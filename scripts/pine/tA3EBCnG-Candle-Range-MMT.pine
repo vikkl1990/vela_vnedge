@@ -1,0 +1,787 @@
+//@version=6
+indicator("Candle Range [MMT]", shorttitle = "CR [MMT]", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 100)
+
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
+string GROUP_TIMEFRAME = "Timeframes"
+string GROUP_STYLE     = "Execution grid style"
+string GROUP_CONTEXT   = "Context grid style"
+string GROUP_LEVELS    = "Range levels"
+string GROUP_LABELS    = "Labels"
+string GROUP_READING   = "Range reading"
+string GROUP_STATS     = "Statistics"
+string GROUP_ALERTS    = "Breakouts"
+
+string MODE_SINGLE = "Single color"
+string MODE_TREND  = "Bullish / bearish"
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+// Timeframes
+string executionTimeframeInput = input.timeframe("", "Execution range timeframe", tooltip = "Leave blank to use the chart timeframe.", group = GROUP_TIMEFRAME)
+string contextTimeframeInput   = input.timeframe("60", "Context range timeframe", tooltip = "Higher timeframe used for directional context.", group = GROUP_TIMEFRAME)
+
+string executionTimeframe = executionTimeframeInput == "" ? timeframe.period : executionTimeframeInput
+string contextTimeframe   = contextTimeframeInput == "" ? executionTimeframe : contextTimeframeInput
+
+// Execution style
+string colorMode     = input.string(MODE_TREND, "Color mode", options = [MODE_TREND, MODE_SINGLE], group = GROUP_STYLE)
+color singleColor    = input.color(color.white, "Single / initial color", group = GROUP_STYLE)
+color bullishColor   = input.color(color.lime, "Bullish reset color", group = GROUP_STYLE)
+color bearishColor   = input.color(color.red, "Bearish reset color", group = GROUP_STYLE)
+int borderWidth      = input.int(2, "Grid line width", minval = 1, maxval = 4, group = GROUP_STYLE)
+int midpointWidth    = input.int(1, "Midpoint width", minval = 1, maxval = 4, group = GROUP_STYLE)
+bool showFill        = input.bool(false, "Fill execution grids", group = GROUP_STYLE)
+int fillTransparency = input.int(92, "Fill transparency", minval = 0, maxval = 100, group = GROUP_STYLE)
+int projectBars      = input.int(2, "Project active grids", minval = 0, maxval = 499, group = GROUP_STYLE)
+int gridsToKeep      = input.int(300, "Historical execution grids", minval = 1, maxval = 450, group = GROUP_STYLE)
+
+// Context style
+bool showContextRange        = input.bool(true, "Show context range", group = GROUP_CONTEXT)
+int contextBorderWidth       = input.int(1, "Context line width", minval = 1, maxval = 4, group = GROUP_CONTEXT)
+int contextTransparency      = input.int(55, "Context transparency", minval = 0, maxval = 100, group = GROUP_CONTEXT)
+bool showContextFill         = input.bool(false, "Fill context range", group = GROUP_CONTEXT)
+int contextFillTransparency  = input.int(96, "Context fill transparency", minval = 0, maxval = 100, group = GROUP_CONTEXT)
+
+// Levels
+bool showQuarterLevels    = input.bool(true, "Show execution 25% / 75%", group = GROUP_LEVELS)
+int quarterWidth          = input.int(1, "Quarter line width", minval = 1, maxval = 4, group = GROUP_LEVELS)
+int quarterTransparency   = input.int(40, "Quarter transparency", minval = 0, maxval = 100, group = GROUP_LEVELS)
+bool showContextMidpoint  = input.bool(true, "Show context midpoint", group = GROUP_LEVELS)
+
+// Labels
+bool showExecutionLabels = input.bool(true, "Show execution labels", group = GROUP_LABELS)
+bool showQuarterLabels   = input.bool(true, "Show 25% / 75% labels", group = GROUP_LABELS)
+bool showContextLabels   = input.bool(true, "Show context labels", group = GROUP_LABELS)
+int labelTransparency    = input.int(70, "Label background transparency", minval = 0, maxval = 100, group = GROUP_LABELS)
+
+// Reading
+bool showSweepMarkers    = input.bool(true, "Show execution range sweeps", group = GROUP_READING)
+bool showMidpointMarkers = input.bool(false, "Show execution midpoint reclaim / loss", group = GROUP_READING)
+bool showDashboard       = input.bool(true, "Show range dashboard", group = GROUP_READING)
+
+// Statistics
+bool showStatistics = input.bool(true, "Show transition statistics", tooltip = "Calculated from confirmed historical range transitions available on the chart.", group = GROUP_STATS)
+int minimumSamples  = input.int(30, "Minimum samples", minval = 1, tooltip = "Statistics below this sample count are marked LOW N.", group = GROUP_STATS)
+
+// Alerts
+bool showResetMarkers = input.bool(false, "Show execution reset markers", group = GROUP_ALERTS)
+
+// ============================================================================
+// RANGE ENGINE
+// ============================================================================
+//
+// The active range is the complete high-to-low wick of the seed candle.
+//
+// A new range forms only after a later candle CLOSES strictly above the
+// current high or strictly below the current low.
+//
+// `previousBar = true` returns the prior confirmed state. This is used inside
+// HTF request.security() calls with lookahead_on to avoid repainting.
+//
+
+calculateRange(bool waitForConfirmation, bool previousBar) =>
+    var float stateHigh = na
+    var float stateLow = na
+    var int stateDirection = 0
+    var int stateSeedTime = na
+    var float stateBreakStrength = na
+
+    bool canProcess = waitForConfirmation ? barstate.isconfirmed : true
+
+    if na(stateHigh) and canProcess
+        stateHigh := high
+        stateLow := low
+        stateDirection := 0
+        stateSeedTime := time
+        stateBreakStrength := na
+    else if not na(stateHigh) and canProcess
+        bool closesAbove = close > stateHigh
+        bool closesBelow = close < stateLow
+
+        if closesAbove or closesBelow
+            float previousRangeSize = stateHigh - stateLow
+            float breakoutDistance = closesAbove ? close - stateHigh : stateLow - close
+
+            stateBreakStrength := previousRangeSize > 0 ? breakoutDistance / previousRangeSize * 100.0 : na
+            stateHigh := high
+            stateLow := low
+            stateDirection := closesAbove ? 1 : -1
+            stateSeedTime := time
+
+    if previousBar
+        [stateHigh[1], stateLow[1], stateDirection[1], stateSeedTime[1], stateBreakStrength[1]]
+    else
+        [stateHigh, stateLow, stateDirection, stateSeedTime, stateBreakStrength]
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+gridColor(int direction) =>
+    colorMode == MODE_SINGLE ? singleColor : direction > 0 ? bullishColor : direction < 0 ? bearishColor : singleColor
+
+formatTimeframe(string tf) =>
+    int seconds = int(timeframe.in_seconds(tf))
+    string result = tf
+
+    if seconds < 60
+        result := str.tostring(seconds) + "S"
+    else if seconds < 3600
+        result := str.tostring(int(seconds / 60)) + "m"
+    else if seconds < 86400 and seconds % 3600 == 0
+        result := str.tostring(int(seconds / 3600)) + "H"
+    else if seconds < 86400
+        result := str.tostring(int(seconds / 60)) + "m"
+    else if seconds < 604800 and seconds % 86400 == 0
+        result := str.tostring(int(seconds / 86400)) + "D"
+    else if seconds % 604800 == 0
+        result := str.tostring(int(seconds / 604800)) + "W"
+
+    result
+
+getDirectionText(int direction) =>
+    direction > 0 ? "Bullish" : direction < 0 ? "Bearish" : "Initial"
+
+getZone(float price, float bottom, float q25, float midpoint, float q75, float top) =>
+    string result = "—"
+
+    if price > top
+        result := "Above range"
+    else if price < bottom
+        result := "Below range"
+    else if price >= q75
+        result := "75-100%"
+    else if price >= midpoint
+        result := "50-75%"
+    else if price >= q25
+        result := "25-50%"
+    else
+        result := "0-25%"
+
+    result
+
+getAlignment(int contextDirection, int executionDirection, float price, float contextBottom, float contextMid, float contextTop, float executionMid) =>
+    string result = "Neutral"
+
+    if price > contextTop
+        result := "Context break UP"
+    else if price < contextBottom
+        result := "Context break DOWN"
+    else if contextDirection > 0 and executionDirection > 0
+        result := price >= contextMid and price >= executionMid ? "STRONG BULL" : "Bull aligned"
+    else if contextDirection < 0 and executionDirection < 0
+        result := price <= contextMid and price <= executionMid ? "STRONG BEAR" : "Bear aligned"
+    else if contextDirection > 0 and executionDirection < 0
+        result := price >= contextMid ? "BULL PULLBACK" : "Deep bull pullback"
+    else if contextDirection < 0 and executionDirection > 0
+        result := price <= contextMid ? "BEAR PULLBACK" : "Deep bear pullback"
+    else if contextDirection > 0
+        result := "Bull context"
+    else if contextDirection < 0
+        result := "Bear context"
+
+    result
+
+getConfirmationRead(int contextDirection, int executionDirection, float price, float executionMid) =>
+    string result = "Wait"
+
+    if contextDirection > 0
+        if executionDirection > 0
+            result := price >= executionMid ? "Long-side structure" : "Wait for Exec Mid reclaim"
+        else if executionDirection < 0
+            result := "Wait for bullish Exec shift"
+        else
+            result := "Wait for Exec confirmation"
+
+    else if contextDirection < 0
+        if executionDirection < 0
+            result := price <= executionMid ? "Short-side structure" : "Wait for Exec Mid loss"
+        else if executionDirection > 0
+            result := "Wait for bearish Exec shift"
+        else
+            result := "Wait for Exec confirmation"
+
+    result
+
+formatStat(string outcome, int successes, int samples, int minSamples) =>
+    string result = outcome + " —"
+
+    if samples > 0
+        float probability = successes * 100.0 / samples
+        string sampleWarning = samples < minSamples ? " | LOW N" : ""
+        result := outcome + " " + str.tostring(probability, "#.1") + "% | n=" + str.tostring(samples) + sampleWarning
+
+    result
+
+// ============================================================================
+// TIMEFRAME VALIDATION
+// ============================================================================
+
+float chartTimeframeSeconds = timeframe.in_seconds()
+float executionTimeframeSeconds = timeframe.in_seconds(executionTimeframe)
+float contextTimeframeSeconds = timeframe.in_seconds(contextTimeframe)
+
+bool executionUsesHigherTimeframe = executionTimeframeSeconds > chartTimeframeSeconds
+bool contextUsesHigherTimeframe = contextTimeframeSeconds > chartTimeframeSeconds
+
+if executionTimeframeSeconds < chartTimeframeSeconds
+    runtime.error("Candle Range [MMT]: Execution timeframe must be equal to or higher than the chart timeframe.")
+
+if contextTimeframeSeconds < executionTimeframeSeconds
+    runtime.error("Candle Range [MMT]: Context timeframe must be equal to or higher than the execution timeframe.")
+
+// ============================================================================
+// RANGE REQUESTS
+// ============================================================================
+
+// Chart timeframe state.
+[chartHigh, chartLow, chartDirection, chartSeedTime, chartBreakStrength] = calculateRange(true, false)
+
+// Confirmed execution HTF state.
+[executionHtfHigh, executionHtfLow, executionHtfDirection, executionHtfSeedTime, executionHtfBreakStrength] = request.security(
+    syminfo.tickerid,
+    executionTimeframe,
+    calculateRange(false, true),
+    lookahead = barmerge.lookahead_on
+)
+
+// Confirmed context HTF state.
+[contextHtfHigh, contextHtfLow, contextHtfDirection, contextHtfSeedTime, contextHtfBreakStrength] = request.security(
+    syminfo.tickerid,
+    contextTimeframe,
+    calculateRange(false, true),
+    lookahead = barmerge.lookahead_on
+)
+
+// ============================================================================
+// EXECUTION RANGE VALUES
+// ============================================================================
+
+float executionHigh = executionUsesHigherTimeframe ? executionHtfHigh : chartHigh
+float executionLow = executionUsesHigherTimeframe ? executionHtfLow : chartLow
+int executionDirection = executionUsesHigherTimeframe ? executionHtfDirection : chartDirection
+int executionSeedTime = executionUsesHigherTimeframe ? executionHtfSeedTime : chartSeedTime
+float executionBreakStrength = executionUsesHigherTimeframe ? executionHtfBreakStrength : chartBreakStrength
+
+float executionSize = executionHigh - executionLow
+float executionQ25 = executionLow + executionSize * 0.25
+float executionMid = executionLow + executionSize * 0.50
+float executionQ75 = executionLow + executionSize * 0.75
+
+bool executionReady = not na(executionHigh) and not na(executionLow) and not na(executionSeedTime)
+
+bool newExecutionGrid = executionReady and (na(executionSeedTime[1]) or executionSeedTime != executionSeedTime[1])
+
+bool bullishExecutionReset = newExecutionGrid and executionDirection > 0
+bool bearishExecutionReset = newExecutionGrid and executionDirection < 0
+
+// ============================================================================
+// CONTEXT RANGE VALUES
+// ============================================================================
+
+float contextHigh = contextUsesHigherTimeframe ? contextHtfHigh : chartHigh
+float contextLow = contextUsesHigherTimeframe ? contextHtfLow : chartLow
+int contextDirection = contextUsesHigherTimeframe ? contextHtfDirection : chartDirection
+int contextSeedTime = contextUsesHigherTimeframe ? contextHtfSeedTime : chartSeedTime
+float contextBreakStrength = contextUsesHigherTimeframe ? contextHtfBreakStrength : chartBreakStrength
+
+float contextSize = contextHigh - contextLow
+float contextQ25 = contextLow + contextSize * 0.25
+float contextMid = contextLow + contextSize * 0.50
+float contextQ75 = contextLow + contextSize * 0.75
+
+bool contextReady = not na(contextHigh) and not na(contextLow) and not na(contextSeedTime)
+
+bool newContextGrid = contextReady and (na(contextSeedTime[1]) or contextSeedTime != contextSeedTime[1])
+
+bool bullishContextReset = newContextGrid and contextDirection > 0
+bool bearishContextReset = newContextGrid and contextDirection < 0
+
+// ============================================================================
+// TRANSITION STATISTICS
+// ============================================================================
+
+// Generic execution continuation.
+var int execBullSamples = 0
+var int execBullSuccesses = 0
+var int execBearSamples = 0
+var int execBearSuccesses = 0
+
+// Context + execution aligned.
+var int alignedBullSamples = 0
+var int alignedBullSuccesses = 0
+var int alignedBearSamples = 0
+var int alignedBearSuccesses = 0
+
+// Pullback recovery.
+var int bullPullbackSamples = 0
+var int bullPullbackRecoveries = 0
+var int bearPullbackSamples = 0
+var int bearPullbackRecoveries = 0
+
+// Context continuation.
+var int contextBullSamples = 0
+var int contextBullSuccesses = 0
+var int contextBearSamples = 0
+var int contextBearSuccesses = 0
+
+// Frozen state of the execution range whose outcome we are waiting for.
+var int trackedExecutionDirection = 0
+var int trackedExecutionContextDirection = 0
+
+// Frozen context range whose next state we are waiting for.
+var int trackedContextDirection = 0
+
+// --------------------------------------------------------------------------
+// EXECUTION TRANSITIONS
+// --------------------------------------------------------------------------
+
+if newExecutionGrid and executionDirection != 0
+
+    if trackedExecutionDirection != 0
+
+        // Generic Bull -> ?
+        if trackedExecutionDirection > 0
+            execBullSamples += 1
+
+            if executionDirection > 0
+                execBullSuccesses += 1
+
+        // Generic Bear -> ?
+        else
+            execBearSamples += 1
+
+            if executionDirection < 0
+                execBearSuccesses += 1
+
+        // Bull context + Bull execution -> next Bull?
+        if trackedExecutionContextDirection > 0 and trackedExecutionDirection > 0
+            alignedBullSamples += 1
+
+            if executionDirection > 0
+                alignedBullSuccesses += 1
+
+        // Bear context + Bear execution -> next Bear?
+        else if trackedExecutionContextDirection < 0 and trackedExecutionDirection < 0
+            alignedBearSamples += 1
+
+            if executionDirection < 0
+                alignedBearSuccesses += 1
+
+        // Bull context + Bear execution = bullish pullback.
+        else if trackedExecutionContextDirection > 0 and trackedExecutionDirection < 0
+            bullPullbackSamples += 1
+
+            if executionDirection > 0
+                bullPullbackRecoveries += 1
+
+        // Bear context + Bull execution = bearish pullback.
+        else if trackedExecutionContextDirection < 0 and trackedExecutionDirection > 0
+            bearPullbackSamples += 1
+
+            if executionDirection < 0
+                bearPullbackRecoveries += 1
+
+    // Freeze the context that exists when this new execution range begins.
+    trackedExecutionDirection := executionDirection
+    trackedExecutionContextDirection := contextReady ? contextDirection : 0
+
+// --------------------------------------------------------------------------
+// CONTEXT TRANSITIONS
+// --------------------------------------------------------------------------
+
+if newContextGrid and contextDirection != 0
+
+    if trackedContextDirection != 0
+
+        if trackedContextDirection > 0
+            contextBullSamples += 1
+
+            if contextDirection > 0
+                contextBullSuccesses += 1
+
+        else
+            contextBearSamples += 1
+
+            if contextDirection < 0
+                contextBearSuccesses += 1
+
+    trackedContextDirection := contextDirection
+
+// ============================================================================
+// CURRENT STAT READINGS
+// ============================================================================
+
+string executionStatText = "—"
+
+if executionDirection > 0
+    executionStatText := formatStat("Next Bull", execBullSuccesses, execBullSamples, minimumSamples)
+else if executionDirection < 0
+    executionStatText := formatStat("Next Bear", execBearSuccesses, execBearSamples, minimumSamples)
+
+string stateStatText = "—"
+
+if contextDirection > 0 and executionDirection > 0
+    stateStatText := formatStat("Next Bull", alignedBullSuccesses, alignedBullSamples, minimumSamples)
+
+else if contextDirection < 0 and executionDirection < 0
+    stateStatText := formatStat("Next Bear", alignedBearSuccesses, alignedBearSamples, minimumSamples)
+
+else if contextDirection > 0 and executionDirection < 0
+    stateStatText := formatStat("Recover Bull", bullPullbackRecoveries, bullPullbackSamples, minimumSamples)
+
+else if contextDirection < 0 and executionDirection > 0
+    stateStatText := formatStat("Recover Bear", bearPullbackRecoveries, bearPullbackSamples, minimumSamples)
+
+string contextStatText = "—"
+
+if contextDirection > 0
+    contextStatText := formatStat("Next Bull", contextBullSuccesses, contextBullSamples, minimumSamples)
+else if contextDirection < 0
+    contextStatText := formatStat("Next Bear", contextBearSuccesses, contextBearSamples, minimumSamples)
+
+// ============================================================================
+// RANGE INTERACTIONS
+// ============================================================================
+
+// Sweep = wick outside active execution range, but close returns inside.
+bool lowerExecutionSweep = executionReady and not newExecutionGrid and low < executionLow and close >= executionLow
+bool upperExecutionSweep = executionReady and not newExecutionGrid and high > executionHigh and close <= executionHigh
+
+bool executionMidReclaim = executionReady and not newExecutionGrid and ta.crossover(close, executionMid)
+bool executionMidLoss = executionReady and not newExecutionGrid and ta.crossunder(close, executionMid)
+
+// ============================================================================
+// RANGE POSITION / INTERPRETATION
+// ============================================================================
+
+float executionPosition = executionReady and executionSize > 0 ? (close - executionLow) / executionSize * 100.0 : na
+float contextPosition = contextReady and contextSize > 0 ? (close - contextLow) / contextSize * 100.0 : na
+
+string executionZone = executionReady ? getZone(close, executionLow, executionQ25, executionMid, executionQ75, executionHigh) : "—"
+string contextZone = contextReady ? getZone(close, contextLow, contextQ25, contextMid, contextQ75, contextHigh) : "—"
+
+string alignmentRead = executionReady and contextReady ? getAlignment(contextDirection, executionDirection, close, contextLow, contextMid, contextHigh, executionMid) : "—"
+
+string confirmationRead = executionReady and contextReady ? getConfirmationRead(contextDirection, executionDirection, close, executionMid) : "—"
+
+int executionAge = nz(ta.barssince(newExecutionGrid))
+int contextAge = nz(ta.barssince(newContextGrid))
+
+// ============================================================================
+// TIME / TEXT
+// ============================================================================
+
+int chartBarDuration = time_close - time
+int activeRightTime = time_close + projectBars * chartBarDuration
+int contextLabelRightTime = activeRightTime + chartBarDuration
+
+string executionTimeframeText = formatTimeframe(executionTimeframe)
+string contextTimeframeText = formatTimeframe(contextTimeframe)
+
+// ============================================================================
+// EXECUTION DRAWING OBJECTS
+// ============================================================================
+
+var box activeExecutionGrid = na
+
+var line activeExecutionMid = na
+var line activeExecutionQ25 = na
+var line activeExecutionQ75 = na
+
+var array<box> executionGrids = array.new<box>()
+var array<line> executionMids = array.new<line>()
+
+var label executionHighLabel = na
+var label executionQ75Label = na
+var label executionMidLabel = na
+var label executionQ25Label = na
+var label executionLowLabel = na
+
+// ============================================================================
+// CONTEXT DRAWING OBJECTS
+// ============================================================================
+
+var box activeContextGrid = na
+var line activeContextMid = na
+
+var label contextHighLabel = na
+var label contextMidLabel = na
+var label contextLowLabel = na
+
+// ============================================================================
+// EXECUTION GRID
+// ============================================================================
+
+if executionReady
+
+    color executionColor = gridColor(executionDirection)
+    color executionQuarterColor = color.new(executionColor, quarterTransparency)
+
+    if newExecutionGrid
+
+        if not na(activeExecutionGrid)
+            box.set_right(activeExecutionGrid, executionSeedTime)
+
+        if not na(activeExecutionMid)
+            line.set_x2(activeExecutionMid, executionSeedTime)
+
+        // Quarter lines are kept only for the active range.
+        if not na(activeExecutionQ25)
+            line.delete(activeExecutionQ25)
+
+        if not na(activeExecutionQ75)
+            line.delete(activeExecutionQ75)
+
+        activeExecutionQ25 := na
+        activeExecutionQ75 := na
+
+        activeExecutionGrid := box.new(left = executionSeedTime, top = executionHigh, right = activeRightTime, bottom = executionLow, xloc = xloc.bar_time, border_color = executionColor, border_width = borderWidth, bgcolor = showFill ? color.new(executionColor, fillTransparency) : na)
+
+        activeExecutionMid := line.new(x1 = executionSeedTime, y1 = executionMid, x2 = activeRightTime, y2 = executionMid, xloc = xloc.bar_time, color = executionColor, style = line.style_dashed, width = midpointWidth)
+
+        if showQuarterLevels
+            activeExecutionQ25 := line.new(x1 = executionSeedTime, y1 = executionQ25, x2 = activeRightTime, y2 = executionQ25, xloc = xloc.bar_time, color = executionQuarterColor, style = line.style_dotted, width = quarterWidth)
+
+            activeExecutionQ75 := line.new(x1 = executionSeedTime, y1 = executionQ75, x2 = activeRightTime, y2 = executionQ75, xloc = xloc.bar_time, color = executionQuarterColor, style = line.style_dotted, width = quarterWidth)
+
+        array.push(executionGrids, activeExecutionGrid)
+        array.push(executionMids, activeExecutionMid)
+
+        if array.size(executionGrids) > gridsToKeep
+            box oldestGrid = array.shift(executionGrids)
+            line oldestMid = array.shift(executionMids)
+
+            box.delete(oldestGrid)
+            line.delete(oldestMid)
+
+    else
+
+        if not na(activeExecutionGrid)
+            box.set_right(activeExecutionGrid, activeRightTime)
+
+        if not na(activeExecutionMid)
+            line.set_x2(activeExecutionMid, activeRightTime)
+
+        if showQuarterLevels
+            if not na(activeExecutionQ25)
+                line.set_x2(activeExecutionQ25, activeRightTime)
+
+            if not na(activeExecutionQ75)
+                line.set_x2(activeExecutionQ75, activeRightTime)
+
+// ============================================================================
+// ACTIVE CONTEXT RANGE
+// ============================================================================
+
+if contextReady and showContextRange
+
+    color rawContextColor = gridColor(contextDirection)
+    color contextColor = color.new(rawContextColor, contextTransparency)
+
+    if newContextGrid or na(activeContextGrid)
+
+        if not na(activeContextGrid)
+            box.delete(activeContextGrid)
+
+        if not na(activeContextMid)
+            line.delete(activeContextMid)
+
+        activeContextGrid := box.new(left = contextSeedTime, top = contextHigh, right = activeRightTime, bottom = contextLow, xloc = xloc.bar_time, border_color = contextColor, border_width = contextBorderWidth, bgcolor = showContextFill ? color.new(rawContextColor, contextFillTransparency) : na)
+
+        if showContextMidpoint
+            activeContextMid := line.new(x1 = contextSeedTime, y1 = contextMid, x2 = activeRightTime, y2 = contextMid, xloc = xloc.bar_time, color = contextColor, style = line.style_dashed, width = contextBorderWidth)
+
+    else
+
+        if not na(activeContextGrid)
+            box.set_right(activeContextGrid, activeRightTime)
+
+        if showContextMidpoint and not na(activeContextMid)
+            line.set_x2(activeContextMid, activeRightTime)
+
+// ============================================================================
+// EXECUTION LABELS
+// ============================================================================
+
+if executionReady and showExecutionLabels
+
+    color executionColor = gridColor(executionDirection)
+    color labelBackground = color.new(executionColor, labelTransparency)
+
+    if na(executionHighLabel)
+        executionHighLabel := label.new(x = activeRightTime, y = executionHigh, text = executionTimeframeText + " High", xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_left, color = labelBackground, textcolor = chart.fg_color, size = size.small)
+    else
+        label.set_xy(executionHighLabel, activeRightTime, executionHigh)
+        label.set_text(executionHighLabel, executionTimeframeText + " High")
+        label.set_color(executionHighLabel, labelBackground)
+
+    if na(executionMidLabel)
+        executionMidLabel := label.new(x = activeRightTime, y = executionMid, text = executionTimeframeText + " Mid", xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_left, color = labelBackground, textcolor = chart.fg_color, size = size.small)
+    else
+        label.set_xy(executionMidLabel, activeRightTime, executionMid)
+        label.set_text(executionMidLabel, executionTimeframeText + " Mid")
+        label.set_color(executionMidLabel, labelBackground)
+
+    if na(executionLowLabel)
+        executionLowLabel := label.new(x = activeRightTime, y = executionLow, text = executionTimeframeText + " Low", xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_left, color = labelBackground, textcolor = chart.fg_color, size = size.small)
+    else
+        label.set_xy(executionLowLabel, activeRightTime, executionLow)
+        label.set_text(executionLowLabel, executionTimeframeText + " Low")
+        label.set_color(executionLowLabel, labelBackground)
+
+    if showQuarterLabels
+
+        if na(executionQ75Label)
+            executionQ75Label := label.new(x = activeRightTime, y = executionQ75, text = executionTimeframeText + " 75%", xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_left, color = labelBackground, textcolor = chart.fg_color, size = size.tiny)
+        else
+            label.set_xy(executionQ75Label, activeRightTime, executionQ75)
+            label.set_text(executionQ75Label, executionTimeframeText + " 75%")
+            label.set_color(executionQ75Label, labelBackground)
+
+        if na(executionQ25Label)
+            executionQ25Label := label.new(x = activeRightTime, y = executionQ25, text = executionTimeframeText + " 25%", xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_left, color = labelBackground, textcolor = chart.fg_color, size = size.tiny)
+        else
+            label.set_xy(executionQ25Label, activeRightTime, executionQ25)
+            label.set_text(executionQ25Label, executionTimeframeText + " 25%")
+            label.set_color(executionQ25Label, labelBackground)
+
+// ============================================================================
+// CONTEXT LABELS
+// ============================================================================
+
+if contextReady and showContextRange and showContextLabels
+
+    color rawContextColor = gridColor(contextDirection)
+    color labelBackground = color.new(rawContextColor, math.min(labelTransparency + 15, 100))
+
+    if na(contextHighLabel)
+        contextHighLabel := label.new(x = contextLabelRightTime, y = contextHigh, text = contextTimeframeText + " Context High", xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_left, color = labelBackground, textcolor = chart.fg_color, size = size.tiny)
+    else
+        label.set_xy(contextHighLabel, contextLabelRightTime, contextHigh)
+        label.set_text(contextHighLabel, contextTimeframeText + " Context High")
+        label.set_color(contextHighLabel, labelBackground)
+
+    if na(contextMidLabel)
+        contextMidLabel := label.new(x = contextLabelRightTime, y = contextMid, text = contextTimeframeText + " Context Mid", xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_left, color = labelBackground, textcolor = chart.fg_color, size = size.tiny)
+    else
+        label.set_xy(contextMidLabel, contextLabelRightTime, contextMid)
+        label.set_text(contextMidLabel, contextTimeframeText + " Context Mid")
+        label.set_color(contextMidLabel, labelBackground)
+
+    if na(contextLowLabel)
+        contextLowLabel := label.new(x = contextLabelRightTime, y = contextLow, text = contextTimeframeText + " Context Low", xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_left, color = labelBackground, textcolor = chart.fg_color, size = size.tiny)
+    else
+        label.set_xy(contextLowLabel, contextLabelRightTime, contextLow)
+        label.set_text(contextLowLabel, contextTimeframeText + " Context Low")
+        label.set_color(contextLowLabel, labelBackground)
+
+// ============================================================================
+// DASHBOARD
+// ============================================================================
+
+var table dashboard = table.new(position.top_right, 2, 11, border_width = 1)
+
+if barstate.islast and showDashboard and executionReady and contextReady
+
+    color executionColor = gridColor(executionDirection)
+    color contextColor = gridColor(contextDirection)
+    color neutralBackground = color.new(chart.bg_color, 10)
+    color stateColor = contextDirection > 0 ? bullishColor : contextDirection < 0 ? bearishColor : chart.fg_color
+
+    string contextPositionText = na(contextPosition) ? "—" : str.tostring(contextPosition, "#.0") + "%"
+    string executionPositionText = na(executionPosition) ? "—" : str.tostring(executionPosition, "#.0") + "%"
+    string contextBreakText = na(contextBreakStrength) ? "—" : str.tostring(contextBreakStrength, "#.1") + "%"
+    string executionBreakText = na(executionBreakStrength) ? "—" : str.tostring(executionBreakStrength, "#.1") + "%"
+
+    table.cell(dashboard, 0, 0, "Context", text_color = chart.fg_color, bgcolor = neutralBackground)
+    table.cell(dashboard, 1, 0, contextTimeframeText + " " + getDirectionText(contextDirection), text_color = contextColor, bgcolor = neutralBackground)
+
+    table.cell(dashboard, 0, 1, "Execution", text_color = chart.fg_color, bgcolor = neutralBackground)
+    table.cell(dashboard, 1, 1, executionTimeframeText + " " + getDirectionText(executionDirection), text_color = executionColor, bgcolor = neutralBackground)
+
+    table.cell(dashboard, 0, 2, "Alignment", text_color = chart.fg_color, bgcolor = neutralBackground)
+    table.cell(dashboard, 1, 2, alignmentRead, text_color = stateColor, bgcolor = neutralBackground)
+
+    table.cell(dashboard, 0, 3, "Read", text_color = chart.fg_color, bgcolor = neutralBackground)
+    table.cell(dashboard, 1, 3, confirmationRead, text_color = stateColor, bgcolor = neutralBackground)
+
+    table.cell(dashboard, 0, 4, "Exec Stat", text_color = chart.fg_color, bgcolor = neutralBackground)
+    table.cell(dashboard, 1, 4, showStatistics ? executionStatText : "Off", text_color = executionColor, bgcolor = neutralBackground)
+
+    table.cell(dashboard, 0, 5, "State Stat", text_color = chart.fg_color, bgcolor = neutralBackground)
+    table.cell(dashboard, 1, 5, showStatistics ? stateStatText : "Off", text_color = stateColor, bgcolor = neutralBackground)
+
+    table.cell(dashboard, 0, 6, "Context Stat", text_color = chart.fg_color, bgcolor = neutralBackground)
+    table.cell(dashboard, 1, 6, showStatistics ? contextStatText : "Off", text_color = contextColor, bgcolor = neutralBackground)
+
+    table.cell(dashboard, 0, 7, "Context Pos", text_color = chart.fg_color, bgcolor = neutralBackground)
+    table.cell(dashboard, 1, 7, contextPositionText + " | " + contextZone, text_color = chart.fg_color, bgcolor = neutralBackground)
+
+    table.cell(dashboard, 0, 8, "Exec Pos", text_color = chart.fg_color, bgcolor = neutralBackground)
+    table.cell(dashboard, 1, 8, executionPositionText + " | " + executionZone, text_color = chart.fg_color, bgcolor = neutralBackground)
+
+    table.cell(dashboard, 0, 9, "Break", text_color = chart.fg_color, bgcolor = neutralBackground)
+    table.cell(dashboard, 1, 9, "C " + contextBreakText + " | E " + executionBreakText, text_color = chart.fg_color, bgcolor = neutralBackground)
+
+    table.cell(dashboard, 0, 10, "Age", text_color = chart.fg_color, bgcolor = neutralBackground)
+    table.cell(dashboard, 1, 10, "C " + str.tostring(contextAge) + " | E " + str.tostring(executionAge), text_color = chart.fg_color, bgcolor = neutralBackground)
+
+// ============================================================================
+// MARKERS
+// ============================================================================
+
+plotshape(showSweepMarkers and lowerExecutionSweep, title = "Lower execution range sweep", text = "SWP", style = shape.triangleup, location = location.belowbar, color = bullishColor, textcolor = bullishColor, size = size.tiny)
+
+plotshape(showSweepMarkers and upperExecutionSweep, title = "Upper execution range sweep", text = "SWP", style = shape.triangledown, location = location.abovebar, color = bearishColor, textcolor = bearishColor, size = size.tiny)
+
+plotshape(showMidpointMarkers and executionMidReclaim, title = "Execution midpoint reclaim", style = shape.circle, location = location.belowbar, color = bullishColor, size = size.tiny)
+
+plotshape(showMidpointMarkers and executionMidLoss, title = "Execution midpoint loss", style = shape.circle, location = location.abovebar, color = bearishColor, size = size.tiny)
+
+plotshape(showResetMarkers and bullishExecutionReset, title = "Bullish execution reset", style = shape.triangleup, location = location.belowbar, color = bullishColor, size = size.tiny)
+
+plotshape(showResetMarkers and bearishExecutionReset, title = "Bearish execution reset", style = shape.triangledown, location = location.abovebar, color = bearishColor, size = size.tiny)
+
+// ============================================================================
+// DATA WINDOW
+// ============================================================================
+
+plot(executionHigh, "Execution range high", display = display.data_window)
+plot(executionQ75, "Execution 75%", display = display.data_window)
+plot(executionMid, "Execution midpoint", display = display.data_window)
+plot(executionQ25, "Execution 25%", display = display.data_window)
+plot(executionLow, "Execution range low", display = display.data_window)
+plot(executionPosition, "Execution position %", display = display.data_window)
+plot(executionBreakStrength, "Execution breakout strength %", display = display.data_window)
+
+plot(contextHigh, "Context range high", display = display.data_window)
+plot(contextMid, "Context midpoint", display = display.data_window)
+plot(contextLow, "Context range low", display = display.data_window)
+plot(contextPosition, "Context position %", display = display.data_window)
+plot(contextBreakStrength, "Context breakout strength %", display = display.data_window)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+alertcondition(bullishExecutionReset, title = "Bullish execution range reset", message = "Candle Range [MMT]: execution range reset bullish.")
+
+alertcondition(bearishExecutionReset, title = "Bearish execution range reset", message = "Candle Range [MMT]: execution range reset bearish.")
+
+alertcondition(bullishContextReset, title = "Bullish context range reset", message = "Candle Range [MMT]: context range reset bullish.")
+
+alertcondition(bearishContextReset, title = "Bearish context range reset", message = "Candle Range [MMT]: context range reset bearish.")
+
+alertcondition(lowerExecutionSweep, title = "Lower execution range sweep", message = "Candle Range [MMT]: price swept below the execution range and closed back inside.")
+
+alertcondition(upperExecutionSweep, title = "Upper execution range sweep", message = "Candle Range [MMT]: price swept above the execution range and closed back inside.")
+
+alertcondition(executionMidReclaim, title = "Execution midpoint reclaimed", message = "Candle Range [MMT]: price reclaimed the execution-range midpoint.")
+
+alertcondition(executionMidLoss, title = "Execution midpoint lost", message = "Candle Range [MMT]: price lost the execution-range midpoint.")

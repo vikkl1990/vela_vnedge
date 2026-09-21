@@ -1,0 +1,284 @@
+//@version=6
+indicator("MACD Matrix [Quantum Algo]", overlay = false, max_lines_count = 100, max_labels_count = 200, max_bars_back = 500)
+
+// ════════════════════════════════════════════════════════════════
+//  MACD MATRIX
+//  The Moving Average Convergence Divergence read as a system:
+//  four momentum quadrants instead of one sign, a multi-timeframe
+//  alignment matrix, histogram divergence drawn on both the
+//  oscillator and the price candles, histogram compression before
+//  expansion, and a momentum river painted through price so the
+//  whole reading lives on the chart, not only in the pane.
+//
+//  Concept credits: MACD by Gerald Appel (late 1970s) · the MACD
+//  histogram by Thomas Aspray (1986) · the Wilson score interval
+//  by Edwin B. Wilson (1927). The quadrant engine, alignment
+//  matrix, dual-canvas divergence rendering, histogram squeeze,
+//  per-symbol statistics and all code are original work — no
+//  third-party or open-source script code was reused.
+// ════════════════════════════════════════════════════════════════
+
+// ─── INPUTS ─────────────────────────────────────────────────────
+grpM = "MACD"
+fastL = input.int(12, "Fast Length", minval = 2, group = grpM)
+slowL = input.int(26, "Slow Length", minval = 3, group = grpM)
+sigL  = input.int(9, "Signal Length", minval = 2, group = grpM)
+
+grpT = "Timeframe Matrix"
+tf1 = input.timeframe("15", "Timeframe One", group = grpT)
+tf2 = input.timeframe("60", "Timeframe Two", group = grpT)
+tf3 = input.timeframe("240", "Timeframe Three", group = grpT)
+tf4 = input.timeframe("D", "Timeframe Four", group = grpT)
+
+grpS = "Signals & Squeeze"
+showSigs = input.bool(true, "Show Signals On Price", group = grpS)
+divPiv   = input.int(5, "Divergence Pivot Length", minval = 2, maxval = 15, group = grpS)
+sqzWin   = input.int(300, "Squeeze History Window (Bars)", minval = 100, maxval = 480, group = grpS)
+sqzPct   = input.int(20, "Squeeze Percentile", minval = 5, maxval = 40, group = grpS, tooltip = "The histogram is coiled when its amplitude sits below this percentile of its own recent history. Releases fire when it expands back through the threshold.")
+cooldown = input.int(6, "Signal Cooldown (Bars)", minval = 1, group = grpS)
+
+grpX = "Statistics"
+cap     = input.int(300, "Samples Per Family (FIFO Cap)", minval = 50, maxval = 1000, group = grpX)
+minN    = input.int(15, "Minimum Samples To Grade", minval = 5, group = grpX)
+shrinkK = input.int(10, "Shrinkage Strength", minval = 0, maxval = 100, group = grpX)
+zConf   = input.float(1.645, "Wilson z-Score", step = 0.005, group = grpX)
+
+grpV = "Visuals"
+bullCol = input.color(#00897b, "Bullish", group = grpV)
+bearCol = input.color(#e4002b, "Bearish", group = grpV)
+goldCol = input.color(#c77800, "Alignment / Squeeze", group = grpV)
+silvCol = input.color(#37474f, "Neutral", group = grpV)
+showRiver = input.bool(true, "Momentum River On Price", group = grpV)
+showAura  = input.bool(true, "Quadrant Aura On Price", group = grpV)
+riverLen  = input.int(21, "River Length", minval = 5, group = grpV)
+
+grpD = "Dashboard"
+showDash    = input.bool(true, "Show Dashboard", group = grpD)
+dashPos     = input.string("Top Right", "Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = grpD)
+dashSize    = input.string("Small", "Text Size", options = ["Tiny", "Small", "Normal", "Large"], group = grpD)
+dashTitleBg = input.color(color.new(#ef9a13, 0), "Title Band", group = grpD)
+dashBg      = input.color(color.new(#171207, 8), "Background", group = grpD)
+dashFrame   = input.color(color.new(#d99b1e, 15), "Frame", group = grpD)
+dashGrid    = input.color(color.new(#d99b1e, 80), "Grid", group = grpD)
+dashHeadTxt = input.color(color.new(#1a1207, 0), "Header Text", group = grpD)
+dashBodyTxt = input.color(color.new(#eef2f7, 5), "Body Text", group = grpD)
+dashMuteTxt = input.color(color.new(#cdb87e, 15), "Muted Text", group = grpD)
+
+// ─── SHARED ─────────────────────────────────────────────────────
+f_rep(string s, int n) =>
+    out = ""
+    if n > 0
+        for i = 1 to n
+            out += s
+    out
+fw(float p) => str.tostring(p * 100, "#") + "%"
+f_meter(float x, int slots) =>
+    k = math.min(slots, math.max(0, int(x * slots + 0.5)))
+    f_rep("▮", k) + f_rep("▭", slots - k)
+
+// ─── MACD CORE + QUADRANTS ─────────────────────────────────────
+macdL = ta.ema(close, fastL) - ta.ema(close, slowL)
+sigLn = ta.ema(macdL, sigL)
+hist  = macdL - sigLn
+// quadrant: 1 expanding ▲ · 2 fading ▲ · 3 expanding ▼ · 4 fading ▼
+quad = macdL >= 0 ? (hist >= hist[1] ? 1 : 2) : (hist <= hist[1] ? 3 : 4)
+qName = quad == 1 ? "Expanding ▲" : quad == 2 ? "Fading ▲" : quad == 3 ? "Expanding ▼" : "Fading ▼"
+qCol  = quad == 1 ? bullCol : quad == 2 ? color.new(bullCol, 45) : quad == 3 ? bearCol : color.new(bearCol, 45)
+qSolid = quad <= 2 ? bullCol : bearCol
+
+// ─── HISTOGRAM SQUEEZE ─────────────────────────────────────────
+var array<float> hHist = array.new<float>()
+if barstate.isconfirmed
+    hHist.push(math.abs(hist))
+    if hHist.size() > sqzWin
+        hHist.shift()
+sqzTh = hHist.size() >= 50 ? array.percentile_linear_interpolation(hHist, sqzPct) : na
+coiled = not na(sqzTh) and math.abs(hist) <= sqzTh
+var int coilDur = 0
+coilDur := coiled ? coilDur + 1 : 0
+releaseUp = barstate.isconfirmed and not coiled and coiled[1] and coilDur[1] >= 4 and hist > 0
+releaseDn = barstate.isconfirmed and not coiled and coiled[1] and coilDur[1] >= 4 and hist < 0
+
+// ─── PANE RENDER ───────────────────────────────────────────────
+hline(0, "Zero", color = color.new(#37474f, 50))
+histMax = ta.highest(math.abs(hist), 100)
+inten = histMax > 0 ? math.abs(hist) / histMax : 0.0
+plot(hist, "Histogram", style = plot.style_columns, color = color.new(qSolid, quad == 1 or quad == 3 ? 15 - int(inten * 15) : 55))
+pMac = plot(macdL, "MACD", color = color.new(qSolid, 0), linewidth = 2)
+pSig = plot(sigLn, "Signal", color = color.new(silvCol, 20))
+fill(pMac, pSig, color = color.new(qSolid, 78), title = "Momentum Ribbon")
+plotshape(coiled ? 0 : na, "Coil", shape.circle, location.absolute, color.new(goldCol, 0), size = size.tiny)
+
+// ─── PRICE-CHART CANVAS · river, aura, beacons ─────────────────
+river = ta.ema(close, riverLen)
+plot(showRiver ? river : na, "Momentum River", color = color.new(qSolid, quad == 1 or quad == 3 ? 0 : 40), linewidth = 3, force_overlay = true)
+bgcolor(showAura ? color.new(qSolid, quad == 1 or quad == 3 ? 88 : 94) : na, title = "Quadrant Aura", force_overlay = true)
+
+// ─── TIMEFRAME MATRIX ──────────────────────────────────────────
+f_state() =>
+    m = ta.ema(close, fastL) - ta.ema(close, slowL)
+    h = m - ta.ema(m, sigL)
+    [m, h]
+[m1, h1] = request.security(syminfo.tickerid, tf1, f_state(), lookahead = barmerge.lookahead_off)
+[m2, h2] = request.security(syminfo.tickerid, tf2, f_state(), lookahead = barmerge.lookahead_off)
+[m3, h3] = request.security(syminfo.tickerid, tf3, f_state(), lookahead = barmerge.lookahead_off)
+[m4, h4] = request.security(syminfo.tickerid, tf4, f_state(), lookahead = barmerge.lookahead_off)
+bullN = (m1 > 0 ? 1 : 0) + (m2 > 0 ? 1 : 0) + (m3 > 0 ? 1 : 0) + (m4 > 0 ? 1 : 0)
+expN  = (h1 > 0 ? 1 : 0) + (h2 > 0 ? 1 : 0) + (h3 > 0 ? 1 : 0) + (h4 > 0 ? 1 : 0)
+alignUp = bullN == 4 and expN >= 3
+alignDn = bullN == 0 and expN <= 1
+beaconUp = barstate.isconfirmed and alignUp and not alignUp[1]
+beaconDn = barstate.isconfirmed and alignDn and not alignDn[1]
+plotshape(showSigs and beaconUp, "Alignment Beacon Up", shape.diamond, location.belowbar, color.new(goldCol, 0), size = size.small, force_overlay = true)
+plotshape(showSigs and beaconDn, "Alignment Beacon Down", shape.diamond, location.abovebar, color.new(goldCol, 0), size = size.small, force_overlay = true)
+f_tfTxt(float m, float h) =>
+    (m > 0 ? "▲" : "▼") + (h > 0 ? "⇡" : "⇣")
+
+// ─── DIVERGENCE · drawn on BOTH canvases ───────────────────────
+var array<line> dvLn = array.new<line>()
+ph = ta.pivothigh(hist, divPiv, divPiv)
+pl = ta.pivotlow(hist, divPiv, divPiv)
+var float lastHL = na
+var float lastPxL = na
+var int   lastBarL = na
+var float lastHH = na
+var float lastPxH = na
+var int   lastBarH = na
+bool divBull = false
+bool divBear = false
+if not na(pl)
+    b2 = bar_index - divPiv
+    if not na(lastHL) and low[divPiv] < lastPxL and pl > lastHL and hist[divPiv] < 0
+        divBull := true
+        dvLn.push(line.new(lastBarL, lastHL, b2, pl, color = color.new(bullCol, 0), width = 2))
+        dvLn.push(line.new(lastBarL, lastPxL, b2, low[divPiv], color = color.new(bullCol, 0), width = 2, style = line.style_dashed, force_overlay = true))
+    lastHL := pl
+    lastPxL := low[divPiv]
+    lastBarL := b2
+if not na(ph)
+    b2 = bar_index - divPiv
+    if not na(lastHH) and high[divPiv] > lastPxH and ph < lastHH and hist[divPiv] > 0
+        divBear := true
+        dvLn.push(line.new(lastBarH, lastHH, b2, ph, color = color.new(bearCol, 0), width = 2))
+        dvLn.push(line.new(lastBarH, lastPxH, b2, high[divPiv], color = color.new(bearCol, 0), width = 2, style = line.style_dashed, force_overlay = true))
+    lastHH := ph
+    lastPxH := high[divPiv]
+    lastBarH := b2
+while dvLn.size() > 24
+    line.delete(dvLn.shift())
+
+// ─── SIGNAL FAMILIES ───────────────────────────────────────────
+var int lastSigBar = -10000
+cooled = bar_index - lastSigBar >= cooldown
+zBuy  = barstate.isconfirmed and cooled and ta.crossover(macdL, 0)
+zSell = barstate.isconfirmed and cooled and ta.crossunder(macdL, 0)
+xBuy  = barstate.isconfirmed and cooled and ta.crossover(macdL, sigLn) and macdL < 0
+xSell = barstate.isconfirmed and cooled and ta.crossunder(macdL, sigLn) and macdL > 0
+dBuy  = barstate.isconfirmed and divBull
+dSell = barstate.isconfirmed and divBear
+if zBuy or zSell or xBuy or xSell or dBuy or dSell or releaseUp or releaseDn
+    lastSigBar := bar_index
+
+// ─── STATISTICS ────────────────────────────────────────────────
+var array<float> fZ = array.new<float>()
+var array<float> fX = array.new<float>()
+var array<float> fD = array.new<float>()
+var array<float> fR = array.new<float>()
+pushF(array<float> a, float v) =>
+    a.push(v)
+    if a.size() > cap
+        a.shift()
+f_feed(array<float> a, bool cB, bool cS) =>
+    if barstate.isconfirmed and bar_index > 10
+        if cB[10]
+            pushF(a, close / close[10] - 1)
+        if cS[10]
+            pushF(a, 1 - close / close[10])
+f_feed(fZ, zBuy, zSell)
+f_feed(fX, xBuy, xSell)
+f_feed(fD, dBuy, dSell)
+f_feed(fR, releaseUp, releaseDn)
+statsOf(array<float> a) =>
+    int n = a.size()
+    float pS_ = 0.5
+    float wLB = 0.5
+    if n > 0
+        int w = 0
+        for i = 0 to n - 1
+            if a.get(i) > 0
+                w += 1
+        float pHat = w * 1.0 / n
+        pS_ := (pHat * n + 0.5 * shrinkK) / (n + shrinkK)
+        wLB := (pHat + zConf * zConf / (2 * n) - zConf * math.sqrt(math.max(pHat * (1 - pHat) / n + zConf * zConf / (4 * n * n), 0.0))) / (1 + zConf * zConf / n)
+    [pS_, wLB, n]
+
+// ─── SIGNAL LETTERS ON PRICE ───────────────────────────────────
+var array<label> sigLbs = array.new<label>()
+f_sig(bool cond, bool isBuy, string ltr, string desc, array<float> fam) =>
+    if showSigs and cond
+        [p10, w10, n10] = statsOf(fam)
+        sigLbs.push(label.new(bar_index, isBuy ? low : high, ltr, style = isBuy ? label.style_label_up : label.style_label_down, color = color.new(ltr == "R" ? goldCol : isBuy ? bullCol : bearCol, 0), textcolor = ltr == "R" ? #231a08 : color.white, size = size.small, tooltip = desc + " · " + qName + "\nMatrix " + str.tostring(bullN) + "/4 bullish on " + syminfo.ticker + " " + timeframe.period + (n10 >= minN ? "\nFamily record · favorable 10 bars: " + fw(p10) + " · Wilson " + fw(w10) + " · ×" + str.tostring(n10) : "\nCollecting history (" + str.tostring(n10) + "/" + str.tostring(minN) + ")"), force_overlay = true))
+        while sigLbs.size() > 30
+            label.delete(sigLbs.shift())
+f_sig(zBuy, true, "Z", "Zero-line cross up — momentum regime turned positive", fZ)
+f_sig(zSell, false, "Z", "Zero-line cross down — momentum regime turned negative", fZ)
+f_sig(xBuy, true, "X", "Early signal cross below zero — momentum turning before the regime does", fX)
+f_sig(xSell, false, "X", "Early signal cross above zero — momentum turning before the regime does", fX)
+f_sig(dBuy, true, "D", "Histogram divergence — price lower low, momentum higher low", fD)
+f_sig(dSell, false, "D", "Histogram divergence — price higher high, momentum lower high", fD)
+f_sig(releaseUp, true, "R", "Squeeze release upward — histogram expanded out of its coil", fR)
+f_sig(releaseDn, false, "R", "Squeeze release downward — histogram expanded out of its coil", fR)
+
+// ─── PREMIUM DASHBOARD · three columns, golden title ───────────
+dPos = dashPos == "Top Left" ? position.top_left : dashPos == "Bottom Right" ? position.bottom_right : dashPos == "Bottom Left" ? position.bottom_left : position.top_right
+bodySize = dashSize == "Tiny" ? size.tiny : dashSize == "Normal" ? size.normal : dashSize == "Large" ? size.large : size.small
+headSize = dashSize == "Tiny" ? size.small : dashSize == "Large" ? size.large : dashSize == "Normal" ? size.normal : size.small
+var table tb = table.new(dPos, 3, 11, bgcolor = dashBg, frame_color = dashFrame, frame_width = 1, border_color = dashGrid, border_width = 1, force_overlay = true)
+if showDash and barstate.islast
+    [pZ, wZ, nZ] = statsOf(fZ)
+    [pX, wX, nX] = statsOf(fX)
+    [pD, wD, nD] = statsOf(fD)
+    [pR, wR, nR] = statsOf(fR)
+    titleSize = dashSize == "Tiny" ? size.small : dashSize == "Small" ? size.normal : dashSize == "Normal" ? size.large : size.huge
+    table.cell(tb, 0, 0, "◈ MACD MATRIX · " + syminfo.ticker, bgcolor = dashTitleBg, text_color = dashHeadTxt, text_size = titleSize, text_halign = text.align_center)
+    table.cell(tb, 1, 0, "", bgcolor = dashTitleBg)
+    table.cell(tb, 2, 0, "", bgcolor = dashTitleBg)
+    table.merge_cells(tb, 0, 0, 2, 0)
+    table.cell(tb, 0, 1, "Quadrant", text_color = dashMuteTxt, text_size = headSize, text_halign = text.align_left)
+    table.cell(tb, 1, 1, quad == 1 ? "◤" : quad == 2 ? "◥" : quad == 3 ? "◣" : "◢", text_color = qSolid, text_size = bodySize)
+    table.cell(tb, 2, 1, qName, text_color = qSolid, text_size = bodySize)
+    table.cell(tb, 0, 2, "Matrix " + tf1, text_color = dashMuteTxt, text_size = headSize, text_halign = text.align_left)
+    table.cell(tb, 1, 2, f_tfTxt(m1, h1), text_color = m1 > 0 ? bullCol : bearCol, text_size = bodySize)
+    table.cell(tb, 2, 2, (m1 > 0 ? "Bullish" : "Bearish") + (h1 > 0 ? " · expanding" : " · fading"), text_color = m1 > 0 ? bullCol : bearCol, text_size = bodySize)
+    table.cell(tb, 0, 3, "Matrix " + tf2, text_color = dashMuteTxt, text_size = headSize, text_halign = text.align_left)
+    table.cell(tb, 1, 3, f_tfTxt(m2, h2), text_color = m2 > 0 ? bullCol : bearCol, text_size = bodySize)
+    table.cell(tb, 2, 3, (m2 > 0 ? "Bullish" : "Bearish") + (h2 > 0 ? " · expanding" : " · fading"), text_color = m2 > 0 ? bullCol : bearCol, text_size = bodySize)
+    table.cell(tb, 0, 4, "Matrix " + tf3, text_color = dashMuteTxt, text_size = headSize, text_halign = text.align_left)
+    table.cell(tb, 1, 4, f_tfTxt(m3, h3), text_color = m3 > 0 ? bullCol : bearCol, text_size = bodySize)
+    table.cell(tb, 2, 4, (m3 > 0 ? "Bullish" : "Bearish") + (h3 > 0 ? " · expanding" : " · fading"), text_color = m3 > 0 ? bullCol : bearCol, text_size = bodySize)
+    table.cell(tb, 0, 5, "Matrix " + tf4, text_color = dashMuteTxt, text_size = headSize, text_halign = text.align_left)
+    table.cell(tb, 1, 5, f_tfTxt(m4, h4), text_color = m4 > 0 ? bullCol : bearCol, text_size = bodySize)
+    table.cell(tb, 2, 5, (m4 > 0 ? "Bullish" : "Bearish") + (h4 > 0 ? " · expanding" : " · fading"), text_color = m4 > 0 ? bullCol : bearCol, text_size = bodySize)
+    table.cell(tb, 0, 6, "Alignment", text_color = dashMuteTxt, text_size = headSize, text_halign = text.align_left)
+    table.cell(tb, 1, 6, f_meter(bullN / 4.0, 4), text_color = alignUp ? goldCol : alignDn ? goldCol : dashBodyTxt, text_size = bodySize)
+    table.cell(tb, 2, 6, alignUp ? "4/4 BULLISH · beacon" : alignDn ? "0/4 · BEARISH beacon" : str.tostring(bullN) + "/4 bullish", text_color = alignUp or alignDn ? goldCol : dashBodyTxt, text_size = bodySize)
+    table.cell(tb, 0, 7, "Squeeze", text_color = dashMuteTxt, text_size = headSize, text_halign = text.align_left)
+    table.cell(tb, 1, 7, coiled ? "◉" : "—", text_color = coiled ? goldCol : dashBodyTxt, text_size = bodySize)
+    table.cell(tb, 2, 7, coiled ? "Coiled · " + str.tostring(coilDur) + " bars" : "Open", text_color = coiled ? goldCol : dashBodyTxt, text_size = bodySize)
+    table.cell(tb, 0, 8, "Records Z · X", text_color = dashMuteTxt, text_size = headSize, text_halign = text.align_left)
+    table.cell(tb, 1, 8, "", text_size = bodySize)
+    table.cell(tb, 2, 8, (nZ > 0 ? fw(pZ) + " ×" + str.tostring(nZ) : "—") + " · " + (nX > 0 ? fw(pX) + " ×" + str.tostring(nX) : "—"), text_color = dashBodyTxt, text_size = bodySize)
+    table.cell(tb, 0, 9, "Records D · R", text_color = dashMuteTxt, text_size = headSize, text_halign = text.align_left)
+    table.cell(tb, 1, 9, "", text_size = bodySize)
+    table.cell(tb, 2, 9, (nD > 0 ? fw(pD) + " ×" + str.tostring(nD) : "—") + " · " + (nR > 0 ? fw(pR) + " ×" + str.tostring(nR) : "—"), text_color = dashBodyTxt, text_size = bodySize)
+    table.cell(tb, 0, 10, "Shrunk win rates · this chart only", text_color = dashMuteTxt, text_size = size.tiny, text_halign = text.align_left)
+    table.cell(tb, 1, 10, "", text_size = size.tiny)
+    table.cell(tb, 2, 10, "", text_size = size.tiny)
+
+// ─── ALERTS ────────────────────────────────────────────────────
+alertcondition(beaconUp, "Matrix Aligned Bullish", "All four timeframes turned bullish with expanding momentum.")
+alertcondition(beaconDn, "Matrix Aligned Bearish", "All four timeframes turned bearish with expanding momentum.")
+alertcondition(zBuy or zSell, "Zero-Line Cross", "MACD crossed the zero line.")
+alertcondition(dBuy or dSell, "Histogram Divergence", "A histogram divergence printed.")
+alertcondition(releaseUp or releaseDn, "Squeeze Release", "The histogram expanded out of its coil.")
+

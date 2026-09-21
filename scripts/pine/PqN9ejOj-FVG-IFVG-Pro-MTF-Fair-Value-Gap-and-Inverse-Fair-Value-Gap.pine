@@ -1,0 +1,504 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════════
+//  FVG & IFVG Pro
+// ───────────────────────────────────────────────────────────────────────────────
+//  FAIR VALUE GAP (FVG) — a 3-candle imbalance
+//    Bullish : candle-3 LOW  > candle-1 HIGH  → zone = [c1 high, c3 low]
+//    Bearish : candle-3 HIGH < candle-1 LOW   → zone = [c3 high, c1 low]
+//    CE (consequent encroachment) = 50% of the zone.
+//    Lifecycle tracked with wicks: touched → reached CE → fully filled.
+//
+//  INVERSION FVG (IFVG) — a gap that FAILED
+//    A candle closes beyond the FAR edge of the gap (a wick through is only
+//    a probe, not an inversion). The zone flips polarity:
+//      bullish FVG closed below its bottom → BEARISH IFVG (resistance)
+//      bearish FVG closed above its top    → BULLISH IFVG (support)
+//    Retest signal : price comes back into the IFVG and is rejected.
+//    Invalidation  : a close back beyond the other edge (the flip failed).
+//
+//  NO REPAINT — every decision is taken on a closed candle (chart or HTF).
+// ═══════════════════════════════════════════════════════════════════════════════
+indicator("FVG & IFVG Pro", "FVG Pro", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500, max_bars_back = 500)
+
+// ── Constants ────────────────────────────────────────────────────────────────
+const int S_LIVE    = 0   // FVG, extending
+const int S_ENDED   = 1   // FVG hit its end rule; still watched for inversion
+const int S_IFVG    = 2   // inverted, extending
+const int MAX_ZONES = 120
+const int ATR_LEN   = 14
+const int PAD_BARS  = 6
+
+// ── Inputs ───────────────────────────────────────────────────────────────────
+const string G_DET  = "Detection"
+const string G_FVG  = "Fair Value Gaps"
+const string G_IFVG = "Inversion FVGs (IFVG)"
+const string G_DSP  = "Display"
+const string G_COL  = "Colours"
+const string G_AL   = "Alerts"
+const string G_ST   = "Statistics"
+
+tfIn      = input.timeframe("", "Timeframe", group = G_DET, tooltip = "Blank, or lower than the chart = chart timeframe. A higher timeframe finds that timeframe's gaps and runs every rule on its CLOSED candles, so nothing repaints.")
+sizeMode  = input.string("ATR", "Min gap size", options = ["ATR", "Percent", "Ticks", "Off"], inline = "size", group = G_DET)
+sizeVal   = input.float(0.1, "", minval = 0.0, step = 0.05, inline = "size", group = G_DET, tooltip = "Gap height must be at least this much.\nATR = multiple of ATR(14)\nPercent = % of price\nTicks = number of ticks")
+dispMult  = input.float(0.0, "Displacement: middle body ≥ × ATR", minval = 0.0, step = 0.1, group = G_DET, tooltip = "0 = off. The middle candle's body must be at least this multiple of ATR(14), so only gaps left by a real impulse count.")
+strictDir = input.bool(false, "Middle candle must close in the gap's direction", group = G_DET)
+mergeOn   = input.bool(true, "Merge back-to-back gaps", group = G_DET, tooltip = "Consecutive same-direction gaps that overlap become one zone instead of a stack of boxes.")
+
+showFvg   = input.bool(true, "Show FVGs", group = G_FVG)
+endMode   = input.string("Full fill", "FVG ends at", options = ["First touch", "50% (CE)", "Full fill", "Inversion only"], group = G_FVG, tooltip = "When a gap stops extending (wicks count). An ended gap is still watched and can invert into an IFVG until it expires.")
+shrinkOn  = input.bool(false, "Shrink box as it fills", group = G_FVG, tooltip = "The live box shows only the part of the gap price has not traded into yet.")
+fvgAge    = input.int(300, "Max age (candles)", minval = 10, maxval = 5000, group = G_FVG)
+
+showIfvg  = input.bool(true, "Show IFVGs", group = G_IFVG)
+invMode   = input.string("Close beyond", "Inversion / invalidation needs", options = ["Close beyond", "Full body beyond"], group = G_IFVG, tooltip = "Close beyond = the candle closes past the far edge.\nFull body beyond = open AND close are past it (stricter).\nThe same rule invalidates an IFVG in the other direction.")
+sigMode   = input.string("Wick rejection", "Retest signal", options = ["Wick rejection", "Close rejection", "Off"], group = G_IFVG, tooltip = "Wick rejection = a wick enters the IFVG and the candle closes back outside on the signal side.\nClose rejection = the previous candle closed inside the IFVG and this one closes back out on the signal side.")
+sigMax    = input.int(1, "Signals per IFVG", minval = 1, maxval = 10, group = G_IFVG, tooltip = "1 = first retest only.")
+ifvgAge   = input.int(200, "Max age (candles)", minval = 10, maxval = 5000, group = G_IFVG)
+
+nearFvg   = input.int(0, "Nearest shown:  FVG", minval = 0, maxval = 50, inline = "near", group = G_DSP)
+nearIfvg  = input.int(0, "IFVG", minval = 0, maxval = 50, inline = "near", group = G_DSP, tooltip = "Only the N live FVGs and the N live IFVGs closest to price are drawn. 3 / 3 = the 3 nearest FVGs and the 3 nearest IFVGs. 0 = show all.")
+keepDone  = input.int(20, "Finished zones kept", minval = 0, maxval = 200, group = G_DSP, tooltip = "Ended FVGs and finished IFVGs stay on the chart, faded. This is how many are kept; 0 = remove them at once.")
+showCe    = input.bool(true, "CE (50%) line", group = G_DSP)
+showText  = input.bool(true, "Zone labels", inline = "txt", group = G_DSP)
+showPct   = input.bool(true, "with fill %", inline = "txt", group = G_DSP)
+sigSizeIn = input.string("Small", "Signal size", options = ["Tiny", "Small", "Normal"], group = G_DSP)
+
+cBullFvg  = input.color(color.new(#089981, 80), "FVG  bull / bear", inline = "fvg", group = G_COL)
+cBearFvg  = input.color(color.new(#F23645, 80), "", inline = "fvg", group = G_COL)
+cBullIfvg = input.color(color.new(#2962FF, 78), "IFVG bull / bear", inline = "ifvg", group = G_COL)
+cBearIfvg = input.color(color.new(#FF9800, 78), "", inline = "ifvg", group = G_COL)
+
+alNew     = input.bool(false, "New FVG", group = G_AL)
+alTouch   = input.bool(false, "FVG first touch", group = G_AL)
+alInv     = input.bool(true, "IFVG formed", group = G_AL)
+alSig     = input.bool(true, "IFVG retest signal", group = G_AL)
+alKill    = input.bool(false, "IFVG invalidated", group = G_AL)
+
+showStats = input.bool(false, "Show statistics", inline = "st", group = G_ST)
+statsPos  = input.string("Bottom Right", "", options = ["Top Right", "Bottom Right", "Bottom Left", "Top Left"], inline = "st", group = G_ST)
+
+sigSize = switch sigSizeIn
+    "Tiny"  => size.tiny
+    "Small" => size.small
+    => size.normal
+
+// ── Timeframe ────────────────────────────────────────────────────────────────
+string tfPick    = tfIn == "" ? timeframe.period : tfIn
+// A timeframe below the chart's has several candles inside one chart bar, so it falls back to the chart.
+string tfReq     = timeframe.in_seconds(tfPick) < timeframe.in_seconds(timeframe.period) ? timeframe.period : tfPick
+int    tfSec     = timeframe.in_seconds(tfReq)
+int    chartSec  = timeframe.in_seconds(timeframe.period)
+bool   tfIsChart = tfSec == chartSec
+
+tfLabel(string tf) =>
+    float m = str.tonumber(tf)
+    na(m) ? tf : m % 60 == 0 ? str.tostring(m / 60) + "H" : str.tostring(m) + "m"
+
+string tfTag = tfIsChart ? "" : tfLabel(tfReq) + " "
+
+// Closed higher-timeframe candles: [1] + lookahead_on is the standard non-repainting form.
+[hO1, hH1, hL1, hC1, hO2, hC2, hH3, hL3, hT2, hT0, hAtr] = request.security(syminfo.tickerid, tfReq, [open[1], high[1], low[1], close[1], open[2], close[2], high[3], low[3], time[2], time, ta.atr(ATR_LEN)[1]], lookahead = barmerge.lookahead_on)
+
+// ── Engine candle ────────────────────────────────────────────────────────────
+// c3 = the candle that just closed, c2 = the middle candle, c1 = the first candle.
+float chartAtr  = ta.atr(ATR_LEN)
+bool  htfNew    = not tfIsChart and not na(hT0[1]) and hT0 != hT0[1]
+bool  newCandle = tfIsChart ? barstate.isconfirmed : htfNew
+
+float o3   = tfIsChart ? open     : hO1
+float h3   = tfIsChart ? high     : hH1
+float l3   = tfIsChart ? low      : hL1
+float c3   = tfIsChart ? close    : hC1
+float o2   = tfIsChart ? open[1]  : hO2
+float c2   = tfIsChart ? close[1] : hC2
+float h1   = tfIsChart ? high[2]  : hH3
+float l1   = tfIsChart ? low[2]   : hL3
+int   tMid = tfIsChart ? time[1]  : hT2      // zones start at the middle candle
+int   tEvt = tfIsChart ? time     : time[1]  // chart bar where the closed candle ended
+float eAtr = tfIsChart ? chartAtr : hAtr
+
+// ── Types ────────────────────────────────────────────────────────────────────
+type Zone
+    int   dir              // +1 bullish FVG, -1 bearish FVG (the ORIGINAL polarity)
+    float top
+    float bot
+    int   born             // engine candle count at birth
+    float deep             // furthest price traded into the gap
+    int   state   = 0
+    bool  touched = false
+    bool  ceHit   = false
+    bool  filled  = false
+    int   invAt   = -1
+    int   sigs    = 0
+    box   fBox
+    line  fCe
+    box   iBox
+    line  iCe
+
+type Trace
+    box  b
+    line l
+
+var array<Zone>  zones  = array.new<Zone>()
+var array<Trace> traces = array.new<Trace>()
+var int   n     = 0
+var float prevC = na
+
+var array<int> stFvg   = array.new<int>(2, 0)   // index 0 = bullish, 1 = bearish
+var array<int> stTouch = array.new<int>(2, 0)
+var array<int> stCe    = array.new<int>(2, 0)
+var array<int> stFill  = array.new<int>(2, 0)
+var array<int> stInv   = array.new<int>(2, 0)   // by FVG polarity
+var array<int> stSig   = array.new<int>(2, 0)   // by IFVG polarity
+var array<int> stKill  = array.new<int>(2, 0)   // by IFVG polarity
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+fmt(float p) => str.tostring(p, format.mintick)
+fade(color c) => color.new(c, color.t(c) + (100 - color.t(c)) * 0.5)
+bump(array<int> a, int k) => a.set(k, a.get(k) + 1)
+
+method mid(Zone z) => (z.top + z.bot) / 2
+method fvgCol(Zone z) => z.dir == 1 ? cBullFvg : cBearFvg
+method ifvgCol(Zone z) => z.dir == 1 ? cBearIfvg : cBullIfvg
+method rng(Zone z) => fmt(z.bot) + " – " + fmt(z.top)
+method fillPct(Zone z) =>
+    float p = z.dir == 1 ? (z.top - z.deep) / (z.top - z.bot) : (z.deep - z.bot) / (z.top - z.bot)
+    z.touched ? math.max(0.0, math.min(1.0, p)) * 100 : 0.0
+method dist(Zone z, float p) => p < z.bot ? z.bot - p : p > z.top ? -(p - z.top) : 0.0   // > 0 zone above price
+method isShown(Zone z) => (z.state == S_LIVE and not na(z.fBox)) or (z.state == S_IFVG and not na(z.iBox))
+
+closedBelow(float lvl, float o, float c) => invMode == "Close beyond" ? c < lvl : math.max(o, c) < lvl
+closedAbove(float lvl, float o, float c) => invMode == "Close beyond" ? c > lvl : math.min(o, c) > lvl
+
+sizeOk(float gap, float atr, float px) =>
+    switch sizeMode
+        "ATR"     => gap >= sizeVal * atr
+        "Percent" => gap >= px * sizeVal / 100
+        "Ticks"   => gap >= sizeVal * syminfo.mintick
+        => true
+
+endRuleHit(Zone z) =>
+    switch endMode
+        "First touch" => z.touched
+        "50% (CE)"    => z.ceHit
+        "Full fill"   => z.filled
+        => false
+
+// A finished drawing is handed to the trace FIFO, which keeps only `keepDone`.
+bury(box b, line l) =>
+    if not na(b) or not na(l)
+        if keepDone == 0
+            box.delete(b)
+            line.delete(l)
+        else
+            traces.push(Trace.new(b, l))
+            if traces.size() > keepDone
+                Trace t = traces.shift()
+                box.delete(t.b)
+                line.delete(t.l)
+    true
+
+method endFvg(Zone z, int t) =>
+    if not na(z.fBox)
+        color c = z.fvgCol()
+        box.set_right(z.fBox, t)
+        box.set_top(z.fBox, z.top)
+        box.set_bottom(z.fBox, z.bot)
+        box.set_bgcolor(z.fBox, fade(c))
+        box.set_text(z.fBox, "")
+        if not na(z.fCe)
+            line.set_x2(z.fCe, t)
+            line.set_color(z.fCe, color.new(c, 85))
+    bury(z.fBox, z.fCe)
+    z.fBox := na
+    z.fCe  := na
+    true
+
+method endIfvg(Zone z, int t, bool broken) =>
+    color c = z.ifvgCol()
+    if not na(z.iBox)
+        box.set_right(z.iBox, t)
+        box.set_bgcolor(z.iBox, fade(c))
+        box.set_text(z.iBox, "")
+        if broken
+            box.set_border_color(z.iBox, color.new(c, 45))
+            box.set_border_style(z.iBox, line.style_dotted)
+    if not na(z.iCe)
+        line.set_x2(z.iCe, t)
+        line.set_color(z.iCe, color.new(c, 85))
+    bury(z.iBox, z.iCe)
+    z.iBox := na
+    z.iCe  := na
+    true
+
+method drawFvg(Zone z, int tL, int tR) =>
+    if showFvg
+        color c = z.fvgCol()
+        z.fBox := box.new(tL, z.top, tR, z.bot, xloc = xloc.bar_time, bgcolor = c, border_color = color.new(c, 100), text_size = size.tiny, text_color = color.new(c, 20), text_halign = text.align_right, text_valign = text.align_center)
+        if showCe
+            z.fCe := line.new(tL, z.mid(), tR, z.mid(), xloc = xloc.bar_time, color = color.new(c, 45), style = line.style_dashed)
+    true
+
+method drawIfvg(Zone z, int t) =>
+    if showIfvg
+        color c = z.ifvgCol()
+        z.iBox := box.new(t, z.top, t, z.bot, xloc = xloc.bar_time, bgcolor = c, border_color = color.new(c, 100), text_size = size.tiny, text_color = color.new(c, 15), text_halign = text.align_right, text_valign = text.align_center)
+        if showCe
+            z.iCe := line.new(t, z.mid(), t, z.mid(), xloc = xloc.bar_time, color = color.new(c, 40), style = line.style_dashed)
+    true
+
+method mergeGap(Zone z, float top, float bot, int bornAt) =>
+    z.top  := math.max(z.top, top)
+    z.bot  := math.min(z.bot, bot)
+    z.born := bornAt
+    if not z.touched
+        z.deep := z.dir == 1 ? z.top : z.bot
+    if not na(z.fBox)
+        box.set_top(z.fBox, z.top)
+        box.set_bottom(z.fBox, z.bot)
+    if not na(z.fCe)
+        line.set_y1(z.fCe, z.mid())
+        line.set_y2(z.fCe, z.mid())
+    true
+
+method paint(Zone z, bool vis, int tR) =>
+    if z.state == S_LIVE and not na(z.fBox)
+        color c    = z.fvgCol()
+        float pct  = z.fillPct()
+        float vTop = z.top
+        float vBot = z.bot
+        if shrinkOn and z.touched
+            if z.dir == 1
+                vTop := math.max(z.bot, math.min(z.top, z.deep))
+            else
+                vBot := math.min(z.top, math.max(z.bot, z.deep))
+        box.set_top(z.fBox, vTop)
+        box.set_bottom(z.fBox, vBot)
+        box.set_right(z.fBox, tR)
+        box.set_bgcolor(z.fBox, vis ? c : color.new(c, 100))
+        box.set_text(z.fBox, showText and vis ? tfTag + "FVG" + (showPct and pct >= 1 ? "  " + str.tostring(pct, "#") + "%" : "") : "")
+        if not na(z.fCe)
+            line.set_x2(z.fCe, tR)
+            line.set_color(z.fCe, vis and not (shrinkOn and z.ceHit) ? color.new(c, 45) : color.new(c, 100))
+    else if z.state == S_IFVG and not na(z.iBox)
+        color c = z.ifvgCol()
+        box.set_right(z.iBox, tR)
+        box.set_bgcolor(z.iBox, vis ? c : color.new(c, 100))
+        box.set_text(z.iBox, showText and vis ? tfTag + "IFVG" : "")
+        if not na(z.iCe)
+            line.set_x2(z.iCe, tR)
+            line.set_color(z.iCe, vis ? color.new(c, 40) : color.new(c, 100))
+    true
+
+// ── Per closed candle ────────────────────────────────────────────────────────
+bool evNewBull  = false
+bool evNewBear  = false
+bool evTouch    = false
+bool evInvBull  = false   // bullish IFVG formed (a bearish FVG failed)
+bool evInvBear  = false
+bool evSigBull  = false
+bool evSigBear  = false
+bool evKill     = false
+string alertMsg = ""
+
+if newCandle
+    n += 1
+
+    // 1) Update every tracked zone with the candle that just closed.
+    int sz = zones.size()
+    if sz > 0
+        for i = sz - 1 to 0
+            Zone  z = zones.get(i)
+            float m = z.mid()
+            int   k = z.dir == 1 ? 0 : 1
+
+            if z.state == S_LIVE or z.state == S_ENDED
+                bool wasTouched = z.touched
+                bool wasCe      = z.ceHit
+                bool wasFilled  = z.filled
+                if z.dir == 1
+                    if l3 <= z.top
+                        z.touched := true
+                        z.deep    := math.min(z.deep, l3)
+                    z.ceHit  := z.ceHit or l3 <= m
+                    z.filled := z.filled or l3 <= z.bot
+                else
+                    if h3 >= z.bot
+                        z.touched := true
+                        z.deep    := math.max(z.deep, h3)
+                    z.ceHit  := z.ceHit or h3 >= m
+                    z.filled := z.filled or h3 >= z.top
+                if z.touched and not wasTouched
+                    bump(stTouch, k)
+                    if z.state == S_LIVE
+                        evTouch := true
+                        if alTouch
+                            alertMsg += (z.dir == 1 ? "Bullish" : "Bearish") + " FVG touched  " + z.rng() + "\n"
+                if z.ceHit and not wasCe
+                    bump(stCe, k)
+                if z.filled and not wasFilled
+                    bump(stFill, k)
+
+                bool inverted = z.dir == 1 ? closedBelow(z.bot, o3, c3) : closedAbove(z.top, o3, c3)
+                if inverted
+                    if z.state == S_LIVE
+                        z.endFvg(tEvt)
+                    z.state := S_IFVG
+                    z.invAt := n
+                    z.drawIfvg(tEvt)
+                    bump(stInv, k)
+                    if z.dir == 1
+                        evInvBear := true
+                    else
+                        evInvBull := true
+                    if alInv
+                        alertMsg += (z.dir == 1 ? "Bearish IFVG formed (bullish FVG closed through)  " : "Bullish IFVG formed (bearish FVG closed through)  ") + z.rng() + "\n"
+                else if n - z.born >= fvgAge
+                    if z.state == S_LIVE
+                        z.endFvg(tEvt)
+                    zones.remove(i)
+                else if z.state == S_LIVE and endRuleHit(z)
+                    z.endFvg(tEvt)
+                    z.state := S_ENDED
+
+            else if z.state == S_IFVG and z.invAt < n
+                int  kI     = z.dir == 1 ? 1 : 0      // IFVG polarity is the opposite
+                bool broken = z.dir == 1 ? closedAbove(z.top, o3, c3) : closedBelow(z.bot, o3, c3)
+                if broken
+                    z.endIfvg(tEvt, true)
+                    zones.remove(i)
+                    bump(stKill, kI)
+                    evKill := true
+                    if alKill
+                        alertMsg += (z.dir == 1 ? "Bearish" : "Bullish") + " IFVG invalidated  " + z.rng() + "\n"
+                else
+                    if sigMode != "Off" and z.sigs < sigMax
+                        bool sig = false
+                        if z.dir == 1   // bearish IFVG = resistance
+                            sig := sigMode == "Wick rejection" ? h3 >= z.bot and c3 < z.bot : prevC >= z.bot and c3 < z.bot
+                        else            // bullish IFVG = support
+                            sig := sigMode == "Wick rejection" ? l3 <= z.top and c3 > z.top : prevC <= z.top and c3 > z.top
+                        if sig
+                            z.sigs += 1
+                            bump(stSig, kI)
+                            color sc = color.new(z.ifvgCol(), 0)
+                            string tip = (z.dir == 1 ? "Bearish" : "Bullish") + " IFVG retest " + tfTag + "\nZone " + z.rng() + "\nClose " + fmt(c3)
+                            label.new(tEvt, z.dir == 1 ? h3 : l3, z.dir == 1 ? "▼" : "▲", xloc = xloc.bar_time, yloc = yloc.price, color = color.new(sc, 100), style = z.dir == 1 ? label.style_label_down : label.style_label_up, textcolor = sc, size = sigSize, tooltip = tip)
+                            if z.dir == 1
+                                evSigBear := true
+                            else
+                                evSigBull := true
+                            if alSig
+                                alertMsg += (z.dir == 1 ? "SELL: bearish" : "BUY: bullish") + " IFVG retest  zone " + z.rng() + "  close " + fmt(c3) + "\n"
+                    if n - z.invAt >= ifvgAge
+                        z.endIfvg(tEvt, false)
+                        zones.remove(i)
+
+    // 2) Detect a new gap on the candle that just closed.
+    bool bullGap = l3 > h1 and sizeOk(l3 - h1, eAtr, c3) and (dispMult <= 0 or math.abs(c2 - o2) >= dispMult * eAtr) and (not strictDir or c2 > o2)
+    bool bearGap = h3 < l1 and sizeOk(l1 - h3, eAtr, c3) and (dispMult <= 0 or math.abs(c2 - o2) >= dispMult * eAtr) and (not strictDir or c2 < o2)
+
+    if bullGap or bearGap
+        int   d   = bullGap ? 1 : -1
+        float top = bullGap ? l3 : l1
+        float bot = bullGap ? h1 : h3
+        bool  merged = false
+        if mergeOn and zones.size() > 0
+            Zone last = zones.last()
+            if last.dir == d and last.state == S_LIVE and last.born == n - 1 and (d == 1 ? bot <= last.top : top >= last.bot)
+                last.mergeGap(top, bot, n)
+                merged := true
+        if not merged
+            Zone z = Zone.new(dir = d, top = top, bot = bot, born = n, deep = d == 1 ? top : bot)
+            z.drawFvg(tMid, tEvt)
+            zones.push(z)
+            bump(stFvg, d == 1 ? 0 : 1)
+            if d == 1
+                evNewBull := true
+            else
+                evNewBear := true
+            if alNew
+                alertMsg += (d == 1 ? "New bullish FVG  " : "New bearish FVG  ") + z.rng() + "\n"
+
+    // 3) Hard cap on tracked zones (oldest first).
+    while zones.size() > MAX_ZONES
+        Zone old = zones.shift()
+        if old.state == S_LIVE
+            old.endFvg(tEvt)
+        else if old.state == S_IFVG
+            old.endIfvg(tEvt, false)
+
+    prevC := c3
+
+// ── Draw the live zones up to the last bar ───────────────────────────────────
+if barstate.islast
+    int tR = time + PAD_BARS * chartSec * 1000
+    int sz = zones.size()
+    if sz > 0
+        for i = 0 to sz - 1
+            Zone z = zones.get(i)
+            if z.isShown()
+                int  lim = z.state == S_LIVE ? nearFvg : nearIfvg
+                bool vis = true
+                if lim > 0
+                    // Rank among zones of the same kind (FVG vs IFVG) by distance to price.
+                    float dz   = math.abs(z.dist(close))
+                    int   rank = 0
+                    for j = 0 to sz - 1
+                        if j != i
+                            Zone o = zones.get(j)
+                            if o.isShown() and o.state == z.state
+                                float dj = math.abs(o.dist(close))
+                                if dj < dz or (dj == dz and j > i)
+                                    rank += 1
+                    vis := rank < lim
+                z.paint(vis, tR)
+
+// ── Statistics ───────────────────────────────────────────────────────────────
+tblPos = switch statsPos
+    "Top Right"   => position.top_right
+    "Bottom Left" => position.bottom_left
+    "Top Left"    => position.top_left
+    => position.bottom_right
+
+var table stT = showStats ? table.new(tblPos, 3, 8, bgcolor = color.new(chart.bg_color, 8), frame_color = color.new(chart.fg_color, 85), frame_width = 1, border_width = 0) : na
+
+pctOf(int a, int b) => b > 0 ? str.tostring(a) + "  ·  " + str.tostring(100.0 * a / b, "#") + "%" : str.tostring(a)
+
+cell(int col, int row, string txt, bool head) =>
+    table.cell(stT, col, row, txt, text_color = head ? chart.fg_color : color.new(chart.fg_color, 25), text_size = size.small, text_halign = col == 0 ? text.align_left : text.align_right)
+
+if showStats and barstate.islast
+    cell(0, 0, "FVG Pro " + tfTag, true)
+    cell(1, 0, "▲ Bull", true)
+    cell(2, 0, "▼ Bear", true)
+    cell(0, 1, "FVGs", false)
+    cell(0, 2, "Touched", false)
+    cell(0, 3, "Reached CE", false)
+    cell(0, 4, "Fully filled", false)
+    cell(0, 5, "Inverted", false)
+    cell(0, 6, "IFVG signals", false)
+    cell(0, 7, "IFVG invalidated", false)
+    for k = 0 to 1
+        int f = stFvg.get(k)
+        cell(k + 1, 1, str.tostring(f), false)
+        cell(k + 1, 2, pctOf(stTouch.get(k), f), false)
+        cell(k + 1, 3, pctOf(stCe.get(k), f), false)
+        cell(k + 1, 4, pctOf(stFill.get(k), f), false)
+        cell(k + 1, 5, pctOf(stInv.get(k), f), false)
+        int ifvgs = stInv.get(1 - k)    // bullish IFVGs come from bearish FVGs
+        cell(k + 1, 6, str.tostring(stSig.get(k)) + " / " + str.tostring(ifvgs), false)
+        cell(k + 1, 7, pctOf(stKill.get(k), ifvgs), false)
+
+// ── Alerts ───────────────────────────────────────────────────────────────────
+if alertMsg != ""
+    alert(syminfo.ticker + " " + tfLabel(tfReq) + " · FVG Pro\n" + alertMsg, alert.freq_once_per_bar)
+
+alertcondition(evNewBull, "New bullish FVG", "{{ticker}} {{interval}}: new bullish FVG")
+alertcondition(evNewBear, "New bearish FVG", "{{ticker}} {{interval}}: new bearish FVG")
+alertcondition(evTouch, "FVG touched", "{{ticker}} {{interval}}: price touched a live FVG")
+alertcondition(evInvBull, "Bullish IFVG formed", "{{ticker}} {{interval}}: bearish FVG closed through, now a bullish IFVG")
+alertcondition(evInvBear, "Bearish IFVG formed", "{{ticker}} {{interval}}: bullish FVG closed through, now a bearish IFVG")
+alertcondition(evSigBull, "Bullish IFVG retest (BUY)", "{{ticker}} {{interval}}: bullish IFVG retest, close {{close}}")
+alertcondition(evSigBear, "Bearish IFVG retest (SELL)", "{{ticker}} {{interval}}: bearish IFVG retest, close {{close}}")
+alertcondition(evKill, "IFVG invalidated", "{{ticker}} {{interval}}: an IFVG was invalidated")

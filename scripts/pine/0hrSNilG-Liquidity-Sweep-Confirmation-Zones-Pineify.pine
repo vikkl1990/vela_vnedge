@@ -1,0 +1,269 @@
+//@version=6
+indicator("Liquidity Sweep Confirmation Zones [Pineify]", shorttitle="Sweep Zones [Pineify]", overlay=true, max_boxes_count=50)
+
+//------------------------------------------------------------------------------
+// Inputs
+//------------------------------------------------------------------------------
+string GROUP_STRUCTURE = "Confirmed structure"
+string GROUP_SWEEP = "Sweep and response"
+string GROUP_ZONES = "Confirmed zone lifecycle"
+string GROUP_VISUALS = "Visual system"
+
+pivotLeft = input.int(3, "Pivot left bars", minval=1, maxval=20, group=GROUP_STRUCTURE)
+pivotRight = input.int(3, "Pivot right bars", minval=1, maxval=20, group=GROUP_STRUCTURE)
+atrLength = input.int(14, "ATR length", minval=2, maxval=100, group=GROUP_STRUCTURE)
+
+minimumPierceAtr = input.float(0.05, "Minimum wick pierce (ATR)", minval=0.0, maxval=2.0, step=0.01, group=GROUP_SWEEP)
+minimumReclaimAtr = input.float(0.03, "Minimum close reclaim (ATR)", minval=0.0, maxval=2.0, step=0.01, group=GROUP_SWEEP)
+minimumDisplacementAtr = input.float(0.75, "Required response displacement (ATR)", minval=0.1, maxval=5.0, step=0.05, group=GROUP_SWEEP)
+minimumEfficiency = input.float(0.45, "Minimum response path efficiency", minval=0.05, maxval=1.0, step=0.05, group=GROUP_SWEEP, tooltip="Net response divided by cumulative close-to-close travel after the sweep.")
+confirmationBars = input.int(5, "Confirmation window (bars)", minval=1, maxval=30, group=GROUP_SWEEP)
+
+zoneLifeBars = input.int(80, "Maximum active zone age", minval=10, maxval=500, group=GROUP_ZONES)
+maximumZones = input.int(20, "Maximum stored zones", minval=3, maxval=40, group=GROUP_ZONES)
+maximumRetests = input.int(4, "Retests before exhausted styling", minval=1, maxval=10, group=GROUP_ZONES)
+
+showLiquidityRails = input.bool(true, "Show armed liquidity rails", group=GROUP_VISUALS)
+showCandidateBridge = input.bool(true, "Show pending candidate bridge", group=GROUP_VISUALS)
+showEventMarkers = input.bool(true, "Show event markers", group=GROUP_VISUALS)
+showStateWash = input.bool(true, "Show pending state wash", group=GROUP_VISUALS)
+showDashboard = input.bool(true, "Show state dashboard", group=GROUP_VISUALS)
+
+bullColor = input.color(color.rgb(20, 184, 166), "Bullish confirmed zone", group=GROUP_VISUALS)
+bearColor = input.color(color.rgb(239, 68, 92), "Bearish confirmed zone", group=GROUP_VISUALS)
+pendingColor = input.color(color.rgb(245, 158, 11), "Pending candidate", group=GROUP_VISUALS)
+neutralColor = input.color(color.rgb(148, 163, 184), "Neutral / expired", group=GROUP_VISUALS)
+
+//------------------------------------------------------------------------------
+// Helpers and bounded confirmed-zone storage
+//------------------------------------------------------------------------------
+f_clamp(float value, float lower, float upper) =>
+    math.min(math.max(value, lower), upper)
+
+var array<box> zoneBoxes = array.new<box>()
+var array<float> zoneTops = array.new_float()
+var array<float> zoneBottoms = array.new_float()
+var array<int> zoneDirections = array.new_int()
+var array<int> zoneBornBars = array.new_int()
+var array<int> zoneRetests = array.new_int()
+var array<bool> zoneWasInside = array.new_bool()
+var array<bool> zoneActive = array.new_bool()
+
+//------------------------------------------------------------------------------
+// Confirmed swing rails
+//------------------------------------------------------------------------------
+float atr = ta.atr(atrLength)
+float pivotHigh = ta.pivothigh(high, pivotLeft, pivotRight)
+float pivotLow = ta.pivotlow(low, pivotLeft, pivotRight)
+
+var float highLiquidityLevel = na
+var float lowLiquidityLevel = na
+var bool highLevelArmed = false
+var bool lowLevelArmed = false
+var int highPivotConfirmationBar = na
+var int lowPivotConfirmationBar = na
+
+//------------------------------------------------------------------------------
+// Frozen candidate memory
+//------------------------------------------------------------------------------
+var int candidateDirection = 0
+var int candidateBornBar = na
+var int candidateAge = 0
+var float candidateLevel = na
+var float candidateExtreme = na
+var float candidateReclaimClose = na
+var float candidateAtr = na
+var float candidatePath = 0.0
+var float candidateResponseAtr = na
+var float candidateEfficiency = na
+
+bool candidateSweepEvent = false
+bool confirmedZoneEvent = false
+bool candidateFailureEvent = false
+bool zoneInvalidationEvent = false
+int candidateEventDirection = 0
+int confirmedZoneDirection = 0
+int failedCandidateDirection = 0
+
+//------------------------------------------------------------------------------
+// Closed-bar state machine
+//------------------------------------------------------------------------------
+if barstate.isconfirmed
+    // Update every stored zone from its confirmation bar forward.
+    if array.size(zoneBoxes) > 0
+        for zoneIndex = 0 to array.size(zoneBoxes) - 1
+            bool isActive = array.get(zoneActive, zoneIndex)
+            if isActive
+                box zoneBox = array.get(zoneBoxes, zoneIndex)
+                float zoneTop = array.get(zoneTops, zoneIndex)
+                float zoneBottom = array.get(zoneBottoms, zoneIndex)
+                int zoneDirection = array.get(zoneDirections, zoneIndex)
+                int zoneBorn = array.get(zoneBornBars, zoneIndex)
+                int retestCount = array.get(zoneRetests, zoneIndex)
+                bool wasInside = array.get(zoneWasInside, zoneIndex)
+                bool isInside = high >= zoneBottom and low <= zoneTop
+                if isInside and not wasInside and bar_index > zoneBorn
+                    retestCount += 1
+                    array.set(zoneRetests, zoneIndex, retestCount)
+                array.set(zoneWasInside, zoneIndex, isInside)
+
+                bool invalidated = zoneDirection > 0 ? close < zoneBottom : close > zoneTop
+                bool expired = bar_index - zoneBorn > zoneLifeBars
+                if invalidated or expired
+                    array.set(zoneActive, zoneIndex, false)
+                    box.set_right(zoneBox, bar_index)
+                    box.set_border_color(zoneBox, color.new(neutralColor, 45))
+                    box.set_bgcolor(zoneBox, color.new(neutralColor, 94))
+                    if invalidated
+                        zoneInvalidationEvent := true
+                else
+                    color zoneColor = zoneDirection > 0 ? bullColor : bearColor
+                    int wear = int(f_clamp(float(retestCount) / float(maximumRetests), 0.0, 1.0) * 10.0)
+                    box.set_right(zoneBox, bar_index)
+                    box.set_border_color(zoneBox, color.new(zoneColor, 12 + wear * 3))
+                    box.set_bgcolor(zoneBox, color.new(zoneColor, 84 + wear))
+
+    // Newly confirmed pivots become visible only on their confirmation bars.
+    if not na(pivotHigh)
+        highLiquidityLevel := pivotHigh
+        highLevelArmed := true
+        highPivotConfirmationBar := bar_index
+    if not na(pivotLow)
+        lowLiquidityLevel := pivotLow
+        lowLevelArmed := true
+        lowPivotConfirmationBar := bar_index
+
+    // Resolve the frozen candidate only on bars after its sweep.
+    if candidateDirection != 0 and bar_index > candidateBornBar
+        candidateAge += 1
+        candidatePath += math.abs(close - close[1])
+        float signedResponse = candidateDirection > 0 ? close - candidateReclaimClose : candidateReclaimClose - close
+        candidateResponseAtr := signedResponse / math.max(candidateAtr, syminfo.mintick)
+        candidateEfficiency := signedResponse > 0.0 ? signedResponse / math.max(candidatePath, syminfo.mintick) : 0.0
+        bool holdsReclaim = candidateDirection > 0 ? close > candidateLevel : close < candidateLevel
+        bool violatesExtreme = candidateDirection > 0 ? close < candidateExtreme : close > candidateExtreme
+        bool displacementReady = holdsReclaim and candidateResponseAtr >= minimumDisplacementAtr and candidateEfficiency >= minimumEfficiency
+        bool candidateExpired = candidateAge > confirmationBars
+
+        if displacementReady
+            float zoneTop = math.max(candidateLevel, candidateExtreme)
+            float zoneBottom = math.min(candidateLevel, candidateExtreme)
+            color zoneColor = candidateDirection > 0 ? bullColor : bearColor
+            box confirmedBox = box.new(left=bar_index, top=zoneTop, right=bar_index, bottom=zoneBottom, xloc=xloc.bar_index, extend=extend.none, border_color=color.new(zoneColor, 12), border_width=2, bgcolor=color.new(zoneColor, 84))
+            array.push(zoneBoxes, confirmedBox)
+            array.push(zoneTops, zoneTop)
+            array.push(zoneBottoms, zoneBottom)
+            array.push(zoneDirections, candidateDirection)
+            array.push(zoneBornBars, bar_index)
+            array.push(zoneRetests, 0)
+            array.push(zoneWasInside, false)
+            array.push(zoneActive, true)
+            if array.size(zoneBoxes) > maximumZones
+                box oldestBox = array.shift(zoneBoxes)
+                box.delete(oldestBox)
+                array.shift(zoneTops)
+                array.shift(zoneBottoms)
+                array.shift(zoneDirections)
+                array.shift(zoneBornBars)
+                array.shift(zoneRetests)
+                array.shift(zoneWasInside)
+                array.shift(zoneActive)
+            confirmedZoneEvent := true
+            confirmedZoneDirection := candidateDirection
+            candidateDirection := 0
+        else if violatesExtreme or candidateExpired
+            candidateFailureEvent := true
+            failedCandidateDirection := candidateDirection
+            candidateDirection := 0
+
+    // A level is consumed on its first unambiguous closed-bar sweep candidate.
+    if candidateDirection == 0 and not confirmedZoneEvent and not candidateFailureEvent and not na(atr) and atr > 0.0
+        bool highSweep = highLevelArmed and not na(highLiquidityLevel) and bar_index > highPivotConfirmationBar and high >= highLiquidityLevel + minimumPierceAtr * atr and close <= highLiquidityLevel - minimumReclaimAtr * atr
+        bool lowSweep = lowLevelArmed and not na(lowLiquidityLevel) and bar_index > lowPivotConfirmationBar and low <= lowLiquidityLevel - minimumPierceAtr * atr and close >= lowLiquidityLevel + minimumReclaimAtr * atr
+        // A bar sweeping both rails is ambiguous, so it creates no candidate.
+        if highSweep != lowSweep
+            candidateDirection := lowSweep ? 1 : -1
+            candidateBornBar := bar_index
+            candidateAge := 0
+            candidateLevel := lowSweep ? lowLiquidityLevel : highLiquidityLevel
+            candidateExtreme := lowSweep ? low : high
+            candidateReclaimClose := close
+            candidateAtr := atr
+            candidatePath := 0.0
+            candidateResponseAtr := 0.0
+            candidateEfficiency := 0.0
+            candidateSweepEvent := true
+            candidateEventDirection := candidateDirection
+            if lowSweep
+                lowLevelArmed := false
+            else
+                highLevelArmed := false
+
+    if candidateDirection == 0
+        candidateBornBar := na
+        candidateAge := 0
+        candidateLevel := na
+        candidateExtreme := na
+        candidateReclaimClose := na
+        candidateAtr := na
+        candidatePath := 0.0
+        candidateResponseAtr := na
+        candidateEfficiency := na
+
+//------------------------------------------------------------------------------
+// Visual system
+//------------------------------------------------------------------------------
+float candidateTop = candidateDirection != 0 ? math.max(candidateLevel, candidateExtreme) : na
+float candidateBottom = candidateDirection != 0 ? math.min(candidateLevel, candidateExtreme) : na
+color candidateColor = candidateDirection > 0 ? bullColor : candidateDirection < 0 ? bearColor : pendingColor
+
+plot(showLiquidityRails and highLevelArmed ? highLiquidityLevel : na, "Armed High Liquidity Rail", color=color.new(bearColor, 45), linewidth=1, style=plot.style_stepline)
+plot(showLiquidityRails and lowLevelArmed ? lowLiquidityLevel : na, "Armed Low Liquidity Rail", color=color.new(bullColor, 45), linewidth=1, style=plot.style_stepline)
+candidateTopPlot = plot(showCandidateBridge ? candidateTop : na, "Pending Sweep Extreme", color=pendingColor, linewidth=2, style=plot.style_stepline)
+candidateBottomPlot = plot(showCandidateBridge ? candidateBottom : na, "Pending Reclaimed Level", color=color.new(pendingColor, 18), linewidth=2, style=plot.style_stepline)
+fill(candidateTopPlot, candidateBottomPlot, color=showCandidateBridge and candidateDirection != 0 ? color.new(pendingColor, 84) : na, title="Pending Confirmation Bridge")
+
+plotshape(showEventMarkers and candidateSweepEvent ? (candidateEventDirection > 0 ? low : high) : na, title="Closed-Bar Sweep Candidate", style=shape.circle, location=location.absolute, color=pendingColor, size=size.tiny)
+plotshape(showEventMarkers and confirmedZoneEvent ? (confirmedZoneDirection > 0 ? low : high) : na, title="Displacement-Confirmed Sweep Zone", style=shape.diamond, location=location.absolute, color=confirmedZoneDirection > 0 ? bullColor : bearColor, size=size.small)
+plotshape(showEventMarkers and candidateFailureEvent ? (failedCandidateDirection > 0 ? low : high) : na, title="Candidate Failed or Expired", style=shape.xcross, location=location.absolute, color=neutralColor, size=size.tiny)
+plotshape(showEventMarkers and zoneInvalidationEvent ? close : na, title="Confirmed Zone Invalidated", style=shape.xcross, location=location.absolute, color=neutralColor, size=size.small)
+
+bgcolor(showStateWash and candidateDirection != 0 ? color.new(candidateColor, 92) : na, title="Pending Candidate Wash")
+
+//------------------------------------------------------------------------------
+// Dashboard and alerts
+//------------------------------------------------------------------------------
+int activeZoneCount = 0
+if array.size(zoneActive) > 0
+    for zoneIndex = 0 to array.size(zoneActive) - 1
+        if array.get(zoneActive, zoneIndex)
+            activeZoneCount += 1
+
+string stateText = candidateDirection > 0 ? "PENDING BULL" : candidateDirection < 0 ? "PENDING BEAR" : "WATCHING"
+string highRailText = highLevelArmed and not na(highLiquidityLevel) ? str.tostring(highLiquidityLevel, format.mintick) : "unarmed"
+string lowRailText = lowLevelArmed and not na(lowLiquidityLevel) ? str.tostring(lowLiquidityLevel, format.mintick) : "unarmed"
+
+var table dashboard = table.new(position.top_right, 2, 7, border_width=1)
+if barstate.islast
+    if showDashboard
+        color headerColor = candidateDirection != 0 ? pendingColor : neutralColor
+        table.cell(dashboard, 0, 0, "SWEEP ZONES", text_color=color.white, bgcolor=color.rgb(34, 40, 52))
+        table.cell(dashboard, 1, 0, stateText, text_color=color.white, bgcolor=color.new(headerColor, 18))
+        table.cell(dashboard, 0, 1, "High rail", text_color=color.silver, bgcolor=color.new(color.black, 18))
+        table.cell(dashboard, 1, 1, highRailText, text_color=highLevelArmed ? bearColor : neutralColor, bgcolor=color.new(color.black, 18))
+        table.cell(dashboard, 0, 2, "Low rail", text_color=color.silver, bgcolor=color.new(color.black, 18))
+        table.cell(dashboard, 1, 2, lowRailText, text_color=lowLevelArmed ? bullColor : neutralColor, bgcolor=color.new(color.black, 18))
+        table.cell(dashboard, 0, 3, "Candidate age", text_color=color.silver, bgcolor=color.new(color.black, 18))
+        table.cell(dashboard, 1, 3, candidateDirection != 0 ? str.tostring(candidateAge) + " / " + str.tostring(confirmationBars) : "n/a", text_color=candidateDirection != 0 ? pendingColor : neutralColor, bgcolor=color.new(color.black, 18))
+        table.cell(dashboard, 0, 4, "Response ATR", text_color=color.silver, bgcolor=color.new(color.black, 18))
+        table.cell(dashboard, 1, 4, candidateDirection != 0 ? str.tostring(candidateResponseAtr, "#.00") : "n/a", text_color=color.white, bgcolor=color.new(color.black, 18))
+        table.cell(dashboard, 0, 5, "Path efficiency", text_color=color.silver, bgcolor=color.new(color.black, 18))
+        table.cell(dashboard, 1, 5, candidateDirection != 0 ? str.tostring(candidateEfficiency * 100.0, "#.0") + "%" : "n/a", text_color=color.white, bgcolor=color.new(color.black, 18))
+        table.cell(dashboard, 0, 6, "Active zones", text_color=color.silver, bgcolor=color.new(color.black, 18))
+        table.cell(dashboard, 1, 6, str.tostring(activeZoneCount), text_color=activeZoneCount > 0 ? color.white : neutralColor, bgcolor=color.new(color.black, 18))
+    else
+        table.clear(dashboard, 0, 0, 1, 6)
+
+alertcondition(candidateSweepEvent, "Closed-bar liquidity sweep candidate", "A completed bar pierced and reclaimed one armed confirmed swing level. The candidate still requires bounded response confirmation.")
+alertcondition(confirmedZoneEvent, "Displacement-confirmed liquidity sweep zone", "A pending sweep produced the required ATR-normalized displacement and path efficiency within the confirmation window.")
+alertcondition(zoneInvalidationEvent, "Confirmed liquidity sweep zone invalidated", "A completed bar closed through the outer extreme of at least one active confirmed sweep zone.")

@@ -1,0 +1,783 @@
+//_______________________23)DrCID CLUB IO (Ichimoku Oscillator)___________________________
+//@version=6
+indicator(title="I-DrCID CLUB IO(Ichimoku Oscillator)", shorttitle="I-DrCID CLUB-IO", explicit_plot_zorder = true)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🔹 📈 Multi-Timeframe Settings
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+timeframegroup = "⏱ Timeframe Settings"
+indi_tf = input.string("Chart","TF1 Timeframe",options = ["Trade Entry TF1","Chart","3 Minutes","5 Minutes","15 Minutes","1 Hour","75 Minutes","4 Hours","1 Day", "1 Week","1 Month"],group = timeframegroup)
+tf1 =
+     indi_tf == "Chart" ? timeframe.period :
+     indi_tf == "Trade Entry TF1" ? timeframe.period :
+     indi_tf == "3 Minutes" ? "3" :
+     indi_tf == "5 Minutes" ? "5" :
+     indi_tf == "15 Minutes" ? "15" :
+     indi_tf == "1 Hour" ? "60" :
+     indi_tf == "75 Minutes" ? "75" :
+     indi_tf == "4 Hours" ? "240" :
+     indi_tf == "1 Day" ? "D" :
+     indi_tf == "1 Week" ? "W" :
+     indi_tf == "1 Month" ? "M" :
+     timeframe.period
+tf2 = input.timeframe("75", "TF2 (Higher Timeframe)",group = timeframegroup)
+tf3 = input.timeframe("D", "TF3 (Daily / Weekly)",group = timeframegroup)
+tf=tf1
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🔹 🔧 DrCID NIFTY Multi-Timeframe Defaults
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🔹Core Ichimoku Structure
+conversionPeriods = input.int(defval = 7,minval = 1,title = "Conversion Line Length",tooltip = "Intraday = 7\n75m HTF = 8-9\nDaily = 9 (classic)",group = "Setup")
+basePeriods = input.int( defval = 21, minval = 1,title = "Base Line Length",tooltip = " Intraday = 21\n75m HTF = 13-26\nDaily = 26 (classic)",group = "Setup")
+laggingSpan2Periods = input.int(defval = 42,minval = 1,title = "Leading Span B Length",tooltip = " Intraday = 42\n75m HTF = 26-52\nDaily = 52 (classic)",group = "Setup")
+displacement = input.int(defval = 21,minval = 1,title = "Lagging Span",tooltip = " Intraday = 21\n75m HTF = 13-26\nDaily = 26 (classic)", group = "Setup")
+// =====================
+//🔹 ATR Protection
+// =====================
+useatr = input.bool( defval = true,title ="Use ATR",tooltip = "Protection from Whispsaw Recommended ON for Intraday & HTF\nOptional OFF for Daily swing ",group = "Setup")
+atrlen = input.int(defval = 9,minval = 1,title = " Length",tooltip = "Intraday = 9\n75m HTF = 9–14\nDaily = 14",group = "Setup")
+atrmul = input.float(defval = 2.2,minval = 0.1,step = 0.1,title = " Mult",tooltip = "Intraday = 2.2\n75m HTF = 2.0\nDaily = 1.8–2.0",group = "Setup")
+//atr_tf = request.security(syminfo.tickerid, tf1, ta.atr(atrlen))
+
+// =====================
+// 🔹Bounce Entries
+// =====================
+bounceoff = input.bool(defval = false,title = "Bounce Off Support/Resistance",tooltip = "Intraday = Optional\nHTF = Good for continuation\nDaily = Recommended for trend pullbacks",group = "Setup")
+// =====================
+// 🔹EMA Settings
+// =====================
+useema = input.bool(defval = true,title ="Show EMA",tooltip = "EMA helps pullback entries & partial exits",group = "Setup")
+emalen = input.int(defval = 13,minval = 1,title = " Length",tooltip = "Intraday = 9\n75m HTF = 13\nDaily = 21 or 34",group = "Setup")
+emacol = input.color(defval = #d1c4e9,title = " Color",group = "Setup")
+emawd = input.int(defval = 1,minval = 1,maxval = 5,title = " Width",tooltip = "Visual preference only",group = "Setup")
+//===============XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX==============================
+
+//conversionPeriods = input.int(8, minval=1, title="Conversion Line Length", group = "Setup")
+//basePeriods = input.int(13, minval=1, title="Base Line Length", group = "Setup")
+//laggingSpan2Periods = input.int(26, minval=1, title="Leading Span B Length", group = "Setup")
+//displacement = input.int(13, minval=1, title="Lagging Span", group = "Setup")
+//useatr = input.bool(defval = true, title ="Use ATR", tooltip = "Protection from Whipsaw", group = "Setup")
+//atrlen = input.int(defval = 9, title = " Length", minval = 1, group = "Setup")
+//atrmul = input.float(defval = 2.0, title = " Mult", minval = 0.1, step = 0.1, group = "Setup")
+//bounceoff = input.bool(defval = false, title = "Bounce Off Support/Resistance", tooltip = "Enables the Additional Entries when price bounce off Support/Resistance Zone", group = "Setup")
+//useema = input.bool(defval = true, title ="Show EMA", group = "Setup")
+//emalen = input.int(defval = 9, title = " Length", minval = 1, group = "Setup")
+//emacol = input.color(defval = #d1c4e9, title = " Color", group = "Setup")
+//emawd = input.int(defval = 1, title = " Width", minval = 1, maxval = 5, group = "Setup")
+
+//===============XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX==============================
+
+ematkpartprft = input.bool(defval = true, title = "Take Partial Profit by EMA")
+entexlongcol = input.color(defval = color.white, title = "Entry/Exit Colors", inline = "entcol", group = "Colors")
+entexshortcol = input.color(defval = color.yellow, title = "", inline = "entcol", group = "Colors")
+coloredbg = input.bool(defval = true, title = "Colored Background", group = "Colors")
+bgcolupI = input.string(defval = "Green", title = " Uptrend", options = ["Green", "Red", "Blue"], group = "Colors")
+bgcoldnI = input.string(defval = "Blue", title = " Downtrend", options = ["Green", "Red", "Blue"], group = "Colors")
+bgtransp = input.int(defval = 60, title = " Transparency", step = 10, minval = 0, maxval = 100, group = "Colors")
+upcol1 = input.color(defval = color.rgb(0 , 250, 0, 0), title = "Uptrend Colors", inline = "upcols", group = "Colors")
+upcol2 = input.color(defval = color.rgb(0 , 190, 0, 0), title = "", inline = "upcols", group = "Colors")
+upcol3 = input.color(defval = color.rgb(0 , 130, 0, 0), title = "", inline = "upcols", group = "Colors")
+upcol4 = input.color(defval = color.rgb(0 , 70, 0, 0), title = "", inline = "upcols", group = "Colors")
+dbcol1 = input.color(defval = color.rgb(250, 0, 0, 0), title = "Downtrend Colors", inline = "dbcols", group = "Colors")
+dbcol2 = input.color(defval = color.rgb(190, 0, 0, 0), title = "", inline = "dbcols", group = "Colors")
+dbcol3 = input.color(defval = color.rgb(130, 0, 0, 0), title = "", inline = "dbcols", group = "Colors")
+dbcol4 = input.color(defval = color.rgb(70, 0, 0, 0), title = "", inline = "dbcols", group = "Colors")
+inSRcolor = input.color(defval = #d1d4dc, title = "In Support/Resistance Zone", group = "Colors")
+// =====================
+// 🔹Alerts
+// =====================
+mainalert = input.bool(defval = true, title = "Main Buy/Sell Alert", group = "Alerts")
+addalert = input.bool(defval = true, title = "Additional Buy/Sell Alert", group = "Alerts")
+alertlongmsg  = input.string(defval = "Buy / Main, Close = close", title = " Long message", group = "Alerts")
+alertshortmsg = input.string(defval = "Sell / Main, Close = close", title = " Short message", group = "Alerts")
+alertaddlongmsg  = input.string(defval = "Buy / Additonal, Close = close", title = " Long message", group = "Alerts")
+alertaddshortmsg = input.string(defval = "Sell / Additonal, Close = close", title = " Short message", group = "Alerts")
+mainfrequency = input.string(defval = alert.freq_once_per_bar_close, title = " Frequency", options = [alert.freq_once_per_bar_close, alert.freq_once_per_bar], group = "Alerts")
+closealert = input.bool(defval = true, title = "Close Position Alert", group = "Alerts")
+closepartalert = input.bool(defval = true, title = "Take Partial Profit Alert", group = "Alerts")
+closemainmsg  = input.string(defval = "Close Position, Close = close", title = " Close Position Message", group = "Alerts")
+closepartmsg = input.string(defval = "Take Partial Profit, Close = close", title = " Take Partial Profit Message", group = "Alerts")
+closefrequency = input.string(defval = alert.freq_once_per_bar, title = " Frequency", options = [alert.freq_once_per_bar_close, alert.freq_once_per_bar], group = "Alerts")
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🔹 🔧 ichimoku calculation
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 
+[open_tf, high_tf, low_tf, close_tf] =request.security(syminfo.tickerid, tf, [open, high, low, close])
+f_tf(src) => request.security(syminfo.tickerid, tf, src)
+//close_tf = f_tf(close)
+//high_tf  = f_tf(high)
+//low_tf   = f_tf(low)
+atr_tf   = f_tf(ta.atr(atrlen))
+donchian(len) =>math.avg(ta.lowest(low_tf, len),ta.highest(high_tf, len))
+//donchian(len) => math.avg(ta.lowest(len), ta.highest(len))
+conversionLine = donchian(conversionPeriods)
+baseLine = donchian(basePeriods)
+leadLine1 = math.avg(conversionLine, baseLine)
+leadLine2 = donchian(laggingSpan2Periods)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🔹 🔧 Oscillator calculation
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 
+var int mtrend = 0
+var int trend = 0
+cloudup = leadLine1 >= leadLine2
+clouddn = leadLine1 <= leadLine2
+CloudMin = math.min(leadLine1[displacement - 1], leadLine2[displacement - 1])
+CloudMax = math.max(leadLine1[displacement - 1], leadLine2[displacement - 1])
+inthecloud = close_tf >= CloudMin and close_tf <= CloudMax
+mtrend := close_tf > CloudMax ? 1 : close_tf < CloudMin ? -1 : mtrend 
+// =====================
+// 🔹first layer
+// =====================
+Oscline = mtrend == 1 ? (close_tf - CloudMin) : (close_tf - CloudMax)
+Osccolor = inthecloud ? inSRcolor: close_tf > CloudMax ? upcol1 : dbcol1
+// =====================
+// 🔹second layer
+// =====================
+Lagging = Oscline + (mtrend == 1 ? math.max(close_tf - CloudMax[displacement - 1], 0) : // , close - close[displacement - 1]
+                                   math.min(close_tf - CloudMin[displacement - 1], 0)) // , close - close[displacement - 1]
+// =====================
+// 🔹third layer
+// =====================
+ConvBase = Lagging + (mtrend == 1 ? math.max((conversionLine - baseLine), 0) : math.min((conversionLine -baseLine), 0))
+ConvBaseColor = conversionLine >= baseLine ? upcol3 : dbcol3
+// =====================
+// 🔹fourth layer
+// ===================== 
+cloud = ConvBase + (mtrend == 1 ? math.max(leadLine1 - leadLine2, 0) : math.min(leadLine1 - leadLine2, 0))
+
+anyofthemrising = ta.change(conversionLine) > 0 or ta.change(baseLine) > 0
+anyofthemfalling = ta.change(conversionLine) < 0 or ta.change(baseLine) < 0
+convoverbase = conversionLine >= baseLine
+baseoverconv = conversionLine <= baseLine
+// little Protection from whipsaw
+//tole = useatr ? ta.atr(atrlen) * atrmul : 0
+tole = useatr ? atr_tf * atrmul : 0
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🔹 🔧 calculation of the trend and getting entry level if trend appears
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 
+var float entrylevel = na
+if mtrend == 1
+    trend := mtrend[1] == -1 ? 0 : trend
+    if trend < 4 and close_tf > CloudMax
+        trend := (Lagging > Oscline ? 1 : 0) + 
+                 (convoverbase and anyofthemrising? 1 : 0) +
+                 (cloudup ? 1 : 0) +
+                 1
+        if trend == 4
+            entrylevel := close_tf
+    else
+        trend := (conversionLine < baseLine - tole ? 0 : trend)
+else if mtrend == -1
+    trend := mtrend[1] == 1 ? 0 : trend
+    if trend > - 4 and close_tf < CloudMin
+        trend := (Lagging < Oscline ? -1 : 0) - 
+                 (baseoverconv and anyofthemfalling ? 1 : 0) -
+                 (clouddn ? 1 : 0) -
+                 1
+        if trend == -4
+            entrylevel := close_tf
+    else
+        trend := (conversionLine > baseLine + tole? 0 : trend)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🔹 🔧 ploting layers
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 
+// =================================
+// 🔹Background coloring if Enabled
+// ================================= 
+uptmult = 159 + math.pow(trend, 3)
+dntmult = 159 - math.pow(trend, 3)
+bgcolup = color.rgb(bgcolupI == "Red" ? uptmult : 0, bgcolupI == "Green" ? uptmult : 0, bgcolupI == "Blue" ? uptmult : 0, bgtransp)
+bgcoldn = color.rgb(bgcoldnI == "Red" ? dntmult : 0, bgcoldnI == "Green" ? dntmult : 0, bgcoldnI == "Blue" ? dntmult : 0, bgtransp)
+bgcolor(color = coloredbg ? trend > 0 ? bgcolup : trend < 0 ? bgcoldn : inSRcolor : na)
+// =================================
+// 🔹ploting layers
+// ================================= 
+plot(cloud, color = mtrend == 1 ? upcol4 : dbcol4, style = plot.style_area)
+plot(ConvBase, color = ConvBaseColor, style = plot.style_area)
+plot(Lagging, color = close_tf > CloudMax ? upcol2 : close_tf < CloudMin ? dbcol2 : color.new(color.white, 100), style = plot.style_area)
+plot(Oscline, color = Osccolor, style = plot.style_area)
+// =================================
+// 🔹convert the message
+// =================================  
+getClose(message) => str.replace(message, "close", str.tostring(close_tf))
+// =================================
+// 🔹closing main position
+// =================================
+closetrade = ta.change(trend) != 0 and math.abs(trend[1]) == 4
+plotshape(cloud, color = closetrade ? (trend[1] > 0 ? entexlongcol : entexshortcol): color.new(color.white, 100), style = shape.xcross, size = size.small, location = location.absolute)
+if closetrade and closealert
+    alert(getClose(closemainmsg), closefrequency)
+// =================================
+// 🔹take long position
+// =================================
+uptrend = trend == 4 and ta.change(trend) != 0
+plotshape(0, color = uptrend ? entexlongcol :color.new(color.white, 100), style = shape.triangleup, size = size.small, location = location.absolute)
+bouncbackup = bounceoff and trend == 4 and close_tf > CloudMax and inthecloud[1]
+plotshape(0, color = bouncbackup ? entexlongcol : color.new(color.white, 100), style = shape.triangleup, size = size.tiny, location = location.absolute)
+// =================================
+// 🔹long position alerts
+// =================================
+if trend == 4
+    if uptrend and mainalert
+        alert(getClose(alertlongmsg), mainfrequency)
+    if bouncbackup and addalert
+        alert(getClose(alertaddlongmsg), mainfrequency)
+// =================================
+// 🔹take short position
+// ================================= 
+downtrend = trend == -4 and ta.change(trend) != 0
+plotshape(0, color = downtrend ? entexshortcol : color.new(color.white, 100), style = shape.triangledown, size = size.small, location = location.absolute)
+bouncbackdn = bounceoff and trend == -4 and close_tf < CloudMin  and inthecloud[1]
+plotshape(0, color = bouncbackdn ? entexshortcol : color.new(color.white, 100), style = shape.triangledown, size = size.tiny, location = location.absolute)
+// =================================
+// 🔹short position alerts
+// ================================= 
+if trend == -4
+    if downtrend and mainalert
+        alert(getClose(alertshortmsg), mainfrequency)
+    if bouncbackdn and addalert
+        alert(getClose(alertaddshortmsg), mainfrequency)
+// =================================
+// 🔹plot ema line if enabled
+// =================================
+//emaline = ta.ema(close_tf, emalen)
+//emaline = request.security(syminfo.tickerid, tf, ta.ema(close, emalen))
+
+emaline = ta.ema(cloud, emalen) 
+plot(emaline, linewidth = emawd, color = useema ? emacol : color.new(color.white, 100))
+// =============================================
+// 🔹possible/partially take profit if profitable
+// ============================================= 
+convcrossbase = ta.crossover(conversionLine, baseLine)
+basecrosscons = ta.crossover(baseLine, conversionLine)
+emacrosscloud = ta.crossover(emaline, cloud)
+cloudcrossema = ta.crossover(cloud, emaline)
+
+//profitable = trend == 4 and close_tf > entrylevel or trend == -4 and close_tf < entrylevel
+profitable = (trend == 4 and close_tf > entrylevel) or
+             (trend == -4 and close_tf < entrylevel)
+
+
+posexitcol = profitable ? trend == 4 and basecrosscons ? entexlongcol : 
+                         trend == 4 and emacrosscloud and ematkpartprft ? emacol : 
+                         trend == -4 and convcrossbase ? entexshortcol :
+                         trend == -4 and cloudcrossema and ematkpartprft ? emacol :
+                         color.new(color.white, 100) :
+                         color.new(color.white, 100)
+
+plotshape(cloud, color = posexitcol, location = location.absolute, style = shape.xcross, size = size.tiny)
+partclose =  trend == 4 and basecrosscons or 
+             trend == 4 and emacrosscloud and ematkpartprft or
+             trend == -4 and convcrossbase or 
+             trend == -4 and cloudcrossema and ematkpartprft 
+// =================================
+// 🔹partially take profit alert
+// ================================= 
+if partclose and closepartalert
+    alert(getClose(closepartmsg), closefrequency)
+strength_txt = str.tostring(math.abs(trend)) + "/4"
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🔹 🔧 📈 Multi-Timeframe Trend Values
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 
+// Chart TF (already calculated)
+//trend_tf1 = trend
+trend_tf1 = request.security(syminfo.tickerid, tf1, trend)
+
+// Higher TF
+trend_tf2 = request.security(syminfo.tickerid, tf2, trend)
+// Daily / Weekly TF
+trend_tf3 = request.security(syminfo.tickerid, tf3, trend)
+
+tf1_txt = trend_tf1 == 4 ? "🟢 Buy" : trend_tf1 == -4 ? "🔴 Sell" : "⚪ Wait"
+tf2_txt = trend_tf2 == 4 ? "🟢 Bullish" : trend_tf2 == -4 ? "🔴 Bearish" : "⚪ Neutral"
+tf3_txt = trend_tf3 == 4 ? "🟢 Bullish" : trend_tf3 == -4 ? "🔴 Bearish" : "⚪ Neutral"
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🔹 🔧 📈 📊 DrCID ALERT TABLE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 
+dash_loc = input.string("Top Right", "Dashboard Location",
+ options=["Top Left","Top Right","Middle Right","Bottom Left","Bottom Center","Bottom Right"])
+font = input.string("Small", "Font Size",options = ["Tiny", "Small", "Normal", "Large", "Huge"])
+font_size = font == "Tiny" ? size.tiny : font == "Small" ? size.small : font == "Normal" ? size.normal : font == "Large" ? size.large : size.huge 
+//text_size=font_size
+
+table_position =
+ dash_loc == "Top Left"      ? position.top_left :
+ dash_loc == "Bottom Left"   ? position.bottom_left :
+ dash_loc == "Middle Right"  ? position.middle_right :
+ dash_loc == "Bottom Center" ? position.bottom_center :
+ dash_loc == "Top Right"     ? position.top_right :
+                               position.bottom_right
+
+
+var table drcid_tab = table.new(table_position, 15, 15, border_width = 1, border_color=color.rgb(85,85,85), frame_color=color.rgb(85,85,85), frame_width=1)
+// ---- Fill Table ----
+if barstate.islast
+
+//if barstate.isfirst
+    //table.cell(drcid_tab, 0, 0, "🔥 DrCID CLUB – IO PANEL", bgcolor = color.black, text_color = color.orange, text_halign = text.align_center,text_size=font_size)
+    //table.merge_cells(drcid_tab, 0, 0, 0, 1)
+// ---- Header ----
+    table.cell(drcid_tab, 1, 0, "Trend", bgcolor = color.black, text_color = color.white,text_size=font_size)
+    table.cell(drcid_tab, 2, 0, "Cloud Zone", bgcolor = color.black, text_color = color.white,text_size=font_size)
+    table.cell(drcid_tab, 3, 0, "Main Signal", bgcolor = color.black, text_color = color.white,text_size=font_size)
+    table.cell(drcid_tab, 4, 0, "Additional", bgcolor = color.black, text_color = color.white,text_size=font_size)
+    table.cell(drcid_tab, 5, 0, "Partial Exit", bgcolor = color.black, text_color = color.white,text_size=font_size)
+    table.cell(drcid_tab, 6, 0, "Close Trade", bgcolor = color.black, text_color = color.white,text_size=font_size)
+
+    table.cell(drcid_tab, 7, 0, "Strength", bgcolor=color.black, text_color=color.white, text_size=font_size)
+    table.cell(drcid_tab, 8, 0, "TF1-Trend", bgcolor=color.black, text_color=color.white, text_size=font_size)
+    table.cell(drcid_tab, 9, 0, "TF2-Trend", bgcolor=color.black, text_color=color.white, text_size=font_size)
+    table.cell(drcid_tab, 10, 0, "TF3-Trend", bgcolor=color.black, text_color=color.white, text_size=font_size)
+
+// ---- Text Logic ----
+trend_txt = trend == 4 ? "🟢 Strong Bullish" : trend == -4 ? "🔴 Strong Bearish" : "⚪ Neutral"
+main_txt  = uptrend ? "Buy" : downtrend ? "Sell" : "—"
+add_txt   = bouncbackup ? "Add Buy" : bouncbackdn ? "Add Sell" : "—"
+part_txt  = partclose ? "Partial Exit" : "—"
+close_txt = closetrade ? "Close" : "—"
+cloud_txt = inthecloud ? "Inside Cloud" : mtrend == 1 ? "Above Cloud" : "Below Cloud"
+
+// ---- Color Logic ----
+trend_col = trend == 4 ? color.green : trend == -4 ? color.red : color.gray
+main_col  = uptrend ? color.green : downtrend ? color.red : color.new(color.gray, 70)
+add_col   = bouncbackup ? color.green : bouncbackdn ? color.red : color.new(color.gray, 80)
+part_col  = partclose ? color.orange : color.new(color.gray, 80)
+close_col = closetrade ? color.red : color.new(color.gray, 80)
+cloud_col = inthecloud ? color.blue : mtrend == 1 ? color.new(color.green, 40) : color.new(color.red, 40)
+
+// ---- Fill Table ----
+table.cell(drcid_tab, 1, 1, trend_txt, bgcolor = trend_col, text_color = color.white,text_size=font_size)
+table.cell(drcid_tab, 2, 1, cloud_txt, bgcolor = cloud_col, text_color = color.white,text_size=font_size)
+table.cell(drcid_tab, 3, 1, main_txt,  bgcolor = main_col,  text_color = color.white,text_size=font_size)
+table.cell(drcid_tab, 4, 1, add_txt,   bgcolor = add_col,   text_color = color.white,text_size=font_size)
+table.cell(drcid_tab, 5, 1, part_txt,  bgcolor = part_col,  text_color = color.white,text_size=font_size)
+table.cell(drcid_tab, 6, 1, close_txt, bgcolor = close_col, text_color = color.white,text_size=font_size)
+
+table.cell(drcid_tab, 7, 1, strength_txt, bgcolor=color.new(color.purple,70), text_color=color.white, text_size=font_size)
+table.cell(drcid_tab, 8, 1, tf1_txt, bgcolor = trend_tf1 > 0 ? color.green : trend_tf1 < 0 ? color.red : color.gray, text_color=color.white, text_size=font_size)
+table.cell(drcid_tab, 9, 1, tf2_txt, bgcolor = trend_tf2 > 0 ? color.green : trend_tf2 < 0 ? color.red : color.gray, text_color=color.white, text_size=font_size)
+table.cell(drcid_tab, 10, 1, tf3_txt, bgcolor = trend_tf3 > 0 ? color.green : trend_tf3 < 0 ? color.red : color.gray, text_color=color.white, text_size=font_size)
+
+
+//Perfect 👑 DrCID — now we go deep.
+
+//You posted the full DrCID CLUB IO (Ichimoku Oscillator) engine.
+
+//I will explain:
+
+//1️⃣ What this code really calculates
+//2️⃣ How trend is determined internally
+//3️⃣ Is it a real trend finder?
+//4️⃣ What makes it strong
+//5️⃣ Best user settings (scalp / intraday / swing / crypto)
+
+//🧠 1️⃣ WHAT THIS INDICATOR REALLY IS
+
+//Your script is an advanced oscillator built from the core logic of the original Ichimoku system:
+
+//Based on the system created by:
+
+
+
+
+//Original Ichimoku components:
+
+//Tenkan (Conversion Line)
+
+//Kijun (Base Line)
+
+//Senkou Span A
+
+//Senkou Span B
+
+//Cloud structure
+
+//Lagging Span
+
+//But your version converts it into:
+
+//✔ A layered oscillator
+//✔ A 4-step trend scoring engine
+//✔ A structured breakout confirmation system
+//✔ With ATR whipsaw protection
+
+//This is NOT a simple cloud indicator.
+
+//It is a trend confirmation engine.
+
+
+//🔍 2️⃣ HOW TREND IS DETERMINED (STEP BY STEP)
+
+//Trend is stored in:
+//var int trend = 0
+//Range:-4  to  +4
+//That is  core engine.
+//🔹 STEP A — Market Bias (mtrend)
+//mtrend := close > CloudMax ? 1 :
+          //close < CloudMin ? -1 :
+          //mtrend
+//Meaning:
+//| Condition         | Bias    |
+//| ----------------- | ------- |
+//| Price above cloud | Bullish |
+//| Price below cloud | Bearish |
+//| Inside cloud      | Neutral |
+//This is structural bias.
+
+//Cloud = institutional equilibrium zone.
+//🔹 STEP B — 4-LAYER CONFIRMATION
+
+//For uptrend:
+//trend :=
+ //(Lagging > Oscline ? 1 : 0) +
+ //(convoverbase and rising ? 1 : 0) +
+ //(cloudup ? 1 : 0) +
+ //1
+
+ //That gives max value = 4.
+
+//So trend = 4 only if ALL these are true:
+
+//✔ Layer 1 — Lagging Confirmation
+
+//Momentum agrees.
+
+//✔ Layer 2 — Conversion > Base + Rising
+
+//Short-term strength confirmed.
+
+//✔ Layer 3 — Cloud bullish
+
+//Higher timeframe structure aligned.
+
+//✔ Layer 4 — Price above cloud
+
+//Breakout confirmed.
+
+//That is very strong confirmation logic.
+
+//Same reversed for downtrend.
+
+
+//🎯 3️⃣ IS THIS A TREND FINDER?
+
+//Yes.
+
+//But not early.
+
+//It is a confirmed trend continuation detector.
+
+//It waits for:
+
+//✔ Cloud breakout
+//✔ Momentum alignment
+//✔ Line alignment
+//✔ Multi-layer agreement
+
+//It is NOT predictive.
+//It is confirmation-based.
+
+//That is why false signals are lower.
+
+
+//⚙ 4️⃣ WHAT MAKES IT STRONG?
+//🔹 ATR Whipsaw Protection
+//tole = useatr ? ta.atr(atrlen) * atrmul : 0
+
+
+//This prevents fake Kijun cross resets.
+
+//This is very smart.
+
+//🔹 Bounce Entries
+//bouncbackup
+//bouncbackdn
+
+
+//This allows trend continuation entries.
+
+//Advanced feature.
+
+//📊 5️⃣  MULTI-TF CONFIRMATION
+
+//added:
+
+//trend_tf2 = request.security(...)
+//trend_tf3 = request.security(...)
+
+
+//That is pure confirmation.
+
+//Now your dashboard tells you:
+
+//Chart TF trend
+
+//Higher TF trend
+
+//Daily/Weekly bias
+
+//This is powerful alignment filtering.
+
+//🧠 6️⃣ WHAT TYPE OF SYSTEM IS THIS?
+
+//This is:
+
+//Trend-Continuation + Structure Break Confirmation System.
+
+//It is NOT:
+
+//❌ Range trading tool
+//❌ Early reversal detector
+//❌ Scalping reversal system
+
+//It is best used in:
+
+//✔ Trending markets
+//✔ Breakout sessions
+//✔ Strong volatility environments
+
+//🏆 BEST SETTINGS FOR DrCID CLUB IO
+
+//Depends on market type
+
+//📌 FOR SWING TRADING (4H / Daily)
+//Conversion: 9
+//Base: 26
+//Span B: 52
+//Displacement: 26
+//ATR Mult: 2
+//EMA: 21
+//TF2: 1D
+//TF3: 1W
+
+
+//Classic Ichimoku proportions.
+//🔥 WHEN IS SIGNAL STRONGEST?
+
+//When:
+
+//trend == 4
+//AND
+//trend_tf2 == 4
+//AND
+//trend_tf3 == 4
+
+
+//That is institutional alignment.
+
+//That is high probability continuation.
+
+//⚠ IMPORTANT LIMITATION
+
+//Because trend requires full 4 confirmations:
+
+//It enters AFTER breakout.
+
+//Meaning:
+
+//You miss early move
+
+//But avoid fake breakouts
+
+//This is safe logic.
+//💎 FINAL VERDICT
+
+//Your DrCID CLUB IO is:
+
+//✔ Structured trend detector
+//✔ Multi-layer confirmation engine
+//✔ ATR-protected breakout system
+//✔ Strong for continuation trading
+//✔ Enhanced by multi-TF dashboard
+
+//It is not a beginner script.
+//It is advanced logic.
+
+//Perfect 👑 DrCID — now we tune DrCID CLUB IO specifically for:
+
+//📊 INTRADAY NIFTY
+
+//TF1 = 5 Minute
+//TF2 = 75 Minute
+//TF3 = Daily
+
+//NIFTY intraday has:
+
+//Opening volatility spike
+
+//Midday compression
+
+//2:30–3:30 PM expansion
+
+//Algo-driven fake breakouts
+
+//So we must balance:
+//✔ Early detection
+//✔ Noise filtering
+//✔ Fast momentum
+//✔ Structure confirmation
+
+//🎯 ✅ BEST OPTIMIZED SETTINGS FOR 5 MIN NIFTY
+//🔥 Recommended Core Setup
+//Conversion (Tenkan): 7
+//Base (Kijun): 21
+//Span B: 42
+//Displacement: 21
+//ATR Length: 9
+//ATR Mult: 2.2
+//EMA: 13
+//TF2: 75
+//TF3: D
+
+//🧠 WHY THESE VALUES?
+//🔹 Conversion = 7
+
+//Faster than classic 9
+//Captures 30–45 min momentum shifts on 5min chart.
+
+//🔹 Base = 21
+
+//Represents roughly half-day structure on 5min.
+//Good balance between noise & structure.
+
+//🔹 Span B = 42
+
+//Keeps cloud reactive but not too tight.
+//52 is too slow for intraday.
+
+//🔹 Displacement = 21
+
+//Keeps structure balanced with Base.
+
+//🔹 ATR Mult = 2.2
+
+//NIFTY has frequent fake breakouts.
+//2.0 is slightly tight.
+//2.2 filters more noise without lagging too much.
+
+//🔹 EMA = 13
+
+//21 EMA is slow for 5min NIFTY.
+
+//13 EMA:
+//✔ Good for pullback continuation
+//✔ Matches intraday volatility rhythm
+
+//📊 MULTI-TF STRUCTURE
+
+//| TF    | Role             |
+//| ----- | ---------------- |
+//| 5m    | Entry timing     |
+//| 75m   | Intraday bias    |
+//| Daily | Market direction |
+
+//🏆 HOW TO TRADE IT (IMPORTANT)
+//🔥 HIGH PROBABILITY SETUP
+
+//Take trade only when:
+
+//trend_tf1 == 4
+//AND
+//trend_tf2 >= 1
+//AND
+//trend_tf3 >= 0
+
+
+//Even stronger:
+
+//trend_tf1 == 4
+//AND
+//trend_tf2 == 4
+//AND
+//trend_tf3 == 4
+
+
+//That is institutional alignment.
+
+//⚠️ AVOID TRADES WHEN:
+
+//5m = 4
+
+//75m = -4
+
+//That is intraday counter-trend trap.
+
+//🏁 IF YOU WANT MORE AGGRESSIVE MODE
+
+//For expiry day / high volatility:
+
+//Conversion: 6
+//Base: 18
+//Span B: 36
+//Displacement: 18
+//ATR Mult: 2.5
+//EMA: 9
+
+
+//Faster but riskier.
+
+//💎 FINAL ANSWER
+
+//For 5m NIFTY intraday, use:
+
+//Conversion: 7
+//Base: 21
+//Span B: 42
+//Displacement: 21
+//ATR Mult: 2.2
+//EMA: 13
+//TF2: 75
+//TF3: D
+
+
+//This gives:
+
+//✔ Early but confirmed breakouts
+//✔ Less whipsaw
+//✔ Strong alignment with 75m structure
+//✔ Daily bias filter
+
+//🎯 FINAL RESULT
+//Optimized for:
+//📊 NIFTY 5m Intraday
+
+//Your indicator will now load automatically with:
+//| Setting      | Value |
+//| ------------ | ----- |
+//| Conversion   | 7     |
+//| Base         | 21    |
+//| Span B       | 42    |
+//| Displacement | 21    |
+//| ATR Mult     | 2.2   |
+//| EMA          | 13    |
+//| TF2          | 75min |
+//| TF3          | Daily |
+
+//🔥 WHY THIS IS BALANCED
+
+//✔ Faster Tenkan → early momentum
+//✔ 21 Kijun → structure control
+//✔ 42 Cloud → avoids fake intraday spikes
+//✔ 2.2 ATR → protects from NIFTY whipsaws
+//✔ 13 EMA → good pullback timing
+
+//🧠 WHY THESE HTF / DAILY VALUES?
+//75 Minute (HTF Bias)
+
+//Use classic structure:
+
+//9 / 26 / 52 / 26
+//Because 75min behaves like mini-daily structure.
+//Daily Swing
+
+//Classic Ichimoku default:
+
+//9 / 26 / 52 / 26
+//This was designed for Japanese daily charts originally.
+
+//🎯 FINAL STRUCTURE LOGIC
+//| Mode  | Speed    | Stability   |
+//| ----- | -------- | ----------- |
+//| 5m    | Fast     | Medium      |
+//| 75m   | Balanced | Strong      |
+//| Daily | Slower   | Very Strong |

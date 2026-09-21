@@ -1,0 +1,47 @@
+//@version=6
+indicator("Volatility Regime", shorttitle="Vol Regime", overlay=false)
+
+// ---------------- Inputs ----------------
+volLength   = input.int(20, title="Volatility Length", minval=1, group="Volatility")
+rankLength  = input.int(100, title="Percentile Rank Lookback", minval=10, group="Volatility")
+
+lowThresh   = input.float(33.0, title="Low Volatility Threshold (Percentile)", minval=0, maxval=100, group="Thresholds")
+highThresh  = input.float(66.0, title="High Volatility Threshold (Percentile)", minval=0, maxval=100, group="Thresholds")
+
+lowColor    = input.color(color.new(color.green, 0),  title="Low Volatility Color",    group="Colors")
+medColor    = input.color(color.new(color.yellow, 0), title="Medium Volatility Color", group="Colors")
+highColor   = input.color(color.new(color.red, 0),    title="High Volatility Color",   group="Colors")
+
+// ---------------- Volatility Calculation ----------------
+// Standard deviation of log returns as the base volatility measure
+logReturn = math.log(close / close[1])
+vol = ta.stdev(logReturn, volLength)
+
+// Percentile rank of current volatility within the lookback window (0-100)
+volRank = ta.percentrank(vol, rankLength)
+
+// ---------------- Regime Classification ----------------
+// 1 = Low, 2 = Medium, 3 = High
+regime = volRank <= lowThresh ? 1 : volRank >= highThresh ? 3 : 2
+
+regimeColor = regime == 1 ? lowColor : regime == 2 ? medColor : highColor
+regimeText  = regime == 1 ? "LOW" : regime == 2 ? "MEDIUM" : "HIGH"
+
+// ---------------- Plots ----------------
+plot(volRank, title="Volatility Percentile Rank", color=regimeColor, linewidth=2)
+
+hline(lowThresh, title="Low Threshold", color=color.gray, linestyle=hline.style_dashed)
+hline(highThresh, title="High Threshold", color=color.gray, linestyle=hline.style_dashed)
+hline(0, title="Zero Line", color=color.new(color.gray, 70))
+hline(100, title="Hundred Line", color=color.new(color.gray, 70))
+
+// Shade the panel background according to the active regime
+bgcolor(color.new(regimeColor, 85))
+
+// ---------------- Current Regime Label ----------------
+var label regimeLabel = na
+
+if barstate.islast
+    if not na(regimeLabel)
+        label.delete(regimeLabel)
+    regimeLabel := label.new(bar_index, volRank, text=regimeText, xloc=xloc.bar_index, style=label.style_label_left, color=regimeColor, textcolor=color.white, size=size.small)

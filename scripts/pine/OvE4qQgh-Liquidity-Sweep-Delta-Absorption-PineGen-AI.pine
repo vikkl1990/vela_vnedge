@@ -1,0 +1,232 @@
+// Liquidity Sweep + Delta Absorption [PineGen AI]
+// ---------------------------------------------------------------------------
+// WHAT THIS DOES
+// Detects a liquidity sweep of a recent swing high/low (a wick that pierces
+// the level and closes back inside it), then requires that sweep to show
+// volume-delta ABSORPTION before taking a trade: elevated participation on
+// the sweep bar, but the bar closes back in the opposite direction instead
+// of continuing through the level. That combination is meant to filter out
+// the single biggest complaint on plain liquidity-sweep and plain
+// volume-delta scripts: too many false signals from a wick alone.
+//
+// HONEST LIMITS (read before you trade this)
+// - "Delta" here is a LOWER-TIMEFRAME VOLUME PROXY, not real exchange bid/ask
+//   tape data. It sums lower-timeframe candles inside each chart bar and
+//   buckets their volume as "up" (close >= open) or "down" (close < open).
+//   That is a widely-used approximation, not true order-flow data. Pine
+//   Script has no access to real bid/ask tape on standard data feeds.
+// - This is a backtesting/educational tool. The Strategy Tester report shows
+//   how these exact rules would have performed on historical data with the
+//   commission/slippage assumptions set below — it is not a promise of
+//   future profit, and no set of inputs "guarantees" a win rate.
+// - Entries are evaluated only on confirmed bars (barstate.isconfirmed) and
+//   swing levels only update once a pivot is confirmed (swingRight bars
+//   later), so this strategy does not repaint its signals after the fact.
+// - The "Order Flow Lower Timeframe" input MUST be smaller than your chart's
+//   timeframe (e.g. "1" on a 5-15min chart). If TradingView throws a lower-
+//   timeframe error, raise your chart timeframe or lower this input.
+// - Built and tested with US index/futures and FX/gold day trading in mind
+//   (NQ1!, ES1!, XAUUSD, EURUSD, GBPUSD) on intraday timeframes. Test any
+//   other market/timeframe combination on its own merits before using it.
+// ---------------------------------------------------------------------------
+
+//@version=6
+strategy(title="Liquidity Sweep + Delta Absorption [PineGen AI]",
+     shorttitle="LSDA [PineGen AI]",
+     overlay=true,
+     initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=10,
+     commission_type=strategy.commission.percent,
+     commission_value=0.02,
+     slippage=2,
+     pyramiding=0,
+     calc_on_every_tick=false)
+
+// ---------------------------------------------------------------------------
+// INPUTS
+// ---------------------------------------------------------------------------
+
+// -- Liquidity Levels --
+swingLeft  = input.int(5, "Swing Left Bars", minval=1, group="Liquidity Levels",
+     tooltip="Bars to the left required to confirm a swing high/low.")
+swingRight = input.int(5, "Swing Right Bars", minval=1, group="Liquidity Levels",
+     tooltip="Bars to the right required to confirm a swing high/low. Higher = more reliable levels, but confirmed later.")
+
+// -- Order Flow / Absorption --
+useVolFilter    = input.bool(true, "Require Volume Spike", group="Order Flow / Absorption")
+volLookback     = input.int(20, "Volume Average Lookback", minval=5, group="Order Flow / Absorption")
+volMultiplier   = input.float(1.5, "Volume Spike Multiplier", minval=1.0, step=0.1, group="Order Flow / Absorption")
+closePosThresh  = input.float(0.65, "Absorption Close Position (0.5-0.95)", minval=0.5, maxval=0.95, step=0.05, group="Order Flow / Absorption",
+     tooltip="How close to the opposite end of the bar's range the close must be to count as absorption.")
+useDeltaFilter  = input.bool(true, "Require Volume-Delta Confirmation", group="Order Flow / Absorption")
+deltaTF         = input.timeframe("1", "Order Flow Lower Timeframe", group="Order Flow / Absorption",
+     tooltip="Must be smaller than the chart timeframe. Example: '1' on a 5-15min chart.")
+minAbsDelta     = input.float(0, "Minimum Net Delta at Sweep", minval=0, group="Order Flow / Absorption",
+     tooltip="0 = delta just has to lean the right way. Raise this to demand a stronger absorption signature.")
+
+// -- Entry Filters --
+requireConfirmClose = input.bool(true, "Wait for Confirmation Candle", group="Entry Filters",
+     tooltip="If on, waits one extra bar and requires it to close in the reversal direction before entering. Off = enter on the absorption bar itself (more trades, less filtering).")
+useTrendFilter  = input.bool(false, "Use EMA Trend Filter", group="Entry Filters")
+trendLen        = input.int(200, "Trend EMA Length", minval=10, group="Entry Filters")
+allowLong       = input.bool(true, "Allow Long Trades", group="Entry Filters")
+allowShort      = input.bool(true, "Allow Short Trades", group="Entry Filters")
+
+// -- Session Filter --
+useSession   = input.bool(true, "Restrict Entries to Session Window", group="Session Filter")
+sessionWindow = input.session("0930-1200", "Session Window", group="Session Filter")
+sessionTZ    = input.string("America/New_York", "Session Timezone", group="Session Filter")
+
+// -- Risk Management --
+atrLen          = input.int(14, "ATR Length", minval=1, group="Risk Management")
+atrMult         = input.float(1.5, "Stop Buffer (x ATR beyond wick)", minval=0, step=0.1, group="Risk Management")
+rr              = input.float(2.0, "Reward:Risk Ratio", minval=0.5, step=0.1, group="Risk Management")
+maxTradesPerDay = input.int(2, "Max Trades Per Day (0 = unlimited)", minval=0, group="Risk Management")
+
+// ---------------------------------------------------------------------------
+// LIQUIDITY LEVELS (confirmed swing points)
+// ---------------------------------------------------------------------------
+ph = ta.pivothigh(high, swingLeft, swingRight)
+pl = ta.pivotlow(low, swingLeft, swingRight)
+
+var float lastSwingHigh = na
+var float lastSwingLow  = na
+
+if not na(ph)
+    lastSwingHigh := ph
+if not na(pl)
+    lastSwingLow := pl
+
+// ---------------------------------------------------------------------------
+// VOLUME-DELTA PROXY (lower-timeframe up/down volume aggregation)
+// ---------------------------------------------------------------------------
+[ltOpen, ltClose, ltVolume] = request.security_lower_tf(syminfo.tickerid, deltaTF, [open, close, volume])
+
+float upVol = 0.0
+float dnVol = 0.0
+n = array.size(ltClose)
+if n > 0
+    for i = 0 to n - 1
+        c = array.get(ltClose, i)
+        o = array.get(ltOpen, i)
+        v = array.get(ltVolume, i)
+        if c >= o
+            upVol += v
+        else
+            dnVol += v
+
+netDelta = upVol - dnVol
+
+// ---------------------------------------------------------------------------
+// SWEEP + ABSORPTION DETECTION
+// ---------------------------------------------------------------------------
+bullishSweep = not na(lastSwingLow) and low < lastSwingLow and close > lastSwingLow
+bearishSweep = not na(lastSwingHigh) and high > lastSwingHigh and close < lastSwingHigh
+
+rangeSize = high - low
+closePos  = rangeSize > 0 ? (close - low) / rangeSize : 0.5
+
+bullishAbsorptionCandle = closePos >= closePosThresh
+bearishAbsorptionCandle = closePos <= (1 - closePosThresh)
+
+volAvg   = ta.sma(volume, volLookback)
+volSpike = volume > volAvg * volMultiplier
+
+volumeOkBull = not useVolFilter or volSpike
+volumeOkBear = not useVolFilter or volSpike
+
+deltaOkBull = not useDeltaFilter or netDelta >= minAbsDelta
+deltaOkBear = not useDeltaFilter or netDelta <= -minAbsDelta
+
+bullishAbsorption = bullishSweep and bullishAbsorptionCandle and volumeOkBull and deltaOkBull and barstate.isconfirmed
+bearishAbsorption = bearishSweep and bearishAbsorptionCandle and volumeOkBear and deltaOkBear and barstate.isconfirmed
+
+// ---------------------------------------------------------------------------
+// TREND / SESSION / DIRECTION FILTERS
+// ---------------------------------------------------------------------------
+trendEma   = ta.ema(close, trendLen)
+trendOkBull = not useTrendFilter or close > trendEma
+trendOkBear = not useTrendFilter or close < trendEma
+
+inSession = not useSession or not na(time(timeframe.period, sessionWindow, sessionTZ))
+
+rawLongSignal  = bullishAbsorption and trendOkBull and inSession and allowLong
+rawShortSignal = bearishAbsorption and trendOkBear and inSession and allowShort
+
+// ---------------------------------------------------------------------------
+// OPTIONAL ONE-BAR CONFIRMATION
+// ---------------------------------------------------------------------------
+var bool  pendingLong     = false
+var bool  pendingShort    = false
+var float pendingLongLow  = na
+var float pendingShortHigh = na
+
+if rawLongSignal
+    pendingLong := true
+    pendingLongLow := low
+if rawShortSignal
+    pendingShort := true
+    pendingShortHigh := high
+
+confirmedLong  = pendingLong[1]  and close > open  and barstate.isconfirmed
+confirmedShort = pendingShort[1] and close < open  and barstate.isconfirmed
+
+if pendingLong[1]
+    pendingLong := false
+if pendingShort[1]
+    pendingShort := false
+
+finalLong  = requireConfirmClose ? confirmedLong  : rawLongSignal
+finalShort = requireConfirmClose ? confirmedShort : rawShortSignal
+
+sweepLowForStop  = pendingLongLow
+sweepHighForStop = pendingShortHigh
+
+// ---------------------------------------------------------------------------
+// DAILY TRADE CAP
+// ---------------------------------------------------------------------------
+var int tradesToday = 0
+if ta.change(time("D")) != 0
+    tradesToday := 0
+dailyLimitOk = maxTradesPerDay == 0 or tradesToday < maxTradesPerDay
+
+// ---------------------------------------------------------------------------
+// RISK MANAGEMENT + ENTRIES
+// ---------------------------------------------------------------------------
+atrVal = ta.atr(atrLen)
+
+if finalLong and strategy.position_size == 0 and dailyLimitOk and not na(sweepLowForStop)
+    longStop   = sweepLowForStop - atrVal * atrMult
+    riskDist   = close - longStop
+    longTarget = close + riskDist * rr
+    if riskDist > 0
+        strategy.entry("Long", strategy.long)
+        strategy.exit("Long Exit", from_entry="Long", stop=longStop, limit=longTarget)
+        tradesToday += 1
+
+if finalShort and strategy.position_size == 0 and dailyLimitOk and not na(sweepHighForStop)
+    shortStop   = sweepHighForStop + atrVal * atrMult
+    riskDist2   = shortStop - close
+    shortTarget = close - riskDist2 * rr
+    if riskDist2 > 0
+        strategy.entry("Short", strategy.short)
+        strategy.exit("Short Exit", from_entry="Short", stop=shortStop, limit=shortTarget)
+        tradesToday += 1
+
+// ---------------------------------------------------------------------------
+// PLOTTING
+// ---------------------------------------------------------------------------
+plot(lastSwingHigh, title="Last Swing High (Sell-Side Liquidity)", color=color.new(color.red, 40), style=plot.style_linebr, linewidth=1)
+plot(lastSwingLow,  title="Last Swing Low (Buy-Side Liquidity)",  color=color.new(color.green, 40), style=plot.style_linebr, linewidth=1)
+
+plotshape(bullishAbsorption, title="Bullish Absorption", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.small)
+plotshape(bearishAbsorption, title="Bearish Absorption", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small)
+
+bgcolor(useSession and inSession ? color.new(color.blue, 92) : na, title="Session Window")
+
+// ---------------------------------------------------------------------------
+// ALERTS
+// ---------------------------------------------------------------------------
+alertcondition(rawLongSignal,  title="Bullish Liquidity Sweep + Absorption", message="Bullish liquidity sweep with delta absorption on {{ticker}} {{interval}}")
+alertcondition(rawShortSignal, title="Bearish Liquidity Sweep + Absorption", message="Bearish liquidity sweep with delta absorption on {{ticker}} {{interval}}")

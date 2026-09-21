@@ -1,0 +1,871 @@
+//@version=6
+// V46: 8 configurable levels + automatic per-level zone alerts.
+// Each configured level can alert at most once per 60 seconds while price touches its zone.
+// Existing general confirmed 5m signal alert is retained.
+indicator("3Candle Multi Timeframe PRO V46", overlay = true, max_boxes_count = 100, max_labels_count = 300, max_lines_count = 300)
+
+// INPUTS
+groupLevels = "Levels"
+level1 = input.price(0.0, "Level 1", group = groupLevels)
+level1Type = input.string("Long", "Level 1 Type", options = ["Long", "Short"], group = groupLevels)
+level2 = input.price(0.0, "Level 2", group = groupLevels)
+level2Type = input.string("Long", "Level 2 Type", options = ["Long", "Short"], group = groupLevels)
+level3 = input.price(0.0, "Level 3", group = groupLevels)
+level3Type = input.string("Long", "Level 3 Type", options = ["Long", "Short"], group = groupLevels)
+level4 = input.price(0.0, "Level 4", group = groupLevels)
+level4Type = input.string("Long", "Level 4 Type", options = ["Long", "Short"], group = groupLevels)
+level5 = input.price(0.0, "Level 5", group = groupLevels)
+level5Type = input.string("Long", "Level 5 Type", options = ["Long", "Short"], group = groupLevels)
+level6 = input.price(0.0, "Level 6", group = groupLevels)
+level6Type = input.string("Long", "Level 6 Type", options = ["Long", "Short"], group = groupLevels)
+level7 = input.price(0.0, "Level 7", group = groupLevels)
+level7Type = input.string("Long", "Level 7 Type", options = ["Long", "Short"], group = groupLevels)
+level8 = input.price(0.0, "Level 8", group = groupLevels)
+level8Type = input.string("Long", "Level 8 Type", options = ["Long", "Short"], group = groupLevels)
+
+groupZone = "Zone Settings"
+zoneMode  = input.string("Ticks", "Zone Mode", options = ["Ticks", "Percent"], group = groupZone)
+zoneTicks = input.int(10, "Zone Ticks", minval = 1, group = groupZone)
+zonePct   = input.float(0.05, "Zone Percent", minval = 0.0001, step = 0.01, group = groupZone)
+
+groupBias = "HTF Bias"
+htfTf                    = input.string("30", "HTF Timeframe", options = ["15", "30"], group = groupBias)
+useSessionFilter         = input.bool(true, "Use Session Filter", group = groupBias)
+useHtfDirection          = input.bool(false, "Use HTF Candle Direction", group = groupBias)
+useDeltaFilter           = input.bool(false, "Use Developing HTF Delta", group = groupBias)
+usePriceVsPocFilter      = input.bool(false, "Use Current Price vs Developing POC", group = groupBias)
+allowNeutralDelta        = input.bool(false, "Allow Neutral Delta", group = groupBias)
+deltaNeutralThresholdPct = input.float(5.0, "Neutral Delta Threshold (% of HTF Volume)", minval = 0.0, step = 0.1, group = groupBias)
+pocBufferTicks           = input.int(0, "Price vs POC Buffer Ticks", minval = 0, group = groupBias)
+
+groupEntry = "Entry Logic"
+requireArrivalWickDominance    = input.bool(false, "Require Arrival Wick Dominance", group = groupEntry)
+requireCurrentBarStillNearZone = input.bool(false, "Require Current Bar Still Touches Zone", group = groupEntry)
+requireConfirmCloseBeyondLevel = input.bool(true, "Require Confirm Close Beyond Level", group = groupEntry)
+useReactionApproachSideFilter = input.bool(true, "Require Correct Approach Side For Reaction Setups", group = groupEntry)
+
+groupBreakout = "Breakout"
+enableBreakoutSetup      = input.bool(true, "Enable Breakout Setup", group = groupBreakout)
+breakoutVolumeRule       = input.string("Previous Candle", "Breakout Volume Rule", options = ["Previous Candle", "Average X Candles"], group = groupBreakout)
+breakoutAvgLength        = input.int(5, "Breakout Avg Length", minval = 1, group = groupBreakout)
+breakoutVolumeMultiplier = input.float(1.0, "Breakout Volume Multiplier", minval = 0.1, step = 0.1, group = groupBreakout)
+
+groupBreakoutRetest = "Breakout Retest BRL/BRS"
+enableBreakoutRetestSetup = input.bool(false, "Enable BRL/BRS Setup", group = groupBreakoutRetest)
+breakoutRetestMaxBars = input.int(10, "Max Retest Bars After Acceptance", minval = 1, group = groupBreakoutRetest)
+reactionApproachLookbackBars = input.int(10, "Reaction Approach Lookback Bars", minval = 1, group = groupBreakoutRetest)
+breakoutRetestExcursionMultiplier = input.float(3.0, "Min Excursion x Zone Width", minval = 0.5, step = 0.5, group = groupBreakoutRetest)
+lockLevelAfterSignal = input.bool(false, "Lock Level After Signal", group = groupBreakoutRetest)
+requireBreakoutRetestTouch = input.bool(true, "Require Retest Touch Zone", group = groupBreakoutRetest)
+
+groupMerged = "Merged 10m Logic"
+enableMergedSetup = input.bool(true, "Enable Merged Setup", group = groupMerged)
+requireMergedBody = input.bool(true, "Require Merged Bull/Bear Body", group = groupMerged)
+
+groupExtra = "VWAP / EMA Confluence Score"
+useVwapScore = input.bool(false, "Use VWAP Score", group = groupExtra)
+useEmaScore  = input.bool(false, "Use EMA 8/21 Score", group = groupExtra)
+emaFastLen   = input.int(8, "EMA Fast", minval = 1, group = groupExtra)
+emaSlowLen   = input.int(21, "EMA Slow", minval = 1, group = groupExtra)
+
+groupWorkflow = "Workflow Preset"
+workflowMode = input.string("Reaction Test", "Workflow Mode", options = ["Reaction Test", "HTF Continuation"], group = groupWorkflow)
+
+// Reaction Test default idea: BRL/BRS OFF, HTF/Delta/POC filters OFF.
+// HTF Continuation idea: enable BRL/BRS and context filters manually.
+
+groupDisplay = "Display"
+showZones         = input.bool(true, "Show Zones", group = groupDisplay)
+zoneTransparency  = input.int(85, "Zone Transparency", minval = 0, maxval = 100, group = groupDisplay)
+showSignals       = input.bool(true, "Show Signals", group = groupDisplay)
+showScoreLabels   = input.bool(true, "Show Score Labels", group = groupDisplay)
+showEntryOpenLine = input.bool(true, "Show Entry Line", group = groupDisplay)
+entryLineLengthBars = input.int(1, "Entry Line Length Bars", minval = 1, maxval = 5, group = groupDisplay)
+cooldownBars      = input.int(3, "Minimum Signal Spacing Bars", minval = 0, group = groupDisplay)
+minOptionalScore  = input.int(0, "Minimum Optional Bias Score", minval = 0, maxval = 5, group = groupDisplay)
+entryLabelSize    = input.string("Normal", "Entry Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = groupDisplay)
+useMtfHeatmap   = input.bool(true, "Use MTF Signal Heatmap", group = groupDisplay)
+mtfHeatmapTf1    = input.string("15", "MTF Heatmap TF 1", group = groupDisplay)
+mtfHeatmapTf2    = input.string("30", "MTF Heatmap TF 2", group = groupDisplay)
+showLevelPriceScale = input.bool(true, "Show Level Price On Scale", group = groupDisplay)
+showZoneBoundaryPriceScale = input.bool(false, "Show Zone Boundary Prices On Scale", group = groupDisplay)
+
+groupAlerts = "Alerts"
+enableAnySignalAlert = input.bool(true, "Enable One General 5m Signal Alert", group = groupAlerts)
+enableLevelZoneAlerts = input.bool(true, "Enable Automatic Level Zone Alerts", group = groupAlerts)
+levelAlertCooldownSeconds = input.int(60, "Level Alert Cooldown Seconds", minval = 60, step = 60, group = groupAlerts)
+
+groupSessions = "Sessions"
+useAllDay     = input.bool(true, "All Day", group = groupSessions)
+useLondon     = input.bool(true, "Enable London", group = groupSessions)
+londonSession = input.session("0800-1130", "London Session", group = groupSessions)
+useNY         = input.bool(true, "Enable New York", group = groupSessions)
+nySession     = input.session("1430-1700", "New York Session", group = groupSessions)
+
+// HELPERS
+getZoneHalfWidth(level) =>
+    zoneMode == "Ticks" ? syminfo.mintick * zoneTicks : level * zonePct / 100.0
+
+isLevelEnabled(level) => level != 0.0
+touchesZone(h, l, top, bottom) => h >= bottom and l <= top
+isLongType(levelType) => levelType == "Long"
+bullBody(o, c) => c > o
+bearBody(o, c) => c < o
+upperWick(o, h, c) => h - math.max(o, c)
+lowerWick(o, l, c) => math.min(o, c) - l
+closePositionPct(h, l, c) => h > l ? ((c - l) / (h - l)) * 100.0 : 50.0
+isShortClosePositionOk(h, l, c) => closePositionPct(h, l, c) <= 50.0
+isLongClosePositionOk(h, l, c) => closePositionPct(h, l, c) >= 50.0
+
+// V35 Adaptive Body Direction:
+// Extreme closes do not require body direction.
+// Middle-zone closes require body direction only when the body direction filter is enabled.
+isLongBodyDirectionOk(o, h, l, c) =>
+    pos = closePositionPct(h, l, c)
+    pos >= 75.0 or (pos >= 50.0 and c > o)
+
+isShortBodyDirectionOk(o, h, l, c) =>
+    pos = closePositionPct(h, l, c)
+    pos <= 25.0 or (pos <= 50.0 and c < o)
+getLabelSize(sz) => sz == "Tiny" ? size.tiny : sz == "Small" ? size.small : sz == "Large" ? size.large : sz == "Huge" ? size.huge : size.normal
+
+// PRICE SCALE LEVEL / ZONE LINES
+// These plots show the exact input level price, and optionally the full zone boundaries, on the right price scale.
+levelColor(typeStr) => typeStr == "Long" ? color.lime : color.red
+
+l1Half = getZoneHalfWidth(level1)
+l2Half = getZoneHalfWidth(level2)
+l3Half = getZoneHalfWidth(level3)
+l4Half = getZoneHalfWidth(level4)
+l5Half = getZoneHalfWidth(level5)
+l6Half = getZoneHalfWidth(level6)
+l7Half = getZoneHalfWidth(level7)
+l8Half = getZoneHalfWidth(level8)
+
+plot(showLevelPriceScale and level1 != 0.0 ? level1 : na, "L1 Price", color = levelColor(level1Type), linewidth = 1, trackprice = true)
+plot(showLevelPriceScale and level2 != 0.0 ? level2 : na, "L2 Price", color = levelColor(level2Type), linewidth = 1, trackprice = true)
+plot(showLevelPriceScale and level3 != 0.0 ? level3 : na, "L3 Price", color = levelColor(level3Type), linewidth = 1, trackprice = true)
+plot(showLevelPriceScale and level4 != 0.0 ? level4 : na, "L4 Price", color = levelColor(level4Type), linewidth = 1, trackprice = true)
+plot(showLevelPriceScale and level5 != 0.0 ? level5 : na, "L5 Price", color = levelColor(level5Type), linewidth = 1, trackprice = true)
+plot(showLevelPriceScale and level6 != 0.0 ? level6 : na, "L6 Price", color = levelColor(level6Type), linewidth = 1, trackprice = true)
+plot(showLevelPriceScale and level7 != 0.0 ? level7 : na, "L7 Price", color = levelColor(level7Type), linewidth = 1, trackprice = true)
+plot(showLevelPriceScale and level8 != 0.0 ? level8 : na, "L8 Price", color = levelColor(level8Type), linewidth = 1, trackprice = true)
+
+plot(showZoneBoundaryPriceScale and level1 != 0.0 ? level1 + l1Half : na, "L1 Zone Top", color = color.new(levelColor(level1Type), 35), linewidth = 1, trackprice = true)
+plot(showZoneBoundaryPriceScale and level1 != 0.0 ? level1 - l1Half : na, "L1 Zone Bottom", color = color.new(levelColor(level1Type), 35), linewidth = 1, trackprice = true)
+plot(showZoneBoundaryPriceScale and level2 != 0.0 ? level2 + l2Half : na, "L2 Zone Top", color = color.new(levelColor(level2Type), 35), linewidth = 1, trackprice = true)
+plot(showZoneBoundaryPriceScale and level2 != 0.0 ? level2 - l2Half : na, "L2 Zone Bottom", color = color.new(levelColor(level2Type), 35), linewidth = 1, trackprice = true)
+plot(showZoneBoundaryPriceScale and level3 != 0.0 ? level3 + l3Half : na, "L3 Zone Top", color = color.new(levelColor(level3Type), 35), linewidth = 1, trackprice = true)
+plot(showZoneBoundaryPriceScale and level3 != 0.0 ? level3 - l3Half : na, "L3 Zone Bottom", color = color.new(levelColor(level3Type), 35), linewidth = 1, trackprice = true)
+plot(showZoneBoundaryPriceScale and level4 != 0.0 ? level4 + l4Half : na, "L4 Zone Top", color = color.new(levelColor(level4Type), 35), linewidth = 1, trackprice = true)
+plot(showZoneBoundaryPriceScale and level4 != 0.0 ? level4 - l4Half : na, "L4 Zone Bottom", color = color.new(levelColor(level4Type), 35), linewidth = 1, trackprice = true)
+plot(showZoneBoundaryPriceScale and level5 != 0.0 ? level5 + l5Half : na, "L5 Zone Top", color = color.new(levelColor(level5Type), 35), linewidth = 1, trackprice = true)
+plot(showZoneBoundaryPriceScale and level5 != 0.0 ? level5 - l5Half : na, "L5 Zone Bottom", color = color.new(levelColor(level5Type), 35), linewidth = 1, trackprice = true)
+plot(showZoneBoundaryPriceScale and level6 != 0.0 ? level6 + l6Half : na, "L6 Zone Top", color = color.new(levelColor(level6Type), 35), linewidth = 1, trackprice = true)
+plot(showZoneBoundaryPriceScale and level6 != 0.0 ? level6 - l6Half : na, "L6 Zone Bottom", color = color.new(levelColor(level6Type), 35), linewidth = 1, trackprice = true)
+plot(showZoneBoundaryPriceScale and level7 != 0.0 ? level7 + l7Half : na, "L7 Zone Top", color = color.new(levelColor(level7Type), 35), linewidth = 1, trackprice = true)
+plot(showZoneBoundaryPriceScale and level7 != 0.0 ? level7 - l7Half : na, "L7 Zone Bottom", color = color.new(levelColor(level7Type), 35), linewidth = 1, trackprice = true)
+plot(showZoneBoundaryPriceScale and level8 != 0.0 ? level8 + l8Half : na, "L8 Zone Top", color = color.new(levelColor(level8Type), 35), linewidth = 1, trackprice = true)
+plot(showZoneBoundaryPriceScale and level8 != 0.0 ? level8 - l8Half : na, "L8 Zone Bottom", color = color.new(levelColor(level8Type), 35), linewidth = 1, trackprice = true)
+
+
+// CHART CHECK
+isEntryChart = true
+
+// 17:00 WINDOW
+msInDay = 24 * 60 * 60 * 1000
+currYear  = year(time, syminfo.timezone)
+currMonth = month(time, syminfo.timezone)
+currDay   = dayofmonth(time, syminfo.timezone)
+prevYear  = year(time - msInDay, syminfo.timezone)
+prevMonth = month(time - msInDay, syminfo.timezone)
+prevDay   = dayofmonth(time - msInDay, syminfo.timezone)
+
+int dayStart17 = na
+if hour(time, syminfo.timezone) >= 17
+    dayStart17 := timestamp(syminfo.timezone, currYear, currMonth, currDay, 17, 0)
+else
+    dayStart17 := timestamp(syminfo.timezone, prevYear, prevMonth, prevDay, 17, 0)
+
+dayEnd17 = dayStart17 + msInDay
+new1700Cycle = ta.change(dayStart17) != 0
+
+// SESSION
+inLondon = not na(time(timeframe.period, londonSession))
+inNY     = not na(time(timeframe.period, nySession))
+sessionOk = not useSessionFilter or useAllDay or ((useLondon and inLondon) or (useNY and inNY))
+
+// HTF
+htfOpen   = request.security(syminfo.tickerid, htfTf, open)
+htfHigh   = request.security(syminfo.tickerid, htfTf, high)
+htfLow    = request.security(syminfo.tickerid, htfTf, low)
+htfClose  = request.security(syminfo.tickerid, htfTf, close)
+htfVolume = request.security(syminfo.tickerid, htfTf, volume)
+htfBull = htfClose > htfOpen
+htfBear = htfClose < htfOpen
+htfMid  = htfLow + (htfHigh - htfLow) * 0.5
+
+// POC
+pocFunc() =>
+    var float maxVol = na
+    var float pocVal = na
+    if timeframe.change(htfTf)
+        maxVol := volume
+        pocVal := close
+    else
+        if na(maxVol) or volume >= maxVol
+            maxVol := volume
+            pocVal := close
+    pocVal
+
+developingPoc = request.security(syminfo.tickerid, "5", pocFunc())
+
+// DELTA
+deltaFunc() =>
+    var float delta = 0.0
+    if timeframe.change(htfTf)
+        delta := 0.0
+    barDelta = close > open ? volume : close < open ? -volume : 0.0
+    delta += barDelta
+    delta
+
+developingDelta = request.security(syminfo.tickerid, "5", deltaFunc())
+deltaPctOfHtfVol = htfVolume != 0 ? (developingDelta / htfVolume) * 100.0 : 0.0
+deltaNeutral = math.abs(deltaPctOfHtfVol) <= math.abs(deltaNeutralThresholdPct)
+deltaBull = developingDelta > 0
+deltaBear = developingDelta < 0
+
+bool deltaLongOk = false
+bool deltaShortOk = false
+if not useDeltaFilter
+    deltaLongOk := true
+    deltaShortOk := true
+else
+    if allowNeutralDelta
+        deltaLongOk := deltaBull or deltaNeutral
+        deltaShortOk := deltaBear or deltaNeutral
+    else
+        deltaLongOk := deltaBull
+        deltaShortOk := deltaBear
+
+// OTHER BIAS
+pocBuffer = syminfo.mintick * pocBufferTicks
+htfDirLongOk  = not useHtfDirection or htfBull
+htfDirShortOk = not useHtfDirection or htfBear
+priceVsPocLongOk  = not usePriceVsPocFilter or close >= developingPoc + pocBuffer
+priceVsPocShortOk = not usePriceVsPocFilter or close <= developingPoc - pocBuffer
+
+// VWAP / EMA
+vwapValue = ta.vwap(hlc3)
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+
+vwapLongScore  = useVwapScore and close < vwapValue ? 1 : 0
+vwapShortScore = useVwapScore and close > vwapValue ? 1 : 0
+emaLongScore   = useEmaScore and emaFast > emaSlow and close > emaFast ? 1 : 0
+emaShortScore  = useEmaScore and emaFast < emaSlow and close < emaFast ? 1 : 0
+maxScore = 8 + (useVwapScore ? 1 : 0) + (useEmaScore ? 1 : 0)
+
+
+// V38 MTF HEATMAP
+// No extra HTF labels are printed.
+// Existing chart signals get stronger color when selected HTFs confirm the same direction.
+mtfLongOk(tf) =>
+    request.security(syminfo.tickerid, tf, isLongClosePositionOk(high, low, close) and isLongBodyDirectionOk(open, high, low, close))
+
+mtfShortOk(tf) =>
+    request.security(syminfo.tickerid, tf, isShortClosePositionOk(high, low, close) and isShortBodyDirectionOk(open, high, low, close))
+
+mtfLong1 = useMtfHeatmap and mtfLongOk(mtfHeatmapTf1)
+mtfLong2 = useMtfHeatmap and mtfLongOk(mtfHeatmapTf2)
+mtfShort1 = useMtfHeatmap and mtfShortOk(mtfHeatmapTf1)
+mtfShort2 = useMtfHeatmap and mtfShortOk(mtfHeatmapTf2)
+
+mtfLongScore = (mtfLong1 ? 1 : 0) + (mtfLong2 ? 1 : 0)
+mtfShortScore = (mtfShort1 ? 1 : 0) + (mtfShort2 ? 1 : 0)
+
+mtfLongSuffix = not useMtfHeatmap ? "" : mtfLong2 ? " ++" : mtfLong1 ? " +" : ""
+mtfShortSuffix = not useMtfHeatmap ? "" : mtfShort2 ? " ++" : mtfShort1 ? " +" : ""
+
+longSignalColor = not useMtfHeatmap ? color.lime : mtfLongScore == 2 ? color.lime : mtfLongScore == 1 ? color.new(color.lime, 20) : color.new(color.lime, 55)
+shortSignalColor = not useMtfHeatmap ? color.red : mtfShortScore == 2 ? color.red : mtfShortScore == 1 ? color.new(color.red, 20) : color.new(color.red, 55)
+
+
+// V39: heatmap is visual only.
+// No MTF text is added to labels.
+// Entry line gets thicker when more selected HTFs agree.
+longSignalWidth = not useMtfHeatmap ? 5 : mtfLongScore == 2 ? 7 : mtfLongScore == 1 ? 5 : 3
+shortSignalWidth = not useMtfHeatmap ? 5 : mtfShortScore == 2 ? 7 : mtfShortScore == 1 ? 5 : 3
+
+longLabelTextColorHeat = not useMtfHeatmap ? color.lime : mtfLongScore == 2 ? color.lime : mtfLongScore == 1 ? color.new(color.lime, 10) : color.new(color.lime, 45)
+shortLabelTextColorHeat = not useMtfHeatmap ? color.red : mtfShortScore == 2 ? color.red : mtfShortScore == 1 ? color.new(color.red, 10) : color.new(color.red, 45)
+
+
+// V46 AUTOMATIC LEVEL ZONE ALERTS
+// Create one TradingView alert using "Any alert() function call".
+// Every configured level has its own independent cooldown.
+var levelAlertLastTimes = array.new_int(8, 0)
+
+levelZoneTouched(float level, float halfWidth) =>
+    level != 0.0 and high >= level - halfWidth and low <= level + halfWidth
+
+fireLevelZoneAlert(int idx, float level, string levelType, float halfWidth) =>
+    bool touched = levelZoneTouched(level, halfWidth)
+    int lastTime = array.get(levelAlertLastTimes, idx)
+    int cooldownMs = levelAlertCooldownSeconds * 1000
+    bool cooldownOk = lastTime == 0 or timenow - lastTime >= cooldownMs
+
+    if enableLevelZoneAlerts and barstate.isrealtime and touched and cooldownOk
+        string sideText = levelType == "Long" ? "LONG" : "SHORT"
+        string msg = "3Candle V46 | Level " + str.tostring(idx + 1) + " " + sideText +
+             " zone touched | " + syminfo.ticker +
+             " | Level: " + str.tostring(level, format.mintick) +
+             " | Price: " + str.tostring(close, format.mintick)
+        alert(msg, alert.freq_all)
+        array.set(levelAlertLastTimes, idx, timenow)
+
+// LEVEL STATE
+levels     = array.from(level1, level2, level3, level4, level5, level6, level7, level8)
+levelTypes = array.from(level1Type, level2Type, level3Type, level4Type, level5Type, level6Type, level7Type, level8Type)
+
+var box[]    levelBoxes      = array.new_box(8)
+var int[]    boxStartTimes   = array.new_int(8, na)
+var float[]  lastLevelVals   = array.new_float(8, na)
+var string[] lastLevelTypes  = array.new_string(8, "")
+var bool[]   levelTouched    = array.new_bool(8, false)
+var bool[]   levelLocked     = array.new_bool(8, false)
+var bool[]   brlConsumed     = array.new_bool(8, false)
+var bool[]   brsConsumed     = array.new_bool(8, false)
+
+// DRAW ZONES
+// V46: automatic zone alerts for all configured levels.
+fireLevelZoneAlert(0, level1, level1Type, l1Half)
+fireLevelZoneAlert(1, level2, level2Type, l2Half)
+fireLevelZoneAlert(2, level3, level3Type, l3Half)
+fireLevelZoneAlert(3, level4, level4Type, l4Half)
+fireLevelZoneAlert(4, level5, level5Type, l5Half)
+fireLevelZoneAlert(5, level6, level6Type, l6Half)
+fireLevelZoneAlert(6, level7, level7Type, l7Half)
+fireLevelZoneAlert(7, level8, level8Type, l8Half)
+
+for i = 0 to 7
+    level      = array.get(levels, i)
+    levelType  = array.get(levelTypes, i)
+    zoneBox    = array.get(levelBoxes, i)
+    startTime  = array.get(boxStartTimes, i)
+    lastValue  = array.get(lastLevelVals, i)
+    lastType   = array.get(lastLevelTypes, i)
+    wasTouched = array.get(levelTouched, i)
+
+    if new1700Cycle
+        array.set(levelTouched, i, false)
+        array.set(levelLocked, i, false)
+        array.set(brlConsumed, i, false)
+        array.set(brsConsumed, i, false)
+        wasTouched := false
+
+    changed = level != lastValue or levelType != lastType
+
+    if changed
+        if not na(zoneBox)
+            box.delete(zoneBox)
+        array.set(levelBoxes, i, na)
+        array.set(boxStartTimes, i, na)
+        array.set(lastLevelVals, i, level)
+        array.set(lastLevelTypes, i, levelType)
+        array.set(levelTouched, i, false)
+        zoneBox := na
+        startTime := na
+        wasTouched := false
+
+    if isLevelEnabled(level) and showZones
+        halfWidth  = getZoneHalfWidth(level)
+        zoneTop    = level + halfWidth
+        zoneBottom = level - halfWidth
+
+        if na(startTime) or new1700Cycle
+            startTime := dayStart17
+            array.set(boxStartTimes, i, startTime)
+
+        preCloseForColor = nz(close[1], close)
+        touchFromCorrectSide =
+             isLongType(levelType) ? (preCloseForColor > zoneBottom and touchesZone(high, low, zoneTop, zoneBottom)) :
+             (preCloseForColor < zoneTop and touchesZone(high, low, zoneTop, zoneBottom))
+
+        if touchFromCorrectSide
+            wasTouched := true
+            array.set(levelTouched, i, true)
+
+        baseColor = isLongType(levelType) ? color.green : color.red
+        zoneColor = wasTouched ? color.yellow : baseColor
+        bgCol     = color.new(zoneColor, zoneTransparency)
+
+        if na(zoneBox)
+            zoneBox := box.new(startTime, zoneTop, dayEnd17, zoneBottom, xloc = xloc.bar_time, bgcolor = bgCol, border_color = zoneColor)
+            array.set(levelBoxes, i, zoneBox)
+        else
+            box.set_left(zoneBox, startTime)
+            box.set_right(zoneBox, dayEnd17)
+            box.set_top(zoneBox, zoneTop)
+            box.set_bottom(zoneBox, zoneBottom)
+            box.set_bgcolor(zoneBox, bgCol)
+            box.set_border_color(zoneBox, zoneColor)
+    else
+        if not na(zoneBox)
+            box.delete(zoneBox)
+        array.set(levelBoxes, i, na)
+        array.set(boxStartTimes, i, na)
+        array.set(lastLevelVals, i, level)
+        array.set(lastLevelTypes, i, levelType)
+        array.set(levelTouched, i, false)
+
+
+hasAcceptedAboveLevel(level, lookbackBars) =>
+    bool found = false
+    for j = 2 to lookbackBars + 1
+        if not na(close[j]) and close[j] > level
+            found := true
+    found
+
+hasAcceptedBelowLevel(level, lookbackBars) =>
+    bool found = false
+    for j = 2 to lookbackBars + 1
+        if not na(close[j]) and close[j] < level
+            found := true
+    found
+
+hasExcursionFromBelow(level, excursionDistance, lookbackBars) =>
+    bool found = false
+    for j = 2 to lookbackBars + 1
+        if not na(low[j]) and low[j] <= level - excursionDistance
+            found := true
+    found
+
+hasExcursionFromAbove(level, excursionDistance, lookbackBars) =>
+    bool found = false
+    for j = 2 to lookbackBars + 1
+        if not na(high[j]) and high[j] >= level + excursionDistance
+            found := true
+    found
+
+// STRUCTURE
+preClose      = close[2]
+arrivalOpen   = open[1]
+arrivalHigh   = high[1]
+arrivalLow    = low[1]
+arrivalClose  = close[1]
+arrivalVol    = volume[1]
+
+confirmOpen   = open
+confirmHigh   = high
+confirmLow    = low
+confirmClose  = close
+confirmVol    = volume
+
+mergedOpen    = open[1]
+mergedHigh    = math.max(high[1], high)
+mergedLow     = math.min(low[1], low)
+mergedClose   = close
+
+bool shortReactionFound = false
+bool longReactionFound  = false
+bool shortBreakoutFound = false
+bool longBreakoutFound  = false
+bool shortBreakoutRetestFound = false
+bool longBreakoutRetestFound  = false
+bool shortMergedReactionFound = false
+bool longMergedReactionFound  = false
+bool shortMergedFallbackFound = false
+bool longMergedFallbackFound  = false
+
+bool shortReactionCherry = false
+bool longReactionCherry  = false
+bool shortBreakoutCherry = false
+bool longBreakoutCherry  = false
+bool shortBreakoutRetestCherry = false
+bool longBreakoutRetestCherry  = false
+bool shortMergedReactionCherry = false
+bool longMergedReactionCherry  = false
+bool shortMergedFallbackCherry = false
+bool longMergedFallbackCherry  = false
+
+int shortReactionScore = 0
+int longReactionScore  = 0
+int shortBreakoutScore = 0
+int longBreakoutScore  = 0
+int shortBreakoutRetestScore = 0
+int longBreakoutRetestScore  = 0
+int shortMergedReactionScore = 0
+int longMergedReactionScore  = 0
+int shortMergedFallbackScore = 0
+int longMergedFallbackScore  = 0
+
+float shortChosenLevelPrice = na
+float longChosenLevelPrice  = na
+int shortChosenLevelIndex = na
+int longChosenLevelIndex  = na
+
+for i = 0 to 7
+    level = array.get(levels, i)
+    levelType = array.get(levelTypes, i)
+
+    if isLevelEnabled(level)
+        isLongLevel = isLongType(levelType)
+        isShortLevel = not isLongLevel
+
+        halfWidth   = getZoneHalfWidth(level)
+        zoneTop     = level + halfWidth
+        zoneBottom  = level - halfWidth
+        breakoutRetestExcursionDistance = halfWidth * breakoutRetestExcursionMultiplier
+
+        levelLockedNow = lockLevelAfterSignal and array.get(levelLocked, i)
+        levelResetDistance = breakoutRetestExcursionDistance
+        if levelLockedNow and (high >= level + levelResetDistance or low <= level - levelResetDistance)
+            array.set(levelLocked, i, false)
+            levelLockedNow := false
+
+        // V30 BRL/BRS ACCEPTANCE CONSUMPTION
+        // Only one BRL/BRS is allowed per acceptance event.
+        // The event is reset only after price moves away by the same reset distance.
+        brlConsumedNow = array.get(brlConsumed, i)
+        brsConsumedNow = array.get(brsConsumed, i)
+
+        if brlConsumedNow and low <= level - levelResetDistance
+            array.set(brlConsumed, i, false)
+            brlConsumedNow := false
+
+        if brsConsumedNow and high >= level + levelResetDistance
+            array.set(brsConsumed, i, false)
+            brsConsumedNow := false
+
+        // V28 APPROACH SIDE FILTER
+        // Reaction shorts on SHORT levels require price to have approached from BELOW.
+        // Reaction longs on LONG levels require price to have approached from ABOVE.
+        // BRL/BRS continuation setups are NOT blocked by this filter.
+        reactionApproachShortOk = not useReactionApproachSideFilter or hasExcursionFromBelow(level, levelResetDistance, reactionApproachLookbackBars)
+        reactionApproachLongOk  = not useReactionApproachSideFilter or hasExcursionFromAbove(level, levelResetDistance, reactionApproachLookbackBars)
+
+        preArrivalLongOk  = preClose > zoneBottom
+        preArrivalShortOk = preClose < zoneTop
+
+        arrivalTouchesZone = touchesZone(arrivalHigh, arrivalLow, zoneTop, zoneBottom)
+        confirmTouchesZone = touchesZone(confirmHigh, confirmLow, zoneTop, zoneBottom)
+        mergedTouchesZone  = touchesZone(mergedHigh, mergedLow, zoneTop, zoneBottom)
+
+        zoneContextOk = requireCurrentBarStillNearZone ? (arrivalTouchesZone and confirmTouchesZone) : arrivalTouchesZone
+
+        arrivalBearish = bearBody(arrivalOpen, arrivalClose)
+        arrivalBullish = bullBody(arrivalOpen, arrivalClose)
+
+        arrivalWickShortOk = not requireArrivalWickDominance or upperWick(arrivalOpen, arrivalHigh, arrivalClose) > lowerWick(arrivalOpen, arrivalLow, arrivalClose)
+        arrivalWickLongOk  = not requireArrivalWickDominance or lowerWick(arrivalOpen, arrivalLow, arrivalClose) > upperWick(arrivalOpen, arrivalHigh, arrivalClose)
+
+        arrivalShortValid = isShortLevel and preArrivalShortOk and zoneContextOk and arrivalBearish and arrivalWickShortOk
+        arrivalLongValid  = isLongLevel and preArrivalLongOk and zoneContextOk and arrivalBullish and arrivalWickLongOk
+
+        bosLongReaction  = confirmHigh >= arrivalHigh
+        bosShortReaction = confirmLow  <= arrivalLow
+        bosLongBreakout  = confirmHigh > arrivalHigh
+        bosShortBreakout = confirmLow  < arrivalLow
+
+        quartileShortOk       = isShortClosePositionOk(confirmHigh, confirmLow, confirmClose)
+        quartileLongOk        = isLongClosePositionOk(confirmHigh, confirmLow, confirmClose)
+        mergedQuartileShortOk = isShortClosePositionOk(mergedHigh, mergedLow, mergedClose)
+        mergedQuartileLongOk  = isLongClosePositionOk(mergedHigh, mergedLow, mergedClose)
+
+        mergedBearishOk = not requireMergedBody or isShortBodyDirectionOk(mergedOpen, mergedHigh, mergedLow, mergedClose)
+        mergedBullishOk = not requireMergedBody or isLongBodyDirectionOk(mergedOpen, mergedHigh, mergedLow, mergedClose)
+
+        liqGrabShort = confirmHigh > arrivalHigh
+        liqGrabLong  = confirmLow  < arrivalLow
+
+        confirmBodyShortOk = isShortBodyDirectionOk(confirmOpen, confirmHigh, confirmLow, confirmClose)
+        confirmBodyLongOk  = isLongBodyDirectionOk(confirmOpen, confirmHigh, confirmLow, confirmClose)
+
+        confirmCloseShortBeyondLevelOk = not requireConfirmCloseBeyondLevel or confirmClose < level
+        confirmCloseLongBeyondLevelOk  = not requireConfirmCloseBeyondLevel or confirmClose > level
+
+        optionalShortScore = 0
+        optionalLongScore  = 0
+        optionalShortScore += sessionOk ? 1 : 0
+        optionalShortScore += htfDirShortOk ? 1 : 0
+        optionalShortScore += deltaShortOk ? 1 : 0
+        optionalShortScore += priceVsPocShortOk ? 1 : 0
+
+        optionalLongScore += sessionOk ? 1 : 0
+        optionalLongScore += htfDirLongOk ? 1 : 0
+        optionalLongScore += deltaLongOk ? 1 : 0
+        optionalLongScore += priceVsPocLongOk ? 1 : 0
+
+        extraShortScore = vwapShortScore + emaShortScore
+        extraLongScore  = vwapLongScore + emaLongScore
+
+        // V15 CONFIRM BODY FILTER:
+// Short reaction requires the confirm candle to have a bearish body.
+// Long reaction requires the confirm candle to have a bullish body.
+        reactionShort = reactionApproachShortOk and arrivalShortValid and bosShortReaction and confirmBodyShortOk and confirmCloseShortBeyondLevelOk and quartileShortOk and optionalShortScore >= minOptionalScore
+        reactionLong  = reactionApproachLongOk and arrivalLongValid  and bosLongReaction  and confirmBodyLongOk and confirmCloseLongBeyondLevelOk and quartileLongOk  and optionalLongScore  >= minOptionalScore
+
+        breakoutVolThreshold = breakoutVolumeRule == "Previous Candle" ? arrivalVol * breakoutVolumeMultiplier : ta.sma(volume, breakoutAvgLength)[1] * breakoutVolumeMultiplier
+        breakoutVolOk = confirmVol > breakoutVolThreshold
+
+        breakoutShort = reactionApproachShortOk and enableBreakoutSetup and isShortLevel and preArrivalShortOk and arrivalTouchesZone and not reactionShort and not arrivalShortValid and bosShortBreakout and confirmBodyShortOk and confirmCloseShortBeyondLevelOk and quartileShortOk and optionalShortScore >= minOptionalScore and breakoutVolOk
+        breakoutLong  = reactionApproachLongOk and enableBreakoutSetup and isLongLevel and preArrivalLongOk and arrivalTouchesZone and not reactionLong and not arrivalLongValid and bosLongBreakout and confirmBodyLongOk and confirmCloseLongBeyondLevelOk and quartileLongOk and optionalLongScore >= minOptionalScore and breakoutVolOk
+
+        // V24 BRL/BRS
+        // V29 BRL: SHORT level failed as resistance. Price must first come from BELOW by min excursion -> accepted above -> retest -> confirm close ABOVE the short level.
+        breakoutRetestLong =
+             enableBreakoutRetestSetup
+             and isShortLevel
+             and not brlConsumedNow
+             and hasExcursionFromBelow(level, breakoutRetestExcursionDistance, breakoutRetestMaxBars)
+             and hasAcceptedAboveLevel(level, breakoutRetestMaxBars)
+             and (not requireBreakoutRetestTouch or confirmTouchesZone or arrivalTouchesZone)
+             and confirmBodyLongOk
+             and quartileLongOk
+             and confirmClose > level
+             and optionalLongScore >= minOptionalScore
+
+        // V29 BRS: LONG level failed as support. Price must first come from ABOVE by min excursion -> accepted below -> retest -> confirm close BELOW the long level.
+        breakoutRetestShort =
+             enableBreakoutRetestSetup
+             and isLongLevel
+             and not brsConsumedNow
+             and hasExcursionFromAbove(level, breakoutRetestExcursionDistance, breakoutRetestMaxBars)
+             and hasAcceptedBelowLevel(level, breakoutRetestMaxBars)
+             and (not requireBreakoutRetestTouch or confirmTouchesZone or arrivalTouchesZone)
+             and confirmBodyShortOk
+             and quartileShortOk
+             and confirmClose < level
+             and optionalShortScore >= minOptionalScore
+
+
+        mergedReactionShort = reactionApproachShortOk and enableMergedSetup and isShortLevel and preArrivalShortOk and mergedTouchesZone and not reactionShort and not breakoutShort and not breakoutRetestShort and mergedBearishOk and confirmCloseShortBeyondLevelOk and mergedQuartileShortOk and optionalShortScore >= minOptionalScore
+        mergedReactionLong  = reactionApproachLongOk and enableMergedSetup and isLongLevel and preArrivalLongOk and mergedTouchesZone and not reactionLong and not breakoutLong and not breakoutRetestLong and mergedBullishOk and confirmCloseLongBeyondLevelOk and mergedQuartileLongOk and optionalLongScore >= minOptionalScore
+
+        mergedFallbackShort = reactionApproachShortOk and enableMergedSetup and isShortLevel and preArrivalShortOk and mergedTouchesZone and not reactionShort and not breakoutShort and not mergedReactionShort and mergedBearishOk and confirmCloseShortBeyondLevelOk and optionalShortScore >= minOptionalScore
+        mergedFallbackLong  = reactionApproachLongOk and enableMergedSetup and isLongLevel and preArrivalLongOk and mergedTouchesZone and not reactionLong and not breakoutLong and not mergedReactionLong and mergedBullishOk and confirmCloseLongBeyondLevelOk and optionalLongScore >= minOptionalScore
+
+        // V27 LEVEL LOCK
+        // After a signal on a level, block new signals on that same level
+        // until price moves away by the same distance used for BRL/BRS excursion.
+        if levelLockedNow
+            reactionShort := false
+            reactionLong := false
+            breakoutShort := false
+            breakoutLong := false
+            breakoutRetestShort := false
+            breakoutRetestLong := false
+            mergedReactionShort := false
+            mergedReactionLong := false
+            mergedFallbackShort := false
+            mergedFallbackLong := false
+
+        scoreReactionShort = (arrivalShortValid ? 1 : 0) + (bosShortReaction ? 1 : 0) + (quartileShortOk ? 1 : 0) + optionalShortScore + (liqGrabShort ? 1 : 0) + extraShortScore
+        scoreReactionLong  = (arrivalLongValid ? 1 : 0) + (bosLongReaction ? 1 : 0) + (quartileLongOk ? 1 : 0) + optionalLongScore + (liqGrabLong ? 1 : 0) + extraLongScore
+        scoreBreakoutShort = (breakoutShort ? 1 : 0) + (bosShortBreakout ? 1 : 0) + (quartileShortOk ? 1 : 0) + optionalShortScore + (liqGrabShort ? 1 : 0) + extraShortScore
+        scoreBreakoutLong  = (breakoutLong ? 1 : 0) + (bosLongBreakout ? 1 : 0) + (quartileLongOk ? 1 : 0) + optionalLongScore + (liqGrabLong ? 1 : 0) + extraLongScore
+        scoreBreakoutRetestShort = (breakoutRetestShort ? 2 : 0) + (quartileShortOk ? 1 : 0) + (confirmBodyShortOk ? 1 : 0) + optionalShortScore + extraShortScore
+        scoreBreakoutRetestLong  = (breakoutRetestLong ? 2 : 0) + (quartileLongOk ? 1 : 0) + (confirmBodyLongOk ? 1 : 0) + optionalLongScore + extraLongScore
+        scoreMergedReactionShort = (mergedReactionShort ? 1 : 0) + (mergedQuartileShortOk ? 1 : 0) + (mergedBearishOk ? 1 : 0) + optionalShortScore + (liqGrabShort ? 1 : 0) + extraShortScore
+        scoreMergedReactionLong  = (mergedReactionLong ? 1 : 0) + (mergedQuartileLongOk ? 1 : 0) + (mergedBullishOk ? 1 : 0) + optionalLongScore + (liqGrabLong ? 1 : 0) + extraLongScore
+        scoreMergedFallbackShort = (mergedFallbackShort ? 1 : 0) + (mergedBearishOk ? 1 : 0) + optionalShortScore + (liqGrabShort ? 1 : 0) + extraShortScore
+        scoreMergedFallbackLong  = (mergedFallbackLong ? 1 : 0) + (mergedBullishOk ? 1 : 0) + optionalLongScore + (liqGrabLong ? 1 : 0) + extraLongScore
+
+        if reactionShort and (not shortReactionFound or scoreReactionShort > shortReactionScore)
+            shortReactionFound := true
+            shortReactionScore := scoreReactionShort
+            shortReactionCherry := liqGrabShort
+            shortChosenLevelPrice := level
+            shortChosenLevelIndex := i
+        if reactionLong and (not longReactionFound or scoreReactionLong > longReactionScore)
+            longReactionFound := true
+            longReactionScore := scoreReactionLong
+            longReactionCherry := liqGrabLong
+            longChosenLevelPrice := level
+            longChosenLevelIndex := i
+        if breakoutShort and (not shortBreakoutFound or scoreBreakoutShort > shortBreakoutScore)
+            shortBreakoutFound := true
+            shortBreakoutScore := scoreBreakoutShort
+            shortBreakoutCherry := liqGrabShort
+            shortChosenLevelPrice := level
+            shortChosenLevelIndex := i
+        if breakoutLong and (not longBreakoutFound or scoreBreakoutLong > longBreakoutScore)
+            longBreakoutFound := true
+            longBreakoutScore := scoreBreakoutLong
+            longBreakoutCherry := liqGrabLong
+            longChosenLevelPrice := level
+            longChosenLevelIndex := i
+        if breakoutRetestShort and (not shortBreakoutRetestFound or scoreBreakoutRetestShort > shortBreakoutRetestScore)
+            shortBreakoutRetestFound := true
+            shortBreakoutRetestScore := scoreBreakoutRetestShort
+            shortBreakoutRetestCherry := false
+            shortChosenLevelPrice := level
+            shortChosenLevelIndex := i
+
+        if breakoutRetestLong and (not longBreakoutRetestFound or scoreBreakoutRetestLong > longBreakoutRetestScore)
+            longBreakoutRetestFound := true
+            longBreakoutRetestScore := scoreBreakoutRetestLong
+            longBreakoutRetestCherry := false
+            longChosenLevelPrice := level
+            longChosenLevelIndex := i
+
+        if mergedReactionShort and (not shortMergedReactionFound or scoreMergedReactionShort > shortMergedReactionScore)
+            shortMergedReactionFound := true
+            shortMergedReactionScore := scoreMergedReactionShort
+            shortMergedReactionCherry := liqGrabShort
+            shortChosenLevelPrice := level
+            shortChosenLevelIndex := i
+        if mergedReactionLong and (not longMergedReactionFound or scoreMergedReactionLong > longMergedReactionScore)
+            longMergedReactionFound := true
+            longMergedReactionScore := scoreMergedReactionLong
+            longMergedReactionCherry := liqGrabLong
+            longChosenLevelPrice := level
+            longChosenLevelIndex := i
+        if mergedFallbackShort and (not shortMergedFallbackFound or scoreMergedFallbackShort > shortMergedFallbackScore)
+            shortMergedFallbackFound := true
+            shortMergedFallbackScore := scoreMergedFallbackShort
+            shortMergedFallbackCherry := liqGrabShort
+            shortChosenLevelPrice := level
+            shortChosenLevelIndex := i
+        if mergedFallbackLong and (not longMergedFallbackFound or scoreMergedFallbackLong > longMergedFallbackScore)
+            longMergedFallbackFound := true
+            longMergedFallbackScore := scoreMergedFallbackLong
+            longMergedFallbackCherry := liqGrabLong
+            longChosenLevelPrice := level
+            longChosenLevelIndex := i
+
+// PRIORITY + DEDUP
+shortPriority = shortBreakoutRetestFound ? 5 : shortBreakoutFound ? 4 : shortMergedReactionFound ? 3 : shortReactionFound ? 2 : shortMergedFallbackFound ? 1 : 0
+longPriority  = longBreakoutRetestFound ? 5 : longBreakoutFound ? 4 : longMergedReactionFound ? 3 : longReactionFound ? 2 : longMergedFallbackFound ? 1 : 0
+
+shortChosenPrefix = shortPriority == 5 ? "BRS" : shortPriority == 4 ? "SB" : shortPriority == 3 ? "SRm" : shortPriority == 2 ? "SR" : shortPriority == 1 ? "SM" : ""
+longChosenPrefix  = longPriority == 5 ? "BRL" : longPriority == 4 ? "LB" : longPriority == 3 ? "LRm" : longPriority == 2 ? "LR" : longPriority == 1 ? "LM" : ""
+
+shortChosenScore = shortPriority == 5 ? shortBreakoutRetestScore : shortPriority == 4 ? shortBreakoutScore : shortPriority == 3 ? shortMergedReactionScore : shortPriority == 2 ? shortReactionScore : shortPriority == 1 ? shortMergedFallbackScore : 0
+longChosenScore  = longPriority == 5 ? longBreakoutRetestScore : longPriority == 4 ? longBreakoutScore : longPriority == 3 ? longMergedReactionScore : longPriority == 2 ? longReactionScore : longPriority == 1 ? longMergedFallbackScore : 0
+
+shortChosenCherry = shortPriority == 5 ? shortBreakoutRetestCherry : shortPriority == 4 ? shortBreakoutCherry : shortPriority == 3 ? shortMergedReactionCherry : shortPriority == 2 ? shortReactionCherry : shortPriority == 1 ? shortMergedFallbackCherry : false
+longChosenCherry  = longPriority == 5 ? longBreakoutRetestCherry : longPriority == 4 ? longBreakoutCherry : longPriority == 3 ? longMergedReactionCherry : longPriority == 2 ? longReactionCherry : longPriority == 1 ? longMergedFallbackCherry : false
+
+var int   lastShortSignalBar  = na
+var int   lastLongSignalBar   = na
+var float lastShortEntryHigh  = na
+var float lastShortEntryLow   = na
+var float lastShortEntryClose = na
+var float lastLongEntryHigh   = na
+var float lastLongEntryLow    = na
+var float lastLongEntryClose  = na
+
+// V20 SIGNAL SPACING
+// Normal rule:
+// After a valid signal, wait Minimum Signal Spacing Bars before another same-direction signal.
+//
+// Sweep exception is ALWAYS active, no extra button.
+//
+// SHORT exception:
+// Current candle breaks the HIGH of the previous short-entry candle
+// AND closes back BELOW the CLOSE of that previous short-entry candle.
+//
+// LONG exception:
+// Current candle breaks the LOW of the previous long-entry candle
+// AND closes back ABOVE the CLOSE of that previous long-entry candle.
+
+shortSpacingOk = na(lastShortSignalBar) or (bar_index - lastShortSignalBar > cooldownBars)
+longSpacingOk  = na(lastLongSignalBar) or (bar_index - lastLongSignalBar > cooldownBars)
+
+shortSweepException =
+     not na(lastShortEntryHigh)
+     and not na(lastShortEntryClose)
+     and high > lastShortEntryHigh
+     and close < lastShortEntryClose
+
+longSweepException =
+     not na(lastLongEntryLow)
+     and not na(lastLongEntryClose)
+     and low < lastLongEntryLow
+     and close > lastLongEntryClose
+
+shortSignal = isEntryChart and shortPriority > 0 and (shortSpacingOk or shortSweepException)
+longSignal  = isEntryChart and longPriority > 0 and (longSpacingOk or longSweepException)
+
+if shortSignal
+    lastShortSignalBar  := bar_index
+    lastShortEntryHigh  := high
+    lastShortEntryLow   := low
+    lastShortEntryClose := close
+    if shortChosenPrefix == "BRS" and not na(shortChosenLevelIndex)
+        array.set(brsConsumed, shortChosenLevelIndex, true)
+    if lockLevelAfterSignal and not na(shortChosenLevelIndex)
+        array.set(levelLocked, shortChosenLevelIndex, true)
+    if lockLevelAfterSignal and not na(shortChosenLevelIndex)
+        array.set(levelLocked, shortChosenLevelIndex, true)
+
+if longSignal
+    lastLongSignalBar  := bar_index
+    lastLongEntryHigh  := high
+    lastLongEntryLow   := low
+    lastLongEntryClose := close
+    if longChosenPrefix == "BRL" and not na(longChosenLevelIndex)
+        array.set(brlConsumed, longChosenLevelIndex, true)
+    if lockLevelAfterSignal and not na(longChosenLevelIndex)
+        array.set(levelLocked, longChosenLevelIndex, true)
+    if lockLevelAfterSignal and not na(longChosenLevelIndex)
+        array.set(levelLocked, longChosenLevelIndex, true)
+
+// ENTRY CLOSE MARKER + LABELS
+// V44 VISUAL PLACEMENT
+// Normal setups stay on the current confirm candle.
+// Merged setups (LM/SM/LRm/SRm) stay one candle earlier,
+// on the last candle of the merged formation.
+//
+// V44 change:
+// No body marker anymore.
+// Only a clean horizontal entry trigger streepje is plotted.
+// The streepje is placed on the confirm candle CLOSE.
+// Long  = green horizontal streepje.
+// Short = red horizontal streepje.
+shortIsMergedVisual = shortChosenPrefix == "SM" or shortChosenPrefix == "SRm"
+longIsMergedVisual  = longChosenPrefix == "LM" or longChosenPrefix == "LRm"
+
+shortVisualBar   = shortIsMergedVisual ? bar_index - 1 : bar_index
+longVisualBar    = longIsMergedVisual  ? bar_index - 1 : bar_index
+
+shortVisualPrice = shortIsMergedVisual ? close[1] : close
+longVisualPrice  = longIsMergedVisual  ? close[1] : close
+
+shortLabelY      = shortIsMergedVisual ? high[1] : high
+longLabelY       = longIsMergedVisual  ? low[1] : low
+
+if showSignals and showEntryOpenLine and shortSignal
+    line.new(shortVisualBar, shortVisualPrice, shortVisualBar + entryLineLengthBars, shortVisualPrice, xloc = xloc.bar_index, extend = extend.none, color = color.red, width = 5)
+
+if showSignals and showEntryOpenLine and longSignal
+    line.new(longVisualBar, longVisualPrice, longVisualBar + entryLineLengthBars, longVisualPrice, xloc = xloc.bar_index, extend = extend.none, color = color.lime, width = 5)
+
+labelBg = color.new(color.black, 100)
+labelTextColor = color.white
+lblSize = getLabelSize(entryLabelSize)
+
+if showSignals and showScoreLabels and shortSignal
+    txt = shortChosenPrefix + (shortChosenCherry ? " 🍒 " : " ") + str.tostring(shortChosenScore) + "/" + str.tostring(maxScore) + mtfShortSuffix
+    label.new(shortVisualBar, shortLabelY, txt, style = label.style_label_down, textcolor = labelTextColor, color = labelBg, size = lblSize)
+
+if showSignals and showScoreLabels and longSignal
+    txt = longChosenPrefix + (longChosenCherry ? " 🍒 " : " ") + str.tostring(longChosenScore) + "/" + str.tostring(maxScore) + mtfLongSuffix
+    label.new(longVisualBar, longLabelY, txt, style = label.style_label_up, textcolor = labelTextColor, color = labelBg, size = lblSize)
+
+// WARN / ALERTS
+var label warningLabel = na
+if barstate.islast
+    if not na(warningLabel)
+        label.delete(warningLabel)
+
+isFiveMinuteChart = timeframe.isminutes and timeframe.multiplier == 5
+anyConfirmedSignal5m = enableAnySignalAlert and isFiveMinuteChart and barstate.isconfirmed and (longSignal or shortSignal)
+
+alertcondition(
+    anyConfirmedSignal5m,
+    "3Candle V46 - Any 5m Signal",
+    "3Candle V46 signal on {{ticker}} | 5m candle closed | Price: {{close}}"
+)

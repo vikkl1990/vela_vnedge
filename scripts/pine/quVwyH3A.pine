@@ -1,0 +1,288 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © [nguyentruonglinh1212]
+//@version=6
+indicator("VPCI & AVSL - Volume Analysis", shorttitle = "VPCI-AVSL",
+   overlay = false, max_bars_back = 300)
+
+// ============================================================================
+// Chi bao rieng, TACH HOAN TOAN khoi Volume Order Blocks - chi giu lai hai
+// ky thuat do khoi luong cua Buff Dormeier, sach "Investing with Volume
+// Analysis" (FT Press, 2011), chuong 17:
+//   1. VPCI (Volume Price Confirmation Indicator) - do khoi luong dang
+//      XAC NHAN hay MAU THUAN voi gia, ve thanh histogram rieng khung.
+//   2. AVSL (Anti-Volume Stop Loss) - vung dung lo theo bien dong va
+//      khoi luong rieng cua tung ma, ve len bieu do gia.
+// Cong thuc toan hoc trong sach khong co ban quyen phan mem - day la ban
+// viet lai hoan toan bang Pine rieng, khong trich code cua ai.
+// VA 13/09/2026: ban cong bo cong khai (mien phi) - toan bo nhan/tooltip/
+// bang/canh bao HIEN THI CHO KHACH doi sang tieng Anh, comment noi bo
+// (dong // nay) giu tieng Viet de tu bao tri. Doi mac dinh "chi hien bang"
+// tu true sang false - khach vua them vao bieu do phai thay duong ve
+// ngay, khong the mac dinh trong tron chi co 1 bang nho (dung cho ban
+// mien phi thu hut nguoi dung, khac voi ban dung ca nhan truoc day).
+bool chiHienBang = input.bool(false,
+   "Show summary table only (hide all chart plots)", group = "Display")
+displayVe = chiHienBang ? display.none : display.all
+
+// ----- Nhom 1: VPCI ---------------------------------------------------------
+int vpciS = input.int(5, "Short length", minval = 2, maxval = 50,
+   group = "VPCI",
+   tooltip = "The long length is always 5x the short length, per the book. " +
+   "Default 5 gives a 5/25 pair. The author recommends choosing this " +
+   "based on the REAL calendar timeframe (5 sessions = 1 week, 20 " +
+   "sessions = 1 month) rather than optimizing via repeated backtests - " +
+   "he calls that curve-fitting.")
+
+float vpNguong = input.float(2.0, "Alert threshold (per mille)",
+   minval = 0.1, maxval = 50.0, step = 0.1, group = "VPCI",
+   tooltip = "VPCI rising above this threshold means volume is " +
+   "CONFIRMING price (money is flowing in the direction of the trend); " +
+   "falling below the negative threshold means volume is CONTRADICTING " +
+   "price (price rises without volume support, or falls without real " +
+   "selling pressure). Default 2.0 is a moderate setting; lower it for " +
+   "more frequent alerts.")
+
+bool vVeNguong = input.bool(true, "Plot the two threshold lines on the VPCI panel",
+   group = "VPCI")
+
+int   vpL  = vpciS * 5
+float vwL  = ta.vwma(close, vpL)
+float smL  = ta.sma(close, vpL)
+float vwS  = ta.vwma(close, vpciS)
+float smS  = ta.sma(close, vpciS)
+float vlS  = ta.sma(volume, vpciS)
+float vlL  = ta.sma(volume, vpL)
+
+// vpc: chenh lech gia co trong so khoi luong voi gia gian don - xac nhan
+// hay mau thuan. vpr: ty so gia ngan han. vm: he so khoi luong ngan/dai han.
+float vpc  = vwL - smL
+float vpr  = smS == 0 ? 1.0 : vwS / smS
+float vm   = vlL == 0 ? 1.0 : vlS / vlL
+float vpci = vpc * vpr * vm
+
+// Chuan hoa theo gia de doc duoc voi moi ma (vang 4.500 hay EURUSD 1.08 deu
+// ra cung don vi phan nghin) - day la diem CHUAN HOA so voi sach, vi cong
+// thuc goc lan gia tri VPC/VPCI (don vi gia) voi VPR/VM (ty so khong don
+// vi), ra so vo nghia va phu thuoc tuyet doi vao gia cua ma.
+float vpcN   = close == 0 ? 0.0 : vpc  / close
+float vpciN  = close == 0 ? 0.0 : vpci / close
+float vpciPn = nz(vpciN) * 1000
+
+color vpciMau = vpciPn >= vpNguong ? color.new(#089981, 0) :
+   vpciPn <= -vpNguong ? color.new(#f23645, 0) : color.new(#9e9e9e, 0)
+
+plot(vpciPn, "VPCI (per mille)", color = vpciMau,
+   style = plot.style_columns, display = displayVe)
+hline(0, "Zero line", color = color.new(#787b86, 50), display = displayVe)
+plot(vVeNguong ? vpNguong : na, "Confirmation threshold",
+   color = color.new(#089981, 60), style = plot.style_line,
+   linewidth = 1, display = displayVe)
+plot(vVeNguong ? -vpNguong : na, "Contradiction threshold",
+   color = color.new(#f23645, 60), style = plot.style_line,
+   linewidth = 1, display = displayVe)
+
+bool vuotLenNguong   = ta.crossover(vpciPn, vpNguong)
+bool vuotXuongNguong = ta.crossunder(vpciPn, -vpNguong)
+
+alertcondition(vuotLenNguong, "VPCI crossed above confirmation threshold",
+   "{{ticker}} {{interval}} - VPCI crossed above the confirmation " +
+   "threshold at price {{close}}. Volume is supporting the current trend.")
+alertcondition(vuotXuongNguong, "VPCI crossed below contradiction threshold",
+   "{{ticker}} {{interval}} - VPCI dropped below the contradiction " +
+   "threshold at price {{close}}. Volume is contradicting price, be careful.")
+
+// ----- 1b. Duong VPCI lam muot (dung nguyen sach: vpcis = vwma(vpci, s)) ---
+// Sach dung de lam "tin hieu doc so 3": VPCI cat len/xuong duong nay la
+// dong luong cua chinh VPCI. O day lam muot tren BAN DA CHUAN HOA (vpciPn)
+// chu khong phai vpci tho, de giu dung don vi phan nghin dang ve/dang dung
+// lam nguong o tren - sach lam muot ban tho vi sach khong chuan hoa theo gia.
+bool vVeMuot = input.bool(true, "Plot smoothed VPCI line", group = "VPCI")
+float vpcisN = ta.vwma(vpciPn, vpciS)
+plot(vVeMuot ? vpcisN : na, "Smoothed VPCI", color = color.new(#2962ff, 0),
+   linewidth = 2, display = displayVe)
+
+bool vCatLenMuot   = ta.crossover(vpciPn, vpcisN)
+bool vCatXuongMuot = ta.crossunder(vpciPn, vpcisN)
+alertcondition(vCatLenMuot, "VPCI crossed above smoothed line",
+   "{{ticker}} {{interval}} - VPCI crossed above its smoothed line at " +
+   "price {{close}}. Volume momentum is rising.")
+alertcondition(vCatXuongMuot, "VPCI crossed below smoothed line",
+   "{{ticker}} {{interval}} - VPCI crossed below its smoothed line at " +
+   "price {{close}}. Volume momentum is falling.")
+
+// ----- 1c. Dai Bollinger dat len VPCI + mo hinh DAY/DINH CHU V -------------
+// VA 13/09/2026: chu chi ra dung sach goc dung dai BOLLINGER (SMA +/- do
+// lech chuan) tren VPCI, khong phai Keltner. Truoc do 08/9 co doi sang
+// Keltner (EMA +/- ATR) cho khop tham so kenh gia that ben san pham tra
+// phi VOB - nhung ban nay la ban MIEN PHI cong bo cong khai, trich dan
+// dung nguyen sach Dormeier nen phai dung DAI BOLLINGER cho dung sach,
+// khong lien quan gi toi kenh gia cua VOB nua. Doi lai dung nguyen ban.
+// Sach goi day la TIN HIEU MANH NHAT: "VPCI roi xuong duoi dai duoi roi
+// bat nguoc len tren dai do, tao hinh chu V, la dau hieu luong ban thao
+// da tay sach nhung tay yeu". Tac gia noi ong da danh dau duoc moi day
+// trung han thuc su cua S&P 500 tu 2002 bang mo hinh nay (tren SPY/S&P
+// 500, KHONG phai tren XAUUSD hay bat ky ma nao chu dang ban - khong
+// duoc trich thanh thanh tich cua san pham nay).
+// Dinh chu V (doi xung phia tren) la suy luan rieng cua nguoi viet chi
+// bao, KHONG co nguyen van trong sach - sach chi noi ve day.
+int bbLenV = input.int(20, "VPCI Bollinger Band: MA length",
+   minval = 5, maxval = 100, group = "VPCI")
+float bbMultV = input.float(2.0, "VPCI Bollinger Band: StdDev multiplier",
+   minval = 0.5, maxval = 4.0, step = 0.1, group = "VPCI")
+bool vVeKc = input.bool(true, "Plot Bollinger Band on VPCI", group = "VPCI")
+
+float vpciSmaBb = ta.sma(vpciPn, bbLenV)
+float vpciSdBb  = ta.stdev(vpciPn, bbLenV)
+float vpciKcTren = vpciSmaBb + bbMultV * vpciSdBb
+float vpciKcDuoi = vpciSmaBb - bbMultV * vpciSdBb
+
+plot(vVeKc ? vpciKcTren : na, "VPCI Bollinger Band - upper",
+   color = color.new(#9e9e9e, 40), style = plot.style_line,
+   linewidth = 1, display = displayVe)
+plot(vVeKc ? vpciKcDuoi : na, "VPCI Bollinger Band - lower",
+   color = color.new(#9e9e9e, 40), style = plot.style_line,
+   linewidth = 1, display = displayVe)
+
+var bool tungDuoiDai = false
+var bool tungTrenDai = false
+bool duoiDai = vpciPn < vpciKcDuoi
+bool trenDai = vpciPn > vpciKcTren
+if duoiDai
+    tungDuoiDai := true
+if trenDai
+    tungTrenDai := true
+
+bool catLenDaiDuoi = ta.crossover(vpciPn, vpciKcDuoi)
+bool catXuongDaiTren = ta.crossunder(vpciPn, vpciKcTren)
+bool dayChuV  = tungDuoiDai and catLenDaiDuoi
+bool dinhChuV = tungTrenDai and catXuongDaiTren
+if dayChuV
+    tungDuoiDai := false
+if dinhChuV
+    tungTrenDai := false
+
+plotshape(dayChuV, "V-bottom", style = shape.triangleup,
+   location = location.bottom, color = color.new(#089981, 0),
+   size = size.small, force_overlay = true, display = displayVe)
+plotshape(dinhChuV, "V-top", style = shape.triangledown,
+   location = location.top, color = color.new(#f23645, 0),
+   size = size.small, force_overlay = true, display = displayVe)
+
+alertcondition(dayChuV, "VPCI: V-bottom",
+   "{{ticker}} {{interval}} - VPCI just formed a V-bottom at price " +
+   "{{close}}. Per Dormeier's book this is the strongest signal, " +
+   "often marking an intermediate-term low.")
+alertcondition(dinhChuV, "VPCI: V-top",
+   "{{ticker}} {{interval}} - VPCI just formed a V-top at price " +
+   "{{close}} (symmetric extension by the script author - the book " +
+   "does not describe this case).")
+
+var string moHinhVGanNhat = "None yet"
+if dayChuV
+    moHinhVGanNhat := "V-bottom at " + str.tostring(close, format.mintick)
+if dinhChuV
+    moHinhVGanNhat := "V-top at " + str.tostring(close, format.mintick)
+
+// ----- Nhom 2: AVSL (Anti-Volume Stop Loss) --------------------------------
+// Y tuong goc: dung lo khong nen la mot ty le phan tram co dinh vi moi ma
+// co bien do rieng. AVSL noi rong khi khoi luong dang xac nhan gia, siet
+// chat khi khoi luong dang mau thuan, va luon theo bien dong rieng cua ma.
+int avLen = input.int(10, "Base length", minval = 3, maxval = 40,
+   group = "AVSL",
+   tooltip = "Number of bars used to calculate the stop-loss zone. The " +
+   "ACTUAL length used is automatically adjusted by VPCI, capped " +
+   "between 3 and 50.")
+
+float avMult = input.float(2.0, "StdDev multiplier", minval = 0.5,
+   maxval = 4.0, step = 0.1, group = "AVSL",
+   tooltip = "The larger this is, the wider the stop-loss zone. The " +
+   "ACTUAL multiplier is further scaled by VPCI, then capped between " +
+   "0.5 and 4.0.")
+
+bool avVe = input.bool(true, "Plot the two AVSL lines on the price chart",
+   group = "AVSL")
+bool avCb = input.bool(false, "Alert when price touches AVSL", group = "AVSL",
+   tooltip = "Price crosses below the AVSL buy line (orange), or " +
+   "crosses above the AVSL sell line (purple). This is a VOLUME-BASED " +
+   "STOP-LOSS / SUPPORT-RESISTANCE ZONE, not an entry signal.")
+
+// Do dai bien thien theo VPCI - Pine khong cho truyen series int vao
+// ta.sma/ta.stdev nen phai tu viet bang vong lap co tran maxLen.
+f_smaVar(float src, int len, int maxLen) =>
+    int n = math.max(1, math.min(maxLen, len))
+    float tong = 0.0
+    for i = 0 to n - 1
+        tong += nz(src[i], src)
+    tong / n
+
+f_sdVar(float src, int len, int maxLen) =>
+    int n = math.max(1, math.min(maxLen, len))
+    float tb = f_smaVar(src, n, maxLen)
+    float s = 0.0
+    for i = 0 to n - 1
+        s += math.pow(nz(src[i], tb) - tb, 2)
+    math.sqrt(s / n)
+
+float hsXn = math.max(0.8, math.min(1.2, (1.0 + nz(vpcN)) * nz(vpr, 1.0)))
+float lowDc  = low  / hsXn
+float highDc = high * hsXn
+int avLT = int(math.max(3, math.min(50,
+   math.round(avLen + nz(vpciN) * 100))))
+float hsSd  = math.max(0.5, math.min(4.0, avMult * (1.0 + nz(vpciN))))
+
+float avslMua = f_smaVar(lowDc,  avLT, 50) - f_sdVar(lowDc,  avLT, 50) * hsSd
+float avslBan = f_smaVar(highDc, avLT, 50) + f_sdVar(highDc, avLT, 50) * hsSd
+
+color mauCam = color.new(#e67e22, 0)
+color mauTim = color.new(#8e44ad, 0)
+
+plot(avVe ? avslMua : na, "AVSL buy", color = mauCam,
+   linewidth = 2, force_overlay = true, display = displayVe)
+plot(avVe ? avslBan : na, "AVSL sell", color = mauTim,
+   linewidth = 2, force_overlay = true, display = displayVe)
+
+bool chamMua = not na(avslMua) and ta.crossunder(close, avslMua)
+bool chamBan = not na(avslBan) and ta.crossover(close, avslBan)
+
+alertcondition(avCb and chamMua, "Price touched AVSL buy zone",
+   "{{ticker}} {{interval}} - Price crossed BELOW the AVSL buy zone " +
+   "at {{close}}.")
+alertcondition(avCb and chamBan, "Price touched AVSL sell zone",
+   "{{ticker}} {{interval}} - Price crossed ABOVE the AVSL sell zone " +
+   "at {{close}}.")
+
+// ----- Bang chan doan don gian ---------------------------------------------
+bool hienBang = input.bool(true, "Show summary table", group = "Display")
+
+if hienBang and barstate.islast
+    var table tb = table.new(position.top_right, 2, 5,
+       bgcolor = color.new(#131722, 10), border_width = 1,
+       border_color = color.new(#434651, 0))
+    string trangThai = vpciPn >= vpNguong ? "CONFIRMING" :
+       vpciPn <= -vpNguong ? "CONTRADICTING" : "Neutral"
+    color mauTT = vpciPn >= vpNguong ? color.new(#089981, 0) :
+       vpciPn <= -vpNguong ? color.new(#f23645, 0) :
+       color.new(#9e9e9e, 0)
+    string vpciTxt = str.tostring(vpciPn, "#.##")
+    string muaTxt  = str.tostring(avslMua, format.mintick)
+    string banTxt  = str.tostring(avslBan, format.mintick)
+    table.cell(tb, 0, 0, "VPCI (per mille)",
+       text_color = color.white, text_halign = text.align_left)
+    table.cell(tb, 1, 0, vpciTxt,
+       text_color = mauTT, text_halign = text.align_right)
+    table.cell(tb, 0, 1, "Status",
+       text_color = color.white, text_halign = text.align_left)
+    table.cell(tb, 1, 1, trangThai,
+       text_color = mauTT, text_halign = text.align_right)
+    table.cell(tb, 0, 2, "AVSL buy",
+       text_color = color.white, text_halign = text.align_left)
+    table.cell(tb, 1, 2, muaTxt,
+       text_color = mauCam, text_halign = text.align_right)
+    table.cell(tb, 0, 3, "AVSL sell",
+       text_color = color.white, text_halign = text.align_left)
+    table.cell(tb, 1, 3, banTxt,
+       text_color = mauTim, text_halign = text.align_right)
+    table.cell(tb, 0, 4, "Latest V pattern",
+       text_color = color.white, text_halign = text.align_left)
+    table.cell(tb, 1, 4, moHinhVGanNhat,
+       text_color = color.new(#2962ff, 0), text_halign = text.align_right)

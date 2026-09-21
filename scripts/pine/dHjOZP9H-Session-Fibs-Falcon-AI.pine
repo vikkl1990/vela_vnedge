@@ -1,0 +1,142 @@
+// SPDX-License-Identifier: CC-BY-NC-4.0
+// © 2026 The Marko Family Group LLC
+//@version=6
+// ============================================================================
+//  Falcon Session Fibs  ·  v1.0
+//  ----------------------------------------------------------------------------
+//  Auto-draws Fibonacci retracement levels across a trading SESSION'S range
+//  (its high to its low). Pick a session window and the script anchors the fib
+//  to that session's high/low, then projects the 0 / 23.6 / 38.2 / 50 / 61.8 /
+//  78.6 / 100% levels — with optional 127.2 / 161.8% extensions.
+//
+//  Two modes:
+//   - Previous session (default): fib the just-COMPLETED session's range and
+//     project it onto the current session — stable reference levels.
+//   - Current session: fib the developing session's range as it forms (levels
+//     update as new highs/lows print).
+//
+//  How to read it: retracement levels (38.2 / 50 / 61.8%) are common pullback
+//  zones inside a range; the 61.8-78.6% area is the classic "deep retrace."
+//  Extensions (127.2 / 161.8%) are common measured-move targets beyond the range.
+//  Reference levels, not signals.
+//
+//  Scope & honesty:
+//   - Indicator only. It does NOT place trades, does NOT backtest, and has no
+//     entry, stop, target, or position logic. Your entry, your risk.
+//   - Pure geometry off one session's high/low — no trend, pattern, or scoring
+//     model, and no proprietary session tuning (you choose the window).
+//   - Session logic needs an intraday chart. Default window is the standard US
+//     index cash session; change it to your market. Nothing here is advice.
+//
+// ============================================================================
+
+indicator("Session Fibs | Falcon AI", overlay = true, max_labels_count = 500)
+
+// ---- Inputs ----------------------------------------------------------------
+gSess = "Session"
+sessWindow = input.session("0930-1600", "Session window", group = gSess,
+     tooltip = "Any session, your call — not a Falcon setting. Default is the standard US index cash session (09:30-16:00).")
+sessTz = input.string("America/New_York", "Session timezone", group = gSess,
+     tooltip = "Timezone the window above is expressed in.")
+useSource = input.string("Previous session", "Fib the",
+     options = ["Previous session", "Current session"], group = gSess)
+
+gFib = "Fib levels"
+flip = input.bool(false, "Flip 0% / 100% ends", group = gFib,
+     tooltip = "Off: 0% at the session high, 100% at the low. On: swap them (for up-move retracements).")
+showExt = input.bool(false, "Show 127.2% / 161.8% extensions", group = gFib)
+
+gStyle = "Appearance"
+lineWidth = input.int(1, "Line width", minval = 1, maxval = 3, group = gStyle)
+cFib  = input.color(color.new(#c8a84b, 0),  "Retracement levels", group = gStyle)
+cMid  = input.color(color.new(#3179f5, 0),  "50% level",          group = gStyle)
+cExt  = input.color(color.new(#e03131, 0),  "Extensions",         group = gStyle)
+fill5 = input.bool(true, "Shade the 61.8-78.6% zone", group = gStyle)
+
+gLabels = "Labels"
+showLabels = input.bool(true, "Show level labels (ratio + price)", group = gLabels)
+labelSize  = input.string("Small", "Label size", options = ["Tiny", "Small", "Normal"], group = gLabels)
+
+gWm = "Watermark"
+showWatermark = input.bool(true, "Show Falcon watermark", group = gWm)
+wmPos = input.string("Bottom right", "Position",
+     options = ["Bottom right", "Bottom left", "Top right", "Top left"], group = gWm)
+
+// ---- Session tracking ------------------------------------------------------
+bool inSess  = not na(time(timeframe.period, sessWindow, sessTz))
+bool sessNew = inSess and not inSess[1]
+bool sessEnd = not inSess and inSess[1]
+
+var float curHi = na
+var float curLo = na
+var float prevHi = na
+var float prevLo = na
+
+if sessNew
+    curHi := high
+    curLo := low
+else if inSess
+    curHi := math.max(curHi, high)
+    curLo := math.min(curLo, low)
+
+if sessEnd
+    prevHi := curHi
+    prevLo := curLo
+
+usePrev = useSource == "Previous session"
+float hi = usePrev ? prevHi : curHi
+float lo = usePrev ? prevLo : curLo
+float rng = na(hi) or na(lo) ? na : hi - lo
+
+// Level for a given fib ratio (0% at high by default; flip swaps ends).
+lvl(float ratio) => na(rng) ? na : (flip ? lo + rng * ratio : hi - rng * ratio)
+
+// Draw only across the current session; break at each session open to re-anchor.
+draw(float v) => (inSess and not sessNew) ? v : na
+
+// ---- Plots -----------------------------------------------------------------
+p000 = plot(draw(lvl(0.0)),   "0%",    color = cFib, linewidth = lineWidth,     style = plot.style_linebr)
+plot(draw(lvl(0.236)),        "23.6%", color = cFib, linewidth = lineWidth,     style = plot.style_linebr)
+plot(draw(lvl(0.382)),        "38.2%", color = cFib, linewidth = lineWidth,     style = plot.style_linebr)
+plot(draw(lvl(0.5)),          "50%",   color = cMid, linewidth = lineWidth,     style = plot.style_linebr)
+p618 = plot(draw(lvl(0.618)), "61.8%", color = cFib, linewidth = lineWidth,     style = plot.style_linebr)
+p786 = plot(draw(lvl(0.786)), "78.6%", color = cFib, linewidth = lineWidth,     style = plot.style_linebr)
+plot(draw(lvl(1.0)),          "100%",  color = cFib, linewidth = lineWidth,     style = plot.style_linebr)
+plot(showExt ? draw(lvl(1.272)) : na, "127.2%", color = cExt, linewidth = lineWidth, style = plot.style_linebr)
+plot(showExt ? draw(lvl(1.618)) : na, "161.8%", color = cExt, linewidth = lineWidth, style = plot.style_linebr)
+
+fill(p618, p786, color = fill5 ? color.new(#c8a84b, 88) : na, title = "61.8-78.6% zone")
+
+// ---- Right-edge labels -----------------------------------------------------
+lblSz = labelSize == "Tiny" ? size.tiny : labelSize == "Normal" ? size.normal : size.small
+
+drawLabel(bool cond, float ratio, string txt, color col) =>
+    v = lvl(ratio)
+    if cond and showLabels and barstate.islast and inSess and not na(v)
+        label.new(bar_index + 2, v, txt + "  " + str.tostring(v, format.mintick),
+             xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none,
+             textcolor = col, size = lblSz)
+
+drawLabel(true, 0.0,   "0%",    cFib)
+drawLabel(true, 0.236, "23.6%", cFib)
+drawLabel(true, 0.382, "38.2%", cFib)
+drawLabel(true, 0.5,   "50%",   cMid)
+drawLabel(true, 0.618, "61.8%", cFib)
+drawLabel(true, 0.786, "78.6%", cFib)
+drawLabel(true, 1.0,   "100%",  cFib)
+drawLabel(showExt, 1.272, "127.2%", cExt)
+drawLabel(showExt, 1.618, "161.8%", cExt)
+
+// ---- Watermark (subtle, toggleable, no links) ------------------------------
+wmPosition = wmPos == "Bottom left" ? position.bottom_left :
+     wmPos == "Top right" ? position.top_right :
+     wmPos == "Top left"  ? position.top_left : position.bottom_right
+
+var table wm = table.new(wmPosition, 1, 3, bgcolor = color.new(color.black, 72),
+     frame_color = color.new(#c8a84b, 45), frame_width = 1, border_width = 0)
+
+if showWatermark and barstate.islast
+    srcTxt = usePrev ? "Prev session" : "Live session"
+    table.cell(wm, 0, 0, "Session Fibs | Falcon AI", text_color = #c8a84b, text_size = size.small)
+    table.cell(wm, 0, 1, "Session range retracement", text_color = color.new(color.gray, 0), text_size = size.tiny)
+    table.cell(wm, 0, 2, srcTxt, text_color = color.new(color.white, 0), text_size = size.tiny)

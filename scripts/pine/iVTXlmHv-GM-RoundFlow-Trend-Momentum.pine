@@ -1,0 +1,238 @@
+//@version=6
+indicator("GM RoundFlow - Trend & Momentum", shorttitle="GM RoundFlow", overlay=true)
+
+// Fusion math and cross filters preserve the supplied GM Fusion v2.1.
+// Closed-bar signals are intentional: intrabar zero crosses are not alerts.
+// Round-number rejection supplies entries; EMA and Fusion supply filters.
+confirmationBars = input.int(3, "Bars After Round-Level Wick", minval=0, maxval=20, group="Entry", tooltip="Initial wick candle plus this many later closed candles. Entry still requires a wick near the SAME saved round level and close beyond it. Repeated touches do not extend the deadline. Zero means immediate confirmation only.")
+useCooldown = input.bool(true, "Use Signal Cooldown", group="Entry")
+cooldownBars = input.int(3, "Cooldown Bars", minval=0, group="Entry", tooltip="Three means three complete intervening bars; earliest next signal is four bars later.")
+
+emaFastLen = input.int(21, "Fusion EMA Fast", minval=1, group="Fusion Calculation")
+emaSlowLen = input.int(55, "Fusion EMA Slow", minval=1, group="Fusion Calculation")
+macdFastLen = input.int(12, "MACD Fast", minval=1, group="Fusion Calculation")
+macdSlowLen = input.int(26, "MACD Slow", minval=1, group="Fusion Calculation")
+macdSignalLen = input.int(9, "MACD Signal", minval=1, group="Fusion Calculation")
+rsiLen = input.int(14, "RSI Length", minval=1, group="Fusion Calculation")
+stochLen = input.int(14, "Stochastic Length", minval=1, group="Fusion Calculation")
+stochSmoothK = input.int(3, "Stoch K Smooth", minval=1, group="Fusion Calculation")
+stochSmoothD = input.int(3, "Stoch D Smooth", minval=1, group="Fusion Calculation")
+atrLen = input.int(14, "ATR Length", minval=1, group="Fusion Calculation")
+smoothLen = input.int(3, "Combo Smoothing", minval=1, group="Fusion Calculation")
+
+useAdxFilter = input.bool(true, "Use ADX Minimum", group="Power Filters")
+adxLen = input.int(14, "ADX DI Length", minval=1, group="Power Filters")
+adxSmoothing = input.int(14, "ADX Smoothing", minval=1, group="Power Filters")
+adxMin = input.float(20.0, "Minimum ADX", minval=0, step=0.5, group="Power Filters")
+useAdxRising = input.bool(true, "Require ADX Rising", group="Power Filters")
+adxRiseBars = input.int(1, "ADX Rising Lookback", minval=1, group="Power Filters")
+useDiFilter = input.bool(true, "Use DI Direction Filter", group="Power Filters")
+
+// These fixed price EMAs are separate from Fusion's original 21/55 calculation.
+// Round-entry mode uses their alignment and slope as entry gates.
+slopeBars = input.int(3, "21 / 50 Slope Lookback", minval=1, maxval=50, group="Trend Filters")
+useSeparation = input.bool(true, "Require 21 / 50 Separation", group="Trend Filters")
+minSeparation = input.float(0.15, "Minimum 21 / 50 Distance (ATR)", minval=0, step=0.05, group="Trend Filters", tooltip="Experimental compression filter, not proof that all sideways movement is excluded. Applies to round-number entries.")
+
+showDiagnostics = input.bool(false, "Show Signal Diagnostics", group="Display", tooltip="Shows first blocking condition for each direction on the last closed candle. Numeric codes are also available historically in the Data Window.")
+roundMode = input.string("Auto - All Markets", "Round Level Mode", options=["Auto - All Markets", "Custom"], group="Round Levels")
+roundGroup = input.string("Minor", "Auto Level Group", options=["Scalp", "Intermediate", "Minor", "Major", "Macro"], group="Round Levels", tooltip="USD gold: 10 / 25 / 50 / 100 / 1000. Other markets scale by type and previous completed price. Minor is the default.")
+autoTolerancePercent = input.float(10.0, "Auto Wick Proximity (% of Spacing)", minval=0.0, maxval=49.0, step=1.0, group="Round Levels", tooltip="10% of 50 is +/-5. BUY wick low / SELL wick high must lie within this distance of the nearest round level. Close must finish above the BUY level or below the SELL level. Merely crossing a level with a distant wick tip does not qualify.")
+customRoundStep = input.float(50.0, "Custom Level Spacing", minval=0.00000001, group="Round Levels")
+customRoundTolerance = input.float(5.0, "Custom Wick Proximity", minval=0.0, group="Round Levels")
+showLevels = input.bool(true, "Show Nearby Round Levels", group="Display")
+showSignals = input.bool(true, "Show BUY / SELL", group="Display")
+showEmas = input.bool(true, "Show EMA 21 / 50 / 200", group="Display")
+showBackground = input.bool(false, "Show Confirmed Direction Background", group="Display")
+enableAlerts = input.bool(true, "Enable Alerts", group="Display", tooltip="Independent of signal visibility. Recreate TradingView alerts after changing script or settings.")
+
+// AUTO ROUND LEVELS BEGIN
+// Price-decade grids implement the recovered Levels Auto design description.
+// This is not a copy of the unavailable v2.6 source. No lookahead or live-close sizing.
+float roundReferencePrice = math.max(math.abs(nz(close[1], open)), syminfo.mintick)
+float roundMagnitude = math.pow(10.0, math.floor(math.log10(roundReferencePrice)))
+bool roundIsEquity = syminfo.type == "stock" or syminfo.type == "fund" or syminfo.type == "dr"
+bool roundIsGold = not roundIsEquity and syminfo.currency == "USD" and (syminfo.basecurrency == "XAU" or str.startswith(syminfo.ticker, "XAUUSD") or (syminfo.type == "futures" and (syminfo.root == "GC" or syminfo.root == "MGC")) or (syminfo.type == "cfd" and syminfo.ticker == "GOLD"))
+// Equities: scalp = one tenth of the price decade, minor = half a decade.
+// Forex/crypto/index/other: scalp = one thousandth, minor = 0.005 of a decade.
+float autoMinorStep = roundIsGold ? 50.0 : roundMagnitude * (roundIsEquity ? 0.5 : 0.005)
+float roundGroupFactor = roundGroup == "Scalp" ? 0.2 : roundGroup == "Intermediate" ? 0.5 : roundGroup == "Major" ? 2.0 : roundGroup == "Macro" ? 20.0 : 1.0
+float autoRawStep = autoMinorStep * roundGroupFactor
+float autoTickStep = math.max(syminfo.mintick, math.round(autoRawStep / syminfo.mintick) * syminfo.mintick)
+float roundStep = roundMode == "Custom" ? customRoundStep : autoTickStep
+float roundTolerance = roundMode == "Custom" ? customRoundTolerance : roundStep * autoTolerancePercent / 100.0
+bool roundGridChanged = roundMode != "Custom" and not na(roundStep[1]) and math.abs(roundStep - roundStep[1]) > syminfo.mintick * 0.000001
+string roundMarket = roundIsGold ? "USD Gold" : roundIsEquity ? "Equity" : syminfo.type
+// AUTO ROUND LEVELS END
+
+if barstate.isfirst and roundMode == "Custom"
+    if customRoundStep < syminfo.mintick
+        runtime.error("Custom spacing must be at least the symbol's minimum tick.")
+    if customRoundTolerance >= customRoundStep / 2.0
+        runtime.error("Wick proximity must be smaller than half the level spacing.")
+
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+atr = ta.atr(atrLen)
+emaRaw = atr != 0 ? (emaFast - emaSlow) / atr : 0.0
+emaComponent = math.max(-100.0, math.min(100.0, emaRaw * 35.0))
+[macdLine, macdSignal, macdHist] = ta.macd(close, macdFastLen, macdSlowLen, macdSignalLen)
+macdRaw = atr != 0 ? macdHist / atr : 0.0
+macdComponent = math.max(-100.0, math.min(100.0, macdRaw * 250.0))
+rsi = ta.rsi(close, rsiLen)
+rsiComponent = (rsi - 50.0) * 2.0
+stochRaw = ta.stoch(close, high, low, stochLen)
+stochK = ta.sma(stochRaw, stochSmoothK)
+stochD = ta.sma(stochK, stochSmoothD)
+stochComponent = (stochK - 50.0) * 2.0
+comboRaw = (emaComponent + macdComponent + rsiComponent + stochComponent) / 4.0
+combo = ta.ema(comboRaw, smoothLen)
+[plusDI, minusDI, adx] = ta.dmi(adxLen, adxSmoothing)
+adxMinimumOK = not useAdxFilter or adx >= adxMin
+adxRisingOK = not useAdxRising or adx > adx[adxRiseBars]
+bullDiOK = not useDiFilter or plusDI > minusDI
+bearDiOK = not useDiFilter or minusDI > plusDI
+bullCross = ta.crossover(combo, 0)
+bearCross = ta.crossunder(combo, 0)
+
+price21 = ta.ema(close, 21)
+price50 = ta.ema(close, 50)
+price200 = ta.ema(close, 200)
+trendReady = bar_index >= 199 + slopeBars and not na(price50[slopeBars]) and not na(atr)
+separationOK = not useSeparation or (atr > 0 and math.abs(price21 - price50) >= atr * minSeparation)
+bullTrend = trendReady and price21 > price50 and price50 > price200 and price21 > price21[slopeBars] and price50 > price50[slopeBars] and separationOK
+bearTrend = trendReady and price21 < price50 and price50 < price200 and price21 < price21[slopeBars] and price50 < price50[slopeBars] and separationOK
+bullPower = combo > 0 and adxMinimumOK and adxRisingOK and bullDiOK
+bearPower = combo < 0 and adxMinimumOK and adxRisingOK and bearDiOK
+
+// ENGINE STATE
+// One attempt per same-direction level visit; original touch fixes the deadline.
+// First encounter needs no breakout or EMA touch. Grid changes clear state.
+var float buyLevel = na
+var float sellLevel = na
+var float buyTolerance = na
+var float sellTolerance = na
+var int buyTouchBar = na
+var int sellTouchBar = na
+var bool buyLocked = false
+var bool sellLocked = false
+var int lastSignalBar = na
+var int buyReason = 0
+var int sellReason = 0
+// ENGINE EVENTS
+bool bullSignal = false
+bool bearSignal = false
+cooldownOK = not useCooldown or na(lastSignalBar) or (bar_index - lastSignalBar > cooldownBars)
+float candidateBuyLevel = math.round(low / roundStep) * roundStep
+float candidateSellLevel = math.round(high / roundStep) * roundStep
+float epsilon = syminfo.mintick * 0.000001
+bool lowerWick = low < math.min(open, close)
+bool upperWick = high > math.max(open, close)
+bool buyNear = math.abs(low - candidateBuyLevel) <= roundTolerance + epsilon
+bool sellNear = math.abs(high - candidateSellLevel) <= roundTolerance + epsilon
+if barstate.isconfirmed
+    if roundGridChanged
+        buyTouchBar := na
+        sellTouchBar := na
+        buyLocked := false
+        sellLocked := false
+        buyLevel := na
+        sellLevel := na
+        buyReason := 14
+        sellReason := 14
+    else
+        bool buyExpired = not na(buyTouchBar) and bar_index - buyTouchBar > confirmationBars
+        bool sellExpired = not na(sellTouchBar) and bar_index - sellTouchBar > confirmationBars
+        if not bullTrend or buyExpired
+            buyTouchBar := na
+        if not bearTrend or sellExpired
+            sellTouchBar := na
+        // A completed full departure unlocks only a finished attempt.
+        if buyLocked and na(buyTouchBar) and (low > buyLevel + buyTolerance or high < buyLevel - buyTolerance)
+            buyLocked := false
+        if sellLocked and na(sellTouchBar) and (low > sellLevel + sellTolerance or high < sellLevel - sellTolerance)
+            sellLocked := false
+        bool buyAvailable = not buyLocked or math.abs(candidateBuyLevel - buyLevel) > epsilon
+        bool sellAvailable = not sellLocked or math.abs(candidateSellLevel - sellLevel) > epsilon
+        if bullTrend and na(buyTouchBar) and not buyExpired and buyAvailable and buyNear and lowerWick
+            buyLevel := candidateBuyLevel
+            buyTolerance := roundTolerance
+            buyTouchBar := bar_index
+            buyLocked := true
+        if bearTrend and na(sellTouchBar) and not sellExpired and sellAvailable and sellNear and upperWick
+            sellLevel := candidateSellLevel
+            sellTolerance := roundTolerance
+            sellTouchBar := bar_index
+            sellLocked := true
+        bool buyRejection = not na(buyTouchBar) and lowerWick and math.abs(low - buyLevel) <= buyTolerance + epsilon and close > buyLevel and close < buyLevel + roundStep
+        bool sellRejection = not na(sellTouchBar) and upperWick and math.abs(high - sellLevel) <= sellTolerance + epsilon and close < sellLevel and close > sellLevel - roundStep
+        bullSignal := bullTrend and bullPower and buyRejection and cooldownOK
+        bearSignal := bearTrend and bearPower and sellRejection and cooldownOK
+        buyReason := not trendReady ? 1 : not bullTrend ? 2 : buyExpired ? 12 : na(buyTouchBar) ? (buyLocked ? 3 : 4) : not adxMinimumOK ? 5 : not adxRisingOK ? 6 : not bullDiOK ? 7 : not (combo > 0) ? 8 : not cooldownOK ? 9 : not buyRejection ? 13 : 11
+        sellReason := not trendReady ? 1 : not bearTrend ? 2 : sellExpired ? 12 : na(sellTouchBar) ? (sellLocked ? 3 : 4) : not adxMinimumOK ? 5 : not adxRisingOK ? 6 : not bearDiOK ? 7 : not (combo < 0) ? 8 : not cooldownOK ? 9 : not sellRejection ? 13 : 11
+        if bullSignal
+            buyTouchBar := na
+        if bearSignal
+            sellTouchBar := na
+        if bullSignal or bearSignal
+            lastSignalBar := bar_index
+// ENGINE END
+
+float gridCenter = math.round(close / roundStep) * roundStep
+bool gridMoved = na(gridCenter[1]) or gridCenter != gridCenter[1] or roundGridChanged
+plot(showLevels and not gridMoved ? gridCenter : na, "Round level", color=color.new(color.gray, 45), style=plot.style_linebr)
+plot(showLevels and not gridMoved ? gridCenter + roundStep : na, "Round level above", color=color.new(color.gray, 65), style=plot.style_linebr)
+plot(showLevels and not gridMoved ? gridCenter - roundStep : na, "Round level below", color=color.new(color.gray, 65), style=plot.style_linebr)
+plot(bullSignal ? buyLevel : bearSignal ? sellLevel : na, "Signal round level", display=display.data_window)
+plot(showEmas ? price21 : na, "EMA 21", color=color.orange, linewidth=2)
+plot(showEmas ? price50 : na, "EMA 50", color=color.aqua, linewidth=2)
+plot(showEmas ? price200 : na, "EMA 200", color=color.blue, linewidth=2)
+// Oscillator values belong in the Data Window, never on the price scale.
+plot(combo, "Fusion Score", display=display.data_window)
+plot(adx, "ADX", display=display.data_window)
+plot(emaComponent, "EMA Component", display=display.data_window)
+plot(macdComponent, "MACD Component", display=display.data_window)
+plot(rsiComponent, "RSI Component", display=display.data_window)
+plot(stochComponent, "Stochastic Component", display=display.data_window)
+var int confirmedDirection = 0
+if barstate.isconfirmed
+    bool bullState = bullPower and bullTrend
+    bool bearState = bearPower and bearTrend
+    confirmedDirection := bullState ? 1 : bearState ? -1 : 0
+bgcolor(showBackground ? (confirmedDirection == 1 ? color.new(color.green, 92) : confirmedDirection == -1 ? color.new(color.red, 92) : color.new(color.gray, 94)) : na, title="Confirmed eligibility (gray = filters not met)")
+plotshape(showSignals and bullSignal, title="RoundFlow BUY", text="BUY", style=shape.triangleup, location=location.belowbar, color=color.lime, textcolor=color.lime, size=size.small)
+plotshape(showSignals and bearSignal, title="RoundFlow SELL", text="SELL", style=shape.triangledown, location=location.abovebar, color=color.red, textcolor=color.red, size=size.small)
+alertcondition(enableAlerts and bullSignal, title="GM RoundFlow BUY", message="{{ticker}} {{interval}} | GM RoundFlow BUY | Close: {{close}}")
+alertcondition(enableAlerts and bearSignal, title="GM RoundFlow SELL", message="{{ticker}} {{interval}} | GM RoundFlow SELL | Close: {{close}}")
+alertcondition(enableAlerts and (bullSignal or bearSignal), title="GM RoundFlow BUY / SELL", message="{{ticker}} {{interval}} | GM RoundFlow signal | Close: {{close}}")
+
+// Codes report the first unmet condition, not every possible blocker.
+f_reason(int code) =>
+    switch code
+        1 => "Warmup"
+        2 => "EMA order / slope / separation"
+        3 => "Level locked: wait for departure"
+        4 => "Waiting for wick near round level"
+        5 => "ADX minimum / missing ADX"
+        6 => "ADX not rising / unavailable"
+        7 => "DI direction / unavailable"
+        8 => "Fusion sign / unavailable"
+        9 => "Signal cooldown"
+        11 => "Signal confirmed"
+        14 => "Round grid changed: reset"
+        12 => "Confirmation window expired"
+        13 => "Need wick near saved level + close beyond"
+        => "Waiting for closed candle"
+plot(showDiagnostics ? buyReason : na, "BUY block code (last closed)", display=display.data_window)
+plot(showDiagnostics ? sellReason : na, "SELL block code (last closed)", display=display.data_window)
+var table diagnostics = table.new(position.top_right, 2, 3, bgcolor=chart.bg_color, border_width=1)
+if barstate.islast
+    if showDiagnostics
+        table.cell(diagnostics, 0, 0, "Last closed candle", text_color=chart.fg_color)
+        table.cell(diagnostics, 1, 0, "First unmet condition", text_color=chart.fg_color)
+        table.cell(diagnostics, 0, 1, "BUY", text_color=color.lime)
+        table.cell(diagnostics, 1, 1, f_reason(buyReason), text_color=chart.fg_color)
+        table.cell(diagnostics, 0, 2, "SELL", text_color=color.red)
+        table.cell(diagnostics, 1, 2, f_reason(sellReason), text_color=chart.fg_color)
+    else
+        table.clear(diagnostics, 0, 0, 1, 2)

@@ -1,0 +1,51 @@
+//@version=6
+indicator("TDI - Goldminds / MMM Jakub Donovan Recreation", shorttitle="TDI MMM", overlay=false)
+
+// ─────────────────────────────────────────────
+// INPUTS
+// ─────────────────────────────────────────────
+rsiPeriod     = input.int(21, minval=1, title="RSI Period")
+bandLength    = input.int(34, minval=1, title="Band Length")
+lengthrsipl   = input.int(7, minval=0, title="Fast MA on RSI")
+lengthtradesl = input.int(2, minval=1, title="Slow MA on RSI")
+src           = input.source(close, "Source")
+
+// ─────────────────────────────────────────────
+// RSI
+// ─────────────────────────────────────────────
+r = ta.rsi(src, rsiPeriod)
+
+// ─────────────────────────────────────────────
+// TDI VOLATILITY BANDS
+// ─────────────────────────────────────────────
+ma   = ta.sma(r, bandLength)
+offs = 1.6185 * ta.stdev(r, bandLength)
+
+up  = ma + offs
+dn  = ma - offs
+mid = (up + dn) / 2
+
+// ─────────────────────────────────────────────
+// TDI MOVING AVERAGES
+// ─────────────────────────────────────────────
+fastMA = ta.sma(r, lengthrsipl)
+slowMA = ta.sma(r, lengthtradesl)
+
+// ─────────────────────────────────────────────
+// REFERENCE LEVELS
+// ─────────────────────────────────────────────
+hline(20, "Extremely Oversold", color=color.gray)
+hline(30, "Oversold",           color=color.gray)
+hline(50, "Midline",             color=color.gray)
+hline(70, "Overbought",          color=color.gray)
+hline(80, "Extremely Overbought",color=color.gray)
+
+// ─────────────────────────────────────────────
+// PLOTS
+// ─────────────────────────────────────────────
+plot(up,  "Upper Band",  color=#3286C3, linewidth=2)
+plot(dn,  "Lower Band",  color=#3286C3, linewidth=2)
+plot(mid, "Middle Band", color=color.yellow, linewidth=2)
+
+plot(slowMA, "Slow MA", color=color.green, linewidth=2)
+plot(fastMA, "Fast MA", color=color.red, linewidth=1)

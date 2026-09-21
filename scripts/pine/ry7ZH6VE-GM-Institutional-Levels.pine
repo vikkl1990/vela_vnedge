@@ -1,0 +1,256 @@
+//@version=6
+indicator("GM Institutional Levels v2.6 - Auto Multi Market", shorttitle="GM Levels 2.6", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// Original Gold/Forex/Index/Crypto 50/100 preset spacing is preserved.
+// Automatic or manual presets. These are price grids, not trading signals.
+// Symbol metadata: https://www.tradingview.com/pine-script-docs/concepts/chart-information/
+mode = input.string("Auto - All Markets", "Preset", options=["Auto - All Markets", "Gold", "Forex", "Index", "Crypto", "Stocks", "Stocks - Ore", "Stocks Auto", "Custom"], group="Market", tooltip="Auto detects symbol metadata and scales grids from the previous completed candle close. USD gold uses fixed 10/25/50/100/1000 spacing. Other or unrecognized instruments use price-based spacing. Check the detected group and actual steps in the dashboard; select a manual preset or Custom to override.")
+custom10 = input.float(10.0, "Scalp spacing", minval=0.00000001, step=0.001, group="Custom", tooltip="Used only with Preset = Custom. Enter the distance between lines, not an individual price level. Example: 0.01 draws 0.11, 0.12, 0.13; 5 draws 5, 10, 15. Positive decimal values are allowed and rounded to the symbol tick size. You can switch each group on or off under Display.")
+custom25 = input.float(25.0, "Intermediate spacing", minval=0.00000001, step=0.001, group="Custom", tooltip="Used only with Preset = Custom. Enter the distance between lines, not an individual price level. Example: 0.01 draws 0.11, 0.12, 0.13; 5 draws 5, 10, 15. Positive decimal values are allowed and rounded to the symbol tick size. You can switch each group on or off under Display.")
+customMinor = input.float(50.0, "Minor spacing", minval=0.00000001, step=0.001, group="Custom", tooltip="Used only with Preset = Custom. Enter the distance between lines, not an individual price level. Example: 0.01 draws 0.11, 0.12, 0.13; 5 draws 5, 10, 15. Positive decimal values are allowed and rounded to the symbol tick size. You can switch each group on or off under Display.")
+customMajor = input.float(100.0, "Major spacing", minval=0.00000001, step=0.001, group="Custom", tooltip="Used only with Preset = Custom. Enter the distance between lines, not an individual price level. Example: 0.01 draws 0.11, 0.12, 0.13; 5 draws 5, 10, 15. Positive decimal values are allowed and rounded to the symbol tick size. You can switch each group on or off under Display.")
+customMacro = input.float(1000.0, "Macro spacing", minval=0.00000001, step=0.001, group="Custom", tooltip="Used only with Preset = Custom. Enter the distance between lines, not an individual price level. Example: 0.01 draws 0.11, 0.12, 0.13; 5 draws 5, 10, 15. Positive decimal values are allowed and rounded to the symbol tick size. You can switch each group on or off under Display.")
+
+// Previous completed candle keeps auto spacing stable during the live candle.
+float autoReference = nz(close[1], close)
+float autoScalpStep = autoReference < 1.0 ? 0.01 : autoReference < 10.0 ? 0.1 : autoReference < 100.0 ? 1.0 : autoReference < 1000.0 ? 10.0 : 100.0
+// Automatic spacing is a price-grid heuristic, not a volatility or reaction model.
+// Use metadata first. Do not identify a stock named GOLD as spot gold.
+bool autoMode = mode == "Auto - All Markets"
+string symbolType = syminfo.type
+string tickerUpper = str.upper(syminfo.ticker)
+string baseUpper = str.upper(syminfo.basecurrency)
+string quoteUpper = str.upper(syminfo.currency)
+bool stockLike = symbolType == "stock" or symbolType == "fund" or symbolType == "dr"
+bool goldFuture = symbolType == "futures" and (syminfo.root == "GC" or syminfo.root == "MGC")
+bool goldSpot = not stockLike and symbolType != "crypto" and (baseUpper == "XAU" or str.startswith(tickerUpper, "XAUUSD") or tickerUpper == "GOLD")
+bool usdGold = (goldSpot or goldFuture) and quoteUpper == "USD"
+string fiatCodes = "|USD|EUR|GBP|JPY|CHF|CAD|AUD|NZD|NOK|SEK|DKK|SGD|HKD|CNH|CNY|ZAR|MXN|TRY|PLN|CZK|HUF|ILS|THB|INR|BRL|KRW|"
+bool fiatPair = str.contains(fiatCodes, "|" + baseUpper + "|") and str.contains(fiatCodes, "|" + quoteUpper + "|")
+bool metalBase = baseUpper == "XAU" or baseUpper == "XAG" or baseUpper == "XPT" or baseUpper == "XPD"
+bool forexLike = not stockLike and symbolType != "crypto" and not metalBase and (symbolType == "forex" or fiatPair)
+string detectedMarket = usdGold ? "Gold USD" : stockLike ? "Stocks / Funds" : forexLike ? "Forex" : symbolType == "crypto" ? "Crypto" : symbolType == "index" ? "Index" : "Price-based fallback"
+// Decade magnitude: 0.12 -> 0.1; 12 -> 10; 78000 -> 10000.
+float safeReference = math.max(math.abs(autoReference), syminfo.mintick)
+float magnitude = math.pow(10.0, math.floor(math.log10(safeReference) + 1e-10))
+float marketScalpStep = usdGold ? 10.0 : stockLike ? magnitude / 10.0 : forexLike ? magnitude / 1000.0 : magnitude / 100.0
+float factor = autoMode ? marketScalpStep / 10.0 : mode == "Forex" ? 0.0001 : mode == "Crypto" ? 10.0 : mode == "Stocks" ? 0.1 : mode == "Stocks - Ore" ? 0.001 : mode == "Stocks Auto" ? autoScalpStep / 10.0 : 1.0
+// Stocks: 1 / 2.5 / 5 / 10 / 100. Stocks - Ore: 0.01 / 0.025 / 0.05 / 0.1 / 1.
+// Enable Show Scalp levels for the one-ore grid.
+// Round spacing to tradable ticks; never allow a zero step.
+f_step(float value) =>
+    math.max(syminfo.mintick, math.round(value / syminfo.mintick) * syminfo.mintick)
+
+float step10 = f_step(mode == "Custom" ? custom10 : 10.0 * factor)
+float step25 = f_step(mode == "Custom" ? custom25 : 25.0 * factor)
+float minorStep = f_step(mode == "Custom" ? customMinor : 50.0 * factor)
+float majorStep = f_step(mode == "Custom" ? customMajor : 100.0 * factor)
+float macroStep = f_step(mode == "Custom" ? customMacro : 1000.0 * factor)
+
+show10 = input.bool(true, "Show Scalp levels", group="Display", tooltip="Shows the smallest grid. Stocks - Ore: 0.01 spacing. Auto modes: spacing follows the price band. See dashboard for actual spacing.")
+show25 = input.bool(false, "Show Intermediate levels", group="Display")
+showMinor = input.bool(true, "Show Minor levels", group="Display")
+showMajor = input.bool(true, "Show Major levels", group="Display")
+showMacro = input.bool(true, "Show Macro levels", group="Display")
+showLabels = input.bool(true, "Show Price Labels", group="Display")
+showScalpLabels = input.bool(true, "Show Scalp / Intermediate labels", group="Display")
+showDashboard = input.bool(true, "Show Dashboard", group="Display")
+// Five groups * (2 * 49 + 1) = 495 objects maximum.
+levelsEachSide = input.int(10, "Levels Above / Below PER GROUP", minval=1, maxval=49, group="Display")
+// Auto uses chart background; Manual preserves the selected line colors.
+theme = input.string("Auto", "Color Theme", options=["Auto", "Dark", "Light", "Manual"], group="Colors")
+manual10 = input.color(color.white, "Scalp color (Manual)", group="Colors")
+manual25 = input.color(color.aqua, "Intermediate color (Manual)", group="Colors")
+manualMinor = input.color(color.yellow, "Minor color (Manual)", group="Colors")
+manualMajor = input.color(color.red, "Major color (Manual)", group="Colors")
+manualMacro = input.color(color.fuchsia, "Macro color (Manual)", group="Colors")
+
+// Relative luminance: choose the higher-contrast black or white label text.
+f_channel(float channel) =>
+    float v = channel / 255.0
+    v <= 0.04045 ? v / 12.92 : math.pow((v + 0.055) / 1.055, 2.4)
+f_luma(color col) =>
+    0.2126 * f_channel(color.r(col)) + 0.7152 * f_channel(color.g(col)) + 0.0722 * f_channel(color.b(col))
+f_text(color bg) =>
+    f_luma(bg) > 0.179 ? color.black : color.white
+
+bool dark = theme == "Dark" or ((theme == "Auto" or theme == "Manual") and f_luma(chart.bg_color) < 0.179)
+color panelBg = dark ? color.rgb(24, 27, 34) : color.rgb(245, 247, 250)
+color panelText = f_text(panelBg)
+color color10 = theme == "Manual" ? manual10 : dark ? color.rgb(205, 210, 220) : color.rgb(70, 75, 85)
+color color25 = theme == "Manual" ? manual25 : dark ? color.aqua : color.rgb(0, 105, 125)
+color minorColor = theme == "Manual" ? manualMinor : dark ? color.yellow : color.rgb(130, 90, 0)
+color majorColor = theme == "Manual" ? manualMajor : dark ? color.rgb(255, 75, 95) : color.rgb(180, 20, 45)
+color macroColor = theme == "Manual" ? manualMacro : dark ? color.fuchsia : color.rgb(140, 25, 165)
+
+enable10Alerts = input.bool(false, "Scalp level alerts", group="Alerts")
+enable25Alerts = input.bool(false, "Intermediate level alerts", group="Alerts")
+enableMinorAlerts = input.bool(false, "Minor level alerts", group="Alerts")
+enableMajorAlerts = input.bool(true, "Major level alerts", group="Alerts")
+enableMacroAlerts = input.bool(false, "Macro level alerts", group="Alerts")
+useNear = input.bool(true, "Near Level Alerts", group="Alerts")
+useTouch = input.bool(false, "Touch / Wick Alerts", group="Alerts")
+useBreak = input.bool(true, "Close Above / Below Alerts", group="Alerts")
+distanceMode = input.string("Auto", "Near Distance Mode", options=["Auto", "Price units", "Percent of step"], group="Alerts", tooltip="Auto uses Percent of step for automatic presets, and Price units for manual presets.")
+alertDistance = input.float(1.0, "Near Distance (price units, NOT pips)", minval=0.0, step=0.001, group="Alerts")
+distancePct = input.float(5.0, "Near Distance (% of each step)", minval=0.0, maxval=49.0, group="Alerts")
+confirmedOnly = input.bool(false, "Near / Touch: Wait For Candle Close", group="Alerts")
+// Break alerts always require a confirmed close.
+// Display switches and alert switches are independent.
+// Select "Any alert() function call" for all enabled events with actual prices.
+// Intrabar deduplication: at most one event per group + event type per candle.
+
+f_format(float value) =>
+    str.tostring(value, format.mintick)
+f_nearest(float step) =>
+    math.round(close / step) * step
+
+// Use actual rounded spacing in labels, dashboard and dynamic alerts.
+f_name(string originalName) =>
+    float spacing = originalName == "10" ? step10 : originalName == "25" ? step25 : originalName == "50" ? minorStep : originalName == "100" ? majorStep : macroStep
+    string role = originalName == "10" ? "Scalp" : originalName == "25" ? "Intermediate" : originalName == "50" ? "Minor" : originalName == "100" ? "Major" : "Macro"
+    f_format(spacing) + " " + role
+
+var array<line> levelLines = array.new<line>()
+var array<label> levelLabels = array.new<label>()
+var array<int> drawnTicks = array.new<int>()
+
+f_clear() =>
+    while array.size(levelLines) > 0
+        line.delete(array.pop(levelLines))
+    while array.size(levelLabels) > 0
+        label.delete(array.pop(levelLabels))
+    array.clear(drawnTicks)
+
+// Draw higher-priority groups first. Deduplicate only actually drawn prices,
+// so a disabled or out-of-range group cannot leave holes in a smaller grid.
+f_draw(bool enabled, float step, color col, int width, string name) =>
+    if enabled
+        float anchor = f_nearest(step)
+        for i = -levelsEachSide to levelsEachSide
+            int tick = int(math.round((anchor + i * step) / syminfo.mintick))
+            float price = tick * syminfo.mintick
+            if not array.includes(drawnTicks, tick)
+                array.push(drawnTicks, tick)
+                array.push(levelLines, line.new(x1=bar_index, y1=price, x2=bar_index + 1, y2=price, xloc=xloc.bar_index, extend=extend.both, color=col, width=width))
+                if showLabels and (showScalpLabels or (name != "10" and name != "25"))
+                    array.push(levelLabels, label.new(x=chart.left_visible_bar_time, y=price, xloc=xloc.bar_time, text=f_name(name) + " | " + f_format(price), style=label.style_label_left, color=color.new(col, 0), textcolor=f_text(col), size=size.tiny))
+
+if barstate.islast
+    f_clear()
+    f_draw(showMacro, macroStep, macroColor, 4, "1000")
+    f_draw(showMajor, majorStep, majorColor, 3, "100")
+    f_draw(showMinor, minorStep, minorColor, 2, "50")
+    f_draw(show25, step25, color25, 1, "25")
+    f_draw(show10, step10, color10, 1, "10")
+
+// Integer tick arithmetic avoids floating-point errors at grid boundaries.
+f_events(float step) =>
+    // Do not treat a change in grid spacing as a price-crossing event.
+    bool stableGrid = not na(step[1]) and step == step[1]
+    int s = int(math.round(step / syminfo.mintick))
+    int ct = int(math.round(close / syminfo.mintick))
+    int pt = int(math.round(close[1] / syminfo.mintick))
+    int lo = int(math.round(low / syminfo.mintick))
+    int hi = int(math.round(high / syminfo.mintick))
+    bool percentageDistance = distanceMode == "Percent of step" or (distanceMode == "Auto" and (autoMode or mode == "Stocks Auto"))
+    float distance = percentageDistance ? step * distancePct / 100.0 : alertDistance
+    int nt = int(math.round(float(ct) / s)) * s
+    int pnt = int(math.round(float(pt) / s)) * s
+    bool nearNow = math.abs(ct - nt) * syminfo.mintick <= distance
+    bool wasNear = not na(pt) and math.abs(pt - pnt) * syminfo.mintick <= distance
+    bool proximityReady = not confirmedOnly or barstate.isconfirmed
+    bool nearEvent = proximityReady and nearNow and (not wasNear or nt != pnt)
+    // A gap over a level without that level inside this candle is NOT a touch.
+    int touched = int(math.ceil(float(lo) / s)) * s
+    bool touchEvent = proximityReady and touched <= hi
+    // Strict close beyond a boundary; closing exactly ON it is not a break.
+    int upLevel = int(math.floor(float(ct - 1) / s)) * s
+    int downLevel = int(math.ceil(float(ct + 1) / s)) * s
+    bool upEvent = barstate.isconfirmed and not na(pt) and ct > pt and pt <= upLevel
+    bool downEvent = barstate.isconfirmed and not na(pt) and ct < pt and pt >= downLevel
+    [nearEvent and stableGrid, touchEvent and stableGrid, upEvent and stableGrid, downEvent and stableGrid, nt * syminfo.mintick, touched * syminfo.mintick, upLevel * syminfo.mintick, downLevel * syminfo.mintick]
+
+varip array<bool> sent = array.new<bool>(20, false)
+if barstate.isnew
+    array.fill(sent, false)
+array<string> messages = array.new<string>()
+
+f_emit(int slot, bool event, string groupName, string action, float level) =>
+    if barstate.isrealtime and event and not array.get(sent, slot)
+        array.set(sent, slot, true)
+        array.push(messages, groupName + " " + action + " " + f_format(level))
+
+[nearScalp10, touchScalp10, upScalp10, downScalp10, nearestScalp10, touchedScalp10, upperScalp10, lowerScalp10] = f_events(step10)
+alertcondition(enable10Alerts and useNear and nearScalp10, "Scalp: Near", "{{ticker}} Scalp: Near. Close: {{close}}")
+f_emit(0, enable10Alerts and useNear and nearScalp10, f_name("10"), "Near", nearestScalp10)
+alertcondition(enable10Alerts and useTouch and touchScalp10, "Scalp: Touch", "{{ticker}} Scalp: Touch. Close: {{close}}")
+f_emit(1, enable10Alerts and useTouch and touchScalp10, f_name("10"), "Touch", touchedScalp10)
+alertcondition(enable10Alerts and useBreak and upScalp10, "Scalp: Close Above", "{{ticker}} Scalp: Close Above. Close: {{close}}")
+f_emit(2, enable10Alerts and useBreak and upScalp10, f_name("10"), "Close Above", upperScalp10)
+alertcondition(enable10Alerts and useBreak and downScalp10, "Scalp: Close Below", "{{ticker}} Scalp: Close Below. Close: {{close}}")
+f_emit(3, enable10Alerts and useBreak and downScalp10, f_name("10"), "Close Below", lowerScalp10)
+
+[nearLevel25, touchLevel25, upLevel25, downLevel25, nearestLevel25, touchedLevel25, upperLevel25, lowerLevel25] = f_events(step25)
+alertcondition(enable25Alerts and useNear and nearLevel25, "Intermediate: Near", "{{ticker}} Intermediate: Near. Close: {{close}}")
+f_emit(4, enable25Alerts and useNear and nearLevel25, f_name("25"), "Near", nearestLevel25)
+alertcondition(enable25Alerts and useTouch and touchLevel25, "Intermediate: Touch", "{{ticker}} Intermediate: Touch. Close: {{close}}")
+f_emit(5, enable25Alerts and useTouch and touchLevel25, f_name("25"), "Touch", touchedLevel25)
+alertcondition(enable25Alerts and useBreak and upLevel25, "Intermediate: Close Above", "{{ticker}} Intermediate: Close Above. Close: {{close}}")
+f_emit(6, enable25Alerts and useBreak and upLevel25, f_name("25"), "Close Above", upperLevel25)
+alertcondition(enable25Alerts and useBreak and downLevel25, "Intermediate: Close Below", "{{ticker}} Intermediate: Close Below. Close: {{close}}")
+f_emit(7, enable25Alerts and useBreak and downLevel25, f_name("25"), "Close Below", lowerLevel25)
+
+[nearMinor, touchMinor, upMinor, downMinor, nearestMinor, touchedMinor, upperMinor, lowerMinor] = f_events(minorStep)
+alertcondition(enableMinorAlerts and useNear and nearMinor, "Minor: Near", "{{ticker}} Minor: Near. Close: {{close}}")
+f_emit(8, enableMinorAlerts and useNear and nearMinor, f_name("50"), "Near", nearestMinor)
+alertcondition(enableMinorAlerts and useTouch and touchMinor, "Minor: Touch", "{{ticker}} Minor: Touch. Close: {{close}}")
+f_emit(9, enableMinorAlerts and useTouch and touchMinor, f_name("50"), "Touch", touchedMinor)
+alertcondition(enableMinorAlerts and useBreak and upMinor, "Minor: Close Above", "{{ticker}} Minor: Close Above. Close: {{close}}")
+f_emit(10, enableMinorAlerts and useBreak and upMinor, f_name("50"), "Close Above", upperMinor)
+alertcondition(enableMinorAlerts and useBreak and downMinor, "Minor: Close Below", "{{ticker}} Minor: Close Below. Close: {{close}}")
+f_emit(11, enableMinorAlerts and useBreak and downMinor, f_name("50"), "Close Below", lowerMinor)
+
+[nearMajor, touchMajor, upMajor, downMajor, nearestMajor, touchedMajor, upperMajor, lowerMajor] = f_events(majorStep)
+alertcondition(enableMajorAlerts and useNear and nearMajor, "Major: Near", "{{ticker}} Major: Near. Close: {{close}}")
+f_emit(12, enableMajorAlerts and useNear and nearMajor, f_name("100"), "Near", nearestMajor)
+alertcondition(enableMajorAlerts and useTouch and touchMajor, "Major: Touch", "{{ticker}} Major: Touch. Close: {{close}}")
+f_emit(13, enableMajorAlerts and useTouch and touchMajor, f_name("100"), "Touch", touchedMajor)
+alertcondition(enableMajorAlerts and useBreak and upMajor, "Major: Close Above", "{{ticker}} Major: Close Above. Close: {{close}}")
+f_emit(14, enableMajorAlerts and useBreak and upMajor, f_name("100"), "Close Above", upperMajor)
+alertcondition(enableMajorAlerts and useBreak and downMajor, "Major: Close Below", "{{ticker}} Major: Close Below. Close: {{close}}")
+f_emit(15, enableMajorAlerts and useBreak and downMajor, f_name("100"), "Close Below", lowerMajor)
+
+[nearMacro, touchMacro, upMacro, downMacro, nearestMacro, touchedMacro, upperMacro, lowerMacro] = f_events(macroStep)
+alertcondition(enableMacroAlerts and useNear and nearMacro, "Macro: Near", "{{ticker}} Macro: Near. Close: {{close}}")
+f_emit(16, enableMacroAlerts and useNear and nearMacro, f_name("1000"), "Near", nearestMacro)
+alertcondition(enableMacroAlerts and useTouch and touchMacro, "Macro: Touch", "{{ticker}} Macro: Touch. Close: {{close}}")
+f_emit(17, enableMacroAlerts and useTouch and touchMacro, f_name("1000"), "Touch", touchedMacro)
+alertcondition(enableMacroAlerts and useBreak and upMacro, "Macro: Close Above", "{{ticker}} Macro: Close Above. Close: {{close}}")
+f_emit(18, enableMacroAlerts and useBreak and upMacro, f_name("1000"), "Close Above", upperMacro)
+alertcondition(enableMacroAlerts and useBreak and downMacro, "Macro: Close Below", "{{ticker}} Macro: Close Below. Close: {{close}}")
+f_emit(19, enableMacroAlerts and useBreak and downMacro, f_name("1000"), "Close Below", lowerMacro)
+
+// One combined message per update. Per-event varip flags prevent repeats.
+// Near and touch may happen before a later confirmed close-break in the same bar.
+if array.size(messages) > 0
+    alert(syminfo.tickerid + " | TF " + timeframe.period + "\n" + array.join(messages, "\n"), alert.freq_all)
+
+var table dash = table.new(position.top_right, 3, 6, border_width=1)
+f_row(int row, string name, float step, color col, bool enabled) =>
+    table.cell(dash, 0, row, f_name(name) + (enabled ? "" : " OFF"), text_color=f_text(col), bgcolor=color.new(col, 0))
+    table.cell(dash, 1, row, f_format(step), text_color=panelText, bgcolor=panelBg)
+    table.cell(dash, 2, row, f_format(f_nearest(step)), text_color=panelText, bgcolor=panelBg)
+
+if barstate.islast
+    if showDashboard
+        table.cell(dash, 0, 0, autoMode ? "Auto: " + detectedMarket : mode, text_color=panelText, bgcolor=panelBg)
+        table.cell(dash, 1, 0, "Step", text_color=panelText, bgcolor=panelBg)
+        table.cell(dash, 2, 0, "Nearest", text_color=panelText, bgcolor=panelBg)
+        f_row(1, "10", step10, color10, show10)
+        f_row(2, "25", step25, color25, show25)
+        f_row(3, "50", minorStep, minorColor, showMinor)
+        f_row(4, "100", majorStep, majorColor, showMajor)
+        f_row(5, "1000", macroStep, macroColor, showMacro)
+    else
+        table.clear(dash, 0, 0, 2, 5)

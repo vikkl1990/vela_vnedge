@@ -1,0 +1,652 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+//   A T T Y   M O V I N G   P O C   A V E R A G E   A N D   P R O J E C T I O N
+//   v1.4  —  © 2026 Atty Labs.
+//
+//   WHAT IT DOES
+//   Every trading session has a point of control: the price where the most
+//   volume traded. One session's POC is a single number. This script collects
+//   that number from every session on the chart, in order, and runs a moving
+//   average through the series.
+//
+//   The result is one line. Not a level from one day, and not a cloud of old
+//   levels, but a single slow-moving estimate of where this market has been
+//   doing its business and which way that centre of business is drifting.
+//
+//   Two averages are drawn so a short memory and a long memory can be compared
+//   on the same chart: POC 20 and POC 200 by default. Both lengths, both
+//   average types, and both colours are inputs, so any pair can be tested.
+//
+//   WHAT IT IS NOT
+//   The average is not a forecast of the next session's POC. Measured on 833 ES
+//   sessions, a 20-session POC average misses the next POC by an average of 104
+//   points, where the session open alone misses by 21. Prior volume structure
+//   was tested as an attractor in three forms and pulls the POC by a coefficient
+//   of at most 0.09. Read this line as a slow centre of past value, not a target.
+//
+//   THE PROJECTION AND THE PROBABILITY FAN
+//   A moving average of N session POCs moves by a known rule. When the next
+//   session closes, an SMA(N) moves by exactly (new POC - dropped POC) / N.
+//   The dropped POC is already history. Only the incoming one is unknown.
+//
+//   So the forward path is built, not extrapolated:
+//
+//     midline  the average recomputed forward with each future session's POC
+//              set to its expected value. The drift comes from old POCs rolling
+//              off the back of the window, which is information already in hand.
+//
+//     fan      68% and 95% containment around that midline. The width is the
+//              uncertainty of the incoming POCs passed through the average's own
+//              weights, so it is roughly session sigma / N one session out. An
+//              average is far steadier than the thing it averages.
+//
+//   WHAT IS MEASURED RATHER THAN ASSUMED
+//   Every constant below was fitted on ES RTH sessions, 2021-2025, with the most
+//   recent twelve months held back. They are re-measured from the chart's own
+//   history where the script can do so; where a fixed exponent is used it is an
+//   input, and it should be re-fitted before being trusted on another contract.
+//
+//     today's anchor     Early in a session the current price estimates the
+//                        final POC better than the developing POC does; the two
+//                        cross at about 60% elapsed. They are blended on a ramp.
+//
+//     settle curve       Remaining uncertainty decays as (1 - elapsed) ^ 0.37,
+//                        not linearly. Half way through a session about three
+//                        quarters of the uncertainty is still live.
+//
+//     three sigmas       POC-to-POC for future sessions, POC-to-prior-close
+//                        before the bell, POC-to-open after it. Learning the
+//                        open removes roughly a third of the uncertainty, so the
+//                        first node tightens the moment the session starts.
+//
+//     day type           Sessions that have already run wide, on heavy volume,
+//                        finish with their POC further from current price.
+//                        Sigma scales as (range so far / typical range by this
+//                        time) ^ 0.77, judged against the same point in the last
+//                        20 sessions. Out of sample this ranks the eventual
+//                        distance at rho +0.19 at 10:30 rising to +0.35 by 13:00.
+//
+//     band shape         The outcome is sharply peaked with a long tail, so the
+//                        bands are drawn at measured containment rather than at
+//                        Gaussian multiples: 0.47 and 1.48 sigma at one session,
+//                        against the Gaussian 1.00 and 2.00. Further out they
+//                        interpolate toward Gaussian as a sum of sessions
+//                        converges.
+//
+//   THE HELD-BACK YEAR
+//   The constants were fitted on 2021-08 to 2025-08 and then applied unchanged
+//   to a sealed year, 2025-09 to 2026-08, that played no part in fitting. The
+//   settle exponent refitted there at 0.33 against 0.37. The blended anchor beat
+//   a developing-POC anchor by 12.55 points of error against 15.24. The day-type
+//   scale still ranked the eventual distance, rho +0.17 early to +0.34 late. The
+//   band multipliers failed that test in their first form and were recalibrated
+//   on the fitting period alone; the sealed year then returned 0.52 and 1.48
+//   against the 0.47 and 1.48 now shipped.
+//
+//   WHAT IS STILL ASSUMED
+//   Future POC changes are treated as independent with constant sigma. The
+//   containment multipliers drift with time of day - nearer 0.7 in the first
+//   hour, nearer 0.45 at midday - and a single pair is used for all of them, so
+//   the bands run narrow early in a session. The interpolation toward Gaussian
+//   at longer horizons is an argument from the central limit theorem, not a
+//   measurement. Treat the bands as a careful scale drawing, not as a
+//   probability to trade against.
+//
+//   HOW THE POC IS MEASURED
+//   Each session's bars are collected, the session high-low range is split into
+//   a fixed number of price bins, and every bar's volume is spread evenly across
+//   the bins its range covers. The POC is the centre of the fullest bin. Ties go
+//   to the lower price.
+//
+//   Profile resolution is the chart timeframe. On a 1- or 5-minute chart a US
+//   session gives 390 or 78 bars to distribute, which is enough to place a POC
+//   within a bin or two. On a 30-minute chart it is not: the line will still
+//   draw, but the inputs to it are coarse.
+//
+//   A session POC is computed when that session CLOSES and is never revised, so
+//   the averages step forward once per session and do not repaint. The fan is a
+//   live forward estimate and changes with every tick, by design.
+//
+//   Symbols with no volume can be profiled on bar count instead. Set Profile
+//   source to Time (TPO) and each bar contributes one unit rather than its
+//   volume.
+//
+//   WHERE TO RUN IT
+//   Intraday charts, 1m to 60m. On daily or higher there is no intraday
+//   distribution to build a profile from, and the script says so instead of
+//   drawing a misleading line. Built and checked on ES; the session presets
+//   cover the other futures sessions.
+//
+//   This measures and draws. There are no entries, stops, targets, or signals.
+// ═══════════════════════════════════════════════════════════════════════════
+
+indicator("Atty Moving POC Average and Projection", "ATTY MPOC", overlay = true, max_lines_count = 500, max_labels_count = 50)
+
+// ─────────────────────────────── Inputs ───────────────────────────────
+GS = "Session"
+GP = "Profile"
+GA = "POC average A"
+GB = "POC average B"
+GJ = "Projection"
+GF = "Probability fan"
+GD = "Display"
+
+presetIn   = input.string("NY RTH (09:30-16:00 ET)", "Session", options = ["NY RTH (09:30-16:00 ET)", "NY full (18:00-17:00 ET)", "NY morning (09:30-12:00 ET)", "NY afternoon (12:00-16:00 ET)", "London (03:00-11:30 ET)", "Asia (18:00-03:00 ET)", "Custom"], group = GS, tooltip = "Which session's point of control feeds the average. Presets are stated in New York time.")
+customSess = input.session("0930-1600", "Custom session", group = GS, tooltip = "Used only when Session is set to Custom.")
+customTz   = input.string("America/New_York", "Custom session timezone", options = ["America/New_York", "America/Chicago", "Europe/London", "Asia/Tokyo", "Asia/Hong_Kong", "UTC", "Exchange"], group = GS)
+
+profSrc = input.string("Volume", "Profile source", options = ["Volume", "Time (TPO)"], group = GP, tooltip = "Volume builds a volume profile. Time (TPO) counts bars instead, for symbols with no volume data.")
+rowsIn  = input.int(100, "Price bins per session", minval = 10, maxval = 500, group = GP, tooltip = "The session range is split into this many bins. More bins gives a finer POC and a noisier one.")
+placeIn = input.string("Spread across bar range", "Volume placement", options = ["Spread across bar range", "At bar close"], group = GP)
+minBars = input.int(10, "Minimum bars per session", minval = 1, group = GP, tooltip = "Sessions with fewer bars than this (holidays, data gaps) are skipped.")
+
+showA = input.bool(true, "Show", group = GA, inline = "A1")
+lenA  = input.int(20, "Sessions", minval = 1, maxval = 1000, group = GA, inline = "A1")
+typeA = input.string("SMA", "Type", options = ["SMA", "EMA", "WMA"], group = GA, inline = "A2")
+colA  = input.color(#E8D9A0, "", group = GA, inline = "A2")
+widA  = input.int(2, "Width", minval = 1, maxval = 5, group = GA, inline = "A2")
+
+showB = input.bool(true, "Show", group = GB, inline = "B1")
+lenB  = input.int(200, "Sessions", minval = 1, maxval = 1000, group = GB, inline = "B1")
+typeB = input.string("SMA", "Type", options = ["SMA", "EMA", "WMA"], group = GB, inline = "B2")
+colB  = input.color(#C9A96A, "", group = GB, inline = "B2")
+widB  = input.int(2, "Width", minval = 1, maxval = 5, group = GB, inline = "B2")
+
+showProj  = input.bool(true, "Show projected midline", group = GJ, tooltip = "The dashed 50% line: the average recomputed forward, with each future session's POC set to its expected value.")
+projSess  = input.int(5, "Project forward (sessions)", minval = 1, maxval = 20, group = GJ)
+projLabel = input.bool(true, "Label projected values", group = GJ)
+
+showFan   = input.bool(true, "Show probability fan", group = GF)
+fanOn     = input.string("POC average A", "Fan on", options = ["POC average A", "POC average B"], group = GF)
+emSrc     = input.string("Realised POC dispersion", "Session sigma from", options = ["Realised POC dispersion", "Implied volatility index", "Manual (points)"], group = GF, tooltip = "How far one session's POC is expected to land from the last one. Realised measures this symbol's own history. Implied converts a 1-day volatility index. Manual takes a number from an options board.")
+emLB      = input.int(60, "Realised lookback (sessions)", minval = 5, maxval = 500, group = GF)
+ivSym     = input.symbol("CBOE:VIX1D", "Implied volatility symbol", group = GF, tooltip = "VIX1D is 1-day S&P implied volatility and is the right instrument for ES. Falls back to the realised figure if the symbol returns nothing.")
+emMan     = input.float(25.0, "Manual session move (points)", minval = 0.0, step = 0.25, group = GF)
+emMult    = input.float(1.0, "Sigma multiplier", minval = 0.1, maxval = 3.0, step = 0.05, group = GF, tooltip = "Scales whichever sigma is in use. A POC typically travels less than a close-to-close move, so an implied number usually wants a multiplier below 1. Compare the two figures in the table and set it from evidence.")
+settleExp = input.float(0.37, "Intraday settle exponent", minval = 0.05, maxval = 4.0, step = 0.01, group = GF, tooltip = "Today's remaining POC uncertainty is sigma x (1 - fraction of session elapsed) ^ this. Measured at 0.37 on 997 ES RTH sessions, 2021-2025 (fit R^2 0.91). A POC settles much more slowly than a straight line: half way through the session about three quarters of the uncertainty is still there. Re-measure before trusting it on another symbol.")
+blendExp  = input.float(2.2, "POC anchor ramp exponent", minval = 0.5, maxval = 6.0, step = 0.1, group = GF, tooltip = "Early in a session the current price is a better estimate of the final POC than the developing POC is; late in the session the reverse is true. The two are blended with weight min(1, 1.2 x elapsed ^ this) on the developing POC. Measured crossover is about 60% through the session on ES.")
+dayScaleOn = input.bool(true, "Scale today by day type", group = GF, tooltip = "Widen or narrow the current session's contribution by how wide the session has been so far against what is typical by this point in the day. Measured out of sample on 677 ES sessions: rank correlation with the realised distance runs +0.19 at 10:30 to +0.35 at 13:00, and the predicted width spans a 2.3x to 3.2x range. The gain is negligible before about 11:30.")
+widthExp   = input.float(0.77, "Day-type exponent", minval = 0.0, maxval = 2.0, step = 0.01, group = GF, tooltip = "Sigma scales as (range so far / typical range by this time) ^ this. Fitted at 0.72, 0.81 and 0.77 at three independent decision times on ES. Set to 0 to switch the day-type scaling off entirely.")
+band68     = input.float(0.47, "68% band (x sigma)", minval = 0.1, maxval = 3.0, step = 0.01, group = GF, tooltip = "Measured containment against this model's own sigma, not a Gaussian multiple. On 8,388 ES observations the 68th percentile of the outcome sits at 0.47 sigma and the 95th at 1.48, against the Gaussian 1.00 and 2.00. A held-back year that played no part in fitting returned 0.52 and 1.48 independently. The ratio between the two bands, 3.1 against the Gaussian 2.0, is the fat tail. Set 1.00 and 2.00 for plain Gaussian bands. Both figures are for a one-session horizon; further out they interpolate toward Gaussian as a sum of sessions converges."
+  )
+band95     = input.float(1.48, "95% band (x sigma)", minval = 0.5, maxval = 6.0, step = 0.01, group = GF)
+col1sd    = input.color(#B98A5E, "68%", group = GF, inline = "F1")
+col2sd    = input.color(#9AA0A6, "95%", group = GF, inline = "F1")
+shadeFan  = input.bool(true, "Shade bands", group = GF, inline = "F1")
+
+showPOC = input.bool(true, "Session POC levels", group = GD, inline = "D1")
+pocCol  = input.color(color.new(#E8D9A0, 35), "", group = GD, inline = "D1")
+pocKeep = input.int(120, "Sessions drawn", minval = 1, maxval = 300, group = GD, inline = "D1")
+showDev = input.bool(true, "Developing POC (current session)", group = GD)
+showTbl = input.bool(true, "Info table", group = GD, inline = "D2")
+tblPos  = input.string("Bottom right", "", options = ["Top right", "Bottom right", "Top left", "Bottom left"], group = GD, inline = "D2")
+
+// ────────────────────────── Session resolution ──────────────────────────
+sessStr = switch presetIn
+    "NY RTH (09:30-16:00 ET)"       => "0930-1600"
+    "NY full (18:00-17:00 ET)"      => "1800-1700"
+    "NY morning (09:30-12:00 ET)"   => "0930-1200"
+    "NY afternoon (12:00-16:00 ET)" => "1200-1600"
+    "London (03:00-11:30 ET)"       => "0300-1130"
+    "Asia (18:00-03:00 ET)"         => "1800-0300"
+    => customSess
+
+tzStr = presetIn == "Custom" ? (customTz == "Exchange" ? syminfo.timezone : customTz) : "America/New_York"
+
+ivRaw = request.security(ivSym, "D", close, ignore_invalid_symbol = true)
+
+// ──────────────────────────── Functions ────────────────────────────
+// Point of control of one session's collected bars.
+f_poc(hs, ls, vs, cs, rows, mode) =>
+    int n = array.size(hs)
+    float poc = na
+    if n > 0
+        float lo = array.min(ls)
+        float hi = array.max(hs)
+        if hi > lo
+            float step = (hi - lo) / rows
+            bins = array.new<float>(rows, 0.0)
+            for i = 0 to n - 1
+                float v = array.get(vs, i)
+                if v > 0
+                    if mode == "At bar close"
+                        int idx = math.min(rows - 1, math.max(0, int(math.floor((array.get(cs, i) - lo) / step))))
+                        array.set(bins, idx, array.get(bins, idx) + v)
+                    else
+                        int i0 = math.min(rows - 1, math.max(0, int(math.floor((array.get(ls, i) - lo) / step))))
+                        int i1 = math.min(rows - 1, math.max(0, int(math.floor((array.get(hs, i) - lo) / step))))
+                        float share = v / (i1 - i0 + 1)
+                        for j = i0 to i1
+                            array.set(bins, j, array.get(bins, j) + share)
+            int mx = array.indexof(bins, array.max(bins))
+            poc := lo + (mx + 0.5) * step
+        else
+            poc := hi
+    poc
+
+// Moving average over the tail of an array of session values.
+f_ma(src, len, mtype) =>
+    int n = array.size(src)
+    float out = na
+    if n >= len and len > 0
+        if mtype == "SMA"
+            float s = 0.0
+            for i = 0 to len - 1
+                s += array.get(src, n - 1 - i)
+            out := s / len
+        else if mtype == "WMA"
+            float s = 0.0
+            float w = 0.0
+            for i = 0 to len - 1
+                float wt = len - i
+                s += array.get(src, n - 1 - i) * wt
+                w += wt
+            out := s / w
+        else
+            int warm = math.min(n, len * 3)
+            float k = 2.0 / (len + 1)
+            float e = array.get(src, n - warm)
+            if warm > 1
+                for i = n - warm + 1 to n - 1
+                    e := array.get(src, i) * k + e * (1.0 - k)
+            out := e
+    out
+
+// Mean of the last n elements.
+f_avgTail(arr, n) =>
+    int sz = array.size(arr)
+    float out = na
+    if sz > 0
+        int k = math.min(n, sz)
+        float s = 0.0
+        for i = 0 to k - 1
+            s += array.get(arr, sz - 1 - i)
+        out := s / k
+    out
+
+// Sample standard deviation of the last n elements.
+f_sdTail(arr, n) =>
+    int sz = array.size(arr)
+    float out = na
+    if sz >= 2
+        int k = math.min(n, sz)
+        if k >= 2
+            float m = 0.0
+            for i = 0 to k - 1
+                m += array.get(arr, sz - 1 - i)
+            m := m / k
+            float ss = 0.0
+            for i = 0 to k - 1
+                float d = array.get(arr, sz - 1 - i) - m
+                ss += d * d
+            out := math.sqrt(ss / (k - 1))
+    out
+
+// Forward path of the average, and the standard deviation around it.
+//
+// For each horizon k the average is recomputed with k hypothetical future POCs
+// appended. The sensitivity of that value to each future POC is measured by
+// bumping it and re-running, which gives the average's own weights whatever
+// its type. Those weights are then applied to a random walk in the POC series
+// whose first step carries the reduced, part-elapsed sigma of today.
+f_fanPath(src, len, mtype, H, mu1, muRest, sig1, sigD, outMid, outSd) =>
+    int n = array.size(src)
+    array.clear(outMid)
+    array.clear(outSd)
+    if n >= len and len > 0 and H > 0
+        int keep = math.min(n, len * 3)
+        work = array.new<float>()
+        for i = 0 to keep - 1
+            array.push(work, array.get(src, n - keep + i))
+        w = array.new<float>(H, 0.0)
+        for k = 1 to H
+            array.push(work, k == 1 ? mu1 : muRest)
+            float mid = f_ma(work, len, mtype)
+            array.push(outMid, mid)
+            for i = 1 to k
+                int idx = keep + i - 1
+                float orig = array.get(work, idx)
+                array.set(work, idx, orig + 1.0)
+                float bump = f_ma(work, len, mtype)
+                array.set(work, idx, orig)
+                array.set(w, i - 1, bump - mid)
+            float sdv = na
+            if not na(sig1) and not na(sigD)
+                float w1 = 0.0
+                for j = 1 to k
+                    w1 += array.get(w, j - 1)
+                float v = w1 * w1 * sig1 * sig1
+                if k >= 2
+                    for i = 2 to k
+                        float wi = 0.0
+                        for j = i to k
+                            wi += array.get(w, j - 1)
+                        v += wi * wi * sigD * sigD
+                sdv := math.sqrt(math.max(0.0, v))
+            array.push(outSd, sdv)
+    array.size(outMid)
+
+// ──────────────────────────── Session state ────────────────────────────
+var sHigh = array.new<float>()
+var sLow  = array.new<float>()
+var sVol  = array.new<float>()
+var sCls  = array.new<float>()
+var pocs  = array.new<float>()
+var diffs = array.new<float>()
+var dOpen = array.new<float>()
+var dCls  = array.new<float>()
+var float sessOpenPx   = na
+var float prevSessClose = na
+var float sessHi = na
+var float sessLo = na
+
+// How wide a session has been by each twentieth of its length, for the last 20
+// sessions. Today's width is judged against the same point in those sessions
+// rather than against an assumed growth curve.
+var SHAPE_ROWS = 20
+var SHAPE_COLS = 20
+var rngShape = matrix.new<float>(SHAPE_ROWS, SHAPE_COLS, na)
+var int shapeRow = 0
+var spans = array.new<int>()
+var cycles = array.new<int>()
+var pocLines = array.new<line>()
+var int sessBar0 = na
+var int lastEndBar = na
+
+inSess = not na(time(timeframe.period, sessStr, tzStr))
+inI    = inSess ? 1 : 0
+prevIn = nz(inI[1], 0) == 1
+
+// A session window that covers every bar the chart carries never shows a gap:
+// an almost-24-hour session such as 1800-1700, or any session on a chart set to
+// regular hours only. Leaving the window cannot be the sole end-of-session test,
+// or those charts run one endless session. The session's own start minute is the
+// second boundary, which also catches the roll from one session straight into
+// the next.
+okLen    = str.length(sessStr) >= 9
+startHH  = okLen ? str.tonumber(str.substring(sessStr, 0, 2)) : na
+startMM  = okLen ? str.tonumber(str.substring(sessStr, 2, 4)) : na
+endHH    = okLen ? str.tonumber(str.substring(sessStr, 5, 7)) : na
+endMM    = okLen ? str.tonumber(str.substring(sessStr, 7, 9)) : na
+startMin = na(startHH) or na(startMM) ? -1 : int(startHH) * 60 + int(startMM)
+endMin   = na(endHH) or na(endMM) ? -1 : int(endHH) * 60 + int(endMM)
+sessLen  = startMin < 0 or endMin < 0 ? na : endMin > startMin ? endMin - startMin : 1440 - startMin + endMin
+modNow   = hour(time, tzStr) * 60 + minute(time, tzStr)
+modPrv   = nz(modNow[1], modNow)
+crossed  = startMin >= 0 and ((modPrv < startMin and modNow >= startMin) or (modPrv > modNow and (startMin > modPrv or startMin <= modNow)))
+
+sEnd   = (not inSess and prevIn) or (inSess and prevIn and crossed)
+sStart = inSess and (not prevIn or crossed)
+
+// Fraction of the session elapsed, from the clock.
+float prog = 0.0
+if inSess and not na(sessLen) and sessLen > 0
+    prog := math.min(1.0, math.max(0.0, ((modNow - startMin + 1440) % 1440) / sessLen))
+
+// ───────────────────── Session close: POC and averages ─────────────────────
+var float maA = na
+var float maB = na
+float newPOC = na
+
+if sEnd
+    if not na(lastEndBar)
+        array.push(cycles, bar_index - lastEndBar)
+        if array.size(cycles) > 200
+            array.shift(cycles)
+    lastEndBar := bar_index
+
+    if array.size(sHigh) >= minBars
+        newPOC := f_poc(sHigh, sLow, sVol, sCls, rowsIn, placeIn)
+        if not na(newPOC)
+            // Three dispersions, because the right one depends on what is known.
+            // Before a session opens the anchor is the last price; once it has
+            // opened, knowing the open removes real uncertainty.
+            if array.size(pocs) > 0
+                array.push(diffs, newPOC - array.get(pocs, array.size(pocs) - 1))
+                if array.size(diffs) > 2000
+                    array.shift(diffs)
+            if not na(sessOpenPx)
+                array.push(dOpen, newPOC - sessOpenPx)
+                if array.size(dOpen) > 2000
+                    array.shift(dOpen)
+            if not na(prevSessClose)
+                array.push(dCls, newPOC - prevSessClose)
+                if array.size(dCls) > 2000
+                    array.shift(dCls)
+            prevSessClose := close[1]
+            array.push(pocs, newPOC)
+            array.push(spans, bar_index - nz(sessBar0, bar_index))
+            if array.size(pocs) > 2000
+                array.shift(pocs)
+                array.shift(spans)
+
+            maA := f_ma(pocs, lenA, typeA)
+            maB := f_ma(pocs, lenB, typeB)
+
+            if showPOC and not na(sessBar0)
+                pl = line.new(math.max(sessBar0, bar_index - 4000), newPOC, bar_index - 1, newPOC, xloc = xloc.bar_index, color = pocCol, width = 1)
+                array.push(pocLines, pl)
+                if array.size(pocLines) > pocKeep
+                    line.delete(array.shift(pocLines))
+
+// The new session opens after the old one has been banked, so a bar that ends
+// one session and opens the next is counted in the right place.
+if sStart
+    array.clear(sHigh)
+    array.clear(sLow)
+    array.clear(sVol)
+    array.clear(sCls)
+    sessBar0 := bar_index
+    sessOpenPx := open
+    sessHi := high
+    sessLo := low
+    shapeRow := (shapeRow + 1) % SHAPE_ROWS
+    for c = 0 to SHAPE_COLS - 1
+        matrix.set(rngShape, shapeRow, c, na)
+
+if inSess
+    array.push(sHigh, high)
+    array.push(sLow, low)
+    array.push(sVol, profSrc == "Volume" and not na(volume) and volume > 0 ? volume : 1.0)
+    array.push(sCls, close)
+    sessHi := math.max(nz(sessHi, high), high)
+    sessLo := math.min(nz(sessLo, low), low)
+    matrix.set(rngShape, shapeRow, math.min(SHAPE_COLS - 1, int(prog * SHAPE_COLS)), sessHi - sessLo)
+
+plot(showA ? maA : na, "POC average A", color = colA, linewidth = widA, style = plot.style_stepline)
+plot(showB ? maB : na, "POC average B", color = colB, linewidth = widB, style = plot.style_stepline)
+plot(newPOC, "Session POC", color = color.new(color.white, 100), style = plot.style_circles, display = display.data_window)
+
+// ─────────────────── Forward drawing: midline and fan ───────────────────
+var line devLine = na
+var label warnL  = na
+var fanLines  = array.new<line>()
+var fanFills  = array.new<linefill>()
+var fanLabels = array.new<label>()
+var midA = array.new<float>()
+var sdA  = array.new<float>()
+var midB = array.new<float>()
+var sdB  = array.new<float>()
+
+// values kept for the table
+var float tSigReal = na
+var float tSigOpen = na
+var float tSigUse  = na
+var float tWDev    = na
+var float tDayScale = na
+var float tProg    = na
+var float tSd1     = na
+var float tSd2     = na
+
+f_seg(x1, y1, x2, y2, col, wid, sty) =>
+    ln = line.new(x1, y1, x2, y2, xloc = xloc.bar_index, color = col, width = wid, style = sty)
+    array.push(fanLines, ln)
+    ln
+
+if barstate.islast
+    while array.size(fanFills) > 0
+        linefill.delete(array.pop(fanFills))
+    while array.size(fanLines) > 0
+        line.delete(array.pop(fanLines))
+    while array.size(fanLabels) > 0
+        label.delete(array.pop(fanLabels))
+    line.delete(devLine)
+    label.delete(warnL)
+
+    if timeframe.isdwm
+        warnL := label.new(bar_index, close, "Atty MPOC needs an intraday chart (1m to 60m).", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(color.red, 20), textcolor = color.white, size = size.normal)
+
+    // developing POC of the session in progress
+    float devPOC = na
+    if inSess and array.size(sHigh) >= 1
+        devPOC := f_poc(sHigh, sLow, sVol, sCls, rowsIn, placeIn)
+        if showDev and not na(devPOC) and not na(sessBar0)
+            devLine := line.new(math.max(sessBar0, bar_index - 4000), devPOC, bar_index, devPOC, xloc = xloc.bar_index, color = color.new(pocCol, 0), style = line.style_dotted, width = 1)
+
+    float avgSpan = f_avgTail(spans, 20)
+    tProg := prog
+
+    // Day type. Today's width so far is judged against the same point in the
+    // last 20 sessions, so the comparison needs no assumption about how a range
+    // grows through a session. A wide, heavily traded session leaves the POC
+    // further from current price than a quiet one, by a factor of two to three
+    // across the range of days.
+    float dayScale = 1.0
+    if dayScaleOn and inSess and widthExp > 0 and not na(sessHi) and not na(sessLo)
+        int col = math.min(SHAPE_COLS - 1, int(prog * SHAPE_COLS))
+        past = array.new<float>()
+        for rr = 0 to SHAPE_ROWS - 1
+            if rr != shapeRow
+                float vv = matrix.get(rngShape, rr, col)
+                if not na(vv) and vv > 0
+                    array.push(past, vv)
+        if array.size(past) >= 5
+            float typ = array.median(past)
+            if typ > 0
+                dayScale := math.min(3.0, math.max(0.33, math.pow((sessHi - sessLo) / typ, widthExp)))
+    tDayScale := inSess ? dayScale : na
+
+    // Session sigma. Three measured dispersions, each matched to its own anchor:
+    //   sigReal  POC to previous POC   - the step from one session to the next
+    //   sigCls   POC to previous close - what is unknown before a session opens
+    //   sigOpen  POC to its own open   - what is left once it has opened
+    // On ES these run roughly 48 / 43 / 30 points. Learning the open genuinely
+    // removes a third of the uncertainty, so the first node of the fan tightens
+    // the moment the bell rings, then decays along the settle curve.
+    float sigReal = f_sdTail(diffs, emLB)
+    float sigOpen = f_sdTail(dOpen, emLB)
+    float sigCls  = f_sdTail(dCls, emLB)
+    float sigImp  = na(ivRaw) ? na : close * (ivRaw / 100.0) / math.sqrt(252.0)
+    float sigD = switch emSrc
+        "Realised POC dispersion"   => sigReal
+        "Implied volatility index"  => nz(sigImp, sigReal)
+        => emMan
+    sigD := na(sigD) ? na : sigD * emMult
+    // An implied or hand-typed figure replaces the POC-to-POC scale. The other
+    // two move with it, so their measured relationship is preserved.
+    float sigScale = na(sigD) or na(sigReal) or sigReal <= 0 ? 1.0 : sigD / sigReal
+    float sigOpenU = na(sigOpen) ? na : sigOpen * sigScale
+    float sigClsU  = na(sigCls) ? sigD : sigCls * sigScale
+    float sig1 = na
+    if inSess
+        sig1 := na(sigOpenU) ? sigD : sigOpenU * math.pow(1.0 - prog, settleExp) * dayScale
+    else
+        sig1 := sigClsU
+    tSigReal := sigReal
+    tSigOpen := sigOpen
+    tSigUse  := sigD
+
+    // Early in a session the current price estimates the final POC better than
+    // the developing POC does. Late in the session the reverse holds. Measured
+    // crossover on ES is about 60% through, so the two are blended on a ramp.
+    float wDev = math.min(1.0, 1.2 * math.pow(prog, blendExp))
+    float mu1 = inSess and not na(devPOC) ? wDev * devPOC + (1.0 - wDev) * close : close
+    float muRest = close
+    tWDev := inSess ? wDev : na
+
+    // forward paths
+    int okA = 0
+    int okB = 0
+    if showA and not na(maA)
+        okA := f_fanPath(pocs, lenA, typeA, projSess, mu1, muRest, sig1, sigD, midA, sdA)
+    if showB and not na(maB)
+        okB := f_fanPath(pocs, lenB, typeB, projSess, mu1, muRest, sig1, sigD, midB, sdB)
+
+    // x positions of the forward session ends
+    float cyc = f_avgTail(cycles, 20)
+    int step = math.max(1, int(math.round(nz(cyc, nz(avgSpan, 1)))))
+    int bTo1 = math.max(1, step - (bar_index - nz(lastEndBar, bar_index - step)))
+
+    if okA > 0 or okB > 0
+        for pass = 0 to 1
+            bool isA = pass == 0
+            int cnt = isA ? okA : okB
+            if cnt > 0
+                float anchor = isA ? maA : maB
+                color cMid = isA ? colA : colB
+                bool wantFan = showFan and (isA == (fanOn == "POC average A"))
+                float pX = bar_index
+                float pM = anchor
+                float pS = 0.0
+                float pB1 = 1.0
+                float pB2 = 2.0
+                for k = 1 to cnt
+                    int x = math.min(bar_index + 495, bar_index + bTo1 + (k - 1) * step)
+                    float m = array.get(isA ? midA : midB, k - 1)
+                    float s = nz(array.get(isA ? sdA : sdB, k - 1), 0.0)
+                    // Measured containment at one session, interpolated toward the
+                    // Gaussian multiples further out as a sum of sessions converges.
+                    float b1 = 1.0 + (band68 - 1.0) / math.sqrt(k)
+                    float b2 = 2.0 + (band95 - 2.0) / math.sqrt(k)
+                    if not na(m)
+                        if wantFan and s > 0
+                            l2u = f_seg(int(pX), pM + pB2 * pS, x, m + b2 * s, col2sd, 1, line.style_solid)
+                            l1u = f_seg(int(pX), pM + pB1 * pS, x, m + b1 * s, col1sd, 1, line.style_solid)
+                            l1d = f_seg(int(pX), pM - pB1 * pS, x, m - b1 * s, col1sd, 1, line.style_solid)
+                            l2d = f_seg(int(pX), pM - pB2 * pS, x, m - b2 * s, col2sd, 1, line.style_solid)
+                            if shadeFan
+                                array.push(fanFills, linefill.new(l2u, l1u, color.new(col2sd, 93)))
+                                array.push(fanFills, linefill.new(l1u, l1d, color.new(col1sd, 90)))
+                                array.push(fanFills, linefill.new(l1d, l2d, color.new(col2sd, 93)))
+                        if showProj
+                            f_seg(int(pX), pM, x, m, cMid, 1, line.style_dashed)
+                        if k == cnt
+                            if wantFan and s > 0
+                                tSd1 := b1 * s
+                                tSd2 := b2 * s
+                                if projLabel
+                                    array.push(fanLabels, label.new(x, m + b2 * s, "95% hi " + str.tostring(m + b2 * s, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = color.new(col2sd, 88), textcolor = col2sd, size = size.small))
+                                    array.push(fanLabels, label.new(x, m - b2 * s, "95% lo " + str.tostring(m - b2 * s, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = color.new(col2sd, 88), textcolor = col2sd, size = size.small))
+                            if projLabel and showProj
+                                array.push(fanLabels, label.new(x, m, str.tostring(m, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = color.new(cMid, 85), textcolor = cMid, size = size.small))
+                        pX := x
+                        pM := m
+                        pS := s
+                        pB1 := b1
+                        pB2 := b2
+
+// ──────────────────────────── Info table ────────────────────────────
+tblAnchor = tblPos == "Top right" ? position.top_right : tblPos == "Bottom right" ? position.bottom_right : tblPos == "Top left" ? position.top_left : position.bottom_left
+var tb = table.new(tblAnchor, 2, 13, bgcolor = color.new(color.black, 82), border_color = color.new(color.gray, 60), border_width = 1)
+
+f_row(t, r, k, v, c) =>
+    table.cell(t, 0, r, k, text_color = color.new(color.gray, 10), text_size = size.small, text_halign = text.align_left)
+    table.cell(t, 1, r, v, text_color = c, text_size = size.small, text_halign = text.align_right)
+
+if barstate.islast
+    table.clear(tb, 0, 0, 1, 12)
+    if showTbl
+        string srcTag = emSrc == "Realised POC dispersion" ? "realised" : emSrc == "Implied volatility index" ? (na(ivRaw) ? "implied (n/a, realised)" : "implied") : "manual"
+        f_row(tb, 0, "session", sessStr, color.new(color.gray, 10))
+        f_row(tb, 1, "sessions counted", str.tostring(array.size(pocs)), color.new(color.gray, 10))
+        f_row(tb, 2, "last session POC", array.size(pocs) > 0 ? str.tostring(array.get(pocs, array.size(pocs) - 1), format.mintick) : "-", color.new(color.gray, 10))
+        f_row(tb, 3, "POC " + str.tostring(lenA), na(maA) ? "-" : str.tostring(maA, format.mintick), colA)
+        f_row(tb, 4, "POC " + str.tostring(lenB), na(maB) ? "-" : str.tostring(maB, format.mintick), colB)
+        f_row(tb, 5, "price vs POC " + str.tostring(lenA), na(maA) ? "-" : str.tostring(close - maA, format.mintick), close >= nz(maA, close) ? color.new(color.teal, 10) : color.new(color.red, 10))
+        f_row(tb, 6, "session elapsed", str.tostring(math.round(nz(tProg, 0) * 100)) + "%", color.new(color.gray, 10))
+        f_row(tb, 7, "today anchor", na(tWDev) ? "next session" : str.tostring(math.round(tWDev * 100)) + "% developing POC", color.new(color.gray, 10))
+        f_row(tb, 8, "day type width", na(tDayScale) ? "-" : str.tostring(tDayScale, "#.00") + "x " + (tDayScale > 1.15 ? "wide" : tDayScale < 0.87 ? "quiet" : "normal"), tDayScale > 1.15 ? color.new(color.orange, 10) : tDayScale < 0.87 ? color.new(color.teal, 10) : color.new(color.gray, 10))
+        f_row(tb, 9, "sigma POC to POC", na(tSigReal) ? "-" : str.tostring(tSigReal, format.mintick), color.new(color.gray, 10))
+        f_row(tb, 10, "sigma POC to open", na(tSigOpen) ? "-" : str.tostring(tSigOpen, format.mintick), color.new(color.gray, 10))
+        f_row(tb, 11, "sigma in use (" + srcTag + ")", na(tSigUse) ? "-" : str.tostring(tSigUse, format.mintick), color.new(color.gray, 10))
+        f_row(tb, 12, "band at +" + str.tostring(projSess) + " (68/95%)", na(tSd1) ? "-" : "±" + str.tostring(tSd1, format.mintick) + " / ±" + str.tostring(tSd2, format.mintick), col1sd)

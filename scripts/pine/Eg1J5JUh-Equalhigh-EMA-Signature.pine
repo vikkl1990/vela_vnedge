@@ -1,0 +1,1946 @@
+//@version=6
+indicator(
+     "Equalhigh — EMA Signature v2",
+     shorttitle = "EMA Signature",
+     overlay = true,
+     max_bars_back = 5000,
+     max_polylines_count = 10,
+     max_labels_count = 50
+)
+
+// ╔════════════════════════════════════════════════════════════════════════════╗
+// ║                     EQUALHIGH — EMA SIGNATURE v2                         ║
+// ║                                                                            ║
+// ║  Finds the EMA that historically acts as the most reliable dynamic        ║
+// ║  support for the current security and timeframe.                           ║
+// ╚════════════════════════════════════════════════════════════════════════════╝
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 1. SCAN SETTINGS
+// ═════════════════════════════════════════════════════════════════════════════
+
+groupScan = "1. EMA Scan"
+
+minLen = input.int(
+     10,
+     "Minimum EMA",
+     minval = 2,
+     maxval = 500,
+     group = groupScan
+)
+
+maxLen = input.int(
+     250,
+     "Maximum EMA",
+     minval = 5,
+     maxval = 500,
+     group = groupScan
+)
+
+stepLen = input.int(
+     2,
+     "EMA Step",
+     minval = 1,
+     maxval = 25,
+     group = groupScan,
+     tooltip = "1 = maximum precision. 2 or 5 = faster."
+)
+
+lookbackBars = input.int(
+     750,
+     "Statistical lookback",
+     minval = 100,
+     maxval = 2500,
+     group = groupScan
+)
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 2. SUPPORT / REBOUND DEFINITION
+// ═════════════════════════════════════════════════════════════════════════════
+
+groupDetection = "2. Rebound Definition"
+
+atrLength = input.int(
+     14,
+     "ATR Length",
+     minval = 5,
+     maxval = 100,
+     group = groupDetection
+)
+
+touchATR = input.float(
+     0.20,
+     "Touch tolerance — ATR",
+     minval = 0.01,
+     maxval = 2.0,
+     step = 0.05,
+     group = groupDetection
+)
+
+breakATR = input.float(
+     0.35,
+     "Support break tolerance — ATR",
+     minval = 0.05,
+     maxval = 3.0,
+     step = 0.05,
+     group = groupDetection
+)
+
+confirmBars = input.int(
+     10,
+     "Rebound evaluation window",
+     minval = 2,
+     maxval = 50,
+     group = groupDetection
+)
+
+minBouncePct = input.float(
+     3.0,
+     "Minimum rebound %",
+     minval = 0.25,
+     maxval = 30,
+     step = 0.25,
+     group = groupDetection
+)
+
+minTests = input.int(
+     5,
+     "Minimum tests required",
+     minval = 2,
+     maxval = 50,
+     group = groupDetection
+)
+
+cooldownBars = input.int(
+     5,
+     "Touch cooldown",
+     minval = 0,
+     maxval = 50,
+     group = groupDetection
+)
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 3. DISPLAY SETTINGS
+// ═════════════════════════════════════════════════════════════════════════════
+
+groupDisplay = "3. Display"
+
+displayBars = input.int(
+     500,
+     "EMA history displayed",
+     minval = 50,
+     maxval = 1500,
+     group = groupDisplay
+)
+
+showSecond = input.bool(
+     true,
+     "Show second-best EMA",
+     group = groupDisplay
+)
+
+showTouchMarker = input.bool(
+     true,
+     "Mark current Best EMA tests",
+     group = groupDisplay
+)
+
+showTable = input.bool(
+     true,
+     "Show Top 5 dashboard",
+     group = groupDisplay
+)
+
+bestColor = input.color(
+     color.aqua,
+     "Best EMA",
+     group = groupDisplay
+)
+
+secondColor = input.color(
+     color.orange,
+     "Second-best EMA",
+     group = groupDisplay
+)
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 4. FUNCTIONS
+// ═════════════════════════════════════════════════════════════════════════════
+
+f_clamp01(float x) =>
+    math.max(
+         0.0,
+         math.min(
+              1.0,
+              x
+         )
+    )
+
+
+// Wilson lower confidence bound.
+// Avoids stupid results such as:
+//
+// EMA 137 = 2/2 = 100%
+// beating
+// EMA 34 = 23/30 = 76.7%
+//
+// Statistical confidence is rewarded.
+
+f_wilson(int wins, int tests) =>
+
+    float result = 0.0
+
+    if tests > 0
+
+        float z = 1.645
+
+        float n =
+             float(tests)
+
+        float p =
+             float(wins) / n
+
+        float denominator =
+             1.0 +
+             z * z / n
+
+        float centre =
+             p +
+             z * z / (2.0 * n)
+
+        float margin =
+             z *
+             math.sqrt(
+                  (
+                       p * (1.0 - p) +
+                       z * z / (4.0 * n)
+                  ) / n
+             )
+
+        result :=
+             math.max(
+                  0.0,
+                  (centre - margin) /
+                  denominator
+             )
+
+    result
+
+
+// Composite EMA Signature score.
+//
+// 65% statistical reliability
+// 15% rebound magnitude
+// 10% sample depth
+// 10% resistance to breakdowns
+
+f_signature_score(
+     int tests,
+     int wins,
+     int breaks,
+     float avgSuccessMove,
+     float minimumBounce,
+     int minimumTests
+ ) =>
+
+    float result = 0.0
+
+    if tests >= minimumTests
+
+        float wilson =
+             f_wilson(
+                  wins,
+                  tests
+             )
+
+        float bounceQuality =
+             f_clamp01(
+                  avgSuccessMove /
+                  math.max(
+                       minimumBounce * 2.0,
+                       0.01
+                  )
+             )
+
+        float sampleQuality =
+             f_clamp01(
+                  float(tests) /
+                  math.max(
+                       float(minimumTests * 3),
+                       1.0
+                  )
+             )
+
+        float breakRate =
+             float(breaks) /
+             float(tests)
+
+        result :=
+             100.0 *
+             (
+                  0.65 * wilson +
+                  0.15 * bounceQuality +
+                  0.10 * sampleQuality +
+                  0.10 * (1.0 - breakRate)
+             )
+
+    result
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 5. VALIDATION
+// ═════════════════════════════════════════════════════════════════════════════
+
+int candidateCount =
+     int(
+          math.floor(
+               (maxLen - minLen) /
+               stepLen
+          )
+     ) + 1
+
+
+if barstate.isfirst
+
+    if maxLen <= minLen
+        runtime.error(
+             "Maximum EMA must be greater than Minimum EMA."
+        )
+
+    if candidateCount > 250
+        runtime.error(
+             "Too many EMA candidates. Increase EMA Step."
+        )
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 6. ATR + MARKET REGIME
+// ═════════════════════════════════════════════════════════════════════════════
+
+float atr =
+     ta.atr(
+          atrLength
+     )
+
+float regimeEMA =
+     ta.ema(
+          close,
+          200
+     )
+
+bool bullRegime =
+     close > regimeEMA and
+     regimeEMA > regimeEMA[10]
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 7. CREATE EVERY EMA
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Dynamic EMA lengths cannot simply be passed to ta.ema().
+//
+// We therefore calculate all candidate EMAs manually.
+//
+// Crucially, a NEW ARRAY is produced on every bar.
+// Pine can then access historical array instances.
+//
+// ═════════════════════════════════════════════════════════════════════════════
+
+array<float> emaNow =
+     array.new_float(
+          candidateCount,
+          na
+     )
+
+array<float> emaPrevious =
+     emaNow[1]
+
+
+for i = 0 to candidateCount - 1
+
+    int length =
+         minLen +
+         i * stepLen
+
+    float alpha =
+         2.0 /
+         (
+              float(length) +
+              1.0
+         )
+
+    float previousEMA =
+         na(emaPrevious) ?
+         na :
+         array.get(
+              emaPrevious,
+              i
+         )
+
+    float currentEMA =
+         na(previousEMA) ?
+         close :
+         alpha * close +
+         (1.0 - alpha) *
+         previousEMA
+
+    array.set(
+         emaNow,
+         i,
+         currentEMA
+    )
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 8. STATISTICAL STORAGE
+// ═════════════════════════════════════════════════════════════════════════════
+
+var array<int> tests =
+     array.new_int(
+          candidateCount,
+          0
+     )
+
+var array<int> wins =
+     array.new_int(
+          candidateCount,
+          0
+     )
+
+var array<int> breaks =
+     array.new_int(
+          candidateCount,
+          0
+     )
+
+var array<float> totalSuccessMove =
+     array.new_float(
+          candidateCount,
+          0.0
+     )
+
+var array<float> totalTimeToTarget =
+     array.new_float(
+          candidateCount,
+          0.0
+     )
+
+
+// Bull regime statistics
+
+var array<int> bullTests =
+     array.new_int(
+          candidateCount,
+          0
+     )
+
+var array<int> bullWins =
+     array.new_int(
+          candidateCount,
+          0
+     )
+
+
+// Non-bull statistics
+
+var array<int> bearTests =
+     array.new_int(
+          candidateCount,
+          0
+     )
+
+var array<int> bearWins =
+     array.new_int(
+          candidateCount,
+          0
+     )
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 9. ACTIVE SUPPORT TEST STORAGE
+// ═════════════════════════════════════════════════════════════════════════════
+
+var array<int> pendingAge =
+     array.new_int(
+          candidateCount,
+          -1
+     )
+
+var array<float> pendingEntry =
+     array.new_float(
+          candidateCount,
+          na
+     )
+
+var array<float> pendingMaxMove =
+     array.new_float(
+          candidateCount,
+          0.0
+     )
+
+var array<bool> pendingSuccess =
+     array.new_bool(
+          candidateCount,
+          false
+     )
+
+var array<int> pendingHitAge =
+     array.new_int(
+          candidateCount,
+          -1
+     )
+
+var array<bool> pendingBull =
+     array.new_bool(
+          candidateCount,
+          false
+     )
+
+var array<int> cooldown =
+     array.new_int(
+          candidateCount,
+          0
+     )
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 10. STATISTICAL WINDOW
+// ═════════════════════════════════════════════════════════════════════════════
+
+bool insideWindow =
+     bar_index >=
+     last_bar_index -
+     lookbackBars
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 11. TEST EVERY EMA
+// ═════════════════════════════════════════════════════════════════════════════
+
+for i = 0 to candidateCount - 1
+
+    float ema =
+         array.get(
+              emaNow,
+              i
+         )
+
+    float previousEMA =
+         na(emaPrevious) ?
+         na :
+         array.get(
+              emaPrevious,
+              i
+         )
+
+
+    // ─────────────────────────────────────────────────────────────────────
+    // COOLDOWN
+    // ─────────────────────────────────────────────────────────────────────
+
+    int cd =
+         array.get(
+              cooldown,
+              i
+         )
+
+    if cd > 0
+        cd -= 1
+
+    array.set(
+         cooldown,
+         i,
+         cd
+    )
+
+
+    // ─────────────────────────────────────────────────────────────────────
+    // EXISTING SUPPORT TEST
+    // ─────────────────────────────────────────────────────────────────────
+
+    int age =
+         array.get(
+              pendingAge,
+              i
+         )
+
+    if age >= 0
+
+        age += 1
+
+        float entry =
+             array.get(
+                  pendingEntry,
+                  i
+             )
+
+        float maxMove =
+             array.get(
+                  pendingMaxMove,
+                  i
+             )
+
+        bool succeeded =
+             array.get(
+                  pendingSuccess,
+                  i
+             )
+
+        int hitAge =
+             array.get(
+                  pendingHitAge,
+                  i
+             )
+
+        bool wasBull =
+             array.get(
+                  pendingBull,
+                  i
+             )
+
+
+        // Maximum upside excursion from support.
+
+        float currentMove =
+             entry > 0 ?
+             (
+                  high / entry -
+                  1.0
+             ) * 100.0 :
+             0.0
+
+        maxMove :=
+             math.max(
+                  maxMove,
+                  currentMove
+             )
+
+
+        bool targetReached =
+             maxMove >=
+             minBouncePct
+
+        bool supportBroken =
+             close <
+             ema -
+             atr * breakATR
+
+
+        bool finishFailure =
+             false
+
+        bool finishSuccess =
+             false
+
+
+        // Conservative assumption:
+        //
+        // If target AND breakdown occur on the same candle,
+        // intrabar order is unknown.
+        //
+        // We count it as a failed support test.
+
+        if not succeeded
+
+            if supportBroken
+
+                finishFailure := true
+
+            else if targetReached
+
+                succeeded := true
+                hitAge := age
+
+
+        // Once the target has been reached we continue
+        // measuring the rebound until the end of the window.
+
+        if succeeded and
+           age >= confirmBars
+
+            finishSuccess := true
+
+
+        // No sufficient rebound before expiration.
+
+        if not succeeded and
+           age >= confirmBars
+
+            finishFailure := true
+
+
+        // ─────────────────────────────────────────────────────────────────
+        // SUCCESS
+        // ─────────────────────────────────────────────────────────────────
+
+        if finishSuccess
+
+            array.set(
+                 tests,
+                 i,
+                 array.get(
+                      tests,
+                      i
+                 ) + 1
+            )
+
+            array.set(
+                 wins,
+                 i,
+                 array.get(
+                      wins,
+                      i
+                 ) + 1
+            )
+
+            array.set(
+                 totalSuccessMove,
+                 i,
+                 array.get(
+                      totalSuccessMove,
+                      i
+                 ) +
+                 maxMove
+            )
+
+            array.set(
+                 totalTimeToTarget,
+                 i,
+                 array.get(
+                      totalTimeToTarget,
+                      i
+                 ) +
+                 float(hitAge)
+            )
+
+
+            if wasBull
+
+                array.set(
+                     bullTests,
+                     i,
+                     array.get(
+                          bullTests,
+                          i
+                     ) + 1
+                )
+
+                array.set(
+                     bullWins,
+                     i,
+                     array.get(
+                          bullWins,
+                          i
+                     ) + 1
+                )
+
+            else
+
+                array.set(
+                     bearTests,
+                     i,
+                     array.get(
+                          bearTests,
+                          i
+                     ) + 1
+                )
+
+                array.set(
+                     bearWins,
+                     i,
+                     array.get(
+                          bearWins,
+                          i
+                     ) + 1
+                )
+
+
+            array.set(
+                 pendingAge,
+                 i,
+                 -1
+            )
+
+            array.set(
+                 pendingEntry,
+                 i,
+                 na
+            )
+
+            array.set(
+                 pendingMaxMove,
+                 i,
+                 0.0
+            )
+
+            array.set(
+                 pendingSuccess,
+                 i,
+                 false
+            )
+
+            array.set(
+                 pendingHitAge,
+                 i,
+                 -1
+            )
+
+            array.set(
+                 cooldown,
+                 i,
+                 cooldownBars
+            )
+
+
+        // ─────────────────────────────────────────────────────────────────
+        // FAILURE
+        // ─────────────────────────────────────────────────────────────────
+
+        else if finishFailure
+
+            array.set(
+                 tests,
+                 i,
+                 array.get(
+                      tests,
+                      i
+                 ) + 1
+            )
+
+
+            // Actual confirmed break.
+
+            if supportBroken
+
+                array.set(
+                     breaks,
+                     i,
+                     array.get(
+                          breaks,
+                          i
+                     ) + 1
+                )
+
+
+            if wasBull
+
+                array.set(
+                     bullTests,
+                     i,
+                     array.get(
+                          bullTests,
+                          i
+                     ) + 1
+                )
+
+            else
+
+                array.set(
+                     bearTests,
+                     i,
+                     array.get(
+                          bearTests,
+                          i
+                     ) + 1
+                )
+
+
+            array.set(
+                 pendingAge,
+                 i,
+                 -1
+            )
+
+            array.set(
+                 pendingEntry,
+                 i,
+                 na
+            )
+
+            array.set(
+                 pendingMaxMove,
+                 i,
+                 0.0
+            )
+
+            array.set(
+                 pendingSuccess,
+                 i,
+                 false
+            )
+
+            array.set(
+                 pendingHitAge,
+                 i,
+                 -1
+            )
+
+            array.set(
+                 cooldown,
+                 i,
+                 cooldownBars
+            )
+
+
+        // ─────────────────────────────────────────────────────────────────
+        // CONTINUE TEST
+        // ─────────────────────────────────────────────────────────────────
+
+        else
+
+            array.set(
+                 pendingAge,
+                 i,
+                 age
+            )
+
+            array.set(
+                 pendingMaxMove,
+                 i,
+                 maxMove
+            )
+
+            array.set(
+                 pendingSuccess,
+                 i,
+                 succeeded
+            )
+
+            array.set(
+                 pendingHitAge,
+                 i,
+                 hitAge
+            )
+
+
+    // ═════════════════════════════════════════════════════════════════════
+    // 12. DETECT NEW SUPPORT TOUCH
+    // ═════════════════════════════════════════════════════════════════════
+
+    age :=
+         array.get(
+              pendingAge,
+              i
+         )
+
+    cd :=
+         array.get(
+              cooldown,
+              i
+         )
+
+    float touchBand =
+         atr *
+         touchATR
+
+    float breakBand =
+         atr *
+         breakATR
+
+
+    // Price must approach the EMA from above.
+
+    bool approachFromAbove =
+         not na(previousEMA) and
+         close[1] >
+         previousEMA
+
+
+    // Candle reaches EMA tolerance zone.
+
+    bool touchesZone =
+         low <=
+         ema + touchBand and
+         high >=
+         ema - touchBand
+
+
+    // Candle must not already be a confirmed breakdown.
+
+    bool stillHolding =
+         close >=
+         ema - breakBand
+
+
+    bool enoughHistory =
+         bar_index >
+         maxLen
+
+
+    bool newTouch =
+         insideWindow and
+         enoughHistory and
+         age == -1 and
+         cd == 0 and
+         approachFromAbove and
+         touchesZone and
+         stillHolding
+
+
+    if newTouch
+
+        array.set(
+             pendingAge,
+             i,
+             0
+        )
+
+        // Rebound is measured from the EMA itself,
+        // not from candle close.
+
+        array.set(
+             pendingEntry,
+             i,
+             ema
+        )
+
+        float firstMove =
+             math.max(
+                  0.0,
+                  (
+                       high / ema -
+                       1.0
+                  ) * 100.0
+             )
+
+        array.set(
+             pendingMaxMove,
+             i,
+             firstMove
+        )
+
+        array.set(
+             pendingSuccess,
+             i,
+             false
+        )
+
+        array.set(
+             pendingHitAge,
+             i,
+             -1
+        )
+
+        array.set(
+             pendingBull,
+             i,
+             bullRegime
+        )
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 13. FIND CURRENT BEST + SECOND BEST
+// ═════════════════════════════════════════════════════════════════════════════
+
+int bestIndex =
+     -1
+
+int secondIndex =
+     -1
+
+float bestScore =
+     -1.0
+
+float secondScore =
+     -1.0
+
+
+for i = 0 to candidateCount - 1
+
+    int t =
+         array.get(
+              tests,
+              i
+         )
+
+    int w =
+         array.get(
+              wins,
+              i
+         )
+
+    int b =
+         array.get(
+              breaks,
+              i
+         )
+
+    float avgMove =
+         w > 0 ?
+         array.get(
+              totalSuccessMove,
+              i
+         ) /
+         float(w) :
+         0.0
+
+    float score =
+         f_signature_score(
+              t,
+              w,
+              b,
+              avgMove,
+              minBouncePct,
+              minTests
+         )
+
+
+    if t >= minTests
+
+        if score > bestScore
+
+            secondScore :=
+                 bestScore
+
+            secondIndex :=
+                 bestIndex
+
+            bestScore :=
+                 score
+
+            bestIndex :=
+                 i
+
+        else if score > secondScore
+
+            secondScore :=
+                 score
+
+            secondIndex :=
+                 i
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 14. CURRENT BEST EMA VALUES
+// ═════════════════════════════════════════════════════════════════════════════
+
+float bestEMA =
+     bestIndex >= 0 ?
+     array.get(
+          emaNow,
+          bestIndex
+     ) :
+     na
+
+float secondEMA =
+     secondIndex >= 0 ?
+     array.get(
+          emaNow,
+          secondIndex
+     ) :
+     na
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 15. CURRENT TEST MARKER
+// ═════════════════════════════════════════════════════════════════════════════
+
+bool testingBest =
+     bestIndex >= 0 and
+     low <=
+     bestEMA +
+     atr * touchATR and
+     high >=
+     bestEMA -
+     atr * touchATR
+
+
+plotshape(
+     showTouchMarker and
+     testingBest,
+     title = "Testing Best EMA",
+     style = shape.diamond,
+     location = location.belowbar,
+     size = size.tiny,
+     color = bestColor
+)
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 16. ALERT
+// ═════════════════════════════════════════════════════════════════════════════
+
+alertcondition(
+     testingBest,
+     title = "Equalhigh — Best EMA Test",
+     message = "Price is testing the Equalhigh EMA Signature support."
+)
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 17. DRAW FINAL EMA SIGNATURES
+// ═════════════════════════════════════════════════════════════════════════════
+
+var polyline bestGlow =
+     na
+
+var polyline bestLine =
+     na
+
+var polyline secondLine =
+     na
+
+var label bestLabel =
+     na
+
+var label secondLabel =
+     na
+
+
+if barstate.islast
+
+    // Delete previous drawings.
+
+    if not na(bestGlow)
+        polyline.delete(
+             bestGlow
+        )
+
+    if not na(bestLine)
+        polyline.delete(
+             bestLine
+        )
+
+    if not na(secondLine)
+        polyline.delete(
+             secondLine
+        )
+
+    if not na(bestLabel)
+        label.delete(
+             bestLabel
+        )
+
+    if not na(secondLabel)
+        label.delete(
+             secondLabel
+        )
+
+
+    // ─────────────────────────────────────────────────────────────────────
+    // BEST EMA
+    // ─────────────────────────────────────────────────────────────────────
+
+    if bestIndex >= 0
+
+        array<chart.point> bestPoints =
+             array.new<chart.point>()
+
+        int barsToDraw =
+             math.min(
+                  displayBars,
+                  bar_index + 1
+             )
+
+
+        for offset = barsToDraw - 1 to 0
+
+            array<float> historicalArray =
+                 emaNow[offset]
+
+            if not na(historicalArray)
+
+                float historicalEMA =
+                     array.get(
+                          historicalArray,
+                          bestIndex
+                     )
+
+                if not na(historicalEMA)
+
+                    array.push(
+                         bestPoints,
+                         chart.point.from_index(
+                              bar_index - offset,
+                              historicalEMA
+                         )
+                    )
+
+
+        if array.size(bestPoints) >= 2
+
+            // Glow
+
+            bestGlow :=
+                 polyline.new(
+                      bestPoints,
+                      curved = false,
+                      closed = false,
+                      xloc = xloc.bar_index,
+                      line_color = color.new(
+                           bestColor,
+                           82
+                      ),
+                      line_width = 8,
+                      force_overlay = true
+                 )
+
+            // Main line
+
+            bestLine :=
+                 polyline.new(
+                      bestPoints,
+                      curved = false,
+                      closed = false,
+                      xloc = xloc.bar_index,
+                      line_color = bestColor,
+                      line_width = 3,
+                      force_overlay = true
+                 )
+
+
+        int bestLength =
+             minLen +
+             bestIndex *
+             stepLen
+
+
+        bestLabel :=
+             label.new(
+                  bar_index + 3,
+                  bestEMA,
+                  "★ EMA " +
+                  str.tostring(
+                       bestLength
+                  ) +
+                  "\nScore " +
+                  str.tostring(
+                       bestScore,
+                       "#.0"
+                  ),
+                  xloc = xloc.bar_index,
+                  style = label.style_label_left,
+                  color = color.new(
+                       bestColor,
+                       10
+                  ),
+                  textcolor = color.black,
+                  size = size.small
+             )
+
+
+    // ─────────────────────────────────────────────────────────────────────
+    // SECOND-BEST EMA
+    // ─────────────────────────────────────────────────────────────────────
+
+    if showSecond and
+       secondIndex >= 0
+
+        array<chart.point> secondPoints =
+             array.new<chart.point>()
+
+        int barsToDraw2 =
+             math.min(
+                  displayBars,
+                  bar_index + 1
+             )
+
+
+        for offset = barsToDraw2 - 1 to 0
+
+            array<float> historicalArray2 =
+                 emaNow[offset]
+
+            if not na(historicalArray2)
+
+                float historicalEMA2 =
+                     array.get(
+                          historicalArray2,
+                          secondIndex
+                     )
+
+                if not na(historicalEMA2)
+
+                    array.push(
+                         secondPoints,
+                         chart.point.from_index(
+                              bar_index - offset,
+                              historicalEMA2
+                         )
+                    )
+
+
+        if array.size(secondPoints) >= 2
+
+            secondLine :=
+                 polyline.new(
+                      secondPoints,
+                      curved = false,
+                      closed = false,
+                      xloc = xloc.bar_index,
+                      line_color = color.new(
+                           secondColor,
+                           15
+                      ),
+                      line_width = 2,
+                      force_overlay = true
+                 )
+
+
+        int secondLength =
+             minLen +
+             secondIndex *
+             stepLen
+
+
+        secondLabel :=
+             label.new(
+                  bar_index + 3,
+                  secondEMA,
+                  "#2 EMA " +
+                  str.tostring(
+                       secondLength
+                  ),
+                  xloc = xloc.bar_index,
+                  style = label.style_label_left,
+                  color = color.new(
+                       secondColor,
+                       20
+                  ),
+                  textcolor = color.black,
+                  size = size.tiny
+             )
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 18. TOP 5 RANKING
+// ═════════════════════════════════════════════════════════════════════════════
+
+var table dashboard =
+     table.new(
+          position.top_right,
+          8,
+          7,
+          border_width = 1
+     )
+
+
+if barstate.islast and
+   showTable
+
+    table.clear(
+         dashboard,
+         0,
+         0,
+         7,
+         6
+    )
+
+
+    array<int> rankIndex =
+         array.new_int()
+
+    array<float> rankScore =
+         array.new_float()
+
+
+    // Build sorted Top 5.
+
+    for i = 0 to candidateCount - 1
+
+        int t =
+             array.get(
+                  tests,
+                  i
+             )
+
+        int w =
+             array.get(
+                  wins,
+                  i
+             )
+
+        int b =
+             array.get(
+                  breaks,
+                  i
+             )
+
+        float avgMove =
+             w > 0 ?
+             array.get(
+                  totalSuccessMove,
+                  i
+             ) /
+             float(w) :
+             0.0
+
+        float candidateScore =
+             f_signature_score(
+                  t,
+                  w,
+                  b,
+                  avgMove,
+                  minBouncePct,
+                  minTests
+             )
+
+
+        if t >= minTests
+
+            int insertAt =
+                 array.size(
+                      rankScore
+                 )
+
+            if array.size(rankScore) > 0
+
+                for j = 0 to array.size(rankScore) - 1
+
+                    if candidateScore >
+                       array.get(
+                            rankScore,
+                            j
+                       )
+
+                        insertAt := j
+                        break
+
+
+            array.insert(
+                 rankScore,
+                 insertAt,
+                 candidateScore
+            )
+
+            array.insert(
+                 rankIndex,
+                 insertAt,
+                 i
+            )
+
+
+            if array.size(rankScore) > 5
+
+                array.pop(
+                     rankScore
+                )
+
+                array.pop(
+                     rankIndex
+                )
+
+
+    // ─────────────────────────────────────────────────────────────────────
+    // HEADER
+    // ─────────────────────────────────────────────────────────────────────
+
+    color headerColor =
+         color.new(
+              bestColor,
+              70
+         )
+
+    table.cell(
+         dashboard,
+         0,
+         0,
+         "#",
+         bgcolor = headerColor,
+         text_color = color.white
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         0,
+         "EMA",
+         bgcolor = headerColor,
+         text_color = color.white
+    )
+
+    table.cell(
+         dashboard,
+         2,
+         0,
+         "SCORE",
+         bgcolor = headerColor,
+         text_color = color.white
+    )
+
+    table.cell(
+         dashboard,
+         3,
+         0,
+         "TESTS",
+         bgcolor = headerColor,
+         text_color = color.white
+    )
+
+    table.cell(
+         dashboard,
+         4,
+         0,
+         "HIT",
+         bgcolor = headerColor,
+         text_color = color.white
+    )
+
+    table.cell(
+         dashboard,
+         5,
+         0,
+         "AVG",
+         bgcolor = headerColor,
+         text_color = color.white
+    )
+
+    table.cell(
+         dashboard,
+         6,
+         0,
+         "BREAK",
+         bgcolor = headerColor,
+         text_color = color.white
+    )
+
+    table.cell(
+         dashboard,
+         7,
+         0,
+         "BULL",
+         bgcolor = headerColor,
+         text_color = color.white
+    )
+
+
+    // ─────────────────────────────────────────────────────────────────────
+    // TOP 5 ROWS
+    // ─────────────────────────────────────────────────────────────────────
+
+    if array.size(rankIndex) > 0
+
+        for rank = 0 to array.size(rankIndex) - 1
+
+            int idx =
+                 array.get(
+                      rankIndex,
+                      rank
+                 )
+
+            float score =
+                 array.get(
+                      rankScore,
+                      rank
+                 )
+
+            int len =
+                 minLen +
+                 idx *
+                 stepLen
+
+            int t =
+                 array.get(
+                      tests,
+                      idx
+                 )
+
+            int w =
+                 array.get(
+                      wins,
+                      idx
+                 )
+
+            int b =
+                 array.get(
+                      breaks,
+                      idx
+                 )
+
+            int bt =
+                 array.get(
+                      bullTests,
+                      idx
+                 )
+
+            int bw =
+                 array.get(
+                      bullWins,
+                      idx
+                 )
+
+            float hitRate =
+                 t > 0 ?
+                 100.0 *
+                 float(w) /
+                 float(t) :
+                 0.0
+
+            float avgMove =
+                 w > 0 ?
+                 array.get(
+                      totalSuccessMove,
+                      idx
+                 ) /
+                 float(w) :
+                 0.0
+
+            float breakRate =
+                 t > 0 ?
+                 100.0 *
+                 float(b) /
+                 float(t) :
+                 0.0
+
+            float bullHit =
+                 bt > 0 ?
+                 100.0 *
+                 float(bw) /
+                 float(bt) :
+                 na
+
+
+            int row =
+                 rank + 1
+
+
+            color rowColor =
+                 rank == 0 ?
+                 color.new(
+                      bestColor,
+                      80
+                 ) :
+                 rank == 1 ?
+                 color.new(
+                      secondColor,
+                      85
+                 ) :
+                 color.new(
+                      color.gray,
+                      92
+                 )
+
+
+            table.cell(
+                 dashboard,
+                 0,
+                 row,
+                 rank == 0 ?
+                 "★" :
+                 str.tostring(
+                      rank + 1
+                 ),
+                 bgcolor = rowColor
+            )
+
+            table.cell(
+                 dashboard,
+                 1,
+                 row,
+                 str.tostring(
+                      len
+                 ),
+                 bgcolor = rowColor
+            )
+
+            table.cell(
+                 dashboard,
+                 2,
+                 row,
+                 str.tostring(
+                      score,
+                      "#.0"
+                 ),
+                 bgcolor = rowColor
+            )
+
+            table.cell(
+                 dashboard,
+                 3,
+                 row,
+                 str.tostring(
+                      t
+                 ),
+                 bgcolor = rowColor
+            )
+
+            table.cell(
+                 dashboard,
+                 4,
+                 row,
+                 str.tostring(
+                      hitRate,
+                      "#.0"
+                 ) + "%",
+                 bgcolor = rowColor
+            )
+
+            table.cell(
+                 dashboard,
+                 5,
+                 row,
+                 str.tostring(
+                      avgMove,
+                      "#.1"
+                 ) + "%",
+                 bgcolor = rowColor
+            )
+
+            table.cell(
+                 dashboard,
+                 6,
+                 row,
+                 str.tostring(
+                      breakRate,
+                      "#.0"
+                 ) + "%",
+                 bgcolor = rowColor
+            )
+
+            table.cell(
+                 dashboard,
+                 7,
+                 row,
+                 na(bullHit) ?
+                 "—" :
+                 str.tostring(
+                      bullHit,
+                      "#.0"
+                 ) + "%",
+                 bgcolor = rowColor
+            )
+
+
+    // ─────────────────────────────────────────────────────────────────────
+    // BEST EMA EXTRA INFORMATION
+    // ─────────────────────────────────────────────────────────────────────
+
+    if bestIndex >= 0
+
+        int bestWins =
+             array.get(
+                  wins,
+                  bestIndex
+             )
+
+        int bestBullTests =
+             array.get(
+                  bullTests,
+                  bestIndex
+             )
+
+        int bestBullWins =
+             array.get(
+                  bullWins,
+                  bestIndex
+             )
+
+        int bestBearTests =
+             array.get(
+                  bearTests,
+                  bestIndex
+             )
+
+        int bestBearWins =
+             array.get(
+                  bearWins,
+                  bestIndex
+             )
+
+        float avgTargetTime =
+             bestWins > 0 ?
+             array.get(
+                  totalTimeToTarget,
+                  bestIndex
+             ) /
+             float(bestWins) :
+             na
+
+        float bullHit =
+             bestBullTests > 0 ?
+             100 *
+             float(bestBullWins) /
+             float(bestBullTests) :
+             na
+
+        float bearHit =
+             bestBearTests > 0 ?
+             100 *
+             float(bestBearWins) /
+             float(bestBearTests) :
+             na
+
+
+        table.cell(
+             dashboard,
+             0,
+             6,
+             "BEST",
+             bgcolor = color.new(
+                  bestColor,
+                  70
+             ),
+             text_color = color.white
+        )
+
+        table.cell(
+             dashboard,
+             1,
+             6,
+             "Target",
+             text_color = color.gray
+        )
+
+        table.cell(
+             dashboard,
+             2,
+             6,
+             na(avgTargetTime) ?
+             "—" :
+             str.tostring(
+                  avgTargetTime,
+                  "#.1"
+             ) + " bars"
+        )
+
+        table.cell(
+             dashboard,
+             3,
+             6,
+             "Bull",
+             text_color = color.gray
+        )
+
+        table.cell(
+             dashboard,
+             4,
+             6,
+             na(bullHit) ?
+             "—" :
+             str.tostring(
+                  bullHit,
+                  "#.0"
+             ) + "%"
+        )
+
+        table.cell(
+             dashboard,
+             5,
+             6,
+             "Weak",
+             text_color = color.gray
+        )
+
+        table.cell(
+             dashboard,
+             6,
+             6,
+             na(bearHit) ?
+             "—" :
+             str.tostring(
+                  bearHit,
+                  "#.0"
+             ) + "%"
+        )
+
+        table.cell(
+             dashboard,
+             7,
+             6,
+             syminfo.ticker,
+             text_color = bestColor
+        )

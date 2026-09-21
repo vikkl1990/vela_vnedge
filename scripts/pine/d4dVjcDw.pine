@@ -1,0 +1,107 @@
+//@version=6
+indicator("C-Power", overlay=true)
+
+// INPUT DATA
+int candlePeriod = input.int(5, title="Analysis Period (bars)", minval=2)
+int labelOffset  = input.int(3, title="Label Offset", minval=0)
+
+color customBullColor = input.color(color.rgb(34, 139, 34), title="Buyers Color (Bull Color)")
+color customBearColor = input.color(color.rgb(220, 20, 60), title="Sellers Color (Bear Color)")
+color customNeutColor = input.color(color.rgb(128, 128, 128), title="Balance Color (Neutral Color)")
+
+// VOLUME FILTER
+float rawVolume = nz(volume)
+float processedVolume = rawVolume
+
+float periodAvgVol = ta.alma(rawVolume, candlePeriod, 0.85, 1)
+float maxAllowedVol = periodAvgVol * 3.5
+
+if rawVolume > maxAllowedVol and periodAvgVol > 0
+    processedVolume := maxAllowedVol
+
+// DATA & GAP PROTECTION
+float c_open     = open
+float c_high     = high
+float c_low      = low
+float c_close    = close
+float prev_close = nz(close[1], c_open)
+
+float effHigh = math.max(c_high, prev_close)
+float effLow  = math.min(c_low, prev_close)
+float effOpen = c_open
+
+float log_h_l = math.log(effHigh / effLow)
+float log_c_o = math.log(c_close / effOpen)
+
+float gk_element = 0.5 * math.pow(log_h_l, 2.0) - (2.0 * math.log(2.0) - 1.0) * math.pow(log_c_o, 2.0)
+float gk_variance = ta.alma(math.max(gk_element, 0.0), candlePeriod, 0.85, 1)
+float gk_volatility = math.sqrt(gk_variance) * c_close
+
+float minVolatility = 0.00000001 * c_close
+float finalVolatility = math.max(gk_volatility, minVolatility)
+
+float midPoint = (effOpen + prev_close) / 2.0
+float priceImbalance = c_close - midPoint
+
+float z_score = priceImbalance / finalVolatility
+
+erf(x) =>
+    float t = 1.0 / (1.0 + 0.5 * math.abs(x))
+    float ans = 1.0 - t * math.exp(-x * x - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418 + t * (-0.01862880 + t * (0.02788680 + t * (-1.13520398 + t * (1.48851587 + t * (-0.82215223 + t * 0.17087277)))))))))
+    x >= 0 ? ans : -ans
+
+normCDF(z) =>
+    0.5 * (1.0 + erf(z / math.sqrt(2.0)))
+
+float directionWeight = normCDF(z_score)
+
+bool hasVolume = math.sum(processedVolume, candlePeriod) > 0
+
+float buyPowerSeries  = hasVolume ? (processedVolume * directionWeight) : directionWeight
+float sellPowerSeries = hasVolume ? (processedVolume * (1.0 - directionWeight)) : (1.0 - directionWeight)
+
+float totalBuyPower  = math.sum(nz(buyPowerSeries), candlePeriod)
+float totalSellPower = math.sum(nz(sellPowerSeries), candlePeriod)
+float aggregatePower = totalBuyPower + totalSellPower
+
+// VISUALIZATION
+var label powerLabel = na
+
+if barstate.islast
+    float rawBuyPercent = aggregatePower > 0.0 ? (totalBuyPower / aggregatePower) * 100.0 : 50.0
+
+    float periodHigh = ta.highest(effHigh, candlePeriod)
+    float periodLow  = ta.lowest(effLow, candlePeriod)
+  
+    float finalBuyPercent = rawBuyPercent
+    if finalBuyPercent >= 100.0 and c_close < periodHigh
+        finalBuyPercent := 97.5
+    if finalBuyPercent <= 0.0 and c_close > periodLow
+        finalBuyPercent := 2.5
+
+    float buyPercent  = math.round(finalBuyPercent / 2.5) * 2.5
+    float sellPercent = 100.0 - buyPercent
+
+    color labelColor = customNeutColor
+    if buyPercent > 50.0
+        labelColor := color.from_gradient(buyPercent, 50.0, 100.0, customNeutColor, customBullColor)
+    else if sellPercent > 50.0
+        labelColor := color.from_gradient(sellPercent, 50.0, 100.0, customNeutColor, customBearColor)
+
+    if not na(powerLabel)
+        label.delete(powerLabel)
+        
+    string methodText = hasVolume ? "Power (" : "GK Price ("
+    string periodText = methodText + str.tostring(candlePeriod) + " bars)\n"
+        
+    labelText = periodText + "BUY : " + str.tostring(buyPercent, "0.0") + "%\n" + "SELL: " + str.tostring(sellPercent, "0.0") + "%"
+                
+    powerLabel := label.new(
+         x=bar_index + labelOffset, 
+         y=c_close, 
+         text=labelText, 
+         color=labelColor, 
+         textcolor=color.white, 
+         style=label.style_label_left, 
+         yloc=yloc.price
+         )

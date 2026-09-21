@@ -1,0 +1,480 @@
+//@version=6
+strategy(
+     "Chainlink LINK Breakout Strategy",
+     shorttitle = "LINK Breakout",
+     overlay = true,
+     pyramiding = 0,
+     process_orders_on_close = true,
+     initial_capital = 10000,
+     default_qty_type = strategy.percent_of_equity,
+     default_qty_value = 10,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.1
+)
+
+// ============================================================================
+// CHAINLINK LINK BREAKOUT STRATEGY
+// ----------------------------------------------------------------------------
+// Description:
+// Long-only breakout strategy for Chainlink (LINK) based on the September 2026
+// technical analysis.
+//
+// Entry:
+// 1. Price closes above the $12.20 breakout resistance.
+// 2. Price is above the long-term SMA.
+// 3. RSI confirms bullish momentum.
+// 4. MACD confirms positive momentum.
+//
+// Risk management:
+// Default Stop Loss = 1.5%
+// Default Take Profit = 3.0%
+//
+// Key levels from the referenced analysis:
+// Resistance: $12.00, $12.20, $13.67, $14.00, $15.00, $15.50
+// Support:    $11.50, $11.00, $10.70
+//
+// Note:
+// The referenced articles do not specify MACD/SMA periods, so standard
+// configurable values are used: RSI 14, MACD 12/26/9, SMA 20/200.
+// ============================================================================
+
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+// Risk management
+slPercent = input.float(
+     1.5,
+     "Stop Loss (%)",
+     minval = 0.1,
+     step = 0.1,
+     group = "Risk Management"
+)
+
+tpPercent = input.float(
+     3.0,
+     "Take Profit (%)",
+     minval = 0.1,
+     step = 0.1,
+     group = "Risk Management"
+)
+
+// RSI
+rsiLength = input.int(
+     14,
+     "RSI Period",
+     minval = 2,
+     group = "Indicators"
+)
+
+rsiMin = input.float(
+     50.0,
+     "Minimum RSI for Long",
+     minval = 0,
+     maxval = 100,
+     step = 1,
+     group = "Indicators"
+)
+
+rsiMax = input.float(
+     70.0,
+     "Maximum RSI for Long",
+     minval = 0,
+     maxval = 100,
+     step = 1,
+     group = "Indicators"
+)
+
+// MACD
+macdFast = input.int(
+     12,
+     "MACD Fast",
+     minval = 1,
+     group = "Indicators"
+)
+
+macdSlow = input.int(
+     26,
+     "MACD Slow",
+     minval = 2,
+     group = "Indicators"
+)
+
+macdSignal = input.int(
+     9,
+     "MACD Signal",
+     minval = 1,
+     group = "Indicators"
+)
+
+// SMA
+shortSmaLength = input.int(
+     20,
+     "Short SMA",
+     minval = 1,
+     group = "Moving Averages"
+)
+
+longSmaLength = input.int(
+     200,
+     "Long SMA",
+     minval = 2,
+     group = "Moving Averages"
+)
+
+// Breakout level
+breakoutLevel = input.float(
+     12.20,
+     "Breakout Level",
+     step = 0.01,
+     group = "Key Levels"
+)
+
+useBreakoutConfirmation = input.bool(
+     true,
+     "Require Breakout Confirmation",
+     group = "Key Levels"
+)
+
+
+// ============================================================================
+// KEY LEVELS FROM ANALYSIS
+// ============================================================================
+
+level12 = 12.00
+level1220 = 12.20
+level1367 = 13.67
+level14 = 14.00
+level15 = 15.00
+level1550 = 15.50
+
+level1150 = 11.50
+level11 = 11.00
+level1070 = 10.70
+
+// Additional levels from the Invezz moving-average analysis
+level1146 = 11.46
+level1028 = 10.28
+level992 = 9.92
+level962 = 9.62
+level1113 = 11.13
+
+
+// ============================================================================
+// INDICATORS
+// ============================================================================
+
+// SMA
+sma20 = ta.sma(close, shortSmaLength)
+sma200 = ta.sma(close, longSmaLength)
+
+// RSI
+rsi = ta.rsi(close, rsiLength)
+
+// MACD
+[macdLine, macdSignalLine, macdHistogram] = ta.macd(
+     close,
+     macdFast,
+     macdSlow,
+     macdSignal
+)
+
+
+// ============================================================================
+// FILTERS
+// ============================================================================
+
+// Long-term trend filter
+bullishTrend = close > sma200
+
+// RSI momentum filter
+rsiBullish = rsi >= rsiMin and rsi <= rsiMax
+
+// MACD momentum filter
+macdBullish = macdLine > macdSignalLine and macdHistogram > 0
+
+// Breakout confirmation
+breakoutConfirmed = useBreakoutConfirmation ?
+     close > breakoutLevel :
+     close > level12
+
+// Final entry condition
+longCondition =
+     strategy.position_size == 0 and
+     bullishTrend and
+     rsiBullish and
+     macdBullish and
+     breakoutConfirmed
+
+
+// ============================================================================
+// ENTRY
+// ============================================================================
+
+if longCondition
+
+    entryPrice = close
+    stopPrice = entryPrice * (1.0 - slPercent / 100.0)
+    targetPrice = entryPrice * (1.0 + tpPercent / 100.0)
+
+    strategy.entry(
+         "LONG",
+         strategy.long,
+         comment = "LINK LONG"
+    )
+
+    strategy.exit(
+         "SL/TP",
+         from_entry = "LONG",
+         stop = stopPrice,
+         limit = targetPrice
+    )
+
+    // Entry label
+    label.new(
+         bar_index,
+         low,
+         "ENTRY\n$" + str.tostring(entryPrice, "#.####"),
+         style = label.style_label_up,
+         textcolor = color.white,
+         color = color.green,
+         size = size.small
+    )
+
+    // Stop Loss label
+    label.new(
+         bar_index,
+         stopPrice,
+         "SL\n$" + str.tostring(stopPrice, "#.####") +
+         "\n-" + str.tostring(slPercent, "#.##") + "%",
+         style = label.style_label_down,
+         textcolor = color.white,
+         color = color.red,
+         size = size.small
+    )
+
+    // Take Profit label
+    label.new(
+         bar_index,
+         targetPrice,
+         "TP\n$" + str.tostring(targetPrice, "#.####") +
+         "\n+" + str.tostring(tpPercent, "#.##") + "%",
+         style = label.style_label_down,
+         textcolor = color.white,
+         color = color.blue,
+         size = size.small
+    )
+
+
+// ============================================================================
+// KEEP SL / TP ACTIVE
+// ============================================================================
+
+if strategy.position_size > 0
+
+    currentEntry = strategy.position_avg_price
+
+    currentSL = currentEntry * (1.0 - slPercent / 100.0)
+    currentTP = currentEntry * (1.0 + tpPercent / 100.0)
+
+    strategy.exit(
+         "SL/TP",
+         from_entry = "LONG",
+         stop = currentSL,
+         limit = currentTP
+    )
+
+
+// ============================================================================
+// MOVING AVERAGES
+// ============================================================================
+
+plot(
+     sma20,
+     title = "SMA 20",
+     color = color.orange,
+     linewidth = 2
+)
+
+plot(
+     sma200,
+     title = "SMA 200",
+     color = color.blue,
+     linewidth = 2
+)
+
+
+// ============================================================================
+// BEARISH ZONE
+// ============================================================================
+
+// Red background whenever price is below the long SMA.
+bearishZone = close < sma200
+
+bgcolor(
+     bearishZone ? color.new(color.red, 88) : na,
+     title = "Bearish Zone"
+)
+
+
+// ============================================================================
+// KEY SUPPORT & RESISTANCE LEVELS
+// ============================================================================
+
+// Main breakout/support zone
+hline(
+     level12,
+     "Support $12.00",
+     color = color.green,
+     linestyle = hline.style_solid,
+     linewidth = 2
+)
+
+hline(
+     level1220,
+     "Resistance $12.20",
+     color = color.orange,
+     linestyle = hline.style_solid,
+     linewidth = 2
+)
+
+// Major resistance
+hline(
+     level1367,
+     "Resistance $13.67",
+     color = color.red,
+     linestyle = hline.style_dashed,
+     linewidth = 2
+)
+
+hline(
+     level14,
+     "Target $14.00",
+     color = color.red,
+     linestyle = hline.style_dashed,
+     linewidth = 1
+)
+
+hline(
+     level15,
+     "Target $15.00",
+     color = color.red,
+     linestyle = hline.style_dashed,
+     linewidth = 2
+)
+
+hline(
+     level1550,
+     "Target $15.50",
+     color = color.red,
+     linestyle = hline.style_dotted,
+     linewidth = 1
+)
+
+// Support levels
+hline(
+     level1150,
+     "Support $11.50",
+     color = color.green,
+     linestyle = hline.style_dashed,
+     linewidth = 1
+)
+
+hline(
+     level11,
+     "Support $11.00",
+     color = color.green,
+     linestyle = hline.style_dashed,
+     linewidth = 1
+)
+
+hline(
+     level1070,
+     "Support $10.70",
+     color = color.green,
+     linestyle = hline.style_dashed,
+     linewidth = 2
+)
+
+// Moving-average reference levels from analysis
+hline(
+     level1146,
+     "20D EMA Reference $11.46",
+     color = color.gray,
+     linestyle = hline.style_dotted,
+     linewidth = 1
+)
+
+hline(
+     level1028,
+     "50D EMA Reference $10.28",
+     color = color.gray,
+     linestyle = hline.style_dotted,
+     linewidth = 1
+)
+
+hline(
+     level992,
+     "200D EMA Reference $9.92",
+     color = color.gray,
+     linestyle = hline.style_dotted,
+     linewidth = 1
+)
+
+hline(
+     level962,
+     "100D EMA Reference $9.62",
+     color = color.gray,
+     linestyle = hline.style_dotted,
+     linewidth = 1
+)
+
+hline(
+     level1113,
+     "Parabolic SAR Reference $11.13",
+     color = color.gray,
+     linestyle = hline.style_dotted,
+     linewidth = 1
+)
+
+
+// ============================================================================
+// BREAKOUT VISUAL SIGNAL
+// ============================================================================
+
+breakoutSignal =
+     ta.crossover(close, breakoutLevel)
+
+plotshape(
+     breakoutSignal,
+     title = "Breakout",
+     style = shape.triangleup,
+     location = location.belowbar,
+     color = color.green,
+     size = size.tiny,
+     text = "BO"
+)
+
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+alertcondition(
+     longCondition,
+     title = "LINK Long Signal",
+     message = "LINK bullish breakout: RSI + MACD + SMA filters confirmed."
+)
+
+alertcondition(
+     ta.crossunder(close, level12),
+     title = "LINK Lost $12 Support",
+     message = "LINK has lost the key $12 support level."
+)
+
+alertcondition(
+     ta.crossover(close, level1367),
+     title = "LINK Breakout Above $13.67",
+     message = "LINK has broken above the $13.67 resistance."
+)

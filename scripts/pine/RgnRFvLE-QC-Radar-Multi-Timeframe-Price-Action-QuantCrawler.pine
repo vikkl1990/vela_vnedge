@@ -1,0 +1,928 @@
+//@version=6
+indicator("QC Radar v1.8.3", shorttitle="QC Radar", overlay=true, max_boxes_count=300, max_lines_count=500, max_labels_count=500, max_bars_back=600)
+// Independent, clean-room visual indicator. No orders or profitability claims.
+// Origin boxes are back-anchored only AFTER a confirmed structure break.
+// Candle volume is not bid/ask delta. No proprietary algorithm parity is claimed.
+string dashboardGroup="00 · RADAR DASHBOARD — SIZE & POSITION"
+bool trackerOn=input.bool(false,"Show RADAR dashboard",group=dashboardGroup,tooltip="Nearest active areas across all layers/types, including chart-hidden ones. IN ZONE/CLOSE/NEAR/WATCH describe distance, not a trade signal. Arrow compares distance with the previous chart close, not tick direction.")
+string trackerPosition=input.string("Top Right","Dashboard position",options=["Top Right","Bottom Right","Top Left","Bottom Left"],group=dashboardGroup,tooltip="Choose a chart corner. The optional older bias panel is positioned top-center to avoid sharing a corner.")
+string trackerFont=input.string("Normal","Dashboard text size",options=["Small","Normal","Large"],group=dashboardGroup,tooltip="Font size for the proximity table. Row count and position are independently adjustable.")
+int trackerRows=input.int(6,"Dashboard rows",minval=1,maxval=12,group=dashboardGroup,tooltip="Show this many nearest unpinned areas within the table radius. Enabled pinned HTF layers add two dedicated rows each. More active zones may be tracked than fit in the table.")
+
+bool pinHTF=input.bool(true,"Always show nearest HTF supply and demand",group=dashboardGroup,tooltip="Pin the nearest retained active supply and demand from EACH enabled HTF Radar layer, even outside the proximity radius. These add up to four zones beyond the regular chart-zone cap. Dedicated dashboard rows cannot be crowded out. FVGs are not pinned. Far zones may expand the chart scale. Turn off to restore the original proximity-only display.")
+
+string a="01 · Structure"
+int fastN=input.int(5,"Local swing confirmation",minval=2,maxval=30,group=a,tooltip="Controls the smaller swings. A pivot needs this many candles on BOTH sides before it is confirmed. On a 15m layer, 5 means five later 15m candles, not five chart candles. Lower values find more small swings; higher values wait for larger ones.")
+int slowN=input.int(20,"Major swing confirmation",minval=5,maxval=100,group=a,tooltip="Controls the larger swings on each layer. Must be greater than Local swing confirmation. This is a longer swing lookback, NOT a separate timeframe. Set actual higher timeframes under Timeframe layers.")
+bool localOn=input.bool(true,"Local structure",group=a,tooltip="Enable local Break/Shift labels and allow local swings to create Radar zones on enabled layers. FVGs are independent of this switch.")
+bool majorOn=input.bool(false,"Major structure",group=a,tooltip="Enable larger-swing Break/Shift labels and allow major swings to create Radar zones on enabled layers. FVGs are independent of this switch.")
+bool labelsOn=input.bool(true,"Show structure break labels",group=a,tooltip="Show Break and Shift badges. Break = a confirmed close through a swing in the existing direction, or the first direction-setting break (BOS). Shift = a break in the opposite direction. Hiding badges does not turn off zone calculations. These are not buy/sell signals.")
+int keepBreaks=input.int(2,"Break annotations per layer",minval=1,maxval=40,group=a,tooltip="Maximum recent Break/Shift annotations retained per timeframe layer, combining local and major events. Older annotations are deleted. Does not limit active zones.")
+string b="02 · Origin zones"
+string zoneSource=input.string("Local","Create zones from",options=["Local","Major","Both"],group=b,tooltip="Choose which enabled structure scale can create origin zones. Local = smaller swings; Major = larger swings; Both = either. The corresponding Local/Major switch must also be on. This does not affect FVGs.")
+int searchBars=input.int(30,"Maximum origin search bars",minval=2,maxval=100,group=b,tooltip="After a confirmed structure break, search backward for the nearest opposite-color candle, no earlier than the broken swing's origin and no farther than this many SOURCE candles. If that nearest candle fails validation, no older replacement is selected.")
+string invalidation=input.string("Close","Invalidate beyond far edge using",options=["Close","Wick"],group=b,tooltip="When is a Radar zone broken? Close: a completed source candle must close beyond its far edge. Wick: its high/low must pass the edge, evaluated after that candle closes. Demand breaks below its bottom; supply above its top. Touching alone does not break it. FVGs use their separate retirement setting.")
+bool allowFlip=input.bool(false,"Allow one broken-zone role reversal",group=b,tooltip="Off: delete a broken Radar zone. On: keep its exact price range but switch demand to supply, or supply to demand, once. A second break deletes it. Reversed shading starts at the reversal candle. Does not apply to FVGs.")
+bool volumeFilter=input.bool(false,"Require above-average origin volume",group=b,tooltip="Only create Radar origin zones when the source candle's relative volume meets the threshold below. Missing volume fails this filter. Off means low-volume zones can still appear. Does not filter FVGs.")
+float minRV=input.float(1.5,"Minimum origin relative volume",minval=1,step=0.25,group=b,tooltip="Origin candle volume divided by the average volume of the 20 SOURCE candles immediately before it, excluding the origin candle. 1.5x = 50% above average; 0.82x = 18% below. This threshold only applies when the volume filter is enabled. It is not buy/sell delta.")
+string c="03 · CHART APPEARANCE — ZONES & LABELS"
+int visibleCount=input.int(2,"Radar zones per side / layer",minval=1,maxval=5,group=c,tooltip="Show up to this many demand AND supply zones per timeframe layer. Closest eligible zones take priority in this proximity version. For example, 2 means up to four Radar zones per layer. This changes display only; hidden candidates keep updating.")
+bool suppressOverlap=input.bool(true,"Hide overlapping zones on the same side",group=c,tooltip="Hide older overlapping Radar zones of the same direction within the same timeframe layer. Hidden zones still update and may reappear. Does not suppress zones across different timeframes or hide FVGs.")
+int extendBars=input.int(45,"Right extension (bar durations)",minval=5,maxval=150,group=c,tooltip="How far drawings extend to the right, measured in CHART-bar durations. On 1m, 45 means 45 clock minutes; on 5m, 225 minutes. Extensions may cross closed sessions. Does not change price boundaries or zone life.")
+bool midline=input.bool(true,"Dashed zone midpoint",group=c,tooltip="Show a dashed line at the center of each Radar zone and FVG. Badge prices also refer to this midpoint, not an entry price.")
+bool metrics=input.bool(true,"Show origin volume ratio",group=c,tooltip="Show the fixed relative volume of each Radar origin candle. Example: 0.82x means 82% of its preceding 20-source-candle average. This is not accumulated zone volume or buying/selling pressure. FVGs do not show a volume ratio.")
+bool showPanel=input.bool(false,"Extra structure-bias panel",group=c,tooltip="Show a compact overview of enabled timeframe layers and their local/major structure directions. FVG means gap tracking is enabled, not that an active gap necessarily exists. The panel is context, not a trade recommendation.")
+string textSize=input.string("Normal","Zone label size",options=["Tiny","Small","Normal","Large"],group=c,tooltip="Text size for Radar zone and FVG badges. Choose Normal or Large if labels are difficult to read. Larger labels can overlap when zones are close together.")
+bool separateStructure=input.bool(true,"Separate overlapping structure badges",group=c,tooltip="Place structure badges in separate vertical lanes when event times are close. Thin connectors point back to the real break levels. This is display only; detection and candle anchors do not change.")
+float structureGap=input.float(0.7,"Structure badge spacing · chart ATR",minval=0.2,maxval=4,step=0.1,group=c,tooltip="Vertical badge spacing based on completed chart ATR. Increase if text still overlaps at your zoom. Pine cannot measure badge dimensions in pixels.")
+int structureWindow=input.int(12,"Structure collision window · chart bars",minval=1,maxval=60,group=c,tooltip="Treat events within this many chart-bar durations as potentially overlapping horizontally. Increase when zoomed out or using larger fonts.")
+string structureSize=input.string("Normal","Structure label size",options=["Small","Normal","Large"],group=c,tooltip="Text size for Break/Shift badges on candles, independent of the zone badge size.")
+bool badges=input.bool(true,"High-contrast label badges",group=c,tooltip="Use white text on solid colored backgrounds for contrast. Off returns to colored text on transparent backgrounds. This does not change any calculation.")
+color bullBadge=input.color(color.rgb(0,85,76),"Bullish badge background",group=c,tooltip="Background color for bullish Radar and structure badges when high-contrast badges are enabled.")
+color bearBadge=input.color(color.rgb(126,34,53),"Bearish badge background",group=c,tooltip="Background color for bearish Radar and structure badges when high-contrast badges are enabled.")
+color demand=input.color(color.rgb(0,175,154),"Demand / bullish",group=c,tooltip="Drawing color for bullish structure and demand/support origin zones. These are candle-based context areas, not proof that unfilled buy orders remain.")
+color supply=input.color(color.rgb(226,75,101),"Supply / bearish",group=c,tooltip="Drawing color for bearish structure and supply/resistance origin zones. These are candle-based context areas, not proof that unfilled sell orders remain.")
+int originFade=input.int(65,"Origin shading transparency",minval=20,maxval=95,group=c,tooltip="Transparency of the stronger formation/origin shading. Lower values are more solid; higher values are fainter. Applies to Radar zones and FVGs. Initial boxes are drawn back to formation candles only after confirmation.")
+int tailFade=input.int(93,"Extension transparency",minval=70,maxval=99,group=c,tooltip="Transparency of the faint rightward extension. Lower values make it more visible. Price boundaries remain fixed at the source candle levels.")
+string zSize=textSize=="Tiny" ? size.tiny : textSize=="Large" ? size.large : textSize=="Normal" ? size.normal : size.small
+string sSize=structureSize=="Large" ? size.large : structureSize=="Small" ? size.small : size.normal
+
+string mt="04 · Timeframe layers"
+bool chartRadar=input.bool(true,"Chart Radar",group=mt,tooltip="Show structure and origin zones calculated from the chart's own candles. Turn this off for an HTF-only Radar view. Does not disable Chart FVG.")
+bool chartFVG=input.bool(false,"Chart FVG",group=mt,tooltip="Show three-candle fair value gaps calculated on the chart timeframe. A gap appears only after candle 3 closes. Price edges use candle 1 and candle 3 wick levels; the box is then visually anchored back to candle 1.")
+string tf1=input.timeframe("60","HTF 1",group=mt,tooltip="First higher timeframe shared by HTF 1 Radar and FVG. Runs only when enabled and higher than the chart. Intraday sources must be exact multiples of the chart timeframe. Incompatible selections are skipped, not errors. Example: 15m works on 1m or 5m. Enable one or both switches below. Uses completed source candles; updates commit at the first chart-bar close afterward.")
+bool land1=input.bool(true,"HTF 1 Radar",group=mt,tooltip="Show origin zones and structure from HTF 1. Its own completed candles control creation, volume ratios, and invalidation. A developing 1m move cannot invalidate a 15m close-based zone. Turn off both HTF 1 switches to disable this layer.")
+bool fvg1=input.bool(false,"HTF 1 FVG",group=mt,tooltip="Show FVGs formed by HTF 1 candles. Later completed HTF 1 candles decide whether a gap is touched or filled, not individual chart candles. Labels identify the source timeframe.")
+string tf2=input.timeframe("240","HTF 2",group=mt,tooltip="Optional second higher timeframe shared by HTF 2 Radar and FVG. Default 240 = 4 hours. Must be higher than the chart; intraday sources must be exact multiples. Incompatible or duplicate enabled layers are skipped without stopping Radar. Enable one or both switches below.")
+bool land2=input.bool(false,"HTF 2 Radar",group=mt,tooltip="Enable a second higher-timeframe structure/origin layer. It follows its own closed candles, independent of the chart and HTF 1. Starts off by default to reduce clutter.")
+bool fvg2=input.bool(false,"HTF 2 FVG",group=mt,tooltip="Enable FVG tracking on HTF 2. Can run without HTF 2 Radar. Creation and retirement use completed HTF 2 candles; updates commit at the first following chart-bar close.")
+string fg="05 · Fair value gaps"
+int gapsPerSide=input.int(2,"FVGs per side / layer",minval=1,maxval=5,group=fg,tooltip="Show up to this many bullish AND bearish FVGs per timeframe layer. Closest eligible gaps take priority in this proximity version. Separate from the Radar zone limit. Hidden gaps still track their retirement conditions.")
+string retireFVG=input.string("Full fill","Retire FVG when",options=["First touch","Midpoint reached","Full fill"],group=fg,tooltip="Choose when an FVG disappears. First touch: price reaches the nearest edge. Midpoint reached: price reaches halfway through. Full fill: price reaches the far edge. Uses wick extremes of LATER completed candles on the gap's OWN timeframe. Formation candles never retire their own gap. A jump beyond the threshold also counts; this is not an order-fill simulation.")
+int gapTicks=input.int(1,"Minimum gap width (ticks)",minval=1,group=fg,tooltip="Minimum distance between candle 1 and candle 3 wick boundaries, in the symbol's smallest price increment. One MNQ tick is 0.25 points. A valid gap must also pass the ATR filter if enabled. Filters reject small gaps; they never pad the box.")
+float gapATR=input.float(0,"Minimum gap width / source ATR14",minval=0,step=0.05,group=fg,tooltip="Optional minimum FVG width as a multiple of ATR(14) calculated on its source timeframe. Zero disables this filter. Example: 0.1 requires a gap at least 10% of source ATR. The larger of the tick and ATR thresholds is used.")
+bool hideGapOverlap=input.bool(true,"Hide overlapping same-side FVGs",group=fg,tooltip="Hide older overlapping FVGs of the same direction within the same timeframe layer. Does not delete them or suppress gaps across different timeframes. Radar overlap is controlled separately.")
+bool contiguousFVG=input.bool(true,"Require consecutive formation candles",group=fg,tooltip="Require candle 1, 2 and 3 to follow each other without timestamp gaps. On excludes formations crossing a session closure or missing-bar gap. Off intentionally permits those formations.")
+color gapBull=input.color(color.rgb(75,151,235),"Bullish FVG",group=fg,tooltip="Color for bullish FVGs: candle 3 low is above candle 1 high. The box spans those exact prices; it does not move away from the creation candles.")
+color gapBear=input.color(color.rgb(191,116,235),"Bearish FVG",group=fg,tooltip="Color for bearish FVGs: candle 3 high is below candle 1 low. The box spans those exact prices; it does not move away from the creation candles.")
+color gapBullBadge=input.color(color.rgb(25,67,114),"Bullish FVG badge",group=fg,tooltip="Background color for bullish FVG badges when high-contrast badges are enabled.")
+color gapBearBadge=input.color(color.rgb(88,44,113),"Bearish FVG badge",group=fg,tooltip="Background color for bearish FVG badges when high-contrast badges are enabled.")
+
+
+string prox="06 · PROXIMITY — CHART & DASHBOARD RANGE"
+bool nearOnly=input.bool(true,"Only draw nearby zones",group=prox,tooltip="Display filter only. All retained active zones keep tracking creation, source-timeframe invalidation and FVG fills. Distance is measured from live price to the nearest zone edge, zero while inside.")
+string distanceMode=input.string("Points","Distance units",options=["Points","Percent","ATR"],group=prox,tooltip="Points = price units, not ticks. Percent = distance / absolute live price x 100. ATR = completed CHART ATR(14), not source ATR. Each mode has its own thresholds below.")
+float closePoints=input.float(25,"Points · close",minval=0,group=prox,tooltip="CLOSE status within this many points of the nearest edge. Default 25 points.")
+float drawPoints=input.float(75,"Points · draw within",minval=0,group=prox,tooltip="Draw eligible zones within this many points. Default 75. Total and per-layer limits still apply.")
+float trackPoints=input.float(225,"Points · dashboard range",minval=0,group=prox,tooltip="Include nearby zones in the tracker within this many points, even when they are hidden on the chart. Default 225.")
+float closePercent=input.float(0.1,"Percent · close",minval=0,step=0.05,group=prox,tooltip="0.1 means 0.1%, not 10%. Measured to the nearest zone edge.")
+float drawPercent=input.float(0.25,"Percent · draw within",minval=0,step=0.05,group=prox,tooltip="0.25% is about 74 points at price 29,580. A 5% radius would be about 1,479 points and would not remove much clutter.")
+float trackPercent=input.float(0.75,"Percent · dashboard range",minval=0,step=0.05,group=prox,tooltip="Wider tracker range in percent. Hidden chart zones may still be shown in the table.")
+float closeATR=input.float(1,"ATR · close",minval=0,step=0.25,group=prox,tooltip="CLOSE distance in completed chart ATR(14) multiples.")
+float drawATR=input.float(3,"ATR · draw within",minval=0,step=0.25,group=prox,tooltip="Chart display radius in completed chart ATR(14) multiples. Changes with volatility.")
+float trackATR=input.float(9,"ATR · dashboard range",minval=0,step=0.25,group=prox,tooltip="Tracker radius in completed chart ATR(14) multiples.")
+int totalZones=input.int(4,"Maximum chart zones TOTAL",minval=1,maxval=12,group=prox,tooltip="Regular proximity-zone cap across all timeframes and types. Pinned HTF context zones are ADDITIONAL (up to four). Closest zones win; equally distant newer entries win. Existing per-side/layer limits and overlap controls also apply.")
+bool spaceBadges=input.bool(true,"Space zone badges with connectors",group=prox,tooltip="Move only label text vertically to reduce overlap, with connector lines back to exact zone midpoints. Candle anchors and zone prices never move. Spacing is price/ATR-based, not pixel-based, so some overlap may remain at extreme zoom.")
+float badgeSpace=input.float(0.6,"Badge spacing · chart ATR",minval=0.1,maxval=3,step=0.1,group=prox,tooltip="Minimum separation between badge centers using completed chart ATR. Increase for larger font sizes. Only presentation changes.")
+float closeThreshold=distanceMode=="Points" ? closePoints : distanceMode=="Percent" ? closePercent : closeATR
+float drawThreshold=distanceMode=="Points" ? drawPoints : distanceMode=="Percent" ? drawPercent : drawATR
+float trackThreshold=distanceMode=="Points" ? trackPoints : distanceMode=="Percent" ? trackPercent : trackATR
+if barstate.isfirst and (closeThreshold>drawThreshold or drawThreshold>trackThreshold)
+    runtime.error("For the selected distance unit, use CLOSE <= DRAW WITHIN <= TABLE WITHIN.")
+float chartATR=ta.atr(14)[1]
+
+// An incompatible optional layer must never stop the chart's own Radar.
+bool timedChart=not timeframe.isticks
+float chartSeconds=timedChart ? timeframe.in_seconds() : na
+float seconds1=str.endswith(tf1,"T") ? na : timeframe.in_seconds(tf1)
+float seconds2=str.endswith(tf2,"T") ? na : timeframe.in_seconds(tf2)
+bool requested1=land1 or fvg1
+bool requested2=land2 or fvg2
+// Calendar bars are not fixed-duration multiples (e.g. daily -> monthly).
+htfCompatible(simple float seconds)=>
+    timedChart and chart.is_standard and not na(seconds) and seconds>chartSeconds and (seconds>=86400 or seconds%chartSeconds==0)
+bool enabled1=requested1 and htfCompatible(seconds1)
+bool enabled2=requested2 and htfCompatible(seconds2) and not (enabled1 and seconds1==seconds2)
+string layerStatus1=not requested1 ? "Off" : enabled1 ? "Active" : "Skipped · incompatible chart"
+string layerStatus2=not requested2 ? "Off" : enabled2 ? "Active" : enabled1 and seconds1==seconds2 ? "Skipped · duplicate HTF 1" : "Skipped · incompatible chart"
+if barstate.isfirst and slowN<=fastN
+    runtime.error("Major confirmation must be greater than local confirmation.")
+type Structure
+    float hi=na
+    float lo=na
+    int ht=na
+    int lt=na
+    int hb=na
+    int lb=na
+    bool usedHi=false
+    bool usedLo=false
+    int bias=0
+method advance(Structure self,float ph,float pl,int n)=>
+    if not na(ph)
+        self.hi:=ph
+        self.ht:=time[n]
+        self.hb:=bar_index
+        self.usedHi:=false
+    if not na(pl)
+        self.lo:=pl
+        self.lt:=time[n]
+        self.lb:=bar_index
+        self.usedLo:=false
+    bool up=not na(self.hi) and not self.usedHi and bar_index>self.hb and close>self.hi
+    bool down=not na(self.lo) and not self.usedLo and bar_index>self.lb and close<self.lo
+    if up
+        self.usedHi:=true
+    if down
+        self.usedLo:=true
+    int direction=up and not down ? 1 : down and not up ? -1 : 0
+    bool shift=direction!=0 and self.bias!=0 and direction!=self.bias
+    if direction!=0
+        self.bias:=direction
+    [direction,shift,direction==1 ? self.hi : self.lo,direction==1 ? self.ht : self.lt]
+
+
+type BreakEvent
+    int direction=0
+    bool shift=false
+    float level=na
+    int swingTime=na
+    float top=na
+    float bottom=na
+    int origin=na
+    float rv=na
+
+// Source-only calculation. Returned objects are fresh, scalar-valued snapshots.
+findOrigin(int direction,bool shifted,float level,int swingTime,float relative)=>
+    BreakEvent result=BreakEvent.new(direction,shifted,level,swingTime)
+    if direction!=0
+        int chosen=na
+        for j=1 to searchBars
+            if time[j]<swingTime
+                break
+            if direction==1 ? close[j]<open[j] : close[j]>open[j]
+                chosen:=j
+                break
+        if not na(chosen)
+            int j=chosen
+            float top=direction==1 ? math.max(open[j],close[j]) : high[j]
+            float bottom=direction==1 ? low[j] : math.min(open[j],close[j])
+            bool intact=top>bottom
+            for k=0 to j-1
+                if direction==1 ? (invalidation=="Close" ? close[k] : low[k])<bottom : (invalidation=="Close" ? close[k] : high[k])>top
+                    intact:=false
+            if intact and (not volumeFilter or (not na(relative[j]) and relative[j]>=minRV))
+                result.top:=top
+                result.bottom:=bottom
+                result.origin:=time[j]
+                result.rv:=relative[j]
+    result
+
+type SourceBar
+    int opened
+    int closed
+    float hi
+    float lo
+    float closing
+    int localBias
+    int majorBias
+    BreakEvent localEvent
+    BreakEvent majorEvent
+    int gapSide
+    float gapTop
+    float gapBottom
+    int gapOrigin
+
+sourceBar()=>
+    var Structure local=Structure.new()
+    var Structure major=Structure.new()
+    float fastHi=ta.pivothigh(high,fastN,fastN)
+    float fastLo=ta.pivotlow(low,fastN,fastN)
+    float slowHi=ta.pivothigh(high,slowN,slowN)
+    float slowLo=ta.pivotlow(low,slowN,slowN)
+    float avgVolume=ta.sma(volume,20)[1]
+    float relative=avgVolume>0 ? volume/avgVolume : na
+    [fd,fs,fp,ft]=local.advance(fastHi,fastLo,fastN)
+    [sd,ss,sp,st]=major.advance(slowHi,slowLo,slowN)
+    BreakEvent fastEvent=findOrigin(fd,fs,fp,ft,relative)
+    BreakEvent slowEvent=findOrigin(sd,ss,sp,st,relative)
+    float sourceATR=ta.atr(14)
+    float minimum=math.max(gapTicks*syminfo.mintick,gapATR>0 ? sourceATR*gapATR : 0)
+    bool consecutive=not contiguousFVG or (time==time_close[1] and time[1]==time_close[2])
+    bool bull=consecutive and low>high[2] and low-high[2]>=minimum
+    bool bear=consecutive and high<low[2] and low[2]-high>=minimum
+    int gd=bull ? 1 : bear ? -1 : 0
+    SourceBar.new(time,time_close,high,low,close,local.bias,major.bias,fastEvent,slowEvent,gd,bull ? low : bear ? low[2] : na,bull ? high[2] : bear ? high : na,gd!=0 ? time[2] : na)
+
+// Offset the WHOLE fresh snapshot in the requested context before lookahead_on.
+// No barstate.isconfirmed inside security; consumer only commits on chart closes.
+confirmedSource()=>
+    SourceBar snapshot=sourceBar()
+    snapshot[1]
+
+SourceBar chartSnapshot=sourceBar()
+SourceBar higher1=na
+SourceBar higher2=na
+if enabled1
+    higher1:=request.security(syminfo.tickerid,tf1,confirmedSource(),gaps=barmerge.gaps_off,lookahead=barmerge.lookahead_on)
+if enabled2
+    higher2:=request.security(syminfo.tickerid,tf2,confirmedSource(),gaps=barmerge.gaps_off,lookahead=barmerge.lookahead_on)
+
+type Area
+    float top
+    float bottom
+    int side
+    int origin
+    int confirmed
+    int phase
+    int phaseEnd
+    float rv
+    bool flipped
+    string scale
+    int layer
+    bool gap
+
+var array<Area> areas=array.new<Area>()
+var array<int> lastSource=array.new<int>(3,na)
+var array<int> localBiases=array.new<int>(3,0)
+var array<int> majorBiases=array.new<int>(3,0)
+var array<line> breakLines=array.new<line>()
+var array<label> breakTags=array.new<label>()
+var array<int> breakLayers=array.new<int>()
+var array<int> breakDirections=array.new<int>()
+var array<float> breakCandleEdges=array.new<float>()
+var array<line> structureConnectors=array.new<line>()
+var array<box> boxes=array.new<box>()
+var array<line> mids=array.new<line>()
+var array<label> tags=array.new<label>()
+
+tfLabel(string tf)=>
+    float seconds=str.endswith(tf,"T") ? na : timeframe.in_seconds(tf)
+    na(seconds) ? tf : seconds<60 ? str.tostring(seconds,"#")+"s" : seconds<3600 ? str.tostring(seconds/60,"#")+"m" : seconds<86400 ? str.tostring(seconds/3600,"#.##")+"h" : tf
+layerName(int layer)=>
+    tfLabel(layer==0 ? timeframe.period : layer==1 ? tf1 : tf2)
+
+if barstate.isconfirmed
+    for layer=0 to 2
+        bool useLand=layer==0 ? chartRadar : layer==1 ? land1 and enabled1 : land2 and enabled2
+        bool useGap=layer==0 ? chartFVG : layer==1 ? fvg1 and enabled1 : fvg2 and enabled2
+        SourceBar sample=layer==0 ? chartSnapshot : layer==1 ? higher1 : higher2
+        if (useLand or useGap) and not na(sample)
+            int previous=array.get(lastSource,layer)
+            if na(previous) or sample.opened>previous
+                array.set(lastSource,layer,sample.opened)
+                array.set(localBiases,layer,sample.localBias)
+                array.set(majorBiases,layer,sample.majorBias)
+                // Each layer is invalidated exclusively by its own closed source candle.
+                if array.size(areas)>0
+                    for i=array.size(areas)-1 to 0
+                        Area z=array.get(areas,i)
+                        if z.layer==layer
+                            if z.gap
+                                float threshold=retireFVG=="Midpoint reached" ? (z.top+z.bottom)/2 : retireFVG=="First touch" ? (z.side==1 ? z.top : z.bottom) : (z.side==1 ? z.bottom : z.top)
+                                bool filled=sample.opened>=z.confirmed and (z.side==1 ? sample.lo<=threshold : sample.hi>=threshold)
+                                if filled
+                                    array.remove(areas,i)
+                            else
+                                bool broken=z.side==1 ? (invalidation=="Close" ? sample.closing : sample.lo)<z.bottom : (invalidation=="Close" ? sample.closing : sample.hi)>z.top
+                                if broken
+                                    if allowFlip and not z.flipped
+                                        z.side:=-z.side
+                                        z.flipped:=true
+                                        z.phase:=sample.opened
+                                        z.phaseEnd:=sample.closed
+                                    else
+                                        array.remove(areas,i)
+                if useLand
+                    for scale=0 to 1
+                        bool scaleOn=scale==0 ? localOn : majorOn
+                        BreakEvent e=scale==0 ? sample.localEvent : sample.majorEvent
+                        string scaleName=scale==0 ? "Local" : "Major"
+                        if scaleOn and e.direction!=0
+                            color ink=e.direction==1 ? demand : supply
+                            if labelsOn
+                                array.push(breakLines,line.new(e.swingTime,e.level,sample.opened,e.level,xloc=xloc.bar_time,color=color.new(ink,25),style=scale==0 ? line.style_dashed : line.style_solid,width=scale==0 ? 1 : 2))
+                                string caption=layerName(layer)+" · "+(scale==1 ? "Major " : "Local ")+(e.shift ? "Shift" : "Break")
+                                array.push(breakTags,label.new(sample.opened,e.level,caption,xloc=xloc.bar_time,style=e.direction==1 ? label.style_label_down : label.style_label_up,color=badges ? (e.direction==1 ? bullBadge : bearBadge) : color.new(ink,100),textcolor=badges ? color.white : ink,size=sSize,tooltip="Known only after this source candle closes. HTF events are consumed on the first following chart-bar close. Anchoring is retrospective."))
+                                array.push(breakLayers,layer)
+                                array.push(breakDirections,e.direction)
+                                array.push(breakCandleEdges,e.direction==1 ? sample.hi : sample.lo)
+                            if (zoneSource=="Both" or zoneSource==scaleName) and not na(e.origin)
+                                bool duplicate=false
+                                if array.size(areas)>0
+                                    for k=0 to array.size(areas)-1
+                                        Area other=array.get(areas,k)
+                                        if not other.gap and other.layer==layer and other.origin==e.origin and other.side==e.direction and not other.flipped
+                                            duplicate:=true
+                                if not duplicate
+                                    array.push(areas,Area.new(e.top,e.bottom,e.direction,e.origin,sample.closed,sample.opened,sample.closed,e.rv,false,scaleName,layer,false))
+                if useGap and sample.gapSide!=0
+                    array.push(areas,Area.new(sample.gapTop,sample.gapBottom,sample.gapSide,sample.gapOrigin,sample.closed,sample.opened,sample.closed,na,false,"3-candle FVG",layer,true))
+                // Separate lifecycle memory caps: 80 per layer per type, newest retained.
+                for kind=0 to 1
+                    int retained=0
+                    if array.size(areas)>0
+                        for i=array.size(areas)-1 to 0
+                            Area z=array.get(areas,i)
+                            if z.layer==layer and z.gap==(kind==1)
+                                retained+=1
+                                if retained>80
+                                    array.remove(areas,i)
+                int kept=0
+                if array.size(breakLayers)>0
+                    for i=array.size(breakLayers)-1 to 0
+                        if array.get(breakLayers,i)==layer
+                            kept+=1
+                            if kept>keepBreaks
+                                line.delete(array.remove(breakLines,i))
+                                label.delete(array.remove(breakTags,i))
+                                array.remove(breakLayers,i)
+                                array.remove(breakDirections,i)
+                                array.remove(breakCandleEdges,i)
+
+
+edgeDistance(Area z,float price)=>
+    math.max(z.bottom-price,math.max(price-z.top,0))
+unitDistance(float points)=>
+    distanceMode=="Points" ? points : distanceMode=="Percent" ? (math.abs(close)>0 ? points/math.abs(close)*100 : na) : (chartATR>0 ? points/chartATR : na)
+areaName(Area z)=>
+    layerName(z.layer)+" "+(z.gap ? (z.side==1 ? "Bull FVG" : "Bear FVG") : (z.side==1 ? "Demand" : "Supply"))+(z.flipped ? " R" : "")
+areaInk(Area z)=>
+    z.gap ? (z.side==1 ? gapBull : gapBear) : (z.side==1 ? demand : supply)
+areaStatus(float points,float units)=>
+    points==0 ? "IN ZONE" : units<=closeThreshold ? "CLOSE" : units<=drawThreshold ? "NEAR" : "WATCH"
+statusInk(string status)=>
+    status=="IN ZONE" ? color.aqua : status=="CLOSE" ? color.orange : status=="NEAR" ? color.yellow : color.silver
+
+var array<line> connectors=array.new<line>()
+string tablePos=trackerPosition=="Top Right" ? position.top_right : trackerPosition=="Bottom Right" ? position.bottom_right : trackerPosition=="Top Left" ? position.top_left : position.bottom_left
+string tableFont=trackerFont=="Large" ? size.large : trackerFont=="Normal" ? size.normal : size.small
+int contextRows=pinHTF ? (land1 and enabled1 ? 2 : 0)+(land2 and enabled2 ? 2 : 0) : 0
+int nearbyHeader=contextRows>0 ? contextRows+1 : 0
+var table tracker=table.new(tablePos,5,trackerRows+contextRows+4,bgcolor=color.rgb(18,23,30),border_color=color.rgb(45,52,62),border_width=1)
+
+// This pass changes drawings only; it never deletes or modifies an Area.
+if barstate.islast
+    while array.size(boxes)>0
+        box.delete(array.pop(boxes))
+    while array.size(mids)>0
+        line.delete(array.pop(mids))
+    while array.size(tags)>0
+        label.delete(array.pop(tags))
+    while array.size(connectors)>0
+        line.delete(array.pop(connectors))
+    // Reverse input indices give stable newest-first ties.
+    array<int> candidates=array.new<int>()
+    array<float> distances=array.new<float>()
+    if array.size(areas)>0
+        for i=array.size(areas)-1 to 0
+            array.push(candidates,i)
+            array.push(distances,edgeDistance(array.get(areas,i),close))
+    // Explicit insertion sort guarantees the documented tie rule.
+    if array.size(candidates)>1
+        for i=1 to array.size(candidates)-1
+            int candidate=array.get(candidates,i)
+            float d=array.get(distances,i)
+            int j=i-1
+            while j>=0
+                if array.get(distances,j)<=d
+                    break
+                array.set(candidates,j+1,array.get(candidates,j))
+                array.set(distances,j+1,array.get(distances,j))
+                j-=1
+            array.set(candidates,j+1,candidate)
+            array.set(distances,j+1,d)
+    // Select pins from live lifecycle records, nearest edge first/newest-first ties.
+    // No synthetic zones: absent sides remain absent.
+    array<int> pinned=array.new<int>(4,-1)
+    if pinHTF and array.size(candidates)>0
+        for p=0 to array.size(candidates)-1
+            int idx=array.get(candidates,p)
+            Area z=array.get(areas,idx)
+            bool activeLayer=z.layer==1 ? land1 and enabled1 : z.layer==2 ? land2 and enabled2 : false
+            if activeLayer and not z.gap
+                int slot=(z.layer-1)*2+(z.side==1 ? 1 : 0)
+                if array.get(pinned,slot)==-1
+                    array.set(pinned,slot,idx)
+    array<int> selected=array.new<int>()
+    array<int> counts=array.new<int>(12,0)
+    for slot=0 to 3
+        int idx=array.get(pinned,slot)
+        if idx>=0
+            Area z=array.get(areas,idx)
+            array.push(selected,idx)
+            int bucket=z.layer*4+(z.side==1 ? 0 : 1)
+            array.set(counts,bucket,array.get(counts,bucket)+1)
+    int regularCount=0
+    if array.size(candidates)>0
+        for p=0 to array.size(candidates)-1
+            int i=array.get(candidates,p)
+            Area z=array.get(areas,i)
+            float units=unitDistance(array.get(distances,p))
+            int bucket=z.layer*4+(z.gap ? 2 : 0)+(z.side==1 ? 0 : 1)
+            bool room=not array.includes(selected,i) and regularCount<totalZones and array.get(counts,bucket)<(z.gap ? gapsPerSide : visibleCount)
+            bool overlap=false
+            if (z.gap ? hideGapOverlap : suppressOverlap) and array.size(selected)>0
+                for k=0 to array.size(selected)-1
+                    Area other=array.get(areas,array.get(selected,k))
+                    if other.layer==z.layer and other.gap==z.gap and other.side==z.side and math.min(z.top,other.top)>math.max(z.bottom,other.bottom)
+                        overlap:=true
+            if room and (not nearOnly or (not na(units) and units<=drawThreshold)) and not overlap
+                array.push(selected,i)
+                regularCount+=1
+                array.set(counts,bucket,array.get(counts,bucket)+1)
+    // Order displayed badges by price to apply non-crossing vertical spacing.
+    array<float> centers=array.new<float>()
+    if array.size(selected)>0
+        for i=0 to array.size(selected)-1
+            Area z=array.get(areas,array.get(selected,i))
+            array.push(centers,(z.top+z.bottom)/2)
+    array<int> labelOrder=array.sort_indices(centers,order.ascending)
+    int edge=time+extendBars*int(nz(chartSeconds,60)*1000)
+    int labelTime=edge+3*int(nz(chartSeconds,60)*1000)
+    float minimumSpace=math.max(syminfo.mintick*4,nz(chartATR,syminfo.mintick*10)*badgeSpace)
+    float previousLabel=na
+    if array.size(labelOrder)>0
+        for p=0 to array.size(labelOrder)-1
+            Area z=array.get(areas,array.get(selected,array.get(labelOrder,p)))
+            color ink=areaInk(z)
+            color badge=z.gap ? (z.side==1 ? gapBullBadge : gapBearBadge) : (z.side==1 ? bullBadge : bearBadge)
+            int left=z.flipped ? z.phase : z.origin
+            int solidEnd=z.flipped ? z.phaseEnd : z.confirmed
+            float center=(z.top+z.bottom)/2
+            float points=edgeDistance(z,close)
+            string status=areaStatus(points,unitDistance(points))
+            array.push(boxes,box.new(left,z.top,edge,z.bottom,xloc=xloc.bar_time,border_color=z.gap ? color.new(ink,65) : color.new(ink,100),border_style=line.style_dotted,bgcolor=color.new(ink,tailFade)))
+            array.push(boxes,box.new(left,z.top,solidEnd,z.bottom,xloc=xloc.bar_time,border_color=color.new(ink,100),bgcolor=color.new(ink,originFade)))
+            if midline
+                array.push(mids,line.new(left,center,edge,center,xloc=xloc.bar_time,color=color.new(ink,20),style=line.style_dashed))
+            float labelPrice=spaceBadges and not na(previousLabel) ? math.max(center,previousLabel+minimumSpace) : center
+            previousLabel:=labelPrice
+            if spaceBadges
+                array.push(connectors,line.new(edge,center,labelTime,labelPrice,xloc=xloc.bar_time,color=color.new(ink,25),width=1))
+            string caption=areaName(z)+(array.includes(pinned,array.get(selected,array.get(labelOrder,p))) ? " · HTF CONTEXT" : "")+" · "+status
+            string tip="Exact range: "+str.tostring(z.bottom,format.mintick)+" – "+str.tostring(z.top,format.mintick)+"\nMidpoint: "+str.tostring(center,format.mintick)+"\nNearest-edge distance: "+str.tostring(points,"#.##")+" points\n"+(z.gap ? "FVG retirement: "+retireFVG : "Source origin volume ratio: "+(na(z.rv) ? "n/a" : str.tostring(z.rv,"#.##")+"x"))+"\nOrigin: "+str.format_time(z.origin,"yyyy-MM-dd HH:mm",syminfo.timezone)+"\nConfirmation close: "+str.format_time(z.confirmed,"yyyy-MM-dd HH:mm",syminfo.timezone)+"\nBadge position may be shifted for readability; connector points to the exact midpoint. Hidden zones keep tracking. HTF updates require a completed source candle and the following chart-bar close."
+            string volumeText=metrics and not z.gap ? " · "+(na(z.rv) ? "RV n/a" : str.tostring(z.rv,"#.##")+"x") : ""
+            array.push(tags,label.new(spaceBadges ? labelTime : edge,labelPrice,caption+volumeText,xloc=xloc.bar_time,style=label.style_label_left,color=badges ? badge : color.new(ink,100),textcolor=badges ? color.white : ink,size=zSize,tooltip=tip))
+    table.clear(tracker,0,0,4,trackerRows+contextRows+3)
+    if trackerOn
+        string unitName=distanceMode=="Points" ? "pt" : distanceMode=="Percent" ? "%" : "ATR"
+        array<string> headers=array.from("ZONE","RANGE","DIST "+unitName,"STATE","VIEW")
+        for col=0 to 4
+            table.cell(tracker,col,nearbyHeader,array.get(headers,col),text_color=color.white,text_size=tableFont,bgcolor=color.rgb(34,43,56))
+        if contextRows>0
+            for col=0 to 4
+                table.cell(tracker,col,0,col==0 ? "HTF CONTEXT" : array.get(headers,col),text_color=color.white,text_size=tableFont,bgcolor=color.rgb(34,43,56))
+            int contextRow=1
+            for slot=0 to 3
+                int layer=slot<2 ? 1 : 2
+                bool enabled=layer==1 ? land1 and enabled1 : land2 and enabled2
+                if enabled
+                    int idx=array.get(pinned,slot)
+                    string name=layerName(layer)+(slot%2==0 ? " Supply" : " Demand")
+                    table.cell(tracker,0,contextRow,name,text_color=slot%2==0 ? supply : demand,text_size=tableFont)
+                    if idx>=0
+                        Area z=array.get(areas,idx)
+                        float points=edgeDistance(z,close)
+                        float units=unitDistance(points)
+                        string status=areaStatus(points,units)
+                        table.cell(tracker,1,contextRow,str.tostring(z.bottom,format.mintick)+"–"+str.tostring(z.top,format.mintick),text_color=color.white,text_size=tableFont)
+                        table.cell(tracker,2,contextRow,str.tostring(units,"#.##"),text_color=statusInk(status),text_size=tableFont)
+                        table.cell(tracker,3,contextRow,status,text_color=statusInk(status),text_size=tableFont)
+                        table.cell(tracker,4,contextRow,"Pinned · Drawn",text_color=color.silver,text_size=tableFont,tooltip="Nearest active Radar zone for this source layer and side. Bypasses distance and regular total cap; not a trade signal.")
+                    else
+                        table.cell(tracker,1,contextRow,"No active zone",text_color=color.silver,text_size=tableFont,tooltip="No retained active zone of this side exists in loaded history. Nothing is fabricated.")
+                    contextRow+=1
+        int row=nearbyHeader+1
+        if array.size(candidates)>0
+            for p=0 to array.size(candidates)-1
+                Area z=array.get(areas,array.get(candidates,p))
+                float points=array.get(distances,p)
+                float units=unitDistance(points)
+                if row<=nearbyHeader+trackerRows and not array.includes(pinned,array.get(candidates,p)) and not na(units) and units<=trackThreshold
+                    string status=areaStatus(points,units)
+                    float before=edgeDistance(z,nz(close[1],close))
+                    string motion=points<before ? "↓ " : points>before ? "↑ " : "• "
+                    string side=close<z.bottom ? "Above" : close>z.top ? "Below" : "Inside"
+                    string location=side+(array.includes(selected,array.get(candidates,p)) ? " · Drawn" : " · Hidden")
+                    string rangeText=str.tostring(z.bottom,format.mintick)+"–"+str.tostring(z.top,format.mintick)
+                    table.cell(tracker,0,row,areaName(z),text_color=areaInk(z),text_size=tableFont)
+                    table.cell(tracker,1,row,rangeText,text_color=color.white,text_size=tableFont)
+                    table.cell(tracker,2,row,motion+str.tostring(units,"#.##"),text_color=statusInk(status),text_size=tableFont,tooltip="Down arrow = distance decreased versus previous chart close (getting nearer). Up = farther. Dot = unchanged. Distance uses nearest edge, not midpoint.")
+                    table.cell(tracker,3,row,status,text_color=statusInk(status),text_size=tableFont)
+                    table.cell(tracker,4,row,location,text_color=color.silver,text_size=tableFont,tooltip="Drawn = currently visible on chart. Hidden = still tracked but excluded by chart radius, overlap, or display caps.")
+                    row+=1
+        if row==nearbyHeader+1
+            table.cell(tracker,0,nearbyHeader+1,"No areas in range",text_color=color.silver,text_size=tableFont)
+        table.cell(tracker,0,nearbyHeader+trackerRows+1,"Price "+str.tostring(close,format.mintick),text_color=color.white,text_size=tableFont)
+        table.cell(tracker,1,nearbyHeader+trackerRows+1,str.tostring(array.size(areas))+" tracked",text_color=color.silver,text_size=tableFont)
+        table.cell(tracker,2,nearbyHeader+trackerRows+1,str.tostring(array.size(selected))+" drawn",text_color=color.silver,text_size=tableFont)
+        table.cell(tracker,3,nearbyHeader+trackerRows+1,"Live proximity",text_color=color.silver,text_size=tableFont)
+        table.cell(tracker,4,nearbyHeader+trackerRows+1,(requested1 and not enabled1) or (requested2 and not enabled2) ? "HTF skipped · hover" : "Closed-bar lifecycle",text_color=color.silver,text_size=tableFont,tooltip="HTF 1: "+layerStatus1+"\nHTF 2: "+layerStatus2+"\nDisabled/incompatible layers are not requested. Chart Radar remains independent.")
+
+var table panel=table.new(position.top_center,2,5)
+if barstate.islast and showPanel
+    table.cell(panel,0,0,"QC RADAR",text_color=color.white,bgcolor=color.new(color.black,20),text_size=size.small)
+    table.cell(panel,1,0,"MTF + FVG",text_color=color.silver,bgcolor=color.new(color.black,20),text_size=size.small)
+    for layer=0 to 2
+        bool land=layer==0 ? chartRadar : layer==1 ? land1 and enabled1 : land2 and enabled2
+        bool gaps=layer==0 ? chartFVG : layer==1 ? fvg1 and enabled1 : fvg2 and enabled2
+        int lb=array.get(localBiases,layer)
+        int mb=array.get(majorBiases,layer)
+        string localText=not localOn ? "Off" : lb==1 ? "Bull" : lb==-1 ? "Bear" : "Neutral"
+        string majorText=not majorOn ? "Off" : mb==1 ? "Bull" : mb==-1 ? "Bear" : "Neutral"
+        string state=layer==1 and not enabled1 ? layerStatus1 : layer==2 and not enabled2 ? layerStatus2 : not land and not gaps ? "Off" : land ? localText+" / "+majorText+(gaps ? " · FVG" : "") : "FVG only"
+        table.cell(panel,0,layer+1,layerName(layer),text_color=color.silver,bgcolor=color.new(color.black,20),text_size=size.small)
+        table.cell(panel,1,layer+1,state,text_color=color.white,bgcolor=color.new(color.black,20),text_size=size.small)
+    table.cell(panel,0,4,"Visual only",text_color=color.silver,bgcolor=color.new(color.black,20),text_size=size.small)
+    table.cell(panel,1,4,"Closed-source candles",text_color=color.silver,bgcolor=color.new(color.black,20),text_size=size.small)
+
+// Structure badge layout is independent of zone badges and detection.
+// Read original anchors from break lines each pass, never from displaced labels.
+if barstate.islast
+    while array.size(structureConnectors)>0
+        line.delete(array.pop(structureConnectors))
+    array<int> placedTimes=array.new<int>()
+    array<float> placedPrices=array.new<float>()
+    float gap=math.max(syminfo.mintick*8,nz(chartATR,syminfo.mintick*20)*structureGap)
+    int timeWindow=int(nz(chartSeconds,60)*1000)*structureWindow
+    if array.size(breakTags)>0
+        // Newer events get first placement; older nearby events occupy outer lanes.
+        for i=array.size(breakTags)-1 to 0
+            line eventLine=array.get(breakLines,i)
+            label badge=array.get(breakTags,i)
+            int eventTime=line.get_x2(eventLine)
+            float level=line.get_y2(eventLine)
+            int direction=array.get(breakDirections,i)
+            float positionPrice=level
+            if separateStructure
+                float candleEdge=array.get(breakCandleEdges,i)
+                positionPrice:=(direction==1 ? math.max(level,candleEdge) : math.min(level,candleEdge))+direction*gap*0.5
+                if array.size(placedTimes)>0
+                    for j=0 to array.size(placedTimes)-1
+                        if math.abs(eventTime-array.get(placedTimes,j))<=timeWindow
+                            float occupied=array.get(placedPrices,j)
+                            positionPrice:=direction==1 ? math.max(positionPrice,occupied+gap) : math.min(positionPrice,occupied-gap)
+                color ink=direction==1 ? demand : supply
+                array.push(structureConnectors,line.new(eventTime,level,eventTime,positionPrice,xloc=xloc.bar_time,color=color.new(ink,50),style=line.style_dotted,width=1))
+            label.set_xy(badge,eventTime,positionPrice)
+            array.push(placedTimes,eventTime)
+            array.push(placedPrices,positionPrice)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PERSONAL v1.8: completed-window levels and independently confirmed reactions.
+// Visual context only. No orders, alerts, probability score or order-flow claims.
+string ug="07 · SESSION & PRIOR LEVELS"
+bool umOn=input.bool(true,"Track session / prior levels",group=ug,tooltip="Keep completed-session and prior-period extremes. First partial windows in loaded history are skipped. Developing windows never draw. Older completed windows remain eligible during a new active session. Mitigation, age and storage limits remove levels.")
+string umDaySource=input.string("Full Day (Futures)","Previous day source",options=["Full Day (Futures)","RTH Only"],group=ug,tooltip="Full Day follows the symbol's TradingView trading-day boundary, including maintenance gaps. RTH uses 09:30–16:00 New York. Use extended-hours chart data to include overnight levels.")
+string umMitigation=input.string("Close","Remove mitigated level using",options=["Close","Wick"],group=ug,tooltip="A high is removed strictly above level + tolerance; a low strictly below level - tolerance, using a completed chart candle. Removal is immediate on that evaluation: no retired-level grace or dashboard retest watch. Touching alone is not mitigation under a nonzero tolerance.")
+float umTolerance=input.float(20,"Mitigation tolerance · points",minval=0,step=0.25,group=ug,tooltip="Price units, not ticks or dollars. This is NOT the sweep or retest threshold. The inherited 20-point setting is symbol-specific; adjust for your market.")
+int umDays=input.int(14,"Session/day retention · calendar days",minval=1,maxval=90,group=ug,tooltip="Elapsed calendar days since publication, not an approximation using chart bars. Storage cap can evict older levels sooner.")
+int umWeeks=input.int(4,"Week retention · weeks",minval=1,maxval=26,group=ug,tooltip="Each week = seven elapsed calendar days after publication.")
+int umMonths=input.int(3,"Month retention · 31-day blocks",minval=1,maxval=12,group=ug,tooltip="Retention uses fixed 31-day blocks; source highs/lows use actual exchange monthly bars.")
+int umCapacity=input.int(240,"Maximum tracked levels",minval=40,maxval=400,group=ug,tooltip="Oldest published level is removed first when full, including its reaction states. This is not unlimited historical storage.")
+bool umPD=input.bool(true,"Previous day high / low",group=ug,tooltip="Publish a completed trading day or RTH window; never use a developing day's final extreme.")
+bool umPW=input.bool(true,"Previous week high / low",group=ug,tooltip="Uses exchange weekly boundaries and available chart bars. First partial loaded week is skipped.")
+bool umPM=input.bool(true,"Previous month high / low",group=ug,tooltip="Uses exchange monthly boundaries and available chart bars. First partial loaded month is skipped.")
+bool umAS=input.bool(true,"Asia high / low",group=ug,tooltip="Published after the configured Asia window ends.")
+bool umLD=input.bool(true,"London high / low",group=ug,tooltip="Published after the configured London window ends. A noon end means no final London level before noon.")
+bool umNY=input.bool(true,"New York high / low",group=ug,tooltip="Published after the configured New York window ends.")
+bool umLC=input.bool(false,"London close high / low",group=ug,tooltip="Optional separate London-close window.")
+string wg="08 · SESSION WINDOWS — NEW YORK LOCAL TIME"
+string umPreset=input.string("Radar","Session preset",options=["Radar","Transcript","Custom"],group=wg,tooltip="Radar: Asia 18:00–00:00, London 02:00–09:30, NY 09:30–16:00. Transcript: Asia 19:00–04:00, London 03:00–12:00, NY 08:00–17:00. All use America/New_York with daylight saving, NOT fixed UTC-5. Windows may overlap.")
+string asCustom=input.session("1800-0000","Custom Asia",group=wg,tooltip="Used only with Custom preset. Full source window, not a developing morning snapshot.")
+string ldCustom=input.session("0200-0930","Custom London",group=wg,tooltip="Used only with Custom preset.")
+string nyCustom=input.session("0930-1600","Custom New York",group=wg,tooltip="Used only with Custom preset.")
+string lcCustom=input.session("1000-1200","London close",group=wg,tooltip="Used when London close is enabled, for every preset.")
+string og="09 · OPTIONAL OPENING RANGES"
+bool orA=input.bool(false,"Opening range A",group=og,tooltip="Publish the high and low after this short window completes, then use the same reaction engine. Off by default; this does not imply the window is optimal for your symbol.")
+string orASession=input.session("0800-0815","Range A window · New York",group=og,tooltip="Default is the transcript's 08:00–08:15 example. Configurable independently of chart timeframe.")
+bool orB=input.bool(false,"Opening range B",group=og,tooltip="Second independent opening range. Off by default.")
+string orBSession=input.session("1900-1915","Range B window · New York",group=og,tooltip="Default is the transcript's evening example. Available chart candles must align with both window edges.")
+string rg="10 · LEVEL REACTIONS — DASHBOARD ONLY"
+bool rxOn=input.bool(true,"Track confirmed level reactions",group=rg,tooltip="Applies to these session/prior/opening-range LINES, not Radar supply/demand boxes or FVGs. Reactions are descriptions, not entry instructions or proven probabilities.")
+bool rx5=input.bool(true,"5m confirmation",group=rg,tooltip="Enabled only when the chart is 5m or lower and divides 5m exactly. On 3m/10m/15m charts this lane explicitly shows unavailable; it never substitutes chart candles.")
+bool rx15=input.bool(true,"15m confirmation",group=rg,tooltip="Enabled only when the chart is 15m or lower and divides 15m exactly. Uses completed 15m candles independently of the 5m lane.")
+float rxTouch=input.float(0.5,"Touch / retest band · points",minval=0,step=0.25,group=rg,tooltip="A candle intersects level ± this band to count a touch. Consecutive touching chart candles form ONE visit; a new visit needs a completed candle outside the band first.")
+float rxPen=input.float(0.25,"Sweep penetration · points",minval=0,step=0.25,group=rg,tooltip="Strict wick penetration beyond this distance, followed by a close back on the original side, marks Reclaimed. Previous confirmation close must be on the original side. Zero still requires a strict cross.")
+float rxClose=input.float(0,"Confirmation close buffer · points",minval=0,step=0.25,group=rg,tooltip="Reclaim, break, hold and failure require a strict close beyond this buffer on the relevant side. Equality does not confirm.")
+int rxBars=input.int(6,"Dashboard retest observation · source candles",minval=1,maxval=30,group=rg,tooltip="While the level remains unmitigated, watch this many later candles after a confirmed break. Mitigation deletes the level and its reaction row immediately. The break candle cannot confirm its own retest. A subsequent close back through the level is Failed. Expired means no further outcome was confirmed within the window.")
+string rxFont=input.string("Small","Plain level name size",options=["Small","Normal","Large"],group=rg,tooltip="Size of unboxed session-level names. Does not affect Radar structure badges or dashboards.")
+string dg="11 · SESSION LEVELS DASHBOARD & DISPLAY"
+bool rxTableOn=input.bool(false,"Show SESSION LEVELS dashboard",group=dg,tooltip="Independent of the main RADAR dashboard. Hiding this table does not stop tracking or change chart markings.")
+string rxPosition=input.string("Bottom Right","Session dashboard position",options=["Top Right","Bottom Right","Top Left","Bottom Left"],group=dg,tooltip="Choose a different corner from the main RADAR dashboard. When both are visible, identical corners are rejected to avoid table overlap.")
+string rxTableFont=input.string("Small","Session dashboard text size",options=["Small","Normal","Large"],group=dg,tooltip="Independent of Radar's table and chart label sizes.")
+bool rxCompact=input.bool(true,"Compact reaction cells",group=dg,tooltip="On: show reaction words only; hover for timestamps and explanations. Off: include each latest event's NY date/time directly in the 5m and 15m cells. Historical reactions are not necessarily current signals.")
+string rxSide=input.string("Both","Session dashboard sides",options=["Both","Highs only","Lows only"],group=dg,tooltip="Display-only filter for this dashboard. Both uses separate nearest-high and nearest-low sections. All sides continue tracking and may draw on chart.")
+int rxRows=input.int(2,"Rows per side",minval=1,maxval=6,group=dg,tooltip="Maximum nearest HIGH rows and nearest LOW rows. Both with 3 means at most six data rows, plus section headings. Distance ranks rows, including chart-hidden levels.")
+int umDrawMax=input.int(3,"Maximum nearby level lines",minval=1,maxval=20,group=dg,tooltip="Separate from the Radar zone limit. All retained levels continue tracking even when hidden.")
+float umDrawRange=input.float(100,"Draw level lines within · points",minval=0,group=dg,tooltip="Only nearby levels draw. Their status remains visible in the dedicated dashboard rows when selected by distance.")
+bool umLabels=input.bool(true,"Show plain level names",group=dg,tooltip="Small unboxed name, extreme date and price at the line endpoint. No pills, visit badges or shifted price anchors. Turn off for lines only; names remain in the session dashboard.")
+bool rxChecklist=input.bool(true,"Show context checklist in tooltips",group=dg,tooltip="Shows visit count, reaction direction versus current chart-local structure, and distance to the next retained opposing line. Not a win-rate or confidence percentage; structure is current context, not frozen at the historical reaction.")
+string rxSize=rxFont=="Small" ? size.small : rxFont=="Large" ? size.large : size.normal
+string rxTableSize=rxTableFont=="Small" ? size.small : rxTableFont=="Large" ? size.large : size.normal
+string rxTablePos=rxPosition=="Top Left" ? position.top_left : rxPosition=="Bottom Left" ? position.bottom_left : rxPosition=="Bottom Right" ? position.bottom_right : position.top_right
+var table levelTable=table.new(rxTablePos,5,2*rxRows+4,bgcolor=color.rgb(18,23,30),border_color=color.rgb(45,52,62),border_width=1)
+if barstate.isfirst and trackerOn and rxTableOn and trackerPosition==rxPosition
+    runtime.error("Choose different corners for the RADAR and SESSION LEVELS dashboards, or hide one dashboard.")
+bool use5=umOn and timedChart and chart.is_standard and rxOn and rx5 and chartSeconds<=300 and 300%chartSeconds==0
+bool use15=umOn and timedChart and chart.is_standard and rxOn and rx15 and chartSeconds<=900 and 900%chartSeconds==0
+
+type Reaction
+    int mode=0
+    int age=0
+    int eventTime=na
+    string status="Waiting"
+    bool sweepArmed=true
+type SessionLevel
+    float price
+    bool isHigh
+    string name
+    color ink
+    int published
+    int origin
+    int expires
+    int visits=0
+    bool touching=false
+    Reaction five
+    Reaction fifteen
+type WindowRange
+    float hi=na
+    float lo=na
+    int hiTime=na
+    int loTime=na
+    int key=na
+    bool valid=false
+    bool running=false
+var array<SessionLevel> sessionLevels=array.new<SessionLevel>()
+var array<WindowRange> windows=array.new<WindowRange>()
+var array<line> levelLines=array.new<line>()
+var array<label> levelTags=array.new<label>()
+if barstate.isfirst
+    for j=0 to 8
+        array.push(windows,WindowRange.new())
+
+addSessionLevel(float price,bool highSide,string name,color ink,int origin,int retention)=>
+    if array.size(sessionLevels)>=umCapacity
+        array.shift(sessionLevels)
+    SessionLevel lvl=SessionLevel.new(price,highSide,name,ink,time_close,origin,time_close+retention*86400000)
+    lvl.five:=Reaction.new()
+    lvl.fifteen:=Reaction.new()
+    array.push(sessionLevels,lvl)
+
+// A window that begins before loaded history is deliberately not published.
+trackWindow(int slot,bool enabled,bool inside,int key,string name,color ink,int retention,bool aligned,bool startAligned=true)=>
+    WindowRange w=array.get(windows,slot)
+    bool changed=inside and w.running and key!=w.key
+    bool finished=w.running and (not inside or changed)
+    if finished
+        if enabled and w.valid and not na(w.hi)
+            addSessionLevel(w.hi,true,name+" High",ink,w.hiTime,retention)
+            addSessionLevel(w.lo,false,name+" Low",ink,w.loTime,retention)
+        w.running:=false
+        w.hi:=na
+        w.lo:=na
+    if inside and enabled
+        if not w.running
+            w.running:=true
+            w.key:=key
+            w.valid:=bar_index>0 and startAligned
+        if not aligned
+            w.valid:=false
+        if na(w.hi) or high>w.hi
+            w.hi:=high
+            w.hiTime:=time
+        if na(w.lo) or low<w.lo
+            w.lo:=low
+            w.loTime:=time
+
+levelCaption(SessionLevel lvl)=>
+    lvl.name+" · "+str.format_time(lvl.origin,"MM/dd","America/New_York")
+updateReaction(SessionLevel lvl,Reaction state,string tf,int t,float h,float l,float c,float previousClose)=>
+    if t>=lvl.published
+        float sign=lvl.isHigh ? 1.0 : -1.0
+        float beyond=(c-lvl.price)*sign
+        float before=(previousClose-lvl.price)*sign
+        float wick=(lvl.isHigh ? h-lvl.price : lvl.price-l)
+        bool touched=h>=lvl.price-rxTouch and l<=lvl.price+rxTouch
+        string event=""
+        int direction=0
+        bool pending=state.mode==1 or state.mode==2
+        if pending
+            state.age+=1
+            if state.age>rxBars
+                state.status:=state.mode==2 ? "Held · watch ended" : "Retest expired"
+                state.mode:=5
+            else if beyond < -rxClose
+                state.mode:=3
+                state.status:="Failed"
+                event:="Failed"
+                direction:=lvl.isHigh ? -1 : 1
+            else if state.mode==1 and touched and beyond>rxClose
+                state.mode:=2
+                state.status:="Retest Held"
+                event:="Retest Held"
+                direction:=lvl.isHigh ? 1 : -1
+        else if beyond>rxClose and before<=rxClose
+            state.mode:=1
+            state.age:=0
+            state.sweepArmed:=true
+            state.status:="Broke Through"
+            event:="Broke Through"
+            direction:=lvl.isHigh ? 1 : -1
+        else if state.sweepArmed and wick>rxPen and beyond < -rxClose and before<=0
+            state.mode:=4
+            state.sweepArmed:=false
+            state.status:="Reclaimed"
+            event:="Reclaimed"
+            direction:=lvl.isHigh ? -1 : 1
+        if event!=""
+            state.eventTime:=t
+
+        if not touched and beyond < -rxClose
+            state.sweepArmed:=true
+
+// Stable prior-source snapshots. Equal-chart lanes instead use this confirmed bar.
+confirmedReactionBar()=>
+    [time[1],high[1],low[1],close[1],close[2]]
+reactionSnapshot(string tf,bool enabled)=>
+    int t=na
+    float h=na
+    float l=na
+    float snapshotClose=na
+    float p=na
+    if enabled
+        [rt,rh,rl,rc,rp]=request.security(syminfo.tickerid,tf,confirmedReactionBar(),lookahead=barmerge.lookahead_on)
+        t:=rt
+        h:=rh
+        l:=rl
+        snapshotClose:=rc
+        p:=rp
+    [t,h,l,snapshotClose,p]
+[r5t,r5h,r5l,r5c,r5p]=reactionSnapshot("5",use5 and chartSeconds<300)
+[r15t,r15h,r15l,r15c,r15p]=reactionSnapshot("15",use15 and chartSeconds<900)
+int t5=chartSeconds==300 ? time : r5t
+int t15=chartSeconds==900 ? time : r15t
+var int seen5=na
+var int seen15=na
+string asSession=umPreset=="Transcript" ? "1900-0400" : umPreset=="Custom" ? asCustom : "1800-0000"
+string ldSession=umPreset=="Transcript" ? "0300-1200" : umPreset=="Custom" ? ldCustom : "0200-0930"
+string nySession=umPreset=="Transcript" ? "0800-1700" : umPreset=="Custom" ? nyCustom : "0930-1600"
+bool inAS=timedChart and chart.is_standard and timeframe.isintraday and not na(time(timeframe.period,asSession,"America/New_York"))
+bool inLD=timedChart and chart.is_standard and timeframe.isintraday and not na(time(timeframe.period,ldSession,"America/New_York"))
+bool inNY=timedChart and chart.is_standard and timeframe.isintraday and not na(time(timeframe.period,nySession,"America/New_York"))
+bool inLC=timedChart and chart.is_standard and timeframe.isintraday and not na(time(timeframe.period,lcCustom,"America/New_York"))
+bool inRTH=timedChart and chart.is_standard and timeframe.isintraday and not na(time(timeframe.period,"0930-1600","America/New_York"))
+bool inORA=timedChart and chart.is_standard and timeframe.isintraday and not na(time(timeframe.period,orASession,"America/New_York"))
+bool inORB=timedChart and chart.is_standard and timeframe.isintraday and not na(time(timeframe.period,orBSession,"America/New_York"))
+// Whole-window alignment only: incomplete/cut windows are skipped, never approximated.
+windowAligned(string sessionSpec)=>
+    int windowOpen=time(timeframe.period,sessionSpec,"America/New_York")
+    int windowClose=time_close(timeframe.period,sessionSpec,"America/New_York")
+    na(windowOpen) or (windowOpen==time and windowClose==time_close)
+// Do not publish a window if the first available chart bar missed its start.
+windowStartsHere(string sessionSpec)=>
+    int startHour=int(str.tonumber(str.substring(sessionSpec,0,2)))
+    int startMinute=int(str.tonumber(str.substring(sessionSpec,2,4)))
+    hour(time,"America/New_York")==startHour and minute(time,"America/New_York")==startMinute and second(time,"America/New_York")==0
+bool sessionChart=timedChart and chart.is_standard and timeframe.isintraday
+bool dayChart=timedChart and chart.is_standard and (timeframe.isintraday or (timeframe.isdaily and timeframe.multiplier==1))
+bool weekChart=dayChart or (chart.is_standard and timeframe.isweekly and timeframe.multiplier==1)
+bool monthChart=dayChart or (chart.is_standard and timeframe.ismonthly and timeframe.multiplier==1)
+if umOn and timedChart and chart.is_standard and barstate.isconfirmed
+    trackWindow(0,umAS and sessionChart,inAS,time("1D",asSession,"America/New_York"),"Asia",color.rgb(186,104,200),umDays,windowAligned(asSession),windowStartsHere(asSession))
+    trackWindow(1,umLD and sessionChart,inLD,time("1D",ldSession,"America/New_York"),"London",color.rgb(255,183,77),umDays,windowAligned(ldSession),windowStartsHere(ldSession))
+    trackWindow(2,umNY and sessionChart,inNY,time("1D",nySession,"America/New_York"),"New York",color.rgb(66,165,245),umDays,windowAligned(nySession),windowStartsHere(nySession))
+    trackWindow(3,umLC and sessionChart,inLC,time("1D",lcCustom,"America/New_York"),"London Close",color.rgb(240,98,146),umDays,windowAligned(lcCustom),windowStartsHere(lcCustom))
+    trackWindow(4,umPD and (umDaySource=="RTH Only" ? sessionChart : dayChart),umDaySource=="RTH Only" ? inRTH : true,umDaySource=="RTH Only" ? time("1D","0930-1600","America/New_York") : time_tradingday,"Prior Day",color.yellow,umDays,umDaySource=="RTH Only" ? windowAligned("0930-1600") : time_close<=time_close("1D"),umDaySource!="RTH Only" or windowStartsHere("0930-1600"))
+    trackWindow(5,umPW and weekChart,true,time("1W"),"Prior Week",color.lime,umWeeks*7,time_close<=time_close("1W"))
+    trackWindow(6,umPM and monthChart,true,time("1M"),"Prior Month",color.fuchsia,umMonths*31,time_close<=time_close("1M"))
+    trackWindow(7,orA and sessionChart,inORA,time("1D",orASession,"America/New_York"),"Range A",color.aqua,umDays,windowAligned(orASession),windowStartsHere(orASession))
+    trackWindow(8,orB and sessionChart,inORB,time("1D",orBSession,"America/New_York"),"Range B",color.silver,umDays,windowAligned(orBSession),windowStartsHere(orBSession))
+    bool new5=use5 and not na(t5) and (na(seen5) or t5!=seen5)
+    bool new15=use15 and not na(t15) and (na(seen15) or t15!=seen15)
+    if array.size(sessionLevels)>0
+        for i=array.size(sessionLevels)-1 to 0
+            SessionLevel lvl=array.get(sessionLevels,i)
+            bool tooOld=time_close>lvl.expires
+            float probe=umMitigation=="Close" ? close : lvl.isHigh ? high : low
+            // Also evaluate the publication bar: its completed price action may
+            // already have mitigated this newly available, completed-window level.
+            bool mitigated=time_close>=lvl.published and (lvl.isHigh ? probe>lvl.price+umTolerance : probe<lvl.price-umTolerance)
+            if tooOld or mitigated
+                array.remove(sessionLevels,i)
+            else
+                if time>=lvl.published
+                    bool touching=high>=lvl.price-rxTouch and low<=lvl.price+rxTouch
+                    if touching and not lvl.touching
+                        lvl.visits+=1
+                    lvl.touching:=touching
+                if new5
+                    updateReaction(lvl,lvl.five,"5m",t5,chartSeconds==300 ? high : r5h,chartSeconds==300 ? low : r5l,chartSeconds==300 ? close : r5c,chartSeconds==300 ? close[1] : r5p)
+                if new15
+                    updateReaction(lvl,lvl.fifteen,"15m",t15,chartSeconds==900 ? high : r15h,chartSeconds==900 ? low : r15l,chartSeconds==900 ? close : r15c,chartSeconds==900 ? close[1] : r15p)
+    if new5
+        seen5:=t5
+    if new15
+        seen15:=t15
+
+visitText(SessionLevel lvl)=>
+    lvl.visits==0 ? "Untested" : lvl.visits==1 ? "First revisit" : "Tested "+str.tostring(lvl.visits)+"x"
+laneText(Reaction state,bool enabled)=>
+    not enabled ? "Off / unavailable" : state.status+(not na(state.eventTime) ? " · "+str.format_time(state.eventTime,"MM/dd HH:mm","America/New_York") : "")
+levelTip(SessionLevel lvl)=>
+    float age=(time_close-lvl.published)/86400000.0
+    string tip="Extreme candle: "+str.format_time(lvl.origin,"yyyy-MM-dd HH:mm","America/New_York")+" NY\nPublished only after the window ends. The source line is back-anchored for context; it was not available on the extreme candle.\nPublished: "+str.format_time(lvl.published,"yyyy-MM-dd HH:mm","America/New_York")+" NY\nAge: "+str.tostring(age,"#.0")+" calendar days\nVisits: "+str.tostring(lvl.visits)+" (chart-candle episodes)\n"+"Active, completed source window"+"\n5m: "+laneText(lvl.five,use5)+"\n15m: "+laneText(lvl.fifteen,use15)
+    if rxChecklist
+        Reaction latest=na(lvl.five.eventTime) ? lvl.fifteen : na(lvl.fifteen.eventTime) ? lvl.five : lvl.five.eventTime>=lvl.fifteen.eventTime ? lvl.five : lvl.fifteen
+        int reactionDirection=latest.status=="Broke Through" or latest.status=="Retest Held" or latest.status=="Held · watch ended" ? (lvl.isHigh ? 1 : -1) : latest.status=="Reclaimed" or latest.status=="Failed" ? (lvl.isHigh ? -1 : 1) : 0
+        int bias=array.get(localBiases,0)
+        string alignment=not chartRadar or not localOn ? "Unavailable" : reactionDirection==0 or bias==0 ? "Unresolved" : bias==reactionDirection ? "Aligned" : "Opposed"
+        float room=na
+        for other in sessionLevels
+            if (reactionDirection>0 ? other.isHigh and other.price>close : reactionDirection<0 ? not other.isHigh and other.price<close : false)
+                float d=math.abs(other.price-close)
+                room:=na(room) ? d : math.min(room,d)
+        tip+="\nCONTEXT ONLY\nFresh: "+(lvl.visits==0 ? "Yes" : "No")+"\nCurrent chart-local structure: "+alignment+"\nNext opposing retained line: "+(na(room) ? "Not available" : str.tostring(room,"#.##")+" pt")+"\nNot a confidence percentage or risk/reward calculation."
+    tip
+
+// Recreate only presentation objects. State and history are independent of tables.
+if barstate.islast
+    while array.size(levelLines)>0
+        line.delete(array.pop(levelLines))
+    while array.size(levelTags)>0
+        label.delete(array.pop(levelTags))
+    table.clear(levelTable,0,0,4,2*rxRows+3)
+    int count=umOn ? array.size(sessionLevels) : 0
+    int drawn=0
+    array<int> picked=array.new<int>()
+    array<float> labelYs=array.new<float>()
+    if count>0
+        for rank=0 to umDrawMax-1
+            int best=-1
+            float nearest=1e30
+            for i=count-1 to 0
+                SessionLevel candidate=array.get(sessionLevels,i)
+                float d=math.abs(candidate.price-close)
+                if not array.includes(picked,i) and d<nearest
+                    best:=i
+                    nearest:=d
+            if best<0 or nearest>umDrawRange
+                break
+            array.push(picked,best)
+            SessionLevel lvl=array.get(sessionLevels,best)
+            float age=(time_close-lvl.published)/86400000.0
+            string tip=levelTip(lvl)
+            int edge=time+int(nz(chartSeconds,60)*1000)*8
+            int tagTime=edge+int(nz(chartSeconds,60)*1000)*2
+            array.push(levelLines,line.new(lvl.origin,lvl.price,edge,lvl.price,xloc=xloc.bar_time,color=color.new(lvl.ink,15),style=line.style_dashed))
+            if umLabels
+                array.push(levelTags,label.new(tagTime,lvl.price,levelCaption(lvl)+" · "+str.tostring(lvl.price,format.mintick),xloc=xloc.bar_time,style=label.style_none,textcolor=lvl.ink,size=rxSize,tooltip=tip))
+            drawn+=1
+    if rxTableOn
+        array<string> headings=array.from("SESSION LEVELS","VISITS / AGE","DIST pt","5m CONFIRMED","15m CONFIRMED")
+        for col=0 to 4
+            table.cell(levelTable,col,0,array.get(headings,col),text_color=color.white,text_size=rxTableSize,bgcolor=color.rgb(34,43,56))
+        int row=1
+        for side=0 to 1
+            bool wantHigh=side==0
+            bool showSide=rxSide=="Both" or (wantHigh ? rxSide=="Highs only" : rxSide=="Lows only")
+            if showSide
+                table.cell(levelTable,0,row,wantHigh ? "SESSION / PRIOR HIGHS" : "SESSION / PRIOR LOWS",text_color=wantHigh ? supply : demand,text_size=rxTableSize,bgcolor=color.rgb(34,43,56))
+                row+=1
+                array<int> sidePicked=array.new<int>()
+                int shown=0
+                if count>0
+                    for rank=0 to rxRows-1
+                        int best=-1
+                        float nearest=1e30
+                        for i=count-1 to 0
+                            SessionLevel candidate=array.get(sessionLevels,i)
+                            float d=math.abs(candidate.price-close)
+                            if candidate.isHigh==wantHigh and not array.includes(sidePicked,i) and d<nearest
+                                best:=i
+                                nearest:=d
+                        if best<0
+                            break
+                        array.push(sidePicked,best)
+                        SessionLevel lvl=array.get(sessionLevels,best)
+                        float age=(time_close-lvl.published)/86400000.0
+                        string tip=levelTip(lvl)
+                        string proximity=nearest<=rxTouch ? "Testing" : nearest<=umDrawRange ? "Nearby" : "Watching"
+                        table.cell(levelTable,0,row,levelCaption(lvl)+"\n"+str.tostring(lvl.price,format.mintick),text_color=lvl.ink,text_size=rxTableSize,tooltip=tip)
+                        table.cell(levelTable,1,row,visitText(lvl)+" · "+str.tostring(age,"#.0")+"d",text_color=color.white,text_size=rxTableSize,tooltip=tip)
+                        table.cell(levelTable,2,row,str.tostring(nearest,"#.##")+" · "+proximity,text_color=color.silver,text_size=rxTableSize,tooltip="Live proximity only. Testing means live price is in the touch band; confirmed visit counts update on chart close. High/Low refers to source extreme, not its current side of price.")
+                        table.cell(levelTable,3,row,rxCompact ? (use5 ? lvl.five.status : "Off / unavailable") : laneText(lvl.five,use5),text_color=color.white,text_size=rxTableSize,tooltip=tip)
+                        table.cell(levelTable,4,row,rxCompact ? (use15 ? lvl.fifteen.status : "Off / unavailable") : laneText(lvl.fifteen,use15),text_color=color.white,text_size=rxTableSize,tooltip=tip)
+                        row+=1
+                        shown+=1
+                if shown==0
+                    table.cell(levelTable,0,row,umOn ? "No retained levels" : "Level tracking off",text_color=color.silver,text_size=rxTableSize)
+                    row+=1
+        int footer=2*rxRows+3
+        table.cell(levelTable,0,footer,str.tostring(count)+" tracked · "+str.tostring(drawn)+" drawn",text_color=color.silver,text_size=rxTableSize)
+        table.cell(levelTable,1,footer,"Visual only",text_color=color.silver,text_size=rxTableSize)
+        table.cell(levelTable,2,footer,sessionChart ? "Aligned windows only" : "Intraday windows off",text_color=color.silver,text_size=rxTableSize,tooltip="Session/opening ranges require whole aligned intraday candles. Cut windows are skipped. Prior day/week/month require chart bars no coarser than their source period and no crossing of its end. 5m/15m reactions are off when incompatible.")
+        table.cell(levelTable,3,footer,use5 ? "5m closed candles" : "5m off / incompatible",text_color=color.silver,text_size=rxTableSize)
+        table.cell(levelTable,4,footer,use15 ? "15m closed candles" : "15m off / incompatible",text_color=color.silver,text_size=rxTableSize)
+
+

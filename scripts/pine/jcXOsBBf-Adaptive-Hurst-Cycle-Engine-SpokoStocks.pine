@@ -1,0 +1,353 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © SpokoStocks
+
+//@version=6
+indicator("Adaptive Hurst Cycle Engine [SpokoStocks]", shorttitle = "Adaptive Hurst Cycle Engine [SpokoStocks]", overlay = false,
+     max_bars_back = 500, max_polylines_count = 10, max_labels_count = 50, max_lines_count = 50)
+
+// ═══════════════════════════════════ Inputs ═══════════════════════════════════
+gSpec = "1 · Spectrum measurement"
+srcIn     = input.source(close, "Source", group = gSpec)
+minP      = input.int(8,  "Shortest period (bars)", minval = 6,  maxval = 40,  group = gSpec)
+maxP      = input.int(64, "Longest period (bars)",  minval = 20, maxval = 120, group = gSpec)
+avgLen    = input.int(3, "Correlation averaging (bars, 0 = use lag)", minval = 0, maxval = 20, group = gSpec)
+specAlpha = input.float(0.2, "Spectrum smoothing (0.05 slow … 1 fast)", minval = 0.05, maxval = 1.0, step = 0.05, group = gSpec)
+
+gCyc = "2 · Cycle set"
+cycMode  = input.string("Measured peaks", "How cycles are chosen", options = ["Measured peaks", "Harmonic set (Hurst 2:1)"], group = gCyc,
+     tooltip = "Measured peaks: the strongest peaks of the spectrum. Harmonic set: Hurst's nominal model built from the dominant period in 2:1 ratios.")
+nCyc     = input.int(3, "Number of cycles", minval = 1, maxval = 4, group = gCyc)
+minPwr   = input.float(0.25, "Minimum spectral power to accept (0-1)", minval = 0.05, maxval = 1.0, step = 0.05, group = gCyc)
+perAlpha = input.float(0.10, "Period smoothing (0.02 slow … 1 none)", minval = 0.02, maxval = 1.0, step = 0.02, group = gCyc)
+bwFrac   = input.float(0.30, "Band-pass bandwidth (fraction of period)", minval = 0.10, maxval = 0.80, step = 0.05, group = gCyc)
+syncTol  = input.float(30, "Trough confluence tolerance (degrees)", minval = 5, maxval = 90, group = gCyc)
+
+gProj = "3 · Projection and accuracy"
+projBars = input.int(30, "Project this many bars ahead", minval = 5, maxval = 200, group = gProj)
+hitWin   = input.int(3, "Accuracy window (± bars around a composite low)", minval = 1, maxval = 10, group = gProj,
+     tooltip = "A composite low counts as a hit when the price low on that bar is the lowest of the surrounding window, within a quarter of an ATR.")
+
+gDisp = "4 · Display"
+showModel  = input.bool(true, "Price chart: cycle model line and projected path", group = gDisp)
+showLows   = input.bool(true, "Price chart: mark composite lows (one bar after the turn)", group = gDisp)
+showZones  = input.bool(true, "Price chart: shade trough and peak zones (leading, from phase)", group = gDisp)
+colorBars  = input.bool(true, "Price chart: colour bars by cycle position", group = gDisp)
+showWaves  = input.bool(false, "Pane: show individual cycle components", group = gDisp)
+showSync   = input.bool(true, "Pane: shade trough confluence", group = gDisp)
+showDash   = input.bool(true, "Dashboard", group = gDisp)
+dashPos    = input.string("Top right", "Dashboard position", options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = gDisp)
+
+gCol = "5 · Colours"
+cTrough = input.color(#2dd4bf, "Cycle trough", group = gCol)
+cMid    = input.color(#a78bfa, "Mid cycle", group = gCol)
+cPeak   = input.color(#ff3b5c, "Cycle peak", group = gCol)
+cProj   = input.color(#fbbf24, "Projection", group = gCol)
+cModel  = input.color(#60a5fa, "Cycle model line", group = gCol)
+
+// ═══════════════════════════ Roofing filter (Ehlers) ══════════════════════════
+PI  = math.pi
+a1  = (math.cos(0.707 * 2 * PI / maxP) + math.sin(0.707 * 2 * PI / maxP) - 1) / math.cos(0.707 * 2 * PI / maxP)
+var float hp = 0.0
+hp := (1 - a1 / 2) * (1 - a1 / 2) * (srcIn - 2 * nz(srcIn[1], srcIn) + nz(srcIn[2], srcIn)) + 2 * (1 - a1) * nz(hp[1]) - (1 - a1) * (1 - a1) * nz(hp[2])
+ssA = math.exp(-1.414 * PI / minP)
+ssB = 2 * ssA * math.cos(1.414 * PI / minP)
+sc2 = ssB
+sc3 = -ssA * ssA
+sc1 = 1 - sc2 - sc3
+var float filt = 0.0
+filt := sc1 * (hp + nz(hp[1])) / 2 + sc2 * nz(filt[1]) + sc3 * nz(filt[2])
+trend = srcIn - hp                       // what is left of price once the cycle band is removed
+
+// ════════════════════ Autocorrelation periodogram (Ehlers) ════════════════════
+corrArr = array.new_float(maxP + 1, 0.0)
+for lag = 0 to maxP
+    M = avgLen == 0 ? lag : avgLen
+    if M > 0
+        sx = 0.0
+        sy = 0.0
+        sxx = 0.0
+        syy = 0.0
+        sxy = 0.0
+        for cnt = 0 to M - 1
+            x = nz(filt[cnt])
+            y = nz(filt[lag + cnt])
+            sx  += x
+            sy  += y
+            sxx += x * x
+            syy += y * y
+            sxy += x * y
+        den = (M * sxx - sx * sx) * (M * syy - sy * sy)
+        array.set(corrArr, lag, den > 0 ? (M * sxy - sx * sy) / math.sqrt(den) : 0.0)
+
+var rArr = array.new_float(0)
+if barstate.isfirst
+    for p = 0 to maxP
+        array.push(rArr, 0.0)
+var float maxPwr = 0.0
+maxPwr := 0.995 * maxPwr
+pwrArr = array.new_float(maxP + 1, 0.0)
+for p = minP to maxP
+    cp = 0.0
+    sp = 0.0
+    for n = 3 to maxP
+        cp += array.get(corrArr, n) * math.cos(2 * PI * n / p)
+        sp += array.get(corrArr, n) * math.sin(2 * PI * n / p)
+    sq = cp * cp + sp * sp
+    r  = specAlpha * sq * sq + (1 - specAlpha) * array.get(rArr, p)
+    array.set(rArr, p, r)
+    if r > maxPwr
+        maxPwr := r
+for p = minP to maxP
+    array.set(pwrArr, p, maxPwr > 0 ? array.get(rArr, p) / maxPwr : 0.0)
+
+spx = 0.0
+spw = 0.0
+for p = minP to maxP
+    w = array.get(pwrArr, p)
+    if w >= 0.5
+        spx += p * w
+        spw += w
+var float domP = (minP + maxP) / 2.0
+domP := spw > 0 ? spx / spw : domP
+
+// ═══════════════════════════ Choose the cycle set ═════════════════════════════
+selP = array.new_float()
+if cycMode == "Harmonic set (Hurst 2:1)"
+    if nCyc == 1
+        array.push(selP, domP)
+    else if nCyc == 2
+        array.push(selP, domP / 2)
+        array.push(selP, domP)
+    else if nCyc == 3
+        array.push(selP, domP / 2)
+        array.push(selP, domP)
+        array.push(selP, domP * 2)
+    else
+        array.push(selP, domP / 4)
+        array.push(selP, domP / 2)
+        array.push(selP, domP)
+        array.push(selP, domP * 2)
+else
+    pkP = array.new_float()
+    pkW = array.new_float()
+    for p = minP to maxP
+        w  = array.get(pwrArr, p)
+        wl = p > minP ? array.get(pwrArr, p - 1) : 0.0
+        wr = p < maxP ? array.get(pwrArr, p + 1) : 0.0
+        if w >= minPwr and w > wl and w >= wr
+            array.push(pkP, p)
+            array.push(pkW, w)
+    for i = 0 to nCyc - 1
+        if array.size(pkW) > 0
+            best = array.indexof(pkW, array.max(pkW))
+            if best >= 0 and array.get(pkW, best) >= 0
+                array.push(selP, array.get(pkP, best))
+                array.set(pkW, best, -1.0)
+    if array.size(selP) == 0
+        array.push(selP, domP)            // never leave the chart empty: fall back to the dominant period
+    array.sort(selP, order.ascending)
+
+var perS = array.new_float(4, na)
+for i = 0 to 3
+    newP = i < array.size(selP) ? array.get(selP, i) : float(na)
+    prev = array.get(perS, i)
+    array.set(perS, i, na(prev) or na(newP) ? newP : prev + perAlpha * (newP - prev))
+
+// ══════════════════════ Band-pass, phase, amplitude per cycle ═════════════════
+atan2(float y, float x) =>
+    x > 0 ? math.atan(y / x) : x < 0 and y >= 0 ? math.atan(y / x) + PI : x < 0 and y < 0 ? math.atan(y / x) - PI : y > 0 ? PI / 2 : y < 0 ? -PI / 2 : 0.0
+
+var bp1  = array.new_float(4, 0.0)
+var bp2  = array.new_float(4, 0.0)
+var ampS = array.new_float(4, 0.0)
+wave   = array.new_float(4, na)
+theta  = array.new_float(4, na)
+amp    = array.new_float(4, na)
+toTr   = array.new_float(4, na)
+pwrOf  = array.new_float(4, na)
+
+for i = 0 to 3
+    P = array.get(perS, i)
+    if i < nCyc and not na(P) and P >= 4
+        beta = math.cos(2 * PI / P)
+        gam  = 1 / math.cos(4 * PI * bwFrac / P)
+        alp  = gam - math.sqrt(gam * gam - 1)
+        prev1 = array.get(bp1, i)
+        prev2 = array.get(bp2, i)
+        bp = 0.5 * (1 - alp) * (filt - nz(filt[2])) + beta * (1 + alp) * prev1 - alp * prev2
+        q  = -(P / (2 * PI)) * (bp - prev1)
+        th = atan2(q, bp)
+        a  = math.sqrt(bp * bp + q * q)
+        aS = array.get(ampS, i) == 0 ? a : array.get(ampS, i) + 0.1 * (a - array.get(ampS, i))
+        array.set(ampS, i, aS)
+        array.set(wave, i, bp)
+        array.set(theta, i, th)
+        array.set(amp, i, aS)
+        array.set(toTr, i, ((PI - th) % (2 * PI)) / (2 * PI) * P)
+        pr = math.round(P)
+        array.set(pwrOf, i, pr >= minP and pr <= maxP ? array.get(pwrArr, pr) : float(na))
+        array.set(bp2, i, prev1)
+        array.set(bp1, i, bp)
+    else
+        array.set(bp1, i, 0.0)
+        array.set(bp2, i, 0.0)
+        array.set(ampS, i, 0.0)
+
+w0 = array.get(wave, 0)
+w1 = array.get(wave, 1)
+w2 = array.get(wave, 2)
+w3 = array.get(wave, 3)
+comp = nz(w0) + nz(w1) + nz(w2) + nz(w3)
+ampSum = nz(array.get(amp, 0)) + nz(array.get(amp, 1)) + nz(array.get(amp, 2)) + nz(array.get(amp, 3))
+ampRef = math.max(ampSum, 1e-10)
+
+nearTr = 0
+for i = 0 to 3
+    th = array.get(theta, i)
+    if not na(th) and (PI - math.abs(th)) * 180 / PI <= syncTol
+        nearTr += 1
+
+// ═══════════════════ Composite phase: leading trough / peak zones ═════════════
+qC   = -(domP / (2 * PI)) * (comp - nz(comp[1], comp))
+thC  = atan2(qC, comp)
+degFromTrough = (PI - math.abs(thC)) * 180 / PI
+degFromPeak   = math.abs(thC) * 180 / PI
+troughZone = ampSum > 0 and degFromTrough <= syncTol
+peakZone   = ampSum > 0 and degFromPeak   <= syncTol
+
+// ═══════════════════ Composite lows and their accuracy score ══════════════════
+compTr = comp[1] < comp[2] and comp > comp[1]          // composite turned up: low was on the previous bar
+atr    = ta.atr(14)
+evalK  = hitWin + 1                                     // bars after the low until the window is complete
+winLow = ta.lowest(low, 2 * hitWin + 1)
+doEval = compTr[hitWin]                                 // the low sits at bar evalK back; its window ends now
+isHit  = doEval and low[evalK] <= winLow[1] + 0.25 * atr
+isMiss = doEval and not isHit
+var int hits = 0
+var int tot  = 0
+if doEval
+    tot  += 1
+    hits += isHit ? 1 : 0
+hitRate = tot > 0 ? hits / tot * 100 : float(na)
+
+// ═══════════════════════════════ Pane visuals ═════════════════════════════════
+cycleCol = color.from_gradient(comp, -ampRef, ampRef, cTrough, cPeak)
+pZero = plot(0, "Zero", color = color.new(color.gray, 70))
+pComp = plot(comp, "Composite", color = cycleCol, linewidth = 2)
+fill(pZero, pComp, ampRef, -ampRef, color.new(cPeak, 55), color.new(cTrough, 55), "Cycle fill")
+plot(showWaves ? w0 : na, "Cycle 1", color = color.new(cTrough, 50), linewidth = 1)
+plot(showWaves ? w1 : na, "Cycle 2", color = color.new(cModel, 50), linewidth = 1)
+plot(showWaves ? w2 : na, "Cycle 3", color = color.new(cMid, 50), linewidth = 1)
+plot(showWaves ? w3 : na, "Cycle 4", color = color.new(cPeak, 50), linewidth = 1)
+plotshape(compTr ? comp[1] : na, "Composite low", shape.diamond, location.absolute, cTrough, offset = -1, size = size.tiny)
+bgcolor(showSync and nearTr >= 2 ? color.new(cTrough, nearTr >= 3 ? 82 : 90) : troughZone ? color.new(cTrough, 92) : peakZone ? color.new(cPeak, 93) : na, title = "Trough confluence and zones")
+
+// ═══════════════════════════ Price chart visuals ══════════════════════════════
+model = trend + comp
+plot(showModel ? model : na, "Cycle model", color = color.new(cModel, 25), linewidth = 2, force_overlay = true)
+plotshape(showLows and compTr, "Composite low", shape.triangleup, location.belowbar, cTrough, offset = -1, size = size.small, force_overlay = true)
+bgcolor(showZones and troughZone ? color.new(cTrough, 85) : showZones and peakZone ? color.new(cPeak, 88) : na, title = "Cycle zones on price", force_overlay = true)
+barcolor(colorBars ? cycleCol : na, title = "Cycle position")
+
+var polyline projPane  = na
+var polyline projPrice = na
+var label    projLb    = na
+var int   kTrough = na
+var float vTrough = na
+if barstate.islast
+    if not na(projPane)
+        polyline.delete(projPane)
+    if not na(projPrice)
+        polyline.delete(projPrice)
+    if not na(projLb)
+        label.delete(projLb)
+    n     = math.max(2, math.round(domP))
+    slope = (trend - nz(trend[n], trend)) / n
+    ptsP  = array.new<chart.point>()
+    ptsX  = array.new<chart.point>()
+    kTrough := na
+    vTrough := na
+    for k = 0 to projBars
+        v = 0.0
+        for i = 0 to 3
+            th = array.get(theta, i)
+            P  = array.get(perS, i)
+            if not na(th) and not na(P)
+                v += array.get(amp, i) * math.cos(th + 2 * PI * k / P)
+        array.push(ptsP, chart.point.from_index(bar_index + k, v))
+        array.push(ptsX, chart.point.from_index(bar_index + k, trend + slope * k + v))
+        if k > 0 and (na(vTrough) or v < vTrough)
+            vTrough := v
+            kTrough := k
+    if array.size(ptsP) > 1
+        projPane := polyline.new(ptsP, false, false, xloc.bar_index, color.new(cProj, 20), line_style = line.style_dashed, line_width = 2)
+        if showModel
+            projPrice := polyline.new(ptsX, false, false, xloc.bar_index, color.new(cProj, 20), line_style = line.style_dashed, line_width = 2, force_overlay = true)
+        if not na(kTrough)
+            projLb := label.new(bar_index + kTrough, vTrough, "low in " + str.tostring(kTrough), xloc = xloc.bar_index,
+                 style = label.style_label_up, color = color.new(cProj, 15), textcolor = #0b1220, size = size.small)
+
+// ═══════════════════════════════════ Dashboard ════════════════════════════════
+posTbl = switch dashPos
+    "Top left"     => position.top_left
+    "Bottom right" => position.bottom_right
+    "Bottom left"  => position.bottom_left
+    => position.top_right
+cTblBg = color.new(#0b1220, 8)
+cText  = #e5e9f0
+cDim   = #8b95a7
+var table tb = table.new(posTbl, 4, 9, bgcolor = cTblBg, border_width = 1, border_color = cTblBg, frame_color = color.new(#3b4b66, 40), frame_width = 1, force_overlay = true)
+
+tfSec = timeframe.in_seconds()
+whenStr(float k) => na(k) ? "–" : str.format_time(time + int(k * tfSec * 1000), "dd MMM", syminfo.timezone)
+meter(float p) =>
+    blocks = array.from("▁", "▂", "▃", "▄", "▅", "▆", "▇", "█")
+    na(p) ? "–" : array.get(blocks, math.round(math.min(p, 1.0) * 7)) + " " + str.tostring(p * 100, "#") + "%"
+hdr(int c, string s) => table.cell(tb, c, 0, s, text_color = #ffffff, text_size = size.small, bgcolor = color.new(cMid, 55), text_halign = c == 0 ? text.align_left : text.align_right)
+cell(int c, int r, string s, color col) => table.cell(tb, c, r, s, text_color = col, text_size = size.small, text_halign = c == 0 ? text.align_left : text.align_right)
+slotCol(int i) => i == 0 ? cTrough : i == 1 ? cModel : i == 2 ? cMid : cPeak
+
+var bool merged = false
+if barstate.islast and showDash
+    if not merged
+        table.merge_cells(tb, 1, 6, 3, 6)
+        table.merge_cells(tb, 1, 7, 3, 7)
+        table.merge_cells(tb, 1, 8, 3, 8)
+        merged := true
+    hdr(0, "HURST CYCLES")
+    hdr(1, "Period")
+    hdr(2, "Power")
+    hdr(3, "Next low")
+    for i = 0 to 3
+        r = i + 1
+        P = array.get(perS, i)
+        if i < nCyc and not na(P)
+            th = array.get(theta, i)
+            pw = array.get(pwrOf, i)
+            rising = th < 0
+            cell(0, r, "C" + str.tostring(i + 1) + (rising ? " ▲" : " ▼"), slotCol(i))
+            cell(1, r, str.tostring(P, "#.#"), cText)
+            cell(2, r, meter(pw), na(pw) ? cDim : pw >= 0.5 ? cTrough : pw >= minPwr ? cText : cPeak)
+            cell(3, r, str.tostring(array.get(toTr, i), "#") + " · " + whenStr(array.get(toTr, i)), cText)
+        else
+            cell(0, r, "C" + str.tostring(i + 1), cDim)
+            cell(1, r, i < nCyc ? "–" : "", cDim)
+            cell(2, r, "", cDim)
+            cell(3, r, "", cDim)
+    cell(0, 5, "Dominant", cDim)
+    cell(1, 5, str.tostring(domP, "#.#"), cText)
+    cell(2, 5, "Sync", cDim)
+    cell(3, 5, str.tostring(nearTr) + "/" + str.tostring(nCyc), nearTr >= 2 ? cProj : cText)
+    cell(0, 6, "Composite low", cDim)
+    cell(1, 6, na(kTrough) ? "–" : "in " + str.tostring(kTrough) + " · " + whenStr(kTrough), cProj)
+    cell(0, 7, "Low accuracy ±" + str.tostring(hitWin), cDim)
+    cell(1, 7, na(hitRate) ? "–" : str.tostring(hitRate, "#") + "% of " + str.tostring(tot), na(hitRate) ? cDim : hitRate >= 60 ? cTrough : cText)
+    cell(0, 8, "Phase", cDim)
+    cell(1, 8, troughZone ? "in trough zone" : peakZone ? "in peak zone" : thC < 0 ? "rising · " + str.tostring(degFromPeak, "#") + "° to peak" : "falling · " + str.tostring(degFromTrough, "#") + "° to trough", troughZone ? cTrough : peakZone ? cPeak : cText)
+
+// ═══════════════════════════════════ Alerts ═══════════════════════════════════
+alertcondition(troughZone and not troughZone[1], "Entered trough zone", "{{ticker}}: composite cycle entered its trough zone")
+alertcondition(peakZone and not peakZone[1], "Entered peak zone", "{{ticker}}: composite cycle entered its peak zone")
+alertcondition(compTr, "Composite low confirmed", "{{ticker}}: composite cycle low confirmed")
+alertcondition(nearTr >= 2 and nearTr[1] < 2, "Trough confluence", "{{ticker}}: two or more cycles near a trough")
+alertcondition(not na(kTrough) and kTrough <= 3, "Composite low within 3 bars", "{{ticker}}: projected composite low within 3 bars")

@@ -1,0 +1,129 @@
+//@version=6
+indicator("3 Candle Manipulation", shorttitle="3 Candle Manipulation", overlay=true)
+
+//====================================================================
+// SETTINGS
+//====================================================================
+
+groupVolume = "Volume Filter"
+
+useVolumePreference = input.bool(
+     true,
+     "Require Candle 3 Higher Volume",
+     group=groupVolume
+     )
+
+//====================================================================
+// CANDLE COLORS
+//====================================================================
+
+// Current candle = Candle 3
+// Previous candle = Candle 2
+// Two candles back = Candle 1
+
+candle1Green = close[2] > open[2]
+candle1Red   = close[2] < open[2]
+
+candle2Green = close[1] > open[1]
+candle2Red   = close[1] < open[1]
+
+candle3Green = close > open
+candle3Red   = close < open
+
+//====================================================================
+// THREE-CANDLE PATTERNS
+//====================================================================
+
+// RED → GREEN → RED
+
+redGreenRed =
+     candle1Red and
+     candle2Green and
+     candle3Red
+
+// GREEN → RED → GREEN
+
+greenRedGreen =
+     candle1Green and
+     candle2Red and
+     candle3Green
+
+//====================================================================
+// VOLUME CONDITION
+//====================================================================
+
+// If volume preference is ON:
+// Candle 3 volume must be higher than Candle 2.
+//
+// If volume preference is OFF:
+// Volume is ignored.
+
+volumeCondition =
+     not useVolumePreference or
+     volume > volume[1]
+
+//====================================================================
+// FINAL SIGNALS
+//====================================================================
+
+// GREEN → RED → GREEN
+
+greenSignal =
+     barstate.isconfirmed and
+     greenRedGreen and
+     volumeCondition
+
+// RED → GREEN → RED
+
+redSignal =
+     barstate.isconfirmed and
+     redGreenRed and
+     volumeCondition
+
+//====================================================================
+// GREEN ARROW
+//====================================================================
+
+// Candle 3 is green.
+// Arrow BELOW Candle 3.
+
+plotshape(
+     greenSignal,
+     title="Green Red Green",
+     style=shape.arrowup,
+     location=location.belowbar,
+     color=color.lime,
+     size=size.tiny
+     )
+
+//====================================================================
+// RED ARROW
+//====================================================================
+
+// Candle 3 is red.
+// Arrow ABOVE Candle 3.
+
+plotshape(
+     redSignal,
+     title="Red Green Red",
+     style=shape.arrowdown,
+     location=location.abovebar,
+     color=color.red,
+     size=size.tiny
+     )
+
+//====================================================================
+// ALERTS
+//====================================================================
+
+alertcondition(
+     greenSignal,
+     title="Green Red Green",
+     message="GREEN-RED-GREEN 3 Candle Manipulation pattern detected"
+     )
+
+alertcondition(
+     redSignal,
+     title="Red Green Red",
+     message="RED-GREEN-RED 3 Candle Manipulation pattern detected"
+     )

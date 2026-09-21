@@ -1,0 +1,31 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Nick_Joan
+
+//@version=6
+indicator(title = "Correlation of Returns | NickJoan", precision = 2, timeframe = "", timeframe_gaps = false)
+
+
+// ─── Inputs ───────────────────────────────────────────────────────────────────
+symbolInput = input.symbol("INDEX:BTCUSD", "Comparison Symbol", confirm = true)
+sourceInput = input.source(close, "Source")
+lengthInput = input.int(30, "Length", minval = 2)
+
+
+// ─── Calculations ─────────────────────────────────────────────────────────────
+// Get the comparison symbol's source.
+requestedData = request.security(symbolInput, timeframe.period, sourceInput)
+
+// Calculate returns for both symbols.
+baseReturn = math.log(sourceInput / sourceInput[1])
+comparisonReturn = math.log(requestedData / requestedData[1])
+
+// Rolling Pearson correlation of returns.
+correlation = ta.correlation(baseReturn, comparisonReturn, lengthInput)
+
+
+// ─── Plots ─────────────────────────────────────────────────────────
+plot(correlation, title = "Correlation of Returns")
+
+hline(1, "Perfect Positive Correlation", color = color.new(color.green, 50))
+hline(0, "No Correlation", color = color.new(color.gray, 50))
+hline(-1, "Perfect Negative Correlation", color = color.new(color.red, 50))

@@ -1,0 +1,299 @@
+//@version=6
+indicator(
+     "Full Candle Engulfing – BUY and SELL",
+     overlay=true,
+     max_labels_count=500
+)
+
+//==============================================================================
+// INPUTS
+//==============================================================================
+
+enableBuy  = input.bool(true, "Enable BUY")
+enableSell = input.bool(true, "Enable SELL")
+
+entryValidityBars = input.int(
+     1,
+     "Entry Validity Bars",
+     minval=1,
+     maxval=20
+)
+
+requireOppositeColor = input.bool(
+     true,
+     "Require Previous Candle Opposite Colour"
+)
+
+useTrendFilter = input.bool(
+     false,
+     "Use EMA Trend Filter"
+)
+
+emaLength = input.int(
+     34,
+     "EMA Length",
+     minval=1
+)
+
+showEMA = input.bool(
+     true,
+     "Show EMA"
+)
+
+showEntryLevels = input.bool(
+     true,
+     "Show Entry Levels"
+)
+
+showEngulfingLabels = input.bool(
+     false,
+     "Show BULL/BEAR ENGULF Labels"
+)
+
+strictBreakout = input.bool(
+     true,
+     "Require Price to Break Entry Level"
+)
+
+//==============================================================================
+// EMA TREND FILTER
+//==============================================================================
+
+emaValue = ta.ema(close, emaLength)
+
+bullishTrend =
+     not useTrendFilter or
+     (close > emaValue and emaValue >= emaValue[1])
+
+bearishTrend =
+     not useTrendFilter or
+     (close < emaValue and emaValue <= emaValue[1])
+
+//==============================================================================
+// CANDLE DIRECTION
+//==============================================================================
+
+currentBullish = close > open
+currentBearish = close < open
+
+previousBullish = close[1] > open[1]
+previousBearish = close[1] < open[1]
+
+//==============================================================================
+// FULL-CANDLE ENGULFING
+//
+// Current candle must contain the entire previous candle:
+//
+// Current high >= previous wick high
+// Current low  <= previous wick low
+//==============================================================================
+
+engulfsPreviousFullCandle =
+     high >= high[1] and
+     low <= low[1]
+
+//==============================================================================
+// BULLISH FULL-CANDLE ENGULFING
+//==============================================================================
+
+bullishColourCondition =
+     not requireOppositeColor or previousBearish
+
+bullishSetup =
+     enableBuy and
+     currentBullish and
+     bullishColourCondition and
+     engulfsPreviousFullCandle and
+     bullishTrend
+
+//==============================================================================
+// BEARISH FULL-CANDLE ENGULFING
+//==============================================================================
+
+bearishColourCondition =
+     not requireOppositeColor or previousBullish
+
+bearishSetup =
+     enableSell and
+     currentBearish and
+     bearishColourCondition and
+     engulfsPreviousFullCandle and
+     bearishTrend
+
+//==============================================================================
+// SAVE BULLISH ENTRY
+//
+// Body high of a bullish candle = close
+//==============================================================================
+
+var float buyEntryLevel = na
+var int buySetupBar = na
+var bool buyTriggered = false
+
+// Remove expired bullish setup.
+if not na(buySetupBar) and bar_index > buySetupBar + entryValidityBars
+    buyEntryLevel := na
+    buySetupBar := na
+    buyTriggered := false
+
+// Store new bullish setup.
+if bullishSetup
+    buyEntryLevel := math.max(open, close)
+    buySetupBar := bar_index
+    buyTriggered := false
+
+buySetupActive =
+     not na(buySetupBar) and
+     bar_index > buySetupBar and
+     bar_index <= buySetupBar + entryValidityBars and
+     not buyTriggered
+
+// BUY requires a bullish candle body to close above the entry level.
+buyBreakCondition =
+     currentBullish and
+     close > buyEntryLevel
+
+buyEntry =
+     buySetupActive and
+     buyBreakCondition
+
+if buyEntry
+    buyTriggered := true
+
+//==============================================================================
+// SAVE BEARISH ENTRY
+//
+// Body low of a bearish candle = close
+//==============================================================================
+
+var float sellEntryLevel = na
+var int sellSetupBar = na
+var bool sellTriggered = false
+
+// Remove expired bearish setup.
+if not na(sellSetupBar) and bar_index > sellSetupBar + entryValidityBars
+    sellEntryLevel := na
+    sellSetupBar := na
+    sellTriggered := false
+
+// Store new bearish setup.
+if bearishSetup
+    sellEntryLevel := math.min(open, close)
+    sellSetupBar := bar_index
+    sellTriggered := false
+
+sellSetupActive =
+     not na(sellSetupBar) and
+     bar_index > sellSetupBar and
+     bar_index <= sellSetupBar + entryValidityBars and
+     not sellTriggered
+
+// SELL requires a bearish candle body to close below the entry level.
+sellBreakCondition =
+     currentBearish and
+     close < sellEntryLevel
+
+sellEntry =
+     sellSetupActive and
+     sellBreakCondition
+
+if sellEntry
+    sellTriggered := true
+
+//==============================================================================
+// DISPLAY
+//==============================================================================
+
+plot(
+     showEMA ? emaValue : na,
+     title="EMA",
+     color=color.orange,
+     linewidth=2
+)
+
+plot(
+     showEntryLevels ? buyEntryLevel : na,
+     title="BUY Entry Level",
+     color=color.lime,
+     linewidth=2,
+     style=plot.style_linebr
+)
+
+plot(
+     showEntryLevels ? sellEntryLevel : na,
+     title="SELL Entry Level",
+     color=color.red,
+     linewidth=2,
+     style=plot.style_linebr
+)
+
+// Highlight engulfing candles.
+barcolor(
+     bullishSetup ? color.aqua :
+     bearishSetup ? color.orange :
+     na
+)
+
+// Bullish setup label.
+plotshape(
+     showEngulfingLabels and bearishSetup,
+     title="Bearish Full Engulfing",
+     text="BEAR ENGULF",
+     style=shape.labeldown,
+     location=location.abovebar,
+     color=color.orange,
+     textcolor=color.white,
+     size=size.small
+)
+
+// BUY entry.
+plotshape(
+     buyEntry,
+     title="BUY Entry",
+     text="BUY",
+     style=shape.labelup,
+     location=location.belowbar,
+     color=color.lime,
+     textcolor=color.black,
+     size=size.small
+)
+
+// SELL entry.
+plotshape(
+     sellEntry,
+     title="SELL Entry",
+     text="SELL",
+     style=shape.labeldown,
+     location=location.abovebar,
+     color=color.red,
+     textcolor=color.white,
+     size=size.small
+)
+
+//==============================================================================
+// ALERTS
+//==============================================================================
+
+alertcondition(
+     bullishSetup,
+     title="Bullish Full Engulfing Setup",
+     message="Bullish full-candle engulfing setup on {{ticker}} {{interval}}"
+)
+
+alertcondition(
+     bearishSetup,
+     title="Bearish Full Engulfing Setup",
+     message="Bearish full-candle engulfing setup on {{ticker}} {{interval}}"
+)
+
+alertcondition(
+     buyEntry,
+     title="Full Engulfing BUY",
+     message="BUY: Price crossed the bullish engulfing body high on {{ticker}} {{interval}}"
+)
+
+alertcondition(
+     sellEntry,
+     title="Full Engulfing SELL",
+     message="SELL: Price crossed the bearish engulfing body low on {{ticker}} {{interval}}"
+)

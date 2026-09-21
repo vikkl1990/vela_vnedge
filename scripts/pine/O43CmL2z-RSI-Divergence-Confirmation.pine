@@ -1,0 +1,149 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//@version=6
+indicator("RSI Divergence Confirmation", shorttitle = "RSI Div Confirm", overlay = false, max_lines_count = 500, max_labels_count = 500)
+
+// --- Constants ---
+string GROUP_CALC = "Calculation"
+string GROUP_DISPLAY = "Display"
+string GROUP_STYLE = "Style"
+color BULL_COLOR = #089981
+color BEAR_COLOR = #f23645
+color RSI_COLOR = #5b9cf6
+
+// --- Inputs ---
+int rsiLengthInput = input.int(14, "RSI length", minval = 1, group = GROUP_CALC, tooltip = "Length used to calculate RSI.")
+int pivotLeftInput = input.int(5, "Pivot left bars", minval = 1, group = GROUP_CALC, tooltip = "Bars required to the left of an RSI pivot.")
+int pivotRightInput = input.int(5, "Pivot right bars", minval = 1, group = GROUP_CALC, tooltip = "Bars required to the right of an RSI pivot. Divergences are confirmed after these bars.")
+sourceInput = input.source(close, "RSI source", group = GROUP_CALC, tooltip = "Source used by RSI.")
+bool showRegularInput = input.bool(true, "Regular divergences", group = GROUP_DISPLAY, tooltip = "Detect bullish and bearish regular RSI divergences.")
+bool showHiddenInput = input.bool(true, "Hidden divergences", group = GROUP_DISPLAY, tooltip = "Detect bullish and bearish hidden RSI divergences.")
+bool showLinesInput = input.bool(true, "Draw divergence lines", group = GROUP_DISPLAY, tooltip = "Draw divergence lines on both the candle bodies and the RSI pane.")
+bool showPivotMarkersInput = input.bool(false, "Show pivot markers", group = GROUP_DISPLAY, tooltip = "Show a marker at each detected RSI divergence pivot.")
+color bullColorInput = input.color(BULL_COLOR, "Bullish color", group = GROUP_STYLE, tooltip = "Color for bullish divergences and confirmation arrows.")
+color bearColorInput = input.color(BEAR_COLOR, "Bearish color", group = GROUP_STYLE, tooltip = "Color for bearish divergences and confirmation arrows.")
+
+// --- RSI calculations and pane visuals ---
+float rsiValue = ta.rsi(sourceInput, rsiLengthInput)
+float rsiLowPivot = ta.pivotlow(rsiValue, pivotLeftInput, pivotRightInput)
+float rsiHighPivot = ta.pivothigh(rsiValue, pivotLeftInput, pivotRightInput)
+plot(rsiValue, "RSI", color = RSI_COLOR, linewidth = 2)
+hline(70, "Overbought", color = color.new(chart.fg_color, 65), linestyle = hline.style_dashed)
+hline(50, "RSI midpoint", color = color.new(chart.fg_color, 80), linestyle = hline.style_dotted)
+hline(30, "Oversold", color = color.new(chart.fg_color, 65), linestyle = hline.style_dashed)
+
+// --- Persistent RSI-pivot history ---
+// RSI pivots are the anchor points. The price values use the candle body,
+// not the wick: body low for bullish setups and body high for bearish setups.
+var float previousLowBody = na
+var float previousLowRsi = na
+var int previousLowBar = na
+var float previousHighBody = na
+var float previousHighRsi = na
+var int previousHighBar = na
+
+// A pending setup exists only until its first opposite candle appears.
+var bool bullishPending = false
+var bool bearishPending = false
+var int bullishDetectionBar = na
+var int bearishDetectionBar = na
+
+// Event flags are reset on every bar and used by alerts.
+bool bullishRegular = false
+bool bullishHidden = false
+bool bearishRegular = false
+bool bearishHidden = false
+bool bullishConfirmation = false
+bool bearishConfirmation = false
+
+// --- Confirm pending setups on future bars ---
+if bullishPending and bar_index > bullishDetectionBar and close > open
+    bullishPending := false
+    if math.abs(close - open) > math.abs(close[1] - open[1])
+        bullishConfirmation := true
+        label.new(bar_index, low, "", xloc = xloc.bar_index, yloc = yloc.belowbar, color = bullColorInput, style = label.style_arrowup, textcolor = bullColorInput, size = size.small, force_overlay = true)
+
+if bearishPending and bar_index > bearishDetectionBar and close < open
+    bearishPending := false
+    if math.abs(close - open) > math.abs(close[1] - open[1])
+        bearishConfirmation := true
+        label.new(bar_index, high, "", xloc = xloc.bar_index, yloc = yloc.abovebar, color = bearColorInput, style = label.style_arrowdown, textcolor = bearColorInput, size = size.small, force_overlay = true)
+
+// --- Detect bullish divergences from confirmed RSI low pivots ---
+if not na(rsiLowPivot)
+    int currentLowBar = bar_index - pivotRightInput
+    float currentLowBody = math.min(open[pivotRightInput], close[pivotRightInput])
+    bool regularBullish = not na(previousLowBody) and currentLowBody < previousLowBody and rsiLowPivot > previousLowRsi
+    bool hiddenBullish = not na(previousLowBody) and currentLowBody > previousLowBody and rsiLowPivot < previousLowRsi
+    bullishRegular := regularBullish and showRegularInput
+    bullishHidden := hiddenBullish and showHiddenInput
+    bool bullishDivergence = bullishRegular or bullishHidden
+
+    if bullishDivergence
+        bool firstOppositeFound = false
+        bool firstOppositePasses = false
+        int firstOppositeOffset = na
+        for step = 0 to pivotRightInput - 1
+            int offset = pivotRightInput - 1 - step
+            if not firstOppositeFound and close[offset] > open[offset]
+                firstOppositeFound := true
+                firstOppositePasses := math.abs(close[offset] - open[offset]) > math.abs(close[offset + 1] - open[offset + 1])
+                firstOppositeOffset := offset
+
+        bullishPending := not firstOppositeFound
+        bullishDetectionBar := bar_index
+        if firstOppositeFound and firstOppositePasses
+            bullishConfirmation := true
+            label.new(bar_index - firstOppositeOffset, low[firstOppositeOffset], "", xloc = xloc.bar_index, yloc = yloc.belowbar, color = bullColorInput, style = label.style_arrowup, textcolor = bullColorInput, size = size.small, force_overlay = true)
+
+        if showLinesInput
+            line.new(previousLowBar, previousLowBody, currentLowBar, currentLowBody, xloc = xloc.bar_index, color = bullColorInput, style = bullishRegular ? line.style_solid : line.style_dashed, width = 2, force_overlay = true)
+            line.new(previousLowBar, previousLowRsi, currentLowBar, rsiLowPivot, xloc = xloc.bar_index, color = bullColorInput, style = bullishRegular ? line.style_solid : line.style_dashed, width = 2)
+
+    previousLowBody := currentLowBody
+    previousLowRsi := rsiLowPivot
+    previousLowBar := currentLowBar
+
+// --- Detect bearish divergences from confirmed RSI high pivots ---
+if not na(rsiHighPivot)
+    int currentHighBar = bar_index - pivotRightInput
+    float currentHighBody = math.max(open[pivotRightInput], close[pivotRightInput])
+    bool regularBearish = not na(previousHighBody) and currentHighBody > previousHighBody and rsiHighPivot < previousHighRsi
+    bool hiddenBearish = not na(previousHighBody) and currentHighBody < previousHighBody and rsiHighPivot > previousHighRsi
+    bearishRegular := regularBearish and showRegularInput
+    bearishHidden := hiddenBearish and showHiddenInput
+    bool bearishDivergence = bearishRegular or bearishHidden
+
+    if bearishDivergence
+        bool firstOppositeFound = false
+        bool firstOppositePasses = false
+        int firstOppositeOffset = na
+        for step = 0 to pivotRightInput - 1
+            int offset = pivotRightInput - 1 - step
+            if not firstOppositeFound and close[offset] < open[offset]
+                firstOppositeFound := true
+                firstOppositePasses := math.abs(close[offset] - open[offset]) > math.abs(close[offset + 1] - open[offset + 1])
+                firstOppositeOffset := offset
+
+        bearishPending := not firstOppositeFound
+        bearishDetectionBar := bar_index
+        if firstOppositeFound and firstOppositePasses
+            bearishConfirmation := true
+            label.new(bar_index - firstOppositeOffset, high[firstOppositeOffset], "", xloc = xloc.bar_index, yloc = yloc.abovebar, color = bearColorInput, style = label.style_arrowdown, textcolor = bearColorInput, size = size.small, force_overlay = true)
+
+        if showLinesInput
+            line.new(previousHighBar, previousHighBody, currentHighBar, currentHighBody, xloc = xloc.bar_index, color = bearColorInput, style = bearishRegular ? line.style_solid : line.style_dashed, width = 2, force_overlay = true)
+            line.new(previousHighBar, previousHighRsi, currentHighBar, rsiHighPivot, xloc = xloc.bar_index, color = bearColorInput, style = bearishRegular ? line.style_solid : line.style_dashed, width = 2)
+
+    previousHighBody := currentHighBody
+    previousHighRsi := rsiHighPivot
+    previousHighBar := currentHighBar
+
+// --- Divergence markers on the candle chart ---
+plotshape(showPivotMarkersInput and bullishRegular, title = "Regular bullish divergence", style = shape.circle, location = location.belowbar, offset = -pivotRightInput, color = bullColorInput, size = size.tiny, force_overlay = true)
+plotshape(showPivotMarkersInput and bullishHidden, title = "Hidden bullish divergence", style = shape.diamond, location = location.belowbar, offset = -pivotRightInput, color = bullColorInput, size = size.tiny, force_overlay = true)
+plotshape(showPivotMarkersInput and bearishRegular, title = "Regular bearish divergence", style = shape.circle, location = location.abovebar, offset = -pivotRightInput, color = bearColorInput, size = size.tiny, force_overlay = true)
+plotshape(showPivotMarkersInput and bearishHidden, title = "Hidden bearish divergence", style = shape.diamond, location = location.abovebar, offset = -pivotRightInput, color = bearColorInput, size = size.tiny, force_overlay = true)
+
+// --- Alerts ---
+alertcondition(bullishConfirmation, "Bullish RSI divergence confirmed", "Bullish RSI divergence confirmed by the first larger bullish candle.")
+alertcondition(bearishConfirmation, "Bearish RSI divergence confirmed", "Bearish RSI divergence confirmed by the first larger bearish candle.")

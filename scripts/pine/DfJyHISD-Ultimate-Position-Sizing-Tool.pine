@@ -1,0 +1,451 @@
+//@version=6
+indicator("AntiGravity Risk Pro v2 | Futures Sizing", shorttitle="AG Risk v2", overlay=true, max_lines_count=10, max_labels_count=10)
+
+// Linear USDT/USDC contracts only. Quantity is in ORDER UNITS; multiplier converts
+// one order unit to base-asset units. All example venue settings must be verified.
+// This indicator plans ONE position. It does not place orders or track fills.
+// Liquidation is an explicitly simplified stress model, NOT an exchange quote.
+
+// 0. Quick Controls (Row 1 for fast toggle) -----------------------------------
+const string G_TOP = "0. Quick Controls"
+bool collapseHud = input.bool(false, "Collapse HUD to 1-Row Mini Bar", group=G_TOP, tooltip="Minimizes the dashboard into a single 1-row status bar. Tip: Double-click the table on your chart to toggle this instantly.")
+
+// 1. Account and capital budget ------------------------------------------------
+const string G_ACC = "1. Account & Capital"
+float equity = input.float(1000.0, "Equity", minval=0.01, display=display.none, inline="acc1", group=G_ACC, tooltip="Total account balance in quote currency (USDT / USDC).")
+string riskMode = input.string("Account %", "Risk Mode", options=["Account %", "Fixed $"], display=display.none, inline="acc1", group=G_ACC)
+float riskPct = input.float(1.0, "Risk %", minval=0.01, maxval=100.0, step=0.1, display=display.none, inline="acc1", group=G_ACC, active=riskMode == "Account %")
+float fixedRisk = input.float(20.0, "Fixed $", minval=0.01, display=display.none, inline="acc1", group=G_ACC, active=riskMode == "Fixed $")
+float capitalPct = input.float(10.0, "Max Capital Alloc %", minval=0.01, maxval=100.0, step=1.0, display=display.none, inline="acc2", group=G_ACC, tooltip="Hard cap on initial margin + fee reserves from free balance.")
+bool allowResize = input.bool(true, "Auto-Resize", inline="acc2", group=G_ACC, tooltip="When enabled, size is rounded down to fit capital, leverage, and venue limits.")
+bool allBalanceFree = input.bool(true, "All Free", inline="acc3", group=G_ACC)
+float freeBalanceInput = input.float(100.0, "Free Margin", minval=0.0, display=display.none, inline="acc3", group=G_ACC, active=not allBalanceFree)
+
+// 2. Entry, stop and target ----------------------------------------------------
+const string G_TRADE = "2. Trade Setup"
+string direction = input.string("Long", "Direction", options=["Long", "Short"], display=display.none, inline="trade1", group=G_TRADE)
+string entryMode = input.string("Market (Floating)", "Entry", options=["Market (Floating)", "Manual Price", "Reference Bar Close"], display=display.none, inline="trade1", group=G_TRADE, tooltip="Floating is for real-time planning as price moves. For fixed monitoring, select Manual Price or Reference Bar Close.")
+float manualEntry = input.price(0.0, "Manual Entry", display=display.none, inline="trade1", group=G_TRADE, active=entryMode == "Manual Price")
+string stopMode = input.string("Entry %", "SL Mode", options=["Entry %", "Manual Price", "ATR"], display=display.none, inline="trade2", group=G_TRADE)
+float stopPctInput = input.float(2.0, "SL %", minval=0.001, maxval=99.0, step=0.1, display=display.none, inline="trade2", group=G_TRADE, active=stopMode == "Entry %")
+float manualStop = input.price(0.0, "SL Price", display=display.none, inline="trade2", group=G_TRADE, active=stopMode == "Manual Price")
+float atrMultiple = input.float(2.0, "ATR Mult", minval=0.01, step=0.1, display=display.none, inline="trade2", group=G_TRADE, active=stopMode == "ATR")
+int atrLength = input.int(14, "ATR Len", minval=1, maxval=500, display=display.none, inline="trade3", group=G_TRADE, active=stopMode == "ATR")
+int anchorTime = input.time(0, "Anchor Bar Time", display=display.none, inline="trade3", group=G_TRADE, active=entryMode == "Reference Bar Close" or (stopMode == "ATR" and entryMode != "Market (Floating)"))
+string targetMode = input.string("Net R:R", "TP Mode", options=["Net R:R", "Gross R:R", "Entry %", "Manual Price"], display=display.none, inline="trade4", group=G_TRADE)
+float targetR = input.float(2.0, "R Mult", minval=0.01, maxval=100.0, step=0.1, display=display.none, inline="trade4", group=G_TRADE, active=targetMode == "Net R:R" or targetMode == "Gross R:R")
+float targetPctInput = input.float(4.0, "TP %", minval=0.001, maxval=10000.0, step=0.1, display=display.none, inline="trade4", group=G_TRADE, active=targetMode == "Entry %")
+float manualTarget = input.price(0.0, "TP Price", display=display.none, inline="trade4", group=G_TRADE, active=targetMode == "Manual Price")
+
+// 3. Display and HUD -----------------------------------------------------------
+const string G_UI = "3. Display & HUD"
+bool showTable = input.bool(true, "Show HUD", inline="ui1", group=G_UI)
+bool compactTable = input.bool(true, "Compact Card", inline="ui1", group=G_UI, active=not collapseHud)
+string tablePos = input.string("Top Right", "Position", options=["Top Right", "Bottom Right", "Top Left", "Bottom Left"], display=display.none, inline="ui2", group=G_UI)
+string tableFont = input.string("Small", "Font", options=["Small", "Normal", "Large"], display=display.none, inline="ui2", group=G_UI)
+float hudWidth = input.float(0.0, "Width % (0 = Auto-Fit)", minval=0.0, maxval=45.0, step=1.0, display=display.none, inline="ui2", group=G_UI, tooltip="0 = Auto-fit snugly to text (eliminates empty space). Enter a percentage (e.g. 15) if you want a fixed width.")
+bool showLines = input.bool(true, "Lines", inline="ui3", group=G_UI)
+bool showLabels = input.bool(true, "Labels", inline="ui3", group=G_UI)
+bool showZones = input.bool(true, "Zones", inline="ui3", group=G_UI)
+bool showBreakEven = input.bool(true, "BE Line", inline="ui3", group=G_UI)
+bool showLiquidation = input.bool(false, "Liq Line", inline="ui3", group=G_UI)
+int lookbackBars = input.int(30, "Lookback", minval=1, maxval=5000, display=display.none, inline="ui4", group=G_UI)
+int labelOffset = input.int(12, "Offset", minval=1, maxval=100, display=display.none, inline="ui4", group=G_UI)
+float minNetR = input.float(1.5, "Min Net R", minval=0.0, step=0.1, display=display.none, inline="ui4", group=G_UI)
+
+// 4. Advanced Venue & Execution ------------------------------------------------
+const string G_ADV = "4. Advanced Venue & Execution"
+float entryFeePct = input.float(0.05, "Entry Fee %", minval=0.0, maxval=5.0, step=0.001, display=display.none, inline="adv1", group=G_ADV)
+float exitFeePct = input.float(0.05, "Exit Fee %", minval=0.0, maxval=5.0, step=0.001, display=display.none, inline="adv1", group=G_ADV)
+float entrySlipPct = input.float(0.02, "Entry Slip %", minval=0.0, maxval=20.0, step=0.01, display=display.none, inline="adv2", group=G_ADV)
+float exitSlipPct = input.float(0.02, "Exit Slip %", minval=0.0, maxval=20.0, step=0.01, display=display.none, inline="adv2", group=G_ADV)
+float fundingPct = input.float(0.0, "Funding Reserve %", minval=0.0, maxval=20.0, step=0.001, display=display.none, inline="adv2", group=G_ADV)
+string contractModel = input.string("Linear USDT/USDC", "Type", options=["Linear USDT/USDC", "Inverse or Other"], display=display.none, inline="adv3", group=G_ADV)
+float multiplier = input.float(1.0, "Multiplier", minval=0.00000001, display=display.none, inline="adv3", group=G_ADV, tooltip="If 1 contract = 1 BTC, enter 1. If 1 contract = 0.001 BTC, enter 0.001.")
+float qtyStep = input.float(0.001, "Qty Step", minval=0.00000001, display=display.none, inline="adv3", group=G_ADV)
+float minQty = input.float(0.001, "Min Qty", minval=0.0, display=display.none, inline="adv4", group=G_ADV)
+float minNotional = input.float(5.0, "Min Notional $", minval=0.0, display=display.none, inline="adv4", group=G_ADV)
+float maxQty = input.float(0.0, "Max Qty", minval=0.0, display=display.none, inline="adv4", group=G_ADV)
+float maxNotional = input.float(0.0, "Max Notional $", minval=0.0, display=display.none, inline="adv5", group=G_ADV)
+float tickOverride = input.float(0.0, "Tick Override", minval=0.0, display=display.none, inline="adv5", group=G_ADV)
+string marginMode = input.string("Isolated", "Margin", options=["Isolated", "Cross / Portfolio"], display=display.none, inline="adv6", group=G_ADV)
+string leverageMode = input.string("Auto", "Lev Mode", options=["Auto", "Manual"], display=display.none, inline="adv6", group=G_ADV)
+int manualLeverage = input.int(5, "Manual Lev", minval=1, maxval=500, display=display.none, inline="adv6", group=G_ADV, active=leverageMode == "Manual")
+int exchangeMaxLeverage = input.int(125, "Max Lev", minval=1, maxval=500, display=display.none, inline="adv7", group=G_ADV)
+float mmrPct = input.float(0.5, "MMR %", minval=0.0, maxval=20.0, step=0.01, display=display.none, inline="adv7", group=G_ADV)
+float bufferPct = input.float(25.0, "Liq Buffer %", minval=0.0, maxval=200.0, step=5.0, display=display.none, inline="adv7", group=G_ADV)
+bool enableMonitor = input.bool(false, "Enable Monitoring", inline="adv8", group=G_ADV)
+int monitorFrom = input.time(0, "Start Time", display=display.none, inline="adv8", group=G_ADV, active=enableMonitor)
+
+// PURE MATH BEGIN: these helpers are also exercised by the supplied tests. ------
+f_level_valid(float rawEntry, float entry, float rawLevel, float level, float side, bool stopLevel, bool manualLevel) =>
+    float orientation = stopLevel ? -side : side
+    rawLevel > 0.0 and level > 0.0 and orientation * (rawLevel - entry) > 0.0 and orientation * (level - entry) > 0.0 and (not manualLevel or orientation * (rawLevel - rawEntry) > 0.0)
+
+f_hit_code(bool longSide, float barLow, float barHigh, float stopLevel, float targetLevel) =>
+    bool hitStop = longSide ? barLow <= stopLevel : barHigh >= stopLevel
+    bool hitTarget = longSide ? barHigh >= targetLevel : barLow <= targetLevel
+    int stopCode = hitStop ? 1 : 0
+    int targetCode = hitTarget ? 2 : 0
+    stopCode + targetCode
+
+f_floor_step(float value, float stepSize) =>
+    float rounded = math.floor(value / stepSize) * stepSize
+    rounded > value ? math.max(0.0, rounded - stepSize) : rounded
+
+f_loss_unit(float e, float s, float side, float feeIn, float feeOut, float fund) =>
+    side * (e - s) + e * feeIn + s * feeOut + e * fund
+
+f_profit_unit(float e, float t, float side, float feeIn, float feeOut, float fund) =>
+    side * (t - e) - e * feeIn - t * feeOut - e * fund
+
+f_target_fill(float e, float lossUnit, float side, float feeIn, float feeOut, float fund, float rr) =>
+    (rr * lossUnit + e * (side + feeIn + fund)) / (side - feeOut)
+
+// Equity model: M = E/L - E*(feeIn + fund), maintenance = P*(MMR + feeOut).
+// Assume fees/funding can erode isolated collateral, even when cash is reserved.
+f_liquidation(float e, int lev, float side, float maintenance, float erosion) =>
+    math.max(0.0, e * (1.0 - side / lev + side * erosion) / (1.0 - side * maintenance))
+
+f_leverage_cap(float e, float stopFill, float side, float maintenance, float erosion, float buffer, float tickSize, int venueCap) =>
+    float requiredDistance = side * (e - stopFill) * (1.0 + buffer) + tickSize
+    float boundary = e - side * requiredDistance
+    float inverseLev = requiredDistance / e + boundary / e * maintenance + erosion
+    int cap = boundary > 0.0 and inverseLev > 0.0 ? int(math.min(venueCap, math.floor(1.0 / inverseLev))) : 0
+    math.max(0, cap)
+
+f_allocate(float risk, float lossUnit, float notionalUnit, float ruleValueUnit, float reserveUnit, float capital, int cap, bool automatic, int manualLev, bool resize, float stepSize, float qtyMax, float valueMax) =>
+    float wanted = risk / lossUnit
+    int sizingLev = automatic ? cap : manualLev
+    float cashLimit = capital / (notionalUnit / sizingLev + reserveUnit)
+    float valueLimit = valueMax > 0.0 ? valueMax / ruleValueUnit : wanted
+    float volumeLimit = qtyMax > 0.0 ? qtyMax : wanted
+    float limited = resize ? math.min(wanted, math.min(cashLimit, math.min(valueLimit, volumeLimit))) : wanted
+    float quantity = f_floor_step(limited, stepSize)
+    int chosenLev = sizingLev
+    if automatic and quantity > 0.0
+        float headroom = capital - quantity * reserveUnit
+        // Clamp even at floating-point boundaries. Infeasible unresized volume
+        // is rejected by the cash check; it can never raise leverage above cap.
+        chosenLev := headroom > 0.0 ? int(math.min(cap, math.max(1.0, math.ceil(quantity * notionalUnit / headroom)))) : 0
+        if chosenLev > 1 and quantity * (notionalUnit / (chosenLev - 1) + reserveUnit) <= capital
+            chosenLev := chosenLev - 1
+    [quantity, chosenLev, wanted]
+// PURE MATH END ---------------------------------------------------------------
+
+f_num(float value) =>
+    na(value) ? "—" : str.tostring(value, "#.############")
+
+f_money(float value) =>
+    na(value) ? "—" : str.tostring(value, "#,##0.00")
+
+f_ratio(float value) =>
+    na(value) ? "—" : str.tostring(value, "0.00")
+
+f_add_note(string textSoFar, string newText) =>
+    textSoFar == "" ? newText : textSoFar + "\n" + newText
+
+// All history-dependent computations run on every bar, outside UI branches.
+bool isLong = direction == "Long"
+float side = isLong ? 1.0 : -1.0
+bool floating = entryMode == "Market (Floating)"
+bool needsAnchor = entryMode == "Reference Bar Close" or (stopMode == "ATR" and not floating)
+float atrSeries = ta.atr(atrLength)
+var float anchorClose = na
+var float anchorAtr = na
+var int anchorBar = na
+var int anchorEnd = na
+var int firstLoadedTime = time
+bool containsAnchor = anchorTime > 0 and time <= anchorTime and not na(time_close) and anchorTime < time_close
+if containsAnchor and barstate.isconfirmed
+    anchorClose := close
+    anchorAtr := atrSeries
+    anchorBar := bar_index
+    anchorEnd := time_close
+
+float tick = tickOverride > 0.0 ? tickOverride : syminfo.mintick
+float rawEntry = floating ? close : entryMode == "Manual Price" ? manualEntry : anchorClose
+float entry = not na(rawEntry) and tick > 0.0 ? math.round(rawEntry / tick) * tick : na
+float usedAtr = floating ? atrSeries[1] : anchorAtr
+float rawStop = stopMode == "Manual Price" ? manualStop : stopMode == "ATR" ? entry - side * usedAtr * atrMultiple : entry * (1.0 - side * stopPctInput / 100.0)
+// Round the stop AWAY from entry; size is computed AFTER price rounding.
+float stop = not na(rawStop) and tick > 0.0 ? (isLong ? math.floor(rawStop / tick) : math.ceil(rawStop / tick)) * tick : na
+
+float feeIn = entryFeePct / 100.0
+float feeOut = exitFeePct / 100.0
+float slipIn = entrySlipPct / 100.0
+float slipOut = exitSlipPct / 100.0
+float fund = fundingPct / 100.0
+float entryFill = entry * (1.0 + side * slipIn)
+float stopFill = stop * (1.0 - side * slipOut)
+float lossPerBase = f_loss_unit(entryFill, stopFill, side, feeIn, feeOut, fund)
+float rawTarget = switch targetMode
+    "Manual Price" => manualTarget
+    "Entry %" => entry * (1.0 + side * targetPctInput / 100.0)
+    "Gross R:R" => entry + side * math.abs(entry - stop) * targetR
+    => f_target_fill(entryFill, lossPerBase, side, feeIn, feeOut, fund, targetR) / (1.0 - side * slipOut)
+float target = not na(rawTarget) and tick > 0.0 ? (isLong ? math.ceil(rawTarget / tick) : math.floor(rawTarget / tick)) * tick : na
+float targetFill = target * (1.0 - side * slipOut)
+float profitPerBase = f_profit_unit(entryFill, targetFill, side, feeIn, feeOut, fund)
+float breakEvenRaw = f_target_fill(entryFill, lossPerBase, side, feeIn, feeOut, fund, 0.0) / (1.0 - side * slipOut)
+float breakEven = tick > 0.0 ? (isLong ? math.ceil(breakEvenRaw / tick) : math.floor(breakEvenRaw / tick)) * tick : na
+
+float available = allBalanceFree ? equity : freeBalanceInput
+float capital = available * capitalPct / 100.0
+float riskBudget = riskMode == "Account %" ? equity * riskPct / 100.0 : fixedRisk
+float stopDistance = side * (entry - stop)
+float stopExecutionDistance = side * (entryFill - stopFill)
+float grossR = stopDistance > 0.0 ? side * (target - entry) / stopDistance : na
+float netR = lossPerBase > 0.0 ? profitPerBase / lossPerBase : na
+float effectiveMaintenance = mmrPct / 100.0 + feeOut
+float erosion = feeIn + fund
+float notionalPerUnit = entryFill * multiplier
+float ruleValuePerUnit = math.max(entry, entryFill) * multiplier
+float minimumValuePerUnit = math.min(entry, entryFill) * multiplier
+float lossPerUnit = lossPerBase * multiplier
+float profitPerUnit = profitPerBase * multiplier
+// Reserve the larger exit fee of the SL/TP scenarios, plus entry fee and funding.
+float reservePerUnit = (entryFill * feeIn + math.max(stopFill, targetFill) * feeOut + entryFill * fund) * multiplier
+bool quoteSupported = syminfo.currency == "USDT" or syminfo.currency == "USDC"
+string quote = syminfo.currency
+string base = syminfo.basecurrency == "" ? "base" : syminfo.basecurrency
+
+// Reject bad INPUTS before rounding can turn equal/wrong-side levels into valid ones.
+string error = ""
+if contractModel != "Linear USDT/USDC" or not quoteSupported
+    error := "Only linear contracts with USDT/USDC quote are supported."
+else if marginMode != "Isolated"
+    error := "Margin model is Isolated only; Cross/Portfolio not supported."
+else if not chart.is_standard
+    error := "Use standard chart; synthetic price charts not supported."
+else if tick <= 0.0
+    error := "Price tick size must be positive."
+else if riskBudget <= 0.0 or riskBudget > equity
+    error := "Risk budget must be positive and <= account equity."
+else if available <= 0.0 or available > equity
+    error := "Free margin must be positive and <= account equity."
+else if maxQty > 0.0 and maxQty < minQty
+    error := "Max quantity cannot be less than min quantity."
+else if maxNotional > 0.0 and maxNotional < minNotional
+    error := "Max notional cannot be less than min notional."
+else if needsAnchor and (anchorTime <= 0 or na(anchorClose))
+    error := "Reference closed bar not found in loaded chart history."
+else if na(entry) or rawEntry <= 0.0 or entry <= 0.0
+    error := "Entry price must be positive and valid."
+else if stopMode == "ATR" and (na(usedAtr) or usedAtr <= 0.0)
+    error := "Insufficient data or non-positive ATR for selected mode."
+else if na(stop) or not f_level_valid(rawEntry, entry, rawStop, stop, side, true, stopMode == "Manual Price")
+    error := isLong ? "Stop must be positive and below Entry." : "Stop must be above Entry."
+else if na(target) or not f_level_valid(rawEntry, entry, rawTarget, target, side, false, targetMode == "Manual Price")
+    error := isLong ? "Target must be above Entry." : "Target must be positive and below Entry."
+else if entryFill <= 0.0 or stopFill <= 0.0 or targetFill <= 0.0 or lossPerUnit <= 0.0
+    error := "Invalid execution fill price or loss per unit."
+else if profitPerUnit <= 0.0
+    error := "Target yields no net profit after fees and slippage."
+
+int leverageCap = 0
+float qty = na
+float requestedQty = na
+int leverage = 0
+if error == ""
+    leverageCap := f_leverage_cap(entryFill, stopFill, side, effectiveMaintenance, erosion, bufferPct / 100.0, tick, exchangeMaxLeverage)
+    if leverageCap < 1
+        error := "Even 1x leverage violates required liquidation buffer."
+    else if leverageMode == "Manual" and manualLeverage > leverageCap
+        error := "Manual leverage exceeds model/venue cap of " + str.tostring(leverageCap) + "x"
+    else
+        [allocatedQty, allocatedLev, desiredQty] = f_allocate(riskBudget, lossPerUnit, notionalPerUnit, ruleValuePerUnit, reservePerUnit, capital, leverageCap, leverageMode == "Auto", manualLeverage, allowResize, qtyStep, maxQty, maxNotional)
+        qty := allocatedQty
+        leverage := allocatedLev
+        requestedQty := desiredQty
+
+float notional = qty * notionalPerUnit
+float baseQty = qty * multiplier
+float estimatedLoss = qty * lossPerUnit
+float estimatedProfit = qty * profitPerUnit
+float reserveCash = qty * reservePerUnit
+float initialMargin = leverage > 0 ? notional / leverage : na
+float totalCash = initialMargin + reserveCash
+float liq = leverage > 0 ? f_liquidation(entryFill, leverage, side, effectiveMaintenance, erosion) : na
+float displayLiq = not na(liq) and tick > 0.0 ? math.round(liq / tick) * tick : liq
+float liqDistance = side * (entryFill - liq)
+float requiredLiqDistance = stopExecutionDistance * (1.0 + bufferPct / 100.0) + tick
+float cashTolerance = math.max(0.00000001, capital * 0.0000000001)
+if error == ""
+    if na(qty) or qty <= 0.0
+        error := "Allowed quantity is less than one step size; rounding up disabled."
+    else if qty < minQty
+        error := "Allowed quantity is below exchange min quantity."
+    else if qty * minimumValuePerUnit < minNotional
+        error := "Order notional value is below exchange min notional."
+    else if leverage < 1 or leverage > leverageCap
+        error := "Size exceeds leverage/capital cap; enable Auto-Resize."
+    else if totalCash > capital + cashTolerance
+        error := "Required capital exceeds cap; enable Auto-Resize."
+    else if estimatedLoss > riskBudget + math.max(0.00000001, riskBudget * 0.0000000001)
+        error := "Rounded size exceeds risk budget."
+    else if (maxQty > 0.0 and qty > maxQty) or (maxNotional > 0.0 and qty * ruleValuePerUnit > maxNotional + cashTolerance)
+        error := "Size exceeds max venue limit; enable Auto-Resize."
+    else if na(liq) or liqDistance < requiredLiqDistance - tick * 0.000001
+        error := "Final liquidation buffer check failed."
+
+bool validPlan = error == ""
+bool resized = validPlan and qty < f_floor_step(requestedQty, qtyStep) - qtyStep * 0.000001
+float stopFees = qty * multiplier * (entryFill * feeIn + stopFill * feeOut)
+float targetFees = qty * multiplier * (entryFill * feeIn + targetFill * feeOut)
+float fundingCash = notional * fund
+float riskUsedPct = validPlan ? estimatedLoss / equity * 100.0 : na
+float roiMargin = validPlan and initialMargin > 0.0 ? estimatedProfit / initialMargin * 100.0 : na
+
+// One monitoring session ends at the first completed bar touching SL and/or TP.
+// History is replayed from monitorFrom; a past hit remains shown as completed.
+var bool monitorDone = false
+var string monitorResult = ""
+bool slEvent = false
+bool tpEvent = false
+bool bothEvent = false
+bool historyCoversMonitor = monitorFrom >= firstLoadedTime
+bool monitorReferenceValid = not needsAnchor or (not na(anchorEnd) and monitorFrom >= anchorEnd)
+bool monitorConfigured = enableMonitor and not floating and monitorFrom > 0 and historyCoversMonitor and monitorReferenceValid
+bool referenceReadyBeforeBar = not needsAnchor or (not na(anchorBar) and bar_index > anchorBar)
+bool monitorReady = monitorConfigured and validPlan and referenceReadyBeforeBar
+if monitorReady and not monitorDone and time >= monitorFrom and barstate.isconfirmed
+    int hitCode = f_hit_code(isLong, low, high, stop, target)
+    bothEvent := hitCode == 3
+    slEvent := hitCode == 1
+    tpEvent := hitCode == 2
+    if hitCode != 0
+        monitorDone := true
+        monitorResult := bothEvent ? "Both SL & TP Touched (Same Bar)" : slEvent ? "Stop Loss Touched" : "Take Profit Touched"
+        string eventText = "AntiGravity | " + syminfo.tickerid + " | " + direction + " | " + monitorResult + " | E=" + f_num(entry) + " SL=" + f_num(stop) + " TP=" + f_num(target) + " | qty=" + f_num(qty)
+        alert(eventText, alert.freq_once_per_bar_close)
+
+alertcondition(slEvent, "AG: Stop touched", "SL touched on {{ticker}}. Confirmed bar; this is a chart-level observation, not an order fill.")
+alertcondition(tpEvent, "AG: Target touched", "TP touched on {{ticker}}. Confirmed bar; this is a chart-level observation, not an order fill.")
+alertcondition(bothEvent, "AG: Both levels touched", "SL and TP touched in the same bar on {{ticker}}. Intrabar order is unknown.")
+
+string monitorStatus = not enableMonitor ? "Disabled" : floating ? "Inactive: Floating Entry" : monitorFrom <= 0 ? "Set Start Time" : not historyCoversMonitor ? "Incomplete History" : not validPlan ? "Inactive: Invalid Plan" : not monitorReferenceValid ? "Start Time must be after Anchor bar close" : monitorDone ? monitorResult : not referenceReadyBeforeBar ? "Waiting for bar after Anchor" : time < monitorFrom ? "Waiting for Start Time" : "Active (evaluates on bar close)"
+string notes = ""
+if floating
+    notes := f_add_note(notes, "Floating plan (updates with price)")
+if resized
+    notes := f_add_note(notes, "Qty resized to meet limits")
+if validPlan and netR < minNetR
+    notes := f_add_note(notes, "Net R:R below threshold")
+
+// Persistent objects: update coordinates instead of delete/new on every tick.
+const color C_ENTRY = #F0B90B
+const color C_STOP = #F6465D
+const color C_TP = #0ECB81
+const color C_BE = #56B4E9
+const color C_LIQ = #C792EA
+var line entryLine = line.new(na, na, na, na, color=C_ENTRY, style=line.style_dashed, width=2)
+var line stopLine = line.new(na, na, na, na, color=C_STOP, width=2)
+var line targetLine = line.new(na, na, na, na, color=C_TP, width=2)
+var line beLine = line.new(na, na, na, na, color=C_BE, style=line.style_dotted)
+var line liqLine = line.new(na, na, na, na, color=C_LIQ, style=line.style_dotted)
+var linefill lossFill = linefill.new(entryLine, stopLine, color.new(C_STOP, 90))
+var linefill profitFill = linefill.new(entryLine, targetLine, color.new(C_TP, 90))
+var label entryLabel = label.new(na, na, "", style=label.style_label_left, color=C_ENTRY, textcolor=color.black, size=size.small)
+var label stopLabel = label.new(na, na, "", style=label.style_label_left, color=C_STOP, textcolor=color.white, size=size.small)
+var label targetLabel = label.new(na, na, "", style=label.style_label_left, color=C_TP, textcolor=color.black, size=size.small)
+// BE label is displayed on the LEFT (start of line) to prevent overlapping with Entry label on the right
+var label beLabel = label.new(na, na, "", style=label.style_label_right, color=C_BE, textcolor=color.black, size=size.small)
+var label liqLabel = label.new(na, na, "", style=label.style_label_left, color=C_LIQ, textcolor=color.black, size=size.small)
+
+f_draw(line ln, label lb, int x1, int x2, float price, string textValue, bool visible, bool labelsVisible) =>
+    float y = visible ? price : na
+    line.set_xy1(ln, x1, y)
+    line.set_xy2(ln, x2, y)
+    label.set_xy(lb, x2, visible and labelsVisible ? price : na)
+    label.set_text(lb, textValue)
+
+f_draw_left(line ln, label lb, int x1, int x2, float price, string textValue, bool visible, bool labelsVisible) =>
+    float y = visible ? price : na
+    line.set_xy1(ln, x1, y)
+    line.set_xy2(ln, x2, y)
+    label.set_xy(lb, x1, visible and labelsVisible ? price : na)
+    label.set_text(lb, textValue)
+
+string tablePosition = tablePos == "Top Right" ? position.top_right : tablePos == "Bottom Right" ? position.bottom_right : tablePos == "Top Left" ? position.top_left : position.bottom_left
+string fontSize = tableFont == "Large" ? size.large : tableFont == "Normal" ? size.normal : size.small
+
+// Auto-fit (0.0) hugs the content snugly with no empty gap. If fixed width is specified, use proportional split.
+float col0W = hudWidth > 0.0 ? hudWidth * 0.40 : 0.0
+float col1W = hudWidth > 0.0 ? hudWidth * 0.60 : 0.0
+
+var table hud = table.new(tablePosition, 2, 31, bgcolor=color.new(#111722, 4), frame_color=#303A4A, frame_width=1, border_width=0)
+
+f_row(table panel, int row, string title, string value, color valueColor, string textSize, float w0, float w1) =>
+    color bg = row % 2 == 0 ? #182130 : #111722
+    table.cell(panel, 0, row, title, width=w0, text_color=#B9C4D3, text_size=textSize, text_halign=text.align_left, bgcolor=bg)
+    table.cell(panel, 1, row, value, width=w1, text_color=valueColor, text_size=textSize, text_halign=text.align_right, bgcolor=bg)
+
+if barstate.islast
+    bool drawPlan = showLines and validPlan
+    int x1 = math.max(0, bar_index - lookbackBars)
+    int x2 = bar_index + labelOffset
+    f_draw(entryLine, entryLabel, x1, x2, entry, "Entry: " + f_num(entry), drawPlan, showLabels)
+    f_draw(stopLine, stopLabel, x1, x2, stop, "SL: " + f_num(stop) + " (-" + f_money(estimatedLoss) + " " + quote + ")", drawPlan, showLabels)
+    f_draw(targetLine, targetLabel, x1, x2, target, "TP: " + f_num(target) + " (+" + f_money(estimatedProfit) + " " + quote + ")", drawPlan, showLabels)
+    // Draw Break-Even label at left end (x1) to prevent collision with Entry label on right
+    f_draw_left(beLine, beLabel, x1, x2, breakEven, "BE: " + f_num(breakEven), drawPlan and showBreakEven, showLabels)
+    f_draw(liqLine, liqLabel, x1, x2, displayLiq, "Liq: " + f_num(displayLiq) + " (Est.)", drawPlan and showLiquidation and displayLiq > 0, showLabels)
+    linefill.set_color(lossFill, color.new(C_STOP, drawPlan and showZones ? 90 : 100))
+    linefill.set_color(profitFill, color.new(C_TP, drawPlan and showZones ? 90 : 100))
+
+    // Clear EVERY cell first so a newly invalid plan or mode switch never leaves stale numbers
+    table.clear(hud, 0, 0, 1, 30)
+
+    if showTable
+        color dirBg = not validPlan ? #7F1D1D : isLong ? #145548 : #682B3B
+        if collapseHud
+            // 1-Row Collapsed Mini Bar (Takes minimal chart space)
+            string miniTitle = "AG RISK [⚙]"
+            string miniValue = not validPlan ? "[INVALID] " + error : (isLong ? "LONG ▲ " : "SHORT ▼ ") + f_num(qty) + " " + base + " | " + f_ratio(netR) + "R | SL " + f_num(stop) + " | TP " + f_num(target)
+            table.cell(hud, 0, 0, miniTitle, width=col0W, text_color=color.white, bgcolor=dirBg, text_size=fontSize, text_halign=text.align_left)
+            table.cell(hud, 1, 0, miniValue, width=col1W, text_color=color.white, bgcolor=dirBg, text_size=fontSize, text_halign=text.align_right)
+        else
+            table.cell(hud, 0, 0, "AG RISK v2 [⚙]", width=col0W, text_color=color.white, bgcolor=dirBg, text_size=fontSize, text_halign=text.align_left)
+            table.cell(hud, 1, 0, (isLong ? "LONG ▲" : "SHORT ▼") + (validPlan ? "" : " [ERROR]"), width=col1W, text_color=color.white, bgcolor=dirBg, text_size=fontSize, text_halign=text.align_right)
+
+            if not validPlan
+                f_row(hud, 1, "Status", "Plan Invalid", C_STOP, fontSize, col0W, col1W)
+                f_row(hud, 2, "Reason", error, C_STOP, fontSize, col0W, col1W)
+                f_row(hud, 3, "Risk Budget", f_money(riskBudget) + " " + quote, C_ENTRY, fontSize, col0W, col1W)
+                f_row(hud, 4, "Capital Cap", f_money(capital) + " " + quote, color.white, fontSize, col0W, col1W)
+                f_row(hud, 5, "Monitoring", monitorStatus, C_ENTRY, fontSize, col0W, col1W)
+            else
+                // Compact HUD (7 sleek rows)
+                f_row(hud, 1, "Order Size", f_num(qty) + " (" + f_num(baseQty) + " " + base + ")", C_ENTRY, fontSize, col0W, col1W)
+                f_row(hud, 2, "Entry / SL / TP", f_num(entry) + " / " + f_num(stop) + " / " + f_num(target), color.white, fontSize, col0W, col1W)
+                f_row(hud, 3, "Risk / Target $", "-" + f_money(estimatedLoss) + " / +" + f_money(estimatedProfit) + " " + quote, C_TP, fontSize, col0W, col1W)
+                f_row(hud, 4, "Net R:R / BE", f_ratio(netR) + "R | BE: " + f_num(breakEven), netR >= minNetR ? C_TP : C_ENTRY, fontSize, col0W, col1W)
+                f_row(hud, 5, "Lev / Margin", str.tostring(leverage) + "x (Cap " + str.tostring(leverageCap) + "x) | " + f_money(initialMargin) + " " + quote, C_ENTRY, fontSize, col0W, col1W)
+                f_row(hud, 6, "Est. Liq Price", f_num(displayLiq) + " (" + f_ratio(liqDistance / entryFill * 100.0) + "%)", C_LIQ, fontSize, col0W, col1W)
+                f_row(hud, 7, "Plan Status", resized ? "Resized for Capital" : notes != "" ? notes : "Optimal Plan", resized ? C_ENTRY : C_TP, fontSize, col0W, col1W)
+
+                if not compactTable
+                    f_row(hud, 8, "Notional Value", f_money(notional) + " " + quote, color.white, fontSize, col0W, col1W)
+                    f_row(hud, 9, "Total Cash / Cap", f_money(totalCash) + " / " + f_money(capital) + " " + quote, color.white, fontSize, col0W, col1W)
+                    f_row(hud, 10, "Cost Reserve", f_money(reserveCash) + " " + quote, color.white, fontSize, col0W, col1W)
+                    f_row(hud, 11, "SL / TP Fees", f_money(stopFees) + " / " + f_money(targetFees) + " " + quote, color.white, fontSize, col0W, col1W)
+                    f_row(hud, 12, "Funding Reserve", f_money(fundingCash) + " " + quote, color.white, fontSize, col0W, col1W)
+                    f_row(hud, 13, "Gross R:R", f_ratio(grossR) + "R", color.white, fontSize, col0W, col1W)
+                    f_row(hud, 14, "SL / TP Distance", f_ratio(stopDistance / entry * 100.0) + "% / " + f_ratio(side * (target - entry) / entry * 100.0) + "%", color.white, fontSize, col0W, col1W)
+                    f_row(hud, 15, "Liq Buffer (Req)", f_ratio(liqDistance / entryFill * 100.0) + "% (Req: " + f_ratio(requiredLiqDistance / entryFill * 100.0) + "%)", C_LIQ, fontSize, col0W, col1W)
+                    f_row(hud, 16, "ROI on Margin", f_ratio(roiMargin) + "%", C_TP, fontSize, col0W, col1W)
+                    f_row(hud, 17, "Account / Free", f_money(equity) + " / " + f_money(available) + " " + quote, color.white, fontSize, col0W, col1W)
+                    f_row(hud, 18, "Tick / Qty Step", f_num(tick) + " / " + f_num(qtyStep), color.white, fontSize, col0W, col1W)
+                    f_row(hud, 19, "Min Qty / Notional", f_num(minQty) + " / " + f_money(minNotional) + " " + quote, color.white, fontSize, col0W, col1W)
+                    f_row(hud, 20, "Monitoring", monitorStatus, monitorDone ? C_ENTRY : color.white, fontSize, col0W, col1W)
+                    f_row(hud, 21, "Model Scope", "Linear Isolated Futures (1 Position)", color.white, fontSize, col0W, col1W)
+
+// Data Window exports; never stretch the chart with quantity/cash plots.
+plot(validPlan ? entry : na, "AG Entry", display=display.data_window)
+plot(validPlan ? stop : na, "AG Stop", display=display.data_window)
+plot(validPlan ? target : na, "AG Target", display=display.data_window)
+plot(validPlan ? qty : na, "AG Order quantity", display=display.data_window, precision=8)
+plot(validPlan ? estimatedLoss : na, "AG Net stop loss", display=display.data_window, precision=2)
+plot(validPlan ? netR : na, "AG Net R", display=display.data_window, precision=4)
+plot(validPlan ? leverage : na, "AG Leverage", display=display.data_window, precision=0)

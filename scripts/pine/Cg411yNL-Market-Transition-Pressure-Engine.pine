@@ -1,0 +1,327 @@
+//@version=6
+indicator("Market Transition Pressure Engine", shorttitle="TRANSITION PRESS", overlay=true, max_boxes_count=100, max_lines_count=100)
+
+// Market Transition Pressure Engine v1.0 — FINAL LOCK
+// Purpose: measure developing internal pressure for behavioral state change.
+// This is not a reversal probability, forecast, or Buy/Sell system.
+
+//------------------------------------------------------------------------------
+// Inputs
+//------------------------------------------------------------------------------
+G1 = "Core Engine"
+fastLen     = input.int(14, "Fast Behavior Length", minval=5, maxval=60, group=G1)
+slowLen     = input.int(40, "Baseline Length", minval=15, maxval=150, group=G1)
+atrLen      = input.int(14, "ATR Length", minval=5, maxval=60, group=G1)
+smoothLen   = input.int(5, "Pressure Smoothing", minval=1, maxval=20, group=G1)
+
+G2 = "Pressure Lifecycle"
+buildTh     = input.float(0.38, "Building Threshold", minval=0.10, maxval=0.80, step=0.01, group=G2)
+elevatedTh  = input.float(0.56, "Elevated Threshold", minval=0.20, maxval=0.90, step=0.01, group=G2)
+criticalTh  = input.float(0.72, "Critical Threshold", minval=0.30, maxval=0.98, step=0.01, group=G2)
+releaseDrop = input.float(0.18, "Release Drop", minval=0.05, maxval=0.50, step=0.01, group=G2)
+confirmBars = input.int(2, "State Confirmation Bars", minval=1, maxval=6, group=G2)
+
+G3 = "Visuals"
+showBands   = input.bool(true, "Adaptive Pressure Bands", group=G3)
+showBasis   = input.bool(true, "Behavior Basis", group=G3)
+showPulse   = input.bool(true, "Critical / Release Pulses", group=G3)
+showCard    = input.bool(true, "Pressure Card", group=G3)
+basisLen    = input.int(21, "Behavior Basis Length", minval=5, maxval=100, group=G3)
+bandATR     = input.float(1.15, "Base Band Width (ATR)", minval=0.30, maxval=3.00, step=0.05, group=G3)
+
+
+//------------------------------------------------------------------------------
+// Helpers
+//------------------------------------------------------------------------------
+clamp01(x) =>
+    math.max(0.0, math.min(1.0, x))
+
+stateText(s) =>
+    switch s
+        0 => "STABLE"
+        1 => "BUILDING"
+        2 => "ELEVATED"
+        3 => "CRITICAL"
+        4 => "RELEASED"
+        => "STABLE"
+
+stateColor(s) =>
+    switch s
+        0 => color.rgb(112, 120, 130)
+        1 => color.rgb(66, 142, 160)
+        2 => color.rgb(210, 151, 48)
+        3 => color.rgb(205, 75, 68)
+        4 => color.rgb(139, 96, 190)
+        => color.rgb(112, 120, 130)
+
+levelText(x) =>
+    x >= 0.72 ? "HIGH" : x >= 0.45 ? "MODERATE" : "LOW"
+
+//------------------------------------------------------------------------------
+// Normalized behavioral features
+//------------------------------------------------------------------------------
+atr = ta.atr(atrLen)
+atrSafe = math.max(atr, syminfo.mintick)
+atrBase = ta.sma(atr, slowLen)
+
+stepAbs = math.abs(close - close[1])
+pathFast = ta.sma(stepAbs, fastLen) * fastLen
+netFast = math.abs(close - close[fastLen])
+efficiency = clamp01(netFast / math.max(pathFast, syminfo.mintick))
+
+effBase = ta.sma(efficiency, slowLen)
+effShift = clamp01(math.abs(efficiency - effBase) / 0.35)
+
+volRatio = atr / math.max(atrBase, syminfo.mintick)
+volShift = clamp01(math.abs(volRatio - 1.0) / 0.55)
+
+signedMove = close - close[fastLen]
+dirNow = signedMove > 0 ? 1.0 : signedMove < 0 ? -1.0 : 0.0
+dirBaseRaw = ta.ema(close - close[1], slowLen)
+dirBase = dirBaseRaw > 0 ? 1.0 : dirBaseRaw < 0 ? -1.0 : 0.0
+directionalConflict = dirNow != 0 and dirBase != 0 and dirNow != dirBase ? 1.0 : 0.0
+
+upShare = ta.sma(close > close[1] ? 1.0 : 0.0, fastLen)
+downShare = ta.sma(close < close[1] ? 1.0 : 0.0, fastLen)
+persistence = clamp01((math.max(upShare, downShare) - 0.40) / 0.35)
+persistBase = ta.sma(persistence, slowLen)
+structuralDeterioration = clamp01((persistBase - persistence) / 0.40)
+
+rangeFast = ta.sma(high - low, fastLen)
+rangeSlow = ta.sma(high - low, slowLen)
+rangeShift = clamp01(math.abs(rangeFast / math.max(rangeSlow, syminfo.mintick) - 1.0) / 0.55)
+
+// Pressure is evidence of behavioral instability, not directional conviction.
+pressureRaw =
+     0.27 * effShift +
+     0.23 * volShift +
+     0.20 * structuralDeterioration +
+     0.17 * directionalConflict +
+     0.13 * rangeShift
+
+pressure = clamp01(ta.ema(pressureRaw, smoothLen))
+pressurePeak = ta.highest(pressure, math.max(3, fastLen))
+dropFromPeak = math.max(0.0, pressurePeak - pressure)
+
+pressureSlope = pressure - pressure[3]
+buildingMomentum = pressureSlope > 0 ? clamp01(pressureSlope / 0.18) : 0.0
+
+//------------------------------------------------------------------------------
+// Lifecycle state machine — symmetric confirmation + explicit release
+//------------------------------------------------------------------------------
+rawState = pressure >= criticalTh ? 3 : pressure >= elevatedTh ? 2 : pressure >= buildTh ? 1 : 0
+releaseCandidate = pressurePeak >= elevatedTh and dropFromPeak >= releaseDrop and pressure < elevatedTh
+
+var int stableState = 0
+var int candidateState = 0
+var int candidateBars = 0
+var int releaseBars = 0
+
+if barstate.isconfirmed
+    // RELEASE requires its own confirmed collapse sequence.
+    if releaseCandidate and stableState != 4
+        releaseBars += 1
+    else
+        releaseBars := 0
+
+    if stableState != 4 and releaseBars >= confirmBars
+        stableState := 4
+        candidateState := 0
+        candidateBars := 0
+        releaseBars := 0
+    else
+        desired = rawState
+
+        if stableState == 4
+            // RELEASED is temporary. The post-release pressure state must
+            // independently persist before becoming the new confirmed state.
+            if desired == candidateState
+                candidateBars += 1
+            else
+                candidateState := desired
+                candidateBars := 1
+
+            if candidateBars >= confirmBars
+                stableState := desired
+                candidateState := 0
+                candidateBars := 0
+        else
+            // Symmetric state replacement:
+            // upgrades and downgrades both require the same N confirmed bars.
+            if desired == stableState
+                candidateState := stableState
+                candidateBars := 0
+            else
+                if desired == candidateState
+                    candidateBars += 1
+                else
+                    candidateState := desired
+                    candidateBars := 1
+
+                if candidateBars >= confirmBars
+                    stableState := desired
+                    candidateState := 0
+                    candidateBars := 0
+
+//------------------------------------------------------------------------------
+// Confirmed display snapshot
+//------------------------------------------------------------------------------
+// Lifecycle decisions are closed-bar only. The dashboard therefore reports
+// the same confirmed information set instead of mixing a live pressure value
+// with a confirmed lifecycle state.
+confirmedPressure = barstate.isconfirmed ? pressure : pressure[1]
+confirmedEffShift = barstate.isconfirmed ? effShift : effShift[1]
+confirmedVolShift = barstate.isconfirmed ? volShift : volShift[1]
+confirmedStructure = barstate.isconfirmed ? structuralDeterioration : structuralDeterioration[1]
+confirmedPressureSlope = barstate.isconfirmed ? pressureSlope : pressureSlope[1]
+confirmedBuildingMomentum = barstate.isconfirmed ? buildingMomentum : buildingMomentum[1]
+
+//------------------------------------------------------------------------------
+// Lifecycle context
+//------------------------------------------------------------------------------
+belowActiveThreshold =
+     (stableState == 1 and confirmedPressure < buildTh) or
+     (stableState == 2 and confirmedPressure < elevatedTh) or
+     (stableState == 3 and confirmedPressure < criticalTh)
+
+//------------------------------------------------------------------------------
+// Adaptive Pressure Bands
+//------------------------------------------------------------------------------
+// Visual architecture is derived from this engine's own transition-pressure state.
+// It does not use Fibonacci ratios, Supertrend anchoring, or external grid logic.
+
+basis = ta.ema(close, basisLen)
+
+// Width responds to both volatility and measured transition pressure.
+// Stable markets remain compact; pressure accumulation progressively expands the field.
+pressureWidth = 0.72 + pressure * 0.95
+stateBoost = stableState == 3 ? 1.12 : stableState == 2 ? 1.05 : stableState == 4 ? 0.88 : 1.0
+width = atrSafe * bandATR * pressureWidth * stateBoost
+
+innerUpper = basis + width * 0.45
+innerLower = basis - width * 0.45
+outerUpper = basis + width
+outerLower = basis - width
+
+bandColor = stateColor(stableState)
+basisColor = stableState == 0 ? color.rgb(126, 136, 146) : bandColor
+
+pOuterU = plot(showBands ? outerUpper : na, "Pressure Outer Upper", color=color.new(bandColor, 48), linewidth=1)
+pInnerU = plot(showBands ? innerUpper : na, "Pressure Inner Upper", color=color.new(bandColor, 18), linewidth=1)
+pBasis  = plot(showBasis ? basis : na, "Behavior Basis", color=color.new(basisColor, 5), linewidth=2)
+pInnerL = plot(showBands ? innerLower : na, "Pressure Inner Lower", color=color.new(bandColor, 18), linewidth=1)
+pOuterL = plot(showBands ? outerLower : na, "Pressure Outer Lower", color=color.new(bandColor, 48), linewidth=1)
+
+// Two-layer field: a quiet outer context plus a more visible inner pressure zone.
+fill(pOuterU, pInnerU, color=showBands ? color.new(bandColor, 88) : na, title="Upper Pressure Field")
+fill(pInnerU, pInnerL, color=showBands ? color.new(bandColor, stableState == 3 ? 84 : stableState == 2 ? 88 : 92) : na, title="Core Pressure Field")
+fill(pInnerL, pOuterL, color=showBands ? color.new(bandColor, 88) : na, title="Lower Pressure Field")
+
+// Boundary proximity increases visual emphasis without generating a signal.
+upperDist = math.abs(close - innerUpper) / atrSafe
+lowerDist = math.abs(close - innerLower) / atrSafe
+nearUpper = upperDist <= 0.22
+nearLower = lowerDist <= 0.22
+
+plot(showBands and nearUpper ? innerUpper : na, "Active Upper Boundary", color=color.new(bandColor, 0), linewidth=3, style=plot.style_linebr)
+plot(showBands and nearLower ? innerLower : na, "Active Lower Boundary", color=color.new(bandColor, 0), linewidth=3, style=plot.style_linebr)
+
+// Right-edge context markers. These are analytical boundaries, not targets.
+var line upperGuide = na
+var line lowerGuide = na
+if barstate.islast
+    if not na(upperGuide)
+        line.delete(upperGuide)
+    if not na(lowerGuide)
+        line.delete(lowerGuide)
+    if showBands
+        upperGuide := line.new(bar_index, innerUpper, bar_index + 8, innerUpper, xloc=xloc.bar_index, extend=extend.none, color=color.new(bandColor, 30), width=1)
+        lowerGuide := line.new(bar_index, innerLower, bar_index + 8, innerLower, xloc=xloc.bar_index, extend=extend.none, color=color.new(bandColor, 30), width=1)
+
+criticalPulse = showPulse and barstate.isconfirmed and stableState == 3 and stableState[1] != 3
+releasePulse  = showPulse and barstate.isconfirmed and stableState == 4 and stableState[1] != 4
+
+plotshape(criticalPulse, title="Critical Pressure Pulse", style=shape.diamond, location=location.abovebar, size=size.tiny, color=color.rgb(205, 75, 68), text="")
+plotshape(releasePulse, title="Pressure Release Pulse", style=shape.circle, location=location.belowbar, size=size.tiny, color=color.rgb(139, 96, 190), text="")
+
+//------------------------------------------------------------------------------
+// Compact Pressure Card
+//------------------------------------------------------------------------------
+var table card = table.new(position.top_right, 2, 10, bgcolor=color.rgb(29, 34, 40), frame_color=color.rgb(54, 60, 68), frame_width=1)
+
+if barstate.islast and showCard
+    headerBg = color.rgb(22, 27, 32)
+    labelBg = color.rgb(35, 41, 48)
+    valueBg = color.rgb(40, 46, 54)
+    table.cell(card, 0, 0, "TRANSITION", text_color=color.white, bgcolor=headerBg, text_size=size.small)
+    table.cell(card, 1, 0, "v1.0", text_color=color.rgb(180, 185, 192), bgcolor=headerBg, text_size=size.small)
+
+    table.cell(card, 0, 1, "STATE", text_color=color.rgb(190, 195, 202), bgcolor=labelBg, text_size=size.small)
+    table.cell(card, 1, 1, stateText(stableState), text_color=bandColor, bgcolor=valueBg, text_size=size.small)
+
+    table.cell(card, 0, 2, "PRESSURE", text_color=color.rgb(190, 195, 202), bgcolor=labelBg, text_size=size.small)
+    table.cell(card, 1, 2, str.tostring(confirmedPressure, "#.00"), text_color=color.white, bgcolor=valueBg, text_size=size.small)
+
+    table.cell(card, 0, 3, "EFF SHIFT", text_color=color.rgb(190, 195, 202), bgcolor=labelBg, text_size=size.small)
+    table.cell(card, 1, 3, levelText(confirmedEffShift), text_color=color.white, bgcolor=valueBg, text_size=size.small)
+
+    table.cell(card, 0, 4, "VOL SHIFT", text_color=color.rgb(190, 195, 202), bgcolor=labelBg, text_size=size.small)
+    table.cell(card, 1, 4, levelText(confirmedVolShift), text_color=color.white, bgcolor=valueBg, text_size=size.small)
+
+    table.cell(card, 0, 5, "STRUCTURE", text_color=color.rgb(190, 195, 202), bgcolor=labelBg, text_size=size.small)
+    table.cell(card, 1, 5, levelText(confirmedStructure), text_color=color.white, bgcolor=valueBg, text_size=size.small)
+
+    table.cell(card, 0, 6, "MOMENTUM", text_color=color.rgb(190, 195, 202), bgcolor=labelBg, text_size=size.small)
+    table.cell(card, 1, 6, confirmedBuildingMomentum >= 0.55 ? "RISING" : confirmedPressureSlope < 0 ? "FALLING" : "FLAT", text_color=color.white, bgcolor=valueBg, text_size=size.small)
+
+    table.cell(card, 0, 7, "LIFECYCLE", text_color=color.rgb(190, 195, 202), bgcolor=labelBg, text_size=size.small)
+    table.cell(card, 1, 7, candidateBars > 0 ? "CONFIRMING" : belowActiveThreshold ? "PERSISTING" : "CONFIRMED", text_color=(candidateBars > 0 or belowActiveThreshold) ? color.rgb(210,151,48) : color.white, bgcolor=valueBg, text_size=size.small)
+
+    table.cell(card, 0, 8, "CANDIDATE", text_color=color.rgb(190, 195, 202), bgcolor=labelBg, text_size=size.small)
+    table.cell(card, 1, 8, candidateBars > 0 ? stateText(candidateState) + " " + str.tostring(candidateBars) + "/" + str.tostring(confirmBars) : "—", text_color=color.white, bgcolor=valueBg, text_size=size.small)
+
+    table.cell(card, 0, 9, "TIMING", text_color=color.rgb(190, 195, 202), bgcolor=labelBg, text_size=size.small)
+    table.cell(card, 1, 9, "CONFIRMED", text_color=color.rgb(180, 185, 192), bgcolor=valueBg, text_size=size.small)
+
+//------------------------------------------------------------------------------
+// Methodology and limitations
+//------------------------------------------------------------------------------
+// Market Transition Pressure Engine measures developing behavioral instability
+// across five normalized dimensions:
+//
+// 1) directional-efficiency shift,
+// 2) volatility shift,
+// 3) structural-persistence deterioration,
+// 4) directional conflict,
+// 5) local range shift.
+//
+// The composite pressure measure is ATR-aware and smoothed before entering a
+// confirmed-bar lifecycle. STABLE, BUILDING, ELEVATED and CRITICAL describe
+// increasing pressure states. RELEASED describes a confirmed pressure collapse
+// after a sufficiently elevated episode; it is temporary and must independently
+// confirm its replacement state.
+//
+// Upgrades and downgrades use the same confirmation requirement. This reduces
+// one-bar state flipping and makes state persistence explicit. The dashboard
+// reports confirmed-bar metrics so its pressure reading and lifecycle state use
+// the same information set. The adaptive bands may continue developing on the
+// live bar and are visual context rather than lifecycle confirmation.
+//
+// The adaptive field is derived from this engine's own behavior basis, ATR and
+// transition-pressure calculation. It does not use Fibonacci ratios, Supertrend
+// anchoring, or external grid calculations.
+//
+// Limitations:
+// - States describe measured behavioral pressure, not reversal probability.
+// - The framework does not provide Buy/Sell signals, targets or expected return.
+// - Thresholds are normalized defaults and may behave differently across unusual
+//   instruments, sparse histories, synthetic symbols or extreme volatility.
+// - Confirmed-bar lifecycle logic intentionally introduces confirmation delay.
+// - Historical state behavior does not imply future recurrence.
+
+//------------------------------------------------------------------------------
+// Alerts
+//------------------------------------------------------------------------------
+alertcondition(barstate.isconfirmed and stableState == 2 and stableState[1] != 2, "Transition Pressure Elevated", "Market Transition Pressure Engine: pressure entered ELEVATED state.")
+alertcondition(barstate.isconfirmed and stableState == 3 and stableState[1] != 3, "Transition Pressure Critical", "Market Transition Pressure Engine: pressure entered CRITICAL state.")
+alertcondition(barstate.isconfirmed and stableState == 4 and stableState[1] != 4, "Transition Pressure Released", "Market Transition Pressure Engine: pressure entered RELEASED state.")

@@ -1,0 +1,101 @@
+//@version=6
+indicator("Buyer/Seller Zones — where orders are sitting", overlay=true,
+     max_boxes_count=250, max_labels_count=250)
+
+// ---------------- inputs ----------------
+pivLen    = input.int(10,    "Pivot strength (bars each side)", 3, 50)
+tolMult   = input.float(0.25,"Zone half-width (ATR mult)", 0.05, 1.0, 0.05)
+minTouch  = input.int(2,     "Touches needed to draw a zone", 2, 10)
+breakMult = input.float(0.5, "Break-through distance (ATR mult)", 0.1, 2.0, 0.1)
+atrLen    = input.int(14,    "ATR length")
+maxZones  = input.int(8,     "Max live zones per side", 2, 20)
+keepDead  = input.bool(false,"Keep broken zones (faded)")
+
+a = ta.atr(atrLen)
+
+// ---------------- level books (parallel arrays) ----------------
+var float[] sPx  = array.new_float()   // seller levels (from swing highs)
+var int[]   sN   = array.new_int()
+var int[]   sBar = array.new_int()
+var box[]   sBx  = array.new_box()
+var float[] bPx  = array.new_float()   // buyer levels (from swing lows)
+var int[]   bN   = array.new_int()
+var int[]   bBar = array.new_int()
+var box[]   bBx  = array.new_box()
+
+zoneCol(bool isSell, bool dead) =>
+    base = isSell ? color.red : color.green
+    color.new(base, dead ? 94 : 85)
+
+// merge a fresh pivot into a book, or open a new level
+processPivot(float px, int pbar, float[] arrPx, int[] arrN, int[] arrBar, box[] arrBx, bool isSell) =>
+    tol = tolMult * a
+    mergedAt = -1
+    sz = array.size(arrPx)
+    if sz > 0
+        for i = 0 to sz - 1
+            if mergedAt < 0 and math.abs(array.get(arrPx, i) - px) <= tol
+                mergedAt := i
+    if mergedAt >= 0
+        cnt = array.get(arrN, mergedAt) + 1
+        avg = (array.get(arrPx, mergedAt) * array.get(arrN, mergedAt) + px) / cnt
+        array.set(arrPx, mergedAt, avg)
+        array.set(arrN, mergedAt, cnt)
+        bx = array.get(arrBx, mergedAt)
+        if cnt >= minTouch and na(bx)
+            bx := box.new(array.get(arrBar, mergedAt), avg + tol, bar_index, avg - tol,
+                 border_color=zoneCol(isSell, false), bgcolor=zoneCol(isSell, false))
+            array.set(arrBx, mergedAt, bx)
+        if not na(bx)
+            box.set_top(bx, avg + tol)
+            box.set_bottom(bx, avg - tol)
+            box.set_text(bx, (isSell ? "SELLERS x" : "BUYERS x") + str.tostring(cnt))
+            box.set_text_color(bx, isSell ? color.red : color.green)
+            box.set_text_size(bx, size.small)
+    if mergedAt < 0
+        array.push(arrPx, px)
+        array.push(arrN, 1)
+        array.push(arrBar, pbar)
+        array.push(arrBx, box(na))
+        if array.size(arrPx) > maxZones          // retire the oldest level
+            oldBx = array.shift(arrBx)
+            if not na(oldBx)
+                box.delete(oldBx)
+            dropF = array.shift(arrPx)
+            dropN = array.shift(arrN)
+            dropB = array.shift(arrBar)
+    true
+
+// a level dies when price CLOSES decisively through it
+sweepDead(float[] arrPx, int[] arrN, int[] arrBar, box[] arrBx, bool isSell) =>
+    i = 0
+    while i < array.size(arrPx)
+        lvl = array.get(arrPx, i)
+        bx = array.get(arrBx, i)
+        broke = isSell ? close > lvl + breakMult * a : close < lvl - breakMult * a
+        if broke and not na(bx)
+            if keepDead
+                box.set_bgcolor(bx, zoneCol(isSell, true))
+                box.set_border_color(bx, zoneCol(isSell, true))
+            else
+                box.delete(bx)
+        if broke
+            dropF = array.remove(arrPx, i)
+            dropN = array.remove(arrN, i)
+            dropB = array.remove(arrBar, i)
+            dropX = array.remove(arrBx, i)
+        if not broke
+            if not na(bx)
+                box.set_right(bx, bar_index)     // live zones extend with time
+            i += 1
+    true
+
+// ---------------- engine ----------------
+ph = ta.pivothigh(pivLen, pivLen)
+pl = ta.pivotlow(pivLen, pivLen)
+if not na(ph)
+    processPivot(ph, bar_index - pivLen, sPx, sN, sBar, sBx, true)
+if not na(pl)
+    processPivot(pl, bar_index - pivLen, bPx, bN, bBar, bBx, false)
+sweepDead(sPx, sN, sBar, sBx, true)
+sweepDead(bPx, bN, bBar, bBx, false)

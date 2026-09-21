@@ -1,0 +1,111 @@
+//@version=6
+indicator("Multi-ORB [4 Sessions]", overlay=true)
+
+// =========================================================================
+// HELPER FUNCTION: Calculate ORB High, Low, and Midline
+// =========================================================================
+get_orb(sess_time, enable) =>
+    var float orb_high = na
+    var float orb_low  = na
+    
+    // Lock to NY Time so it functions consistently regardless of your chart's local time
+    in_session_time = time(timeframe.period, sess_time, "America/New_York")
+    
+    // v6 Fix: time() returns an int (or na). v6 no longer allows implicit int-to-bool casting.
+    // We explicitly check if it's not 'na' to create a strict boolean.
+    in_session = not na(in_session_time)
+    is_new_session = in_session and not in_session[1]
+    
+    // v6 Fix: Use nz() to prevent 'na' on the first bar from causing a boolean logic error
+    is_new_day = nz(ta.change(time("D", "America/New_York"))) != 0
+
+    // Reset levels at the start of a new day so lines don't drag overnight
+    if is_new_day
+        orb_high := na
+        orb_low  := na
+
+    // Record highs and lows during the session
+    if is_new_session and enable
+        orb_high := high
+        orb_low  := low
+    else if in_session and enable
+        orb_high := math.max(orb_high, high)
+        orb_low  := math.min(orb_low, low)
+
+    orb_mid = (orb_high + orb_low) / 2
+    
+    // Return values only if enabled and a valid ORB is established
+    valid = enable and not na(orb_high)
+    [valid ? orb_high : na, valid ? orb_low : na, valid ? orb_mid : na]
+
+// =========================================================================
+// INPUTS & PLOTTING
+// =========================================================================
+
+// --- ORB 1 (Default: 5 Min) ---
+grp1 = "ORB 1 Settings"
+en1 = input.bool(true, "Enable ORB 1", group=grp1)
+sess1 = input.session("0930-0935", "Session Time (EST)", group=grp1)
+c1_h = input.color(color.new(color.green, 0), "High Line Color", group=grp1)
+c1_m = input.color(color.new(color.gray, 0), "Mid Line Color", group=grp1)
+c1_l = input.color(color.new(color.red, 0), "Low Line Color", group=grp1)
+c1_fill_top = input.color(color.new(color.green, 85), "Fill Gradient Top", group=grp1)
+c1_fill_bot = input.color(color.new(color.red, 85), "Fill Gradient Bottom", group=grp1)
+
+[h1, l1, m1] = get_orb(sess1, en1)
+p1_h = plot(h1, color=c1_h, title="ORB 1 High", style=plot.style_linebr)
+p1_m = plot(m1, color=c1_m, title="ORB 1 Mid", style=plot.style_linebr)
+p1_l = plot(l1, color=c1_l, title="ORB 1 Low", style=plot.style_linebr)
+fill(p1_h, p1_m, color=c1_fill_top, title="ORB 1 Fill Top")
+fill(p1_m, p1_l, color=c1_fill_bot, title="ORB 1 Fill Bottom")
+
+// --- ORB 2 (Default: 15 Min) ---
+grp2 = "ORB 2 Settings"
+en2 = input.bool(true, "Enable ORB 2", group=grp2)
+sess2 = input.session("0930-0945", "Session Time (EST)", group=grp2)
+c2_h = input.color(color.new(color.blue, 0), "High Line Color", group=grp2)
+c2_m = input.color(color.new(color.gray, 0), "Mid Line Color", group=grp2)
+c2_l = input.color(color.new(color.orange, 0), "Low Line Color", group=grp2)
+c2_fill_top = input.color(color.new(color.blue, 90), "Fill Gradient Top", group=grp2)
+c2_fill_bot = input.color(color.new(color.orange, 90), "Fill Gradient Bottom", group=grp2)
+
+[h2, l2, m2] = get_orb(sess2, en2)
+p2_h = plot(h2, color=c2_h, title="ORB 2 High", style=plot.style_linebr)
+p2_m = plot(m2, color=c2_m, title="ORB 2 Mid", style=plot.style_linebr)
+p2_l = plot(l2, color=c2_l, title="ORB 2 Low", style=plot.style_linebr)
+fill(p2_h, p2_m, color=c2_fill_top, title="ORB 2 Fill Top")
+fill(p2_m, p2_l, color=c2_fill_bot, title="ORB 2 Fill Bottom")
+
+// --- ORB 3 (Default: 30 Min) ---
+grp3 = "ORB 3 Settings"
+en3 = input.bool(false, "Enable ORB 3", group=grp3)
+sess3 = input.session("0930-1000", "Session Time (EST)", group=grp3)
+c3_h = input.color(color.new(color.fuchsia, 0), "High Line Color", group=grp3)
+c3_m = input.color(color.new(color.gray, 0), "Mid Line Color", group=grp3)
+c3_l = input.color(color.new(color.teal, 0), "Low Line Color", group=grp3)
+c3_fill_top = input.color(color.new(color.fuchsia, 90), "Fill Gradient Top", group=grp3)
+c3_fill_bot = input.color(color.new(color.teal, 90), "Fill Gradient Bottom", group=grp3)
+
+[h3, l3, m3] = get_orb(sess3, en3)
+p3_h = plot(h3, color=c3_h, title="ORB 3 High", style=plot.style_linebr)
+p3_m = plot(m3, color=c3_m, title="ORB 3 Mid", style=plot.style_linebr)
+p3_l = plot(l3, color=c3_l, title="ORB 3 Low", style=plot.style_linebr)
+fill(p3_h, p3_m, color=c3_fill_top, title="ORB 3 Fill Top")
+fill(p3_m, p3_l, color=c3_fill_bot, title="ORB 3 Fill Bottom")
+
+// --- ORB 4 (Default: 60 Min) ---
+grp4 = "ORB 4 Settings"
+en4 = input.bool(false, "Enable ORB 4", group=grp4)
+sess4 = input.session("0930-1030", "Session Time (EST)", group=grp4)
+c4_h = input.color(color.new(color.purple, 0), "High Line Color", group=grp4)
+c4_m = input.color(color.new(color.gray, 0), "Mid Line Color", group=grp4)
+c4_l = input.color(color.new(color.maroon, 0), "Low Line Color", group=grp4)
+c4_fill_top = input.color(color.new(color.purple, 92), "Fill Gradient Top", group=grp4)
+c4_fill_bot = input.color(color.new(color.maroon, 92), "Fill Gradient Bottom", group=grp4)
+
+[h4, l4, m4] = get_orb(sess4, en4)
+p4_h = plot(h4, color=c4_h, title="ORB 4 High", style=plot.style_linebr)
+p4_m = plot(m4, color=c4_m, title="ORB 4 Mid", style=plot.style_linebr)
+p4_l = plot(l4, color=c4_l, title="ORB 4 Low", style=plot.style_linebr)
+fill(p4_h, p4_m, color=c4_fill_top, title="ORB 4 Fill Top")
+fill(p4_m, p4_l, color=c4_fill_bot, title="ORB 4 Fill Bottom")

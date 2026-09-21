@@ -1,0 +1,77 @@
+//@version=6
+indicator("Azrael Dealer Map (SPX Pattern)", overlay = true, max_lines_count = 20, max_labels_count = 20, max_boxes_count = 10)
+
+// ── Inputs (edit these each morning with the 5-min calc) ──
+float refClose   = input.float(7637.76, "Reference / Prev Close", step = 0.01)
+float emPoints   = input.float(73.8,    "ATM Straddle / 1σ EM (points)", step = 0.1)
+float gammaPut   = input.float(7600.0,  "Put / Lower Gamma Wall")
+float gammaCall  = input.float(7700.0,  "Call / Upper Gamma Wall")
+bool  showBox    = input.bool(true,     "Show EM Envelope Box")
+bool  showLabels = input.bool(true,     "Show Labels")
+
+// Derived levels
+float upperWall  = refClose + emPoints
+float lowerWall  = refClose - emPoints
+float upperShelf = refClose + emPoints * 0.5
+float lowerShelf = refClose - emPoints * 0.5
+
+// Colors
+color colUpper = color.new(#ef5350, 0)
+color colLower = color.new(#26a69a, 0)
+color colGamma = color.new(#ab47bc, 0)
+color colRef   = color.new(#42a5f5, 20)
+color colBox   = color.new(#90caf9, 88)
+
+// Plot lines
+plot(upperWall,  "Upper Wall (+1σ)",     color = colUpper, linewidth = 2)
+plot(lowerWall,  "Lower Wall (−1σ)",     color = colLower, linewidth = 2)
+plot(upperShelf, "Upper Shelf (+0.5σ)",  color = color.new(colUpper, 40), linewidth = 1)
+plot(lowerShelf, "Lower Shelf (−0.5σ)",  color = color.new(colLower, 40), linewidth = 1)
+plot(refClose,   "Ref / Magnet",         color = colRef, linewidth = 1, style = plot.style_circles)
+plot(gammaCall,  "Call Gamma Wall",      color = colGamma, linewidth = 2)
+plot(gammaPut,   "Put Gamma Wall",       color = colGamma, linewidth = 2)
+
+// Envelope box (reused on last bar)
+var box emBox = box.new(na, na, na, na, xloc = xloc.bar_index, extend = extend.right,
+     border_color = color.new(#90caf9, 50), bgcolor = colBox)
+
+if barstate.islast
+    if showBox
+        box.set_left(emBox, bar_index - 20)
+        box.set_right(emBox, bar_index + 50)
+        box.set_top(emBox, upperWall)
+        box.set_bottom(emBox, lowerWall)
+        box.set_bgcolor(emBox, colBox)
+    else
+        box.set_bgcolor(emBox, color(na))
+        box.set_border_color(emBox, color(na))
+
+// Labels (created once, moved on last bar)
+var label lblUpper = label.new(na, na, "", style = label.style_label_left, color = colUpper, textcolor = color.white, size = size.small)
+var label lblLower = label.new(na, na, "", style = label.style_label_left, color = colLower, textcolor = color.white, size = size.small)
+var label lblCall  = label.new(na, na, "", style = label.style_label_left, color = colGamma, textcolor = color.white, size = size.small)
+var label lblPut   = label.new(na, na, "", style = label.style_label_left, color = colGamma, textcolor = color.white, size = size.small)
+var label lblRef   = label.new(na, na, "", style = label.style_label_left, color = colRef,   textcolor = color.white, size = size.tiny)
+
+if barstate.islast
+    if showLabels
+        label.set_xy(lblUpper, bar_index + 8, upperWall)
+        label.set_text(lblUpper, "Upper Wall " + str.tostring(upperWall, "#.0"))
+
+        label.set_xy(lblLower, bar_index + 8, lowerWall)
+        label.set_text(lblLower, "Lower Wall " + str.tostring(lowerWall, "#.0"))
+
+        label.set_xy(lblCall, bar_index + 8, gammaCall)
+        label.set_text(lblCall, "Call Wall " + str.tostring(gammaCall, "#"))
+
+        label.set_xy(lblPut, bar_index + 8, gammaPut)
+        label.set_text(lblPut, "Put Wall " + str.tostring(gammaPut, "#"))
+
+        label.set_xy(lblRef, bar_index + 8, refClose)
+        label.set_text(lblRef, "Ref " + str.tostring(refClose, "#.2"))
+    else
+        label.set_xy(lblUpper, na, na)
+        label.set_xy(lblLower, na, na)
+        label.set_xy(lblCall, na, na)
+        label.set_xy(lblPut, na, na)
+        label.set_xy(lblRef, na, na)

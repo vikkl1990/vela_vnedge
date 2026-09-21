@@ -1,0 +1,71 @@
+//@version=6
+indicator("Delta Trend ", shorttitle="Delta Trend", overlay=false)
+bgcolor(color.new(#000000, 20), title='Dark Background')
+
+//============================================================================
+// INPUT PARAMETERS
+//============================================================================
+
+smth = input.int(5, title="Delta Smooth", minval= 1,maxval = 20)
+
+adj = input.float(1, title="Delta Adjust", minval= 0.1,maxval = 20.0, step = 0.1)
+
+//============================================================================
+// DELTA CALCULATIONS
+//============================================================================
+
+raw =  (close - open)/(close + open)
+
+delta = (ta.wma(raw,smth) * 100) * adj
+
+fall = delta < delta[1]
+
+rise = not fall 
+
+col = rise ? color.white: color.red
+
+plot(delta, "Delta Line", color=col, linewidth = 3)
+
+hline(3, "3 Line", color= color.yellow, linestyle= hline.style_dotted)
+
+hline(0.3, "0.3 Line", color= color.yellow, linestyle= hline.style_dotted)
+
+hline(0, "0 Line", color= color.yellow, linestyle= hline.style_dotted)
+
+bgCol = delta >= 0 ? color.new(color.blue,60) : na
+
+bgcolor(bgCol)
+
+//===========================================================================
+// TABLE
+//============================================================================
+
+var table infoTable = table.new(position.top_right, 5, 20, bgcolor = #000000, border_width = 1, border_color = color.white)
+
+table.cell(infoTable, 0, 0, "Delta", text_color = color.white, bgcolor = color.navy, text_size = size.large)
+table.cell(infoTable, 1, 0, str.tostring(delta, "#.###") + "x", text_color = color.white, bgcolor = delta >= 5 ? color.teal : delta > 0 ? color.blue : color.maroon, text_size = size.large)
+
+//============================================================================
+// ALERTS
+//============================================================================
+
+alertcondition(rise, title = "Buy - delta Line Rise", message= "Buy Alert - delta Line is Rising")
+alertcondition(fall, title = "Sell - delta Line Fall", message= "Sell Alert - delta Line is Falling")
+
+alertcondition(delta >= 10, "Buy - delta Line > 10", "Buy Alert - delta Line is Above 10")
+alertcondition(delta < 10, "Sell - delta Line < 10", "Sell Alert - delta Line is Below 10")
+alertcondition(delta >= 5, "Buy - delta Line > 5", "Buy Alert - delta Line is Above 5")
+alertcondition(delta < 5, "Sell - delta Line < 5", "Sell Alert - delta Line is Below 5")
+alertcondition(delta >= 3, "Buy - delta Line > 3", "Buy Alert - delta Line is Above 3")
+alertcondition(delta < 3, "Sell - delta Line < 3", "Sell Alert - delta Line is Below 3")
+alertcondition(delta >= 0.3, "Buy - delta Line > 0.3", "Buy Alert - delta Line is above 0.3")
+alertcondition(delta < 0.3, "Sell - delta Line < 0.3", "Sell Alert - delta Line is below 0.3")
+alertcondition(delta >= 0, "Buy - delta Line > 0", "Buy Alert - delta Line is above 0 ")
+alertcondition(delta < 0, "Sell - delta Line < 0", "Sell Alert - delta Line is below 0: ")
+
+alertcondition(delta > 0 or rise, title = "Buy - delta Line Rise or delta Line > 0", message= "Buy Alert - delta Line is Rising or delta Line > 0")
+alertcondition(delta < 0 or fall, title = "Sell - delta Line Fall or delta Line < 0", message= "Sell Alert - delta Line is Falling or delta Line < 0")
+
+
+
+

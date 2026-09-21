@@ -1,0 +1,417 @@
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// © BarState Labs
+//@version=6
+indicator("Session Gap Board [BSL]", shorttitle = "BSL Gap Board", overlay = true, max_bars_back = 600, max_boxes_count = 100, max_labels_count = 100)
+
+// Session Gap Board tracks the hole a market leaves when it opens away from
+// where it last settled. Each gap is an object with a state: still open, or
+// closed on a named bar. The board prints how many are in each state and how
+// many sessions it looked at.
+//
+// It prints NO FILL RATE, and that omission is the product rather than an
+// oversight. Dividing closed gaps by all gaps overstates the share, because the
+// gaps still open are disproportionately the ones that will not close. An
+// unfilled gap is a censored observation, not a zero, and a board that cannot
+// say so honestly should say nothing. If a rate is ever wanted it has to come
+// through the eligible-window convention in eligible-window-curtain.pine, which
+// aligns unequal exposure before anything is divided.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inputs
+// ─────────────────────────────────────────────────────────────────────────────
+string GROUP_EVENT = "01 · Event definition"
+string GROUP_DISPLAY = "02 · Display"
+
+int trackedCap = input.int(40, "Tracked gaps · cap", minval = 5, maxval = 100, group = GROUP_EVENT,
+     tooltip = "How many gaps hold a drawing object at once. The cap bounds the DRAWING, never the counting: sessions observed, filled and no-hole keep accumulating over the whole loaded history. When the cap is reached the oldest already-closed gap gives up its box first, because it has nothing left to contribute. Only when every tracked gap is still open does an unresolved one get retired, and that case has its own counted row.")
+int maturitySessions = input.int(20, "Maturity horizon · sessions", minval = 1, maxval = 500, group = GROUP_EVENT,
+     tooltip = "A gap younger than this has had less opportunity to close than the older ones on the same chart. It is drawn at raised transparency so the unequal exposure is visible, and it is still counted. This is the eligible-window idea from B-vis3-07 applied to one board.")
+
+string ageLabels = input.string("None", "Age labels", options = ["Open gaps only", "Every tracked gap", "None"],
+     group = GROUP_DISPLAY, tooltip = "Every tracked gap owns one label object whichever setting is chosen, so the object budget does not move. This input only decides what the label says.")
+bool showMarks = input.bool(true, "Mark the bar that closed a gap", group = GROUP_DISPLAY,
+     tooltip = "A confirmed close is an X. A close still forming on the open bar is a circle at raised transparency: a different symbol, not a faded X, because plotshape has no outline style and a faded copy would read as a weaker version of the same claim rather than as a different claim.")
+string panelDensity = input.string("Compact", "Panel detail", options = ["Compact", "Full"], group = GROUP_DISPLAY)
+string panelPositionInput = input.string("Bottom center", "Panel position", options = ["Auto", "Top right", "Bottom right", "Top left", "Bottom left", "Top center", "Bottom center"],
+     group = GROUP_DISPLAY, tooltip = "Auto keeps the panel opposite the latest price within the visible chart range. Pick a corner by hand when another script already occupies this one.")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Palette
+// ─────────────────────────────────────────────────────────────────────────────
+color COLOR_BG = color.rgb(11, 14, 13)
+color COLOR_TEXT = color.rgb(242, 239, 232)
+color COLOR_MUTED = color.rgb(156, 161, 154)
+color COLOR_GREEN = color.rgb(82, 211, 151)
+color COLOR_RED = color.rgb(239, 107, 107)
+color COLOR_AMBER = color.rgb(235, 184, 87)
+color COLOR_BLUE = color.rgb(104, 167, 255)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Session boundary
+//
+// A session is one trading day. On a daily-or-higher chart every bar already IS
+// a session, so every bar after the first opens one. On an intraday chart the
+// platform's own session flag marks the boundary, which keeps the whole rule on
+// the chart's own series: no higher-timeframe request, and therefore no
+// lookahead argument to have.
+//
+// The design register wrote this as ta.change(time(timeframe.period)). On a
+// daily chart that is the same rule, because a bar's own open time changes at
+// every boundary and nowhere else. On an intraday chart it is not: time() at
+// the chart's own timeframe is the bar's own open time, so it changes on EVERY
+// bar and would make each five-minute bar a session. The rule below is the
+// register's intent written so it survives the timeframe.
+// ─────────────────────────────────────────────────────────────────────────────
+bool configValid = trackedCap >= 5 and trackedCap <= 100 and maturitySessions >= 1 and maturitySessions <= 500
+bool standardChart = chart.is_standard
+
+bool newSession = timeframe.isintraday ? session.isfirstbar : true
+bool boundaryHere = bar_index > 0 and newSession
+
+float priorClose = close[1]
+// A Pine boolean is never na: a comparison against an unavailable value returns
+// false, which is indistinguishable from "tested and found false". This flag is
+// what keeps warm-up separable from a session that opened flat.
+bool historyReady = bar_index > 0 and not na(priorClose)
+bool ready = configValid and standardChart and historyReady
+bool resolved = ready and barstate.isconfirmed
+
+// The gap sign is +1 when the session opened above the prior settled close, -1
+// below and 0 when they are equal. A boundary with an equal open left NO HOLE.
+// It is an observed session and it is not a filled gap: counting it as a fill
+// would inflate the filled bucket with sessions that never had a hole, which is
+// the same direction of error this product exists to refuse.
+int gapSign = not (resolved and boundaryHere) ? 0 : open > priorClose ? 1 : open < priorClose ? -1 : 0
+bool hasHole = gapSign != 0
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tracked gaps
+//
+// Parallel arrays, one slot per tracked gap, plus one box and one label. The
+// slot is the object; the counters below are separate on purpose.
+// ─────────────────────────────────────────────────────────────────────────────
+var array<float> gapTarget = array.new<float>()
+var array<float> gapOrigin = array.new<float>()
+var array<int> gapDirection = array.new<int>()
+var array<int> gapOriginBar = array.new<int>()
+// The origin bar's TIME, kept beside its index. A gap that stays open outlives
+// the distance `xloc.bar_index` will accept, and the box has to be re-anchored
+// on every bar while it is open.
+var array<int> gapOriginTime = array.new<int>()
+var array<int> gapOriginSession = array.new<int>()
+var array<int> gapFillBar = array.new<int>()
+var array<box> gapBox = array.new<box>()
+var array<label> gapLabel = array.new<label>()
+
+// Counters. None of these is ever decremented, and none of them is ever divided
+// by another one. `observedSessions` is the denominator that is never used as a
+// denominator: it is printed next to the buckets so a reader can see that
+// filled + still open + retired + no hole accounts for every session examined.
+var int observedSessions = 0
+var int noHoleCount = 0
+var int filledCount = 0
+var int retiredOpenCount = 0
+
+if resolved and boundaryHere
+    observedSessions += 1
+    if not hasHole
+        noHoleCount += 1
+
+if resolved and hasHole
+    // Retire before pushing, so the tracked set never exceeds the cap the
+    // object budget is written against. The oldest CLOSED gap goes first: it
+    // has already contributed everything it will ever contribute, so its box is
+    // the cheapest thing on the chart to give up.
+    if array.size(gapTarget) >= trackedCap
+        int retireAt = 0
+        bool retiringFilled = false
+        for slot = 0 to array.size(gapFillBar) - 1
+            if array.get(gapFillBar, slot) >= 0
+                retireAt := slot
+                retiringFilled := true
+                break
+        if not retiringFilled
+            // The one case where the cap really does censor. It gets its own
+            // counted row instead of being folded into "filled" or deducted
+            // from "sessions observed". Deducting it would make the numbers
+            // agree by shrinking the universe, which is the bias this board
+            // exists to refuse.
+            retiredOpenCount += 1
+        box.delete(array.get(gapBox, retireAt))
+        label.delete(array.get(gapLabel, retireAt))
+        array.remove(gapTarget, retireAt)
+        array.remove(gapOrigin, retireAt)
+        array.remove(gapDirection, retireAt)
+        array.remove(gapOriginBar, retireAt)
+        array.remove(gapOriginTime, retireAt)
+        array.remove(gapOriginSession, retireAt)
+        array.remove(gapFillBar, retireAt)
+        array.remove(gapBox, retireAt)
+        array.remove(gapLabel, retireAt)
+
+    color edge = gapSign > 0 ? COLOR_GREEN : COLOR_RED
+    float boxTop = math.max(priorClose, open)
+    float boxBottom = math.min(priorClose, open)
+    // A still-open gap is a hollow box with a DASHED border. Both are real box
+    // parameters, and the pair is readable without touching the text: a closed
+    // gap below is solid-bordered and shaded.
+// Positioned by TIME, not by bar index. A drawing whose x sits more than a
+// few hundred bars from the current one is refused with runtime error
+// RE10026, and that error takes the whole script's output down, not just
+// the drawing. Time carries any distance.
+    box created = box.new(time, boxTop, time, boxBottom, xloc = xloc.bar_time,
+         border_color = edge, border_width = 1, border_style = line.style_dashed,
+         bgcolor = color.new(edge, 100), extend = extend.right)
+    label ageTag = label.new(time, priorClose, "", xloc = xloc.bar_time, yloc = yloc.price,
+         style = label.style_label_left, color = color.new(COLOR_BG, 20), textcolor = edge,
+         size = size.small)
+    array.push(gapTarget, priorClose)
+    array.push(gapOrigin, open)
+    array.push(gapDirection, gapSign)
+    array.push(gapOriginBar, bar_index)
+    array.push(gapOriginTime, time)
+    array.push(gapOriginSession, observedSessions)
+    array.push(gapFillBar, -1)
+    array.push(gapBox, created)
+    array.push(gapLabel, ageTag)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Closing a gap
+//
+// The register's rule verbatim: the bar's range has to reach back to the prior
+// settled close. Inclusive on both sides, because the hole is the stretch of
+// price nobody traded and a trade AT the level means the stretch is no longer
+// untraded. Confirmed bars only.
+// ─────────────────────────────────────────────────────────────────────────────
+int fillUpCount = 0
+int fillDownCount = 0
+if resolved and array.size(gapTarget) > 0
+    for slot = 0 to array.size(gapTarget) - 1
+        if array.get(gapFillBar, slot) < 0
+            float gapClose = array.get(gapTarget, slot)
+            if low <= gapClose and high >= gapClose
+                int direction = array.get(gapDirection, slot)
+                array.set(gapFillBar, slot, bar_index)
+                filledCount += 1
+                if direction > 0
+                    fillUpCount += 1
+                else
+                    fillDownCount += 1
+                box closedBox = array.get(gapBox, slot)
+                box.set_right(closedBox, time)
+                box.set_extend(closedBox, extend.none)
+                box.set_border_style(closedBox, line.style_solid)
+                box.set_bgcolor(closedBox, color.new(direction > 0 ? COLOR_GREEN : COLOR_RED, 84))
+
+// The forming close. Drawn and never counted, never exported and never allowed
+// to settle a gap, because the bar's high and low are still moving.
+bool forming = ready and not barstate.isconfirmed
+bool formingFillUp = false
+bool formingFillDown = false
+if forming and array.size(gapTarget) > 0
+    for slot = 0 to array.size(gapTarget) - 1
+        if array.get(gapFillBar, slot) < 0
+            float pendingClose = array.get(gapTarget, slot)
+            if low <= pendingClose and high >= pendingClose
+                if array.get(gapDirection, slot) > 0
+                    formingFillUp := true
+                else
+                    formingFillDown := true
+
+// Cardinality, contract clause 7. One wide bar can close an up gap sitting
+// below it and a down gap sitting above it. A signed pulse carries one value
+// per bar and cannot say "both" without inventing a side, so such a bar
+// publishes 0 on the pulse and 1 on the collision mask. Both marks are still
+// drawn, and both closes still reach the counter: the stream is one value per
+// bar, the counter is not.
+bool twoSided = fillUpCount > 0 and fillDownCount > 0
+int fillEvent = twoSided ? 0 : fillUpCount > 0 ? 1 : fillDownCount > 0 ? -1 : 0
+int twoSidedFill = twoSided ? 1 : 0
+
+var int twoSidedCount = 0
+if twoSided
+    twoSidedCount += 1
+
+// A session boundary that opened flat publishes 0 on the signed pulse, and so
+// does every bar inside a session. Those are different facts, so the boundary
+// mask carries the difference. Without it the pulse's 0 does two jobs and a
+// consumer cannot count sessions, which is the one number everything else on
+// this board is read against.
+int gapEvent = gapSign
+int boundaryMask = boundaryHere ? 1 : 0
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Marks
+//
+// plotshape output consumes no drawing objects, so every historical close in
+// the loaded history keeps its mark even after its box has been retired at the
+// cap. A two-sided bar shows both marks, which is the honest picture of it.
+// ─────────────────────────────────────────────────────────────────────────────
+plotshape(showMarks and fillUpCount > 0, title = "Gap closed · session had opened above", style = shape.xcross,
+     location = location.belowbar, color = COLOR_GREEN, size = size.tiny)
+plotshape(showMarks and fillDownCount > 0, title = "Gap closed · session had opened below", style = shape.xcross,
+     location = location.abovebar, color = COLOR_RED, size = size.tiny)
+plotshape(showMarks and formingFillUp, title = "Close forming · not confirmed · opened above", style = shape.circle,
+     location = location.belowbar, color = color.new(COLOR_GREEN, 60), size = size.tiny)
+plotshape(showMarks and formingFillDown, title = "Close forming · not confirmed · opened below", style = shape.circle,
+     location = location.abovebar, color = color.new(COLOR_RED, 60), size = size.tiny)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Exported streams
+//
+// BarState Labs producer stream contract 1.1.0, declared in
+// docs/products/data-trust-painter-spec.md §5.1. Two signed pulses and two
+// masks, every one of them stamped on the bar its event became knowable, every
+// one at a delay of 0 bars. na means the product has no opinion yet — warm-up,
+// an open bar, an invalid configuration, a non-standard chart — and a consumer
+// must not read it as "no gap" or carry it forward with nz().
+// ─────────────────────────────────────────────────────────────────────────────
+plot(resolved ? float(gapEvent) : na, "Session gap event", display = display.data_window)
+plot(resolved ? float(boundaryMask) : na, "Session boundary", display = display.data_window)
+plot(resolved ? float(fillEvent) : na, "Gap fill event", display = display.data_window)
+plot(resolved ? float(twoSidedFill) : na, "Two-sided fill", display = display.data_window)
+
+alertcondition(gapEvent == 1, "Session opened above the prior close",
+     "Session Gap Board recorded a session that opened above the prior settled close.")
+alertcondition(gapEvent == -1, "Session opened below the prior close",
+     "Session Gap Board recorded a session that opened below the prior settled close.")
+alertcondition(fillEvent != 0, "Gap closed", "Session Gap Board closed a tracked session gap.")
+alertcondition(twoSidedFill == 1, "Gaps closed on both sides",
+     "Session Gap Board closed gaps of both signs on one bar. The signed stream carries 0 on that bar.")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Board state and drawing refresh
+//
+// One pass over the tracked slots on the last bar only. It does two jobs that
+// must not be confused: it refreshes the drawings, and it reads the open set
+// for the panel. Retiring a drawing above changed which gaps have boxes; it did
+// not change filledCount, noHoleCount or observedSessions, and nothing here
+// recomputes those from what is currently drawn.
+// ─────────────────────────────────────────────────────────────────────────────
+int stillOpenCount = 0
+int youngOpenCount = 0
+int oldestOpenAge = -1
+bool drawable = standardChart and configValid
+
+if barstate.islast and drawable and array.size(gapTarget) > 0
+    for slot = 0 to array.size(gapTarget) - 1
+        int fillBar = array.get(gapFillBar, slot)
+        bool stillOpen = fillBar < 0
+        int ageSessions = observedSessions - array.get(gapOriginSession, slot)
+        bool young = stillOpen and ageSessions < maturitySessions
+        int direction = array.get(gapDirection, slot)
+        color edge = direction > 0 ? COLOR_GREEN : COLOR_RED
+        box slotBox = array.get(gapBox, slot)
+        if stillOpen
+            stillOpenCount += 1
+            youngOpenCount += young ? 1 : 0
+            oldestOpenAge := math.max(oldestOpenAge, ageSessions)
+            box.set_right(slotBox, time)
+            // Raised transparency is the censoring, drawn where the reader is
+            // already looking instead of written in a footnote. It removes the
+            // gap from nothing.
+            box.set_border_color(slotBox, color.new(edge, young ? 55 : 0))
+        bool wantLabel = ageLabels == "Every tracked gap" or (ageLabels == "Open gaps only" and stillOpen)
+        string ageText = not wantLabel ? "" :
+             stillOpen ? str.tostring(ageSessions) + (ageSessions == 1 ? " session open" : " sessions open") :
+             "closed after " + str.tostring(fillBar - array.get(gapOriginBar, slot)) + " bars"
+        label slotLabel = array.get(gapLabel, slot)
+        label.set_text(slotLabel, ageText)
+        label.set_xy(slotLabel, time, array.get(gapTarget, slot))
+        label.set_textcolor(slotLabel, color.new(edge, young ? 45 : 0))
+        label.set_color(slotLabel, color.new(COLOR_BG, wantLabel ? 20 : 100))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Evidence panel
+// ─────────────────────────────────────────────────────────────────────────────
+int panelRows = not standardChart ? 1 : panelDensity == "Full" ? 15 : 10
+bool inVisibleWindow = time >= chart.left_visible_bar_time and time <= chart.right_visible_bar_time
+var float visibleWindowHigh = na
+var float visibleWindowLow = na
+var float visibleWindowRightClose = na
+if inVisibleWindow
+    visibleWindowHigh := na(visibleWindowHigh) ? high : math.max(visibleWindowHigh, high)
+    visibleWindowLow := na(visibleWindowLow) ? low : math.min(visibleWindowLow, low)
+    visibleWindowRightClose := close
+
+float visibleWindowMid = not na(visibleWindowHigh) and not na(visibleWindowLow) ?
+     (visibleWindowHigh + visibleWindowLow) / 2.0 : na
+string automaticPanelPosition = not na(visibleWindowMid) and visibleWindowRightClose > visibleWindowMid ?
+     position.bottom_right : position.top_right
+string resolvedPanelPosition = panelPositionInput == "Top right" ? position.top_right :
+     panelPositionInput == "Bottom right" ? position.bottom_right :
+     panelPositionInput == "Top left" ? position.top_left :
+     panelPositionInput == "Bottom left" ? position.bottom_left :
+     panelPositionInput == "Top center" ? position.top_center :
+     panelPositionInput == "Bottom center" ? position.bottom_center : automaticPanelPosition
+
+var table panel = table.new(position.top_right, 2, panelRows, bgcolor = color.new(COLOR_BG, 3),
+     border_color = color.new(COLOR_MUTED, 65), border_width = 1)
+
+if barstate.islast
+    table.set_position(panel, resolvedPanelPosition)
+    if not standardChart
+        table.cell(panel, 0, 0, "BSL / GAP BOARD · FROZEN", text_color = COLOR_AMBER,
+             bgcolor = color.new(COLOR_AMBER, 78), text_size = size.small, text_halign = text.align_left)
+        table.cell(panel, 1, 0, "NON-STANDARD BARS · NO GAPS, NO COUNTS, NO STREAMS",
+             text_color = COLOR_TEXT, bgcolor = color.new(COLOR_AMBER, 78), text_size = size.small,
+             text_halign = text.align_left)
+    else
+        bool fullPanel = panelDensity == "Full"
+        string status = not configValid ? "CONFIG ERROR" :
+             observedSessions == 0 ? "WARMUP · NO SESSION BOUNDARY YET" :
+             barstate.isconfirmed ? "CONFIRMED" : "OPEN BAR · HELD"
+        color statusColor = not configValid ? COLOR_RED :
+             observedSessions == 0 ? COLOR_AMBER :
+             barstate.isconfirmed ? COLOR_GREEN : COLOR_AMBER
+        string oldestText = oldestOpenAge < 0 ? "NONE OPEN" :
+             str.tostring(oldestOpenAge) + (oldestOpenAge == 1 ? " SESSION" : " SESSIONS")
+
+        table.cell(panel, 0, 0, "BSL / SESSION GAP BOARD", text_color = COLOR_TEXT,
+             bgcolor = color.new(COLOR_BLUE, 70), text_size = size.small)
+        table.cell(panel, 1, 0, syminfo.ticker + " · " + timeframe.period, text_color = COLOR_MUTED,
+             bgcolor = color.new(COLOR_BLUE, 70), text_size = size.small)
+        table.cell(panel, 0, 1, "FILLED", text_color = COLOR_GREEN, text_halign = text.align_left)
+        table.cell(panel, 1, 1, str.tostring(filledCount), text_color = COLOR_TEXT)
+        // A table cell takes no dashed border, so the two unresolved rows are
+        // marked the only honest way this object class allows: a leading tilde
+        // and raised transparency. The number is exact; what the tilde says is
+        // that these observations have not finished, so they are not zeros.
+        table.cell(panel, 0, 2, "STILL OPEN", text_color = COLOR_AMBER, text_halign = text.align_left)
+        table.cell(panel, 1, 2, "~" + str.tostring(stillOpenCount), text_color = color.new(COLOR_TEXT, 22),
+             bgcolor = color.new(COLOR_AMBER, 88))
+        table.cell(panel, 0, 3, "RETIRED AT THE CAP", text_color = COLOR_AMBER, text_halign = text.align_left)
+        table.cell(panel, 1, 3, "~" + str.tostring(retiredOpenCount), text_color = color.new(COLOR_TEXT, 22),
+             bgcolor = color.new(COLOR_AMBER, 88))
+        table.cell(panel, 0, 4, "NO HOLE", text_color = COLOR_MUTED, text_halign = text.align_left)
+        table.cell(panel, 1, 4, str.tostring(noHoleCount), text_color = COLOR_TEXT)
+        table.cell(panel, 0, 5, "SESSIONS OBSERVED", text_color = COLOR_MUTED, text_halign = text.align_left)
+        table.cell(panel, 1, 5, str.tostring(observedSessions), text_color = COLOR_TEXT)
+        table.cell(panel, 0, 6, "OLDEST STILL OPEN", text_color = COLOR_MUTED, text_halign = text.align_left)
+        table.cell(panel, 1, 6, oldestText, text_color = COLOR_TEXT)
+        table.cell(panel, 0, 7, "YOUNGER THAN THE HORIZON", text_color = COLOR_MUTED, text_halign = text.align_left)
+        table.cell(panel, 1, 7, str.tostring(youngOpenCount) + " OF " + str.tostring(stillOpenCount) +
+             " STILL OPEN", text_color = COLOR_TEXT)
+        table.cell(panel, 0, 8, "STATUS", text_color = COLOR_MUTED, text_halign = text.align_left)
+        table.cell(panel, 1, 8, status, text_color = statusColor)
+        if fullPanel
+            table.cell(panel, 0, 9, "DELAY", text_color = COLOR_MUTED, text_halign = text.align_left)
+            table.cell(panel, 1, 9, "0 BARS · GAP KNOWN AT THE SESSION'S FIRST TICK, PUBLISHED AT THAT BAR'S CLOSE",
+                 text_color = COLOR_TEXT)
+            table.cell(panel, 0, 10, "CLOSE TEST", text_color = COLOR_MUTED, text_halign = text.align_left)
+            table.cell(panel, 1, 10, "THE BAR'S RANGE REACHES THE PRIOR SETTLED CLOSE · TOUCHING IT COUNTS",
+                 text_color = COLOR_TEXT)
+            table.cell(panel, 0, 11, "TRACKED GAP CAP", text_color = COLOR_MUTED, text_halign = text.align_left)
+            table.cell(panel, 1, 11, str.tostring(trackedCap) + " BOXES · COUNTS ARE NOT CAPPED",
+                 text_color = COLOR_TEXT)
+            table.cell(panel, 0, 12, "BOTH SIDES ON ONE BAR", text_color = COLOR_MUTED, text_halign = text.align_left)
+            table.cell(panel, 1, 12, str.tostring(twoSidedCount) + " · STREAM CARRIES 0", text_color = COLOR_TEXT)
+            table.cell(panel, 0, 13, "WHAT IS MISSING", text_color = COLOR_MUTED, text_halign = text.align_left)
+            table.cell(panel, 1, 13, "NO FILL RATE HERE · COUNTS ONLY · ALIGN EXPOSURE FIRST · SEE B-VIS3-07",
+                 text_color = COLOR_AMBER)
+
+        int footerRow = fullPanel ? 14 : 9
+        table.cell(panel, 0, footerRow, "SESSION GAPS", text_color = COLOR_MUTED,
+             bgcolor = color.new(COLOR_BG, 0), text_size = size.tiny)
+        table.cell(panel, 1, footerRow, "AN UNFILLED GAP IS CENSORED, NOT ZERO · NO FILL RATE HERE · COUNTS ONLY",
+             text_color = COLOR_AMBER, bgcolor = color.new(COLOR_BG, 0), text_size = size.tiny)

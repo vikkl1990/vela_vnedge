@@ -1,0 +1,460 @@
+//@version=6
+// HVN Zones
+//
+// Boxes the high-volume nodes of a multi-session volume profile, the way a trader would by
+// eye from a zoomed-out chart with a fine visible-range profile: each prominent node above
+// and below price becomes a zone.
+//
+// How it works (recomputed on the last bar every N minutes)
+//   1. window = the last N Globex sessions (or the visible range)
+//   2. histogram over 1-minute intrabars (or chart bars), each entry's volume spread evenly
+//      over the rows its high-low overlaps; row size in points or auto (range / 1000)
+//   3. centred moving average over rows (smoothing)
+//   4. candidate node = local maximum over +/-W rows and at least the threshold share of the
+//      tallest row
+//   5. zone = rows around the node whose volume stays above a floor. Default floor is
+//      prominence-based: prominence = peak minus the higher of the troughs on either side, and
+//      the zone ends where volume has fallen the chosen share of the way toward that trough.
+//      Nodes below a minimum prominence are dropped; zones are trimmed to a max height.
+//   6. near or overlapping zones merge; a price band keeps only nodes within N x ATR (or a
+//      fixed number of points) of the current price; the top N by peak volume are drawn
+//   7. one box per zone with an optional POC line and label
+//
+// Profile method (even volume spread across the rows a bar overlaps) follows the open-source
+// volume profile family by PtGambler (Mozilla Public License 2.0); this file is an original
+// implementation.
+//
+// Limits: TradingView serves at most 100k one-minute intrabars per request (about 60 sessions),
+// so longer lookbacks use chart bars for the older part. Every drawing is rebuilt on each
+// recompute; the object counts stay under max zones + histogram bins.
+//
+// Changelog
+//   2026-09-19  v9.1: TradingView version 2 published (new chart snapshot; release notes carry the new defaults).
+//   2026-09-19  v9: price band default 2 → 1.25 × ATR (RTH excursion and distance-stratified lift).
+//   2026-09-19  v8: lookback extends past Sessions until the window spans the price band (cap 63).
+//   2026-09-19  v7: Sessions default 63 → 10 after a 13-year NQ study (see the description).
+//   2026-09-19  v6.2: visible-range mode shows the session count so it can be locked in as Sessions.
+//   2026-09-19  v6.1: published open-source on TradingView; chart snapshot updated, no functional change.
+//   2026-09-19  v6: renamed HVN Zones for publication (open-source).
+//   2026-09-19  v5: price band from ATR only (the expected-move paste option was dropped: over
+//               303 days ATR(14) tracked it at a stable ~1.2x); header rewritten for sharing.
+//   2026-09-18  v4: labels right of the last bar; note as a bottom-left table.
+//   2026-09-18  v3: price band.
+//   2026-09-18  v2: prominence-based zone width, min prominence, max zone height, lookback to 250.
+//   2026-09-18  First cut.
+
+indicator("HVN Zones", shorttitle="HVN Zones", overlay=true, max_boxes_count=500, max_lines_count=100, max_labels_count=100)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inputs
+// ─────────────────────────────────────────────────────────────────────────────
+G1 = "Window"
+windowMode = input.string("Sessions", "Window", options=["Sessions", "Visible range (to pick a lookback)"], group=G1, display=display.none, tooltip="Sessions: a fixed lookback (the normal mode). Visible range: the profile follows what is on screen and recomputes on every pan, and a box shows how many sessions that is. Scroll and zoom until the zones look right, then set Window back to Sessions and type that number. Pine cannot set an input for you.")
+sessionsN  = input.int(10, "Sessions", minval=1, maxval=250, group=G1, display=display.none, tooltip="Full Globex sessions back from the current one. Default 10: on 13 years of NQ, zones from 10 sessions were reacted to 9 points more often than matched control levels; 20 to 63 gave 7 to 8 points, so longer windows add context rather than accuracy. 1-minute data covers about the newest 60; older sessions use chart bars.")
+extendCover = input.bool(true, "Extend lookback to cover the price band", inline="ext2", group=G1, display=display.none, tooltip="A short window often has no volume across the whole price band (10 sessions often do not span the band on NQ). When on, the window grows past Sessions, one session at a time, until its high and low span the band, up to the cap.")
+extendCap   = input.int(63, "up to", minval=1, maxval=250, inline="ext2", group=G1, display=display.none)
+profSrc    = input.string("1-minute intrabars", "Profile source", options=["1-minute intrabars", "Chart bars"], group=G1, display=display.none)
+rowMode    = input.string("Points", "Row size", options=["Points", "Auto (range ÷ 1000)"], inline="row", group=G1, display=display.none)
+rowPts     = input.float(2.0, "", minval=0.05, step=0.25, inline="row", group=G1, display=display.none)
+
+G2 = "Node detection"
+smoothRows = input.int(3, "Smoothing (rows)", minval=1, maxval=15, group=G2, display=display.none, tooltip="Centred moving average over the histogram before peak detection. 1 = off.")
+peakPct    = input.float(35, "Peak threshold (% of tallest row)", minval=1, maxval=100, group=G2, display=display.none)
+peakWin    = input.int(5, "Peak window (rows each side)", minval=1, maxval=50, group=G2, display=display.none, tooltip="A row is a node candidate when it is the tallest within this many rows on both sides.")
+widthRule  = input.string("% of prominence", "Zone width rule", options=["% of prominence", "% of peak"], group=G2, display=display.none, tooltip="Prominence = peak volume minus the higher of the troughs on either side. The zone ends where volume has fallen this share of the way from the peak toward the trough. '% of peak' is the older absolute rule, which turns a broad dome into one huge zone.")
+zonePct    = input.float(60, "Zone width (%)", minval=10, maxval=100, group=G2, display=display.none)
+minProm    = input.float(10, "Min prominence (% of peak)", minval=0, maxval=100, group=G2, display=display.none, tooltip="Drops shoulders that barely dip before the next node.")
+maxZoneH   = input.float(40, "Max zone height (points, 0 = none)", minval=0, step=1, group=G2, display=display.none, tooltip="Trims a zone symmetrically around its peak.")
+mergeRows  = input.int(2, "Merge zones closer than (rows)", minval=0, maxval=50, group=G2, display=display.none)
+maxZones   = input.int(12, "Max zones", minval=1, maxval=40, group=G2, display=display.none, tooltip="Ranked by peak volume.")
+recalcMin = input.int(60, "Recompute every (minutes)", minval=1, maxval=1440, group=G2, display=display.none, tooltip="The multi-session profile barely changes intra-day. Lower it if you want zones to react faster; raise it if TradingView reports CPU limits (Bar Replay recomputes on every step).")
+recalcEvery = math.max(1, int(math.round(recalcMin * 60.0 / timeframe.in_seconds())))
+liveRecalc = input.bool(false, "Recompute on every tick", group=G2, display=display.none)
+
+GB = "Price band"
+bandMode = input.string("× daily ATR(14)", "Only draw zones within", options=["× daily ATR(14)", "Points", "Off"], group=GB, display=display.none, tooltip="Distance from the current price. Default 1.25 × ATR(14): on 13 years of NQ, RTH price reached that far from the open in 7.5% of sessions, and zones beyond about 1 ATR showed no reaction advantage over control levels.")
+bandMult = input.float(1.25, "Multiplier", minval=0.1, step=0.25, inline="bm", group=GB, display=display.none)
+bandPts  = input.float(300, "or points", minval=1, step=10, inline="bm", group=GB, display=display.none)
+
+G3 = "Drawing"
+zoneColor  = input.color(color.new(color.white, 85), "Zone fill", inline="z", group=G3, display=display.none)
+zoneBorder = input.color(color.new(color.white, 50), "border", inline="z", group=G3, display=display.none)
+zoneExtent = input.string("Window start", "Zone extent", options=["Window start", "Bars back"], inline="ext", group=G3, display=display.none)
+zoneBars   = input.int(200, "", minval=5, inline="ext", group=G3, display=display.none)
+extendRight = input.bool(true, "Extend zones right", group=G3, display=display.none)
+showPOC    = input.bool(true, "POC line in zone", inline="poc", group=G3, display=display.none)
+pocColor   = input.color(color.new(color.white, 0), "", inline="poc", group=G3, display=display.none)
+pocWidth   = input.int(1, "width", minval=1, maxval=4, inline="poc", group=G3, display=display.none)
+showLabels = input.bool(true, "Labels", inline="lab", group=G3, display=display.none)
+labelMode  = input.string("HVN", "", options=["HVN", "Rank", "Rank + volume %", "Price", "None"], inline="lab", group=G3, display=display.none)
+labelSizeIn = input.string("Small", "Label size", options=["Tiny", "Small", "Normal", "Large"], group=G3, display=display.none)
+labelOffset = input.int(3, "Label offset (bars right of last bar)", minval=0, maxval=500, group=G3, display=display.none)
+labelIndent = input.int(100, "Label indent (spaces)", minval=0, maxval=400, group=G3, display=display.none, tooltip="Leading spaces: a fixed pixel push to the right, independent of zoom. Raise it to sit further into the right margin, clear of Desk Levels' label columns.")
+showHist   = input.bool(false, "Show profile histogram", inline="h", group=G3, display=display.none)
+histColor  = input.color(color.new(color.gray, 70), "", inline="h", group=G3, display=display.none)
+histWidth  = input.int(80, "width (bars)", minval=10, maxval=400, inline="h", group=G3, display=display.none)
+showNotes  = input.bool(false, "Show info note", group=G3, display=display.none)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Price band
+// ─────────────────────────────────────────────────────────────────────────────
+dailyATR = request.security(syminfo.tickerid, "D", ta.atr(14), lookahead=barmerge.lookahead_off)
+bandHalf = bandMode == "Off" ? na : bandMode == "Points" ? bandPts : dailyATR * bandMult
+bandSrc  = bandMode == "Points" ? "points" : "ATR"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Entry store (1-minute intrabars or chart bars), flattened; index == bar_index for entStart
+// ─────────────────────────────────────────────────────────────────────────────
+var entHi  = array.new<float>()
+var entLo  = array.new<float>()
+var entVol = array.new<float>()
+var entStart = array.new<int>()
+var int base = 0
+useIntrabars = profSrc == "1-minute intrabars" and timeframe.in_seconds() > 60
+ltf = timeframe.in_seconds() < 60 ? timeframe.period : "1"
+[ltfHi, ltfLo, ltfVol] = request.security_lower_tf(syminfo.tickerid, ltf, [high, low, volume])
+array.push(entStart, base + array.size(entHi))
+nIntra = array.size(ltfHi)
+if useIntrabars and nIntra > 0
+    for i = 0 to nIntra - 1
+        array.push(entHi, array.get(ltfHi, i))
+        array.push(entLo, array.get(ltfLo, i))
+        array.push(entVol, nz(array.get(ltfVol, i)))
+else
+    array.push(entHi, high)
+    array.push(entLo, low)
+    array.push(entVol, nz(volume))
+
+// Sessions kept: the requested window plus one. 1-minute intrabars are limited to 100k
+// per request (about 70 sessions) and arrays to 100k elements, so the store is capped at
+// 65 sessions of intrabars; with chart bars it can hold 250.
+keepSessions = math.min(useIntrabars ? 60 : 250, math.max(sessionsN, extendCover ? extendCap : 0) + 1)
+isNewDay = timeframe.change("D")
+var sessStarts = array.new<int>()
+var sessHi = array.new<float>()   // running high/low per session, aligned with sessStarts
+var sessLo = array.new<float>()
+if isNewDay or barstate.isfirst
+    array.push(sessStarts, bar_index)
+    array.push(sessHi, high)
+    array.push(sessLo, low)
+else if array.size(sessHi) > 0
+    li = array.size(sessHi) - 1
+    array.set(sessHi, li, math.max(array.get(sessHi, li), high))
+    array.set(sessLo, li, math.min(array.get(sessLo, li), low))
+    // Prune in batches: the copy costs the whole store, so do it every ~6 sessions, not daily.
+    // Store ceiling: (keep + 6) sessions × ~1380 one-minute entries stays under Pine's 100k.
+    if array.size(sessStarts) > keepSessions + 6
+        nDrop = array.size(sessStarts) - keepSessions - 1
+        dropBar = array.get(sessStarts, nDrop)
+        dropAbs = array.get(entStart, dropBar)
+        k = dropAbs - base
+        if k > 0
+            sz = array.size(entHi)
+            entHi := array.copy(array.slice(entHi, k, sz))
+            entLo := array.copy(array.slice(entLo, k, sz))
+            entVol := array.copy(array.slice(entVol, k, sz))
+            base := dropAbs
+        for d = 1 to nDrop
+            array.shift(sessStarts)
+            array.shift(sessHi)
+            array.shift(sessLo)
+
+// Visible-range left bar: chart.left_visible_bar_time re-runs the script on every pan.
+var int leftVisBar = na
+if time >= chart.left_visible_bar_time and (na(time[1]) or time[1] < chart.left_visible_bar_time)
+    leftVisBar := bar_index
+// bar open times, index == bar_index: drawings use time coordinates because bar-index
+// drawings may not start more than 10,000 bars back (63 sessions on 5m is ~17,000).
+var barTimes = array.new<int>()
+array.push(barTimes, time)
+barMs = timeframe.in_seconds() * 1000
+
+f_entRange(int a, int b) =>
+    ea = array.get(entStart, a) - base
+    eb = (b + 1 < array.size(entStart) ? array.get(entStart, b + 1) : base + array.size(entHi)) - base - 1
+    [ea, eb]
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Drawing state
+// ─────────────────────────────────────────────────────────────────────────────
+var zBoxes  = array.new<box>()
+var zLines  = array.new<line>()
+var zLabels = array.new<label>()
+var hBoxes  = array.new<box>()
+var table noteTbl = table.new(position.bottom_left, 1, 1, bgcolor=color.new(color.black, 20), border_width=1, border_color=color.new(color.gray, 50))
+// top-right, with blank spacer rows so it sits a little below the top edge (tables cannot be
+// offset by pixels; a blank row is the only spacer Pine has)
+var table visTbl = table.new(position.top_right, 1, 5, bgcolor=color.new(color.black, 100), border_width=0)
+var int lastComputedBar = na
+
+labelSize() =>
+    switch labelSizeIn
+        "Tiny" => size.tiny
+        "Small" => size.small
+        "Large" => size.large
+        => size.normal
+
+f_clear() =>
+    while array.size(zBoxes) > 0
+        box.delete(array.pop(zBoxes))
+    while array.size(zLines) > 0
+        line.delete(array.pop(zLines))
+    while array.size(zLabels) > 0
+        label.delete(array.pop(zLabels))
+    while array.size(hBoxes) > 0
+        box.delete(array.pop(hBoxes))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Compute + draw on the last bar
+// ─────────────────────────────────────────────────────────────────────────────
+doCompute = barstate.islast and (liveRecalc or na(lastComputedBar) or bar_index - lastComputedBar >= recalcEvery or windowMode == "Visible range (to pick a lookback)")
+if doCompute
+    lastComputedBar := bar_index
+    f_clear()
+    notes = ""
+
+    // window in chart bars [a, b]
+    a = int(na)
+    b = bar_index
+    nSess = array.size(sessStarts)
+    if windowMode == "Visible range (to pick a lookback)"
+        a := leftVisBar
+        oldestKept = nSess > 0 ? array.get(sessStarts, 0) : 0
+        if not na(a) and a < oldestKept
+            a := oldestKept
+            notes := "visible range clipped to " + str.tostring(keepSessions) + " kept sessions"
+        // sessions covered by the visible window, for locking it in as a Sessions value
+        visSess = 0
+        if nSess > 0 and not na(a)
+            for k = 0 to nSess - 1
+                if array.get(sessStarts, k) >= a
+                    visSess += 1
+        for sp = 0 to 3
+            table.cell(visTbl, 0, sp, " ", text_size=size.normal, bgcolor=color.new(color.black, 100))
+        table.cell(visTbl, 0, 4, "Visible range = " + str.tostring(math.max(0, visSess - 1)) + " sessions.\nTo lock it: Window = Sessions, Sessions = " + str.tostring(math.max(0, visSess - 1)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.black, 20))
+    else
+        table.clear(visTbl, 0, 0, 0, 4)
+        idx = math.max(0, nSess - 1 - sessionsN)
+        // extend the window one session at a time until its range spans the price band
+        if extendCover and not na(bandHalf) and nSess > 0
+            hiW = float(na)
+            loW = float(na)
+            for k = idx to nSess - 1
+                hiW := na(hiW) ? array.get(sessHi, k) : math.max(hiW, array.get(sessHi, k))
+                loW := na(loW) ? array.get(sessLo, k) : math.min(loW, array.get(sessLo, k))
+            idxMin = math.max(0, nSess - 1 - extendCap)
+            while idx > idxMin and (hiW < close + bandHalf or loW > close - bandHalf)
+                idx -= 1
+                hiW := math.max(hiW, array.get(sessHi, idx))
+                loW := math.min(loW, array.get(sessLo, idx))
+        a := nSess > 0 ? array.get(sessStarts, idx) : na
+        used = nSess - 1 - idx
+        notes := str.tostring(used) + " full session" + (used == 1 ? "" : "s") + " + today" + (used > sessionsN ? " (extended to cover the band)" : "")
+        if used < sessionsN
+            notes := notes + (useIntrabars and sessionsN > 65 ? " (1-minute store caps at 60; switch Profile source to Chart bars for more)" : " (history limit)")
+
+    if not na(a) and a >= 0 and b >= a
+        [ea, eb] = f_entRange(a, b)
+        if ea >= 0 and eb >= ea and eb < array.size(entHi)
+            // ── histogram
+            pl = float(na)
+            ph = float(na)
+            for i = ea to eb
+                pl := na(pl) ? array.get(entLo, i) : math.min(pl, array.get(entLo, i))
+                ph := na(ph) ? array.get(entHi, i) : math.max(ph, array.get(entHi, i))
+            step = rowMode == "Points" ? rowPts : math.max(syminfo.mintick, (ph - pl) / 1000)
+            rows = int(math.ceil((ph - pl) / step)) + 1
+            if rows > 4000
+                step := (ph - pl) / 4000
+                rows := 4001
+            vol = array.new<float>(rows, 0.0)
+            for i = ea to eb
+                bh = array.get(entHi, i)
+                bl = array.get(entLo, i)
+                bv = array.get(entVol, i)
+                r0 = int(math.floor((bl - pl) / step))
+                r1 = int(math.min(rows - 1, math.floor((bh - pl) / step)))
+                share = bv / (r1 - r0 + 1)
+                for r = r0 to r1
+                    array.set(vol, r, array.get(vol, r) + share)
+
+            // ── smoothing (centred MA; window shrinks at the edges)
+            sm = array.new<float>(rows, 0.0)
+            half = int(math.floor(smoothRows / 2))
+            for r = 0 to rows - 1
+                lo_ = math.max(0, r - half)
+                hi_ = math.min(rows - 1, r + half)
+                acc = 0.0
+                for q = lo_ to hi_
+                    acc += array.get(vol, q)
+                array.set(sm, r, acc / (hi_ - lo_ + 1))
+            vmax = array.max(sm)
+
+            // ── peaks
+            peaks = array.new<int>()
+            if vmax > 0
+                for r = 0 to rows - 1
+                    v = array.get(sm, r)
+                    if v >= vmax * peakPct / 100
+                        isPeak = true
+                        lo_ = math.max(0, r - peakWin)
+                        hi_ = math.min(rows - 1, r + peakWin)
+                        for q = lo_ to hi_
+                            if q != r
+                                vq = array.get(sm, q)
+                                // strict on the lower side, non-strict above, so a flat top yields one peak
+                                if vq > v or (vq == v and q < r)
+                                    isPeak := false
+                        if isPeak
+                            array.push(peaks, r)
+
+            // ── zones around each peak
+            zLo = array.new<int>()
+            zHi = array.new<int>()
+            zPk = array.new<int>()
+            zVol = array.new<float>()
+            if array.size(peaks) > 0
+                for k = 0 to array.size(peaks) - 1
+                    pr = array.get(peaks, k)
+                    pv = array.get(sm, pr)
+                    // prominence: walk each side to the first row taller than the peak (or the
+                    // edge), tracking the lowest row met; base = the higher of the two troughs
+                    minL = pv
+                    q = pr - 1
+                    while q >= 0
+                        vq = array.get(sm, q)
+                        if vq > pv
+                            break
+                        minL := math.min(minL, vq)
+                        q -= 1
+                    minR = pv
+                    q := pr + 1
+                    while q < rows
+                        vq = array.get(sm, q)
+                        if vq > pv
+                            break
+                        minR := math.min(minR, vq)
+                        q += 1
+                    baseV = math.max(minL, minR)
+                    prom = pv - baseV
+                    if prom >= pv * minProm / 100
+                        floor_ = widthRule == "% of peak" ? pv * zonePct / 100 : pv - prom * zonePct / 100
+                        lo_ = pr
+                        while lo_ - 1 >= 0
+                            if array.get(sm, lo_ - 1) < floor_
+                                break
+                            lo_ -= 1
+                        hi_ = pr
+                        while hi_ + 1 < rows
+                            if array.get(sm, hi_ + 1) < floor_
+                                break
+                            hi_ += 1
+                        // cap the height, trimming symmetrically around the peak
+                        if maxZoneH > 0
+                            maxRows = math.max(1, int(math.floor(maxZoneH / step)))
+                            while hi_ - lo_ + 1 > maxRows
+                                if hi_ - pr >= pr - lo_
+                                    hi_ -= 1
+                                else
+                                    lo_ += 1
+                        array.push(zLo, lo_)
+                        array.push(zHi, hi_)
+                        array.push(zPk, pr)
+                        array.push(zVol, pv)
+
+            // ── merge overlapping / near zones (peaks are already in ascending row order)
+            mLo = array.new<int>()
+            mHi = array.new<int>()
+            mPk = array.new<int>()
+            mVol = array.new<float>()
+            if array.size(zLo) > 0
+                for k = 0 to array.size(zLo) - 1
+                    n = array.size(mLo)
+                    if n > 0 and array.get(zLo, k) <= array.get(mHi, n - 1) + mergeRows
+                        array.set(mHi, n - 1, math.max(array.get(mHi, n - 1), array.get(zHi, k)))
+                        if array.get(zVol, k) > array.get(mVol, n - 1)
+                            array.set(mVol, n - 1, array.get(zVol, k))
+                            array.set(mPk, n - 1, array.get(zPk, k))
+                    else
+                        array.push(mLo, array.get(zLo, k))
+                        array.push(mHi, array.get(zHi, k))
+                        array.push(mPk, array.get(zPk, k))
+                        array.push(mVol, array.get(zVol, k))
+
+            // ── rank by peak volume, keep the top N (ties: nearest to price)
+            nz_ = array.size(mLo)
+            order = array.new<int>()
+            if nz_ > 0
+                for k = 0 to nz_ - 1
+                    pocK = pl + (array.get(mPk, k) + 0.5) * step
+                    if na(bandHalf) or math.abs(pocK - close) <= bandHalf
+                        array.push(order, k)
+            nIn = array.size(order)
+            if nIn > 1
+                for i = 1 to nIn - 1
+                    j = i
+                    while j > 0
+                        aI = array.get(order, j - 1)
+                        bI = array.get(order, j)
+                        va = array.get(mVol, aI)
+                        vb = array.get(mVol, bI)
+                        da = math.abs(pl + (array.get(mPk, aI) + 0.5) * step - close)
+                        db = math.abs(pl + (array.get(mPk, bI) + 0.5) * step - close)
+                        if va > vb or (va == vb and da <= db)
+                            break
+                        array.set(order, j, aI)
+                        array.set(order, j - 1, bI)
+                        j -= 1
+            keep = math.min(maxZones, nIn)
+
+            // ── draw
+            total = array.sum(vol)
+            x1b = zoneExtent == "Window start" ? a : math.max(0, bar_index - zoneBars)
+            x1 = array.get(barTimes, x1b)
+            x2 = time + 2 * barMs
+            if keep > 0
+                for rank = 0 to keep - 1
+                    k = array.get(order, rank)
+                    top = pl + (array.get(mHi, k) + 1) * step
+                    bot = pl + array.get(mLo, k) * step
+                    pocY = pl + (array.get(mPk, k) + 0.5) * step
+                    array.push(zBoxes, box.new(x1, top, x2, bot, xloc=xloc.bar_time, border_color=zoneBorder, bgcolor=zoneColor, extend=extendRight ? extend.right : extend.none))
+                    if showPOC
+                        array.push(zLines, line.new(x1, pocY, x2, pocY, xloc=xloc.bar_time, color=pocColor, width=pocWidth, style=line.style_dotted, extend=extendRight ? extend.right : extend.none))
+                    if showLabels and labelMode != "None"
+                        zoneVol = 0.0
+                        for r = array.get(mLo, k) to array.get(mHi, k)
+                            zoneVol += array.get(vol, r)
+                        pct = total > 0 ? zoneVol / total * 100 : 0.0
+                        txt = labelMode == "HVN" ? "HVN" : labelMode == "Price" ? str.tostring(pocY, format.mintick) : labelMode == "Rank + volume %" ? "HVN" + str.tostring(rank + 1) + " " + str.tostring(pct, "#.#") + "%" : "HVN" + str.tostring(rank + 1)
+                        indent = ""
+                        if labelIndent > 0
+                            for q = 1 to labelIndent
+                                indent := indent + " "
+                        array.push(zLabels, label.new(bar_index + labelOffset, pocY, indent + txt, style=label.style_label_left, textcolor=pocColor, color=color.new(pocColor, 100), size=labelSize()))
+
+            // ── optional histogram, right of the last bar, binned to ≤ 400 boxes
+            if showHist and vmax > 0
+                binN = int(math.max(1, math.ceil(rows / 400.0)))
+                hmax = array.max(vol) * binN
+                hx = bar_index + 3
+                r = 0
+                while r < rows
+                    r2 = math.min(rows - 1, r + binN - 1)
+                    vs = 0.0
+                    for q = r to r2
+                        vs += array.get(vol, q)
+                    wlen = hmax > 0 ? int(math.round(histWidth * vs / hmax)) : 0
+                    array.push(hBoxes, box.new(hx, pl + (r2 + 1) * step, hx + wlen, pl + r * step, border_color=na, bgcolor=histColor))
+                    r := r2 + 1
+
+            notes := notes + " · " + str.tostring(rows) + " rows × " + str.tostring(step, "#.##") + " pts · " + str.tostring(nz_) + " nodes, " + str.tostring(nIn) + " in band, " + str.tostring(keep) + " drawn"
+            if not na(bandHalf)
+                notes := notes + " · band ±" + str.tostring(bandHalf, "#") + " (" + bandSrc + ")"
+        else
+            notes := "window outside the kept history"
+    else
+        notes := "no window yet"
+
+    if showNotes
+        table.cell(noteTbl, 0, 0, notes, text_color=color.silver, text_size=size.small, text_halign=text.align_left)

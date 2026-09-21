@@ -1,0 +1,143 @@
+//@version=6
+indicator("ADR + Daily Stats", overlay=true)
+
+// Calculations
+adrLen = input.int(20, "ADR length", minval=1, group="Calculations")
+adrMode = input.string("Daily", "ADR timeframe", options=["Daily", "Chart"], group="Calculations", tooltip="Daily uses daily bars, including today. Chart uses the chart timeframe.")
+volLen = input.int(20, "Avg $ volume days", minval=1, group="Calculations", tooltip="Average of daily close x volume over completed trading days. Set to 30 for a 30-day average.")
+
+// Display
+panelPosition = input.string("Top Right", "Position", options=["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group="Display")
+font = input.string("Small", "Text size", options=["Tiny", "Small", "Normal", "Large", "Huge"], group="Display")
+bg = input.color(color.new(color.black, 100), "Background", group="Display")
+spacer = input.int(1, "Empty rows above", minval=0, maxval=5, group="Display")
+
+// Lower order numbers appear first. Zero hides a line.
+oADR = input.int(1, "ADR %", minval=0, maxval=8, group="Line order (0 = hide)")
+oMove = input.int(2, "ADR move", minval=0, maxval=8, group="Line order (0 = hide)")
+oLOD = input.int(3, "% to LOD", minval=0, maxval=8, group="Line order (0 = hide)")
+oHOD = input.int(4, "% to HOD", minval=0, maxval=8, group="Line order (0 = hide)")
+oVol = input.int(5, "Avg $ volume", minval=0, maxval=8, group="Line order (0 = hide)")
+oCap = input.int(6, "Market cap", minval=0, maxval=8, group="Line order (0 = hide)")
+oSector = input.int(7, "Sector", minval=0, maxval=8, group="Line order (0 = hide)")
+oIndustry = input.int(8, "Industry", minval=0, maxval=8, group="Line order (0 = hide)")
+
+// Label colors include the colon.
+lADR = input.color(color.white, "ADR:", group="Label colors")
+lMove = input.color(color.white, "Move:", group="Label colors")
+lLOD = input.color(color.white, "LOD:", group="Label colors")
+lHOD = input.color(color.white, "HOD:", group="Label colors")
+lVol = input.color(color.white, "Avg $:", group="Label colors")
+lCap = input.color(color.white, "Cap $:", group="Label colors")
+lSector = input.color(color.white, "Sector:", group="Label colors")
+lIndustry = input.color(color.white, "Industry:", group="Label colors")
+
+// Value colors
+cADR = input.color(color.white, "ADR %", group="Value colors")
+cMove = input.color(color.white, "ADR move", group="Value colors")
+cLOD = input.color(color.white, "% to LOD", group="Value colors")
+cHOD = input.color(color.white, "% to HOD", group="Value colors")
+cVol = input.color(color.white, "Avg $ volume", group="Value colors")
+cCap = input.color(color.white, "Market cap", group="Value colors")
+cSector = input.color(color.white, "Sector", group="Value colors")
+cIndustry = input.color(color.white, "Industry", group="Value colors")
+
+tablePosition = switch panelPosition
+    "Top Left" => position.top_left
+    "Top Center" => position.top_center
+    "Top Right" => position.top_right
+    "Middle Left" => position.middle_left
+    "Middle Center" => position.middle_center
+    "Middle Right" => position.middle_right
+    "Bottom Left" => position.bottom_left
+    "Bottom Center" => position.bottom_center
+    => position.bottom_right
+
+textSize = switch font
+    "Tiny" => size.tiny
+    "Small" => size.small
+    "Normal" => size.normal
+    "Large" => size.large
+    => size.huge
+
+f_pct(float value) =>
+    na(value) ? "N/A" : str.tostring(value, "0.00") + "%"
+
+f_money(float value) =>
+    if na(value)
+        "N/A"
+    else if math.abs(value) >= 1e9
+        str.tostring(value / 1e9, "0.00") + "B"
+    else if math.abs(value) >= 1e6
+        str.tostring(value / 1e6, "0.00") + "M"
+    else if math.abs(value) >= 1e3
+        str.tostring(value / 1e3, "0.00") + "K"
+    else
+        str.tostring(value, "0.00")
+
+// Daily statistics use regular-session candles.
+dailyTicker = ticker.new(syminfo.prefix, syminfo.ticker, session.regular)
+chartADR = 100.0 * (ta.sma(high / low, adrLen) - 1.0)
+dailyADR = request.security(dailyTicker, "1D", 100.0 * (ta.sma(high / low, adrLen) - 1.0))
+adrPct = adrMode == "Daily" ? dailyADR : chartADR
+
+// Today's change from the previous close divided by ADR%.
+prevClose = request.security(dailyTicker, "1D", close[1], lookahead=barmerge.lookahead_on)
+changePct = not na(prevClose) and prevClose > 0 ? (close / prevClose - 1.0) * 100.0 : na
+adrMove = not na(adrPct) and adrPct > 0 ? changePct / adrPct : na
+moveText = na(adrMove) ? "N/A" : (adrMove > 0 ? "+" : "") + str.tostring(adrMove, "0.00") + "x"
+
+// HOD/LOD includes the sessions visible on the chart.
+var float hod = na
+var float lod = na
+
+if barstate.isfirst or timeframe.change("1D")
+    hod := high
+    lod := low
+else
+    hod := math.max(hod, high)
+    lod := math.min(lod, low)
+
+validDayChart = timeframe.isintraday or timeframe.isdaily
+pctToLOD = validDayChart and close > 0 ? (close - lod) / close * 100.0 : na
+pctToHOD = validDayChart and close > 0 ? (hod - close) / close * 100.0 : na
+
+// Average daily dollar volume, excluding today's partial day.
+avgDollarVol = request.security(dailyTicker, "1D", ta.sma(close * volume, volLen)[1], lookahead=barmerge.lookahead_on, currency=currency.USD)
+
+// Market cap in USD.
+reportedShares = request.financial(syminfo.tickerid, "TOTAL_SHARES_OUTSTANDING", "FQ", ignore_invalid_symbol=true)
+shares = na(reportedShares) ? syminfo.shares_outstanding_total : reportedShares
+usdRate = request.currency_rate(syminfo.currency, "USD", ignore_invalid_currency=true)
+marketCap = shares * close * usdRate
+
+// Sector and industry.
+sectorText = na(syminfo.sector) ? "N/A" : syminfo.sector
+industryText = na(syminfo.industry) ? "N/A" : syminfo.industry
+
+// Compact panel.
+var table panel = table.new(tablePosition, 2, 13, border_width=0)
+
+if barstate.islast
+    table.clear(panel, 0, 0, 1, 12)
+
+    labels = array.from("ADR:", "Move:", "LOD:", "HOD:", "Avg $:", "Cap $:", "Sector:", "Industry:")
+    values = array.from(f_pct(adrPct), moveText, f_pct(pctToLOD), f_pct(pctToHOD), f_money(avgDollarVol), f_money(marketCap), sectorText, industryText)
+    orders = array.from(oADR, oMove, oLOD, oHOD, oVol, oCap, oSector, oIndustry)
+    labelColors = array.from(lADR, lMove, lLOD, lHOD, lVol, lCap, lSector, lIndustry)
+    valueColors = array.from(cADR, cMove, cLOD, cHOD, cVol, cCap, cSector, cIndustry)
+
+    int row = 0
+
+    if spacer > 0
+        for i = 0 to spacer - 1
+            table.cell(panel, 0, row, "", text_size=textSize)
+            table.cell(panel, 1, row, "", text_size=textSize)
+            row += 1
+
+    for priority = 1 to 8
+        for i = 0 to 7
+            if array.get(orders, i) == priority
+                table.cell(panel, 0, row, array.get(labels, i), text_color=array.get(labelColors, i), text_size=textSize, text_halign=text.align_right, bgcolor=bg)
+                table.cell(panel, 1, row, array.get(values, i), text_color=array.get(valueColors, i), text_size=textSize, text_halign=text.align_left, bgcolor=bg)
+                row += 1

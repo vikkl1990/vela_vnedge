@@ -1,0 +1,99 @@
+//@version=6
+indicator("Atty Noise Area", shorttitle = "ATTY NOISE", overlay = true)
+// Chart preview refreshed 2026-09-11 — indicator shown on its own.
+
+// Based on the Noise Area definition in "Beat the Market: An Effective
+// Intraday Momentum Strategy for S&P 500 ETF (SPY)" by Zarattini et al.
+// Uses regular US market hours only. Each time-of-day bucket is compared
+// with that same bucket over previous regular sessions.
+
+int lookback = input.int(14, "Prior sessions", minval = 2, maxval = 60)
+bool requireFullHistory = input.bool(true, "Require the full lookback")
+bool showBreakouts = input.bool(true, "Show boundary breaks")
+
+const string TZ = "America/New_York"
+const string RTH = "0930-1600:23456"
+const int OPEN_MINUTE = 9 * 60 + 30
+const int MAX_SLOT = 390
+
+if not timeframe.isintraday or not timeframe.isminutes
+    runtime.error("Noise Area requires a minute-based intraday chart.")
+
+bool inRth = not na(time(timeframe.period, RTH, TZ))
+int sessionDate = year(time, TZ) * 10000 + month(time, TZ) * 100 + dayofmonth(time, TZ)
+
+var int activeDate = na
+var float sessionOpen = na
+var float priorRthClose = na
+var float lastRthClose = na
+
+bool newSession = inRth and (na(activeDate) or sessionDate != activeDate)
+if newSession
+    priorRthClose := lastRthClose
+    sessionOpen := open
+    activeDate := sessionDate
+
+// time_close aligns each observation with the time named in the paper:
+// e.g., a 10:00-10:30 bar supplies the observation for 10:30.
+int slot = inRth ? hour(time_close, TZ) * 60 + minute(time_close, TZ) - OPEN_MINUTE : na
+bool validSlot = inRth and not na(slot) and slot >= 0 and slot <= MAX_SLOT
+
+var array<float> observations = array.new_float((MAX_SLOT + 1) * lookback, na)
+var array<float> sums = array.new_float(MAX_SLOT + 1, 0.0)
+var array<int> counts = array.new_int(MAX_SLOT + 1, 0)
+var array<int> pointers = array.new_int(MAX_SLOT + 1, 0)
+
+float sigma = na
+if validSlot
+    int count = array.get(counts, slot)
+    bool enoughHistory = requireFullHistory ? count == lookback : count > 0
+    sigma := enoughHistory ? array.get(sums, slot) / count : na
+
+float upperAnchor = math.max(sessionOpen, priorRthClose)
+float lowerAnchor = math.min(sessionOpen, priorRthClose)
+float upperBound = validSlot and not na(sigma) and not na(priorRthClose) ? upperAnchor * (1.0 + sigma) : na
+float lowerBound = validSlot and not na(sigma) and not na(priorRthClose) ? lowerAnchor * (1.0 - sigma) : na
+
+color upperColor = color.rgb(33, 150, 243)
+color lowerColor = color.rgb(239, 83, 80)
+color areaColor = color.new(color.rgb(120, 144, 156), 84)
+
+upperPlot = plot(inRth ? upperBound : na, "Upper Boundary", color = upperColor, linewidth = 2, style = plot.style_linebr)
+lowerPlot = plot(inRth ? lowerBound : na, "Lower Boundary", color = lowerColor, linewidth = 2, style = plot.style_linebr)
+fill(upperPlot, lowerPlot, color = areaColor, title = "Noise Area")
+
+bool crossedAboveRaw = ta.crossover(close, upperBound)
+bool crossedBelowRaw = ta.crossunder(close, lowerBound)
+bool crossedAbove = showBreakouts and inRth and not newSession and crossedAboveRaw
+bool crossedBelow = showBreakouts and inRth and not newSession and crossedBelowRaw
+plotshape(crossedAbove, "Break Above", shape.triangleup, location.belowbar, upperColor, size = size.tiny, text = "NA+")
+plotshape(crossedBelow, "Break Below", shape.triangledown, location.abovebar, lowerColor, size = size.tiny, text = "NA-")
+
+alertcondition(crossedAbove, "Noise Area break above", "{{ticker}} crossed above its Noise Area upper boundary.")
+alertcondition(crossedBelow, "Noise Area break below", "{{ticker}} crossed below its Noise Area lower boundary.")
+
+// Add today's observation only after calculating today's boundary, so the
+// current session never leaks into its own 14-session reference window.
+if validSlot and barstate.isconfirmed and not na(sessionOpen)
+    float currentMove = math.abs(close / sessionOpen - 1.0)
+    int pointer = array.get(pointers, slot)
+    int historyIndex = slot * lookback + pointer
+    int count = array.get(counts, slot)
+    float runningSum = array.get(sums, slot)
+    float replacedValue = array.get(observations, historyIndex)
+
+    if count == lookback
+        runningSum -= nz(replacedValue)
+    else
+        count += 1
+
+    array.set(observations, historyIndex, currentMove)
+    array.set(sums, slot, runningSum + currentMove)
+    array.set(counts, slot, count)
+    array.set(pointers, slot, (pointer + 1) % lookback)
+    lastRthClose := close
+
+// Values in the Data Window make the calculation auditable bar by bar.
+plot(inRth ? sessionOpen : na, "RTH Open", display = display.data_window)
+plot(inRth ? priorRthClose : na, "Prior RTH Close", display = display.data_window)
+plot(inRth ? sigma * 100.0 : na, "Average Absolute Move (%)", display = display.data_window)

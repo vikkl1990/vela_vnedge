@@ -1,0 +1,356 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © MarketM00d
+
+//@version=6
+indicator("Market Mood | Session Range", shorttitle="MM Sessions", overlay=true, max_boxes_count=200, max_lines_count=250, max_labels_count=200)
+
+// Market Mood - session statistics display revision 1.5.
+// Use standard time-based candles, 1-60 minutes. Session boundaries must align
+// with chart bars. Missing bars / partial sessions are excluded from averages.
+// Averages use ONLY completed, contiguous sessions and freeze at session start.
+// No future data, security lookahead, external libraries, or trade management.
+
+string G_CALC = "01 | Calculation"
+int avgCount = input.int(20, "Completed sessions to average", minval=1, maxval=100, group=G_CALC)
+bool liveUpdate = input.bool(false, "Update during the live candle", tooltip="Off: update at candle close. On: values can change while the candle forms. Alerts always use candle close.", group=G_CALC)
+string unitMode = input.string("Auto", "Forex pip size", options=["Auto", "Custom pip"], group=G_CALC)
+float customPip = input.float(0.0001, "Custom forex pip size", minval=0.00000001, group=G_CALC, tooltip="Forex only. All other assets always use percent of their session opening price.")
+bool includeWeekends = input.bool(false, "Include sessions starting on weekends", group=G_CALC)
+
+string G_ACTIVITY = "Activity | Same elapsed time"
+bool showActivity = input.bool(true, "Show today's activity", group=G_ACTIVITY)
+int activityWarmup = input.int(15, "Minutes before first assessment", minval=1, maxval=240, group=G_ACTIVITY)
+float slowerBelow = input.float(80, "Slower: below this % of usual movement", minval=1, maxval=99, group=G_ACTIVITY)
+float fasterAbove = input.float(120, "Faster: above this % of usual movement", minval=101, maxval=500, group=G_ACTIVITY, tooltip="Initial configurable thresholds, not calibrated probabilities. Activity uses closed candles and compares the same elapsed session minute. Requires up to five completed sessions (or your shorter averaging window).")
+
+
+string G_SESS = "02 | Sessions - LOCAL city time"
+string frankHours = input.session("0800-1700", "Frankfurt | Europe/Berlin", group=G_SESS)
+string londonHours = input.session("0800-1700", "London | Europe/London", group=G_SESS)
+string nyHours = input.session("0800-1700", "New York | America/New_York", group=G_SESS)
+string sydneyHours = input.session("0800-1700", "Sydney | Australia/Sydney", group=G_SESS)
+string tokyoHours = input.session("0900-1800", "Tokyo | Asia/Tokyo", group=G_SESS)
+string displayZone = input.string("Europe/Istanbul", "Clock display timezone (IANA)", group=G_SESS, tooltip="Display only. Session calculation always uses its city's timezone. Default: Turkey.")
+
+string G_VIEW = "03 | Chart display"
+bool detailedView = input.bool(true, "Detailed view (include closed sessions)", group=G_VIEW)
+bool showBoxes = input.bool(true, "Session boxes", group=G_VIEW)
+bool showBoxNames = input.bool(true, "Session names", group=G_VIEW)
+bool showOpen = input.bool(false, "Session opening lines", group=G_VIEW)
+int keepHistory = input.int(10, "Sessions to keep per city", minval=1, maxval=30, group=G_VIEW)
+bool showFrank = input.bool(true, "Frankfurt", inline="fr", group=G_VIEW)
+color frankColor = input.color(#A7BF45, "", inline="fr", group=G_VIEW)
+bool showLondon = input.bool(true, "London", inline="lo", group=G_VIEW)
+color londonColor = input.color(#4996FF, "", inline="lo", group=G_VIEW)
+bool showNY = input.bool(true, "New York", inline="ny", group=G_VIEW)
+color nyColor = input.color(#F2AD43, "", inline="ny", group=G_VIEW)
+bool showSydney = input.bool(true, "Sydney", inline="sy", group=G_VIEW)
+color sydneyColor = input.color(#B28DFF, "", inline="sy", group=G_VIEW)
+bool showTokyo = input.bool(true, "Tokyo", inline="to", group=G_VIEW)
+color tokyoColor = input.color(#F378A5, "", inline="to", group=G_VIEW)
+bool showPanel = input.bool(true, "Statistics panel", group=G_VIEW)
+string panelCorner = input.string("Top right", "Panel position", options=["Top right", "Bottom right", "Top left", "Bottom left"], group=G_VIEW)
+string fontSize = input.string("Normal", "Text size", options=["Tiny", "Small", "Normal", "Large"], group=G_VIEW)
+
+string G_ALERT = "04 | Alerts - once per level per session"
+bool enableAlerts = input.bool(false, "Enable range-usage alerts", group=G_ALERT)
+bool alert80 = input.bool(true, "80%", inline="al", group=G_ALERT)
+bool alert100 = input.bool(true, "100%", inline="al", group=G_ALERT)
+bool alert120 = input.bool(true, "120%", inline="al", group=G_ALERT)
+
+// Some feeds classify precious-metal pairs as forex; they still use percent.
+bool metalPair = syminfo.basecurrency == "XAU" or syminfo.basecurrency == "XAG" or syminfo.basecurrency == "XPT" or syminfo.basecurrency == "XPD" or syminfo.currency == "XAU" or syminfo.currency == "XAG" or syminfo.currency == "XPT" or syminfo.currency == "XPD"
+bool isForex = syminfo.type == "forex" and not metalPair
+float autoUnit = syminfo.currency == "JPY" ? 0.01 : 0.0001
+float unit = isForex ? (unitMode == "Custom pip" ? customPip : autoUnit) : 1.0
+string unitName = isForex ? "pips" : "%"
+string textSize = fontSize == "Tiny" ? size.tiny : fontSize == "Normal" ? size.normal : fontSize == "Large" ? size.large : size.small
+color bg = #081226
+color gold = #A454FF
+color grid = #2B3959
+color headerBg = #0C1731
+color muted = #9AAAC4
+
+if barstate.isfirst and (not chart.is_standard or not timeframe.isintraday or timeframe.in_seconds() < 60 or timeframe.in_seconds() > 3600)
+    runtime.error("Use standard time-based candles from 1 to 60 minutes. Session times must align with candle boundaries.")
+
+f_num(float v) =>
+    na(v) ? "--" : str.tostring(v, "0.0")
+
+// Every historical non-forex sample uses ITS OWN session open, never today's price.
+// Movement remains high-low, not signed return from open or summed candle travel.
+f_measure(float rangePrice, float sessionOpen) =>
+    isForex ? rangePrice : sessionOpen > 0 ? 100.0 * rangePrice / sessionOpen : na
+
+f_move(float measurement) =>
+    na(measurement) ? "--" : isForex ? f_num(measurement / unit) : str.tostring(measurement, "0.00##") + "%"
+
+f_usage(float rangePrice, float averagePrice) =>
+    averagePrice > 0 ? math.round(100.0 * rangePrice / averagePrice, 8) : na
+
+// Calculate actual timestamps in each city, including DST and overnight sessions.
+// Weekday selection refers to the local date on which the session STARTS.
+f_window(string hours, string zone) =>
+    int sh = int(str.tonumber(str.substring(hours, 0, 2)))
+    int sm = int(str.tonumber(str.substring(hours, 2, 4)))
+    int eh = int(str.tonumber(str.substring(hours, 5, 7)))
+    int em = int(str.tonumber(str.substring(hours, 7, 9)))
+    int startMinute = sh * 60 + sm
+    int endMinute = eh * 60 + em
+    bool overnight = endMinute <= startMinute
+    int dayShift = overnight and hour(time, zone) * 60 + minute(time, zone) < startMinute ? -1 : 0
+    int y = year(time, zone)
+    int m = month(time, zone)
+    int d = dayofmonth(time, zone) + dayShift
+    int startTime = timestamp(zone, y, m, d, sh, sm)
+    int endTime = timestamp(zone, y, m, d + (overnight ? 1 : 0), eh, em)
+    int weekday = dayofweek(startTime, zone)
+    bool allowed = includeWeekends or (weekday >= dayofweek.monday and weekday <= dayofweek.friday)
+    bool inside = allowed and time >= startTime and time < endTime
+    [startTime, endTime, inside]
+
+// Each completed session keeps its own closed-candle trajectory.
+// Elapsed-minute indices align comparisons across different days and DST.
+// Separate arrays keep each collection below Pine's size limit at all chart TFs.
+type SessionProfile
+    array<float> values
+
+type Session
+    string name
+    string zone
+    string hours
+    color tint
+    bool visible
+    array<float> samples
+    array<SessionProfile> profiles
+    array<float> currentProfile
+    float activityRatio = na
+    float activityAverage = na
+    float activityMove = na
+    int activityMinute = 0
+    int activityMatches = 0
+    array<box> boxes
+    array<line> opens
+    array<label> names
+    int id = na
+    int finish = na
+    int lastClose = na
+    int sampleSize = 0
+    bool active = false
+    bool valid = false
+    bool saved = false
+    bool hit80 = false
+    bool hit100 = false
+    bool hit120 = false
+    float hi = na
+    float lo = na
+    float opening = na
+    float average = na
+    box currentBox = na
+    line currentOpen = na
+    label currentName = na
+
+f_new(string name, string zone, string hours, color tint, bool visible) =>
+    Session.new(name=name, zone=zone, hours=hours, tint=tint, visible=visible, samples=array.new<float>(), profiles=array.new<SessionProfile>(), currentProfile=array.new<float>(), boxes=array.new<box>(), opens=array.new<line>(), names=array.new<label>())
+
+method process(Session s) =>
+    [startTime, endTime, inside] = f_window(s.hours, s.zone)
+    string events = ""
+    s.active := inside
+    if inside
+        bool newSession = na(s.id) or s.id != startTime
+        if newSession
+            s.id := startTime
+            s.finish := endTime
+            s.valid := time == startTime
+            s.saved := false
+            s.hit80 := false
+            s.hit100 := false
+            s.hit120 := false
+            s.hi := high
+            s.lo := low
+            s.opening := open
+            s.lastClose := time
+            s.activityRatio := na
+            s.activityAverage := na
+            s.activityMove := na
+            s.activityMinute := 0
+            s.activityMatches := 0
+            if showActivity
+                s.currentProfile := array.new<float>(int((endTime - startTime) / 60000) + 1, na)
+            s.sampleSize := array.size(s.samples)
+            s.average := s.sampleSize > 0 ? array.avg(s.samples) : na
+            s.currentBox := na
+            s.currentOpen := na
+            s.currentName := na
+            if s.visible
+                if showBoxes
+                    s.currentBox := box.new(left=time, top=high, right=time_close, bottom=low, xloc=xloc.bar_time, border_color=color.new(s.tint, 25), border_style=line.style_dotted, bgcolor=color.new(s.tint, 93))
+                    array.push(s.boxes, s.currentBox)
+                    if array.size(s.boxes) > keepHistory
+                        box.delete(array.shift(s.boxes))
+                if showOpen
+                    s.currentOpen := line.new(x1=time, y1=open, x2=time_close, y2=open, xloc=xloc.bar_time, color=color.new(s.tint, 30), style=line.style_dashed)
+                    array.push(s.opens, s.currentOpen)
+                    if array.size(s.opens) > keepHistory
+                        line.delete(array.shift(s.opens))
+                if showBoxNames
+                    s.currentName := label.new(x=time, y=high, text=s.name, xloc=xloc.bar_time, style=label.style_label_lower_left, color=color.new(bg, 100), textcolor=s.tint, size=textSize)
+                    array.push(s.names, s.currentName)
+                    if array.size(s.names) > keepHistory
+                        label.delete(array.shift(s.names))
+        // Reject incomplete starts, internal gaps and bars crossing the end.
+        s.valid := s.valid and time == s.lastClose and time_close <= endTime
+        s.hi := math.max(s.hi, high)
+        s.lo := math.min(s.lo, low)
+        s.lastClose := time_close
+        float rangePrice = s.hi - s.lo
+        float movement = f_measure(rangePrice, s.opening)
+        float usage = f_usage(movement, s.average)
+        // Evaluate only at candle close. The forming candle never borrows a
+        // later historical checkpoint. Current session enters history only below.
+        if showActivity and barstate.isconfirmed
+            int elapsed = int((time_close - startTime) / 60000)
+            s.activityMinute := elapsed
+            s.activityRatio := na
+            s.activityAverage := na
+            s.activityMove := movement
+            s.activityMatches := 0
+            if s.valid and not na(movement) and elapsed >= 0 and elapsed < array.size(s.currentProfile)
+                array.set(s.currentProfile, elapsed, movement)
+                if elapsed >= activityWarmup
+                    float total = 0.0
+                    for profile in s.profiles
+                        if elapsed < array.size(profile.values)
+                            float previousMove = array.get(profile.values, elapsed)
+                            if not na(previousMove)
+                                total += previousMove
+                                s.activityMatches += 1
+                    int required = math.min(5, avgCount)
+                    if s.activityMatches >= required
+                        s.activityAverage := total / s.activityMatches
+                        s.activityRatio := f_usage(movement, s.activityAverage)
+
+        if not na(s.currentBox)
+            box.set_top(s.currentBox, s.hi)
+            box.set_bottom(s.currentBox, s.lo)
+            box.set_right(s.currentBox, math.min(time_close, endTime))
+        if not na(s.currentOpen)
+            line.set_x2(s.currentOpen, math.min(time_close, endTime))
+        if not na(s.currentName)
+            label.set_y(s.currentName, s.hi)
+            label.set_text(s.currentName, s.name)
+        // Evaluate all sessions before sending one combined close-confirmed alert.
+        if barstate.isconfirmed and s.valid and not na(usage)
+            if usage >= 80 and not s.hit80
+                s.hit80 := true
+                if alert80
+                    events += s.name + ": 80% range used\n"
+            if usage >= 100 and not s.hit100
+                s.hit100 := true
+                if alert100
+                    events += s.name + ": 100% average reached\n"
+            if usage >= 120 and not s.hit120
+                s.hit120 := true
+                if alert120
+                    events += s.name + ": 120% range used\n"
+        // Commit on the closing bar itself; no outside-session bar is required.
+        if barstate.isconfirmed and time_close >= endTime and not s.saved
+            if s.valid and time_close == endTime and not na(movement)
+                array.push(s.samples, movement)
+                if showActivity
+                    array.push(s.profiles, SessionProfile.new(values=s.currentProfile))
+                    if array.size(s.profiles) > avgCount
+                        array.shift(s.profiles)
+                if array.size(s.samples) > avgCount
+                    array.shift(s.samples)
+            s.saved := true
+        // At the final candle close the session has finished, also on Friday.
+        if barstate.isconfirmed and time_close >= endTime
+            s.active := false
+    events
+
+var array<Session> sessions = array.new<Session>()
+if barstate.isfirst
+    array.push(sessions, f_new("Frankfurt", "Europe/Berlin", frankHours, frankColor, showFrank))
+    array.push(sessions, f_new("London", "Europe/London", londonHours, londonColor, showLondon))
+    array.push(sessions, f_new("New York", "America/New_York", nyHours, nyColor, showNY))
+    array.push(sessions, f_new("Sydney", "Australia/Sydney", sydneyHours, sydneyColor, showSydney))
+    array.push(sessions, f_new("Tokyo", "Asia/Tokyo", tokyoHours, tokyoColor, showTokyo))
+
+string tablePosition = panelCorner == "Top left" ? position.top_left : panelCorner == "Bottom left" ? position.bottom_left : panelCorner == "Bottom right" ? position.bottom_right : position.top_right
+// Rebuild the small last-bar table with exactly the visible rows.
+var table dashboard = na
+bool updateNow = barstate.isconfirmed or liveUpdate
+if updateNow
+    string alertsText = ""
+    for s in sessions
+        alertsText += s.process()
+    if enableAlerts and barstate.isconfirmed and alertsText != ""
+        alert("Market Mood | " + syminfo.ticker + "\n" + alertsText, alert.freq_once_per_bar_close)
+
+// Populate at the last confirmed historical bar too, so close-only mode does not
+// start with a blank panel when the currently open candle has not closed yet.
+if updateNow and (barstate.islast or barstate.islastconfirmedhistory)
+    int clock = barstate.isrealtime and not barstate.isconfirmed ? timenow : time_close
+    int sessionRows = 0
+    for s in sessions
+        if s.active or detailedView
+            sessionRows += 1
+    table.delete(dashboard)
+    dashboard := na
+    if showPanel
+        int listedRows = math.max(1, sessionRows)
+        int totalRows = 3 + listedRows + (detailedView ? 1 : 0)
+        int lastCol = showActivity ? 4 : 3
+        dashboard := table.new(tablePosition, lastCol + 1, totalRows, bgcolor=bg, frame_color=#6552A4, frame_width=1, border_color=grid, border_width=1)
+        table.merge_cells(dashboard, 0, 0, lastCol, 0)
+        table.merge_cells(dashboard, 0, 1, lastCol, 1)
+        table.cell(dashboard, 0, 0, "M A R K E T  M O O D", text_color=gold, text_size=textSize, bgcolor=bg)
+        table.cell(dashboard, 0, 1, "SESSION MOVEMENT  |  " + unitName, text_color=color.white, text_size=textSize, bgcolor=headerBg)
+        table.cell(dashboard, 0, 2, "SESSION", text_color=muted, text_size=size.small)
+        table.cell(dashboard, 1, 2, "MOVE SO FAR", text_color=muted, text_size=size.small, tooltip="Highest minus lowest price since this session opened. This is not the net change from opening price.")
+        table.cell(dashboard, 2, 2, "AVG. MOVE", text_color=muted, text_size=size.small)
+        table.cell(dashboard, 3, 2, "AVG. USED", text_color=muted, text_size=size.small)
+        if showActivity
+            table.cell(dashboard, 4, 2, "TODAY'S ACTIVITY", text_color=muted, text_size=size.small, tooltip="Compares high-low movement at the SAME elapsed time in previous completed sessions. Faster means faster range expansion, not an uptrend. Evaluated at candle close.")
+        int row = 3
+        for s in sessions
+            if s.active or detailedView
+                float avg = s.active ? s.average : (array.size(s.samples) > 0 ? array.avg(s.samples) : na)
+                float used = s.active and s.valid ? f_usage(f_measure(s.hi - s.lo, s.opening), avg) : na
+                color usageColor = na(used) ? muted : used >= 100 ? #FFAA45 : used >= 80 ? #FFD54F : color.white
+                string nameText = s.name + (s.active ? "" : " (Closed)")
+                table.cell(dashboard, 0, row, nameText, text_color=s.tint, text_size=textSize, text_halign=text.align_left)
+                table.cell(dashboard, 1, row, s.active ? f_move(f_measure(s.hi - s.lo, s.opening)) + (s.valid ? "" : "*") : "--", text_color=color.white, text_size=textSize)
+                table.cell(dashboard, 2, row, f_move(avg), text_color=color.white, text_size=textSize)
+                table.cell(dashboard, 3, row, s.active and not s.valid ? "Partial" : na(used) ? "--" : f_num(used) + "%", text_color=usageColor, text_size=textSize)
+                if showActivity
+                    string activityText = "--"
+                    string activityTip = "Session closed."
+                    color activityColor = muted
+                    if s.active
+                        if not s.valid
+                            activityText := "Partial"
+                            activityTip := "Incomplete session data; activity cannot be assessed."
+                        else if s.activityMinute < activityWarmup
+                            activityText := "Starting"
+                            activityTip := "Assessment starts after " + str.tostring(activityWarmup) + " minutes, on a closed candle."
+                        else if s.activityMatches < math.min(5, avgCount)
+                            activityText := "Learning"
+                            activityTip := "Not enough completed sessions at this elapsed time yet."
+                        else if na(s.activityRatio)
+                            activityTip := "No positive historical average at this elapsed time."
+                        else
+                            activityText := s.activityRatio < slowerBelow ? "Slower" : s.activityRatio > fasterAbove ? "Faster" : "Usual"
+                            activityColor := s.activityRatio < slowerBelow ? muted : s.activityRatio > fasterAbove ? #42C7E8 : color.white
+                            activityTip := "After " + str.tostring(s.activityMinute) + " minutes: today's move " + f_move(s.activityMove) + "; usual move " + f_move(s.activityAverage) + ". Today is " + f_num(s.activityRatio) + "% of usual movement at this time. Closed candles only."
+                    table.cell(dashboard, 4, row, activityText, text_color=activityColor, text_size=textSize, tooltip=activityTip)
+                row += 1
+        if sessionRows == 0
+            table.merge_cells(dashboard, 0, 3, lastCol, 3)
+            table.cell(dashboard, 0, 3, "No active sessions", text_color=muted, text_size=textSize)
+        if detailedView
+            int footerRow = totalRows - 1
+            table.merge_cells(dashboard, 0, footerRow, lastCol, footerRow)
+            table.cell(dashboard, 0, footerRow, (liveUpdate ? "Live" : "Candle close") + " | " + str.format_time(clock, "HH:mm", displayZone), text_color=muted, text_size=size.small)

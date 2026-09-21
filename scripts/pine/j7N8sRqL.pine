@@ -1,0 +1,123 @@
+//@version=6
+// =============================================================================
+//  EMA 50×200 CROSS — REGIME "WEATHER"        (a regime lens, NOT a trade signal)
+// -----------------------------------------------------------------------------
+//  The classic golden/death cross, drawn as a risk-on / risk-off "weather" gauge.
+//
+//    • EMA50 above EMA200  → RISK-ON   ("☀ fair weather" — uptrend regime)
+//    • EMA50 below EMA200  → RISK-OFF  ("⛈ storm"        — downtrend regime)
+//    • the crossover bar    → golden cross ▲ / death cross ▼ marker
+//
+//  WHY THIS IS A LENS, NOT A STRATEGY (read this before trading it):
+//    A full backtest of the 50×200 long-only crossover across 19 markets
+//    (crypto majors + alts, gold/silver/oil/copper, S&P 500; daily + 4h; EMA &
+//    SMA; cost ladder 0/5/10 bps; matched random-timing null) found it is
+//    *trend beta, not an edge*: it does NOT beat buy-and-hold on a risk-adjusted
+//    basis (median Sharpe/Calmar were WORSE than B&H). Its one robust property is
+//    SHALLOWER DRAWDOWNS (19/19 assets, ~20pp), bought with missed upside — so it
+//    is useful as a *regime / drawdown-context* readout, not as an entry trigger.
+//    A matched null showed the timing is mostly exposure, not selection skill.
+//
+//  So: use the colour to read the WEATHER (which regime you're in, how long you've
+//  been in it), not as a buy/sell. No strategy(), and the alerts below just
+//  announce the regime flip — they are notifications, not recommendations.
+//
+//  NO REPAINT: ta.ema / ta.sma are causal (computed only from bars up to and
+//  including the current one); no request.security, no future reference.
+//  Historical bars do not repaint; only the live bar updates intrabar until close.
+//
+//  Pine v6, overlay.
+// =============================================================================
+
+indicator("EMA 50×200 Cross — Trend Barometer", shorttitle = "EMA Trend Barometer", overlay = true)
+
+// =============================================================================
+// INPUTS
+// =============================================================================
+gMA   = "Moving averages"
+src      = input.source(close, "Source",        group = gMA)
+maType   = input.string("EMA", "MA type",       group = gMA, options = ["EMA", "SMA"])
+fastLen  = input.int(50,  "Fast length",         group = gMA, minval = 1)
+slowLen  = input.int(200, "Slow length",         group = gMA, minval = 2)
+
+gViz  = "Weather display"
+showBg     = input.bool(true,  "Tint background by regime", group = gViz)
+showMarks  = input.bool(true,  "Cross markers (▲ / ▼)",     group = gViz)
+showPanel  = input.bool(true,  "Weather panel",             group = gViz)
+panelPos   = input.string("top_right", "Panel position",    group = gViz,
+     options = ["top_right", "top_left", "bottom_right", "bottom_left"])
+
+gCol  = "Colours"
+cOn   = input.color(color.new(#10b981, 0), "Risk-on (uptrend)",   group = gCol)
+cOff  = input.color(color.new(#f87171, 0), "Risk-off (downtrend)", group = gCol)
+cSlow = input.color(color.new(#9ca3af, 0), "Slow MA (200)",        group = gCol)
+
+// =============================================================================
+// COMPUTE  (both MAs evaluated every bar, then selected — no conditional ta.* )
+// =============================================================================
+emaF = ta.ema(src, fastLen)
+emaS = ta.ema(src, slowLen)
+smaF = ta.sma(src, fastLen)
+smaS = ta.sma(src, slowLen)
+fastMA = maType == "SMA" ? smaF : emaF
+slowMA = maType == "SMA" ? smaS : emaS
+
+mature  = bar_index >= slowLen                      // slow MA is seeded
+riskOn  = mature and fastMA > slowMA
+// ta.crossover/under are STATEFUL (they compare against the previous bar), so assign them
+// to globals — this guarantees they evaluate on EVERY bar rather than being short-circuited
+// by `mature`; the maturity gate is applied afterwards (correct first-cross detection).
+xUp     = ta.crossover(fastMA, slowMA)              // EMA50 crosses up through EMA200
+xDn     = ta.crossunder(fastMA, slowMA)             // EMA50 crosses down through EMA200
+golden  = mature and xUp
+death   = mature and xDn
+
+regimeCol = riskOn ? cOn : cOff
+
+// =============================================================================
+// PLOT
+// =============================================================================
+pFast = plot(fastMA, "Fast MA", color = regimeCol, linewidth = 2)   // colour = regime
+pSlow = plot(slowMA, "Slow MA", color = cSlow,     linewidth = 2)
+fill(pFast, pSlow, color = color.new(regimeCol, 88))                 // tinted gap
+
+bgcolor(showBg ? color.new(regimeCol, 92) : na, title = "Regime tint")
+
+plotshape(showMarks and golden, "Golden cross", shape.triangleup,   location.belowbar,
+     color = cOn,  size = size.small, text = "golden")
+plotshape(showMarks and death,  "Death cross",  shape.triangledown, location.abovebar,
+     color = cOff, size = size.small, text = "death")
+
+// =============================================================================
+// WEATHER PANEL  (current regime, age, last flip)
+// =============================================================================
+lastFlipUp = ta.barssince(golden)
+lastFlipDn = ta.barssince(death)
+sinceFlip  = math.min(lastFlipUp, lastFlipDn)   // bars since the last regime flip
+
+if showPanel and barstate.islast
+    pos = switch panelPos
+        "top_left"     => position.top_left
+        "bottom_right" => position.bottom_right
+        "bottom_left"  => position.bottom_left
+        => position.top_right
+    var table t = table.new(pos, 2, 3, border_width = 1)
+    wx    = riskOn ? "☀ RISK-ON" : "⛈ RISK-OFF"
+    head  = riskOn ? "Fair weather (uptrend)" : "Storm (downtrend)"
+    cTxt  = color.new(color.white, 0)
+    cHd   = color.new(regimeCol, 0)
+    table.cell(t, 0, 0, wx, text_color = cTxt, bgcolor = cHd, text_size = size.large)
+    table.cell(t, 1, 0, "",                     bgcolor = cHd)
+    table.cell(t, 0, 1, head,                    text_color = cHd, text_size = size.small)
+    table.cell(t, 1, 1, na(sinceFlip) ? "—" : str.tostring(sinceFlip) + " bars in regime",
+         text_color = cTxt, text_size = size.small)
+    table.cell(t, 0, 2, maType + " " + str.tostring(fastLen) + "×" + str.tostring(slowLen),
+         text_color = color.new(color.gray, 0), text_size = size.tiny)
+    table.cell(t, 1, 2, "regime lens · not a trade signal",
+         text_color = color.new(color.gray, 0), text_size = size.tiny)
+
+// =============================================================================
+// ALERTS  (regime-flip notifications — NOT trade recommendations)
+// =============================================================================
+alertcondition(golden, "Golden cross (→ Risk-on)", "EMA{{fastLen}}×{{slowLen}} golden cross: regime flipped RISK-ON on {{ticker}}")
+alertcondition(death,  "Death cross (→ Risk-off)",  "EMA{{fastLen}}×{{slowLen}} death cross: regime flipped RISK-OFF on {{ticker}}")

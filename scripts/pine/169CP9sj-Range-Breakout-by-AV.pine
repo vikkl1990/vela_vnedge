@@ -1,0 +1,249 @@
+//@version=6
+// =============================================================
+//  Range Compression Breakout  v4
+//  Clean-room volatility compression system.
+//
+//  v4 FIX: v2/v3 compared a multi-bar high-low range against a
+//  single-bar ATR. A 10-bar range naturally runs ~3.5-5x ATR, so
+//  thresholds near 1.0-1.2 could never trigger and no boxes drew.
+//  Thresholds are corrected and an adaptive percentile mode is
+//  now the default so compression is always detectable.
+//
+//  Styling calibrated from the published Range Breaker [MOT]
+//  chart, status line: (Options Selling, 10, 2, 7, 25, 20, 1.7, 1)
+// =============================================================
+indicator("Range Compression Breakout", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+// ------------------------- INPUTS -----------------------------
+grpP = "Profile"
+profile = input.string("Normal Ranges", "Preset Profile", options = ["Tight Ranges", "Normal Ranges", "Swing Trading", "Options Selling", "Custom"], group = grpP)
+mode    = input.string("Adaptive Percentile", "Detection Mode", options = ["Adaptive Percentile", "ATR Multiple"], group = grpP, tooltip = "Adaptive: compression when the current range is among the quietest X% of recent history. Always finds ranges on any symbol. ATR Multiple: original-style fixed threshold.")
+
+grpA = "Adaptive Mode"
+pctRank = input.float(20.0, "Quietest Percentile (%)", minval = 1.0, maxval = 60.0, step = 1.0, group = grpA, tooltip = "Higher = more boxes. 20 means the range must be quieter than 80% of recent bars.")
+pctWin  = input.int(200,    "History Window (bars)",   minval = 30, group = grpA)
+
+grpD = "Custom Detection (used when Profile = Custom)"
+cLen     = input.int(10,    "Lookback Bars",         minval = 3,   group = grpD)
+cTight   = input.float(2.0, "Tightness (x ATR)",     minval = 0.1, step = 0.1, group = grpD)
+cMinBars = input.int(7,     "Min Bars To Confirm",   minval = 2,   group = grpD)
+cCool    = input.int(25,    "Cooldown Bars",         minval = 0,   group = grpD)
+cConfirm = input.int(1,     "Confirm Bars Outside",  minval = 1, maxval = 5, group = grpD)
+
+grpG = "Global"
+atrLen  = input.int(25,     "ATR Length",            minval = 1, group = grpG)
+bufATR  = input.float(0.05, "Breakout Buffer (xATR)",minval = 0.0, step = 0.01, group = grpG)
+volLen  = input.int(20,     "Volume Average Length", minval = 1, group = grpG)
+volMult = input.float(1.7,  "Volume Spike Multiple", minval = 1.0, step = 0.1, group = grpG)
+useVol  = input.bool(false, "Confirm with Volume Spike", group = grpG, tooltip = "Leave OFF on FX / spot symbols where volume is tick-based or absent.")
+
+grpR = "Reversals"
+showRev   = input.bool(true, "Show Wick Reversal Signals", group = grpR)
+wickRatio = input.float(0.5, "Min Wick / Bar Range Ratio", minval = 0.1, maxval = 0.9, step = 0.05, group = grpR)
+
+grpS = "Style"
+showBox   = input.bool(true,  "Show Range Boxes", group = grpS)
+showMid   = input.bool(true,  "Show Midline",     group = grpS)
+showBrk   = input.bool(true,  "Show Breakout Labels", group = grpS)
+keepBoxes = input.bool(true,  "Keep Boxes As History", group = grpS)
+shadeBg   = input.bool(false, "Shade Background While Compressed", group = grpS)
+colBord   = input.color(#FF9800,                "Box Border",  group = grpS)
+colFill   = input.color(color.new(#FF9800, 90), "Box Fill",    group = grpS)
+colMidC   = input.color(#8A8078,                "Midline",     group = grpS)
+colLong   = input.color(#4EBC97,                "Wick Long",   group = grpS)
+colShort  = input.color(#9C27B0,                "Wick Short",  group = grpS)
+colBrkTxt = input.color(color.white,            "Break Label", group = grpS)
+
+// --------------------- PRESET RESOLUTION ----------------------
+// ATR-mode thresholds sit around the author's observed 2.0 anchor,
+// which is near the low decile of the natural range/ATR spread.
+len = switch profile
+    "Tight Ranges"    => 10
+    "Normal Ranges"   => 10
+    "Swing Trading"   => 10
+    "Options Selling" => 10
+    => cLen
+
+tight = switch profile
+    "Tight Ranges"    => 1.6
+    "Normal Ranges"   => 1.8
+    "Swing Trading"   => 2.0
+    "Options Selling" => 2.2
+    => cTight
+
+minBars = switch profile
+    "Tight Ranges"    => 4
+    "Normal Ranges"   => 5
+    "Swing Trading"   => 6
+    "Options Selling" => 7
+    => cMinBars
+
+coolBars = switch profile
+    "Tight Ranges"    => 10
+    "Normal Ranges"   => 15
+    "Swing Trading"   => 20
+    "Options Selling" => 25
+    => cCool
+
+confirmBars = switch profile
+    "Tight Ranges"    => 1
+    "Normal Ranges"   => 1
+    "Swing Trading"   => 1
+    "Options Selling" => 1
+    => cConfirm
+
+// ------------------------- CORE MATH --------------------------
+atr   = ta.atr(atrLen)
+hi    = ta.highest(high, len)
+lo    = ta.lowest(low,  len)
+rng   = hi - lo
+ratio = atr > 0 ? rng / atr : na
+
+// Adaptive: is the current range quieter than the chosen percentile
+// of its own recent distribution?
+thresh   = ta.percentile_nearest_rank(rng, pctWin, pctRank)
+adaptOK  = not na(thresh) and rng <= thresh
+atrOK    = not na(ratio) and ratio < tight
+isTight  = mode == "Adaptive Percentile" ? adaptOK : atrOK
+
+buf      = atr * bufATR
+volAvg   = ta.sma(volume, volLen)
+volSpike = volAvg > 0 and volume > volAvg * volMult
+volOK    = not useVol or volSpike
+
+// ------------------------ STATE VARS --------------------------
+var bool inRange  = false
+var float top     = na
+var float bot     = na
+var int  startBar = na
+var int  barsIn   = 0
+var box  curBox   = na
+var line curMid   = na
+var int  outUp    = 0
+var int  outDn    = 0
+var int  coolLeft = 0
+var bool armedUp  = false
+var bool armedDn  = false
+
+newRange = false
+brkUp    = false
+brkDn    = false
+revUp    = false
+revDn    = false
+
+if coolLeft > 0
+    coolLeft -= 1
+
+// ------------------- RANGE BUILD / EXPAND ---------------------
+if not inRange
+    if isTight and coolLeft == 0
+        inRange  := true
+        top      := hi
+        bot      := lo
+        startBar := bar_index - len + 1
+        barsIn   := len
+        outUp    := 0
+        outDn    := 0
+        newRange := true
+        if showBox
+            curBox := box.new(startBar, top, bar_index, bot, border_color = colBord, border_width = 1, bgcolor = colFill)
+        if showMid
+            curMid := line.new(startBar, (top + bot) / 2, bar_index, (top + bot) / 2, color = colMidC, style = line.style_dotted)
+else
+    barsIn += 1
+    aboveOK = close > top + buf
+    belowOK = close < bot - buf
+
+    outUp := aboveOK ? outUp + 1 : 0
+    outDn := belowOK ? outDn + 1 : 0
+
+    if outUp >= confirmBars and barsIn >= minBars and volOK
+        brkUp := true
+    else if outDn >= confirmBars and barsIn >= minBars and volOK
+        brkDn := true
+    else if not aboveOK and not belowOK
+        // still contained: expand the box to absorb the churn
+        top := math.max(top, high)
+        bot := math.min(bot, low)
+        if showBox and not na(curBox)
+            box.set_top(curBox, top)
+            box.set_bottom(curBox, bot)
+            box.set_right(curBox, bar_index)
+        if showMid and not na(curMid)
+            line.set_y1(curMid, (top + bot) / 2)
+            line.set_y2(curMid, (top + bot) / 2)
+            line.set_x2(curMid, bar_index)
+
+// --------------------- WICK REVERSALS -------------------------
+if showRev and inRange
+    barRange = high - low
+    upWick   = high - math.max(open, close)
+    dnWick   = math.min(open, close) - low
+    if high > top and close <= top and barRange > 0 and upWick / barRange >= wickRatio
+        armedUp := true
+        armedDn := false
+    else if low < bot and close >= bot and barRange > 0 and dnWick / barRange >= wickRatio
+        armedDn := true
+        armedUp := false
+    else
+        if armedUp and close < close[1]
+            revDn   := true
+            armedUp := false
+        else if armedDn and close > close[1]
+            revUp   := true
+            armedDn := false
+
+// ----------------------- CLOSE RANGE --------------------------
+if brkUp or brkDn
+    if showBox and not na(curBox)
+        box.set_right(curBox, bar_index)
+        if not keepBoxes
+            box.delete(curBox)
+    if showMid and not na(curMid)
+        line.set_x2(curMid, bar_index)
+        if not keepBoxes
+            line.delete(curMid)
+    inRange  := false
+    barsIn   := 0
+    outUp    := 0
+    outDn    := 0
+    armedUp  := false
+    armedDn  := false
+    coolLeft := coolBars
+
+// ------------------------- LABELS -----------------------------
+brkTxt = useVol ? "Vol Break" : "Break"
+
+if showBrk and brkUp
+    label.new(bar_index, high, brkTxt, style = label.style_label_down, color = color.new(color.black, 100), textcolor = colBrkTxt, size = size.small)
+if showBrk and brkDn
+    label.new(bar_index, low, brkTxt, style = label.style_label_up, color = color.new(color.black, 100), textcolor = colBrkTxt, size = size.small)
+
+if revUp
+    label.new(bar_index, low, "Wick Long", style = label.style_label_up, color = colLong, textcolor = color.white, size = size.small)
+if revDn
+    label.new(bar_index, high, "Wick Short", style = label.style_label_down, color = colShort, textcolor = color.white, size = size.small)
+
+plotshape(showBrk and brkUp, "Break Up Marker",   shape.triangleup,   location.belowbar, colBrkTxt, size = size.tiny)
+plotshape(showBrk and brkDn, "Break Down Marker", shape.triangledown, location.abovebar, colBrkTxt, size = size.tiny)
+
+bgcolor(shadeBg and inRange ? color.new(#FF9800, 94) : na, title = "Compression Shade")
+
+// ----------------- DIAGNOSTICS (Data Window) ------------------
+// Open the Data Window (right panel) to read live values. If no
+// boxes appear in ATR mode, compare "Range/ATR Ratio" against
+// your Tightness setting and raise Tightness above the ratio's
+// typical quiet-period value.
+plot(ratio,                    "Range/ATR Ratio", display = display.data_window)
+plot(rng,                      "Range Size",      display = display.data_window)
+plot(thresh,                   "Adaptive Thresh", display = display.data_window)
+plot(isTight  ? 1 : 0,         "Is Compressed",   display = display.data_window)
+plot(inRange  ? 1 : 0,         "In Range",        display = display.data_window)
+plot(coolLeft,                 "Cooldown Left",   display = display.data_window)
+
+// -------------------------- ALERTS ----------------------------
+alertcondition(newRange,                      "Range Detected",    "New consolidation range detected")
+alertcondition(brkUp or brkDn,                "Range Breakout",    "Price closed outside the range")
+alertcondition((brkUp or brkDn) and volSpike, "Breakout + Volume", "Breakout confirmed by volume spike")
+alertcondition(revUp or revDn,                "Range Reversal",    "Confirmed wick reversal at range edge")
+

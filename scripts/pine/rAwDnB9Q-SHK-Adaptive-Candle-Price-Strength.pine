@@ -1,0 +1,196 @@
+//@version=6
+indicator("SHK Adaptive Candle Price Strength", "SHK ACPS", overlay=true, max_labels_count=500)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INPUTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GROUP_DISPLAY = "Display Settings"
+
+showValue = input.bool(true, "Show Strength Value", group=GROUP_DISPLAY)
+showBar   = input.bool(false, "Show Strength Bar", group=GROUP_DISPLAY)
+
+atrLength = input.int(14, "ATR Length", minval=1, group=GROUP_DISPLAY)
+distance  = input.float(0.35, "Distance Below Price", minval=0.05, step=0.05, group=GROUP_DISPLAY)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// CURRENT CHART PRICE DATA
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+srcOpen  = open
+srcHigh  = high
+srcLow   = low
+srcClose = close
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// RANGE & BODY
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+barRange = srcHigh - srcLow
+barBody  = math.abs(srcClose - srcOpen)
+
+upperWick = srcHigh - math.max(srcOpen, srcClose)
+lowerWick = math.min(srcOpen, srcClose) - srcLow
+
+safeRange = math.max(barRange, syminfo.mintick)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// BODY STRENGTH
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+bodyStrength = (barBody / safeRange) * 100
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// WICK PRESSURE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+bullStrength =
+     srcClose > srcOpen ?
+     bodyStrength +
+     (lowerWick / safeRange) * 25 -
+     (upperWick / safeRange) * 25 :
+     0
+
+bearStrength =
+     srcClose < srcOpen ?
+     bodyStrength +
+     (upperWick / safeRange) * 25 -
+     (lowerWick / safeRange) * 25 :
+     0
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// FINAL CANDLE STRENGTH
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+bullFinal = math.min(math.max(bullStrength, 0), 100)
+bearFinal = math.min(math.max(bearStrength, 0), 100)
+
+candleStrength =
+     srcClose > srcOpen ? bullFinal :
+     srcClose < srcOpen ? bearFinal :
+     0
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PRICE MOVEMENT STRENGTH
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+priceChange = srcClose - srcClose[1]
+
+atrValue = ta.atr(atrLength)
+safeATR  = math.max(atrValue, syminfo.mintick)
+
+movementStrength =
+     math.min(
+         math.abs(priceChange) / safeATR * 100,
+         100
+     )
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// AUTOMATIC STRENGTH SELECTION
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+hasCandleStructure = barRange > syminfo.mintick
+
+strength =
+     hasCandleStructure ?
+     candleStrength :
+     movementStrength
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// DIRECTION
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+isBull = srcClose > srcOpen
+isBear = srcClose < srcOpen
+
+movementBull = priceChange > 0
+movementBear = priceChange < 0
+
+isBullFinal =
+     hasCandleStructure ?
+     isBull :
+     movementBull
+
+isBearFinal =
+     hasCandleStructure ?
+     isBear :
+     movementBear
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// STRENGTH COLOR
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+strengthColor =
+     isBullFinal ? color.green :
+     isBearFinal ? color.red :
+     color.gray
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// VALUE POSITION
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+labelY = srcLow - safeATR * distance
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// HISTORICAL + LIVE LABEL SYSTEM
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// Every historical candle gets its own label.
+//
+// The current candle has ONE label that updates
+// continuously while the candle is forming.
+//
+// When a new candle begins, its own label is created
+// and the previous candle's value remains where it was.
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var label currentLabel = na
+
+if showValue
+
+    // New bar:
+    // Create a new label for this candle.
+    if barstate.isnew
+        currentLabel := label.new(
+             x=bar_index,
+             y=labelY,
+             text=str.tostring(math.round(strength)),
+             style=label.style_none,
+             textcolor=strengthColor,
+             size=size.tiny
+         )
+
+    // Existing realtime bar:
+    // Update only the current candle's label.
+    else if not na(currentLabel)
+        label.set_xy(
+             currentLabel,
+             bar_index,
+             labelY
+         )
+
+        label.set_text(
+             currentLabel,
+             str.tostring(math.round(strength))
+         )
+
+        label.set_textcolor(
+             currentLabel,
+             strengthColor
+         )
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// OPTIONAL STRENGTH BAR
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+barValue =
+     strength > 0 ?
+     strength :
+     na
+
+plot(
+     showBar ? barValue : na,
+     title="SHK Adaptive Strength",
+     color=strengthColor,
+     style=plot.style_columns,
+     display=display.none
+)

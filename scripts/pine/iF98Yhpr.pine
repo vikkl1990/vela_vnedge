@@ -1,0 +1,46 @@
+//@version=6
+indicator('Risk Yönetimi', overlay = true)
+
+// Input variables
+risk_dolar = input.float(20, title = 'Risk (USD)')
+stop_percent = input.float(3, title = 'Stop %')
+kaldirac_x = input.float(25, title = 'Kaldıraç X')
+
+// Dropdown menu for table position
+table_position = input.string('Bottom Left', title = 'Table Position', options = ['Top Right', 'Top Left', 'Bottom Right', 'Bottom Left'])
+
+// Set table position based on user input
+var table_position_enum = position.top_right
+if table_position == 'Top Right'
+    table_position_enum := position.top_right
+    table_position_enum
+else if table_position == 'Top Left'
+    table_position_enum := position.top_left
+    table_position_enum
+else if table_position == 'Bottom Right'
+    table_position_enum := position.bottom_right
+    table_position_enum
+else if table_position == 'Bottom Left'
+    table_position_enum := position.bottom_left
+    table_position_enum
+
+// Calculations
+pozisyon_buyuklugu = risk_dolar / stop_percent * 100
+pozisyon_marji = pozisyon_buyuklugu / kaldirac_x
+
+// Plotting the table
+var table risk_table = table.new(table_position_enum, 2, 6, bgcolor = color.new(color.teal, 90), frame_color = color.white, frame_width = 1)
+
+if bar_index == 0
+    table.cell(risk_table, 0, 1, 'Risk (USD)', bgcolor = #80d4ee, text_color = #01050f, text_size = size.normal)
+    table.cell(risk_table, 0, 2, 'Stop %', bgcolor = #80d4ee, text_color = #01050f, text_size = size.normal)
+    table.cell(risk_table, 0, 3, 'Kaldıraç X', bgcolor = #80d4ee, text_color = #01050f, text_size = size.normal)
+    table.cell(risk_table, 0, 4, 'Pozisyon Büyüklüğü', bgcolor = color.yellow, text_color = #01050f, text_size = size.normal)
+    table.cell(risk_table, 0, 5, 'Pozisyon Marjı', bgcolor = color.yellow, text_color = #01050f, text_size = size.normal)
+
+// Updating the table values
+table.cell(risk_table, 1, 1, str.tostring(risk_dolar), bgcolor = color.white, text_color = #01050f, text_size = size.auto)
+table.cell(risk_table, 1, 2, str.tostring(stop_percent), bgcolor = color.white, text_color = #01050f, text_size = size.auto)
+table.cell(risk_table, 1, 3, str.tostring(kaldirac_x), bgcolor = color.white, text_color = #01050f, text_size = size.auto)
+table.cell(risk_table, 1, 4, str.tostring(pozisyon_buyuklugu), bgcolor = color.white, text_color = #01050f, text_size = size.auto)
+table.cell(risk_table, 1, 5, str.tostring(pozisyon_marji), bgcolor = color.white, text_color = #01050f, text_size = size.auto)

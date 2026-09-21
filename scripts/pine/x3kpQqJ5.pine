@@ -1,0 +1,3194 @@
+//@version=6
+//@strategy_alert_message {{strategy.order.alert_message}}
+
+strategy(
+     "EMA200 + BOS/CHoCH + STRICT 2x FVG Backtest Strategy",
+     shorttitle = "EMA200 STRICT 2xFVG",
+     overlay = true,
+     pyramiding = 0,
+     calc_on_order_fills = true,
+     calc_on_every_tick = true,
+     process_orders_on_close = false,
+     use_bar_magnifier = true,
+     initial_capital = 100000,
+     margin_long = 10,
+     margin_short = 10,
+     default_qty_type = strategy.fixed,
+     default_qty_value = 1,
+     max_bars_back = 5000,
+     max_boxes_count = 500,
+     max_lines_count = 500,
+     max_labels_count = 500
+)
+
+
+//=============================================================================
+// GROUPS
+//=============================================================================
+
+const string GROUP_MARKET    = "MARKET SETTINGS"
+const string GROUP_EMA       = "EMA SETTINGS"
+const string GROUP_STRUCTURE = "STRUCTURE SETTINGS"
+const string GROUP_FVG       = "FVG SETTINGS"
+const string GROUP_SETUP     = "STRICT SETUP SETTINGS"
+const string GROUP_ENTRY     = "ENTRY SETTINGS"
+const string GROUP_RISK      = "RISK MANAGEMENT"
+const string GROUP_VISUAL    = "POSITION BOX / VISUAL SETTINGS"
+const string GROUP_BACKTEST  = "BACKTEST SETTINGS"
+const string GROUP_DEBUG     = "DEBUG"
+
+
+//=============================================================================
+// IDS
+//=============================================================================
+
+const string ID_SHORT      = "SHORT"
+const string ID_SHORT_MAIN = "SHORT_MAIN"
+const string ID_SHORT_TP1  = "SHORT_TP1"
+
+const string ID_LONG       = "LONG"
+const string ID_LONG_MAIN  = "LONG_MAIN"
+const string ID_LONG_TP1   = "LONG_TP1"
+
+
+//=============================================================================
+// MARKET SETTINGS
+//=============================================================================
+
+string market = input.string(
+     "NASDAQ",
+     "MARKET",
+     options = ["GOLD", "NASDAQ", "CUSTOM"],
+     group = GROUP_MARKET
+)
+
+string tradeDirection = input.string(
+     "BOTH",
+     "Trade Direction",
+     options = ["SHORT ONLY", "LONG ONLY", "BOTH"],
+     group = GROUP_MARKET
+)
+
+float orderQty = input.float(
+     1.0,
+     "Contracts",
+     minval = 0.001,
+     step = 1.0,
+     group = GROUP_MARKET
+)
+
+
+//=============================================================================
+// GOLD
+//=============================================================================
+
+float goldTP = input.float(
+     20.0,
+     "GOLD TP Points",
+     minval = 0.1,
+     step = 0.1,
+     group = GROUP_MARKET
+)
+
+float goldSL = input.float(
+     10.0,
+     "GOLD SL Points",
+     minval = 0.1,
+     step = 0.1,
+     group = GROUP_MARKET
+)
+
+float goldBE = input.float(
+     7.0,
+     "GOLD BE Trigger",
+     minval = 0.1,
+     step = 0.1,
+     group = GROUP_MARKET
+)
+
+float goldBEOffset = input.float(
+     0.0,
+     "GOLD BE Offset",
+     step = 0.1,
+     group = GROUP_MARKET
+)
+
+
+//=============================================================================
+// NASDAQ
+//=============================================================================
+
+float nasdaqTP = input.float(
+     100.0,
+     "NASDAQ TP Points",
+     minval = 0.25,
+     step = 0.25,
+     group = GROUP_MARKET
+)
+
+float nasdaqSL = input.float(
+     50.0,
+     "NASDAQ SL Points",
+     minval = 0.25,
+     step = 0.25,
+     group = GROUP_MARKET
+)
+
+float nasdaqBE = input.float(
+     40.0,
+     "NASDAQ BE Trigger",
+     minval = 0.25,
+     step = 0.25,
+     group = GROUP_MARKET
+)
+
+float nasdaqBEOffset = input.float(
+     0.0,
+     "NASDAQ BE Offset",
+     step = 0.25,
+     group = GROUP_MARKET
+)
+
+
+//=============================================================================
+// CUSTOM
+//=============================================================================
+
+float customTP = input.float(
+     50.0,
+     "CUSTOM TP Points",
+     minval = 0.01,
+     step = 0.01,
+     group = GROUP_MARKET
+)
+
+float customSL = input.float(
+     25.0,
+     "CUSTOM SL Points",
+     minval = 0.01,
+     step = 0.01,
+     group = GROUP_MARKET
+)
+
+float customBE = input.float(
+     20.0,
+     "CUSTOM BE Trigger",
+     minval = 0.01,
+     step = 0.01,
+     group = GROUP_MARKET
+)
+
+float customBEOffset = input.float(
+     0.0,
+     "CUSTOM BE Offset",
+     step = 0.01,
+     group = GROUP_MARKET
+)
+
+
+//=============================================================================
+// ACTIVE PARAMETERS
+//=============================================================================
+
+float tpPoints = market == "GOLD" ? goldTP : market == "NASDAQ" ? nasdaqTP : customTP
+float slPoints = market == "GOLD" ? goldSL : market == "NASDAQ" ? nasdaqSL : customSL
+float beTriggerPoints = market == "GOLD" ? goldBE : market == "NASDAQ" ? nasdaqBE : customBE
+float beOffsetPoints = market == "GOLD" ? goldBEOffset : market == "NASDAQ" ? nasdaqBEOffset : customBEOffset
+
+
+//=============================================================================
+// EMA
+//=============================================================================
+
+bool showEMA = input.bool(
+     true,
+     "Show EMA200",
+     group = GROUP_EMA
+)
+
+int emaLength = input.int(
+     200,
+     "EMA Length",
+     minval = 1,
+     group = GROUP_EMA
+)
+
+color emaColor = input.color(
+     color.rgb(55, 85, 255),
+     "EMA200 Color",
+     group = GROUP_EMA
+)
+
+int emaWidth = input.int(
+     2,
+     "EMA200 Width",
+     minval = 1,
+     maxval = 5,
+     group = GROUP_EMA
+)
+
+float ema200 = ta.ema(close, emaLength)
+
+plot(
+     showEMA ? ema200 : na,
+     title = "EMA200",
+     color = emaColor,
+     linewidth = emaWidth
+)
+
+
+//=============================================================================
+// STRUCTURE SETTINGS
+//=============================================================================
+
+bool enableBos = input.bool(
+     true,
+     "Enable BOS",
+     group = GROUP_STRUCTURE
+)
+
+bool enableChoch = input.bool(
+     true,
+     "Enable CHoCH",
+     group = GROUP_STRUCTURE
+)
+
+int swingLength = input.int(
+     5,
+     "Swing Length",
+     minval = 1,
+     maxval = 50,
+     group = GROUP_STRUCTURE
+)
+
+string breakConfirmation = input.string(
+     "Close",
+     "Structure Break Confirmation",
+     options = ["Close", "Wick"],
+     group = GROUP_STRUCTURE
+)
+
+bool showStructureLines = input.bool(
+     true,
+     "Show Structure Lines",
+     group = GROUP_STRUCTURE
+)
+
+bool showBosLabels = input.bool(
+     true,
+     "Show BOS Labels",
+     group = GROUP_STRUCTURE
+)
+
+bool showChochLabels = input.bool(
+     true,
+     "Show CHoCH Labels",
+     group = GROUP_STRUCTURE
+)
+
+color bullishStructureColor = input.color(
+     color.rgb(0, 195, 105),
+     "Bullish BOS / CHoCH",
+     group = GROUP_STRUCTURE
+)
+
+color bearishStructureColor = input.color(
+     color.rgb(245, 40, 55),
+     "Bearish BOS / CHoCH",
+     group = GROUP_STRUCTURE
+)
+
+int maximumStructureObjects = input.int(
+     150,
+     "Maximum Structure Objects",
+     minval = 20,
+     maxval = 250,
+     group = GROUP_STRUCTURE
+)
+
+
+//=============================================================================
+// FVG SETTINGS
+//=============================================================================
+
+bool enableFvg = input.bool(
+     true,
+     "Enable FVG",
+     group = GROUP_FVG
+)
+
+bool showFvg = input.bool(
+     true,
+     "Show FVG",
+     group = GROUP_FVG
+)
+
+bool useMinFvgFilter = input.bool(
+     false,
+     "Minimum FVG Size Filter",
+     group = GROUP_FVG
+)
+
+float minFvgSize = input.float(
+     0.0,
+     "Minimum FVG Size",
+     minval = 0.0,
+     step = 0.25,
+     group = GROUP_FVG
+)
+
+string minFvgUnit = input.string(
+     "Points",
+     "Minimum FVG Unit",
+     options = ["Points", "Ticks"],
+     group = GROUP_FVG
+)
+
+color bullishFvgColor = input.color(
+     color.rgb(65, 225, 165),
+     "Bullish FVG",
+     group = GROUP_FVG
+)
+
+color bearishFvgColor = input.color(
+     color.rgb(255, 90, 105),
+     "Bearish FVG",
+     group = GROUP_FVG
+)
+
+int fvgTransparency = input.int(
+     68,
+     "FVG Transparency",
+     minval = 0,
+     maxval = 100,
+     group = GROUP_FVG
+)
+
+bool showTwoFvgMarkers = input.bool(
+     true,
+     "Show 2x FVG Markers",
+     group = GROUP_FVG
+)
+
+int maximumFvgZones = input.int(
+     120,
+     "Maximum FVG Zones",
+     minval = 10,
+     maxval = 200,
+     group = GROUP_FVG
+)
+
+
+//=============================================================================
+// STRICT SETUP SETTINGS
+//=============================================================================
+//
+// WYMAGANY UKŁAD NA TF 2M:
+//
+// EMA200 CROSS
+// +
+// BOS lub CHoCH w kierunku crossa
+// +
+// FVG #1
+// +
+// WYRAŹNIE ODDZIELNE FVG #2
+//
+// Wszystko musi wystąpić lokalnie po tym samym crossie.
+//
+//=============================================================================
+
+int strictSetupWindowBars = input.int(
+     6,
+     "STRICT Setup Window After EMA Cross",
+     minval = 2,
+     maxval = 20,
+     tooltip =
+         "Default 6 bars on 2M = 12 minutes. " +
+         "EMA cross + matching BOS/CHoCH + two clear FVG must all occur inside this local window.",
+     group = GROUP_SETUP
+)
+
+bool firstTradeOnlyPerEmaCycle = input.bool(
+     true,
+     "ONLY 1 Trade Per EMA Cross",
+     group = GROUP_SETUP
+)
+
+
+//=============================================================================
+// ENTRY
+//=============================================================================
+
+int entryValidityBars = input.int(
+     5,
+     "LIMIT Entry Validity Bars",
+     minval = 1,
+     maxval = 50,
+     group = GROUP_ENTRY
+)
+
+
+//=============================================================================
+// RISK
+//=============================================================================
+
+float tp1Fraction = input.float(
+     0.50,
+     "TP1 Position",
+     minval = 0.05,
+     maxval = 0.95,
+     step = 0.05,
+     group = GROUP_RISK
+)
+
+bool enablePartialTP1 = input.bool(
+     false,
+     "Enable Partial TP1",
+     group = GROUP_RISK
+)
+
+float tp1QtyPercent = input.float(
+     50.0,
+     "TP1 Quantity %",
+     minval = 1.0,
+     maxval = 99.0,
+     step = 1.0,
+     group = GROUP_RISK
+)
+
+bool allowHistoricalSameBarBE = input.bool(
+     false,
+     "Allow Historical BE On Entry Bar",
+     group = GROUP_RISK
+)
+
+
+//=============================================================================
+// POSITION BOX
+//=============================================================================
+
+bool showTradeBoxes = input.bool(
+     true,
+     "SHOW POSITION BOX ON EVERY TRADE",
+     group = GROUP_VISUAL
+)
+
+int positionBoxMinWidth = input.int(
+     12,
+     "Minimum Position Box Width",
+     minval = 2,
+     maxval = 100,
+     group = GROUP_VISUAL
+)
+
+int maximumHistoricalTrades = input.int(
+     20,
+     "Maximum Historical Position Boxes",
+     minval = 1,
+     maxval = 30,
+     group = GROUP_VISUAL
+)
+
+bool showTradeLabels = input.bool(
+     true,
+     "Show Position Labels",
+     group = GROUP_VISUAL
+)
+
+color riskBoxColor = input.color(
+     color.rgb(190, 193, 198),
+     "STOP / Risk Box",
+     group = GROUP_VISUAL
+)
+
+int riskBoxTransparency = input.int(
+     35,
+     "Risk Box Transparency",
+     minval = 0,
+     maxval = 100,
+     group = GROUP_VISUAL
+)
+
+color rewardBoxColor = input.color(
+     color.rgb(90, 205, 190),
+     "TARGET / Profit Box",
+     group = GROUP_VISUAL
+)
+
+int rewardBoxTransparency = input.int(
+     32,
+     "Reward Box Transparency",
+     minval = 0,
+     maxval = 100,
+     group = GROUP_VISUAL
+)
+
+color entryLineColor = input.color(
+     color.rgb(70, 75, 80),
+     "ENTRY Line",
+     group = GROUP_VISUAL
+)
+
+color stopLineColor = input.color(
+     color.rgb(125, 130, 135),
+     "STOP Line",
+     group = GROUP_VISUAL
+)
+
+color targetLineColor = input.color(
+     color.rgb(20, 155, 145),
+     "TARGET Line",
+     group = GROUP_VISUAL
+)
+
+color tp1LineColor = input.color(
+     color.rgb(25, 140, 145),
+     "TP1 Line",
+     group = GROUP_VISUAL
+)
+
+color beLineColor = input.color(
+     color.rgb(210, 150, 20),
+     "BE Line",
+     group = GROUP_VISUAL
+)
+
+bool showTimeframeWarning = input.bool(
+     true,
+     "Show Non-2M Warning",
+     group = GROUP_VISUAL
+)
+
+
+//=============================================================================
+// BACKTEST
+//=============================================================================
+
+int startDate = input.time(
+     timestamp("01 Jan 2024 00:00 +0000"),
+     "Start Date",
+     group = GROUP_BACKTEST
+)
+
+int endDate = input.time(
+     timestamp("31 Dec 2099 23:59 +0000"),
+     "End Date",
+     group = GROUP_BACKTEST
+)
+
+bool inDateRange =
+     time >= startDate and
+     time <= endDate
+
+
+//=============================================================================
+// DEBUG
+//=============================================================================
+
+bool debugMode = input.bool(
+     false,
+     "Debug Mode",
+     group = GROUP_DEBUG
+)
+
+
+//=============================================================================
+// HELPERS
+//=============================================================================
+
+f_roundToTick(float price) =>
+    math.round(price / syminfo.mintick) * syminfo.mintick
+
+
+f_directionAllowed(int dir) =>
+    dir == -1 ? (tradeDirection == "SHORT ONLY" or tradeDirection == "BOTH") : (tradeDirection == "LONG ONLY" or tradeDirection == "BOTH")
+
+
+//=============================================================================
+// BAR GUARD
+//=============================================================================
+
+var int lastProcessedBar = na
+
+bool confirmedNewBar =
+     barstate.isconfirmed and
+     (
+         na(lastProcessedBar) or
+         bar_index != lastProcessedBar
+     )
+
+
+//=============================================================================
+// STRUCTURE STATE
+//=============================================================================
+
+float pivotHigh =
+     ta.pivothigh(
+         high,
+         swingLength,
+         swingLength
+     )
+
+float pivotLow =
+     ta.pivotlow(
+         low,
+         swingLength,
+         swingLength
+     )
+
+var float lastSwingHigh = na
+var float lastSwingLow = na
+
+var int lastSwingHighBar = na
+var int lastSwingLowBar = na
+
+var bool lastSwingHighBroken = false
+var bool lastSwingLowBroken = false
+
+var int structureDirection = 0
+
+
+//=============================================================================
+// VISUAL ARRAYS
+//=============================================================================
+
+var line[] structureLines = array.new_line()
+var label[] structureLabels = array.new_label()
+
+var box[] fvgBoxes = array.new_box()
+var label[] twoFvgLabels = array.new_label()
+
+var box[] historicalTradeBoxes = array.new_box()
+var line[] historicalTradeLines = array.new_line()
+var label[] historicalTradeLabels = array.new_label()
+
+
+//=============================================================================
+// STRICT EMA CYCLE STATE
+//=============================================================================
+
+var int activeCycleId = 0
+var int lastTradedCycleId = -1
+
+var bool cycleActive = false
+var bool cycleConsumed = false
+
+var int cycleDirection = 0
+var int cycleCrossBar = na
+
+var bool cycleStructureSeen = false
+var int cycleStructureBar = na
+
+var int cycleFvgCount = 0
+
+var float cycleFvgClusterBottom = na
+var float cycleFvgClusterTop = na
+
+var int cycleFirstFvgBar = na
+var int cycleSecondFvgBar = na
+
+var bool strictSetupReady = false
+var int strictSetupReadyBar = na
+
+
+//=============================================================================
+// PENDING ORDER
+//=============================================================================
+
+var bool pendingActive = false
+
+var int pendingDirection = 0
+var int pendingCreatedBar = na
+var int pendingCycleId = na
+
+var float pendingEntry = na
+var float pendingStop = na
+var float pendingTarget = na
+var float pendingTP1 = na
+
+var float pendingBETrigger = na
+var float pendingBEStop = na
+
+
+//=============================================================================
+// ACTIVE POSITION
+//=============================================================================
+
+var bool positionRegistered = false
+
+var int activeDirection = 0
+var int activeStartBar = na
+
+var float activeEntry = na
+var float activeOriginalStop = na
+var float activeCurrentStop = na
+
+var float activeTarget = na
+var float activeTP1 = na
+
+var float activeBETrigger = na
+var float activeBEStop = na
+
+var bool beActivated = false
+var bool tp1Taken = false
+
+var float activeInitialQty = na
+
+
+//=============================================================================
+// POSITION BOX HANDLES
+//=============================================================================
+
+var box activeRiskBox = na
+var box activeRewardBox = na
+
+var line activeEntryLine = na
+var line activeStopLine = na
+var line activeTargetLine = na
+var line activeTP1Line = na
+var line activeBELine = na
+
+var label activeEntryLabel = na
+var label activeStopLabel = na
+var label activeTargetLabel = na
+var label activeTP1Label = na
+var label activeBELabel = na
+
+var bool activeVisualCreated = false
+
+
+//=============================================================================
+// EVENTS
+//=============================================================================
+
+bool evtCrossDown = false
+bool evtCrossUp = false
+
+bool evtBullBos = false
+bool evtBearBos = false
+
+bool evtBullChoch = false
+bool evtBearChoch = false
+
+bool evtTwoBullFvg = false
+bool evtTwoBearFvg = false
+
+bool evtSetupReady = false
+bool evtLimitCreated = false
+
+bool evtEntryFilled = false
+
+bool evtBE = false
+bool evtTP = false
+bool evtSL = false
+
+
+//=============================================================================
+// RAW CONDITIONS
+//=============================================================================
+
+bool rawCrossDown =
+     ta.crossunder(
+         close,
+         ema200
+     )
+
+bool rawCrossUp =
+     ta.crossover(
+         close,
+         ema200
+     )
+
+float minFvgThreshold =
+     minFvgUnit == "Ticks" ?
+     minFvgSize * syminfo.mintick :
+     minFvgSize
+
+bool bullishFvgRaw =
+     bar_index >= 2 and
+     low > high[2]
+
+bool bearishFvgRaw =
+     bar_index >= 2 and
+     high < low[2]
+
+float bullishFvgSize =
+     bullishFvgRaw ?
+     low - high[2] :
+     na
+
+float bearishFvgSize =
+     bearishFvgRaw ?
+     low[2] - high :
+     na
+
+
+//=============================================================================
+// REGISTER POSITION FILL
+//=============================================================================
+
+if strategy.position_size != 0 and
+   not positionRegistered
+
+    positionRegistered := true
+
+    activeDirection :=
+         strategy.position_size < 0 ?
+         -1 :
+         1
+
+    activeStartBar :=
+         bar_index
+
+    activeEntry :=
+         not na(pendingEntry) ?
+         pendingEntry :
+         strategy.position_avg_price
+
+    activeOriginalStop :=
+         pendingStop
+
+    activeCurrentStop :=
+         pendingStop
+
+    activeTarget :=
+         pendingTarget
+
+    activeTP1 :=
+         pendingTP1
+
+    activeBETrigger :=
+         pendingBETrigger
+
+    activeBEStop :=
+         pendingBEStop
+
+    activeInitialQty :=
+         math.abs(
+             strategy.position_size
+         )
+
+    beActivated := false
+    tp1Taken := false
+
+
+    //---------------------------------------------------------------------
+    // LOCK CURRENT EMA CYCLE
+    //---------------------------------------------------------------------
+
+    lastTradedCycleId :=
+         not na(pendingCycleId) ?
+         pendingCycleId :
+         activeCycleId
+
+    cycleConsumed := true
+
+    pendingActive := false
+    pendingCycleId := na
+
+    evtEntryFilled := true
+
+
+    //=========================================================================
+    // CREATE POSITION BOX
+    //=========================================================================
+
+    if showTradeBoxes
+
+        int initialRight =
+             activeStartBar +
+             positionBoxMinWidth
+
+        float riskTop =
+             math.max(
+                 activeEntry,
+                 activeOriginalStop
+             )
+
+        float riskBottom =
+             math.min(
+                 activeEntry,
+                 activeOriginalStop
+             )
+
+        float rewardTop =
+             math.max(
+                 activeEntry,
+                 activeTarget
+             )
+
+        float rewardBottom =
+             math.min(
+                 activeEntry,
+                 activeTarget
+             )
+
+
+        activeRiskBox := box.new(
+             left = activeStartBar,
+             top = riskTop,
+             right = initialRight,
+             bottom = riskBottom,
+             xloc = xloc.bar_index,
+             extend = extend.none,
+             bgcolor = color.new(
+                 riskBoxColor,
+                 riskBoxTransparency
+             ),
+             border_color = color.new(
+                 riskBoxColor,
+                 25
+             ),
+             border_width = 1
+        )
+
+
+        activeRewardBox := box.new(
+             left = activeStartBar,
+             top = rewardTop,
+             right = initialRight,
+             bottom = rewardBottom,
+             xloc = xloc.bar_index,
+             extend = extend.none,
+             bgcolor = color.new(
+                 rewardBoxColor,
+                 rewardBoxTransparency
+             ),
+             border_color = color.new(
+                 rewardBoxColor,
+                 20
+             ),
+             border_width = 1
+        )
+
+
+        activeEntryLine := line.new(
+             x1 = activeStartBar,
+             y1 = activeEntry,
+             x2 = initialRight,
+             y2 = activeEntry,
+             xloc = xloc.bar_index,
+             color = entryLineColor,
+             width = 1
+        )
+
+
+        activeStopLine := line.new(
+             x1 = activeStartBar,
+             y1 = activeCurrentStop,
+             x2 = initialRight,
+             y2 = activeCurrentStop,
+             xloc = xloc.bar_index,
+             color = stopLineColor,
+             width = 1
+        )
+
+
+        activeTargetLine := line.new(
+             x1 = activeStartBar,
+             y1 = activeTarget,
+             x2 = initialRight,
+             y2 = activeTarget,
+             xloc = xloc.bar_index,
+             color = targetLineColor,
+             width = 1
+        )
+
+
+        activeTP1Line := line.new(
+             x1 = activeStartBar,
+             y1 = activeTP1,
+             x2 = initialRight,
+             y2 = activeTP1,
+             xloc = xloc.bar_index,
+             color = tp1LineColor,
+             style = line.style_dashed,
+             width = 1
+        )
+
+
+        activeBELine := line.new(
+             x1 = activeStartBar,
+             y1 = activeBETrigger,
+             x2 = initialRight,
+             y2 = activeBETrigger,
+             xloc = xloc.bar_index,
+             color = beLineColor,
+             style = line.style_dashed,
+             width = 1
+        )
+
+
+        if showTradeLabels
+
+            activeStopLabel := label.new(
+                 x = initialRight,
+                 y = activeCurrentStop,
+                 text =
+                     "STOP " +
+                     str.tostring(
+                         slPoints,
+                         "#.##"
+                     ),
+                 xloc = xloc.bar_index,
+                 yloc = yloc.price,
+                 style = label.style_label_left,
+                 color = color.new(
+                     color.white,
+                     100
+                 ),
+                 textcolor = stopLineColor,
+                 size = size.tiny
+            )
+
+
+            activeEntryLabel := label.new(
+                 x = initialRight,
+                 y = activeEntry,
+                 text = "ENTRY",
+                 xloc = xloc.bar_index,
+                 yloc = yloc.price,
+                 style = label.style_label_left,
+                 color = color.new(
+                     color.white,
+                     100
+                 ),
+                 textcolor = entryLineColor,
+                 size = size.tiny
+            )
+
+
+            activeTP1Label := label.new(
+                 x = initialRight,
+                 y = activeTP1,
+                 text =
+                     "TP1 +" +
+                     str.tostring(
+                         tpPoints *
+                         tp1Fraction,
+                         "#.##"
+                     ),
+                 xloc = xloc.bar_index,
+                 yloc = yloc.price,
+                 style = label.style_label_left,
+                 color = color.new(
+                     color.white,
+                     100
+                 ),
+                 textcolor = tp1LineColor,
+                 size = size.tiny
+            )
+
+
+            activeBELabel := label.new(
+                 x = initialRight,
+                 y = activeBETrigger,
+                 text =
+                     "BE +" +
+                     str.tostring(
+                         beTriggerPoints,
+                         "#.##"
+                     ),
+                 xloc = xloc.bar_index,
+                 yloc = yloc.price,
+                 style = label.style_label_left,
+                 color = color.new(
+                     color.white,
+                     100
+                 ),
+                 textcolor = beLineColor,
+                 size = size.tiny
+            )
+
+
+            activeTargetLabel := label.new(
+                 x = initialRight,
+                 y = activeTarget,
+                 text =
+                     "TARGET +" +
+                     str.tostring(
+                         tpPoints,
+                         "#.##"
+                     ),
+                 xloc = xloc.bar_index,
+                 yloc = yloc.price,
+                 style = label.style_label_left,
+                 color = color.new(
+                     color.white,
+                     100
+                 ),
+                 textcolor = targetLineColor,
+                 size = size.tiny
+            )
+
+
+        activeVisualCreated := true
+
+
+//=============================================================================
+// PARTIAL TP1
+//=============================================================================
+
+if positionRegistered and
+   strategy.position_size != 0 and
+   enablePartialTP1 and
+   not tp1Taken and
+   not na(activeInitialQty)
+
+    if math.abs(
+         strategy.position_size
+    ) <
+       activeInitialQty
+
+        tp1Taken := true
+
+
+//=============================================================================
+// BREAK EVEN
+//=============================================================================
+
+bool historicalBEAllowed =
+     allowHistoricalSameBarBE or
+     barstate.isrealtime or
+     bar_index >
+     activeStartBar
+
+
+if positionRegistered and
+   strategy.position_size != 0 and
+   not beActivated and
+   historicalBEAllowed
+
+    bool hitBE =
+         activeDirection == -1 ?
+         low <= activeBETrigger :
+         high >= activeBETrigger
+
+
+    if hitBE
+
+        beActivated := true
+        activeCurrentStop := activeBEStop
+
+        evtBE := true
+
+
+        if activeDirection == -1
+
+            if enablePartialTP1
+
+                if not tp1Taken
+
+                    strategy.exit(
+                         ID_SHORT_TP1,
+                         from_entry = ID_SHORT,
+                         limit = activeTP1,
+                         stop = activeCurrentStop,
+                         qty_percent = tp1QtyPercent
+                    )
+
+
+                strategy.exit(
+                     ID_SHORT_MAIN,
+                     from_entry = ID_SHORT,
+                     limit = activeTarget,
+                     stop = activeCurrentStop,
+                     qty_percent =
+                         100.0 -
+                         tp1QtyPercent
+                )
+
+            else
+
+                strategy.exit(
+                     ID_SHORT_MAIN,
+                     from_entry = ID_SHORT,
+                     limit = activeTarget,
+                     stop = activeCurrentStop
+                )
+
+
+        if activeDirection == 1
+
+            if enablePartialTP1
+
+                if not tp1Taken
+
+                    strategy.exit(
+                         ID_LONG_TP1,
+                         from_entry = ID_LONG,
+                         limit = activeTP1,
+                         stop = activeCurrentStop,
+                         qty_percent = tp1QtyPercent
+                    )
+
+
+                strategy.exit(
+                     ID_LONG_MAIN,
+                     from_entry = ID_LONG,
+                     limit = activeTarget,
+                     stop = activeCurrentStop,
+                     qty_percent =
+                         100.0 -
+                         tp1QtyPercent
+                )
+
+            else
+
+                strategy.exit(
+                     ID_LONG_MAIN,
+                     from_entry = ID_LONG,
+                     limit = activeTarget,
+                     stop = activeCurrentStop
+                )
+
+
+//=============================================================================
+// MAIN CONFIRMED BAR LOGIC
+//=============================================================================
+
+if confirmedNewBar
+
+    //=========================================================================
+    // STRUCTURE DETECTION
+    //=========================================================================
+
+    float highBreakSource =
+         breakConfirmation == "Close" ?
+         close :
+         high
+
+    float lowBreakSource =
+         breakConfirmation == "Close" ?
+         close :
+         low
+
+
+    bool oldBreakHigh =
+         not na(lastSwingHigh) and
+         not lastSwingHighBroken and
+         highBreakSource >
+         lastSwingHigh
+
+    bool oldBreakLow =
+         not na(lastSwingLow) and
+         not lastSwingLowBroken and
+         lowBreakSource <
+         lastSwingLow
+
+
+    if oldBreakHigh
+        lastSwingHighBroken := true
+
+
+    if oldBreakLow
+        lastSwingLowBroken := true
+
+
+    bool selectedOldHigh =
+         oldBreakHigh
+
+    bool selectedOldLow =
+         oldBreakLow
+
+
+    if oldBreakHigh and
+       oldBreakLow
+
+        if structureDirection == 1
+            selectedOldHigh := false
+
+        else if structureDirection == -1
+            selectedOldLow := false
+
+        else if close >= open
+            selectedOldLow := false
+
+        else
+            selectedOldHigh := false
+
+
+    bool structureSignalCreated =
+         false
+
+
+    float bullStructureLevel =
+         na
+
+    int bullStructureStartBar =
+         na
+
+
+    float bearStructureLevel =
+         na
+
+    int bearStructureStartBar =
+         na
+
+
+    //---------------------------------------------------------------------
+    // BREAK OLD HIGH
+    //---------------------------------------------------------------------
+
+    if selectedOldHigh
+
+        bullStructureLevel :=
+             lastSwingHigh
+
+        bullStructureStartBar :=
+             lastSwingHighBar
+
+
+        if structureDirection == -1
+            evtBullChoch := enableChoch
+
+        else
+            evtBullBos := enableBos
+
+
+        structureDirection := 1
+        structureSignalCreated := true
+
+
+    //---------------------------------------------------------------------
+    // BREAK OLD LOW
+    //---------------------------------------------------------------------
+
+    else if selectedOldLow
+
+        bearStructureLevel :=
+             lastSwingLow
+
+        bearStructureStartBar :=
+             lastSwingLowBar
+
+
+        if structureDirection == 1
+            evtBearChoch := enableChoch
+
+        else
+            evtBearBos := enableBos
+
+
+        structureDirection := -1
+        structureSignalCreated := true
+
+
+    //---------------------------------------------------------------------
+    // NEW PIVOTS
+    //---------------------------------------------------------------------
+
+    bool hasNewPivotHigh =
+         not na(
+             pivotHigh
+         )
+
+    bool hasNewPivotLow =
+         not na(
+             pivotLow
+         )
+
+
+    float newPivotHighLevel =
+         pivotHigh
+
+    float newPivotLowLevel =
+         pivotLow
+
+
+    int newPivotHighBar =
+         bar_index -
+         swingLength
+
+    int newPivotLowBar =
+         bar_index -
+         swingLength
+
+
+    bool newPivotHighAlreadyBroken =
+         hasNewPivotHigh and
+         highBreakSource >
+         newPivotHighLevel
+
+    bool newPivotLowAlreadyBroken =
+         hasNewPivotLow and
+         lowBreakSource <
+         newPivotLowLevel
+
+
+    bool selectedNewHigh =
+         newPivotHighAlreadyBroken
+
+    bool selectedNewLow =
+         newPivotLowAlreadyBroken
+
+
+    if not structureSignalCreated
+
+        if selectedNewHigh and
+           selectedNewLow
+
+            if structureDirection == 1
+                selectedNewHigh := false
+
+            else if structureDirection == -1
+                selectedNewLow := false
+
+            else if close >= open
+                selectedNewLow := false
+
+            else
+                selectedNewHigh := false
+
+
+        if selectedNewHigh
+
+            bullStructureLevel :=
+                 newPivotHighLevel
+
+            bullStructureStartBar :=
+                 newPivotHighBar
+
+
+            if structureDirection == -1
+                evtBullChoch := enableChoch
+
+            else
+                evtBullBos := enableBos
+
+
+            structureDirection := 1
+
+
+        else if selectedNewLow
+
+            bearStructureLevel :=
+                 newPivotLowLevel
+
+            bearStructureStartBar :=
+                 newPivotLowBar
+
+
+            if structureDirection == 1
+                evtBearChoch := enableChoch
+
+            else
+                evtBearBos := enableBos
+
+
+            structureDirection := -1
+
+
+    //---------------------------------------------------------------------
+    // REGISTER PIVOTS
+    //---------------------------------------------------------------------
+
+    if hasNewPivotHigh
+
+        lastSwingHigh :=
+             newPivotHighLevel
+
+        lastSwingHighBar :=
+             newPivotHighBar
+
+        lastSwingHighBroken :=
+             newPivotHighAlreadyBroken
+
+
+    if hasNewPivotLow
+
+        lastSwingLow :=
+             newPivotLowLevel
+
+        lastSwingLowBar :=
+             newPivotLowBar
+
+        lastSwingLowBroken :=
+             newPivotLowAlreadyBroken
+
+
+    bool bullishStructureEvent =
+         evtBullBos or
+         evtBullChoch
+
+    bool bearishStructureEvent =
+         evtBearBos or
+         evtBearChoch
+
+
+    //=========================================================================
+    // STRUCTURE VISUALS
+    //=========================================================================
+
+    float structureAtr =
+         ta.atr(
+             14
+         )
+
+    float structureLabelOffset =
+         nz(
+             structureAtr,
+             syminfo.mintick *
+             20
+         ) *
+         0.06
+
+
+    if bullishStructureEvent
+
+        string bullText =
+             evtBullChoch ?
+             "CHoCH" :
+             "BOS"
+
+
+        bool showBullText =
+             (
+                 evtBullBos and
+                 showBosLabels
+             ) or
+             (
+                 evtBullChoch and
+                 showChochLabels
+             )
+
+
+        if showStructureLines and
+           not na(
+               bullStructureLevel
+           ) and
+           not na(
+               bullStructureStartBar
+           )
+
+            line bullLine = line.new(
+                 x1 =
+                     bullStructureStartBar,
+                 y1 =
+                     bullStructureLevel,
+                 x2 =
+                     bar_index,
+                 y2 =
+                     bullStructureLevel,
+                 xloc =
+                     xloc.bar_index,
+                 extend =
+                     extend.none,
+                 color =
+                     bullishStructureColor,
+                 style =
+                     line.style_dashed,
+                 width =
+                     2
+            )
+
+
+            array.push(
+                 structureLines,
+                 bullLine
+            )
+
+
+        if showBullText and
+           not na(
+               bullStructureLevel
+           ) and
+           not na(
+               bullStructureStartBar
+           )
+
+            int textX =
+                 bullStructureStartBar +
+                 int(
+                     (
+                         bar_index -
+                         bullStructureStartBar
+                     ) /
+                     2
+                 )
+
+
+            label bullLabel = label.new(
+                 x =
+                     textX,
+                 y =
+                     bullStructureLevel +
+                     structureLabelOffset,
+                 text =
+                     bullText,
+                 xloc =
+                     xloc.bar_index,
+                 yloc =
+                     yloc.price,
+                 style =
+                     label.style_none,
+                 textcolor =
+                     bullishStructureColor,
+                 size =
+                     size.small
+            )
+
+
+            array.push(
+                 structureLabels,
+                 bullLabel
+            )
+
+
+    if bearishStructureEvent
+
+        string bearText =
+             evtBearChoch ?
+             "CHoCH" :
+             "BOS"
+
+
+        bool showBearText =
+             (
+                 evtBearBos and
+                 showBosLabels
+             ) or
+             (
+                 evtBearChoch and
+                 showChochLabels
+             )
+
+
+        if showStructureLines and
+           not na(
+               bearStructureLevel
+           ) and
+           not na(
+               bearStructureStartBar
+           )
+
+            line bearLine = line.new(
+                 x1 =
+                     bearStructureStartBar,
+                 y1 =
+                     bearStructureLevel,
+                 x2 =
+                     bar_index,
+                 y2 =
+                     bearStructureLevel,
+                 xloc =
+                     xloc.bar_index,
+                 extend =
+                     extend.none,
+                 color =
+                     bearishStructureColor,
+                 style =
+                     line.style_dashed,
+                 width =
+                     2
+            )
+
+
+            array.push(
+                 structureLines,
+                 bearLine
+            )
+
+
+        if showBearText and
+           not na(
+               bearStructureLevel
+           ) and
+           not na(
+               bearStructureStartBar
+           )
+
+            int textX =
+                 bearStructureStartBar +
+                 int(
+                     (
+                         bar_index -
+                         bearStructureStartBar
+                     ) /
+                     2
+                 )
+
+
+            label bearLabel = label.new(
+                 x =
+                     textX,
+                 y =
+                     bearStructureLevel +
+                     structureLabelOffset,
+                 text =
+                     bearText,
+                 xloc =
+                     xloc.bar_index,
+                 yloc =
+                     yloc.price,
+                 style =
+                     label.style_none,
+                 textcolor =
+                     bearishStructureColor,
+                 size =
+                     size.small
+            )
+
+
+            array.push(
+                 structureLabels,
+                 bearLabel
+            )
+
+
+    while array.size(
+         structureLines
+    ) >
+       maximumStructureObjects
+
+        line oldLine =
+             array.shift(
+                 structureLines
+             )
+
+        line.delete(
+             oldLine
+        )
+
+
+    while array.size(
+         structureLabels
+    ) >
+       maximumStructureObjects
+
+        label oldLabel =
+             array.shift(
+                 structureLabels
+             )
+
+        label.delete(
+             oldLabel
+        )
+
+
+    //=========================================================================
+    // FVG DETECTION
+    //=========================================================================
+
+    bool bullishFvg =
+         enableFvg and
+         bullishFvgRaw and
+         (
+             not useMinFvgFilter or
+             bullishFvgSize >=
+             minFvgThreshold
+         )
+
+    bool bearishFvg =
+         enableFvg and
+         bearishFvgRaw and
+         (
+             not useMinFvgFilter or
+             bearishFvgSize >=
+             minFvgThreshold
+         )
+
+
+    //=========================================================================
+    // FVG VISUALS
+    //=========================================================================
+
+    if showFvg and
+       bullishFvg
+
+        box bullFvgBox = box.new(
+             left =
+                 bar_index -
+                 2,
+             top =
+                 low,
+             right =
+                 bar_index,
+             bottom =
+                 high[2],
+             xloc =
+                 xloc.bar_index,
+             extend =
+                 extend.none,
+             border_color =
+                 color.new(
+                     bullishFvgColor,
+                     76
+                 ),
+             border_width =
+                 1,
+             bgcolor =
+                 color.new(
+                     bullishFvgColor,
+                     fvgTransparency
+                 )
+        )
+
+
+        array.push(
+             fvgBoxes,
+             bullFvgBox
+        )
+
+
+    if showFvg and
+       bearishFvg
+
+        box bearFvgBox = box.new(
+             left =
+                 bar_index -
+                 2,
+             top =
+                 low[2],
+             right =
+                 bar_index,
+             bottom =
+                 high,
+             xloc =
+                 xloc.bar_index,
+             extend =
+                 extend.none,
+             border_color =
+                 color.new(
+                     bearishFvgColor,
+                     76
+                 ),
+             border_width =
+                 1,
+             bgcolor =
+                 color.new(
+                     bearishFvgColor,
+                     fvgTransparency
+                 )
+        )
+
+
+        array.push(
+             fvgBoxes,
+             bearFvgBox
+        )
+
+
+    while array.size(
+         fvgBoxes
+    ) >
+       maximumFvgZones
+
+        box oldFvg =
+             array.shift(
+                 fvgBoxes
+             )
+
+        box.delete(
+             oldFvg
+        )
+
+
+    //=========================================================================
+    // NEW EMA CROSS = NEW STRICT CYCLE
+    //=========================================================================
+
+    evtCrossDown :=
+         rawCrossDown
+
+    evtCrossUp :=
+         rawCrossUp
+
+
+    if evtCrossDown or
+       evtCrossUp
+
+        activeCycleId += 1
+
+
+        //-------------------------------------------------------------
+        // Cancel old pending order
+        //-------------------------------------------------------------
+
+        if pendingActive
+
+            strategy.cancel(
+                 ID_SHORT
+            )
+
+            strategy.cancel(
+                 ID_SHORT_MAIN
+            )
+
+            strategy.cancel(
+                 ID_SHORT_TP1
+            )
+
+            strategy.cancel(
+                 ID_LONG
+            )
+
+            strategy.cancel(
+                 ID_LONG_MAIN
+            )
+
+            strategy.cancel(
+                 ID_LONG_TP1
+            )
+
+
+        pendingActive := false
+        pendingCycleId := na
+
+
+        //-------------------------------------------------------------
+        // COMPLETE RESET OF OLD SETUP DATA
+        //-------------------------------------------------------------
+
+        cycleStructureSeen := false
+        cycleStructureBar := na
+
+        cycleFvgCount := 0
+
+        cycleFvgClusterBottom := na
+        cycleFvgClusterTop := na
+
+        cycleFirstFvgBar := na
+        cycleSecondFvgBar := na
+
+        strictSetupReady := false
+        strictSetupReadyBar := na
+
+        cycleConsumed := false
+
+
+        //-------------------------------------------------------------
+        // SHORT CROSS
+        //-------------------------------------------------------------
+
+        if evtCrossDown
+
+            if f_directionAllowed(-1)
+
+                cycleActive := true
+                cycleDirection := -1
+                cycleCrossBar := bar_index
+
+            else
+
+                cycleActive := false
+                cycleDirection := 0
+                cycleCrossBar := na
+
+
+        //-------------------------------------------------------------
+        // LONG CROSS
+        //-------------------------------------------------------------
+
+        if evtCrossUp
+
+            if f_directionAllowed(1)
+
+                cycleActive := true
+                cycleDirection := 1
+                cycleCrossBar := bar_index
+
+            else
+
+                cycleActive := false
+                cycleDirection := 0
+                cycleCrossBar := na
+
+
+    //=========================================================================
+    // STRICT WINDOW
+    //=========================================================================
+
+    bool strictWindowOpen =
+         cycleActive and
+         not cycleConsumed and
+         not na(
+             cycleCrossBar
+         ) and
+         bar_index >=
+         cycleCrossBar and
+         bar_index <=
+         cycleCrossBar +
+         strictSetupWindowBars
+
+
+    bool cycleAlreadyTraded =
+         lastTradedCycleId ==
+         activeCycleId
+
+
+    bool cycleCanTrade =
+         not firstTradeOnlyPerEmaCycle or
+         not cycleAlreadyTraded
+
+
+    //=========================================================================
+    // COLLECT STRICT CONDITIONS
+    //=========================================================================
+
+    if strictWindowOpen and
+       cycleCanTrade and
+       not pendingActive
+
+        //=====================================================================
+        // BOS / CHOCH IN SAME DIRECTION AS EMA CROSS
+        //=====================================================================
+
+        if cycleDirection == -1 and
+           bearishStructureEvent
+
+            cycleStructureSeen := true
+            cycleStructureBar := bar_index
+
+
+        if cycleDirection == 1 and
+           bullishStructureEvent
+
+            cycleStructureSeen := true
+            cycleStructureBar := bar_index
+
+
+        //=====================================================================
+        // MATCHING FVG
+        //=====================================================================
+
+        bool matchingFvg = false
+
+
+        if cycleDirection == 1 and
+           bullishFvg
+
+            matchingFvg := true
+
+
+        if cycleDirection == -1 and
+           bearishFvg
+
+            matchingFvg := true
+
+
+        //=====================================================================
+        // FVG #1 + FVG #2
+        //=====================================================================
+
+        if matchingFvg and
+           cycleFvgCount <
+           2
+
+            float currentFvgBottom =
+                 na
+
+
+            float currentFvgTop =
+                 na
+
+
+            if cycleDirection == 1
+
+                currentFvgBottom :=
+                     high[2]
+
+                currentFvgTop :=
+                     low
+
+
+            if cycleDirection == -1
+
+                currentFvgBottom :=
+                     high
+
+                currentFvgTop :=
+                     low[2]
+
+
+            //-------------------------------------------------------------
+            // FVG #1
+            //-------------------------------------------------------------
+
+            if cycleFvgCount == 0
+
+                cycleFvgCount := 1
+
+                cycleFirstFvgBar :=
+                     bar_index
+
+                cycleFvgClusterBottom :=
+                     currentFvgBottom
+
+                cycleFvgClusterTop :=
+                     currentFvgTop
+
+
+            //-------------------------------------------------------------
+            // SEARCH FOR CLEAR FVG #2
+            //-------------------------------------------------------------
+
+            else
+
+                bool overlapsFirst =
+                     currentFvgBottom <=
+                     cycleFvgClusterTop and
+                     currentFvgTop >=
+                     cycleFvgClusterBottom
+
+
+                //---------------------------------------------------------
+                // Overlap = still one imbalance
+                //---------------------------------------------------------
+
+                if overlapsFirst
+
+                    cycleFvgClusterBottom :=
+                         math.min(
+                             cycleFvgClusterBottom,
+                             currentFvgBottom
+                         )
+
+
+                    cycleFvgClusterTop :=
+                         math.max(
+                             cycleFvgClusterTop,
+                             currentFvgTop
+                         )
+
+
+                //---------------------------------------------------------
+                // Non-overlapping = true FVG #2
+                //---------------------------------------------------------
+
+                else
+
+                    cycleFvgCount := 2
+
+                    cycleSecondFvgBar :=
+                         bar_index
+
+
+                    if showTwoFvgMarkers
+
+                        float markerY =
+                             cycleDirection == 1 ?
+                             low :
+                             high
+
+
+                        string markerText =
+                             cycleDirection == 1 ?
+                             "▲ 2x" :
+                             "▼ 2x"
+
+
+                        color markerColor =
+                             cycleDirection == 1 ?
+                             bullishFvgColor :
+                             bearishFvgColor
+
+
+                        label strict2x = label.new(
+                             x =
+                                 bar_index,
+                             y =
+                                 markerY,
+                             text =
+                                 markerText,
+                             xloc =
+                                 xloc.bar_index,
+                             yloc =
+                                 yloc.price,
+                             style =
+                                 label.style_none,
+                             textcolor =
+                                 markerColor,
+                             size =
+                                 size.tiny
+                        )
+
+
+                        array.push(
+                             twoFvgLabels,
+                             strict2x
+                        )
+
+
+        //=====================================================================
+        // STRICT SETUP READY
+        //=====================================================================
+
+        if not strictSetupReady and
+           cycleStructureSeen and
+           cycleFvgCount == 2 and
+           not na(
+               cycleStructureBar
+           ) and
+           not na(
+               cycleSecondFvgBar
+           )
+
+            strictSetupReady := true
+
+
+            strictSetupReadyBar :=
+                 math.max(
+                     cycleStructureBar,
+                     cycleSecondFvgBar
+                 )
+
+
+            evtSetupReady := true
+
+
+    //=========================================================================
+    // STRICT WINDOW EXPIRED
+    //=========================================================================
+
+    if cycleActive and
+       not strictSetupReady and
+       not na(
+           cycleCrossBar
+       ) and
+       bar_index >
+       cycleCrossBar +
+       strictSetupWindowBars
+
+        cycleActive := false
+
+
+    //=========================================================================
+    // SIGNAL CANDLE
+    //=========================================================================
+
+    if strictSetupReady and
+       cycleCanTrade and
+       not cycleConsumed and
+       not pendingActive and
+       strategy.position_size == 0 and
+       bar_index >
+       strictSetupReadyBar and
+       inDateRange
+
+        pendingEntry :=
+             f_roundToTick(
+                 (
+                     open +
+                     close
+                 ) /
+                 2.0
+             )
+
+
+        pendingDirection :=
+             cycleDirection
+
+
+        pendingCreatedBar :=
+             bar_index
+
+
+        pendingCycleId :=
+             activeCycleId
+
+
+        //-------------------------------------------------------------
+        // SHORT LEVELS
+        //-------------------------------------------------------------
+
+        if pendingDirection == -1
+
+            pendingStop :=
+                 f_roundToTick(
+                     pendingEntry +
+                     slPoints
+                 )
+
+
+            pendingTarget :=
+                 f_roundToTick(
+                     pendingEntry -
+                     tpPoints
+                 )
+
+
+            pendingTP1 :=
+                 f_roundToTick(
+                     pendingEntry -
+                     tpPoints *
+                     tp1Fraction
+                 )
+
+
+            pendingBETrigger :=
+                 f_roundToTick(
+                     pendingEntry -
+                     beTriggerPoints
+                 )
+
+
+            pendingBEStop :=
+                 f_roundToTick(
+                     pendingEntry +
+                     beOffsetPoints
+                 )
+
+
+        //-------------------------------------------------------------
+        // LONG LEVELS
+        //-------------------------------------------------------------
+
+        if pendingDirection == 1
+
+            pendingStop :=
+                 f_roundToTick(
+                     pendingEntry -
+                     slPoints
+                 )
+
+
+            pendingTarget :=
+                 f_roundToTick(
+                     pendingEntry +
+                     tpPoints
+                 )
+
+
+            pendingTP1 :=
+                 f_roundToTick(
+                     pendingEntry +
+                     tpPoints *
+                     tp1Fraction
+                 )
+
+
+            pendingBETrigger :=
+                 f_roundToTick(
+                     pendingEntry +
+                     beTriggerPoints
+                 )
+
+
+            pendingBEStop :=
+                 f_roundToTick(
+                     pendingEntry -
+                     beOffsetPoints
+                 )
+
+
+        pendingActive := true
+        cycleConsumed := true
+
+        evtLimitCreated := true
+
+
+        //-------------------------------------------------------------
+        // SHORT ORDER
+        //-------------------------------------------------------------
+
+        if pendingDirection == -1
+
+            strategy.entry(
+                 ID_SHORT,
+                 strategy.short,
+                 qty =
+                     orderQty,
+                 limit =
+                     pendingEntry
+            )
+
+
+            if enablePartialTP1
+
+                strategy.exit(
+                     ID_SHORT_TP1,
+                     from_entry =
+                         ID_SHORT,
+                     limit =
+                         pendingTP1,
+                     stop =
+                         pendingStop,
+                     qty_percent =
+                         tp1QtyPercent
+                )
+
+
+                strategy.exit(
+                     ID_SHORT_MAIN,
+                     from_entry =
+                         ID_SHORT,
+                     limit =
+                         pendingTarget,
+                     stop =
+                         pendingStop,
+                     qty_percent =
+                         100.0 -
+                         tp1QtyPercent
+                )
+
+            else
+
+                strategy.exit(
+                     ID_SHORT_MAIN,
+                     from_entry =
+                         ID_SHORT,
+                     limit =
+                         pendingTarget,
+                     stop =
+                         pendingStop
+                )
+
+
+        //-------------------------------------------------------------
+        // LONG ORDER
+        //-------------------------------------------------------------
+
+        if pendingDirection == 1
+
+            strategy.entry(
+                 ID_LONG,
+                 strategy.long,
+                 qty =
+                     orderQty,
+                 limit =
+                     pendingEntry
+            )
+
+
+            if enablePartialTP1
+
+                strategy.exit(
+                     ID_LONG_TP1,
+                     from_entry =
+                         ID_LONG,
+                     limit =
+                         pendingTP1,
+                     stop =
+                         pendingStop,
+                     qty_percent =
+                         tp1QtyPercent
+                )
+
+
+                strategy.exit(
+                     ID_LONG_MAIN,
+                     from_entry =
+                         ID_LONG,
+                     limit =
+                         pendingTarget,
+                     stop =
+                         pendingStop,
+                     qty_percent =
+                         100.0 -
+                         tp1QtyPercent
+                )
+
+            else
+
+                strategy.exit(
+                     ID_LONG_MAIN,
+                     from_entry =
+                         ID_LONG,
+                     limit =
+                         pendingTarget,
+                     stop =
+                         pendingStop
+                )
+
+
+    //=========================================================================
+    // LIMIT EXPIRATION
+    //=========================================================================
+
+    if pendingActive and
+       strategy.position_size == 0
+
+        bool limitExpired =
+             bar_index -
+             pendingCreatedBar >
+             entryValidityBars
+
+
+        bool wrongCycle =
+             pendingCycleId !=
+             activeCycleId
+
+
+        if limitExpired or
+           wrongCycle
+
+            if pendingDirection == -1
+
+                strategy.cancel(
+                     ID_SHORT
+                )
+
+                strategy.cancel(
+                     ID_SHORT_MAIN
+                )
+
+                strategy.cancel(
+                     ID_SHORT_TP1
+                )
+
+
+            if pendingDirection == 1
+
+                strategy.cancel(
+                     ID_LONG
+                )
+
+                strategy.cancel(
+                     ID_LONG_MAIN
+                )
+
+                strategy.cancel(
+                     ID_LONG_TP1
+                )
+
+
+            pendingActive := false
+            pendingCycleId := na
+
+            strictSetupReady := false
+
+
+    lastProcessedBar :=
+         bar_index
+
+
+//=============================================================================
+// UPDATE POSITION BOX
+//=============================================================================
+
+if activeVisualCreated
+
+    int activeRight =
+         math.max(
+             bar_index,
+             activeStartBar +
+             positionBoxMinWidth
+         )
+
+
+    if not na(
+         activeRiskBox
+    )
+
+        box.set_right(
+             activeRiskBox,
+             activeRight
+        )
+
+
+    if not na(
+         activeRewardBox
+    )
+
+        box.set_right(
+             activeRewardBox,
+             activeRight
+        )
+
+
+    if not na(
+         activeEntryLine
+    )
+
+        line.set_x2(
+             activeEntryLine,
+             activeRight
+        )
+
+
+    if not na(
+         activeStopLine
+    )
+
+        line.set_x2(
+             activeStopLine,
+             activeRight
+        )
+
+
+        line.set_y1(
+             activeStopLine,
+             activeCurrentStop
+        )
+
+
+        line.set_y2(
+             activeStopLine,
+             activeCurrentStop
+        )
+
+
+    if not na(
+         activeTargetLine
+    )
+
+        line.set_x2(
+             activeTargetLine,
+             activeRight
+        )
+
+
+    if not na(
+         activeTP1Line
+    )
+
+        line.set_x2(
+             activeTP1Line,
+             activeRight
+        )
+
+
+    if not na(
+         activeBELine
+    )
+
+        line.set_x2(
+             activeBELine,
+             activeRight
+        )
+
+
+    if not na(
+         activeEntryLabel
+    )
+
+        label.set_x(
+             activeEntryLabel,
+             activeRight
+        )
+
+
+    if not na(
+         activeStopLabel
+    )
+
+        label.set_x(
+             activeStopLabel,
+             activeRight
+        )
+
+
+        label.set_y(
+             activeStopLabel,
+             activeCurrentStop
+        )
+
+
+        label.set_text(
+             activeStopLabel,
+             beActivated ?
+             "STOP -> BE" :
+             "STOP " +
+             str.tostring(
+                 slPoints,
+                 "#.##"
+             )
+        )
+
+
+    if not na(
+         activeTP1Label
+    )
+
+        label.set_x(
+             activeTP1Label,
+             activeRight
+        )
+
+
+    if not na(
+         activeBELabel
+    )
+
+        label.set_x(
+             activeBELabel,
+             activeRight
+        )
+
+
+    if not na(
+         activeTargetLabel
+    )
+
+        label.set_x(
+             activeTargetLabel,
+             activeRight
+        )
+
+
+//=============================================================================
+// POSITION CLOSED
+//=============================================================================
+
+if positionRegistered and
+   strategy.position_size == 0
+
+    float exitPrice =
+         strategy.closedtrades > 0 ?
+         strategy.closedtrades.exit_price(
+             strategy.closedtrades -
+             1
+         ) :
+         close
+
+
+    bool targetHit =
+         activeDirection == -1 ?
+         exitPrice <=
+         activeTarget +
+         syminfo.mintick *
+         2 :
+         exitPrice >=
+         activeTarget -
+         syminfo.mintick *
+         2
+
+
+    if targetHit
+        evtTP := true
+
+    else if not beActivated
+        evtSL := true
+
+
+    int finalRight =
+         math.max(
+             bar_index,
+             activeStartBar +
+             positionBoxMinWidth
+         )
+
+
+    //---------------------------------------------------------------------
+    // FREEZE OBJECTS
+    //---------------------------------------------------------------------
+
+    if not na(activeRiskBox)
+        box.set_right(
+             activeRiskBox,
+             finalRight
+        )
+
+
+    if not na(activeRewardBox)
+        box.set_right(
+             activeRewardBox,
+             finalRight
+        )
+
+
+    if not na(activeEntryLine)
+        line.set_x2(
+             activeEntryLine,
+             finalRight
+        )
+
+
+    if not na(activeStopLine)
+        line.set_x2(
+             activeStopLine,
+             finalRight
+        )
+
+
+    if not na(activeTargetLine)
+        line.set_x2(
+             activeTargetLine,
+             finalRight
+        )
+
+
+    if not na(activeTP1Line)
+        line.set_x2(
+             activeTP1Line,
+             finalRight
+        )
+
+
+    if not na(activeBELine)
+        line.set_x2(
+             activeBELine,
+             finalRight
+        )
+
+
+    if not na(activeEntryLabel)
+        label.set_x(
+             activeEntryLabel,
+             finalRight
+        )
+
+
+    if not na(activeStopLabel)
+        label.set_x(
+             activeStopLabel,
+             finalRight
+        )
+
+
+    if not na(activeTargetLabel)
+        label.set_x(
+             activeTargetLabel,
+             finalRight
+        )
+
+
+    if not na(activeTP1Label)
+        label.set_x(
+             activeTP1Label,
+             finalRight
+        )
+
+
+    if not na(activeBELabel)
+        label.set_x(
+             activeBELabel,
+             finalRight
+        )
+
+
+    //---------------------------------------------------------------------
+    // KEEP EVERY POSITION BOX
+    //---------------------------------------------------------------------
+
+    if not na(activeRiskBox)
+        array.push(
+             historicalTradeBoxes,
+             activeRiskBox
+        )
+
+
+    if not na(activeRewardBox)
+        array.push(
+             historicalTradeBoxes,
+             activeRewardBox
+        )
+
+
+    if not na(activeEntryLine)
+        array.push(
+             historicalTradeLines,
+             activeEntryLine
+        )
+
+
+    if not na(activeStopLine)
+        array.push(
+             historicalTradeLines,
+             activeStopLine
+        )
+
+
+    if not na(activeTargetLine)
+        array.push(
+             historicalTradeLines,
+             activeTargetLine
+        )
+
+
+    if not na(activeTP1Line)
+        array.push(
+             historicalTradeLines,
+             activeTP1Line
+        )
+
+
+    if not na(activeBELine)
+        array.push(
+             historicalTradeLines,
+             activeBELine
+        )
+
+
+    if not na(activeEntryLabel)
+        array.push(
+             historicalTradeLabels,
+             activeEntryLabel
+        )
+
+
+    if not na(activeStopLabel)
+        array.push(
+             historicalTradeLabels,
+             activeStopLabel
+        )
+
+
+    if not na(activeTargetLabel)
+        array.push(
+             historicalTradeLabels,
+             activeTargetLabel
+        )
+
+
+    if not na(activeTP1Label)
+        array.push(
+             historicalTradeLabels,
+             activeTP1Label
+        )
+
+
+    if not na(activeBELabel)
+        array.push(
+             historicalTradeLabels,
+             activeBELabel
+        )
+
+
+    //---------------------------------------------------------------------
+    // RELEASE HANDLES
+    //---------------------------------------------------------------------
+
+    activeRiskBox := na
+    activeRewardBox := na
+
+    activeEntryLine := na
+    activeStopLine := na
+    activeTargetLine := na
+    activeTP1Line := na
+    activeBELine := na
+
+    activeEntryLabel := na
+    activeStopLabel := na
+    activeTargetLabel := na
+    activeTP1Label := na
+    activeBELabel := na
+
+    activeVisualCreated := false
+
+
+    positionRegistered := false
+
+    beActivated := false
+    tp1Taken := false
+
+    activeInitialQty := na
+
+
+//=============================================================================
+// CAP HISTORICAL OBJECTS
+//=============================================================================
+
+int maxTradeBoxes =
+     maximumHistoricalTrades *
+     2
+
+
+int maxTradeLines =
+     maximumHistoricalTrades *
+     5
+
+
+int maxTradeLabels =
+     maximumHistoricalTrades *
+     5
+
+
+while array.size(
+     historicalTradeBoxes
+) >
+   maxTradeBoxes
+
+    box oldTradeBox =
+         array.shift(
+             historicalTradeBoxes
+         )
+
+
+    box.delete(
+         oldTradeBox
+    )
+
+
+while array.size(
+     historicalTradeLines
+) >
+   maxTradeLines
+
+    line oldTradeLine =
+         array.shift(
+             historicalTradeLines
+         )
+
+
+    line.delete(
+         oldTradeLine
+    )
+
+
+while array.size(
+     historicalTradeLabels
+) >
+   maxTradeLabels
+
+    label oldTradeLabel =
+         array.shift(
+             historicalTradeLabels
+         )
+
+
+    label.delete(
+         oldTradeLabel
+    )
+
+
+//=============================================================================
+// DEBUG
+//=============================================================================
+
+plotshape(
+     debugMode and
+     evtCrossDown,
+     title = "STRICT SHORT CROSS",
+     text = "EMA↓",
+     style = shape.labeldown,
+     location = location.abovebar,
+     color = color.new(
+         color.red,
+         15
+     ),
+     textcolor = color.white,
+     size = size.tiny
+)
+
+
+plotshape(
+     debugMode and
+     evtCrossUp,
+     title = "STRICT LONG CROSS",
+     text = "EMA↑",
+     style = shape.labelup,
+     location = location.belowbar,
+     color = color.new(
+         color.green,
+         15
+     ),
+     textcolor = color.white,
+     size = size.tiny
+)
+
+
+plotshape(
+     debugMode and
+     evtSetupReady,
+     title = "STRICT SETUP READY",
+     text = "STRICT\nREADY",
+     style = shape.labeldown,
+     location = location.abovebar,
+     color = color.new(
+         color.blue,
+         10
+     ),
+     textcolor = color.white,
+     size = size.tiny
+)
+
+
+//=============================================================================
+// 2M WARNING
+//=============================================================================
+
+bool correctTF =
+     timeframe.isminutes and
+     timeframe.multiplier ==
+     2
+
+
+var table timeframeTable =
+     table.new(
+         position.bottom_right,
+         1,
+         1
+     )
+
+
+if barstate.islast
+
+    if showTimeframeWarning and
+       not correctTF
+
+        table.cell(
+             timeframeTable,
+             0,
+             0,
+             "USE 2 MINUTE TF",
+             text_color = color.white,
+             bgcolor = color.orange
+        )
+
+    else
+
+        table.cell(
+             timeframeTable,
+             0,
+             0,
+             ""
+        )
+
+
+//=============================================================================
+// ALERTS
+//=============================================================================
+
+alertcondition(
+     evtCrossDown,
+     "EMA200 CROSS DOWN",
+     "STRICT SHORT CYCLE STARTED"
+)
+
+alertcondition(
+     evtCrossUp,
+     "EMA200 CROSS UP",
+     "STRICT LONG CYCLE STARTED"
+)
+
+alertcondition(
+     evtBullBos or
+     evtBearBos,
+     "BOS",
+     "BOS"
+)
+
+alertcondition(
+     evtBullChoch or
+     evtBearChoch,
+     "CHoCH",
+     "CHoCH"
+)
+
+alertcondition(
+     evtSetupReady,
+     "STRICT SETUP READY",
+     "EMA CROSS + BOS/CHoCH + TWO CLEAR FVG"
+)
+
+alertcondition(
+     evtLimitCreated,
+     "LIMIT CREATED",
+     "50% BODY LIMIT CREATED"
+)
+
+alertcondition(
+     evtEntryFilled,
+     "ENTRY FILLED",
+     "STRICT ENTRY FILLED"
+)
+
+alertcondition(
+     evtBE,
+     "BE ACTIVATED",
+     "BREAK EVEN ACTIVATED"
+)
+
+alertcondition(
+     evtTP,
+     "TP HIT",
+     "TAKE PROFIT HIT"
+)
+
+alertcondition(
+     evtSL,
+     "SL HIT",
+     "STOP LOSS HIT"
+)

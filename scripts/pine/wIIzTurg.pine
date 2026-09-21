@@ -1,0 +1,336 @@
+//@version=6
+indicator("ATK / DEF — Multi-Session Volatility Dynamics", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=200)
+
+// ============================================
+// 1. Input Parameters
+// ============================================
+// Timezone setting
+userTimezone = input.string("Asia/Shanghai", "Timezone", options=["UTC", "UTC+1", "UTC+2", "UTC+3", "UTC+4", "UTC+5", "UTC+6", "UTC+7", "UTC+8", "UTC+9", "UTC+10", "UTC+11", "UTC+12", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Europe/London", "Europe/Paris", "Europe/Moscow", "Asia/Dubai", "Asia/Singapore", "Asia/Shanghai", "Asia/Tokyo", "Australia/Sydney", "Pacific/Auckland"])
+
+// Bar display limit
+maxBarsToShow = input.int(50, "Max Bars to Show", minval=10, maxval=200, tooltip="Only show OB boxes and labels for the most recent N bars")
+
+// ============================================
+// 1.1 Asian Session Settings
+// ============================================
+groupAsia = "Asian Session"
+enableAsia = input.bool(true, "Enable Asian Session", group=groupAsia)
+asiaStartHour = input.int(9, "Start Hour", minval=0, maxval=23, group=groupAsia)
+asiaStartMinute = input.int(0, "Start Minute", minval=0, maxval=59, group=groupAsia)
+asiaEndHour = input.int(10, "End Hour", minval=0, maxval=23, group=groupAsia)
+asiaEndMinute = input.int(0, "End Minute", minval=0, maxval=59, group=groupAsia)
+
+// ============================================
+// 1.2 European Session Settings
+// ============================================
+groupEurope = "European Session"
+enableEurope = input.bool(true, "Enable European Session", group=groupEurope)
+europeStartHour = input.int(15, "Start Hour", minval=0, maxval=23, group=groupEurope)
+europeStartMinute = input.int(0, "Start Minute", minval=0, maxval=59, group=groupEurope)
+europeEndHour = input.int(16, "End Hour", minval=0, maxval=23, group=groupEurope)
+europeEndMinute = input.int(0, "End Minute", minval=0, maxval=59, group=groupEurope)
+
+// ============================================
+// 1.3 American Session Settings
+// ============================================
+groupAmerica = "American Session"
+enableAmerica = input.bool(true, "Enable American Session", group=groupAmerica)
+americaStartHour = input.int(21, "Start Hour", minval=0, maxval=23, group=groupAmerica)
+americaStartMinute = input.int(0, "Start Minute", minval=0, maxval=59, group=groupAmerica)
+americaEndHour = input.int(22, "End Hour", minval=0, maxval=23, group=groupAmerica)
+americaEndMinute = input.int(0, "End Minute", minval=0, maxval=59, group=groupAmerica)
+
+// ============================================
+// 1.4 Display Settings
+// ============================================
+showOB = input.bool(true, "Show OB Boxes", group="Display Settings")
+showProgress = input.bool(true, "Show Progress Table", group="Display Settings")
+
+// ============================================
+// 2. Get User Timezone Time
+// ============================================
+currentHour = hour(time, userTimezone)
+currentMinute = minute(time, userTimezone)
+currentTimeMinutes = currentHour * 60 + currentMinute
+
+// ============================================
+// 3. Session Detection (Supports Higher Timeframes)
+// ============================================
+barOpenTime = time
+barOpenHour = hour(barOpenTime, userTimezone)
+barOpenMinute = minute(barOpenTime, userTimezone)
+barOpenMinutes = barOpenHour * 60 + barOpenMinute
+
+barCloseTime = time_close
+barCloseHour = hour(barCloseTime, userTimezone)
+barCloseMinute = minute(barCloseTime, userTimezone)
+barCloseMinutes = barCloseHour * 60 + barCloseMinute
+
+// Session detection function
+isSession(startMinutes, endMinutes) =>
+    result = false
+    if barOpenMinutes >= startMinutes and barOpenMinutes < endMinutes
+        result := true
+    if not result
+        if barOpenMinutes <= startMinutes and barCloseMinutes > startMinutes
+            result := true
+    result
+
+// Calculate session start/end minutes
+asiaStartMinutes = asiaStartHour * 60 + asiaStartMinute
+asiaEndMinutes = asiaEndHour * 60 + asiaEndMinute
+europeStartMinutes = europeStartHour * 60 + europeStartMinute
+europeEndMinutes = europeEndHour * 60 + europeEndMinute
+americaStartMinutes = americaStartHour * 60 + americaStartMinute
+americaEndMinutes = americaEndHour * 60 + americaEndMinute
+
+// Detect current session
+isAsia = enableAsia and isSession(asiaStartMinutes, asiaEndMinutes)
+isEurope = enableEurope and isSession(europeStartMinutes, europeEndMinutes)
+isAmerica = enableAmerica and isSession(americaStartMinutes, americaEndMinutes)
+
+// Determine current session (Priority: America > Europe > Asia)
+currentSession = ""
+sessionColor = color.white
+if isAmerica
+    currentSession := "America"
+    sessionColor := color.rgb(180, 80, 255)  // Purple
+else if isEurope
+    currentSession := "Europe"
+    sessionColor := color.rgb(0, 150, 255)   // Blue
+else if isAsia
+    currentSession := "Asia"
+    sessionColor := color.rgb(255, 165, 0)   // Orange
+
+// ============================================
+// 4. Calculate Candle Body
+// ============================================
+entitySize = math.abs(close - open)
+totalRange = high - low
+entityPercent = totalRange > 0 ? (entitySize / totalRange) * 100 : 0
+progressValue = entityPercent * 2
+
+// ============================================
+// 5. Calculate Three-Dimensional Indicators
+// ============================================
+
+// 5.1 Institutional Behavior Detection
+volAvg = ta.sma(volume, 20)
+volRatio = volume / (volAvg + 0.0001)
+pricePosition = (close - low) / (high - low + 0.0001) * 100
+
+institutionBehavior = ""
+behaviorColor = color.white
+
+if volRatio > 1.5 and pricePosition < 40 and close > open
+    institutionBehavior := "Accumulation"
+    behaviorColor := color.rgb(0, 255, 100)
+else if volRatio > 1.5 and pricePosition > 60 and close < open
+    institutionBehavior := "Distribution"
+    behaviorColor := color.rgb(255, 50, 50)
+else if volRatio > 1.3 and entityPercent < 40
+    institutionBehavior := "Shakeout"
+    behaviorColor := color.rgb(255, 200, 0)
+else
+    institutionBehavior := "Normal"
+    behaviorColor := color.rgb(150, 150, 150)
+
+// 5.2 Liquidity Assessment
+liquidityLevel = ""
+liquidityColor = color.white
+
+if volRatio > 1.8
+    liquidityLevel := "High Liquidity"
+    liquidityColor := color.rgb(255, 0, 0)
+else if volRatio > 1.2
+    liquidityLevel := "Medium Liquidity"
+    liquidityColor := color.rgb(255, 165, 0)
+else
+    liquidityLevel := "Low Liquidity"
+    liquidityColor := color.rgb(0, 150, 255)
+
+// 5.3 Volatility State
+atrValue = ta.atr(14)
+atrAvg = ta.sma(atrValue, 50)
+atrRatio = atrValue / (atrAvg + 0.0001)
+
+volatilityState = ""
+volatilityColor = color.white
+
+if atrRatio > 1.5
+    volatilityState := "Expanding"
+    volatilityColor := color.rgb(255, 50, 50)
+else if atrRatio > 0.8
+    volatilityState := "Ranging"
+    volatilityColor := color.rgb(255, 200, 0)
+else
+    volatilityState := "Contracting"
+    volatilityColor := color.rgb(0, 150, 255)
+
+// ============================================
+// 6. Combined Label
+// ============================================
+combinedLabel = institutionBehavior + " | " + liquidityLevel + " | " + volatilityState
+combinedColor = behaviorColor
+
+if volRatio > 1.8
+    combinedColor := color.rgb(255, 0, 0)
+else if volRatio > 1.5 and (pricePosition < 40 or pricePosition > 60)
+    combinedColor := behaviorColor
+else if atrRatio > 1.5
+    combinedColor := color.rgb(255, 50, 50)
+
+// ============================================
+// 7. Session OB Boxes + Labels (with Bar Limit)
+// ============================================
+// Check if current bar is within display range (most recent N bars)
+isWithinDisplayRange = bar_index >= last_bar_index - maxBarsToShow + 1
+
+if showOB and currentSession != "" and isWithinDisplayRange
+    // OB box colors (session colors)
+    obColor = color.new(sessionColor, 85)
+    borderColor = color.new(sessionColor, 70)
+    
+    // Draw OB box
+    box.new(
+        left=bar_index - 1,
+        top=high,
+        right=bar_index + 1,
+        bottom=low,
+        bgcolor=obColor,
+        border_color=borderColor,
+        border_width=2,
+        extend=extend.none
+    )
+    
+    // Session label (at the top of the OB box)
+    label.new(
+        x=bar_index,
+        y=high + (high - low) * 0.25,
+        text="🕐 " + currentSession + " Session",
+        color=color.new(color.black, 80),
+        textcolor=sessionColor,
+        style=label.style_label_down,
+        size=size.small
+    )
+    
+    // Combined label
+    label.new(
+        x=bar_index,
+        y=high + (high - low) * 0.12,
+        text=combinedLabel,
+        color=color.new(color.black, 80),
+        textcolor=combinedColor,
+        style=label.style_label_down,
+        size=size.small
+    )
+    
+    // Entity percentage label
+    label.new(
+        x=bar_index,
+        y=high + (high - low) * 0.02,
+        text="Body: " + str.tostring(entityPercent, "#.0") + "%",
+        color=color.new(color.black, 80),
+        textcolor=color.rgb(200, 200, 255),
+        style=label.style_label_down,
+        size=size.tiny
+    )
+
+// ============================================
+// 8. Right Side Progress Table (Latest Data Only)
+// ============================================
+if showProgress and barstate.islast
+    displayProgress = math.min(math.max(progressValue, 0), 200)
+    
+    // Session status text
+    sessionStatus = currentSession != "" ? currentSession : "None"
+    statusColor = currentSession != "" ? sessionColor : color.gray
+    
+    var table progressTable = table.new(
+        position.top_right, 
+        3, 
+        6,
+        bgcolor=color.rgb(10, 10, 30, 95),
+        border_color=color.rgb(80, 80, 150),
+        border_width=1
+    )
+    
+    // Title
+    table.cell(progressTable, 0, 0, "📊 3-Session OB Analysis",
+               text_color=color.rgb(255, 255, 255),
+               text_size=size.small,
+               bgcolor=color.rgb(40, 40, 100))
+    table.merge_cells(progressTable, 0, 0, 2, 0)
+    
+    // Current Session
+    table.cell(progressTable, 0, 1, "Current Session",
+               text_color=color.rgb(200, 200, 255),
+               bgcolor=color.rgb(20, 20, 50))
+    table.cell(progressTable, 1, 1, sessionStatus,
+               text_color=statusColor,
+               bgcolor=color.rgb(20, 20, 50))
+    table.merge_cells(progressTable, 1, 1, 2, 1)
+    
+    // Progress Bar
+    table.cell(progressTable, 0, 2, "0%",
+               text_color=color.rgb(150, 150, 150),
+               text_size=size.tiny,
+               bgcolor=color.rgb(20, 20, 50))
+    
+    progressColor = color.rgb(0, 200, 255)
+    if displayProgress > 100
+        progressColor := color.rgb(255, 200, 0)
+    if displayProgress > 150
+        progressColor := color.rgb(255, 50, 50)
+    
+    barText = "▌" + str.tostring(displayProgress, "#.0") + "%"
+    table.cell(progressTable, 1, 2, barText,
+               text_color=progressColor,
+               text_size=size.normal,
+               bgcolor=color.rgb(20, 20, 50))
+    
+    table.cell(progressTable, 2, 2, "200%",
+               text_color=color.rgb(150, 150, 150),
+               text_size=size.tiny,
+               bgcolor=color.rgb(20, 20, 50))
+    
+    // Institutional Behavior
+    table.cell(progressTable, 0, 3, "Institution",
+               text_color=color.rgb(200, 200, 255),
+               bgcolor=color.rgb(20, 20, 50))
+    table.cell(progressTable, 1, 3, institutionBehavior,
+               text_color=behaviorColor,
+               bgcolor=color.rgb(20, 20, 50))
+    table.merge_cells(progressTable, 1, 3, 2, 3)
+    
+    // Liquidity
+    table.cell(progressTable, 0, 4, "Liquidity",
+               text_color=color.rgb(200, 200, 255),
+               bgcolor=color.rgb(20, 20, 50))
+    table.cell(progressTable, 1, 4, liquidityLevel,
+               text_color=liquidityColor,
+               bgcolor=color.rgb(20, 20, 50))
+    table.merge_cells(progressTable, 1, 4, 2, 4)
+    
+    // Volatility State
+    table.cell(progressTable, 0, 5, "Volatility",
+               text_color=color.rgb(200, 200, 255),
+               bgcolor=color.rgb(20, 20, 50))
+    table.cell(progressTable, 1, 5, volatilityState,
+               text_color=volatilityColor,
+               bgcolor=color.rgb(20, 20, 50))
+    table.merge_cells(progressTable, 1, 5, 2, 5)
+
+// ============================================
+// 9. Status Line Display
+// ============================================
+plot(entityPercent, "Body%", display=display.status_line, color=color.rgb(0, 200, 255))
+plot(progressValue, "Progress", display=display.status_line, color=color.rgb(255, 200, 0))
+plot(volRatio, "Volume Ratio", display=display.status_line, color=color.rgb(255, 100, 100))
+
+// ============================================
+// 10. Notes
+// ============================================
+// The indicator automatically manages objects through max_labels_count 
+// and max_boxes_count parameters. Only the most recent N bars (default 50)
+// will display OB boxes and labels. Older bars are automatically cleaned up.

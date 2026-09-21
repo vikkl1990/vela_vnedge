@@ -1,0 +1,360 @@
+//@version=6
+indicator("Volatility Time Windows", "Vol Windows", overlay = true, max_boxes_count = 500, max_labels_count = 500)
+
+// ═══════════════════════════ Inputs ═══════════════════════════
+grpS = "Scanner"
+slotMin  = input.int(60, "Time resolution (minutes)", options = [15, 30, 60, 120], group = grpS, tooltip = "Volatility is measured per time slot of this size and windows are built from consecutive slots. The chart timeframe must be intraday and not larger than this.")
+tzSel    = input.string("UTC", "Timezone", options = ["Exchange", "UTC", "Europe/Berlin", "Europe/London", "America/New_York", "America/Chicago", "Asia/Tokyo", "Asia/Singapore", "Australia/Sydney"], group = grpS)
+daySel   = input.string("All days", "Days", options = ["All days", "Mon-Fri", "Sat-Sun"], group = grpS)
+hotThr   = input.float(1.2, "Volatile if ≥ × average volatility", minval = 1.0, step = 0.05, group = grpS, tooltip = "Consecutive time slots at or above this multiple of the average volatility form a volatile window. Lower = longer windows, higher = only the peak.")
+maxWin   = input.int(2, "Windows to show", minval = 1, maxval = 3, group = grpS)
+
+grpD = "Display"
+boxDays  = input.int(0, "Days of history (0 = all loaded bars)", minval = 0, maxval = 365, group = grpD)
+projNext = input.bool(true, "Show next occurrence (dashed)", group = grpD)
+lblMode  = input.string("All", "Labels", options = ["All", "Current + next only", "None"], inline = "l", group = grpD)
+txtSize  = input.string("small", "", options = ["tiny", "small", "normal"], inline = "l", group = grpD)
+colZone  = input.color(#2962ff, "Zone color", group = grpD)
+
+grpA = "Alerts"
+preMin   = input.int(15, "Heads-up minutes before a window (0 = off)", minval = 0, maxval = 240, group = grpA)
+
+// ═══════════════════════════ Core ═══════════════════════════
+string tz     = tzSel == "Exchange" ? syminfo.timezone : tzSel
+int    nSlots = math.round(1440.0 / slotMin)
+int    tfMin  = math.max(1, math.round(timeframe.in_seconds() / 60.0))
+bool   tfOk   = timeframe.isintraday and tfMin <= slotMin
+int    slotMs = slotMin * 60000
+int    dayMs  = 86400000
+int    minN   = 20
+
+float rawVol     = (high - low) / close * 100
+int   barsPerDay = math.max(2, math.round(1440.0 / tfMin))
+float dailyAvg   = ta.sma(rawVol, barsPerDay)[1]
+float vol        = dailyAvg > 0 ? rawVol / dailyAvg : na
+
+slotOf(int t) => math.floor((hour(t, tz) * 60.0 + minute(t, tz)) / slotMin)
+
+dayOk(int t) =>
+    int  d  = dayofweek(t, tz)
+    bool we = d == dayofweek.saturday or d == dayofweek.sunday
+    daySel == "All days" ? true : daySel == "Mon-Fri" ? not we : we
+
+// slot labels and start times, built once
+var string[] slotLbl = array.new_string()
+var int[]    slotHH  = array.new_int()
+var int[]    slotMM  = array.new_int()
+if barstate.isfirst
+    for i = 0 to nSlots - 1
+        int mins = i * slotMin
+        int hh   = mins / 60
+        int mm   = mins - hh * 60
+        array.push(slotHH, hh)
+        array.push(slotMM, mm)
+        array.push(slotLbl, (hh < 10 ? "0" : "") + str.tostring(hh) + ":" + (mm < 10 ? "0" : "") + str.tostring(mm))
+
+int  slot   = slotOf(time)
+bool accept = tfOk and dayOk(time) and not na(vol)
+
+var float[] sumA = array.new_float(nSlots, 0.0)
+var float[] rawA = array.new_float(nSlots, 0.0)
+var int[]   cntA = array.new_int(nSlots, 0)
+var float   gSum = 0.0
+var int     gCnt = 0
+
+if accept
+    array.set(sumA, slot, array.get(sumA, slot) + vol)
+    array.set(rawA, slot, array.get(rawA, slot) + rawVol)
+    array.set(cntA, slot, array.get(cntA, slot) + 1)
+    gSum += vol
+    gCnt += 1
+
+float gMean = gCnt > 0 ? gSum / gCnt : na
+
+ratioOf(int i) =>
+    int n = array.get(cntA, i)
+    n >= minN and gMean > 0 ? array.get(sumA, i) / n / gMean : na
+
+// ═══════════════════════════ Windows ═══════════════════════════
+var int[]   fStart = array.new_int()          // final windows: start slot
+var int[]   fLen   = array.new_int()          // length in slots
+var float[] fRatio = array.new_float()
+var int[]   fNext  = array.new_int()          // next start time per window
+var int[]   winOf  = array.new_int(nSlots, -1)
+var int[]   tStart = array.new_int()          // scratch
+var int[]   tLen   = array.new_int()
+var float[] tRatio = array.new_float()
+
+winStat(int ws, int len, float[] src) =>
+    float s = 0.0
+    int   c = 0
+    for k = 0 to len - 1
+        int j = ws + k
+        if j >= nSlots
+            j -= nSlots
+        s += array.get(src, j)
+        c += array.get(cntA, j)
+    c > 0 ? s / c : na
+
+winRatio(int ws, int len) =>
+    float m = winStat(ws, len, sumA)
+    gMean > 0 ? m / gMean : na
+
+// finds all runs of consecutive "true" slots (circular, across midnight) and stores them in the scratch arrays
+scanRuns(bool[] mask) =>
+    array.clear(tStart)
+    array.clear(tLen)
+    array.clear(tRatio)
+    int n   = array.size(mask)
+    int gap = 0
+    for i = 0 to n - 1
+        if not array.get(mask, i)
+            gap := i
+            break
+    int rs = -1
+    int rl = 0
+    for k = 1 to n
+        int j = gap + k
+        if j >= n
+            j -= n
+        if array.get(mask, j)
+            if rs == -1
+                rs := j
+                rl := 1
+            else
+                rl += 1
+        else if rs != -1
+            array.push(tStart, rs)
+            array.push(tLen, rl)
+            array.push(tRatio, winRatio(rs, rl))
+            rs := -1
+            rl := 0
+    if rs != -1
+        array.push(tStart, rs)
+        array.push(tLen, rl)
+        array.push(tRatio, winRatio(rs, rl))
+    array.size(tStart)
+
+if barstate.islast and tfOk
+    array.clear(fStart)
+    array.clear(fLen)
+    array.clear(fRatio)
+    array.fill(winOf, -1)
+    bool[] mask     = array.new_bool(nSlots, false)
+    int    nValid   = 0
+    int    bestSlot = -1
+    float  bestR    = -1.0
+    for i = 0 to nSlots - 1
+        float r = ratioOf(i)
+        if not na(r)
+            nValid += 1
+            array.set(mask, i, r >= hotThr)
+            if r > bestR
+                bestR    := r
+                bestSlot := i
+    // bridge single slots that are at least average between two volatile slots
+    bool[] base = array.copy(mask)
+    for i = 0 to nSlots - 1
+        if not array.get(base, i)
+            int   p = i == 0 ? nSlots - 1 : i - 1
+            int   q = i == nSlots - 1 ? 0 : i + 1
+            float r = ratioOf(i)
+            if array.get(base, p) and array.get(base, q) and not na(r) and r >= 1.0
+                array.set(mask, i, true)
+    if nValid > 0
+        int nRuns = scanRuns(mask)
+        if nRuns == 0
+            array.push(tStart, bestSlot)
+            array.push(tLen, 1)
+            array.push(tRatio, bestR)
+        int[] ord   = array.sort_indices(tRatio, order.descending)
+        int   nTake = math.min(maxWin, array.size(ord))
+        if nTake > 0
+            for k = 0 to nTake - 1
+                int j = array.get(ord, k)
+                array.push(fStart, array.get(tStart, j))
+                array.push(fLen, array.get(tLen, j))
+                array.push(fRatio, array.get(tRatio, j))
+        for w = 0 to array.size(fStart) - 1
+            for k = 0 to array.get(fLen, w) - 1
+                int j = array.get(fStart, w) + k
+                if j >= nSlots
+                    j -= nSlots
+                array.set(winOf, j, w)
+
+// ═══════════════════════════ Drawing ═══════════════════════════
+var int[]   bT = array.new_int()
+var int[]   bS = array.new_int()
+var float[] bH = array.new_float()
+var float[] bL = array.new_float()
+if boxDays == 0 or time >= last_bar_time - (boxDays + 2) * dayMs
+    array.push(bT, time)
+    array.push(bS, slot)
+    array.push(bH, high)
+    array.push(bL, low)
+
+var box[]   bxs  = array.new<box>()
+var label[] lbls = array.new<label>()
+string lSz = txtSize == "tiny" ? size.tiny : txtSize == "small" ? size.small : size.normal
+
+occStart(int tRef, int ws) => timestamp(tz, year(tRef, tz), month(tRef, tz), dayofmonth(tRef, tz), array.get(slotHH, ws), array.get(slotMM, ws))
+
+winText(int w) =>
+    int ws = array.get(fStart, w)
+    int we = ws + array.get(fLen, w)
+    if we >= nSlots
+        we -= nSlots
+    array.get(slotLbl, ws) + "-" + array.get(slotLbl, we)
+
+fmtDur(int ms) =>
+    int m = math.max(0, math.round(ms / 60000.0))
+    int h = m / 60
+    int r = m - h * 60
+    h > 0 ? str.tostring(h) + "h " + str.tostring(r) + "m" : str.tostring(r) + "m"
+
+// kind: 0 = past, 1 = in progress, 2 = next occurrence
+drawWin(int w, int t0, int t1, float hi, float lo, int kind, int nowT, bool withLabel, float avgPct) =>
+    float pad   = math.max((hi - lo) * 0.08, syminfo.mintick * 5)
+    float top   = hi + pad
+    float bot   = lo - pad
+    int   fillT = kind == 2 ? 93 : kind == 1 ? 80 : 86
+    int   lineT = kind == 2 ? 55 : kind == 1 ? 35 : 60
+    array.push(bxs, box.new(t0, top, t1, bot, xloc = xloc.bar_time, border_color = color.new(colZone, lineT), border_width = 1, border_style = kind == 2 ? line.style_dashed : line.style_solid, bgcolor = color.new(colZone, fillT)))
+    if withLabel
+        string avgTxt = na(avgPct) ? "" : "  ·  Ø " + str.tostring(avgPct, "0.00") + "%"
+        string txt = kind == 2 ? "Next  " + winText(w) + "  ·  in " + fmtDur(t0 - nowT) + avgTxt : kind == 1 ? "▶ " + winText(w) + "  ·  ends in " + fmtDur(t1 - nowT) + avgTxt : winText(w) + avgTxt
+        string tip = winText(w) + " " + tz + "\nØ high-low range of this window: " + (na(avgPct) ? "n/a" : str.tostring(avgPct, "0.00") + " %") + "\nVolatility vs. daily average: ×" + str.tostring(array.get(fRatio, w), "0.00")
+        array.push(lbls, label.new((t0 + t1) / 2, top, txt, xloc = xloc.bar_time, style = label.style_label_down, color = color.new(colZone, kind == 2 ? 40 : 15), textcolor = color.white, size = lSz, tooltip = tip))
+
+if barstate.islast and tfOk
+    for bx in bxs
+        box.delete(bx)
+    array.clear(bxs)
+    for lb in lbls
+        label.delete(lb)
+    array.clear(lbls)
+    array.clear(fNext)
+
+    int nWin = array.size(fStart)
+    int nowT = barstate.isrealtime ? timenow : time
+    if nWin > 0
+        // ── occurrences of the windows (from the bar buffer)
+        int[]   oW    = array.new_int()
+        int[]   oT0   = array.new_int()
+        float[] oHi   = array.new_float()
+        float[] oLo   = array.new_float()
+        int     curW  = -1
+        int     curT0 = na
+        float   curHi = na
+        float   curLo = na
+        int     prevS = -1
+        int     prevT = na
+        int     cutT  = boxDays == 0 ? 0 : last_bar_time - boxDays * dayMs
+        int     nB    = array.size(bT)
+        if nB > 0
+            for k = 0 to nB - 1
+                int  t        = array.get(bT, k)
+                int  s        = array.get(bS, k)
+                int  w        = array.get(winOf, s)
+                bool startNow = false
+                bool closeNow = false
+                if w >= 0
+                    int ws = array.get(fStart, w)
+                    startNow := w != curW or (s == ws and prevS != ws) or (not na(prevT) and t - prevT > slotMs)
+                    closeNow := startNow and curW >= 0
+                else
+                    closeNow := curW >= 0
+                if closeNow
+                    if curT0 >= cutT and dayOk(curT0)
+                        array.push(oW, curW)
+                        array.push(oT0, curT0)
+                        array.push(oHi, curHi)
+                        array.push(oLo, curLo)
+                    curW := -1
+                if startNow
+                    int ws = array.get(fStart, w)
+                    curW  := w
+                    curT0 := occStart(s >= ws ? t : t - dayMs, ws)
+                    curHi := array.get(bH, k)
+                    curLo := array.get(bL, k)
+                else if w >= 0
+                    curHi := math.max(curHi, array.get(bH, k))
+                    curLo := math.min(curLo, array.get(bL, k))
+                prevS := s
+                prevT := t
+            if curW >= 0 and curT0 >= cutT and dayOk(curT0)
+                array.push(oW, curW)
+                array.push(oT0, curT0)
+                array.push(oHi, curHi)
+                array.push(oLo, curLo)
+
+        // ── average high-low range per window (completed occurrences only)
+        float[] rPct   = array.new_float(nWin, 0.0)
+        int[]   rCnt   = array.new_int(nWin, 0)
+        float[] avgPct = array.new_float(nWin, na)
+        int     nOcc   = array.size(oW)
+        if nOcc > 0
+            for k = 0 to nOcc - 1
+                int   w  = array.get(oW, k)
+                int   t1 = array.get(oT0, k) + array.get(fLen, w) * slotMs
+                float lo = array.get(oLo, k)
+                if t1 <= nowT and lo > 0
+                    array.set(rPct, w, array.get(rPct, w) + (array.get(oHi, k) - lo) / lo * 100)
+                    array.set(rCnt, w, array.get(rCnt, w) + 1)
+        for w = 0 to nWin - 1
+            float est = winStat(array.get(fStart, w), array.get(fLen, w), rawA) * math.sqrt(array.get(fLen, w))
+            array.set(avgPct, w, array.get(rCnt, w) > 0 ? array.get(rPct, w) / array.get(rCnt, w) : est)
+
+        // ── draw past and current occurrences (newest first if the drawing limit is hit)
+        if nOcc > 0
+            int kFrom = math.max(0, nOcc - (480 - nWin))
+            for k = kFrom to nOcc - 1
+                int  w   = array.get(oW, k)
+                int  t0  = array.get(oT0, k)
+                int  t1  = t0 + array.get(fLen, w) * slotMs
+                bool cur = t1 > nowT
+                bool lbl = lblMode == "All" or (lblMode == "Current + next only" and cur)
+                drawWin(w, t0, t1, array.get(oHi, k), array.get(oLo, k), cur ? 1 : 0, nowT, lbl, array.get(avgPct, w))
+
+        // ── next occurrence of each window (within the next 24h)
+        for w = 0 to nWin - 1
+            int  ws     = array.get(fStart, w)
+            int  dur    = array.get(fLen, w) * slotMs
+            int  tA     = occStart(nowT - dayMs, ws)
+            int  tB     = occStart(nowT, ws)
+            int  tC     = occStart(nowT + dayMs, ws)
+            bool inProg = (tA <= nowT and nowT < tA + dur) or (tB <= nowT and nowT < tB + dur)
+            int  nxt    = tB > nowT ? tB : tC
+            array.push(fNext, inProg ? -1 : nxt)
+            if projNext and not inProg and dayOk(nxt)
+                float ex = nz(array.get(avgPct, w), 1.0) / 100 * close
+                drawWin(w, nxt, nxt + dur, close + ex / 2, close - ex / 2, 2, nowT, lblMode != "None", array.get(avgPct, w))
+
+        // ── heads-up alert before a window
+        if barstate.isrealtime and preMin > 0
+            int lead = preMin * 60000
+            for w = 0 to nWin - 1
+                int nxt = array.get(fNext, w)
+                if nxt > 0 and nxt - time <= lead and nxt - time[1] > lead
+                    alert("Heads-up: volatile window " + winText(w) + " " + tz + " starts in " + fmtDur(nxt - timenow) + " on " + syminfo.ticker, alert.freq_once_per_bar)
+
+// ═══════════════════════════ Window start alert ═══════════════════════════
+int  prevSlot  = slot == 0 ? nSlots - 1 : slot - 1
+int  wCur      = array.get(winOf, slot)
+bool winStarts = slot != nz(slot[1], -1) and wCur >= 0 and array.get(winOf, prevSlot) != wCur
+if barstate.isrealtime and winStarts
+    alert("Volatile window " + winText(wCur) + " " + tz + " starts now on " + syminfo.ticker, alert.freq_once_per_bar)
+alertcondition(winStarts, "Volatility window starts", "A volatile time window starts now.")
+
+// ═══════════════════════════ Status note ═══════════════════════════
+var label note = na
+if barstate.islast
+    string msg = not tfOk ? "Vol Windows: chart timeframe must be intraday and ≤ " + str.tostring(slotMin) + " min" : array.size(fStart) == 0 ? "Vol Windows: collecting data - needs " + str.tostring(minN) + " samples per slot" : ""
+    if msg == "" and not na(note)
+        label.delete(note)
+        note := na
+    if msg != "" and na(note)
+        note := label.new(bar_index, close, msg, style = label.style_label_left, color = color.new(color.orange, 25), textcolor = color.white, size = size.small)
+    if msg != "" and not na(note)
+        label.set_xy(note, bar_index, close)
+        label.set_text(note, msg)

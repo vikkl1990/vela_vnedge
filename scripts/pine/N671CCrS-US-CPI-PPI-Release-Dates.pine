@@ -1,0 +1,157 @@
+//@version=6
+indicator("US CPI & PPI Release Dates — 5 Years", overlay=true, max_lines_count=250, max_labels_count=250)
+
+showCPI    = input.bool(true, "Show CPI", group="Events")
+showPPI    = input.bool(true, "Show PPI", group="Events")
+showLabels = input.bool(true, "Show labels", group="Display")
+lineWidth  = input.int(1, "Line width", minval=1, maxval=4, group="Display")
+lineStyle  = input.string("Dashed", "Line style", options=["Solid", "Dashed", "Dotted"], group="Display")
+cpiColor   = input.color(color.rgb(255, 82, 82), "CPI colour", group="Colours")
+ppiColor   = input.color(color.rgb(41, 182, 246), "PPI colour", group="Colours")
+
+style = lineStyle == "Solid" ? line.style_solid : lineStyle == "Dotted" ? line.style_dotted : line.style_dashed
+
+var int[] cpiDates = array.from(
+    timestamp("America/New_York", 2021, 9, 14, 8, 30),
+    timestamp("America/New_York", 2021, 10, 13, 8, 30),
+    timestamp("America/New_York", 2021, 11, 10, 8, 30),
+    timestamp("America/New_York", 2021, 12, 10, 8, 30),
+    timestamp("America/New_York", 2022, 1, 12, 8, 30),
+    timestamp("America/New_York", 2022, 2, 10, 8, 30),
+    timestamp("America/New_York", 2022, 3, 10, 8, 30),
+    timestamp("America/New_York", 2022, 4, 12, 8, 30),
+    timestamp("America/New_York", 2022, 5, 11, 8, 30),
+    timestamp("America/New_York", 2022, 6, 10, 8, 30),
+    timestamp("America/New_York", 2022, 7, 13, 8, 30),
+    timestamp("America/New_York", 2022, 8, 10, 8, 30),
+    timestamp("America/New_York", 2022, 9, 13, 8, 30),
+    timestamp("America/New_York", 2022, 10, 13, 8, 30),
+    timestamp("America/New_York", 2022, 11, 10, 8, 30),
+    timestamp("America/New_York", 2022, 12, 13, 8, 30),
+    timestamp("America/New_York", 2023, 1, 12, 8, 30),
+    timestamp("America/New_York", 2023, 2, 14, 8, 30),
+    timestamp("America/New_York", 2023, 3, 14, 8, 30),
+    timestamp("America/New_York", 2023, 4, 12, 8, 30),
+    timestamp("America/New_York", 2023, 5, 10, 8, 30),
+    timestamp("America/New_York", 2023, 6, 13, 8, 30),
+    timestamp("America/New_York", 2023, 7, 12, 8, 30),
+    timestamp("America/New_York", 2023, 8, 10, 8, 30),
+    timestamp("America/New_York", 2023, 9, 13, 8, 30),
+    timestamp("America/New_York", 2023, 10, 12, 8, 30),
+    timestamp("America/New_York", 2023, 11, 14, 8, 30),
+    timestamp("America/New_York", 2023, 12, 12, 8, 30),
+    timestamp("America/New_York", 2024, 1, 11, 8, 30),
+    timestamp("America/New_York", 2024, 2, 13, 8, 30),
+    timestamp("America/New_York", 2024, 3, 12, 8, 30),
+    timestamp("America/New_York", 2024, 4, 10, 8, 30),
+    timestamp("America/New_York", 2024, 5, 15, 8, 30),
+    timestamp("America/New_York", 2024, 6, 12, 8, 30),
+    timestamp("America/New_York", 2024, 7, 11, 8, 30),
+    timestamp("America/New_York", 2024, 8, 14, 8, 30),
+    timestamp("America/New_York", 2024, 9, 11, 8, 30),
+    timestamp("America/New_York", 2024, 10, 10, 8, 30),
+    timestamp("America/New_York", 2024, 11, 13, 8, 30),
+    timestamp("America/New_York", 2024, 12, 11, 8, 30),
+    timestamp("America/New_York", 2025, 1, 15, 8, 30),
+    timestamp("America/New_York", 2025, 2, 12, 8, 30),
+    timestamp("America/New_York", 2025, 3, 12, 8, 30),
+    timestamp("America/New_York", 2025, 4, 10, 8, 30),
+    timestamp("America/New_York", 2025, 5, 13, 8, 30),
+    timestamp("America/New_York", 2025, 6, 11, 8, 30),
+    timestamp("America/New_York", 2025, 7, 15, 8, 30),
+    timestamp("America/New_York", 2025, 8, 12, 8, 30),
+    timestamp("America/New_York", 2025, 9, 11, 8, 30),
+    timestamp("America/New_York", 2025, 10, 24, 8, 30),
+    timestamp("America/New_York", 2025, 12, 18, 8, 30),
+    timestamp("America/New_York", 2026, 1, 13, 8, 30),
+    timestamp("America/New_York", 2026, 2, 13, 8, 30),
+    timestamp("America/New_York", 2026, 3, 11, 8, 30),
+    timestamp("America/New_York", 2026, 4, 10, 8, 30),
+    timestamp("America/New_York", 2026, 5, 12, 8, 30),
+    timestamp("America/New_York", 2026, 6, 10, 8, 30),
+    timestamp("America/New_York", 2026, 7, 14, 8, 30),
+    timestamp("America/New_York", 2026, 8, 12, 8, 30)
+)
+
+var int[] ppiDates = array.from(
+    timestamp("America/New_York", 2021, 9, 10, 8, 30),
+    timestamp("America/New_York", 2021, 10, 14, 8, 30),
+    timestamp("America/New_York", 2021, 11, 9, 8, 30),
+    timestamp("America/New_York", 2021, 12, 14, 8, 30),
+    timestamp("America/New_York", 2022, 1, 13, 8, 30),
+    timestamp("America/New_York", 2022, 2, 15, 8, 30),
+    timestamp("America/New_York", 2022, 3, 15, 8, 30),
+    timestamp("America/New_York", 2022, 4, 13, 8, 30),
+    timestamp("America/New_York", 2022, 5, 12, 8, 30),
+    timestamp("America/New_York", 2022, 6, 14, 8, 30),
+    timestamp("America/New_York", 2022, 7, 14, 8, 30),
+    timestamp("America/New_York", 2022, 8, 11, 8, 30),
+    timestamp("America/New_York", 2022, 9, 14, 8, 30),
+    timestamp("America/New_York", 2022, 10, 12, 8, 30),
+    timestamp("America/New_York", 2022, 11, 15, 8, 30),
+    timestamp("America/New_York", 2022, 12, 9, 8, 30),
+    timestamp("America/New_York", 2023, 1, 18, 8, 30),
+    timestamp("America/New_York", 2023, 2, 16, 8, 30),
+    timestamp("America/New_York", 2023, 3, 15, 8, 30),
+    timestamp("America/New_York", 2023, 4, 13, 8, 30),
+    timestamp("America/New_York", 2023, 5, 11, 8, 30),
+    timestamp("America/New_York", 2023, 6, 14, 8, 30),
+    timestamp("America/New_York", 2023, 7, 13, 8, 30),
+    timestamp("America/New_York", 2023, 8, 11, 8, 30),
+    timestamp("America/New_York", 2023, 9, 14, 8, 30),
+    timestamp("America/New_York", 2023, 10, 11, 8, 30),
+    timestamp("America/New_York", 2023, 11, 15, 8, 30),
+    timestamp("America/New_York", 2023, 12, 13, 8, 30),
+    timestamp("America/New_York", 2024, 1, 12, 8, 30),
+    timestamp("America/New_York", 2024, 2, 16, 8, 30),
+    timestamp("America/New_York", 2024, 3, 14, 8, 30),
+    timestamp("America/New_York", 2024, 4, 11, 8, 30),
+    timestamp("America/New_York", 2024, 5, 14, 8, 30),
+    timestamp("America/New_York", 2024, 6, 13, 8, 30),
+    timestamp("America/New_York", 2024, 7, 12, 8, 30),
+    timestamp("America/New_York", 2024, 8, 13, 8, 30),
+    timestamp("America/New_York", 2024, 9, 12, 8, 30),
+    timestamp("America/New_York", 2024, 10, 11, 8, 30),
+    timestamp("America/New_York", 2024, 11, 14, 8, 30),
+    timestamp("America/New_York", 2024, 12, 12, 8, 30),
+    timestamp("America/New_York", 2025, 1, 14, 8, 30),
+    timestamp("America/New_York", 2025, 2, 13, 8, 30),
+    timestamp("America/New_York", 2025, 3, 13, 8, 30),
+    timestamp("America/New_York", 2025, 4, 11, 8, 30),
+    timestamp("America/New_York", 2025, 5, 15, 8, 30),
+    timestamp("America/New_York", 2025, 6, 12, 8, 30),
+    timestamp("America/New_York", 2025, 7, 16, 8, 30),
+    timestamp("America/New_York", 2025, 8, 14, 8, 30),
+    timestamp("America/New_York", 2025, 9, 10, 8, 30),
+    timestamp("America/New_York", 2025, 11, 25, 8, 30),
+    timestamp("America/New_York", 2026, 1, 14, 8, 30),
+    timestamp("America/New_York", 2026, 1, 30, 8, 30),
+    timestamp("America/New_York", 2026, 2, 27, 8, 30),
+    timestamp("America/New_York", 2026, 3, 18, 8, 30),
+    timestamp("America/New_York", 2026, 4, 14, 8, 30),
+    timestamp("America/New_York", 2026, 5, 13, 8, 30),
+    timestamp("America/New_York", 2026, 6, 11, 8, 30),
+    timestamp("America/New_York", 2026, 7, 15, 8, 30),
+    timestamp("America/New_York", 2026, 8, 13, 8, 30)
+)
+
+f_eventOnBar(int[] dates) =>
+    bool found = false
+    for eventTime in dates
+        if time <= eventTime and time_close > eventTime
+            found := true
+    found
+
+isCPI = showCPI and f_eventOnBar(cpiDates)
+isPPI = showPPI and f_eventOnBar(ppiDates)
+
+if isCPI
+    line.new(bar_index, low, bar_index, high, extend=extend.both, color=cpiColor, style=style, width=lineWidth)
+    if showLabels
+        label.new(bar_index, high, "CPI", color=cpiColor, textcolor=color.white, style=label.style_label_down, size=size.tiny)
+
+if isPPI
+    line.new(bar_index, low, bar_index, high, extend=extend.both, color=ppiColor, style=style, width=lineWidth)
+    if showLabels
+        label.new(bar_index, high, "PPI", color=ppiColor, textcolor=color.white, style=label.style_label_down, size=size.tiny)
+

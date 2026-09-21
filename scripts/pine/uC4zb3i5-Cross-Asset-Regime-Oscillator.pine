@@ -1,0 +1,151 @@
+// © regimecard
+//
+// Cross-Asset Regime Oscillator (Daily) — a simplified, transparent market-regime gauge.
+//
+// METHOD
+//   Five equal-weight cross-asset risk-appetite signals, each z-scored against its
+//   own trailing distribution on DAILY bars, clamped to ±3 (so one blown-out signal
+//   cannot dominate), averaged, then mapped linearly onto a 0–100 scale split into
+//   five labeled bands:
+//     0–20 RISK-OFF · 20–40 MILDLY OFF · 40–60 NEUTRAL · 60–80 MILDLY ON · 80–100 RISK-ON
+//
+//   1. Credit                HYG / IEF        (high yield vs. Treasuries)  higher = risk-on
+//   2. Equity volatility     VIX                                           INVERTED (lower = risk-on)
+//   3. Cyclical / defensive  XLI / XLU        (industrials vs. utilities)  higher = risk-on
+//   4. Yield curve           US10Y - US03MY   (10y-3m slope)               higher = risk-on
+//   5. US dollar             DXY                                           INVERTED (lower = risk-on)
+//
+//   All symbols are free-tier data (ETFs, a volatility index, cash yields, a dollar
+//   index); no futures or premium feeds are used.
+//
+// NON-REPAINTING APPROACH
+//   Supported chart timeframes: 1D and below. This is a daily oscillator —
+//   chart timeframes above 1D (W, M) raise a runtime error rather than showing
+//   an unreliable reading (a "1D" request from an above-1D chart is a
+//   lower-timeframe request, whose merge cannot be pinned to the same confirmed
+//   session that 1D-and-below charts resolve to).
+//
+//   On every supported chart timeframe, every signal resolves to the same
+//   quantity — the clamped z-score of the LAST CONFIRMED daily bar — with no
+//   chart-context offsets:
+//
+//       zClamped(close)[1]   evaluated inside the "1D" request context
+//
+//   The [1] offset lives INSIDE the "1D" security context, so only the z-score
+//   of the last COMPLETED daily bar is ever requested; the forming daily bar
+//   cannot leak in, historical or realtime. Because the requested series is
+//   offset by one confirmed bar, barmerge.lookahead_on is safe (it cannot reach
+//   unconfirmed data — the classic `expr[1]` + lookahead_on confirmed-bar idiom)
+//   and is deliberate: it aligns each day's value to the START of the daily
+//   period, so symbols whose sessions close after the chart symbol's
+//   (VIX 16:15 ET, DXY ~17:00 ET) land on the same chart day on every supported
+//   timeframe. Close-time alignment (lookahead_off) would let those signals
+//   drift between chart timeframes.
+//
+//   Result: one identical reading on any supported chart timeframe, and values
+//   never change on refresh. Trade-off: while a session is in progress the
+//   reading reflects the prior session's confirmed close. Each z-score is
+//   computed inside the daily context, so the lookback always counts daily bars
+//   regardless of chart timeframe.
+//
+// MISSING DATA
+//   If a signal has not loaded (na), it is skipped and the composite averages the
+//   signals that remain. A corner note appears when fewer than 3 of 5 signals have
+//   data.
+
+//@version=6
+indicator("Cross-Asset Regime Oscillator", "Regime Osc", overlay = false, precision = 1)
+
+// ---------- Inputs ----------------------------------------------------------
+int  lenInput       = input.int(252, "Lookback (bars)", minval = 60, maxval = 1000, tooltip = "Z-score lookback in DAILY bars (252 = about one trading year), regardless of chart timeframe.")
+bool colorBarsInput = input.bool(false, "Color chart bars by regime")
+bool showBreakdownInput = input.bool(false, "Show signal breakdown", tooltip = "Debug: list each signal's clamped z-score and the composite in the corner table.")
+
+// ---------- Band colors (red -> amber -> gray -> light green -> green) ------
+color C_RED   = #f23645
+color C_AMBER = #ff9800
+color C_GRAY  = #787b86
+color C_LTGRN = #66bb6a
+color C_GREEN = #089981
+
+// ---------- Signal engine ---------------------------------------------------
+// Z-score of `src` over `lenInput` bars, clamped to [-3, +3]. Returns na until
+// enough bars exist, or when the deviation is zero (flat series).
+zClamped(float src) =>
+    float m = ta.sma(src, lenInput)
+    float s = ta.stdev(src, lenInput)
+    float z = not na(s) and s > 0 ? (src - m) / s : na
+    math.max(-3.0, math.min(3.0, z))
+
+// This is a daily oscillator: reject chart timeframes above 1D outright (see
+// header comment) instead of showing an unreliable reading.
+if timeframe.in_seconds() > timeframe.in_seconds("1D")
+    runtime.error("Cross-Asset Regime Oscillator is a daily indicator. Use a 1D or lower chart timeframe.")
+
+// Confirmed-bar daily request (see header comment). Returns the clamped z of
+// the last CONFIRMED daily bar, evaluated inside the daily context so the
+// lookback counts daily bars — no chart-context offsets, identical on every
+// supported chart timeframe.
+nrDailyZ(string sym) =>
+    request.security(sym, "1D", zClamped(close)[1], lookahead = barmerge.lookahead_on)
+
+// The five signals, all oriented so HIGHER = more risk-on. The two series that
+// rise when risk appetite falls (VIX, DXY) are inverted by negating their
+// z-scores, which is mathematically identical to z-scoring the negated series.
+float zCredit = nrDailyZ("AMEX:HYG/NASDAQ:IEF")     // credit appetite: junk vs. Treasuries
+float zVol    = -nrDailyZ("CBOE:VIX")               // equity volatility (inverted)
+float zCycDef = nrDailyZ("AMEX:XLI/AMEX:XLU")       // cyclical vs. defensive equities
+float zCurve  = nrDailyZ("TVC:US10Y-TVC:US03MY")    // 10y-3m yield-curve slope
+float zDollar = -nrDailyZ("TVC:DXY")                // US dollar (inverted)
+
+// ---------- Composite: equal-weight average of the signals that have data ---
+array<float> zs = array.from(zCredit, zVol, zCycDef, zCurve, zDollar)
+float zSum = 0.0
+int   zCnt = 0
+for z in zs
+    if not na(z)
+        zSum += z
+        zCnt += 1
+
+// Average z is in [-3, +3] by construction; map it linearly onto 0-100.
+float composite = zCnt > 0 ? zSum / zCnt : na
+float score     = na(composite) ? na : math.max(0.0, math.min(100.0, 50.0 + composite * (100.0 / 6.0)))
+
+// ---------- Bands -----------------------------------------------------------
+bandName(float s) =>
+    na(s) ? "NO DATA" : s < 20 ? "RISK-OFF" : s < 40 ? "MILDLY OFF" : s < 60 ? "NEUTRAL" : s < 80 ? "MILDLY ON" : "RISK-ON"
+
+bandColor(float s) =>
+    na(s) ? C_GRAY : s < 20 ? C_RED : s < 40 ? C_AMBER : s < 60 ? C_GRAY : s < 80 ? C_LTGRN : C_GREEN
+
+// ---------- Display ---------------------------------------------------------
+hline(80, "Band 80", color = color.new(color.gray, 65), linestyle = hline.style_dotted)
+hline(60, "Band 60", color = color.new(color.gray, 65), linestyle = hline.style_dotted)
+hline(40, "Band 40", color = color.new(color.gray, 65), linestyle = hline.style_dotted)
+hline(20, "Band 20", color = color.new(color.gray, 65), linestyle = hline.style_dotted)
+
+plot(score, "Regime score", color = bandColor(score), linewidth = 2)
+
+barcolor(colorBarsInput and not na(score) ? bandColor(score) : na, title = "Regime bar color")
+
+// Formats a z-score for the breakdown readout: signed, 2 dp, "na" if missing.
+fmtZ(float z) =>
+    na(z) ? "na" : (z >= 0 ? "+" : "") + str.tostring(z, "0.00")
+
+// Corner readout: current band + score to 1 dp, plus a data-coverage warning
+// when fewer than 3 of the 5 signals have loaded. With "Show signal breakdown"
+// enabled, extra rows list each signal's clamped z-score and the composite.
+var table readout = table.new(position.top_right, 2, 8)
+if barstate.isfirst
+    table.merge_cells(readout, 0, 0, 1, 0)
+    table.merge_cells(readout, 0, 1, 1, 1)
+if barstate.islast
+    table.cell(readout, 0, 0, bandName(score) + (na(score) ? "" : "  " + str.tostring(score, "#.0")), text_color = bandColor(score), text_size = size.normal, bgcolor = color.new(#000000, 25))
+    table.cell(readout, 0, 1, zCnt < 3 ? "only " + str.tostring(zCnt) + "/5 signals loaded" : "", text_color = C_AMBER, text_size = size.small, bgcolor = zCnt < 3 ? color.new(#000000, 25) : na)
+    if showBreakdownInput
+        array<string> zNames = array.from("Credit", "Volatility", "Cyclical/Defensive", "Yield curve", "Dollar")
+        for i = 0 to 4
+            table.cell(readout, 0, 2 + i, array.get(zNames, i), text_color = C_GRAY, text_size = size.small, text_halign = text.align_left, bgcolor = color.new(#000000, 25))
+            table.cell(readout, 1, 2 + i, fmtZ(array.get(zs, i)), text_color = #d1d4dc, text_size = size.small, text_halign = text.align_right, bgcolor = color.new(#000000, 25))
+        table.cell(readout, 0, 7, "Composite", text_color = C_GRAY, text_size = size.small, text_halign = text.align_left, bgcolor = color.new(#000000, 25))
+        table.cell(readout, 1, 7, fmtZ(composite), text_color = #d1d4dc, text_size = size.small, text_halign = text.align_right, bgcolor = color.new(#000000, 25))

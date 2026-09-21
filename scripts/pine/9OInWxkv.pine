@@ -1,0 +1,274 @@
+//@version=6
+indicator("ATK/DEF — Session Equilibrium State [ASIA/LONDON/NY]", "ATK/DEF — Session Equilibrium State", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// ============================================================
+// Inputs
+// ============================================================
+grpSess = "Session Settings"
+tz       = input.string("Asia/Shanghai", "Timezone", group=grpSess)
+asiaSess = input.session("0000-0800", "Asia Session", group=grpSess)
+lonSess  = input.session("1500-2300", "London Session", group=grpSess)
+nySess   = input.session("2130-0500", "New York Session", group=grpSess)
+
+grpMA = "MA Settings"
+maType   = input.string("SMA", "MA Type", options=["SMA","EMA","WMA","VWMA"], group=grpMA)
+maLen    = input.int(20, "MA Length", minval=1, group=grpMA)
+useSessionMA = input.bool(true, "Use Session MA (otherwise Global MA)", group=grpMA)
+showGlobalMA = input.bool(true, "Show Global MA", group=grpMA)
+
+grpSig = "Signal Settings"
+useClose    = input.bool(true, "Confirm breakout with close", group=grpSig)
+fakeoutBars = input.int(3, "Fakeout observation bars", minval=1, maxval=20, group=grpSig)
+showLbl     = input.bool(true, "Show breakout / fakeout labels", group=grpSig)
+
+grpStyle = "Style"
+asiaCol = input.color(color.new(color.blue, 0),   "Asia MA Color", group=grpStyle)
+lonCol  = input.color(color.new(color.orange, 0), "London MA Color", group=grpStyle)
+nyCol   = input.color(color.new(color.red, 0),    "New York MA Color", group=grpStyle)
+glbCol  = input.color(color.new(color.gray, 0),   "Global MA Color", group=grpStyle)
+brkUpCol = input.color(color.lime, "Breakout Up Color", group=grpStyle)
+brkDnCol = input.color(color.red,  "Breakout Down Color", group=grpStyle)
+fakeCol  = input.color(color.yellow,"Fakeout Color", group=grpStyle)
+
+// ============================================================
+// Helper Functions
+// ============================================================
+inSess(string sess) =>
+    not na(time(timeframe.period, sess, tz))
+
+newSess(string sess) =>
+    inSess(sess) and not inSess(sess)[1]
+
+// MA calculation
+ma(src, len) =>
+    switch maType
+        "EMA"  => ta.ema(src, len)
+        "WMA"  => ta.wma(src, len)
+        "VWMA" => ta.vwma(src, len)
+        => ta.sma(src, len)
+
+// ============================================================
+// Global MA
+// ============================================================
+globalMA = ma(close, maLen)
+plot(showGlobalMA ? globalMA : na, "Global MA", color=glbCol, linewidth=2)
+
+// ============================================================
+// Session MAs (each session computed independently, shown only in session)
+// ============================================================
+// Asia Session MA
+var float asiaMA = na
+if inSess(asiaSess)
+    asiaMA := ma(close, maLen)
+else
+    asiaMA := na
+
+// London Session MA
+var float lonMA = na
+if inSess(lonSess)
+    lonMA := ma(close, maLen)
+else
+    lonMA := na
+
+// New York Session MA
+var float nyMA = na
+if inSess(nySess)
+    nyMA := ma(close, maLen)
+else
+    nyMA := na
+
+plot(useSessionMA ? asiaMA : na, "Asia MA", color=asiaCol, linewidth=2)
+plot(useSessionMA ? lonMA  : na, "London MA", color=lonCol,  linewidth=2)
+plot(useSessionMA ? nyMA   : na, "New York MA", color=nyCol,   linewidth=2)
+
+// ============================================================
+// Breakout / Fakeout State
+// ============================================================
+var int   aDir = 0
+var float aLvl = na
+var int   aBar = na
+var bool  aFake = false
+var bool  aFakeReady = false
+
+var int   lDir = 0
+var float lLvl = na
+var int   lBar = na
+var bool  lFake = false
+var bool  lFakeReady = false
+
+var int   nDir = 0
+var float nLvl = na
+var int   nBar = na
+var bool  nFake = false
+var bool  nFakeReady = false
+
+brkUp(float lvl) =>
+    useClose ? (close > lvl and close[1] <= lvl) : (high > lvl and high[1] <= lvl)
+
+brkDn(float lvl) =>
+    useClose ? (close < lvl and close[1] >= lvl) : (low < lvl and low[1] >= lvl)
+
+// ============================================================
+// Asia
+// ============================================================
+if newSess(asiaSess)
+    aDir := 0
+    aLvl := na
+    aBar := na
+    aFake := false
+    aFakeReady := false
+
+if inSess(asiaSess) and aDir == 0 and not na(asiaMA)
+    if brkUp(asiaMA)
+        aDir := 1
+        aLvl := asiaMA
+        aBar := bar_index
+    else if brkDn(asiaMA)
+        aDir := -1
+        aLvl := asiaMA
+        aBar := bar_index
+
+if inSess(asiaSess) and aDir != 0 and not aFake and bar_index - aBar >= fakeoutBars
+    backIn = aDir > 0 ? close < asiaMA : close > asiaMA
+    if backIn
+        aFake := true
+        aFakeReady := true
+    else
+        aFakeReady := true
+
+// ============================================================
+// London
+// ============================================================
+if newSess(lonSess)
+    lDir := 0
+    lLvl := na
+    lBar := na
+    lFake := false
+    lFakeReady := false
+
+if inSess(lonSess) and lDir == 0 and not na(lonMA)
+    if brkUp(lonMA)
+        lDir := 1
+        lLvl := lonMA
+        lBar := bar_index
+    else if brkDn(lonMA)
+        lDir := -1
+        lLvl := lonMA
+        lBar := bar_index
+
+if inSess(lonSess) and lDir != 0 and not lFake and bar_index - lBar >= fakeoutBars
+    backIn = lDir > 0 ? close < lonMA : close > lonMA
+    if backIn
+        lFake := true
+        lFakeReady := true
+    else
+        lFakeReady := true
+
+// ============================================================
+// New York
+// ============================================================
+if newSess(nySess)
+    nDir := 0
+    nLvl := na
+    nBar := na
+    nFake := false
+    nFakeReady := false
+
+if inSess(nySess) and nDir == 0 and not na(nyMA)
+    if brkUp(nyMA)
+        nDir := 1
+        nLvl := nyMA
+        nBar := bar_index
+    else if brkDn(nyMA)
+        nDir := -1
+        nLvl := nyMA
+        nBar := bar_index
+
+if inSess(nySess) and nDir != 0 and not nFake and bar_index - nBar >= fakeoutBars
+    backIn = nDir > 0 ? close < nyMA : close > nyMA
+    if backIn
+        nFake := true
+        nFakeReady := true
+    else
+        nFakeReady := true
+
+// ============================================================
+// Labels
+// ============================================================
+if showLbl and inSess(asiaSess) and aDir != 0 and bar_index == aBar
+    col = aDir > 0 ? brkUpCol : brkDnCol
+    txt = aDir > 0 ? "ASIA Break Up" : "ASIA Break Down"
+    label.new(bar_index, aLvl, txt, color=col, textcolor=color.white,
+              style=aDir > 0 ? label.style_label_down : label.style_label_up, size=size.small)
+
+if showLbl and aFake and aFakeReady
+    label.new(bar_index, aLvl, "ASIA Fakeout", color=fakeCol, textcolor=color.black,
+              style=aDir > 0 ? label.style_label_down : label.style_label_up, size=size.small)
+    aFakeReady := false
+
+if showLbl and inSess(lonSess) and lDir != 0 and bar_index == lBar
+    col = lDir > 0 ? brkUpCol : brkDnCol
+    txt = lDir > 0 ? "LONDON Break Up" : "LONDON Break Down"
+    label.new(bar_index, lLvl, txt, color=col, textcolor=color.white,
+              style=lDir > 0 ? label.style_label_down : label.style_label_up, size=size.small)
+
+if showLbl and lFake and lFakeReady
+    label.new(bar_index, lLvl, "LONDON Fakeout", color=fakeCol, textcolor=color.black,
+              style=lDir > 0 ? label.style_label_down : label.style_label_up, size=size.small)
+    lFakeReady := false
+
+if showLbl and inSess(nySess) and nDir != 0 and bar_index == nBar
+    col = nDir > 0 ? brkUpCol : brkDnCol
+    txt = nDir > 0 ? "NY Break Up" : "NY Break Down"
+    label.new(bar_index, nLvl, txt, color=col, textcolor=color.white,
+              style=nDir > 0 ? label.style_label_down : label.style_label_up, size=size.small)
+
+if showLbl and nFake and nFakeReady
+    label.new(bar_index, nLvl, "NY Fakeout", color=fakeCol, textcolor=color.black,
+              style=nDir > 0 ? label.style_label_down : label.style_label_up, size=size.small)
+    nFakeReady := false
+
+// ============================================================
+// Info Panel
+// ============================================================
+var table info = table.new(position.top_right, 4, 4, border_width=1)
+if barstate.islast
+    table.cell(info, 0, 0, "Session", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.cell(info, 1, 0, "State",   bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.cell(info, 2, 0, "Dir",     bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.cell(info, 3, 0, "Result",  bgcolor=color.new(color.gray, 70), text_color=color.white)
+
+    aState = inSess(asiaSess) ? "Active" : aDir != 0 ? "Broken" : "Waiting"
+    aDirTxt = aDir > 0 ? "↑" : aDir < 0 ? "↓" : "-"
+    aRes = aFake ? "Fakeout" : (aDir != 0 and aFakeReady ? "Valid" : "-")
+    table.cell(info, 0, 1, "ASIA", text_color=color.white)
+    table.cell(info, 1, 1, aState, text_color=color.white)
+    table.cell(info, 2, 1, aDirTxt, text_color=aDir > 0 ? brkUpCol : aDir < 0 ? brkDnCol : color.gray)
+    table.cell(info, 3, 1, aRes, text_color=aFake ? fakeCol : color.white)
+
+    lState = inSess(lonSess) ? "Active" : lDir != 0 ? "Broken" : "Waiting"
+    lDirTxt = lDir > 0 ? "↑" : lDir < 0 ? "↓" : "-"
+    lRes = lFake ? "Fakeout" : (lDir != 0 and lFakeReady ? "Valid" : "-")
+    table.cell(info, 0, 2, "LONDON", text_color=color.white)
+    table.cell(info, 1, 2, lState, text_color=color.white)
+    table.cell(info, 2, 2, lDirTxt, text_color=lDir > 0 ? brkUpCol : lDir < 0 ? brkDnCol : color.gray)
+    table.cell(info, 3, 2, lRes, text_color=lFake ? fakeCol : color.white)
+
+    nState = inSess(nySess) ? "Active" : nDir != 0 ? "Broken" : "Waiting"
+    nDirTxt = nDir > 0 ? "↑" : nDir < 0 ? "↓" : "-"
+    nRes = nFake ? "Fakeout" : (nDir != 0 and nFakeReady ? "Valid" : "-")
+    table.cell(info, 0, 3, "NY", text_color=color.white)
+    table.cell(info, 1, 3, nState, text_color=color.white)
+    table.cell(info, 2, 3, nDirTxt, text_color=nDir > 0 ? brkUpCol : nDir < 0 ? brkDnCol : color.gray)
+    table.cell(info, 3, 3, nRes, text_color=nFake ? fakeCol : color.white)
+
+// ============================================================
+// Alerts
+// ============================================================
+alertcondition(inSess(asiaSess) and aDir != 0 and bar_index == aBar, "ASIA Breakout", "Asia session breakout of MA")
+alertcondition(inSess(lonSess) and lDir != 0 and bar_index == lBar, "LONDON Breakout", "London session breakout of MA")
+alertcondition(inSess(nySess) and nDir != 0 and bar_index == nBar, "NY Breakout", "New York session breakout of MA")
+
+alertcondition(aFake and aFakeReady, "ASIA Fakeout", "Asia session fakeout of MA")
+alertcondition(lFake and lFakeReady, "LONDON Fakeout", "London session fakeout of MA")
+alertcondition(nFake and nFakeReady, "NY Fakeout", "New York session fakeout of MA")

@@ -1,0 +1,1315 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © phildelisle
+
+//@version=6
+indicator(
+     "Phil RTH Gap 50% + Statistics Dashboard",
+     shorttitle="Phil RTH Gap Stats",
+     overlay=true,
+     max_lines_count=500,
+     max_labels_count=500,
+     max_boxes_count=100
+ )
+
+//=====================================================================
+// GROUPS
+//=====================================================================
+
+grpSession = "1 — RTH Session"
+grpATR     = "2 — Gap / ATR"
+grpLevels  = "3 — Gap Levels"
+grpVisual  = "4 — Visualization"
+grpStats   = "5 — Statistics Dashboard"
+
+//=====================================================================
+// SESSION SETTINGS
+//=====================================================================
+
+rthSession = input.session(
+     "0930-1600",
+     "NY RTH Session",
+     group=grpSession
+ )
+
+timeZone = input.string(
+     "America/New_York",
+     "Time Zone",
+     group=grpSession
+ )
+
+//=====================================================================
+// ATR SETTINGS
+//=====================================================================
+
+atrLength = input.int(
+     14,
+     "Daily ATR Length",
+     minval=1,
+     group=grpATR
+ )
+
+tinyATR = input.float(
+     0.30,
+     "Tiny Gap < ATR",
+     step=0.05,
+     group=grpATR
+ )
+
+mediumATR = input.float(
+     0.70,
+     "Medium Gap < ATR",
+     step=0.05,
+     group=grpATR
+ )
+
+largeATR = input.float(
+     1.20,
+     "Large Gap < ATR",
+     step=0.05,
+     group=grpATR
+ )
+
+//=====================================================================
+// LEVEL SETTINGS
+//=====================================================================
+
+showPrevClose = input.bool(
+     true,
+     "Previous RTH Close — 100%",
+     group=grpLevels
+ )
+
+show25 = input.bool(
+     true,
+     "25% Gap",
+     group=grpLevels
+ )
+
+show50 = input.bool(
+     true,
+     "50% Gap",
+     group=grpLevels
+ )
+
+show75 = input.bool(
+     true,
+     "75% Gap",
+     group=grpLevels
+ )
+
+showOpen = input.bool(
+     true,
+     "09:30 Open — 0%",
+     group=grpLevels
+ )
+
+//=====================================================================
+// VISUAL SETTINGS
+//=====================================================================
+
+showGapBox = input.bool(
+     true,
+     "Show Gap Zone",
+     group=grpVisual
+ )
+
+showLabels = input.bool(
+     true,
+     "Show Labels",
+     group=grpVisual
+ )
+
+keepHistory = input.bool(
+     false,
+     "Keep Previous Sessions",
+     group=grpVisual
+ )
+
+prevCloseColor = input.color(
+     color.white,
+     "Previous Close",
+     group=grpVisual
+ )
+
+level25Color = input.color(
+     color.new(color.orange, 15),
+     "25%",
+     group=grpVisual
+ )
+
+level50Color = input.color(
+     color.yellow,
+     "50%",
+     group=grpVisual
+ )
+
+level75Color = input.color(
+     color.new(color.orange, 15),
+     "75%",
+     group=grpVisual
+ )
+
+openColor = input.color(
+     color.aqua,
+     "09:30 Open",
+     group=grpVisual
+ )
+
+gapUpColor = input.color(
+     color.new(color.green, 88),
+     "Gap Up Zone",
+     group=grpVisual
+ )
+
+gapDownColor = input.color(
+     color.new(color.red, 88),
+     "Gap Down Zone",
+     group=grpVisual
+ )
+
+lineWidth = input.int(
+     2,
+     "Standard Line Width",
+     minval=1,
+     maxval=5,
+     group=grpVisual
+ )
+
+midLineWidth = input.int(
+     3,
+     "50% Line Width",
+     minval=1,
+     maxval=5,
+     group=grpVisual
+ )
+
+//=====================================================================
+// DASHBOARD SETTINGS
+//=====================================================================
+
+showDashboard = input.bool(
+     true,
+     "Show Statistics Dashboard",
+     group=grpStats
+ )
+
+dashboardPosition = input.string(
+     "Top Right",
+     "Dashboard Position",
+     options=[
+         "Top Right",
+         "Top Left",
+         "Bottom Right",
+         "Bottom Left"
+     ],
+     group=grpStats
+ )
+
+//=====================================================================
+// SESSION DETECTION
+//=====================================================================
+
+inRTH = not na(
+     time(
+         timeframe.period,
+         rthSession,
+         timeZone
+     )
+ )
+
+rthStart = inRTH and not inRTH[1]
+rthEnd   = not inRTH and inRTH[1]
+
+//=====================================================================
+// PREVIOUS RTH INFORMATION
+//=====================================================================
+
+var float prevRTHHigh  = na
+var float prevRTHLow   = na
+var float prevRTHClose = na
+
+var float currentRTHHigh = na
+var float currentRTHLow  = na
+
+//---------------------------------------------------------------------
+// Start RTH tracking
+//---------------------------------------------------------------------
+
+if rthStart
+    currentRTHHigh := high
+    currentRTHLow  := low
+
+//---------------------------------------------------------------------
+// Update RTH range
+//---------------------------------------------------------------------
+
+if inRTH
+    currentRTHHigh := na(currentRTHHigh) ? high : math.max(currentRTHHigh, high)
+    currentRTHLow  := na(currentRTHLow)  ? low  : math.min(currentRTHLow, low)
+
+//---------------------------------------------------------------------
+// Store finished RTH session
+//---------------------------------------------------------------------
+
+if rthEnd
+    prevRTHHigh  := currentRTHHigh
+    prevRTHLow   := currentRTHLow
+    prevRTHClose := close[1]
+
+//=====================================================================
+// DAILY ATR
+//=====================================================================
+
+// Previous completed Daily ATR
+dailyATR = request.security(
+     syminfo.tickerid,
+     "D",
+     ta.atr(atrLength)[1],
+     lookahead=barmerge.lookahead_off
+ )
+
+//=====================================================================
+// CURRENT GAP VARIABLES
+//=====================================================================
+
+var float rthOpen = na
+
+var float level25 = na
+var float level50 = na
+var float level75 = na
+
+var float gapPoints = na
+var float gapATR    = na
+
+var bool gapUp   = false
+var bool gapDown = false
+
+//=====================================================================
+// FIRST 15 MINUTES
+//=====================================================================
+
+var float first15Close = na
+var bool first15Complete = false
+var bool first15TowardFill = false
+
+//=====================================================================
+// LINE OBJECTS
+//=====================================================================
+
+var line closeLine = na
+var line line25    = na
+var line line50    = na
+var line line75    = na
+var line openLine  = na
+
+var box gapBox = na
+
+var label closeLabel = na
+var label label25    = na
+var label label50    = na
+var label label75    = na
+var label openLabel  = na
+
+//=====================================================================
+// NEW RTH SESSION
+//=====================================================================
+
+if rthStart
+
+    //---------------------------------------------------------------
+    // Reset 15 minute information
+    //---------------------------------------------------------------
+
+    first15Close      := na
+    first15Complete   := false
+    first15TowardFill := false
+
+    //---------------------------------------------------------------
+    // Capture 09:30 Open
+    //---------------------------------------------------------------
+
+    rthOpen := open
+
+    //---------------------------------------------------------------
+    // Gap calculations
+    //---------------------------------------------------------------
+
+    if not na(prevRTHClose)
+
+        gapPoints := math.abs(rthOpen - prevRTHClose)
+
+        gapATR := not na(dailyATR) and dailyATR > 0
+             ? gapPoints / dailyATR
+             : na
+
+        gapUp   := rthOpen > prevRTHClose
+        gapDown := rthOpen < prevRTHClose
+
+        //-----------------------------------------------------------
+        // Gap levels
+        //
+        // 0%   = 09:30 Open
+        // 100% = Previous Close
+        //-----------------------------------------------------------
+
+        level25 := rthOpen + (prevRTHClose - rthOpen) * 0.25
+        level50 := rthOpen + (prevRTHClose - rthOpen) * 0.50
+        level75 := rthOpen + (prevRTHClose - rthOpen) * 0.75
+
+    //---------------------------------------------------------------
+    // Delete previous objects if history disabled
+    //---------------------------------------------------------------
+
+    if not keepHistory
+
+        if not na(closeLine)
+            line.delete(closeLine)
+
+        if not na(line25)
+            line.delete(line25)
+
+        if not na(line50)
+            line.delete(line50)
+
+        if not na(line75)
+            line.delete(line75)
+
+        if not na(openLine)
+            line.delete(openLine)
+
+        if not na(gapBox)
+            box.delete(gapBox)
+
+        if not na(closeLabel)
+            label.delete(closeLabel)
+
+        if not na(label25)
+            label.delete(label25)
+
+        if not na(label50)
+            label.delete(label50)
+
+        if not na(label75)
+            label.delete(label75)
+
+        if not na(openLabel)
+            label.delete(openLabel)
+
+    //---------------------------------------------------------------
+    // Draw levels
+    //---------------------------------------------------------------
+
+    if not na(prevRTHClose)
+
+        //-----------------------------------------------------------
+        // Previous Close
+        //-----------------------------------------------------------
+
+        if showPrevClose
+
+            closeLine := line.new(
+                 bar_index,
+                 prevRTHClose,
+                 bar_index,
+                 prevRTHClose,
+                 xloc=xloc.bar_index,
+                 extend=extend.none,
+                 color=prevCloseColor,
+                 width=lineWidth
+             )
+
+        //-----------------------------------------------------------
+        // 25%
+        //-----------------------------------------------------------
+
+        if show25
+
+            line25 := line.new(
+                 bar_index,
+                 level25,
+                 bar_index,
+                 level25,
+                 xloc=xloc.bar_index,
+                 extend=extend.none,
+                 color=level25Color,
+                 style=line.style_dotted,
+                 width=lineWidth
+             )
+
+        //-----------------------------------------------------------
+        // 50%
+        //-----------------------------------------------------------
+
+        if show50
+
+            line50 := line.new(
+                 bar_index,
+                 level50,
+                 bar_index,
+                 level50,
+                 xloc=xloc.bar_index,
+                 extend=extend.none,
+                 color=level50Color,
+                 style=line.style_solid,
+                 width=midLineWidth
+             )
+
+        //-----------------------------------------------------------
+        // 75%
+        //-----------------------------------------------------------
+
+        if show75
+
+            line75 := line.new(
+                 bar_index,
+                 level75,
+                 bar_index,
+                 level75,
+                 xloc=xloc.bar_index,
+                 extend=extend.none,
+                 color=level75Color,
+                 style=line.style_dotted,
+                 width=lineWidth
+             )
+
+        //-----------------------------------------------------------
+        // 09:30 Open
+        //-----------------------------------------------------------
+
+        if showOpen
+
+            openLine := line.new(
+                 bar_index,
+                 rthOpen,
+                 bar_index,
+                 rthOpen,
+                 xloc=xloc.bar_index,
+                 extend=extend.none,
+                 color=openColor,
+                 width=lineWidth
+             )
+
+        //-----------------------------------------------------------
+        // Gap Box
+        //-----------------------------------------------------------
+
+        if showGapBox and gapPoints > 0
+
+            gapBox := box.new(
+                 left=bar_index,
+                 top=math.max(rthOpen, prevRTHClose),
+                 right=bar_index,
+                 bottom=math.min(rthOpen, prevRTHClose),
+                 xloc=xloc.bar_index,
+                 bgcolor=gapUp ? gapUpColor : gapDownColor,
+                 border_color=color.new(
+                     gapUp ? color.green : color.red,
+                     45
+                 )
+             )
+
+        //-----------------------------------------------------------
+        // Labels
+        //-----------------------------------------------------------
+
+        if showLabels
+
+            if showPrevClose
+                closeLabel := label.new(
+                     bar_index,
+                     prevRTHClose,
+                     "100% • PREV CLOSE",
+                     xloc=xloc.bar_index,
+                     style=label.style_label_left,
+                     textcolor=prevCloseColor,
+                     color=color.new(color.black, 100),
+                     size=size.small
+                 )
+
+            if show25
+                label25 := label.new(
+                     bar_index,
+                     level25,
+                     "25%",
+                     xloc=xloc.bar_index,
+                     style=label.style_label_left,
+                     textcolor=level25Color,
+                     color=color.new(color.black, 100),
+                     size=size.tiny
+                 )
+
+            if show50
+                label50 := label.new(
+                     bar_index,
+                     level50,
+                     "50% GAP",
+                     xloc=xloc.bar_index,
+                     style=label.style_label_left,
+                     textcolor=level50Color,
+                     color=color.new(color.black, 100),
+                     size=size.small
+                 )
+
+            if show75
+                label75 := label.new(
+                     bar_index,
+                     level75,
+                     "75%",
+                     xloc=xloc.bar_index,
+                     style=label.style_label_left,
+                     textcolor=level75Color,
+                     color=color.new(color.black, 100),
+                     size=size.tiny
+                 )
+
+            if showOpen
+                openLabel := label.new(
+                     bar_index,
+                     rthOpen,
+                     "0% • 09:30 OPEN",
+                     xloc=xloc.bar_index,
+                     style=label.style_label_left,
+                     textcolor=openColor,
+                     color=color.new(color.black, 100),
+                     size=size.small
+                 )
+
+//=====================================================================
+// EXTEND OBJECTS THROUGH RTH
+//=====================================================================
+
+if inRTH
+
+    if not na(closeLine)
+        line.set_x2(closeLine, bar_index)
+
+    if not na(line25)
+        line.set_x2(line25, bar_index)
+
+    if not na(line50)
+        line.set_x2(line50, bar_index)
+
+    if not na(line75)
+        line.set_x2(line75, bar_index)
+
+    if not na(openLine)
+        line.set_x2(openLine, bar_index)
+
+    if not na(gapBox)
+        box.set_right(gapBox, bar_index)
+
+    //---------------------------------------------------------------
+    // Move labels
+    //---------------------------------------------------------------
+
+    if showLabels
+
+        if not na(closeLabel)
+            label.set_x(closeLabel, bar_index)
+
+        if not na(label25)
+            label.set_x(label25, bar_index)
+
+        if not na(label50)
+            label.set_x(label50, bar_index)
+
+        if not na(label75)
+            label.set_x(label75, bar_index)
+
+        if not na(openLabel)
+            label.set_x(openLabel, bar_index)
+
+//=====================================================================
+// FIRST 15 MINUTE DIRECTION
+//=====================================================================
+
+// Detect bar whose CLOSE occurs exactly at 09:45 NY time.
+
+closeHourNY   = hour(time_close, timeZone)
+closeMinuteNY = minute(time_close, timeZone)
+
+is945Close =
+     inRTH and
+     closeHourNY == 9 and
+     closeMinuteNY == 45
+
+if is945Close and not first15Complete
+
+    first15Close    := close
+    first15Complete := true
+
+    if gapUp
+        first15TowardFill := first15Close < rthOpen
+
+    else if gapDown
+        first15TowardFill := first15Close > rthOpen
+
+//=====================================================================
+// GAP CLASSIFICATION
+//=====================================================================
+
+string gapSizeClass = "N/A"
+
+if not na(gapATR)
+
+    if gapATR < tinyATR
+        gapSizeClass := "TINY"
+
+    else if gapATR < mediumATR
+        gapSizeClass := "SMALL / MEDIUM"
+
+    else if gapATR < largeATR
+        gapSizeClass := "LARGE"
+
+    else
+        gapSizeClass := "EXTREME"
+
+//=====================================================================
+// FULL GAP FILL STATISTIC — GAP SIZE
+//=====================================================================
+
+float sizeFillProbability = na
+
+if not na(gapATR)
+
+    if gapATR < tinyATR
+        sizeFillProbability := 77.8
+
+    else if gapATR < mediumATR
+        sizeFillProbability := 42.0
+
+    else if gapATR < largeATR
+        sizeFillProbability := 25.6
+
+    else
+        sizeFillProbability := 8.2
+
+//=====================================================================
+// OPEN LOCATION VS PREVIOUS RTH RANGE
+//=====================================================================
+
+string openLocation = "N/A"
+float locationFillProbability = na
+
+if not na(rthOpen) and not na(prevRTHHigh) and not na(prevRTHLow)
+
+    if rthOpen > prevRTHHigh
+
+        openLocation := "ABOVE PREV HIGH"
+        locationFillProbability := 47.1
+
+    else if rthOpen < prevRTHLow
+
+        openLocation := "BELOW PREV LOW"
+        locationFillProbability := 44.1
+
+    else
+
+        openLocation := "INSIDE PREV RANGE"
+        locationFillProbability := 70.4
+
+//=====================================================================
+// GAP DIRECTION STATISTICS
+//=====================================================================
+
+float directionFillProbability = na
+
+if gapUp
+    directionFillProbability := 58.8
+
+else if gapDown
+    directionFillProbability := 62.2
+
+//=====================================================================
+// QUALITATIVE OPENING BIAS
+//=====================================================================
+
+string openingBias = "N/A"
+
+if not na(gapATR)
+
+    //---------------------------------------------------------------
+    // Tiny gaps
+    //---------------------------------------------------------------
+
+    if gapATR < tinyATR
+
+        if openLocation == "INSIDE PREV RANGE"
+            openingBias := "STRONG MEAN REVERSION"
+
+        else
+            openingBias := "MEAN REVERSION"
+
+    //---------------------------------------------------------------
+    // Small / medium gap
+    //---------------------------------------------------------------
+
+    else if gapATR < mediumATR
+
+        if openLocation == "INSIDE PREV RANGE"
+            openingBias := "MODERATE MEAN REVERSION"
+
+        else
+            openingBias := "BALANCED"
+
+    //---------------------------------------------------------------
+    // Large gap
+    //---------------------------------------------------------------
+
+    else if gapATR < largeATR
+
+        if openLocation == "INSIDE PREV RANGE"
+            openingBias := "MIXED"
+
+        else
+            openingBias := "CONTINUATION FAVORED"
+
+    //---------------------------------------------------------------
+    // Extreme gap
+    //---------------------------------------------------------------
+
+    else
+
+        openingBias := "STRONG CONTINUATION"
+
+//=====================================================================
+// SPECIAL FIRST 15 MIN STATISTIC
+//=====================================================================
+
+bool tinyGap15Toward =
+     not na(gapATR) and
+     gapATR < tinyATR and
+     first15Complete and
+     first15TowardFill
+
+//=====================================================================
+// STATISTICAL CONSTANTS
+//=====================================================================
+
+// Historical probabilities referenced for NQ:
+//
+// Touch 25% = 86.6%
+// Touch 50% = 76.1%
+// Touch 75% = 68.0%
+// Full Fill = 60.3%
+
+float stat25   = 86.6
+float stat50   = 76.1
+float stat75   = 68.0
+float statFull = 60.3
+
+//=====================================================================
+// DASHBOARD POSITION
+//=====================================================================
+
+tablePosition =
+     dashboardPosition == "Top Left"     ? position.top_left :
+     dashboardPosition == "Bottom Right" ? position.bottom_right :
+     dashboardPosition == "Bottom Left"  ? position.bottom_left :
+     position.top_right
+
+//=====================================================================
+// DASHBOARD
+//=====================================================================
+
+var table dash = table.new(
+     tablePosition,
+     3,
+     15,
+     border_width=1
+ )
+
+//=====================================================================
+// DASHBOARD UPDATE
+//=====================================================================
+
+if barstate.islast and showDashboard
+
+    //-----------------------------------------------------------------
+    // Header
+    //-----------------------------------------------------------------
+
+    table.cell(
+         dash,
+         0,
+         0,
+         "RTH GAP",
+         text_color=color.white,
+         bgcolor=color.new(color.blue, 35)
+     )
+
+    table.cell(
+         dash,
+         1,
+         0,
+         "VALUE",
+         text_color=color.white,
+         bgcolor=color.new(color.blue, 35)
+     )
+
+    table.cell(
+         dash,
+         2,
+         0,
+         "STAT",
+         text_color=color.white,
+         bgcolor=color.new(color.blue, 35)
+     )
+
+    //-----------------------------------------------------------------
+    // Direction
+    //-----------------------------------------------------------------
+
+    table.cell(
+         dash,
+         0,
+         1,
+         "Direction"
+     )
+
+    table.cell(
+         dash,
+         1,
+         1,
+         gapUp ? "GAP UP ▲" :
+         gapDown ? "GAP DOWN ▼" :
+         "FLAT",
+         text_color=
+             gapUp ? color.lime :
+             gapDown ? color.red :
+             color.gray
+     )
+
+    table.cell(
+         dash,
+         2,
+         1,
+         not na(directionFillProbability)
+             ? str.tostring(directionFillProbability, "#.0") + "% Full"
+             : "—"
+     )
+
+    //-----------------------------------------------------------------
+    // Gap points
+    //-----------------------------------------------------------------
+
+    table.cell(
+         dash,
+         0,
+         2,
+         "Gap"
+     )
+
+    table.cell(
+         dash,
+         1,
+         2,
+         not na(gapPoints)
+             ? str.tostring(gapPoints, "#.00") + " pts"
+             : "—"
+     )
+
+    table.cell(
+         dash,
+         2,
+         2,
+         ""
+     )
+
+    //-----------------------------------------------------------------
+    // ATR
+    //-----------------------------------------------------------------
+
+    table.cell(
+         dash,
+         0,
+         3,
+         "Gap / ATR"
+     )
+
+    table.cell(
+         dash,
+         1,
+         3,
+         not na(gapATR)
+             ? str.tostring(gapATR, "#.00") + " ATR"
+             : "—"
+     )
+
+    table.cell(
+         dash,
+         2,
+         3,
+         gapSizeClass
+     )
+
+    //-----------------------------------------------------------------
+    // Size statistic
+    //-----------------------------------------------------------------
+
+    table.cell(
+         dash,
+         0,
+         4,
+         "Size Stat"
+     )
+
+    table.cell(
+         dash,
+         1,
+         4,
+         not na(sizeFillProbability)
+             ? str.tostring(sizeFillProbability, "#.0") + "%"
+             : "—"
+     )
+
+    table.cell(
+         dash,
+         2,
+         4,
+         "Full Fill"
+     )
+
+    //-----------------------------------------------------------------
+    // Opening position
+    //-----------------------------------------------------------------
+
+    table.cell(
+         dash,
+         0,
+         5,
+         "09:30 Location"
+     )
+
+    table.cell(
+         dash,
+         1,
+         5,
+         openLocation
+     )
+
+    table.cell(
+         dash,
+         2,
+         5,
+         not na(locationFillProbability)
+             ? str.tostring(locationFillProbability, "#.0") + "% Full"
+             : "—"
+     )
+
+    //-----------------------------------------------------------------
+    // General statistics
+    //-----------------------------------------------------------------
+
+    table.cell(
+         dash,
+         0,
+         6,
+         "25% Gap"
+     )
+
+    table.cell(
+         dash,
+         1,
+         6,
+         str.tostring(stat25, "#.0") + "%"
+     )
+
+    table.cell(
+         dash,
+         2,
+         6,
+         "Historical"
+     )
+
+    //-----------------------------------------------------------------
+
+    table.cell(
+         dash,
+         0,
+         7,
+         "50% Gap"
+     )
+
+    table.cell(
+         dash,
+         1,
+         7,
+         str.tostring(stat50, "#.0") + "%"
+     )
+
+    table.cell(
+         dash,
+         2,
+         7,
+         "Historical"
+     )
+
+    //-----------------------------------------------------------------
+
+    table.cell(
+         dash,
+         0,
+         8,
+         "75% Gap"
+     )
+
+    table.cell(
+         dash,
+         1,
+         8,
+         str.tostring(stat75, "#.0") + "%"
+     )
+
+    table.cell(
+         dash,
+         2,
+         8,
+         "Historical"
+     )
+
+    //-----------------------------------------------------------------
+
+    table.cell(
+         dash,
+         0,
+         9,
+         "Full Gap"
+     )
+
+    table.cell(
+         dash,
+         1,
+         9,
+         str.tostring(statFull, "#.0") + "%"
+     )
+
+    table.cell(
+         dash,
+         2,
+         9,
+         "Historical"
+     )
+
+    //-----------------------------------------------------------------
+    // First 15 minutes
+    //-----------------------------------------------------------------
+
+    table.cell(
+         dash,
+         0,
+         10,
+         "First 15m"
+     )
+
+    table.cell(
+         dash,
+         1,
+         10,
+         not first15Complete
+             ? "WAIT 09:45"
+             : first15TowardFill
+                 ? "→ GAP FILL"
+                 : "→ AWAY"
+     )
+
+    table.cell(
+         dash,
+         2,
+         10,
+         tinyGap15Toward
+             ? "93.1% Full*"
+             : "—"
+     )
+
+    //-----------------------------------------------------------------
+    // Previous Close
+    //-----------------------------------------------------------------
+
+    table.cell(
+         dash,
+         0,
+         11,
+         "Prev Close"
+     )
+
+    table.cell(
+         dash,
+         1,
+         11,
+         not na(prevRTHClose)
+             ? str.tostring(prevRTHClose, format.mintick)
+             : "—"
+     )
+
+    table.cell(
+         dash,
+         2,
+         11,
+         "100%"
+     )
+
+    //-----------------------------------------------------------------
+    // 50%
+    //-----------------------------------------------------------------
+
+    table.cell(
+         dash,
+         0,
+         12,
+         "Gap Midpoint"
+     )
+
+    table.cell(
+         dash,
+         1,
+         12,
+         not na(level50)
+             ? str.tostring(level50, format.mintick)
+             : "—",
+         text_color=level50Color
+     )
+
+    table.cell(
+         dash,
+         2,
+         12,
+         "50%"
+     )
+
+    //-----------------------------------------------------------------
+    // Opening Bias
+    //-----------------------------------------------------------------
+
+    biasColor =
+         openingBias == "STRONG MEAN REVERSION" ? color.lime :
+         openingBias == "MEAN REVERSION" ? color.green :
+         openingBias == "MODERATE MEAN REVERSION" ? color.green :
+         openingBias == "STRONG CONTINUATION" ? color.red :
+         openingBias == "CONTINUATION FAVORED" ? color.orange :
+         color.yellow
+
+    table.cell(
+         dash,
+         0,
+         13,
+         "OPENING BIAS",
+         text_color=color.white,
+         bgcolor=color.new(biasColor, 65)
+     )
+
+    table.cell(
+         dash,
+         1,
+         13,
+         openingBias,
+         text_color=color.white,
+         bgcolor=color.new(biasColor, 65)
+     )
+
+    table.cell(
+         dash,
+         2,
+         13,
+         "",
+         bgcolor=color.new(biasColor, 65)
+     )
+//=====================================================================
+// DIRECTIONAL BIAS — SIMPLE BULLISH / BEARISH
+//=====================================================================
+
+string directionalBias = "NEUTRAL"
+string directionalReason = "NO CLEAR EDGE"
+color directionalBiasColor = color.gray
+
+//---------------------------------------------------------
+// MEAN REVERSION
+// Price expected to move TOWARD Previous Close
+//---------------------------------------------------------
+
+bool isMeanReversion =
+     openingBias == "STRONG MEAN REVERSION" or
+     openingBias == "MEAN REVERSION" or
+     openingBias == "MODERATE MEAN REVERSION"
+
+//---------------------------------------------------------
+// CONTINUATION
+// Price expected to move AWAY from Previous Close
+//---------------------------------------------------------
+
+bool isContinuation =
+     openingBias == "STRONG CONTINUATION" or
+     openingBias == "CONTINUATION FAVORED"
+
+//---------------------------------------------------------
+// GAP UP
+//---------------------------------------------------------
+
+if gapUp
+
+    if isMeanReversion
+        directionalBias := "BEARISH ▼"
+        directionalReason := "TARGET → GAP FILL"
+        directionalBiasColor := color.red
+
+    else if isContinuation
+        directionalBias := "BULLISH ▲"
+        directionalReason := "GAP CONTINUATION"
+        directionalBiasColor := color.lime
+
+    else
+        directionalBias := "NEUTRAL"
+        directionalReason := "WAIT FOR CONFIRMATION"
+        directionalBiasColor := color.yellow
+
+//---------------------------------------------------------
+// GAP DOWN
+//---------------------------------------------------------
+
+else if gapDown
+
+    if isMeanReversion
+        directionalBias := "BULLISH ▲"
+        directionalReason := "TARGET → GAP FILL"
+        directionalBiasColor := color.lime
+
+    else if isContinuation
+        directionalBias := "BEARISH ▼"
+        directionalReason := "GAP CONTINUATION"
+        directionalBiasColor := color.red
+
+    else
+        directionalBias := "NEUTRAL"
+        directionalReason := "WAIT FOR CONFIRMATION"
+        directionalBiasColor := color.yellow
+
+    //-----------------------------------------------------------------
+    // Directional Bias — Bullish / Bearish
+    //-----------------------------------------------------------------
+
+    table.cell(
+         dash,
+         0,
+         14,
+         "DIRECTIONAL BIAS",
+         text_color=color.white,
+         bgcolor=color.new(directionalBiasColor, 35)
+     )
+
+    table.cell(
+         dash,
+         1,
+         14,
+         directionalBias,
+         text_color=color.white,
+         bgcolor=color.new(directionalBiasColor, 35)
+     )
+
+    table.cell(
+         dash,
+         2,
+         14,
+         directionalReason,
+         text_color=color.white,
+         bgcolor=color.new(directionalBiasColor, 35)
+     )

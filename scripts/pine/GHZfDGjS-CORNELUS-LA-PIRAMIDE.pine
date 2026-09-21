@@ -1,0 +1,34 @@
+//@version=6
+indicator("CORNELUS LA PIRAMIDE", overlay = true)
+
+// ── Inputs ─────────────────────────────────────────────
+atrLength = input.int(14,       "ATR Length",     minval = 1)
+atrMult   = input.float(1.5,    "ATR Multiplier", minval = 0.1, step = 0.1)
+riskUsd   = input.int(500,      "Risk $",         minval = 0,   step = 50)
+lotUnits  = input.float(100000, "Units per Lot",  minval = 1)
+
+// ── Conversia valutei de cotare în USD (scop global) ───
+quoteToUsd = request.currency_rate(syminfo.currency, "USD")
+
+// ── Calcule ────────────────────────────────────────────
+pipSize   = syminfo.mintick * 10
+
+atrPrice  = ta.atr(atrLength)                 // în preț, timeframe-ul curent
+stopPrice = atrPrice * atrMult                // brut, nerotunjit
+
+atrPips   = atrPrice  / pipSize
+stopPips  = stopPrice / pipSize
+
+riskPerLot = stopPrice * lotUnits * quoteToUsd     // $ pierduți la 1 lot
+
+lots = na(riskPerLot) or riskPerLot <= 0 ? 0.0 : math.floor(riskUsd / riskPerLot * 100) / 100
+
+// ── Dashboard ──────────────────────────────────────────
+var table dash = table.new(position.top_right, 1, 4)
+
+if barstate.islast
+    txt = chart.fg_color
+    table.cell(dash, 0, 0, na(atrPips)  ? "ATR n/a"  : "ATR "  + str.tostring(atrPips,  "0.0"),           text_color = txt, text_size = size.normal, text_halign = text.align_left)
+    table.cell(dash, 0, 1, na(stopPips) ? "Stop n/a" : "Stop " + str.tostring(stopPips, "0.0") + " pips", text_color = txt, text_size = size.normal, text_halign = text.align_left)
+    table.cell(dash, 0, 2, "Risk $" + str.tostring(riskUsd),          text_color = txt, text_size = size.normal, text_halign = text.align_left)
+    table.cell(dash, 0, 3, "Lots "  + str.tostring(lots, "0.00"),     text_color = txt, text_size = size.normal, text_halign = text.align_left)

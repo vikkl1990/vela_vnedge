@@ -1,0 +1,195 @@
+//@version=6
+indicator("NO WICK INDICATION", shorttitle="NO WICK INDICATION", overlay=true)
+
+//====================================================
+// SETTINGS
+//====================================================
+
+minimumBodyPoints = input.float(
+     10.0,
+     "Minimum Candle Body Size (Points)",
+     minval=0.0,
+     step=0.25,
+     display=display.none
+)
+
+wickToleranceTicks = input.int(
+     0,
+     "Wick Tolerance (Ticks)",
+     minval=0,
+     maxval=100,
+     display=display.none
+)
+
+//====================================================
+// INDIVIDUAL ON / OFF SETTINGS
+//====================================================
+
+showGreenNoUpperWick = input.bool(
+     true,
+     "Green No Upper Wick - Dot Above",
+     display=display.none
+)
+
+showGreenNoLowerWick = input.bool(
+     true,
+     "Green No Lower Wick - Dot Below",
+     display=display.none
+)
+
+showRedNoUpperWick = input.bool(
+     true,
+     "Red No Upper Wick - Dot Above",
+     display=display.none
+)
+
+showRedNoLowerWick = input.bool(
+     true,
+     "Red No Lower Wick - Dot Below",
+     display=display.none
+)
+
+//====================================================
+// COLORS
+//====================================================
+
+greenColor = input.color(
+     color.lime,
+     "Green Dot Color",
+     display=display.none
+)
+
+redColor = input.color(
+     color.red,
+     "Red Dot Color",
+     display=display.none
+)
+
+//====================================================
+// WICK TOLERANCE
+//====================================================
+
+tolerance = syminfo.mintick * wickToleranceTicks
+
+//====================================================
+// CANDLE BODY SIZE
+//====================================================
+
+bodySize = math.abs(close - open)
+
+bodySizeOK = bodySize >= minimumBodyPoints
+
+//====================================================
+// CANDLE DIRECTION
+//====================================================
+
+greenCandle = close > open
+redCandle = close < open
+
+//====================================================
+// GREEN CONDITIONS
+//====================================================
+
+// Green candle with no wick at TOP
+// Close = High
+greenNoUpperWick =
+     greenCandle and
+     bodySizeOK and
+     math.abs(high - close) <= tolerance
+
+// Green candle with no wick at BOTTOM
+// Open = Low
+greenNoLowerWick =
+     greenCandle and
+     bodySizeOK and
+     math.abs(open - low) <= tolerance
+
+//====================================================
+// RED CONDITIONS
+//====================================================
+
+// Red candle with no wick at TOP
+// Open = High
+redNoUpperWick =
+     redCandle and
+     bodySizeOK and
+     math.abs(high - open) <= tolerance
+
+// Red candle with no wick at BOTTOM
+// Close = Low
+redNoLowerWick =
+     redCandle and
+     bodySizeOK and
+     math.abs(close - low) <= tolerance
+
+//====================================================
+// GREEN DOTS
+//====================================================
+
+plotshape(
+     showGreenNoUpperWick and greenNoUpperWick,
+     title="Green No Upper Wick",
+     style=shape.circle,
+     location=location.abovebar,
+     color=greenColor,
+     size=size.tiny
+)
+
+plotshape(
+     showGreenNoLowerWick and greenNoLowerWick,
+     title="Green No Lower Wick",
+     style=shape.circle,
+     location=location.belowbar,
+     color=greenColor,
+     size=size.tiny
+)
+
+//====================================================
+// RED DOTS
+//====================================================
+
+plotshape(
+     showRedNoUpperWick and redNoUpperWick,
+     title="Red No Upper Wick",
+     style=shape.circle,
+     location=location.abovebar,
+     color=redColor,
+     size=size.tiny
+)
+
+plotshape(
+     showRedNoLowerWick and redNoLowerWick,
+     title="Red No Lower Wick",
+     style=shape.circle,
+     location=location.belowbar,
+     color=redColor,
+     size=size.tiny
+)
+
+//====================================================
+// ALERTS
+//====================================================
+
+alertcondition(
+     showGreenNoUpperWick and greenNoUpperWick,
+     title="Green No Upper Wick",
+     message="Green candle with no upper wick and required body size detected."
+)
+
+alertcondition(
+     showGreenNoLowerWick and greenNoLowerWick,
+     title="Green No Lower Wick",
+     message="Green candle with no lower wick and required body size detected."
+)
+
+alertcondition(
+     showRedNoUpperWick and redNoUpperWick,
+     title="Red No Upper Wick",
+     message="Red candle with no upper wick and required body size detected."
+)
+
+alertcondition(
+     showRedNoLowerWick and redNoLowerWick,
+     title="Red No Lower Wick",
+     message="Red candle with no lower wick and required body size detected."
+)

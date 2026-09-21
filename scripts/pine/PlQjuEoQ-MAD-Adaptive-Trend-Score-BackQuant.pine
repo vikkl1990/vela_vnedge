@@ -1,0 +1,138 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BackQuant
+
+//@version=6
+indicator("MAD Adaptive Trend Score [BackQuant]", shorttitle = "MAD Trend Score [BackQuant]", overlay=false)
+
+// Constants
+const string calc  = "Core Calculation Settings"
+const string thres = "Signal Settings"
+const string ui    = "Plotting and Coloring"
+const color GREEN  = #00ff00
+const color RED    = #ff0000
+
+// Inputs
+float src = input.source(close, "Source", group=calc)
+int madLen = input.int(15, "MAD Length", minval=3, group=calc, tooltip="Length used for the rolling median and Median Absolute Deviation.")
+float madMult = input.float(5.2, "MAD Multiplier", minval=0.1, step=0.1, group=calc, tooltip="Controls how far price may move away from the rolling median. Lower values suppress more noise. Higher values follow price more closely.")
+int scoreStart = input.int(1, "Score Lookback Start", inline="SL", group=calc)
+int scoreEnd = input.int(45, "End", maxval=50, inline="SL", group=calc, tooltip="Range of bars used for the directional persistence score.")
+
+bool showRefs = input.bool(true, "Show Reference Lines", group=thres)
+bool showSignals = input.bool(true, "Show Signals on Chart?", group=thres)
+int longThres = input.int(40, "Long Threshold", group=thres, inline="TH")
+int shortThres = input.int(-6, "Short Threshold", group=thres, inline="TH")
+
+color longCol = input.color(GREEN, "Long Color", group=ui, inline="col")
+color shortCol = input.color(RED, "Short Color", group=ui, inline="col")
+int lineW = input.int(5, "Line Width", group=ui)
+bool showSmooth = input.bool(false, "Show MAD Filter on Chart?", group=ui)
+bool paintCandles = input.bool(true, "Paint Candles to Trend?", group=ui)
+bool bgCol = input.bool(false, "Background Color?", group=ui)
+
+// Helpers
+method transp(color x, int t) =>
+    color.new(x, t)
+
+/////////////////////////////////////////////////////////////// © BackQuant ///////////////////////////////////////////////////////////////
+
+// Exact Rolling Median + MAD
+madStats(float source, simple int length) =>
+    array<float> values = array.new_float()
+
+    for i = 0 to length - 1
+        if not na(source[i])
+            array.push(values, source[i])
+
+    float median = array.size(values) > 0 ? array.median(values) : na
+    array<float> deviations = array.new_float()
+
+    if not na(median)
+        for i = 0 to array.size(values) - 1
+            array.push(deviations, math.abs(array.get(values, i) - median))
+
+    float mad = array.size(deviations) > 0 ? array.median(deviations) : na
+    [median, mad]
+
+/////////////////////////////////////////////////////////////// © BackQuant ///////////////////////////////////////////////////////////////
+
+// MAD Calculation
+[medianValue, rawMad] = madStats(src, madLen)
+
+// Scale MAD to a standard-deviation-like measure
+float scaledMad = math.max(rawMad * 1.4826, syminfo.mintick)
+
+// Allow price to move around the median only within the MAD envelope
+float deviation = src - medianValue
+float maxDeviation = scaledMad * madMult
+float clippedDeviation = math.max(-maxDeviation, math.min(maxDeviation, deviation))
+
+// MAD Adaptive Filter
+float madFilt = medianValue + clippedDeviation
+
+/////////////////////////////////////////////////////////////// © BackQuant ///////////////////////////////////////////////////////////////
+
+// Score the MAD filter's directional persistence
+float scoreS = 0.0
+
+for i = scoreStart to scoreEnd
+    scoreS += madFilt > madFilt[i] ? 1.0 : -1.0
+
+// Signal State
+var int signal = 0
+
+float prevScore = nz(scoreS[1], scoreS)
+bool longCond = scoreS > longThres
+bool shortCond = prevScore >= shortThres and scoreS < shortThres
+
+if longCond and not shortCond
+    signal := 1
+else if shortCond
+    signal := -1
+
+// Color State
+color col = signal == 1 ? longCol : shortCol
+
+/////////////////////////////////////////////////////////////// © BackQuant ///////////////////////////////////////////////////////////////
+// Plotting
+
+// Score line in pane
+plot(scoreS, "Trend Score", col, lineW)
+
+// Reference lines
+if barstate.islast and showRefs
+    line.new(last_bar_index, longThres, bar_index - 1, longThres, color=chart.fg_color.transp(50), style=line.style_dashed, extend=extend.right)
+    line.new(last_bar_index, shortThres, bar_index - 1, shortThres, color=chart.fg_color.transp(50), style=line.style_dashed, extend=extend.right)
+
+// MAD Filter on chart
+plot(madFilt, "MAD Adaptive Filter", col, 2, plot.style_line, force_overlay=true,
+     display=showSmooth ? display.all : display.none)
+
+// Candle painting
+plotcandle(open, high, low, close, "Trend Candles",
+     col, col, true,
+     bordercolor=col,
+     display=paintCandles ? display.all : display.none, force_overlay=true)
+
+// Background
+bgcolor(bgCol ? col.transp(80) : na, force_overlay=true)
+
+// Signals
+plotshape(signal == 1 and signal[1] == -1, "Long Signal", shape.triangleup, location.belowbar, longCol, 0, "𝕃", longCol, true, size.small,
+     display=showSignals ? display.all : display.none, force_overlay=true)
+
+plotshape(signal == -1 and signal[1] == 1, "Short Signal", shape.triangledown, location.abovebar, shortCol, 0, "𝕊", shortCol, true, size.small,
+     display=showSignals ? display.all : display.none, force_overlay=true)
+
+/////////////////////////////////////////////////////////////// © BackQuant ///////////////////////////////////////////////////////////////
+// Data Window
+
+plot(medianValue, "Rolling Median", display=display.data_window)
+plot(rawMad, "Raw MAD", display=display.data_window)
+plot(scaledMad, "Scaled MAD", display=display.data_window)
+
+/////////////////////////////////////////////////////////////// © BackQuant ///////////////////////////////////////////////////////////////
+// Alerts
+
+alertcondition(signal == 1 and signal[1] == -1, title="MAD Trend Score Long", message="MAD Adaptive Trend Score Long {{exchange}}:{{ticker}}")
+alertcondition(signal == -1 and signal[1] == 1, title="MAD Trend Score Short", message="MAD Adaptive Trend Score Short {{exchange}}:{{ticker}}")

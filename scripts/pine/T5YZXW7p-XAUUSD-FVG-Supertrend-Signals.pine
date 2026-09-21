@@ -1,0 +1,289 @@
+//@version=6
+indicator("XAUUSD FVG Supertrend Signals", overlay=true, max_boxes_count=50, max_labels_count=100)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INPUTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+groupTrend = "Trend Settings"
+stFactor   = input.float(3.0, "Supertrend Factor", step=0.1, group=groupTrend)
+stATR      = input.int(10, "Supertrend ATR", minval=1, group=groupTrend)
+emaLength  = input.int(200, "EMA Length", minval=1, group=groupTrend)
+
+groupFVG = "Fair Value Gap"
+showFVG = input.bool(true, "Show FVG Zones", group=groupFVG)
+extendFVG = input.int(15, "FVG Extension", minval=1, maxval=100, group=groupFVG)
+
+groupSignal = "Signal Settings"
+showSignals = input.bool(true, "Show BUY / SELL Signals", group=groupSignal)
+requireFVG = input.bool(true, "Require FVG Confirmation", group=groupSignal)
+
+groupTarget = "Target Settings"
+showTarget = input.bool(true, "Show Target", group=groupTarget)
+targetDistance = input.float(40.0, "Target Distance ($)", minval=0.1, step=0.1, group=groupTarget)
+
+showStop = input.bool(true, "Show Stop Level", group=groupTarget)
+stopDistance = input.float(15.0, "Stop Distance ($)", minval=0.1, step=0.1, group=groupTarget)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SUPERTREND
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[supertrend, direction] = ta.supertrend(stFactor, stATR)
+
+bullTrend = direction < 0
+bearTrend = direction > 0
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// EMA 200
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ema200 = ta.ema(close, emaLength)
+
+emaBull = close > ema200
+emaBear = close < ema200
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// FAIR VALUE GAP
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Bullish FVG:
+// Current low is above high from 2 candles ago
+
+bullFVG = low > high[2]
+
+// Bearish FVG:
+// Current high is below low from 2 candles ago
+
+bearFVG = high < low[2]
+
+// FVG levels
+bullFVGTop = low
+bullFVGBottom = high[2]
+
+bearFVGTop = low[2]
+bearFVGBottom = high
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// FVG MEMORY
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var bool bullishFVGExists = false
+var bool bearishFVGExists = false
+
+if bullFVG
+    bullishFVGExists := true
+
+if bearFVG
+    bearishFVGExists := true
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// DRAW FVG ZONES
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if showFVG and bullFVG
+    box.new(
+         left=bar_index - 2,
+         top=bullFVGTop,
+         right=bar_index + extendFVG,
+         bottom=bullFVGBottom,
+         bgcolor=color.new(color.green, 88),
+         border_color=color.new(color.green, 55))
+
+if showFVG and bearFVG
+    box.new(
+         left=bar_index - 2,
+         top=bearFVGTop,
+         right=bar_index + extendFVG,
+         bottom=bearFVGBottom,
+         bgcolor=color.new(color.red, 88),
+         border_color=color.new(color.red, 55))
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SIGNAL LOGIC
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Fresh FVG confirmation
+fvgBullConfirmation = bullFVG or bullishFVGExists
+fvgBearConfirmation = bearFVG or bearishFVGExists
+
+// BUY
+buySetup =
+     bullTrend and
+     emaBull and
+     fvgBullConfirmation and
+     close > open
+
+// SELL
+sellSetup =
+     bearTrend and
+     emaBear and
+     fvgBearConfirmation and
+     close < open
+
+// If FVG requirement is disabled
+buySignal =
+     buySetup and
+     (requireFVG ? fvgBullConfirmation : true)
+
+sellSignal =
+     sellSetup and
+     (requireFVG ? fvgBearConfirmation : true)
+
+// Only signal on the first bar of the setup
+buyTrigger = buySignal and not buySignal[1]
+sellTrigger = sellSignal and not sellSignal[1]
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SUPERTREND PLOTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+plot(
+     bullTrend ? supertrend : na,
+     title="Bullish Supertrend",
+     color=color.lime,
+     linewidth=2,
+     style=plot.style_linebr)
+
+plot(
+     bearTrend ? supertrend : na,
+     title="Bearish Supertrend",
+     color=color.red,
+     linewidth=2,
+     style=plot.style_linebr)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// EMA
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+plot(
+     ema200,
+     title="EMA 200",
+     color=color.orange,
+     linewidth=2)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// BUY SIGNAL
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+plotshape(
+     showSignals and buyTrigger,
+     title="BUY Signal",
+     style=shape.labelup,
+     location=location.belowbar,
+     color=color.lime,
+     textcolor=color.black,
+     text="BUY",
+     size=size.small)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SELL SIGNAL
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+plotshape(
+     showSignals and sellTrigger,
+     title="SELL Signal",
+     style=shape.labeldown,
+     location=location.abovebar,
+     color=color.red,
+     textcolor=color.white,
+     text="SELL",
+     size=size.small)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TARGET / STOP VARIABLES
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var float buyTarget = na
+var float buyStop = na
+
+var float sellTarget = na
+var float sellStop = na
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// BUY TARGET
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if buyTrigger
+    buyTarget := close + targetDistance
+    buyStop := close - stopDistance
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SELL TARGET
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if sellTrigger
+    sellTarget := close - targetDistance
+    sellStop := close + stopDistance
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TARGET PLOTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+plot(
+     showTarget ? buyTarget : na,
+     title="BUY TARGET",
+     color=color.green,
+     linewidth=2,
+     style=plot.style_linebr)
+
+plot(
+     showTarget ? sellTarget : na,
+     title="SELL TARGET",
+     color=color.green,
+     linewidth=2,
+     style=plot.style_linebr)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// STOP PLOTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+plot(
+     showStop ? buyStop : na,
+     title="BUY STOP",
+     color=color.red,
+     linewidth=1,
+     style=plot.style_linebr)
+
+plot(
+     showStop ? sellStop : na,
+     title="SELL STOP",
+     color=color.red,
+     linewidth=1,
+     style=plot.style_linebr)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TARGET LABELS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if buyTrigger and showTarget
+    label.new(
+         bar_index,
+         buyTarget,
+         "BUY TARGET\n" + str.tostring(buyTarget, format.mintick),
+         style=label.style_label_down,
+         color=color.green,
+         textcolor=color.white)
+
+if sellTrigger and showTarget
+    label.new(
+         bar_index,
+         sellTarget,
+         "SELL TARGET\n" + str.tostring(sellTarget, format.mintick),
+         style=label.style_label_up,
+         color=color.green,
+         textcolor=color.white)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ALERTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+alertcondition(
+     buyTrigger,
+     title="XAUUSD BUY",
+     message="XAUUSD BUY signal: Supertrend + EMA200 + Bullish FVG.")
+
+alertcondition(
+     sellTrigger,
+     title="XAUUSD SELL",
+     message="XAUUSD SELL signal: Supertrend + EMA200 + Bearish FVG.")

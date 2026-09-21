@@ -1,0 +1,222 @@
+//@version=6
+indicator("Daily Futures Wick Levels — Monthly Span V8", shorttitle="Daily Wicks V8", overlay=true, max_lines_count=20, max_labels_count=20)
+
+groupSource = "Futures source and history"
+sourceFutures = input.symbol("", "Continuous futures symbol (blank = chart symbol)", group=groupSource, tooltip="For identical history across users, select the matching continuous contract, such as CME_MINI:NQ1! or CME_MINI:ES1!.")
+historyMonths = input.int(60, "Daily wick history span (months)", minval=12, maxval=240, group=groupSource, tooltip="Daily wick touches are analyzed across approximately this many months. Keep this setting identical for every user.")
+
+groupLogic = "Daily wick-level logic"
+requiredTouches = input.int(4, "Touches required", minval=2, maxval=12, group=groupLogic)
+zoneATR = input.float(0.40, "Touch clustering range (Daily ATR)", minval=0.05, maxval=1.0, step=0.05, group=groupLogic, tooltip="Touches only need to be within the same nearby price area; they do not need to hit the exact price.")
+minimumWickRange = input.float(0.15, "Minimum rejection wick portion", minval=0.05, maxval=0.60, step=0.01, group=groupLogic)
+minimumReactionATR = input.float(0.25, "Minimum close-away move (Daily ATR)", minval=0.10, maxval=2.0, step=0.05, group=groupLogic, tooltip="The Daily candle must close this far away from its rejected wick tip.")
+
+groupDisplay = "Display"
+flipColor = input.color(color.rgb(170, 90, 255), "Flip key-zone color", group=groupDisplay)
+supplyColor = input.color(color.rgb(255, 45, 70), "Supply-zone color", group=groupDisplay)
+demandColor = input.color(color.rgb(45, 105, 255), "Demand-zone color", group=groupDisplay)
+showLabels = input.bool(true, "Show key-level tags", group=groupDisplay)
+
+// This complete database runs in the Daily request context—not on the chart's
+// timeframe. A 1-minute chart therefore receives the same results as a 4H chart.
+f_dailyDatabase() =>
+    var array<float> centers = array.new_float()
+    var array<float> radii = array.new_float()
+    var array<int> hits = array.new_int()
+    var array<int> supplyHits = array.new_int()
+    var array<int> demandHits = array.new_int()
+    var array<int> lastHit = array.new_int()
+    var array<int> firstHit = array.new_int()
+
+    float atr = ta.atr(14)
+    float candleRange = math.max(high - low, syminfo.mintick)
+    float upperWick = high - math.max(open, close)
+    float lowerWick = math.min(open, close) - low
+
+    // request.security() with lookahead_off controls Daily confirmation. Do not
+    // use barstate.isconfirmed here; it is not reliable inside requested contexts.
+    if not na(atr)
+        int existing = array.size(centers)
+        if existing > 0
+            for i = 0 to existing - 1
+                float center = array.get(centers, i)
+                float radius = array.get(radii, i)
+                bool upperTipNear = math.abs(high - center) <= radius
+                bool lowerTipNear = math.abs(low - center) <= radius
+                bool rejectDown = upperTipNear and close < center and upperWick >= candleRange * minimumWickRange and high - close >= atr * minimumReactionATR
+                bool rejectUp = lowerTipNear and close > center and lowerWick >= candleRange * minimumWickRange and close - low >= atr * minimumReactionATR
+                if (rejectDown or rejectUp) and array.get(lastHit, i) != time
+                    int oldHits = array.get(hits, i)
+                    // Only a wick tip may update the marked price. If both sides
+                    // reject on one Daily candle, use the more dominant wick.
+                    float tip = rejectDown and rejectUp ? (upperWick >= lowerWick ? high : low) : rejectDown ? high : low
+                    array.set(centers, i, (center * oldHits + tip) / (oldHits + 1))
+                    array.set(hits, i, oldHits + 1)
+                    array.set(supplyHits, i, array.get(supplyHits, i) + (rejectDown ? 1 : 0))
+                    array.set(demandHits, i, array.get(demandHits, i) + (rejectUp ? 1 : 0))
+                    array.set(lastHit, i, time)
+
+        // Every clear Daily rejection can seed a candidate. Significance comes
+        // from four separate touches, not from requiring a rare first candle.
+        bool seedSupply = upperWick >= candleRange * minimumWickRange and high - close >= atr * minimumReactionATR
+        bool seedDemand = lowerWick >= candleRange * minimumWickRange and close - low >= atr * minimumReactionATR
+
+        if seedSupply or seedDemand
+            // The candidate anchor is always the actual Daily high or low.
+            float seedPrice = seedSupply and seedDemand ? (upperWick >= lowerWick ? high : low) : seedSupply ? high : low
+            bool chosenSupply = seedSupply and (not seedDemand or upperWick >= lowerWick)
+            bool chosenDemand = seedDemand and not chosenSupply
+            float seedRadius = atr * zoneATR
+            int match = -1
+            float nearest = 1e20
+            int count = array.size(centers)
+            if count > 0
+                for i = 0 to count - 1
+                    float distance = math.abs(array.get(centers, i) - seedPrice)
+                    if distance <= math.max(array.get(radii, i), seedRadius) and distance < nearest
+                        match := i
+                        nearest := distance
+            if match >= 0
+                if array.get(lastHit, match) != time
+                    int oldHits = array.get(hits, match)
+                    array.set(centers, match, (array.get(centers, match) * oldHits + seedPrice) / (oldHits + 1))
+                    // Keep the cluster tolerance anchored to its original scale.
+                    // Letting it expand forever merges unrelated price regions.
+                    array.set(radii, match, math.min(array.get(radii, match), seedRadius))
+                    array.set(hits, match, oldHits + 1)
+                    array.set(supplyHits, match, array.get(supplyHits, match) + (chosenSupply ? 1 : 0))
+                    array.set(demandHits, match, array.get(demandHits, match) + (chosenDemand ? 1 : 0))
+                    array.set(lastHit, match, time)
+            else
+                if array.size(centers) >= 500
+                    array.shift(centers)
+                    array.shift(radii)
+                    array.shift(hits)
+                    array.shift(supplyHits)
+                    array.shift(demandHits)
+                    array.shift(lastHit)
+                    array.shift(firstHit)
+                array.push(centers, seedPrice)
+                array.push(radii, seedRadius)
+                array.push(hits, 1)
+                array.push(supplyHits, chosenSupply ? 1 : 0)
+                array.push(demandHits, chosenDemand ? 1 : 0)
+                array.push(lastHit, time)
+                array.push(firstHit, time)
+
+    // Select six relevant qualifying zones. Proximity to current price wins;
+    // additional touches provide a small strength bonus.
+    array<int> chosen = array.new_int()
+    array<float> outLevel = array.new_float(6, na)
+    array<float> outRadius = array.new_float(6, na)
+    array<int> outType = array.new_int(6, 0)
+    array<int> outHits = array.new_int(6, 0)
+    array<int> outFirst = array.new_int(6, 0)
+    for slot = 0 to 5
+        int bestIndex = -1
+        float bestScore = -1e20
+        int count = array.size(centers)
+        if count > 0
+            for i = 0 to count - 1
+                int touchCount = array.get(hits, i)
+                if touchCount >= requiredTouches and not array.includes(chosen, i)
+                    float distanceATR = math.abs(close - array.get(centers, i)) / math.max(atr, syminfo.mintick)
+                    float score = math.min(touchCount, 12) * 0.25 - distanceATR
+                    if score > bestScore
+                        bestScore := score
+                        bestIndex := i
+        if bestIndex >= 0
+            array.push(chosen, bestIndex)
+            int supplies = array.get(supplyHits, bestIndex)
+            int demands = array.get(demandHits, bestIndex)
+            int levelType = supplies > 0 and demands > 0 ? 0 : supplies > 0 ? 1 : -1
+            array.set(outLevel, slot, array.get(centers, bestIndex))
+            array.set(outRadius, slot, array.get(radii, bestIndex))
+            array.set(outType, slot, levelType)
+            array.set(outHits, slot, array.get(hits, bestIndex))
+            array.set(outFirst, slot, array.get(firstHit, bestIndex))
+
+    int qualifiedCount = 0
+    int totalCandidates = array.size(centers)
+    if totalCandidates > 0
+        for i = 0 to totalCandidates - 1
+            qualifiedCount += array.get(hits, i) >= requiredTouches ? 1 : 0
+
+    [array.get(outLevel, 0), array.get(outRadius, 0), array.get(outType, 0), array.get(outHits, 0), array.get(outFirst, 0),
+     array.get(outLevel, 1), array.get(outRadius, 1), array.get(outType, 1), array.get(outHits, 1), array.get(outFirst, 1),
+     array.get(outLevel, 2), array.get(outRadius, 2), array.get(outType, 2), array.get(outHits, 2), array.get(outFirst, 2),
+     array.get(outLevel, 3), array.get(outRadius, 3), array.get(outType, 3), array.get(outHits, 3), array.get(outFirst, 3),
+     array.get(outLevel, 4), array.get(outRadius, 4), array.get(outType, 4), array.get(outHits, 4), array.get(outFirst, 4),
+     array.get(outLevel, 5), array.get(outRadius, 5), array.get(outType, 5), array.get(outHits, 5), array.get(outFirst, 5),
+     totalCandidates, qualifiedCount]
+
+string standardSymbol = sourceFutures == "" ? ticker.standard(syminfo.tickerid) : sourceFutures
+int dailyBarsInSpan = math.min(5000, historyMonths * 23 + 50)
+[l1,r1,t1,n1,f1,l2,r2,t2,n2,f2,l3,r3,t3,n3,f3,l4,r4,t4,n4,f4,l5,r5,t5,n5,f5,l6,r6,t6,n6,f6,candidateCount,qualifiedCount] = request.security(standardSymbol, "D", f_dailyDatabase(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off, calc_bars_count=dailyBarsInSpan)
+
+f_levelColor(int levelType) =>
+    levelType == 0 ? flipColor : levelType == 1 ? supplyColor : demandColor
+
+f_levelText(int levelType, int hitCount, float level) =>
+    string role = levelType == 0 ? "FLIP KEY ZONE" : levelType == 1 ? "SUPPLY ZONE" : "DEMAND ZONE"
+    role + "  #" + str.tostring(hitCount) + "  " + str.tostring(level, format.mintick)
+
+f_updateLine(line currentLine, float level, int firstTime, int hitCount, int levelType) =>
+    line result = currentLine
+    if barstate.islast
+        if na(level)
+            if not na(result)
+                line.delete(result)
+                result := na
+        else
+            if na(result)
+                result := line.new(firstTime, level, time, level, xloc=xloc.bar_time, extend=extend.right, color=f_levelColor(levelType), width=2)
+            line.set_xy1(result, firstTime, level)
+            line.set_xy2(result, time, level)
+            line.set_color(result, f_levelColor(levelType))
+            line.set_width(result, levelType == 0 ? 3 : 2)
+    result
+
+f_updateLabel(label currentLabel, float level, int hitCount, int levelType) =>
+    label result = currentLabel
+    if barstate.islast
+        if na(level) or not showLabels
+            if not na(result)
+                label.delete(result)
+                result := na
+        else
+            string tag = f_levelText(levelType, hitCount, level)
+            if na(result)
+                result := label.new(time, level, tag, xloc=xloc.bar_time, style=label.style_label_left, color=f_levelColor(levelType), textcolor=color.white, size=size.tiny)
+            label.set_xy(result, time, level)
+            label.set_text(result, tag)
+            label.set_color(result, f_levelColor(levelType))
+    result
+
+var line line1 = na
+var line line2 = na
+var line line3 = na
+var line line4 = na
+var line line5 = na
+var line line6 = na
+var label label1 = na
+var label label2 = na
+var label label3 = na
+var label label4 = na
+var label label5 = na
+var label label6 = na
+line1 := f_updateLine(line1,l1,f1,n1,t1)
+line2 := f_updateLine(line2,l2,f2,n2,t2)
+line3 := f_updateLine(line3,l3,f3,n3,t3)
+line4 := f_updateLine(line4,l4,f4,n4,t4)
+line5 := f_updateLine(line5,l5,f5,n5,t5)
+line6 := f_updateLine(line6,l6,f6,n6,t6)
+label1 := f_updateLabel(label1,l1,n1,t1)
+label2 := f_updateLabel(label2,l2,n2,t2)
+label3 := f_updateLabel(label3,l3,n3,t3)
+label4 := f_updateLabel(label4,l4,n4,t4)
+label5 := f_updateLabel(label5,l5,n5,t5)
+label6 := f_updateLabel(label6,l6,n6,t6)
+
+bool nearLevel = (not na(l1) and math.abs(close-l1)<=r1) or (not na(l2) and math.abs(close-l2)<=r2) or (not na(l3) and math.abs(close-l3)<=r3) or (not na(l4) and math.abs(close-l4)<=r4) or (not na(l5) and math.abs(close-l5)<=r5) or (not na(l6) and math.abs(close-l6)<=r6)
+alertcondition(nearLevel and not nearLevel[1], "Price entered a Daily key zone", "{{ticker}} entered a confirmed four-touch Daily key reversal zone near {{close}}.")

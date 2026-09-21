@@ -1,0 +1,245 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0
+// at https://mozilla.org/MPL/2.0/
+
+// ═══════════════════════════════════════════════════════════════
+// Session Levels + Pre-Market H/L · v1.0.0.
+// Vertical dashed dividers for pre-market · regular · after-hours
+// session boundaries, plus horizontal lines for pre-market High/Low,
+// opening-range High/Low, and prior day's close.
+// No buy/sell signals. Not financial advice.
+// ═══════════════════════════════════════════════════════════════
+//
+// v1.0.0 (2026-09-01) — Wave 2 release. Session dividers · pre-market
+//   H/L (extends through RTH) · opening-range H/L · prior-day close
+//   reference · full brand palette · configurable timezone.
+//
+// ═══════════════════════════════════════════════════════════════
+
+//@version=6
+indicator("Trding Session Levels + Pre-Market H/L", shorttitle="TRDING Sess HL", overlay=true,
+     max_lines_count=500, max_labels_count=500)
+
+// ═══════════════════════════════════════════════════════════════
+// PALETTE (Trding_AI brand · locked with Score + Fire v2.11.0)
+// ═══════════════════════════════════════════════════════════════
+color C_LIME  = #5EE33E   // electric lime · support / PM Low role
+color C_BLUE  = #3B82F6   // electric blue · resistance / PM High role
+color C_GOLD  = #D4AF37   // gold · opening range role
+color C_NAVY  = #0B1220   // deep navy · reserved for table bg
+color C_MUTE  = #94A3B8   // slate · muted labels / dividers
+
+// ═══════════════════════════════════════════════════════════════
+// INPUTS
+// ═══════════════════════════════════════════════════════════════
+
+// ─── Sessions ───
+grpS = "Sessions"
+tzInput    = input.string("America/New_York", "Timezone",
+     options=["America/New_York", "America/Chicago", "America/Los_Angeles", "Europe/London", "Asia/Tokyo", "exchange"],
+     group=grpS,
+     tooltip="Timezone the session windows are interpreted in. Default = New York (US equities). Choose 'exchange' to use the symbol's native timezone.")
+pmSession  = input.session("0400-0930", "Pre-Market",    group=grpS)
+rthSession = input.session("0930-1600", "Regular (RTH)", group=grpS)
+ahSession  = input.session("1600-2000", "After-Hours",   group=grpS)
+
+// ─── Session Dividers ───
+grpD = "Session Dividers"
+showPMOpen   = input.bool(true,  "Divider · Pre-Market Open (04:00)",   group=grpD)
+showRTHOpen  = input.bool(true,  "Divider · RTH Open (09:30)",          group=grpD)
+showRTHClose = input.bool(true,  "Divider · RTH Close (16:00)",         group=grpD)
+showAHClose  = input.bool(false, "Divider · After-Hours Close (20:00)", group=grpD)
+divWidth     = input.int(1, "Divider Width", minval=1, maxval=4, group=grpD)
+
+// ─── Pre-Market H/L ───
+grpP = "Pre-Market H/L"
+showPMHL   = input.bool(true, "Show Pre-Market High/Low lines", group=grpP)
+extendPMHL = input.bool(true, "Extend PM H/L through RTH",       group=grpP)
+pmLabels   = input.bool(true, "Show PM H/L labels",              group=grpP)
+
+// ─── Opening Range ───
+grpO = "Opening Range"
+showOR = input.bool(true, "Show Opening Range (first N minutes of RTH)", group=grpO)
+orMin  = input.int(30, "Opening Range Minutes", minval=1, maxval=120, group=grpO,
+     tooltip="Captures High/Low over the first N minutes after RTH open, then freezes and extends.")
+
+// ─── Prior Close ───
+grpY = "Prior Close"
+showYC = input.bool(true, "Show Yesterday's Close (reference line)", group=grpY)
+
+// ─── Colors ───
+grpC = "Colors"
+cPMHigh  = input.color(C_BLUE, "PM High / Resistance", group=grpC)
+cPMLow   = input.color(C_LIME, "PM Low / Support",     group=grpC)
+cOR      = input.color(C_GOLD, "Opening Range",        group=grpC)
+cYC      = input.color(C_MUTE, "Yesterday's Close",    group=grpC)
+cDivider = input.color(C_MUTE, "Session Dividers",     group=grpC)
+
+// ═══════════════════════════════════════════════════════════════
+// TIME + SESSION DETECTION
+// ═══════════════════════════════════════════════════════════════
+useTZ = tzInput == "exchange" ? syminfo.timezone : tzInput
+
+inPM  = not na(time(timeframe.period, pmSession,  useTZ))
+inRTH = not na(time(timeframe.period, rthSession, useTZ))
+inAH  = not na(time(timeframe.period, ahSession,  useTZ))
+
+startPM  = inPM  and not inPM[1]
+startRTH = inRTH and not inRTH[1]
+endRTH   = not inRTH and inRTH[1]
+endAH    = not inAH and inAH[1]
+
+// ═══════════════════════════════════════════════════════════════
+// SESSION DIVIDERS (vertical dashed lines · full chart height)
+// ═══════════════════════════════════════════════════════════════
+if startPM and showPMOpen
+    line.new(bar_index, 0, bar_index, 1, xloc=xloc.bar_index, extend=extend.both,
+         color=color.new(cDivider, 40), style=line.style_dashed, width=divWidth)
+
+if startRTH and showRTHOpen
+    line.new(bar_index, 0, bar_index, 1, xloc=xloc.bar_index, extend=extend.both,
+         color=color.new(cDivider, 20), style=line.style_dashed, width=divWidth)
+
+if endRTH and showRTHClose
+    line.new(bar_index, 0, bar_index, 1, xloc=xloc.bar_index, extend=extend.both,
+         color=color.new(cDivider, 30), style=line.style_dashed, width=divWidth)
+
+if endAH and showAHClose
+    line.new(bar_index, 0, bar_index, 1, xloc=xloc.bar_index, extend=extend.both,
+         color=color.new(cDivider, 50), style=line.style_dashed, width=divWidth)
+
+// ═══════════════════════════════════════════════════════════════
+// PRE-MARKET H/L TRACKING
+// ═══════════════════════════════════════════════════════════════
+var float pmH     = na
+var float pmL     = na
+var line  pmHLine = na
+var line  pmLLine = na
+var label pmHLbl  = na
+var label pmLLbl  = na
+
+// Reset at new pre-market open
+if startPM
+    pmH := high
+    pmL := low
+    line.delete(pmHLine)
+    line.delete(pmLLine)
+    label.delete(pmHLbl)
+    label.delete(pmLLbl)
+    pmHLine := na
+    pmLLine := na
+    pmHLbl  := na
+    pmLLbl  := na
+
+// Update PM H/L during pre-market
+if inPM
+    pmH := na(pmH) ? high : math.max(pmH, high)
+    pmL := na(pmL) ? low  : math.min(pmL, low)
+
+// Draw PM H/L lines at RTH open (freeze the pre-market range)
+if startRTH and showPMHL and not na(pmH) and not na(pmL)
+    pmHLine := line.new(bar_index, pmH, bar_index + 1, pmH, xloc=xloc.bar_index,
+         extend=extendPMHL ? extend.right : extend.none,
+         color=cPMHigh, width=2, style=line.style_dashed)
+    pmLLine := line.new(bar_index, pmL, bar_index + 1, pmL, xloc=xloc.bar_index,
+         extend=extendPMHL ? extend.right : extend.none,
+         color=cPMLow, width=2, style=line.style_dashed)
+    if pmLabels
+        pmHLbl := label.new(bar_index, pmH, "PM H  " + str.tostring(pmH, format.mintick),
+             xloc=xloc.bar_index, style=label.style_label_left,
+             color=cPMHigh, textcolor=color.white, size=size.small)
+        pmLLbl := label.new(bar_index, pmL, "PM L  " + str.tostring(pmL, format.mintick),
+             xloc=xloc.bar_index, style=label.style_label_left,
+             color=cPMLow, textcolor=color.black, size=size.small)
+
+// Clear PM H/L at RTH close
+if endRTH
+    line.delete(pmHLine)
+    line.delete(pmLLine)
+    label.delete(pmHLbl)
+    label.delete(pmLLbl)
+    pmHLine := na
+    pmLLine := na
+    pmHLbl  := na
+    pmLLbl  := na
+    pmH := na
+    pmL := na
+
+// ═══════════════════════════════════════════════════════════════
+// OPENING RANGE (first N minutes of RTH)
+// ═══════════════════════════════════════════════════════════════
+var float orH         = na
+var float orL         = na
+var int   orStartTime = na
+var bool  orFrozen    = false
+var line  orHLine     = na
+var line  orLLine     = na
+var label orHLbl      = na
+var label orLLbl      = na
+
+// Reset at new RTH open
+if startRTH
+    orStartTime := time
+    orH := high
+    orL := low
+    orFrozen := false
+    line.delete(orHLine)
+    line.delete(orLLine)
+    label.delete(orHLbl)
+    label.delete(orLLbl)
+    orHLine := na
+    orLLine := na
+    orHLbl  := na
+    orLLbl  := na
+
+orActive = inRTH and not na(orStartTime) and (time - orStartTime) < orMin * 60000
+
+// Extend OR H/L during window
+if orActive
+    orH := math.max(nz(orH, high), high)
+    orL := math.min(nz(orL, low),  low)
+
+// Freeze OR + draw lines once window expires
+if showOR and inRTH and not orActive and not orFrozen and not na(orH) and not na(orL)
+    orFrozen := true
+    orHLine := line.new(bar_index, orH, bar_index + 1, orH, xloc=xloc.bar_index,
+         extend=extend.right, color=cOR, width=1, style=line.style_solid)
+    orLLine := line.new(bar_index, orL, bar_index + 1, orL, xloc=xloc.bar_index,
+         extend=extend.right, color=cOR, width=1, style=line.style_solid)
+    orHLbl := label.new(bar_index, orH, "OR H  " + str.tostring(orH, format.mintick),
+         xloc=xloc.bar_index, style=label.style_label_left,
+         color=cOR, textcolor=color.black, size=size.small)
+    orLLbl := label.new(bar_index, orL, "OR L  " + str.tostring(orL, format.mintick),
+         xloc=xloc.bar_index, style=label.style_label_left,
+         color=cOR, textcolor=color.black, size=size.small)
+
+// Clear OR at RTH close
+if endRTH
+    line.delete(orHLine)
+    line.delete(orLLine)
+    label.delete(orHLbl)
+    label.delete(orLLbl)
+    orHLine := na
+    orLLine := na
+    orHLbl  := na
+    orLLbl  := na
+    orH := na
+    orL := na
+    orStartTime := na
+    orFrozen := false
+
+// ═══════════════════════════════════════════════════════════════
+// PRIOR DAY'S CLOSE (reference line)
+// ═══════════════════════════════════════════════════════════════
+prevClose = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
+
+var line  ycLine = na
+var label ycLbl  = na
+
+if showYC and barstate.islast and not na(prevClose)
+    line.delete(ycLine)
+    label.delete(ycLbl)
+    ycLine := line.new(bar_index - 50, prevClose, bar_index + 5, prevClose, xloc=xloc.bar_index,
+         extend=extend.right, color=cYC, width=1, style=line.style_dotted)
+    ycLbl := label.new(bar_index + 5, prevClose, "Prev Close  " + str.tostring(prevClose, format.mintick),
+         xloc=xloc.bar_index, style=label.style_label_left,
+         color=cYC, textcolor=color.white, size=size.small)

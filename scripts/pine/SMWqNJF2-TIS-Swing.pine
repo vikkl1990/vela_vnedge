@@ -1,0 +1,183 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TheIndicatorStore
+
+//@version=6
+indicator("TIS_Swing", shorttitle = "TIS_Swing", overlay = true, max_lines_count = 10)
+
+//--------------------------------------------------------------------------------------------------
+//--- Input Groups ---
+//--------------------------------------------------------------------------------------------------
+GRP_PARAMS = "Parameters"
+GRP_VISUAL = "Visual Settings"
+
+//--------------------------------------------------------------------------------------------------
+//--- Parameters (NT8 order) ---
+//--------------------------------------------------------------------------------------------------
+Left_Strength  = input.int(5, "Strength Left", minval = 1, group = GRP_PARAMS,
+     tooltip = "Number of bars to the left of the candidate bar that must be lower (for a swing high) or higher (for a swing low).")
+
+Right_Strength = input.int(2, "Strength Right", minval = 1, group = GRP_PARAMS,
+     tooltip = "Number of bars to the right of the candidate bar required to confirm the pivot. The pivot is only confirmed this many bars after it forms.")
+
+Remove_Broken  = input.bool(true, "Remove Broken Pivot Lines", group = GRP_PARAMS,
+     tooltip = "ON (default): the level is dropped as soon as the series trades through it, and no level is published until a new pivot forms. OFF: the last confirmed level is kept even after it is broken. This only affects the 'Last Swing High/Low' plots. The '(persistent)' plots always keep the last level regardless of this setting.")
+
+Use_Other_Source = input.bool(false, "Use Other Source", group = GRP_PARAMS,
+     tooltip = "Detect pivots on another plotted series instead of the bar highs and lows. Both the high and the low side then use the selected series. Useful on oscillators: a higher swing low on the oscillator while price keeps making lower lows is a divergence. Move the script to its own pane when using a non-price source.")
+
+srcInput = input.source(close, "Source", group = GRP_PARAMS)
+
+//--------------------------------------------------------------------------------------------------
+//--- Visual Settings ---
+//--------------------------------------------------------------------------------------------------
+Show_Levels  = input.bool(true, "Show Levels", group = GRP_VISUAL,
+     tooltip = "Show the stepped line that holds the last level, honouring 'Remove Broken Pivot Lines'.")
+
+Show_Persist = input.bool(false, "Show Persistent Levels", group = GRP_VISUAL,
+     tooltip = "Show the thin line that always holds the last confirmed level, even after it is broken. Off by default to keep the chart clean. The values are published either way, so other scripts can read them.")
+
+Show_Pivots  = input.bool(true, "Show Pivot Markers", group = GRP_VISUAL)
+
+Extend_Right = input.bool(true, "Extend to the Right", group = GRP_VISUAL)
+
+High_Color   = input.color(color.blue, "Swing High Color", group = GRP_VISUAL)
+Low_Color    = input.color(color.red, "Swing Low Color", group = GRP_VISUAL)
+Line_Width   = input.int(2, "Line Width", minval = 1, group = GRP_VISUAL)
+Line_Style   = input.string("Dashed", "Extension Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_VISUAL)
+
+//--------------------------------------------------------------------------------------------------
+//--- Derived series ---
+//--------------------------------------------------------------------------------------------------
+srcHigh = Use_Other_Source ? srcInput : high
+srcLow  = Use_Other_Source ? srcInput : low
+
+extStyle = Line_Style == "Solid" ? line.style_solid : Line_Style == "Dashed" ? line.style_dashed : line.style_dotted
+
+//--------------------------------------------------------------------------------------------------
+//--- Operations (global scope) ---
+//--------------------------------------------------------------------------------------------------
+// NT8: MAX(High, Right_Strength)[0]               -> highest of the Right_Strength bars AFTER the candidate
+// NT8: MAX(High, Left_Strength)[Right_Strength+1] -> highest of the Left_Strength bars BEFORE the candidate
+rightMaxHigh = ta.highest(srcHigh, Right_Strength)
+leftMaxHigh  = ta.highest(srcHigh, Left_Strength)[Right_Strength + 1]
+rightMinLow  = ta.lowest(srcLow, Right_Strength)
+leftMinLow   = ta.lowest(srcLow, Left_Strength)[Right_Strength + 1]
+
+candHigh = srcHigh[Right_Strength]
+candLow  = srcLow[Right_Strength]
+
+//--------------------------------------------------------------------------------------------------
+//--- State ---
+//--------------------------------------------------------------------------------------------------
+// pivotHi / pivotLo hold the last confirmed level and are NEVER invalidated. The broken flags record
+// whether that level has been traded through. This keeps the raw level available for comparison while
+// still reproducing NT8's behaviour on the visible plots.
+var float pivotHi  = na
+var float pivotLo  = na
+var bool  hiBroken = false
+var bool  loBroken = false
+var int   hiBar    = na
+var int   loBar    = na
+var line  hiLine   = na
+var line  loLine   = na
+
+newPH   = false
+newPL   = false
+brokeHi = false
+brokeLo = false
+
+//--------------------------------------------------------------------------------------------------
+//--- Bar Update (literal translation of OnBarUpdate) ---
+//--------------------------------------------------------------------------------------------------
+if bar_index > Left_Strength + Right_Strength
+
+    // --- Swing high ---
+    // NT8 uses >= on the right side and > on the left side. This is NOT the same as ta.pivothigh(),
+    // which is strict on both sides, so the comparison is written out to preserve NT8 behaviour.
+    if candHigh >= rightMaxHigh and candHigh > leftMaxHigh
+        pivotHi  := candHigh
+        hiBar    := bar_index - Right_Strength
+        hiBroken := false
+        newPH    := true
+
+    if not na(pivotHi) and not hiBroken and srcHigh > pivotHi
+        hiBroken := true
+        brokeHi  := true
+
+    // --- Swing low ---
+    if candLow <= rightMinLow and candLow < leftMinLow
+        pivotLo  := candLow
+        loBar    := bar_index - Right_Strength
+        loBroken := false
+        newPL    := true
+
+    if not na(pivotLo) and not loBroken and srcLow < pivotLo
+        loBroken := true
+        brokeLo  := true
+
+//--------------------------------------------------------------------------------------------------
+//--- Published series ---
+//--------------------------------------------------------------------------------------------------
+// NT8 equivalent: swinghi / swinglo after the 9999 sentinel is applied.
+swingHi = Remove_Broken and hiBroken ? na : pivotHi
+swingLo = Remove_Broken and loBroken ? na : pivotLo
+
+//--------------------------------------------------------------------------------------------------
+//--- Extension lines ---
+//--------------------------------------------------------------------------------------------------
+if Extend_Right
+    if newPH
+        if not na(hiLine)
+            line.delete(hiLine)
+        hiLine := line.new(hiBar, pivotHi, bar_index, pivotHi, extend = extend.right, color = High_Color, width = Line_Width, style = extStyle)
+    if Remove_Broken and brokeHi and not na(hiLine)
+        line.delete(hiLine)
+        hiLine := na
+
+    if newPL
+        if not na(loLine)
+            line.delete(loLine)
+        loLine := line.new(loBar, pivotLo, bar_index, pivotLo, extend = extend.right, color = Low_Color, width = Line_Width, style = extStyle)
+    if Remove_Broken and brokeLo and not na(loLine)
+        line.delete(loLine)
+        loLine := na
+else
+    if not na(hiLine)
+        line.delete(hiLine)
+        hiLine := na
+    if not na(loLine)
+        line.delete(loLine)
+        loLine := na
+
+//--------------------------------------------------------------------------------------------------
+//--- Plots ---
+//--------------------------------------------------------------------------------------------------
+// All four series are published unconditionally so other scripts can select them with input.source.
+// The Show toggles only change opacity, they never turn a series into na.
+// style_steplinebr ("Step line with Breaks") is required, not style_stepline: when Remove_Broken
+// drops a level the series becomes na, and a plain stepline bridges that gap by joining the last
+// value before the break to the first value after it, drawing a level that was never there.
+levelHiColor = Show_Levels ? High_Color : color.new(High_Color, 100)
+levelLoColor = Show_Levels ? Low_Color : color.new(Low_Color, 100)
+persHiColor  = Show_Persist ? color.new(High_Color, 45) : color.new(High_Color, 100)
+persLoColor  = Show_Persist ? color.new(Low_Color, 45) : color.new(Low_Color, 100)
+
+plot(swingHi, title = "Last Swing High", style = plot.style_steplinebr, color = levelHiColor, linewidth = Line_Width)
+plot(swingLo, title = "Last Swing Low", style = plot.style_steplinebr, color = levelLoColor, linewidth = Line_Width)
+
+plot(pivotHi, title = "Last Swing High (persistent)", style = plot.style_steplinebr, color = persHiColor, linewidth = 1)
+plot(pivotLo, title = "Last Swing Low (persistent)", style = plot.style_steplinebr, color = persLoColor, linewidth = 1)
+
+plotshape(Show_Pivots and newPH ? candHigh : na, title = "Pivot High Marker", style = shape.diamond,
+     location = location.absolute, color = High_Color, size = size.tiny, offset = -Right_Strength)
+
+plotshape(Show_Pivots and newPL ? candLow : na, title = "Pivot Low Marker", style = shape.diamond,
+     location = location.absolute, color = Low_Color, size = size.tiny, offset = -Right_Strength)
+
+//--------------------------------------------------------------------------------------------------
+//--- Alerts ---
+//--------------------------------------------------------------------------------------------------
+alertcondition(newPH, title = "New Swing High", message = "TIS_Swing: new swing high confirmed")
+alertcondition(newPL, title = "New Swing Low", message = "TIS_Swing: new swing low confirmed")
+alertcondition(brokeHi, title = "Swing High Broken", message = "TIS_Swing: last swing high broken")
+alertcondition(brokeLo, title = "Swing Low Broken", message = "TIS_Swing: last swing low broken")

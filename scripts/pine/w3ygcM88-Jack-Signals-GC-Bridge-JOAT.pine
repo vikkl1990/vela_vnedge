@@ -1,0 +1,492 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+//  JACK SIGNALS → GC FUTURES BRIDGE  [JOAT]
+//
+//  #jack-signals and #jack-swings are quoted in XAUUSD SPOT (OANDA). GC futures
+//  print somewhere else. This puts spot ON the futures chart, live, so a GC
+//  trader can see the exact price the signal is talking about without leaving
+//  their chart — and place stops and targets against it.
+//
+//  ─────────────────────────────────────────────────────────────────────────
+//  IT DOES SOMETHING THE MOMENT YOU ADD IT. NOTHING TO FILL IN.
+//  ─────────────────────────────────────────────────────────────────────────
+//  The live SPOT line plots across the whole chart from the first bar, tracks
+//  tick for tick, and carries its own price label on the axis. That alone is
+//  the tool: you watch GC candles and you watch the spot price the signals are
+//  quoted in, on one screen, in real time.
+//
+//  Everything below that — pasting a signal's levels, the contract sizing, the
+//  runner trail — is OPTIONAL. Leave it all at zero and the indicator is still
+//  doing its job. Fill it in when a call drops and it becomes an order ticket.
+//
+//  ─────────────────────────────────────────────────────────────────────────
+//  WHAT THE TWO LINES MEAN
+//  ─────────────────────────────────────────────────────────────────────────
+//  SPOT      XAUUSD, drawn on the futures chart. It sits below the candles by
+//            the carry — typically $10-60 depending on contract and expiry.
+//
+//  FAIR GC   spot plus the MEAN basis: where these futures would trade if the
+//            spread were behaving normally. When the candles pull away from
+//            this line the spread itself is stretched, not gold. That is the
+//            moment converted levels stop being trustworthy, and it is why the
+//            z-score sits on the dashboard.
+//
+//  ─────────────────────────────────────────────────────────────────────────
+//  ONE SIGNAL PIP = ONE GC TICK. EXACTLY.
+//  ─────────────────────────────────────────────────────────────────────────
+//  The desk quotes gold in 0.10 steps — "SL: 4445 (80 pips)" against entry
+//  4453 is $8.00, so a pip is $0.10/oz. A COMEX gold tick is also $0.10/oz.
+//  Same unit. An 80-pip stop is 80 ticks, no conversion and no rounding:
+//        GC   $10.00/tick  →  80-pip stop = $800 per contract
+//        MGC  $ 1.00/tick  →  80-pip stop = $ 80 per contract
+//
+//  ⚠ Ace Algo's own labels count a gold pip as 0.01 and print far bigger
+//  numbers for the same move. Two conventions in one product family. This file
+//  speaks the SIGNALS convention, because signals are what you paste into it.
+//
+//  NOT A SIGNAL GENERATOR. It has no entries and no view on direction. It
+//  mirrors spot onto futures, converts a call you were already given, sizes it
+//  for your account, and trails the runner.
+// ═══════════════════════════════════════════════════════════════════════════
+
+indicator("Jack Signals → GC Bridge [JOAT]", shorttitle="JS→GC",
+     overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// ═════════════════════════════════════════════ 1 · LIVE SPOT (always on) ══
+gLive = "╔═══════ 1 · Live Spot Mirror ═══════╗"
+i_spot   = input.symbol("OANDA:XAUUSD", "Spot Feed", group = gLive,
+     tooltip = "The feed the signals are quoted from. Only change it if the desk changes feed.")
+i_pltSpot= input.bool(true,  "Plot Spot Line",    group = gLive)
+i_pltFair= input.bool(false, "Plot Fair-GC Line", group = gLive,
+     tooltip = "Spot plus the MEAN basis — where futures would sit if the spread were normal. Candles pulling away from it means the SPREAD is stretched, not gold.")
+i_tag    = input.bool(true,  "Price Tag on Spot", group = gLive,
+     tooltip = "Floating label pinned to the right edge with the live spot number.")
+i_cSpot  = input.color(#5CF0D7, "Spot",  group = gLive, inline = "lc")
+i_cFair  = input.color(#7A8290, "Fair",  group = gLive, inline = "lc")
+
+gGhost = "╔═══════ 2 · Ghost XAUUSD Candles ═══════╗"
+i_ghost  = input.bool(true, "Show XAUUSD Candles", group = gGhost,
+     tooltip = "Draws XAUUSD's own OHLC on the futures chart so you can see how spot is actually moving, not just where it is.")
+i_gMode  = input.string("True price (below futures)", "Placement",
+     options = ["True price (below futures)", "Aligned onto futures"], group = gGhost,
+     tooltip = "TRUE PRICE puts spot candles where spot actually trades — they sit below the futures by the carry, and you watch two markets stacked on one chart.\n\nALIGNED lifts them by the mean basis so they overlay the futures candles. They should then sit almost on top of each other; wherever they DON'T is the spread moving, which is the clearest possible picture of basis stress.")
+i_gUp    = input.color(color.new(#5CF0D7, 45), "Ghost up",   group = gGhost, inline = "g")
+i_gDn    = input.color(color.new(#B32AC3, 45), "Ghost down", group = gGhost, inline = "g")
+
+gRev = "╔═══════ 3 · Read Futures Back In Spot ═══════╗"
+i_gcTag  = input.bool(true, "Price Tag on Futures", group = gRev,
+     tooltip = "Pins the live futures price to the candles with its XAU equivalent beside it — the same tag the spot line carries, on the other side of the trade. Now both numbers are on the chart at the price they belong to, instead of only in the panel.")
+i_rev    = input.bool(false, "Label Today's High / Low", group = gRev,
+     tooltip = "The reverse conversion. You see a wick on the GC chart and want to know what that price IS in XAUUSD so you can match it against the signal posts. Labels the session extremes in both units.")
+i_cRev   = input.color(#8FA0AE, "Session colour", group = gRev)
+
+gLiq = "╔═══════ 4 · Liquidity ═══════╗"
+i_liq    = input.bool(false, "Show Liquidity Levels", group = gLiq,
+     tooltip = "Swing highs and lows are where resting stops sit. Price reaching for them and rejecting is the move the desk's calls are usually built around, so these are the levels worth having in BOTH units on a futures chart.")
+i_pivLen = input.int(10, "Pivot Strength", minval = 2, maxval = 50, group = gLiq,
+     tooltip = "Bars either side required to confirm a swing. Higher = fewer, more significant levels. Note a pivot is only confirmed this many bars AFTER it forms — that is the definition of a swing, not a delay in the script.")
+i_liqN   = input.int(5, "Levels Each Side", minval = 1, maxval = 15, group = gLiq)
+i_liqKeep= input.bool(true, "Keep Swept Levels", group = gLiq,
+     tooltip = "A swept level stays on the chart marked SWEPT rather than vanishing. Where liquidity was taken is information — it is often exactly where the reversal started.")
+i_cLiq   = input.color(#C9A227, "Resting", group = gLiq, inline = "lq")
+i_cSwept = input.color(#5A6470, "Swept",   group = gLiq, inline = "lq")
+
+gBas = "╔═══════ 5 · Basis ═══════╗"
+i_len    = input.int(50, "Lookback", minval = 5, maxval = 500, group = gBas)
+i_zLim   = input.float(2.0, "Z-Score Limit", minval = 0.5, step = 0.1, group = gBas,
+     tooltip = "Beyond this the spread counts as stretched — roughly the widest 5% of readings at 2.0.")
+i_smooth = input.int(3, "Smoothing", minval = 1, maxval = 50, group = gBas,
+     tooltip = "Two feeds tick independently so the raw basis flickers. 1 = raw.")
+i_mode   = input.string("Auto (mean when stretched)", "Convert Levels At",
+     options = ["Auto (mean when stretched)", "Live", "Mean", "Frozen at session open", "Manual"],
+     group = gBas,
+     tooltip = "Only affects the OPTIONAL signal levels below. AUTO uses the live basis normally and the mean whenever the spread is statistically stretched — converting a stop at a 3-sigma basis puts it in the wrong place when the spread reverts.")
+i_manual = input.float(0.0, "Manual Basis (USD)", step = 0.01, group = gBas)
+
+// ══════════════════════════════════ 6 · OPTIONAL — paste a signal here ══
+gSig = "╔═══ 6 · Signal (OPTIONAL — leave at 0 for live mirror only) ═══╗"
+i_dir = input.string("BUY", "Direction", options = ["BUY", "SELL"], group = gSig)
+i_e1  = input.float(0.0, "First Entry  (spot)", step = 0.01, group = gSig,
+     tooltip = "Paste the XAUUSD prices from Discord. Every level left at 0 stays hidden, and its dashboard row disappears — no empty dashes.")
+i_e2  = input.float(0.0, "Second Entry (spot)", step = 0.01, group = gSig,
+     tooltip = "The desk posts two entries. This draws the second one so you can see both fills on the futures chart.\n\nSizing and R:R are still measured from the FIRST entry, deliberately — if only the first fills, that is your real risk, and sizing off an averaged price you might never get would understate it. Size for the worst case, not the hoped-for one.")
+i_sl  = input.float(0.0, "Stop   (spot)", step = 0.01, group = gSig)
+i_tp1 = input.float(0.0, "TP1    (spot)", step = 0.01, group = gSig)
+i_tp2 = input.float(0.0, "TP2    (spot)", step = 0.01, group = gSig)
+i_tp3 = input.float(0.0, "TP3    (spot)", step = 0.01, group = gSig)
+
+gRisk = "╔═══════ 7 · Prop Sizing (optional) ═══════╗"
+i_acct   = input.float(50000, "Account Size ($)", minval = 0, step = 1000, group = gRisk)
+i_riskPc = input.float(1.0, "Risk per Trade (%)", minval = 0.0, step = 0.1, group = gRisk)
+i_maxDD  = input.float(1000, "Daily Loss Limit ($)", minval = 0, step = 100, group = gRisk,
+     tooltip = "Warns when one stop-out would eat more than half of it — the trade that ends evaluations.")
+i_tickAuto = input.bool(true, "Auto-detect contract", group = gRisk,
+     tooltip = "Reads tick value from the chart symbol so GC and MGC size themselves.")
+i_tickMan  = input.float(10.0, "…or $ per tick", minval = 0.01, step = 0.01, group = gRisk)
+
+gTrl = "╔═══════ 8 · Runner Trail (optional) ═══════╗"
+i_trail  = input.bool(false, "Enable Trailing Stop", group = gTrl,
+     tooltip = "The 'TP4: Trail SL to maximize profits' leg. Arms when price reaches the chosen target, then ratchets one way only.")
+i_trigAt = input.string("TP2", "Arm After", options = ["TP1", "TP2", "TP3"], group = gTrl)
+i_trlAtr = input.float(1.5, "ATR Multiple", minval = 0.1, step = 0.1, group = gTrl)
+i_trlLen = input.int(14, "ATR Length", minval = 2, group = gTrl)
+
+gSty = "╔═══════ 9 · Style ═══════╗"
+i_dash = input.bool(true, "Show Dashboard", group = gSty)
+//  Defaults to Huge on purpose. This panel is read mid-trade, often on a second
+//  monitor or a laptop across the desk, and the numbers on it decide where a
+//  stop goes. A readout you have to lean in to read is a readout that gets
+//  guessed at instead.
+i_dashSz = input.string("Normal", "Dashboard Size",
+     options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = gSty)
+i_lblSz  = input.string("Normal", "Chart Label Size",
+     options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = gSty,
+     tooltip = "Size of the price labels drawn on the chart itself. Kept separate from the dashboard — a huge dashboard is useful, huge labels on every level cover the candles.")
+i_ext  = input.bool(true, "Extend Levels Right", group = gSty)
+i_w    = input.int(1, "Line Width", minval = 1, maxval = 4, group = gSty)
+i_cE   = input.color(#5CF0D7, "Entry", group = gSty, inline = "c")
+i_cS   = input.color(#FF3B5C, "Stop",  group = gSty, inline = "c")
+i_cT   = input.color(#B32AC3, "Target",group = gSty, inline = "c")
+i_cR   = input.color(#FFB020, "Trail", group = gSty, inline = "c")
+
+//  Pine has no string→size cast, so the mapping is explicit.
+toSize(string s) =>
+     s == "Tiny"   ? size.tiny   :
+     s == "Small"  ? size.small  :
+     s == "Normal" ? size.normal :
+     s == "Large"  ? size.large  : size.huge
+dashSz = toSize(i_dashSz)
+lblSz  = toSize(i_lblSz)
+
+// ═══════════════════════════════════════════════════ spot and basis ══════
+//  The CHART symbol is the futures leg — correct on GC1!, on any dated month,
+//  and on MGC, with nothing to configure and nothing to break at the roll.
+spot = request.security(i_spot, timeframe.period, close,
+     gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off,
+     ignore_invalid_symbol = true)
+
+bool  haveSpot  = not na(spot) and spot > 0
+float bRaw      = haveSpot ? close - spot : na
+float bLive     = i_smooth > 1 ? ta.sma(bRaw, i_smooth) : bRaw
+float bMean     = ta.sma(bRaw, i_len)
+float bSd       = ta.stdev(bRaw, i_len)
+float zScore    = (not na(bSd) and bSd > 0) ? (bLive - bMean) / bSd : na
+bool  stretched = not na(zScore) and math.abs(zScore) > i_zLim
+
+var float bFroz = na
+if not na(bLive) and (na(bFroz) or ta.change(time("D")) != 0)
+    bFroz := bLive
+
+float basis =
+     i_mode == "Live"                   ? bLive :
+     i_mode == "Mean"                   ? bMean :
+     i_mode == "Manual"                 ? i_manual :
+     i_mode == "Frozen at session open" ? bFroz :
+     (stretched ? bMean : bLive)
+
+//  ── REVERSE CONVERSION: futures price → spot price ──────────────────────
+//  The direction a futures trader actually needs at the chart. You are staring
+//  at a wick on GC and the signal is written in spot; this connects the two, so
+//  "did that sweep take out the 4453 entry?" becomes readable instead of mental
+//  arithmetic. Declared here, above its first use in the price tags below.
+//  Uses the RAW basis, never the smoothed one, and that distinction is the whole
+//  correctness of this function.
+//
+//  `bLive` is smoothed over a few bars so the displayed basis number does not
+//  flicker between two independently-ticking feeds. Useful for a readout. Fatal
+//  for a conversion: with raw basis 47.37 and smoothed 46.98, converting futures
+//  4477.20 back to spot returned 4430.22 when spot was actually 4429.83 — off by
+//  exactly the 0.39 the smoothing had removed. It looked like a laggy feed and
+//  was arithmetic.
+//
+//  With the raw basis this is exact by construction: gcPx − (close − spot) at
+//  gcPx = close returns spot precisely, so the futures readout and the spot
+//  readout can never disagree.
+xauOf(float gcPx) => (na(gcPx) or na(bRaw)) ? na : gcPx - bRaw
+
+//  ── THE HEADLINE PLOTS. These are the product; everything else is optional.
+float fairGC = (haveSpot and not na(bMean)) ? spot + bMean : na
+plot(i_pltSpot and haveSpot ? spot   : na, "XAUUSD Spot", color = i_cSpot, linewidth = 2)
+plot(i_pltFair                ? fairGC : na, "Fair GC",     color = color.new(i_cFair, 35),
+     linewidth = 1, style = plot.style_line)
+
+//  ── GHOST XAUUSD CANDLES ────────────────────────────────────────────────
+//  Spot's own OHLC drawn on the futures chart. The line above tells you where
+//  spot IS; these tell you how it is MOVING — the wick that swept a low, the
+//  body that rejected. A futures trader reading a spot-quoted signal needs the
+//  second thing as much as the first.
+[sO, sH, sL, sC] = request.security(i_spot, timeframe.period, [open, high, low, close],
+     gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off,
+     ignore_invalid_symbol = true)
+
+//  Aligned mode lifts spot by the MEAN basis, not the live one. Using the live
+//  basis would subtract the very divergence the overlay exists to reveal — the
+//  candles would always sit perfectly on top of each other and show nothing.
+float gShift = i_gMode == "Aligned onto futures" ? nz(bMean, 0.0) : 0.0
+bool  gOn    = i_ghost and not na(sO) and not na(sC)
+plotcandle(gOn ? sO + gShift : na, gOn ? sH + gShift : na,
+           gOn ? sL + gShift : na, gOn ? sC + gShift : na,
+     title       = "XAUUSD (ghost)",
+     color       = sC >= sO ? i_gUp : i_gDn,
+     wickcolor   = sC >= sO ? i_gUp : i_gDn,
+     bordercolor = sC >= sO ? i_gUp : i_gDn)
+
+//  Floating price tag pinned to the last bar so the live spot number is always
+//  readable without hunting the axis.
+var label spotTag = na
+var label gcTag   = na
+if barstate.islast
+    if not na(spotTag)
+        label.delete(spotTag)
+    if not na(gcTag)
+        label.delete(gcTag)
+    if i_tag and haveSpot
+        spotTag := label.new(bar_index, spot, "XAU " + str.tostring(spot, "#.##"),
+             xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left,
+             color = color.new(i_cSpot, 10), textcolor = #06231F, size = lblSz)
+    //  The same tag on the futures candles, carrying the spot equivalent. Both
+    //  numbers now sit on the chart at the price they belong to, so reading a
+    //  spot-quoted signal against a futures chart needs no arithmetic at all.
+    if i_gcTag
+        gcTag := label.new(bar_index, close,
+             "GC " + str.tostring(close, format.mintick) +
+             (na(basis) ? "" : "  =  XAU " + str.tostring(xauOf(close), "#.##")),
+             xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left,
+             color = color.new(#8FA0AE, 10), textcolor = #0A0A0A, size = lblSz)
+
+var float dayHi = na
+var float dayLo = na
+if ta.change(time("D")) != 0
+    dayHi := high
+    dayLo := low
+else
+    dayHi := math.max(nz(dayHi, high), high)
+    dayLo := math.min(nz(dayLo, low), low)
+
+// ────────────────────────────────────────────────────────── liquidity ──
+//  Swing highs and lows are where resting stop orders accumulate. A level that
+//  price has NOT yet traded through is live liquidity; one it wicked through
+//  and closed back inside of has been SWEPT, and that sweep is frequently the
+//  turn itself. Both states are worth seeing, which is why swept levels are
+//  kept and greyed rather than deleted.
+//
+//  A sweep is deliberately defined as WICK THROUGH + CLOSE BACK INSIDE, not
+//  merely "price touched it". A clean break that closes beyond the level is a
+//  breakout, not a sweep, and colouring the two the same would be actively
+//  misleading on the one chart where a trader is deciding whether to fade.
+var float[] hiP = array.new_float()
+var bool[]  hiS = array.new_bool()
+var float[] loP = array.new_float()
+var bool[]  loS = array.new_bool()
+
+float ph = ta.pivothigh(i_pivLen, i_pivLen)
+float pl = ta.pivotlow(i_pivLen, i_pivLen)
+
+if not na(ph)
+    array.push(hiP, ph)
+    array.push(hiS, false)
+    if array.size(hiP) > i_liqN
+        array.shift(hiP)
+        array.shift(hiS)
+if not na(pl)
+    array.push(loP, pl)
+    array.push(loS, false)
+    if array.size(loP) > i_liqN
+        array.shift(loP)
+        array.shift(loS)
+
+if array.size(hiP) > 0
+    for i = 0 to array.size(hiP) - 1
+        if not array.get(hiS, i) and high > array.get(hiP, i) and close < array.get(hiP, i)
+            array.set(hiS, i, true)
+if array.size(loP) > 0
+    for i = 0 to array.size(loP) - 1
+        if not array.get(loS, i) and low < array.get(loP, i) and close > array.get(loP, i)
+            array.set(loS, i, true)
+
+// ═════════════════════════════════════════════════ optional signal ══════
+conv(float lvl) => lvl > 0 and not na(basis) ? lvl + basis : na
+float cE1  = conv(i_e1)
+float cE2  = conv(i_e2)
+float cSL  = conv(i_sl)
+float cTP1 = conv(i_tp1)
+float cTP2 = conv(i_tp2)
+float cTP3 = conv(i_tp3)
+bool  hasSignal = i_e1 > 0 and i_sl > 0
+
+float tickSz  = syminfo.mintick > 0 ? syminfo.mintick : 0.10
+float tickVal = i_tickAuto and syminfo.pointvalue > 0 ? syminfo.pointvalue * tickSz : i_tickMan
+tk(float a, float b) => (na(a) or na(b) or tickSz <= 0) ? na : math.abs(a - b) / tickSz
+
+float slTk  = tk(cE1, cSL)
+float tp1Tk = tk(cE1, cTP1)
+float tp2Tk = tk(cE1, cTP2)
+float tp3Tk = tk(cE1, cTP3)
+
+float budget  = i_acct * i_riskPc / 100.0
+float perCon  = not na(slTk) ? slTk * tickVal : na
+int   size    = (not na(perCon) and perCon > 0) ? int(math.floor(budget / perCon)) : 0
+float totRisk = not na(perCon) ? size * perCon : na
+bool  ddRisk  = i_maxDD > 0 and not na(totRisk) and totRisk > i_maxDD * 0.5
+float rr      = (not na(tp3Tk) and not na(slTk) and slTk > 0) ? tp3Tk / slTk : na
+
+// ── runner trail
+float trigLvl = i_trigAt == "TP1" ? cTP1 : i_trigAt == "TP2" ? cTP2 : cTP3
+float trlDist = ta.atr(i_trlLen) * i_trlAtr
+var bool  armed = false
+var float trail = na
+if ta.change(time("D")) != 0
+    armed := false
+    trail := na
+if i_trail and hasSignal and not na(trigLvl)
+    if not armed
+        armed := i_dir == "BUY" ? high >= trigLvl : low <= trigLvl
+    if armed and not na(trlDist)
+        float cand = i_dir == "BUY" ? high - trlDist : low + trlDist
+        trail := na(trail) ? cand : (i_dir == "BUY" ? math.max(trail, cand) : math.min(trail, cand))
+
+// ═══════════════════════════════════════════════════════════ drawing ══════
+var line[]  L = array.new_line()
+var label[] B = array.new_label()
+
+//  Declared at GLOBAL scope. Pine forbids a function declaration inside an `if`
+//  block, and having this one nested inside `if barstate.islast` is exactly the
+//  syntax error that stopped the build.
+dual(float px, string tag, color c) =>
+    if not na(px) and not na(basis)
+        array.push(L, line.new(bar_index - 1, px, bar_index, px, color = color.new(c, 45),
+             width = 1, extend = i_ext ? extend.right : extend.none, style = line.style_dotted))
+        array.push(B, label.new(bar_index, px,
+             tag + "  " + str.tostring(px, format.mintick) + "  =  XAU " + str.tostring(xauOf(px), "#.##"),
+             xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left,
+             color = color.new(c, 30), textcolor = color.white, size = lblSz))
+
+lvl(float px, string tag, color c, float spotPx, bool dashed) =>
+    if not na(px)
+        array.push(L, line.new(bar_index - 1, px, bar_index, px, color = c, width = i_w,
+             extend = i_ext ? extend.right : extend.none,
+             style = dashed ? line.style_dashed : line.style_solid))
+        //  Both numbers on purpose: the call is written in spot, the order is
+        //  placed in futures, and losing track of which is which is the entire
+        //  failure mode this exists to prevent.
+        array.push(B, label.new(bar_index, px,
+             tag + "  " + str.tostring(spotPx, "#.##") + " → " + str.tostring(px, format.mintick),
+             xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left,
+             color = color.new(c, 12), textcolor = color.white, size = lblSz))
+
+if barstate.islast
+    while array.size(L) > 0
+        line.delete(array.pop(L))
+    while array.size(B) > 0
+        label.delete(array.pop(B))
+    //  Session extremes read back into spot. These are the wicks people ask
+    //  about — "what was that low in XAU?" — answered on the chart.
+    if i_rev
+        dual(dayHi, "DAY HI", i_cRev)
+        dual(dayLo, "DAY LO", i_cRev)
+
+    //  Live liquidity, both sides, each carrying its spot equivalent.
+    if i_liq and array.size(hiP) > 0
+        for i = 0 to array.size(hiP) - 1
+            bool sw = array.get(hiS, i)
+            if not sw or i_liqKeep
+                dual(array.get(hiP, i), sw ? "SWEPT HI" : "LIQ HI", sw ? i_cSwept : i_cLiq)
+    if i_liq and array.size(loP) > 0
+        for i = 0 to array.size(loP) - 1
+            bool sw = array.get(loS, i)
+            if not sw or i_liqKeep
+                dual(array.get(loP, i), sw ? "SWEPT LO" : "LIQ LO", sw ? i_cSwept : i_cLiq)
+
+    lvl(cE1,  "ENTRY 1", i_cE, i_e1,  false)
+    lvl(cE2,  "ENTRY 2", i_cE, i_e2,  false)
+    lvl(cSL,  "STOP",  i_cS, i_sl,  true)
+    lvl(cTP1, "TP1",   i_cT, i_tp1, false)
+    lvl(cTP2, "TP2",   i_cT, i_tp2, false)
+    lvl(cTP3, "TP3",   i_cT, i_tp3, false)
+    if armed and not na(trail)
+        array.push(L, line.new(bar_index - 1, trail, bar_index, trail, color = i_cR,
+             width = i_w + 1, extend = i_ext ? extend.right : extend.none,
+             style = line.style_dotted))
+        array.push(B, label.new(bar_index, trail, "TRAIL  " + str.tostring(trail, format.mintick),
+             xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left,
+             color = color.new(i_cR, 12), textcolor = #241802, size = lblSz))
+
+// ═════════════════════════════════════════════════════════ dashboard ══════
+//  Height adapts: with no signal loaded it is a compact live-price panel and
+//  shows no empty rows. Rows of dashes are how a tool looks broken when it is
+//  simply idle.
+var table T = table.new(position.top_right, 2, 14,
+     frame_color = color.new(#5CF0D7, 62), frame_width = 1,
+     border_color = color.new(#5CF0D7, 84), border_width = 1)
+
+row(int r, string k, string v, color vc) =>
+    table.cell(T, 0, r, k, text_color = color.new(color.white, 32), text_size = dashSz,
+         bgcolor = color.new(#0A0A0A, 6), text_halign = text.align_left,
+         text_font_family = font.family_monospace)
+    table.cell(T, 1, r, v, text_color = vc, text_size = dashSz,
+         bgcolor = color.new(#0A0A0A, 6), text_halign = text.align_right,
+         text_font_family = font.family_monospace)
+
+money(float v) => na(v) ? "—" : "$" + str.tostring(v, "#,###")
+
+if i_dash and barstate.islast
+    table.clear(T, 0, 0, 1, 13)
+    table.cell(T, 0, 0, "XAU → GC", text_color = color.white, text_size = dashSz,
+         bgcolor = color.new(#5CF0D7, 70), text_halign = text.align_left,
+         text_font_family = font.family_monospace)
+    table.cell(T, 1, 0, syminfo.ticker, text_color = color.white, text_size = dashSz,
+         bgcolor = color.new(#5CF0D7, 70), text_halign = text.align_right,
+         text_font_family = font.family_monospace)
+
+    //  Always-on block — the live mirror.
+    row(1, "XAU spot", haveSpot ? str.tostring(spot, "#.##") : "NO FEED",
+         haveSpot ? i_cSpot : #FF3B5C)
+    //  Futures price with its spot equivalent alongside — the reverse read, on
+    //  the row people look at most.
+    row(2, "Futures",  str.tostring(close, format.mintick) +
+         (na(basis) ? "" : "  = XAU " + str.tostring(xauOf(close), "#.##")),
+         color.new(color.white, 15))
+    row(3, "Basis",    na(bLive) ? "—" : (bLive >= 0 ? "+" : "") + str.tostring(bLive, "#.##") +
+         (haveSpot ? "  (" + str.tostring(bLive / spot * 100, "#.##") + "%)" : ""),
+         stretched ? #FFB020 : #5CF0D7)
+    row(4, "Mean(" + str.tostring(i_len) + ")", na(bMean) ? "—" :
+         (bMean >= 0 ? "+" : "") + str.tostring(bMean, "#.##"), color.new(color.white, 38))
+    row(5, "Z-Score",  na(zScore) ? "—" : str.tostring(zScore, "#.##") +
+         (stretched ? "  ⚠ STRETCHED" : "  normal"),
+         stretched ? #FFB020 : color.new(color.white, 38))
+
+    //  Signal block — only rendered when a call is actually loaded.
+    if hasSignal
+        row(6, "Convert at", na(basis) ? "—" : (basis >= 0 ? "+" : "") + str.tostring(basis, "#.##") +
+             (i_mode == "Auto (mean when stretched)" ? (stretched ? " [mean]" : " [live]") : ""),
+             stretched ? #FFB020 : #5CF0D7)
+        row(7, "Entry " + i_dir, str.tostring(cE1, format.mintick) +
+             (na(cE2) ? "" : " / " + str.tostring(cE2, format.mintick)), i_cE)
+        row(8, "Stop",  str.tostring(cSL, format.mintick) +
+             (na(slTk) ? "" : "  " + str.tostring(slTk, "#") + "t"), i_cS)
+        if not na(cTP1)
+            row(9, "TP1", str.tostring(cTP1, format.mintick) +
+                 (na(tp1Tk) or size < 1 ? "" : "  " + money(tp1Tk * tickVal * size)), i_cT)
+        if not na(cTP2)
+            row(10, "TP2", str.tostring(cTP2, format.mintick) +
+                 (na(tp2Tk) or size < 1 ? "" : "  " + money(tp2Tk * tickVal * size)), i_cT)
+        if not na(cTP3)
+            row(11, "TP3", str.tostring(cTP3, format.mintick) +
+                 (na(tp3Tk) or size < 1 ? "" : "  " + money(tp3Tk * tickVal * size)), i_cT)
+        //  The number that decides whether the trade is takeable at all.
+        row(12, "SIZE", size > 0 ? str.tostring(size) + " @ " + money(totRisk) +
+             (ddRisk ? " ⚠" : "") : "0 — won't fit",
+             size > 0 ? (ddRisk ? #FFB020 : #5CF0D7) : #FF3B5C)
+        row(13, i_trail ? "Trail" : "R:R TP3",
+             i_trail ? (armed ? (na(trail) ? "armed" : str.tostring(trail, format.mintick))
+                              : "waiting " + i_trigAt)
+                     : (na(rr) ? "—" : str.tostring(rr, "#.##") + " R"),
+             i_trail and armed ? i_cR : color.new(color.white, 30))
+
+// ═══════════════════════════════════════════════════════════════ alerts ══
+alertcondition(stretched,
+     title   = "JS→GC — Basis stretched",
+     message = "Jack→GC Bridge: spot/futures basis is statistically stretched on {{ticker}}. Converted levels are distorted — re-check before placing orders.")
+alertcondition(i_trail and armed and not armed[1],
+     title   = "JS→GC — Runner trail armed",
+     message = "Jack→GC Bridge: trail armed on {{ticker}} — the runner is now on the trailing stop.")

@@ -1,0 +1,628 @@
+//@version=6
+// Author: DL INVEST — Laurent (France)
+indicator("Trade Management V2", shorttitle = "Trade Management V2", overlay = true, max_lines_count = 50, max_labels_count = 50)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SETTINGS
+// ─────────────────────────────────────────────────────────────────────────────
+string G_PLAN = "1. Plan"
+string direction = input.string("LONG", "Direction", options = ["LONG", "SHORT"], group = G_PLAN, tooltip = "LONG builds a bullish plan with the stop below entry. SHORT builds a bearish plan with the stop above entry.")
+string modeSuivi = input.string("LIVE", "Tracking mode", options = ["LIVE", "REPLAY"], group = G_PLAN, tooltip = "In LIVE mode, choose whether you are preparing a plan or tracking an actual open position. No orders are sent to or verified with your broker. The recovery record is saved in the settings; newly observed price touches remain temporary until entered in that record. REPLAY simulates a past plan from the actual entry date.")
+string etatLive = input.string("ACTIVE PLAN", "LIVE mode status", options = ["ACTIVE PLAN", "OPEN POSITION"], group = G_PLAN, tooltip = "ACTIVE PLAN prepares the levels. For OPEN POSITION, enter the fill price, quantity, initial stop and planned targets. After a reload, the Recovery group restores your reported record. Update this record after a fill. Observed price touches alone never change the reported quantity.", active = modeSuivi == "LIVE")
+// A reported open position uses explicitly entered broker data.
+bool positionDeclaree = modeSuivi == "LIVE" and etatLive == "OPEN POSITION"
+string modePrixEntree = modeSuivi == "LIVE" and not positionDeclaree ? "SNAPSHOT AT LOAD" : "SPECIFIED PRICE"
+float prixEntreeIndique = input.price(0.0, "Specified price", group = G_PLAN, tooltip = "Fill price for an OPEN POSITION, or simulated price in REPLAY. ACTIVE PLAN takes a snapshot at load and freezes it. The average fill price remains exact, even if it is not tick-aligned.", active = modeSuivi == "REPLAY" or etatLive == "OPEN POSITION")
+float quantiteIndiquee = input.float(1.0, "INITIAL quantity bought / sold", minval = 0.0, step = 0.01, group = G_PLAN, tooltip = "Filled quantity for an OPEN POSITION, or simulated quantity in REPLAY. Filled quantities that do not match the quantity step are rejected, never silently adjusted.", active = modeSuivi == "REPLAY" or etatLive == "OPEN POSITION")
+int dateEntreeManuelle = input.time(timestamp("01 Jan 2025 00:00 +0000"), "Actual entry date", group = G_PLAN, tooltip = "Actual date and time of your entry. In REPLAY, this time must exactly match the opening time of a loaded bar; otherwise tracking is blocked. Use a lower timeframe for an intrabar entry time. The date is displayed in the table and positions the vertical marker.")
+
+float stopPosition = input.price(0.0, "Open position: initial stop", group = G_PLAN, tooltip = "Enter the initial stop from the executed plan. It overrides the stop modes below in OPEN POSITION and remains independent of the current price.", active = modeSuivi == "LIVE" and etatLive == "OPEN POSITION")
+float tp1Position = input.price(0.0, "Open position: TP1 (0 = fixed R)", group = G_PLAN, tooltip = "Enter the planned TP1, or leave 0 to calculate it in R from the fill price and initial stop.", active = modeSuivi == "LIVE" and etatLive == "OPEN POSITION")
+float tp2Position = input.price(0.0, "Open position: TP2 (0 = fixed R)", group = G_PLAN, tooltip = "Enter the planned TP2, or leave 0 to calculate it in R. TP2 must be beyond TP1 in the trade direction.", active = modeSuivi == "LIVE" and etatLive == "OPEN POSITION")
+
+string G_STRUCTURE = "2. Structure and targets"
+int pivotGauche = input.int(5, "Pivot: left bars", minval = 1, maxval = 50, group = G_STRUCTURE, tooltip = "Number of preceding bars required to identify a pivot. Higher values select larger but less frequent structures.")
+int pivotDroite = input.int(3, "Pivot: right bars", minval = 1, maxval = 50, group = G_STRUCTURE, tooltip = "Number of bars required to confirm a pivot. Higher values provide stronger but later confirmation.")
+int repliStructure = input.int(100, "Structure fallback lookback", minval = 20, maxval = 500, group = G_STRUCTURE, tooltip = "Fallback lookback used to build the automatic stop when no confirmed pivot is available.")
+int longueurATR = input.int(14, "ATR", minval = 1, group = G_STRUCTURE, tooltip = "ATR period used by the AUTOMATIC stop to measure market volatility.")
+float tamponATR = input.float(0.20, "Stop buffer (ATR)", minval = 0.0, step = 0.05, group = G_STRUCTURE, tooltip = "Buffer added beyond the pivot in AUTOMATIC mode. Example: 0.20 places the stop 0.20 ATR beyond the structure.")
+float stopMinimumATR = input.float(0.50, "Minimum stop distance (ATR)", minval = 0.1, step = 0.1, group = G_STRUCTURE, tooltip = "Minimum distance between entry and the AUTOMATIC stop. Prevents an excessively tight stop when the structure is narrow.")
+string modeStop = input.string("AUTOMATIC", "Stop-loss mode", options = ["AUTOMATIC", "MANUAL PRICE", "PERCENTAGE"], group = G_STRUCTURE, tooltip = "AUTOMATIC uses structure and ATR. MANUAL PRICE uses an exact price. PERCENTAGE calculates the stop from the specified percentage.")
+float prixStopManuel = input.price(0.0, "Manual stop-loss price", group = G_STRUCTURE, tooltip = "Used only in MANUAL PRICE mode. For a long trade, the stop must be below entry; for a short trade, above entry.", active = modeStop == "MANUAL PRICE")
+float stopPctManuel = input.float(5.0, "Stop-loss percentage", minval = 0.01, maxval = 99.99, step = 0.05, group = G_STRUCTURE, tooltip = "Used only in PERCENTAGE mode. Example: 5 places the stop 5% away from the entry price.", active = modeStop == "PERCENTAGE")
+string modeCibles = input.string("FIXED R", "Target mode", options = ["FIXED R", "STRUCTURE"], group = G_STRUCTURE, tooltip = "FIXED R meets at least the requested multiples after tick rounding in the profit direction. STRUCTURE may select a more distant historical high or low if the minimum R is met.")
+float rrTP1 = input.float(1.0, "Minimum R for TP1", minval = 0.1, step = 0.1, group = G_STRUCTURE, tooltip = "Minimum target gain for TP1, expressed as a multiple of initial risk R. Example: 1 means a distance equal to the initial stop distance.")
+float rrTP2 = input.float(2.0, "Minimum R for TP2", minval = 0.2, step = 0.1, group = G_STRUCTURE, tooltip = "Minimum target gain for TP2, expressed as a multiple of R. This value must be greater than the TP1 value.")
+int repliCible1 = input.int(100, "TP1 structure lookback", minval = 10, maxval = 500, group = G_STRUCTURE, tooltip = "Lookback used to find resistance for a long trade or support for a short trade for TP1. The target always meets the requested minimum R.", active = modeCibles == "STRUCTURE")
+int repliCible2 = input.int(250, "TP2 structure lookback", minval = 20, maxval = 1000, group = G_STRUCTURE, tooltip = "Longer lookback used to find the structural TP2 target. TP2 always remains beyond TP1.", active = modeCibles == "STRUCTURE")
+bool afficherEntreeIdeale = input.bool(true, "Show ideal entry", group = G_STRUCTURE, tooltip = "Shows a more favorable entry pivot only when it is on the appropriate side of entry and within the maximum distance in R.")
+float distanceIdealeMaxR = input.float(0.75, "Maximum ideal entry distance (R)", minval = 0.1, step = 0.05, group = G_STRUCTURE, tooltip = "Maximum allowed distance between planned entry and ideal entry, expressed as a multiple of initial risk R.", active = afficherEntreeIdeale)
+
+string G_RISQUE = "3. Risk management"
+string typeActif = input.string("STOCKS", "Asset type", options = ["STOCKS", "OTHER"], group = G_RISQUE, tooltip = "STOCKS enforces a point value of 1 and whole-share quantities. OTHER allows you to configure point value and quantity step.")
+string modeCalculQuantite = input.string("CAPITAL ALLOCATION %", "Automatic position sizing", options = ["CAPITAL ALLOCATION %", "RISK AT STOP %"], group = G_RISQUE, tooltip = "Calculation method used in LIVE mode.", active = modeSuivi == "LIVE" and etatLive == "ACTIVE PLAN")
+float capital = input.float(10000.0, "Capital", minval = 0.0, step = 100.0, group = G_RISQUE, tooltip = "Total capital in the account currency selected in the Currencies and costs group. Used to calculate capital allocation and actual risk as a percentage.")
+float capitalEngagePct = input.float(5.0, "Capital to allocate (%)", minval = 0.01, maxval = 100.0, step = 0.05, group = G_RISQUE, tooltip = "Example: 5 allocates at most 5% of capital to the position.", active = modeSuivi == "LIVE" and etatLive == "ACTIVE PLAN" and modeCalculQuantite == "CAPITAL ALLOCATION %")
+float risquePct = input.float(1.0, "Risk at stop (%)", minval = 0.01, step = 0.05, group = G_RISQUE, tooltip = "Used only with RISK AT STOP %. Theoretical risk at the stop level, including estimated costs and excluding gaps.", active = modeSuivi == "LIVE" and etatLive == "ACTIVE PLAN" and modeCalculQuantite == "RISK AT STOP %")
+float plafondCapitalPct = input.float(100.0, "Capital allocation cap — stocks (%)", minval = 0.01, maxval = 100.0, group = G_RISQUE, tooltip = "Caps the automatically calculated quantity for STOCKS. A manually entered filled quantity remains unchanged.", active = typeActif == "STOCKS" and modeSuivi == "LIVE" and etatLive == "ACTIVE PLAN")
+string modeValeurPoint = input.string("AUTO TRADINGVIEW", "Point value", options = ["AUTO TRADINGVIEW", "MANUAL"], group = G_RISQUE, tooltip = "AUTO uses syminfo.pointvalue. For Forex/CFDs, always check your broker's contract specifications.", active = typeActif == "OTHER")
+float valeurPointManuelle = input.float(1.0, "Monetary value of one point per unit/lot", minval = 0.0000001, step = 0.01, group = G_RISQUE, tooltip = "Used with OTHER and MANUAL point value. Specifies the monetary gain or loss from a 1-point move for one unit or lot.", active = typeActif == "OTHER" and modeValeurPoint == "MANUAL")
+float pasQuantite = input.float(0.01, "Quantity / lot step", minval = 0.0000001, step = 0.01, group = G_RISQUE, tooltip = "Used only with OTHER. The calculated quantity is rounded to this step without exceeding the requested limit.", active = typeActif == "OTHER")
+string repartition = input.string("50 / 50", "TP1 / TP2 allocation", options = ["25 / 75", "33 / 67", "50 / 50", "67 / 33", "75 / 25", "100 / 0"], group = G_RISQUE, tooltip = "Splits the total quantity between TP1 and TP2. In STOCKS mode, each portion is rounded to a whole number and the remainder goes to TP2.")
+
+string G_GESTION = "4. Progressive trade management"
+float declencheurLockR = input.float(1.50, "Profit protection trigger (R)", minval = 0.1, step = 0.1, group = G_GESTION, tooltip = "At this multiple of R, the stop tracked by the indicator moves to the protected level. You must still move the actual order with your broker.")
+float stopProtegeR = input.float(0.25, "Protected stop from entry (R)", minval = 0.0, step = 0.05, group = G_GESTION, tooltip = "Protected stop position as a multiple of R from entry. Must be below the profit protection trigger. Theoretical result, excluding fees and slippage.")
+
+string G_VISUEL = "5. Display"
+bool afficherTableau = input.bool(true, "Show table", group = G_VISUEL, tooltip = "Shows or hides the table. Like any setting change, this restarts the script from your saved recovery record.")
+bool afficherNiveaux = input.bool(true, "Show levels", group = G_VISUEL, tooltip = "Shows or hides the entry, active stop, TP1, TP2 and profit protection trigger lines.")
+bool afficherRepereEntree = input.bool(true, "Show vertical entry marker", group = G_VISUEL, tooltip = "Shows or hides the vertical line at the actual entry date specified in the plan settings.")
+bool afficherPointEntree = input.bool(true, "Show entry point", group = G_VISUEL, tooltip = "Shows or hides a small triangle pointing toward the entry bar at the actual entry price.")
+color couleurRepereEntree = input.color(color.aqua, "Entry marker color", group = G_VISUEL, tooltip = "Sets the color of the vertical line and small entry symbol.", active = afficherRepereEntree or afficherPointEntree)
+string styleRepereEntree = input.string("Dashed", "Vertical marker style", options = ["Solid", "Dashed", "Dotted"], group = G_VISUEL, tooltip = "Sets the style of the vertical entry line.", active = afficherRepereEntree)
+int longueurLignes = input.int(80, "Line projection (bars)", minval = 10, maxval = 200, group = G_VISUEL, tooltip = "Number of bars the levels extend to the right of the chart.", active = afficherNiveaux)
+string positionTableau = input.string("Top right", "Table position", options = ["Top left", "Top center", "Top right", "Middle left", "Middle center", "Middle right", "Bottom left", "Bottom center", "Bottom right"], group = G_VISUEL, tooltip = "Selects one of the nine available table positions on the chart.", active = afficherTableau)
+string taillePolice = input.string("Small", "Text size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = G_VISUEL, tooltip = "Sets the text size for all table cells.", active = afficherTableau)
+string tailleEtiquettes = input.string("Small", "Label size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = G_VISUEL, tooltip = "Sets the text size of the labels attached to chart levels.", active = afficherNiveaux)
+
+string G_TABLEAU = "6. Table content"
+string vueTableau = input.string("ESSENTIAL", "Table view", options = ["ESSENTIAL", "TRACKING", "FULL", "CUSTOM"], group = G_TABLEAU, tooltip = "ESSENTIAL shows only the immediate decision. TRACKING adds the position summary. FULL shows all details. CUSTOM uses the blocks below.")
+bool blocPlan = input.bool(true, "Custom • Plan and risk", group = G_TABLEAU, tooltip = "Adds entry, ideal entry, initial stop, risk distance, quantity, initial risk and capital allocation. Used only in CUSTOM view.", active = vueTableau == "CUSTOM")
+bool blocObjectifs = input.bool(true, "Custom • Targets", group = G_TABLEAU, tooltip = "Adds TP1, TP2 and total target profit. Used only in CUSTOM view.", active = vueTableau == "CUSTOM")
+bool blocProtection = input.bool(true, "Custom • Protection", group = G_TABLEAU, tooltip = "Adds break-even, profit protection trigger, protected stop, active stop and estimated P&L at the stop. Used only in CUSTOM view.", active = vueTableau == "CUSTOM")
+bool blocSuivi = input.bool(true, "Custom • Status and engine", group = G_TABLEAU, tooltip = "Adds status, next action and technical engine information. Used only in CUSTOM view.", active = vueTableau == "CUSTOM")
+bool blocBilan = input.bool(true, "Custom • Summary", group = G_TABLEAU, tooltip = "Adds remaining quantity, theoretical gains, P&L at the stop, date, actual price and performance. Used only in CUSTOM view.", active = vueTableau == "CUSTOM")
+bool afficherDateEntreeTableau = input.bool(false, "Show entry date", group = G_TABLEAU, tooltip = "Adds the entry date to the table regardless of the selected view.", active = afficherTableau)
+
+
+// V2: user-reported recovery, tick-aligned prices, causal simulation and explicit costs.
+string G_REPRISE = "1b. LIVE position recovery"
+float quantiteRestanteSaisie = input.float(-1.0, "Remaining quantity (-1 = initial quantity)", minval = -1.0, group = G_REPRISE, active = positionDeclaree, tooltip = "Broker record saved in the settings. 0 reports the position as closed. A TP/SL touch does not change this quantity. Update after every exit.")
+float realiseNetSaisi = input.float(0.0, "NET realized P&L to date (account currency)", group = G_REPRISE, active = positionDeclaree, tooltip = "Confirmed cumulative P&L, including fees already accounted for. Costs still to be deducted from remaining units are entered separately. No TP profit is added automatically in LIVE mode.")
+float stopCourtierSaisi = input.price(0.0, "Actual stop in place (0 = initial stop)", group = G_REPRISE, active = positionDeclaree, tooltip = "Enter an already adjusted stop here. The red line follows this reported stop; the yellow line is a suggestion to apply and then confirm.")
+bool tp1ObserveSaisi = input.bool(false, "TP1 already observed", group = G_REPRISE, active = positionDeclaree)
+bool tp2ObserveSaisi = input.bool(false, "TP2 already observed", group = G_REPRISE, active = positionDeclaree)
+bool lockObserveSaisi = input.bool(false, "Profit protection trigger already observed", group = G_REPRISE, active = positionDeclaree)
+bool tp1ExecuteSaisi = input.bool(false, "TP1 partial exit confirmed filled", group = G_REPRISE, active = positionDeclaree, tooltip = "Also report the remaining quantity and net P&L. Validation requires at least the planned TP1 quantity to have been closed.")
+int dateReleve = input.time(timestamp("14 Sep 2026 00:00 +0000"), "Recovery record date / time", group = G_REPRISE, active = positionDeclaree, tooltip = "Date and time as of which the entered quantities, P&L and stop are valid. Must be after entry and cannot be in the future. Tracking of new price touches starts at load; the start time is displayed.")
+
+string G_COUTS = "3b. Currencies and costs"
+string choixDevise = input.string("QUOTE CURRENCY", "Account currency", options = ["QUOTE CURRENCY", "EUR", "USD", "GBP", "CHF", "CAD", "AUD", "JPY"], group = G_COUTS)
+string deviseCompte = choixDevise == "QUOTE CURRENCY" ? syminfo.currency : choixDevise
+string modeChange = input.string("AUTO DAILY", "Quote → account conversion", options = ["AUTO DAILY", "MANUAL RATE"], group = G_COUTS, tooltip = "1 unit of quote currency equals X units of account currency. The rate is frozen with the plan. P&L is estimated at a constant exchange rate. In REPLAY, the automatic rate uses the value available on the previous bar.")
+float tauxChangeManuel = input.float(1.0, "Manual quote → account rate", minval = 0.00000001, group = G_COUTS, active = modeChange == "MANUAL RATE")
+float commissionParSens = input.float(0.0, "Commission per unit AND per side (quote currency)", minval = 0.0, group = G_COUTS, tooltip = "PLAN / REPLAY: proportional commissions per unit or lot. Round-trip cost is twice this amount. No fixed minimum fee per order is modeled.")
+float spreadPoints = input.float(0.0, "Estimated round-trip spread (price points)", minval = 0.0, group = G_COUTS, tooltip = "PLAN / REPLAY: total additional spread/slippage cost in points. Use 0 if already included in the prices used. Does not change OHLC touch thresholds.")
+float coutsRestantsLive = input.float(0.0, "LIVE: costs still to deduct / remaining unit (quote currency)", minval = 0.0, group = G_COUTS, active = positionDeclaree, tooltip = "Total commissions and slippage still to be charged per unit. Exclude fees already included in the entered net P&L and spread already paid in the fill price. Used for net unrealized P&L, P&L at the stop and net break-even of the remaining position.")
+
+string G_ALERTES = "7. LIVE price alerts"
+bool activerAlertes = input.bool(false, "Enable alert() events", group = G_ALERTES, tooltip = "Available only in OPEN POSITION with an explicitly entered price, initial stop and recovery record. Then create a TradingView alert: Any alert() function call. No orders are sent. Recreate the alert after updating the record; its server copy does not follow chart changes.")
+string identifiantPlan = input.string("TRADE-1", "Trade / record ID", group = G_ALERTES, tooltip = "Change this ID after updating the record to distinguish alert copies.")
+bool alerteTP1 = input.bool(true, "TP1", group = G_ALERTES)
+bool alerteTP2 = input.bool(true, "TP2", group = G_ALERTES)
+bool alerteLock = input.bool(true, "Profit protection", group = G_ALERTES)
+bool alerteSL = input.bool(true, "Reported broker stop", group = G_ALERTES)
+bool alerteStopConseille = input.bool(true, "Suggested stop crossed before confirmation", group = G_ALERTES)
+
+
+f_arrondi_inferieur(float valeur, float pas) =>
+    pas > 0.0 ? math.floor(valeur / pas + 1e-10) * pas : valeur
+
+f_nombre(float valeur) =>
+    na(valeur) ? "N/A" : str.tostring(valeur, "#.########")
+
+f_symbole_devise() =>
+    switch syminfo.currency
+        "USD" => "$"
+        "EUR" => "€"
+        "GBP" => "£"
+        "JPY" => "¥"
+        "CNY" => "¥"
+        "CNH" => "¥"
+        "KRW" => "₩"
+        "INR" => "₹"
+        "RUB" => "₽"
+        "TRY" => "₺"
+        "PLN" => "zł"
+        "ILS" => "₪"
+        "THB" => "฿"
+        "BRL" => "R$"
+        "CAD" => "C$"
+        "AUD" => "A$"
+        "NZD" => "NZ$"
+        "HKD" => "HK$"
+        "SGD" => "S$"
+        "TWD" => "NT$"
+        "BTC" => "₿"
+        => syminfo.currency
+
+f_prix(float valeur) =>
+    na(valeur) ? "N/A" : str.tostring(valeur, format.mintick) + (f_symbole_devise() == "" ? "" : " " + f_symbole_devise())
+
+f_monnaie(float valeur) =>
+    na(valeur) ? "N/A" : str.replace_all(str.tostring(valeur, "#,##0.00"), ",", " ") + " " + deviseCompte
+
+f_position_table(string choix) =>
+    switch choix
+        "Top left"    => position.top_left
+        "Top center"    => position.top_center
+        "Top right"    => position.top_right
+        "Middle left"  => position.middle_left
+        "Middle center"  => position.middle_center
+        "Middle right"  => position.middle_right
+        "Bottom left"     => position.bottom_left
+        "Bottom center"     => position.bottom_center
+        => position.bottom_right
+
+f_taille(string choix) =>
+    switch choix
+        "Tiny" => size.tiny
+        "Small"      => size.small
+        "Normal"     => size.normal
+        "Large"      => size.large
+        => size.huge
+
+f_style_ligne(string choix) =>
+    switch choix
+        "Solid"    => line.style_solid
+        "Dotted" => line.style_dotted
+        => line.style_dashed
+
+f_cellule(table tableau, int colonne, int ligne, string texte, color fond, color texteCouleur = color.white) =>
+    table.cell(tableau, colonne, ligne, texte, bgcolor = fond, text_color = texteCouleur, text_size = f_taille(taillePolice))
+
+
+
+f_tick(float prix, bool versHaut) =>
+    math.round_to_mintick((versHaut ? math.ceil(prix / syminfo.mintick - 1e-9) : math.floor(prix / syminfo.mintick + 1e-9)) * syminfo.mintick)
+
+f_au_tick(float prix) =>
+    not na(prix) and math.abs(prix - math.round_to_mintick(prix)) <= syminfo.mintick * 1e-6
+
+f_au_pas(float q, float pas) =>
+    not na(q) and math.abs(q - math.round(q / pas) * pas) <= pas * 1e-6
+
+f_gain_touche(bool long, float prix, float niveau) =>
+    long ? prix >= niveau : prix <= niveau
+
+f_stop_touche(bool long, float prix, float niveau) =>
+    long ? prix <= niveau : prix >= niveau
+
+f_ameliore(bool long, float actuel, float candidat) =>
+    long ? math.max(actuel, candidat) : math.min(actuel, candidat)
+
+type PlanV2
+    varip bool long
+    varip float entree
+    varip float ideal
+    varip float initial
+    varip float risque
+    varip float tp1
+    varip float tp2
+    varip float lock
+    varip float protege
+    varip float be
+    varip float q
+    varip float q1
+    varip float q2
+    varip float point
+    varip float change
+    varip float cout
+    varip float risqueNet
+    varip float gainNet
+    varip float stopCourtier
+    varip float coutPlan
+
+type SuiviV2
+    varip float restant
+    varip float realise
+    varip float stop
+    varip bool tp1 = false
+    varip bool tp2 = false
+    varip bool lock = false
+    varip bool sl = false
+    varip bool incertain = false
+    varip bool conseilTraverse = false
+
+method sortir(SuiviV2 s, PlanV2 p, float nombre, float prix) =>
+    float qSortie = math.min(s.restant, nombre)
+    s.realise += ((p.long ? prix - p.entree : p.entree - prix) * p.point - p.cout) * qSortie * p.change
+    s.restant := math.max(0.0, s.restant - qSortie)
+
+// Break-even is net of remaining-position costs, rounded in the profit direction.
+// A suggested stop cannot exceed the price that triggers its adjustment.
+f_proposition(PlanV2 p, float actuel, bool touche1, bool toucheLock) =>
+    float resultat = actuel
+    if touche1 and p.q2 > 0.0 and (p.long ? p.be < p.tp1 : p.be > p.tp1)
+        resultat := f_ameliore(p.long, resultat, p.be)
+    float finalTP = p.q2 > 0.0 ? p.tp2 : p.tp1
+    if toucheLock and (p.long ? p.lock < finalTP : p.lock > finalTP)
+        resultat := f_ameliore(p.long, resultat, p.protege)
+    resultat
+
+// Known opening prices are processed before high/low. Targets fill at the planned level
+// (no price improvement); stops fill at the opening price on an adverse gap.
+method ouverture(SuiviV2 s, PlanV2 p, float prix) =>
+    if s.restant > 0.0
+        if f_stop_touche(p.long, prix, s.stop)
+            s.sortir(p, s.restant, prix)
+            s.sl := true
+        else
+            bool touche1 = f_gain_touche(p.long, prix, p.tp1)
+            bool touche2 = f_gain_touche(p.long, prix, p.tp2)
+            bool toucheLock = f_gain_touche(p.long, prix, p.lock)
+            if touche1 and not s.tp1
+                s.sortir(p, p.q1, p.tp1)
+                s.tp1 := true
+            if touche2 and s.restant > 0.0
+                s.sortir(p, s.restant, p.tp2)
+                s.tp2 := true
+            if s.restant > 0.0
+                s.stop := f_proposition(p, s.stop, touche1, toucheLock)
+                s.lock := s.lock or toucheLock
+
+// When event order is unknown, freeze the simulation instead of following an
+// arbitrary path. The table then hides ALL path-dependent results.
+method bougie(SuiviV2 s, PlanV2 p, float o, float h, float l) =>
+    if s.restant > 0.0 and not s.incertain
+        s.ouverture(p, o)
+        if s.restant > 0.0
+            float favorable = p.long ? h : l
+            float adverse = p.long ? l : h
+            bool hitSL = f_stop_touche(p.long, adverse, s.stop)
+            bool hit1 = not s.tp1 and f_gain_touche(p.long, favorable, p.tp1)
+            bool hit2 = not s.tp2 and f_gain_touche(p.long, favorable, p.tp2)
+            bool hitLock = not s.lock and f_gain_touche(p.long, favorable, p.lock)
+            float proposition = f_proposition(p, s.stop, hit1, hitLock)
+            bool nouveauSLTraverse = proposition != s.stop and f_stop_touche(p.long, adverse, proposition)
+            if (hitSL and (hit1 or hit2 or hitLock)) or nouveauSLTraverse
+                s.incertain := true
+            else if hitSL
+                s.sortir(p, s.restant, s.stop)
+                s.sl := true
+            else
+                if hit1
+                    s.sortir(p, p.q1, p.tp1)
+                    s.tp1 := true
+                if hit2 and s.restant > 0.0
+                    s.sortir(p, s.restant, p.tp2)
+                    s.tp2 := true
+                if s.restant > 0.0
+                    s.stop := proposition
+                    s.lock := s.lock or hitLock
+
+// CONSTRUCTION: original structure preserved; rounding BEFORE risk and quantity.
+bool achat = direction == "LONG"
+bool replay = modeSuivi == "REPLAY"
+float sens = achat ? 1.0 : -1.0
+float prixEntree = positionDeclaree or replay ? prixEntreeIndique : close
+float atr = ta.atr(longueurATR)
+float pivotBas = ta.pivotlow(low, pivotGauche, pivotDroite)
+float pivotHaut = ta.pivothigh(high, pivotGauche, pivotDroite)
+float dernierPivotBas = ta.valuewhen(not na(pivotBas), pivotBas, 0)
+float dernierPivotHaut = ta.valuewhen(not na(pivotHaut), pivotHaut, 0)
+float secoursBas = ta.lowest(low, repliStructure)
+float secoursHaut = ta.highest(high, repliStructure)
+float structureBasse = replay ? nz(dernierPivotBas[1], secoursBas[1]) : nz(dernierPivotBas, secoursBas)
+float structureHaute = replay ? nz(dernierPivotHaut[1], secoursHaut[1]) : nz(dernierPivotHaut, secoursHaut)
+float atrPlan = replay ? atr[1] : atr
+float stopStructureBrut = achat ? structureBasse - atrPlan * tamponATR : structureHaute + atrPlan * tamponATR
+float stopSecours = prixEntree - sens * atrPlan * stopMinimumATR
+float stopAuto = achat ? math.min(stopStructureBrut, stopSecours) : math.max(stopStructureBrut, stopSecours)
+float stopBrut = positionDeclaree ? stopPosition : modeStop == "MANUAL PRICE" ? prixStopManuel : modeStop == "PERCENTAGE" ? prixEntree * (1.0 - sens * stopPctManuel / 100.0) : stopAuto
+bool stopExplicite = positionDeclaree or modeStop == "MANUAL PRICE"
+float stopInitial = stopExplicite ? math.round_to_mintick(stopBrut) : f_tick(stopBrut, not achat)
+float risquePrix = math.abs(prixEntree - stopInitial)
+float cibleR1 = f_tick(prixEntree + sens * risquePrix * rrTP1, achat)
+float cibleR2 = f_tick(prixEntree + sens * risquePrix * rrTP2, achat)
+float haut1 = ta.highest(high, repliCible1)
+float bas1 = ta.lowest(low, repliCible1)
+float haut2 = ta.highest(high, repliCible2)
+float bas2 = ta.lowest(low, repliCible2)
+float structure1 = replay ? (achat ? haut1[1] : bas1[1]) : achat ? haut1 : bas1
+float structure2 = replay ? (achat ? haut2[1] : bas2[1]) : achat ? haut2 : bas2
+float tp1Auto = modeCibles == "STRUCTURE" and f_gain_touche(achat, structure1, cibleR1) ? f_tick(structure1, achat) : cibleR1
+float tp2Auto = modeCibles == "STRUCTURE" and f_gain_touche(achat, structure2, cibleR2) ? f_tick(structure2, achat) : cibleR2
+float cible1 = positionDeclaree ? (tp1Position > 0.0 ? math.round_to_mintick(tp1Position) : cibleR1) : tp1Auto
+float cible2 = positionDeclaree and tp2Position > 0.0 ? math.round_to_mintick(tp2Position) : f_ameliore(achat, positionDeclaree ? cibleR2 : tp2Auto, cible1 + sens * syminfo.mintick)
+float niveauLock = f_tick(prixEntree + sens * risquePrix * declencheurLockR, achat)
+float niveauProtege = f_tick(prixEntree + sens * risquePrix * stopProtegeR, not achat)
+float valeurPoint = typeActif == "STOCKS" ? 1.0 : modeValeurPoint == "MANUAL" ? valeurPointManuelle : syminfo.pointvalue
+float pas = typeActif == "STOCKS" ? 1.0 : pasQuantite
+float changeAuto = syminfo.currency == deviseCompte ? 1.0 : request.currency_rate(syminfo.currency, deviseCompte, ignore_invalid_currency = true)
+float change = syminfo.currency == deviseCompte ? 1.0 : modeChange == "MANUAL RATE" ? tauxChangeManuel : replay ? changeAuto[1] : changeAuto
+float coutStandard = 2.0 * commissionParSens + spreadPoints * valeurPoint
+float coutUnitaire = positionDeclaree ? coutsRestantsLive : coutStandard
+float breakEvenNet = f_tick(prixEntree + sens * coutUnitaire / valeurPoint, achat)
+float risqueUnitaireCompte = (risquePrix * valeurPoint + coutStandard) * change
+float budgetCompte = capital * capitalEngagePct / 100.0
+float qAuto = modeCalculQuantite == "CAPITAL ALLOCATION %" ? budgetCompte / (prixEntree * valeurPoint * change) : capital * risquePct / 100.0 / risqueUnitaireCompte
+if typeActif == "STOCKS"
+    qAuto := math.min(qAuto, capital * plafondCapitalPct / 100.0 / (prixEntree * change))
+float q = positionDeclaree or replay ? quantiteIndiquee : f_arrondi_inferieur(qAuto, pas)
+float fraction1 = switch repartition
+    "25 / 75" => 0.25
+    "33 / 67" => 0.33
+    "50 / 50" => 0.50
+    "67 / 33" => 0.67
+    "75 / 25" => 0.75
+    => 1.00
+// Portions use whole numbers of quantity steps to avoid floating-point remainders.
+float nombrePas = math.round(q / pas)
+float pasTP1 = math.floor(nombrePas * fraction1 + 1e-10)
+float q1 = pasTP1 * pas
+float q2 = (nombrePas - pasTP1) * pas
+float restantDeclare = quantiteRestanteSaisie == -1.0 ? q : quantiteRestanteSaisie
+float stopCourtier = not positionDeclaree or stopCourtierSaisi == 0.0 ? stopInitial : math.round_to_mintick(stopCourtierSaisi)
+float candidatIdeal = replay ? (achat ? dernierPivotBas[1] : dernierPivotHaut[1]) : achat ? dernierPivotBas : dernierPivotHaut
+float ideal = f_tick(candidatIdeal, achat)
+bool idealValide = achat ? ideal <= prixEntree and ideal > stopInitial : ideal >= prixEntree and ideal < stopInitial
+ideal := afficherEntreeIdeale and idealValide and math.abs(ideal - prixEntree) <= risquePrix * distanceIdealeMaxR ? ideal : na
+
+string erreurPlan = ""
+if not chart.is_standard
+    erreurPlan := "USE STANDARD CANDLES"
+else if na(change) or change <= 0.0
+    erreurPlan := "EXCHANGE RATE UNAVAILABLE: ENTER A RATE"
+else if na(valeurPoint) or valeurPoint <= 0.0
+    erreurPlan := "INVALID POINT VALUE"
+else if na(prixEntree) or prixEntree <= 0.0 or na(stopInitial) or stopInitial <= 0.0
+    erreurPlan := "ENTER ENTRY / SL OR LOAD MORE HISTORY"
+else if stopExplicite and not f_au_tick(stopBrut)
+    erreurPlan := "ENTERED STOP NOT TICK-ALIGNED"
+else if (positionDeclaree and (tp1Position < 0.0 or tp2Position < 0.0 or (tp1Position != 0.0 and not f_au_tick(tp1Position)) or (tp2Position != 0.0 and not f_au_tick(tp2Position))))
+    erreurPlan := "ENTERED TARGET NOT TICK-ALIGNED"
+else if not (achat ? stopInitial < prixEntree : stopInitial > prixEntree) or risquePrix < syminfo.mintick
+    erreurPlan := "INITIAL STOP ON WRONG SIDE OR TOO CLOSE"
+else if rrTP2 <= rrTP1 or stopProtegeR >= declencheurLockR or not (achat ? niveauProtege < niveauLock : niveauProtege > niveauLock)
+    erreurPlan := "CHECK R AND THRESHOLDS AFTER ROUNDING"
+else if cible1 <= 0.0 or cible2 <= 0.0 or not (achat ? cible1 > prixEntree and cible2 > cible1 : cible1 < prixEntree and cible2 < cible1)
+    erreurPlan := "INCONSISTENT TARGETS"
+else if na(q) or q <= 0.0 or not f_au_pas(q, pas)
+    erreurPlan := "ZERO / INVALID QUANTITY STEP OR INSUFFICIENT BUDGET"
+else if positionDeclaree and (restantDeclare < 0.0 or restantDeclare > q or not f_au_pas(restantDeclare, pas))
+    erreurPlan := "INCONSISTENT REMAINING QUANTITY"
+else if positionDeclaree and (stopCourtier <= 0.0 or (stopCourtierSaisi != 0.0 and not f_au_tick(stopCourtierSaisi)))
+    erreurPlan := "INVALID / NON-TICK-ALIGNED BROKER STOP"
+else if positionDeclaree and tp1ExecuteSaisi and restantDeclare > q - q1 + pas * 1e-6
+    erreurPlan := "TP1 CONFIRMED: CORRECT REMAINING QUANTITY"
+else if positionDeclaree and (dateReleve < dateEntreeManuelle or dateReleve > timenow)
+    erreurPlan := "RECORD DATE BEFORE ENTRY OR IN THE FUTURE"
+
+float risqueNet = q * risqueUnitaireCompte
+float gainNet = ((math.abs(cible1 - prixEntree) * q1 + math.abs(cible2 - prixEntree) * q2) * valeurPoint - q * coutStandard) * change
+PlanV2 candidat = PlanV2.new(achat, prixEntree, ideal, stopInitial, risquePrix, cible1, cible2, niveauLock, niveauProtege, breakEvenNet, q, q1, q2, valeurPoint, change, coutUnitaire, risqueNet, gainNet, stopCourtier, coutStandard)
+varip PlanV2 planLive = na
+varip SuiviV2 suiviLive = na
+varip int debutObservation = na
+varip string erreurLive = ""
+varip bool initialisationLive = false
+var PlanV2 planHist = na
+var SuiviV2 suiviHist = na
+var string erreurHist = ""
+var bool dateEvaluee = false
+var int premiereDate = time
+
+if not replay and barstate.islast and not initialisationLive
+    initialisationLive := true
+    erreurLive := erreurPlan
+    if erreurLive == ""
+        planLive := candidat
+        debutObservation := timenow
+        suiviLive := SuiviV2.new(positionDeclaree ? restantDeclare : q, positionDeclaree ? realiseNetSaisi : 0.0, positionDeclaree ? stopCourtier : stopInitial)
+        suiviLive.tp1 := positionDeclaree and (tp1ObserveSaisi or tp1ExecuteSaisi or tp2ObserveSaisi)
+        suiviLive.tp2 := positionDeclaree and tp2ObserveSaisi
+        suiviLive.lock := positionDeclaree and lockObserveSaisi
+        suiviLive.stop := f_proposition(planLive, suiviLive.stop, suiviLive.tp1, suiviLive.lock)
+
+// Stable alerts: only an explicitly entered position plan, without using the price
+// at alert creation. varip latches prevent repeats within the same execution.
+bool evtTP1 = false
+bool evtTP2 = false
+bool evtLock = false
+bool evtSL = false
+bool evtConseil = false
+if positionDeclaree and not na(planLive) and barstate.islast and barstate.isrealtime and suiviLive.restant > 0.0
+    evtSL := not suiviLive.sl and f_stop_touche(achat, close, planLive.stopCourtier)
+    evtTP1 := not suiviLive.tp1 and f_gain_touche(achat, close, planLive.tp1)
+    evtTP2 := not suiviLive.tp2 and f_gain_touche(achat, close, planLive.tp2)
+    evtLock := not suiviLive.lock and f_gain_touche(achat, close, planLive.lock)
+    suiviLive.sl := suiviLive.sl or evtSL
+    suiviLive.tp1 := suiviLive.tp1 or evtTP1 or evtTP2
+    suiviLive.tp2 := suiviLive.tp2 or evtTP2
+    suiviLive.lock := suiviLive.lock or evtLock
+    float ancienConseil = suiviLive.stop
+    suiviLive.stop := f_proposition(planLive, suiviLive.stop, suiviLive.tp1, suiviLive.lock)
+    if suiviLive.stop != ancienConseil
+        suiviLive.conseilTraverse := false
+    evtConseil := not suiviLive.conseilTraverse and suiviLive.stop != planLive.stopCourtier and f_stop_touche(achat, close, suiviLive.stop)
+    suiviLive.conseilTraverse := suiviLive.conseilTraverse or evtConseil
+
+f_alerter(string evenement, float niveau) =>
+    alert("Trade Management V2 | " + identifiantPlan + " | " + syminfo.tickerid + " | " + direction + " | " + evenement + " | level " + f_prix(niveau) + " | price touch observed, verify fill | record " + str.format_time(dateReleve, "yyyy-MM-dd HH:mm", syminfo.timezone), alert.freq_all)
+
+if activerAlertes and positionDeclaree and not na(planLive)
+    if evtTP1 and alerteTP1
+        f_alerter("TP1", planLive.tp1)
+    if evtTP2 and alerteTP2
+        f_alerter("TP2", planLive.tp2)
+    if evtLock and alerteLock
+        f_alerter("PROFIT PROTECTION", planLive.lock)
+    if evtSL and alerteSL
+        f_alerter("REPORTED BROKER STOP", planLive.stopCourtier)
+    if evtConseil and alerteStopConseille
+        f_alerter("SUGGESTED STOP CROSSED", suiviLive.stop)
+
+bool entreeCetteBougie = false
+if replay and not dateEvaluee and barstate.isconfirmed
+    bool dateInterne = time < dateEntreeManuelle and not na(time_close) and time_close > dateEntreeManuelle
+    if premiereDate > dateEntreeManuelle or dateInterne or time >= dateEntreeManuelle
+        dateEvaluee := true
+        if premiereDate > dateEntreeManuelle
+            erreurHist := "INSUFFICIENT HISTORY FOR THIS DATE"
+        else if dateInterne
+            erreurHist := "INTRABAR TIME: USE A LOWER TIMEFRAME"
+        else if time != dateEntreeManuelle
+            erreurHist := "NO BAR AT THE SPECIFIED TIME"
+        else if erreurPlan != ""
+            erreurHist := erreurPlan
+        else if not (low <= prixEntree and high >= prixEntree)
+            erreurHist := "ENTRY PRICE NOT REACHED AT SPECIFIED DATE"
+        else
+            planHist := candidat
+            suiviHist := SuiviV2.new(q, 0.0, stopInitial)
+            entreeCetteBougie := true
+            // An average price different from the open does not establish the order of
+            // touches within this bar. If a level was touched, the sequence is indeterminate.
+            if open != prixEntree
+                suiviHist.incertain := f_stop_touche(achat, achat ? low : high, stopInitial) or f_gain_touche(achat, achat ? high : low, cible1) or f_gain_touche(achat, achat ? high : low, niveauLock)
+
+if replay and not na(planHist) and barstate.isconfirmed and (not entreeCetteBougie or open == planHist.entree)
+    suiviHist.bougie(planHist, open, high, low)
+
+PlanV2 p = replay ? planHist : planLive
+SuiviV2 s = replay ? suiviHist : suiviLive
+string erreur = replay ? erreurHist : erreurLive
+bool initialise = not na(p) and not na(s)
+bool entre = initialise and (replay or positionDeclaree)
+bool incertain = initialise and s.incertain
+bool bilanValide = entre and not incertain
+bool solde = entre and s.restant <= 0.0
+string statut = erreur != "" ? "TRACKING BLOCKED" : not initialise ? (replay ? "WAITING FOR ENTRY BAR TO CLOSE" : "INITIALIZING") : not entre ? "PLAN FROZEN AT LOAD" : incertain ? "REPLAY: UNKNOWN EVENT ORDER" : solde ? (replay ? "SIMULATION COMPLETED" : "POSITION REPORTED CLOSED") : not replay and s.sl ? "STOP OBSERVED • EXIT UNCONFIRMED" : not replay and s.conseilTraverse ? "SUGGESTED STOP CROSSED" : s.tp2 ? "TP2 OBSERVED • CONFIRM EXIT" : s.lock ? "PROFIT PROTECTION TRIGGER OBSERVED" : s.tp1 ? "TP1 OBSERVED" : "OPEN POSITION"
+string action = erreur != "" ? erreur : incertain ? "USE A LOWER TIMEFRAME TO REPLAY" : not entre ? (replay ? "WAIT / CHECK THE DATE" : "COPY PLAN DETAILS AFTER FILL") : solde ? "TRACKING COMPLETED" : not replay and (s.sl or s.tp2 or s.conseilTraverse) ? "CHECK BROKER AND UPDATE RECORD" : not replay and s.tp1 and not tp1ExecuteSaisi and p.q1 > 0.0 ? "CONFIRM PARTIAL EXIT / CHECK SL" : not replay and s.stop != p.stopCourtier ? "APPLY SUGGESTED SL THEN UPDATE RECORD" : "MONITOR LEVELS"
+float stopActif = initialise ? (replay ? s.stop : p.stopCourtier) : na
+float restant = bilanValide ? s.restant : na
+float realise = bilanValide ? s.realise : na
+float latent = bilanValide ? ((p.long ? close - p.entree : p.entree - close) * p.point - p.cout) * s.restant * p.change : na
+float performance = bilanValide ? s.realise + latent : na
+float bilanStop = bilanValide ? s.realise + ((p.long ? stopActif - p.entree : p.entree - stopActif) * p.point - p.cout) * s.restant * p.change : na
+float valeurInitiale = initialise ? p.entree * p.q * p.point * p.change : na
+float performancePct = valeurInitiale > 0.0 ? performance / valeurInitiale * 100.0 : na
+string textePerformance = not bilanValide ? "N/A" : f_monnaie(performance) + " • " + str.tostring(performancePct, "0.00") + "%"
+string libelleSL = positionDeclaree ? "Entered initial SL" : modeStop == "MANUAL PRICE" ? "Manual SL" : modeStop == "PERCENTAGE" ? "Percentage SL" : "Structural SL"
+color fondCle = color.rgb(55, 58, 66)
+color fondValeur = color.rgb(37, 40, 47)
+color fondTitre = color.rgb(35, 78, 145)
+color fondAlerte = color.rgb(130, 45, 50)
+color fondPositif = color.rgb(42, 105, 67)
+color fondAttention = color.rgb(145, 95, 25)
+color fondStatut = erreur != "" or incertain ? fondAlerte : not replay and entre and (s.sl or s.conseilTraverse) ? fondAttention : fondTitre
+
+// Objects are created once on the first bar and updated at the latest price.
+var array<line> lignes = array.new<line>()
+var array<label> etiquettes = array.new<label>()
+var line repere = na
+var label pointEntree = na
+if barstate.isfirst
+    for i = 0 to 7
+        array.push(lignes, line.new(bar_index, float(na), bar_index, float(na)))
+        array.push(etiquettes, label.new(bar_index, float(na), "", style = label.style_label_left))
+    repere := line.new(time, float(na), time, float(na), xloc = xloc.bar_time, extend = extend.both)
+    pointEntree := label.new(time, float(na), "▶", xloc = xloc.bar_time, style = label.style_none)
+
+f_niveau(int index, float prix, string texte, color teinte, bool visible, string style) =>
+    line ln = array.get(lignes, index)
+    label lb = array.get(etiquettes, index)
+    float y = visible ? prix : na
+    line.set_xy1(ln, bar_index, y)
+    line.set_xy2(ln, bar_index + longueurLignes, y)
+    line.set_color(ln, teinte)
+    line.set_width(ln, 2)
+    line.set_style(ln, style)
+    label.set_xy(lb, bar_index + longueurLignes, y)
+    label.set_text(lb, texte + " • " + (index == 0 ? f_nombre(prix) + " " + syminfo.currency : f_prix(prix)))
+    label.set_color(lb, teinte)
+    label.set_textcolor(lb, index == 1 or index == 3 ? color.white : color.black)
+    label.set_size(lb, f_taille(tailleEtiquettes))
+
+if barstate.islast
+    bool voir = initialise and afficherNiveaux
+    f_niveau(0, initialise ? p.entree : na, "ENTRY", color.aqua, voir, line.style_dashed)
+    f_niveau(1, stopActif, replay ? "SIMULATED SL" : "REPORTED BROKER SL", color.red, voir and not incertain, line.style_solid)
+    f_niveau(2, initialise ? p.tp1 : na, "TP1", color.lime, voir, line.style_solid)
+    f_niveau(3, initialise ? p.tp2 : na, "TP2", color.green, voir, line.style_solid)
+    f_niveau(4, initialise ? p.lock : na, "PROFIT PROTECTION TRIGGER", color.orange, voir, line.style_dashed)
+    f_niveau(5, initialise ? s.stop : na, "SUGGESTED SL", color.yellow, voir and not replay and entre, line.style_dotted)
+    f_niveau(6, initialise ? p.ideal : na, "IDEAL ENTRY", color.rgb(65, 180, 205), voir, line.style_dotted)
+    f_niveau(7, initialise ? p.be : na, "REMAINING POSITION NET BE", color.silver, voir, line.style_dotted)
+    line.set_xy1(repere, dateEntreeManuelle, entre and afficherRepereEntree ? p.entree : na)
+    line.set_xy2(repere, dateEntreeManuelle, entre and afficherRepereEntree ? p.entree + syminfo.mintick : na)
+    line.set_color(repere, couleurRepereEntree)
+    line.set_style(repere, f_style_ligne(styleRepereEntree))
+    label.set_xy(pointEntree, dateEntreeManuelle, entre and afficherPointEntree ? p.entree : na)
+    label.set_textcolor(pointEntree, couleurRepereEntree)
+
+f_ligne_table(table t, int r, string cle, string valeur, color fond) =>
+    f_cellule(t, 0, r, cle, fondCle)
+    f_cellule(t, 1, r, valeur, fond)
+    r + 1
+
+var table tableau = table.new(f_position_table(positionTableau), 2, 40, border_width = 1, frame_color = color.rgb(90, 90, 90))
+if barstate.islast
+    table.clear(tableau, 0, 0, 1, 39)
+    if afficherTableau
+        int r = 0
+        // Status and Action remain visible even in Custom view: never show numerical
+        // historical results without the corresponding validity warning.
+        r := f_ligne_table(tableau, r, "Trade Management V2", direction + " • " + modeSuivi, fondTitre)
+        r := f_ligne_table(tableau, r, "Status", statut, fondStatut)
+        r := f_ligne_table(tableau, r, "Action", action, fondStatut)
+        bool complet = vueTableau == "FULL"
+        bool suivi = vueTableau == "TRACKING" or complet
+        bool perso = vueTableau == "CUSTOM"
+        bool voirPlan = not perso or blocPlan
+        bool detailPlan = complet or (perso and blocPlan)
+        bool voirObjectifs = not perso or blocObjectifs
+        bool voirProtection = not perso or blocProtection
+        bool detailProtection = complet or (perso and blocProtection)
+        bool voirBilan = suivi or (perso and blocBilan)
+        bool voirMoteur = complet or (perso and blocSuivi)
+        if initialise
+            if voirPlan
+                r := f_ligne_table(tableau, r, entre ? "Filled / simulated entry" : "Planned entry (frozen)", f_nombre(p.entree) + " " + syminfo.currency, fondTitre)
+                r := f_ligne_table(tableau, r, "Initial quantity", f_nombre(p.q), fondValeur)
+            if detailPlan
+                r := f_ligne_table(tableau, r, "Ideal entry", f_prix(p.ideal), fondValeur)
+                r := f_ligne_table(tableau, r, libelleSL, f_prix(p.initial), fondAlerte)
+                r := f_ligne_table(tableau, r, "Risk distance", f_nombre(p.risque), fondValeur)
+                r := f_ligne_table(tableau, r, "Estimated initial risk (including costs)", f_monnaie(p.risqueNet) + (capital > 0.0 ? " • " + str.tostring(p.risqueNet / capital * 100.0, "0.00") + "%" : ""), fondValeur)
+                r := f_ligne_table(tableau, r, typeActif == "STOCKS" ? "Allocated capital" : "Notional value (not margin)", f_monnaie(valeurInitiale), fondValeur)
+            if voirObjectifs
+                float gain1Net = (math.abs(p.tp1 - p.entree) * p.point - p.coutPlan) * p.q1 * p.change
+                float gain2Net = (math.abs(p.tp2 - p.entree) * p.point - p.coutPlan) * p.q2 * p.change
+                r := f_ligne_table(tableau, r, p.q1 == 0.0 ? "TP1: milestone without exit" : "TP1", f_prix(p.tp1) + " • +" + str.tostring(math.abs(p.tp1 - p.entree) / p.entree * 100.0, "0.00") + "% • q " + f_nombre(p.q1) + " • net " + f_monnaie(gain1Net), color.rgb(43, 105, 68))
+                r := f_ligne_table(tableau, r, "TP2", f_prix(p.tp2) + " • +" + str.tostring(math.abs(p.tp2 - p.entree) / p.entree * 100.0, "0.00") + "% • q " + f_nombre(p.q2) + " • net " + f_monnaie(gain2Net), color.rgb(35, 88, 58))
+                r := f_ligne_table(tableau, r, "Initial plan NET target profit", f_monnaie(p.gainNet) + " • RR net " + (p.risqueNet > 0.0 ? str.tostring(p.gainNet / p.risqueNet, "0.00") : "N/A"), fondValeur)
+            if voirProtection
+                r := f_ligne_table(tableau, r, replay ? "Simulated SL" : entre ? "Reported broker SL" : "Planned SL", incertain ? "N/A" : f_prix(stopActif), fondAlerte)
+                if not replay and entre
+                    r := f_ligne_table(tableau, r, "Suggested SL (to confirm)", f_prix(s.stop), fondAttention)
+                if entre
+                    r := f_ligne_table(tableau, r, "Remaining position NET P&L at SL", bilanValide ? f_monnaie(bilanStop - realise) : "N/A", fondValeur)
+                r := f_ligne_table(tableau, r, "Total NET P&L at SL", entre ? f_monnaie(bilanStop) : f_monnaie(-p.risqueNet), fondValeur)
+            if detailProtection
+                r := f_ligne_table(tableau, r, "Remaining position NET BE", f_prix(p.be), fondValeur)
+                r := f_ligne_table(tableau, r, "Profit protection trigger", f_prix(p.lock), fondAttention)
+                r := f_ligne_table(tableau, r, "Protected stop level (before costs)", f_prix(p.protege), fondValeur)
+                bool bePossible = p.long ? p.be < p.tp1 : p.be > p.tp1
+                r := f_ligne_table(tableau, r, "Move to BE at TP1", p.q2 <= 0.0 ? "FULL EXIT AT TP1" : bePossible ? "POSSIBLE WITH ENTERED COSTS" : "COSTS TOO HIGH: SL NOT MOVED AT TP1", bePossible ? fondValeur : fondAttention)
+            if voirBilan and entre
+                r := f_ligne_table(tableau, r, replay ? "Simulated remaining quantity" : "Reported remaining quantity", f_nombre(restant), fondValeur)
+                r := f_ligne_table(tableau, r, replay ? "Simulated net realized P&L" : "Confirmed NET realized P&L", f_monnaie(realise), fondValeur)
+                r := f_ligne_table(tableau, r, "Estimated NET unrealized P&L", f_monnaie(latent), fondValeur)
+                if not replay
+                    r := f_ligne_table(tableau, r, "TP1 partial exit", tp1ExecuteSaisi ? "REPORTED FILLED" : "UNCONFIRMED", tp1ExecuteSaisi ? fondPositif : fondAttention)
+            if entre and (not perso or blocBilan)
+                r := f_ligne_table(tableau, r, "Estimated NET performance", textePerformance, incertain ? fondAlerte : fondValeur)
+            if afficherDateEntreeTableau and entre
+                r := f_ligne_table(tableau, r, "Entry date", str.format_time(dateEntreeManuelle, "dd/MM/yyyy HH:mm", syminfo.timezone), fondValeur)
+            // Displaying the observation start time prevents confusion with the actual entry.
+            if positionDeclaree
+                r := f_ligne_table(tableau, r, "Broker record as of", str.format_time(dateReleve, "dd/MM/yyyy HH:mm", syminfo.timezone), fondValeur)
+                r := f_ligne_table(tableau, r, "Observation since", str.format_time(debutObservation, "dd/MM/yyyy HH:mm:ss", syminfo.timezone), fondValeur)
+            if voirMoteur
+                r := f_ligne_table(tableau, r, "Frozen quote → account rate", f_nombre(p.change) + " " + deviseCompte + " / " + syminfo.currency, fondValeur)
+                r := f_ligne_table(tableau, r, "Costs to deduct per unit", f_monnaie(p.cout * p.change), fondValeur)
+                r := f_ligne_table(tableau, r, "Intrabar", replay ? (incertain ? "UNKNOWN ORDER: SIMULATION FROZEN" : "OPEN THEN CONFIRMED OHLC") : "OBSERVED TOUCHES ≠ FILLS", fondValeur)
+                r := f_ligne_table(tableau, r, "Alerts", replay or not positionDeclaree ? "EXPLICIT LIVE POSITION REQUIRED" : activerAlertes ? "CREATE / UPDATE TRADINGVIEW ALERT" : "DISABLED", fondValeur)

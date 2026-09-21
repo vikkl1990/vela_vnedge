@@ -1,0 +1,568 @@
+// This Pine Script(TM) code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// (c) YOUR_TRADINGVIEW_USERNAME
+
+//@version=6
+indicator("Opening Range Breakout + Midline", "ORB + Mid", overlay = true,
+     max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ORB — Opening Range Breakout, with the 50% midline drawn by default.
+//
+// What the research says, and how it shaped the defaults:
+//
+//  • Range length. Zarattini, Barbon & Aziz (2024) tested 5/15/30/60-minute
+//    ranges across 7,000+ US stocks, 2016–2023; the 5-minute range came out on
+//    top. Most of that paper's edge, though, came from *which* stocks were
+//    traded (top 20 by opening relative volume) rather than from the range
+//    length — so this ships with a 15-minute default (steadier levels for a
+//    discretionary read) and surfaces the relative-volume number rather than
+//    hiding it. Set 5 if you want the paper's range.
+//
+//  • The midline matters because clean breakouts are the minority. Measured on
+//    ES over six months, a *double break* — price taking out both sides of the
+//    range — happened on ~67% of sessions, against ~17% clean break-up and
+//    ~16% clean break-down. A first break is therefore not a trend signal on
+//    its own, and the 50% level is what arbitrates which side owns the day.
+//    After a failed break (price closing back inside), the midline is the
+//    high-probability follow-on, with a full traverse of the range live from
+//    there. Hence midline on by default — Midline → Show midline turns it off.
+//
+//  • Targets. A 100,569-entry study of 15-minute ORB breakouts found the full
+//    1× range projection produced the best expectancy — beating the tighter
+//    0.5× (higher win rate, lower expectancy) and every fixed R-multiple up to
+//    3×, with the opposite side of the range as the stop. The range sets the
+//    stop and the range sets the target. 1× and 2× are on by default.
+//
+//  • Range quality. An unusually narrow range breaks out at random; an already
+//    huge one has spent the day's move before you are in. The table scores the
+//    range against ADR(14), scaled by √time so the score stays comparable
+//    whether you run a 5- or a 60-minute range.
+//
+//  • Relative volume was the strongest single filter in the literature. The
+//    table shows opening relative volume: this session's range-window volume
+//    against the same window's average over the last N sessions.
+//
+// The stats block is measured on *this* chart and symbol over the last N
+// sessions — none of it is borrowed from the studies above. ~65% is the rough
+// line between an edge worth a plan and a coin flip.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ══ Inputs ═══════════════════════════════════════════════════════════════════
+g_r = "Opening range"
+or_min   = input.int(15, "Range length (minutes)", minval = 1, maxval = 480, group = g_r,
+     tooltip = "Minutes measured from the first bar of the trading session below. 5 is the " +
+     "best-performing length in the literature; 15 and 30 give steadier levels.")
+sess_str = input.session("0930-1600", "Trading session", group = g_r,
+     tooltip = "The full session the range belongs to. Levels reset at its open and stop " +
+     "extending at its close. Futures RTH: 0930-1600. London: 0300-1130. Set to the " +
+     "instrument's real hours, not the chart's.")
+tz_in    = input.string("America/New_York", "Session timezone",
+     options = ["Exchange", "America/New_York", "America/Chicago", "America/Denver",
+                "America/Los_Angeles", "Europe/London", "Europe/Berlin", "Asia/Tokyo",
+                "Asia/Hong_Kong", "Asia/Kolkata", "Australia/Sydney", "UTC"], group = g_r,
+     tooltip = "Interprets the session times above. 'Exchange' uses the symbol's own timezone.")
+hist_n   = input.int(20, "Sessions drawn at once", minval = 1, maxval = 150, group = g_r,
+     tooltip = "Drawing follows the part of the chart you are looking at, so scrolling back " +
+     "shows those days' ranges too. This caps how many are drawn at one time — a drawing " +
+     "budget — not how far back you can go.")
+extend_r = input.bool(true, "Extend today's levels to the right", group = g_r)
+
+g_l = "Range lines"
+show_hl   = input.bool(true, "Show high / low", group = g_l)
+hi_col    = input.color(#3fb950, "High", group = g_l, inline = "hi")
+lo_col    = input.color(#f85149, "Low",  group = g_l, inline = "hi")
+hl_style  = input.string("Solid", "Style", options = ["Solid", "Dashed", "Dotted"],
+     group = g_l, inline = "hs")
+hl_width  = input.int(2, "Width", minval = 1, maxval = 4, group = g_l, inline = "hs")
+show_box  = input.bool(true, "Shade the range", group = g_l, inline = "bx")
+box_mode  = input.string("Range window", "", options = ["Range window", "Whole session"],
+     group = g_l, inline = "bx")
+box_alpha = input.int(92, "Shade transparency", minval = 50, maxval = 99, group = g_l)
+
+g_m = "Midline"
+show_mid  = input.bool(true, "Show midline (50%)", group = g_m,
+     tooltip = "The 50% level of the opening range. On by default: with double breaks " +
+     "outnumbering clean breaks roughly 4:1, the midline — not the first break — is what " +
+     "tells you which side owns the session, and it is the first magnet after a failed break.")
+mid_col   = input.color(#d29922, "Colour", group = g_m, inline = "ms")
+mid_style = input.string("Dashed", "Style", options = ["Solid", "Dashed", "Dotted"],
+     group = g_m, inline = "ms")
+mid_width = input.int(1, "Width", minval = 1, maxval = 4, group = g_m, inline = "ms")
+
+g_t = "Extension targets"
+show_tgt = input.bool(true, "Show targets", group = g_t,
+     tooltip = "Projected from the broken edge, in multiples of the range width.")
+t_05 = input.bool(false, "0.5 × range", group = g_t)
+t_10 = input.bool(true,  "1.0 × range — best expectancy in a 100k-entry study", group = g_t)
+t_15 = input.bool(false, "1.5 × range", group = g_t)
+t_20 = input.bool(true,  "2.0 × range", group = g_t)
+tgt_col  = input.color(#8b949e, "Colour", group = g_t, inline = "ts")
+tgt_both = input.bool(false, "Draw both sides before a break", group = g_t, inline = "ts")
+
+g_x = "Context"
+show_table = input.bool(true, "Summary table", group = g_x)
+tbl_pos    = input.string("Top right", "Position",
+     options = ["Top right", "Middle right", "Bottom right", "Top left", "Bottom left"],
+     group = g_x)
+show_stats = input.bool(true, "Measured stats block", group = g_x,
+     tooltip = "Hit rates measured on this symbol and chart timeframe over the lookback below.")
+stats_n    = input.int(60, "Stats lookback (sessions)", minval = 5, maxval = 500, group = g_x)
+adr_len    = input.int(14, "ADR length (days)", minval = 2, group = g_x)
+rvol_len   = input.int(14, "Relative-volume lookback (sessions)", minval = 2, group = g_x)
+or_share   = input.float(30.0, "Expected range as % of ADR at 15 min", minval = 1.0, maxval = 100.0,
+     step = 1.0, group = g_x,
+     tooltip = "Baseline for the NARROW / NORMAL / WIDE score. Scaled by √time for other " +
+     "range lengths, so 5 min expects ~17% and 60 min ~60%. Lower it for instruments whose " +
+     "open is habitually quiet.")
+show_lbl   = input.bool(true, "Price labels", group = g_x)
+
+// ── Palette (shared with gex_levels.pine so both read as one system) ─────────
+C_TEXT = #e6edf3
+C_DIM  = #8b949e
+C_BG   = color.new(#161b22, 12)
+C_EDGE = #30363d
+
+to_style(s) => s == "Solid" ? line.style_solid : s == "Dashed" ? line.style_dashed : line.style_dotted
+S_HL  = to_style(hl_style)
+S_MID = to_style(mid_style)
+
+tz = tz_in == "Exchange" ? syminfo.timezone : tz_in
+
+// ══ Session and range detection ══════════════════════════════════════════════
+// The range is measured forward in wall-clock minutes from the session's first
+// bar, rather than from a second session string, so any range length works and
+// the two windows can never drift apart.
+in_sess = not na(time(timeframe.period, sess_str, tz))
+
+// A chart set to Regular hours contains ONLY in-session bars, so the
+// out-of-session -> in-session transition never happens and no range would ever
+// start. Identify the session by its calendar day in the session's own timezone
+// instead: that fires on the first in-session bar whichever bars the chart shows.
+// (Assumes a session that opens and closes within one calendar day, which every
+// opening range does; a session spanning midnight would reset at 00:00.)
+sess_day = in_sess ? year(time, tz) * 10000 + month(time, tz) * 100 + dayofmonth(time, tz) : na
+var int cur_day = na
+new_sess = in_sess and (na(cur_day) or sess_day != cur_day)
+
+// ══ Per-session history ══════════════════════════════════════════════════════
+var array<float> h_break = array.new<float>()  // broke either side          (all sessions)
+var array<float> h_dbl   = array.new<float>()  // broke both sides           (all sessions)
+var array<float> h_cont  = array.new<float>()  // 1× before opposite extreme (sessions that broke)
+var array<float> h_f2m   = array.new<float>()  // reached mid after failing  (failed breaks)
+var array<float> h_orv   = array.new<float>()  // range-window volume        (all sessions)
+
+// Geometry of completed sessions, replayed on the last bar. Retained far deeper
+// than the draw budget so panning back into older weeks still has data to draw.
+STORE_N = 500
+
+var array<float> d_hi = array.new<float>()
+var array<float> d_lo = array.new<float>()
+var array<int>   d_t1 = array.new<int>()
+var array<int>   d_t2 = array.new<int>()
+var array<int>   d_te = array.new<int>()
+
+trim_f(a, n) =>
+    while array.size(a) > n
+        array.shift(a)
+    array.size(a)
+
+trim_i(a, n) =>
+    while array.size(a) > n
+        array.shift(a)
+    array.size(a)
+
+
+var float orh      = na    // range high
+var float orl      = na    // range low
+var float orv      = 0.0   // volume traded inside the range window
+var int   or_t1    = na    // timestamp of the session's first bar
+var int   or_t2    = na    // timestamp of the range window's last bar
+var int   or_te    = na    // timestamp of the session's last bar so far
+var bool  or_done  = false // range window has closed
+var int   or_end_ms = na
+
+// Break-state machine for the live session.
+var bool brk_up    = false
+var bool brk_dn    = false
+var int  first_dir = 0
+var bool failed    = false // closed back inside the range after a break
+var bool mid_hit   = false // reached the midline after that failed break
+var bool t1_up     = false
+var bool t1_dn     = false
+var bool res_done  = false // 1× / opposite-side race has resolved
+var bool res_win   = false
+
+// Values carried from the previous bar, so alert events fire exactly once.
+was_up   = brk_up
+was_dn   = brk_dn
+was_fail = failed
+was_mid  = mid_hit
+was_t1u  = t1_up
+was_t1d  = t1_dn
+
+if new_sess
+    // Close out the previous session before resetting it. Doing this here
+    // rather than on a session-close transition is what makes it work on a
+    // Regular-hours chart, where no out-of-session bar exists to mark the end.
+    if or_done and not na(orh) and not na(orl)
+        array.push(h_break, brk_up or brk_dn ? 1.0 : 0.0)
+        array.push(h_dbl,   brk_up and brk_dn ? 1.0 : 0.0)
+        array.push(h_orv,   orv)
+        if first_dir != 0
+            // Unresolved by the close counts as "did not reach 1×", which is what
+            // an end-of-day flat would have booked.
+            array.push(h_cont, res_win ? 1.0 : 0.0)
+        if failed
+            array.push(h_f2m, mid_hit ? 1.0 : 0.0)
+        array.push(d_hi, orh)
+        array.push(d_lo, orl)
+        array.push(d_t1, or_t1)
+        array.push(d_t2, or_t2)
+        array.push(d_te, nz(or_te, or_t1))
+        trim_f(h_break, stats_n)
+        trim_f(h_dbl,   stats_n)
+        trim_f(h_cont,  stats_n)
+        trim_f(h_f2m,   stats_n)
+        trim_f(h_orv,   rvol_len)
+        trim_f(d_hi, STORE_N)
+        trim_f(d_lo, STORE_N)
+        trim_i(d_t1, STORE_N)
+        trim_i(d_t2, STORE_N)
+        trim_i(d_te, STORE_N)
+
+    cur_day   := sess_day
+    orh       := na
+    orl       := na
+    orv       := 0.0
+    or_t1     := time
+    or_t2     := na
+    or_te     := time
+    or_done   := false
+    or_end_ms := time + or_min * 60000
+    brk_up    := false
+    brk_dn    := false
+    first_dir := 0
+    failed    := false
+    mid_hit   := false
+    t1_up     := false
+    t1_dn     := false
+    res_done  := false
+    res_win   := false
+
+in_or = in_sess and not na(or_end_ms) and time < or_end_ms
+
+if in_sess
+    or_te := time
+
+if in_or
+    orh := na(orh) ? high : math.max(orh, high)
+    orl := na(orl) ? low  : math.min(orl, low)
+    orv += nz(volume)
+    or_t2 := time
+else if in_sess and not or_done and not na(orh)
+    or_done := true
+
+or_w   = na(orh) or na(orl) ? na : orh - orl
+or_mid = na(or_w) ? na : orl + or_w / 2
+
+// ── Break tracking ───────────────────────────────────────────────────────────
+if or_done and in_sess and not na(or_w)
+    up = high > orh
+    dn = low  < orl
+    if up and not brk_up
+        brk_up := true
+    if dn and not brk_dn
+        brk_dn := true
+    if first_dir == 0 and (up or dn)
+        // A bar that takes out both sides at once is attributed by its own
+        // direction — intrabar sequence is unknowable here.
+        first_dir := up and dn ? (close >= open ? 1 : -1) : up ? 1 : -1
+    if first_dir != 0 and not failed and close <= orh and close >= orl
+        failed := true
+    if failed and not mid_hit and low <= or_mid and high >= or_mid
+        mid_hit := true
+    if or_w > 0
+        if not t1_up and brk_up and high >= orh + or_w
+            t1_up := true
+        if not t1_dn and brk_dn and low <= orl - or_w
+            t1_dn := true
+        // 1× target against the opposite extreme as stop — the pairing the
+        // target study measured. Same-bar ambiguity is scored as the stop.
+        if first_dir != 0 and not res_done
+            if first_dir > 0
+                if low <= orl
+                    res_done := true
+                else if high >= orh + or_w
+                    res_done := true
+                    res_win  := true
+            else
+                if high >= orh
+                    res_done := true
+                else if low <= orl - or_w
+                    res_done := true
+                    res_win  := true
+
+// ══ Context metrics ══════════════════════════════════════════════════════════
+adr = request.security(syminfo.tickerid, "D", ta.atr(adr_len)[1], lookahead = barmerge.lookahead_off)
+
+exp_share = or_share / 100.0 * math.sqrt(or_min / 15.0)
+act_share = na(or_w) or na(adr) or adr <= 0 ? na : or_w / adr
+q_ratio   = na(act_share) ? na : act_share / exp_share
+q_txt     = na(q_ratio) ? "—" : q_ratio < 0.70 ? "NARROW" : q_ratio > 1.40 ? "WIDE" : "NORMAL"
+q_col     = na(q_ratio) ? C_DIM : q_ratio < 0.70 ? mid_col : q_ratio > 1.40 ? lo_col : hi_col
+
+rv_base = array.size(h_orv) > 0 ? array.avg(h_orv) : na
+rvol    = na(rv_base) or rv_base <= 0 or not or_done ? na : orv / rv_base
+rv_txt  = na(rvol) ? "—" : rvol >= 2.0 ? "HIGH" : rvol >= 1.2 ? "ELEVATED"
+     : rvol >= 0.7 ? "NORMAL" : "LIGHT"
+rv_col  = na(rvol) ? C_DIM : rvol >= 1.2 ? hi_col : rvol >= 0.7 ? C_TEXT : lo_col
+
+inside_now = not na(or_w) and close <= orh and close >= orl
+state_txt  = na(orh) ? "NO RANGE" : in_or ? "FORMING"
+     : brk_up and brk_dn ? "DOUBLE BREAK" : brk_up ? "BROKE ↑" : brk_dn ? "BROKE ↓" : "INSIDE"
+state_col  = na(orh) or in_or ? C_DIM
+     : brk_up and brk_dn ? mid_col : brk_up ? hi_col : brk_dn ? lo_col : C_TEXT
+if or_done and first_dir != 0 and inside_now
+    state_txt := state_txt + " · BACK INSIDE"
+    state_col := mid_col
+
+// A chart timeframe that does not divide the range evenly overshoots it by one
+// bar (a 15-minute range on a 2-minute chart measures 16 minutes) — inherent to
+// any bar-based range, so say so rather than silently mis-measuring.
+tf_bad = timeframe.in_seconds() > or_min * 60
+tf_odd = not tf_bad and (or_min * 60) % timeframe.in_seconds() != 0
+tf_msg = not timeframe.isintraday ? "⚠ Intraday chart required"
+     : tf_bad ? "⚠ Chart TF exceeds the range — levels are approximate"
+     : tf_odd ? "⚠ Chart TF does not divide the range evenly" : ""
+
+// ══ Drawing ══════════════════════════════════════════════════════════════════
+vis_l = chart.left_visible_bar_time
+vis_r = chart.right_visible_bar_time
+
+tf_ms = timeframe.in_seconds() * 1000   // one bar, in milliseconds
+
+var array<float> T_MULT = array.from(0.5, 1.0, 1.5, 2.0)
+
+var array<line>  L  = array.new<line>()
+var array<box>   B  = array.new<box>()
+var array<label> LB = array.new<label>()
+
+mk_line(x1, x2, y, c, w, st, ext) =>
+    line ln = na
+    if not na(y)
+        ln := line.new(x1, y, int(math.max(x2, x1 + tf_ms)), y, xloc = xloc.bar_time,
+             extend = ext ? extend.right : extend.none, color = c, width = w, style = st)
+        array.push(L, ln)
+    ln
+
+mk_label(x, y, txt, c) =>
+    label lb = na
+    if show_lbl and not na(y)
+        lb := label.new(x, y, txt + "  " + str.tostring(y, format.mintick),
+             xloc = xloc.bar_time, style = label.style_label_left,
+             color = color.new(c, 85), textcolor = c, size = size.small)
+        array.push(LB, lb)
+    lb
+
+// One session's lines. `live` gets the labels, the targets and the right-extend.
+draw_session(hi, lo, x1, x2, xe, live) =>
+    w   = hi - lo
+    mid = lo + w / 2
+    ext = live and extend_r
+    if show_box
+        bx_r = box_mode == "Whole session" ? xe : x2
+        array.push(B, box.new(x1, hi, int(math.max(bx_r, x1 + tf_ms)), lo, xloc = xloc.bar_time,
+             border_color = color.new(C_EDGE, 40),
+             bgcolor = color.new(mid_col, box_alpha)))
+    if show_hl
+        mk_line(x1, xe, hi, hi_col, hl_width, S_HL, ext)
+        mk_line(x1, xe, lo, lo_col, hl_width, S_HL, ext)
+    if show_mid
+        mk_line(x1, xe, mid, mid_col, mid_width, S_MID, ext)
+    if show_tgt and live and or_done and w > 0
+        // Only the broken side is projected, unless both are asked for — an
+        // untested side's targets are noise.
+        up_ok = tgt_both or brk_up or first_dir == 0
+        dn_ok = tgt_both or brk_dn or first_dir == 0
+        for [i, m] in T_MULT
+            on = i == 0 ? t_05 : i == 1 ? t_10 : i == 2 ? t_15 : t_20
+            if on
+                st = m == 1.0 ? line.style_dashed : line.style_dotted
+                if up_ok
+                    mk_line(x2, xe, hi + w * m, color.new(tgt_col, 25), 1, st, ext)
+                if dn_ok
+                    mk_line(x2, xe, lo - w * m, color.new(tgt_col, 25), 1, st, ext)
+    if live and show_lbl
+        lx = ext ? time + 2 * tf_ms : xe
+        mk_label(lx, hi, "ORH", hi_col)
+        if show_mid
+            mk_label(lx, mid, "MID", mid_col)
+        mk_label(lx, lo, "ORL", lo_col)
+    w
+
+if barstate.islast
+    while array.size(L) > 0
+        line.delete(array.pop(L))
+    while array.size(B) > 0
+        box.delete(array.pop(B))
+    while array.size(LB) > 0
+        label.delete(array.pop(LB))
+
+    if timeframe.isintraday
+        // Draw what the viewer is actually looking at, newest first, until the
+        // budget runs out — so panning back a month draws that month's ranges
+        // rather than nothing.
+        live_ok = not na(orh) and not na(orl) and not na(or_t1)
+        budget  = hist_n
+        if live_ok and or_t1 <= vis_r
+            draw_session(orh, orl, or_t1, nz(or_t2, or_t1), time, true)
+            budget -= 1
+        n_hist = array.size(d_hi)
+        if n_hist > 0 and budget > 0
+            for i = n_hist - 1 to 0
+                if budget <= 0
+                    break
+                s_t1 = array.get(d_t1, i)
+                s_te = array.get(d_te, i)
+                if s_te >= vis_l and s_t1 <= vis_r      // overlaps the visible window
+                    draw_session(array.get(d_hi, i), array.get(d_lo, i), s_t1,
+                         array.get(d_t2, i), s_te, false)
+                    budget -= 1
+
+// ══ Summary table ════════════════════════════════════════════════════════════
+pos = tbl_pos == "Top right" ? position.top_right : tbl_pos == "Middle right" ? position.middle_right
+     : tbl_pos == "Bottom right" ? position.bottom_right : tbl_pos == "Top left" ? position.top_left
+     : position.bottom_left
+
+pct(a) =>
+    array.size(a) == 0 ? "—" : str.tostring(array.avg(a) * 100, "#") + "%"
+
+n_of(a) =>
+    "n=" + str.tostring(array.size(a))
+
+var table tb = na
+table.delete(tb)
+
+if show_table and barstate.islast
+    n_rows = 5 + (show_mid ? 1 : 0) + (show_stats ? 5 : 0) + (tf_msg != "" ? 1 : 0)
+    tb := table.new(pos, 3, n_rows, bgcolor = C_BG, border_width = 1,
+         border_color = color.new(C_EDGE, 0), frame_width = 1,
+         frame_color = color.new(C_EDGE, 0))
+    r = 0
+    table.cell(tb, 0, r, syminfo.ticker + " · ORB " + str.tostring(or_min) + "m",
+         text_color = C_TEXT, text_size = size.normal, text_halign = text.align_left)
+    table.cell(tb, 2, r, state_txt, text_color = state_col, text_size = size.small,
+         text_halign = text.align_right)
+    r += 1
+
+    table.cell(tb, 0, r, "ORH", text_color = C_DIM, text_size = size.small,
+         text_halign = text.align_left)
+    table.cell(tb, 1, r, na(orh) ? "—" : str.tostring(orh, format.mintick),
+         text_color = hi_col, text_size = size.small, text_halign = text.align_right)
+    r += 1
+
+    if show_mid
+        table.cell(tb, 0, r, "MID", text_color = C_DIM, text_size = size.small,
+             text_halign = text.align_left)
+        table.cell(tb, 1, r, na(or_mid) ? "—" : str.tostring(or_mid, format.mintick),
+             text_color = mid_col, text_size = size.small, text_halign = text.align_right)
+        table.cell(tb, 2, r, na(or_mid) or na(close) ? "" :
+             (close >= or_mid ? "above" : "below"),
+             text_color = C_DIM, text_size = size.tiny, text_halign = text.align_right)
+        r += 1
+
+    table.cell(tb, 0, r, "ORL", text_color = C_DIM, text_size = size.small,
+         text_halign = text.align_left)
+    table.cell(tb, 1, r, na(orl) ? "—" : str.tostring(orl, format.mintick),
+         text_color = lo_col, text_size = size.small, text_halign = text.align_right)
+    r += 1
+
+    table.cell(tb, 0, r, "range", text_color = C_DIM, text_size = size.small,
+         text_halign = text.align_left)
+    table.cell(tb, 1, r, na(or_w) ? "—" : str.tostring(or_w, format.mintick) + "  (" +
+         str.tostring(or_w / close * 100, "#.##") + "%)",
+         text_color = C_TEXT, text_size = size.small, text_halign = text.align_right)
+    table.cell(tb, 2, r, na(act_share) ? "—" :
+         str.tostring(act_share * 100, "#") + "% ADR  " + q_txt,
+         text_color = q_col, text_size = size.tiny, text_halign = text.align_right)
+    r += 1
+
+    table.cell(tb, 0, r, "rVol", text_color = C_DIM, text_size = size.small,
+         text_halign = text.align_left)
+    table.cell(tb, 1, r, na(rvol) ? "—" : str.tostring(rvol, "#.##") + "×",
+         text_color = rv_col, text_size = size.small, text_halign = text.align_right)
+    table.cell(tb, 2, r, rv_txt, text_color = rv_col, text_size = size.tiny,
+         text_halign = text.align_right)
+    r += 1
+
+    if show_stats
+        table.cell(tb, 0, r, "measured, last " + str.tostring(stats_n) + " sessions",
+             text_color = color.new(C_DIM, 30), text_size = size.tiny,
+             text_halign = text.align_left)
+        r += 1
+        table.cell(tb, 0, r, "broke range", text_color = C_DIM, text_size = size.tiny,
+             text_halign = text.align_left)
+        table.cell(tb, 1, r, pct(h_break), text_color = C_TEXT, text_size = size.tiny,
+             text_halign = text.align_right)
+        table.cell(tb, 2, r, n_of(h_break), text_color = color.new(C_DIM, 40),
+             text_size = size.tiny, text_halign = text.align_right)
+        r += 1
+        table.cell(tb, 0, r, "double break", text_color = C_DIM, text_size = size.tiny,
+             text_halign = text.align_left)
+        table.cell(tb, 1, r, pct(h_dbl), text_color = mid_col, text_size = size.tiny,
+             text_halign = text.align_right)
+        table.cell(tb, 2, r, n_of(h_dbl), text_color = color.new(C_DIM, 40),
+             text_size = size.tiny, text_halign = text.align_right)
+        r += 1
+        table.cell(tb, 0, r, "1× before far side", text_color = C_DIM, text_size = size.tiny,
+             text_halign = text.align_left)
+        table.cell(tb, 1, r, pct(h_cont),
+             text_color = array.size(h_cont) > 0 and array.avg(h_cont) >= 0.65 ? hi_col : C_TEXT,
+             text_size = size.tiny, text_halign = text.align_right)
+        table.cell(tb, 2, r, n_of(h_cont), text_color = color.new(C_DIM, 40),
+             text_size = size.tiny, text_halign = text.align_right)
+        r += 1
+        table.cell(tb, 0, r, "failed → midline", text_color = C_DIM, text_size = size.tiny,
+             text_halign = text.align_left)
+        table.cell(tb, 1, r, pct(h_f2m),
+             text_color = array.size(h_f2m) > 0 and array.avg(h_f2m) >= 0.65 ? mid_col : C_TEXT,
+             text_size = size.tiny, text_halign = text.align_right)
+        table.cell(tb, 2, r, n_of(h_f2m), text_color = color.new(C_DIM, 40),
+             text_size = size.tiny, text_halign = text.align_right)
+        r += 1
+
+    if tf_msg != ""
+        table.cell(tb, 0, r, tf_msg, text_color = lo_col, text_size = size.tiny,
+             text_halign = text.align_left)
+
+// ══ Data window (also exposes the levels to other scripts) ═══════════════════
+plot(orh,   "ORB high",  display = display.data_window)
+plot(or_mid,"ORB mid",   display = display.data_window)
+plot(orl,   "ORB low",   display = display.data_window)
+plot(or_w,  "OR width",  display = display.data_window)
+plot(rvol,  "Opening rVol", display = display.data_window)
+
+// ══ Alerts ═══════════════════════════════════════════════════════════════════
+_x_mid  = ta.cross(close, or_mid)
+ev_up   = brk_up and not was_up
+ev_dn   = brk_dn and not was_dn
+ev_fail = failed and not was_fail
+ev_mid  = mid_hit and not was_mid
+ev_t1u  = t1_up and not was_t1u
+ev_t1d  = t1_dn and not was_t1d
+ev_xmid = or_done and not na(or_mid) and _x_mid
+
+alertcondition(ev_up,   "ORB: broke range high",
+     "{{ticker}} broke the opening range high at {{close}}")
+alertcondition(ev_dn,   "ORB: broke range low",
+     "{{ticker}} broke the opening range low at {{close}}")
+alertcondition(ev_fail, "ORB: failed break (back inside)",
+     "{{ticker}} closed back inside the opening range at {{close}} — midline is the next magnet")
+alertcondition(ev_mid,  "ORB: midline reached after a failed break",
+     "{{ticker}} reached the opening range midline at {{close}} after a failed break")
+alertcondition(ev_xmid, "ORB: midline crossed",
+     "{{ticker}} crossed the opening range midline at {{close}}")
+alertcondition(ev_t1u,  "ORB: 1× target hit (up)",
+     "{{ticker}} hit the 1× range extension above the opening range at {{close}}")
+alertcondition(ev_t1d,  "ORB: 1× target hit (down)",
+     "{{ticker}} hit the 1× range extension below the opening range at {{close}}")

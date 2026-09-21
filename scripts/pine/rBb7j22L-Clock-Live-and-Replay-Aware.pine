@@ -1,0 +1,79 @@
+//@version=6
+indicator("Clock — Live / Replay Aware", overlay=true)
+
+// ─── Inputs ───────────────────────────────────────────────
+posInput      = input.string("Top Right", "Table Position",
+     options=["Top Left","Top Right","Bottom Left","Bottom Right"])
+tzInput       = input.string("", "Timezone (blank = exchange/chart default)",
+     tooltip="Example: America/New_York, Etc/UTC, Europe/London")
+show24h       = input.bool(true, "Use 24-hour format")
+showDate      = input.bool(true, "Show date")
+showSeconds   = input.bool(true, "Show seconds")
+showCountdown = input.bool(true, "Show countdown to next bar")
+
+colLive       = input.color(color.new(color.green, 0), "Live color")
+colReplay     = input.color(color.new(color.orange, 0), "Replay color")
+colHist       = input.color(color.new(color.gray, 0), "Historical color")
+txtColor      = input.color(color.white, "Text color")
+
+// ─── Position mapping ────────────────────────────────────
+tablePos = posInput == "Top Left" ? position.top_left :
+     posInput == "Top Right" ? position.top_right :
+     posInput == "Bottom Left" ? position.bottom_left : position.bottom_right
+
+// ─── Replay / live detection ─────────────────────────────
+isReplay = barstate.isrealtime and time_close <= timenow
+isLive   = barstate.isrealtime and time_close  > timenow
+
+// ─── Build the time string ───────────────────────────────
+tz = tzInput == "" ? syminfo.timezone : tzInput
+
+fmt = (showDate ? "yyyy-MM-dd " : "") +
+      (show24h ? "HH:mm" : "hh:mm") +
+      (showSeconds ? ":ss" : "") +
+      (show24h ? "" : " a")
+
+refTime = isReplay ? time_close : isLive ? timenow : time_close
+timeStr = str.format_time(refTime, fmt, tz)
+
+label_ = isReplay ? "REPLAY" : isLive ? "LIVE" : "CHART"
+bgCol  = isReplay ? colReplay : isLive ? colLive : colHist
+
+// ─── Countdown to next bar ────────────────────────────────
+var float replayBarStartWall = na
+var float replayAvgDuration  = na
+
+if isReplay and barstate.isnew
+    replayBarStartWall := timenow
+
+if isReplay and barstate.isconfirmed and not na(replayBarStartWall)
+    float dur = timenow - replayBarStartWall
+    replayAvgDuration := na(replayAvgDuration) ? dur : replayAvgDuration * 0.7 + dur * 0.3
+
+pad2(n) => n < 10 ? "0" + str.tostring(n) : str.tostring(n)
+
+f_fmtDuration(ms) =>
+    totalSec = int(math.max(ms, 0) / 1000)
+    h = totalSec / 3600
+    m = (totalSec % 3600) / 60
+    s = totalSec % 60
+    h > 0 ? pad2(h) + ":" + pad2(m) + ":" + pad2(s) : pad2(m) + ":" + pad2(s)
+
+countdownStr = isLive ? f_fmtDuration(time_close - timenow) :
+     isReplay ? (na(replayAvgDuration) ? "calibrating…" :
+          f_fmtDuration(math.max(replayAvgDuration - (timenow - replayBarStartWall), 0)) + " (est.)") :
+     "n/a"
+
+// ─── Draw table ───────────────────────────────────────────
+rows = showCountdown ? 3 : 2
+var table clock = table.new(tablePos, 1, rows, border_width=1)
+
+if barstate.islast
+    table.cell(clock, 0, 0, label_, bgcolor=bgCol, text_color=txtColor,
+         text_size=size.small)
+    table.cell(clock, 0, 1, timeStr, bgcolor=color.new(color.black, 20),
+         text_color=txtColor, text_size=size.normal)
+    if showCountdown
+        table.cell(clock, 0, 2, "Next bar: " + countdownStr,
+             bgcolor=color.new(color.black, 40), text_color=txtColor,
+             text_size=size.small)

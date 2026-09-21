@@ -1,0 +1,458 @@
+//@version=6
+indicator("Multi-Timeframe FVG [Custom]", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// =====================================================================================
+// HELPERS
+// =====================================================================================
+f_style(s) =>
+    s == "Dashed" ? line.style_dashed : s == "Dotted" ? line.style_dotted : line.style_solid
+
+f_size(s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.small : s == "Large" ? size.large : size.normal
+
+type FVGData
+    box   b
+    line  mid
+    label lbl
+    float top
+    float bottom
+    bool  isBull
+    bool  mitigated
+    int   createdIndex
+
+// =====================================================================================
+// LABEL SIZE - shared across all 4 timeframes
+// =====================================================================================
+labelSizeGlobal   = input.string("Small", "Label Size (all timeframes)", options = ["Tiny", "Small", "Normal", "Large"], group = "Label Settings")
+labelOffsetBars   = input.int(20, "Right-aligned Label Offset (chart bars ahead of price, extend mode only)", minval = 0, group = "Label Settings", tooltip = "When a box is set to extend and its label is right-aligned, the label floats this many bars of the CHART's own timeframe ahead of the latest price, instead of sitting glued to the box's moving right edge.")
+
+// =====================================================================================
+// TIMEFRAME 1
+// =====================================================================================
+tf1_enable   = input.bool(true, "Enable", group = "Timeframe 1")
+tf1          = input.timeframe("1", "Timeframe", group = "Timeframe 1")
+tf1_allowLow = input.bool(true, "Show when chart TF is higher than this TF", group = "Timeframe 1", tooltip = "If off, this timeframe's FVGs are hidden once the chart's timeframe is larger than this one (e.g. hide a 1min FVG on an H1 chart).")
+
+tf1_bullBg     = input.color(color.new(color.teal, 85), "Fill", group = "Timeframe 1 · Bullish", inline = "b1")
+tf1_bullBorder = input.color(color.teal, "Border", group = "Timeframe 1 · Bullish", inline = "b1")
+tf1_bullWidth  = input.int(1, "Width", minval = 1, maxval = 5, group = "Timeframe 1 · Bullish", inline = "b1w")
+tf1_bullStyleS = input.string("Solid", "Style", options = ["Solid", "Dashed", "Dotted"], group = "Timeframe 1 · Bullish", inline = "b1w")
+
+tf1_bearBg     = input.color(color.new(color.red, 85), "Fill", group = "Timeframe 1 · Bearish", inline = "r1")
+tf1_bearBorder = input.color(color.red, "Border", group = "Timeframe 1 · Bearish", inline = "r1")
+tf1_bearWidth  = input.int(1, "Width", minval = 1, maxval = 5, group = "Timeframe 1 · Bearish", inline = "r1w")
+tf1_bearStyleS = input.string("Solid", "Style", options = ["Solid", "Dashed", "Dotted"], group = "Timeframe 1 · Bearish", inline = "r1w")
+
+tf1_showMid  = input.bool(false, "Show Midline", group = "Timeframe 1 · Midline", tooltip = "Midline colour and thickness always match this FVG's border colour and width.")
+tf1_midStyleS= input.string("Dashed", "Style", options = ["Solid", "Dashed", "Dotted"], group = "Timeframe 1 · Midline")
+
+tf1_extend     = input.bool(false, "Extend Boxes to Latest Bar", group = "Timeframe 1 · Box")
+tf1_boxWidth   = input.int(20, "Box Width (native bars, used when not extending)", minval = 1, group = "Timeframe 1 · Box")
+tf1_lookback   = input.int(300, "Lookback (bars of this timeframe)", minval = 1, group = "Timeframe 1 · Box", tooltip = "FVGs older than this many bars of Timeframe 1 are removed automatically.")
+tf1_maxKeep    = input.int(20, "Max FVGs Displayed", minval = 1, maxval = 100, group = "Timeframe 1 · Box")
+tf1_deleteOnMit= input.bool(true, "Remove When Mitigated", group = "Timeframe 1 · Box", tooltip = "A FVG is mitigated only when a candle of ITS OWN timeframe closes fully across the far boundary of the gap in the opposite direction.")
+
+tf1_showLabel  = input.bool(true, "Show Label", group = "Timeframe 1 · Label", tooltip = "Label colour always matches this FVG's border colour. Size is set once for all timeframes above.")
+tf1_labelText  = input.string("FVG {tf}", "Text (use {tf} for timeframe)", group = "Timeframe 1 · Label")
+tf1_labelPosS  = input.string("Midline", "Vertical Position", options = ["Midline", "Top", "Bottom"], group = "Timeframe 1 · Label")
+tf1_labelAlignS= input.string("Right", "Horizontal Position", options = ["Left", "Right"], group = "Timeframe 1 · Label")
+
+// =====================================================================================
+// TIMEFRAME 2
+// =====================================================================================
+tf2_enable   = input.bool(true, "Enable", group = "Timeframe 2")
+tf2          = input.timeframe("5", "Timeframe", group = "Timeframe 2")
+tf2_allowLow = input.bool(true, "Show when chart TF is higher than this TF", group = "Timeframe 2")
+
+tf2_bullBg     = input.color(color.new(color.lime, 85), "Fill", group = "Timeframe 2 · Bullish", inline = "b2")
+tf2_bullBorder = input.color(color.lime, "Border", group = "Timeframe 2 · Bullish", inline = "b2")
+tf2_bullWidth  = input.int(1, "Width", minval = 1, maxval = 5, group = "Timeframe 2 · Bullish", inline = "b2w")
+tf2_bullStyleS = input.string("Solid", "Style", options = ["Solid", "Dashed", "Dotted"], group = "Timeframe 2 · Bullish", inline = "b2w")
+
+tf2_bearBg     = input.color(color.new(color.orange, 85), "Fill", group = "Timeframe 2 · Bearish", inline = "r2")
+tf2_bearBorder = input.color(color.orange, "Border", group = "Timeframe 2 · Bearish", inline = "r2")
+tf2_bearWidth  = input.int(1, "Width", minval = 1, maxval = 5, group = "Timeframe 2 · Bearish", inline = "r2w")
+tf2_bearStyleS = input.string("Solid", "Style", options = ["Solid", "Dashed", "Dotted"], group = "Timeframe 2 · Bearish", inline = "r2w")
+
+tf2_showMid  = input.bool(false, "Show Midline", group = "Timeframe 2 · Midline", tooltip = "Midline colour and thickness always match this FVG's border colour and width.")
+tf2_midStyleS= input.string("Dashed", "Style", options = ["Solid", "Dashed", "Dotted"], group = "Timeframe 2 · Midline")
+
+tf2_extend     = input.bool(false, "Extend Boxes to Latest Bar", group = "Timeframe 2 · Box")
+tf2_boxWidth   = input.int(20, "Box Width (native bars, used when not extending)", minval = 1, group = "Timeframe 2 · Box")
+tf2_lookback   = input.int(300, "Lookback (bars of this timeframe)", minval = 1, group = "Timeframe 2 · Box", tooltip = "FVGs older than this many bars of Timeframe 2 are removed automatically.")
+tf2_maxKeep    = input.int(20, "Max FVGs Displayed", minval = 1, maxval = 100, group = "Timeframe 2 · Box")
+tf2_deleteOnMit= input.bool(true, "Remove When Mitigated", group = "Timeframe 2 · Box", tooltip = "A FVG is mitigated only when a candle of ITS OWN timeframe closes fully across the far boundary of the gap in the opposite direction.")
+
+tf2_showLabel  = input.bool(true, "Show Label", group = "Timeframe 2 · Label", tooltip = "Label colour always matches this FVG's border colour. Size is set once for all timeframes above.")
+tf2_labelText  = input.string("FVG {tf}", "Text (use {tf} for timeframe)", group = "Timeframe 2 · Label")
+tf2_labelPosS  = input.string("Midline", "Vertical Position", options = ["Midline", "Top", "Bottom"], group = "Timeframe 2 · Label")
+tf2_labelAlignS= input.string("Right", "Horizontal Position", options = ["Left", "Right"], group = "Timeframe 2 · Label")
+
+// =====================================================================================
+// TIMEFRAME 3
+// =====================================================================================
+tf3_enable   = input.bool(false, "Enable", group = "Timeframe 3")
+tf3          = input.timeframe("15", "Timeframe", group = "Timeframe 3")
+tf3_allowLow = input.bool(true, "Show when chart TF is higher than this TF", group = "Timeframe 3")
+
+tf3_bullBg     = input.color(color.new(color.blue, 85), "Fill", group = "Timeframe 3 · Bullish", inline = "b3")
+tf3_bullBorder = input.color(color.blue, "Border", group = "Timeframe 3 · Bullish", inline = "b3")
+tf3_bullWidth  = input.int(1, "Width", minval = 1, maxval = 5, group = "Timeframe 3 · Bullish", inline = "b3w")
+tf3_bullStyleS = input.string("Solid", "Style", options = ["Solid", "Dashed", "Dotted"], group = "Timeframe 3 · Bullish", inline = "b3w")
+
+tf3_bearBg     = input.color(color.new(color.maroon, 85), "Fill", group = "Timeframe 3 · Bearish", inline = "r3")
+tf3_bearBorder = input.color(color.maroon, "Border", group = "Timeframe 3 · Bearish", inline = "r3")
+tf3_bearWidth  = input.int(1, "Width", minval = 1, maxval = 5, group = "Timeframe 3 · Bearish", inline = "r3w")
+tf3_bearStyleS = input.string("Solid", "Style", options = ["Solid", "Dashed", "Dotted"], group = "Timeframe 3 · Bearish", inline = "r3w")
+
+tf3_showMid  = input.bool(false, "Show Midline", group = "Timeframe 3 · Midline", tooltip = "Midline colour and thickness always match this FVG's border colour and width.")
+tf3_midStyleS= input.string("Dashed", "Style", options = ["Solid", "Dashed", "Dotted"], group = "Timeframe 3 · Midline")
+
+tf3_extend     = input.bool(false, "Extend Boxes to Latest Bar", group = "Timeframe 3 · Box")
+tf3_boxWidth   = input.int(20, "Box Width (native bars, used when not extending)", minval = 1, group = "Timeframe 3 · Box")
+tf3_lookback   = input.int(300, "Lookback (bars of this timeframe)", minval = 1, group = "Timeframe 3 · Box", tooltip = "FVGs older than this many bars of Timeframe 3 are removed automatically.")
+tf3_maxKeep    = input.int(20, "Max FVGs Displayed", minval = 1, maxval = 100, group = "Timeframe 3 · Box")
+tf3_deleteOnMit= input.bool(true, "Remove When Mitigated", group = "Timeframe 3 · Box", tooltip = "A FVG is mitigated only when a candle of ITS OWN timeframe closes fully across the far boundary of the gap in the opposite direction.")
+
+tf3_showLabel  = input.bool(true, "Show Label", group = "Timeframe 3 · Label", tooltip = "Label colour always matches this FVG's border colour. Size is set once for all timeframes above.")
+tf3_labelText  = input.string("FVG {tf}", "Text (use {tf} for timeframe)", group = "Timeframe 3 · Label")
+tf3_labelPosS  = input.string("Midline", "Vertical Position", options = ["Midline", "Top", "Bottom"], group = "Timeframe 3 · Label")
+tf3_labelAlignS= input.string("Right", "Horizontal Position", options = ["Left", "Right"], group = "Timeframe 3 · Label")
+
+// =====================================================================================
+// TIMEFRAME 4
+// =====================================================================================
+tf4_enable   = input.bool(false, "Enable", group = "Timeframe 4")
+tf4          = input.timeframe("60", "Timeframe", group = "Timeframe 4")
+tf4_allowLow = input.bool(true, "Show when chart TF is higher than this TF", group = "Timeframe 4")
+
+tf4_bullBg     = input.color(color.new(color.purple, 85), "Fill", group = "Timeframe 4 · Bullish", inline = "b4")
+tf4_bullBorder = input.color(color.purple, "Border", group = "Timeframe 4 · Bullish", inline = "b4")
+tf4_bullWidth  = input.int(1, "Width", minval = 1, maxval = 5, group = "Timeframe 4 · Bullish", inline = "b4w")
+tf4_bullStyleS = input.string("Solid", "Style", options = ["Solid", "Dashed", "Dotted"], group = "Timeframe 4 · Bullish", inline = "b4w")
+
+tf4_bearBg     = input.color(color.new(color.fuchsia, 85), "Fill", group = "Timeframe 4 · Bearish", inline = "r4")
+tf4_bearBorder = input.color(color.fuchsia, "Border", group = "Timeframe 4 · Bearish", inline = "r4")
+tf4_bearWidth  = input.int(1, "Width", minval = 1, maxval = 5, group = "Timeframe 4 · Bearish", inline = "r4w")
+tf4_bearStyleS = input.string("Solid", "Style", options = ["Solid", "Dashed", "Dotted"], group = "Timeframe 4 · Bearish", inline = "r4w")
+
+tf4_showMid  = input.bool(false, "Show Midline", group = "Timeframe 4 · Midline", tooltip = "Midline colour and thickness always match this FVG's border colour and width.")
+tf4_midStyleS= input.string("Dashed", "Style", options = ["Solid", "Dashed", "Dotted"], group = "Timeframe 4 · Midline")
+
+tf4_extend     = input.bool(false, "Extend Boxes to Latest Bar", group = "Timeframe 4 · Box")
+tf4_boxWidth   = input.int(20, "Box Width (native bars, used when not extending)", minval = 1, group = "Timeframe 4 · Box")
+tf4_lookback   = input.int(300, "Lookback (bars of this timeframe)", minval = 1, group = "Timeframe 4 · Box", tooltip = "FVGs older than this many bars of Timeframe 4 are removed automatically.")
+tf4_maxKeep    = input.int(20, "Max FVGs Displayed", minval = 1, maxval = 100, group = "Timeframe 4 · Box")
+tf4_deleteOnMit= input.bool(true, "Remove When Mitigated", group = "Timeframe 4 · Box", tooltip = "A FVG is mitigated only when a candle of ITS OWN timeframe closes fully across the far boundary of the gap in the opposite direction.")
+
+tf4_showLabel  = input.bool(true, "Show Label", group = "Timeframe 4 · Label", tooltip = "Label colour always matches this FVG's border colour. Size is set once for all timeframes above.")
+tf4_labelText  = input.string("FVG {tf}", "Text (use {tf} for timeframe)", group = "Timeframe 4 · Label")
+tf4_labelPosS  = input.string("Midline", "Vertical Position", options = ["Midline", "Top", "Bottom"], group = "Timeframe 4 · Label")
+tf4_labelAlignS= input.string("Right", "Horizontal Position", options = ["Left", "Right"], group = "Timeframe 4 · Label")
+
+// =====================================================================================
+// DATA FETCH
+// Regular path (tf >= chart tf): offsets [3]/[1] so only fully-CLOSED candles are ever
+// used - nothing is evaluated on the still-forming bar, so no repainting.
+// Lower-tf path (tf < chart tf): request.security_lower_tf pulls every closed intrabar
+// candle inside the current chart bar, so e.g. 1min gaps aren't skipped on a 5min chart.
+// Both paths also carry the closed candle's close, used for the mitigation rule: a FVG
+// is only deleted when a candle of ITS OWN timeframe closes fully across the far
+// boundary of the gap, in the opposite direction to the FVG.
+// =====================================================================================
+isLower1 = timeframe.in_seconds(tf1) < timeframe.in_seconds(timeframe.period)
+isLower2 = timeframe.in_seconds(tf2) < timeframe.in_seconds(timeframe.period)
+isLower3 = timeframe.in_seconds(tf3) < timeframe.in_seconds(timeframe.period)
+isLower4 = timeframe.in_seconds(tf4) < timeframe.in_seconds(timeframe.period)
+
+[h3_1, l3_1, h1_1, l1_1, c1_1, t3_1, t1_1] = request.security(syminfo.tickerid, tf1, [high[3], low[3], high[1], low[1], close[1], time[3], time[1]], lookahead = barmerge.lookahead_off)
+[h3_2, l3_2, h1_2, l1_2, c1_2, t3_2, t1_2] = request.security(syminfo.tickerid, tf2, [high[3], low[3], high[1], low[1], close[1], time[3], time[1]], lookahead = barmerge.lookahead_off)
+[h3_3, l3_3, h1_3, l1_3, c1_3, t3_3, t1_3] = request.security(syminfo.tickerid, tf3, [high[3], low[3], high[1], low[1], close[1], time[3], time[1]], lookahead = barmerge.lookahead_off)
+[h3_4, l3_4, h1_4, l1_4, c1_4, t3_4, t1_4] = request.security(syminfo.tickerid, tf4, [high[3], low[3], high[1], low[1], close[1], time[3], time[1]], lookahead = barmerge.lookahead_off)
+
+// request.security_lower_tf() throws a runtime error if its timeframe is not strictly
+// lower-resolution than the chart's own timeframe, so it must only ever be called when
+// isLowerN is true - never unconditionally.
+var array<float> arrH1 = array.new<float>()
+var array<float> arrL1 = array.new<float>()
+var array<float> arrC1 = array.new<float>()
+var array<int>   arrT1 = array.new<int>()
+if isLower1
+    arrH1 := request.security_lower_tf(syminfo.tickerid, tf1, high)
+    arrL1 := request.security_lower_tf(syminfo.tickerid, tf1, low)
+    arrC1 := request.security_lower_tf(syminfo.tickerid, tf1, close)
+    arrT1 := request.security_lower_tf(syminfo.tickerid, tf1, time)
+
+var array<float> arrH2 = array.new<float>()
+var array<float> arrL2 = array.new<float>()
+var array<float> arrC2 = array.new<float>()
+var array<int>   arrT2 = array.new<int>()
+if isLower2
+    arrH2 := request.security_lower_tf(syminfo.tickerid, tf2, high)
+    arrL2 := request.security_lower_tf(syminfo.tickerid, tf2, low)
+    arrC2 := request.security_lower_tf(syminfo.tickerid, tf2, close)
+    arrT2 := request.security_lower_tf(syminfo.tickerid, tf2, time)
+
+var array<float> arrH3 = array.new<float>()
+var array<float> arrL3 = array.new<float>()
+var array<float> arrC3 = array.new<float>()
+var array<int>   arrT3 = array.new<int>()
+if isLower3
+    arrH3 := request.security_lower_tf(syminfo.tickerid, tf3, high)
+    arrL3 := request.security_lower_tf(syminfo.tickerid, tf3, low)
+    arrC3 := request.security_lower_tf(syminfo.tickerid, tf3, close)
+    arrT3 := request.security_lower_tf(syminfo.tickerid, tf3, time)
+
+var array<float> arrH4 = array.new<float>()
+var array<float> arrL4 = array.new<float>()
+var array<float> arrC4 = array.new<float>()
+var array<int>   arrT4 = array.new<int>()
+if isLower4
+    arrH4 := request.security_lower_tf(syminfo.tickerid, tf4, high)
+    arrL4 := request.security_lower_tf(syminfo.tickerid, tf4, low)
+    arrC4 := request.security_lower_tf(syminfo.tickerid, tf4, close)
+    arrT4 := request.security_lower_tf(syminfo.tickerid, tf4, time)
+
+var array<FVGData> tf1Arr = array.new<FVGData>()
+var array<FVGData> tf2Arr = array.new<FVGData>()
+var array<FVGData> tf3Arr = array.new<FVGData>()
+var array<FVGData> tf4Arr = array.new<FVGData>()
+
+// =====================================================================================
+// DRAWING HELPER (shared by both fetch paths)
+// Midline and label colour/width always inherit from this FVG's own border colour and
+// width - there is no separate colour/thickness input for them.
+// =====================================================================================
+f_createFVG(tf, top, bottom, leftTime, baseTime, bull, createdIndex,
+     bullBg, bullBorder, bullWidth, bullStyleS,
+     bearBg, bearBorder, bearWidth, bearStyleS,
+     showMid, midStyleS,
+     extend, boxWidthBars, maxKeep,
+     showLabel, labelText, labelPosS, labelAlignS, labelSize,
+     array<FVGData> arr) =>
+
+    barSec = timeframe.in_seconds(tf)
+    rightT = extend ? time : baseTime + barSec * 1000 * boxWidthBars
+
+    bcol = bull ? bullBg : bearBg
+    brd  = bull ? bullBorder : bearBorder
+    bw   = bull ? bullWidth : bearWidth
+    bst  = f_style(bull ? bullStyleS : bearStyleS)
+
+    newBox = box.new(left = leftTime, top = top, right = rightT, bottom = bottom,
+                      xloc = xloc.bar_time, bgcolor = bcol,
+                      border_color = brd, border_width = bw, border_style = bst,
+                      extend = extend ? extend.right : extend.none)
+
+    line newMid = na
+    if showMid
+        midY = (top + bottom) / 2
+        newMid := line.new(x1 = leftTime, y1 = midY, x2 = rightT, y2 = midY,
+                            xloc = xloc.bar_time, color = brd,
+                            width = bw, style = f_style(midStyleS),
+                            extend = extend ? extend.right : extend.none)
+
+    label newLbl = na
+    if showLabel
+        lblY = labelPosS == "Top" ? top : labelPosS == "Bottom" ? bottom : (top + bottom) / 2
+        lblX = labelAlignS == "Left" ? leftTime : rightT
+        lblStyle = labelAlignS == "Left" ? label.style_label_left : label.style_label_right
+        txt = str.replace_all(labelText, "{tf}", tf)
+        newLbl := label.new(x = lblX, y = lblY, text = txt, xloc = xloc.bar_time,
+                             yloc = yloc.price, color = color.new(color.black, 100), textcolor = brd,
+                             style = lblStyle, size = f_size(labelSize))
+
+    fvg = FVGData.new(b = newBox, mid = newMid, lbl = newLbl, top = top, bottom = bottom, isBull = bull, mitigated = false, createdIndex = createdIndex)
+    array.push(arr, fvg)
+
+    if array.size(arr) > maxKeep
+        old = array.shift(arr)
+        box.delete(old.b)
+        if not na(old.mid)
+            line.delete(old.mid)
+        if not na(old.lbl)
+            label.delete(old.lbl)
+
+f_pushAndCheck(hVal, lVal, tVal, array<float> trailH, array<float> trailL, array<int> trailT) =>
+    array.push(trailH, hVal)
+    array.push(trailL, lVal)
+    array.push(trailT, tVal)
+    n = array.size(trailH)
+    bull = false
+    bear = false
+    float top = na
+    float bottom = na
+    int leftTime = na
+    if n >= 3
+        hCur = array.get(trailH, n - 1)
+        lCur = array.get(trailL, n - 1)
+        hOld = array.get(trailH, n - 3)
+        lOld = array.get(trailL, n - 3)
+        tOld = array.get(trailT, n - 3)
+        bull := lCur > hOld
+        bear := hCur < lOld
+        if bull
+            top := lCur
+            bottom := hOld
+            leftTime := tOld
+        if bear
+            top := lOld
+            bottom := hCur
+            leftTime := tOld
+    if n > 10
+        array.shift(trailH)
+        array.shift(trailL)
+        array.shift(trailT)
+    [bull, bear, top, bottom, leftTime]
+
+// Deletes/marks an FVG as mitigated ONLY when closeVal (a close of a candle on the
+// FVG's OWN timeframe) has closed fully across the far boundary, opposite direction.
+f_checkMitigation(closeVal, deleteOnMit, array<FVGData> arr) =>
+    if array.size(arr) > 0
+        for i = array.size(arr) - 1 to 0
+            fvg = array.get(arr, i)
+            if not fvg.mitigated
+                isMit = fvg.isBull ? closeVal < fvg.bottom : closeVal > fvg.top
+                if isMit
+                    fvg.mitigated := true
+                    if deleteOnMit
+                        box.delete(fvg.b)
+                        if not na(fvg.mid)
+                            line.delete(fvg.mid)
+                        if not na(fvg.lbl)
+                            label.delete(fvg.lbl)
+                        array.remove(arr, i)
+
+// Removes any FVG older than lookbackBars (measured in native bars of its own
+// timeframe), regardless of mitigation status.
+f_pruneOld(nativeBarIndex, lookbackBars, array<FVGData> arr) =>
+    if array.size(arr) > 0
+        for i = array.size(arr) - 1 to 0
+            fvg = array.get(arr, i)
+            if (nativeBarIndex - fvg.createdIndex) > lookbackBars
+                box.delete(fvg.b)
+                if not na(fvg.mid)
+                    line.delete(fvg.mid)
+                if not na(fvg.lbl)
+                    label.delete(fvg.lbl)
+                array.remove(arr, i)
+
+// =====================================================================================
+// CORE PROCESSOR
+// =====================================================================================
+f_processTF(tf, enable, allowLowerOnHigher, isLower,
+     h3, l3, h1, l1, c1, t3, t1,
+     array<float> arrH, array<float> arrL, array<float> arrC, array<int> arrT,
+     bullBg, bullBorder, bullWidth, bullStyleS,
+     bearBg, bearBorder, bearWidth, bearStyleS,
+     showMid, midStyleS,
+     extend, boxWidthBars, lookbackBars, maxKeep, deleteOnMit,
+     showLabel, labelText, labelPosS, labelAlignS, labelSize, labelOffsetBars,
+     array<FVGData> arr) =>
+
+    var array<float> trailH = array.new<float>()
+    var array<float> trailL = array.new<float>()
+    var array<int> trailT = array.new<int>()
+    var int lastPushedTime = na
+    var int lastRegularT = na
+    var int nativeBarIndex = 0
+
+    skip = not allowLowerOnHigher and isLower
+
+    if enable and not skip
+        if isLower
+            if array.size(arrH) > 0
+                for j = 0 to array.size(arrH) - 1
+                    tv = array.get(arrT, j)
+                    if na(lastPushedTime) or tv > lastPushedTime
+                        lastPushedTime := tv
+                        nativeBarIndex += 1
+                        hv = array.get(arrH, j)
+                        lv = array.get(arrL, j)
+                        cv = array.get(arrC, j)
+                        [bull, bear, top, bottom, leftT] = f_pushAndCheck(hv, lv, tv, trailH, trailL, trailT)
+                        if bull or bear
+                            f_createFVG(tf, top, bottom, leftT, tv, bull, nativeBarIndex,
+                                 bullBg, bullBorder, bullWidth, bullStyleS,
+                                 bearBg, bearBorder, bearWidth, bearStyleS,
+                                 showMid, midStyleS,
+                                 extend, boxWidthBars, maxKeep,
+                                 showLabel, labelText, labelPosS, labelAlignS, labelSize,
+                                 arr)
+                        f_checkMitigation(cv, deleteOnMit, arr)
+                        f_pruneOld(nativeBarIndex, lookbackBars, arr)
+        else
+            isNewBar = na(lastRegularT) or t1 != lastRegularT
+            if isNewBar
+                lastRegularT := t1
+                if not na(h3) and not na(t3)
+                    nativeBarIndex += 1
+                    bull = l1 > h3
+                    bear = h1 < l3
+                    if bull or bear
+                        top = bull ? l1 : l3
+                        bottom = bull ? h3 : h1
+                        f_createFVG(tf, top, bottom, t3, t1, bull, nativeBarIndex,
+                             bullBg, bullBorder, bullWidth, bullStyleS,
+                             bearBg, bearBorder, bearWidth, bearStyleS,
+                             showMid, midStyleS,
+                             extend, boxWidthBars, maxKeep,
+                             showLabel, labelText, labelPosS, labelAlignS, labelSize,
+                             arr)
+                    if not na(c1)
+                        f_checkMitigation(c1, deleteOnMit, arr)
+                    f_pruneOld(nativeBarIndex, lookbackBars, arr)
+
+    // Every bar (independent of native-tf candle closes): extend still-active boxes.
+    // The box/midline right edge tracks the latest bar; a right-aligned label instead
+    // floats a fixed number of CHART bars ahead of price, so it never gets trapped
+    // inside the box's original width and never overlaps live price action.
+    labelAnchorTime = time + labelOffsetBars * timeframe.in_seconds(timeframe.period) * 1000
+    if array.size(arr) > 0
+        for i = array.size(arr) - 1 to 0
+            fvg = array.get(arr, i)
+            if not fvg.mitigated and extend
+                box.set_right(fvg.b, time)
+                if not na(fvg.mid)
+                    line.set_x2(fvg.mid, time)
+                if not na(fvg.lbl) and labelAlignS == "Right"
+                    label.set_x(fvg.lbl, labelAnchorTime)
+
+// =====================================================================================
+// RUN
+// =====================================================================================
+f_processTF(tf1, tf1_enable, tf1_allowLow, isLower1,
+     h3_1, l3_1, h1_1, l1_1, c1_1, t3_1, t1_1, arrH1, arrL1, arrC1, arrT1,
+     tf1_bullBg, tf1_bullBorder, tf1_bullWidth, tf1_bullStyleS,
+     tf1_bearBg, tf1_bearBorder, tf1_bearWidth, tf1_bearStyleS,
+     tf1_showMid, tf1_midStyleS,
+     tf1_extend, tf1_boxWidth, tf1_lookback, tf1_maxKeep, tf1_deleteOnMit,
+     tf1_showLabel, tf1_labelText, tf1_labelPosS, tf1_labelAlignS, labelSizeGlobal, labelOffsetBars,
+     tf1Arr)
+
+f_processTF(tf2, tf2_enable, tf2_allowLow, isLower2,
+     h3_2, l3_2, h1_2, l1_2, c1_2, t3_2, t1_2, arrH2, arrL2, arrC2, arrT2,
+     tf2_bullBg, tf2_bullBorder, tf2_bullWidth, tf2_bullStyleS,
+     tf2_bearBg, tf2_bearBorder, tf2_bearWidth, tf2_bearStyleS,
+     tf2_showMid, tf2_midStyleS,
+     tf2_extend, tf2_boxWidth, tf2_lookback, tf2_maxKeep, tf2_deleteOnMit,
+     tf2_showLabel, tf2_labelText, tf2_labelPosS, tf2_labelAlignS, labelSizeGlobal, labelOffsetBars,
+     tf2Arr)
+
+f_processTF(tf3, tf3_enable, tf3_allowLow, isLower3,
+     h3_3, l3_3, h1_3, l1_3, c1_3, t3_3, t1_3, arrH3, arrL3, arrC3, arrT3,
+     tf3_bullBg, tf3_bullBorder, tf3_bullWidth, tf3_bullStyleS,
+     tf3_bearBg, tf3_bearBorder, tf3_bearWidth, tf3_bearStyleS,
+     tf3_showMid, tf3_midStyleS,
+     tf3_extend, tf3_boxWidth, tf3_lookback, tf3_maxKeep, tf3_deleteOnMit,
+     tf3_showLabel, tf3_labelText, tf3_labelPosS, tf3_labelAlignS, labelSizeGlobal, labelOffsetBars,
+     tf3Arr)
+
+f_processTF(tf4, tf4_enable, tf4_allowLow, isLower4,
+     h3_4, l3_4, h1_4, l1_4, c1_4, t3_4, t1_4, arrH4, arrL4, arrC4, arrT4,
+     tf4_bullBg, tf4_bullBorder, tf4_bullWidth, tf4_bullStyleS,
+     tf4_bearBg, tf4_bearBorder, tf4_bearWidth, tf4_bearStyleS,
+     tf4_showMid, tf4_midStyleS,
+     tf4_extend, tf4_boxWidth, tf4_lookback, tf4_maxKeep, tf4_deleteOnMit,
+     tf4_showLabel, tf4_labelText, tf4_labelPosS, tf4_labelAlignS, labelSizeGlobal, labelOffsetBars,
+     tf4Arr)

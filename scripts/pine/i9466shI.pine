@@ -1,0 +1,2081 @@
+//@version=6
+indicator("2x FVG + BOS/CHoCH + EMA + RSI Gradient + PVSRA", shorttitle="FVG Structure EMA RSI PVSRA", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500, calc_bars_count=6000)
+
+const string GROUP_FVG   = "FVG SETTINGS"
+const string GROUP_MS    = "MARKET STRUCTURE SETTINGS"
+const string GROUP_EMA   = "EMA SETTINGS"
+const string GROUP_RSI   = "RSI CANDLE GRADIENT"
+const string GROUP_PVSR  = "PVSRA / VECTOR CANDLES"
+const string GROUP_FOOTPRINT = "PVSRA FOOTPRINT / BUY-SELL DOMINANCE"
+const string GROUP_ALERT = "ALERT SETTINGS"
+const string GROUP_DEBUG = "DEBUG"
+
+bool enableFvg = input.bool(true, "Enable FVG", group=GROUP_FVG)
+bool showFvg = input.bool(true, "Show FVG", group=GROUP_FVG)
+
+string fvgVisibility = input.string(
+     "Last N hours",
+     "FVG + 2x FVG Visibility",
+     options=["Last N hours", "All"],
+     group=GROUP_FVG)
+
+int recentFvgHours = input.int(
+     24,
+     "Recent FVG + 2x FVG hours",
+     minval=1,
+     maxval=168,
+     group=GROUP_FVG)
+
+int maxBarsBetweenFvg = input.int(
+     5,
+     "Max bars between FVG",
+     minval=1,
+     maxval=50,
+     group=GROUP_FVG)
+
+bool useMinFvgFilter = input.bool(
+     false,
+     "Minimum FVG size filter",
+     group=GROUP_FVG)
+
+float minFvgSize = input.float(
+     0.0,
+     "Minimum FVG size",
+     minval=0.0,
+     step=0.25,
+     group=GROUP_FVG)
+
+string minFvgUnit = input.string(
+     "Points",
+     "Minimum FVG unit",
+     options=["Points", "Ticks"],
+     group=GROUP_FVG)
+
+int maximumFvgZones = input.int(
+     350,
+     "Maximum FVG zones",
+     minval=1,
+     maxval=450,
+     group=GROUP_FVG)
+
+color bullishFvgColor = input.color(
+     color.rgb(65, 225, 165),
+     "Bullish FVG color",
+     group=GROUP_FVG)
+
+color bearishFvgColor = input.color(
+     color.rgb(255, 90, 105),
+     "Bearish FVG color",
+     group=GROUP_FVG)
+
+int fvgTransparency = input.int(
+     68,
+     "FVG transparency",
+     minval=0,
+     maxval=100,
+     group=GROUP_FVG)
+
+bool showTwoFvgMarkers = input.bool(
+     true,
+     "Show subtle 2x FVG markers",
+     group=GROUP_FVG)
+
+bool enableBos = input.bool(
+     true,
+     "Enable BOS",
+     group=GROUP_MS)
+
+bool enableChoch = input.bool(
+     true,
+     "Enable CHoCH",
+     group=GROUP_MS)
+
+int swingLength = input.int(
+     5,
+     "Swing Length",
+     minval=1,
+     maxval=50,
+     group=GROUP_MS)
+
+string breakConfirmation = input.string(
+     "Close",
+     "Structure Break Confirmation",
+     options=["Close", "Wick"],
+     group=GROUP_MS)
+
+string structureVisibility = input.string(
+     "Last N hours",
+     "BOS / CHoCH Visibility",
+     options=["Last N hours", "All"],
+     group=GROUP_MS)
+
+int recentStructureHours = input.int(
+     24,
+     "Recent BOS / CHoCH hours",
+     minval=1,
+     maxval=168,
+     group=GROUP_MS)
+
+int maximumStructureObjects = input.int(
+     350,
+     "Maximum BOS / CHoCH objects",
+     minval=20,
+     maxval=450,
+     group=GROUP_MS)
+
+bool showSwingHighLow = input.bool(
+     false,
+     "Show Swing High/Low",
+     group=GROUP_MS)
+
+bool showStructureLines = input.bool(
+     true,
+     "Show Structure Lines",
+     group=GROUP_MS)
+
+bool showBosLabels = input.bool(
+     true,
+     "Show BOS Labels",
+     group=GROUP_MS)
+
+bool showChochLabels = input.bool(
+     true,
+     "Show CHoCH Labels",
+     group=GROUP_MS)
+
+color bullishStructureColor = input.color(
+     color.rgb(0, 195, 105),
+     "Bullish BOS / CHoCH",
+     group=GROUP_MS)
+
+color bearishStructureColor = input.color(
+     color.rgb(245, 40, 55),
+     "Bearish BOS / CHoCH",
+     group=GROUP_MS)
+
+bool enableEma = input.bool(
+     true,
+     "Enable EMA",
+     group=GROUP_EMA)
+
+int fastEmaLength = input.int(
+     50,
+     "Fast EMA Length",
+     minval=1,
+     group=GROUP_EMA)
+
+int slowEmaLength = input.int(
+     200,
+     "Slow EMA Length",
+     minval=2,
+     group=GROUP_EMA)
+
+bool showEma = input.bool(
+     true,
+     "Show EMA",
+     group=GROUP_EMA)
+
+int emaLineWidth = input.int(
+     2,
+     "EMA Line Width",
+     minval=1,
+     maxval=5,
+     group=GROUP_EMA)
+
+color fastEmaColor = input.color(
+     color.rgb(255, 125, 0),
+     "Fast EMA Color",
+     group=GROUP_EMA)
+
+color slowEmaColor = input.color(
+     color.rgb(70, 85, 255),
+     "Slow EMA Color",
+     group=GROUP_EMA)
+
+bool enableRsiGradient = input.bool(
+     true,
+     "Enable RSI Candle Gradient",
+     group=GROUP_RSI)
+
+int rsiLength = input.int(
+     14,
+     "RSI Length",
+     minval=2,
+     maxval=100,
+     group=GROUP_RSI)
+
+float rsiOversold = input.float(
+     30.0,
+     "Oversold Level",
+     minval=1,
+     maxval=49,
+     step=1,
+     group=GROUP_RSI)
+
+float rsiOverbought = input.float(
+     70.0,
+     "Overbought Level",
+     minval=51,
+     maxval=99,
+     step=1,
+     group=GROUP_RSI)
+
+color rsiExtremeLowColor = input.color(
+     color.rgb(0, 255, 90),
+     "Extreme Low RSI",
+     group=GROUP_RSI)
+
+color rsiLowColor = input.color(
+     color.rgb(0, 200, 95),
+     "Low RSI",
+     group=GROUP_RSI)
+
+color rsiNeutralLowColor = input.color(
+     color.rgb(170, 215, 35),
+     "RSI 40-50",
+     group=GROUP_RSI)
+
+color rsiNeutralColor = input.color(
+     color.rgb(255, 195, 0),
+     "Neutral RSI 50",
+     group=GROUP_RSI)
+
+color rsiNeutralHighColor = input.color(
+     color.rgb(255, 115, 0),
+     "RSI 50-60",
+     group=GROUP_RSI)
+
+color rsiHighColor = input.color(
+     color.rgb(255, 45, 45),
+     "High RSI",
+     group=GROUP_RSI)
+
+color rsiExtremeHighColor = input.color(
+     color.rgb(125, 0, 25),
+     "Extreme High RSI",
+     group=GROUP_RSI)
+
+int rsiCandleTransparency = input.int(
+     0,
+     "RSI Candle Transparency",
+     minval=0,
+     maxval=80,
+     group=GROUP_RSI)
+
+bool enablePvsr = input.bool(
+     true,
+     "Enable PVSRA",
+     group=GROUP_PVSR)
+
+int pvsrVolumeLength = input.int(
+     10,
+     "PVSRA Lookback",
+     minval=2,
+     maxval=100,
+     tooltip="Leave at 10 to match the Trademania reference.",
+     group=GROUP_PVSR)
+
+float pvsrAboveAvgMultiplier = input.float(
+     1.5,
+     "150% Volume Threshold",
+     minval=1.0,
+     maxval=5.0,
+     step=0.1,
+     group=GROUP_PVSR)
+
+float pvsrClimaxMultiplier = input.float(
+     2.0,
+     "200% Volume Threshold",
+     minval=1.0,
+     maxval=10.0,
+     step=0.1,
+     group=GROUP_PVSR)
+
+bool pvsrUseVolumeSpreadClimax = input.bool(
+     true,
+     "Use Volume x Spread Climax",
+     group=GROUP_PVSR)
+
+bool pvsrOverrideSymbol = input.bool(
+     false,
+     "Override PVSRA Source Symbol",
+     tooltip="Use this only if the reference indicator is using another volume feed. Both indicators must use the same feed to match candle-for-candle.",
+     group=GROUP_PVSR)
+
+string pvsrOverrideTicker = input.symbol(
+     "CME_MINI:NQ1!",
+     "PVSRA Override Symbol",
+     group=GROUP_PVSR)
+
+color pvsrBullClimaxColor = input.color(
+     #69F0AE,
+     "200% Bull / Green",
+     group=GROUP_PVSR)
+
+color pvsrBearClimaxColor = input.color(
+     #FF5252,
+     "200% Bear / Red",
+     group=GROUP_PVSR)
+
+color pvsrBullAboveAvgColor = input.color(
+     #448AFF,
+     "150% Bull / Blue",
+     group=GROUP_PVSR)
+
+color pvsrBearAboveAvgColor = input.color(
+     #E040FB,
+     "150% Bear / Purple",
+     group=GROUP_PVSR)
+
+color pvsrRegularBullColor = input.color(
+     #999999,
+     "Regular Bull / Light Gray",
+     group=GROUP_PVSR)
+
+color pvsrRegularBearColor = input.color(
+     #4D4D4D,
+     "Regular Bear / Dark Gray",
+     group=GROUP_PVSR)
+
+int pvsrCandleTransparency = input.int(
+     0,
+     "PVSRA Candle Transparency",
+     minval=0,
+     maxval=80,
+     group=GROUP_PVSR)
+
+bool enableFootprintBubbles = input.bool(
+     true,
+     "Enable Footprint Bubbles",
+     group=GROUP_FOOTPRINT)
+
+bool footprintLimitHistoryToOneHour = input.bool(
+     true,
+     "Limit Footprint History to Last 1H",
+     group=GROUP_FOOTPRINT)
+
+string footprintBubbleVisibility = input.string(
+     "200% Climax only",
+     "Bubble Visibility",
+     options=["200% Climax only", "150% + 200%", "All candles"],
+     group=GROUP_FOOTPRINT)
+
+float footprintNeutralThreshold = input.float(
+     5.0,
+     "Neutral Threshold %",
+     minval=0.0,
+     maxval=100.0,
+     step=0.5,
+     group=GROUP_FOOTPRINT)
+
+int footprintTicksPerRow = input.int(
+     100,
+     "Ticks Per Footprint Row (100 recommended)",
+     minval=1,
+     maxval=1000,
+     group=GROUP_FOOTPRINT)
+
+bool footprintDynamicBubbleSize = input.bool(
+     true,
+     "Dynamic Bubble Size",
+     group=GROUP_FOOTPRINT)
+
+string footprintBubbleSize = input.string(
+     "Small",
+     "Bubble Size (Dynamic OFF)",
+     options=["Tiny", "Small", "Normal"],
+     group=GROUP_FOOTPRINT)
+
+bool footprintShowDeltaPct = input.bool(
+     true,
+     "Show Delta %",
+     group=GROUP_FOOTPRINT)
+
+bool footprintShowDetailedTooltip = input.bool(
+     true,
+     "Show Detailed Tooltip",
+     group=GROUP_FOOTPRINT)
+
+color footprintBuyBubbleColor = input.color(
+     #00C853,
+     "BUY Bubble Color",
+     group=GROUP_FOOTPRINT)
+
+color footprintSellBubbleColor = input.color(
+     #FF3D57,
+     "SELL Bubble Color",
+     group=GROUP_FOOTPRINT)
+
+color footprintNeutralBubbleColor = input.color(
+     #7A7A7A,
+     "Neutral Bubble Color",
+     group=GROUP_FOOTPRINT)
+
+int footprintBubbleTransparency = input.int(
+     10,
+     "Bubble Transparency",
+     minval=0,
+     maxval=90,
+     group=GROUP_FOOTPRINT)
+
+int maximumFootprintBubbles = input.int(
+     250,
+     "Maximum Footprint Bubbles",
+     minval=1,
+     maxval=450,
+     group=GROUP_FOOTPRINT)
+
+bool enableFvgAlerts = input.bool(true, "Enable FVG Alerts", group=GROUP_ALERT)
+bool enableStructureAlerts = input.bool(true, "Enable Structure Alerts", group=GROUP_ALERT)
+bool enableEmaAlerts = input.bool(true, "Enable EMA Alerts", group=GROUP_ALERT)
+bool enablePvsrAlerts = input.bool(true, "Enable PVSRA Green/Red Alerts", group=GROUP_ALERT)
+bool enableMasterAlert = input.bool(true, "Enable Master Alert", group=GROUP_ALERT)
+bool enableRepeatingAlerts = input.bool(true, "Enable Repeating Alert Engine", group=GROUP_ALERT)
+bool debugMode = input.bool(false, "Debug Mode", group=GROUP_DEBUG)
+
+int fvgWindowMs = recentFvgHours * 60 * 60 * 1000
+int structureWindowMs = recentStructureHours * 60 * 60 * 1000
+int footprintHistoryWindowMs = 60 * 60 * 1000
+
+int fvgCutoff = last_bar_time - fvgWindowMs
+int structureCutoff = last_bar_time - structureWindowMs
+int footprintHistoryCutoff = last_bar_time - footprintHistoryWindowMs
+
+float rsiValue = ta.rsi(close, rsiLength)
+color rsiCandleColor = na
+
+if rsiValue <= rsiOversold
+    rsiCandleColor := color.from_gradient(rsiValue, 0, rsiOversold, rsiExtremeLowColor, rsiLowColor)
+else if rsiValue < 40
+    rsiCandleColor := color.from_gradient(rsiValue, rsiOversold, 40, rsiLowColor, rsiNeutralLowColor)
+else if rsiValue < 50
+    rsiCandleColor := color.from_gradient(rsiValue, 40, 50, rsiNeutralLowColor, rsiNeutralColor)
+else if rsiValue < 60
+    rsiCandleColor := color.from_gradient(rsiValue, 50, 60, rsiNeutralColor, rsiNeutralHighColor)
+else if rsiValue < rsiOverbought
+    rsiCandleColor := color.from_gradient(rsiValue, 60, rsiOverbought, rsiNeutralHighColor, rsiHighColor)
+else
+    rsiCandleColor := color.from_gradient(rsiValue, rsiOverbought, 100, rsiHighColor, rsiExtremeHighColor)
+
+color finalRsiCandleColor = color.new(rsiCandleColor, rsiCandleTransparency)
+
+[pvsrVolume, pvsrHigh, pvsrLow, pvsrClose, pvsrOpen] =
+     request.security(
+         pvsrOverrideSymbol ? pvsrOverrideTicker : syminfo.tickerid,
+         "",
+         [volume, high, low, close, open],
+         barmerge.gaps_off,
+         barmerge.lookahead_off)
+
+float pvsrAvgVolume = ta.sma(pvsrVolume, pvsrVolumeLength)
+float pvsrSpread = pvsrHigh - pvsrLow
+float pvsrVolumeSpread = pvsrVolume * pvsrSpread
+float pvsrHighestVolumeSpread = ta.highest(pvsrVolumeSpread, pvsrVolumeLength)
+
+bool pvsrBullCandle = pvsrClose > pvsrOpen
+
+bool pvsrHasData =
+     not na(pvsrVolume) and
+     not na(pvsrAvgVolume) and
+     not na(pvsrHigh) and
+     not na(pvsrLow)
+
+bool pvsrClimaxByVolume =
+     pvsrHasData and
+     pvsrVolume >= pvsrAvgVolume * pvsrClimaxMultiplier
+
+bool pvsrClimaxBySpread =
+     pvsrUseVolumeSpreadClimax and
+     pvsrHasData and
+     not na(pvsrHighestVolumeSpread) and
+     pvsrVolumeSpread >= pvsrHighestVolumeSpread
+
+bool pvsrClimax = pvsrClimaxByVolume or pvsrClimaxBySpread
+
+bool pvsrAboveAverage =
+     pvsrHasData and
+     not pvsrClimax and
+     pvsrVolume >= pvsrAvgVolume * pvsrAboveAvgMultiplier
+
+const int FOOTPRINT_REQUEST_BARS = 120
+
+f_footprintStats() =>
+    footprint fp = request.footprint(footprintTicksPerRow)
+    bool hasFp = not na(fp)
+    float totalVol = hasFp ? footprint.total_volume(fp) : na
+    float buyVol = hasFp ? footprint.buy_volume(fp) : na
+    float sellVol = hasFp ? footprint.sell_volume(fp) : na
+    float deltaVol = hasFp ? footprint.delta(fp) : na
+    [totalVol, buyVol, sellVol, deltaVol]
+
+[footprintTotalVolume, footprintBuyVolume, footprintSellVolume, footprintDeltaVolume] =
+     request.security(
+         syminfo.tickerid,
+         timeframe.period,
+         f_footprintStats(),
+         gaps=barmerge.gaps_off,
+         lookahead=barmerge.lookahead_off,
+         calc_bars_count=FOOTPRINT_REQUEST_BARS)
+
+bool footprintBubbleSelectedBar =
+     footprintBubbleVisibility == "All candles"
+         ? true
+         : footprintBubbleVisibility == "150% + 200%"
+             ? (
+                 pvsrClimax or
+                 pvsrAboveAverage
+             )
+             : pvsrClimax
+
+bool footprintInsideHistoryWindow =
+     not footprintLimitHistoryToOneHour or
+     time >= footprintHistoryCutoff
+
+bool footprintRequestNeeded =
+     enableFootprintBubbles and
+     barstate.isconfirmed and
+     footprintBubbleSelectedBar and
+     footprintInsideHistoryWindow
+
+bool footprintHasData =
+     not na(footprintTotalVolume) and
+     not na(footprintBuyVolume) and
+     not na(footprintSellVolume) and
+     not na(footprintDeltaVolume)
+
+bool footprintHasUsableData =
+     footprintHasData and
+     footprintTotalVolume > 0
+
+float footprintBuyPct =
+     footprintHasUsableData
+         ? footprintBuyVolume / footprintTotalVolume * 100.0
+         : na
+
+float footprintSellPct =
+     footprintHasUsableData
+         ? footprintSellVolume / footprintTotalVolume * 100.0
+         : na
+
+float footprintDeltaPct =
+     footprintHasUsableData
+         ? footprintDeltaVolume / footprintTotalVolume * 100.0
+         : na
+
+float footprintDominanceDifference =
+     footprintHasUsableData
+         ? math.abs(footprintBuyPct - footprintSellPct)
+         : na
+
+bool footprintNeutralDominance =
+     footprintHasUsableData and
+     footprintDominanceDifference <= footprintNeutralThreshold
+
+bool footprintBuyDominance =
+     footprintHasUsableData and
+     not footprintNeutralDominance and
+     footprintBuyPct > footprintSellPct
+
+bool footprintSellDominance =
+     footprintHasUsableData and
+     not footprintNeutralDominance and
+     footprintSellPct > footprintBuyPct
+
+color pvsrCandleColor =
+     pvsrClimax
+         ? (pvsrBullCandle ? pvsrBullClimaxColor : pvsrBearClimaxColor)
+         : pvsrAboveAverage
+             ? (pvsrBullCandle ? pvsrBullAboveAvgColor : pvsrBearAboveAvgColor)
+             : (pvsrBullCandle ? pvsrRegularBullColor : pvsrRegularBearColor)
+
+color finalPvsrCandleColor =
+     color.new(pvsrCandleColor, pvsrCandleTransparency)
+
+color finalCandleColor =
+     enablePvsr
+         ? finalPvsrCandleColor
+         : enableRsiGradient
+             ? finalRsiCandleColor
+             : na
+
+barcolor(finalCandleColor)
+
+float minFvgThreshold =
+     minFvgUnit == "Ticks"
+         ? minFvgSize * syminfo.mintick
+         : minFvgSize
+
+bool bullishFvgRaw = bar_index >= 2 and low > high[2]
+bool bearishFvgRaw = bar_index >= 2 and high < low[2]
+
+float bullishFvgSize = bullishFvgRaw ? low - high[2] : na
+float bearishFvgSize = bearishFvgRaw ? low[2] - high : na
+
+bool bullishFvg =
+     enableFvg and
+     barstate.isconfirmed and
+     bullishFvgRaw and
+     (not useMinFvgFilter or bullishFvgSize >= minFvgThreshold)
+
+bool bearishFvg =
+     enableFvg and
+     barstate.isconfirmed and
+     bearishFvgRaw and
+     (not useMinFvgFilter or bearishFvgSize >= minFvgThreshold)
+
+var array<box> fvgBoxes = array.new<box>()
+var array<int> fvgTimes = array.new<int>()
+
+if showFvg and bullishFvg
+    box bullBox =
+         box.new(
+             left=bar_index - 2,
+             top=low,
+             right=bar_index,
+             bottom=high[2],
+             xloc=xloc.bar_index,
+             extend=extend.none,
+             border_color=color.new(bullishFvgColor, 76),
+             border_width=1,
+             bgcolor=color.new(bullishFvgColor, fvgTransparency))
+    array.push(fvgBoxes, bullBox)
+    array.push(fvgTimes, time)
+
+if showFvg and bearishFvg
+    box bearBox =
+         box.new(
+             left=bar_index - 2,
+             top=low[2],
+             right=bar_index,
+             bottom=high,
+             xloc=xloc.bar_index,
+             extend=extend.none,
+             border_color=color.new(bearishFvgColor, 76),
+             border_width=1,
+             bgcolor=color.new(bearishFvgColor, fvgTransparency))
+    array.push(fvgBoxes, bearBox)
+    array.push(fvgTimes, time)
+
+if fvgVisibility == "Last N hours"
+    while array.size(fvgTimes) > 0
+        int oldestFvgTime = array.get(fvgTimes, 0)
+        if oldestFvgTime < fvgCutoff
+            box oldFvg = array.shift(fvgBoxes)
+            array.shift(fvgTimes)
+            box.delete(oldFvg)
+        else
+            break
+
+while array.size(fvgBoxes) > maximumFvgZones
+    box oldFvg = array.shift(fvgBoxes)
+    array.shift(fvgTimes)
+    box.delete(oldFvg)
+
+var int bullishClusterFirstBar = na
+var float bullishClusterBottom = na
+var float bullishClusterTop = na
+
+var int bearishClusterFirstBar = na
+var float bearishClusterBottom = na
+var float bearishClusterTop = na
+
+bool twoBullishFvg = false
+bool twoBearishFvg = false
+
+if enableFvg and barstate.isconfirmed
+    if not na(bullishClusterFirstBar) and
+       bar_index - bullishClusterFirstBar > maxBarsBetweenFvg
+        bullishClusterFirstBar := na
+        bullishClusterBottom := na
+        bullishClusterTop := na
+
+    if not na(bearishClusterFirstBar) and
+       bar_index - bearishClusterFirstBar > maxBarsBetweenFvg
+        bearishClusterFirstBar := na
+        bearishClusterBottom := na
+        bearishClusterTop := na
+
+    if bullishFvg
+        bearishClusterFirstBar := na
+        bearishClusterBottom := na
+        bearishClusterTop := na
+
+        float currentBullBottom = high[2]
+        float currentBullTop = low
+
+        if na(bullishClusterFirstBar)
+            bullishClusterFirstBar := bar_index
+            bullishClusterBottom := currentBullBottom
+            bullishClusterTop := currentBullTop
+        else
+            bool overlapsBullCluster =
+                 currentBullBottom <= bullishClusterTop and
+                 currentBullTop >= bullishClusterBottom
+
+            if overlapsBullCluster
+                bullishClusterBottom :=
+                     math.min(
+                         bullishClusterBottom,
+                         currentBullBottom)
+
+                bullishClusterTop :=
+                     math.max(
+                         bullishClusterTop,
+                         currentBullTop)
+            else
+                twoBullishFvg := true
+                bullishClusterFirstBar := na
+                bullishClusterBottom := na
+                bullishClusterTop := na
+
+    else if bearishFvg
+        bullishClusterFirstBar := na
+        bullishClusterBottom := na
+        bullishClusterTop := na
+
+        float currentBearBottom = high
+        float currentBearTop = low[2]
+
+        if na(bearishClusterFirstBar)
+            bearishClusterFirstBar := bar_index
+            bearishClusterBottom := currentBearBottom
+            bearishClusterTop := currentBearTop
+        else
+            bool overlapsBearCluster =
+                 currentBearBottom <= bearishClusterTop and
+                 currentBearTop >= bearishClusterBottom
+
+            if overlapsBearCluster
+                bearishClusterBottom :=
+                     math.min(
+                         bearishClusterBottom,
+                         currentBearBottom)
+
+                bearishClusterTop :=
+                     math.max(
+                         bearishClusterTop,
+                         currentBearTop)
+            else
+                twoBearishFvg := true
+                bearishClusterFirstBar := na
+                bearishClusterBottom := na
+                bearishClusterTop := na
+
+bool anyTwoFvg = twoBullishFvg or twoBearishFvg
+
+var array<label> twoFvgLabels = array.new<label>()
+var array<int> twoFvgTimes = array.new<int>()
+
+float markerAtr =
+     nz(
+         ta.atr(14),
+         syminfo.mintick * 20)
+
+if showTwoFvgMarkers and twoBullishFvg
+    label bull2x =
+         label.new(
+             x=bar_index,
+             y=low - markerAtr * 0.10,
+             text="▲ 2x",
+             xloc=xloc.bar_index,
+             yloc=yloc.price,
+             style=label.style_none,
+             textcolor=bullishFvgColor,
+             size=size.tiny)
+
+    array.push(twoFvgLabels, bull2x)
+    array.push(twoFvgTimes, time)
+
+if showTwoFvgMarkers and twoBearishFvg
+    label bear2x =
+         label.new(
+             x=bar_index,
+             y=high + markerAtr * 0.10,
+             text="▼ 2x",
+             xloc=xloc.bar_index,
+             yloc=yloc.price,
+             style=label.style_none,
+             textcolor=bearishFvgColor,
+             size=size.tiny)
+
+    array.push(twoFvgLabels, bear2x)
+    array.push(twoFvgTimes, time)
+
+if fvgVisibility == "Last N hours"
+    while array.size(twoFvgTimes) > 0
+        int oldest2xTime =
+             array.get(twoFvgTimes, 0)
+
+        if oldest2xTime < fvgCutoff
+            label old2x =
+                 array.shift(twoFvgLabels)
+
+            array.shift(twoFvgTimes)
+            label.delete(old2x)
+        else
+            break
+
+float pivotHigh =
+     ta.pivothigh(
+         high,
+         swingLength,
+         swingLength)
+
+float pivotLow =
+     ta.pivotlow(
+         low,
+         swingLength,
+         swingLength)
+
+var float lastSwingHigh = na
+var float lastSwingLow = na
+var int lastSwingHighBar = na
+var int lastSwingLowBar = na
+var bool lastSwingHighBroken = false
+var bool lastSwingLowBroken = false
+var int structureDirection = 0
+
+bool bullishBosRaw = false
+bool bearishBosRaw = false
+bool bullishChochRaw = false
+bool bearishChochRaw = false
+
+float bullishSignalLevel = na
+int bullishSignalStartBar = na
+float bearishSignalLevel = na
+int bearishSignalStartBar = na
+
+if barstate.isconfirmed
+    float highBreakSource =
+         breakConfirmation == "Close"
+             ? close
+             : high
+
+    float lowBreakSource =
+         breakConfirmation == "Close"
+             ? close
+             : low
+
+    bool oldBreakHigh =
+         not na(lastSwingHigh) and
+         not lastSwingHighBroken and
+         highBreakSource > lastSwingHigh
+
+    bool oldBreakLow =
+         not na(lastSwingLow) and
+         not lastSwingLowBroken and
+         lowBreakSource < lastSwingLow
+
+    if oldBreakHigh
+        lastSwingHighBroken := true
+
+    if oldBreakLow
+        lastSwingLowBroken := true
+
+    bool selectedOldHigh = oldBreakHigh
+    bool selectedOldLow = oldBreakLow
+
+    if oldBreakHigh and oldBreakLow
+        if structureDirection == 1
+            selectedOldHigh := false
+        else if structureDirection == -1
+            selectedOldLow := false
+        else if close >= open
+            selectedOldLow := false
+        else
+            selectedOldHigh := false
+
+    bool structureSignalCreated = false
+
+    if selectedOldHigh
+        bullishSignalLevel := lastSwingHigh
+        bullishSignalStartBar := lastSwingHighBar
+
+        if structureDirection == -1
+            bullishChochRaw := true
+        else
+            bullishBosRaw := true
+
+        structureDirection := 1
+        structureSignalCreated := true
+
+    else if selectedOldLow
+        bearishSignalLevel := lastSwingLow
+        bearishSignalStartBar := lastSwingLowBar
+
+        if structureDirection == 1
+            bearishChochRaw := true
+        else
+            bearishBosRaw := true
+
+        structureDirection := -1
+        structureSignalCreated := true
+
+    bool hasNewPivotHigh = not na(pivotHigh)
+    bool hasNewPivotLow = not na(pivotLow)
+
+    float newPivotHighLevel = pivotHigh
+    float newPivotLowLevel = pivotLow
+
+    int newPivotHighBar =
+         bar_index -
+         swingLength
+
+    int newPivotLowBar =
+         bar_index -
+         swingLength
+
+    bool newPivotHighAlreadyBroken =
+         hasNewPivotHigh and
+         highBreakSource > newPivotHighLevel
+
+    bool newPivotLowAlreadyBroken =
+         hasNewPivotLow and
+         lowBreakSource < newPivotLowLevel
+
+    bool selectedNewHigh =
+         newPivotHighAlreadyBroken
+
+    bool selectedNewLow =
+         newPivotLowAlreadyBroken
+
+    if not structureSignalCreated
+        if selectedNewHigh and selectedNewLow
+            if structureDirection == 1
+                selectedNewHigh := false
+            else if structureDirection == -1
+                selectedNewLow := false
+            else if close >= open
+                selectedNewLow := false
+            else
+                selectedNewHigh := false
+
+        if selectedNewHigh
+            bullishSignalLevel := newPivotHighLevel
+            bullishSignalStartBar := newPivotHighBar
+
+            if structureDirection == -1
+                bullishChochRaw := true
+            else
+                bullishBosRaw := true
+
+            structureDirection := 1
+
+        else if selectedNewLow
+            bearishSignalLevel := newPivotLowLevel
+            bearishSignalStartBar := newPivotLowBar
+
+            if structureDirection == 1
+                bearishChochRaw := true
+            else
+                bearishBosRaw := true
+
+            structureDirection := -1
+
+    if hasNewPivotHigh
+        lastSwingHigh := newPivotHighLevel
+        lastSwingHighBar := newPivotHighBar
+        lastSwingHighBroken := newPivotHighAlreadyBroken
+
+    if hasNewPivotLow
+        lastSwingLow := newPivotLowLevel
+        lastSwingLowBar := newPivotLowBar
+        lastSwingLowBroken := newPivotLowAlreadyBroken
+
+bool bullishBos =
+     enableBos and
+     bullishBosRaw
+
+bool bearishBos =
+     enableBos and
+     bearishBosRaw
+
+bool bullishChoch =
+     enableChoch and
+     bullishChochRaw
+
+bool bearishChoch =
+     enableChoch and
+     bearishChochRaw
+
+bool anyBos = bullishBos or bearishBos
+bool anyChoch = bullishChoch or bearishChoch
+
+bool anyStructureBreak =
+     anyBos or
+     anyChoch
+
+var array<line> structureLines =
+     array.new<line>()
+
+var array<int> structureLineTimes =
+     array.new<int>()
+
+var array<label> structureLabels =
+     array.new<label>()
+
+var array<int> structureLabelTimes =
+     array.new<int>()
+
+float structureAtr =
+     ta.atr(14)
+
+float structureLabelOffset =
+     nz(
+         structureAtr,
+         syminfo.mintick * 20) *
+     0.06
+
+if bullishBos or bullishChoch
+    string bullText =
+         bullishChoch
+             ? "CHoCH"
+             : "BOS"
+
+    bool showBullText =
+         (
+             bullishBos and
+             showBosLabels
+         ) or
+         (
+             bullishChoch and
+             showChochLabels
+         )
+
+    if showStructureLines and
+       not na(bullishSignalLevel) and
+       not na(bullishSignalStartBar)
+
+        line bullLine =
+             line.new(
+                 x1=bullishSignalStartBar,
+                 y1=bullishSignalLevel,
+                 x2=bar_index,
+                 y2=bullishSignalLevel,
+                 xloc=xloc.bar_index,
+                 extend=extend.none,
+                 color=bullishStructureColor,
+                 style=line.style_dashed,
+                 width=2)
+
+        array.push(structureLines, bullLine)
+        array.push(structureLineTimes, time)
+
+    if showBullText and
+       not na(bullishSignalLevel) and
+       not na(bullishSignalStartBar)
+
+        int textX =
+             bullishSignalStartBar +
+             int(
+                 (bar_index -
+                  bullishSignalStartBar) /
+                 2)
+
+        label bullLabel =
+             label.new(
+                 x=textX,
+                 y=bullishSignalLevel +
+                   structureLabelOffset,
+                 text=bullText,
+                 xloc=xloc.bar_index,
+                 yloc=yloc.price,
+                 style=label.style_none,
+                 textcolor=bullishStructureColor,
+                 size=size.small)
+
+        array.push(structureLabels, bullLabel)
+        array.push(structureLabelTimes, time)
+
+if bearishBos or bearishChoch
+    string bearText =
+         bearishChoch
+             ? "CHoCH"
+             : "BOS"
+
+    bool showBearText =
+         (
+             bearishBos and
+             showBosLabels
+         ) or
+         (
+             bearishChoch and
+             showChochLabels
+         )
+
+    if showStructureLines and
+       not na(bearishSignalLevel) and
+       not na(bearishSignalStartBar)
+
+        line bearLine =
+             line.new(
+                 x1=bearishSignalStartBar,
+                 y1=bearishSignalLevel,
+                 x2=bar_index,
+                 y2=bearishSignalLevel,
+                 xloc=xloc.bar_index,
+                 extend=extend.none,
+                 color=bearishStructureColor,
+                 style=line.style_dashed,
+                 width=2)
+
+        array.push(structureLines, bearLine)
+        array.push(structureLineTimes, time)
+
+    if showBearText and
+       not na(bearishSignalLevel) and
+       not na(bearishSignalStartBar)
+
+        int textX =
+             bearishSignalStartBar +
+             int(
+                 (bar_index -
+                  bearishSignalStartBar) /
+                 2)
+
+        label bearLabel =
+             label.new(
+                 x=textX,
+                 y=bearishSignalLevel +
+                   structureLabelOffset,
+                 text=bearText,
+                 xloc=xloc.bar_index,
+                 yloc=yloc.price,
+                 style=label.style_none,
+                 textcolor=bearishStructureColor,
+                 size=size.small)
+
+        array.push(structureLabels, bearLabel)
+        array.push(structureLabelTimes, time)
+
+if structureVisibility == "Last N hours"
+    while array.size(structureLineTimes) > 0
+        int oldestLineTime =
+             array.get(
+                 structureLineTimes,
+                 0)
+
+        if oldestLineTime <
+           structureCutoff
+
+            line oldLine =
+                 array.shift(
+                     structureLines)
+
+            array.shift(
+                 structureLineTimes)
+
+            line.delete(
+                 oldLine)
+        else
+            break
+
+    while array.size(structureLabelTimes) > 0
+        int oldestLabelTime =
+             array.get(
+                 structureLabelTimes,
+                 0)
+
+        if oldestLabelTime <
+           structureCutoff
+
+            label oldLabel =
+                 array.shift(
+                     structureLabels)
+
+            array.shift(
+                 structureLabelTimes)
+
+            label.delete(
+                 oldLabel)
+        else
+            break
+
+while array.size(structureLines) >
+      maximumStructureObjects
+
+    line oldLine =
+         array.shift(
+             structureLines)
+
+    array.shift(
+         structureLineTimes)
+
+    line.delete(
+         oldLine)
+
+while array.size(structureLabels) >
+      maximumStructureObjects
+
+    label oldLabel =
+         array.shift(
+             structureLabels)
+
+    array.shift(
+         structureLabelTimes)
+
+    label.delete(
+         oldLabel)
+
+float fastEma =
+     ta.ema(
+         close,
+         fastEmaLength)
+
+float slowEma =
+     ta.ema(
+         close,
+         slowEmaLength)
+
+bool emaBullishCross =
+     enableEma and
+     barstate.isconfirmed and
+     ta.crossover(
+         fastEma,
+         slowEma)
+
+bool emaBearishCross =
+     enableEma and
+     barstate.isconfirmed and
+     ta.crossunder(
+         fastEma,
+         slowEma)
+
+bool anyEmaCross =
+     emaBullishCross or
+     emaBearishCross
+
+plot(
+     enableEma and showEma
+         ? fastEma
+         : na,
+     title="Fast EMA",
+     color=fastEmaColor,
+     linewidth=emaLineWidth)
+
+plot(
+     enableEma and showEma
+         ? slowEma
+         : na,
+     title="Slow EMA",
+     color=slowEmaColor,
+     linewidth=emaLineWidth)
+
+plotshape(
+     emaBullishCross,
+     title="EMA Bullish Cross",
+     style=shape.circle,
+     location=location.belowbar,
+     color=fastEmaColor,
+     size=size.tiny)
+
+plotshape(
+     emaBearishCross,
+     title="EMA Bearish Cross",
+     style=shape.circle,
+     location=location.abovebar,
+     color=slowEmaColor,
+     size=size.tiny)
+
+plot(
+     showSwingHighLow or debugMode
+         ? pivotHigh
+         : na,
+     title="Confirmed Swing High",
+     color=bearishStructureColor,
+     linewidth=2,
+     style=plot.style_circles)
+
+plot(
+     showSwingHighLow or debugMode
+         ? pivotLow
+         : na,
+     title="Confirmed Swing Low",
+     color=bullishStructureColor,
+     linewidth=2,
+     style=plot.style_circles)
+
+bool alertTwoBullFvg =
+     enableFvgAlerts and
+     twoBullishFvg
+
+bool alertTwoBearFvg =
+     enableFvgAlerts and
+     twoBearishFvg
+
+bool alertAnyTwoFvg =
+     enableFvgAlerts and
+     anyTwoFvg
+
+bool alertBullBos =
+     enableStructureAlerts and
+     bullishBos
+
+bool alertBearBos =
+     enableStructureAlerts and
+     bearishBos
+
+bool alertAnyBos =
+     enableStructureAlerts and
+     anyBos
+
+bool alertBullChoch =
+     enableStructureAlerts and
+     bullishChoch
+
+bool alertBearChoch =
+     enableStructureAlerts and
+     bearishChoch
+
+bool alertAnyChoch =
+     enableStructureAlerts and
+     anyChoch
+
+bool alertAnyStructure =
+     enableStructureAlerts and
+     anyStructureBreak
+
+bool alertEmaBull =
+     enableEmaAlerts and
+     emaBullishCross
+
+bool alertEmaBear =
+     enableEmaAlerts and
+     emaBearishCross
+
+bool alertAnyEma =
+     enableEmaAlerts and
+     anyEmaCross
+
+bool pvsrGreenCandle =
+     enablePvsr and
+     barstate.isconfirmed and
+     pvsrClimax and
+     pvsrBullCandle
+
+bool pvsrRedCandle =
+     enablePvsr and
+     barstate.isconfirmed and
+     pvsrClimax and
+     not pvsrBullCandle
+
+bool anyPvsrClimax =
+     pvsrGreenCandle or
+     pvsrRedCandle
+
+bool alertPvsrGreen =
+     enablePvsrAlerts and
+     pvsrGreenCandle
+
+bool alertPvsrRed =
+     enablePvsrAlerts and
+     pvsrRedCandle
+
+bool alertAnyPvsrClimax =
+     enablePvsrAlerts and
+     anyPvsrClimax
+
+bool footprintShouldDrawBubble =
+     footprintRequestNeeded and
+     footprintHasUsableData
+
+var array<label> footprintCircleLabels =
+     array.new<label>()
+
+var array<label> footprintTextLabels =
+     array.new<label>()
+
+var array<int> footprintBubbleTimes =
+     array.new<int>()
+
+var array<int> footprintBubbleBars =
+     array.new<int>()
+
+var array<int> footprintBubbleSides =
+     array.new<int>()
+
+var array<int> footprintBubbleLanes =
+     array.new<int>()
+
+float footprintBubbleAtr =
+     nz(
+         ta.atr(14),
+         syminfo.mintick * 20)
+
+if footprintLimitHistoryToOneHour
+    while array.size(
+          footprintBubbleTimes) > 0
+
+        int oldestFootprintBubbleTime =
+             array.get(
+                 footprintBubbleTimes,
+                 0)
+
+        if oldestFootprintBubbleTime <
+           footprintHistoryCutoff
+
+            label oldCircle =
+                 array.shift(
+                     footprintCircleLabels)
+
+            label oldText =
+                 array.shift(
+                     footprintTextLabels)
+
+            array.shift(
+                 footprintBubbleTimes)
+
+            array.shift(
+                 footprintBubbleBars)
+
+            array.shift(
+                 footprintBubbleSides)
+
+            array.shift(
+                 footprintBubbleLanes)
+
+            label.delete(
+                 oldCircle)
+
+            label.delete(
+                 oldText)
+        else
+            break
+
+int footprintNonBubbleLabelCount =
+     array.size(twoFvgLabels) +
+     array.size(structureLabels)
+
+int footprintAvailableLabelSlots =
+     math.max(
+         0,
+         495 -
+         footprintNonBubbleLabelCount)
+
+int footprintAvailableBubblePairs =
+     int(
+         math.floor(
+             footprintAvailableLabelSlots /
+             2.0))
+
+int footprintEffectiveBubbleLimit =
+     math.min(
+         maximumFootprintBubbles,
+         footprintAvailableBubblePairs)
+
+while array.size(
+      footprintCircleLabels) >
+      footprintEffectiveBubbleLimit
+
+    label oldCircle =
+         array.shift(
+             footprintCircleLabels)
+
+    label oldText =
+         array.shift(
+             footprintTextLabels)
+
+    if array.size(
+       footprintBubbleTimes) > 0
+
+        array.shift(
+             footprintBubbleTimes)
+
+        array.shift(
+             footprintBubbleBars)
+
+        array.shift(
+             footprintBubbleSides)
+
+        array.shift(
+             footprintBubbleLanes)
+
+    label.delete(
+         oldCircle)
+
+    label.delete(
+         oldText)
+
+if footprintShouldDrawBubble and
+   footprintEffectiveBubbleLimit > 0
+
+    while array.size(
+          footprintCircleLabels) >=
+          footprintEffectiveBubbleLimit and
+          array.size(
+          footprintCircleLabels) > 0
+
+        label oldCircle =
+             array.shift(
+                 footprintCircleLabels)
+
+        label oldText =
+             array.shift(
+                 footprintTextLabels)
+
+        if array.size(
+           footprintBubbleTimes) > 0
+
+            array.shift(
+                 footprintBubbleTimes)
+
+            array.shift(
+                 footprintBubbleBars)
+
+            array.shift(
+                 footprintBubbleSides)
+
+            array.shift(
+                 footprintBubbleLanes)
+
+        label.delete(
+             oldCircle)
+
+        label.delete(
+             oldText)
+
+    int footprintManualCircleSize =
+         footprintBubbleSize == "Tiny"
+             ? 22
+             : footprintBubbleSize == "Small"
+                 ? 26
+                 : 30
+
+    int footprintManualOverlayTextSize =
+         footprintBubbleSize == "Tiny"
+             ? 7
+             : footprintBubbleSize == "Small"
+                 ? 8
+                 : 9
+
+    int footprintDynamicCircleSize =
+         footprintDominanceDifference <=
+         footprintNeutralThreshold
+             ? 26
+             : footprintDominanceDifference <= 15.0
+                 ? 22
+                 : footprintDominanceDifference <= 30.0
+                     ? 26
+                     : footprintDominanceDifference <= 50.0
+                         ? 30
+                         : 34
+
+    int footprintDynamicOverlayTextSize =
+         footprintDominanceDifference <=
+         footprintNeutralThreshold
+             ? 7
+             : footprintDominanceDifference <= 15.0
+                 ? 7
+                 : footprintDominanceDifference <= 30.0
+                     ? 8
+                     : footprintDominanceDifference <= 50.0
+                         ? 8
+                         : 9
+
+    int footprintCircleSize =
+         footprintDynamicBubbleSize
+             ? footprintDynamicCircleSize
+             : footprintManualCircleSize
+
+    int footprintOverlayTextSize =
+         footprintDynamicBubbleSize
+             ? footprintDynamicOverlayTextSize
+             : footprintManualOverlayTextSize
+
+    string footprintBuyPctText =
+         str.tostring(
+             footprintBuyPct,
+             "#.#")
+
+    string footprintSellPctText =
+         str.tostring(
+             footprintSellPct,
+             "#.#")
+
+    string footprintDeltaPctValueText =
+         str.tostring(
+             footprintDeltaPct,
+             "#.#")
+
+    string footprintDeltaPctSignedText =
+         (
+             footprintDeltaPct > 0
+                 ? "+"
+                 : ""
+         ) +
+         footprintDeltaPctValueText +
+         "%"
+
+    string footprintDeltaVolumeSignedText =
+         (
+             footprintDeltaVolume > 0
+                 ? "+"
+                 : ""
+         ) +
+         str.tostring(
+             footprintDeltaVolume,
+             "#,###.##")
+
+    string footprintDominanceText =
+         footprintBuyDominance
+             ? "BUY"
+             : footprintSellDominance
+                 ? "SELL"
+                 : "NEUTRAL"
+
+    string footprintBubbleText =
+         footprintBuyDominance
+             ? footprintShowDeltaPct
+                 ? "BUY " +
+                   footprintBuyPctText +
+                   "%\nΔ " +
+                   footprintDeltaPctSignedText
+                 : "BUY " +
+                   footprintBuyPctText +
+                   "%"
+             : footprintSellDominance
+                 ? footprintShowDeltaPct
+                     ? "SELL " +
+                       footprintSellPctText +
+                       "%\nΔ " +
+                       footprintDeltaPctSignedText
+                     : "SELL " +
+                       footprintSellPctText +
+                       "%"
+                 : footprintShowDeltaPct
+                     ? "NEUTRAL\n" +
+                       footprintBuyPctText +
+                       "/" +
+                       footprintSellPctText +
+                       "%\nΔ " +
+                       footprintDeltaPctSignedText
+                     : "NEUTRAL\n" +
+                       footprintBuyPctText +
+                       "/" +
+                       footprintSellPctText +
+                       "%"
+
+    string footprintDetailedTooltip =
+         "BUY Volume: " +
+         str.tostring(
+             footprintBuyVolume,
+             "#,###.##") +
+         "\nSELL Volume: " +
+         str.tostring(
+             footprintSellVolume,
+             "#,###.##") +
+         "\nTotal Volume: " +
+         str.tostring(
+             footprintTotalVolume,
+             "#,###.##") +
+         "\nBUY: " +
+         footprintBuyPctText +
+         "%" +
+         "\nSELL: " +
+         footprintSellPctText +
+         "%" +
+         "\nDelta: " +
+         footprintDeltaVolumeSignedText +
+         "\nDelta %: " +
+         footprintDeltaPctSignedText +
+         "\nDominance: " +
+         footprintDominanceText +
+         "\nBUY/SELL difference: " +
+         str.tostring(
+             footprintDominanceDifference,
+             "#.#") +
+         " pp"
+
+    string footprintTooltip =
+         footprintShowDetailedTooltip
+             ? footprintDetailedTooltip
+             : ""
+
+    bool footprintBubbleBelow =
+         footprintBuyDominance
+
+    int footprintBubbleSide =
+         footprintBubbleBelow
+             ? -1
+             : 1
+
+    int footprintCollisionLookbackBars =
+         4
+
+    bool footprintLane0Used = false
+    bool footprintLane1Used = false
+    bool footprintLane2Used = false
+    bool footprintLane3Used = false
+    bool footprintLane4Used = false
+
+    if array.size(
+       footprintBubbleBars) > 0
+
+        for i = 0 to array.size(footprintBubbleBars) - 1
+            int oldBubbleBar =
+                 array.get(
+                     footprintBubbleBars,
+                     i)
+
+            int oldBubbleSide =
+                 array.get(
+                     footprintBubbleSides,
+                     i)
+
+            int oldBubbleLane =
+                 array.get(
+                     footprintBubbleLanes,
+                     i)
+
+            int bubbleBarsApart =
+                 bar_index -
+                 oldBubbleBar
+
+            bool bubbleCanCollide =
+                 oldBubbleSide ==
+                 footprintBubbleSide and
+                 bubbleBarsApart >= 0 and
+                 bubbleBarsApart <=
+                 footprintCollisionLookbackBars
+
+            if bubbleCanCollide
+                if oldBubbleLane == 0
+                    footprintLane0Used := true
+                else if oldBubbleLane == 1
+                    footprintLane1Used := true
+                else if oldBubbleLane == 2
+                    footprintLane2Used := true
+                else if oldBubbleLane == 3
+                    footprintLane3Used := true
+                else if oldBubbleLane == 4
+                    footprintLane4Used := true
+
+    int footprintCollisionLane =
+         not footprintLane0Used
+             ? 0
+             : not footprintLane1Used
+                 ? 1
+                 : not footprintLane2Used
+                     ? 2
+                     : not footprintLane3Used
+                         ? 3
+                         : not footprintLane4Used
+                             ? 4
+                             : 0
+
+    float footprintDynamicOffsetMultiplier =
+         footprintDynamicBubbleSize
+             ? footprintDominanceDifference <= 15.0
+                 ? 1.00
+                 : footprintDominanceDifference <= 30.0
+                     ? 1.08
+                     : footprintDominanceDifference <= 50.0
+                         ? 1.16
+                         : 1.24
+             : 1.00
+
+    float footprintBubbleBaseOffset =
+         math.max(
+             footprintBubbleAtr *
+             0.22 *
+             footprintDynamicOffsetMultiplier,
+             syminfo.mintick *
+             12)
+
+    float footprintLaneAtrFactor =
+         footprintCircleSize <= 22
+             ? 0.24
+             : footprintCircleSize <= 26
+                 ? 0.28
+                 : footprintCircleSize <= 30
+                     ? 0.33
+                     : 0.38
+
+    float footprintLaneSpacing =
+         math.max(
+             footprintBubbleAtr *
+             footprintLaneAtrFactor,
+             syminfo.mintick *
+             16)
+
+    float footprintCollisionOffset =
+         footprintCollisionLane *
+         footprintLaneSpacing
+
+    float footprintBubbleY =
+         footprintBubbleBelow
+             ? low -
+               footprintBubbleBaseOffset -
+               footprintCollisionOffset
+             : high +
+               footprintBubbleBaseOffset +
+               footprintCollisionOffset
+
+    color footprintBubbleBaseColor =
+         footprintBuyDominance
+             ? footprintBuyBubbleColor
+             : footprintSellDominance
+                 ? footprintSellBubbleColor
+                 : footprintNeutralBubbleColor
+
+    color footprintBubbleFinalColor =
+         color.new(
+             footprintBubbleBaseColor,
+             footprintBubbleTransparency)
+
+    label footprintCircle =
+         label.new(
+             x=bar_index,
+             y=footprintBubbleY,
+             text="",
+             xloc=xloc.bar_index,
+             yloc=yloc.price,
+             color=footprintBubbleFinalColor,
+             style=label.style_circle,
+             textcolor=color.white,
+             size=footprintCircleSize,
+             textalign=text.align_center,
+             tooltip=footprintTooltip)
+
+    label footprintText =
+         label.new(
+             x=bar_index,
+             y=footprintBubbleY,
+             text=footprintBubbleText,
+             xloc=xloc.bar_index,
+             yloc=yloc.price,
+             color=color.new(
+                 color.white,
+                 100),
+             style=label.style_none,
+             textcolor=color.white,
+             size=footprintOverlayTextSize,
+             textalign=text.align_center,
+             tooltip=footprintTooltip,
+             text_formatting=text.format_bold)
+
+    array.push(
+         footprintCircleLabels,
+         footprintCircle)
+
+    array.push(
+         footprintTextLabels,
+         footprintText)
+
+    array.push(
+         footprintBubbleTimes,
+         time)
+
+    array.push(
+         footprintBubbleBars,
+         bar_index)
+
+    array.push(
+         footprintBubbleSides,
+         footprintBubbleSide)
+
+    array.push(
+         footprintBubbleLanes,
+         footprintCollisionLane)
+
+bool alertMaster =
+     enableMasterAlert and
+     (
+         anyTwoFvg or
+         anyStructureBreak or
+         anyEmaCross or
+         anyPvsrClimax
+     )
+
+alertcondition(
+     alertTwoBullFvg,
+     title="2x Bullish FVG",
+     message="2x BULLISH FVG | {{ticker}} | TF: {{interval}}")
+
+alertcondition(
+     alertTwoBearFvg,
+     title="2x Bearish FVG",
+     message="2x BEARISH FVG | {{ticker}} | TF: {{interval}}")
+
+alertcondition(
+     alertAnyTwoFvg,
+     title="2x FVG — Any Direction",
+     message="2x FVG | {{ticker}} | TF: {{interval}}")
+
+alertcondition(
+     alertBullBos,
+     title="Bullish BOS",
+     message="BULLISH BOS | {{ticker}} | TF: {{interval}}")
+
+alertcondition(
+     alertBearBos,
+     title="Bearish BOS",
+     message="BEARISH BOS | {{ticker}} | TF: {{interval}}")
+
+alertcondition(
+     alertAnyBos,
+     title="Any BOS",
+     message="BOS | {{ticker}} | TF: {{interval}}")
+
+alertcondition(
+     alertBullChoch,
+     title="Bullish CHoCH",
+     message="BULLISH CHoCH | {{ticker}} | TF: {{interval}}")
+
+alertcondition(
+     alertBearChoch,
+     title="Bearish CHoCH",
+     message="BEARISH CHoCH | {{ticker}} | TF: {{interval}}")
+
+alertcondition(
+     alertAnyChoch,
+     title="Any CHoCH",
+     message="CHoCH | {{ticker}} | TF: {{interval}}")
+
+alertcondition(
+     alertAnyStructure,
+     title="Any Structure Break",
+     message="STRUCTURE BREAK | {{ticker}} | TF: {{interval}}")
+
+alertcondition(
+     alertEmaBull,
+     title="EMA Bullish Cross",
+     message="EMA BULLISH CROSS | {{ticker}} | TF: {{interval}}")
+
+alertcondition(
+     alertEmaBear,
+     title="EMA Bearish Cross",
+     message="EMA BEARISH CROSS | {{ticker}} | TF: {{interval}}")
+
+alertcondition(
+     alertAnyEma,
+     title="Any EMA Cross",
+     message="EMA CROSS | {{ticker}} | TF: {{interval}}")
+
+alertcondition(
+     alertPvsrGreen,
+     title="PVSRA Green Candle — Bullish Climax",
+     message="PVSRA GREEN CANDLE / BULLISH CLIMAX | {{ticker}} | TF: {{interval}} | Close: {{close}}")
+
+alertcondition(
+     alertPvsrRed,
+     title="PVSRA Red Candle — Bearish Climax",
+     message="PVSRA RED CANDLE / BEARISH CLIMAX | {{ticker}} | TF: {{interval}} | Close: {{close}}")
+
+alertcondition(
+     alertAnyPvsrClimax,
+     title="PVSRA Green/Red Candle — Any Climax",
+     message="PVSRA CLIMAX CANDLE | {{ticker}} | TF: {{interval}} | Close: {{close}}")
+
+alertcondition(
+     alertMaster,
+     title="ANY SIGNAL",
+     message="ANY SIGNAL | {{ticker}} | TF: {{interval}}")
+
+bool repeatingSignal =
+     alertTwoBullFvg or
+     alertTwoBearFvg or
+     alertBullBos or
+     alertBearBos or
+     alertBullChoch or
+     alertBearChoch or
+     alertEmaBull or
+     alertEmaBear or
+     alertPvsrGreen or
+     alertPvsrRed
+
+string repeatingMessage = ""
+
+if alertTwoBullFvg
+    repeatingMessage +=
+         "2x BULLISH FVG | " +
+         syminfo.ticker +
+         " | TF: " +
+         timeframe.period +
+         "\n"
+
+if alertTwoBearFvg
+    repeatingMessage +=
+         "2x BEARISH FVG | " +
+         syminfo.ticker +
+         " | TF: " +
+         timeframe.period +
+         "\n"
+
+if alertBullBos
+    repeatingMessage +=
+         "BULLISH BOS | " +
+         syminfo.ticker +
+         " | TF: " +
+         timeframe.period +
+         "\n"
+
+if alertBearBos
+    repeatingMessage +=
+         "BEARISH BOS | " +
+         syminfo.ticker +
+         " | TF: " +
+         timeframe.period +
+         "\n"
+
+if alertBullChoch
+    repeatingMessage +=
+         "BULLISH CHoCH | " +
+         syminfo.ticker +
+         " | TF: " +
+         timeframe.period +
+         "\n"
+
+if alertBearChoch
+    repeatingMessage +=
+         "BEARISH CHoCH | " +
+         syminfo.ticker +
+         " | TF: " +
+         timeframe.period +
+         "\n"
+
+if alertEmaBull
+    repeatingMessage +=
+         "EMA BULLISH CROSS | " +
+         syminfo.ticker +
+         " | TF: " +
+         timeframe.period +
+         "\n"
+
+if alertEmaBear
+    repeatingMessage +=
+         "EMA BEARISH CROSS | " +
+         syminfo.ticker +
+         " | TF: " +
+         timeframe.period +
+         "\n"
+
+if alertPvsrGreen
+    repeatingMessage +=
+         "PVSRA GREEN CANDLE / BULLISH CLIMAX | " +
+         syminfo.ticker +
+         " | TF: " +
+         timeframe.period +
+         " | Close: " +
+         str.tostring(
+             close) +
+         "\n"
+
+if alertPvsrRed
+    repeatingMessage +=
+         "PVSRA RED CANDLE / BEARISH CLIMAX | " +
+         syminfo.ticker +
+         " | TF: " +
+         timeframe.period +
+         " | Close: " +
+         str.tostring(
+             close) +
+         "\n"
+
+if enableRepeatingAlerts and
+   repeatingSignal and
+   barstate.isconfirmed
+
+    alert(
+         repeatingMessage,
+         alert.freq_once_per_bar_close)

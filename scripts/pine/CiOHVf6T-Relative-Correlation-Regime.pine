@@ -1,0 +1,147 @@
+//@version=6
+indicator(
+     "Vertex Relative Correlation Regime",
+     shorttitle = "VertexCorR",
+     overlay = false
+)
+
+// ─────────────────────────────────────────────
+// Inputs
+// ─────────────────────────────────────────────
+compareSymbol = input.symbol("OANDA:EURUSD", "Compare With")
+length        = input.int(50, "Correlation Length", minval = 10)
+smoothLength  = input.int(5, "Smoothing", minval = 1)
+
+strongLevel   = input.float(0.70, "Strong Regime Threshold",
+     minval = 0.50, maxval = 1.00, step = 0.05)
+
+neutralLevel  = input.float(0.20, "Neutral Threshold",
+     minval = 0.00, maxval = 0.50, step = 0.05)
+
+showTable     = input.bool(true, "Show Regime Dashboard")
+
+// ─────────────────────────────────────────────
+// Return calculation
+// ─────────────────────────────────────────────
+chartReturn = math.log(close / close[1])
+
+compareClose = request.security(
+     compareSymbol,
+     timeframe.period,
+     close
+)
+
+compareReturn = math.log(compareClose / compareClose[1])
+
+// ─────────────────────────────────────────────
+// Correlation
+// ─────────────────────────────────────────────
+rawCorrelation = ta.correlation(
+     chartReturn,
+     compareReturn,
+     length
+)
+
+correlation = ta.ema(rawCorrelation, smoothLength)
+
+// ─────────────────────────────────────────────
+// Regime classification
+// ─────────────────────────────────────────────
+string regime =
+     correlation >= strongLevel  ? "Strong Positive" :
+     correlation > neutralLevel  ? "Positive" :
+     correlation <= -strongLevel ? "Strong Negative" :
+     correlation < -neutralLevel ? "Negative" :
+                                   "Neutral"
+
+color regimeColor =
+     correlation >= strongLevel  ? color.lime :
+     correlation > neutralLevel  ? color.green :
+     correlation <= -strongLevel ? color.red :
+     correlation < -neutralLevel ? color.orange :
+                                   color.gray
+
+// ─────────────────────────────────────────────
+// Plot
+// ─────────────────────────────────────────────
+plot(
+     correlation,
+     title = "Rolling Correlation",
+     color = regimeColor,
+     linewidth = 2
+)
+
+hline(1.0,  "Perfect Positive", color = color.new(color.gray, 80))
+hline(0.0,  "Neutral",          color = color.new(color.gray, 60))
+hline(-1.0, "Perfect Negative", color = color.new(color.gray, 80))
+
+hline(strongLevel,  "Strong Positive Threshold",
+     color = color.new(color.green, 75))
+
+hline(-strongLevel, "Strong Negative Threshold",
+     color = color.new(color.red, 75))
+
+hline(neutralLevel, "Positive Threshold",
+     color = color.new(color.gray, 85))
+
+hline(-neutralLevel, "Negative Threshold",
+     color = color.new(color.gray, 85))
+
+// ─────────────────────────────────────────────
+// Dashboard
+// ─────────────────────────────────────────────
+var table dashboard = table.new(
+     position.top_right,
+     2,
+     3,
+     border_width = 1
+)
+
+if barstate.islast and showTable
+    table.cell(
+         dashboard,
+         0,
+         0,
+         "Compare",
+         text_color = color.white
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         0,
+         compareSymbol,
+         text_color = color.white
+    )
+
+    table.cell(
+         dashboard,
+         0,
+         1,
+         "Correlation",
+         text_color = color.white
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         1,
+         str.tostring(correlation, "#.##"),
+         text_color = regimeColor
+    )
+
+    table.cell(
+         dashboard,
+         0,
+         2,
+         "Regime",
+         text_color = color.white
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         2,
+         regime,
+         text_color = regimeColor
+    )

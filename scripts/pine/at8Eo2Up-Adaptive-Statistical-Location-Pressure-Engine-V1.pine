@@ -1,0 +1,1077 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © uPaSKaL
+
+//@version=6
+indicator("Adaptive Statistical Location + Pressure Engine V1", shorttitle="ASLP V1", overlay=false, precision=1, max_bars_back=1000, max_labels_count=450, max_lines_count=450, max_boxes_count=2)
+
+// First public release: V1. Author: uPaSKaL.
+// Asymmetric empirical location, block pressure and causal first-touch outcomes.
+// Location is a percentile, not a reversal probability.
+// Event forecasts are frozen at entry; insufficient samples suppress probabilities.
+// Loaded-chart history only. This indicator does not calculate strategy returns.
+// All state mutation is confirmed-bar only. Outcome training is delayed one bar.
+const string G1 = "01 · Sampling"
+const string G2 = "02 · Independent sessions"
+const string G3 = "03 · Location / pressure"
+const string G4 = "04 · Empirical outcomes"
+const string G5 = "05 · Display"
+int periodCap = input.int(1200, "Completed session records", minval=200, maxval=2400, group=G1, display=display.none)
+int dayCap = input.int(500, "Completed day records", minval=60, maxval=1000, group=G1, display=display.none)
+int blockCap = input.int(2400, "Completed marginal blocks", minval=300, maxval=5000, group=G1, display=display.none)
+int minDist = input.int(30, "Minimum distribution n", minval=20, maxval=150, group=G1, tooltip="Minimum completed periods in the selected movement distribution. Fallback broadens conditioning when needed. Increasing the record cap cannot load extra chart history.", display=display.none)
+bool weekends = input.bool(false, "Include weekends (enable for crypto)", group=G1, display=display.none)
+string dayBoundaryMode = input.string("Symbol trading day", "Daily reset reference", options=["Symbol trading day", "Custom timezone boundary"], group=G1,
+ tooltip="Symbol trading day follows the feed's 1D bar boundaries, including overnight sessions. Custom mode uses the timezone/hour/minute below. Chart display timezone does not control either mode.", display=display.none)
+string dayTZ = input.string("America/New_York", "Day IANA timezone", group=G1, display=display.none)
+int dayHour = input.int(0, "Trading-day start hour", minval=0, maxval=23, group=G1, display=display.none)
+int dayMinute = input.int(0, "Trading-day start minute", minval=0, maxval=59, group=G1, display=display.none)
+int regLen = input.int(10, "Completed-day regime mean length", minval=3, maxval=60, group=G1, display=display.none)
+float maxRange = input.float(50, "Reject period range above % (data guard)", minval=2, maxval=500, group=G1, display=display.none)
+bool condReg = input.bool(true, "Regime in movement hierarchy", group=G1, display=display.none)
+bool condPrev = input.bool(true, "Previous state in movement hierarchy", group=G1, display=display.none)
+bool en1 = input.bool(true, "Asia", inline="1", group=G2, display=display.none)
+string ss1 = input.session("0900-1700", "", inline="1", group=G2, display=display.none)
+string tz1 = input.string("Asia/Tokyo", "IANA timezone", inline="1t", group=G2, display=display.none)
+bool en2 = input.bool(true, "London", inline="2", group=G2, display=display.none)
+string ss2 = input.session("0800-1200", "", inline="2", group=G2, display=display.none)
+string tz2 = input.string("Europe/London", "IANA timezone", inline="2t", group=G2, display=display.none)
+bool en3 = input.bool(true, "London/NY overlap", inline="3", group=G2, display=display.none)
+string ss3 = input.session("1200-1600", "", inline="3", group=G2, display=display.none)
+string tz3 = input.string("Europe/London", "IANA timezone", inline="3t", group=G2, display=display.none)
+bool en4 = input.bool(true, "New York", inline="4", group=G2, display=display.none)
+string ss4 = input.session("0900-1500", "", inline="4", group=G2, display=display.none)
+string tz4 = input.string("America/New_York", "IANA timezone", inline="4t", group=G2, display=display.none)
+bool en5 = input.bool(false, "NY PM", inline="5", group=G2, display=display.none)
+string ss5 = input.session("1500-1700", "", inline="5", group=G2, display=display.none)
+string tz5 = input.string("America/New_York", "IANA timezone", inline="5t", group=G2, display=display.none)
+string focus = input.string("Auto priority", "Display / event session", options=["Auto priority", "Asia", "London", "LON/NY", "New York", "NY PM"], group=G2, tooltip="Auto priority selects the highest-numbered enabled active session: NY PM, New York, LON/NY, London, Asia. Each session keeps independent statistics. A reference change can reset the plotted location.", display=display.none)
+float centralQ = input.float(25, "Central boundary percentile", minval=5, maxval=45, group=G3, display=display.none)
+float stretchQ = input.float(75, "Stretch percentile", minval=55, maxval=85, group=G3, display=display.none)
+float extremeQ = input.float(90, "Extreme percentile", minval=86, maxval=94, group=G3, display=display.none)
+float tailQ = input.float(95, "Tail percentile", minval=95, maxval=99, group=G3, display=display.none)
+int blockMinutes = input.int(30, "Non-overlapping pressure block minutes", minval=15, maxval=120, group=G3, tooltip="Pressure updates at completed non-overlapping blocks. Must be an exact multiple of the chart timeframe. An unavailable block rank means unrated pressure, not stable pressure.", display=display.none)
+float denominatorFloor = input.float(0.05, "Marginal denominator floor × Q50", minval=0.01, maxval=0.25, step=0.01, group=G3, display=display.none)
+bool poolFamilies = input.bool(true, "Allow pooled-family base fallback", group=G4,
+ tooltip="When a family-specific bucket is sparse, pool expansion/extreme/weakening events while preserving direction and elapsed-age bucket. Labelled Low / pooled; not a precise state forecast.", display=display.none)
+bool trainingCheckpoints = input.bool(true, "Admit eligible states at completed-block checkpoints", group=G4,
+ tooltip="Also admits a still-valid expansion/extreme/weakening state at block close if its direction/family has not been sampled in this session. One global pending event and six-per-session maximum remain.", display=display.none)
+int eventCap = input.int(1200, "Resolved event records", minval=200, maxval=3000, group=G4, display=display.none)
+int minOutcome = input.int(40, "Minimum outcome bucket n", minval=30, maxval=200, group=G4, tooltip="Minimum resolved events in the selected conditional bucket before displaying a forecast. Total learned labels may be much larger. Lowering this increases uncertainty; it does not improve the model.", display=display.none)
+float priorStrength = input.float(20, "Empirical prior strength", minval=0, maxval=100, group=G4, tooltip="Shrinkage weight toward a disjoint broader historical group, used only when that group has at least 20 records. This weight is not additional observed evidence.", display=display.none)
+int horizonMinutes = input.int(120, "Maximum outcome horizon minutes", minval=15, maxval=480, group=G4, tooltip="First-touch observation window, capped at the source session end. Must be an exact multiple of the chart timeframe. Changing this rebuilds outcome labels.", display=display.none)
+float continueMultiple = input.float(0.25, "Continuation distance × frozen Q50", minval=0.05, maxval=2, step=0.05, group=G4, display=display.none)
+float revertMultiple = input.float(0.35, "Toward-open distance × Q50 (capped at open)", minval=0.05, maxval=2, step=0.05, group=G4, display=display.none)
+float minimumDisplacement = input.float(0.10, "Minimum event displacement × Q50", minval=0.05, maxval=1, step=0.05, group=G4, display=display.none)
+bool featureGate = input.bool(true, "Prequential gate for optional outcome features", group=G4, display=display.none)
+int evalCap = input.int(200, "Paired Brier evaluation window", minval=60, maxval=500, group=G4, display=display.none)
+int minEval = input.int(60, "Minimum paired evaluations", minval=60, maxval=300, group=G4, display=display.none)
+float probabilityAlert = input.float(60, "Empirical probability alert %", minval=50, maxval=95, group=G4, display=display.none)
+string mode = input.string("Compact", "Dashboard mode", options=["Compact", "Detailed", "Research"], group=G5, tooltip="Compact shows current context and the last event forecast. Detailed adds consumption and efficiency. Research adds sample diagnostics, raw Wilson intervals and the walk-forward audit.", display=display.none)
+bool priceLabels = input.bool(false, "Research: allow text labels on price", group=G5, tooltip="Master switch for text labels on price. Also enable the desired state markers, historical labels, event paths or nearest levels. Off keeps the publication chart clean.", display=display.none)
+bool dailyResetTint = input.bool(true, "Subtle daily reset marker in history pane", group=G5, display=display.none)
+bool panel = input.bool(true, "Dashboard", group=G5, display=display.none)
+bool neighbors = input.bool(false, "Nearest levels + NOW", group=G5, tooltip="Shows nearest statistical prices only when the price-label master switch is also enabled. These levels are descriptive, not trade targets.", display=display.none)
+bool zone = input.bool(false, "Current statistical region only", group=G5, display=display.none)
+bool points = input.bool(false, "Small state-entry markers", group=G5, display=display.none)
+bool researchMarks = input.bool(false, "Historical event / outcome labels", group=G5, tooltip="Optional historical entry/outcome text. Requires Research: allow text labels on price. It does not change training or probabilities.", display=display.none)
+int markerCap = input.int(100, "Maximum historical markers", minval=10, maxval=150, group=G5, display=display.none)
+const string G6 = "06 · Historical research / audit"
+bool historicalPane = input.bool(true, "Historical session / daily location", group=G6, display=display.none)
+bool showSessionResets = input.bool(false, "Mark changes of session reference", group=G6, display=display.none)
+bool historicalStates = input.bool(true, "Historical state ribbon", group=G6, display=display.none)
+bool eventTrails = input.bool(false, "Event paths on price chart", group=G6, tooltip="Optional entry, continuation and toward-open levels for recent admitted events. Text tags require the separate price-label master switch.", display=display.none)
+int trailCap = input.int(70, "Recent event paths retained", minval=10, maxval=140, group=G6, display=display.none)
+bool auditPanel = input.bool(true, "Walk-forward audit table", group=G6, tooltip="Visible in Research dashboard mode. Scores forecasts frozen at entry against subsequent outcomes. This is a forecast audit, not trade P&L or Strategy Tester.", display=display.none)
+int auditCap = input.int(300, "Recent resolved events in audit", minval=50, maxval=1000, group=G6, display=display.none)
+int auditFrom = input.time(timestamp("01 Jan 2020 00:00 +0000"), "Audit entry from", group=G6, display=display.none)
+int auditTo = input.time(timestamp("01 Jan 2100 00:00 +0000"), "Audit resolution through", group=G6, display=display.none)
+string theme = input.string("Light", "Panel theme", options=["Light", "Dark"], group=G5, display=display.none)
+string fontSize = input.string("Normal", "Panel font", options=["Small", "Normal", "Large"], group=G5, display=display.none)
+string dailyGapMode = input.string("Observed feed", "Daily gap treatment", options=["Observed feed", "Strict contiguous"], group=G1,
+ tooltip="Observed feed permits exchange/CFD maintenance closures in daily OHLC; unexpected missing bars cannot be distinguished from planned closures. Sessions, blocks and event labels still reject gaps.", display=display.none)
+const float EPS = 1e-10
+
+// Sorted CDF cache; no per-bar scans of the complete training database.
+f_rank(array<float> a, float x) =>
+    int lo = 0
+    int hi = array.size(a)
+    if not na(x)
+        while lo < hi
+            int mid = int(math.floor((lo + hi) / 2))
+            if array.get(a, mid) <= x
+                lo := mid + 1
+            else
+                hi := mid
+    array.size(a) > 0 and not na(x) ? 100.0 * lo / array.size(a) : na
+
+f_q(array<float> a, float p) =>
+    array.size(a) > 0 ? array.percentile_linear_interpolation(a, p) : na
+
+f_age(int minutes) =>
+    minutes <= 60 ? 0 : minutes <= 180 ? 1 : 2
+
+f_name(int id) =>
+    switch id
+        0 => "Day"
+        1 => "Asia"
+        2 => "London"
+        3 => "LON/NY"
+        4 => "New York"
+        => "NY PM"
+
+f_reg(int r) =>
+    r < 0 ? "Unknown" : r == 0 ? "Low" : r == 1 ? "Normal" : r == 2 ? "High" : "Extreme"
+
+f_fmt(float x) =>
+    na(x) ? "—" : str.tostring(x, "#.00")
+f_pct(float x) =>
+    na(x) ? "—" : str.tostring(x, "#") + "%"
+
+// Local date arithmetic via timestamp() respects DST. No fixed 24h subtraction.
+f_anchor(string tz, int hh, int mm) =>
+    int today = timestamp(tz, year(time, tz), month(time, tz), dayofmonth(time, tz), hh, mm)
+    time >= today ? today : timestamp(tz, year(time, tz), month(time, tz), dayofmonth(time, tz) - 1, hh, mm)
+
+f_start(string sess, string tz) =>
+    f_anchor(tz, int(str.tonumber(str.substring(sess, 0, 2))), int(str.tonumber(str.substring(sess, 2, 4))))
+
+f_end(string sess, string tz, int anchor) =>
+    int sh = int(str.tonumber(str.substring(sess, 0, 2)))
+    int sm = int(str.tonumber(str.substring(sess, 2, 4)))
+    int eh = int(str.tonumber(str.substring(sess, 5, 7)))
+    int em = int(str.tonumber(str.substring(sess, 7, 9)))
+    int nextDate = eh * 60 + em <= sh * 60 + sm ? 1 : 0
+    timestamp(tz, year(anchor, tz), month(anchor, tz), dayofmonth(anchor, tz) + nextDate, eh, em)
+
+type PeriodRecord
+    int sid
+    int dow
+    int regime
+    int prev
+    float rng
+    float up
+    float dn
+    float eff
+    float edge
+
+type BlockRecord
+    int sid
+    int age
+    float marginal
+
+type Context
+    int sid
+    bool active = false
+    bool valid = false
+    int key = na
+    int endTime = na
+    int dow = na
+    int regime = -1
+    int prev = -1
+    int prevSid = -1
+    int lastTime = na
+    float o = na
+    float h = na
+    float l = na
+    float c = na
+    int bars = 0
+    int level = 4
+    array<float> rs
+    array<float> us
+    array<float> ds
+    array<float> es
+    array<float> cs
+    array<float> m0
+    array<float> m1
+    array<float> m2
+    float q50 = na
+    float q75 = na
+    float q90 = na
+    float loc = na
+    float rp = na
+    float ep = na
+    float cp = na
+    float eff = na
+    float clv = na
+    int dir = 0
+    int locBin = 0
+    int pressure = 0
+    int evidence = 0
+    int state = 0
+    int oldState = 0
+    int oldLoc = 0
+    int oldPressure = 0
+    int blockAt = na
+    float blockC = na
+    float blockR = na
+    float blockE = na
+    float blockH = na
+    float blockL = na
+    int blockDir = 0
+    float marginal = na
+    float mp = na
+    int marginalAt = na
+    bool expandedUp = false
+    bool expandedDn = false
+    int exhaustedDir = 0
+    array<bool> used
+
+f_new(int sid) =>
+    Context.new(sid=sid, rs=array.new_float(), us=array.new_float(), ds=array.new_float(), es=array.new_float(), cs=array.new_float(), m0=array.new_float(), m1=array.new_float(), m2=array.new_float(), used=array.new_bool(6, false))
+
+var array<PeriodRecord> days = array.new<PeriodRecord>()
+var array<PeriodRecord> sessions = array.new<PeriodRecord>()
+var array<BlockRecord> blocks = array.new<BlockRecord>()
+var array<float> regimeScores = array.new_float()
+var array<Context> contexts = array.new<Context>()
+var array<label> marks = array.new<label>()
+
+f_mark(float y, string txt, color col) =>
+    label lb = label.new(bar_index, y, txt, style=label.style_none, textcolor=col, size=size.tiny, force_overlay=true)
+    array.push(marks, lb)
+    if array.size(marks) > markerCap
+        label.delete(array.shift(marks))
+
+f_match(PeriodRecord r, Context c, int level) =>
+    bool dw = r.dow == c.dow
+    bool rg = r.regime == c.regime
+    bool pv = r.prev == c.prev
+    bool si = r.sid == c.sid
+    c.sid == 0 ? (level == 0 ? dw and rg and pv : level == 1 ? dw and rg : level == 2 ? dw : true) : (level == 0 ? si and dw and rg and pv : level == 1 ? si and dw and rg : level == 2 ? si and dw : level == 3 ? si : true)
+
+f_freeze(Context c, array<PeriodRecord> db) =>
+    int lastLevel = c.sid == 0 ? 3 : 4
+    int firstLevel = condReg ? (condPrev ? 0 : 1) : 2
+    array<int> counts = array.new_int(lastLevel + 1, 0)
+    if array.size(db) > 0
+        for r in db
+            for lv = firstLevel to lastLevel
+                if f_match(r, c, lv)
+                    array.set(counts, lv, array.get(counts, lv) + 1)
+    c.level := lastLevel
+    for lv = firstLevel to lastLevel
+        if array.get(counts, lv) >= minDist
+            c.level := lv
+            break
+    if array.size(db) > 0
+        for r in db
+            if f_match(r, c, c.level)
+                array.push(c.rs, r.rng)
+                array.push(c.us, r.up)
+                array.push(c.ds, r.dn)
+                array.push(c.es, r.eff)
+                array.push(c.cs, r.edge)
+    array.sort(c.rs)
+    array.sort(c.us)
+    array.sort(c.ds)
+    array.sort(c.es)
+    array.sort(c.cs)
+    c.q50 := f_q(c.rs, 50)
+    c.q75 := f_q(c.rs, 75)
+    c.q90 := f_q(c.rs, 90)
+    if c.sid > 0 and array.size(blocks) > 0
+        for b in blocks
+            if b.sid == c.sid
+                array.push(b.age == 0 ? c.m0 : b.age == 1 ? c.m1 : c.m2, b.marginal)
+    array.sort(c.m0)
+    array.sort(c.m1)
+    array.sort(c.m2)
+
+f_finish(Context c, array<PeriodRecord> db, int cap) =>
+    int cls = -1
+    float rr = 100 * (c.h - c.l) / c.o
+    if c.valid and c.bars >= 2 and c.o > 0 and rr >= 0 and rr <= maxRange
+        float ef = c.h > c.l ? math.abs(c.c - c.o) / (c.h - c.l) : 0
+        float edge = c.h > c.l ? (c.c >= c.o ? (c.c - c.l) / (c.h - c.l) : (c.h - c.c) / (c.h - c.l)) : 0.5
+        array.push(db, PeriodRecord.new(c.sid, c.dow, c.regime, c.prev, rr, 100 * (c.h - c.o) / c.o, 100 * (c.o - c.l) / c.o, ef, edge))
+        if array.size(db) > cap
+            array.shift(db)
+        float rp = array.size(c.rs) >= minDist ? f_rank(c.rs, rr) : na
+        cls := na(rp) ? -1 : rp < 25 ? 0 : rp < 75 ? 1 : rp < 90 ? 2 : 3
+    cls
+
+f_update(Context c) =>
+    c.oldState := c.state
+    c.oldLoc := c.locBin * c.dir
+    c.oldPressure := c.pressure
+    c.h := math.max(c.h, high)
+    c.l := math.min(c.l, low)
+    c.c := close
+    c.bars += 1
+    c.lastTime := time_close
+    float rr = c.h - c.l
+    c.dir := close > c.o ? 1 : close < c.o ? -1 : 0
+    c.eff := rr > EPS ? math.abs(close - c.o) / rr : 0
+    c.clv := rr > EPS ? 2 * (close - c.l) / rr - 1 : 0
+    bool ready = array.size(c.rs) >= minDist and c.valid
+    c.rp := ready ? f_rank(c.rs, 100 * rr / c.o) : na
+    c.loc := ready and c.dir != 0 ? f_rank(c.dir > 0 ? c.us : c.ds, 100 * math.abs(close - c.o) / c.o) : na
+    c.ep := ready ? f_rank(c.es, c.eff) : na
+    c.cp := ready ? f_rank(c.cs, (1 + c.dir * c.clv) / 2) : na
+    c.locBin := na(c.loc) or c.loc < centralQ ? 0 : c.loc < stretchQ ? 1 : c.loc < extremeQ ? 2 : c.loc < tailQ ? 3 : 4
+    bool blockDone = c.sid > 0 and not na(c.blockAt) and time_close - c.blockAt >= blockMinutes * 60000
+    if blockDone
+        c.pressure := 0
+        c.marginal := na
+        c.mp := na
+        float qp = c.o * c.q50 / 100
+        bool blockValid = ready and c.blockDir != 0 and c.dir == c.blockDir and qp > syminfo.mintick and time_close - c.blockAt == blockMinutes * 60000
+        if blockValid
+            float signedProgress = c.blockDir * (close - c.blockC)
+            float denom = math.max(rr - c.blockR, denominatorFloor * qp)
+            c.marginal := signedProgress / math.max(denom, syminfo.mintick)
+            int age = f_age(int((time_close - c.key) / 60000))
+            array<float> bench = age == 0 ? c.m0 : age == 1 ? c.m1 : c.m2
+            c.mp := array.size(bench) >= minDist ? f_rank(bench, c.marginal) : na
+            c.marginalAt := time_close
+            bool extension = c.dir > 0 ? c.h > c.blockH : c.l < c.blockL
+            float retreat = c.dir > 0 ? c.h - close : close - c.l
+            bool weak = not na(c.mp) and c.eff < c.blockE and retreat > syminfo.mintick and (c.mp <= 25 or signedProgress < 0)
+            bool strong = not na(c.mp) and c.ep >= 75 and c.cp >= 75 and c.mp >= 50 and signedProgress > 0 and extension
+            c.pressure := weak ? -1 : strong ? 1 : 0
+            array.push(blocks, BlockRecord.new(c.sid, age, c.marginal))
+            if array.size(blocks) > blockCap
+                array.shift(blocks)
+        c.blockAt := time_close
+        c.blockC := close
+        c.blockR := rr
+        c.blockE := c.eff
+        c.blockH := c.h
+        c.blockL := c.l
+        c.blockDir := c.dir
+    // A held block state is invalid after an open-crossing direction change.
+    if c.dir != c.blockDir
+        c.pressure := 0
+    bool expansion = ready and c.rp >= stretchQ and c.ep >= 75 and c.cp >= 75 and c.dir != 0
+    bool priorExpansion = c.dir > 0 ? c.expandedUp : c.dir < 0 ? c.expandedDn : false
+    bool candidate = priorExpansion and c.loc >= extremeQ and c.rp >= stretchQ and c.pressure == -1
+    c.evidence := candidate ? 2 : priorExpansion and c.pressure == -1 ? 1 : 0
+    bool reversion = c.exhaustedDir != 0 and c.exhaustedDir * (close - c.o) < 0
+    c.state := not ready ? -1 : reversion ? 8 : candidate ? 7 : expansion and c.pressure == 1 ? 3 : expansion ? 2 : c.rp >= stretchQ and c.ep <= 25 ? 4 : c.loc >= extremeQ ? 5 : c.rp < centralQ ? 1 : 0
+    if candidate
+        c.exhaustedDir := c.dir
+    if expansion
+        if c.dir > 0
+            c.expandedUp := true
+        else
+            c.expandedDn := true
+
+// Outcome records and predictions: classes C / R / timeout / ambiguous.
+type Key
+    int sid
+    int dow
+    int regime
+    int prev
+    int direction
+    int age
+    int family
+    int location
+    int pressure
+
+type Outcome
+    Key k
+    int outcomeCode
+
+type Forecast
+    array<float> p
+    array<int> counts
+    int n = 0
+    int level = 3
+    int feature = 0
+    int parentN = 0
+    float width = na
+
+type Event
+    Key k
+    int instance
+    int bornBar
+    int bornTime
+    int deadline
+    float entry
+    float cont
+    float rev
+    array<Forecast> models
+    Forecast shown
+    int result = -1
+    int resolvedBar = na
+    bool censored = false
+    int resolvedTime = na
+    Forecast base = na
+    line entryPath = na
+    line contPath = na
+    line revPath = na
+    label startTag = na
+    label endTag = na
+
+type Evaluation
+    int feature
+    float gain
+
+var array<Outcome> outcomes = array.new<Outcome>()
+var array<Evaluation> evaluations = array.new<Evaluation>()
+var array<Event> staging = array.new<Event>()
+var array<Event> auditEvents = array.new<Event>()
+var array<Event> drawnEvents = array.new<Event>()
+var Event pending = na
+var Event lastEvent = na
+var int trainedTotal = 0
+var int censorCount = 0
+var int ambiguousCount = 0
+var int lastDailyState = -1
+var int lastSessionState = -1
+var int lastSessionSid = -1
+var int lastSessionEnd = na
+var int currentRegime = -1
+
+f_same(Key a, Key b, int level, int feature) =>
+    // Direction and elapsed age are always preserved; only L4 pools event families.
+    bool invariant = a.direction == b.direction and a.age == b.age and (level >= 4 or a.family == b.family)
+    bool core = level == 0 ? a.sid == b.sid and a.location == b.location and a.pressure == b.pressure : level == 1 ? a.location == b.location and a.pressure == b.pressure : level == 2 ? a.location == b.location : true
+    bool extra = feature == 1 ? a.regime == b.regime : feature == 2 ? a.dow == b.dow : feature == 3 ? a.prev == b.prev : true
+    invariant and core and extra
+
+f_wilson(int hits, int n) =>
+    float lo = na
+    float hi = na
+    if n > 0
+        float p = float(hits) / n
+        float z2 = 3.841458820694
+        float center = (p + z2 / (2 * n)) / (1 + z2 / n)
+        float half = 1.95996398454 * math.sqrt(p * (1 - p) / n + z2 / (4 * n * n)) / (1 + z2 / n)
+        lo := math.max(0, center - half)
+        hi := math.min(1, center + half)
+    [lo, hi]
+
+f_counts(Key k, int lv, int feature) =>
+    array<int> ct = array.new_int(4, 0)
+    if array.size(outcomes) > 0
+        for r in outcomes
+            if f_same(r.k, k, lv, feature)
+                array.set(ct, r.outcomeCode, array.get(ct, r.outcomeCode) + 1)
+    ct
+
+f_forecast(Key k, int forcedFeature) =>
+    int lv = 0
+    array<int> ct = f_counts(k, 0, forcedFeature)
+    if forcedFeature == 0
+        while array.sum(ct) < minOutcome and lv < (poolFamilies ? 4 : 3)
+            lv += 1
+            ct := f_counts(k, lv, 0)
+    int n = array.sum(ct)
+    array<int> parent = forcedFeature > 0 ? f_counts(k, 0, 0) : lv < (poolFamilies ? 4 : 3) ? f_counts(k, lv + 1, 0) : array.copy(ct)
+    int complementN = array.sum(parent) - n
+    bool shrink = complementN >= 20 and priorStrength > 0
+    array<float> p = array.new_float(4, na)
+    float width = 0
+    if n > 0
+        for j = 0 to 3
+            float base = shrink ? float(array.get(parent, j) - array.get(ct, j)) / complementN : 0
+            float estimate = (array.get(ct, j) + (shrink ? priorStrength * base : 0)) / (n + (shrink ? priorStrength : 0))
+            array.set(p, j, estimate)
+            [lo, hi] = f_wilson(array.get(ct, j), n)
+            width := math.max(width, hi - lo)
+    Forecast.new(p, ct, n, lv, forcedFeature, complementN, n > 0 ? width : na)
+
+// Unconditional-within-invariants baseline, frozen at the same entry as the model.
+f_base(Key k) =>
+    array<int> ct = f_counts(k, poolFamilies ? 4 : 3, 0)
+    int n = array.sum(ct)
+    array<float> p = array.new_float(4, na)
+    if n > 0
+        for j = 0 to 3
+            array.set(p, j, float(array.get(ct, j)) / n)
+    Forecast.new(p, ct, n, poolFamilies ? 4 : 3, 0, 0, na)
+
+f_gain(int feature) =>
+    int n = 0
+    float sm = 0
+    float sq = 0
+    if array.size(evaluations) > 0
+        for e in evaluations
+            if e.feature == feature
+                n += 1
+                sm += e.gain
+                sq += e.gain * e.gain
+    float mean = n > 0 ? sm / n : na
+    float se = n > 1 ? math.sqrt(math.max(0, (sq - sm * sm / n) / (n - 1)) / n) : na
+    [mean, se, n]
+
+f_brier(Forecast f, int result) =>
+    float loss = 0
+    for j = 0 to 3
+        float err = array.get(f.p, j) - (result == j ? 1 : 0)
+        loss += err * err
+    loss
+
+f_learn(Event e) =>
+    array.push(outcomes, Outcome.new(e.k, e.result))
+    if array.size(outcomes) > eventCap
+        array.shift(outcomes)
+    Forecast core = array.get(e.models, 0)
+    if core.n >= minOutcome and core.level == 0
+        for j = 1 to 3
+            Forecast aug = array.get(e.models, j)
+            if aug.n >= minOutcome
+                array.push(evaluations, Evaluation.new(j, f_brier(core, e.result) - f_brier(aug, e.result)))
+                int count = 0
+                for ev in evaluations
+                    if ev.feature == j
+                        count += 1
+                if count > evalCap
+                    int removeAt = -1
+                    for z = 0 to array.size(evaluations) - 1
+                        if array.get(evaluations, z).feature == j
+                            removeAt := z
+                            break
+                    if removeAt >= 0
+                        array.remove(evaluations, removeAt)
+
+f_condition(Forecast f) =>
+    string core = f.level == 0 ? "Session+Loc+Pressure" : f.level == 1 ? "Loc+Pressure" : f.level == 2 ? "Location" : f.level == 3 ? "Family base" : "Pooled-family base"
+    core + (f.feature == 1 ? "+Regime" : f.feature == 2 ? "+Weekday" : f.feature == 3 ? "+Previous" : "")
+
+f_reliability(Forecast f) =>
+    f.n < minOutcome ? "Insufficient" : f.level >= 2 ? "Low / broad fallback" : f.n >= 160 and f.width <= 0.16 ? "Good (nominal)" : f.n >= 80 and f.width <= 0.22 ? "Moderate" : "Low"
+
+f_state(Context c) =>
+    string side = c.dir >= 0 ? "Upper " : "Lower "
+    switch c.state
+        -1 => "WARMING / INCOMPLETE"
+        1 => "COMPRESSED SO FAR"
+        2 => "DIRECTIONAL EXPANSION"
+        3 => "STRONG EXPANSION"
+        4 => "TWO-SIDED VOLATILITY"
+        5 => side + "STATISTICAL EXTREME"
+        7 => side + "EXHAUSTION CANDIDATE"
+        8 => "REVERSION IN PROGRESS"
+        => "NORMAL"
+
+f_location(Context c) =>
+    na(c.rp) ? "Insufficient history" : c.dir == 0 ? "Central / at open" : (c.dir > 0 ? "Upper " : "Lower ") + f_pct(c.loc) + (c.locBin == 0 ? " · Central" : c.locBin == 1 ? " · Normal" : c.locBin == 2 ? " · Stretch" : c.locBin == 3 ? " · Extreme" : " · Tail")
+
+f_pressure(Context c) =>
+    na(c.mp) ? "Unrated / block warm-up" : c.pressure == 1 ? "Strengthening" : c.pressure == -1 ? "Weakening" : "Stable"
+
+f_cons(Context c, float q) =>
+    not na(c.rp) and q > EPS ? f_pct(100 * (100 * (c.h - c.l) / c.o) / q) : "—"
+
+// Reject synthetic chart prices and unsupported alignment rather than manufacture labels.
+float tfSeconds = timeframe.in_seconds()
+if barstate.isfirst
+    if not chart.is_standard or not timeframe.isintraday or tfSeconds < 60 or tfSeconds > 1800
+        runtime.error("Use standard time-based intraday candles from 1m to 30m; 5m/15m recommended.")
+    if (blockMinutes * 60) % tfSeconds != 0 or (horizonMinutes * 60) % tfSeconds != 0
+        runtime.error("Pressure block and outcome horizon must be exact multiples of the chart timeframe.")
+    for id = 0 to 5
+        array.push(contexts, f_new(id))
+
+string weekdays = weekends ? "1234567" : "23456"
+array<string> sess = array.from("0000-0000", ss1, ss2, ss3, ss4, ss5)
+array<string> tzs = array.from(dayTZ, tz1, tz2, tz3, tz4, tz5)
+// time_tradingday is a UTC trading-date label, NOT the opening timestamp.
+// The actual boundary comes from the feed's 1D bar, with no OHLC request/lookahead.
+bool nativeDay = dayBoundaryMode == "Symbol trading day"
+int nativeDayOpen = time("1D")
+int nativeDayClose = time_close("1D")
+int dkey = nativeDay ? nativeDayOpen : f_anchor(dayTZ, dayHour, dayMinute)
+int ddow = nativeDay ? dayofweek(time_tradingday, "Etc/UTC") : dayofweek(dkey, dayTZ)
+string dayDisplayTZ = nativeDay ? syminfo.timezone : dayTZ
+bool dayAllowed = weekends or (ddow >= dayofweek.monday and ddow <= dayofweek.friday)
+array<bool> inside = array.from(dayAllowed, en1 and not na(time(timeframe.period, ss1 + ":" + weekdays, tz1)), en2 and not na(time(timeframe.period, ss2 + ":" + weekdays, tz2)), en3 and not na(time(timeframe.period, ss3 + ":" + weekdays, tz3)), en4 and not na(time(timeframe.period, ss4 + ":" + weekdays, tz4)), en5 and not na(time(timeframe.period, ss5 + ":" + weekdays, tz5)))
+array<int> keys = array.from(dkey, f_start(ss1, tz1), f_start(ss2, tz2), f_start(ss3, tz3), f_start(ss4, tz4), f_start(ss5, tz5))
+int selected = -1
+for id = 1 to 5
+    if array.get(inside, id) and (focus == "Auto priority" or focus == f_name(id))
+        selected := id
+
+bool enteredUpper = false
+bool enteredLower = false
+bool enteredStrong = false
+bool weakening = false
+bool upperExhaustion = false
+bool lowerExhaustion = false
+bool continuationProbability = false
+bool reversionProbability = false
+bool continuationResolved = false
+bool reversionResolved = false
+
+if barstate.isconfirmed
+    if open <= 0 or low <= 0
+        runtime.error("Percentage excursion modelling requires strictly positive prices.")
+    // Stage 1: only labels resolved strictly before this bar enter training.
+    if array.size(staging) > 0
+        Event ready = array.get(staging, 0)
+        if ready.resolvedBar < bar_index
+            if not ready.censored
+                f_learn(ready)
+                trainedTotal += 1
+            array.shift(staging)
+    // Stage 2: finalize ALL old periods before freezing ANY new session.
+    for id = 0 to 5
+        Context c = array.get(contexts, id)
+        bool nowInside = array.get(inside, id)
+        int key = array.get(keys, id)
+        bool ending = c.active and (not nowInside or key != c.key)
+        if ending
+            // Days use the observed feed's trading hours. Analytical sessions
+            // require complete configured coverage; internal holes invalidate both.
+            c.valid := c.valid and (id == 0 or c.lastTime == c.endTime)
+            int cls = f_finish(c, id == 0 ? days : sessions, id == 0 ? dayCap : periodCap)
+            if id == 0
+                lastDailyState := cls
+            else if cls >= 0 and (na(lastSessionEnd) or c.endTime >= lastSessionEnd)
+                lastSessionState := cls
+                lastSessionSid := id
+                lastSessionEnd := c.endTime
+            c.active := false
+    // Stage 3: initialize/update independent live contexts.
+    for id = 0 to 5
+        bool nowInside = array.get(inside, id)
+        Context c = array.get(contexts, id)
+        if nowInside
+            int key = array.get(keys, id)
+            bool starting = not c.active or c.key != key
+            if starting
+                c := f_new(id)
+                c.key := key
+                string tz = array.get(tzs, id)
+                c.endTime := id == 0 ? (nativeDay ? nativeDayClose : timestamp(dayTZ, year(key, dayTZ), month(key, dayTZ), dayofmonth(key, dayTZ) + 1, dayHour, dayMinute)) : f_end(array.get(sess, id), tz, key)
+                c.active := true
+                c.valid := (id == 0 or time == key) and not barstate.isfirst
+                c.dow := id == 0 ? ddow : dayofweek(key, tz)
+                c.prev := id == 0 ? lastDailyState : lastSessionState
+                c.prevSid := id == 0 ? 0 : lastSessionSid
+                if id == 0
+                    float score = na
+                    if array.size(days) >= regLen
+                        float sm = 0
+                        for j = array.size(days) - regLen to array.size(days) - 1
+                            sm += array.get(days, j).rng
+                        score := sm / regLen
+                    array<float> sortedScores = array.copy(regimeScores)
+                    array.sort(sortedScores)
+                    float rank = array.size(sortedScores) >= minDist ? f_rank(sortedScores, score) : na
+                    currentRegime := na(rank) ? -1 : rank < 25 ? 0 : rank < 75 ? 1 : rank < 90 ? 2 : 3
+                    if not na(score)
+                        array.push(regimeScores, score)
+                        if array.size(regimeScores) > dayCap
+                            array.shift(regimeScores)
+                c.regime := currentRegime
+                c.o := open
+                c.h := open
+                c.l := open
+                c.c := open
+                c.blockAt := time
+                c.blockC := open
+                c.blockR := 0
+                c.blockE := 0
+                c.blockH := open
+                c.blockL := open
+                c.blockDir := 0
+                f_freeze(c, id == 0 ? days : sessions)
+                array.set(contexts, id, c)
+            else if time != c.lastTime
+                if id > 0 or dailyGapMode == "Strict contiguous"
+                    c.valid := false
+            if time_close > c.endTime
+                runtime.error("A chart candle straddles a configured session/day boundary. Align session times and chart timeframe.")
+            f_update(c)
+    // Stage 4: resolve pending event. Current result remains in staging this bar.
+    if not na(pending)
+        Context ec = array.get(contexts, pending.k.sid)
+        bool sameInstance = array.get(inside, pending.k.sid) and ec.key == pending.instance
+        if eventTrails
+            int drawEnd = math.min(time_close, pending.deadline)
+            line.set_x2(pending.entryPath, drawEnd)
+            line.set_x2(pending.contPath, drawEnd)
+            line.set_x2(pending.revPath, drawEnd)
+        bool gap = time != time_close[1]
+        int result = -1
+        bool cancel = gap
+        if not cancel
+            if not sameInstance or time >= pending.deadline
+                result := 2
+            else if bar_index > pending.bornBar
+                if time_close > pending.deadline
+                    cancel := true
+                else
+                    int d = pending.k.direction
+                    bool openC = d > 0 ? open >= pending.cont : open <= pending.cont
+                    bool openR = d > 0 ? open <= pending.rev : open >= pending.rev
+                    bool hitC = d > 0 ? high >= pending.cont : low <= pending.cont
+                    bool hitR = d > 0 ? low <= pending.rev : high >= pending.rev
+                    result := openC ? 0 : openR ? 1 : hitC and hitR ? 3 : hitC ? 0 : hitR ? 1 : time_close >= pending.deadline ? 2 : -1
+        if cancel or result >= 0
+            pending.result := result
+            pending.censored := cancel
+            pending.resolvedBar := bar_index
+            pending.resolvedTime := time_close
+            if pending.bornTime >= auditFrom and time_close <= auditTo
+                array.push(auditEvents, pending)
+                if array.size(auditEvents) > auditCap
+                    array.shift(auditEvents)
+            if eventTrails and priceLabels
+                string resultText = cancel ? "X · gap" : result == 0 ? "C · continuation" : result == 1 ? "R · toward open" : result == 2 ? "T · timeout" : "? · ambiguous"
+                color resultColor = cancel or result >= 2 ? color.gray : result == 0 ? color.teal : color.orange
+                pending.endTag := label.new(time_close, close, resultText, xloc=xloc.bar_time, style=label.style_label_left, color=color.new(resultColor, 85), textcolor=resultColor, size=size.small, force_overlay=true)
+                // Entry text/probabilities and original barriers are never rewritten.
+            array.push(staging, pending)
+            if cancel
+                censorCount += 1
+            else if result == 3
+                ambiguousCount += 1
+            continuationResolved := not cancel and result == 0
+            reversionResolved := not cancel and result == 1
+            if researchMarks and priceLabels
+                f_mark(close, cancel ? "X" : result == 0 ? "C" : result == 1 ? "R" : result == 2 ? "T" : "?", color.silver)
+            pending := na
+    // Stage 5: state markers and state-entry event admission for the focus session.
+    if selected > 0
+        Context c = array.get(contexts, selected)
+        enteredUpper := c.dir > 0 and c.locBin >= 3 and c.oldLoc < 3 and c.valid
+        enteredLower := c.dir < 0 and c.locBin >= 3 and c.oldLoc > -3 and c.valid
+        enteredStrong := c.state == 3 and c.oldState != 3
+        weakening := c.pressure == -1 and c.oldPressure != -1
+        upperExhaustion := c.state == 7 and c.oldState != 7 and c.dir > 0
+        lowerExhaustion := c.state == 7 and c.oldState != 7 and c.dir < 0
+        bool expansionEntry = (c.state == 2 or c.state == 3) and c.oldState != 2 and c.oldState != 3
+        bool weakeningEntry = weakening and (c.dir > 0 ? c.expandedUp : c.expandedDn)
+        int family = weakeningEntry ? 2 : enteredUpper or enteredLower ? 1 : expansionEntry ? 0 : -1
+        if points and priceLabels
+            if upperExhaustion or lowerExhaustion
+                f_mark(c.dir > 0 ? high : low, "EX", color.orange)
+            else if weakening
+                f_mark(close, "· W", color.orange)
+            else if enteredUpper or enteredLower
+                f_mark(c.dir > 0 ? high : low, c.dir > 0 ? "UE" : "LE", color.rgb(126, 159, 201))
+            else if expansionEntry
+                f_mark(close, "· E", color.teal)
+        // A blocked state entry can be reconsidered at a later completed block,
+        // never on every candle. Re-evaluate the CURRENT state, not the old entry.
+        bool checkpoint = trainingCheckpoints and c.blockAt == time_close
+        int offset = c.dir > 0 ? 0 : 3
+        bool weakNow = c.pressure == -1 and (c.dir > 0 ? c.expandedUp : c.expandedDn)
+        bool admitWeak = (weakeningEntry or checkpoint and weakNow) and not array.get(c.used, offset + 2)
+        bool admitExtreme = (enteredUpper or enteredLower or checkpoint and c.locBin >= 3) and not array.get(c.used, offset + 1)
+        bool admitExpansion = (expansionEntry or checkpoint and (c.state == 2 or c.state == 3)) and not array.get(c.used, offset)
+        family := admitWeak ? 2 : admitExtreme ? 1 : admitExpansion ? 0 : -1
+        float scale = c.o * c.q50 / 100
+        int usedIndex = (c.dir > 0 ? 0 : 3) + math.max(family, 0)
+        bool eligible = family >= 0 and c.dir != 0 and c.valid and not na(c.rp) and (family != 2 or not na(c.mp)) and scale > syminfo.mintick and math.abs(close - c.o) >= minimumDisplacement * scale and time_close < c.endTime
+        if eligible and na(pending) and not array.get(c.used, usedIndex)
+            Key k = Key.new(c.sid, c.dow, c.regime, c.prev, c.dir, f_age(int((time_close - c.key) / 60000)), family, math.min(c.locBin, 3), na(c.mp) ? 2 : c.pressure)
+            array<Forecast> models = array.new<Forecast>()
+            for ft = 0 to 3
+                array.push(models, f_forecast(k, ft))
+            Forecast chosen = array.get(models, 0)
+            float bestLowerBound = 0
+            if featureGate and chosen.level == 0
+                for ft = 1 to 3
+                    [gain, se, n] = f_gain(ft)
+                    Forecast alternative = array.get(models, ft)
+                    float lowerBound = gain - 2.40 * se
+                    if n >= minEval and alternative.n >= minOutcome and lowerBound > bestLowerBound
+                        chosen := alternative
+                        bestLowerBound := lowerBound
+            int deadline = math.min(time_close + horizonMinutes * 60000, c.endTime)
+            pending := Event.new(k, c.key, bar_index, time_close, deadline, close, close + c.dir * continueMultiple * scale, close - c.dir * math.min(revertMultiple * scale, math.abs(close - c.o)), models, chosen)
+            pending.base := f_base(k)
+            if eventTrails
+                pending.entryPath := line.new(time_close, pending.entry, time_close, pending.entry, xloc=xloc.bar_time, color=color.new(color.gray, 35), style=line.style_dotted, force_overlay=true)
+                pending.contPath := line.new(time_close, pending.cont, time_close, pending.cont, xloc=xloc.bar_time, color=color.new(color.teal, 20), force_overlay=true)
+                pending.revPath := line.new(time_close, pending.rev, time_close, pending.rev, xloc=xloc.bar_time, color=color.new(color.orange, 20), force_overlay=true)
+                string entryText = (k.direction > 0 ? "U" : "L") + " · " + (family == 0 ? "Expansion" : family == 1 ? "Extreme" : "Weakening")
+                entryText += chosen.n >= minOutcome ? "\nC " + f_pct(array.get(chosen.p, 0) * 100) + " · R " + f_pct(array.get(chosen.p, 1) * 100) + " · n=" + str.tostring(chosen.n) : "\nUnscored · n=" + str.tostring(chosen.n)
+                if priceLabels
+                    pending.startTag := label.new(time_close, close, entryText, xloc=xloc.bar_time, style=k.direction > 0 ? label.style_label_down : label.style_label_up, color=color.new(color.blue, 87), textcolor=color.rgb(55, 115, 180), size=size.small, force_overlay=true)
+                array.push(drawnEvents, pending)
+                if array.size(drawnEvents) > trailCap
+                    Event old = array.shift(drawnEvents)
+                    line.delete(old.entryPath)
+                    line.delete(old.contPath)
+                    line.delete(old.revPath)
+                    label.delete(old.startTag)
+                    label.delete(old.endTag)
+            lastEvent := pending
+            array.set(c.used, usedIndex, true)
+            if researchMarks and priceLabels
+                f_mark(close, "e" + str.tostring(family + 1), color.gray)
+            continuationProbability := chosen.n >= minOutcome and array.get(chosen.p, 0) * 100 >= probabilityAlert
+            reversionProbability := chosen.n >= minOutcome and array.get(chosen.p, 1) * 100 >= probabilityAlert
+
+alertcondition(enteredUpper, "Entered Upper Statistical Extreme", "Confirmed upper extreme entry; not a reversal signal.")
+alertcondition(enteredLower, "Entered Lower Statistical Extreme", "Confirmed lower extreme entry; not a reversal signal.")
+alertcondition(enteredStrong, "Strong Expansion Detected", "Confirmed efficient expansion with strengthening block pressure.")
+alertcondition(weakening, "Pressure Weakening", "Confirmed block pressure deterioration.")
+alertcondition(upperExhaustion, "Upper Exhaustion Candidate", "Upper extension with deterioration after expansion.")
+alertcondition(lowerExhaustion, "Lower Exhaustion Candidate", "Lower extension with deterioration after expansion.")
+alertcondition(continuationProbability, "Empirical Continuation Threshold", "New eligible event: empirical continuation-first estimate exceeds configured threshold.")
+alertcondition(reversionProbability, "Empirical Reversion Threshold", "New eligible event: empirical toward-open-first estimate exceeds configured threshold.")
+alertcondition(continuationResolved, "Continuation Confirmed", "A previously admitted event resolved continuation first.")
+alertcondition(reversionResolved, "Reversion Confirmed", "A previously admitted event resolved toward-open first.")
+
+// Current context on price chart; persistent history and audit are below.
+var label upperLabel = na
+var label lowerLabel = na
+var label nowLabel = na
+var box activeZone = na
+color panelBG = theme == "Light" ? color.new(color.rgb(247, 249, 252), 5) : color.new(color.rgb(18, 23, 31), 5)
+string panelFont = fontSize == "Small" ? size.small : fontSize == "Large" ? size.large : size.normal
+var table dash = table.new(position.top_right, 2, 32, bgcolor=panelBG, border_width=0, force_overlay=true)
+var table audit = table.new(position.top_left, 2, 14, bgcolor=panelBG, border_width=0, force_overlay=true)
+color ink = theme == "Light" ? color.rgb(30, 43, 60) : color.rgb(218, 225, 234)
+color muted = theme == "Light" ? color.rgb(84, 102, 122) : color.rgb(145, 159, 176)
+color accent = color.rgb(75, 190, 175)
+f_row(int row, string title, string value, color col) =>
+    table.cell(dash, 0, row, title, text_color=muted, text_size=panelFont, text_halign=text.align_left)
+    table.cell(dash, 1, row, value, text_color=col, text_size=panelFont, text_halign=text.align_left)
+
+if barstate.islast
+    label.delete(upperLabel)
+    label.delete(lowerLabel)
+    label.delete(nowLabel)
+    box.delete(activeZone)
+    table.clear(dash, 0, 0, 1, 31)
+    Context daily = array.get(contexts, 0)
+    if panel
+        f_row(0, "ASLP V1 · " + syminfo.ticker, "Confirmed closes", accent)
+        f_row(1, "DAY LOCATION", daily.active and daily.key == dkey ? (na(daily.rp) ? "Warm-up " + str.tostring(array.size(daily.rs)) + "/" + str.tostring(minDist) : f_location(daily)) : "Waiting for day confirmation", ink)
+    if selected > 0
+        Context c = array.get(contexts, selected)
+        bool fresh = c.active and c.key == array.get(keys, selected)
+        bool ready = fresh and not na(c.rp)
+        if ready and (neighbors or zone)
+            array<float> grid = array.new_float()
+            array<string> names = array.new_string()
+            array<float> qs = array.from(centralQ, 50.0, stretchQ, extremeQ, tailQ)
+            array.push(grid, c.o)
+            array.push(names, "Open")
+            for j = 0 to 4
+                float q = array.get(qs, j)
+                array.push(grid, c.o * (1 + f_q(c.us, q) / 100))
+                array.push(names, "U Q" + str.tostring(q, "#"))
+                array.push(grid, c.o * (1 - f_q(c.ds, q) / 100))
+                array.push(names, "L Q" + str.tostring(q, "#"))
+            float below = na
+            float above = na
+            string belowName = ""
+            string aboveName = ""
+            for j = 0 to array.size(grid) - 1
+                float price = array.get(grid, j)
+                if price <= c.c and (na(below) or price > below)
+                    below := price
+                    belowName := array.get(names, j)
+                if price > c.c and (na(above) or price < above)
+                    above := price
+                    aboveName := array.get(names, j)
+            if neighbors and priceLabels
+                if not na(above)
+                    upperLabel := label.new(bar_index + 3, above, "▲ " + aboveName + " " + str.tostring(above, format.mintick), style=label.style_label_left, color=color.new(color.black, 100), textcolor=muted, size=size.small, force_overlay=true)
+                if not na(below)
+                    lowerLabel := label.new(bar_index + 3, below, "▼ " + belowName + " " + str.tostring(below, format.mintick), style=label.style_label_left, color=color.new(color.black, 100), textcolor=muted, size=size.small, force_overlay=true)
+                nowLabel := label.new(bar_index + 3, c.c, "NOW " + str.tostring(c.c, format.mintick), style=label.style_label_left, color=color.new(color.black, 100), textcolor=accent, size=size.small, force_overlay=true)
+            if zone and c.locBin < 4
+                array<float> sideSamples = c.dir >= 0 ? c.us : c.ds
+                float zlo = c.locBin == 0 ? 0 : f_q(sideSamples, c.locBin == 1 ? centralQ : c.locBin == 2 ? stretchQ : extremeQ)
+                float zhi = f_q(sideSamples, c.locBin == 0 ? centralQ : c.locBin == 1 ? stretchQ : c.locBin == 2 ? extremeQ : tailQ)
+                float a = c.o * (1 + (c.dir >= 0 ? 1 : -1) * zlo / 100)
+                float b = c.o * (1 + (c.dir >= 0 ? 1 : -1) * zhi / 100)
+                activeZone := box.new(bar_index - math.min(c.bars - 1, 300), math.max(a, b), bar_index + 2, math.min(a, b), border_width=0, bgcolor=color.new(c.state == 7 ? color.orange : accent, 93), force_overlay=true)
+        if panel
+            f_row(2, f_name(selected) + " · " + f_reg(c.regime), fresh ? f_state(c) : "Waiting for confirmed bar", c.state == 7 ? color.orange : accent)
+            f_row(3, "SESSION LOCATION", fresh ? f_location(c) : "—", ink)
+            f_row(4, "PRESSURE", fresh ? f_pressure(c) : "—", ink)
+            f_row(5, "EXHAUSTION", not ready ? "Unrated" : c.evidence == 2 ? "High · candidate" : c.evidence == 1 ? "Watch" : "None detected", c.evidence > 0 ? color.orange : ink)
+            if mode != "Compact"
+                f_row(12, "RANGE percentile S / D", f_pct(c.rp) + " / " + (daily.active ? f_pct(daily.rp) : "—"), ink)
+                f_row(13, "Session Q50 / Q75 / Q90", f_cons(c, c.q50) + " / " + f_cons(c, c.q75) + " / " + f_cons(c, c.q90), ink)
+                f_row(14, "Day Q50 / Q75 / Q90", daily.active ? f_cons(daily, daily.q50) + " / " + f_cons(daily, daily.q75) + " / " + f_cons(daily, daily.q90) : "—", ink)
+                f_row(15, "Efficiency / terminal rank", f_fmt(c.eff) + " / " + f_pct(c.ep), ink)
+                f_row(16, "CLV / directed-close rank", f_fmt(c.clv) + " / " + f_pct(c.cp), ink)
+                f_row(17, "Marginal / block rank", f_fmt(c.marginal) + " / " + f_pct(c.mp), ink)
+                f_row(18, "Last pressure block", na(c.marginalAt) ? "—" : str.format_time(c.marginalAt, "HH:mm", array.get(tzs, selected)), muted)
+            if mode == "Research"
+                f_row(19, "Movement n / fallback", str.tostring(array.size(c.rs)) + " / L" + str.tostring(c.level), muted)
+                f_row(20, "Previous completed session", c.prevSid < 0 ? "Unknown" : f_name(c.prevSid) + " · state " + str.tostring(c.prev), muted)
+    else if panel
+        f_row(2, "SESSION", "No focus session active", muted)
+    if panel
+        if not na(lastEvent)
+            Event ev = lastEvent
+            Forecast f = ev.shown
+            string status = ev.censored ? "Censored" : ev.result < 0 ? "Pending" : ev.result == 0 ? "C first" : ev.result == 1 ? "R first" : ev.result == 2 ? "Timeout" : "Ambiguous"
+            string direction = ev.k.direction > 0 ? "Upper" : "Lower"
+            f_row(6, "LAST EVENT · " + f_name(ev.k.sid), direction + " " + str.format_time(ev.bornTime, "MM-dd HH:mm", array.get(tzs, ev.k.sid)) + " · " + status, accent)
+            bool sufficient = f.n >= minOutcome
+            f_row(7, "Continuation first", sufficient ? f_pct(100 * array.get(f.p, 0)) : "Insufficient samples", ink)
+            f_row(8, "Toward-open first", sufficient ? f_pct(100 * array.get(f.p, 1)) : "—", ink)
+            f_row(9, "Timeout / Ambiguous", sufficient ? f_pct(100 * array.get(f.p, 2)) + " / " + f_pct(100 * array.get(f.p, 3)) : "—", ink)
+            f_row(10, "SUPPORT", "n=" + str.tostring(f.n) + " · " + f_reliability(f), muted)
+            f_row(11, "Condition (+direction/age)", f_condition(f), muted)
+            if mode == "Research"
+                [clo, chi] = f_wilson(array.get(f.counts, 0), f.n)
+                [rlo, rhi] = f_wilson(array.get(f.counts, 1), f.n)
+                f_row(21, "RAW Wilson 95% · C", sufficient ? f_pct(100 * clo) + "–" + f_pct(100 * chi) : "—", muted)
+                f_row(22, "RAW Wilson 95% · R", sufficient ? f_pct(100 * rlo) + "–" + f_pct(100 * rhi) : "—", muted)
+                f_row(23, "Prior complement n", str.tostring(f.parentN) + " · alpha=" + str.tostring(priorStrength, "#"), muted)
+                f_row(30, "Event age / family / loc / pressure", str.tostring(ev.k.age) + " / " + str.tostring(ev.k.family) + " / " + str.tostring(ev.k.location) + " / " + str.tostring(ev.k.pressure), muted)
+                f_row(31, "Event regime / weekday / previous", f_reg(ev.k.regime) + " / " + str.tostring(ev.k.dow) + " / " + str.tostring(ev.k.prev), muted)
+        else
+            f_row(6, "OUTCOMES", "Waiting for eligible state entry", muted)
+        if mode == "Research"
+            for ft = 1 to 3
+                [gain, se, n] = f_gain(ft)
+                f_row(23 + ft, ft == 1 ? "Regime ΔBrier / SE / n" : ft == 2 ? "Weekday ΔBrier / SE / n" : "Previous ΔBrier / SE / n", f_fmt(gain) + " / " + f_fmt(se) + " / " + str.tostring(n), muted)
+            f_row(27, "Resolved / censored / ambiguous", str.tostring(array.size(outcomes)) + " / " + str.tostring(censorCount) + " / " + str.tostring(ambiguousCount), muted)
+            f_row(28, "Probability scope", "Frozen event-entry forecast", muted)
+            f_row(29, "Daily anchor · " + dayDisplayTZ, str.format_time(dkey, "MM-dd HH:mm", dayDisplayTZ) + " → " + str.format_time(nativeDay ? nativeDayClose : daily.endTime, "MM-dd HH:mm", dayDisplayTZ), muted)
+
+// Publishing layout: replace diagnostic rows with a compact current-context card.
+if barstate.islast and panel and mode == "Compact"
+    table.clear(dash, 0, 0, 1, 31)
+    Context dayCard = array.get(contexts, 0)
+    bool dayFresh = dayCard.active and dayCard.key == dkey
+    f_row(0, "ASLP · " + syminfo.ticker, "V1 · closed bars", accent)
+    f_row(1, "DAY", dayFresh ? f_location(dayCard) : "Awaiting first close", ink)
+    if selected > 0
+        Context card = array.get(contexts, selected)
+        bool cardFresh = card.active and card.key == array.get(keys, selected)
+        f_row(2, f_name(selected), cardFresh ? f_location(card) : "Awaiting first close", ink)
+        f_row(3, "STATE", cardFresh ? f_state(card) : "—", card.state == 7 ? color.orange : accent)
+        f_row(4, "PRESSURE", cardFresh ? f_pressure(card) : "—", ink)
+    else
+        f_row(2, "SESSION", "Outside focus session", muted)
+    if not na(lastEvent)
+        Forecast latest = lastEvent.shown
+        string eventSummary = latest.n >= minOutcome ? "C " + f_pct(100 * array.get(latest.p, 0)) + " · R " + f_pct(100 * array.get(latest.p, 1)) + " · n=" + str.tostring(latest.n) : "n=" + str.tostring(latest.n) + "/" + str.tostring(minOutcome) + " · warming"
+        f_row(5, "LAST · " + str.format_time(lastEvent.bornTime, "MM-dd HH:mm", dayDisplayTZ), eventSummary, muted)
+        f_row(6, "SUPPORT", f_reliability(latest) + " · " + f_condition(latest), muted)
+    else
+        f_row(5, "OUTCOMES", "Collecting eligible events", muted)
+    f_row(7, "DAY START · " + dayDisplayTZ, str.format_time(dkey, "MM-dd HH:mm", dayDisplayTZ), muted)
+
+// Data Window only. Historical state/location remain inspectable without bands.
+Context dc = array.get(contexts, 0)
+Context sc = selected > 0 ? array.get(contexts, selected) : dc
+plot(dc.active ? dc.loc : na, "Daily location percentile (unsigned)", display=display.data_window)
+plot(dc.active ? dc.rp : na, "Daily range percentile", display=display.data_window)
+plot(selected > 0 ? sc.loc : na, "Session location percentile (unsigned)", display=display.data_window)
+plot(selected > 0 ? sc.dir : na, "Session direction (+1 upper / -1 lower)", display=display.data_window)
+plot(selected > 0 ? sc.rp : na, "Session range percentile", display=display.data_window)
+plot(selected > 0 ? sc.state : na, "State code (-1 warm,0 normal,1 compressed,2 expansion,3 strong,4 two-sided,5 extreme,7 exhaustion,8 reversion)", display=display.data_window)
+plot(selected > 0 ? sc.mp : na, "Marginal block percentile", display=display.data_window)
+
+
+// HISTORY PANE: signed empirical location, not a probability or RSI score.
+// plot series persist for every loaded bar; the last-bar dashboard is not the history.
+bool sessionHistoryReady = selected > 0 and sc.active and sc.key == array.get(keys, selected) and not na(sc.rp)
+bool dailyHistoryReady = dc.active and dc.key == dkey and not na(dc.rp)
+int historySessionKey = selected > 0 ? sc.key : na
+bool sessionReset = selected > 0 and (selected != selected[1] or historySessionKey != historySessionKey[1])
+bool dayReset = dkey != dkey[1]
+// Alternate plot lanes preserve the FIRST valid point while breaking connections
+// across different anchors. No interpolation or forward-filled statistical values.
+var int sessionLane = 0
+var int dayLane = 0
+if barstate.isconfirmed
+    if sessionReset
+        sessionLane := 1 - sessionLane
+    if dayReset
+        dayLane := 1 - dayLane
+float signedSession = sessionHistoryReady ? (sc.dir == 0 ? 0 : sc.dir * sc.loc) : na
+float signedDay = dailyHistoryReady ? (dc.dir == 0 ? 0 : dc.dir * dc.loc) : na
+bgcolor(dailyResetTint and dayReset and barstate.isconfirmed ? color.new(color.rgb(105, 116, 145), 92) : na, title="Trading-day boundary")
+hline(0, "Session/day open", color=color.new(color.gray, 65), linestyle=hline.style_dotted)
+hline(stretchQ, "Upper stretch", color=color.new(color.teal, 65), linestyle=hline.style_dotted)
+hline(-stretchQ, "Lower stretch", color=color.new(color.blue, 65), linestyle=hline.style_dotted)
+upperExtremeLine = hline(extremeQ, "Upper extreme", color=color.new(color.orange, 50))
+upperLimit = hline(100, "Upper empirical limit", color=color.new(color.gray, 95))
+lowerExtremeLine = hline(-extremeQ, "Lower extreme", color=color.new(color.orange, 50))
+lowerLimit = hline(-100, "Lower empirical limit", color=color.new(color.gray, 95))
+fill(upperExtremeLine, upperLimit, color.new(color.orange, 94), title="Upper tail region")
+fill(lowerExtremeLine, lowerLimit, color.new(color.blue, 94), title="Lower tail region")
+plot(historicalPane and barstate.isconfirmed and sessionLane == 0 ? signedSession : na, "HISTORY · Session signed percentile A", color=color.rgb(22, 145, 158), linewidth=2, style=plot.style_linebr, display=display.pane + display.data_window)
+plot(historicalPane and barstate.isconfirmed and sessionLane == 1 ? signedSession : na, "HISTORY · Session signed percentile B", color=color.rgb(22, 145, 158), linewidth=2, style=plot.style_linebr, display=display.pane + display.data_window)
+plot(historicalPane and barstate.isconfirmed and dayLane == 0 ? signedDay : na, "HISTORY · Day signed percentile A", color=color.new(color.rgb(121, 115, 158), 20), linewidth=1, style=plot.style_linebr, display=display.pane + display.data_window)
+plot(historicalPane and barstate.isconfirmed and dayLane == 1 ? signedDay : na, "HISTORY · Day signed percentile B", color=color.new(color.rgb(121, 115, 158), 20), linewidth=1, style=plot.style_linebr, display=display.pane + display.data_window)
+plotshape(historicalPane and showSessionResets and barstate.isconfirmed and sessionReset ? signedSession : na, "Session reference reset", shape.circle, location.absolute, color=color.rgb(22, 145, 158), size=size.tiny)
+color stateColor = not sessionHistoryReady ? color.new(color.gray, 75) : sc.state == 7 ? color.rgb(211, 92, 62) : sc.state == 8 ? color.rgb(147, 99, 176) : sc.state == 3 ? color.rgb(0, 137, 115) : sc.state == 2 ? color.rgb(69, 170, 142) : sc.state == 4 ? color.rgb(209, 166, 49) : sc.state == 5 ? color.rgb(66, 128, 190) : sc.state == 1 ? color.rgb(163, 173, 184) : color.rgb(206, 213, 220)
+plot(historicalStates and barstate.isconfirmed and selected > 0 ? -108 : na, "HISTORY · State ribbon (category, not score)", color=stateColor, linewidth=5, style=plot.style_linebr, display=display.pane)
+plotshape(barstate.isconfirmed and enteredUpper ? signedSession : na, "Upper extreme history", shape.circle, location.absolute, color=color.orange, size=size.tiny)
+plotshape(barstate.isconfirmed and enteredLower ? signedSession : na, "Lower extreme history", shape.circle, location.absolute, color=color.blue, size=size.tiny)
+plotshape(barstate.isconfirmed and (upperExhaustion or lowerExhaustion) ? signedSession : na, "Exhaustion history", shape.diamond, location.absolute, color=color.red, size=size.small)
+// Frozen predictions are emitted ONLY on their actual entry bar for data export.
+bool admittedNow = not na(lastEvent) and lastEvent.bornBar == bar_index and barstate.isconfirmed
+bool scoredNow = admittedNow and lastEvent.shown.n >= minOutcome
+plot(scoredNow ? array.get(lastEvent.shown.p, 0) * 100 : na, "EVENT ENTRY · P continuation %", display=display.data_window)
+plot(scoredNow ? array.get(lastEvent.shown.p, 1) * 100 : na, "EVENT ENTRY · P reversion %", display=display.data_window)
+plot(scoredNow ? array.get(lastEvent.shown.p, 2) * 100 : na, "EVENT ENTRY · P timeout %", display=display.data_window)
+plot(scoredNow ? array.get(lastEvent.shown.p, 3) * 100 : na, "EVENT ENTRY · P ambiguous %", display=display.data_window)
+plot(scoredNow and lastEvent.base.n >= minOutcome ? array.get(lastEvent.base.p, 0) * 100 : na, "EVENT ENTRY · BASE C %", display=display.data_window)
+plot(scoredNow and lastEvent.base.n >= minOutcome ? array.get(lastEvent.base.p, 1) * 100 : na, "EVENT ENTRY · BASE R %", display=display.data_window)
+plot(scoredNow and lastEvent.base.n >= minOutcome ? array.get(lastEvent.base.p, 2) * 100 : na, "EVENT ENTRY · BASE timeout %", display=display.data_window)
+plot(scoredNow and lastEvent.base.n >= minOutcome ? array.get(lastEvent.base.p, 3) * 100 : na, "EVENT ENTRY · BASE ambiguous %", display=display.data_window)
+plot(admittedNow ? lastEvent.k.direction : na, "EVENT ENTRY · Direction", display=display.data_window)
+plot(admittedNow ? lastEvent.entry : na, "EVENT ENTRY · Price", display=display.data_window)
+plot(admittedNow ? lastEvent.cont : na, "EVENT ENTRY · Continuation barrier", display=display.data_window)
+plot(admittedNow ? lastEvent.rev : na, "EVENT ENTRY · Reversion barrier", display=display.data_window)
+plot(admittedNow ? lastEvent.bornTime : na, "EVENT ENTRY · ID timestamp", display=display.data_window)
+plot(admittedNow ? lastEvent.shown.n : na, "EVENT ENTRY · Support n", display=display.data_window)
+Event resolvedNow = array.size(staging) > 0 ? array.get(staging, 0) : na
+bool resolutionNow = not na(resolvedNow) and resolvedNow.resolvedBar == bar_index and barstate.isconfirmed
+plot(resolutionNow ? resolvedNow.bornTime : na, "EVENT RESULT · Entry ID timestamp", display=display.data_window)
+plot(resolutionNow ? (resolvedNow.censored ? -1 : resolvedNow.result) : na, "EVENT RESULT · 0 C,1 R,2 timeout,3 ambiguous,-1 censored", display=display.data_window)
+
+f_auditrow(int row, string title, string value) =>
+    table.cell(audit, 0, row, title, text_color=muted, text_size=panelFont, text_halign=text.align_left)
+    table.cell(audit, 1, row, value, text_color=ink, text_size=panelFont, text_halign=text.align_left)
+
+if barstate.islast
+    table.clear(audit, 0, 0, 1, 13)
+    if auditPanel and mode == "Research"
+        array<int> totals = array.new_int(4, 0)
+        int censored = 0
+        int scored = 0
+        int conditionalScored = 0
+        int familyScored = 0
+        int pooledScored = 0
+        int correct = 0
+        float modelLoss = 0
+        float baseLoss = 0
+        float expectedR = 0
+        int observedR = 0
+        if array.size(auditEvents) > 0
+            for e in auditEvents
+                if e.censored
+                    censored += 1
+                else
+                    array.set(totals, e.result, array.get(totals, e.result) + 1)
+                    if e.shown.n >= minOutcome and not na(e.base) and e.base.n >= minOutcome
+                        scored += 1
+                        conditionalScored += e.shown.level <= 2 ? 1 : 0
+                        familyScored += e.shown.level == 3 ? 1 : 0
+                        pooledScored += e.shown.level == 4 ? 1 : 0
+                        modelLoss += f_brier(e.shown, e.result)
+                        baseLoss += f_brier(e.base, e.result)
+                        expectedR += array.get(e.shown.p, 1)
+                        observedR += e.result == 1 ? 1 : 0
+                        int pick = 0
+                        for j = 1 to 3
+                            if array.get(e.shown.p, j) > array.get(e.shown.p, pick)
+                                pick := j
+                        correct += pick == e.result ? 1 : 0
+        int labelled = array.sum(totals)
+        f_auditrow(0, "WALK-FORWARD AUDIT", "Last " + str.tostring(auditCap) + " eligible resolutions")
+        f_auditrow(1, "Labelled / scored / censored", str.tostring(labelled) + " / " + str.tostring(scored) + " / " + str.tostring(censored))
+        f_auditrow(2, "C / R / timeout / ambiguous", str.tostring(array.get(totals, 0)) + " / " + str.tostring(array.get(totals, 1)) + " / " + str.tostring(array.get(totals, 2)) + " / " + str.tostring(array.get(totals, 3)))
+        f_auditrow(3, "Brier model / base (lower better)", scored > 0 ? str.tostring(modelLoss / scored, "#.000") + " / " + str.tostring(baseLoss / scored, "#.000") : "No supported forecasts yet")
+        f_auditrow(4, "Brier skill versus base", scored > 0 and baseLoss > EPS ? f_pct(100 * (1 - modelLoss / baseLoss)) : "—")
+        f_auditrow(5, "Most-likely class correct", scored > 0 ? f_pct(100.0 * correct / scored) : "—")
+        f_auditrow(6, "Mean predicted R / observed R", scored > 0 ? f_pct(100 * expectedR / scored) + " / " + f_pct(100.0 * observedR / scored) : "—")
+        f_auditrow(7, "Entry date filter (UTC)", str.format_time(auditFrom, "yyyy-MM-dd", "Etc/UTC") + " → " + str.format_time(auditTo, "yyyy-MM-dd", "Etc/UTC"))
+        f_auditrow(8, "Training days / sessions / labels", str.tostring(array.size(days)) + " / " + str.tostring(array.size(sessions)) + " / " + str.tostring(array.size(outcomes)))
+        f_auditrow(9, "Ribbon", "Green expansion · red exhaustion · gold two-sided")
+        f_auditrow(10, "Path colors", "Gray entry · teal continuation · orange reversion")
+        f_auditrow(11, "Scored: state / family / pooled", str.tostring(conditionalScored) + " / " + str.tostring(familyScored) + " / " + str.tostring(pooledScored))
+        f_auditrow(12, "Bars processed / labels learned", str.tostring(bar_index + 1) + " / " + str.tostring(trainedTotal))
+        f_auditrow(13, "Scope", "Loaded history; no persistent external model")

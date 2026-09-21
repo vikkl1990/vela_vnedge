@@ -1,0 +1,80 @@
+//@version=6
+indicator("Smooth Moving Avarage", overlay = true)
+
+groupEma = "EmaMA Settings"
+groupTrend = "Trend Settings"
+groupColor = "Color Settings"
+
+period = input.int(110, "Period", minval = 1, group = groupEma)
+smoothLength = input.int(15, "Smooth Length", minval = 1, group = groupEma)
+smoothCount = input.int(6, "Smooth Count", minval = 1, maxval = 6, group = groupEma)
+
+atrPeriod = input.int(14, "ATR Period", minval = 1, group = groupTrend)
+trendThreshold = input.float(0.5, "Trend Threshold", minval = 0.0, step = 0.1, group = groupTrend)
+
+upColor = input.color(#0DF1C6, "Up Color", group = groupColor)
+downColor = input.color(#871EE9, "Down Color", group = groupColor)
+flatColor = input.color(color.gray, "Flat Color", group = groupColor)
+
+emaSmooth(source, length, previous) =>
+    alpha = 2.0 / (length + 1.0)
+    na(previous) ? source : previous + alpha * (source - previous)
+
+halfPeriod = math.max(1, math.round(period / 2))
+sqrtPeriod = math.max(1, math.round(math.sqrt(period)))
+
+emaFast = ta.ema(close, halfPeriod)
+emaSlow = ta.ema(close, period)
+emaDifference = 2.0 * emaFast - emaSlow
+emaBase = ta.ema(emaDifference, sqrtPeriod)
+
+var array<float> smoothValues = array.new_float(6, na)
+
+smooth1 = emaBase
+smooth2 = emaBase
+smooth3 = emaBase
+smooth4 = emaBase
+smooth5 = emaBase
+smooth6 = emaBase
+
+for index = 0 to smoothCount - 1
+    previous = array.get(smoothValues, index)
+    source = index == 0 ? emaBase : array.get(smoothValues, index - 1)
+    smoothedEma = emaSmooth(source, smoothLength, previous)
+    array.set(smoothValues, index, smoothedEma)
+
+    if index == 0
+        smooth1 := smoothedEma
+    if index == 1
+        smooth2 := smoothedEma
+    if index == 2
+        smooth3 := smoothedEma
+    if index == 3
+        smooth4 := smoothedEma
+    if index == 4
+        smooth5 := smoothedEma
+    if index == 5
+        smooth6 := smoothedEma
+
+atr = ta.atr(atrPeriod)
+
+normalizedSlope = atr > 0 ? (smooth1 - smooth1[1]) / (atr * 0.1) : 0.0
+
+isUpTrend = normalizedSlope < -trendThreshold
+isDownTrend = normalizedSlope > trendThreshold
+isFlat = not isUpTrend and not isDownTrend
+
+emaColor = normalizedSlope < 0 ? color.from_gradient(normalizedSlope, -trendThreshold, 0, upColor, flatColor) : color.from_gradient(normalizedSlope, 0, trendThreshold, flatColor, downColor)
+
+p1 = plot(smooth1, "EmaMA 1", color = emaColor, linewidth = 1, editable = false)
+p2 = plot(smooth2, "EmaMA 2", color = emaColor, linewidth = 1, editable = false)
+p3 = plot(smooth3, "EmaMA 3", color = emaColor, linewidth = 1, editable = false)
+p4 = plot(smooth4, "EmaMA 4", color = emaColor, linewidth = 1, editable = false)
+p5 = plot(smooth5, "EmaMA 5", color = emaColor, linewidth = 1, editable = false)
+p6 = plot(smooth6, "EmaMA 6", color = emaColor, linewidth = 1, editable = false)
+
+fill(p1, p2, color = color.from_gradient(1, 1, 5, color.new(emaColor, 50), color.new(emaColor, 90)))
+fill(p2, p3, color = color.from_gradient(2, 1, 5, color.new(emaColor, 50), color.new(emaColor, 90)))
+fill(p3, p4, color = color.from_gradient(3, 1, 5, color.new(emaColor, 50), color.new(emaColor, 90)))
+fill(p4, p5, color = color.from_gradient(4, 1, 5, color.new(emaColor, 50), color.new(emaColor, 90)))
+fill(p5, p6, color = color.from_gradient(5, 1, 5, color.new(emaColor, 50), color.new(emaColor, 90)))

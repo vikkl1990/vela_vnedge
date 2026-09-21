@@ -1,0 +1,72 @@
+//@version=6
+indicator('Bank Math 2.0 - Custom Time Close', shorttitle = 'Bank Math 2.0 Time', overlay = true)
+
+// ─── Inputs ────────────────────────────────────────────────
+chosenHour = input.int(17, 'Close Hour (24h format)', minval = 0, maxval = 23)
+chosenMinute = input.int(0, 'Close Minute', minval = 0, maxval = 59)
+pct = input.float(75.0, 'Projection % of Range', minval = 1, maxval = 200, step = 1) / 100
+
+showClose = input.bool(true, 'Show Close Line')
+showTargets = input.bool(true, 'Show Upside / Downside Targets')
+showRangeHL = input.bool(true, 'Show Range High / Low')
+
+// ─── Time in New York ──────────────────────────────────────
+nyHour = hour(time, 'America/New_York')
+nyMinute = minute(time, 'America/New_York')
+
+nyHourPrev = hour(time[1], 'America/New_York')
+nyMinutePrev = minute(time[1], 'America/New_York')
+
+// Correct detection: we just passed the chosen time
+// → take the previous bar as the last print up to the chosen time
+isCloseTime = (nyHour > chosenHour or nyHour == chosenHour and nyMinute > chosenMinute) and (nyHourPrev < chosenHour or nyHourPrev == chosenHour and nyMinutePrev <= chosenMinute)
+
+// ─── Running High / Low ────────────────────────────────────
+var float runningHigh = na
+var float runningLow = na
+
+// ─── Locked values ─────────────────────────────────────────
+var float lockedClose = na
+var float lockedHigh = na
+var float lockedLow = na
+var float lockedRange = na
+var float upTarget = na
+var float dnTarget = na
+
+if isCloseTime
+    // Last print up to the chosen time
+    lockedClose := close[1]
+
+    // Finalize range
+    lockedHigh := runningHigh
+    lockedLow := runningLow
+    lockedRange := lockedHigh - lockedLow
+
+    // Project
+    projection = lockedRange * pct
+    upTarget := lockedClose + projection
+    dnTarget := lockedClose - projection
+
+    // Reset only here (no other resets)
+    runningHigh := high
+    runningLow := low
+    runningLow
+else
+    runningHigh := math.max(nz(runningHigh, high), high)
+    runningLow := math.min(nz(runningLow, low), low)
+    runningLow
+
+// ─── Debug ─────────────────────────────────────────────────
+if barstate.islast and not na(lockedClose)
+    label.new(bar_index, high, 'Close Time: ' + str.tostring(chosenHour) + ':' + str.tostring(chosenMinute, '00') + ' ET\n\n' + 'Close:      ' + str.tostring(lockedClose, '#.##') + '\n' + 'Range High: ' + str.tostring(lockedHigh, '#.##') + '\n' + 'Range Low:  ' + str.tostring(lockedLow, '#.##') + '\n' + 'Range:      ' + str.tostring(lockedRange, '#.##') + '\n' + 'Projection: ' + str.tostring(lockedRange * pct, '#.##') + '\n\n' + 'Upside:     ' + str.tostring(upTarget, '#.##') + '\n' + 'Downside:   ' + str.tostring(dnTarget, '#.##'), style = label.style_label_left, color = color.black, textcolor = color.white, size = size.normal)
+
+// ─── Plots ─────────────────────────────────────────────────
+plot(showClose and not na(lockedClose) ? lockedClose : na, 'Close', color = color.white, style = plot.style_circles, linewidth = 1)
+
+plot(showTargets ? upTarget : na, 'Upside Target', color = color.orange, style = plot.style_cross, linewidth = 2)
+
+plot(showTargets ? dnTarget : na, 'Downside Target', color = color.blue, style = plot.style_cross, linewidth = 2)
+
+plot(showRangeHL and not na(lockedHigh) ? lockedHigh : na, 'Range High', color = color.new(color.red, 50), style = plot.style_circles)
+
+plot(showRangeHL and not na(lockedLow) ? lockedLow : na, 'Range Low', color = color.new(color.aqua, 50), style = plot.style_circles)

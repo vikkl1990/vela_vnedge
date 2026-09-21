@@ -1,0 +1,246 @@
+// Previous Day Value Area - CriptoMatiko
+//
+// Replicates, bar-for-bar, the exact volume-area calculation used in the
+// CriptoMatiko Volume Profile Backtester (Python). The goal is verifiability:
+// every number this indicator plots on the chart can be checked line-by-line
+// against the backtester's own output, instead of relying on the native
+// Volume Profile tool's internal (unpublished) resolution.
+//
+// Method (identical to daily_value_areas() in the Python backtester):
+//   1. Pull 1-minute bars for the day (request.security_lower_tf).
+//   2. Split each 1-minute bar's volume evenly across every price bucket its
+//      high-low range touches ("bar-distributed" volume).
+//   3. POC = the bucket with the most volume.
+//   4. Expand outward from the POC toward the heavier side until 70% of the
+//      day's total volume is accumulated. The two edges are VAL and VAH.
+//
+// Use it on a 15m ETHUSDT.P (Bybit) chart. The table shows the PREVIOUS
+// day's value area (the one the backtester actually reads) plus the
+// in-progress area for the current day.
+//
+// Tested and running without errors on TradingView (Pine v6).
+
+//@version=6
+indicator("Previous Day Value Area - CriptoMatiko", overlay=true, max_lines_count=500, max_boxes_count=500, max_bars_back=5000)
+
+vaPct  = input.float(0.70,  "Value area %", minval = 0.5, maxval = 0.95, step = 0.01)
+modoBucket = input.string("automatic", "Profile resolution", options=["automatic", "rows over D-1 range", "fixed"])
+// 0.0008% of price: on ETH at 2500 this gives 0.02, the validated value. Scales to any asset.
+bucketPct = input.float(0.0008, "Bucket as % of price (automatic mode)", minval=0.00001, step=0.0001)
+nRows     = input.int(24,     "Number of rows (rows mode)", minval = 4, maxval = 500)
+bucketFix = input.float(0.02, "Bucket size (fixed mode)", minval = 0.0000001, step = 0.001)
+showPrev = input.bool(true,  "Project D-1 value area onto the current day (what the detector uses)")
+proyectada = input.bool(true, "Draw the full D-1 value area at day open, instead of bar by bar")
+estiloLin  = input.string("solid", "Style of these lines", options = ["solid", "dashed", "dotted"])
+modoComp = input.bool(false, "COMPARISON MODE: draw the value area OVER the day that generated it")
+
+// --- per-session volume histogram ------------------------------------
+// The profile is CALCULATED with the fine-grained bucket (thousands of cells,
+// so VAH/VAL come out exact) but DRAWN aggregated into few rows: Pine allows
+// 500 boxes total, so drawing the raw histogram is impossible. These are two
+// different resolutions on purpose.
+verPerfil   = input.bool(true, "Draw the volume histogram for each session", group="Profile")
+filasDibujo = input.int(30, "Histogram rows", minval=8, maxval=60, group="Profile")
+anchoVelas  = input.int(20, "Maximum profile width, in bars", minval=3, maxval=120, group="Profile")
+// The profile anchors to the SAME day as the lines, not the day that generated it.
+// If it anchored to its own day, each session would show that session's
+// histogram next to the PREVIOUS session's lines: two different things that
+// shouldn't be overlaid. Anchored to the following day, the shape and the
+// levels line up.
+perfilEnSuDia = input.bool(false, "Anchor the profile to the day that generated it (instead of the day it applies to)", group="Profile")
+ladoPerfil  = input.string("left", "Profile side", options=["left", "right"], group="Profile")
+// splits the histogram into two box sets: effectively half the lookback in boxes
+separarUD   = input.bool(true, "Split buy / sell volume", group="Profile")
+
+// 1-minute bars inside the current bar
+[lo1, hi1, vol1, op1, cl1] = request.security_lower_tf(syminfo.tickerid, "1", [low, high, volume, open, close])
+
+// startup guard: without this the first session runs with an na bucket and accumulates nothing
+
+var map<int, float> hist = map.new<int, float>()
+var map<int, float> histUp = map.new<int, float>()   // 1-minute bars that closed up only
+var float diaHi = na, var float diaLo = na
+var float rangoPrevio = na
+
+// The bucket size is fixed ONCE when the day opens and never touched again.
+// The histogram's keys are price/bucket: if the bucket changed mid-session,
+// keys already written would start meaning a different price and the profile
+// would be corrupted. The "rows" mode used to have exactly that bug -- it
+// recalculated width as (diaHi-diaLo)/nRows on every bar, while the day's
+// range kept growing. That's why "rows" mode uses the PREVIOUS day's range:
+// it's the only one already closed when the session starts.
+var float bucket = na
+
+// accumulates the bar-distributed volume of every 1-minute bar
+acumular(array<float> los, array<float> his, array<float> vols, array<float> ops, array<float> cls) =>
+    if array.size(los) > 0 and not na(bucket) and bucket > 0
+        for i = 0 to array.size(los) - 1
+            a = math.round(array.get(los, i) / bucket)
+            b = math.round(array.get(his, i) / bucket)
+            n = math.max(1, b - a + 1)
+            cada = array.get(vols, i) / n
+            alcista = array.get(cls, i) >= array.get(ops, i)
+            for k = a to b
+                map.put(hist, k, nz(map.get(hist, k)) + cada)
+                if alcista
+                    map.put(histUp, k, nz(map.get(histUp, k)) + cada)
+
+// computes (VAL, POC, VAH) over the accumulated histogram
+areaDeValor() =>
+    ks = map.keys(hist)
+    float val = na, float poc = na, float vah = na
+    if array.size(ks) > 2
+        array.sort(ks, order.ascending)
+        float total = 0.0
+        int   pocI  = 0
+        float pocV  = -1.0
+        for i = 0 to array.size(ks) - 1
+            v = map.get(hist, array.get(ks, i))
+            total += v
+            if v > pocV
+                pocV := v
+                pocI := i
+        objetivo = total * vaPct
+        int i = pocI, int j = pocI
+        float acc = pocV
+        while acc < objetivo and (i > 0 or j < array.size(ks) - 1)
+            vLo = i > 0 ? map.get(hist, array.get(ks, i - 1)) : -1.0
+            vHi = j < array.size(ks) - 1 ? map.get(hist, array.get(ks, j + 1)) : -1.0
+            if vHi >= vLo
+                j += 1
+                acc += vHi
+            else
+                i -= 1
+                acc += vLo
+        val := array.get(ks, i) * bucket
+        vah := array.get(ks, j) * bucket
+        poc := array.get(ks, pocI) * bucket
+    [val, poc, vah]
+
+nuevoDia = ta.change(time("D")) != 0
+
+var float pVAL = na, var float pPOC = na, var float pVAH = na
+var int   pDia = na
+
+// In comparison mode the levels are drawn OVER the day that produced them,
+// instead of projected onto the next one. Useful to overlay them against the
+// native Volume Profile tool, which draws its lines inside its own day: without
+// this the two indicators would be one day out of phase and the visual
+// comparison would be misleading.
+var int inicioDia = na
+
+// D-1 value-area lines spanning the ENTIRE day from its first bar.
+// With plot() the line would build up bar by bar and the full level wouldn't
+// be visible until the day closes -- the opposite of what it's for: the level
+// is defined from 00:00 UTC and is what the detector uses all session long.
+// The style is configurable: dotted distinguishes a projected level from one
+// price has already crossed, but it's harder on the eyes, so solid is default.
+var line lnVAH = na, var line lnPOC = na, var line lnVAL = na
+
+estiloDe(x) =>
+    x == "dashed" ? line.style_dashed : x == "dotted" ? line.style_dotted : line.style_solid
+
+if nuevoDia
+    [v, p, h] = areaDeValor()
+    rangoPrevio := na(diaHi) or na(diaLo) ? na : diaHi - diaLo
+    if modoComp and not na(v) and not na(inicioDia)
+        line.new(inicioDia, v, time[1], v, xloc.bar_time, color = color.green,  width = 2)
+        line.new(inicioDia, p, time[1], p, xloc.bar_time, color = color.orange, width = 2)
+        line.new(inicioDia, h, time[1], h, xloc.bar_time, color = color.red,    width = 2)
+    pVAL := v
+    pPOC := p
+    pVAH := h
+    pDia := time[1]
+    if proyectada and showPrev and not modoComp and not na(pVAH)
+        finDia = time + 86400000                 // extends until day close
+        est = estiloDe(estiloLin)
+        lnVAH := line.new(time, pVAH, finDia, pVAH, xloc.bar_time, color=color.red, width=1, style=est)
+        lnPOC := line.new(time, pPOC, finDia, pPOC, xloc.bar_time, color=color.orange, width=2, style=est)
+        lnVAL := line.new(time, pVAL, finDia, pVAL, xloc.bar_time, color=color.green, width=1, style=est)
+    // Histogram of the session that just closed, aggregated into `filasDibujo` rows.
+    // `anclaVP` decides which day it's drawn on: by default the one starting
+    // now, which is where this profile's VAH/POC/VAL levels apply.
+    anclaVP = perfilEnSuDia ? inicioDia : time
+    // The silhouette grows from the chosen edge inward through the session: on
+    // the left it starts at day open and grows right; on the right it starts
+    // at day close and grows left. The buy-side segment always stays pinned to
+    // the edge, so the drawing is a mirror image and reads the same either way.
+    derechaVP = ladoPerfil == "right"
+    finVP = anclaVP + 86400000
+    if verPerfil and not na(anclaVP) and map.size(hist) > 2
+        kk = map.keys(hist)
+        array.sort(kk, order.ascending)
+        pMin = array.get(kk, 0) * bucket
+        pMax = array.get(kk, array.size(kk) - 1) * bucket
+        alto = (pMax - pMin) / filasDibujo
+        if alto > 0
+            filaTot = array.new_float(filasDibujo, 0.0)
+            filaUp  = array.new_float(filasDibujo, 0.0)
+            for i = 0 to array.size(kk) - 1
+                k = array.get(kk, i)
+                idx = math.min(filasDibujo - 1, math.max(0, int((k * bucket - pMin) / alto)))
+                array.set(filaTot, idx, array.get(filaTot, idx) + map.get(hist, k))
+                array.set(filaUp,  idx, array.get(filaUp,  idx) + nz(map.get(histUp, k)))
+            maxVol = array.max(filaTot)
+            msVela = timeframe.in_seconds() * 1000
+            if maxVol > 0
+                for i = 0 to filasDibujo - 1
+                    vTot = array.get(filaTot, i)
+                    if vTot > 0
+                        y1 = pMin + i * alto
+                        y2 = y1 + alto * 0.9
+                        wTot = int(vTot / maxVol * anchoVelas * msVela)
+                        if separarUD
+                            wUp = int(array.get(filaUp, i) / maxVol * anchoVelas * msVela)
+                            upA = derechaVP ? finVP - wUp : anclaVP
+                            upB = derechaVP ? finVP : anclaVP + wUp
+                            dnA = derechaVP ? finVP - wTot : anclaVP + wUp
+                            dnB = derechaVP ? finVP - wUp : anclaVP + wTot
+                            if wUp > 0
+                                box.new(upA, y2, upB, y1, xloc=xloc.bar_time, border_color=na, bgcolor=color.new(color.teal, 55))
+                            if wTot > wUp
+                                box.new(dnA, y2, dnB, y1, xloc=xloc.bar_time, border_color=na, bgcolor=color.new(color.maroon, 45))
+                        else
+                            tA = derechaVP ? finVP - wTot : anclaVP
+                            tB = derechaVP ? finVP : anclaVP + wTot
+                            box.new(tA, y2, tB, y1, xloc=xloc.bar_time, border_color=na, bgcolor=color.new(color.gray, 65))
+    inicioDia := time
+    diaHi := na
+    diaLo := na
+    // resolution for the day that's starting, fixed here and constant until it closes.
+    // Never below the instrument's tick: a bucket smaller than that adds no
+    // information, only empty cells and extra work for Pine.
+    float bkNuevo = close * bucketPct / 100
+    if modoBucket == "fixed"
+        bkNuevo := bucketFix
+    else if modoBucket == "rows over D-1 range" and not na(rangoPrevio) and rangoPrevio > 0
+        bkNuevo := rangoPrevio / nRows
+    bucket := math.max(bkNuevo, syminfo.mintick)
+    map.clear(hist)
+    map.clear(histUp)
+
+if array.size(lo1) > 0
+    diaLo := na(diaLo) ? array.min(lo1) : math.min(diaLo, array.min(lo1))
+    diaHi := na(diaHi) ? array.max(hi1) : math.max(diaHi, array.max(hi1))
+
+acumular(lo1, hi1, vol1, op1, cl1)
+
+[cVAL, cPOC, cVAH] = areaDeValor()
+
+// ---------------------------------------------------------------- plots
+plot(showPrev and not modoComp and not proyectada ? pVAH : na, "VAH D-1", color.new(color.red,   0), 1, plot.style_linebr)
+plot(showPrev and not modoComp and not proyectada ? pPOC : na, "POC D-1", color.new(color.orange,0), 2, plot.style_linebr)
+plot(showPrev and not modoComp and not proyectada ? pVAL : na, "VAL D-1", color.new(color.green, 0), 1, plot.style_linebr)
+
+var table t = table.new(position.top_right, 2, 5, border_width = 1)
+if barstate.islast
+    table.cell(t, 0, 0, "D-1",  text_color = color.gray)
+    table.cell(t, 1, 0, na(pDia) ? "-" : str.format_time(pDia, "yyyy-MM-dd", "UTC"), text_color = color.gray)
+    table.cell(t, 0, 1, "VAH",  text_color = color.red)
+    table.cell(t, 1, 1, str.tostring(pVAH, "#.##"), text_color = color.red)
+    table.cell(t, 0, 2, "POC",  text_color = color.orange)
+    table.cell(t, 1, 2, str.tostring(pPOC, "#.##"), text_color = color.orange)
+    table.cell(t, 0, 3, "VAL",  text_color = color.green)
+    table.cell(t, 1, 3, str.tostring(pVAL, "#.##"), text_color = color.green)
+    table.cell(t, 0, 4, "today (partial)", text_color = color.gray)
+    table.cell(t, 1, 4, str.tostring(cVAL, "#.##") + " / " + str.tostring(cPOC, "#.##") + " / " + str.tostring(cVAH, "#.##"), text_color = color.gray)

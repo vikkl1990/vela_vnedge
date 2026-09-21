@@ -1,0 +1,305 @@
+//@version=6
+indicator('Multi-Timeframe Volume Profile & Orderflow Levels', overlay = true, max_lines_count = 500, max_boxes_count = 100)
+
+// =========================================================================
+// 1. EXACT UI MATCHING (INPUTS TAB)
+// =========================================================================
+
+// --- COMMON ---
+grpCommon = 'COMMON'
+lvlStart = input.string('Period start', 'Levels start from', options = ['Period start', 'Current bar'], group = grpCommon)
+vaPercent = input.float(70.0, 'Value Area %', minval = 1, maxval = 100, group = grpCommon)
+tickMult = input.int(10, 'Ticks per Profile Bin', minval = 1, group = grpCommon, tooltip = 'Lower = Higher accuracy')
+
+// --- CUSTOM ---
+grpCustom = 'CUSTOM'
+c_show = input.bool(true, 'Custom', inline = 'c1', group = grpCustom)
+c_col = input.color(color.yellow, '', inline = 'c1', group = grpCustom)
+c_poc = input.bool(true, 'POC', inline = 'c1', group = grpCustom)
+c_val = input.bool(true, 'VAL', inline = 'c1', group = grpCustom)
+c_vah = input.bool(true, 'VAH', inline = 'c1', group = grpCustom)
+c_ohlc = input.bool(true, 'OHLC', inline = 'c1', group = grpCustom)
+c_anchor = input.string('Custom', 'Anchor', options = ['Custom', 'Earnings', 'Split', 'Dividends'], inline = 'c2', group = grpCustom)
+c_val_num = input.int(2, '', inline = 'c2', group = grpCustom)
+c_tf = input.string('Day', '', options = ['Day', 'Week', 'Month'], inline = 'c2', group = grpCustom)
+
+// --- CURRENT TIMEFRAMES ---
+grpCurrent = 'CURRENT'
+d_show = input.bool(true, 'D', inline = 'd1', group = grpCurrent)
+d_col = input.color(color.orange, '', inline = 'd1', group = grpCurrent)
+d_poc = input.bool(true, 'POC', inline = 'd1', group = grpCurrent)
+d_val = input.bool(true, 'VAL', inline = 'd1', group = grpCurrent)
+d_vah = input.bool(true, 'VAH', inline = 'd1', group = grpCurrent)
+d_ohlc = input.bool(true, 'OHLC', inline = 'd1', group = grpCurrent)
+
+w_show = input.bool(true, 'W', inline = 'w1', group = grpCurrent)
+w_col = input.color(color.blue, '', inline = 'w1', group = grpCurrent)
+w_poc = input.bool(true, 'POC', inline = 'w1', group = grpCurrent)
+w_val = input.bool(true, 'VAL', inline = 'w1', group = grpCurrent)
+w_vah = input.bool(true, 'VAH', inline = 'w1', group = grpCurrent)
+w_ohlc = input.bool(true, 'OHLC', inline = 'w1', group = grpCurrent)
+
+m_show = input.bool(true, 'M', inline = 'm1', group = grpCurrent)
+m_col = input.color(color.purple, '', inline = 'm1', group = grpCurrent)
+m_poc = input.bool(true, 'POC', inline = 'm1', group = grpCurrent)
+m_val = input.bool(true, 'VAL', inline = 'm1', group = grpCurrent)
+m_vah = input.bool(true, 'VAH', inline = 'm1', group = grpCurrent)
+m_ohlc = input.bool(true, 'OHLC', inline = 'm1', group = grpCurrent)
+
+// --- PREVIOUS TIMEFRAMES ---
+grpPrev = 'PREVIOUS'
+pd_show = input.bool(true, 'Prev D', inline = 'pd1', group = grpPrev)
+pd_col = input.color(color.blue, '', inline = 'pd1', group = grpPrev)
+pd_poc = input.bool(true, 'POC', inline = 'pd1', group = grpPrev)
+pd_val = input.bool(true, 'VAL', inline = 'pd1', group = grpPrev)
+pd_vah = input.bool(true, 'VAH', inline = 'pd1', group = grpPrev)
+pd_ohlc = input.bool(true, 'OHLC', inline = 'pd1', group = grpPrev)
+
+pw_show = input.bool(true, 'Prev W', inline = 'pw1', group = grpPrev)
+pw_col = input.color(color.blue, '', inline = 'pw1', group = grpPrev)
+pw_poc = input.bool(true, 'POC', inline = 'pw1', group = grpPrev)
+pw_val = input.bool(true, 'VAL', inline = 'pw1', group = grpPrev)
+pw_vah = input.bool(true, 'VAH', inline = 'pw1', group = grpPrev)
+pw_ohlc = input.bool(true, 'OHLC', inline = 'pw1', group = grpPrev)
+
+pm_show = input.bool(true, 'Prev M', inline = 'pm1', group = grpPrev)
+pm_col = input.color(color.blue, '', inline = 'pm1', group = grpPrev)
+pm_poc = input.bool(true, 'POC', inline = 'pm1', group = grpPrev)
+pm_val = input.bool(true, 'VAL', inline = 'pm1', group = grpPrev)
+pm_vah = input.bool(true, 'VAH', inline = 'pm1', group = grpPrev)
+pm_ohlc = input.bool(true, 'OHLC', inline = 'pm1', group = grpPrev)
+
+// =========================================================================
+// 2. TIMEFRAME DETECTION LOGIC
+// =========================================================================
+isNewDay = ta.change(time('D'))
+isNewWeek = ta.change(time('W'))
+isNewMonth = ta.change(time('M'))
+
+var int customBars = 0
+bool isNewCustom = false
+if c_tf == 'Day' and bool(isNewDay) or c_tf == 'Week' and bool(isNewWeek) or c_tf == 'Month' and bool(isNewMonth)
+    customBars := customBars + 1
+    customBars
+if customBars >= c_val_num
+    isNewCustom := true
+    customBars := 0
+    customBars
+
+// =========================================================================
+// 3. TRUE VOLUME PROFILE ENGINE (Isolated Object Method)
+// =========================================================================
+type PrevLevels
+	float poc = na
+	float vah = na
+	float val = na
+	float o = na
+
+type VolProfile
+	map<float, float> bins
+	float total_vol
+	float poc
+	float vah
+	float val
+	float o
+	int start_idx
+	line l_poc // Storing lines INSIDE the object stops looping and curved lines!
+	line l_val
+	line l_vah
+	line l_o
+
+method update_and_calc(VolProfile this, bool isNew, float tick_sz, float va_pct) =>
+    float p_poc = this.poc
+    float p_vah = this.vah
+    float p_val = this.val
+    float p_o = this.o
+
+    if isNew
+        this.bins.clear()
+        this.total_vol := 0.0
+        this.o := open
+        this.start_idx := bar_index
+        this.start_idx
+
+    // Distribute tick volume
+    float h_bin = math.round(high / tick_sz) * tick_sz
+    float l_bin = math.round(low / tick_sz) * tick_sz
+    int steps = math.max(1, math.round((h_bin - l_bin) / tick_sz) + 1)
+    float v_step = volume / steps
+
+    for i = 0 to steps - 1 by 1
+        float p = l_bin + i * tick_sz
+        float cv = this.bins.contains(p) ? this.bins.get(p) : 0.0
+        this.bins.put(p, cv + v_step)
+
+    this.total_vol := this.total_vol + volume
+
+    array<float> keys = this.bins.keys()
+    if keys.size() > 0
+        keys.sort()
+        float max_v = -1.0
+        int poc_idx = 0
+        int sz = keys.size()
+
+        for i = 0 to sz - 1 by 1
+            float v = this.bins.get(keys.get(i))
+            if v > max_v
+                max_v := v
+                poc_idx := i
+                poc_idx
+
+        this.poc := keys.get(poc_idx)
+        float target_v = this.total_vol * (va_pct / 100.0)
+        float accum_v = max_v
+        int up = poc_idx + 1
+        int dn = poc_idx - 1
+
+        while accum_v < target_v and (up < sz or dn >= 0)
+            float v_up = up < sz ? this.bins.get(keys.get(up)) : -1.0
+            float v_dn = dn >= 0 ? this.bins.get(keys.get(dn)) : -1.0
+            if v_up == -1.0 and v_dn == -1.0
+                break
+            if v_up >= v_dn
+                accum_v := accum_v + v_up
+                up := up + 1
+                up
+            else
+                accum_v := accum_v + v_dn
+                dn := dn - 1
+                dn
+
+        this.vah := keys.get(math.max(0, math.min(up - 1, sz - 1)))
+        this.val := keys.get(math.max(0, math.min(dn + 1, sz - 1)))
+        this.val
+
+    [p_poc, p_vah, p_val, p_o]
+
+// State Variables (Completely isolated)
+var curD = VolProfile.new(map.new<float, float>(), 0.0, na, na, na, na, 0, na, na, na, na)
+var prvD = PrevLevels.new()
+
+var curW = VolProfile.new(map.new<float, float>(), 0.0, na, na, na, na, 0, na, na, na, na)
+var prvW = PrevLevels.new()
+
+var curM = VolProfile.new(map.new<float, float>(), 0.0, na, na, na, na, 0, na, na, na, na)
+var prvM = PrevLevels.new()
+
+var curC = VolProfile.new(map.new<float, float>(), 0.0, na, na, na, na, 0, na, na, na, na)
+
+float tickSize = syminfo.mintick * tickMult
+
+// Execute Core Logic
+[d_p, d_h, d_l, d_o] = curD.update_and_calc(bool(isNewDay), tickSize, vaPercent)
+if bool(isNewDay)
+    prvD.poc := d_p
+    prvD.vah := d_h
+    prvD.val := d_l
+    prvD.o := d_o
+    prvD.o
+
+[w_p, w_h, w_l, w_o] = curW.update_and_calc(bool(isNewWeek), tickSize, vaPercent)
+if bool(isNewWeek)
+    prvW.poc := w_p
+    prvW.vah := w_h
+    prvW.val := w_l
+    prvW.o := w_o
+    prvW.o
+
+[m_p, m_h, m_l, m_o] = curM.update_and_calc(bool(isNewMonth), tickSize, vaPercent)
+if bool(isNewMonth)
+    prvM.poc := m_p
+    prvM.vah := m_h
+    prvM.val := m_l
+    prvM.o := m_o
+    prvM.o
+
+curC.update_and_calc(isNewCustom, tickSize, vaPercent)
+
+// =========================================================================
+// 4. PREVIOUS DAY VALUE AREA BOX (Only active box)
+// =========================================================================
+var box pd_box = na
+if pd_show
+    int b_left = lvlStart == 'Period start' ? curD.start_idx : bar_index
+    if bool(isNewDay) or na(pd_box)
+        pd_box := box.new(b_left, prvD.vah, bar_index, prvD.val, border_color = na, bgcolor = color.new(pd_col, 85))
+        pd_box
+    else
+        box.set_left(pd_box, b_left)
+        box.set_right(pd_box, bar_index)
+        box.set_top(pd_box, prvD.vah)
+        box.set_bottom(pd_box, prvD.val)
+
+// =========================================================================
+// 5. PERFECT HORIZONTAL LINES FIX (Current Timeframes)
+// =========================================================================
+method draw_lines(VolProfile this, bool m_show, bool p_show, bool val_show, bool vah_show, bool o_show, color col, string ls) =>
+    int x1 = ls == 'Period start' ? this.start_idx : bar_index
+
+    if m_show
+        if p_show and not na(this.poc)
+            if na(this.l_poc)
+                this.l_poc := line.new(x1, this.poc, bar_index, this.poc, color = col, width = 2)
+                this.l_poc
+            else
+                line.set_xy1(this.l_poc, x1, this.poc)
+                line.set_xy2(this.l_poc, bar_index, this.poc)
+
+        if val_show and not na(this.val)
+            if na(this.l_val)
+                this.l_val := line.new(x1, this.val, bar_index, this.val, color = col, style = line.style_dashed)
+                this.l_val
+            else
+                line.set_xy1(this.l_val, x1, this.val)
+                line.set_xy2(this.l_val, bar_index, this.val)
+
+        if vah_show and not na(this.vah)
+            if na(this.l_vah)
+                this.l_vah := line.new(x1, this.vah, bar_index, this.vah, color = col, style = line.style_dashed)
+                this.l_vah
+            else
+                line.set_xy1(this.l_vah, x1, this.vah)
+                line.set_xy2(this.l_vah, bar_index, this.vah)
+
+        if o_show and not na(this.o)
+            if na(this.l_o)
+                this.l_o := line.new(x1, this.o, bar_index, this.o, color = col, style = line.style_solid)
+                this.l_o
+            else
+                line.set_xy1(this.l_o, x1, this.o)
+                line.set_xy2(this.l_o, bar_index, this.o)
+
+    // THIS FIXES THE COMPILER ERROR IN SCREENSHOT 0232
+    int dummy = 1
+    dummy
+
+curD.draw_lines(d_show, d_poc, d_val, d_vah, d_ohlc, d_col, lvlStart)
+curW.draw_lines(w_show, w_poc, w_val, w_vah, w_ohlc, w_col, lvlStart)
+curM.draw_lines(m_show, m_poc, m_val, m_vah, m_ohlc, m_col, lvlStart)
+curC.draw_lines(c_show, c_poc, c_val, c_vah, c_ohlc, c_col, lvlStart)
+
+// =========================================================================
+// 6. STYLE TAB MATCHING & LINE BREAKS (ScreenShot 0219 & 0229)
+// =========================================================================
+get_plot(float val, bool master, bool feature, bool isNew) =>
+    if not(master and feature)
+        na
+    else if lvlStart == 'Current bar'
+        barstate.islast ? val : na
+    else
+        isNew ? na : val
+
+plot(get_plot(prvD.poc, pd_show, pd_poc, bool(isNewDay)), 'Prev Daily POC', pd_col, 2, plot.style_linebr)
+plot(get_plot(prvD.val, pd_show, pd_val, bool(isNewDay)), 'Prev Daily VAL', pd_col, 1, plot.style_linebr)
+plot(get_plot(prvD.vah, pd_show, pd_vah, bool(isNewDay)), 'Prev Daily VAH', pd_col, 1, plot.style_linebr)
+plot(get_plot(prvD.o, pd_show, pd_ohlc, bool(isNewDay)), 'Prev Daily OHLC', pd_col, 1, plot.style_linebr)
+
+plot(get_plot(prvW.poc, pw_show, pw_poc, bool(isNewWeek)), 'Prev Weekly POC', pw_col, 2, plot.style_linebr)
+plot(get_plot(prvW.val, pw_show, pw_val, bool(isNewWeek)), 'Prev Weekly VAL', pw_col, 1, plot.style_linebr)
+plot(get_plot(prvW.vah, pw_show, pw_vah, bool(isNewWeek)), 'Prev Weekly VAH', pw_col, 1, plot.style_linebr)
+plot(get_plot(prvW.o, pw_show, pw_ohlc, bool(isNewWeek)), 'Prev Weekly OHLC', pw_col, 1, plot.style_linebr)
+
+plot(get_plot(prvM.poc, pm_show, pm_poc, bool(isNewMonth)), 'Prev Monthly POC', pm_col, 2, plot.style_linebr)
+plot(get_plot(prvM.val, pm_show, pm_val, bool(isNewMonth)), 'Prev Monthly VAL', pm_col, 1, plot.style_linebr)
+plot(get_plot(prvM.vah, pm_show, pm_vah, bool(isNewMonth)), 'Prev Monthly VAH', pm_col, 1, plot.style_linebr)
+plot(get_plot(prvM.o, pm_show, pm_ohlc, bool(isNewMonth)), 'Prev Monthly OHLC', pm_col, 1, plot.style_linebr)

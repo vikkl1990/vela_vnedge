@@ -1,0 +1,71 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TrigosFxMentor
+
+//@version=6
+indicator("Inicio del Día - TrigosFX", overlay=true, max_lines_count=500)
+
+// ─────────────────────────────────────────────
+// CONFIGURACIÓN
+// ─────────────────────────────────────────────
+
+// Hora de inicio
+startHour   = input.int(0, "Hora de inicio", minval=0, maxval=23)
+startMinute = input.int(0, "Minuto de inicio", minval=0, maxval=59)
+
+// Zona horaria
+timezone = input.string(
+     "Europe/Madrid",
+     "Zona horaria",
+     options=[
+         "Europe/Madrid",
+         "Europe/London",
+         "America/New_York",
+         "America/Chicago",
+         "America/Los_Angeles",
+         "Asia/Tokyo",
+         "Asia/Hong_Kong",
+         "Asia/Singapore",
+         "Australia/Sydney",
+         "Etc/UTC"
+     ]
+)
+
+// Apariencia
+lineColor = input.color(color.gray, "Color de línea")
+lineWidth = input.int(1, "Grosor", minval=1, maxval=5)
+
+lineStyleInput = input.string(
+     "Discontinua",
+     "Estilo",
+     options=["Continua", "Discontinua", "Punteada"]
+)
+
+lineStyle = switch lineStyleInput
+    "Continua"     => line.style_solid
+    "Discontinua" => line.style_dashed
+    => line.style_dotted
+
+// ─────────────────────────────────────────────
+// DETECTAR INICIO DEL DÍA
+// ─────────────────────────────────────────────
+
+currentHour   = hour(time, timezone)
+currentMinute = minute(time, timezone)
+
+isStart = currentHour == startHour and currentMinute == startMinute
+
+// ─────────────────────────────────────────────
+// DIBUJAR LÍNEA VERTICAL
+// ─────────────────────────────────────────────
+
+if isStart
+    line.new(
+         x1=bar_index,
+         y1=low,
+         x2=bar_index,
+         y2=high,
+         extend=extend.both,
+         color=lineColor,
+         width=lineWidth,
+         style=lineStyle
+     )

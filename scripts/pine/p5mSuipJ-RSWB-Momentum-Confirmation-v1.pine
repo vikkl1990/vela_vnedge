@@ -1,0 +1,54 @@
+//@version=6
+indicator("RSWB Momentum Confirmation v1", overlay=false)
+
+// RSI
+rsiValue = ta.rsi(close, 14)
+
+plot(rsiValue, title="RSI", color=color.yellow, linewidth=2)
+
+hline(70, "Overbought", color=color.red)
+hline(50, "Midline", color=color.gray)
+hline(30, "Oversold", color=color.green)
+
+// MACD
+[macdLine, signalLine, hist] = ta.macd(close, 12, 26, 9)
+
+plot(
+     hist,
+     title="MACD Histogram",
+     style=plot.style_histogram,
+     color=hist >= 0 ? color.lime : color.red,
+     linewidth=2)
+
+// Confirmation Signals
+bullConfirm = ta.crossover(hist, hist[1]) and rsiValue < 35
+bearConfirm = ta.crossunder(hist, hist[1]) and rsiValue > 65
+
+// Bullish Dot
+plotshape(
+     bullConfirm,
+     title="Bull Confirm",
+     location=location.bottom,
+     style=shape.circle,
+     color=color.lime,
+     size=size.small)
+
+// Bearish Dot
+plotshape(
+     bearConfirm,
+     title="Bear Confirm",
+     location=location.top,
+     style=shape.circle,
+     color=color.red,
+     size=size.small)
+
+// Alerts
+alertcondition(
+     bullConfirm,
+     title="Bullish Confirmation",
+     message="RSWB Bullish Momentum Confirmation")
+
+alertcondition(
+     bearConfirm,
+     title="Bearish Confirmation",
+     message="RSWB Bearish Momentum Confirmation")

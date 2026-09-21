@@ -1,0 +1,364 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0
+// © Currency Strength Meter - Pine Script v5
+// Ported from MQL5 EA logic (Strength() function)
+
+//@version=6
+indicator(title = 'Currency Strength Meter', shorttitle = 'CSM', overlay = false, max_bars_back = 500)
+
+// ─────────────────────────────────────────────
+//  INPUTS
+// ─────────────────────────────────────────────
+grp_calc = '── Calculation Settings ──'
+i_tf = input.timeframe('240', 'Strength Timeframe', group = grp_calc)
+i_candles = input.int(55, 'Number of Candles', group = grp_calc, minval = 5, maxval = 300)
+i_smoothing = input.bool(true, 'Apply Smoothing', group = grp_calc)
+i_triangular = input.bool(true, 'Triangular Weighting', group = grp_calc)
+
+grp_sig = '── Signal Settings ──'
+i_upper = input.float(7.2, 'Upper Limit (Strong)', group = grp_sig, step = 0.1)
+i_lower = input.float(3.3, 'Lower Limit (Weak)', group = grp_sig, step = 0.1)
+i_show_signals = input.bool(true, 'Show Buy/Sell Signals', group = grp_sig)
+
+grp_disp = '── Display Settings ──'
+i_show_panel = input.bool(true, 'Show Strength Panel (Table)', group = grp_disp)
+i_show_rank = input.bool(true, 'Show Ranking in Panel', group = grp_disp)
+i_show_histo = input.bool(true, 'Show Histogram Bars', group = grp_disp)
+i_panel_pos = input.string('Top Right', 'Panel Position', group = grp_disp, options = ['Top Right', 'Top Left', 'Bottom Right', 'Bottom Left'])
+
+// ─────────────────────────────────────────────
+//  SECURITY REQUESTS  (close / high / low)
+//  24 pares  →  1 request cada (high/low pelo mesmo barmerge)
+// ─────────────────────────────────────────────
+
+// Helper: retorna [high, low, close] numa única chamada por par
+// 26 pares × 1 call = 26 calls  (limite = 40)
+f_hlc(sym) =>
+    request.security(sym, i_tf, [high, low, close], lookahead = barmerge.lookahead_off)
+
+[h_GBPUSD, l_GBPUSD, c_GBPUSD] = f_hlc('FX:GBPUSD')
+[h_USDCHF, l_USDCHF, c_USDCHF] = f_hlc('FX:USDCHF')
+[h_EURUSD, l_EURUSD, c_EURUSD] = f_hlc('FX:EURUSD')
+[h_USDJPY, l_USDJPY, c_USDJPY] = f_hlc('FX:USDJPY')
+[h_USDCAD, l_USDCAD, c_USDCAD] = f_hlc('FX:USDCAD')
+[h_NZDUSD, l_NZDUSD, c_NZDUSD] = f_hlc('FX:NZDUSD')
+[h_AUDUSD, l_AUDUSD, c_AUDUSD] = f_hlc('FX:AUDUSD')
+[h_AUDNZD, l_AUDNZD, c_AUDNZD] = f_hlc('FX:AUDNZD')
+[h_AUDCAD, l_AUDCAD, c_AUDCAD] = f_hlc('FX:AUDCAD')
+[h_AUDCHF, l_AUDCHF, c_AUDCHF] = f_hlc('FX:AUDCHF')
+[h_AUDJPY, l_AUDJPY, c_AUDJPY] = f_hlc('FX:AUDJPY')
+[h_CHFJPY, l_CHFJPY, c_CHFJPY] = f_hlc('FX:CHFJPY')
+[h_GBPCHF, l_GBPCHF, c_GBPCHF] = f_hlc('FX:GBPCHF')
+[h_GBPAUD, l_GBPAUD, c_GBPAUD] = f_hlc('FX:GBPAUD')
+[h_GBPCAD, l_GBPCAD, c_GBPCAD] = f_hlc('FX:GBPCAD')
+[h_GBPJPY, l_GBPJPY, c_GBPJPY] = f_hlc('FX:GBPJPY')
+[h_GBPNZD, l_GBPNZD, c_GBPNZD] = f_hlc('FX:GBPNZD')
+[h_EURJPY, l_EURJPY, c_EURJPY] = f_hlc('FX:EURJPY')
+[h_EURCAD, l_EURCAD, c_EURCAD] = f_hlc('FX:EURCAD')
+[h_EURGBP, l_EURGBP, c_EURGBP] = f_hlc('FX:EURGBP')
+[h_EURCHF, l_EURCHF, c_EURCHF] = f_hlc('FX:EURCHF')
+[h_EURAUD, l_EURAUD, c_EURAUD] = f_hlc('FX:EURAUD')
+[h_EURNZD, l_EURNZD, c_EURNZD] = f_hlc('FX:EURNZD')
+[h_CADJPY, l_CADJPY, c_CADJPY] = f_hlc('FX:CADJPY')
+[h_NZDJPY, l_NZDJPY, c_NZDJPY] = f_hlc('FX:NZDJPY')
+[h_CADCHF, l_CADCHF, c_CADCHF] = f_hlc('FX:CADCHF')
+
+// ─────────────────────────────────────────────
+//  CORE: bid_ratio → score 1-9
+// ─────────────────────────────────────────────
+
+// Calcula o range máx/mín dos últimos N candles com suporte a smoothing
+f_bidRatio(h_arr, l_arr, c_cur) =>
+    float ratio = 0.0
+    float candleSum = i_candles * (i_candles + 1) / 2.0
+
+    if i_smoothing
+        for k = 1 to i_candles by 1
+            float hh = ta.highest(h_arr, k)
+            float ll = ta.lowest(l_arr, k)
+            float rng = hh - ll
+            float r = rng != 0.0 ? (c_cur - ll) / rng : 0.0
+            float w = i_triangular ? (i_candles + 1 - k) / candleSum : 1.0 / i_candles
+            ratio := ratio + r * w
+            ratio
+    else
+        float hh = ta.highest(h_arr, i_candles)
+        float ll = ta.lowest(l_arr, i_candles)
+        float rng = hh - ll
+        ratio := rng != 0.0 ? (c_cur - ll) / rng : 0.0
+        ratio
+
+    ratio
+
+// Converte ratio (0-1) em score (0-9)  — mesma escala do EA
+f_score(ratio) =>
+    float s = 0.0
+    if ratio >= 0.97
+        s := 9.0
+        s
+    else if ratio >= 0.90
+        s := 8.0
+        s
+    else if ratio >= 0.75
+        s := 7.0
+        s
+    else if ratio >= 0.60
+        s := 6.0
+        s
+    else if ratio >= 0.50
+        s := 5.0
+        s
+    else if ratio >= 0.40
+        s := 4.0
+        s
+    else if ratio >= 0.25
+        s := 3.0
+        s
+    else if ratio >= 0.10
+        s := 2.0
+        s
+    else if ratio >= 0.03
+        s := 1.0
+        s
+    s
+
+// ─────────────────────────────────────────────
+//  STRENGTH CALCULATION
+//  Para cada par: score para moeda base, 9-score para moeda cotada
+//
+//  Índices:  0=USD  1=EUR  2=GBP  3=CHF  4=CAD  5=AUD  6=JPY  7=NZD
+// ─────────────────────────────────────────────
+
+var array<float> str_sum = array.new_float(8, 0.0)
+var array<int> str_count = array.new_int(8, 0)
+
+// Reseta acumuladores a cada barra
+array.fill(str_sum, 0.0)
+array.fill(str_count, 0)
+
+// Macro-like helper para acumular
+f_accum(base_idx, quote_idx, h_arr, l_arr, c_cur) =>
+    float ratio = f_bidRatio(h_arr, l_arr, c_cur)
+    float sc = f_score(ratio)
+    array.set(str_sum, base_idx, array.get(str_sum, base_idx) + sc)
+    array.set(str_count, base_idx, array.get(str_count, base_idx) + 1)
+    array.set(str_sum, quote_idx, array.get(str_sum, quote_idx) + 9.0 - sc)
+    array.set(str_count, quote_idx, array.get(str_count, quote_idx) + 1)
+
+// ── 26 pares ──────────────────────────────────────────────────────────────────
+//            base  quote
+f_accum(2, 0, h_GBPUSD, l_GBPUSD, c_GBPUSD) // GBP / USD
+f_accum(0, 3, h_USDCHF, l_USDCHF, c_USDCHF) // USD / CHF
+f_accum(1, 0, h_EURUSD, l_EURUSD, c_EURUSD) // EUR / USD
+f_accum(0, 6, h_USDJPY, l_USDJPY, c_USDJPY) // USD / JPY
+f_accum(0, 4, h_USDCAD, l_USDCAD, c_USDCAD) // USD / CAD
+f_accum(7, 0, h_NZDUSD, l_NZDUSD, c_NZDUSD) // NZD / USD
+f_accum(5, 0, h_AUDUSD, l_AUDUSD, c_AUDUSD) // AUD / USD
+f_accum(5, 7, h_AUDNZD, l_AUDNZD, c_AUDNZD) // AUD / NZD
+f_accum(5, 4, h_AUDCAD, l_AUDCAD, c_AUDCAD) // AUD / CAD
+f_accum(5, 3, h_AUDCHF, l_AUDCHF, c_AUDCHF) // AUD / CHF
+f_accum(5, 6, h_AUDJPY, l_AUDJPY, c_AUDJPY) // AUD / JPY
+f_accum(3, 6, h_CHFJPY, l_CHFJPY, c_CHFJPY) // CHF / JPY
+f_accum(2, 3, h_GBPCHF, l_GBPCHF, c_GBPCHF) // GBP / CHF
+f_accum(2, 5, h_GBPAUD, l_GBPAUD, c_GBPAUD) // GBP / AUD
+f_accum(2, 4, h_GBPCAD, l_GBPCAD, c_GBPCAD) // GBP / CAD
+f_accum(2, 6, h_GBPJPY, l_GBPJPY, c_GBPJPY) // GBP / JPY
+f_accum(2, 7, h_GBPNZD, l_GBPNZD, c_GBPNZD) // GBP / NZD
+f_accum(1, 6, h_EURJPY, l_EURJPY, c_EURJPY) // EUR / JPY
+f_accum(1, 4, h_EURCAD, l_EURCAD, c_EURCAD) // EUR / CAD
+f_accum(1, 2, h_EURGBP, l_EURGBP, c_EURGBP) // EUR / GBP
+f_accum(1, 3, h_EURCHF, l_EURCHF, c_EURCHF) // EUR / CHF
+f_accum(1, 5, h_EURAUD, l_EURAUD, c_EURAUD) // EUR / AUD
+f_accum(1, 7, h_EURNZD, l_EURNZD, c_EURNZD) // EUR / NZD
+f_accum(4, 6, h_CADJPY, l_CADJPY, c_CADJPY) // CAD / JPY
+f_accum(7, 6, h_NZDJPY, l_NZDJPY, c_NZDJPY) // NZD / JPY
+f_accum(4, 3, h_CADCHF, l_CADCHF, c_CADCHF) // CAD / CHF
+
+// ── Força final (média ponderada) ─────────────────────────────────────────────
+f_final(idx) =>
+    int cnt = array.get(str_count, idx)
+    float sm = array.get(str_sum, idx)
+    cnt > 0 ? sm / cnt : 0.0
+
+float s_USD = f_final(0)
+float s_EUR = f_final(1)
+float s_GBP = f_final(2)
+float s_CHF = f_final(3)
+float s_CAD = f_final(4)
+float s_AUD = f_final(5)
+float s_JPY = f_final(6)
+float s_NZD = f_final(7)
+
+// ─────────────────────────────────────────────
+//  PLOTS (linhas no painel)
+// ─────────────────────────────────────────────
+plot(s_USD, 'USD', color = color.new(color.red, 0), linewidth = 2)
+plot(s_EUR, 'EUR', color = color.new(color.yellow, 0), linewidth = 2)
+plot(s_GBP, 'GBP', color = color.new(#9370DB, 0), linewidth = 2) // BlueViolet
+plot(s_CHF, 'CHF', color = color.new(#DAA520, 0), linewidth = 2) // Goldenrod
+plot(s_CAD, 'CAD', color = color.new(color.white, 0), linewidth = 2)
+plot(s_AUD, 'AUD', color = color.new(color.green, 0), linewidth = 2)
+plot(s_JPY, 'JPY', color = color.new(#EE82EE, 0), linewidth = 2) // Violet
+plot(s_NZD, 'NZD', color = color.new(color.orange, 0), linewidth = 2)
+
+// Linhas de referência
+hline(i_upper, 'Upper Limit', color = color.new(color.lime, 60), linestyle = hline.style_dashed, linewidth = 1)
+hline(i_lower, 'Lower Limit', color = color.new(color.red, 60), linestyle = hline.style_dashed, linewidth = 1)
+hline(4.5, 'Mid', color = color.new(color.gray, 70), linestyle = hline.style_dotted, linewidth = 1)
+
+// ─────────────────────────────────────────────
+//  RANKING  (sort descending)
+// ─────────────────────────────────────────────
+// Arrays paralelos para ordenação por força
+var array<string> ccy_names = array.from('USD', 'EUR', 'GBP', 'CHF', 'CAD', 'AUD', 'JPY', 'NZD')
+var array<color> ccy_colors = array.from(color.red, color.yellow, #9370DB, #DAA520, color.white, color.green, #EE82EE, color.orange)
+
+array<float> strengths = array.from(s_USD, s_EUR, s_GBP, s_CHF, s_CAD, s_AUD, s_JPY, s_NZD)
+
+// Bubble sort (8 elementos, simples e sem dependências externas)
+array<int> order = array.from(0, 1, 2, 3, 4, 5, 6, 7)
+for i = 0 to 6 by 1
+    for j = 0 to 6 - i by 1
+        if array.get(strengths, array.get(order, j)) < array.get(strengths, array.get(order, j + 1))
+            int tmp = array.get(order, j)
+            array.set(order, j, array.get(order, j + 1))
+            array.set(order, j + 1, tmp)
+
+// ─────────────────────────────────────────────
+//  TABELA / PANEL
+// ─────────────────────────────────────────────
+if i_show_panel and barstate.islast
+
+    // Posição da tabela
+    var string tpos = switch i_panel_pos
+        'Top Right' => position.top_right
+        'Top Left' => position.top_left
+        'Bottom Right' => position.bottom_right
+        => position.bottom_left
+
+    var table t = table.new(tpos, 4, 10, bgcolor = color.new(color.black, 15), border_color = color.new(color.gray, 40), border_width = 1, frame_color = color.new(color.gray, 20), frame_width = 1)
+
+    // Cabeçalho
+    table.cell(t, 0, 0, i_show_rank ? '#' : '', text_color = color.new(color.gray, 20), text_size = size.small, bgcolor = color.new(color.navy, 40))
+    table.cell(t, 1, 0, 'CCY', text_color = color.new(color.gray, 20), text_size = size.small, bgcolor = color.new(color.navy, 40))
+    table.cell(t, 2, 0, 'STR', text_color = color.new(color.gray, 20), text_size = size.small, bgcolor = color.new(color.navy, 40))
+    table.cell(t, 3, 0, i_show_histo ? 'METER' : '', text_color = color.new(color.gray, 20), text_size = size.small, bgcolor = color.new(color.navy, 40))
+
+    for r = 0 to 7 by 1
+        int idx = array.get(order, r)
+        float val = array.get(strengths, idx)
+        string nm = array.get(ccy_names, idx)
+        color cl = array.get(ccy_colors, idx)
+
+        // Cor de fundo da linha: verde se forte, vermelho se fraco, neutro senão
+        color rowbg = val >= i_upper ? color.new(color.green, 75) : val <= i_lower ? color.new(color.red, 75) : color.new(color.black, 60)
+
+        // Ranking
+        table.cell(t, 0, r + 1, i_show_rank ? str.tostring(r + 1) : '', text_color = color.new(color.gray, 10), text_size = size.small, bgcolor = rowbg)
+
+        // Nome da moeda
+        table.cell(t, 1, r + 1, nm, text_color = cl, text_size = size.normal, bgcolor = rowbg, text_halign = text.align_center)
+
+        // Valor numérico
+        table.cell(t, 2, r + 1, str.tostring(val, '#.##'), text_color = val >= i_upper ? color.lime : val <= i_lower ? color.red : color.white, text_size = size.normal, bgcolor = rowbg, text_halign = text.align_right)
+
+        // Histograma textual (█ blocks)
+        string bar_str = ''
+        if i_show_histo
+            int blocks = math.round(val) // 0-9 blocos
+            for b = 1 to blocks by 1
+                bar_str := bar_str + '█'
+                bar_str
+            for b = blocks + 1 to 9 by 1
+                bar_str := bar_str + '░'
+                bar_str
+        table.cell(t, 3, r + 1, bar_str, text_color = color.new(cl, 20), text_size = size.small, bgcolor = rowbg)
+
+// ─────────────────────────────────────────────
+//  CRUZAMENTOS — qualquer moeda vs i_upper / i_lower
+// ─────────────────────────────────────────────
+
+// Detecta se QUALQUER moeda cruzou acima de i_upper nesta barra
+bool cross_above_upper = ta.crossover(s_USD, i_upper) or ta.crossover(s_EUR, i_upper) or ta.crossover(s_GBP, i_upper) or ta.crossover(s_CHF, i_upper) or ta.crossover(s_CAD, i_upper) or ta.crossover(s_AUD, i_upper) or ta.crossover(s_JPY, i_upper) or ta.crossover(s_NZD, i_upper)
+
+// Detecta se QUALQUER moeda cruzou abaixo de i_lower nesta barra
+bool cross_below_lower = ta.crossunder(s_USD, i_lower) or ta.crossunder(s_EUR, i_lower) or ta.crossunder(s_GBP, i_lower) or ta.crossunder(s_CHF, i_lower) or ta.crossunder(s_CAD, i_lower) or ta.crossunder(s_AUD, i_lower) or ta.crossunder(s_JPY, i_lower) or ta.crossunder(s_NZD, i_lower)
+
+// Verifica se ATUALMENTE existe ao menos 1 moeda acima da verde
+// e ao menos 1 moeda abaixo da vermelha (estado ativo, não só o cruzamento)
+bool any_above_upper = s_USD >= i_upper or s_EUR >= i_upper or s_GBP >= i_upper or s_CHF >= i_upper or s_CAD >= i_upper or s_AUD >= i_upper or s_JPY >= i_upper or s_NZD >= i_upper
+
+bool any_below_lower = s_USD <= i_lower or s_EUR <= i_lower or s_GBP <= i_lower or s_CHF <= i_lower or s_CAD <= i_lower or s_AUD <= i_lower or s_JPY <= i_lower or s_NZD <= i_lower
+
+// ─────────────────────────────────────────────
+//  FLAGS PERSISTENTES
+//  Quando uma moeda cruza pra fora (acima ou abaixo),
+//  a flag fica true até que o outro lado também se cumpra
+//  (ou seja: os dois cruzamentos não precisam ser na mesma barra).
+//  Reset: quando o alerta é disparado (ambas as flags true ao mesmo tempo).
+// ─────────────────────────────────────────────
+var bool flag_above = false // houve cruzamento acima da verde desde o último reset
+var bool flag_below = false // houve cruzamento abaixo da vermelha desde o último reset
+
+// Atualiza flags com novos cruzamentos
+if cross_above_upper
+    flag_above := true
+    flag_above
+if cross_below_lower
+    flag_below := true
+    flag_below
+
+// Alerta: ambas as condições acumuladas são verdadeiras
+bool alert_imbalance = flag_above and flag_below
+
+// Reset das flags após o disparo para não repetir o mesmo alerta
+if alert_imbalance
+    flag_above := false
+    flag_below := false
+    flag_below
+
+// ─────────────────────────────────────────────
+//  SINAIS VISUAIS NO PAINEL
+// ─────────────────────────────────────────────
+// Sinal visual simples baseado no estado atual do gráfico
+f_ccyStrength(ccy) =>
+    switch ccy
+        'USD' => s_USD
+        'EUR' => s_EUR
+        'GBP' => s_GBP
+        'CHF' => s_CHF
+        'CAD' => s_CAD
+        'AUD' => s_AUD
+        'JPY' => s_JPY
+        'NZD' => s_NZD
+        => float(na)
+
+float base_str = f_ccyStrength(syminfo.basecurrency)
+float quote_str = f_ccyStrength(syminfo.currency)
+
+bool sig_buy = i_show_signals and not na(base_str) and not na(quote_str) and base_str >= i_upper and quote_str <= i_lower
+bool sig_sell = i_show_signals and not na(base_str) and not na(quote_str) and base_str <= i_lower and quote_str >= i_upper
+
+// Triângulos no painel
+plotshape(sig_buy ? 4.5 : na, 'BUY Signal', shape.triangleup, location.absolute, color.new(color.lime, 0), size = size.small)
+plotshape(sig_sell ? 4.5 : na, 'SELL Signal', shape.triangledown, location.absolute, color.new(color.red, 0), size = size.small)
+
+// Marcador do alerta de desequilíbrio (losango dourado)
+plotshape(alert_imbalance ? 4.5 : na, 'Imbalance Alert', shape.diamond, location.absolute, color.new(color.yellow, 0), size = size.normal)
+
+// ─────────────────────────────────────────────
+//  ALERTCONDITIONS
+// ─────────────────────────────────────────────
+
+// Alerta principal: desequilíbrio detectado (uma moeda cruzou acima + outra abaixo)
+alertcondition(alert_imbalance, 'CSM — Desequilíbrio Detectado', 'CSM: Desequilíbrio! Uma moeda cruzou acima de {{plot_1}} e outra abaixo de {{plot_2}} — Possível trend forte em formação.')
+
+// Alertas auxiliares (cruzamento individual, útil para monitorar cada lado)
+alertcondition(cross_above_upper, 'CSM — Moeda cruzou acima da zona FORTE', 'CSM: Uma moeda cruzou acima do limite superior ({{ticker}})')
+alertcondition(cross_below_lower, 'CSM — Moeda cruzou abaixo da zona FRACA', 'CSM: Uma moeda cruzou abaixo do limite inferior ({{ticker}})')
+
+// ─────────────────────────────────────────────
+//  BACKGROUND
+// ─────────────────────────────────────────────
+bgcolor(sig_buy ? color.new(color.green, 90) : na, title = 'BUY bg')
+bgcolor(sig_sell ? color.new(color.red, 90) : na, title = 'SELL bg')
+bgcolor(alert_imbalance ? color.new(color.yellow, 80) : na, title = 'Imbalance bg')

@@ -1,0 +1,342 @@
+//@version=6
+// ===========================================================================
+//  IV vs RV Volatility Cones                                          v2.2
+//  Implied volatility (India VIX) against realized volatility, both scaled to
+//  the same horizon, drawn as directly comparable cones.
+//
+//  Changes vs the original "NIFTY IV & RV 4W + HUD + FP (AnyTF)":
+//   - ALL weekly maths now runs inside a single request.security() context, so
+//     history offsets and averaging windows count WEEKLY bars on every chart
+//     timeframe. In v1 they counted CHART bars, which silently corrupted the
+//     realized-volatility leg on any timeframe below Weekly.
+//   - Sample (n-1) standard deviation instead of population (n).
+//   - IV and RV bands share one geometry. In v1 IV was arithmetic and RV was
+//     lognormal, so the two cones were not built the same way.
+//   - Horizon is one input driving the annualisation, the cone width and the
+//     projection length together.
+//   - Forward cone is drawn as NESTED cones, not two overlapping boxes, so the
+//     gap between implied and realized is legible instead of muddy, and the
+//     price labels can no longer collide.
+//   - Adds a variance-premium verdict, alerts, and a guard for chart
+//     timeframes above Weekly.
+// ===========================================================================
+
+indicator("IV vs RV Volatility Cones", "IV-RV", overlay = true,
+     max_lines_count = 100, max_boxes_count = 20, max_labels_count = 50)
+
+// --------------------------- Calculation ---------------------------
+gC = "Calculation"
+horizonW   = input.int(4, "Horizon (weeks)", minval = 1, maxval = 26, group = gC,
+     tooltip = "Both legs are scaled to this horizon. 4 weeks is roughly one option cycle.")
+lookback   = input.int(12, "RV lookback (weekly bars)", minval = 4, maxval = 104, group = gC)
+rvMethod   = input.string("Yang-Zhang", "RV estimator",
+     options = ["Yang-Zhang", "Std Dev", "ATR%"], group = gC,
+     tooltip = "Yang-Zhang uses the whole weekly bar including the gap and is the most efficient of the three.")
+atrLen     = input.int(14, "ATR length (weekly bars)", minval = 2, maxval = 52, group = gC)
+atrToSigma = input.float(1.00, "ATR to sigma factor", step = 0.05, minval = 0.5, maxval = 1.5, group = gC)
+sigmaMult  = input.float(1.0, "Sigma multiple", step = 0.25, minval = 0.25, maxval = 3.0, group = gC)
+bandGeom   = input.string("Lognormal", "Band geometry", options = ["Lognormal", "Arithmetic"], group = gC,
+     tooltip = "Applied identically to both legs so the two cones stay comparable.")
+vixSym     = input.symbol("NSE:INDIAVIX", "Implied vol source", group = gC,
+     tooltip = "Must be an ANNUALISED volatility index quoted in percentage points. India VIX is 30-day annualised implied vol on NIFTY 50.")
+
+// --------------------------- Cones ---------------------------
+gA = "Cones"
+anchorBack = input.int(0, "Step the historical cone back (weeks)", minval = 0, maxval = 104, group = gA,
+     tooltip = "0 anchors the cone one horizon back, so it ends at the current bar. Increase it to walk through history.")
+showHist   = input.bool(true, "Historical cones", group = gA)
+fillStyle  = input.string("Both", "Shade", options = ["Both", "IV only", "RV only", "None"], group = gA)
+histOpac   = input.int(92, "Historical shade opacity", minval = 60, maxval = 100, group = gA,
+     tooltip = "Higher is lighter. Two overlapping shades compound, so keep this high.")
+showFwd    = input.bool(true, "Forward cone from current bar", group = gA)
+fwdOpac    = input.int(88, "Forward core opacity", minval = 60, maxval = 100, group = gA)
+showFwdLbl = input.bool(false, "Forward cone price labels", group = gA,
+     tooltip = "Off by default. The readout already lists both cone ranges.")
+
+// --------------------------- Style ---------------------------
+gS = "Style"
+colIV    = input.color(#F0B429, "IV colour", group = gS)
+colRV    = input.color(#22B8CF, "RV colour", group = gS)
+colCore  = input.color(#5A6B8C, "Forward cone core", group = gS,
+     tooltip = "Fills the range implied and realized agree on. The ring outside it is the gap between them.")
+colAnch  = input.color(#7D8799, "Anchor colour", group = gS)
+lw       = input.int(2, "Band line width", minval = 1, maxval = 4, group = gS)
+showAnch = input.bool(true, "Show anchor line", group = gS)
+
+// --------------------------- Readout ---------------------------
+gH = "Readout"
+showHUD = input.bool(true, "Show readout", group = gH)
+hudPos  = input.string("Top Right", "Position",
+     options = ["Top Right", "Top Left", "Middle Right", "Bottom Right", "Bottom Left"], group = gH)
+hudSize = input.string("Small", "Text size", options = ["Tiny", "Small", "Normal"], group = gH)
+hudOpac = input.int(12, "Background opacity", minval = 0, maxval = 90, group = gH)
+dec     = input.int(2, "Decimals", minval = 0, maxval = 4, group = gH)
+richTh  = input.float(1.15, "IV/RV rich above", step = 0.05, minval = 1.0, maxval = 3.0, group = gH)
+cheapTh = input.float(0.85, "IV/RV cheap below", step = 0.05, minval = 0.1, maxval = 1.0, group = gH)
+
+// ======================= Shared constants =======================
+tooHigh = timeframe.in_seconds(timeframe.period) > timeframe.in_seconds("W")
+
+txtDim  = #8B94A7
+txtMain = #E6EAF2
+fmtP    = dec == 0 ? "#" : dec == 1 ? "#.#" : dec == 2 ? "#.##" : dec == 3 ? "#.###" : "#.####"
+
+// ======================= Weekly context =======================
+// Everything inside f_weekly() runs on WEEKLY bars, so [n] offsets and every
+// averaging window count weekly bars no matter what the chart timeframe is.
+sh = horizonW + anchorBack
+
+f_weekly() =>
+    lr   = math.log(close / close[1])
+    tr   = math.max(high - low, math.max(math.abs(high - close[1]), math.abs(low - close[1])))
+    atrw = ta.rma(tr, atrLen)
+    atrF = atrw / close * atrToSigma
+
+    ro = math.log(open  / close[1])          // weekend gap
+    rc = math.log(close / open)              // open to close
+    u  = math.log(high  / open)
+    d  = math.log(low   / open)
+    rs = u * (u - rc) + d * (d - rc)         // Rogers-Satchell
+
+    sd  = ta.stdev(lr, lookback, false)      // sample, n-1
+    vo  = math.pow(ta.stdev(ro, lookback, false), 2)
+    vc  = math.pow(ta.stdev(rc, lookback, false), 2)
+    mrs = ta.sma(rs, lookback)
+    k   = 0.34 / (1.34 + (lookback + 1.0) / (lookback - 1.0))
+    yzv = vo + k * vc + (1.0 - k) * mrs
+    yz  = yzv > 0 ? math.sqrt(yzv) : na
+
+    s1w = rvMethod == "Std Dev" ? sd : rvMethod == "ATR%" ? atrF : yz
+
+    anchorPx = close[sh]
+    anchorSg = s1w[sh]
+    liveSg   = s1w[1]                        // last CONFIRMED weekly bar
+    [anchorPx, anchorSg, liveSg]
+
+f_vix() =>
+    va = close[sh]
+    vl = close[1]
+    [va, vl]
+
+[basePx, sigA, sigL] = request.security(syminfo.tickerid, "W", f_weekly())
+[vixA, vixL]         = request.security(vixSym, "W", f_vix(), ignore_invalid_symbol = true)
+
+// ======================= Scaling =======================
+annToH = math.sqrt(horizonW / 52.0)          // annualised -> horizon
+wkToH  = math.sqrt(horizonW)                 // weekly     -> horizon
+
+ivFracA = na(vixA) ? na : vixA / 100.0 * annToH
+ivFracL = na(vixL) ? na : vixL / 100.0 * annToH
+rvFracA = na(sigA) ? na : sigA * wkToH
+rvFracL = na(sigL) ? na : sigL * wkToH
+
+f_up(p, f) => bandGeom == "Lognormal" ? p * math.exp( sigmaMult * f) : p * (1.0 + sigmaMult * f)
+f_dn(p, f) => bandGeom == "Lognormal" ? p * math.exp(-sigmaMult * f) : p * (1.0 - sigmaMult * f)
+
+okA   = not tooHigh and not na(basePx)
+okIVA = okA and not na(ivFracA)
+okRVA = okA and not na(rvFracA)
+
+ivU = okIVA ? f_up(basePx, ivFracA) : na
+ivL = okIVA ? f_dn(basePx, ivFracA) : na
+rvU = okRVA ? f_up(basePx, rvFracA) : na
+rvL = okRVA ? f_dn(basePx, rvFracA) : na
+
+// ======================= Historical cones =======================
+shadeIV = showHist and (fillStyle == "Both" or fillStyle == "IV only")
+shadeRV = showHist and (fillStyle == "Both" or fillStyle == "RV only")
+
+pIvU = plot(showHist ? ivU : na, "IV upper", color = color.new(colIV, 15), linewidth = lw)
+pIvL = plot(showHist ? ivL : na, "IV lower", color = color.new(colIV, 15), linewidth = lw)
+pRvU = plot(showHist ? rvU : na, "RV upper", color = color.new(colRV, 15), linewidth = lw)
+pRvL = plot(showHist ? rvL : na, "RV lower", color = color.new(colRV, 15), linewidth = lw)
+plot(showHist and showAnch ? basePx : na, "Anchor", color = color.new(colAnch, 35), linewidth = 1)
+
+fill(pIvU, pIvL, color = shadeIV ? color.new(colIV, histOpac) : na, title = "IV shade")
+fill(pRvU, pRvL, color = shadeRV ? color.new(colRV, histOpac) : na, title = "RV shade")
+
+// ======================= Forward cone =======================
+// Nested, not overlapping. The CORE is the range implied and realized agree
+// on. The RING above and below it is the gap between them, coloured by
+// whichever cone sits outside. That ring is the variance risk premium, so the
+// thing this indicator measures is the thing you actually see.
+livePx = close
+okIVL  = not tooHigh and not na(ivFracL)
+okRVL  = not tooHigh and not na(rvFracL)
+bothL  = okIVL and okRVL
+
+fIvU = okIVL ? f_up(livePx, ivFracL) : na
+fIvL = okIVL ? f_dn(livePx, ivFracL) : na
+fRvU = okRVL ? f_up(livePx, rvFracL) : na
+fRvL = okRVL ? f_dn(livePx, rvFracL) : na
+
+upOut   = bothL ? math.max(fIvU, fRvU) : okIVL ? fIvU : fRvU
+upIn    = bothL ? math.min(fIvU, fRvU) : upOut
+dnOut   = bothL ? math.min(fIvL, fRvL) : okIVL ? fIvL : fRvL
+dnIn    = bothL ? math.max(fIvL, fRvL) : dnOut
+ringCol = not bothL ? colCore : fIvU >= fRvU ? colIV : colRV
+
+var box   bCore  = na
+var box   bRingU = na
+var box   bRingD = na
+var line  lIvU = na
+var line  lIvL = na
+var line  lRvU = na
+var line  lRvL = na
+var line  lMid = na
+var label gTop = na
+var label gBot = na
+
+if barstate.islast
+    if showFwd and not tooHigh and (okIVL or okRVL)
+        t0 = time
+        t1 = time + horizonW * 604800000
+        ringOpac = math.max(fwdOpac - 14, 55)
+        lblBg    = color.new(#0B0E14, 20)
+        clear    = color.new(color.black, 100)
+
+        if na(bCore)
+            bCore  := box.new(t0, livePx, t1, livePx, xloc = xloc.bar_time, border_color = clear)
+            bRingU := box.new(t0, livePx, t1, livePx, xloc = xloc.bar_time, border_color = clear)
+            bRingD := box.new(t0, livePx, t1, livePx, xloc = xloc.bar_time, border_color = clear)
+            lIvU   := line.new(t0, livePx, t1, livePx, xloc = xloc.bar_time, style = line.style_solid,  width = 1)
+            lIvL   := line.new(t0, livePx, t1, livePx, xloc = xloc.bar_time, style = line.style_solid,  width = 1)
+            lRvU   := line.new(t0, livePx, t1, livePx, xloc = xloc.bar_time, style = line.style_dashed, width = 1)
+            lRvL   := line.new(t0, livePx, t1, livePx, xloc = xloc.bar_time, style = line.style_dashed, width = 1)
+            lMid   := line.new(t0, livePx, t1, livePx, xloc = xloc.bar_time, style = line.style_dotted, width = 1)
+            gTop   := label.new(t1, livePx, "", xloc = xloc.bar_time, style = label.style_label_left,
+                 textcolor = txtMain, size = size.tiny, textalign = text.align_left)
+            gBot   := label.new(t1, livePx, "", xloc = xloc.bar_time, style = label.style_label_left,
+                 textcolor = txtMain, size = size.tiny, textalign = text.align_left)
+
+        box.set_lefttop(bCore, t0, upIn)
+        box.set_rightbottom(bCore, t1, dnIn)
+        box.set_bgcolor(bCore, color.new(colCore, fwdOpac))
+
+        box.set_lefttop(bRingU, t0, upOut)
+        box.set_rightbottom(bRingU, t1, upIn)
+        box.set_bgcolor(bRingU, bothL ? color.new(ringCol, ringOpac) : clear)
+
+        box.set_lefttop(bRingD, t0, dnIn)
+        box.set_rightbottom(bRingD, t1, dnOut)
+        box.set_bgcolor(bRingD, bothL ? color.new(ringCol, ringOpac) : clear)
+
+        line.set_xy1(lIvU, t0, nz(fIvU, livePx))
+        line.set_xy2(lIvU, t1, nz(fIvU, livePx))
+        line.set_xy1(lIvL, t0, nz(fIvL, livePx))
+        line.set_xy2(lIvL, t1, nz(fIvL, livePx))
+        line.set_xy1(lRvU, t0, nz(fRvU, livePx))
+        line.set_xy2(lRvU, t1, nz(fRvU, livePx))
+        line.set_xy1(lRvL, t0, nz(fRvL, livePx))
+        line.set_xy2(lRvL, t1, nz(fRvL, livePx))
+        line.set_xy1(lMid, t0, livePx)
+        line.set_xy2(lMid, t1, livePx)
+        line.set_color(lIvU, okIVL ? colIV : clear)
+        line.set_color(lIvL, okIVL ? colIV : clear)
+        line.set_color(lRvU, okRVL ? colRV : clear)
+        line.set_color(lRvL, okRVL ? colRV : clear)
+        line.set_color(lMid, color.new(colAnch, 40))
+
+        // One label per side, both numbers stacked, so they can never collide.
+        topTxt = not showFwdLbl ? "" :
+                 bothL ? "IV " + str.tostring(fIvU, fmtP) + "\nRV " + str.tostring(fRvU, fmtP) :
+                 okIVL ? "IV " + str.tostring(fIvU, fmtP) :
+                 okRVL ? "RV " + str.tostring(fRvU, fmtP) : ""
+        botTxt = not showFwdLbl ? "" :
+                 bothL ? "IV " + str.tostring(fIvL, fmtP) + "\nRV " + str.tostring(fRvL, fmtP) :
+                 okIVL ? "IV " + str.tostring(fIvL, fmtP) :
+                 okRVL ? "RV " + str.tostring(fRvL, fmtP) : ""
+        label.set_xy(gTop, t1, upOut)
+        label.set_text(gTop, topTxt)
+        label.set_xy(gBot, t1, dnOut)
+        label.set_text(gBot, botTxt)
+        label.set_color(gTop, showFwdLbl ? lblBg : clear)
+        label.set_color(gBot, showFwdLbl ? lblBg : clear)
+    else
+        box.delete(bCore)
+        bCore := na
+        box.delete(bRingU)
+        bRingU := na
+        box.delete(bRingD)
+        bRingD := na
+        line.delete(lIvU)
+        lIvU := na
+        line.delete(lIvL)
+        lIvL := na
+        line.delete(lRvU)
+        lRvU := na
+        line.delete(lRvL)
+        lRvL := na
+        line.delete(lMid)
+        lMid := na
+        label.delete(gTop)
+        gTop := na
+        label.delete(gBot)
+        gBot := na
+
+// ======================= Readout =======================
+pos = hudPos == "Top Right"    ? position.top_right    :
+      hudPos == "Top Left"     ? position.top_left     :
+      hudPos == "Middle Right" ? position.middle_right :
+      hudPos == "Bottom Right" ? position.bottom_right : position.bottom_left
+
+tsz = hudSize == "Tiny" ? size.tiny : hudSize == "Normal" ? size.normal : size.small
+
+ratio = bothL and rvFracL > 0 ? ivFracL / rvFracL : na
+
+bgPanel = color.new(#0B0E14, hudOpac)
+bgHead  = color.new(#161B26, hudOpac)
+
+verdictTxt = na(ratio) ? "NO IV SOURCE" :
+             ratio > richTh  ? "IV RICH"  :
+             ratio < cheapTh ? "IV CHEAP" : "IV FAIR"
+verdictCol = na(ratio) ? #6B7280 : ratio > richTh ? #2F9E68 : ratio < cheapTh ? #C4453B : #6B7280
+
+var table hud = na
+if barstate.islast and showHUD and not tooHigh
+    if na(hud)
+        hud := table.new(pos, 2, 8, bgcolor = bgPanel, border_width = 1,
+             border_color = color.new(#2A3040, 40), frame_color = color.new(#2A3040, 20), frame_width = 1)
+
+    table.cell(hud, 0, 0, "IV vs RV", text_color = txtMain, bgcolor = bgHead, text_size = tsz, text_halign = text.align_left)
+    table.cell(hud, 1, 0, str.tostring(horizonW) + "W  " + rvMethod, text_color = txtDim, bgcolor = bgHead, text_size = tsz, text_halign = text.align_right)
+
+    table.cell(hud, 0, 1, verdictTxt, text_color = color.white, bgcolor = color.new(verdictCol, 15), text_size = tsz, text_halign = text.align_left)
+    table.cell(hud, 1, 1, na(ratio) ? "-" : str.tostring(ratio, "#.##") + "x", text_color = color.white, bgcolor = color.new(verdictCol, 15), text_size = tsz, text_halign = text.align_right)
+
+    table.cell(hud, 0, 2, "IV 1 sigma", text_color = colIV, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_left)
+    table.cell(hud, 1, 2, okIVL ? str.tostring(ivFracL * 100, fmtP) + "%" : "-", text_color = colIV, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_right)
+
+    table.cell(hud, 0, 3, "RV 1 sigma", text_color = colRV, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_left)
+    table.cell(hud, 1, 3, okRVL ? str.tostring(rvFracL * 100, fmtP) + "%" : "-", text_color = colRV, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_right)
+
+    table.cell(hud, 0, 4, "IV cone", text_color = txtDim, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_left)
+    table.cell(hud, 1, 4, okIVL ? str.tostring(fIvL, fmtP) + " - " + str.tostring(fIvU, fmtP) : "-", text_color = colIV, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_right)
+
+    table.cell(hud, 0, 5, "RV cone", text_color = txtDim, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_left)
+    table.cell(hud, 1, 5, okRVL ? str.tostring(fRvL, fmtP) + " - " + str.tostring(fRvU, fmtP) : "-", text_color = colRV, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_right)
+
+    table.cell(hud, 0, 6, "Anchor", text_color = txtDim, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_left)
+    table.cell(hud, 1, 6, okA ? str.tostring(basePx, fmtP) : "-", text_color = txtDim, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_right)
+
+    table.cell(hud, 0, 7, "Lookback", text_color = txtDim, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_left)
+    table.cell(hud, 1, 7, str.tostring(lookback) + "w", text_color = txtDim, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_right)
+
+// ======================= Timeframe warning =======================
+var label warn = na
+if barstate.islast
+    if tooHigh
+        if na(warn)
+            warn := label.new(bar_index, close, "", style = label.style_label_left,
+                 color = color.new(#C4453B, 15), textcolor = color.white, size = size.small)
+        label.set_xy(warn, bar_index, close)
+        label.set_text(warn, "IV-RV needs a chart timeframe of Weekly or lower")
+    else
+        label.delete(warn)
+        warn := na
+
+// ======================= Alerts =======================
+alertcondition(ta.crossover(ratio, richTh),   "IV turned rich vs RV",  "IV/RV crossed above the rich threshold")
+alertcondition(ta.crossunder(ratio, cheapTh), "IV turned cheap vs RV", "IV/RV crossed below the cheap threshold")
+alertcondition(ta.crossover(close, rvU),      "Close above RV cone",   "Price closed above the realized-volatility cone")
+alertcondition(ta.crossunder(close, rvL),     "Close below RV cone",   "Price closed below the realized-volatility cone")

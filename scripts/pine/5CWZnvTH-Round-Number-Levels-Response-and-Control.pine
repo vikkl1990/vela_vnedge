@@ -1,0 +1,1097 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// ©SG_Group
+
+//@version=6
+indicator("Round Number Levels - Response and Control", overlay = true, behind_chart = false, max_lines_count = 400, max_labels_count = 450, max_boxes_count = 2, max_bars_back = 5000)
+
+// Display revision 8.0: compact, opaque round-price badges; research is unchanged.
+// Research protocol 6001. One publication, three fixed grids, one matched sample.
+// No other author's script code, imported libraries, order routing or network requests.
+// Final outcomes are OBSERVATIONS, not simulated fills, win rates or causal effects.
+// The full-horizon export emits at most ONE record per grid per bar, without collisions.
+// Changing any input restarts Pine. Keep the recipe and the same OHLC feed for a replay.
+
+const int PROTOCOL = 6001
+const int HASH_MOD = 2147483629
+const string G1 = "01  |  Fixed grid and reproducibility"
+const string G2 = "02  |  Contact and outcome rules"
+const string G3 = "03  |  Outcome-blind matching"
+const string G4 = "04  |  Chart appearance"
+const string G5 = "05  |  Research panel"
+const string G6 = "06  |  Colors"
+
+string spacingMode = input.string("Manual ticks", "Spacing mode", options = ["Manual ticks", "Manual price", "Auto preview (prior range)", "Auto preview (price %)"], group = G1, display = display.none, tooltip = "Default: a reproducible 200-tick interval. Check its price value for your symbol. Preview chooses a 1-2-5 interval ONCE from the first usable prior bar and is explicitly marked PREVIEW. Copy the displayed interval into Manual price to lock it; automatic preview is not a history-independent experiment.")
+int manualTicks = input.int(200, "Fixed interval (minimum ticks)", minval = 1, maxval = 1000000000, group = G1, display = display.none)
+float manualPrice = input.float(0.200, "Fixed interval (price units)", minval = 0.000000001, group = G1, display = display.none, tooltip = "Price units, not pips. Rounded to an integer number of minimum ticks. The zero-origin grid never moves to follow past reactions.")
+int atrLength = input.int(50, "Prior mean true-range length", minval = 2, maxval = 500, group = G1, display = display.none, tooltip = "Finite simple mean of true range, not recursively seeded Wilder ATR. Research always uses the previous bar's value. Finite context prevents an arbitrary prehistory from changing later regime assignments.")
+float autoAtr = input.float(3.0, "Preview interval / prior mean range", minval = 0.25, maxval = 30.0, step = 0.25, group = G1, display = display.none)
+float autoPct = input.float(0.25, "Preview interval / prior price (%)", minval = 0.001, maxval = 20.0, step = 0.05, group = G1, display = display.none)
+int majorEvery = input.int(5, "Major level every N intervals", minval = 2, maxval = 20, group = G1, display = display.none, tooltip = "Drawing emphasis only. Does not select observations or alter matching.")
+int startDate = input.time(timestamp("01 Jan 2025 00:00 +0000"), "Study start (inclusive)", group = G1, display = display.none)
+int endDate = input.time(timestamp("01 Jan 2100 00:00 +0000"), "Study end (exclusive)", group = G1, display = display.none, tooltip = "No new contacts at or after this time. Existing contacts still receive their full subsequent bar horizon. Only complete clock blocks inside the requested date interval enter the matched sample.")
+bool strictCoverage = input.bool(false, "Require full start-date context", group = G1, display = display.none, tooltip = "When enabled, research stays off unless history crosses the requested start with enough preceding finite-range/trend context. When disabled, the first partial clock block is excluded and incomplete window coverage is reported. Grid drawings remain available.")
+
+bool researchOn = input.bool(true, "Enable three-grid research", group = G2, display = display.none)
+float touchPct = input.float(4.0, "Contact half-width (% of interval)", minval = 0.1, maxval = 10.0, step = 0.5, group = G2, display = display.none)
+float approachPct = input.float(12.0, "Prior-close clearance (% of interval)", minval = 1.0, maxval = 45.0, step = 1.0, group = G2, display = display.none)
+string responseMode = input.string("Interval fraction", "Response distance", options = ["Interval fraction", "Prior mean range"], group = G2, display = display.none)
+float responsePct = input.float(20.0, "Response threshold (% of interval)", minval = 1.0, maxval = 200.0, step = 1.0, group = G2, display = display.none)
+float responseAtr = input.float(0.6, "Response threshold / prior mean range", minval = 0.05, maxval = 10.0, step = 0.05, group = G2, display = display.none)
+int confirmCloses = input.int(2, "Consecutive closes to confirm", minval = 1, maxval = 10, group = G2, display = display.none)
+int horizonBars = input.int(12, "Full observation horizon (bars)", minval = 1, maxval = 100, group = G2, display = display.none, tooltip = "Contact bar excluded. Effective horizon is at least the confirmation count. Every eligible contact is tracked concurrently; no outcome-dependent cooldown or busy-state exclusion. Early results are frozen, but all records enter the comparison only after the entire horizon.")
+
+float shiftFraction = input.float(0.37, "Reference A / interval", minval = 0.15, maxval = 0.85, step = 0.01, group = G3, display = display.none, tooltip = "Reference B is the exact tick complement. ROUND, A and B contact bands must all be separate. Neither reference is selected for a favorable result.")
+int matchPeriods = input.int(128, "Clock block (chart periods)", minval = 16, maxval = 2048, group = G3, display = display.none, tooltip = "A fixed elapsed-time block anchored to the Unix epoch, not to the first loaded bar. Example: 128 periods on a 5-minute chart = 640 minutes. Not a session or a count of actually traded bars.")
+float maxLagPct = input.float(50.0, "Maximum matched time spread (% of block)", minval = 1.0, maxval = 100.0, step = 5.0, group = G3, display = display.none, tooltip = "All three contacts in an ordinal triplet must be within this fixed time span. Failed triplets are not rematched to improve results. This filter uses contact times, never outcomes.")
+string matchMode = input.string("Side + range + trend", "Match on prior context", options = ["Side only", "Side + range", "Side + range + trend"], group = G3, display = display.none, tooltip = "Inside each clock block and stratum, pair the first eligible ROUND/A/B contacts, then the second, and so on. Same approach side; optional prior range/interval bin and prior trend bin. Outcome-blind ordinal matching, not randomization or exact counterfactuals.")
+float volatilityLow = input.float(0.25, "Range/interval: low boundary", minval = 0.01, maxval = 10.0, step = 0.05, group = G3, display = display.none)
+float volatilityHigh = input.float(0.75, "Range/interval: high boundary", minval = 0.02, maxval = 20.0, step = 0.05, group = G3, display = display.none)
+int trendLength = input.int(10, "Prior trend lookback (bars)", minval = 1, maxval = 500, group = G3, display = display.none)
+float trendBoundary = input.float(0.5, "Prior trend neutral band / mean range", minval = 0.0, maxval = 20.0, step = 0.1, group = G3, display = display.none)
+int windowBlocks = input.int(24, "Retained mature clock blocks", minval = 4, maxval = 64, group = G3, display = display.none, tooltip = "One common elapsed-time window for all three grids. Blocks cut by a date boundary or a missing initial history are excluded. Empty complete blocks are allowed and are not fabricated as trades.")
+int perCellCap = input.int(8, "First contacts per grid / stratum / block", minval = 1, maxval = 12, group = G3, display = display.none, tooltip = "Fixed outcome-blind matching cap. Later contacts are still tracked and exported, and cap exclusions are counted. Increase the cap only as a declared research-setting change, not to search for a preferred result.")
+int minimumN = input.int(30, "Minimum matched triplets for deltas", minval = 3, maxval = 1000, group = G3, display = display.none)
+int minimumSideN = input.int(5, "Minimum triplets per approach side", minval = 1, maxval = 200, group = G3, display = display.none)
+int minimumBlocks = input.int(3, "Minimum contributing clock blocks", minval = 1, maxval = 64, group = G3, display = display.none, tooltip = "Display guard only. More matches or blocks do not establish independence or statistical significance.")
+int levelsEachSide = input.int(6, "Base levels on each side", minval = 2, maxval = 24, group = G4, display = display.none)
+int drawBars = input.int(260, "Line length behind current bar", minval = 20, maxval = 4000, group = G4, display = display.none)
+int rightBars = input.int(14, "Line end to the right (bars)", minval = 2, maxval = 100, group = G4, display = display.none)
+string lineExtension = input.string("Segment", "Line extension", options = ["Segment", "Right", "Both"], group = G4, display = display.none, tooltip = "Extension is a visual projection of the selected fixed grid, not a historical signal. Research is independent of displayed lines.")
+bool limitHeight = input.bool(true, "Reduce distant-line clutter", group = G4, display = display.none)
+float heightAtr = input.float(12.0, "Drawing radius / current mean range", minval = 2.0, maxval = 100.0, step = 1.0, group = G4, display = display.none, tooltip = "Only affects drawing. The two enclosing base levels remain visible. It does not remove observations from the research.")
+bool showLabels = input.bool(true, "Show level price badges", group = G4, display = display.none)
+bool showHalf = input.bool(false, "Show half-interval guides", group = G4, display = display.none, tooltip = "Visual only; never researched. Hidden when the base interval contains an odd number of ticks, to avoid uneven subdivision.")
+bool showShift = input.bool(false, "Show reference A lines", group = G4, display = display.none, tooltip = "Dotted reference-A lines. Research continues even when these lines are hidden.")
+bool showMirror = input.bool(false, "Show reference B lines", group = G4, display = display.none, tooltip = "Dashed mirrored-reference lines. Visual only; the mirrored audit does not depend on showing them.")
+bool showCell = input.bool(true, "Shade the current price cell", group = G4, display = display.none)
+bool liveContext = input.bool(true, "Follow the live price for visual context", group = G4, display = display.none, tooltip = "The enclosing lines, distances and shading may move intrabar. Observations, outcomes and research statistics update only on confirmed bars.")
+bool showActive = input.bool(true, "Show latest unresolved round-contact thresholds", group = G4, display = display.none, tooltip = "Shows only the most recent unresolved round contact to limit clutter. Other contacts continue independently. These are observation thresholds, not targets or stops.")
+bool showMarkers = input.bool(true, "Mark completed round-grid outcomes", group = G4, display = display.none, tooltip = "R = return to the approach side; T = through to the opposite side; U = unresolved. Plotted on the outcome bar, never backdated to the contact bar.")
+int markerCapacity = input.int(60, "Maximum outcome markers", minval = 0, maxval = 250, group = G4, display = display.none)
+int baseWidth = input.int(1, "Base line width", minval = 1, maxval = 4, group = G4, display = display.none)
+int majorWidth = input.int(2, "Major line width", minval = 1, maxval = 4, group = G4, display = display.none)
+int nearestWidth = input.int(3, "Enclosing line width", minval = 1, maxval = 5, group = G4, display = display.none)
+string badgeEdge = input.string("Left of segment", "Price badge placement", options = ["Left of segment", "Right of segment"], group = G4, display = display.none, tooltip = "Left placement keeps price badges away from the fixed right-side panel. This changes drawing only.")
+bool showThresholdBadges = input.bool(false, "Show response-threshold captions", group = G4, display = display.none)
+int markerGap = input.int(12, "Minimum marker gap at the same level", minval = 0, maxval = 100, group = G4, display = display.none, tooltip = "Drawing-only thinning against the most recently drawn marker. All outcomes remain in the full-horizon ledger even when not drawn. Multiple outcomes can confirm on the same bar. Markers never move back to contact bars.")
+int badgeSize = input.int(13, "Round-number font size (points)", minval = 10, maxval = 36, group = G4, display = display.none, tooltip = "Actual numeric label size. Default: compact 13-point round-number badges. This setting affects base round-number badges only, not the panel, outcome markers or reference captions.")
+int badgeEmphasisSize = input.int(14, "Major / enclosing font size (points)", minval = 10, maxval = 40, group = G4, display = display.none, tooltip = "Major and enclosing price labels use at least the base font size. Drawing only.")
+string badgeTheme = input.string("Solid level color", "Round-number badge appearance", options = ["Solid level color", "Dark badge"], group = G4, display = display.none, tooltip = "Solid level color: an opaque badge matching the price line, with automatic black/white text contrast. Dark badge: white numbers on opaque navy. Does not recolor lines or the research panel.")
+bool badgeDigitsOnly = input.bool(true, "Price digits only in round badges", group = G4, display = display.none, tooltip = "Removes L/U prefixes and decorative symbols from the price. Level roles remain in the colors, tooltips and unchanged panel. Turn off to restore the prefixes.")
+bool badgeMonospace = input.bool(true, "Monospace round-number digits", group = G4, display = display.none)
+int badgeHorizontalGap = input.int(12, "Round-badge horizontal gap (bars)", minval = 0, maxval = 150, group = G4, display = display.none, tooltip = "Moves only the round badge outward from its segment endpoint. Optional leaders still start on the exact level at the original endpoint. Left placement stays away from the right-side panel; right placement can overlap it depending on zoom and chart margin.")
+int badgeOffsetTicks = input.int(2, "Price badge offset (ticks)", minval = 0, maxval = 100, group = G4, display = display.none, tooltip = "Vertical displacement of badge boxes only. The printed price and horizontal line remain exact. Lower/upper badges move outward; optional short leaders join the boxes to their true levels.")
+bool staggerBadges = input.bool(true, "Alternate badge offset direction", group = G4, display = display.none, tooltip = "Alternates the displacement of non-enclosing badges. Lower badges move down and upper badges move up. Turning this off uses upward displacement for other levels.")
+string markerPlacement = input.string("Above/Below bar", "Outcome marker placement", options = ["Above/Below bar", "On level"], group = G4, display = display.none, tooltip = "Above/Below bar places each badge outside the outcome bar and the selected preceding clearance bars. Its time stays on the outcome bar. On level restores the original placement. No future bars are used.")
+float markerOffsetAtr = input.float(0.30, "Outcome marker offset / mean range", minval = 0.05, maxval = 3.0, step = 0.05, group = G4, display = display.none, tooltip = "Extra distance outside the clearance range. Fixed when the outcome is confirmed. Drawing only; it does not change any research threshold.")
+int markerClearanceBars = input.int(3, "Marker clearance lookback (bars)", minval = 1, maxval = 25, group = G4, display = display.none, tooltip = "Includes the outcome bar and preceding bars only. Future candles are not known and may later enter the same area.")
+string markerSize = input.string("Normal", "Outcome marker size", options = ["Small", "Normal", "Large"], group = G4, display = display.none)
+bool badgeLeaders = input.bool(true, "Connect displaced badges to exact levels", group = G4, display = display.none)
+
+bool showPanel = input.bool(true, "Show research panel", group = G5, display = display.none)
+string panelDetail = input.string("Compact", "Panel detail", options = ["Compact", "Standard", "Research"], group = G5, display = display.none, tooltip = "Compact: 14 rows. Standard: 22 rows. Research: 32 rows. Every rate in the main sample uses the same matched, mature triplets. Display settings never change observations or matching.")
+string panelLocation = input.string("Top right", "Panel location", options = ["Top right", "Middle right", "Bottom right", "Top left", "Bottom left"], group = G5, display = display.none)
+int panelFont = input.int(14, "Panel label size (points)", minval = 10, maxval = 22, group = G5, display = display.none)
+int panelValueFont = input.int(15, "Panel value size (points)", minval = 10, maxval = 24, group = G5, display = display.none)
+bool panelIcons = input.bool(true, "Show panel icons", group = G5, display = display.none)
+float panelInset = input.float(2.0, "Right-side panel inset (%)", minval = 0.0, maxval = 15.0, step = 0.5, group = G5, display = display.none)
+
+color baseColor = input.color(color.rgb(35, 215, 255), "Base levels", group = G6, display = display.none)
+color majorColor = input.color(color.rgb(255, 202, 65), "Major levels", group = G6, display = display.none)
+color lowerColor = input.color(color.rgb(78, 245, 183), "Enclosing lower level", group = G6, display = display.none)
+color upperColor = input.color(color.rgb(255, 100, 173), "Enclosing upper level", group = G6, display = display.none)
+color shiftColor = input.color(color.rgb(180, 139, 255), "Shifted comparison", group = G6, display = display.none)
+color returnColor = input.color(color.rgb(95, 240, 196), "Return outcome", group = G6, display = display.none)
+color throughColor = input.color(color.rgb(255, 146, 90), "Through outcome", group = G6, display = display.none)
+color neutralColor = input.color(color.rgb(163, 179, 199), "Neutral / unresolved", group = G6, display = display.none)
+color panelBg = input.color(color.rgb(15, 23, 38), "Panel and badge background", group = G6, display = display.none)
+color panelFg = input.color(color.rgb(237, 244, 255), "Panel text", group = G6, display = display.none)
+bool printRecipe = input.bool(false, "Print reproducibility recipe to Pine Logs", group = G5, display = display.none, tooltip = "Personal editor copies only: writes the recipe at the last confirmed historical bar. Published scripts cannot create Pine Logs. Public users can read all protocol fields via numeric chart-data exports. No upload or network call.")
+
+int cellTransparency = input.int(95, "Cell shade transparency", minval = 85, maxval = 100, group = G6, display = display.none)
+
+// -------------------- Outcome-blind observation and matching records --------------------
+type Trial
+    int bornBar
+    int bornTime
+    int blockKey
+    int bucketSlot
+    int cohort
+    float levelTicks
+    int side
+    float thresholdTicks
+    int stratum
+    int ordinal
+    int result = 0
+    int resultAge = 0
+    int returnRun = 0
+    int throughRun = 0
+    bool mature = false
+    bool completeBlock = false
+
+type Candidate
+    float levelTicks = na
+    int side = 0
+    int touched = 0
+    bool jumped = false
+    bool valid = false
+
+type Tally
+    int count = 0
+    int returns = 0
+    int throughs = 0
+    int unresolved = 0
+    int aboveN = 0
+    int belowN = 0
+    int aboveReturns = 0
+    int belowReturns = 0
+    int ageSum = 0
+
+type Triplet
+    Trial r
+    Trial a
+    Trial b
+    bool settled = false
+
+type Block
+    int key
+    bool completeStart
+    array<int> ordinals
+    array<int> capped
+    array<Tally> raw
+    array<Tally> matched
+    int lagRejected = 0
+    int matchedTriplets = 0
+    int lagSum = 0
+    int maxLag = 0
+    int cleanBars = 0
+    int gapBars = 0
+    int multiBars = 0
+    int dataHash = 0
+
+type Sample
+    array<Tally> matched
+    array<Tally> raw
+    array<Tally> early
+    array<Tally> late
+    array<int> capped
+    int blocks = 0
+    int earlyBlocks = 0
+    int lateBlocks = 0
+    int observedBlocks = 0
+    int lagRejected = 0
+    int lagSum = 0
+    int maxLag = 0
+    int cleanBars = 0
+    int gapBars = 0
+    int multiBars = 0
+    int checksum = 0
+
+f_nice_up(float value) =>
+    float decade = math.pow(10.0, math.floor(math.log10(math.max(value, syminfo.mintick))))
+    float mantissa = value / decade
+    decade * (mantissa <= 1.0 ? 1.0 : mantissa <= 2.0 ? 2.0 : mantissa <= 5.0 ? 5.0 : 10.0)
+
+f_pct(int numerator, int denominator) =>
+    denominator > 0 ? 100.0 * numerator / denominator : na
+
+f_percent(float value) =>
+    na(value) ? "--" : str.tostring(value, "0.0") + "%"
+
+f_price(float value) =>
+    na(value) ? "--" : str.tostring(value, format.mintick)
+
+f_signed(float value) =>
+    na(value) ? "--" : (value > 0 ? "+" : "") + str.tostring(value, "0.0")
+
+f_mix(int previous, int item) =>
+    int reduced = (item % HASH_MOD + HASH_MOD) % HASH_MOD
+    (previous * 97 + reduced) % HASH_MOD
+
+f_tallies() =>
+    array<Tally> result = array.new<Tally>()
+    for k = 0 to 2
+        array.push(result, Tally.new())
+    result
+
+f_sample() =>
+    Sample result = Sample.new()
+    result.matched := f_tallies()
+    result.raw := f_tallies()
+    result.early := f_tallies()
+    result.late := f_tallies()
+    result.capped := array.new_int(3, 0)
+    result
+
+f_block(int key, bool completeStart, int strata) =>
+    Block result = Block.new()
+    result.key := key
+    result.completeStart := completeStart
+    result.ordinals := array.new_int(strata * 3, 0)
+    result.capped := array.new_int(3, 0)
+    result.raw := f_tallies()
+    result.matched := f_tallies()
+    result.dataHash := f_mix(0, key)
+    result
+
+method add(Tally self, Trial item) =>
+    self.count += 1
+    self.returns += item.result == 1 ? 1 : 0
+    self.throughs += item.result == 2 ? 1 : 0
+    self.unresolved += item.result == 3 ? 1 : 0
+    self.aboveN += item.side == 1 ? 1 : 0
+    self.belowN += item.side == -1 ? 1 : 0
+    self.aboveReturns += item.side == 1 and item.result == 1 ? 1 : 0
+    self.belowReturns += item.side == -1 and item.result == 1 ? 1 : 0
+    self.ageSum += item.resultAge
+    self.count
+
+method combine(Tally self, Tally other) =>
+    self.count += other.count
+    self.returns += other.returns
+    self.throughs += other.throughs
+    self.unresolved += other.unresolved
+    self.aboveN += other.aboveN
+    self.belowN += other.belowN
+    self.aboveReturns += other.aboveReturns
+    self.belowReturns += other.belowReturns
+    self.ageSum += other.ageSum
+    self.count
+
+f_consistent(Tally value) =>
+    value.count == value.returns + value.throughs + value.unresolved and value.count == value.aboveN + value.belowN
+
+f_candidate(float phase, float stepTicks, float band, float clearance, float prev, float o, float h, float l) =>
+    Candidate result = Candidate.new()
+    float gapLow = math.min(prev, o)
+    float gapHigh = math.max(prev, o)
+    int gapFirst = int(math.ceil((gapLow + band + 1.0 - phase) / stepTicks))
+    int gapLast = int(math.floor((gapHigh - band - 1.0 - phase) / stepTicks))
+    result.jumped := gapFirst <= gapLast
+    int firstIndex = int(math.ceil((l - band - phase) / stepTicks))
+    int lastIndex = int(math.floor((h + band - phase) / stepTicks))
+    result.touched := math.max(0, lastIndex - firstIndex + 1)
+    if result.touched == 1
+        result.levelTicks := phase + firstIndex * stepTicks
+        float distance = prev - result.levelTicks
+        result.valid := math.abs(distance) >= clearance
+        result.side := distance > 0 ? 1 : -1
+    result
+
+f_stratum(int side, int rangeBin, int trendBin, int rangeBins, int trendBins) =>
+    (side == 1 ? 0 : 1) * rangeBins * trendBins + rangeBin * trendBins + trendBin
+
+// All observations live for the same H bars, irrespective of early resolution.
+// A grid can start at most one contact per bar, so H+1 slots are sufficient.
+f_advance(array<Trial> pending, array<Trial> newlyResolved, int nowBar, float closeTicks, int neededCloses, int horizon) =>
+    Trial delivered = na
+    for j = 0 to array.size(pending) - 1
+        Trial item = array.get(pending, j)
+        if not na(item)
+            int age = nowBar - item.bornBar
+            if age >= 1
+                if item.result == 0
+                    float signedDistance = item.side * (closeTicks - item.levelTicks)
+                    item.returnRun := signedDistance >= item.thresholdTicks ? item.returnRun + 1 : 0
+                    item.throughRun := signedDistance <= -item.thresholdTicks ? item.throughRun + 1 : 0
+                    item.result := item.returnRun >= neededCloses ? 1 : item.throughRun >= neededCloses ? 2 : age == horizon ? 3 : 0
+                    if item.result != 0
+                        item.resultAge := age
+                        array.push(newlyResolved, item)
+                if age == horizon
+                    if not na(delivered) or item.result == 0
+                        runtime.error("RNRC: invalid full-horizon delivery. No record was silently dropped.")
+                    item.mature := true
+                    delivered := item
+                    array.set(pending, j, na)
+                else if age > horizon
+                    runtime.error("RNRC: overdue observation. Research stopped rather than emitting a wrong ledger.")
+    delivered
+
+// Matching depends only on block, side/context stratum, ordinal and contact times.
+// This admission function never reads a result, result age or pending workload.
+f_register(Candidate candidate, int cohort, int stratum, Block bucket, int bucketSlot, int nowBar, int nowTime, float threshold, int strata, int cap, array<Trial> pending, array<Triplet> pairs) =>
+    int counterSlot = cohort * strata + stratum
+    int ordinal = array.get(bucket.ordinals, counterSlot) + 1
+    array.set(bucket.ordinals, counterSlot, ordinal)
+    Trial item = Trial.new(nowBar, nowTime, bucket.key, bucketSlot, cohort, candidate.levelTicks, candidate.side, threshold, stratum, ordinal)
+    item.completeBlock := bucket.completeStart
+    int pendingSlot = nowBar % array.size(pending)
+    if not na(array.get(pending, pendingSlot))
+        runtime.error("RNRC: pending capacity invariant failed. No overflow sampling is allowed.")
+    array.set(pending, pendingSlot, item)
+    if ordinal <= cap
+        int pairSlot = bucketSlot * strata * cap + stratum * cap + ordinal - 1
+        Triplet pair = array.get(pairs, pairSlot)
+        if na(pair)
+            pair := Triplet.new()
+            array.set(pairs, pairSlot, pair)
+        if cohort == 0
+            pair.r := item
+        else if cohort == 1
+            pair.a := item
+        else
+            pair.b := item
+    else
+        array.set(bucket.capped, cohort, array.get(bucket.capped, cohort) + 1)
+    item
+
+f_deliver(Trial item, array<Block> buckets, array<Triplet> pairs, int strata, int cap, int allowedLag) =>
+    int admitted = 0
+    if not na(item)
+        Block bucket = array.get(buckets, item.bucketSlot)
+        if na(bucket) or bucket.key != item.blockKey
+            runtime.error("RNRC: a pending block was evicted. Increase the bounded storage design before proceeding.")
+        Tally raw = array.get(bucket.raw, item.cohort)
+        raw.add(item)
+        if item.ordinal <= cap
+            int pairSlot = item.bucketSlot * strata * cap + item.stratum * cap + item.ordinal - 1
+            Triplet pair = array.get(pairs, pairSlot)
+            if not na(pair) and not pair.settled and not na(pair.r) and not na(pair.a) and not na(pair.b)
+                if pair.r.mature and pair.a.mature and pair.b.mature
+                    pair.settled := true
+                    int earliest = math.min(pair.r.bornTime, math.min(pair.a.bornTime, pair.b.bornTime))
+                    int latest = math.max(pair.r.bornTime, math.max(pair.a.bornTime, pair.b.bornTime))
+                    int lag = latest - earliest
+                    if lag <= allowedLag
+                        Tally r = array.get(bucket.matched, 0)
+                        Tally a = array.get(bucket.matched, 1)
+                        Tally b = array.get(bucket.matched, 2)
+                        r.add(pair.r)
+                        a.add(pair.a)
+                        b.add(pair.b)
+                        bucket.matchedTriplets += 1
+                        bucket.lagSum += lag
+                        bucket.maxLag := math.max(bucket.maxLag, lag)
+                        admitted := 1
+                    else
+                        bucket.lagRejected += 1
+    admitted
+
+f_collect(array<Block> buckets, int firstKey, int lastKey, int blockMs, int studyStart, int studyEnd) =>
+    Sample result = f_sample()
+    int middleKey = int(math.floor((firstKey + lastKey) * 0.5))
+    for k = 0 to array.size(buckets) - 1
+        Block bucket = array.get(buckets, k)
+        if not na(bucket)
+            bool inWindow = bucket.key >= firstKey and bucket.key <= lastKey
+            bool inDates = bucket.key * blockMs >= studyStart and (bucket.key + 1) * blockMs <= studyEnd
+            if inWindow and inDates and bucket.completeStart
+                result.observedBlocks += 1
+                result.blocks += bucket.matchedTriplets > 0 ? 1 : 0
+                result.earlyBlocks += bucket.matchedTriplets > 0 and bucket.key <= middleKey ? 1 : 0
+                result.lateBlocks += bucket.matchedTriplets > 0 and bucket.key > middleKey ? 1 : 0
+                result.lagRejected += bucket.lagRejected
+                result.lagSum += bucket.lagSum
+                result.maxLag := math.max(result.maxLag, bucket.maxLag)
+                result.cleanBars += bucket.cleanBars
+                result.gapBars += bucket.gapBars
+                result.multiBars += bucket.multiBars
+                result.checksum := (result.checksum + bucket.dataHash) % HASH_MOD
+                for c = 0 to 2
+                    Tally dst = array.get(result.matched, c)
+                    Tally rawDst = array.get(result.raw, c)
+                    Tally halfDst = bucket.key <= middleKey ? array.get(result.early, c) : array.get(result.late, c)
+                    Tally source = array.get(bucket.matched, c)
+                    dst.combine(source)
+                    Tally rawSource = array.get(bucket.raw, c)
+                    int expected = 0
+                    int blockStrata = int(array.size(bucket.ordinals) / 3)
+                    for q = 0 to blockStrata - 1
+                        expected += array.get(bucket.ordinals, c * blockStrata + q)
+                    if expected != rawSource.count or source.count > rawSource.count
+                        runtime.error("RNRC: incomplete raw/matched coverage in a mature block.")
+                    rawDst.combine(rawSource)
+                    halfDst.combine(source)
+                    array.set(result.capped, c, array.get(result.capped, c) + array.get(bucket.capped, c))
+    result
+
+f_ready(array<Tally> values, int blocks, int minN, int minSide, int minBlocks) =>
+    Tally r = array.get(values, 0)
+    Tally a = array.get(values, 1)
+    Tally b = array.get(values, 2)
+    r.count == a.count and r.count == b.count and r.count >= minN and r.aboveN >= minSide and r.belowN >= minSide and blocks >= minBlocks
+
+f_delta(array<Tally> values, int comparison) =>
+    Tally r = array.get(values, 0)
+    Tally other = array.get(values, comparison)
+    r.count > 0 ? 100.0 * (r.returns - other.returns) / r.count : na
+
+f_mean(array<Tally> values) =>
+    (f_delta(values, 1) + f_delta(values, 2)) * 0.5
+
+// 1 both positive; -1 both negative; 2 opposite signs; 0 one or both exactly zero.
+// Sign agreement is descriptive, never a test of significance or trading reliability.
+f_agreement(float deltaA, float deltaB) =>
+    int value = na
+    if not na(deltaA) and not na(deltaB)
+        value := deltaA > 0 and deltaB > 0 ? 1 : deltaA < 0 and deltaB < 0 ? -1 : deltaA * deltaB < 0 ? 2 : 0
+    value
+
+f_agreement_text(int code) =>
+    na(code) ? "Low N" : code == 1 ? "Both +" : code == -1 ? "Both -" : code == 2 ? "SPLIT" : "Has zero"
+
+f_tally_hint(Tally item) =>
+    "N=" + str.tostring(item.count) + "; R/T/U=" + str.tostring(item.returns) + "/" + str.tostring(item.throughs) + "/" + str.tostring(item.unresolved) + "; above/below=" + str.tostring(item.aboveN) + "/" + str.tostring(item.belowN)
+
+// Local memory uses matched ROUND contacts in the SAME closed clock window.
+f_local(array<Block> buckets, array<Triplet> pairs, int strata, int cap, int firstKey, int lastKey, int blockMs, float lowLevel, float highLevel, int allowedLag, int studyStart, int studyEnd) =>
+    Tally lower = Tally.new()
+    Tally upper = Tally.new()
+    for s = 0 to array.size(buckets) - 1
+        Block bucket = array.get(buckets, s)
+        if not na(bucket) and bucket.completeStart
+            if bucket.key >= firstKey and bucket.key <= lastKey and bucket.key * blockMs >= studyStart and (bucket.key + 1) * blockMs <= studyEnd and bucket.matchedTriplets > 0
+                for j = 0 to strata * cap - 1
+                    Triplet pair = array.get(pairs, s * strata * cap + j)
+                    if not na(pair) and pair.settled and not na(pair.r) and not na(pair.a) and not na(pair.b)
+                        int lag = math.max(pair.r.bornTime, math.max(pair.a.bornTime, pair.b.bornTime)) - math.min(pair.r.bornTime, math.min(pair.a.bornTime, pair.b.bornTime))
+                        if lag <= allowedLag
+                            if pair.r.levelTicks == lowLevel
+                                lower.add(pair.r)
+                            else if pair.r.levelTicks == highLevel
+                                upper.add(pair.r)
+    [lower, upper]
+
+f_local_hint(Tally item) =>
+    "Matched, mature ROUND records at this exact level: " + f_tally_hint(item) + ". Not an all-history frequency or a level-selection score."
+
+f_size(string choice) =>
+    choice == "Large" ? size.large : choice == "Normal" ? size.normal : size.small
+
+f_position(string choice) =>
+    switch choice
+        "Middle right" => position.middle_right
+        "Bottom right" => position.bottom_right
+        "Top left" => position.top_left
+        "Bottom left" => position.bottom_left
+        => position.top_right
+
+f_gauge(float fraction) =>
+    int filled = int(math.round(math.max(0.0, math.min(1.0, fraction)) * 8.0))
+    str.repeat("■", filled) + str.repeat("□", 8 - filled)
+
+f_draw_line(array<line> pool, int slot, bool visible, int leftX, int rightX, float price, color lineColor, int width, string lineStyle, string extension) =>
+    line item = array.get(pool, slot)
+    if visible
+        if na(item)
+            item := line.new(leftX, price, rightX, price, xloc = xloc.bar_index, extend = extension, color = lineColor, style = lineStyle, width = width, force_overlay = true)
+            array.set(pool, slot, item)
+        else
+            line.set_xy1(item, leftX, price)
+            line.set_xy2(item, rightX, price)
+            line.set_color(item, lineColor)
+            line.set_width(item, width)
+            line.set_style(item, lineStyle)
+            line.set_extend(item, extension)
+    else if not na(item)
+        line.delete(item)
+        array.set(pool, slot, na)
+
+f_draw_badge(array<label> pool, array<line> leaders, int slot, bool visible, int x, float truePrice, float boxPrice, string caption, color ink, string fontSize, string hint) =>
+    string badgeStyle = badgeEdge == "Left of segment" ? label.style_label_right : label.style_label_left
+    string fullHint = hint + "\nExact level: " + f_price(truePrice) + ". The badge box may be displaced; its printed price and the horizontal level are unchanged."
+    label item = array.get(pool, slot)
+    line leader = array.get(leaders, slot)
+    bool showLeader = visible and badgeLeaders and math.abs(boxPrice - truePrice) > syminfo.mintick * 0.25
+    if showLeader
+        if na(leader)
+            leader := line.new(x, truePrice, x, boxPrice, xloc = xloc.bar_index, extend = extend.none, color = color.new(ink, 20), width = 1, force_overlay = true)
+            array.set(leaders, slot, leader)
+        else
+            line.set_xy1(leader, x, truePrice)
+            line.set_xy2(leader, x, boxPrice)
+            line.set_color(leader, color.new(ink, 20))
+    else if not na(leader)
+        line.delete(leader)
+        array.set(leaders, slot, na)
+    if visible
+        if na(item)
+            item := label.new(x, boxPrice, caption, xloc = xloc.bar_index, yloc = yloc.price, style = badgeStyle, color = color.new(panelBg, 0), textcolor = color.new(ink, 0), size = fontSize, tooltip = fullHint, force_overlay = true, text_formatting = text.format_bold)
+            array.set(pool, slot, item)
+        else
+            label.set_xy(item, x, boxPrice)
+            label.set_text(item, caption)
+            label.set_textcolor(item, color.new(ink, 0))
+            label.set_color(item, color.new(panelBg, 0))
+            label.set_style(item, badgeStyle)
+            label.set_size(item, fontSize)
+            label.set_tooltip(item, fullHint)
+    else if not na(item)
+        label.delete(item)
+        array.set(pool, slot, na)
+
+// -------------------- Round-price badge readability; no research input is read --------------------
+f_srgb_component(float component) =>
+    float value = component / 255.0
+    value <= 0.04045 ? value / 12.92 : math.pow((value + 0.055) / 1.055, 2.4)
+
+f_badge_ink(color background) =>
+    float luminance = 0.2126 * f_srgb_component(color.r(background)) + 0.7152 * f_srgb_component(color.g(background)) + 0.0722 * f_srgb_component(color.b(background))
+    float blackContrast = (luminance + 0.05) / 0.05
+    float whiteContrast = 1.05 / (luminance + 0.05)
+    blackContrast >= whiteContrast ? color.black : color.white
+
+// Reuses the existing base label and leader pools. No new plot or object pool.
+// Both creation and update paths apply the same size, colors, font and coordinates.
+f_draw_round_badge(array<label> pool, array<line> leaders, int slot, bool visible, int anchorX, int boxX, float truePrice, float boxPrice, string caption, color levelColor, bool emphasis, string hint) =>
+    string badgeStyle = badgeEdge == "Left of segment" ? label.style_label_right : label.style_label_left
+    color badgeBackground = badgeTheme == "Solid level color" ? color.new(levelColor, 0) : color.rgb(9, 17, 30)
+    color badgeInk = f_badge_ink(badgeBackground)
+    int pointSize = emphasis ? math.max(badgeSize, badgeEmphasisSize) : badgeSize
+    string badgeFont = badgeMonospace ? font.family_monospace : font.family_default
+    string fullHint = hint + "\nExact round level: " + f_price(truePrice) + ". The price badge can be displaced; only its text and connector identify the true level. Not a new price or a signal."
+    label item = array.get(pool, slot)
+    line leader = array.get(leaders, slot)
+    bool displaced = anchorX != boxX or math.abs(boxPrice - truePrice) > syminfo.mintick * 0.25
+    bool showLeader = visible and badgeLeaders and displaced
+    if showLeader
+        if na(leader)
+            leader := line.new(anchorX, truePrice, boxX, boxPrice, xloc = xloc.bar_index, extend = extend.none, color = color.new(levelColor, 0), width = 1, force_overlay = true)
+            array.set(leaders, slot, leader)
+        else
+            line.set_xy1(leader, anchorX, truePrice)
+            line.set_xy2(leader, boxX, boxPrice)
+            line.set_color(leader, color.new(levelColor, 0))
+    else if not na(leader)
+        line.delete(leader)
+        array.set(leaders, slot, na)
+    if visible
+        if na(item)
+            item := label.new(boxX, boxPrice, caption, xloc = xloc.bar_index, yloc = yloc.price, style = badgeStyle, color = badgeBackground, textcolor = badgeInk, size = pointSize, textalign = text.align_center, tooltip = fullHint, text_font_family = badgeFont, force_overlay = true, text_formatting = text.format_bold)
+            array.set(pool, slot, item)
+        else
+            label.set_xy(item, boxX, boxPrice)
+            label.set_text(item, caption)
+            label.set_textcolor(item, badgeInk)
+            label.set_color(item, badgeBackground)
+            label.set_style(item, badgeStyle)
+            label.set_size(item, pointSize)
+            label.set_textalign(item, text.align_center)
+            label.set_text_font_family(item, badgeFont)
+            label.set_text_formatting(item, text.format_bold)
+            label.set_tooltip(item, fullHint)
+    else if not na(item)
+        label.delete(item)
+        array.set(pool, slot, na)
+
+f_row(table panel, int row, string icon, string heading, string valueA, string valueB, color inkA, color inkB, string hint) =>
+    color rowBg = row % 2 == 0 ? color.new(panelBg, 0) : color.new(color.from_gradient(0.055, 0.0, 1.0, panelBg, panelFg), 0)
+    table.cell(panel, 0, row, panelIcons ? icon : "", text_color = baseColor, bgcolor = rowBg, text_size = panelValueFont, tooltip = hint, text_formatting = text.format_bold)
+    table.cell(panel, 1, row, heading, text_color = panelFg, bgcolor = rowBg, text_size = panelFont, text_halign = text.align_left, tooltip = hint, text_formatting = text.format_bold)
+    table.cell(panel, 2, row, valueA, text_color = inkA, bgcolor = rowBg, text_size = panelValueFont, text_halign = text.align_right, tooltip = hint, text_formatting = text.format_bold)
+    table.cell(panel, 3, row, valueB, text_color = inkB, bgcolor = rowBg, text_size = panelValueFont, text_halign = text.align_right, tooltip = hint, text_formatting = text.format_bold)
+
+f_section(table panel, int row, string icon, string heading, string valueA, string valueB, string hint) =>
+    color headerBg = color.new(color.from_gradient(0.13, 0.0, 1.0, panelBg, baseColor), 0)
+    table.cell(panel, 0, row, panelIcons ? icon : "", text_color = majorColor, bgcolor = headerBg, text_size = panelValueFont, tooltip = hint, text_formatting = text.format_bold)
+    table.cell(panel, 1, row, heading, text_color = baseColor, bgcolor = headerBg, text_size = panelFont, text_halign = text.align_left, tooltip = hint, text_formatting = text.format_bold)
+    table.cell(panel, 2, row, valueA, text_color = panelFg, bgcolor = headerBg, text_size = panelFont, text_halign = text.align_right, tooltip = hint, text_formatting = text.format_bold)
+    table.cell(panel, 3, row, valueB, text_color = shiftColor, bgcolor = headerBg, text_size = panelFont, text_halign = text.align_right, tooltip = hint, text_formatting = text.format_bold)
+
+// -------------------- Deterministic context and run configuration --------------------
+float tick = syminfo.mintick
+float prevTicks = math.round(close[1] / tick)
+float openTicks = math.round(open / tick)
+float highTicks = math.round(high / tick)
+float lowTicks = math.round(low / tick)
+float closeTicks = math.round(close / tick)
+// Quantize OHLC before context arithmetic; avoid decimal-price subtraction drift.
+float trueRangeTicks = na(prevTicks) ? highTicks - lowTicks : math.max(highTicks - lowTicks, math.max(math.abs(highTicks - prevTicks), math.abs(lowTicks - prevTicks)))
+float rangeSumTicks = math.round(math.sum(trueRangeTicks, atrLength))
+float currentRangeTicks = rangeSumTicks / atrLength
+float priorRangeTicks = currentRangeTicks[1]
+float currentRange = currentRangeTicks * tick
+float priorRange = priorRangeTicks * tick
+float priorTrendTicks = closeTicks[1] - closeTicks[trendLength + 1]
+bool contextReady = not na(priorRangeTicks) and not na(closeTicks[atrLength + 1]) and not na(priorTrendTicks)
+bool timeBased = chart.is_standard and not str.endswith(timeframe.period, "T")
+int chartMillis = timeBased ? int(timeframe.in_seconds() * 1000) : 60000
+int blockMillis = math.max(1, chartMillis * matchPeriods)
+int allowedLagMillis = int(math.round(blockMillis * maxLagPct / 100.0))
+int effectiveHorizon = math.max(horizonBars, confirmCloses)
+int modeCode = matchMode == "Side only" ? 0 : matchMode == "Side + range" ? 1 : 2
+int rangeBins = modeCode >= 1 ? 3 : 1
+int trendBins = modeCode == 2 ? 3 : 1
+int strataCount = 2 * rangeBins * trendBins
+// H bars can cross at most H observed blocks, even across large weekend gaps.
+int bucketCapacity = windowBlocks + effectiveHorizon + 2
+int pairCapacity = bucketCapacity * strataCount * perCellCap
+bool previewMode = str.contains(spacingMode, "Auto preview")
+bool inputsOK = endDate > startDate and minimumBlocks <= windowBlocks and (modeCode == 0 or volatilityLow < volatilityHigh)
+var int initializedBar = na
+var int initializedTime = na
+var int lockedTicks = na
+var bool startSeen = false
+var bool anchorCovered = false
+var int firstFullKey = na
+var int firstUsableTime = na
+if barstate.isconfirmed and not startSeen and time >= startDate
+    startSeen := true
+    anchorCovered := not na(time[1]) and time[1] < startDate and contextReady
+if barstate.isconfirmed and na(lockedTicks) and time >= startDate and (not previewMode or contextReady)
+    float rawInterval = switch spacingMode
+        "Manual ticks" => manualTicks * tick
+        "Manual price" => manualPrice
+        "Auto preview (prior range)" => f_nice_up(math.max(tick, priorRange * autoAtr))
+        => f_nice_up(math.max(tick, math.abs(close[1]) * autoPct / 100.0))
+    lockedTicks := int(math.max(1.0, math.round(rawInterval / tick)))
+    initializedBar := bar_index
+    initializedTime := time
+
+bool gridReady = not na(lockedTicks)
+float intervalPrice = gridReady ? lockedTicks * tick : na
+float bandTicks = gridReady ? math.max(1.0, math.round(lockedTicks * touchPct / 100.0)) : na
+float clearanceTicks = gridReady ? math.max(bandTicks + 1.0, math.round(lockedTicks * approachPct / 100.0)) : na
+float shiftedTicks = gridReady ? math.round(lockedTicks * shiftFraction) : na
+float mirrorTicks = gridReady ? lockedTicks - shiftedTicks : na
+float phaseSeparation = gridReady ? math.abs(mirrorTicks - shiftedTicks) : na
+bool distinctBands = gridReady and lockedTicks >= 8 and math.min(shiftedTicks, lockedTicks - shiftedTicks) > 2.0 * bandTicks
+bool mirrorDistinct = distinctBands and math.min(phaseSeparation, lockedTicks - phaseSeparation) > 2.0 * bandTicks
+bool studyReady = researchOn and gridReady and mirrorDistinct and inputsOK and timeBased and (not strictCoverage or anchorCovered)
+float rawThreshold = responseMode == "Interval fraction" ? lockedTicks * responsePct / 100.0 : priorRangeTicks * responseAtr
+float responseTicks = gridReady and contextReady ? math.max(bandTicks + 1.0, math.round(rawThreshold)) : na
+bool dataOK = not na(openTicks) and not na(highTicks) and not na(lowTicks) and not na(closeTicks) and highTicks >= math.max(openTicks, closeTicks) and lowTicks <= math.min(openTicks, closeTicks)
+int rangeBin = modeCode >= 1 and contextReady ? (priorRangeTicks / lockedTicks < volatilityLow ? 0 : priorRangeTicks / lockedTicks < volatilityHigh ? 1 : 2) : 0
+int trendBin = modeCode == 2 and contextReady ? (priorTrendTicks < -priorRangeTicks * trendBoundary ? 0 : priorTrendTicks > priorRangeTicks * trendBoundary ? 2 : 1) : 0
+
+var array<Trial> pendingR = array.new<Trial>(effectiveHorizon + 1)
+var array<Trial> pendingA = array.new<Trial>(effectiveHorizon + 1)
+var array<Trial> pendingB = array.new<Trial>(effectiveHorizon + 1)
+var array<Block> buckets = array.new<Block>(bucketCapacity)
+var array<Triplet> pairs = array.new<Triplet>(pairCapacity)
+var int bucketCursor = -1
+var int currentKey = na
+var int currentSlot = na
+var int totalContactsR = 0
+var int totalContactsA = 0
+var int totalContactsB = 0
+array<Trial> resolvedR = array.new<Trial>()
+array<Trial> resolvedOther = array.new<Trial>()
+Trial deliveredR = na
+Trial deliveredA = na
+Trial deliveredB = na
+bool newRoundContact = false
+bool commonGap = false
+bool commonMulti = false
+if barstate.isconfirmed and studyReady
+    if contextReady and not dataOK
+        runtime.error("RNRC: invalid OHLC encountered. No missing-price bar was converted into an unresolved outcome.")
+    deliveredR := f_advance(pendingR, resolvedR, bar_index, closeTicks, confirmCloses, effectiveHorizon)
+    deliveredA := f_advance(pendingA, resolvedOther, bar_index, closeTicks, confirmCloses, effectiveHorizon)
+    deliveredB := f_advance(pendingB, resolvedOther, bar_index, closeTicks, confirmCloses, effectiveHorizon)
+    f_deliver(deliveredR, buckets, pairs, strataCount, perCellCap, allowedLagMillis)
+    f_deliver(deliveredA, buckets, pairs, strataCount, perCellCap, allowedLagMillis)
+    f_deliver(deliveredB, buckets, pairs, strataCount, perCellCap, allowedLagMillis)
+    if contextReady and dataOK and time >= startDate and time < endDate
+        int key = int(math.floor(time / blockMillis))
+        if na(firstUsableTime)
+            firstUsableTime := time
+            bool wholeInitialBlock = contextReady[1] and not na(time[1]) and time[1] < key * blockMillis and startDate <= key * blockMillis
+            firstFullKey := wholeInitialBlock ? key : key + 1
+        if na(currentKey) or key != currentKey
+            bucketCursor += 1
+            currentSlot := bucketCursor % bucketCapacity
+            currentKey := key
+            bool complete = key >= firstFullKey and key * blockMillis >= startDate and (key + 1) * blockMillis <= endDate
+            array.set(buckets, currentSlot, f_block(key, complete, strataCount))
+            int baseSlot = currentSlot * strataCount * perCellCap
+            for j = 0 to strataCount * perCellCap - 1
+                array.set(pairs, baseSlot + j, na)
+        Block bucket = array.get(buckets, currentSlot)
+        bucket.dataHash := f_mix(f_mix(f_mix(f_mix(f_mix(bucket.dataHash, time), int(openTicks)), int(highTicks)), int(lowTicks)), int(closeTicks))
+        Candidate r = f_candidate(0.0, lockedTicks, bandTicks, clearanceTicks, prevTicks, openTicks, highTicks, lowTicks)
+        Candidate a = f_candidate(shiftedTicks, lockedTicks, bandTicks, clearanceTicks, prevTicks, openTicks, highTicks, lowTicks)
+        Candidate b = f_candidate(mirrorTicks, lockedTicks, bandTicks, clearanceTicks, prevTicks, openTicks, highTicks, lowTicks)
+        // A bad gap or multiple-band candle in ANY grid excludes ALL three on this bar.
+        // Existing observations continue normally; the veto never depends on outcomes.
+        commonGap := r.jumped or a.jumped or b.jumped
+        commonMulti := r.touched > 1 or a.touched > 1 or b.touched > 1
+        if commonGap
+            bucket.gapBars += 1
+        else if commonMulti
+            bucket.multiBars += 1
+        else
+            bucket.cleanBars += 1
+            if r.valid
+                Trial acceptedR = f_register(r, 0, f_stratum(r.side, rangeBin, trendBin, rangeBins, trendBins), bucket, currentSlot, bar_index, time, responseTicks, strataCount, perCellCap, pendingR, pairs)
+                newRoundContact := true
+                totalContactsR += 1
+            if a.valid
+                Trial acceptedA = f_register(a, 1, f_stratum(a.side, rangeBin, trendBin, rangeBins, trendBins), bucket, currentSlot, bar_index, time, responseTicks, strataCount, perCellCap, pendingA, pairs)
+                totalContactsA += 1
+            if b.valid
+                Trial acceptedB = f_register(b, 2, f_stratum(b.side, rangeBin, trendBin, rangeBins, trendBins), bucket, currentSlot, bar_index, time, responseTicks, strataCount, perCellCap, pendingB, pairs)
+                totalContactsB += 1
+
+// -------------------- One genuinely common, mature matched sample --------------------
+var Sample audit = f_sample()
+var int auditFirstKey = na
+var int auditLastKey = na
+var int auditAsOf = na
+var bool partialWindow = true
+var bool auditEnough = false
+var float deltaA = na
+var float deltaB = na
+var float meanDelta = na
+var float earlyDelta = na
+var float lateDelta = na
+var int agreement = na
+bool refreshAudit = barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
+int maturityTime = time[effectiveHorizon]
+if refreshAudit and gridReady and not na(maturityTime)
+    // Even an early-resolved late contact cannot move the window end forward.
+    int lastMatureKey = int(math.floor(maturityTime / blockMillis)) - 1
+    int lastDateKey = int(math.floor(endDate / blockMillis)) - 1
+    auditLastKey := math.min(lastMatureKey, lastDateKey)
+    auditFirstKey := math.max(auditLastKey - windowBlocks + 1, int(math.ceil(startDate / blockMillis)))
+    auditAsOf := bar_index
+    audit := f_collect(buckets, auditFirstKey, auditLastKey, blockMillis, startDate, endDate)
+    partialWindow := na(firstFullKey) or firstFullKey > auditFirstKey
+    auditEnough := studyReady and f_ready(audit.matched, audit.blocks, minimumN, minimumSideN, minimumBlocks)
+    deltaA := auditEnough ? f_delta(audit.matched, 1) : na
+    deltaB := auditEnough ? f_delta(audit.matched, 2) : na
+    meanDelta := auditEnough ? f_mean(audit.matched) : na
+    agreement := f_agreement(deltaA, deltaB)
+    int halfN = math.max(3, int(math.ceil(minimumN * 0.5)))
+    int halfSide = math.max(1, int(math.ceil(minimumSideN * 0.5)))
+    int halfBlocks = math.max(1, int(math.ceil(minimumBlocks * 0.5)))
+    earlyDelta := f_ready(audit.early, audit.earlyBlocks, halfN, halfSide, halfBlocks) ? f_mean(audit.early) : na
+    lateDelta := f_ready(audit.late, audit.lateBlocks, halfN, halfSide, halfBlocks) ? f_mean(audit.late) : na
+    Tally rCheck = array.get(audit.matched, 0)
+    Tally aCheck = array.get(audit.matched, 1)
+    Tally bCheck = array.get(audit.matched, 2)
+    if not f_consistent(rCheck) or not f_consistent(aCheck) or not f_consistent(bCheck) or rCheck.count != aCheck.count or rCheck.count != bCheck.count or rCheck.aboveN != aCheck.aboveN or rCheck.aboveN != bCheck.aboveN
+        runtime.error("RNRC: matched-denominator invariant failed. No mismatched percentages were displayed.")
+
+// -------------------- Familiar chart context, independent of matching --------------------
+float referencePrice = liveContext or barstate.isconfirmed ? close : nz(close[1], close)
+float referenceTicks = math.round(referencePrice / tick)
+int lowerIndex = gridReady ? int(math.floor(referenceTicks / lockedTicks)) : 0
+float lowerPrice = gridReady ? lowerIndex * intervalPrice : na
+float upperPrice = gridReady ? (lowerIndex + 1) * intervalPrice : na
+float cellFraction = gridReady ? math.max(0.0, math.min(1.0, (referencePrice - lowerPrice) / intervalPrice)) : na
+var Tally localLower = Tally.new()
+var Tally localUpper = Tally.new()
+var int localIndex = na
+var int localAuditBar = na
+if gridReady and not na(auditFirstKey) and (barstate.islastconfirmedhistory or barstate.islast)
+    if na(localIndex) or localIndex != lowerIndex or na(localAuditBar) or localAuditBar != auditAsOf
+        [lo, hi] = f_local(buckets, pairs, strataCount, perCellCap, auditFirstKey, auditLastKey, blockMillis, lowerIndex * lockedTicks, (lowerIndex + 1) * lockedTicks, allowedLagMillis, startDate, endDate)
+        localLower := lo
+        localUpper := hi
+        localIndex := lowerIndex
+        localAuditBar := auditAsOf
+
+// All outcome conditions can trigger even if the chart marker is thinned.
+float markerHighRange = ta.highest(high, markerClearanceBars)
+float markerLowRange = ta.lowest(low, markerClearanceBars)
+var array<label> outcomeMarkers = array.new<label>()
+var int lastMarkerBar = na
+var float lastMarkerLevel = na
+int eventRCount = 0
+int eventTCount = 0
+int eventUCount = 0
+Trial representative = na
+if array.size(resolvedR) > 0
+    for j = 0 to array.size(resolvedR) - 1
+        Trial item = array.get(resolvedR, j)
+        eventRCount += item.result == 1 ? 1 : 0
+        eventTCount += item.result == 2 ? 1 : 0
+        eventUCount += item.result == 3 ? 1 : 0
+        if na(representative) or item.bornBar < representative.bornBar
+            representative := item
+if showMarkers and markerCapacity > 0 and not na(representative)
+    bool markerAllowed = na(lastMarkerBar) or representative.levelTicks != lastMarkerLevel or bar_index - lastMarkerBar >= markerGap
+    if markerAllowed
+        int totalHere = eventRCount + eventTCount + eventUCount
+        string code = representative.result == 1 ? "R" : representative.result == 2 ? "T" : "U"
+        code += totalHere > 1 ? "+" : ""
+        color outcomeColor = representative.result == 1 ? returnColor : representative.result == 2 ? throughColor : neutralColor
+        bool outsideBars = markerPlacement == "Above/Below bar"
+        bool markerAbove = representative.side == 1
+        float pad = math.max(2.0 * tick, nz(currentRange, intervalPrice) * markerOffsetAtr)
+        float markerPrice = outsideBars ? (markerAbove ? markerHighRange + pad : markerLowRange - pad) : representative.levelTicks * tick
+        string markerStyle = outsideBars ? (markerAbove ? label.style_label_down : label.style_label_up) : label.style_label_center
+        string hint = "Outcomes confirmed on this bar: R=" + str.tostring(eventRCount) + "; T=" + str.tostring(eventTCount) + "; U=" + str.tostring(eventUCount) + ". The badge represents the oldest contact resolved here; '+' means additional outcomes."
+        hint += "\nRepresentative level: " + f_price(representative.levelTicks * tick) + "; approach from " + (representative.side == 1 ? "above" : "below") + "; age=" + str.tostring(representative.resultAge) + "."
+        hint += "\nEvery contact is exported separately at full-horizon maturity. The comparison uses only matched triplets; markers show all eligible ROUND outcomes. No trade signal, backdated result or execution price."
+        label marker = label.new(bar_index, markerPrice, code, xloc = xloc.bar_index, yloc = yloc.price, style = markerStyle, color = color.new(outcomeColor, 0), textcolor = color.new(panelBg, 0), size = f_size(markerSize), tooltip = hint, force_overlay = true, text_formatting = text.format_bold)
+        array.push(outcomeMarkers, marker)
+        lastMarkerBar := bar_index
+        lastMarkerLevel := representative.levelTicks
+        if array.size(outcomeMarkers) > markerCapacity
+            label.delete(array.shift(outcomeMarkers))
+
+Trial latestActive = na
+if barstate.islast
+    for j = 0 to array.size(pendingR) - 1
+        Trial item = array.get(pendingR, j)
+        if not na(item) and item.result == 0
+            if na(latestActive) or item.bornBar > latestActive.bornBar
+                latestActive := item
+
+int baseCount = levelsEachSide * 2 + 1
+var array<line> baseLines = array.new<line>(baseCount)
+var array<line> halfLines = array.new<line>(baseCount)
+var array<line> shiftLines = array.new<line>(baseCount)
+var array<line> mirrorLines = array.new<line>(baseCount)
+var array<line> activeLines = array.new<line>(2)
+var array<label> baseBadges = array.new<label>(baseCount)
+var array<label> shiftBadges = array.new<label>(baseCount)
+var array<label> mirrorBadges = array.new<label>(baseCount)
+var array<label> activeBadges = array.new<label>(2)
+var array<line> baseBadgeLeaders = array.new<line>(baseCount)
+var array<line> shiftBadgeLeaders = array.new<line>(baseCount)
+var array<line> mirrorBadgeLeaders = array.new<line>(baseCount)
+var array<line> activeBadgeLeaders = array.new<line>(2)
+var box priceCell = na
+int panelRows = panelDetail == "Compact" ? 14 : panelDetail == "Standard" ? 22 : 32
+var table info = table.new(f_position(panelLocation), 5, panelRows, bgcolor = color.new(panelBg, 100), frame_width = 0, border_width = 0, force_overlay = true)
+
+if barstate.islast
+    if gridReady
+        int xLeft = math.max(nz(initializedBar, 0), math.max(0, bar_index - drawBars))
+        int xRight = bar_index + rightBars
+        int badgeX = badgeEdge == "Left of segment" ? xLeft : xRight
+        int roundBadgeX = badgeEdge == "Left of segment" ? math.max(0, badgeX - badgeHorizontalGap) : badgeX + badgeHorizontalGap
+        float radius = math.max(nz(currentRange, intervalPrice) * heightAtr, intervalPrice)
+        string extension = lineExtension == "Both" ? extend.both : lineExtension == "Right" ? extend.right : extend.none
+        for i = 0 to baseCount - 1
+            int levelIndex = lowerIndex - levelsEachSide + i
+            float levelPrice = levelIndex * intervalPrice
+            bool isLower = levelIndex == lowerIndex
+            bool isUpper = levelIndex == lowerIndex + 1
+            bool isMajor = levelIndex % majorEvery == 0
+            bool visible = not limitHeight or math.abs(levelPrice - referencePrice) <= radius or isLower or isUpper
+            color ink = isLower ? lowerColor : isUpper ? upperColor : isMajor ? majorColor : color.new(baseColor, 28)
+            int width = isLower or isUpper ? nearestWidth : isMajor ? majorWidth : baseWidth
+            string glyph = isMajor ? "◆ " : "· "
+            string caption = (badgeDigitsOnly ? "" : isLower ? "↧ L " : isUpper ? "↥ U " : glyph) + f_price(levelPrice)
+            string hint = (isMajor ? "Major base level" : "Base level") + ". Interval: " + f_price(intervalPrice) + ". Research uses every base level, whether displayed or not. L and U enclose the reference price; they are not signals."
+            hint += isLower ? " " + f_local_hint(localLower) : isUpper ? " " + f_local_hint(localUpper) : ""
+            int badgePolarity = isLower ? -1 : isUpper ? 1 : staggerBadges ? (levelIndex % 2 == 0 ? 1 : -1) : 1
+            float badgeDisplacement = badgePolarity * badgeOffsetTicks * tick
+            float badgePrice = levelPrice + badgeDisplacement
+            f_draw_line(baseLines, i, visible, xLeft, xRight, levelPrice, ink, width, line.style_solid, extension)
+            f_draw_round_badge(baseBadges, baseBadgeLeaders, i, visible and showLabels, badgeX, roundBadgeX, levelPrice, badgePrice, caption, ink, isLower or isUpper or isMajor, hint)
+            float halfPrice = levelPrice + intervalPrice * 0.5
+            bool halfVisible = showHalf and lockedTicks % 2 == 0 and i < baseCount - 1 and (not limitHeight or math.abs(halfPrice - referencePrice) <= radius)
+            f_draw_line(halfLines, i, halfVisible, xLeft, xRight, halfPrice, color.new(baseColor, 75), 1, line.style_dotted, extension)
+            float shiftPrice = levelPrice + shiftedTicks * tick
+            bool shiftVisible = showShift and distinctBands and (not limitHeight or math.abs(shiftPrice - referencePrice) <= radius)
+            f_draw_line(shiftLines, i, shiftVisible, xLeft, xRight, shiftPrice, color.new(shiftColor, 35), 1, line.style_dotted, extension)
+            float shiftBadgePrice = shiftPrice + badgeDisplacement
+            f_draw_badge(shiftBadges, shiftBadgeLeaders, i, shiftVisible and showLabels, badgeX, shiftPrice, shiftBadgePrice, "A " + f_price(shiftPrice), shiftColor, size.small, "Shifted reference level. Same spacing and observation rules. Same matched context and ordinal. Not a randomized control.")
+            float mirrorPrice = levelPrice + mirrorTicks * tick
+            bool mirrorVisible = showMirror and mirrorDistinct and (not limitHeight or math.abs(mirrorPrice - referencePrice) <= radius)
+            f_draw_line(mirrorLines, i, mirrorVisible, xLeft, xRight, mirrorPrice, color.new(shiftColor, 50), 1, line.style_dashed, extension)
+            float mirrorBadgePrice = mirrorPrice + badgeDisplacement
+            f_draw_badge(mirrorBadges, mirrorBadgeLeaders, i, mirrorVisible and showLabels, badgeX, mirrorPrice, mirrorBadgePrice, "B " + f_price(mirrorPrice), shiftColor, size.small, "Mirrored reference B: the exact tick complement of A. Same spacing. No reference is selected by its result.")
+        if showCell
+            if na(priceCell)
+                priceCell := box.new(xLeft, upperPrice, xRight, lowerPrice, xloc = xloc.bar_index, border_color = color.new(baseColor, 100), bgcolor = color.new(baseColor, cellTransparency), force_overlay = true)
+            else
+                box.set_lefttop(priceCell, xLeft, upperPrice)
+                box.set_rightbottom(priceCell, xRight, lowerPrice)
+                box.set_bgcolor(priceCell, color.new(baseColor, cellTransparency))
+        else if not na(priceCell)
+            box.delete(priceCell)
+            priceCell := na
+        for j = 0 to 1
+            bool visible = showActive and studyReady and not na(latestActive)
+            float direction = j == 0 ? 1.0 : -1.0
+            float thresholdPrice = visible ? (latestActive.levelTicks + direction * latestActive.side * latestActive.thresholdTicks) * tick : na
+            color ink = j == 0 ? returnColor : throughColor
+            string caption = j == 0 ? "Return test" : "Through test"
+            int activeLeft = visible ? math.max(0, latestActive.bornBar) : bar_index
+            float thresholdBadgePrice = visible ? thresholdPrice + direction * latestActive.side * badgeOffsetTicks * tick : na
+            f_draw_line(activeLines, j, visible, activeLeft, xRight, thresholdPrice, color.new(ink, 15), 1, line.style_dashed, extend.none)
+            int thresholdBadgeX = badgeEdge == "Left of segment" ? activeLeft : xRight
+            f_draw_badge(activeBadges, activeBadgeLeaders, j, visible and showThresholdBadges, thresholdBadgeX, thresholdPrice, thresholdBadgePrice, caption, ink, size.small, "Frozen at contact. Requires " + str.tostring(confirmCloses) + " consecutive subsequent closes beyond this threshold. Not a target or stop.")
+    table.clear(info, 0, 0, 4, panelRows - 1)
+    if showPanel
+        Tally sr = array.get(audit.matched, 0)
+        Tally sa = array.get(audit.matched, 1)
+        Tally sb = array.get(audit.matched, 2)
+        Tally rr = array.get(audit.raw, 0)
+        Tally ra = array.get(audit.raw, 1)
+        Tally rb = array.get(audit.raw, 2)
+        Tally er = array.get(audit.early, 0)
+        Tally lr = array.get(audit.late, 0)
+        string windowHint = not na(auditFirstKey) and auditFirstKey <= auditLastKey ? "Clock window [" + str.format_time(auditFirstKey * blockMillis, "yyyy-MM-dd HH:mm", "UTC") + ", " + str.format_time((auditLastKey + 1) * blockMillis, "yyyy-MM-dd HH:mm", "UTC") + ") UTC. " : "Awaiting a fully mature clock block. "
+        windowHint += partialWindow ? "Requested window is not fully covered; partial initial blocks are excluded. " : "Window start has sufficient loaded context. "
+        string matchedHint = "Identical triplets in every main-panel rate and delta. ROUND: " + f_tally_hint(sr) + ". A: " + f_tally_hint(sa) + ". B: " + f_tally_hint(sb) + ". " + windowHint
+        matchedHint += "Unresolved outcomes remain in the denominator. No raw latest-N figures are mixed into this sample. Correlated contacts are not independent trials."
+        string matchingHint = "In each fixed clock block and prior-context stratum, match ordinal 1 with ordinal 1 in all grids, then ordinal 2, and so on. Same approach side; range/trend bins depend only on prior bars. No busy-state filter, result-based selection or rematching. Maximum time spread: " + str.tostring(allowedLagMillis / 60000.0, "0.0") + " min."
+        string meanHint = "ROUND return share minus the arithmetic mean of the A and B shares, using the SAME matched N. Delta A=" + f_signed(deltaA) + " pp; delta B=" + f_signed(deltaB) + " pp. Sign agreement: " + f_agreement_text(agreement) + "."
+        meanHint += " An opposite-sign comparison is labeled SPLIT even when the mean is positive. No significance, confidence, causality or profitability claim. " + matchedHint
+        color agreeColor = na(agreement) ? neutralColor : agreement == 2 ? throughColor : agreement == 0 ? neutralColor : baseColor
+        string protocolHint = "Protocol " + str.tostring(PROTOCOL) + "; " + syminfo.tickerid + "; chart=" + timeframe.period + "; minimum tick=" + str.tostring(tick, "0.##########") + "; fixed interval ticks=" + str.tostring(lockedTicks) + "; A/B ticks=" + str.tostring(shiftedTicks, "0") + "/" + str.tostring(mirrorTicks, "0") + "."
+        protocolHint += " Manual spacing and finite prior context are reproducible on the same complete, unchanged OHLC feed. Epoch clock blocks do not shift when earlier history loads. Automatic spacing remains an explicitly marked preview. Export numeric plots with chart data for a full-horizon ledger."
+        f_section(info, 0, "◆", "ROUND LEVELS", "RESPONSE", "CONTROL", protocolHint)
+        bool isRightPanel = panelLocation == "Top right" or panelLocation == "Middle right" or panelLocation == "Bottom right"
+        if isRightPanel and panelInset > 0
+            table.cell(info, 4, 0, "", width = panelInset, bgcolor = color.new(panelBg, 100))
+        string rangeRatio = gridReady and currentRange > 0 ? str.tostring(intervalPrice / currentRange, "0.0") + " TR" : "--"
+        f_row(info, 1, "#", "Interval", f_price(intervalPrice), previewMode ? "PREVIEW" : rangeRatio, majorColor, previewMode ? throughColor : neutralColor, "Price interval fixed for this run. TR = current finite mean true range, not Wilder ATR. " + protocolHint)
+        f_row(info, 2, "↧", "Lower", f_price(lowerPrice), gridReady ? str.tostring(math.max(0.0, (referencePrice - lowerPrice) / tick), "0") + "t" : "--", lowerColor, lowerColor, f_local_hint(localLower))
+        f_row(info, 3, "↥", "Upper", f_price(upperPrice), gridReady ? str.tostring(math.max(0.0, (upperPrice - referencePrice) / tick), "0") + "t" : "--", upperColor, upperColor, f_local_hint(localUpper))
+        f_row(info, 4, "▦", "Cell position", gridReady ? f_gauge(cellFraction) : "--", gridReady ? f_percent(cellFraction * 100.0) : "--", baseColor, panelFg, "Position in the enclosing fixed interval, not a probability. Visual context follows " + (liveContext ? "live price." : "the latest confirmed close."))
+        f_section(info, 5, "◎", "MATCHED", "ROUND", "MEAN A/B", matchedHint + " " + matchingHint)
+        f_row(info, 6, "#", "N each grid", str.tostring(sr.count), str.tostring(sa.count) + " / " + str.tostring(sb.count), panelFg, panelFg, "Left ROUND N; right A N / B N. All three are exactly equal. This is the actual denominator used below, not a retention capacity. " + matchedHint)
+        f_row(info, 7, "↶", "Return", f_percent(f_pct(sr.returns, sr.count)), f_percent((f_pct(sa.returns, sa.count) + f_pct(sb.returns, sb.count)) * 0.5), returnColor, returnColor, "R: required consecutive closes beyond the approach-side threshold. A=" + f_percent(f_pct(sa.returns, sa.count)) + "; B=" + f_percent(f_pct(sb.returns, sb.count)) + ". " + matchedHint)
+        f_row(info, 8, "⇢", "Through", f_percent(f_pct(sr.throughs, sr.count)), f_percent((f_pct(sa.throughs, sa.count) + f_pct(sb.throughs, sb.count)) * 0.5), throughColor, throughColor, "T: required consecutive closes beyond the opposite-side threshold. A=" + f_percent(f_pct(sa.throughs, sa.count)) + "; B=" + f_percent(f_pct(sb.throughs, sb.count)) + ". " + matchedHint)
+        f_row(info, 9, "◷", "Unresolved", f_percent(f_pct(sr.unresolved, sr.count)), f_percent((f_pct(sa.unresolved, sa.count) + f_pct(sb.unresolved, sb.count)) * 0.5), neutralColor, neutralColor, "U: no required confirmation by full horizon. A=" + f_percent(f_pct(sa.unresolved, sa.count)) + "; B=" + f_percent(f_pct(sb.unresolved, sb.count)) + ". " + matchedHint)
+        f_row(info, 10, "↔", "R delta A / B", f_signed(deltaA), f_signed(deltaB), baseColor, shiftColor, "Percentage points. LEFT: ROUND minus A. RIGHT: ROUND minus B. Same matched sample, not two different ROUND subsets. " + meanHint)
+        f_row(info, 11, na(agreement) ? "·" : agreement == 2 ? "!" : "Δ", "Mean / A-B", na(meanDelta) ? "--" : f_signed(meanDelta) + "pp", f_agreement_text(agreement), agreeColor, agreeColor, meanHint)
+        string halvesHint = "Descriptive early/late halves of the same elapsed clock window. Each half has its own smaller matched denominator: early N=" + str.tostring(er.count) + ", late N=" + str.tostring(lr.count) + ". Block boundaries, not outcome times, define the split. Not an out-of-sample or significance test. " + windowHint
+        f_row(info, 12, "◐", "Early / Late", f_signed(earlyDelta), f_signed(lateDelta), baseColor, shiftColor, "Mean return delta in percentage points, early on the left, late on the right. " + halvesHint)
+        int row = 13
+        if panelDetail != "Compact"
+            f_section(info, row, "⋯", "COVERAGE", "ROUND", "A / B", "Diagnostics below are explicitly NOT the matched denominator. " + matchingHint)
+            row += 1
+            f_row(info, row, "#", "All mature N", str.tostring(rr.count), str.tostring(ra.count) + " / " + str.tostring(rb.count), neutralColor, neutralColor, "All admitted contacts in the same complete block window, before matching and per-cell caps. " + windowHint)
+            row += 1
+            f_row(info, row, "%", "Matched share", f_percent(f_pct(sr.count, rr.count)), f_percent(f_pct(sa.count, ra.count)) + " / " + f_percent(f_pct(sb.count, rb.count)), baseColor, shiftColor, "Matched contacts / all mature eligible contacts, separately in each grid. Low coverage means the paired subset may not describe the whole grid.")
+            row += 1
+            f_row(info, row, "⋯", "Beyond cap", str.tostring(array.get(audit.capped, 0)), str.tostring(array.get(audit.capped, 1)) + " / " + str.tostring(array.get(audit.capped, 2)), neutralColor, neutralColor, "Contacts beyond the predeclared first-K limit per grid, stratum and block. Still observed and exported; not used in matching.")
+            row += 1
+            f_row(info, row, "▦", "Blocks used", str.tostring(audit.blocks), str.tostring(windowBlocks) + " window", baseColor, neutralColor, "Left: blocks contributing at least one accepted triplet. Right: requested elapsed block-window length. Empty periods do not become observations. Observed complete blocks=" + str.tostring(audit.observedBlocks) + ".")
+            row += 1
+            f_row(info, row, "◷", "Lag max / mean", str.tostring(audit.maxLag / 60000.0, "0.0") + "m", sr.count > 0 ? str.tostring(audit.lagSum / sr.count / 60000.0, "0.0") + "m" : "--", neutralColor, neutralColor, "Contact-time spread within accepted triplets. Both values in elapsed minutes. Lag cap=" + str.tostring(allowedLagMillis / 60000.0, "0.0") + "m. No nearest-outcome or best-result rematching.")
+            row += 1
+            f_row(info, row, "◷", "Window UTC", not na(auditFirstKey) ? str.format_time(auditFirstKey * blockMillis, "MM-dd HH:mm", "UTC") : "--", not na(auditLastKey) ? str.format_time((auditLastKey + 1) * blockMillis, "MM-dd HH:mm", "UTC") : "--", neutralColor, neutralColor, windowHint)
+            row += 1
+            f_row(info, row, "⌖", "Context", previewMode ? "Preview" : "Fixed", partialWindow ? "Partial" : "Covered", previewMode ? throughColor : baseColor, partialWindow ? throughColor : baseColor, protocolHint + " Requested start context=" + (anchorCovered ? "covered" : "missing") + "; strict start requirement=" + str.tostring(strictCoverage) + ".")
+            row += 1
+        if panelDetail == "Research"
+            f_row(info, row, "⌖", "Local N L / U", str.tostring(localLower.count), str.tostring(localUpper.count), lowerColor, upperColor, "Exact enclosing levels in the matched sample. LOWER: " + f_local_hint(localLower) + " UPPER: " + f_local_hint(localUpper))
+            row += 1
+            f_row(info, row, "↶", "Local R L / U", f_percent(f_pct(localLower.returns, localLower.count)), f_percent(f_pct(localUpper.returns, localUpper.count)), lowerColor, upperColor, "Read together with Local N. These rates do not select levels or constitute predictions.")
+            row += 1
+            f_row(info, row, "↕", "N above/below", str.tostring(sr.aboveN), str.tostring(sr.belowN), panelFg, panelFg, "Approach-side counts are identical in all three matched cohorts. No additional weighting changes the main denominator.")
+            row += 1
+            f_row(info, row, "↶", "Return A / B", f_percent(f_pct(sa.returns, sa.count)), f_percent(f_pct(sb.returns, sb.count)), shiftColor, shiftColor, matchedHint)
+            row += 1
+            f_row(info, row, "⇢", "Through A / B", f_percent(f_pct(sa.throughs, sa.count)), f_percent(f_pct(sb.throughs, sb.count)), throughColor, throughColor, matchedHint)
+            row += 1
+            f_row(info, row, "◷", "Unresolved A/B", f_percent(f_pct(sa.unresolved, sa.count)), f_percent(f_pct(sb.unresolved, sb.count)), neutralColor, neutralColor, matchedHint)
+            row += 1
+            f_row(info, row, "⋯", "Common G / M", str.tostring(audit.gapBars), str.tostring(audit.multiBars), neutralColor, neutralColor, "Common-bar veto counts in the same window: G=gap over a band in ANY grid; M=multiple contacted levels in ANY grid. Gap takes precedence. All grids share the exclusion.")
+            row += 1
+            f_row(info, row, "!", "Lag rejects", str.tostring(audit.lagRejected), "No rematch", neutralColor, neutralColor, "Complete ordinal triplets rejected only for exceeding the contact-time limit. Results are never used to decide or replace a match.")
+            row += 1
+            f_row(info, row, "#", "Data checksum", str.tostring(audit.checksum), "OHLC", neutralColor, neutralColor, "Non-cryptographic checksum of quantized OHLC and bar-open times in included blocks. Compare with the exported-data replay. Not a signature or a guarantee against feed revisions.")
+            row += 1
+            f_row(info, row, "#", "Protocol", str.tostring(PROTOCOL), "Fixed H", neutralColor, neutralColor, protocolHint + " Every export record is delivered at contact bar + H, including early resolved cases.")
+            row += 1
+        string status = not inputsOK ? "Check inputs" : not timeBased ? "Time OHLC" : not gridReady ? "Await grid" : strictCoverage and not anchorCovered ? "Start missing" : not researchOn ? "Study off" : not mirrorDistinct ? "Bands overlap" : previewMode ? "PREVIEW" : partialWindow ? "Partial" : "Fixed / full"
+        string statusRight = not studyReady ? "Paused" : not auditEnough ? "Low N" : agreement == 2 ? "A/B SPLIT" : "No forecast"
+        string statusHint = "Require N >= " + str.tostring(minimumN) + ", each side >= " + str.tostring(minimumSideN) + ", contributing blocks >= " + str.tostring(minimumBlocks) + " to display deltas. These are visibility guards, not significance tests. " + protocolHint
+        statusHint += " Markers cover all eligible ROUND contacts; the table uses only matched mature triplets. Active observations do not block later contact admission. No randomization or proof of a round-number causal effect."
+        f_row(info, row, "●", "Status", status, statusRight, studyReady and not previewMode and not partialWindow ? baseColor : throughColor, not auditEnough or agreement == 2 ? throughColor : neutralColor, statusHint)
+
+// -------------------- Lossless three-grid ledger and self-describing snapshot --------------------
+// R/A/B each emit one maturity record per bar at most. All contacts, including
+// unmatched/capped ones, are exported. Outcomes are NOT moved to their contact bar.
+// Ordinal < 0 marks a partial/date-cut block, excluded from all panel statistics.
+f_record(Trial item, int field) =>
+    float value = na
+    if not na(item)
+        value := switch field
+            0 => float(item.bornTime)
+            1 => item.levelTicks
+            2 => float(item.side)
+            3 => item.thresholdTicks
+            4 => float(item.result)
+            5 => float(item.resultAge)
+            6 => float(item.stratum)
+            => float(item.completeBlock ? item.ordinal : -item.ordinal)
+    value
+
+bool snapshotRow = refreshAudit and not na(auditAsOf) and auditAsOf == bar_index
+Tally exportMatched = array.get(audit.matched, 0)
+int runFlags = (gridReady ? 1 : 0) + (studyReady ? 2 : 0) + (previewMode ? 4 : 0) + (not anchorCovered ? 8 : 0) + (partialWindow ? 16 : 0) + (not inputsOK ? 32 : 0) + (not mirrorDistinct ? 64 : 0) + (strictCoverage ? 128 : 0) + (not timeBased ? 256 : 0) + (commonGap ? 512 : 0) + (commonMulti ? 1024 : 0)
+
+// Exactly 60 fixed-color numeric plots + 4 alertcondition calls = 64 plot counts.
+// All numeric exports are Data Window only, never added to the title/status line.
+plot(PROTOCOL, "RN6_Protocol", display = display.data_window, editable = false, precision = 0)
+plot(bar_index, "RN6_Seq", display = display.data_window, editable = false, precision = 0)
+plot(tick, "RN6_Tick", display = display.data_window, editable = false, precision = 16)
+plot(lockedTicks, "RN6_GridTicks", display = display.data_window, editable = false, precision = 0)
+plot(shiftedTicks, "RN6_ShiftTicks", display = display.data_window, editable = false, precision = 0)
+plot(bandTicks, "RN6_BandTicks", display = display.data_window, editable = false, precision = 0)
+plot(clearanceTicks, "RN6_ClearanceTicks", display = display.data_window, editable = false, precision = 0)
+plot(effectiveHorizon, "RN6_Horizon", display = display.data_window, editable = false, precision = 0)
+plot(confirmCloses, "RN6_Confirm", display = display.data_window, editable = false, precision = 0)
+plot(blockMillis, "RN6_BlockMs", display = display.data_window, editable = false, precision = 0)
+plot(windowBlocks, "RN6_WindowBlocks", display = display.data_window, editable = false, precision = 0)
+plot(perCellCap, "RN6_CellCap", display = display.data_window, editable = false, precision = 0)
+plot(modeCode, "RN6_MatchMode", display = display.data_window, editable = false, precision = 0)
+plot(atrLength, "RN6_RangeLength", display = display.data_window, editable = false, precision = 0)
+plot(trendLength, "RN6_TrendLength", display = display.data_window, editable = false, precision = 0)
+plot(volatilityLow, "RN6_VolLow", display = display.data_window, editable = false, precision = 12)
+plot(volatilityHigh, "RN6_VolHigh", display = display.data_window, editable = false, precision = 12)
+plot(trendBoundary, "RN6_TrendBoundary", display = display.data_window, editable = false, precision = 12)
+plot(responseMode == "Interval fraction" ? 0 : 1, "RN6_ResponseMode", display = display.data_window, editable = false, precision = 0)
+plot(responseMode == "Interval fraction" ? responsePct / 100.0 : responseAtr, "RN6_ResponseArgument", display = display.data_window, editable = false, precision = 12)
+plot(startDate, "RN6_StudyStart", display = display.data_window, editable = false, precision = 0)
+plot(endDate, "RN6_StudyEnd", display = display.data_window, editable = false, precision = 0)
+plot(minimumN, "RN6_MinimumN", display = display.data_window, editable = false, precision = 0)
+plot(minimumSideN, "RN6_MinimumSide", display = display.data_window, editable = false, precision = 0)
+plot(minimumBlocks, "RN6_MinimumBlocks", display = display.data_window, editable = false, precision = 0)
+plot(allowedLagMillis, "RN6_MaxLagMs", display = display.data_window, editable = false, precision = 0)
+plot(runFlags, "RN6_Flags", display = display.data_window, editable = false, precision = 0)
+plot(snapshotRow ? auditFirstKey : na, "RN6_WindowFirst", display = display.data_window, editable = false, precision = 0)
+plot(snapshotRow ? auditLastKey : na, "RN6_WindowLast", display = display.data_window, editable = false, precision = 0)
+plot(snapshotRow ? exportMatched.count : na, "RN6_MatchedN", display = display.data_window, editable = false, precision = 0)
+plot(snapshotRow ? deltaA : na, "RN6_DeltaA", display = display.data_window, editable = false, precision = 12)
+plot(snapshotRow ? deltaB : na, "RN6_DeltaB", display = display.data_window, editable = false, precision = 12)
+plot(snapshotRow ? meanDelta : na, "RN6_MeanDelta", display = display.data_window, editable = false, precision = 12)
+plot(snapshotRow ? agreement : na, "RN6_Agreement", display = display.data_window, editable = false, precision = 0)
+plot(initializedTime, "RN6_InitializedTime", display = display.data_window, editable = false, precision = 0)
+plot(snapshotRow ? audit.checksum : na, "RN6_DataChecksum", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredR, 0), "RN6_R_ContactTime", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredR, 1), "RN6_R_LevelTicks", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredR, 2), "RN6_R_Side", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredR, 3), "RN6_R_ThresholdTicks", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredR, 4), "RN6_R_Result", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredR, 5), "RN6_R_Age", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredR, 6), "RN6_R_Stratum", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredR, 7), "RN6_R_Ordinal", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredA, 0), "RN6_A_ContactTime", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredA, 1), "RN6_A_LevelTicks", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredA, 2), "RN6_A_Side", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredA, 3), "RN6_A_ThresholdTicks", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredA, 4), "RN6_A_Result", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredA, 5), "RN6_A_Age", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredA, 6), "RN6_A_Stratum", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredA, 7), "RN6_A_Ordinal", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredB, 0), "RN6_B_ContactTime", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredB, 1), "RN6_B_LevelTicks", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredB, 2), "RN6_B_Side", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredB, 3), "RN6_B_ThresholdTicks", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredB, 4), "RN6_B_Result", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredB, 5), "RN6_B_Age", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredB, 6), "RN6_B_Stratum", display = display.data_window, editable = false, precision = 0)
+plot(f_record(deliveredB, 7), "RN6_B_Ordinal", display = display.data_window, editable = false, precision = 0)
+
+alertcondition(newRoundContact, "Round level: new contact", "{{ticker}} {{interval}}: a round-number contact was admitted on a confirmed bar. Observation only; not an entry signal.")
+alertcondition(eventRCount > 0, "Round level: return confirmed", "{{ticker}} {{interval}}: one or more ROUND return outcomes were confirmed. Full-horizon records are exported separately at maturity. Not a trading recommendation.")
+alertcondition(eventTCount > 0, "Round level: through confirmed", "{{ticker}} {{interval}}: one or more ROUND through outcomes were confirmed. Full-horizon records are exported separately at maturity. Not a trading recommendation.")
+alertcondition(eventUCount > 0, "Round level: horizon unresolved", "{{ticker}} {{interval}}: one or more ROUND observations reached the full horizon without a return or through confirmation.")
+
+// A public script remains self-describing through numeric exports. Logs below are
+// a convenience for personal editor copies, never a required off-platform dependency.
+if printRecipe and barstate.islastconfirmedhistory
+    string recipe = "RNRC protocol=" + str.tostring(PROTOCOL) + "; ticker=" + syminfo.tickerid + "; timeframe=" + timeframe.period
+    recipe += "\nUse fixed spacing ticks=" + str.tostring(lockedTicks) + "; minimum tick=" + str.tostring(tick, "0.################") + "; initialized_ms=" + str.tostring(initializedTime)
+    recipe += "\nA_ticks=" + str.tostring(shiftedTicks, "0") + "; band_ticks=" + str.tostring(bandTicks, "0") + "; clearance_ticks=" + str.tostring(clearanceTicks, "0") + "; H=" + str.tostring(effectiveHorizon) + "; consecutive=" + str.tostring(confirmCloses)
+    recipe += "\nblock_ms=" + str.tostring(blockMillis) + "; max_lag_ms=" + str.tostring(allowedLagMillis) + "; window_blocks=" + str.tostring(windowBlocks) + "; cell_cap=" + str.tostring(perCellCap) + "; mode=" + str.tostring(modeCode)
+    recipe += "\nrange_length=" + str.tostring(atrLength) + "; trend_length=" + str.tostring(trendLength) + "; range_bins=" + str.tostring(volatilityLow) + "," + str.tostring(volatilityHigh) + "; trend_boundary=" + str.tostring(trendBoundary)
+    recipe += "\nresponse_mode=" + responseMode + "; fraction=" + str.tostring(responsePct / 100.0) + "; range_multiple=" + str.tostring(responseAtr) + "; start_ms=" + str.tostring(startDate) + "; end_ms=" + str.tostring(endDate)
+    recipe += "\nmin_N=" + str.tostring(minimumN) + "; min_side=" + str.tostring(minimumSideN) + "; min_blocks=" + str.tostring(minimumBlocks) + "; strict_start=" + str.tostring(strictCoverage) + "; preview=" + str.tostring(previewMode)
+    recipe += "\nwindow_first_key=" + str.tostring(auditFirstKey) + "; window_last_key=" + str.tostring(auditLastKey) + "; matched_each=" + str.tostring(exportMatched.count) + "; delta_A=" + str.tostring(deltaA) + "; delta_B=" + str.tostring(deltaB) + "; mean=" + str.tostring(meanDelta)
+    recipe += "\nOHLC_checksum=" + str.tostring(audit.checksum) + ". Keep the source, identical feed/session/adjustments, settings and loaded OHLC. This checksum is not cryptographic. No causal or performance certification."
+    log.info(recipe)

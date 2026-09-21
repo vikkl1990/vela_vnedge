@@ -1,0 +1,763 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © matt_spinola
+
+// version v2.3.0, 2026-09-15
+// The redesign of the published Index Lead Lag line; follows the v1.1.0 bug-fix release
+// (index_lead_lag_v1.pine). v2.1.0 adds the RTH open measure, v2.2.0 the cash-index source, v2.3.0 the
+// ribbon tooltips and the anchor-sized beta window, and moves the chart-symbol read out to its own
+// overlay, symbol_vs_nq.pine. Release notes in index_lead_lag.publish.md.
+
+//@version=6
+indicator("Index Lead Lag [BMT]", shorttitle="Index Lead Lag [BMT]", overlay=false, precision=2, max_bars_back=5000, max_labels_count=500)
+
+// Which index is leading and which is lagging.
+//
+// All four are measured from ONE shared anchor, which is what makes the differences
+// between them relative strength rather than four unrelated returns. Vertical order in
+// the pane is the ranking; a crossover is a change of leadership.
+//
+// "Beta-adjust vs ES" is the one to turn on for "is NQ actually leading".
+// NQ's beta to ES has run about 1.67, so NQ beats ES on nearly every up day whether or
+// not it is leading, which makes zero the wrong threshold on a plain difference.
+// Subtracting beta x the ES move leaves the residual: zero means the index moved
+// exactly as its beta implies, above zero is genuine leadership, below zero is a quiet
+// failure even on a green day. ES sits flat on zero by construction.
+//
+// The period anchors are read as prices rather than bar offsets:
+//   request.security(sym, "D", open, lookahead_on)
+// lookahead_on is safe for an open, and for a close n sessions back, because those
+// bars have already closed. Reading a price instead of counting bars back means there
+// is no history-buffer limit to clamp against. Only Fixed date still counts bars.
+
+// --------------------- Inputs { ----------------------------- \\
+var g_ref = "Reference"
+measureInput = input.string("Auto", "Measure", group=g_ref,
+     options=["Auto", "Session open", "RTH open", "Prior close", "Week open", "Month open", "Quarter open", "ES swing low", "ES swing high", "Fixed date"],
+     tooltip="Percent change from a shared anchor.\nAuto: picks one from the chart timeframe, so you are not resetting this every time you switch charts. Under an hour it uses the session open; intraday above that, the week; on a daily chart, the month; higher, the quarter. The Ref cell shows what it resolved to.\nSession open: the open of the current daily bar. On CME index futures that is the 18:00 ET Globex open, so the overnight is inside the measure.\nRTH open: the open of the first bar of the cash session (09:30 ET by default), so it reads as who is leading today's cash tape with the overnight left out. Overnight bars measure from the last cash open; on a daily or higher chart it is the same as Session open.\nPrior close: the prior daily bar's close. On futures that is the 17:00 ET settlement, one maintenance hour before Session open; on a stock the gap between this and Session open is the overnight move.\nWeek open / Month open / Quarter open: the open of the current week, month or quarter. Each resets on that boundary, so the pane reads as leadership within the period to date.\nES swing low / high: the lowest low or highest high ES has printed in the range you are looking at. All four anchor to that same bar, so it reads as 'since the market turned, who led?'. Pan or zoom and it re-resolves to the new view. The vertical line marks where it sits.\nFixed date: the date picked below. Does not reset.")
+
+// Auto resolves against the chart's own timeframe. The useful window is roughly a few
+// dozen bars: a session open on a 4h chart is six bars and says nothing, while a
+// session open on a 1m chart is a full day of them. So the anchor scales with the bar.
+//
+// The active= gating on the inputs below deliberately reads measureInput, not this.
+// `active` demands an "input bool": timeframe.in_seconds() is simple, so anything
+// derived from it is too, and `or`/`and` degrade even two input bools to simple. That
+// rules out both the resolved value and any compound test.
+//
+// It costs nothing here. Auto only ever resolves to a period open, so under Auto none
+// of the sub-controls apply and greying all of them is the right answer anyway.
+int chartSeconds = timeframe.in_seconds()
+string autoMeasure = chartSeconds < 3600 ? "Session open" : chartSeconds < 86400 ? "Week open" : chartSeconds == 86400 ? "Month open" : "Quarter open"
+string activeMeasure = measureInput == "Auto" ? autoMeasure : measureInput
+sourceInput = input.string("Auto", "Index source", group=g_ref, options=["Auto", "Futures", "Cash index"],
+     tooltip="Futures: NQ1!, ES1!, YM1!, RTY1!, the back-adjusted continuous contracts. Right intraday, where the cash indexes have no overnight bars, but back-adjustment shifts each series by its roll gaps, so over many months the percent changes drift a few points from the cash index and by a different amount per contract.\nCash index: NDX, SPX, RUT, DJI. Exact over any horizon, but only trades the cash session, so intraday charts lose the overnight.\nAuto: futures on intraday charts, cash on daily and above. The Ref tooltip says which is in use.")
+rthSessionInput = input.session("0930-1600", "RTH session", group=g_ref, active=measureInput == "RTH open",
+     tooltip="Used by the RTH open measure: the cash session, in New York time. The anchor is the open of the first chart bar inside it each day.")
+int startBar = input.time(timestamp("2026-01-01"), "Fixed date anchor", group=g_ref, active=measureInput == "Fixed date",
+     tooltip="Used only when Measure is Fixed date. Set with the date and time picker. A date before the loaded history anchors at the first bar loaded, and the Ref cell marks it with !.")
+// A date picker, not click-a-bar: click-a-bar means confirm=true, which makes TradingView
+// demand a bar selection every single time the indicator is added, for a field the
+// default settings never read.
+
+var g_scale = "Scale"
+betaAdjustInput = input.bool(false, "Beta-adjust vs ES", group=g_scale,
+     tooltip="Turn this on to answer 'is NQ actually leading'.\n\nOff, the pane shows raw percent change from the anchor and you read the ranking off the vertical order.\n\nOn, each index has beta x the ES move subtracted, leaving the residual. Zero then means 'moved exactly as its beta implies', so above zero is genuine leadership and below zero is a quiet failure even on a green day. ES sits flat on zero.\n\nThe y-axis stops being a percentage when this is on.")
+
+var g_disp = "Display"
+showRty = input.bool(true, title="Include RTY", group=g_disp,
+     tooltip="RTY's correlation to ES is much lower than the others', so it reaches the top or bottom of the ranking on idiosyncratic moves rather than on leadership. Turn it off to read the megacap-led story on its own.")
+showLinesInput = input.bool(true, title="Show index lines", group=g_disp,
+     tooltip="Off leaves just the ribbon and the table: the same message at a fraction of the visual weight, in a pane you can shrink to a strip. The divergence triangles need the lines, so they go with them.")
+ribbonModeInput = input.string("NQ vs beta", title="Ribbon shows", group=g_disp, options=["NQ vs beta", "Leader"],
+     tooltip="Only applies with the index lines off, where the ribbon is the whole pane.\n\nNQ vs beta: green when NQ is beating the move its beta implies, red when it is missing it, grey in between. With the lines off this is the ONLY place NQ's state appears, since the triangles need the traces.\n\nLeader: coloured by whichever index is on top, in the line colours. Grey whenever the leader-to-laggard spread is below its own recent average, because with four indexes bunched together the top spot flips on noise and 'who is leading' means least exactly when it changes most.\n\nWith the lines on this does nothing: the leader is already the top trace, and the triangles already carry NQ's state.")
+divThreshInput = input.float(1.0, title="Divergence threshold (σ)", group=g_disp, minval=0.0, maxval=4.0, step=0.25,
+     tooltip="How far NQ has to sit from the path its beta implies before a bar is marked.\n\nMeasured in standard deviations of where the residual would be by now under pure chance (per-bar noise times the square root of bars since the anchor), so the bar is compared against how far it COULD have drifted by this point in the period, not against the period's average size.\n\nThat matters most early: the residual starts at zero every anchor and widens from there, so before this scaling nothing could clear the threshold near the open and almost everything cleared it near the close.\n\n0 marks every bar that diverges at all, which is most of them and tells you nothing. 1.0 is a reasonable working level. 2.0 keeps only the outliers.")
+tableLocationInput = input.string("Bottom right", title="Status table", group=g_disp,
+     options=["Hidden", "Top left", "Middle left", "Bottom left", "Top right", "Middle right", "Bottom right"])
+bool showTableInput = tableLocationInput != "Hidden"
+tablePosition = switch tableLocationInput
+    "Top left"     => position.top_left
+    "Middle left"  => position.middle_left
+    "Bottom left"  => position.bottom_left
+    "Top right"    => position.top_right
+    "Middle right" => position.middle_right
+    => position.bottom_right
+tableFontSizeInput = input.string("small", title="Table font size", group=g_disp, options=["tiny", "small", "auto", "large", "very large"])
+tableFontSizeOption = switch tableFontSizeInput
+    "tiny"       => size.tiny
+    "small"      => size.small
+    "auto"       => size.auto
+    "large"      => size.large
+    "very large" => size.huge
+
+
+bool usesDate = activeMeasure == "Fixed date"
+bool usesSwingLow = activeMeasure == "ES swing low"
+bool usesSwingHigh = activeMeasure == "ES swing high"
+bool usesSwing = usesSwingLow or usesSwingHigh
+//}
+
+// --------------------- Fixed-date anchor { ----------------------------- \\
+// Only Fixed date needs a bar offset, so it is the only measure that can run past the
+// history buffer. First bar at or after the anchor: if the date predates the loaded
+// history this lands on bar 0 rather than never resolving.
+getBarIndexSinceTime(t) =>
+    var int foundBar = na
+    if na(foundBar) and time >= t
+        foundBar := bar_index
+    foundBar
+
+// input.time defaults have to be constants, so the literal date below goes stale. There
+// used to be an "anchor at current session" checkbox to make the stale default usable,
+// but that only restated Session open (one bar worse: the first bar's close rather than
+// the daily open), so Fixed date now means the date, and a stale date lands on bar 0.
+
+// Hoisted out of the conditions below on purpose. v6 short-circuits or, so
+// "na(dayStartBar) or ta.change(...)" would skip ta.change on the first bar, and a
+// ta.* call that does not run every bar loses its history.
+bool newDay = ta.change(time("D")) != 0
+bool newWeek = ta.change(time("W")) != 0
+bool newMonth = ta.change(time("M")) != 0
+bool newQuarter = ta.change(time("3M")) != 0
+
+var int dayStartBar = na
+var int weekStartBar = na
+var int monthStartBar = na
+var int quarterStartBar = na
+// A short ring of session starts, for the session length the beta window needs.
+var array<int> dayStarts = array.new_int(0)
+if na(dayStartBar) or newDay
+    dayStartBar := bar_index
+    dayStarts.unshift(bar_index)
+    if dayStarts.size() > 6
+        dayStarts.pop()
+// The length of the last completed week, month and quarter in bars, for the beta
+// window below. Taken on the chart's own bars rather than assumed from the timeframe,
+// so a weekly chart's quarter is 13 and a 5m chart's is a few thousand.
+var int weekLen = na
+var int monthLen = na
+var int quarterLen = na
+if na(weekStartBar) or newWeek
+    weekLen := na(weekStartBar) ? na : bar_index - weekStartBar
+    weekStartBar := bar_index
+if na(monthStartBar) or newMonth
+    monthLen := na(monthStartBar) ? na : bar_index - monthStartBar
+    monthStartBar := bar_index
+if na(quarterStartBar) or newQuarter
+    quarterLen := na(quarterStartBar) ? na : bar_index - quarterStartBar
+    quarterStartBar := bar_index
+
+int MAX_LOOKBACK = 4900
+
+// Called unconditionally, not inside the ternary below. getBarIndexSinceTime holds a
+// var that latches the first bar at or after the anchor date, and a function carrying
+// var state has to run on every bar to latch correctly; burying it in a branch is the
+// same trap as putting a ta.* call inside an if.
+int fixedAnchorBar = getBarIndexSinceTime(startBar)
+int offsetBarIndex = fixedAnchorBar
+//}
+
+// --------------------- Data { ----------------------------- \\
+// Which four series. Continuous futures are the only choice with overnight bars, so
+// they stay the intraday default; on daily and above the cash indexes are the honest
+// series for a long anchor, since back-adjustment moves each contract's history by its
+// own roll gaps. Beta is fitted on whichever set is in use, so the two stay consistent.
+bool useCash = sourceInput == "Cash index" or (sourceInput == "Auto" and not timeframe.isintraday)
+string NQ_SYM  = useCash ? "NASDAQ:NDX" : "NQ1!"
+string ES_SYM  = useCash ? "SP:SPX"     : "ES1!"
+string YM_SYM  = useCash ? "TVC:DJI"    : "YM1!"
+string RTY_SYM = useCash ? "TVC:RUT"    : "RTY1!"
+
+// lookahead ON for a same-timeframe request, deliberately. The cash indexes' daily
+// bars close after a stock's (NDX is calculated to 17:16 ET, a stock's bar ends at
+// 16:00), and TradingView merges bars by close time, so with lookahead off a daily
+// stock chart received the index's PREVIOUS day on every historical bar: measured
+// 2026-09-15 on DELL, where "NQ move" on 4 Sep was NDX's 3 Sep figure, and the
+// chart symbol's beta to NQ came out at -0.05 against a true 1.8. On the same
+// timeframe lookahead on is the bar's own close, nothing from the future, and the
+// realtime bar is the developing value either way.
+f_closeOpen(string sym) =>
+    request.security(sym, timeframe.period, [close, open], lookahead=barmerge.lookahead_on)
+
+f_dayData(string sym) =>
+    request.security(sym, "D", [open, close[1]], lookahead=barmerge.lookahead_on)
+
+f_periodOpen(string sym, string tf) =>
+    request.security(sym, tf, open, lookahead=barmerge.lookahead_on)
+
+[nqClose,  nqOpen]  = f_closeOpen(NQ_SYM)
+[esClose, esHigh, esLow, esOpen] = request.security(ES_SYM, timeframe.period, [close, high, low, open], lookahead=barmerge.lookahead_on)
+[ymClose,  ymOpen]  = f_closeOpen(YM_SYM)
+[rtyClose, rtyOpen] = f_closeOpen(RTY_SYM)
+
+// RTH open: the open of each symbol's first chart bar inside the cash session. The four
+// index futures share the chart's bars, so one session test serves all of them. Held through the overnight so a bar
+// at 03:00 measures from the last cash open rather than from nothing. Intraday only;
+// on a daily or higher chart the measure falls back to the daily open.
+bool inRth = timeframe.isintraday and not na(time(timeframe.period, rthSessionInput, "America/New_York"))
+bool rthStart = inRth and not inRth[1]
+var float nqRthOpen  = na
+var float esRthOpen  = na
+var float ymRthOpen  = na
+var float rtyRthOpen = na
+var int   rthStartBar = na
+if rthStart
+    nqRthOpen   := nqOpen
+    esRthOpen   := esOpen
+    ymRthOpen   := ymOpen
+    rtyRthOpen  := rtyOpen
+    rthStartBar := bar_index
+bool usesRth = activeMeasure == "RTH open"
+
+[nqDayOpen, nqPrevClose] = f_dayData(NQ_SYM)
+[esDayOpen, esPrevClose] = f_dayData(ES_SYM)
+[ymDayOpen, ymPrevClose] = f_dayData(YM_SYM)
+[rtyDayOpen, rtyPrevClose] = f_dayData(RTY_SYM)
+
+nqWeekOpen  = f_periodOpen(NQ_SYM,  "W")
+esWeekOpen  = f_periodOpen(ES_SYM,  "W")
+ymWeekOpen  = f_periodOpen(YM_SYM,  "W")
+rtyWeekOpen = f_periodOpen(RTY_SYM, "W")
+
+nqMonthOpen  = f_periodOpen(NQ_SYM,  "M")
+esMonthOpen  = f_periodOpen(ES_SYM,  "M")
+ymMonthOpen  = f_periodOpen(YM_SYM,  "M")
+rtyMonthOpen = f_periodOpen(RTY_SYM, "M")
+
+nqQtrOpen  = f_periodOpen(NQ_SYM,  "3M")
+esQtrOpen  = f_periodOpen(ES_SYM,  "3M")
+ymQtrOpen  = f_periodOpen(YM_SYM,  "3M")
+rtyQtrOpen = f_periodOpen(RTY_SYM, "3M")
+
+// The extreme of what you are actually looking at, rather than a pivot you have to
+// tune. Referencing chart.left_visible_bar_time makes TradingView recalculate the whole
+// script whenever you pan or zoom, which is what keeps the anchor in step with the view.
+//
+// Running rather than final: at any bar the anchor is the most extreme ES print since
+// the left edge up to THAT bar, so the series reads as "how far from the running
+// extreme are we". At the right edge that is the visible extreme, which is the number
+// you are actually looking for.
+//
+// This also removes the confirmation lag. A pivot could not be known until its right
+// bars had printed, so the marker sat to the right of the low it described; a running
+// extreme is known the moment it happens.
+bool inView = not na(chart.left_visible_bar_time) and time >= chart.left_visible_bar_time
+var float visExtreme = na
+var int visExtremeBar = na
+if inView and usesSwingLow and (na(visExtreme) or esLow < visExtreme)
+    visExtreme := esLow
+    visExtremeBar := bar_index
+if inView and usesSwingHigh and (na(visExtreme) or esHigh > visExtreme)
+    visExtreme := esHigh
+    visExtremeBar := bar_index
+
+int swingOffset = na(visExtremeBar) ? na : bar_index - visExtremeBar
+int rawLookback = usesDate ? bar_index - offsetBarIndex : usesSwing ? swingOffset : na
+int lookback = na(rawLookback) ? na : math.min(math.max(rawLookback, 1), MAX_LOOKBACK)
+bool lookbackCapped = usesDate and not na(rawLookback) and rawLookback > MAX_LOOKBACK
+
+// The offset close for the bar-counted measures. Taken at top level so the history operator applies
+// to a real series rather than a function parameter.
+float nqOffsetClose  = na(lookback) ? na : nqClose[lookback]
+float esOffsetClose  = na(lookback) ? na : esClose[lookback]
+float ymOffsetClose  = na(lookback) ? na : ymClose[lookback]
+float rtyOffsetClose = na(lookback) ? na : rtyClose[lookback]
+
+f_anchor(float dayOpen, float rthOpen, float prevClose, float weekOpen, float monthOpen, float qtrOpen, float offsetClose) =>
+    activeMeasure == "Session open" ? dayOpen : usesRth ? (timeframe.isintraday ? rthOpen : dayOpen) : activeMeasure == "Prior close" ? prevClose : activeMeasure == "Week open" ? weekOpen : activeMeasure == "Month open" ? monthOpen : activeMeasure == "Quarter open" ? qtrOpen : offsetClose
+
+f_pct(float c, float anchor) =>
+    na(anchor) or anchor == 0 ? na : (c - anchor) / anchor * 100
+
+float nqRaw  = f_pct(nqClose,  f_anchor(nqDayOpen, nqRthOpen, nqPrevClose, nqWeekOpen, nqMonthOpen, nqQtrOpen, nqOffsetClose))
+float esRaw  = f_pct(esClose,  f_anchor(esDayOpen, esRthOpen, esPrevClose, esWeekOpen, esMonthOpen, esQtrOpen, esOffsetClose))
+float ymRaw  = f_pct(ymClose,  f_anchor(ymDayOpen, ymRthOpen, ymPrevClose, ymWeekOpen, ymMonthOpen, ymQtrOpen, ymOffsetClose))
+float rtyRaw = showRty ? f_pct(rtyClose, f_anchor(rtyDayOpen, rtyRthOpen, rtyPrevClose, rtyWeekOpen, rtyMonthOpen, rtyQtrOpen, rtyOffsetClose)) : na
+
+int indexCount = showRty ? 4 : 3
+// Where the measurement starts, for every measure and not just the bar-counted ones.
+// The period anchors are read as prices, so their bar has to be recovered separately
+// from the session, week, month and quarter trackers.
+int anchorBar = switch
+    activeMeasure == "Session open" => dayStartBar
+    usesRth                         => timeframe.isintraday ? rthStartBar : dayStartBar
+    activeMeasure == "Prior close"  => na(dayStartBar) ? na : dayStartBar - 1
+    activeMeasure == "Week open"    => weekStartBar
+    activeMeasure == "Month open"   => monthStartBar
+    activeMeasure == "Quarter open" => quarterStartBar
+    => na(lookback) ? na : bar_index - lookback
+
+// Bars elapsed since it. Floored at 1: on the anchor bar itself the residual is
+// zero anyway, and a zero scale would divide by zero rather than read as neutral.
+int barsSinceAnchor = na(anchorBar) ? na : math.max(bar_index - anchorBar, 1)
+
+// The beta window, sized from the anchor rather than set by hand. A fixed 90 bars was
+// a few hours on a 5m chart and four months on a daily one, and on a long anchor the
+// beta's own estimation error, times the size of the ES move, swamped the residual.
+// So the window is a fixed number of ANCHOR PERIODS: four sessions for a session
+// anchor, four months for a month anchor, four times the span for a swing or a date.
+// Beta is then always fitted at the horizon it is subtracted over, and the estimate
+// tightens as the anchor lengthens instead of staying at 90 while the move it scales
+// grows.
+//
+// Four periods, because on a daily chart with the month anchor that is 84 bars, the
+// same neighbourhood as the 90 this replaces; the standard error of an OLS beta falls
+// with the square root of the sample, so more periods buy little and cost history.
+// The floor keeps a thin OLS honest where a period is a handful of bars (a daily
+// chart on a session anchor, a weekly chart on the quarter); the cap keeps a 1m chart
+// inside the history buffer (max_bars_back 5000), at a session and a half there.
+//
+// It does NOT make beta-adjust trustworthy over a long anchor. A wider window shrinks
+// the estimation error; it cannot fix a beta that has itself drifted over the year.
+// Raw mode remains the read for anchors months back.
+//
+// Session length is the mean of the last five completed sessions from the day-start
+// ring, so one holiday half-day moves the window by a tenth rather than halving it.
+float sessionBars = dayStarts.size() > 5 ? (dayStarts.get(0) - dayStarts.get(5)) / 5.0 : 1.0
+float spanBars = na(anchorBar) ? sessionBars : math.max(last_bar_index - anchorBar, sessionBars)
+float periodBars = switch
+    activeMeasure == "Week open"    => na(weekLen)    ? 5  * sessionBars : weekLen
+    activeMeasure == "Month open"   => na(monthLen)   ? 21 * sessionBars : monthLen
+    activeMeasure == "Quarter open" => na(quarterLen) ? 63 * sessionBars : quarterLen
+    usesSwing                       => spanBars
+    usesDate                        => spanBars
+    => sessionBars
+int BETA_PERIODS = 4
+int betaLen = math.min(math.max(math.round(BETA_PERIODS * periodBars), 60), 2000)
+
+bool haveDataRaw = not na(nqRaw) and not na(esRaw) and not na(ymRaw) and (not showRty or not na(rtyRaw))
+//}
+
+// --------------------- Beta and baseline { ----------------------------- \\
+// Ordinary least squares slope of each index against ES, written out as moments so
+// both sides stay in one convention: the 1/n cancels in cov/var, leaving the slope.
+//
+// Fitted on the PRECEDING window, both series lagged a bar. A beta fitted on a window
+// that contains the bar it scores leaks that bar into its own benchmark, and the
+// residual then reads smaller than it was. At 90 bars that is about 1% of the fit, but
+// it biases exactly the outliers the sigma test exists to catch: a genuine outlier
+// drags its own beta toward itself and partly explains itself away. Same offset, and
+// same reasoning, as the beta in agi/indicators/cars.pine.
+f_beta(float rx, float rm, int len) =>
+    float x = rx[1]
+    float m = rm[1]
+    float mx = ta.sma(m, len)
+    float my = ta.sma(x, len)
+    float cov = ta.sma(m * x, len) - mx * my
+    float vr  = ta.sma(m * m, len) - mx * mx
+    na(vr) or vr == 0 ? na : cov / vr
+
+float esRet  = na(esClose[1])  or esClose[1]  == 0 ? na : esClose / esClose[1] - 1
+float nqRet  = na(nqClose[1])  or nqClose[1]  == 0 ? na : nqClose / nqClose[1] - 1
+float ymRet  = na(ymClose[1])  or ymClose[1]  == 0 ? na : ymClose / ymClose[1] - 1
+float rtyRet = na(rtyClose[1]) or rtyClose[1] == 0 ? na : rtyClose / rtyClose[1] - 1
+
+bool betaMode = betaAdjustInput
+
+// Computed on every bar whether or not the pane is showing residuals, because the
+// divergence markers below need the residual even in raw mode, which is exactly where
+// it is not otherwise visible. Unconditional also keeps the ta.* calls out of a
+// branch, which is the trap this file has hit twice.
+float nqBeta  = f_beta(nqRet,  esRet, betaLen)
+float ymBeta  = f_beta(ymRet,  esRet, betaLen)
+float rtyBeta = f_beta(rtyRet, esRet, betaLen)
+
+// NQ's move minus what its beta implies. Negative means NQ did less than its own
+// history says it should have, in whichever direction the tape went.
+float nqResidual = na(nqBeta) or na(nqRaw) or na(esRaw) ? na : nqRaw - nqBeta * esRaw
+
+
+// Applied per index, because the beta-adjusted baseline is beta x ES rather than one
+// number shared by all four.
+f_relative(float raw, float b) =>
+    betaMode ? (na(b) ? na : raw - b * esRaw) : raw
+
+float nqVal  = f_relative(nqRaw,  nqBeta)
+float esVal  = betaMode ? 0.0 : esRaw
+float ymVal  = f_relative(ymRaw,  ymBeta)
+float rtyVal = showRty ? f_relative(rtyRaw, rtyBeta) : na
+//}
+
+// --------------------- Colours { ----------------------------- \\
+// Red and green are avoided on purpose: on a chart they already mean down and up, so a
+// red leader reads as a falling index. These are four hues no one reads directionally,
+// held close together in luma so no index visually outweighs another (all four sit at
+// 118 on dark, 93-119 on light). ES is the neutral one because it is the benchmark:
+// under beta-adjusted mode it flattens onto the zero line.
+//
+// The dark set was originally 158-172, borrowed from the moving-average palette. That
+// range exists so a line stays legible ON TOP OF candles; this pane has no candles, so
+// the lines only have to clear the canvas and 118 does it at a third less contrast.
+//
+// Blue against amber is also the axis that survives red-green colour deficiency.
+chartLuma = 0.2126 * color.r(chart.bg_color) + 0.7152 * color.g(chart.bg_color) + 0.0722 * color.b(chart.bg_color)
+bool isDark = chartLuma <= 128
+
+// Not four matched lines any more. The question this pane answers is "is NQ leading",
+// so NQ is deliberately the loudest and the other three recede in order. RTY is also
+// desaturated toward grey: at equal luma, magenta grabs far more attention than cyan
+// or amber does, so matching them by brightness alone still let RTY win the eye.
+//   dark  NQ 145 > ES 112 > YM 108 > RTY 100     (canvas 25, brighter = louder)
+//   light NQ  96 < ES 118 < YM 122 < RTY 130     (canvas 250, darker = louder)
+nqColor   = isDark ? #47A3BB : #0E7585                                 // cyan, the one to watch
+esColor   = isDark ? #6A7179 : #707780                                 // neutral, the benchmark
+ymColor   = isDark ? #836A3A : #9E772D                                 // amber, muted
+rtyColor  = color.new(isDark ? #725F69 : #AE72A4, showRty ? 0 : 100)   // magenta, most muted
+zeroColor   = color.new(isDark ? #8B92A0 : #5B6068, 40)
+// The anchor marker is the house "this bar matters" blue from the npf scripts, lifted
+// clear of the data lines (118) so it reads as an annotation rather than a series. It
+// was a bright neutral, but ES is also neutral, so the marker and one of the four
+// shared a hue family. Blue is the one hue none of the four uses.
+// Sits just UNDER the data lines rather than 42 above them. It is an annotation, not
+// a series, and the theme's own rule is that chrome does not outshine data, and the first
+// value broke that. Light was already under its lines, so only dark moves.
+anchorColor = color.new(isDark ? #4A72AE : #2F5FA8, 10)   // luma 110 dark / 90 light
+// Same blue, for the bars where the anchor last moved. Set by AREA, not by luma: the
+// theme's zone fills sit 12 off the canvas, but those are wide regions read as
+// background. This is one full-height column beside a 2px line (same luma, roughly
+// fifty times the pixels), so matching the zone-fill number made the band louder than
+// the anchor it was supposed to sit behind. 11 off canvas is the equivalent weight.
+
+// Blue-tinted rather than neutral grey, matching the anchor line: these mark where
+// PREVIOUS anchors sat, so they belong to that family rather than reading as haze.
+resetColor  = isDark ? #253957 : #D5DEEB   // opaque, 30 off dark canvas / 29 off light
+
+// Behind the lines, so kept under the theme's zone-fill level. Large areas read
+// heavier than their luma suggests, the same lesson as the reset bands.
+leadFill = color.new(isDark ? #47A3BB : #0E7585, 90)   // NQ ahead
+lagFill  = color.new(isDark ? #6A7179 : #707780, 90)   // NQ behind, deliberately dull
+// Green leads, red lags, grey is neutral. Red and green are avoided for the index
+// lines, where they would read as up and down, but this signal IS good-versus-bad
+// for NQ, so the convention is the correct one here rather than a borrowed one.
+//
+// The pair is deliberately NOT matched in luminance, unlike everything else in this
+// file. Hue is the only thing separating lead from lag, and red-green is the one axis
+// that collapses for the roughly one man in twelve with a deficiency, so green is set
+// well brighter than red: 167 against 136 raw, which survives in greyscale.
+//
+// Neutral has to stay the dimmest of the three or it competes with a marginal
+// divergence. At 72 transparency it renders around 49 on the dark canvas, under even a
+// 1σ lag at 75.
+calmColor = isDark ? #5BC08A : #1E8355   // lead,  luma 167 dark / 106 light
+warnColor = isDark ? #DE7078 : #B03B42   // lag,   luma 136 dark /  84 light
+// The ribbon is drawn OPAQUE. Consecutive bars overlap, and overlapping transparent
+// shapes stack their alpha: a run of neutral dots at 72 transparency composites to
+// roughly 55 luma off the canvas by the fourth bar, which is why grey was reading as a
+// peer to red and green instead of receding. Opaque means what is specified is what
+// renders, at any bar density.
+//
+// The same stacking silently destroyed brightness-as-magnitude here: a run of 1σ dots
+// went near-opaque and looked identical to a single 3σ one. So the ribbon carries STATE
+// only. Magnitude lives on the triangles in lines mode, where markers are sparse enough
+// for it to survive, and as the exact figure in the data window.
+neutralColor = isDark ? #292E36 : #E2E4E8   // 21 off the dark canvas, and stays there
+
+// The table carries its own, brighter set. Small text needs far more contrast than a
+// 2px line does, so dimming the lines to 118 should not drag the readout down with
+// them; these are the original 158-172 values.
+tblNqColor  = isDark ? #55C1DE : #1191A5
+tblEsColor  = isDark ? #9AA3B0 : #5B6068
+tblYmColor  = isDark ? #D9A441 : #9A6B12
+tblRtyColor = isDark ? #DF88B4 : #CA3798
+tblDimColor = isDark ? #C3CAD6 : #3F444B
+tblBgColor  = isDark ? color.new(#0A0C10, 20) : color.new(#FFFFFF, 10)
+//}
+
+// --------------------- Ranking { ----------------------------- \\
+array<float> valArray = showRty ? array.from(nqVal, esVal, ymVal, rtyVal) : array.from(nqVal, esVal, ymVal)
+
+float spread = na
+var int leaderId = na
+var int barsSinceLeadChange = 0
+var array<int> rankOrder = array.from(0, 1, 2, 3)
+
+bool haveData = haveDataRaw and not na(nqVal) and not na(esVal) and not na(ymVal) and (not showRty or not na(rtyVal))
+
+if haveData
+    sortedOrder = array.sort_indices(valArray, order.descending)
+    for i = 0 to indexCount - 1
+        array.set(rankOrder, i, array.get(sortedOrder, i))
+    int topId = array.get(sortedOrder, 0)
+    int bottomId = array.get(sortedOrder, indexCount - 1)
+    spread := array.get(valArray, topId) - array.get(valArray, bottomId)
+
+    if na(leaderId) or topId != leaderId
+        leaderId := topId
+        barsSinceLeadChange := 0
+    else
+        barsSinceLeadChange += 1
+//}
+
+// --------------------- Plotting { ----------------------------- \\
+p_nq = plot(showLinesInput ? nqVal : na, title="NQ", color=nqColor, linewidth=2, precision=2)
+p_es = plot(showLinesInput ? esVal : na, title="ES", color=esColor, linewidth=2, precision=2)
+plot(showLinesInput ? ymVal : na, title="YM", color=ymColor, linewidth=2, precision=2)
+plot(showLinesInput and showRty ? rtyVal : na, title="RTY", color=rtyColor, linewidth=2, precision=2)
+
+// The gap between NQ and ES, as an area rather than two line positions. Under
+// beta-adjust ES is flat at zero, so this becomes the filled residual, the leadership
+// itself, signed. Cyan when NQ is ahead, neutral when it is not, so the pane lights up
+// on the state you are watching for and goes quiet otherwise.
+fill(p_nq, p_es, color = not showLinesInput or na(nqVal) or na(esVal) ? na : nqVal >= esVal ? leadFill : lagFill, title="NQ vs ES")
+
+// The two conjunctions the lines cannot show, because each needs the sign of the ES
+// move AND the sign of NQ's residual at the same time.
+//
+// Scored in standard deviations rather than tested against zero, because without that the
+// condition is true on any bar NQ sits a hair under its beta path, which is most of
+// them, and the marker fired in long unbroken runs carrying no information.
+//
+// But NOT in standard deviations of the anchored residual's own distribution, which is
+// what this used to do. That quantity resets at every anchor and grows through the
+// period, so pooling it into one stdev sets the yardstick to the period's AVERAGE
+// size. On a 5m chart with a session anchor, mean k is about 39 of 78 bars, so a
+// nominal 1.0 sigma was really a 2.8 sigma test in the first half hour and a 0.71
+// sigma test in the last. Nothing fired at the open and the markers piled up at the
+// right edge of every session.
+//
+// The anchored residual is a running sum of per-bar residuals. Under the null (no
+// persistent lead or lag) that sum is a driftless random walk, whose spread at step k
+// is sigma_bar * sqrt(k). Dividing by THAT makes the threshold mean one thing at every
+// point in the period. It also generalises to all nine measures: slot-matching against
+// the same bar of prior sessions would handle the intraday volatility smile too, but
+// only the session anchor repeats, and the swing anchors, where k runs from three
+// bars to three hundred and the bias is worst, have no slots at all.
+//
+// sigma_bar is measured on the ONE-BAR residual, which is stationary and so can be
+// pooled honestly. The anchored one could not.
+//
+// ⚠️ sqrt(k) assumes the per-bar residuals are independent. They are not (persistent
+// leadership is this script's whole premise), so true dispersion grows somewhat faster
+// than sqrt(k) and this still under-corrects late in a period. By a little, not by 4x.
+//
+// ⚠️ In PERCENT. f_pct multiplies by 100, so nqResidual is a percentage; the returns
+// are fractions, because beta is a ratio and the units cancel inside f_beta. They do
+// NOT cancel here: the numerator and the scale have to be in the same unit, and
+// mixing them inflates every z by exactly 100x, which puts the threshold below the
+// noise floor and marks every bar.
+float nqBarResid = na(nqBeta) or na(nqRet) or na(esRet) ? na : (nqRet - nqBeta * esRet) * 100
+float nqBarSigma = ta.stdev(nqBarResid, betaLen)
+float residScale = na(nqBarSigma) or na(barsSinceAnchor) ? na : nqBarSigma * math.sqrt(barsSinceAnchor)
+float residZ = na(residScale) or residScale == 0 or na(nqResidual) ? na : nqResidual / residScale
+
+
+// Three states, not two quadrants. The earlier pair keyed on the sign of the ES move
+// as well as the residual, which meant "lagging a rally" and "holding up in a selloff"
+// got marked while the other two corners went blank. Informative, but it made the
+// strip sparse and left gaps you had to interpret.
+//
+// The residual alone is the cleaner primitive, because its sign already means the same
+// thing in either tape: negative is NQ delivering less than its own beta says it
+// should have, positive is more. So:
+//
+//   lead     residual above  +threshold   NQ beating its beta
+//   lag      residual below  -threshold   NQ missing it
+//   neutral  in between                   doing about what it should
+//
+// Neutral needs no variable of its own: the state ternary falls through to it.
+bool nqLead = not na(residZ) and residZ >  divThreshInput
+bool nqLag  = not na(residZ) and residZ < -divThreshInput
+
+// With the traces up there is room for a glyph and the direction now means something
+// literal (up is leading), so small triangles, and nothing at all when neutral.
+//
+// Opaque, like the ribbon. These were graded by magnitude, which only works while the
+// markers stay sparse, and the three-state rule marks about twice as many bars as the
+// old quadrant one did, because it no longer needs the ES direction to agree. Dense
+// enough to touch means the transparency compounds and a run of 1σ reads as solid as a
+// single 3σ. The σ figure is in the data window, where nothing can composite it.
+//
+// Labels rather than plotchar, so each triangle carries a hover tooltip with its σ and
+// how to read it. A label has no location.top, so the strip is placed at the highest
+// plotted value on screen: the divergence bars are stored as they fire and redrawn on
+// the last bar at that height. chart.left/right_visible_bar_time re-run the script on
+// every scroll and zoom, so the strip follows the view, and the height comes from the
+// plots alone, so the labels never feed back into the auto-scale they sit against.
+var array<int>   divTimes  = array.new<int>()
+var array<float> divSigmas = array.new<float>()
+var array<label> divLabels = array.new<label>()
+if nqLead or nqLag
+    array.push(divTimes, time)
+    array.push(divSigmas, residZ)
+    if array.size(divTimes) > 2000
+        array.shift(divTimes)
+        array.shift(divSigmas)
+
+float barTop = math.max(math.max(nz(nqVal), nz(esVal)), math.max(nz(ymVal), showRty ? nz(rtyVal) : 0.0), 0.0)
+var float visTop = na
+if time >= chart.left_visible_bar_time and time <= chart.right_visible_bar_time
+    visTop := math.max(nz(visTop, barTop), barTop)
+
+if barstate.islast
+    for lb in divLabels
+        label.delete(lb)
+    array.clear(divLabels)
+    if showLinesInput and not na(visTop)
+        int n = array.size(divTimes)
+        int drawn = 0
+        if n > 0
+            for i = n - 1 to 0
+                int t = array.get(divTimes, i)
+                if t < chart.left_visible_bar_time or drawn >= 500
+                    break
+                if t <= chart.right_visible_bar_time
+                    float z = array.get(divSigmas, i)
+                    bool lead = z > 0
+                    string sig = (lead ? "+" : "") + str.tostring(z, "0.0") + "σ"
+                    string tip = lead
+                         ? "NQ leading its beta, " + sig + "\nNQ is above the path beta x ES implies: beating the move, not just riding it."
+                         : "NQ lagging its beta, " + sig + "\nNQ is below the path beta x ES implies: missing the move, a quiet failure even if green."
+                    // The plotchar glyphs, as text at size.small: a label's triangle SHAPE
+                    // bottoms out at size.tiny, which is a good deal larger than the character,
+                    // and the character at size.tiny is a dot.
+                    array.push(divLabels, label.new(t, visTop, lead ? "▴" : "▾", xloc=xloc.bar_time, yloc=yloc.price, style=label.style_none, textcolor=lead ? calmColor : warnColor, size=size.small, tooltip=tip))
+                    drawn += 1
+
+// With the traces off there is nothing else in the pane, so every bar gets a dot and
+// the strip becomes a continuous regime ribbon rather than scattered events. Neutral
+// is dim enough to read as background, so the eye only catches the runs.
+// Leader ribbon. Gated on the spread being wider than its own recent average: with
+// four indexes bunched the top spot flips on noise, so an ungated version would
+// flicker hardest exactly where the information is thinnest.
+float spreadAvg = ta.sma(spread, betaLen)
+bool spreadWide = not na(spread) and not na(spreadAvg) and spread > spreadAvg
+int ribbonLeaderId = array.get(rankOrder, 0)
+color leaderColor = ribbonLeaderId == 0 ? tblNqColor : ribbonLeaderId == 1 ? tblEsColor : ribbonLeaderId == 2 ? tblYmColor : tblRtyColor
+
+// The table palette, not the line palette: these are small opaque marks, so they need
+// the contrast that text does rather than the muted weight a 2px trace wants.
+// With the lines off this is the only surface showing NQ's own state, which is what
+// makes the switch load-bearing rather than redundant.
+color stateColor = nqLead ? calmColor : nqLag ? warnColor : neutralColor
+color ribbonColor = ribbonModeInput == "Leader" ? (spreadWide and haveData ? leaderColor : neutralColor) : stateColor
+plotchar(not showLinesInput and not na(residZ) ? 0.0 : na, title="NQ state", char="●", location=location.absolute, color=ribbonColor, size=size.tiny)
+plot(residZ, title="NQ residual (σ)", precision=2, display=display.data_window)
+plot(showLinesInput ? 0 : na, title="Zero", color=zeroColor, linestyle=plot.linestyle_dashed, display=display.pane)
+
+// With every line hidden the pane has no value range of its own, so location.top and
+// location.bottom collapse toward each other, and position is the only thing telling
+// the two markers apart. Two fully transparent anchors give it a range to spread
+// across, so the markers sit at the real extremes of the strip however short it is.
+plot(showLinesInput ? na :  1.2, title="scale top",    color=color.new(color.black, 100), display=display.pane)
+plot(showLinesInput ? na : -1.2, title="scale bottom", color=color.new(color.black, 100), display=display.pane)
+
+// Mark the bars that WERE anchors, not the bars where the anchor value changed. For a
+// period open those are the same bar. For the swing measures they are too, now that the
+// anchor is a running extreme rather than a confirmed pivot: the extreme is set on the
+// bar that makes it. The earlier pivot version needed a bgcolor offset here to drag the
+// band back off the confirmation bar; that is gone with it.
+//
+// Fixed date is excluded: it has exactly one anchor, and the solid line already marks it.
+bool markBar = usesSwing ? (not na(visExtremeBar) and visExtremeBar == bar_index) : usesDate ? false : activeMeasure == "Quarter open" ? newQuarter : activeMeasure == "Month open" ? newMonth : activeMeasure == "Week open" ? newWeek : usesRth and timeframe.isintraday ? rthStart : newDay
+bgcolor(markBar ? resetColor : na, title="Anchor reset")
+
+
+var line anchorLine = na
+if barstate.islast
+    line.delete(anchorLine)
+    anchorLine := na(anchorBar) or anchorBar < 0 ? na : line.new(anchorBar, 0, anchorBar, 1, xloc=xloc.bar_index, extend=extend.both, color=anchorColor, style=line.style_solid, width=2)
+
+plot(spread, title="Spread", precision=2, display=display.status_line)
+plot(barsSinceLeadChange, title="Bars since lead change", precision=0, display=display.data_window)
+plot(lookback, title="Lookback bars", precision=0, display=display.data_window)
+plot(betaLen, title="Beta window bars", precision=0, display=display.data_window)
+//}
+
+// --------------------- Status table { ----------------------------- \\
+// Laid out across, not down. A pane is wide and short, so six rows of three ate a
+// third of the height and sat on top of the traces; three rows of six is a strip along
+// one edge. The Ref cell is abbreviated for the same reason: a long label would just
+// trade the vertical problem for a horizontal one.
+var table indexTable = table.new(tablePosition, 6, 3, border_width=1, force_overlay=false)
+
+f_cell(int _col, int _row, string _text, color _txtcolor, string _tip = "") =>
+    table.cell(indexTable, _col, _row, _text, bgcolor=tblBgColor, text_color=_txtcolor, text_size=tableFontSizeOption, tooltip=_tip)
+
+f_num(float v) =>
+    na(v) ? "-" : str.tostring(v, "0.00")
+
+f_betaCell(float b) =>
+    betaMode and not na(b) ? "β" + str.tostring(b, "0.0") : ""
+
+bool showBetaCol = betaMode
+
+if barstate.islast and showTableInput
+    // Columns are ordered strongest first, so the table reads left to right as a
+    // ranking and a change of column order is itself the signal leadership turned.
+    array<string> tblNames = array.from("NQ", "ES", "YM", "RTY")
+    array<float>  tblVals  = array.from(nqVal, esVal, ymVal, rtyVal)
+    array<color>  tblCols  = array.from(tblNqColor, tblEsColor, tblYmColor, tblRtyColor)
+    array<float>  tblBetas = array.from(nqBeta, 1.0, ymBeta, rtyBeta)
+
+    string valueTip = betaMode
+         ? "Residual: this index's move from the " + activeMeasure + " anchor, minus beta x the ES move over the same stretch.\n\nZero means it moved exactly as its beta implies. Above zero is genuine leadership; below zero is a quiet failure even on a green day. ES is flat at zero by construction.\n\nColumns sort strongest first, so the leftmost is the current leader."
+         : "Percent change from the " + activeMeasure + " anchor. All four share that one bar, which is what makes the differences between them relative strength rather than four unrelated returns.\n\nColumns sort strongest first, so the leftmost is the current leader.\n\nCareful with NQ here: its beta to ES runs well above 1, so it out-moves ES on most up days whether or not it is leading. Turn on Beta-adjust vs ES to see whether it is genuinely ahead."
+    string betaTip = "Ordinary least squares slope of this index against ES, over the last " + str.tostring(betaLen) + " bars of the chart's own timeframe, four anchor periods (the same window sets the sigma behind the markers and ribbon). ES is 1.0 by definition.\n\nThis is the baseline the value above it is measured against."
+    string heldTip = "Bars since the leftmost index last changed.\n\nA long run means leadership is durable. Frequent changes mean the tape has no clear leader, and the ranking is worth less."
+    string refTip = "The anchor every index is measured from: " + activeMeasure + ".\n\nSource: " + (useCash ? "cash indexes (NDX, SPX, DJI, RUT)" : "continuous futures (NQ1!, ES1!, YM1!, RTY1!)") + ".\n\nThe vertical line in the pane marks that bar; the faint bands mark earlier anchors.\n\nThe leader-to-laggard spread is on the status line, since it is just the leftmost value minus the rightmost."
+
+
+    for i = 0 to indexCount - 1
+        int id = array.get(rankOrder, i)
+        color c = array.get(tblCols, id)
+        f_cell(i, 0, array.get(tblNames, id), c, valueTip)
+        f_cell(i, 1, f_num(array.get(tblVals, id)), c, valueTip)
+        if showBetaCol
+            f_cell(i, 2, f_betaCell(array.get(tblBetas, id)), c, betaTip)
+    if not showRty
+        f_cell(3, 0, "", tblDimColor)
+        f_cell(3, 1, "", tblDimColor)
+        if showBetaCol
+            f_cell(3, 2, "", tblDimColor)
+
+    f_cell(4, 0, "Held", tblDimColor, heldTip)
+    f_cell(4, 1, str.tostring(barsSinceLeadChange) + "b", tblDimColor, heldTip)
+    if showBetaCol
+        f_cell(4, 2, "", tblDimColor)
+
+    // Short forms so this cell does not stretch the strip
+    string autoTag = measureInput == "Auto" ? "~" : ""
+    string refText = autoTag + (activeMeasure == "Session open" ? "Session" : usesRth ? (timeframe.isintraday ? "RTH" : "Session") : activeMeasure == "Prior close" ? "Prev cl" : activeMeasure == "Week open" ? "Week" : activeMeasure == "Month open" ? "Month" : activeMeasure == "Quarter open" ? "Quarter" : usesSwingLow ? "SwLo " + str.tostring(lookback) + "b" : usesSwingHigh ? "SwHi " + str.tostring(lookback) + "b" : "Date " + str.tostring(lookback) + "b" + (lookbackCapped ? "!" : ""))
+    f_cell(5, 0, "Ref", tblDimColor, refTip)
+    f_cell(5, 1, refText, tblDimColor, refTip)
+    if showBetaCol
+        f_cell(5, 2, "", tblDimColor)
+//}
+
+// --------------------- Ribbon tooltips { ----------------------------- \\
+// plotchar cannot carry a tooltip, so each ribbon dot on screen gets a label drawn over
+// it: the same glyph, the same colour, at size.tiny, with a hover text. The plotchar
+// stays underneath for every bar, so the strip never ends where the label budget does.
+//
+// Drawn as the bars are processed rather than collected and redrawn on the last bar,
+// which the triangles have to do because their height is only known once the whole
+// view has been seen; the ribbon sits at a fixed y. chart.left/right_visible_bar_time
+// re-run the script on every scroll and zoom, so only the bars in view get a label,
+// and past max_labels_count (500, the ceiling) Pine drops the oldest first; the dots
+// themselves go on regardless.
+//
+// Brief on purpose: the state and its σ on one line, the ranking on the next. The
+// long-form reading is on the triangles and in the table.
+var array<string> idxNames = array.from("NQ", "ES", "YM", "RTY")
+f_sigma(float z) =>
+    na(z) ? "" : ", " + (z > 0 ? "+" : "") + str.tostring(z, "0.0") + "σ"
+
+// inView (the swing-anchor block's test) only bounds the left edge, which is all a
+// running extreme needs; labels also stop at the right edge, or bars scrolled off the
+// right of the view would spend the budget.
+if not showLinesInput and inView and time <= chart.right_visible_bar_time
+    string rankText = ""
+    if haveData
+        for i = 0 to indexCount - 1
+            rankText := rankText + (i > 0 ? " > " : "") + array.get(idxNames, array.get(rankOrder, i))
+    string spreadText = na(spread) ? "" : ", spread " + f_num(spread)
+    if not na(residZ)
+        string nqLine = (nqLead ? "NQ leading its beta" : nqLag ? "NQ lagging its beta" : "NQ near its beta") + f_sigma(residZ)
+        string nqTip = ribbonModeInput == "Leader"
+             ? (spreadWide and haveData
+                 ? "Leader " + array.get(idxNames, ribbonLeaderId) + spreadText + ", wider than its " + f_num(spreadAvg) + " average"
+                 : "No clear leader" + spreadText + ", under its " + f_num(spreadAvg) + " average")
+                 + "\n" + rankText + "\n" + nqLine
+             : nqLine + "\n" + rankText + spreadText
+        label.new(bar_index, 0.0, "●", style=label.style_none, textcolor=ribbonColor, size=size.tiny, tooltip=nqTip)
+//}

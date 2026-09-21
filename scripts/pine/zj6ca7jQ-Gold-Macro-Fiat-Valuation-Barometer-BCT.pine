@@ -1,0 +1,315 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © bigcitytom
+
+//@version=6
+indicator("Gold Macro & Fiat Valuation Barometer", overlay = false, precision = 1, max_lines_count = 500, max_labels_count = 500)
+
+// =============================================================================
+// 1. INPUT SETTINGS & TIME-AWARE ENGINE
+// =============================================================================
+grp_smooth = "Engine Parameters"
+len_smooth      = input.int(5, "Master Score Smoothing", minval = 1, group = grp_smooth, tooltip = "Smoothes out day-to-day or week-to-week noise.")
+k_yield         = input.float(0.12, "Yield Multiplier Sensitivity (k)", minval = 0.01, step = 0.01, group = grp_smooth)
+y_neutral       = input.float(1.00, "Neutral Real Yield Benchmark (%)", step = 0.05, group = grp_smooth)
+mult_upper      = input.float(1.35, "Valuation Extended Threshold (+Z)", step = 0.25, group = grp_smooth)
+mult_lower      = input.float(1.00, "Valuation Discount Threshold (-Z)", step = 0.25, group = grp_smooth)
+
+grp_alerts = "Alert Visuals"
+show_st_markers = input.bool(true, "Plot Tactical Signals (▲ / ▼)", group = grp_alerts)
+show_lt_markers = input.bool(true, "Plot Regime Signals (★)", group = grp_alerts)
+
+grp_dash = "Legend & Verdict Display"
+show_table      = input.bool(true, "Show Barometer Legend Badge", group = grp_dash)
+table_pos_str   = input.string("Bottom Right", "Legend Position", options = ["Bottom Right", "Bottom Left", "Top Right", "Top Left"], group = grp_dash)
+badge_size      = input.string("Small", "Legend Text Size", options = ["Tiny", "Small", "Normal"], group = grp_dash)
+
+table_pos = table_pos_str == "Bottom Right" ? position.bottom_right :            table_pos_str == "Bottom Left"  ? position.bottom_left :            table_pos_str == "Top Right"    ? position.top_right :            position.top_left
+
+t_size = badge_size == "Tiny" ? size.tiny :
+         badge_size == "Small" ? size.small :
+         size.normal
+
+// =============================================================================
+// 2. DYNAMIC TIMEFRAME NORMALIZATION
+// =============================================================================
+int len_m2_median = 1260
+int len_std       = 100
+int len_trend     = 200
+
+string tf_mode_title = "DAILY: TACTICAL SWING"
+string tf_strategy_desc = "Focus on short-term Z-score pullbacks & weekly entry points."
+
+if timeframe.isdaily
+    len_m2_median    := 1260
+    len_std          := 100
+    len_trend        := 200
+    tf_mode_title    := "TIMEFRAME: DAILY (SWING / TACTICAL)"
+    tf_strategy_desc := "Strategy: Trade intermediate dips. Execute when ST Timing shows BUY."
+else if timeframe.isweekly
+    len_m2_median    := 260
+    len_std          := 26
+    len_trend        := 40
+    tf_mode_title    := "TIMEFRAME: WEEKLY (INTERMEDIATE MACRO)"
+    tf_strategy_desc := "Strategy: Core portfolio accumulation. Stagger entries on 55%+ scores."
+else if timeframe.ismonthly
+    len_m2_median    := 60
+    len_std          := 12
+    len_trend        := 10
+    tf_mode_title    := "TIMEFRAME: MONTHLY (SECULAR / GENERATIONAL)"
+    tf_strategy_desc := "Strategy: Multi-year physical gold thesis. Ignore short-term noise."
+else
+    len_m2_median    := 2500
+    len_std          := 200
+    len_trend        := 400
+    tf_mode_title    := "TIMEFRAME: INTRADAY (HIGH NOISE)"
+    tf_strategy_desc := "Caution: Macro FRED data updates daily/weekly. Daily chart recommended."
+
+// =============================================================================
+// 3. DATA FEEDS (NON-REPAINTING)
+// =============================================================================
+f_sec(string _ticker, string _tf, series float _src) =>
+    request.security(_ticker, _tf, _src[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+
+tips_yield = f_sec("FRED:DFII10", "D", close)
+m2_supply  = f_sec("FRED:WM2NS", "W", close)
+xau_eur    = f_sec("XAUEUR", timeframe.period, close)
+xau_jpy    = f_sec("XAUJPY", timeframe.period, close)
+xau_gbp    = f_sec("XAUGBP", timeframe.period, close)
+xau_aud    = f_sec("XAUAUD", timeframe.period, close)
+xag_usd    = f_sec("XAGUSD", timeframe.period, close)
+
+valid_yield = not na(tips_yield) ? tips_yield : 1.25
+valid_m2    = not na(m2_supply) and m2_supply > 0 ? m2_supply : 21000.0
+valid_xag   = not na(xag_usd) and xag_usd > 0 ? xag_usd : 30.0
+
+// =============================================================================
+// 4. FACTOR CALCULATIONS
+// =============================================================================
+// 1. Real Yields Factor (30 pts)
+int yield_lookback = timeframe.isdaily ? 50 : timeframe.isweekly ? 10 : 3
+yield_sma = ta.sma(valid_yield, yield_lookback)
+bool y_green = (valid_yield < 1.25) or (valid_yield < yield_sma)
+bool y_red   = (valid_yield > 1.85) and (valid_yield > yield_sma)
+raw_score_yield = y_green ? 30.0 : y_red ? 0.0 : 15.0
+
+// 2. M2 Valuation Percentile (25 pts)
+gold_m2_ratio = close / valid_m2
+pct_rank_m2   = ta.percentrank(gold_m2_ratio, len_m2_median)
+bool m2_green = pct_rank_m2 <= 35.0
+bool m2_red   = pct_rank_m2 > 75.0
+raw_score_m2  = m2_green ? 25.0 : m2_red ? 0.0 : 12.5
+
+// 3. Multi-Fiat Breadth (15 pts)
+ema_usd = ta.ema(close, len_trend)
+ema_eur = ta.ema(xau_eur, len_trend)
+ema_jpy = ta.ema(xau_jpy, len_trend)
+ema_gbp = ta.ema(xau_gbp, len_trend)
+ema_aud = ta.ema(xau_aud, len_trend)
+
+breadth_count = (close > ema_usd ? 1 : 0) +                 (xau_eur > ema_eur ? 1 : 0) +                 (xau_jpy > ema_jpy ? 1 : 0) +                 (xau_gbp > ema_gbp ? 1 : 0) +                 (xau_aud > ema_aud ? 1 : 0)
+
+bool br_green     = breadth_count >= 3
+bool br_red       = breadth_count <= 1
+raw_score_breadth = br_green ? 15.0 : br_red ? 0.0 : 7.5
+
+// 4. Gold/Silver Ratio (15 pts)
+gsr = close / valid_xag
+int gsr_roc_len = timeframe.isdaily ? 20 : timeframe.isweekly ? 4 : 2
+gsr_roc = ta.roc(gsr, gsr_roc_len)
+bool gsr_green = (gsr > 78.0) or (gsr >= 65.0 and gsr_roc < 0)
+bool gsr_red   = gsr < 50.0
+raw_score_gsr  = gsr_green ? 15.0 : gsr_red ? 0.0 : 7.5
+
+// 5. Blended Valuation Dispersion Z-Score (15 pts)
+ratio_median = ta.median(gold_m2_ratio, len_m2_median)
+p_m2_base    = valid_m2 * (na(ratio_median) ? gold_m2_ratio : ratio_median)
+delta_y      = valid_yield - y_neutral
+m_yield      = math.exp(-k_yield * delta_y)
+p_fair       = p_m2_base * m_yield
+
+spread        = close - p_fair
+spread_sd     = ta.stdev(spread, len_std)
+std_dev       = spread_sd > 0 ? spread_sd : 1.0
+overlay_z     = spread / std_dev
+bool ov_green = overlay_z <= -mult_lower
+bool ov_red   = overlay_z >= mult_upper
+raw_score_ov  = ov_green ? 15.0 : ov_red ? 0.0 : 7.5
+
+// =============================================================================
+// 5. MASTER SMOOTHED OSCILLATOR
+// =============================================================================
+raw_total_score = raw_score_yield + raw_score_m2 + raw_score_breadth + raw_score_gsr + raw_score_ov
+smoothed_score  = ta.ema(raw_total_score, len_smooth)
+
+// Horizontal Scale Thresholds
+hline(100, "Scale Ceiling", color = color.new(color.gray, 90))
+hline(70,  "Accumulate Threshold", color = color.new(#10b981, 40), linestyle = hline.style_dashed)
+hline(35,  "Restrictive Threshold", color = color.new(#ef4444, 40), linestyle = hline.style_dashed)
+hline(0,   "Scale Floor", color = color.new(color.gray, 90))
+
+p_mid = plot(50, "Neutral Baseline", color = color.new(#71717a, 60), style = plot.style_circles)
+
+score_color = smoothed_score >= 70 ? #10b981 :
+              smoothed_score >= 50 ? #3b82f6 :
+              smoothed_score >= 35 ? #f59e0b : #ef4444
+
+p_score = plot(smoothed_score, "Macro Barometer Score", color = score_color, linewidth = 2)
+
+fill_color = smoothed_score >= 50 ? color.new(#10b981, 88) : color.new(#ef4444, 88)
+fill(p_score, p_mid, color = fill_color, title = "Sentiment Bias Fill")
+
+bgcolor(smoothed_score >= 70 ? color.new(#10b981, 95) : na, title = "Accumulate Regime Background")
+plot(10, "Regime Track", color = score_color, style = plot.style_circles, linewidth = 2)
+
+// =============================================================================
+// 6. LATCHED (NON-SPAMMING) ALERTS & SIGNALS
+// =============================================================================
+var bool ready_for_st_buy  = true
+var bool ready_for_st_sell = true
+
+bool alert_st_buy  = false
+bool alert_st_sell = false
+
+// Tactical Buy: Fires once when price enters discount and rebounds, then latches closed.
+if ready_for_st_buy and (overlay_z <= -mult_lower) and (ta.change(overlay_z) > 0)
+    alert_st_buy      := true
+    ready_for_st_buy  := false
+
+// Reset Tactical Buy latch only after price returns to near fair value
+if not ready_for_st_buy and (overlay_z > -0.50)
+    ready_for_st_buy  := true
+
+// Tactical Sell: Fires once when price is extended and rolls over, then latches closed.
+if ready_for_st_sell and (overlay_z >= mult_upper) and (ta.change(overlay_z) < 0)
+    alert_st_sell     := true
+    ready_for_st_sell := false
+
+// Reset Tactical Sell latch only after price cools off
+if not ready_for_st_sell and (overlay_z < 0.50)
+    ready_for_st_sell := true
+
+// Long-Term Regime Alerts (Strict single crossovers)
+alert_lt_buy  = ta.crossover(smoothed_score, 70.0)
+alert_lt_sell = ta.crossunder(smoothed_score, 35.0)
+
+// Visual Shapes (Rendered strictly on the single trigger candle)
+plotshape(show_st_markers and alert_st_buy,  title = "Tactical Buy",  style = shape.triangleup,   location = location.bottom, color = #10b981, size = size.tiny, text = "Buy Dip",   textcolor = #10b981)
+plotshape(show_st_markers and alert_st_sell, title = "Tactical Trim", style = shape.triangledown, location = location.top,    color = #ef4444, size = size.tiny, text = "Trim Peak", textcolor = #ef4444)
+plotshape(show_lt_markers and alert_lt_buy,  title = "Regime Accum",  style = shape.diamond,      location = location.bottom, color = #38bdf8, size = size.small, text = "ACCUM",     textcolor = #38bdf8)
+plotshape(show_lt_markers and alert_lt_sell, title = "Regime De-Risk", style = shape.diamond,     location = location.top,    color = #f43f5e, size = size.small, text = "DE-RISK",   textcolor = #f43f5e)
+
+// Dedicated Alert Conditions
+alertcondition(alert_st_buy,  title = "Gold ST Tactical Buy",  message = "XAUUSD Tactical Swing BUY: Price completed discount pullback and turned upward.")
+alertcondition(alert_st_sell, title = "Gold ST Tactical Sell", message = "XAUUSD Tactical Swing TRIM: Price reached speculative exhaustion and turned downward.")
+alertcondition(alert_lt_buy,  title = "Gold LT Macro Buy",     message = "XAUUSD Macro Regime ACCUMULATE: Barometer crossed above 70%.")
+alertcondition(alert_lt_sell, title = "Gold LT Macro Sell",    message = "XAUUSD Macro Regime DE-RISK: Barometer dropped below 35%.")
+
+// =============================================================================
+// 7. TIME-AWARE LEGEND & STRATEGY BADGE
+// =============================================================================
+var table hud = table.new(table_pos, 3, 12, bgcolor = color.new(#18181b, 15), border_width = 1, border_color = color.new(#27272a, 30))
+
+if barstate.islast and show_table
+    string lt_verdict = ""
+    color  lt_color   = color.gray
+    if smoothed_score >= 70.0
+        lt_verdict := "FAVORABLE (ACCUMULATE)"
+        lt_color   := #10b981
+    else if smoothed_score >= 50.0
+        lt_verdict := "CONSTRUCTIVE (HOLD)"
+        lt_color   := #3b82f6
+    else if smoothed_score >= 35.0
+        lt_verdict := "NEUTRAL (CAUTION)"
+        lt_color   := #f59e0b
+    else
+        lt_verdict := "UNFAVORABLE (TRIM)"
+        lt_color   := #ef4444
+
+    string st_verdict = ""
+    color  st_color   = color.gray
+    if overlay_z <= -mult_lower
+        st_verdict := "DISCOUNT (BUY PULLBACK)"
+        st_color   := #10b981
+    else if overlay_z >= mult_upper
+        st_verdict := "EXTENDED (WAIT FOR DIP)"
+        st_color   := #ef4444
+    else if overlay_z > 0.4
+        st_verdict := "SLIGHT PREMIUM"
+        st_color   := #f59e0b
+    else
+        st_verdict := "FAIR VALUE (STAGGER)"
+        st_color   := #3b82f6
+
+    col_yield   = y_green ? #10b981 : y_red ? #ef4444 : #f59e0b
+    txt_yield   = y_green ? "Accommodative" : y_red ? "Restrictive" : "Neutral"
+
+    col_m2      = m2_green ? #10b981 : m2_red ? #ef4444 : #f59e0b
+    txt_m2      = m2_green ? "Undervalued" : m2_red ? "Stretched" : "Equilibrium"
+
+    col_breadth = br_green ? #10b981 : br_red ? #ef4444 : #f59e0b
+    txt_breadth = str.tostring(breadth_count) + "/5 Bullish"
+
+    col_gsr     = gsr_green ? #10b981 : gsr_red ? #ef4444 : #f59e0b
+    txt_gsr     = gsr_green ? "Early Cycle" : gsr_red ? "Late Froth" : "Mid Cycle"
+
+    col_overlay = ov_green ? #10b981 : ov_red ? #ef4444 : #f59e0b
+    txt_overlay = ov_green ? "Deep Discount" : ov_red ? "Extended" : "Fair Value"
+
+    string regime_title = ""
+    color regime_bg     = color.gray
+    if smoothed_score >= 70.0
+        regime_title := "STRONG ACCUMULATE"
+        regime_bg    := #10b981
+    else if smoothed_score >= 50.0
+        regime_title := "CONSTRUCTIVE / HOLD"
+        regime_bg    := #3b82f6
+    else if smoothed_score >= 35.0
+        regime_title := "NEUTRAL / CAUTION"
+        regime_bg    := #f59e0b
+    else
+        regime_title := "RESTRICTIVE / TRIM"
+        regime_bg    := #ef4444
+
+    table.cell(hud, 0, 0, "MACRO FIAT BAROMETER", bgcolor = color.new(#09090b, 5), text_color = color.white, text_size = t_size, text_font_family = font.family_monospace)
+    table.merge_cells(hud, 0, 0, 2, 0)
+    
+    table.cell(hud, 0, 1, tf_mode_title, bgcolor = color.new(#27272a, 40), text_color = #38bdf8, text_size = size.small, text_font_family = font.family_monospace)
+    table.merge_cells(hud, 0, 1, 2, 1)
+
+    table.cell(hud, 0, 2, tf_strategy_desc, bgcolor = color.new(#18181b, 20), text_color = #a1a1aa, text_size = size.small)
+    table.merge_cells(hud, 0, 2, 2, 2)
+    
+    table.cell(hud, 0, 3, "Macro Regime", text_color = #d4d4d8, text_size = t_size, text_halign = text.align_left)
+    table.cell(hud, 1, 3, "●", text_color = lt_color, text_size = t_size)
+    table.cell(hud, 2, 3, lt_verdict, text_color = lt_color, text_size = t_size, text_halign = text.align_right, text_font_family = font.family_monospace)
+    
+    table.cell(hud, 0, 4, "Tactical Timing", text_color = #d4d4d8, text_size = t_size, text_halign = text.align_left)
+    table.cell(hud, 1, 4, "●", text_color = st_color, text_size = t_size)
+    table.cell(hud, 2, 4, st_verdict, text_color = st_color, text_size = t_size, text_halign = text.align_right, text_font_family = font.family_monospace)
+
+    table.cell(hud, 0, 5, "--- DRIVERS BREAKDOWN ---", bgcolor = color.new(#09090b, 50), text_color = #71717a, text_size = size.small, text_font_family = font.family_monospace)
+    table.merge_cells(hud, 0, 5, 2, 5)
+
+    table.cell(hud, 0, 6, "Real Yields (10Y)", text_color = #a1a1aa, text_size = t_size, text_halign = text.align_left)
+    table.cell(hud, 1, 6, "●", text_color = col_yield, text_size = t_size)
+    table.cell(hud, 2, 6, txt_yield, text_color = col_yield, text_size = t_size, text_halign = text.align_right)
+    
+    table.cell(hud, 0, 7, "M2 Money Supply", text_color = #a1a1aa, text_size = t_size, text_halign = text.align_left)
+    table.cell(hud, 1, 7, "●", text_color = col_m2, text_size = t_size)
+    table.cell(hud, 2, 7, txt_m2, text_color = col_m2, text_size = t_size, text_halign = text.align_right)
+    
+    table.cell(hud, 0, 8, "Fiat Debasement", text_color = #a1a1aa, text_size = t_size, text_halign = text.align_left)
+    table.cell(hud, 1, 8, "●", text_color = col_breadth, text_size = t_size)
+    table.cell(hud, 2, 8, txt_breadth, text_color = col_breadth, text_size = t_size, text_halign = text.align_right)
+    
+    table.cell(hud, 0, 9, "Gold/Silver Ratio", text_color = #a1a1aa, text_size = t_size, text_halign = text.align_left)
+    table.cell(hud, 1, 9, "●", text_color = col_gsr, text_size = t_size)
+    table.cell(hud, 2, 9, txt_gsr, text_color = col_gsr, text_size = t_size, text_halign = text.align_right)
+    
+    table.cell(hud, 0, 10, "Valuation Dispersion", text_color = #a1a1aa, text_size = t_size, text_halign = text.align_left)
+    table.cell(hud, 1, 10, "●", text_color = col_overlay, text_size = t_size)
+    table.cell(hud, 2, 10, txt_overlay, text_color = col_overlay, text_size = t_size, text_halign = text.align_right)
+    
+    string score_str = str.tostring(math.round(smoothed_score)) + "%"
+    table.cell(hud, 0, 11, regime_title + " (" + score_str + ")", bgcolor = color.new(regime_bg, 20), text_color = color.white, text_size = t_size, text_font_family = font.family_monospace)
+    table.merge_cells(hud, 0, 11, 2, 11)

@@ -1,0 +1,914 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Tidemarks — key session levels & VWAP
+// Rebuilt and streamlined from "Price levels" by © nkwdesmond
+//
+// The lines the tide leaves behind: pre/post-market extremes, prior & current
+// day/week levels, 1H/4H swing highs & lows, all-time high — plus an anchored
+// VWAP with optional σ bands.
+// v2: causal ranges, managed history, opening range, session VWAP and level alerts.
+// VWAP needs volume. Session classifications follow the exchange feed.
+
+//@version=6
+indicator('Tidemarks — Session Levels & VWAP', 'Tidemarks', overlay = true, max_lines_count = 500, max_labels_count = 100)
+
+M_HIST = 'Each session (history)'
+M_LAST = 'Latest only'
+M_FULL = 'Latest, full width'
+
+//──────────────────────────── Display & history ────────────────────────────
+grpD = 'Display & history'
+modeOpt     = input.string(M_LAST, 'Level history', options = [M_HIST, M_LAST, M_FULL], group = grpD, display = display.none)
+historySessions = input.int(10, 'Sessions to retain', minval = 1, maxval = 60, group = grpD, display = display.none, tooltip = 'Retains archived segments by trading day. A separate 420-segment cap protects active lines within the drawing limit.')
+endOnTouch = input.bool(false, 'End levels at first touch', group = grpD, tooltip = 'By default, a touched level changes to a transparent dotted line and stays extended. Enable this to stop it at the close of the first touching candle. A level is eligible starting with the candle after it appears.')
+
+//──────────────────────────── Session levels ────────────────────────────
+grpS = 'Session levels'
+showPMH = input.bool(true,  'Pre-market high',  inline = 's1', group = grpS)
+colPMH  = input.color(#79B8AD, '', inline = 's1', group = grpS)
+showPML = input.bool(true,  'Pre-market low',   inline = 's2', group = grpS)
+colPML  = input.color(#79B8AD, '', inline = 's2', group = grpS)
+showAHH = input.bool(false, 'After-hours high', inline = 's3', group = grpS)
+colAHH  = input.color(#568D87, '', inline = 's3', group = grpS)
+showAHL = input.bool(false, 'After-hours low',  inline = 's4', group = grpS)
+colAHL  = input.color(#568D87, '', inline = 's4', group = grpS)
+showOR = input.bool(false, 'Opening range high / low / midpoint', group = grpS)
+orMinutes = input.int(15, 'Minutes', options = [5, 15, 30], group = grpS)
+colOR = input.color(#C6B58A, 'Color', group = grpS)
+
+//──────────────────────────── Global sessions ────────────────────────────
+grpG = 'Global sessions'
+showGlobal = input.bool(false, 'Enable global session levels', group = grpG)
+globalPreset = input.string('ICT killzones', 'Session definitions', options = ['ICT killzones', 'Local market hours', 'Custom'], group = grpG, tooltip = 'ICT: Asia 20:00–00:00 and London 02:00–05:00 New York time. Local market hours: Asia 08:00–16:00 Tokyo and London 08:00–14:30 London time (a configured range, not official exchange hours). Each timezone adjusts for daylight saving where applicable. NY is configured separately below.')
+globalCompleted = input.bool(false, 'Completed ranges only', group = grpG, tooltip = 'Otherwise current ranges develop live, then freeze. A complete range requires loaded bars covering the entire window. Global trading days roll at 18:00 New York: Sunday evening Asia belongs to Monday. Prior means the previous available complete session, including across holidays. Custom windows must fit within one 18:00–18:00 cycle.')
+globalAsiaCustom = input.session('2000-0000', 'Custom Asia (New York time)', group = grpG)
+globalLondonCustom = input.session('0200-0500', 'Custom London (New York time)', group = grpG)
+globalNYWindow = input.session('0930-1600', 'NY window (New York time)', group = grpG)
+showAsiaCurrent = input.bool(true, 'Asia current', inline = 'ga', group = grpG)
+showAsiaPrior = input.bool(false, 'Prior', inline = 'ga', group = grpG)
+colAsia = input.color(#79B8AD, '', inline = 'ga', group = grpG)
+showLondonCurrent = input.bool(true, 'London current', inline = 'gl', group = grpG)
+showLondonPrior = input.bool(false, 'Prior', inline = 'gl', group = grpG)
+colLondon = input.color(#AC9BD3, '', inline = 'gl', group = grpG)
+showNYCurrent = input.bool(false, 'NY current', inline = 'gn', group = grpG)
+showNYPrior = input.bool(false, 'Prior', inline = 'gn', group = grpG)
+colNY = input.color(#82AADE, '', inline = 'gn', group = grpG)
+
+//──────────────────────────── Daily levels ────────────────────────────
+grpDay = 'Daily levels'
+showPDH = input.bool(true,  'Prior day high',  inline = 'd1', group = grpDay)
+colPDH  = input.color(#82AADE, '', inline = 'd1', group = grpDay)
+showPDL = input.bool(true,  'Prior day low',   inline = 'd2', group = grpDay)
+colPDL  = input.color(#82AADE, '', inline = 'd2', group = grpDay)
+showPDO = input.bool(false, 'Prior day open',  inline = 'd3', group = grpDay)
+colPDO  = input.color(#98A3B5, '', inline = 'd3', group = grpDay)
+showPDC = input.bool(false, 'Prior day close', inline = 'd4', group = grpDay)
+colPDC  = input.color(#98A3B5, '', inline = 'd4', group = grpDay)
+showDO  = input.bool(false, 'Today open',      inline = 'd5', group = grpDay)
+colDO   = input.color(#7E899B, '', inline = 'd5', group = grpDay)
+showDH  = input.bool(false,  'Today high',      inline = 'd6', group = grpDay)
+colDH   = input.color(#6585AD, '', inline = 'd6', group = grpDay)
+showDL  = input.bool(false,  'Today low',       inline = 'd7', group = grpDay)
+colDL   = input.color(#6585AD, '', inline = 'd7', group = grpDay)
+showDM  = input.bool(false,  'Today midpoint (50%)',       inline = 'd8', group = grpDay, tooltip = 'Midpoint of the current day range, (high + low) / 2. Moves as the range expands.')
+colDM   = input.color(#7E899B, '', inline = 'd8', group = grpDay)
+
+//──────────────────────────── Weekly & all-time ────────────────────────────
+grpW = 'Weekly & all-time'
+showPWH = input.bool(true,  'Prior week high',  inline = 'w1', group = grpW)
+colPWH  = input.color(#AC9BD3, '', inline = 'w1', group = grpW)
+showPWL = input.bool(true,  'Prior week low',   inline = 'w2', group = grpW)
+colPWL  = input.color(#AC9BD3, '', inline = 'w2', group = grpW)
+showPWC = input.bool(false, 'Prior week close', inline = 'w3', group = grpW)
+colPWC  = input.color(#98A3B5, '', inline = 'w3', group = grpW)
+showWO  = input.bool(false, 'Week open',        inline = 'w4', group = grpW)
+colWO   = input.color(#7E899B, '', inline = 'w4', group = grpW)
+showWH  = input.bool(false,  'Week high',        inline = 'w5', group = grpW)
+colWH   = input.color(#897BA9, '', inline = 'w5', group = grpW)
+showWL  = input.bool(false,  'Week low',         inline = 'w6', group = grpW)
+colWL   = input.color(#897BA9, '', inline = 'w6', group = grpW)
+showATH = input.bool(true,  'All-time high',    inline = 'w7', group = grpW)
+colATH  = input.color(#DDD8CC, '', inline = 'w7', group = grpW)
+
+//──────────────────────────── Swing levels (1H / 4H) ────────────────────────────
+grpSw = 'Swing levels (1H / 4H)'
+showH1H = input.bool(false,  '1H swing high', inline = 'h1', group = grpSw)
+colH1H  = input.color(#C394A5, '', inline = 'h1', group = grpSw)
+showH1L = input.bool(false,  '1H swing low',  inline = 'h2', group = grpSw)
+colH1L  = input.color(#C394A5, '', inline = 'h2', group = grpSw)
+showH4H = input.bool(false,  '4H swing high', inline = 'h3', group = grpSw)
+colH4H  = input.color(#A9798D, '', inline = 'h3', group = grpSw)
+showH4L = input.bool(false,  '4H swing low',  inline = 'h4', group = grpSw)
+colH4L  = input.color(#A9798D, '', inline = 'h4', group = grpSw)
+swingLen = input.int(5, 'Swing strength (bars each side)', minval = 1, group = grpSw, display = display.none, tooltip = 'A swing high needs this many lower highs on both sides (swing low: higher lows). Levels update only once the swing is confirmed on the higher timeframe, so they never repaint. Shown on chart timeframes at or below 1H / 4H respectively.')
+
+//──────────────────────────── VWAP ────────────────────────────
+grpV = 'VWAP'
+showVwap   = input.bool(true, 'VWAP', inline = 'v', group = grpV)
+vwapCol    = input.color(#E3B566, '', inline = 'v', group = grpV)
+vwapWidth  = input.int(2, 'width', minval = 1, maxval = 5, inline = 'v', group = grpV, display = display.none)
+vwapAnchor = input.string('Session', 'Anchor', options = ['Session', 'Week', 'Month'], group = grpV, display = display.none)
+vwapSession = input.string('Regular session', 'Volume window', options = ['Regular session', 'All chart sessions'], group = grpV, tooltip = 'All chart sessions includes only bars loaded on this chart. Enable extended hours to include them. Regular session uses the exchange feed classification.')
+showBand1  = input.bool(false, '±1σ band', inline = 'vb', group = grpV)
+showBand2  = input.bool(false, '±2σ band', inline = 'vb', group = grpV)
+
+//──────────────────────────── Labels & price scale ────────────────────────────
+grpL = 'Labels & price scale'
+showLabels  = input.bool(true, 'Labels', inline = 'lb', group = grpL)
+labelPrices = input.bool(true, 'with price', inline = 'lb', group = grpL)
+labelSize   = input.int(10, 'size', minval = 6, maxval = 24, inline = 'lb', group = grpL, display = display.none)
+showScale   = input.bool(true, 'Show level prices on the price scale', group = grpL)
+mergeLabels = input.bool(true, 'Merge nearby labels', group = grpL, tooltip = 'Uses the label proximity threshold below. With prices enabled, every merged level keeps its own price.')
+overlapPct  = input.float(0.03, 'Label proximity threshold (%)', minval = 0, step = 0.01, group = grpL, display = display.none, tooltip = 'Merge levels within this distance, or stagger their labels when merging is off. Zero groups only identical prices.')
+labelOffset = input.int(8, 'Label offset (bars)', minval = 0, maxval = 500, inline = 'lo', group = grpL, display = display.none)
+labelStep   = input.int(8, 'Stagger spacing (bars)', minval = 0, maxval = 500, group = grpL, display = display.none, tooltip = 'Bars between label columns. Only labels that would overlap fan out; everything else sits in the first column.')
+
+//──────────────────────────── Line appearance ────────────────────────────
+grpStyle = 'Line appearance'
+styleOpt    = input.string('Solid', 'Day lines', options = ['Solid', 'Dashed', 'Dotted'], inline = 'ls', group = grpStyle, display = display.none)
+lineWidth   = input.int(1, 'width', minval = 1, maxval = 5, inline = 'ls', group = grpStyle, display = display.none)
+wStyleOpt   = input.string('Dashed', 'Week lines', options = ['Solid', 'Dashed', 'Dotted'], inline = 'ws', group = grpStyle, display = display.none)
+wLineWidth  = input.int(1, 'width', minval = 1, maxval = 5, inline = 'ws', group = grpStyle, display = display.none)
+sStyleOpt   = input.string('Dotted', 'Swing lines', options = ['Solid', 'Dashed', 'Dotted'], inline = 'ss', group = grpStyle, display = display.none)
+sLineWidth  = input.int(1, 'width', minval = 1, maxval = 5, inline = 'ss', group = grpStyle, display = display.none)
+
+//──────────────────────────── Distance filter ────────────────────────────
+grpF = 'Distance filter'
+filterMode = input.string('Off', 'Level distance filter', options = ['Off', 'Percent', 'ATR'], group = grpF)
+filterDistance = input.float(3.0, 'Maximum distance (% or ATR multiples)', minval = 0.01, group = grpF, display = display.none)
+filterAtrLen = input.int(14, 'Distance ATR length', minval = 1, group = grpF, display = display.none)
+
+//──────────────────────────── Level alerts ────────────────────────────
+grpA = 'Level alerts'
+levelAlerts = input.bool(false, 'Enable dynamic level alerts', group = grpA)
+alertTarget = input.string('Enabled levels', 'Level', options = ['Enabled levels', 'PM Hi', 'PM Lo', 'AH Hi', 'AH Lo', 'PDH', 'PDL', 'PDO', 'PDC', 'Open', 'Hi', 'Lo', '50%', 'Wk O', 'Wk Hi', 'Wk Lo', 'PWH', 'PWL', 'PWC', '1H SH', '1H SL', '4H SH', '4H SL', 'ATH', 'OR Hi', 'OR Lo', 'OR 50%', 'Asia H', 'Asia L', 'Prior Asia H', 'Prior Asia L', 'London H', 'London L', 'Prior London H', 'Prior London L', 'NY H', 'NY L', 'Prior NY H', 'Prior NY L', 'VWAP'], group = grpA)
+alertEvent = input.string('Cross either way', 'Event', options = ['Touch', 'Cross above', 'Cross below', 'Cross either way'], group = grpA)
+alertOnClose = input.bool(true, 'Confirm at bar close', group = grpA)
+alertOnce = input.bool(true, 'Once per level per trading day', group = grpA)
+alertRegular = input.bool(true, 'Regular session only', group = grpA)
+// Alerts use previous closed-bar levels. Display filtering and label merging do not affect alerts.
+
+float distanceAtr = ta.atr(filterAtrLen)
+float distanceLimit = filterMode == 'Percent' ? math.abs(close) * filterDistance / 100 : filterMode == 'ATR' ? distanceAtr * filterDistance : na
+nearPrice(float p) =>
+    not na(p) and (filterMode == 'Off' or na(distanceLimit) or math.abs(p - close) <= distanceLimit)
+
+toStyle(string s) =>
+    s == 'Dashed' ? line.style_dashed : s == 'Dotted' ? line.style_dotted : line.style_solid
+
+dayStyle   = toStyle(styleOpt)
+weekStyle  = toStyle(wStyleOpt)
+swingStyle = toStyle(sStyleOpt)
+
+//──────────────────────────── Level engine ────────────────────────────
+type Level
+    bool   show
+    color  clr
+    string tag
+    string st
+    int    wd
+    line   ln
+    line   touchLn
+    label  lb
+    label  touchLb
+    float  price
+    int    bornBar
+    int    bornTime
+    int    touchTime
+    int    touchLabelTime
+    float  touchLabelY
+    bool   touched = false
+
+usedLevelColor(color base) =>
+    color.new(base, 45)
+
+// Only archived objects enter this queue. Active objects never depend on garbage collection.
+var array<line> archived = array.new<line>()
+var array<int> archivedDay = array.new<int>()
+var array<color> archivedColors = array.new<color>()
+var int sessionNumber = 0
+int tradingDayChange = ta.change(time_tradingday)
+bool newTradingDay = barstate.isfirst or tradingDayChange != 0
+if newTradingDay
+    sessionNumber += 1
+
+archiveLine(line id, color clr) =>
+    line.set_extend(id, extend.none)
+    archived.push(id)
+    archivedDay.push(sessionNumber)
+    archivedColors.push(clr)
+    if archived.size() > 420
+        line.delete(archived.shift())
+        archivedDay.shift()
+        archivedColors.shift()
+    true
+
+method txt(Level lv) =>
+    labelPrices and not na(lv.price) ? lv.tag + '  ' + str.tostring(lv.price, format.mintick) : lv.tag
+
+method displayTxt(Level lv) =>
+    lv.txt() + (lv.touched ? ' (touched)' : '')
+
+method retire(Level lv) =>
+    if not na(lv.ln)
+        if modeOpt == M_HIST
+            archiveLine(lv.ln, lv.clr)
+        else
+            line.delete(lv.ln)
+    if not na(lv.touchLn)
+        if modeOpt == M_HIST
+            archiveLine(lv.touchLn, usedLevelColor(lv.clr))
+        else
+            line.delete(lv.touchLn)
+    lv.ln := na
+    lv.touchLn := na
+    lv.price := na
+    lv.bornBar := na
+    lv.bornTime := na
+    lv.touchTime := na
+    lv.touchLabelTime := na
+    lv.touchLabelY := na
+    lv.touched := false
+    true
+
+// A range invalidated by missing/straddling bars must not leave a history segment.
+method discard(Level lv) =>
+    if not na(lv.ln)
+        line.delete(lv.ln)
+    if not na(lv.touchLn)
+        line.delete(lv.touchLn)
+    lv.ln := na
+    lv.touchLn := na
+    lv.price := na
+    lv.bornBar := na
+    lv.bornTime := na
+    lv.touchTime := na
+    lv.touchLabelTime := na
+    lv.touchLabelY := na
+    lv.touched := false
+    true
+
+method start(Level lv, float p) =>
+    if lv.show and not na(p)
+        if not na(lv.touchLn)
+            if modeOpt == M_HIST
+                archiveLine(lv.touchLn, usedLevelColor(lv.clr))
+            else
+                line.delete(lv.touchLn)
+            lv.touchLn := na
+        if modeOpt == M_HIST or na(lv.ln)
+            if not na(lv.ln)
+                archiveLine(lv.ln, lv.clr)
+            lv.ln := line.new(time, p, nz(time_close, time + 1), p, xloc = xloc.bar_time, color = lv.clr, style = lv.st, width = lv.wd, extend = modeOpt == M_FULL ? extend.both : extend.right)
+        else
+            line.set_xy1(lv.ln, time, p)
+            line.set_xy2(lv.ln, nz(time_close, time + 1), p)
+            line.set_color(lv.ln, lv.clr)
+            line.set_style(lv.ln, lv.st)
+            line.set_extend(lv.ln, modeOpt == M_FULL ? extend.both : extend.right)
+        lv.price := p
+        lv.bornBar := bar_index
+        lv.bornTime := time
+        lv.touchTime := na
+        lv.touchLabelTime := na
+        lv.touchLabelY := na
+        lv.touched := false
+    true
+
+method track(Level lv, float p) =>
+    if lv.show and not na(p)
+        if na(lv.ln)
+            lv.start(p)
+        else if lv.touched
+            if p != lv.price
+                lv.start(p)
+            else if not na(lv.touchLn)
+                line.set_x2(lv.touchLn, nz(time_close, time + 1))
+        else
+            line.set_x2(lv.ln, nz(time_close, time + 1))
+            if p != lv.price
+                lv.price := p
+                lv.bornBar := bar_index
+                line.set_y1(lv.ln, p)
+                line.set_y2(lv.ln, p)
+            else if lv.bornBar < bar_index and low <= p and high >= p and barstate.isconfirmed
+                line.set_x2(lv.ln, nz(time_close, time + 1))
+                line.set_extend(lv.ln, modeOpt == M_FULL ? extend.left : extend.none)
+                lv.touchTime := nz(time_close, time + 1)
+                lv.touchLabelTime := int(math.round((lv.bornTime + lv.touchTime) * 0.5))
+                lv.touchLabelY := p + math.max((high - low) * 0.2, syminfo.mintick * 8)
+                if endOnTouch
+                    lv.touchLn := na
+                else
+                    int touchBarDuration = math.max(1, nz(time_close, time + 1) - time)
+                    lv.touchLn := line.new(lv.touchTime, p, lv.touchTime + touchBarDuration, p, xloc = xloc.bar_time, color = usedLevelColor(lv.clr), style = line.style_dotted, width = lv.wd, extend = extend.right)
+                lv.touched := true
+    true
+
+method swing(Level lv, float p) =>
+    bool fresh = not na(p) and (na(lv.price) or p != lv.price)
+    if fresh
+        lv.start(p)
+    else
+        lv.track(p)
+    true
+
+var Level dyOp = Level.new(showDO,  colDO,  'Open', dayStyle, lineWidth)
+var Level dyHi = Level.new(showDH,  colDH,  'Hi',   dayStyle, lineWidth)
+var Level dyLo = Level.new(showDL,  colDL,  'Lo',   dayStyle, lineWidth)
+var Level dyMd = Level.new(showDM,  colDM,  '50%',  dayStyle, lineWidth)
+var Level pmHi = Level.new(showPMH, colPMH, 'PM Hi', dayStyle, lineWidth)
+var Level pmLo = Level.new(showPML, colPML, 'PM Lo', dayStyle, lineWidth)
+var Level ahHi = Level.new(showAHH, colAHH, 'AH Hi', dayStyle, lineWidth)
+var Level ahLo = Level.new(showAHL, colAHL, 'AH Lo', dayStyle, lineWidth)
+var Level pdHi = Level.new(showPDH, colPDH, 'PDH', dayStyle, lineWidth)
+var Level pdLo = Level.new(showPDL, colPDL, 'PDL', dayStyle, lineWidth)
+var Level pdOp = Level.new(showPDO, colPDO, 'PDO', dayStyle, lineWidth)
+var Level pdCl = Level.new(showPDC, colPDC, 'PDC', dayStyle, lineWidth)
+var Level wkOp = Level.new(showWO,  colWO,  'Wk O', weekStyle, wLineWidth)
+var Level wkHi = Level.new(showWH,  colWH,  'Wk Hi', weekStyle, wLineWidth)
+var Level wkLo = Level.new(showWL,  colWL,  'Wk Lo', weekStyle, wLineWidth)
+var Level pwHi = Level.new(showPWH, colPWH, 'PWH',  weekStyle, wLineWidth)
+var Level pwLo = Level.new(showPWL, colPWL, 'PWL',  weekStyle, wLineWidth)
+var Level pwCl = Level.new(showPWC, colPWC, 'PWC',  weekStyle, wLineWidth)
+var Level h1Hi = Level.new(showH1H, colH1H, '1H SH', swingStyle, sLineWidth)
+var Level h1Lo = Level.new(showH1L, colH1L, '1H SL', swingStyle, sLineWidth)
+var Level h4Hi = Level.new(showH4H, colH4H, '4H SH', swingStyle, sLineWidth)
+var Level h4Lo = Level.new(showH4L, colH4L, '4H SL', swingStyle, sLineWidth)
+var Level ath  = Level.new(showATH, colATH, 'ATH',  dayStyle, lineWidth)
+
+var Level orHi = Level.new(showOR, colOR, 'OR Hi', dayStyle, lineWidth)
+var Level orLo = Level.new(showOR, colOR, 'OR Lo', dayStyle, lineWidth)
+var Level orMd = Level.new(showOR, colOR, 'OR 50%', dayStyle, lineWidth)
+
+var Level asiaHi = Level.new(showGlobal and showAsiaCurrent, colAsia, 'Asia H', line.style_solid, lineWidth)
+var Level asiaLo = Level.new(showGlobal and showAsiaCurrent, colAsia, 'Asia L', line.style_solid, lineWidth)
+var Level priorAsiaHi = Level.new(showGlobal and showAsiaPrior, color.new(colAsia, 30), 'Prior Asia H', line.style_dashed, lineWidth)
+var Level priorAsiaLo = Level.new(showGlobal and showAsiaPrior, color.new(colAsia, 30), 'Prior Asia L', line.style_dashed, lineWidth)
+var Level londonHi = Level.new(showGlobal and showLondonCurrent, colLondon, 'London H', line.style_solid, lineWidth)
+var Level londonLo = Level.new(showGlobal and showLondonCurrent, colLondon, 'London L', line.style_solid, lineWidth)
+var Level priorLondonHi = Level.new(showGlobal and showLondonPrior, color.new(colLondon, 30), 'Prior London H', line.style_dashed, lineWidth)
+var Level priorLondonLo = Level.new(showGlobal and showLondonPrior, color.new(colLondon, 30), 'Prior London L', line.style_dashed, lineWidth)
+var Level nyHi = Level.new(showGlobal and showNYCurrent, colNY, 'NY H', line.style_solid, lineWidth)
+var Level nyLo = Level.new(showGlobal and showNYCurrent, colNY, 'NY L', line.style_solid, lineWidth)
+var Level priorNYHi = Level.new(showGlobal and showNYPrior, color.new(colNY, 30), 'Prior NY H', line.style_dashed, lineWidth)
+var Level priorNYLo = Level.new(showGlobal and showNYPrior, color.new(colNY, 30), 'Prior NY L', line.style_dashed, lineWidth)
+
+var array<Level> levels = array.from(dyOp, dyHi, dyLo, dyMd, pmHi, pmLo, ahHi, ahLo, pdHi, pdLo, pdOp, pdCl, wkOp, wkHi, wkLo, pwHi, pwLo, pwCl, h1Hi, h1Lo, h4Hi, h4Lo, ath, orHi, orLo, orMd, asiaHi, asiaLo, priorAsiaHi, priorAsiaLo, londonHi, londonLo, priorLondonHi, priorLondonLo, nyHi, nyLo, priorNYHi, priorNYLo)
+
+// Snapshot before this bar's updates; alerts compare price against a known reference.
+var array<float> previousLevels = array.new<float>(levels.size(), na)
+if levelAlerts
+    for [i, lv] in levels
+        previousLevels.set(i, lv.price)
+
+//──────────────────────────── Global session engine ────────────────────────────
+// Calendar arithmetic in IANA zones preserves local hours across DST changes.
+globalCycleAt(int t) =>
+    int shift = hour(t, 'America/New_York') < 18 ? -1 : 0
+    timestamp('America/New_York', year(t, 'America/New_York'), month(t, 'America/New_York'), dayofmonth(t, 'America/New_York') + shift, 18, 0)
+
+globalWindow(string window, string zone, int cycle) =>
+    int sh = int(str.tonumber(str.substring(window, 0, 2)))
+    int sm = int(str.tonumber(str.substring(window, 2, 4)))
+    int eh = int(str.tonumber(str.substring(window, 5, 7)))
+    int em = int(str.tonumber(str.substring(window, 7, 9)))
+    int y = year(cycle, zone)
+    int m = month(cycle, zone)
+    int d = dayofmonth(cycle, zone)
+    int candidate = timestamp(zone, y, m, d, sh, sm)
+    int offset = candidate < cycle ? 1 : 0
+    int overnight = eh * 60 + em <= sh * 60 + sm ? 1 : 0
+    int windowStart = timestamp(zone, y, m, d + offset, sh, sm)
+    int windowEnd = timestamp(zone, y, m, d + offset + overnight, eh, em)
+    [windowStart, windowEnd]
+
+type GlobalRange
+    int cycle = na
+    float hi = na
+    float lo = na
+    float priorHi = na
+    float priorLo = na
+    int lastClose = na
+    bool valid = false
+    bool complete = false
+    bool incomplete = false
+
+method updateGlobal(GlobalRange r, int cycle, int windowStart, int windowEnd, bool windowFits, Level currentH, Level currentL, Level priorH, Level priorL) =>
+    // GLOBAL_STATE_BEGIN: scalar state transitions exercised by local fixtures.
+    if na(r.cycle) or r.cycle != cycle
+        if r.complete
+            r.priorHi := r.hi
+            r.priorLo := r.lo
+            priorH.retire()
+            priorL.retire()
+            priorH.start(r.priorHi)
+            priorL.start(r.priorLo)
+        currentH.retire()
+        currentL.retire()
+        r.cycle := cycle
+        r.hi := na
+        r.lo := na
+        r.lastClose := na
+        r.valid := false
+        r.complete := false
+        r.incomplete := false
+    bool inside = windowFits and time >= windowStart and time < windowEnd
+    if inside
+        if time == windowStart
+            r.valid := true
+            r.hi := high
+            r.lo := low
+        else if na(r.lastClose) or r.lastClose != time
+            r.valid := false
+        if na(time_close) or time_close > windowEnd
+            r.valid := false
+        if r.valid
+            r.hi := math.max(r.hi, high)
+            r.lo := math.min(r.lo, low)
+            r.complete := time_close == windowEnd and barstate.isconfirmed
+        else
+            r.incomplete := true
+        r.lastClose := time_close
+    if time >= windowEnd and not r.complete
+        r.valid := false
+        r.incomplete := true
+    if r.valid and (not globalCompleted or r.complete)
+        currentH.track(r.hi)
+        currentL.track(r.lo)
+    else if r.incomplete
+        currentH.discard()
+        currentL.discard()
+    else
+        currentH.retire()
+        currentL.retire()
+    // GLOBAL_STATE_END
+    true
+
+int globalCycle = globalCycleAt(time)
+int globalCycleEnd = timestamp('America/New_York', year(globalCycle, 'America/New_York'), month(globalCycle, 'America/New_York'), dayofmonth(globalCycle, 'America/New_York') + 1, 18, 0)
+string asiaWindow = globalPreset == 'Local market hours' ? '0800-1600' : globalPreset == 'ICT killzones' ? '2000-0000' : globalAsiaCustom
+string londonWindow = globalPreset == 'Local market hours' ? '0800-1430' : globalPreset == 'ICT killzones' ? '0200-0500' : globalLondonCustom
+string asiaZone = globalPreset == 'Local market hours' ? 'Asia/Tokyo' : 'America/New_York'
+string londonZone = globalPreset == 'Local market hours' ? 'Europe/London' : 'America/New_York'
+[asiaStart, asiaEnd] = globalWindow(asiaWindow, asiaZone, globalCycle)
+[londonStart, londonEnd] = globalWindow(londonWindow, londonZone, globalCycle)
+[nyStart, nyEnd] = globalWindow(globalNYWindow, 'America/New_York', globalCycle)
+bool asiaFits = asiaEnd <= globalCycleEnd
+bool londonFits = londonEnd <= globalCycleEnd
+bool nyFits = nyEnd <= globalCycleEnd
+var GlobalRange asiaRange = GlobalRange.new()
+var GlobalRange londonRange = GlobalRange.new()
+var GlobalRange nyRange = GlobalRange.new()
+if showGlobal and timeframe.isintraday
+    asiaRange.updateGlobal(globalCycle, asiaStart, asiaEnd, asiaFits, asiaHi, asiaLo, priorAsiaHi, priorAsiaLo)
+    londonRange.updateGlobal(globalCycle, londonStart, londonEnd, londonFits, londonHi, londonLo, priorLondonHi, priorLondonLo)
+    nyRange.updateGlobal(globalCycle, nyStart, nyEnd, nyFits, nyHi, nyLo, priorNYHi, priorNYLo)
+
+//──────────────────────────── Level values ────────────────────────────
+// Explicit regular-session ticker preserves other symbol modifiers.
+string regularTicker = ticker.modify(syminfo.tickerid, session = session.regular)
+[pdh, pdl, pdo, pdc] = request.security(regularTicker, 'D', [high[1], low[1], open[1], close[1]], lookahead = barmerge.lookahead_on)
+[pwh, pwl, pwc] = request.security(regularTicker, 'W', [high[1], low[1], close[1]], lookahead = barmerge.lookahead_on)
+// These unoffset requests use lookahead_off and are accepted ONLY after their period closes.
+// They make the just-completed regular day/week available during the next pre-market.
+[closedDH, closedDL, closedDO, closedDC, closedDT] = request.security(regularTicker, 'D', [high, low, open, close, time_close], lookahead = barmerge.lookahead_off)
+[closedWH, closedWL, closedWC, closedWT] = request.security(regularTicker, 'W', [high, low, close, time_close], lookahead = barmerge.lookahead_off)
+
+var float pmHighV = na
+var float pmLowV = na
+var float afterHighV = na
+var float afterLowV = na
+var float priorHighV = na
+var float priorLowV = na
+var float priorOpenV = na
+var float priorCloseV = na
+var float dayOpenV = na
+var float dayHighV = na
+var float dayLowV = na
+var float dayMidV = na
+var float dayCloseV = na
+var bool dayStartedAtOpen = false
+var float priorWkHighV = na
+var float priorWkLowV = na
+var float priorWkCloseV = na
+var float weekOpenV = na
+var float weekHighV = na
+var float weekLowV = na
+var int regularDay = na
+var int regularWeek = na
+var int priorDayKey = na
+var int priorWeekKey = na
+var int afterDay = na
+var int orEnd = na
+var float orHighV = na
+var float orLowV = na
+var bool orComplete = false
+var bool orValid = false
+bool orTfOk = timeframe.isintraday and timeframe.in_seconds() <= orMinutes * 60 and (orMinutes * 60) % timeframe.in_seconds() == 0
+
+if timeframe.isintraday
+    if newTradingDay
+        // Keep the last completed chart session available even if a live HTF feed
+        // has already advanced to a developing daily bar during pre-market.
+        if dayStartedAtOpen and not na(dayHighV)
+            priorHighV := dayHighV
+            priorLowV := dayLowV
+            priorOpenV := dayOpenV
+            priorCloseV := dayCloseV
+            pdHi.start(priorHighV)
+            pdLo.start(priorLowV)
+            pdOp.start(priorOpenV)
+            pdCl.start(priorCloseV)
+            priorDayKey := time_tradingday
+        if not na(regularWeek) and regularWeek != time('W') and (na(priorWeekKey) or priorWeekKey != time('W'))
+            priorWkHighV := weekHighV
+            priorWkLowV := weekLowV
+            priorWkCloseV := dayCloseV
+            pwHi.start(priorWkHighV)
+            pwLo.start(priorWkLowV)
+            pwCl.start(priorWkCloseV)
+            priorWeekKey := time('W')
+            weekOpenV := na
+            weekHighV := na
+            weekLowV := na
+            for lv in array.from(wkOp, wkHi, wkLo)
+                lv.retire()
+        dayStartedAtOpen := false
+        dayCloseV := na
+        pmHighV := na
+        pmLowV := na
+        dayOpenV := na
+        dayHighV := na
+        dayLowV := na
+        dayMidV := na
+        orHighV := na
+        orLowV := na
+        orEnd := na
+        orComplete := false
+        orValid := false
+        for lv in array.from(pmHi, pmLo, dyOp, dyHi, dyLo, dyMd, orHi, orLo, orMd)
+            lv.retire()
+
+    if session.ispremarket
+        pmHighV := na(pmHighV) ? high : math.max(pmHighV, high)
+        pmLowV := na(pmLowV) ? low : math.min(pmLowV, low)
+    pmHi.track(pmHighV)
+    pmLo.track(pmLowV)
+
+    bool firstRegular = session.ismarket and (na(regularDay) or regularDay != time_tradingday)
+    bool firstWeekRegular = session.ismarket and (na(regularWeek) or regularWeek != time('W'))
+    bool readyClosedDay = not na(closedDT) and closedDT <= time
+    bool readyClosedWeek = not na(closedWT) and closedWT <= time
+    // Initialize at pre-market when a completed regular period is available, and
+    // refresh from confirmed [1] data at the regular open to handle feed alignment.
+    if (newTradingDay and readyClosedDay) or firstRegular
+        priorHighV := firstRegular ? pdh : closedDH
+        priorLowV := firstRegular ? pdl : closedDL
+        priorOpenV := firstRegular ? pdo : closedDO
+        priorCloseV := firstRegular ? pdc : closedDC
+        bool freshPrior = na(priorDayKey) or priorDayKey != time_tradingday
+        if freshPrior
+            pdHi.start(priorHighV)
+            pdLo.start(priorLowV)
+            pdOp.start(priorOpenV)
+            pdCl.start(priorCloseV)
+            priorDayKey := time_tradingday
+    pdHi.track(priorHighV)
+    pdLo.track(priorLowV)
+    pdOp.track(priorOpenV)
+    pdCl.track(priorCloseV)
+
+    if session.ismarket
+        if firstRegular
+            regularDay := time_tradingday
+            dayStartedAtOpen := session.isfirstbar_regular
+            dayOpenV := open
+            dayHighV := high
+            dayLowV := low
+            if showOR and orTfOk and session.isfirstbar_regular
+                orEnd := time + orMinutes * 60000
+                orValid := true
+        else
+            dayHighV := math.max(dayHighV, high)
+            dayLowV := math.min(dayLowV, low)
+        dayCloseV := close
+        dayMidV := (dayHighV + dayLowV) / 2
+        dyOp.track(dayOpenV)
+        dyHi.track(dayHighV)
+        dyLo.track(dayLowV)
+        dyMd.track(dayMidV)
+
+        if firstWeekRegular
+            regularWeek := time('W')
+            weekOpenV := open
+            weekHighV := high
+            weekLowV := low
+            wkOp.start(weekOpenV)
+            wkHi.start(weekHighV)
+            wkLo.start(weekLowV)
+        else
+            weekHighV := math.max(weekHighV, high)
+            weekLowV := math.min(weekLowV, low)
+        wkOp.track(weekOpenV)
+        wkHi.track(weekHighV)
+        wkLo.track(weekLowV)
+
+        if orValid and not orComplete
+            if time < orEnd
+                if na(time_close) or time_close > orEnd
+                    orValid := false
+                    orHighV := na
+                    orLowV := na
+                    orHi.retire()
+                    orLo.retire()
+                    orMd.retire()
+                else
+                    orHighV := na(orHighV) ? high : math.max(orHighV, high)
+                    orLowV := na(orLowV) ? low : math.min(orLowV, low)
+                    orComplete := time_close == orEnd and barstate.isconfirmed
+            else
+                orComplete := not na(orHighV)
+        if orValid
+            orHi.track(orHighV)
+            orLo.track(orLowV)
+            orMd.track((orHighV + orLowV) / 2)
+
+    if session.ispostmarket
+        if na(afterDay) or afterDay != time_tradingday
+            afterDay := time_tradingday
+            afterHighV := high
+            afterLowV := low
+            ahHi.start(afterHighV)
+            ahLo.start(afterLowV)
+        else
+            afterHighV := math.max(afterHighV, high)
+            afterLowV := math.min(afterLowV, low)
+    ahHi.track(afterHighV)
+    ahLo.track(afterLowV)
+
+    if (newTradingDay and (na(priorWeekKey) or priorWeekKey != time('W')) and readyClosedWeek) or firstWeekRegular
+        priorWkHighV := firstWeekRegular ? pwh : closedWH
+        priorWkLowV := firstWeekRegular ? pwl : closedWL
+        priorWkCloseV := firstWeekRegular ? pwc : closedWC
+        if na(priorWeekKey) or priorWeekKey != time('W')
+            pwHi.start(priorWkHighV)
+            pwLo.start(priorWkLowV)
+            pwCl.start(priorWkCloseV)
+            priorWeekKey := time('W')
+    pwHi.track(priorWkHighV)
+    pwLo.track(priorWkLowV)
+    pwCl.track(priorWkCloseV)
+
+//──────────────────────────── Swing highs / lows (1H, 4H) ────────────────────────────
+// Last confirmed pivot on the higher timeframe. The [1] + lookahead_on pairing
+// returns the value as of the last *closed* HTF bar. Apply it to drawings only
+// when the chart bar closes too, so a live lower-timeframe candle cannot move a swing.
+swingPair(int len) =>
+    float sh = fixnan(ta.pivothigh(len, len))
+    float sl = fixnan(ta.pivotlow(len, len))
+    [sh[1], sl[1]]
+
+[h1HiRaw, h1LoRaw] = request.security(syminfo.tickerid, '60',  swingPair(swingLen), lookahead = barmerge.lookahead_on)
+[h4HiRaw, h4LoRaw] = request.security(syminfo.tickerid, '240', swingPair(swingLen), lookahead = barmerge.lookahead_on)
+
+// Only meaningful when the chart timeframe is at or below the swing timeframe.
+bool h1Ok = timeframe.in_seconds() <= 3600
+bool h4Ok = timeframe.in_seconds() <= 14400
+float h1HiV = h1Ok ? h1HiRaw : na
+float h1LoV = h1Ok ? h1LoRaw : na
+float h4HiV = h4Ok ? h4HiRaw : na
+float h4LoV = h4Ok ? h4LoRaw : na
+
+if barstate.isconfirmed
+    h1Hi.swing(h1HiV)
+    h1Lo.swing(h1LoV)
+    h4Hi.swing(h4HiV)
+    h4Lo.swing(h4LoV)
+
+//──────────────────────────── All-time high ────────────────────────────
+GetChartHighest() =>
+    var float highest = na
+    highest := na(highest) ? high : math.max(highest, high)
+    highest[1]
+// Completed monthly history plus highs actually seen on the chart; no future monthly high.
+float completedAth = request.security(syminfo.tickerid, 'M', GetChartHighest(), lookahead = barmerge.lookahead_on)
+var float athV = na
+athV := math.max(nz(athV, high), math.max(nz(completedAth, high), high))
+ath.track(athV)
+
+// Expire archived segments without ever deleting an active level.
+while archived.size() > 0
+    if archivedDay.first() <= sessionNumber - historySessions
+        line.delete(archived.shift())
+        archivedDay.shift()
+        archivedColors.shift()
+    else
+        break
+
+//──────────────────────────── Label placement / filtering ────────────────────────────
+// Drawing-only work runs on the last bar. Historical calculations remain unconditional.
+if barstate.islast
+    array<float> prices = array.new<float>()
+    array<int> idx = array.new<int>()
+    for [i, lv] in levels
+        bool visible = lv.show and nearPrice(lv.price)
+        if not na(lv.ln)
+            line.set_color(lv.ln, visible ? lv.clr : color.new(lv.clr, 100))
+        if not na(lv.touchLn)
+            line.set_color(lv.touchLn, visible ? usedLevelColor(lv.clr) : color.new(lv.clr, 100))
+        if not na(lv.lb)
+            label.set_text(lv.lb, '')
+        if not na(lv.touchLb)
+            label.set_text(lv.touchLb, '')
+        if showLabels and visible
+            if lv.touched and endOnTouch
+                if na(lv.touchLb)
+                    lv.touchLb := label.new(lv.touchLabelTime, lv.touchLabelY, '', xloc = xloc.bar_time, color = color.new(color.black, 10), style = label.style_label_down, textcolor = color.white, size = labelSize, textalign = text.align_left)
+                label.set_xy(lv.touchLb, lv.touchLabelTime, lv.touchLabelY)
+                label.set_color(lv.touchLb, color.new(color.black, 10))
+                label.set_textcolor(lv.touchLb, color.white)
+                label.set_text(lv.touchLb, lv.txt() + '  Touched')
+            else
+                if na(lv.lb)
+                    lv.lb := label.new(bar_index, lv.price, '', color = color.new(color.black, 100), style = label.style_label_lower_left, textcolor = lv.clr, size = labelSize, textalign = text.align_left)
+                prices.push(lv.price)
+                idx.push(i)
+    float tol = math.abs(close) * overlapPct / 100
+    float prev = na
+    float groupPrice = na
+    int slot = 0
+    Level leader = na
+    string merged = ''
+    for k in prices.sort_indices()
+        Level cur = levels.get(idx.get(k))
+        bool sameGroup = mergeLabels and not na(groupPrice) and cur.price - groupPrice <= tol
+        if sameGroup
+            merged += ' / ' + cur.displayTxt()
+            label.set_text(leader.lb, merged)
+        else
+            slot := not na(prev) and cur.price - prev <= tol ? slot + 1 : 0
+            leader := cur
+            groupPrice := cur.price
+            merged := cur.displayTxt()
+            label.set_xy(cur.lb, bar_index + math.min(500, labelOffset + slot * labelStep), cur.price)
+            label.set_text(cur.lb, merged)
+        prev := cur.price
+    // Filtering is visual only; apply it to archived lines too.
+    if filterMode != 'Off'
+        for [i, id] in archived
+            line.set_color(id, nearPrice(line.get_y1(id)) ? archivedColors.get(i) : color.new(archivedColors.get(i), 100))
+
+//──────────────────────────── VWAP ────────────────────────────
+// Weighted Welford accumulation avoids subtracting two large squared-price sums.
+int vwapKey = vwapAnchor == 'Session' ? time_tradingday : vwapAnchor == 'Week' ? time('W') : time('M')
+bool vwapEligible = vwapSession == 'All chart sessions' or session.ismarket
+var int lastVwapKey = na
+var float weightSum = 0.0
+var float weightedMean = na
+var float weightedM2 = 0.0
+if vwapEligible
+    if na(lastVwapKey) or lastVwapKey != vwapKey
+        lastVwapKey := vwapKey
+        weightSum := 0.0
+        weightedMean := na
+        weightedM2 := 0.0
+    if not na(volume) and volume > 0
+        float nextWeight = weightSum + volume
+        float delta = hlc3 - nz(weightedMean, hlc3)
+        float nextMean = nz(weightedMean, hlc3) + volume / nextWeight * delta
+        weightedM2 += volume * delta * (hlc3 - nextMean)
+        weightedMean := nextMean
+        weightSum := nextWeight
+float vwapV = vwapEligible and lastVwapKey == vwapKey and weightSum > 0 ? weightedMean : na
+float sigma = not na(vwapV) ? math.sqrt(math.max(0.0, weightedM2 / weightSum)) : na
+float vUp1 = vwapV + sigma
+float vDn1 = vwapV - sigma
+float vUp2 = vwapV + 2 * sigma
+float vDn2 = vwapV - 2 * sigma
+plot(showVwap ? vwapV : na, 'VWAP', vwapCol, vwapWidth, style = plot.style_linebr)
+pU1 = plot(showVwap and showBand1 ? vUp1 : na, 'VWAP +1σ', color.new(vwapCol, 60), 1, style = plot.style_linebr)
+pD1 = plot(showVwap and showBand1 ? vDn1 : na, 'VWAP −1σ', color.new(vwapCol, 60), 1, style = plot.style_linebr)
+pU2 = plot(showVwap and showBand2 ? vUp2 : na, 'VWAP +2σ', color.new(vwapCol, 75), 1, style = plot.style_linebr)
+pD2 = plot(showVwap and showBand2 ? vDn2 : na, 'VWAP −2σ', color.new(vwapCol, 75), 1, style = plot.style_linebr)
+fill(pU1, pD1, color.new(vwapCol, 95))
+fill(pU2, pD2, color.new(vwapCol, 97))
+
+//──────────────────────────── Price-scale values ────────────────────────────
+// Constant defaults keep each scale plot to one plot count. Scale colors remain
+// editable in Style; chart line/label colors remain in Inputs. Budget: at most 54.
+sp(bool show, float v) =>
+    show and showScale and timeframe.isintraday and nearPrice(v) ? v : na
+
+plot(sp(showPMH, pmHighV),       'PM high',          #79B8AD, editable = true, display = display.price_scale)
+plot(sp(showPML, pmLowV),        'PM low',           #79B8AD, editable = true, display = display.price_scale)
+plot(sp(showAHH, afterHighV),    'After-hours high', #568D87, editable = true, display = display.price_scale)
+plot(sp(showAHL, afterLowV),     'After-hours low',  #568D87, editable = true, display = display.price_scale)
+plot(sp(showPDH, priorHighV),    'Prior day high',   #82AADE, editable = true, display = display.price_scale)
+plot(sp(showPDL, priorLowV),     'Prior day low',    #82AADE, editable = true, display = display.price_scale)
+plot(sp(showPDO, priorOpenV),    'Prior day open',   #98A3B5, editable = true, display = display.price_scale)
+plot(sp(showPDC, priorCloseV),   'Prior day close',  #98A3B5, editable = true, display = display.price_scale)
+plot(sp(showDO, dayOpenV),       'Today open',       #7E899B, editable = true, display = display.price_scale)
+plot(sp(showDH, dayHighV),       'Today high',       #6585AD, editable = true, display = display.price_scale)
+plot(sp(showDL, dayLowV),        'Today low',        #6585AD, editable = true, display = display.price_scale)
+plot(sp(showDM, dayMidV),        'Today 50%',        #7E899B, editable = true, display = display.price_scale)
+plot(sp(showPWH, priorWkHighV),  'Prior week high',  #AC9BD3, editable = true, display = display.price_scale)
+plot(sp(showPWL, priorWkLowV),   'Prior week low',   #AC9BD3, editable = true, display = display.price_scale)
+plot(sp(showPWC, priorWkCloseV), 'Prior week close', #98A3B5, editable = true, display = display.price_scale)
+plot(sp(showWO, weekOpenV),      'Week open',        #7E899B, editable = true, display = display.price_scale)
+plot(sp(showWH, weekHighV),      'Week high',        #897BA9, editable = true, display = display.price_scale)
+plot(sp(showWL, weekLowV),       'Week low',         #897BA9, editable = true, display = display.price_scale)
+plot(showH1H and showScale and nearPrice(h1HiV) ? h1HiV : na, '1H swing high', #C394A5, editable = true, display = display.price_scale)
+plot(showH1L and showScale and nearPrice(h1LoV) ? h1LoV : na, '1H swing low',  #C394A5, editable = true, display = display.price_scale)
+plot(showH4H and showScale and nearPrice(h4HiV) ? h4HiV : na, '4H swing high', #A9798D, editable = true, display = display.price_scale)
+plot(showH4L and showScale and nearPrice(h4LoV) ? h4LoV : na, '4H swing low',  #A9798D, editable = true, display = display.price_scale)
+plot(showATH and showScale and nearPrice(athV) ? athV : na, 'All-time high', #DDD8CC, editable = true, display = display.price_scale)
+
+plot(sp(showOR and orValid, orHighV), 'OR high', #C6B58A, editable = true, display = display.price_scale)
+plot(sp(showOR and orValid, orLowV), 'OR low', #C6B58A, editable = true, display = display.price_scale)
+plot(sp(showOR and orValid, (orHighV + orLowV) / 2), 'OR midpoint', #C6B58A, editable = true, display = display.price_scale)
+
+plot(sp(asiaHi.show, asiaHi.price), 'Asia H', #79B8AD, editable = true, display = display.price_scale)
+plot(sp(asiaLo.show, asiaLo.price), 'Asia L', #79B8AD, editable = true, display = display.price_scale)
+plot(sp(priorAsiaHi.show, priorAsiaHi.price), 'Prior Asia H', #79B8ADB3, editable = true, display = display.price_scale)
+plot(sp(priorAsiaLo.show, priorAsiaLo.price), 'Prior Asia L', #79B8ADB3, editable = true, display = display.price_scale)
+plot(sp(londonHi.show, londonHi.price), 'London H', #AC9BD3, editable = true, display = display.price_scale)
+plot(sp(londonLo.show, londonLo.price), 'London L', #AC9BD3, editable = true, display = display.price_scale)
+plot(sp(priorLondonHi.show, priorLondonHi.price), 'Prior London H', #AC9BD3B3, editable = true, display = display.price_scale)
+plot(sp(priorLondonLo.show, priorLondonLo.price), 'Prior London L', #AC9BD3B3, editable = true, display = display.price_scale)
+plot(sp(nyHi.show, nyHi.price), 'NY H', #82AADE, editable = true, display = display.price_scale)
+plot(sp(nyLo.show, nyLo.price), 'NY L', #82AADE, editable = true, display = display.price_scale)
+plot(sp(priorNYHi.show, priorNYHi.price), 'Prior NY H', #82AADEB3, editable = true, display = display.price_scale)
+plot(sp(priorNYLo.show, priorNYLo.price), 'Prior NY L', #82AADEB3, editable = true, display = display.price_scale)
+
+//──────────────────────────── Alerts ────────────────────────────
+// Retained named alerts. Evaluate cross functions on every bar, outside lazy conditions.
+bool pmCrossUp = ta.crossover(close, pmHighV)
+bool pmCrossDown = ta.crossunder(close, pmLowV)
+bool vwapCrossUp = ta.crossover(close, vwapV)
+bool vwapCrossDown = ta.crossunder(close, vwapV)
+alertcondition(session.ismarket and pmCrossUp, 'Cross above PM high', 'Tidemarks: price crossed above the pre-market high')
+alertcondition(session.ismarket and pmCrossDown, 'Cross below PM low', 'Tidemarks: price crossed below the pre-market low')
+alertcondition(vwapCrossUp, 'Cross above VWAP', 'Tidemarks: price crossed above VWAP')
+alertcondition(vwapCrossDown, 'Cross below VWAP', 'Tidemarks: price crossed below VWAP')
+
+bool asiaReady = asiaRange.complete
+bool londonReady = londonRange.complete
+bool nyReady = nyRange.complete
+
+// Primitive varip arrays retain delivery state across realtime ticks (rollback-safe).
+varip array<int> firedDay = array.new<int>(levels.size() + 1, na)
+varip array<int> firedBar = array.new<int>(levels.size() + 1, na)
+if levelAlerts and timeframe.isintraday and (not alertRegular or session.ismarket) and (not alertOnClose or barstate.isconfirmed)
+    string events = ''
+    for i = 0 to levels.size()
+        bool isVwap = i == levels.size()
+        Level lv = isVwap ? ath : levels.get(i)
+        string tag = isVwap ? 'VWAP' : lv.tag
+        bool enabled = isVwap ? showVwap : lv.show
+        float reference = isVwap ? vwapV[1] : previousLevels.get(i)
+        bool available = isVwap ? not na(vwapV) and vwapKey == vwapKey[1] : not na(lv.price) and lv.bornBar != bar_index
+        // Only the completed opening range can generate alerts, starting on the next bar.
+        if i >= 23 and i <= 25
+            available := available and orValid and orComplete[1]
+        // Current global ranges alert only after completion, using a closed-bar reference.
+        if i == 26 or i == 27
+            available := available and asiaReady and asiaReady[1]
+        if i == 30 or i == 31
+            available := available and londonReady and londonReady[1]
+        if i == 34 or i == 35
+            available := available and nyReady and nyReady[1]
+        int alertDay = i >= 26 and not isVwap ? globalCycle : time_tradingday
+        bool selected = enabled and (alertTarget == 'Enabled levels' or alertTarget == tag)
+        bool up = close > reference and close[1] <= reference
+        bool down = close < reference and close[1] >= reference
+        bool touch = low <= reference and high >= reference
+        bool triggered = alertEvent == 'Touch' ? touch : alertEvent == 'Cross above' ? up : alertEvent == 'Cross below' ? down : up or down
+        bool alreadyToday = alertOnce and firedDay.get(i) == alertDay
+        bool alreadyBar = firedBar.get(i) == bar_index
+        if selected and available and not na(reference) and triggered and not alreadyToday and not alreadyBar
+            string eventName = alertEvent == 'Touch' ? 'touched' : up ? 'crossed above' : 'crossed below'
+            events += (events == '' ? '' : '\n') + tag + ': ' + eventName + ' ' + str.tostring(reference, format.mintick)
+            firedDay.set(i, alertDay)
+            firedBar.set(i, bar_index)
+    if events != ''
+        alert('Tidemarks | ' + syminfo.ticker + ' | ' + timeframe.period + '\n' + events, alert.freq_all)
+
+// Small status note only when an enabled feature cannot be calculated as configured.
+var table status = table.new(position.bottom_right, 1, 1)
+if barstate.islast
+    string note = not timeframe.isintraday ? 'Session levels require an intraday chart.' : ''
+    if showOR and not orTfOk
+        note += (note == '' ? '' : '\n') + 'Opening range: use a time chart that evenly divides ' + str.tostring(orMinutes) + ' minutes.'
+    if showGlobal and timeframe.isintraday
+        string globalNote = ''
+        if (showAsiaCurrent or showAsiaPrior) and (not asiaFits or asiaRange.incomplete)
+            globalNote += ' Asia'
+        if (showLondonCurrent or showLondonPrior) and (not londonFits or londonRange.incomplete)
+            globalNote += ' London'
+        if (showNYCurrent or showNYPrior) and (not nyFits or nyRange.incomplete)
+            globalNote += ' NY'
+        if globalNote != ''
+            note += (note == '' ? '' : '\n') + 'Global sessions:' + globalNote + ' unavailable/incomplete. Load the full window on aligned intraday bars; windows must fit the 18:00 NY cycle.'
+    if showVwap and vwapEligible and weightSum == 0
+        note += (note == '' ? '' : '\n') + 'VWAP: waiting for volume data.'
+    table.cell(status, 0, 0, note, text_color = chart.fg_color, text_size = size.small, bgcolor = note == '' ? color.new(color.black, 100) : color.new(chart.bg_color, 15))

@@ -1,0 +1,1395 @@
+//@version=6
+
+indicator("Session Breakout Context", overlay=true)
+
+// --- User Inputs ---
+
+sl_mode = input.string("London Midpoint", title="Stop Loss Anchor", options=["London Midpoint", "Opposite London Extreme"])
+
+show_sr_lines = input.bool(true, title="Show Session Levels on Chart")
+
+show_morning_edge = input.bool(false, title="Show Morning Edge AI Briefing Dashboard")
+
+trade_london_breakout = input.bool(true, title="Trade London Breakout of Asia Range")
+
+trade_ny_breakout = input.bool(true, title="Trade NY Breakout of London Range")
+
+trade_asia_breakout = input.bool(true, title="Trade Asia Breakout of NY Range")
+
+// Helper function to update on-chart labels dynamically
+
+f_update_label(lbl_var, y_val, txt, col) =>
+
+    label.delete(lbl_var)
+
+    label new_lbl = not na(y_val) ? label.new(bar_index + 2, y_val, text=txt, color=col, textcolor=color.white, style=label.style_label_left, size=size.small) : na
+
+    new_lbl
+
+// --- Multi-Timeframe and Context Calculations ---
+
+volSmaPeriod = 20
+
+volMultiplier = 1.5
+
+// Helper structure logic
+
+f_eval_tf(c_close, c_high, c_low, left_right) =>
+
+    bool is_ph = not na(ta.pivothigh(c_high, left_right, left_right))
+
+    bool is_pl = not na(ta.pivotlow(c_low, left_right, left_right))
+
+    ph = ta.valuewhen(is_ph, c_high[left_right], 0)
+
+    pl = ta.valuewhen(is_pl, c_low[left_right], 0)
+
+    bias = 0.0
+
+    if not na(ph)
+
+        if c_close > ph
+
+            bias := 2.0
+
+        else if c_high > ph
+
+            float u_wick = c_high - math.max(c_close, open)
+
+            float body = math.abs(c_close - open)
+
+            float c_rng = math.max(c_high - c_low, 0.01)
+
+            if u_wick >= body * 1.5 or u_wick >= c_rng * 0.40
+
+                bias := 3.0
+
+    if not na(pl) and bias == 0.0
+
+        if c_close < pl
+
+            bias := -2.0
+
+        else if c_low < pl
+
+            float l_wick = math.min(c_close, open) - c_low
+
+            float body = math.abs(c_close - open)
+
+            float c_rng = math.max(c_high - c_low, 0.01)
+
+            if l_wick >= body * 1.5 or l_wick >= c_rng * 0.40
+
+                bias := -3.0
+
+    bias
+
+f_rsi_div(src, rsiVal) =>
+
+    lb = 5
+
+    lf = 5
+
+    pl = ta.pivotlow(src, lb, lf)
+
+    ph = ta.pivothigh(src, lb, lf)
+
+    var float pl_price = na
+
+    var float pl_rsi = na
+
+    var float ph_price = na
+
+    var float ph_rsi = na
+
+    div_state = 0.0
+
+    if not na(pl)
+
+        if not na(pl_price)
+
+            if src[lf] < pl_price and rsiVal[lf] > pl_rsi
+
+                div_state := 1.0
+
+            else if src[lf] > pl_price and rsiVal[lf] < pl_rsi
+
+                div_state := 2.0
+
+        pl_price := src[lf]
+
+        pl_rsi := rsiVal[lf]
+
+    if not na(ph)
+
+        if not na(ph_price)
+
+            if src[lf] > ph_price and rsiVal[lf] < ph_rsi
+
+                div_state := -1.0
+
+            else if src[lf] < ph_price and rsiVal[lf] > ph_rsi
+
+                div_state := -2.0
+
+        ph_price := src[lf]
+
+        ph_rsi := rsiVal[lf]
+
+    div_state
+
+f_get_data(v_len, v_mult) =>
+
+    m15  = f_eval_tf(close, high, low, 5)
+
+    m30  = f_eval_tf(close, high, low, 10)
+
+    m60  = f_eval_tf(close, high, low, 20)
+
+    m240 = f_eval_tf(close, high, low, 80)
+
+    mD   = f_eval_tf(close, high, low, 96)
+
+    float c_range = math.max(high - low, 0.01)
+
+    float volFlow = ((close - open) / c_range) * volume
+
+    float rawVolFlowSma = ta.sma(volFlow, v_len)
+
+    float rawVolSma = ta.sma(volume, v_len)
+
+    float priceChange = close - open
+
+    float atrVal = ta.atr(14)
+
+    float rawMomSma = ta.sma(priceChange, v_len)
+
+    float rawMomThreshold = nz(atrVal, 0.01) * 0.15
+
+    // Extract ta.cum to calculate consistently
+
+    float cum_vol = ta.cum(volume)
+
+    bool hasVolume = not na(volume) and cum_vol > 0.0
+
+    float volFlowSma = hasVolume ? rawVolFlowSma : rawMomSma
+
+    float volSma = hasVolume ? rawVolSma : rawMomThreshold
+
+    float v_sma = ta.sma(volume, 20)
+
+    float v_dev = ta.stdev(volume, 20)
+
+    float volClimax = 0.0
+
+    if volume > v_sma + 2.0 * v_dev
+
+        volClimax := close >= open ? 1.0 : -1.0
+
+    float rsiVal = ta.rsi(close, 14)
+
+    float div_state = f_rsi_div(close, rsiVal)
+
+    // Calculate timezone offset
+
+    int hr_diff = hour(time, "America/Chicago") - hour(time)
+
+    if hr_diff < -12
+
+        hr_diff := hr_diff + 24
+
+    if hr_diff > 12
+
+        hr_diff := hr_diff - 24
+
+    int ms_offset = hr_diff * 3600000
+
+    int current_day = dayofmonth(time + ms_offset)
+
+    int yesterday_day = na
+
+    for idx = 1 to 96
+
+        int idx_day = dayofmonth(time[idx] + ms_offset)
+
+        if idx_day != current_day
+
+            yesterday_day := idx_day
+
+            break
+
+    float yh_local = na
+
+    float yl_local = na
+
+    bool is24h = (syminfo.type == "crypto" or syminfo.type == "forex" or syminfo.ticker == "XAUUSD" or syminfo.ticker == "GOLD")
+
+    int max_lookback = is24h ? 192 : 60
+
+    if not na(yesterday_day)
+
+        for idx = 1 to max_lookback
+
+            int adj_time = time[idx] + ms_offset
+
+            if dayofmonth(adj_time) == yesterday_day
+
+                yh_local := na(yh_local) ? high[idx] : math.max(yh_local, high[idx])
+
+                yl_local := na(yl_local) ? low[idx] : math.min(yl_local, low[idx])
+
+    float rsiPack = rsiVal + div_state * 1000.0
+
+    float sessPack = volClimax * 10.0
+
+    [close, m15, m30, m60, m240, mD, volFlowSma, volSma, rsiPack, sessPack, yh_local, yl_local]
+
+// --- Query Context Natively ---
+
+[c_15m, m15, m30, m60, m240, md, vf, vs, rsiPack, sessPack, yh_val, yl_val] = request.security(syminfo.tickerid, "15", f_get_data(volSmaPeriod, volMultiplier), barmerge.gaps_off, barmerge.lookahead_off)
+
+sc1m = request.security(syminfo.tickerid, "1", f_eval_tf(close, high, low, 3), barmerge.gaps_off, barmerge.lookahead_off)
+
+float div_state = math.floor(rsiPack / 1000.0)
+
+float rsiVal    = rsiPack - div_state * 1000.0
+
+float volClimax = math.round(sessPack / 10.0)
+
+// Fetch DXY, PWH/PWL, and Weekly Open
+
+[dxy_d_close1, dxy_d_open1, dxy_d_sma1] = request.security("TVC:DXY", "D", [close[1], open[1], ta.sma(close, 20)[1]], barmerge.gaps_off, barmerge.lookahead_off)
+
+dxy_d_trend = dxy_d_close1 > dxy_d_sma1 ? 1.0 : -1.0
+
+[pwh, pwl] = request.security(syminfo.tickerid, "W", [high[1], low[1]], barmerge.gaps_off, barmerge.lookahead_off)
+
+weekly_open = request.security(syminfo.tickerid, "W", open, barmerge.gaps_off, barmerge.lookahead_off)
+
+// Fetch daily open and ADR (14-day Average Daily Range)
+
+[d_open, adr] = request.security(syminfo.tickerid, "D", [open, ta.sma(high - low, 14)], barmerge.gaps_off, barmerge.lookahead_off)
+
+float adr_high = d_open + adr
+
+float adr_low = d_open - adr
+
+// Fetch 4H Key High / Low pivots
+
+h4_ph = request.security(syminfo.tickerid, "240", ta.valuewhen(not na(ta.pivothigh(high, 5, 5)), high[5], 0), barmerge.gaps_off, barmerge.lookahead_off)
+
+h4_pl = request.security(syminfo.tickerid, "240", ta.valuewhen(not na(ta.pivotlow(low, 5, 5)), low[5], 0), barmerge.gaps_off, barmerge.lookahead_off)
+
+// Volatility exhaustion boundaries
+
+float ema_basis = ta.ema(close, 20)
+
+float atr_exhaustion = ta.atr(14) * 3.0
+
+float exhaustion_upper = ema_basis + atr_exhaustion
+
+float exhaustion_lower = ema_basis - atr_exhaustion
+
+// Net CVD Pressure Calculations
+
+float c_range_local = math.max(high - low, 0.001)
+
+float delta_local = volume * ((close - low) - (high - close)) / c_range_local
+
+// Extract ta.cum to calculate consistently
+
+float cum_vol_main = ta.cum(volume)
+
+bool hasVolume_local = not na(volume) and cum_vol_main > 0.0
+
+float delta_effective = hasVolume_local ? delta_local : (close - open)
+
+float cvd_val = ta.sma(delta_effective, 20)
+
+float cvd_sma = ta.sma(cvd_val, 5)
+
+cvd_code = 0.0
+
+if cvd_val > 0.0 and cvd_val > cvd_sma
+
+    cvd_code := 1.0
+
+else if cvd_val < 0.0 and cvd_val < cvd_sma
+
+    cvd_code := -1.0
+
+// Volume Spread Analysis (VSA) context
+
+float body_range = math.abs(close - open)
+
+float total_range = math.max(high - low, 0.001)
+
+// Extract ta.sma outside of the ternary operator
+
+float sma_vol_20 = ta.sma(volume, 20)
+
+float rvol_val = hasVolume_local ? (volume / sma_vol_20) : 1.0
+
+vsa_code = 0.0
+
+bool is_high_vol = rvol_val > 1.8
+
+bool is_low_vol = rvol_val < 0.6
+
+bool is_narrow_spread = body_range < total_range * 0.25
+
+bool is_wide_spread = body_range > total_range * 0.75
+
+float u_wick = high - math.max(open, close)
+
+float l_wick = math.min(open, close) - low
+
+if is_high_vol
+
+    if is_narrow_spread
+
+        if l_wick > u_wick * 1.5 and l_wick > body_range
+
+            vsa_code := 1.0
+
+        else if u_wick > l_wick * 1.5 and u_wick > body_range
+
+            vsa_code := -1.0
+
+        else
+
+            vsa_code := close >= open ? 4.0 : -4.0
+
+    else if is_wide_spread
+
+        vsa_code := close >= open ? 2.0 : -2.0
+
+else if is_low_vol and is_narrow_spread
+
+    vsa_code := close >= open ? 3.0 : -3.0
+
+// --- Chicago Time Timezone Calculations ---
+
+int h_chi = hour(time, "America/Chicago")
+
+int m_chi = minute(time, "America/Chicago")
+
+// State variables reset daily at 18:00 CST (Start of Asia session)
+
+var float asia_high = na
+
+var float asia_low = na
+
+var float lon_high = na
+
+var float lon_low = na
+
+var float lon_mid = na
+
+var float ny_high = na
+
+var float ny_low = na
+
+var float ny_mid = na
+
+// Reset triggers for three sessions
+
+bool start_london = (h_chi == 2 and h_chi[1] != 2) or (h_chi == 2 and na(h_chi[1]))
+
+bool start_ny     = (h_chi == 7 and h_chi[1] != 7) or (h_chi == 7 and na(h_chi[1]))
+
+bool start_asia   = (h_chi == 18 and h_chi[1] != 18) or (h_chi == 18 and na(h_chi[1]))
+
+// Session Breakout state variables
+
+var int lon_break = 0 // 0=none, 1=bull break, -1=bear break, 2=fade short, -2=fade long
+
+var bool lon_opp_broken = false
+
+var float lon_trade_pnl = 0.0
+
+var bool lon_is_closed = false
+
+var int ny_break = 0
+
+var bool ny_opp_broken = false
+
+var float ny_trade_pnl = 0.0
+
+var bool ny_is_closed = false
+
+var int break_time_hr = 0
+
+var int break_time_mn = 0
+
+var int asia_break = 0
+
+var bool asia_opp_broken = false
+
+var float asia_trade_pnl = 0.0
+
+var bool asia_is_closed = false
+
+if start_london
+
+    lon_break := 0
+
+    lon_opp_broken := false
+
+    lon_trade_pnl := 0.0
+
+    lon_is_closed := false
+
+if start_ny
+
+    ny_break := 0
+
+    ny_opp_broken := false
+
+    ny_trade_pnl := 0.0
+
+    ny_is_closed := false
+
+    break_time_hr := 0
+
+    break_time_mn := 0
+
+if start_asia
+
+    asia_break := 0
+
+    asia_opp_broken := false
+
+    asia_trade_pnl := 0.0
+
+    asia_is_closed := false
+
+    // Also reset session ranges at start of new day cycle (18:00 CST)
+
+    asia_high := na
+
+    asia_low := na
+
+    lon_high := na
+
+    lon_low := na
+
+    lon_mid := na
+
+    ny_high := na
+
+    ny_low := na
+
+    ny_mid := na
+
+// --- Session Range Scanners (CST Timeframes) ---
+
+// Asia Session: 18:00 to 02:00 CST
+
+bool in_asia = (h_chi >= 18) or (h_chi < 2)
+
+if in_asia
+
+    asia_high := na(asia_high) ? high : math.max(asia_high, high)
+
+    asia_low := na(asia_low) ? low : math.min(asia_low, low)
+
+    lon_mid := (asia_high + asia_low) / 2 // store helper
+
+// London Session: 02:00 to 07:00 CST
+
+bool in_london = (h_chi >= 2 and h_chi < 7)
+
+if in_london
+
+    lon_high := na(lon_high) ? high : math.max(lon_high, high)
+
+    lon_low := na(lon_low) ? low : math.min(lon_low, low)
+
+    lon_mid := (lon_high + lon_low) / 2
+
+// NY Session: 07:00 to 14:00 CST
+
+bool in_ny = (h_chi >= 7 and h_chi < 14)
+
+if in_ny
+
+    ny_high := na(ny_high) ? high : math.max(ny_high, high)
+
+    ny_low := na(ny_low) ? low : math.min(ny_low, low)
+
+    ny_mid := (ny_high + ny_low) / 2
+
+// --- Session 1: London Session Breakout Engine (Asia Range Boundaries) ---
+
+float lon_entry = na
+
+float lon_sl = na
+
+if lon_break == 1
+
+    lon_entry := asia_high
+
+    lon_sl := sl_mode == "London Midpoint" ? lon_mid : lon_low
+
+else if lon_break == -1
+
+    lon_entry := asia_low
+
+    lon_sl := sl_mode == "London Midpoint" ? lon_mid : asia_high
+
+else if lon_break == 2
+
+    lon_entry := asia_high
+
+    lon_sl := asia_high + (asia_high - lon_mid)
+
+else if lon_break == -2
+
+    lon_entry := asia_low
+
+    lon_sl := asia_low - (lon_mid - asia_low)
+
+if in_london and trade_london_breakout and not na(asia_high) and not na(asia_low)
+
+    if lon_break == 0
+
+        if high > asia_high
+
+            if sc1m == 2.0 and cvd_code == 1.0 and vsa_code != 2.0
+
+                lon_break := 1
+
+            else if sc1m == -2.0 or vsa_code == -1.0 or high > exhaustion_upper
+
+                lon_break := 2
+
+        else if low < asia_low
+
+            if sc1m == -2.0 and cvd_code == -1.0 and vsa_code != -2.0
+
+                lon_break := -1
+
+            else if sc1m == 2.0 or vsa_code == 1.0 or low < exhaustion_lower
+
+                lon_break := -2
+
+    else
+
+        if (lon_break == 1 or lon_break == -2) and low < asia_low
+
+            lon_opp_broken := true
+
+        else if (lon_break == -1 or lon_break == 2) and high > asia_high
+
+            lon_opp_broken := true
+
+var bool lon_sl_hit = false
+
+if lon_break != 0
+
+    if start_london
+
+        lon_sl_hit := false
+
+    else if not lon_sl_hit and not lon_is_closed
+
+        if (lon_break == 1 or lon_break == -2) and low < lon_sl
+
+            lon_sl_hit := true
+
+            lon_trade_pnl := lon_sl - lon_entry
+
+        else if (lon_break == -1 or lon_break == 2) and high > lon_sl
+
+            lon_sl_hit := true
+
+            lon_trade_pnl := lon_entry - lon_sl
+
+if not lon_is_closed and lon_break != 0
+
+    if h_chi >= 7
+
+        lon_is_closed := true
+
+        if not lon_sl_hit
+
+            if lon_break == 1 or lon_break == -2
+
+                lon_trade_pnl := close - lon_entry
+
+            else
+
+                lon_trade_pnl := lon_entry - close
+
+// --- Session 2: NY Session Breakout Engine (London Range Boundaries) ---
+
+float ny_entry = na
+
+float ny_sl = na
+
+if ny_break == 1
+
+    ny_entry := lon_high
+
+    ny_sl := sl_mode == "London Midpoint" ? lon_mid : lon_low
+
+else if ny_break == -1
+
+    ny_entry := lon_low
+
+    ny_sl := sl_mode == "London Midpoint" ? lon_mid : lon_high
+
+else if ny_break == 2
+
+    ny_entry := lon_high
+
+    ny_sl := lon_high + (lon_high - lon_mid)
+
+else if ny_break == -2
+
+    ny_entry := lon_low
+
+    ny_sl := lon_low - (lon_mid - lon_low)
+
+// CPI/NFP Clock Guard
+
+bool in_news_window = (h_chi == 7 and m_chi >= 29 and m_chi <= 35)
+
+if in_ny and trade_ny_breakout and not na(lon_high) and not na(lon_low) and not in_news_window
+
+    if ny_break == 0
+
+        if high > lon_high
+
+            if sc1m == 2.0 and cvd_code == 1.0 and vsa_code != 2.0
+
+                ny_break := 1
+
+                break_time_hr := h_chi
+
+                break_time_mn := m_chi
+
+            else if sc1m == -2.0 or vsa_code == -1.0 or high > exhaustion_upper
+
+                ny_break := 2
+
+                break_time_hr := h_chi
+
+                break_time_mn := m_chi
+
+        else if low < lon_low
+
+            if sc1m == -2.0 and cvd_code == -1.0 and vsa_code != -2.0
+
+                ny_break := -1
+
+                break_time_hr := h_chi
+
+                break_time_mn := m_chi
+
+            else if sc1m == 2.0 or vsa_code == 1.0 or low < exhaustion_lower
+
+                ny_break := -2
+
+                break_time_hr := h_chi
+
+                break_time_mn := m_chi
+
+    else
+
+        if (ny_break == 1 or ny_break == -2) and low < lon_low
+
+            ny_opp_broken := true
+
+        else if (ny_break == -1 or ny_break == 2) and high > lon_high
+
+            ny_opp_broken := true
+
+var bool ny_sl_hit = false
+
+if ny_break != 0
+
+    if start_ny
+
+        ny_sl_hit := false
+
+    else if not ny_sl_hit and not ny_is_closed
+
+        if (ny_break == 1 or ny_break == -2) and low < ny_sl
+
+            ny_sl_hit := true
+
+            ny_trade_pnl := ny_sl - ny_entry
+
+        else if (ny_break == -1 or ny_break == 2) and high > ny_sl
+
+            ny_sl_hit := true
+
+            ny_trade_pnl := ny_entry - ny_sl
+
+if not ny_is_closed and ny_break != 0
+
+    if h_chi >= 14
+
+        ny_is_closed := true
+
+        if not ny_sl_hit
+
+            if ny_break == 1 or ny_break == -2
+
+                ny_trade_pnl := close - ny_entry
+
+            else
+
+                ny_trade_pnl := ny_entry - close
+
+// --- Session 3: Asia Session Breakout Engine (NY Range Boundaries) ---
+
+float asia_entry = na
+
+float asia_sl = na
+
+if asia_break == 1
+
+    asia_entry := ny_high
+
+    asia_sl := sl_mode == "London Midpoint" ? ny_mid : ny_low
+
+else if asia_break == -1
+
+    asia_entry := ny_low
+
+    asia_sl := sl_mode == "London Midpoint" ? ny_mid : ny_high
+
+else if asia_break == 2
+
+    asia_entry := ny_high
+
+    asia_sl := ny_high + (ny_high - ny_mid)
+
+else if asia_break == -2
+
+    asia_entry := ny_low
+
+    asia_sl := ny_low - (ny_mid - ny_low)
+
+if in_asia and trade_asia_breakout and not na(ny_high) and not na(ny_low)
+
+    if asia_break == 0
+
+        if high > ny_high
+
+            if sc1m == 2.0 and cvd_code == 1.0 and vsa_code != 2.0
+
+                asia_break := 1
+
+            else if sc1m == -2.0 or vsa_code == -1.0 or high > exhaustion_upper
+
+                asia_break := 2
+
+        else if low < ny_low
+
+            if sc1m == -2.0 and cvd_code == -1.0 and vsa_code != -2.0
+
+                asia_break := -1
+
+            else if sc1m == 2.0 or vsa_code == 1.0 or low < exhaustion_lower
+
+                asia_break := -2
+
+    else
+
+        if (asia_break == 1 or asia_break == -2) and low < ny_low
+
+            asia_opp_broken := true
+
+        else if (asia_break == -1 or asia_break == 2) and high > ny_high
+
+            asia_opp_broken := true
+
+var bool asia_sl_hit = false
+
+if asia_break != 0
+
+    if start_asia
+
+        asia_sl_hit := false
+
+    else if not asia_sl_hit and not asia_is_closed
+
+        if (asia_break == 1 or asia_break == -2) and low < asia_sl
+
+            asia_sl_hit := true
+
+            asia_trade_pnl := asia_sl - asia_entry
+
+        else if (asia_break == -1 or asia_break == 2) and high > asia_sl
+
+            asia_sl_hit := true
+
+            asia_trade_pnl := asia_entry - asia_sl
+
+if not asia_is_closed and asia_break != 0
+
+    if h_chi >= 2 and h_chi < 18
+
+        asia_is_closed := true
+
+        if not asia_sl_hit
+
+            if asia_break == 1 or asia_break == -2
+
+                asia_trade_pnl := close - asia_entry
+
+            else
+
+                asia_trade_pnl := asia_entry - close
+
+// --- Signal Visual Shapes on Chart ---
+
+bool is_lon_break_now = (lon_break != 0 and lon_break[1] == 0)
+
+bool is_ny_break_now  = (ny_break != 0 and ny_break[1] == 0)
+
+bool is_asia_break_now = (asia_break != 0 and asia_break[1] == 0)
+
+// 1. London Session Signal Shapes
+
+plotshape(is_lon_break_now and lon_break == 1, title="London Bullish Breakout", style=shape.labelup, location=location.belowbar, color=color.green, text="LON BUY", textcolor=color.white, size=size.small)
+
+plotshape(is_lon_break_now and lon_break == -1, title="London Bearish Breakout", style=shape.labeldown, location=location.abovebar, color=color.red, text="LON SELL", textcolor=color.white, size=size.small)
+
+plotshape(is_lon_break_now and lon_break == 2, title="London Sweep Fade Short", style=shape.labeldown, location=location.abovebar, color=color.orange, text="LON FADE S", textcolor=color.white, size=size.small)
+
+plotshape(is_lon_break_now and lon_break == -2, title="London Sweep Fade Long", style=shape.labelup, location=location.belowbar, color=color.blue, text="LON FADE L", textcolor=color.white, size=size.small)
+
+// 2. NY Session Signal Shapes
+
+plotshape(is_ny_break_now and ny_break == 1 and break_time_hr < 11, title="NY Bullish Breakout", style=shape.labelup, location=location.belowbar, color=color.green, text="NY BUY", textcolor=color.white, size=size.small)
+
+plotshape(is_ny_break_now and ny_break == -1 and break_time_hr < 11, title="NY Bearish Breakout", style=shape.labeldown, location=location.abovebar, color=color.red, text="NY SELL", textcolor=color.white, size=size.small)
+
+plotshape(is_ny_break_now and ny_break == 2 and break_time_hr < 11, title="NY Sweep Fade Short", style=shape.labeldown, location=location.abovebar, color=color.orange, text="NY FADE S", textcolor=color.white, size=size.small)
+
+plotshape(is_ny_break_now and ny_break == -2 and break_time_hr < 11, title="NY Sweep Fade Long", style=shape.labelup, location=location.belowbar, color=color.blue, text="NY FADE L", textcolor=color.white, size=size.small)
+
+plotshape(is_ny_break_now and break_time_hr >= 11, title="NY Late Break Warning", style=shape.labeldown, location=location.abovebar, color=color.orange, text="NY LATE SKIP", textcolor=color.white, size=size.small)
+
+// 3. Asia Session Signal Shapes
+
+plotshape(is_asia_break_now and asia_break == 1, title="Asia Bullish Breakout", style=shape.labelup, location=location.belowbar, color=color.green, text="ASIA BUY", textcolor=color.white, size=size.small)
+
+plotshape(is_asia_break_now and asia_break == -1, title="Asia Bearish Breakout", style=shape.labeldown, location=location.abovebar, color=color.red, text="ASIA SELL", textcolor=color.white, size=size.small)
+
+plotshape(is_asia_break_now and asia_break == 2, title="Asia Sweep Fade Short", style=shape.labeldown, location=location.abovebar, color=color.orange, text="ASIA FADE S", textcolor=color.white, size=size.small)
+
+plotshape(is_asia_break_now and asia_break == -2, title="Asia Sweep Fade Long", style=shape.labelup, location=location.belowbar, color=color.blue, text="ASIA FADE L", textcolor=color.white, size=size.small)
+
+// --- On-Chart Level Drawing ---
+
+var float d_asia_h = na
+
+var float d_asia_l = na
+
+var float d_lon_h = na
+
+var float d_lon_l = na
+
+var float d_lon_m = na
+
+// Freeze lines daily at session transition boundaries
+
+if h_chi == 2 and h_chi[1] != 2
+
+    d_asia_h := asia_high
+
+    d_asia_l := asia_low
+
+if h_chi == 7 and h_chi[1] != 7
+
+    d_lon_h := lon_high
+
+    d_lon_l := lon_low
+
+    d_lon_m := lon_mid
+
+plot(show_sr_lines ? d_asia_h : na, color=color.new(color.purple, 30), title="Asia High")
+
+plot(show_sr_lines ? d_asia_l : na, color=color.new(color.purple, 30), title="Asia Low")
+
+plot(show_sr_lines ? d_lon_h : na, color=color.new(color.teal, 30), title="London High")
+
+plot(show_sr_lines ? d_lon_l : na, color=color.new(color.teal, 30), title="London Low")
+
+plot(show_sr_lines ? d_lon_m : na, color=color.new(color.orange, 40), title="London Midpoint")
+
+// --- Floating scale labels ---
+
+var label lbl_ah = na
+
+var label lbl_al = na
+
+var label lbl_lh = na
+
+var label lbl_ll = na
+
+var label lbl_lm = na
+
+if barstate.islast and show_sr_lines
+
+    lbl_ah := f_update_label(lbl_ah, d_asia_h, "Asia High", color.purple)
+
+    lbl_al := f_update_label(lbl_al, d_asia_l, "Asia Low", color.purple)
+
+    lbl_lh := f_update_label(lbl_lh, d_lon_h, "London High", color.teal)
+
+    lbl_ll := f_update_label(lbl_ll, d_lon_l, "London Low", color.teal)
+
+    lbl_lm := f_update_label(lbl_lm, d_lon_m, "London Midpoint", color.orange)
+
+// --- Dynamic Morning Edge AI Calculations (Claude Analysis Engine Replicant) ---
+
+string d_bias_str = md == 2.0 ? "BULL" : (md == -2.0 ? "BEAR" : "CHOP")
+
+string h4_bias_str = m240 == 2.0 ? "BULL" : (m240 == -2.0 ? "BEAR" : "CHOP")
+
+string m15_bias_str = m15 == 2.0 ? "BULL" : (m15 == -2.0 ? "BEAR" : "CHOP")
+
+string overall_bias = "NEUTRAL"
+
+int confidence = 35
+
+string align_score = "NONE"
+
+string alignment_type = "conflicting"
+
+if d_bias_str == h4_bias_str and h4_bias_str == m15_bias_str and d_bias_str != "CHOP"
+
+    overall_bias := d_bias_str == "BULL" ? "BULLISH" : "BEARISH"
+
+    confidence := 90
+
+    align_score := "HIGH"
+
+    alignment_type := "aligned"
+
+else if d_bias_str == h4_bias_str and d_bias_str != "CHOP"
+
+    overall_bias := d_bias_str == "BULL" ? "BULLISH" : "BEARISH"
+
+    confidence := 70
+
+    align_score := "MEDIUM"
+
+    alignment_type := "conflicting"
+
+else if h4_bias_str == m15_bias_str and h4_bias_str != "CHOP"
+
+    overall_bias := h4_bias_str == "BULL" ? "BULLISH" : "BEARISH"
+
+    confidence := 50
+
+    align_score := "LOW"
+
+    alignment_type := "conflicting"
+
+else
+
+    overall_bias := "NEUTRAL"
+
+    confidence := 30
+
+    align_score := "NONE"
+
+    alignment_type := "neutral"
+
+// Signals generator
+
+string entry_zone = "No Trade / Range chop"
+
+string sl_zone = "Wait for structure alignment"
+
+float t1_val = na
+
+float t2_val = na
+
+float t3_val = na
+
+if overall_bias == "BULLISH"
+
+    entry_zone := "Buy at London H Break / Retest"
+
+    sl_zone := "Below London Mid / 4H swing L"
+
+    t1_val := yh_val
+
+    t2_val := adr_high
+
+    t3_val := pwh
+
+else if overall_bias == "BEARISH"
+
+    entry_zone := "Sell at London L Break / Retest"
+
+    sl_zone := "Above London Mid / 4H swing H"
+
+    t1_val := yl_val
+
+    t2_val := adr_low
+
+    t3_val := pwl
+
+// Calculate Cumulative daily P&L across all three sessions
+
+float total_pnl = 0.0
+
+if lon_break != 0
+
+    if lon_sl_hit or lon_is_closed
+
+        total_pnl := total_pnl + lon_trade_pnl
+
+    else
+
+        float act_lon = (lon_break == 1 or lon_break == -2) ? (close - lon_entry) : (lon_entry - close)
+
+        total_pnl := total_pnl + act_lon
+
+if ny_break != 0
+
+    if ny_sl_hit or ny_is_closed
+
+        total_pnl := total_pnl + ny_trade_pnl
+
+    else
+
+        float act_ny = (ny_break == 1 or ny_break == -2) ? (close - ny_entry) : (ny_entry - close)
+
+        total_pnl := total_pnl + act_ny
+
+if asia_break != 0
+
+    if asia_sl_hit or asia_is_closed
+
+        total_pnl := total_pnl + asia_trade_pnl
+
+    else
+
+        float act_asia = (asia_break == 1 or asia_break == -2) ? (close - asia_entry) : (asia_entry - close)
+
+        total_pnl := total_pnl + act_asia
+
+// Move SMA calculation out of 'if barstate.islast' for global execution
+
+float a_rng = nz(asia_high - asia_low, 0.0)
+
+float a_ma = ta.sma(a_rng, 14)
+
+// --- Cockpit Statistics HUD Widget ---
+
+var table hud = table.new(position.top_right, 2, 9, bgcolor=color.new(color.black, 20), border_color=color.black, border_width=1)
+
+var table morning_edge = table.new(position.top_left, 2, 9, bgcolor=color.new(color.black, 20), border_color=color.black, border_width=1)
+
+if barstate.islast
+
+    // Header Right
+
+    table.cell(hud, 0, 0, text="GOLD COCKPIT (3-SESSION P&L)", text_color=color.white, bgcolor=color.rgb(15, 23, 42), text_size=size.small)
+
+    table.merge_cells(hud, 0, 0, 1, 0)
+
+    // Asia Range size classification
+
+    string asia_vol_str = "Normal"
+
+    color asia_vol_color = color.rgb(30, 41, 59)
+
+    if a_rng < 0.75 * a_ma
+
+        asia_vol_str := "⚠️ QUIET (-20% Vol)"
+
+        asia_vol_color := color.rgb(120, 50, 50)
+
+    else if a_rng > 1.25 * a_ma
+
+        asia_vol_str := "🔥 WILD (+20% Vol)"
+
+        asia_vol_color := color.rgb(50, 120, 50)
+
+    else
+
+        asia_vol_str := str.tostring(a_rng, "#.##") + " pts (Normal)"
+
+    table.cell(hud, 0, 1, text="Asia Range", text_color=color.gray, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+    table.cell(hud, 1, 1, text=asia_vol_str, text_color=color.white, bgcolor=asia_vol_color, text_size=size.small)
+
+    // 1. London Session breakout state
+
+    string lon_status = "⏳ STANDBY"
+
+    color lon_bg = color.rgb(30, 41, 59)
+
+    if lon_break != 0
+
+        string type_str = lon_break == 1 ? "BULL" : (lon_break == -1 ? "BEAR" : (lon_break == 2 ? "FADE S" : "FADE L"))
+
+        string pnl_val_str = (lon_trade_pnl >= 0 ? "+" : "") + str.tostring(lon_trade_pnl, "#.##")
+
+        if lon_sl_hit
+
+            lon_status := type_str + " (❌ " + pnl_val_str + ")"
+
+            lon_bg := color.rgb(120, 50, 50)
+
+        else if lon_is_closed
+
+            lon_status := type_str + " (✅ " + pnl_val_str + ")"
+
+            lon_bg := color.rgb(50, 120, 50)
+
+        else
+
+            lon_status := type_str + " (⏳ ACTIVE)"
+
+            lon_bg := color.rgb(100, 80, 50)
+
+    table.cell(hud, 0, 2, text="London Session", text_color=color.gray, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+    table.cell(hud, 1, 2, text=lon_status, text_color=color.white, bgcolor=lon_bg, text_size=size.small)
+
+    // 2. NY Session breakout state
+
+    string ny_status = "⏳ STANDBY"
+
+    color ny_bg = color.rgb(30, 41, 59)
+
+    if ny_break != 0
+
+        string type_str = ny_break == 1 ? "BULL" : (ny_break == -1 ? "BEAR" : (ny_break == 2 ? "FADE S" : "FADE L"))
+
+        string pnl_val_str = (ny_trade_pnl >= 0 ? "+" : "") + str.tostring(ny_trade_pnl, "#.##")
+
+        if ny_sl_hit
+
+            ny_status := type_str + " (❌ " + pnl_val_str + ")"
+
+            ny_bg := color.rgb(120, 50, 50)
+
+        else if ny_is_closed
+
+            ny_status := type_str + " (✅ " + pnl_val_str + ")"
+
+            ny_bg := color.rgb(50, 120, 50)
+
+        else
+
+            ny_status := type_str + " (⏳ ACTIVE)"
+
+            ny_bg := color.rgb(100, 80, 50)
+
+    table.cell(hud, 0, 3, text="NY Session", text_color=color.gray, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+    table.cell(hud, 1, 3, text=ny_status, text_color=color.white, bgcolor=ny_bg, text_size=size.small)
+
+    // 3. Asia Session breakout state
+
+    string asia_status = "⏳ STANDBY"
+
+    color asia_bg = color.rgb(30, 41, 59)
+
+    if asia_break != 0
+
+        string type_str = asia_break == 1 ? "BULL" : (asia_break == -1 ? "BEAR" : (asia_break == 2 ? "FADE S" : "FADE L"))
+
+        string pnl_val_str = (asia_trade_pnl >= 0 ? "+" : "") + str.tostring(asia_trade_pnl, "#.##")
+
+        if asia_sl_hit
+
+            asia_status := type_str + " (❌ " + pnl_val_str + ")"
+
+            asia_bg := color.rgb(120, 50, 50)
+
+        else if asia_is_closed
+
+            asia_status := type_str + " (✅ " + pnl_val_str + ")"
+
+            asia_bg := color.rgb(50, 120, 50)
+
+        else
+
+            asia_status := type_str + " (⏳ ACTIVE)"
+
+            asia_bg := color.rgb(100, 80, 50)
+
+    table.cell(hud, 0, 4, text="Asia Session", text_color=color.gray, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+    table.cell(hud, 1, 4, text=asia_status, text_color=color.white, bgcolor=asia_bg, text_size=size.small)
+
+    // Live breakout status
+
+    string live_breakout_str = "STANDBY"
+
+    if in_london
+
+        live_breakout_str := lon_break != 0 ? "London Active" : "Waiting London Break"
+
+    else if in_ny
+
+        live_breakout_str := ny_break != 0 ? "NY Active" : "Waiting NY Break"
+
+    else if in_asia
+
+        live_breakout_str := asia_break != 0 ? "Asia Active" : "Waiting Asia Break"
+
+    table.cell(hud, 0, 5, text="Live Status", text_color=color.gray, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+    table.cell(hud, 1, 5, text=live_breakout_str, text_color=color.white, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+    // News Hour Guard Status
+
+    string news_guard_str = in_news_window ? "⚠️ ACTIVE (07:30 CST)" : "INACTIVE"
+
+    color news_guard_color = in_news_window ? color.rgb(120, 50, 50) : color.rgb(30, 41, 59)
+
+    table.cell(hud, 0, 6, text="News Guard", text_color=color.gray, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+    table.cell(hud, 1, 6, text=news_guard_str, text_color=color.white, bgcolor=news_guard_color, text_size=size.small)
+
+    // Daily Cumulative P&L
+
+    string total_pnl_str = (total_pnl >= 0 ? "+" : "") + str.tostring(total_pnl, "#.##") + " pts"
+
+    color total_pnl_bg = total_pnl >= 0 ? color.new(color.green, 20) : color.new(color.red, 20)
+
+    table.cell(hud, 0, 7, text="Daily Cum. P&L", text_color=color.gray, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+    table.cell(hud, 1, 7, text=total_pnl_str, text_color=color.white, bgcolor=total_pnl_bg, text_size=size.small)
+
+    // Master Action Advisor (Chicago Timezone)
+
+    string master_action_str = "⏳ AWAIT BREAK"
+
+    color master_action_bg = color.rgb(30, 41, 59)
+
+    int act_break = in_london ? lon_break : (in_ny ? ny_break : (in_asia ? asia_break : 0))
+
+    bool act_sl_hit = in_london ? lon_sl_hit : (in_ny ? ny_sl_hit : (in_asia ? asia_sl_hit : false))
+
+    bool act_closed = in_london ? lon_is_closed : (in_ny ? ny_is_closed : (in_asia ? asia_is_closed : false))
+
+    float act_entry = in_london ? lon_entry : (in_ny ? ny_entry : (in_asia ? asia_entry : 0.0))
+
+    if in_news_window
+
+        master_action_str := "⏳ NEWS WAITING"
+
+        master_action_bg := color.rgb(100, 80, 50)
+
+    else if act_break != 0
+
+        if act_sl_hit
+
+            master_action_str := "❌ STOPPED OUT"
+
+            master_action_bg := color.rgb(120, 50, 50)
+
+        else if act_closed
+
+            master_action_str := "⚖️ EXITED (DONE)"
+
+            master_action_bg := color.rgb(30, 41, 59)
+
+        else if in_ny and break_time_hr >= 11
+
+            master_action_str := "🛑 SKIP (LATE)"
+
+            master_action_bg := color.rgb(120, 50, 50)
+
+        else
+
+            float active_diff = (act_break == 1 or act_break == -2) ? (close - act_entry) : (act_entry - close)
+
+            if active_diff > 0
+
+                master_action_str := (act_break == 2 or act_break == -2) ? "✅ HOLD FADE" : "✅ HOLD BREAK"
+
+                master_action_bg := color.rgb(50, 120, 50)
+
+            else
+
+                master_action_str := "⏳ HOLD ACTIVE"
+
+                master_action_bg := color.rgb(100, 80, 50)
+
+    table.cell(hud, 0, 8, text="MASTER ACTION", text_color=color.yellow, bgcolor=color.rgb(15, 23, 42), text_size=size.small)
+
+    table.cell(hud, 1, 8, text=master_action_str, text_color=color.white, bgcolor=master_action_bg, text_size=size.small)
+
+    // --- Header Left: Morning Edge AI Dashboard ---
+
+    if show_morning_edge
+
+        table.cell(morning_edge, 0, 0, text="🤖 MORNING EDGE AI BRIEFING", text_color=color.yellow, bgcolor=color.rgb(15, 23, 42), text_size=size.small)
+
+        table.merge_cells(morning_edge, 0, 0, 1, 0)
+
+        // Bias cell
+
+        color bias_col = overall_bias == "BULLISH" ? color.new(color.green, 20) : (overall_bias == "BEARISH" ? color.new(color.red, 20) : color.rgb(30, 41, 59))
+
+        table.cell(morning_edge, 0, 1, text="Directional Bias", text_color=color.gray, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+        table.cell(morning_edge, 1, 1, text=overall_bias + " (" + str.tostring(confidence) + "%)", text_color=color.white, bgcolor=bias_col, text_size=size.small)
+
+        // HTF Alignment cell
+
+        color align_col = align_score == "HIGH" ? color.rgb(50, 120, 50) : (align_score == "MEDIUM" ? color.rgb(100, 80, 50) : color.rgb(120, 50, 50))
+
+        table.cell(morning_edge, 0, 2, text="HTF Alignment", text_color=color.gray, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+        table.cell(morning_edge, 1, 2, text=alignment_type + " (" + align_score + ")", text_color=color.white, bgcolor=align_col, text_size=size.small)
+
+        // Confluence
+
+        table.cell(morning_edge, 0, 3, text="Timeframe Setup", text_color=color.gray, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+        table.cell(morning_edge, 1, 3, text="D:" + d_bias_str + " | 4H:" + h4_bias_str + " | 15M:" + m15_bias_str, text_color=color.white, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+        // Key Support
+
+        string sup_txt = "YL: " + (na(yl_val) ? "N/A" : str.tostring(yl_val, "#.##")) + " | 4H L: " + (na(h4_pl) ? "N/A" : str.tostring(h4_pl, "#.##")) + " | WO: " + (na(weekly_open) ? "N/A" : str.tostring(weekly_open, "#.##"))
+
+        table.cell(morning_edge, 0, 4, text="Key Support", text_color=color.gray, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+        table.cell(morning_edge, 1, 4, text=sup_txt, text_color=color.white, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+        // Key Resistance
+
+        string res_txt = "YH: " + (na(yh_val) ? "N/A" : str.tostring(yh_val, "#.##")) + " | 4H H: " + (na(h4_ph) ? "N/A" : str.tostring(h4_ph, "#.##")) + " | PWH: " + (na(pwh) ? "N/A" : str.tostring(pwh, "#.##"))
+
+        table.cell(morning_edge, 0, 5, text="Key Resistance", text_color=color.gray, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+        table.cell(morning_edge, 1, 5, text=res_txt, text_color=color.white, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+        // Entry
+
+        table.cell(morning_edge, 0, 6, text="Entry Plan", text_color=color.gray, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+        table.cell(morning_edge, 1, 6, text=entry_zone, text_color=color.white, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+        // Stop Loss
+
+        table.cell(morning_edge, 0, 7, text="Stop Loss Plan", text_color=color.gray, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+        table.cell(morning_edge, 1, 7, text=sl_zone, text_color=color.white, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+        // Target Goals
+
+        string targets_txt = "T1: " + (na(t1_val) ? "N/A" : str.tostring(t1_val, "#.##")) + " | T2: " + (na(t2_val) ? "N/A" : str.tostring(t2_val, "#.##")) + " | T3: " + (na(t3_val) ? "N/A" : str.tostring(t3_val, "#.##"))
+
+        table.cell(morning_edge, 0, 8, text="Target Goals", text_color=color.gray, bgcolor=color.rgb(30, 41, 59), text_size=size.small)
+
+        table.cell(morning_edge, 1, 8, text=targets_txt, text_color=color.white, bgcolor=color.rgb(30, 41, 59), text_size=size.small)

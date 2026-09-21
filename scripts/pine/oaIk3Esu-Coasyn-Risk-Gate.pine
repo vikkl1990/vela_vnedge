@@ -1,0 +1,149 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Coasyn
+
+//@version=6
+indicator("COASYN TV Risk Precheck", overlay=true, max_labels_count=100, max_lines_count=100)
+
+// COASYN TV RISK PRECHECK — TradingView Pine v6
+// Purpose: show whether a trade's risk is acceptable before the operator lets TradingView size/order it.
+// No execution. No strategy orders. No alerts by default.
+
+// ---------------- Inputs ----------------
+tradeDirection = input.string("LONG", "Direction", options=["LONG", "SHORT"], group="Trade Setup")
+entryPrice     = input.float(0.0, "Entry Price", minval=0.0, step=0.00001, group="Trade Setup")
+stopPrice      = input.float(0.0, "Stop Price", minval=0.0, step=0.00001, group="Trade Setup")
+accountSize    = input.float(10000.0, "Account Size", minval=0.0, step=100.0, group="Risk Gates")
+maxRiskPercent = input.float(0.25, "Max Account Risk %", minval=0.0, step=0.01, group="Risk Gates")
+plannedRiskPct = input.float(0.25, "Planned TradingView Risk %", minval=0.0, step=0.01, group="Risk Gates")
+minRewardR     = input.float(1.50, "Minimum Reward R Required", minval=0.0, step=0.25, group="Risk Gates")
+maxStopPips    = input.float(35.0, "Maximum Stop Distance Pips", minval=0.0, step=0.5, group="Risk Gates")
+minStopPips    = input.float(3.0, "Minimum Stop Distance Pips", minval=0.0, step=0.5, group="Risk Gates")
+useAtrGate     = input.bool(true, "Use ATR Stop Reality Gate", group="Risk Gates")
+atrLength      = input.int(14, "ATR Length", minval=1, group="Risk Gates")
+maxStopAtr     = input.float(1.75, "Max Stop / ATR", minval=0.0, step=0.05, group="Risk Gates")
+minStopAtr     = input.float(0.20, "Min Stop / ATR", minval=0.0, step=0.05, group="Risk Gates")
+
+showPanel      = input.bool(true, "Show Risk Panel", group="Display")
+showLines      = input.bool(true, "Show Entry / Stop / R Lines", group="Display")
+panelPos       = input.string("Top Right", "Panel Position", options=["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group="Display")
+
+// ---------------- Helpers ----------------
+pipSize() =>
+    syminfo.mintick * ((syminfo.type == "forex" and (syminfo.mintick == 0.00001 or syminfo.mintick == 0.001)) ? 10.0 : 1.0)
+
+priceText(v) =>
+    v > 0 ? str.tostring(v, format.mintick) : "--"
+
+moneyText(v) =>
+    "$" + str.tostring(v, "#.##")
+
+// ---------------- Risk Precheck Calculations ----------------
+pip = pipSize()
+hasEntry = entryPrice > 0
+hasStop = stopPrice > 0
+riskDistance = hasEntry and hasStop ? math.abs(entryPrice - stopPrice) : 0.0
+stopPips = riskDistance > 0 ? riskDistance / pip : 0.0
+isLong = tradeDirection == "LONG"
+validDirection = hasEntry and hasStop and ((isLong and stopPrice < entryPrice) or (not isLong and stopPrice > entryPrice))
+
+riskAllowedMoney = accountSize * maxRiskPercent / 100.0
+plannedRiskMoney = accountSize * plannedRiskPct / 100.0
+riskOverLimit = plannedRiskPct > maxRiskPercent
+
+oneR = riskDistance
+r1 = isLong ? entryPrice + oneR : entryPrice - oneR
+rMin = isLong ? entryPrice + oneR * minRewardR : entryPrice - oneR * minRewardR
+r2 = isLong ? entryPrice + oneR * 2.0 : entryPrice - oneR * 2.0
+
+atr = ta.atr(atrLength)
+atrPips = atr / pip
+stopAtr = atr > 0 and riskDistance > 0 ? riskDistance / atr : 0.0
+stopTooWide = maxStopPips > 0 and stopPips > maxStopPips
+stopTooTight = minStopPips > 0 and stopPips < minStopPips
+atrTooWide = useAtrGate and maxStopAtr > 0 and stopAtr > maxStopAtr
+atrTooTight = useAtrGate and minStopAtr > 0 and stopAtr < minStopAtr
+
+status = accountSize <= 0 ? "ACCOUNT REQUIRED" :
+     not hasEntry ? "ENTRY REQUIRED" :
+     not hasStop ? "STOP REQUIRED" :
+     entryPrice == stopPrice ? "INVALID STOP" :
+     not validDirection ? "STOP ON WRONG SIDE" :
+     riskOverLimit ? "RISK ABOVE LIMIT" :
+     stopTooWide ? "STOP TOO WIDE" :
+     stopTooTight ? "STOP TOO TIGHT" :
+     atrTooWide ? "STOP WIDE VS ATR" :
+     atrTooTight ? "STOP TIGHT VS ATR" :
+     "RISK ACCEPTABLE"
+
+pass = status == "RISK ACCEPTABLE"
+
+// ---------------- Display Colors ----------------
+gold = color.rgb(212, 172, 74)
+bg = color.rgb(6, 9, 13)
+card = color.rgb(18, 23, 30)
+muted = color.rgb(136, 150, 164)
+textColor = color.rgb(230, 236, 242)
+good = color.rgb(78, 184, 124)
+bad = color.rgb(198, 92, 92)
+warn = color.rgb(220, 140, 20)
+sideColor = isLong ? good : bad
+statusColor = pass ? good : warn
+
+// ---------------- Panel ----------------
+pos = panelPos == "Top Left" ? position.top_left : panelPos == "Top Right" ? position.top_right : panelPos == "Bottom Right" ? position.bottom_right : position.bottom_left
+var table panel = table.new(pos, 2, 12, border_width=1)
+
+if barstate.islast and showPanel
+    table.cell(panel, 0, 0, "COASYN RISK PRECHECK", text_color=gold, bgcolor=bg, text_size=size.small)
+    table.cell(panel, 1, 0, status, text_color=statusColor, bgcolor=bg, text_size=size.small)
+    table.cell(panel, 0, 1, "SIDE", text_color=muted, bgcolor=card, text_size=size.small)
+    table.cell(panel, 1, 1, tradeDirection, text_color=sideColor, bgcolor=card, text_size=size.small)
+    table.cell(panel, 0, 2, "ENTRY", text_color=muted, bgcolor=card, text_size=size.small)
+    table.cell(panel, 1, 2, priceText(entryPrice), text_color=textColor, bgcolor=card, text_size=size.small)
+    table.cell(panel, 0, 3, "STOP", text_color=muted, bgcolor=card, text_size=size.small)
+    table.cell(panel, 1, 3, priceText(stopPrice), text_color=textColor, bgcolor=card, text_size=size.small)
+    table.cell(panel, 0, 4, "STOP DISTANCE", text_color=muted, bgcolor=card, text_size=size.small)
+    table.cell(panel, 1, 4, str.tostring(stopPips, "#.##") + " pips", text_color=stopTooWide or stopTooTight ? warn : textColor, bgcolor=card, text_size=size.small)
+    table.cell(panel, 0, 5, "STOP / ATR", text_color=muted, bgcolor=card, text_size=size.small)
+    table.cell(panel, 1, 5, useAtrGate ? str.tostring(stopAtr, "#.##") + "x" : "OFF", text_color=atrTooWide or atrTooTight ? warn : textColor, bgcolor=card, text_size=size.small)
+    table.cell(panel, 0, 6, "MAX RISK", text_color=muted, bgcolor=card, text_size=size.small)
+    table.cell(panel, 1, 6, str.tostring(maxRiskPercent, "#.##") + "% / " + moneyText(riskAllowedMoney), text_color=textColor, bgcolor=card, text_size=size.small)
+    table.cell(panel, 0, 7, "PLANNED TV RISK", text_color=muted, bgcolor=card, text_size=size.small)
+    table.cell(panel, 1, 7, str.tostring(plannedRiskPct, "#.##") + "% / " + moneyText(plannedRiskMoney), text_color=riskOverLimit ? bad : textColor, bgcolor=card, text_size=size.small)
+    table.cell(panel, 0, 8, "1R PRICE", text_color=muted, bgcolor=card, text_size=size.small)
+    table.cell(panel, 1, 8, validDirection ? priceText(r1) : "--", text_color=textColor, bgcolor=card, text_size=size.small)
+    table.cell(panel, 0, 9, "MIN ACCEPT R", text_color=muted, bgcolor=card, text_size=size.small)
+    table.cell(panel, 1, 9, validDirection ? str.tostring(minRewardR, "#.##") + "R @ " + priceText(rMin) : "--", text_color=gold, bgcolor=card, text_size=size.small)
+    table.cell(panel, 0, 10, "2R PRICE", text_color=muted, bgcolor=card, text_size=size.small)
+    table.cell(panel, 1, 10, validDirection ? priceText(r2) : "--", text_color=textColor, bgcolor=card, text_size=size.small)
+    table.cell(panel, 0, 11, "OPERATOR CALL", text_color=muted, bgcolor=card, text_size=size.small)
+    table.cell(panel, 1, 11, pass ? "CAN SIZE" : "DO NOT SIZE", text_color=pass ? good : bad, bgcolor=card, text_size=size.normal)
+
+if barstate.islast and not showPanel
+    table.clear(panel, 0, 0, 1, 11)
+
+// ---------------- Lines ----------------
+var line entryLine = na
+var line stopLine = na
+var line minRLine = na
+var label entryLabel = na
+var label stopLabel = na
+var label minRLabel = na
+
+if barstate.islast
+    line.delete(entryLine)
+    line.delete(stopLine)
+    line.delete(minRLine)
+    label.delete(entryLabel)
+    label.delete(stopLabel)
+    label.delete(minRLabel)
+    if showLines and hasEntry and hasStop
+        leftX = bar_index - 50
+        rightX = bar_index + 10
+        entryLine := line.new(leftX, entryPrice, rightX, entryPrice, color=gold, width=1)
+        stopLine := line.new(leftX, stopPrice, rightX, stopPrice, color=bad, width=1)
+        entryLabel := label.new(rightX, entryPrice, "ENTRY", style=label.style_label_left, textcolor=textColor, color=bg)
+        stopLabel := label.new(rightX, stopPrice, "STOP", style=label.style_label_left, textcolor=textColor, color=bg)
+        if validDirection
+            minRLine := line.new(leftX, rMin, rightX, rMin, color=good, width=1)
+            minRLabel := label.new(rightX, rMin, "MIN " + str.tostring(minRewardR, "#.##") + "R", style=label.style_label_left, textcolor=textColor, color=bg)

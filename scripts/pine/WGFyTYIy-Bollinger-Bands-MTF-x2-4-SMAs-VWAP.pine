@@ -1,0 +1,636 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+//  Bollinger Bands MTF x2 + 4 Adjustable MTF SMAs + VWAP
+//
+//  BB1: own timeframe, source, length, multiplier, basis MA type
+//  BB2: own timeframe, source, length, multiplier, basis MA type
+//  4 SMAs: each with own on/off, source, length, timeframe, colour, width
+//  VWAP: on/off, source, colour, width
+// ═══════════════════════════════════════════════════════════════════════════
+
+indicator(
+     "Bollinger Bands MTF x2 + 4 SMAs + VWAP",
+     "BB x2 + 4 SMA + VWAP",
+     overlay = true,
+     max_bars_back = 5000)
+
+// ───────────────────────────── General ─────────────────────────────
+GGEN = "⚙ General"
+
+repaint = input.bool(
+     false,
+     "Let higher-TF values update intrabar (repaints)",
+     group = GGEN,
+     tooltip = "OFF (default): higher-timeframe values only appear once that HTF bar has closed. Historical and realtime values match.\nON: values update live inside the forming HTF bar, but the plot will repaint.")
+
+// ═══════════════════════════════════════════════════════════════════════════
+//                              BOLLINGER BAND 1
+// ═══════════════════════════════════════════════════════════════════════════
+GBB1 = "① Bollinger Bands 1"
+
+bb1Tf = input.timeframe(
+     "",
+     "Timeframe",
+     group = GBB1,
+     tooltip = "Leave blank to use the chart timeframe.")
+
+bb1Src = input.source(
+     close,
+     "Source",
+     group = GBB1)
+
+bb1Len = input.int(
+     20,
+     "Length",
+     minval = 1,
+     group = GBB1)
+
+bb1Mult = input.float(
+     2.0,
+     "StdDev multiplier",
+     minval = 0.001,
+     maxval = 50,
+     step = 0.1,
+     group = GBB1)
+
+bb1Type = input.string(
+     "SMA",
+     "Basis MA type",
+     options = ["SMA", "EMA", "WMA", "RMA", "VWMA", "HMA"],
+     group = GBB1)
+
+bb1Show = input.bool(
+     true,
+     "Show upper / lower",
+     group = GBB1,
+     inline = "bb1v1")
+
+bb1ShowMid = input.bool(
+     true,
+     "Show basis",
+     group = GBB1,
+     inline = "bb1v1")
+
+bb1Fill = input.bool(
+     true,
+     "Shade between bands",
+     group = GBB1)
+
+bb1ColB = input.color(
+     #ff9800,
+     "Basis",
+     group = GBB1,
+     inline = "bb1c1")
+
+bb1ColU = input.color(
+     #2962ff,
+     "Upper",
+     group = GBB1,
+     inline = "bb1c1")
+
+bb1ColL = input.color(
+     #2962ff,
+     "Lower",
+     group = GBB1,
+     inline = "bb1c1")
+
+bb1Width = input.int(
+     1,
+     "Line width",
+     minval = 1,
+     maxval = 4,
+     group = GBB1)
+
+// ═══════════════════════════════════════════════════════════════════════════
+//                              BOLLINGER BAND 2
+// ═══════════════════════════════════════════════════════════════════════════
+GBB2 = "② Bollinger Bands 2"
+
+bb2Tf = input.timeframe(
+     "",
+     "Timeframe",
+     group = GBB2,
+     tooltip = "Leave blank to use the chart timeframe.")
+
+bb2Src = input.source(
+     close,
+     "Source",
+     group = GBB2)
+
+bb2Len = input.int(
+     50,
+     "Length",
+     minval = 1,
+     group = GBB2)
+
+bb2Mult = input.float(
+     2.0,
+     "StdDev multiplier",
+     minval = 0.001,
+     maxval = 50,
+     step = 0.1,
+     group = GBB2)
+
+bb2Type = input.string(
+     "SMA",
+     "Basis MA type",
+     options = ["SMA", "EMA", "WMA", "RMA", "VWMA", "HMA"],
+     group = GBB2)
+
+bb2Show = input.bool(
+     true,
+     "Show upper / lower",
+     group = GBB2,
+     inline = "bb2v1")
+
+bb2ShowMid = input.bool(
+     true,
+     "Show basis",
+     group = GBB2,
+     inline = "bb2v1")
+
+bb2Fill = input.bool(
+     false,
+     "Shade between bands",
+     group = GBB2)
+
+bb2ColB = input.color(
+     #e91e63,
+     "Basis",
+     group = GBB2,
+     inline = "bb2c1")
+
+bb2ColU = input.color(
+     #9c27b0,
+     "Upper",
+     group = GBB2,
+     inline = "bb2c1")
+
+bb2ColL = input.color(
+     #9c27b0,
+     "Lower",
+     group = GBB2,
+     inline = "bb2c1")
+
+bb2Width = input.int(
+     1,
+     "Line width",
+     minval = 1,
+     maxval = 4,
+     group = GBB2)
+
+// ═══════════════════════════════════════════════════════════════════════════
+//                                  SMA 1
+// ═══════════════════════════════════════════════════════════════════════════
+G1 = "③ SMA 1"
+
+s1On = input.bool(
+     true,
+     "Enabled",
+     group = G1,
+     inline = "s1a")
+
+s1Len = input.int(
+     20,
+     "Length",
+     minval = 1,
+     group = G1,
+     inline = "s1a")
+
+s1Src = input.source(
+     close,
+     "Source",
+     group = G1)
+
+s1Tf = input.timeframe(
+     "",
+     "Timeframe",
+     group = G1)
+
+s1Col = input.color(
+     #26a69a,
+     "Colour",
+     group = G1,
+     inline = "s1b")
+
+s1W = input.int(
+     2,
+     "Width",
+     minval = 1,
+     maxval = 4,
+     group = G1,
+     inline = "s1b")
+
+// ═══════════════════════════════════════════════════════════════════════════
+//                                  SMA 2
+// ═══════════════════════════════════════════════════════════════════════════
+G2 = "④ SMA 2"
+
+s2On = input.bool(
+     true,
+     "Enabled",
+     group = G2,
+     inline = "s2a")
+
+s2Len = input.int(
+     50,
+     "Length",
+     minval = 1,
+     group = G2,
+     inline = "s2a")
+
+s2Src = input.source(
+     close,
+     "Source",
+     group = G2)
+
+s2Tf = input.timeframe(
+     "",
+     "Timeframe",
+     group = G2)
+
+s2Col = input.color(
+     #ffeb3b,
+     "Colour",
+     group = G2,
+     inline = "s2b")
+
+s2W = input.int(
+     2,
+     "Width",
+     minval = 1,
+     maxval = 4,
+     group = G2,
+     inline = "s2b")
+
+// ═══════════════════════════════════════════════════════════════════════════
+//                                  SMA 3
+// ═══════════════════════════════════════════════════════════════════════════
+G3 = "⑤ SMA 3"
+
+s3On = input.bool(
+     true,
+     "Enabled",
+     group = G3,
+     inline = "s3a")
+
+s3Len = input.int(
+     100,
+     "Length",
+     minval = 1,
+     group = G3,
+     inline = "s3a")
+
+s3Src = input.source(
+     close,
+     "Source",
+     group = G3)
+
+s3Tf = input.timeframe(
+     "",
+     "Timeframe",
+     group = G3)
+
+s3Col = input.color(
+     #ef5350,
+     "Colour",
+     group = G3,
+     inline = "s3b")
+
+s3W = input.int(
+     2,
+     "Width",
+     minval = 1,
+     maxval = 4,
+     group = G3,
+     inline = "s3b")
+
+// ═══════════════════════════════════════════════════════════════════════════
+//                                  SMA 4
+// ═══════════════════════════════════════════════════════════════════════════
+G4 = "⑥ SMA 4"
+
+s4On = input.bool(
+     true,
+     "Enabled",
+     group = G4,
+     inline = "s4a")
+
+s4Len = input.int(
+     200,
+     "Length",
+     minval = 1,
+     group = G4,
+     inline = "s4a")
+
+s4Src = input.source(
+     close,
+     "Source",
+     group = G4)
+
+s4Tf = input.timeframe(
+     "",
+     "Timeframe",
+     group = G4)
+
+s4Col = input.color(
+     #ab47bc,
+     "Colour",
+     group = G4,
+     inline = "s4b")
+
+s4W = input.int(
+     3,
+     "Width",
+     minval = 1,
+     maxval = 4,
+     group = G4,
+     inline = "s4b")
+
+// ═══════════════════════════════════════════════════════════════════════════
+//                                    VWAP
+// ═══════════════════════════════════════════════════════════════════════════
+GVWAP = "⑦ VWAP"
+
+vwapOn = input.bool(
+     true,
+     "Enabled",
+     group = GVWAP,
+     inline = "v1")
+
+vwapSrc = input.source(
+     hlc3,
+     "Source",
+     group = GVWAP)
+
+vwapCol = input.color(
+     #00bcd4,
+     "Colour",
+     group = GVWAP,
+     inline = "v2")
+
+vwapW = input.int(
+     2,
+     "Width",
+     minval = 1,
+     maxval = 4,
+     group = GVWAP,
+     inline = "v2")
+
+// ═══════════════════════════════════════════════════════════════════════════
+//                                  HELPERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Selectable moving average for Bollinger basis
+maCalc(float src, simple int len, simple string t) =>
+    switch t
+        "SMA"  => ta.sma(src, len)
+        "EMA"  => ta.ema(src, len)
+        "WMA"  => ta.wma(src, len)
+        "RMA"  => ta.rma(src, len)
+        "VWMA" => ta.vwma(src, len)
+        "HMA"  => ta.hma(src, len)
+        => ta.sma(src, len)
+
+// True only when requested TF is genuinely higher than chart TF
+isHigher(simple string tf) =>
+    timeframe.in_seconds(tf) > timeframe.in_seconds(timeframe.period)
+
+// Non-repainting MTF SMA
+smaTf(float src, simple int len, simple string tf) =>
+    v = ta.sma(src, len)
+    simple bool nr = not repaint and isHigher(tf)
+
+    request.security(
+         syminfo.tickerid,
+         tf,
+         v[nr ? 1 : 0],
+         gaps = barmerge.gaps_off,
+         lookahead = nr ? barmerge.lookahead_on : barmerge.lookahead_off)
+
+// ═══════════════════════════════════════════════════════════════════════════
+//                              BB1 CALCULATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+basis1Local = maCalc(
+     bb1Src,
+     bb1Len,
+     bb1Type)
+
+dev1Local = bb1Mult * ta.stdev(
+     bb1Src,
+     bb1Len)
+
+simple bool bb1Nr =
+     not repaint and isHigher(bb1Tf)
+
+[basis1, dev1] = request.security(
+     syminfo.tickerid,
+     bb1Tf,
+     [basis1Local[bb1Nr ? 1 : 0], dev1Local[bb1Nr ? 1 : 0]],
+     gaps = barmerge.gaps_off,
+     lookahead = bb1Nr ? barmerge.lookahead_on : barmerge.lookahead_off)
+
+upper1 = basis1 + dev1
+lower1 = basis1 - dev1
+
+// ═══════════════════════════════════════════════════════════════════════════
+//                              BB2 CALCULATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+basis2Local = maCalc(
+     bb2Src,
+     bb2Len,
+     bb2Type)
+
+dev2Local = bb2Mult * ta.stdev(
+     bb2Src,
+     bb2Len)
+
+simple bool bb2Nr =
+     not repaint and isHigher(bb2Tf)
+
+[basis2, dev2] = request.security(
+     syminfo.tickerid,
+     bb2Tf,
+     [basis2Local[bb2Nr ? 1 : 0], dev2Local[bb2Nr ? 1 : 0]],
+     gaps = barmerge.gaps_off,
+     lookahead = bb2Nr ? barmerge.lookahead_on : barmerge.lookahead_off)
+
+upper2 = basis2 + dev2
+lower2 = basis2 - dev2
+
+// ═══════════════════════════════════════════════════════════════════════════
+//                              SMA CALCULATIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+sma1 = smaTf(
+     s1Src,
+     s1Len,
+     s1Tf)
+
+sma2 = smaTf(
+     s2Src,
+     s2Len,
+     s2Tf)
+
+sma3 = smaTf(
+     s3Src,
+     s3Len,
+     s3Tf)
+
+sma4 = smaTf(
+     s4Src,
+     s4Len,
+     s4Tf)
+
+// ═══════════════════════════════════════════════════════════════════════════
+//                              VWAP CALCULATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+vwapValue = ta.vwap(vwapSrc)
+
+// ═══════════════════════════════════════════════════════════════════════════
+//                                   PLOTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ───────────────────────────── BB1 ─────────────────────────────
+pU1 = plot(
+     bb1Show ? upper1 : na,
+     "BB1 Upper",
+     color = bb1ColU,
+     linewidth = bb1Width)
+
+pL1 = plot(
+     bb1Show ? lower1 : na,
+     "BB1 Lower",
+     color = bb1ColL,
+     linewidth = bb1Width)
+
+plot(
+     bb1ShowMid ? basis1 : na,
+     "BB1 Basis",
+     color = bb1ColB,
+     linewidth = bb1Width)
+
+fill(
+     pU1,
+     pL1,
+     color = bb1Fill and bb1Show
+          ? color.new(bb1ColU, 92)
+          : na,
+     title = "BB1 Fill")
+
+// ───────────────────────────── BB2 ─────────────────────────────
+pU2 = plot(
+     bb2Show ? upper2 : na,
+     "BB2 Upper",
+     color = bb2ColU,
+     linewidth = bb2Width)
+
+pL2 = plot(
+     bb2Show ? lower2 : na,
+     "BB2 Lower",
+     color = bb2ColL,
+     linewidth = bb2Width)
+
+plot(
+     bb2ShowMid ? basis2 : na,
+     "BB2 Basis",
+     color = bb2ColB,
+     linewidth = bb2Width)
+
+fill(
+     pU2,
+     pL2,
+     color = bb2Fill and bb2Show
+          ? color.new(bb2ColU, 92)
+          : na,
+     title = "BB2 Fill")
+
+// ───────────────────────────── SMA 1 ─────────────────────────────
+plot(
+     s1On ? sma1 : na,
+     "SMA 1",
+     color = s1Col,
+     linewidth = s1W)
+
+// ───────────────────────────── SMA 2 ─────────────────────────────
+plot(
+     s2On ? sma2 : na,
+     "SMA 2",
+     color = s2Col,
+     linewidth = s2W)
+
+// ───────────────────────────── SMA 3 ─────────────────────────────
+plot(
+     s3On ? sma3 : na,
+     "SMA 3",
+     color = s3Col,
+     linewidth = s3W)
+
+// ───────────────────────────── SMA 4 ─────────────────────────────
+plot(
+     s4On ? sma4 : na,
+     "SMA 4",
+     color = s4Col,
+     linewidth = s4W)
+
+// ───────────────────────────── VWAP ─────────────────────────────
+plot(
+     vwapOn ? vwapValue : na,
+     "VWAP",
+     color = vwapCol,
+     linewidth = vwapW)
+
+// ═══════════════════════════════════════════════════════════════════════════
+//                                   ALERTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ───────────────────────────── BB1 Alerts ─────────────────────────────
+alertcondition(
+     ta.crossover(close, upper1),
+     "BB1 - Close crosses above Upper Band",
+     "Price closed above BB1 upper Bollinger Band")
+
+alertcondition(
+     ta.crossunder(close, lower1),
+     "BB1 - Close crosses below Lower Band",
+     "Price closed below BB1 lower Bollinger Band")
+
+alertcondition(
+     ta.crossover(close, basis1),
+     "BB1 - Close crosses above Basis",
+     "Price closed above BB1 Bollinger basis")
+
+alertcondition(
+     ta.crossunder(close, basis1),
+     "BB1 - Close crosses below Basis",
+     "Price closed below BB1 Bollinger basis")
+
+// ───────────────────────────── BB2 Alerts ─────────────────────────────
+alertcondition(
+     ta.crossover(close, upper2),
+     "BB2 - Close crosses above Upper Band",
+     "Price closed above BB2 upper Bollinger Band")
+
+alertcondition(
+     ta.crossunder(close, lower2),
+     "BB2 - Close crosses below Lower Band",
+     "Price closed below BB2 lower Bollinger Band")
+
+alertcondition(
+     ta.crossover(close, basis2),
+     "BB2 - Close crosses above Basis",
+     "Price closed above BB2 Bollinger basis")
+
+alertcondition(
+     ta.crossunder(close, basis2),
+     "BB2 - Close crosses below Basis",
+     "Price closed below BB2 Bollinger basis")
+
+// ───────────────────────────── SMA Alerts ─────────────────────────────
+alertcondition(
+     ta.cross(sma1, sma2),
+     "SMA 1 / SMA 2 cross",
+     "SMA 1 crossed SMA 2")

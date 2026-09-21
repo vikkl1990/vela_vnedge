@@ -1,0 +1,307 @@
+//@version=6
+indicator("ATK/DEF — Temporal Session Sweep Hunt Timeworks", overlay=true, max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+
+// ========== Inputs ==========
+grp_main = "Main Settings"
+atk_limit = input.int(3, "ATK Max Count", minval=1, maxval=10, group=grp_main)
+def_limit = input.int(3, "DEF Max Count", minval=1, maxval=10, group=grp_main)
+show_ob = input.bool(true, "Show Order Blocks", group=grp_main)
+
+grp_fifo = "FIFO Settings"
+fifo_size = input.int(5, "Events Kept per Session", minval=1, maxval=20, group=grp_fifo)
+
+grp_sess = "Session Settings (GMT+8)"
+asia_sess   = input.session("0600-1400", "Asia Session", group=grp_sess)
+london_sess = input.session("1400-2200", "London Session", group=grp_sess)
+ny_sess     = input.session("2200-0600", "New York Session", group=grp_sess)
+reset_hour  = input.int(6, "Daily Reset Hour (GMT+8)", minval=0, maxval=23, group=grp_sess)
+tz_input    = input.string("GMT+8", "Timezone", options=["GMT+8","GMT+0","Exchange"], group=grp_sess)
+
+grp_style = "Style"
+bull_color = input.color(color.new(color.green, 70), "Bullish / True Breakout Color", group=grp_style)
+bear_color = input.color(color.new(color.red, 70), "Bearish / True Breakdown Color", group=grp_style)
+fake_bull_color = input.color(color.new(color.orange, 70), "Fake Breakout (Reject DOWN) Color", group=grp_style)
+fake_bear_color = input.color(color.new(color.purple, 70), "Fake Breakout (Reject UP) Color", group=grp_style)
+
+// ========== Timezone ==========
+tz = tz_input == "GMT+8" ? "GMT+8" : tz_input == "GMT+0" ? "GMT+0" : syminfo.timezone
+
+// ========== Session Detection ==========
+in_asia   = not na(time(timeframe.period, asia_sess,   tz))
+in_london = not na(time(timeframe.period, london_sess, tz))
+in_ny     = not na(time(timeframe.period, ny_sess,     tz))
+
+// ========== Daily Reset ==========
+cur_hour = hour(time, tz)
+cur_min  = minute(time, tz)
+
+var int last_reset_day = na
+today_key = dayofmonth(time, tz) + month(time, tz) * 100 + year(time, tz) * 10000
+is_new_day = na(last_reset_day) or today_key != last_reset_day
+do_reset = is_new_day and cur_hour >= reset_hour
+if do_reset
+    last_reset_day := today_key
+
+// ========== Previous Values ==========
+prev_high = high[1]
+prev_low  = low[1]
+h3 = high[3]
+l3 = low[3]
+
+// ========== True Breakout / True Breakdown ==========
+true_breakout_bull = high > prev_high and low >= prev_low
+true_breakout_bear = low < prev_low and high <= prev_high
+
+var int atk_count = 0
+var int def_count = 0
+
+if do_reset
+    atk_count := 0
+    def_count := 0
+
+if true_breakout_bull and atk_count < atk_limit
+    atk_count += 1
+else if not true_breakout_bull
+    atk_count := 0
+
+if true_breakout_bear and def_count < def_limit
+    def_count += 1
+else if not true_breakout_bear
+    def_count := 0
+
+// ========== Fake Breakout ==========
+fake_breakout_bull = low < l3 and low[3] >= l3
+fake_breakout_bear = high > h3 and high[3] <= h3
+
+// ========== Momentum / Volume Filter ==========
+avg_body = ta.sma(math.abs(close - open), 20)
+avg_vol  = ta.sma(volume, 20)
+strong_body = math.abs(close - open) > avg_body * 1.5
+strong_vol  = volume > avg_vol * 1.5
+high_impact = strong_body and strong_vol
+
+barcolor(high_impact ? color.new(color.yellow, 60) : na)
+
+// ========== Order Blocks ==========
+var box bull_ob = na
+var box bear_ob = na
+
+if show_ob and true_breakout_bull and atk_count == 1
+    if not na(bull_ob)
+        box.delete(bull_ob)
+    bull_ob := box.new(bar_index-1, prev_high, bar_index+10, prev_low,
+                       border_color=bull_color, bgcolor=bull_color)
+
+if show_ob and true_breakout_bear and def_count == 1
+    if not na(bear_ob)
+        box.delete(bear_ob)
+    bear_ob := box.new(bar_index-1, prev_high, bar_index+10, prev_low,
+                       border_color=bear_color, bgcolor=bear_color)
+
+if show_ob and fake_breakout_bull
+    box.new(bar_index-3, h3, bar_index+5, l3,
+            border_color=fake_bull_color, bgcolor=color.new(fake_bull_color, 85))
+
+if show_ob and fake_breakout_bear
+    box.new(bar_index-3, h3, bar_index+5, l3,
+            border_color=fake_bear_color, bgcolor=color.new(fake_bear_color, 85))
+
+// ========== Labels ==========
+if true_breakout_bull and atk_count <= atk_limit
+    label.new(bar_index, high, "ATK +" + str.tostring(atk_count),
+              color=color.new(color.green, 80), style=label.style_label_down,
+              textcolor=color.green, size=size.small)
+if true_breakout_bear and def_count <= def_limit
+    label.new(bar_index, low, "DEF +" + str.tostring(def_count),
+              color=color.new(color.red, 80), style=label.style_label_up,
+              textcolor=color.red, size=size.small)
+if fake_breakout_bull
+    label.new(bar_index, low, "Reject DOWN",
+              color=color.new(color.orange, 80), style=label.style_label_up,
+              textcolor=color.orange, size=size.small)
+if fake_breakout_bear
+    label.new(bar_index, high, "Reject UP",
+              color=color.new(color.purple, 80), style=label.style_label_down,
+              textcolor=color.purple, size=size.small)
+
+// ========== Session FIFO Queues ==========
+// Each session has 5 parallel arrays: timestamp, direction, impact price, break price, volume flag
+// Enqueue via push, dequeue via shift when exceeding fifo_size (FIFO)
+
+// --- Asia ---
+var array<int>    asia_time   = array.new<int>()
+var array<string> asia_dir    = array.new<string>()
+var array<float>  asia_impact = array.new<float>()
+var array<float>  asia_break  = array.new<float>()
+var array<bool>   asia_vol    = array.new<bool>()
+
+// --- London ---
+var array<int>    ldn_time   = array.new<int>()
+var array<string> ldn_dir    = array.new<string>()
+var array<float>  ldn_impact = array.new<float>()
+var array<float>  ldn_break  = array.new<float>()
+var array<bool>   ldn_vol    = array.new<bool>()
+
+// --- New York ---
+var array<int>    ny_time   = array.new<int>()
+var array<string> ny_dir    = array.new<string>()
+var array<float>  ny_impact = array.new<float>()
+var array<float>  ny_break  = array.new<float>()
+var array<bool>   ny_vol    = array.new<bool>()
+
+// Clear helper
+clear_queue(array<int> t, array<string> d, array<float> i, array<float> b, array<bool> v) =>
+    array.clear(t)
+    array.clear(d)
+    array.clear(i)
+    array.clear(b)
+    array.clear(v)
+
+if do_reset
+    clear_queue(asia_time, asia_dir, asia_impact, asia_break, asia_vol)
+    clear_queue(ldn_time,  ldn_dir,  ldn_impact,  ldn_break,  ldn_vol)
+    clear_queue(ny_time,   ny_dir,   ny_impact,   ny_break,   ny_vol)
+
+// Enqueue helper
+enqueue(array<int> t, array<string> d, array<float> i, array<float> b, array<bool> v,
+        int ts, string dir, float imp, float brk, bool vol, int maxSize) =>
+    array.push(t, ts)
+    array.push(d, dir)
+    array.push(i, imp)
+    array.push(b, brk)
+    array.push(v, vol)
+    if array.size(t) > maxSize
+        array.shift(t)
+        array.shift(d)
+        array.shift(i)
+        array.shift(b)
+        array.shift(v)
+
+// Event detection
+is_impact_bull = true_breakout_bull and high_impact
+is_impact_bear = true_breakout_bear and high_impact
+
+// Build event (one event per bar, priority: true breakout > fake breakout)
+string evt_dir = na
+float  evt_impact = na
+float  evt_break = na
+bool   evt_vol = false
+
+if is_impact_bull
+    evt_dir := "Bull Impact"
+    evt_impact := high
+    evt_break := prev_high
+    evt_vol := true
+else if is_impact_bear
+    evt_dir := "Bear Impact"
+    evt_impact := low
+    evt_break := prev_low
+    evt_vol := true
+else if fake_breakout_bull
+    evt_dir := "Trap DOWN"
+    evt_impact := low
+    evt_break := l3
+    evt_vol := high_impact
+else if fake_breakout_bear
+    evt_dir := "Trap UP"
+    evt_impact := high
+    evt_break := h3
+    evt_vol := high_impact
+
+has_event = not na(evt_dir)
+
+// Enqueue per session
+if has_event and in_asia
+    enqueue(asia_time, asia_dir, asia_impact, asia_break, asia_vol,
+            time, evt_dir, evt_impact, evt_break, evt_vol, fifo_size)
+
+if has_event and in_london
+    enqueue(ldn_time, ldn_dir, ldn_impact, ldn_break, ldn_vol,
+            time, evt_dir, evt_impact, evt_break, evt_vol, fifo_size)
+
+if has_event and in_ny
+    enqueue(ny_time, ny_dir, ny_impact, ny_break, ny_vol,
+            time, evt_dir, evt_impact, evt_break, evt_vol, fifo_size)
+
+// ========== Right-Side FIFO Table ==========
+var table tbl = table.new(position.top_right, 6, fifo_size * 3 + 4, border_width=1, frame_width=1)
+
+fmt_price(float p) => na(p) ? "—" : str.tostring(p, format.mintick)
+fmt_time(int t)   => na(t) ? "—" : str.format_time(t, "HH:mm", tz)
+
+if barstate.islast
+    // Header
+    table.cell(tbl, 0, 0, "Session",   bgcolor=color.new(color.gray, 60), text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 1, 0, "Time",      bgcolor=color.new(color.gray, 60), text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 2, 0, "Direction", bgcolor=color.new(color.gray, 60), text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 3, 0, "Impact",    bgcolor=color.new(color.gray, 60), text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 4, 0, "Break",     bgcolor=color.new(color.gray, 60), text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 5, 0, "Vol",       bgcolor=color.new(color.gray, 60), text_color=color.white, text_size=size.tiny)
+
+    row = 1
+
+    // ---- Asia ----
+    table.cell(tbl, 0, row, "Asia (" + str.tostring(array.size(asia_time)) + ")", bgcolor=color.new(color.blue, 80), text_color=color.white, text_size=size.tiny)
+    for c = 1 to 5
+        table.cell(tbl, c, row, "", bgcolor=color.new(color.blue, 80))
+    row += 1
+    if array.size(asia_time) == 0
+        table.cell(tbl, 0, row, "—", bgcolor=color.new(color.blue, 90), text_color=color.gray, text_size=size.tiny)
+        for c = 1 to 5
+            table.cell(tbl, c, row, "", bgcolor=color.new(color.blue, 90))
+        row += 1
+    else
+        for i = 0 to array.size(asia_time) - 1
+            table.cell(tbl, 0, row, "", bgcolor=color.new(color.blue, 90))
+            table.cell(tbl, 1, row, fmt_time(array.get(asia_time, i)), bgcolor=color.new(color.blue, 90), text_color=color.white, text_size=size.tiny)
+            table.cell(tbl, 2, row, array.get(asia_dir, i), bgcolor=color.new(color.blue, 90), text_color=color.white, text_size=size.tiny)
+            table.cell(tbl, 3, row, fmt_price(array.get(asia_impact, i)), bgcolor=color.new(color.blue, 90), text_color=color.white, text_size=size.tiny)
+            table.cell(tbl, 4, row, fmt_price(array.get(asia_break, i)),  bgcolor=color.new(color.blue, 90), text_color=color.white, text_size=size.tiny)
+            table.cell(tbl, 5, row, array.get(asia_vol, i) ? "✔" : "✘", bgcolor=color.new(color.blue, 90), text_color=array.get(asia_vol, i) ? color.lime : color.gray, text_size=size.tiny)
+            row += 1
+
+    // ---- London ----
+    table.cell(tbl, 0, row, "London (" + str.tostring(array.size(ldn_time)) + ")", bgcolor=color.new(color.orange, 80), text_color=color.white, text_size=size.tiny)
+    for c = 1 to 5
+        table.cell(tbl, c, row, "", bgcolor=color.new(color.orange, 80))
+    row += 1
+    if array.size(ldn_time) == 0
+        table.cell(tbl, 0, row, "—", bgcolor=color.new(color.orange, 90), text_color=color.gray, text_size=size.tiny)
+        for c = 1 to 5
+            table.cell(tbl, c, row, "", bgcolor=color.new(color.orange, 90))
+        row += 1
+    else
+        for i = 0 to array.size(ldn_time) - 1
+            table.cell(tbl, 0, row, "", bgcolor=color.new(color.orange, 90))
+            table.cell(tbl, 1, row, fmt_time(array.get(ldn_time, i)), bgcolor=color.new(color.orange, 90), text_color=color.white, text_size=size.tiny)
+            table.cell(tbl, 2, row, array.get(ldn_dir, i), bgcolor=color.new(color.orange, 90), text_color=color.white, text_size=size.tiny)
+            table.cell(tbl, 3, row, fmt_price(array.get(ldn_impact, i)), bgcolor=color.new(color.orange, 90), text_color=color.white, text_size=size.tiny)
+            table.cell(tbl, 4, row, fmt_price(array.get(ldn_break, i)),  bgcolor=color.new(color.orange, 90), text_color=color.white, text_size=size.tiny)
+            table.cell(tbl, 5, row, array.get(ldn_vol, i) ? "✔" : "✘", bgcolor=color.new(color.orange, 90), text_color=array.get(ldn_vol, i) ? color.lime : color.gray, text_size=size.tiny)
+            row += 1
+
+    // ---- New York ----
+    table.cell(tbl, 0, row, "New York (" + str.tostring(array.size(ny_time)) + ")", bgcolor=color.new(color.purple, 80), text_color=color.white, text_size=size.tiny)
+    for c = 1 to 5
+        table.cell(tbl, c, row, "", bgcolor=color.new(color.purple, 80))
+    row += 1
+    if array.size(ny_time) == 0
+        table.cell(tbl, 0, row, "—", bgcolor=color.new(color.purple, 90), text_color=color.gray, text_size=size.tiny)
+        for c = 1 to 5
+            table.cell(tbl, c, row, "", bgcolor=color.new(color.purple, 90))
+        row += 1
+    else
+        for i = 0 to array.size(ny_time) - 1
+            table.cell(tbl, 0, row, "", bgcolor=color.new(color.purple, 90))
+            table.cell(tbl, 1, row, fmt_time(array.get(ny_time, i)), bgcolor=color.new(color.purple, 90), text_color=color.white, text_size=size.tiny)
+            table.cell(tbl, 2, row, array.get(ny_dir, i), bgcolor=color.new(color.purple, 90), text_color=color.white, text_size=size.tiny)
+            table.cell(tbl, 3, row, fmt_price(array.get(ny_impact, i)), bgcolor=color.new(color.purple, 90), text_color=color.white, text_size=size.tiny)
+            table.cell(tbl, 4, row, fmt_price(array.get(ny_break, i)),  bgcolor=color.new(color.purple, 90), text_color=color.white, text_size=size.tiny)
+            table.cell(tbl, 5, row, array.get(ny_vol, i) ? "✔" : "✘", bgcolor=color.new(color.purple, 90), text_color=array.get(ny_vol, i) ? color.lime : color.gray, text_size=size.tiny)
+            row += 1
+
+// ========== Alerts ==========
+alertcondition(true_breakout_bull and atk_count > 0, "True Breakout Bullish", "ATK count triggered")
+alertcondition(true_breakout_bear and def_count > 0, "True Breakdown Bearish", "DEF count triggered")
+alertcondition(fake_breakout_bull, "Fake Breakout Reject DOWN", "Fake breakout bullish signal")
+alertcondition(fake_breakout_bear, "Fake Breakout Reject UP", "Fake breakout bearish signal")

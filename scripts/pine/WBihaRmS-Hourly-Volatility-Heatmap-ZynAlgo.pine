@@ -1,0 +1,559 @@
+// Hourly Volatility Heatmap [ZynAlgo] - TradingView (Pine)
+// Free, open-source. Non-repaint: every signal decision gates on barstate.isconfirmed.
+//@version=6
+indicator("Hourly Volatility Heatmap [ZynAlgo]", shorttitle="Hourly Volatility Heatmap [ZynAlgo]", overlay=true, max_lines_count=100, max_labels_count=200, max_boxes_count=200)
+
+// =============================================================================
+// 1. INPUTS
+// =============================================================================
+grp_mode = "Toggles & UI Mode"
+tradeMode = input.bool(false, "Enable Trade Mode", group=grp_mode, tooltip="OFF: signal marker still fires with a reason tooltip, Stability Mode / Smart Signal Filter are bypassed, no box/SL-TP tracking. ON: full position box + trailing SL + Win Rate/PF tracking activates, and Stability Mode / Smart Signal Filter start actually gating entries.")
+
+grp_tz = "Timezone & Data Settings"
+tzInput      = input.string("UTC", "Timezone (UTC Offset)", options=["UTC-12", "UTC-11", "UTC-10", "UTC-9", "UTC-8", "UTC-7", "UTC-6", "UTC-5", "UTC-4", "UTC-3", "UTC-2", "UTC-1", "UTC", "UTC+1", "UTC+2", "UTC+3", "UTC+4", "UTC+5", "UTC+5:30", "UTC+6", "UTC+7", "UTC+8", "UTC+9", "UTC+10", "UTC+11", "UTC+12", "UTC+13", "UTC+14"], group=grp_tz, tooltip="Aligns the hours in the statistics table with your own timezone.")
+lookbackDays = input.int(30, "Lookback Days", minval=5, maxval=100, group=grp_tz, tooltip="Number of past days used to build the hourly statistics.")
+
+grp_signal = "Signal Settings"
+topNHours = input.int(5, "Hot Hours Filter (Top N by combined score)", minval=1, maxval=24, group=grp_signal, tooltip="Signals are allowed only during the Top N hottest hours.")
+swingLen  = input.int(5, "Swing Length (bars)", minval=2, group=grp_signal, tooltip="Pivot lookback length used to detect the swing highs and lows that get swept.")
+
+grp_bias = "Seasonal Bias Filter"
+useBiasFilter = input.bool(true, "Enable Directional Bias Filter", group=grp_bias, tooltip="Filters signals by the historical share of bullish or bearish closes in that hour.")
+
+grp_mom = "Momentum Filter (RSI Divergence)"
+useRsiDiv = input.bool(true, "Enable RSI Divergence Filter", group=grp_mom, tooltip="Requires an RSI divergence at the sweep - price makes a new extreme while RSI does not.")
+rsiLen    = input.int(14, "RSI Length", minval=1, group=grp_mom)
+
+grp_display = "Display"
+string uiSizeStr  = input.string("Small", "UI Text Size (chart + dashboard)", options=["Tiny", "Small", "Normal", "Large"], group=grp_display)
+
+grp_risk = "Risk & Reward"
+tp1R               = input.float(1.0, "TP1 (R)", minval=0.1, step=0.1, group=grp_risk)
+tp2R               = input.float(2.0, "TP2 (R)", minval=0.1, step=0.1, group=grp_risk)
+tp3R               = input.float(3.0, "TP3 (R)", minval=0.1, step=0.1, group=grp_risk)
+enableTP2          = input.bool(true, "Enable TP2", group=grp_risk)
+enableTP3          = input.bool(true, "Enable TP3", group=grp_risk)
+maxTradeDuration   = input.int(200, "Max Trade Duration (Bars)", minval=10, group=grp_risk)
+maxStoredTrades    = input.int(30, "Max Stored Trade Records (history)", minval=5, group=grp_risk)
+
+grp_filters = "Execution Filters"
+useStabilityMode    = input.bool(true, "Stability Mode (no new signal while a trade is open)", group=grp_filters)
+useSmartFilter      = input.bool(false, "Smart Signal Filter (force alternating Buy/Sell)", group=grp_filters)
+reversalLockBars    = input.int(5, "Cooldown (Bars) - min bars before the next signal", minval=0, group=grp_filters)
+
+grp_dash = "Dashboard"
+string dashPosStr = input.string("Top Right", "Dashboard Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=grp_dash)
+
+dashPos = dashPosStr == "Top Left" ? position.top_left : dashPosStr == "Bottom Right" ? position.bottom_right : dashPosStr == "Bottom Left" ? position.bottom_left : position.top_right
+uiSize  = uiSizeStr == "Tiny" ? size.tiny : uiSizeStr == "Normal" ? size.normal : uiSizeStr == "Large" ? size.large : size.small
+
+color_low  = #0d1b2a   
+color_mid  = #ffc400   
+color_high = #ff1744   
+
+f_heatColor(score) =>
+    color result = score <= 50.0 ? color.from_gradient(score, 0.0, 50.0, color_low, color_mid) : color.from_gradient(score, 50.0, 100.0, color_mid, color_high)
+    result
+
+f_hourStr(h) => (h < 10 ? "0" : "") + str.tostring(h) + ":00"
+
+// =============================================================================
+// 2. ROLLING WINDOW DATA MODEL
+// =============================================================================
+type DayData
+    array<float> volSum
+    array<int>   volCount
+    array<int>   bullCount 
+    array<int>   bearCount 
+    int highHour = na
+    int lowHour  = na
+
+var array<DayData> dayHistory = array.new<DayData>(0)
+var DayData currentDay = na
+var float   currHigh   = na
+var float   currLow    = na
+
+// Hourly Open/Close Tracker for Seasonal Bias
+var float h_open    = na
+var float h_close   = na
+var int   h_current = na
+
+// Aggregate arrays
+var array<float> avgVolArr   = array.new_float(24, 0.0)
+var array<float> revProbArr  = array.new_float(24, 0.0)
+var array<float> combinedArr = array.new_float(24, 0.0)
+var array<float> bullBiasArr = array.new_float(24, 50.0) 
+var array<int>   sortedIdx   = array.new_int(24, 0)
+var int daysTracked = 0
+var int bestVolHour = 0
+var int bestRevHour = 0
+
+bool isNewDay    = ta.change(time("D", tzInput)) != 0
+int  currentHour = hour(time, tzInput)
+bool isNewHour   = ta.change(currentHour) != 0
+
+// =============================================================================
+// 3. CORE LOGIC — GATHERING DATA & BIAS (Non-repaint)
+// =============================================================================
+
+if isNewHour
+    if not na(h_current) and not na(currentDay)
+        if h_close > h_open
+            array.set(currentDay.bullCount, h_current, 1)
+        else if h_close < h_open
+            array.set(currentDay.bearCount, h_current, 1)
+            
+    h_open := open
+    h_current := currentHour
+
+if barstate.isconfirmed
+    h_close := close
+
+if barstate.isconfirmed
+    if isNewDay or na(currentDay)
+        if not na(currentDay)
+            array.push(dayHistory, currentDay)
+            if array.size(dayHistory) > lookbackDays
+                array.shift(dayHistory)
+
+            var array<float> sumVol  = array.new_float(24, 0.0)
+            var array<int>   cntVol  = array.new_int(24, 0)
+            var array<int>   cntHigh = array.new_int(24, 0)
+            var array<int>   cntLow  = array.new_int(24, 0)
+            var array<int>   cntBull = array.new_int(24, 0)
+            var array<int>   cntBear = array.new_int(24, 0)
+            array.fill(sumVol, 0.0)
+            array.fill(cntVol, 0)
+            array.fill(cntHigh, 0)
+            array.fill(cntLow, 0)
+            array.fill(cntBull, 0)
+            array.fill(cntBear, 0)
+
+            daysTracked := array.size(dayHistory)
+            for d = 0 to daysTracked - 1
+                DayData day = array.get(dayHistory, d)
+                for h = 0 to 23
+                    array.set(sumVol, h, array.get(sumVol, h) + array.get(day.volSum, h))
+                    array.set(cntVol, h, array.get(cntVol, h) + array.get(day.volCount, h))
+                    array.set(cntBull, h, array.get(cntBull, h) + array.get(day.bullCount, h))
+                    array.set(cntBear, h, array.get(cntBear, h) + array.get(day.bearCount, h))
+                if not na(day.highHour)
+                    array.set(cntHigh, day.highHour, array.get(cntHigh, day.highHour) + 1)
+                if not na(day.lowHour)
+                    array.set(cntLow, day.lowHour, array.get(cntLow, day.lowHour) + 1)
+
+            float maxAvgVol  = 0.0
+            float maxRevProb = 0.0
+            for h = 0 to 23
+                float avgVol  = array.get(cntVol, h) > 0 ? array.get(sumVol, h) / array.get(cntVol, h) : 0.0
+                float revProb = daysTracked > 0 ? (array.get(cntHigh, h) + array.get(cntLow, h)) / (daysTracked * 2.0) * 100.0 : 0.0
+                
+                int bull = array.get(cntBull, h)
+                int bear = array.get(cntBear, h)
+                float bias = (bull + bear) > 0 ? (bull / ((bull + bear) * 1.0)) * 100.0 : 50.0 
+                
+                array.set(avgVolArr, h, avgVol)
+                array.set(revProbArr, h, revProb)
+                array.set(bullBiasArr, h, bias)
+                maxAvgVol  := math.max(maxAvgVol, avgVol)
+                maxRevProb := math.max(maxRevProb, revProb)
+                array.set(sortedIdx, h, h)
+
+            bestVolHour := 0
+            bestRevHour := 0
+            for h = 0 to 23
+                float volNorm = maxAvgVol > 0 ? array.get(avgVolArr, h) / maxAvgVol * 100.0 : 0.0
+                float revNorm = maxRevProb > 0 ? array.get(revProbArr, h) / maxRevProb * 100.0 : 0.0
+                array.set(combinedArr, h, (volNorm + revNorm) / 2.0)
+                if array.get(avgVolArr, h) > array.get(avgVolArr, bestVolHour)
+                    bestVolHour := h
+                if array.get(revProbArr, h) > array.get(revProbArr, bestRevHour)
+                    bestRevHour := h
+
+            for i = 0 to 22
+                for j = 0 to 22 - i
+                    float score1 = array.get(combinedArr, array.get(sortedIdx, j))
+                    float score2 = array.get(combinedArr, array.get(sortedIdx, j + 1))
+                    if score1 < score2
+                        int temp = array.get(sortedIdx, j)
+                        array.set(sortedIdx, j, array.get(sortedIdx, j + 1))
+                        array.set(sortedIdx, j + 1, temp)
+
+        currentDay   := DayData.new(array.new_float(24, 0.0), array.new_int(24, 0), array.new_int(24, 0), array.new_int(24, 0))
+        currHigh     := high
+        currLow      := low
+        currentDay.highHour := currentHour
+        currentDay.lowHour  := currentHour
+    else
+        if high > currHigh
+            currHigh := high
+            currentDay.highHour := currentHour
+        if low < currLow
+            currLow := low
+            currentDay.lowHour := currentHour
+
+    float barRangePoints = (high - low) / syminfo.mintick
+    array.set(currentDay.volSum, currentHour, array.get(currentDay.volSum, currentHour) + barRangePoints)
+    array.set(currentDay.volCount, currentHour, array.get(currentDay.volCount, currentHour) + 1)
+
+// =============================================================================
+// 4. SIGNAL & ALERT (STRICTLY NON-REPAINT + BIAS + DIVERGENCE FILTER)
+// =============================================================================
+bool isHotHour = false
+for k = 0 to math.min(topNHours, 24) - 1
+    if array.get(sortedIdx, k) == currentHour
+        isHotHour := true
+
+// Structural Extremes (excluding current bar)
+float recentHigh = ta.highest(high, swingLen)[1]
+float recentLow  = ta.lowest(low, swingLen)[1]
+
+// Rejection Check
+bool newHighReject = high >= recentHigh and close < open
+bool newLowReject  = low <= recentLow  and close > open
+
+// Filter 1: Seasonal Bias
+float currentBias = array.get(bullBiasArr, currentHour)
+bool biasAllowsBuy  = not useBiasFilter or currentBias >= 50.0
+bool biasAllowsSell = not useBiasFilter or currentBias <= 50.0
+
+// Filter 2: Momentum Divergence (RSI)
+float rsiVal = ta.rsi(close, rsiLen)
+
+// Find the RSI value at the exact recent high/low we are sweeping
+int   idxHigh   = -ta.highestbars(high, swingLen)[1] + 1
+int   idxLow    = -ta.lowestbars(low, swingLen)[1] + 1
+float rsiAtHigh = rsiVal[idxHigh]
+float rsiAtLow  = rsiVal[idxLow]
+
+// Divergence Logic: Price sweeps structure, but RSI fails to sweep previous RSI
+bool isBearDiv = (high >= recentHigh) and (rsiVal < rsiAtHigh)
+bool isBullDiv = (low <= recentLow)   and (rsiVal > rsiAtLow)
+
+bool rsiPassedBuy  = not useRsiDiv or isBullDiv
+bool rsiPassedSell = not useRsiDiv or isBearDiv
+
+// FULLY GATED BY barstate.isconfirmed TO AVOID REPAINTING ALERTS
+bool sellRaw = isHotHour and newHighReject and biasAllowsSell and rsiPassedSell and barstate.isconfirmed
+bool buyRaw  = isHotHour and newLowReject  and biasAllowsBuy  and rsiPassedBuy  and barstate.isconfirmed
+
+// =============================================================================
+// 5. STATE — TRADES
+// =============================================================================
+var int  lastSignalBar = na
+var int  lastSignalDir = 0
+var bool anyTradeOpen  = false
+
+var array<float> tEntry            = array.new_float(0)
+var array<float> tSL               = array.new_float(0)
+var array<float> tR                = array.new_float(0)
+var array<bool>  tIsBuy            = array.new_bool(0)
+var array<int>   tEntryBar         = array.new_int(0)
+var array<int>   tMaxTp            = array.new_int(0)
+var array<bool>  tActive           = array.new_bool(0)
+var array<float> tHighestTpPrice   = array.new_float(0)
+var array<int>   tHighestTpBar     = array.new_int(0)
+var array<box>   tRewardBox        = array.new_box(0)
+var array<box>   tRiskBox          = array.new_box(0)
+var array<line>  tEntryLine        = array.new_line(0)
+var array<line>  tStopLine         = array.new_line(0)
+var array<label> tEntryLabel       = array.new_label(0)
+
+var int   totalTrades  = 0
+var float totalWins    = 0.0   
+var int   totalLosses  = 0
+var float totalProfitR = 0.0
+var float totalLossR   = 0.0
+
+var int   pendingDir      = 0
+var float pendingSLRef    = na
+var int   pendingEntryBar = na
+
+// =============================================================================
+// 6. SIGNAL FILTERS + ENTRY
+// =============================================================================
+if barstate.isconfirmed
+    bool cooldownOk       = na(lastSignalBar) or (bar_index - lastSignalBar) >= reversalLockBars
+    bool stabilityAllowed = not tradeMode or not (useStabilityMode and anyTradeOpen)
+    bool smartBuyAllowed  = not tradeMode or not (useSmartFilter and lastSignalDir == 1)
+    bool smartSellAllowed = not tradeMode or not (useSmartFilter and lastSignalDir == -1)
+
+    bool fireBuy  = buyRaw  and cooldownOk and stabilityAllowed and smartBuyAllowed
+    bool fireSell = sellRaw and cooldownOk and stabilityAllowed and smartSellAllowed
+
+    if fireBuy or fireSell
+        pendingDir      := fireBuy ? 1 : -1
+        // Use the exact extreme price of the sweep as Stoploss
+        pendingSLRef    := fireBuy ? low : high
+        pendingEntryBar := bar_index + 1
+        lastSignalBar   := bar_index
+        lastSignalDir   := pendingDir
+
+    if not na(pendingEntryBar) and bar_index == pendingEntryBar
+        float entryPx = open
+        bool  isBuy   = pendingDir == 1
+        float slPx    = pendingSLRef
+        float slDist  = isBuy ? entryPx - slPx : slPx - entryPx
+
+        if not na(slPx) and slDist > 0
+            float tp1Px = isBuy ? entryPx + tp1R * slDist : entryPx - tp1R * slDist
+            float tp2Px = isBuy ? entryPx + tp2R * slDist : entryPx - tp2R * slDist
+            float tp3Px = isBuy ? entryPx + tp3R * slDist : entryPx - tp3R * slDist
+            float finalTargetPrice = enableTP3 ? tp3Px : enableTP2 ? tp2Px : tp1Px
+            float finalTargetR     = enableTP3 ? tp3R : enableTP2 ? tp2R : tp1R
+
+            string labelText  = isBuy ? "▲" : "▼"
+            color  labelColor = isBuy ? color.new(#1a935b, 0) : color.new(#ff4757, 0)
+            string labelStyle = isBuy ? label.style_label_up : label.style_label_down
+            
+            // Build dynamic tooltip text
+            string biasInfo = useBiasFilter ? " (Bias Check: " + str.tostring(array.get(bullBiasArr, currentHour), "#.#") + "% Bullish) " : ""
+            string momInfo  = useRsiDiv ? " [RSI Divergence Confirmed] " : ""
+            string reasonText = (isBuy ? "Buy" : "Sell") + ": " + f_hourStr(currentHour) + " (" + tzInput + ") is a Top " + str.tostring(topNHours) + " hot hour." + biasInfo + momInfo + "Price made a " + str.tostring(swingLen) + "-bar " + (isBuy ? "low" : "high") + " and rejected."
+            
+            // AUTO-ALIGN THE LABEL NEXT TO THE BAR USING yloc
+            label newLbl = label.new(bar_index, isBuy ? low : high, labelText, yloc = isBuy ? yloc.belowbar : yloc.abovebar, style=labelStyle, color=labelColor, textcolor=color.white, size=uiSize, tooltip=reasonText)
+
+            if tradeMode
+                array.push(tEntry, entryPx)
+                array.push(tSL, slPx)
+                array.push(tR, slDist)
+                array.push(tIsBuy, isBuy)
+                array.push(tEntryBar, bar_index)
+                array.push(tMaxTp, 0)
+                array.push(tActive, true)
+                array.push(tHighestTpPrice, entryPx)
+                array.push(tHighestTpBar, na)
+
+                box riskBox = box.new(bar_index, isBuy ? entryPx : slPx, bar_index, isBuy ? slPx : entryPx, border_color=color.new(#F5474A, 100), bgcolor=color.new(#F5474A, 82))
+                box rewardBox = box.new(bar_index, isBuy ? finalTargetPrice : entryPx, bar_index, isBuy ? entryPx : finalTargetPrice, border_color=color.new(#00D97E, 100), bgcolor=color.new(#00D97E, 86))
+                line entryLine = line.new(bar_index, entryPx, bar_index, entryPx, color=color.new(color.white, 65), width=1, style=line.style_dotted)
+                line stopLine  = line.new(bar_index, slPx, bar_index, slPx, color=color.new(color.red, 65), width=1, style=line.style_dotted)
+                array.push(tRewardBox, rewardBox)
+                array.push(tRiskBox, riskBox)
+                array.push(tEntryLine, entryLine)
+                array.push(tStopLine, stopLine)
+                array.push(tEntryLabel, newLbl)
+
+                totalTrades += 1
+                anyTradeOpen := true
+
+        pendingEntryBar := na
+
+// =============================================================================
+// 7. TRADE MANAGEMENT
+// =============================================================================
+if barstate.isconfirmed and tradeMode and array.size(tActive) > 0
+    for i = array.size(tActive) - 1 to 0
+        if array.get(tActive, i)
+            bool  isBuy      = array.get(tIsBuy, i)
+            float entryPx    = array.get(tEntry, i)
+            float slOriginal = array.get(tSL, i)
+            float rDist      = array.get(tR, i)
+            int   maxTp      = array.get(tMaxTp, i)
+            int   entryBar   = array.get(tEntryBar, i)
+
+            float tp1Px = isBuy ? entryPx + tp1R * rDist : entryPx - tp1R * rDist
+            float tp2Px = isBuy ? entryPx + tp2R * rDist : entryPx - tp2R * rDist
+            float finalTargetPrice = enableTP3 ? (isBuy ? entryPx + tp3R * rDist : entryPx - tp3R * rDist) : enableTP2 ? tp2Px : tp1Px
+            float finalTargetR     = enableTP3 ? tp3R : enableTP2 ? tp2R : tp1R
+
+            float currentSL = maxTp >= 2 ? tp1Px : maxTp >= 1 ? entryPx : slOriginal
+            bool  hitSL          = isBuy ? low <= currentSL : high >= currentSL
+            bool  hitFinalTarget = isBuy ? high >= finalTargetPrice : low <= finalTargetPrice
+
+            box  rb = array.get(tRewardBox, i)
+            box  rk = array.get(tRiskBox, i)
+            line el = array.get(tEntryLine, i)
+            line sl_line = array.get(tStopLine, i)
+            box.set_right(rb, bar_index)
+            box.set_right(rk, bar_index)
+            line.set_x2(el, bar_index)
+            line.set_x2(sl_line, bar_index)
+            line.set_y1(sl_line, currentSL)
+            line.set_y2(sl_line, currentSL)
+
+            bool   closeNow = false
+            string resultKind = ""
+            bool   justReachedNewTp = false
+
+            if hitSL
+                closeNow := true
+                resultKind := maxTp > 0 ? "TP" : "SL"
+            else if hitFinalTarget
+                closeNow := true
+                resultKind := "WIN"
+                array.set(tHighestTpPrice, i, finalTargetPrice)
+                array.set(tHighestTpBar, i, bar_index)
+            else
+                bool hitTp1 = isBuy ? high >= tp1Px : low <= tp1Px
+                bool hitTp2 = enableTP2 and (isBuy ? high >= tp2Px : low <= tp2Px)
+
+                if maxTp < 1 and hitTp1
+                    maxTp := 1
+                    array.set(tMaxTp, i, 1)
+                    array.set(tHighestTpPrice, i, tp1Px)
+                    array.set(tHighestTpBar, i, bar_index)
+                    justReachedNewTp := true
+                if maxTp == 1 and hitTp2
+                    maxTp := 2
+                    array.set(tMaxTp, i, 2)
+                    array.set(tHighestTpPrice, i, tp2Px)
+                    array.set(tHighestTpBar, i, bar_index)
+                    justReachedNewTp := true
+
+                bool timedOut = (bar_index - entryBar) >= maxTradeDuration
+                if timedOut
+                    closeNow := true
+                    resultKind := "TIMEOUT"
+
+            if justReachedNewTp and not closeNow
+                label.new(bar_index, isBuy ? high : low, "TP" + str.tostring(array.get(tMaxTp, i)), style=label.style_none, textcolor=color.new(#00D97E, 0), size=size.tiny, yloc=isBuy ? yloc.abovebar : yloc.belowbar)
+
+            if closeNow
+                array.set(tActive, i, false)
+
+                bool  cleanLoss = resultKind == "SL" and array.get(tMaxTp, i) == 0
+                float rResult   = resultKind == "WIN" ? finalTargetR : array.get(tMaxTp, i) >= 2 ? tp1R : 0.0
+
+                if resultKind == "SL" or resultKind == "WIN" or resultKind == "TP"
+                    if cleanLoss
+                        totalLosses += 1
+                        totalLossR  += 1.0
+                    else
+                        totalWins    += rResult == 0.0 ? 0.5 : 1.0
+                        totalProfitR += rResult
+
+                string rSign = rResult >= 0 ? "+" : ""
+                string resText = resultKind == "SL" ? "SL -1R" : resultKind == "WIN" ? "WIN +" + str.tostring(rResult, "#.#") + "R" : resultKind == "TIMEOUT" ? "TIMEOUT" : "TP " + rSign + str.tostring(rResult, "#.#") + "R"
+                string barsText = str.tostring(bar_index - entryBar) + " bars"
+                label entryLbl = array.get(tEntryLabel, i)
+                if not na(entryLbl)
+                    label.set_tooltip(entryLbl, resText + "\n" + barsText)
+
+                int achievedBar = na(array.get(tHighestTpBar, i)) ? bar_index : array.get(tHighestTpBar, i)
+                float achievedPrice = array.get(tHighestTpPrice, i)
+                box.set_right(rb, achievedBar)
+                box.set_right(rk, achievedBar)
+                if isBuy
+                    box.set_top(rb, achievedPrice)
+                    box.set_bottom(rb, entryPx)
+                else
+                    box.set_top(rb, entryPx)
+                    box.set_bottom(rb, achievedPrice)
+
+                if resultKind == "SL" and cleanLoss
+                    label.new(bar_index, isBuy ? low : high, "x", style=label.style_none, textcolor=color.new(#EF4444, 0), size=size.small, yloc=isBuy ? yloc.belowbar : yloc.abovebar)
+
+    bool stillOpen = false
+    if array.size(tActive) > 0
+        for k = 0 to array.size(tActive) - 1
+            if array.get(tActive, k)
+                stillOpen := true
+    anyTradeOpen := stillOpen
+
+    if array.size(tActive) > maxStoredTrades
+        if not array.get(tActive, 0)
+            box  b1 = array.get(tRewardBox, 0)
+            box  b2 = array.get(tRiskBox, 0)
+            line l1 = array.get(tEntryLine, 0)
+            line l2 = array.get(tStopLine, 0)
+            if not na(b1)
+                box.delete(b1)
+            if not na(b2)
+                box.delete(b2)
+            if not na(l1)
+                line.delete(l1)
+            if not na(l2)
+                line.delete(l2)
+            array.shift(tEntry)
+            array.shift(tSL)
+            array.shift(tR)
+            array.shift(tIsBuy)
+            array.shift(tEntryBar)
+            array.shift(tMaxTp)
+            array.shift(tActive)
+            array.shift(tHighestTpPrice)
+            array.shift(tHighestTpBar)
+            array.shift(tRewardBox)
+            array.shift(tRiskBox)
+            array.shift(tEntryLine)
+            array.shift(tStopLine)
+            array.shift(tEntryLabel)
+
+// =============================================================================
+// 8. DASHBOARD (Matrix Heatmap + Top 5 w/ Bias + Smart Insight)
+// =============================================================================
+if barstate.islast
+    var table tb = table.new(dashPos, 5, 17, bgcolor=color.new(#131722, 10), border_color=color.new(color.gray, 80), border_width=1)
+
+    table.merge_cells(tb, 0, 0, 4, 0)
+    table.cell(tb, 0, 0, "HOURLY VOLATILITY HEATMAP", text_color=color.white, text_size=uiSize, bgcolor=color.new(#2962ff, 20))
+
+    string insightText = "Vol peak: " + f_hourStr(bestVolHour) + "  |  Reversal peak: " + f_hourStr(bestRevHour)
+    table.merge_cells(tb, 0, 1, 4, 1)
+    table.cell(tb, 0, 1, insightText, text_color=color.new(#ffc400, 0), text_size=uiSize, bgcolor=color.new(#131722, 0))
+
+    for r = 0 to 5
+        for c = 0 to 3
+            int hr = r * 4 + c
+            float combined = array.get(combinedArr, hr)
+            color cellColor = f_heatColor(combined)
+            color txtColor = combined >= 30.0 and combined <= 70.0 ? color.new(#131722, 0) : color.white
+            table.cell(tb, c, r + 2, f_hourStr(hr), bgcolor=cellColor, text_color=txtColor, text_size=uiSize)
+        table.cell(tb, 4, r + 2, "", bgcolor=color.new(#131722, 10))
+
+    table.merge_cells(tb, 0, 8, 4, 8)
+    table.cell(tb, 0, 8, "TOP 5 (Last " + str.tostring(daysTracked) + "d)", text_color=color.white, text_size=uiSize, bgcolor=color.new(#2962ff, 20))
+
+    table.cell(tb, 0, 9, "Rank", text_color=color.gray, text_size=uiSize)
+    table.cell(tb, 1, 9, "Time (" + tzInput + ")", text_color=color.gray, text_size=uiSize)
+    table.cell(tb, 2, 9, "Avg. Vol", text_color=color.gray, text_size=uiSize)
+    table.cell(tb, 3, 9, "Reversal %", text_color=color.gray, text_size=uiSize)
+    table.cell(tb, 4, 9, "Bull Bias", text_color=color.gray, text_size=uiSize) 
+
+    for row = 1 to 5
+        int   hr      = array.get(sortedIdx, row - 1)
+        float avgVol  = array.get(avgVolArr, hr)
+        float revProb = array.get(revProbArr, hr)
+        float bias    = array.get(bullBiasArr, hr)
+
+        color bgCol   = color.new(color.gray, 90)
+        color textCol = color.white
+
+        if row == 1
+            bgCol := color.new(#ff1744, 60)
+        else if row == 2
+            bgCol := color.new(#ff9100, 70)
+        else if row == 3
+            bgCol := color.new(#ffc400, 80)
+            textCol := color.new(#131722, 0)
+            
+        color biasCol = bias > 50 ? color.new(#1a935b, 0) : bias < 50 ? color.new(#ff4757, 0) : color.gray
+        if row == 3 
+            biasCol := bias > 50 ? color.new(#0d4a2e, 0) : bias < 50 ? color.new(#8a0011, 0) : color.gray
+
+        int tableRow = row + 9
+        table.cell(tb, 0, tableRow, "#" + str.tostring(row), bgcolor=bgCol, text_color=textCol, text_size=uiSize)
+        table.cell(tb, 1, tableRow, f_hourStr(hr), bgcolor=bgCol, text_color=textCol, text_size=uiSize)
+        table.cell(tb, 2, tableRow, str.tostring(avgVol, "#") + " pts", bgcolor=bgCol, text_color=textCol, text_size=uiSize)
+        table.cell(tb, 3, tableRow, str.tostring(revProb, "#.#") + "%", bgcolor=bgCol, text_color=textCol, text_size=uiSize)
+        table.cell(tb, 4, tableRow, str.tostring(bias, "#.#") + "%", bgcolor=bgCol, text_color=biasCol, text_size=uiSize)
+
+    if tradeMode
+        float winRate = (totalWins + totalLosses) > 0 ? (totalWins / (totalWins + totalLosses)) * 100.0 : 0.0
+        float pf = totalLossR > 0 ? totalProfitR / totalLossR : totalProfitR > 0 ? 999.0 : 0.0
+
+        table.merge_cells(tb, 1, 15, 4, 15)
+        table.cell(tb, 0, 15, "Trades", text_color=color.gray, text_size=uiSize)
+        table.cell(tb, 1, 15, str.tostring(totalTrades), text_color=color.white, text_size=uiSize)
+
+        table.merge_cells(tb, 1, 16, 4, 16)
+        table.cell(tb, 0, 16, "Win Rate / PF", text_color=color.gray, text_size=uiSize)
+        table.cell(tb, 1, 16, str.tostring(winRate, "#.#") + "% / " + str.tostring(pf, "#.##"), text_color=winRate >= 50 ? color.new(#10B981, 0) : color.new(#EF4444, 0), text_size=uiSize)
+
+// =============================================================================
+// 9. ALERTS 
+// =============================================================================
+alertcondition(buyRaw,  title="Hourly Volatility Heatmap Buy",  message="Hourly Volatility Heatmap [ZynAlgo]: Hot-hour reversal BUY on {{ticker}} ({{interval}}) at {{close}}")
+alertcondition(sellRaw, title="Hourly Volatility Heatmap Sell", message="Hourly Volatility Heatmap [ZynAlgo]: Hot-hour reversal SELL on {{ticker}} ({{interval}}) at {{close}}")

@@ -1,0 +1,753 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Fusión de "Volumized Order Blocks | Flux Charts" + "Supply & Demand (MTF) | Flux Charts"
+// -----------------------------------------------------------------------------------------
+// OB + SD MTF OVERLAP
+//  - Dibuja Order Blocks Y zonas Supply/Demand de hasta 6 temporalidades a la vez
+//    (TF del gráfico + superiores; TFs menores o duplicados se auto-deshabilitan).
+//  - Intensidad de color = f(temporalidad, solapamiento): cuanto MAYOR el TF de la
+//    zona y cuantas MÁS zonas del mismo tipo se fusionan, más opaco el color.
+//    Ajustable en el grupo "Intensidad de Color".
+//  - Conserva: texto de volumen + % del OB, retests "R", breaks "B" (ambos motores).
+//  - Eliminado: barras volumétricas internas del OB original.
+// -----------------------------------------------------------------------------------------
+
+//@version=6
+const bool DEBUG = false
+const int maxBoxesCount = 500
+const float overlapThresholdPercentage = 0.0
+const int maxZonesPerList = 30
+const int minZoneSize = 10
+const int RETEST_COOLDOWN = 5
+const int minDistanceBetweenZones = 5
+const float maxZoneSizeATR = 1.5
+const float maxATRMult = 3.5
+const float momentumBodyMult = 0.5
+const int momentumCount = 4
+const int momentumSpan = 4
+
+indicator(title = 'OB + SD MTF Overlap', shorttitle = "OB+SD MTF", overlay = true, scale = scale.right, max_boxes_count = maxBoxesCount, max_labels_count = maxBoxesCount, max_lines_count = maxBoxesCount, max_bars_back = 5000, dynamic_requests = true)
+
+// ============================== INPUTS ==============================
+
+maxDistanceString = input.string("Normal", "Max Distance To Last Bar", options = ["High", "Normal", "Low"], group = "General Configuration", display = display.none)
+showOBs = input.bool(true, "Order Blocks", inline = "kinds", group = "General Configuration", display = display.none)
+showSDs = input.bool(true, "Supply & Demand", inline = "kinds", group = "General Configuration", display = display.none)
+obEndMethod = input.string("Wick", "OB Invalidation", options = ["Wick", "Close"], group = "General Configuration", display = display.none)
+sdEndMethod = input.string("Close", "S&D Invalidation", options = ["Wick", "Close"], group = "General Configuration", display = display.none)
+showInvalidated = input.bool(true, "Show Historic Zones", group = "General Configuration", display = display.none)
+retestsEnabled = input.bool(true, "Retests", inline = "rb", group = "General Configuration", display = display.none)
+breaksEnabled = input.bool(false, "Breaks", inline = "rb", group = "General Configuration", display = display.none)
+swingLength = input.int(10, 'Swing Length', minval = 3, maxval = 500, tooltip = "Longitud de swing para detectar Order Blocks. Valores menores = OBs más chicos.", group = "General Configuration", display = display.none)
+obShowVolumeText = input.bool(true, "OB Volume Text", group = "General Configuration", display = display.none)
+obZoneCountStr = input.string("Medium", 'OB Zone Count', options = ["High", "Medium", "Low", "One"], tooltip = "Zonas OB por tipo y por temporalidad.", group = "General Configuration", display = display.none)
+sdZoneCountStr = input.string("Medium", 'S&D Zone Count', options = ["High", "Medium", "Low", "One"], tooltip = "Zonas S&D por tipo y por temporalidad.", group = "General Configuration", display = display.none)
+bullOBColor = input.color(#089981, 'Bull OB', inline = 'obColor', group = 'General Configuration', display = display.none)
+bearOBColor = input.color(#f23646, 'Bear OB', inline = 'obColor', group = 'General Configuration', display = display.none)
+demandColor = input.color(#089981, 'Demand', inline = 'sdColor', group = 'General Configuration', display = display.none)
+supplyColor = input.color(#f23646, 'Supply', inline = 'sdColor', group = 'General Configuration', display = display.none)
+
+autoMTF = input.bool(true, "Auto MTF (seguir la escala del gráfico)", group = "Timeframes", tooltip = "ON: ignora los slots manuales y usa el TF del gráfico + los 3 estándar superiores (ej. en 4h: 4h, D, W, M; en 1m: 1m, 5m, 15m, 1h). Al cambiar la temporalidad del gráfico, las zonas acompañan solas. OFF: usa los 6 slots de abajo.")
+timeframe1Enabled = input.bool(true, title = "", group = "Timeframes", inline = "timeframe1", display = display.none)
+timeframe1 = input.timeframe("", title = "", group = "Timeframes", inline = "timeframe1", display = display.none)
+timeframe2Enabled = input.bool(false, title = "", group = "Timeframes", inline = "timeframe2", display = display.none)
+timeframe2 = input.timeframe("5", title = "", group = "Timeframes", inline = "timeframe2", display = display.none)
+timeframe3Enabled = input.bool(true, title = "", group = "Timeframes", inline = "timeframe3", display = display.none)
+timeframe3 = input.timeframe("15", title = "", group = "Timeframes", inline = "timeframe3", display = display.none)
+timeframe4Enabled = input.bool(true, title = "", group = "Timeframes", inline = "timeframe4", display = display.none)
+timeframe4 = input.timeframe("60", title = "", group = "Timeframes", inline = "timeframe4", display = display.none)
+timeframe5Enabled = input.bool(false, title = "", group = "Timeframes", inline = "timeframe5", display = display.none)
+timeframe5 = input.timeframe("240", title = "", group = "Timeframes", inline = "timeframe5", display = display.none)
+timeframe6Enabled = input.bool(false, title = "", group = "Timeframes", inline = "timeframe6", display = display.none)
+timeframe6 = input.timeframe("D", title = "", group = "Timeframes", inline = "timeframe6", display = display.none)
+
+// Escalera estándar del modo Auto MTF: devuelve el siguiente TF superior
+f_nextTF (string tf) =>
+    s = timeframe.in_seconds(tf)
+    s < 300 ? "5" : s < 900 ? "15" : s < 3600 ? "60" : s < 14400 ? "240" : s < 86400 ? "D" : s < 604800 ? "W" : "M"
+
+autoTF2 = f_nextTF(timeframe.period)
+autoTF3 = f_nextTF(autoTF2)
+autoTF4 = f_nextTF(autoTF3)
+
+// TFs efectivos: en Auto MTF, gráfico + 3 superiores (slots 5-6 apagados);
+// duplicados en el techo de la escalera (W/M) los apaga la sanitización.
+effTF1 = autoMTF ? timeframe.period : timeframe1
+effEn1 = autoMTF ? true : timeframe1Enabled
+effTF2 = autoMTF ? autoTF2 : timeframe2
+effEn2 = autoMTF ? true : timeframe2Enabled
+effTF3 = autoMTF ? autoTF3 : timeframe3
+effEn3 = autoMTF ? true : timeframe3Enabled
+effTF4 = autoMTF ? autoTF4 : timeframe4
+effEn4 = autoMTF ? true : timeframe4Enabled
+effTF5 = autoMTF ? "" : timeframe5
+effEn5 = autoMTF ? false : timeframe5Enabled
+effTF6 = autoMTF ? "" : timeframe6
+effEn6 = autoMTF ? false : timeframe6Enabled
+
+baseTransparency = input.int(82, "Transparencia base", minval = 0, maxval = 98, group = "Intensidad de Color", tooltip = "Transparencia de una zona simple del TF más bajo habilitado. Menor = más opaco.")
+tfStepTransparency = input.int(6, "Paso por rango de TF", minval = 0, maxval = 30, group = "Intensidad de Color", tooltip = "Cuánto se opaca la zona por cada rango de temporalidad por encima del menor.")
+ovStepTransparency = input.int(8, "Paso por solapamiento", minval = 0, maxval = 30, group = "Intensidad de Color", tooltip = "Cuánto se opaca la zona por cada zona extra fusionada en ella.")
+minTransparency = input.int(25, "Transparencia mínima", minval = 0, maxval = 90, group = "Intensidad de Color", tooltip = "Piso: ninguna zona se vuelve más opaca que esto.")
+
+textColor = input.color(#ffffffcc, "Text Color", group = "Style")
+
+obZones = obZoneCountStr == "One" ? 1 : obZoneCountStr == "Low" ? 2 : obZoneCountStr == "Medium" ? 3 : 5
+sdZones = sdZoneCountStr == "One" ? 1 : sdZoneCountStr == "Low" ? 2 : sdZoneCountStr == "Medium" ? 3 : 5
+maxDistanceToLastBar = maxDistanceString == "Low" ? 150 : maxDistanceString == "Normal" ? 500 : 1250
+
+atrOB = ta.atr(10)
+atrSD = ta.atr(20)
+averageBodySize = ta.sma(math.abs(close - open), 20)
+bodySize = math.abs(close - open)
+
+// ============================== TYPES ==============================
+
+type zoneInfo
+    float top
+    float bottom
+    string zKind                      // "OB" | "SD"
+    string zType                      // "Bull" | "Bear" | "Demand" | "Supply"
+    int startTime
+    int breakTime = na
+    int guid = na                     // startTime + typeCode (namespace por tipo)
+    string timeframeStr = na
+    int tfSeconds = na                // TF dueño (el mayor si es combinada)
+    int overlapCount = 1              // zonas originales fusionadas en esta
+    float obVolume = na               // solo OB
+    float obLowVolume = na
+    float obHighVolume = na
+    float bbVolume = na
+    bool breaker = false              // solo OB
+    bool disabled = false
+    bool combined = false
+    string combinedTimeframesStr = na
+
+type zone
+    zoneInfo info
+    bool isRendered = false
+    box zoneBox = na
+    box zoneTextBox = na
+    line middleLine = na              // solo se crea para zonas SD
+
+type timeframeInfo
+    int index = na
+    string timeframeStr = na
+    bool isEnabled = false
+    zoneInfo[] bullOBList = na
+    zoneInfo[] bearOBList = na
+    zoneInfo[] demandList = na
+    zoneInfo[] supplyList = na
+
+type obSwing
+    int x = na
+    float y = na
+    float swingVolume = na
+    bool crossed = false
+
+type retestLabelContainer
+    int guid
+    array<label> labels
+
+// ============================== HELPERS ==============================
+
+zTypeCode (zTypeF) =>
+    zTypeF == "Bull" ? 0 : zTypeF == "Bear" ? 1 : zTypeF == "Demand" ? 2 : 3
+
+newTimeframeInfo (index, timeframeStr, isEnabled) =>
+    newTFInfo = timeframeInfo.new()
+    newTFInfo.index := index
+    newTFInfo.isEnabled := isEnabled
+    newTFInfo.timeframeStr := timeframeStr
+    newTFInfo
+
+moveLine (_line, _x, _y, _x2) =>
+    line.set_xy1(_line, _x, _y)
+    line.set_xy2(_line, _x2, _y)
+
+moveBox (_box, _topLeftX, _topLeftY, _bottomRightX, _bottomRightY) =>
+    box.set_lefttop(_box, _topLeftX, _topLeftY)
+    box.set_rightbottom(_box, _bottomRightX, _bottomRightY)
+
+isTimeframeLower (timeframe1F, timeframe2F) =>
+    timeframe.in_seconds(timeframe1F) < timeframe.in_seconds(timeframe2F)
+
+formatTimeframeString (formatTimeframe) =>
+    timeframeF = formatTimeframe == "" ? timeframe.period : formatTimeframe
+    if str.contains(timeframeF, "D") or str.contains(timeframeF, "W") or str.contains(timeframeF, "S") or str.contains(timeframeF, "M")
+        timeframeF
+    else
+        seconds = timeframe.in_seconds(timeframeF)
+        if seconds >= 3600
+            hourCount = int(seconds / 3600)
+            str.tostring(hourCount) + " Hour" + (hourCount > 1 ? "s" : "")
+        else
+            timeframeF + " Min"
+
+// ============================== VAR GLOBALES ==============================
+
+var timeframeInfo[] timeframeInfos = array.from(newTimeframeInfo(1, effTF1, effEn1), newTimeframeInfo(2, effTF2, effEn2), newTimeframeInfo(3, effTF3, effEn3), newTimeframeInfo(4, effTF4, effEn4), newTimeframeInfo(5, effTF5, effEn5), newTimeframeInfo(6, effTF6, effEn6))
+var bullOBList = array.new<zoneInfo>(0)
+var bearOBList = array.new<zoneInfo>(0)
+var demandList = array.new<zoneInfo>(0)
+var supplyList = array.new<zoneInfo>(0)
+var allZonesList = array.new<zone>(0)
+var breakLabels = map.new<int, label>()
+var retestLabels = map.new<int, retestLabelContainer>()
+var enabledTfSeconds = array.new<int>(0)
+
+var int oldestBarTime = na
+if bar_index == last_bar_index - maxDistanceToLastBar
+    oldestBarTime := time
+
+// Sanitización de TFs (una sola vez): auto-off de TFs menores al gráfico,
+// auto-off de duplicados (se conserva el slot de índice menor), y armado de
+// enabledTfSeconds (ascendente) para el ranking de intensidad.
+var bool tfSanitized = false
+if not tfSanitized
+    tfSanitized := true
+    for i = 0 to timeframeInfos.size() - 1
+        tfi = timeframeInfos.get(i)
+        if tfi.isEnabled and isTimeframeLower(tfi.timeframeStr, timeframe.period)
+            tfi.isEnabled := false
+    for i = 0 to timeframeInfos.size() - 1
+        for j = 0 to timeframeInfos.size() - 1
+            if i >= j
+                continue
+            tfiI = timeframeInfos.get(i)
+            tfiJ = timeframeInfos.get(j)
+            if tfiI.isEnabled and tfiJ.isEnabled and timeframe.in_seconds(tfiI.timeframeStr) == timeframe.in_seconds(tfiJ.timeframeStr)
+                tfiJ.isEnabled := false
+    for i = 0 to timeframeInfos.size() - 1
+        tfi = timeframeInfos.get(i)
+        if tfi.isEnabled
+            enabledTfSeconds.push(timeframe.in_seconds(tfi.timeframeStr))
+    array.sort(enabledTfSeconds, order.ascending)
+
+// ============================== INTENSIDAD ==============================
+
+calcTransparency (zoneInfo info) =>
+    int rank = math.max(0, array.indexof(enabledTfSeconds, info.tfSeconds))
+    float t = baseTransparency - rank * tfStepTransparency - (info.overlapCount - 1) * ovStepTransparency
+    int(math.max(minTransparency, math.min(95, t)))
+
+createMainBox (color baseColor, int transp) =>
+    box.new(na, na, na, na, xloc = xloc.bar_time, extend = extend.none, bgcolor = color.new(baseColor, transp), border_color = color.new(baseColor, math.max(transp - 20, 0)), text_color = textColor)
+
+createTextBox (bool isOB) =>
+    box.new(na, na, na, na, xloc = xloc.bar_time, extend = extend.none, bgcolor = color.new(color.white, 100), border_color = color.new(color.white, 100), text_color = textColor, text_halign = isOB ? text.align_center : text.align_right, text_valign = isOB ? text.align_center : text.align_bottom, text_size = isOB ? size.normal : size.small)
+
+safeDeleteZone (zone zoneF) =>
+    zoneF.isRendered := false
+    box.delete(zoneF.zoneBox)
+    box.delete(zoneF.zoneTextBox)
+    line.delete(zoneF.middleLine)
+
+clampSDZone (zoneInfo zoneF) =>
+    zoneSize = zoneF.top - zoneF.bottom
+    if zoneSize > atrSD * maxZoneSizeATR
+        diff = zoneSize - (atrSD * maxZoneSizeATR)
+        zoneF.top -= diff / 2
+        zoneF.bottom += diff / 2
+
+areaOfZone (zoneInfo z) =>
+    float XA1 = z.startTime
+    float XA2 = na(z.breakTime) ? time + 1 : z.breakTime
+    float YA1 = z.top
+    float YA2 = z.bottom
+    float edge1 = math.sqrt((XA2 - XA1) * (XA2 - XA1) + (YA2 - YA2) * (YA2 - YA2))
+    float edge2 = math.sqrt((XA2 - XA2) * (XA2 - XA2) + (YA2 - YA1) * (YA2 - YA1))
+    edge1 * edge2
+
+doZonesTouch (zoneInfo z1, zoneInfo z2) =>
+    float pad = z1.zKind == "SD" ? atrSD / 100 : 0.0
+    float XA1 = z1.startTime
+    float XA2 = na(z1.breakTime) ? (time + 1) : z1.breakTime
+    float YA1 = z1.top + pad
+    float YA2 = z1.bottom - pad
+    float XB1 = z2.startTime
+    float XB2 = na(z2.breakTime) ? (time + 1) : z2.breakTime
+    float YB1 = z2.top + pad
+    float YB2 = z2.bottom - pad
+    float intersectionArea = math.max(0, math.min(XA2, XB2) - math.max(XA1, XB1)) * math.max(0, math.min(YA1, YB1) - math.max(YA2, YB2))
+    float unionArea = areaOfZone(z1) + areaOfZone(z2) - intersectionArea
+    float overlapPercentage = (intersectionArea / unionArea) * 100.0
+    overlapPercentage > overlapThresholdPercentage
+
+isZoneValid (zoneInfo info) =>
+    not info.disabled
+
+// ============================== MOTOR ORDER BLOCKS ==============================
+
+findOBSwings (len) =>
+    var swingType = 0
+    var obSwing top = obSwing.new(na, na)
+    var obSwing bottom = obSwing.new(na, na)
+    upper = ta.highest(len)
+    lower = ta.lowest(len)
+    swingType := high[len] > upper ? 0 : low[len] < lower ? 1 : swingType
+    if swingType == 0 and swingType[1] != 0
+        top := obSwing.new(bar_index[len], high[len], volume[len])
+    if swingType == 1 and swingType[1] != 1
+        bottom := obSwing.new(bar_index[len], low[len], volume[len])
+    [top, bottom]
+
+// top/btm llegan por parámetro: findOBSwings debe llamarse en CADA barra
+// (usa ta.highest/ta.lowest), así que la llamada vive en el scope global.
+findOrderBlocks (obSwing top, obSwing btm) =>
+    if bar_index > last_bar_index - maxDistanceToLastBar
+        max = high
+        min = low
+
+        // ---- Bullish OB: invalidación / remoción ----
+        if bullOBList.size() > 0
+            for i = bullOBList.size() - 1 to 0
+                currentOB = bullOBList.get(i)
+                if not currentOB.breaker
+                    if (obEndMethod == "Wick" ? low : math.min(open, close)) < currentOB.bottom
+                        currentOB.breaker := true
+                        currentOB.breakTime := time
+                        currentOB.bbVolume := volume
+                else
+                    if high > currentOB.top
+                        bullOBList.remove(i)
+
+        if close > top.y and not top.crossed
+            top.crossed := true
+            // Guard: si el swing quedó fuera de la ventana de render, el loop
+            // histórico podría exceder max_bars_back (runtime error del buffer).
+            if bar_index - top.x <= maxDistanceToLastBar
+                boxBtm = max[1]
+                boxTop = min[1]
+                boxLoc = time[1]
+                for i = 1 to (bar_index - top.x) - 1
+                    boxBtm := math.min(min[i], boxBtm)
+                    boxTop := boxBtm == min[i] ? max[i] : boxTop
+                    boxLoc := boxBtm == min[i] ? time[i] : boxLoc
+                newInfo = zoneInfo.new(top = boxTop, bottom = boxBtm, zKind = "OB", zType = "Bull", startTime = boxLoc)
+                newInfo.obVolume := volume + volume[1] + volume[2]
+                newInfo.obLowVolume := volume[2]
+                newInfo.obHighVolume := volume + volume[1]
+                newInfo.guid := boxLoc + zTypeCode("Bull")
+                obSize = math.abs(newInfo.top - newInfo.bottom)
+                if obSize <= atrOB * maxATRMult
+                    bullOBList.unshift(newInfo)
+                    if bullOBList.size() > maxZonesPerList
+                        bullOBList.pop()
+
+        // ---- Bearish OB: invalidación / remoción ----
+        if bearOBList.size() > 0
+            for i = bearOBList.size() - 1 to 0
+                currentOB = bearOBList.get(i)
+                if not currentOB.breaker
+                    if (obEndMethod == "Wick" ? high : math.max(open, close)) > currentOB.top
+                        currentOB.breaker := true
+                        currentOB.breakTime := time
+                        currentOB.bbVolume := volume
+                else
+                    if low < currentOB.bottom
+                        bearOBList.remove(i)
+
+        if close < btm.y and not btm.crossed
+            btm.crossed := true
+            if bar_index - btm.x <= maxDistanceToLastBar
+                boxBtm = min[1]
+                boxTop = max[1]
+                boxLoc = time[1]
+                for i = 1 to (bar_index - btm.x) - 1
+                    boxTop := math.max(max[i], boxTop)
+                    boxBtm := boxTop == max[i] ? min[i] : boxBtm
+                    boxLoc := boxTop == max[i] ? time[i] : boxLoc
+                newInfo = zoneInfo.new(top = boxTop, bottom = boxBtm, zKind = "OB", zType = "Bear", startTime = boxLoc)
+                newInfo.obVolume := volume + volume[1] + volume[2]
+                newInfo.obLowVolume := volume + volume[1]
+                newInfo.obHighVolume := volume[2]
+                newInfo.guid := boxLoc + zTypeCode("Bear")
+                obSize = math.abs(newInfo.top - newInfo.bottom)
+                if obSize <= atrOB * maxATRMult
+                    bearOBList.unshift(newInfo)
+                    if bearOBList.size() > maxZonesPerList
+                        bearOBList.pop()
+    true
+
+// ============================== MOTOR SUPPLY & DEMAND ==============================
+
+getMomentumCandleCount (lastBars, reqMult) =>
+    bearishCnt = 0
+    bullishCnt = 0
+    for i = 0 to lastBars - 1
+        if bodySize[i] >= averageBodySize * reqMult
+            if close[i] > open[i]
+                bullishCnt += 1
+            else
+                bearishCnt += 1
+    [bullishCnt, bearishCnt]
+
+[bullishMomentum, bearishMomentum] = getMomentumCandleCount(momentumSpan, momentumBodyMult)
+
+var int lastDemandZone = 0
+var int lastSupplyZone = 0
+if bar_index > last_bar_index - maxDistanceToLastBar
+    if bullishMomentum >= momentumCount and bar_index - lastDemandZone > minDistanceBetweenZones
+        lastDemandZone := bar_index
+        newSD = zoneInfo.new(top = high[momentumSpan + 1], bottom = low[momentumSpan + 1], zKind = "SD", zType = "Demand", startTime = time[momentumSpan + 1])
+        newSD.guid := time[momentumSpan + 1] + zTypeCode("Demand")
+        clampSDZone(newSD)
+        demandList.unshift(newSD)
+        if demandList.size() > maxZonesPerList
+            demandList.pop()
+    if bearishMomentum >= momentumCount and bar_index - lastSupplyZone > minDistanceBetweenZones
+        lastSupplyZone := bar_index
+        newSD = zoneInfo.new(top = high[momentumSpan + 1], bottom = low[momentumSpan + 1], zKind = "SD", zType = "Supply", startTime = time[momentumSpan + 1])
+        newSD.guid := time[momentumSpan + 1] + zTypeCode("Supply")
+        clampSDZone(newSD)
+        supplyList.unshift(newSD)
+        if supplyList.size() > maxZonesPerList
+            supplyList.pop()
+
+    // Invalidación S&D
+    if demandList.size() > 0
+        for i = demandList.size() - 1 to 0
+            currentSD = demandList.get(i)
+            if na(currentSD.breakTime)
+                if (sdEndMethod == "Wick" ? low : math.min(open, close)) < currentSD.bottom
+                    currentSD.breakTime := time
+    if supplyList.size() > 0
+        for i = supplyList.size() - 1 to 0
+            currentSD = supplyList.get(i)
+            if na(currentSD.breakTime)
+                if (sdEndMethod == "Wick" ? high : math.max(open, close)) > currentSD.top
+                    currentSD.breakTime := time
+
+// ============================== CAPA SECURITY (MTF) ==============================
+
+reqSeq (timeframeStr) =>
+    if timeframe.in_seconds(timeframeStr) == timeframe.in_seconds()
+        [bullOBList, bearOBList, demandList, supplyList]
+    else
+        [bullF, bearF, demF, supF] = request.security(syminfo.tickerid, timeframeStr, [bullOBList, bearOBList, demandList, supplyList])
+        [bullF, bearF, demF, supF]
+
+getTFData (timeframeInfo timeframeInfoF, timeframeStr) =>
+    if timeframeInfoF.isEnabled
+        [bullF, bearF, demF, supF] = reqSeq(timeframeStr)
+        [bullF, bearF, demF, supF]
+    else
+        [na, na, na, na]
+
+handleTimeframeInfo (timeframeInfo timeframeInfoF, bullF, bearF, demF, supF) =>
+    if timeframeInfoF.isEnabled
+        timeframeInfoF.bullOBList := bullF
+        timeframeInfoF.bearOBList := bearF
+        timeframeInfoF.demandList := demF
+        timeframeInfoF.supplyList := supF
+
+// ============================== COMBINACIÓN ==============================
+
+combineZonesFunc () =>
+    if allZonesList.size() > 0
+        lastCombinations = 999
+        while lastCombinations > 0
+            lastCombinations := 0
+            for i = 0 to allZonesList.size() - 1
+                cur1 = allZonesList.get(i)
+                for j = 0 to allZonesList.size() - 1
+                    cur2 = allZonesList.get(j)
+                    if i == j
+                        continue
+                    if not isZoneValid(cur1.info) or not isZoneValid(cur2.info)
+                        continue
+                    if cur1.info.zKind != cur2.info.zKind or cur1.info.zType != cur2.info.zType
+                        continue
+                    if doZonesTouch(cur1.info, cur2.info)
+                        cur1.info.disabled := true
+                        cur2.info.disabled := true
+                        newInfo = zoneInfo.new(top = math.max(cur1.info.top, cur2.info.top), bottom = math.min(cur1.info.bottom, cur2.info.bottom), zKind = cur1.info.zKind, zType = cur1.info.zType)
+                        newInfo.startTime := math.min(cur1.info.startTime, cur2.info.startTime)
+                        newInfo.breakTime := math.max(nz(cur1.info.breakTime), nz(cur2.info.breakTime))
+                        newInfo.breakTime := newInfo.breakTime == 0 ? na : newInfo.breakTime
+                        newInfo.overlapCount := cur1.info.overlapCount + cur2.info.overlapCount
+                        biggerTF = cur1.info.tfSeconds >= cur2.info.tfSeconds ? cur1.info : cur2.info
+                        newInfo.tfSeconds := biggerTF.tfSeconds
+                        newInfo.timeframeStr := biggerTF.timeframeStr
+                        newInfo.guid := newInfo.startTime + zTypeCode(newInfo.zType)
+                        if newInfo.zKind == "OB"
+                            newInfo.obVolume := nz(cur1.info.obVolume) + nz(cur2.info.obVolume)
+                            newInfo.obLowVolume := nz(cur1.info.obLowVolume) + nz(cur2.info.obLowVolume)
+                            newInfo.obHighVolume := nz(cur1.info.obHighVolume) + nz(cur2.info.obHighVolume)
+                            newInfo.bbVolume := nz(cur1.info.bbVolume) + nz(cur2.info.bbVolume)
+                            newInfo.breaker := cur1.info.breaker or cur2.info.breaker
+                        else
+                            clampSDZone(newInfo)
+                        newInfo.combined := true
+                        if cur1.info.tfSeconds != cur2.info.tfSeconds
+                            newInfo.combinedTimeframesStr := (na(cur1.info.combinedTimeframesStr) ? formatTimeframeString(cur1.info.timeframeStr) : cur1.info.combinedTimeframesStr) + " & " + (na(cur2.info.combinedTimeframesStr) ? formatTimeframeString(cur2.info.timeframeStr) : cur2.info.combinedTimeframesStr)
+                        else if not na(cur1.info.combinedTimeframesStr) or not na(cur2.info.combinedTimeframesStr)
+                            newInfo.combinedTimeframesStr := na(cur1.info.combinedTimeframesStr) ? cur2.info.combinedTimeframesStr : cur1.info.combinedTimeframesStr
+                        allZonesList.unshift(zone.new(newInfo))
+                        lastCombinations += 1
+
+// ============================== RENDER ==============================
+
+renderZone (zone z) =>
+    zoneInfo info = z.info
+    z.isRendered := true
+    color baseColor = info.zKind == "OB" ? (info.zType == "Bull" ? bullOBColor : bearOBColor) : (info.zType == "Demand" ? demandColor : supplyColor)
+
+    int zoneSize = na
+    if na(info.breakTime)
+        zoneSize := (time + 1) - info.startTime
+    else
+        zoneSize := info.breakTime - info.startTime
+
+    render = true
+    if info.zKind == "SD"
+        if zoneSize < timeframe.in_seconds(info.timeframeStr) * minZoneSize * 1000
+            render := false
+        if info.startTime < nz(oldestBarTime, time)
+            render := false
+
+    if render and (showInvalidated or na(info.breakTime))
+        int transp = calcTransparency(info)
+        z.zoneBox := createMainBox(baseColor, transp)
+        moveBox(z.zoneBox, info.startTime, info.top, info.startTime + zoneSize, info.bottom)
+
+        float middlePoint = (info.top + info.bottom) / 2
+        tfStr = na(info.combinedTimeframesStr) ? formatTimeframeString(info.timeframeStr) : info.combinedTimeframesStr
+        ovTxt = info.overlapCount > 1 ? " x" + str.tostring(info.overlapCount) : ""
+
+        z.zoneTextBox := createTextBox(info.zKind == "OB")
+        if info.zKind == "OB"
+            moveBox(z.zoneTextBox, info.startTime, info.top, info.startTime + zoneSize, info.bottom)
+            float volHigh = nz(info.obHighVolume)
+            float volLow = nz(info.obLowVolume)
+            percentage = int((math.min(volHigh, volLow) / math.max(math.max(volHigh, volLow), 1e-10)) * 100.0)
+            volTxt = obShowVolumeText and not na(info.obVolume) ? str.tostring(info.obVolume, format.volume) + " (" + str.tostring(percentage) + "%)\n" : ""
+            box.set_text(z.zoneTextBox, volTxt + tfStr + " OB" + ovTxt)
+        else
+            maxEndX = info.startTime + zoneSize / 2
+            moveBox(z.zoneTextBox, maxEndX, middlePoint, info.startTime + zoneSize, info.bottom)
+            z.middleLine := line.new(info.startTime, middlePoint, info.startTime + zoneSize, middlePoint, xloc = xloc.bar_time, color = textColor, style = line.style_dashed)
+            box.set_text(z.zoneTextBox, tfStr + " " + info.zType + ovTxt)
+
+handleZonesFinal () =>
+    if allZonesList.size() > 0
+        for i = 0 to allZonesList.size() - 1
+            safeDeleteZone(allZonesList.get(i))
+    allZonesList.clear()
+
+    for i = 0 to timeframeInfos.size() - 1
+        curTimeframe = timeframeInfos.get(i)
+        if not curTimeframe.isEnabled
+            continue
+        tfSecs = timeframe.in_seconds(curTimeframe.timeframeStr)
+        if showOBs and not na(curTimeframe.bullOBList) and curTimeframe.bullOBList.size() > 0
+            for j = 0 to math.min(curTimeframe.bullOBList.size() - 1, obZones - 1)
+                inf = zoneInfo.copy(curTimeframe.bullOBList.get(j))
+                inf.timeframeStr := curTimeframe.timeframeStr
+                inf.tfSeconds := tfSecs
+                allZonesList.unshift(zone.new(inf))
+        if showOBs and not na(curTimeframe.bearOBList) and curTimeframe.bearOBList.size() > 0
+            for j = 0 to math.min(curTimeframe.bearOBList.size() - 1, obZones - 1)
+                inf = zoneInfo.copy(curTimeframe.bearOBList.get(j))
+                inf.timeframeStr := curTimeframe.timeframeStr
+                inf.tfSeconds := tfSecs
+                allZonesList.unshift(zone.new(inf))
+        if showSDs and not na(curTimeframe.demandList) and curTimeframe.demandList.size() > 0
+            for j = 0 to math.min(curTimeframe.demandList.size() - 1, sdZones - 1)
+                inf = zoneInfo.copy(curTimeframe.demandList.get(j))
+                inf.timeframeStr := curTimeframe.timeframeStr
+                inf.tfSeconds := tfSecs
+                allZonesList.unshift(zone.new(inf))
+        if showSDs and not na(curTimeframe.supplyList) and curTimeframe.supplyList.size() > 0
+            for j = 0 to math.min(curTimeframe.supplyList.size() - 1, sdZones - 1)
+                inf = zoneInfo.copy(curTimeframe.supplyList.get(j))
+                inf.timeframeStr := curTimeframe.timeframeStr
+                inf.tfSeconds := tfSecs
+                allZonesList.unshift(zone.new(inf))
+
+    combineZonesFunc()
+
+    if allZonesList.size() > 0
+        for i = 0 to allZonesList.size() - 1
+            curZone = allZonesList.get(i)
+            if isZoneValid(curZone.info)
+                renderZone(curZone)
+
+// ============================== EJECUCIÓN ==============================
+
+[obTop, obBtm] = findOBSwings(swingLength)
+findOrderBlocks(obTop, obBtm)
+
+[bullOBs1, bearOBs1, dem1, sup1] = getTFData(timeframeInfos.get(0), effTF1)
+[bullOBs2, bearOBs2, dem2, sup2] = getTFData(timeframeInfos.get(1), effTF2)
+[bullOBs3, bearOBs3, dem3, sup3] = getTFData(timeframeInfos.get(2), effTF3)
+[bullOBs4, bearOBs4, dem4, sup4] = getTFData(timeframeInfos.get(3), effTF4)
+[bullOBs5, bearOBs5, dem5, sup5] = getTFData(timeframeInfos.get(4), effTF5)
+[bullOBs6, bearOBs6, dem6, sup6] = getTFData(timeframeInfos.get(5), effTF6)
+
+// Render vars de retests/breaks (por clase de zona)
+var lastRetestIndexSupply = 0
+var lastRetestIndexDemand = 0
+var lastRetestIndexBullOB = 0
+var lastRetestIndexBearOB = 0
+
+float renderRetestSupplyPrice = na
+int renderRetestSupplyGUID = na
+float renderRetestDemandPrice = na
+int renderRetestDemandGUID = na
+float renderRetestBullOBPrice = na
+int renderRetestBullOBGUID = na
+float renderRetestBearOBPrice = na
+int renderRetestBearOBGUID = na
+
+float renderBreakSupplyPrice = na
+int renderBreakSupplyGUID = na
+float renderBreakDemandPrice = na
+int renderBreakDemandGUID = na
+float renderBreakBullOBPrice = na
+int renderBreakBullOBGUID = na
+float renderBreakBearOBPrice = na
+int renderBreakBearOBGUID = na
+
+if barstate.isconfirmed and bar_index > last_bar_index - maxDistanceToLastBar
+    handleTimeframeInfo(timeframeInfos.get(0), bullOBs1, bearOBs1, dem1, sup1)
+    handleTimeframeInfo(timeframeInfos.get(1), bullOBs2, bearOBs2, dem2, sup2)
+    handleTimeframeInfo(timeframeInfos.get(2), bullOBs3, bearOBs3, dem3, sup3)
+    handleTimeframeInfo(timeframeInfos.get(3), bullOBs4, bearOBs4, dem4, sup4)
+    handleTimeframeInfo(timeframeInfos.get(4), bullOBs5, bearOBs5, dem5, sup5)
+    handleTimeframeInfo(timeframeInfos.get(5), bullOBs6, bearOBs6, dem6, sup6)
+    handleZonesFinal()
+
+    // ---- Breaks (zona invalidada en ESTA barra) ----
+    if allZonesList.size() > 0
+        for i = 0 to allZonesList.size() - 1
+            curZone = allZonesList.get(i)
+            if curZone.info.disabled
+                continue
+            if na(curZone.info.breakTime)
+                continue
+            if curZone.info.startTime < nz(oldestBarTime, time)
+                continue
+            if time == curZone.info.breakTime and curZone.info.breakTime - curZone.info.startTime > minZoneSize * timeframe.in_seconds() * 1000
+                if curZone.info.zType == "Supply"
+                    renderBreakSupplyPrice := curZone.info.bottom
+                    renderBreakSupplyGUID := curZone.info.guid
+                else if curZone.info.zType == "Demand"
+                    renderBreakDemandPrice := curZone.info.top
+                    renderBreakDemandGUID := curZone.info.guid
+                else if curZone.info.zType == "Bear"
+                    renderBreakBearOBPrice := curZone.info.bottom
+                    renderBreakBearOBGUID := curZone.info.guid
+                else if curZone.info.zType == "Bull"
+                    renderBreakBullOBPrice := curZone.info.top
+                    renderBreakBullOBGUID := curZone.info.guid
+
+    // ---- Retests (zona viva tocada en ESTA barra) ----
+    if allZonesList.size() > 0
+        for i = 0 to allZonesList.size() - 1
+            curZone = allZonesList.get(i)
+            if curZone.info.disabled
+                continue
+            if not na(curZone.info.breakTime)
+                continue
+            if curZone.info.startTime < nz(oldestBarTime, time)
+                continue
+            if curZone.info.zKind == "SD" and time - curZone.info.startTime < minZoneSize * timeframe.in_seconds(curZone.info.timeframeStr) * 1000
+                continue
+            if curZone.info.zType == "Supply" and bar_index - lastRetestIndexSupply > RETEST_COOLDOWN
+                if high > curZone.info.bottom
+                    renderRetestSupplyPrice := curZone.info.top
+                    renderRetestSupplyGUID := curZone.info.guid
+                    lastRetestIndexSupply := bar_index
+            else if curZone.info.zType == "Demand" and bar_index - lastRetestIndexDemand > RETEST_COOLDOWN
+                if low < curZone.info.top
+                    renderRetestDemandPrice := curZone.info.bottom
+                    renderRetestDemandGUID := curZone.info.guid
+                    lastRetestIndexDemand := bar_index
+            else if curZone.info.zType == "Bear" and bar_index - lastRetestIndexBearOB > RETEST_COOLDOWN
+                if high > curZone.info.bottom
+                    renderRetestBearOBPrice := curZone.info.top
+                    renderRetestBearOBGUID := curZone.info.guid
+                    lastRetestIndexBearOB := bar_index
+            else if curZone.info.zType == "Bull" and bar_index - lastRetestIndexBullOB > RETEST_COOLDOWN
+                if low < curZone.info.top
+                    renderRetestBullOBPrice := curZone.info.bottom
+                    renderRetestBullOBGUID := curZone.info.guid
+                    lastRetestIndexBullOB := bar_index
+
+// ============================== LABELS R / B ==============================
+
+addRetestLabel (float price, int guidF, bool isResistance, color col) =>
+    if not na(price) and retestsEnabled
+        newLabel = label.new(bar_index, price, style = isResistance ? label.style_label_down : label.style_label_up, color = col, text = "R", textcolor = color.white, size = size.small)
+        retestLabelContainer container = retestLabels.get(guidF)
+        if na(container)
+            container := retestLabelContainer.new(guidF)
+            container.labels := array.new<label>()
+            retestLabels.put(guidF, container)
+        container.labels.push(newLabel)
+
+addBreakLabel (float price, int guidF, bool isResistance) =>
+    if not na(price) and breaksEnabled
+        newLabel = label.new(bar_index, price, style = isResistance ? label.style_label_up : label.style_label_down, color = color.blue, text = "B", textcolor = color.white, size = size.small)
+        prevLabel = breakLabels.put(guidF, newLabel)
+        label.delete(prevLabel)
+
+addRetestLabel(renderRetestSupplyPrice, renderRetestSupplyGUID, true, color.new(supplyColor, 20))
+addRetestLabel(renderRetestDemandPrice, renderRetestDemandGUID, false, color.new(demandColor, 20))
+addRetestLabel(renderRetestBearOBPrice, renderRetestBearOBGUID, true, color.new(bearOBColor, 20))
+addRetestLabel(renderRetestBullOBPrice, renderRetestBullOBGUID, false, color.new(bullOBColor, 20))
+
+addBreakLabel(renderBreakSupplyPrice, renderBreakSupplyGUID, true)
+addBreakLabel(renderBreakDemandPrice, renderBreakDemandGUID, false)
+addBreakLabel(renderBreakBearOBPrice, renderBreakBearOBGUID, true)
+addBreakLabel(renderBreakBullOBPrice, renderBreakBullOBGUID, false)
+
+// Limpieza de labels R cuyas zonas ya no existen / no son válidas
+if retestLabels.keys().size() > 0
+    for i = 0 to retestLabels.keys().size() - 1
+        curKey = retestLabels.keys().get(i)
+        foundKey = false
+        if allZonesList.size() > 0
+            for j = 0 to allZonesList.size() - 1
+                zInfo = allZonesList.get(j).info
+                if zInfo.guid == curKey
+                    if zInfo.disabled
+                        continue
+                    if not showInvalidated and not na(zInfo.breakTime)
+                        continue
+                    if zInfo.zKind == "SD" and time - zInfo.startTime < minZoneSize * timeframe.in_seconds(zInfo.timeframeStr) * 1000
+                        continue
+                    if zInfo.startTime < nz(oldestBarTime, time)
+                        continue
+                    foundKey := true
+                    break
+        if not foundKey
+            for j = 0 to retestLabels.get(curKey).labels.size() - 1
+                label.delete(retestLabels.get(curKey).labels.get(j))
+
+// Limpieza de labels B
+if breakLabels.keys().size() > 0
+    for i = 0 to breakLabels.keys().size() - 1
+        curKey = breakLabels.keys().get(i)
+        foundKey = false
+        if allZonesList.size() > 0
+            for j = 0 to allZonesList.size() - 1
+                if allZonesList.get(j).info.guid == curKey
+                    if allZonesList.get(j).info.disabled
+                        continue
+                    foundKey := true
+                    break
+        if not foundKey
+            label.delete(breakLabels.get(curKey))
+
+// ============================== ALERTAS ==============================
+
+alertcondition(not na(renderRetestSupplyPrice) and barstate.isconfirmed, "Supply Zone Retest @ {{ticker}}", "Supply Zone Retest @ {{ticker}}")
+alertcondition(not na(renderRetestDemandPrice) and barstate.isconfirmed, "Demand Zone Retest @ {{ticker}}", "Demand Zone Retest @ {{ticker}}")
+alertcondition(not na(renderBreakSupplyPrice) and barstate.isconfirmed, "Supply Zone Break @ {{ticker}}", "Supply Zone Break @ {{ticker}}")
+alertcondition(not na(renderBreakDemandPrice) and barstate.isconfirmed, "Demand Zone Break @ {{ticker}}", "Demand Zone Break @ {{ticker}}")
+alertcondition(not na(renderRetestBearOBPrice) and barstate.isconfirmed, "Bearish OB Retest @ {{ticker}}", "Bearish OB Retest @ {{ticker}}")
+alertcondition(not na(renderRetestBullOBPrice) and barstate.isconfirmed, "Bullish OB Retest @ {{ticker}}", "Bullish OB Retest @ {{ticker}}")
+alertcondition(not na(renderBreakBearOBPrice) and barstate.isconfirmed, "Bearish OB Break @ {{ticker}}", "Bearish OB Break @ {{ticker}}")
+alertcondition(not na(renderBreakBullOBPrice) and barstate.isconfirmed, "Bullish OB Break @ {{ticker}}", "Bullish OB Break @ {{ticker}}")

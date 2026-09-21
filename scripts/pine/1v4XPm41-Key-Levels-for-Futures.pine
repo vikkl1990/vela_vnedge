@@ -1,0 +1,285 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Mikey2timez
+
+// This Pine Script(R) code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// (c) Mikey2timez
+
+//@version=6
+// ============================================================================
+//  Key Levels v6 - PASTE-SAFE, Pine Script v6
+//  No indented lines, no if-blocks, no multi-line functions. The mobile Pine
+//  editor auto-indents on paste and compounds it line over line; this format
+//  gives it nothing to mangle.
+//
+//  MH  / ML   Prev Month High/Low      violet   structural
+//  WH  / WL   Prev Week High/Low       blue
+//  PDH / PDL  Prev Day High/Low RTH    cyan
+//  LH  / LL   London High/Low          amber    overnight
+//  PMH / PML  Premarket High/Low       magenta  immediate
+//
+//  Hue = which timeframe, shade = which side. Cool and deep for the structural
+//  levels, warm for the overnight sessions.
+//
+//  Tags anchor to the RIGHT EDGE OF THE VISIBLE CHART, so they stay on screen
+//  wherever you scroll.
+//
+//  NOTE: session levels are computed on the CHART timeframe, not on 1-minute
+//  data. Doing it on 1-minute needs a multi-statement function, which cannot
+//  be written without indentation. On any timeframe whose bars line up with
+//  the session boundaries - 1, 2, 3, 5, 10, 15, 30, 60m - the result is the
+//  same. On an odd timeframe like 7m it can differ by one bar.
+//
+//  v6 notes: no integer division, no implicit int/float-to-bool casts and no
+//  na()/nz() on booleans anywhere in this script, so the v5 to v6 breaking
+//  changes do not touch it. Booleans can no longer hold na in v6, which makes
+//  the first-bar session flags resolve to false instead of propagating na.
+//
+//  Times = America/New_York (DST auto). Use an intraday chart.
+//  Stocks: enable Extended Trading Hours or premarket bars will not exist.
+// ============================================================================
+indicator("Key Levels v6", "Key Levels v6", overlay=true, max_lines_count=60, max_labels_count=60)
+
+tz = "America/New_York"
+cHide = color.new(color.black, 100)
+
+gT = "Show / Hide"
+showMo = input.bool(true, "Month H/L", group=gT)
+showWk = input.bool(true, "Week H/L", group=gT)
+showPD = input.bool(true, "Prev Day H/L (RTH 09:30-16:00)", group=gT)
+showLN = input.bool(true, "London H/L", group=gT)
+showPM = input.bool(true, "Premarket H/L (04:00-09:30)", group=gT)
+
+gSe = "Sessions"
+lonSess = input.session("0300-0800:23456", "London window (ET)", group=gSe, tooltip="London morning through to the US premarket ramp. ICT killzone users often prefer 0200-0500.")
+preSess = input.session("0400-0930:23456", "Premarket window (ET)", group=gSe)
+rthSess = input.session("0930-1600:23456", "RTH window (ET)", group=gSe)
+useCurW = input.bool(false, "Week: use CURRENT developing period", group=gSe)
+useCurM = input.bool(false, "Month: use CURRENT developing period", group=gSe)
+
+gS = "Style"
+lw = input.int(2, "Line width", minval=1, maxval=6, group=gS, tooltip="Week and month draw one step thicker than this.")
+labelOff = input.int(2, "Tag inset from right edge (bars)", minval=0, maxval=60, group=gS)
+tagSize = input.string("Small", "Tag size", options=["Tiny", "Small", "Normal"], group=gS)
+showPriceInTag = input.bool(true, "Show price in tag", group=gS)
+
+gC = "Colors"
+moHCol = input.color(#7E57C2, "Month High", group=gC)
+moLCol = input.color(#4527A0, "Month Low", group=gC)
+wkHCol = input.color(#42A5F5, "Week High", group=gC)
+wkLCol = input.color(#0D47A1, "Week Low", group=gC)
+pdCol = input.color(#26C6DA, "Prev Day High", group=gC)
+pdlCol = input.color(#00838F, "Prev Day Low", group=gC)
+lnHCol = input.color(#FFA726, "London High", group=gC)
+lnLCol = input.color(#E65100, "London Low", group=gC)
+pmCol = input.color(#EC407A, "Premarket High", group=gC)
+pmlCol = input.color(#AD1457, "Premarket Low", group=gC)
+
+tSize = tagSize == "Tiny" ? size.tiny : tagSize == "Normal" ? size.normal : size.small
+
+// PREMARKET - live inside the window, then holds
+inPM = not na(time(timeframe.period, preSess, tz))
+stPM = inPM and not inPM[1]
+var float pmHV = na
+var float pmLV = na
+pmHV := stPM ? high : inPM ? math.max(nz(pmHV, high), high) : pmHV
+pmLV := stPM ? low : inPM ? math.min(nz(pmLV, low), low) : pmLV
+
+// LONDON - same behaviour
+inLN = not na(time(timeframe.period, lonSess, tz))
+stLN = inLN and not inLN[1]
+var float lnHV = na
+var float lnLV = na
+lnHV := stLN ? high : inLN ? math.max(nz(lnHV, high), high) : lnHV
+lnLV := stLN ? low : inLN ? math.min(nz(lnLV, low), low) : lnLV
+
+// PREV DAY RTH - accumulates through the session, locks at the close
+inRT = not na(time(timeframe.period, rthSess, tz))
+stRT = inRT and not inRT[1]
+enRT = not inRT and inRT[1]
+var float rtH = na
+var float rtL = na
+var float pdhV = na
+var float pdlV = na
+rtH := stRT ? high : inRT ? math.max(nz(rtH, high), high) : rtH
+rtL := stRT ? low : inRT ? math.min(nz(rtL, low), low) : rtL
+pdhV := enRT ? rtH : pdhV
+pdlV := enRT ? rtL : pdlV
+
+// WEEK / MONTH - previous completed period, standard non-repainting idiom
+[pwHV, pwLV] = request.security(syminfo.tickerid, "W", [high[1], low[1]], lookahead=barmerge.lookahead_on)
+[pmoHV, pmoLV] = request.security(syminfo.tickerid, "M", [high[1], low[1]], lookahead=barmerge.lookahead_on)
+
+// WEEK / MONTH - current developing, accumulated on the chart series so there
+// is no lookahead on this path either
+newW = timeframe.change("W")
+newM = timeframe.change("M")
+var float cwH = na
+var float cwL = na
+var float cmH = na
+var float cmL = na
+cwH := newW ? high : math.max(nz(cwH, high), high)
+cwL := newW ? low : math.min(nz(cwL, low), low)
+cmH := newM ? high : math.max(nz(cmH, high), high)
+cmL := newM ? low : math.min(nz(cmL, low), low)
+
+wkHV = useCurW ? cwH : pwHV
+wkLV = useCurW ? cwL : pwLV
+moHV = useCurM ? cmH : pmoHV
+moLV = useCurM ? cmL : pmoLV
+wkStyle = useCurW ? line.style_dotted : line.style_solid
+moStyle = useCurM ? line.style_dotted : line.style_solid
+
+// Tag anchor. The real built-in is chart.right_visible_bar_TIME - there is no
+// bar_index equivalent - so labels are placed with xloc.bar_time and the inset
+// is converted from bars into milliseconds using the current bar duration.
+barMs = nz(time - time[1], 60000)
+rvT = nz(chart.right_visible_bar_time, time)
+tagT = math.min(rvT - labelOff * barMs, time + 480 * barMs)
+
+var line lnMH = line.new(bar_index, close, bar_index + 1, close, extend=extend.both)
+var label lbMH = label.new(time, close, "", xloc=xloc.bar_time, style=label.style_label_right, textcolor=color.white)
+okMH = showMo and not na(moHV)
+line.set_xy1(lnMH, bar_index, okMH ? moHV : close)
+line.set_xy2(lnMH, bar_index + 1, okMH ? moHV : close)
+line.set_color(lnMH, okMH ? moHCol : cHide)
+line.set_width(lnMH, lw + 1)
+line.set_style(lnMH, moStyle)
+label.set_xy(lbMH, tagT, okMH ? moHV : close)
+label.set_color(lbMH, okMH ? moHCol : cHide)
+label.set_textcolor(lbMH, okMH ? color.white : cHide)
+label.set_size(lbMH, tSize)
+label.set_text(lbMH, not okMH ? "" : showPriceInTag ? "MH  " + str.tostring(moHV, format.mintick) : "MH")
+
+var line lnML = line.new(bar_index, close, bar_index + 1, close, extend=extend.both)
+var label lbML = label.new(time, close, "", xloc=xloc.bar_time, style=label.style_label_right, textcolor=color.white)
+okML = showMo and not na(moLV)
+line.set_xy1(lnML, bar_index, okML ? moLV : close)
+line.set_xy2(lnML, bar_index + 1, okML ? moLV : close)
+line.set_color(lnML, okML ? moLCol : cHide)
+line.set_width(lnML, lw + 1)
+line.set_style(lnML, moStyle)
+label.set_xy(lbML, tagT, okML ? moLV : close)
+label.set_color(lbML, okML ? moLCol : cHide)
+label.set_textcolor(lbML, okML ? color.white : cHide)
+label.set_size(lbML, tSize)
+label.set_text(lbML, not okML ? "" : showPriceInTag ? "ML  " + str.tostring(moLV, format.mintick) : "ML")
+
+var line lnWH = line.new(bar_index, close, bar_index + 1, close, extend=extend.both)
+var label lbWH = label.new(time, close, "", xloc=xloc.bar_time, style=label.style_label_right, textcolor=color.white)
+okWH = showWk and not na(wkHV)
+line.set_xy1(lnWH, bar_index, okWH ? wkHV : close)
+line.set_xy2(lnWH, bar_index + 1, okWH ? wkHV : close)
+line.set_color(lnWH, okWH ? wkHCol : cHide)
+line.set_width(lnWH, lw + 1)
+line.set_style(lnWH, wkStyle)
+label.set_xy(lbWH, tagT, okWH ? wkHV : close)
+label.set_color(lbWH, okWH ? wkHCol : cHide)
+label.set_textcolor(lbWH, okWH ? color.white : cHide)
+label.set_size(lbWH, tSize)
+label.set_text(lbWH, not okWH ? "" : showPriceInTag ? "WH  " + str.tostring(wkHV, format.mintick) : "WH")
+
+var line lnWL = line.new(bar_index, close, bar_index + 1, close, extend=extend.both)
+var label lbWL = label.new(time, close, "", xloc=xloc.bar_time, style=label.style_label_right, textcolor=color.white)
+okWL = showWk and not na(wkLV)
+line.set_xy1(lnWL, bar_index, okWL ? wkLV : close)
+line.set_xy2(lnWL, bar_index + 1, okWL ? wkLV : close)
+line.set_color(lnWL, okWL ? wkLCol : cHide)
+line.set_width(lnWL, lw + 1)
+line.set_style(lnWL, wkStyle)
+label.set_xy(lbWL, tagT, okWL ? wkLV : close)
+label.set_color(lbWL, okWL ? wkLCol : cHide)
+label.set_textcolor(lbWL, okWL ? color.white : cHide)
+label.set_size(lbWL, tSize)
+label.set_text(lbWL, not okWL ? "" : showPriceInTag ? "WL  " + str.tostring(wkLV, format.mintick) : "WL")
+
+var line lnPDH = line.new(bar_index, close, bar_index + 1, close, extend=extend.both)
+var label lbPDH = label.new(time, close, "", xloc=xloc.bar_time, style=label.style_label_right, textcolor=color.white)
+okPDH = showPD and not na(pdhV)
+line.set_xy1(lnPDH, bar_index, okPDH ? pdhV : close)
+line.set_xy2(lnPDH, bar_index + 1, okPDH ? pdhV : close)
+line.set_color(lnPDH, okPDH ? pdCol : cHide)
+line.set_width(lnPDH, lw)
+line.set_style(lnPDH, line.style_solid)
+label.set_xy(lbPDH, tagT, okPDH ? pdhV : close)
+label.set_color(lbPDH, okPDH ? pdCol : cHide)
+label.set_textcolor(lbPDH, okPDH ? color.white : cHide)
+label.set_size(lbPDH, tSize)
+label.set_text(lbPDH, not okPDH ? "" : showPriceInTag ? "PDH  " + str.tostring(pdhV, format.mintick) : "PDH")
+
+var line lnPDL = line.new(bar_index, close, bar_index + 1, close, extend=extend.both)
+var label lbPDL = label.new(time, close, "", xloc=xloc.bar_time, style=label.style_label_right, textcolor=color.white)
+okPDL = showPD and not na(pdlV)
+line.set_xy1(lnPDL, bar_index, okPDL ? pdlV : close)
+line.set_xy2(lnPDL, bar_index + 1, okPDL ? pdlV : close)
+line.set_color(lnPDL, okPDL ? pdlCol : cHide)
+line.set_width(lnPDL, lw)
+line.set_style(lnPDL, line.style_solid)
+label.set_xy(lbPDL, tagT, okPDL ? pdlV : close)
+label.set_color(lbPDL, okPDL ? pdlCol : cHide)
+label.set_textcolor(lbPDL, okPDL ? color.white : cHide)
+label.set_size(lbPDL, tSize)
+label.set_text(lbPDL, not okPDL ? "" : showPriceInTag ? "PDL  " + str.tostring(pdlV, format.mintick) : "PDL")
+
+var line lnLH = line.new(bar_index, close, bar_index + 1, close, extend=extend.both)
+var label lbLH = label.new(time, close, "", xloc=xloc.bar_time, style=label.style_label_right, textcolor=color.white)
+okLH = showLN and not na(lnHV)
+line.set_xy1(lnLH, bar_index, okLH ? lnHV : close)
+line.set_xy2(lnLH, bar_index + 1, okLH ? lnHV : close)
+line.set_color(lnLH, okLH ? lnHCol : cHide)
+line.set_width(lnLH, lw)
+line.set_style(lnLH, line.style_solid)
+label.set_xy(lbLH, tagT, okLH ? lnHV : close)
+label.set_color(lbLH, okLH ? lnHCol : cHide)
+label.set_textcolor(lbLH, okLH ? color.white : cHide)
+label.set_size(lbLH, tSize)
+label.set_text(lbLH, not okLH ? "" : showPriceInTag ? "LH  " + str.tostring(lnHV, format.mintick) : "LH")
+
+var line lnLL = line.new(bar_index, close, bar_index + 1, close, extend=extend.both)
+var label lbLL = label.new(time, close, "", xloc=xloc.bar_time, style=label.style_label_right, textcolor=color.white)
+okLL = showLN and not na(lnLV)
+line.set_xy1(lnLL, bar_index, okLL ? lnLV : close)
+line.set_xy2(lnLL, bar_index + 1, okLL ? lnLV : close)
+line.set_color(lnLL, okLL ? lnLCol : cHide)
+line.set_width(lnLL, lw)
+line.set_style(lnLL, line.style_solid)
+label.set_xy(lbLL, tagT, okLL ? lnLV : close)
+label.set_color(lbLL, okLL ? lnLCol : cHide)
+label.set_textcolor(lbLL, okLL ? color.white : cHide)
+label.set_size(lbLL, tSize)
+label.set_text(lbLL, not okLL ? "" : showPriceInTag ? "LL  " + str.tostring(lnLV, format.mintick) : "LL")
+
+var line lnPMH = line.new(bar_index, close, bar_index + 1, close, extend=extend.both)
+var label lbPMH = label.new(time, close, "", xloc=xloc.bar_time, style=label.style_label_right, textcolor=color.white)
+okPMH = showPM and not na(pmHV)
+line.set_xy1(lnPMH, bar_index, okPMH ? pmHV : close)
+line.set_xy2(lnPMH, bar_index + 1, okPMH ? pmHV : close)
+line.set_color(lnPMH, okPMH ? pmCol : cHide)
+line.set_width(lnPMH, lw)
+line.set_style(lnPMH, line.style_solid)
+label.set_xy(lbPMH, tagT, okPMH ? pmHV : close)
+label.set_color(lbPMH, okPMH ? pmCol : cHide)
+label.set_textcolor(lbPMH, okPMH ? color.white : cHide)
+label.set_size(lbPMH, tSize)
+label.set_text(lbPMH, not okPMH ? "" : showPriceInTag ? "PMH  " + str.tostring(pmHV, format.mintick) : "PMH")
+
+var line lnPML = line.new(bar_index, close, bar_index + 1, close, extend=extend.both)
+var label lbPML = label.new(time, close, "", xloc=xloc.bar_time, style=label.style_label_right, textcolor=color.white)
+okPML = showPM and not na(pmLV)
+line.set_xy1(lnPML, bar_index, okPML ? pmLV : close)
+line.set_xy2(lnPML, bar_index + 1, okPML ? pmLV : close)
+line.set_color(lnPML, okPML ? pmlCol : cHide)
+line.set_width(lnPML, lw)
+line.set_style(lnPML, line.style_solid)
+label.set_xy(lbPML, tagT, okPML ? pmLV : close)
+label.set_color(lbPML, okPML ? pmlCol : cHide)
+label.set_textcolor(lbPML, okPML ? color.white : cHide)
+label.set_size(lbPML, tSize)
+label.set_text(lbPML, not okPML ? "" : showPriceInTag ? "PML  " + str.tostring(pmLV, format.mintick) : "PML")
+
+// Intraday guard
+var label warnLab = label.new(bar_index, close, "", style=label.style_label_down, textcolor=color.white, size=size.small)
+badTF = not timeframe.isintraday
+label.set_xy(warnLab, bar_index, high)
+label.set_text(warnLab, badTF ? "Use an intraday chart." : "")
+label.set_color(warnLab, badTF ? color.new(color.red, 0) : cHide)
+label.set_textcolor(warnLab, badTF ? color.white : cHide)

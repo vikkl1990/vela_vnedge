@@ -1,0 +1,589 @@
+// This Source Code Form is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Horizon Algo
+
+//@version=6
+indicator("Session Range & Volatility Monitor", shorttitle = "Session Monitor", overlay = true, max_boxes_count = 150, explicit_plot_zorder = true)
+
+//------------------------------------------------------------------------------
+// Groups
+//------------------------------------------------------------------------------
+string GROUP_SESSIONS = "Sessions"
+string GROUP_PACE = "Range Pace"
+string GROUP_IB = "Initial Balance"
+string GROUP_VISUALS = "Visuals"
+string GROUP_DASHBOARD = "Dashboard"
+string GROUP_ALERTS = "Alerts"
+
+//------------------------------------------------------------------------------
+// Session configuration
+//------------------------------------------------------------------------------
+showAsia = input.bool(true, "Show Asia", group = GROUP_SESSIONS, display = display.data_window)
+asiaSession = input.session("0900-1700", "Asia Hours", group = GROUP_SESSIONS, display = display.data_window)
+asiaTimezone = input.string("Asia/Tokyo", "Asia Timezone", group = GROUP_SESSIONS, tooltip = "Use an IANA timezone such as Asia/Tokyo.", display = display.data_window)
+asiaDurationMinutes = input.int(480, "Asia Duration Minutes", minval = 30, group = GROUP_SESSIONS, tooltip = "Match this value to the configured session window. It is used only to normalize elapsed session progress.", display = display.data_window)
+
+showLondon = input.bool(true, "Show London", group = GROUP_SESSIONS, display = display.data_window)
+londonSession = input.session("0800-1630", "London Hours", group = GROUP_SESSIONS, display = display.data_window)
+londonTimezone = input.string("Europe/London", "London Timezone", group = GROUP_SESSIONS, tooltip = "The IANA timezone lets TradingView account for daylight-saving changes.", display = display.data_window)
+londonDurationMinutes = input.int(510, "London Duration Minutes", minval = 30, group = GROUP_SESSIONS, tooltip = "Match this value to the configured session window.", display = display.data_window)
+
+showNewYork = input.bool(true, "Show New York", group = GROUP_SESSIONS, display = display.data_window)
+newYorkSession = input.session("0930-1600", "New York Hours", group = GROUP_SESSIONS, display = display.data_window)
+newYorkTimezone = input.string("America/New_York", "New York Timezone", group = GROUP_SESSIONS, tooltip = "The IANA timezone lets TradingView account for daylight-saving changes.", display = display.data_window)
+newYorkDurationMinutes = input.int(390, "New York Duration Minutes", minval = 30, group = GROUP_SESSIONS, tooltip = "Match this value to the configured session window.", display = display.data_window)
+
+//------------------------------------------------------------------------------
+// Pace and history
+//------------------------------------------------------------------------------
+historyLength = input.int(20, "Completed Sessions", minval = 5, maxval = 100, group = GROUP_PACE, tooltip = "Number of completed sessions retained for checkpoint medians.", display = display.data_window)
+minimumHistory = input.int(5, "Minimum Sessions", minval = 2, maxval = 20, group = GROUP_PACE, tooltip = "Pace remains in Learning state until this many completed sessions are available.", display = display.data_window)
+minimumPaceProgress = input.float(0.05, "Pace Starts After", minval = 0.01, maxval = 0.25, step = 0.01, group = GROUP_PACE, tooltip = "Minimum elapsed fraction of the active session before a pace state is displayed.", display = display.data_window)
+quietThreshold = input.float(0.75, "Quiet Below", minval = 0.10, maxval = 1.00, step = 0.05, group = GROUP_PACE, tooltip = "Current range divided by the historical range expected at the same elapsed stage.", display = display.data_window)
+activeThreshold = input.float(1.15, "Active From", minval = 1.00, maxval = 2.00, step = 0.05, group = GROUP_PACE, display = display.data_window)
+extendedThreshold = input.float(1.50, "Extended From", minval = 1.10, maxval = 3.00, step = 0.05, group = GROUP_PACE, display = display.data_window)
+
+//------------------------------------------------------------------------------
+// Initial Balance and visuals
+//------------------------------------------------------------------------------
+showInitialBalance = input.bool(true, "Show Initial Balance", group = GROUP_IB, display = display.data_window)
+initialBalanceMinutes = input.int(60, "Initial Balance Minutes", minval = 5, maxval = 240, group = GROUP_IB, display = display.data_window)
+
+asiaColor = input.color(#8B7CF6, "Asia", group = GROUP_VISUALS, display = display.data_window)
+londonColor = input.color(#17C3A2, "London", group = GROUP_VISUALS, display = display.data_window)
+newYorkColor = input.color(#F2A93B, "New York", group = GROUP_VISUALS, display = display.data_window)
+showSessionNames = input.bool(true, "Show Session Names", group = GROUP_VISUALS, display = display.data_window)
+sessionBoxTextSize = input.string("Normal", "Session Box Text Size", options = ["Small", "Normal", "Large"], group = GROUP_VISUALS, tooltip = "Controls the session name and range-pace text inside active session boxes. Initial Balance markers remain small.", display = display.data_window)
+showMidpoints = input.bool(false, "Show Session Midpoints", group = GROUP_VISUALS, display = display.data_window)
+sessionDaysOnChart = input.int(3, "Session Days On Chart", minval = 1, maxval = 20, group = GROUP_VISUALS, tooltip = "Number of most recent session days shown for each enabled session. 1 keeps only the latest Asia, London, and New York session; higher values retain more historical session boxes.", display = display.data_window)
+quietColor = input.color(#718096, "Quiet Pace", group = GROUP_VISUALS, display = display.data_window)
+onPaceColor = input.color(#2AA9A1, "On Pace", group = GROUP_VISUALS, display = display.data_window)
+activeColor = input.color(#F2A93B, "Active Pace", group = GROUP_VISUALS, display = display.data_window)
+extendedColor = input.color(#E76F51, "Extended Pace", group = GROUP_VISUALS, display = display.data_window)
+
+showDashboard = input.bool(true, "Show Dashboard", group = GROUP_DASHBOARD, display = display.data_window)
+dashboardPosition = input.string("Top Right", "Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = GROUP_DASHBOARD, display = display.data_window)
+
+confirmAlertsOnClose = input.bool(true, "Confirm Alerts On Bar Close", group = GROUP_ALERTS, display = display.data_window)
+
+//------------------------------------------------------------------------------
+// Helpers
+//------------------------------------------------------------------------------
+f_clamp(float value, float minimum, float maximum) =>
+    math.max(minimum, math.min(maximum, value))
+
+f_lerp(float first, float second, float amount) =>
+    first + (second - first) * amount
+
+f_median(array<float> values, int required) =>
+    int count = array.size(values)
+    float result = na
+    if count >= required
+        array<float> sorted = array.copy(values)
+        array.sort(sorted)
+        int middle = int(math.floor(count * 0.5))
+        result := count % 2 == 1 ? array.get(sorted, middle) : (array.get(sorted, middle - 1) + array.get(sorted, middle)) * 0.5
+    result
+
+f_average(array<float> values, int required) =>
+    int count = array.size(values)
+    float result = na
+    if count >= required
+        float total = 0.0
+        for index = 0 to count - 1
+            total += array.get(values, index)
+        result := total / count
+    result
+
+f_pushBounded(array<float> values, float value, int maximum) =>
+    if not na(value)
+        array.push(values, value)
+        while array.size(values) > maximum
+            array.shift(values)
+
+f_storeBox(array<box> boxes, box newBox, int daysToKeep) =>
+    array.push(boxes, newBox)
+    while array.size(boxes) > daysToKeep
+        box oldBox = array.shift(boxes)
+        box.delete(oldBox)
+
+f_expectedRange(float progress, float quarterMedian, float halfMedian, float threeQuarterMedian, float fullMedian) =>
+    float result = na
+    if not na(quarterMedian) and not na(halfMedian) and not na(threeQuarterMedian) and not na(fullMedian)
+        float p = f_clamp(progress, 0.0, 1.0)
+        if p <= 0.25
+            result := quarterMedian * p / 0.25
+        else if p <= 0.50
+            result := f_lerp(quarterMedian, halfMedian, (p - 0.25) / 0.25)
+        else if p <= 0.75
+            result := f_lerp(halfMedian, threeQuarterMedian, (p - 0.50) / 0.25)
+        else
+            result := f_lerp(threeQuarterMedian, fullMedian, (p - 0.75) / 0.25)
+    result
+
+f_paceState(float ratio) =>
+    int state = -1
+    if not na(ratio)
+        state := ratio < quietThreshold ? 0 : ratio < activeThreshold ? 1 : ratio < extendedThreshold ? 2 : 3
+    state
+
+f_paceText(int state) =>
+    state == 0 ? "QUIET" : state == 1 ? "ON PACE" : state == 2 ? "ACTIVE" : state == 3 ? "EXTENDED" : "LEARNING"
+
+f_paceTransparency(int state) =>
+    state == 0 ? 95 : state == 1 ? 94 : state == 2 ? 91 : state == 3 ? 87 : 96
+
+f_paceColor(int state) =>
+    state == 0 ? quietColor : state == 1 ? onPaceColor : state == 2 ? activeColor : state == 3 ? extendedColor : color.new(chart.fg_color, 65)
+
+f_dashboardPosition(string setting) =>
+    switch setting
+        "Top Left" => position.top_left
+        "Bottom Right" => position.bottom_right
+        "Bottom Left" => position.bottom_left
+        => position.top_right
+
+f_sessionBoxTextSize(string setting) =>
+    setting == "Small" ? size.small : setting == "Large" ? size.large : size.normal
+
+f_rangeText(float value) =>
+    na(value) ? "-" : str.tostring(value, format.mintick)
+
+f_ratioText(float ratio) =>
+    na(ratio) ? "-" : str.tostring(ratio * 100.0, "#") + "%"
+
+f_paceDisplay(int state, float ratio) =>
+    f_paceText(state) + (na(ratio) ? "" : "  " + f_ratioText(ratio))
+
+f_boxText(string sessionName, int state, float ratio) =>
+    showSessionNames ? sessionName + "\n" + f_paceDisplay(state, ratio) : ""
+
+f_paceMeaning(float ratio) =>
+    string result = "Building enough completed-session history"
+    if not na(ratio)
+        int difference = int(math.round(math.abs(ratio - 1.0) * 100.0))
+        result := difference <= 1 ? "Near the typical range at this stage" : ratio < 1.0 ? str.tostring(difference) + "% below the typical range at this stage" : str.tostring(difference) + "% above the typical range at this stage"
+    result
+
+//------------------------------------------------------------------------------
+// Timeframe and session detection
+//------------------------------------------------------------------------------
+validTimeframe = timeframe.isintraday
+float timeframeSeconds = timeframe.in_seconds()
+
+inAsia = validTimeframe and showAsia and not na(time(timeframe.period, asiaSession, asiaTimezone))
+inLondon = validTimeframe and showLondon and not na(time(timeframe.period, londonSession, londonTimezone))
+inNewYork = validTimeframe and showNewYork and not na(time(timeframe.period, newYorkSession, newYorkTimezone))
+
+// Some exchange feeds omit every bar outside regular trading hours. In that
+// case the last stored bar of yesterday and the first bar of today can both
+// fall inside the same configured session window. Treat a long data gap as a
+// new session segment so boxes and completed-session statistics reset cleanly.
+int sessionGapThresholdMs = int(math.max(timeframeSeconds * 3000.0, 4.0 * 60.0 * 60.0 * 1000.0))
+bool asiaGapRestart = inAsia and inAsia[1] and time - time[1] > sessionGapThresholdMs
+bool londonGapRestart = inLondon and inLondon[1] and time - time[1] > sessionGapThresholdMs
+bool newYorkGapRestart = inNewYork and inNewYork[1] and time - time[1] > sessionGapThresholdMs
+
+asiaStarted = inAsia and (not inAsia[1] or asiaGapRestart)
+LondonStarted = inLondon and (not inLondon[1] or londonGapRestart)
+newYorkStarted = inNewYork and (not inNewYork[1] or newYorkGapRestart)
+asiaEnded = not inAsia and inAsia[1]
+londonEnded = not inLondon and inLondon[1]
+newYorkEnded = not inNewYork and inNewYork[1]
+
+int asiaExpectedBars = int(math.max(1.0, math.round(asiaDurationMinutes * 60.0 / timeframeSeconds)))
+int londonExpectedBars = int(math.max(1.0, math.round(londonDurationMinutes * 60.0 / timeframeSeconds)))
+int newYorkExpectedBars = int(math.max(1.0, math.round(newYorkDurationMinutes * 60.0 / timeframeSeconds)))
+
+//------------------------------------------------------------------------------
+// Historical checkpoint stores
+//------------------------------------------------------------------------------
+var array<float> asiaQuarterHistory = array.new_float()
+var array<float> asiaHalfHistory = array.new_float()
+var array<float> asiaThreeQuarterHistory = array.new_float()
+var array<float> asiaFullHistory = array.new_float()
+var array<float> londonQuarterHistory = array.new_float()
+var array<float> londonHalfHistory = array.new_float()
+var array<float> londonThreeQuarterHistory = array.new_float()
+var array<float> londonFullHistory = array.new_float()
+var array<float> newYorkQuarterHistory = array.new_float()
+var array<float> newYorkHalfHistory = array.new_float()
+var array<float> newYorkThreeQuarterHistory = array.new_float()
+var array<float> newYorkFullHistory = array.new_float()
+
+var array<box> asiaBoxes = array.new_box()
+var array<box> londonBoxes = array.new_box()
+var array<box> newYorkBoxes = array.new_box()
+var array<box> asiaIbBoxes = array.new_box()
+var array<box> londonIbBoxes = array.new_box()
+var array<box> newYorkIbBoxes = array.new_box()
+
+//------------------------------------------------------------------------------
+// Asia state
+//------------------------------------------------------------------------------
+var float asiaHigh = na
+var float asiaLow = na
+var float asiaQuarter = na
+var float asiaHalf = na
+var float asiaThreeQuarter = na
+var float asiaLastRange = na
+var int asiaBarCount = 0
+var int asiaStartTime = na
+var box asiaBox = na
+var box asiaIbBox = na
+var float asiaIbHigh = na
+var float asiaIbLow = na
+
+if asiaGapRestart and not na(asiaHigh) and not na(asiaLow)
+    float asiaPriorFinalRange = asiaHigh - asiaLow
+    asiaLastRange := asiaPriorFinalRange
+    f_pushBounded(asiaQuarterHistory, na(asiaQuarter) ? asiaPriorFinalRange : asiaQuarter, historyLength)
+    f_pushBounded(asiaHalfHistory, na(asiaHalf) ? asiaPriorFinalRange : asiaHalf, historyLength)
+    f_pushBounded(asiaThreeQuarterHistory, na(asiaThreeQuarter) ? asiaPriorFinalRange : asiaThreeQuarter, historyLength)
+    f_pushBounded(asiaFullHistory, asiaPriorFinalRange, historyLength)
+
+if asiaStarted
+    asiaHigh := high
+    asiaLow := low
+    asiaQuarter := na
+    asiaHalf := na
+    asiaThreeQuarter := na
+    asiaBarCount := 1
+    asiaStartTime := time
+    asiaIbHigh := high
+    asiaIbLow := low
+    asiaBox := box.new(left = bar_index, top = high, right = bar_index, bottom = low, border_color = color.new(asiaColor, 46), border_width = 1, bgcolor = color.new(asiaColor, 94), text = showSessionNames ? "ASIA" : "", text_color = color.new(asiaColor, 18), text_size = f_sessionBoxTextSize(sessionBoxTextSize), text_halign = text.align_left, text_valign = text.align_top)
+    f_storeBox(asiaBoxes, asiaBox, sessionDaysOnChart)
+    if showInitialBalance
+        asiaIbBox := box.new(left = bar_index, top = high, right = bar_index, bottom = low, border_color = color.new(asiaColor, 68), border_width = 1, border_style = line.style_dotted, bgcolor = color.new(asiaColor, 96), text = "IB", text_color = color.new(asiaColor, 42), text_size = size.tiny, text_halign = text.align_right, text_valign = text.align_bottom)
+        f_storeBox(asiaIbBoxes, asiaIbBox, sessionDaysOnChart)
+else if inAsia
+    asiaBarCount += 1
+    asiaHigh := math.max(asiaHigh, high)
+    asiaLow := math.min(asiaLow, low)
+
+float asiaRange = inAsia ? asiaHigh - asiaLow : na
+float asiaProgress = inAsia ? f_clamp(asiaBarCount / float(asiaExpectedBars), 0.0, 1.0) : na
+
+if inAsia
+    if na(asiaQuarter) and asiaProgress >= 0.25
+        asiaQuarter := asiaRange
+    if na(asiaHalf) and asiaProgress >= 0.50
+        asiaHalf := asiaRange
+    if na(asiaThreeQuarter) and asiaProgress >= 0.75
+        asiaThreeQuarter := asiaRange
+
+float asiaQMedian = f_median(asiaQuarterHistory, minimumHistory)
+float asiaHMedian = f_median(asiaHalfHistory, minimumHistory)
+float asiaTMedian = f_median(asiaThreeQuarterHistory, minimumHistory)
+float asiaFMedian = f_median(asiaFullHistory, minimumHistory)
+float asiaFAverage = f_average(asiaFullHistory, minimumHistory)
+float asiaExpectedRange = inAsia ? f_expectedRange(asiaProgress, asiaQMedian, asiaHMedian, asiaTMedian, asiaFMedian) : na
+float asiaPaceRatio = inAsia and asiaProgress >= minimumPaceProgress and asiaExpectedRange > 0.0 ? asiaRange / asiaExpectedRange : na
+int asiaPaceState = f_paceState(asiaPaceRatio)
+
+if inAsia and not na(asiaBox)
+    box.set_right(asiaBox, bar_index)
+    box.set_top(asiaBox, asiaHigh)
+    box.set_bottom(asiaBox, asiaLow)
+    box.set_bgcolor(asiaBox, color.new(f_paceColor(asiaPaceState), f_paceTransparency(asiaPaceState)))
+    box.set_border_color(asiaBox, color.new(asiaColor, asiaPaceState >= 2 ? 24 : 46))
+    box.set_text(asiaBox, f_boxText("ASIA", asiaPaceState, asiaPaceRatio))
+    box.set_text_color(asiaBox, f_paceColor(asiaPaceState))
+
+asiaIbActive = inAsia and showInitialBalance and time < asiaStartTime + initialBalanceMinutes * 60000
+asiaIbCompleted = inAsia and showInitialBalance and not asiaIbActive and asiaIbActive[1]
+if asiaIbActive
+    asiaIbHigh := math.max(asiaIbHigh, high)
+    asiaIbLow := math.min(asiaIbLow, low)
+    if not na(asiaIbBox)
+        box.set_right(asiaIbBox, bar_index)
+        box.set_top(asiaIbBox, asiaIbHigh)
+        box.set_bottom(asiaIbBox, asiaIbLow)
+else if inAsia and showInitialBalance and not na(asiaIbBox)
+    box.set_right(asiaIbBox, bar_index)
+
+if asiaEnded
+    float finalRange = asiaHigh - asiaLow
+    asiaLastRange := finalRange
+    f_pushBounded(asiaQuarterHistory, na(asiaQuarter) ? finalRange : asiaQuarter, historyLength)
+    f_pushBounded(asiaHalfHistory, na(asiaHalf) ? finalRange : asiaHalf, historyLength)
+    f_pushBounded(asiaThreeQuarterHistory, na(asiaThreeQuarter) ? finalRange : asiaThreeQuarter, historyLength)
+    f_pushBounded(asiaFullHistory, finalRange, historyLength)
+
+//------------------------------------------------------------------------------
+// London state
+//------------------------------------------------------------------------------
+var float londonHigh = na
+var float londonLow = na
+var float londonQuarter = na
+var float londonHalf = na
+var float londonThreeQuarter = na
+var float londonLastRange = na
+var int londonBarCount = 0
+var int londonStartTime = na
+var box londonBox = na
+var box londonIbBox = na
+var float londonIbHigh = na
+var float londonIbLow = na
+
+if londonGapRestart and not na(londonHigh) and not na(londonLow)
+    float londonPriorFinalRange = londonHigh - londonLow
+    londonLastRange := londonPriorFinalRange
+    f_pushBounded(londonQuarterHistory, na(londonQuarter) ? londonPriorFinalRange : londonQuarter, historyLength)
+    f_pushBounded(londonHalfHistory, na(londonHalf) ? londonPriorFinalRange : londonHalf, historyLength)
+    f_pushBounded(londonThreeQuarterHistory, na(londonThreeQuarter) ? londonPriorFinalRange : londonThreeQuarter, historyLength)
+    f_pushBounded(londonFullHistory, londonPriorFinalRange, historyLength)
+
+if LondonStarted
+    londonHigh := high
+    londonLow := low
+    londonQuarter := na
+    londonHalf := na
+    londonThreeQuarter := na
+    londonBarCount := 1
+    londonStartTime := time
+    londonIbHigh := high
+    londonIbLow := low
+    londonBox := box.new(left = bar_index, top = high, right = bar_index, bottom = low, border_color = color.new(londonColor, 46), border_width = 1, bgcolor = color.new(londonColor, 94), text = showSessionNames ? "LONDON" : "", text_color = color.new(londonColor, 18), text_size = f_sessionBoxTextSize(sessionBoxTextSize), text_halign = text.align_left, text_valign = text.align_top)
+    f_storeBox(londonBoxes, londonBox, sessionDaysOnChart)
+    if showInitialBalance
+        londonIbBox := box.new(left = bar_index, top = high, right = bar_index, bottom = low, border_color = color.new(londonColor, 68), border_width = 1, border_style = line.style_dotted, bgcolor = color.new(londonColor, 96), text = "IB", text_color = color.new(londonColor, 42), text_size = size.tiny, text_halign = text.align_right, text_valign = text.align_bottom)
+        f_storeBox(londonIbBoxes, londonIbBox, sessionDaysOnChart)
+else if inLondon
+    londonBarCount += 1
+    londonHigh := math.max(londonHigh, high)
+    londonLow := math.min(londonLow, low)
+
+float londonRange = inLondon ? londonHigh - londonLow : na
+float londonProgress = inLondon ? f_clamp(londonBarCount / float(londonExpectedBars), 0.0, 1.0) : na
+
+if inLondon
+    if na(londonQuarter) and londonProgress >= 0.25
+        londonQuarter := londonRange
+    if na(londonHalf) and londonProgress >= 0.50
+        londonHalf := londonRange
+    if na(londonThreeQuarter) and londonProgress >= 0.75
+        londonThreeQuarter := londonRange
+
+float londonQMedian = f_median(londonQuarterHistory, minimumHistory)
+float londonHMedian = f_median(londonHalfHistory, minimumHistory)
+float londonTMedian = f_median(londonThreeQuarterHistory, minimumHistory)
+float londonFMedian = f_median(londonFullHistory, minimumHistory)
+float londonFAverage = f_average(londonFullHistory, minimumHistory)
+float londonExpectedRange = inLondon ? f_expectedRange(londonProgress, londonQMedian, londonHMedian, londonTMedian, londonFMedian) : na
+float londonPaceRatio = inLondon and londonProgress >= minimumPaceProgress and londonExpectedRange > 0.0 ? londonRange / londonExpectedRange : na
+int londonPaceState = f_paceState(londonPaceRatio)
+
+if inLondon and not na(londonBox)
+    box.set_right(londonBox, bar_index)
+    box.set_top(londonBox, londonHigh)
+    box.set_bottom(londonBox, londonLow)
+    box.set_bgcolor(londonBox, color.new(f_paceColor(londonPaceState), f_paceTransparency(londonPaceState)))
+    box.set_border_color(londonBox, color.new(londonColor, londonPaceState >= 2 ? 24 : 46))
+    box.set_text(londonBox, f_boxText("LONDON", londonPaceState, londonPaceRatio))
+    box.set_text_color(londonBox, f_paceColor(londonPaceState))
+
+londonIbActive = inLondon and showInitialBalance and time < londonStartTime + initialBalanceMinutes * 60000
+londonIbCompleted = inLondon and showInitialBalance and not londonIbActive and londonIbActive[1]
+if londonIbActive
+    londonIbHigh := math.max(londonIbHigh, high)
+    londonIbLow := math.min(londonIbLow, low)
+    if not na(londonIbBox)
+        box.set_right(londonIbBox, bar_index)
+        box.set_top(londonIbBox, londonIbHigh)
+        box.set_bottom(londonIbBox, londonIbLow)
+else if inLondon and showInitialBalance and not na(londonIbBox)
+    box.set_right(londonIbBox, bar_index)
+
+if londonEnded
+    float finalRange = londonHigh - londonLow
+    londonLastRange := finalRange
+    f_pushBounded(londonQuarterHistory, na(londonQuarter) ? finalRange : londonQuarter, historyLength)
+    f_pushBounded(londonHalfHistory, na(londonHalf) ? finalRange : londonHalf, historyLength)
+    f_pushBounded(londonThreeQuarterHistory, na(londonThreeQuarter) ? finalRange : londonThreeQuarter, historyLength)
+    f_pushBounded(londonFullHistory, finalRange, historyLength)
+
+//------------------------------------------------------------------------------
+// New York state
+//------------------------------------------------------------------------------
+var float newYorkHigh = na
+var float newYorkLow = na
+var float newYorkQuarter = na
+var float newYorkHalf = na
+var float newYorkThreeQuarter = na
+var float newYorkLastRange = na
+var int newYorkBarCount = 0
+var int newYorkStartTime = na
+var box newYorkBox = na
+var box newYorkIbBox = na
+var float newYorkIbHigh = na
+var float newYorkIbLow = na
+
+if newYorkGapRestart and not na(newYorkHigh) and not na(newYorkLow)
+    float newYorkPriorFinalRange = newYorkHigh - newYorkLow
+    newYorkLastRange := newYorkPriorFinalRange
+    f_pushBounded(newYorkQuarterHistory, na(newYorkQuarter) ? newYorkPriorFinalRange : newYorkQuarter, historyLength)
+    f_pushBounded(newYorkHalfHistory, na(newYorkHalf) ? newYorkPriorFinalRange : newYorkHalf, historyLength)
+    f_pushBounded(newYorkThreeQuarterHistory, na(newYorkThreeQuarter) ? newYorkPriorFinalRange : newYorkThreeQuarter, historyLength)
+    f_pushBounded(newYorkFullHistory, newYorkPriorFinalRange, historyLength)
+
+if newYorkStarted
+    newYorkHigh := high
+    newYorkLow := low
+    newYorkQuarter := na
+    newYorkHalf := na
+    newYorkThreeQuarter := na
+    newYorkBarCount := 1
+    newYorkStartTime := time
+    newYorkIbHigh := high
+    newYorkIbLow := low
+    newYorkBox := box.new(left = bar_index, top = high, right = bar_index, bottom = low, border_color = color.new(newYorkColor, 46), border_width = 1, bgcolor = color.new(newYorkColor, 94), text = showSessionNames ? "NEW YORK" : "", text_color = color.new(newYorkColor, 18), text_size = f_sessionBoxTextSize(sessionBoxTextSize), text_halign = text.align_left, text_valign = text.align_top)
+    f_storeBox(newYorkBoxes, newYorkBox, sessionDaysOnChart)
+    if showInitialBalance
+        newYorkIbBox := box.new(left = bar_index, top = high, right = bar_index, bottom = low, border_color = color.new(newYorkColor, 68), border_width = 1, border_style = line.style_dotted, bgcolor = color.new(newYorkColor, 96), text = "IB", text_color = color.new(newYorkColor, 42), text_size = size.tiny, text_halign = text.align_right, text_valign = text.align_bottom)
+        f_storeBox(newYorkIbBoxes, newYorkIbBox, sessionDaysOnChart)
+else if inNewYork
+    newYorkBarCount += 1
+    newYorkHigh := math.max(newYorkHigh, high)
+    newYorkLow := math.min(newYorkLow, low)
+
+float newYorkRange = inNewYork ? newYorkHigh - newYorkLow : na
+float newYorkProgress = inNewYork ? f_clamp(newYorkBarCount / float(newYorkExpectedBars), 0.0, 1.0) : na
+
+if inNewYork
+    if na(newYorkQuarter) and newYorkProgress >= 0.25
+        newYorkQuarter := newYorkRange
+    if na(newYorkHalf) and newYorkProgress >= 0.50
+        newYorkHalf := newYorkRange
+    if na(newYorkThreeQuarter) and newYorkProgress >= 0.75
+        newYorkThreeQuarter := newYorkRange
+
+float newYorkQMedian = f_median(newYorkQuarterHistory, minimumHistory)
+float newYorkHMedian = f_median(newYorkHalfHistory, minimumHistory)
+float newYorkTMedian = f_median(newYorkThreeQuarterHistory, minimumHistory)
+float newYorkFMedian = f_median(newYorkFullHistory, minimumHistory)
+float newYorkFAverage = f_average(newYorkFullHistory, minimumHistory)
+float newYorkExpectedRange = inNewYork ? f_expectedRange(newYorkProgress, newYorkQMedian, newYorkHMedian, newYorkTMedian, newYorkFMedian) : na
+float newYorkPaceRatio = inNewYork and newYorkProgress >= minimumPaceProgress and newYorkExpectedRange > 0.0 ? newYorkRange / newYorkExpectedRange : na
+int newYorkPaceState = f_paceState(newYorkPaceRatio)
+
+if inNewYork and not na(newYorkBox)
+    box.set_right(newYorkBox, bar_index)
+    box.set_top(newYorkBox, newYorkHigh)
+    box.set_bottom(newYorkBox, newYorkLow)
+    box.set_bgcolor(newYorkBox, color.new(f_paceColor(newYorkPaceState), f_paceTransparency(newYorkPaceState)))
+    box.set_border_color(newYorkBox, color.new(newYorkColor, newYorkPaceState >= 2 ? 24 : 46))
+    box.set_text(newYorkBox, f_boxText("NEW YORK", newYorkPaceState, newYorkPaceRatio))
+    box.set_text_color(newYorkBox, f_paceColor(newYorkPaceState))
+
+newYorkIbActive = inNewYork and showInitialBalance and time < newYorkStartTime + initialBalanceMinutes * 60000
+newYorkIbCompleted = inNewYork and showInitialBalance and not newYorkIbActive and newYorkIbActive[1]
+if newYorkIbActive
+    newYorkIbHigh := math.max(newYorkIbHigh, high)
+    newYorkIbLow := math.min(newYorkIbLow, low)
+    if not na(newYorkIbBox)
+        box.set_right(newYorkIbBox, bar_index)
+        box.set_top(newYorkIbBox, newYorkIbHigh)
+        box.set_bottom(newYorkIbBox, newYorkIbLow)
+else if inNewYork and showInitialBalance and not na(newYorkIbBox)
+    box.set_right(newYorkIbBox, bar_index)
+
+if newYorkEnded
+    float finalRange = newYorkHigh - newYorkLow
+    newYorkLastRange := finalRange
+    f_pushBounded(newYorkQuarterHistory, na(newYorkQuarter) ? finalRange : newYorkQuarter, historyLength)
+    f_pushBounded(newYorkHalfHistory, na(newYorkHalf) ? finalRange : newYorkHalf, historyLength)
+    f_pushBounded(newYorkThreeQuarterHistory, na(newYorkThreeQuarter) ? finalRange : newYorkThreeQuarter, historyLength)
+    f_pushBounded(newYorkFullHistory, finalRange, historyLength)
+
+//------------------------------------------------------------------------------
+// Optional midpoint references
+//------------------------------------------------------------------------------
+float asiaMidpoint = inAsia ? (asiaHigh + asiaLow) * 0.5 : na
+float londonMidpoint = inLondon ? (londonHigh + londonLow) * 0.5 : na
+float newYorkMidpoint = inNewYork ? (newYorkHigh + newYorkLow) * 0.5 : na
+plot(showMidpoints ? asiaMidpoint : na, "Asia Midpoint", color = color.new(asiaColor, 60), linewidth = 1, style = plot.style_linebr, display = display.all - display.status_line - display.price_scale)
+plot(showMidpoints ? londonMidpoint : na, "London Midpoint", color = color.new(londonColor, 60), linewidth = 1, style = plot.style_linebr, display = display.all - display.status_line - display.price_scale)
+plot(showMidpoints ? newYorkMidpoint : na, "New York Midpoint", color = color.new(newYorkColor, 60), linewidth = 1, style = plot.style_linebr, display = display.all - display.status_line - display.price_scale)
+
+plot(asiaFMedian, "Asia Completed Median Range", color = color.new(asiaColor, 100), display = display.data_window)
+plot(asiaFAverage, "Asia Completed Average Range", color = color.new(asiaColor, 100), display = display.data_window)
+plot(londonFMedian, "London Completed Median Range", color = color.new(londonColor, 100), display = display.data_window)
+plot(londonFAverage, "London Completed Average Range", color = color.new(londonColor, 100), display = display.data_window)
+plot(newYorkFMedian, "New York Completed Median Range", color = color.new(newYorkColor, 100), display = display.data_window)
+plot(newYorkFAverage, "New York Completed Average Range", color = color.new(newYorkColor, 100), display = display.data_window)
+
+//------------------------------------------------------------------------------
+// Active-session focus and explanatory dashboard
+//------------------------------------------------------------------------------
+activeCount = (inAsia ? 1 : 0) + (inLondon ? 1 : 0) + (inNewYork ? 1 : 0)
+int latestStart = math.max(inAsia ? asiaStartTime : 0, math.max(inLondon ? londonStartTime : 0, inNewYork ? newYorkStartTime : 0))
+bool focusNewYork = inNewYork and latestStart == newYorkStartTime
+bool focusLondon = not focusNewYork and inLondon and latestStart == londonStartTime
+bool focusAsia = not focusNewYork and not focusLondon and inAsia
+
+string focusName = focusNewYork ? "NEW YORK" : focusLondon ? "LONDON" : focusAsia ? "ASIA" : "NO ACTIVE SESSION"
+float focusRange = focusNewYork ? newYorkRange : focusLondon ? londonRange : focusAsia ? asiaRange : na
+float focusExpectedRange = focusNewYork ? newYorkExpectedRange : focusLondon ? londonExpectedRange : focusAsia ? asiaExpectedRange : na
+float focusPaceRatio = focusNewYork ? newYorkPaceRatio : focusLondon ? londonPaceRatio : focusAsia ? asiaPaceRatio : na
+float focusProgress = focusNewYork ? newYorkProgress : focusLondon ? londonProgress : focusAsia ? asiaProgress : na
+float focusFullMedian = focusNewYork ? newYorkFMedian : focusLondon ? londonFMedian : focusAsia ? asiaFMedian : na
+float focusFullRatio = focusRange > 0.0 and focusFullMedian > 0.0 ? focusRange / focusFullMedian : na
+int focusPaceState = focusNewYork ? newYorkPaceState : focusLondon ? londonPaceState : focusAsia ? asiaPaceState : -1
+color focusSessionColor = focusNewYork ? newYorkColor : focusLondon ? londonColor : focusAsia ? asiaColor : color.new(chart.fg_color, 55)
+color focusPaceColor = f_paceColor(focusPaceState)
+string dashboardTitle = not validTimeframe ? "INTRADAY TIMEFRAME REQUIRED" : activeCount == 0 ? "NO ACTIVE SESSION" : activeCount > 1 ? "SESSION OVERLAP · " + focusName + " FOCUS" : focusName + " RANGE PACE"
+string focusIbStatus = not showInitialBalance ? "DISABLED" : activeCount == 0 ? "WAITING" : focusNewYork ? (newYorkIbActive ? "BUILDING" : "COMPLETE") : focusLondon ? (londonIbActive ? "BUILDING" : "COMPLETE") : asiaIbActive ? "BUILDING" : "COMPLETE"
+
+var table dashboard = table.new(f_dashboardPosition(dashboardPosition), 2, 9, bgcolor = color.new(chart.bg_color, 4), frame_color = color.new(chart.fg_color, 82), frame_width = 1, border_color = color.new(chart.fg_color, 92), border_width = 1)
+if barstate.isfirst
+    table.merge_cells(dashboard, 0, 0, 1, 0)
+    table.merge_cells(dashboard, 0, 1, 1, 1)
+    table.merge_cells(dashboard, 0, 4, 1, 4)
+
+if barstate.islast
+    if showDashboard
+        table.cell(dashboard, 0, 0, dashboardTitle, text_color = activeCount > 0 ? focusSessionColor : chart.fg_color, bgcolor = color.new(chart.fg_color, 93), text_size = size.small)
+        table.cell(dashboard, 0, 1, activeCount > 0 ? f_paceDisplay(focusPaceState, focusPaceRatio) : "WAITING", text_color = activeCount > 0 ? focusPaceColor : color.new(chart.fg_color, 45), bgcolor = activeCount > 0 ? color.new(focusPaceColor, 84) : color.new(chart.bg_color, 4), text_size = size.normal)
+
+        table.cell(dashboard, 0, 2, "CURRENT RANGE", text_color = color.new(chart.fg_color, 44), bgcolor = color.new(chart.bg_color, 4), text_size = size.tiny)
+        table.cell(dashboard, 1, 2, f_rangeText(focusRange), text_color = chart.fg_color, bgcolor = color.new(chart.bg_color, 4), text_size = size.small)
+        table.cell(dashboard, 0, 3, "TYPICAL RANGE NOW", text_color = color.new(chart.fg_color, 44), bgcolor = color.new(chart.bg_color, 4), text_size = size.tiny)
+        table.cell(dashboard, 1, 3, f_rangeText(focusExpectedRange), text_color = focusPaceColor, bgcolor = color.new(chart.bg_color, 4), text_size = size.small)
+
+        table.cell(dashboard, 0, 4, activeCount > 0 ? f_paceMeaning(focusPaceRatio) : "Waiting for the next configured session", text_color = activeCount > 0 ? focusPaceColor : color.new(chart.fg_color, 45), bgcolor = activeCount > 0 ? color.new(focusPaceColor, 92) : color.new(chart.bg_color, 4), text_size = size.small)
+
+        table.cell(dashboard, 0, 5, "SESSION ELAPSED", text_color = color.new(chart.fg_color, 44), bgcolor = color.new(chart.bg_color, 4), text_size = size.tiny)
+        table.cell(dashboard, 1, 5, f_ratioText(focusProgress), text_color = chart.fg_color, bgcolor = color.new(chart.bg_color, 4), text_size = size.small)
+        table.cell(dashboard, 0, 6, "FULL-SESSION MEDIAN", text_color = color.new(chart.fg_color, 44), bgcolor = color.new(chart.bg_color, 4), text_size = size.tiny)
+        table.cell(dashboard, 1, 6, f_rangeText(focusFullMedian), text_color = chart.fg_color, bgcolor = color.new(chart.bg_color, 4), text_size = size.small)
+        table.cell(dashboard, 0, 7, "REACHED OF FULL MEDIAN", text_color = color.new(chart.fg_color, 44), bgcolor = color.new(chart.bg_color, 4), text_size = size.tiny)
+        table.cell(dashboard, 1, 7, f_ratioText(focusFullRatio), text_color = chart.fg_color, bgcolor = color.new(chart.bg_color, 4), text_size = size.small)
+        table.cell(dashboard, 0, 8, "INITIAL BALANCE", text_color = color.new(chart.fg_color, 44), bgcolor = color.new(chart.bg_color, 4), text_size = size.tiny)
+        table.cell(dashboard, 1, 8, focusIbStatus, text_color = color.new(chart.fg_color, 20), bgcolor = color.new(chart.fg_color, 94), text_size = size.small)
+    else
+        table.clear(dashboard, 0, 0, 1, 8)
+
+//------------------------------------------------------------------------------
+// Alerts
+//------------------------------------------------------------------------------
+alertConfirmed = not confirmAlertsOnClose or barstate.isconfirmed
+asiaPaceActiveStarted = inAsia and asiaPaceState == 2 and asiaPaceState[1] != 2
+asiaPaceExtendedStarted = inAsia and asiaPaceState == 3 and asiaPaceState[1] != 3
+londonPaceActiveStarted = inLondon and londonPaceState == 2 and londonPaceState[1] != 2
+londonPaceExtendedStarted = inLondon and londonPaceState == 3 and londonPaceState[1] != 3
+newYorkPaceActiveStarted = inNewYork and newYorkPaceState == 2 and newYorkPaceState[1] != 2
+newYorkPaceExtendedStarted = inNewYork and newYorkPaceState == 3 and newYorkPaceState[1] != 3
+
+asiaMedianExceeded = inAsia and not na(asiaFMedian) and asiaRange > asiaFMedian and nz(asiaRange[1], 0.0) <= asiaFMedian
+londonMedianExceeded = inLondon and not na(londonFMedian) and londonRange > londonFMedian and nz(londonRange[1], 0.0) <= londonFMedian
+newYorkMedianExceeded = inNewYork and not na(newYorkFMedian) and newYorkRange > newYorkFMedian and nz(newYorkRange[1], 0.0) <= newYorkFMedian
+
+alertcondition(alertConfirmed and asiaStarted, "Asia Session Started", "Asia session started on {{ticker}} {{interval}}.")
+alertcondition(alertConfirmed and LondonStarted, "London Session Started", "London session started on {{ticker}} {{interval}}.")
+alertcondition(alertConfirmed and newYorkStarted, "New York Session Started", "New York session started on {{ticker}} {{interval}}.")
+alertcondition(alertConfirmed and (asiaEnded or londonEnded or newYorkEnded), "Session Ended", "A configured session ended on {{ticker}} {{interval}}.")
+alertcondition(alertConfirmed and (asiaIbCompleted or londonIbCompleted or newYorkIbCompleted), "Initial Balance Completed", "A configured session completed its Initial Balance on {{ticker}} {{interval}}.")
+alertcondition(alertConfirmed and (asiaPaceActiveStarted or londonPaceActiveStarted or newYorkPaceActiveStarted), "Session Pace Active", "An active session moved into the Active range-pace state on {{ticker}} {{interval}}.")
+alertcondition(alertConfirmed and (asiaPaceExtendedStarted or londonPaceExtendedStarted or newYorkPaceExtendedStarted), "Session Pace Extended", "An active session moved into the Extended range-pace state on {{ticker}} {{interval}}.")
+alertcondition(alertConfirmed and (asiaMedianExceeded or londonMedianExceeded or newYorkMedianExceeded), "Completed-Session Median Exceeded", "An active session exceeded its historical completed-session median range on {{ticker}} {{interval}}.")

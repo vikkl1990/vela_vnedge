@@ -1,0 +1,195 @@
+//@version=6
+// COT Index - Commercial Positioning (Weekly)
+// Uses TradingView LibraryCOT data source
+// Formula: Commercial Net Position normalized over a selectable weekly lookback period
+
+indicator(
+     title          = "COT Index - Commercial Positioning (Weekly)",
+     shorttitle     = "COT Index",
+     format         = format.percent,
+     precision      = 0,
+     timeframe      = "W",
+     timeframe_gaps = false
+)
+
+//────────────────────────────────────────────────────────────────────
+// Imports
+//────────────────────────────────────────────────────────────────────
+
+import TradingView/LibraryCOT/2 as cot
+
+//────────────────────────────────────────────────────────────────────
+// Inputs
+//────────────────────────────────────────────────────────────────────
+
+lookbackWeeks = input.int(
+     defval  = 26,
+     title   = "COT Index Lookback in Weeks",
+     minval  = 1,
+     tooltip = "Number of weekly COT data points used for the normalization."
+)
+
+upperLevel = input.float(
+     defval = 75,
+     title  = "Upper Extreme Level",
+     minval = 0,
+     maxval = 100
+)
+
+lowerLevel = input.float(
+     defval = 25,
+     title  = "Lower Extreme Level",
+     minval = 0,
+     maxval = 100
+)
+
+showBackground = input.bool(
+     defval = true,
+     title  = "Highlight Extremes"
+)
+
+showMiddleLine = input.bool(
+     defval = true,
+     title  = "Show 50 Line"
+)
+
+//────────────────────────────────────────────────────────────────────
+// CFTC Code Handling
+//────────────────────────────────────────────────────────────────────
+
+rootSymbol = str.upper(syminfo.root)
+
+f_getCftcCode() =>
+    string autoCode = cot.convertRootToCOTCode("Auto")
+
+    // Known fixes / special cases
+    if rootSymbol == "HG"
+        autoCode := "085692"
+    else if rootSymbol == "LBR"
+        autoCode := "058644"
+
+    autoCode
+
+cftcCode = f_getCftcCode()
+
+//────────────────────────────────────────────────────────────────────
+// COT Data Request
+// Script itself runs on Weekly timeframe.
+// Therefore all ta.lowest / ta.highest calculations are true weekly.
+//────────────────────────────────────────────────────────────────────
+
+f_requestCot(metricName, direction) =>
+    string cotTicker = cot.COTTickerid(
+         "Legacy",
+         cftcCode,
+         false,
+         metricName,
+         direction,
+         "All"
+    )
+
+    float cotValue = request.security(
+         cotTicker,
+         "1D",
+         close,
+         gaps                  = barmerge.gaps_off,
+         lookahead             = barmerge.lookahead_off,
+         ignore_invalid_symbol = true
+    )
+
+    if barstate.islastconfirmedhistory and na(cotValue)
+        runtime.error("No matching COT data found for this futures symbol.")
+
+    cotValue
+
+//────────────────────────────────────────────────────────────────────
+// Commercial Net Position
+//────────────────────────────────────────────────────────────────────
+
+commercialLong  = f_requestCot("Commercial Positions", "Long")
+commercialShort = f_requestCot("Commercial Positions", "Short")
+
+commercialNet = commercialLong - commercialShort
+
+//────────────────────────────────────────────────────────────────────
+// Weekly COT Index Calculation
+//────────────────────────────────────────────────────────────────────
+
+lowestNet  = ta.lowest(commercialNet, lookbackWeeks)
+highestNet = ta.highest(commercialNet, lookbackWeeks)
+
+cotIndex =
+     highestNet != lowestNet
+     ? 100 * (commercialNet - lowestNet) / (highestNet - lowestNet)
+     : na
+
+//────────────────────────────────────────────────────────────────────
+// Plotting
+//────────────────────────────────────────────────────────────────────
+
+plot(
+     cotIndex,
+     title     = "Commercials COT Index Weekly",
+     color     = color.blue,
+     linewidth = 2
+)
+
+hline(
+     upperLevel,
+     title     = "Upper Extreme",
+     color     = color.new(color.lime, 0),
+     linestyle = hline.style_solid
+)
+
+hline(
+     lowerLevel,
+     title     = "Lower Extreme",
+     color     = color.new(color.red, 0),
+     linestyle = hline.style_solid
+)
+
+hline(
+     50,
+     title     = "Middle Line",
+     color     = showMiddleLine ? color.new(color.gray, 40) : color.new(color.gray, 100),
+     linestyle = hline.style_dotted
+)
+
+bgcolor(
+     showBackground and cotIndex >= upperLevel
+     ? color.new(color.lime, 88)
+     : na,
+     title = "Bullish Commercial Extreme Background"
+)
+
+bgcolor(
+     showBackground and cotIndex <= lowerLevel
+     ? color.new(color.red, 88)
+     : na,
+     title = "Bearish Commercial Extreme Background"
+)
+
+//────────────────────────────────────────────────────────────────────
+// Data Window Outputs
+//────────────────────────────────────────────────────────────────────
+
+plot(
+     commercialNet,
+     title   = "Commercial Net Position",
+     display = display.data_window,
+     color   = color.new(color.gray, 100)
+)
+
+plot(
+     commercialLong,
+     title   = "Commercial Long Positions",
+     display = display.data_window,
+     color   = color.new(color.gray, 100)
+)
+
+plot(
+     commercialShort,
+     title   = "Commercial Short Positions",
+     display = display.data_window,
+     color   = color.new(color.gray, 100)
+)

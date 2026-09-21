@@ -1,0 +1,640 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © digitaldynastytraders
+
+//@version=6
+indicator("Futures Settlement [DigitalD] - Labeled", "Futures Settlement", overlay=true, max_lines_count=500, max_labels_count=500)
+
+//====================================================
+// INPUTS
+//====================================================
+
+showDailyInput      = input.bool(true, "Daily Settlement")
+showWeeklyInput     = input.bool(true, "Weekly Settlement")
+showMonthlyInput    = input.bool(true, "Monthly Settlement")
+showQuarterlyInput  = input.bool(false, "Quarterly Settlement")
+
+showFinalQtrInput   = input.bool(false, "Final Settlement, Quarterly",
+     tooltip="The final settlement price for the quarterly contracts of the year.")
+
+finalQtrYearInput   = input.int(2024, "Final Settlement Year",
+     minval=1900,
+     tooltip="The year that you'd like to view the final settlements for.",
+     display=display.none)
+
+showWklyHalfInput   = input.bool(false, "Average of Past Two Weekly Settlements")
+showMnlyHalfInput   = input.bool(false, "Average of Past Two Monthly Settlements")
+
+weeksBackInput      = input.int(0, "Reprint Weeks", minval=0, maxval=3,
+     tooltip="Continue drawing lines for weekly settlements that have passed.")
+
+monthsBackInput     = input.int(0, "Reprint Months", minval=0, maxval=2,
+     tooltip="Continue drawing lines for monthly settlements that have passed.")
+
+backAdjInput        = input.bool(false, "Back-Adjusted Futures",
+     tooltip="Back-adjusted futures adjust for contract changes in the futures prior to the current.")
+
+//====================================================
+// LABEL SETTINGS
+//====================================================
+
+showLabelsInput = input.bool(true, "Show Settlement Labels", group="Labels")
+
+labelOffsetInput = input.int(
+     2,
+     "Label Offset",
+     minval=0,
+     maxval=50,
+     group="Labels",
+     tooltip="Number of bars to the right of the current bar where labels are placed."
+     )
+
+showPricesInput = input.bool(true, "Show Price In Label", group="Labels")
+
+labelSizeInput = input.string(
+     "Small",
+     "Label Size",
+     options=["Tiny", "Small", "Normal", "Large"],
+     group="Labels"
+     )
+
+// NEW: LABEL TRANSPARENCY
+labelTransparencyInput = input.int(
+     90,
+     "Label Transparency",
+     minval=0,
+     maxval=100,
+     group="Labels",
+     tooltip="0 = solid, 100 = completely transparent."
+     )
+
+//====================================================
+// COLORS
+//====================================================
+
+colorDailyInput =
+     input.color(color.blue, "Daily Settlement Color")
+
+colorWeeklyInput =
+     input.color(color.new(color.red, 40), "Weekly Settlement Color")
+
+colorMonthlyInput =
+     input.color(color.new(color.red, 25), "Monthly Settlement Color")
+
+colorQuarterlyInput =
+     input.color(color.new(color.orange, 30), "Quarterly Settlement Color")
+
+colorFinalQtrInput =
+     input.color(color.new(color.aqua, 25), "Final Settlement, Quarterly Color")
+
+colorAverageInput =
+     input.color(color.new(color.gray, 10), "Averaged Settlement Color")
+
+//====================================================
+// LABEL SIZE
+//====================================================
+
+getLabelSize(sz) =>
+    switch sz
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        => size.small
+
+//====================================================
+// STANDARD / SETTLEMENT TICKER
+//====================================================
+
+standardTicker =
+     chart.is_standard ?
+     syminfo.tickerid :
+     ticker.standard(syminfo.tickerid)
+
+settleTicker =
+     ticker.modify(
+         standardTicker,
+         session.extended,
+         adjustment.dividends,
+         chart.is_standard ?
+             backadjustment.inherit :
+             (backAdjInput ? backadjustment.on : backadjustment.off),
+         settlement_as_close.on
+         )
+
+//====================================================
+// SETTLEMENT DATA
+//====================================================
+
+settleDaily = request.security(
+     settleTicker,
+     "D",
+     close
+     )
+
+settleDaily := barstate.islast ?
+     settleDaily[1] :
+     settleDaily
+
+//====================================================
+// WEEKLY SETTLEMENT
+//====================================================
+
+settleWeekly(index) =>
+    out = request.security(
+         settleTicker,
+         "W",
+         close[index]
+         )
+
+    out := barstate.islast ?
+         out[1] :
+         out
+
+    out
+
+//====================================================
+// MONTHLY SETTLEMENT
+//====================================================
+
+settleMonthly(index) =>
+    out = request.security(
+         settleTicker,
+         "M",
+         close[index]
+         )
+
+    out := barstate.islast ?
+         out[1] :
+         out
+
+    out
+
+//====================================================
+// QUARTERLY SETTLEMENT
+//====================================================
+
+settleQuarterly = request.security(
+     settleTicker,
+     "3M",
+     close
+     )
+
+settleQuarterly := barstate.islast ?
+     settleQuarterly[1] :
+     settleQuarterly
+
+//====================================================
+// ARRAYS
+//====================================================
+
+weeklyArray = array.from(
+     settleWeekly(0),
+     settleWeekly(1),
+     settleWeekly(2),
+     settleWeekly(3)
+     )
+
+monthlyArray = array.from(
+     settleMonthly(0),
+     settleMonthly(1),
+     settleMonthly(2)
+     )
+
+//====================================================
+// AVERAGES
+//====================================================
+
+wklyHalfOut =
+     math.avg(
+         array.get(weeklyArray, 0),
+         array.get(weeklyArray, 1)
+         )
+
+mnlyHalfOut =
+     math.avg(
+         array.get(monthlyArray, 0),
+         array.get(monthlyArray, 1)
+         )
+
+//====================================================
+// FINAL QUARTERLY SETTLEMENT
+//====================================================
+
+finalQtrFun(monthCode) =>
+
+    finalTkr =
+         ticker.modify(
+             syminfo.prefix + ":" + syminfo.root + monthCode + str.tostring(finalQtrYearInput),
+             session.extended,
+             adjustment.dividends,
+             chart.is_standard ?
+                 backadjustment.inherit :
+                 (backAdjInput ? backadjustment.on : backadjustment.off),
+             settlement_as_close.on
+             )
+
+    finalSec =
+         request.security(
+             finalTkr,
+             "D",
+             close,
+             lookahead=barmerge.lookahead_on,
+             ignore_invalid_symbol=true
+             )
+
+    finalOut =
+         ta.valuewhen(
+             request.security(
+                 finalTkr,
+                 "D",
+                 syminfo.expiration_date,
+                 ignore_invalid_symbol=true
+                 ) == time("D"),
+             finalSec,
+             0
+             )
+
+    finalOut
+
+//====================================================
+// FINAL QUARTERLY TIME
+//====================================================
+
+finalQtrFunTime(monthCode) =>
+
+    finalTkr =
+         ticker.modify(
+             syminfo.prefix + ":" + syminfo.root + monthCode + str.tostring(finalQtrYearInput),
+             session.extended,
+             adjustment.dividends,
+             chart.is_standard ?
+                 backadjustment.inherit :
+                 (backAdjInput ? backadjustment.on : backadjustment.off),
+             settlement_as_close.on
+             )
+
+    finalSec =
+         request.security(
+             finalTkr,
+             "D",
+             syminfo.expiration_date,
+             lookahead=barmerge.lookahead_on,
+             ignore_invalid_symbol=true
+             )
+
+    finalSec
+
+//====================================================
+// FINAL VALUES
+//====================================================
+
+float finalQtrH = na
+float finalQtrM = na
+float finalQtrU = na
+float finalQtrZ = na
+
+int finalQtrTimeH = na
+int finalQtrTimeM = na
+int finalQtrTimeU = na
+int finalQtrTimeZ = na
+
+if showFinalQtrInput
+
+    finalQtrH := finalQtrFun("H")
+    finalQtrM := finalQtrFun("M")
+    finalQtrU := finalQtrFun("U")
+    finalQtrZ := finalQtrFun("Z")
+
+    finalQtrTimeH := finalQtrFunTime("H")
+    finalQtrTimeM := finalQtrFunTime("M")
+    finalQtrTimeU := finalQtrFunTime("U")
+    finalQtrTimeZ := finalQtrFunTime("Z")
+
+//====================================================
+// PLOTS
+//====================================================
+
+plot(
+     showDailyInput ? settleDaily : na,
+     "Daily",
+     settleDaily == settleDaily[1] ?
+         colorDailyInput :
+         color.new(colorDailyInput, 100),
+     1,
+     plot.style_line
+     )
+
+plot(
+     showWeeklyInput ? array.get(weeklyArray, 0) : na,
+     "Weekly",
+     array.get(weeklyArray, 0) == array.get(weeklyArray, 0)[1] ?
+         colorWeeklyInput :
+         color.new(colorWeeklyInput, 100),
+     1,
+     plot.style_line
+     )
+
+plot(
+     showMonthlyInput ? array.get(monthlyArray, 0) : na,
+     "Monthly",
+     array.get(monthlyArray, 0) == array.get(monthlyArray, 0)[1] ?
+         colorMonthlyInput :
+         color.new(colorMonthlyInput, 100),
+     2,
+     plot.style_line
+     )
+
+plot(
+     showQuarterlyInput ? settleQuarterly : na,
+     "Quarterly",
+     settleQuarterly == settleQuarterly[1] ?
+         colorQuarterlyInput :
+         color.new(colorQuarterlyInput, 100),
+     1,
+     plot.style_line
+     )
+
+plot(
+     showFinalQtrInput ? finalQtrH : na,
+     "Final (H)",
+     color.new(colorFinalQtrInput, 100)
+     )
+
+plot(
+     showFinalQtrInput ? finalQtrM : na,
+     "Final (M)",
+     color.new(colorFinalQtrInput, 100)
+     )
+
+plot(
+     showFinalQtrInput ? finalQtrU : na,
+     "Final (U)",
+     color.new(colorFinalQtrInput, 100)
+     )
+
+plot(
+     showFinalQtrInput ? finalQtrZ : na,
+     "Final (Z)",
+     color.new(colorFinalQtrInput, 100)
+     )
+
+//====================================================
+// HISTORICAL WEEKLY LINES
+//====================================================
+
+if timeframe.change("W") and weeksBackInput > 0 and showWeeklyInput
+
+    for weewoo in array.slice(
+         weeklyArray,
+         0,
+         weeksBackInput + 1
+         )
+
+        line.new(
+             time,
+             weewoo,
+             time + timeframe.in_seconds("W") * 1000,
+             weewoo,
+             xloc.bar_time,
+             extend.none,
+             color.new(colorWeeklyInput, 30),
+             line.style_dashed,
+             1
+             )
+
+//====================================================
+// HISTORICAL MONTHLY LINES
+//====================================================
+
+if timeframe.change("M") and monthsBackInput > 0 and showMonthlyInput
+
+    for meemoo in array.slice(
+         monthlyArray,
+         0,
+         monthsBackInput + 1
+         )
+
+        line.new(
+             time,
+             meemoo,
+             time + timeframe.in_seconds("M") * 1000,
+             meemoo,
+             xloc.bar_time,
+             extend.none,
+             color.new(colorMonthlyInput, 30),
+             line.style_dashed,
+             2
+             )
+
+//====================================================
+// AVERAGE LINES
+//====================================================
+
+if timeframe.change("W") and showWklyHalfInput
+
+    line.new(
+         time,
+         wklyHalfOut,
+         time + timeframe.in_seconds("W") * 1000,
+         wklyHalfOut,
+         xloc.bar_time,
+         extend.none,
+         colorAverageInput,
+         line.style_dashed,
+         1
+         )
+
+if timeframe.change("M") and showMnlyHalfInput
+
+    line.new(
+         time,
+         mnlyHalfOut,
+         time + timeframe.in_seconds("M") * 1000,
+         mnlyHalfOut,
+         xloc.bar_time,
+         extend.none,
+         colorAverageInput,
+         line.style_dashed,
+         2
+         )
+
+//====================================================
+// FINAL QUARTERLY LINES
+//====================================================
+
+if showFinalQtrInput
+
+    if not na(finalQtrTimeH) and not na(finalQtrH)
+        line.new(
+             finalQtrTimeH,
+             finalQtrH,
+             finalQtrTimeH + timeframe.in_seconds("3M") * 1000,
+             finalQtrH,
+             xloc.bar_time,
+             extend.none,
+             colorFinalQtrInput,
+             line.style_solid,
+             2
+             )
+
+    if not na(finalQtrTimeM) and not na(finalQtrM)
+        line.new(
+             finalQtrTimeM,
+             finalQtrM,
+             finalQtrTimeM + timeframe.in_seconds("3M") * 1000,
+             finalQtrM,
+             xloc.bar_time,
+             extend.none,
+             colorFinalQtrInput,
+             line.style_solid,
+             2
+             )
+
+    if not na(finalQtrTimeU) and not na(finalQtrU)
+        line.new(
+             finalQtrTimeU,
+             finalQtrU,
+             finalQtrTimeU + timeframe.in_seconds("3M") * 1000,
+             finalQtrU,
+             xloc.bar_time,
+             extend.none,
+             colorFinalQtrInput,
+             line.style_solid,
+             2
+             )
+
+    if not na(finalQtrTimeZ) and not na(finalQtrZ)
+        line.new(
+             finalQtrTimeZ,
+             finalQtrZ,
+             finalQtrTimeZ + timeframe.in_seconds("3M") * 1000,
+             finalQtrZ,
+             xloc.bar_time,
+             extend.none,
+             colorFinalQtrInput,
+             line.style_solid,
+             2
+             )
+
+//====================================================
+// LIVE LABELS
+//====================================================
+
+// We keep references to the labels so they can be
+// deleted and recreated on the latest bar.
+
+var label dailyLabel = na
+var label weeklyLabel = na
+var label monthlyLabel = na
+var label quarterlyLabel = na
+
+// Delete old labels
+if barstate.islast
+
+    if not na(dailyLabel)
+        label.delete(dailyLabel)
+
+    if not na(weeklyLabel)
+        label.delete(weeklyLabel)
+
+    if not na(monthlyLabel)
+        label.delete(monthlyLabel)
+
+    if not na(quarterlyLabel)
+        label.delete(quarterlyLabel)
+
+    //================================================
+    // DAILY LABEL
+    //================================================
+
+    if showLabelsInput and showDailyInput and not na(settleDaily)
+
+        dailyText =
+             showPricesInput ?
+                 "Daily Settlement  " + str.tostring(settleDaily, format.mintick) :
+                 "Daily Settlement"
+
+        dailyLabel := label.new(
+             bar_index + labelOffsetInput,
+             settleDaily,
+             dailyText,
+             xloc=xloc.bar_index,
+             yloc=yloc.price,
+             style=label.style_label_left,
+             color=color.new(colorDailyInput, labelTransparencyInput),
+             textcolor=color.white,
+             size=getLabelSize(labelSizeInput)
+             )
+
+    //================================================
+    // WEEKLY LABEL
+    //================================================
+
+    weeklyValue = array.get(weeklyArray, 0)
+
+    if showLabelsInput and showWeeklyInput and not na(weeklyValue)
+
+        weeklyText =
+             showPricesInput ?
+                 "Weekly Settlement  " + str.tostring(weeklyValue, format.mintick) :
+                 "Weekly Settlement"
+
+        weeklyLabel := label.new(
+             bar_index + labelOffsetInput,
+             weeklyValue,
+             weeklyText,
+             xloc=xloc.bar_index,
+             yloc=yloc.price,
+             style=label.style_label_left,
+             color=color.new(colorWeeklyInput, labelTransparencyInput),
+             textcolor=color.white,
+             size=getLabelSize(labelSizeInput)
+             )
+
+    //================================================
+    // MONTHLY LABEL
+    //================================================
+
+    monthlyValue = array.get(monthlyArray, 0)
+
+    if showLabelsInput and showMonthlyInput and not na(monthlyValue)
+
+        monthlyText =
+             showPricesInput ?
+                 "Monthly Settlement  " + str.tostring(monthlyValue, format.mintick) :
+                 "Monthly Settlement"
+
+        monthlyLabel := label.new(
+             bar_index + labelOffsetInput,
+             monthlyValue,
+             monthlyText,
+             xloc=xloc.bar_index,
+             yloc=yloc.price,
+             style=label.style_label_left,
+             color=color.new(colorMonthlyInput, labelTransparencyInput),
+             textcolor=color.white,
+             size=getLabelSize(labelSizeInput)
+             )
+
+    //================================================
+    // QUARTERLY LABEL
+    //================================================
+
+    if showLabelsInput and showQuarterlyInput and not na(settleQuarterly)
+
+        quarterlyText =
+             showPricesInput ?
+                 "Quarterly Settlement  " + str.tostring(settleQuarterly, format.mintick) :
+                 "Quarterly Settlement"
+
+        quarterlyLabel := label.new(
+             bar_index + labelOffsetInput,
+             settleQuarterly,
+             quarterlyText,
+             xloc=xloc.bar_index,
+             yloc=yloc.price,
+             style=label.style_label_left,
+             color=color.new(colorQuarterlyInput, labelTransparencyInput),
+             textcolor=color.white,
+             size=getLabelSize(labelSizeInput)
+             )

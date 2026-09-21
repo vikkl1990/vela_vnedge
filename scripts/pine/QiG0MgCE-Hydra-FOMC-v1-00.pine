@@ -1,0 +1,1111 @@
+// @author @BBItsTime
+// @version=6
+
+// Hydra FOMC v1.00
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DESCRIPTION
+// Measures how the chart's security (SPY, SPX, QQQ, TLT, GLD, BTC, any symbol
+// on a Daily chart) moved before, on, and after every U.S. Federal Reserve
+// fed funds rate change since September 2007, and shows the market and
+// economic conditions that existed when each decision was made.
+// 
+// WHAT IT OFFERS
+// • Every Fed rate change since Sep 18 2007 (hikes, cuts, emergency cuts),
+//   with new moves auto-detected from TradingView's U.S. interest rate feed.
+// • Security picker: measure the chart's symbol, SPY, SPX, QQQ, TLT, GLD,
+//   BTC, or any Custom symbol without changing the chart. The measured
+//   security is shown in a purple badge at the top of the table.
+// • Before / Day of / After returns for each event over four windows plus
+//   1 day, all close-to-close. T = first session on/after the announcement.
+// • Period presets: Custom, Super Short (2W), Short (1M), Medium (3M),
+//   Medium-Long (6M), Long (1Y), each with a matched trend MA.
+// • Market conditions at T-1: VIX level (colored calm/normal/stressed/crisis)
+//   and % distance from the trend moving average.
+// • Economic conditions known at the announcement: CPI, Core CPI,
+//   unemployment, nonfarm payrolls, GDP growth and initial jobless claims.
+//   Feeds are stamped at the end of the period measured, so each print is
+//   paired with its real release date from built-in BLS/BEA calendars and
+//   is never used before it was public. Estimated timing is marked *,
+//   stale prints (delayed or unpublished reports) are marked †.
+// • Guidance read: day-of change in the 2-year and 10-year Treasury yields,
+//   the market's verdict on the statement, projections and press
+//   conference. Moves opposite to the rate change (a hawkish cut or a
+//   dovish hike) are flagged ◆.
+// • Expected vs Surprise: fed funds futures split each move into the part the
+//   market had already discounted and the part that surprised it.
+// • Priced 6M: how much easing or tightening the 6-month bill had priced for
+//   the coming months, read at T-1 (free data, no futures needed).
+// • Baseline row: the security's median return over the same window length
+//   across ALL sessions, so event medians can be read against normal drift.
+// • Summary rows: median or average by Hikes / Cuts / Emergency / All,
+//   % of events up per window, sample-size and window-overlap warnings.
+// • Filters: date range, event type, row count, newest first, before/after
+//   column modes and column toggles to fit the table on screen.
+// • New rate from the feed or the hard-coded target history.
+// • Chart labels showing the rate change, new rate, or both, with a
+//   detailed hover for every event.
+// • Highlight event: marks any event (or the most recent) with a vertical
+//   band, dims the other labels and highlights its table row. Use the
+//   chart's Go to date (Alt+G / Option+G) to jump there.
+// • Hover ANY table cell for what it means; the ⚠ Data notes cell lists the
+//   data cautions to read before drawing conclusions.
+//
+// NOTES
+// Economic values are the feeds' latest revised figures, not first-reported
+// numbers, and colors compare to the prior print, not forecasts.
+// Built-in calendars: CPI and jobs through Aug 2026, GDP through Q2 2026.
+// Extend hDate/hBps/hUpper and the release calendars as history grows.
+//
+// POSSIBLE FUTURE FEATURES
+// 1. HOLD MEETINGS — add the ~150 no-change FOMC decisions since 2007 as a
+//    fifth group ("Hold", Move = 0) plus an Events-to-list filter. Gives a
+//    control group for the change medians and is where guidance does most of
+//    the work. Needs every meeting date from the Fed's per-year calendar
+//    pages (about 15 pages); a wrong date silently corrupts that row.
+// 2. CYCLE POSITION — mark each move as 1st, 2nd, 3rd… of its cycle, with a
+//    "first move only" filter. First cut / first hike is the most-studied
+//    Fed question and position often splits otherwise mixed results.
+// 3. CONDITION FILTERS on the summary rows — include only events where VIX >
+//    30, CPI > 4%, price above/below the trend MA, or a hawkish/dovish read.
+//    Turns the table from description into hypothesis testing.
+// 4. PATH, NOT JUST ENDPOINTS — max drawdown and max run-up inside the after
+//    windows, so a +1% month that first fell 8% is visible.
+// 5. CSV EXPORT — write per-event metrics as display=display.data_window
+//    plots on the event bar so TradingView's "Export chart data" produces a
+//    file for spreadsheet work.
+// 6. DOT PLOT MEDIAN — the Fed's own projected year-end rate and its change
+//    from the prior projection (2012 onward, quarterly meetings only).
+// 7. FREE SURPRISE PROXY — a "Surprise source" option using FRED:DTB3 day-of
+//    change for users without CME futures data (proxy only; no expected/
+//    surprise split).
+// 8. ALERTS — when a new rate change is auto-detected, or when an event's
+//    windows complete.
+// 9. CALENDAR REFRESH — extend hDate/hBps/hUpper and the CPI, jobs and GDP
+//    release calendars as new data arrives (currently to Sep 2026 / Aug 2026
+//    / Q2 2026). 
+// ─────────────────────────────────────────────────────────────────────────────
+
+const string VERSION = "v1.00"
+indicator("Hydra FOMC " + VERSION, "Hydra FOMC " + VERSION, overlay = true, max_labels_count = 200, max_bars_back = 1100)
+
+const string G_TBL  = "Economic Performance Table"
+const string G_RNG  = "Date range"
+const string G_DATA = "Data"
+const string G_VIX  = "VIX stress colors"
+const string G_ECON = "Economic conditions (known at announcement)"
+const string G_PER  = "Periods (trading sessions)"
+
+// Input titles show their default value in [brackets].
+secPick    = input.string("Chart", "Security [Chart]", options = ["Chart", "SPY", "SPX", "QQQ", "TLT", "GLD", "BTC", "Custom"], group = G_TBL, tooltip = "Which security's returns and trend MA the table measures.\nChart = the symbol on this chart.\nCustom = the symbol chosen in Custom security below.\nSPY = AMEX:SPY (S&P 500 ETF) · SPX = SP:SPX (S&P 500 index; may need an index data subscription) · QQQ = NASDAQ:QQQ (Nasdaq-100 ETF) · TLT = NASDAQ:TLT (20+ yr Treasury ETF) · GLD = AMEX:GLD (gold ETF) · BTC = BITSTAMP:BTCUSD (bitcoin, data from 2011).\n\nWindows are counted in THIS CHART's sessions, so use a Daily stock or ETF chart for the ETFs and index. BTC trades 24/7 and closes at 00:00 UTC, so its daily closes don't line up exactly with U.S. sessions. A security with shorter history shows — for earlier events.")
+customSym  = input.symbol("AMEX:IWM", "Custom security [AMEX:IWM]", group = G_TBL, tooltip = "CUSTOM ONLY: used when Security = Custom; ignored otherwise.\nPick any symbol (stock, ETF, index, future, crypto). Windows are still counted on this chart's daily sessions, so choose a symbol that trades on the same days as the chart for clean results.")
+showTable  = input.bool(true, "Show Table [On]", group = G_TBL, tooltip = "Off = hide the table entirely. Chart labels still follow the 'Chart labels' setting.\n\nBEFORE INTERPRETING: hover the '⚠ Data notes' cell at the top-left of the table. Key cautions: economic values are revised figures (not first-reported); colors compare to the prior print, not forecasts; * = estimated release timing; † = stale print (report delayed or never published); small samples and overlapping windows make medians descriptive, not proof.")
+showEvents = input.bool(true, "Show per-event rows [On]", group = G_TBL, tooltip = "Off = summary rows only (compact table).")
+evFilter   = input.string("All", "Events to list [All]", options = ["All", "Hikes", "Cuts", "Emergency"], group = G_TBL, tooltip = "Which events get their own row. Summary rows always use every event in the date range.")
+maxRows    = input.int(10, "Max event rows, 0 = all [10]", minval = 0, group = G_TBL, tooltip = "Keeps the table short enough to fit on screen.")
+newest     = input.bool(true, "Newest events first [On]", group = G_TBL)
+hdrEvery   = input.int(8, "Repeat header every N rows, 0 = off [8]", minval = 0, group = G_TBL, tooltip = "Re-prints column names inside the event list.")
+colMode    = input.string("Both", "Performance columns [Both]", options = ["Before", "After", "Both"], group = G_TBL, tooltip = "Before = Period 4/3/2/1 and 1D before the rate change.\nAfter = 1D and Period 1/2/3/4 after the rate change.\nBoth = all of them.\nThe 'Day of' column is shown in every mode. VIX / MA columns have their own toggle.")
+showBase   = input.bool(true, "Show baseline row [On]", group = G_TBL, tooltip = "Adds a Baseline row: the measured security's median return over the same window lengths across EVERY session in the date range, not just event days. A Fed effect is the difference between a group's median and this row.")
+showEcon   = input.bool(false, "Show economic columns [Off]", group = G_TBL, tooltip = "Master switch for the CPI / Core / Unemp / NFP / GDP / Claims columns. Each also has its own toggle under Economic conditions.\nOFF by default to keep the table narrow on first load; turn it on for the full economic backdrop of each decision.")
+showGuide  = input.bool(true, "Show guidance (yield) columns [On]", group = G_TBL, tooltip = "Master switch for the 2Y Δ and 10Y Δ columns. Each also has its own toggle under Guidance read.\nOff also stops both yield requests, which is the fix if a yield symbol is unavailable.")
+showCond   = input.bool(true, "Show VIX / MA columns [On]", group = G_TBL, tooltip = "Market-condition columns at T-1: VIX and % vs the trend MA.\nOff also stops the VIX request, which is the fix if the VIX symbol is unavailable.")
+showLong   = input.bool(false, "Show Period 3 & 4 columns [Off]", group = G_TBL, tooltip = "The two longest windows (before and/or after, per Performance columns). OFF by default to keep the table narrow; turn on for the 3M and 1Y views.")
+topPad     = input.int(0, "Blank rows above table [0]", minval = 0, maxval = 10, group = G_TBL, tooltip = "Pushes the table down by this many empty rows, to clear the chart's top toolbar or another indicator's legend. Pine cannot offset a table in pixels, so blank rows are the way to nudge it.")
+posIn      = input.string("Top Right", "Table position [Top Right]", options = ["Top Right", "Bottom Right", "Top Left", "Bottom Left"], group = G_TBL)
+sizeIn     = input.string("Tiny", "Text size [Tiny]", options = ["Tiny", "Small", "Normal"], group = G_TBL)
+
+useRange = input.bool(true, "Limit to date range [On]", group = G_RNG, tooltip = "On = only events announced between From and To, and the Baseline row also covers just that span. Off = every event and every session on the chart's loaded history.\nOn by default, starting 2007-01-01, so the baseline is measured over the same era as the events instead of the symbol's entire history.\nSummary rows and chart labels follow the range. After-windows still use bars past the To date.")
+rngStart = input.time(timestamp("01 Jan 2007 00:00 +0000"), "From [2007-01-01]", group = G_RNG, tooltip = "The first Fed event in the script is 2007-09-18, so 2007-01-01 keeps every event while holding the Baseline row to the same period.")
+rngEnd   = input.time(timestamp("31 Dec 2030 00:00 +0000"), "To [2030-12-31]", group = G_RNG)
+
+const string G_PRICE = "Expectations (priced in)"
+show6M     = input.bool(true, "Priced 6M column [On]", group = G_PRICE, tooltip = "Forward-looking: the 6-month Treasury bill yield at T-1 minus the target rate in effect, in basis points. Negative = cuts priced over the coming months (about four meetings), positive = hikes priced. Roughly 25bp per expected move.\nUses free TVC data, unlike the futures columns.")
+y6Sym      = input.symbol("FRED:DGS6MO", "6-month rate symbol [FRED:DGS6MO]", group = G_PRICE, tooltip = "FRED:DGS6MO quotes a YIELD in percent, which is what this column needs.\nFree alternatives: FRED:DTB3 (3-month yield), FRED:DGS1 (1-year yield), TVC:US01Y.\nCareful with TVC bill symbols such as TVC:US06M: they quote a PRICE near 100, not a yield. Set Quote type below if you use one.")
+y6Mode     = input.string("Auto", "Quote type [Auto]", options = ["Auto", "Yield", "Bill price"], group = G_PRICE, tooltip = "Yield = the symbol reports a percent yield (FRED:DGS…).\nBill price = the symbol reports a discount price near 100 (TVC bill symbols); the yield is then approximated as (100 − price) × 12 / maturity months.\nAuto treats any value above 25 as a price.")
+y6Months   = input.int(6, "Bill maturity, months [6]", minval = 1, maxval = 24, group = G_PRICE, tooltip = "Only used when the symbol is price-quoted: 6 for a 6-month bill, 3 for a 3-month bill.")
+showPriced = input.bool(false, "Expected / Surprise columns [Off]", group = G_PRICE, tooltip = "Splits each rate change into the part the market had already priced and the part that surprised it, using fed funds futures (the standard Kuttner method).\nSurprise = change in the implied rate on announcement day, scaled for how much of the month is left. Priced = the actual change minus that surprise.\n\nOFF by default because the ZQ contracts need CME market data, which many plans do not include: with it off the request never runs and the rest of the table is unaffected.")
+ffSym1     = input.symbol("CBOT:ZQ1!", "Front-month futures [CBOT:ZQ1!]", group = G_PRICE, tooltip = "30-day fed funds futures, front month. Implied rate = 100 − price.")
+ffSym2     = input.symbol("CBOT:ZQ2!", "Next-month futures [CBOT:ZQ2!]", group = G_PRICE, tooltip = "Used instead of the front month when the meeting falls in the last 3 days of a month, where the front-month scaling blows up.")
+
+const string G_GUIDE = "Guidance read (Treasury yields)"
+show2Y  = input.bool(true, "2Y yield change [On]", group = G_GUIDE, tooltip = "Day-of change in the 2-year Treasury yield, in basis points. The 2-year is the market's fastest read on the expected path of Fed policy.")
+y2Sym   = input.symbol("TVC:US02Y", "2Y yield symbol [TVC:US02Y]", group = G_GUIDE)
+show10Y = input.bool(true, "10Y yield change [On]", group = G_GUIDE, tooltip = "Day-of change in the 10-year Treasury yield, in basis points. Shows whether the guidance also moved longer-term rates.")
+y10Sym  = input.symbol("TVC:US10Y", "10Y yield symbol [TVC:US10Y]", group = G_GUIDE)
+oppBp   = input.float(2.0, "Opposite-move threshold, bp [2]", minval = 0, step = 0.5, group = G_GUIDE, tooltip = "A move is flagged ◆ when the yield goes AGAINST the rate change by at least this many basis points: yield down on a hike (dovish read) or yield up on a cut (hawkish read). Filters out noise.")
+
+autoDetect = input.bool(true, "Auto-detect new Fed moves [On]", group = G_DATA, tooltip = "Watches the US interest rate feed and adds any rate change after the last hard-coded event (Sep 16 2026). Auto events are typed hike/cut; an unscheduled move can't be detected as 'Emergency' automatically.")
+statIn     = input.string("Median", "Group statistic [Median]", options = ["Median", "Average"], group = G_DATA, tooltip = "How the summary rows are calculated. Median resists outliers like Mar 16 2020 (−12%).")
+rateSrc    = input.string("Feed", "New rate source [Feed]", options = ["Feed", "Hard-coded"], group = G_DATA, tooltip = "Feed = the US interest rate value on the event bar, shown as reported (e.g. 4.00%).\n\nHard-coded = the target entered in the script, shown as a range (e.g. 3.75–4.00%).\nHard-coded list covers Sep 18 2007 → Sep 16 2026 (42 events). Moves after that come only from auto-detect and always use the feed value.\n\nIf the feed has no value for an event, the hard-coded target is used. Hover a New rate cell to see both.")
+labelMode  = input.string("Fed change", "Chart labels [Fed change]", options = ["None", "Fed change", "New rate", "Both"], group = G_DATA, tooltip = "What each event label on the chart shows: the change in bp, the new rate, both, or no labels.\nRed = hike, green = cut, orange = emergency. Hover a label for details.")
+vixSym     = input.symbol("TVC:VIX", "VIX symbol [TVC:VIX]", group = G_DATA, tooltip = "Used for the 'VIX T-1' column (fear level going into each decision).")
+hlPick     = input.string("None", "Highlight event [None]", options = ["None", "Most recent", "2026-09-16", "2025-12-10", "2025-10-29", "2025-09-17", "2024-12-18", "2024-11-07", "2024-09-18", "2023-07-26", "2023-05-03", "2023-03-22", "2023-02-01", "2022-12-14", "2022-11-02", "2022-09-21", "2022-07-27", "2022-06-15", "2022-05-04", "2022-03-16", "2020-03-15", "2020-03-03", "2019-10-30", "2019-09-18", "2019-07-31", "2018-12-19", "2018-09-26", "2018-06-13", "2018-03-21", "2017-12-13", "2017-06-14", "2017-03-15", "2016-12-14", "2015-12-16", "2008-12-16", "2008-10-29", "2008-10-08", "2008-04-30", "2008-03-18", "2008-01-30", "2008-01-22", "2007-12-11", "2007-10-31", "2007-09-18"], group = G_DATA, tooltip = "Marks one event on the chart with a vertical band, enlarges its label and highlights its table row.\nMost recent = the latest event on the chart (includes auto-detected moves).\nTo jump there: Alt+G (Option+G on Mac) and type the date.\nNothing is drawn if the event is outside the date range or loaded history.")
+hlDim      = input.bool(true, "Dim other labels while highlighting [On]", group = G_DATA, tooltip = "When an event is highlighted, fades every other event label so the highlighted one stands out.")
+
+vixCalm   = input.float(15, "Calm below [15]", group = G_VIX, inline = "v1", tooltip = "VIX T-1 cell colors: green = calm, gray = normal, orange = stressed, red = crisis.")
+vixStress = input.float(20, "Stressed at [20]", group = G_VIX, inline = "v2")
+vixCrisis = input.float(30, "Crisis at [30]", group = G_VIX, inline = "v2")
+
+showCPI    = input.bool(true, "CPI YoY [On]", group = G_ECON, tooltip = "Feed IRYY. Paired with BLS CPI release dates.")
+showCore   = input.bool(true, "Core CPI YoY [On]", group = G_ECON, tooltip = "Feed CIR. Same BLS release dates as CPI.")
+showUR     = input.bool(true, "Unemployment rate [On]", group = G_ECON, tooltip = "Feed UR. Paired with BLS Employment Situation release dates.")
+showNFP    = input.bool(true, "Nonfarm payrolls [On]", group = G_ECON, tooltip = "Feed NFP (monthly change). Same release as unemployment.")
+showGDP    = input.bool(true, "GDP growth [On]", group = G_ECON, tooltip = "Paired with BEA advance-estimate release dates.")
+gdpField   = input.string("GDPQQ", "GDP feed field [GDPQQ]", options = ["GDPQQ", "GDPGA"], group = G_ECON, tooltip = "GDPQQ = GDP growth rate as the feed reports it. GDPGA = annualized growth (BEA headline). If GDPQQ shows small values like 0.4, it is quarterly, not annualized.")
+showClaims = input.bool(true, "Initial jobless claims [On]", group = G_ECON)
+claimsSym  = input.symbol("FRED:ICSA", "Claims symbol [FRED:ICSA]", group = G_ECON)
+claimsLag  = input.int(5, "Claims release lag, days [5]", minval = 0, maxval = 6, group = G_ECON, tooltip = "Days from the claims data stamp to its Thursday release. 5 assumes the feed stamps the week-ending Saturday.")
+
+perPreset = input.string("Custom", "Period preset [Custom]", options = ["Custom", "Super Short", "Short", "Medium", "Medium-Long", "Long"], group = G_PER, tooltip = "Sets Periods 1-4 (trading sessions) and, if enabled below, the trend MA.\nCustom: your Period / MA inputs (defaults 5/21/63/252, MA 200).\nSuper Short (2 weeks): 2/3/5/10 = 2D·3D·1W·2W, MA 20. Event reaction and fast reversals.\nShort (1 month): 3/5/10/21 = 3D·1W·2W·1M, MA 50. Swing view, stays inside one meeting cycle.\nMedium (3 months): 5/10/21/63 = 1W·2W·1M·3M, MA 50. Priced-in vs repricing into the next meetings.\nMedium-Long (6 months): 10/21/63/126 = 2W·1M·3M·6M, MA 100. Did a cycle turn follow?\nLong (1 year): 21/63/126/252 = 1M·3M·6M·1Y, MA 200. Investor view.\n\nFed meetings are ~32 sessions apart, so windows longer than that overlap the next decisions.")
+presetMA  = input.bool(true, "Preset sets trend MA [On]", group = G_PER, tooltip = "On = each preset uses its matched MA (20/50/50/100/200). Off = always use your Trend MA length. Custom always uses your Trend MA length.")
+inMaLen   = input.int(200, "Trend MA length [200]", minval = 2, maxval = 1000, group = G_PER, tooltip = "SMA for the 'vs MA' column: % distance of the close from this SMA at T-1. Used when preset = Custom, or when 'Preset sets trend MA' is off.")
+inPer1    = input.int(5, "Period 1 [5]", minval = 2, maxval = 1000, group = G_PER, tooltip = "CUSTOM ONLY: ignored unless Period preset = Custom.\nShortest window in trading sessions, used BEFORE and AFTER the rate change. 5 ≈ 1 week, 21 ≈ 1 month, 63 ≈ 3 months, 126 ≈ 6 months, 252 ≈ 1 year.\nMust be P1 < P2 < P3 < P4. The 1D columns are fixed.")
+inPer2    = input.int(21, "Period 2 [21]", minval = 2, maxval = 1000, group = G_PER, tooltip = "CUSTOM ONLY: ignored unless Period preset = Custom. Must be larger than Period 1.")
+inPer3    = input.int(63, "Period 3 [63]", minval = 2, maxval = 1000, group = G_PER, tooltip = "CUSTOM ONLY: ignored unless Period preset = Custom. Must be larger than Period 2.")
+inPer4    = input.int(252, "Period 4 [252]", minval = 2, maxval = 1000, group = G_PER, tooltip = "CUSTOM ONLY: ignored unless Period preset = Custom. Longest window; must be larger than Period 3.")
+
+// Resolve the active periods and MA from the preset
+int per1 = switch perPreset
+    "Super Short" => 2
+    "Short"       => 3
+    "Medium"      => 5
+    "Medium-Long" => 10
+    "Long"        => 21
+    => inPer1
+int per2 = switch perPreset
+    "Super Short" => 3
+    "Short"       => 5
+    "Medium"      => 10
+    "Medium-Long" => 21
+    "Long"        => 63
+    => inPer2
+int per3 = switch perPreset
+    "Super Short" => 5
+    "Short"       => 10
+    "Medium"      => 21
+    "Medium-Long" => 63
+    "Long"        => 126
+    => inPer3
+int per4 = switch perPreset
+    "Super Short" => 10
+    "Short"       => 21
+    "Medium"      => 63
+    "Medium-Long" => 126
+    "Long"        => 252
+    => inPer4
+int presetMaLen = switch perPreset
+    "Super Short" => 20
+    "Short"       => 50
+    "Medium"      => 50
+    "Medium-Long" => 100
+    "Long"        => 200
+    => inMaLen
+int maLen = presetMA ? presetMaLen : inMaLen
+
+tblPos = switch posIn
+    "Top Left"     => position.top_left
+    "Bottom Right" => position.bottom_right
+    "Bottom Left"  => position.bottom_left
+    => position.top_right
+
+txtSize = switch sizeIn
+    "Small"  => size.small
+    "Normal" => size.normal
+    => size.tiny
+
+if not timeframe.isdaily
+    runtime.error("Load this indicator on a Daily (1D) chart.")
+if not (per1 < per2 and per2 < per3 and per3 < per4)
+    runtime.error("Custom periods must increase: Period 1 < Period 2 < Period 3 < Period 4.")
+
+// ── Hard-coded history ───────────────────────────────────────────────────────
+// hDate = announcement date, hBps = change in bp, hUpper = new target (upper
+// bound of the range; single target before Dec 16 2008).
+// 2008-12-16 was 1.00% → 0–0.25% (coded −100bp). 2020-03-15 was a Sunday → T = Mar 16.
+var array<int> hDate = array.from(
+     20070918, 20071031, 20071211, 20080122, 20080130, 20080318, 20080430, 20081008, 20081029, 20081216,
+     20151216, 20161214, 20170315, 20170614, 20171213, 20180321, 20180613, 20180926, 20181219,
+     20190731, 20190918, 20191030, 20200303, 20200315,
+     20220316, 20220504, 20220615, 20220727, 20220921, 20221102, 20221214,
+     20230201, 20230322, 20230503, 20230726,
+     20240918, 20241107, 20241218,
+     20250917, 20251029, 20251210,
+     20260916)
+
+var array<int> hBps = array.from(
+     -50, -25, -25, -75, -50, -75, -25, -50, -50, -100,
+     25, 25, 25, 25, 25, 25, 25, 25, 25,
+     -25, -25, -25, -50, -100,
+     25, 50, 75, 75, 75, 75, 50,
+     25, 25, 25, 25,
+     -50, -25, -25,
+     -25, -25, -25,
+     25)
+
+var array<float> hUpper = array.from(
+     4.75, 4.50, 4.25, 3.50, 3.00, 2.25, 2.00, 1.50, 1.00, 0.25,
+     0.50, 0.75, 1.00, 1.25, 1.50, 1.75, 2.00, 2.25, 2.50,
+     2.25, 2.00, 1.75, 1.25, 0.25,
+     0.50, 1.00, 1.75, 2.50, 3.25, 4.00, 4.50,
+     4.75, 5.00, 5.25, 5.50,
+     5.00, 4.75, 4.50,
+     4.25, 4.00, 3.75,
+     4.00)
+
+var array<int> hEmerg = array.from(20080122, 20081008, 20200303, 20200315)
+
+const int NCOL = 24
+int   NA_I = na
+float NA_F = na
+
+// Live event lists (hard-coded + auto-detected)
+var int nHard    = array.size(hDate)
+var int lastHard = array.get(hDate, array.size(hDate) - 1)
+var array<int>    evDate  = array.copy(hDate)
+var array<int>    evBps   = array.copy(hBps)
+var array<float>  evUpper = array.copy(hUpper)
+var array<string> evType  = array.new<string>()
+var array<bool>   evAuto  = array.new<bool>(array.size(hDate), false)
+var array<int>    evBar   = array.new<int>(array.size(hDate), NA_I)
+var array<float>  evCls   = array.new<float>(array.size(hDate), NA_F)
+var array<float>  evFeed  = array.new<float>(array.size(hDate), NA_F)
+var array<label>  evLbl   = array.new<label>(array.size(hDate))   // chart label per event (for highlight/dim)   // feed rate captured on the event bar
+// matrix cols: 0 VIX | 1 vs MA | 2 P4 bef | 3 P3 bef | 4 P2 bef | 5 P1 bef | 6 1D bef
+//              7 Day of | 8 1D aft | 9 P1 aft | 10 P2 aft | 11 P3 aft | 12 P4 aft
+//              13 CPI | 14 Core CPI | 15 Unemp | 16 NFP | 17 GDP | 18 Claims (known at T)
+//              19 2Y yield Δ bp (day of) | 20 10Y yield Δ bp (day of)
+//              21 expected change bp | 22 policy surprise bp | 23 priced 6M bp
+var matrix<float> res = matrix.new<float>(array.size(hDate), NCOL, NA_F)
+// econMeta per event: for series k (0-5) → col k*3 = reference period, k*3+1 = release date (negative = estimated), k*3+2 = prior print
+var matrix<float> econMeta = matrix.new<float>(array.size(hDate), 18, NA_F)
+// econSt per series row k: 0 known | 1 prior | 2 ref | 3 release | 4 calendar pointer (claims: pending value) | 5 pending stamp time | 6 pending ref
+var matrix<float> econSt = matrix.new<float>(6, 7, NA_F)
+var map<int, float> mCpi  = map.new<int, float>()
+var map<int, float> mCore = map.new<int, float>()
+var map<int, float> mUr   = map.new<int, float>()
+var map<int, float> mNfp  = map.new<int, float>()
+var map<int, float> mGdp  = map.new<int, float>()
+
+if array.size(evType) == 0
+    for i = 0 to nHard - 1
+        int d = array.get(hDate, i)
+        array.push(evType, array.includes(hEmerg, d) ? "Emergency" : array.get(hBps, i) > 0 ? "Hike" : "Cut")
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+// Short label for a session count: 252→1Y, 63→3M, 21→1M, 10→2W, 7→7D
+perLbl(int n) =>
+    n % 252 == 0 ? str.tostring(int(n / 252)) + "Y" : n % 21 == 0 ? str.tostring(int(n / 21)) + "M" : n % 5 == 0 ? str.tostring(int(n / 5)) + "W" : str.tostring(n) + "D"
+
+pct(float a, float b) =>
+    na(a) or na(b) or b == 0 ? na : (a / b - 1.0) * 100.0
+
+fmtPct(float v) =>
+    na(v) ? "—" : str.tostring(v, "#0.00") + "%"
+
+bgFor(float v) =>
+    na(v) ? color.new(color.gray, 85) : v >= 0 ? color.new(color.green, 70) : color.new(color.red, 70)
+
+dateStr(int d) =>
+    int y = int(math.floor(d / 10000))
+    int m = int(math.floor(d / 100)) % 100
+    int dd = d % 100
+    str.tostring(y) + "-" + str.tostring(m, "00") + "-" + str.tostring(dd, "00")
+
+rateStr(float upper, int d) =>
+    na(upper) ? "—" : d < 20081216 ? str.tostring(upper, "#0.00") + "%" : str.tostring(math.max(upper - 0.25, 0.0), "#0.00") + "–" + str.tostring(upper, "#0.00") + "%"
+
+feedStr(float v) =>
+    na(v) ? "—" : str.tostring(v, "#0.00") + "%"
+
+// New-rate text for an event, honoring the source setting
+evRateTxt(int idx) =>
+    float fv = array.get(evFeed, idx)
+    bool useFeed = rateSrc == "Feed" and not na(fv)
+    useFeed ? feedStr(fv) : array.get(evAuto, idx) ? feedStr(array.get(evUpper, idx)) : rateStr(array.get(evUpper, idx), array.get(evDate, idx))
+
+evRateBoth(int idx) =>
+    "Feed: " + feedStr(array.get(evFeed, idx)) + "  ·  Hard-coded: " + (array.get(evAuto, idx) ? "n/a (auto event; hard-coded list ends " + dateStr(lastHard) + ")" : rateStr(array.get(evUpper, idx), array.get(evDate, idx)))
+     + (rateSrc == "Feed" and na(array.get(evFeed, idx)) ? "\n(no feed value on this bar, showing hard-coded)" : "")
+
+vixTier(float v) =>
+    na(v) ? "n/a" : v < vixCalm ? "Calm" : v < vixStress ? "Normal" : v < vixCrisis ? "Stressed" : "Crisis"
+
+vixBg(float v) =>
+    na(v) ? color.new(color.gray, 85) : v < vixCalm ? color.new(color.green, 55) : v < vixStress ? color.new(color.gray, 55) : v < vixCrisis ? color.new(color.orange, 40) : color.new(color.red, 30)
+
+// Yield change color: up = hawkish read (red), down = dovish read (green)
+yieldBg(float v) =>
+    na(v) ? color.new(color.gray, 85) : math.abs(v) < 0.5 ? color.new(color.gray, 60) : v > 0 ? color.new(color.red, 60) : color.new(color.green, 60)
+
+// Opposite read: yield moved against the rate change by at least the threshold
+isOpposite(string t, float v) =>
+    not na(v) and ((t == "Hike" and v <= -oppBp) or (t != "Hike" and v >= oppBp))
+
+grpOpposite(matrix<float> mtx, array<string> types, int col, string grp) =>
+    int c = 0
+    for i = 0 to matrix.rows(mtx) - 1
+        string t = array.get(types, i)
+        if (grp == "All" or t == grp) and isOpposite(t, matrix.get(mtx, i, col))
+            c += 1
+    c
+
+// Thousands formatter; the NFP and claims feeds report persons
+fmtK(float v, bool signed) =>
+    float k = v / 1000
+    (signed and k > 0 ? "+" : "") + str.tostring(k, "#,##0") + "K"
+
+valTxt(int c, float v) =>
+    na(v) ? "—" : c == 0 ? str.tostring(v, "#0.0") : c >= 19 ? (v > 0 ? "+" : "") + str.tostring(v, "#0") + "bp" : c == 16 ? fmtK(v, true) : c == 18 ? fmtK(v, false) : c >= 13 ? str.tostring(v, "#0.0") + "%" : fmtPct(v)
+
+valBg(int c, float v) =>
+    c == 0 ? vixBg(v) : c == 21 ? color.new(color.blue, 70) : (c == 19 or c == 20 or c == 22 or c == 23) ? yieldBg(v) : c >= 13 ? color.new(color.teal, 70) : bgFor(v)
+
+// Event-row econ color: NFP/GDP by sign; others vs the prior print (red = worse/hotter, green = better/cooler)
+econBg(int c, float v, float pr) =>
+    color bad = color.new(color.red, 60)
+    color good = color.new(color.green, 60)
+    na(v) ? color.new(color.gray, 85) : (c == 16 or c == 17) ? (v < 0 ? bad : good) : (na(pr) or v == pr) ? color.new(color.gray, 60) : v > pr ? bad : good
+
+monStr(int ym) =>
+    str.format_time(timestamp("UTC", int(ym / 100), ym % 100, 1, 0, 0), "MMM yyyy", "UTC")
+
+periodStr(int c, float ref) =>
+    na(ref) ? "" : c == 17 ? "Q" + str.tostring(int((int(ref) % 100) / 3)) + " " + str.tostring(int(int(ref) / 100)) : c == 18 ? "week ending " + dateStr(int(ref)) : monStr(int(ref))
+
+grpStat(matrix<float> mtx, array<string> types, int col, string grp, bool useMedian) =>
+    array<float> vals = array.new<float>()
+    for i = 0 to matrix.rows(mtx) - 1
+        float v = matrix.get(mtx, i, col)
+        if not na(v) and (grp == "All" or array.get(types, i) == grp)
+            array.push(vals, v)
+    array.size(vals) == 0 ? na : useMedian ? array.median(vals) : array.avg(vals)
+
+grpUp(matrix<float> mtx, int col) =>
+    int up = 0
+    int c = 0
+    for i = 0 to matrix.rows(mtx) - 1
+        float v = matrix.get(mtx, i, col)
+        if not na(v)
+            c += 1
+            up += v > 0 ? 1 : 0
+    c == 0 ? na : up * 100.0 / c
+
+grpCount(array<int> bars, array<string> types, string grp) =>
+    int c = 0
+    for i = 0 to array.size(bars) - 1
+        if not na(array.get(bars, i)) and (grp == "All" or array.get(types, i) == grp)
+            c += 1
+    c
+
+// Events in a group whose Period 4 window reaches a neighboring Fed move (before or after)
+grpOverlap(array<int> bars, array<string> types, string grp, int span) =>
+    int c = 0
+    int n = array.size(bars)
+    for i = 0 to n - 1
+        int bi = array.get(bars, i)
+        if not na(bi) and (grp == "All" or array.get(types, i) == grp)
+            bool hit = false
+            for j = 0 to n - 1
+                int bj = array.get(bars, j)
+                if j != i and not na(bj) and math.abs(bj - bi) < span
+                    hit := true
+            c += hit ? 1 : 0
+    c
+
+// ── Per-bar series ───────────────────────────────────────────────────────────
+int   dayKey  = year * 10000 + month * 100 + dayofmonth
+int   prevKey = bar_index == 0 ? dayKey : dayKey[1]
+string secSym  = switch secPick
+    "SPY" => "AMEX:SPY"
+    "SPX" => "SP:SPX"
+    "QQQ" => "NASDAQ:QQQ"
+    "TLT" => "NASDAQ:TLT"
+    "GLD" => "AMEX:GLD"
+    "BTC" => "BITSTAMP:BTCUSD"
+    "Custom" => customSym
+    => syminfo.tickerid
+string secName = secPick == "Chart" ? syminfo.ticker : secPick == "Custom" ? array.get(str.split(customSym, ":"), array.size(str.split(customSym, ":")) - 1) : secPick
+// Measured price: the chart's close, or the picked security's daily close sampled on this chart's bars
+// Daily chart requesting daily data: lookahead_on returns the SAME date's bar.
+// With lookahead_off the other symbol's bar is not confirmed yet and the value
+// comes back one day late (bug fixed in v1.01). No future data is used because
+// the chart and the request are both Daily.
+float secReq  = na
+if secPick != "Chart"
+    secReq := request.security(secSym, "D", close, lookahead = barmerge.lookahead_on, ignore_invalid_symbol = true)
+float pClose  = secPick == "Chart" ? close : secReq
+float trendMa = ta.sma(pClose, maLen)
+float vixPrev = na
+if showCond
+    vixPrev := request.security(vixSym, "D", close[1], lookahead = barmerge.lookahead_on, ignore_invalid_symbol = true)
+float fedRate = request.economic("US", "INTR")
+bool  rateChg = not na(fedRate) and not na(fedRate[1]) and math.abs(fedRate - fedRate[1]) >= 0.1
+float vsSma   = pct(pClose[1], trendMa[1])
+float p4Bef   = pct(pClose[1], pClose[per4 + 1])
+float p3Bef   = pct(pClose[1], pClose[per3 + 1])
+float p2Bef   = pct(pClose[1], pClose[per2 + 1])
+float p1Bef   = pct(pClose[1], pClose[per1 + 1])
+float dBef    = pct(pClose[1], pClose[2])
+float dOf     = pct(pClose, pClose[1])
+// Day-of yield changes in basis points, computed on each yield symbol's own sessions
+float y2Chg   = na
+float y10Chg  = na
+if showGuide and show2Y
+    y2Chg := request.security(y2Sym, "D", (close - close[1]) * 100, lookahead = barmerge.lookahead_on, ignore_invalid_symbol = true)
+if showGuide and show10Y
+    y10Chg := request.security(y10Sym, "D", (close - close[1]) * 100, lookahead = barmerge.lookahead_on, ignore_invalid_symbol = true)
+// Fed funds futures: implied rate = 100 − price, so the implied-rate change in bp is (prev price − price) * 100
+float y6Lvl   = na
+if show6M
+    y6Lvl := request.security(y6Sym, "D", close[1], lookahead = barmerge.lookahead_on, ignore_invalid_symbol = true)
+// Some bill symbols quote a discount price near 100 instead of a yield
+bool  y6IsPrice = y6Mode == "Bill price" or (y6Mode == "Auto" and not na(y6Lvl) and y6Lvl > 25)
+float y6Yield   = na(y6Lvl) ? na : y6IsPrice ? (100.0 - y6Lvl) * 12.0 / y6Months : y6Lvl
+// Easing/tightening already priced for the coming months: 6M yield at T-1 vs the rate in effect
+float priced6 = na(y6Yield) or na(fedRate[1]) ? na : (y6Yield - fedRate[1]) * 100
+
+float ff1Chg  = na
+float ff2Chg  = na
+if showPriced
+    ff1Chg := request.security(ffSym1, "D", (close[1] - close) * 100, lookahead = barmerge.lookahead_on, ignore_invalid_symbol = true)
+    ff2Chg := request.security(ffSym2, "D", (close[1] - close) * 100, lookahead = barmerge.lookahead_on, ignore_invalid_symbol = true)
+int   daysInMo = int((timestamp("UTC", month == 12 ? year + 1 : year, month == 12 ? 1 : month + 1, 1, 0, 0) - timestamp("UTC", year, month, 1, 0, 0)) / 86400000)
+// Kuttner surprise: scale the front-month move by the share of the month still to run; near month end use the next contract unscaled
+float surpBp  = not showPriced ? na : dayofmonth > daysInMo - 3 ? ff2Chg : na(ff1Chg) ? na : ff1Chg * daysInMo / (daysInMo - dayofmonth)
+
+// ── Economic releases ────────────────────────────────────────────────────────
+// CPI release dates (BLS archive): reference month → release date. 247 entries.
+calCpi() =>
+    var array<int> ref = array.from(
+         200601, 200602, 200603, 200604, 200605, 200606, 200607, 200608, 200609, 200610,
+         200611, 200612, 200701, 200702, 200703, 200704, 200705, 200706, 200707, 200708,
+         200709, 200710, 200711, 200712, 200801, 200802, 200803, 200804, 200805, 200806,
+         200807, 200808, 200809, 200810, 200811, 200812, 200901, 200902, 200903, 200904,
+         200905, 200906, 200907, 200908, 200909, 200910, 200911, 200912, 201001, 201002,
+         201003, 201004, 201005, 201006, 201007, 201008, 201009, 201010, 201011, 201012,
+         201101, 201102, 201103, 201104, 201105, 201106, 201107, 201108, 201109, 201110,
+         201111, 201112, 201201, 201202, 201203, 201204, 201205, 201206, 201207, 201208,
+         201209, 201210, 201211, 201212, 201301, 201302, 201303, 201304, 201305, 201306,
+         201307, 201308, 201309, 201310, 201311, 201312, 201401, 201402, 201403, 201404,
+         201405, 201406, 201407, 201408, 201409, 201410, 201411, 201412, 201501, 201502,
+         201503, 201504, 201505, 201506, 201507, 201508, 201509, 201510, 201511, 201512,
+         201601, 201602, 201603, 201604, 201605, 201606, 201607, 201608, 201609, 201610,
+         201611, 201612, 201701, 201702, 201703, 201704, 201705, 201706, 201707, 201708,
+         201709, 201710, 201711, 201712, 201801, 201802, 201803, 201804, 201805, 201806,
+         201807, 201808, 201809, 201810, 201811, 201812, 201901, 201902, 201903, 201904,
+         201905, 201906, 201907, 201908, 201909, 201910, 201911, 201912, 202001, 202002,
+         202003, 202004, 202005, 202006, 202007, 202008, 202009, 202010, 202011, 202012,
+         202101, 202102, 202103, 202104, 202105, 202106, 202107, 202108, 202109, 202110,
+         202111, 202112, 202201, 202202, 202203, 202204, 202205, 202206, 202207, 202208,
+         202209, 202210, 202211, 202212, 202301, 202302, 202303, 202304, 202305, 202306,
+         202307, 202308, 202309, 202310, 202311, 202312, 202401, 202402, 202403, 202404,
+         202405, 202406, 202407, 202408, 202409, 202410, 202411, 202412, 202501, 202502,
+         202503, 202504, 202505, 202506, 202507, 202508, 202509, 202511, 202512, 202601,
+         202602, 202603, 202604, 202605, 202606, 202607, 202608)
+    var array<int> rel = array.from(
+         20060222, 20060316, 20060419, 20060517, 20060614, 20060719, 20060816, 20060915, 20061018, 20061116,
+         20061215, 20070118, 20070221, 20070316, 20070417, 20070515, 20070615, 20070718, 20070815, 20070919,
+         20071017, 20071115, 20071214, 20080116, 20080220, 20080314, 20080416, 20080514, 20080613, 20080716,
+         20080814, 20080916, 20081016, 20081119, 20081216, 20090116, 20090220, 20090318, 20090415, 20090515,
+         20090617, 20090715, 20090814, 20090916, 20091015, 20091118, 20091216, 20100115, 20100219, 20100318,
+         20100414, 20100519, 20100617, 20100716, 20100813, 20100917, 20101015, 20101117, 20101215, 20110114,
+         20110217, 20110317, 20110415, 20110513, 20110615, 20110715, 20110818, 20110915, 20111019, 20111116,
+         20111216, 20120119, 20120217, 20120316, 20120413, 20120515, 20120614, 20120717, 20120815, 20120914,
+         20121016, 20121115, 20121214, 20130116, 20130221, 20130315, 20130416, 20130516, 20130618, 20130716,
+         20130815, 20130917, 20131030, 20131120, 20131217, 20140116, 20140220, 20140318, 20140415, 20140515,
+         20140617, 20140722, 20140819, 20140917, 20141022, 20141120, 20141217, 20150116, 20150226, 20150324,
+         20150417, 20150522, 20150618, 20150717, 20150819, 20150916, 20151015, 20151117, 20151215, 20160120,
+         20160219, 20160316, 20160414, 20160517, 20160616, 20160715, 20160816, 20160916, 20161018, 20161117,
+         20161215, 20170118, 20170215, 20170315, 20170414, 20170512, 20170614, 20170714, 20170811, 20170914,
+         20171013, 20171115, 20171213, 20180112, 20180214, 20180313, 20180411, 20180510, 20180612, 20180712,
+         20180810, 20180913, 20181011, 20181114, 20181212, 20190111, 20190213, 20190312, 20190410, 20190510,
+         20190612, 20190711, 20190813, 20190912, 20191010, 20191113, 20191211, 20200114, 20200213, 20200311,
+         20200410, 20200512, 20200610, 20200714, 20200812, 20200911, 20201013, 20201112, 20201210, 20210113,
+         20210210, 20210310, 20210413, 20210512, 20210610, 20210713, 20210811, 20210914, 20211013, 20211110,
+         20211210, 20220112, 20220210, 20220310, 20220412, 20220511, 20220610, 20220713, 20220810, 20220913,
+         20221013, 20221110, 20221213, 20230112, 20230214, 20230314, 20230412, 20230510, 20230613, 20230712,
+         20230810, 20230913, 20231012, 20231114, 20231212, 20240111, 20240213, 20240312, 20240410, 20240515,
+         20240612, 20240711, 20240814, 20240911, 20241010, 20241113, 20241211, 20250115, 20250212, 20250312,
+         20250410, 20250513, 20250611, 20250715, 20250812, 20250911, 20251024, 20251218, 20260113, 20260213,
+         20260311, 20260410, 20260512, 20260610, 20260714, 20260812, 20260911)
+    [ref, rel]
+
+// Employment Situation release dates (BLS archive): reference month → release date. 247 entries.
+calJobs() =>
+    var array<int> ref = array.from(
+         200601, 200602, 200603, 200604, 200605, 200606, 200607, 200608, 200609, 200610,
+         200611, 200612, 200701, 200702, 200703, 200704, 200705, 200706, 200707, 200708,
+         200709, 200710, 200711, 200712, 200801, 200802, 200803, 200804, 200805, 200806,
+         200807, 200808, 200809, 200810, 200811, 200812, 200901, 200902, 200903, 200904,
+         200905, 200906, 200907, 200908, 200909, 200910, 200911, 200912, 201001, 201002,
+         201003, 201004, 201005, 201006, 201007, 201008, 201009, 201010, 201011, 201012,
+         201101, 201102, 201103, 201104, 201105, 201106, 201107, 201108, 201109, 201110,
+         201111, 201112, 201201, 201202, 201203, 201204, 201205, 201206, 201207, 201208,
+         201209, 201210, 201211, 201212, 201301, 201302, 201303, 201304, 201305, 201306,
+         201307, 201308, 201309, 201310, 201311, 201312, 201401, 201402, 201403, 201404,
+         201405, 201406, 201407, 201408, 201409, 201410, 201411, 201412, 201501, 201502,
+         201503, 201504, 201505, 201506, 201507, 201508, 201509, 201510, 201511, 201512,
+         201601, 201602, 201603, 201604, 201605, 201606, 201607, 201608, 201609, 201610,
+         201611, 201612, 201701, 201702, 201703, 201704, 201705, 201706, 201707, 201708,
+         201709, 201710, 201711, 201712, 201801, 201802, 201803, 201804, 201805, 201806,
+         201807, 201808, 201809, 201810, 201811, 201812, 201901, 201902, 201903, 201904,
+         201905, 201906, 201907, 201908, 201909, 201910, 201911, 201912, 202001, 202002,
+         202003, 202004, 202005, 202006, 202007, 202008, 202009, 202010, 202011, 202012,
+         202101, 202102, 202103, 202104, 202105, 202106, 202107, 202108, 202109, 202110,
+         202111, 202112, 202201, 202202, 202203, 202204, 202205, 202206, 202207, 202208,
+         202209, 202210, 202211, 202212, 202301, 202302, 202303, 202304, 202305, 202306,
+         202307, 202308, 202309, 202310, 202311, 202312, 202401, 202402, 202403, 202404,
+         202405, 202406, 202407, 202408, 202409, 202410, 202411, 202412, 202501, 202502,
+         202503, 202504, 202505, 202506, 202507, 202508, 202509, 202511, 202512, 202601,
+         202602, 202603, 202604, 202605, 202606, 202607, 202608)
+    var array<int> rel = array.from(
+         20060203, 20060310, 20060407, 20060505, 20060602, 20060707, 20060804, 20060901, 20061006, 20061103,
+         20061208, 20070105, 20070202, 20070309, 20070406, 20070504, 20070601, 20070706, 20070803, 20070907,
+         20071005, 20071102, 20071207, 20080104, 20080201, 20080307, 20080404, 20080502, 20080606, 20080703,
+         20080801, 20080905, 20081003, 20081107, 20081205, 20090109, 20090206, 20090306, 20090403, 20090508,
+         20090605, 20090702, 20090807, 20090904, 20091002, 20091106, 20091204, 20100108, 20100205, 20100305,
+         20100402, 20100507, 20100604, 20100702, 20100806, 20100903, 20101008, 20101105, 20101203, 20110107,
+         20110204, 20110304, 20110401, 20110506, 20110603, 20110708, 20110805, 20110902, 20111007, 20111104,
+         20111202, 20120106, 20120203, 20120309, 20120406, 20120504, 20120601, 20120706, 20120803, 20120907,
+         20121005, 20121102, 20121207, 20130104, 20130201, 20130308, 20130405, 20130503, 20130607, 20130705,
+         20130802, 20130906, 20131022, 20131108, 20131206, 20140110, 20140207, 20140307, 20140404, 20140502,
+         20140606, 20140703, 20140801, 20140905, 20141003, 20141107, 20141205, 20150109, 20150206, 20150306,
+         20150403, 20150508, 20150605, 20150702, 20150807, 20150904, 20151002, 20151106, 20151204, 20160108,
+         20160205, 20160304, 20160401, 20160506, 20160603, 20160708, 20160805, 20160902, 20161007, 20161104,
+         20161202, 20170106, 20170203, 20170310, 20170407, 20170505, 20170602, 20170707, 20170804, 20170901,
+         20171006, 20171103, 20171208, 20180105, 20180202, 20180309, 20180406, 20180504, 20180601, 20180706,
+         20180803, 20180907, 20181005, 20181102, 20181207, 20190104, 20190201, 20190308, 20190405, 20190503,
+         20190607, 20190705, 20190802, 20190906, 20191004, 20191101, 20191206, 20200110, 20200207, 20200306,
+         20200403, 20200508, 20200605, 20200702, 20200807, 20200904, 20201002, 20201106, 20201204, 20210108,
+         20210205, 20210305, 20210402, 20210507, 20210604, 20210702, 20210806, 20210903, 20211008, 20211105,
+         20211203, 20220107, 20220204, 20220304, 20220401, 20220506, 20220603, 20220708, 20220805, 20220902,
+         20221007, 20221104, 20221202, 20230106, 20230203, 20230310, 20230407, 20230505, 20230602, 20230707,
+         20230804, 20230901, 20231006, 20231103, 20231208, 20240105, 20240202, 20240308, 20240405, 20240503,
+         20240607, 20240705, 20240802, 20240906, 20241004, 20241101, 20241206, 20250110, 20250207, 20250307,
+         20250404, 20250502, 20250606, 20250703, 20250801, 20250905, 20251120, 20251216, 20260109, 20260211,
+         20260306, 20260403, 20260508, 20260605, 20260702, 20260807, 20260904)
+    [ref, rel]
+
+// GDP advance/first estimate dates (BEA via ALFRED vintages): quarter-end month → release date. 82 entries.
+calGdp() =>
+    var array<int> ref = array.from(
+         200603, 200606, 200609, 200612, 200703, 200706, 200709, 200712, 200803, 200806,
+         200809, 200812, 200903, 200906, 200909, 200912, 201003, 201006, 201009, 201012,
+         201103, 201106, 201109, 201112, 201203, 201206, 201209, 201212, 201303, 201306,
+         201309, 201312, 201403, 201406, 201409, 201412, 201503, 201506, 201509, 201512,
+         201603, 201606, 201609, 201612, 201703, 201706, 201709, 201712, 201803, 201806,
+         201809, 201812, 201903, 201906, 201909, 201912, 202003, 202006, 202009, 202012,
+         202103, 202106, 202109, 202112, 202203, 202206, 202209, 202212, 202303, 202306,
+         202309, 202312, 202403, 202406, 202409, 202412, 202503, 202506, 202509, 202512,
+         202603, 202606)
+    var array<int> rel = array.from(
+         20060428, 20060728, 20061027, 20070131, 20070427, 20070727, 20071031, 20080130, 20080430, 20080731,
+         20081030, 20090130, 20090429, 20090731, 20091029, 20100129, 20100430, 20100730, 20101029, 20110128,
+         20110428, 20110729, 20111027, 20120127, 20120427, 20120727, 20121026, 20130130, 20130426, 20130731,
+         20131107, 20140130, 20140430, 20140730, 20141030, 20150130, 20150429, 20150730, 20151029, 20160129,
+         20160428, 20160729, 20161028, 20170127, 20170428, 20170728, 20171027, 20180126, 20180427, 20180727,
+         20181026, 20190228, 20190426, 20190726, 20191030, 20200130, 20200429, 20200730, 20201029, 20210128,
+         20210429, 20210729, 20211028, 20220127, 20220428, 20220728, 20221027, 20230126, 20230427, 20230727,
+         20231026, 20240125, 20240425, 20240725, 20241030, 20250130, 20250430, 20250730, 20251223, 20260220,
+         20260430, 20260730)
+    [ref, rel]
+
+float fCpi   = request.economic("US", "IRYY", gaps = barmerge.gaps_on, ignore_invalid_symbol = true)
+float fCore  = request.economic("US", "CIR", gaps = barmerge.gaps_on, ignore_invalid_symbol = true)
+float fUr    = request.economic("US", "UR", gaps = barmerge.gaps_on, ignore_invalid_symbol = true)
+float fNfp   = request.economic("US", "NFP", gaps = barmerge.gaps_on, ignore_invalid_symbol = true)
+float fGdp   = request.economic("US", gdpField, gaps = barmerge.gaps_on, ignore_invalid_symbol = true)
+float fClm   = na
+int   fClmT  = na
+if showClaims
+    fClm := request.security(claimsSym, "D", close, gaps = barmerge.gaps_on, ignore_invalid_symbol = true)
+    fClmT := request.security(claimsSym, "D", time, gaps = barmerge.gaps_on, ignore_invalid_symbol = true)
+
+// Feed stamps land on the last day of the period (or the first session after it)
+refOfStamp() =>
+    dayofmonth >= 15 ? year * 100 + month : month == 1 ? (year - 1) * 100 + 12 : year * 100 + month - 1
+
+econSet(int k, float v, float ref, float rel) =>
+    matrix.set(econSt, k, 1, matrix.get(econSt, k, 0))
+    matrix.set(econSt, k, 0, v)
+    matrix.set(econSt, k, 2, ref)
+    matrix.set(econSt, k, 3, rel)
+
+// Store each feed print by reference period; publish it only once its release date has arrived
+econStep(int k, float feedVal, map<int, float> vals, array<int> ref, array<int> rel, int estLagDays) =>
+    int lastRef = array.get(ref, array.size(ref) - 1)
+    if not na(feedVal)
+        int rf0 = refOfStamp()
+        map.put(vals, rf0, feedVal)
+        if rf0 > lastRef
+            matrix.set(econSt, k, 5, time)
+            matrix.set(econSt, k, 6, rf0)
+    int p = int(nz(matrix.get(econSt, k, 4)))
+    while p < array.size(rel) and array.get(rel, p) <= dayKey
+        int rf = array.get(ref, p)
+        if map.contains(vals, rf)
+            econSet(k, map.get(vals, rf), rf, array.get(rel, p))
+        p += 1
+    matrix.set(econSt, k, 4, p)
+    float pt = matrix.get(econSt, k, 5)
+    if not na(pt) and time >= pt + estLagDays * 86400000
+        int pr = int(matrix.get(econSt, k, 6))
+        if map.contains(vals, pr)
+            econSet(k, map.get(vals, pr), pr, -dayKey)
+        matrix.set(econSt, k, 5, NA_F)
+
+// Weekly claims: hold each print until stamp + lag days
+claimsStep(float v, int t) =>
+    int lagMs = claimsLag * 86400000
+    for pass = 0 to 1
+        if pass == 1 and not na(v) and not na(t)
+            matrix.set(econSt, 5, 4, v)
+            matrix.set(econSt, 5, 5, t)
+        float pt = matrix.get(econSt, 5, 5)
+        if not na(pt) and time >= pt + lagMs
+            int pti = int(pt)
+            int rt = pti + lagMs
+            econSet(5, matrix.get(econSt, 5, 4), year(pti, "UTC") * 10000 + month(pti, "UTC") * 100 + dayofmonth(pti, "UTC"), year(rt, "UTC") * 10000 + month(rt, "UTC") * 100 + dayofmonth(rt, "UTC"))
+            matrix.set(econSt, 5, 5, NA_F)
+
+// Estimated lags past the calendars (conservative vs history): CPI 18d, jobs 10d, GDP 31d after the stamp
+econUpdate() =>
+    [cpiRef, cpiRel] = calCpi()
+    [jobRef, jobRel] = calJobs()
+    [gdpRef, gdpRel] = calGdp()
+    econStep(0, fCpi, mCpi, cpiRef, cpiRel, 18)
+    econStep(1, fCore, mCore, cpiRef, cpiRel, 18)
+    econStep(2, fUr, mUr, jobRef, jobRel, 10)
+    econStep(3, fNfp, mNfp, jobRef, jobRel, 10)
+    econStep(4, fGdp, mGdp, gdpRef, gdpRel, 31)
+    claimsStep(fClm, fClmT)
+
+econUpdate()
+
+econRecord(int idx) =>
+    for k = 0 to 5
+        matrix.set(res, idx, 13 + k, matrix.get(econSt, k, 0))
+        matrix.set(econMeta, idx, k * 3, matrix.get(econSt, k, 2))
+        matrix.set(econMeta, idx, k * 3 + 1, matrix.get(econSt, k, 3))
+        matrix.set(econMeta, idx, k * 3 + 2, matrix.get(econSt, k, 1))
+
+// Baseline: every session's n-bar return, for comparing event windows with normal drift
+var array<float> bl1  = array.new<float>()
+var array<float> blP1 = array.new<float>()
+var array<float> blP2 = array.new<float>()
+var array<float> blP3 = array.new<float>()
+var array<float> blP4 = array.new<float>()
+
+blPush(array<float> a, float v) =>
+    if not na(v)
+        array.push(a, v)
+
+if showBase and (not useRange or (time >= rngStart and time <= rngEnd))
+    blPush(bl1, dOf)
+    blPush(blP1, pct(pClose, pClose[per1]))
+    blPush(blP2, pct(pClose, pClose[per2]))
+    blPush(blP3, pct(pClose, pClose[per3]))
+    blPush(blP4, pct(pClose, pClose[per4]))
+
+blMed(array<float> a) =>
+    array.size(a) == 0 ? na : array.median(a)
+
+// Medians are computed once on the last bar, then read from this cache
+var array<float> blCache = array.new<float>(5, na)
+
+blFill() =>
+    array.set(blCache, 0, blMed(bl1))
+    array.set(blCache, 1, blMed(blP1))
+    array.set(blCache, 2, blMed(blP2))
+    array.set(blCache, 3, blMed(blP3))
+    array.set(blCache, 4, blMed(blP4))
+
+// Baseline value for a column: matched to that column's window length
+baseFor(int c) =>
+    int k = c == 6 or c == 7 or c == 8 ? 0 : c == 5 or c == 9 ? 1 : c == 4 or c == 10 ? 2 : c == 3 or c == 11 ? 3 : c == 2 or c == 12 ? 4 : -1
+    k < 0 ? na : array.get(blCache, k)
+
+recordEvent(int idx) =>
+    bool inR = not useRange or (time >= rngStart and time <= rngEnd)
+    if inR
+        array.set(evBar, idx, bar_index)
+        array.set(evCls, idx, pClose)
+        matrix.set(res, idx, 0, vixPrev)
+        matrix.set(res, idx, 1, vsSma)
+        matrix.set(res, idx, 2, p4Bef)
+        matrix.set(res, idx, 3, p3Bef)
+        matrix.set(res, idx, 4, p2Bef)
+        matrix.set(res, idx, 5, p1Bef)
+        matrix.set(res, idx, 6, dBef)
+        matrix.set(res, idx, 7, dOf)
+        matrix.set(res, idx, 19, y2Chg)
+        matrix.set(res, idx, 20, y10Chg)
+        float actBp = array.get(evBps, idx)
+        matrix.set(res, idx, 22, surpBp)
+        matrix.set(res, idx, 21, na(surpBp) ? na : actBp - surpBp)
+        matrix.set(res, idx, 23, priced6)
+        array.set(evFeed, idx, fedRate)
+        econRecord(idx)
+        if labelMode != "None"
+            int b = array.get(evBps, idx)
+            string t = array.get(evType, idx)
+            color c = t == "Hike" ? color.red : t == "Cut" ? color.green : color.orange
+            string chgTxt = (b > 0 ? "+" : "") + str.tostring(b)
+            string lblTxt = labelMode == "Fed change" ? chgTxt : labelMode == "New rate" ? evRateTxt(idx) : chgTxt + "\n" + evRateTxt(idx)
+            label lb = label.new(bar_index, high, lblTxt, yloc = yloc.abovebar,
+                 style = label.style_label_down, color = c, textcolor = color.white, size = size.tiny,
+                 tooltip = secName + " · " + (t == "Emergency" ? "Emergency cut " : "Fed " + str.lower(t) + " ") + str.tostring(math.abs(b)) + "bp → "
+                     + evRateTxt(idx) + (array.get(evAuto, idx) ? " (auto-detected)" : "")
+                     + "\n" + evRateBoth(idx)
+                     + "\nVIX T-1: " + (na(vixPrev) ? "—" : str.tostring(vixPrev, "#0.0") + " (" + vixTier(vixPrev) + ")") + "\nvs " + str.tostring(maLen) + "D SMA: " + fmtPct(vsSma)
+                     + "\n" + perLbl(per4) + " before: " + fmtPct(p4Bef) + "\n" + perLbl(per3) + " before: " + fmtPct(p3Bef) + "\n" + perLbl(per2) + " before: " + fmtPct(p2Bef)
+                     + "\n" + perLbl(per1) + " before: " + fmtPct(p1Bef) + "\n1D before: " + fmtPct(dBef) + "\nDay of: " + fmtPct(dOf)
+                     + "\nGuidance read: 2Y " + valTxt(19, y2Chg) + " · 10Y " + valTxt(20, y10Chg) + (isOpposite(t, y2Chg) ? (t == "Hike" ? " ◆ dovish hike" : " ◆ hawkish cut") : "")
+                     + "\nKnown at T: CPI " + valTxt(13, matrix.get(econSt, 0, 0)) + " · Core " + valTxt(14, matrix.get(econSt, 1, 0)) + " · Unemp " + valTxt(15, matrix.get(econSt, 2, 0))
+                     + " · NFP " + valTxt(16, matrix.get(econSt, 3, 0)) + " · GDP " + valTxt(17, matrix.get(econSt, 4, 0)) + " · Claims " + valTxt(18, matrix.get(econSt, 5, 0))
+                     + "\n(after-windows are in the table)")
+            array.set(evLbl, idx, lb)
+    inR
+
+// ── Event detection ──────────────────────────────────────────────────────────
+var int ptr = 0
+bool eventThisBar = false
+
+while ptr < nHard and array.get(evDate, ptr) <= prevKey
+    ptr += 1
+
+if ptr < nHard and dayKey >= array.get(evDate, ptr)
+    recordEvent(ptr)
+    eventThisBar := true
+    ptr += 1
+
+if autoDetect and rateChg and dayKey > lastHard and not eventThisBar
+    array.push(evDate, dayKey)
+    array.push(evBps, int(math.round((fedRate - fedRate[1]) * 100)))
+    array.push(evUpper, fedRate)
+    array.push(evType, fedRate > fedRate[1] ? "Hike" : "Cut")
+    array.push(evAuto, true)
+    array.push(evBar, NA_I)
+    array.push(evCls, NA_F)
+    array.push(evFeed, NA_F)
+    array.push(evLbl, label(na))
+    matrix.add_row(res, matrix.rows(res), array.new<float>(NCOL, NA_F))
+    matrix.add_row(econMeta, matrix.rows(econMeta), array.new<float>(18, NA_F))
+    recordEvent(array.size(evDate) - 1)
+
+// Fill forward windows as they complete
+for i = 0 to array.size(evBar) - 1
+    int eb = array.get(evBar, i)
+    if not na(eb)
+        int k = bar_index - eb
+        int col = k == 1 ? 8 : k == per1 ? 9 : k == per2 ? 10 : k == per3 ? 11 : k == per4 ? 12 : -1
+        if col >= 0
+            matrix.set(res, i, col, pct(pClose, array.get(evCls, i)))
+
+// ── Table text ───────────────────────────────────────────────────────────────
+var array<string> colHdr  = array.from("VIX T-1", "vs " + str.tostring(maLen) + "D", perLbl(per4) + " bef", perLbl(per3) + " bef", perLbl(per2) + " bef", perLbl(per1) + " bef", "1D bef", "Day of",
+     "1D aft", perLbl(per1) + " aft", perLbl(per2) + " aft", perLbl(per3) + " aft", perLbl(per4) + " aft",
+     "CPI", "Core CPI", "Unemp", "NFP", "GDP", "Claims", "2Y Δ", "10Y Δ", "Expected", "Surprise", "Priced 6M")
+var array<string> colName = array.from("VIX T-1", "VS " + str.tostring(maLen) + "D SMA",
+     perLbl(per4) + " BEFORE", perLbl(per3) + " BEFORE", perLbl(per2) + " BEFORE", perLbl(per1) + " BEFORE", "1D BEFORE", "DAY OF",
+     "1D AFTER", perLbl(per1) + " AFTER", perLbl(per2) + " AFTER", perLbl(per3) + " AFTER", perLbl(per4) + " AFTER",
+     "CPI YOY (KNOWN AT T)", "CORE CPI YOY (KNOWN AT T)", "UNEMPLOYMENT RATE (KNOWN AT T)", "NONFARM PAYROLLS (KNOWN AT T)", "GDP GROWTH (KNOWN AT T)", "INITIAL CLAIMS (KNOWN AT T)", "2Y YIELD CHANGE, DAY OF", "10Y YIELD CHANGE, DAY OF", "EXPECTED CHANGE (bp)", "POLICY SURPRISE (bp)", "PRICED 6M (bp)")
+
+string ECON_NOTE = "\n\nShows the latest print PUBLICLY RELEASED on or before the announcement day (8:30am ET releases count as known for a 2pm decision). The feed stamps prints at the end of the period measured, so the script pairs each with its real release date from built-in BLS/BEA calendars; past the calendars it uses a conservative estimated lag, marked est.\nValues are the feed's latest revised numbers, which can differ from what was first reported."
+
+befTip(int p, string slot) =>
+    "T-" + str.tostring(p + 1) + " close → T-1 close (" + str.tostring(p) + " sessions, " + slot + ") of " + secName + ".\nHow the market ran into the decision."
+
+aftTip(int p, string slot) =>
+    "T close → T+" + str.tostring(p) + " close (" + str.tostring(p) + " sessions, " + slot + ") of " + secName + ".\nWhat followed the decision. Windows of nearby events can overlap, so events are not fully independent."
+
+var array<string> colTip  = array.from(
+     "VIX closing level the session BEFORE the decision (T-1) = fear going in.\nColor: green = calm (< " + str.tostring(vixCalm) + "), gray = normal (" + str.tostring(vixCalm) + "–" + str.tostring(vixStress) + "), orange = stressed (" + str.tostring(vixStress) + "–" + str.tostring(vixCrisis) + "), red = crisis (" + str.tostring(vixCrisis) + "+).",
+     "% distance of the close from its " + str.tostring(maLen) + "-day SMA at T-1 (Trend MA length setting).\n+ = trading above the average going in, − = below it.",
+     befTip(per4, "Period 4"),
+     befTip(per3, "Period 3"),
+     befTip(per2, "Period 2"),
+     befTip(per1, "Period 1"),
+     "T-2 close → T-1 close of " + secName + ".\nThe session right before the announcement.",
+     "T-1 close → T close of " + secName + ".\nIncludes the morning before the 2pm ET release on scheduled days.",
+     "T close → T+1 close of " + secName + ".\nFollow-through or reversal the next session.",
+     aftTip(per1, "Period 1"),
+     aftTip(per2, "Period 2"),
+     aftTip(per3, "Period 3"),
+     aftTip(per4, "Period 4"),
+     "Headline CPI, % year over year (feed IRYY). BLS release dates Jan 2006 → Aug 2026.\nEvent color vs prior print: red = higher, green = lower, gray = unchanged." + ECON_NOTE,
+     "CPI less food and energy, % year over year (feed CIR). Same release dates as CPI.\nEvent color vs prior print: red = higher, green = lower, gray = unchanged." + ECON_NOTE,
+     "Unemployment rate, % (feed UR), from the Employment Situation report. BLS release dates Jan 2006 → Aug 2026.\nEvent color vs prior print: red = higher, green = lower." + ECON_NOTE,
+     "Monthly change in nonfarm payrolls (feed NFP), same release as unemployment.\nEvent color: red = jobs lost, green = jobs added." + ECON_NOTE,
+     "Real GDP growth, % (feed " + gdpField + "). BEA advance-estimate dates Q1 2006 → Q2 2026; shutdown quarters use the delayed first release.\nEvent color: red = contraction, green = growth." + ECON_NOTE,
+     "Initial jobless claims, weekly (" + claimsSym + "). Treated as known " + str.tostring(claimsLag) + " days after the feed's week-ending stamp.\nEvent color vs prior week: red = higher, green = lower." + ECON_NOTE,
+     "GUIDANCE READ: change in the 2-year Treasury yield on the announcement day, T-1 close → T close, in basis points (" + y2Sym + ").\nThe 2-year prices the expected path of Fed policy, so its move is the market's verdict on the statement, projections and press conference combined.\nRed = yield up (hawkish read), green = yield down (dovish read), gray = under 0.5bp.\n◆ = moved AGAINST the rate change by at least " + str.tostring(oppBp) + "bp: a dovish hike or a hawkish cut.\n\nCautions: close-to-close includes pre-announcement trading and any same-day data (e.g. a CPI release that morning). It measures the market's reaction, not what the Fed said.",
+     "GUIDANCE READ: change in the 10-year Treasury yield on the announcement day, T-1 close → T close, in basis points (" + y10Sym + ").\nShows whether the guidance moved longer-term rates too. 2Y up more than 10Y = curve flattening (tighter expected policy); 10Y up more = steepening.\nRed = yield up, green = yield down, gray = under 0.5bp. ◆ uses the same opposite-move rule as the 2Y.\n\nCautions: close-to-close includes pre-announcement trading and same-day data; the 10Y also reflects inflation, growth and supply news.",
+     "EXPECTED: the part of THIS decision the market had already discounted, in basis points = actual change − surprise (" + ffSym1 + ").\nA +25bp hike showing +23bp expected means the decision itself was nearly fully priced by the previous close.\nNo color: a large expected share is neither good nor bad, it only means no shock. The reaction is in Surprise and the yield columns.\n\nIt is NOT a horizon measure: it says nothing about later meetings. For that, see Priced 6M.\n\nCaution: derived by subtraction from a one-day futures move, so it inherits the Surprise column's limits below.",
+     "POLICY SURPRISE: the unexpected part of the decision, in basis points, from 30-day fed funds futures (the Kuttner method).\nThe implied rate (100 − price) change on announcement day is scaled by how much of the month still has to run; meetings in the last 3 days of a month use " + ffSym2 + " unscaled.\n+ (red) = rates set higher than priced (hawkish surprise); − (green) = lower than priced (dovish surprise); near 0 = fully expected.\n\nCautions: the futures day also contains any other news, the scaling is noisy late in a month, weekend and pre-market moves (Mar 15 2020) span more than one session, and continuous futures contracts roll, so treat small values as noise.",
+     "PRICED 6M: how much easing or tightening the market had priced for the MONTHS AHEAD, read the session before the decision — the 6-month yield (" + y6Sym + ", read as " + (y6Mode == "Auto" ? "auto-detected" : str.lower(y6Mode)) + ") minus the target rate then in effect, in basis points.\nRoughly 25bp per expected move, so −45bp ≈ about two cuts priced over the next four meetings.\nGreen = cuts priced, red = hikes priced.\n\nUnlike Expected / Surprise, this looks FORWARD past this meeting.\n\nCautions: bills carry term and liquidity premia, so this is directional, not a clean probability. In stressed markets, flight-to-quality buying pushes bill yields down and overstates the cuts priced. The target rate comes from the interest rate feed (upper bound of the range since Dec 2008), which biases the gap by a few bp.\nIf this column shows huge values such as +9800bp, the symbol is price-quoted: set Quote type to Bill price, or use FRED:DGS6MO.")
+
+string TIP_DATE = "DATE\nAnnouncement date. T = first trading session on/after this date.\nAll returns are close-to-close, % change of the measured security (Security setting).\nGreen = up, red = down, '—' = window not complete yet or before loaded history."
+string TIP_MOVE = "MOVE\nRate change in basis points (25bp = 0.25%).\n+ = hike (red), − = cut (green), E = emergency/unscheduled (orange), A = auto-detected.\nn = events in that group with data."
+string HARD_RANGE = dateStr(array.get(hDate, 0)) + " → " + dateStr(lastHard) + " (" + str.tostring(nHard) + " events)"
+string TIP_RATE = "NEW RATE\nFed funds rate AFTER this decision. Source: " + rateSrc + " (change under Data settings).\n\nFeed = US interest rate value on the event bar, as reported.\n\nCell color matches Move: red = hike (rate higher), green = cut (rate lower), orange = emergency cut.\n\nHard-coded = target entered in the script: single rate before Dec 16 2008, 0.25%-wide range since.\nHard-coded list covers " + HARD_RANGE + ". Later moves come from auto-detect and use the feed value."
+
+// ── Data notes (shown in the top-left table cell tooltip) ───────────────────────
+string DATA_NOTES = "⚠ DATA NOTES: read before drawing conclusions"
+     + "\n\n1. REVISED DATA. Economic values are TradingView's latest revised figures, not what was first reported. Payrolls and GDP revisions can be large, so a cell can differ from the number the Fed and the market actually saw."
+     + "\n\n2. NO FORECASTS. Colors compare each print to the PRIOR print, not to consensus expectations. Markets react to surprises vs forecasts, which this table cannot show."
+     + "\n\n3. RELEASE TIMING. Built-in BLS/BEA calendars cover CPI and jobs through Aug 2026 and GDP through Q2 2026. Later prints use an estimated lag and are marked *. Claims use a fixed lag from the feed stamp (Economic conditions settings)."
+     + "\n\n4. STALE PRINTS are marked †. A report was delayed or never published (e.g. Oct 2025 CPI and jobs, the canceled Q3 2025 GDP advance estimate), so the value shown is older than usual for that date."
+     + "\n\n5. DAY OF is close-to-close and includes trading before the 2pm ET announcement. Emergency moves came pre-market or on a Sunday (Mar 15 2020 → T = Mar 16)."
+     + "\n\n6. SMALL SAMPLES. Emergency n=4, and hikes/cuts cluster in a few cycles (2007-08, 2015-19, 2022-23). Medians describe what happened; they are not statistically independent evidence."
+     + "\n\n7. OVERLAPPING WINDOWS. Long windows of nearby events cover the same bars (e.g. the 2022 hikes' 1Y after), so one big move is counted several times."
+     + "\n\n8. INCOMPLETE WINDOWS show — and are left out of summary rows, so recent events drop out of long-window medians and the effective n differs by column."
+     + "\n\n9b. LOADED HISTORY: the table only covers events on the bars your chart has loaded. If the event count is below the full list, scroll left (or use a plan with more bars) until the chart reaches Sep 2007."
+     + "\n\n9. PRICES come from the Security setting (Chart or a preset symbol), sampled on this chart's daily sessions. A preset symbol on a chart with different trading days (e.g. BTC's 24/7 closes on a U.S. chart, or SPY on a crypto chart) can shift or flatten windows. With ADJ on, ETF returns include dividends; SPY, SPX and ES differ slightly. Short histories or plan bar limits drop early events."
+     + "\n\n10. NEW RATE. Feed = value as reported; Hard-coded = target range (single rate before Dec 16 2008). Auto-detected moves cannot be classed as Emergency."
+     + "\n\n11. UNITS depend on the feed. NFP and claims are assumed reported in persons (shown in K). GDPQQ may be quarterly rather than annualized; GDPGA is annualized. Check a known print."
+     + "\n\n12. DATE RANGE filters by announcement date; after-windows can use bars past the To date."
+     + "\n\n14b. BAD SYMBOLS: a symbol that does not exist can stop the whole table from drawing, because TradingView raises the error before the script runs. Every optional feed has an on/off switch (Priced-in, guidance yields, VIX / MA, claims, Security) and switching one OFF stops its request entirely, which restores the table. A symbol that exists but returns nothing just shows — and its header hover says so."
+     + "\n\n14d. PRICED 6M needs a YIELD feed. FRED:DGS6MO quotes a yield; TVC bill symbols quote a price near 100 and must use the Bill price quote type, which converts with (100 − price) × 12 / months — an approximation, not the exact bond-equivalent yield."
+     + "\n\n14c. PRICED 6M is a proxy built from the 6-month bill, not a probability. It answers what the market expected for the months ahead going into the meeting; Expected / Surprise answer only how much of THIS decision was already discounted."
+     + "\n\n14. EXPECTED / SURPRISE comes from fed funds futures, not from the Fed. It is a market estimate: the scaling is noisy in the last days of a month, continuous contracts roll, and any other news that day lands in the same number. Small values (a few bp) are noise, not signal."
+     + "\n\n15. BASELINE is the median return over the same window length across EVERY session in the date range, including event days. It is what the security did normally, so compare group medians with it instead of reading raw event returns as a Fed effect."
+     + "\n\n13. GUIDANCE READ (2Y/10Y) is the market's reaction, not the Fed's words. It is close-to-close, so it includes pre-announcement trading and same-day data releases, and it blends statement, projections and press conference into one number."
+
+ymdTs(int d) =>
+    timestamp("UTC", int(d / 10000), int(d / 100) % 100, d % 100, 0, 0)
+
+// Start of the period AFTER the reference period (≈ its end); claims use the week-ending date
+refEndTs(int c, float ref) =>
+    int r = int(ref)
+    int y = int(r / 100)
+    int m = r % 100
+    c == 18 ? ymdTs(r) : m == 12 ? timestamp("UTC", y + 1, 1, 1, 0, 0) : timestamp("UTC", y, m + 1, 1, 0, 0)
+
+// "*" = estimated release timing, "†" = stale (older than normal for this date)
+econFlag(int c, int row, int evDay) =>
+    int k = c - 13
+    float ref = matrix.get(econMeta, row, k * 3)
+    float rel = matrix.get(econMeta, row, k * 3 + 1)
+    string f = ""
+    if not na(ref)
+        int ageDays = int((ymdTs(evDay) - refEndTs(c, ref)) / 86400000)
+        int limit = c == 17 ? 125 : c == 18 ? 14 : 50
+        f := (rel < 0 ? "*" : "") + (ageDays > limit ? "†" : "")
+    f
+
+// First column: pad text with one space each side so the column hugs its widest entry
+pad(string t) =>
+    " " + t + " "
+
+tipTxt(int c, float v, string ctx) =>
+    array.get(colName, c) + " = " + valTxt(c, v) + (c == 0 and not na(v) ? " (" + vixTier(v) + ")" : "") + "\n" + ctx + "\n\n" + array.get(colTip, c)
+
+econTip(int c, int row, float v, int evDay, string ctx) =>
+    int k = c - 13
+    float ref = matrix.get(econMeta, row, k * 3)
+    float rel = matrix.get(econMeta, row, k * 3 + 1)
+    float pr = matrix.get(econMeta, row, k * 3 + 2)
+    string when = na(ref) ? "No print known yet" : periodStr(c, ref) + (rel < 0 ? ", est. known by " + dateStr(int(-rel)) : ", released " + dateStr(int(rel)))
+    string fl = econFlag(c, row, evDay)
+    string flagTxt = (str.contains(fl, "*") ? "\n* ESTIMATED TIMING: this print is past the built-in release calendar, so when it became public is estimated." : "")
+         + (str.contains(fl, "†") ? "\n† STALE: this print is older than normal for this date. The next report was delayed or never published, so it may not reflect conditions at the announcement." : "")
+    array.get(colName, c) + " = " + valTxt(c, v) + fl + "\n" + when + " · prior print " + valTxt(c, pr) + flagTxt + "\n" + ctx + "\n\n" + array.get(colTip, c) + "\n\nRevised figure, not first-reported. Color compares to the prior print, not a forecast."
+
+cellTip(int c, string vTxt, string ctx) =>
+    array.get(colName, c) + " = " + vTxt + "\n" + ctx + "\n\n" + array.get(colTip, c)
+
+// ── Table ────────────────────────────────────────────────────────────────────
+var int TROWS = 2 * array.size(hDate) + 75
+var table tbl = table.new(tblPos, 3 + NCOL, TROWS, border_width = 1, frame_color = color.gray, frame_width = 1)
+varip bool titleMerged = false
+
+// Flags a column whose external feed is returning nothing (wrong symbol, or not in the plan)
+noteFor(int c) =>
+    bool missing = (c == 0 and na(vixPrev)) or (c == 19 and na(y2Chg)) or (c == 20 and na(y10Chg)) or (c == 23 and show6M and na(y6Yield)) or ((c == 21 or c == 22) and showPriced and na(ff1Chg) and na(ff2Chg))
+    missing ? "\n\n⚠ NO DATA from this feed right now: check the symbol in settings, or your plan may not include it. This column just shows — and everything else keeps working." : ""
+
+drawHeader(int r, array<int> vis) =>
+    color hb = color.new(color.blue, 30)
+    color hbDay = color.new(#0A1F5C, 0)   // "Day of" header only: dark blue so the event column stands out
+    color hbEcon = color.new(color.teal, 25)   // economic-condition headers
+    table.cell(tbl, 0, r, pad("Date"), text_color = color.white, bgcolor = hb, text_size = txtSize, tooltip = TIP_DATE)
+    table.cell(tbl, 1, r, "Move", text_color = color.white, bgcolor = hb, text_size = txtSize, tooltip = TIP_MOVE)
+    table.cell(tbl, 2, r, "New rate", text_color = color.white, bgcolor = hb, text_size = txtSize, tooltip = TIP_RATE)
+    for j = 0 to array.size(vis) - 1
+        int c = array.get(vis, j)
+        table.cell(tbl, 3 + j, r, array.get(colHdr, c), text_color = color.white, bgcolor = c == 7 ? hbDay : (c >= 13 and c <= 18) ? hbEcon : hb, text_size = txtSize,
+             tooltip = array.get(colName, c) + "\n" + array.get(colTip, c) + noteFor(c))
+
+// ── Highlight event ──────────────────────────────────────────────────────────
+hlIndex() =>
+    int h = -1
+    if hlPick == "Most recent"
+        for i = array.size(evBar) - 1 to 0
+            if h < 0 and not na(array.get(evBar, i))
+                h := i
+    else if hlPick != "None"
+        for i = 0 to array.size(evDate) - 1
+            if dateStr(array.get(evDate, i)) == hlPick and not na(array.get(evBar, i))
+                h := i
+    h
+
+var line hlBand = na
+var line hlLine = na
+var label hlTag = na
+int hlIdx = barstate.islast ? hlIndex() : -1
+
+if barstate.islast
+    line.delete(hlBand)
+    line.delete(hlLine)
+    label.delete(hlTag)
+    for i = 0 to array.size(evLbl) - 1
+        label lb = array.get(evLbl, i)
+        if not na(lb)
+            string t = array.get(evType, i)
+            color base = t == "Hike" ? color.red : t == "Cut" ? color.green : color.orange
+            bool dim = hlIdx >= 0 and i != hlIdx and hlDim
+            label.set_color(lb, dim ? color.new(base, 80) : base)
+            label.set_textcolor(lb, dim ? color.new(color.white, 70) : color.white)
+            label.set_size(lb, i == hlIdx ? size.normal : size.tiny)
+    if hlIdx >= 0
+        int hb = array.get(evBar, hlIdx)
+        hlBand := line.new(hb, low, hb, high, extend = extend.both, color = color.new(color.yellow, 82), width = 12)
+        hlLine := line.new(hb, low, hb, high, extend = extend.both, color = color.new(color.yellow, 0), width = 1, style = line.style_dashed)
+        hlTag := label.new(hb, low, "▲ " + dateStr(array.get(evDate, hlIdx)), yloc = yloc.belowbar, style = label.style_label_up, color = color.new(color.yellow, 0), textcolor = color.black, size = size.small,
+             tooltip = "Highlighted event (Highlight event setting). Hover its label above the bar for full details.")
+
+if barstate.islast and showTable
+    if showBase
+        blFill()
+    bool useMed = statIn == "Median"
+    string statName = useMed ? "Median" : "Average"
+
+    array<int> vis = array.new<int>()
+    array<int> order = array.from(23, 21, 22, 19, 20, 0, 1, 13, 14, 15, 16, 17, 18, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+    for oi = 0 to array.size(order) - 1
+        int c = array.get(order, oi)
+        bool isCond = c <= 1
+        bool guideOk = c < 19 or c > 20 or (showGuide and (c == 19 ? show2Y : show10Y))
+        bool pricedOk = c < 21 or (c == 23 ? show6M : showPriced)
+        bool econOk = c < 13 or c >= 19 or (showEcon and (c == 13 ? showCPI : c == 14 ? showCore : c == 15 ? showUR : c == 16 ? showNFP : c == 17 ? showGDP : showClaims))
+        bool isLong = c == 2 or c == 3 or c == 11 or c == 12
+        bool isBef  = c >= 2 and c <= 6
+        bool isAft  = c >= 8 and c <= 12
+        bool modeOk = colMode == "Both" or (colMode == "Before" and not isAft) or (colMode == "After" and not isBef)
+        if (showCond or not isCond) and econOk and guideOk and pricedOk and (showLong or not isLong) and modeOk
+            array.push(vis, c)
+    if array.size(vis) == 0
+        array.push(vis, 7)   // never leave the column list empty: the draw loops would run backwards
+    int ncols = 3 + array.size(vis)
+
+    // Row 0: title
+    int cntAll = grpCount(evBar, evType, "All")
+    string rngTxt = useRange ? str.format_time(rngStart, "yyyy-MM-dd", syminfo.timezone) + " → " + str.format_time(rngEnd, "yyyy-MM-dd", syminfo.timezone) : "Full history"
+    string titleTip = "HYDRA FOMC " + VERSION + " · " + secName + " · " + rngTxt + " · " + str.tostring(cntAll) + " events · hover any cell"
+         + "\nPeriod preset: " + perPreset + " (" + perLbl(per1) + " · " + perLbl(per2) + " · " + perLbl(per3) + " · " + perLbl(per4) + ", trend MA " + str.tostring(maLen) + ")"
+         + "\n\nReturns of " + secName + (secPick == "Chart" ? "" : " (" + secSym + ", sampled on " + syminfo.ticker + " chart sessions)") + " around Fed rate changes.\nDate range: " + rngTxt + "\nSummary rows use " + statName + "s of every event in range.\nColumns: " + colMode + "\nNew rate source: " + rateSrc + " · hard-coded list covers " + HARD_RANGE + "\nEconomic columns (teal headers) = latest print publicly released by the announcement day."
+    // A merged cell's text sizes its FIRST column, so row 0 keeps only short text; full details are in the tooltip
+    // Blank spacer rows push the table down from the top of the chart
+    // (guarded: a Pine for-loop counts DOWN when its "to" is below its "from")
+    if topPad > 0
+        for sp = 0 to topPad - 1
+            for cc = 0 to ncols - 1
+                table.cell(tbl, cc, sp, "", bgcolor = color.new(color.black, 100), text_size = txtSize)
+    table.cell(tbl, 0, topPad, pad("⚠ Data notes"), text_color = color.white, bgcolor = color.new(#8A5A00, 0), text_size = txtSize, tooltip = DATA_NOTES + "\n\n────────\n" + titleTip)
+    string secTip = "PERFORMANCE DATA: " + secName + " (" + secSym + ")" + (secPick == "Chart" ? ", the symbol on this chart." : ", sampled on this " + syminfo.ticker + " chart's daily sessions.")
+         + "\nEvery return column (before, Day of, after) and the trend MA column measure this security."
+         + "\nThe Fed, economic, VIX and yield columns are the same for any security."
+         + "\nChange it with Security (Economic Performance Table settings)."
+    // Highlighted security badge; short ticker keeps column 1 narrow
+    table.cell(tbl, 1, topPad, secName, text_color = color.white, bgcolor = color.new(#7B1FA2, 0), text_size = txtSize, tooltip = secTip)
+    table.cell(tbl, 2, topPad, "", bgcolor = color.new(color.navy, 10), text_size = txtSize, tooltip = titleTip)
+    if not titleMerged
+        table.merge_cells(tbl, 2, topPad, ncols - 1, topPad)
+        titleMerged := true
+
+    drawHeader(topPad + 1, vis)
+
+    array<string> grps = array.from("Hike", "Cut", "Emergency", "All")
+    for g = 0 to 3
+        string grp = array.get(grps, g)
+        int r = topPad + g + 2
+        string grpDesc = grp == "Hike" ? "hikes" : grp == "Cut" ? "scheduled cuts" : grp == "Emergency" ? "emergency cuts (Jan 22 '08, Oct 8 '08, Mar 3 '20, Mar 15 '20)" : "all events"
+        int cnt = grpCount(evBar, evType, grp)
+        string ctx = "SUMMARY ROW: " + statName + " across " + grpDesc + " (" + rngTxt + ")"
+             + (cnt < 10 ? "\n⚠ SMALL SAMPLE (n=" + str.tostring(cnt) + "): one event can swing this value." : "")
+             + "\nOverlap: " + str.tostring(grpOverlap(evBar, evType, grp, per4)) + " of " + str.tostring(cnt) + " events have another Fed move within their " + perLbl(per4) + " (Period 4) window, so those longer windows share bars."
+             + "\nCaution: events cluster in a few cycles and long windows overlap, so this is descriptive, not independent evidence. Windows still in progress are excluded, so the effective n can be lower in longer columns."
+        table.cell(tbl, 0, r, pad((useMed ? "Med " : "Avg ") + grp), text_color = color.white, bgcolor = color.new(color.gray, 40), text_size = txtSize,
+             tooltip = ctx + (useMed ? "\nMedian resists outliers like Mar 16 2020 (−12%)." : "\nAverages can be skewed by outliers like Mar 16 2020 (−12%)."))
+        table.cell(tbl, 1, r, "n=" + str.tostring(cnt), text_color = color.white, bgcolor = color.new(color.gray, 40), text_size = txtSize,
+             tooltip = str.tostring(cnt) + " " + grpDesc + " with data in range.")
+        table.cell(tbl, 2, r, "", bgcolor = color.new(color.gray, 40), text_size = txtSize)
+        for j = 0 to array.size(vis) - 1
+            int c = array.get(vis, j)
+            float v = grpStat(res, evType, c, grp, useMed)
+            float bv = baseFor(c)
+            string baseTxt = showBase and not na(bv) and not na(v) ? "\nvs baseline (" + fmtPct(bv) + " normally): " + (v - bv > 0 ? "+" : "") + str.tostring(v - bv, "#0.00") + "pp" : ""
+            string oppTxt = (c == 19 or c == 20) ? "\nOpposite reads (◆): " + str.tostring(grpOpposite(res, evType, c, grp)) + " of " + str.tostring(cnt) + " events moved against the rate change by ≥ " + str.tostring(oppBp) + "bp." : ""
+            table.cell(tbl, 3 + j, r, valTxt(c, v), text_color = color.white, bgcolor = valBg(c, v), text_size = txtSize, tooltip = tipTxt(c, v, ctx) + baseTxt + oppTxt)
+
+    string upCtx = "SUMMARY ROW: share of all events in range where this window closed positive (50% = coin flip)"
+    table.cell(tbl, 0, topPad + 6, pad("% Up (All)"), text_color = color.white, bgcolor = color.new(color.gray, 40), text_size = txtSize, tooltip = upCtx)
+    table.cell(tbl, 1, topPad + 6, "", bgcolor = color.new(color.gray, 40), text_size = txtSize)
+    table.cell(tbl, 2, topPad + 6, "", bgcolor = color.new(color.gray, 40), text_size = txtSize)
+    for j = 0 to array.size(vis) - 1
+        int c = array.get(vis, j)
+        bool noUp = c == 0 or (c >= 13 and c <= 18) or c == 21 or c == 23
+        float up = noUp ? na : grpUp(res, c)
+        string upTxt = noUp ? "" : na(up) ? "—" : str.tostring(up, "#0") + "%"
+        table.cell(tbl, 3 + j, topPad + 6, upTxt, text_color = color.white, bgcolor = color.new(color.gray, 60), text_size = txtSize, tooltip = noUp ? "" : cellTip(c, upTxt, upCtx))
+
+    if showBase
+        string bCtx = "BASELINE ROW: median return of " + secName + " over the same window length across EVERY session in the date range (" + str.tostring(array.size(bl1)) + " sessions), not just event days."
+             + "\nRead each group's median against this line: the Fed effect is the difference, not the raw number."
+        table.cell(tbl, 0, topPad + 7, pad("Baseline"), text_color = color.white, bgcolor = color.new(#004D40, 0), text_size = txtSize, tooltip = bCtx)
+        table.cell(tbl, 1, topPad + 7, "n=" + str.tostring(array.size(bl1)), text_color = color.white, bgcolor = color.new(#004D40, 0), text_size = txtSize, tooltip = bCtx)
+        table.cell(tbl, 2, topPad + 7, "", bgcolor = color.new(#004D40, 0), text_size = txtSize)
+        for j = 0 to array.size(vis) - 1
+            int c = array.get(vis, j)
+            float bv = baseFor(c)
+            table.cell(tbl, 3 + j, topPad + 7, na(bv) ? "" : fmtPct(bv), text_color = color.white, bgcolor = na(bv) ? color.new(#004D40, 40) : color.new(#004D40, 20), text_size = txtSize,
+                 tooltip = na(bv) ? bCtx : array.get(colName, c) + " baseline = " + fmtPct(bv) + "\n" + bCtx)
+
+    if showEvents
+        int r = topPad + (showBase ? 8 : 7)
+        int shown = 0
+        int nEv = array.size(evDate)
+        string want = evFilter == "Hikes" ? "Hike" : evFilter == "Cuts" ? "Cut" : evFilter == "Emergency" ? "Emergency" : "All"
+        for jj = 0 to nEv - 1
+            int i = newest ? nEv - 1 - jj : jj
+            string t = array.get(evType, i)
+            bool pass = not na(array.get(evBar, i)) and (want == "All" or t == want) and (maxRows == 0 or shown < maxRows) and r < TROWS - 1
+            if pass
+                if hdrEvery > 0 and shown > 0 and shown % hdrEvery == 0
+                    drawHeader(r, vis)
+                    r += 1
+                int b = array.get(evBps, i)
+                int d = array.get(evDate, i)
+                bool isAuto = array.get(evAuto, i)
+                color tc = t == "Hike" ? color.new(color.red, 40) : t == "Cut" ? color.new(color.green, 40) : color.new(color.orange, 30)
+                string moveTxt = (b > 0 ? "+" : "") + str.tostring(b) + (t == "Emergency" ? " E" : "") + (isAuto ? " A" : "")
+                string rTxt = evRateTxt(i)
+                string ctx = "EVENT: " + dateStr(d) + ", " + (t == "Emergency" ? "emergency cut" : str.lower(t)) + " " + str.tostring(b) + "bp → " + rTxt
+                     + (d == 20081216 ? " (from 1.00%)" : "")
+                     + (d == 20200315 ? " (Sunday; T = Mon Mar 16 2020)" : "")
+                     + (isAuto ? " (auto-detected)" : "")
+                table.cell(tbl, 0, r, pad(dateStr(d)), text_color = color.white, bgcolor = i == hlIdx ? color.new(#8A7A00, 0) : color.new(color.gray, 70), text_size = txtSize, tooltip = ctx + "\n\nTo view on chart: Alt+G (Option+G on Mac) → " + dateStr(d) + ", or pick " + dateStr(d) + " in Highlight event (Data settings)." + "\n\n" + TIP_DATE)
+                table.cell(tbl, 1, r, moveTxt, text_color = color.white, bgcolor = tc, text_size = txtSize, tooltip = ctx + "\n\n" + TIP_MOVE)
+                table.cell(tbl, 2, r, rTxt, text_color = color.white, bgcolor = tc, text_size = txtSize, tooltip = ctx + "\n" + evRateBoth(i) + "\n\n" + TIP_RATE)
+                for j = 0 to array.size(vis) - 1
+                    int c = array.get(vis, j)
+                    float v = matrix.get(res, i, c)
+                    bool isEc = c >= 13 and c <= 18
+                    bool isY = c >= 19
+                    bool opp = isY and isOpposite(t, v)
+                    table.cell(tbl, 3 + j, r, valTxt(c, v) + (isEc ? econFlag(c, i, d) : opp ? " ◆" : ""), text_color = color.white, bgcolor = isEc ? econBg(c, v, matrix.get(econMeta, i, (c - 13) * 3 + 2)) : valBg(c, v), text_size = txtSize,
+                         tooltip = isEc ? econTip(c, i, v, d, ctx) : tipTxt(c, v, ctx) + (opp ? "\n\n◆ OPPOSITE READ: " + (t == "Hike" ? "the Fed hiked but this yield FELL, so the market heard dovish guidance (e.g. a signal the cycle is ending)." : "the Fed cut but this yield ROSE, so the market heard hawkish guidance (e.g. fewer cuts ahead).") : ""))
+                r += 1
+                shown += 1

@@ -1,0 +1,331 @@
+//@version=6
+
+indicator(title            = "Trend Survival Matrix",
+          
+          overlay           = true,
+          max_labels_count  = 500,
+          max_bars_back     = 5000)
+
+// =================================================================================================
+//  SECTION 1  -  INPUTS
+// =================================================================================================
+grpEngine = "Trend Engine  ·  EMA Regimes"
+grpSurv   = "Survival  ·  Horizons & Buckets"
+grpVis    = "Visibility"
+grpAlert  = "Alerts  ·  Thresholds"
+grpStyle  = "Appearance"
+
+// ---- Trend engine (three timescales) ----
+sFast = input.int(8,   "Short  ·  Fast EMA",  minval = 2, maxval = 400, group = grpEngine, inline = "S",
+     tooltip = "Short-term regime: bull while Fast EMA > Slow EMA, else bear. Fastest of the three rows.")
+sSlow = input.int(21,  "Slow",                minval = 3, maxval = 600, group = grpEngine, inline = "S")
+mFast = input.int(21,  "Medium ·  Fast EMA",  minval = 2, maxval = 400, group = grpEngine, inline = "M",
+     tooltip = "Medium-term regime. This is the default PRIMARY row driving the on-chart ribbon and alerts.")
+mSlow = input.int(55,  "Slow",                minval = 3, maxval = 600, group = grpEngine, inline = "M")
+lFast = input.int(55,  "Long   ·  Fast EMA",  minval = 2, maxval = 400, group = grpEngine, inline = "L",
+     tooltip = "Long-term regime: the slowest, structural trend. Needs the most history to populate.")
+lSlow = input.int(200, "Slow",                minval = 3, maxval = 600, group = grpEngine, inline = "L")
+
+primSel = input.string("Medium", "Primary row (ribbon + alerts)", options = ["Short", "Medium", "Long"],
+     group = grpEngine, tooltip = "Which timescale drives the chart ribbon, START markers and survival alerts.")
+
+// ---- Survival ----
+hzShort = input.int(5,  "Horizon 1  (bars)", minval = 1, maxval = 500, group = grpSurv,
+     tooltip = "First survival horizon k. Cell shows P(trend survives >= this many more bars).")
+hzMed   = input.int(10, "Horizon 2  (bars)", minval = 1, maxval = 500, group = grpSurv)
+hzLong  = input.int(20, "Horizon 3  (bars)", minval = 1, maxval = 500, group = grpSurv)
+
+prLen   = input.int(200, "Volatility bucket lookback", minval = 20, maxval = 2000, group = grpSurv,
+     tooltip = "ATR percentile is measured over this window at each run's birth to bucket it LOW / NORMAL / HIGH.")
+bkLo    = input.float(33.0, "Bucket split  ·  Low<",  minval = 5, maxval = 90, step = 1, group = grpSurv, inline = "BK",
+     tooltip = "ATR-percentile boundaries. Below Low< = LOW-vol bucket; above High> = HIGH-vol bucket; between = NORMAL.")
+bkHi    = input.float(66.0, "High>",                  minval = 10, maxval = 95, step = 1, group = grpSurv, inline = "BK")
+maxHist = input.int(500, "Max completed runs / bucket", minval = 20, maxval = 2000, group = grpSurv,
+     tooltip = "Rolling cap on stored run lengths per bucket. Oldest is dropped when exceeded.")
+minSamp = input.int(15, "Min samples for confidence", minval = 3, maxval = 500, group = grpSurv,
+     tooltip = "Below this many conditioning samples the survival estimate is flagged LOW DATA / low confidence.")
+
+// ---- Visibility ----
+showTbl  = input.bool(true,  "Show survival matrix",  group = grpVis)
+tblPos   = input.string("Top Right", "Panel position",
+     options = ["Top Right", "Top Left", "Top Center", "Middle Right", "Middle Left", "Bottom Right", "Bottom Left", "Bottom Center"],
+     group = grpVis)
+tblSize  = input.string("Normal", "Panel size", options = ["Tiny", "Small", "Normal", "Large"], group = grpVis)
+showRib  = input.bool(true,  "Show survival ribbon",  group = grpVis,
+     tooltip = "Fill between the primary EMA pair, tinted by direction and faded by survival (opaque = durable).")
+showMark = input.bool(true,  "Show START markers",    group = grpVis)
+showLbl  = input.bool(true,  "Show EXHAUSTION labels", group = grpVis)
+showBg   = input.bool(false, "Tint background by primary trend", group = grpVis)
+
+// ---- Alerts ----
+decayAlert = input.float(25.0, "Exhaustion  ·  survival below %", minval = 1, maxval = 99, group = grpAlert,
+     tooltip = "Fire the exhaustion alert when the primary row's Horizon-2 survival decays under this %.")
+zAlert     = input.float(2.0,  "Exhaustion  ·  or z above",       minval = 0.5, maxval = 10, step = 0.1, group = grpAlert,
+     tooltip = "...or when age exceeds mean run-length by this many standard deviations (whichever comes first).")
+
+// ---- Appearance ----
+bullCol = input.color(#089981, "Bull", group = grpStyle, inline = "C")
+bearCol = input.color(#f23645, "Bear", group = grpStyle, inline = "C")
+warnCol = input.color(#f59e0b, "Warn", group = grpStyle, inline = "C")
+panelBg = input.color(#0d1117, "Panel background", group = grpStyle)
+frameCol= input.color(#1f2a37, "Panel frame",      group = grpStyle)
+
+primIdx = primSel == "Short" ? 0 : primSel == "Medium" ? 1 : 2
+
+// =================================================================================================
+//  SECTION 2  -  HELPERS  (pure, read-only)
+// =================================================================================================
+// Count stored run lengths >= v  (the survival-function numerator/denominator).
+f_countGE(array<float> arr, float v) =>
+    int c = 0
+    int sz = array.size(arr)
+    if sz > 0
+        for j = 0 to sz - 1
+            if array.get(arr, j) >= v
+                c += 1
+    c
+
+// Empirical conditional survival: P(run >= age + k | run >= age), as a percentage.
+f_surv(array<float> arr, int ageV, int k) =>
+    float res = na
+    int d = f_countGE(arr, ageV)
+    if d > 0
+        int n = f_countGE(arr, ageV + k)
+        res := 100.0 * n / d
+    res
+
+// Select the bucket array matching a run's birth bucket.
+f_pick(int bk, array<float> a0, array<float> a1, array<float> a2) =>
+    bk == 0 ? a0 : bk == 1 ? a1 : a2
+
+// Map a survival % to a cell colour.
+f_pctCol(float p) =>
+    na(p) ? color.new(color.gray, 30) : p >= 60 ? color.new(bullCol, 0) : p >= 35 ? color.new(warnCol, 0) : color.new(bearCol, 0)
+
+// Maturity tier from z-score, survival and age-vs-median.
+f_tier(float z, float s10, int age, float med) =>
+    string t = "BUILDING"
+    if na(s10)
+        t := "LOW DATA"
+    else if not na(med) and age < 0.5 * med
+        t := "FRESH"
+    else if not na(z) and z > 2.0
+        t := "EXHAUSTION"
+    else if not na(z) and z > 1.0
+        t := "EXTENDED"
+    else if s10 >= 50
+        t := "HEALTHY"
+    else
+        t := "MATURING"
+    t
+
+f_tierCol(string t) =>
+    t == "EXHAUSTION" ? bearCol : t == "EXTENDED" ? warnCol : t == "HEALTHY" ? bullCol : t == "FRESH" ? color.new(bullCol, 20) : t == "LOW DATA" ? color.gray : color.silver
+
+// =================================================================================================
+//  SECTION 3  -  PER-SCALE STATE  (non-repainting run-length state machine)
+// =================================================================================================
+// One state object per timescale; three volatility-bucket history arrays each.
+type Scale
+    int dir = 0        // 1 bull / -1 bear / 0 uninitialised
+    int age = 0        // current run length in bars
+    int stBk = 1       // volatility bucket the current run was born in
+    array<float> h0 = na   // completed run lengths born in LOW-vol
+    array<float> h1 = na   // ... NORMAL-vol
+    array<float> h2 = na   // ... HIGH-vol
+
+var array<Scale> S = array.new<Scale>()
+if barstate.isfirst
+    for i = 0 to 2
+        Scale sc = Scale.new()
+        sc.h0 := array.new<float>()
+        sc.h1 := array.new<float>()
+        sc.h2 := array.new<float>()
+        array.push(S, sc)
+
+// ---- Six EMAs + directions (computed every bar, unconditionally) ----
+float eSf = ta.ema(close, sFast)
+float eSs = ta.ema(close, sSlow)
+float eMf = ta.ema(close, mFast)
+float eMs = ta.ema(close, mSlow)
+float eLf = ta.ema(close, lFast)
+float eLs = ta.ema(close, lSlow)
+
+int dir0 = eSf > eSs ? 1 : -1
+int dir1 = eMf > eMs ? 1 : -1
+int dir2 = eLf > eLs ? 1 : -1
+
+// ---- Volatility bucket for a run BORN on this bar ----
+float atrPr = ta.percentrank(ta.atr(14), prLen)
+int curBk = atrPr < bkLo ? 0 : atrPr < bkHi ? 1 : 2
+
+// ---- Primary-row mirrors (plottable, non-repainting series) ----
+var int   pDir = 0
+var int   pAge = 0
+var float pS10 = na
+var float pZ   = na
+var int   pDen = 0
+
+// ---- Advance the state machine only on confirmed bars (never repaints intrabar) ----
+if barstate.isconfirmed
+    for i = 0 to 2
+        Scale sc = array.get(S, i)
+        int dnow = i == 0 ? dir0 : i == 1 ? dir1 : dir2
+        if sc.dir == 0
+            sc.dir  := dnow
+            sc.age  := 1
+            sc.stBk := curBk
+        else if dnow == sc.dir
+            sc.age += 1
+        else
+            // Trend flipped: archive the completed run into its birth bucket, then re-seed.
+            array<float> harr = f_pick(sc.stBk, sc.h0, sc.h1, sc.h2)
+            array.push(harr, float(sc.age))
+            if array.size(harr) > maxHist
+                array.shift(harr)
+            sc.dir  := dnow
+            sc.age  := 1
+            sc.stBk := curBk
+
+        // Refresh primary mirrors for the on-chart ribbon / markers / alerts.
+        if i == primIdx
+            array<float> ap = f_pick(sc.stBk, sc.h0, sc.h1, sc.h2)
+            pDir := sc.dir
+            pAge := sc.age
+            pDen := f_countGE(ap, sc.age)
+            pS10 := f_surv(ap, sc.age, hzMed)
+            int np = array.size(ap)
+            float mu = np > 0 ? array.avg(ap) : na
+            float sd = np > 1 ? array.stdev(ap) : na
+            pZ := (not na(sd) and sd > 0) ? (sc.age - mu) / sd : na
+
+// =================================================================================================
+//  SECTION 4  -  ON-CHART VISUALS
+// =================================================================================================
+bool   primUp   = pDir == 1
+color  baseCol  = pDir == 0 ? color.gray : primUp ? bullCol : bearCol
+// Survival -> opacity: durable trend = opaque; fragile = faded.
+float  survCol  = na(pS10) ? 50.0 : pS10
+int    ribTrans = int(math.round(88.0 - 0.45 * math.max(0.0, math.min(100.0, survCol))))
+ribTrans := math.max(40, math.min(90, ribTrans))
+
+float  primFast = primIdx == 0 ? eSf : primIdx == 1 ? eMf : eLf
+float  primSlow = primIdx == 0 ? eSs : primIdx == 1 ? eMs : eLs
+
+p1 = plot(showRib ? primFast : na, "Primary Fast EMA", color = color.new(baseCol, 45), linewidth = 1)
+p2 = plot(showRib ? primSlow : na, "Primary Slow EMA", color = color.new(baseCol, 70), linewidth = 1)
+fill(p1, p2, color = showRib ? color.new(baseCol, ribTrans) : na, title = "Survival Ribbon")
+
+bgcolor(showBg and pDir != 0 ? color.new(baseCol, 93) : na, title = "Trend Tint")
+
+// ---- START markers on primary flips ----
+bool newBull = pDir == 1  and pDir[1] != 1
+bool newBear = pDir == -1 and pDir[1] != -1
+plotshape(showMark and newBull, "New Bull Trend", shape.triangleup,   location.belowbar, color.new(bullCol, 0), size = size.tiny)
+plotshape(showMark and newBear, "New Bear Trend", shape.triangledown, location.abovebar, color.new(bearCol, 0), size = size.tiny)
+
+// ---- Exhaustion event (once per run) ----
+var bool exhFired = false
+if newBull or newBear
+    exhFired := false
+bool exhNow  = (not na(pZ) and pZ > zAlert) or (not na(pS10) and pS10 < decayAlert)
+bool fireExh = exhNow and not exhFired and pDir != 0
+if fireExh
+    exhFired := true
+    if showLbl
+        label.new(bar_index, primUp ? high : low,
+             text  = "⚠ EXHAUSTION RISK",
+             style = primUp ? label.style_label_down : label.style_label_up,
+             color = color.new(warnCol, 10), textcolor = color.white, size = size.small)
+
+// =================================================================================================
+//  SECTION 5  -  SURVIVAL MATRIX PANEL
+// =================================================================================================
+f_pos(string s) =>
+    switch s
+        "Top Right"     => position.top_right
+        "Top Left"      => position.top_left
+        "Top Center"    => position.top_center
+        "Middle Right"  => position.middle_right
+        "Middle Left"   => position.middle_left
+        "Bottom Right"  => position.bottom_right
+        "Bottom Left"   => position.bottom_left
+        "Bottom Center" => position.bottom_center
+        => position.top_right
+
+f_txtSize(string s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        => size.small
+
+// Read-only per-scale display bundle.
+f_scaleStats(Scale sc) =>
+    array<float> arr = f_pick(sc.stBk, sc.h0, sc.h1, sc.h2)
+    int   n   = array.size(arr)
+    float med = n > 0 ? array.median(arr) : na
+    float mu  = n > 0 ? array.avg(arr)    : na
+    float sd  = n > 1 ? array.stdev(arr)  : na
+    float z   = (not na(sd) and sd > 0) ? (sc.age - mu) / sd : na
+    int   den = f_countGE(arr, sc.age)
+    float s5  = f_surv(arr, sc.age, hzShort)
+    float s10 = f_surv(arr, sc.age, hzMed)
+    float s20 = f_surv(arr, sc.age, hzLong)
+    [med, z, den, s5, s10, s20, n]
+
+var table tbl = table.new(f_pos(tblPos), 8, 6, bgcolor = color.new(panelBg, 8), border_color = color.new(frameCol, 40), border_width = 1, frame_color = color.new(frameCol, 20), frame_width = 1)
+
+f_dirTxt(int d) => d == 1 ? "▲ BULL" : d == -1 ? "▼ BEAR" : "—"
+
+f_row(int r, string name, Scale sc) =>
+    [med, z, den, s5, s10, s20, n] = f_scaleStats(sc)
+    string tier = f_tier(z, s10, sc.age, med)
+    color  dCol = sc.dir == 1 ? bullCol : sc.dir == -1 ? bearCol : color.gray
+    bool   dim  = den < minSamp
+    color  txt  = color.new(color.white, 0)
+    table.cell(tbl, 0, r, name,                                          text_color = color.silver, text_size = f_txtSize(tblSize), text_halign = text.align_left)
+    table.cell(tbl, 1, r, f_dirTxt(sc.dir),                              text_color = dCol,          text_size = f_txtSize(tblSize))
+    table.cell(tbl, 2, r, str.tostring(sc.age),                          text_color = txt,           text_size = f_txtSize(tblSize))
+    table.cell(tbl, 3, r, na(med) ? "–" : str.tostring(med, "#.#"),      text_color = color.silver,  text_size = f_txtSize(tblSize))
+    table.cell(tbl, 4, r, na(s5)  ? "–" : str.tostring(s5,  "#") + "%",  text_color = color.white, bgcolor = color.new(f_pctCol(s5),  dim ? 70 : 78), text_size = f_txtSize(tblSize))
+    table.cell(tbl, 5, r, na(s10) ? "–" : str.tostring(s10, "#") + "%",  text_color = color.white, bgcolor = color.new(f_pctCol(s10), dim ? 70 : 78), text_size = f_txtSize(tblSize))
+    table.cell(tbl, 6, r, na(s20) ? "–" : str.tostring(s20, "#") + "%",  text_color = color.white, bgcolor = color.new(f_pctCol(s20), dim ? 70 : 78), text_size = f_txtSize(tblSize))
+    table.cell(tbl, 7, r, tier,                                          text_color = f_tierCol(tier), text_size = f_txtSize(tblSize))
+
+if showTbl and barstate.islast
+    color hdBg = color.new(frameCol, 0)
+    // Title row
+    table.cell(tbl, 0, 0, "TREND SURVIVAL MATRIX", text_color = color.new(warnCol, 0), text_size = f_txtSize(tblSize), text_halign = text.align_left, bgcolor = hdBg)
+    for c = 1 to 6
+        table.cell(tbl, c, 0, "", bgcolor = hdBg)
+    table.cell(tbl, 7, 0, syminfo.ticker + " · " + timeframe.period, text_color = color.silver, text_size = f_txtSize(tblSize), bgcolor = hdBg)
+    // Column headers
+    table.cell(tbl, 0, 1, "Scale",  text_color = color.silver, text_size = f_txtSize(tblSize), bgcolor = color.new(frameCol, 30), text_halign = text.align_left)
+    table.cell(tbl, 1, 1, "Dir",    text_color = color.silver, text_size = f_txtSize(tblSize), bgcolor = color.new(frameCol, 30))
+    table.cell(tbl, 2, 1, "Age",    text_color = color.silver, text_size = f_txtSize(tblSize), bgcolor = color.new(frameCol, 30))
+    table.cell(tbl, 3, 1, "Med",    text_color = color.silver, text_size = f_txtSize(tblSize), bgcolor = color.new(frameCol, 30))
+    table.cell(tbl, 4, 1, "S+" + str.tostring(hzShort), text_color = color.silver, text_size = f_txtSize(tblSize), bgcolor = color.new(frameCol, 30))
+    table.cell(tbl, 5, 1, "S+" + str.tostring(hzMed),   text_color = color.silver, text_size = f_txtSize(tblSize), bgcolor = color.new(frameCol, 30))
+    table.cell(tbl, 6, 1, "S+" + str.tostring(hzLong),  text_color = color.silver, text_size = f_txtSize(tblSize), bgcolor = color.new(frameCol, 30))
+    table.cell(tbl, 7, 1, "State",  text_color = color.silver, text_size = f_txtSize(tblSize), bgcolor = color.new(frameCol, 30))
+    // Data rows
+    f_row(2, "Short",  array.get(S, 0))
+    f_row(3, "Medium", array.get(S, 1))
+    f_row(4, "Long",   array.get(S, 2))
+    // Footer: honesty / confidence line
+    string bkTxt  = curBk == 0 ? "LOW-vol" : curBk == 1 ? "NORMAL-vol" : "HIGH-vol"
+    string confTx = pDen >= minSamp * 3 ? "GOOD" : pDen >= minSamp ? "OK" : "LOW"
+    color  confCl = pDen >= minSamp * 3 ? bullCol : pDen >= minSamp ? warnCol : bearCol
+    table.cell(tbl, 0, 5, "Empirical S(t+k)/S(t) · bucket: " + bkTxt, text_color = color.new(color.silver, 15), text_size = size.tiny, text_halign = text.align_left, bgcolor = color.new(panelBg, 20))
+    for c = 1 to 6
+        table.cell(tbl, c, 5, "", bgcolor = color.new(panelBg, 20))
+    table.cell(tbl, 7, 5, "conf " + confTx + " · n=" + str.tostring(pDen), text_color = confCl, text_size = size.tiny, bgcolor = color.new(panelBg, 20))
+
+// =================================================================================================
+//  SECTION 6  -  ALERTS
+// =================================================================================================
+alertcondition(newBull, "New Bull Trend (primary)", "TSM: primary trend flipped BULLISH.")
+alertcondition(newBear, "New Bear Trend (primary)", "TSM: primary trend flipped BEARISH.")
+alertcondition(fireExh, "Exhaustion Risk (primary)", "TSM: primary trend survival decayed below threshold / overextended.")

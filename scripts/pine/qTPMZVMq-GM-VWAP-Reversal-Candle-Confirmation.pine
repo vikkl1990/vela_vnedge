@@ -1,0 +1,503 @@
+//@version=6
+indicator("GM VWAP Reversal - Candle Confirmation", shorttitle="GM VWAP Reversal", overlay=true, max_lines_count=20)
+
+// Release 2.1: auto market-scaled round levels; optional zone-wick and round-level arming, ADX, signal controls.
+// VWAP mean reversion using the leading / C1 / C2 / entry sequence.
+// Defaults: Week, wick mode ON, automatic round spacing/tolerance (USD gold 50 +/-5), ADX 14/14/20 ON,
+// wick quality OFF. Chart timeframe is selected by the user (tested logically,
+// not performance-backtested). Signal overlays and alerts have separate switches.
+// Defaults are starting parameters for testing, not optimized settings.
+//
+// SELL:
+// 1. A confirmed CLOSE above the outer VWAP band arms the leading move.
+//    Optional wick mode accepts an upper wick reaching the upper shaded zone
+//    or above it, even if close stays above the outer band. BUY mirrors this.
+//    The arming close must remain on the setup side of VWAP.
+//    Optional round-level filter checks the arming wick tip against a grid
+//    anchored at zero. Auto uses symbol metadata and previous completed price.
+//    Default Minor group on USD gold: spacing 50, tolerance 5.
+//    SELL uses high; BUY uses low. No level crossing is required.
+//    It can continue for many candles; the arming candle is never C1.
+// 2. A later bearish candle is C1.
+// 3. A later bearish candle closing below C1's CLOSE is C2.
+//    C2's CLOSE becomes the fixed entry reference.
+// 4. A LATER candle closing strictly below C2's close can signal SELL.
+//    It must still close at/above the upper inner band (default +1 sigma).
+// BUY is the exact opposite below VWAP (default entry at/below -1 sigma).
+// Intervening candles are allowed. C3 does not need a specific body color.
+//
+// Only confirmed candles arm, advance, cancel or trigger setups. Wick mode
+// uses zone rejection and VWAP-touch resets; a wick alone is never an entry.
+// Closes exactly on the entry reference do not trigger an entry.
+// Wick mode can allow repeated completed setups before VWAP is touched.
+// Otherwise one setup per excursion; VWAP touch rearms wick mode, and a
+// close at/beyond VWAP rearms original mode. No arm on a VWAP-touch candle.
+// A new VWAP anchor clears pending setups, rearming locks and latest lines.
+// Wick mode cancels pending entries when the candle reaches VWAP.
+// Original mode cancels when the candle closes at/beyond VWAP.
+//
+// The first qualifying entry close consumes the setup, even if the zone
+// check or optional ADX filter rejects it. There are no delayed filter entries.
+// ADX rejects entries only when above its threshold AND rising.
+// Candle direction is determined from open/close, never chart colors.
+//
+// VWAP uses the chart's volume feed; it requires available volume data.
+// Default source is Close. HLC3 can be selected for a typical-price VWAP.
+// The built-in ta.vwap() supplies the standard-deviation bands; they are
+// adaptive distances, not calibrated probabilities of a reversal.
+// Session anchor follows the symbol's daily session boundary, not the
+// chart's display timezone. Week/Month anchors are also available.
+// The first loaded anchor may be partial; use adequate chart history.
+// The live VWAP/bands can move during an open candle. Signal logic cannot.
+// Dashed target = VWAP frozen at signal time; live VWAP keeps changing.
+// Setup close extreme is an invalidation reference, not a protective order.
+// This indicator does not execute orders or measure trading performance.
+//
+// Pine v6 docs:
+// https://www.tradingview.com/pine-script-reference/v6/#fun_ta.vwap
+// https://www.tradingview.com/pine-script-docs/concepts/bar-states/
+// https://www.tradingview.com/support/solutions/43000502018-volume-weighted-average-price-vwap/
+
+// INPUTS
+showSignals = input.bool(true, "Show Signals and Setup Drawings", group="Signals", tooltip="ON shows enabled BUY/SELL markers, setup marks, entry, target and invalidation lines. OFF displays only VWAP/bands and the optional dashboard. The engine continues calculating. Alerts are controlled separately below.")
+enableAlerts = input.bool(true, "Enable BUY / SELL Alerts", group="Signals", tooltip="Controls all alertcondition() and alert() events independently of chart visibility. Create a TradingView alert to receive notifications. After changing script inputs or updating the script, recreate existing alerts to use the new settings.")
+
+anchorChoice = input.string("Week", "VWAP Anchor", options=["Session", "Week", "Month"], group="VWAP and Zones", tooltip="Session resets at the symbol's daily session boundary. The anchor must be longer than the chart timeframe.")
+sourceChoice = input.string("Close", "VWAP Source", options=["Close", "HLC3"], group="VWAP and Zones", tooltip="Close is the default. HLC3 uses (high + low + close) / 3. Setup and entry conditions always use candle closes.")
+bandMultiplier = input.float(2.0, "Outer Band (Standard Deviations)", minval=0.2, step=0.1, group="VWAP and Zones", tooltip="Original mode: a confirmed close outside this band starts the leading move. Wick mode: an upper/lower wick reaches the shaded zone or beyond it. Close may remain outside the outer band.")
+entryZoneMultiplier = input.float(1.0, "Minimum Entry Distance from VWAP", minval=0.1, step=0.1, group="VWAP and Zones", tooltip="Standard deviations. SELL must close at/above the upper inner band; BUY at/below the lower inner band. Must be less than the outer band. This prevents signals near the middle.")
+minAnchorBars = input.int(10, "Minimum Bars after VWAP Reset", minval=2, maxval=500, group="VWAP and Zones", tooltip="Wait for this many chart candles in the anchor before starting setups.")
+
+useWickRejection = input.bool(true, "Use Zone Wick + VWAP Touch", group="Setup", tooltip="OFF: original close-outside and close-at-VWAP reset. ON: SELL requires high above the upper inner boundary and strictly above both open and close (a real upper wick). The candle may close above the outer band. BUY mirrors this below the lower inner boundary with a real lower wick. Optional Wick Quality filter sets minimum wick/body and wick/range ratios. No candle color requirement. A VWAP touch (SELL low <= VWAP; BUY high >= VWAP) cancels pending setups and rearms that side. No new setup on that touch candle. C1, C2 and entry require later candles. Decisions use confirmed candles and final current-bar VWAP/bands.")
+
+allowRepeatSetups = input.bool(true, "Allow New Setups Before VWAP Touch", group="Setup", tooltip="Wick mode only. After an earlier setup ends, a fresh qualifying wick can start another setup without waiting for VWAP. Only one setup can be active. Every new setup still requires later C1, C2 and entry candles. OFF restores the VWAP-touch lock.")
+minSetupGap = input.int(5, "Minimum Bars Between Setup Starts", minval=1, maxval=500, group="Setup", tooltip="Used only with repeated wick setups. Minimum bar-index distance between same-direction arming candles. VWAP touches do not bypass this spacing; a new VWAP anchor resets it.")
+
+useWickQuality = input.bool(false, "Use Wick Quality Filter", group="Wick Quality", tooltip="Applies only in wick mode, only to the arming candle. SELL upper wick / BUY lower wick must pass BOTH size thresholds. OFF accepts any nonzero relevant wick that meets the zone and optional round-level rules. This filter does not change C1, C2 or entry requirements.")
+minWickBodyRatio = input.float(1.0, "Minimum Wick / Body", minval=0.0, step=0.1, group="Wick Quality", tooltip="1.0 requires the relevant wick to be at least as long as abs(close - open). For dojis, the range-percentage threshold still applies.")
+minWickRangePercent = input.float(40.0, "Minimum Wick / Candle Range (%)", minval=0.0, maxval=100.0, step=1.0, group="Wick Quality", tooltip="40 means the relevant wick must be at least 40% of high - low. Both thresholds must pass. Zero-range candles and candles without the relevant wick cannot arm.")
+
+useRoundFilter = input.bool(true, "Use Round Level Filter (Wick Mode)", group="Round Levels", tooltip="Applies only when Use Zone Wick + VWAP Touch is ON. At arming, SELL high / BUY low must be within the tolerance of a round level. C1, C2 and entry are unchanged. OFF allows zone wicks at any price.")
+roundMode = input.string("Auto - All Markets", "Round Level Mode", options=["Auto - All Markets", "Custom"], group="Round Levels", tooltip="Auto scales the grid using instrument metadata and the previous completed candle. USD gold uses the familiar 10/25/50/100/1000 groups. Unrecognized instruments use price-based spacing. Custom overrides spacing and tolerance.")
+roundGroup = input.string("Minor", "Auto Level Group", options=["Scalp", "Intermediate", "Minor", "Major", "Macro"], group="Round Levels", tooltip="USD gold: Scalp 10, Intermediate 25, Minor 50, Major 100, Macro 1000. Other markets scale these groups. Minor includes the Major multiples on the same zero-based grid.")
+autoTolerancePercent = input.float(10.0, "Auto Tolerance (% of Spacing)", minval=0.0, maxval=49.0, step=1.0, group="Round Levels", tooltip="10% gives +/-5 for spacing 50 and +/-0.0005 for spacing 0.005. Tolerance scales automatically and is not rounded up to a full tick.")
+customRoundStep = input.float(50.0, "Custom Level Spacing", minval=0.00000001, group="Round Levels")
+customRoundTolerance = input.float(5.0, "Custom Tolerance (+/-)", minval=0.0, group="Round Levels", tooltip="Only used in Custom mode. Price units, not ticks or pips. Must be smaller than half the custom spacing.")
+
+maxWaitBars = input.int(30, "Max Bars After C1", minval=2, maxval=300, group="Setup", tooltip="Number of later candles allowed after the first reversal candle, including the wait for C2 and the entry close. The leading move itself may last longer.")
+
+useAdxFilter = input.bool(true, "Use ADX Filter", group="ADX Filter", tooltip="At the entry candle's close, block signals if ADX is above the threshold and rising. A blocked setup is consumed. Turn off to compare against the original candle-entry rules.")
+diLength = input.int(14, "DI Length", minval=1, maxval=100, group="ADX Filter")
+adxSmoothing = input.int(14, "ADX Smoothing", minval=1, maxval=100, group="ADX Filter")
+adxThreshold = input.float(20.0, "Strong ADX Threshold", minval=0.0, maxval=100.0, step=0.5, group="ADX Filter")
+
+showMean = input.bool(true, "Show VWAP", group="Display")
+showBands = input.bool(true, "Show VWAP Bands and Entry Zones", group="Display")
+showEntryLevel = input.bool(true, "Show Entry Level", group="Display") and showSignals
+showTarget = input.bool(true, "Show VWAP Target at Signal", group="Display") and showSignals
+showInvalidation = input.bool(false, "Show Setup Invalidation Level", group="Display") and showSignals
+showSetupMarks = input.bool(false, "Show Leading / C1 / C2 Marks", group="Display", tooltip="L = arming candle (close outside the band, or wick rejection when enabled). C1 = first reversal candle. C2 = candle whose CLOSE supplies the fixed entry level. X = an entry blocked by the zone or ADX filter.") and showSignals
+showDashboard = input.bool(false, "Show Dashboard", group="Display")
+signalLineBars = input.int(20, "Keep Signal Lines for Bars", minval=1, maxval=200, group="Display", tooltip="Latest setup only. After a signal, its lines remain for this many bars, or until a new setup starts. Historical BUY/SELL markers remain visible.")
+
+buyColor = input.color(color.rgb(0, 200, 160), "BUY Color", group="Colors")
+sellColor = input.color(color.rgb(240, 75, 110), "SELL Color", group="Colors")
+meanColor = input.color(color.rgb(255, 183, 77), "VWAP Color", group="Colors")
+
+// AUTO ROUND LEVELS BEGIN
+// Price-decade grids implement the recovered Levels Auto design description.
+// This is not a copy of the unavailable v2.6 source. No lookahead or live-close sizing.
+float roundReferencePrice = math.max(math.abs(nz(close[1], open)), syminfo.mintick)
+float roundMagnitude = math.pow(10.0, math.floor(math.log10(roundReferencePrice)))
+bool roundIsEquity = syminfo.type == "stock" or syminfo.type == "fund" or syminfo.type == "dr"
+bool roundIsGold = not roundIsEquity and syminfo.currency == "USD" and (syminfo.basecurrency == "XAU" or str.startswith(syminfo.ticker, "XAUUSD") or (syminfo.type == "futures" and (syminfo.root == "GC" or syminfo.root == "MGC")) or (syminfo.type == "cfd" and syminfo.ticker == "GOLD"))
+// Equities: scalp = one tenth of the price decade, minor = half a decade.
+// Forex/crypto/index/other: scalp = one thousandth, minor = 0.005 of a decade.
+float autoMinorStep = roundIsGold ? 50.0 : roundMagnitude * (roundIsEquity ? 0.5 : 0.005)
+float roundGroupFactor = roundGroup == "Scalp" ? 0.2 : roundGroup == "Intermediate" ? 0.5 : roundGroup == "Major" ? 2.0 : roundGroup == "Macro" ? 20.0 : 1.0
+float autoRawStep = autoMinorStep * roundGroupFactor
+float autoTickStep = math.max(syminfo.mintick, math.round(autoRawStep / syminfo.mintick) * syminfo.mintick)
+float roundStep = roundMode == "Custom" ? customRoundStep : autoTickStep
+float roundTolerance = roundMode == "Custom" ? customRoundTolerance : roundStep * autoTolerancePercent / 100.0
+bool roundGridChanged = roundMode != "Custom" and not na(roundStep[1]) and math.abs(roundStep - roundStep[1]) > syminfo.mintick * 0.000001
+string roundMarket = roundIsGold ? "USD Gold" : roundIsEquity ? "Equity" : syminfo.type
+// AUTO ROUND LEVELS END
+
+// VWAP AND STANDARD-DEVIATION ZONES
+string anchorTf = switch anchorChoice
+    "Session" => "1D"
+    "Week" => "1W"
+    => "1M"
+
+if barstate.isfirst
+    if useWickRejection and useRoundFilter and roundMode == "Custom" and customRoundTolerance >= customRoundStep / 2.0
+        runtime.error("Round Level Tolerance must be smaller than half the Round Level Spacing.")
+    if timeframe.in_seconds() >= timeframe.in_seconds(anchorTf)
+        runtime.error("Choose a VWAP anchor longer than the chart timeframe. Use Session on intraday charts, or choose Week / Month.")
+    if entryZoneMultiplier >= bandMultiplier
+        runtime.error("Minimum Entry Distance must be smaller than Outer Band.")
+
+float totalVolume = ta.cum(nz(volume))
+if barstate.islast and totalVolume == 0
+    runtime.error("This symbol has no usable volume. Choose a data feed with volume for VWAP.")
+
+bool anchorChanged = timeframe.change(anchorTf)
+bool newAnchor = barstate.isfirst or anchorChanged
+float vwapSource = sourceChoice == "Close" ? close : hlc3
+[mean, oneSigmaUpper, oneSigmaLower] = ta.vwap(vwapSource, newAnchor, 1.0)
+float sigma = math.max(oneSigmaUpper - mean, 0.0)
+float upperBand = mean + sigma * bandMultiplier
+float lowerBand = mean - sigma * bandMultiplier
+float upperEntry = mean + sigma * entryZoneMultiplier
+float lowerEntry = mean - sigma * entryZoneMultiplier
+float distanceSigma = sigma > 0 ? (close - mean) / sigma : na
+int anchorBars = ta.barssince(newAnchor) + 1
+bool hasVolume = not na(volume) and volume > 0
+bool dataReady = hasVolume and not na(mean) and not na(sigma) and sigma >= syminfo.mintick and anchorBars >= minAnchorBars
+bool bullish = close > open
+bool bearish = close < open
+
+// ADX value can update live, but its gate is read only inside the confirmed
+// entry block. No +DI/-DI directional condition is used.
+[diPlus, diMinus, adx] = ta.dmi(diLength, adxSmoothing)
+bool adxReady = not na(adx) and not na(adx[1])
+bool adxStrongRising = adxReady and adx > adxThreshold and adx > adx[1]
+bool adxAllowsEntry = not useAdxFilter or (adxReady and not adxStrongRising)
+
+meanPlot = plot(showMean ? mean : na, "VWAP", color=meanColor, linewidth=2)
+upperPlot = plot(showBands ? upperBand : na, "Upper Outer Band", color=color.new(sellColor, 20), linewidth=1)
+lowerPlot = plot(showBands ? lowerBand : na, "Lower Outer Band", color=color.new(buyColor, 20), linewidth=1)
+upperEntryPlot = plot(showBands ? upperEntry : na, "Upper Entry Limit", color=color.new(sellColor, 75), linewidth=1)
+lowerEntryPlot = plot(showBands ? lowerEntry : na, "Lower Entry Limit", color=color.new(buyColor, 75), linewidth=1)
+fill(upperEntryPlot, upperPlot, color=showBands ? color.new(sellColor, 88) : na, title="Upper Reversal Zone")
+fill(lowerEntryPlot, lowerPlot, color=showBands ? color.new(buyColor, 88) : na, title="Lower Reversal Zone")
+
+f_price(float price) =>
+    na(price) ? "-" : str.tostring(price, format.mintick)
+
+// ENGINE STATE
+// phase: 0 = idle, 1 = leading, 2 = C1 found, 3 = fixed level ready.
+// direction: -1 = waiting for SELL, +1 = waiting for BUY.
+var int phase = 0
+var int direction = 0
+var int leadingBar = na
+// Highest / lowest CLOSE during the leading and confirmation phase.
+var float leadingExtreme = na
+var int c1Bar = na
+var float c1Close = na
+var int referenceBar = na
+var float entryLevel = na
+var bool shortRearmed = true
+var bool longRearmed = true
+var int lastShortArmBar = na
+var int lastLongArmBar = na
+
+var float lastMeanTarget = na
+var float lastSignalClose = na
+
+// Events start false on EVERY update, including updates of the live candle.
+bool newLeading = false
+bool newC1 = false
+bool newC2 = false
+bool setupCancelled = false
+bool buySignal = false
+bool sellSignal = false
+bool buyBlocked = false
+bool sellBlocked = false
+
+// ENGINE BEGIN
+// Resets are evaluated even when the new anchor has not warmed up.
+// Missing/zero-volume candles cancel a pending sequence.
+if barstate.isconfirmed and (newAnchor or not dataReady)
+    phase := 0
+    direction := 0
+    leadingBar := na
+    leadingExtreme := na
+    c1Bar := na
+    c1Close := na
+    referenceBar := na
+    entryLevel := na
+    setupCancelled := true
+    if newAnchor
+        shortRearmed := true
+        longRearmed := true
+        lastShortArmBar := na
+        lastLongArmBar := na
+        lastMeanTarget := na
+        lastSignalClose := na
+
+if barstate.isconfirmed and dataReady
+    // A touch is enough in wick mode. Use final VWAP at candle close.
+    // Process target/reset before entries; do not infer intrabar event order.
+    bool shortMeanReached = useWickRejection ? low <= mean : close <= mean
+    bool longMeanReached = useWickRejection ? high >= mean : close >= mean
+    if shortMeanReached
+        shortRearmed := true
+    if longMeanReached
+        longRearmed := true
+
+    if phase > 0
+        bool meanReached = false
+        if direction == -1
+            meanReached := shortMeanReached
+        else
+            meanReached := longMeanReached
+
+        bool expired = not na(c1Bar) and bar_index - c1Bar > maxWaitBars
+        bool invalidated = false
+        if phase == 3
+            if direction == -1
+                invalidated := close > leadingExtreme
+            else
+                invalidated := close < leadingExtreme
+
+        if meanReached or expired or invalidated
+            phase := 0
+            direction := 0
+            setupCancelled := true
+
+    // Arming is evaluated here, at confirmed candle close, using current bands.
+    // A real upper/lower wick must extend into the corresponding shaded zone.
+    // Close may stay outside the outer band; a real wick shows retreat from the extreme.
+    // No new arming on a VWAP-touch candle, even if it also rejects a zone.
+    // Only the arming wick is filtered. Check final high/low at candle close.
+    // Skip new round-filtered arming on an Auto grid-change bar.
+    // Already active C1/C2/entry setups retain their original confirmation rules.
+    float shortRoundLevel = math.round(high / roundStep) * roundStep
+    float longRoundLevel = math.round(low / roundStep) * roundStep
+    // Tiny tick-relative epsilon avoids floating-point misses on exact boundaries.
+    float roundEpsilon = syminfo.mintick * 0.000001
+    bool shortRoundOk = not useRoundFilter or (not roundGridChanged and math.abs(high - shortRoundLevel) <= roundTolerance + roundEpsilon)
+    bool longRoundOk = not useRoundFilter or (not roundGridChanged and math.abs(low - longRoundLevel) <= roundTolerance + roundEpsilon)
+    // Evaluate quality at candle close; use multiplication to handle dojis safely.
+    float candleBody = math.abs(close - open)
+    float candleRange = high - low
+    float upperWick = high - math.max(open, close)
+    float lowerWick = math.min(open, close) - low
+    float minimumWickLength = math.max(candleBody * minWickBodyRatio, candleRange * minWickRangePercent / 100.0)
+    bool shortWickQualityOk = not useWickQuality or (candleRange > 0 and upperWick > 0 and upperWick + roundEpsilon >= minimumWickLength)
+    bool longWickQualityOk = not useWickQuality or (candleRange > 0 and lowerWick > 0 and lowerWick + roundEpsilon >= minimumWickLength)
+    bool shortArm = useWickRejection ? (high > upperEntry and high > math.max(open, close) and not shortMeanReached and shortRoundOk and shortWickQualityOk) : close > upperBand
+    bool longArm = useWickRejection ? (low < lowerEntry and low < math.min(open, close) and not longMeanReached and longRoundOk and longWickQualityOk) : close < lowerBand
+    // The arming candle cannot also supply C1 (bar_index > leadingBar below).
+    bool repeatMode = useWickRejection and allowRepeatSetups
+    bool shortCanArm = repeatMode ? (na(lastShortArmBar) or bar_index - lastShortArmBar >= minSetupGap) : shortRearmed
+    bool longCanArm = repeatMode ? (na(lastLongArmBar) or bar_index - lastLongArmBar >= minSetupGap) : longRearmed
+    if phase == 0
+        if shortArm and shortCanArm
+            phase := 1
+            direction := -1
+            leadingBar := bar_index
+            leadingExtreme := close
+            c1Bar := na
+            c1Close := na
+            referenceBar := na
+            entryLevel := na
+            shortRearmed := false
+            lastShortArmBar := bar_index
+            newLeading := true
+        else if longArm and longCanArm
+            phase := 1
+            direction := 1
+            leadingBar := bar_index
+            leadingExtreme := close
+            c1Bar := na
+            c1Close := na
+            referenceBar := na
+            entryLevel := na
+            longRearmed := false
+            lastLongArmBar := bar_index
+            newLeading := true
+
+    // Only ONE of these phases can advance per candle.
+    if phase == 1
+        if direction == -1
+            leadingExtreme := math.max(leadingExtreme, close)
+            if bar_index > leadingBar and bearish
+                phase := 2
+                c1Bar := bar_index
+                c1Close := close
+                newC1 := true
+        else
+            leadingExtreme := math.min(leadingExtreme, close)
+            if bar_index > leadingBar and bullish
+                phase := 2
+                c1Bar := bar_index
+                c1Close := close
+                newC1 := true
+
+    else if phase == 2
+        bool leadingResumed = false
+        bool c2Ready = false
+        if direction == -1
+            leadingResumed := close > leadingExtreme
+            leadingExtreme := math.max(leadingExtreme, close)
+            c2Ready := bearish and close < c1Close
+        else
+            leadingResumed := close < leadingExtreme
+            leadingExtreme := math.min(leadingExtreme, close)
+            c2Ready := bullish and close > c1Close
+
+        if leadingResumed
+            // A close beyond the old extreme restarts the reversal sequence.
+            // Wick sweeps alone do not restart it.
+            phase := 1
+            c1Bar := na
+            c1Close := na
+        else if bar_index > c1Bar and c2Ready
+            phase := 3
+            referenceBar := bar_index
+            entryLevel := close
+            newC2 := true
+            // Both entryLevel and leadingExtreme are now fixed.
+
+    else if phase == 3
+        bool entryClose = false
+        if direction == -1
+            entryClose := close < entryLevel
+        else
+            entryClose := close > entryLevel
+
+        if bar_index > referenceBar and entryClose
+            bool entryInZone = false
+            if direction == -1
+                entryInZone := close >= upperEntry
+            else
+                entryInZone := close <= lowerEntry
+            if entryInZone and adxAllowsEntry
+                buySignal := direction == 1
+                sellSignal := direction == -1
+                lastSignalClose := close
+                lastMeanTarget := mean
+            else
+                buyBlocked := direction == 1
+                sellBlocked := direction == -1
+            phase := 0
+            direction := 0
+            // Consume the first qualifying close even if zone/ADX rejects it.
+            // Neither a moving zone nor ADX can create a delayed entry.
+            // Prices are retained for drawings/alerts until the next arm.
+// ENGINE END
+
+// LATEST SETUP LINES
+var line entryLine = na
+var line targetLine = na
+var line invalidationLine = na
+var int linesExpireBar = na
+
+if barstate.isconfirmed
+    if newLeading or setupCancelled or buyBlocked or sellBlocked
+        if not na(entryLine)
+            line.delete(entryLine)
+        if not na(targetLine)
+            line.delete(targetLine)
+        if not na(invalidationLine)
+            line.delete(invalidationLine)
+        entryLine := na
+        targetLine := na
+        invalidationLine := na
+        linesExpireBar := na
+
+    if newC2
+        color setupColor = direction == 1 ? buyColor : sellColor
+        if showEntryLevel
+            entryLine := line.new(bar_index, entryLevel, bar_index + 1, entryLevel, xloc=xloc.bar_index, color=setupColor, width=2)
+        if showInvalidation
+            invalidationLine := line.new(bar_index, leadingExtreme, bar_index + 1, leadingExtreme, xloc=xloc.bar_index, color=color.new(setupColor, 50), style=line.style_dotted)
+
+    if phase == 3
+        if not na(entryLine)
+            line.set_x2(entryLine, bar_index + 1)
+        if not na(invalidationLine)
+            line.set_x2(invalidationLine, bar_index + 1)
+
+    if buySignal or sellSignal
+        linesExpireBar := bar_index + signalLineBars
+        if not na(entryLine)
+            line.set_x2(entryLine, linesExpireBar)
+        if not na(invalidationLine)
+            line.set_x2(invalidationLine, linesExpireBar)
+        if showTarget
+            targetLine := line.new(bar_index, lastMeanTarget, linesExpireBar, lastMeanTarget, xloc=xloc.bar_index, color=meanColor, style=line.style_dashed, width=2)
+
+    if not na(linesExpireBar) and bar_index > linesExpireBar
+        if not na(entryLine)
+            line.delete(entryLine)
+        if not na(targetLine)
+            line.delete(targetLine)
+        if not na(invalidationLine)
+            line.delete(invalidationLine)
+        entryLine := na
+        targetLine := na
+        invalidationLine := na
+        linesExpireBar := na
+
+// SIGNALS AND OPTIONAL SEQUENCE MARKS
+plotshape(showSignals and buySignal, title="BUY Mean Reversion", style=shape.triangleup, location=location.belowbar, color=buyColor, textcolor=buyColor, size=size.small, text="BUY")
+plotshape(showSignals and sellSignal, title="SELL Mean Reversion", style=shape.triangledown, location=location.abovebar, color=sellColor, textcolor=sellColor, size=size.small, text="SELL")
+
+plotshape(showSetupMarks and newLeading and direction == -1, title="Leading Up", style=shape.circle, location=location.abovebar, color=sellColor, textcolor=sellColor, size=size.tiny, text="L")
+plotshape(showSetupMarks and newLeading and direction == 1, title="Leading Down", style=shape.circle, location=location.belowbar, color=buyColor, textcolor=buyColor, size=size.tiny, text="L")
+plotshape(showSetupMarks and newC1 and direction == -1, title="Bearish C1", style=shape.circle, location=location.abovebar, color=sellColor, textcolor=sellColor, size=size.tiny, text="C1")
+plotshape(showSetupMarks and newC1 and direction == 1, title="Bullish C1", style=shape.circle, location=location.belowbar, color=buyColor, textcolor=buyColor, size=size.tiny, text="C1")
+plotshape(showSetupMarks and newC2 and direction == -1, title="SELL Reference C2", style=shape.diamond, location=location.abovebar, color=sellColor, textcolor=sellColor, size=size.tiny, text="C2")
+plotshape(showSetupMarks and newC2 and direction == 1, title="BUY Reference C2", style=shape.diamond, location=location.belowbar, color=buyColor, textcolor=buyColor, size=size.tiny, text="C2")
+plotshape(showSetupMarks and buyBlocked, title="BUY Blocked by Zone or ADX", style=shape.xcross, location=location.belowbar, color=color.gray, textcolor=color.gray, size=size.tiny, text="X")
+plotshape(showSetupMarks and sellBlocked, title="SELL Blocked by Zone or ADX", style=shape.xcross, location=location.abovebar, color=color.gray, textcolor=color.gray, size=size.tiny, text="X")
+
+// OPTIONAL DASHBOARD
+var table dash = table.new(position.top_right, 2, 9, bgcolor=color.new(color.black, 10), border_width=1)
+
+if barstate.islast
+    if showDashboard
+        string stateText = shortRearmed and longRearmed ? "Waiting for extension" : (useWickRejection ? "Waiting for touch at VWAP" : "Waiting for close at mean")
+        if useWickRejection and allowRepeatSetups
+            stateText := "Waiting for wick / setup spacing"
+        color stateColor = meanColor
+        if phase == 1
+            stateText := direction == -1 ? "Leading up / wait C1" : "Leading down / wait C1"
+        else if phase == 2
+            stateText := direction == -1 ? "Bearish C1 / wait C2" : "Bullish C1 / wait C2"
+        else if phase == 3
+            stateText := direction == -1 ? "Wait close below level" : "Wait close above level"
+        if direction != 0
+            stateColor := direction == 1 ? buyColor : sellColor
+        if not dataReady
+            stateText := hasVolume ? "Waiting for VWAP / band width" : "No volume on this candle"
+
+        table.cell(dash, 0, 0, "GM VWAP Reversal", text_color=color.white)
+        table.cell(dash, 1, 0,  "v2.1 | " + timeframe.period, text_color=meanColor)
+        table.cell(dash, 0, 1, "VWAP (" + anchorChoice + ")", text_color=color.white)
+        table.cell(dash, 1, 1, f_price(mean), text_color=meanColor)
+        table.cell(dash, 0, 2, "Distance", text_color=color.white)
+        table.cell(dash, 1, 2, str.tostring(distanceSigma, "#.00") + " SD", text_color=color.white)
+        table.cell(dash, 0, 3, "Setup", text_color=color.white)
+        table.cell(dash, 1, 3, stateText, text_color=stateColor)
+        table.cell(dash, 0, 4, "Entry level", text_color=color.white)
+        table.cell(dash, 1, 4, phase == 3 ? f_price(entryLevel) : "-", text_color=stateColor)
+        table.cell(dash, 0, 5, "Last VWAP target", text_color=color.white)
+        table.cell(dash, 1, 5, f_price(lastMeanTarget), text_color=meanColor)
+        string adxText = "OFF"
+        if useAdxFilter
+            adxText := not adxReady ? "Warming up" : str.tostring(adx, "#.0") + (adxStrongRising ? " | Block" : " | Allow")
+        table.cell(dash, 0, 6, "ADX filter (live)", text_color=color.white)
+        table.cell(dash, 1, 6, adxText, text_color=adxAllowsEntry ? meanColor : color.gray)
+        table.cell(dash, 0, 7, "Round grid", text_color=color.white)
+        table.cell(dash, 1, 7, roundMode == "Custom" ? "Custom" : roundMarket + " / " + roundGroup, text_color=meanColor)
+        table.cell(dash, 0, 8, "Spacing / tolerance", text_color=color.white)
+        table.cell(dash, 1, 8, str.tostring(roundStep, "#.##########") + " / +/-" + str.tostring(roundTolerance, "#.##########"), text_color=meanColor)
+    else
+        table.clear(dash, 0, 0, 1, 8)
+
+// ALERTS
+// The independent Enable BUY / SELL Alerts input gates every alert event.
+// Turning chart signals off does not disable alerts.
+// Create an alert and choose "Any alert() function call" for direction and
+// actual prices, or choose one of the individual conditions below.
+alertcondition(enableAlerts and buySignal, "GM VWAP Reversal BUY", "{{ticker}} {{interval}} | GM VWAP Reversal BUY | Close: {{close}}")
+alertcondition(enableAlerts and sellSignal, "GM VWAP Reversal SELL", "{{ticker}} {{interval}} | GM VWAP Reversal SELL | Close: {{close}}")
+alertcondition(enableAlerts and (buySignal or sellSignal), "GM VWAP Reversal BUY / SELL", "{{ticker}} {{interval}} | GM VWAP Reversal signal | Close: {{close}}")
+
+if enableAlerts and (buySignal or sellSignal)
+    string sideText = buySignal ? "BUY" : "SELL"
+    alert(syminfo.tickerid + " | TF " + timeframe.period + " | " + sideText + " GM VWAP REVERSAL\nSignal close: " + f_price(lastSignalClose) + "\nC2 reference close: " + f_price(entryLevel) + "\nVWAP target at signal: " + f_price(lastMeanTarget) + "\nSetup close extreme: " + f_price(leadingExtreme), alert.freq_once_per_bar_close)

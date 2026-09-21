@@ -1,0 +1,227 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════
+//  POWER OF 3 — MULTI RSI
+//  3 independent RSIs (fast / standard / slow), shaded OB-OS zones,
+//  regular + hidden divergence lines, and confluence dots when all
+//  RSIs occupy the same extreme zone. RSI 4 is an optional
+//  confirmation leg that can be pulled from a higher timeframe.
+// ═══════════════════════════════════════════════════════════════
+indicator("Power of 3", "The Power of 3 (Multi-RSI)", overlay = false)
+
+// ─────────────────────────── RSI LINES ───────────────────────────
+gR    = "RSI Lines"
+src   = input.source(close, "Source", group = gR)
+
+show1 = input.bool(true, "RSI 1", group = gR, inline = "R1")
+len1  = input.int(5,  "Length", minval = 1, group = gR, inline = "R1")
+col1  = input.color(color.new(#b2b5be, 40), "", group = gR, inline = "R1")
+
+show2 = input.bool(true, "RSI 2", group = gR, inline = "R2")
+len2  = input.int(14, "Length", minval = 1, group = gR, inline = "R2")
+col2  = input.color(#4dd0e1, "", group = gR, inline = "R2")
+
+show3 = input.bool(true, "RSI 3", group = gR, inline = "R3")
+len3  = input.int(20, "Length", minval = 1, group = gR, inline = "R3")
+col3  = input.color(#f06292, "", group = gR, inline = "R3")
+
+lineW = input.int(1, "RSI Line Width", minval = 1, maxval = 4, group = gR)
+
+// ─────────────────── RSI 4 (CONFIRMATION FILTER) ─────────────────
+g4      = "RSI 4 - Confirmation Filter"
+use4    = input.bool(true, "Enable RSI 4", group = g4,
+     tooltip = "A 4th RSI that can run on a higher timeframe and act as a confirmation leg for the confluence dots.")
+len4    = input.int(9, "Length", minval = 1, group = g4, inline = "R4")
+col4    = input.color(#2962ff, "", group = g4, inline = "R4")
+src4    = input.source(close, "Source", group = g4)
+
+tf4     = input.timeframe("60", "Timeframe", group = g4,
+     tooltip = "Blank uses the chart timeframe. Set it higher (60, 240, D) so a slower clock has to agree before a dot prints. A timeframe lower than the chart is ignored and falls back to the chart.")
+conf4   = input.bool(true, "Confirmed higher timeframe bars only", group = g4,
+     tooltip = "On: uses the last CLOSED higher timeframe bar, so the value never repaints. Costs up to one HTF bar of lag. Off: updates live inside the forming HTF bar and can repaint.")
+
+plot4   = input.bool(true, "Plot RSI 4 on the pane", group = g4)
+align4  = input.bool(true, "Require RSI 4 for confluence dots", group = g4)
+custom4 = input.bool(true, "Use custom OB/OS levels for RSI 4", group = g4,
+     tooltip = "A slower RSI rarely reaches 70/30. Loosen its thresholds or the dots will almost never fire.")
+ob4     = input.float(60, "RSI 4 Overbought", minval = 0, maxval = 100, group = g4, inline = "L4")
+os4     = input.float(40, "RSI 4 Oversold",   minval = 0, maxval = 100, group = g4, inline = "L4")
+turn4   = input.bool(false, "Require RSI 4 to be turning", group = g4,
+     tooltip = "Oversold dots also need RSI 4 rising, overbought dots need it falling. Filters out dots that fire while the higher timeframe is still running away from you.")
+
+// ────────────────────────── ZONES & LEVELS ───────────────────────
+gZ      = "Zones & Levels"
+obLevel = input.int(70, "Overbought Level", minval = 50, maxval = 100, group = gZ)
+osLevel = input.int(30, "Oversold Level",   minval = 0,  maxval = 50,  group = gZ)
+midLvl  = input.int(50, "Midline",          minval = 0,  maxval = 100, group = gZ)
+obFillC = input.color(color.red,   "OB Fill", group = gZ, inline = "fz")
+osFillC = input.color(color.green, "OS Fill", group = gZ, inline = "fz")
+opacity = input.int(25, "Zone Opacity %", minval = 0, maxval = 100, group = gZ,
+     tooltip = "25 = 25% opaque (Pine transparency 75).")
+outOpac = input.int(60, "Zone Outline Opacity %", minval = 0, maxval = 100, group = gZ,
+     tooltip = "Solid boundary lines at the OB and OS levels.")
+midCol  = input.color(color.white, "Midline Color", group = gZ, inline = "mid")
+midOpac = input.int(80, "Opacity %", minval = 0, maxval = 100, group = gZ, inline = "mid")
+
+// ─────────────────────────── DIVERGENCES ─────────────────────────
+gD      = "Divergences"
+divOn1  = input.bool(true,  "Detect on RSI 1", group = gD)
+divOn2  = input.bool(true,  "Detect on RSI 2", group = gD)
+divOn3  = input.bool(true,  "Detect on RSI 3", group = gD)
+divOn4  = input.bool(false, "Detect on RSI 4", group = gD,
+     tooltip = "Leave this off when RSI 4 runs on a higher timeframe. Its value is stair stepped on the chart, which produces flat pivots and unreliable divergence.")
+showReg = input.bool(true,  "Regular", group = gD, inline = "dt")
+showHid = input.bool(false, "Hidden",  group = gD, inline = "dt")
+lbL     = input.int(5,  "Pivot Lookback Left",  minval = 1, group = gD)
+lbR     = input.int(5,  "Pivot Lookback Right", minval = 1, group = gD)
+rngMin  = input.int(5,  "Min Lookback Range", minval = 1, group = gD)
+rngMax  = input.int(60, "Max Lookback Range", minval = 1, group = gD)
+divW    = input.int(1,  "Divergence Line Width", minval = 1, maxval = 4, group = gD,
+     tooltip = "1 is the thinnest line Pine can draw.")
+bullC   = input.color(#00ff00, "Bull",   group = gD, inline = "dc1")
+bearC   = input.color(#ff0000, "Bear",   group = gD, inline = "dc1")
+hBullC  = input.color(#00e676, "H.Bull", group = gD, inline = "dc2")
+hBearC  = input.color(#ff5252, "H.Bear", group = gD, inline = "dc2")
+
+// ────────────────────────── CONFLUENCE DOTS ──────────────────────
+gA        = "Confluence Dots"
+showDots  = input.bool(true, "Show alignment dots", group = gA)
+firstOnly = input.bool(true, "Only first bar of alignment", group = gA,
+     tooltip = "Off = a dot on every bar the RSIs stay aligned.")
+obDotY    = input.float(96, "OB Dot Level", minval = 0, maxval = 100, group = gA)
+osDotY    = input.float(4,  "OS Dot Level", minval = 0, maxval = 100, group = gA)
+dotSize   = input.int(2, "Dot Size", minval = 1, maxval = 5, group = gA)
+obDotC    = input.color(color.red,  "OB Dot", group = gA, inline = "dot")
+osDotC    = input.color(color.lime, "OS Dot", group = gA, inline = "dot")
+
+// ─────────────────────────── CALCULATIONS ────────────────────────
+r1 = ta.rsi(src, len1)
+r2 = ta.rsi(src, len2)
+r3 = ta.rsi(src, len3)
+
+// RSI 4 resolves on its own timeframe. A requested timeframe below the
+// chart's own would return meaningless values, so it falls back to the chart.
+tf4in  = tf4 == "" ? timeframe.period : tf4
+tf4res = timeframe.in_seconds(tf4in) >= timeframe.in_seconds(timeframe.period) ? tf4in : timeframe.period
+
+// Live: updates inside the forming HTF bar and can repaint.
+// Confirmed: last closed HTF bar, fixed once printed.
+r4Live = request.security(syminfo.tickerid, tf4res, ta.rsi(src4, len4),      lookahead = barmerge.lookahead_off)
+r4Conf = request.security(syminfo.tickerid, tf4res, ta.rsi(src4, len4)[1],   lookahead = barmerge.lookahead_on)
+r4     = conf4 ? r4Conf : r4Live
+
+// ───────────────────────────── ZONES ─────────────────────────────
+hline(obLevel, "Overbought", color = color.new(obFillC, 100 - outOpac), linestyle = hline.style_solid, linewidth = 1)
+hline(midLvl,  "Midline",    color = color.new(midCol, 100 - midOpac), linestyle = hline.style_dotted, linewidth = 1)
+hline(osLevel, "Oversold",   color = color.new(osFillC, 100 - outOpac), linestyle = hline.style_solid, linewidth = 1)
+
+invis = color.new(color.gray, 100)
+pTop  = plot(100,     "Top Edge", color = invis, display = display.none, editable = false)
+pOB   = plot(obLevel, "OB Edge",  color = invis, display = display.none, editable = false)
+pOS   = plot(osLevel, "OS Edge",  color = invis, display = display.none, editable = false)
+pBot  = plot(0,       "Bot Edge", color = invis, display = display.none, editable = false)
+
+fill(pOB, pTop, color = color.new(obFillC, 100 - opacity), title = "Overbought Zone")
+fill(pBot, pOS, color = color.new(osFillC, 100 - opacity), title = "Oversold Zone")
+
+// ─────────────────────────── RSI PLOTS ───────────────────────────
+plot(show1 ? r1 : na, "RSI 1", color = col1, linewidth = lineW)
+plot(show2 ? r2 : na, "RSI 2", color = col2, linewidth = lineW)
+plot(show3 ? r3 : na, "RSI 3", color = col3, linewidth = lineW)
+plot(use4 and plot4 ? r4 : na, "RSI 4", color = col4, linewidth = lineW)
+
+// ──────────────────────── DIVERGENCE ENGINE ──────────────────────
+inRange(bool cond) =>
+    bars = ta.barssince(cond)
+    rngMin <= bars and bars <= rngMax
+
+divCalc(float osc) =>
+    pl = not na(ta.pivotlow(osc, lbL, lbR))
+    ph = not na(ta.pivothigh(osc, lbL, lbR))
+
+    // Evaluated unconditionally so ta.barssince inside inRange runs every bar
+    plInRng = inRange(pl[1])
+    phInRng = inRange(ph[1])
+
+    // Regular bullish: price lower low, oscillator higher low
+    oscHL     = osc[lbR] > ta.valuewhen(pl, osc[lbR], 1) and plInRng
+    priceLL   = low[lbR] < ta.valuewhen(pl, low[lbR], 1)
+    bullCond  = priceLL and oscHL and pl
+
+    // Hidden bullish: price higher low, oscillator lower low
+    oscLL     = osc[lbR] < ta.valuewhen(pl, osc[lbR], 1) and plInRng
+    priceHL   = low[lbR] > ta.valuewhen(pl, low[lbR], 1)
+    hBullCond = priceHL and oscLL and pl
+
+    // Regular bearish: price higher high, oscillator lower high
+    oscLH     = osc[lbR] < ta.valuewhen(ph, osc[lbR], 1) and phInRng
+    priceHH   = high[lbR] > ta.valuewhen(ph, high[lbR], 1)
+    bearCond  = priceHH and oscLH and ph
+
+    // Hidden bearish: price lower high, oscillator higher high
+    oscHH     = osc[lbR] > ta.valuewhen(ph, osc[lbR], 1) and phInRng
+    priceLH   = high[lbR] < ta.valuewhen(ph, high[lbR], 1)
+    hBearCond = priceLH and oscHH and ph
+
+    [pl, ph, bullCond, bearCond, hBullCond, hBearCond]
+
+[pl1, ph1, bull1, bear1, hbull1, hbear1] = divCalc(r1)
+[pl2, ph2, bull2, bear2, hbull2, hbear2] = divCalc(r2)
+[pl3, ph3, bull3, bear3, hbull3, hbear3] = divCalc(r3)
+[pl4, ph4, bull4, bear4, hbull4, hbear4] = divCalc(r4)
+
+noneC = color.new(color.white, 100)
+on1   = show1 and divOn1
+on2   = show2 and divOn2
+on3   = show3 and divOn3
+on4   = use4 and plot4 and divOn4
+
+// RSI 1 divergence lines
+plot(pl1 ? r1[lbR] : na, "R1 Bull Div",   offset = -lbR, linewidth = divW, color = on1 and showReg and bull1  ? bullC  : noneC)
+plot(ph1 ? r1[lbR] : na, "R1 Bear Div",   offset = -lbR, linewidth = divW, color = on1 and showReg and bear1  ? bearC  : noneC)
+plot(pl1 ? r1[lbR] : na, "R1 H.Bull Div", offset = -lbR, linewidth = divW, color = on1 and showHid and hbull1 ? hBullC : noneC)
+plot(ph1 ? r1[lbR] : na, "R1 H.Bear Div", offset = -lbR, linewidth = divW, color = on1 and showHid and hbear1 ? hBearC : noneC)
+
+// RSI 2 divergence lines
+plot(pl2 ? r2[lbR] : na, "R2 Bull Div",   offset = -lbR, linewidth = divW, color = on2 and showReg and bull2  ? bullC  : noneC)
+plot(ph2 ? r2[lbR] : na, "R2 Bear Div",   offset = -lbR, linewidth = divW, color = on2 and showReg and bear2  ? bearC  : noneC)
+plot(pl2 ? r2[lbR] : na, "R2 H.Bull Div", offset = -lbR, linewidth = divW, color = on2 and showHid and hbull2 ? hBullC : noneC)
+plot(ph2 ? r2[lbR] : na, "R2 H.Bear Div", offset = -lbR, linewidth = divW, color = on2 and showHid and hbear2 ? hBearC : noneC)
+
+// RSI 3 divergence lines
+plot(pl3 ? r3[lbR] : na, "R3 Bull Div",   offset = -lbR, linewidth = divW, color = on3 and showReg and bull3  ? bullC  : noneC)
+plot(ph3 ? r3[lbR] : na, "R3 Bear Div",   offset = -lbR, linewidth = divW, color = on3 and showReg and bear3  ? bearC  : noneC)
+plot(pl3 ? r3[lbR] : na, "R3 H.Bull Div", offset = -lbR, linewidth = divW, color = on3 and showHid and hbull3 ? hBullC : noneC)
+plot(ph3 ? r3[lbR] : na, "R3 H.Bear Div", offset = -lbR, linewidth = divW, color = on3 and showHid and hbear3 ? hBearC : noneC)
+
+// RSI 4 divergence lines
+plot(pl4 ? r4[lbR] : na, "R4 Bull Div",   offset = -lbR, linewidth = divW, color = on4 and showReg and bull4  ? bullC  : noneC)
+plot(ph4 ? r4[lbR] : na, "R4 Bear Div",   offset = -lbR, linewidth = divW, color = on4 and showReg and bear4  ? bearC  : noneC)
+plot(pl4 ? r4[lbR] : na, "R4 H.Bull Div", offset = -lbR, linewidth = divW, color = on4 and showHid and hbull4 ? hBullC : noneC)
+plot(ph4 ? r4[lbR] : na, "R4 H.Bear Div", offset = -lbR, linewidth = divW, color = on4 and showHid and hbear4 ? hBearC : noneC)
+
+// ──────────────────────── CONFLUENCE DOTS ────────────────────────
+// RSI 4 uses its own thresholds when custom levels are on, otherwise the shared ones.
+obThr4  = custom4 ? ob4 : obLevel
+osThr4  = custom4 ? os4 : osLevel
+req4    = use4 and align4
+rise4   = r4 > r4[1]
+fall4   = r4 < r4[1]
+ok4OB   = not req4 or (r4 >= obThr4 and (not turn4 or fall4))
+ok4OS   = not req4 or (r4 <= osThr4 and (not turn4 or rise4))
+
+alignOB = r1 >= obLevel and r2 >= obLevel and r3 >= obLevel and ok4OB
+alignOS = r1 <= osLevel and r2 <= osLevel and r3 <= osLevel and ok4OS
+
+obSig = showDots and (firstOnly ? alignOB and not alignOB[1] : alignOB)
+osSig = showDots and (firstOnly ? alignOS and not alignOS[1] : alignOS)
+
+plot(obSig ? obDotY : na, "OB Confluence", style = plot.style_circles, linewidth = dotSize, color = obDotC)
+plot(osSig ? osDotY : na, "OS Confluence", style = plot.style_circles, linewidth = dotSize, color = osDotC)
+
+// ───────────────────────────── ALERTS ────────────────────────────
+alertcondition(obSig, "Triple RSI Overbought", "All enabled RSIs are in the overbought zone")
+alertcondition(osSig, "Triple RSI Oversold",   "All enabled RSIs are in the oversold zone")
+alertcondition((on1 and bull1)  or (on2 and bull2)  or (on3 and bull3)  or (on4 and bull4),  "Regular Bullish Divergence", "Regular bullish RSI divergence")
+alertcondition((on1 and bear1)  or (on2 and bear2)  or (on3 and bear3)  or (on4 and bear4),  "Regular Bearish Divergence", "Regular bearish RSI divergence")
+alertcondition((on1 and hbull1) or (on2 and hbull2) or (on3 and hbull3) or (on4 and hbull4), "Hidden Bullish Divergence",  "Hidden bullish RSI divergence")
+alertcondition((on1 and hbear1) or (on2 and hbear2) or (on3 and hbear3) or (on4 and hbear4), "Hidden Bearish Divergence",  "Hidden bearish RSI divergence")

@@ -1,0 +1,321 @@
+//@version=6
+indicator("PDH PDL + Key Levels", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// ═════════════════════════════ GENERAL ═════════════════════════════
+const string G_GEN = "General"
+cutOnTouch = input.bool(true, "Cut line when the level is consumed", group = G_GEN)
+mergeDupes = input.bool(true, "Merge coincident levels (higher hierarchy wins)", group = G_GEN)
+showLabels = input.bool(true, "Show labels", group = G_GEN, tooltip = "Turn off to keep the lines but hide all level text.")
+lblSize    = input.string(size.small, "Label size", options = [size.tiny, size.small, size.normal], group = G_GEN)
+
+// ── Style helper ──
+styleOf(string s) =>
+    switch s
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+        => line.style_solid
+
+const string G_STY = "Line style"
+prevStyleIn = input.string("Solid", "Prev H/L style", options = ["Solid", "Dashed", "Dotted"], group = G_STY, inline = "p")
+prevWidth   = input.int(1, "Width", minval = 1, maxval = 4, group = G_STY, inline = "p")
+prevStyle = styleOf(prevStyleIn)
+
+// Master color overrides every individual color below without erasing them:
+// switch it off and your own palette comes back untouched.
+const string G_COL = "Colors"
+useMaster   = input.bool(false, "Single color for everything", group = G_COL, inline = "mc")
+masterColor = input.color(color.gray, "", group = G_COL, inline = "mc")
+colorHigh   = input.color(color.red,   "Highs (PDH / PWH / PMH)", group = G_COL)
+colorLow    = input.color(color.green, "Lows (PDL / PWL / PML)",  group = G_COL)
+
+const string G_LVL = "Levels"
+showPDH = input.bool(true,  "PDH", group = G_LVL, inline = "d")
+showPDL = input.bool(true,  "PDL", group = G_LVL, inline = "d")
+showPWH = input.bool(true,  "PWH", group = G_LVL, inline = "w")
+showPWL = input.bool(true,  "PWL", group = G_LVL, inline = "w")
+showPMH = input.bool(false, "PMH", group = G_LVL, inline = "m")
+showPML = input.bool(false, "PML", group = G_LVL, inline = "m")
+
+const string TZ_TT = "GMT notation ('GMT-5') or IANA name ('America/New_York'). IANA recommended: it handles DST."
+
+// ═══════════════════════════ NY OPEN ═══════════════════════════════
+// Hard-wired to 09:30 America/New_York. The price is the CLOSE of the 1-minute
+// candle of 09:29, i.e. the last print before the bell. Time is not an input.
+const string G_NYO = "NY Open"
+const string NYO_TT = "Fixed at 09:30 America/New_York (DST handled). Price = close of the 09:29 one-minute candle. Intraday timeframes only."
+const string NYC_TT = "On: the line stops at the first candle that touches the level. Off: it runs uncut all the way to the current bar, regardless of the global cut setting."
+nyOn    = input.bool(true, "Enable", group = G_NYO, tooltip = NYO_TT)
+nyCut   = input.bool(true, "Cut on first touch", group = G_NYO, tooltip = NYC_TT)
+nyLbl   = input.string("NY Open", "Label", group = G_NYO)
+nyCol   = input.color(color.blue, "Color", group = G_NYO, inline = "ny")
+nyStyIn = input.string("Solid", "", options = ["Solid", "Dashed", "Dotted"], group = G_NYO, inline = "ny")
+nyW     = input.int(1, "Width", minval = 1, maxval = 4, group = G_NYO, inline = "ny")
+nySty   = styleOf(nyStyIn)
+
+const string G_S1 = "Session 1"
+s1On    = input.bool(true, "Enable", group = G_S1)
+s1Lbl   = input.string("NY", "Label prefix", group = G_S1)
+s1Sess  = input.session("0930-1600", "Hours", group = G_S1)
+s1TZ    = input.string("America/New_York", "Timezone", group = G_S1, tooltip = TZ_TT)
+s1Col   = input.color(color.fuchsia, "Color", group = G_S1, inline = "s1")
+s1StyIn = input.string("Dashed", "", options = ["Solid", "Dashed", "Dotted"], group = G_S1, inline = "s1")
+s1W     = input.int(1, "Width", minval = 1, maxval = 4, group = G_S1, inline = "s1")
+
+const string G_S2 = "Session 2"
+s2On    = input.bool(true, "Enable", group = G_S2)
+s2Lbl   = input.string("Asian", "Label prefix", group = G_S2)
+s2Sess  = input.session("0900-1500", "Hours", group = G_S2)
+s2TZ    = input.string("Asia/Tokyo", "Timezone", group = G_S2, tooltip = TZ_TT)
+s2Col   = input.color(color.teal, "Color", group = G_S2, inline = "s2")
+s2StyIn = input.string("Dashed", "", options = ["Solid", "Dashed", "Dotted"], group = G_S2, inline = "s2")
+s2W     = input.int(1, "Width", minval = 1, maxval = 4, group = G_S2, inline = "s2")
+
+const string G_S3 = "Session 3"
+s3On    = input.bool(false, "Enable", group = G_S3)
+s3Lbl   = input.string("London", "Label prefix", group = G_S3)
+s3Sess  = input.session("0800-1630", "Hours", group = G_S3)
+s3TZ    = input.string("Europe/London", "Timezone", group = G_S3, tooltip = TZ_TT)
+s3Col   = input.color(color.olive, "Color", group = G_S3, inline = "s3")
+s3StyIn = input.string("Dashed", "", options = ["Solid", "Dashed", "Dotted"], group = G_S3, inline = "s3")
+s3W     = input.int(1, "Width", minval = 1, maxval = 4, group = G_S3, inline = "s3")
+
+s1Sty = styleOf(s1StyIn)
+s2Sty = styleOf(s2StyIn)
+s3Sty = styleOf(s3StyIn)
+
+// ═════════════════════ TOUCH / CONSUMPTION LOGIC ═══════════════════
+// Resistance is consumed by any candle whose HIGH reaches it (covers gaps up).
+// Support   is consumed by any candle whose LOW  reaches it (covers gaps down).
+touchesRes(float lvl) => high >= lvl
+touchesSup(float lvl) => low  <= lvl
+
+// Open levels can be approached from either side -> straddle OR gap through it.
+touchesOpen(float lvl) =>
+    bool straddle  = low <= lvl and high >= lvl
+    bool prevKnown = not na(close[1])
+    bool gapUp     = prevKnown and open >= lvl and close[1] < lvl
+    bool gapDown   = prevKnown and open <= lvl and close[1] > lvl
+    straddle or gapUp or gapDown
+
+endTime(int hitT) => na(hitT) ? time : hitT
+
+// ═══════════════════════ DAY / WEEK / MONTH STATE ══════════════════
+var int   pdhTime  = na, var float pdhPrice = na
+var int   pdlTime  = na, var float pdlPrice = na
+var int   pwhTime  = na, var float pwhPrice = na
+var int   pwlTime  = na, var float pwlPrice = na
+var int   pmhTime  = na, var float pmhPrice = na
+var int   pmlTime  = na, var float pmlPrice = na
+
+// Period anchors: not drawn any more, only used to gate the consumption checks.
+var int dayStartT = na, var int wkStartT = na, var int moStartT = na
+
+var int   curDayHT = na, var float curDayH = na
+var int   curDayLT = na, var float curDayL = na
+var int   curWkHT  = na, var float curWkH  = na
+var int   curWkLT  = na, var float curWkL  = na
+var int   curMoHT  = na, var float curMoH  = na
+var int   curMoLT  = na, var float curMoL  = na
+
+var int pdhHit = na, var int pdlHit = na
+var int pwhHit = na, var int pwlHit = na
+var int pmhHit = na, var int pmlHit = na
+
+bool isNewDay = ta.change(time("D")) != 0
+if isNewDay
+    pdhTime := curDayHT, pdhPrice := curDayH
+    pdlTime := curDayLT, pdlPrice := curDayL
+    curDayHT := time, curDayH := high
+    curDayLT := time, curDayL := low
+    dayStartT := time
+    pdhHit := na, pdlHit := na
+else
+    if na(curDayH) or high > curDayH
+        curDayH := high, curDayHT := time
+    if na(curDayL) or low < curDayL
+        curDayL := low,  curDayLT := time
+
+bool isNewWeek = ta.change(time("W")) != 0
+if isNewWeek
+    pwhTime := curWkHT, pwhPrice := curWkH
+    pwlTime := curWkLT, pwlPrice := curWkL
+    curWkHT := time, curWkH := high
+    curWkLT := time, curWkL := low
+    wkStartT := time
+    pwhHit := na, pwlHit := na
+else
+    if na(curWkH) or high > curWkH
+        curWkH := high, curWkHT := time
+    if na(curWkL) or low < curWkL
+        curWkL := low,  curWkLT := time
+
+bool isNewMonth = ta.change(time("M")) != 0
+if isNewMonth
+    pmhTime := curMoHT, pmhPrice := curMoH
+    pmlTime := curMoLT, pmlPrice := curMoL
+    curMoHT := time, curMoH := high
+    curMoLT := time, curMoL := low
+    moStartT := time
+    pmhHit := na, pmlHit := na
+else
+    if na(curMoH) or high > curMoH
+        curMoH := high, curMoHT := time
+    if na(curMoL) or low < curMoL
+        curMoL := low,  curMoLT := time
+
+if cutOnTouch and na(pdhHit) and not na(pdhPrice) and not na(dayStartT) and time >= dayStartT and touchesRes(pdhPrice)
+    pdhHit := time
+if cutOnTouch and na(pdlHit) and not na(pdlPrice) and not na(dayStartT) and time >= dayStartT and touchesSup(pdlPrice)
+    pdlHit := time
+if cutOnTouch and na(pwhHit) and not na(pwhPrice) and not na(wkStartT) and time >= wkStartT and touchesRes(pwhPrice)
+    pwhHit := time
+if cutOnTouch and na(pwlHit) and not na(pwlPrice) and not na(wkStartT) and time >= wkStartT and touchesSup(pwlPrice)
+    pwlHit := time
+if cutOnTouch and na(pmhHit) and not na(pmhPrice) and not na(moStartT) and time >= moStartT and touchesRes(pmhPrice)
+    pmhHit := time
+if cutOnTouch and na(pmlHit) and not na(pmlPrice) and not na(moStartT) and time >= moStartT and touchesSup(pmlPrice)
+    pmlHit := time
+
+// ═══════════════════════════ NY OPEN STATE ═════════════════════════
+// Evaluated inside a 1-minute context: grab the close of the 09:29 candle and
+// stamp it with its closing time (= 09:30:00 NY), which is where the line starts.
+// lookahead is off, so the value only reaches the chart once 09:29 has closed.
+nyCapture() =>
+    var float p = na
+    var int   t = na
+    if not na(time("", "0929-0930", "America/New_York"))
+        p := close
+        t := time_close
+    [p, t]
+
+[nyRawP, nyRawT] = request.security(syminfo.tickerid, "1", nyCapture())
+
+var float nyPrice = na
+var int   nyTime  = na
+var int   nyHit   = na
+
+if not na(nyRawT) and (na(nyTime) or nyRawT > nyTime)
+    nyPrice := nyRawP
+    nyTime  := nyRawT
+    nyHit   := na
+
+if nyCut and na(nyHit) and not na(nyPrice) and not na(nyTime) and time > nyTime and touchesOpen(nyPrice)
+    nyHit := time
+
+// ═══════════════════════════ SESSION LEVELS ════════════════════════
+type Sess
+    float curH
+    int   curHT
+    float curL
+    int   curLT
+    float hP
+    int   hT
+    float lP
+    int   lT
+    int   hHit
+    int   lHit
+    int   freezeT
+    bool  live
+
+// While the session is open the H/L develop live and are never cut.
+// Once it closes they freeze and start being checked for consumption.
+method upd(Sess s, bool inSess, bool sStart, bool sEnd) =>
+    if sStart
+        s.curH := high, s.curHT := time
+        s.curL := low,  s.curLT := time
+        s.live := true
+        s.hHit := na,   s.lHit := na
+    else if inSess
+        if na(s.curH) or high > s.curH
+            s.curH := high, s.curHT := time
+        if na(s.curL) or low < s.curL
+            s.curL := low,  s.curLT := time
+    if inSess
+        s.hP := s.curH, s.hT := s.curHT
+        s.lP := s.curL, s.lT := s.curLT
+        s.freezeT := time
+    if sEnd
+        s.live := false
+        s.hHit := na, s.lHit := na
+    if cutOnTouch and not s.live and not na(s.freezeT) and time > s.freezeT
+        if na(s.hHit) and not na(s.hP) and touchesRes(s.hP)
+            s.hHit := time
+        if na(s.lHit) and not na(s.lP) and touchesSup(s.lP)
+            s.lHit := time
+
+var Sess sA = Sess.new(live = false)
+var Sess sB = Sess.new(live = false)
+var Sess sC = Sess.new(live = false)
+
+inA = s1On and not na(time("", s1Sess, s1TZ))
+inB = s2On and not na(time("", s2Sess, s2TZ))
+inC = s3On and not na(time("", s3Sess, s3TZ))
+
+sA.upd(inA, inA and not inA[1], not inA and inA[1])
+sB.upd(inB, inB and not inB[1], not inB and inB[1])
+sC.upd(inC, inC and not inC[1], not inC and inC[1])
+
+// ═══════════════ COLLECTION + HIERARCHY MERGE + DRAW ═══════════════
+// Levels are pushed in descending order of hierarchy. If a new level lands on
+// an existing price (within one tick), it folds into the surviving label as
+// "PDH + NY-H" and the line keeps the LATEST endpoint of the two, so a level
+// that is still alive never inherits an older level's cut.
+var array<float>  lvlP  = array.new<float>()
+var array<int>    lvlX1 = array.new<int>()
+var array<int>    lvlX2 = array.new<int>()
+var array<string> lvlT  = array.new<string>()
+var array<color>  lvlC  = array.new<color>()
+var array<string> lvlS  = array.new<string>()
+var array<int>    lvlW  = array.new<int>()
+
+addLevel(bool show, float p, int x1, int x2, string txt, color col, string sty, int w) =>
+    if show and not na(p) and not na(x1) and not na(x2)
+        int idx = -1
+        if mergeDupes
+            for [i, ep] in lvlP
+                if math.abs(ep - p) <= syminfo.mintick
+                    idx := i
+                    break
+        if idx >= 0
+            lvlT.set(idx, lvlT.get(idx) + " + " + txt)
+            lvlX2.set(idx, math.max(lvlX2.get(idx), x2))
+            lvlX1.set(idx, math.min(lvlX1.get(idx), x1))
+        else
+            lvlP.push(p), lvlX1.push(x1), lvlX2.push(x2)
+            lvlT.push(txt), lvlC.push(col), lvlS.push(sty), lvlW.push(w)
+
+lvlP.clear(), lvlX1.clear(), lvlX2.clear(), lvlT.clear(), lvlC.clear(), lvlS.clear(), lvlW.clear()
+
+// Monthly > Weekly > Daily > Sessions > NY Open
+addLevel(showPMH, pmhPrice, pmhTime, cutOnTouch ? endTime(pmhHit) : time, "PMH", colorHigh, prevStyle, prevWidth)
+addLevel(showPML, pmlPrice, pmlTime, cutOnTouch ? endTime(pmlHit) : time, "PML", colorLow,  prevStyle, prevWidth)
+addLevel(showPWH, pwhPrice, pwhTime, cutOnTouch ? endTime(pwhHit) : time, "PWH", colorHigh, prevStyle, prevWidth)
+addLevel(showPWL, pwlPrice, pwlTime, cutOnTouch ? endTime(pwlHit) : time, "PWL", colorLow,  prevStyle, prevWidth)
+addLevel(showPDH, pdhPrice, pdhTime, cutOnTouch ? endTime(pdhHit) : time, "PDH", colorHigh, prevStyle, prevWidth)
+addLevel(showPDL, pdlPrice, pdlTime, cutOnTouch ? endTime(pdlHit) : time, "PDL", colorLow,  prevStyle, prevWidth)
+
+addLevel(s1On, sA.hP, sA.hT, (cutOnTouch and not sA.live) ? endTime(sA.hHit) : time, s1Lbl + "-H", s1Col, s1Sty, s1W)
+addLevel(s1On, sA.lP, sA.lT, (cutOnTouch and not sA.live) ? endTime(sA.lHit) : time, s1Lbl + "-L", s1Col, s1Sty, s1W)
+addLevel(s2On, sB.hP, sB.hT, (cutOnTouch and not sB.live) ? endTime(sB.hHit) : time, s2Lbl + "-H", s2Col, s2Sty, s2W)
+addLevel(s2On, sB.lP, sB.lT, (cutOnTouch and not sB.live) ? endTime(sB.lHit) : time, s2Lbl + "-L", s2Col, s2Sty, s2W)
+addLevel(s3On, sC.hP, sC.hT, (cutOnTouch and not sC.live) ? endTime(sC.hHit) : time, s3Lbl + "-H", s3Col, s3Sty, s3W)
+addLevel(s3On, sC.lP, sC.lT, (cutOnTouch and not sC.live) ? endTime(sC.lHit) : time, s3Lbl + "-L", s3Col, s3Sty, s3W)
+
+addLevel(nyOn and timeframe.isintraday, nyPrice, nyTime, nyCut ? endTime(nyHit) : time, nyLbl, nyCol, nySty, nyW)
+
+var array<line>  pool  = array.new<line>()
+var array<label> lpool = array.new<label>()
+
+if barstate.islast
+    for ln in pool
+        line.delete(ln)
+    pool.clear()
+    for lb in lpool
+        label.delete(lb)
+    lpool.clear()
+
+    for [i, p] in lvlP
+        color c = useMaster ? masterColor : lvlC.get(i)
+        pool.push(line.new(lvlX1.get(i), p, lvlX2.get(i), p, xloc = xloc.bar_time, color = c, width = lvlW.get(i), style = lvlS.get(i)))
+        if showLabels
+            lpool.push(label.new(lvlX2.get(i), p, xloc = xloc.bar_time, yloc = yloc.price, text = lvlT.get(i), textcolor = c, style = label.style_none, size = lblSize, textalign = text.align_left))

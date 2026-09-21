@@ -1,0 +1,243 @@
+//@version=6
+// =============================================================================
+// MTF Supply & Demand (Prop Firm Gorilla)
+// Port of the MotiveWave study to TradingView / Pine Script.
+//
+// Timeframes: 15m, 30m, 1H, 90m, 2H, 4H, 690m, Daily.
+//
+// DEMAND: bullish impulse (open->close >= 0.3%, close in top 30% of range) with a
+//   red basing candle to its LEFT whose body <= 50% of the impulse body.
+//   Zone = basing OPEN (top) down to basing LOW (bottom), green 15% fill, extended
+//   right, labeled with the timeframe. Removed when a later bar's low trades
+//   through the zone bottom.
+// SUPPLY: mirror. Bearish impulse (open->close <= -0.3%, close in bottom 30% of
+//   range) with a green basing candle to its LEFT whose body <= 50% of the impulse
+//   body. Zone = basing HIGH (top) down to basing OPEN (bottom), red 15% fill.
+//   Removed when a later bar's high trades through the zone top.
+//
+// Non-repainting: impulse/basing are read from CLOSED higher-timeframe bars
+// (offsets [1]/[2] with lookahead_off), so zones only appear after the impulse
+// bar has closed and do not repaint on historical reload.
+// =============================================================================
+indicator("MTF Supply & Demand (PropFirmGorilla)", overlay = true, max_boxes_count = 500, max_labels_count = 500)
+
+// ------------------------------- Inputs --------------------------------------
+gDet = "Zone Detection"
+impPct   = input.float(0.3,  "Impulse min move (%)",              step = 0.05, minval = 0.0, group = gDet)
+closePct = input.float(70.0, "Impulse close in range (%)",        minval = 0.0, maxval = 100.0, group = gDet)
+basePct  = input.float(50.0, "Basing body max vs impulse (%)",    minval = 0.0, maxval = 100.0, group = gDet)
+maxZones = input.int(20,     "Max zones per timeframe",           minval = 1, maxval = 200, group = gDet)
+
+gTf = "Timeframes"
+useT15  = input.bool(true, "15m",  group = gTf, inline = "a")
+useT30  = input.bool(true, "30m",  group = gTf, inline = "a")
+useT60  = input.bool(true, "1H",   group = gTf, inline = "b")
+useT90  = input.bool(true, "90m",  group = gTf, inline = "b")
+useT120 = input.bool(true, "2H",   group = gTf, inline = "c")
+useT240 = input.bool(true, "4H",   group = gTf, inline = "c")
+useT690 = input.bool(true, "690m", group = gTf, inline = "d")
+useTD   = input.bool(true, "Daily",group = gTf, inline = "d")
+
+gApp = "Appearance"
+showDemand  = input.bool(true,  "Show demand zones", group = gApp, inline = "s")
+showSupply  = input.bool(true,  "Show supply zones", group = gApp, inline = "s")
+demandColor = input.color(color.new(color.green, 0), "Demand color", group = gApp, inline = "c")
+supplyColor = input.color(color.new(color.red,   0), "Supply color", group = gApp, inline = "c")
+opacity     = input.int(15, "Fill opacity (%)", minval = 0, maxval = 100, group = gApp)
+showBoxes   = input.bool(true, "Fill boxes (uncheck = origin line only)", group = gApp)
+showLabel   = input.bool(true, "Show timeframe label", group = gApp)
+simplify    = input.bool(false, "Simplify Zones (merge overlapping same-side zones)", group = gApp)
+
+// ------------------------------- Types ---------------------------------------
+// Zones are stored as DATA (no drawing objects). Figures are rebuilt each render
+// from the current set, so "Simplify" can merge/un-merge and invalidation stays
+// correct as individual sub-zones break.
+type Zone
+    int    tf        // timeframe index (0..7)
+    int    tfMin     // timeframe in minutes (for ordering the merged label)
+    string tfName    // display label, e.g. "90m"
+    bool   isDemand
+    float  top
+    float  bottom
+    float  lvl       // invalidation level: bottom (demand) / top (supply)
+    int    left      // basing (origin) bar time
+
+var array<Zone>  zones       = array.new<Zone>()
+var array<box>   drawnBoxes  = array.new<box>()
+var array<line>  drawnLines  = array.new<line>()
+var array<label> drawnLabels = array.new<label>()
+
+// --------------------- Detection (runs in HTF context) -----------------------
+// Impulse candle = bar[1] (just closed). Basing candle = bar[2] (to its left).
+// Returns [valid, zoneTop, zoneBottom, basingTime].
+detectDemand() =>
+    io = open[1], ic = close[1], ih = high[1], il = low[1]
+    bo = open[2], bc = close[2], bl = low[2]
+    rng = ih - il
+    impBody = ic - io
+    isImp  = ic > io and io > 0 and (ic - io) / io * 100.0 >= impPct and rng > 0 and (ic - il) / rng * 100.0 >= closePct
+    isBase = bc < bo and (bo - bc) <= basePct / 100.0 * impBody
+    valid  = isImp and isBase
+    [valid, valid ? bo : na, valid ? bl : na, valid ? time[2] : na]
+
+detectSupply() =>
+    io = open[1], ic = close[1], ih = high[1], il = low[1]
+    bo = open[2], bc = close[2], bh = high[2]
+    rng = ih - il
+    impBody = io - ic
+    isImp  = ic < io and io > 0 and (io - ic) / io * 100.0 >= impPct and rng > 0 and (ih - ic) / rng * 100.0 >= closePct
+    isBase = bc > bo and (bc - bo) <= basePct / 100.0 * impBody
+    valid  = isImp and isBase
+    [valid, valid ? bh : na, valid ? bo : na, valid ? time[2] : na]
+
+// ------------------------------ Zone creation (data only) --------------------
+addZone(bool isDemand, int tfIdx, int tfMin, string tfName, float top, float bot, int leftT) =>
+    // Enforce the per-timeframe cap by dropping the oldest matching zone.
+    cnt = 0
+    if array.size(zones) > 0
+        for i = 0 to array.size(zones) - 1
+            z = array.get(zones, i)
+            if z.isDemand == isDemand and z.tf == tfIdx
+                cnt += 1
+        if cnt >= maxZones
+            for i = 0 to array.size(zones) - 1
+                z = array.get(zones, i)
+                if z.isDemand == isDemand and z.tf == tfIdx
+                    array.remove(zones, i)
+                    break
+    array.push(zones, Zone.new(tfIdx, tfMin, tfName, isDemand, top, bot, isDemand ? bot : top, leftT))
+
+// --------- Per-timeframe pipeline: request + create on new signal -------------
+// Called once per timeframe at global scope; `var` state below is per-call-site.
+runTF(string tf, int tfIdx, int tfMin, string tfName, bool enabled) =>
+    [dv, dt, db, dl] = request.security(syminfo.tickerid, tf, detectDemand(), lookahead = barmerge.lookahead_off)
+    [sv, st, sb, sl] = request.security(syminfo.tickerid, tf, detectSupply(), lookahead = barmerge.lookahead_off)
+    var float lastD = na
+    var float lastS = na
+    if enabled and showDemand and dv and (na(lastD) or dl != lastD)
+        addZone(true, tfIdx, tfMin, tfName, dt, db, int(dl))
+        lastD := dl
+    if enabled and showSupply and sv and (na(lastS) or sl != lastS)
+        addZone(false, tfIdx, tfMin, tfName, st, sb, int(sl))
+        lastS := sl
+
+runTF("15",  0, 15,   "15m",  useT15)
+runTF("30",  1, 30,   "30m",  useT30)
+runTF("60",  2, 60,   "1H",   useT60)
+runTF("90",  3, 90,   "90m",  useT90)
+runTF("120", 4, 120,  "2H",   useT120)
+runTF("240", 5, 240,  "4H",   useT240)
+runTF("690", 6, 690,  "690m", useT690)
+runTF("D",   7, 1440, "1D",   useTD)
+
+// ----------------- Per-bar: invalidate broken zones (data only) ---------------
+if array.size(zones) > 0
+    for i = array.size(zones) - 1 to 0
+        z = array.get(zones, i)
+        broken = z.isDemand ? (low <= z.lvl) : (high >= z.lvl)
+        if broken
+            array.remove(zones, i)
+
+// ------------------------------- Rendering -----------------------------------
+clearDrawn() =>
+    if array.size(drawnBoxes) > 0
+        for i = 0 to array.size(drawnBoxes) - 1
+            box.delete(array.get(drawnBoxes, i))
+        array.clear(drawnBoxes)
+    if array.size(drawnLines) > 0
+        for i = 0 to array.size(drawnLines) - 1
+            line.delete(array.get(drawnLines, i))
+        array.clear(drawnLines)
+    if array.size(drawnLabels) > 0
+        for i = 0 to array.size(drawnLabels) - 1
+            label.delete(array.get(drawnLabels, i))
+        array.clear(drawnLabels)
+
+// One zone, drawn as a filled box or an origin line, plus its timeframe label.
+drawZone(Zone z) =>
+    col    = z.isDemand ? demandColor : supplyColor
+    bg     = color.new(col, 100 - opacity)
+    bd     = color.new(col, math.max(0, 100 - opacity * 2))
+    origin = z.isDemand ? z.top : z.bottom
+    labelY = showBoxes ? z.top : origin
+    if showBoxes
+        array.push(drawnBoxes, box.new(z.left, z.top, z.left, z.bottom, xloc = xloc.bar_time, border_color = bd, border_width = 1, bgcolor = bg, extend = extend.right))
+    else
+        array.push(drawnLines, line.new(z.left, origin, z.left, origin, xloc = xloc.bar_time, extend = extend.right, color = col, width = 2))
+    if showLabel
+        array.push(drawnLabels, label.new(time, labelY, z.tfName, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(col, 100), textcolor = col, size = size.small))
+
+// Combined label for a merged cluster: timeframes largest-first, e.g. "90m / 30m / 15m".
+clusterLabel(array<int> members) =>
+    txt = ""
+    for idx = 7 to 0
+        nm = ""
+        if array.size(members) > 0
+            for k = 0 to array.size(members) - 1
+                z = array.get(zones, array.get(members, k))
+                if z.tf == idx
+                    nm := z.tfName
+                    break
+        if nm != ""
+            txt := txt == "" ? nm : txt + " / " + nm
+    txt
+
+// One merged rectangle spanning all zones in a cluster.
+drawCluster(bool side, float cTop, float cBot, int cLeft, array<int> members) =>
+    col  = side ? demandColor : supplyColor
+    fill = showBoxes ? color.new(col, 100 - opacity) : color.new(col, 100)  // transparent fill in line mode
+    bd   = color.new(col, math.max(0, 100 - opacity * 2))
+    array.push(drawnBoxes, box.new(cLeft, cTop, cLeft, cBot, xloc = xloc.bar_time, border_color = bd, border_width = 1, bgcolor = fill, extend = extend.right))
+    if showLabel
+        array.push(drawnLabels, label.new(time, cTop, clusterLabel(members), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(col, 100), textcolor = col, size = size.small))
+
+// Merge overlapping same-side zones (by price interval) into single rectangles.
+renderSide(bool side) =>
+    idx = array.new<int>()
+    if array.size(zones) > 0
+        for i = 0 to array.size(zones) - 1
+            z = array.get(zones, i)
+            if z.isDemand == side
+                array.push(idx, i)
+    n = array.size(idx)
+    if n > 1
+        // sort indices by zone bottom ascending (selection sort)
+        for a = 0 to n - 2
+            for b = a + 1 to n - 1
+                za = array.get(zones, array.get(idx, a))
+                zb = array.get(zones, array.get(idx, b))
+                if zb.bottom < za.bottom
+                    tmp = array.get(idx, a)
+                    array.set(idx, a, array.get(idx, b))
+                    array.set(idx, b, tmp)
+    ci = 0
+    while ci < n
+        z0    = array.get(zones, array.get(idx, ci))
+        cBot  = z0.bottom
+        cTop  = z0.top
+        cLeft = z0.left
+        members = array.new<int>()
+        array.push(members, array.get(idx, ci))
+        cj = ci + 1
+        while cj < n
+            zj = array.get(zones, array.get(idx, cj))
+            if zj.bottom <= cTop            // overlaps the growing cluster (sorted by bottom)
+                cTop  := math.max(cTop, zj.top)
+                cLeft := zj.left < cLeft ? zj.left : cLeft   // keep int (earliest origin)
+                array.push(members, array.get(idx, cj))
+                cj += 1
+            else
+                break
+        drawCluster(side, cTop, cBot, cLeft, members)
+        ci := cj
+
+// Draw once at the right edge (final state / each realtime tick).
+if barstate.islast
+    clearDrawn()
+    if array.size(zones) > 0
+        if simplify
+            renderSide(true)
+            renderSide(false)
+        else
+            for i = 0 to array.size(zones) - 1
+                drawZone(array.get(zones, i))

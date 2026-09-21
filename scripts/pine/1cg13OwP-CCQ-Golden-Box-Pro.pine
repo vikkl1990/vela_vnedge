@@ -1,0 +1,398 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © CCQ
+
+//@version=6
+indicator("CCQ Golden Box Pro ", "CCQ Golden Box Pro", overlay=true, max_boxes_count=150, max_lines_count=50)
+
+// ============ INPUTS - STRUCTURE / FIBONACCI ============
+swingLen    = input.int(9, "Swing length (pivot)", minval=2, group="Structure")
+fibMinLevel = input.float(0.618, "Golden Box - low", step=0.01, group="Fibonacci")
+fibMaxLevel = input.float(0.786, "Golden Box - high", step=0.01, group="Fibonacci")
+goldColor   = input.color(color.new(color.yellow, 60), "Golden Box color", group="Fibonacci")
+zoneMode    = input.string("Fibonacci", "Zone mode", options=["Fibonacci", "Dynamic ATR"], group="Fibonacci")
+atrLen      = input.int(14, "ATR length", group="Fibonacci")
+atrMult     = input.float(1.0, "ATR multiplier (zone width)", step=0.1, minval=0.1, group="Fibonacci")
+
+// ============ INPUTS - INVALIDATION ============
+useInvalidation = input.bool(true, "Invalidate/reset bias on swing break", group="Invalidation")
+
+// ============ INPUTS - FIXED TIMEFRAME ============
+useFixedTF = input.bool(true, "Compute structure on a fixed timeframe", group="Timeframe")
+fixedTF    = input.timeframe("240", "Fixed timeframe", group="Timeframe")
+
+// ============ INPUTS - HTF CONFIRMATION (MACRO TREND) ============
+useHtfConfirm    = input.bool(true, "Show/score HTF trend", group="HTF Confirmation")
+requireHtfAlign  = input.bool(false, "Block signal if HTF not aligned", group="HTF Confirmation")
+htfTF            = input.timeframe("D", "HTF timeframe", group="HTF Confirmation")
+htfEmaFastLen    = input.int(9, "Fast EMA (HTF)", group="HTF Confirmation")
+htfEmaSlowLen    = input.int(21, "Slow EMA (HTF)", group="HTF Confirmation")
+
+// ============ INPUTS - VOLUME / DELTA FILTER ============
+useVolFilter    = input.bool(true, "Score with volume/delta", group="Volume Filter")
+requireVolAlign = input.bool(false, "Block signal if volume not aligned", group="Volume Filter")
+volLen          = input.int(20, "Volume average length", group="Volume Filter")
+volMult         = input.float(1.2, "Volume spike threshold (x average)", step=0.1, group="Volume Filter")
+deltaLen        = input.int(5, "Volume delta cumulative length", group="Volume Filter")
+
+// ============ INPUTS - CONFIRMATION CANDLE ============
+useConfirmCandle = input.bool(true, "Require a confirmation candle (engulfing/pin bar)", group="Confirmation Candle")
+pinRatio         = input.float(0.66, "Rejection wick ratio", step=0.01, minval=0.5, maxval=0.95, group="Confirmation Candle")
+
+// ============ INPUTS - FVG / iFVG ============
+useFVG        = input.bool(false, "Enable fresh FVG zones", group="FVG / iFVG")
+useIFVG       = input.bool(true, "Enable iFVG zones", group="FVG / iFVG")
+fvgMinATR     = input.float(0.15, "Minimum gap size (x ATR)", step=0.05, minval=0.0, group="FVG / iFVG")
+fvgMaxStored  = input.int(15, "Max zones tracked", minval=1, maxval=40, group="FVG / iFVG")
+showFVGBoxes  = input.bool(true, "Show FVG/iFVG zones on chart", group="FVG / iFVG")
+fvgMaxTouches = input.int(2, "Delete zone after N touches", minval=1, maxval=10, group="FVG / iFVG")
+ifvgBullColor    = input.color(color.lime, "iFVG color - bullish (support)", group="FVG / iFVG")
+ifvgBearColor    = input.color(color.red, "iFVG color - bearish (resistance)", group="FVG / iFVG")
+ifvgBgTransp     = input.int(90, "iFVG background transparency", minval=0, maxval=100, group="FVG / iFVG")
+fvgBullColor     = input.color(color.lime, "FVG color - bullish (fresh, not yet inverted)", group="FVG / iFVG")
+fvgBearColor     = input.color(color.red, "FVG color - bearish (fresh, not yet inverted)", group="FVG / iFVG")
+fvgBgTransp      = input.int(90, "FVG background transparency", minval=0, maxval=100, group="FVG / iFVG")
+
+// ============ INPUTS - STATISTICAL TRACKING (LIVE WIN RATE) ============
+useWinTracker  = input.bool(true, "Enable live signal statistics tracking", group="Statistical Tracking")
+trackHorizon   = input.int(30, "Tracking horizon (bars)", minval=5, group="Statistical Tracking")
+targetATRMult  = input.float(1.5, "Target (x ATR)", step=0.1, minval=0.1, group="Statistical Tracking")
+stopATRMult    = input.float(1.0, "Stop (x ATR)", step=0.1, minval=0.1, group="Statistical Tracking")
+
+// ============ INPUTS - TREND VISUAL ============
+showEmaTrend   = input.bool(true, "Show trend EMA", group="Trend Visual")
+emaFastLen     = input.int(9, "Fast EMA", group="Trend Visual")
+emaSlowLen     = input.int(21, "Slow EMA", group="Trend Visual")
+showBgColor    = input.bool(true, "Show background color (bias)", group="Trend Visual")
+bgOpacity      = input.int(92, "Background opacity (0=opaque, 100=invisible)", minval=0, maxval=100, group="Trend Visual")
+bgBullColor    = input.color(color.lime, "Bullish background color", group="Trend Visual")
+bgBearColor    = input.color(color.red, "Bearish background color", group="Trend Visual")
+
+// ============ TYPES ============
+type FVGZone
+    float top
+    float bot
+    bool  origBull
+    bool  isBull
+    bool  inverted
+    int   startBar
+    int   leftBar
+    int   touchCount
+    bool  wasInside
+    box   bx
+
+type Signal
+    int   entryBar
+    float entryPrice
+    float target
+    float stop
+    bool  isBuy
+    bool  fvgConfluence
+
+// ============ ATR (reused everywhere: dynamic zone, FVG, tracker) ============
+atr_ = ta.atr(atrLen)
+
+// ============ STRUCTURE / SWINGS ON TIMEFRAME (FIXED OR CHART) ============
+f_swing() =>
+    _ph = ta.pivothigh(swingLen, swingLen)
+    _pl = ta.pivotlow(swingLen, swingLen)
+    [_ph, _pl]
+
+[secPH, secPL] = request.security(syminfo.tickerid, useFixedTF ? fixedTF : timeframe.period, f_swing())
+tfRatio = timeframe.in_seconds(useFixedTF ? fixedTF : timeframe.period) / timeframe.in_seconds(timeframe.period)
+
+newPH = not na(secPH) and (na(secPH[1]) or secPH != secPH[1])
+newPL = not na(secPL) and (na(secPL[1]) or secPL != secPL[1])
+
+var float lastPH    = na
+var float prevPH    = na
+var int   lastPHBar = na
+var float lastPL    = na
+var float prevPL    = na
+var int   lastPLBar = na
+
+if newPH
+    prevPH    := lastPH
+    lastPH    := secPH
+    lastPHBar := bar_index - int(swingLen * tfRatio)
+
+if newPL
+    prevPL    := lastPL
+    lastPL    := secPL
+    lastPLBar := bar_index - int(swingLen * tfRatio)
+
+// ============ BIAS (with reset on ambiguous structure) ============
+var string bias = "neutral"
+if not na(lastPH) and not na(prevPH) and not na(lastPL) and not na(prevPL)
+    if lastPH > prevPH and lastPL > prevPL
+        bias := "bullish"
+    else if lastPH < prevPH and lastPL < prevPL
+        bias := "bearish"
+    else
+        bias := "neutral"
+
+// ============ GOLDEN BOX (FIBONACCI OR DYNAMIC ATR) ============
+var box   goldenBox = na
+float gpTop = na
+float gpBot = na
+float fibHigh = na
+float fibLow  = na
+
+if not na(lastPH) and not na(lastPL)
+    legUp   = lastPHBar > lastPLBar
+    fibHigh := math.max(lastPH, lastPL)
+    fibLow  := math.min(lastPH, lastPL)
+    range_  = fibHigh - fibLow
+
+    if zoneMode == "Fibonacci"
+        gpA = legUp ? fibHigh - range_ * fibMinLevel : fibLow + range_ * fibMinLevel
+        gpB = legUp ? fibHigh - range_ * fibMaxLevel : fibLow + range_ * fibMaxLevel
+        gpTop := math.max(gpA, gpB)
+        gpBot := math.min(gpA, gpB)
+    else
+        centerLevel = (fibMinLevel + fibMaxLevel) / 2
+        centerPrice = legUp ? fibHigh - range_ * centerLevel : fibLow + range_ * centerLevel
+        halfWidth   = atr_ * atrMult
+        gpTop := centerPrice + halfWidth
+        gpBot := centerPrice - halfWidth
+
+    // Invalidation: decisive break of the swing against the bias -> reset
+    if useInvalidation
+        if bias == "bullish" and close < fibLow
+            bias := "neutral"
+        if bias == "bearish" and close > fibHigh
+            bias := "neutral"
+
+    box.delete(goldenBox)
+    goldenBox := box.new(math.min(lastPHBar, lastPLBar), gpTop, bar_index + 25, gpBot,
+         border_color=color.new(color.yellow, 90), bgcolor=goldColor, extend=extend.none)
+
+// ============ HTF CONFIRMATION (MACRO TREND VIA EMA) ============
+[htfEmaFastVal, htfEmaSlowVal] = request.security(syminfo.tickerid, htfTF, [ta.ema(close, htfEmaFastLen), ta.ema(close, htfEmaSlowLen)])
+htfBias     = htfEmaFastVal > htfEmaSlowVal ? "bullish" : "bearish"
+htfAlignBuy  = htfBias == "bullish"
+htfAlignSell = htfBias == "bearish"
+
+// ============ VOLUME / DELTA FILTER ============
+volDelta     = close > open ? volume : close < open ? -volume : 0.0
+volDeltaSum  = ta.sma(volDelta, deltaLen) * deltaLen
+volSpike     = volume > ta.sma(volume, volLen) * volMult
+volAlignBuy  = volDeltaSum > 0 and volSpike
+volAlignSell = volDeltaSum < 0 and volSpike
+
+// ============ CONFIRMATION CANDLE (ENGULFING / PIN BAR) ============
+rangeC      = high - low
+bullEngulf  = close > open and close[1] < open[1] and close >= open[1] and open <= close[1]
+bearEngulf  = close < open and close[1] > open[1] and close <= open[1] and open >= close[1]
+bullPin     = rangeC > 0 and (close - low) / rangeC >= pinRatio and close > open
+bearPin     = rangeC > 0 and (high - close) / rangeC >= pinRatio and close < open
+confirmBuy  = bullEngulf or bullPin
+confirmSell = bearEngulf or bearPin
+
+// ============ FVG / iFVG ============
+var array<FVGZone> fvgZones = array.new<FVGZone>()
+
+bullGap    = low - high[2]
+bearGap    = low[2] - high
+detectFVG  = useFVG or useIFVG  // gaps still need to be tracked internally so a fresh FVG can later become an iFVG
+isBullFVG = detectFVG and bullGap > atr_ * fvgMinATR
+isBearFVG = detectFVG and bearGap > atr_ * fvgMinATR
+
+if isBullFVG
+    z = FVGZone.new()
+    z.top        := low
+    z.bot        := high[2]
+    z.origBull   := true
+    z.isBull     := true
+    z.inverted   := false
+    z.startBar   := bar_index - 1
+    z.leftBar    := bar_index - 2
+    z.touchCount := 0
+    z.wasInside  := false
+    z.bx         := (showFVGBoxes and useFVG) ? box.new(bar_index - 2, low, bar_index + 5, high[2], border_width=0, bgcolor=color.new(fvgBullColor, fvgBgTransp), extend=extend.right) : na
+    array.unshift(fvgZones, z)
+
+if isBearFVG
+    z2 = FVGZone.new()
+    z2.top        := low[2]
+    z2.bot        := high
+    z2.origBull   := false
+    z2.isBull     := false
+    z2.inverted   := false
+    z2.startBar   := bar_index - 1
+    z2.leftBar    := bar_index - 2
+    z2.touchCount := 0
+    z2.wasInside  := false
+    z2.bx         := (showFVGBoxes and useFVG) ? box.new(bar_index - 2, low[2], bar_index + 5, high, border_width=0, bgcolor=color.new(fvgBearColor, fvgBgTransp), extend=extend.right) : na
+    array.unshift(fvgZones, z2)
+
+// purge oldest zones beyond the cap (end of array)
+if array.size(fvgZones) > fvgMaxStored
+    while array.size(fvgZones) > fvgMaxStored
+        old = array.pop(fvgZones)
+        if not na(old.bx)
+            box.delete(old.bx)
+
+// inversion (FVG broken -> iFVG), confluence, and touch-based expiry
+fvgConfluenceBuy  = false
+fvgConfluenceSell = false
+
+if array.size(fvgZones) > 0
+    for i = array.size(fvgZones) - 1 to 0
+        zn = array.get(fvgZones, i)
+
+        // Inversion: a fresh FVG that gets closed through flips into an iFVG.
+        // If fresh FVG boxes are off, the box does not exist yet and gets created only here.
+        // If iFVG is disabled, any existing fresh-FVG box is removed instead (nothing to show once inverted).
+        if not zn.inverted
+            if zn.origBull and close < zn.bot
+                zn.isBull   := false
+                zn.inverted := true
+                if useIFVG and showFVGBoxes and na(zn.bx)
+                    zn.bx := box.new(zn.leftBar, zn.top, bar_index + 5, zn.bot, border_width=0, bgcolor=color.new(ifvgBearColor, ifvgBgTransp), extend=extend.right)
+                else if useIFVG and not na(zn.bx)
+                    box.set_bgcolor(zn.bx, color.new(ifvgBearColor, ifvgBgTransp))
+                else if (not useIFVG) and not na(zn.bx)
+                    box.delete(zn.bx)
+                    zn.bx := na
+            else if (not zn.origBull) and close > zn.top
+                zn.isBull   := true
+                zn.inverted := true
+                if useIFVG and showFVGBoxes and na(zn.bx)
+                    zn.bx := box.new(zn.leftBar, zn.top, bar_index + 5, zn.bot, border_width=0, bgcolor=color.new(ifvgBullColor, ifvgBgTransp), extend=extend.right)
+                else if useIFVG and not na(zn.bx)
+                    box.set_bgcolor(zn.bx, color.new(ifvgBullColor, ifvgBgTransp))
+                else if (not useIFVG) and not na(zn.bx)
+                    box.delete(zn.bx)
+                    zn.bx := na
+
+        // A fresh zone counts/shows while useFVG is on; an inverted zone counts/shows while useIFVG is on
+        zoneActive = zn.inverted ? useIFVG : useFVG
+        touching   = close <= zn.top and close >= zn.bot
+
+        if zoneActive and touching
+            if zn.isBull
+                fvgConfluenceBuy := true
+            else
+                fvgConfluenceSell := true
+
+        // Touch count: only counts entries into the zone, not every bar spent inside it
+        if touching and not zn.wasInside
+            zn.touchCount := zn.touchCount + 1
+        zn.wasInside := touching
+
+        // Zone expires (disappears) once it has been touched fvgMaxTouches times
+        if zn.touchCount >= fvgMaxTouches
+            if not na(zn.bx)
+                box.delete(zn.bx)
+            array.remove(fvgZones, i)
+
+// ============ TREND EMA (VISUAL) ============
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+emaTrendColor = emaFast > emaSlow ? color.lime : color.red
+
+plot(showEmaTrend ? emaFast : na, "Fast EMA", color=emaTrendColor, linewidth=2)
+plot(showEmaTrend ? emaSlow : na, "Slow EMA", color=color.new(emaTrendColor, 40), linewidth=1)
+
+// ============ SIGNAL: FULL CONFLUENCE ============
+inBox   = not na(gpTop) and close <= gpTop and close >= gpBot
+baseBuy  = inBox and bias == "bullish"
+baseSell = inBox and bias == "bearish"
+
+score = 0.0
+if baseBuy or baseSell
+    score += 40
+if useHtfConfirm and ((baseBuy and htfAlignBuy) or (baseSell and htfAlignSell))
+    score += 20
+if useVolFilter and ((baseBuy and volAlignBuy) or (baseSell and volAlignSell))
+    score += 15
+if useConfirmCandle and ((baseBuy and confirmBuy) or (baseSell and confirmSell))
+    score += 15
+if (useFVG or useIFVG) and ((baseBuy and fvgConfluenceBuy) or (baseSell and fvgConfluenceSell))
+    score += 10
+
+gateBuy  = baseBuy  and (not requireHtfAlign or htfAlignBuy)  and (not requireVolAlign or volAlignBuy)  and (not useConfirmCandle or confirmBuy)
+gateSell = baseSell and (not requireHtfAlign or htfAlignSell) and (not requireVolAlign or volAlignSell) and (not useConfirmCandle or confirmSell)
+
+var string signal = "NEUTRAL"
+if gateBuy
+    signal := "BUY"
+else if gateSell
+    signal := "SELL"
+else
+    signal := "NEUTRAL"
+
+scoreLabel = score >= 70 ? "HIGH" : score >= 40 ? "MEDIUM" : "LOW"
+sigColor = signal == "BUY" ? color.lime : signal == "SELL" ? color.red : color.gray
+scoreColor = scoreLabel == "HIGH" ? color.lime : scoreLabel == "MEDIUM" ? color.orange : color.red
+
+// ============ STATISTICAL TRACKING (LIVE WIN RATE) ============
+var array<Signal> pendingSignals = array.new<Signal>()
+var int winCount        = 0
+var int totalCount      = 0
+var int winCountFVG     = 0
+var int totalCountFVG   = 0
+
+signalChanged = signal != signal[1]
+if useWinTracker and signalChanged and (signal == "BUY" or signal == "SELL")
+    isBuy_ = signal == "BUY"
+    conf   = isBuy_ ? fvgConfluenceBuy : fvgConfluenceSell
+    s = Signal.new()
+    s.entryBar      := bar_index
+    s.entryPrice    := close
+    s.target        := isBuy_ ? close + atr_ * targetATRMult : close - atr_ * targetATRMult
+    s.stop          := isBuy_ ? close - atr_ * stopATRMult   : close + atr_ * stopATRMult
+    s.isBuy         := isBuy_
+    s.fvgConfluence := conf
+    array.push(pendingSignals, s)
+
+if useWinTracker and array.size(pendingSignals) > 0
+    for i = array.size(pendingSignals) - 1 to 0
+        s2 = array.get(pendingSignals, i)
+        hitTarget = s2.isBuy ? high >= s2.target : low <= s2.target
+        hitStop   = s2.isBuy ? low <= s2.stop   : high >= s2.stop
+        expired   = (bar_index - s2.entryBar) > trackHorizon
+        if hitStop
+            totalCount += 1
+            if s2.fvgConfluence
+                totalCountFVG += 1
+            array.remove(pendingSignals, i)
+        else if hitTarget
+            totalCount += 1
+            winCount   += 1
+            if s2.fvgConfluence
+                totalCountFVG += 1
+                winCountFVG   += 1
+            array.remove(pendingSignals, i)
+        else if expired
+            array.remove(pendingSignals, i)
+
+winRate    = totalCount > 0 ? (winCount / totalCount) * 100 : na
+winRateFVG = totalCountFVG > 0 ? (winCountFVG / totalCountFVG) * 100 : na
+
+// ============ BACKGROUND COLOR (BIAS) ============
+bgTint = bias == "bullish" ? color.new(bgBullColor, bgOpacity) : bias == "bearish" ? color.new(bgBearColor, bgOpacity) : na
+bgcolor(showBgColor ? bgTint : na, title="Bias Background")
+
+// ============ TABLE ============
+biasColor = bias == "bullish" ? color.lime : bias == "bearish" ? color.red : color.gray
+htfColor  = htfBias == "bullish" ? color.lime : color.red
+
+var table infoTable = table.new(position.top_right, 2, 6, border_width=1)
+if barstate.islast
+    table.cell(infoTable, 0, 0, "Signal", text_color=color.white, bgcolor=color.new(color.gray, 40))
+    table.cell(infoTable, 1, 0, signal, text_color=color.white, bgcolor=color.new(sigColor, 20), text_size=size.large)
+    table.cell(infoTable, 0, 1, "Bias", text_color=color.white, bgcolor=color.new(color.gray, 40))
+    table.cell(infoTable, 1, 1, bias, text_color=color.white, bgcolor=color.new(biasColor, 20))
+    table.cell(infoTable, 0, 2, "HTF (" + htfTF + ")", text_color=color.white, bgcolor=color.new(color.gray, 40))
+    table.cell(infoTable, 1, 2, htfBias, text_color=color.white, bgcolor=color.new(htfColor, 20))
+    table.cell(infoTable, 0, 3, "Confluence Score", text_color=color.white, bgcolor=color.new(color.gray, 40))
+    table.cell(infoTable, 1, 3, scoreLabel + " (" + str.tostring(score, "#") + ")", text_color=color.white, bgcolor=color.new(scoreColor, 20))
+    table.cell(infoTable, 0, 4, "Win Rate (global)", text_color=color.white, bgcolor=color.new(color.gray, 40))
+    table.cell(infoTable, 1, 4, na(winRate) ? "n=" + str.tostring(totalCount) : str.tostring(winRate, "#.#") + "% (n=" + str.tostring(totalCount) + ")", text_color=color.white, bgcolor=color.new(color.gray, 30))
+    table.cell(infoTable, 0, 5, "Win Rate (iFVG)", text_color=color.white, bgcolor=color.new(color.gray, 40))
+    table.cell(infoTable, 1, 5, na(winRateFVG) ? "n=" + str.tostring(totalCountFVG) : str.tostring(winRateFVG, "#.#") + "% (n=" + str.tostring(totalCountFVG) + ")", text_color=color.white, bgcolor=color.new(color.gray, 30))
+
+// ============ ALERTS ============
+alertcondition(signal == "BUY" and signal[1] != "BUY", "CCQ Golden Box - BUY", "CCQ Golden Box v2: BUY signal")
+alertcondition(signal == "SELL" and signal[1] != "SELL", "CCQ Golden Box - SELL", "CCQ Golden Box v2: SELL signal")

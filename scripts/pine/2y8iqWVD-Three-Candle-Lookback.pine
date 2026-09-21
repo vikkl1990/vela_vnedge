@@ -1,0 +1,146 @@
+//@version=6
+indicator("Three-Candle Lookback", overlay=true, max_lines_count=500, max_labels_count=500)
+
+//#region Inputs
+offsetBars = input.int(20, "Offset (bars) from last bar", minval=1)
+spacingBars = input.int(10, "Spacing between candles (bars)", minval=0)
+bodyWidth = input.int(24, "Body line width", minval=1)
+wickWidth = input.int(2, "Wick line width", minval=1)
+hlStyleInput = input.string("Solid", "Line style for H/L lines", options=["Solid", "Dotted"])
+color15Input = input.color(color.blue, "15m candle color")
+color4HInput = input.color(color.orange, "4H candle color")
+color6HInput = input.color(color.purple, "6H candle color")
+showCandles = input.bool(true, "Show candles")
+showHLLines = input.bool(true, "Show H/L lines")
+showLabels = input.bool(true, "Show labels")
+//#endregion
+
+//#region Constants
+MINUTES_15 = 15.0
+MINUTES_4H = 240.0
+MINUTES_6H = 360.0
+//#endregion
+
+//#region Helpers
+//@function Returns the number of chart bars that match the requested minute lookback.
+//@param lookbackMinutes The requested lookback in minutes.
+//@returns The lookback converted to chart bars, never less than 1.
+calcLookbackBars(lookbackMinutes) =>
+    chartMinutes = timeframe.in_seconds() / 60.0
+    math.max(1, int(math.round(lookbackMinutes / chartMinutes)))
+
+//@function Deletes a line if it exists.
+//@param ln The line to delete.
+//@returns Nothing.
+deleteLine(ln) =>
+    if not na(ln)
+        line.delete(ln)
+
+//@function Deletes a label if it exists.
+//@param lb The label to delete.
+//@returns Nothing.
+deleteLabel(lb) =>
+    if not na(lb)
+        label.delete(lb)
+//#endregion
+
+//#region Lookback calculations
+bars15 = calcLookbackBars(MINUTES_15)
+bars4H = calcLookbackBars(MINUTES_4H)
+bars6H = calcLookbackBars(MINUTES_6H)
+
+high15 = ta.highest(high, bars15)
+low15 = ta.lowest(low, bars15)
+high4H = ta.highest(high, bars4H)
+low4H = ta.lowest(low, bars4H)
+high6H = ta.highest(high, bars6H)
+low6H = ta.lowest(low, bars6H)
+
+open15 = bars15 > 0 and not na(open[bars15 - 1]) ? open[bars15 - 1] : na
+close15 = close
+open4H = bars4H > 0 and not na(open[bars4H - 1]) ? open[bars4H - 1] : na
+close4H = close
+open6H = bars6H > 0 and not na(open[bars6H - 1]) ? open[bars6H - 1] : na
+close6H = close
+
+color15 = color15Input
+color4H = color4HInput
+color6H = color6HInput
+
+hlStyle = hlStyleInput == "Dotted" ? line.style_dotted : line.style_solid
+//#endregion
+
+//#region Drawing objects
+var line body15Line = na
+var line wick15Line = na
+var line high15Line = na
+var line low15Line = na
+var label label15 = na
+
+var line body4HLine = na
+var line wick4HLine = na
+var line high4HLine = na
+var line low4HLine = na
+var label label4H = na
+var line body6HLine = na
+var line wick6HLine = na
+var line high6HLine = na
+var line low6HLine = na
+var label label6H = na
+//#endregion
+
+//#region Render
+if barstate.islast
+    deleteLine(body15Line)
+    deleteLine(wick15Line)
+    deleteLine(high15Line)
+    deleteLine(low15Line)
+    deleteLabel(label15)
+    deleteLine(body4HLine)
+    deleteLine(wick4HLine)
+    deleteLine(high4HLine)
+    deleteLine(low4HLine)
+    deleteLabel(label4H)
+    deleteLine(body6HLine)
+    deleteLine(wick6HLine)
+    deleteLine(high6HLine)
+    deleteLine(low6HLine)
+    deleteLabel(label6H)
+
+    x15 = bar_index + offsetBars
+    x4H = x15 + spacingBars
+    x6H = x4H + spacingBars
+
+    if showCandles and not na(open15) and not na(high15) and not na(low15)
+        body15Line := line.new(x15, open15, x15, close15, color=color15, width=bodyWidth)
+        wick15Line := line.new(x15, high15, x15, low15, color=color15, width=wickWidth)
+
+    if showCandles and not na(open4H) and not na(high4H) and not na(low4H)
+        body4HLine := line.new(x4H, open4H, x4H, close4H, color=color4H, width=bodyWidth)
+        wick4HLine := line.new(x4H, high4H, x4H, low4H, color=color4H, width=wickWidth)
+
+    if showHLLines and not na(high15) and not na(low15)
+        high15Line := line.new(x15 - bars15 + 1, high15, x15, high15, color=color.blue, style=hlStyle)
+        low15Line := line.new(x15 - bars15 + 1, low15, x15, low15, color=color.blue, style=hlStyle)
+
+    if showHLLines and not na(high4H) and not na(low4H)
+        high4HLine := line.new(x4H - bars4H + 1, high4H, x4H, high4H, color=color.orange, style=hlStyle)
+        low4HLine := line.new(x4H - bars4H + 1, low4H, x4H, low4H, color=color.orange, style=hlStyle)
+
+    if showLabels and not na(high15)
+        label15 := label.new(x15, high15, "15m", style=label.style_label_up, textcolor=color.white, color=color.new(color15Input, 0))
+
+    if showLabels and not na(high4H)
+        label4H := label.new(x4H, high4H, "4H", style=label.style_label_up, textcolor=color.white, color=color.new(color4HInput, 0))
+
+    if showCandles and not na(open6H) and not na(high6H) and not na(low6H)
+        body6HLine := line.new(x6H, open6H, x6H, close6H, color=color6H, width=bodyWidth)
+        wick6HLine := line.new(x6H, high6H, x6H, low6H, color=color6H, width=wickWidth)
+
+    if showHLLines and not na(high6H) and not na(low6H)
+        high6HLine := line.new(x6H - bars6H + 1, high6H, x6H, high6H, color=color.purple, style=hlStyle)
+        low6HLine := line.new(x6H - bars6H + 1, low6H, x6H, low6H, color=color.purple, style=hlStyle)
+
+    if showLabels and not na(high6H)
+        label6H := label.new(x6H, high6H, "6H", style=label.style_label_up, textcolor=color.white, color=color.new(color6HInput, 0))
+//#endregion

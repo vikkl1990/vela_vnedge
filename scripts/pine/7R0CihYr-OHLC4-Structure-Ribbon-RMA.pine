@@ -1,0 +1,1924 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © MYNAMEISBRANDON
+
+//@version=6
+indicator("OHLC4 Structure Ribbon [RMA] ", "OHLC4 Ribbon", overlay=true, calc_bars_count=2500, max_bars_back=5000, max_labels_count=500)
+
+// ==============================================================================================
+// 🟢 REGION: Script Overview
+// ==============================================================================================
+//
+// OHLC STACK RIBBON — MULTI-HORIZON RMA(OHLC4) STRUCTURE
+//
+// WHAT THIS INDICATOR DOES
+// • Builds a six-average structural ribbon from Wilder RMA applied to OHLC4:
+//      5 / 8 / 13 / 20 / 34 / 50.
+// • Uses the shape, ordering, and directional strength of the full stack to classify market structure.
+// • Separates short/intermediate ribbon structure from a slower 75 / 110 RMA(OHLC4) structural pair.
+// • Adds regime-colored candles, right-side level labels, persistent price-cross arrows,
+//   crossover event labels, a two-bar price follow line, and a compact two-row context table.
+//
+// CORE ENGINE
+//
+// 1) REG BODY — regression-derived ribbon body
+// • Each of the six RMA horizons is assigned its theoretical Wilder-RMA lag:
+//      5→4, 8→7, 13→12, 20→19, 34→33, 50→49 bars.
+// • A linear regression across those lag coordinates estimates the directional slope of the entire stack.
+// • That slope is projected across the full lag span to create one signed structural spread:
+//      positive = faster horizons are structurally above slower horizons;
+//      negative = faster horizons are structurally below slower horizons.
+// • REG BODY is therefore a full-stack measurement, not simply the distance between two averages.
+//
+// 2) ATR14 NORMALIZATION
+// • The signed REG BODY spread is divided by ATR14.
+// • This converts the raw price-distance measurement into volatility-relative units so the engine can
+//   behave more consistently across symbols, prices, and timeframes.
+//
+// 3) SOFT PEAK-PERSISTENCE ATR-DRAG GUARD
+// • A strong, orderly move can appear to weaken simply because ATR expands faster than the ribbon body.
+// • The guard watches REG BODY persistence, stack order, and ATR expansion together.
+// • When structure remains highly ordered and the ribbon body is still holding/expanding, the guard can
+//   temporarily preserve part of the prior normalized strength instead of allowing an ATR spike to collapse it.
+// • The effect is capped and decays automatically. It releases when directional side changes, order deteriorates,
+//   the ribbon body cools, or the qualifying structural conditions are no longer present.
+//
+// 4) WIDE SEMANTIC — signed structural-strength scale
+// • The guarded ATR-normalized REG BODY is mapped to a bounded -100…+100 scale.
+// • The mapping is intentionally non-linear so ordinary trends retain useful separation while increasingly
+//   uncommon structural expansion is pushed toward the outer readings.
+// • Key absolute-value anchors:
+//      0.70 ATR → 34
+//      1.25 ATR → 55
+//      2.50 ATR → 65
+//      4.00 ATR → 75
+//      7.00 ATR → 89
+//      12.0 ATR → 95
+//      20.0 ATR → 100
+// • Positive values indicate bullish structural direction; negative values indicate bearish direction.
+// • CORE in the table is this final signed Wide Semantic value. It is a structural-strength reading,
+//   not a probability, price target, or percentage.
+//
+// GLOBAL REGIME ENGINE
+// • Bull Rise — accepted bullish full-stack structure.
+// • Bear Fall — accepted bearish full-stack structure.
+// • Bull Resistance — prior bullish lineage remains active while the full bullish stack is disrupted.
+// • Bear Support — prior bearish lineage remains active while the full bearish stack is disrupted.
+// • Top / Bottom Extreme and Exceptional states identify unusually large same-direction structural expansion.
+// • Structural ownership uses fixed Wide Semantic rails:
+//      same-side full-stack re-entry = ±34
+//      opposite/initial directional transfer = ±55
+//      Extreme entry / release = ±89 / ±75
+//      Exceptional entry / release = ±95 / ±89
+// • Extreme and Exceptional persistence also require the corresponding full stack to remain physically intact.
+//
+// RIBBON + TRANSITION RENDERING
+// • The visible ribbon contains five adjacent bands:
+//      5/8 → 8/13 → 13/20 → 20/34 → 34/50.
+// • Gradient mode uses opaque background-matched shades so crossover bands can cover one another cleanly
+//   without transparent-fill discoloration.
+// • Foreground transition ownership propagates contiguously from the fast 5/8 edge.
+// • A deeper band cannot visually change direction until every faster pair in front of it has aligned first.
+// • Bull Resistance rollover and Bear Support recovery/rollover use the same contiguous pair-by-pair ownership,
+//   allowing the ribbon to show transition progression instead of flipping every band at once.
+// • Global Regime mode is also available for a flat single-color presentation.
+//
+// PLOTCANDLES + PRICE FOLLOW
+// • Optional PlotCandles use the active Global Regime color with independent body, wick, and border transparency.
+// • The hardcoded Bar-to-Bar Follow Line uses native show_last=2, producing one previous-close → current-close
+//   segment colored by the active Global Regime.
+//
+// RIGHT-SIDE OHLC LABELS
+// • OHLC5 / 8 / 13 / 20 / 34 / 50 labels inherit the active ribbon presentation at their physical gradient boundaries.
+// • Internal labels use interpolated boundary shades so the right-label stack visually continues the ribbon gradient.
+// • A label-only brightness lift improves readability without changing the ribbon itself.
+// • Each level independently tracks the most recent live price-side ownership:
+//      $⤵ on the TOP row = price most recently moved from above to below that OHLC level;
+//      $⤴ on the BOTTOM row = price most recently moved from below to above that OHLC level.
+// • The arrow persists until the opposite side takes ownership and can flip within the same live bar.
+// • OHLC75 / OHLC110 labels use the separate long-structure color owner:
+//      75 > 110 = orange; otherwise = gray.
+//
+// CROSSOVER EVENT LABELS
+// • 5 / 8 = fast-edge crossover.
+// • 8 / 20 = optional early-intermediate crossover; default HIDE.
+// • 13 / 34 = optional middle-structure crossover; default HIDE.
+// • 20 / 50 = slower ribbon-structure crossover.
+// • 75 / 110 = long structural crossover.
+// • Bullish events print below the candle; bearish events print above the candle.
+// • Historical event labels retain the Global Regime color that was active on the bar where the crossover formed.
+//
+// RIBBON ORDER TELEMETRY
+// • ORDER % measures how efficiently the six averages form one monotonic directional path:
+//      |OHLC5 − OHLC50| ÷ sum of all five adjacent-pair distances × 100.
+// • 100% means the stack is perfectly monotonic from fast to slow.
+// • Lower readings indicate increasing internal folding / crossover geometry.
+// • Bull/Bear x/5 shows how far the current fast-edge ordering has propagated CONTIGUOUSLY through the five pairs.
+// • ORDER telemetry describes current geometry only; it does not override Global Regime ownership.
+//
+// DEVELOPING HTF CORE
+// • The table also calculates the same six-RMA CORE engine natively on the automatically selected next higher timeframe.
+// • This is a DEVELOPING reading: gaps_off, lookahead_off, no confirmed-bar [1] offset.
+// • Because it uses the live higher-timeframe candle, the HTF CORE value can continue changing until that HTF candle closes.
+// • The chart-timeframe and HTF readings use the same REG BODY, ATR normalization, guard, and Wide Semantic architecture.
+//
+// LONG STRUCTURAL PAIR
+// • OHLC75 and OHLC110 are separate RMA(OHLC4) structural plots.
+// • They do not participate in the 5/8/13/20/34/50 REG BODY, Global Regime, or ribbon transition ownership.
+// • Both long plots and both long right labels share one state color:
+//      75 > 110 = orange; otherwise = gray.
+// • The table shows the active long-pair order and inclusive bars since the most recent 75/110 crossover.
+//
+// CONTEXT TABLE
+// • Row 1:
+//      Ticker / chart timeframe
+//      → Global Regime + inclusive regime age
+//      → Ribbon ORDER % + contiguous Bull/Bear x/5
+//      → Chart CORE
+//      → Developing Auto-Next-HTF CORE.
+// • Row 2:
+//      Current 75 / 110 order
+//      → inclusive bars since the most recent 75/110 crossover.
+// • Both rows include hover tooltips that explain the displayed readings.
+//
+// PERFORMANCE / IMPLEMENTATION
+// • Stateful RMA, ATR, and crossover kernels execute continuously for Pine consistency.
+// • Presentation work is gated independently from calculation state.
+// • Developing HTF CORE uses one request.security call.
+// • Right-label updates and context-table updates are last-bar managed.
+// • Historical crossover labels rebuild only within their enabled Last-N windows.
+// • Ribbon and follow-line history use native show_last where appropriate.
+// • No line-object family is used.
+//
+// ==============================================================================================
+// 🔴 END REGION: Script Overview
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Constants
+// ==============================================================================================
+
+const string SHOW = "Show"
+const string HIDE = "Hide"
+
+const string LABEL_PADDING_GROUPED = "Grouped"
+const string LABEL_PADDING_INDIVIDUAL = "Individual"
+const string CHANGE_LAYOUT_ROWS = "Different Rows"
+const string CHANGE_LAYOUT_INLINE = "Side by Side"
+
+const int OHLC_LEN_1 = 5
+const int OHLC_LEN_2 = 8
+const int OHLC_LEN_3 = 13
+const int OHLC_LEN_4 = 20
+const int OHLC_LEN_5 = 34
+const int OHLC_LEN_6 = 50
+const int OHLC_LONG_FAST_LEN = 75
+const int OHLC_LONG_SLOW_LEN = 110
+const int OHLC_STACK_COUNT = 6
+const int OHLC_BAND_COUNT = 5
+const int OHLC_ATR_LEN = 14
+const int MAX_CROSS_SCAN_BARS = 500
+const int MAX_CROSS_LABEL_OBJECTS = 488
+
+// Structural ownership rails used by the Global Regime engine.
+const float OHLC_REENTRY_THRESHOLD = 34.0
+const float OHLC_TRANSFER_THRESHOLD = 55.0
+const float OHLC_EXTREME_THRESHOLD = 89.0
+const float OHLC_EXTREME_RELEASE_THRESHOLD = 75.0
+const float OHLC_EXCEPTIONAL_THRESHOLD = 95.0
+const float OHLC_EXCEPTIONAL_RELEASE_THRESHOLD = 89.0
+
+// RMA theoretical-lag regression coordinates for 5/8/13/20/34/50.
+// Wilder RMA low-frequency lag = N - 1, yielding 4/7/12/19/33/49.
+const float OHLC_REG_LAG_MEAN = 20.666666666666668
+const float OHLC_REG_LAG_SS = 1497.3333333333333
+const float OHLC_REG_LAG_SPAN = 45.0
+
+// Frozen Soft Peak-Persistence ATR-Drag Guard.
+const float OHLC_REG_PEAK_DECAY = 0.991
+const float OHLC_GUARD_MIN_PK_PCT = 90.0
+const float OHLC_GUARD_MIN_ORDER = 90.0
+const float OHLC_GUARD_MIN_RAW = 2.50
+const float OHLC_GUARD_FLOOR_DECAY = 0.991
+const float OHLC_GUARD_MAX_BLEND = 0.85
+const float OHLC_GUARD_STRENGTH_DECAY = 0.92
+const float OHLC_GUARD_FULL_DRAG_PCT = 20.0
+
+// Canonical production-look five-band transparency ladder.
+const int OHLC_BAND_1_TRANSP = 58
+const int OHLC_BAND_2_TRANSP = 66
+const int OHLC_BAND_3_TRANSP = 74
+const int OHLC_BAND_4_TRANSP = 82
+const int OHLC_BAND_5_TRANSP = 88
+
+const color INVISIBLE_COLOR = #00000000
+const string OHLC_PRICE_CROSS_DOWN_ARROW = "$⤵"
+const string OHLC_PRICE_CROSS_UP_ARROW = "$⤴"
+const color OHLC_LONG_BULL_LABEL_COLOR = #ff8400
+const color OHLC_LONG_BEAR_LABEL_COLOR = color.rgb(135, 135, 135)
+
+// 🔹 Canonical hardcoded price Bar-to-Bar Follow Line
+const int OHLC_BAR_TO_BAR_FOLLOW_LAST_N = 2
+const int OHLC_BAR_TO_BAR_FOLLOW_WIDTH = 2
+const int OHLC_BAR_TO_BAR_FOLLOW_TRANSP = 0
+
+const string G_VIS = "OHLC Ribbon Visuals"
+const string G_CANDLES = "OHLC PlotCandles"
+const string G_COLORS = "OHLC Ribbon Regime Colors"
+const string G_LABELS = "Right-Side OHLC Labels"
+const string G_LONG = "Long Structural OHLC"
+const string G_TABLE = "OHLC Context Table"
+const string G_CROSS = "OHLC Crossover Labels"
+
+// ==============================================================================================
+// 🔴 END REGION: Constants
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Tooltip Strings
+// ==============================================================================================
+
+const string TT_RIBBON =
+     "Shows the fixed RMA(OHLC4) 5/8/13/20/34/50 structural ribbon.\n\n" +
+     "The six-average stack drives the REG BODY, Wide Semantic CORE, Global Regime colors, and contiguous transition renderer described in the Script Overview."
+
+const string TT_RIBBON_COLOR =
+     "Controls the OHLC Ribbon presentation.\n\n" +
+     "• Gradient — default. Uses the canonical opaque production-look five-band gradient plus contiguous crossover foreground ownership.\n" +
+     "• Global Regime — paints all five bands with the exact active regime color."
+
+const string TT_PLOT_CANDLES =
+     "Overlays native OHLC price candles colored by the exact resolved OHLC global-regime engine.\n\n" +
+     "Body, wick, and border transparency are independent. Set any component to 100 to make only that component fully transparent.\n\n" +
+     "This is presentation-only: no additional rolling kernels, requests, lines, labels, or tables are created."
+
+const string TT_RIGHT_LABELS =
+     "Master gate for the eight OHLC right-side labels.\n\n" +
+     "OHLC5/8/13/20/34/50 inherit the active Ribbon color engine at their physical gradient boundary, including transition ownership. Gradient mode interpolates the two neighboring visible band shades at internal MA boundaries, then applies a label-only Brightness + lift so the text remains readable without changing the ribbon itself. Global Regime mode stays flat. Each label independently latches the last close-vs-level ownership: $⤵ on the top row means price most recently moved below that OHLC level; $⤴ on the bottom row means price most recently moved above it. The $ identifies the cue as price-relative-to-level telemetry, and the arrow persists until the opposite side takes ownership.\n\n" +
+     "OHLC75/110 retain their shared long-pair state color: orange while 75 > 110, gray otherwise.\n\n" +
+     "Labels are independent from Ribbon visibility. Formatting and label-object updates are last-bar gated."
+
+const string TT_RIGHT_LABEL_PADDING =
+     "Controls dynamic right-label spacing.\n\n" +
+     "Individual — DEFAULT. Every visible OHLC label owns its own horizontal lane.\n" +
+     "Grouped — all visible OHLC labels share one lane.\n\n" +
+     "Only visible labels consume Individual spacing. No bar_index offset is used."
+
+const string TT_RIGHT_LABEL_LAYOUT =
+     "Controls how dollar and percent distance appear beneath each OHLC tag.\n\n" +
+     "Different Rows is the default."
+
+const string TT_LONG_STRUCT =
+     "Separate long structural RMA(OHLC4) pair.\n\n" +
+     "OHLC75 and OHLC110 are plotted as independent structural lines and do NOT participate in the 5/8/13/20/34/50 regime engine, REG BODY, or ribbon transition ownership.\n\n" +
+     "OHLC75 / OHLC110 plots and right labels share ONE resolved long-pair state color: orange while 75 > 110, gray otherwise.\n\n" +
+     "The pair has its own 75/110 crossover event family under OHLC Crossover Labels."
+
+const string TT_TABLE =
+     "Compact two-row context table for the short ribbon and long structural pair.\n\n" +
+     "Row 1 = Ticker / chart TF, OHLC Global Regime + inclusive age, short-ribbon ORDER %, contiguous fast-edge propagation x/5, Chart CORE, and Developing Auto-Next-HTF CORE on the bottom line.\n" +
+     "Row 2 = the separate OHLC75/110 long structural pair shown as the actual current order (75 > 110 or 110 > 75) plus inclusive crossover age, using the exact same orange/gray color owner as both long plots and right labels.\n\n" +
+     "Developing HTF CORE uses the same six-RMA REG BODY / ATR14 / guard / Wide Semantic architecture calculated natively on the next higher timeframe with lookahead_off. It can continue changing until that HTF candle closes."
+
+const string TT_CROSS =
+     "Shows OHLC-stack crossover events using the fixed RMA(OHLC4) series.\n\n" +
+     "OHLC 5/8 is the fast-edge pair and the same pair that arms Bull Resistance rollover ownership.\n" +
+     "OHLC 8/20 is an optional early-intermediate crossover and defaults HIDE.\n" +
+     "OHLC 13/34 is an optional middle-structure crossover and defaults HIDE.\n" +
+     "OHLC 20/50 is the slower ribbon-structure crossover.\n" +
+     "OHLC 75/110 is the separate long structural crossover.\n\n" +
+     "Bullish crossovers are always BELOW the candle. Bearish crossovers are always ABOVE the candle.\n" +
+     "Each event label inherits the exact OHLC Global Regime color resolved on the bar where that crossover formed.\n" +
+     "The two-row text lists the newly-leading average first."
+
+// ==============================================================================================
+// 🔴 END REGION: Tooltip Strings
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Inputs
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Ribbon Display
+// ──────────────────────────────────────────────
+
+// 🔹 Main 5/8/13/20/34/50 OHLC ribbon presentation
+string in_ribbonMode = input.string(SHOW, "Ribbon", options=[SHOW, HIDE], group=G_VIS, tooltip=TT_RIBBON)
+bool showRibbon = in_ribbonMode == SHOW
+int in_ribbonLastN = input.int(233, "  ↳ Ribbon Last N Bars", minval=1, maxval=5000, group=G_VIS, active=showRibbon)
+string in_ribbonColorEngine = input.string("Gradient", "  ↳ Ribbon Color Engine", options=["Gradient", "Global Regime"], group=G_VIS, active=showRibbon, tooltip=TT_RIBBON_COLOR)
+bool useRibbonGradient = in_ribbonColorEngine == "Gradient"
+int in_ribbonBrightness = input.int(5, "    ↳ Gradient Brightness +", minval=0, maxval=20, group=G_VIS, active=showRibbon and useRibbonGradient)
+color in_ribbonChartBg = input.color(#0e0e0e, "    ↳ Chart Background Match", group=G_VIS, active=showRibbon and useRibbonGradient)
+string in_lineMode = input.string("Hide Lines", "  ↳ OHLC Boundary Lines", options=["Inner Crossover Only", "Inner Line", "Outer Line", "Both", "Hide Lines"], group=G_VIS, active=showRibbon)
+int in_lineTransp = input.int(0, "    ↳ Line Transparency", minval=0, maxval=100, group=G_VIS, active=showRibbon and in_lineMode != "Hide Lines")
+int in_lineWidth = input.int(3, "    ↳ Line Width", minval=1, maxval=5, group=G_VIS, active=showRibbon and in_lineMode != "Hide Lines")
+color in_fastLineColor = input.color(#2b38ff, "    ↳ OHLC5 Line", group=G_VIS, active=showRibbon and in_lineMode != "Hide Lines")
+color in_slowLineColor = input.color(#d7d7d7, "    ↳ OHLC50 Line", group=G_VIS, active=showRibbon and in_lineMode != "Hide Lines")
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: PlotCandles
+// ──────────────────────────────────────────────
+
+// 🔹 Regime-colored candle overlay with independent body / wick / border transparency
+string in_candleMode = input.string(SHOW, "PlotCandles", options=[SHOW, HIDE], group=G_CANDLES, tooltip=TT_PLOT_CANDLES)
+bool showCandles = in_candleMode == SHOW
+int in_candleLastN = input.int(233, "  ↳ Candle Last N Bars", minval=1, maxval=5000, group=G_CANDLES, active=showCandles)
+int in_candleBodyTransp = input.int(70, "  ↳ Body Transparency", minval=0, maxval=100, group=G_CANDLES, active=showCandles)
+int in_candleWickTransp = input.int(0, "  ↳ Wick Transparency", minval=0, maxval=100, group=G_CANDLES, active=showCandles)
+int in_candleBorderTransp = input.int(0, "  ↳ Border Transparency", minval=0, maxval=100, group=G_CANDLES, active=showCandles)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Canonical Regime Colors
+// ──────────────────────────────────────────────
+
+// 🔹 Same active global-regime palette used by the EMA Ribbon
+color in_colBullTrend = input.color(#ffb000, "Bull Rise", group=G_COLORS)
+color in_colBearTrend = input.color(#f51673, "Bear Fall", group=G_COLORS)
+color in_colBullResistance = input.color(color.rgb(135, 135, 135), "Bull Resistance / Compression", group=G_COLORS)
+color in_colBearSupport = input.color(color.rgb(44, 161, 190), "Bear Support / Compression", group=G_COLORS)
+color in_colExtremeTop = input.color(#ff8400, "Top Extreme", group=G_COLORS)
+color in_colExtremeBot = input.color(color.rgb(157, 78, 221), "Bottom Extreme", group=G_COLORS)
+color in_colExceptionalTop = input.color(color.rgb(255, 94, 0), "Top Exceptional", group=G_COLORS)
+color in_colExceptionalBot = input.color(color.rgb(89, 40, 169), "Bottom Exceptional", group=G_COLORS)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Global Right-Side Label Formatting
+// ──────────────────────────────────────────────
+
+// 🔹 MF defaults: SHOW / Individual / 6 first / 4 between
+string in_rightLabelMode = input.string(SHOW, "Right Side Labels", options=[SHOW, HIDE], group=G_LABELS, tooltip=TT_RIGHT_LABELS)
+bool showRightLabels = in_rightLabelMode == SHOW
+string in_rightLabelPaddingMode = input.string(LABEL_PADDING_INDIVIDUAL, "Label Padding Mode", options=[LABEL_PADDING_GROUPED, LABEL_PADDING_INDIVIDUAL], group=G_LABELS, active=showRightLabels, tooltip=TT_RIGHT_LABEL_PADDING)
+int in_rightLabelBasePad = input.int(6, "First Label Padding", minval=0, maxval=200, group=G_LABELS, active=showRightLabels)
+int in_rightLabelPadStep = input.int(4, "Padding Between Labels", minval=1, maxval=40, group=G_LABELS, active=showRightLabels)
+bool useGroupedRightLabelPadding = in_rightLabelPaddingMode == LABEL_PADDING_GROUPED
+
+// 🔹 MF dollar / percent row defaults
+string in_rightLabelChangeLayout = input.string(CHANGE_LAYOUT_ROWS, "Dollar / % Layout", options=[CHANGE_LAYOUT_ROWS, CHANGE_LAYOUT_INLINE], group=G_LABELS, active=showRightLabels, tooltip=TT_RIGHT_LABEL_LAYOUT)
+string in_rightLabelDollarSignMode = input.string(SHOW, "Dollar Sign in Right Labels", options=[SHOW, HIDE], group=G_LABELS, active=showRightLabels)
+bool showRightLabelDollarSign = in_rightLabelDollarSignMode == SHOW
+string in_rightLabelSize = input.string("Normal", "Label Size", options=["Tiny", "Small", "Normal", "Large", "Huge"], group=G_LABELS, active=showRightLabels)
+int in_shortLabelBrightness = input.int(60, "Short Label Brightness +", minval=0, maxval=60, step=1, group=G_LABELS, active=showRightLabels and useRibbonGradient)
+
+// 🔹 Individual OHLC label visibility — all eight enabled for the first visual pass
+bool in_showOhlc5Label = input.bool(true, "  ↳ OHLC5", group=G_LABELS, active=showRightLabels)
+bool in_showOhlc8Label = input.bool(true, "  ↳ OHLC8", group=G_LABELS, active=showRightLabels)
+bool in_showOhlc13Label = input.bool(true, "  ↳ OHLC13", group=G_LABELS, active=showRightLabels)
+bool in_showOhlc20Label = input.bool(true, "  ↳ OHLC20", group=G_LABELS, active=showRightLabels)
+bool in_showOhlc34Label = input.bool(true, "  ↳ OHLC34", group=G_LABELS, active=showRightLabels)
+bool in_showOhlc50Label = input.bool(true, "  ↳ OHLC50", group=G_LABELS, active=showRightLabels)
+bool in_showOhlc75Label = input.bool(true, "  ↳ OHLC75", group=G_LABELS, active=showRightLabels)
+bool in_showOhlc110Label = input.bool(true, "  ↳ OHLC110", group=G_LABELS, active=showRightLabels)
+
+// 🔹 Short-label color is owned directly by the active Global Regime; no duplicate label palette
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Long Structural OHLC Plots
+// ──────────────────────────────────────────────
+
+// 🔹 Separate 75/110 structural pair; intentionally excluded from the six-average ribbon regime engine
+string in_longStructMode = input.string(SHOW, "Long Structural OHLC", options=[SHOW, HIDE], group=G_LONG, tooltip=TT_LONG_STRUCT)
+bool showLongStruct = in_longStructMode == SHOW
+string in_longStructPlotMode = input.string(SHOW, "  ↳ 75/110 Plots", options=[SHOW, HIDE], group=G_LONG, active=showLongStruct)
+bool showLongStructPlots = showLongStruct and in_longStructPlotMode == SHOW
+bool in_showOhlc75Plot = input.bool(true, "    ↳ OHLC75", group=G_LONG, active=showLongStructPlots)
+bool in_showOhlc110Plot = input.bool(true, "    ↳ OHLC110", group=G_LONG, active=showLongStructPlots)
+bool showAnyLongStructPlot = showLongStructPlots and (in_showOhlc75Plot or in_showOhlc110Plot)
+int in_longStructPlotLastN = input.int(233, "    ↳ Plot Last N Bars", minval=1, maxval=5000, group=G_LONG, active=showAnyLongStructPlot)
+int in_longStructPlotWidth = input.int(1, "    ↳ Plot Width", minval=1, maxval=5, group=G_LONG, active=showAnyLongStructPlot)
+int in_longStructPlotTransp = input.int(25, "    ↳ Plot Transparency", minval=0, maxval=100, group=G_LONG, active=showAnyLongStructPlot)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: OHLC Context Table
+// ──────────────────────────────────────────────
+
+// 🔹 Compact two-row context table; object creation/update remains last-bar gated
+string in_tableMode = input.string(SHOW, "Context Table", options=[SHOW, HIDE], group=G_TABLE, tooltip=TT_TABLE)
+bool showContextTable = in_tableMode == SHOW
+string in_tableSizeStr = input.string("Large", "  ↳ Table Size", options=["Tiny", "Small", "Normal", "Large", "Huge"], group=G_TABLE, active=showContextTable)
+string in_tablePositionStr = input.string("Top Right", "  ↳ Table Position", options=["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group=G_TABLE, active=showContextTable)
+int in_tableCellWidth = input.int(10, "  ↳ Cell Width", minval=0, maxval=100, group=G_TABLE, active=showContextTable)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: OHLC Crossover Labels
+// ──────────────────────────────────────────────
+
+// 🔹 Master gate + fast / structural / long OHLC pairs; placement is intentionally fixed
+string in_crossMode = input.string(SHOW, "Crossover Labels", options=[SHOW, HIDE], group=G_CROSS, tooltip=TT_CROSS)
+bool showCrossLabels = in_crossMode == SHOW
+
+string in_ohlc58CrossMode = input.string(SHOW, "5/8 OHLC Cross", options=[SHOW, HIDE], group=G_CROSS, active=showCrossLabels)
+bool showOhlc58Cross = showCrossLabels and in_ohlc58CrossMode == SHOW
+int in_ohlc58CrossLastN = input.int(144, "  ↳ 5/8 Last N Bars", minval=1, maxval=500, group=G_CROSS, active=showOhlc58Cross)
+
+string in_ohlc820CrossMode = input.string(SHOW, "8/20 OHLC Cross", options=[SHOW, HIDE], group=G_CROSS, active=showCrossLabels)
+bool showOhlc820Cross = showCrossLabels and in_ohlc820CrossMode == SHOW
+int in_ohlc820CrossLastN = input.int(144, "  ↳ 8/20 Last N Bars", minval=1, maxval=500, group=G_CROSS, active=showOhlc820Cross)
+
+string in_ohlc1334CrossMode = input.string(SHOW, "13/34 OHLC Cross", options=[SHOW, HIDE], group=G_CROSS, active=showCrossLabels)
+bool showOhlc1334Cross = showCrossLabels and in_ohlc1334CrossMode == SHOW
+int in_ohlc1334CrossLastN = input.int(144, "  ↳ 13/34 Last N Bars", minval=1, maxval=500, group=G_CROSS, active=showOhlc1334Cross)
+
+string in_ohlc2050CrossMode = input.string(SHOW, "20/50 OHLC Cross", options=[SHOW, HIDE], group=G_CROSS, active=showCrossLabels)
+bool showOhlc2050Cross = showCrossLabels and in_ohlc2050CrossMode == SHOW
+int in_ohlc2050CrossLastN = input.int(144, "  ↳ 20/50 Last N Bars", minval=1, maxval=500, group=G_CROSS, active=showOhlc2050Cross)
+
+string in_ohlc75110CrossMode = input.string(SHOW, "75/110 OHLC Cross", options=[SHOW, HIDE], group=G_CROSS, active=showCrossLabels)
+bool showOhlc75110Cross = showCrossLabels and in_ohlc75110CrossMode == SHOW
+int in_ohlc75110CrossLastN = input.int(144, "  ↳ 75/110 Last N Bars", minval=1, maxval=500, group=G_CROSS, active=showOhlc75110Cross)
+
+string in_crossLabelSize = input.string("Normal", "Cross Label Size", options=["Tiny", "Small", "Normal", "Large", "Huge"], group=G_CROSS, active=showCrossLabels)
+
+// ==============================================================================================
+// 🔴 END REGION: Inputs
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Helper Functions
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Math + Color Helpers
+// ──────────────────────────────────────────────
+
+// 🔹 Canonical semantic transfer + opaque ribbon color construction
+f_clamp(float _v, float _lo, float _hi) =>
+    math.min(math.max(_v, _lo), _hi)
+
+f_clamp01(float _v) =>
+    math.min(math.max(_v, 0.0), 1.0)
+
+f_dir(float _x) =>
+    _x > 0.0 ? 1.0 : _x < 0.0 ? -1.0 : 0.0
+
+f_lerp(float _x, float _x0, float _x1, float _y0, float _y1) =>
+    _x1 == _x0 ? _y1 : _y0 + ((_x - _x0) / (_x1 - _x0)) * (_y1 - _y0)
+
+f_cap100(float _x) =>
+    math.min(math.max(_x, 0.0), 100.0)
+
+f_wideSemanticMag(float _x) =>
+    float _m = math.abs(_x)
+    float _y =
+         _m <= 0.70 ? f_lerp(_m, 0.00, 0.70, 0.0, 34.0) :
+         _m <= 1.25 ? f_lerp(_m, 0.70, 1.25, 34.0, 55.0) :
+         _m <= 2.50 ? f_lerp(_m, 1.25, 2.50, 55.0, 65.0) :
+         _m <= 4.00 ? f_lerp(_m, 2.50, 4.00, 65.0, 75.0) :
+         _m <= 7.00 ? f_lerp(_m, 4.00, 7.00, 75.0, 89.0) :
+         _m <= 12.0 ? f_lerp(_m, 7.00, 12.0, 89.0, 95.0) :
+         _m <= 20.0 ? f_lerp(_m, 12.0, 20.0, 95.0, 100.0) :
+         100.0
+    f_cap100(_y)
+
+f_wideSemantic(float _x) =>
+    f_dir(_x) * f_wideSemanticMag(_x)
+
+f_opaqueRibbonColor(color _fg, int _transp, color _bg) =>
+    float _alpha = 1.0 - math.min(math.max(float(_transp), 0.0), 100.0) / 100.0
+    float _invAlpha = 1.0 - _alpha
+
+    int _r = int(math.round(float(color.r(_fg)) * _alpha + float(color.r(_bg)) * _invAlpha))
+    int _g = int(math.round(float(color.g(_fg)) * _alpha + float(color.g(_bg)) * _invAlpha))
+    int _b = int(math.round(float(color.b(_fg)) * _alpha + float(color.b(_bg)) * _invAlpha))
+
+    color.rgb(_r, _g, _b)
+
+// 🔹 Auto-Next-HTF ladder used by Developing HTF CORE
+f_getNextTf() =>
+    float _mult = timeframe.multiplier
+    timeframe.isseconds ?
+     timeframe.period == "1S" ? "5S" : timeframe.period == "5S" ? "10S" : timeframe.period == "10S" ? "15S" : timeframe.period == "15S" ? "30S" : timeframe.period == "30S" ? "45S" : "1" :
+     timeframe.isminutes ?
+     _mult <= 1 ? "3" : _mult <= 2 ? "4" : _mult <= 3 ? "5" : _mult <= 5 ? "10" : _mult <= 10 ? "15" : _mult <= 15 ? "30" : _mult <= 30 ? "60" : _mult <= 60 ? "120" : _mult <= 120 ? "240" : _mult <= 240 ? "480" : "D" :
+     timeframe.isdaily ? "1W" : timeframe.isweekly ? "2W" : timeframe.ismonthly ? "2M" : "D"
+
+f_prettyTf(string _tf) =>
+    int _sec = timeframe.in_seconds(_tf)
+    _sec < 60 ? str.tostring(_sec) + "s" :
+     _sec < 3600 ? str.tostring(int(_sec / 60)) + "m" :
+     _sec < 86400 ? str.tostring(int(_sec / 3600)) + "h" :
+     _sec == 86400 ? "D" :
+     _sec == 604800 ? "W" :
+     _tf
+
+// 🔹 Shared six-RMA CORE + ORDER engine; each written call/context owns independent guard state
+f_coreFromStack(float _r1, float _r2, float _r3, float _r4, float _r5, float _r6, float _atr) =>
+    float _regNumerator =
+         (4.0 - OHLC_REG_LAG_MEAN) * _r1 +
+         (7.0 - OHLC_REG_LAG_MEAN) * _r2 +
+         (12.0 - OHLC_REG_LAG_MEAN) * _r3 +
+         (19.0 - OHLC_REG_LAG_MEAN) * _r4 +
+         (33.0 - OHLC_REG_LAG_MEAN) * _r5 +
+         (49.0 - OHLC_REG_LAG_MEAN) * _r6
+
+    float _regSpread = -OHLC_REG_LAG_SPAN * (_regNumerator / OHLC_REG_LAG_SS)
+    float _regRaw = not na(_atr) and _atr != 0.0 ? _regSpread / _atr : na
+    float _regBodyAbs = math.abs(_regSpread)
+    var float _regBodyPeak = na
+
+    if not na(_regBodyAbs)
+        _regBodyPeak := na(_regBodyPeak[1]) ? _regBodyAbs : math.max(OHLC_REG_PEAK_DECAY * _regBodyPeak[1], _regBodyAbs)
+    else
+        _regBodyPeak := _regBodyPeak[1]
+
+    float _regPeakPct = not na(_regBodyPeak) and _regBodyPeak > 0.0 ? 100.0 * _regBodyAbs / _regBodyPeak : na
+    float _regRawAbs = math.abs(_regRaw)
+    float _regRawPctDelta = not na(_regRawAbs[1]) and _regRawAbs[1] > 0.0 ? 100.0 * (_regRawAbs / _regRawAbs[1] - 1.0) : na
+    bool _sameSide = not na(_regRaw[1]) and f_dir(_regRaw) != 0.0 and f_dir(_regRaw) == f_dir(_regRaw[1])
+    bool _atrDrag = _sameSide and _regRawAbs < _regRawAbs[1] and _regBodyAbs >= _regBodyAbs[1] and _atr > _atr[1]
+    bool _bodyCool = _sameSide and _regRawAbs < _regRawAbs[1] and _regBodyAbs < _regBodyAbs[1]
+
+    float _endpointSpread = _r1 - _r6
+    float _adjacentPath = math.abs(_r1 - _r2) + math.abs(_r2 - _r3) + math.abs(_r3 - _r4) + math.abs(_r4 - _r5) + math.abs(_r5 - _r6)
+    float _orderEff = _adjacentPath > 0.0 ? 100.0 * math.abs(_endpointSpread) / _adjacentPath : na
+
+    bool _eligible = _sameSide and not na(_regPeakPct) and _regPeakPct >= OHLC_GUARD_MIN_PK_PCT and not na(_orderEff) and _orderEff >= OHLC_GUARD_MIN_ORDER and _regRawAbs >= OHLC_GUARD_MIN_RAW
+    bool _trigger = _eligible and _atrDrag
+    bool _bodyStillExpanding = not na(_regBodyAbs[1]) and _regBodyAbs >= _regBodyAbs[1]
+    float _pkConfidence = not na(_regPeakPct) ? f_clamp01((_regPeakPct - OHLC_GUARD_MIN_PK_PCT) / (100.0 - OHLC_GUARD_MIN_PK_PCT)) : 0.0
+    float _orderConfidence = not na(_orderEff) ? f_clamp01((_orderEff - OHLC_GUARD_MIN_ORDER) / (100.0 - OHLC_GUARD_MIN_ORDER)) : 0.0
+    float _dragConfidence = not na(_regRawPctDelta) and _regRawPctDelta < 0.0 ? f_clamp01((-_regRawPctDelta) / OHLC_GUARD_FULL_DRAG_PCT) : 0.0
+    float _triggerBlend = math.min(OHLC_GUARD_MAX_BLEND, _pkConfidence * _orderConfidence * (0.35 + 0.65 * _dragConfidence))
+
+    var float _guardFloorAbs = na
+    var float _guardStrength = 0.0
+    bool _release = not _sameSide or not _eligible or not _bodyStillExpanding or _bodyCool
+
+    if _release
+        _guardFloorAbs := na
+        _guardStrength := 0.0
+    else if _trigger
+        float _seed = na(_guardFloorAbs[1]) ? nz(_regRawAbs[1], _regRawAbs) : _guardFloorAbs[1]
+        _guardFloorAbs := math.max(_regRawAbs, _seed * OHLC_GUARD_FLOOR_DECAY)
+        _guardStrength := math.max(_triggerBlend, nz(_guardStrength[1], 0.0) * OHLC_GUARD_STRENGTH_DECAY)
+    else if not na(_guardFloorAbs[1]) and nz(_guardStrength[1], 0.0) > 0.0
+        _guardFloorAbs := math.max(_regRawAbs, _guardFloorAbs[1] * OHLC_GUARD_FLOOR_DECAY)
+        _guardStrength := _guardStrength[1] * OHLC_GUARD_STRENGTH_DECAY
+    else
+        _guardFloorAbs := na
+        _guardStrength := 0.0
+
+    float _guardTargetAbs = not na(_guardFloorAbs) ? math.max(_regRawAbs, _guardFloorAbs) : _regRawAbs
+    float _guardedRawAbs = _regRawAbs + _guardStrength * math.max(_guardTargetAbs - _regRawAbs, 0.0)
+    float _core = f_wideSemantic(f_dir(_regRaw) * _guardedRawAbs)
+    [_core, _orderEff]
+
+f_developingHtfCore() =>
+    float _r1 = ta.rma(ohlc4, OHLC_LEN_1)
+    float _r2 = ta.rma(ohlc4, OHLC_LEN_2)
+    float _r3 = ta.rma(ohlc4, OHLC_LEN_3)
+    float _r4 = ta.rma(ohlc4, OHLC_LEN_4)
+    float _r5 = ta.rma(ohlc4, OHLC_LEN_5)
+    float _r6 = ta.rma(ohlc4, OHLC_LEN_6)
+    float _atr = ta.atr(OHLC_ATR_LEN)
+    [_core, _order] = f_coreFromStack(_r1, _r2, _r3, _r4, _r5, _r6, _atr)
+    _core
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Display + String Helpers
+// ──────────────────────────────────────────────
+
+// 🔹 Shared label size + MF right-label distance formatting
+f_markerSize(string _size) =>
+    _size == "Tiny" ? size.tiny :
+     _size == "Small" ? size.small :
+     _size == "Large" ? size.large :
+     _size == "Huge" ? size.huge :
+     size.normal
+
+f_tablePosition(string _s) =>
+    _s == "Top Left" ? position.top_left :
+     _s == "Top Center" ? position.top_center :
+     _s == "Top Right" ? position.top_right :
+     _s == "Middle Left" ? position.middle_left :
+     _s == "Middle Center" ? position.middle_center :
+     _s == "Bottom Left" ? position.bottom_left :
+     _s == "Bottom Center" ? position.bottom_center :
+     _s == "Bottom Right" ? position.bottom_right :
+     position.middle_right
+
+f_prettyChartTf() =>
+    int _sec = timeframe.in_seconds(timeframe.period)
+    string _out = timeframe.period
+
+    if timeframe.ismonthly
+        _out := timeframe.multiplier == 1 ? "M" : str.tostring(int(timeframe.multiplier)) + "M"
+    else if timeframe.isweekly
+        _out := timeframe.multiplier == 1 ? "W" : str.tostring(int(timeframe.multiplier)) + "W"
+    else if timeframe.isdaily
+        _out := timeframe.multiplier == 1 ? "D" : str.tostring(int(timeframe.multiplier)) + "D"
+    else if not na(_sec) and _sec < 60
+        _out := str.tostring(_sec) + "s"
+    else if not na(_sec) and _sec < 3600
+        _out := str.tostring(int(_sec / 60)) + "m"
+    else if not na(_sec) and _sec < 86400
+        _out := str.tostring(int(_sec / 3600)) + "h"
+
+    _out
+
+f_contrast(color _c) =>
+    float _lum = color.r(_c) * 0.299 + color.g(_c) * 0.587 + color.b(_c) * 0.114
+    _lum >= 150.0 ? #000000 : color.white
+
+f_tableTextColor(color _bg, bool _forceDark = false) =>
+    _forceDark ? #000000 : f_contrast(_bg)
+
+f_plain1Trim(float _v) =>
+    if na(_v)
+        "na"
+    else
+        float _oneDecimal = math.round(_v * 10.0) / 10.0
+        float _whole = math.round(_oneDecimal)
+        math.abs(_oneDecimal - _whole) < 0.0001 ?
+         str.tostring(int(_whole)) :
+         str.tostring(_oneDecimal, "#.0")
+
+f_barsAgoText(int _bars) =>
+    na(_bars) ? "na" : str.tostring(_bars) + "ba"
+
+f_fmtPctNoLeadNoPlus(float _pct) =>
+    if na(_pct)
+        ""
+    else
+        string _raw = str.tostring(math.abs(_pct), "#.##")
+        string _trimmed = math.abs(_pct) < 1.0 ? str.replace(_raw, "0.", ".") : _raw
+        string _sign = _pct < 0.0 ? "-" : ""
+        _sign + _trimmed + "%"
+
+f_fmtDollarNoLeadNoPlus(float _value) =>
+    if na(_value)
+        ""
+    else
+        float _absValue = math.abs(_value)
+        string _raw = str.tostring(_absValue, "#.##")
+        string _trimmed = _absValue < 1.0 and _value != 0.0 ? str.replace(_raw, "0.", ".") : _raw
+        string _sign = _value < 0.0 ? "-" : ""
+        string _currency = showRightLabelDollarSign ? "$" : ""
+        _sign + _currency + _trimmed
+
+f_linePricePctText(float _lineLevel, float _price) =>
+    float _pct = na(_lineLevel) or na(_price) or _price == 0.0 ? na : ((_price - _lineLevel) / _price) * 100.0
+    f_fmtPctNoLeadNoPlus(_pct)
+
+f_linePriceDollarText(float _lineLevel, float _price) =>
+    float _dollarChange = na(_lineLevel) or na(_price) ? na : _price - _lineLevel
+    f_fmtDollarNoLeadNoPlus(_dollarChange)
+
+f_rightLabelSpacer(int _count) =>
+    var string _em = " "
+    string _out = ""
+    int _effectiveCount = math.max(_count, 0) * 2
+
+    if _effectiveCount > 0
+        for _i = 1 to _effectiveCount
+            _out += _em
+
+    _out
+
+f_buildLabelPads(array<bool> _visible, array<int> _groups, array<int> _order, bool _grouped, int _basePad, int _step) =>
+    int _count = array.size(_visible)
+    int _orderCount = array.size(_order)
+    array<int> _pads = array.new_int(_count, _basePad)
+    int _cursor = _basePad
+
+    if _orderCount > 0
+        if _grouped
+            int _firstIdx = array.get(_order, 0)
+            int _activeGroup = array.get(_groups, _firstIdx)
+            bool _groupVisible = false
+
+            for _rank = 0 to _orderCount - 1
+                int _idx = array.get(_order, _rank)
+                int _group = array.get(_groups, _idx)
+
+                if _rank > 0 and _group != _activeGroup
+                    if _groupVisible
+                        _cursor += _step
+
+                    _activeGroup := _group
+                    _groupVisible := false
+
+                array.set(_pads, _idx, _cursor)
+                _groupVisible := _groupVisible or array.get(_visible, _idx)
+        else
+            for _rank = 0 to _orderCount - 1
+                int _idx = array.get(_order, _rank)
+                array.set(_pads, _idx, _cursor)
+
+                if array.get(_visible, _idx)
+                    _cursor += _step
+
+    _pads
+
+f_rightLineTagText(string _tag, float _lineLevel, float _price, int _pad, int _priceCrossDir) =>
+    string _pctText = f_linePricePctText(_lineLevel, _price)
+    string _dollarText = f_linePriceDollarText(_lineLevel, _price)
+    string _spacer = f_rightLabelSpacer(_pad)
+
+    string _coreText =
+         _tag == "" ? "" :
+         _dollarText == "" and _pctText == "" ? _spacer + _tag :
+         _dollarText == "" ? _spacer + _tag + "\n" + _spacer + _pctText :
+         _pctText == "" ? _spacer + _tag + "\n" + _spacer + _dollarText :
+         in_rightLabelChangeLayout == CHANGE_LAYOUT_INLINE ? _spacer + _tag + "\n" + _spacer + _dollarText + " / " + _pctText :
+         _spacer + _tag + "\n" + _spacer + _dollarText + "\n" + _spacer + _pctText
+
+    _coreText == "" ? "" :
+     _priceCrossDir < 0 ? _spacer + OHLC_PRICE_CROSS_DOWN_ARROW + "\n" + _coreText :
+     _priceCrossDir > 0 ? _coreText + "\n" + _spacer + OHLC_PRICE_CROSS_UP_ARROW :
+     _coreText
+
+f_nextPriceCrossDir(int _prior, float _level) =>
+    not na(_level) and close > _level ? 1 :
+     not na(_level) and close < _level ? -1 :
+     _prior
+
+f_manageRightLineTag(bool _enabled, label _label, float _y, string _text, color _textColor, _size) =>
+    label _out = _label
+
+    if _enabled
+        if na(_out)
+            _out :=
+                 label.new(
+                     x=bar_index,
+                     y=_y,
+                     xloc=xloc.bar_index,
+                     yloc=yloc.price,
+                     text=_text,
+                     style=label.style_label_center,
+                     color=color.new(color.black, 100),
+                     textcolor=_textColor,
+                     size=_size)
+        else
+            label.set_xy(_out, bar_index, _y)
+            label.set_text(_out, _text)
+            label.set_textcolor(_out, _textColor)
+            label.set_color(_out, color.new(color.black, 100))
+            label.set_size(_out, _size)
+    else
+        if not na(_out)
+            label.delete(_out)
+            _out := na
+
+    _out
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Ribbon Helpers
+// ──────────────────────────────────────────────
+
+// 🔹 Canonical transparency orientation and optional edge-line visibility
+f_bandTransparency(int _band, int _activeBands, bool _reverse) =>
+    int _rank = _reverse ? _activeBands - _band + 1 : _band
+    int _base =
+         _band > _activeBands ? 100 :
+         _rank == 1 ? OHLC_BAND_1_TRANSP :
+         _rank == 2 ? OHLC_BAND_2_TRANSP :
+         _rank == 3 ? OHLC_BAND_3_TRANSP :
+         _rank == 4 ? OHLC_BAND_4_TRANSP :
+                      OHLC_BAND_5_TRANSP
+    math.max(_base - in_ribbonBrightness, 0)
+
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Crossover Label Helpers
+// ──────────────────────────────────────────────
+
+// 🔹 Exact rolling Last-N rebuild with same-candle vertical stacking
+f_clearLabels(label[] _arr) =>
+    while array.size(_arr) > 0
+        label _old = array.pop(_arr)
+        if not na(_old)
+            label.delete(_old)
+
+f_repeatNewline(int _count) =>
+    string _out = ""
+
+    if _count > 0
+        for _i = 0 to _count - 1
+            _out += "\n"
+
+    _out
+
+f_stackEventText(string _text, int _slot, bool _above) =>
+    string _pad = f_repeatNewline(_slot)
+    _above ? _text + _pad : _pad + _text
+
+f_addCrossLabel(label[] _arr, bool _show, int _x, string _text, color _textColor, bool _above, int[] _stackRows) =>
+    if _show and _text != ""
+        int _stackIndex = _above ? 0 : 1
+        int _slot = array.get(_stackRows, _stackIndex)
+
+        label _lbl =
+             label.new(
+                 x=_x,
+                 y=0,
+                 xloc=xloc.bar_index,
+                 yloc=_above ? yloc.abovebar : yloc.belowbar,
+                 text=f_stackEventText(_text, _slot, _above),
+                 style=label.style_none,
+                 color=INVISIBLE_COLOR,
+                 textcolor=_textColor,
+                 size=f_markerSize(in_crossLabelSize))
+
+        array.push(_arr, _lbl)
+        array.set(_stackRows, _stackIndex, _slot + 2)
+
+// ==============================================================================================
+// 🔴 END REGION: Helper Functions
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Canonical OHLC Stack State
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Fixed RMA(OHLC4) Geometry
+// ──────────────────────────────────────────────
+
+// 🔹 Stateful RMA kernels remain continuous regardless of Ribbon/label visibility
+float ohlc5 = ta.rma(ohlc4, OHLC_LEN_1)
+float ohlc8 = ta.rma(ohlc4, OHLC_LEN_2)
+float ohlc13 = ta.rma(ohlc4, OHLC_LEN_3)
+float ohlc20 = ta.rma(ohlc4, OHLC_LEN_4)
+float ohlc34 = ta.rma(ohlc4, OHLC_LEN_5)
+float ohlc50 = ta.rma(ohlc4, OHLC_LEN_6)
+float ohlc75 = ta.rma(ohlc4, OHLC_LONG_FAST_LEN)
+float ohlc110 = ta.rma(ohlc4, OHLC_LONG_SLOW_LEN)
+float ohlcAtr = ta.atr(OHLC_ATR_LEN)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Full-Stack Alignment
+// ──────────────────────────────────────────────
+
+// 🔹 Strict physical order owns Rise/Fall eligibility
+bool isBullishStack =
+     not na(ohlc5) and
+     ohlc5 > ohlc8 and ohlc8 > ohlc13 and ohlc13 > ohlc20 and
+     ohlc20 > ohlc34 and ohlc34 > ohlc50
+
+bool isBearishStack =
+     not na(ohlc5) and
+     ohlc5 < ohlc8 and ohlc8 < ohlc13 and ohlc13 < ohlc20 and
+     ohlc20 < ohlc34 and ohlc34 < ohlc50
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: OHLC CORE + ORDER
+// ──────────────────────────────────────────────
+
+// 🔹 Chart-TF CORE and path efficiency reuse the same canonical engine as Developing HTF
+[ohlcCore, orderEff] = f_coreFromStack(ohlc5, ohlc8, ohlc13, ohlc20, ohlc34, ohlc50, ohlcAtr)
+
+// ==============================================================================================
+// 🔴 END REGION: Canonical OHLC Stack State
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Developing Auto-Next-HTF CORE
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Canonical Next-HTF Transport
+// ──────────────────────────────────────────────
+
+// 🔹 Developing only: native next-HTF calculation, no [1] offset, lookahead_off
+string ohlcCoreHtfTf = f_getNextTf()
+float ohlcCoreHtf =
+     request.security(
+         syminfo.tickerid,
+         ohlcCoreHtfTf,
+         f_developingHtfCore(),
+         gaps=barmerge.gaps_off,
+         lookahead=barmerge.lookahead_off,
+         calc_bars_count=2500)
+
+// ==============================================================================================
+// 🔴 END REGION: Developing Auto-Next-HTF CORE
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Global Regime Color Engine
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Accepted Structural Lineage
+// ──────────────────────────────────────────────
+
+// 🔹 Canonical Rise/Fall → Support/Resistance → Extreme/Exceptional ownership
+const int LINEAGE_BEAR = -1
+const int LINEAGE_NONE = 0
+const int LINEAGE_BULL = 1
+
+var int trendLineage = LINEAGE_NONE
+var int activeTrendSide = LINEAGE_NONE
+var int extremeSide = LINEAGE_NONE
+var int exceptionalSide = LINEAGE_NONE
+
+int lineageBefore = trendLineage
+int activeTrendBefore = activeTrendSide
+int extremeSideBefore = extremeSide
+int exceptionalSideBefore = exceptionalSide
+
+bool bullReentryReady = isBullishStack and not na(ohlcCore) and ohlcCore >= OHLC_REENTRY_THRESHOLD
+bool bearReentryReady = isBearishStack and not na(ohlcCore) and ohlcCore <= -OHLC_REENTRY_THRESHOLD
+bool bullTransferReady = not na(ohlcCore) and ohlcCore >= OHLC_TRANSFER_THRESHOLD
+bool bearTransferReady = not na(ohlcCore) and ohlcCore <= -OHLC_TRANSFER_THRESHOLD
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Nested Exceptional / Extreme Persistence
+// ──────────────────────────────────────────────
+
+// 🔹 Full stack must remain intact for severity persistence
+bool exceptionalTopEntry = isBullishStack and not na(ohlcCore) and ohlcCore >= OHLC_EXCEPTIONAL_THRESHOLD
+bool exceptionalBotEntry = isBearishStack and not na(ohlcCore) and ohlcCore <= -OHLC_EXCEPTIONAL_THRESHOLD
+bool exceptionalTopHold = exceptionalSideBefore == LINEAGE_BULL and isBullishStack and not na(ohlcCore) and ohlcCore >= OHLC_EXCEPTIONAL_RELEASE_THRESHOLD
+bool exceptionalBotHold = exceptionalSideBefore == LINEAGE_BEAR and isBearishStack and not na(ohlcCore) and ohlcCore <= -OHLC_EXCEPTIONAL_RELEASE_THRESHOLD
+
+bool isTopExceptional = exceptionalTopEntry or exceptionalTopHold
+bool isBottomExceptional = exceptionalBotEntry or exceptionalBotHold
+
+bool extremeTopEntry = isBullishStack and not na(ohlcCore) and ohlcCore >= OHLC_EXTREME_THRESHOLD
+bool extremeBotEntry = isBearishStack and not na(ohlcCore) and ohlcCore <= -OHLC_EXTREME_THRESHOLD
+bool extremeTopHold = extremeSideBefore == LINEAGE_BULL and isBullishStack and not na(ohlcCore) and ohlcCore >= OHLC_EXTREME_RELEASE_THRESHOLD
+bool extremeBotHold = extremeSideBefore == LINEAGE_BEAR and isBearishStack and not na(ohlcCore) and ohlcCore <= -OHLC_EXTREME_RELEASE_THRESHOLD
+
+bool isExtremeTop = extremeTopEntry or extremeTopHold
+bool isExtremeBot = extremeBotEntry or extremeBotHold
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Rise / Fall Acceptance
+// ──────────────────────────────────────────────
+
+// 🔹 Same-side re-entry = ±34; opposite/initial transfer = ±55
+bool bullContinuation = activeTrendBefore == LINEAGE_BULL and isBullishStack
+bool bearContinuation = activeTrendBefore == LINEAGE_BEAR and isBearishStack
+bool bullSameSideReentry = lineageBefore == LINEAGE_BULL and bullReentryReady
+bool bearSameSideReentry = lineageBefore == LINEAGE_BEAR and bearReentryReady
+bool bullOppositeTransfer = lineageBefore != LINEAGE_BULL and bullTransferReady
+bool bearOppositeTransfer = lineageBefore != LINEAGE_BEAR and bearTransferReady
+
+bool isBullRise =
+     isBullishStack and
+     not isExtremeTop and
+     not isTopExceptional and
+     (bullContinuation or bullSameSideReentry or bullOppositeTransfer)
+
+bool isBearFall =
+     isBearishStack and
+     not isExtremeBot and
+     not isBottomExceptional and
+     (bearContinuation or bearSameSideReentry or bearOppositeTransfer)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Structural Support / Resistance
+// ──────────────────────────────────────────────
+
+// 🔹 Mixed structure inherits the last accepted directional lineage
+bool isBullResistance =
+     lineageBefore == LINEAGE_BULL and
+     not isBullRise and not isExtremeTop and not isTopExceptional and
+     not isBearFall and not isExtremeBot and not isBottomExceptional
+
+bool isBearSupport =
+     lineageBefore == LINEAGE_BEAR and
+     not isBearFall and not isExtremeBot and not isBottomExceptional and
+     not isBullRise and not isExtremeTop and not isTopExceptional
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Resolved Regime Color
+// ──────────────────────────────────────────────
+
+// 🔹 Global Regime hierarchy
+color ohlcRibbonColor =
+     isTopExceptional ? in_colExceptionalTop :
+     isBottomExceptional ? in_colExceptionalBot :
+     isExtremeTop ? in_colExtremeTop :
+     isExtremeBot ? in_colExtremeBot :
+     isBullRise ? in_colBullTrend :
+     isBearFall ? in_colBearTrend :
+     isBearSupport ? in_colBearSupport :
+     in_colBullResistance
+
+string ohlcRegimeText =
+     isTopExceptional ? "Top Exceptional" :
+     isBottomExceptional ? "Bottom Exceptional" :
+     isExtremeTop ? "Top Extreme" :
+     isExtremeBot ? "Bottom Extreme" :
+     isBullRise ? "Bull Rise" :
+     isBearFall ? "Bear Fall" :
+     isBearSupport ? "Bear Support" :
+     "Bull Resistance"
+
+// 🔹 Inclusive regime age follows the EMA Ribbon table contract: first bar = 1ba
+int ohlcRegimeStateCode =
+     isTopExceptional ? 20 :
+     isExtremeTop ? 10 :
+     isBullRise ? 2 :
+     isBearSupport ? -1 :
+     isBearFall ? -2 :
+     isBottomExceptional ? -20 :
+     isExtremeBot ? -10 :
+     1
+
+bool ohlcRegimeChanged =
+     bar_index == 0 or
+     na(ohlcRegimeStateCode[1]) or
+     ohlcRegimeStateCode != ohlcRegimeStateCode[1]
+
+var int ohlcRegimeBarCount = 1
+ohlcRegimeBarCount := ohlcRegimeChanged ? 1 : nz(ohlcRegimeBarCount[1], 0) + 1
+
+// 🔹 Update severity memory before accepted direction lineage
+if isTopExceptional
+    exceptionalSide := LINEAGE_BULL
+else if isBottomExceptional
+    exceptionalSide := LINEAGE_BEAR
+else
+    exceptionalSide := LINEAGE_NONE
+
+if isExtremeTop or isTopExceptional
+    extremeSide := LINEAGE_BULL
+else if isExtremeBot or isBottomExceptional
+    extremeSide := LINEAGE_BEAR
+else
+    extremeSide := LINEAGE_NONE
+
+if isBullRise or isExtremeTop or isTopExceptional
+    trendLineage := LINEAGE_BULL
+    activeTrendSide := LINEAGE_BULL
+else if isBearFall or isExtremeBot or isBottomExceptional
+    trendLineage := LINEAGE_BEAR
+    activeTrendSide := LINEAGE_BEAR
+else
+    if activeTrendBefore == LINEAGE_BULL and not isBullishStack
+        activeTrendSide := LINEAGE_NONE
+    else if activeTrendBefore == LINEAGE_BEAR and not isBearishStack
+        activeTrendSide := LINEAGE_NONE
+
+// ==============================================================================================
+// 🔴 END REGION: Global Regime Color Engine
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: OHLC Price-Cross Direction State
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Intrabar-Safe Per-Level Direction Latches
+// ──────────────────────────────────────────────
+
+// 🔹 `varip` allows the arrow to flip top ↔ bottom on the SAME realtime bar_index
+// 🔹 +1 = price owns above-level side ($⤴ bottom row); -1 = below-level side ($⤵ top row)
+// 🔹 Exact equality preserves the prior owner until price takes the opposite side
+varip int priceOhlc5CrossDir = 0
+varip int priceOhlc8CrossDir = 0
+varip int priceOhlc13CrossDir = 0
+varip int priceOhlc20CrossDir = 0
+varip int priceOhlc34CrossDir = 0
+varip int priceOhlc50CrossDir = 0
+varip int priceOhlc75CrossDir = 0
+varip int priceOhlc110CrossDir = 0
+
+priceOhlc5CrossDir := f_nextPriceCrossDir(priceOhlc5CrossDir, ohlc5)
+priceOhlc8CrossDir := f_nextPriceCrossDir(priceOhlc8CrossDir, ohlc8)
+priceOhlc13CrossDir := f_nextPriceCrossDir(priceOhlc13CrossDir, ohlc13)
+priceOhlc20CrossDir := f_nextPriceCrossDir(priceOhlc20CrossDir, ohlc20)
+priceOhlc34CrossDir := f_nextPriceCrossDir(priceOhlc34CrossDir, ohlc34)
+priceOhlc50CrossDir := f_nextPriceCrossDir(priceOhlc50CrossDir, ohlc50)
+priceOhlc75CrossDir := f_nextPriceCrossDir(priceOhlc75CrossDir, ohlc75)
+priceOhlc110CrossDir := f_nextPriceCrossDir(priceOhlc110CrossDir, ohlc110)
+
+// ==============================================================================================
+// 🔴 END REGION: OHLC Price-Cross Direction State
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Ribbon Plot Series + Transition Ownership
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Plot Series
+// ──────────────────────────────────────────────
+
+// 🔹 Ribbon visibility gates presentation only; RMA state remains continuous
+float ohlc5Plot = showRibbon ? ohlc5 : na
+float ohlc8Plot = showRibbon ? ohlc8 : na
+float ohlc13Plot = showRibbon ? ohlc13 : na
+float ohlc20Plot = showRibbon ? ohlc20 : na
+float ohlc34Plot = showRibbon ? ohlc34 : na
+float ohlc50Plot = showRibbon ? ohlc50 : na
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Boundary Line Colors
+// ──────────────────────────────────────────────
+
+// 🔹 Inner = OHLC5; Outer = OHLC50; crossover window = mixed full-stack geometry
+f_lineColor(int _slot) =>
+    bool _isInner = _slot == 1
+    bool _isOuter = _slot == OHLC_STACK_COUNT
+    bool _isCrossoverWindow = not isBullishStack and not isBearishStack
+
+    bool _showInner =
+         showRibbon and
+         (
+             in_lineMode == "Inner Line" or
+             in_lineMode == "Both" or
+             (in_lineMode == "Inner Crossover Only" and _isCrossoverWindow)
+         )
+
+    bool _showOuter =
+         showRibbon and
+         (in_lineMode == "Outer Line" or in_lineMode == "Both")
+
+    bool _showLine = (_isInner and _showInner) or (_isOuter and _showOuter)
+    color _base = _isInner ? in_fastLineColor : _isOuter ? in_slowLineColor : na
+
+    _showLine ? color.new(_base, in_lineTransp) : na
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Opaque Production-Look Gradient
+// ──────────────────────────────────────────────
+
+// 🔹 Regime lineage owns gradient orientation; unresolved state falls back to OHLC5↔50 orientation
+bool useBearTransparencyOrder =
+     isBearFall or isExtremeBot or isBottomExceptional or isBearSupport ? true :
+     isBullRise or isExtremeTop or isTopExceptional or isBullResistance ? false :
+     not na(ohlc5) and not na(ohlc50) and ohlc5 < ohlc50
+
+int band1Transp = f_bandTransparency(1, OHLC_BAND_COUNT, useBearTransparencyOrder)
+int band2Transp = f_bandTransparency(2, OHLC_BAND_COUNT, useBearTransparencyOrder)
+int band3Transp = f_bandTransparency(3, OHLC_BAND_COUNT, useBearTransparencyOrder)
+int band4Transp = f_bandTransparency(4, OHLC_BAND_COUNT, useBearTransparencyOrder)
+int band5Transp = f_bandTransparency(5, OHLC_BAND_COUNT, useBearTransparencyOrder)
+
+color band1Color = showRibbon ? (useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, band1Transp, in_ribbonChartBg) : ohlcRibbonColor) : na
+color band2Color = showRibbon ? (useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, band2Transp, in_ribbonChartBg) : ohlcRibbonColor) : na
+color band3Color = showRibbon ? (useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, band3Transp, in_ribbonChartBg) : ohlcRibbonColor) : na
+color band4Color = showRibbon ? (useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, band4Transp, in_ribbonChartBg) : ohlcRibbonColor) : na
+color band5Color = showRibbon ? (useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, band5Transp, in_ribbonChartBg) : ohlcRibbonColor) : na
+
+
+// 🔹 Reversed Bear Support recovery palette
+int bearSupportRecoveryBand1Transp = f_bandTransparency(1, OHLC_BAND_COUNT, false)
+int bearSupportRecoveryBand2Transp = f_bandTransparency(2, OHLC_BAND_COUNT, false)
+int bearSupportRecoveryBand3Transp = f_bandTransparency(3, OHLC_BAND_COUNT, false)
+int bearSupportRecoveryBand4Transp = f_bandTransparency(4, OHLC_BAND_COUNT, false)
+int bearSupportRecoveryBand5Transp = f_bandTransparency(5, OHLC_BAND_COUNT, false)
+
+color bearSupportRecoveryBand1Color = showRibbon ? (useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, bearSupportRecoveryBand1Transp, in_ribbonChartBg) : ohlcRibbonColor) : na
+color bearSupportRecoveryBand2Color = showRibbon ? (useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, bearSupportRecoveryBand2Transp, in_ribbonChartBg) : ohlcRibbonColor) : na
+color bearSupportRecoveryBand3Color = showRibbon ? (useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, bearSupportRecoveryBand3Transp, in_ribbonChartBg) : ohlcRibbonColor) : na
+color bearSupportRecoveryBand4Color = showRibbon ? (useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, bearSupportRecoveryBand4Transp, in_ribbonChartBg) : ohlcRibbonColor) : na
+color bearSupportRecoveryBand5Color = showRibbon ? (useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, bearSupportRecoveryBand5Transp, in_ribbonChartBg) : ohlcRibbonColor) : na
+
+// 🔹 Reversed Bull Resistance rollover palette
+int bullResistanceRolloverBand1Transp = f_bandTransparency(1, OHLC_BAND_COUNT, true)
+int bullResistanceRolloverBand2Transp = f_bandTransparency(2, OHLC_BAND_COUNT, true)
+int bullResistanceRolloverBand3Transp = f_bandTransparency(3, OHLC_BAND_COUNT, true)
+int bullResistanceRolloverBand4Transp = f_bandTransparency(4, OHLC_BAND_COUNT, true)
+int bullResistanceRolloverBand5Transp = f_bandTransparency(5, OHLC_BAND_COUNT, true)
+
+color bullResistanceRolloverBand1Color = showRibbon ? (useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, bullResistanceRolloverBand1Transp, in_ribbonChartBg) : ohlcRibbonColor) : na
+color bullResistanceRolloverBand2Color = showRibbon ? (useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, bullResistanceRolloverBand2Transp, in_ribbonChartBg) : ohlcRibbonColor) : na
+color bullResistanceRolloverBand3Color = showRibbon ? (useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, bullResistanceRolloverBand3Transp, in_ribbonChartBg) : ohlcRibbonColor) : na
+color bullResistanceRolloverBand4Color = showRibbon ? (useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, bullResistanceRolloverBand4Transp, in_ribbonChartBg) : ohlcRibbonColor) : na
+color bullResistanceRolloverBand5Color = showRibbon ? (useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, bullResistanceRolloverBand5Transp, in_ribbonChartBg) : ohlcRibbonColor) : na
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Contiguous Fast-Edge Foreground Propagation
+// ──────────────────────────────────────────────
+
+// 🔹 A deeper band cannot repaint until every faster pair has aligned in the same direction
+bool bull58 = not na(ohlc5) and not na(ohlc8) and ohlc5 >= ohlc8
+bool bull813 = not na(ohlc8) and not na(ohlc13) and ohlc8 >= ohlc13
+bool bull1320 = not na(ohlc13) and not na(ohlc20) and ohlc13 >= ohlc20
+bool bull2034 = not na(ohlc20) and not na(ohlc34) and ohlc20 >= ohlc34
+bool bull3450 = not na(ohlc34) and not na(ohlc50) and ohlc34 >= ohlc50
+
+bool bear58 = not na(ohlc5) and not na(ohlc8) and ohlc5 < ohlc8
+bool bear813 = not na(ohlc8) and not na(ohlc13) and ohlc8 < ohlc13
+bool bear1320 = not na(ohlc13) and not na(ohlc20) and ohlc13 < ohlc20
+bool bear2034 = not na(ohlc20) and not na(ohlc34) and ohlc20 < ohlc34
+bool bear3450 = not na(ohlc34) and not na(ohlc50) and ohlc34 < ohlc50
+
+bool bullFront58 = bull58
+bool bullFront813 = bullFront58 and bull813
+bool bullFront1320 = bullFront813 and bull1320
+bool bullFront2034 = bullFront1320 and bull2034
+bool bullFront3450 = bullFront2034 and bull3450
+
+bool bearFront58 = bear58
+bool bearFront813 = bearFront58 and bear813
+bool bearFront1320 = bearFront813 and bear1320
+bool bearFront2034 = bearFront1320 and bear2034
+bool bearFront3450 = bearFront2034 and bear3450
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Bear Support Recovery Ownership
+// ──────────────────────────────────────────────
+
+// 🔹 Recovery begins at the first bullish 5/8 ordering and propagates outward contiguously
+var bool bearSupportRecoveryArmed = false
+var bool bearSupportRecoveryOwn58 = false
+var bool bearSupportRecoveryOwn813 = false
+var bool bearSupportRecoveryOwn1320 = false
+var bool bearSupportRecoveryOwn2034 = false
+var bool bearSupportRecoveryOwn3450 = false
+
+if not isBearSupport
+    bearSupportRecoveryArmed := false
+    bearSupportRecoveryOwn58 := false
+    bearSupportRecoveryOwn813 := false
+    bearSupportRecoveryOwn1320 := false
+    bearSupportRecoveryOwn2034 := false
+    bearSupportRecoveryOwn3450 := false
+else
+    if not bearSupportRecoveryArmed and bullFront58
+        bearSupportRecoveryArmed := true
+        bearSupportRecoveryOwn58 := true
+
+    if bearSupportRecoveryArmed
+        bearSupportRecoveryOwn58 := bullFront58
+
+        if bullFront813
+            bearSupportRecoveryOwn813 := true
+        else if bear813
+            bearSupportRecoveryOwn813 := false
+
+        if bullFront1320
+            bearSupportRecoveryOwn1320 := true
+        else if bear1320
+            bearSupportRecoveryOwn1320 := false
+
+        if bullFront2034
+            bearSupportRecoveryOwn2034 := true
+        else if bear2034
+            bearSupportRecoveryOwn2034 := false
+
+        if bullFront3450
+            bearSupportRecoveryOwn3450 := true
+        else if bear3450
+            bearSupportRecoveryOwn3450 := false
+
+        if not bearSupportRecoveryOwn58 and
+           not bearSupportRecoveryOwn813 and
+           not bearSupportRecoveryOwn1320 and
+           not bearSupportRecoveryOwn2034 and
+           not bearSupportRecoveryOwn3450
+            bearSupportRecoveryArmed := false
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Bull Resistance Rollover Ownership
+// ──────────────────────────────────────────────
+
+// 🔹 Rollover begins at the first bearish 5/8 ordering and hands back pair-by-pair on Bull recross
+var bool bullResistanceRolloverArmed = false
+var bool bullResistanceRolloverOwn58 = false
+var bool bullResistanceRolloverOwn813 = false
+var bool bullResistanceRolloverOwn1320 = false
+var bool bullResistanceRolloverOwn2034 = false
+var bool bullResistanceRolloverOwn3450 = false
+
+if not isBullResistance
+    bullResistanceRolloverArmed := false
+    bullResistanceRolloverOwn58 := false
+    bullResistanceRolloverOwn813 := false
+    bullResistanceRolloverOwn1320 := false
+    bullResistanceRolloverOwn2034 := false
+    bullResistanceRolloverOwn3450 := false
+else
+    if not bullResistanceRolloverArmed and bearFront58
+        bullResistanceRolloverArmed := true
+        bullResistanceRolloverOwn58 := true
+
+    if bullResistanceRolloverArmed
+        bullResistanceRolloverOwn58 := bearFront58
+
+        if bearFront813
+            bullResistanceRolloverOwn813 := true
+        else if bull813
+            bullResistanceRolloverOwn813 := false
+
+        if bearFront1320
+            bullResistanceRolloverOwn1320 := true
+        else if bull1320
+            bullResistanceRolloverOwn1320 := false
+
+        if bearFront2034
+            bullResistanceRolloverOwn2034 := true
+        else if bull2034
+            bullResistanceRolloverOwn2034 := false
+
+        if bearFront3450
+            bullResistanceRolloverOwn3450 := true
+        else if bull3450
+            bullResistanceRolloverOwn3450 := false
+
+        if not bullResistanceRolloverOwn58 and
+           not bullResistanceRolloverOwn813 and
+           not bullResistanceRolloverOwn1320 and
+           not bullResistanceRolloverOwn2034 and
+           not bullResistanceRolloverOwn3450
+            bullResistanceRolloverArmed := false
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Bear Support Rollover Ownership
+// ──────────────────────────────────────────────
+
+// 🔹 Bear recross has priority over recovery so the fast edge can feed cleanly back into Bear Fall
+var bool bearSupportRolloverArmed = false
+var bool bearSupportRolloverOwn58 = false
+var bool bearSupportRolloverOwn813 = false
+var bool bearSupportRolloverOwn1320 = false
+var bool bearSupportRolloverOwn2034 = false
+var bool bearSupportRolloverOwn3450 = false
+
+if not isBearSupport
+    bearSupportRolloverArmed := false
+    bearSupportRolloverOwn58 := false
+    bearSupportRolloverOwn813 := false
+    bearSupportRolloverOwn1320 := false
+    bearSupportRolloverOwn2034 := false
+    bearSupportRolloverOwn3450 := false
+else
+    if not bearSupportRolloverArmed and bearFront58
+        bearSupportRolloverArmed := true
+        bearSupportRolloverOwn58 := true
+
+    if bearSupportRolloverArmed
+        bearSupportRolloverOwn58 := bearFront58
+
+        if bearFront813
+            bearSupportRolloverOwn813 := true
+        else if bull813
+            bearSupportRolloverOwn813 := false
+
+        if bearFront1320
+            bearSupportRolloverOwn1320 := true
+        else if bull1320
+            bearSupportRolloverOwn1320 := false
+
+        if bearFront2034
+            bearSupportRolloverOwn2034 := true
+        else if bull2034
+            bearSupportRolloverOwn2034 := false
+
+        if bearFront3450
+            bearSupportRolloverOwn3450 := true
+        else if bull3450
+            bearSupportRolloverOwn3450 := false
+
+        if not bearSupportRolloverOwn58 and
+           not bearSupportRolloverOwn813 and
+           not bearSupportRolloverOwn1320 and
+           not bearSupportRolloverOwn2034 and
+           not bearSupportRolloverOwn3450
+            bearSupportRolloverArmed := false
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Short Right-Label Ribbon Gradient Owner
+// ──────────────────────────────────────────────
+
+// 🔹 Resolve each physical band from the SAME transition ownership used by the visible Ribbon foreground
+int rightBand1Transp =
+     bearSupportRolloverOwn58 ? band1Transp :
+     bearSupportRecoveryOwn58 ? bearSupportRecoveryBand1Transp :
+     bullResistanceRolloverOwn58 ? bullResistanceRolloverBand1Transp :
+     band1Transp
+
+int rightBand2Transp =
+     bearSupportRolloverOwn813 ? band2Transp :
+     bearSupportRecoveryOwn813 ? bearSupportRecoveryBand2Transp :
+     bullResistanceRolloverOwn813 ? bullResistanceRolloverBand2Transp :
+     band2Transp
+
+int rightBand3Transp =
+     bearSupportRolloverOwn1320 ? band3Transp :
+     bearSupportRecoveryOwn1320 ? bearSupportRecoveryBand3Transp :
+     bullResistanceRolloverOwn1320 ? bullResistanceRolloverBand3Transp :
+     band3Transp
+
+int rightBand4Transp =
+     bearSupportRolloverOwn2034 ? band4Transp :
+     bearSupportRecoveryOwn2034 ? bearSupportRecoveryBand4Transp :
+     bullResistanceRolloverOwn2034 ? bullResistanceRolloverBand4Transp :
+     band4Transp
+
+int rightBand5Transp =
+     bearSupportRolloverOwn3450 ? band5Transp :
+     bearSupportRecoveryOwn3450 ? bearSupportRecoveryBand5Transp :
+     bullResistanceRolloverOwn3450 ? bullResistanceRolloverBand5Transp :
+     band5Transp
+
+// 🔹 Six MA boundaries interpolate neighboring physical band shades; fast/slow edges use their outer band directly
+int shortLabel5Transp = rightBand1Transp
+int shortLabel8Transp = int(math.round((float(rightBand1Transp) + float(rightBand2Transp)) * 0.5))
+int shortLabel13Transp = int(math.round((float(rightBand2Transp) + float(rightBand3Transp)) * 0.5))
+int shortLabel20Transp = int(math.round((float(rightBand3Transp) + float(rightBand4Transp)) * 0.5))
+int shortLabel34Transp = int(math.round((float(rightBand4Transp) + float(rightBand5Transp)) * 0.5))
+int shortLabel50Transp = rightBand5Transp
+
+// 🔹 Label-only brightness reduces preblend transparency while preserving the exact ribbon hue / gradient order
+int shortLabel5RenderTransp = math.max(shortLabel5Transp - in_shortLabelBrightness, 0)
+int shortLabel8RenderTransp = math.max(shortLabel8Transp - in_shortLabelBrightness, 0)
+int shortLabel13RenderTransp = math.max(shortLabel13Transp - in_shortLabelBrightness, 0)
+int shortLabel20RenderTransp = math.max(shortLabel20Transp - in_shortLabelBrightness, 0)
+int shortLabel34RenderTransp = math.max(shortLabel34Transp - in_shortLabelBrightness, 0)
+int shortLabel50RenderTransp = math.max(shortLabel50Transp - in_shortLabelBrightness, 0)
+
+color shortLabel5Color = useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, shortLabel5RenderTransp, in_ribbonChartBg) : ohlcRibbonColor
+color shortLabel8Color = useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, shortLabel8RenderTransp, in_ribbonChartBg) : ohlcRibbonColor
+color shortLabel13Color = useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, shortLabel13RenderTransp, in_ribbonChartBg) : ohlcRibbonColor
+color shortLabel20Color = useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, shortLabel20RenderTransp, in_ribbonChartBg) : ohlcRibbonColor
+color shortLabel34Color = useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, shortLabel34RenderTransp, in_ribbonChartBg) : ohlcRibbonColor
+color shortLabel50Color = useRibbonGradient ? f_opaqueRibbonColor(ohlcRibbonColor, shortLabel50RenderTransp, in_ribbonChartBg) : ohlcRibbonColor
+
+// ==============================================================================================
+// 🔴 END REGION: Ribbon Plot Series + Transition Ownership
+// ==============================================================================================
+
+
+// ==============================================================================================
+// 🟢 REGION: PlotCandles Render
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Regime-Colored Price Candles
+// ──────────────────────────────────────────────
+
+// 🔹 Pure presentation gate; exact resolved global-regime hue owns body / wick / border
+color candleBodyColor = showCandles ? color.new(ohlcRibbonColor, in_candleBodyTransp) : na
+color candleWickColor = showCandles ? color.new(ohlcRibbonColor, in_candleWickTransp) : na
+color candleBorderColor = showCandles ? color.new(ohlcRibbonColor, in_candleBorderTransp) : na
+
+plotcandle(
+     showCandles ? open : na,
+     showCandles ? high : na,
+     showCandles ? low : na,
+     showCandles ? close : na,
+     title="OHLC Regime PlotCandles",
+     color=candleBodyColor,
+     wickcolor=candleWickColor,
+     bordercolor=candleBorderColor,
+     show_last=in_candleLastN)
+
+// ==============================================================================================
+// 🔴 END REGION: PlotCandles Render
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Price Bar-to-Bar Follow Line
+// ==============================================================================================
+//
+// Canonical lightweight price follow plot.
+// • Hardcoded SHOW.
+// • Last 2 bars only.
+// • Width 2 / transparency 0.
+// • Uses the exact active OHLC Global Regime color.
+// • Native plot only — no line-object lifecycle.
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Hardcoded Follow Plot
+// ──────────────────────────────────────────────
+
+// 🔹 Native show_last=2 renders exactly the previous-close → current-close segment
+color ohlcBarToBarFollowColor =
+     color.new(ohlcRibbonColor, OHLC_BAR_TO_BAR_FOLLOW_TRANSP)
+
+plot(
+     close,
+     title="OHLC Price Bar-to-Bar Follow Line",
+     color=ohlcBarToBarFollowColor,
+     linewidth=OHLC_BAR_TO_BAR_FOLLOW_WIDTH,
+     show_last=OHLC_BAR_TO_BAR_FOLLOW_LAST_N)
+
+// ==============================================================================================
+// 🔴 END REGION: Price Bar-to-Bar Follow Line
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Ribbon Render
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Native Identity Plots
+// ──────────────────────────────────────────────
+
+// 🔹 Six real RMA identities remain intact; no sorted-rank substitution
+p1 = plot(ohlc5Plot, title="OHLC 5", color=f_lineColor(1), linewidth=in_lineWidth, show_last=in_ribbonLastN)
+p2 = plot(ohlc8Plot, title="OHLC 8", color=f_lineColor(2), linewidth=in_lineWidth, show_last=in_ribbonLastN)
+p3 = plot(ohlc13Plot, title="OHLC 13", color=f_lineColor(3), linewidth=in_lineWidth, show_last=in_ribbonLastN)
+p4 = plot(ohlc20Plot, title="OHLC 20", color=f_lineColor(4), linewidth=in_lineWidth, show_last=in_ribbonLastN)
+p5 = plot(ohlc34Plot, title="OHLC 34", color=f_lineColor(5), linewidth=in_lineWidth, show_last=in_ribbonLastN)
+p6 = plot(ohlc50Plot, title="OHLC 50", color=f_lineColor(6), linewidth=in_lineWidth, show_last=in_ribbonLastN)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Continuous Base Ribbon
+// ──────────────────────────────────────────────
+
+// 🔹 5/8 is omitted from the base pass because its foreground is always pair-owned
+fill(p5, p6, color=band5Color, title="OHLC BASE · 34 / 50", show_last=in_ribbonLastN, fillgaps=false)
+fill(p4, p5, color=band4Color, title="OHLC BASE · 20 / 34", show_last=in_ribbonLastN, fillgaps=false)
+fill(p3, p4, color=band3Color, title="OHLC BASE · 13 / 20", show_last=in_ribbonLastN, fillgaps=false)
+fill(p2, p3, color=band2Color, title="OHLC BASE · 8 / 13", show_last=in_ribbonLastN, fillgaps=false)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Contiguous Foreground Overlay
+// ──────────────────────────────────────────────
+
+// 🔹 Recovery / rollover ownership reuses the same five foreground fills; no duplicate geometry family
+fill(p5, p6, color=showRibbon and (bullFront3450 or bearFront3450 or bearSupportRecoveryOwn3450 or bearSupportRolloverOwn3450 or bullResistanceRolloverOwn3450) ? (bearSupportRolloverOwn3450 ? band5Color : bearSupportRecoveryOwn3450 ? bearSupportRecoveryBand5Color : bullResistanceRolloverOwn3450 ? bullResistanceRolloverBand5Color : band5Color) : na, title="OHLC FOREGROUND · 34 / 50", show_last=in_ribbonLastN, fillgaps=false)
+fill(p4, p5, color=showRibbon and (bullFront2034 or bearFront2034 or bearSupportRecoveryOwn2034 or bearSupportRolloverOwn2034 or bullResistanceRolloverOwn2034) ? (bearSupportRolloverOwn2034 ? band4Color : bearSupportRecoveryOwn2034 ? bearSupportRecoveryBand4Color : bullResistanceRolloverOwn2034 ? bullResistanceRolloverBand4Color : band4Color) : na, title="OHLC FOREGROUND · 20 / 34", show_last=in_ribbonLastN, fillgaps=false)
+fill(p3, p4, color=showRibbon and (bullFront1320 or bearFront1320 or bearSupportRecoveryOwn1320 or bearSupportRolloverOwn1320 or bullResistanceRolloverOwn1320) ? (bearSupportRolloverOwn1320 ? band3Color : bearSupportRecoveryOwn1320 ? bearSupportRecoveryBand3Color : bullResistanceRolloverOwn1320 ? bullResistanceRolloverBand3Color : band3Color) : na, title="OHLC FOREGROUND · 13 / 20", show_last=in_ribbonLastN, fillgaps=false)
+fill(p2, p3, color=showRibbon and (bullFront813 or bearFront813 or bearSupportRecoveryOwn813 or bearSupportRolloverOwn813 or bullResistanceRolloverOwn813) ? (bearSupportRolloverOwn813 ? band2Color : bearSupportRecoveryOwn813 ? bearSupportRecoveryBand2Color : bullResistanceRolloverOwn813 ? bullResistanceRolloverBand2Color : band2Color) : na, title="OHLC FOREGROUND · 8 / 13", show_last=in_ribbonLastN, fillgaps=false)
+fill(p1, p2, color=showRibbon and (bullFront58 or bearFront58 or bearSupportRecoveryOwn58 or bearSupportRolloverOwn58 or bullResistanceRolloverOwn58) ? (bearSupportRolloverOwn58 ? band1Color : bearSupportRecoveryOwn58 ? bearSupportRecoveryBand1Color : bullResistanceRolloverOwn58 ? bullResistanceRolloverBand1Color : band1Color) : na, title="OHLC FOREGROUND · 5 / 8", show_last=in_ribbonLastN, fillgaps=false)
+
+// ==============================================================================================
+// 🔴 END REGION: Ribbon Render
+// ==============================================================================================
+
+
+// ==============================================================================================
+// 🟢 REGION: Long Structural OHLC Plots
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Separate 75 / 110 Structural Lines
+// ──────────────────────────────────────────────
+
+// 🔹 One canonical 75/110 state color owner shared by BOTH plots and BOTH right labels
+color longStructStateColor =
+     not na(ohlc75) and not na(ohlc110) and ohlc75 > ohlc110 ?
+     OHLC_LONG_BULL_LABEL_COLOR :
+     OHLC_LONG_BEAR_LABEL_COLOR
+
+color longStructPlotColor =
+     showAnyLongStructPlot ?
+     color.new(longStructStateColor, in_longStructPlotTransp) :
+     na
+
+plot(showLongStructPlots and in_showOhlc75Plot ? ohlc75 : na, title="OHLC 75 · Long Structure", color=longStructPlotColor, linewidth=in_longStructPlotWidth, show_last=in_longStructPlotLastN)
+plot(showLongStructPlots and in_showOhlc110Plot ? ohlc110 : na, title="OHLC 110 · Long Structure", color=longStructPlotColor, linewidth=in_longStructPlotWidth, show_last=in_longStructPlotLastN)
+
+// ==============================================================================================
+// 🔴 END REGION: Long Structural OHLC Plots
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: OHLC Context Table
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Short-Ribbon ORDER Telemetry
+// ──────────────────────────────────────────────
+
+// 🔹 Path efficiency is the existing REG BODY guard metric; x/5 is contiguous from 5/8 outward
+int ribbonOrderSide =
+     bull58 ? 1 :
+     bear58 ? -1 :
+     0
+
+int ribbonOrderedCount =
+     ribbonOrderSide == 1 ?
+         (bullFront3450 ? 5 : bullFront2034 ? 4 : bullFront1320 ? 3 : bullFront813 ? 2 : bullFront58 ? 1 : 0) :
+     ribbonOrderSide == -1 ?
+         (bearFront3450 ? 5 : bearFront2034 ? 4 : bearFront1320 ? 3 : bearFront813 ? 2 : bearFront58 ? 1 : 0) :
+     0
+
+string ribbonOrderSideText =
+     ribbonOrderSide == 1 ? "Bull" :
+     ribbonOrderSide == -1 ? "Bear" :
+     "Flat"
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Long-Pair Structural Telemetry
+// ──────────────────────────────────────────────
+
+// 🔹 Crossover age supplies the compact long-row telemetry; long plot/label color ownership remains unchanged
+// 🔹 Long crossover kernels execute continuously here because both the table and historical event labels consume them
+bool ohlc75110BullCrossRaw = ta.crossover(ohlc75, ohlc110)
+bool ohlc75110BearCrossRaw = ta.crossunder(ohlc75, ohlc110)
+bool ohlc75110CrossRaw = ohlc75110BullCrossRaw or ohlc75110BearCrossRaw
+int ohlc75110BarsSinceCross = ta.barssince(ohlc75110CrossRaw)
+int ohlc75110CrossBarCount = na(ohlc75110BarsSinceCross) ? na : ohlc75110BarsSinceCross + 1
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Table Color Ownership
+// ──────────────────────────────────────────────
+
+// 🔹 Row 1 mirrors the EMA table's brightest visible main-ribbon shade; Row 2 uses exact long-pair owner
+int tableRibbonBrightestTransp = math.max(OHLC_BAND_1_TRANSP - in_ribbonBrightness, 0)
+color tableGlobalBg =
+     useRibbonGradient ?
+     f_opaqueRibbonColor(ohlcRibbonColor, tableRibbonBrightestTransp, in_ribbonChartBg) :
+     ohlcRibbonColor
+
+color tableGlobalText =
+     f_tableTextColor(
+         tableGlobalBg,
+         not useRibbonGradient and isBullResistance)
+
+color tableLongBg = longStructStateColor
+color tableLongText = f_tableTextColor(tableLongBg)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Two-Row Last-Bar Render
+// ──────────────────────────────────────────────
+
+// 🔹 One table object only; hidden mode deletes the object and suppresses formatting/render work
+var table ohlcContextTable = na
+
+if barstate.islast
+    if showContextTable
+        if na(ohlcContextTable)
+            ohlcContextTable :=
+                 table.new(
+                     f_tablePosition(in_tablePositionStr),
+                     1,
+                     2,
+                     border_width=1,
+                     frame_color=color.white,
+                     frame_width=1)
+
+        table.set_position(
+             ohlcContextTable,
+             f_tablePosition(in_tablePositionStr))
+
+        string _identity = syminfo.ticker + " (" + f_prettyChartTf() + ")"
+        string _coreValue = f_plain1Trim(ohlcCore)
+        string _htfCoreValue = f_plain1Trim(ohlcCoreHtf)
+        string _htfCoreTfText = f_prettyTf(ohlcCoreHtfTf)
+        string _ribbonOrderPctText =
+             na(orderEff) ? "na" : str.tostring(int(math.round(orderEff))) + "%"
+
+        string _globalRow =
+             _identity + "\n" +
+             "OHLC Global Regime\n" +
+             ohlcRegimeText + " | " + f_barsAgoText(ohlcRegimeBarCount) + "\n" +
+             "Ribbon " + _ribbonOrderPctText +
+             " | " + ribbonOrderSideText + " " +
+             str.tostring(ribbonOrderedCount) + "/5\n" +
+             "CORE: " + _coreValue + "\n" +
+             "CORE HTF (" + _htfCoreTfText + "): " + _htfCoreValue
+
+        string _longOrder =
+             na(ohlc75) or na(ohlc110) ? "75 / 110" :
+             ohlc75 > ohlc110 ? "75 > 110" :
+             ohlc75 < ohlc110 ? "110 > 75" :
+             "75 = 110"
+
+        string _longRow =
+             _longOrder + " | " +
+             f_barsAgoText(ohlc75110CrossBarCount)
+
+        string _globalTooltip =
+             "ROW 1 — OHLC GLOBAL CONTEXT\n\n" +
+             "Ticker / TF: " + syminfo.ticker + " / " + f_prettyChartTf() +
+             "\n\nGLOBAL REGIME" +
+             "\nCurrent state: " + ohlcRegimeText +
+             "\nAge: " + f_barsAgoText(ohlcRegimeBarCount) +
+             "\n1ba = the first bar of the current regime; the count increases by one on each bar that the same regime persists." +
+             "\nRibbon color engine: " + in_ribbonColorEngine +
+             "\n\nRIBBON STRUCTURE" +
+             "\nORDER: " + _ribbonOrderPctText +
+             "\nORDER measures path efficiency across OHLC5/8/13/20/34/50." +
+             "\nFormula: |OHLC5−OHLC50| ÷ summed adjacent 5/8/13/20/34/50 path × 100." +
+             "\n100% = perfectly monotonic ordering; lower values = more internal folding / crossover geometry." +
+             "\nCrossover front: " + ribbonOrderSideText + " " + str.tostring(ribbonOrderedCount) + "/5" +
+             "\nBull/Bear is set by the fast 5/8 relationship. x/5 shows how many adjacent relationships have aligned CONTIGUOUSLY outward from 5/8." +
+             "\n5/5 = the full six-RMA stack is ordered in that direction; isolated deeper pairs cannot jump the count ahead." +
+             "\n\nOHLC CORE" +
+             "\nCORE: " + _coreValue +
+             "\nCORE is the internal -100 to +100 OHLC directional-strength score produced by the six-RMA REG BODY, ATR14 normalization, guard, and Wide Semantic transfer." +
+             "\n\nDEVELOPING HTF CORE" +
+             "\nNext HTF: " + _htfCoreTfText +
+             "\nCORE HTF: " + _htfCoreValue +
+             "\nThis is the same six-RMA CORE engine calculated natively on the Auto-Next-HTF with gaps_off / lookahead_off and no [1] offset." +
+             "\nIt is DEVELOPING: the value can continue changing until the current " + _htfCoreTfText + " candle closes." +
+             "\nPositive values are bullish; negative values are bearish. The Global Regime engine consumes this score together with physical stack structure." +
+             "\nCanonical strength rails include ±34 same-side re-entry, ±55 transfer, ±89/75 Extreme entry/release, and ±95/89 Exceptional entry/release."
+
+        string _longTooltip =
+             "ROW 2 — LONG OHLC STRUCTURE\n\n" +
+             "Family: OHLC75 / OHLC110" +
+             "\nCurrent order: " + _longOrder +
+             "\n\nORDER READING" +
+             "\n75 > 110 = the faster long structural average is above the slower average; this is the bullish long-pair state." +
+             "\n110 > 75 = the slower average is above the faster average; this is the bearish long-pair state." +
+             "\n\nCROSSOVER AGE" +
+             "\nLast 75/110 crossover: " + f_barsAgoText(ohlc75110CrossBarCount) +
+             "\nAge is inclusive: the crossover bar itself = 1ba." +
+             "\n\nCOLOR OWNER" +
+             "\nThis cell uses the exact same shared long-pair state color as both OHLC75/OHLC110 plots and both long right labels." +
+             "\nOrange = 75 > 110; gray = 110 > 75." +
+             "\nThe 75/110 pair is structural context only and does not participate in the six-average Global Regime engine."
+
+        table.cell(
+             ohlcContextTable, 0, 0, _globalRow,
+             width=in_tableCellWidth,
+             bgcolor=tableGlobalBg,
+             text_color=tableGlobalText,
+             text_halign=text.align_center,
+             text_size=f_markerSize(in_tableSizeStr),
+             tooltip=_globalTooltip)
+
+        table.cell(
+             ohlcContextTable, 0, 1, _longRow,
+             width=in_tableCellWidth,
+             bgcolor=tableLongBg,
+             text_color=tableLongText,
+             text_halign=text.align_center,
+             text_size=f_markerSize(in_tableSizeStr),
+             tooltip=_longTooltip)
+    else
+        if not na(ohlcContextTable)
+            table.delete(ohlcContextTable)
+            ohlcContextTable := na
+
+// ==============================================================================================
+// 🔴 END REGION: OHLC Context Table
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Right-Side OHLC Labels
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Label Handles
+// ──────────────────────────────────────────────
+
+// 🔹 Persistent last-bar objects only
+var label ohlc5Label = na
+var label ohlc8Label = na
+var label ohlc13Label = na
+var label ohlc20Label = na
+var label ohlc34Label = na
+var label ohlc50Label = na
+var label ohlc75Label = na
+var label ohlc110Label = na
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Last-Bar Dynamic Padding + Render
+// ──────────────────────────────────────────────
+
+// 🔹 Individual mode consumes one lane per visible label; short labels inherit Ribbon boundary gradient, arrows retain last price-cross direction
+if barstate.islast
+    string ohlc5Text = ""
+    string ohlc8Text = ""
+    string ohlc13Text = ""
+    string ohlc20Text = ""
+    string ohlc34Text = ""
+    string ohlc50Text = ""
+    string ohlc75Text = ""
+    string ohlc110Text = ""
+
+    if showRightLabels
+        array<bool> labelVisible = array.from(
+             in_showOhlc5Label and not na(ohlc5),
+             in_showOhlc8Label and not na(ohlc8),
+             in_showOhlc13Label and not na(ohlc13),
+             in_showOhlc20Label and not na(ohlc20),
+             in_showOhlc34Label and not na(ohlc34),
+             in_showOhlc50Label and not na(ohlc50),
+             in_showOhlc75Label and not na(ohlc75),
+             in_showOhlc110Label and not na(ohlc110))
+
+        array<int> labelGroups = array.from(0, 0, 0, 0, 0, 0, 0, 0)
+        array<int> labelOrder = array.from(0, 1, 2, 3, 4, 5, 6, 7)
+
+        array<int> labelPads =
+             f_buildLabelPads(
+                 labelVisible,
+                 labelGroups,
+                 labelOrder,
+                 useGroupedRightLabelPadding,
+                 in_rightLabelBasePad,
+                 in_rightLabelPadStep)
+
+        int pad5 = array.get(labelPads, 0)
+        int pad8 = array.get(labelPads, 1)
+        int pad13 = array.get(labelPads, 2)
+        int pad20 = array.get(labelPads, 3)
+        int pad34 = array.get(labelPads, 4)
+        int pad50 = array.get(labelPads, 5)
+        int pad75 = array.get(labelPads, 6)
+        int pad110 = array.get(labelPads, 7)
+
+        ohlc5Text := in_showOhlc5Label ? f_rightLineTagText("OHLC5", ohlc5, close, pad5, priceOhlc5CrossDir) : ""
+        ohlc8Text := in_showOhlc8Label ? f_rightLineTagText("OHLC8", ohlc8, close, pad8, priceOhlc8CrossDir) : ""
+        ohlc13Text := in_showOhlc13Label ? f_rightLineTagText("OHLC13", ohlc13, close, pad13, priceOhlc13CrossDir) : ""
+        ohlc20Text := in_showOhlc20Label ? f_rightLineTagText("OHLC20", ohlc20, close, pad20, priceOhlc20CrossDir) : ""
+        ohlc34Text := in_showOhlc34Label ? f_rightLineTagText("OHLC34", ohlc34, close, pad34, priceOhlc34CrossDir) : ""
+        ohlc50Text := in_showOhlc50Label ? f_rightLineTagText("OHLC50", ohlc50, close, pad50, priceOhlc50CrossDir) : ""
+        ohlc75Text := in_showOhlc75Label ? f_rightLineTagText("OHLC75", ohlc75, close, pad75, priceOhlc75CrossDir) : ""
+        ohlc110Text := in_showOhlc110Label ? f_rightLineTagText("OHLC110", ohlc110, close, pad110, priceOhlc110CrossDir) : ""
+
+    ohlc5Label := f_manageRightLineTag(showRightLabels and in_showOhlc5Label and not na(ohlc5) and ohlc5Text != "", ohlc5Label, ohlc5, ohlc5Text, shortLabel5Color, f_markerSize(in_rightLabelSize))
+    ohlc8Label := f_manageRightLineTag(showRightLabels and in_showOhlc8Label and not na(ohlc8) and ohlc8Text != "", ohlc8Label, ohlc8, ohlc8Text, shortLabel8Color, f_markerSize(in_rightLabelSize))
+    ohlc13Label := f_manageRightLineTag(showRightLabels and in_showOhlc13Label and not na(ohlc13) and ohlc13Text != "", ohlc13Label, ohlc13, ohlc13Text, shortLabel13Color, f_markerSize(in_rightLabelSize))
+    ohlc20Label := f_manageRightLineTag(showRightLabels and in_showOhlc20Label and not na(ohlc20) and ohlc20Text != "", ohlc20Label, ohlc20, ohlc20Text, shortLabel20Color, f_markerSize(in_rightLabelSize))
+    ohlc34Label := f_manageRightLineTag(showRightLabels and in_showOhlc34Label and not na(ohlc34) and ohlc34Text != "", ohlc34Label, ohlc34, ohlc34Text, shortLabel34Color, f_markerSize(in_rightLabelSize))
+    ohlc50Label := f_manageRightLineTag(showRightLabels and in_showOhlc50Label and not na(ohlc50) and ohlc50Text != "", ohlc50Label, ohlc50, ohlc50Text, shortLabel50Color, f_markerSize(in_rightLabelSize))
+    ohlc75Label := f_manageRightLineTag(showRightLabels and in_showOhlc75Label and not na(ohlc75) and ohlc75Text != "", ohlc75Label, ohlc75, ohlc75Text, longStructStateColor, f_markerSize(in_rightLabelSize))
+    ohlc110Label := f_manageRightLineTag(showRightLabels and in_showOhlc110Label and not na(ohlc110) and ohlc110Text != "", ohlc110Label, ohlc110, ohlc110Text, longStructStateColor, f_markerSize(in_rightLabelSize))
+
+// ==============================================================================================
+// 🔴 END REGION: Right-Side OHLC Labels
+// ==============================================================================================
+
+
+// ==============================================================================================
+// 🟢 REGION: OHLC Crossover State + Labels
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Continuous Crossover Kernels
+// ──────────────────────────────────────────────
+
+// 🔹 Short-family cross detection executes continuously; 75/110 is resolved earlier because the table also consumes its age
+bool ohlc58BullCrossRaw = ta.crossover(ohlc5, ohlc8)
+bool ohlc58BearCrossRaw = ta.crossunder(ohlc5, ohlc8)
+bool ohlc820BullCrossRaw = ta.crossover(ohlc8, ohlc20)
+bool ohlc820BearCrossRaw = ta.crossunder(ohlc8, ohlc20)
+bool ohlc1334BullCrossRaw = ta.crossover(ohlc13, ohlc34)
+bool ohlc1334BearCrossRaw = ta.crossunder(ohlc13, ohlc34)
+bool ohlc2050BullCrossRaw = ta.crossover(ohlc20, ohlc50)
+bool ohlc2050BearCrossRaw = ta.crossunder(ohlc20, ohlc50)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Canonical Event Text
+// ──────────────────────────────────────────────
+
+// 🔹 Bull = newly-leading faster OHLC first; Bear reverses ownership
+const string OHLC_58_BULL_TEXT = "5\n8"
+const string OHLC_58_BEAR_TEXT = "8\n5"
+const string OHLC_820_BULL_TEXT = "8\n20"
+const string OHLC_820_BEAR_TEXT = "20\n8"
+const string OHLC_1334_BULL_TEXT = "13\n34"
+const string OHLC_1334_BEAR_TEXT = "34\n13"
+const string OHLC_2050_BULL_TEXT = "20\n50"
+const string OHLC_2050_BEAR_TEXT = "50\n20"
+const string OHLC_75110_BULL_TEXT = "75\n110"
+const string OHLC_75110_BEAR_TEXT = "110\n75"
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Exact Rolling Last-N Rebuild
+// ──────────────────────────────────────────────
+
+// 🔹 Bull labels are hardcoded below candle; Bear labels are hardcoded above candle
+var label[] crossoverLabels = array.new<label>()
+
+if barstate.islast
+    f_clearLabels(crossoverLabels)
+
+    if showCrossLabels and (showOhlc58Cross or showOhlc820Cross or showOhlc1334Cross or showOhlc2050Cross or showOhlc75110Cross)
+        int crossLastNUse = 0
+        crossLastNUse := showOhlc58Cross ? math.max(crossLastNUse, in_ohlc58CrossLastN) : crossLastNUse
+        crossLastNUse := showOhlc820Cross ? math.max(crossLastNUse, in_ohlc820CrossLastN) : crossLastNUse
+        crossLastNUse := showOhlc1334Cross ? math.max(crossLastNUse, in_ohlc1334CrossLastN) : crossLastNUse
+        crossLastNUse := showOhlc2050Cross ? math.max(crossLastNUse, in_ohlc2050CrossLastN) : crossLastNUse
+        crossLastNUse := showOhlc75110Cross ? math.max(crossLastNUse, in_ohlc75110CrossLastN) : crossLastNUse
+
+        int enabledCrossFamilyCount =
+             (showOhlc58Cross ? 1 : 0) +
+             (showOhlc820Cross ? 1 : 0) +
+             (showOhlc1334Cross ? 1 : 0) +
+             (showOhlc2050Cross ? 1 : 0) +
+             (showOhlc75110Cross ? 1 : 0)
+        int maxCrossScanByBudget = enabledCrossFamilyCount > 0 ? int(math.floor(float(MAX_CROSS_LABEL_OBJECTS) / float(enabledCrossFamilyCount))) : 0
+        int crossScanBars = math.min(math.min(math.min(crossLastNUse, bar_index + 1), MAX_CROSS_SCAN_BARS), maxCrossScanByBudget)
+
+        if crossScanBars > 0
+            for _j = 0 to crossScanBars - 1
+                int _barsAgo = crossScanBars - 1 - _j
+                int _x = bar_index - _barsAgo
+                int[] _stackRows = array.new<int>(2, 0)
+
+                bool _bull58Cross = showOhlc58Cross and _barsAgo < in_ohlc58CrossLastN and ohlc58BullCrossRaw[_barsAgo]
+                bool _bear58Cross = showOhlc58Cross and _barsAgo < in_ohlc58CrossLastN and ohlc58BearCrossRaw[_barsAgo]
+                bool _bull820Cross = showOhlc820Cross and _barsAgo < in_ohlc820CrossLastN and ohlc820BullCrossRaw[_barsAgo]
+                bool _bear820Cross = showOhlc820Cross and _barsAgo < in_ohlc820CrossLastN and ohlc820BearCrossRaw[_barsAgo]
+                bool _bull1334Cross = showOhlc1334Cross and _barsAgo < in_ohlc1334CrossLastN and ohlc1334BullCrossRaw[_barsAgo]
+                bool _bear1334Cross = showOhlc1334Cross and _barsAgo < in_ohlc1334CrossLastN and ohlc1334BearCrossRaw[_barsAgo]
+                bool _bull2050 = showOhlc2050Cross and _barsAgo < in_ohlc2050CrossLastN and ohlc2050BullCrossRaw[_barsAgo]
+                bool _bear2050 = showOhlc2050Cross and _barsAgo < in_ohlc2050CrossLastN and ohlc2050BearCrossRaw[_barsAgo]
+                bool _bull75110 = showOhlc75110Cross and _barsAgo < in_ohlc75110CrossLastN and ohlc75110BullCrossRaw[_barsAgo]
+                bool _bear75110 = showOhlc75110Cross and _barsAgo < in_ohlc75110CrossLastN and ohlc75110BearCrossRaw[_barsAgo]
+
+                // Formation-bar regime owns event color; historical labels never inherit today's regime.
+                color _eventRegimeColor = ohlcRibbonColor[_barsAgo]
+
+                f_addCrossLabel(crossoverLabels, _bull58Cross, _x, OHLC_58_BULL_TEXT, _eventRegimeColor, false, _stackRows)
+                f_addCrossLabel(crossoverLabels, _bear58Cross, _x, OHLC_58_BEAR_TEXT, _eventRegimeColor, true, _stackRows)
+                f_addCrossLabel(crossoverLabels, _bull820Cross, _x, OHLC_820_BULL_TEXT, _eventRegimeColor, false, _stackRows)
+                f_addCrossLabel(crossoverLabels, _bear820Cross, _x, OHLC_820_BEAR_TEXT, _eventRegimeColor, true, _stackRows)
+                f_addCrossLabel(crossoverLabels, _bull1334Cross, _x, OHLC_1334_BULL_TEXT, _eventRegimeColor, false, _stackRows)
+                f_addCrossLabel(crossoverLabels, _bear1334Cross, _x, OHLC_1334_BEAR_TEXT, _eventRegimeColor, true, _stackRows)
+                f_addCrossLabel(crossoverLabels, _bull2050, _x, OHLC_2050_BULL_TEXT, _eventRegimeColor, false, _stackRows)
+                f_addCrossLabel(crossoverLabels, _bear2050, _x, OHLC_2050_BEAR_TEXT, _eventRegimeColor, true, _stackRows)
+                f_addCrossLabel(crossoverLabels, _bull75110, _x, OHLC_75110_BULL_TEXT, _eventRegimeColor, false, _stackRows)
+                f_addCrossLabel(crossoverLabels, _bear75110, _x, OHLC_75110_BEAR_TEXT, _eventRegimeColor, true, _stackRows)
+
+// ==============================================================================================
+// 🔴 END REGION: OHLC Crossover State + Labels
+// ==============================================================================================

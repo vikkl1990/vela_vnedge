@@ -1,0 +1,405 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © evawpd141
+
+//@version=6
+indicator("YURI VWAP Excursion Engine", "YURI VXE", overlay = false)
+
+// Session VWAP carries a deadline that most levels do not. Whatever price is
+// doing when the session ends, the average resets and the question of whether
+// price got back to it is closed for good. This keeps the record of how that
+// question has been answered on the chart in front of you.
+//
+// An excursion opens on the first bar whose close sits more than a set distance
+// from session VWAP, and closes on the first later bar whose range contains
+// VWAP. A session that ends with one still open does not delete it: it is
+// committed with the elapsed time kept as a lower bound and a mark saying the
+// deadline arrived first. The pushes that did not come back are the ones a
+// record of return times is most tempted to lose, and a record that loses them
+// is an advertisement.
+//
+// THE ESTIMATOR. The share of excursions that came back before the close is
+// mostly a readout of how much session was left when they started: across three
+// US equity ETFs and sixty sessions of five minute bars, that share by hour of
+// departure ranked against the minutes remaining at a Spearman of 0.96. So the
+// ledger is read with a Kaplan-Meier estimate instead. Each entry contributes
+// to the number at risk for as long as it was actually watched, contributes an
+// event only where a return was seen, and an entry still out when its session
+// ended leaves the risk set at that point rather than being counted as a
+// failure to return or thrown away.
+//
+// The naive alternatives both break, in opposite directions. Admitting an entry
+// only when its horizon reaches the age being asked about throws away returns
+// that were already seen, and every one of those is a late departure because in
+// a fixed length session a short horizon is a late start: on the tested window
+// that understates the later group by 4.0 points at two hours. Admitting every
+// entry whose outcome is determined swings it the other way, because a short
+// horizon entry gets in only when it came back fast, which overstates the later
+// group by 8.0 points at the same age.
+//
+// THE CLOCK. The ledger is kept in two groups split at a settable minute of the
+// session. On the tested window, pushes leaving in the first two hours were back
+// inside an hour 41.0% of the time against 16.1% for pushes leaving later.
+//
+// Two things have to be said about that number rather than left to the reader.
+// First, in a fixed length session the departure minute and the minutes
+// remaining are one variable with the sign flipped, and the two groups have no
+// overlap on it at all, so this is not a time of day effect sitting on top of a
+// remaining time effect. It is what is left after the observation windows are
+// equalised at each age, which is a narrower claim. Second, the most likely
+// mechanism is measured in this same file: VWAP itself is still mobile early in
+// the session and nearly frozen late, and it supplied a median 38.8% of the
+// closing distance for early departures against 16.9% for later ones, a ratio
+// of 2.3 against the 2.5 ratio in the return shares. The ledger does not
+// separate price coming back from VWAP arriving, so a large part of what looks
+// like a clock effect on price is a clock effect on the average.
+//
+// Below about half an hour of age the two groups are not distinguishable on the
+// tested window: the gap at fifteen minutes is 1.0 points against a standard
+// error of 3.1.
+//
+// WHAT THE LINE IS. An empirical distribution function of the age, so it is
+// non-decreasing while an excursion stays open and it ranked against that age
+// between 0.88 and 0.93 across the three tested symbols. That is the same kind
+// of clock relation the raw return share was rejected for, and it is not
+// hidden: the line rises because
+// the excursion is getting older, and what it adds over the age printed one row
+// above it is the conversion of that age into a historical frequency. It is not
+// a second piece of information and it is not news arriving.
+//
+// The complement of the line is not a forecast that the rest are coming back. A
+// push that has been out longer than most is equally consistent with a day that
+// has simply gone somewhere, and nothing here says which.
+//
+// The two sides are pooled rather than kept apart, and that is a measurement
+// rather than a convenience. On the tested window the same estimate at an hour
+// reads 30.7% for the 100 pushes above VWAP and 32.0% for the 111 below. A
+// split that buys nothing costs half the sample.
+//
+// The distance is set in basis points of VWAP rather than in units of the
+// deviation, so that the same setting means the same proportional distance at
+// any price level, and so that the reading does not inherit a second statistic
+// with its own sampling behaviour. It is instrument specific: on five minute
+// bars over the tested window the default produced about 0.65 excursions a
+// session on one ETF and about 1.57 on another. The status line prints how many
+// the ledger is holding, which is the number to set it by.
+//
+// Everything is computed on closed bars. The forming bar carries the last closed
+// bar's reading until it closes and takes its own then; nothing already printed
+// is rewritten afterwards.
+
+// Excursion ------------------------------------------------------------------
+enterBps = input.float(35.0, "Distance that starts an excursion, bps of VWAP", minval = 5.0, maxval = 500.0, step = 5.0, group = "Excursion", tooltip = "One basis point is 0.01%. This is instrument specific and is meant to be set by the resulting ledger size rather than left alone: too wide and the ledger holds nothing, too narrow and it fills with round trips through a VWAP that price was sitting on anyway.")
+rthOnly  = input.bool(true, "Regular hours only", group = "Excursion", tooltip = "Off counts pre and post market bars into the average and into the session clock.")
+
+// Ledger ---------------------------------------------------------------------
+splitMins = input.int(120, "Split the ledger at, minutes into the session", minval = 20, maxval = 720, group = "Ledger", tooltip = "Excursions that start before this minute are compared only with each other, and the same for the ones that start after. Two groups rather than more, because a finer split runs the comparison sets down to a size that carries no information. On a symbol whose counting window runs longer than twelve hours the cap here cannot reach the middle of the session, and the two groups stop meaning early and late.")
+minSample = input.int(15, "Excursions needed in a group before it reads", minval = 5, maxval = 100, group = "Ledger")
+refMins   = input.int(60, "Reference age for the two group rows, minutes", minval = 5, maxval = 720, group = "Ledger", tooltip = "The two group rows report the same estimate at this fixed age. It changes those two rows and nothing else.")
+
+showBg    = input.bool(true, "Shade while an excursion is open", group = "Display")
+showTable = input.bool(true, "Show readout", group = "Display")
+
+// How many past excursions the ledger holds. A ring: the oldest is overwritten
+// once it is full, so the reference is the recent history of the chart rather
+// than all of it.
+int MAXLED = 300
+
+// Excursions buffered inside the current session before they are committed.
+// They are held rather than committed as they happen, because the horizon each
+// one needs is the time from its start to the end of its own session, which is
+// not known until that session ends.
+int MAXPEND = 64
+
+// One slot per minute of a day, which is the resolution the durations are kept
+// at and the longest session anything here can meet.
+int KSLOTS = 1441
+
+// Renko, Kagi, Heikin Ashi, Point and Figure, Line Break and Range charts each
+// derive their close from a rule instead of from a trade. None of the remaining
+// gates would object, the status line would sit at ok, and the ledger would end
+// up a record of prices nobody paid.
+stdOk      = chart.is_standard
+intradayOk = timeframe.isintraday
+tfOk       = not timeframe.isseconds and not timeframe.isticks
+engineOk   = stdOk and intradayOk and tfOk
+
+// ta.* is hoisted to the top level. Inside a conditional it would stop being
+// evaluated on every bar and its history would go wrong.
+newDay   = ta.change(time_tradingday) != 0
+counting = rthOnly ? session.ismarket : true
+
+// Volume presence gets its own flag rather than being inferred from the
+// accumulator. A running total that takes a single na stays na for the rest of
+// the chart, and every test after it would then describe an empty engine
+// instead of naming the symbol as the problem. The flag also catches the feeds
+// that answer with a hard zero.
+var bool sawVolume = false
+if not na(volume) and volume > 0.0
+    sawVolume := true
+
+// A symbol with no volume cannot carry a volume weighted average, so it is a
+// refusal and not a warmup. Refusals blank every line and every value cell and
+// leave the status line to do the talking, rather than printing a shape that
+// looks like a reading.
+readOk = engineOk and sawVolume
+
+// A bar outside the counting window has fed nothing into the average and moved
+// no clock, so everything that describes the current bar belongs to the last bar
+// that did. Carrying it forward would draw a whole post-market session of a
+// number the script is not measuring. The ledger rows are history rather than a
+// live reading, so they stay on readOk.
+liveOk = readOk and counting
+
+var float cumVol = 0.0
+var float cumPV  = 0.0
+var int   periodBars = 0
+
+var int  sessionStart = na
+var bool sessionOpen  = false
+var int  lastMin      = 0
+
+var array<float> durA = array.new<float>(MAXLED, na)
+var array<float> horA = array.new<float>(MAXLED, na)
+var array<float> grpA = array.new<float>(MAXLED, na)
+var int ledPtr = 0
+var int ledN   = 0
+
+var array<float> pendDep = array.new<float>(MAXPEND, na)
+var array<float> pendDur = array.new<float>(MAXPEND, na)
+var int  pendN = 0
+var bool pendOverflow = false
+
+var bool  outNow  = false
+var int   outDep  = 0
+var int   outSide = 0
+
+var float vwapNow = na
+var float distBps = na
+var int   curMin  = 0
+var float curAge  = na
+
+// The survival curve for each departure group, and the number of entries still
+// under observation at each age. Rebuilt once per session rather than per bar,
+// because nothing is committed to the ledger inside a session.
+var array<float> kmE  = array.new<float>(KSLOTS, 0.0)
+var array<float> kmL  = array.new<float>(KSLOTS, 0.0)
+var array<float> nAtE = array.new<float>(KSLOTS, 0.0)
+var array<float> nAtL = array.new<float>(KSLOTS, 0.0)
+
+// Kaplan-Meier for one group. The observed time of an entry is its duration if
+// it returned and its horizon if it was still out at the close, so n(u) is the
+// reverse cumulative count of observed times and S(t) is the running product of
+// (1 - d(u)/n(u)) over the ages where a return was seen.
+f_kmBuild(array<float> _nAt, array<float> _km, float _grp) =>
+    array.fill(_nAt, 0.0)
+    array<float> _ev = array.new<float>(KSLOTS, 0.0)
+    if ledN > 0
+        for i = 0 to ledN - 1
+            if array.get(grpA, i) == _grp
+                float _dd = array.get(durA, i)
+                float _hh = array.get(horA, i)
+                float _obs = na(_dd) ? _hh : _dd
+                int _o = math.max(0, math.min(KSLOTS - 1, int(_obs)))
+                array.set(_nAt, _o, array.get(_nAt, _o) + 1.0)
+                if not na(_dd)
+                    int _d = math.max(0, math.min(KSLOTS - 1, int(_dd)))
+                    array.set(_ev, _d, array.get(_ev, _d) + 1.0)
+    float _run = 0.0
+    for k = 0 to KSLOTS - 1
+        int _u = KSLOTS - 1 - k
+        _run += array.get(_nAt, _u)
+        array.set(_nAt, _u, _run)
+    float _surv = 1.0
+    array.set(_km, 0, 0.0)
+    for _u = 1 to KSLOTS - 1
+        float _d = array.get(_ev, _u)
+        float _n = array.get(_nAt, _u)
+        if _d > 0.0 and _n > 0.0
+            _surv *= 1.0 - _d / _n
+        array.set(_km, _u, (1.0 - _surv) * 100.0)
+
+// A forming bar recalculates from the previous close, and scalars are rewound
+// for it while arrays keep whatever was pushed into them. A commit made part way
+// through a bar would therefore outlive the rewind and be made a second time
+// when the bar finished. Confining the state machine to closed bars removes that
+// whole class of double counting, and what it costs is a reading that would have
+// been provisional anyway.
+if barstate.isconfirmed and engineOk
+
+    // The session clock is not started from an edge on session.ismarket. Some
+    // feeds carry nothing at all outside the session, so that flag reads true on
+    // every bar they have and there is no edge to catch; a cash index behaves
+    // this way. What both kinds of feed do have is the exchange day rolling
+    // over, so that is the boundary used here, and the clock begins counting at
+    // the first bar that actually feeds the average.
+    if newDay
+        // The session that just ended is the one whose horizons are now known.
+        // An excursion still open at that point is committed as still out, with
+        // the elapsed time kept: dropping it is what would bias the ledger, and
+        // it is a lower bound rather than a duration.
+        if outNow
+            if pendN < MAXPEND
+                array.set(pendDep, pendN, outDep)
+                array.set(pendDur, pendN, na)
+                pendN += 1
+            else
+                pendOverflow := true
+        if pendN > 0
+            for i = 0 to pendN - 1
+                float dep = array.get(pendDep, i)
+                float dur = array.get(pendDur, i)
+                float hor = lastMin - dep
+                if hor >= 0.0
+                    array.set(durA, ledPtr, dur)
+                    array.set(horA, ledPtr, hor)
+                    array.set(grpA, ledPtr, dep <= splitMins ? 0.0 : 1.0)
+                    ledPtr := (ledPtr + 1) % MAXLED
+                    ledN   := math.min(ledN + 1, MAXLED)
+        f_kmBuild(nAtE, kmE, 0.0)
+        f_kmBuild(nAtL, kmL, 1.0)
+        pendN  := 0
+        outNow := false
+        cumVol := 0.0
+        cumPV  := 0.0
+        periodBars := 0
+        sessionOpen := false
+        lastMin := 0
+
+    if counting
+        if not sessionOpen
+            sessionOpen  := true
+            sessionStart := time
+        cumVol += nz(volume)
+        cumPV  += nz(volume) * hlc3
+        periodBars += 1
+        curMin  := int(math.floor((time - sessionStart) / 60000.0))
+        lastMin := curMin
+        vwapNow := cumVol > 0.0 ? cumPV / cumVol : na
+
+        // A one bar session VWAP is that bar's own hlc3, so a distance measured
+        // against it describes the shape of the bar rather than where the bar
+        // sits in the day. The bar count is the test that holds up in floating
+        // point; asking whether the distance is zero asks something else, and it
+        // rests on a difference of two nearly equal quantities whose sign is
+        // decided by rounding.
+        bool dataOk = periodBars > 1 and not na(vwapNow) and vwapNow > 0.0
+        distBps := dataOk ? (close - vwapNow) / vwapNow * 10000.0 : na
+
+        // Closing an open excursion is tested before opening a new one, so a bar
+        // that trades through VWAP and still closes past the threshold ends one
+        // excursion and starts another on the same bar. One push that retreats
+        // partway and goes out again without reaching VWAP stays a single
+        // excursion, which is what makes the duration a duration.
+        if outNow and dataOk and low <= vwapNow and high >= vwapNow
+            if pendN < MAXPEND
+                array.set(pendDep, pendN, outDep)
+                array.set(pendDur, pendN, curMin - outDep)
+                pendN += 1
+            else
+                pendOverflow := true
+            outNow := false
+
+        if not outNow and dataOk and math.abs(distBps) >= enterBps
+            outNow  := true
+            outDep  := curMin
+            outSide := distBps > 0.0 ? 1 : -1
+
+        curAge := outNow ? curMin - outDep : na
+
+// Two array reads, because the curve belongs to the ledger and the ledger does
+// not move inside a session.
+float share   = na
+int   riskNow = 0
+int   grpN    = 0
+
+if outNow and not na(curAge)
+    bool early = outDep <= splitMins
+    int a = math.max(0, math.min(KSLOTS - 1, int(curAge)))
+    grpN    := int(early ? array.get(nAtE, 0) : array.get(nAtL, 0))
+    riskNow := int(early ? array.get(nAtE, a) : array.get(nAtL, a))
+    if grpN >= minSample
+        share := early ? array.get(kmE, a) : array.get(kmL, a)
+
+// The two group rows, both at one fixed age.
+int   refSlot = math.max(0, math.min(KSLOTS - 1, refMins))
+int   eTot    = int(array.get(nAtE, 0))
+int   lTot    = int(array.get(nAtL, 0))
+float eShare  = eTot >= minSample ? array.get(kmE, refSlot) : na
+float lShare  = lTot >= minSample ? array.get(kmL, refSlot) : na
+
+// How many entries the ledger is holding that ended with the deadline rather
+// than with a return. One pass, on the only bar the table is drawn on.
+int stillOut = 0
+if showTable and barstate.islast and ledN > 0
+    for i = 0 to ledN - 1
+        if na(array.get(durA, i))
+            stillOut += 1
+
+// Every reason there is no reading is named. A message saying the ledger is
+// filling, on a chart that will not fill one, is worse than no message.
+string baseStatus = not stdOk ? "needs a standard chart, this one is built from synthetic prices" : not intradayOk ? "needs an intraday chart" : not tfOk ? "needs a chart of one minute or more" : not sawVolume ? "no volume on this symbol" : na(sessionStart) ? "waiting for a session to open" : not counting ? "outside the counting window" : periodBars <= 1 ? "first bar of the session" : ledN < minSample ? "filling the ledger, " + str.tostring(ledN) + " of " + str.tostring(minSample) + " excursions" : not outNow ? "ok, no excursion open" : grpN < minSample ? "only " + str.tostring(grpN) + " excursions in this half of the session" : "ok"
+
+// The floor is on the size of the half of the session, not on how many entries
+// are still being watched at the age being read. That is the right gate for a
+// survival estimate, which uses every event up to the age rather than only the
+// entries that outlived it, but it means the precision at long ages is not
+// gated at all. So the count is appended to the status whenever it falls below
+// the same floor, and named outright when it reaches zero, where the curve is
+// carried forward from the last event and the age is past everything the ledger
+// has seen. The count is also the table row directly below the estimate.
+bool statusIsOk = baseStatus == "ok" or baseStatus == "ok, no excursion open"
+bool thinNow = outNow and not na(share) and riskNow < minSample
+string thinNote = not thinNow ? "" : riskNow == 0 ? "; nothing still under observation at this age, the estimate is carried forward" : "; only " + str.tostring(riskNow) + " still under observation at this age"
+
+// The overflow flag is sticky, because a session that lost excursions has left
+// a hole in the ledger that later sessions do not fill. Both notes hang off an
+// ok status rather than replacing a message that matters more, so the count of
+// reasons there is no reading is unchanged.
+string statusText = baseStatus + (statusIsOk ? thinNote : "") + (pendOverflow and statusIsOk ? "; a session overflowed the excursion buffer" : "")
+
+color sideColor = not outNow ? color.gray : color.teal
+
+// The shading says an excursion is open and nothing else. It is deliberately
+// the same colour on both sides: which side of VWAP price left from is on the
+// price chart already, and colouring it here would dress a state as a lean.
+bgcolor(showBg and liveOk and outNow ? color.new(color.teal, 90) : na)
+
+// The line is drawn dimmed wherever the count still under observation is below
+// the floor, which is the long-age tail. The estimate there is a correct
+// Kaplan-Meier value and it keeps drawing at every age; what changes is that
+// it no longer looks like a reading standing on a full group. One plot call
+// with a series colour rather than two complementary ones, which would leave
+// a one bar hole wherever the condition flips.
+color shareColor = thinNow ? color.new(color.orange, 55) : color.new(color.orange, 0)
+
+plot(liveOk ? share : na, "Share of comparable excursions already back", shareColor, 2)
+
+hline(50, "Half", color.new(color.gray, 60), hline.style_dotted)
+hline(25, "Quarter", color.new(color.gray, 80), hline.style_dotted)
+hline(75, "Three quarters", color.new(color.gray, 80), hline.style_dotted)
+
+plot(liveOk and not na(curAge) ? curAge : na, "Age of the open excursion (min)", display = display.data_window)
+plot(liveOk and outNow ? float(riskNow) : na, "Still under observation at this age", display = display.data_window)
+plot(liveOk and outNow ? float(grpN) : na, "Excursions in this group", display = display.data_window)
+plot(readOk ? float(ledN) : na, "Excursions in the ledger", display = display.data_window)
+
+if showTable and barstate.islast
+    var table t = table.new(position.top_right, 2, 9, border_width = 1)
+    table.cell(t, 0, 0, "State", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 0, not liveOk ? "" : not outNow ? "no excursion open" : outSide > 0 ? "out above VWAP" : "out below VWAP", text_color = color.white, bgcolor = color.new(sideColor, 25), text_size = size.small)
+    table.cell(t, 0, 1, "Distance from VWAP", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 1, not liveOk ? "" : na(distBps) ? "-" : str.tostring(distBps, "#.#") + " bps", text_color = color.gray, text_size = size.small)
+    table.cell(t, 0, 2, "Time out", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 2, not liveOk ? "" : na(curAge) ? "-" : str.tostring(curAge, "0") + " min", text_color = color.gray, text_size = size.small)
+    table.cell(t, 0, 3, "Comparable already back", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 3, not liveOk ? "" : na(share) ? "-" : str.tostring(share, "0") + "%" + (riskNow == 0 ? " carried forward" : ""), text_color = color.white, bgcolor = color.new(na(share) ? color.gray : color.orange, 25), text_size = size.small)
+    table.cell(t, 0, 4, "Still watched at this age", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 4, not liveOk ? "" : not outNow ? "-" : str.tostring(riskNow) + " of " + str.tostring(grpN) + " in this group", text_color = color.gray, text_size = size.small)
+    table.cell(t, 0, 5, "Early group at " + str.tostring(refMins) + " min", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 5, not readOk ? "" : na(eShare) ? "-" : str.tostring(eShare, "0") + "% of " + str.tostring(eTot), text_color = color.gray, text_size = size.small)
+    table.cell(t, 0, 6, "Later group at " + str.tostring(refMins) + " min", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 6, not readOk ? "" : na(lShare) ? "-" : str.tostring(lShare, "0") + "% of " + str.tostring(lTot), text_color = color.gray, text_size = size.small)
+    table.cell(t, 0, 7, "Ledger", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 7, not readOk ? "" : str.tostring(ledN) + " excursions, " + str.tostring(stillOut) + " still out at the close", text_color = color.gray, text_size = size.small)
+    table.cell(t, 0, 8, "Status", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 8, statusText, text_color = statusIsOk ? color.gray : color.orange, text_size = size.small)

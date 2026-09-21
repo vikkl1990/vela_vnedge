@@ -1,0 +1,237 @@
+//@version=6
+indicator("SadashiTrading Gap Analyzer", overlay=true)
+
+// --- Configuration Inputs ---
+minGapPct   = input.float(1.0, title="Min. Gap Size (%)", step=0.1, group="Gap Strategy")
+evalDays    = input.int(0, title="Evaluation Days After Gap (0 = Same Day Close)", minval=0, maxval=10, group="Gap Strategy")
+
+// Trend Filter Inputs
+useSmaFilter = input.bool(true, title="Use Trend Filter (SMA)", group="Trend Context")
+smaPeriod    = input.int(200, title="SMA Period", minval=10, group="Trend Context")
+
+// Volume Filter Inputs
+useRvolFilter = input.bool(true, title="Use RVOL Filter (Historical Daily Vol)", group="Volume Context", tooltip="NOTE: Uses total daily volume. Designed for historical daily analysis.")
+minRvol       = input.float(1.5, title="Min. RVOL Threshold (e.g. 1.5x)", step=0.1, group="Volume Context")
+rvolPeriod    = input.int(20, title="RVOL SMA Period", minval=5, group="Volume Context")
+
+tablePosInput = input.string("Top Right", title="Table Position", 
+  options=["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right", "Middle Left"], 
+  group="Display Settings")
+
+// Maps dropdown selection to Pine Script position constant
+getPosition(string pos) =>
+    switch pos
+        "Top Right"     => position.top_right
+        "Top Left"      => position.top_left
+        "Bottom Right"  => position.bottom_right
+        "Bottom Left"   => position.bottom_left
+        "Middle Right"  => position.middle_right
+        "Middle Left"   => position.middle_left
+        => position.top_right
+
+// Helper function to format numbers
+formatNumber(float num, int decimals) =>
+    string rawStr = str.tostring(num, decimals == 0 ? "#" : "#." + str.repeat("#", decimals))
+    string[] parts = str.split(rawStr, ".")
+    string integerPart = array.get(parts, 0)
+    string decimalPart = array.size(parts) > 1 ? array.get(parts, 1) : ""
+    
+    string formattedInt = ""
+    bool isNegative = str.startswith(integerPart, "-")
+    string cleanInt = isNegative ? str.substring(integerPart, 1) : integerPart
+    int cleanLen = str.length(cleanInt)
+    
+    for i = 0 to cleanLen - 1
+        if i > 0 and (cleanLen - i) % 3 == 0
+            formattedInt += ","
+        formattedInt += str.substring(cleanInt, i, i + 1)
+        
+    string result = (isNegative ? "-" : "") + formattedInt
+    if decimals > 0 and str.length(decimalPart) > 0
+        while str.length(decimalPart) < decimals
+            decimalPart += "0"
+        result += "." + decimalPart
+    result
+
+// --- Context Calculations ---
+trendSma = ta.sma(close, smaPeriod)
+plot(trendSma, title="SMA Trend Filter", color=color.blue, linewidth=2)
+
+// Relative Volume (RVOL)
+avgVolume = ta.sma(volume[1], rvolPeriod)
+rvol      = volume / avgVolume
+hasVol    = not useRvolFilter or (rvol >= minRvol)
+
+// Gap Calculation
+float prevClose = close[1]
+float gapPct    = ((open - prevClose) / prevClose) * 100.0
+
+bool rawBullGap = (gapPct >= minGapPct) and hasVol
+bool rawBearGap = (gapPct <= -minGapPct) and hasVol
+
+// --- Gap Categorization ---
+bool isBullWithTrend    = rawBullGap and (not useSmaFilter or open > trendSma[1])
+bool isBullAgainstTrend = rawBullGap and (useSmaFilter and open <= trendSma[1])
+
+bool isBearWithTrend    = rawBearGap and (not useSmaFilter or open < trendSma[1])
+bool isBearAgainstTrend = rawBearGap and (useSmaFilter and open >= trendSma[1])
+
+bool anyGapSignal = isBullWithTrend or isBullAgainstTrend or isBearWithTrend or isBearAgainstTrend
+
+// --- Metrics Variables ---
+var int totalBullWith = 0, var int winBullWith = 0, var float sumPnlBullWith = 0.0
+var float grossProfitBullWith = 0.0, var float grossLossBullWith = 0.0
+
+var int totalBullAgainst = 0, var int winBullAgainst = 0, var float sumPnlBullAgainst = 0.0
+var float grossProfitBullAgainst = 0.0, var float grossLossBullAgainst = 0.0
+
+var int totalBearWith = 0, var int winBearWith = 0, var float sumPnlBearWith = 0.0
+var float grossProfitBearWith = 0.0, var float grossLossBearWith = 0.0
+
+var int totalBearAgainst = 0, var int winBearAgainst = 0, var float sumPnlBearAgainst = 0.0
+var float grossProfitBearAgainst = 0.0, var float grossLossBearAgainst = 0.0
+
+// Exit condition calculation
+bool isExitBar = (evalDays == 0 and anyGapSignal) or (evalDays > 0 and anyGapSignal[evalDays])
+
+// --- Evaluation Logic ---
+if evalDays == 0
+    if isBullWithTrend
+        float pnl = ((close - open) / open) * 100.0
+        totalBullWith += 1, sumPnlBullWith += pnl
+        if pnl > 0
+            winBullWith += 1
+            grossProfitBullWith += pnl
+        else
+            grossLossBullWith += math.abs(pnl)
+            
+    if isBullAgainstTrend
+        float pnl = ((close - open) / open) * 100.0
+        totalBullAgainst += 1, sumPnlBullAgainst += pnl
+        if pnl > 0
+            winBullAgainst += 1
+            grossProfitBullAgainst += pnl
+        else
+            grossLossBullAgainst += math.abs(pnl)
+
+    if isBearWithTrend
+        float pnl = ((open - close) / open) * 100.0
+        totalBearWith += 1, sumPnlBearWith += pnl
+        if pnl > 0
+            winBearWith += 1
+            grossProfitBearWith += pnl
+        else
+            grossLossBearWith += math.abs(pnl)
+
+    if isBearAgainstTrend
+        float pnl = ((open - close) / open) * 100.0
+        totalBearAgainst += 1, sumPnlBearAgainst += pnl
+        if pnl > 0
+            winBearAgainst += 1
+            grossProfitBearAgainst += pnl
+        else
+            grossLossBearAgainst += math.abs(pnl)
+
+if evalDays > 0
+    if isBullWithTrend[evalDays]
+        float pnl = ((close - open[evalDays]) / open[evalDays]) * 100.0
+        totalBullWith += 1, sumPnlBullWith += pnl
+        if pnl > 0
+            winBullWith += 1
+            grossProfitBullWith += pnl
+        else
+            grossLossBullWith += math.abs(pnl)
+
+    if isBullAgainstTrend[evalDays]
+        float pnl = ((close - open[evalDays]) / open[evalDays]) * 100.0
+        totalBullAgainst += 1, sumPnlBullAgainst += pnl
+        if pnl > 0
+            winBullAgainst += 1
+            grossProfitBullAgainst += pnl
+        else
+            grossLossBullAgainst += math.abs(pnl)
+
+    if isBearWithTrend[evalDays]
+        float pnl = ((open[evalDays] - close) / open[evalDays]) * 100.0
+        totalBearWith += 1, sumPnlBearWith += pnl
+        if pnl > 0
+            winBearWith += 1
+            grossProfitBearWith += pnl
+        else
+            grossLossBearWith += math.abs(pnl)
+
+    if isBearAgainstTrend[evalDays]
+        float pnl = ((open[evalDays] - close) / open[evalDays]) * 100.0
+        totalBearAgainst += 1, sumPnlBearAgainst += pnl
+        if pnl > 0
+            winBearAgainst += 1
+            grossProfitBearAgainst += pnl
+        else
+            grossLossBearAgainst += math.abs(pnl)
+
+// --- Visual Shapes ---
+// Entry Signals
+plotshape(isBullWithTrend, title="Bull Gap - With Trend", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small)
+plotshape(isBullAgainstTrend, title="Bull Gap - Against Trend", style=shape.triangleup, location=location.belowbar, color=color.orange, size=size.small)
+
+plotshape(isBearWithTrend, title="Bear Gap - With Trend", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small)
+plotshape(isBearAgainstTrend, title="Bear Gap - Against Trend", style=shape.triangledown, location=location.abovebar, color=color.purple, size=size.small)
+
+// Exit Marker (X) above bar
+plotshape(isExitBar, title="Evaluation Exit (X)", style=shape.xcross, location=location.abovebar, color=color.gray, size=size.tiny)
+
+// --- Dynamic Table (5 Columns) ---
+var table statsTable = table.new(getPosition(tablePosInput), 5, 5, bgcolor=color.white, border_width=1, border_color=color.rgb(200, 200, 200))
+
+if barstate.islast
+    color headerBg   = color.rgb(235, 238, 242)
+    color textColor  = color.rgb(30, 30, 30)
+    color greenColor = color.rgb(0, 130, 60)
+    color redColor   = color.rgb(190, 30, 30)
+
+    // Headers
+    table.cell(statsTable, 0, 0, " Category (SMA & RVOL Filter) ", bgcolor=headerBg, text_color=textColor)
+    table.cell(statsTable, 1, 0, " Samples ", bgcolor=headerBg, text_color=textColor)
+    table.cell(statsTable, 2, 0, " Win Rate ", bgcolor=headerBg, text_color=textColor)
+    table.cell(statsTable, 3, 0, " Avg Return ", bgcolor=headerBg, text_color=textColor)
+    table.cell(statsTable, 4, 0, " Profit Factor ", bgcolor=headerBg, text_color=textColor)
+
+    // Row 1: Bullish With Trend
+    float winRateBullWith = totalBullWith > 0 ? (winBullWith / float(totalBullWith)) * 100.0 : 0.0
+    float avgPnlBullWith  = totalBullWith > 0 ? sumPnlBullWith / float(totalBullWith) : 0.0
+    float pfBullWith      = grossLossBullWith > 0 ? grossProfitBullWith / grossLossBullWith : (grossProfitBullWith > 0 ? 99.99 : 0.0)
+    table.cell(statsTable, 0, 1, "Bull Gap — With Trend", text_color=greenColor)
+    table.cell(statsTable, 1, 1, formatNumber(totalBullWith, 0), text_color=textColor)
+    table.cell(statsTable, 2, 1, formatNumber(winRateBullWith, 2) + "%", text_color=textColor)
+    table.cell(statsTable, 3, 1, formatNumber(avgPnlBullWith, 2) + "%", text_color=avgPnlBullWith >= 0 ? greenColor : redColor)
+    table.cell(statsTable, 4, 1, formatNumber(pfBullWith, 2), text_color=pfBullWith >= 1.0 ? greenColor : redColor)
+
+    // Row 2: Bullish Against Trend
+    float winRateBullAgainst = totalBullAgainst > 0 ? (winBullAgainst / float(totalBullAgainst)) * 100.0 : 0.0
+    float avgPnlBullAgainst  = totalBullAgainst > 0 ? sumPnlBullAgainst / float(totalBullAgainst) : 0.0
+    float pfBullAgainst      = grossLossBullAgainst > 0 ? grossProfitBullAgainst / grossLossBullAgainst : (grossProfitBullAgainst > 0 ? 99.99 : 0.0)
+    table.cell(statsTable, 0, 2, "Bull Gap — Against Trend", text_color=color.orange)
+    table.cell(statsTable, 1, 2, formatNumber(totalBullAgainst, 0), text_color=textColor)
+    table.cell(statsTable, 2, 2, formatNumber(winRateBullAgainst, 2) + "%", text_color=textColor)
+    table.cell(statsTable, 3, 2, formatNumber(avgPnlBullAgainst, 2) + "%", text_color=avgPnlBullAgainst >= 0 ? greenColor : redColor)
+    table.cell(statsTable, 4, 2, formatNumber(pfBullAgainst, 2), text_color=pfBullAgainst >= 1.0 ? greenColor : redColor)
+
+    // Row 3: Bearish With Trend
+    float winRateBearWith = totalBearWith > 0 ? (winBearWith / float(totalBearWith)) * 100.0 : 0.0
+    float avgPnlBearWith  = totalBearWith > 0 ? sumPnlBearWith / float(totalBearWith) : 0.0
+    float pfBearWith      = grossLossBearWith > 0 ? grossProfitBearWith / grossLossBearWith : (grossProfitBearWith > 0 ? 99.99 : 0.0)
+    table.cell(statsTable, 0, 3, "Bear Gap — With Trend", text_color=redColor)
+    table.cell(statsTable, 1, 3, formatNumber(totalBearWith, 0), text_color=textColor)
+    table.cell(statsTable, 2, 3, formatNumber(winRateBearWith, 2) + "%", text_color=textColor)
+    table.cell(statsTable, 3, 3, formatNumber(avgPnlBearWith, 2) + "%", text_color=avgPnlBearWith >= 0 ? greenColor : redColor)
+    table.cell(statsTable, 4, 3, formatNumber(pfBearWith, 2), text_color=pfBearWith >= 1.0 ? greenColor : redColor)
+
+    // Row 4: Bearish Against Trend
+    float winRateBearAgainst = totalBearAgainst > 0 ? (winBearAgainst / float(totalBearAgainst)) * 100.0 : 0.0
+    float avgPnlBearAgainst  = totalBearAgainst > 0 ? sumPnlBearAgainst / float(totalBearAgainst) : 0.0
+    float pfBearAgainst      = grossLossBearAgainst > 0 ? grossProfitBearAgainst / grossLossBearAgainst : (grossProfitBearAgainst > 0 ? 99.99 : 0.0)
+    table.cell(statsTable, 0, 4, "Bear Gap — Against Trend", text_color=color.purple)
+    table.cell(statsTable, 1, 4, formatNumber(totalBearAgainst, 0), text_color=textColor)
+    table.cell(statsTable, 2, 4, formatNumber(winRateBearAgainst, 2) + "%", text_color=textColor)
+    table.cell(statsTable, 3, 4, formatNumber(avgPnlBearAgainst, 2) + "%", text_color=avgPnlBearAgainst >= 0 ? greenColor : redColor)
+    table.cell(statsTable, 4, 4, formatNumber(pfBearAgainst, 2), text_color=pfBearAgainst >= 1.0 ? greenColor : redColor)

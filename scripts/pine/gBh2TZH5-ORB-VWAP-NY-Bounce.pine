@@ -1,0 +1,777 @@
+//@version=6
+// ============================================================================
+//  MNQ — OBR + VWAP Bounce                          Strategy (Pine Script v6)
+//
+//  Setup, in one sentence:
+//    The 09:30-10:00 opening range breaks; from 10:01 a resting LIMIT order
+//    waits at the RTH-anchored session VWAP and fills the instant price
+//    retests it in the direction of that break.
+//
+//      • Opening range broke UP   -> BUY  limit resting at the VWAP below.
+//      • Opening range broke DOWN -> SELL limit resting at the VWAP above.
+//
+//    Direction is therefore fully determined by the break, and the "correct
+//    side of VWAP" is inherent to the entry itself (a buy limit can only rest
+//    below market, a sell limit above it). There is no separate bias input,
+//    because there is nothing left for it to decide.
+//
+//  Filters, all derived from the 2023-09 -> 2026-09 MNQ 1m backtest and ranked
+//  here by how much evidence stands behind them:
+//    • Shorts blocked after 11:30 NY  — 36 trades, -$5,856, PF 0.22, negative
+//      in all four years of the sample. Longs in that window stay profitable.
+//    • Shorts blocked in Jan + Feb    — 21 trades, -$2,304, negative in all
+//      three years. The longs of those months run at PF 3.05 and 1.95.
+//    • Shorts blocked on Mondays      — 13 trades, -$1,462, PF 0.50, negative
+//      in 3 of 4 years. THE THINNEST rule here; see its tooltip before trusting
+//      it. Turning it on took the system from PF 2.24 to 2.47.
+//    • Entry window ends at 12:00     — the 12:00-12:45 slot returned $14 a
+//      trade at PF 1.13 and changed sign every year. Noise, not profit.
+//    • Generic day-of-week and month switches are available for both sides.
+//      May is deliberately NOT filtered: its longs lose -$1,002 overall but go
+//      -396 / +236 / -842 by year. That is a coin flip, not a season.
+//
+//  IMPORTANT — every number above is in-sample. These rules were fitted on the
+//  very data they are measured against, so they describe the past, not an
+//  expectation. What argues for them is that each one is negative in nearly
+//  every year independently and none depends on a finely tuned threshold.
+//
+//  Two settings to check before trusting any backtest of this script:
+//    • Limit order execution -> Standard (not "Requested price"). Every entry
+//      here is a limit order resting on the VWAP; "Requested price" assumes a
+//      fill the moment price grazes the line without trading through it.
+//    • Bar detalization -> High.
+//
+//  Run on the 1-minute chart. Times use the New York timezone (auto DST).
+//  Risk sizing, R:R box tool, positioning matrix and prop-firm tracker
+//  included. Not financial advice.
+// ============================================================================
+
+strategy(
+     title                   = "OBR+VWAP Bounce",
+     shorttitle              = "OBR+VWAP",
+     overlay                 = true,
+     initial_capital         = 50000,
+     default_qty_type        = strategy.fixed,
+     default_qty_value       = 1,
+     pyramiding              = 1,
+     commission_type         = strategy.commission.cash_per_contract,
+     commission_value        = 0.50,                         // $0.50/side = $1.00 round turn
+     slippage                = 1,
+     margin_long             = 0,
+     margin_short            = 0,
+     calc_on_order_fills     = false,
+     calc_on_every_tick      = false,
+     process_orders_on_close = true,
+     max_lines_count         = 500,
+     max_boxes_count         = 500)
+
+// ---------------------------------------------------------------------------
+//  SESSION / TIME
+// ---------------------------------------------------------------------------
+tz       = input.string("America/New_York", "Timezone", group = "Session / Time")
+rthSess  = input.session("0930-1545", "RTH session (defines the trading day)", group = "Session / Time")
+entryWin = input.session("1001-1200", "Entry window", tooltip = "The 12:00-12:45 half hour was dropped: 24 trades over three years for +$341 total, i.e. $14 a trade at PF 1.13, and it flipped sign every year (+292 / -146 / +831 / -636). That is below the noise floor of any realistic fill model, not profit.", group = "Session / Time")
+onSess   = input.session("1800-0930", "Overnight session (overnight VWAP anchor)", tooltip = "Globex overnight, prev 18:00 -> 09:30 NY. The overnight VWAP is anchored at its start.", group = "Session / Time")
+flatEOD  = input.bool(true, "Flat at end of session", group = "Session / Time")
+flatH    = input.int(15, "Flat hour (NY)",  minval = 0, maxval = 23, group = "Session / Time")
+flatM    = input.int(55, "Flat minute (NY)", minval = 0, maxval = 59, group = "Session / Time")
+
+// ---------------------------------------------------------------------------
+//  ENTRY LOGIC
+// ---------------------------------------------------------------------------
+dirMode     = input.string("Both", "Direction", options = ["Long only", "Short only", "Both"], group = "Entry Logic")
+vwapAnchor  = input.string("RTH open (09:30)", "Session VWAP anchor (the entry line)", options = ["RTH open (09:30)", "Globex open (18:00)"], tooltip = "Where the VWAP the limit rests on starts accumulating. RTH: resets at 09:30, tracks the day's own auction, sits close to price all morning. Globex: starts at the 18:00 overnight open and keeps running through RTH, so it carries the overnight positioning and sits further from price — deeper pullbacks, fewer and later fills. Backtest both; the entry price of every single trade changes, so this is a different strategy, not a cosmetic switch.", group = "Entry Logic")
+entryOffset = input.int(0, "Entry offset from VWAP (ticks)", minval = 0, tooltip = "Rest the limit this many ticks on the approach side of the VWAP, to fill a hair early. 0 = exactly on the line.", group = "Entry Logic")
+maxTrades   = input.int(1, "Max trades per day", minval = 1, group = "Entry Logic")
+
+// ---------------------------------------------------------------------------
+//  FILTERS / SEASONALITY
+//  The short side carries every persistent loss cluster in the backtest; the
+//  long side is clean throughout. The defaults below reflect that asymmetry.
+// ---------------------------------------------------------------------------
+trMon = input.bool(true, "Mon", inline = "dow", group = "Filters / Seasonality")
+trTue = input.bool(true, "Tue", inline = "dow", group = "Filters / Seasonality")
+trWed = input.bool(true, "Wed", inline = "dow", group = "Filters / Seasonality")
+trThu = input.bool(true, "Thu", inline = "dow", group = "Filters / Seasonality")
+trFri = input.bool(true, "Fri", inline = "dow", tooltip = "Days the strategy is allowed to trade at all (both sides). Monday is the weakest day overall, but only because of its shorts — its longs make +$3,939 at PF 2.00, so leave it on and let the short filters below do the work.", group = "Filters / Seasonality")
+skipMonths = input.string("", "Skip these months entirely (1-12)", tooltip = "Comma-separated, e.g. \"2,5\". Blocks BOTH sides. Empty = trade every month. No month is negative on the long side, so this is left empty by default.", group = "Filters / Seasonality")
+
+useLateShort = input.bool(true, "Block shorts after a cut-off time", tooltip = "Shorts entered late in the window lost money in every year of the backtest: 2023 -$1,096 / 2024 -$2,141 / 2025 -$975 / 2026 -$1,644, PF 0.22 over 36 trades. Longs in the same window stay profitable, so this gates the short side only.", group = "Filters / Seasonality")
+lateShortH   = input.int(11, "Short cut-off — hour (NY)", minval = 0, maxval = 23, inline = "cut", group = "Filters / Seasonality")
+lateShortM   = input.int(30, "minute",                    minval = 0, maxval = 59, inline = "cut", group = "Filters / Seasonality")
+useShortMon  = input.bool(true, "Block shorts in weak months", tooltip = "Jan + Feb shorts were negative in all three years sampled (PF 0.54 / 0.22 / 0.65). The longs of those same months run at PF 3.05 and 1.95, so only the short side is blocked. Small sample — treat as a hypothesis with evidence, not a certainty.", group = "Filters / Seasonality")
+shortMonths  = input.string("1,2", "Months with no shorts (1-12)", group = "Filters / Seasonality")
+noMonShort   = input.bool(true, "Block shorts on Mondays", tooltip = "The 13 Monday shorts that survive the time cut-off (they enter before 11:30) still lose: -$1,462, 31% win rate, PF 0.50, negative in 3 of the 4 years sampled. Turning this on moved the whole system from PF 2.24 to 2.47. Caveat: 13 trades is the thinnest evidence behind any rule in this script — 2025 was positive on a single +$740 trade. Switch it off if you would rather not act on a sample that small.", group = "Filters / Seasonality")
+
+// ---------------------------------------------------------------------------
+//  SETUP QUALITY — opening-range size gate
+//  In the filtered backtest, 123 of 256 trades (48%) never reached even 1R and
+//  cost -$20,979 between them at PF 0.19. Nothing in the trade export separates
+//  them at entry time, so this is the first untested hypothesis worth a sweep:
+//  a break out of a very narrow 09:30-10:00 range may have no room to travel,
+//  and a very wide one may mean the day's move is already spent.
+//  OFF by default — turning it on changes results that have not been validated.
+// ---------------------------------------------------------------------------
+useOrbSize  = input.bool(false, "Filter by opening-range size", tooltip = "Skip the day entirely when the 09:30-10:00 range falls outside the band below. Read today's value off the bottom row of the Market Positioning table to calibrate.", group = "Setup Quality")
+orbSizeUnit = input.string("Points", "Measure the range in", options = ["Points", "x daily ATR"], tooltip = "Points: an absolute band. x daily ATR: the range as a fraction of the previous completed day's ATR — self-scaling, so one setting holds up across changing volatility regimes. Prefer ATR if you sweep across several years.", group = "Setup Quality")
+orbMinPts   = input.float(0,    "Min range (points)", minval = 0, step = 1, inline = "opt", group = "Setup Quality")
+orbMaxPts   = input.float(0,    "Max (0 = none)",     minval = 0, step = 1, inline = "opt", group = "Setup Quality")
+orbMinAtr   = input.float(0,    "Min range (x ATR)",  minval = 0, step = 0.05, inline = "oat", group = "Setup Quality")
+orbMaxAtr   = input.float(0,    "Max (0 = none)",     minval = 0, step = 0.05, inline = "oat", group = "Setup Quality")
+atrLen      = input.int(14,     "Daily ATR length",   minval = 1, group = "Setup Quality")
+
+// ---------------------------------------------------------------------------
+//  OPENING RANGE  — sets the direction and arms the entry
+// ---------------------------------------------------------------------------
+orSess  = input.session("0930-1000", "Opening range (ORB) session", tooltip = "The range whose break decides the trade direction. Nothing is armed until this window closes and price breaks one side of it.", group = "Opening Range")
+showORB = input.bool(true, "Show ORB high/low lines", group = "Opening Range")
+
+// ---------------------------------------------------------------------------
+//  STOP / TARGET
+// ---------------------------------------------------------------------------
+stopMode  = input.string("Fixed ticks", "Stop loss", options = ["Fixed ticks", "ATR multiple", "VWAP line", "ORB opposite side", "Retest swing"], group = "Stop / Target")
+swingLen  = input.int(3,   "Retest swing lookback", minval = 1, group = "Stop / Target")
+stopTicks = input.int(365, "Fixed stop (ticks)",    minval = 1, tooltip = "365 ticks = 91.25 points. Tested against 30/40/50/60/70/80 at constant $ risk: the profit factor stays flat (1.54-1.68) while return-per-unit-of-drawdown is best right here. Tightening it buys leverage, not edge.", group = "Stop / Target")
+atrStopMult = input.float(0.25, "ATR multiple (stop)", minval = 0.02, step = 0.01, tooltip = "Only used when Stop loss = \"ATR multiple\". Stop distance = this fraction of the previous COMPLETED day's ATR (length set below, in Setup Quality → Daily ATR length). Self-scales with the volatility regime instead of staying fixed in ticks — the same 0.25x band that sits near the current 365-tick stop in a normal-vol day widens on its own in a high-vol one. Read today's actual ATR off the bottom row of the Market Positioning table to calibrate. Sweep 0.15 to 0.40 in steps of 0.05.", group = "Stop / Target")
+bufTicks  = input.int(0,   "Stop buffer (ticks)",   minval = 0, group = "Stop / Target")
+tgtMode   = input.string("R multiple", "Take profit", options = ["R multiple", "ORB extension", "Fixed ticks", "None (ride to the EOD flat)"], tooltip = "\"None\" removes the target entirely so the trade can only end at the stop, the trailing stop or the 15:55 flat. Needed to test the trailing stop honestly: with the trailing stop OFF, \"Remove fixed take-profit when trailing\" stops applying and the R-multiple target silently comes back.", group = "Stop / Target")
+rr        = input.float(2.0, "Risk:Reward (R)",       minval = 0.1, step = 0.1, group = "Stop / Target")
+orMult    = input.float(1.0, "ORB range x (target)",  minval = 0.1, step = 0.1, group = "Stop / Target")
+tgtTicks  = input.int(80,    "Fixed target (ticks)",  minval = 1, group = "Stop / Target")
+useBE     = input.bool(true, "Move to breakeven at 1R", group = "Stop / Target")
+
+// ---------------------------------------------------------------------------
+//  TRAILING STOP
+// ---------------------------------------------------------------------------
+useTrail   = input.bool(true, "Use trailing stop", group = "Trailing Stop")
+trailMode  = input.string("R multiple", "Trail by", options = ["R multiple", "Points"], tooltip = "R multiple: trail the stop a number of R behind the best price. Points: trail a fixed number of index points behind.", group = "Trailing Stop")
+trailR     = input.float(0.9, "Trail distance (R)", minval = 0.1, step = 0.1, tooltip = "Keep the stop this many R behind the best price reached. In the backtest this handed back 82 points on average — almost exactly 0.9R — on every managed exit, while the trades that survived to the EOD flat kept 68% of their peak instead of 42%. Sweep 0.4 / 0.5 / 0.6, and also test with the trailing stop off.", group = "Trailing Stop")
+trailPts   = input.float(50.0, "Trail distance (points)", minval = 0.25, step = 0.25, group = "Trailing Stop")
+trailStart = input.float(1.0, "Start trailing after (R)", minval = 0, step = 0.1, group = "Trailing Stop")
+trailNoTgt = input.bool(true, "Remove fixed take-profit when trailing (let it run)", group = "Trailing Stop")
+
+// ---------------------------------------------------------------------------
+//  RISK MANAGEMENT
+// ---------------------------------------------------------------------------
+useRiskSizing = input.bool(true,  "Size by $ risk (else fixed contracts)", group = "Risk Management")
+riskUSD       = input.float(500,  "Risk per trade ($)",  minval = 0,  group = "Risk Management")
+fixedQty      = input.int(1,      "Fixed contracts",     minval = 1,  group = "Risk Management")
+maxCon        = input.int(40,     "Max contracts",       minval = 1,  group = "Risk Management")
+manualPV      = input.float(0,    "Manual point value ($, 0 = auto)", minval = 0, group = "Risk Management")
+minThresh     = input.float(0,     "Min stop distance (points)", minval = 0, tooltip = "These two guard the STOP distance, not the opening range. With a fixed 365-tick stop they never trigger — they only bite on the variable stop modes (ORB opposite side, Retest swing). To filter by range size use the Setup Quality group.", group = "Risk Management")
+maxRangeP     = input.float(10000, "Max stop distance (points)", minval = 0, group = "Risk Management")
+
+// ---------------------------------------------------------------------------
+//  VISUALS
+// ---------------------------------------------------------------------------
+showBias    = input.bool(true,  "Plot session VWAP (the entry line)", group = "Visuals")
+showOnVwap  = input.bool(true,  "Show overnight VWAP", group = "Visuals")
+onVwapColor = input.color(color.new(color.teal, 0), "Overnight VWAP color", group = "Visuals")
+orbColor    = input.color(color.new(color.black, 0), "ORB line color", group = "Visuals")
+showRR      = input.bool(true,  "Show Risk:Reward tool on entries", group = "Visuals")
+tpColor     = input.color(color.new(color.green, 75), "Take-profit zone", group = "Visuals")
+slColor     = input.color(color.new(color.red,   75), "Stop-loss zone",   group = "Visuals")
+
+// ---------------------------------------------------------------------------
+//  KEY VWAPs (ASFX-style reference lines)
+//  Lines OFF by default — they still feed the positioning score and the matrix.
+// ---------------------------------------------------------------------------
+showPdVwap  = input.bool(false, "PD NY VWAP (prev New York open)", inline = "pd",  group = "Key VWAPs")
+pdVwapColor = input.color(color.new(#4dd0e1, 0), "", inline = "pd",  group = "Key VWAPs")
+showHodVwap = input.bool(false, "HOD VWAP (high of day)", inline = "hod", group = "Key VWAPs")
+hodVwapColor= input.color(color.new(#673ab7, 0), "", inline = "hod", group = "Key VWAPs")
+showLodVwap = input.bool(false, "LOD VWAP (low of day)",  inline = "lod", group = "Key VWAPs")
+lodVwapColor= input.color(color.new(#9c27b0, 0), "", inline = "lod", group = "Key VWAPs")
+
+// ---------------------------------------------------------------------------
+//  MARKET POSITIONING (FluxCharts-style matrix)
+// ---------------------------------------------------------------------------
+showMatrix = input.bool(true, "Show Market Positioning table", group = "Market Positioning")
+matrixPos  = input.string("Bottom right", "Table position", options = ["Bottom right", "Bottom left", "Top left", "Middle right"], tooltip = "Top right is taken by the prop tracker.", group = "Market Positioning")
+matrixSize = input.string("Small", "Text size", options = ["Tiny", "Small", "Normal"], group = "Market Positioning")
+useScore   = input.bool(false, "Filter entries by positioning score", tooltip = "Longs only when the net score (5 VWAPs + Opening Range, -6..+6) is at least +threshold; shorts only at -threshold or lower. Evaluated live, so a resting limit is cancelled if positioning degrades before the touch.", group = "Market Positioning")
+minScore   = input.int(2, "Score threshold (|score| needed)", minval = 0, maxval = 6, tooltip = "2 = mild agreement, 4 = strong, 6 = everything aligned.", group = "Market Positioning")
+showT2 = input.bool(true, "", inline = "t2", group = "Market Positioning")
+tick2  = input.symbol("CME_MINI:ES1!",  "Ticker 2 (correlation)", inline = "t2", group = "Market Positioning")
+showT3 = input.bool(false, "", inline = "t3", group = "Market Positioning")
+tick3  = input.symbol("CBOT_MINI:YM1!", "Ticker 3 (correlation)", inline = "t3", group = "Market Positioning")
+useCorr  = input.bool(true, "Require correlated-ticker agreement", tooltip = "Longs on the chart ticker only when the correlated ticker(s) positioning score also reads bullish (>= threshold); shorts mirror. Uses Ticker 2/3 whether or not their table columns are shown.", group = "Market Positioning")
+corrMode = input.string("Both", "Confirm with", options = ["Ticker 2", "Ticker 3", "Both", "Either"], tooltip = "Both = strictest (ES and YM must agree). Either = mildest.", group = "Market Positioning")
+corrMin  = input.int(2, "Correlation score threshold", minval = 0, maxval = 6, group = "Market Positioning")
+
+// ---------------------------------------------------------------------------
+//  PROP FIRM EVALUATION
+// ---------------------------------------------------------------------------
+propMode   = input.bool(false,  "Enable prop-firm tracker", group = "Lucid Pro 50k")
+accSize    = input.float(50000, "Account size ($)",         group = "Lucid Pro 50k")
+maxDD      = input.float(2000,  "Max drawdown ($)",         group = "Lucid Pro 50k")
+ddType     = input.string("EOD trailing", "Drawdown type", options = ["EOD trailing", "Intraday trailing", "Static"], group = "Lucid Pro 50k")
+lockAtInit = input.bool(false,  "Trailing DD locks at initial balance", group = "Lucid Pro 50k")
+profTarget = input.float(4000,  "Profit target / payout ($)",      group = "Lucid Pro 50k")
+consistPct = input.float(40,    "Consistency rule (% best day)", minval = 1, maxval = 100, group = "Lucid Pro 50k")
+dailyGoal  = input.float(150,   "Daily profit goal ($)",    group = "Lucid Pro 50k")
+stopAtGoal = input.bool(false,  "Stop trading after daily goal", group = "Lucid Pro 50k")
+haltOnDone = input.bool(false,  "Halt after pass/fail (single-eval sim)", group = "Lucid Pro 50k")
+
+enableLong  = dirMode != "Short only"
+enableShort = dirMode != "Long only"
+tick = syminfo.mintick
+pv   = manualPV > 0 ? manualPV : syminfo.pointvalue
+
+// ---------------------------------------------------------------------------
+//  SESSION DETECTION
+// ---------------------------------------------------------------------------
+inRTH      = not na(time(timeframe.period, rthSess,  tz))
+inOR       = not na(time(timeframe.period, orSess,   tz))
+inEntryWin = not na(time(timeframe.period, entryWin, tz))
+inON       = not na(time(timeframe.period, onSess,   tz))
+newSession = inRTH and not inRTH[1]
+nyH = hour(time, tz)
+nyM = minute(time, tz)
+
+// ---------------------------------------------------------------------------
+//  DAY / MONTH / SESSION FILTERS
+// ---------------------------------------------------------------------------
+// Parse a comma-separated month list ("1,2") and report whether today is in it.
+f_inMonthList(string csv) =>
+    clean = str.replace_all(csv, " ", "")
+    hit   = false
+    if str.length(clean) > 0
+        for part in str.split(clean, ",")
+            v = str.tonumber(part)
+            if not na(v) and math.round(v) == month(time, tz)
+                hit := true
+    hit
+
+dowNow = dayofweek(time, tz)
+dayOK  = (dowNow == dayofweek.monday    and trMon)
+      or (dowNow == dayofweek.tuesday   and trTue)
+      or (dowNow == dayofweek.wednesday and trWed)
+      or (dowNow == dayofweek.thursday  and trThu)
+      or (dowNow == dayofweek.friday    and trFri)
+monthOK = not f_inMonthList(skipMonths)
+sessionOK = dayOK and monthOK
+
+// Short-side-only gates
+pastCutoff   = useLateShort and (nyH * 60 + nyM) >= (lateShortH * 60 + lateShortM)
+shortMonthNo = useShortMon and f_inMonthList(shortMonths)
+mondayShort  = noMonShort and dowNow == dayofweek.monday
+shortOK      = not (pastCutoff or shortMonthNo or mondayShort)
+
+// ---------------------------------------------------------------------------
+//  PROP FIRM EVALUATION TRACKER
+// ---------------------------------------------------------------------------
+profitNow = strategy.netprofit + strategy.openprofit
+equityNow = accSize + profitNow
+
+var float dayStartEq = accSize
+if newSession
+    dayStartEq := equityNow
+todayPnL = equityNow - dayStartEq
+
+var float peakEOD   = accSize
+var float peakIntra = accSize
+if newSession
+    peakEOD := math.max(peakEOD, equityNow)
+peakIntra := math.max(peakIntra, equityNow)
+
+ddBase = switch ddType
+    "Static"            => accSize
+    "Intraday trailing" => peakIntra
+    => peakEOD
+ddRaw  = ddType == "Static" ? accSize - maxDD : ddBase - maxDD
+ddLine = (lockAtInit and ddType != "Static") ? math.min(ddRaw, accSize) : ddRaw
+
+targetEq = accSize + profTarget
+
+var bool  everFailed = false
+var bool  everPassed = false
+var float minMargin  = na
+ddMargin = equityNow - ddLine
+minMargin := na(minMargin) ? ddMargin : math.min(minMargin, ddMargin)
+if equityNow <= ddLine
+    everFailed := true
+if equityNow >= targetEq and not everFailed
+    everPassed := true
+
+var float lastSessEq = accSize
+var float bestDay    = 0.0
+var int   daysCount  = 0
+var int   daysGoal   = 0
+if newSession
+    dPnL = equityNow - lastSessEq
+    if dPnL != 0
+        daysCount += 1
+        bestDay := math.max(bestDay, dPnL)
+        daysGoal += dPnL >= dailyGoal ? 1 : 0
+    lastSessEq := equityNow
+
+evalDone      = everFailed or everPassed
+dailyGoalHit  = stopAtGoal and todayPnL >= dailyGoal
+tradingHalted = propMode and ((haltOnDone and evalDone) or dailyGoalHit)
+
+// ---------------------------------------------------------------------------
+//  OPENING RANGE + break flags — this is what sets the direction
+// ---------------------------------------------------------------------------
+var float orHigh = na
+var float orLow  = na
+var bool  orDone = false
+if newSession
+    orHigh := na
+    orLow  := na
+    orDone := false
+if inOR
+    orHigh := na(orHigh) ? high : math.max(orHigh, high)
+    orLow  := na(orLow)  ? low  : math.min(orLow,  low)
+if (not inOR) and inOR[1]
+    orDone := true
+orRange = (not na(orHigh) and not na(orLow)) ? (orHigh - orLow) : na
+
+// Previous completed day's ATR — [1] keeps today's forming bar out of it, so the
+// gate below cannot see the future.
+dAtr      = request.security(syminfo.tickerid, "D", ta.atr(atrLen)[1], lookahead = barmerge.lookahead_off)
+orbRelAtr = (not na(orRange) and not na(dAtr) and dAtr > 0) ? orRange / dAtr : na
+orbPtsOK  = not na(orRange)   and orRange   >= orbMinPts and (orbMaxPts <= 0 or orRange   <= orbMaxPts)
+orbAtrOK  = not na(orbRelAtr) and orbRelAtr >= orbMinAtr and (orbMaxAtr <= 0 or orbRelAtr <= orbMaxAtr)
+orbSizeOK = (not useOrbSize) or (orbSizeUnit == "x daily ATR" ? orbAtrOK : orbPtsOK)
+
+// Stop distance for the "ATR multiple" mode, in price points. Falls back to the
+// fixed-tick distance on the first session or two, before a completed daily ATR exists.
+atrStopDist = na(dAtr) ? stopTicks * tick : atrStopMult * dAtr
+
+var bool brokeUp = false
+var bool brokeDn = false
+if newSession
+    brokeUp := false
+    brokeDn := false
+if orDone and close > orHigh
+    brokeUp := true
+if orDone and close < orLow
+    brokeDn := true
+
+// ---------------------------------------------------------------------------
+//  VWAPs
+// ---------------------------------------------------------------------------
+// RTH-anchored VWAP (resets at the 09:30 session open) — this is the entry line
+var float pvSum  = 0.0
+var float vSum   = 0.0
+var float prevPV = na      // previous NY session's sums (carried for the PD VWAP)
+var float prevV  = na
+if newSession
+    prevPV := vSum > 0 ? pvSum : na
+    prevV  := vSum > 0 ? vSum  : na
+    pvSum  := 0.0
+    vSum   := 0.0
+if inRTH
+    pvSum += hlc3 * nz(volume)
+    vSum  += nz(volume)
+vwapVal = vSum > 0 ? pvSum / vSum : na
+
+// PD NY VWAP — anchored at the PREVIOUS New York open (spans prev + current RTH)
+pdCombPV = nz(prevPV) + pvSum
+pdCombV  = nz(prevV)  + vSum
+pdVwap   = (not na(prevV) and pdCombV > 0) ? pdCombPV / pdCombV : na
+
+// Overnight VWAP — anchored at the overnight session open (e.g. 18:00 prev day);
+// holds its final value through RTH so it reads as a level during the day.
+var float onPV = 0.0
+var float onV  = 0.0
+if inON and not inON[1]
+    onPV := 0.0
+    onV  := 0.0
+if inON
+    onPV += hlc3 * nz(volume)
+    onV  += nz(volume)
+onVwap = onV > 0 ? onPV / onV : na
+
+// Globex-anchored VWAP — same 18:00 anchor as the overnight VWAP, but it keeps
+// accumulating through RTH instead of freezing at 09:30. Optional entry line.
+var float ethPV = 0.0
+var float ethV  = 0.0
+if inON and not inON[1]
+    ethPV := 0.0
+    ethV  := 0.0
+ethPV += hlc3 * nz(volume)
+ethV  += nz(volume)
+ethVwap = ethV > 0 ? ethPV / ethV : na
+
+// HOD / LOD VWAPs — re-anchor whenever a new high / low of the day prints
+var float hod = na
+var float lod = na
+if timeframe.change('D')
+    hod := high
+    lod := low
+else
+    hod := math.max(nz(hod, high), high)
+    lod := math.min(nz(lod, low),  low)
+hodVwap = ta.vwap(hlc3, high >= hod)
+lodVwap = ta.vwap(hlc3, low  <= lod)
+
+// ---------------------------------------------------------------------------
+//  POSITIONING SCORE — net read across the 5 key VWAPs and the Opening Range.
+//  Each level: +1 price above / -1 below / 0 at or unavailable.  Range -6..+6.
+// ---------------------------------------------------------------------------
+f_side(float lvl) => na(lvl) ? 0 : close > lvl ? 1 : close < lvl ? -1 : 0
+posScore = f_side(vwapVal) + f_side(onVwap) + f_side(pdVwap) + f_side(lodVwap) + f_side(hodVwap)
+         + (na(orHigh) ? 0 : close > orHigh ? 1 : close < orLow ? -1 : 0)
+
+// Self-contained positioning bundle, evaluated inside request.security() so the
+// matrix can read correlated tickers (ES/YM). Mirrors the main-chart calcs.
+f_matrixBundle() =>
+    _inRTH = not na(time(timeframe.period, rthSess, tz))
+    _inOR  = not na(time(timeframe.period, orSess,  tz))
+    _inON  = not na(time(timeframe.period, onSess,  tz))
+    _newS  = _inRTH and not _inRTH[1]
+    var float _pv  = 0.0
+    var float _v   = 0.0
+    var float _ppv = na
+    var float _pvv = na
+    if _newS
+        _ppv := _v > 0 ? _pv : na
+        _pvv := _v > 0 ? _v  : na
+        _pv  := 0.0
+        _v   := 0.0
+    if _inRTH
+        _pv += hlc3 * nz(volume)
+        _v  += nz(volume)
+    _ny   = _v > 0 ? _pv / _v : na
+    _pdny = (not na(_pvv) and (_pvv + _v) > 0) ? (nz(_ppv) + _pv) / (_pvv + _v) : na
+    var float _opv = 0.0
+    var float _ov  = 0.0
+    if _inON and not _inON[1]
+        _opv := 0.0
+        _ov  := 0.0
+    if _inON
+        _opv += hlc3 * nz(volume)
+        _ov  += nz(volume)
+    _on = _ov > 0 ? _opv / _ov : na
+    var float _hod = na
+    var float _lod = na
+    if timeframe.change('D')
+        _hod := high
+        _lod := low
+    else
+        _hod := math.max(nz(_hod, high), high)
+        _lod := math.min(nz(_lod, low),  low)
+    _hodV = ta.vwap(hlc3, high >= _hod)
+    _lodV = ta.vwap(hlc3, low  <= _lod)
+    var float _orH = na
+    var float _orL = na
+    if _newS
+        _orH := na
+        _orL := na
+    if _inOR
+        _orH := na(_orH) ? high : math.max(_orH, high)
+        _orL := na(_orL) ? low  : math.min(_orL, low)
+    _sOR = na(_orH) ? 0 : close > _orH ? 1 : close < _orL ? -1 : 0
+    [f_side(_ny), f_side(_on), f_side(_pdny), f_side(_lodV), f_side(_hodV), _sOR, not na(_orH)]
+
+[t2ny, t2on, t2pd, t2lod, t2hod, t2or, t2has] = request.security(tick2, timeframe.period, f_matrixBundle())
+[t3ny, t3on, t3pd, t3lod, t3hod, t3or, t3has] = request.security(tick3, timeframe.period, f_matrixBundle())
+
+t2score = t2ny + t2on + t2pd + t2lod + t2hod + t2or
+t3score = t3ny + t3on + t3pd + t3lod + t3hod + t3or
+
+// Correlated-ticker agreement gate (uses the same -6..+6 scoring per ticker)
+corrL2 = t2score >=  corrMin
+corrL3 = t3score >=  corrMin
+corrS2 = t2score <= -corrMin
+corrS3 = t3score <= -corrMin
+corrOKlong  = (not useCorr) or (corrMode == "Ticker 2" ? corrL2 : corrMode == "Ticker 3" ? corrL3 : corrMode == "Either" ? (corrL2 or corrL3) : (corrL2 and corrL3))
+corrOKshort = (not useCorr) or (corrMode == "Ticker 2" ? corrS2 : corrMode == "Ticker 3" ? corrS3 : corrMode == "Either" ? (corrS2 or corrS3) : (corrS2 and corrS3))
+
+// ---------------------------------------------------------------------------
+//  STATE MACHINE (resets every day)
+// ---------------------------------------------------------------------------
+var int tradesDay = 0
+if newSession
+    tradesDay := 0
+
+entryLine = vwapAnchor == "Globex open (18:00)" ? ethVwap : vwapVal
+armed     = orDone and not na(entryLine)
+flat      = strategy.position_size == 0
+timeOK    = inEntryWin and tradesDay < maxTrades
+canPlace  = armed and flat and timeOK and sessionOK and orbSizeOK and not tradingHalted
+
+scoreOKlong  = (not useScore) or posScore >=  minScore
+scoreOKshort = (not useScore) or posScore <= -minScore
+
+// --- The entry: touch of the session VWAP, in the direction of the OR break --
+//  A buy  limit must rest below market -> price has to be above the VWAP.
+//  A sell limit must rest above market -> price has to be below the VWAP.
+//  Those two conditions already encode "broke up / correct side of VWAP", which
+//  is why there is no separate bias or side filter here.
+wantLong  = canPlace and enableLong  and brokeUp and close > entryLine and scoreOKlong  and corrOKlong
+wantShort = canPlace and enableShort and brokeDn and close < entryLine and scoreOKshort and corrOKshort and shortOK
+
+// ---------------------------------------------------------------------------
+//  ENTRIES + STOP / TARGET + SIZING
+// ---------------------------------------------------------------------------
+lowestLow   = ta.lowest(low,  swingLen)
+highestHigh = ta.highest(high, swingLen)
+
+var float curStop  = na
+var float curTgt   = na
+var float curR     = na      // initial risk (price distance) of the open trade
+var float trailExt = na      // best price reached since entry (for trailing)
+var bool  beDone   = false
+var box   tpBox    = na
+var box   slBox    = na
+
+f_qty(distPts) =>
+    raw = useRiskSizing ? (distPts > 0 ? math.floor(riskUSD / (distPts * pv)) : 0) : fixedQty
+    math.min(raw, maxCon)
+
+f_rangeOK(distPts) => distPts >= minThresh and distPts <= maxRangeP
+
+// TradersPost-style JSON payloads (sent via {{strategy.order.alert_message}})
+f_aEntry(string action, int qty) =>
+    '{"ticker":"' + syminfo.ticker + '","action":"' + action + '","orderType":"market","quantity":' + str.tostring(qty) + '}'
+aExit = '{"ticker":"' + syminfo.ticker + '","action":"exit"}'
+
+// Limit price sits on the VWAP (offset a hair toward the approach side)
+entryPxL = entryLine + entryOffset * tick
+entryPxS = entryLine - entryOffset * tick
+
+stL = switch stopMode
+    "ATR multiple"      => entryPxL - atrStopDist - bufTicks * tick
+    "VWAP line"          => entryLine - bufTicks * tick
+    "ORB opposite side"  => (na(orLow)  ? entryPxL - stopTicks * tick : orLow)  - bufTicks * tick
+    "Retest swing"       => math.min(lowestLow, low) - bufTicks * tick
+    => entryPxL - stopTicks * tick
+stS = switch stopMode
+    "ATR multiple"      => entryPxS + atrStopDist + bufTicks * tick
+    "VWAP line"          => entryLine  + bufTicks * tick
+    "ORB opposite side"  => (na(orHigh) ? entryPxS + stopTicks * tick : orHigh) + bufTicks * tick
+    "Retest swing"       => math.max(highestHigh, high) + bufTicks * tick
+    => entryPxS + stopTicks * tick
+
+riskL = entryPxL - stL
+riskS = stS - entryPxS
+
+tgL = switch tgtMode
+    "R multiple"    => entryPxL + rr * riskL
+    "ORB extension" => entryPxL + orMult * nz(orRange)
+    "None (ride to the EOD flat)" => na
+    => entryPxL + tgtTicks * tick
+tgS = switch tgtMode
+    "R multiple"    => entryPxS - rr * riskS
+    "ORB extension" => entryPxS - orMult * nz(orRange)
+    "None (ride to the EOD flat)" => na
+    => entryPxS - tgtTicks * tick
+
+okL = wantLong  and riskL > 0 and f_rangeOK(math.abs(entryPxL - stL)) and f_qty(math.abs(entryPxL - stL)) >= 1
+okS = wantShort and riskS > 0 and f_rangeOK(math.abs(stS - entryPxS)) and f_qty(math.abs(stS - entryPxS)) >= 1
+
+// Rest / refresh the limit order on the VWAP
+if okL
+    qL = f_qty(math.abs(entryPxL - stL))
+    strategy.entry("Long", strategy.long, qty = qL, limit = entryPxL, alert_message = f_aEntry("buy", qL))
+    curStop := stL
+    curTgt  := tgL
+if okS
+    qS = f_qty(math.abs(stS - entryPxS))
+    strategy.entry("Short", strategy.short, qty = qS, limit = entryPxS, alert_message = f_aEntry("sell", qS))
+    curStop := stS
+    curTgt  := tgS
+
+// Cancel a resting order once its setup is no longer valid (while still flat)
+if flat and not okL
+    strategy.cancel("Long")
+if flat and not okS
+    strategy.cancel("Short")
+
+// On fill: count the trade and draw the R:R boxes at the real fill price
+filledLong  = strategy.position_size > 0 and strategy.position_size[1] <= 0
+filledShort = strategy.position_size < 0 and strategy.position_size[1] >= 0
+if filledLong or filledShort
+    tradesDay += 1
+    beDone    := false
+    e0 = strategy.position_avg_price
+    curR     := math.abs(e0 - curStop)    // lock in the initial R distance
+    trailExt := e0                        // seed the favorable extreme
+    if showRR and not na(curTgt)
+        if filledLong
+            tpBox := box.new(bar_index, curTgt, bar_index, e0, border_color = tpColor, bgcolor = tpColor)
+            slBox := box.new(bar_index, e0, bar_index, curStop, border_color = slColor, bgcolor = slColor)
+        else
+            tpBox := box.new(bar_index, e0, bar_index, curTgt, border_color = tpColor, bgcolor = tpColor)
+            slBox := box.new(bar_index, curStop, bar_index, e0, border_color = slColor, bgcolor = slColor)
+
+if useBE and strategy.position_size > 0 and not beDone
+    r = strategy.position_avg_price - curStop
+    if high >= strategy.position_avg_price + r
+        curStop := strategy.position_avg_price
+        beDone  := true
+if useBE and strategy.position_size < 0 and not beDone
+    r = curStop - strategy.position_avg_price
+    if low <= strategy.position_avg_price - r
+        curStop := strategy.position_avg_price
+        beDone  := true
+
+// Trailing stop: ratchet the stop a fixed distance behind the best price,
+// once the trade is at least `trailStart` R in profit. Only ever tightens.
+if useTrail and strategy.position_size != 0 and not na(curR) and curR > 0
+    e    = strategy.position_avg_price
+    dist = trailMode == "Points" ? trailPts : trailR * curR
+    if strategy.position_size > 0
+        trailExt := math.max(trailExt, high)
+        if (trailExt - e) >= trailStart * curR
+            curStop := math.max(curStop, trailExt - dist)
+    else
+        trailExt := math.min(trailExt, low)
+        if (e - trailExt) >= trailStart * curR
+            curStop := math.min(curStop, trailExt + dist)
+
+exitTgt = (useTrail and trailNoTgt) ? na : curTgt
+if strategy.position_size > 0
+    strategy.exit("Exit L", from_entry = "Long",  stop = curStop, limit = exitTgt, alert_message = aExit)
+if strategy.position_size < 0
+    strategy.exit("Exit S", from_entry = "Short", stop = curStop, limit = exitTgt, alert_message = aExit)
+
+justClosed = strategy.position_size == 0 and strategy.position_size[1] != 0
+if showRR and not na(tpBox) and (strategy.position_size != 0 or justClosed)
+    box.set_right(tpBox, bar_index)
+    box.set_right(slBox, bar_index)
+
+isFlatTime = nyH > flatH or (nyH == flatH and nyM >= flatM)
+if flatEOD and isFlatTime and strategy.position_size != 0
+    strategy.close_all("EOD", alert_message = aExit)
+
+// ---------------------------------------------------------------------------
+//  PLOTS
+// ---------------------------------------------------------------------------
+// NY session VWAP — the entry line. Visible 09:30 -> session close, breaks daily.
+plot(showBias and inRTH ? entryLine : na, "Entry line (session VWAP)", color = color.new(color.blue, 0), linewidth = 2, style = plot.style_linebr)
+// The RTH VWAP stays plotted as a reference whenever it is NOT the entry line
+plot(showBias and inRTH and vwapAnchor != "RTH open (09:30)" ? vwapVal : na, "NY VWAP (9:30)", color = color.new(color.blue, 55), linewidth = 1, style = plot.style_linebr)
+// Overnight VWAP — live through the overnight, then holds as a level during RTH
+plot(showOnVwap and (inON or inRTH) ? onVwap : na, "Overnight VWAP", color = onVwapColor, linewidth = 2, style = plot.style_linebr)
+// Key VWAPs (ASFX): previous-day NY, high-of-day, low-of-day
+plot(showPdVwap  and inRTH ? pdVwap  : na, "PD NY VWAP", color = pdVwapColor,  linewidth = 2, style = plot.style_linebr)
+plot(showHodVwap ? hodVwap : na, "HOD VWAP", color = hodVwapColor, linewidth = 1, style = plot.style_linebr)
+plot(showLodVwap ? lodVwap : na, "LOD VWAP", color = lodVwapColor, linewidth = 1, style = plot.style_linebr)
+
+// Opening-range high/low as HORIZONTAL lines: drawn from the OR open, the level
+// re-adjusts while the window forms and is then left frozen.
+var int  orStartBar = na
+var line orbHiLn = na
+var line orbLoLn = na
+if newSession
+    orStartBar := na
+    orbHiLn := na     // drop the reference; the previous day's line stays in history
+    orbLoLn := na
+if inOR and na(orStartBar)
+    orStartBar := bar_index            // anchor the left edge at the first OR bar
+if showORB and inRTH and not na(orHigh) and not na(orStartBar)
+    if na(orbHiLn)
+        orbHiLn := line.new(orStartBar, orHigh, bar_index, orHigh, color = orbColor, width = 1)
+        orbLoLn := line.new(orStartBar, orLow,  bar_index, orLow,  color = orbColor, width = 1)
+    else
+        line.set_xy1(orbHiLn, orStartBar, orHigh)
+        line.set_xy2(orbHiLn, bar_index,  orHigh)
+        line.set_xy1(orbLoLn, orStartBar, orLow)
+        line.set_xy2(orbLoLn, bar_index,  orLow)
+
+// Shade the bars where the short side is muted by a filter
+bgcolor(enableShort and brokeDn and inEntryWin and not shortOK ? color.new(color.red, 92) : na, title = "Shorts blocked")
+
+// ---------------------------------------------------------------------------
+//  PROP EVAL TABLE (top-right)
+// ---------------------------------------------------------------------------
+var table tbl = table.new(position.top_right, 2, 9, border_width = 1)
+
+if propMode and barstate.islast
+    bestPct     = profitNow > 0 ? bestDay / profitNow * 100 : 0.0
+    consistOK   = bestPct <= consistPct
+    payoutReady = profitNow >= profTarget and consistOK
+    evalStatus  = everFailed ? "BREACHED" : payoutReady ? "PAYOUT OK" : "IN PROGRESS"
+    statusCol   = everFailed ? color.red : payoutReady ? color.lime : color.yellow
+    cBg         = color.new(color.black, 10)
+    table.cell(tbl, 0, 0, "STATUS",          text_color = color.white, text_size = size.small, bgcolor = cBg)
+    table.cell(tbl, 1, 0, evalStatus,        text_color = statusCol,   text_size = size.small, bgcolor = cBg)
+    table.cell(tbl, 0, 1, "Equity",          text_color = color.white, text_size = size.small, bgcolor = cBg)
+    table.cell(tbl, 1, 1, str.tostring(equityNow, "#"),  text_color = color.white, text_size = size.small, bgcolor = cBg)
+    table.cell(tbl, 0, 2, "Net profit",      text_color = color.white, text_size = size.small, bgcolor = cBg)
+    table.cell(tbl, 1, 2, str.tostring(profitNow, "#"),  text_color = profitNow >= 0 ? color.lime : color.red, text_size = size.small, bgcolor = cBg)
+    table.cell(tbl, 0, 3, "Today P&L",       text_color = color.white, text_size = size.small, bgcolor = cBg)
+    table.cell(tbl, 1, 3, str.tostring(todayPnL, "#"),   text_color = todayPnL >= 0 ? color.lime : color.red, text_size = size.small, bgcolor = cBg)
+    table.cell(tbl, 0, 4, "DD line",         text_color = color.white, text_size = size.small, bgcolor = cBg)
+    table.cell(tbl, 1, 4, str.tostring(ddLine, "#"),     text_color = color.orange, text_size = size.small, bgcolor = cBg)
+    table.cell(tbl, 0, 5, "Min margin to DD",text_color = color.white, text_size = size.small, bgcolor = cBg)
+    table.cell(tbl, 1, 5, str.tostring(minMargin, "#"),  text_color = minMargin <= 0 ? color.red : color.lime, text_size = size.small, bgcolor = cBg)
+    table.cell(tbl, 0, 6, "To target",       text_color = color.white, text_size = size.small, bgcolor = cBg)
+    table.cell(tbl, 1, 6, str.tostring(targetEq - equityNow, "#"), text_color = color.white, text_size = size.small, bgcolor = cBg)
+    table.cell(tbl, 0, 7, "Days >= goal",    text_color = color.white, text_size = size.small, bgcolor = cBg)
+    table.cell(tbl, 1, 7, str.tostring(daysGoal),        text_color = color.white, text_size = size.small, bgcolor = cBg)
+    table.cell(tbl, 0, 8, "Best day (<=" + str.tostring(consistPct, "#") + "%)", text_color = color.white, text_size = size.small, bgcolor = cBg)
+    table.cell(tbl, 1, 8, str.tostring(bestPct, "#.#") + "%", text_color = bestPct > consistPct ? color.red : color.lime, text_size = size.small, bgcolor = cBg)
+
+// ---------------------------------------------------------------------------
+//  MARKET POSITIONING TABLE (price vs the 5 key VWAPs, Opening Range position,
+//  and an aggregate Trend read)
+// ---------------------------------------------------------------------------
+mtxPosition = switch matrixPos
+    "Bottom left"  => position.bottom_left
+    "Top left"     => position.top_left
+    "Middle right" => position.middle_right
+    => position.bottom_right
+mtxTxtSize = switch matrixSize
+    "Tiny"   => size.tiny
+    "Normal" => size.normal
+    => size.small
+
+var table mtx = table.new(mtxPosition, 4, 10, border_width = 1)
+mtxBg = color.new(color.black, 10)
+
+f_dot(int col, int row, int s) =>
+    table.cell(mtx, col, row, "●", text_color = s > 0 ? color.lime : s < 0 ? color.red : color.gray, text_size = mtxTxtSize, bgcolor = mtxBg)
+
+f_orCell(int col, int s, bool has) =>
+    txt = not has ? "—" : s > 0 ? "Above | ▲" : s < 0 ? "Below | ▼" : "Inside | ●"
+    tc  = not has ? color.gray : s > 0 ? color.lime : s < 0 ? color.red : color.yellow
+    table.cell(mtx, col, 6, txt, text_color = tc, text_size = mtxTxtSize, bgcolor = mtxBg)
+
+f_trendCell(int col, int sc) =>
+    txt = (sc >= 5 ? "Strong Up" : sc >= 2 ? "Up" : sc <= -5 ? "Strong Down" : sc <= -2 ? "Down" : "Mixed") + " (" + (sc > 0 ? "+" : "") + str.tostring(sc) + ")"
+    tc  = sc >= 2 ? color.lime : sc <= -2 ? color.red : color.yellow
+    table.cell(mtx, col, 7, txt, text_color = tc, text_size = mtxTxtSize, bgcolor = mtxBg)
+
+// One full column of the matrix for one ticker
+f_tickCol(int col, string name, int sNY, int sON, int sPD, int sLOD, int sHOD, int sOR, bool hasOR) =>
+    table.cell(mtx, col, 0, name, text_color = color.white, text_size = mtxTxtSize, bgcolor = mtxBg)
+    f_dot(col, 1, sNY)
+    f_dot(col, 2, sON)
+    f_dot(col, 3, sPD)
+    f_dot(col, 4, sLOD)
+    f_dot(col, 5, sHOD)
+    f_orCell(col, sOR, hasOR)
+    f_trendCell(col, sNY + sON + sPD + sLOD + sHOD + sOR)
+
+f_shortName(string sym) => array.last(str.split(sym, ":"))
+
+if showMatrix and barstate.islast
+    // Label column
+    table.cell(mtx, 0, 0, "Ticker",         text_color = color.white, text_size = mtxTxtSize, text_halign = text.align_left, bgcolor = mtxBg)
+    table.cell(mtx, 0, 1, "NY VWAP",        text_color = color.white, text_size = mtxTxtSize, text_halign = text.align_left, bgcolor = mtxBg)
+    table.cell(mtx, 0, 2, "Overnight VWAP", text_color = color.white, text_size = mtxTxtSize, text_halign = text.align_left, bgcolor = mtxBg)
+    table.cell(mtx, 0, 3, "PD NY VWAP",     text_color = color.white, text_size = mtxTxtSize, text_halign = text.align_left, bgcolor = mtxBg)
+    table.cell(mtx, 0, 4, "LOD VWAP",       text_color = color.white, text_size = mtxTxtSize, text_halign = text.align_left, bgcolor = mtxBg)
+    table.cell(mtx, 0, 5, "HOD VWAP",       text_color = color.white, text_size = mtxTxtSize, text_halign = text.align_left, bgcolor = mtxBg)
+    table.cell(mtx, 0, 6, "Opening Range",  text_color = color.white, text_size = mtxTxtSize, text_halign = text.align_left, bgcolor = mtxBg)
+    table.cell(mtx, 0, 7, "Trend" + (useScore ? " (need ±" + str.tostring(minScore) + ")" : ""), text_color = color.white, text_size = mtxTxtSize, text_halign = text.align_left, bgcolor = mtxBg)
+    table.cell(mtx, 0, 8, "ORB size" + (useOrbSize ? " (gated)" : ""), text_color = color.white, text_size = mtxTxtSize, text_halign = text.align_left, bgcolor = mtxBg)
+    orbTxt = na(orRange) ? "—" : str.tostring(orRange, "#.#") + " pt" + (na(orbRelAtr) ? "" : "  /  " + str.tostring(orbRelAtr, "#.##") + "x ATR")
+    table.cell(mtx, 1, 8, orbTxt, text_color = orbSizeOK ? color.white : color.red, text_size = mtxTxtSize, bgcolor = mtxBg)
+    // Daily ATR and, when the ATR stop is active, the stop distance it produces
+    table.cell(mtx, 0, 9, stopMode == "ATR multiple" ? "ATR / stop" : "Daily ATR", text_color = color.white, text_size = mtxTxtSize, text_halign = text.align_left, bgcolor = mtxBg)
+    atrTxt = na(dAtr) ? "—" : str.tostring(dAtr, "#.#") + " pt" + (stopMode == "ATR multiple" ? "  /  " + str.tostring(atrStopDist, "#.#") + " pt" : "")
+    table.cell(mtx, 1, 9, atrTxt, text_color = color.white, text_size = mtxTxtSize, bgcolor = mtxBg)
+    // Chart ticker — same components the entry filter (posScore) uses
+    orSideMain = na(orHigh) ? 0 : close > orHigh ? 1 : close < orLow ? -1 : 0
+    f_tickCol(1, syminfo.ticker, f_side(vwapVal), f_side(onVwap), f_side(pdVwap), f_side(lodVwap), f_side(hodVwap), orSideMain, not na(orHigh))
+    // Correlated tickers
+    if showT2
+        f_tickCol(2, f_shortName(tick2), t2ny, t2on, t2pd, t2lod, t2hod, t2or, t2has)
+    if showT3
+        f_tickCol(3, f_shortName(tick3), t3ny, t3on, t3pd, t3lod, t3hod, t3or, t3has)

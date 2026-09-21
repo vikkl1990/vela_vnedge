@@ -1,0 +1,174 @@
+//@version=6
+// PD LLT replica — Python-parity port of src/backtest_v2/pd_llt.py
+//
+// Model (mirrors the Python module exactly):
+//   1. Dealing range = latest CONFIRMED swing high + swing low pair.
+//      A swing of strength s is only known s bars after it prints.
+//      Rotation: every newly confirmed pivot rotates the range to the
+//      latest pair ("Growing area" mode = rotate only on new extremes).
+//   2. Range split at the 50% midpoint (Mid) into premium / discount areas.
+//   3. EQ cross: the close at range activation sets the baseline side;
+//      a FLIP of that side through Mid is the cross (up = bull, down = bear).
+//   4. LLT = first pivot confirming after the cross on the cross side.
+//   5. Delivery = price touches the LLT after it is known -> areas fade.
+//   Older areas keep tracking until delivery (supersession does not kill
+//   their lifecycle), matching the Python `detect_pd_ranges` behaviour.
+indicator("PD LLT replica (Python parity)", "PD LLT py", overlay = true,
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+strength = input.int(16, "Pivot strength (bars each side)", minval = 1)
+growMode = input.bool(false, "Growing area (rotate only on new extremes)")
+keepOld  = input.int(6, "Older PD areas kept on chart", minval = 1, maxval = 80)
+
+colPrem  = color.new(#ef5350, 72)
+colDisc  = color.new(#26a69a, 72)
+colPremE = color.new(#ef5350, 35)
+colDiscE = color.new(#26a69a, 35)
+colPremF = color.new(#ef5350, 92)
+colDiscF = color.new(#26a69a, 92)
+colMid   = #ffd54f
+colBull  = #039be5
+colBear  = #d81b60
+
+type LC
+    float hi
+    float lo
+    float eq
+    bool  active = true
+    box   premBox
+    box   discBox
+    line  midLine
+    int   baseSide = 0
+    int   crossDir = 0
+    float llt = na
+    line  lltLine = na
+    bool  delivered = false
+
+var array<LC> lcs = array.new<LC>()
+var float curHi = na
+var float curLo = na
+var int   curHiConf = na  // confirm bar of the current swing high
+var int   curLoConf = na  // confirm bar of the current swing low
+
+bool midUp = false
+bool midDn = false
+bool lltHit = false
+
+// ---------------------------------------------------------------- 1) EQ cross
+// Only while the range is ACTIVE (mirrors the Python active-window scan).
+// Runs before pivot handling so a pivot confirming on the cross bar counts.
+if array.size(lcs) > 0
+    for i = 0 to array.size(lcs) - 1
+        lc = array.get(lcs, i)
+        if lc.active and lc.crossDir == 0
+            side = close > lc.eq ? 1 : close < lc.eq ? -1 : 0
+            if side != 0
+                if lc.baseSide == 0
+                    lc.baseSide := side
+                else if side != lc.baseSide
+                    lc.crossDir := side
+                    if side == 1
+                        midUp := true
+                    else
+                        midDn := true
+                    label.new(bar_index, close, "", style = label.style_circle,
+                         color = color.new(colMid, 0), size = size.tiny)
+
+// ------------------------------------------------- 2) pivot confirmation
+// Pivot candidate sits at offset `strength`; needs strength bars each side.
+// left:  high[strength] >= highs of the strength bars before it
+// right: high[strength] >  highs of the strength bars after it
+bool pHigh = false
+bool pLow = false
+if bar_index >= 2 * strength
+    pHigh := true
+    pLow := true
+    for k = 1 to strength
+        if not (high[strength] >= high[strength + k])
+            pHigh := false
+        if not (low[strength] <= low[strength + k])
+            pLow := false
+    for d = 0 to strength - 1
+        if not (high[strength] > high[d])
+            pHigh := false
+        if not (low[strength] < low[d])
+            pLow := false
+
+// ------------------------------------------------- 3) range rotation
+bool rotated = false
+if pHigh or pLow
+    bool doHi = pHigh and (na(curHi) or not growMode or high[strength] > curHi)
+    bool doLo = pLow and (na(curLo) or not growMode or low[strength] < curLo)
+    if doHi
+        curHi := high[strength]
+        curHiConf := bar_index
+    if doLo
+        curLo := low[strength]
+        curLoConf := bar_index
+    rotated := (doHi or doLo) and not na(curHi) and not na(curLo)
+
+if rotated
+    if array.size(lcs) > 0
+        LC old = array.get(lcs, array.size(lcs) - 1)
+        if old.active
+            old.active := false
+    float eq = (curHi + curLo) / 2
+    // each area starts at ITS OWN swing's confirmation bar (matches the
+    // original's look: premium and discount boxes have different x-spans)
+    LC lc = LC.new(hi = curHi, lo = curLo, eq = eq,
+         premBox = box.new(nz(curHiConf, bar_index), curHi, bar_index + 1, eq,
+             border_color = colPremE, border_width = 1, bgcolor = colPrem),
+         discBox = box.new(nz(curLoConf, bar_index), eq, bar_index + 1, curLo,
+             border_color = colDiscE, border_width = 1, bgcolor = colDisc),
+         midLine = line.new(bar_index, eq, bar_index + 1, eq,
+             color = colMid, style = line.style_dashed, width = 2))
+    array.push(lcs, lc)
+    // baseline side from the formation bar's close (Python start-bar semantics)
+    side0 = close > eq ? 1 : close < eq ? -1 : 0
+    if side0 != 0
+        lc.baseSide := side0
+    if array.size(lcs) > keepOld
+        LC dead = array.shift(lcs)
+        box.delete(dead.premBox)
+        box.delete(dead.discBox)
+        line.delete(dead.midLine)
+        if not na(dead.lltLine)
+            line.delete(dead.lltLine)
+
+// ------------------------------------------------- 4) LLT: first pivot after cross
+if (pHigh or pLow) and array.size(lcs) > 0
+    for i = 0 to array.size(lcs) - 1
+        lc = array.get(lcs, i)
+        if not lc.delivered and na(lc.llt) and lc.crossDir != 0
+            if (lc.crossDir == 1 and pHigh) or (lc.crossDir == -1 and pLow)
+                lc.llt := lc.crossDir == 1 ? high[strength] : low[strength]
+                lc.lltLine := line.new(bar_index, lc.llt, bar_index + 1, lc.llt,
+                     color = lc.crossDir == 1 ? color.new(colBull, 0) : color.new(colBear, 0),
+                     width = 2)
+
+// ------------------------------------------------- 5) extend active + delivery
+if array.size(lcs) > 0
+    for i = 0 to array.size(lcs) - 1
+        lc = array.get(lcs, i)
+        if lc.active
+            box.set_right(lc.premBox, bar_index + 1)
+            box.set_right(lc.discBox, bar_index + 1)
+            line.set_x2(lc.midLine, bar_index + 1)
+            if not na(lc.lltLine) and not lc.delivered
+                line.set_x2(lc.lltLine, bar_index + 1)
+        if not lc.delivered and not na(lc.llt)
+            bool hit = lc.crossDir == 1 ? high >= lc.llt : low <= lc.llt
+            if hit
+                lc.delivered := true
+                lltHit := true
+                box.set_bgcolor(lc.premBox, colPremF)
+                box.set_bgcolor(lc.discBox, colDiscF)
+                box.set_border_color(lc.premBox, color.new(#ef5350, 85))
+                box.set_border_color(lc.discBox, color.new(#26a69a, 85))
+                label.new(bar_index, lc.llt, "", style = label.style_diamond,
+                     color = color.white, size = size.tiny)
+
+// ------------------------------------------------- alerts (original wording)
+alertcondition(midUp, "Mid Hit up", "Mid Hit up at {{close}}")
+alertcondition(midDn, "Mid Hit down", "Mid Hit down at {{close}}")
+alertcondition(lltHit, "LLT Hit", "LLT Hit at {{close}}")

@@ -1,0 +1,59 @@
+//@version=6
+// HOD Reversal Scanner
+// Logic: bar N makes a new high of day. The first later bar (same day) that CLOSES below
+// bar N's close -> signal. Fires once per HOD candle; a fresh HOD re-arms it.
+// Always evaluates on the "Signal timeframe" (default 15m) no matter what the chart /
+// screener interval is. Chart or screener interval must be <= signal timeframe.
+indicator("HOD Reversal Scanner", shorttitle="HOD Rev", overlay=true)
+
+// ---------- Inputs ----------
+sigTf      = input.timeframe("15", "Signal timeframe")
+minAvgVol  = input.float(1000000, "Min avg daily volume", minval=0, step=100000)
+avgVolLen  = input.int(20, "Avg volume lookback (days)", minval=1)
+rthOnly    = input.bool(true, "Regular session only")
+showHod    = input.bool(true, "Mark new-HOD bars")
+
+// ---------- Volume filter (completed daily bars only) ----------
+avgDailyVol = request.security(syminfo.tickerid, "D", ta.sma(volume, avgVolLen)[1], lookahead=barmerge.lookahead_on)
+volOk = avgDailyVol >= minAvgVol
+
+// ---------- HOD logic, computed on the signal timeframe ----------
+f_hod() =>
+    var float dayHigh  = na
+    var float refClose = na      // close of the most recent new-HOD candle
+    var bool  armed    = false   // waiting for a close below refClose
+    newDay    = ta.change(time("D")) != 0
+    inSession = not rthOnly or session.ismarket
+    if newDay
+        dayHigh  := na
+        refClose := na
+        armed    := false
+    isNewHigh = inSession and not na(dayHigh) and high > dayHigh
+    if inSession
+        dayHigh := na(dayHigh) ? high : math.max(dayHigh, high)
+    sig = false
+    if isNewHigh
+        // new HOD candle: (re)set the reference and arm
+        refClose := close
+        armed    := true
+    else if inSession and armed and close < refClose
+        // any later candle closing below the HOD candle's close fires once
+        sig   := true
+        armed := false
+    [isNewHigh, sig]
+
+[isNewHigh, rawSig] = request.security(syminfo.tickerid, sigTf, f_hod())
+
+signal = rawSig and volOk
+
+// ---------- Visuals ----------
+plotshape(showHod and isNewHigh, "New HOD", shape.circle, location.abovebar, color.new(color.green, 40), size=size.tiny)
+plotshape(signal, "HOD Reversal", shape.triangledown, location.abovebar, color.red, size=size.small, text="REV")
+bgcolor(signal ? color.new(color.red, 85) : na)
+
+// Screener columns
+plot(signal ? 1 : 0, "Signal", display=display.data_window)
+plot(avgDailyVol, "Avg Daily Vol", display=display.data_window)
+
+// ---------- Alerts ----------
+alertcondition(signal, "HOD Reversal", "{{ticker}} closed below its high-of-day candle")

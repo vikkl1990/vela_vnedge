@@ -1,0 +1,123 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © thefalconai
+
+//@version=6
+// ════════════════════════════════════════════════════════════════════════════
+//  FALCON RISK & POSITION-SIZE CALCULATOR  ·  FREE
+//  by Falcon AI  ·  thefalconai.com
+//
+//  Tells you EXACTLY how many contracts to trade so a stop-out only costs the
+//  $ you decided to risk — on any futures symbol (MNQ, MES, NQ, ES, MGC, CL...).
+//  Auto-detects each contract's point value, so the math is always right.
+//  Plus a prop-firm guardrail panel: how many losers until you breach your
+//  daily-loss limit or trailing drawdown.
+//
+//  (Free utility. The Falcon AI engine — the part that decides WHEN to trade and
+//   auto-sizes every entry for you — is a separate product. Link in author bio.)
+// ════════════════════════════════════════════════════════════════════════════
+indicator("Risk & Position-Size Calculator | Falcon AI", "FalconRisk", overlay = true)
+
+// ─────────────── RISK INPUTS ───────────────
+gR = "💰 Risk & Position Size"
+acct       = input.float(50000, "Account Size ($)",       group = gR, minval = 0, step = 1000)
+riskPct    = input.float(1.0,   "Risk Per Trade (%)",     group = gR, minval = 0, step = 0.1)
+stopMode   = input.string("Manual (points)", "Stop Distance", options = ["Manual (points)", "ATR-based"], group = gR)
+stopManual = input.float(20,    "  Manual stop (points)", group = gR, minval = 0, tooltip = "Used when Stop Distance = Manual (points)")
+atrLen     = input.int(14,      "  ATR length",           group = gR, minval = 1)
+atrMult    = input.float(1.5,   "  ATR x stop multiple",  group = gR, minval = 0.1, step = 0.1, tooltip = "Used when Stop Distance = ATR-based")
+
+// ─────────────── PROP FIRM INPUTS ───────────────
+gP = "🛡️ Prop-Firm Guardrails"
+showProp = input.bool(true,  "Show prop-firm panel", group = gP)
+maxDaily = input.float(1000, "Max Daily Loss ($)",   group = gP, minval = 0, step = 100)
+trailDD  = input.float(2500, "Trailing Drawdown ($)", group = gP, minval = 0, step = 100)
+
+// ─────────────── LEVELS (bonus) ───────────────
+gL = "📐 Key Levels"
+showPD = input.bool(true, "Prior-Day High / Low", group = gL)
+
+// ─────────────── DISPLAY ───────────────
+gD = "⚙️ Display"
+posIn  = input.string("Top Right", "Panel position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right"], group = gD)
+szIn   = input.string("Normal",    "Text size",      options = ["Small", "Normal", "Large"], group = gD)
+accent = input.color(#E8B84B,      "Accent color",   group = gD)
+
+// ─────────────── CALCULATIONS ───────────────
+pv     = syminfo.pointvalue                        // $ per 1.0 point (MNQ=2, MES=5, NQ=20, ES=50...)
+tick   = syminfo.mintick
+atrVal = ta.atr(atrLen)
+stopPoints      = stopMode == "ATR-based" ? atrVal * atrMult : stopManual
+riskDollars     = acct * riskPct / 100.0
+riskPerContract = stopPoints * pv
+contracts       = riskPerContract > 0 ? math.max(math.floor(riskDollars / riskPerContract), 0) : 0
+actualRisk      = contracts * riskPerContract
+stopTicks       = tick > 0 ? stopPoints / tick : 0
+dollarPerPoint  = contracts * pv
+r2              = actualRisk * 2
+r3              = actualRisk * 3
+tradesToDaily   = actualRisk > 0 ? math.floor(maxDaily / actualRisk) : 0
+tradesToDD      = actualRisk > 0 ? math.floor(trailDD  / actualRisk) : 0
+
+f_money(x) => "$" + str.tostring(math.round(x), "#,###")
+f_pts(x)   => str.tostring(x, "#.##")
+
+// ─────────────── PRIOR-DAY LEVELS ───────────────
+[pdh, pdl] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+plot(showPD ? pdh : na, "Prior Day High", color = color.new(color.gray, 0), style = plot.style_stepline, linewidth = 1)
+plot(showPD ? pdl : na, "Prior Day Low",  color = color.new(color.gray, 0), style = plot.style_stepline, linewidth = 1)
+
+// ─────────────── PANEL ───────────────
+posMap = posIn == "Top Left" ? position.top_left : posIn == "Bottom Right" ? position.bottom_right : posIn == "Bottom Left" ? position.bottom_left : posIn == "Middle Right" ? position.middle_right : position.top_right
+szMap  = szIn == "Small" ? size.small : szIn == "Large" ? size.large : size.normal
+
+bg  = color.new(#0F1217, 8)
+txt = color.new(#C8CDD8, 0)
+sub = color.new(#5A6275, 0)
+
+var table t = table.new(posMap, 2, 14, bgcolor = bg, border_color = color.new(#000000, 60), border_width = 1, frame_color = color.new(accent, 40), frame_width = 1)
+
+if barstate.islast
+    table.clear(t, 0, 0, 1, 13)
+    r = 0
+    table.cell(t, 0, r, "⚡ FALCON RISK CALCULATOR", text_color = #0c0a06, bgcolor = accent, text_size = szMap, text_halign = text.align_center)
+    table.cell(t, 1, r, "", bgcolor = accent)
+    table.merge_cells(t, 0, r, 1, r)
+    r += 1
+    table.cell(t, 0, r, "Instrument", text_color = sub, text_size = szMap, text_halign = text.align_left)
+    table.cell(t, 1, r, syminfo.ticker + "  ·  " + f_money(pv) + "/pt", text_color = txt, text_size = szMap, text_halign = text.align_right)
+    r += 1
+    table.cell(t, 0, r, "Account", text_color = sub, text_size = szMap, text_halign = text.align_left)
+    table.cell(t, 1, r, f_money(acct), text_color = txt, text_size = szMap, text_halign = text.align_right)
+    r += 1
+    table.cell(t, 0, r, "Risk / trade", text_color = sub, text_size = szMap, text_halign = text.align_left)
+    table.cell(t, 1, r, str.tostring(riskPct, "#.#") + "%  =  " + f_money(riskDollars), text_color = txt, text_size = szMap, text_halign = text.align_right)
+    r += 1
+    table.cell(t, 0, r, "Stop distance", text_color = sub, text_size = szMap, text_halign = text.align_left)
+    table.cell(t, 1, r, f_pts(stopPoints) + " pts  (" + str.tostring(stopTicks, "#") + " ticks)", text_color = txt, text_size = szMap, text_halign = text.align_right)
+    r += 1
+    table.cell(t, 0, r, "▶ POSITION SIZE", text_color = #0c0a06, bgcolor = accent, text_size = szMap, text_halign = text.align_left)
+    table.cell(t, 1, r, str.tostring(contracts) + (contracts == 1 ? " contract" : " contracts"), text_color = #0c0a06, bgcolor = accent, text_size = szMap, text_halign = text.align_right)
+    r += 1
+    table.cell(t, 0, r, "Actual risk", text_color = sub, text_size = szMap, text_halign = text.align_left)
+    table.cell(t, 1, r, f_money(actualRisk), text_color = #ef5350, text_size = szMap, text_halign = text.align_right)
+    r += 1
+    table.cell(t, 0, r, "$ / point", text_color = sub, text_size = szMap, text_halign = text.align_left)
+    table.cell(t, 1, r, f_money(dollarPerPoint), text_color = txt, text_size = szMap, text_halign = text.align_right)
+    r += 1
+    table.cell(t, 0, r, "2R / 3R target", text_color = sub, text_size = szMap, text_halign = text.align_left)
+    table.cell(t, 1, r, "+" + f_money(r2) + " / +" + f_money(r3), text_color = #26a69a, text_size = szMap, text_halign = text.align_right)
+    r += 1
+    if showProp
+        table.cell(t, 0, r, "🛡️ PROP GUARDRAILS", text_color = accent, text_size = szMap, text_halign = text.align_left)
+        table.cell(t, 1, r, "")
+        table.merge_cells(t, 0, r, 1, r)
+        r += 1
+        table.cell(t, 0, r, "Daily-loss budget", text_color = sub, text_size = szMap, text_halign = text.align_left)
+        table.cell(t, 1, r, f_money(maxDaily) + "  →  " + str.tostring(tradesToDaily) + " losers", text_color = txt, text_size = szMap, text_halign = text.align_right)
+        r += 1
+        table.cell(t, 0, r, "Trailing drawdown", text_color = sub, text_size = szMap, text_halign = text.align_left)
+        table.cell(t, 1, r, f_money(trailDD) + "  →  " + str.tostring(tradesToDD) + " losers", text_color = txt, text_size = szMap, text_halign = text.align_right)
+        r += 1
+    table.cell(t, 0, r, "Auto-sizing built in → Falcon AI", text_color = accent, text_size = size.small, text_halign = text.align_center)
+    table.cell(t, 1, r, "")
+    table.merge_cells(t, 0, r, 1, r)

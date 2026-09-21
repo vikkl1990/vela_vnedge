@@ -1,0 +1,1039 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// Stryk: Truth Line v1 — participation-weighted adaptive line + true-delta verdict
+// Defaults tuned for: 5-min chart · 60-min delta timeframe · CME index futures.
+//
+// DELTA SOURCE (footprint-first, disclosed fallback):
+//   • request.footprint() supplies real bid/ask buy & sell volume per chart bar
+//     on plans where TradingView provides it. Where it returns na (plan, symbol,
+//     or historical bars without footprint data) the script falls back to an
+//     ESTIMATE from lower-timeframe bar polarity. The box header shows which
+//     source is live: "ftp" or "est". Everything downstream is identical.
+//
+// WHAT THE LINE IS: a price follower whose follow-speed is "fuel" =
+//   bell(participation) × delta-agreement. Moves the crowd pays for are chased
+//   (line colours by direction); moves nobody pays for stall the line (neutral
+//   colour) and the price↔line gap is shaded toward the fade side.
+//   Participation is scored as a HUMP, not a ramp: very thin AND climactic
+//   volume both lower fuel — only the mid band counts as "paid".
+//
+// SIGNALS: FADE, CLIMAX, DIVERGE, LINE FLIP, BUY/SELL (regime-gated confluence).
+// VERDICT: 3-candle delta-vs-price memory on the delta timeframe →
+//   ABSORPTION ▲/▼ · BUYERS · SELLERS · CONSOLIDATE · MIXED.
+//
+// NON-REPAINTING NOTES: verdict, DIVERGE, LINE FLIP confirmation and every alert
+//   evaluate on completed bars / completed delta-TF candles only. The live
+//   verdict row and the provisional flip glyph update intrabar by design.
+// ─────────────────────────────────────────────────────────────────────────────
+indicator("Stryk: Truth Line", "Stryk:TL", overlay = true, max_labels_count = 500, max_bars_back = 300, dynamic_requests = true)
+
+// ── Groups (settings panel order) ────────────────────────────────────────────
+string G0 = "0 · Master Switches"
+string G1 = "1 · Delta Engine"
+string G2 = "2 · Participation"
+string G3 = "3 · Truth Line"
+string GC = "3b · Candle Paint"
+string G4 = "4 · Signals"
+string G5 = "5 · Verdict Engine"
+string G6 = "6 · Rolling VWAP"
+string G7 = "7 · Display Box"
+string G8 = "8 · Alerts"
+
+// ── 0 · Master switches ──────────────────────────────────────────────────────
+mLine    = input.bool(true, "Truth Line", group = G0, inline = "m1",
+     tooltip = "Master switch for the adaptive line itself. OFF hides the line and the gap shading but keeps the engine running for the box, verdict and signals.")
+mGap     = input.bool(true, "Gap shading", group = G0, inline = "m1",
+     tooltip = "Shades the price↔line gap when a move is unpaid: bear colour above the line (thin rally), bull colour below (thin dump). Needs Truth Line ON.")
+mSignals = input.bool(true, "Signals", group = G0, inline = "m2",
+     tooltip = "Master switch for every on-chart glyph (FADE, CLIMAX, DIVERGE, LINE FLIP, BUY/SELL). Individual signals toggle in section 4.")
+mVerdict = input.bool(true, "Verdict engine", group = G0, inline = "m2",
+     tooltip = "Master switch for the 3-candle delta memory and the verdict/regime read. OFF blanks the verdict rows and disables the regime-gated BUY/SELL signals.")
+mVwap    = input.bool(true, "Rolling VWAP", group = G0, inline = "m3",
+     tooltip = "Master switch for the rolling volume-weighted average price and its deviation bands (section 6).")
+mPartBg  = input.bool(true, "Participation tint", group = G0, inline = "m3",
+     tooltip = "Background tint by participation band (section 2): climax band and, optionally, the mid band.")
+mPaint   = input.bool(true, "Candle paint", group = G0, inline = "m5",
+     tooltip = "Master switch for delta/fuel-coloured candles (section 3b). Hide the chart's own candles (eye icon by the ticker) so only the painted set shows.")
+mBox     = input.bool(true, "Display box", group = G0, inline = "m4",
+     tooltip = "Master switch for the stats table (section 7).")
+mDesc    = input.bool(true, "Signal descriptions", group = G0, inline = "m6",
+     tooltip = "Master switch for the plain-English description attached to every signal glyph — what happened on that bar and what tends to follow. OFF removes all of them.")
+descMode = input.string("Hover tooltip", "", group = G0, inline = "m6",
+     options = ["Hover tooltip", "Static short", "Static full", "Hover + static short"],
+     tooltip = "Hover tooltip: the description appears when you hover the glyph (desktop) or tap-and-hold it (TradingView mobile) — keeps the chart clean. Static short: one extra line under the glyph, always visible. Static full: the whole description printed under the glyph — busiest, but readable on a phone without touching anything. Hover + static short: both.")
+mAlerts  = input.bool(true, "Alerts", group = G0, inline = "m4",
+     tooltip = "Master switch for alert() calls. Individual alert types toggle in section 8. Create ONE alert on this indicator with 'Any alert() function call' — every enabled event arrives through it with a JSON message.")
+
+// ── 1 · Delta engine ─────────────────────────────────────────────────────────
+deltaSrc = input.string("Auto (footprint → estimate)", "Delta source", group = G1,
+     options = ["Auto (footprint → estimate)", "Estimate only"],
+     tooltip = "Auto: uses request.footprint() bid/ask volume whenever TradingView supplies it for the bar, otherwise the polarity estimate. Estimate only: ignores footprint even if available (useful for comparing the two, or to match a plan without footprint access). Which source is live is shown in the box header: ftp / est. DATA NOTE: the footprint is built from TradingView's own tick feed — a broker data plan (e.g. Tradovate CME data) does NOT make it real-time. If the chart shows a 'Delayed' chip next to the symbol, every live delta value and alert is delayed by the same amount; TradingView's exchange real-time data package removes that.")
+fpTicks  = input.int(4, "Footprint row size (ticks)", minval = 1, group = G1,
+     tooltip = "Price height of each footprint row in ticks. Only affects the per-row breakdown (POC / value area inside the bar); bar delta and buy/sell totals are the same at any row size. 4 ticks = 1 point on ES/NQ.")
+htfTf    = input.timeframe("60", "Delta timeframe", group = G1,
+     tooltip = "The candle everything is measured on: delta accumulates per candle of this timeframe, the 3-candle memory is three of these, the average |Δ| is over N of these, and DIVERGE / verdict confirmations fire at their close. Must be ≥ the chart timeframe. 60 on a 5-min chart = the standard read; set to D for a daily memory, 15 for the last 45 minutes of flow.")
+autoRaiseTf = input.bool(true, "Auto-raise delta timeframe to chart", group = G1,
+     tooltip = "Keeps the script working when you jump the chart to a HIGHER timeframe than the delta timeframe. ON (default): the delta timeframe is lifted to the chart timeframe for that session with the SAME lookback N — flip a 5-min chart to 1-hour with a 60-min delta TF and the delta TF simply becomes 1-hour, N candles of it. Your saved setting is untouched; drop back down and it returns. The box header shows the timeframe actually in use with ↑ when a raise is active. OFF: strict behaviour — the script halts with an error telling you to fix the setting. Same rule as Stryk: ΔC.")
+lenN     = input.int(20, "Lookback N (avg Δ, VWAP window)", minval = 3, maxval = 200, group = G1,
+     tooltip = "Completed delta-TF candles in the average |Δ| that calibrates every verdict threshold, and the rolling VWAP window. 20 on a 60-min delta TF ≈ one full day + overnight. Lower reacts faster and whipsaws; higher turns the verdict into a multi-day regime filter.")
+estAlways = input.bool(true, "Always run the estimate path", group = G1,
+     tooltip = "ON: the lower-timeframe estimate is pulled on every bar so the est path is warm whenever footprint data is missing (safe default, costs one request slot and intrabar budget). OFF: the estimate is requested only on bars where footprint returns na (Pine v6 dynamic requests). Turn OFF once you have confirmed footprint coverage is ~100% in the box header.")
+useAutoLtf = input.bool(true, "Auto intrabar resolution (estimate path)", group = G1,
+     tooltip = "Only used when the estimate path is active. Picks the finest lower-timeframe resolution whose data budget still covers N candles × the history multiple. Same rule as Stryk: ΔC.")
+dataBudget = input.string("100K (Basic–Premium)", "Intrabar budget (your plan)", group = G1,
+     options = ["100K (Basic–Premium)", "125K (Expert)", "200K (Ultimate)"],
+     tooltip = "TradingView's cap on total lower-timeframe bars a script may pull, by plan. Only affects the estimate path.")
+histMult = input.float(3.0, "History coverage (× N candles)", minval = 1.0, maxval = 10.0, step = 0.5, group = G1,
+     tooltip = "How many multiples of N candles the estimate path must cover before accepting a resolution. Higher = coarser intrabars, more history.")
+manualLtf = input.timeframe("1", "Manual intrabar resolution", group = G1,
+     tooltip = "Used when auto is OFF. Must be below the chart timeframe. 1 = one-minute bars.")
+
+// Sessions are fixed internally (US index futures, New York time) and used ONLY to
+// rank participation against the same session's own history — no user settings.
+string sessTz = "America/New_York"
+string asiaSess = "1800-0300"
+string lonSess  = "0300-0930"
+string nySess   = "0930-1600"
+
+// ── 2 · Participation ────────────────────────────────────────────────────────
+partMethod = input.string("Percentile rank", "Participation method", group = G2,
+     options = ["Percentile rank", "Range (Stryk ΔC)"],
+     tooltip = "How the volume EMA is scored 0–100. Percentile rank = where the current EMA sits among the last [lookback] values (the method used in the design research). Range = position between the lookback high and low, identical to Stryk: ΔC's vol participation oscillator.")
+partEmaLen = input.int(8, "Volume EMA length", minval = 1, group = G2,
+     tooltip = "Smoothing of raw volume before scoring. 8 on a 5-min chart reacts within a couple of bars of a surge; 20 (Stryk: ΔC's value) is smoother but ~100 minutes of lag before a move registers as paid.")
+partFast   = input.bool(true, "Spike-aware (rank the bar too)", group = G2,
+     tooltip = "ON: participation = the HIGHER of the EMA's rank and the current bar's own volume rank, so the first big bar of a move counts immediately instead of waiting for the EMA to catch up. OFF: EMA rank only.")
+partScope  = input.string("Rolling (all hours)", "Participation baseline", group = G2, options = ["Per session", "Rolling (all hours)"],
+     tooltip = "Per session: participation is ranked only against bars from the same fixed session window (Asia 18:00–03:00, London 03:00–09:30, New York 09:30–16:00 NY time), so overnight volume is not permanently 'thin' and the cash open is not permanently 'climax'. Rolling: plain lookback across all hours, like Stryk: ΔC. Per session is the right setting for 23-hour futures.")
+partLookMode = input.string("Follow Lookback N", "Participation lookback", group = G2, options = ["Follow Lookback N", "Manual bars"],
+     tooltip = "Follow Lookback N (default): participation is ranked over the same rolling window as the delta memory — N candles of the delta timeframe, converted to chart bars (60-min × 23 on a 5-min chart = 276 bars). Change N or the delta TF and this follows. Manual bars: use the fixed bar count below.")
+partLookIn = input.int(100, "Manual lookback (bars)", minval = 10, maxval = 2000, group = G2,
+     tooltip = "Bars used to score the EMA. With Per-session baseline these are the last [lookback] bars of the SAME session, which can span several days; 100 on a 5-min chart ≈ one full NY session's worth of bars.")
+partThin   = input.int(45, "Thin band ceiling", minval = 5, maxval = 60, group = G2, inline = "pb",
+     tooltip = "Participation at or below this = THIN: nobody is paying for the move. The FADE signal only fires in this band.")
+partClimax = input.int(80, "Climax band floor", minval = 60, maxval = 99, group = G2, inline = "pb",
+     tooltip = "Participation at or above this = CLIMAX: the crowd arrived late. Fuel is reduced here, the CLIMAX warning can fire, and BUY/SELL are blocked. Between the two thresholds is the MID band where moves count as paid.")
+bgClimax   = input.bool(true, "Tint climax band", group = G2, inline = "bg",
+     tooltip = "Background tint whenever participation is in the climax band.")
+bgMid      = input.bool(false, "Tint mid band", group = G2, inline = "bg",
+     tooltip = "Lighter tint whenever participation is in the mid (paid) band. OFF by default — it covers a lot of chart.")
+bgTransp   = input.int(88, "Tint transparency", minval = 50, maxval = 98, group = G2,
+     tooltip = "Higher = fainter background tint.")
+colClimax  = input.color(#9c27b0, "Climax", group = G2, inline = "pc")
+colMidP    = input.color(#00bcd4, "Mid", group = G2, inline = "pc")
+colThin    = input.color(#ffd700, "Thin", group = G2, inline = "pc",
+     tooltip = "Band colours used by the box, the tint and the participation row.")
+
+// ── 3 · Truth Line ───────────────────────────────────────────────────────────
+bellPeak  = input.int(70, "Fuel peak (participation)", minval = 40, maxval = 90, group = G3,
+     tooltip = "Participation value where fuel is maximal. Fuel falls off on both sides of this (a bell), so very thin and climactic volume both slow the line.")
+bellWidth = input.int(30, "Fuel bell width", minval = 5, maxval = 50, group = G3,
+     tooltip = "How fast fuel decays BELOW the peak (above the peak fuel stays at 1 unless 'Climax reduces fuel' is on). 30 → fuel ≈ 0.5 at 35 points under the peak. Smaller = only a narrow participation band moves the line.")
+climaxCuts = input.bool(false, "Climax reduces fuel", group = G3,
+     tooltip = "OFF (default): a bar on climax-band volume is still a PAID bar — the line chases it and it colours by delta; climax is handled by the CLIMAX warning and by blocking BUY/SELL, not by stalling the line. ON: fuel decays inside the climax band by the rate below, so runaway-volume bars read as unpaid (this was the earlier behaviour and it stalled the line on the biggest moves).")
+climaxDecay = input.float(0.07, "Climax decay rate", minval = 0.0, maxval = 0.2, step = 0.01, group = G3,
+     tooltip = "Only when 'Climax reduces fuel' is ON: fuel × (1 − rate × (participation − climax floor)), floored at 0.15.")
+bellFloor = input.float(0.10, "Fuel floor", minval = 0.0, maxval = 0.5, step = 0.05, group = G3,
+     tooltip = "Minimum fuel. Keeps the line creeping toward price even when unpaid so it never freezes for a whole session (the slow-drift exception). Higher floor = less gap on overnight drift, but weaker fade signals.")
+useAgree  = input.bool(true, "Delta agreement in fuel (footprint only)", group = G3,
+     tooltip = "Multiplies fuel by how strongly true delta agrees with the bar's direction (|Δ| vs the recent average, sign must match; disagreeing bars get the penalty below). Automatically off on the estimate path, where polarity delta cannot disagree with price.")
+agreePen  = input.float(0.35, "Disagreement penalty", minval = 0.05, maxval = 1.0, step = 0.05, group = G3,
+     tooltip = "Fuel multiplier when true delta points against the bar's direction. 0.35 = the line nearly stalls on bars where price moved one way and aggression went the other.")
+kMin      = input.float(0.03, "Follow speed — min", minval = 0.005, maxval = 0.2, step = 0.005, group = G3, inline = "k",
+     tooltip = "Fraction of the price↔line distance closed per bar at zero fuel.")
+kMax      = input.float(0.45, "max", minval = 0.1, maxval = 1.0, step = 0.05, group = G3, inline = "k",
+     tooltip = "Fraction closed per bar at full fuel. 0.45 = a fully paid move is caught in ~2 bars.")
+lagComp   = input.float(0.5, "Lag compensation (0 = off)", minval = 0.0, maxval = 1.0, step = 0.05, group = G3,
+     tooltip = "Zero-lag term: on top of the follow step, the line is pushed by [this] × fuel × the bar's price change (the ZLEMA idea, fuel-weighted). At full fuel and 0.5 the line sits on price within a bar of a paid move; it is clipped so it never overshoots the close. Unpaid bars are barely affected, so the gap still opens on thin moves. 0 = pure follower (more lag).")
+paidTh    = input.float(0.30, "Paid threshold (fuel)", minval = 0.05, maxval = 0.9, step = 0.05, group = G3,
+     tooltip = "Fuel at or above this = the bar is PAID: the line colours by direction and the bar can count toward a LINE FLIP. Below = unpaid: line neutral, gap shading on.")
+lineWidth = input.int(3, "Line width", minval = 1, maxval = 5, group = G3)
+colUp     = input.color(#4ade80, "Paid up", group = G3, inline = "lc")
+colDn     = input.color(#e63030, "Paid down", group = G3, inline = "lc")
+colStall  = input.color(#3b82f6, "Unpaid", group = G3, inline = "lc",
+     tooltip = "Line colours: paid move up / paid move down / unpaid (stalled).")
+colGapUp  = input.color(#4ade80, "Gap: thin dump", group = G3, inline = "gcol")
+colGapDn  = input.color(#e63030, "thin rally", group = G3, inline = "gcol",
+     tooltip = "Shade colours for the price↔line gap on unpaid bars: price BELOW the line (thin dump, buy-side read) / price ABOVE the line (thin rally, sell-side read). Independent of the line colours.")
+gapTransp = input.int(80, "Gap shade transparency", minval = 40, maxval = 98, group = G3,
+     tooltip = "Transparency of the price↔line shading on unpaid bars.")
+gapMinAtr = input.float(0.25, "Gap shade minimum (× ATR)", minval = 0.0, step = 0.05, group = G3,
+     tooltip = "Gaps smaller than this many ATRs are not shaded — keeps the chart clean on ordinary noise.")
+atrLen    = input.int(14, "ATR length", minval = 1, group = G3,
+     tooltip = "ATR used for every distance in this script: gap thresholds, flip hysteresis, glyph offsets.")
+
+// ── 3b · Candle paint ────────────────────────────────────────────────────────
+paintOn_i = input.bool(true, "Paint candles", group = GC,
+     tooltip = "Colours every candle (body, wick, border). Hide the chart's own candles so only the painted set shows.")
+paintMode = input.string("Fuel × Δ (Truth Line)", "Paint mode", group = GC,
+     options = ["Fuel × Δ (Truth Line)", "Δ size (Stryk ΔC)", "Δ % imbalance (Stryk ΔC)", "Participation band"],
+     tooltip = "Fuel × Δ (default, fastest): each CHART bar is coloured by its own delta sign with intensity = fuel (participation bell × delta agreement). A paid bar glows bull/bear on its first ticks; an unpaid bar fades to neutral. This is the same quantity that moves the line, so colour and line always agree — the earliest visible read of whether a move is real. Δ size / Δ % = Stryk: ΔC's paint, driven by the LIVE delta-TF candle (slower by design — the candle accumulates). Participation band = thin / mid / climax colours only, the on-chart substitute for a participation strip.")
+colBull   = input.color(#4ade80, "Bull", group = GC, inline = "pc")
+colNeutP  = input.color(#3b82f6, "Neutral", group = GC, inline = "pc")
+colBearP  = input.color(#e63030, "Bear", group = GC, inline = "pc",
+     tooltip = "Paint palette. Bull = paid buying / positive delta, Neutral = unpaid or balanced, Bear = paid selling / negative delta. Intensity fades through Neutral.")
+paintSens = input.float(1.5, "Paint sensitivity", minval = 0.5, maxval = 5.0, step = 0.25, group = GC,
+     tooltip = "ΔC modes only: how big delta must be to reach FULL colour — Δ size: full at sensitivity × average |Δ|; Δ %: full at (15 ÷ sensitivity)% imbalance. Fuel mode ignores this (fuel is already 0–1).")
+paintCurve = input.string("Boosted", "Paint curve", group = GC, options = ["Linear", "Boosted"],
+     tooltip = "Linear = intensity proportional. Boosted = square-root response: mid values render noticeably more colourful while extremes still cap at full — the tested-optimal setting on ΔC and the default here.")
+paintFloor = input.float(0.0, "Minimum colour (0 = off)", minval = 0.0, maxval = 0.8, step = 0.05, group = GC,
+     tooltip = "Snap-to-colour floor once a bar clears a small dead zone. Tested OFF on ΔC: the Boosted curve alone showed real flips within ~2 bars and a floor tripled false wrong-side flashes.")
+paintUnpaid = input.bool(true, "Unpaid bars fade to neutral", group = GC,
+     tooltip = "Fuel mode only. ON: a bar whose fuel is below the paid threshold is pulled toward Neutral regardless of its delta — the bar is telling you the move was not paid for. OFF: intensity is fuel alone with no extra pull.")
+
+// ── 4 · Signals ──────────────────────────────────────────────────────────────
+sigTiming  = input.string("Bar close", "Signal timing", group = G4, options = ["Bar close", "Intrabar (provisional)"],
+     tooltip = "Bar close: every signal and alert evaluates once the chart bar is confirmed — non-repainting, one chart bar of lag. Intrabar: signals print and alert as soon as their condition is true on the forming bar; a glyph printed intrabar stays even if the bar later closes without the condition. Faster, and disclosed as repainting.")
+flipConfirm = input.string("Instant (conviction)", "LINE FLIP confirmation", group = G4,
+     options = ["Instant (conviction)", "Hold N bars", "Delta-TF close"],
+     tooltip = "Instant: the flip is confirmed on the crossing bar itself when the crossing bar has conviction — |Δ| ≥ [multiple] × the average bar |Δ| AND participation in the MID band; crosses without conviction fall back to Hold N bars. Hold N bars: confirmed once price has stayed beyond the line for N chart bars. Delta-TF close: confirmed only if price is still through the line at the next delta-timeframe candle close (slowest, fewest false flips).")
+flipHold   = input.int(2, "hold N bars", minval = 1, maxval = 20, group = G4, inline = "fc")
+flipConv   = input.float(1.0, "conviction × avg bar |Δ|", minval = 0.25, step = 0.25, group = G4, inline = "fc",
+     tooltip = "N for Hold-N mode, and the delta multiple that grants an instant confirmation.")
+showFade   = input.bool(true, "FADE △▽", group = G4, inline = "s1",
+     tooltip = "Unpaid gap ≥ [threshold] ATR with participation in the THIN band. Price ran, nobody paid. △ below the line (thin dump), ▽ above (thin rally). One print per stretch episode; the episode resets when the gap closes to under half the threshold.")
+fadeAtr    = input.float(1.5, "gap ≥ × ATR", minval = 0.3, step = 0.1, group = G4, inline = "s1")
+showClimax = input.bool(true, "CLIMAX ⊗", group = G4, inline = "s2",
+     tooltip = "Participation in the CLIMAX band while the line is paid in the bar's direction and the gap is still widening — the crowd arrived late. A warning, not an entry. One print per climax episode.")
+showDiv    = input.bool(true, "DIVERGE ◇", group = G4, inline = "s2",
+     tooltip = "On delta-TF candle close: price moved beyond the flat tolerance but |Δ| was small versus the average. Effort without aggression — absorption family, bias against the candle's direction. Footprint path only (polarity delta cannot diverge from price).")
+showFlip   = input.bool(true, "LINE FLIP ▲▼", group = G4, inline = "s3",
+     tooltip = "Price closes through the line by ≥ [hysteresis] ATR on a PAID bar whose delta agrees with the new direction. Prints a provisional glyph immediately; it solidifies (and alerts) if price is still on that side at the next delta-TF candle close, otherwise the glyph is removed. Unpaid crosses are pullbacks — no signal.")
+flipHyst   = input.float(0.5, "hysteresis × ATR", minval = 0.0, step = 0.1, group = G4, inline = "s3")
+showTrade  = input.bool(true, "BUY / SELL ●", group = G4, inline = "s4",
+     tooltip = "Regime-gated confluence, fires only at a CONFIRMED line flip: verdict regime allows that side (BUYERS or ABSORPTION ▲ for buys; SELLERS or ABSORPTION ▼ for sells) AND participation was in the MID band at the flip bar AND price is on the agreeing side of the rolling VWAP. Never fires under MIXED or CONSOLIDATE. Few per week by design.")
+tradeVwap  = input.bool(true, "require VWAP side", group = G4, inline = "s4",
+     tooltip = "BUY needs close above the rolling VWAP, SELL below. OFF removes that condition.")
+glyphSize  = input.string("Normal", "Glyph size", group = G4, options = ["Tiny", "Small", "Normal", "Large", "Huge"], inline = "gs")
+tradeSize  = input.string("Large", "BUY/SELL size", group = G4, options = ["Tiny", "Small", "Normal", "Large", "Huge"], inline = "gs",
+     tooltip = "Glyph size for FADE / CLIMAX / DIVERGE / LINE FLIP, and a separate size for the BUY / SELL confluence glyphs so the rare ones stand out.")
+glyphOff   = input.float(0.8, "Glyph ATR offset", minval = 0.0, step = 0.1, group = G4,
+     tooltip = "Distance of glyphs from the bar high/low in ATRs.")
+glyphTxt   = input.bool(true, "Label glyphs with names", group = G4,
+     tooltip = "Adds the signal name under/over the glyph (FADE, CLIMAX, …). OFF prints the glyph alone.")
+colFade    = input.color(#4ade80, "FADE", group = G4, inline = "gc")
+colClimaxG = input.color(#9c27b0, "CLIMAX", group = G4, inline = "gc")
+colDivG    = input.color(#ffd700, "DIVERGE", group = G4, inline = "gc")
+colFlipG   = input.color(#ff6a00, "FLIP", group = G4, inline = "gc2")
+colTradeG  = input.color(#e8e8ee, "BUY/SELL", group = G4, inline = "gc2")
+provTransp = input.int(45, "Provisional flip transparency", minval = 0, maxval = 90, group = G4,
+     tooltip = "How faint an unconfirmed LINE FLIP glyph prints. It becomes fully opaque on confirmation.")
+
+// ── 5 · Verdict engine ───────────────────────────────────────────────────────
+absorbMult = input.float(1.5, "Absorption Δ threshold (× avg |block Δ|)", minval = 0.5, step = 0.1, group = G5,
+     tooltip = "The memory is three BLOCKS of N delta-TF candles (N = Lookback in Delta Engine): this block (live), the previous block, the one before. With 60-min × 23 each block is ~a trading day. ABSORPTION fires when THIS block's net delta is at least this many times the average |block Δ| while this block's price change is flat or against it — this session's aggression that produced no result.")
+meanMult   = input.float(0.75, "Meaningful Δ (× avg |block Δ|)", minval = 0.1, step = 0.05, group = G5,
+     tooltip = "Each of the three blocks must have |Δ| at least this many times the average |block Δ| to count as BUYERS / SELLERS.")
+smallMult  = input.float(0.35, "Small Δ (× avg)", minval = 0.05, step = 0.05, group = G5,
+     tooltip = "All three blocks at or under this many times the average |block Δ| = CONSOLIDATE. Also the DIVERGE cutoff at candle level (× avg candle |Δ|).")
+flatTicks  = input.int(24, "Flat tolerance (ticks)", minval = 0, group = G5,
+     tooltip = "Price change within ± this many ticks counts as flat. Used at candle level for DIVERGE (24 ticks = 6 points on NQ suits 60-min candles) and scaled by √N for the block-level verdict, so a 23-candle block gets a proportionally wider flat zone automatically.")
+regimeSrc  = input.string("Live (sticky)", "Regime source for BUY / SELL", group = G5, options = ["Live (sticky)", "Confirmed at delta-TF close"],
+     tooltip = "Live (sticky): the regime comes from the live verdict (forming candle included) once it has held for [sticky] consecutive bars — no wait for the candle to close. Confirmed: regime only changes at delta-timeframe candle close (slower, cleaner).")
+regimeStick = input.int(2, "sticky bars", minval = 1, maxval = 20, group = G5,
+     tooltip = "Consecutive chart bars a new live verdict must hold before it becomes the working regime. Stops threshold flicker.")
+absorbInv  = input.bool(false, "Invert absorption read", group = G5,
+     tooltip = "OFF (standard): heavy net SELLING that price will not honour = ▲ (passive bid absorbing, bullish); heavy net BUYING that cannot lift price = ▼. ON flips the interpretation if your own logging says the opposite works on your market.")
+colVerdBuy = input.color(#4ade80, "Buyers", group = G5, inline = "vc")
+colVerdSel = input.color(#e63030, "Sellers", group = G5, inline = "vc")
+colVerdAbs = input.color(#ff6a00, "Absorption", group = G5, inline = "vc")
+colVerdCon = input.color(#3b82f6, "Consolidate", group = G5, inline = "vc2")
+colVerdMix = input.color(#8b8b98, "Mixed", group = G5, inline = "vc2",
+     tooltip = "Verdict colours in the box.")
+
+// ── 6 · Rolling VWAP ─────────────────────────────────────────────────────────
+vwapCol   = input.color(#35d0e0, "VWAP colour", group = G6, inline = "vw")
+vwapWidth = input.int(2, "width", minval = 1, maxval = 5, group = G6, inline = "vw",
+     tooltip = "Rolling VWAP over the last N delta-TF candles (same N as section 1), computed from chart bars. Not anchored to a session — it slides.")
+showB1  = input.bool(true, "±1σ", group = G6, inline = "b")
+showB2  = input.bool(true, "±2σ", group = G6, inline = "b")
+showB3  = input.bool(false, "±3σ", group = G6, inline = "b",
+     tooltip = "Volume-weighted standard-deviation bands around the rolling VWAP.")
+bandCol  = input.color(color.new(#35d0e0, 65), "±1σ", group = G6, inline = "bc")
+bandCol2 = input.color(color.new(#35d0e0, 75), "±2σ", group = G6, inline = "bc")
+bandCol3 = input.color(color.new(#35d0e0, 85), "±3σ", group = G6, inline = "bc",
+     tooltip = "One colour per band pair (transparency in the picker).")
+bandWidth = input.int(1, "Band width", minval = 1, maxval = 5, group = G6)
+
+// ── 7 · Display box ──────────────────────────────────────────────────────────
+tPos    = input.string("Top Right", "Position", group = G7,
+     options = ["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"])
+tLayout = input.string("Vertical", "Layout", group = G7, options = ["Vertical", "Mobile"],
+     tooltip = "Vertical = full desktop labels in one tall column. Mobile = the SAME rows you have toggled on, with abbreviated labels forced to Tiny size and wrapped into a compact grid (rows per column below) — like Stryk: ΔC. Expand or shrink the phone readout purely by toggling rows.")
+tWrap   = input.int(8, "Mobile: rows per column (0 = off)", minval = 0, maxval = 30, group = G7,
+     tooltip = "MOBILE LAYOUT ONLY: once a column fills with this many rows, the next rows start a new column to the right, so a fully loaded phone box stays a compact grid instead of a strip down the screen. 0 = single column. Vertical always renders one tall column.")
+tSizeIn = input.string("Small", "Text size", group = G7, options = ["Tiny", "Small", "Normal", "Large"],
+     tooltip = "Mobile layout forces Tiny regardless.")
+showBarM  = input.bool(true, "Δ this bar", group = G7, inline = "r1")
+showHtfM  = input.bool(true, "Δ delta-TF + buy/sell", group = G7, inline = "r1")
+showPartM = input.bool(true, "Participation", group = G7, inline = "r2")
+showLineM = input.bool(true, "Line state + gap", group = G7, inline = "r2")
+showSigM  = input.bool(true, "Last signal", group = G7, inline = "r3")
+showMemM  = input.bool(true, "3-candle memory", group = G7, inline = "r3")
+showVerdM = input.bool(true, "Verdict + regime", group = G7, inline = "r4",
+     tooltip = "Rows shown in the Vertical layout. Mobile shows a fixed compact set.")
+tblBgCol     = input.color(color.new(#0a0a0e, 12), "Background", group = G7, inline = "tc1")
+tblHeadCol   = input.color(#16161d, "Header", group = G7, inline = "tc1")
+tblBorderCol = input.color(#2a2a33, "Border", group = G7, inline = "tc2")
+tblLabelCol  = input.color(#8b8b98, "Labels", group = G7, inline = "tc2")
+tblHeadTxt   = input.color(#ffffff, "Header text", group = G7, inline = "tc3")
+tblDimCol    = input.color(#c8c8d2, "Neutral values", group = G7, inline = "tc3",
+     tooltip = "Header text colour and the colour of neutral / informational values. Positive and negative values use the paint palette Bull / Bear colours; verdict rows use section 5 colours.")
+tblFrameW    = input.int(1, "Border width", minval = 0, maxval = 4, group = G7,
+     tooltip = "Cell border width. 0 = borderless.")
+
+// ── 8 · Alerts ───────────────────────────────────────────────────────────────
+alFade   = input.bool(true, "FADE", group = G8, inline = "a1")
+alClimax = input.bool(true, "CLIMAX", group = G8, inline = "a1")
+alDiv    = input.bool(true, "DIVERGE", group = G8, inline = "a1")
+alFlip   = input.bool(true, "LINE FLIP (confirmed)", group = G8, inline = "a2")
+alTrade  = input.bool(true, "BUY / SELL", group = G8, inline = "a2")
+alVerd   = input.bool(true, "Verdict changed", group = G8, inline = "a3")
+alAbs    = input.bool(true, "ABSORPTION set", group = G8, inline = "a3")
+alGapCl  = input.bool(false, "Gap closed", group = G8, inline = "a3",
+     tooltip = "Every alert sends one JSON object: {\"src\":\"stryk_tl\",\"sig\":…,\"dir\":…,\"verdict\":…,\"band\":…,\"gap_atr\":…,\"delta_src\":…,\"price\":…}. Fires on bar close only. 'Gap closed' = price returned to the line after a FADE (useful for logging outcomes; OFF by default to keep the feed quiet).")
+
+// ── Effective delta timeframe (auto-raise) / validation — same rule as Stryk: ΔC ──
+// If the delta TF would sit BELOW the chart TF it is lifted to the chart TF for the
+// session, keeping the same lookback N. Stays a simple string (ternary of two simple
+// strings). With auto-raise OFF the original strict behaviour applies.
+string dTf = autoRaiseTf and timeframe.in_seconds(htfTf) < timeframe.in_seconds(timeframe.period) ? timeframe.period : htfTf
+bool tfRaised = timeframe.in_seconds(dTf) != timeframe.in_seconds(htfTf)
+int lookBars = math.min(2000, math.max(10, math.round(lenN * timeframe.in_seconds(dTf) / timeframe.in_seconds(timeframe.period))))
+int partLook = partLookMode == "Manual bars" ? partLookIn : lookBars
+if barstate.isfirst and not autoRaiseTf and timeframe.in_seconds(htfTf) < timeframe.in_seconds(timeframe.period)
+    runtime.error("Stryk: TL — delta timeframe must be equal to or higher than the chart timeframe. Turn on 'Auto-raise delta timeframe to chart' in Delta Engine to have this handled automatically.")
+
+// ── Helpers (global scope, declared before use) ──────────────────────────────
+fmtD(float x) =>
+    na(x) ? "—" : (x > 0 ? "+" : "") + str.tostring(x, format.volume)
+fmtP(float x) =>
+    na(x) ? "—" : str.tostring(x, format.mintick)
+fmtPx(float x) =>
+    na(x) ? "—" : (x > 0 ? "+" : "") + str.tostring(x, format.mintick)
+szOf(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.small : s == "Normal" ? size.normal : s == "Large" ? size.large : size.huge
+posOf(string s) =>
+    s == "Top Left" ? position.top_left : s == "Top Center" ? position.top_center :
+     s == "Top Right" ? position.top_right : s == "Middle Left" ? position.middle_left :
+     s == "Middle Center" ? position.middle_center : s == "Middle Right" ? position.middle_right :
+     s == "Bottom Left" ? position.bottom_left : s == "Bottom Center" ? position.bottom_center :
+     position.bottom_right
+
+// ── Estimate path: intrabar resolution (same rule as Stryk: ΔC) ─────────────
+int ibBudget = dataBudget == "200K (Ultimate)" ? 200000 : dataBudget == "125K (Expert)" ? 125000 : 100000
+float needSec = math.max(lenN * timeframe.in_seconds(dTf) * histMult, 2.0 * 86400)
+int chartSec = timeframe.in_seconds(timeframe.period)
+
+ltfAutoSec() =>
+    array<int> lad = array.from(1, 5, 10, 15, 30, 60, 300, 900)
+    int best = -1
+    for s in lad
+        if s < chartSec and best == -1 and ibBudget * s >= needSec
+            best := s
+    if best == -1
+        for s in lad
+            if s < chartSec
+                best := s
+    best
+
+tfStrOf(int s) =>
+    s == 1 ? "1S" : s == 5 ? "5S" : s == 10 ? "10S" : s == 15 ? "15S" : s == 30 ? "30S" : s == 60 ? "1" : s == 300 ? "5" : "15"
+
+int autoSec = ltfAutoSec()
+string ltf = useAutoLtf ? (autoSec > 0 ? tfStrOf(autoSec) : "1") : manualLtf
+
+signedVol() =>
+    float v = nz(volume)
+    float out = 0.0
+    if close > open
+        out := v
+    else if close < open
+        out := -v
+    else if close > close[1]
+        out := v
+    else if close < close[1]
+        out := -v
+    out
+
+// footprint first (unconditional); the estimate request is optionally gated by it (dynamic request)
+footprint fp = request.footprint(fpTicks, 70, 300)
+bool needEst = estAlways or deltaSrc == "Estimate only" or na(fp)
+array<float> ivS = needEst ? request.security_lower_tf(syminfo.tickerid, ltf, signedVol()) : array.new_float()
+
+// ── Per-bar delta (footprint-first, estimate fallback) ───────────────────────
+bool fpOk = deltaSrc != "Estimate only" and not na(fp)
+float fpCov = ta.sma(fpOk ? 1.0 : 0.0, 100) * 100          // % of the last 100 bars with true delta
+float barBuy  = 0.0
+float barSell = 0.0
+if fpOk
+    barBuy  := nz(fp.buy_volume())
+    barSell := nz(fp.sell_volume())
+else
+    int nIB = array.size(ivS)
+    if nIB > 0
+        for i = 0 to nIB - 1
+            float sv = nz(array.get(ivS, i))
+            if sv > 0
+                barBuy += sv
+            else
+                barSell -= sv
+    else
+        float v0 = nz(volume)
+        barBuy  := close > open ? v0 : 0.0
+        barSell := close < open ? v0 : 0.0
+float barDelta = barBuy - barSell
+bool haveLtf = array.size(ivS) > 0
+// source of this bar's delta: 2 = footprint, 1 = intrabar estimate, 0 = whole-bar estimate
+int barSrc = fpOk ? 2 : haveLtf ? 1 : 0
+
+float atrV = ta.atr(atrLen)
+float tol  = flatTicks * syminfo.mintick
+
+// ── Delta-TF candle state + 3-candle memory ──────────────────────────────────
+var float liveD    = 0.0
+var float liveBuy  = 0.0
+var float liveSell = 0.0
+var float htfOpen  = na
+// completed-candle history: kept for HIST_BLOCKS × N candles so the memory can be
+// built as three N-candle BLOCKS (the "session" = your lookback window) and the
+// block-level average |Δ| that calibrates the verdict has enough blocks behind it.
+int HIST_BLOCKS = 8
+var array<float> deltaHist = array.new_float()
+var array<float> pxHist    = array.new_float()        // open→close change per candle
+var array<float> oHist     = array.new_float()        // candle open
+var array<float> cHist     = array.new_float()        // candle close
+var array<int>   srcHist   = array.new_int()          // per completed candle: 2 ftp / 1 intrabar est / 0 bar est
+var int liveFpBars = 0
+var int liveBars   = 0
+int closedSrc = na
+bool htfRoll = timeframe.change(dTf)
+bool candleClosed = false                     // true on the first bar of a new candle
+float closedD  = na                           // the candle that just completed
+float closedPx = na
+
+if htfRoll
+    if not na(htfOpen)
+        closedD  := liveD
+        closedPx := close[1] - htfOpen
+        closedSrc := liveFpBars * 2 >= liveBars ? 2 : (haveLtf ? 1 : 0)
+        array.push(deltaHist, closedD)
+        array.push(pxHist, closedPx)
+        array.push(oHist, htfOpen)
+        array.push(cHist, close[1])
+        array.push(srcHist, closedSrc)
+        if array.size(deltaHist) > lenN * HIST_BLOCKS
+            array.shift(deltaHist)
+            array.shift(pxHist)
+            array.shift(oHist)
+            array.shift(cHist)
+            array.shift(srcHist)
+        candleClosed := true
+    liveD := 0.0
+    liveBuy := 0.0
+    liveSell := 0.0
+    liveFpBars := 0
+    liveBars := 0
+    htfOpen := open
+liveD    += nz(barDelta)
+liveBars += 1
+if fpOk
+    liveFpBars += 1
+liveBuy  += nz(barBuy)
+liveSell += nz(barSell)
+float livePx = na(htfOpen) ? na : close - htfOpen
+
+// average |Δ| over completed candles that share the CURRENT candle's delta source.
+// Footprint delta and polarity-estimate delta differ in magnitude, so blending them
+// would mis-calibrate every verdict threshold where footprint history starts.
+int liveSrc = liveFpBars * 2 >= liveBars ? 2 : (haveLtf ? 1 : 0)
+int hSize = array.size(deltaHist)
+// candle-level avg |Δ| over the last N completed candles of the current source
+// (feeds DIVERGE, paint scale, and the per-candle reads)
+float avgAbsD = na
+int nSame = 0
+if hSize >= 3
+    float acc = 0.0
+    int from = math.max(0, hSize - lenN)
+    for i = from to hSize - 1
+        if array.get(srcHist, i) == liveSrc
+            acc += math.abs(nz(array.get(deltaHist, i)))
+            nSame += 1
+    if nSame >= 3
+        avgAbsD := acc / nSame
+
+// ── N-candle BLOCKS = the memory "sessions" ──────────────────────────────────
+// Block 0 = the live window: the forming candle + the last N−1 completed candles.
+// Block k (k ≥ 1) = the N completed candles before block k−1. Each block reports
+// net Δ, price change (block open → block close), and majority delta source.
+blockOf(int k, bool live) =>
+    // live = true: block 0 is the forming candle + the last N−1 completed candles.
+    // live = false: block 0 is the last N completed candles (confirmed read).
+    float bd = na
+    float bpx = na
+    int bsrc = na
+    int e = live ? lenN - 1 : lenN                 // completed candles in block 0
+    int lo = hSize - e - k * lenN
+    int hi = k == 0 ? hSize - 1 : lo + lenN - 1
+    if lo >= 0 and hi >= lo and hi < hSize
+        float acc = 0.0
+        int fp = 0
+        int cnt = 0
+        for i = lo to hi
+            acc += nz(array.get(deltaHist, i))
+            fp += array.get(srcHist, i) == 2 ? 1 : 0
+            cnt += 1
+        if k == 0 and live
+            acc += liveD
+            fp += liveSrc == 2 ? 1 : 0
+            cnt += 1
+        bd := acc
+        bpx := (k == 0 and live ? close : array.get(cHist, hi)) - array.get(oHist, lo)
+        bsrc := fp * 2 >= cnt ? 2 : 1
+    else if k == 0 and live and lenN == 1
+        bd := liveD
+        bpx := livePx
+        bsrc := liveSrc
+    [bd, bpx, bsrc]
+
+[b0d, b0px, b0src] = blockOf(0, true)
+[b1d, b1px, b1src] = blockOf(1, true)
+[b2d, b2px, b2src] = blockOf(2, true)
+
+// block-level avg |Δ| over completed same-source blocks (calibrates the verdict)
+var float avgAbsBlk = na
+var int nBlk = 0
+if candleClosed or (na(avgAbsBlk) and hSize >= lenN and barstate.isconfirmed)
+    float accB = 0.0
+    int cntB = 0
+    if hSize >= lenN
+        for k = 0 to HIST_BLOCKS - 2
+            [kd, kpx, ksrc] = blockOf(k, false)
+            if not na(kd) and ksrc == (liveSrc == 2 ? 2 : 1)
+                accB += math.abs(kd)
+                cntB += 1
+    nBlk := cntB
+    if cntB >= 3
+        avgAbsBlk := accB / cntB
+    else if cntB >= 1 and not na(avgAbsD)
+        avgAbsBlk := avgAbsD * math.sqrt(lenN)      // provisional: scale the candle avg until 3 blocks exist
+    else
+        avgAbsBlk := na
+int liveBlkSrc = liveSrc == 2 ? 2 : 1
+bool memMixed = (not na(b1src) and b1src != liveBlkSrc) or (not na(b2src) and b2src != liveBlkSrc)
+float avgRef = avgAbsBlk                          // the calibration the verdict and memory rows use
+
+// magnitude blocks for the box: |Δ| relative to avg |block Δ|, one block per 0.5× (max 8)
+magOf(float d) =>
+    int nb = na(d) or na(avgRef) or avgRef == 0 ? 0 : math.min(8, math.round(math.abs(d) / avgRef * 2))
+    string out = ""
+    if nb > 0
+        for i = 1 to nb
+            out += "▮"
+    out
+
+// ── Sessions ─────────────────────────────────────────────────────────────────
+bool inAsia = not na(time(timeframe.period, asiaSess, sessTz))
+bool inLon  = not na(time(timeframe.period, lonSess, sessTz))
+bool inNy   = not na(time(timeframe.period, nySess, sessTz))
+string sessName = inNy ? "NY" : inLon ? "LON" : inAsia ? "ASIA" : "OFF"
+bool sessAllowed = true
+
+// ── Participation (0–100) and band ───────────────────────────────────────────
+float volEma = ta.ema(nz(volume), partEmaLen)
+// rolling (all-hours) scoring — computed unconditionally
+float prank  = ta.percentrank(volEma, partLook)
+float volHi  = ta.highest(volEma, partLook)
+float volLo  = ta.lowest(volEma, partLook)
+float prange = volHi > volLo ? (volEma - volLo) / (volHi - volLo) * 100 : 50.0
+// per-session scoring — one sample buffer per session, ranked within its own history
+var array<float> bufAsia = array.new_float()
+var array<float> bufLon  = array.new_float()
+var array<float> bufNy   = array.new_float()
+var array<float> bufOff  = array.new_float()
+sessRank(array<float> buf, float x, bool rangeMode) =>
+    float r = 50.0
+    int n = array.size(buf)
+    if n >= 10
+        if rangeMode
+            float hi = array.max(buf)
+            float lo = array.min(buf)
+            r := hi > lo ? (x - lo) / (hi - lo) * 100 : 50.0
+        else
+            int below = 0
+            for v in buf
+                if v < x
+                    below += 1
+            r := below / n * 100
+    r
+array<float> curBuf = inNy ? bufNy : inLon ? bufLon : inAsia ? bufAsia : bufOff
+if barstate.isconfirmed
+    array.push(curBuf, volEma)
+    if array.size(curBuf) > partLook
+        array.shift(curBuf)
+float psess = sessRank(curBuf, volEma, partMethod != "Percentile rank")
+float pbarS = sessRank(curBuf, nz(volume), partMethod != "Percentile rank")     // this bar's raw volume vs the same history
+float prankBar = ta.percentrank(nz(volume), partLook)
+float pbarR = nz(prankBar, 50.0)
+float partSlow = partScope == "Per session" ? psess : partMethod == "Percentile rank" ? nz(prank, 50.0) : prange
+float partBar  = partScope == "Per session" ? pbarS : pbarR
+float part  = partFast ? math.max(partSlow, partBar) : partSlow
+string band  = part <= partThin ? "THIN" : part >= partClimax ? "CLIMAX" : "MID"
+color partCol = band == "THIN" ? colThin : band == "CLIMAX" ? colClimax : colMidP
+
+// ── Fuel: bell(participation) × delta agreement ──────────────────────────────
+float bell = part >= bellPeak ? 1.0 : math.exp(-math.pow(part - bellPeak, 2) / (2.0 * bellWidth * bellWidth))
+float avgBarAbs = ta.sma(math.abs(barDelta), 240)
+float mv = close - close[1]
+float mvBar = close - open                     // the bar's own direction, for delta agreement
+float agree = 1.0
+if useAgree and fpOk and avgBarAbs > 0
+    bool sameSide = (barDelta > 0 and mvBar > 0) or (barDelta < 0 and mvBar < 0) or mvBar == 0
+    float mag = math.min(1.0, math.abs(barDelta) / avgBarAbs)
+    agree := sameSide ? 0.5 + 0.5 * mag : agreePen
+float climaxF = climaxCuts and part > partClimax ? math.max(0.15, 1.0 - climaxDecay * (part - partClimax)) : 1.0
+float fuel = math.max(bellFloor, bell * climaxF * agree)
+bool paid  = fuel >= paidTh
+
+// ── The line ─────────────────────────────────────────────────────────────────
+var float tl = na
+if na(tl)
+    tl := close
+float kk = kMin + (kMax - kMin) * math.pow(fuel, 1.6)
+float step = (close - tl) * kk + lagComp * fuel * mv
+tl := tl + step
+// never overshoot the close on the compensation term
+if (mv > 0 and tl > close and tl[1] < close) or (mv < 0 and tl < close and tl[1] > close)
+    tl := close
+float gap = close - tl
+float gapAtr = atrV > 0 ? gap / atrV : 0.0
+bool lineUp = tl > tl[1]
+bool lineDn = tl < tl[1]
+color lineCol = paid and lineUp ? colUp : paid and lineDn ? colDn : colStall
+string lineState = paid and lineUp ? "UP" : paid and lineDn ? "DOWN" : "STALL"
+
+// ── Verdict (live) and confirmed verdict (at candle close) ──────────────────
+verdictOf(float a, float b, float c, float pa, float pb, float pc, float avg) =>
+    string v = "MIXED"
+    if not na(a) and not na(b) and not na(c) and not na(avg) and avg > 0
+        float net = a + b + c
+        float npx = pa + pb + pc
+        // absorption is judged on the CURRENT block (c / pc): this session's net
+        // aggression against this session's price result
+        float tolB = tol * math.sqrt(lenN)          // block-level flat zone
+        bool absUp = c <= -absorbMult * avg and pc >= -tolB
+        bool absDn = c >=  absorbMult * avg and pc <=  tolB
+        if absorbInv
+            bool t = absUp
+            absUp := absDn
+            absDn := t
+        if absUp
+            v := "ABSORPTION ▲"
+        else if absDn
+            v := "ABSORPTION ▼"
+        else if a > meanMult * avg and b > meanMult * avg and c > meanMult * avg and npx > tolB
+            v := "BUYERS"
+        else if a < -meanMult * avg and b < -meanMult * avg and c < -meanMult * avg and npx < -tolB
+            v := "SELLERS"
+        else if math.abs(a) <= smallMult * avg and math.abs(b) <= smallMult * avg and math.abs(c) <= smallMult * avg
+            v := "CONSOLIDATE"
+    v
+
+string verdLive = mVerdict ? verdictOf(b2d, b1d, b0d, b2px, b1px, b0px, avgRef) : "—"
+var string verdConf = "MIXED"
+bool verdChanged = false
+if candleClosed and mVerdict
+    // confirmed read = the blocks as they stand at this candle close, live candle excluded
+    [c0d, c0px, c0src] = blockOf(0, false)
+    [c1d, c1px, c1src] = blockOf(1, false)
+    [c2d, c2px, c2src] = blockOf(2, false)
+    if not na(c0d)
+        string vNew = verdictOf(c2d, c1d, c0d, c2px, c1px, c0px, avgRef)
+        if regimeSrc != "Live (sticky)"
+            verdChanged := vNew != verdConf
+        verdConf := vNew
+// sticky live verdict: a new live state must hold [regimeStick] bars before it becomes the working one
+var string verdSticky = "MIXED"
+var string verdCand   = "MIXED"
+var int    candBars   = 0
+if barstate.isconfirmed and mVerdict
+    if verdLive == verdCand
+        candBars += 1
+    else
+        verdCand := verdLive
+        candBars := 1
+    if candBars >= regimeStick and verdSticky != verdCand
+        verdSticky := verdCand
+        if regimeSrc == "Live (sticky)"
+            verdChanged := true
+string verdUsed = regimeSrc == "Live (sticky)" ? verdSticky : verdConf
+string regime = verdUsed == "BUYERS" or verdUsed == "ABSORPTION ▲" ? "LONG" : verdUsed == "SELLERS" or verdUsed == "ABSORPTION ▼" ? "SHORT" : "FADE ONLY"
+verdColOf(string v) =>
+    v == "BUYERS" ? colVerdBuy : v == "SELLERS" ? colVerdSel : str.startswith(v, "ABSORPTION") ? colVerdAbs : v == "CONSOLIDATE" ? colVerdCon : colVerdMix
+
+// ── Rolling VWAP over N delta-TF candles (chart-bar window) ─────────────────
+// Rolling window as a ring buffer with running sums — no series history needed,
+// so the script runs at max_bars_back = 300 (replay-safe, same as Stryk: ΔC).
+int winBars = math.min(4000, math.max(1, math.round(lenN * timeframe.in_seconds(dTf) / chartSec)))
+var array<float> rbV  = array.new_float()
+var array<float> rbPv = array.new_float()
+var array<float> rbP2 = array.new_float()
+var float vSum  = 0.0
+var float pvSum = 0.0
+var float p2Sum = 0.0
+float vNow  = nz(volume)
+float pvNow = hlc3 * vNow
+float p2Now = hlc3 * hlc3 * vNow
+if barstate.isconfirmed or barstate.ishistory
+    array.push(rbV, vNow)
+    array.push(rbPv, pvNow)
+    array.push(rbP2, p2Now)
+    vSum  += vNow
+    pvSum += pvNow
+    p2Sum += p2Now
+    while array.size(rbV) > winBars
+        vSum  -= array.shift(rbV)
+        pvSum -= array.shift(rbPv)
+        p2Sum -= array.shift(rbP2)
+// on the forming bar include it without committing it to the buffer
+float vSumL  = barstate.isconfirmed or barstate.ishistory ? vSum  : vSum  + vNow
+float pvSumL = barstate.isconfirmed or barstate.ishistory ? pvSum : pvSum + pvNow
+float p2SumL = barstate.isconfirmed or barstate.ishistory ? p2Sum : p2Sum + p2Now
+float rvwap = vSumL > 0 ? pvSumL / vSumL : na
+float rvar  = vSumL > 0 ? math.max(0.0, p2SumL / vSumL - rvwap * rvwap) : na
+float rsd   = na(rvar) ? na : math.sqrt(rvar)
+
+float offY = glyphOff * atrV
+// ── Signal descriptions (what happened · what tends to follow) ───────────────
+// Wording is descriptive, never predictive with numbers — House Rules bar.
+string ctxTxt = "gap " + str.tostring(math.abs(gapAtr), "#.#") + " ATR · participation " + str.tostring(part, "#") + " (" + str.lower(band) + ") · verdict " + verdUsed + " · " + (fpOk ? "true delta" : "estimated delta")
+descShort(string kind, int dir) =>
+    kind == "FADE"    ? (dir == 1 ? "thin dump → line is the magnet" : "thin rally → line is the magnet") :
+     kind == "CLIMAX"  ? "crowd arrived late → run tends to stall" :
+     kind == "DIVERGE" ? (dir == 1 ? "moved down on no aggression → bias up" : "moved up on no aggression → bias down") :
+     kind == "FLIP"    ? (dir == 1 ? "paid close above line → line chases up" : "paid close below line → line chases down") :
+     kind == "BUY"     ? "flip + regime + mid band + VWAP agree" :
+     "flip + regime + mid band + VWAP agree"
+descFull(string kind, int dir) =>
+    string what = ""
+    string next = ""
+    if kind == "FADE"
+        what := dir == 1 ? "Price fell well below the Truth Line while participation stayed thin — the dip was not paid for. The line refused to follow." : "Price ran well above the Truth Line while participation stayed thin — the rally was not paid for. The line refused to follow."
+        next := dir == 1 ? "Price tends to return toward the line (the magnet) while the line stays neutral. If participation arrives on the sell side and the line turns bear-coloured instead, the read is invalid." : "Price tends to return toward the line (the magnet) while the line stays neutral. If participation arrives on the buy side and the line turns bull-coloured instead, the read is invalid."
+    else if kind == "CLIMAX"
+        what := "Participation entered the climax band while the line was still being paid in the run's direction and the gap kept widening — the crowd arrived late."
+        next := "Runs tend to slow or reverse within a few bars from here; new entries in the run's direction have the weakest context this tool sees. Tightened stops and a following FADE or line stall are the usual sequence."
+    else if kind == "DIVERGE"
+        what := dir == 1 ? "The delta-timeframe candle closed down beyond the flat tolerance, yet its delta was small — price moved without aggressive sellers (effort without aggression)." : "The delta-timeframe candle closed up beyond the flat tolerance, yet its delta was small — price moved without aggressive buyers (effort without aggression)."
+        next := dir == 1 ? "Such candles tend not to continue; bias is against the candle, i.e. up, for the next candle or two." : "Such candles tend not to continue; bias is against the candle, i.e. down, for the next candle or two."
+    else if kind == "FLIP"
+        what := dir == 1 ? "Price closed above the line by more than the hysteresis on a paid bar whose delta agreed, and the flip passed its confirmation rule. The line's direction is now up." : "Price closed below the line by more than the hysteresis on a paid bar whose delta agreed, and the flip passed its confirmation rule. The line's direction is now down."
+        next := dir == 1 ? "The line now chases upward; unpaid dips back to it are the pullback read, a paid close back below it is the next flip." : "The line now chases downward; unpaid bounces back to it are the pullback read, a paid close back above it is the next flip."
+    else
+        what := dir == 1 ? "Confirmed LINE FLIP ▲ while the verdict regime allowed longs (BUYERS or ABSORPTION ▲), participation was in the mid band at the flip, and price was above the rolling VWAP." : "Confirmed LINE FLIP ▼ while the verdict regime allowed shorts (SELLERS or ABSORPTION ▼), participation was in the mid band at the flip, and price was below the rolling VWAP."
+        next := "Every engine agrees on one side. Continuation in the flip direction is the expectation; the next VWAP band is the natural reference and a paid close back through the line invalidates it."
+    kind + (dir == 1 ? " ▲" : " ▼") + "\nWHAT HAPPENED: " + what + "\nUSUALLY NEXT: " + next + "\nCONTEXT: " + ctxTxt
+bool descOn = mDesc
+bool descTip = descOn and (descMode == "Hover tooltip" or descMode == "Hover + static short")
+bool descSt  = descOn and descMode != "Hover tooltip"
+staticTxt(string kind, int dir) =>
+    not descSt ? "" : descMode == "Static full" ? "\n" + descFull(kind, dir) : "\n" + descShort(kind, dir)
+tipTxt(string kind, int dir) =>
+    descTip ? descFull(kind, dir) : ""
+
+mkGlyph(bool above, string txt, color c, string kind, int dir) =>
+    string t = above ? txt + staticTxt(kind, dir) : staticTxt(kind, dir) == "" ? txt : txt + staticTxt(kind, dir)
+    label.new(bar_index, above ? high + offY : low - offY, t, style = label.style_none, textcolor = c, size = szOf(glyphSize), tooltip = tipTxt(kind, dir))
+mkGlyphSz(bool above, string txt, color c, string sz, string kind, int dir) =>
+    label.new(bar_index, above ? high + offY : low - offY, txt + staticTxt(kind, dir), style = label.style_none, textcolor = c, size = szOf(sz), tooltip = tipTxt(kind, dir))
+
+// ── Signals ──────────────────────────────────────────────────────────────────
+bool intrabar = sigTiming != "Bar close"
+bool sigOn = mSignals and sessAllowed and (intrabar or barstate.isconfirmed)
+
+// FADE — one per stretch episode
+var bool fadeArmed = true
+bool fadeCond = showFade and not paid and band == "THIN" and math.abs(gapAtr) >= fadeAtr
+bool fadeFire = sigOn and fadeCond and fadeArmed
+if fadeFire
+    fadeArmed := false
+if math.abs(gapAtr) < fadeAtr * 0.5
+    fadeArmed := true
+int fadeDir = gap < 0 ? 1 : -1                    // price below line → long fade (△)
+
+// gap closed (after a fade)
+var int lastFadeDir = 0
+if fadeFire
+    lastFadeDir := fadeDir
+bool gapClosed = sigOn and lastFadeDir != 0 and ((lastFadeDir == 1 and gap >= 0) or (lastFadeDir == -1 and gap <= 0))
+if gapClosed
+    lastFadeDir := 0
+
+// CLIMAX — one per climax episode, only while the line is paid in the bar's direction and gap widening
+var bool climaxArmed = true
+bool climaxCond = showClimax and band == "CLIMAX" and paid and ((lineUp and mv > 0) or (lineDn and mv < 0)) and math.abs(gap) > math.abs(gap[1])
+bool climaxFire = sigOn and climaxCond and climaxArmed
+if climaxFire
+    climaxArmed := false
+if band != "CLIMAX"
+    climaxArmed := true
+int climaxDir = mv > 0 ? 1 : -1
+
+// DIVERGE — at delta-TF close, footprint path only
+var int divBar = na
+bool divFire = sigOn and showDiv and candleClosed and (na(divBar) or divBar != bar_index) and fpOk and not na(avgAbsD) and avgAbsD > 0 and math.abs(closedPx) > tol and math.abs(closedD) <= smallMult * avgAbsD
+int divDir = closedPx > 0 ? -1 : 1                // bias against the candle
+if divFire
+    divBar := bar_index
+
+// LINE FLIP — provisional on the bar, confirmed at the next delta-TF close
+var int lineDir = 1
+var int pendDir = 0
+var label pendLb = na
+float hy = flipHyst * atrV
+bool crossDn = close < tl - hy and close[1] >= tl[1]
+bool crossUp = close > tl + hy and close[1] <= tl[1]
+bool flipProv = false
+int flipProvDir = 0
+if sigOn and showFlip and mLine and paid
+    if lineDir == 1 and crossDn and barDelta < 0
+        lineDir := -1
+        flipProv := true
+        flipProvDir := -1
+    else if lineDir == -1 and crossUp and barDelta > 0
+        lineDir := 1
+        flipProv := true
+        flipProvDir := 1
+bool flipConf = false
+int flipConfDir = 0
+string flipBand = ""
+var string pendBand = ""
+var int pendStart = na
+float avgBarRef = nz(avgBarAbs, 0.0)
+bool conviction = avgBarRef > 0 and math.abs(barDelta) >= flipConv * avgBarRef and band == "MID"
+// resolve a pending provisional flip
+if pendDir != 0
+    bool due = flipConfirm == "Delta-TF close" ? candleClosed : (bar_index - pendStart >= flipHold and (intrabar or barstate.isconfirmed))
+    if due
+        float refC = flipConfirm == "Delta-TF close" ? close[1] : close
+        float refT = flipConfirm == "Delta-TF close" ? tl[1] : tl
+        bool stillThere = (pendDir == -1 and refC < refT) or (pendDir == 1 and refC > refT)
+        if stillThere
+            flipConf := true
+            flipConfDir := pendDir
+            flipBand := pendBand
+            if not na(pendLb)
+                label.set_text(pendLb, (glyphTxt ? (pendDir == 1 ? "▲\nLINE FLIP" : "LINE FLIP\n▼") : (pendDir == 1 ? "▲" : "▼")) + staticTxt("FLIP", pendDir))
+                label.set_textcolor(pendLb, colFlipG)
+                label.set_tooltip(pendLb, tipTxt("FLIP", pendDir))
+        else
+            if not na(pendLb)
+                label.delete(pendLb)
+            if not flipProv
+                lineDir := -pendDir          // the flip failed — restore direction
+        pendDir := 0
+        pendLb := na
+        pendStart := na
+// register the new provisional flip — or confirm it on the spot
+bool instantConf = flipProv and flipConfirm == "Instant (conviction)" and conviction
+if flipProv and not instantConf
+    pendDir := flipProvDir
+    pendBand := band
+    pendStart := bar_index
+if instantConf
+    flipConf := true
+    flipConfDir := flipProvDir
+    flipBand := band
+
+// BUY / SELL — regime-gated confluence at the confirmed flip
+bool vwapOkBuy  = not tradeVwap or (not na(rvwap) and close > rvwap)
+bool vwapOkSell = not tradeVwap or (not na(rvwap) and close < rvwap)
+bool buyFire  = sigOn and showTrade and mVerdict and not memMixed and flipConf and flipConfDir == 1  and regime == "LONG"  and flipBand == "MID" and vwapOkBuy
+bool sellFire = sigOn and showTrade and mVerdict and not memMixed and flipConf and flipConfDir == -1 and regime == "SHORT" and flipBand == "MID" and vwapOkSell
+
+// ── Glyphs ───────────────────────────────────────────────────────────────────
+
+if fadeFire
+    mkGlyph(fadeDir == -1, glyphTxt ? (fadeDir == 1 ? "△\nFADE" : "FADE\n▽") : (fadeDir == 1 ? "△" : "▽"), colFade, "FADE", fadeDir)
+if climaxFire
+    mkGlyph(climaxDir == 1, glyphTxt ? (climaxDir == 1 ? "CLIMAX\n⊗" : "⊗\nCLIMAX") : "⊗", colClimaxG, "CLIMAX", climaxDir)
+if divFire
+    mkGlyph(divDir == -1, glyphTxt ? (divDir == 1 ? "◇\nDIVERGE" : "DIVERGE\n◇") : "◇", colDivG, "DIVERGE", divDir)
+if flipProv
+    if not na(pendLb)
+        label.delete(pendLb)                 // a newer provisional flip replaces an unconfirmed one
+    if instantConf
+        mkGlyph(flipProvDir == -1, glyphTxt ? (flipProvDir == 1 ? "▲\nLINE FLIP" : "LINE FLIP\n▼") : (flipProvDir == 1 ? "▲" : "▼"), colFlipG, "FLIP", flipProvDir)
+    else
+        pendLb := label.new(bar_index, flipProvDir == -1 ? high + offY : low - offY, flipProvDir == 1 ? "▲" : "▼", style = label.style_none, textcolor = color.new(colFlipG, provTransp), size = szOf(glyphSize), tooltip = descTip ? "LINE FLIP (provisional) — awaiting confirmation; removed if it fails." : "")
+if buyFire
+    mkGlyphSz(false, glyphTxt ? "●\nBUY" : "●", colTradeG, tradeSize, "BUY", 1)
+if sellFire
+    mkGlyphSz(true, glyphTxt ? "SELL\n●" : "●", colTradeG, tradeSize, "SELL", -1)
+
+// last signal memory for the box
+var string lastSig = "—"
+var int lastSigBar = na
+if buyFire
+    lastSig := "BUY ●"
+    lastSigBar := bar_index
+else if sellFire
+    lastSig := "SELL ●"
+    lastSigBar := bar_index
+else if flipConf
+    lastSig := flipConfDir == 1 ? "LINE FLIP ▲" : "LINE FLIP ▼"
+    lastSigBar := bar_index
+else if fadeFire
+    lastSig := fadeDir == 1 ? "FADE △" : "FADE ▽"
+    lastSigBar := bar_index
+else if divFire
+    lastSig := divDir == 1 ? "DIVERGE ◇ (bull)" : "DIVERGE ◇ (bear)"
+    lastSigBar := bar_index
+else if climaxFire
+    lastSig := climaxDir == 1 ? "CLIMAX ⊗ (up)" : "CLIMAX ⊗ (down)"
+    lastSigBar := bar_index
+
+// ── Plots ────────────────────────────────────────────────────────────────────
+plot(mVwap and showB3 ? rvwap + 3 * rsd : na, "VWAP +3σ", color = bandCol3, linewidth = bandWidth)
+plot(mVwap and showB2 ? rvwap + 2 * rsd : na, "VWAP +2σ", color = bandCol2, linewidth = bandWidth)
+plot(mVwap and showB1 ? rvwap + rsd : na,     "VWAP +1σ", color = bandCol, linewidth = bandWidth)
+plot(mVwap ? rvwap : na,                       "Rolling VWAP", color = vwapCol, linewidth = vwapWidth)
+plot(mVwap and showB1 ? rvwap - rsd : na,     "VWAP −1σ", color = bandCol, linewidth = bandWidth)
+plot(mVwap and showB2 ? rvwap - 2 * rsd : na, "VWAP −2σ", color = bandCol2, linewidth = bandWidth)
+plot(mVwap and showB3 ? rvwap - 3 * rsd : na, "VWAP −3σ", color = bandCol3, linewidth = bandWidth)
+
+pLine  = plot(mLine ? tl : na, "Truth Line", color = lineCol, linewidth = lineWidth)
+pClose = plot(mLine ? close : na, "close (fill anchor)", color = na, display = display.none)
+bool shade = mLine and mGap and not paid and math.abs(gapAtr) >= gapMinAtr
+color gapCol = shade ? color.new(gap > 0 ? colGapDn : colGapUp, gapTransp) : na
+fill(pLine, pClose, color = gapCol, title = "Gap shading")
+
+color tint = mPartBg ? (band == "CLIMAX" and bgClimax ? color.new(colClimax, bgTransp) : band == "MID" and bgMid ? color.new(colMidP, math.min(100, bgTransp + 5)) : na) : na
+bgcolor(tint, title = "Participation tint")
+// ── Candle paint ─────────────────────────────────────────────────────────────
+// Fuel × Δ: intensity = fuel (the quantity that moves the line), sign = this bar's
+// delta (footprint) or polarity (estimate). ΔC modes reproduce Stryk: ΔC on the
+// live delta-TF candle. Never na — gaps impossible.
+bool paintOn = mPaint and paintOn_i
+float totVLive = liveBuy + liveSell
+float scaleRef = not na(avgAbsD) and avgAbsD > 0 ? avgAbsD * paintSens : math.abs(nz(liveD))
+float dPctRaw  = totVLive > 0 ? nz(liveD) / totVLive : 0.0
+float rawN = 0.0
+if paintMode == "Fuel × Δ (Truth Line)"
+    float sgn = barDelta > 0 ? 1.0 : barDelta < 0 ? -1.0 : (close > open ? 1.0 : close < open ? -1.0 : 0.0)
+    float inten = paintUnpaid and not paid ? fuel * (fuel / paidTh) : fuel
+    rawN := sgn * math.max(0.0, math.min(1.0, inten))
+else if paintMode == "Δ size (Stryk ΔC)"
+    rawN := scaleRef > 0 ? math.max(-1.0, math.min(1.0, nz(liveD) / scaleRef)) : 0.0
+else if paintMode == "Δ % imbalance (Stryk ΔC)"
+    rawN := math.max(-1.0, math.min(1.0, dPctRaw * paintSens / 0.15))
+float curvedN = paintCurve == "Boosted" ? math.sign(rawN) * math.pow(math.abs(rawN), 0.55) : rawN
+float normD = paintFloor > 0 and math.abs(curvedN) > 0.05 ? math.sign(curvedN) * math.max(math.abs(curvedN), paintFloor) : curvedN
+color gradCol = normD >= 0 ? color.from_gradient(normD, 0, 1, colNeutP, colBull) : color.from_gradient(normD, -1, 0, colBearP, colNeutP)
+color dCol = paintMode == "Participation band" ? partCol : (na(gradCol) ? colNeutP : gradCol)
+barcolor(paintOn ? dCol : na, title = "Candle paint")
+plotcandle(open, high, low, close, "Painted candles", color = paintOn ? dCol : na, wickcolor = paintOn ? dCol : na, bordercolor = paintOn ? dCol : na)
+
+// ── Alerts (bar close only, one JSON object each) ────────────────────────────
+alertJson(string sig, int dir) =>
+    "{\"src\":\"stryk_tl\",\"sig\":\"" + sig + "\",\"dir\":" + str.tostring(dir) +
+     ",\"verdict\":\"" + verdUsed + "\",\"regime\":\"" + regime + "\",\"band\":\"" + band +
+     "\",\"part\":" + str.tostring(part, "#") + ",\"gap_atr\":" + str.tostring(gapAtr, "#.##") +
+     ",\"session\":\"" + sessName + "\",\"delta_src\":\"" + (fpOk ? "ftp" : "est") + "\",\"tf\":\"" + timeframe.period + "\",\"dtf\":\"" + dTf +
+     "\",\"price\":" + str.tostring(close, format.mintick) + ",\"time\":" + str.tostring(time) + "}"
+
+if mAlerts and (intrabar or barstate.isconfirmed)
+    if alFade and fadeFire
+        alert(alertJson("FADE", fadeDir), alert.freq_once_per_bar)
+    if alClimax and climaxFire
+        alert(alertJson("CLIMAX", climaxDir), alert.freq_once_per_bar)
+    if alDiv and divFire
+        alert(alertJson("DIVERGE", divDir), alert.freq_once_per_bar)
+    if alFlip and flipConf
+        alert(alertJson("LINE_FLIP", flipConfDir), alert.freq_once_per_bar)
+    if alTrade and buyFire
+        alert(alertJson("BUY", 1), alert.freq_once_per_bar)
+    if alTrade and sellFire
+        alert(alertJson("SELL", -1), alert.freq_once_per_bar)
+    if alVerd and verdChanged
+        alert(alertJson("VERDICT", regime == "LONG" ? 1 : regime == "SHORT" ? -1 : 0), alert.freq_once_per_bar)
+    if alAbs and verdChanged and str.startswith(verdUsed, "ABSORPTION")
+        alert(alertJson("ABSORPTION", verdUsed == "ABSORPTION ▲" ? 1 : -1), alert.freq_once_per_bar)
+    if alGapCl and gapClosed
+        alert(alertJson("GAP_CLOSED", 0), alert.freq_once_per_bar)
+
+// ── Display box ──────────────────────────────────────────────────────────────
+var table tbl = na
+if mBox and barstate.islast
+    var array<string> lbl = array.new_string()
+    var array<string> val = array.new_string()
+    var array<color>  vc  = array.new_color()
+    array.clear(lbl), array.clear(val), array.clear(vc)
+
+    bool mobile = tLayout == "Mobile"
+    color cPos = colBull
+    color cNeg = colBearP
+    color cDim = tblDimCol
+
+    string partTxt = str.tostring(part, "#") + " · " + (band == "MID" ? "mid ✓" : band == "THIN" ? "thin" : "climax ⚠")
+    string lineTxt = lineState + " · gap " + fmtPx(gap) + " (" + str.tostring(math.abs(gapAtr), "#.#") + " ATR)"
+    color lineC = lineState == "UP" ? colUp : lineState == "DOWN" ? colDn : colStall
+    string sigTxt = lastSig + (na(lastSigBar) ? "" : " · " + str.tostring(bar_index - lastSigBar) + " bars ago")
+    color verdC = verdColOf(verdLive)
+    string regTxt = regime == "LONG" ? "long-side only" : regime == "SHORT" ? "short-side only" : "fade only"
+    string whyTxt = na(avgRef) or avgRef == 0 ? "calibrating · " + str.tostring(nBlk) + "/3 same-source blocks" : memMixed ? "memory mixed src — verdict unreliable" : "this block " + fmtD(b0d) + " (" + str.tostring(math.abs(nz(b0d)) / avgRef, "#.#") + "× avg block) · px " + fmtPx(b0px)
+
+    // SAME rows in both layouts — Mobile only swaps in the short label and wraps
+    if showBarM
+        array.push(lbl, mobile ? "Δ bar" : "Δ this bar (" + timeframe.period + ")"), array.push(val, fmtD(barDelta)), array.push(vc, barDelta >= 0 ? cPos : cNeg)
+    if showHtfM
+        array.push(lbl, mobile ? "Δ" + dTf : "Δ " + dTf + " live · buy / sell"), array.push(val, fmtD(liveD) + " · " + str.tostring(liveBuy, format.volume) + "/" + str.tostring(liveSell, format.volume)), array.push(vc, liveD >= 0 ? cPos : cNeg)
+    if showPartM
+        array.push(lbl, mobile ? "Part" : "Participation"), array.push(val, partTxt), array.push(vc, partCol)
+    if showLineM
+        array.push(lbl, "Line"), array.push(val, lineTxt), array.push(vc, lineC)
+    if showSigM
+        array.push(lbl, mobile ? "Sig" : "Last signal"), array.push(val, mobile ? lastSig : sigTxt), array.push(vc, cDim)
+    if showMemM and mVerdict
+        string agL = na(b0px) ? "" : ((b0d > 0 and b0px > tol) or (b0d < 0 and b0px < -tol)) ? "  ✓" : (math.abs(b0px) <= tol ? "  ·" : "  ✗")
+        string ag1 = na(b1px) ? "" : ((b1d > 0 and b1px > tol) or (b1d < 0 and b1px < -tol)) ? "  ✓" : (math.abs(b1px) <= tol ? "  ·" : "  ✗")
+        string ag2 = na(b2px) ? "" : ((b2d > 0 and b2px > tol) or (b2d < 0 and b2px < -tol)) ? "  ✓" : (math.abs(b2px) <= tol ? "  ·" : "  ✗")
+        if not mobile
+            array.push(lbl, "Δ MEMORY · 3 × " + dTf), array.push(val, "Δ vs price"), array.push(vc, cDim)
+        array.push(lbl, mobile ? "Live" : "Live"), array.push(val, magOf(b0d) + " " + fmtD(b0d) + " · px " + fmtPx(b0px) + agL), array.push(vc, na(b0d) ? cDim : b0d >= 0 ? cPos : cNeg)
+        array.push(lbl, mobile ? "Prev" : "Prev"), array.push(val, magOf(b1d) + " " + fmtD(b1d) + " · px " + fmtPx(b1px) + ag1), array.push(vc, na(b1d) ? cDim : b1d >= 0 ? cPos : cNeg)
+        array.push(lbl, mobile ? "2 back" : "2 back"), array.push(val, magOf(b2d) + " " + fmtD(b2d) + " · px " + fmtPx(b2px) + ag2), array.push(vc, na(b2d) ? cDim : b2d >= 0 ? cPos : cNeg)
+        array.push(lbl, mobile ? "Avg" : "Avg |Δ| (" + str.tostring(nBlk) + ")"), array.push(val, fmtD(avgAbsBlk) + (memMixed ? " · mixed ⚠" : "")), array.push(vc, memMixed ? colVerdAbs : cDim)
+    if showVerdM and mVerdict
+        array.push(lbl, mobile ? "Verdict" : "Verdict (live)"), array.push(val, verdLive), array.push(vc, verdC)
+        array.push(lbl, "why"), array.push(val, whyTxt), array.push(vc, cDim)
+        array.push(lbl, mobile ? "Regime" : (regimeSrc == "Live (sticky)" ? "Sticky" : "Confirmed") + " · regime"), array.push(val, verdUsed + " · " + regTxt), array.push(vc, verdColOf(verdUsed))
+
+    int n = array.size(lbl)
+    if not na(tbl)
+        table.delete(tbl)
+        tbl := na
+    if n > 0
+        string tsz = szOf(mobile ? "Tiny" : tSizeIn)
+        string headR = timeframe.period + " · Δ" + dTf + (tfRaised ? "↑" : "") + " · " + (fpOk ? "ftp " + str.tostring(fpCov, "#") + "%" : haveLtf ? "est " + ltf : "est bar")
+        if not mobile
+            // VERTICAL — one tall label | value column
+            tbl := table.new(posOf(tPos), 2, n + 1, bgcolor = tblBgCol, border_width = tblFrameW, border_color = tblBorderCol)
+            table.cell(tbl, 0, 0, "STRYK TL", text_color = tblHeadTxt, text_size = tsz, bgcolor = tblHeadCol)
+            table.cell(tbl, 1, 0, headR, text_color = tblLabelCol, text_size = tsz, bgcolor = tblHeadCol)
+            for i = 0 to n - 1
+                table.cell(tbl, 0, 1 + i, array.get(lbl, i), text_color = tblLabelCol, text_size = tsz)
+                table.cell(tbl, 1, 1 + i, array.get(val, i), text_color = array.get(vc, i), text_size = tsz)
+        else
+            // MOBILE — smart-wrap grid: fill down each column, spill right (Stryk: ΔC pattern)
+            int wrapN = tWrap > 0 ? math.min(tWrap, n) : n
+            int nCols = (n + wrapN - 1) / wrapN
+            tbl := table.new(posOf(tPos), 2 * nCols, wrapN + 1, bgcolor = tblBgCol, border_width = tblFrameW, border_color = tblBorderCol)
+            table.cell(tbl, 0, 0, "STRYK TL   " + headR, text_color = tblHeadTxt, text_size = tsz, bgcolor = tblHeadCol)
+            if nCols > 1
+                table.merge_cells(tbl, 0, 0, 2 * nCols - 1, 0)
+            for i = 0 to n - 1
+                int cCol = (i / wrapN) * 2
+                int cRow = (i % wrapN) + 1
+                table.cell(tbl, cCol, cRow, array.get(lbl, i), text_color = tblLabelCol, text_size = tsz)
+                table.cell(tbl, cCol + 1, cRow, array.get(val, i), text_color = array.get(vc, i), text_size = tsz)

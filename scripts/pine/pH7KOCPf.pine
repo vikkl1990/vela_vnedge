@@ -1,0 +1,869 @@
+//@version=6
+indicator(
+     "B8 Ultimate v2",
+     shorttitle="B8",
+     overlay=true,
+     max_boxes_count=300,
+     max_lines_count=300)
+
+// ══════════════════════════════════════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════════════════════════════════════
+
+const int MARKER_WIDTH = 2
+const int MAX_HISTORY = 250
+
+// ══════════════════════════════════════════════════════════════════════
+// TIME ZONES
+// ══════════════════════════════════════════════════════════════════════
+
+const string TZ_LA         = "GMT-8/-7 — Los Angeles"
+const string TZ_CHICAGO    = "GMT-6/-5 — Chicago"
+const string TZ_MEXICO     = "GMT-6 — Mexico City"
+const string TZ_NEWYORK    = "GMT-5/-4 — New York / Toronto"
+const string TZ_SAO        = "GMT-3 — São Paulo"
+const string TZ_LONDON     = "GMT+0/+1 — London"
+const string TZ_PARIS      = "GMT+1/+2 — Paris / Frankfurt / Zurich"
+const string TZ_ATHENS     = "GMT+2/+3 — Athens"
+const string TZ_JERUSALEM  = "GMT+2/+3 — Tel Aviv / Jerusalem"
+const string TZ_MOSCOW     = "GMT+3 — Moscow"
+const string TZ_DUBAI      = "GMT+4 — Dubai"
+const string TZ_INDIA      = "GMT+5:30 — Mumbai"
+const string TZ_SINGAPORE  = "GMT+8 — Singapore"
+const string TZ_HONGKONG   = "GMT+8 — Hong Kong"
+const string TZ_SHANGHAI   = "GMT+8 — Shanghai / Shenzhen"
+const string TZ_TOKYO      = "GMT+9 — Tokyo"
+const string TZ_SEOUL      = "GMT+9 — Seoul"
+const string TZ_SYDNEY     = "GMT+10/+11 — Sydney"
+const string TZ_AUCKLAND   = "GMT+12/+13 — Auckland"
+
+f_timezone(string choice) =>
+    string tz = "Europe/Paris"
+
+    if choice == TZ_LA
+        tz := "America/Los_Angeles"
+    else if choice == TZ_CHICAGO
+        tz := "America/Chicago"
+    else if choice == TZ_MEXICO
+        tz := "America/Mexico_City"
+    else if choice == TZ_NEWYORK
+        tz := "America/New_York"
+    else if choice == TZ_SAO
+        tz := "America/Sao_Paulo"
+    else if choice == TZ_LONDON
+        tz := "Europe/London"
+    else if choice == TZ_PARIS
+        tz := "Europe/Paris"
+    else if choice == TZ_ATHENS
+        tz := "Europe/Athens"
+    else if choice == TZ_JERUSALEM
+        tz := "Asia/Jerusalem"
+    else if choice == TZ_MOSCOW
+        tz := "Europe/Moscow"
+    else if choice == TZ_DUBAI
+        tz := "Asia/Dubai"
+    else if choice == TZ_INDIA
+        tz := "Asia/Kolkata"
+    else if choice == TZ_SINGAPORE
+        tz := "Asia/Singapore"
+    else if choice == TZ_HONGKONG
+        tz := "Asia/Hong_Kong"
+    else if choice == TZ_SHANGHAI
+        tz := "Asia/Shanghai"
+    else if choice == TZ_TOKYO
+        tz := "Asia/Tokyo"
+    else if choice == TZ_SEOUL
+        tz := "Asia/Seoul"
+    else if choice == TZ_SYDNEY
+        tz := "Australia/Sydney"
+    else if choice == TZ_AUCKLAND
+        tz := "Pacific/Auckland"
+
+    tz
+
+// ══════════════════════════════════════════════════════════════════════
+// HH:MM CONVERSION
+// ══════════════════════════════════════════════════════════════════════
+
+f_hour(string referenceTime) =>
+    int(str.tonumber(str.substring(referenceTime, 0, 2)))
+
+f_minute(string referenceTime) =>
+    int(str.tonumber(str.substring(referenceTime, 3, 5)))
+
+// ══════════════════════════════════════════════════════════════════════
+// XX:30 MODE
+//
+// One full hour is built from 2 × 30-minute candles.
+// Existing validated engine remains unchanged.
+// ══════════════════════════════════════════════════════════════════════
+
+f_zone30(int referenceHour, string tz) =>
+
+    var int zoneStart = na
+    var float zoneHigh = na
+    var float zoneLow = na
+
+    int h = hour(time, tz)
+    int m = minute(time, tz)
+
+    bool newZoneStart =
+         h == referenceHour and m == 30
+
+    if newZoneStart
+        zoneStart := time
+        zoneHigh := high
+        zoneLow := low
+
+    else if not na(zoneStart) and
+         time < zoneStart + 60 * 60 * 1000
+
+        zoneHigh := math.max(zoneHigh, high)
+        zoneLow := math.min(zoneLow, low)
+
+    [zoneStart, zoneHigh, zoneLow]
+
+// ══════════════════════════════════════════════════════════════════════
+// AVAILABLE REFERENCE TIMES
+// ══════════════════════════════════════════════════════════════════════
+
+const string H00="00:00"
+const string H0030="00:30"
+const string H01="01:00"
+const string H0130="01:30"
+const string H02="02:00"
+const string H0230="02:30"
+const string H03="03:00"
+const string H0330="03:30"
+const string H04="04:00"
+const string H0430="04:30"
+const string H05="05:00"
+const string H0530="05:30"
+const string H06="06:00"
+const string H0630="06:30"
+const string H07="07:00"
+const string H0730="07:30"
+const string H08="08:00"
+const string H0830="08:30"
+const string H09="09:00"
+const string H0930="09:30"
+const string H10="10:00"
+const string H1030="10:30"
+const string H11="11:00"
+const string H1130="11:30"
+const string H12="12:00"
+const string H1230="12:30"
+const string H13="13:00"
+const string H1330="13:30"
+const string H14="14:00"
+const string H1430="14:30"
+const string H15="15:00"
+const string H1530="15:30"
+const string H16="16:00"
+const string H1630="16:30"
+const string H17="17:00"
+const string H1730="17:30"
+const string H18="18:00"
+const string H1830="18:30"
+const string H19="19:00"
+const string H1930="19:30"
+const string H20="20:00"
+const string H2030="20:30"
+const string H21="21:00"
+const string H2130="21:30"
+const string H22="22:00"
+const string H2230="22:30"
+const string H23="23:00"
+const string H2330="23:30"
+
+// ══════════════════════════════════════════════════════════════════════
+// SYMBOL 1 — DAX DEFAULT
+// ══════════════════════════════════════════════════════════════════════
+
+g1 = "━━━━━━━━━━ SYMBOL 1 — DAX default ━━━━━━━━━━"
+
+symbol1 = input.symbol("IG:DAX", "Symbol", group=g1)
+
+referenceTime1 = input.string(
+     H08,
+     "Reference time",
+     options=[
+         H00,H0030,H01,H0130,H02,H0230,H03,H0330,
+         H04,H0430,H05,H0530,H06,H0630,H07,H0730,
+         H08,H0830,H09,H0930,H10,H1030,H11,H1130,
+         H12,H1230,H13,H1330,H14,H1430,H15,H1530,
+         H16,H1630,H17,H1730,H18,H1830,H19,H1930,
+         H20,H2030,H21,H2130,H22,H2230,H23,H2330
+     ],
+     group=g1)
+
+timezone1 = input.string(
+     TZ_PARIS,
+     "Time zone",
+     options=[
+         TZ_LA,TZ_CHICAGO,TZ_MEXICO,TZ_NEWYORK,TZ_SAO,
+         TZ_LONDON,TZ_PARIS,TZ_ATHENS,TZ_JERUSALEM,
+         TZ_MOSCOW,TZ_DUBAI,TZ_INDIA,TZ_SINGAPORE,
+         TZ_HONGKONG,TZ_SHANGHAI,TZ_TOKYO,TZ_SEOUL,
+         TZ_SYDNEY,TZ_AUCKLAND
+     ],
+     group=g1)
+
+color1 = input.color(
+     color.blue,
+     "Color",
+     group=g1)
+
+duration1 = input.float(
+     24.0,
+     "Rectangle duration (hours)",
+     minval=0.5,
+     step=0.5,
+     group=g1)
+
+marker1 = input.bool(
+     false,
+     "Mark first hour",
+     group=g1)
+
+// ══════════════════════════════════════════════════════════════════════
+// SYMBOL 2 — CAC DEFAULT
+// ══════════════════════════════════════════════════════════════════════
+
+g2 = "━━━━━━━━━━ SYMBOL 2 — CAC default ━━━━━━━━━━"
+
+symbol2 = input.symbol("IG:CAC", "Symbol", group=g2)
+
+referenceTime2 = input.string(
+     H08,
+     "Reference time",
+     options=[
+         H00,H0030,H01,H0130,H02,H0230,H03,H0330,
+         H04,H0430,H05,H0530,H06,H0630,H07,H0730,
+         H08,H0830,H09,H0930,H10,H1030,H11,H1130,
+         H12,H1230,H13,H1330,H14,H1430,H15,H1530,
+         H16,H1630,H17,H1730,H18,H1830,H19,H1930,
+         H20,H2030,H21,H2130,H22,H2230,H23,H2330
+     ],
+     group=g2)
+
+timezone2 = input.string(
+     TZ_PARIS,
+     "Time zone",
+     options=[
+         TZ_LA,TZ_CHICAGO,TZ_MEXICO,TZ_NEWYORK,TZ_SAO,
+         TZ_LONDON,TZ_PARIS,TZ_ATHENS,TZ_JERUSALEM,
+         TZ_MOSCOW,TZ_DUBAI,TZ_INDIA,TZ_SINGAPORE,
+         TZ_HONGKONG,TZ_SHANGHAI,TZ_TOKYO,TZ_SEOUL,
+         TZ_SYDNEY,TZ_AUCKLAND
+     ],
+     group=g2)
+
+color2 = input.color(
+     color.blue,
+     "Color",
+     group=g2)
+
+duration2 = input.float(
+     24.0,
+     "Rectangle duration (hours)",
+     minval=0.5,
+     step=0.5,
+     group=g2)
+
+marker2 = input.bool(
+     false,
+     "Mark first hour",
+     group=g2)
+
+// ══════════════════════════════════════════════════════════════════════
+// SYMBOL 3
+// ══════════════════════════════════════════════════════════════════════
+
+g3 = "━━━━━━━━━━━━━━━━ SYMBOL 3 ━━━━━━━━━━━━━━━━"
+
+symbol3 = input.symbol("", "Symbol", group=g3)
+
+referenceTime3 = input.string(
+     H08,
+     "Reference time",
+     options=[
+         H00,H0030,H01,H0130,H02,H0230,H03,H0330,
+         H04,H0430,H05,H0530,H06,H0630,H07,H0730,
+         H08,H0830,H09,H0930,H10,H1030,H11,H1130,
+         H12,H1230,H13,H1330,H14,H1430,H15,H1530,
+         H16,H1630,H17,H1730,H18,H1830,H19,H1930,
+         H20,H2030,H21,H2130,H22,H2230,H23,H2330
+     ],
+     group=g3)
+
+timezone3 = input.string(
+     TZ_PARIS,
+     "Time zone",
+     options=[
+         TZ_LA,TZ_CHICAGO,TZ_MEXICO,TZ_NEWYORK,TZ_SAO,
+         TZ_LONDON,TZ_PARIS,TZ_ATHENS,TZ_JERUSALEM,
+         TZ_MOSCOW,TZ_DUBAI,TZ_INDIA,TZ_SINGAPORE,
+         TZ_HONGKONG,TZ_SHANGHAI,TZ_TOKYO,TZ_SEOUL,
+         TZ_SYDNEY,TZ_AUCKLAND
+     ],
+     group=g3)
+
+color3 = input.color(
+     color.blue,
+     "Color",
+     group=g3)
+
+duration3 = input.float(
+     24.0,
+     "Rectangle duration (hours)",
+     minval=0.5,
+     step=0.5,
+     group=g3)
+
+marker3 = input.bool(
+     false,
+     "Mark first hour",
+     group=g3)
+
+// ══════════════════════════════════════════════════════════════════════
+// SYMBOL 4
+// ══════════════════════════════════════════════════════════════════════
+
+g4 = "━━━━━━━━━━━━━━━━ SYMBOL 4 ━━━━━━━━━━━━━━━━"
+
+symbol4 = input.symbol("", "Symbol", group=g4)
+
+referenceTime4 = input.string(
+     H08,
+     "Reference time",
+     options=[
+         H00,H0030,H01,H0130,H02,H0230,H03,H0330,
+         H04,H0430,H05,H0530,H06,H0630,H07,H0730,
+         H08,H0830,H09,H0930,H10,H1030,H11,H1130,
+         H12,H1230,H13,H1330,H14,H1430,H15,H1530,
+         H16,H1630,H17,H1730,H18,H1830,H19,H1930,
+         H20,H2030,H21,H2130,H22,H2230,H23,H2330
+     ],
+     group=g4)
+
+timezone4 = input.string(
+     TZ_PARIS,
+     "Time zone",
+     options=[
+         TZ_LA,TZ_CHICAGO,TZ_MEXICO,TZ_NEWYORK,TZ_SAO,
+         TZ_LONDON,TZ_PARIS,TZ_ATHENS,TZ_JERUSALEM,
+         TZ_MOSCOW,TZ_DUBAI,TZ_INDIA,TZ_SINGAPORE,
+         TZ_HONGKONG,TZ_SHANGHAI,TZ_TOKYO,TZ_SEOUL,
+         TZ_SYDNEY,TZ_AUCKLAND
+     ],
+     group=g4)
+
+color4 = input.color(
+     color.blue,
+     "Color",
+     group=g4)
+
+duration4 = input.float(
+     24.0,
+     "Rectangle duration (hours)",
+     minval=0.5,
+     step=0.5,
+     group=g4)
+
+marker4 = input.bool(
+     false,
+     "Mark first hour",
+     group=g4)
+
+// ══════════════════════════════════════════════════════════════════════
+// SYMBOL 5
+// ══════════════════════════════════════════════════════════════════════
+
+g5 = "━━━━━━━━━━━━━━━━ SYMBOL 5 ━━━━━━━━━━━━━━━━"
+
+symbol5 = input.symbol("", "Symbol", group=g5)
+
+referenceTime5 = input.string(
+     H08,
+     "Reference time",
+     options=[
+         H00,H0030,H01,H0130,H02,H0230,H03,H0330,
+         H04,H0430,H05,H0530,H06,H0630,H07,H0730,
+         H08,H0830,H09,H0930,H10,H1030,H11,H1130,
+         H12,H1230,H13,H1330,H14,H1430,H15,H1530,
+         H16,H1630,H17,H1730,H18,H1830,H19,H1930,
+         H20,H2030,H21,H2130,H22,H2230,H23,H2330
+     ],
+     group=g5)
+
+timezone5 = input.string(
+     TZ_PARIS,
+     "Time zone",
+     options=[
+         TZ_LA,TZ_CHICAGO,TZ_MEXICO,TZ_NEWYORK,TZ_SAO,
+         TZ_LONDON,TZ_PARIS,TZ_ATHENS,TZ_JERUSALEM,
+         TZ_MOSCOW,TZ_DUBAI,TZ_INDIA,TZ_SINGAPORE,
+         TZ_HONGKONG,TZ_SHANGHAI,TZ_TOKYO,TZ_SEOUL,
+         TZ_SYDNEY,TZ_AUCKLAND
+     ],
+     group=g5)
+
+color5 = input.color(
+     color.blue,
+     "Color",
+     group=g5)
+
+duration5 = input.float(
+     24.0,
+     "Rectangle duration (hours)",
+     minval=0.5,
+     step=0.5,
+     group=g5)
+
+marker5 = input.bool(
+     false,
+     "Mark first hour",
+     group=g5)
+
+// ══════════════════════════════════════════════════════════════════════
+// COMMON APPEARANCE
+// ══════════════════════════════════════════════════════════════════════
+
+gCommon = "━━━━━━━━━━━━ COMMON APPEARANCE ━━━━━━━━━━━━"
+
+showFill = input.bool(
+     true,
+     "Show rectangle fill",
+     group=gCommon)
+
+transparency = input.int(
+     85,
+     "Rectangle transparency",
+     minval=0,
+     maxval=100,
+     group=gCommon)
+
+borderWidth = input.int(
+     2,
+     "Rectangle border width",
+     minval=1,
+     maxval=5,
+     group=gCommon)
+
+markerTransparency = input.int(
+     55,
+     "First-hour marker transparency",
+     minval=0,
+     maxval=100,
+     group=gCommon)
+
+historyZones = input.int(
+     250,
+     "Historical zones",
+     minval=1,
+     maxval=MAX_HISTORY,
+     group=gCommon)
+
+// ══════════════════════════════════════════════════════════════════════
+// ALLOWED TIMEFRAMES
+//
+// Rectangle: <= 1H
+// Marker:    < 1H
+// ══════════════════════════════════════════════════════════════════════
+
+float chartSeconds =
+     timeframe.in_seconds(timeframe.period)
+
+bool timeframeAllowed =
+     not na(chartSeconds) and
+     chartSeconds <= 60 * 60
+
+bool markerTimeframeAllowed =
+     not na(chartSeconds) and
+     chartSeconds < 60 * 60
+
+// ══════════════════════════════════════════════════════════════════════
+// CURRENT SYMBOL IDENTIFICATION
+// ══════════════════════════════════════════════════════════════════════
+
+string currentTicker = syminfo.tickerid
+
+bool isSymbol1 =
+     symbol1 != "" and currentTicker == symbol1
+
+bool isSymbol2 =
+     symbol2 != "" and currentTicker == symbol2
+
+bool isSymbol3 =
+     symbol3 != "" and currentTicker == symbol3
+
+bool isSymbol4 =
+     symbol4 != "" and currentTicker == symbol4
+
+bool isSymbol5 =
+     symbol5 != "" and currentTicker == symbol5
+
+bool symbolAllowed =
+     isSymbol1 or
+     isSymbol2 or
+     isSymbol3 or
+     isSymbol4 or
+     isSymbol5
+
+// ══════════════════════════════════════════════════════════════════════
+// CURRENT SYMBOL SETTINGS
+// ══════════════════════════════════════════════════════════════════════
+
+string selectedTime = H08
+string selectedTimezone = TZ_PARIS
+color selectedColor = color.blue
+float selectedDuration = 24.0
+bool showMarker = false
+
+if isSymbol1
+    selectedTime := referenceTime1
+    selectedTimezone := timezone1
+    selectedColor := color1
+    selectedDuration := duration1
+    showMarker := marker1
+
+else if isSymbol2
+    selectedTime := referenceTime2
+    selectedTimezone := timezone2
+    selectedColor := color2
+    selectedDuration := duration2
+    showMarker := marker2
+
+else if isSymbol3
+    selectedTime := referenceTime3
+    selectedTimezone := timezone3
+    selectedColor := color3
+    selectedDuration := duration3
+    showMarker := marker3
+
+else if isSymbol4
+    selectedTime := referenceTime4
+    selectedTimezone := timezone4
+    selectedColor := color4
+    selectedDuration := duration4
+    showMarker := marker4
+
+else if isSymbol5
+    selectedTime := referenceTime5
+    selectedTimezone := timezone5
+    selectedColor := color5
+    selectedDuration := duration5
+    showMarker := marker5
+
+int referenceHour =
+     f_hour(selectedTime)
+
+int referenceMinute =
+     f_minute(selectedTime)
+
+string ianaTimezone =
+     f_timezone(selectedTimezone)
+
+// ══════════════════════════════════════════════════════════════════════
+// 1H DATA
+// ══════════════════════════════════════════════════════════════════════
+
+[time1H, high1H, low1H] = request.security(
+     syminfo.tickerid,
+     "60",
+     [time, high, low],
+     lookahead=barmerge.lookahead_off)
+
+// ══════════════════════════════════════════════════════════════════════
+// XX:30 DATA
+// ══════════════════════════════════════════════════════════════════════
+
+[time30, high30, low30] = request.security(
+     syminfo.tickerid,
+     "30",
+     f_zone30(
+          referenceHour,
+          ianaTimezone),
+     lookahead=barmerge.lookahead_off)
+
+// ══════════════════════════════════════════════════════════════════════
+// ENGINE SELECTION
+//
+// XX:00 -> native 1H candle
+// XX:30 -> synthetic 1H range built from 2 × 30 min
+// ══════════════════════════════════════════════════════════════════════
+
+bool mode30 =
+     referenceMinute == 30
+
+int referenceTimestamp =
+     mode30 ? time30 : time1H
+
+float referenceHigh =
+     mode30 ? high30 : high1H
+
+float referenceLow =
+     mode30 ? low30 : low1H
+
+// ══════════════════════════════════════════════════════════════════════
+// REFERENCE CANDLE DETECTION
+// ══════════════════════════════════════════════════════════════════════
+
+bool referenceCandle = false
+
+if symbolAllowed and timeframeAllowed
+
+    if mode30
+        referenceCandle :=
+             not na(time30)
+
+    else
+
+        int localHour1H =
+             hour(
+                  time1H,
+                  ianaTimezone)
+
+        int localMinute1H =
+             minute(
+                  time1H,
+                  ianaTimezone)
+
+        referenceCandle :=
+             localHour1H == referenceHour and
+             localMinute1H == 0
+
+bool newZone =
+     timeframeAllowed and
+     referenceCandle and
+     not na(referenceTimestamp) and
+     (
+         na(referenceTimestamp[1]) or
+         referenceTimestamp != referenceTimestamp[1]
+     )
+
+// ══════════════════════════════════════════════════════════════════════
+// OBJECTS
+// ══════════════════════════════════════════════════════════════════════
+
+var box zone = na
+var line marker = na
+
+var array<box> zoneHistory =
+     array.new<box>()
+
+var array<line> markerHistory =
+     array.new<line>()
+
+// ══════════════════════════════════════════════════════════════════════
+// NEW ZONE CREATION
+// ══════════════════════════════════════════════════════════════════════
+
+if newZone
+
+    // Actual reference time.
+    int zoneStart =
+         referenceTimestamp
+
+    // ────────────────────────────────────────────────────────────────
+    // XX:30 VISUAL ALIGNMENT ON 1H CHARTS
+    //
+    // TF < 1H:
+    //     XX:30 remains displayed at XX:30.
+    //
+    // TF = 1H:
+    //     the rectangle starts at the opening of the 1H candle
+    //     containing the XX:30 reference time.
+    //
+    // High/Low remain calculated from the actual XX:30 -> XX+1:30 hour.
+    // ────────────────────────────────────────────────────────────────
+
+    bool alignXX30 =
+         mode30 and
+         chartSeconds == 60 * 60
+
+    int displayStart =
+         alignXX30 ?
+         time :
+         zoneStart
+
+    int displayEnd =
+         displayStart +
+         int(
+             selectedDuration *
+             60.0 *
+             60.0 *
+             1000.0)
+
+    // ────────────────────────────────────────────────────────────────
+    // MAIN RECTANGLE
+    // ────────────────────────────────────────────────────────────────
+
+    color fillColor =
+         showFill ?
+         color.new(selectedColor, transparency) :
+         color.new(selectedColor, 100)
+
+    zone := box.new(
+         left=displayStart,
+         top=referenceHigh,
+         right=displayEnd,
+         bottom=referenceLow,
+         xloc=xloc.bar_time,
+         border_color=selectedColor,
+         border_width=borderWidth,
+         bgcolor=fillColor)
+
+    array.push(
+         zoneHistory,
+         zone)
+
+    if array.size(zoneHistory) > historyZones
+
+        box oldZone =
+             array.shift(
+                  zoneHistory)
+
+        box.delete(
+             oldZone)
+
+    // ────────────────────────────────────────────────────────────────
+    // FIRST-HOUR MARKER
+    //
+    // Displayed only on timeframes below 1H.
+    // Position is always based on the ACTUAL reference time.
+    //
+    // 1m  -> XX:59
+    // 5m  -> XX:55
+    // 15m -> XX:45
+    // 30m -> XX:30
+    // ────────────────────────────────────────────────────────────────
+
+    if showMarker and
+         markerTimeframeAllowed
+
+        int candleDurationMs =
+             int(
+                 chartSeconds *
+                 1000.0)
+
+        int oneHourMs =
+             60 *
+             60 *
+             1000
+
+        int markerTime =
+             zoneStart +
+             oneHourMs
+
+        if candleDurationMs > 0 and
+             candleDurationMs < oneHourMs
+
+            markerTime :=
+                 zoneStart +
+                 oneHourMs -
+                 candleDurationMs
+
+        marker := line.new(
+             x1=markerTime,
+             y1=referenceLow,
+             x2=markerTime,
+             y2=referenceHigh,
+             xloc=xloc.bar_time,
+             extend=extend.none,
+             color=color.new(
+                  selectedColor,
+                  markerTransparency),
+             style=line.style_dashed,
+             width=MARKER_WIDTH)
+
+        array.push(
+             markerHistory,
+             marker)
+
+        if array.size(markerHistory) > historyZones
+
+            line oldMarker =
+                 array.shift(
+                      markerHistory)
+
+            line.delete(
+                 oldMarker)
+
+// ══════════════════════════════════════════════════════════════════════
+// REAL-TIME UPDATE
+// ══════════════════════════════════════════════════════════════════════
+
+if timeframeAllowed and
+     symbolAllowed and
+     referenceCandle and
+     not na(zone)
+
+    box.set_top(
+         zone,
+         referenceHigh)
+
+    box.set_bottom(
+         zone,
+         referenceLow)
+
+    if showMarker and
+         markerTimeframeAllowed and
+         not na(marker)
+
+        line.set_y1(
+             marker,
+             referenceLow)
+
+        line.set_y2(
+             marker,
+             referenceHigh)
+
+// ══════════════════════════════════════════════════════════════════════
+// RECTANGLE STYLE
+// ══════════════════════════════════════════════════════════════════════
+
+if timeframeAllowed and
+     symbolAllowed and
+     not na(zone)
+
+    color fillColor =
+         showFill ?
+         color.new(selectedColor, transparency) :
+         color.new(selectedColor, 100)
+
+    box.set_border_color(
+         zone,
+         selectedColor)
+
+    box.set_border_width(
+         zone,
+         borderWidth)
+
+    box.set_bgcolor(
+         zone,
+         fillColor)
+
+// ══════════════════════════════════════════════════════════════════════
+// MARKER STYLE
+// ══════════════════════════════════════════════════════════════════════
+
+if markerTimeframeAllowed and
+     symbolAllowed and
+     showMarker and
+     not na(marker)
+
+    line.set_color(
+         marker,
+         color.new(
+              selectedColor,
+              markerTransparency))
+
+    line.set_style(
+         marker,
+         line.style_dashed)
+
+    line.set_width(
+         marker,
+         MARKER_WIDTH)

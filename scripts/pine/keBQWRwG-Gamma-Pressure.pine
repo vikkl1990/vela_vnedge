@@ -1,0 +1,176 @@
+//@version=6
+// =============================================================================
+//  Gamma Pressure
+//  ---------------------------------------------------------------------------
+//  Independent reconstruction from the PUBLIC DESCRIPTION of the closed-source
+//  "Gamma Pulse" indicator by TheRealDrip2Rip (tradingview.com/script/BwwnMQIU).
+//  Not a copy of that script's source (never seen it) -- this is a from-scratch
+//  implementation of the general MECHANISM the description lays out: six
+//  normalized [-1,+1] sub-signals, weighted-averaged, smoothed, scaled to a
+//  -100..+100 oscillator with 0/±50/±80 reference zones. Same category of
+//  "recreate from description" project as the earlier ICT indicator work --
+//  the mechanism is inferable, the ORIGINAL'S EXACT weights/scale constants are
+//  not (never published, "calibrated for institutional sensitivity" is
+//  marketing language for "proprietary"). Treat every weight/scale input below
+//  as a starting guess to tune, not a recovered ground truth. Named differently
+//  from the original (Pressure, not Pulse) to avoid confusion with it.
+//
+//  KEY FINDING: unlike the paused GEX/Call-Wall work (real options-chain data,
+//  proxy-scraped, fragile), this composite needs NO options data at all --
+//  every leg is plain OHLCV plus one standard index ticker (VIX/VXN/RVX/DXY)
+//  via request.security. "Vanna pressure" in the original's own description is
+//  just IV-proxy (VIX-family) SLOPE, not real vanna/OI math. Much more solid
+//  ground to build on.
+//
+//  Visual "seven-layer depth" (halo/echo/memory-trail/specular) from the
+//  original is pure rendering polish, skipped here per request -- one clean
+//  line, colored by sign.
+//
+//  SYMBOL -> VOL PROXY MAP (auto-detected, matches the original's stated
+//  universe): NQ/MNQ/NDX/QQQ -> VXN. ES/MES/SPX/SPY -> VIX. RTY/M2K/RUT/IWM ->
+//  RVX. Anything else falls back to VIX (documented assumption, not a claim).
+// =============================================================================
+indicator("Gamma Pressure", overlay=false)
+
+var string G1 = "Signal Components"
+var string G2 = "Weights & Smoothing"
+var string G3 = "Zones & Display"
+
+// ---- symbol -> volatility-proxy auto-detect ----
+isNQ  = syminfo.root == "NQ"  or syminfo.root == "MNQ" or syminfo.ticker == "NDX" or syminfo.ticker == "QQQ"
+isES  = syminfo.root == "ES"  or syminfo.root == "MES" or syminfo.ticker == "SPX" or syminfo.ticker == "SPY"
+isRUT = syminfo.root == "RTY" or syminfo.root == "M2K" or syminfo.ticker == "RUT" or syminfo.ticker == "IWM"
+volTicker = isNQ ? "VXN" : isES ? "VIX" : isRUT ? "RVX" : "VIX"
+
+// =============================================================================
+// 1) Multi-bar price momentum -- short-term thrust normalized to volatility
+// =============================================================================
+momLen   = input.int(5, "Momentum lookback (bars)", group=G1, inline="mom")
+momScale = input.float(2.0, "  scale (x ATR)", minval=0.1, step=0.1, group=G1, inline="mom")
+atrVal   = ta.atr(14)
+rawMom   = close - close[momLen]
+momNorm  = atrVal > 0 ? math.max(-1.0, math.min(1.0, rawMom / (atrVal * momScale))) : 0.0
+
+// =============================================================================
+// 2) Vanna pressure -- IV-proxy (VIX-family) slope. Falling vol => dealers
+//    unwinding short-vol/covering hedges => bullish contribution (sign-flipped).
+// =============================================================================
+vanLen   = input.int(5, "Vanna: vol-slope lookback (bars)", group=G1, inline="van")
+vanScale = input.float(2.0, "  scale (vol index pts)", minval=0.1, step=0.1, group=G1, inline="van")
+volProxy = request.security(volTicker, timeframe.period, close)
+volSlope = volProxy - volProxy[vanLen]
+vanNorm  = math.max(-1.0, math.min(1.0, -volSlope / vanScale))
+
+// =============================================================================
+// 3) Volume flow rotation -- session-cumulative green/red volume, decay-weighted
+// =============================================================================
+flowDecay = input.float(0.95, "Volume flow decay (per bar)", minval=0.0, maxval=1.0, step=0.01, group=G1)
+isNewDay  = ta.change(time("D")) != 0
+var float cumFlow = 0.0
+if isNewDay
+    cumFlow := 0.0
+barFlow = close > open ? volume : close < open ? -volume : 0.0
+cumFlow := cumFlow * flowDecay + barFlow
+avgVol  = ta.sma(volume, 20)
+flowNorm = avgVol > 0 ? math.max(-1.0, math.min(1.0, cumFlow / (avgVol * 5))) : 0.0
+
+// =============================================================================
+// 4) Multi-timeframe(-ish) trend agreement -- short & medium EMA slopes
+//    (same-chart lengths, not literally cross-timeframe -- "agreement" falls
+//    out naturally: opposite-signed slopes average toward 0)
+// =============================================================================
+trendFastLen  = input.int(9,  "Trend EMA fast", group=G1, inline="trd")
+trendSlowLen  = input.int(21, "  slow", group=G1, inline="trd")
+trendSlopeLB  = input.int(3,  "  slope lookback", group=G1, inline="trd")
+emaFast  = ta.ema(close, trendFastLen)
+emaSlow  = ta.ema(close, trendSlowLen)
+slopeFast = (emaFast - emaFast[trendSlopeLB]) / trendSlopeLB
+slopeSlow = (emaSlow - emaSlow[trendSlopeLB]) / trendSlopeLB
+sF = atrVal > 0 ? math.max(-1.0, math.min(1.0, slopeFast / (atrVal * 0.5))) : 0.0
+sS = atrVal > 0 ? math.max(-1.0, math.min(1.0, slopeSlow / (atrVal * 0.5))) : 0.0
+trendNorm = (sF + sS) / 2.0
+
+// =============================================================================
+// 5) Dollar pressure -- DXY slope, sign-flipped (DXY up = risk-off = bearish)
+// =============================================================================
+dxyLen   = input.int(5, "DXY slope lookback (bars)", group=G1, inline="dxy")
+dxyScale = input.float(0.5, "  scale (DXY pts)", minval=0.01, step=0.01, group=G1, inline="dxy")
+dxyClose = request.security("DXY", timeframe.period, close)
+dxySlope = dxyClose - dxyClose[dxyLen]
+dollarNorm = math.max(-1.0, math.min(1.0, -dxySlope / dxyScale))
+
+// =============================================================================
+// 6) Volume-weighted body strength -- candle conviction x relative volume
+// =============================================================================
+range_    = high - low
+bodyRatio = range_ > 0 ? (close - open) / range_ : 0.0
+relVol    = avgVol > 0 ? math.min(volume / avgVol, 2.0) : 1.0
+bodyNorm  = math.max(-1.0, math.min(1.0, bodyRatio * relVol))
+
+// =============================================================================
+// Composite: weighted average (stays in [-1,+1] since every leg is pre-clipped
+// and weights are non-negative), smoothed, scaled to -100..+100.
+// =============================================================================
+w1 = input.float(1.0, "Weight: Momentum",         group=G2, inline="w1")
+w2 = input.float(1.0, "Weight: Vanna (vol slope)",group=G2, inline="w2")
+w3 = input.float(1.0, "Weight: Volume flow",      group=G2, inline="w3")
+w4 = input.float(1.0, "Weight: Trend agreement",  group=G2, inline="w4")
+w5 = input.float(1.0, "Weight: Dollar pressure",  group=G2, inline="w5")
+w6 = input.float(1.0, "Weight: Body strength",    group=G2, inline="w6")
+smoothLen = input.int(3, "Final smoothing (EMA bars)", minval=1, group=G2)
+slopeLB   = input.int(1, "Pressure slope lookback (bars)", minval=1, group=G2)
+
+wSum = w1 + w2 + w3 + w4 + w5 + w6
+rawComposite = wSum != 0 ?
+     (momNorm*w1 + vanNorm*w2 + flowNorm*w3 + trendNorm*w4 + dollarNorm*w5 + bodyNorm*w6) / wSum : 0.0
+pressure = ta.ema(rawComposite, smoothLen) * 100.0
+pressureSlope = (pressure - pressure[slopeLB]) / slopeLB
+
+// ---- plot (same format as MACDelta_Trade_Signals / Kalman_Slope_Trade_Signals:
+//      main value as a histogram, second plot is its slope/rate of change) ----
+showZones = input.bool(true, "Show 0/±50/±80 zones", group=G3)
+pressureCol = pressure >= 0 ? color.new(color.teal, 10) : color.new(color.maroon, 10)
+plot(pressure, "Gamma Pressure", color=pressureCol, style=plot.style_columns)
+slopeCol = pressureSlope > 0 ? color.lime : pressureSlope < 0 ? color.red : color.gray
+plot(pressureSlope, "Pressure Slope", color=slopeCol, linewidth=2)
+hline(0, "Zero", color.new(color.gray, 40))
+// hline() can't be called conditionally (local scope) -- keep it unconditional
+// and toggle visibility via full transparency instead.
+zoneA1 = showZones ? 50 : 100
+zoneA2 = showZones ? 30 : 100
+hline(50,  "+50", color.new(color.green, zoneA1), hline.style_dashed)
+hline(-50, "-50", color.new(color.red, zoneA1),   hline.style_dashed)
+hline(80,  "+80", color.new(color.green, zoneA2), hline.style_dotted)
+hline(-80, "-80", color.new(color.red, zoneA2),   hline.style_dotted)
+
+// sanity-check label: which vol proxy actually got wired for this symbol
+// (single persistent label -- barstate.islast re-fires on every realtime tick,
+// so label.new() alone would stack a new label each time; delete-and-recreate
+// keeps exactly one on screen)
+var label volProxyLabel = na
+if barstate.islast
+    label.delete(volProxyLabel)
+    volProxyLabel := label.new(bar_index, pressure, "vol proxy: " + volTicker, style=label.style_label_left,
+         color=color.new(color.blue, 80), textcolor=color.white, size=size.small)
+
+// ---- alerts (mirrors the original's stated set) ----
+bullCross   = ta.crossover(pressure, 0)
+bearCross   = ta.crossunder(pressure, 0)
+strongBull  = ta.crossover(pressure, 50)
+strongBear  = ta.crossunder(pressure, -50)
+extremeBull = pressure > 80
+extremeBear = pressure < -80
+alertcondition(bullCross,   "Pressure Bullish Cross", "Gamma Pressure crossed above zero")
+alertcondition(bearCross,   "Pressure Bearish Cross", "Gamma Pressure crossed below zero")
+alertcondition(strongBull,  "Pressure Strong Bull",   "Gamma Pressure crossed above +50")
+alertcondition(strongBear,  "Pressure Strong Bear",   "Gamma Pressure crossed below -50")
+alertcondition(extremeBull, "Pressure Extreme Bull",  "Gamma Pressure above +80")
+alertcondition(extremeBear, "Pressure Extreme Bear",  "Gamma Pressure below -80")
+
+// data window -- per-leg breakdown for tuning
+plot(momNorm,    "leg: momentum",  display=display.data_window)
+plot(vanNorm,    "leg: vanna",     display=display.data_window)
+plot(flowNorm,   "leg: vol flow",  display=display.data_window)
+plot(trendNorm,  "leg: trend agr", display=display.data_window)
+plot(dollarNorm, "leg: dollar",    display=display.data_window)
+plot(bodyNorm,   "leg: body",      display=display.data_window)

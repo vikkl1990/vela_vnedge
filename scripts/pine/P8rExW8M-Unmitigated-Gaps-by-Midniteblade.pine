@@ -1,0 +1,275 @@
+//author Midniteblade special thanks to TradingView Remix for building this indicator what a journey
+  //@version=6
+//------------------------------------------------------------------------------
+// 4H Unmitigated Gaps — FVG / Imbalance Module
+// Simplified version using stored completed 4H bars.
+// Mitigation rule: zones are deleted only on a full sweep-through, not a wick touch.
+//------------------------------------------------------------------------------
+indicator("Unmitigated Gaps by Midniteblade", overlay=true, max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+
+//#region Inputs
+showFvg = input.bool(true, "Show 4H Imbalance / FVG", group="Display")
+maxZones = input.int(50, "Max Live Zones", minval=1, maxval=200, group="Display")
+showBorder = input.bool(true, "Show Border", group="Display")
+extendRight = input.bool(true, "Extend Right", group="Display")
+showTable = input.bool(true, "Show Table", group="Display")
+showHTFCandles = input.bool(true, "Show Last 4H Candle", group="HTF Candles")
+htfCandleOffset = input.int(12, "HTF Candle Offset (bars right)", minval=0, maxval=100, group="HTF Candles")
+htfCandleWidth = input.int(6, "HTF Candle Width (bars)", minval=2, maxval=30, group="HTF Candles")
+htfShowWicks = input.bool(true, "Show Wicks", group="HTF Candles")
+htfShowLabels = input.bool(true, "Show Labels", group="HTF Candles")
+//#endregion
+
+//#region HTF series (single source, no fallback)
+[o4, h4, l4, c4, t4] = request.security(ticker.standard(syminfo.tickerid), "240", [open, high, low, close, time], lookahead=barmerge.lookahead_off)
+//#endregion
+
+//#region 4H history array
+var array<float> htfO = array.new<float>()
+var array<float> htfH = array.new<float>()
+var array<float> htfL = array.new<float>()
+var array<float> htfC = array.new<float>()
+var array<int> htfT = array.new<int>()
+var int lastT4 = na
+
+bool new4h = na(lastT4) or t4 != lastT4
+if new4h
+    if not na(o4) and not na(h4) and not na(l4) and not na(c4) and not na(t4)
+        htfO.push(o4)
+        htfH.push(h4)
+        htfL.push(l4)
+        htfC.push(c4)
+        htfT.push(t4)
+        while htfO.size() > 24
+            htfO.shift()
+            htfH.shift()
+            htfL.shift()
+            htfC.shift()
+            htfT.shift()
+    lastT4 := t4
+//#endregion
+
+//#region Zone storage
+var array<box> zoneBoxes = array.new<box>()
+var array<int> zoneDirs = array.new<int>()
+var array<float> zoneTops = array.new<float>()
+var array<float> zoneBottoms = array.new<float>()
+var array<int> zoneLeftBars = array.new<int>()
+//#endregion
+
+//#region Utility functions
+//@function Adds a new FVG zone and enforces the live-zone cap.
+//@param leftBar Left bar index for the zone.
+//@param top Zone top price.
+//@param bottom Zone bottom price.
+//@param dir Zone direction: 1 bullish, -1 bearish.
+//@param fillColor Fill color.
+//@param borderColor Border color.
+addZone(leftBar, top, bottom, dir, fillColor, borderColor) =>
+    rightBar = extendRight ? bar_index : leftBar
+    zoneBox = box.new(left=leftBar, top=top, right=rightBar, bottom=bottom, xloc=xloc.bar_index, bgcolor=fillColor, border_color=borderColor, border_width=showBorder ? 1 : 0)
+    zoneBoxes.push(zoneBox)
+    zoneDirs.push(dir)
+    zoneTops.push(top)
+    zoneBottoms.push(bottom)
+    zoneLeftBars.push(leftBar)
+    while zoneBoxes.size() > maxZones
+        oldestBox = zoneBoxes.shift()
+        oldestBox.delete()
+        zoneDirs.shift()
+        zoneTops.shift()
+        zoneBottoms.shift()
+        zoneLeftBars.shift()
+
+//@function Updates all live boxes to the current bar when extension is enabled.
+updateZoneEnds() =>
+    if extendRight
+        for bx in zoneBoxes
+            bx.set_right(bar_index)
+
+//@function Deletes mitigated zones using the full-sweep rule.
+removeMitigatedZones() =>
+    if zoneBoxes.size() > 0
+        survivingBoxes = array.new<box>()
+        survivingDirs = array.new<int>()
+        survivingTops = array.new<float>()
+        survivingBottoms = array.new<float>()
+        survivingLeftBars = array.new<int>()
+        for i = 0 to zoneBoxes.size() - 1
+            dir = zoneDirs.get(i)
+            top = zoneTops.get(i)
+            bottom = zoneBottoms.get(i)
+            mitigated = (dir == 1 and low < bottom) or (dir == -1 and high > top)
+            if mitigated
+                zoneBoxes.get(i).delete()
+            else
+                survivingBoxes.push(zoneBoxes.get(i))
+                survivingDirs.push(dir)
+                survivingTops.push(top)
+                survivingBottoms.push(bottom)
+                survivingLeftBars.push(zoneLeftBars.get(i))
+        zoneBoxes.clear()
+        zoneDirs.clear()
+        zoneTops.clear()
+        zoneBottoms.clear()
+        zoneLeftBars.clear()
+        nSurv = survivingBoxes.size()
+        if nSurv > 0
+            for i = 0 to nSurv - 1
+                zoneBoxes.push(survivingBoxes.get(i))
+                zoneDirs.push(survivingDirs.get(i))
+                zoneTops.push(survivingTops.get(i))
+                zoneBottoms.push(survivingBottoms.get(i))
+                zoneLeftBars.push(survivingLeftBars.get(i))
+
+//@function Counts live zones and finds nearest bullish/bearish levels for the table.
+//@returns Bull count, bear count, nearest bullish level, nearest bearish level.
+getStats() =>
+    bullCount = 0
+    bearCount = 0
+    float nearestBull = na
+    float nearestBear = na
+    nZones = zoneBoxes.size()
+    if nZones > 0
+        for i = 0 to nZones - 1
+            dir = zoneDirs.get(i)
+            top = zoneTops.get(i)
+            bottom = zoneBottoms.get(i)
+            if dir == 1
+                bullCount += 1
+                if bottom < close and (na(nearestBull) or bottom > nearestBull)
+                    nearestBull := bottom
+            else
+                bearCount += 1
+                if top > close and (na(nearestBear) or top < nearestBear)
+                    nearestBear := top
+    [bullCount, bearCount, nearestBull, nearestBear]
+//#endregion
+
+//#region FVG detection (walk every adjacent pair in stored history + live bar)
+var int lastFvgT = na
+bool isNewPeriod = na(lastFvgT) or t4 != lastFvgT
+n = htfH.size()
+bullFvg = false
+bearFvg = false
+
+// One-time historical sweep: three-candle FVG over stored completed periods.
+// Bullish FVG: low of candle 3 > high of candle 1  (gap between them)
+// Bearish FVG: high of candle 3 < low of candle 1
+var bool histSwept = false
+if showFvg and not histSwept and n >= 3
+    for i = 2 to n - 1
+        h1 = htfH.get(i - 2)
+        l1 = htfL.get(i - 2)
+        h3 = htfH.get(i)
+        l3 = htfL.get(i)
+        if l3 > h1
+            addZone(bar_index, l3, h1, 1, color.new(color.green, 85), color.new(color.green, 20))
+        if h3 < l1
+            addZone(bar_index, l1, h3, -1, color.new(color.red, 85), color.new(color.red, 20))
+    histSwept := true
+
+// Ongoing: three-candle FVG over the three newest STORED periods.
+// candle 1 = n-3, candle 2 = n-2, candle 3 = n-1 (the newest completed period).
+// NOTE: the live 4H bar is already pushed into the array as n-1 on the period it
+// belongs to, so using h4/l4 here would compare a bar against itself (dead test).
+// Once per new 4H period.
+if showFvg and isNewPeriod and n >= 3
+    h1 = htfH.get(n - 3)
+    l1 = htfL.get(n - 3)
+    h3 = htfH.get(n - 1)
+    l3 = htfL.get(n - 1)
+    if l3 > h1
+        bullFvg := true
+        addZone(bar_index, l3, h1, 1, color.new(color.green, 85), color.new(color.green, 20))
+        lastFvgT := t4
+    if h3 < l1
+        bearFvg := true
+        addZone(bar_index, l1, h3, -1, color.new(color.red, 85), color.new(color.red, 20))
+        lastFvgT := t4
+//#endregion
+
+//#region Zone maintenance
+updateZoneEnds()
+removeMitigatedZones()
+//#endregion
+
+//#region HTF candles
+var array<box> htfBoxes = array.new<box>()
+var array<line> htfWicks = array.new<line>()
+var array<label> htfLabels = array.new<label>()
+
+if barstate.islast and showHTFCandles
+    if htfBoxes.size() > 0
+        for b in htfBoxes
+            b.delete()
+        htfBoxes.clear()
+    if htfWicks.size() > 0
+        for wick in htfWicks
+            wick.delete()
+        htfWicks.clear()
+    if htfLabels.size() > 0
+        for lb in htfLabels
+            lb.delete()
+        htfLabels.clear()
+
+    if not na(o4) and not na(h4) and not na(l4) and not na(c4)
+        slotRight = bar_index + htfCandleOffset + htfCandleWidth
+        slotLeft = slotRight - htfCandleWidth
+        isBull = c4 > o4
+        isBear = c4 < o4
+        fillColor = isBull ? color.new(color.green, 60) : isBear ? color.new(color.red, 60) : color.new(color.gray, 60)
+        borderColor = isBull ? color.new(color.green, 10) : isBear ? color.new(color.red, 10) : color.new(color.gray, 10)
+        htfBox = box.new(left=slotLeft, top=math.max(o4, c4), right=slotRight, bottom=math.min(o4, c4), xloc=xloc.bar_index, bgcolor=fillColor, border_color=borderColor, border_width=1)
+        htfBoxes.push(htfBox)
+        if htfShowWicks
+            cx = (slotLeft + slotRight) / 2
+            htfWick = line.new(x1=cx, y1=l4, x2=cx, y2=h4, xloc=xloc.bar_index, color=borderColor, width=1)
+            htfWicks.push(htfWick)
+        if htfShowLabels
+            htfLabel = label.new(x=slotRight, y=c4, text="4H " + str.tostring(c4, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, color=fillColor, textcolor=color.black, size=size.small)
+            htfLabels.push(htfLabel)
+//#endregion
+
+//#region Table
+var table infoTable = table.new(position.top_right, 2, 13, border_width=1)
+if barstate.islast and showTable
+    [bullCount, bearCount, nearestBull, nearestBear] = getStats()
+    curHL = n >= 1 ? str.tostring(htfH.get(n - 1), format.mintick) + " / " + str.tostring(htfL.get(n - 1), format.mintick) : "n/a / n/a"
+    prevHL = n >= 2 ? str.tostring(htfH.get(n - 2), format.mintick) + " / " + str.tostring(htfL.get(n - 2), format.mintick) : "n/a / n/a"
+    infoTable.cell(0, 0, "4H Unmitigated Gaps", text_color=color.white, bgcolor=color.black, text_size=size.small)
+    infoTable.cell(1, 0, "SRC: primary", text_color=color.white, bgcolor=color.black, text_size=size.small)
+    infoTable.cell(0, 1, "Bullish Live", text_color=color.white, bgcolor=color.black, text_size=size.small)
+    infoTable.cell(1, 1, str.tostring(bullCount), text_color=color.white, bgcolor=color.new(color.black, 80), text_size=size.small)
+    infoTable.cell(0, 2, "Bearish Live", text_color=color.white, bgcolor=color.black, text_size=size.small)
+    infoTable.cell(1, 2, str.tostring(bearCount), text_color=color.white, bgcolor=color.new(color.black, 80), text_size=size.small)
+    infoTable.cell(0, 3, "Nearest Bull Below", text_color=color.white, bgcolor=color.black, text_size=size.small)
+    infoTable.cell(1, 3, na(nearestBull) ? "n/a" : str.tostring(nearestBull, format.mintick), text_color=color.white, bgcolor=color.new(color.black, 80), text_size=size.small)
+    infoTable.cell(0, 4, "Nearest Bear Above", text_color=color.white, bgcolor=color.black, text_size=size.small)
+    infoTable.cell(1, 4, na(nearestBear) ? "n/a" : str.tostring(nearestBear, format.mintick), text_color=color.white, bgcolor=color.new(color.black, 80), text_size=size.small)
+    infoTable.cell(0, 5, "4H bars stored", text_color=color.white, bgcolor=color.black, text_size=size.small)
+    infoTable.cell(1, 5, str.tostring(htfH.size()), text_color=color.white, bgcolor=color.new(color.black, 80), text_size=size.small)
+    infoTable.cell(0, 6, "4H high (live)", text_color=color.white, bgcolor=color.black, text_size=size.small)
+    infoTable.cell(1, 6, na(h4) ? "na" : str.tostring(h4, format.mintick), text_color=color.white, bgcolor=color.new(color.black, 80), text_size=size.small)
+    infoTable.cell(0, 7, "4H low (live)", text_color=color.white, bgcolor=color.black, text_size=size.small)
+    infoTable.cell(1, 7, na(l4) ? "na" : str.tostring(l4, format.mintick), text_color=color.white, bgcolor=color.new(color.black, 80), text_size=size.small)
+    infoTable.cell(0, 8, "Cur period H / L", text_color=color.white, bgcolor=color.black, text_size=size.small)
+    infoTable.cell(1, 8, curHL, text_color=color.white, bgcolor=color.new(color.black, 80), text_size=size.small)
+    infoTable.cell(0, 9, "Prev period H / L", text_color=color.white, bgcolor=color.black, text_size=size.small)
+    infoTable.cell(1, 9, prevHL, text_color=color.white, bgcolor=color.new(color.black, 80), text_size=size.small)
+    infoTable.cell(0, 10, "new4h / isNewPeriod", text_color=color.white, bgcolor=color.black, text_size=size.small)
+    infoTable.cell(1, 10, str.tostring(new4h) + " / " + str.tostring(isNewPeriod), text_color=color.white, bgcolor=color.new(color.black, 80), text_size=size.small)
+    infoTable.cell(0, 11, "bullFvg / bearFvg", text_color=color.white, bgcolor=color.black, text_size=size.small)
+    infoTable.cell(1, 11, str.tostring(bullFvg) + " / " + str.tostring(bearFvg), text_color=color.white, bgcolor=color.new(color.black, 80), text_size=size.small)
+    // --- DEBUG: last three stored htfH / htfL pairs ---
+    dbg = "n/a"
+    if htfH.size() >= 3
+        i2 = htfH.size() - 3
+        i1 = htfH.size() - 2
+        i0 = htfH.size() - 1
+        dbg := str.tostring(htfH.get(i2), format.mintick) + "/" + str.tostring(htfL.get(i2), format.mintick) + " | " + str.tostring(htfH.get(i1), format.mintick) + "/" + str.tostring(htfL.get(i1), format.mintick) + " | " + str.tostring(htfH.get(i0), format.mintick) + "/" + str.tostring(htfL.get(i0), format.mintick)
+    else if htfH.size() >= 1
+        dbg := str.tostring(htfH.get(htfH.size() - 1), format.mintick) + "/" + str.tostring(htfL.get(htfL.size() - 1), format.mintick)
+    infoTable.cell(0, 12, "DBG H/L [n-3|n-2|n-1]", text_color=color.white, bgcolor=color.black, text_size=size.small)
+    infoTable.cell(1, 12, dbg, text_color=color.white, bgcolor=color.new(color.black, 80), text_size=size.small)
+//#endregion

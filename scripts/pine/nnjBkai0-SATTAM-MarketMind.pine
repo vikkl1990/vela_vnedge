@@ -1,0 +1,923 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © S4tt4m
+//@version=6
+// جدول الأخبار يعمل بمكتبات toodegrees العامة (MPL-2.0)، ومصدر بياناتها
+// Pine Seeds من seed_toodegrees_toogit.
+import toodegrees/forex_factory_utility/17 as ffUtil
+import toodegrees/forex_factory_decoding/46 as ffDec
+// ═══════════════════════════════════════════════════════════════════════════
+//  SATTAM | MarketMind — لوحة تحليل متكاملة على شموع هايكن آشي:
+//  اتجاه وسوبرترند · إشارات وتأكيدات · أهداف ووقف متحرك · دعوم ومقاومات
+//  بالفوليوم · قناة سعرية · جدول أطر زمنية · جدول أخبار اقتصادية.
+// ═══════════════════════════════════════════════════════════════════════════
+indicator("SATTAM | MarketMind", "SATTAM | MarketMind", overlay = true,
+     max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+
+g1  = "① MarketMind Signal / إشارات ماركت مايند"
+g2  = "② Signals Display / عرض الإشارات"
+g3  = "③ TP / SL / GE / الأهداف والوقف"
+g4  = "④ Support & Resistance / الدعوم والمقاومات"
+g5  = "⑤ Chart Drawing / أدوات الرسم"
+g6  = "⑥ Candles / الشموع"
+g7  = "⑦ Daily & Weekly / اليومي والأسبوعي"
+g8  = "⑧ Probability / احتمالية الشمعة"
+g9  = "⑨ HTF Candles / شموع الإطار الأعلى"
+g10 = "⑩ MarketMind Table / جدول ماركت مايند"
+g11 = "⑪ News / الأخبار"
+g12 = "⑫ Timezone / التوقيت"
+
+i_mode      = input.string("MarketMind + ", "MarketMind Mode / اسلوب ماركت مايند", options = ["MarketMind", "MarketMind + ", "MarketMind + FILTER"], group = g1)
+
+i_multF     = input.float(3.0, "Fast Multiplier / مضاعف سريع", minval = 1.0, maxval = 10.0, step = 0.1, group = g1)
+i_multS     = input.float(4.0, "Slow Multiplier / مضاعف بطيء", minval = 1.0, maxval = 10.0, step = 0.1, group = g1)
+i_filtLook  = input.int(120,   "Filter Breakout Bars / نافذة اختراق الفلتر", minval = 20, maxval = 300, group = g1)
+
+i_sig       = input.bool(true,  "MarketMind Signals / اشارات ماركت مايند", group = g2)
+i_sigText   = input.bool(false, "Show Buy/Sell Text / اظهار نص البيع والشراء", group = g2)
+i_confirm   = input.bool(true,  "Enable MarketMind Confirm Signals / تمكين إشارات MarketMind Confirm", group = g2)
+
+i_rrBox     = input.bool(false, "Show Risk/Reward Boxes / عرض صناديق المخاطرة والمكافأة", group = g3)
+i_tsl       = input.bool(true,  "Enable TSL / تمكين وقف الخسارة المتحرك", group = g3)
+i_slLabel   = input.bool(true,  "Show Stop Loss Labels / عرض علامات وقف الخسارة", group = g3)
+i_tpHit     = input.bool(true,  "Show TP Hit Labels / عرض إشارات تحقيق الهدف", group = g3)
+i_tpShow    = input.bool(true,  "Show TP Targets / إظهار الأهداف TP1 TP2 TP3", group = g3)
+i_geShow    = input.bool(true,  "Show Golden Entry Label / إظهار علامة الدخول الذهبي GE", group = g3)
+i_slMult    = input.float(4.0, "Stop × ATR / مضاعف الوقف",   minval = 0.5, maxval = 15.0, step = 0.1, group = g3)
+i_geM       = input.float(1.0, "Golden Entry × ATR / الدخول الذهبي", minval = 0.1, maxval = 5.0, step = 0.1, group = g3)
+i_tp1M      = input.float(2.0, "TP1 × ATR", minval = 0.5, maxval = 20.0, step = 0.1, group = g3)
+i_tp2M      = input.float(4.0, "TP2 × ATR", minval = 0.5, maxval = 20.0, step = 0.1, group = g3)
+i_tp3M      = input.float(6.0, "TP3 × ATR", minval = 0.5, maxval = 20.0, step = 0.1, group = g3)
+i_lblSize   = input.int(3,      "Labels Size / حجم الاهداف ووقف الخسارة والدخول الذهبي", minval = 1, maxval = 5, group = g3)
+
+i_sr        = input.bool(true,  "Support & Resistance / الدعوم والمقاومات", group = g4)
+i_srVol     = input.bool(true,  "Show Volume Info / معلومات حجم الدعوم والمقاومات", group = g4)
+i_srBreak   = input.bool(false, "Show Break of S&R ($) / إظهار كسر الدعوم والمقاومات", group = g4)
+
+i_ma        = input.bool(false, "MarketMind MA / متوسط ماركت مايند السعري", group = g5)
+i_channel   = input.bool(true,  "MarketMind Channel / قناة ماركت مايند السعرية", group = g5)
+i_fib       = input.bool(false, "Fibonacci / فيبوناتشي", group = g5)
+i_fibType   = input.string("Internal", "Fibonacci Type / نوع الفيبوناتشي", options = ["Internal", "External", "Both"], group = g5)
+i_struct    = input.bool(false, "Structure Breaks (CHoCH & BoS) / الهيكلية", group = g5)
+i_structTyp = input.string("Internal", "Structure Type / نوع الهيكلية", options = ["Internal", "External", "Both"], group = g5)
+
+i_paint     = input.bool(true,  "Paint Bars / تلوين الشموع", group = g6)
+i_colDn     = input.color(#e91e63, "DownTrend Color / لون الشموع الهابطة", group = g6)
+i_colUp     = input.color(#00bcd4, "UpTrend Color / لون الشموع الصاعدة", group = g6)
+
+i_pdhl      = input.bool(false, "Previous Day High/Low (PDH/PDL) / أعلى وأدنى اليوم السابق", group = g7)
+i_dayDiv    = input.bool(false, "Daily Divider / الفاصل اليومي", group = g7)
+i_pwhl      = input.bool(false, "Previous Week High/Low (PWH/PWL) / أعلى وأدنى الأسبوع السابق", group = g7)
+i_weekDiv   = input.bool(false, "Weekly Divider / الفاصل الأسبوعي", group = g7)
+
+i_nextPct   = input.bool(false, "Next Candles % / احتمالية الشمعة القادمة", group = g8)
+
+i_htf       = input.bool(false, "Show HTF Candles / اظهار شموع الاطار الزمني الاكبر", group = g9)
+i_htfVP     = input.bool(false, "Show Volume Profile / اظهار البروفايل", group = g9)
+i_htfTF     = input.timeframe("D", "Timeframe / الإطار الزمني", group = g9)
+i_htfCount  = input.int(1, "Amount of Candles / عدد الشموع", minval = 1, maxval = 10, group = g9)
+
+i_table     = input.bool(true,  "Show MarketMind Table / جدول ماركت مايند", group = g10)
+i_tblV      = input.string("bottom", "Vertical Position / الموقع الرأسي", options = ["top", "middle", "bottom"], group = g10)
+i_tblH      = input.string("right", "Horizontal Position / الموقع الأفقي", options = ["left", "center", "right"], group = g10)
+i_tblSize   = input.string("Tiny / صغير جداً", "Table Size / حجم الجدول", options = ["Tiny / صغير جداً", "Small / صغير", "Normal / عادي", "Large / كبير", "Huge / ضخم"], group = g10)
+i_tblTheme  = input.string("Classic / كلاسيكي", "Table Colors / ألوان الجدول", options = ["Classic / كلاسيكي", "Dark / خلفية سوداء"], group = g10)
+
+i_news      = input.bool(true,  "Show News / عرض الاخبار", group = g11)
+i_newsType  = input.string("Today", "Table Type / نوع الجدول", options = ["Today", "This Week"], group = g11)
+i_newsTime  = input.string("AM/PM", "Time Format / تنسيق الوقت", options = ["24H", "AM/PM"], group = g11)
+i_newsH     = input.string("Right", "Horizontal Align / المحاذاة الأفقية", options = ["Left", "Center", "Right"], group = g11)
+i_newsV     = input.string("Top", "Vertical Align / المحاذاة العمودية", options = ["Top", "Middle", "Bottom"], group = g11)
+i_newsSize  = input.string("Tiny / صغير جداً", "Table Size / حجم الجدول", options = ["Tiny / صغير جداً", "Small / صغير", "Normal / عادي", "Large / كبير", "Huge / ضخم"], group = g11)
+i_newsCur   = input.bool(false, "Symbol currency only / أخبار عملة الرمز فقط", group = g11)
+i_newsHigh  = input.bool(true,  "🔴 High / عالي",      group = g11, inline = "imp")
+i_newsMed   = input.bool(true,  "🟠 Medium / متوسط",   group = g11, inline = "imp")
+i_newsLow   = input.bool(false, "🟡 Low / منخفض",      group = g11, inline = "imp2")
+i_newsHol   = input.bool(false, "⚪ Holiday / عطلة",    group = g11, inline = "imp2")
+
+i_tzOn      = input.bool(true, "Custom Timezone (UTC) / التوقيت الزمني المخصص", group = g12)
+i_tzH       = input.int(3, "Hours / الساعات", minval = -12, maxval = 14, group = g12)
+i_tzM       = input.int(0, "Minutes / دقيقة", minval = 0, maxval = 59, group = g12)
+
+g13 = "⑬ External Data / بيانات خارجية"
+
+// بيانات خارجية اختيارية — كلها مطفأة افتراضياً.
+i_nbOn      = input.bool(false, "Block signals around news / حجب الإشارات حول الأخبار", group = g13)
+i_nbBefore  = input.int(15,  "Minutes before / دقائق قبل", minval = 0, maxval = 240, group = g13, inline = "nb")
+i_nbAfter   = input.int(15,  "Minutes after / دقائق بعد",  minval = 0, maxval = 240, group = g13, inline = "nb")
+i_nbRedOnly = input.bool(true, "High impact only / الأحمر فقط", group = g13)
+
+i_macroOn   = input.bool(false, "Macro filter (DXY / US10Y) / فلتر الدولار والعائد", group = g13)
+i_macroSrc  = input.string("Both", "Source / المصدر", options = ["DXY", "US10Y", "Both"], group = g13)
+i_macroLen  = input.int(20, "MA length / طول المتوسط", minval = 2, maxval = 200, group = g13)
+
+i_cotOn     = input.bool(false, "Show COT row / إظهار صف COT", group = g13)
+i_cotCode   = input.string("088691", "CFTC code / رمز CFTC (ذهب 088691 · ناسداك 209742 · S&P 13874A)", group = g13)
+
+i_finOn     = input.bool(false, "Show fundamentals row / إظهار صف أساسيات الشركة", group = g13)
+i_finField  = input.string("Revenue", "Field / الحقل", options = ["Revenue", "EPS", "Net income", "Debt/Equity"], group = g13)
+
+
+// ── لوحة ألوان MarketMind
+SIG_UP   = #61c1fd
+SIG_DN   = #ff0000
+CONF_UP  = #00ddff
+CONF_DN  = #ff0000
+TP_COL   = #4caf50
+GE_COL   = #fdd835
+SL_COL   = #f23645
+TSL_COL  = #ff5252
+ZONE_SUP = #f02424
+ZONE_DEM = #00ddfb
+
+// ═══════════════════════ ١) شموع هايكن آشي ═══════════════
+var float haOpen = na
+haClose = (open + high + low + close) / 4
+haOpen := na(haOpen[1]) ? (open + close) / 2 : (haOpen[1] + haClose[1]) / 2
+haHigh  = math.max(high, math.max(haOpen, haClose))
+haLow   = math.min(low,  math.min(haOpen, haClose))
+haUp    = haClose >= haOpen
+
+mmLine = (haOpen + haClose) / 2
+
+// ═══════════════════════ ٢) السوبرترند على هايكن آشي ═══════════════════════
+// المضاعفات: 3.22 لوضع MarketMind و4.22 للوضعين الآخرين
+ATR_LEN   = 14
+
+haTR   = na(haClose[1]) ? haHigh - haLow : math.max(haHigh - haLow, math.max(math.abs(haHigh - haClose[1]), math.abs(haLow - haClose[1])))
+haATR  = ta.rma(haTR, ATR_LEN)
+
+f_supertrend(float _mult) =>
+    float src = (haHigh + haLow) / 2
+    var float up = na
+    var float dn = na
+    var int   tr = 1
+    float u = src - _mult * haATR
+    float d = src + _mult * haATR
+    up := na(up[1]) ? u : (haClose[1] > up[1] ? math.max(u, up[1]) : u)
+    dn := na(dn[1]) ? d : (haClose[1] < dn[1] ? math.min(d, dn[1]) : d)
+    tr := na(tr[1]) ? 1 : (tr[1] == -1 and haClose > dn[1] ? 1 : tr[1] == 1 and haClose < up[1] ? -1 : tr[1])
+    [up, dn, tr]
+
+[upFast, dnFast, trFast] = f_supertrend(i_multF)
+[upSlow, dnSlow, trSlow] = f_supertrend(i_multS)
+
+fastMode = i_mode == "MarketMind"
+trendDir = fastMode ? trFast : trSlow
+trendLvl = fastMode ? (trFast == 1 ? upFast : dnFast) : (trSlow == 1 ? upSlow : dnSlow)
+
+flipUp = trendDir == 1  and trendDir[1] == -1
+flipDn = trendDir == -1 and trendDir[1] == 1
+
+// ═══════════════════════ ٣) منظومة التقييم (BULL/BEAR) ════════════════════
+// منظومة تقييم من ثمانية مكوّنات: اتجاه ستة أطر زمنية + RSI + الزخم.
+// اتجاه كل إطار = السعر مقابل متوسطه الأسّي على ذلك الإطار.
+f_tfBias() => close < ta.ema(close, 20) ? -1 : 1
+f_tfTrend(string tf) =>
+    request.security(syminfo.tickerid, tf, f_tfBias(), lookahead = barmerge.lookahead_off)
+
+t3m  = f_tfTrend("3")
+t5m  = f_tfTrend("5")
+t15m = f_tfTrend("15")
+t1h  = f_tfTrend("60")
+t4h  = f_tfTrend("240")
+t1d  = f_tfTrend("D")
+
+rsiV   = ta.rsi(close, 14)
+rsiBull = rsiV > 55
+rsiBear = rsiV < 45
+momBull = haClose > haOpen
+momBear = haClose < haOpen
+
+bullCnt = (t3m == 1 ? 1 : 0) + (t5m == 1 ? 1 : 0) + (t15m == 1 ? 1 : 0) + (t1h == 1 ? 1 : 0) + (t4h == 1 ? 1 : 0) + (t1d == 1 ? 1 : 0) + (rsiBull ? 1 : 0) + (momBull ? 1 : 0)
+bearCnt = (t3m == -1 ? 1 : 0) + (t5m == -1 ? 1 : 0) + (t15m == -1 ? 1 : 0) + (t1h == -1 ? 1 : 0) + (t4h == -1 ? 1 : 0) + (t1d == -1 ? 1 : 0) + (rsiBear ? 1 : 0) + (momBear ? 1 : 0)
+// النسبة = عدد المكوّنات المحققة ÷ 8.
+bullPct = math.round(bullCnt / 8 * 100)
+bearPct = math.round(bearCnt / 8 * 100)
+
+// ═══════════════════════ ⑪ جدول الأخبار ═══════════
+// بيانات الأخبار ليست مضمّنة في السكربت بل تأتي من
+// Pine Seeds عبر request.seed("seed_toodegrees_toogit", "TOODEGREES_FOREX_FACTORY_SLOT_n").
+// كل خبر عدد بصيغة DCHHMMI%T: يوم الأسبوع، العملة (1=AUD…9=USD)، الوقت 24h،
+// التأثير (1 أبيض → 4 أحمر)، ثم معرّف العنوان. المرجع الزمني America/New_York.
+f_ffSeed(string slot) =>
+    request.seed("seed_toodegrees_toogit", slot,
+         str.tostring(open) + "," + str.tostring(high) + "," + str.tostring(low) + "," + str.tostring(close) + "," + str.tostring(volume))
+
+f_ffRequest() =>
+    [f_ffSeed("TOODEGREES_FOREX_FACTORY_SLOT_1"), f_ffSeed("TOODEGREES_FOREX_FACTORY_SLOT_2"),
+     f_ffSeed("TOODEGREES_FOREX_FACTORY_SLOT_3"), f_ffSeed("TOODEGREES_FOREX_FACTORY_SLOT_4"),
+     f_ffSeed("TOODEGREES_FOREX_FACTORY_SLOT_5"), f_ffSeed("TOODEGREES_FOREX_FACTORY_SLOT_6"),
+     f_ffSeed("TOODEGREES_FOREX_FACTORY_SLOT_7"), f_ffSeed("TOODEGREES_FOREX_FACTORY_SLOT_8"),
+     f_ffSeed("TOODEGREES_FOREX_FACTORY_SLOT_9")]
+
+method ffRead(ffUtil.News[] N, string S1, string S2, string S3, string S4, string S5, string S6, string S7, string S8, string S9) =>
+    ffDec.readNews(N, S1), ffDec.readNews(N, S2), ffDec.readNews(N, S3)
+    ffDec.readNews(N, S4), ffDec.readNews(N, S5), ffDec.readNews(N, S6)
+    ffDec.readNews(N, S7), ffDec.readNews(N, S8), ffDec.readNews(N, S9)
+
+// FF_Table تستقبل اسم الحجم نصاً ("Tiny"…) وتحوّله داخلياً — لا تمرّر ffUtil.size()
+f_ffSize(string sz) => sz == "Tiny / صغير جداً" ? "Tiny" : sz == "Small / صغير" ? "Small" : sz == "Normal / عادي" ? "Normal" : sz == "Large / كبير" ? "Large" : "Huge"
+
+newsOK = timeframe.in_seconds(timeframe.period) <= 86400 and timeframe.in_seconds(timeframe.period) >= 30
+
+var bool ffMidnight = false
+if hour(time, "America/New_York") == 0 and hour(time[1], "America/New_York") != 0 and not ffMidnight
+    ffMidnight := true
+ffNewDay = ffMidnight ? hour(time, "America/New_York") == 0 and hour(time[1], "America/New_York") != 0 : timeframe.change("D")
+
+var ffCurr = array.new<ffUtil.News>()
+var ffNext = array.new<ffUtil.News>()
+var ffDay  = array.new<ffUtil.News>()
+var ffLoc  = ffUtil.boxLoc(i_newsH, i_newsV)
+var ffImp  = ffUtil.impFilter(i_newsHol, i_newsLow, i_newsMed, i_newsHigh)
+// فلترة الأخبار بعملتَي الرمز — ترتيب معاملات curFilter أبجدي:
+//   AUD CAD CHF CNY EUR GBP JPY NZD USD
+f_curOn(string c) => not i_newsCur or syminfo.currency == c or syminfo.basecurrency == c
+var ffCurF = ffUtil.curFilter(false, f_curOn("AUD"), f_curOn("CAD"), f_curOn("CHF"), f_curOn("CNY"), f_curOn("EUR"), f_curOn("GBP"), f_curOn("JPY"), f_curOn("NZD"), f_curOn("USD"))
+
+[fs1, fs2, fs3, fs4, fs5, fs6, fs7, fs8, fs9] = f_ffRequest()
+
+if newsOK
+    if timeframe.change("W")
+        ffNext := ffUtil.bubbleSort_News(ffNext)
+        if i_tzOn
+            ffNext := ffUtil.adjustTimezone(ffNext, i_tzH, i_tzM)
+        if i_newsTime == "AM/PM"
+            ffNext := ffUtil.NewsAMPM_TOD(ffNext)
+        ffCurr := ffNext.copy()
+        ffCurr := ffUtil.weekNews(ffCurr, ffCurF, ffImp)
+        ffNext.clear()
+    if ffNewDay
+        ffDay.clear()
+        ffDay := ffUtil.todayNews(ffCurr, ffDay, ffMidnight)
+    ffNext.ffRead(fs1, fs2, fs3, fs4, fs5, fs6, fs7, fs8, fs9)
+
+// ── حجب الإشارات حول الأخبار (إضافة)
+f_newsBlackout() =>
+    bool hit = false
+    if i_nbOn and ffCurr.size() > 0
+        for i = 0 to ffCurr.size() - 1
+            ffUtil.News n = ffCurr.get(i)
+            bool impOK = not i_nbRedOnly or n.imp == color.red
+            if impOK and not na(n.tmst)
+                if time >= n.tmst - i_nbBefore * 60000 and time <= n.tmst + i_nbAfter * 60000
+                    hit := true
+    hit
+newsBlackout = f_newsBlackout()
+
+// ── فلتر الدولار والعائد (إضافة) — رمزان تحقّقت من وجودهما
+dxyD  = request.security("TVC:DXY",   "D", close, ignore_invalid_symbol = true)
+us10D = request.security("TVC:US10Y", "D", close, ignore_invalid_symbol = true)
+dxyEma  = ta.ema(dxyD,  i_macroLen)
+us10Ema = ta.ema(us10D, i_macroLen)
+dxyUp  = not na(dxyD)  and dxyD  > dxyEma
+us10Up = not na(us10D) and us10D > us10Ema
+macroUp   = i_macroSrc == "DXY" ? dxyUp : i_macroSrc == "US10Y" ? us10Up : (dxyUp and us10Up)
+macroDown = i_macroSrc == "DXY" ? not dxyUp : i_macroSrc == "US10Y" ? not us10Up : (not dxyUp and not us10Up)
+// الذهب يتحرك عكس الدولار والعائد: امنع الشراء حين يصعدان، والبيع حين يهبطان
+macroBlockBuy  = i_macroOn and macroUp
+macroBlockSell = i_macroOn and macroDown
+
+// ── COT: مراكز المضاربين غير التجاريين أسبوعياً (إضافة)
+cotLong  = request.security("COT:" + i_cotCode + "_F_NCP_L", "W", close, ignore_invalid_symbol = true)
+cotShort = request.security("COT:" + i_cotCode + "_F_NCP_S", "W", close, ignore_invalid_symbol = true)
+cotNet   = nz(cotLong) - nz(cotShort)
+cotRise  = cotNet > nz(cotNet[1], cotNet)
+
+// ── أساسيات الشركة (إضافة) — تعطي na على غير الأسهم
+finField = i_finField == "Revenue" ? "TOTAL_REVENUE" : i_finField == "EPS" ? "EARNINGS_PER_SHARE_BASIC" : i_finField == "Net income" ? "NET_INCOME" : "DEBT_TO_EQUITY"
+finVal   = request.financial(syminfo.tickerid, finField, "FQ", ignore_invalid_symbol = true)
+
+// ═══════════════════════ ٤) الإشارات ═══════════════════════════════════════
+// MarketMind / MarketMind +  : إشارة عند كل انقلاب في الاتجاه.
+// MarketMind + FILTER  : إشارة عند اختراق نطاق 130 شمعة باتجاه الترند.
+//   بتوافق اتجاه 100%. لا يطابق البارات نفسها (المعدّل والسلوك فقط).
+
+// الفلتر: اختراق قمة/قاع آخر 130 شمعة باتجاه الترند، مع تناوب صارم بين
+//   الشراء والبيع — فلا تتكرر إشارتان بالاتجاه نفسه.
+brkHi = ta.highest(high, i_filtLook)[1]
+brkLo = ta.lowest(low,  i_filtLook)[1]
+filterUp = trendDir ==  1 and high > brkHi
+filterDn = trendDir == -1 and low  < brkLo
+
+var int lastFilt = 0
+filterBuy  = filterUp and lastFilt !=  1
+filterSell = filterDn and lastFilt != -1
+if filterBuy
+    lastFilt :=  1
+else if filterSell
+    lastFilt := -1
+
+bool rawBuy  = false
+bool rawSell = false
+if i_mode == "MarketMind + FILTER"
+    rawBuy  := filterBuy
+    rawSell := filterSell
+else
+    rawBuy  := flipUp
+    rawSell := flipDn
+
+buySignal  = i_sig and rawBuy  and not newsBlackout and not macroBlockBuy
+sellSignal = i_sig and rawSell and not newsBlackout and not macroBlockSell
+
+plotshape(buySignal  and not i_sigText ? low  : na, "Buy",  shape.triangleup,   location.belowbar, SIG_UP, size = size.small)
+plotshape(sellSignal and not i_sigText ? high : na, "Sell", shape.triangledown, location.abovebar, SIG_DN, size = size.small)
+plotshape(buySignal  and i_sigText ? trendLvl : na, "Buy With Text",  shape.labelup,   location.absolute, color.new(#61c1fd, 54), text = "◈BUY",  textcolor = chart.fg_color, size = size.small)
+plotshape(sellSignal and i_sigText ? trendLvl : na, "Sell With Text", shape.labeldown, location.absolute, color.new(#ff0000, 80), text = "◈SELL", textcolor = chart.fg_color, size = size.small)
+
+// شروط شمعة التأكيد: جسم قوي، ذيل قصير بجهة الاتجاه، وفاصل زمني بين تأكيدين
+CONF_RUN   = 3
+CONF_TAIL  = 0.25
+CONF_BODYR = 0.30
+CONF_BODY  = 0.70
+CONF_GAP   = 6
+
+var int haRun = 1
+haRun := haUp == haUp[1] ? haRun + 1 : 1
+haBody    = math.abs(haClose - haOpen)
+haRng     = math.max(haHigh - haLow, syminfo.mintick)
+haLowWick = math.min(haOpen, haClose) - haLow
+haUpWick  = haHigh - math.max(haOpen, haClose)
+confBase  = haRun <= CONF_RUN and haBody >= CONF_BODY * haATR and haBody >= CONF_BODYR * haRng
+pullbackUp = trendDir ==  1 and haUp     and confBase and haLowWick <= CONF_TAIL * haRng
+pullbackDn = trendDir == -1 and not haUp and confBase and haUpWick  <= CONF_TAIL * haRng
+
+var int confBar = -10000
+rawConfUp = pullbackUp and bar_index - confBar >= CONF_GAP
+rawConfDn = pullbackDn and bar_index - confBar >= CONF_GAP
+if rawConfUp or rawConfDn
+    confBar := bar_index
+
+nearSignal = buySignal or sellSignal or buySignal[1] or sellSignal[1]
+confBuy  = i_confirm and rawConfUp and not nearSignal
+confSell = i_confirm and rawConfDn and not nearSignal
+plotshape(confBuy,  "MarketMind Confirm Buy",  shape.circle, location.belowbar, color.new(CONF_UP, 100), text = "◆", textcolor = CONF_UP, size = size.tiny)
+plotshape(confSell, "MarketMind Confirm Sell", shape.circle, location.abovebar, color.new(CONF_DN, 100), text = "◆", textcolor = CONF_DN, size = size.tiny)
+
+alertcondition(confBuy,  "MarketMind Confirm Buy Alert",  "{{interval}} - {{ticker}} 🔵 MarketMind Confirm Buy\n")
+alertcondition(confSell, "MarketMind Confirm Sell Alert", "{{interval}} - {{ticker}} 🔴 MarketMind Confirm Sell\n")
+
+// ═══════════════════════ ٥) الأهداف والوقف ═════════════
+
+var int   posDir  = 0
+var float entry   = na
+var float slLvl   = na
+var float geLvl   = na
+var float tp1Lvl  = na
+var float tp2Lvl  = na
+var float tp3Lvl  = na
+var float tslLvl  = na
+var bool  tp1Hit  = false
+var bool  tp2Hit  = false
+var bool  tp3Hit  = false
+var int   entryBar = na
+var label lSL     = na
+
+if buySignal or sellSignal
+    posDir   := buySignal ? 1 : -1
+    entry    := close
+    entryBar := bar_index
+    slLvl    := close - posDir * i_slMult  * haATR
+    geLvl    := close - posDir * i_geM  * haATR
+    tp1Lvl   := close + posDir * i_tp1M * haATR
+    tp2Lvl   := close + posDir * i_tp2M * haATR
+    tp3Lvl   := close + posDir * i_tp3M * haATR
+    tslLvl   := slLvl
+    tp1Hit   := false
+    tp2Hit   := false
+    tp3Hit   := false
+    label.delete(lSL)
+    if i_slLabel
+        lSL := label.new(bar_index, slLvl, "SL · " + str.tostring(slLvl, "#.####"), style = label.style_label_left, color = color.new(SL_COL, 100), textcolor = SL_COL, size = size.normal)
+
+if i_tsl and posDir != 0
+    float trail = posDir == 1 ? upSlow : dnSlow
+    tslLvl := posDir == 1 ? math.max(nz(tslLvl, trail), trail) : math.min(nz(tslLvl, trail), trail)
+
+if posDir == 1
+    if not tp1Hit and high >= tp1Lvl
+        tp1Hit := true
+        if i_tpHit
+            label.new(bar_index, na, "✓" + "1", yloc = yloc.abovebar, style = label.style_label_up, color = color.new(TP_COL, 100), textcolor = TP_COL, size = size.tiny)
+    if not tp2Hit and high >= tp2Lvl
+        tp2Hit := true
+        if i_tpHit
+            label.new(bar_index, na, "✓" + "2", yloc = yloc.abovebar, style = label.style_label_up, color = color.new(TP_COL, 100), textcolor = TP_COL, size = size.tiny)
+    if not tp3Hit and high >= tp3Lvl
+        tp3Hit := true
+        if i_tpHit
+            label.new(bar_index, na, "✓" + "3", yloc = yloc.abovebar, style = label.style_label_up, color = color.new(TP_COL, 100), textcolor = TP_COL, size = size.tiny)
+if posDir == -1
+    if not tp1Hit and low <= tp1Lvl
+        tp1Hit := true
+        if i_tpHit
+            label.new(bar_index, na, "✓" + "1", yloc = yloc.belowbar, style = label.style_label_down, color = color.new(TP_COL, 100), textcolor = TP_COL, size = size.tiny)
+    if not tp2Hit and low <= tp2Lvl
+        tp2Hit := true
+        if i_tpHit
+            label.new(bar_index, na, "✓" + "2", yloc = yloc.belowbar, style = label.style_label_down, color = color.new(TP_COL, 100), textcolor = TP_COL, size = size.tiny)
+    if not tp3Hit and low <= tp3Lvl
+        tp3Hit := true
+        if i_tpHit
+            label.new(bar_index, na, "✓" + "3", yloc = yloc.belowbar, style = label.style_label_down, color = color.new(TP_COL, 100), textcolor = TP_COL, size = size.tiny)
+
+// ليبلات المستويات الحيّة على آخر شمعة
+f_lblSize(int n) => n <= 1 ? size.tiny : n == 2 ? size.small : n == 3 ? size.normal : n == 4 ? size.large : size.huge
+var label lTP1 = na
+var label lTP2 = na
+var label lTP3 = na
+var label lGE  = na
+var label lTSL = na
+if barstate.islast and posDir != 0
+    label.delete(lTP1), label.delete(lTP2), label.delete(lTP3), label.delete(lGE), label.delete(lTSL)
+    string dash = ""
+    if i_tpShow
+        lTP1 := label.new(bar_index, tp1Lvl, dash + "TP1 · " + str.tostring(tp1Lvl, "#.####"), style = label.style_label_left, color = color.new(color.white, 100), textcolor = TP_COL, size = f_lblSize(i_lblSize))
+        lTP2 := label.new(bar_index, tp2Lvl, dash + "TP2 · " + str.tostring(tp2Lvl, "#.####"), style = label.style_label_left, color = color.new(color.white, 100), textcolor = TP_COL, size = f_lblSize(i_lblSize))
+        lTP3 := label.new(bar_index, tp3Lvl, dash + "TP3 · " + str.tostring(tp3Lvl, "#.####"), style = label.style_label_left, color = color.new(color.white, 100), textcolor = TP_COL, size = f_lblSize(i_lblSize))
+    if i_geShow
+        lGE := label.new(bar_index, geLvl, dash + "GE · " + str.tostring(geLvl, "#.####"), style = label.style_label_left, color = color.new(GE_COL, 100), textcolor = GE_COL, size = f_lblSize(i_lblSize))
+    if i_tsl
+        lTSL := label.new(bar_index + 4, tslLvl, "TSL · " + str.tostring(tslLvl, "#.####"), style = label.style_label_left, color = color.new(color.white, 100), textcolor = TSL_COL, size = f_lblSize(i_lblSize))
+
+// صناديق المخاطرة/المكافأة (مطفأة افتراضياً)
+var box rrRisk = na
+var box rrRew  = na
+if i_rrBox and barstate.islast and posDir != 0
+    box.delete(rrRisk), box.delete(rrRew)
+    rrRisk := box.new(entryBar, entry, bar_index, slLvl,  bgcolor = color.new(#f23645, 85), border_color = color.new(#f23645, 60))
+    rrRew  := box.new(entryBar, entry, bar_index, tp3Lvl, bgcolor = color.new(#4caf50, 85), border_color = color.new(#4caf50, 60))
+
+// ═══════════════════════ ٦) الدعوم والمقاومات ══════════════
+SR_PIVOT   = 10      // ta.pivothigh/low(10, 10)
+SR_HEIGHT  = 0.40    // × ta.atr(50) عند شمعة التأكيد
+SR_MINGAP  = 2.0     // × ta.atr(50)  — تباعد أدنى بين مستويات من نفس النوع
+SR_EXTEND  = 50      // امتداد الصندوق يميناً
+SR_LBLOFF  = 50     // إزاحة ليبل الفوليوم = الطول الكلي لعمودَي الفوليوم
+SR_VOLLEN  = 50     // عمودا الفوليوم مجموع طولهما 49 شمعة دائماً
+SR_MAXLIVE = 12      // أقصى عدد مناطق حيّة (الأقدم يُحذف)
+
+atr50    = ta.atr(50)
+volSma20 = ta.sma(volume, 20)
+atrAvg50 = ta.sma(haATR, 50)
+
+// مصفوفات متوازية مرتّبة بترتيب الإنشاء (0 = الأقدم)
+var array<int>   zKind = array.new<int>()    // 1 = مقاومة، -1 = دعم
+var array<float> zLvl  = array.new<float>()
+var array<box>   zBox  = array.new<box>()
+var array<label> zLbl  = array.new<label>()
+var array<box>   zVolA = array.new<box>()   // عمود الشراء
+var array<box>   zVolB = array.new<box>()   // عمود البيع
+
+f_farEnough(int kind, float lvl, float gap) =>
+    bool ok = true
+    if array.size(zLvl) > 0
+        for i = 0 to array.size(zLvl) - 1
+            if array.get(zKind, i) == kind and math.abs(lvl - array.get(zLvl, i)) < gap
+                ok := false
+    ok
+
+f_zoneDrop(int i) =>
+    box.delete(array.get(zBox, i))
+    label.delete(array.get(zLbl, i))
+    box.delete(array.get(zVolA, i))
+    box.delete(array.get(zVolB, i))
+    array.remove(zKind, i), array.remove(zLvl, i), array.remove(zBox, i), array.remove(zLbl, i)
+    array.remove(zVolA, i), array.remove(zVolB, i)
+
+ph = ta.pivothigh(high, SR_PIVOT, SR_PIVOT)
+pl = ta.pivotlow(low,  SR_PIVOT, SR_PIVOT)
+
+upVol   = math.sum(close >= open ? volume : 0, SR_PIVOT * 2 + 1)
+dnVol   = math.sum(close <  open ? volume : 0, SR_PIVOT * 2 + 1)
+totVol  = na(volume) ? float(na) : upVol + dnVol
+sellSh  = na(volume) ? float(na) : (totVol > 0 ? dnVol / totVol : 0.0)
+sellLen = math.round(SR_VOLLEN * sellSh)
+buyLen  = SR_VOLLEN - sellLen
+volTxtRes = str.tostring(totVol, format.volume) + "  ·  " + str.tostring(math.round(sellSh * 100)) + "% Sell"
+volTxtSup = str.tostring(totVol, format.volume) + "  ·  " + str.tostring(math.round((1 - sellSh) * 100)) + "% Buy"
+
+f_volBars(int piv, float top, float bot, int kind) =>
+    bool  draw = i_srVol and totVol > 0
+    float share = kind == 1 ? sellSh : 1 - sellSh
+    color vc   = kind == 1 ? ZONE_SUP : ZONE_DEM
+    int   ln   = math.max(math.round(SR_VOLLEN * share), 1)
+    int   alph = math.round(84 - 44 * share)
+    box a = draw ? box.new(piv, top, piv + ln, bot, border_color = color.new(vc, math.max(alph - 25, 0)), bgcolor = color.new(vc, alph)) : na
+    box b = na
+    array.push(zVolA, a)
+    array.push(zVolB, b)
+
+if i_sr and not na(atr50)
+    float h = SR_HEIGHT * atr50
+    if not na(ph) and f_farEnough(1, ph, SR_MINGAP * atr50)
+        array.push(zKind, 1)
+        array.push(zLvl, ph)
+        array.push(zBox, box.new(bar_index - SR_PIVOT, ph, bar_index + SR_EXTEND, ph - h, border_color = color.new(ZONE_SUP, 79), bgcolor = color.new(ZONE_SUP, 79), border_width = 1))
+        array.push(zLbl, i_srVol ? label.new(bar_index - SR_PIVOT + SR_LBLOFF, ph - h / 2, volTxtRes, style = label.style_label_left, color = color.new(#363a45, 100), textcolor = ZONE_SUP, size = size.small) : na)
+        f_volBars(bar_index - SR_PIVOT, ph, ph - h, 1)
+    if not na(pl) and f_farEnough(-1, pl, SR_MINGAP * atr50)
+        array.push(zKind, -1)
+        array.push(zLvl, pl)
+        array.push(zBox, box.new(bar_index - SR_PIVOT, pl + h, bar_index + SR_EXTEND, pl, border_color = color.new(#2aa6e8, 71), bgcolor = color.new(ZONE_DEM, 78), border_width = 1))
+        array.push(zLbl, i_srVol ? label.new(bar_index - SR_PIVOT + SR_LBLOFF, pl + h / 2, volTxtSup, style = label.style_label_left, color = color.new(#363a45, 100), textcolor = ZONE_DEM, size = size.small) : na)
+        f_volBars(bar_index - SR_PIVOT, pl + h, pl, -1)
+
+// حذف المستوى عند كسره بالإغلاق + تمديد الصناديق الحيّة
+if array.size(zLvl) > 0
+    for i = array.size(zLvl) - 1 to 0
+        int   k = array.get(zKind, i)
+        float v = array.get(zLvl, i)
+        if (k == 1 and close > v) or (k == -1 and close < v)
+            if i_srBreak
+                label.new(bar_index, v, "$", style = k == 1 ? label.style_label_down : label.style_label_up, color = color.new(k == 1 ? #f02424 : #2aa6e8, 40), textcolor = color.white, size = size.tiny)
+            f_zoneDrop(i)
+        else
+            box.set_right(array.get(zBox, i), bar_index + SR_EXTEND)
+
+// سقف عدد المناطق الحيّة — يُحذف الأقدم
+while array.size(zLvl) > SR_MAXLIVE
+    f_zoneDrop(0)
+
+// ═══════════════════════ ٧) قناة ماركت مايند — انحدار خطي 100 شمعة ═════════
+CH_LEN = 100
+chMid  = ta.linreg(close, CH_LEN, 0)
+chPrev = ta.linreg(close, CH_LEN, CH_LEN - 1)
+float chDev = 0.0
+if i_channel and barstate.islast
+    float sum = 0.0
+    float slope = (chMid - chPrev) / (CH_LEN - 1)
+    for i = 0 to CH_LEN - 1
+        float fit = chMid - slope * i
+        sum += math.pow(close[i] - fit, 2)
+    chDev := 2 * math.sqrt(sum / CH_LEN)
+
+var line chUp  = na
+var line chLo  = na
+var line chMidL = na
+if i_channel and barstate.islast
+    line.delete(chUp), line.delete(chLo), line.delete(chMidL)
+    chUp   := line.new(bar_index - CH_LEN + 1, chPrev + chDev, bar_index, chMid + chDev, color = #787878, style = line.style_dashed, width = 2, extend = extend.right)
+    chLo   := line.new(bar_index - CH_LEN + 1, chPrev - chDev, bar_index, chMid - chDev, color = #787878, style = line.style_dashed, width = 2, extend = extend.right)
+    chMidL := line.new(bar_index - CH_LEN + 1, chPrev, bar_index, chMid, color = color.new(color.red, 100), width = 2, extend = extend.right)
+
+// ═══════════════════════ ٨) الأنظمة المطفأة افتراضياً ═══
+// كلها مطفأة افتراضياً وتُفعَّل من الإعدادات.
+
+// ── متوسط ماركت مايند: ta.ema(close, 34) — خطأ صفر على 500 شمعة
+MM_MA_LEN = 34
+plot(i_ma ? ta.ema(close, MM_MA_LEN) : na, "MarketMind MA", color = #2962ff, linewidth = 2)
+
+STRUCT_INT = 3
+STRUCT_EXT = 15      // طول محاور الهيكلية الخارجية
+STRUCT_KEEP = 30     // يُحتفظ بآخر 30 حدثاً فقط
+COL_BULL   = #00ddff
+COL_BEAR   = #ff004c
+
+structLen  = i_structTyp == "External" ? STRUCT_EXT : STRUCT_INT
+sPH = ta.pivothigh(high, structLen, structLen)
+sPL = ta.pivotlow(low,  structLen, structLen)
+
+var float stHigh    = na
+var int   stHighBar = na
+var float stLow     = na
+var int   stLowBar  = na
+var int   lastBreak = 0      // ‎+1 صعودي، ‎-1 هبوطي
+STRUCT_STALE = 150
+if not na(sPH) and (na(stHigh) or sPH > stHigh or bar_index - nz(stHighBar, 0) > STRUCT_STALE)
+    stHigh    := sPH
+    stHighBar := bar_index - structLen
+if not na(sPL) and (na(stLow) or sPL < stLow or bar_index - nz(stLowBar, 0) > STRUCT_STALE)
+    stLow    := sPL
+    stLowBar := bar_index - structLen
+
+var array<line>  stLn  = array.new<line>()
+var array<label> stLb1 = array.new<label>()
+var array<label> stLb2 = array.new<label>()
+
+f_structEvent(bool bull, float lvl, int pivBar, int prevDir, float atrRef) =>
+    int   x1  = pivBar + 1
+    int   x2  = bar_index - 1
+    color col = bull ? COL_BULL : COL_BEAR
+    string txt = prevDir != 0 and prevDir != (bull ? 1 : -1) ? "CHoCH" : "BoS"
+    int xm = math.floor((x1 + x2) / 2)
+    array.push(stLn,  line.new(x1, lvl, x2, lvl, color = col, style = line.style_solid, width = 1))
+    array.push(stLb1, label.new(xm, lvl, txt, style = label.style_none, color = color.new(color.white, 100), textcolor = col))
+    array.push(stLb2, label.new(xm, lvl + (bull ? 1 : -1) * atrRef * 0.08, "●", style = label.style_none, color = color.new(color.white, 100), textcolor = col))
+    while array.size(stLn) > STRUCT_KEEP
+        line.delete(array.shift(stLn))
+        label.delete(array.shift(stLb1))
+        label.delete(array.shift(stLb2))
+    bull ? 1 : -1
+
+if i_struct
+    if not na(stHigh) and close > stHigh
+        lastBreak := f_structEvent(true, stHigh, stHighBar, lastBreak, haATR)
+        stHigh := na
+    if not na(stLow) and close < stLow
+        lastBreak := f_structEvent(false, stLow, stLowBar, lastBreak, haATR)
+        stLow := na
+
+var float rngHi = na
+var float rngLo = na
+rngHi := na(stHigh) ? rngHi : stHigh
+rngLo := na(stLow)  ? rngLo : stLow
+var label lb1 = na
+var label lb0 = na
+if (i_struct or i_fib) and barstate.islast and not na(rngHi) and not na(rngLo)
+    label.delete(lb1), label.delete(lb0)
+    lb1 := label.new(bar_index + 10, rngHi, "1", style = label.style_none, color = color.new(color.white, 100), textcolor = COL_BULL)
+    lb0 := label.new(bar_index + 10, rngLo, "0", style = label.style_none, color = color.new(color.white, 100), textcolor = COL_BEAR)
+
+// نطاق خارجي مستقل ليعمل مدخل نوع الفيبوناتشي (والهيكلية الخارجية)
+ePH = ta.pivothigh(high, STRUCT_EXT, STRUCT_EXT)
+ePL = ta.pivotlow(low,  STRUCT_EXT, STRUCT_EXT)
+var float exHi    = na
+var int   exHiBar = na
+var float exLo    = na
+var int   exLoBar = na
+if not na(ePH) and (na(exHi) or ePH > exHi or bar_index - nz(exHiBar, 0) > STRUCT_STALE)
+    exHi    := ePH
+    exHiBar := bar_index - STRUCT_EXT
+if not na(ePL) and (na(exLo) or ePL < exLo or bar_index - nz(exLoBar, 0) > STRUCT_STALE)
+    exLo    := ePL
+    exLoBar := bar_index - STRUCT_EXT
+
+var line[]  fibLn = array.new<line>()
+var label[] fibLb = array.new<label>()
+
+f_drawFib(float hi, float lo, int startBar) =>
+    float rng = hi - lo
+    for k = 0 to 4
+        float ratio = array.get(array.from(0.236, 0.382, 0.500, 0.618, 0.786), k)
+        color  col  = ratio == 0.500 ? #ffbe3b : (ratio == 0.382 or ratio == 0.618) ? #c4e600 : color.new(color.white, 100)
+        float  lvl  = lo + rng * ratio
+        if ratio != 0.236 and ratio != 0.786
+            array.push(fibLn, line.new(startBar, lvl, bar_index + 10, lvl, color = col, style = line.style_dotted, width = 1))
+        array.push(fibLb, label.new(bar_index + 10, lvl, str.tostring(ratio, ratio == 0.500 ? "0.000" : "0.###"), style = label.style_none, color = color.new(color.white, 100), textcolor = col))
+
+if i_fib and barstate.islast
+    for ln in fibLn
+        line.delete(ln)
+    for lx in fibLb
+        label.delete(lx)
+    array.clear(fibLn), array.clear(fibLb)
+    bool wantInt = i_fibType == "Internal" or i_fibType == "Both"
+    bool wantExt = i_fibType == "External" or i_fibType == "Both"
+    if wantInt and not na(rngHi) and not na(rngLo)
+        f_drawFib(rngHi, rngLo, math.max(nz(stHighBar, bar_index), nz(stLowBar, bar_index)) - 1)
+    if wantExt and not na(exHi) and not na(exLo)
+        f_drawFib(exHi, exLo, math.max(nz(exHiBar, bar_index), nz(exLoBar, bar_index)) - 1)
+
+COL_PDHL = #21d7f3
+f_prevExtreme(string tf) =>
+    [prevHi, prevLo] = request.security(syminfo.tickerid, tf, [high[1], low[1]], lookahead = barmerge.lookahead_on)
+    [prevHi, prevLo]
+[pdh, pdl] = f_prevExtreme("D")
+[pwh, pwl] = f_prevExtreme("W")
+
+var line  lPDH = na, var line  lPDL = na, var line  lPWH = na, var line  lPWL = na
+var label tPDH = na, var label tPDL = na, var label tPWH = na, var label tPWL = na
+f_hline(line ln, label lx, bool on, float lvl, string txt, int back) =>
+    line.delete(ln), label.delete(lx)
+    line  nl = on and not na(lvl) ? line.new(bar_index - back, lvl, bar_index, lvl, color = color.new(COL_PDHL, 31), style = line.style_dashed, width = 1) : na
+    label nx = on and not na(lvl) ? label.new(bar_index, lvl, txt, style = label.style_label_left, color = color.new(COL_PDHL, 100), textcolor = color.new(COL_PDHL, 31)) : na
+    [nl, nx]
+if barstate.islast
+    [a1, a2] = f_hline(lPDH, tPDH, i_pdhl, pdh, "PDH", 10)
+    lPDH := a1
+    tPDH := a2
+    [b1, b2] = f_hline(lPDL, tPDL, i_pdhl, pdl, "PDL", 10)
+    lPDL := b1
+    tPDL := b2
+    [c1, c2] = f_hline(lPWH, tPWH, i_pwhl, pwh, "PWH", 45)
+    lPWH := c1
+    tPWH := c2
+    [d1, d2] = f_hline(lPWL, tPWL, i_pwhl, pwl, "PWL", 45)
+    lPWL := d1
+    tPWL := d2
+
+newDay  = timeframe.change("D")
+newWeek = timeframe.change("W")
+if (i_dayDiv and newDay) or (i_weekDiv and newWeek)
+    line.new(bar_index, 10000000000, bar_index, -10000000000, color = #dddddd, style = line.style_dashed, width = 1, xloc = xloc.bar_index)
+
+var label nxUp = na
+var label nxDn = na
+if i_nextPct and barstate.islast
+    label.delete(nxUp), label.delete(nxDn)
+    int win = 100
+    int hu = 0
+    int ld = 0
+    for k = 1 to win
+        hu += high[k] > high[k + 1] ? 1 : 0
+        ld += low[k]  < low[k + 1]  ? 1 : 0
+    nxUp := label.new(bar_index + 1, high[1], str.tostring(hu / win * 100, "#.##") + "%", style = label.style_label_left, color = color.new(#363a45, 100), textcolor = #059ae4)
+    nxDn := label.new(bar_index + 1, low[1],  str.tostring(ld / win * 100, "#.##") + "%", style = label.style_label_left, color = color.new(#363a45, 100), textcolor = #f23645)
+
+VP_ROWS   = 8
+VP_MAXLEN = 50
+// عشر شمعات من الإطار الأعلى في نداء واحد لكل سلسلة (يخدم مدخل عدد الشموع)
+f_htf10(float src) =>
+    [src, src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8], src[9]]
+[o0, o1, o2, o3, o4, o5, o6, o7, o8, o9] = request.security(syminfo.tickerid, i_htfTF, f_htf10(open),  lookahead = barmerge.lookahead_off)
+[h0, h1, h2, h3, h4, h5, h6, h7, h8, h9] = request.security(syminfo.tickerid, i_htfTF, f_htf10(high),  lookahead = barmerge.lookahead_off)
+[l0, l1, l2, l3, l4, l5, l6, l7, l8, l9] = request.security(syminfo.tickerid, i_htfTF, f_htf10(low),   lookahead = barmerge.lookahead_off)
+[c0, c1, c2, c3, c4, c5, c6, c7, c8, c9] = request.security(syminfo.tickerid, i_htfTF, f_htf10(close), lookahead = barmerge.lookahead_off)
+htfOpens  = array.from(o0, o1, o2, o3, o4, o5, o6, o7, o8, o9)
+htfHighs  = array.from(h0, h1, h2, h3, h4, h5, h6, h7, h8, h9)
+htfLows   = array.from(l0, l1, l2, l3, l4, l5, l6, l7, l8, l9)
+htfCloses = array.from(c0, c1, c2, c3, c4, c5, c6, c7, c8, c9)
+htfO2 = o0
+htfH2 = h0
+htfL2 = l0
+htfC2 = c0
+var box[] htfBx = array.new<box>()
+if (i_htf or i_htfVP) and barstate.islast and not na(htfH2)
+    for bx in htfBx
+        box.delete(bx)
+    array.clear(htfBx)
+    if i_htf
+        // عدد الشموع (i_htfCount): كل شمعة تشغل 3 بارات مع فاصل بار واحد
+        for k = 0 to i_htfCount - 1
+            float ko = array.get(htfOpens, k)
+            float kh = array.get(htfHighs, k)
+            float kl = array.get(htfLows,  k)
+            float kc = array.get(htfCloses, k)
+            if not na(kh)
+                int x0 = bar_index + 36 - k * 4
+                color kcol = kc >= ko ? #00c0e6 : #ff5252
+                array.push(htfBx, box.new(x0, math.max(ko, kc), x0 + 2, math.min(ko, kc), border_color = color.new(color.black, 100), bgcolor = color.new(kcol, 10)))
+                array.push(htfBx, box.new(x0 + 1, kh, x0 + 1, kl, border_color = color.new(kcol, 10), bgcolor = color.new(kcol, 10)))
+    if i_htfVP
+        float rowH = (htfH2 - htfL2) / VP_ROWS
+        float maxV = 0.0
+        for r = 0 to VP_ROWS - 1
+            float lo2 = htfL2 + rowH * r
+            float hi2 = lo2 + rowH
+            float vv = 0.0
+            for k = 0 to 199
+                if high[k] >= lo2 and low[k] <= hi2
+                    vv += nz(volume[k])
+            maxV := math.max(maxV, vv)
+        for r = 0 to VP_ROWS - 1
+            float lo2 = htfL2 + rowH * r
+            float hi2 = lo2 + rowH
+            float vv = 0.0
+            for k = 0 to 199
+                if high[k] >= lo2 and low[k] <= hi2
+                    vv += nz(volume[k])
+            float sh = maxV > 0 ? vv / maxV : 0
+            array.push(htfBx, box.new(bar_index + 39, hi2, bar_index + 39 + math.round(VP_MAXLEN * sh), lo2, border_color = #161a25, bgcolor = color.new(#00c0e6, math.round(100 - 90 * sh))))
+
+// ═══════════════════════ ٩) الشموع والتلوين ════════════════════════════════
+// شموع HA تُرسم شفافة تماماً (alpha 0) — قيمها تُستخدم في الحسابات فقط
+plotcandle(haUp ? haOpen : na, haUp ? haHigh : na, haUp ? haLow : na, haUp ? haClose : na, "MarketMind HA Up",
+     color = color.new(#4caf4f, 100), wickcolor = color.new(#4caf4f, 100), bordercolor = color.new(#4caf4f, 100))
+plotcandle(not haUp ? haOpen : na, not haUp ? haHigh : na, not haUp ? haLow : na, not haUp ? haClose : na, "MarketMind HA Down",
+     color = color.new(#ff5252, 100), wickcolor = color.new(#ff5252, 100), bordercolor = color.new(#ff5252, 100))
+barcolor(i_paint ? (trendDir == 1 ? i_colUp : i_colDn) : na, title = "Trend Bars")
+
+// barcolor يلوّن جسم الشمعة فقط، لذا نرسم الشمعة كاملة — جسماً وحدّاً وفتيلاً
+paintCol = trendDir == 1 ? i_colUp : i_colDn
+plotcandle(i_paint ? open : na, i_paint ? high : na, i_paint ? low : na, i_paint ? close : na, "Trend Candles",
+     color = paintCol, wickcolor = paintCol, bordercolor = paintCol)
+
+plot(trendDir ==  1 ? trendLvl : na, "Up Trend",   color = color.new(#288cb1, 100), linewidth = 2, style = plot.style_linebr)
+plot(trendDir == -1 ? trendLvl : na, "Down Trend", color = color.new(#dc9fe0, 100), linewidth = 2, style = plot.style_linebr)
+
+// ═══════════════════════ ⑩ جدول ماركت مايند ═══════════════════
+f_tblSize(string s) => s == "Tiny / صغير جداً" ? size.tiny : s == "Small / صغير" ? size.small : s == "Normal / عادي" ? size.normal : s == "Large / كبير" ? size.large : size.huge
+f_pos(string v, string h) =>
+    v == "top"    and h == "left" ? position.top_left    : v == "top"    and h == "center" ? position.top_center    : v == "top"    ? position.top_right    :
+     v == "middle" and h == "left" ? position.middle_left : v == "middle" and h == "center" ? position.middle_center : v == "middle" ? position.middle_right :
+     h == "left" ? position.bottom_left : h == "center" ? position.bottom_center : position.bottom_right
+
+bool   TB_DARK   = i_tblTheme == "Dark / خلفية سوداء"
+color  TB_BG     = TB_DARK ? #000000 : #111111
+color  TB_FRAME  = TB_DARK ? #3a4150 : #2a2e39
+color  TB_BORDER = TB_DARK ? #0a0a0a : #1a1a1a
+color  TB_TITLE  = TB_DARK ? #4dd0ff : #61c1fd
+color  TB_HEAD   = TB_DARK ? #9aa4b2 : #555555
+color  TB_HEADBG = TB_DARK ? color.new(#2a2e39, 55) : color.new(#1a1a1a, 85)
+color  TB_DIM    = TB_DARK ? #c3c9d4 : #787b86
+color  TB_DIM2   = TB_DARK ? #c3c9d4 : #555555
+color  TB_LABEL  = TB_DARK ? #ffffff : #cccccc
+color  TB_ROWBG  = TB_DARK ? color.new(#20242e, 60) : color.new(#1a1a1a, 85)
+color  TB_DEEPBG = TB_DARK ? #050505 : #0d0d0d
+color  TB_SEP    = TB_DARK ? #2f3542 : #333333
+color  TB_UP     = TB_DARK ? #00e676 : #4caf50
+color  TB_DN     = TB_DARK ? #ff5252 : #f23645
+color  TB_ON     = TB_DARK ? #4dd0ff : #61c1fd
+color  TB_OFF    = TB_DARK ? #8b93a1 : #787b86
+color  TB_OFF2   = TB_DARK ? #8b93a1 : #ff5252
+int    TB_SESS_A = TB_DARK ? 68 : 85   // خلية الجلسة النشطة
+int    TB_SESS_I = TB_DARK ? 92 : 85   // والخاملة — تبقى باهتة على الأسود
+int    TB_SESSA2 = TB_DARK ? 68 : 88
+int    TB_SESSI2 = TB_DARK ? 92 : 88
+color  TB_BULLV  = TB_DARK ? #00e676 : color.new(#888888, 30)
+color  TB_BEARV  = TB_DARK ? #ff5252 : color.new(#ff5252, 50)
+int    TB_JUDGEA = TB_DARK ? 0 : 40
+
+// $$$ = حجم الشمعة ÷ متوسط 20 بخمس درجات · VOL = التذبذب (ATR ÷ متوسطه 50)
+f_moneyTxt() =>
+    float r = na(volume) or volSma20 <= 0 ? na : volume / volSma20
+    na(r) ? "—" : r < 0.2 ? "V.Low" : r < 0.6 ? "Low" : r < 1.0 ? "Normal" : r < 1.25 ? "High" : "V.High"
+f_volaTxt() =>
+    float r = atrAvg50 <= 0 ? na : haATR / atrAvg50
+    na(r) ? "—" : r < 0.7 ? "Low" : r > 1.6 ? "High" : "Neutral"
+
+f_arrow(int t) => t == 1 ? "▲" : "▼"
+f_arrowCol(int t) => t == 1 ? TB_UP : TB_DN
+f_bar(int pct) =>
+    int filled = math.round(pct / 20.0)
+    str.repeat("▰", math.max(filled, 0)) + str.repeat("▱", math.max(5 - filled, 0))
+
+inNY  = not na(time(timeframe.period, "1300-2200"))
+inLON = not na(time(timeframe.period, "0800-1700"))
+inTYO = not na(time(timeframe.period, "0000-0900"))
+inSYD = not na(time(timeframe.period, "2200-0700"))
+
+var table mmTbl = na
+if i_table and barstate.islast
+    table.delete(mmTbl)
+    int extraRows = (i_cotOn ? 1 : 0) + (i_finOn ? 1 : 0)
+    mmTbl := table.new(f_pos(i_tblV, i_tblH), 5, 10 + extraRows, bgcolor = TB_BG, frame_color = TB_FRAME, frame_width = 1, border_color = TB_BORDER, border_width = 1)
+    sz = f_tblSize(i_tblSize)
+    table.cell(mmTbl, 0, 0, "SATTAM | MarketMind", text_color = TB_TITLE, bgcolor = TB_BG, text_size = sz, text_halign = text.align_center)
+    table.merge_cells(mmTbl, 0, 0, 4, 0)
+    for c = 0 to 4
+        table.cell(mmTbl, c, 1, array.get(array.from("Frame", "HTF", "Gauge", "Reading", "Session"), c), text_color = TB_HEAD, bgcolor = TB_HEADBG, text_size = sz)
+    table.cell(mmTbl, 0, 2, "3m "  + f_arrow(t3m),  text_color = f_arrowCol(t3m),  text_size = sz)
+    table.cell(mmTbl, 1, 2, "1h "  + f_arrow(t1h),  text_color = f_arrowCol(t1h),  text_size = sz)
+    table.cell(mmTbl, 2, 2, "FIB",  text_color = TB_DIM2, text_size = sz)
+    table.cell(mmTbl, 3, 2, "—",    text_color = TB_DIM2, text_size = sz)
+    table.cell(mmTbl, 4, 2, "NY",   text_color = inNY ? TB_ON : TB_OFF, bgcolor = color.new(inNY ? TB_ON : TB_OFF, inNY ? TB_SESS_A : TB_SESS_I), text_size = sz)
+    table.cell(mmTbl, 0, 3, "5m "  + f_arrow(t5m),  text_color = f_arrowCol(t5m),  text_size = sz)
+    table.cell(mmTbl, 1, 3, "4h "  + f_arrow(t4h),  text_color = f_arrowCol(t4h),  text_size = sz)
+    table.cell(mmTbl, 2, 3, "VOL",  text_color = TB_DIM, text_size = sz)
+    table.cell(mmTbl, 3, 3, f_volaTxt(), text_color = TB_DIM, text_size = sz)
+    table.cell(mmTbl, 4, 3, "LON",  text_color = inLON ? TB_ON : TB_OFF2, bgcolor = color.new(inLON ? TB_ON : TB_OFF2, inLON ? TB_SESSA2 : TB_SESSI2), text_size = sz)
+    table.cell(mmTbl, 0, 4, "15m " + f_arrow(t15m), text_color = f_arrowCol(t15m), text_size = sz)
+    table.cell(mmTbl, 1, 4, "D "   + f_arrow(t1d),  text_color = f_arrowCol(t1d),  text_size = sz)
+    table.cell(mmTbl, 2, 4, "RSI",  text_color = TB_DIM, text_size = sz)
+    table.cell(mmTbl, 3, 4, str.tostring(math.round(rsiV)) + (rsiV > 70 ? " OB" : rsiV < 30 ? " OS" : " Neutral"), text_color = TB_DIM, text_size = sz)
+    table.cell(mmTbl, 4, 4, "TYO",  text_color = inTYO ? TB_ON : TB_OFF2, bgcolor = color.new(inTYO ? TB_ON : TB_OFF2, inTYO ? TB_SESSA2 : TB_SESSI2), text_size = sz)
+    int shortAvg = (t3m + t5m + t15m) >= 0 ? 1 : -1
+    int longAvg  = (t1h + t4h + t1d)  >= 0 ? 1 : -1
+    table.cell(mmTbl, 0, 5, "AVG " + f_arrow(shortAvg), text_color = f_arrowCol(shortAvg), bgcolor = TB_ROWBG, text_size = sz)
+    table.cell(mmTbl, 1, 5, "AVG " + f_arrow(longAvg),  text_color = f_arrowCol(longAvg),  bgcolor = TB_ROWBG, text_size = sz)
+    table.cell(mmTbl, 2, 5, "$$$",  text_color = TB_DIM, bgcolor = TB_ROWBG, text_size = sz)
+    table.cell(mmTbl, 3, 5, f_moneyTxt(), text_color = TB_DIM, bgcolor = TB_ROWBG, text_size = sz)
+    table.cell(mmTbl, 4, 5, "SYD",  text_color = inSYD ? TB_ON : TB_OFF2, bgcolor = color.new(inSYD ? TB_ON : TB_OFF2, inSYD ? TB_SESSA2 : TB_SESSI2), text_size = sz)
+    table.cell(mmTbl, 0, 6, str.repeat("╌", 44), text_color = TB_SEP, text_size = sz)
+    table.merge_cells(mmTbl, 0, 6, 4, 6)
+    table.cell(mmTbl, 0, 7, "BULL", text_color = TB_LABEL, text_size = sz)
+    table.cell(mmTbl, 1, 7, str.tostring(bullCnt) + "/8 " + str.tostring(bullPct) + "% " + f_bar(bullPct), text_color = TB_BULLV, text_size = sz, text_halign = text.align_left)
+    table.merge_cells(mmTbl, 1, 7, 4, 7)
+    table.cell(mmTbl, 0, 8, "BEAR", text_color = TB_LABEL, text_size = sz)
+    table.cell(mmTbl, 1, 8, str.tostring(bearCnt) + "/8 " + str.tostring(bearPct) + "% " + f_bar(bearPct), text_color = TB_BEARV, text_size = sz, text_halign = text.align_left)
+    table.merge_cells(mmTbl, 1, 8, 4, 8)
+    int    dom    = math.max(bullCnt, bearCnt)
+    string domDir = bullCnt >= bearCnt ? "LONG" : "SHORT"
+    string arrow  = bullCnt >= bearCnt ? "▲" : "▼"
+    string side   = bullCnt >= bearCnt ? "BULL" : "BEAR"
+    string judge  = dom >= 7 ? arrow + " STRONG " + side : dom >= 5 ? arrow + " MODERATE " + side : dom >= 3 ? arrow + " SLIGHT " + side : "— NEUTRAL"
+    table.cell(mmTbl, 0, 9, "JUDGE", text_color = TB_LABEL, bgcolor = TB_DEEPBG, text_size = sz)
+    table.cell(mmTbl, 1, 9, judge, text_color = color.new(bullCnt >= bearCnt ? TB_UP : TB_DN, TB_JUDGEA), bgcolor = TB_DEEPBG, text_size = sz, text_halign = text.align_left)
+    table.merge_cells(mmTbl, 1, 9, 4, 9)
+
+    int r = 10
+    if i_cotOn
+        table.cell(mmTbl, 0, r, "COT", text_color = TB_LABEL, bgcolor = TB_DEEPBG, text_size = sz)
+        string cotTxt = na(cotLong) or na(cotShort) ? "— لا بيانات لهذا الرمز" : (cotRise ? "▲ " : "▼ ") + str.tostring(cotNet, format.volume) + " net"
+        table.cell(mmTbl, 1, r, cotTxt, text_color = na(cotLong) ? TB_DIM : (cotRise ? TB_UP : TB_DN), bgcolor = TB_DEEPBG, text_size = sz, text_halign = text.align_left)
+        table.merge_cells(mmTbl, 1, r, 4, r)
+        r += 1
+    if i_finOn
+        table.cell(mmTbl, 0, r, "FIN", text_color = TB_LABEL, bgcolor = TB_DEEPBG, text_size = sz)
+        string finTxt = na(finVal) ? "— ليس سهماً" : i_finField + ": " + str.tostring(finVal, format.volume)
+        table.cell(mmTbl, 1, r, finTxt, text_color = na(finVal) ? TB_DIM : TB_ON, bgcolor = TB_DEEPBG, text_size = sz, text_halign = text.align_left)
+        table.merge_cells(mmTbl, 1, r, 4, r)
+
+FF_HEAD_TXT = color.new(#dee1e9, 100)
+FF_HEAD_BG  = color.new(#283c70, 100)
+FF_ROW_TXT  = #00ccff
+FF_ROW_BG   = color.new(#dee1e9, 100)
+FF_BORDER   = chart.fg_color
+var table ffTable = ffUtil.newTable(ffLoc, FF_BORDER)
+if newsOK and i_news and ffCurr.size() > 0
+    string dailyType = timeframe.period == "D" ? "This Week" : i_newsType
+    if dailyType == "Today"
+        if ffNewDay
+            ffTable := ffUtil.FF_Table(ffDay, ffLoc, f_ffSize(i_newsSize), FF_HEAD_TXT, FF_HEAD_BG, FF_ROW_TXT, FF_ROW_BG, FF_BORDER)
+        ffUtil.timeline(ffDay, ffTable, FF_ROW_TXT, i_tzH, i_tzM, true)
+    else
+        if timeframe.change("W")
+            ffTable := ffUtil.FF_Table(ffCurr, ffLoc, f_ffSize(i_newsSize), FF_HEAD_TXT, FF_HEAD_BG, FF_ROW_TXT, FF_ROW_BG, FF_BORDER)
+        ffUtil.timeline(ffCurr, ffTable, FF_ROW_TXT, i_tzH, i_tzM)
+else
+    table.delete(ffTable)
+
+alertcondition(buySignal,  "MarketMind Buy Alert",  "{{interval}} - {{ticker}} 🔵 MarketMind Buy\n")
+alertcondition(sellSignal, "MarketMind Sell Alert", "{{interval}} - {{ticker}} 🔴 MarketMind Sell\n")

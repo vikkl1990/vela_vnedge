@@ -1,0 +1,702 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════
+//  MarketMaulers CISD  ·  v1.4
+//  ─────────────────────
+//  Change in State of Delivery, on the chart timeframe and on up to two higher
+//  timeframes at once.
+//
+//  A CISD is the open of the delivery run that raided a level and then got reclaimed.
+//  Read it as a three-candle story:
+//    C1  the candle whose high or low is the level worth taking
+//    C2  the candle that TAKES it and closes back inside. The manipulation
+//    C3  the candle that opens after it. Where the reclaim gets proven
+//  The CISD LEVEL is the open of the consecutive same-direction run that did the
+//  raiding. Price closing back through that open is delivery changing state: the run
+//  that swept is now the run that failed.
+//
+//  ─── WHAT IS AND IS NOT SOURCED ───
+//  Stated plainly because it matters. CISD is not a term with one canonical published
+//  definition an implementation can be checked against. What is here is a specific,
+//  complete and fully stated reading of it. Every rule the engine applies is written
+//  out below and readable in the source. Take none of it as received doctrine.
+//  The fractal pairing, where a CISD names a granularity and its C2 candle sits one
+//  step above it, follows the ttrades fractal model. Credit where it is due.
+//
+//  ─── THE TWO-SIDED SWEEP RULE ───
+//  A candle that takes BOTH sides of the prior candle is indecisive: no C2, no setup,
+//  in either direction. It gates everything, and it is on by default.
+//    MAULER MODE is the single exception. If that two-sided candle CLOSED beyond one of
+//    C1's extremes it was decisive after all, and the setup stands. Off by default.
+//
+//  ─── WHAT "POTENTIAL" MEANS ───
+//  One thing only: price has not closed through the level yet. It is NOT a statement
+//  about which candle the close belonged to. So when the C2's own sealing close is
+//  already through the level, the CISD is CONFIRMED at that seal and draws that way
+//  immediately. Model-neutral, every C2.
+//    Tested at the SEAL and never mid-C2, because the level RE-ANCHORS every time price
+//    sweeps a new extreme inside the candle. A bar confirming against the level as it
+//    stood an hour ago would be confirming against a level that no longer exists.
+//
+//  ─── THE FRACTAL PAIR ───
+//  A CISD timeframe names the GRANULARITY, not the candle. The C2 candle pairs one
+//  fractal step UP:
+//      1m <- 15m · 3m <- 30m · 5m <- 1H · 15m <- 4H · 1h <- 1D · 4h <- 1W · 1D <- 1M
+//  So a "5m CISD" is a 1H C1/C2 confirmed on 5m closes. That is the whole model, and it
+//  is why this does not simply hunt "the current candle sweeps the one before it" on
+//  whatever chart you happen to have open. That version fires several times an hour and
+//  says nothing.
+//  Two consequences, both worth knowing before you wonder where a level went:
+//    A CISD only draws when the chart timeframe is at or BELOW its own granularity.
+//    From a 15m chart a 5m CISD stays hidden, because the chart cannot resolve the
+//    closes that confirm it.
+//    A slot confirms at ITS OWN granularity, not the chart's. On a 5m chart the 15m
+//    slot waits for a 15m close. The architecture note below covers how.
+//  "CHART" as a selector means the chart timeframe is the granularity, so its C2 still
+//  pairs one step up. On a 5m chart that is a 1H C2. Same engine and same rule as every
+//  other slot, which is the only reason they cannot drift apart.
+//
+//  ─── ARCHITECTURE, and why there is no request.security here ───
+//  The engine ACCUMULATES its own C1/C2 candles from the bars it runs on rather than
+//  requesting a higher timeframe. So there is no request.security anywhere in this file:
+//  no lookahead idiom to get wrong, and no repaint surface at all. Confirmation reads
+//  close[1], the previous always-complete bar.
+//  Because the whole file runs on chart bars, slot granularity has to be enforced
+//  explicitly or every slot would quietly confirm at chart resolution and a 15m slot on
+//  a 5m chart would fire up to two bars early. It is enforced with a second boundary
+//  detector: on a bar where the slot's own timeframe has just rolled, close[1] IS that
+//  timeframe's sealed close, so the confirm test only consults it there. Where a slot's
+//  granularity equals the chart timeframe that is true on every bar and the gate costs
+//  nothing.
+//  Invalidation is deliberately NOT gated the same way. A raid of the C2 extreme is a
+//  raw trade, and a trade is a trade at every resolution, so it stays free to fire mid
+//  candle. The resulting order is the correct one: a level whose own candle would have
+//  closed through it, but whose C2 extreme was taken first, dies rather than confirming,
+//  because the raid happened first.
+//
+//  ─── ALERTS ───
+//  Arm, confirm and invalidate, each with its own toggle. Messages are built at runtime
+//  and name the slot timeframe, the direction, the event and the level price. Create ONE
+//  alert on this indicator with the condition set to Any alert() function call and it
+//  carries every enabled event for every slot at once.
+//  An optional killzone filter quiets alerts outside three editable windows. It touches
+//  alerts only; the chart is identical either way.
+//
+//  ─── CHANGELOG ───
+//  v1.4  killzone filter on alerts; alert messages carry the level and the slot
+//  v1.3  each slot confirms at its own granularity rather than the chart's
+//  v1.2  optional history for invalidated levels; the table reports the LAST outcome
+//
+//  Display only - NO buy/sell signals. It marks a level and reports what happened to it.
+//
+//  Built by Market Maulers
+// ═══════════════════════════════════════════════════════════════════════
+indicator("MarketMaulers CISD", shorttitle="MM CISD", overlay=true,
+     max_lines_count=500, max_labels_count=500, max_boxes_count=100)
+
+
+// ═══════════════════════════════════════════════════════════════════════
+//  INPUTS
+// ═══════════════════════════════════════════════════════════════════════
+string g_slot = "Timeframes"
+string g_rule = "Model Rules"
+string g_sty  = "Style"
+string g_tbl  = "Table"
+string g_alrt = "Alerts"
+string g_kz   = "Killzone Filter"
+
+// ── Slots ──
+// Each selector picks a CISD TIMEFRAME, which is the granularity. Its C2 candle is
+// auto-paired one fractal step up (5m -> 1H C2, 15m -> 4H C2, and so on), which is the
+// fractal model. "Chart" uses your chart timeframe as the granularity.
+string sel1 = input.string("5m",  "CISD 1", options=["Chart","1m","3m","5m","15m","1h","4h","1D","Off"], group=g_slot, tooltip="Pick the CISD TIMEFRAME. That is the granularity, NOT the candle: the C2 candle auto-pairs one fractal step up.\n\n1m from 15m · 3m from 30m · 5m from 1H · 15m from 4H · 1h from 1D · 4h from 1W · 1D from 1M\n\nSo a 5m CISD is a 1H C1/C2 confirmed on 5m closes, which is the fractal model rather than a 5m candle sweeping the 5m candle before it.\n\nA CISD only draws when your chart timeframe is at or BELOW its own. From a 15m chart a 5m CISD stays hidden, because the chart cannot resolve the closes that confirm it.")
+color c1_bl = input.color(#00adef, "", inline="c1", group=g_slot)
+color c1_br = input.color(#db5755, "", inline="c1", group=g_slot, tooltip="Bull colour then bear colour for CISD 1.")
+string sel2 = input.string("15m", "CISD 2", options=["Chart","1m","3m","5m","15m","1h","4h","1D","Off"], group=g_slot)
+color c2_bl = input.color(#26c6da, "", inline="c2", group=g_slot)
+color c2_br = input.color(#ec407a, "", inline="c2", group=g_slot, tooltip="Bull colour then bear colour for CISD 2.")
+string sel3 = input.string("Off", "CISD 3", options=["Chart","1m","3m","5m","15m","1h","4h","1D","Off"], group=g_slot)
+color c3_bl = input.color(#7e57c2, "", inline="c3", group=g_slot)
+color c3_br = input.color(#f5a800, "", inline="c3", group=g_slot, tooltip="Bull colour then bear colour for CISD 3.\n\nTwo selectors set to the same timeframe: the later one is disabled rather than drawing a duplicate on top of the first.")
+
+// ── Model rules ──
+bool in_noboth = input.bool(true, "Skip two-sided sweeps", group=g_rule, tooltip="THE TWO-SIDED SWEEP RULE. A candle that takes BOTH sides of the prior candle is indecisive: it swept the highs AND the lows, so nothing about it says which side was the manipulation. No C2, no setup, either direction.\n\nThis gates the whole model. Turning it off will produce setups on candles that argue with themselves, and is really only useful for seeing what the rule is filtering out.")
+bool in_maul   = input.bool(false, "Mauler Mode", group=g_rule, active=in_noboth, tooltip="The one exception to the rule above.\n\nIf a two-sided candle CLOSED beyond one of the prior candle's extremes, it was decisive after all: it took both sides and then committed. Mauler Mode lets that candle print its C2 while every other two-sided candle stays filtered.\n\nOff by default. It loosens the strictest gate in the model, so turn it on deliberately.")
+
+// ── Style ──
+bool   in_pot_on  = input.bool(false, "Draw potential CISD", inline="pot", group=g_sty)
+string in_pot_sty = input.string("····", "", options=["⎯⎯⎯","----","····"], inline="pot", group=g_sty, active=in_pot_on)
+int    in_pot_wid = input.int(1, "", minval=1, maxval=5, inline="pot", group=g_sty, active=in_pot_on, tooltip="A CISD is not real until price CLOSES through the level. Before that the engine is only HUNTING a level it has captured, so by default a hunt draws NOTHING.\n\nThis is the opt-in preview of that hunt, in its own line style, upgraded to the confirmed style the instant it confirms.\n\nLeave it off if you only want levels that actually happened. Turn it on if you want to see what the engine is watching before it resolves.")
+string in_cnf_sty = input.string("⎯⎯⎯", "Confirmed", inline="cnf", group=g_sty)
+int    in_cnf_wid = input.int(2, "", minval=1, maxval=5, inline="cnf", group=g_sty, tooltip="Style and thickness for a CONFIRMED CISD, which is one price has closed through.")
+string in_ext     = input.string("Current bar", "Extend to", options=["Confirm bar","Current bar","Extend right"], group=g_sty, tooltip="How far a CISD level runs to the right.\n\nConfirm bar - stops where it confirmed. The cleanest history, and the honest one: the level did its job there.\nCurrent bar - keeps running to now, so an old level stays in front of you as long as it is drawn.\nExtend right - runs off the edge of the chart.")
+bool   in_lbl_on  = input.bool(true, "Labels", inline="lbl", group=g_sty)
+string in_lbl_sz  = input.string("Small", "", options=["Tiny","Small","Normal"], inline="lbl", group=g_sty, active=in_lbl_on, tooltip="A short tag at the right end of each level naming the timeframe and whether it is confirmed. The tick means confirmed; the dot means still potential.")
+bool   in_kfail   = input.bool(false, "Keep failed CISD", group=g_sty, tooltip="OFF (default) - a CISD that gets invalidated, meaning price took the C2's own extreme before the level was ever reclaimed, is removed from the chart automatically.\n\nON - it stays as dotted, faded history with an ✕ tag, and counts against the budget below alongside confirmed levels.\n\nThis draws the failed level even if the potential preview was off. Otherwise the toggle would do nothing in the default setup, because with previews off there was never a line on the chart to keep.")
+int    in_maxk    = input.int(3, "Max CISD kept per side", minval=1, maxval=250, group=g_sty, tooltip="How many finished levels stay on the chart per direction, per slot, before the oldest is dropped. Confirmed levels always count; failed ones count too when Keep Failed is on.\n\nA DRAWING BUDGET AND NOTHING ELSE. Detection, the table and the alerts see every setup regardless of what is drawn.\n\nBEFORE YOU TURN IT UP: TradingView caps a script at 500 lines and 500 labels in total. With three slots and two directions each, 250 a side is far past that ceiling, and Pine silently drops the oldest drawings when you hit it. Past roughly 80 a side with everything on, this number stops being the thing that decides what you see.")
+
+// ── Table ──
+bool   in_tbl_on  = input.bool(true, "Show table", group=g_tbl, tooltip="A READOUT, deliberately independent of what draws.\n\nMost people run one CISD on the chart to keep it clean. That is a drawing choice and it should not decide what you are allowed to KNOW. Every enabled slot reports here whether or not it is drawing, so the chart stays as sparse as you want while the table still shows the picture.")
+string in_tbl_pos = input.string("Top Right", "Position", options=["Top Right","Top Left","Bottom Right","Bottom Left"], group=g_tbl, active=in_tbl_on)
+string in_tbl_sz  = input.string("Small", "Text size", options=["Tiny","Small","Normal"], group=g_tbl, active=in_tbl_on)
+
+// ── Alerts ──
+bool al_arm  = input.bool(false, "CISD armed (potential)", group=g_alrt, tooltip="Fires when a C2 completes and the engine captures a level to hunt. The setup exists but price has NOT closed through it yet.\n\nSET UP ONCE: create a single TradingView alert on this indicator with the condition set to Any alert() function call. That one alert carries every event you enable here, for every slot, and each message names the slot timeframe and the level price.")
+bool al_conf = input.bool(true,  "CISD confirmed", group=g_alrt, tooltip="Fires when price closes through the level. This is the change in state of delivery actually happening, and it is the one worth having on by default.\n\nSET UP ONCE: create a single TradingView alert on this indicator with the condition set to Any alert() function call. That one alert carries every event you enable here, for every slot, and each message names the slot timeframe and the level price.")
+bool al_kill = input.bool(false, "CISD invalidated", group=g_alrt, tooltip="Fires when a hunt dies without confirming, because price took the C2's own extreme. Useful as a stand-down ping.\n\nSET UP ONCE: create a single TradingView alert on this indicator with the condition set to Any alert() function call. That one alert carries every event you enable here, for every slot, and each message names the slot timeframe and the level price.")
+
+
+// ── Killzone filter ──
+// Alert gating ONLY. Ported from the sibling tools that already carry these three
+// windows: same sessions, same DST-aware reads, same inKz expression. Over there a
+// killzone consumes the setup and it never prints; here the chart is untouched and only
+// the ping is suppressed. Kept out of the engine on purpose, so this input can never
+// change what the tool detects or draws.
+bool   in_kz_on  = input.bool(false, "Filter alerts to killzones", group=g_kz, tooltip="OFF (default) - every enabled event alerts, whenever it happens.\n\nON - an alert only fires when the event lands inside one of the enabled windows below. All times are New York, and they follow DST on their own.\n\nIT ONLY TOUCHES ALERTS. Outside your windows the chart is identical: setups still arm, confirm, draw and invalidate on exactly the same rules. You just do not get pinged for them.")
+bool   in_kz1_on = input.bool(true, "", inline="kz1", group=g_kz, active=in_kz_on)
+string in_kz1_s  = input.session("0200-0500", "London  ", inline="kz1", group=g_kz, active=in_kz_on)
+bool   in_kz2_on = input.bool(true, "", inline="kz2", group=g_kz, active=in_kz_on)
+string in_kz2_s  = input.session("0830-1100", "NY AM   ", inline="kz2", group=g_kz, active=in_kz_on)
+bool   in_kz3_on = input.bool(true, "", inline="kz3", group=g_kz, active=in_kz_on)
+string in_kz3_s  = input.session("1330-1600", "NY PM   ", inline="kz3", group=g_kz, active=in_kz_on, tooltip="Three windows, each with its own toggle. The defaults are the classic killzones; edit them freely, they are ordinary session strings.")
+
+// Evaluated at global scope every bar so it is already correct whenever the transport
+// asks. time(tf, session, tz) returns na outside the window, which IS the test.
+bool inKz = not in_kz_on or
+     (in_kz1_on and not na(time(timeframe.period, in_kz1_s, "America/New_York"))) or
+     (in_kz2_on and not na(time(timeframe.period, in_kz2_s, "America/New_York"))) or
+     (in_kz3_on and not na(time(timeframe.period, in_kz3_s, "America/New_York")))
+
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MAPPERS (house library)
+// ═══════════════════════════════════════════════════════════════════════
+f_lstyle(string s) => s == "⎯⎯⎯" ? line.style_solid : s == "----" ? line.style_dashed : line.style_dotted
+f_tsize(string s)  => s == "Tiny" ? size.tiny : s == "Normal" ? size.normal : size.small
+f_tpos(string s) =>
+    switch s
+        "Top Left"     => position.top_left
+        "Bottom Right" => position.bottom_right
+        "Bottom Left"  => position.bottom_left
+        => position.top_right
+
+// Short display name for a timeframe string, for labels and the table.
+// A LOOKUP rather than arithmetic, deliberately. The obvious version parses the string
+// with str.tonumber and divides by 60, and it does not compile: str.tonumber returns
+// SERIES float, which cannot be held by an int declaration and, worse, would drag the
+// returned string to series and break the simple-string assignment below it. Cosmetics
+// are not worth a type fight, so the common cases are named and everything else falls
+// through to the raw timeframe string, which already reads fine.
+f_tfName(string tf) =>
+    string t = tf == "" ? timeframe.period : tf
+    switch t
+        "60"  => "1H"
+        "120" => "2H"
+        "180" => "3H"
+        "240" => "4H"
+        "360" => "6H"
+        "480" => "8H"
+        "720" => "12H"
+        "D"   => "1D"
+        "W"   => "1W"
+        "M"   => "1M"
+        => t
+
+
+// The fractal pair table, and it IS the model: the selector names the granularity and
+// this returns the C2 candle timeframe one fractal step up from it.
+// Footgun carried over knowingly: timeframe.in_seconds('M') is unreliable on variable
+// month length. It is only ever compared against thresholds here, so a month lands in
+// the top bucket either way.
+f_c2ForLtf(string ltfTf) =>
+    int sec = timeframe.in_seconds(ltfTf)
+    switch
+        sec >= timeframe.in_seconds("1D") => "1M"
+        sec >= 14400 => "1W"
+        sec >= 3600  => "1D"
+        sec >= 900   => "240"
+        sec >= 300   => "60"
+        sec >= 180   => "30"
+        sec >= 60    => "15"
+        => "5"
+
+// Map a CISD selector to the timeframe it hunts on.
+f_selLtf(string sel) =>
+    sel == "1m" ? "1" : sel == "3m" ? "3" : sel == "5m" ? "5" : sel == "15m" ? "15" : sel == "1h" ? "60" : sel == "4h" ? "240" : sel == "1D" ? "1D" : timeframe.period
+
+color COL_NONE = #ffffff00
+
+
+// ═══════════════════════════════════════════════════════════════════════
+//  THE ENGINE.
+//  One function, three slots. Everything the tool decides happens in here.
+//
+//  Per bar it: (1) tracks candle boundaries for `tf` and keeps the PRIOR candle's high
+//  and low, which are C1's levels; (2) tracks consecutive same-close-direction runs,
+//  where a run's open is the open of its FIRST candle; (3) when a bar raids a C1 level
+//  while making the developing candle's extreme, captures that delivery run's open as
+//  the CISD level; (4) on the candle boundary, if the completed candle printed a C2,
+//  arms a hunt at the captured level; (5) confirms on the first LTF-SEALED close through
+//  the level
+//  and kills it if price takes the C2's own extreme.
+//
+//  `var` inside a function is instanced PER CALL SITE in Pine, which is what lets one
+//  engine serve three independent slots without a line of duplicated logic.
+// ═══════════════════════════════════════════════════════════════════════
+f_cisd(string tf, string ltf) =>
+    var float htfH = na
+    var float htfL = na
+    var float htfC = na
+    var float prevH = na
+    var float prevL = na
+    // Consecutive-run tracking
+    var float dnOpen = na
+    var int   dnTime = na
+    var bool  dnBroken = true
+    var float upOpen = na
+    var int   upTime = na
+    var bool  upBroken = true
+    // Captured candidates for the DEVELOPING candle
+    var float capBull = na
+    var int   capBullT = na
+    var float capBear = na
+    var int   capBearT = na
+    // Active hunts
+    var bool  bAct = false
+    var float bLvl = na
+    var int   bStart = na
+    var float bC2Low = na
+    var int   bC3 = na
+    var int   bHunt = 0
+    var int   bConf = 0
+    var int   bKill = 0
+    var int   bConfT = na
+    var bool  sAct = false
+    var float sLvl = na
+    var int   sStart = na
+    var float sC2Hi = na
+    var int   sC3 = na
+    var int   sHunt = 0
+    var int   sConf = 0
+    var int   sKill = 0
+    var int   sConfT = na
+
+    float chg = ta.change(time(tf))
+    bool newC = not na(chg) and chg != 0
+
+    // v1.3: the LTF seal. `ltf` is the slot's GRANULARITY, `tf` is its C2 candle, and the
+    // two are not the same thing. On a bar where the LTF has just rolled, close[1] is the
+    // final chart bar of the LTF candle that just ended, so close[1] IS that candle's
+    // sealed close. Gating the confirm test on this is what makes a 15m slot confirm on
+    // 15m closes when read from a 5m chart. Every C2 timeframe in the fractal pair table
+    // is a whole multiple of its LTF, so a C2 seal is always an LTF seal too and the
+    // seal-confirm path below needs no gate of its own.
+    float lchg = ta.change(time(ltf))
+    bool newL = not na(lchg) and lchg != 0
+
+    if newC
+        // The just-completed candle is a potential C2. htfC is still ITS close here:
+        // the roll happens after this block, so this is the SEALED close.
+        bool two  = not na(prevH) and not na(prevL) and not na(htfH) and not na(htfL) and htfH > prevH and htfL < prevL
+        bool maul = in_maul and two and not na(htfC) and (htfC > prevH or htfC < prevL)
+        bool both = in_noboth and two and not maul
+        bool c2B  = not both and not na(prevL) and not na(htfL) and htfL < prevL and htfC > prevL
+        bool c2S  = not both and not na(prevH) and not na(htfH) and htfH > prevH and htfC < prevH
+
+        if c2B and not na(capBull)
+            bAct   := true
+            bLvl   := capBull
+            bStart := capBullT
+            bC2Low := htfL
+            bC3    := time
+            bHunt  += 1
+            // THE POTENTIAL RULE: potential means only that price has not closed through
+            // yet. If the C2's own sealing close is already through, it is CONFIRMED at the
+            // seal.
+            // Tested here and never mid-C2, because capBull re-anchors on every new sweep
+            // inside the candle; at the seal both level and close are final.
+            if htfC > bLvl
+                bAct  := false
+                bConf += 1
+                bConfT := time
+        if c2S and not na(capBear)
+            sAct   := true
+            sLvl   := capBear
+            sStart := capBearT
+            sC2Hi  := htfH
+            sC3    := time
+            sHunt  += 1
+            if htfC < sLvl
+                sAct  := false
+                sConf += 1
+                sConfT := time
+
+        prevH := htfH
+        prevL := htfL
+        htfH  := high
+        htfL  := low
+        capBull  := na
+        capBullT := na
+        capBear  := na
+        capBearT := na
+    else
+        htfH := math.max(nz(htfH, high), high)
+        htfL := math.min(nz(htfL, low), low)
+    htfC := close
+
+    // Delivery-run tracking. The anchor is the open of the first down-close candle after
+    // the last up-close candle. ONLY an up-close candle resets the down anchor: wicks,
+    // extremes and dojis are all transparent to it. Mirror for the up run. Runs may span
+    // candle boundaries, because delivery often starts inside the prior candle.
+    bool dnBar = close < open
+    bool upBar = close > open
+    if upBar
+        dnBroken := true
+    if dnBar and dnBroken
+        dnOpen   := open
+        dnTime   := time
+        dnBroken := false
+    if dnBar
+        upBroken := true
+    if upBar and upBroken
+        upOpen   := open
+        upTime   := time
+        upBroken := false
+
+    // Rule-A ratchet: any bar OPENING beyond the current anchor drags the anchor to its
+    // own open. A rally pulls a dead down-anchor up with it, so a shallow wick breach
+    // near the top can never capture a stale run from bars ago. The anchor always sits at
+    // the origin of the CURRENT move.
+    if not na(dnOpen) and open > dnOpen
+        dnOpen := open
+        dnTime := time
+    if not na(upOpen) and open < upOpen
+        upOpen := open
+        upTime := time
+
+    // Capture the anchor, RE-ANCHORING to the final sweep of the candle rather than the
+    // first: when price sweeps, pulls back, then sweeps again further, the delivery-run
+    // open moves to that last leg. The anchor is STRUCTURAL (a run open), so a bare noise
+    // wick past the extreme re-captures the SAME value; only a genuine pullback and
+    // resweep, which starts a new run, shifts the mark.
+    if not na(prevL) and low < prevL and low <= htfL and not na(dnOpen)
+        capBull  := dnOpen
+        capBullT := dnTime
+    if not na(prevH) and high > prevH and high >= htfH and not na(upOpen)
+        capBear  := upOpen
+        capBearT := upTime
+
+    // Process hunts. Invalidation is on a RAW TRADE through the C2 extreme (taken, not
+    // closed). Confirmation reads close[1], the previous always-complete bar, and only
+    // counts bars belonging to C3 or later, so the C2's own final bar can never confirm
+    // here - that case is handled at the seal above.
+    // v1.3: and it only reads that close on an LTF SEAL, so a slot confirms at its own
+    // granularity rather than the chart's. The kill is deliberately NOT gated the same
+    // way: a raid of the C2 extreme is a raw trade and is true at every resolution, so it
+    // has to stay free to fire mid-LTF-candle.
+    // Confirm is checked BEFORE the kill because the [1] close happened chronologically
+    // before anything on the current bar.
+    if bAct
+        if newL and not na(close[1]) and not na(bC3) and time[1] >= bC3 and close[1] > bLvl
+            bAct   := false
+            bConf  += 1
+            bConfT := time
+        else if low < bC2Low
+            bAct  := false
+            bKill += 1
+    if sAct
+        if newL and not na(close[1]) and not na(sC3) and time[1] >= sC3 and close[1] < sLvl
+            sAct   := false
+            sConf  += 1
+            sConfT := time
+        else if high > sC2Hi
+            sAct  := false
+            sKill += 1
+
+    [bAct, bLvl, bStart, bHunt, bConf, bKill, sAct, sLvl, sStart, sHunt, sConf, sKill]
+
+
+// ═══════════════════════════════════════════════════════════════════════
+//  DRAW - one call site per slot per direction, so each keeps its own handles.
+//  A hunt that never confirms leaves nothing behind. That is the point of the potential
+//  toggle: by default this file only draws levels that actually happened.
+// ═══════════════════════════════════════════════════════════════════════
+f_draw(bool en, string tf, int dir, float lvl, int startT, bool act, int huntN, int confN, int killN, color col) =>
+    var line  ln    = na
+    var label lb    = na
+    var int   hPrev = 0
+    var int   cPrev = 0
+    var int   kPrev = 0
+    var bool  isCnf = false
+    var array<line>  keepL = array.new<line>()
+    var array<label> keepB = array.new<label>()
+
+    bool newHunt = huntN != hPrev
+    bool newConf = confN != cPrev
+
+    if newHunt
+        hPrev := huntN
+        // Retire the previous drawing. A CONFIRMED one is history worth keeping, up to
+        // the budget; an unconfirmed one is a hunt that died and is simply removed.
+        if not na(ln)
+            if isCnf
+                array.push(keepL, ln)
+                array.push(keepB, lb)
+                while array.size(keepL) > in_maxk
+                    line.delete(array.get(keepL, 0))
+                    label.delete(array.get(keepB, 0))
+                    array.remove(keepL, 0)
+                    array.remove(keepB, 0)
+            else
+                line.delete(ln)
+                label.delete(lb)
+        ln := na
+        lb := na
+        isCnf := false
+        if en and in_pot_on and not na(lvl) and not na(startT)
+            ln := line.new(startT, lvl, time, lvl, xloc=xloc.bar_time, color=col,
+                 style=f_lstyle(in_pot_sty), width=in_pot_wid)
+            if in_lbl_on
+                lb := label.new(time, lvl, "CISD " + f_tfName(tf) + " ·", xloc=xloc.bar_time,
+                     style=label.style_label_left, textcolor=col, color=COL_NONE, size=f_tsize(in_lbl_sz))
+
+    if newConf
+        cPrev := confN
+        isCnf := true
+        if en and not na(lvl) and not na(startT)
+            // The level still starts at its ANCHOR even when the potential preview was
+            // off and this line is being created for the first time here. Starting it at
+            // the confirm bar would misreport where the delivery run actually opened.
+            if na(ln)
+                ln := line.new(startT, lvl, time, lvl, xloc=xloc.bar_time, color=col,
+                     style=f_lstyle(in_cnf_sty), width=in_cnf_wid)
+                if in_lbl_on
+                    lb := label.new(time, lvl, "", xloc=xloc.bar_time,
+                         style=label.style_label_left, textcolor=col, color=COL_NONE, size=f_tsize(in_lbl_sz))
+            else
+                line.set_style(ln, f_lstyle(in_cnf_sty))
+                line.set_width(ln, in_cnf_wid)
+            if not na(lb)
+                label.set_text(lb, "CISD " + f_tfName(tf) + " ✓")
+
+    // A hunt that died without confirming. Detected off the KILL COUNTER rather than off
+    // "not active and not confirmed", because the counter is the event and the state test
+    // was only ever a proxy for it. Both the hunt and the confirm paths already work this
+    // way, so this makes all three consistent.
+    if killN != kPrev
+        kPrev := killN
+        if en and in_kfail and not na(lvl) and not na(startT)
+            // Draw it even if the preview was off, or the toggle is a no-op in the
+            // default setup where nothing was on the chart to keep.
+            if na(ln)
+                ln := line.new(startT, lvl, time, lvl, xloc=xloc.bar_time,
+                     color=color.new(col, 55), style=line.style_dotted, width=in_pot_wid)
+                if in_lbl_on
+                    lb := label.new(time, lvl, "", xloc=xloc.bar_time,
+                         style=label.style_label_left, textcolor=color.new(col, 55),
+                         color=COL_NONE, size=f_tsize(in_lbl_sz))
+            else
+                line.set_style(ln, line.style_dotted)
+                line.set_color(ln, color.new(col, 55))
+            if not na(lb)
+                label.set_text(lb, "CISD " + f_tfName(tf) + " ✕")
+                label.set_textcolor(lb, color.new(col, 55))
+            array.push(keepL, ln)
+            array.push(keepB, lb)
+            while array.size(keepL) > in_maxk
+                line.delete(array.get(keepL, 0))
+                label.delete(array.get(keepB, 0))
+                array.remove(keepL, 0)
+                array.remove(keepB, 0)
+        else if not na(ln)
+            line.delete(ln)
+            label.delete(lb)
+        ln := na
+        lb := na
+        isCnf := false
+
+    // Right-hand extension. "Confirm bar" freezes a confirmed level where it confirmed,
+    // which is the honest history: the level did its job there.
+    if not na(ln) and barstate.islast
+        bool grow = in_ext == "Extend right" or in_ext == "Current bar" or not isCnf
+        if grow
+            int x2 = time
+            line.set_x2(ln, x2)
+            if not na(lb)
+                label.set_x(lb, x2)
+        if in_ext == "Extend right" and isCnf
+            line.set_extend(ln, extend.right)
+    0
+
+
+// Reports what happened LAST, not what has ever happened. The first version tested
+// "confN > 0" and so read CONFIRMED forever once any hunt on that side had confirmed,
+// even after a later one was killed. A readout that cannot go backwards is not a readout.
+// One call site per slot per direction, so each keeps its own last-outcome state.
+f_state(bool act, int confN, int killN) =>
+    var int st = 0                      // 0 none · 1 potential · 2 confirmed · 3 killed
+    var int cP = 0
+    var int kP = 0
+    if confN != cP
+        cP := confN
+        st := 2
+    if killN != kP
+        kP := killN
+        st := 3
+    if act
+        st := 1                          // an armed hunt outranks any finished one
+    st == 1 ? "POTENTIAL" : st == 2 ? "CONFIRMED" : st == 3 ? "KILLED" : "--"
+
+// ═══════════════════════════════════════════════════════════════════════
+//  RUN THE SLOTS
+//  The selector gives the LTF granularity; f_c2ForLtf gives the C2 candle. The engine is
+//  fed the C2 timeframe, which is the fix v1.1 exists for, AND the LTF granularity,
+//  which is the fix v1.3 exists for. Both matter, and they are not the same thing.
+// ═══════════════════════════════════════════════════════════════════════
+string ltf1 = f_selLtf(sel1)
+string ltf2 = f_selLtf(sel2)
+string ltf3 = f_selLtf(sel3)
+string c2t1 = f_c2ForLtf(ltf1)
+string c2t2 = f_c2ForLtf(ltf2)
+string c2t3 = f_c2ForLtf(ltf3)
+
+// A CISD only draws when the chart TF is at or BELOW its granularity, and a later
+// selector on an already-used timeframe is disabled rather than drawing a duplicate.
+int chartSec = timeframe.in_seconds(timeframe.period)
+bool fit1 = sel1 != "Off" and chartSec <= timeframe.in_seconds(ltf1)
+bool fit2 = sel2 != "Off" and chartSec <= timeframe.in_seconds(ltf2) and not (fit1 and ltf2 == ltf1)
+bool fit3 = sel3 != "Off" and chartSec <= timeframe.in_seconds(ltf3) and not (fit1 and ltf3 == ltf1) and not (fit2 and ltf3 == ltf2)
+
+[b1a, b1l, b1s, b1h, b1c, b1k, s1a, s1l, s1s, s1h, s1c, s1k] = f_cisd(c2t1, ltf1)
+[b2a, b2l, b2s, b2h, b2c, b2k, s2a, s2l, s2s, s2h, s2c, s2k] = f_cisd(c2t2, ltf2)
+[b3a, b3l, b3s, b3h, b3c, b3k, s3a, s3l, s3s, s3h, s3c, s3k] = f_cisd(c2t3, ltf3)
+
+// Labelled with the CISD timeframe (the granularity), not the C2 candle, because that is
+// what the trader selected and what the setup is called.
+f_draw(fit1, ltf1,  1, b1l, b1s, b1a, b1h, b1c, b1k, c1_bl)
+f_draw(fit1, ltf1, -1, s1l, s1s, s1a, s1h, s1c, s1k, c1_br)
+f_draw(fit2, ltf2,  1, b2l, b2s, b2a, b2h, b2c, b2k, c2_bl)
+f_draw(fit2, ltf2, -1, s2l, s2s, s2a, s2h, s2c, s2k, c2_br)
+f_draw(fit3, ltf3,  1, b3l, b3s, b3a, b3h, b3c, b3k, c3_bl)
+f_draw(fit3, ltf3, -1, s3l, s3s, s3a, s3h, s3c, s3k, c3_br)
+
+// Evaluated EVERY bar, at global scope, and deliberately not inside the table block.
+// f_state carries `var` state, and a var inside a function only advances when the branch
+// containing the call runs. Called under `barstate.islast` it would compare this bar's
+// counters against a baseline that had never been updated, so the readout would be
+// decided by the ORDER of its two tests rather than by which event happened last. Same
+// footgun class as a ta.* call inside an `if`.
+string st1b = f_state(b1a, b1c, b1k)
+string st1s = f_state(s1a, s1c, s1k)
+string st2b = f_state(b2a, b2c, b2k)
+string st2s = f_state(s2a, s2c, s2k)
+string st3b = f_state(b3a, b3c, b3k)
+string st3s = f_state(s3a, s3c, s3k)
+
+
+// ═══════════════════════════════════════════════════════════════════════
+//  TABLE - a READOUT, and deliberately independent of what draws.
+//  An enabled slot reports here whether or not it is drawing, so the chart can stay as
+//  sparse as you want while the table still shows the full picture.
+// ═══════════════════════════════════════════════════════════════════════
+
+var table cTbl = table.new(position.top_right, 3, 4, border_width=1)
+
+if in_tbl_on and barstate.islast
+    table.clear(cTbl, 0, 0, 2, 3)
+    table.set_position(cTbl, f_tpos(in_tbl_pos))
+    table.set_bgcolor(cTbl, color.new(#0e1621, 12))
+    table.set_frame_color(cTbl, color.new(#f5a800, 55))
+    table.set_frame_width(cTbl, 1)
+    table.set_border_color(cTbl, color.new(#f5a800, 80))
+    string z = in_tbl_sz
+
+    table.cell(cTbl, 0, 0, "MM CISD", text_color=#f5a800, text_size=f_tsize(z))
+    table.cell(cTbl, 1, 0, "BULL",    text_color=#f5a800, text_size=f_tsize(z))
+    table.cell(cTbl, 2, 0, "BEAR",    text_color=#f5a800, text_size=f_tsize(z))
+
+    table.cell(cTbl, 0, 1, fit1 ? f_tfName(ltf1) : "--", text_color=color.silver, text_size=f_tsize(z))
+    table.cell(cTbl, 1, 1, fit1 ? st1b : "--", text_color=fit1 and (b1a or b1c > 0) ? c1_bl : color.gray, text_size=f_tsize(z))
+    table.cell(cTbl, 2, 1, fit1 ? st1s : "--", text_color=fit1 and (s1a or s1c > 0) ? c1_br : color.gray, text_size=f_tsize(z))
+
+    table.cell(cTbl, 0, 2, fit2 ? f_tfName(ltf2) : "--", text_color=color.silver, text_size=f_tsize(z))
+    table.cell(cTbl, 1, 2, fit2 ? st2b : "--", text_color=fit2 and (b2a or b2c > 0) ? c2_bl : color.gray, text_size=f_tsize(z))
+    table.cell(cTbl, 2, 2, fit2 ? st2s : "--", text_color=fit2 and (s2a or s2c > 0) ? c2_br : color.gray, text_size=f_tsize(z))
+
+    table.cell(cTbl, 0, 3, fit3 ? f_tfName(ltf3) : "--", text_color=color.silver, text_size=f_tsize(z))
+    table.cell(cTbl, 1, 3, fit3 ? st3b : "--", text_color=fit3 and (b3a or b3c > 0) ? c3_bl : color.gray, text_size=f_tsize(z))
+    table.cell(cTbl, 2, 3, fit3 ? st3s : "--", text_color=fit3 and (s3a or s3c > 0) ? c3_br : color.gray, text_size=f_tsize(z))
+
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ALERTS - double-gated (the event AND the user's toggle), house idiom (a).
+//  Counter changes are the events: a hunt arming, confirming or dying each tick their
+//  own counter exactly once, so an alert cannot fire twice for one setup.
+//
+//  v1.4: transport moved from alertcondition to alert(). alertcondition can only carry a
+//  fixed string, so it could never name the level or the slot that produced it. alert()
+//  builds its message at runtime, which is the whole point of the change. The cost is one
+//  extra step for the user: ONE alert on the indicator set to Any alert() function call
+//  now covers every event and every slot, instead of picking a named condition per event.
+// ═══════════════════════════════════════════════════════════════════════
+
+// The dedupe buffer. `varip` on purpose: `var` state ROLLS BACK on every tick of a live
+// bar, so a counter can re-increment and re-fire the same event several times inside one
+// bar. varip state does not roll back, so the second copy of an identical message is
+// recognised and dropped. Pushing to these from inside a function is a reference
+// mutation and is legal; rebinding a global scalar in a function is not.
+varip array<string> g_sentMsg = array.new<string>()
+varip array<int>    g_sentT   = array.new<int>()
+
+// The transport. Every message that reaches here is built from the LEVEL and the slot
+// timeframe, never from live price, so an intrabar recalculation produces byte-identical
+// text and the dedupe absorbs it. That determinism is what makes firing instantly safe
+// rather than gating on barstate.isconfirmed and giving up a bar of notice.
+f_alert(string msg) =>
+    if inKz
+        bool dup = false
+        if g_sentMsg.size() > 0
+            for i = g_sentMsg.size() - 1 to 0
+                if time - g_sentT.get(i) > 600000
+                    break
+                if g_sentMsg.get(i) == msg
+                    dup := true
+                    break
+        if not dup
+            g_sentMsg.push(msg)
+            g_sentT.push(time)
+            if g_sentMsg.size() > 40
+                g_sentMsg.shift()
+                g_sentT.shift()
+            alert("MM CISD | " + syminfo.ticker + " | " + msg, alert.freq_all)
+
+// One call site per slot per direction, mirroring f_draw, because `var` inside a function
+// is instanced PER CALL SITE. That is what turns one function into six independent alert
+// streams without a line of duplicated logic.
+// The baselines advance whether or not the slot is enabled, so switching a slot on later
+// starts it from now instead of dumping every event it missed while it was off.
+f_alertSlot(bool en, string tf, int dir, float lvl, int huntN, int confN, int killN) =>
+    var int hPrev = 0
+    var int cPrev = 0
+    var int kPrev = 0
+    string tag = "CISD " + f_tfName(tf) + " " + (dir == 1 ? "Bull" : "Bear")
+    string at  = na(lvl) ? "" : " @ " + str.tostring(lvl, format.mintick)
+    if huntN != hPrev
+        hPrev := huntN
+        if en and al_arm and not na(lvl)
+            f_alert(tag + " ARMED" + at + " - level captured, price has not closed through it yet")
+    if confN != cPrev
+        cPrev := confN
+        if en and al_conf and not na(lvl)
+            f_alert(tag + " CONFIRMED" + at + " - price closed back " + (dir == 1 ? "above" : "below") + " the delivery run that swept the " + (dir == 1 ? "low" : "high"))
+    if killN != kPrev
+        kPrev := killN
+        if en and al_kill and not na(lvl)
+            f_alert(tag + " INVALIDATED" + at + " - the C2 extreme was taken before the level was reclaimed")
+    0
+
+f_alertSlot(fit1, ltf1,  1, b1l, b1h, b1c, b1k)
+f_alertSlot(fit1, ltf1, -1, s1l, s1h, s1c, s1k)
+f_alertSlot(fit2, ltf2,  1, b2l, b2h, b2c, b2k)
+f_alertSlot(fit2, ltf2, -1, s2l, s2h, s2c, s2k)
+f_alertSlot(fit3, ltf3,  1, b3l, b3h, b3c, b3k)
+f_alertSlot(fit3, ltf3, -1, s3l, s3h, s3c, s3k)

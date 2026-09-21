@@ -1,0 +1,1504 @@
+//@version=6
+indicator("KAIROS Lite v1.5 PF1 | 1 Minute", shorttitle = "KAIROS PF1", overlay = true, calc_bars_count = 18000, max_lines_count = 4, max_labels_count = 4)
+
+// KAIROS LITE v1.5 PF1 | MNQ native 1-minute PSEUDO-FINAL.
+// Separate experimental branch of KAIROS_Lite_v1_4_1_RC1_1m.txt.
+// UNOPTIMIZED. Not a profitability claim or a fully validated final release.
+// The original RC1 file is unchanged. This is an indicator, not an order engine.
+//
+// Default timing = First break (experimental):
+// - Reuses existing pullback/sweep, VFI/VSA, VWAP, confirmed 15m and repeat rules.
+// - Freezes a dedicated continuation seed instead of refreshing its age each bar.
+// - Keeps consecutive VWAP acceptance; removes the separate post-seed age wait.
+// - Requires a LATER candle to close through the frozen trigger, which includes
+//   the seed candle's high/low. The first closing break ends that attempt even
+//   if another gate blocks it. No late chase of an already-broken trigger.
+// - RC1 baseline mode retains the old entry/state formulas for a control run.
+// - Reversal formulas are retained, but earlier continuation events consume
+//   shared repeat/state. Reversal timestamps can therefore differ in PF mode.
+//
+// Product cleanup:
+// - Removed the unused CVD-memory switch, unused 60m request and weight hooks.
+// - Removed the redundant weak-close observer, coloring, counters and alert.
+// - CVD is explicitly SIGNED CANDLE VOLUME, not bid/ask delta or a footprint.
+// - Compact/Diagnostic panels; four distinct confirmed signal labels.
+// - Frozen latest-signal invalidation reference + distance, not an optimal stop,
+//   fill, active position, target, trailing stop or risk-management system.
+//
+// LIVE lifecycle retained: one provisional attempt per bar, terminal resolution,
+// no intrabar rearming, independent closing signal after invalidation/expiry.
+// Notifications default to Confirmed only. LIVE observation is not reconstructed
+// historically and resets on reload; no claims of exactly-once delivery across
+// separate runtimes, alert instances or service restarts.
+// Additional preview guards reject a stale seed during context/reset or breach.
+//
+// Raw regime remains an OBSERVER, never an entry filter or confidence score.
+// Existing VWAP math, confirmed 15m structure and daily reference levels retained.
+// All original numeric trading thresholds retained; no fitted parameter changes.
+// Confirmed outputs depend on chart/feed/history/settings; reload parity and real
+// alert-server delivery still require TradingView validation.
+// See the companion release notes, tests and fixed-protocol export auditor.
+
+string G0 = "01 Modules"
+bool trendOn = input.bool(false, "Supertrend filter", group = G0)
+bool volOn = input.bool(false, "Volatility / RVOL engine", group = G0)
+bool flowOn = input.bool(true, "VFI / VSA volume confirmation", group = G0)
+bool sweepOn = input.bool(true, "Require liquidity sweep for REVERSALS", group = G0)
+bool sessionsOn = input.bool(false, "Restrict signals to NY / Asia", group = G0)
+bool newsOn = input.bool(false, "Manual news filter", group = G0)
+bool pauseNow = input.bool(false, "NEWS: pause new signals", group = G0)
+bool timedNews = input.bool(false, "Use dated blackout interval", group = G0)
+int newsFrom = input.time(timestamp("01 Jan 2026 13:25 +0000"), "Blackout starts", group = G0)
+int newsTo = input.time(timestamp("01 Jan 2026 13:40 +0000"), "Blackout ends", group = G0)
+
+string G1 = "02 Sessions"
+bool nyOn = input.bool(true, "Enable New York signals", group = G1)
+string nyHours = input.session("0930-1600", "New York hours", group = G1)
+string nyZone = input.string("America/New_York", "New York timezone", group = G1)
+bool asiaOn = input.bool(true, "Enable Asia signals", group = G1)
+string asiaHours = input.session("0900-1600", "Asia hours", group = G1)
+string asiaZone = input.string("Asia/Tokyo", "Asia timezone", group = G1)
+int orMinutes = input.int(15, "Opening range (minutes)", 5, 60, group = G1)
+
+string G2 = "03 VFI + VSA flow"
+// Secondary CVD uses this 1m chart directly. There is deliberately no seconds-TF input.
+// VFI + VSA remain the primary flow inputs; CVD is a candle-volume proxy, not bid/ask delta.
+
+int vfiLength = input.int(50, "VFI length", 20, 200, group = G2)
+int vfiVolatilityLength = input.int(30, "VFI volatility length", 10, 100, group = G2)
+float vfiCoef = input.float(0.10, "VFI volatility cutoff coefficient", 0.01, 1.00, 0.01, group = G2, tooltip = "Intraday-oriented default. Larger values ignore more small price changes.")
+float vfiVolumeCap = input.float(3.5, "VFI volume cap multiple", 1.0, 10.0, 0.25, group = G2)
+int vfiSignalLength = input.int(5, "VFI signal EMA", 2, 30, group = G2)
+float vfiMinSlope = input.float(0.00, "Minimum VFI bar-to-bar slope", 0.0, 5.0, 0.05, group = G2)
+float reversalVfiTurnMin = input.float(0.00, "Reversal: minimum VFI turn slope", 0.0, 5.0, 0.05, group = G2)
+float reversalCvdTurnMin = input.float(0.05, "Reversal: signed-candle fraction turn threshold", 0.0, 0.50, 0.01, group = G2)
+bool reversalNeedCvdTurn = input.bool(true, "Reversal: require signed-candle turn", group = G2,
+     tooltip = "Real working control, ON preserves RC1. This proxy classifies an up candle +1, a down candle -1 and a doji 0. It is not independent aggressor-volume evidence. OFF is an ablation experiment, not an upgrade.")
+
+int vsaLookback = input.int(20, "VSA baseline lookback", 5, 100, group = G2)
+float vsaHighEffort = input.float(1.15, "VSA high-effort relative volume", 1.0, 5.0, 0.05, group = G2)
+float vsaLowResult = input.float(0.35, "VSA poor-result body / ATR", 0.05, 1.0, 0.05, group = G2)
+float vsaDriveResult = input.float(0.45, "VSA initiative body / ATR", 0.10, 2.0, 0.05, group = G2)
+float vsaCloseControl = input.float(0.65, "VSA directional close location", 0.50, 0.90, 0.05, group = G2)
+float vsaWickMin = input.float(0.25, "VSA absorption minimum wick / range", 0.05, 0.80, 0.05, group = G2)
+float reversalOpposeEffort = input.float(1.25, "Reversal: VSA opposing effort threshold", 1.0, 5.0, 0.05, group = G2, tooltip = "Blocks a reversal only when VSA shows strong opposite-direction initiative.")
+
+bool memoryOn = input.bool(true, "Remember reversal flow-turn confirmation", group = G2)
+int flowMemory = input.int(5, "Confirmation memory age (bars)", 1, 10, group = G2)
+string G3 = "04 VWAP / Auction"
+bool hideVWAPonDWM = false // Chart is enforced to 1m; the old 1D-only display control was irrelevant.
+string vwapAnchor = input.string("Session", "VWAP Anchor Period",
+     options = ["Session", "Week", "Month", "Quarter", "Year", "Decade", "Century", "Earnings", "Dividends", "Splits"], group = G3)
+float vwapSource = input.source(hlc3, "VWAP Source", group = G3)
+float nyRevZ = input.float(0.25, "NY reversal: minimum VWAP excursion (sigma)", 0, 3, 0.25, group = G3)
+float asiaRevZ = input.float(0.25, "Asia reversal: minimum VWAP excursion (sigma)", 0, 3, 0.25, group = G3)
+bool continuationOn = input.bool(true, "Enable continuation setups", group = G3)
+bool reversalOn = input.bool(true, "Enable failed-auction reversal setups", group = G3)
+int acceptanceBars = input.int(3, "Continuation: consecutive VWAP-accepted closes", 1, 5, group = G3)
+
+string G4 = "05 Structure / Volatility"
+int pivotLen = input.int(2, "Confirmed pivot left/right bars", 1, 10, group = G4)
+int pivotAge = input.int(150, "Maximum pivot age (bars)", 10, 300, group = G4)
+int breakLook = input.int(2, "Structure break lookback", 1, 10, group = G4)
+int sweepLife = input.int(7, "Pullback/sweep-to-confirmation maximum bars", 1, 30, group = G4)
+int sweepTicks = input.int(2, "Minimum sweep penetration (ticks)", 1, 20, group = G4)
+float bodyATR = input.float(0.25, "Confirmation body / prior ATR", 0.05, 2, 0.05, group = G4)
+float nyRelVol = input.float(0.75, "NY minimum same-time RVOL", 0.1, 3, 0.05, group = G4)
+float asiaRelVol = input.float(0.75, "Asia minimum same-time RVOL", 0.1, 3, 0.05, group = G4)
+float nyMinATR = input.float(1.5, "NY minimum ATR (points)", 0.25, 100, 0.25, group = G4)
+float asiaMinATR = input.float(1.0, "Asia minimum ATR (points)", 0.25, 100, 0.25, group = G4)
+float shockATR = input.float(3.0, "Reject signal candle range above ATR multiple", 1, 10, 0.25, group = G4)
+int relVolPeriods = input.int(10, "Same-time RVOL comparison sessions", 2, 50, group = G4)
+int supertrendATR = input.int(10, "Supertrend ATR length", 1, 100, group = G4)
+float supertrendFactor = input.float(3.0, "Supertrend factor", 0.5, 10.0, 0.25, group = G4)
+
+string GR = "05B KAIROS Regime Engine"
+bool regimeOn = input.bool(true, "Calculate raw regime (diagnostic observer only)", group = GR)
+int regimeERLength = input.int(20, "Efficiency-ratio lookback", 8, 80, group = GR)
+int regimeDILength = input.int(14, "DMI length", 5, 50, group = GR)
+int regimeADXSmoothing = input.int(14, "ADX smoothing", 5, 50, group = GR)
+float regimeTrendADX = input.float(20.0, "Trend: minimum ADX", 5.0, 60.0, 0.5, group = GR)
+float regimeTrendER = input.float(0.40, "Trend: minimum efficiency ratio", 0.10, 0.90, 0.05, group = GR)
+int regimeVolFast = input.int(5, "Volatility fast lookback", 2, 20, group = GR)
+int regimeVolSlow = input.int(30, "Volatility slow lookback", 10, 100, group = GR)
+float regimeCompressionRatio = input.float(0.72, "Compression: fast/slow TR maximum", 0.30, 1.00, 0.02, group = GR)
+float regimeExpansionRatio = input.float(1.28, "Expansion: fast/slow TR minimum", 1.00, 3.00, 0.02, group = GR)
+int regimeSlopeBars = input.int(5, "VWAP slope lookback", 2, 20, group = GR)
+float regimeSlopeATR = input.float(0.10, "Trend: minimum VWAP slope / ATR", 0.01, 1.00, 0.01, group = GR)
+int regimeTransitionLife = input.int(4, "Transition: sweep memory bars", 1, 12, group = GR)
+
+string G5 = "06 Signal alerts"
+bool detailedAlerts = input.bool(true, "Enable dynamic alert() messages", group = G5)
+string dynamicAlertMode = input.string("Confirmed only", "Dynamic alert stream",
+     options = ["LIVE + confirmed", "Confirmed only"], group = G5,
+     tooltip = "LIVE + confirmed includes LIVE starts, invalidations, expiries and confirmed signals. Confirmed only omits provisional notifications. Create ONE Any alert() function call alert. This input does not change signals or chart labels; recreate running alerts after changing it.")
+
+string G6 = "07 Chart context"
+string panelMode = input.string("Compact", "Panel detail", options = ["Compact", "Diagnostic"], group = G6)
+bool showLiveLabels = input.bool(true, "Show provisional LIVE labels", group = G6,
+     tooltip = "Visual previews only. Notification mode is independent. A LIVE label can invalidate and is not a historical entry or order fill.")
+bool showPanel = input.bool(true, "Show status table", group = G6)
+bool showVWAP = input.bool(true, "Show VWAP", group = G6)
+bool showBands = input.bool(false, "Show VWAP deviation bands", group = G6)
+bool showSessionMid = input.bool(false, "Show session midpoint", group = G6)
+string panelCorner = input.string("Top right", "Table position", options = ["Top right", "Bottom right", "Top left", "Bottom left"], group = G6)
+
+string G9 = "08 One-minute continuation"
+string continuationTiming = input.string("First break (experimental)", "Continuation timing",
+     options = ["First break (experimental)", "RC1 baseline"], group = G9,
+     tooltip = "First break freezes a pullback seed, retains consecutive VWAP acceptance and all enabled HTF/flow/repeat checks, and attempts the first later closing break. RC1 baseline restores the original timing/state route. Compare separate full reruns; mode changes alter later state.")
+bool firstBreakMode = continuationTiming == "First break (experimental)"
+bool htfOn = input.bool(true, "Require confirmed 15m structure direction", group = G9)
+int htfPivotLen = input.int(2, "HTF swing left/right bars", 1, 5, group = G9)
+int htfMaxAge = input.int(32, "Maximum HTF swing age (HTF bars)", 8, 96, group = G9)
+bool continueSweepOn = input.bool(false, "Require sweep for continuation pullbacks", group = G9)
+bool continueShiftOn = input.bool(false, "Continuation: require remembered VFI + candle turn", group = G9)
+float continueMaxZ = input.float(3.0, "Maximum continuation VWAP deviation", 1.0, 5.0, 0.25, group = G9)
+int pullbackBars = input.int(5, "Pullback envelope bars", 2, 10, group = G9)
+float pullbackRangeATR = input.float(2.0, "Maximum pullback range / ATR", 0.5, 5.0, 0.25, group = G9)
+
+string G11 = "09 Repeat signals"
+bool repeatOn = input.bool(true, "Require fresh pullback for repeated direction", group = G11)
+int repeatPivotLen = input.int(3, "Fresh pullback pivot left/right bars", 1, 6, group = G11)
+float repeatDepthATR = input.float(1.0, "Fresh pullback minimum depth / prior ATR", 0.25, 3.0, 0.25, group = G11)
+
+string GD = "10 Diagnostics"
+bool exportDiagnostics = input.bool(true, "Export tuning diagnostics (Data Window only)", group = GD)
+
+string GP = "11 Structural reference (not orders)"
+bool showInvalidation = input.bool(true, "Show latest signal invalidation reference", group = GP)
+int invalidationBufferTicks = input.int(1, "Reference buffer (ticks)", minval = 0, maxval = 20, group = GP,
+     tooltip = "Reference = selected setup low minus buffer for BUY, high plus buffer for SELL. Frozen at confirmation. It never changes entry eligibility or repeat gates. This is not a tested optimal stop.")
+string auditTag = input.string("PF1-A", "Alert run tag", group = GD,
+     tooltip = "Use a distinct short tag for each settings/run combination. Also retain settings screenshots and contract/roll information. This is a user label, NOT an automatic source/settings hash.")
+
+float tick = syminfo.mintick
+int atrLength = input.int(23, "ATR length (1m bars)", 5, 100, group = G4)
+float atr = ta.atr(atrLength)
+float priorATR = atr[1]
+float span = math.max(high - low, tick)
+float closePos = (close - low) / span
+float lowerWick = (math.min(open, close) - low) / span
+float upperWick = (high - math.max(open, close)) / span
+var int firstCalculationBar = bar_index
+
+max_bars_back(open, 64)
+max_bars_back(high, 64)
+max_bars_back(low, 64)
+max_bars_back(close, 128)
+max_bars_back(volume, 64)
+max_bars_back(atr, 64)
+
+if bar_index == firstCalculationBar
+    if syminfo.root != "MNQ" or not chart.is_standard or not timeframe.isminutes or timeframe.multiplier != 1
+        runtime.error("Use KAIROS Lite 1m on MNQ standard 1-minute candles.")
+    if str.contains(auditTag, "|") or str.contains(auditTag, "\n") or str.contains(auditTag, "\r")
+        runtime.error("Alert run tag must not contain pipes or line breaks.")
+    if newsOn and timedNews and newsTo <= newsFrom
+        runtime.error("The news blackout end must be later than its start.")
+
+// -----------------------------------------------------------------------------
+// VFI + VSA PRIMARY FLOW ENGINE
+// -----------------------------------------------------------------------------
+// 1) LazyBear/Katsanos-style VFI.
+//    - Typical-price log change.
+//    - Volatility-adjusted cutoff ignores insignificant price movement.
+//    - Volume is capped before signed flow is accumulated.
+float vfiTypical = hlc3
+float vfiInter = math.log(vfiTypical) - math.log(vfiTypical[1])
+float vfiVolatility = ta.stdev(vfiInter, vfiVolatilityLength)
+float vfiCutoff = vfiCoef * vfiVolatility * close
+float vfiVolumeAverage = ta.sma(volume, vfiLength)[1]
+float vfiMaxVolume = nz(vfiVolumeAverage) * vfiVolumeCap
+float vfiCappedVolume = math.min(volume, vfiMaxVolume)
+float vfiMoneyChange = vfiTypical - vfiTypical[1]
+float vfiSignedVolume = vfiMoneyChange > vfiCutoff ? vfiCappedVolume :
+     vfiMoneyChange < -vfiCutoff ? -vfiCappedVolume : 0.0
+float vfiRaw = nz(vfiVolumeAverage) > 0 ? math.sum(vfiSignedVolume, vfiLength) / vfiVolumeAverage : na
+float vfiSignal = ta.ema(vfiRaw, vfiSignalLength)
+float vfiSlope = vfiRaw - vfiRaw[1]
+
+bool vfiBull = not na(vfiRaw) and vfiRaw > 0 and vfiRaw >= vfiSignal and vfiSlope >= vfiMinSlope
+bool vfiBear = not na(vfiRaw) and vfiRaw < 0 and vfiRaw <= vfiSignal and vfiSlope <= -vfiMinSlope
+
+// Reversal turns intentionally do NOT require VFI to have crossed zero.
+// Either signal-line recovery or accelerating slope is enough to show the old flow is losing control.
+bool vfiCrossUp = not na(vfiRaw[1]) and not na(vfiSignal[1]) and vfiRaw >= vfiSignal and vfiRaw[1] < vfiSignal[1]
+bool vfiCrossDown = not na(vfiRaw[1]) and not na(vfiSignal[1]) and vfiRaw <= vfiSignal and vfiRaw[1] > vfiSignal[1]
+bool vfiTurnLong = not na(vfiSlope) and vfiSlope > reversalVfiTurnMin and
+     (vfiCrossUp or vfiRaw >= vfiSignal or vfiSlope > nz(vfiSlope[1]))
+bool vfiTurnShort = not na(vfiSlope) and vfiSlope < -reversalVfiTurnMin and
+     (vfiCrossDown or vfiRaw <= vfiSignal or vfiSlope < nz(vfiSlope[1]))
+
+
+// 2) VSA / Effort-vs-Result.
+//    Effort = relative volume.
+//    Result = directional body progress normalized by ATR.
+//    Absorption = high effort + poor result + rejection wick + controlled close.
+//    Initiative = healthy effort + meaningful result + directional close.
+float vsaVolBase = ta.sma(volume, vsaLookback)
+float vsaEffort = nz(vsaVolBase) > 0 ? volume / vsaVolBase : na
+float vsaBodyResult = not na(priorATR) and priorATR > 0 ? math.abs(close - open) / priorATR : na
+float vsaEfficiency = not na(vsaEffort) and vsaEffort > 0 ? nz(vsaBodyResult) / vsaEffort : na
+
+bool vsaHighEffortNow = not na(vsaEffort) and vsaEffort >= vsaHighEffort
+bool vsaPoorResult = not na(vsaBodyResult) and vsaBodyResult <= vsaLowResult
+bool vsaStrongResult = not na(vsaBodyResult) and vsaBodyResult >= vsaDriveResult
+
+bool vsaBullAbsorption = vsaHighEffortNow and vsaPoorResult and lowerWick >= vsaWickMin and closePos >= vsaCloseControl
+bool vsaBearAbsorption = vsaHighEffortNow and vsaPoorResult and upperWick >= vsaWickMin and closePos <= 1.0 - vsaCloseControl
+
+bool vsaBullInitiative = not na(vsaEffort) and vsaEffort >= 1.0 and vsaStrongResult and close > open and closePos >= vsaCloseControl
+bool vsaBearInitiative = not na(vsaEffort) and vsaEffort >= 1.0 and vsaStrongResult and close < open and closePos <= 1.0 - vsaCloseControl
+
+bool vsaSupportLong = vsaBullAbsorption or vsaBullInitiative
+bool vsaSupportShort = vsaBearAbsorption or vsaBearInitiative
+bool vsaOpposeLong = not na(vsaEffort) and vsaEffort >= reversalOpposeEffort and vsaBearInitiative
+bool vsaOpposeShort = not na(vsaEffort) and vsaEffort >= reversalOpposeEffort and vsaBullInitiative
+
+
+// Secondary 1m signed-volume CVD proxy, computed directly from the chart.
+// This preserves the original individual 1m sample classifier:
+// bullish candle = +volume; bearish candle = -volume; doji = 0.
+// On a 1m chart there is one such sample per bar, not three intrabars per 3m bar.
+// Therefore delta fraction is +1, -1 or 0 when volume is valid. It is NOT actual
+// aggressor buy/sell volume, a footprint, or a measure of intrabar buying intensity.
+// Recompute the developing candle contribution from current OHLCV on each update;
+// never add cumulative bar volume repeatedly across realtime ticks.
+float ltfFlowVol = nz(volume, 0.0)
+float ltfDelta = close > open ? ltfFlowVol : close < open ? -ltfFlowVol : 0.0
+float ltfDeltaFrac = ltfFlowVol > 0 ? ltfDelta / ltfFlowVol : na
+bool ltfFlowOK = ltfFlowVol > 0 and not na(ltfDeltaFrac)
+
+var float liteCvdClose = 0.0
+float liteCvdOpen = timeframe.change("1D") ? 0.0 : nz(liteCvdClose[1], 0.0)
+liteCvdClose := liteCvdOpen + nz(ltfDelta, 0.0)
+bool cvdBull = ltfFlowOK and ltfDelta > 0 and liteCvdClose > liteCvdOpen
+bool cvdBear = ltfFlowOK and ltfDelta < 0 and liteCvdClose < liteCvdOpen
+
+float cvdDeltaSlope = not na(ltfDeltaFrac) and not na(ltfDeltaFrac[1]) ? ltfDeltaFrac - ltfDeltaFrac[1] : na
+bool cvdTurnLong = ltfFlowOK and (ltfDeltaFrac > 0 or
+     (not na(cvdDeltaSlope) and cvdDeltaSlope >= reversalCvdTurnMin and ltfDeltaFrac > -0.35))
+bool cvdTurnShort = ltfFlowOK and (ltfDeltaFrac < 0 or
+     (not na(cvdDeltaSlope) and cvdDeltaSlope <= -reversalCvdTurnMin and ltfDeltaFrac < 0.35))
+
+bool flowOK = not na(vfiRaw) and not na(vsaEffort)
+
+bool opposeLong = vfiBear and vsaBearInitiative
+bool opposeShort = vfiBull and vsaBullInitiative
+
+// SESSION STATE
+// -----------------------------------------------------------------------------
+type SessionState
+    int startTime = na
+    float hi = na
+    float lo = na
+    float orHi = na
+    float orLo = na
+
+newSessionState() =>
+    SessionState.new()
+
+method reset(SessionState s) =>
+    s.startTime := time
+    s.hi := na
+    s.lo := na
+    s.orHi := na
+    s.orLo := na
+
+method update(SessionState s) =>
+    s.hi := na(s.hi) ? high : math.max(s.hi, high)
+    s.lo := na(s.lo) ? low : math.min(s.lo, low)
+    if time < s.startTime + orMinutes * 60000
+        s.orHi := na(s.orHi) ? high : math.max(s.orHi, high)
+        s.orLo := na(s.orLo) ? low : math.min(s.orLo, low)
+
+bool inNY = not na(time(timeframe.period, nyHours, nyZone))
+bool inAsia = not na(time(timeframe.period, asiaHours, asiaZone))
+int nyKey = time("1D", nyHours, nyZone)
+int asiaKey = time("1D", asiaHours, asiaZone)
+bool newNY = inNY and (not inNY[1] or nyKey != nyKey[1])
+bool newAsia = inAsia and (not inAsia[1] or asiaKey != asiaKey[1])
+bool newDay = timeframe.change("1D")
+
+var SessionState ny = newSessionState()
+var SessionState asia = newSessionState()
+var SessionState allHours = newSessionState()
+
+if barstate.isconfirmed
+    if newNY or (inNY and na(ny.startTime))
+        ny.reset()
+    if newAsia or (inAsia and na(asia.startTime))
+        asia.reset()
+    if not sessionsOn and (newDay or na(allHours.startTime))
+        allHours.reset()
+
+int context = inNY and nyOn ? 1 : inAsia and asiaOn ? 2 : not sessionsOn ? 3 : 0
+SessionState active = context == 1 ? ny : context == 2 ? asia : allHours
+string sessionName = context == 1 ? "NY" : context == 2 ? "ASIA" : context == 3 ? "ALL" : "OFF"
+bool resetContext = context != context[1] or (context == 1 and newNY) or (context == 2 and newAsia) or (context == 3 and newDay)
+
+// -----------------------------------------------------------------------------
+// EXACT TRADINGVIEW VWAP — same implementation used by full KAIROS.
+// -----------------------------------------------------------------------------
+bool vwapIsNewPeriod = switch vwapAnchor
+    "Earnings" =>
+        new_earnings_actual = request.earnings(syminfo.tickerid, earnings.actual, barmerge.gaps_on, barmerge.lookahead_on, ignore_invalid_symbol = true)
+        new_earnings_standardized = request.earnings(syminfo.tickerid, earnings.standardized, barmerge.gaps_on, barmerge.lookahead_on, ignore_invalid_symbol = true)
+        not na(new_earnings_actual) or not na(new_earnings_standardized)
+    "Dividends" =>
+        new_dividends = request.dividends(syminfo.tickerid, dividends.gross, barmerge.gaps_on, barmerge.lookahead_on, ignore_invalid_symbol = true)
+        not na(new_dividends)
+    "Splits" =>
+        new_split = request.splits(syminfo.tickerid, splits.denominator, barmerge.gaps_on, barmerge.lookahead_on, ignore_invalid_symbol = true)
+        not na(new_split)
+    "Session" => timeframe.change("D")
+    "Week" => timeframe.change("W")
+    "Month" => timeframe.change("M")
+    "Quarter" => timeframe.change("3M")
+    "Year" => timeframe.change("12M")
+    "Decade" => timeframe.change("12M") and year % 10 == 0
+    "Century" => timeframe.change("12M") and year % 100 == 0
+    => false
+
+bool vwapIsEsdAnchor = vwapAnchor == "Earnings" or vwapAnchor == "Dividends" or vwapAnchor == "Splits"
+if na(vwapSource[1]) and not vwapIsEsdAnchor
+    vwapIsNewPeriod := true
+
+float tvVwapValue = na
+float tvStdevAbs = na
+if not (hideVWAPonDWM and timeframe.isdwm)
+    [tvVwapRaw, tvStdevUpperRaw, tvUnusedLower] = ta.vwap(vwapSource, vwapIsNewPeriod, 1.0)
+    tvVwapValue := tvVwapRaw
+    tvStdevAbs := tvStdevUpperRaw - tvVwapRaw
+
+float vwapRef = tvVwapValue
+float sigmaRef = math.max(nz(tvStdevAbs), tick)
+
+// -----------------------------------------------------------------------------
+// SAME-TIME-OF-DAY RVOL — self-contained, no library or premium data.
+// 1,440 possible 1-minute slots/day, using the symbol's exchange timezone.
+// The original ring convention is retained: relVolPeriods rows include the current
+// day, which is excluded from the average. Thus up to relVolPeriods - 1 prior days
+// contribute, subject to missing bars and the chart's available history.
+// -----------------------------------------------------------------------------
+const int RVOL_SLOTS_PER_DAY = 1440
+int rvolSlot = hour(time) * 60 + minute(time)
+int rvolDayKey = year(time) * 10000 + month(time) * 100 + dayofmonth(time)
+bool rvolNewDay = bar_index > 0 and rvolDayKey != rvolDayKey[1]
+var int rvolDayPointer = 0
+var array<float> rvolHistory = array.new_float(RVOL_SLOTS_PER_DAY * relVolPeriods, na)
+
+if rvolNewDay
+    rvolDayPointer := (rvolDayPointer + 1) % relVolPeriods
+    int recycleStart = rvolDayPointer * RVOL_SLOTS_PER_DAY
+    for slot = 0 to RVOL_SLOTS_PER_DAY - 1
+        rvolHistory.set(recycleStart + slot, na)
+
+float rvolHistSum = 0.0
+int rvolHistCount = 0
+for p = 0 to relVolPeriods - 1
+    if p != rvolDayPointer
+        float histVol = rvolHistory.get(p * RVOL_SLOTS_PER_DAY + rvolSlot)
+        if not na(histVol)
+            rvolHistSum += histVol
+            rvolHistCount += 1
+
+float relVolAverage = rvolHistCount > 0 ? rvolHistSum / rvolHistCount : na
+float relVolume = not na(relVolAverage) and relVolAverage > 0 ? volume / relVolAverage : na
+rvolHistory.set(rvolDayPointer * RVOL_SLOTS_PER_DAY + rvolSlot, volume)
+
+// Optional built-in trend context remains free-plan compatible.
+[supertrendValue, supertrendDir] = ta.supertrend(supertrendFactor, supertrendATR)
+bool trendBull = supertrendDir < 0
+bool trendBear = supertrendDir > 0
+
+// Lite auction proxies replace profile/footprint value levels.
+// ±1 sigma acts as the lightweight value envelope; session midpoint is chart context only.
+float sessionMidRef = not na(active.hi) and not na(active.lo) ? (active.hi + active.lo) * 0.5 : na
+float vahRef = vwapRef + sigmaRef
+float valRef = vwapRef - sigmaRef
+
+float sessionHiRef = active.hi
+float sessionLoRef = active.lo
+bool orReady = not na(active.startTime) and time >= active.startTime + orMinutes * 60000
+float orHiRef = orReady ? active.orHi : na
+float orLoRef = orReady ? active.orLo : na
+
+bool ready = context != 0 and flowOK and not na(vwapRef) and not na(priorATR)
+
+// -----------------------------------------------------------------------------
+// CONFIRMED HTF STRUCTURE
+// -----------------------------------------------------------------------------
+confirmedStructure() =>
+    float swingH = ta.pivothigh(high, htfPivotLen, htfPivotLen)
+    float swingL = ta.pivotlow(low, htfPivotLen, htfPivotLen)
+    var float lastH = na
+    var float lastL = na
+    var int highAt = na
+    var int lowAt = na
+    var int direction = 0
+    if not na(swingH)
+        lastH := swingH
+        highAt := bar_index - htfPivotLen
+    if not na(swingL)
+        lastL := swingL
+        lowAt := bar_index - htfPivotLen
+    bool highFresh = not na(highAt) and bar_index - highAt <= htfMaxAge
+    bool lowFresh = not na(lowAt) and bar_index - lowAt <= htfMaxAge
+    if not highFresh or not lowFresh
+        direction := 0
+    else if close > lastH + syminfo.mintick
+        direction := 1
+    else if close < lastL - syminfo.mintick
+        direction := -1
+    direction[1]
+
+int bias15 = request.security(syminfo.tickerid, "15", confirmedStructure(), lookahead = barmerge.lookahead_on)
+bool htfLong = not htfOn or bias15 == 1
+bool htfShort = not htfOn or bias15 == -1
+
+[prevHigh, prevLow] = request.security(syminfo.tickerid, "1D", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+float ph = ta.pivothigh(high, pivotLen, pivotLen)
+float pl = ta.pivotlow(low, pivotLen, pivotLen)
+float repeatPH = ta.pivothigh(high, repeatPivotLen, repeatPivotLen)
+float repeatPL = ta.pivotlow(low, repeatPivotLen, repeatPivotLen)
+float pullbackLow = ta.lowest(low, pullbackBars)
+float pullbackHigh = ta.highest(high, pullbackBars)
+var float pivotHigh = na
+var float pivotLow = na
+var int pivotHighBar = na
+var int pivotLowBar = na
+float validPH = not na(pivotHighBar) and bar_index - pivotHighBar <= pivotAge ? pivotHigh : na
+float validPL = not na(pivotLowBar) and bar_index - pivotLowBar <= pivotAge ? pivotLow : na
+float structureHigh = ta.highest(high, breakLook)[1]
+float structureLow = ta.lowest(low, breakLook)[1]
+
+sweptDown(float level) =>
+    not na(level) and low <= level - sweepTicks * tick and close > level
+
+sweptUp(float level) =>
+    not na(level) and high >= level + sweepTicks * tick and close < level
+
+bool downSweep = sweptDown(prevLow) or sweptDown(sessionLoRef) or sweptDown(orLoRef) or sweptDown(validPL)
+bool upSweep = sweptUp(prevHigh) or sweptUp(sessionHiRef) or sweptUp(orHiRef) or sweptUp(validPH)
+
+// -----------------------------------------------------------------------------
+// KAIROS REGIME ENGINE — PHASE 1 OBSERVER
+// -----------------------------------------------------------------------------
+// Five mutually exclusive environments:
+// 1 TREND, 2 RANGE, 3 COMPRESSION, 4 EXPANSION, 5 TRANSITION / REVERSAL.
+// Phase 1 does not block or create entries. It tags context and exposes
+// regime-aware weighting hooks for the next scoring phase.
+float regimeNetMove = math.abs(close - close[regimeERLength])
+float regimePath = math.sum(math.abs(close - close[1]), regimeERLength)
+float regimeER = regimePath > tick ? regimeNetMove / regimePath : 0.0
+[regimePlusDI, regimeMinusDI, regimeADX] = ta.dmi(regimeDILength, regimeADXSmoothing)
+float regimeFastTR = ta.sma(ta.tr(true), regimeVolFast)
+float regimeSlowTR = ta.sma(ta.tr(true), regimeVolSlow)
+float regimeVolRatio = not na(regimeSlowTR) and regimeSlowTR > 0 ? regimeFastTR / regimeSlowTR : na
+int barsSinceVwapReset = ta.barssince(vwapIsNewPeriod)
+bool regimeSlopeReady = not na(barsSinceVwapReset) and barsSinceVwapReset > regimeSlopeBars
+float regimeVwapSlopeATR = regimeSlopeReady and not na(vwapRef[regimeSlopeBars]) and not na(priorATR) and priorATR > 0 ?
+     (vwapRef - vwapRef[regimeSlopeBars]) / priorATR : 0.0
+
+int regimeDirectional = math.abs(regimeVwapSlopeATR) >= regimeSlopeATR ?
+     (regimeVwapSlopeATR > 0 ? 1 : -1) :
+     regimePlusDI > regimeMinusDI ? 1 : regimeMinusDI > regimePlusDI ? -1 : 0
+
+bool regimeTrendRaw = not na(regimeADX) and regimeADX >= regimeTrendADX and
+     regimeER >= regimeTrendER and math.abs(regimeVwapSlopeATR) >= regimeSlopeATR
+bool regimeCompressionRaw = not na(regimeVolRatio) and regimeVolRatio <= regimeCompressionRatio and
+     regimeER <= regimeTrendER * 0.90
+bool regimeExpansionRaw = not na(regimeVolRatio) and
+     (regimeVolRatio >= regimeExpansionRatio or (not na(priorATR) and priorATR > 0 and span >= priorATR * 1.60))
+
+int barsSinceDownSweep = ta.barssince(downSweep)
+int barsSinceUpSweep = ta.barssince(upSweep)
+bool recentDownSweep = not na(barsSinceDownSweep) and barsSinceDownSweep <= regimeTransitionLife
+bool recentUpSweep = not na(barsSinceUpSweep) and barsSinceUpSweep <= regimeTransitionLife
+bool regimeTransitionLong = recentDownSweep and (vfiTurnLong or cvdTurnLong) and
+     (regimeDirectional <= 0 or bias15 <= 0)
+bool regimeTransitionShort = recentUpSweep and (vfiTurnShort or cvdTurnShort) and
+     (regimeDirectional >= 0 or bias15 >= 0)
+
+int regimeCode = 0
+int regimeDirection = 0
+if regimeOn
+    if regimeTransitionLong != regimeTransitionShort
+        regimeCode := 5
+        regimeDirection := regimeTransitionLong ? 1 : -1
+    else if regimeExpansionRaw
+        regimeCode := 4
+        regimeDirection := regimeDirectional
+    else if regimeCompressionRaw
+        regimeCode := 3
+        regimeDirection := 0
+    else if regimeTrendRaw
+        regimeCode := 1
+        regimeDirection := regimeDirectional
+    else
+        regimeCode := 2
+        regimeDirection := 0
+
+string regimeText = not regimeOn ? "OFF" :
+     regimeCode == 5 ? (regimeDirection == 1 ? "TRANSITION UP" : "TRANSITION DOWN") :
+     regimeCode == 4 ? (regimeDirection == 1 ? "EXPANSION UP" : regimeDirection == -1 ? "EXPANSION DOWN" : "EXPANSION") :
+     regimeCode == 3 ? "COMPRESSION" :
+     regimeCode == 1 ? (regimeDirection == 1 ? "TREND UP" : regimeDirection == -1 ? "TREND DOWN" : "TREND") :
+     "RANGE"
+
+// Raw regime classification is exported/displayed for diagnosis only.
+
+// -----------------------------------------------------------------------------
+// SETUP MEMORY
+// -----------------------------------------------------------------------------
+type Seed
+    int at = na
+    float lo = na
+    float hi = na
+    float trigger = na
+    bool evidence = false
+    bool excursion = false
+    bool swept = false
+    float valueEdge = na
+    int deltaAt = na
+    int imbalanceAt = na
+
+newSeed() =>
+    Seed.new()
+
+method resetSeed(Seed seed, int at = na, float lo = na, float hi = na, float trigger = na, bool evidence = false, bool excursion = false, float valueEdge = na, bool swept = false) =>
+    seed.at := at
+    seed.lo := lo
+    seed.hi := hi
+    seed.trigger := trigger
+    seed.evidence := evidence
+    seed.excursion := excursion
+    seed.swept := swept
+    seed.valueEdge := valueEdge
+    seed.deltaAt := na
+    seed.imbalanceAt := na
+    seed
+
+method remember(Seed seed, int side) =>
+    bool opposite = side == 1 ? opposeLong : opposeShort
+    int lifetime = memoryOn ? flowMemory : 0
+
+    if not flowOK or opposite
+        seed.deltaAt := na
+        seed.imbalanceAt := na
+    else if not na(seed.at)
+        // deltaAt = remembered reversal TURN confirmation.
+        bool vfiTurnNow = side == 1 ? vfiTurnLong : vfiTurnShort
+        bool cvdTurnNow = side == 1 ? cvdTurnLong : cvdTurnShort
+        bool turnNow = vfiTurnNow and (not reversalNeedCvdTurn or not ltfFlowOK or cvdTurnNow)
+
+        // imbalanceAt = remembered VSA support in the reversal direction.
+        bool vsaSupportNow = side == 1 ? vsaSupportLong : vsaSupportShort
+
+        if turnNow
+            seed.deltaAt := bar_index
+        if vsaSupportNow
+            seed.imbalanceAt := bar_index
+
+        if not na(seed.deltaAt) and bar_index - seed.deltaAt > lifetime
+            seed.deltaAt := na
+        if not na(seed.imbalanceAt) and bar_index - seed.imbalanceAt > lifetime
+            seed.imbalanceAt := na
+    seed
+
+var Seed longSeed = newSeed()
+var Seed shortSeed = newSeed()
+var int acceptedLong = 0
+var int acceptedShort = 0
+// Read-only seed-refresh counters; no condition uses them as a trading filter.
+var int legacyLongRefreshes = 0
+var int legacyShortRefreshes = 0
+
+float revZ = context == 2 ? asiaRevZ : nyRevZ
+bool newsBlock = newsOn and (pauseNow or (timedNews and time < newsTo and time_close > newsFrom))
+bool volPass = not volOn or (
+     priorATR >= (context == 2 ? asiaMinATR : nyMinATR) and
+     (na(relVolume) or relVolume >= (context == 2 ? asiaRelVol : nyRelVol)) and
+     span <= priorATR * shockATR)
+
+float failedLongEdge = sweptDown(valRef) ? valRef : na
+float failedShortEdge = sweptUp(vahRef) ? vahRef : na
+bool acceptLongNow = ready and close > vwapRef
+bool acceptShortNow = ready and close < vwapRef
+
+if barstate.isconfirmed
+    if resetContext or context == 0 or newsBlock or not flowOK
+        longSeed.resetSeed()
+        shortSeed.resetSeed()
+        acceptedLong := 0
+        acceptedShort := 0
+        legacyLongRefreshes := 0
+        legacyShortRefreshes := 0
+
+    if not na(longSeed.at) and (bar_index - longSeed.at > sweepLife or low < longSeed.lo - tick)
+        longSeed.resetSeed()
+        legacyLongRefreshes := 0
+    if not na(shortSeed.at) and (bar_index - shortSeed.at > sweepLife or high > shortSeed.hi + tick)
+        shortSeed.resetSeed()
+        legacyShortRefreshes := 0
+
+    bool compactPullback = pullbackHigh - pullbackLow <= pullbackRangeATR * priorATR
+    bool localLong = (low < low[1] or close[1] < close[2]) and close > open and compactPullback
+    bool localShort = (high > high[1] or close[1] > close[2]) and close < open and compactPullback
+
+    bool contSeedLong = continuationOn and htfLong and close > vwapRef and (continueSweepOn ? downSweep : localLong)
+    bool contSeedShort = continuationOn and htfShort and close < vwapRef and (continueSweepOn ? upSweep : localShort)
+    bool revSeedLong = reversalOn and (sweepOn ? downSweep : localLong)
+    bool revSeedShort = reversalOn and (sweepOn ? upSweep : localShort)
+
+    bool seedLong = contSeedLong or revSeedLong
+    bool seedShort = contSeedShort or revSeedShort
+
+    if ready and not newsBlock and seedLong and not seedShort
+        legacyLongRefreshes := not na(longSeed.at) ? legacyLongRefreshes + 1 : 0
+        longSeed.resetSeed(
+             bar_index,
+             contSeedLong and not downSweep ? pullbackLow : low,
+             high,
+             structureHigh,
+             vsaBullAbsorption,
+             low <= vwapRef - revZ * sigmaRef,
+             failedLongEdge,
+             downSweep)
+
+    if ready and not newsBlock and seedShort and not seedLong
+        legacyShortRefreshes := not na(shortSeed.at) ? legacyShortRefreshes + 1 : 0
+        shortSeed.resetSeed(
+             bar_index,
+             low,
+             contSeedShort and not upSweep ? pullbackHigh : high,
+             structureLow,
+             vsaBearAbsorption,
+             high >= vwapRef + revZ * sigmaRef,
+             failedShortEdge,
+             upSweep)
+
+    if not na(longSeed.at)
+        longSeed.hi := math.max(longSeed.hi, high)
+        longSeed.remember(1)
+
+    if not na(shortSeed.at)
+        shortSeed.lo := math.min(shortSeed.lo, low)
+        shortSeed.remember(-1)
+
+    acceptedLong := acceptLongNow and not newsBlock ? math.min(acceptedLong + 1, acceptanceBars) : 0
+    acceptedShort := acceptShortNow and not newsBlock ? math.min(acceptedShort + 1, acceptanceBars) : 0
+
+bool hasLong = not na(longSeed.at) and bar_index - longSeed.at <= sweepLife
+bool hasShort = not na(shortSeed.at) and bar_index - shortSeed.at <= sweepLife
+
+bool longStructure = hasLong and close > longSeed.trigger and close > open and close - open >= bodyATR * priorATR
+bool shortStructure = hasShort and close < shortSeed.trigger and close < open and open - close >= bodyATR * priorATR
+
+bool continuationFlowLong = not flowOn or (
+     hasLong and not opposeLong and vfiBull and vsaBullInitiative and
+     (not continueShiftOn or not na(longSeed.deltaAt)))
+
+bool reversalFlowLong = not flowOn or (
+     hasLong and not opposeLong and not vsaOpposeLong and
+     (not na(longSeed.deltaAt) or (vfiTurnLong and (not reversalNeedCvdTurn or not ltfFlowOK or cvdTurnLong))))
+
+bool continuationFlowShort = not flowOn or (
+     hasShort and not opposeShort and vfiBear and vsaBearInitiative and
+     (not continueShiftOn or not na(shortSeed.deltaAt)))
+
+bool reversalFlowShort = not flowOn or (
+     hasShort and not opposeShort and not vsaOpposeShort and
+     (not na(shortSeed.deltaAt) or (vfiTurnShort and (not reversalNeedCvdTurn or not ltfFlowOK or cvdTurnShort))))
+
+float z = (close - vwapRef) / sigmaRef
+bool trendLong = trendBull and close > vwapRef and z <= continueMaxZ
+bool trendShort = trendBear and close < vwapRef and z >= -continueMaxZ
+
+bool continueLocationLong = hasLong and close > vwapRef and z <= continueMaxZ
+bool continueLocationShort = hasShort and close < vwapRef and z >= -continueMaxZ
+bool continueAcceptLong = hasLong and acceptedLong >= acceptanceBars and bar_index - longSeed.at + 1 >= acceptanceBars
+bool continueAcceptShort = hasShort and acceptedShort >= acceptanceBars and bar_index - shortSeed.at + 1 >= acceptanceBars
+
+bool continueLong = continuationOn and htfLong and continueLocationLong and continueAcceptLong and
+     (not continueSweepOn or longSeed.swept) and continuationFlowLong and (not trendOn or trendLong)
+
+bool continueShort = continuationOn and htfShort and continueLocationShort and continueAcceptShort and
+     (not continueSweepOn or shortSeed.swept) and continuationFlowShort and (not trendOn or trendShort)
+
+bool reclaimLongSigma = close > valRef
+bool reclaimShortSigma = close < vahRef
+bool reclaimLongMid = not na(sessionMidRef) and close > sessionMidRef
+bool reclaimShortMid = not na(sessionMidRef) and close < sessionMidRef
+bool reclaimLongVWAP = close > vwapRef
+bool reclaimShortVWAP = close < vwapRef
+bool reclaimLongStructure = longStructure
+bool reclaimShortStructure = shortStructure
+
+bool revertValueLong = hasLong and (reclaimLongSigma or reclaimLongMid or reclaimLongVWAP or reclaimLongStructure)
+bool revertValueShort = hasShort and (reclaimShortSigma or reclaimShortMid or reclaimShortVWAP or reclaimShortStructure)
+bool revertLocationLong = hasLong and longSeed.excursion and z >= -2.0 and z <= 0.75
+bool revertLocationShort = hasShort and shortSeed.excursion and z <= 2.0 and z >= -0.75
+
+bool revertLong = reversalOn and (not sweepOn or longSeed.swept) and reversalFlowLong and
+     revertValueLong and revertLocationLong and (not trendOn or trendBull)
+
+bool revertShort = reversalOn and (not sweepOn or shortSeed.swept) and reversalFlowShort and
+     revertValueShort and revertLocationShort and (not trendOn or trendBear)
+
+// -----------------------------------------------------------------------------
+// PF1 CONTINUATION EXPERIMENT - isolated seeds, no regime/quality/room filter.
+// -----------------------------------------------------------------------------
+var Seed pfLongSeed = newSeed()
+var Seed pfShortSeed = newSeed()
+var int pfLongRefreshIgnored = 0
+var int pfShortRefreshIgnored = 0
+
+bool pfCompactPullback = pullbackHigh - pullbackLow <= pullbackRangeATR * priorATR
+bool pfLocalLong = (low < low[1] or close[1] < close[2]) and close > open and pfCompactPullback
+bool pfLocalShort = (high > high[1] or close[1] > close[2]) and close < open and pfCompactPullback
+bool pfSeedLongNow = continuationOn and htfLong and close > vwapRef and (continueSweepOn ? downSweep : pfLocalLong)
+bool pfSeedShortNow = continuationOn and htfShort and close < vwapRef and (continueSweepOn ? upSweep : pfLocalShort)
+
+if barstate.isconfirmed
+    if not firstBreakMode or not continuationOn or resetContext or context == 0 or newsBlock or not flowOK
+        pfLongSeed.resetSeed()
+        pfShortSeed.resetSeed()
+        pfLongRefreshIgnored := 0
+        pfShortRefreshIgnored := 0
+    if not na(pfLongSeed.at) and (bar_index - pfLongSeed.at > sweepLife or low < pfLongSeed.lo - tick or not htfLong or close <= vwapRef)
+        pfLongSeed.resetSeed()
+        pfLongRefreshIgnored := 0
+    if not na(pfShortSeed.at) and (bar_index - pfShortSeed.at > sweepLife or high > pfShortSeed.hi + tick or not htfShort or close >= vwapRef)
+        pfShortSeed.resetSeed()
+        pfShortRefreshIgnored := 0
+
+    if firstBreakMode and ready and not newsBlock and pfSeedLongNow and not pfSeedShortNow
+        if na(pfLongSeed.at)
+            pfLongSeed.resetSeed(bar_index, downSweep ? low : pullbackLow, high,
+                 math.max(structureHigh, high), false, false, na, downSweep)
+            pfLongRefreshIgnored := 0
+        else
+            pfLongRefreshIgnored += 1
+    if firstBreakMode and ready and not newsBlock and pfSeedShortNow and not pfSeedLongNow
+        if na(pfShortSeed.at)
+            pfShortSeed.resetSeed(bar_index, low, upSweep ? high : pullbackHigh,
+                 math.min(structureLow, low), false, false, na, upSweep)
+            pfShortRefreshIgnored := 0
+        else
+            pfShortRefreshIgnored += 1
+
+    if not na(pfLongSeed.at)
+        pfLongSeed.remember(1)
+    if not na(pfShortSeed.at)
+        pfShortSeed.remember(-1)
+
+bool pfHasLong = firstBreakMode and not na(pfLongSeed.at) and bar_index - pfLongSeed.at <= sweepLife and
+     low >= pfLongSeed.lo - tick and htfLong and close > vwapRef
+bool pfHasShort = firstBreakMode and not na(pfShortSeed.at) and bar_index - pfShortSeed.at <= sweepLife and
+     high <= pfShortSeed.hi + tick and htfShort and close < vwapRef
+// On historical/closing evaluations this is the first closing-break opportunity:
+// every such opportunity consumes its PF seed BELOW, whether eligible or blocked.
+// On an open bar it is provisional and does not consume any confirmed seed.
+bool pfBreakLong = pfHasLong and bar_index > pfLongSeed.at and close > pfLongSeed.trigger
+bool pfBreakShort = pfHasShort and bar_index > pfShortSeed.at and close < pfShortSeed.trigger
+bool pfStructureLong = pfBreakLong and close > open and close - open >= bodyATR * priorATR
+bool pfStructureShort = pfBreakShort and close < open and open - close >= bodyATR * priorATR
+bool pfFlowLong = not flowOn or (pfHasLong and not opposeLong and vfiBull and vsaBullInitiative and
+     (not continueShiftOn or not na(pfLongSeed.deltaAt)))
+bool pfFlowShort = not flowOn or (pfHasShort and not opposeShort and vfiBear and vsaBearInitiative and
+     (not continueShiftOn or not na(pfShortSeed.deltaAt)))
+bool pfLocationLong = pfHasLong and z <= continueMaxZ
+bool pfLocationShort = pfHasShort and z >= -continueMaxZ
+bool pfAcceptLong = pfHasLong and acceptedLong >= acceptanceBars
+bool pfAcceptShort = pfHasShort and acceptedShort >= acceptanceBars
+bool pfContinueLong = continuationOn and htfLong and pfLocationLong and pfAcceptLong and
+     (not continueSweepOn or pfLongSeed.swept) and pfFlowLong and (not trendOn or trendLong)
+bool pfContinueShort = continuationOn and htfShort and pfLocationShort and pfAcceptShort and
+     (not continueSweepOn or pfShortSeed.swept) and pfFlowShort and (not trendOn or trendShort)
+
+bool selectedContHasLong = firstBreakMode ? pfHasLong : hasLong
+bool selectedContHasShort = firstBreakMode ? pfHasShort : hasShort
+bool selectedContLong = firstBreakMode ? pfContinueLong : continueLong
+bool selectedContShort = firstBreakMode ? pfContinueShort : continueShort
+bool selectedContStructureLong = firstBreakMode ? pfStructureLong : longStructure
+bool selectedContStructureShort = firstBreakMode ? pfStructureShort : shortStructure
+bool selectedContFlowLong = firstBreakMode ? pfFlowLong : continuationFlowLong
+bool selectedContFlowShort = firstBreakMode ? pfFlowShort : continuationFlowShort
+bool selectedContLocationLong = firstBreakMode ? pfLocationLong : continueLocationLong
+bool selectedContLocationShort = firstBreakMode ? pfLocationShort : continueLocationShort
+bool selectedContAcceptLong = firstBreakMode ? pfAcceptLong : continueAcceptLong
+bool selectedContAcceptShort = firstBreakMode ? pfAcceptShort : continueAcceptShort
+bool selectedContSweptLong = firstBreakMode ? pfLongSeed.swept : longSeed.swept
+bool selectedContSweptShort = firstBreakMode ? pfShortSeed.swept : shortSeed.swept
+int selectedContAtLong = firstBreakMode ? pfLongSeed.at : longSeed.at
+int selectedContAtShort = firstBreakMode ? pfShortSeed.at : shortSeed.at
+
+// Baseline priority is retained when its mode is selected. Each PF branch now
+// owns its structural check; a PF continuation cannot borrow a reversal trigger.
+string sweepKindLong = selectedContLong and selectedContStructureLong ? "CONTINUATION" : revertLong and longStructure ? "REVERSAL" : ""
+string sweepKindShort = selectedContShort and selectedContStructureShort ? "CONTINUATION" : revertShort and shortStructure ? "REVERSAL" : ""
+bool sweepCandidateLong = ready and volPass and not newsBlock and sweepKindLong != ""
+bool sweepCandidateShort = ready and volPass and not newsBlock and sweepKindShort != ""
+
+// -----------------------------------------------------------------------------
+// REPEAT SIGNAL GATE
+// -----------------------------------------------------------------------------
+var int lastSignalDirection = 0
+var int legSignalBar = na
+var float legExtreme = na
+var float rearmPivot = na
+var int rearmPivotBar = na
+
+max_bars_back(legExtreme, 16)
+max_bars_back(legSignalBar, 16)
+
+if barstate.isconfirmed and lastSignalDirection != 0
+    if not na(rearmPivot) and (lastSignalDirection == 1 ? low < rearmPivot - tick : high > rearmPivot + tick)
+        rearmPivot := na
+        rearmPivotBar := na
+
+    int pivotBar = bar_index - repeatPivotLen
+    float confirmedPullback = lastSignalDirection == 1 ? repeatPL : repeatPH
+    float peakBeforePivot = legExtreme[repeatPivotLen + 1]
+    bool sameLeg = not na(legSignalBar) and legSignalBar[repeatPivotLen + 1] == legSignalBar
+    float depth = lastSignalDirection == 1 ? peakBeforePivot - confirmedPullback : confirmedPullback - peakBeforePivot
+    bool freshPivot = sameLeg and not na(confirmedPullback) and pivotBar > legSignalBar and depth >= repeatDepthATR * priorATR[repeatPivotLen]
+
+    if freshPivot
+        rearmPivot := confirmedPullback
+        rearmPivotBar := pivotBar
+
+    legExtreme := lastSignalDirection == 1 ? math.max(legExtreme, high) : math.min(legExtreme, low)
+
+bool revRepeatLongOK = not repeatOn or lastSignalDirection != 1 or (hasLong and not na(rearmPivotBar) and longSeed.at >= rearmPivotBar)
+bool revRepeatShortOK = not repeatOn or lastSignalDirection != -1 or (hasShort and not na(rearmPivotBar) and shortSeed.at >= rearmPivotBar)
+bool contRepeatLongOK = not repeatOn or lastSignalDirection != 1 or (selectedContHasLong and not na(rearmPivotBar) and selectedContAtLong >= rearmPivotBar)
+bool contRepeatShortOK = not repeatOn or lastSignalDirection != -1 or (selectedContHasShort and not na(rearmPivotBar) and selectedContAtShort >= rearmPivotBar)
+bool repeatLongOK = sweepKindLong == "CONTINUATION" ? contRepeatLongOK : revRepeatLongOK
+bool repeatShortOK = sweepKindShort == "CONTINUATION" ? contRepeatShortOK : revRepeatShortOK
+
+bool baseConflict = sweepCandidateLong and sweepCandidateShort
+bool candidateLong = sweepCandidateLong and (repeatLongOK or baseConflict)
+bool candidateShort = sweepCandidateShort and (repeatShortOK or baseConflict)
+string kindLong = sweepKindLong
+string kindShort = sweepKindShort
+
+// Branch diagnostic helpers are read-only. They never mutate setup or repeat state.
+commonBlocker() =>
+    newsBlock ? "NEWS PAUSE" :
+     context == 0 ? "OUTSIDE SESSION" :
+     not flowOK ? "VFI / VSA WARMUP" :
+     not ready ? "WAIT FOR DATA" :
+     not volPass ? "RVOL / ATR BLOCK" : ""
+
+branchBlocker(int side, bool continuationBranch) =>
+    bool enabled = continuationBranch ? continuationOn : reversalOn
+    bool hasSeed = continuationBranch ? (side == 1 ? selectedContHasLong : selectedContHasShort) :
+         (side == 1 ? hasLong : hasShort)
+    bool directionOK = side == 1 ? htfLong : htfShort
+    bool wasSwept = continuationBranch ? (side == 1 ? selectedContSweptLong : selectedContSweptShort) :
+         (side == 1 ? longSeed.swept : shortSeed.swept)
+    bool sweepRequired = continuationBranch ? continueSweepOn : sweepOn
+    bool flow = continuationBranch ? (side == 1 ? selectedContFlowLong : selectedContFlowShort) :
+         (side == 1 ? reversalFlowLong : reversalFlowShort)
+    bool structure = continuationBranch ? (side == 1 ? selectedContStructureLong : selectedContStructureShort) :
+         (side == 1 ? longStructure : shortStructure)
+    bool location = continuationBranch ? (side == 1 ? selectedContLocationLong : selectedContLocationShort) :
+         (side == 1 ? revertLocationLong : revertLocationShort)
+    bool accepted = side == 1 ? selectedContAcceptLong : selectedContAcceptShort
+    bool reclaimed = side == 1 ? revertValueLong : revertValueShort
+    bool trendOK = not trendOn or (continuationBranch ? (side == 1 ? trendLong : trendShort) :
+         (side == 1 ? trendBull : trendBear))
+    bool repeatOK = continuationBranch ? (side == 1 ? contRepeatLongOK : contRepeatShortOK) :
+         (side == 1 ? revRepeatLongOK : revRepeatShortOK)
+    string chosenKind = side == 1 ? kindLong : kindShort
+    string common = commonBlocker()
+    string biasName = bias15 == 1 ? "BULL" : bias15 == -1 ? "BEAR" : "NEUTRAL"
+    string result = barstate.isconfirmed ? "PASS AT CLOSE" : "ELIGIBLE NOW (PROVISIONAL)"
+
+    if not enabled
+        result := "DISABLED"
+    else if common != ""
+        result := common
+    else if baseConflict
+        result := "CONFLICTING DIRECTIONS"
+    else if continuationBranch and not directionOK
+        result := "15m " + biasName + "; NEED " + (side == 1 ? "BULL" : "BEAR")
+    else if not hasSeed
+        result := "NEED PULLBACK / SWEEP"
+    else if sweepRequired and not wasSwept
+        result := "NEED LIQUIDITY SWEEP"
+    else if not flow
+        result := continuationBranch ? "NEED VFI / VSA INITIATIVE" : "NEED FLOW TURN / NO OPPOSITION"
+    else if not structure
+        result := continuationBranch and firstBreakMode ? "NEED FIRST LATER BREAK / BODY" : "NEED STRUCTURE / BODY"
+    else if not location
+        result := continuationBranch ? "NEED VWAP SIDE / DEVIATION" : "NEED REVERSAL EXCURSION / LOCATION"
+    else if continuationBranch and not accepted
+        result := firstBreakMode ? "NEED VWAP-ACCEPTED CLOSES" : "NEED ACCEPTED CLOSES / SEED AGE"
+    else if not continuationBranch and not reclaimed
+        result := "NEED VALUE / STRUCTURE RECLAIM"
+    else if not trendOK
+        result := "SUPERTREND FILTER BLOCK"
+    else if not repeatOK
+        result := "WAIT FOR FRESH " + (side == 1 ? "BUY" : "SELL") + " PULLBACK"
+    else if not continuationBranch and chosenKind == "CONTINUATION"
+        result := "PASS; CONTINUATION HAS PRIORITY"
+    result
+
+blocker(int side) =>
+    "CONT: " + branchBlocker(side, true) + "\nREV: " + branchBlocker(side, false)
+
+// Snapshot before the confirmed layer clears seeds. Display the same decision
+// context used on this update, not the already-consumed post-signal seed state.
+string currentBuyBlocker = blocker(1)
+string currentSellBlocker = blocker(-1)
+string currentCommonBlocker = commonBlocker()
+
+int diagCommon = (context == 0 ? 1 : 0) + (newsBlock ? 2 : 0) + (not flowOK ? 4 : 0) +
+     (not ready ? 8 : 0) + (not volPass ? 16 : 0) + (candidateLong and candidateShort ? 128 : 0)
+
+int diagContLong = (not continuationOn ? 1 : 0) + (not selectedContHasLong ? 2 : 0) + (not htfLong ? 4 : 0) +
+     (not selectedContLocationLong ? 8 : 0) + (not selectedContAcceptLong ? 16 : 0) +
+     (continueSweepOn and not selectedContSweptLong ? 32 : 0) + (not selectedContFlowLong ? 64 : 0) +
+     (trendOn and not trendLong ? 128 : 0) + (not selectedContStructureLong ? 256 : 0)
+
+int diagContShort = (not continuationOn ? 1 : 0) + (not selectedContHasShort ? 2 : 0) + (not htfShort ? 4 : 0) +
+     (not selectedContLocationShort ? 8 : 0) + (not selectedContAcceptShort ? 16 : 0) +
+     (continueSweepOn and not selectedContSweptShort ? 32 : 0) + (not selectedContFlowShort ? 64 : 0) +
+     (trendOn and not trendShort ? 128 : 0) + (not selectedContStructureShort ? 256 : 0)
+
+int diagRevLong = (not reversalOn ? 1 : 0) + (not hasLong ? 2 : 0) +
+     (sweepOn and not longSeed.swept ? 4 : 0) + (not revertValueLong ? 8 : 0) +
+     (not revertLocationLong ? 16 : 0) + (not reversalFlowLong ? 32 : 0) +
+     (trendOn and not trendBull ? 64 : 0) + (not longStructure ? 128 : 0)
+
+int diagRevShort = (not reversalOn ? 1 : 0) + (not hasShort ? 2 : 0) +
+     (sweepOn and not shortSeed.swept ? 4 : 0) + (not revertValueShort ? 8 : 0) +
+     (not revertLocationShort ? 16 : 0) + (not reversalFlowShort ? 32 : 0) +
+     (trendOn and not trendBear ? 64 : 0) + (not shortStructure ? 128 : 0)
+
+// Separate from the original branch masks: bit 1 = BUY repeat gate failed,
+// bit 2 = SELL repeat gate failed. A failed repeat gate is not a signal by itself.
+int diagContRepeat = (not contRepeatLongOK ? 1 : 0) + (not contRepeatShortOK ? 2 : 0)
+int diagRevRepeat = (not revRepeatLongOK ? 1 : 0) + (not revRepeatShortOK ? 2 : 0)
+int diagContAgeLong = selectedContHasLong ? bar_index - selectedContAtLong : na
+int diagContAgeShort = selectedContHasShort ? bar_index - selectedContAtShort : na
+int diagContRefreshLong = firstBreakMode ? pfLongRefreshIgnored : legacyLongRefreshes
+int diagContRefreshShort = firstBreakMode ? pfShortRefreshIgnored : legacyShortRefreshes
+// Frozen prospective structure: only becomes a signal reference if confirmed.
+bool pickedPfLong = firstBreakMode and kindLong == "CONTINUATION"
+bool pickedPfShort = firstBreakMode and kindShort == "CONTINUATION"
+float decisionLongLow = pickedPfLong ? pfLongSeed.lo : longSeed.lo
+float decisionShortHigh = pickedPfShort ? pfShortSeed.hi : shortSeed.hi
+float decisionLongTrigger = pickedPfLong ? pfLongSeed.trigger : longSeed.trigger
+float decisionShortTrigger = pickedPfShort ? pfShortSeed.trigger : shortSeed.trigger
+int decisionLongAt = pickedPfLong ? pfLongSeed.at : longSeed.at
+int decisionShortAt = pickedPfShort ? pfShortSeed.at : shortSeed.at
+int decisionLongRefreshes = pickedPfLong ? pfLongRefreshIgnored : legacyLongRefreshes
+int decisionShortRefreshes = pickedPfShort ? pfShortRefreshIgnored : legacyShortRefreshes
+float decisionLongInvalidation = math.round_to_mintick(decisionLongLow - invalidationBufferTicks * tick)
+float decisionShortInvalidation = math.round_to_mintick(decisionShortHigh + invalidationBufferTicks * tick)
+int inputFlags = (trendOn ? 1 : 0) + (volOn ? 2 : 0) + (flowOn ? 4 : 0) + (sweepOn ? 8 : 0) +
+     (sessionsOn ? 16 : 0) + (htfOn ? 32 : 0) + (repeatOn ? 64 : 0) + (reversalNeedCvdTurn ? 128 : 0) +
+     (continueShiftOn ? 256 : 0) + (continueSweepOn ? 512 : 0) + (continuationOn ? 1024 : 0) + (reversalOn ? 2048 : 0)
+
+// -----------------------------------------------------------------------------
+// REALTIME LIVE LIFECYCLE — observer/notifications, never an entry gate
+// -----------------------------------------------------------------------------
+// Read-only preview safety: confirmed signals remain independent of LIVE state.
+// Reject a prior-context or currently breached seed before its close-only reset.
+bool previewLongSafe = not resetContext and not na(decisionLongLow) and low >= decisionLongLow - tick
+bool previewShortSafe = not resetContext and not na(decisionShortHigh) and high <= decisionShortHigh + tick
+bool liveNowLong = barstate.isrealtime and not barstate.isconfirmed and candidateLong and not candidateShort and previewLongSafe
+bool liveNowShort = barstate.isrealtime and not barstate.isconfirmed and candidateShort and not candidateLong and previewShortSafe
+bool liveMessagesOn = detailedAlerts and dynamicAlertMode == "LIVE + confirmed"
+
+sideText(int side) =>
+    side == 1 ? "BUY" : side == -1 ? "SELL" : "NONE"
+
+eventKey(int openedAt, int side, string phase) =>
+    "KLL1m-PF1:" + auditTag + ":" + (firstBreakMode ? "FIRST_BREAK:" : "RC1_BASELINE:") + syminfo.tickerid + ":" + timeframe.period + ":" +
+     str.tostring(openedAt) + ":" + sideText(side) + ":" + phase
+
+// Times are Unix milliseconds. Prices are observations, NOT assumed order fills.
+// EventID stays the same from a LIVE start to its one terminal notification.
+// An independent close-only signal gets a different EventID, with RelatedLiveID
+// documenting any earlier attempt on that candle. InitialKind may differ from
+// FinalKind: LIVE tracks direction intrabar, not a frozen entry-branch identity.
+notice(string eventName, int side, string initialKind, string finalKind, string eventSession,
+     int openedAt, int closedAt, int firstAt, float firstPrice, float eventPrice,
+     string eventID, string relatedLiveID, string reason) =>
+    "KAIROS Lite 1m v1.5 PF1 | " + eventName + " " + sideText(side) +
+     " | Event=" + eventName + " | EventID=" + eventID +
+     " | RelatedLiveID=" + relatedLiveID +
+     " | Symbol=" + syminfo.tickerid + " | TF=" + timeframe.period +
+     " | Session=" + eventSession + " | InitialKind=" + initialKind + " | FinalKind=" + finalKind +
+     " | BarOpen=" + str.tostring(openedAt) + " | BarClose=" + str.tostring(closedAt) +
+     " | FirstObservedAt=" + (na(firstAt) ? "NA" : str.tostring(firstAt)) +
+     " | ObservedAt=" + str.tostring(timenow) +
+     " | FirstPrice=" + (na(firstPrice) ? "NA" : str.tostring(firstPrice, format.mintick)) +
+     " | EventPrice=" + (na(eventPrice) ? "NA" : str.tostring(eventPrice, format.mintick)) +
+      " | Build=1501 | Mode=" + (firstBreakMode ? "FIRST_BREAK" : "RC1_BASELINE") +
+      " | RunTag=" + auditTag + " | InputFlags=" + str.tostring(inputFlags) + " | Reason=" + reason
+
+// State: 0 = realtime observed, no LIVE attempt; sign = BUY(+)/SELL(-).
+// Absolute values: 1 ACTIVE, 2 INVALIDATED intrabar, 3 CONFIRMED, 4 EXPIRED.
+// Historical bars never fabricate a LIVE history; new LIVE exports are na there.
+varip int liveState = 0
+varip int liveSide = 0
+varip int liveTrackedTime = na
+varip int liveTrackedClose = na
+varip int liveFirstTime = na
+varip float liveFirstPrice = na
+varip float liveLastPrice = na
+varip string liveKind = ""
+varip string liveSession = ""
+varip string liveEventID = ""
+varip bool liveObserved = false
+varip bool liveAlerted = false
+varip bool liveTerminalAlerted = false
+varip bool confirmedAlerted = false
+varip string lastLiveResolution = "No LIVE outcome observed"
+varip string lastLiveResolutionID = ""
+varip string lastLiveResolutionReason = ""
+varip int lastLiveResolutionTime = na
+
+// Track bar identity instead of assuming this runtime observed the opening tick.
+// If a close update was not seen, expire the old attempt on the next observed bar.
+// This is a fallback on incoming updates, NOT a timer that runs without ticks.
+bool newTrackedLiveBar = na(liveTrackedTime) or liveTrackedTime != time
+if newTrackedLiveBar
+    if barstate.isrealtime and math.abs(liveState) == 1
+        lastLiveResolution := sideText(liveSide) + " EXPIRED"
+        lastLiveResolutionID := liveEventID
+        lastLiveResolutionReason := "NEXT_BAR_WITHOUT_OBSERVED_CLOSE; EventPrice is last observed prior-bar price"
+        lastLiveResolutionTime := timenow
+        if liveMessagesOn and liveAlerted and not liveTerminalAlerted
+            alert(notice("EXPIRED", liveSide, liveKind, "NONE", liveSession,
+                 liveTrackedTime, liveTrackedClose, liveFirstTime, liveFirstPrice,
+                 liveLastPrice, liveEventID, "NONE", lastLiveResolutionReason), alert.freq_all)
+    liveState := 0
+    liveSide := 0
+    liveTrackedTime := time
+    liveTrackedClose := time_close
+    liveFirstTime := na
+    liveFirstPrice := na
+    liveLastPrice := na
+    liveKind := ""
+    liveSession := ""
+    liveEventID := ""
+    liveObserved := false
+    liveAlerted := false
+    liveTerminalAlerted := false
+    confirmedAlerted := false
+
+if barstate.isrealtime
+    liveObserved := true
+    liveLastPrice := close
+
+if barstate.isrealtime and not barstate.isconfirmed
+    if liveState == 0
+        if liveNowLong or liveNowShort
+            liveSide := liveNowLong ? 1 : -1
+            liveState := liveSide
+            liveKind := liveSide == 1 ? kindLong : kindShort
+            liveSession := sessionName
+            liveFirstTime := timenow
+            liveFirstPrice := close
+            liveEventID := eventKey(time, liveSide, "LIVE")
+            if liveMessagesOn and not liveAlerted
+                alert(notice("LIVE", liveSide, liveKind, "PENDING", liveSession,
+                     liveTrackedTime, liveTrackedClose, liveFirstTime, liveFirstPrice,
+                     close, liveEventID, "NONE", "PROVISIONAL_UNTIL_CANDLE_CLOSE"), alert.freq_all)
+                liveAlerted := true
+    else if math.abs(liveState) == 1
+        bool stillEligible = liveSide == 1 ? liveNowLong : liveNowShort
+        if not stillEligible
+            liveState := liveSide * 2
+            lastLiveResolution := sideText(liveSide) + " INVALIDATED"
+            lastLiveResolutionID := liveEventID
+            lastLiveResolutionReason := candidateLong and candidateShort ? "DIRECTION_CONFLICT" :
+                 resetContext ? "CONTEXT_RESET_PENDING_CLOSE" :
+                 (liveSide == 1 ? not previewLongSafe : not previewShortSafe) ? "SEED_REFERENCE_BREACHED_OR_UNAVAILABLE" :
+                 str.replace_all(liveSide == 1 ? currentBuyBlocker : currentSellBlocker, "\n", "; ")
+            lastLiveResolutionTime := timenow
+            if liveMessagesOn and liveAlerted and not liveTerminalAlerted
+                alert(notice("INVALIDATED", liveSide, liveKind, "NONE", liveSession,
+                     liveTrackedTime, liveTrackedClose, liveFirstTime, liveFirstPrice,
+                     close, liveEventID, "NONE", lastLiveResolutionReason), alert.freq_all)
+                liveTerminalAlerted := true
+
+// -----------------------------------------------------------------------------
+// CONFIRMED SIGNAL LAYER
+// -----------------------------------------------------------------------------
+bool buySignal = false
+bool sellSignal = false
+string signalKind = ""
+var string diagnosticLong = "Waiting for closed bar"
+var string diagnosticShort = "Waiting for closed bar"
+var string lastEvent = "No signal yet"
+var int lastSignalTime = na
+var string lastSignalSession = ""
+var float lastSignalReference = na
+var float lastInvalidationReference = na
+var float lastReferenceDistance = na
+var int lastReferenceBar = na
+var int lastReferenceSide = 0
+var bool lastReferenceTouched = false
+var int lastReferenceTouchedTime = na
+var float lastTriggerExtensionATR = na
+var int lastSetupAge = na
+// Signal-only exports do not carry a previous event forward on non-signal bars.
+float signalReferenceClose = na
+float signalInvalidationReference = na
+float signalReferenceDistance = na
+float signalFrozenTrigger = na
+float signalTriggerExtension = na
+float signalTriggerExtensionATR = na
+int signalSetupAge = na
+int signalSeedRefreshes = na
+
+// A later candle touching the frozen reference is a chart observation only.
+// It neither exits a trade nor changes the engine, repeat gates or signal counts.
+if barstate.isconfirmed and not na(lastReferenceBar) and bar_index > lastReferenceBar and not lastReferenceTouched
+    bool referenceTouchedNow = lastReferenceSide == 1 ? low <= lastInvalidationReference : high >= lastInvalidationReference
+    if referenceTouchedNow
+        lastReferenceTouched := true
+        lastReferenceTouchedTime := time_close
+
+if barstate.isconfirmed
+    string commonBlock = newsBlock ? "NEWS PAUSE" :
+         context == 0 ? "OUTSIDE SESSION" :
+         not flowOK ? "VFI / VSA WARMUP" :
+         not ready ? "WAIT FOR DATA" :
+         not volPass ? "RVOL / ATR BLOCK" : ""
+
+    diagnosticLong := commonBlock != "" ? commonBlock : candidateLong ? "BUY CONFIRMED" : blocker(1)
+    diagnosticShort := commonBlock != "" ? commonBlock : candidateShort ? "SELL CONFIRMED" : blocker(-1)
+
+    if candidateLong and candidateShort and commonBlock == ""
+        diagnosticLong := "CONFLICTING DIRECTIONS"
+        diagnosticShort := "CONFLICTING DIRECTIONS"
+    else if repeatOn and commonBlock == ""
+        if sweepCandidateLong and not repeatLongOK
+            diagnosticLong := "WAIT FOR FRESH BUY PULLBACK"
+        if sweepCandidateShort and not repeatShortOK
+            diagnosticShort := "WAIT FOR FRESH SELL PULLBACK"
+
+    if candidateLong != candidateShort
+        int side = candidateLong ? 1 : -1
+        buySignal := side == 1
+        sellSignal := side == -1
+        signalKind := side == 1 ? kindLong : kindShort
+        lastSignalDirection := side
+        legSignalBar := bar_index
+        legExtreme := side == 1 ? high : low
+        rearmPivot := na
+        rearmPivotBar := na
+        lastEvent := (side == 1 ? "BUY" : "SELL") + " | " + signalKind
+        lastSignalTime := time_close
+        lastSignalSession := sessionName
+        signalReferenceClose := close
+        signalInvalidationReference := side == 1 ? decisionLongInvalidation : decisionShortInvalidation
+        signalReferenceDistance := side * (close - signalInvalidationReference)
+        signalFrozenTrigger := side == 1 ? decisionLongTrigger : decisionShortTrigger
+        signalTriggerExtension := side * (close - signalFrozenTrigger)
+        signalTriggerExtensionATR := not na(priorATR) and priorATR > 0 ? signalTriggerExtension / priorATR : na
+        signalSetupAge := bar_index - (side == 1 ? decisionLongAt : decisionShortAt)
+        signalSeedRefreshes := side == 1 ? decisionLongRefreshes : decisionShortRefreshes
+        lastSignalReference := signalReferenceClose
+        lastInvalidationReference := signalInvalidationReference
+        lastReferenceDistance := signalReferenceDistance
+        lastReferenceBar := bar_index
+        lastReferenceSide := side
+        lastReferenceTouched := false
+        lastReferenceTouchedTime := na
+        lastTriggerExtensionATR := signalTriggerExtensionATR
+        lastSetupAge := signalSetupAge
+
+        longSeed.resetSeed()
+        shortSeed.resetSeed()
+        pfLongSeed.resetSeed()
+        pfShortSeed.resetSeed()
+        legacyLongRefreshes := 0
+        legacyShortRefreshes := 0
+        pfLongRefreshIgnored := 0
+        pfShortRefreshIgnored := 0
+
+    // The first closing break is a one-shot opportunity, not a persistent level.
+    // A blocked attempt is consumed too; a NEW pullback/sweep is needed to retry.
+    if firstBreakMode and pfBreakLong
+        pfLongSeed.resetSeed()
+        pfLongRefreshIgnored := 0
+    if firstBreakMode and pfBreakShort
+        pfShortSeed.resetSeed()
+        pfShortRefreshIgnored := 0
+
+    // Keep session references PRE-BAR for signal decisions.
+    if inNY
+        ny.update()
+    if inAsia
+        asia.update()
+    if not sessionsOn
+        allHours.update()
+
+    if not na(ph)
+        pivotHigh := ph
+        pivotHighBar := bar_index - pivotLen
+    if not na(pl)
+        pivotLow := pl
+        pivotLowBar := bar_index - pivotLen
+
+// -----------------------------------------------------------------------------
+// RECONCILE LIVE WITH THE SELECTED CONFIRMED SIGNAL OUTPUT
+// -----------------------------------------------------------------------------
+// A LIVE attempt invalidated earlier is terminal; do not resurrect it at close.
+// The selected engine can still generate a separate valid confirmed signal.
+// No LIVE state is read by candidateLong/Short, buySignal/sellSignal or seed logic.
+if barstate.isrealtime and barstate.isconfirmed
+    if math.abs(liveState) == 1
+        bool sameSideConfirmed = liveSide == 1 ? buySignal : sellSignal
+        if sameSideConfirmed
+            liveState := liveSide * 3
+            lastLiveResolution := sideText(liveSide) + " CONFIRMED"
+            lastLiveResolutionID := liveEventID
+            lastLiveResolutionReason := "LIVE_DIRECTION_CONFIRMED_AT_CLOSE; FinalKind=" + signalKind
+            lastLiveResolutionTime := timenow
+            // The single CONFIRMED notice below resolves this LIVE attempt.
+            // Do not send a second standalone lifecycle-confirmed notification.
+        else
+            liveState := liveSide * 4
+            lastLiveResolution := sideText(liveSide) + " EXPIRED"
+            lastLiveResolutionID := liveEventID
+            lastLiveResolutionReason := buySignal or sellSignal ? "OPPOSITE_SIDE_CONFIRMED_AT_CLOSE" :
+                 candidateLong and candidateShort ? "DIRECTION_CONFLICT_AT_CLOSE" : "NO_CONFIRMED_SIGNAL_AT_CLOSE"
+            lastLiveResolutionTime := timenow
+            if liveMessagesOn and liveAlerted and not liveTerminalAlerted
+                alert(notice("EXPIRED", liveSide, liveKind, "NONE", liveSession,
+                     liveTrackedTime, liveTrackedClose, liveFirstTime, liveFirstPrice,
+                     close, liveEventID, "NONE", lastLiveResolutionReason), alert.freq_all)
+                liveTerminalAlerted := true
+
+    if detailedAlerts and not confirmedAlerted and (buySignal or sellSignal)
+        int confirmedSide = buySignal ? 1 : -1
+        bool linkedToLive = math.abs(liveState) == 3 and liveSide == confirmedSide and liveAlerted
+        string confirmedID = linkedToLive ? liveEventID : eventKey(time, confirmedSide, "CLOSE")
+        string relatedID = not linkedToLive and liveAlerted ? liveEventID : "NONE"
+        string confirmedReason = linkedToLive ? "LIVE_RESOLVED_AT_CLOSE" :
+             liveAlerted and math.abs(liveState) == 2 ? "INDEPENDENT_CLOSE_AFTER_LIVE_INVALIDATION" :
+             liveAlerted and math.abs(liveState) == 4 ? "INDEPENDENT_CLOSE_AFTER_LIVE_EXPIRY" : "CLOSE_ONLY_SIGNAL"
+        alert(notice("CONFIRMED", confirmedSide, linkedToLive ? liveKind : signalKind,
+             signalKind, sessionName, time, time_close,
+             linkedToLive ? liveFirstTime : timenow, linkedToLive ? liveFirstPrice : close,
+             close, confirmedID, relatedID, confirmedReason) +
+             " | SignalCloseNotFill=" + str.tostring(signalReferenceClose, format.mintick) +
+             " | InvalidationRef=" + str.tostring(signalInvalidationReference, format.mintick) +
+             " | RefDistancePts=" + str.tostring(signalReferenceDistance, format.mintick) +
+             " | FrozenTrigger=" + str.tostring(signalFrozenTrigger, format.mintick) +
+             " | TriggerExtensionATR=" + str.tostring(signalTriggerExtensionATR, "#.####") +
+             " | SetupAgeBars=" + str.tostring(signalSetupAge), alert.freq_all)
+        confirmedAlerted := true
+        if linkedToLive
+            liveTerminalAlerted := true
+
+// -----------------------------------------------------------------------------
+// CHART
+// -----------------------------------------------------------------------------
+bool contextVisible = context != 0 and not na(vwapRef)
+
+plot(showVWAP and contextVisible ? vwapRef : na, "KAIROS Lite VWAP", color = color.aqua, linewidth = 2, style = plot.style_linebr)
+bandUpper = plot(showVWAP and showBands and contextVisible ? vwapRef + sigmaRef : na, "VWAP +1 sigma", color = color.new(color.aqua, 82), style = plot.style_linebr)
+bandLower = plot(showVWAP and showBands and contextVisible ? vwapRef - sigmaRef : na, "VWAP -1 sigma", color = color.new(color.aqua, 82), style = plot.style_linebr)
+fill(bandUpper, bandLower, color = color.new(color.aqua, 96), title = "VWAP 1-sigma fill", fillgaps = false)
+plot(showVWAP and showBands and contextVisible ? vwapRef + 2.0 * sigmaRef : na, "VWAP +2 sigma", color = color.new(color.aqua, 88), style = plot.style_linebr)
+plot(showVWAP and showBands and contextVisible ? vwapRef - 2.0 * sigmaRef : na, "VWAP -2 sigma", color = color.new(color.aqua, 88), style = plot.style_linebr)
+plot(showVWAP and showBands and contextVisible ? vwapRef + 3.0 * sigmaRef : na, "VWAP +3 sigma", color = color.new(color.aqua, 93), style = plot.style_linebr)
+plot(showVWAP and showBands and contextVisible ? vwapRef - 3.0 * sigmaRef : na, "VWAP -3 sigma", color = color.new(color.aqua, 93), style = plot.style_linebr)
+plot(showSessionMid and contextVisible ? sessionMidRef : na, "Session midpoint", color = color.new(color.orange, 35), style = plot.style_linebr)
+
+plotshape(buySignal and signalKind == "CONTINUATION", title = "BUY continuation", style = shape.labelup,
+     location = location.belowbar, color = color.new(color.green, 10), text = "BUY\nCONT", textcolor = color.white, size = size.small)
+plotshape(sellSignal and signalKind == "CONTINUATION", title = "SELL continuation", style = shape.labeldown,
+     location = location.abovebar, color = color.new(color.red, 10), text = "SELL\nCONT", textcolor = color.white, size = size.small)
+plotshape(buySignal and signalKind == "REVERSAL", title = "BUY reversal", style = shape.labelup,
+     location = location.belowbar, color = color.new(color.teal, 10), text = "BUY\nREV", textcolor = color.white, size = size.small)
+plotshape(sellSignal and signalKind == "REVERSAL", title = "SELL reversal", style = shape.labeldown,
+     location = location.abovebar, color = color.new(color.orange, 10), text = "SELL\nREV", textcolor = color.white, size = size.small)
+plotshape(showLiveLabels and barstate.isrealtime and not barstate.isconfirmed and liveState == 1,
+     title = "KAIROS Lite LIVE BUY", style = shape.labelup, location = location.belowbar,
+     color = color.new(color.lime, 0), text = "LIVE BUY", textcolor = color.black, size = size.small)
+plotshape(showLiveLabels and barstate.isrealtime and not barstate.isconfirmed and liveState == -1,
+     title = "KAIROS Lite LIVE SELL", style = shape.labeldown, location = location.abovebar,
+     color = color.new(color.red, 0), text = "LIVE SELL", textcolor = color.white, size = size.small)
+
+// Latest reference only: no historical backdating or implied open position.
+var line invalidationLine = na
+var label invalidationLabel = na
+if barstate.isconfirmed and (buySignal or sellSignal)
+    if not na(invalidationLine)
+        line.delete(invalidationLine)
+    if not na(invalidationLabel)
+        label.delete(invalidationLabel)
+    invalidationLine := na
+    invalidationLabel := na
+    if showInvalidation and not na(lastInvalidationReference)
+        invalidationLine := line.new(time_close, lastInvalidationReference, time_close + 60000, lastInvalidationReference,
+             xloc = xloc.bar_time, extend = extend.right, color = color.orange, style = line.style_dashed)
+        invalidationLabel := label.new(time_close, lastInvalidationReference, "INVALIDATION REF (not an order)",
+             xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.orange, 25), textcolor = color.white, size = size.tiny)
+if barstate.islast and showInvalidation and not na(invalidationLine)
+    line.set_color(invalidationLine, lastReferenceTouched ? color.gray : color.orange)
+    line.set_style(invalidationLine, lastReferenceTouched ? line.style_dotted : line.style_dashed)
+    if not na(invalidationLabel)
+        label.set_x(invalidationLabel, time_close)
+        label.set_text(invalidationLabel, (lastReferenceTouched ? "REF TOUCHED" : "INVALIDATION REF") +
+             " | " + str.tostring(lastInvalidationReference, format.mintick) +
+             " | " + str.tostring(lastReferenceDistance, format.mintick) + " pts from signal close")
+        label.set_color(invalidationLabel, color.new(lastReferenceTouched ? color.gray : color.orange, 25))
+
+// -----------------------------------------------------------------------------
+// PF1 EXPORT SCHEMA - one Event/Kind per closed bar, observed-only LIVE values.
+// Export raw Time/OHLC/Volume with the chart. Event close is NOT a fill.
+// Original column names retained where semantics are unchanged. Continuation
+// masks/seed ages now follow the SELECTED engine. Full mask definitions in notes.
+// -----------------------------------------------------------------------------
+int diagEvent = buySignal ? 1 : sellSignal ? -1 : 0
+plot(exportDiagnostics and barstate.isconfirmed ? 1501 : na, "KAIROS PF1 Build", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? (firstBreakMode ? 1 : 0) : na, "KAIROS PF1 Timing mode", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? inputFlags : na, "KAIROS PF1 Input flags", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? diagEvent : na, "KAIROS Lite Event", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? (buySignal or sellSignal ? (signalKind == "CONTINUATION" ? 1 : 2) : na) : na, "KAIROS Lite Signal type", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? context : na, "KAIROS Lite Context", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? diagCommon : na, "KAIROS Lite Common blockers", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? diagContLong : na, "KAIROS Lite Continuation BUY blockers", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? diagContShort : na, "KAIROS Lite Continuation SELL blockers", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? diagRevLong : na, "KAIROS Lite Reversal BUY blockers", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? diagRevShort : na, "KAIROS Lite Reversal SELL blockers", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? diagContRepeat : na, "KAIROS PF1 Continuation repeat blockers", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? diagRevRepeat : na, "KAIROS PF1 Reversal repeat blockers", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? bias15 : na, "KAIROS Lite 15m direction", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? priorATR : na, "KAIROS Lite Prior ATR", display = display.data_window, precision = 6)
+plot(exportDiagnostics and barstate.isconfirmed ? z : na, "KAIROS Lite VWAP deviation", display = display.data_window, precision = 6)
+plot(exportDiagnostics and barstate.isconfirmed ? vfiRaw : na, "KAIROS Lite VFI", display = display.data_window, precision = 6)
+plot(exportDiagnostics and barstate.isconfirmed ? vfiSignal : na, "KAIROS Lite VFI signal", display = display.data_window, precision = 6)
+plot(exportDiagnostics and barstate.isconfirmed ? vsaEffort : na, "KAIROS Lite VSA effort", display = display.data_window, precision = 6)
+plot(exportDiagnostics and barstate.isconfirmed ? vsaBodyResult : na, "KAIROS Lite VSA body result", display = display.data_window, precision = 6)
+plot(exportDiagnostics and barstate.isconfirmed ? ltfDeltaFrac : na, "KAIROS PF1 Signed candle-volume fraction", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? relVolume : na, "KAIROS Lite same-time RVOL", display = display.data_window, precision = 6)
+plot(exportDiagnostics and barstate.isconfirmed ? rvolHistCount : na, "KAIROS PF1 RVOL prior-day samples", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? signalReferenceClose : na, "KAIROS PF1 Signal close not fill", display = display.data_window, precision = 6)
+plot(exportDiagnostics and barstate.isconfirmed ? signalInvalidationReference : na, "KAIROS PF1 Invalidation reference", display = display.data_window, precision = 6)
+plot(exportDiagnostics and barstate.isconfirmed ? signalReferenceDistance : na, "KAIROS PF1 Reference distance points", display = display.data_window, precision = 6)
+plot(exportDiagnostics and barstate.isconfirmed ? signalFrozenTrigger : na, "KAIROS PF1 Frozen trigger", display = display.data_window, precision = 6)
+plot(exportDiagnostics and barstate.isconfirmed ? signalTriggerExtension : na, "KAIROS PF1 Trigger extension points", display = display.data_window, precision = 6)
+plot(exportDiagnostics and barstate.isconfirmed ? signalTriggerExtensionATR : na, "KAIROS PF1 Trigger extension ATR", display = display.data_window, precision = 6)
+plot(exportDiagnostics and barstate.isconfirmed ? signalSetupAge : na, "KAIROS PF1 Signal setup age", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? signalSeedRefreshes : na, "KAIROS PF1 Signal seed refresh count", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? diagContAgeLong : na, "KAIROS PF1 Continuation BUY seed age", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? diagContAgeShort : na, "KAIROS PF1 Continuation SELL seed age", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? diagContRefreshLong : na, "KAIROS PF1 BUY refresh attempts", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? diagContRefreshShort : na, "KAIROS PF1 SELL refresh attempts", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? regimeCode : na, "KAIROS Regime code", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? regimeDirection : na, "KAIROS Regime direction", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? (pfBreakLong ? 1 : pfBreakShort ? -1 : 0) : na, "KAIROS PF1 First break opportunity", display = display.data_window, precision = 0)
+plot(exportDiagnostics and barstate.isconfirmed ? regimeER : na, "KAIROS Regime efficiency ratio", display = display.data_window, precision = 6)
+plot(exportDiagnostics and barstate.isconfirmed ? regimeADX : na, "KAIROS Regime ADX", display = display.data_window, precision = 6)
+// NA = not observed by THIS runtime; zero = realtime observed but no LIVE start.
+plot(exportDiagnostics and liveObserved ? liveState : na, "KAIROS Lite LIVE lifecycle observed", display = display.data_window)
+plot(exportDiagnostics and liveObserved ? liveFirstTime : na, "KAIROS Lite LIVE first observed time", display = display.data_window, precision = 0)
+plot(exportDiagnostics and liveObserved ? liveFirstPrice : na, "KAIROS Lite LIVE first observed price", display = display.data_window, precision = 6)
+
+// Six static confirmed alerts; dynamic alert() stream includes lifecycle IDs.
+// Use ONE route, not duplicate dynamic + individual alerts for the same purpose.
+alertcondition(buySignal, "KAIROS PF1 BUY confirmed", "KAIROS PF1 BUY setup confirmed at candle close; not an order.")
+alertcondition(sellSignal, "KAIROS PF1 SELL confirmed", "KAIROS PF1 SELL setup confirmed at candle close; not an order.")
+alertcondition(buySignal and signalKind == "CONTINUATION", "KAIROS PF1 BUY continuation", "KAIROS PF1 continuation BUY confirmed.")
+alertcondition(sellSignal and signalKind == "CONTINUATION", "KAIROS PF1 SELL continuation", "KAIROS PF1 continuation SELL confirmed.")
+alertcondition(buySignal and signalKind == "REVERSAL", "KAIROS PF1 BUY reversal", "KAIROS PF1 reversal BUY confirmed.")
+alertcondition(sellSignal and signalKind == "REVERSAL", "KAIROS PF1 SELL reversal", "KAIROS PF1 reversal SELL confirmed.")
+
+// -----------------------------------------------------------------------------
+// COMPACT / DIAGNOSTIC DASHBOARD - read-only decision-time snapshots.
+// -----------------------------------------------------------------------------
+string tablePosition = panelCorner == "Top right" ? position.top_right :
+     panelCorner == "Bottom right" ? position.bottom_right :
+     panelCorner == "Top left" ? position.top_left : position.bottom_left
+var table panel = table.new(tablePosition, 2, 16, bgcolor = color.new(color.black, 15), border_width = 1)
+
+if barstate.islast
+    table.clear(panel, 0, 0, 1, 15)
+    if showPanel
+        bool activeLive = barstate.isrealtime and not barstate.isconfirmed and math.abs(liveState) == 1
+        string liveText = barstate.isconfirmed and buySignal ? "CONFIRMED BUY | " + signalKind :
+             barstate.isconfirmed and sellSignal ? "CONFIRMED SELL | " + signalKind :
+             activeLive ? "LIVE " + sideText(liveSide) + " | " + liveKind :
+             math.abs(liveState) == 2 ? "LIVE INVALIDATED (THIS BAR)" :
+             math.abs(liveState) == 4 ? "LIVE EXPIRED (THIS BAR)" : "WAIT"
+        string biasText = (bias15 == 1 ? "BULL" : bias15 == -1 ? "BEAR" : "NEUTRAL") + (htfOn ? " | ON" : " | FILTER OFF")
+        string vwapText = na(z) ? "WAIT FOR DATA" : (z > 0 ? "ABOVE VWAP" : z < 0 ? "BELOW VWAP" : "AT VWAP") +
+             " | " + str.tostring(z, "#.##") + " sigma"
+        string focusReason = currentCommonBlocker != "" ? currentCommonBlocker :
+             candidateLong and candidateShort ? "CONFLICTING DIRECTIONS" :
+             candidateLong ? "BUY ELIGIBLE" : candidateShort ? "SELL ELIGIBLE" :
+             hasLong and longSeed.swept and reversalOn ? "BUY REV: " + branchBlocker(1, false) :
+             hasShort and shortSeed.swept and reversalOn ? "SELL REV: " + branchBlocker(-1, false) :
+             selectedContHasLong and continuationOn ? "BUY CONT: " + branchBlocker(1, true) :
+             selectedContHasShort and continuationOn ? "SELL CONT: " + branchBlocker(-1, true) : "NEED PULLBACK / SWEEP"
+        string lastText = lastEvent + (na(lastSignalTime) ? "" : " | " + str.format_time(lastSignalTime, "MM-dd HH:mm", nyZone))
+        string refText = na(lastInvalidationReference) ? "NO CONFIRMED REFERENCE" :
+             str.tostring(lastInvalidationReference, format.mintick) + " | " + str.tostring(lastReferenceDistance, format.mintick) +
+             " pts" + (lastReferenceTouched ? " | TOUCHED" : " | NOT YET TOUCHED")
+        string timingText = firstBreakMode ? "FIRST BREAK - EXPERIMENT" : "RC1 BASELINE TIMING"
+        table.cell(panel, 0, 0, "KAIROS LITE", text_color = color.white, text_size = size.small)
+        table.cell(panel, 1, 0, "1m | v1.5 PF1 | UNOPTIMIZED", text_color = color.aqua, text_size = size.small)
+        table.cell(panel, 0, 1, "Mode / session", text_color = color.silver, text_size = size.small)
+        table.cell(panel, 1, 1, timingText + " | " + sessionName, text_color = color.white, text_size = size.small,
+             tooltip = "ALL remains possible with the original session restriction OFF. This is not a broker/prop-hours compliance filter. Full settings rerun is needed for mode comparisons.")
+        table.cell(panel, 0, 2, "Signal state", text_color = color.silver, text_size = size.small)
+        table.cell(panel, 1, 2, liveText, text_color = activeLive ? color.yellow : color.white, text_size = size.small,
+             tooltip = "LIVE is provisional and can invalidate. Confirmed signals are independent of earlier intrabar invalidation. No open-position model.")
+        table.cell(panel, 0, 3, "15m / VWAP", text_color = color.silver, text_size = size.small)
+        table.cell(panel, 1, 3, biasText + "\n" + vwapText, text_color = color.white, text_size = size.small)
+        table.cell(panel, 0, 4, "Main wait reason", text_color = color.silver, text_size = size.small)
+        table.cell(panel, 1, 4, focusReason, text_color = color.white, text_size = size.small,
+             tooltip = "One prioritized explanation, not a complete gate list. Diagnostic view and exported masks show all branches.")
+        table.cell(panel, 0, 5, "Last confirmed", text_color = color.silver, text_size = size.small)
+        table.cell(panel, 1, 5, lastText, text_color = color.white, text_size = size.small, tooltip = "Display timezone: " + nyZone)
+        table.cell(panel, 0, 6, "Invalidation ref", text_color = color.silver, text_size = size.small)
+        table.cell(panel, 1, 6, refText, text_color = lastReferenceTouched ? color.silver : color.orange, text_size = size.small,
+             tooltip = "Frozen reference from last confirmed setup. Distance is from that candle's close, NOT current price or an assumed fill. Touch is observed on later closed bars only. No trade is tracked. Touch observed at: " +
+             (na(lastReferenceTouchedTime) ? "NA" : str.format_time(lastReferenceTouchedTime, "MM-dd HH:mm", nyZone)))
+        table.cell(panel, 0, 7, "Alert stream", text_color = color.silver, text_size = size.small)
+        table.cell(panel, 1, 7, detailedAlerts ? dynamicAlertMode : "DYNAMIC OFF", text_color = color.white, text_size = size.small,
+             tooltip = "Shows configured stream, NOT proof of an active server alert. Create one Any alert() function call alert; recreate after code/settings changes. Run tag: " + auditTag)
+        if panelMode == "Diagnostic"
+            string flowText = vsaOpposeLong ? "VSA OPPOSES BUY" : vsaOpposeShort ? "VSA OPPOSES SELL" :
+                 vfiBull and vsaBullInitiative ? "VFI + VSA BUY" : vfiBear and vsaBearInitiative ? "VFI + VSA SELL" :
+                 vfiTurnLong ? "VFI TURN UP" : vfiTurnShort ? "VFI TURN DOWN" : "NEUTRAL"
+            string signedVolText = not ltfFlowOK ? "NO VOLUME" : cvdBull ? "UP CANDLE VOLUME" : cvdBear ? "DOWN CANDLE VOLUME" : "DOJI / ZERO"
+            table.cell(panel, 0, 8, "Regime - observer", text_color = color.silver, text_size = size.small)
+            table.cell(panel, 1, 8, regimeText, text_color = color.white, text_size = size.small,
+                 tooltip = "Raw unsmoothed classification. Never creates or rejects entries. No probability/quality weighting.")
+            table.cell(panel, 0, 9, "VFI / VSA", text_color = color.silver, text_size = size.small)
+            table.cell(panel, 1, 9, flowText, text_color = color.white, text_size = size.small)
+            table.cell(panel, 0, 10, "Signed volume", text_color = color.silver, text_size = size.small)
+            table.cell(panel, 1, 10, signedVolText, text_color = color.white, text_size = size.small,
+                 tooltip = "Candle-direction proxy, not true bid/ask delta. Reversal turn control: " + (reversalNeedCvdTurn ? "ON" : "OFF (ablation)"))
+            table.cell(panel, 0, 11, "BUY blockers", text_color = color.silver, text_size = size.small)
+            table.cell(panel, 1, 11, currentBuyBlocker, text_color = color.white, text_size = size.small)
+            table.cell(panel, 0, 12, "SELL blockers", text_color = color.silver, text_size = size.small)
+            table.cell(panel, 1, 12, currentSellBlocker, text_color = color.white, text_size = size.small)
+            table.cell(panel, 0, 13, "Repeat masks", text_color = color.silver, text_size = size.small)
+            table.cell(panel, 1, 13, "CONT=" + str.tostring(diagContRepeat) + " | REV=" + str.tostring(diagRevRepeat), text_color = color.white, text_size = size.small,
+                 tooltip = "0=pass both; 1=BUY blocked; 2=SELL blocked; 3=both blocked. Eligibility is not a trade.")
+            table.cell(panel, 0, 14, "Last LIVE outcome", text_color = color.silver, text_size = size.small)
+            table.cell(panel, 1, 14, lastLiveResolution, text_color = color.white, text_size = size.small,
+                 tooltip = lastLiveResolutionID + "\n" + lastLiveResolutionReason + "\nObservation resets on reload.")
+            table.cell(panel, 0, 15, "Signal age / drift", text_color = color.silver, text_size = size.small)
+            table.cell(panel, 1, 15, na(lastSetupAge) ? "NO SIGNAL" : str.tostring(lastSetupAge) + " bars | " +
+                 str.tostring(lastTriggerExtensionATR, "#.###") + " ATR beyond trigger", text_color = color.white, text_size = size.small,
+                 tooltip = "Frozen decision-time diagnostics, not a confidence score. RVOL prior-day samples now: " + str.tostring(rvolHistCount))

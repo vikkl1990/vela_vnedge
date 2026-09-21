@@ -1,0 +1,650 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//@version=6
+indicator("Liquidity Sweep + CISD + FVG Reversal", shorttitle="LIQ SWEEP Reversal + CISD + FVG
+ ", overlay=true, max_lines_count=200, max_labels_count=300, max_boxes_count=300)
+
+//==================================================================================================
+// INPUTS
+//==================================================================================================
+gL = "◈ Liquidity + Sweep"
+pLen      = input.int(10,  "Swing Pivot Length", minval=2, maxval=50, group=gL, tooltip="Bars on each side required to confirm a swing high/low. The most recent unswept swing is the tracked liquidity pool.")
+liqMaxAge = input.int(300, "Max Level Age (bars)", minval=20, maxval=1000, group=gL, tooltip="A tracked level older than this is dropped.")
+cisdWait  = input.int(15,  "Sweep → CISD Window (bars)", minval=2, maxval=100, group=gL, tooltip="Bars allowed between the sweep and the CISD close. No CISD inside the window = setup dead.")
+
+gF = "◈ CISD + FVG"
+fvgMinAtr = input.float(0.20, "Min FVG Size (ATR ×)", minval=0.0, maxval=2.0, step=0.05, group=gF, tooltip="Gaps smaller than this fraction of ATR are ignored.")
+fvgWait   = input.int(25,  "FVG Retrace Window (bars)", minval=2, maxval=150, group=gF, tooltip="Bars allowed for price to retrace into the gap and reject. Timeout = setup dead.")
+showCE    = input.bool(true, "FVG Midline (CE)", group=gF, tooltip="Dashed consequent-encroachment line at the middle of the gap.")
+
+gQ = "◈ SETUP QUALITY — what separates a real sweep from a wiggle"
+qMinGrade = input.string("C — show everything", "Minimum Grade To Signal", options=["A — only the best", "B — good and better", "C — show everything"], group=gQ, tooltip="Every setup is scored 0-100 on four independent measures and graded. Raise this to trade only the ones that earn it. A = 75+, B = 50-74, C = below 50. The grade is printed on the entry label and in the dashboard either way, so you can watch what you are filtering out before you filter it.")
+qEqTol    = input.float(0.15, "  ◈ Equal-H/L tolerance (ATR ×)", minval=0.02, maxval=1.0, step=0.01, group=gQ, tooltip="MEASURE 1 — POOL QUALITY. A single swing high is a wiggle; TWO OR MORE highs at the same price is a POOL, because that is where stops actually stack. This is how close two highs must be to count as equal. The engine counts the touches and scores the level accordingly — a 3-touch pool is worth far more than a 1-touch pivot, and nothing in the original build measured this at all.")
+qEqLook   = input.int(60, "  ◈ Equal-H/L lookback (bars)", minval=10, maxval=400, group=gQ)
+qDispAtr  = input.float(1.00, "  ◈ Displacement: CISD body (ATR ×)", minval=0.0, maxval=5.0, step=0.05, group=gQ, tooltip="MEASURE 2 — DISPLACEMENT. ICT's change in state of delivery is supposed to arrive with FORCE. The original build only required a close through the level with a directional candle — a doji qualified. This scores the CISD candle's BODY against ATR. A body at or above this multiple is full marks.")
+qPDmin    = input.float(0.50, "  ◈ Premium/discount edge required", minval=0.0, maxval=1.0, step=0.05, group=gQ, tooltip="MEASURE 3 — ARRAY CONTEXT. You sell in PREMIUM and buy in DISCOUNT. The dealing range is the recent swing high to swing low; 0.5 is the equilibrium. A short sweep firing in the LOWER half of the range is fighting the array and scores nothing here. 0.50 = must at least be on the correct side of equilibrium.")
+qPDLook   = input.int(80, "  ◈ Dealing-range lookback (bars)", minval=20, maxval=400, group=gQ)
+qSwpMax   = input.float(1.50, "  ◈ Max sweep penetration (ATR ×)", minval=0.2, maxval=10.0, step=0.1, group=gQ, tooltip="MEASURE 4 — SWEEP CLEANLINESS. A clean raid pokes through the pool and snaps back. A spear 3 ATR beyond it is not a sweep, it is a breakout that failed later — different animal, worse odds. Penetration beyond this multiple scores zero.")
+qAppLen   = input.int(20, "  ◈ MEASURE 5 · Approach length (bars)", minval=5, maxval=100, group=gQ, tooltip="THE ONE THAT SEPARATES A RAID FROM A BREAK. Kaufman Efficiency Ratio over the bars leading INTO the sweep: |net travel| ÷ |total path|. Price that DRIFTED sideways and then wicked through a pool was raided — fade it. Price that arrived on a clean, one-way, efficient leg is a TREND ARRIVING, and the pool is fuel rather than a wall: the level breaks and keeps going. A high approach ER is the single best evidence that a sweep-reversal is about to be wrong.")
+qAppTrend = input.float(0.55, "  ◈ Trend-arrival ER threshold", minval=0.1, maxval=1.0, step=0.05, group=gQ, tooltip="At or above this the approach is judged a TREND ARRIVAL rather than a raid. 0.55 is a genuinely directional leg; 0.25 is churn.")
+qAppMode  = input.string("Downgrade only", "  ◈ On a trend arrival", options=["Downgrade only", "Skip the setup", "FLIP the direction"], group=gQ, tooltip="DOWNGRADE ONLY (default) — it just costs the setup its Measure-5 points and usually drops it out of A. SKIP — refuse it entirely. FLIP — take the OTHER side, on the thesis that the pool is about to break and run. Flip is the aggressive read and the one that would have turned both of the Architect's circled losers into winners; test it before believing it.")
+qShowGrade= input.bool(true, "  ◈ Print grade on labels", group=gQ)
+
+gT = "🎯 Trade Levels"
+tradeMode = input.string("Structural RR", "TP/SL Mode", options=["Structural RR", "Fixed %"], group=gT, tooltip="Structural RR: stop beyond the sweep wick, target = RR multiple of that risk. Fixed %: TP and SL as a percent of entry.")
+rrMult    = input.float(2.0,  "Risk : Reward (Structural)", minval=0.5, maxval=10.0, step=0.5, group=gT)
+slBufAtr  = input.float(0.25, "Stop Buffer Past Wick (ATR ×)", minval=0.0, maxval=3.0, step=0.05, group=gT)
+tpPct     = input.float(1.00, "Take Profit % (Fixed)", minval=0.05, step=0.05, group=gT)
+slPct     = input.float(0.50, "Stop Loss % (Fixed)",   minval=0.05, step=0.05, group=gT)
+showLevels  = input.bool(true, "Show TP/SL Boxes", group=gT)
+pastBoxFade = input.int(92,    "Past Trade Box Fade %", group=gT, minval=80, maxval=99)
+
+gR = "🛡️ Risk Management"
+useCooldown = input.bool(true, "Cooldown Between Signals", group=gR)
+cooldownBars= input.int(5,    "Cooldown Bars",   group=gR, minval=1, maxval=200)
+maxBars     = input.int(60,   "Max Bars In Trade", group=gR, minval=3, maxval=500)
+useEOD      = input.bool(false,"Flatten in EOD Window", group=gR)
+eodHour     = input.int(16,   "EOD Start Hour (NY)", group=gR, minval=0, maxval=23)
+eodMinute   = input.int(40,   "EOD Start Min (NY)",  group=gR, minval=0, maxval=59)
+eodEndHour  = input.int(18,   "EOD End Hour (NY)",   group=gR, minval=0, maxval=23)
+eodEndMin   = input.int(5,    "EOD End Min (NY)",    group=gR, minval=0, maxval=59)
+
+gW = "🔗 Webhook"
+enableWebhook = input.bool(false, "Enable Webhook Alerts", group=gW)
+STRATEGY_ID   = input.string("sweep_cisd_fvg_v1", "Strategy ID", group=gW)
+whQty         = input.float(1.0, "Quantity", group=gW, minval=0.01, step=0.01)
+
+gS = "🎨 Visuals"
+showLiq   = input.bool(true, "Liquidity Lines (glow)", group=gS)
+showSweep = input.bool(true, "Sweep Zone + Marker",    group=gS)
+showCisd  = input.bool(true, "CISD Level Line",        group=gS)
+showFvg   = input.bool(true, "FVG Boxes",              group=gS)
+showSig   = input.bool(true, "Entry / Exit Labels",    group=gS)
+keepStruct= input.int(8,     "Past Setups To Keep",    group=gS, minval=2, maxval=20)
+keepTrades= input.int(30,    "Past Trades To Keep",    group=gS, minval=1, maxval=60)
+
+gD = "📊 Dashboard"
+showDash  = input.bool(true, "Show Dashboard", group=gD)
+
+//==================================================================================================
+// COLORS
+//==================================================================================================
+color C_TEAL   = #00F5D4
+color C_PURPLE = #AA00FF
+color C_GOLD   = #FFD700
+color C_BULL   = #00FF88
+color C_BEAR   = #FF4466
+color C_ORANGE = #FF8800
+color C_INK    = #E8ECF2
+color C_MUTED   = color.new(#AAAAAA, 40)
+color C_HDR_BG  = color.new(#0d1f1e, 0)
+color C_COL_BG  = color.new(#0a0a14, 10)
+color C_COL_ALT = color.new(#0d1117, 30)
+color C_STRIPE  = color.new(#00F5D4, 20)
+
+f_instr() => na(syminfo.current_contract) ? syminfo.ticker : syminfo.current_contract
+
+//==================================================================================================
+// CONTEXT
+//==================================================================================================
+float atr  = ta.atr(14)
+float atrS = atr > 0 ? atr : syminfo.mintick
+
+string tzNY = "America/New_York"
+int    nowMin   = hour(time, tzNY) * 60 + minute(time, tzNY)
+int    eodStart = eodHour * 60 + eodMinute
+int    eodEnd   = eodEndHour * 60 + eodEndMin
+bool   inEODWin = eodStart <= eodEnd ? (nowMin >= eodStart and nowMin < eodEnd) : (nowMin >= eodStart or nowMin < eodEnd)
+bool   isEOD    = useEOD and inEODWin
+
+//==================================================================================================
+// ROLLING BAR LOG — the FVG scanner reads these arrays, never history-offset loops
+//==================================================================================================
+var array<float> rO = array.new<float>()
+var array<float> rH = array.new<float>()
+var array<float> rL = array.new<float>()
+var array<float> rC = array.new<float>()
+var array<int>   rB = array.new<int>()
+
+//==================================================================================================
+// STATE
+//==================================================================================================
+// stage: 0 SCAN · 1 SWEPT · 2 CISD (hunting the gap) · 3 FVG SET (waiting retrace + rejection)
+var int   stage    = 0
+var int   dir      = 0
+var float liqHi    = na
+var float liqLo    = na
+var int   liqHiBar = na
+var int   liqLoBar = na
+var float sweepLvl = na
+var float sweepExt = na
+var int   sweepBar = na
+var float cisdLvl  = na
+var int   cisdBar  = na
+var float fvgTop   = na
+var float fvgBot   = na
+var int   fvgBar   = na
+var bool  fvgTouched = false
+
+// delivery-run open tracking (the CISD anchor)
+var float upRunOpen = na
+var float dnRunOpen = na
+var bool  bullStreak = false
+var bool  bearStreak = false
+
+// trade state (template names)
+var bool   g_inTrade  = false
+var bool   g_isLong   = false
+var float  g_entry    = na
+var float  g_tp       = na
+var float  g_sl       = na
+var int    g_entryBar = na
+var int    lastSigBar = na
+var int    wins       = 0
+var int    losses     = 0
+var string lastExitTxt = "--"
+bool cdOK    = not useCooldown or na(lastSigBar) or bar_index - lastSigBar >= cooldownBars
+bool canFire = not g_inTrade and cdOK and not isEOD and barstate.isconfirmed
+
+bool longSig  = false
+bool shortSig = false
+bool exitSig  = false
+var bool  pendLong  = false
+var bool  pendShort = false
+var int   pendBar   = na
+var float armSweepExt = na
+
+//==================================================================================================
+// DRAWINGS — live glow lines for the two tracked pools, setup furniture, trade furniture
+//==================================================================================================
+var line  liqHiL1 = na
+var line  liqHiL2 = na
+var line  liqHiL3 = na
+var label liqHiTag = na
+var line  liqLoL1 = na
+var line  liqLoL2 = na
+var line  liqLoL3 = na
+var label liqLoTag = na
+var box   sweepBox = na
+var label sweepTag = na
+var line  cisdLine = na
+var label cisdTag  = na
+var box   fvgBox   = na
+var line  fvgCe    = na
+var label fvgTag   = na
+var array<box>   oldBoxes = array.new<box>()
+var array<line>  oldLines = array.new<line>()
+var array<label> oldLbls  = array.new<label>()
+var box   tpBox  = na
+var box   slBox  = na
+var label entLbl = na
+// ── SETUP QUALITY state, HOISTED. The entry label reads qGrade/qScore several
+// hundred lines before the quality engine runs, and Pine resolves identifiers
+// top-down — declaring them down there was a forward-declaration violation
+// (CE10272). House law #1, and I broke it.
+var int   qPool  = 0
+var float qDisp  = 0.0
+var float qPen   = 0.0
+var float qPD    = 0.5
+var int   qScore = 0
+var float qApp   = 0.0
+var bool  qTrendArr = false
+var int   qFlips = 0
+var string qGrade = "C"
+
+var label exLbl  = na
+var array<box>   pastTrBoxes = array.new<box>()
+var array<label> pastTrLbls  = array.new<label>()
+
+f_glowDel(line a, line b, line c) =>
+    line.delete(a)
+    line.delete(b)
+    line.delete(c)
+
+f_fadeLine(line _l, color _c) =>
+    if not na(_l)
+        line.set_color(_l, color.new(_c, 88))
+        oldLines.push(_l)
+
+f_fadeLbl(label _x, color _c) =>
+    if not na(_x)
+        label.set_color(_x, color.new(_c, 95))
+        label.set_textcolor(_x, color.new(_c, 70))
+        oldLbls.push(_x)
+
+f_fadeBox(box _b, color _c, int _tr) =>
+    if not na(_b)
+        box.set_bgcolor(_b, color.new(_c, _tr))
+        box.set_border_color(_b, color.new(_c, math.min(99, _tr + 3)))
+        oldBoxes.push(_b)
+
+f_trimStruct() =>
+    while oldBoxes.size() > keepStruct * 2
+        box.delete(oldBoxes.shift())
+    while oldLines.size() > keepStruct * 3
+        line.delete(oldLines.shift())
+    while oldLbls.size() > keepStruct * 4
+        label.delete(oldLbls.shift())
+
+//==================================================================================================
+// 1 · ENTRY EXECUTION — a signal armed on the PRIOR bar fills at THIS bar's open (or expires)
+//==================================================================================================
+if (pendLong or pendShort) and not na(pendBar) and bar_index > pendBar
+    if not g_inTrade and not isEOD
+        bool  isL = pendLong
+        float e   = open
+        float sl  = na
+        float tp  = na
+        if tradeMode == "Structural RR"
+            sl := isL ? armSweepExt - atrS * slBufAtr : armSweepExt + atrS * slBufAtr
+            float risk = math.max(syminfo.mintick, isL ? e - sl : sl - e)
+            tp := isL ? e + rrMult * risk : e - rrMult * risk
+        else
+            tp := isL ? e + e * tpPct / 100.0 : e - e * tpPct / 100.0
+            sl := isL ? e - e * slPct / 100.0 : e + e * slPct / 100.0
+        if not na(tpBox)
+            box.set_bgcolor(tpBox, color.new(C_TEAL, pastBoxFade))
+            box.set_border_color(tpBox, color.new(C_TEAL, pastBoxFade))
+            pastTrBoxes.push(tpBox)
+        if not na(slBox)
+            box.set_bgcolor(slBox, color.new(C_BEAR, pastBoxFade))
+            box.set_border_color(slBox, color.new(C_BEAR, pastBoxFade))
+            pastTrBoxes.push(slBox)
+        if not na(entLbl)
+            pastTrLbls.push(entLbl)
+        if not na(exLbl)
+            pastTrLbls.push(exLbl)
+        tpBox  := na
+        slBox  := na
+        entLbl := na
+        exLbl  := na
+        while pastTrBoxes.size() > keepTrades * 2
+            box.delete(pastTrBoxes.shift())
+        while pastTrLbls.size() > keepTrades * 2
+            label.delete(pastTrLbls.shift())
+        g_inTrade  := true
+        g_isLong   := isL
+        g_entry    := e
+        g_tp       := tp
+        g_sl       := sl
+        g_entryBar := bar_index
+        lastSigBar := bar_index
+        if showLevels
+            tpBox := box.new(bar_index, math.max(e, tp), bar_index + maxBars, math.min(e, tp), border_color=color.new(C_TEAL, 22), bgcolor=color.new(C_TEAL, 87), border_width=2)
+            slBox := box.new(bar_index, math.max(e, sl), bar_index + maxBars, math.min(e, sl), border_color=color.new(C_BEAR, 22), bgcolor=color.new(C_BEAR, 87), border_width=2)
+        if showSig
+            float slD = math.max(math.abs(e - sl), syminfo.mintick)
+            float rr  = math.abs(tp - e) / slD
+            string enTxt = (isL ? "▲ LONG  1:" : "▼ SHORT  1:") + str.tostring(rr, "#.##") + " RR" + (qShowGrade ? "   ◈ " + qGrade + " " + str.tostring(qScore) : "") + "\nTP " + str.tostring(tp, format.mintick) + "   IN " + str.tostring(e, format.mintick) + "   SL " + str.tostring(sl, format.mintick)
+            entLbl := label.new(bar_index, isL ? low : high, enTxt, style=isL ? label.style_label_up : label.style_label_down, color=isL ? color.new(#003322, 20) : color.new(#330000, 20), textcolor=isL ? C_BULL : C_BEAR, size=size.small, text_font_family=font.family_monospace)
+        if enableWebhook
+            alert('{"strategy_id":"' + STRATEGY_ID + '","instrument":"' + f_instr() + '","action":"enter","side":"' + (isL ? "buy" : "sell") + '","entry":' + str.tostring(e, "#.##") + ',"stop":' + str.tostring(sl, "#.##") + ',"profit":' + str.tostring(tp, "#.##") + ',"instrument_multiplier":' + str.tostring(syminfo.pointvalue) + ',"quantity":' + str.tostring(whQty) + '}', alert.freq_once_per_bar)
+    pendLong  := false
+    pendShort := false
+else if g_inTrade
+    if not na(tpBox)
+        box.set_right(tpBox, bar_index + 1)
+    if not na(slBox)
+        box.set_right(slBox, bar_index + 1)
+
+//==================================================================================================
+// 2 · LIQUIDITY TRACKING — confirmed pivots, glow lines, age-out
+//==================================================================================================
+float ph = ta.pivothigh(high, pLen, pLen)
+float pl = ta.pivotlow(low, pLen, pLen)
+
+if barstate.isconfirmed
+    // delivery-run opens (CISD anchors)
+    if close > open
+        if not bullStreak
+            upRunOpen := open
+        bullStreak := true
+        bearStreak := false
+    else if close < open
+        if not bearStreak
+            dnRunOpen := open
+        bearStreak := true
+        bullStreak := false
+    // new confirmed swing HIGH becomes the tracked pool (unless a short setup is mid-flight on it)
+    if not na(ph) and stage != 1 and stage != 2 and stage != 3
+        liqHi    := ph
+        liqHiBar := bar_index - pLen
+        f_glowDel(liqHiL1, liqHiL2, liqHiL3)
+        label.delete(liqHiTag)
+        if showLiq
+            liqHiL1 := line.new(liqHiBar, liqHi, bar_index, liqHi, color=color.new(C_GOLD, 88), width=6)
+            liqHiL2 := line.new(liqHiBar, liqHi, bar_index, liqHi, color=color.new(C_GOLD, 68), width=3)
+            liqHiL3 := line.new(liqHiBar, liqHi, bar_index, liqHi, color=color.new(C_GOLD, 10), width=1)
+            liqHiTag := label.new(bar_index, liqHi, " ◆ BSL ", style=label.style_label_left, color=color.new(C_HDR_BG, 40), textcolor=C_GOLD, size=size.tiny, text_font_family=font.family_monospace)
+    if not na(pl) and stage != 1 and stage != 2 and stage != 3
+        liqLo    := pl
+        liqLoBar := bar_index - pLen
+        f_glowDel(liqLoL1, liqLoL2, liqLoL3)
+        label.delete(liqLoTag)
+        if showLiq
+            liqLoL1 := line.new(liqLoBar, liqLo, bar_index, liqLo, color=color.new(C_TEAL, 88), width=6)
+            liqLoL2 := line.new(liqLoBar, liqLo, bar_index, liqLo, color=color.new(C_TEAL, 68), width=3)
+            liqLoL3 := line.new(liqLoBar, liqLo, bar_index, liqLo, color=color.new(C_TEAL, 10), width=1)
+            liqLoTag := label.new(bar_index, liqLo, " ◆ SSL ", style=label.style_label_left, color=color.new(C_HDR_BG, 40), textcolor=C_TEAL, size=size.tiny, text_font_family=font.family_monospace)
+    // extend the glow to the current bar · age-out stale levels
+    if not na(liqHi)
+        if bar_index - liqHiBar > liqMaxAge
+            f_glowDel(liqHiL1, liqHiL2, liqHiL3)
+            label.delete(liqHiTag)
+            liqHi := na
+        else if showLiq and not na(liqHiL1)
+            line.set_x2(liqHiL1, bar_index)
+            line.set_x2(liqHiL2, bar_index)
+            line.set_x2(liqHiL3, bar_index)
+            label.set_x(liqHiTag, bar_index)
+    if not na(liqLo)
+        if bar_index - liqLoBar > liqMaxAge
+            f_glowDel(liqLoL1, liqLoL2, liqLoL3)
+            label.delete(liqLoTag)
+            liqLo := na
+        else if showLiq and not na(liqLoL1)
+            line.set_x2(liqLoL1, bar_index)
+            line.set_x2(liqLoL2, bar_index)
+            line.set_x2(liqLoL3, bar_index)
+            label.set_x(liqLoTag, bar_index)
+
+//==================================================================================================
+// 2b · SETUP QUALITY ENGINE — four independent measures, scored 0-100
+// Everything here is measurement. Nothing is filtered unless the Architect
+// raises the minimum grade.
+//==================================================================================================
+// — MEASURE 1 · POOL QUALITY: how many highs/lows sit at the same price?
+f_touches(float lvl, bool isHigh, int look, float tol) =>
+    int cnt = 0
+    if not na(lvl) and tol > 0
+        for i = 0 to look - 1
+            float v = isHigh ? high[i] : low[i]
+            if math.abs(v - lvl) <= tol
+                cnt += 1
+    cnt
+
+// — MEASURE 3 · DEALING RANGE for premium / discount
+float drHi = ta.highest(high, qPDLook)
+float drLo = ta.lowest(low, qPDLook)
+float drPos = drHi > drLo ? (close - drLo) / (drHi - drLo) : 0.5
+
+//==================================================================================================
+// 3 · SEQUENCE STATE MACHINE — SWEEP → CISD → FVG → rejection = signal
+//==================================================================================================
+f_retireSetup() =>
+    f_fadeBox(sweepBox, C_PURPLE, 94)
+    f_fadeLbl(sweepTag, C_PURPLE)
+    f_fadeLine(cisdLine, C_GOLD)
+    f_fadeLbl(cisdTag, C_GOLD)
+    f_fadeBox(fvgBox, C_PURPLE, 92)
+    f_fadeLine(fvgCe, C_PURPLE)
+    f_fadeLbl(fvgTag, C_PURPLE)
+    f_trimStruct()
+
+if barstate.isconfirmed
+    bool dead = false
+    // ---- SCAN: wick through a pool, close back inside = sweep
+    if stage == 0
+        bool sweepHi = not na(liqHi) and high > liqHi and close < liqHi
+        bool sweepLo = not na(liqLo) and low < liqLo and close > liqLo
+        if sweepHi or sweepLo
+            f_retireSetup()
+            sweepBox := na
+            sweepTag := na
+            cisdLine := na
+            cisdTag  := na
+            fvgBox   := na
+            fvgCe    := na
+            fvgTag   := na
+            dir      := sweepHi ? -1 : 1
+            sweepLvl := sweepHi ? liqHi : liqLo
+            sweepExt := sweepHi ? high : low
+            sweepBar := bar_index
+            cisdLvl  := sweepHi ? upRunOpen : dnRunOpen
+            // — QUALITY: pool touches, penetration depth, premium/discount
+            qPool := f_touches(sweepLvl, sweepHi, qEqLook, qEqTol * atrS)
+            qPen  := atrS > 0 ? math.abs(sweepExt - sweepLvl) / atrS : 0.0
+            qPD   := sweepHi ? drPos : 1.0 - drPos
+            qDisp := 0.0
+            // — MEASURE 5 · APPROACH EFFICIENCY: raid, or trend arriving?
+            float appNet  = math.abs(close - close[qAppLen])
+            float appPath = math.sum(math.abs(close - close[1]), qAppLen)
+            qApp      := appPath > 0 ? appNet / appPath : 0.0
+            qTrendArr := qApp >= qAppTrend
+            stage    := 1
+            fvgTouched := false
+            if showSweep
+                sweepBox := box.new(bar_index - 1, math.max(sweepLvl, sweepExt), bar_index + 1, math.min(sweepLvl, sweepExt), border_color=color.new(C_PURPLE, 35), bgcolor=color.new(C_PURPLE, 78), border_width=1)
+                sweepTag := label.new(bar_index, sweepHi ? high : low, sweepHi ? " ✕ SWEEP " : " ✕ SWEEP ", style=sweepHi ? label.style_label_down : label.style_label_up, color=color.new(C_PURPLE, 25), textcolor=color.white, size=size.tiny, text_font_family=font.family_monospace)
+            // the swept pool is spent — clear it so a fresh pivot can replace it after the setup
+            if sweepHi
+                f_glowDel(liqHiL1, liqHiL2, liqHiL3)
+                f_fadeLbl(liqHiTag, C_GOLD)
+                liqHiTag := na
+                liqHi := na
+            else
+                f_glowDel(liqLoL1, liqLoL2, liqLoL3)
+                f_fadeLbl(liqLoTag, C_TEAL)
+                liqLoTag := na
+                liqLo := na
+    // ---- SWEPT: hunt the CISD close through the delivery-run open
+    else if stage == 1
+        sweepExt := dir == -1 ? math.max(sweepExt, high) : math.min(sweepExt, low)
+        if not na(sweepBox)
+            box.set_top(sweepBox, math.max(sweepLvl, sweepExt))
+            box.set_bottom(sweepBox, math.min(sweepLvl, sweepExt))
+            box.set_right(sweepBox, bar_index)
+        bool breakThrough = dir == -1 ? close > sweepExt : close < sweepExt
+        bool cisdHit = not na(cisdLvl) and (dir == -1 ? (close < cisdLvl and close < open) : (close > cisdLvl and close > open))
+        if breakThrough or bar_index - sweepBar > cisdWait
+            dead := true
+        else if cisdHit
+            cisdBar := bar_index
+            stage   := 2
+            // — QUALITY: how much FORCE did the change of state arrive with?
+            qDisp := atrS > 0 ? math.abs(close - open) / atrS : 0.0
+            // — GRADE: four measures, 25 points each, nothing weighted by opinion
+            // five measures, 20 points each — no opinion in the weighting
+            int sPool = qPool >= 4 ? 20 : qPool == 3 ? 16 : qPool == 2 ? 11 : 4
+            int sDisp = qDispAtr <= 0 ? 20 : int(math.min(20.0, qDisp / qDispAtr * 20.0))
+            int sPen  = qPen <= qSwpMax * 0.4 ? 20 : qPen <= qSwpMax ? 13 : qPen <= qSwpMax * 1.8 ? 6 : 0
+            int sPD   = qPD >= 0.75 ? 20 : qPD >= qPDmin ? 13 : qPD >= 0.35 ? 6 : 0
+            int sApp  = qApp <= qAppTrend * 0.5 ? 20 : qApp < qAppTrend ? 12 : 0
+            qScore := sPool + sDisp + sPen + sPD + sApp
+            qGrade := qScore >= 75 ? "A" : qScore >= 50 ? "B" : "C"
+            if showCisd
+                cisdLine := line.new(sweepBar, cisdLvl, bar_index + 4, cisdLvl, color=color.new(C_GOLD, 15), width=2)
+                cisdTag  := label.new(bar_index + 4, cisdLvl, " CISD ", style=label.style_label_left, color=color.new(C_HDR_BG, 30), textcolor=C_GOLD, size=size.tiny, text_font_family=font.family_monospace)
+    // ---- CISD: find the freshest displacement FVG since the sweep
+    else if stage == 2
+        int sz = rH.size()
+        if sz >= 3
+            int maxBack = math.min(sz - 3, bar_index - sweepBar)
+            for j = 0 to maxBack
+                float h0 = rH.get(sz - 1 - j)
+                float l0 = rL.get(sz - 1 - j)
+                float h2 = rH.get(sz - 3 - j)
+                float l2 = rL.get(sz - 3 - j)
+                bool bearGap = dir == -1 and l2 > h0 and (l2 - h0) >= fvgMinAtr * atrS
+                bool bullGap = dir ==  1 and h2 < l0 and (l0 - h2) >= fvgMinAtr * atrS
+                if bearGap or bullGap
+                    fvgTop := bearGap ? l2 : l0
+                    fvgBot := bearGap ? h0 : h2
+                    fvgBar := rB.get(sz - 1 - j)
+                    stage  := 3
+                    if showFvg
+                        fvgBox := box.new(fvgBar - 2, fvgTop, fvgBar + fvgWait, fvgBot, border_color=color.new(C_PURPLE, 30), bgcolor=color.new(C_PURPLE, 82), border_width=1, text=" FVG ", text_color=color.new(C_PURPLE, 15), text_size=size.tiny, text_halign=text.align_right, text_valign=dir == -1 ? text.align_bottom : text.align_top)
+                        if showCE
+                            fvgCe := line.new(fvgBar - 2, (fvgTop + fvgBot) / 2.0, fvgBar + fvgWait, (fvgTop + fvgBot) / 2.0, color=color.new(C_PURPLE, 40), width=1, style=line.style_dashed)
+                    break
+        bool breakThrough2 = dir == -1 ? close > sweepExt : close < sweepExt
+        if stage == 2 and (breakThrough2 or bar_index - cisdBar > fvgWait)
+            dead := true
+    // ---- FVG SET: retrace into the gap, then a confirmed rejection close = arm the signal
+    else if stage == 3
+        bool touch = dir == -1 ? high >= fvgBot : low <= fvgTop
+        if touch
+            fvgTouched := true
+        bool reject = fvgTouched and (dir == -1 ? (close < fvgBot and close < open) : (close > fvgTop and close > open))
+        bool breakThrough3 = dir == -1 ? close > sweepExt : close < sweepExt
+        bool gapKilled = dir == -1 ? close > fvgTop : close < fvgBot
+        // GRADE GATE — the setup must clear the minimum before it is allowed to
+        // fire. A refused setup is retired, not parked, so it cannot fire later.
+        bool gradeOK = qMinGrade == "C — show everything" ? true : qMinGrade == "B — good and better" ? qScore >= 50 : qScore >= 75
+        if breakThrough3 or gapKilled or bar_index - cisdBar > fvgWait
+            dead := true
+        else if reject and canFire and gradeOK and not (qTrendArr and qAppMode == "Skip the setup")
+            bool appFlip = qTrendArr and qAppMode == "FLIP the direction"
+            longSig  := appFlip ? dir == -1 : dir == 1
+            shortSig := appFlip ? dir == 1  : dir == -1
+            if appFlip
+                qFlips += 1
+            armSweepExt := sweepExt
+            stage := 0
+        else if reject
+            dead := true
+    if dead
+        f_retireSetup()
+        sweepBox := na
+        sweepTag := na
+        cisdLine := na
+        cisdTag  := na
+        fvgBox   := na
+        fvgCe    := na
+        fvgTag   := na
+        stage := 0
+
+//==================================================================================================
+// 4 · ARM (executes next bar) · EXIT MANAGEMENT (TP / SL / TIME / EOD)
+//==================================================================================================
+if canFire and longSig
+    pendLong  := true
+    pendShort := false
+    pendBar   := bar_index
+if canFire and shortSig
+    pendShort := true
+    pendLong  := false
+    pendBar   := bar_index
+
+if g_inTrade and barstate.isconfirmed and bar_index > g_entryBar
+    bool hitTP  = g_isLong ? high >= g_tp : low <= g_tp
+    bool hitSL  = g_isLong ? low  <= g_sl : high >= g_sl
+    bool timeUp = bar_index - g_entryBar >= maxBars
+    bool eodOut = isEOD
+    if hitSL or hitTP or eodOut or timeUp
+        string mark   = hitSL ? "SL" : hitTP ? "✦ TP" : eodOut ? "◈ EOD" : "TIME"
+        float  exitPx = hitSL ? g_sl : hitTP ? g_tp : close
+        float  pnl    = g_isLong ? (exitPx - g_entry) / g_entry * 100.0 : (g_entry - exitPx) / g_entry * 100.0
+        color  c      = hitSL ? C_BEAR : hitTP ? C_TEAL : C_GOLD
+        if pnl > 0
+            wins += 1
+        else
+            losses += 1
+        if not na(tpBox)
+            box.set_right(tpBox, bar_index)
+        if not na(slBox)
+            box.set_right(slBox, bar_index)
+        if showSig
+            exLbl := label.new(bar_index, na, " " + mark + " " + (pnl >= 0 ? "+" : "") + str.tostring(pnl, "#.##") + "% ", yloc=g_isLong ? yloc.abovebar : yloc.belowbar, style=g_isLong ? label.style_label_down : label.style_label_up, color=color.new(c, 75), textcolor=c, size=size.tiny, text_font_family=font.family_monospace)
+        lastExitTxt := mark + " " + (pnl >= 0 ? "+" : "") + str.tostring(pnl, "#.##") + "%"
+        g_inTrade  := false
+        lastSigBar := bar_index
+        exitSig    := true
+        if enableWebhook
+            alert('{"strategy_id":"' + STRATEGY_ID + '","instrument":"' + f_instr() + '","action":"exit-all"}', alert.freq_once_per_bar)
+
+//==================================================================================================
+// 5 · ROLLING BAR LOG — appended AFTER the machine so this bar never scans itself as an FVG leg
+//==================================================================================================
+if barstate.isconfirmed
+    rO.push(open)
+    rH.push(high)
+    rL.push(low)
+    rC.push(close)
+    rB.push(bar_index)
+    while rH.size() > 200
+        rO.shift()
+        rH.shift()
+        rL.shift()
+        rC.shift()
+        rB.shift()
+
+//==================================================================================================
+// 6 · DASHBOARD — 11×4 bottom-center monospace panel
+//==================================================================================================
+f_drawDash() =>
+    string stTx = stage == 3 ? "④ FVG SET" : stage == 2 ? "③ CISD ✓" : stage == 1 ? "② SWEPT ✓" : "① SCANNING"
+    color  stC  = stage == 3 ? C_BULL : stage == 2 ? C_GOLD : stage == 1 ? C_PURPLE : C_MUTED
+    string dTx  = stage == 0 ? "--" : dir == 1 ? "LONG HUNT ▲" : "SHORT HUNT ▼"
+    string qTx  = stage == 0 ? "--" : qGrade + " " + str.tostring(qScore) + "  pool" + str.tostring(qPool) + " disp" + str.tostring(qDisp, "#.#") + " pen" + str.tostring(qPen, "#.#") + " pd" + str.tostring(qPD, "#.##")
+    color  qCl  = qGrade == "A" ? C_TEAL : qGrade == "B" ? C_GOLD : C_MUTED
+    color  dC   = stage == 0 ? C_MUTED : dir == 1 ? C_BULL : C_BEAR
+    string bslT = na(liqHi) ? "--" : str.tostring(liqHi, format.mintick)
+    string sslT = na(liqLo) ? "--" : str.tostring(liqLo, format.mintick)
+    string swT  = stage >= 1 ? str.tostring(sweepExt, format.mintick) : "--"
+    string ciT  = stage >= 1 and not na(cisdLvl) ? str.tostring(cisdLvl, format.mintick) + (stage >= 2 ? " ✓" : "") : "--"
+    string fvT  = stage == 3 ? str.tostring(fvgBot, format.mintick) + "–" + str.tostring(fvgTop, format.mintick) : "--"
+    string poT  = g_inTrade ? (g_isLong ? "LONG ●" : "SHORT ●") : "FLAT"
+    color  poC  = g_inTrade ? (g_isLong ? C_BULL : C_BEAR) : C_MUTED
+    string tpT  = g_inTrade ? str.tostring(g_tp, format.mintick) : "--"
+    string slT  = g_inTrade ? str.tostring(g_sl, format.mintick) : "--"
+    int    cdL  = (not useCooldown or na(lastSigBar)) ? 0 : math.max(0, cooldownBars - (bar_index - lastSigBar))
+    string cdT  = g_inTrade ? "IN TRADE" : isEOD ? "EOD ⛔" : cdL > 0 ? "CD " + str.tostring(cdL) + "b" : "READY ✅"
+    color  cdC  = g_inTrade ? C_GOLD : isEOD ? C_PURPLE : cdL > 0 ? C_GOLD : C_BULL
+    int    tot  = wins + losses
+    float  wr   = tot > 0 ? wins * 100.0 / tot : 0.0
+    float  upnl = g_inTrade ? (g_isLong ? (close - g_entry) : (g_entry - close)) / g_entry * 100.0 : na
+    string upT  = na(upnl) ? "--" : (upnl >= 0 ? "+" : "") + str.tostring(upnl, "#.##") + "%"
+    var table dash = table.new(position.bottom_center, 11, 4, bgcolor=C_COL_BG, border_width=1, border_color=color.new(C_TEAL, 55))
+    for _c = 0 to 10
+        table.cell(dash, _c, 0, "", bgcolor=C_STRIPE, text_size=size.tiny)
+    table.cell(dash, 0, 0, " SWEEP → CISD → FVG ", text_color=C_TEAL, bgcolor=C_HDR_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 10, 0, " DASHBOARD ", text_color=C_GOLD, bgcolor=C_HDR_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 0, 1, " ◈ STAGE ",    text_color=C_TEAL, bgcolor=C_HDR_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 1, 1, " ◈ HUNT ",     text_color=C_TEAL, bgcolor=C_COL_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 2, 1, " ◈ BSL ",      text_color=C_TEAL, bgcolor=C_COL_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 3, 1, " ◈ SSL ",      text_color=C_TEAL, bgcolor=C_COL_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 4, 1, " ◈ GRADE ",     text_color=C_TEAL, bgcolor=C_COL_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 5, 1, " ◈ CISD ",     text_color=C_TEAL, bgcolor=C_COL_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 6, 1, " ◈ FVG ",      text_color=C_TEAL, bgcolor=C_COL_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 7, 1, " ◈ POSITION ", text_color=C_TEAL, bgcolor=C_COL_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 8, 1, " ◈ TP / SL ",  text_color=C_TEAL, bgcolor=C_COL_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 9, 1, " ◈ RECORD ",   text_color=C_TEAL, bgcolor=C_COL_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 10,1, " ◈ STATUS ",   text_color=C_TEAL, bgcolor=C_HDR_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 0, 2, " " + stTx, text_color=stC,  bgcolor=C_HDR_BG,  text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 1, 2, " " + dTx,  text_color=dC,   bgcolor=C_COL_ALT, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 2, 2, " " + bslT, text_color=C_GOLD, bgcolor=C_COL_ALT, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 3, 2, " " + sslT, text_color=C_TEAL, bgcolor=C_COL_ALT, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 4, 2, " " + (stage == 0 ? swT : qGrade + " · " + str.tostring(qScore)), text_color=stage == 0 ? C_PURPLE : qCl, bgcolor=C_COL_ALT, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 5, 2, " " + ciT,  text_color=C_GOLD, bgcolor=C_COL_ALT, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 6, 2, " " + fvT,  text_color=C_PURPLE, bgcolor=C_COL_ALT, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 7, 2, " " + poT,  text_color=poC,  bgcolor=C_COL_ALT, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 8, 2, " " + tpT + " / " + slT, text_color=C_INK, bgcolor=C_COL_ALT, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 9, 2, " " + str.tostring(wins) + "W " + str.tostring(losses) + "L " + str.tostring(wr, "#") + "%", text_color=wr >= 50 ? C_TEAL : C_ORANGE, bgcolor=C_COL_ALT, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 10,2, " " + cdT,  text_color=cdC,  bgcolor=C_HDR_BG,  text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 0, 3, " ①Sweep ②CISD ③FVG ④Go", text_color=color.new(stC, 50), bgcolor=C_HDR_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 1, 3, " pivot " + str.tostring(pLen), text_color=C_MUTED, bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 2, 3, " buy-side pool",  text_color=C_MUTED, bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 3, 3, " sell-side pool", text_color=C_MUTED, bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 4, 3, " " + (stage == 0 ? "pool/disp/pen/pd/ER" : "p" + str.tostring(qPool) + " d" + str.tostring(qDisp, "#.#") + " x" + str.tostring(qPen, "#.#") + " " + str.tostring(qPD, "#.##") + " ER" + str.tostring(qApp, "#.##") + (qTrendArr ? "!" : "")), text_color=C_MUTED, bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 5, 3, " window " + str.tostring(cisdWait) + "b", text_color=C_MUTED, bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 6, 3, " retrace " + str.tostring(fvgWait) + "b", text_color=C_MUTED, bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 7, 3, " Bars " + (g_inTrade ? str.tostring(bar_index - g_entryBar) + "/" + str.tostring(maxBars) + "  " + upT : "--"), text_color=C_MUTED, bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 8, 3, " " + (tradeMode == "Structural RR" ? "1:" + str.tostring(rrMult, "#.#") + " struct" : str.tostring(tpPct, "#.##") + "/" + str.tostring(slPct, "#.##") + "%"), text_color=C_MUTED, bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 9, 3, " last " + lastExitTxt, text_color=C_MUTED, bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 10,3, " " + (enableWebhook ? "alerts on 🔗" : "chart study"), text_color=C_MUTED, bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    0
+
+if showDash and barstate.islast
+    f_drawDash()
+
+//==================================================================================================
+// 7 · ALERTS + WIRES
+//==================================================================================================
+alertcondition(longSig,  "Long Entry",  "Sweep Reversal long entry {{ticker}} @ {{close}}")
+alertcondition(shortSig, "Short Entry", "Sweep Reversal short entry {{ticker}} @ {{close}}")
+alertcondition(exitSig,  "Exit",        "Sweep Reversal exit {{ticker}} @ {{close}}")
+
+plot(liqHi, "Liquidity High", display=display.none)
+plot(liqLo, "Liquidity Low",  display=display.none)
+plot(stage, "Stage",          display=display.none)
+plot(g_inTrade ? (g_isLong ? 1 : -1) : 0, "Position", display=display.none)

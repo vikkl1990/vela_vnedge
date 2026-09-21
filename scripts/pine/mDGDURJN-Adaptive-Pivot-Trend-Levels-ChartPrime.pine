@@ -1,0 +1,158 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+
+//@version=6
+indicator("Adaptive Pivot Trend Levels [ChartPrime]", overlay = true, max_lines_count = 500)
+
+
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 📌 𝙐𝙎𝙀𝙍 𝙄𝙉𝙋𝙐𝙏𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+
+Length = input.int(5)
+actvLevels = input.bool(true, "Active", inline = "c")
+crossLevels = input.bool(true, "Crossed", inline = "c")
+
+colorUP = input.color(color.rgb(36, 224, 133), "", inline = "color")
+colorDN = input.color(color.rgb(230, 36, 165), "", inline = "color")
+
+
+type level 
+    line l 
+    bool isBelow
+    label count
+
+var pivots = array.new<float>()
+var levels = array.new<level>()
+
+
+
+active = 0 
+var crossed = 0
+var start = 0
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 📌 𝙄𝙉𝘿𝙄𝘾𝘼𝙏𝙊𝙍 𝘾𝘼𝙇𝘾𝙐𝙇𝘼𝙏𝙄𝙊𝙉𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+
+ph = ta.pivothigh(Length, Length)
+pl = ta.pivotlow(Length, Length)
+
+
+if not na(ph)
+    l = line.new(bar_index-Length, ph, bar_index, ph)
+    count = label.new(bar_index, ph, "", color = color(na), style = label.style_label_left)
+
+    pivots.push(ph)
+    levels.push(level.new(l, false, count))
+
+
+if not na(pl)
+    l = line.new(bar_index-Length, pl, bar_index, pl)
+    count = label.new(bar_index, ph, "", color = color(na), style = label.style_label_left)
+
+    pivots.push(pl)
+    levels.push(level.new(l, true, count))
+
+
+
+
+if pivots.size() > 10
+    pivots.shift()
+
+
+trendLine = pivots.avg()
+
+Uptrend   = low  >= trendLine
+Dntrend   = high <= trendLine
+TColor = Uptrend ? colorUP : Dntrend ? colorDN : color.gray
+
+upTrend = TColor == colorUP or TColor == color.gray and TColor[1] == colorUP and TColor[2] == colorUP
+dnTrend = TColor == colorDN or TColor == color.gray and TColor[1] == colorDN and TColor[2] == colorDN
+
+
+
+upChange = ta.change(upTrend) 
+dnChange = ta.change(dnTrend) 
+
+TrendChange = upChange or dnChange
+
+if TrendChange
+    crossed := 0
+    start := bar_index
+
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 📌 𝙑𝙄𝙎𝙐𝘼𝙇𝙄𝙕𝘼𝙏𝙄𝙊𝙉
+// --------------------------------------------------------------------------------------------------------------------{
+
+if not TrendChange
+    for i in levels
+
+        if start > i.l.get_x2()
+
+            i.l.delete()
+            i.count.delete()
+
+            levels.remove(levels.indexof(i))
+
+
+        else 
+            
+            active += 1
+         
+            i.l.set_x2(bar_index)
+            i.l.set_color(color.new(TColor, 100))
+
+            if actvLevels
+                
+    
+                i.count.set_xy(bar_index, i.l.get_y1())
+
+                i.l.set_color(TColor)
+                i.l.set_style(line.style_dashed)
+
+                i.count.set_text(str.tostring(active))
+                i.count.set_textcolor(color.new(chart.fg_color, 60))
+    
+
+            if i.isBelow
+                if low < i.l.get_y1()
+                    crossed += 1
+                    i.count.delete()
+
+                    i.l.set_color(color.new(TColor, crossLevels ? 50 : 100))
+                    i.l.set_style(line.style_dotted)
+                    levels.remove(levels.indexof(i))
+
+            else 
+                if high > i.l.get_y1()
+                    crossed += 1
+                    i.count.delete()
+                    i.l.set_color(color.new(TColor, crossLevels ? 50 : 100))
+                    i.l.set_style(line.style_dotted)
+                    levels.remove(levels.indexof(i))
+
+
+
+var tbl = table.new(position.top_right, 100, 100, chart.bg_color)
+
+if barstate.islast
+
+    tbl.cell(0, 0, "Trend", text_halign = text.align_left, text_color = chart.fg_color)
+    tbl.cell(1, 0, (upTrend ? "↑" : Dntrend ? "↓" : "-"), text_color = TColor)
+
+    tbl.cell(0, 1, "Active Levels", text_halign = text.align_left, text_color = chart.fg_color)
+    tbl.cell(1, 1,  str.tostring(active), text_color = TColor)
+
+    tbl.cell(0, 2, "Crossed Levels", text_halign = text.align_left, text_color = chart.fg_color)
+    tbl.cell(1, 2, str.tostring(crossed), text_color = TColor)
+
+pt = plot(trendLine, "Trend Line", style = plot.style_stepline, color = TColor)
+plot(trendLine, "Trend Line Shadow", style = plot.style_stepline, color = color.new(TColor, 70), linewidth = 5)
+pc = plot(close, display = display.none, editable = false)
+
+fill(pc, pt, trendLine, close, color(na), color.new(TColor, 70))
+// --------------------------------------------------------------------------------------------------------------------{

@@ -1,0 +1,126 @@
+//@version=6
+indicator("C-Power Oscillator", overlay=false, max_bars_back=500)
+
+// USER SETTINGS
+var string G_MAIN = "Main Candle Power Settings"
+int candlePeriod = input.int(10, title="Analysis Period (bars)", minval=2, group=G_MAIN)
+float deadzoneWidth = input.float(5.0, title="Deadzone Width (%)", minval=0.0, maxval=50.0, step=0.5, group=G_MAIN, tooltip="The width of the noise cancellation zone around the 50% level. The default 5.0% means ±2.5% from the center (from 47.5 to 52.5).")
+
+var string G_BOUNDS = "Oscillator Thresholds"
+int obLevel = input.int(60, title="Overbought Level", minval=50, maxval=100, step=1, group=G_BOUNDS)
+int osLevel = input.int(40, title="Oversold Level", minval=0, maxval=50, step=1, group=G_BOUNDS)
+
+var string G_ALMA = "ALMA Smoothing"
+int almaLength   = input.int(3, title="ALMA: Length", minval=1, group=G_ALMA)
+float almaOffset = input.float(0.7, title="ALMA: Offset", minval=0.0, maxval=1.0, step=0.05, group=G_ALMA, tooltip="Values closer to 1.0 reduce lag but decrease smoothness.")
+float almaSigma  = input.float(2.5, title="ALMA: Sigma", minval=0.0, step=0.5, group=G_ALMA, tooltip="Higher sigma values increase filter sharpness and smoothness.")
+
+var string G_COLORS = "Colors"
+color customBullColor = input.color(color.rgb(34, 139, 34, 30), title="Buyers Fill Color", group=G_COLORS)
+color customBearColor = input.color(color.rgb(220, 20, 60, 30), title="Sellers Fill Color", group=G_COLORS)
+color lineBullColor   = input.color(color.rgb(0, 200, 50), title="Buyers Line Color", group=G_COLORS)
+color lineBearColor   = input.color(color.rgb(255, 50, 50), title="Sellers Line Color", group=G_COLORS)
+
+// VOLUME SPIKE FILTER
+float rawVolume = nz(volume)
+float processedVolume = rawVolume
+
+float periodAvgVol = ta.alma(rawVolume, candlePeriod, 0.85, 1.0)
+float maxAllowedVol = periodAvgVol * 3.5
+
+if rawVolume > maxAllowedVol and periodAvgVol > 0
+    processedVolume := maxAllowedVol
+
+// ENGINE APPROXIMATION OF GAUSSIAN CDF
+erf(x) =>
+    float t = 1.0 / (1.0 + 0.5 * math.abs(x))
+    float ans = 1.0 - t * math.exp(-x * x - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418 + t * (-0.01862880 + t * (0.02788680 + t * (-1.13520398 + t * (1.48851587 + t * (-0.82215223 + t * 0.17087277)))))))))
+    x >= 0 ? ans : -ans
+
+normCDF(z) =>
+    0.5 * (1.0 + erf(z / math.sqrt(2.0)))
+
+// PRICE PROCESSING & GARMAN-KLASS MODEL
+float c_open     = open
+float c_high     = high
+float c_low      = low
+float c_close    = close
+float prev_close = nz(close, c_open)
+
+// Gap-Adjustment protection
+float effHigh = math.max(c_high, prev_close)
+float effLow  = math.min(c_low, prev_close)
+float effOpen = c_open
+
+float log_h_l = math.log(effHigh / effLow)
+float log_c_o = math.log(c_close / effOpen)
+
+// Garman-Klass Volatility Estimator
+float gk_element = 0.5 * math.pow(log_h_l, 2.0) - (2.0 * math.log(2.0) - 1.0) * math.pow(log_c_o, 2.0)
+float gk_variance = ta.alma(math.max(gk_element, 0.0), candlePeriod, 0.85, 1.0)
+float gk_volatility = math.sqrt(gk_variance) * c_close
+
+float minVolatility = 0.00000001 * c_close
+float finalVolatility = math.max(gk_volatility, minVolatility)
+
+// Price deviation from midpoint (Imbalance)
+float midPoint = (effOpen + prev_close) / 2.0
+float priceImbalance = c_close - midPoint
+
+// Calculate Z-Score and directional weight (CDF Probability)
+float z_score = priceImbalance / finalVolatility
+float directionWeight = normCDF(z_score)
+
+// POWER / VOLUME SPLIT
+bool hasVolume = math.sum(processedVolume, candlePeriod) > 0
+
+float buyPowerSeries  = hasVolume ? (processedVolume * directionWeight) : directionWeight
+float sellPowerSeries = hasVolume ? (processedVolume * (1.0 - directionWeight)) : (1.0 - directionWeight)
+
+float totalBuyPower  = math.sum(nz(buyPowerSeries), candlePeriod)
+float totalSellPower = math.sum(nz(sellPowerSeries), candlePeriod)
+float aggregatePower = totalBuyPower + totalSellPower
+
+// Calculate raw and final BUY percentage values
+float rawBuyPercent = aggregatePower > 0.0 ? (totalBuyPower / aggregatePower) * 100.0 : 50.0
+
+float periodHigh = ta.highest(effHigh, candlePeriod)
+float periodLow  = ta.lowest(effLow, candlePeriod)
+  
+float finalBuyPercent = rawBuyPercent
+if finalBuyPercent >= 100.0 and c_close < periodHigh
+    finalBuyPercent := 95.0
+if finalBuyPercent <= 0.0 and c_close > periodLow
+    finalBuyPercent := 5.0
+
+// Smooth the final line using ALMA
+float smoothBuyPercent = ta.alma(finalBuyPercent, almaLength, almaOffset, almaSigma)
+
+// NOISE REDUCTION / DEADZONE LOGIC
+float halfZone = deadzoneWidth / 2.0
+float upperDeadThreshold = 50.0 + halfZone
+float lowerDeadThreshold = 50.0 - halfZone
+
+if smoothBuyPercent <= upperDeadThreshold and smoothBuyPercent >= lowerDeadThreshold
+    smoothBuyPercent := 50.0
+
+// OSCILLATOR VISUALIZATION (PANEL)
+line_100 = plot(100, title="Upper Boundary", display=display.none)
+line_OB  = plot(obLevel,  title="Overbought Level", color=color.new(color.gray, 40), linewidth=1)
+
+plotDeadUpper = plot(upperDeadThreshold, title="Deadzone Upper Bound", color=color.rgb(128, 128, 128))
+line_50  = plot(50,  title="Balance Line (50%)", color=color.new(color.gray, 30), linewidth=2)
+plotDeadLower = plot(lowerDeadThreshold, title="Deadzone Lower Bound", color=color.rgb(128, 128, 128))
+
+line_OS  = plot(osLevel,  title="Oversold Level", color=color.new(color.gray, 40), linewidth=1)
+line_0   = plot(0,   title="Lower Boundary", display=display.none)
+
+fill(plotDeadUpper, plotDeadLower, color=color.rgb(128, 128, 128, 85), title="Deadzone Background Fill")
+
+// Dynamic line coloring based on trends and extreme zones
+color oscLineColor = smoothBuyPercent >= obLevel ? color.rgb(0, 255, 100) : smoothBuyPercent <= osLevel ? color.rgb(255, 0, 0) : (smoothBuyPercent > 50.0 ? lineBullColor : smoothBuyPercent < 50.0 ? lineBearColor : color.gray)
+oscPlot = plot(smoothBuyPercent, title="Candle Power Line (ALMA)", color=oscLineColor, linewidth=2, style=plot.style_line)
+
+// Background fill for the bull zone (above 50%) and bear zone (below 50%)
+fill(oscPlot, line_50, top_value=100, bottom_value=50, top_color=customBullColor, bottom_color=color.rgb(0,0,0,100), title="Bull Fill")
+fill(oscPlot, line_50, top_value=50, bottom_value=0, top_color=color.rgb(0,0,0,100), bottom_color=customBearColor, title="Bear Fill")

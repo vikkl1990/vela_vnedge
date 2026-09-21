@@ -1,0 +1,1689 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// STRYK: MOMENTUM ("STRYK:M") — rolling VWAP with deviation bands, EMA with
+// a smoothing MA, delta-coloured candles — now with the Stryk: ΔC volume
+// participation background tint and the Stryk: Ranges DWM level engine
+// (previous Day / Week / Month high & low with an optional 25% quartile area).
+//
+// ROLLING VWAP: volume-weighted average price over the last N candles of a
+//   chosen delta timeframe (60-min × 20 = the 20-hour VWAP), computed from chart
+//   bars on a ring buffer with running sums — replay-safe, no history lookback.
+//   Visual smoothing rounds the steps as the oldest candle drops out of the window.
+// EMA: TradingView's standard EMA with its optional smoothing MA / Bollinger
+//   bands, plus the same visual smoothing.
+// CANDLE PAINT: Stryk: ΔC's delta colouring. Delta per bar comes from
+//   request.footprint() (real bid/ask volume) where TradingView provides it,
+//   otherwise an ESTIMATE from lower-timeframe bar polarity (disclosed). Colour
+//   follows the LIVE delta of the delta-timeframe candle each bar belongs to.
+// VOL PARTICIPATION BG: volume EMA normalised 0–100 against its own recent
+//   range; the chart background tints at the extremes (crowd present / tape dead).
+// DWM LEVELS: previous completed Day / Week / Month high & low, drawn from the
+//   period's open; optional 25 / 50 / 75% quartile lines inside each range.
+// ─────────────────────────────────────────────────────────────────────────────
+indicator("STRYK: MOMENTUM", "STRYK:M", overlay = true, max_bars_back = 300, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, dynamic_requests = true)
+
+string G0 = "0 · Master Switches"
+string G1 = "1 · Delta Engine (candle paint source)"
+string G2 = "2 · Rolling VWAP"
+string G3 = "3 · EMA"
+string G4 = "4 · Candle Paint"
+string G5 = "5 · Volume Participation BG"
+string G6 = "6 · DWM Range Levels"
+string G7 = "7 · Asian Range"
+string G8 = "8 · Display Box"
+
+// ── 0 · Master switches ──────────────────────────────────────────────────────
+mVwap  = input.bool(true, "Rolling VWAP + bands", group = G0, inline = "m",
+     tooltip = "Master switches. OFF forces that block off regardless of its own toggles; ON hands control back with settings intact.")
+mEma   = input.bool(true, "EMA", group = G0, inline = "m")
+mPaint = input.bool(true, "Candle paint", group = G0, inline = "m")
+mPaintMode = input.string("Use Paint section", "Paint mode (quick)", group = G0,
+     options = ["Use Paint section", "Delta size", "Delta size HTF", "Delta % (imbalance)", "POC trend", "Value area", "Fuel × Δ (Truth Line)", "Participation band", "Pivot structure", "Pivot structure HTF", "Market structure", "EMA trend", "Day range position", "Asian range position", "VWAP σ-distance", "Candle conviction", "RSI momentum"],
+     tooltip = "Quick paint-mode switch right at the top. 'Use Paint section' (default) defers to the Paint mode set in the Candle Paint group below; picking anything else here OVERRIDES that setting so you can flip reads without scrolling. Full mode explanations live on the Candle Paint group's Paint mode tooltip.")
+mVolBg = input.bool(true, "Vol BG", group = G0, inline = "m2")
+mRanges = input.bool(true, "Ranges", group = G0, inline = "m2")
+mDwmHL = input.bool(true, "DWM lines", group = G0, inline = "m2")
+mQuart = input.bool(true, "25% lines", group = G0, inline = "m3")
+mZones = input.bool(true, "25% zones", group = G0, inline = "m3",
+     tooltip = "25% lines = the dashed 25 / 50 / 75% quartile grid inside each previous Day/Week/Month range. 25% zones = a shaded box straddling each High and Low line, 12.5% of the range above and 12.5% below it — the reaction band around the level. Both need Ranges ON.")
+mAlerts = input.bool(true, "Alerts", group = G0, inline = "m4",
+     tooltip = "Master kill switch for every alert this script fires — one per display-box row (state changes and flags). With it off nothing triggers even if alerts are configured in TradingView; useful in Replay or while testing.")
+mBox = input.bool(true, "Display box", group = G0, inline = "m4",
+     tooltip = "A compact panel of leading reads — participation, fuel, POC migration, value-area compression, structure, and an absorption/squeeze flag — everything on this row is chosen to move BEFORE price does, not confirm after. Group 8 for position/size.")
+mAsian = input.bool(true, "Asian", group = G0, inline = "m2",
+     tooltip = "Vol BG = the ΔC volume-participation background tint. Ranges = the whole Stryk: Ranges block (levels, 25% area, labels). DWM lines = just the Day/Week/Month high/low lines themselves — off while Ranges stays ON shows only the 25/50/75% quartile grid. Asian = the overnight Asian session range engine, fully separate.")
+
+// ── 1 · Delta engine ─────────────────────────────────────────────────────────
+deltaSrc = input.string("Auto (footprint → estimate)", "Delta source", group = G1,
+     options = ["Auto (footprint → estimate)", "Estimate only"],
+     tooltip = "Auto: uses request.footprint() buy/sell volume whenever TradingView supplies it (classified from lower-timeframe price action, not exchange aggressor data) for the bar, otherwise the polarity estimate. Estimate only: ignores footprint. Footprint availability depends on plan and symbol; the footprint is built from TradingView's own tick feed, so a 'Delayed' chip on the chart means the colours are delayed by the same amount.")
+fpTicks  = input.int(4, "Footprint row size (ticks)", minval = 1, group = G1,
+     tooltip = "Row height for request.footprint(). Bar delta is the same at any row size; 4 ticks = 1 point on ES/NQ.")
+htfTf    = input.timeframe("60", "Delta timeframe", group = G1,
+     tooltip = "The candle delta accumulates into (candle colour follows this candle's LIVE delta) and the candle the VWAP window is counted in. Must be ≥ the chart timeframe; with auto-raise ON it is lifted to the chart timeframe when you go higher.")
+autoRaiseTf = input.bool(true, "Auto-raise delta timeframe to chart", group = G1,
+     tooltip = "ON: when the chart timeframe is above the delta timeframe, the delta timeframe becomes the chart timeframe for that session with the same lookback N — no error, same rule as Stryk: ΔC. OFF: strict, the script halts with an error.")
+lenN     = input.int(23, "Lookback N (VWAP window, paint scale)", minval = 1, maxval = 200, group = G1,
+     tooltip = "Completed delta-TF candles in the rolling VWAP window and in the average |Δ| the paint scale normalises to. 20 on a 60-min delta TF ≈ one day + overnight.")
+useAutoLtf = input.bool(true, "Auto intrabar resolution (estimate path)", group = G1,
+     tooltip = "Estimate path only. Picks the finest lower-timeframe resolution whose data budget still covers N candles × the history multiple. Same rule as Stryk: ΔC.")
+dataBudget = input.string("100K (Basic–Premium)", "Intrabar budget (your plan)", group = G1,
+     options = ["25K (memory saver)", "50K (replay-safe)", "100K (Basic–Premium)", "125K (Expert)", "200K (Ultimate)"],
+     tooltip = "TradingView's cap on total lower-timeframe bars a script may pull, by plan — and the script's biggest memory user, since the auto ladder picks the finest resolution that fills it. Bar Replay runs with a smaller memory allowance than a live chart: if you see 'Memory limits exceeded' there, drop to 50K (or 25K). Coarser intrabars, same engines. Estimate path and the POC profiles both draw on this.")
+histMult = input.float(3.0, "History coverage (× N candles)", minval = 1.0, maxval = 10.0, step = 0.5, group = G1,
+     tooltip = "Multiples of N candles the estimate path must cover before accepting a resolution.")
+manualLtf = input.timeframe("1", "Manual intrabar resolution", group = G1,
+     tooltip = "Used when auto is OFF. Must be below the chart timeframe.")
+
+// ── 2 · Rolling VWAP ─────────────────────────────────────────────────────────
+vwapSmooth = input.int(5, "Smoothing (EMA length, 1 = off)", minval = 1, maxval = 50, group = G2,
+     tooltip = "VISUAL smoothing of the rolling VWAP and its bands. The raw window VWAP steps each time the oldest candle leaves the window; this EMA rounds the steps into a curve. 1 = raw stepped line; 5 = default; 10+ = glassier, slightly later on turns.")
+vwapCol   = input.color(#00e5ff, "VWAP colour", group = G2, inline = "vw")
+vwapWidth = input.int(4, "width", minval = 1, maxval = 5, group = G2, inline = "vw")
+showB1 = input.bool(true, "±1σ", group = G2, inline = "b1")
+multB1 = input.float(1.0, "×", minval = 0.1, step = 0.1, group = G2, inline = "b1",
+     tooltip = "Volume-weighted standard-deviation bands over the same window, with per-band multipliers.")
+bandCol1 = input.color(#0e5a66, "", group = G2, inline = "b1")
+showB2 = input.bool(true, "±2σ", group = G2, inline = "b2")
+multB2 = input.float(2.0, "×", minval = 0.1, step = 0.1, group = G2, inline = "b2")
+bandCol2 = input.color(#0b3f47, "", group = G2, inline = "b2")
+showB3 = input.bool(true, "±3σ", group = G2, inline = "b3")
+multB3 = input.float(3.0, "×", minval = 0.1, step = 0.1, group = G2, inline = "b3")
+bandCol3 = input.color(#a11a1a, "", group = G2, inline = "b3")
+bandWidth = input.int(3, "Band width", minval = 1, maxval = 3, group = G2)
+bandFill  = input.bool(false, "Fill ±1σ", group = G2, inline = "bf")
+bandFillCol = input.color(color.new(#8a8a1c, 85), "", group = G2, inline = "bf",
+     tooltip = "Soft fill between the ±1σ bands. Transparency lives in the colour picker.")
+
+// ── 3 · EMA ──────────────────────────────────────────────────────────────────
+emaLen = input.int(233, "Length", minval = 1, group = G3)
+emaSrc = input.source(close, "Source", group = G3)
+emaOffset = input.int(0, "Offset", minval = -500, maxval = 500, group = G3)
+emaSmooth = input.int(3, "Visual smoothing (1 = off)", minval = 1, maxval = 50, group = G3,
+     tooltip = "Extra EMA pass on the plotted line only. 1 = the stock EMA exactly.")
+emaCol = input.color(#ffffff, "EMA colour", group = G3, inline = "e")
+emaWidth = input.int(2, "width", minval = 1, maxval = 5, group = G3, inline = "e")
+maTypeInput = input.string("EMA", "Smoothing MA type", options = ["None", "SMA", "SMA + Bollinger Bands", "EMA", "SMMA (RMA)", "WMA", "VWMA"], group = G3,
+     tooltip = "TradingView's standard smoothing-MA overlay on the EMA, including the Bollinger option.")
+maLengthInput = input.int(233, "Smoothing MA length", minval = 1, group = G3)
+bbMultInput = input.float(2.0, "BB StdDev", minval = 0.001, maxval = 50, step = 0.5, group = G3,
+     tooltip = "Distance between the smoothing SMA and the Bollinger bands.")
+maCol = input.color(#ffd700, "Smoothing MA colour", group = G3, inline = "sm")
+bbCol = input.color(#4ade80, "BB colour", group = G3, inline = "sm")
+var bool isBB = maTypeInput == "SMA + Bollinger Bands"
+var bool enableMA = maTypeInput != "None"
+
+// ── 4 · Candle paint ─────────────────────────────────────────────────────────
+paintOn_i = input.bool(true, "Paint candles", group = G4,
+     tooltip = "Colours every candle (body, wick, border) by the LIVE delta of the delta-TF candle it belongs to. Hide the chart's own candles so only the painted set shows.")
+colBull = input.color(#4ade80, "Bull", group = G4, inline = "c")
+colNeut = input.color(#3b82f6, "Neutral", group = G4, inline = "c")
+colBear = input.color(#e63030, "Bear", group = G4, inline = "c")
+paintSens = input.float(1.5, "Paint sensitivity", minval = 0.5, maxval = 5.0, step = 0.25, group = G4,
+     tooltip = "Only used by Delta % (imbalance) when its self-calibration is OFF: full colour at (15 ÷ sensitivity)% imbalance — 1.5 = full at 10% Δ%. Every other mode has its own calibration controls further down; Delta size no longer uses this (it's POC-band based now).")
+paintMode = input.string("Delta % (imbalance)", "Paint mode", group = G4,
+     options = ["Delta size", "Delta size HTF", "Delta % (imbalance)", "POC trend", "Value area", "Fuel × Δ (Truth Line)", "Participation band", "Pivot structure", "Pivot structure HTF", "Market structure", "EMA trend", "Day range position", "Asian range position", "VWAP σ-distance", "Candle conviction", "RSI momentum"],
+     tooltip = "VOLUME MODES — Delta % (imbalance) is the flagship of this group: self-calibrating (percentile rank vs its own recent history, not a fixed threshold), size-gated (a huge ratio on tiny volume can't paint full-bright), trajectory-aware (weights toward how the bar CLOSED, not its flat average — needs the estimate path's intrabar data), and streak-compounding (consecutive same-direction significant bars brighten further). Full controls in the Δ% upgrades sub-section below. Delta size: compares THIS bar's close to the PRIOR bar's own volume POC. Inside that bar's VALUE AREA (VAH/VAL, where its volume actually traded — or ±25% of its range, selectable) = blue (balance). Beyond the band, above = green / below = red, brightening the further price travels and brightening MORE when that bar's own delta agrees with the zone (dampening when it disagrees — a divergence tell). Blue itself varies: most saturated when price sits dead-center on the POC AND delta is quiet, fading (more transparent) moving off-center or as delta picks up. Delta size HTF: identical logic, but the anchor is the LAST COMPLETED delta-timeframe candle's POC and value area (its VAH/VAL from the hour's own profile), and alignment checks the LIVE forming HTF candle's delta — so every chart bar inside the current hour paints relative to where last hour traded and settled, not the current 5-min bar alone. Delta %: delta as a share of volume — imbalance quality, vivid even on thin tape. POC trend: the DELTA-TIMEFRAME (1H) profile by default — sign = which way the live hour's POC has migrated vs the completed hours before it (acceptance moving up = green, down = red, flat = blue), intensity = migration in ATRs vs its own history; halved inside the hour's own VAH/VAL, boosted outside value on the migration's side, boosted again when price sits on the migration's side and when the live POC is already beyond the last completed hour's POC. Switchable to the full-session profile. Value area: the session's VAH/VAL (70% of volume around the POC) as the box — inside = blue, brightest at the POC, fading toward the edges; above VAH = green, below VAL = red, ramping with distance beyond, boosted when delta agrees with the excursion (price leaving value on nothing is the failed-auction look, and dims). POC trend also gates on it: halved inside value, boosted outside value on the migration's side. Fuel × Δ (Truth Line): sign from THIS bar's delta, intensity from fuel (spike-aware participation bell × delta agreement × EMA confluence — boosted when the bar trades with the 233 EMA's side, dampened against it) — a paid bar colours on its first ticks, an unpaid bar fades to neutral. Participation band: pure crowd-presence read, no direction — a SMOOTH two-stage gradient across the full 0-100 participation rank (red at dead/thin tape, gold at average, cyan at climax), continuously interpolated rather than snapping between flat states. When this mode is active, the separate Vol-participation background tint (group 5) auto-suppresses itself so the same signal isn't painted twice, on the candles and the background, at once. NON-VOLUME MODES — Pivot structure: above the last confirmed pivot high (on the CHART timeframe) = bull, below the last pivot low = bear, between = neutral. Self-calibrating (percentile rank of the break's ATR-distance vs its own recent history) and delta-aligned (brighter when that bar's own delta agrees with the break direction, dimmer when it disagrees — a divergence tell). Pivot structure HTF: identical engine, but the pivots are computed on the CURRENT DELTA TIMEFRAME's own bars (e.g. the 1H selected in Delta Engine) via request.security — every chart bar paints against the hour's own structural high/low, with alignment checked against the LIVE forming HTF candle's delta instead of the single chart bar's. Market structure: LATCHED trend state — turns bull on a close above the last pivot high and STAYS bull until a close below the last pivot low (and vice versa) — trend memory rather than location. The flip flashes at an intensity set by its QUALITY (how far beyond the pivot it broke + whether that bar's own delta agreed), then decays over a few bars to a settled baseline that ALSO scales with that same quality — a strong, delta-confirmed flip stays visibly brighter forever after than a weak one, instead of every flip looking identical. EMA trend: side of this script's EMA. Self-calibrating distance (percentile rank vs its own history), × slope alignment (rising EMA + price above = real continuation; flattening/rolling-over = often the top), × a third confluence layer using the EMA's own SMOOTHING LINE if one is selected in group 3 — EMA above its own smoothed line boosts, EMA below dampens, and an EMA extending beyond its own Bollinger band (when that smoothing type is chosen) boosts further as trend extension. Plus a brief bright flash the bar price first crosses the EMA, decaying into the steady read. Day range position: YESTERDAY's completed high/low as the box — inside = blue, brightest at dead centre and fading almost transparent toward either edge; above the high = green, below the low = red, ramping to full colour with distance beyond the edge (default: full at 50% of yesterday's range beyond it). Pure position by default; an optional delta align boost/damp is available. Asian range position: above the Asian high = bull, below the low = bear, self-calibrated break distance × delta alignment × tight-range significance (a break from a tight overnight range is boosted); inside the range = blue, deepest at the midpoint, fading toward the edges. VWAP σ-distance: σ-normalised stretch from the rolling VWAP (full at ±2σ) × delta alignment × VWAP-slope alignment; beyond the exhaustion σ WITH delta disagreeing paints a distinct exhaustion colour — the mean-reversion tell. Candle conviction: pure price action — self-calibrated body dominance (body ÷ range vs its own history) × range gate (a marubozu on a tiny bar means little) × delta alignment × confirmed-bar streak. RSI momentum: gradient around RSI 50, self-calibrated (percentile rank of |RSI−50| vs its own history) × velocity (RSI accelerating vs stalling) × fast/slow RSI(7)/RSI(21) agreement. Overridden entirely by a distinct warning colour on CONFIRMED pivot divergence — price making a higher high while RSI makes a lower high (or the mirror on lows) — held until the next pivot of that type re-evaluates it.")
+paintCurve = input.string("Boosted", "Paint curve", group = G4, options = ["Linear", "Boosted"],
+     tooltip = "Linear = intensity proportional to delta. Boosted = square-root response: small and mid deltas render noticeably more colourful while extremes still cap at full.")
+paintFloor = input.float(0.0, "Minimum flip colour (0 = off)", minval = 0.0, maxval = 0.8, step = 0.05, group = G4,
+     tooltip = "Snap-to-colour: once the paint value clears a small dead zone, the candle shows at least this intensity toward its side. Tested OFF as default — the Boosted curve alone shows a genuine flip within ~2 bars; a floor triples false wrong-side flashes without flipping any faster.")
+// — Delta % upgrades —
+dpctCalib = input.bool(true, "Δ%: self-calibrate (percentile rank)", group = G4, inline = "dc1")
+dpctCalibLook = input.int(100, "lookback", minval = 20, maxval = 500, group = G4, inline = "dc1",
+     tooltip = "ON (default): full colour is reached when the CURRENT bar's imbalance is more extreme than most of the last N bars — self-calibrating per instrument and session instead of a fixed 10% threshold. OFF: the original fixed formula (full colour at 15 ÷ sensitivity %).")
+dpctGateOn = input.bool(true, "Δ%: size gate", group = G4, inline = "dc2")
+dpctGateFloor = input.int(30, "floor (vol percentile)", minval = 5, maxval = 80, group = G4, inline = "dc2",
+     tooltip = "Tapers intensity toward zero on bars whose own volume ranks below this percentile of recent bars — a huge imbalance on 3 contracts can no longer paint full-bright. Full intensity restored once volume clears the floor.")
+dpctTrajOn = input.bool(true, "Δ%: trajectory weighting", group = G4, inline = "dc3")
+dpctTrajTilt = input.float(0.65, "2nd-half weight", minval = 0.5, maxval = 0.9, step = 0.05, group = G4, inline = "dc3",
+     tooltip = "Tilts the developing delta-candle ratio toward the CURRENT bar's own buy/sell ratio — an imbalance BUILDING into the latest bar reads sharper, one FADING reads duller, at the same net ratio. Same calculation on the footprint and estimate paths. 0.65 = the current bar counts 65/35 against the accumulated candle.")
+dpctStreakOn = input.bool(true, "Δ%: persistence streak", group = G4, inline = "dc4")
+dpctStreakThresh = input.int(60, "sig. rank ≥", minval = 50, maxval = 95, group = G4, inline = "dc4",
+     tooltip = "Consecutive COMPLETED bars leaning the same direction at or above this calibrated-rank threshold compound the paint intensity — three mediocre-but-consistent bars outshine one isolated spike. Streak advances only on bar close (barstate.isconfirmed), so the live/forming bar never thrashes the count.")
+dpctStreakBoost = input.float(0.15, "boost / bar", minval = 0.0, maxval = 0.4, step = 0.05, group = G4, inline = "dc5")
+dpctStreakCap = input.int(5, "cap (bars)", minval = 2, maxval = 15, group = G4, inline = "dc5",
+     tooltip = "Intensity multiplier per consecutive significant bar (capped at this many bars counted), applied on top of the calibrated + gated value.")
+// — Fuel × Δ (Truth Line engine) —
+partEmaLen = input.int(8, "Fuel: volume EMA length", minval = 1, group = G4,
+     tooltip = "Truth Line participation smoothing. 8 reacts within a couple of bars of a surge; 20 is ΔC-smooth but slow.")
+partLook = input.int(100, "Fuel: participation lookback", minval = 20, maxval = 500, group = G4,
+     tooltip = "Bars of history the 0–100 participation rank is measured against.")
+partFast = input.bool(true, "Fuel: spike-aware (rank the bar too)", group = G4,
+     tooltip = "ON: participation = the HIGHER of the volume-EMA's rank and the current bar's own volume rank, so the first big bar of a move counts immediately. OFF: EMA rank only.")
+bellPeak = input.int(60, "Fuel: bell peak", minval = 30, maxval = 90, group = G4, inline = "fb")
+bellWidth = input.int(30, "width", minval = 5, maxval = 50, group = G4, inline = "fb",
+     tooltip = "Fuel rises through the thin band and reaches FULL at the peak, staying full above it (a climax-volume bar is still a paid bar). Width 30 → fuel ≈ 0.5 at 35 points under the peak.")
+climaxCuts = input.bool(false, "Fuel: climax reduces fuel", group = G4, inline = "fc")
+climaxDecay = input.float(0.07, "rate", minval = 0.0, maxval = 0.2, step = 0.01, group = G4, inline = "fc",
+     tooltip = "OFF (default): runaway volume still paints as paid. ON: fuel decays inside the climax band (participation above the band threshold below), floored at 0.15 — the crowd arriving late reads as unpaid.")
+useAgree = input.bool(true, "Fuel: delta agreement", group = G4, inline = "fa")
+agreePen = input.float(0.35, "penalty", minval = 0.0, maxval = 1.0, step = 0.05, group = G4, inline = "fa",
+     tooltip = "Footprint path only: when the bar's delta disagrees with its own open→close direction, fuel is multiplied by the penalty — effort against result is not a paid move in that direction. Estimate path skips the penalty.")
+fuelEmaOn = input.bool(true, "Fuel: EMA confluence", group = G4, inline = "fe")
+fuelEmaBoost = input.float(0.25, "boost/damp", minval = 0.0, maxval = 0.6, step = 0.05, group = G4, inline = "fe",
+     tooltip = "Checks the bar's delta direction against which side of the script's 233 EMA (group 3) price is sitting on. Same side (buying above the EMA, selling below it) boosts fuel by this much — a move with the larger trend. Opposite side (buying below the EMA, selling above it) dampens fuel by the same amount — a move against the trend. Fuel is re-capped at 1.0 after the boost so intensity still tops out where every other mode does.")
+// — Climax threshold (Fuel × Δ's optional climax-reduces-fuel option only;
+// the old flat Participation-band mode that used to share this row was
+// replaced by the Participation gate above) —
+bandClimax = input.int(85, "Climax band (participation ≥)", minval = 50, maxval = 100, group = G4,
+     tooltip = "Participation level Fuel × Δ's 'Climax reduces fuel' option (above) treats as runaway volume.")
+// — Non-volume modes —
+pivLen = input.int(10, "Pivot length (left/right bars)", minval = 2, maxval = 50, group = G4,
+     tooltip = "Pivot-structure mode. A pivot confirms this many bars after it prints (standard non-repainting pivots), then becomes the active level: close above the last pivot high = bull, below the last pivot low = bear, between them = neutral.")
+pivGradAtr = input.float(1.0, "Pivot: ATRs beyond level for full colour", minval = 0.25, maxval = 5.0, step = 0.25, group = G4,
+     tooltip = "Intensity ramp for pivot mode — full colour once price is this many ATRs beyond the broken pivot. Inside the pivots stays flat neutral. Used directly when self-calibration (below) is OFF; used as the normalising unit feeding the percentile rank when it's ON.")
+pivCalib = input.bool(true, "Pivot: self-calibrate (percentile rank)", group = G4, inline = "pv1")
+pivCalibLook = input.int(100, "lookback", minval = 20, maxval = 500, group = G4, inline = "pv1",
+     tooltip = "ON (default): full colour is reached when the CURRENT break is more extended (in ATRs beyond the level) than most of the last N breaks — self-calibrating per instrument instead of one fixed ATR multiple for every market. OFF: the plain fixed-ATR ramp above.")
+pivAlignBoost = input.float(0.3, "Pivot: align boost/damp", minval = 0.0, maxval = 0.6, step = 0.05, group = G4,
+     tooltip = "Outside the pivots: when that bar's own delta (Pivot structure) or the live forming HTF candle's delta (Pivot structure HTF) agrees with the break direction, intensity is boosted by this much. When delta disagrees with the break, intensity is dampened by the same amount instead — a structural break with nobody behind it, a visible divergence tell.")
+msFreshBars = input.int(8, "Market structure: fresh-flip decay (bars)", minval = 1, maxval = 50, group = G4,
+     tooltip = "How many bars after a structure flip the paint fades from its brightest 'just happened' flash down to its settled baseline. Both the flash peak and the settled baseline scale with the QUALITY of the flip — how far beyond the pivot the confirming close travelled (in ATRs) and whether that bar's own delta agreed with the new direction. A weak or delta-unconfirmed flip never flashes as bright and settles lower, even once it's held for a while — a structure change everyone can see is not the same as one nobody was behind.")
+msMinBaseline = input.float(0.35, "Market structure: settled baseline (low quality)", minval = 0.1, maxval = 0.8, step = 0.05, group = G4,
+     tooltip = "Floor intensity once a flip has fully settled, for the WEAKEST possible flip (small break, delta disagreed). High-quality flips settle noticeably brighter than this — up to ~0.85.")
+// — POC band (Delta size / Delta size HTF) —
+pocBinTicks = input.int(4, "POC: bin size (ticks)", minval = 1, group = G4,
+     tooltip = "Price bucket width for the intrabar volume-at-price profile that locates POC for Delta size / Delta size HTF. Computed from intrabar volume binned by price (the same lower-timeframe technique used on the estimate delta path), independent of whether the bar's own delta figure came from footprint or the estimate — This script bins each intrabar's volume at its close, so the profile is a distribution of intrabar closes — an approximation of volume at price, finer with finer intrabars. 4 ticks = 1 point on ES/NQ.")
+pocBandMode = input.string("Value area (VAH/VAL)", "POC: blue band", options = ["Value area (VAH/VAL)", "25% of range"], group = G4,
+     tooltip = "What counts as 'at the POC' (blue) for Delta size and Delta size HTF. Value area (default): the band is the VAH/VAL of the reference profile — the prior bar's own profile for Delta size, the last completed delta-timeframe candle's for Delta size HTF — where the volume actually traded. 25% of range: the older fixed band, ±25% of the reference high-low around the POC. Beyond the band the ramp and align rules below apply either way.")
+pocBandPct = input.float(25, "POC: band width (%)", minval = 5, maxval = 50, step = 5, group = G4, inline = "pocb")
+pocRampPct = input.float(25, "ramp width (%)", minval = 5, maxval = 75, step = 5, group = G4, inline = "pocb",
+     tooltip = "Band = how close to POC still counts as neutral (blue), as a % of the reference range (prior bar's high-low for Delta size, prior HTF candle's high-low for Delta size HTF). Ramp = how much FURTHER beyond the band price must travel to reach full colour. Defaults 25 + 25 = full green/red at 50% of the range beyond POC.")
+pocAlignBoost = input.float(0.35, "POC: align boost", minval = 0.0, maxval = 0.6, step = 0.05, group = G4,
+     tooltip = "Outside the band: when that bar's own delta (bar-level mode) or the live forming HTF candle's delta (HTF mode) agrees with the price zone — positive delta above POC, negative below — intensity is boosted by this much (capped at full). When price and delta DISAGREE, intensity is reduced by the same amount instead — a visible divergence tell, effort fighting result.")
+// — POC trend (session POC migration) —
+ptSource = input.string("Delta timeframe (HTF)", "POC trend: profile source", options = ["Delta timeframe (HTF)", "Session"], group = G4,
+     tooltip = "Delta timeframe (default): the profile is the DELTA-TIMEFRAME candle (the 1H in Delta Engine). Migration = the LIVE hour's POC vs the POC of a completed hour N candles back; the value-area gate uses the live hour's own VAH/VAL; the prior-period check is the last completed hour's POC. Session: the same engine on the full trading-day profile instead (reset at the session open).")
+ptSlopeLen = input.int(3, "POC trend: migration lookback", minval = 1, maxval = 50, group = G4, inline = "pt1")
+ptCalibLook = input.int(100, "rank lookback", minval = 20, maxval = 500, group = G4, inline = "pt1",
+     tooltip = "Migration lookback is in delta-timeframe CANDLES for the HTF source (3 = the live hour vs the hour three back) and in chart BARS for the Session source. Sign = which way the POC has migrated (rising = acceptance moving up = green; falling = red; flat = blue). Intensity = migration in ATRs, percentile-ranked against its own history over the rank lookback.")
+ptAlignBoost = input.float(0.3, "POC trend: align boost/damp", minval = 0.0, maxval = 0.6, step = 0.05, group = G4, inline = "pt2")
+ptPrevBoost = input.float(0.25, "prior-session boost", minval = 0.0, maxval = 0.6, step = 0.05, group = G4, inline = "pt2",
+     tooltip = "Align: price on the same side as the migration (above a rising POC / below a falling one) is boosted; price on the wrong side is dampened — acceptance moving one way while price sits the other is a divergence. Prior-session: today's developing POC already above YESTERDAY's completed session POC (with a rising migration) — or below with a falling one — boosts again: the multi-session version of the same read.")
+ptVaGate = input.bool(true, "POC trend: value-area gate", group = G4,
+     tooltip = "Inside the profile's value area (the live hour's VAH/VAL for the HTF source, the session's for the Session source) the POC-trend intensity is halved (the market is in balance — a migrating POC inside value is a lean, not a trend). Outside value on the migration's side it is boosted by the align amount (acceptance and price have both left value the same way).")
+// — Value area (session VAH / VAL) —
+vaPct = input.int(70, "Value area (% of session volume)", minval = 50, maxval = 95, group = G4, inline = "va1")
+vaRampPct = input.float(50, "ramp beyond (% of VA width)", minval = 10, maxval = 200, step = 10, group = G4, inline = "va1",
+     tooltip = "The value area is the band around the session POC holding this share of the session's volume (70% is the standard), expanded bin by bin toward whichever side has more volume. Paint: inside = blue, brightest at the POC and fading toward VAH/VAL; above VAH = green, below VAL = red, ramping to full colour once price is this % of the value-area width beyond the edge.")
+vaAlignBoost = input.float(0.3, "Value area: align boost/damp", minval = 0.0, maxval = 0.6, step = 0.05, group = G4,
+     tooltip = "Outside value: price above VAH on positive delta (or below VAL on negative) is boosted — acceptance leaving value with the tape behind it. Delta fighting the excursion dampens — price outside value with nobody behind it is the failed-auction look.")
+emaGradAtr = input.float(2.0, "EMA trend: ATRs from EMA for full colour", minval = 0.5, maxval = 8.0, step = 0.5, group = G4,
+     tooltip = "EMA-trend mode — full colour at this many ATRs of distance from the script's EMA (group 3 settings). Used directly when self-calibration below is OFF; used as the normalising unit feeding the percentile rank when it's ON.")
+emaCalib = input.bool(true, "EMA trend: self-calibrate (percentile rank)", group = G4, inline = "et1")
+emaCalibLook = input.int(100, "lookback", minval = 20, maxval = 500, group = G4, inline = "et1",
+     tooltip = "ON (default): full colour is reached when price is MORE stretched from the EMA (in ATRs) than most of the last N bars — self-calibrating per instrument instead of a fixed ATR multiple. OFF: the plain fixed-ATR ramp above.")
+emaSlopeLen = input.int(5, "EMA trend: slope lookback (bars)", minval = 1, maxval = 50, group = G4, inline = "et2")
+emaSlopeBoost = input.float(0.3, "align boost/damp", minval = 0.0, maxval = 0.6, step = 0.05, group = G4, inline = "et2",
+     tooltip = "Checks the EMA's OWN slope over this many bars against which side of it price sits on. Price above a RISING EMA (or below a FALLING one) is trend continuation — intensity boosted by this much. Price the same distance above a FLATTENING or ROLLING-OVER EMA is often near a turn — intensity dampened by the same amount instead. Distance alone can't tell these apart; slope can.")
+emaSmoothBoost = input.float(0.25, "EMA trend: smoothing-line boost/damp", minval = 0.0, maxval = 0.6, step = 0.05, group = G4,
+     tooltip = "A third confluence layer, only active when a Smoothing MA type is selected in group 3 (off by default there). Checks whether the EMA itself sits on the trend side of its OWN smoothed line — the EMA running above its smoothing MA (or below, for downtrends) means the EMA is accelerating, not just drifting across price on a stale slope. Boosts/damps by this much. If the smoothing type is 'SMA + Bollinger Bands', an extra confluence fires when the EMA extends beyond its OWN band — trend extension, boosted again on top.")
+emaFreshBars = input.int(8, "EMA trend: fresh-cross decay (bars)", minval = 1, maxval = 50, group = G4, inline = "et3")
+emaMinBaseline = input.float(0.35, "settled baseline", minval = 0.1, maxval = 0.8, step = 0.05, group = G4, inline = "et3",
+     tooltip = "The bar price first crosses the EMA gets a brief bright flash (quality-scaled by slope alignment and how decisively the bar closed), then over this many bars the paint settles back to the normal ongoing distance-based read. Marks the MOMENT of a cross distinctly from having slowly drifted to the same distance.")
+drRampPct = input.float(50, "Prev-day range: ramp beyond edge (%)", minval = 10, maxval = 200, step = 10, group = G4, inline = "dr1")
+drAlignBoost = input.float(0.0, "align boost/damp", minval = 0.0, maxval = 0.6, step = 0.05, group = G4, inline = "dr1",
+     tooltip = "Reference = YESTERDAY's completed high/low (the same levels as the Day lines in group 6). Inside it: blue, brightest at dead centre, fading almost transparent at the edges. Above the high: green, ramping to full colour once price is this % of yesterday's range beyond it. Below the low: red, same ramp. Align boost/damp (default 0 = pure position): optionally brighten when the bar's delta agrees with the side price is on, dim when it fights it.")
+rsiLen = input.int(14, "RSI length", minval = 2, maxval = 50, group = G4,
+     tooltip = "RSI-momentum mode — gradient around 50: 100 = full bull, 0 = full bear.")
+rsiCalib = input.bool(true, "RSI: self-calibrate (percentile rank)", group = G4, inline = "rs1")
+rsiCalibLook = input.int(100, "lookback", minval = 20, maxval = 500, group = G4, inline = "rs1",
+     tooltip = "ON (default): sign still comes from which side of 50 RSI sits on, but full colour is reached when |RSI−50| is MORE extreme than most of the last N bars — self-calibrating, since some instruments/timeframes never leave 40–60 while others swing wildly. OFF: the plain fixed 0–100 scale.")
+rsiVelLen = input.int(3, "RSI: velocity lookback (bars)", minval = 1, maxval = 20, group = G4, inline = "rs2")
+rsiVelBoost = input.float(0.25, "boost/damp", minval = 0.0, maxval = 0.6, step = 0.05, group = G4, inline = "rs2",
+     tooltip = "Rate of change of RSI itself over this many bars. RSI accelerating in the same direction as its current side of 50 boosts intensity by this much — momentum building. RSI decelerating or reversing while still on the same side dampens instead, even at an identical level — momentum stalling before price has caught on.")
+rsiFastLen = input.int(7, "RSI: fast length", minval = 2, maxval = 30, group = G4, inline = "rs3")
+rsiSlowLen = input.int(21, "slow length", minval = 5, maxval = 60, group = G4, inline = "rs3")
+rsiFsBoost = input.float(0.25, "RSI: fast/slow agree boost/damp", minval = 0.0, maxval = 0.6, step = 0.05, group = G4,
+     tooltip = "A second, independent RSI pair with no external dependency (unlike every other confluence upgrade in this suite, which leans on delta, EMA, or pivots). When fast RSI(7) and slow RSI(21) sit on the SAME side of 50, intensity is boosted — real agreement across timescales. When they're on OPPOSITE sides, intensity is dampened instead — the fast one has already turned while the slow one hasn't caught up, a transitional state worth less trust.")
+rsiDivBearCol = input.color(#ff6a00, "RSI: bearish divergence colour", group = G4, inline = "rs4")
+rsiDivBullCol = input.color(#00bcd4, "bullish divergence colour", group = G4, inline = "rs4",
+     tooltip = "Divergence gets its OWN distinct colour rather than a duller shade of green/red, since it's flagging the OPPOSITE of what the normal gradient says. Detected at CONFIRMED price pivots (same pivLen, same non-repainting rule as Pivot structure): price makes a higher pivot high while RSI at that pivot is LOWER than at the prior pivot high = bearish divergence, held until the next pivot high re-evaluates it. Mirrored for pivot lows / bullish divergence.")
+
+// — Asian range position upgrades —
+arCalib = input.bool(true, "Asian: self-calibrate (percentile rank)", group = G4, inline = "ar1")
+arCalibLook = input.int(100, "lookback", minval = 20, maxval = 500, group = G4, inline = "ar1",
+     tooltip = "ON (default): full colour when price is MORE extended beyond the Asian high/low (in ATRs) than most of the last N bars. OFF: the plain fixed-ATR ramp (Pivot: ATRs beyond level).")
+arAlignBoost = input.float(0.3, "Asian: align boost/damp", minval = 0.0, maxval = 0.6, step = 0.05, group = G4, inline = "ar2")
+arTightBoost = input.float(0.25, "tight-range boost", minval = 0.0, maxval = 0.6, step = 0.05, group = G4, inline = "ar2",
+     tooltip = "Align: a break above the Asian high on positive delta (or below the low on negative delta) is boosted; a break on delta fighting it is dampened. Tight-range: the Asian range's size is ranked against the last N completed Asian sessions — a breakout from a TIGHT overnight range is more significant than one from an already-wide range, and is boosted by up to this much. Inside the range the paint is blue, deepest at the midpoint and fading toward the edges.")
+arRangeLook = input.int(20, "Asian: range history (sessions)", minval = 5, maxval = 60, group = G4,
+     tooltip = "How many completed Asian sessions the tight-range rank is measured against.")
+// — VWAP σ-distance upgrades —
+vwAlignBoost = input.float(0.3, "VWAP σ: align boost/damp", minval = 0.0, maxval = 0.6, step = 0.05, group = G4, inline = "vw1")
+vwSlopeLen = input.int(5, "slope lookback", minval = 1, maxval = 50, group = G4, inline = "vw1",
+     tooltip = "Align: stretched above the VWAP on positive delta (or below on negative) is boosted — a paid extension; stretched on delta fighting it is dampened. Slope: the rolling VWAP's own direction over this many bars gets a half-weight confluence — price above a RISING VWAP is trend, above a FALLING one is a counter-trend stretch.")
+vwExhaustSigma = input.float(2.0, "VWAP σ: exhaustion beyond ±σ", minval = 1.0, maxval = 4.0, step = 0.25, group = G4, inline = "vw2")
+vwExhaustCol = input.color(#ffb300, "colour", group = G4, inline = "vw2",
+     tooltip = "The mean-reversion read this mode exists for: price beyond this many σ from the VWAP WITH delta disagreeing (stretched up on selling, stretched down on buying) is painted this distinct exhaustion colour instead of the gradient — the stretch has run out of buyers/sellers. Stretch with AGREEING delta stays green/red: a paid extension, not exhaustion.")
+// — Candle conviction upgrades —
+ccCalib = input.bool(true, "Conviction: self-calibrate (percentile rank)", group = G4, inline = "cc1")
+ccCalibLook = input.int(100, "lookback", minval = 20, maxval = 500, group = G4, inline = "cc1",
+     tooltip = "ON (default): full colour when this bar's body dominance (body ÷ range) is higher than most of the last N bars — self-calibrating, since some markets rarely print full-body bars. OFF: fixed — full colour at 90% body.")
+ccGateFloor = input.int(30, "Conviction: range gate floor (percentile)", minval = 0, maxval = 80, group = G4, inline = "cc2")
+ccAlignBoost = input.float(0.25, "align boost/damp", minval = 0.0, maxval = 0.6, step = 0.05, group = G4, inline = "cc2",
+     tooltip = "Range gate: a marubozu on a tiny-range bar means little — intensity tapers toward zero when the bar's range ranks below this percentile of recent bars. Align: body direction agreeing with the bar's delta boosts, disagreeing dampens (set 0 for a pure price-only read).")
+ccStreakBoost = input.float(0.15, "Conviction: streak boost / bar", minval = 0.0, maxval = 0.4, step = 0.05, group = G4, inline = "cc3")
+ccStreakCap = input.int(5, "cap", minval = 2, maxval = 15, group = G4, inline = "cc3",
+     tooltip = "Consecutive COMPLETED bars of significant same-direction conviction compound the intensity (capped) — follow-through, not one-off. Advances only on bar close so the forming bar can't thrash it.")
+
+// ── 5 · Volume participation BG (Stryk: ΔC engine, background only) ─────────
+showVolBg_i = input.bool(true, "Vol-participation background tint", group = G5,
+     tooltip = "The Stryk: ΔC / AR volume participation engine: volume EMA normalised 0–100 against its own recent range, tinting the chart background at the EXTREMES — high colour when the crowd shows up, low colour when the tape goes dead. 50 = average participation.")
+volOscEmaLen = input.int(20, "Volume EMA length", minval = 1, group = G5,
+     tooltip = "Smoothing length of the volume EMA that feeds the oscillator.")
+volOscLook = input.int(100, "Vol-osc lookback", minval = 10, maxval = 500, group = G5,
+     tooltip = "How many bars of the volume EMA's own history the 0–100 normalisation is measured against.")
+volBgHigh = input.int(80, "BG tint high", minval = 50, maxval = 100, group = G5, inline = "vb")
+volBgLow = input.int(20, "low", minval = 0, maxval = 50, group = G5, inline = "vb",
+     tooltip = "Background tint thresholds on the 0–100 volume oscillator: a volume EMA placed between its recent minimum (0), average (50) and maximum (100) — a min/max normalisation, not a percentile. Above the high threshold tints one colour, below the low threshold the other. This is a different volume measure from the Participation-band paint mode, which uses a percentile rank.")
+volBgTransp = input.int(85, "BG tint transparency", minval = 50, maxval = 98, group = G5,
+     tooltip = "Transparency of the extreme tint. Higher = lighter.")
+volOscGreen = input.color(#00bcd4, "High", group = G5, inline = "vc")
+volOscYellow = input.color(#ffd700, "Mid", group = G5, inline = "vc")
+volOscRed = input.color(#9c27b0, "Low", group = G5, inline = "vc",
+     tooltip = "High / mid / low participation colours — used by the background tint (high/low) and by the Participation-band paint mode (all three).")
+
+// ── 6 · DWM range levels (Stryk: Ranges engine) ──────────────────────────────
+dwmHLOn = input.bool(true, "Show DWM HL lines", group = G6,
+     tooltip = "Previous completed Day / Week / Month high & low. Each level is drawn from its period's open and stops at the next period boundary. Non-repainting.")
+dwmHLDaily        = input.bool(true,  "Daily HL",   inline = "dwmD", group = G6)
+dwmHLDailyColor   = input.color(#ffffff, "",         inline = "dwmD", group = G6)
+dwmHLDailyW       = input.int(2, "Width",  minval = 1, maxval = 4, inline = "dwmD", group = G6)
+dwmHLDailyShow    = input.int(1, "Show",   minval = 1, maxval = 10, inline = "dwmD", group = G6,
+     tooltip = "How many past daily levels to keep drawn.")
+dwmHLWeekly       = input.bool(true,  "Weekly HL",  inline = "dwmW", group = G6)
+dwmHLWeeklyColor  = input.color(#ffd700, "",         inline = "dwmW", group = G6)
+dwmHLWeeklyW      = input.int(2, "Width",  minval = 1, maxval = 4, inline = "dwmW", group = G6)
+dwmHLWeeklyShow   = input.int(1, "Show",   minval = 1, maxval = 10, inline = "dwmW", group = G6)
+dwmHLMonthly      = input.bool(true,  "Monthly HL", inline = "dwmM", group = G6)
+dwmHLMonthlyColor = input.color(#2962ff, "",         inline = "dwmM", group = G6)
+dwmHLMonthlyW     = input.int(2, "Width",  minval = 1, maxval = 4, inline = "dwmM", group = G6)
+dwmHLMonthlyShow  = input.int(1, "Show",   minval = 1, maxval = 10, inline = "dwmM", group = G6)
+dwmQuartOn = input.bool(true, "25% area (25 / 50 / 75% lines)", group = G6,
+     tooltip = "Dashed quartile lines inside each shown previous range — the 25%, 50% and 75% marks between that period's low and high. The same quartile grid the range-position rows key off (0 / 25 / 50 / 75 / 100).")
+dwmQuartW = input.int(1, "Quartile width", minval = 1, maxval = 3, group = G6, inline = "q")
+dwmQuartTransp = input.int(35, "transparency", minval = 0, maxval = 90, group = G6, inline = "q",
+     tooltip = "Quartile lines take each period's own colour at this transparency, drawn dashed and thinner so the H/L edges stay dominant.")
+dwmZoneOn = input.bool(true, "25% zones (boxes around the H/L lines)", group = G6, inline = "z")
+dwmZoneTransp = input.int(88, "transparency", minval = 50, maxval = 98, group = G6, inline = "z",
+     tooltip = "A shaded box straddling each period's High line and each Low line — 12.5% of that period's range above the line and 12.5% below it, 25% tall in total. The reaction band around the level. Colour-matched to the period, extended with the lines, no border.")
+weekStartDay      = input.string("Sunday", "Week starts on", options = ["Sunday", "Monday"], group = G6,
+     tooltip = "Sunday = the futures/forex week (Sun 17:00 open through Fri close). Monday = the cash-equity week. Intraday charts only — on daily and higher, weekly/monthly boundaries follow TradingView's own W/M bars.")
+sessDetect = input.string("Auto (symbol session)", "Session boundary", options = ["Auto (symbol session)", "Manual hour"], group = G6,
+     tooltip = "Auto: a new trading day starts on the first bar of the symbol's own session (17:00 CT for CME futures, the open for a stock — works on regular-hours equity charts that have no 17:00 bar). Manual: the hour below.")
+sessOpenHr        = input.int(17, "Session opens at (hour, exchange time)", minval = 0, maxval = 23, group = G6,
+     tooltip = "The hour the daily session opens in the exchange's own time zone. CME index futures (ES/NQ/YM/RTY) open at 17:00. Used on intraday charts; daily-and-above charts roll on the symbol's own session boundary.")
+dwmExtend         = input.bool(true, "Extend levels to end of chart bar", group = G6,
+     tooltip = "OFF: each level stays inside its own period. ON: every shown level extends as a ray to the newest chart bar.")
+dwmProject        = input.bool(true, "Project levels forward", inline = "dwmP", group = G6,
+     tooltip = "Pushes the live level this many bars into the future.")
+dwmProjBars       = input.int(20, "bars", minval = 0, maxval = 500, inline = "dwmP", group = G6)
+dwmHLGradient     = input.bool(true, "Fade older HL lines", group = G6,
+     tooltip = "Each older kept level renders more transparent than the current one.")
+dwmHLLabels       = input.bool(false, "Show D/W/M name labels", inline = "dwmL", group = G6,
+     tooltip = "Prints a name label on each level — high reads 'Day/Week/Month High', low reads 'Day/Week/Month Low'.")
+dwmHLLabelPos     = input.string("Outside right", "", options = ["Outside left", "Inside middle", "Outside right"], inline = "dwmL", group = G6)
+dwmLblDCol = input.color(#ffffff, "Daily label text",   inline = "ldD", group = G6)
+dwmLblDSz  = input.string("Small", "", options = ["Tiny", "Small", "Normal", "Large"], inline = "ldD", group = G6)
+dwmLblWCol = input.color(#ffd700, "Weekly label text",  inline = "ldW", group = G6)
+dwmLblWSz  = input.string("Small", "", options = ["Tiny", "Small", "Normal", "Large"], inline = "ldW", group = G6)
+dwmLblMCol = input.color(#82aaff, "Monthly label text", inline = "ldM", group = G6)
+dwmLblMSz  = input.string("Small", "", options = ["Tiny", "Small", "Normal", "Large"], inline = "ldM", group = G6)
+
+// ── 7 · Asian range (Stryk: Ranges engine, verbatim) ─────────────────────────
+asianOn = input.bool(true, "Show Asian session range", group = G7,
+     tooltip = "High and low of the overnight Asian session as levels that extend into the trading day. Intraday only — switches itself off on daily and higher charts (no bar can sit inside the overnight window); coarse on 4H.")
+asianStart = input.string("2000", "Asian start (HHMM)", inline = "atime", group = G7)
+asianEnd = input.string("0400", "end", inline = "atime", group = G7,
+     tooltip = "Session window in the exchange's own time zone, HHMM. Default 2000–0400 spans the overnight Asian session on US index futures.")
+asianColor = input.color(#e040fb, "Asian range color", group = G7)
+asianWidth = input.int(2, "Line width", minval = 1, maxval = 3, group = G7)
+showAsianLabels = input.bool(false, "Show Asia H/L labels", group = G7)
+asianEndOfDay = input.bool(true, "Asian: extend to end of trading day", group = G7,
+     tooltip = "Extends the confirmed Asian range across the current trading day, then stops at the daily roll.")
+asianEndOfChart = input.bool(false, "Asian: extend to end of chart", group = G7,
+     tooltip = "Keeps every shown Asian range extending to the newest bar, across days. Overrides end-of-day.")
+asianShow = input.int(4, "Asian sessions to show", minval = 1, maxval = 20, group = G7,
+     tooltip = "How many completed Asian ranges stay drawn.")
+
+// ── 8 · Display box (leading-read panel) ─────────────────────────────────────
+boxPos = input.string("Top right", "Position", options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = G8)
+boxSz = input.string("Small", "Text size", options = ["Tiny", "Small", "Normal"], group = G8)
+boxLayout = input.string("Vertical", "Layout", options = ["Vertical", "Horizontal", "Mobile"], group = G8,
+     tooltip = "Vertical = label | value rows stacked down (default). Horizontal = one wide strip — labels across the top row, values beneath. Mobile = the same rows with abbreviated labels forced to Tiny size, wrapped into columns by the setting below so a phone box stays a compact grid.")
+boxWrap = input.int(5, "Mobile: rows per column (0 = off)", minval = 0, maxval = 30, group = G8,
+     tooltip = "MOBILE LAYOUT ONLY: once a column fills with this many rows, the next rows start a new column to the right. 0 = single column. Vertical and Horizontal ignore this.")
+// — Bias engine (three engines scored: acceptance · structure · order flow) —
+biasHtf = input.string("4 hours", "HTF bias timeframe", options = ["1 hour", "2 hours", "4 hours", "1 day", "1 week", "1 month"], group = G8,
+     tooltip = "The higher timeframe the HTF Bias row is computed on — the same three engines (acceptance, structure, order flow) run on THAT timeframe's own bars and scored the same way. If it's below the chart timeframe it's lifted to the chart timeframe for that session.")
+biasLook = input.int(20, "Bias: lookback (bars)", minval = 5, maxval = 200, group = G8, inline = "bs1")
+biasMigK = input.int(3, "POC migration (bars)", minval = 1, maxval = 50, group = G8, inline = "bs1",
+     tooltip = "Lookback = bars in the order-flow score (recency-weighted, newest weight N … oldest 1) and in the HTF POC window. POC migration = how many bars back the HTF POC is compared against for the HTF acceptance vote. The chart-timeframe acceptance vote reuses the POC trend row.")
+biasWAcc = input.float(1.5, "Bias weights: acceptance", minval = 0.0, maxval = 3.0, step = 0.25, group = G8, inline = "bs2")
+biasWStr = input.float(1.0, "structure", minval = 0.0, maxval = 3.0, step = 0.25, group = G8, inline = "bs2")
+biasWFlow = input.float(1.0, "flow", minval = 0.0, maxval = 3.0, step = 0.25, group = G8, inline = "bs2",
+     tooltip = "Each engine votes +1 / 0 / −1 and is multiplied by its weight. Acceptance (which way volume is being accepted) carries the most by default because it can't be faked by one aggressive burst; structure is price truth; order flow is fastest and noisiest.")
+biasThresh = input.float(1.5, "Bias: BULL/BEAR threshold", minval = 0.5, maxval = 4.0, step = 0.25, group = G8, inline = "bs3")
+biasMixTh = input.float(0.15, "flow dead zone", minval = 0.01, maxval = 1.0, step = 0.05, group = G8, inline = "bs3",
+     tooltip = "Threshold = the weighted score at or beyond which the read is BULL (+) or BEAR (−); anything inside is CONSOLIDATION — sideways, or the engines disagreeing. Default 1.5 = acceptance plus one other engine, or structure and flow together. Flow dead zone = the order-flow score (in multiples of average |Δ|) inside which flow votes 0.")
+boxSqueezeLook = input.int(100, "Squeeze/compression lookback", minval = 20, maxval = 500, group = G8,
+     tooltip = "Value-area width is percentile-ranked against its own history over this many bars. A LOW rank (tight relative to normal) flags a squeeze — the coiled state that tends to precede expansion, before price has actually broken out either way.")
+boxAbsorbAtr = input.float(0.3, "Absorption: max body (× ATR)", minval = 0.1, maxval = 1.0, step = 0.05, group = G8, inline = "abs")
+boxAbsorbFuel = input.float(0.55, "min fuel", minval = 0.2, maxval = 1.0, step = 0.05, group = G8, inline = "abs",
+     tooltip = "Absorption flag fires when real participation (fuel above this) is showing up but the candle's own body stays under this many ATRs — effort without result. Often precedes a move once the absorbing side runs out.")
+releaseWindow = input.int(10, "Release: window after squeeze/absorption (bars)", minval = 2, maxval = 50, group = G8, inline = "rel")
+releaseHoldBars = input.int(5, "arrow hold (bars)", minval = 1, maxval = 20, group = G8, inline = "rel",
+     tooltip = "After a squeeze or absorption flag, the NEXT bar that closes outside the value area WITH delta agreeing (up = above VAH on buying, down = below VAL on selling) fires a one-time release arrow — the compression actually resolving, not just coiled. Only fires once per coil episode; window = how many bars after the flag still counts as 'from that coil'. Hold = how long the arrow stays visible once it fires.")
+
+// ── Resolution: delta TF, chart seconds, auto intrabar ladder ────────────────
+int chartSec = timeframe.in_seconds(timeframe.period)
+string dTf = autoRaiseTf and timeframe.in_seconds(htfTf) < chartSec ? timeframe.period : htfTf
+if not autoRaiseTf and timeframe.in_seconds(htfTf) < chartSec
+    runtime.error("Delta timeframe is below the chart timeframe. Raise the delta timeframe or enable auto-raise.")
+tfStrOf(int sec) =>
+    sec < 60 ? str.tostring(sec) + "S" : str.tostring(sec / 60)
+int budgetBars = dataBudget == "200K (Ultimate)" ? 200000 : dataBudget == "125K (Expert)" ? 125000 : dataBudget == "50K (replay-safe)" ? 50000 : dataBudget == "25K (memory saver)" ? 25000 : 100000
+int needSec = math.max(int(lenN * timeframe.in_seconds(dTf) * histMult), 172800)
+var int[] ladder = array.from(1, 5, 10, 15, 30, 60, 300, 900)
+int autoSec = 0
+for c in ladder
+    if autoSec == 0 and budgetBars * c >= needSec and c < chartSec
+        autoSec := c
+string ltf = useAutoLtf ? (autoSec > 0 ? tfStrOf(autoSec) : "1") : manualLtf
+signedVol() =>
+    float v = nz(volume)
+    float out = 0.0
+    if close > open
+        out := v
+    else if close < open
+        out := -v
+    else if close > close[1]
+        out := v
+    else if close < close[1]
+        out := -v
+    out
+
+// footprint first (unconditional); estimate requested only when needed (dynamic request)
+// unconditional: this exact call is compiler-proven on the account. In
+// "Estimate only" mode the result is simply ignored (fpOk gates it below).
+footprint fp = request.footprint(fpTicks, 70, 300)
+bool fpOk = deltaSrc != "Estimate only" and not na(fp)
+// ONE intrabar pull serves everything: signed volume (estimate-path delta),
+// close + volume (POC profiles). Three separate calls previously fetched the
+// same intrabars three times over — this is a 3× saving on the intrabar budget.
+[ivS, pocIvC, pocIvV] = request.security_lower_tf(syminfo.tickerid, ltf, [signedVol(), close, nz(volume)])
+
+// ── Per-bar delta ────────────────────────────────────────────────────────────
+float barBuy  = 0.0
+float barSell = 0.0
+if fpOk
+    barBuy  := nz(fp.buy_volume())
+    barSell := nz(fp.sell_volume())
+else
+    int nIB = array.size(ivS)
+    if nIB > 0
+        for i = 0 to nIB - 1
+            float sv = nz(array.get(ivS, i))
+            if sv > 0
+                barBuy += sv
+            else
+                barSell -= sv
+    else
+        float v0 = nz(volume)
+        barBuy  := close > open ? v0 : 0.0
+        barSell := close < open ? v0 : 0.0
+float barDelta = barBuy - barSell
+
+// ── POC profile engine (Delta size / Delta size HTF) — intrabar volume-at-price,
+// independent of footprint availability (see tooltip above). ────────────────
+int nPocIB = math.min(array.size(pocIvC), array.size(pocIvV))
+float pocBinSize = pocBinTicks * syminfo.mintick
+addBin(map<int, float> m, int k, float v) =>
+    map.put(m, k, (map.contains(m, k) ? map.get(m, k) : 0.0) + v)
+pocOf(map<int, float> m) =>
+    float best = -1.0
+    int bestK = 0
+    array<int> ks = map.keys(m)
+    for k in ks
+        float v = map.get(m, k)
+        if v > best
+            best := v
+            bestK := k
+    best > 0 ? bestK * pocBinSize : na
+// value area: expand from the POC bin toward the heavier side until vaPct of
+// the session's volume is inside. Returns [VAH, VAL] in price.
+f_valueArea(map<int, float> m, int pct) =>
+    float vah = na
+    float val = na
+    array<int> ks = map.keys(m)
+    int n = array.size(ks)
+    if n > 0
+        array.sort(ks)
+        array<float> vs = array.new_float(n, 0.0)
+        float total = 0.0
+        int pocIdx = 0
+        float best = -1.0
+        for i = 0 to n - 1
+            float v = map.get(m, array.get(ks, i))
+            array.set(vs, i, v)
+            total += v
+            if v > best
+                best := v
+                pocIdx := i
+        float acc = array.get(vs, pocIdx)
+        int up = pocIdx + 1
+        int dn = pocIdx - 1
+        float target = total * pct / 100.0
+        while acc < target and (up < n or dn >= 0)
+            float vUp = up < n ? array.get(vs, up) : -1.0
+            float vDn = dn >= 0 ? array.get(vs, dn) : -1.0
+            if vUp >= vDn
+                acc += vUp
+                up += 1
+            else
+                acc += vDn
+                dn -= 1
+        vah := array.get(ks, up - 1) * pocBinSize
+        val := array.get(ks, dn + 1) * pocBinSize
+        if vah <= val
+            vah := vah + pocBinSize / 2.0
+            val := val - pocBinSize / 2.0
+    [vah, val]
+// this single chart bar's own POC (for the "Delta size" bar-level mode)
+map<int, float> barProf = map.new<int, float>()
+if nPocIB > 0
+    for i = 0 to nPocIB - 1
+        float pc = array.get(pocIvC, i)
+        float vv = nz(array.get(pocIvV, i))
+        if not na(pc)
+            addBin(barProf, math.round(pc / pocBinSize), vv)
+else
+    addBin(barProf, math.round(close / pocBinSize), nz(volume))
+float barPocNow = pocOf(barProf)
+[barVahNow, barValNow] = f_valueArea(barProf, vaPct)
+
+f_pocColor(float px, float anchor, float rng, float dlt, float avgAbs) =>
+    color result = colNeut
+    if not na(anchor) and not na(rng) and rng > 0
+        float bandW = rng * (pocBandPct / 100.0)
+        float rampW = rng * (pocRampPct / 100.0)
+        float dist = px - anchor
+        if math.abs(dist) <= bandW
+            float centering = 1.0 - math.abs(dist) / bandW
+            float dq = avgAbs > 0 ? 1.0 - math.min(1.0, math.abs(dlt) / avgAbs) : 0.5
+            float depth = math.max(0.0, math.min(1.0, (centering + dq) / 2.0))
+            int transp = int(math.round(70 - depth * 70))
+            result := color.new(colNeut, transp)
+        else
+            float beyond = math.abs(dist) - bandW
+            float frac = math.max(0.0, math.min(1.0, beyond / math.max(syminfo.mintick, rampW)))
+            bool greenZone = dist > 0
+            bool aligned = (greenZone and dlt > 0) or (not greenZone and dlt < 0)
+            float adj = aligned ? math.min(1.0, frac + pocAlignBoost) : frac * (1.0 - pocAlignBoost)
+            result := greenZone ? color.from_gradient(adj, 0, 1, colNeut, colBull) : color.from_gradient(adj, 0, 1, colNeut, colBear)
+    result
+
+// ── Delta-TF candle state ────────────────────────────────────────────────────
+var float liveDelta = 0.0
+var float liveBuy   = 0.0
+var float liveSell  = 0.0
+var float htfOpen   = na
+var array<float> deltaHist = array.new_float()
+var float htfHiPoc = na
+var float htfLoPoc = na
+var float prevHtfPocVal = na
+var float prevHtfRangeVal = na
+var float prevHtfVah = na
+var float prevHtfVal = na
+var array<float> htfPocHist = array.new_float()   // completed delta-TF candle POCs, newest last
+var map<int, float> htfProf = map.new<int, float>()
+bool htfRoll = timeframe.change(dTf)
+if htfRoll
+    if not na(htfOpen)
+        array.push(deltaHist, liveDelta)
+        if array.size(deltaHist) > lenN
+            array.shift(deltaHist)
+        prevHtfPocVal := pocOf(htfProf)
+        prevHtfRangeVal := (na(htfHiPoc) or na(htfLoPoc)) ? na : (htfHiPoc - htfLoPoc)
+        [hv, lv] = f_valueArea(htfProf, vaPct)
+        prevHtfVah := hv
+        prevHtfVal := lv
+        array.push(htfPocHist, prevHtfPocVal)
+        if array.size(htfPocHist) > 60
+            array.shift(htfPocHist)
+    liveDelta := 0.0
+    liveBuy := 0.0
+    liveSell := 0.0
+    htfOpen := open
+    htfHiPoc := na
+    htfLoPoc := na
+    htfProf := map.new<int, float>()
+liveDelta += nz(barDelta)
+liveBuy   += nz(barBuy)
+liveSell  += nz(barSell)
+htfHiPoc := na(htfHiPoc) ? high : math.max(htfHiPoc, high)
+htfLoPoc := na(htfLoPoc) ? low : math.min(htfLoPoc, low)
+if nPocIB > 0
+    for i = 0 to nPocIB - 1
+        float pc3 = array.get(pocIvC, i)
+        float vv3 = nz(array.get(pocIvV, i))
+        if not na(pc3)
+            addBin(htfProf, math.round(pc3 / pocBinSize), vv3)
+else
+    addBin(htfProf, math.round(close / pocBinSize), nz(volume))
+float liveHtfPoc = pocOf(htfProf)
+[liveHtfVah, liveHtfVal] = f_valueArea(htfProf, vaPct)
+
+// ── Rolling VWAP over N delta-TF candles — ring buffer, running sums ────────
+int winBars = math.min(4000, math.max(1, math.round(lenN * timeframe.in_seconds(dTf) / chartSec)))
+var array<float> rbV  = array.new_float()
+var array<float> rbPv = array.new_float()
+var array<float> rbP2 = array.new_float()
+var float vSum  = 0.0
+var float pvSum = 0.0
+var float p2Sum = 0.0
+float vNow  = nz(volume)
+float pvNow = hlc3 * vNow
+float p2Now = hlc3 * hlc3 * vNow
+bool commit = barstate.isconfirmed or barstate.ishistory
+if commit
+    array.push(rbV, vNow)
+    array.push(rbPv, pvNow)
+    array.push(rbP2, p2Now)
+    vSum  += vNow
+    pvSum += pvNow
+    p2Sum += p2Now
+    while array.size(rbV) > winBars
+        vSum  -= array.shift(rbV)
+        pvSum -= array.shift(rbPv)
+        p2Sum -= array.shift(rbP2)
+// live window: on the forming bar, add it AND drop the oldest stored bar so the
+// window is always exactly winBars (previously winBars + 1 while a bar formed)
+bool rbFull = array.size(rbV) >= winBars
+float oldV  = not commit and rbFull ? array.get(rbV, 0)  : 0.0
+float oldPv = not commit and rbFull ? array.get(rbPv, 0) : 0.0
+float oldP2 = not commit and rbFull ? array.get(rbP2, 0) : 0.0
+float vSumL  = commit ? vSum  : vSum  + vNow  - oldV
+float pvSumL = commit ? pvSum : pvSum + pvNow - oldPv
+float p2SumL = commit ? p2Sum : p2Sum + p2Now - oldP2
+float rvwap = vSumL > 0 ? pvSumL / vSumL : na
+float rvar  = vSumL > 0 ? math.max(0.0, p2SumL / vSumL - rvwap * rvwap) : na
+float rsd   = na(rvar) ? na : math.sqrt(rvar)
+// visual smoothing (calls unconditional)
+float rvwapS = ta.ema(rvwap, vwapSmooth)
+float rsdS   = ta.ema(rsd, vwapSmooth)
+
+// ── EMA + smoothing MA (TradingView standard) ────────────────────────────────
+float emaRaw = ta.ema(emaSrc, emaLen)
+float emaOut = ta.ema(emaRaw, emaSmooth)
+ma(source, length, MAtype) =>
+    switch MAtype
+        "SMA"                   => ta.sma(source, length)
+        "SMA + Bollinger Bands" => ta.sma(source, length)
+        "EMA"                   => ta.ema(source, length)
+        "SMMA (RMA)"            => ta.rma(source, length)
+        "WMA"                   => ta.wma(source, length)
+        "VWMA"                  => ta.vwma(source, length)
+float smoothingMA    = enableMA ? ma(emaOut, maLengthInput, maTypeInput) : na
+float smoothingStDev = isBB ? ta.stdev(emaOut, maLengthInput) * bbMultInput : na
+
+// ── DWM period detection (intraday: session-open hour; D+: symbol session) ──
+int hrNow = hour(time, syminfo.timezone)
+bool newDManual = hrNow == sessOpenHr and (na(hrNow[1]) or hrNow[1] != sessOpenHr)
+bool newD = chartSec <= 3600 ? (sessDetect == "Manual hour" ? newDManual : session.isfirstbar) : timeframe.change("D")
+// Intraday: week/month boundaries derive from the session-open day (week-start
+// input honoured). Daily and above: use TradingView's own W/M boundaries, which
+// are correct regardless of how the exchange stamps daily bar times.
+bool dailyPlus = chartSec >= 86400
+int dowNow = dayofweek(time, syminfo.timezone)
+bool newW = dailyPlus ? timeframe.change("W") : newD and dowNow == (weekStartDay == "Sunday" ? dayofweek.sunday : dayofweek.monday)
+var int lastMo = na
+bool newM = false
+if dailyPlus
+    newM := timeframe.change("M")
+else if newD
+    int moNow = month(time, syminfo.timezone)
+    newM := not na(lastMo) and moNow != lastMo
+    lastMo := moNow
+
+// period high/low tracking → previous completed values
+var float curDH = na
+var float curDL = na
+var float prevDH = na
+var float prevDL = na
+var float curWH = na
+var float curWL = na
+var float prevWH = na
+var float prevWL = na
+var float curMH = na
+var float curML = na
+var float prevMH = na
+var float prevML = na
+var int curDStart = na
+var int prevDStart = na
+var int curWStart = na
+var int prevWStart = na
+var int curMStart = na
+var int prevMStart = na
+var map<int, float> sessProf = map.new<int, float>()
+var float prevSessPoc = na
+if newD
+    prevDH := curDH
+    prevDL := curDL
+    prevDStart := curDStart
+    curDStart := bar_index
+    curDH := high
+    curDL := low
+    prevSessPoc := pocOf(sessProf)
+    sessProf := map.new<int, float>()
+else
+    curDH := na(curDH) ? high : math.max(curDH, high)
+    curDL := na(curDL) ? low : math.min(curDL, low)
+if nPocIB > 0
+    for i = 0 to nPocIB - 1
+        float pcS = array.get(pocIvC, i)
+        float vvS = nz(array.get(pocIvV, i))
+        if not na(pcS)
+            addBin(sessProf, math.round(pcS / pocBinSize), vvS)
+else
+    addBin(sessProf, math.round(close / pocBinSize), nz(volume))
+float sessPoc = pocOf(sessProf)
+[sessVah, sessVal] = f_valueArea(sessProf, vaPct)
+if newW
+    prevWH := curWH
+    prevWL := curWL
+    prevWStart := curWStart
+    curWStart := bar_index
+    curWH := high
+    curWL := low
+else
+    curWH := na(curWH) ? high : math.max(curWH, high)
+    curWL := na(curWL) ? low : math.min(curWL, low)
+if newM
+    prevMH := curMH
+    prevML := curML
+    prevMStart := curMStart
+    curMStart := bar_index
+    curMH := high
+    curML := low
+else
+    curMH := na(curMH) ? high : math.max(curMH, high)
+    curML := na(curML) ? low : math.min(curML, low)
+
+
+// ── Asian range engine (Stryk: Ranges, verbatim; tail reconstructed) ─────────
+// Asian range needs bars inside the overnight window — it cannot form on daily
+// or higher charts, and is coarse on 4H. Off automatically at daily and above.
+bool showAsian = mAsian and asianOn and chartSec < 86400
+f_hhmm(s) => str.tonumber(str.substring(s, 0, 2)) * 60 + str.tonumber(str.substring(s, 2, 4))
+aStart = f_hhmm(asianStart)
+aEnd = f_hhmm(asianEnd)
+curMin = hour * 60 + minute
+inAsian = aStart > aEnd ? (curMin >= aStart or curMin < aEnd) : (curMin >= aStart and curMin < aEnd)
+newAsian = inAsian and not inAsian[1]
+endAsian = not inAsian and inAsian[1]
+var float asianHi = na
+var float asianLo = na
+var int asianStartBar = na
+var int asianStartTime = na
+var array<line> asianHiLines = array.new<line>()
+var array<line> asianLoLines = array.new<line>()
+var array<label> asianHiLbls = array.new<label>()
+var array<label> asianLoLbls = array.new<label>()
+if newAsian
+    asianHi := high
+    asianLo := low
+    asianStartBar := bar_index
+    asianStartTime := time
+else if inAsian
+    asianHi := math.max(asianHi, high)
+    asianLo := math.min(asianLo, low)
+var line liveHiLine = na
+var line liveLoLine = na
+if showAsian and inAsian
+    if newAsian
+        liveHiLine := line.new(asianStartBar, asianHi, bar_index, asianHi, color = color.new(asianColor, 35), width = asianWidth, style = line.style_dotted)
+        liveLoLine := line.new(asianStartBar, asianLo, bar_index, asianLo, color = color.new(asianColor, 35), width = asianWidth, style = line.style_dotted)
+    if not na(liveHiLine)
+        line.set_xy1(liveHiLine, asianStartBar, asianHi)
+        line.set_xy2(liveHiLine, bar_index, asianHi)
+        line.set_xy1(liveLoLine, asianStartBar, asianLo)
+        line.set_xy2(liveLoLine, bar_index, asianLo)
+var line activeHiLine = na
+var line activeLoLine = na
+if newAsian
+    activeHiLine := na
+    activeLoLine := na
+bool newTradingDay = timeframe.change("D")
+if newTradingDay
+    activeHiLine := line(na)
+    activeLoLine := line(na)
+    if not na(liveHiLine)
+        line.delete(liveHiLine)
+        line.delete(liveLoLine)
+        liveHiLine := na
+        liveLoLine := na
+if showAsian and endAsian and not na(asianHi)
+    if not na(liveHiLine)
+        line.delete(liveHiLine)
+        line.delete(liveLoLine)
+        liveHiLine := na
+        liveLoLine := na
+    line hiLn = line.new(asianStartTime, asianHi, time, asianHi, xloc = xloc.bar_time, color = asianColor, width = asianWidth)
+    line loLn = line.new(asianStartTime, asianLo, time, asianLo, xloc = xloc.bar_time, color = asianColor, width = asianWidth)
+    if asianEndOfDay
+        activeHiLine := hiLn
+        activeLoLine := loLn
+    array.push(asianHiLines, hiLn)
+    array.push(asianLoLines, loLn)
+    if showAsianLabels
+        array.push(asianHiLbls, label.new(time, asianHi, "Asia High", xloc = xloc.bar_time, textcolor = color.white, size = size.small))
+        array.push(asianLoLbls, label.new(time, asianLo, "Asia Low", xloc = xloc.bar_time, textcolor = color.white, size = size.small))
+    while array.size(asianHiLines) > asianShow
+        line.delete(array.shift(asianHiLines))
+        line.delete(array.shift(asianLoLines))
+    while array.size(asianHiLbls) > asianShow
+        label.delete(array.shift(asianHiLbls))
+        label.delete(array.shift(asianLoLbls))
+// extension tail: end-of-chart keeps every stored range at the newest bar;
+// end-of-day keeps only the current day's confirmed pair extending until the roll
+int asProjMs = (dwmProject ? dwmProjBars : 0) * timeframe.in_seconds() * 1000
+if showAsian
+    if asianEndOfChart
+        int nA = array.size(asianHiLines)
+        if nA > 0
+            for i = 0 to nA - 1
+                line.set_x2(array.get(asianHiLines, i), time + asProjMs)
+                line.set_x2(array.get(asianLoLines, i), time + asProjMs)
+    else if asianEndOfDay and not na(activeHiLine)
+        line.set_x2(activeHiLine, time + asProjMs)
+        line.set_x2(activeLoLine, time + asProjMs)
+
+
+// ── Candle paint — shared engines (all calls unconditional) ──────────────────
+string paintModeEff = mPaintMode == "Use Paint section" ? paintMode : mPaintMode
+float atrV = ta.atr(14)
+// Truth Line fuel: spike-aware participation → plateau bell → agreement
+float pVolEma = ta.ema(nz(volume), partEmaLen)
+float prankEma = ta.percentrank(pVolEma, partLook)
+float prankBar = ta.percentrank(nz(volume), partLook)
+float part = partFast ? math.max(nz(prankEma, 50.0), nz(prankBar, 50.0)) : nz(prankEma, 50.0)
+// Participation band: smooth two-stage gradient across the full 0-100 rank —
+// red at 0, gold at 50, cyan at 100, continuously interpolated (no hard bands).
+color partBandCol = part >= 50 ? color.from_gradient(part, 50, 100, volOscYellow, volOscGreen) : color.from_gradient(part, 0, 50, volOscRed, volOscYellow)
+float bell = part >= bellPeak ? 1.0 : math.exp(-math.pow(part - bellPeak, 2) / (2.0 * bellWidth * bellWidth))
+float climaxF = climaxCuts and part > bandClimax ? math.max(0.15, 1.0 - climaxDecay * (part - bandClimax)) : 1.0
+float mvBar = close - open
+bool sameSide = (barDelta > 0 and mvBar > 0) or (barDelta < 0 and mvBar < 0) or mvBar == 0
+float agree = useAgree and fpOk and not sameSide ? agreePen : 1.0
+float fuelVal = bell * climaxF * agree
+bool emaSideUp = close > emaOut
+bool emaAlign = (barDelta > 0 and emaSideUp) or (barDelta < 0 and not emaSideUp)
+float emaMult = fuelEmaOn and not na(emaOut) ? (emaAlign ? 1.0 + fuelEmaBoost : 1.0 - fuelEmaBoost) : 1.0
+fuelVal := math.max(0.0, math.min(1.0, fuelVal * emaMult))
+// pivot structure: last confirmed pivots (confirm pivLen bars late, non-repainting)
+float phP = ta.pivothigh(pivLen, pivLen)
+float plP = ta.pivotlow(pivLen, pivLen)
+var float lastPH = na
+var float lastPL = na
+if not na(phP)
+    lastPH := phP
+if not na(plP)
+    lastPL := plP
+// HTF pivots: same pivLen, computed on the current DELTA TIMEFRAME's own bars.
+// var-state inside the function persists across calls in the requested context —
+// same pattern as the HTF bias engine. lookahead_off keeps it non-repainting.
+htfPivots(simple int n) =>
+    float ph2 = ta.pivothigh(n, n)
+    float pl2 = ta.pivotlow(n, n)
+    var float lph = na
+    var float lpl = na
+    if not na(ph2)
+        lph := ph2
+    if not na(pl2)
+        lpl := pl2
+    [lph, lpl]
+[htfLastPH, htfLastPL] = request.security(syminfo.tickerid, dTf, htfPivots(pivLen), lookahead = barmerge.lookahead_off)
+// always-on continuous "beyond" series (0 inside the pivots) so ta.percentrank
+// runs every bar with a well-defined input, regardless of which mode is active
+float pivBeyond = not na(lastPH) and close > lastPH ? (close - lastPH) / math.max(syminfo.mintick, atrV * pivGradAtr) : not na(lastPL) and close < lastPL ? (lastPL - close) / math.max(syminfo.mintick, atrV * pivGradAtr) : 0.0
+float pivBeyondHtf = not na(htfLastPH) and close > htfLastPH ? (close - htfLastPH) / math.max(syminfo.mintick, atrV * pivGradAtr) : not na(htfLastPL) and close < htfLastPL ? (htfLastPL - close) / math.max(syminfo.mintick, atrV * pivGradAtr) : 0.0
+float pivBeyondRank = ta.percentrank(pivBeyond, pivCalibLook)
+float pivBeyondHtfRank = ta.percentrank(pivBeyondHtf, pivCalibLook)
+f_pivotColor(float px, float ph3, float pl3, float dlt, float rank, float rawBeyond) =>
+    color result = colNeut
+    if not na(ph3) and px > ph3
+        float frac = pivCalib ? nz(rank, 50.0) / 100.0 : math.min(1.0, rawBeyond)
+        bool aligned = dlt > 0
+        float adj = aligned ? math.min(1.0, frac + pivAlignBoost) : frac * (1.0 - pivAlignBoost)
+        result := color.from_gradient(adj, 0, 1, colNeut, colBull)
+    else if not na(pl3) and px < pl3
+        float frac = pivCalib ? nz(rank, 50.0) / 100.0 : math.min(1.0, rawBeyond)
+        bool aligned = dlt < 0
+        float adj = aligned ? math.min(1.0, frac + pivAlignBoost) : frac * (1.0 - pivAlignBoost)
+        result := color.from_gradient(adj, 0, 1, colNeut, colBear)
+    result
+// latched market-structure state: +1 after a close above the last pivot high,
+// −1 after a close below the last pivot low, held until the opposite break
+var int structDir = 0
+if not na(lastPH) and close > lastPH
+    structDir := 1
+if not na(lastPL) and close < lastPL
+    structDir := -1
+// flip freshness + quality: captured ONCE at the moment structDir changes, then
+// the paint decays from a quality-scaled flash down to a quality-scaled settled
+// baseline over msFreshBars — a strong, delta-confirmed flip flashes brighter
+// and settles brighter than a weak or delta-unconfirmed one.
+var int msFlipBar = na
+var float msFlipQuality = 0.5
+bool msJustFlippedUp = structDir == 1 and structDir[1] != 1
+bool msJustFlippedDn = structDir == -1 and structDir[1] != -1
+if msJustFlippedUp or msJustFlippedDn
+    msFlipBar := bar_index
+    float msBrk = msJustFlippedUp ? (not na(lastPH) ? (close - lastPH) / math.max(syminfo.mintick, atrV * pivGradAtr) : 0.0) : (not na(lastPL) ? (lastPL - close) / math.max(syminfo.mintick, atrV * pivGradAtr) : 0.0)
+    bool msDeltaOk = msJustFlippedUp ? barDelta > 0 : barDelta < 0
+    float msStrengthNorm = math.min(1.0, msBrk)
+    msFlipQuality := (msDeltaOk ? 1.0 : 0.55) * math.max(0.4, msStrengthNorm)
+int msBarsSince = na(msFlipBar) ? 999 : bar_index - msFlipBar
+float msDecayFrac = math.min(1.0, msBarsSince / msFreshBars)
+float msFreshPeak = math.max(0.5, msFlipQuality)
+float msBaseline = msMinBaseline + (0.85 - msMinBaseline) * msFlipQuality
+float msIntensity = msFreshPeak - (msFreshPeak - msBaseline) * msDecayFrac
+// EMA trend engine: self-calibrated distance × slope alignment, with a
+// fresh-cross flash that decays into the steady read (same mechanic as
+// Market structure's flip-quality decay).
+float emaDistRaw = (close - emaOut) / math.max(syminfo.mintick, atrV)
+float emaDistAbsRank = ta.percentrank(math.abs(emaDistRaw), emaCalibLook)
+int emaSide = close > emaOut ? 1 : close < emaOut ? -1 : 0
+float emaSlopeVal = na(emaOut[emaSlopeLen]) ? 0.0 : emaOut - emaOut[emaSlopeLen]
+bool emaSlopeAlignedNow = (emaSide == 1 and emaSlopeVal > 0) or (emaSide == -1 and emaSlopeVal < 0)
+float emaDistCalibN = emaCalib ? nz(emaDistAbsRank, 50.0) / 100.0 : math.min(1.0, math.abs(emaDistRaw) / emaGradAtr)
+float emaSlopeMult = emaSlopeAlignedNow ? math.min(1.0, emaDistCalibN + emaSlopeBoost) : emaDistCalibN * (1.0 - emaSlopeBoost)
+// third confluence layer: EMA vs its own smoothing line (and, if Bollinger is
+// the smoothing type, EMA vs its own band) — only active when a smoothing MA
+// type is actually selected; otherwise these multipliers are neutral (1.0).
+bool emaSmoothAvail = enableMA and not na(smoothingMA)
+bool emaSmoothAligned = emaSmoothAvail and ((emaSide == 1 and emaOut > smoothingMA) or (emaSide == -1 and emaOut < smoothingMA))
+float emaSmoothMult = emaSmoothAvail ? (emaSmoothAligned ? 1.0 + emaSmoothBoost : 1.0 - emaSmoothBoost) : 1.0
+bool emaBBAvail = isBB and emaSmoothAvail and not na(smoothingStDev)
+bool emaBBExtreme = emaBBAvail and ((emaSide == 1 and emaOut > smoothingMA + smoothingStDev) or (emaSide == -1 and emaOut < smoothingMA - smoothingStDev))
+float emaBBMult = emaBBExtreme ? 1.0 + emaSmoothBoost : 1.0
+bool emaJustCrossed = emaSide != 0 and emaSide != nz(emaSide[1], emaSide)
+var int emaFlipBar = na
+var float emaFlipQuality = 0.5
+if emaJustCrossed
+    emaFlipBar := bar_index
+    float emaBodyFrac = (high - low) > 0 ? math.abs(close - open) / (high - low) : 0.5
+    emaFlipQuality := (emaSlopeAlignedNow ? 1.0 : 0.55) * math.max(0.4, emaBodyFrac)
+int emaBarsSince = na(emaFlipBar) ? 999 : bar_index - emaFlipBar
+float emaDecayFrac = math.min(1.0, emaBarsSince / emaFreshBars)
+float emaFreshPeak = math.max(0.5, emaFlipQuality)
+float emaBaseline = emaMinBaseline + (0.85 - emaMinBaseline) * emaFlipQuality
+float emaFlashIntensity = emaFreshPeak - (emaFreshPeak - emaBaseline) * emaDecayFrac
+float emaSteadyIntensity = math.min(1.0, emaSlopeMult * emaSmoothMult * emaBBMult)
+float emaFinalIntensity = emaSide * (emaBarsSince < emaFreshBars ? math.max(emaFlashIntensity, emaSteadyIntensity) : emaSteadyIntensity)
+// array-rank helper (used by the Asian tight-range factor)
+f_arrRank(array<float> arr, float v) =>
+    int n = array.size(arr)
+    float result = 50.0
+    if n > 0
+        int cnt = 0
+        for i = 0 to n - 1
+            if array.get(arr, i) <= v
+                cnt += 1
+        result := 100.0 * cnt / n
+    result
+// Day range position: YESTERDAY's completed range as the reference box.
+// Inside = blue, deepest at the midpoint, fading toward the edges. Above the
+// high = green, below the low = red, ramping with distance beyond the edge.
+f_dayColor(float px, float hi, float lo, float dlt) =>
+    color result = colNeut
+    if not na(hi) and not na(lo) and hi > lo
+        float rng = hi - lo
+        float ramp = math.max(syminfo.mintick, rng * drRampPct / 100.0)
+        if px > hi
+            float frac = math.min(1.0, (px - hi) / ramp)
+            float adj = drAlignBoost > 0 ? (dlt > 0 ? math.min(1.0, frac + drAlignBoost) : frac * (1.0 - drAlignBoost)) : frac
+            result := color.from_gradient(adj, 0, 1, colNeut, colBull)
+        else if px < lo
+            float frac = math.min(1.0, (lo - px) / ramp)
+            float adj = drAlignBoost > 0 ? (dlt < 0 ? math.min(1.0, frac + drAlignBoost) : frac * (1.0 - drAlignBoost)) : frac
+            result := color.from_gradient(adj, 0, 1, colNeut, colBear)
+        else
+            float centering = 1.0 - math.abs(px - (hi + lo) / 2.0) / (rng / 2.0)
+            int transp = int(math.round(80.0 - math.max(0.0, math.min(1.0, centering)) * 80.0))
+            result := color.new(colNeut, transp)
+    result
+color dayColOut = f_dayColor(close, prevDH, prevDL, barDelta)
+// RSI: self-calibration → velocity → fast/slow agreement → pivot divergence
+float rsiV = ta.rsi(close, rsiLen)
+float rsiDist = rsiV - 50.0
+float rsiDistAbsRank = ta.percentrank(math.abs(rsiDist), rsiCalibLook)
+float rsiCalibN = rsiCalib ? math.sign(rsiDist) * nz(rsiDistAbsRank, 50.0) / 100.0 : math.max(-1.0, math.min(1.0, rsiDist / 50.0))
+float rsiVel = na(rsiV[rsiVelLen]) ? 0.0 : rsiV - rsiV[rsiVelLen]
+bool rsiVelAligned = (rsiDist > 0 and rsiVel > 0) or (rsiDist < 0 and rsiVel < 0)
+float rsiVelMult = rsiVelAligned ? 1.0 + rsiVelBoost : 1.0 - rsiVelBoost
+float rsiFast = ta.rsi(close, rsiFastLen)
+float rsiSlow = ta.rsi(close, rsiSlowLen)
+bool rsiFsAgree = (rsiFast > 50 and rsiSlow > 50) or (rsiFast < 50 and rsiSlow < 50)
+float rsiFsMult = rsiFsAgree ? 1.0 + rsiFsBoost : 1.0 - rsiFsBoost
+float rsiFinal = math.max(-1.0, math.min(1.0, rsiCalibN * rsiVelMult * rsiFsMult))
+// pivot divergence: reuses the SAME confirmed pivots (phP/plP, pivLen) as Pivot
+// structure — price/RSI comparison at each confirmed pivot pair, latched until
+// the next pivot of that type re-evaluates it.
+var float divPh1 = na
+var float divPh2 = na
+var float divPhRsi1 = na
+var float divPhRsi2 = na
+var float divPl1 = na
+var float divPl2 = na
+var float divPlRsi1 = na
+var float divPlRsi2 = na
+var bool divBearActive = false
+var bool divBullActive = false
+if not na(phP)
+    divPh1 := divPh2
+    divPhRsi1 := divPhRsi2
+    divPh2 := phP
+    divPhRsi2 := rsiV[pivLen]
+    divBearActive := not na(divPh1) and divPh2 > divPh1 and divPhRsi2 < divPhRsi1
+    if divBearActive
+        divBullActive := false
+if not na(plP)
+    divPl1 := divPl2
+    divPlRsi1 := divPlRsi2
+    divPl2 := plP
+    divPlRsi2 := rsiV[pivLen]
+    divBullActive := not na(divPl1) and divPl2 < divPl1 and divPlRsi2 > divPlRsi1
+    if divBullActive
+        divBearActive := false
+
+// ── Asian range position engine: calibrated break distance × delta alignment ×
+// tight-range significance; inside the range = blue, deepest at the midpoint.
+var array<float> arRangeHist = array.new_float()
+if endAsian and not na(asianHi) and not na(asianLo) and asianHi > asianLo
+    array.push(arRangeHist, asianHi - asianLo)
+    if array.size(arRangeHist) > arRangeLook
+        array.shift(arRangeHist)
+float arBeyond = not na(asianHi) and close > asianHi ? (close - asianHi) / math.max(syminfo.mintick, atrV * pivGradAtr) : not na(asianLo) and close < asianLo ? (asianLo - close) / math.max(syminfo.mintick, atrV * pivGradAtr) : 0.0
+float arBeyondRank = ta.percentrank(arBeyond, arCalibLook)
+float arRangeNow = (na(asianHi) or na(asianLo)) ? na : asianHi - asianLo
+float arRangeRank = na(arRangeNow) ? 50.0 : f_arrRank(arRangeHist, arRangeNow)
+float arTightMult = 1.0 + arTightBoost * (1.0 - arRangeRank / 100.0)
+f_asianColor(float px, float hi, float lo, float dlt, float rank, float rawBeyond, float tightMult) =>
+    color result = colNeut
+    if not na(hi) and not na(lo) and hi > lo
+        if px > hi
+            float frac = arCalib ? nz(rank, 50.0) / 100.0 : math.min(1.0, rawBeyond)
+            float adj = dlt > 0 ? math.min(1.0, frac + arAlignBoost) : frac * (1.0 - arAlignBoost)
+            result := color.from_gradient(math.min(1.0, adj * tightMult), 0, 1, colNeut, colBull)
+        else if px < lo
+            float frac = arCalib ? nz(rank, 50.0) / 100.0 : math.min(1.0, rawBeyond)
+            float adj = dlt < 0 ? math.min(1.0, frac + arAlignBoost) : frac * (1.0 - arAlignBoost)
+            result := color.from_gradient(math.min(1.0, adj * tightMult), 0, 1, colNeut, colBear)
+        else
+            float centering = 1.0 - math.abs(px - (hi + lo) / 2.0) / ((hi - lo) / 2.0)
+            int transp = int(math.round(70.0 - math.max(0.0, math.min(1.0, centering)) * 70.0))
+            result := color.new(colNeut, transp)
+    result
+color asianColOut = f_asianColor(close, asianHi, asianLo, barDelta, arBeyondRank, arBeyond, arTightMult)
+
+// ── VWAP σ-distance engine: σ-normalised stretch (self-calibrating by construction)
+// × delta alignment × VWAP-slope alignment, with an exhaustion override.
+float vwZ = not na(rvwap) and not na(rsd) and rsd > 0 ? (close - rvwap) / rsd : 0.0
+float vwSlopeVal = na(rvwap[vwSlopeLen]) ? 0.0 : rvwap - rvwap[vwSlopeLen]
+int vwSide = vwZ > 0 ? 1 : vwZ < 0 ? -1 : 0
+bool vwDeltaAligned = (vwSide == 1 and barDelta > 0) or (vwSide == -1 and barDelta < 0)
+bool vwSlopeAligned = (vwSide == 1 and vwSlopeVal > 0) or (vwSide == -1 and vwSlopeVal < 0)
+float vwBase = math.min(1.0, math.abs(vwZ) / 2.0)
+float vwMult = (vwDeltaAligned ? 1.0 + vwAlignBoost : 1.0 - vwAlignBoost) * (vwSlopeAligned ? 1.0 + vwAlignBoost * 0.5 : 1.0 - vwAlignBoost * 0.5)
+float vwFinal = vwSide * math.min(1.0, vwBase * vwMult)
+bool vwDeltaAgainst = (vwSide == 1 and barDelta < 0) or (vwSide == -1 and barDelta > 0)
+bool vwExhaust = vwSide != 0 and math.abs(vwZ) >= vwExhaustSigma and vwDeltaAgainst
+
+// ── Candle conviction engine: calibrated body dominance × range gate × delta
+// alignment × confirmed-bar streak.
+float ccRange = high - low
+float ccBody = ccRange > 0 ? math.abs(close - open) / ccRange : 0.0
+float ccBodyRank = ta.percentrank(ccBody, ccCalibLook)
+float ccRangeRank = ta.percentrank(ccRange, ccCalibLook)
+int ccDir = close > open ? 1 : close < open ? -1 : 0
+float ccBase = ccCalib ? nz(ccBodyRank, 50.0) / 100.0 : math.min(1.0, ccBody / 0.9)
+float ccGate = nz(ccRangeRank, 50.0) <= ccGateFloor ? math.max(0.0, nz(ccRangeRank, 50.0) / math.max(1.0, ccGateFloor)) : 1.0
+bool ccAligned = (ccDir == 1 and barDelta > 0) or (ccDir == -1 and barDelta < 0)
+float ccMult = ccDir == 0 ? 1.0 : ccAligned ? 1.0 + ccAlignBoost : 1.0 - ccAlignBoost
+var int ccStreak = 1
+var int ccLastDir = 0
+if barstate.isconfirmed
+    bool ccSig = ccDir != 0 and nz(ccBodyRank, 50.0) >= 60
+    ccStreak := ccSig and ccDir == ccLastDir ? math.min(ccStreakCap, ccStreak + 1) : 1
+    ccLastDir := ccDir
+float ccStreakMult = ccDir == ccLastDir ? 1.0 + ccStreakBoost * (ccStreak - 1) : 1.0
+float ccFinal = ccDir * math.min(1.0, ccBase * ccGate * ccMult * ccStreakMult)
+
+// ── POC trend engine: session-POC migration × price alignment × prior-session ──
+bool ptHtf = ptSource == "Delta timeframe (HTF)"
+int ptHistN = array.size(htfPocHist)
+float ptRefBack = ptHtf ? (ptHistN >= ptSlopeLen ? array.get(htfPocHist, ptHistN - ptSlopeLen) : na) : sessPoc[ptSlopeLen]
+float ptPocNow = ptHtf ? liveHtfPoc : sessPoc
+float ptPrevRef = ptHtf ? (ptHistN >= 1 ? array.get(htfPocHist, ptHistN - 1) : na) : prevSessPoc
+float ptVahNow = ptHtf ? liveHtfVah : sessVah
+float ptValNow = ptHtf ? liveHtfVal : sessVal
+float ptMig = na(ptPocNow) or na(ptRefBack) ? 0.0 : (ptPocNow - ptRefBack) / math.max(syminfo.mintick, atrV)
+float ptMigRank = ta.percentrank(math.abs(ptMig), ptCalibLook)
+int ptDir = ptMig > 0 ? 1 : ptMig < 0 ? -1 : 0
+float ptBase = nz(ptMigRank, 50.0) / 100.0
+bool ptAligned = not na(ptPocNow) and ((ptDir == 1 and close > ptPocNow) or (ptDir == -1 and close < ptPocNow))
+bool ptPrevOk = not na(ptPocNow) and not na(ptPrevRef) and ((ptDir == 1 and ptPocNow > ptPrevRef) or (ptDir == -1 and ptPocNow < ptPrevRef))
+float ptMult = (ptAligned ? 1.0 + ptAlignBoost : 1.0 - ptAlignBoost) * (ptPrevOk ? 1.0 + ptPrevBoost : 1.0)
+float ptFinal0 = ptDir * math.min(1.0, ptBase * ptMult)
+bool inVa = not na(ptVahNow) and not na(ptValNow) and close <= ptVahNow and close >= ptValNow
+bool outVaWithMig = not na(ptVahNow) and not na(ptValNow) and ((ptDir == 1 and close > ptVahNow) or (ptDir == -1 and close < ptValNow))
+float ptFinal = ptVaGate ? (inVa ? ptFinal0 * 0.5 : outVaWithMig ? math.sign(ptFinal0) * math.min(1.0, math.abs(ptFinal0) * (1.0 + ptAlignBoost)) : ptFinal0) : ptFinal0
+
+// ── Value area paint: VAH/VAL as the box, POC as the centre ─────────────────
+f_vaColor(float px, float vah, float val, float poc, float dlt) =>
+    color result = colNeut
+    if not na(vah) and not na(val) and not na(poc) and vah > val
+        float w = vah - val
+        float ramp = math.max(syminfo.mintick, w * vaRampPct / 100.0)
+        if px > vah
+            float frac = math.min(1.0, (px - vah) / ramp)
+            float adj = dlt > 0 ? math.min(1.0, frac + vaAlignBoost) : frac * (1.0 - vaAlignBoost)
+            result := color.from_gradient(adj, 0, 1, colNeut, colBull)
+        else if px < val
+            float frac = math.min(1.0, (val - px) / ramp)
+            float adj = dlt < 0 ? math.min(1.0, frac + vaAlignBoost) : frac * (1.0 - vaAlignBoost)
+            result := color.from_gradient(adj, 0, 1, colNeut, colBear)
+        else
+            float halfW = math.max(syminfo.mintick, math.max(vah - poc, poc - val))
+            float centering = 1.0 - math.min(1.0, math.abs(px - poc) / halfW)
+            int transp = int(math.round(80.0 - centering * 80.0))
+            result := color.new(colNeut, transp)
+    result
+color vaColOut = f_vaColor(close, sessVah, sessVal, sessPoc, barDelta)
+
+// ── Candle paint (mode → normalized −1..+1 → curve → floor → gradient) ──────
+float avgAbsD = 0.0
+if array.size(deltaHist) > 0
+    for d in deltaHist
+        avgAbsD += math.abs(nz(d))
+    avgAbsD /= array.size(deltaHist)
+float totVLive = liveBuy + liveSell
+float dPctRaw  = totVLive > 0 ? nz(liveDelta) / totVLive : 0.0
+
+// ── Delta % (imbalance) — trajectory → self-calibration → size gate → streak ──
+// Trajectory needs intrabar granularity, only present on the estimate path
+// (ivS holds signed volume per intrabar; empty when footprint supplied barDelta).
+// trajectory: the developing-hour ratio tilted toward the CURRENT bar's own
+// ratio — same horizon on every data path (the earlier version swapped to a
+// chart-bar-only measure on the estimate path, changing what the colour meant)
+float barTot = nz(barBuy) + nz(barSell)
+float barImb = barTot > 0 ? (nz(barBuy) - nz(barSell)) / barTot : 0.0
+float dpctBase = dpctTrajOn ? (1.0 - dpctTrajTilt) * dPctRaw + dpctTrajTilt * barImb : dPctRaw
+
+// self-calibration: percentile rank of |imbalance| vs its own recent history
+float dpctRank = ta.percentrank(math.abs(dpctBase), dpctCalibLook)
+float volRankPct = ta.percentrank(totVLive, dpctCalibLook)
+float calibN = dpctCalib ? math.sign(dpctBase) * (nz(dpctRank, 50.0) / 100.0) : math.max(-1.0, math.min(1.0, dpctBase * paintSens / 0.15))
+// size gate: tapers intensity below the volume-percentile floor
+float gateMult = 1.0
+if dpctGateOn
+    float vr = nz(volRankPct, 50.0)
+    gateMult := vr <= dpctGateFloor ? math.max(0.0, vr / math.max(1.0, dpctGateFloor)) : 1.0
+float dPctGated = calibN * gateMult
+// persistence streak: advances only on confirmed (completed) bars
+var int dpctStreak = 1
+var int dpctLastDir = 0
+int dpctCurDir = dPctGated > 0.02 ? 1 : dPctGated < -0.02 ? -1 : 0
+if dpctStreakOn and barstate.isconfirmed
+    bool sigNow = nz(dpctRank, 50.0) >= dpctStreakThresh
+    if sigNow and dpctCurDir != 0 and dpctCurDir == dpctLastDir
+        dpctStreak := math.min(dpctStreakCap, dpctStreak + 1)
+    else if sigNow and dpctCurDir != 0
+        dpctStreak := 1
+    else
+        dpctStreak := 1
+    dpctLastDir := dpctCurDir
+float dpctStreakMult = dpctStreakOn and dpctCurDir == dpctLastDir ? 1.0 + dpctStreakBoost * (dpctStreak - 1) : 1.0
+float dPctFinal = math.sign(dPctGated) * math.min(1.0, math.abs(dPctGated) * dpctStreakMult)
+
+float rawN = 0.0
+if paintModeEff == "Delta % (imbalance)"
+    rawN := dPctFinal
+else if paintModeEff == "Fuel × Δ (Truth Line)"
+    rawN := math.sign(nz(barDelta)) * fuelVal
+else if paintModeEff == "Market structure"
+    rawN := structDir * msIntensity
+else if paintModeEff == "VWAP σ-distance"
+    rawN := vwFinal
+else if paintModeEff == "POC trend"
+    rawN := ptFinal
+else if paintModeEff == "Candle conviction"
+    rawN := ccFinal
+else if paintModeEff == "EMA trend"
+    rawN := emaFinalIntensity
+else if paintModeEff == "RSI momentum"
+    rawN := rsiFinal
+float curvedN = paintCurve == "Boosted" ? math.sign(rawN) * math.pow(math.abs(rawN), 0.55) : rawN
+float normD = paintFloor > 0 and math.abs(curvedN) > 0.05 ? math.sign(curvedN) * math.max(math.abs(curvedN), paintFloor) : curvedN
+color gradCol = normD >= 0 ? color.from_gradient(normD, 0, 1, colNeut, colBull) : color.from_gradient(normD, -1, 0, colBear, colNeut)
+// VA-band variant of f_pocColor: blue between VAL and VAH (deepest at the POC and
+// on quiet delta), green/red beyond, ramp = pocRampPct of the value-area width.
+f_pocVaColor(float px, float poc, float vah, float val, float dlt, float avgAbs) =>
+    color result = colNeut
+    if not na(poc) and not na(vah) and not na(val) and vah > val
+        float w = vah - val
+        float rampW = math.max(syminfo.mintick, w * pocRampPct / 100.0)
+        if px > vah or px < val
+            float beyond = px > vah ? px - vah : val - px
+            float frac = math.min(1.0, beyond / rampW)
+            bool greenZone = px > vah
+            bool aligned = (greenZone and dlt > 0) or (not greenZone and dlt < 0)
+            float adj = aligned ? math.min(1.0, frac + pocAlignBoost) : frac * (1.0 - pocAlignBoost)
+            result := greenZone ? color.from_gradient(adj, 0, 1, colNeut, colBull) : color.from_gradient(adj, 0, 1, colNeut, colBear)
+        else
+            float halfW = math.max(syminfo.mintick, math.max(vah - poc, poc - val))
+            float centering = 1.0 - math.min(1.0, math.abs(px - poc) / halfW)
+            float dq = avgAbs > 0 ? 1.0 - math.min(1.0, math.abs(dlt) / avgAbs) : 0.5
+            float depth = math.max(0.0, math.min(1.0, (centering + dq) / 2.0))
+            int transp = int(math.round(70 - depth * 70))
+            result := color.new(colNeut, transp)
+    result
+bool pocUseVa = pocBandMode == "Value area (VAH/VAL)"
+color deltaSizeCol = pocUseVa ? f_pocVaColor(close, barPocNow[1], barVahNow[1], barValNow[1], barDelta, avgAbsD) : f_pocColor(close, barPocNow[1], high[1] - low[1], barDelta, avgAbsD)
+color deltaSizeHtfCol = pocUseVa ? f_pocVaColor(close, prevHtfPocVal, prevHtfVah, prevHtfVal, liveDelta, avgAbsD) : f_pocColor(close, prevHtfPocVal, prevHtfRangeVal, liveDelta, avgAbsD)
+color pivColBar = f_pivotColor(close, lastPH, lastPL, barDelta, pivBeyondRank, pivBeyond)
+color pivColHtf = f_pivotColor(close, htfLastPH, htfLastPL, liveDelta, pivBeyondHtfRank, pivBeyondHtf)
+color dCol = paintModeEff == "Delta size" ? deltaSizeCol : paintModeEff == "Delta size HTF" ? deltaSizeHtfCol : paintModeEff == "Participation band" ? partBandCol : paintModeEff == "Pivot structure" ? pivColBar : paintModeEff == "Pivot structure HTF" ? pivColHtf : paintModeEff == "Asian range position" ? asianColOut : paintModeEff == "Value area" ? vaColOut : paintModeEff == "Day range position" ? dayColOut : paintModeEff == "VWAP σ-distance" and vwExhaust ? vwExhaustCol : paintModeEff == "RSI momentum" and divBearActive ? rsiDivBearCol : paintModeEff == "RSI momentum" and divBullActive ? rsiDivBullCol : na(gradCol) ? colNeut : gradCol
+bool paintOn = mPaint and paintOn_i
+barcolor(paintOn ? dCol : na, title = "Δ candle paint")
+plotcandle(open, high, low, close, "Δ Candles", color = paintOn ? dCol : na, wickcolor = paintOn ? dCol : na, bordercolor = paintOn ? dCol : na)
+
+
+// ── Volume participation BG (Stryk: ΔC engine; calls unconditional) ─────────
+float volEma = ta.ema(nz(volume), volOscEmaLen)
+float volHi = ta.highest(volEma, volOscLook)
+float volLo = ta.lowest(volEma, volOscLook)
+float volOsc = volHi > volLo ? (volEma - volLo) / (volHi - volLo) * 100 : 50.0
+bool volBgAutoOff = paintOn and paintModeEff == "Participation band"
+bool volBgOn = mVolBg and showVolBg_i and not volBgAutoOff
+color volBg = volBgOn ? (volOsc >= volBgHigh ? color.new(volOscGreen, volBgTransp) : volOsc <= volBgLow ? color.new(volOscRed, volBgTransp) : na) : na
+bgcolor(volBg, title = "Vol participation tint")
+
+// ── DWM drawing engine ───────────────────────────────────────────────────────
+bool rangesOn = mRanges and dwmHLOn
+bool hlLinesOn = rangesOn and mDwmHL
+bool quartsOn = rangesOn and dwmQuartOn and mQuart
+bool zonesOn = rangesOn and dwmZoneOn and mZones
+szOf(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.small : s == "Normal" ? size.normal : size.large
+
+// per-TF line/label stores: [hiLine, loLine, q25, q50, q75] per period, flat arrays
+var array<line> dLines = array.new<line>()
+var array<line> wLines = array.new<line>()
+var array<line> mLines = array.new<line>()
+var array<label> dLbls = array.new<label>()
+var array<label> wLbls = array.new<label>()
+var array<label> mLbls = array.new<label>()
+// per-TF zone stores: [hiZone, loZone] per period
+var array<box> dBoxes = array.new<box>()
+var array<box> wBoxes = array.new<box>()
+var array<box> mBoxes = array.new<box>()
+
+f_fade(array<line> lns, color baseCol) =>
+    int sets = array.size(lns) / 5
+    if dwmHLGradient and sets > 1
+        for si = 0 to sets - 2
+            int age = sets - 1 - si
+            int tr = math.min(88, 25 + age * 25)
+            color fadedC = color.new(baseCol, tr)
+            for k = 0 to 1
+                line ln = array.get(lns, si * 5 + k)
+                if not na(ln)
+                    line.set_color(ln, fadedC)
+
+f_spawn(array<line> lns, array<label> lbls, array<box> bxs, float ph, float pl, int pStart, color colHL, int w, int keepN, string nm, color lblCol, string lblSz, bool hlOn, bool qOn, bool zOn) =>
+    if not na(ph) and not na(pl)
+        int x1 = na(pStart) ? bar_index : pStart
+        box hiZ = na
+        box loZ = na
+        if zOn
+            float half = (ph - pl) * 0.125
+            color zc = color.new(colHL, dwmZoneTransp)
+            hiZ := box.new(x1, ph + half, bar_index, ph - half, border_color = na, bgcolor = zc)
+            loZ := box.new(x1, pl + half, bar_index, pl - half, border_color = na, bgcolor = zc)
+        array.push(bxs, hiZ)
+        array.push(bxs, loZ)
+        while array.size(bxs) > keepN * 2
+            box oldB = array.shift(bxs)
+            if not na(oldB)
+                box.delete(oldB)
+        line hiL = na
+        line loL = na
+        if hlOn
+            hiL := line.new(x1, ph, bar_index, ph, color = colHL, width = w)
+            loL := line.new(x1, pl, bar_index, pl, color = colHL, width = w)
+        color qc = color.new(colHL, dwmQuartTransp)
+        float rng = ph - pl
+        line q1 = na
+        line q2 = na
+        line q3 = na
+        if qOn
+            q1 := line.new(x1, pl + rng * 0.25, bar_index, pl + rng * 0.25, color = qc, width = dwmQuartW, style = line.style_dashed)
+            q2 := line.new(x1, pl + rng * 0.50, bar_index, pl + rng * 0.50, color = qc, width = dwmQuartW, style = line.style_dashed)
+            q3 := line.new(x1, pl + rng * 0.75, bar_index, pl + rng * 0.75, color = qc, width = dwmQuartW, style = line.style_dashed)
+        array.push(lns, hiL)
+        array.push(lns, loL)
+        array.push(lns, q1)
+        array.push(lns, q2)
+        array.push(lns, q3)
+        if hlOn and dwmHLLabels
+            string stH = dwmHLLabelPos == "Outside left" ? label.style_label_right : dwmHLLabelPos == "Inside middle" ? label.style_label_center : label.style_label_left
+            int lx0 = dwmHLLabelPos == "Outside left" ? x1 : bar_index
+            label hiT = label.new(lx0, ph, nm + " High", style = stH, textcolor = lblCol, color = color.new(color.black, 100), size = szOf(lblSz))
+            label loT = label.new(lx0, pl, nm + " Low", style = stH, textcolor = lblCol, color = color.new(color.black, 100), size = szOf(lblSz))
+            array.push(lbls, hiT)
+            array.push(lbls, loT)
+        while array.size(lns) > keepN * 5
+            for k = 1 to 5
+                line old = array.shift(lns)
+                if not na(old)
+                    line.delete(old)
+        while array.size(lbls) > keepN * 2
+            label oldL = array.shift(lbls)
+            label.delete(oldL)
+
+f_extend(array<line> lns, array<label> lbls, array<box> bxs) =>
+    int sets = array.size(lns) / 5
+    if sets > 0
+        int x2 = bar_index + (dwmProject ? dwmProjBars : 0)
+        int fromSet = dwmExtend ? 0 : sets - 1
+        for si = fromSet to sets - 1
+            for k = 0 to 4
+                line ln = array.get(lns, si * 5 + k)
+                if not na(ln)
+                    line.set_x2(ln, x2)
+        int bsets = array.size(bxs) / 2
+        if bsets > 0
+            int bFrom = dwmExtend ? 0 : bsets - 1
+            for si = bFrom to bsets - 1
+                for k = 0 to 1
+                    box bx = array.get(bxs, si * 2 + k)
+                    if not na(bx)
+                        box.set_right(bx, x2)
+        int lsets = array.size(lbls) / 2
+        if lsets > 0 and dwmHLLabelPos != "Outside left"
+            int lFrom = dwmExtend ? 0 : lsets - 1
+            for si = lFrom to lsets - 1
+                label hb = array.get(lbls, si * 2)
+                label lb = array.get(lbls, si * 2 + 1)
+                int lx = dwmHLLabelPos == "Inside middle" ? (label.get_x(hb) + x2) / 2 : x2
+                label.set_x(hb, lx)
+                label.set_x(lb, lx)
+
+if rangesOn and dwmHLDaily and newD
+    f_spawn(dLines, dLbls, dBoxes, prevDH, prevDL, prevDStart, dwmHLDailyColor, dwmHLDailyW, dwmHLDailyShow, "Day", dwmLblDCol, dwmLblDSz, hlLinesOn, quartsOn, zonesOn)
+    f_fade(dLines, dwmHLDailyColor)
+if rangesOn and dwmHLWeekly and newW
+    f_spawn(wLines, wLbls, wBoxes, prevWH, prevWL, prevWStart, dwmHLWeeklyColor, dwmHLWeeklyW, dwmHLWeeklyShow, "Week", dwmLblWCol, dwmLblWSz, hlLinesOn, quartsOn, zonesOn)
+    f_fade(wLines, dwmHLWeeklyColor)
+if rangesOn and dwmHLMonthly and newM
+    f_spawn(mLines, mLbls, mBoxes, prevMH, prevML, prevMStart, dwmHLMonthlyColor, dwmHLMonthlyW, dwmHLMonthlyShow, "Month", dwmLblMCol, dwmLblMSz, hlLinesOn, quartsOn, zonesOn)
+    f_fade(mLines, dwmHLMonthlyColor)
+if rangesOn
+    f_extend(dLines, dLbls, dBoxes)
+    f_extend(wLines, wLbls, wBoxes)
+    f_extend(mLines, mLbls, mBoxes)
+
+// // ── Display box engine — every read here is chosen to lead, not confirm ────
+float vaWidthNow = (na(ptVahNow) or na(ptValNow)) ? na : ptVahNow - ptValNow
+float vaWidthRank = na(vaWidthNow) ? 50.0 : ta.percentrank(vaWidthNow, boxSqueezeLook)
+bool squeezeOn = not na(vaWidthNow) and vaWidthRank <= 20
+bool absorbOn = fuelVal >= boxAbsorbFuel and math.abs(close - open) <= atrV * boxAbsorbAtr and math.abs(barDelta) > 0
+// release: the first VA break WITH agreeing delta after a coil (squeeze or
+// absorption) — the compression actually resolving, one-shot per episode.
+var int coilBar = na
+var bool releaseFired = false
+if squeezeOn or absorbOn
+    if na(coilBar) or (bar_index - coilBar) > releaseWindow
+        releaseFired := false
+    coilBar := bar_index
+bool coiledRecently = not na(coilBar) and (bar_index - coilBar) <= releaseWindow
+bool releaseUpNow = coiledRecently and not releaseFired and not na(ptVahNow) and close > ptVahNow and barDelta > 0
+bool releaseDnNow = coiledRecently and not releaseFired and not na(ptValNow) and close < ptValNow and barDelta < 0
+var int releaseBar = na
+var int releaseDir = 0
+if releaseUpNow
+    releaseFired := true
+    releaseBar := bar_index
+    releaseDir := 1
+if releaseDnNow
+    releaseFired := true
+    releaseBar := bar_index
+    releaseDir := -1
+bool releaseShow = not na(releaseBar) and (bar_index - releaseBar) <= releaseHoldBars
+string partLbl = part >= bandClimax ? "Climax" : part <= 40 ? "Thin" : "Building"
+string fuelLbl = fuelVal >= 0.6 ? "Paid" : fuelVal >= 0.3 ? "Partial" : "Unpaid"
+string ptLbl = ptDir == 1 ? "Rising" : ptDir == -1 ? "Falling" : "Flat"
+string structLbl = structDir == 1 ? "Bull" : structDir == -1 ? "Bear" : "Neutral"
+color partColBox = part >= bandClimax ? volOscGreen : part <= 40 ? volOscRed : colNeut
+color fuelColBox = fuelVal >= 0.6 ? colBull : fuelVal >= 0.3 ? colNeut : colBear
+color ptColBox = ptDir == 1 ? colBull : ptDir == -1 ? colBear : colNeut
+color structColBox = structDir == 1 ? colBull : structDir == -1 ? colBear : colNeut
+
+// ── Bias engine — acceptance · structure · order flow, scored ───────────────
+// Chart timeframe: acceptance = the POC trend row's direction, structure = the
+// latched Market-structure state, flow = recency-weighted chart-bar delta.
+// HTF: the same three computed on the selected timeframe's own bars inside one
+// request.security call. Agreement is the signal; disagreement reads as
+// CONSOLIDATION rather than being forced into a side.
+f_flowVote(float sc, float mixTh) =>
+    sc > mixTh ? 1 : sc < -mixTh ? -1 : 0
+f_biasScore(int a, int st, int fl) =>
+    float sc = a * biasWAcc + st * biasWStr + fl * biasWFlow
+    string lbl = sc >= biasThresh ? "BULL" : sc <= -biasThresh ? "BEAR" : "CONSOLIDATION"
+    [lbl, sc]
+f_voteGlyph(int v) =>
+    v == 1 ? "▲" : v == -1 ? "▼" : "▶"
+// chart-TF flow score: recency-weighted true delta, normalised by average |Δ|
+float bfWSum = 0.0
+float bfWTot = 0.0
+float bfAbs = 0.0
+for i = 0 to biasLook - 1
+    float d = nz(barDelta[i])
+    float w = biasLook - i
+    bfWSum += d * w
+    bfWTot += w
+    bfAbs += math.abs(d)
+bfAbs := bfAbs / biasLook
+float bfScore = bfAbs > 0 ? (bfWSum / bfWTot) / bfAbs : 0.0
+int biasAccV = ptDir
+int biasStrV = structDir
+int biasFlowV = f_flowVote(bfScore, biasMixTh)
+[biasLbl, biasSc] = f_biasScore(biasAccV, biasStrV, biasFlowV)
+string biasVotes = "A" + f_voteGlyph(biasAccV) + " S" + f_voteGlyph(biasStrV) + " F" + f_voteGlyph(biasFlowV)
+color biasCol = biasLbl == "BULL" ? colBull : biasLbl == "BEAR" ? colBear : colNeut
+
+// HTF votes, computed on the selected timeframe's own bars
+htfBiasVotes(simple int n, simple int migK, simple float mixTh, simple int pl) =>
+    // flow: recency-weighted bar-polarity delta on this context
+    float sv = close > open ? nz(volume) : close < open ? -nz(volume) : 0.0
+    float wSum = 0.0
+    float wTot = 0.0
+    float aAbs = 0.0
+    for i = 0 to n - 1
+        float d = nz(sv[i])
+        float w = n - i
+        wSum += d * w
+        wTot += w
+        aAbs += math.abs(d)
+    aAbs := aAbs / n
+    float sc = aAbs > 0 ? (wSum / wTot) / aAbs : 0.0
+    int flowV = sc > mixTh ? 1 : sc < -mixTh ? -1 : 0
+    // acceptance: POC over the last n bars (each bar's volume spread across its
+    // range, capped bins), compared against the same POC migK bars ago
+    map<int, float> prof = map.new<int, float>()
+    for i = 0 to n - 1
+        float hi = high[i]
+        float lo = low[i]
+        float vo = nz(volume[i])
+        if not na(hi) and not na(lo) and vo > 0
+            int bHi = math.round(hi / pocBinSize)
+            int bLo = math.round(lo / pocBinSize)
+            int span = math.max(1, bHi - bLo + 1)
+            int steps = math.min(span, 200)
+            float per = vo / steps
+            float stepSz = span * 1.0 / steps
+            for k = 0 to steps - 1
+                int b = bLo + math.round(k * stepSz)
+                map.put(prof, b, (map.contains(prof, b) ? map.get(prof, b) : 0.0) + per)
+    float bestV = 0.0
+    int bestB = na
+    array<int> pks = map.keys(prof)
+    for k in pks
+        float v = map.get(prof, k)
+        if v > bestV
+            bestV := v
+            bestB := k
+    float pocPx = na(bestB) ? na : bestB * pocBinSize
+    float pocPrev = pocPx[migK]
+    float atrH = ta.atr(14)
+    float mig = na(pocPx) or na(pocPrev) ? 0.0 : (pocPx - pocPrev) / math.max(syminfo.mintick, atrH)
+    int accV = mig > 0.1 ? 1 : mig < -0.1 ? -1 : 0
+    // structure: latched pivot state on this context
+    float ph = ta.pivothigh(pl, pl)
+    float plo = ta.pivotlow(pl, pl)
+    var float lph = na
+    var float lpl = na
+    var int sd = 0
+    if not na(ph)
+        lph := ph
+    if not na(plo)
+        lpl := plo
+    if not na(lph) and close > lph
+        sd := 1
+    if not na(lpl) and close < lpl
+        sd := -1
+    [accV, sd, flowV]
+string biasTfRaw = biasHtf == "1 hour" ? "60" : biasHtf == "2 hours" ? "120" : biasHtf == "4 hours" ? "240" : biasHtf == "1 day" ? "D" : biasHtf == "1 week" ? "W" : "M"
+string biasTfEff = timeframe.in_seconds(biasTfRaw) < chartSec ? timeframe.period : biasTfRaw
+[hbAccV, hbStrV, hbFlowV] = request.security(syminfo.tickerid, biasTfEff, htfBiasVotes(biasLook, biasMigK, biasMixTh, pivLen), lookahead = barmerge.lookahead_off)
+int hbAcc = nz(hbAccV, 0)
+int hbStr = nz(hbStrV, 0)
+int hbFlow = nz(hbFlowV, 0)
+[hbLbl, hbSc] = f_biasScore(hbAcc, hbStr, hbFlow)
+string hbVotes = "A" + f_voteGlyph(hbAcc) + " S" + f_voteGlyph(hbStr) + " F" + f_voteGlyph(hbFlow)
+color hbCol = hbLbl == "BULL" ? colBull : hbLbl == "BEAR" ? colBear : colNeut
+string hbTfLbl = biasHtf == "1 hour" ? "1H" : biasHtf == "2 hours" ? "2H" : biasHtf == "4 hours" ? "4H" : biasHtf == "1 day" ? "1D" : biasHtf == "1 week" ? "1W" : "1M"
+
+// rows are collected into arrays, then rendered by the chosen layout — the
+// same smart-wrap pattern as the ΔC info box. Table is rebuilt on the last bar.
+var table boxT = na
+if mBox and barstate.islast
+    var array<string> bLbl = array.new_string()
+    var array<string> bSh  = array.new_string()
+    var array<string> bVal = array.new_string()
+    var array<color>  bCol = array.new_color()
+    array.clear(bLbl), array.clear(bSh), array.clear(bVal), array.clear(bCol)
+    color volBgColBox = volOsc >= volBgHigh ? volOscGreen : volOsc <= volBgLow ? volOscRed : colNeut
+    string relTxt = releaseShow ? (releaseDir == 1 ? "▲ RELEASE" : "▼ RELEASE") : "Release"
+    color relCol = releaseShow ? (releaseDir == 1 ? colBull : colBear) : color.gray
+    array.push(bLbl, "Δ (live)"),      array.push(bSh, "Δ"),      array.push(bVal, str.tostring(math.round(liveDelta))),                   array.push(bCol, liveDelta > 0 ? colBull : liveDelta < 0 ? colBear : colNeut)
+    array.push(bLbl, "Participation"), array.push(bSh, "Part"),   array.push(bVal, partLbl + "  " + str.tostring(math.round(part)) + "%"), array.push(bCol, partColBox)
+    array.push(bLbl, "Vol BG"),        array.push(bSh, "VolBG"),  array.push(bVal, str.tostring(math.round(volOsc)) + "%"),               array.push(bCol, volBgColBox)
+    array.push(bLbl, "Fuel"),          array.push(bSh, "Fuel"),   array.push(bVal, fuelLbl),                                              array.push(bCol, fuelColBox)
+    array.push(bLbl, "POC trend"),     array.push(bSh, "PoC"),    array.push(bVal, ptLbl),                                                array.push(bCol, ptColBox)
+    array.push(bLbl, "Structure"),     array.push(bSh, "Struct"), array.push(bVal, structLbl),                                            array.push(bCol, structColBox)
+    array.push(bLbl, squeezeOn ? "⚡ SQUEEZE" : "VA width"), array.push(bSh, squeezeOn ? "⚡SQZ" : "VA"), array.push(bVal, squeezeOn ? "coiled" : str.tostring(math.round(vaWidthRank)) + "%ile"), array.push(bCol, squeezeOn ? #ffd166 : colNeut)
+    array.push(bLbl, absorbOn ? "⚠ ABSORPTION" : "Absorption"), array.push(bSh, absorbOn ? "⚠ABS" : "Abs"), array.push(bVal, absorbOn ? "active" : " "), array.push(bCol, color.orange)
+    array.push(bLbl, relTxt),          array.push(bSh, releaseShow ? (releaseDir == 1 ? "▲Rel" : "▼Rel") : "Rel"), array.push(bVal, releaseShow ? (releaseDir == 1 ? "up" : "down") : " "), array.push(bCol, relCol)
+    array.push(bLbl, "Bias"),          array.push(bSh, "Bias"),   array.push(bVal, biasLbl + "  " + biasVotes),                          array.push(bCol, biasCol)
+    array.push(bLbl, "HTF bias (" + hbTfLbl + ")"), array.push(bSh, "HTF " + hbTfLbl), array.push(bVal, hbLbl + "  " + hbVotes),         array.push(bCol, hbCol)
+
+    int nB = array.size(bLbl)
+    bool mobile = boxLayout == "Mobile"
+    bool horiz = boxLayout == "Horizontal"
+    string tsz = mobile ? size.tiny : boxSz == "Tiny" ? size.tiny : boxSz == "Normal" ? size.normal : size.small
+    color lblC = color.gray
+    color headBg = color.new(color.black, 20)
+    color frameC = color.new(color.gray, 60)
+    string posS = boxPos == "Top right" ? position.top_right : boxPos == "Top left" ? position.top_left : boxPos == "Bottom right" ? position.bottom_right : position.bottom_left
+    if not na(boxT)
+        table.delete(boxT)
+        boxT := na
+    if horiz
+        // HORIZONTAL — header strip, then labels across row 1, values across row 2
+        boxT := table.new(posS, nB, 3, border_width = 1, border_color = frameC, frame_color = frameC, frame_width = 1)
+        table.cell(boxT, 0, 0, "STRYK:M", text_color = color.white, bgcolor = headBg, text_size = tsz)
+        if nB > 1
+            table.merge_cells(boxT, 0, 0, nB - 1, 0)
+        for i = 0 to nB - 1
+            table.cell(boxT, i, 1, array.get(bLbl, i), text_color = squeezeOn and i == 6 ? #ffd166 : absorbOn and i == 7 ? color.orange : releaseShow and i == 8 ? array.get(bCol, i) : lblC, text_size = tsz)
+            table.cell(boxT, i, 2, array.get(bVal, i), text_color = array.get(bCol, i), text_size = tsz)
+    else if mobile
+        // MOBILE — short labels, Tiny, smart wrap: fill down each column, spill right
+        int wrapN = boxWrap > 0 ? math.min(boxWrap, nB) : nB
+        int nCols = (nB + wrapN - 1) / wrapN
+        boxT := table.new(posS, 2 * nCols, wrapN + 1, border_width = 1, border_color = frameC, frame_color = frameC, frame_width = 1)
+        table.cell(boxT, 0, 0, "STRYK:M", text_color = color.white, bgcolor = headBg, text_size = tsz)
+        if nCols > 1
+            table.merge_cells(boxT, 0, 0, 2 * nCols - 1, 0)
+        for i = 0 to nB - 1
+            int cCol = (i / wrapN) * 2
+            int cRow = (i % wrapN) + 1
+            table.cell(boxT, cCol, cRow, array.get(bSh, i), text_color = squeezeOn and i == 6 ? #ffd166 : absorbOn and i == 7 ? color.orange : releaseShow and i == 8 ? array.get(bCol, i) : lblC, text_size = tsz)
+            table.cell(boxT, cCol + 1, cRow, array.get(bVal, i), text_color = array.get(bCol, i), text_size = tsz)
+    else
+        // VERTICAL — classic label | value column
+        boxT := table.new(posS, 2, nB + 1, border_width = 1, border_color = frameC, frame_color = frameC, frame_width = 1)
+        table.cell(boxT, 0, 0, "STRYK:M", text_color = color.white, bgcolor = headBg, text_size = tsz)
+        table.cell(boxT, 1, 0, "", bgcolor = headBg)
+        for i = 0 to nB - 1
+            table.cell(boxT, 0, i + 1, array.get(bLbl, i), text_color = squeezeOn and i == 6 ? #ffd166 : absorbOn and i == 7 ? color.orange : releaseShow and i == 8 ? array.get(bCol, i) : lblC, text_size = tsz)
+            table.cell(boxT, 1, i + 1, array.get(bVal, i), text_color = array.get(bCol, i), text_size = tsz)
+
+// ── Alerts — one per display-box row, on CONFIRMED bars, on state CHANGE ──
+// Each row's state is compared to its own previous bar so an alert fires once
+// when the read changes, not on every bar it holds. Release fires on the bar it
+// triggered. alert() carries live values; alertcondition() gives each its own
+// named entry in the alert dialog (constant text, TradingView placeholders).
+bool alertOk = mAlerts and barstate.isconfirmed
+// row 1 · Δ (live): sign flip of the forming delta-TF candle's delta
+int dSignNow = liveDelta > 0 ? 1 : liveDelta < 0 ? -1 : 0
+bool aDeltaPos = dSignNow == 1 and nz(dSignNow[1], 0) != 1
+bool aDeltaNeg = dSignNow == -1 and nz(dSignNow[1], 0) != -1
+// row 2 · Participation: enters Climax / enters Thin
+bool aPartClimax = partLbl == "Climax" and partLbl[1] != "Climax"
+bool aPartThin = partLbl == "Thin" and partLbl[1] != "Thin"
+// row 3 · Vol BG: crosses into the high / low tint zone
+bool aVolBgHigh = volOsc >= volBgHigh and volOsc[1] < volBgHigh
+bool aVolBgLow = volOsc <= volBgLow and volOsc[1] > volBgLow
+bool aVolBgHighExit = volOsc < volBgHigh and volOsc[1] >= volBgHigh
+bool aVolBgLowExit = volOsc > volBgLow and volOsc[1] <= volBgLow
+// participation exits too — leaving climax / recovering from thin
+bool aPartClimaxExit = partLbl != "Climax" and partLbl[1] == "Climax"
+bool aPartThinExit = partLbl != "Thin" and partLbl[1] == "Thin"
+// row 4 · Fuel: becomes Paid / becomes Unpaid
+bool aFuelPaid = fuelLbl == "Paid" and fuelLbl[1] != "Paid"
+bool aFuelUnpaid = fuelLbl == "Unpaid" and fuelLbl[1] != "Unpaid"
+// row 5 · POC trend: migration direction changes
+bool aPocRising = ptDir == 1 and ptDir[1] != 1
+bool aPocFalling = ptDir == -1 and ptDir[1] != -1
+// row 6 · Structure: latched state flips
+bool aStructBull = structDir == 1 and structDir[1] != 1
+bool aStructBear = structDir == -1 and structDir[1] != -1
+// row 7 · Squeeze: flag turns on
+bool aSqueeze = squeezeOn and not squeezeOn[1]
+// row 8 · Absorption: flag turns on
+bool aAbsorb = absorbOn and not absorbOn[1]
+// row 9 · Release: fired on this bar
+bool aRelUp = not na(releaseBar) and releaseBar == bar_index and releaseDir == 1
+bool aRelDn = not na(releaseBar) and releaseBar == bar_index and releaseDir == -1
+// rows 10-11 · Bias / HTF bias: read changes
+bool aBiasBull = biasLbl == "BULL" and biasLbl[1] != "BULL"
+bool aBiasBear = biasLbl == "BEAR" and biasLbl[1] != "BEAR"
+bool aBiasCons = biasLbl == "CONSOLIDATION" and biasLbl[1] != "CONSOLIDATION"
+bool aHbBull = hbLbl == "BULL" and hbLbl[1] != "BULL"
+bool aHbBear = hbLbl == "BEAR" and hbLbl[1] != "BEAR"
+bool aHbCons = hbLbl == "CONSOLIDATION" and hbLbl[1] != "CONSOLIDATION"
+
+if alertOk
+    if aDeltaPos
+        alert("STRYK:M [" + dTf + "] Δ flipped POSITIVE (" + str.tostring(math.round(liveDelta)) + ").", alert.freq_once_per_bar)
+    if aDeltaNeg
+        alert("STRYK:M [" + dTf + "] Δ flipped NEGATIVE (" + str.tostring(math.round(liveDelta)) + ").", alert.freq_once_per_bar)
+    if aPartClimax
+        alert("STRYK:M participation CLIMAX (" + str.tostring(math.round(part)) + "%).", alert.freq_once_per_bar)
+    if aPartThin
+        alert("STRYK:M participation THIN (" + str.tostring(math.round(part)) + "%).", alert.freq_once_per_bar)
+    if aVolBgHigh
+        alert("STRYK:M volume BG HIGH (" + str.tostring(math.round(volOsc)) + "%).", alert.freq_once_per_bar)
+    if aVolBgLow
+        alert("STRYK:M volume BG LOW (" + str.tostring(math.round(volOsc)) + "%).", alert.freq_once_per_bar)
+    if aVolBgHighExit
+        alert("STRYK:M volume BG left the HIGH zone (" + str.tostring(math.round(volOsc)) + "%).", alert.freq_once_per_bar)
+    if aVolBgLowExit
+        alert("STRYK:M volume BG left the LOW zone (" + str.tostring(math.round(volOsc)) + "%).", alert.freq_once_per_bar)
+    if aPartClimaxExit
+        alert("STRYK:M participation left CLIMAX (" + str.tostring(math.round(part)) + "%).", alert.freq_once_per_bar)
+    if aPartThinExit
+        alert("STRYK:M participation recovered from THIN (" + str.tostring(math.round(part)) + "%).", alert.freq_once_per_bar)
+    if aFuelPaid
+        alert("STRYK:M fuel PAID — participation behind the move.", alert.freq_once_per_bar)
+    if aFuelUnpaid
+        alert("STRYK:M fuel UNPAID — move without participation.", alert.freq_once_per_bar)
+    if aPocRising
+        alert("STRYK:M [" + dTf + "] POC trend RISING — acceptance migrating up.", alert.freq_once_per_bar)
+    if aPocFalling
+        alert("STRYK:M [" + dTf + "] POC trend FALLING — acceptance migrating down.", alert.freq_once_per_bar)
+    if aStructBull
+        alert("STRYK:M structure flipped BULL.", alert.freq_once_per_bar)
+    if aStructBear
+        alert("STRYK:M structure flipped BEAR.", alert.freq_once_per_bar)
+    if aSqueeze
+        alert("STRYK:M ⚡ SQUEEZE — value area coiled (" + str.tostring(math.round(vaWidthRank)) + "%ile).", alert.freq_once_per_bar)
+    if aAbsorb
+        alert("STRYK:M ⚠ ABSORPTION — participation without price result.", alert.freq_once_per_bar)
+    if aRelUp
+        alert("STRYK:M ▲ RELEASE UP — closed above value with buying delta.", alert.freq_once_per_bar)
+    if aRelDn
+        alert("STRYK:M ▼ RELEASE DOWN — closed below value with selling delta.", alert.freq_once_per_bar)
+    if aBiasBull
+        alert("STRYK:M bias BULL (" + biasVotes + ").", alert.freq_once_per_bar)
+    if aBiasBear
+        alert("STRYK:M bias BEAR (" + biasVotes + ").", alert.freq_once_per_bar)
+    if aBiasCons
+        alert("STRYK:M bias CONSOLIDATION (" + biasVotes + ").", alert.freq_once_per_bar)
+    if aHbBull
+        alert("STRYK:M HTF bias (" + hbTfLbl + ") BULL (" + hbVotes + ").", alert.freq_once_per_bar)
+    if aHbBear
+        alert("STRYK:M HTF bias (" + hbTfLbl + ") BEAR (" + hbVotes + ").", alert.freq_once_per_bar)
+    if aHbCons
+        alert("STRYK:M HTF bias (" + hbTfLbl + ") CONSOLIDATION (" + hbVotes + ").", alert.freq_once_per_bar)
+
+alertcondition(aDeltaPos and mAlerts,   "Δ — flipped positive",      "STRYK:M {{ticker}} {{interval}} — Δ flipped positive at {{close}}.")
+alertcondition(aDeltaNeg and mAlerts,   "Δ — flipped negative",      "STRYK:M {{ticker}} {{interval}} — Δ flipped negative at {{close}}.")
+alertcondition(aPartClimax and mAlerts, "Participation — climax",    "STRYK:M {{ticker}} {{interval}} — participation reached climax at {{close}}.")
+alertcondition(aPartThin and mAlerts,   "Participation — thin",      "STRYK:M {{ticker}} {{interval}} — participation dropped to thin at {{close}}.")
+alertcondition(aVolBgHigh and mAlerts,  "Vol BG — high",             "STRYK:M {{ticker}} {{interval}} — volume BG entered the high zone at {{close}}.")
+alertcondition(aVolBgLow and mAlerts,   "Vol BG — low",              "STRYK:M {{ticker}} {{interval}} — volume BG entered the low zone at {{close}}.")
+alertcondition(aVolBgHighExit and mAlerts, "Vol BG — left high",      "STRYK:M {{ticker}} {{interval}} — volume BG left the high zone at {{close}}.")
+alertcondition(aVolBgLowExit and mAlerts,  "Vol BG — left low",       "STRYK:M {{ticker}} {{interval}} — volume BG left the low zone at {{close}}.")
+alertcondition(aPartClimaxExit and mAlerts, "Participation — left climax", "STRYK:M {{ticker}} {{interval}} — participation left climax at {{close}}.")
+alertcondition(aPartThinExit and mAlerts,   "Participation — left thin",   "STRYK:M {{ticker}} {{interval}} — participation recovered from thin at {{close}}.")
+alertcondition(aFuelPaid and mAlerts,   "Fuel — paid",               "STRYK:M {{ticker}} {{interval}} — fuel turned paid at {{close}}.")
+alertcondition(aFuelUnpaid and mAlerts, "Fuel — unpaid",             "STRYK:M {{ticker}} {{interval}} — fuel turned unpaid at {{close}}.")
+alertcondition(aPocRising and mAlerts,  "POC trend — rising",        "STRYK:M {{ticker}} {{interval}} — POC migration turned rising at {{close}}.")
+alertcondition(aPocFalling and mAlerts, "POC trend — falling",       "STRYK:M {{ticker}} {{interval}} — POC migration turned falling at {{close}}.")
+alertcondition(aStructBull and mAlerts, "Structure — bull",          "STRYK:M {{ticker}} {{interval}} — structure flipped bull at {{close}}.")
+alertcondition(aStructBear and mAlerts, "Structure — bear",          "STRYK:M {{ticker}} {{interval}} — structure flipped bear at {{close}}.")
+alertcondition(aSqueeze and mAlerts,    "⚡ Squeeze",                 "STRYK:M {{ticker}} {{interval}} — squeeze: value area coiled at {{close}}.")
+alertcondition(aAbsorb and mAlerts,     "⚠ Absorption",              "STRYK:M {{ticker}} {{interval}} — absorption at {{close}}.")
+alertcondition(aRelUp and mAlerts,      "▲ Release — up",            "STRYK:M {{ticker}} {{interval}} — release up at {{close}}.")
+alertcondition(aRelDn and mAlerts,      "▼ Release — down",          "STRYK:M {{ticker}} {{interval}} — release down at {{close}}.")
+alertcondition((aRelUp or aRelDn) and mAlerts, "Release — either side", "STRYK:M {{ticker}} {{interval}} — release at {{close}}.")
+alertcondition(aBiasBull and mAlerts, "Bias — BULL",          "STRYK:M {{ticker}} {{interval}} — bias turned BULL at {{close}}.")
+alertcondition(aBiasBear and mAlerts, "Bias — BEAR",          "STRYK:M {{ticker}} {{interval}} — bias turned BEAR at {{close}}.")
+alertcondition(aBiasCons and mAlerts, "Bias — CONSOLIDATION", "STRYK:M {{ticker}} {{interval}} — bias turned CONSOLIDATION at {{close}}.")
+alertcondition(aHbBull and mAlerts,   "HTF bias — BULL",      "STRYK:M {{ticker}} {{interval}} — HTF bias turned BULL at {{close}}.")
+alertcondition(aHbBear and mAlerts,   "HTF bias — BEAR",      "STRYK:M {{ticker}} {{interval}} — HTF bias turned BEAR at {{close}}.")
+alertcondition(aHbCons and mAlerts,   "HTF bias — CONSOLIDATION", "STRYK:M {{ticker}} {{interval}} — HTF bias turned CONSOLIDATION at {{close}}.")
+
+// ── Plots ────────────────────────────────────────────────────────────────────
+plot(mVwap and showB3 ? rvwapS + multB3 * rsdS : na, "VWAP +3σ", color = bandCol3, linewidth = bandWidth)
+plot(mVwap and showB2 ? rvwapS + multB2 * rsdS : na, "VWAP +2σ", color = bandCol2, linewidth = bandWidth)
+pU1 = plot(mVwap and showB1 ? rvwapS + multB1 * rsdS : na, "VWAP +1σ", color = bandCol1, linewidth = bandWidth)
+plot(mVwap ? rvwapS : na, "Rolling VWAP", color = vwapCol, linewidth = vwapWidth)
+pD1 = plot(mVwap and showB1 ? rvwapS - multB1 * rsdS : na, "VWAP −1σ", color = bandCol1, linewidth = bandWidth)
+plot(mVwap and showB2 ? rvwapS - multB2 * rsdS : na, "VWAP −2σ", color = bandCol2, linewidth = bandWidth)
+plot(mVwap and showB3 ? rvwapS - multB3 * rsdS : na, "VWAP −3σ", color = bandCol3, linewidth = bandWidth)
+fill(pU1, pD1, color = mVwap and showB1 and bandFill ? bandFillCol : na, title = "±1σ fill")
+
+plot(mEma ? emaOut : na, "EMA", color = emaCol, linewidth = emaWidth, offset = emaOffset)
+plot(mEma ? smoothingMA : na, "EMA-based MA", color = maCol, display = enableMA ? display.all : display.none, editable = enableMA)
+bbUpperBand = plot(mEma ? smoothingMA + smoothingStDev : na, "Upper Bollinger Band", color = bbCol, display = isBB ? display.all : display.none, editable = isBB)
+bbLowerBand = plot(mEma ? smoothingMA - smoothingStDev : na, "Lower Bollinger Band", color = bbCol, display = isBB ? display.all : display.none, editable = isBB)
+fill(bbUpperBand, bbLowerBand, color = isBB and mEma ? color.new(bbCol, 90) : na, title = "Bollinger Bands Background Fill", display = isBB ? display.all : display.none, editable = isBB)

@@ -1,0 +1,495 @@
+//@version=6
+indicator("Agreed Upon DOL", overlay = true, max_boxes_count = 40, max_labels_count = 40, max_lines_count = 60, max_bars_back = 1200)
+
+// Each timeframe is analysed SELF-CONTAINED: a 15m gap is judged against 15m swings,
+// a 1H gap against 1H swings. Results display on any chart below them, so 1m / 30s /
+// 15s all show the same thing.
+//
+// A gap is AGREED when all three hold, on its own timeframe:
+//   1. it is an unmitigated fair value gap   (nothing else qualifies)
+//   2. unswept liquidity exists BEYOND it, on its own side   -> continuation branch
+//   3. unswept liquidity exists on the OPPOSITE side of price -> reversal branch
+//
+// The map goes stale as the session runs. New candles print new gaps, sweeps kill
+// pools. REASSESS lights up when either happens.
+//
+// Implementation note: nothing in this script uses a historical offset. HTF bars are
+// committed to a local ring buffer when their timestamp advances, and gaps and swings
+// are found from that buffer, so Pine is never asked to look deep into the past.
+
+// ------------------------------------------------------------------ inputs
+
+gA = "Analysis Timeframes"
+i_e1 = input.bool(true, "", inline = "t1", group = gA)
+i_t1 = input.timeframe("15", "", inline = "t1", group = gA)
+i_e2 = input.bool(true, "", inline = "t2", group = gA)
+i_t2 = input.timeframe("30", "", inline = "t2", group = gA)
+i_e3 = input.bool(true, "", inline = "t3", group = gA)
+i_t3 = input.timeframe("60", "", inline = "t3", group = gA)
+
+i_pl  = input.int(4, "Swing Left Bars", minval = 1, maxval = 20, group = gA, tooltip = "In bars of each analysis timeframe, not your chart.")
+i_pr  = input.int(2, "Swing Right Bars", minval = 1, maxval = 20, group = gA, tooltip = "Confirmation lag in bars of each analysis timeframe.")
+i_min = input.float(0.0, "Min Gap Size (pts)", minval = 0.0, step = 0.25, group = gA)
+
+gL = "Limits"
+i_maxg = input.int(6,  "Gaps Kept Per Timeframe",  minval = 1, maxval = 20, group = gL, tooltip = "Over the cap, whatever sits furthest from price is dropped.")
+i_maxp = input.int(10, "Pools Kept Per Timeframe", minval = 2, maxval = 30, group = gL)
+
+gO = "Clear Path"
+i_clear = input.bool(true, "Require A Clear Path To The Target", group = gO, tooltip = "An agreed DOL must be the FIRST thing price meets in its direction. Anything in between - a session high, another gap, an unswept swing - is where the market decides instead, so the far level stops being inevitable.")
+i_sobs  = input.bool(true, "Count Session / Daily Levels As Obstacles", group = gO)
+i_tzO   = input.string("America/New_York", "Timezone", group = gO)
+i_asiaO = input.session("1800-0300", "Asia", group = gO)
+i_lonO  = input.session("0300-0830", "London", group = gO)
+
+gR = "Reassess"
+i_flash = input.int(30, "Hold Signal (chart bars)", minval = 1, group = gR)
+i_mark  = input.bool(true, "Mark Sweeps On Chart", group = gR)
+
+gD = "Display"
+i_only = input.bool(true,  "Only Nearest Agreed Each Side", group = gD)
+i_othr = input.bool(false, "Also Show Non-Agreed Gaps (faded)", group = gD)
+i_pool = input.bool(true,  "Show Liquidity Pools", group = gD)
+i_tbl  = input.bool(true,  "Show Panel", group = gD)
+i_ext  = input.int(300, "Box Left Extent (chart bars)", minval = 20, maxval = 1000, group = gD, tooltip = "How far back a box is anchored, in bars of YOUR chart. Boxes extend right regardless, so this is cosmetic. Anchoring further back than this makes Pine hold that many bars in memory and throws a historical-buffer error on low timeframes.")
+i_col  = input.color(#0a7f8c, "Agreed", group = gD)
+i_dim  = input.color(color.new(color.gray, 80), "Not Agreed", group = gD)
+i_plc  = input.color(color.new(#bf5700, 40), "Pools", group = gD)
+i_hot  = input.color(#c1121f, "Reassess", group = gD)
+
+tfNm(simple string tf) =>
+    tf == "D" ? "1D" : tf == "240" ? "4H" : tf == "120" ? "2H" : tf == "60" ? "1H" : tf + "m"
+
+nameOf(int k) => k == 0 ? tfNm(i_t1) : k == 1 ? tfNm(i_t2) : tfNm(i_t3)
+
+type Gap
+    float top
+    float bot
+    int   tf
+    int   bar
+    int   side   // 1 = sits above price, -1 = sits below price, fixed at creation
+
+type Pool
+    float px
+    int   tf
+    bool  hi
+
+var array<Gap>  gaps  = array.new<Gap>(0)
+var array<Pool> pools = array.new<Pool>(0)
+
+// ------------------------------------------------------------------ htf feed: zero lookback
+
+// NO historical offset here. Asking for high[1] inside request.security forces Pine
+// to look back however many chart bars ago the previous HTF bar began - across a
+// session gap that can be ~1400 bars on a 1m chart and ~5800 on a 15s chart, which
+// blows past the buffer limit. Requesting the live HTF bar costs zero lookback.
+f_req(simple string tf) =>
+    request.security(syminfo.tickerid, tf, [high, low, time], lookahead = barmerge.lookahead_off)
+
+[rhA, rlA, rtA] = f_req(i_t1)
+[rhB, rlB, rtB] = f_req(i_t2)
+[rhC, rlC, rtC] = f_req(i_t3)
+
+// A bar is committed only when its timestamp advances, i.e. once it has closed, so
+// nothing repaints even though we are reading the developing bar.
+// lookahead_off with NO offset already hands back the LAST CLOSED higher-timeframe
+// bar - that is the documented equivalent of high[1] with lookahead_on. So the moment
+// the timestamp advances, rh/rl ARE the bar that just closed. Buffering them and
+// releasing on the following change cost a whole extra HTF bar of delay.
+// isconfirmed keeps a realtime tick from being mistaken for a closed bar.
+f_commit(float rh, float rl, int rt) =>
+    var int cT = na
+    bool done = false
+    if barstate.isconfirmed and not na(rt) and (na(cT) or rt != cT)
+        done := true
+        cT := rt
+    [done, rh, rl]
+
+[cmA, chA, clA] = f_commit(rhA, rlA, rtA)
+[cmB, chB, clB] = f_commit(rhB, rlB, rtB)
+[cmC, chC, clC] = f_commit(rhC, rlC, rtC)
+
+// request.security cannot deliver a timeframe BELOW the chart's own. It does not
+// error, it returns junk - which is how a "15m gap" appears that no 15m chart has.
+// Any timeframe under the chart is switched off outright.
+tfOK1 = timeframe.in_seconds(i_t1) >= timeframe.in_seconds()
+tfOK2 = timeframe.in_seconds(i_t2) >= timeframe.in_seconds()
+tfOK3 = timeframe.in_seconds(i_t3) >= timeframe.in_seconds()
+
+freshA = i_e1 and tfOK1 and cmA
+freshB = i_e2 and tfOK2 and cmB
+freshC = i_e3 and tfOK3 and cmC
+
+// ------------------------------------------------------------------ trims
+
+f_trimGaps(int k) =>
+    int n = 0
+    if array.size(gaps) > 0
+        for i = 0 to array.size(gaps) - 1
+            if array.get(gaps, i).tf == k
+                n += 1
+    if n > i_maxg
+        int worst = -1
+        float wd = -1.0
+        for i = 0 to array.size(gaps) - 1
+            g = array.get(gaps, i)
+            if g.tf == k
+                d = math.min(math.abs(g.top - close), math.abs(g.bot - close))
+                if d > wd
+                    wd := d
+                    worst := i
+        if worst >= 0
+            array.remove(gaps, worst)
+
+f_trimPools(int k) =>
+    int n = 0
+    if array.size(pools) > 0
+        for i = 0 to array.size(pools) - 1
+            if array.get(pools, i).tf == k
+                n += 1
+    if n > i_maxp
+        int worst = -1
+        float wd = -1.0
+        for i = 0 to array.size(pools) - 1
+            p = array.get(pools, i)
+            if p.tf == k
+                d = math.abs(p.px - close)
+                if d > wd
+                    wd := d
+                    worst := i
+        if worst >= 0
+            array.remove(pools, worst)
+
+// ------------------------------------------------------------------ local htf ring buffers
+
+var array<float> hsA = array.new<float>(0)
+var array<float> lsA = array.new<float>(0)
+var array<float> hsB = array.new<float>(0)
+var array<float> lsB = array.new<float>(0)
+var array<float> hsC = array.new<float>(0)
+var array<float> lsC = array.new<float>(0)
+
+f_step(array<float> hs, array<float> ls, bool fresh, float hi, float lo, int k) =>
+    if fresh and not na(hi) and not na(lo)
+        array.push(hs, hi)
+        array.push(ls, lo)
+        cap = math.max(4, i_pl + i_pr + 1)
+        if array.size(hs) > cap
+            array.shift(hs)
+            array.shift(ls)
+        n = array.size(hs)
+
+        // fair value gap across the three most recent closed bars
+        if n >= 3
+            h3 = array.get(hs, n - 3)
+            l3 = array.get(ls, n - 3)
+            h1 = array.get(hs, n - 1)
+            l1 = array.get(ls, n - 1)
+            // bullish gap: price rallied away above it, so it sits BELOW  -> side -1
+            if l1 > h3 and (l1 - h3) >= i_min
+                array.push(gaps, Gap.new(l1, h3, k, bar_index, -1))
+                f_trimGaps(k)
+            // bearish gap: price dropped away below it, so it sits ABOVE -> side 1
+            if h1 < l3 and (l3 - h1) >= i_min
+                array.push(gaps, Gap.new(l3, h1, k, bar_index, 1))
+                f_trimGaps(k)
+
+        // swing at the position that just gained enough bars to its right
+        p = n - 1 - i_pr
+        if p >= i_pl
+            ch = array.get(hs, p)
+            cl = array.get(ls, p)
+            bool isH = true
+            bool isL = true
+            for j = p - i_pl to p + i_pr
+                if j != p
+                    if array.get(hs, j) >= ch
+                        isH := false
+                    if array.get(ls, j) <= cl
+                        isL := false
+            if isH
+                array.push(pools, Pool.new(ch, k, true))
+                f_trimPools(k)
+            if isL
+                array.push(pools, Pool.new(cl, k, false))
+                f_trimPools(k)
+
+f_step(hsA, lsA, freshA, chA, clA, 0)
+f_step(hsB, lsB, freshB, chB, clB, 1)
+f_step(hsC, lsC, freshC, chC, clC, 2)
+
+// ------------------------------------------------------------------ live invalidation
+
+bool sweptNow = false
+float sweptPx = na
+
+if array.size(pools) > 0
+    for i = array.size(pools) - 1 to 0
+        p = array.get(pools, i)
+        if (p.hi and high > p.px) or (not p.hi and low < p.px)
+            sweptNow := true
+            sweptPx := p.px
+            array.remove(pools, i)
+
+// A gap dies the moment price reaches its NEAR edge. Testing the near edge rather
+// than bar-range overlap means a gap price jumped clean over still gets killed.
+if array.size(gaps) > 0
+    for i = array.size(gaps) - 1 to 0
+        g = array.get(gaps, i)
+        reached = g.side == 1 ? high >= g.bot : low <= g.top
+        if reached or (high >= g.bot and low <= g.top)
+            array.remove(gaps, i)
+
+// ------------------------------------------------------------------ obstacles
+
+// Session and daily levels are NOT candidates here - an agreed DOL can only be an
+// unmitigated FVG. They are tracked purely as things that can stop price on the way.
+
+// previous day via the same zero-offset commit, NOT high[1] on the daily - that is a
+// ~1400 chart-bar lookback on a 1m chart and it is what threw the buffer errors
+var float pdhO = na
+var float pdlO = na
+[rdh, rdl, rdt] = f_req("D")
+[cmD, odh, odl] = f_commit(rdh, rdl, rdt)
+if cmD
+    pdhO := odh
+    pdlO := odl
+
+f_sessO(simple string spec) =>
+    var float rh = na
+    var float rl = na
+    var float fh = na
+    var float fl = na
+    inS = not na(time(timeframe.period, spec, i_tzO))
+    if inS and not inS[1]
+        rh := high
+        rl := low
+    else if inS
+        rh := math.max(rh, high)
+        rl := math.min(rl, low)
+    if not inS and inS[1]
+        fh := rh
+        fl := rl
+    [fh, fl]
+
+[oaH, oaL] = f_sessO(i_asiaO)
+[olH, olL] = f_sessO(i_lonO)
+
+var bool oaHs = false
+var bool oaLs = false
+var bool olHs = false
+var bool olLs = false
+
+if oaH != oaH[1]
+    oaHs := false
+if oaL != oaL[1]
+    oaLs := false
+if olH != olH[1]
+    olHs := false
+if olL != olL[1]
+    olLs := false
+
+if not na(oaH) and high > oaH
+    oaHs := true
+if not na(oaL) and low < oaL
+    oaLs := true
+if not na(olH) and high > olH
+    olHs := true
+if not na(olL) and low < olL
+    olLs := true
+
+var float dHiO = na
+var float dLoO = na
+if timeframe.change("D")
+    dHiO := high
+    dLoO := low
+else
+    dHiO := math.max(nz(dHiO, high), high)
+    dLoO := math.min(nz(dLoO, low), low)
+
+obs = array.new<float>(0)
+
+if i_clear
+    // every unswept swing, any timeframe
+    if array.size(pools) > 0
+        for i = 0 to array.size(pools) - 1
+            array.push(obs, array.get(pools, i).px)
+    // near edge of every other unmitigated gap, any timeframe
+    if array.size(gaps) > 0
+        for i = 0 to array.size(gaps) - 1
+            g = array.get(gaps, i)
+            array.push(obs, g.side == 1 ? g.bot : g.top)
+    if i_sobs
+        if not oaHs and not na(oaH)
+            array.push(obs, oaH)
+        if not oaLs and not na(oaL)
+            array.push(obs, oaL)
+        if not olHs and not na(olH)
+            array.push(obs, olH)
+        if not olLs and not na(olL)
+            array.push(obs, olL)
+        if not na(pdhO) and dHiO <= pdhO
+            array.push(obs, pdhO)
+        if not na(pdlO) and dLoO >= pdlO
+            array.push(obs, pdlO)
+
+// nothing strictly between price and the target. The target's own near edge is the
+// boundary and the comparison is strict, so it never blocks itself.
+f_clear(float target) =>
+    bool ok = true
+    if i_clear
+        lo = math.min(close, target)
+        hi = math.max(close, target)
+        if array.size(obs) > 0
+            for i = 0 to array.size(obs) - 1
+                p = array.get(obs, i)
+                if p > lo and p < hi
+                    ok := false
+                    break
+    ok
+
+// ------------------------------------------------------------------ single evaluation pass
+
+f_above(int k, float lvl) =>
+    bool r = false
+    if array.size(pools) > 0
+        for i = 0 to array.size(pools) - 1
+            p = array.get(pools, i)
+            if p.tf == k and p.hi and p.px > lvl
+                r := true
+                break
+    r
+
+f_below(int k, float lvl) =>
+    bool r = false
+    if array.size(pools) > 0
+        for i = 0 to array.size(pools) - 1
+            p = array.get(pools, i)
+            if p.tf == k and not p.hi and p.px < lvl
+                r := true
+                break
+    r
+
+agFlag = array.new<bool>(0)
+agByTf = array.new<int>(3, 0)
+gpByTf = array.new<int>(3, 0)
+int upI = -1
+int dnI = -1
+float upP = na
+float dnP = na
+
+if array.size(gaps) > 0
+    for i = 0 to array.size(gaps) - 1
+        g = array.get(gaps, i)
+        array.set(gpByTf, g.tf, array.get(gpByTf, g.tf) + 1)
+        bool ok = false
+        if g.bot > close
+            ok := f_above(g.tf, g.top) and f_below(g.tf, close) and f_clear(g.bot)
+        else if g.top < close
+            ok := f_below(g.tf, g.bot) and f_above(g.tf, close) and f_clear(g.top)
+        array.push(agFlag, ok)
+        if ok
+            array.set(agByTf, g.tf, array.get(agByTf, g.tf) + 1)
+            if g.bot > close and (na(upP) or g.bot < upP)
+                upP := g.bot
+                upI := i
+            if g.top < close and (na(dnP) or g.top > dnP)
+                dnP := g.top
+                dnI := i
+
+// ------------------------------------------------------------------ reassess signal
+
+var float lastUp = na
+var float lastDn = na
+var int   lastChg = na
+var string chgWhy = ""
+
+// did the level we were pointing at just get reached? lastUp/lastDn still hold the
+// previous bar's agreed levels at this point, so this catches the hit exactly once
+hitUp = not na(lastUp) and high >= lastUp
+hitDn = not na(lastDn) and low <= lastDn
+targetHit = hitUp or hitDn
+hitPx = hitUp ? lastUp : lastDn
+
+mapMoved = (na(upP) != na(lastUp)) or (na(dnP) != na(lastDn)) or (not na(upP) and upP != lastUp) or (not na(dnP) and dnP != lastDn)
+
+if targetHit or sweptNow or mapMoved
+    lastChg := bar_index
+    chgWhy := targetHit ? "TARGET HIT" : sweptNow ? "POOL SWEPT" : "MAP CHANGED"
+lastUp := upP
+lastDn := dnP
+
+hot = not na(lastChg) and bar_index - lastChg <= i_flash
+
+var array<label> swp = array.new<label>(0)
+if i_mark and sweptNow and barstate.isconfirmed
+    array.push(swp, label.new(bar_index, sweptPx, "swept", color = color.new(color.white, 100), textcolor = i_hot, style = label.style_label_left, size = size.tiny))
+    if array.size(swp) > 12
+        label.delete(array.shift(swp))
+
+// ------------------------------------------------------------------ draw
+
+var array<box>   bxs = array.new<box>(0)
+var array<label> lbs = array.new<label>(0)
+var array<line>  lns = array.new<line>(0)
+
+if barstate.islast
+    if array.size(bxs) > 0
+        for i = array.size(bxs) - 1 to 0
+            box.delete(array.get(bxs, i))
+            array.remove(bxs, i)
+    if array.size(lbs) > 0
+        for i = array.size(lbs) - 1 to 0
+            label.delete(array.get(lbs, i))
+            array.remove(lbs, i)
+    if array.size(lns) > 0
+        for i = array.size(lns) - 1 to 0
+            line.delete(array.get(lns, i))
+            array.remove(lns, i)
+
+    if array.size(gaps) > 0
+        for i = 0 to array.size(gaps) - 1
+            g = array.get(gaps, i)
+            ag = array.get(agFlag, i)
+            if ag ? (not i_only or i == upI or i == dnI) : i_othr
+                col = ag ? i_col : i_dim
+                // box stops at the current bar so the label sits clear of it
+                x1 = math.max(g.bar, bar_index - i_ext)
+                array.push(bxs, box.new(x1, g.top, bar_index + 1, g.bot, border_color = col, border_width = ag ? 2 : 1, bgcolor = color.new(col, ag ? 86 : 94)))
+                if ag
+                    edge = g.bot > close ? g.bot : g.top
+                    array.push(lbs, label.new(bar_index + 4, edge, "AGREED  " + nameOf(g.tf), color = color.new(color.white, 100), textcolor = col, style = label.style_label_left, size = size.small))
+
+    if i_pool and array.size(pools) > 0
+        for i = 0 to array.size(pools) - 1
+            p = array.get(pools, i)
+            array.push(lns, line.new(bar_index - 50, p.px, bar_index + 12, p.px, color = i_plc, style = line.style_dotted, extend = extend.right))
+
+// ------------------------------------------------------------------ panel
+
+var table tb = table.new(position.bottom_left, 3, 5, bgcolor = color.new(color.white, 10), frame_color = color.new(color.gray, 50), frame_width = 1, border_color = color.new(color.gray, 80), border_width = 1)
+
+if barstate.islast and i_tbl
+    table.cell(tb, 0, 0, "TF", text_size = size.tiny, text_halign = text.align_left, text_color = color.black)
+    table.cell(tb, 1, 0, "gaps", text_size = size.tiny, text_color = color.black)
+    table.cell(tb, 2, 0, "agreed", text_size = size.tiny, text_color = color.black)
+    for k = 0 to 2
+        enab = k == 0 ? i_e1 : k == 1 ? i_e2 : i_e3
+        good = k == 0 ? tfOK1 : k == 1 ? tfOK2 : tfOK3
+        on = enab and good
+        ag = array.get(agByTf, k)
+        table.cell(tb, 0, k + 1, enab and not good ? nameOf(k) + " !" : on ? nameOf(k) : "-", text_size = size.tiny, text_halign = text.align_left, text_color = enab and not good ? i_hot : on ? color.black : color.new(color.gray, 50))
+        table.cell(tb, 1, k + 1, on ? str.tostring(array.get(gpByTf, k)) : "", text_size = size.tiny, text_color = color.new(color.gray, 20))
+        table.cell(tb, 2, k + 1, on ? str.tostring(ag) : "", text_size = size.tiny, text_color = ag > 0 ? i_col : color.new(color.gray, 50))
+    table.cell(tb, 0, 4, hot ? "REASSESS" : "stable", text_size = size.tiny, text_halign = text.align_left, text_color = hot ? color.white : color.new(color.gray, 30), bgcolor = hot ? i_hot : color.new(color.white, 100))
+    table.cell(tb, 1, 4, hot ? chgWhy : "", text_size = size.tiny, text_color = color.white, bgcolor = hot ? i_hot : color.new(color.white, 100))
+    table.cell(tb, 2, 4, "", bgcolor = hot ? i_hot : color.new(color.white, 100))
+
+// ------------------------------------------------------------------ alerts
+
+// ------------------------------------------------------------------ alerts
+
+alertcondition(targetHit, "Agreed DOL hit", "AGREED: the agreed-upon draw on liquidity was reached - recalculating")
+alertcondition(sweptNow, "Pool swept - reassess", "AGREED: liquidity pool swept, the map has changed")
+alertcondition(mapMoved, "Agreed DOL changed", "AGREED: the agreed-upon draw on liquidity has changed")
+

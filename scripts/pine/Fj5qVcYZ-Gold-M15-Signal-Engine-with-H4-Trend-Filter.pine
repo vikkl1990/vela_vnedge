@@ -1,0 +1,372 @@
+//@version=6
+// Consultya Signal Indicator — v3.0 (Pine Script v6)
+
+indicator("Gold M15 Signal Engine with H4 Trend Filter", overlay=true, max_labels_count=500, max_lines_count=100)
+
+// ══════════════════════════════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════════════════════════════
+i_e20    = input.int(20,    "EMA 20",              group="Moving averages")
+i_e50    = input.int(50,    "EMA 50",              group="Moving averages")
+i_e200   = input.int(200,   "EMA 200",             group="Moving averages")
+i_swing  = input.int(7,     "Swing Length",        group="Support / resistance")
+i_maxS   = input.int(2,     "Max Supports",        group="Support / resistance")
+i_maxR   = input.int(2,     "Max Resistances",     group="Support / resistance")
+i_minD   = input.float(0.4, "Min Gap %",           group="Support / resistance")
+i_rsiP   = input.int(14,    "RSI Period",          group="Signal engine")
+i_cool   = input.int(5,     "Cooldown Bars",       group="Signal engine")
+i_brk    = input.int(10,    "Breakout Bars",       group="Signal engine")
+i_exp    = input.int(40,    "Expire Bars (0=off)", group="Signal engine")
+i_atrP   = input.int(14,    "ATR Period",          group="Targets and stop")
+i_tp1x   = input.float(0.8, "TP1 x ATR",           group="Targets and stop")
+i_tp2x   = input.float(1.8, "TP2 x ATR fallback",  group="Targets and stop")
+i_tp3x   = input.float(3.0, "TP3 x ATR",           group="Targets and stop")
+i_slPct  = input.float(0.35,"Max SL %",            group="Targets and stop")
+i_h4     = input.bool(true, "H4 trend filter",     group="Higher-timeframe filter", tooltip="Only allow 15-minute signals that agree with the 4-hour trend. Blocks counter-trend entries.")
+
+// ══════════════════════════════════════════════════════════════
+// CORE INDICATORS
+// ══════════════════════════════════════════════════════════════
+ema20  = ta.ema(close, i_e20)
+ema50  = ta.ema(close, i_e50)
+ema200 = ta.ema(close, i_e200)
+rsiVal = ta.rsi(close, i_rsiP)
+atrVal = ta.atr(i_atrP)
+
+plot(ema20,  "EMA 20",  color=color.yellow, linewidth=1)
+plot(ema50,  "EMA 50",  color=#1E90FF,      linewidth=2)
+plot(ema200, "EMA 200", color=color.red,    linewidth=2)
+
+// ══════════════════════════════════════════════════════════════
+// H4 TREND FILTER
+// ══════════════════════════════════════════════════════════════
+h4_ema200    = request.security(syminfo.tickerid, "240", ta.ema(close, 200), lookahead=barmerge.lookahead_off)
+h4_close     = request.security(syminfo.tickerid, "240", close,              lookahead=barmerge.lookahead_off)
+h4_uptrend   = h4_close > h4_ema200
+h4_downtrend = h4_close < h4_ema200
+h4_buy_ok    = not i_h4 or h4_uptrend
+h4_sell_ok   = not i_h4 or h4_downtrend
+plot(h4_ema200, "H4 EMA 200", color=color.new(color.purple, 50), linewidth=1, style=plot.style_stepline)
+
+// ══════════════════════════════════════════════════════════════
+// M15 GUARD
+// ══════════════════════════════════════════════════════════════
+is_m15 = timeframe.period == "15"
+if not is_m15 and barstate.islast
+    label.new(bar_index, high, "Consultya: this script runs on the 15-minute timeframe only", color=color.yellow, textcolor=color.black, style=label.style_label_down, size=size.normal)
+
+// ══════════════════════════════════════════════════════════════
+// SUPPORT / RESISTANCE DETECTION
+// ══════════════════════════════════════════════════════════════
+var array<float> supArr  = array.new_float(0)
+var array<float> resArr  = array.new_float(0)
+var array<line>  supLns  = array.new_line(0)
+var array<line>  resLns  = array.new_line(0)
+
+f_near(arr, lvl, gap) =>
+    found = false
+    n = array.size(arr)
+    if n > 0
+        for j = 0 to n - 1
+            if math.abs(array.get(arr, j) - lvl) < gap
+                found := true
+                break
+    found
+
+ph = ta.pivothigh(high, i_swing, i_swing)
+pl = ta.pivotlow(low,   i_swing, i_swing)
+
+if not na(ph) and is_m15
+    gap = close * i_minD / 100.0
+    if ph > close and not f_near(resArr, ph, gap)
+        if array.size(resArr) >= i_maxR
+            line.delete(array.shift(resLns))
+            array.shift(resArr)
+        array.push(resArr, ph)
+        ln = line.new(bar_index - i_swing, ph, bar_index, ph, extend=extend.right, color=color.new(#FF4500, 20), style=line.style_dashed, width=1)
+        array.push(resLns, ln)
+
+if not na(pl) and is_m15
+    gap = close * i_minD / 100.0
+    if pl < close and not f_near(supArr, pl, gap)
+        if array.size(supArr) >= i_maxS
+            line.delete(array.shift(supLns))
+            array.shift(supArr)
+        array.push(supArr, pl)
+        ln = line.new(bar_index - i_swing, pl, bar_index, pl, extend=extend.right, color=color.new(color.lime, 20), style=line.style_solid, width=1)
+        array.push(supLns, ln)
+
+// ══════════════════════════════════════════════════════════════
+// SIGNAL STATE
+// ══════════════════════════════════════════════════════════════
+var int   lastSig  = -999
+var bool  sigOn    = false
+var bool  sigBuy   = true
+var float sigEntry = na
+var float sigSL    = na
+var float sigTP1   = na
+var float sigTP2   = na
+var float sigTP3   = na
+var int   sigBar   = -1
+var bool  sigDone  = false
+var bool  t1Hit    = false
+var bool  t2Hit    = false
+
+// ══════════════════════════════════════════════════════════════
+// INFO PANEL
+// ══════════════════════════════════════════════════════════════
+var table pnl = table.new(position.top_right, 2, 10, bgcolor=#0D1117, border_width=1, border_color=#2A2D4A, frame_width=2, frame_color=#2A2D4A)
+
+// ══════════════════════════════════════════════════════════════
+// HELPERS
+// ══════════════════════════════════════════════════════════════
+f_nearestAbove(tp) =>
+    float best = na
+    n = array.size(resArr)
+    if n > 0
+        for j = 0 to n - 1
+            v = array.get(resArr, j)
+            if v > tp and (na(best) or v < best)
+                best := v
+    best
+
+f_nearestBelow(tp) =>
+    float best = na
+    n = array.size(supArr)
+    if n > 0
+        for j = 0 to n - 1
+            v = array.get(supArr, j)
+            if v < tp and (na(best) or v > best)
+                best := v
+    best
+
+f_tps(isBuy, price, base, rng, atr) =>
+    maxSL = price * (i_slPct / 100.0)
+    sl_   = isBuy ? base - math.min(rng * 0.5, maxSL) : base + math.min(rng * 0.5, maxSL)
+    tp1_  = isBuy ? price + atr * i_tp1x : price - atr * i_tp1x
+    nr    = f_nearestAbove(tp1_)
+    ns    = f_nearestBelow(tp1_)
+    tp2_  = isBuy ? (not na(nr) and nr > tp1_ ? nr : price + atr * i_tp2x) : (not na(ns) and ns < tp1_ ? ns : price - atr * i_tp2x)
+    tp3r  = isBuy ? price + atr * i_tp3x : price - atr * i_tp3x
+    tp3_  = isBuy ? (tp3r <= tp2_ ? tp2_ + (tp2_ - price) * 0.5 : tp3r) : (tp3r >= tp2_ ? tp2_ - (price - tp2_) * 0.5 : tp3r)
+    [sl_, tp1_, tp2_, tp3_]
+
+// ══════════════════════════════════════════════════════════════
+// MAIN LOGIC — evaluated on confirmed bars only (no repainting)
+// ══════════════════════════════════════════════════════════════
+if is_m15 and barstate.isconfirmed
+
+    rng = high - low
+
+    // ── Track the outcome of the active signal ───────────────────────────
+    if sigOn and not sigDone and sigBar >= 0 and bar_index > sigBar
+
+        if sigBuy
+            if low <= sigSL
+                label.new(bar_index, sigSL, "X SL", color=#C83C3C, textcolor=color.white, style=label.style_label_up, size=size.tiny)
+                sigOn   := false
+                sigDone := true
+
+            else if high >= sigTP3
+                if not t1Hit
+                    label.new(bar_index, sigTP1, ">> TP1", color=#00C8A0, textcolor=color.black, style=label.style_label_down, size=size.tiny)
+                    t1Hit := true
+                if not t2Hit
+                    label.new(bar_index, sigTP2, ">> TP2", color=#00D0A8, textcolor=color.black, style=label.style_label_down, size=size.tiny)
+                    t2Hit := true
+                label.new(bar_index, sigTP3, ">> TP3", color=#00EB78, textcolor=color.black, style=label.style_label_down, size=size.tiny)
+                sigDone := true
+
+            else if not t2Hit and high >= sigTP2
+                if not t1Hit
+                    label.new(bar_index, sigTP1, ">> TP1", color=#00C8A0, textcolor=color.black, style=label.style_label_down, size=size.tiny)
+                    t1Hit := true
+                    sigSL := sigEntry
+                label.new(bar_index, sigTP2, ">> TP2", color=#00D0A8, textcolor=color.black, style=label.style_label_down, size=size.tiny)
+                t2Hit := true
+                sigSL := sigTP1
+
+            else if not t1Hit and high >= sigTP1
+                label.new(bar_index, sigTP1, ">> TP1", color=#00C8A0, textcolor=color.black, style=label.style_label_down, size=size.tiny)
+                t1Hit := true
+                sigSL := sigEntry
+
+        else
+            if high >= sigSL
+                label.new(bar_index, sigSL, "X SL", color=#C83C3C, textcolor=color.white, style=label.style_label_down, size=size.tiny)
+                sigOn   := false
+                sigDone := true
+
+            else if low <= sigTP3
+                if not t1Hit
+                    label.new(bar_index, sigTP1, ">> TP1", color=#00C8A0, textcolor=color.black, style=label.style_label_up, size=size.tiny)
+                    t1Hit := true
+                if not t2Hit
+                    label.new(bar_index, sigTP2, ">> TP2", color=#00D0A8, textcolor=color.black, style=label.style_label_up, size=size.tiny)
+                    t2Hit := true
+                label.new(bar_index, sigTP3, ">> TP3", color=#00EB78, textcolor=color.black, style=label.style_label_up, size=size.tiny)
+                sigDone := true
+
+            else if not t2Hit and low <= sigTP2
+                if not t1Hit
+                    label.new(bar_index, sigTP1, ">> TP1", color=#00C8A0, textcolor=color.black, style=label.style_label_up, size=size.tiny)
+                    t1Hit := true
+                    sigSL := sigEntry
+                label.new(bar_index, sigTP2, ">> TP2", color=#00D0A8, textcolor=color.black, style=label.style_label_up, size=size.tiny)
+                t2Hit := true
+                sigSL := sigTP1
+
+            else if not t1Hit and low <= sigTP1
+                label.new(bar_index, sigTP1, ">> TP1", color=#00C8A0, textcolor=color.black, style=label.style_label_up, size=size.tiny)
+                t1Hit := true
+                sigSL := sigEntry
+
+    // ── Signal detection ─────────────────────────────────────────────────
+    canSig   = bar_index - lastSig >= i_cool
+    actBuy   = sigOn and not sigDone and     sigBuy
+    actSell  = sigOn and not sigDone and not sigBuy
+
+    fire_buy  = false
+    fire_sell = false
+    buy_base  = low
+    sell_base = high
+    buy_clr   = color.lime
+    sell_clr  = color.orange
+
+    if canSig
+        upTrd   = ema20 > ema50
+        dnTrd   = ema20 < ema50
+        abv200  = close > ema200
+        blw200  = close < ema200
+        strongU = rng > 0 and (close - low)  >= rng * 0.55
+        strongD = rng > 0 and (high - close) >= rng * 0.55
+        rsiOk   = rsiVal >= 35.0 and rsiVal <= 65.0
+
+        // Signal 1: EMA pullback
+        if upTrd and abv200 and low <= ema20 and close > ema20 and strongU and rsiOk and h4_buy_ok and not actBuy
+            fire_buy := true
+            buy_base := low
+            buy_clr  := color.lime
+
+        else if dnTrd and blw200 and high >= ema20 and close < ema20 and strongD and rsiOk and h4_sell_ok and not actSell
+            fire_sell := true
+            sell_base := high
+            sell_clr  := color.orange
+
+        // Signal 2: SR reaction
+        if not fire_buy and not fire_sell
+            tol = close * 0.0015
+
+            n_s = array.size(supArr)
+            if n_s > 0
+                for j = 0 to n_s - 1
+                    lvl = array.get(supArr, j)
+                    if lvl < close and low <= lvl + tol and low >= lvl - tol * 2.0 and (close - low) >= rng * 0.55 and rsiVal < 60.0 and h4_buy_ok and not actBuy
+                        fire_buy := true
+                        buy_base := lvl
+                        buy_clr  := color.aqua
+                        break
+
+            if not fire_buy
+                n_r = array.size(resArr)
+                if n_r > 0
+                    for j = 0 to n_r - 1
+                        lvl = array.get(resArr, j)
+                        if lvl > close and high >= lvl - tol and high <= lvl + tol * 2.0 and (high - close) >= rng * 0.55 and rsiVal > 40.0 and h4_sell_ok and not actSell
+                            fire_sell := true
+                            sell_base := lvl
+                            sell_clr  := color.yellow
+                            break
+
+        // Signal 3: N-bar breakout
+        if not fire_buy and not fire_sell and bar_index >= i_brk + 1
+            hh = ta.highest(high, i_brk)[1]
+            ll = ta.lowest(low,   i_brk)[1]
+
+            if close > hh and rng > 0 and (close - low) >= rng * 0.5 and rsiVal < 70.0 and h4_buy_ok and not actBuy
+                fire_buy  := true
+                buy_base  := low
+                buy_clr   := color.white
+            else if close < ll and rng > 0 and (high - close) >= rng * 0.5 and rsiVal > 30.0 and h4_sell_ok and not actSell
+                fire_sell := true
+                sell_base := high
+                sell_clr  := color.fuchsia
+
+    // ── Emit the signal and store its levels ─────────────────────────────
+    if fire_buy
+        [sl_, tp1_, tp2_, tp3_] = f_tps(true, close, buy_base, rng, atrVal)
+        off = close * 0.002
+        tip = "Entry: " + str.tostring(close, format.mintick) + "  SL: " + str.tostring(sl_, format.mintick) + "  TP1: " + str.tostring(tp1_, format.mintick)
+        label.new(bar_index, buy_base - off, "", color=buy_clr, style=label.style_arrowup, size=size.small, tooltip=tip)
+        sigOn    := true
+        sigBuy   := true
+        sigEntry := close
+        sigSL    := sl_
+        sigTP1   := tp1_
+        sigTP2   := tp2_
+        sigTP3   := tp3_
+        sigBar   := bar_index
+        sigDone  := false
+        t1Hit    := false
+        t2Hit    := false
+        lastSig  := bar_index
+
+    if fire_sell and not fire_buy
+        [sl_, tp1_, tp2_, tp3_] = f_tps(false, close, sell_base, rng, atrVal)
+        off = close * 0.002
+        tip = "Entry: " + str.tostring(close, format.mintick) + "  SL: " + str.tostring(sl_, format.mintick) + "  TP1: " + str.tostring(tp1_, format.mintick)
+        label.new(bar_index, sell_base + off, "", color=sell_clr, style=label.style_arrowdown, size=size.small, tooltip=tip)
+        sigOn    := true
+        sigBuy   := false
+        sigEntry := close
+        sigSL    := sl_
+        sigTP1   := tp1_
+        sigTP2   := tp2_
+        sigTP3   := tp3_
+        sigBar   := bar_index
+        sigDone  := false
+        t1Hit    := false
+        t2Hit    := false
+        lastSig  := bar_index
+
+// ══════════════════════════════════════════════════════════════
+// PANEL UPDATE — refreshes on the last bar
+// ══════════════════════════════════════════════════════════════
+if is_m15 and barstate.islast and sigOn
+    barsEl   = bar_index - sigBar
+    expired  = i_exp > 0 and barsEl >= i_exp
+
+    stat_txt = expired ? "-- Expired" : sigDone ? ">> TP3 hit - signal complete" : t2Hit ? ">> TP2 hit - SL moved to TP1" : t1Hit ? ">> TP1 hit - SL moved to entry" : "Active"
+    stat_clr = expired ? #808080 : sigDone ? #00EB78 : t2Hit ? #00D0A0 : t1Hit ? #00C0B0 : #50B450
+
+    dir_txt = sigBuy ? "BUY  +" : "SELL  -"
+    dir_clr = sigBuy ? #00D25A  : #DC3C3C
+
+    sl_lbl  = str.tostring(sigSL, format.mintick) + (t2Hit ? " [TP1]" : t1Hit ? " [BE]" : "")
+
+    hdr_bg  = #1A1E3A
+    row_bg  = #0D1117
+    dir_bg  = sigBuy ? #003A18 : #3A0010
+
+    table.cell(pnl, 0, 0, "CONSULTYA", text_color=#8AB4FF, text_size=size.normal, bgcolor=hdr_bg, text_halign=text.align_left)
+    table.cell(pnl, 1, 0, "",          text_color=#8AB4FF, text_size=size.normal, bgcolor=hdr_bg)
+    table.cell(pnl, 0, 1, dir_txt,     text_color=dir_clr, text_size=size.large, bgcolor=dir_bg, text_halign=text.align_center)
+    table.cell(pnl, 1, 1, "",          text_color=dir_clr, text_size=size.large, bgcolor=dir_bg)
+    table.cell(pnl, 0, 2, "Entry",     text_color=#BBBBBB, text_size=size.normal, bgcolor=row_bg, text_halign=text.align_left)
+    table.cell(pnl, 1, 2, str.tostring(sigEntry, format.mintick), text_color=color.white, text_size=size.normal, bgcolor=row_bg, text_halign=text.align_right)
+    table.cell(pnl, 0, 3, "SL",        text_color=#FF6060, text_size=size.normal, bgcolor=row_bg, text_halign=text.align_left)
+    table.cell(pnl, 1, 3, sl_lbl,      text_color=#FF8080, text_size=size.normal, bgcolor=row_bg, text_halign=text.align_right)
+    table.cell(pnl, 0, 4, "TP1",       text_color=#BBBBBB, text_size=size.normal, bgcolor=row_bg, text_halign=text.align_left)
+    table.cell(pnl, 1, 4, str.tostring(sigTP1, format.mintick), text_color=#64C8FF, text_size=size.normal, bgcolor=row_bg, text_halign=text.align_right)
+    table.cell(pnl, 0, 5, "TP2",       text_color=#BBBBBB, text_size=size.normal, bgcolor=row_bg, text_halign=text.align_left)
+    table.cell(pnl, 1, 5, str.tostring(sigTP2, format.mintick), text_color=#00E5CC, text_size=size.normal, bgcolor=row_bg, text_halign=text.align_right)
+    table.cell(pnl, 0, 6, "TP3",       text_color=#BBBBBB, text_size=size.normal, bgcolor=row_bg, text_halign=text.align_left)
+    table.cell(pnl, 1, 6, str.tostring(sigTP3, format.mintick), text_color=#00FF88, text_size=size.normal, bgcolor=row_bg, text_halign=text.align_right)
+    table.cell(pnl, 0, 7, "Bar",       text_color=#555577, text_size=size.small,  bgcolor=row_bg, text_halign=text.align_left)
+    table.cell(pnl, 1, 7, str.tostring(sigBar), text_color=#555577, text_size=size.small, bgcolor=row_bg, text_halign=text.align_right)
+    table.cell(pnl, 0, 8, stat_txt,    text_color=stat_clr, text_size=size.normal, bgcolor=hdr_bg, text_halign=text.align_left)
+    table.cell(pnl, 1, 8, "",          text_color=stat_clr, text_size=size.normal, bgcolor=hdr_bg)
+    h4_lbl = not i_h4 ? "H4 OFF" : h4_uptrend ? "H4 uptrend" : "H4 downtrend"
+    h4_clr = not i_h4 ? #555555 : h4_uptrend  ? #00C853     : #FF1744
+    table.cell(pnl, 0, 9, h4_lbl,      text_color=h4_clr, text_size=size.small, bgcolor=#0A0D15, text_halign=text.align_left)
+    table.cell(pnl, 1, 9, "",          text_color=h4_clr, text_size=size.small, bgcolor=#0A0D15)

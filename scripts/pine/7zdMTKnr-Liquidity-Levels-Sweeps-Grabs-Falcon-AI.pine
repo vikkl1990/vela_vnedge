@@ -1,0 +1,133 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © thefalconai
+
+//@version=6
+// ============================================================================
+//  FALCON AI — LIQUIDITY LEVELS, SWEEPS & GRABS  [FREE]
+//  A free ICT / Smart-Money tool.
+//
+//  Price hunts liquidity. This tool draws the pools it hunts — the Previous
+//  Day and Previous Week highs & lows — and flags the TWO ways each pool is taken:
+//
+//   • SWEEP — price runs BEYOND the level, can hover/consolidate there, then
+//             closes BACK through it over one or more candles (the stop-run reversal).
+//   • GRAB  — a SINGLE candle spikes a large wick beyond the level and snaps back
+//             inside with a small body (doji-like rejection — taken in one bar).
+//
+//  • Previous Day High / Low   (PDH / PDL)
+//  • Previous Week High / Low  (PWH / PWL)
+//  • Live SWEEP + GRAB markers and alerts the moment a pool is taken
+//
+//  Educational only — not financial advice. Your entries are your call.
+
+// ============================================================================
+
+indicator("Liquidity Levels, Sweeps & Grabs | Falcon AI", "Falcon Liquidity", overlay=true, max_lines_count=100, max_labels_count=200)
+
+// ─────────────────────────────  INPUTS  ─────────────────────────────────────
+gD = "Previous Day"
+showPD = input.bool(true,  "Show Previous Day high / low", group=gD)
+colPD  = input.color(#c8a84b, "Day color", group=gD)
+
+gW = "Previous Week"
+showPW = input.bool(true,  "Show Previous Week high / low", group=gW)
+colPW  = input.color(#4a8fff, "Week color", group=gW)
+
+gS = "Sweeps & Grabs"
+showSweep = input.bool(true, "Flag liquidity SWEEPS (multi-candle reversal)", group=gS, tooltip="Price runs beyond the level, can consolidate there, then closes back through it over one or more bars.")
+showGrab  = input.bool(true, "Flag liquidity GRABS (single-candle rejection)", group=gS, tooltip="One candle wicks beyond the level and closes back inside with a small body — a doji-like stop hunt.")
+grabRatio = input.float(1.0, "Grab min wick : body ratio", minval=0.3, step=0.1, group=gS, tooltip="Higher = stricter / more doji-like. The wick beyond the level must be at least this many times the candle body.")
+colHi = input.color(#ff4a6b, "High marker (buy-side liquidity taken)", group=gS)
+colLo = input.color(#2dff9a, "Low marker (sell-side liquidity taken)", group=gS)
+
+gStyle = "Style"
+styleIn   = input.string("Dashed", "Line style", options=["Solid","Dashed","Dotted"], group=gStyle)
+showLabels= input.bool(true, "Show price labels", group=gStyle)
+showBadge = input.bool(true, "Show Falcon watermark", group=gStyle)
+
+lstyle = styleIn == "Solid" ? line.style_solid : styleIn == "Dotted" ? line.style_dotted : line.style_dashed
+
+// ────────────────  PRIOR-PERIOD LEVELS (non-repainting)  ─────────────────────
+// [1] + lookahead_on = the last COMPLETED day/week, fixed for the whole period.
+pdh = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_on)
+pdl = request.security(syminfo.tickerid, "D", low[1],  lookahead=barmerge.lookahead_on)
+pwh = request.security(syminfo.tickerid, "W", high[1], lookahead=barmerge.lookahead_on)
+pwl = request.security(syminfo.tickerid, "W", low[1],  lookahead=barmerge.lookahead_on)
+
+// ─────────────────────────  DRAW THE LEVELS  ────────────────────────────────
+f_draw(show, price, col, txt) =>
+    var line  ln = na
+    var label lb = na
+    if barstate.islast
+        line.delete(ln)
+        label.delete(lb)
+        if show and not na(price)
+            ln := line.new(bar_index - 400, price, bar_index, price, color=col, style=lstyle, width=1, extend=extend.right)
+            if showLabels
+                lb := label.new(bar_index, price, txt + "  " + str.tostring(price, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, textcolor=col, color=color.new(col, 88), size=size.small)
+
+f_draw(showPD, pdh, colPD, "PDH")
+f_draw(showPD, pdl, colPD, "PDL")
+f_draw(showPW, pwh, colPW, "PWH")
+f_draw(showPW, pwl, colPW, "PWL")
+
+// ─────────────────────────  SWEEPS & GRABS  ────────────────────────────────
+// SWEEP = the level was pierced on an EARLIER bar (price may consolidate beyond it)
+//         and price now CLOSES back through it — a multi-candle reversal.
+// GRAB  = a SINGLE candle wicks beyond the level and closes back inside with a small
+//         body (doji-like). Grab and sweep are mutually exclusive per level.
+f_high(lvl) =>
+    var bool armed = false
+    var int  pierceBar = na
+    wasArmed = armed
+    upWick = high - math.max(open, close)
+    body   = math.abs(close - open)
+    grab   = not na(lvl) and high > lvl and close < lvl and upWick >= body * grabRatio and not wasArmed
+    if not na(lvl) and high > lvl and not armed
+        armed := true
+        pierceBar := bar_index
+    sweep = armed and not na(lvl) and close < lvl and bar_index > pierceBar
+    if sweep or grab
+        armed := false
+    [sweep, grab]
+
+f_low(lvl) =>
+    var bool armed = false
+    var int  pierceBar = na
+    wasArmed = armed
+    dnWick = math.min(open, close) - low
+    body   = math.abs(close - open)
+    grab   = not na(lvl) and low < lvl and close > lvl and dnWick >= body * grabRatio and not wasArmed
+    if not na(lvl) and low < lvl and not armed
+        armed := true
+        pierceBar := bar_index
+    sweep = armed and not na(lvl) and close > lvl and bar_index > pierceBar
+    if sweep or grab
+        armed := false
+    [sweep, grab]
+
+[pdhSw, pdhGr] = f_high(pdh)
+[pwhSw, pwhGr] = f_high(pwh)
+[pdlSw, pdlGr] = f_low(pdl)
+[pwlSw, pwlGr] = f_low(pwl)
+
+hiSweep = showSweep and (pdhSw or pwhSw)
+loSweep = showSweep and (pdlSw or pwlSw)
+hiGrab  = showGrab  and (pdhGr or pwhGr)
+loGrab  = showGrab  and (pdlGr or pwlGr)
+
+plotshape(hiSweep, "High swept", shape.triangledown, location.abovebar, colHi, text="SWEEP", textcolor=colHi, size=size.tiny)
+plotshape(loSweep, "Low swept",  shape.triangleup,   location.belowbar, colLo, text="SWEEP", textcolor=colLo, size=size.tiny)
+plotshape(hiGrab,  "High grab",  shape.diamond,      location.abovebar, colHi, text="grab",  textcolor=colHi, size=size.tiny)
+plotshape(loGrab,  "Low grab",   shape.diamond,      location.belowbar, colLo, text="grab",  textcolor=colLo, size=size.tiny)
+
+alertcondition(hiSweep, "Liquidity sweep — high taken", "Falcon: HIGH swept (buy-side liquidity taken) on {{ticker}} {{interval}}")
+alertcondition(loSweep, "Liquidity sweep — low taken",  "Falcon: LOW swept (sell-side liquidity taken) on {{ticker}} {{interval}}")
+alertcondition(hiGrab,  "Liquidity grab — high wicked", "Falcon: HIGH grabbed (single-candle wick) on {{ticker}} {{interval}}")
+alertcondition(loGrab,  "Liquidity grab — low wicked",  "Falcon: LOW grabbed (single-candle wick) on {{ticker}} {{interval}}")
+
+// ─────────────────────────────  WATERMARK  ──────────────────────────────────
+var table badge = na
+if showBadge and barstate.islast and na(badge)
+    badge := table.new(position.bottom_right, 1, 1)
+    table.cell(badge, 0, 0, " FALCON AI", text_color=#c8a84b, text_size=size.small, bgcolor=color.new(#0a0c11, 15))

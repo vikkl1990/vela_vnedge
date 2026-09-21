@@ -1,0 +1,231 @@
+//@version=6
+// LDO-Swing v1.7 
+indicator("LDO-Swing v1.7", shorttitle="LDO-Swing v1.7", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// A swing is confirmed only after the final required moving-away candle closes.
+patternLayout = input.string(
+     "5-bar (2 + pivot + 2)",
+     "Pattern layout",
+     options=["5-bar (2 + pivot + 2)", "4-bar (pivot is second incoming)", "3-bar (1 + pivot + 1)"],
+     tooltip="5-bar: two incoming candles, a separate pivot, then two moving away.\n4-bar: the second incoming candle is also the pivot, so this mode is asymmetric.\n3-bar: one incoming candle, a separate pivot, then one moving away.")
+
+signalTimeframe      = input.timeframe("15", "Swing timeframe", tooltip="The timeframe used to calculate swings and level breaks, independently of the chart timeframe. The default is 15 minutes.")
+requireLocalExtreme = input.bool(true, "Apply structure-lookback filter")
+structureLookback   = input.int(10, "Structure lookback (bars)", minval=1, tooltip="A candidate SH must exceed the highs of this many bars before its pivot; a candidate SL must undercut their lows. Every required moving-away candle is also checked.")
+strictColours       = input.bool(true, "Treat doji candles as invalid")
+showHighLabels      = input.bool(true, "Show SH text boxes")
+showLowLabels       = input.bool(true, "Show SL text boxes")
+showLevels          = input.bool(true, "Show swing levels")
+extendVirginLevels  = input.bool(true, "Extend virgin levels right", tooltip="Unbroken levels extend into future chart space. Once broken, each ray becomes a finite line ending on the break candle.")
+breakBasis          = input.string("Wick", "Level invalidation", options=["Wick", "Close"], tooltip="Wick: a high/low through the level invalidates it.\nClose: price must close beyond the level.")
+alertRequiresClose  = input.bool(true, "Require candle close for alert", tooltip="Enabled: alert only after a candle on the selected Swing timeframe closes beyond the latest confirmed SH or SL. Disabled: a wick beyond the latest confirmed SH or SL qualifies. This setting is independent of Level invalidation above.")
+highColour          = input.color(color.red, "Swing-high colour")
+lowColour           = input.color(color.lime, "Swing-low colour")
+lineThickness       = input.int(1, "Level line thickness", minval=1, maxval=5)
+lineOpacity         = input.int(40, "Level line opacity (%)", minval=10, maxval=100, step=5, tooltip="TradingView's minimum physical line width is 1 pixel. Lower opacity makes a 1-pixel line appear finer without changing it to a dotted line.")
+
+isBull(int barsBack) =>
+    strictColours ? close[barsBack] > open[barsBack] : close[barsBack] >= open[barsBack]
+
+isBear(int barsBack) =>
+    strictColours ? close[barsBack] < open[barsBack] : close[barsBack] <= open[barsBack]
+
+// Calculates swing data in whichever timeframe context requests this function.
+sourceBarData() =>
+    bool fiveBar = patternLayout == "5-bar (2 + pivot + 2)"
+    bool fourBar = patternLayout == "4-bar (pivot is second incoming)"
+    int pivotOffset = fiveBar or fourBar ? 2 : 1
+
+    bool lowDirection = fiveBar
+         ? isBear(4) and isBear(3) and isBull(1) and isBull(0)
+         : fourBar
+           ? isBear(3) and isBear(2) and isBull(1) and isBull(0)
+           : isBear(2) and isBull(0)
+
+    bool highDirection = fiveBar
+         ? isBull(4) and isBull(3) and isBear(1) and isBear(0)
+         : fourBar
+           ? isBull(3) and isBull(2) and isBear(1) and isBear(0)
+           : isBull(2) and isBear(0)
+
+    float priorLowest = ta.lowest(low[pivotOffset + 1], structureLookback)
+    float priorHighest = ta.highest(high[pivotOffset + 1], structureLookback)
+    float outgoingLowest = ta.lowest(low, pivotOffset)
+    float outgoingHighest = ta.highest(high, pivotOffset)
+    bool lowIsExtreme = low[pivotOffset] < priorLowest and low[pivotOffset] < outgoingLowest
+    bool highIsExtreme = high[pivotOffset] > priorHighest and high[pivotOffset] > outgoingHighest
+    bool sourceSwingLow = lowDirection and (not requireLocalExtreme or lowIsExtreme)
+    bool sourceSwingHigh = highDirection and (not requireLocalExtreme or highIsExtreme)
+
+    [time, time_close, high, low, close, sourceSwingLow, sourceSwingHigh,
+     time[pivotOffset], low[pivotOffset], high[pivotOffset]]
+
+// Each confirmed swing gets its own solid level. Active levels advance one bar at
+// a time; after price breaks one, its endpoint remains fixed on the break candle.
+var array<line> activeLowLines = array.new<line>()
+var array<float> activeLowPrices = array.new<float>()
+var array<line> activeHighLines = array.new<line>()
+var array<float> activeHighPrices = array.new<float>()
+
+buildBreakMessage(string swingType, float levelPrice, float breakPrice) =>
+    string selectedTimeframe = signalTimeframe == "" ? timeframe.period : signalTimeframe
+    "Previous swing " + swingType + " was broken at " + str.tostring(breakPrice, format.mintick) +
+         ". Level: " + str.tostring(levelPrice, format.mintick) +
+         ". Symbol: " + syminfo.ticker + ". Swing timeframe: " + selectedTimeframe + "."
+
+// Processes one closed source-timeframe candle in chronological order.
+processSourceBar(int sourceTime, int sourceCloseTime, float sourceHigh, float sourceLow, float sourceClose,
+                 bool sourceSwingLow, bool sourceSwingHigh, int pivotTime, float pivotLow, float pivotHigh,
+                 float alertLowLevel, float alertHighLevel, bool lowAlertArmed, bool highAlertArmed) =>
+    float nextAlertLowLevel = alertLowLevel
+    float nextAlertHighLevel = alertHighLevel
+    bool nextLowAlertArmed = lowAlertArmed
+    bool nextHighAlertArmed = highAlertArmed
+
+    // Only the latest confirmed SH and latest confirmed SL are alert levels.
+    // They are checked before this bar's new swings are armed, so a newly
+    // printed level cannot break itself on its confirmation candle.
+    bool lowAlertBreak = nextLowAlertArmed and not na(nextAlertLowLevel) and
+         (alertRequiresClose ? sourceClose < nextAlertLowLevel : sourceLow < nextAlertLowLevel)
+    bool highAlertBreak = nextHighAlertArmed and not na(nextAlertHighLevel) and
+         (alertRequiresClose ? sourceClose > nextAlertHighLevel : sourceHigh > nextAlertHighLevel)
+    if lowAlertBreak
+        float lowBreakPrice = alertRequiresClose ? sourceClose : sourceLow
+        alert(buildBreakMessage("low", nextAlertLowLevel, lowBreakPrice), alert.freq_all)
+        nextLowAlertArmed := false
+    if highAlertBreak
+        float highBreakPrice = alertRequiresClose ? sourceClose : sourceHigh
+        alert(buildBreakMessage("high", nextAlertHighLevel, highBreakPrice), alert.freq_all)
+        nextHighAlertArmed := false
+
+    int lowIndex = array.size(activeLowLines) - 1
+    while lowIndex >= 0
+        line lowLine = array.get(activeLowLines, lowIndex)
+        float lowPrice = array.get(activeLowPrices, lowIndex)
+        line.set_x2(lowLine, sourceCloseTime)
+        bool isBroken = breakBasis == "Wick" ? sourceLow < lowPrice : sourceClose < lowPrice
+        if isBroken
+            line.set_extend(lowLine, extend.none)
+            line.set_x2(lowLine, sourceTime)
+            array.remove(activeLowLines, lowIndex)
+            array.remove(activeLowPrices, lowIndex)
+        lowIndex -= 1
+
+    int highIndex = array.size(activeHighLines) - 1
+    while highIndex >= 0
+        line highLine = array.get(activeHighLines, highIndex)
+        float highPrice = array.get(activeHighPrices, highIndex)
+        line.set_x2(highLine, sourceCloseTime)
+        bool isBroken = breakBasis == "Wick" ? sourceHigh > highPrice : sourceClose > highPrice
+        if isBroken
+            line.set_extend(highLine, extend.none)
+            line.set_x2(highLine, sourceTime)
+            array.remove(activeHighLines, highIndex)
+            array.remove(activeHighPrices, highIndex)
+        highIndex -= 1
+
+    if sourceSwingLow
+        nextAlertLowLevel := pivotLow
+        nextLowAlertArmed := true
+        if showLowLabels
+            label.new(pivotTime, pivotLow, "SL", xloc=xloc.bar_time, yloc=yloc.price,
+                 style=label.style_label_up, color=lowColour, textcolor=color.black, size=size.tiny)
+        if showLevels
+            color lowLineColour = color.new(lowColour, 100 - lineOpacity)
+            line newLowLine = line.new(pivotTime, pivotLow, sourceCloseTime, pivotLow,
+                 xloc=xloc.bar_time, extend=extendVirginLevels ? extend.right : extend.none,
+                 color=lowLineColour, style=line.style_solid, width=lineThickness)
+            array.push(activeLowLines, newLowLine)
+            array.push(activeLowPrices, pivotLow)
+
+    if sourceSwingHigh
+        nextAlertHighLevel := pivotHigh
+        nextHighAlertArmed := true
+        if showHighLabels
+            label.new(pivotTime, pivotHigh, "SH", xloc=xloc.bar_time, yloc=yloc.price,
+                 style=label.style_label_down, color=highColour, textcolor=color.white, size=size.tiny)
+        if showLevels
+            color highLineColour = color.new(highColour, 100 - lineOpacity)
+            line newHighLine = line.new(pivotTime, pivotHigh, sourceCloseTime, pivotHigh,
+                 xloc=xloc.bar_time, extend=extendVirginLevels ? extend.right : extend.none,
+                 color=highLineColour, style=line.style_solid, width=lineThickness)
+            array.push(activeHighLines, newHighLine)
+            array.push(activeHighPrices, pivotHigh)
+
+    [nextAlertLowLevel, nextAlertHighLevel, nextLowAlertArmed, nextHighAlertArmed]
+
+// An empty input value represents TradingView's "Chart" selection. Resolve it
+// explicitly so equal-timeframe requests never receive an ambiguous timeframe.
+string resolvedTimeframe = signalTimeframe == "" ? timeframe.period : signalTimeframe
+
+// request.security_lower_tf() preserves every source candle when, for example,
+// 15-minute swings are displayed on a 1-hour chart.
+[lowerTimes, lowerCloseTimes, lowerHighs, lowerLows, lowerCloses,
+ lowerSwingLows, lowerSwingHighs, lowerPivotTimes, lowerPivotLows, lowerPivotHighs] =
+     request.security_lower_tf(syminfo.tickerid, resolvedTimeframe, sourceBarData(), ignore_invalid_timeframe=true)
+
+// Higher-timeframe values are accepted only when their source candle has closed.
+[higherTime, higherCloseTime, higherHigh, higherLow, higherClose,
+ higherSwingLow, higherSwingHigh, higherPivotTime, higherPivotLow, higherPivotHigh] =
+     request.security(syminfo.tickerid, resolvedTimeframe, sourceBarData(),
+          gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+[chartSourceTime, chartSourceCloseTime, chartSourceHigh, chartSourceLow, chartSourceClose,
+ chartSwingLow, chartSwingHigh, chartPivotTime, chartPivotLow, chartPivotHigh] = sourceBarData()
+
+float sourceSeconds = timeframe.in_seconds(resolvedTimeframe)
+float chartSeconds = timeframe.in_seconds(timeframe.period)
+bool sourceIsStrictlyLower = sourceSeconds < chartSeconds
+bool sourceMatchesChart = resolvedTimeframe == timeframe.period
+
+var int lastProcessedSourceTime = na
+var float latestAlertLowLevel = na
+var float latestAlertHighLevel = na
+var bool latestLowAlertArmed = false
+var bool latestHighAlertArmed = false
+
+if sourceIsStrictlyLower
+    int intrabarCount = array.size(lowerTimes)
+    if intrabarCount > 0
+        for intrabarIndex = 0 to intrabarCount - 1
+            int sourceTime = array.get(lowerTimes, intrabarIndex)
+            int sourceCloseTime = array.get(lowerCloseTimes, intrabarIndex)
+            bool sourceBarConfirmed = barstate.isconfirmed or sourceCloseTime <= timenow
+            if sourceBarConfirmed and not na(sourceTime) and (na(lastProcessedSourceTime) or sourceTime != lastProcessedSourceTime)
+                [nextAlertLowLevel, nextAlertHighLevel, nextLowAlertArmed, nextHighAlertArmed] = processSourceBar(
+                     sourceTime,
+                     sourceCloseTime,
+                     array.get(lowerHighs, intrabarIndex),
+                     array.get(lowerLows, intrabarIndex),
+                     array.get(lowerCloses, intrabarIndex),
+                     array.get(lowerSwingLows, intrabarIndex),
+                     array.get(lowerSwingHighs, intrabarIndex),
+                     array.get(lowerPivotTimes, intrabarIndex),
+                     array.get(lowerPivotLows, intrabarIndex),
+                     array.get(lowerPivotHighs, intrabarIndex),
+                     latestAlertLowLevel, latestAlertHighLevel, latestLowAlertArmed, latestHighAlertArmed)
+                latestAlertLowLevel := nextAlertLowLevel
+                latestAlertHighLevel := nextAlertHighLevel
+                latestLowAlertArmed := nextLowAlertArmed
+                latestHighAlertArmed := nextHighAlertArmed
+                lastProcessedSourceTime := sourceTime
+else if sourceMatchesChart and barstate.isconfirmed and not na(chartSourceTime) and (na(lastProcessedSourceTime) or chartSourceTime != lastProcessedSourceTime)
+    [nextAlertLowLevel, nextAlertHighLevel, nextLowAlertArmed, nextHighAlertArmed] = processSourceBar(
+         chartSourceTime, chartSourceCloseTime, chartSourceHigh, chartSourceLow, chartSourceClose,
+         chartSwingLow, chartSwingHigh, chartPivotTime, chartPivotLow, chartPivotHigh,
+         latestAlertLowLevel, latestAlertHighLevel, latestLowAlertArmed, latestHighAlertArmed)
+    latestAlertLowLevel := nextAlertLowLevel
+    latestAlertHighLevel := nextAlertHighLevel
+    latestLowAlertArmed := nextLowAlertArmed
+    latestHighAlertArmed := nextHighAlertArmed
+    lastProcessedSourceTime := chartSourceTime
+else if barstate.isconfirmed and not na(higherTime) and time_close >= higherCloseTime and (na(lastProcessedSourceTime) or higherTime != lastProcessedSourceTime)
+    [nextAlertLowLevel, nextAlertHighLevel, nextLowAlertArmed, nextHighAlertArmed] = processSourceBar(
+         higherTime, higherCloseTime, higherHigh, higherLow, higherClose,
+         higherSwingLow, higherSwingHigh, higherPivotTime, higherPivotLow, higherPivotHigh,
+         latestAlertLowLevel, latestAlertHighLevel, latestLowAlertArmed, latestHighAlertArmed)
+    latestAlertLowLevel := nextAlertLowLevel
+    latestAlertHighLevel := nextAlertHighLevel
+    latestLowAlertArmed := nextLowAlertArmed
+    latestHighAlertArmed := nextHighAlertArmed
+    lastProcessedSourceTime := higherTime

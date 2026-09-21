@@ -1,0 +1,1392 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AttyLabs
+
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════════
+//   A T T Y   S T R A T E G Y   S E E K E R
+//   © 2026 Atty Labs.
+//
+//   Searches a few hundred to a few thousand simple strategies, ranks them, and
+//   then spends most of its panel explaining why the winner probably means
+//   nothing. That second half is the product.
+//
+//   Every strategy search has the same three problems. This one answers all three
+//   on screen instead of hiding them.
+//
+//   1. FILLS. A backtest that fills a stop AT the stop deletes its own left tail.
+//      Measured 2026-09-12: a signal printing +$60/trade on NQ at t = +5.24 —
+//      symmetric, stable across halves, consistent year by year, n = 1,566 — was
+//      entirely this artefact. 175 of 876 entries opened already through the
+//      level. Here a stop pays the WORSE of the level and the bar open, stop
+//      exits pay extra slippage, and the gap-through rate is printed as a
+//      first-class number rather than left invisible.
+//
+//   2. TIMING. A signal computed from a bar's close is not knowable until that
+//      close prints, so the fill is the NEXT bar's open by default. Trailing
+//      stops test the level carried in from the previous bar BEFORE ratcheting
+//      on this bar's close — the reverse order is the most common intrabar
+//      look-ahead in published strategy scripts and it always pays.
+//
+//   3. SELECTION. The best of N strategies is the maximum of N noisy draws, not
+//      an estimate of anything. The panel prints what the best of N scores on
+//      pure luck (Gumbel expected maximum and its 95% ceiling), what ALL N
+//      strategies did, and how the top K held up on a frozen holdout that was
+//      never used to rank them.
+//
+//   Nothing here is a performance claim. The leaderboard is labelled FITTED. The
+//   only forward-looking numbers on the panel are the walk-forward basket and
+//   the frozen holdout, and both are allowed to be ugly.
+// ═══════════════════════════════════════════════════════════════════════════════
+indicator("Atty Strategy Seeker", "ATTY SEEKER", overlay = false, max_bars_back = 1000, max_lines_count = 500, max_labels_count = 500, max_polylines_count = 8)
+
+// ───────────────────────────────────────────────────────────────────────────────
+// 1 · SEARCH
+// ───────────────────────────────────────────────────────────────────────────────
+string gS = "1 · Search"
+string sizeStr = input.string("Standard (768)", "Search size", options = ["Quick (288)", "Standard (768)", "Deep (1536)"], group = gS, tooltip = "Every strategy is entry signal x direction x exit rule x market filter. 24 entries, 8 exits, 6 filters. Bigger is not better: the larger the search, the higher the bar a winner must clear to mean anything, and the panel raises that bar for you.")
+int lastN = input.int(2500, "Test the last N bars", minval = 400, maxval = 20000, group = gS, tooltip = "Older bars are ignored. Fewer bars load faster and prove less.")
+int minTrades = input.int(30, "Minimum trades to qualify", minval = 10, maxval = 500, group = gS)
+bool profOnly = input.bool(false, "Only profitable strategies may rank", group = gS, tooltip = "OFF by design. Turning it on hides every loser, and the share of the search that lost money is the most informative number on this panel. If half of a random search is profitable, a profitable champion tells you nothing.")
+string dirMode = input.string("Long and short", "Directions", options = ["Long and short", "Long only", "Short only"], group = gS)
+string rankBy = input.string("t-stat of mean return", "Rank strategies by", options = ["t-stat of mean return", "Profit factor", "Net profit", "Expectancy", "Return / drawdown", "Win % (weak)"], group = gS, tooltip = "t-stat = sqrt(trades) x mean(R) / stdev(R). It is the only entry on this list the luck bar can be computed against, which is why it is the default. Win % is offered for completeness and is the easiest metric here to top by chance.")
+int followK = input.int(5, "Basket size K", minval = 1, maxval = 10, group = gS, tooltip = "The walk-forward basket equal-weights the K strategies that were top-ranked AT THE MOMENT each trade was entered. Following a single champion whipsaws.")
+string basketMode = input.string("Top K by score", "Basket composition", options = ["Top K by score", "Best of each concept family"], group = gS, tooltip = "Top K by score takes the K best whatever they are, which frequently means five dressings of the same idea — two RSI(2) variants and three moving-average crosses diversify nothing. Best of each concept family instead takes the single best RANGE, BREAKOUT, TREND, MOMENTUM and SHOCK strategy, so the legs are picked to be structurally different rather than individually best. Selection is still walk-forward: each family champion is re-chosen bar by bar and a trade only counts for the basket if its strategy was already the family champion before the trade existed.")
+float margin = input.float(25, "Champion hysteresis (%)", minval = 0, maxval = 200, step = 5, group = gS, tooltip = "A challenger takes the title only by beating the champion by this margin, so the crown does not flip on noise.")
+
+// ───────────────────────────────────────────────────────────────────────────────
+// 2 · EXECUTION REALISM — every default here makes the result worse and truer
+// ───────────────────────────────────────────────────────────────────────────────
+string gX = "2 · Execution realism"
+string execMode = input.string("Next bar open", "Fill entries at", options = ["Next bar open", "Signal bar close (optimistic)"], group = gX, tooltip = "A signal computed from a bar's close is not knowable until that close has printed. Filling AT it assumes a market-on-close order fired at the instant of the print. Next bar open is what you could actually have done. The optimistic setting exists so you can measure how much of an edge is this assumption alone.")
+float slipTicks = input.float(1.0, "Slippage per side (ticks)", minval = 0, maxval = 100, step = 0.25, group = gX)
+float stopSlip = input.float(2.0, "EXTRA slippage on stop exits (ticks)", minval = 0, maxval = 100, step = 0.25, group = gX, tooltip = "A stop is a marketable order fired into the move that triggered it. It slips more than anything else you do, and almost no backtest charges it for that.")
+float commPct = input.float(0.01, "Commission per side (%)", minval = 0, maxval = 1, step = 0.005, group = gX)
+bool gapCredit = input.bool(false, "Credit gap-through on targets", group = gX, tooltip = "OFF: a bar that gaps past a target fills AT the target, never at the better open. Stops always pay the worse of the level and the open whatever this is set to. The asymmetry is deliberate.")
+string bothHit = input.string("Stop first (conservative)", "When one bar hits both stop and target", options = ["Stop first (conservative)", "Target first (optimistic)"], group = gX, tooltip = "A 5-minute or daily bar does not record which came first. Stop first is the honest default. Switch it to see how much of the result rests on an assumption the data cannot settle — the panel reports how many exits were ambiguous.")
+int atrLen = input.int(14, "ATR length for stops and targets", minval = 2, maxval = 100, group = gX)
+float atrScale = input.float(1.0, "Scale all stop and target distances", minval = 0.25, maxval = 4.0, step = 0.25, group = gX)
+float trailMult = input.float(3.0, "Trailing stop distance (ATR)", minval = 0.5, maxval = 10.0, step = 0.5, group = gX)
+bool flatEOD = input.bool(false, "Force flat at a fixed time each day (intraday only)", group = gX, tooltip = "Closes any open position at the first bar at or after the time below, and blocks new entries from that time on, so nothing carries overnight. This is what separates a genuinely intraday result from one that merely holds few bars: a 20-bar hold on a 5-minute chart is 100 minutes, but without this it can still straddle the bell. Deliberately a CLOCK and not Pine session built-ins — ES trades a near-24-hour symbol session, so those fire once a day at 17:00 even on a chart displaying regular hours only, and a force-flat built on them silently never triggers.")
+string flatTz = input.string("America/New_York", "Exchange timezone", group = gX)
+int flatHour = input.int(15, "Flat at (hour)", minval = 0, maxval = 23, group = gX, inline = "flat")
+int flatMinute = input.int(45, "minute", minval = 0, maxval = 59, group = gX, inline = "flat")
+
+// ───────────────────────────────────────────────────────────────────────────────
+// 3 · EVIDENCE
+// ───────────────────────────────────────────────────────────────────────────────
+string gE = "3 · Evidence"
+int isPct = input.int(70, "In-sample share of the window (%)", minval = 30, maxval = 90, group = gE, tooltip = "The top K by in-sample score are FROZEN at this point and then tracked, with no re-ranking, across the remaining bars. That holdout figure is the closest thing on this panel to an out-of-sample result.")
+bool showLuck = input.bool(true, "Luck bar — what the best of N scores on noise", group = gE)
+bool showNull = input.bool(true, "The null — what all N strategies did", group = gE)
+bool showFill = input.bool(true, "Fill-realism diagnostics", group = gE)
+bool showVerdict = input.bool(true, "Verdict banner", group = gE)
+bool showFam = input.bool(true, "Concept-family basket breakdown", group = gE)
+int corrLen = input.int(1000, "Bars used for the leg-correlation estimate", minval = 100, maxval = 5000, group = gE, tooltip = "Diversification only works if the legs are actually uncorrelated. This correlates the five legs’ bar-by-bar exposure (-1 flat +1) pairwise and reports the average, alongside what the basket drawdown would have been had they moved as one.")
+
+// ───────────────────────────────────────────────────────────────────────────────
+// 4 · CHART
+// ───────────────────────────────────────────────────────────────────────────────
+string gP = "4 · Chart"
+int pick = input.int(1, "Leaderboard row to put on the chart", minval = 1, maxval = 10, group = gP)
+bool showLive = input.bool(true, "Draw the selected row's trades and open position", group = gP)
+int drawTr = input.int(30, "Draw its last N trades", minval = 5, maxval = 120, group = gP)
+bool showPos = input.bool(true, "Shade exposure", group = gP)
+string follow = input.string("Top-K basket", "Shading follows", options = ["Top-K basket", "Selected row"], group = gP)
+bool showTrade = input.bool(true, "Mark turns long / short / flat", group = gP)
+bool showHind = input.bool(true, "Stamp the hindsight warning on drawn trades", group = gP, tooltip = "The selected row's trades are on the chart BECAUSE they won. Leave this on.")
+
+// ───────────────────────────────────────────────────────────────────────────────
+// 5 · PANE
+// ───────────────────────────────────────────────────────────────────────────────
+string gD = "5 · Pane"
+bool showWF = input.bool(true, "Walk-forward basket (the honest curve)", group = gD)
+bool showOOS = input.bool(true, "Frozen holdout basket", group = gD)
+bool showChamp = input.bool(true, "Champion #1, fitted", group = gD)
+bool showSel = input.bool(false, "Selected row, fitted", group = gD)
+bool showBH = input.bool(true, "Buy and hold", group = gD)
+string benchSym = input.symbol("SP:SPX", "Buy-and-hold benchmark", group = gD, tooltip = "Defaults to the cash index rather than the chart symbol. A back-adjusted continuous futures series has correct price DIFFERENCES but distorted RATIOS, so a percent return taken off it is wrong. The cash index has no such problem.")
+string equityMode = input.string("Percent", "Pane units", options = ["Percent", "Dollars"], group = gD, tooltip = "Dollars restates every curve as an account starting at the balance below. Each leg is shown as if that leg alone had the whole balance; the basket splits the same balance equally across the legs, which is what makes their drawdowns comparable.")
+float startBal = input.float(100000, "Starting balance", minval = 100, step = 1000, group = gD)
+bool showLegs = input.bool(true, "Draw each basket leg separately", group = gD)
+bool showDD = input.bool(false, "Basket underwater", group = gD)
+bool shadeOOS = input.bool(true, "Shade the holdout region", group = gD)
+bool paneLog = input.bool(false, "Log scale", group = gD)
+
+// ───────────────────────────────────────────────────────────────────────────────
+// 6 · LOOK
+// ───────────────────────────────────────────────────────────────────────────────
+string gL = "6 · Look"
+string themeName = input.string("Obsidian", "Theme", options = ["Obsidian", "Porcelain", "Ember", "Glacier", "Mono", "Voltage"], group = gL)
+bool showDash = input.bool(true, "Leaderboard panel", group = gL)
+string dashPos = input.string("Top right", "Panel position", options = ["Top right", "Top left", "Top center", "Middle right", "Middle left", "Bottom right", "Bottom left", "Bottom center"], group = gL)
+int topRows = input.int(6, "Leaderboard rows", minval = 3, maxval = 10, group = gL)
+string tblSize = input.string("Auto", "Panel text", options = ["Auto", "Tiny", "Small", "Normal", "Large"], group = gL)
+bool useGlow = input.bool(true, "Glow under the basket curve", group = gL)
+bool ovrCol = input.bool(false, "Override theme colours", group = gL)
+color oLong = input.color(#2DD4BF, "Long", group = gL, inline = "o1")
+color oShort = input.color(#FF3B5C, "Short", group = gL, inline = "o1")
+color oWF = input.color(#60A5FA, "Basket", group = gL, inline = "o2")
+color oOOS = input.color(#F2A93B, "Holdout", group = gL, inline = "o2")
+color oChamp = input.color(#FBBF24, "Champion", group = gL, inline = "o3")
+color oSel = input.color(#A78BFA, "Selected", group = gL, inline = "o3")
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//   THEME ENGINE — inlined from atty-lib/atty_common.pine §11
+// ═══════════════════════════════════════════════════════════════════════════════
+type AttyTheme
+    color ink
+    color ink2
+    color dim
+    color surface
+    color surface2
+    color line
+    color pos
+    color neg
+    color warn
+    color r0
+    color r1
+    color r2
+    color r3
+    color r4
+
+f_theme(string preset) =>
+    AttyTheme t = switch preset
+        "Porcelain" => AttyTheme.new(#16211F, #4A5A57, #849691, #F4F6F3, #E9EDE8, #D3DBD6, #0E7A63, #B4462F, #9A6B12, #D7E7E0, #8FC7B6, #0E7A63, #C9A227, #B4462F)
+        "Ember"     => AttyTheme.new(#F0E7DC, #B29C86, #6E5E4E, #120E0B, #1A1511, #2B231C, #F2A93B, #E2574C, #F7D38A, #3A2416, #8A4A1E, #F2A93B, #F7D38A, #FFF1CF)
+        "Glacier"   => AttyTheme.new(#E9F0F7, #9DB2C6, #5C7186, #0B1119, #121A24, #1F2B38, #5FC3F0, #F06FA8, #FFD479, #12324D, #1E6B96, #5FC3F0, #B7E4F7, #F0FAFF)
+        "Mono"      => AttyTheme.new(#F2F2F2, #A8A8A8, #6A6A6A, #0D0D0D, #161616, #282828, #FFFFFF, #8C8C8C, #C4C4C4, #1E1E1E, #4A4A4A, #7A7A7A, #B5B5B5, #FFFFFF)
+        "Voltage"   => AttyTheme.new(#EAFBFF, #7FD4E8, #3E7C8C, #05080B, #0A1016, #14222B, #00E5C7, #FF3D7F, #FFE14D, #06303A, #0A7E86, #00E5C7, #9BFFDF, #FFFFFF)
+        => AttyTheme.new(#E8EDEC, #9FB0AE, #5E7370, #0E1514, #151E1D, #24302E, #46D6B4, #FF7A6B, #FFC65C, #1B4A55, #2A7E80, #46D6B4, #C8E6A0, #FFE08A)
+    t
+
+method ramp(AttyTheme t, float x01) =>
+    float x = math.max(0.0, math.min(1.0, nz(x01)))
+    color out = x < 0.25 ? color.from_gradient(x, 0.00, 0.25, t.r0, t.r1) : x < 0.50 ? color.from_gradient(x, 0.25, 0.50, t.r1, t.r2) : x < 0.75 ? color.from_gradient(x, 0.50, 0.75, t.r2, t.r3) : color.from_gradient(x, 0.75, 1.00, t.r3, t.r4)
+    out
+
+f_text_size(string mode) =>
+    string auto = timeframe.isseconds ? size.tiny : timeframe.isintraday and timeframe.multiplier <= 5 ? size.tiny : timeframe.isintraday and timeframe.multiplier <= 30 ? size.small : size.normal
+    switch mode
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        => auto
+
+f_position(string p) =>
+    switch p
+        "Top left"      => position.top_left
+        "Top center"    => position.top_center
+        "Middle right"  => position.middle_right
+        "Middle left"   => position.middle_left
+        "Bottom right"  => position.bottom_right
+        "Bottom left"   => position.bottom_left
+        "Bottom center" => position.bottom_center
+        => position.top_right
+
+AttyTheme TH = f_theme(themeName)
+color cLong  = ovrCol ? oLong  : TH.pos
+color cShort = ovrCol ? oShort : TH.neg
+color cWF    = ovrCol ? oWF    : TH.r2
+color cOOS   = ovrCol ? oOOS   : TH.warn
+color cBest  = ovrCol ? oChamp : TH.r3
+color cSel   = ovrCol ? oSel   : TH.r1
+color cUp    = TH.pos
+color cDown  = TH.neg
+color cBH    = TH.dim
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//   WILSON SCORE INTERVAL — inlined from atty-lib §9. Never print a rate without it.
+// ═══════════════════════════════════════════════════════════════════════════════
+f_wilson(int k, int n, float z) =>
+    float lo = 0.0
+    float hi = 1.0
+    if n > 0
+        float p = k / n
+        float d = 1.0 + z * z / n
+        float ctr = (p + z * z / (2 * n)) / d
+        float hw = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+        lo := math.max(0.0, ctr - hw)
+        hi := math.min(1.0, ctr + hw)
+    [lo, hi]
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//   THE LUCK BAR
+//
+//   The best of N strategies is the maximum of N draws. If none of them has any
+//   edge, that maximum is still a positive number — it grows like sqrt(2 ln N).
+//   The Gumbel limit for the maximum of N standard normals gives a location
+//   b_N = a_N - (ln ln N + ln 4pi) / 2 a_N,  a_N = sqrt(2 ln N),
+//   and the p-th quantile of the maximum is b_N + (-ln(-ln p)) / a_N.
+//
+//   Two honest caveats, both printed in the panel tooltip:
+//   - The N strategies here are heavily correlated (24 entry signals reused across
+//     exits and filters), so the effective independent count is well below N and
+//     the true bar sits BELOW this one. The test is therefore conservative in the
+//     direction of rejecting a real edge, not of passing a fake one.
+//   - The t-stat treats trade returns as independent and identically distributed.
+//     Overlapping trades and fat tails both inflate it.
+// ═══════════════════════════════════════════════════════════════════════════════
+f_hold_txt(float bars) =>
+    float secs = bars * timeframe.in_seconds()
+    string unit = secs < 3600 ? str.tostring(secs / 60, "#") + "m" : secs < 86400 ? str.tostring(secs / 3600, "#.#") + "h" : str.tostring(secs / 86400, "#.#") + "d"
+    str.tostring(bars, "#.#") + "b " + unit
+
+f_luck_typical(int n) =>
+    float a = math.sqrt(2 * math.log(math.max(n, 2)))
+    a - (math.log(math.log(math.max(n, 3))) + math.log(4 * math.pi)) / (2 * a)
+
+f_luck_ceiling(int n, float p) =>
+    float a = math.sqrt(2 * math.log(math.max(n, 2)))
+    f_luck_typical(n) + (-math.log(-math.log(p))) / a
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//   BUILDING BLOCKS — computed once per bar, shared by every strategy
+// ═══════════════════════════════════════════════════════════════════════════════
+int E = 24
+int XN = 8
+int FN = 6
+float tick = syminfo.mintick
+float atr = ta.atr(atrLen)
+float ema9 = ta.ema(close, 9)
+float ema21 = ta.ema(close, 21)
+float ema20 = ta.ema(close, 20)
+float ema50 = ta.ema(close, 50)
+float sma20 = ta.sma(close, 20)
+float sma50 = ta.sma(close, 50)
+float sma200 = ta.sma(close, 200)
+float rsi2 = ta.rsi(close, 2)
+float rsi14 = ta.rsi(close, 14)
+float bbDev = ta.stdev(close, 20)
+float hh10 = ta.highest(high, 10)[1]
+float ll10 = ta.lowest(low, 10)[1]
+float hh20 = ta.highest(high, 20)[1]
+float ll20 = ta.lowest(low, 20)[1]
+float hh55 = ta.highest(high, 55)[1]
+float ll55 = ta.lowest(low, 55)[1]
+[macdL, macdS, macdH] = ta.macd(close, 12, 26, 9)
+[st1Val, st1Dir] = ta.supertrend(3, 10)
+[st2Val, st2Dir] = ta.supertrend(2, 14)
+float stK = ta.sma(ta.stoch(close, high, low, 14), 3)
+bool inside = high[1] < high[2] and low[1] > low[2]
+[diP, diM, adx] = ta.dmi(14, 14)
+float wpr = ta.wpr(14)
+float ll10r = ta.lowest(low, 10)[2]
+float hh10r = ta.highest(high, 10)[2]
+float roc20 = ta.roc(close, 20)
+float volRank = ta.percentrank(atr / close, 100)
+
+// Time of day in the exchange's own timezone. Known in advance, so not look-ahead.
+int barMinOfDay = hour(time, flatTz) * 60 + minute(time, flatTz)
+bool pastFlat = flatEOD and barMinOfDay >= flatHour * 60 + flatMinute
+int dayNum = dayofmonth(time, flatTz)
+bool newDay = dayNum != nz(dayNum[1], dayNum)
+
+var longSig = array.new_bool(E, false)
+var shortSig = array.new_bool(E, false)
+array.set(longSig, 0, ta.crossover(ema9, ema21))
+array.set(shortSig, 0, ta.crossunder(ema9, ema21))
+array.set(longSig, 1, ta.crossover(close, sma20))
+array.set(shortSig, 1, ta.crossunder(close, sma20))
+array.set(longSig, 2, rsi2 < 10)
+array.set(shortSig, 2, rsi2 > 90)
+array.set(longSig, 3, ta.crossover(rsi14, 30))
+array.set(shortSig, 3, ta.crossunder(rsi14, 70))
+array.set(longSig, 4, close < sma20 - 2 * bbDev)
+array.set(shortSig, 4, close > sma20 + 2 * bbDev)
+array.set(longSig, 5, close > hh20)
+array.set(shortSig, 5, close < ll20)
+array.set(longSig, 6, close > hh55)
+array.set(shortSig, 6, close < ll55)
+array.set(longSig, 7, ta.crossover(macdH, 0))
+array.set(shortSig, 7, ta.crossunder(macdH, 0))
+array.set(longSig, 8, st1Dir < 0 and st1Dir[1] > 0)
+array.set(shortSig, 8, st1Dir > 0 and st1Dir[1] < 0)
+array.set(longSig, 9, ta.crossover(stK, 20))
+array.set(shortSig, 9, ta.crossunder(stK, 80))
+array.set(longSig, 10, inside and close > high[1])
+array.set(shortSig, 10, inside and close < low[1])
+array.set(longSig, 11, close < close[1] and close[1] < close[2] and close[2] < close[3])
+array.set(shortSig, 11, close > close[1] and close[1] > close[2] and close[2] > close[3])
+array.set(longSig, 12, adx > 20 and ta.crossover(diP, diM))
+array.set(shortSig, 12, adx > 20 and ta.crossunder(diP, diM))
+array.set(longSig, 13, wpr < -90)
+array.set(shortSig, 13, wpr > -10)
+array.set(longSig, 14, low[1] <= ll10r and close > high[1])
+array.set(shortSig, 14, high[1] >= hh10r and close < low[1])
+array.set(longSig, 15, open > high[1] and close > open)
+array.set(shortSig, 15, open < low[1] and close < open)
+array.set(longSig, 16, ta.crossover(ema20, ema50))
+array.set(shortSig, 16, ta.crossunder(ema20, ema50))
+array.set(longSig, 17, ta.crossover(close, sma50))
+array.set(shortSig, 17, ta.crossunder(close, sma50))
+array.set(longSig, 18, rsi2 < 5)
+array.set(shortSig, 18, rsi2 > 95)
+array.set(longSig, 19, ta.crossover(rsi14, 50))
+array.set(shortSig, 19, ta.crossunder(rsi14, 50))
+array.set(longSig, 20, close < sma20 - 2.5 * bbDev)
+array.set(shortSig, 20, close > sma20 + 2.5 * bbDev)
+array.set(longSig, 21, close > hh10)
+array.set(shortSig, 21, close < ll10)
+array.set(longSig, 22, ta.crossover(macdL, macdS))
+array.set(shortSig, 22, ta.crossunder(macdL, macdS))
+array.set(longSig, 23, st2Dir < 0 and st2Dir[1] > 0)
+array.set(shortSig, 23, st2Dir > 0 and st2Dir[1] < 0)
+
+fLong = array.from(true, close > sma200, volRank < 50, roc20 > 0, volRank > 50, close < sma200)
+fShort = array.from(true, close < sma200, volRank < 50, roc20 < 0, volRank > 50, close > sma200)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//   PLAIN-LANGUAGE NAMES
+// ═══════════════════════════════════════════════════════════════════════════════
+entryName(int e, int dir) =>
+    bool up = dir > 0
+    switch e
+        0 => up ? "EMA 9 crosses above EMA 21" : "EMA 9 crosses below EMA 21"
+        1 => up ? "close crosses above SMA 20" : "close crosses below SMA 20"
+        2 => up ? "RSI(2) oversold below 10" : "RSI(2) overbought above 90"
+        3 => up ? "RSI(14) climbs back above 30" : "RSI(14) falls back below 70"
+        4 => up ? "close below lower Bollinger 2s" : "close above upper Bollinger 2s"
+        5 => up ? "close above 20-bar high" : "close below 20-bar low"
+        6 => up ? "close above 55-bar high" : "close below 55-bar low"
+        7 => up ? "MACD histogram turns positive" : "MACD histogram turns negative"
+        8 => up ? "Supertrend (3,10) turns up" : "Supertrend (3,10) turns down"
+        9 => up ? "Stochastic climbs above 20" : "Stochastic falls below 80"
+        10 => up ? "inside bar, then break above it" : "inside bar, then break below it"
+        11 => up ? "3 falling closes in a row" : "3 rising closes in a row"
+        12 => up ? "ADX over 20, DI+ crosses above DI-" : "ADX over 20, DI- crosses above DI+"
+        13 => up ? "Williams %R below -90" : "Williams %R above -10"
+        14 => up ? "fresh 10-bar low, close above prior high" : "fresh 10-bar high, close below prior low"
+        15 => up ? "gap up that closes higher" : "gap down that closes lower"
+        16 => up ? "EMA 20 crosses above EMA 50" : "EMA 20 crosses below EMA 50"
+        17 => up ? "close crosses above SMA 50" : "close crosses below SMA 50"
+        18 => up ? "RSI(2) deeply oversold below 5" : "RSI(2) deeply overbought above 95"
+        19 => up ? "RSI(14) crosses above 50" : "RSI(14) crosses below 50"
+        20 => up ? "close below lower Bollinger 2.5s" : "close above upper Bollinger 2.5s"
+        21 => up ? "close above 10-bar high" : "close below 10-bar low"
+        22 => up ? "MACD line crosses above signal" : "MACD line crosses below signal"
+        => up ? "Supertrend (2,14) turns up" : "Supertrend (2,14) turns down"
+
+exitName(int x) =>
+    switch x
+        0 => "exit after 5 bars"
+        1 => "exit after 10 bars"
+        2 => "exit after 20 bars"
+        3 => "stop 2 ATR · target 3 ATR"
+        4 => "trailing stop " + str.tostring(trailMult, "#.#") + " ATR"
+        5 => "exit on the reverse signal"
+        6 => "stop 1.5 ATR · target 1.5 ATR"
+        => "stop 1 ATR · target 2 ATR"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONCEPT FAMILIES
+//
+// The 24 entry signals are five ideas wearing 24 costumes. Grouping them this way
+// is what lets a basket hold structurally different bets rather than five spellings
+// of "price crossed a moving average". The mapping is fixed and stated, not fitted.
+// ─────────────────────────────────────────────────────────────────────────────
+f_family(int e) =>
+    switch e
+        2 => 0
+        18 => 0
+        4 => 0
+        20 => 0
+        13 => 0
+        9 => 0
+        3 => 0
+        11 => 0
+        5 => 1
+        6 => 1
+        21 => 1
+        10 => 1
+        0 => 2
+        16 => 2
+        1 => 2
+        17 => 2
+        8 => 2
+        23 => 2
+        7 => 3
+        22 => 3
+        19 => 3
+        12 => 3
+        => 4
+
+familyLabel(int f) =>
+    switch f
+        0 => "RANGE"
+        1 => "BREAKOUT"
+        2 => "TREND"
+        3 => "MOMENTUM"
+        => "SHOCK"
+
+filterName(int f) =>
+    switch f
+        0 => "any market"
+        1 => "with the 200-bar trend"
+        2 => "calm volatility"
+        3 => "with 20-bar momentum"
+        4 => "high volatility"
+        => "against the 200-bar trend"
+
+filterLong(int f, int dir) =>
+    switch f
+        0 => "in any market"
+        1 => dir > 0 ? "only while price is above its 200-bar average" : "only while price is below its 200-bar average"
+        2 => "only when volatility is calm (ATR in the lower half of its 100-bar range)"
+        3 => dir > 0 ? "only when the 20-bar rate of change is positive" : "only when the 20-bar rate of change is negative"
+        4 => "only when volatility is high (ATR in the upper half of its 100-bar range)"
+        => dir > 0 ? "only while price is below its 200-bar average (counter-trend)" : "only while price is above its 200-bar average (counter-trend)"
+
+exitLong(int x) =>
+    switch x
+        0 => "Exit at the open 5 bars later."
+        1 => "Exit at the open 10 bars later."
+        2 => "Exit at the open 20 bars later."
+        3 => "Stop 2 ATR from entry, target 3 ATR from entry."
+        4 => "Trail a stop " + str.tostring(trailMult, "#.#") + " ATR behind the best close."
+        5 => "Exit when the opposite signal fires."
+        6 => "Stop and target both 1.5 ATR from entry."
+        => "Stop 1 ATR from entry, target 2 ATR from entry."
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//   STRATEGY UNIVERSE
+// ═══════════════════════════════════════════════════════════════════════════════
+var int N = 0
+var eOf = array.new_int(0)
+var dOf = array.new_int(0)
+var xOf = array.new_int(0)
+var fOf = array.new_int(0)
+if barstate.isfirst
+    bool quick = str.startswith(sizeStr, "Quick")
+    bool std = str.startswith(sizeStr, "Standard")
+    for e = 0 to E - 1
+        for d = 0 to 1
+            int dir = d == 0 ? 1 : -1
+            bool dirOk = not ((dirMode == "Long only" and dir < 0) or (dirMode == "Short only" and dir > 0))
+            if dirOk
+                for x = 0 to XN - 1
+                    bool xOk = not (quick and not (x == 0 or x == 3 or x == 5))
+                    if xOk
+                        for f = 0 to FN - 1
+                            bool fOk = not ((quick or std) and f > 1) and not (f > 3)
+                            if fOk
+                                array.push(eOf, e)
+                                array.push(dOf, dir)
+                                array.push(xOf, x)
+                                array.push(fOf, f)
+    N := array.size(eOf)
+
+// ── per-strategy state ────────────────────────────────────────────────────────
+var pos = array.new_int(N, 0)
+var pend = array.new_int(N, 0)
+var pendX = array.new_int(N, 0)
+var pendAtr = array.new_float(N, 0.0)
+var entryP = array.new_float(N, float(na))
+var barsIn = array.new_int(N, 0)
+var stopP = array.new_float(N, float(na))
+var targP = array.new_float(N, float(na))
+var wAt = array.new_float(N, 0.0)
+var fzWAt = array.new_float(N, 0.0)
+var nTr = array.new_int(N, 0)
+var nWin = array.new_int(N, 0)
+var sumR = array.new_float(N, 0.0)
+var sumR2 = array.new_float(N, 0.0)
+var sumHold = array.new_float(N, 0.0)
+var grossP = array.new_float(N, 0.0)
+var grossL = array.new_float(N, 0.0)
+var eq = array.new_float(N, 1.0)
+var peak = array.new_float(N, 1.0)
+var mdd = array.new_float(N, 0.0)
+var score = array.new_float(N, float(na))
+var tstat = array.new_float(N, float(na))
+// out-of-sample only accumulators (in-sample = full minus these)
+var ooN = array.new_int(N, 0)
+var ooSumR = array.new_float(N, 0.0)
+var ooSumR2 = array.new_float(N, 0.0)
+var ooWin = array.new_int(N, 0)
+var ooEq = array.new_float(N, 1.0)
+// membership snapshots, written at the END of a bar and read on the NEXT one
+var inK = array.new_bool(N, false)
+var inFrozen = array.new_bool(N, false)
+var famIdx = array.new_int(5, -1)
+var famEq = array.new_float(5, 1.0)
+var float legE0 = 1.0
+var float legE1 = 1.0
+var float legE2 = 1.0
+var float legE3 = 1.0
+var float legE4 = 1.0
+var famSc = array.new_float(5, float(na))
+var int basketK = 5
+var float legP0 = 0.0
+var float legP1 = 0.0
+var float legP2 = 0.0
+var float legP3 = 0.0
+var float legP4 = 0.0
+
+int TR = int(math.max(30, math.min(120, math.floor(90000 / math.max(N, 1)))))
+var trEB = array.new_int(N * TR, -1)
+var trXB = array.new_int(N * TR, -1)
+var trEP = array.new_float(N * TR, float(na))
+var trXP = array.new_float(N * TR, float(na))
+var trR = array.new_float(N * TR, 0.0)
+var trHead = array.new_int(N, 0)
+
+// ── fill-realism counters ─────────────────────────────────────────────────────
+var int nStopExit = 0
+var int nGapThru = 0
+var float gapTicks = 0.0
+var int nAmbig = 0
+var int nExitAll = 0
+
+// ── the two curves that are allowed to be believed ────────────────────────────
+// Both are credited from REALISED trades of members that were already ranked in
+// at the moment of entry, so what is measured is exactly what was ranked. The
+// original this replaces ranked stop-and-target strategies and then measured a
+// close-to-close proxy, which is a different system.
+var float wfEq = 1.0
+var float wfPeak = 1.0
+var float wfMdd = 0.0
+var int wfN = 0
+var int wfWin = 0
+var float wfHold = 0.0
+var float dayStartEq = 1.0
+var float worstDay = 0.0
+var float bestDay = 0.0
+var int dayCount = 0
+var float fzEq = 1.0
+var int fzN = 0
+var int fzWin = 0
+
+float comm = commPct / 100
+float slipPx = slipTicks * tick
+float stopSlipPx = stopSlip * tick
+bool active = last_bar_index - bar_index < lastN and bar_index > 250
+int startBar = math.max(250, last_bar_index - lastN + 1)
+int splitBar = startBar + int((last_bar_index - startBar) * isPct / 100)
+bool inOOS = bar_index > splitBar
+bool atSplit = bar_index == splitBar
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//   SCORING
+// ═══════════════════════════════════════════════════════════════════════════════
+f_tstat(int n, float sr, float sr2) =>
+    float out = float(na)
+    if n >= 2
+        float mean = sr / n
+        float varR = sr2 / n - mean * mean
+        if varR > 0
+            out := math.sqrt(n) * mean / math.sqrt(varR)
+    out
+
+scoreOf(int s) =>
+    int n = array.get(nTr, s)
+    float out = float(na)
+    if n >= minTrades and not (profOnly and array.get(eq, s) <= 1)
+        float mean = array.get(sumR, s) / n
+        float gl = array.get(grossL, s)
+        float gp = array.get(grossP, s)
+        int nw = array.get(nWin, s)
+        float tv = nz(f_tstat(n, array.get(sumR, s), array.get(sumR2, s)), 0.0)
+        out := switch rankBy
+            "Profit factor"      => gl > 0 ? math.min(gp / gl, 20.0) : gp > 0 ? 20.0 : 0.0
+            "Net profit"         => (array.get(eq, s) - 1) * 100
+            "Expectancy"         => mean * 100
+            "Return / drawdown"  => (array.get(eq, s) - 1) / math.max(array.get(mdd, s), 0.01)
+            "Win % (weak)"       => nw / n * 100
+            => tv
+    out
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//   THE ENGINE
+//
+//   Order within a bar, per strategy, and the order is the whole point:
+//     1. Fill a pending entry at THIS bar's open, plus slippage.
+//     2. Test the exit levels carried in from the PREVIOUS bar against this bar.
+//        Stops pay the worse of the level and the open. Only then does a trailing
+//        stop ratchet on this bar's close.
+//     3. Read the signal from this bar's close and queue it for the NEXT open.
+// ═══════════════════════════════════════════════════════════════════════════════
+if active and N > 0
+    for s = 0 to N - 1
+        int e = array.get(eOf, s)
+        int dir = array.get(dOf, s)
+        int x = array.get(xOf, s)
+        int f = array.get(fOf, s)
+        bool bracket = x == 3 or x == 6 or x == 7
+
+        // ── 1. fill the pending entry at this bar's open ──────────────────────
+        bool justEntered = false
+        if array.get(pos, s) == 0 and array.get(pend, s) != 0
+            float a0 = array.get(pendAtr, s)
+            float fill = open + dir * slipPx
+            array.set(pos, s, dir)
+            array.set(entryP, s, fill)
+            array.set(barsIn, s, 0)
+            array.set(wAt, s, array.get(inK, s) ? 1.0 / math.max(basketK, 1) : 0.0)
+            array.set(fzWAt, s, array.get(inFrozen, s) ? 1.0 / math.max(basketK, 1) : 0.0)
+            if x == 3
+                array.set(stopP, s, fill - dir * 2 * a0 * atrScale)
+                array.set(targP, s, fill + dir * 3 * a0 * atrScale)
+            else if x == 6
+                array.set(stopP, s, fill - dir * 1.5 * a0 * atrScale)
+                array.set(targP, s, fill + dir * 1.5 * a0 * atrScale)
+            else if x == 7
+                array.set(stopP, s, fill - dir * 1 * a0 * atrScale)
+                array.set(targP, s, fill + dir * 2 * a0 * atrScale)
+            else if x == 4
+                array.set(stopP, s, fill - dir * trailMult * a0 * atrScale)
+            array.set(pend, s, 0)
+            array.set(pendX, s, 0)
+            justEntered := true
+        else if array.get(pos, s) != 0
+            array.set(barsIn, s, array.get(barsIn, s) + 1)
+
+        // ── 2. exits, tested against levels that already existed ──────────────
+        bool exited = false
+        if array.get(pos, s) != 0
+            int b = array.get(barsIn, s)
+            float ep = array.get(entryP, s)
+            float exitP = float(na)
+            bool wasStop = false
+            bool wasAmbig = false
+            bool wasGap = false
+            float thisGapTicks = 0.0
+
+            if pastFlat
+                exitP := close - dir * slipPx
+                array.set(pendX, s, 0)
+            else if array.get(pendX, s) != 0
+                // the reverse signal was read at the previous close; this is the next open
+                exitP := open - dir * slipPx
+                array.set(pendX, s, 0)
+            else if x == 0 and b >= 5
+                exitP := open - dir * slipPx
+            else if x == 1 and b >= 10
+                exitP := open - dir * slipPx
+            else if x == 2 and b >= 20
+                exitP := open - dir * slipPx
+            else if bracket
+                float sp = array.get(stopP, s)
+                float tp = array.get(targP, s)
+                bool hitStop = dir > 0 ? low <= sp : high >= sp
+                bool hitTarg = dir > 0 ? high >= tp : low <= tp
+                wasAmbig := hitStop and hitTarg
+                bool takeStop = hitStop and (not hitTarg or bothHit == "Stop first (conservative)")
+                if takeStop
+                    // the house rule: a stop pays the WORSE of the level and the open
+                    float raw = dir > 0 ? math.min(sp, open) : math.max(sp, open)
+                    wasGap := dir > 0 ? open < sp : open > sp
+                    thisGapTicks := math.abs(raw - sp) / tick
+                    exitP := raw - dir * (slipPx + stopSlipPx)
+                    wasStop := true
+                else if hitTarg
+                    float raw = tp
+                    if gapCredit
+                        raw := dir > 0 ? math.max(tp, open) : math.min(tp, open)
+                    exitP := raw - dir * slipPx
+            else if x == 4
+                float sp = array.get(stopP, s)
+                bool hitStop = dir > 0 ? low <= sp : high >= sp
+                if hitStop
+                    float raw = dir > 0 ? math.min(sp, open) : math.max(sp, open)
+                    wasGap := dir > 0 ? open < sp : open > sp
+                    thisGapTicks := math.abs(raw - sp) / tick
+                    exitP := raw - dir * (slipPx + stopSlipPx)
+                    wasStop := true
+                else
+                    // ratchet only AFTER the level that existed has been tested
+                    float nsp = dir > 0 ? math.max(sp, close - trailMult * atr * atrScale) : math.min(sp, close + trailMult * atr * atrScale)
+                    array.set(stopP, s, nsp)
+
+            if not na(exitP) and exitP > 0 and ep > 0
+                float r = dir * (exitP / ep - 1) - 2 * comm
+                int n = array.get(nTr, s) + 1
+                array.set(nTr, s, n)
+                array.set(nWin, s, array.get(nWin, s) + (r > 0 ? 1 : 0))
+                array.set(sumR, s, array.get(sumR, s) + r)
+                array.set(sumR2, s, array.get(sumR2, s) + r * r)
+                array.set(sumHold, s, array.get(sumHold, s) + array.get(barsIn, s))
+                if r > 0
+                    array.set(grossP, s, array.get(grossP, s) + r)
+                else
+                    array.set(grossL, s, array.get(grossL, s) - r)
+                float q = math.max(array.get(eq, s) * (1 + r), 0.0001)
+                array.set(eq, s, q)
+                float pk = math.max(array.get(peak, s), q)
+                array.set(peak, s, pk)
+                array.set(mdd, s, math.max(array.get(mdd, s), 1 - q / pk))
+                float wgt = array.get(wAt, s)
+                if wgt > 0
+                    int fm = f_family(e)
+                    array.set(famEq, fm, math.max(array.get(famEq, fm) * (1 + r), 0.0001))
+                if wgt > 0
+                    wfEq := math.max(wfEq * (1 + r * wgt), 0.0001)
+                    wfPeak := math.max(wfPeak, wfEq)
+                    wfMdd := math.max(wfMdd, 1 - wfEq / wfPeak)
+                    wfN += 1
+                    wfWin += r > 0 ? 1 : 0
+                    wfHold += array.get(barsIn, s)
+                float fwgt = array.get(fzWAt, s)
+                if inOOS and fwgt > 0
+                    fzEq := math.max(fzEq * (1 + r * fwgt), 0.0001)
+                    fzN += 1
+                    fzWin += r > 0 ? 1 : 0
+                if inOOS
+                    array.set(ooN, s, array.get(ooN, s) + 1)
+                    array.set(ooSumR, s, array.get(ooSumR, s) + r)
+                    array.set(ooSumR2, s, array.get(ooSumR2, s) + r * r)
+                    array.set(ooWin, s, array.get(ooWin, s) + (r > 0 ? 1 : 0))
+                    array.set(ooEq, s, math.max(array.get(ooEq, s) * (1 + r), 0.0001))
+                array.set(pos, s, 0)
+                array.set(score, s, scoreOf(s))
+                array.set(tstat, s, f_tstat(n, array.get(sumR, s), array.get(sumR2, s)))
+                int hd = array.get(trHead, s)
+                int slot = s * TR + hd
+                array.set(trEB, slot, bar_index - array.get(barsIn, s))
+                array.set(trXB, slot, bar_index)
+                array.set(trEP, slot, ep)
+                array.set(trXP, slot, exitP)
+                array.set(trR, slot, r)
+                array.set(trHead, s, (hd + 1) % TR)
+                nExitAll += 1
+                if wasStop
+                    nStopExit += 1
+                    if wasGap
+                        nGapThru += 1
+                        gapTicks += thisGapTicks
+                if wasAmbig
+                    nAmbig += 1
+                exited := true
+
+        // ── 3. read this bar's signal, queue it for the next open ─────────────
+        // Exit rule 5 (reverse signal) is queued the same way an entry is: the
+        // opposite signal is only knowable at this close, so it is filled next open.
+        if x == 5 and array.get(pos, s) != 0 and array.get(pendX, s) == 0 and array.get(barsIn, s) >= 1
+            bool oppo = dir > 0 ? array.get(shortSig, e) : array.get(longSig, e)
+            if oppo
+                array.set(pendX, s, 1)
+        if array.get(pos, s) == 0 and array.get(pend, s) == 0
+            bool sig = dir > 0 ? array.get(longSig, e) : array.get(shortSig, e)
+            bool ok = dir > 0 ? array.get(fLong, f) : array.get(fShort, f)
+            if sig and ok and atr > 0 and not pastFlat
+                if execMode == "Next bar open"
+                    array.set(pend, s, dir)
+                    array.set(pendAtr, s, atr)
+                else
+                    float fill = close + dir * slipPx
+                    array.set(pos, s, dir)
+                    array.set(entryP, s, fill)
+                    array.set(barsIn, s, 0)
+                    array.set(wAt, s, array.get(inK, s) ? 1.0 / math.max(basketK, 1) : 0.0)
+                    array.set(fzWAt, s, array.get(inFrozen, s) ? 1.0 / math.max(basketK, 1) : 0.0)
+                    if x == 3
+                        array.set(stopP, s, fill - dir * 2 * atr * atrScale)
+                        array.set(targP, s, fill + dir * 3 * atr * atrScale)
+                    else if x == 6
+                        array.set(stopP, s, fill - dir * 1.5 * atr * atrScale)
+                        array.set(targP, s, fill + dir * 1.5 * atr * atrScale)
+                    else if x == 7
+                        array.set(stopP, s, fill - dir * 1 * atr * atrScale)
+                        array.set(targP, s, fill + dir * 2 * atr * atrScale)
+                    else if x == 4
+                        array.set(stopP, s, fill - dir * trailMult * atr * atrScale)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//   RANKING · CHAMPION · MEMBERSHIP SNAPSHOT
+//
+//   The snapshot written here is read by the NEXT bar's entries. That one line of
+//   sequencing is what makes the basket walk-forward rather than fitted: a trade
+//   can only be credited to the basket if its strategy was already ranked in
+//   before the trade existed.
+// ═══════════════════════════════════════════════════════════════════════════════
+var int champ = -1
+var int champSince = na
+var int prevChamp = -1
+var int switches = 0
+var topIdx = array.new_int(10, -1)
+var topSc = array.new_float(10, float(na))
+var bool frozenDone = false
+var float kPos = 0.0
+var float kPosPrev = 0.0
+var int nK = 0
+var int nLongK = 0
+var int nShortK = 0
+
+if active and N > 0
+    kPosPrev := kPos
+    array.fill(topIdx, -1)
+    array.fill(topSc, float(na))
+    for s = 0 to N - 1
+        float sc = array.get(score, s)
+        if not na(sc)
+            int j = 9
+            if na(array.get(topSc, j)) or sc > array.get(topSc, j)
+                while j > 0 and (na(array.get(topSc, j - 1)) or sc > array.get(topSc, j - 1))
+                    array.set(topSc, j, array.get(topSc, j - 1))
+                    array.set(topIdx, j, array.get(topIdx, j - 1))
+                    j -= 1
+                array.set(topSc, j, sc)
+                array.set(topIdx, j, s)
+
+    int best = array.get(topIdx, 0)
+    float bestSc = array.get(topSc, 0)
+    float champSc = champ >= 0 ? array.get(score, champ) : float(na)
+    int newChamp = champ
+    // the original inverted this whenever the champion's score was negative
+    if best >= 0 and (champ < 0 or na(champSc) or bestSc - champSc > margin / 100 * math.max(math.abs(champSc), 0.1))
+        newChamp := best
+    if newChamp != champ
+        champSince := bar_index
+        if champ >= 0
+            switches += 1
+    prevChamp := champ
+    champ := newChamp
+
+    // best-scoring strategy inside each concept family, recomputed every bar
+    array.fill(famIdx, -1)
+    array.fill(famSc, float(na))
+    for s = 0 to N - 1
+        float sc = array.get(score, s)
+        if not na(sc)
+            int fam = f_family(array.get(eOf, s))
+            if na(array.get(famSc, fam)) or sc > array.get(famSc, fam)
+                array.set(famSc, fam, sc)
+                array.set(famIdx, fam, s)
+
+    bool famMode = basketMode == "Best of each concept family"
+    int sumPos = 0
+    nK := 0
+    nLongK := 0
+    nShortK := 0
+    array.fill(inK, false)
+    if famMode
+        for f = 0 to 4
+            int t = array.get(famIdx, f)
+            if t >= 0
+                array.set(inK, t, true)
+                int ps = array.get(pos, t)
+                sumPos += ps
+                nK += 1
+                nLongK += ps > 0 ? 1 : 0
+                nShortK += ps < 0 ? 1 : 0
+    else
+        for j = 0 to followK - 1
+            int t = array.get(topIdx, j)
+            if t >= 0
+                array.set(inK, t, true)
+                int ps = array.get(pos, t)
+                sumPos += ps
+                nK += 1
+                nLongK += ps > 0 ? 1 : 0
+                nShortK += ps < 0 ? 1 : 0
+    kPos := nK > 0 ? sumPos / nK : 0.0
+    basketK := math.max(nK, 1)
+
+    // each leg's exposure as its own series, so the legs can be correlated
+    legP0 := array.get(famIdx, 0) >= 0 ? float(array.get(pos, array.get(famIdx, 0))) : 0.0
+    legP1 := array.get(famIdx, 1) >= 0 ? float(array.get(pos, array.get(famIdx, 1))) : 0.0
+    legP2 := array.get(famIdx, 2) >= 0 ? float(array.get(pos, array.get(famIdx, 2))) : 0.0
+    legP3 := array.get(famIdx, 3) >= 0 ? float(array.get(pos, array.get(famIdx, 3))) : 0.0
+    legP4 := array.get(famIdx, 4) >= 0 ? float(array.get(pos, array.get(famIdx, 4))) : 0.0
+    legE0 := array.get(famEq, 0)
+    legE1 := array.get(famEq, 1)
+    legE2 := array.get(famEq, 2)
+    legE3 := array.get(famEq, 3)
+    legE4 := array.get(famEq, 4)
+
+    // freeze the holdout selection once, and never re-rank it again
+    if atSplit and not frozenDone
+        array.fill(inFrozen, false)
+        if famMode
+            for f = 0 to 4
+                int t = array.get(famIdx, f)
+                if t >= 0
+                    array.set(inFrozen, t, true)
+        else
+            for j = 0 to followK - 1
+                int t = array.get(topIdx, j)
+                if t >= 0
+                    array.set(inFrozen, t, true)
+        frozenDone := true
+
+// The basket's worst SESSION, not its worst drawdown. A funded-account evaluation is failed
+// by one day breaching the daily loss limit long before total drawdown becomes the problem.
+if active
+    if newDay
+        if dayStartEq > 0 and dayCount >= 0
+            float dayR = wfEq / dayStartEq - 1
+            worstDay := math.min(worstDay, dayR)
+            bestDay := math.max(bestDay, dayR)
+            dayCount += 1
+        dayStartEq := wfEq
+
+int sel = array.get(topIdx, pick - 1)
+int selPos = sel >= 0 ? array.get(pos, sel) : 0
+int selDir = sel >= 0 ? array.get(dOf, sel) : 0
+int champPos = champ >= 0 ? array.get(pos, champ) : 0
+float chartPos = follow == "Selected row" ? float(selPos) : kPos
+float chartPosPrev = follow == "Selected row" ? float(nz(selPos[1])) : kPosPrev
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//   THE NULL AND THE LUCK BAR — computed once, on the last bar
+// ═══════════════════════════════════════════════════════════════════════════════
+var int qualN = 0
+var int profN = 0
+var int tradedN = 0
+var float medT = na
+var float medNet = na
+var float luckTyp = na
+var float luck95 = na
+var float champT = na
+
+if barstate.islast and N > 0
+    ts = array.new_float(0)
+    nets = array.new_float(0)
+    qualN := 0
+    profN := 0
+    tradedN := 0
+    for s = 0 to N - 1
+        int n = array.get(nTr, s)
+        if n > 0
+            tradedN += 1
+        if n >= minTrades
+            qualN += 1
+            array.push(ts, nz(array.get(tstat, s), 0.0))
+            array.push(nets, array.get(eq, s) - 1)
+            if array.get(eq, s) > 1
+                profN += 1
+    medT := array.size(ts) > 0 ? array.median(ts) : float(na)
+    medNet := array.size(nets) > 0 ? array.median(nets) : float(na)
+    int effN = math.max(qualN, 2)
+    luckTyp := f_luck_typical(effN)
+    luck95 := f_luck_ceiling(effN, 0.95)
+    champT := champ >= 0 ? array.get(tstat, champ) : float(na)
+
+// average pairwise correlation of the five legs' exposure. Diversification is a
+// claim about this number, so it gets measured rather than assumed.
+f_corr(float a, float b, int len) =>
+    float c = ta.correlation(a, b, len)
+    na(c) ? 0.0 : c
+
+float corrSum = 0.0
+corrSum += f_corr(legP0, legP1, corrLen)
+corrSum += f_corr(legP0, legP2, corrLen)
+corrSum += f_corr(legP0, legP3, corrLen)
+corrSum += f_corr(legP0, legP4, corrLen)
+corrSum += f_corr(legP1, legP2, corrLen)
+corrSum += f_corr(legP1, legP3, corrLen)
+corrSum += f_corr(legP1, legP4, corrLen)
+corrSum += f_corr(legP2, legP3, corrLen)
+corrSum += f_corr(legP2, legP4, corrLen)
+corrSum += f_corr(legP3, legP4, corrLen)
+float avgCorr = corrSum / 10
+
+string verdict = "INSUFFICIENT SAMPLE"
+color vCol = TH.warn
+if champ >= 0 and not na(champT) and not na(luckTyp)
+    if champT >= luck95
+        verdict := "CLEARS THE LUCK BAR"
+        vCol := TH.pos
+    else if champT >= luckTyp
+        verdict := "BORDERLINE — inside the range a search this size produces by chance"
+        vCol := TH.warn
+    else
+        verdict := "NOT DISTINGUISHABLE FROM LUCK"
+        vCol := TH.neg
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//   PANE
+// ═══════════════════════════════════════════════════════════════════════════════
+var float bhStart = na
+if active and na(bhStart)
+    bhStart := close
+float benchPx = request.security(benchSym, timeframe.period, close, lookahead = barmerge.lookahead_off)
+var float benchStart = na
+if active and na(benchStart) and not na(benchPx)
+    benchStart := benchPx
+float bhEq = na(benchStart) or na(benchPx) ? (na(bhStart) ? float(na) : close / bhStart) : benchPx / benchStart
+
+bool dollars = equityMode == "Dollars"
+
+scaleV(float m) =>
+    float out = float(na)
+    if not na(m) and m > 0
+        out := dollars ? m * startBal : paneLog ? 100 * math.log(m) : (m - 1) * 100
+    out
+
+money(float m) =>
+    float v = m * startBal
+    v >= 1000000 ? "$" + str.tostring(v / 1000000, "#.##") + "M" : "$" + str.tostring(v / 1000, "#.#") + "k"
+
+float bhV = showBH ? scaleV(bhEq) : float(na)
+float wfV = showWF and active ? scaleV(wfEq) : float(na)
+float fzV = showOOS and active and inOOS and frozenDone ? scaleV(fzEq) : float(na)
+float ddV = showDD and active ? scaleV(wfEq / wfPeak) : float(na)
+bool wfUp = nz(wfV) >= 0
+
+bgcolor(shadeOOS and active and inOOS ? color.new(TH.surface2, 55) : na, title = "Holdout region")
+
+pZero = plot(active ? (dollars ? startBal : 0) : na, "Start", color = color.new(TH.dim, 60))
+pBH = plot(bhV, "Buy and hold", color = color.new(cBH, 25), linewidth = 2)
+pG3 = plot(useGlow ? wfV : na, "Basket glow 3", color = color.new(cWF, 92), linewidth = 7)
+pG2 = plot(useGlow ? wfV : na, "Basket glow 2", color = color.new(cWF, 84), linewidth = 5)
+pG1 = plot(useGlow ? wfV : na, "Basket glow 1", color = color.new(cWF, 72), linewidth = 3)
+pL0 = plot(showLegs and active ? scaleV(legE0) : na, "Leg RANGE", color = color.new(TH.r0, 15), linewidth = 1)
+pL1 = plot(showLegs and active ? scaleV(legE1) : na, "Leg BREAKOUT", color = color.new(TH.r1, 15), linewidth = 1)
+pL2 = plot(showLegs and active ? scaleV(legE2) : na, "Leg TREND", color = color.new(TH.r2, 15), linewidth = 1)
+pL3 = plot(showLegs and active ? scaleV(legE3) : na, "Leg MOMENTUM", color = color.new(TH.r3, 15), linewidth = 1)
+pL4 = plot(showLegs and active ? scaleV(legE4) : na, "Leg SHOCK", color = color.new(TH.r4, 15), linewidth = 1)
+pWF = plot(wfV, "Walk-forward basket", color = cWF, linewidth = 4)
+pFZ = plot(fzV, "Frozen holdout basket", color = cOOS, linewidth = 2)
+fill(pZero, pWF, wfV, 0, color.new(wfUp ? cUp : cDown, 66), color.new(wfUp ? cUp : cDown, 97), "Basket area")
+pDD = plot(dollars ? na : ddV, "Basket underwater", color = color.new(cDown, 45), linewidth = 1)
+fill(pZero, pDD, 0, ddV, color.new(cDown, 95), color.new(cDown, 62), "Underwater")
+
+// the fitted curves are rebuilt from each strategy's own realised trade returns,
+// so they never jump when the ranking changes
+var polyline plCh = na
+var polyline plSel = na
+var label lgBH = na
+var label lgWF = na
+var label lgFZ = na
+var label lgL0 = na
+var label lgL1 = na
+var label lgL2 = na
+var label lgL3 = na
+var label lgL4 = na
+var label lgCh = na
+var label lgSel = na
+
+pcv(float m) =>
+    (m >= 1 ? "+" : "") + str.tostring((m - 1) * 100, "#.#") + "%"
+
+val(float m) =>
+    dollars ? money(m) : pcv(m)
+
+pc(float v) =>
+    (v >= 0 ? "+" : "") + str.tostring(v * 100, "#.#") + "%"
+
+mkLegend(label id, float y, string txt, color col) =>
+    if not na(id)
+        label.delete(id)
+    label out = na
+    if not na(y)
+        out := label.new(bar_index + 2, y, txt, xloc.bar_index, style = label.style_label_left, color = color.new(col, 12), textcolor = TH.surface, size = size.small)
+    out
+
+curveOf(int t, color col) =>
+    pts = array.new<chart.point>()
+    float m = 1.0
+    int cnt = 0
+    polyline pl = na
+    if t >= 0
+        int hd = array.get(trHead, t)
+        float prod = 1.0
+        for k = 0 to TR - 1
+            int slot = t * TR + (hd + k) % TR
+            if array.get(trEB, slot) >= 0
+                prod := prod * (1 + array.get(trR, slot))
+        m := prod > 0 ? array.get(eq, t) / prod : 1.0
+        for k = 0 to TR - 1
+            int slot = t * TR + (hd + k) % TR
+            int eb = array.get(trEB, slot)
+            if eb >= 0
+                if cnt == 0
+                    array.push(pts, chart.point.from_index(eb, scaleV(m)))
+                m := math.max(m * (1 + array.get(trR, slot)), 0.0001)
+                array.push(pts, chart.point.from_index(array.get(trXB, slot), scaleV(m)))
+                cnt += 1
+        if array.size(pts) > 1
+            pl := polyline.new(pts, false, false, xloc.bar_index, color.new(col, 25), line_width = 1)
+    [pl, m, cnt]
+
+if barstate.islast
+    if not na(plCh)
+        polyline.delete(plCh)
+    if not na(plSel)
+        polyline.delete(plSel)
+    lgBH := mkLegend(lgBH, bhV, "BUY AND HOLD " + benchSym + "  " + val(bhEq), cBH)
+    lgWF := mkLegend(lgWF, wfV, "BASKET, equal weight  " + val(wfEq) + "  ·  " + str.tostring(wfN) + " trades  ·  max DD " + str.tostring(-wfMdd * 100, "#.#") + "%", cWF)
+    lgFZ := mkLegend(lgFZ, fzV, "FROZEN HOLDOUT  " + val(fzEq) + "  ·  " + str.tostring(fzN) + " trades", cOOS)
+    if showLegs
+        lgL0 := mkLegend(lgL0, scaleV(legE0), "RANGE  " + val(legE0), TH.r0)
+        lgL1 := mkLegend(lgL1, scaleV(legE1), "BREAKOUT  " + val(legE1), TH.r1)
+        lgL2 := mkLegend(lgL2, scaleV(legE2), "TREND  " + val(legE2), TH.r2)
+        lgL3 := mkLegend(lgL3, scaleV(legE3), "MOMENTUM  " + val(legE3), TH.r3)
+        lgL4 := mkLegend(lgL4, scaleV(legE4), "SHOCK  " + val(legE4), TH.r4)
+    if showChamp and champ >= 0
+        [pl, m, cnt] = curveOf(champ, cBest)
+        plCh := pl
+        lgCh := mkLegend(lgCh, scaleV(m), "#1 FITTED " + val(m) + " — not tradeable", cBest)
+    else
+        lgCh := mkLegend(lgCh, float(na), "", cBest)
+    if showSel and sel >= 0
+        [pl, m, cnt] = curveOf(sel, cSel)
+        plSel := pl
+        lgSel := mkLegend(lgSel, scaleV(m), "#" + str.tostring(pick) + " FITTED " + val(m) + " — not tradeable", cSel)
+    else
+        lgSel := mkLegend(lgSel, float(na), "", cSel)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//   PRICE CHART
+// ═══════════════════════════════════════════════════════════════════════════════
+bgcolor(showPos and chartPos > 0 ? color.new(cLong, 97 - int(9 * math.abs(chartPos))) : showPos and chartPos < 0 ? color.new(cShort, 97 - int(9 * math.abs(chartPos))) : na, title = "Exposure", force_overlay = true)
+plotshape(showTrade and chartPos > 0 and chartPosPrev <= 0, "Turns long", shape.triangleup, location.belowbar, cLong, size = size.tiny, force_overlay = true)
+plotshape(showTrade and chartPos < 0 and chartPosPrev >= 0, "Turns short", shape.triangledown, location.abovebar, cShort, size = size.tiny, force_overlay = true)
+plotshape(showTrade and chartPos == 0 and chartPosPrev != 0, "Flat", shape.xcross, location.abovebar, color.new(TH.dim, 25), size = size.tiny, force_overlay = true)
+
+var line lEntry = na
+var line lStop = na
+var line lTarg = na
+var label lbTrade = na
+var label lbHind = na
+var trLines = array.new<line>()
+var trLabels = array.new<label>()
+if barstate.islast
+    if not na(lEntry)
+        line.delete(lEntry)
+    if not na(lStop)
+        line.delete(lStop)
+    if not na(lTarg)
+        line.delete(lTarg)
+    if not na(lbTrade)
+        label.delete(lbTrade)
+    if not na(lbHind)
+        label.delete(lbHind)
+    for ln in trLines
+        line.delete(ln)
+    for lb in trLabels
+        label.delete(lb)
+    array.clear(trLines)
+    array.clear(trLabels)
+    if showLive and sel >= 0
+        int hd = array.get(trHead, sel)
+        int firstB = -1
+        float firstP = na
+        for k = 0 to TR - 1
+            int slot = sel * TR + (hd + k) % TR
+            int eb = array.get(trEB, slot)
+            if eb >= 0 and k >= TR - drawTr
+                int xb = array.get(trXB, slot)
+                float ep0 = array.get(trEP, slot)
+                float xp0 = array.get(trXP, slot)
+                bool won = array.get(trR, slot) > 0
+                if firstB < 0
+                    firstB := eb
+                    firstP := ep0
+                array.push(trLines, line.new(eb, ep0, xb, xp0, xloc.bar_index, color = color.new(won ? cUp : cDown, 25), width = 1, force_overlay = true))
+                array.push(trLabels, label.new(eb, ep0, selDir > 0 ? "▲" : "▼", xloc.bar_index, style = label.style_none, textcolor = selDir > 0 ? cLong : cShort, size = size.tiny, force_overlay = true))
+        if showHind and firstB >= 0
+            lbHind := label.new(firstB, firstP, "row #" + str.tostring(pick) + " of " + str.tostring(qualN > 0 ? qualN : N) + " — these trades are on the chart BECAUSE they won", xloc.bar_index, style = label.style_label_down, color = color.new(TH.warn, 15), textcolor = TH.surface, size = size.small, force_overlay = true)
+        if selPos != 0
+            int bIn = array.get(barsIn, sel)
+            int x0 = bar_index - bIn
+            float ep = array.get(entryP, sel)
+            int xr = array.get(xOf, sel)
+            color cDir = selPos > 0 ? cLong : cShort
+            lEntry := line.new(x0, ep, bar_index + 3, ep, xloc.bar_index, color = cDir, width = 2, force_overlay = true)
+            if xr == 3 or xr == 6 or xr == 7 or xr == 4
+                float sp = array.get(stopP, sel)
+                lStop := line.new(x0, sp, bar_index + 3, sp, xloc.bar_index, color = cDown, style = line.style_dashed, width = 1, force_overlay = true)
+            if xr == 3 or xr == 6 or xr == 7
+                float tp = array.get(targP, sel)
+                lTarg := line.new(x0, tp, bar_index + 3, tp, xloc.bar_index, color = cUp, style = line.style_dashed, width = 1, force_overlay = true)
+            lbTrade := label.new(bar_index + 3, ep, "#" + str.tostring(pick) + (selPos > 0 ? " long " : " short ") + str.tostring(bIn) + " bars · " + exitName(xr), xloc.bar_index, style = selPos > 0 ? label.style_label_lower_left : label.style_label_upper_left, color = color.new(cDir, 15), textcolor = TH.surface, size = size.small, force_overlay = true)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//   PANEL
+// ═══════════════════════════════════════════════════════════════════════════════
+int COLS = 7
+int famRows = showFam ? 6 : 0
+int ROWS = 3 + topRows + famRows + 8
+var table tb = table.new(f_position(dashPos), COLS, ROWS, bgcolor = color.new(TH.surface, 4), border_width = 1, border_color = color.new(TH.surface, 0), frame_color = color.new(TH.line, 25), frame_width = 1, force_overlay = true)
+var bool merged = false
+string txtSz = f_text_size(tblSize)
+
+cell(int c, int r, string s, color col, color bg, string al = "right") =>
+    table.cell(tb, c, r, s, text_color = col, text_size = txtSz, bgcolor = bg, text_halign = al == "left" ? text.align_left : al == "center" ? text.align_center : text.align_right, text_valign = text.align_center)
+
+winBar(float w) =>
+    int k = math.round(math.max(0, math.min(5, w / 20)))
+    string b = ""
+    for i = 1 to 5
+        b += i <= k ? "▰" : "▱"
+    b + " " + str.tostring(w, "#") + "%"
+
+metricTxt(int s) =>
+    float v = array.get(score, s)
+    rankBy == "Expectancy" ? str.tostring(v, "#.##") + "%" : str.tostring(v, "#.##")
+
+if barstate.islast and showDash
+    if not merged
+        table.merge_cells(tb, 0, 0, COLS - 1, 0)
+        table.merge_cells(tb, 0, 1, COLS - 1, 1)
+        if showFam
+            table.merge_cells(tb, 1, 3 + topRows, COLS - 1, 3 + topRows)
+        for rr = 3 + topRows + famRows to ROWS - 1
+            table.merge_cells(tb, 1, rr, COLS - 1, rr)
+        merged := true
+
+    color hdrBg = color.new(TH.line, 15)
+    cell(0, 0, "ATTY STRATEGY SEEKER   ·   " + str.tostring(N) + " strategies   ·   " + str.tostring(math.min(lastN, bar_index)) + " bars   ·   ranked by " + rankBy, TH.ink, hdrBg, "left")
+    cell(0, 1, showVerdict ? verdict + "   —   in-sample. The only forward-looking rows on this panel are WF and HOLDOUT." : "", TH.surface, color.new(vCol, 18), "center")
+
+    color colBg = color.new(TH.surface2, 0)
+    cell(0, 2, "#", TH.ink2, colBg, "center")
+    cell(1, 2, "FITTED — entry / exit · filter", TH.ink2, colBg, "left")
+    cell(2, 2, "Trades · win", TH.ink2, colBg)
+    cell(3, 2, "PF", TH.ink2, colBg)
+    cell(4, 2, "Net · DD", TH.ink2, colBg)
+    cell(5, 2, "t", TH.ink2, colBg)
+    cell(6, 2, "Hold", TH.ink2, colBg)
+
+    for j = 0 to topRows - 1
+        int r = j + 3
+        int t = array.get(topIdx, j)
+        color bg = j % 2 == 0 ? color.new(TH.surface, 4) : color.new(TH.surface2, 4)
+        if t < 0
+            cell(0, r, str.tostring(j + 1), TH.dim, bg, "center")
+            cell(1, r, j == 0 ? "nothing has reached " + str.tostring(minTrades) + " trades yet" : "", TH.dim, bg, "left")
+            cell(2, r, "", TH.dim, bg)
+            cell(3, r, "", TH.dim, bg)
+            cell(4, r, "", TH.dim, bg)
+            cell(5, r, "", TH.dim, bg)
+            cell(6, r, "", TH.dim, bg)
+        else
+            int n = array.get(nTr, t)
+            float win = array.get(nWin, t) / n * 100
+            float gl = array.get(grossL, t)
+            float pf = gl > 0 ? array.get(grossP, t) / gl : 20.0
+            float net = array.get(eq, t) - 1
+            float dd = array.get(mdd, t)
+            float tv = nz(array.get(tstat, t), 0.0)
+            bool isChamp = t == champ
+            bool isSel = j == pick - 1
+            int dS = array.get(dOf, t)
+            color dirCol = dS > 0 ? cLong : cShort
+            color rowBg = isSel ? color.new(cSel, 80) : isChamp ? color.new(cBest, 86) : bg
+            cell(0, r, (isSel ? "▶ " : isChamp ? "★ " : "") + str.tostring(j + 1), isSel ? cSel : isChamp ? cBest : TH.dim, rowBg, "center")
+            cell(1, r, (dS > 0 ? "▲ " : "▼ ") + entryName(array.get(eOf, t), dS) + "\n    " + exitName(array.get(xOf, t)) + " · " + filterName(array.get(fOf, t)), dirCol, rowBg, "left")
+            cell(2, r, str.tostring(n) + "  " + winBar(win), TH.ramp(math.min(1.0, 0.18 + math.max(0.0, (win - 30) / 40) * 0.82)), rowBg)
+            cell(3, r, str.tostring(pf, "#.##"), TH.ramp(math.min(1.0, 0.18 + math.max(0.0, (pf - 0.8) / 1.7) * 0.82)), rowBg)
+            cell(4, r, pc(net) + " · " + pc(-dd), TH.ramp(math.min(1.0, 0.18 + math.max(0.0, (net + 0.1) / 0.4) * 0.82)), rowBg)
+            cell(5, r, str.tostring(tv, "#.##"), not na(luck95) and tv >= luck95 ? TH.pos : not na(luckTyp) and tv >= luckTyp ? TH.warn : TH.ink2, rowBg)
+            cell(6, r, f_hold_txt(array.get(sumHold, t) / n), TH.ink2, rowBg)
+
+    if showFam
+        int rFamHead = 3 + topRows
+        color famHeadBg = color.new(TH.line, 30)
+        cell(0, rFamHead, "◈", TH.ink, famHeadBg, "center")
+        cell(1, rFamHead, "CONCEPT-FAMILY BASKET — best of each idea, not the best five overall" + (basketMode == "Best of each concept family" ? "   ·   ACTIVE: this is what WF and HOLDOUT below are trading" : "   ·   shown for reference; the basket is currently Top K by score"), TH.ink, famHeadBg, "left")
+        for f = 0 to 4
+            int r = 3 + topRows + 1 + f
+            int t = array.get(famIdx, f)
+            color bg = f % 2 == 0 ? color.new(TH.surface, 4) : color.new(TH.surface2, 4)
+            cell(0, r, familyLabel(f), TH.ink2, bg, "center")
+            if t < 0
+                cell(1, r, "no strategy in this family has reached " + str.tostring(minTrades) + " trades", TH.dim, bg, "left")
+                cell(2, r, "", TH.dim, bg)
+                cell(3, r, "", TH.dim, bg)
+                cell(4, r, "", TH.dim, bg)
+                cell(5, r, "", TH.dim, bg)
+                cell(6, r, "", TH.dim, bg)
+            else
+                int n = array.get(nTr, t)
+                float win = array.get(nWin, t) / n * 100
+                float gl = array.get(grossL, t)
+                float pf = gl > 0 ? array.get(grossP, t) / gl : 20.0
+                float net = array.get(eq, t) - 1
+                float dd = array.get(mdd, t)
+                float tv = nz(array.get(tstat, t), 0.0)
+                int dS = array.get(dOf, t)
+                cell(1, r, (dS > 0 ? "▲ " : "▼ ") + entryName(array.get(eOf, t), dS) + "
+    " + exitName(array.get(xOf, t)) + " · " + filterName(array.get(fOf, t)), dS > 0 ? cLong : cShort, bg, "left")
+                cell(2, r, str.tostring(n) + "  " + winBar(win), TH.ramp(math.min(1.0, 0.18 + math.max(0.0, (win - 30) / 40) * 0.82)), bg)
+                cell(3, r, str.tostring(pf, "#.##"), TH.ramp(math.min(1.0, 0.18 + math.max(0.0, (pf - 0.8) / 1.7) * 0.82)), bg)
+                cell(4, r, pc(net) + " · " + pc(-dd), TH.ramp(math.min(1.0, 0.18 + math.max(0.0, (net + 0.1) / 0.4) * 0.82)), bg)
+                cell(5, r, str.tostring(tv, "#.##"), TH.ink2, bg)
+                cell(6, r, f_hold_txt(array.get(sumHold, t) / n), TH.ink2, bg)
+
+    int rNull = 3 + topRows + famRows
+    int rLuck = rNull + 1
+    int rFill = rLuck + 1
+    int rDiv = rFill + 1
+    int rWF = rDiv + 1
+    int rOOS = rWF + 1
+    int rDay = rOOS + 1
+    int rNow = rDay + 1
+
+    cell(0, rNull, "NULL", TH.ink2, color.new(TH.surface2, 4), "center")
+    string nullTxt = "not computed"
+    if showNull and qualN > 0
+        nullTxt := str.tostring(qualN) + " of " + str.tostring(N) + " strategies reached " + str.tostring(minTrades) + " trades.  " + str.tostring(profN) + " of those made money (" + str.tostring(profN / qualN * 100, "#") + "%).  Median t " + str.tostring(medT, "#.##") + ", median net " + pc(medNet) + ".\nIf a large share of a random search is profitable, a profitable champion is not evidence of anything."
+    cell(1, rNull, showNull ? nullTxt : "", TH.ink2, color.new(TH.surface2, 4), "left")
+
+    cell(0, rLuck, "LUCK", TH.ink2, color.new(TH.surface, 4), "center")
+    string luckTxt = ""
+    if showLuck and not na(luckTyp)
+        luckTxt := "Best of " + str.tostring(qualN) + " on pure noise scores t ≈ " + str.tostring(luckTyp, "#.##") + " typically, and " + str.tostring(luck95, "#.##") + " at the 95th percentile.  Champion t = " + str.tostring(champT, "#.##") + ".\nThese strategies are heavily correlated, so the true bar sits below this one — the test errs toward rejecting a real edge, not passing a fake one."
+    cell(1, rLuck, showLuck ? luckTxt : "", TH.ink2, color.new(TH.surface, 4), "left")
+
+    cell(0, rFill, "FILL", TH.ink2, color.new(TH.surface2, 4), "center")
+    string fillTxt = ""
+    if showFill
+        string gapPart = nStopExit > 0 ? str.tostring(nGapThru) + " of " + str.tostring(nStopExit) + " stop exits GAPPED THROUGH the level (" + str.tostring(nGapThru / nStopExit * 100, "#.#") + "%) and filled at the open instead, " + str.tostring(nGapThru > 0 ? gapTicks / nGapThru : 0, "#.#") + " ticks worse on average" : "no stop exits yet"
+        string ambPart = nExitAll > 0 ? str.tostring(nAmbig) + " exits hit stop AND target on one bar (" + str.tostring(nAmbig / nExitAll * 100, "#.#") + "%), resolved as " + (bothHit == "Stop first (conservative)" ? "the stop" : "the TARGET — optimistic") : ""
+        fillTxt := gapPart + ".  " + ambPart + ".\nEntries fill at " + (execMode == "Next bar open" ? "the next open" : "the SIGNAL BAR CLOSE — optimistic") + ".  Slippage " + str.tostring(slipTicks, "#.##") + " ticks per side, " + str.tostring(stopSlip, "#.##") + " extra on stop exits.  Commission " + str.tostring(commPct, "#.###") + "% per side."
+    cell(1, rFill, showFill ? fillTxt : "", TH.ink2, color.new(TH.surface2, 4), "left")
+
+    // DIVERSIFICATION. A basket only smooths drawdown if the legs are uncorrelated,
+    // so both halves of that claim get printed: the measured correlation, and the
+    // drawdown the basket would have had if the legs had moved as one.
+    float legDDsum = 0.0
+    int legDDn = 0
+    for f = 0 to 4
+        int t = array.get(famIdx, f)
+        if t >= 0
+            legDDsum += array.get(mdd, t)
+            legDDn += 1
+    float avgLegDD = legDDn > 0 ? legDDsum / legDDn : 0.0
+    float divRatio = wfMdd > 0.0001 ? avgLegDD / wfMdd : float(na)
+    cell(0, rDiv, "DIVERS", TH.ink2, color.new(TH.surface, 4), "center")
+    string divTxt = "not enough legs yet"
+    if legDDn > 1
+        divTxt := "Average pairwise correlation of the " + str.tostring(legDDn) + " legs exposure, last " + str.tostring(corrLen) + " bars: " + str.tostring(avgCorr, "#.##") + ".  " + (avgCorr < 0.2 ? "Genuinely different bets." : avgCorr < 0.45 ? "Partly overlapping." : "THESE ARE THE SAME BET IN DIFFERENT CLOTHES.") + "\n" + "Mean standalone leg drawdown " + pc(-avgLegDD) + " vs basket drawdown " + pc(-wfMdd) + (na(divRatio) ? "" : "  ·  smoothing ratio " + str.tostring(divRatio, "#.##") + "x") + ".  Above 1.0x the basket is smoother than its average leg; 1.0x means diversification bought nothing."
+    cell(1, rDiv, divTxt, avgCorr < 0.2 ? TH.pos : avgCorr < 0.45 ? TH.warn : TH.neg, color.new(TH.surface, 4), "left")
+
+    [wLo, wHi] = f_wilson(wfWin, wfN, 1.96)
+    cell(0, rWF, "WF", cWF, color.new(TH.surface, 4), "center")
+    cell(1, rWF, "WALK-FORWARD, equal-weight " + (basketMode == "Best of each concept family" ? "one per concept family" : "top " + str.tostring(followK)) + ", membership decided before each trade existed:\n" + pcv(wfEq) + " net  ·  max drawdown " + pc(-wfMdd) + "  ·  " + str.tostring(wfN) + " trades  ·  win " + str.tostring(wfN > 0 ? wfWin / wfN * 100 : 0, "#") + "% (95% CI " + str.tostring(wLo * 100, "#") + "-" + str.tostring(wHi * 100, "#") + "%)  ·  champion changed " + str.tostring(switches) + "x", wfEq > 1 ? cWF : cDown, color.new(TH.surface, 4), "left")
+
+    cell(0, rOOS, "HOLD", cOOS, color.new(TH.surface2, 4), "center")
+    string fzTxt = "holdout has not started — it begins at " + str.tostring(isPct) + "% through the window"
+    if frozenDone
+        fzTxt := "FROZEN HOLDOUT, top " + str.tostring(followK) + " picked at the split and never re-ranked:\n" + pcv(fzEq) + " net  ·  " + str.tostring(fzN) + " trades  ·  win " + str.tostring(fzN > 0 ? fzWin / fzN * 100 : 0, "#") + "%.  This is the number to look at. A fitted leaderboard that collapses here was curve-fitted."
+    cell(1, rOOS, fzTxt, frozenDone and fzEq > 1 ? cOOS : TH.ink2, color.new(TH.surface2, 4), "left")
+
+    // SESSION RISK. Everything above is measured per trade or over the whole test. A funded
+    // evaluation is failed on a single day, so the daily figure gets its own row.
+    cell(0, rDay, "DAY", TH.ink2, color.new(TH.surface2, 4), "center")
+    string dayTxt = "no completed sessions measured"
+    if dayCount > 0
+        dayTxt := "Basket average hold " + f_hold_txt(wfN > 0 ? wfHold / wfN : 0) + "  ·  " + str.tostring(dayCount) + " sessions" + (flatEOD ? ", forced flat at " + str.tostring(flatHour) + ":" + (flatMinute < 10 ? "0" : "") + str.tostring(flatMinute) : ", POSITIONS CARRY OVERNIGHT") + ".\n" + "Worst session " + pc(worstDay) + " (" + money(1 + worstDay) + " of " + money(1.0) + "), best session " + pc(bestDay) + ".  A funded evaluation is failed by the worst day, not the drawdown."
+    cell(1, rDay, dayTxt, worstDay < -0.02 ? TH.neg : TH.ink2, color.new(TH.surface2, 4), "left")
+
+    cell(0, rNow, "NOW", TH.dim, color.new(TH.surface, 4), "center")
+    string selRule = "—"
+    if sel >= 0
+        selRule := "#" + str.tostring(pick) + " " + (array.get(dOf, sel) > 0 ? "BUY" : "SELL SHORT") + " at the next open when " + entryName(array.get(eOf, sel), array.get(dOf, sel)) + ", " + filterLong(array.get(fOf, sel), array.get(dOf, sel)) + ". " + exitLong(array.get(xOf, sel))
+    cell(1, rNow, selRule + "\n#" + str.tostring(pick) + " is " + (sel >= 0 ? (selPos > 0 ? "LONG, " + str.tostring(array.get(barsIn, sel)) + " bars in" : selPos < 0 ? "SHORT, " + str.tostring(array.get(barsIn, sel)) + " bars in" : "flat") : "–") + "  ·  basket " + str.tostring(nLongK) + "▲ " + str.tostring(nShortK) + "▼ of " + str.tostring(nK), selPos > 0 ? cLong : selPos < 0 ? cShort : TH.ink2, color.new(TH.surface, 4), "left")
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//   ALERTS — every one gated on a confirmed bar, so none of them can un-fire
+// ═══════════════════════════════════════════════════════════════════════════════
+bool conf = barstate.isconfirmed
+alertcondition(conf and selPos > 0 and nz(selPos[1]) <= 0, "Seeker: selected row goes long", "{{ticker}}: the selected leaderboard strategy entered long on the confirmed bar")
+alertcondition(conf and selPos < 0 and nz(selPos[1]) >= 0, "Seeker: selected row goes short", "{{ticker}}: the selected leaderboard strategy entered short on the confirmed bar")
+alertcondition(conf and selPos == 0 and nz(selPos[1]) != 0, "Seeker: selected row exits", "{{ticker}}: the selected leaderboard strategy closed its trade")
+alertcondition(conf and kPos > 0 and kPosPrev <= 0, "Seeker: basket turns long", "{{ticker}}: the top-K basket is net long")
+alertcondition(conf and kPos < 0 and kPosPrev >= 0, "Seeker: basket turns short", "{{ticker}}: the top-K basket is net short")
+alertcondition(conf and champPos > 0 and nz(champPos[1]) <= 0, "Seeker: champion goes long", "{{ticker}}: the champion strategy entered long")
+alertcondition(conf and champPos < 0 and nz(champPos[1]) >= 0, "Seeker: champion goes short", "{{ticker}}: the champion strategy entered short")
+alertcondition(conf and champ != prevChamp and prevChamp >= 0, "Seeker: champion changed", "{{ticker}}: the top-ranked strategy changed")

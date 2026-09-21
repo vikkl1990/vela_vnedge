@@ -1,0 +1,1140 @@
+//@version=6
+
+import outofoptions/OutofOptionsHelperLibrary/18 as H
+
+indicator(
+    "Frostman04 DOL",
+    overlay=true,
+    max_boxes_count=500,
+    max_labels_count=500,
+    max_lines_count=500)
+
+//=====================================================
+// EQH/EQL SECTION
+//=====================================================
+
+var realtime = input.bool(
+     false,
+     "Realtime Mode",
+     tooltip = "If enabled will identify Equal Highs/Lows before candle close",
+     group = "EQH EQL Settings")
+
+var lineColorHigh = input.color(
+     color.green,
+     "Line Color: Highs",
+     group = "EQH EQL Settings",
+     inline = "color")
+
+var lineColorLow = input.color(
+     color.red,
+     "Lows",
+     group = "EQH EQL Settings",
+     inline = "color")
+
+var H.liquidity[] hi = array.new<H.liquidity>()
+var H.liquidity[] lo = array.new<H.liquidity>()
+
+var UPlines = map.new<float, line>()
+var DWlines = map.new<float, line>()
+
+var float Hprice = 0
+var float Lprice = 0
+
+while hi.size() > 0
+    Hprice := hi.last().price
+
+    if Hprice < high
+        line ln = UPlines.get(Hprice)
+
+        if not na(ln)
+            ln.delete()
+            UPlines.remove(Hprice)
+
+        hi.pop()
+        Hprice := 0
+
+    else
+        break
+
+while lo.size() > 0
+    Lprice := lo.last().price
+
+    if Lprice > low
+        line ln = DWlines.get(Lprice)
+
+        if not na(ln)
+            ln.delete()
+            DWlines.remove(Lprice)
+
+        Lprice := 0
+        lo.pop()
+
+    else
+        break
+
+if realtime or barstate.isconfirmed
+
+    int otime = time
+
+    if Hprice == high
+
+        H.liquidity last = hi.last()
+
+        int tm = math.min(last.otime, last.time)
+
+        line ln = UPlines.get(high)
+
+        if na(ln)
+
+            UPlines.put(
+                 Hprice,
+                 line.new(
+                      x1 = tm,
+                      y1 = Hprice,
+                      x2 = time,
+                      y2 = Hprice,
+                      width = 1,
+                      color = lineColorHigh,
+                      style = line.style_dashed,
+                      xloc = xloc.bar_time,
+                      extend = extend.right))
+
+        else
+            ln.set_x2(time)
+
+    hi.push(H.liquidity.new(high, time, otime = otime))
+
+    otime := time
+
+    if Lprice == low
+
+        H.liquidity last = lo.last()
+
+        int tm = math.min(last.otime, last.time)
+
+        line ln = DWlines.get(Lprice)
+
+        if na(ln)
+
+            DWlines.put(
+                 Lprice,
+                 line.new(
+                      x1 = tm,
+                      y1 = Lprice,
+                      x2 = time,
+                      y2 = Lprice,
+                      width = 1,
+                      color = lineColorLow,
+                      style = line.style_dashed,
+                      xloc = xloc.bar_time,
+                      extend = extend.right))
+
+        else
+            ln.set_x2(time)
+
+    lo.push(H.liquidity.new(low, time, otime = otime))
+
+//=====================================================
+// DAILY HIGH/LOW MARKERS
+//=====================================================
+
+var bool  daily_showHL   = input.bool(true, "Show Daily High/Low", group="Daily HL")
+var color daily_color    = input.color(color.orange, "Line Color", group="Daily HL")
+var int   daily_width    = input.int(1, "Line Width", minval=1, maxval=5, group="Daily HL")
+
+daily_styleIn = input.string("Solid", "Line Style", options=["Solid","Dotted","Dashed"], group="Daily HL")
+
+var daily_style = line.style_solid
+if daily_styleIn == "Dotted"
+    daily_style := line.style_dotted
+else if daily_styleIn == "Dashed"
+    daily_style := line.style_dashed
+else
+    daily_style := line.style_solid
+
+daily_labelColor = input.color(color.new(color.orange, 80), "Label Background", group="Daily HL")
+daily_labelTextColor = input.color(color.white, "Label Text Color", group="Daily HL")
+daily_labelHighText = input.string("Daily High", "High Label Text", group="Daily HL")
+daily_labelLowText  = input.string("Daily Low",  "Low Label Text", group="Daily HL")
+
+var line  daily_highLine = na
+var line  daily_lowLine  = na
+var label daily_highLbl  = na
+var label daily_lowLbl   = na
+
+[daily_high, daily_low, daily_time] = request.security(
+    syminfo.tickerid,
+    "D",
+    [high, low, time],
+    lookahead = barmerge.lookahead_off)
+
+if daily_showHL
+
+    newDaily = barstate.isfirst or time("D") != time("D")[1]
+
+    // Daily chart MUST use bar_index anchors
+    isDailyChart = timeframe.isdaily
+
+    if newDaily
+        if not na(daily_highLine)
+            line.delete(daily_highLine)
+        if not na(daily_lowLine)
+            line.delete(daily_lowLine)
+
+        daily_highLine := line.new(
+            x1 = isDailyChart ? bar_index : daily_time,
+            y1 = daily_high,
+            x2 = isDailyChart ? bar_index + 1 : time,
+            y2 = daily_high,
+            xloc = isDailyChart ? xloc.bar_index : xloc.bar_time,
+            extend = extend.right,
+            color  = daily_color,
+            width  = daily_width,
+            style  = daily_style)
+
+        daily_lowLine := line.new(
+            x1 = isDailyChart ? bar_index : daily_time,
+            y1 = daily_low,
+            x2 = isDailyChart ? bar_index + 1 : time,
+            y2 = daily_low,
+            xloc = isDailyChart ? xloc.bar_index : xloc.bar_time,
+            extend = extend.right,
+            color  = daily_color,
+            width  = daily_width,
+            style  = daily_style)
+
+    // Update lines safely
+    if not na(daily_highLine)
+        line.set_x2(daily_highLine, isDailyChart ? bar_index : time)
+        line.set_y1(daily_highLine, daily_high)
+        line.set_y2(daily_highLine, daily_high)
+
+    if not na(daily_lowLine)
+        line.set_x2(daily_lowLine, isDailyChart ? bar_index : time)
+        line.set_y1(daily_lowLine, daily_low)
+        line.set_y2(daily_lowLine, daily_low)
+
+    // Labels
+    if not na(daily_highLbl)
+        label.delete(daily_highLbl)
+    if not na(daily_lowLbl)
+        label.delete(daily_lowLbl)
+
+    daily_highLbl := label.new(
+        bar_index + 10,
+        daily_high,
+        daily_labelHighText,
+        xloc = xloc.bar_index,
+        style = label.style_label_left,
+        textcolor = daily_labelTextColor,
+        color = daily_labelColor)
+
+    daily_lowLbl := label.new(
+        bar_index + 10,
+        daily_low,
+        daily_labelLowText,
+        xloc = xloc.bar_index,
+        style = label.style_label_left,
+        textcolor = daily_labelTextColor,
+        color = daily_labelColor)
+
+//=====================================================
+// UNMITIGATED GAP LINES (15m 1hr 4hr)
+//=====================================================
+
+showUnmit   = input.bool(true, "Show Unmitigated Gaps", group="Unmit")
+unmitColor  = (input.color(color.yellow, "Line Color", group="Unmit"))
+unmitWidth = (input.int(1, "Line Width", minval = 1, maxval = 5, group="Unmit"))
+unmitStyleIn = input.string("Solid", "Line Style", options = ["Solid", "Dotted", "Dashed"], group="Unmit")
+
+var unmitStyle = line.style_solid
+if unmitStyleIn == "Dotted"
+    unmitStyle := line.style_dotted
+else if unmitStyleIn == "Dashed"
+    unmitStyle := line.style_dashed
+else
+    unmitStyle := line.style_solid
+
+var float[]  gapLevels = array.new_float()
+var string[] gapTFs    = array.new_string()
+var bool[]   gapIsUp   = array.new_bool()
+var line[]   gapLines  = array.new_line()
+var label[]  gapLabels = array.new_label()
+
+//-----------------------------------------------------
+// VISIBILITY
+//-----------------------------------------------------
+canShowTF(tf) => true
+
+//-----------------------------------------------------
+// ADD GAP
+//-----------------------------------------------------
+addGap(level, tfLabel, isUp) =>
+    array.push(gapLevels, level)
+    array.push(gapTFs, tfLabel)
+    array.push(gapIsUp, isUp)
+    array.push(gapLines, na)
+    array.push(gapLabels, na)
+
+//-----------------------------------------------------
+// TOUCH CHECK (must be outside loops)
+//-----------------------------------------------------
+checkTouched(level, isUp, startIndex) =>
+    touched = false
+    for j = startIndex - 1 to 1
+        if (isUp ? low[j] <= level : high[j] >= level)
+            touched := true
+            break
+    touched
+
+//-----------------------------------------------------
+// CONSOLIDATED SECURITY CALLS
+//-----------------------------------------------------
+getHTF(tf) =>
+    up = request.security(syminfo.tickerid, tf, high[2] < low ? low : na)
+    dn = request.security(syminfo.tickerid, tf, low[2] > high ? high : na)
+    [up, dn]
+
+[M15UpSeries, M15DownSeries] = getHTF("15")
+[h1UpSeries,  h1DownSeries ] = getHTF("60")
+[h4UpSeries,  h4DownSeries ] = getHTF("240")
+[dUpSeries,   dDownSeries  ] = getHTF("D")
+
+//-----------------------------------------------------
+// INITIAL SCAN
+//-----------------------------------------------------
+if barstate.isfirst
+    for i = 3 to 5000
+
+        // M15
+        if not na(M15UpSeries[i]) and not checkTouched(M15UpSeries[i], true, i)
+            addGap(M15UpSeries[i], "15m", true)
+
+        if not na(M15DownSeries[i]) and not checkTouched(M15DownSeries[i], false, i)
+            addGap(M15DownSeries[i], "15m", false)
+
+        // H1
+        if not na(h1UpSeries[i]) and not checkTouched(h1UpSeries[i], true, i)
+            addGap(h1UpSeries[i], "1hr", true)
+
+        if not na(h1DownSeries[i]) and not checkTouched(h1DownSeries[i], false, i)
+            addGap(h1DownSeries[i], "1hr", false)
+
+        // H4
+        if not na(h4UpSeries[i]) and not checkTouched(h4UpSeries[i], true, i)
+            addGap(h4UpSeries[i], "4hr", true)
+
+        if not na(h4DownSeries[i]) and not checkTouched(h4DownSeries[i], false, i)
+            addGap(h4DownSeries[i], "4hr", false)
+
+        // Daily
+        if not na(dUpSeries[i]) and not checkTouched(dUpSeries[i], true, i)
+            addGap(dUpSeries[i], "Daily", true)
+
+        if not na(dDownSeries[i]) and not checkTouched(dDownSeries[i], false, i)
+            addGap(dDownSeries[i], "Daily", false)
+
+//-----------------------------------------------------
+// GAP EXISTS
+//-----------------------------------------------------
+gapExists(level, tfLabel, isUp) =>
+    sz = array.size(gapLevels)
+    if sz == 0
+        false
+    else
+        found = false
+        for x = 0 to sz - 1
+            if array.get(gapLevels, x) == level and
+               array.get(gapTFs, x) == tfLabel and
+               array.get(gapIsUp, x) == isUp
+                found := true
+                break
+        found
+
+//-----------------------------------------------------
+// LIVE DETECTION
+//-----------------------------------------------------
+new15m = ta.change(time("15"))  != 0
+newH1  = ta.change(time("60"))  != 0
+newH4  = ta.change(time("240")) != 0
+newD   = ta.change(time("D"))   != 0
+
+if new15m
+    up15 = M15UpSeries[1]
+    dn15 = M15DownSeries[1]
+    if not na(up15) and not gapExists(up15, "15m", true)
+        addGap(up15, "15m", true)
+    if not na(dn15) and not gapExists(dn15, "15m", false)
+        addGap(dn15, "15m", false)
+
+if newH1
+    upH1 = h1UpSeries[1]
+    dnH1 = h1DownSeries[1]
+    if not na(upH1) and not gapExists(upH1, "1hr", true)
+        addGap(upH1, "1hr", true)
+    if not na(dnH1) and not gapExists(dnH1, "1hr", false)
+        addGap(dnH1, "1hr", false)
+
+if newH4
+    upH4 = h4UpSeries[1]
+    dnH4 = h4DownSeries[1]
+    if not na(upH4) and not gapExists(upH4, "4hr", true)
+        addGap(upH4, "4hr", true)
+    if not na(dnH4) and not gapExists(dnH4, "4hr", false)
+        addGap(dnH4, "4hr", false)
+
+if newD
+    upD = dUpSeries[1]
+    dnD = dDownSeries[1]
+    if not na(upD) and not gapExists(upD, "Daily", true)
+        addGap(upD, "Daily", true)
+    if not na(dnD) and not gapExists(dnD, "Daily", false)
+        addGap(dnD, "Daily", false)
+
+//-----------------------------------------------------
+// REMOVE TOUCHED
+//-----------------------------------------------------
+gapCount = array.size(gapLevels)
+
+if gapCount > 0
+    for i = gapCount - 1 to 0
+        lvl  = array.get(gapLevels, i)
+        isUp = array.get(gapIsUp, i)
+
+        touched = isUp ? low <= lvl : high >= lvl
+
+        if touched
+            ln = array.get(gapLines, i)
+            lb = array.get(gapLabels, i)
+
+            if not na(ln)
+                line.delete(ln)
+            if not na(lb)
+                label.delete(lb)
+
+            array.remove(gapLevels, i)
+            array.remove(gapTFs, i)
+            array.remove(gapIsUp, i)
+            array.remove(gapLines, i)
+            array.remove(gapLabels, i)
+
+//-----------------------------------------------------
+// CLEAR DRAWINGS
+//-----------------------------------------------------
+drawCount = array.size(gapLines)
+
+if drawCount > 0
+    for i = 0 to drawCount - 1
+        ln = array.get(gapLines, i)
+        lb = array.get(gapLabels, i)
+
+        if not na(ln)
+            line.delete(ln)
+        if not na(lb)
+            label.delete(lb)
+
+        array.set(gapLines, i, na)
+        array.set(gapLabels, i, na)
+
+//-----------------------------------------------------
+// DRAW
+//-----------------------------------------------------
+drawCount := array.size(gapLevels)
+
+if drawCount > 0
+    for i = drawCount - 1 to 0
+        tf  = array.get(gapTFs, i)
+        lvl = array.get(gapLevels, i)
+
+        if canShowTF(tf)
+            ln = line.new(
+                x1 = bar_index,
+                y1 = lvl,
+                x2 = bar_index + 1,
+                y2 = lvl,
+                xloc = xloc.bar_index,
+                extend = extend.both,
+                color = unmitColor,
+                width = unmitWidth,
+                style = unmitStyle)
+
+            lb = label.new(
+                x = bar_index + 15,
+                y = lvl,
+                text = tf,
+                xloc = xloc.bar_index,
+                style = label.style_label_left,
+                color = unmitColor,
+                textcolor = color.black)
+
+            array.set(gapLines, i, ln)
+            array.set(gapLabels, i, lb)
+
+//=====================================================
+//  UNIVERSAL KILLZONE ENGINE
+//=====================================================
+
+//-----------------------------------------------------
+// Killzone State Object
+//-----------------------------------------------------
+type KillzoneState
+    float hi
+    float lo
+    int   hiOriginT
+    int   loOriginT
+    int   hiSweepT
+    int   loSweepT
+    line  hiLine
+    line  loLine
+    label hiLbl
+    label loLbl
+    bool  hiSwept
+    bool  loSwept
+
+//-----------------------------------------------------
+// Daily Reset
+//-----------------------------------------------------
+killzone_reset(kz) =>
+    if not na(kz.hiLine)
+        line.delete(kz.hiLine)
+    if not na(kz.loLine)
+        line.delete(kz.loLine)
+    if not na(kz.hiLbl)
+        label.delete(kz.hiLbl)
+    if not na(kz.loLbl)
+        label.delete(kz.loLbl)
+
+    kz.hi        := na
+    kz.lo        := na
+    kz.hiOriginT := na
+    kz.loOriginT := na
+    kz.hiSweepT  := na
+    kz.loSweepT  := na
+    kz.hiLine    := na
+    kz.loLine    := na
+    kz.hiLbl     := na
+    kz.loLbl     := na
+    kz.hiSwept   := false
+    kz.loSwept   := false
+
+//-----------------------------------------------------
+// Track Session High/Low (Origin Wick)
+//-----------------------------------------------------
+killzone_track_session(kz, inSess) =>
+    if inSess
+        // HIGH wick
+        if na(kz.hi)
+            kz.hi        := high
+            kz.hiOriginT := time
+        else if high > kz.hi
+            kz.hi        := high
+            kz.hiOriginT := time
+
+        // LOW wick
+        if na(kz.lo)
+            kz.lo        := low
+            kz.loOriginT := time
+        else if low < kz.lo
+            kz.lo        := low
+            kz.loOriginT := time
+
+//-----------------------------------------------------
+// Sweep Detection (Outside Session Only)
+// Sweep = wick break (high > hi, low < lo)
+//-----------------------------------------------------
+killzone_check_sweep(kz, inSess) =>
+    if not inSess
+        if not kz.hiSwept and not na(kz.hi) and high > kz.hi
+            kz.hiSwept  := true
+            kz.hiSweepT := time
+
+        if not kz.loSwept and not na(kz.lo) and low < kz.lo
+            kz.loSwept  := true
+            kz.loSweepT := time
+
+//-----------------------------------------------------
+// Freeze Line + Center Label After Sweep
+//-----------------------------------------------------
+killzone_freeze(kz, color, width, style, hiText, loText) =>
+    // HIGH
+    if kz.hiSwept and not na(kz.hiSweepT)
+        line.set_x1(kz.hiLine, kz.hiOriginT)
+        line.set_x2(kz.hiLine, kz.hiSweepT)
+        line.set_y1(kz.hiLine, kz.hi)
+        line.set_y2(kz.hiLine, kz.hi)
+        line.set_extend(kz.hiLine, extend.none)
+
+        midT = kz.hiOriginT + int((kz.hiSweepT - kz.hiOriginT) / 2)
+        if not na(kz.hiLbl)
+            label.delete(kz.hiLbl)
+        kz.hiLbl := label.new(
+            midT, kz.hi,
+            hiText,
+            xloc = xloc.bar_time,
+            style = label.style_label_center,
+            textcolor = color.white,
+            color = color.new(color, 80))
+
+    // LOW
+    if kz.loSwept and not na(kz.loSweepT)
+        line.set_x1(kz.loLine, kz.loOriginT)
+        line.set_x2(kz.loLine, kz.loSweepT)
+        line.set_y1(kz.loLine, kz.lo)
+        line.set_y2(kz.loLine, kz.lo)
+        line.set_extend(kz.loLine, extend.none)
+
+        midT = kz.loOriginT + int((kz.loSweepT - kz.loOriginT) / 2)
+        if not na(kz.loLbl)
+            label.delete(kz.loLbl)
+        kz.loLbl := label.new(
+            midT, kz.lo,
+            loText,
+            xloc = xloc.bar_time,
+            style = label.style_label_center,
+            textcolor = color.white,
+            color = color.new(color, 80))
+
+//-----------------------------------------------------
+// Extend Lines + Right‑End Labels (Not Swept)
+//-----------------------------------------------------
+killzone_extend(kz, color, width, style, hiText, loText) =>
+    // HIGH
+    if not kz.hiSwept and not na(kz.hi)
+        if na(kz.hiLine)
+            kz.hiLine := line.new(
+                kz.hiOriginT, kz.hi,
+                time, kz.hi,
+                xloc = xloc.bar_time,
+                extend = extend.none,
+                color  = color,
+                width  = width,
+                style  = style)
+        else
+            line.set_x1(kz.hiLine, kz.hiOriginT)
+            line.set_x2(kz.hiLine, time)
+            line.set_y1(kz.hiLine, kz.hi)
+            line.set_y2(kz.hiLine, kz.hi)
+
+        if not na(kz.hiLbl)
+            label.delete(kz.hiLbl)
+        kz.hiLbl := label.new(
+            time, kz.hi,
+            hiText,
+            xloc = xloc.bar_time,
+            style = label.style_label_left,
+            textcolor = color.white,
+            color = color.new(color, 80))
+
+    // LOW
+    if not kz.loSwept and not na(kz.lo)
+        if na(kz.loLine)
+            kz.loLine := line.new(
+                kz.loOriginT, kz.lo,
+                time, kz.lo,
+                xloc = xloc.bar_time,
+                extend = extend.none,
+                color  = color,
+                width  = width,
+                style  = style)
+        else
+            line.set_x1(kz.loLine, kz.loOriginT)
+            line.set_x2(kz.loLine, time)
+            line.set_y1(kz.loLine, kz.lo)
+            line.set_y2(kz.loLine, kz.lo)
+
+        if not na(kz.loLbl)
+            label.delete(kz.loLbl)
+        kz.loLbl := label.new(
+            time, kz.lo,
+            loText,
+            xloc = xloc.bar_time,
+            style = label.style_label_left,
+            textcolor = color.white,
+            color = color.new(color, 80))
+
+//-----------------------------------------------------
+// Unified Killzone Engine
+//-----------------------------------------------------
+killzone_run(kz, inSess, color, width, style, hiText, loText) =>
+    killzone_track_session(kz, inSess)
+    killzone_check_sweep(kz, inSess)
+    killzone_freeze(kz, color, width, style, hiText, loText)
+    killzone_extend(kz, color, width, style, hiText, loText)
+
+//=====================================================
+//  KILLZONE CONTROLS — SHOW/HIDE + NAME + TIME + STYLE
+//=====================================================
+
+groupKZ = "Killzones"
+
+//-----------------------------------------------------
+// ASIA INPUTS
+//-----------------------------------------------------
+showAsia       = input.bool(true, "Show Asia Killzone", group = groupKZ)
+asia_name_hi   = input.string("Asia High", "Asia High Label", group = groupKZ)
+asia_name_lo   = input.string("Asia Low",  "Asia Low Label",  group = groupKZ)
+asia_sess      = input.session("2000-0000", "Asia Session Time", group = groupKZ)
+asia_color     = input.color(color.new(#787b86, 0), "Asia Line Color", group = groupKZ)
+asia_width     = input.int(1, "Asia Line Width", minval = 1, maxval = 5, group = groupKZ)
+asia_styleIn   = input.string("Dotted", "Asia Line Style", options = ["Solid", "Dotted", "Dashed"], group = groupKZ)
+
+// STYLE HANDLING
+var asia_style = line.style_dotted
+if asia_styleIn == "Solid"
+    asia_style := line.style_solid
+else if asia_styleIn == "Dashed"
+    asia_style := line.style_dashed
+else
+    asia_style := line.style_dotted
+
+
+//-----------------------------------------------------
+// LONDON INPUTS
+//-----------------------------------------------------
+showLondon     = input.bool(true, "Show London Killzone", group = groupKZ)
+london_name_hi = input.string("London High", "London High Label", group = groupKZ)
+london_name_lo = input.string("London Low",  "London Low Label",  group = groupKZ)
+london_sess    = input.session("0200-0500", "London Session Time", group = groupKZ)
+london_color   = input.color(color.new(#2962ff, 0), "London Line Color", group = groupKZ)
+london_width   = input.int(1, "London Line Width", minval = 1, maxval = 5, group = groupKZ)
+london_styleIn = input.string("Dotted", "London Line Style", options = ["Solid", "Dotted", "Dashed"], group = groupKZ)
+
+var london_style = line.style_dotted
+if london_styleIn == "Solid"
+    london_style := line.style_solid
+else if london_styleIn == "Dashed"
+    london_style := line.style_dashed
+else
+    london_style := line.style_dotted
+
+
+//-----------------------------------------------------
+// NY-AM INPUTS
+//-----------------------------------------------------
+showNYAM       = input.bool(true, "Show NY AM Killzone", group = groupKZ)
+nyam_name_hi   = input.string("NY AM High", "NY AM High Label", group = groupKZ)
+nyam_name_lo   = input.string("NY AM Low",  "NY AM Low Label",  group = groupKZ)
+nyam_sess      = input.session("0930-1100", "NY AM Session Time", group = groupKZ)
+nyam_color     = input.color(color.new(#ff9800, 0), "NY AM Line Color", group = groupKZ)
+nyam_width     = input.int(1, "NY AM Line Width", minval = 1, maxval = 5, group = groupKZ)
+nyam_styleIn   = input.string("Dotted", "NY AM Line Style", options = ["Solid", "Dotted", "Dashed"], group = groupKZ)
+
+var nyam_style = line.style_dotted
+if nyam_styleIn == "Solid"
+    nyam_style := line.style_solid
+else if nyam_styleIn == "Dashed"
+    nyam_style := line.style_dashed
+else
+    nyam_style := line.style_dotted
+
+
+//=====================================================
+//  KILLZONE DEFINITIONS (ASIA, LONDON, NY-AM)
+//=====================================================
+
+//-----------------------------------------------------
+// ASIA
+//-----------------------------------------------------
+var KillzoneState asia = KillzoneState.new()
+asiaInSess = not na(time(timeframe.period, asia_sess, "America/New_York"))
+
+if time("D") != time("D")[1]
+    killzone_reset(asia)
+
+if showAsia
+    killzone_run(
+        asia,
+        asiaInSess,
+        asia_color,
+        asia_width,
+        asia_style,
+        asia_name_hi,
+        asia_name_lo
+    )
+
+//-----------------------------------------------------
+// LONDON
+//-----------------------------------------------------
+var KillzoneState london = KillzoneState.new()
+londonInSess = not na(time(timeframe.period, london_sess, "America/New_York"))
+
+if time("D") != time("D")[1]
+    killzone_reset(london)
+
+if showLondon
+    killzone_run(
+        london,
+        londonInSess,
+        london_color,
+        london_width,
+        london_style,
+        london_name_hi,
+        london_name_lo
+    )
+
+//-----------------------------------------------------
+// NY-AM
+//-----------------------------------------------------
+var KillzoneState nyam = KillzoneState.new()
+nyamInSess = not na(time(timeframe.period, nyam_sess, "America/New_York"))
+
+if time("D") != time("D")[1]
+    killzone_reset(nyam)
+
+if showNYAM
+    killzone_run(
+        nyam,
+        nyamInSess,
+        nyam_color,
+        nyam_width,
+        nyam_style,
+        nyam_name_hi,
+        nyam_name_lo
+    )
+
+
+//=====================================================
+// NEWS HIGH/LOW — STRICT TIME + SPIKE DETECTION
+//=====================================================
+
+groupNews = "News High/Low"
+
+//-----------------------------------------------------
+// Inputs
+//-----------------------------------------------------
+showNews        = input.bool(true, "Show News High/Low", group = groupNews)
+news_name_hi    = input.string("News High", "High Label Text", group = groupNews)
+news_name_lo    = input.string("News Low",  "Low Label Text", group = groupNews)
+news_color      = input.color(color.red, "Line Color", group = groupNews)
+news_width      = input.int(1, "Line Width", minval = 1, maxval = 5, group = groupNews)
+news_styleIn    = input.string("Solid", "Line Style", options = ["Solid","Dotted","Dashed"], group = groupNews)
+news_lookback_days = input.int(30, "Lookback Days", minval = 1, maxval = 365, group = groupNews)
+volumeMult     = input.float(2.5, "Volume Spike Multiplier", minval = 1.0, step = 0.1, group = groupNews)
+rangeMult      = input.float(2.0, "Range Spike Multiplier (ATR)", minval = 1.0, step = 0.1, group = groupNews)
+lookbackPeriod = input.int(30, "Vol Spike Lookback Num Candles", minval = 1, maxval=100, group = groupNews)
+
+// Style resolver
+var news_style = line.style_solid
+if news_styleIn == "Dotted"
+    news_style := line.style_dotted
+else if news_styleIn == "Dashed"
+    news_style := line.style_dashed
+else
+    news_style := line.style_solid
+
+//-----------------------------------------------------
+// NewsLevel object
+//-----------------------------------------------------
+type NewsLevel
+    float hi
+    float lo
+    int   originT
+    line  hiLine
+    line  loLine
+    label hiLbl
+    label loLbl
+    bool  hiSwept
+    bool  loSwept
+
+var NewsLevel[] newsLevels = array.new<NewsLevel>()
+
+//---------------------------------------------------------------
+// STRICT NEWS TIMES — NY TIME ONLY
+//---------------------------------------------------------------
+is_news_minute(nyHour, nyMin) =>
+    (nyHour == 8  and (nyMin == 15 or nyMin == 30)) or (nyHour == 10 and nyMin == 0) or (nyHour == 14 and (nyMin == 0 or nyMin == 30))
+
+//---------------------------------------------------------------
+// SPIKE DETECTION (Volume + ATR)
+//---------------------------------------------------------------
+avgVolume = ta.sma(volume, lookbackPeriod)
+avgRange  = ta.atr(lookbackPeriod)
+currentRange = high - low
+
+isVolumeSpike = volume > (avgVolume * volumeMult)
+isRangeSpike  = currentRange > (avgRange * rangeMult)
+
+is_news_spike = isVolumeSpike or isRangeSpike
+
+//---------------------------------------------------------------
+// COMBINED TRIGGER (STRICT TIME OR SPIKE)
+//---------------------------------------------------------------
+is_news_trigger(nyHour, nyMin) =>
+    is_news_minute(nyHour, nyMin) and is_news_spike
+
+//---------------------------------------------------------------
+// Detect news candle (LIVE) — NY time
+//---------------------------------------------------------------
+detect_news_candle() =>
+    nyHour = hour(time, "America/New_York")
+    nyMin  = minute(time, "America/New_York")
+
+    if barstate.isconfirmed and is_news_trigger(nyHour, nyMin)
+        nl = NewsLevel.new()
+        nl.hi       := high
+        nl.lo       := low
+        nl.originT  := time
+        nl.hiLine   := na
+        nl.loLine   := na
+        nl.hiLbl    := na
+        nl.loLbl    := na
+        nl.hiSwept  := false
+        nl.loSwept  := false
+        array.push(newsLevels, nl)
+
+//-----------------------------------------------------
+// Historical scan — same NY time, same logic
+//-----------------------------------------------------
+lookbackMinutes = news_lookback_days * 24 * 60
+
+if barstate.isfirst
+    maxBack = math.min(lookbackMinutes, bar_index)
+    for i = 1 to maxBack
+        nyHour = hour(time[i], "America/New_York")
+        nyMin  = minute(time[i], "America/New_York")
+
+        if is_news_trigger(nyHour, nyMin)
+            nl = NewsLevel.new()
+            nl.hi       := high[i]
+            nl.lo       := low[i]
+            nl.originT  := time[i]
+            nl.hiLine   := na
+            nl.loLine   := na
+            nl.hiLbl    := na
+            nl.loLbl    := na
+            nl.hiSwept  := false
+            nl.loSwept  := false
+            array.push(newsLevels, nl)
+
+//-----------------------------------------------------
+// Sweep logic — delete swept lines
+//-----------------------------------------------------
+news_check_sweeps() =>
+    sz = array.size(newsLevels)
+    if sz > 0
+        for i = 0 to sz - 1
+            nl = array.get(newsLevels, i)
+
+            if not nl.hiSwept and high > nl.hi
+                nl.hiSwept := true
+                if not na(nl.hiLine)
+                    line.delete(nl.hiLine)
+                    nl.hiLine := na
+                if not na(nl.hiLbl)
+                    label.delete(nl.hiLbl)
+                    nl.hiLbl := na
+
+            if not nl.loSwept and low < nl.lo
+                nl.loSwept := true
+                if not na(nl.loLine)
+                    line.delete(nl.loLine)
+                    nl.loLine := na
+                if not na(nl.loLbl)
+                    label.delete(nl.loLbl)
+                    nl.loLbl := na
+
+//-----------------------------------------------------
+// Draw news lines + labels
+//-----------------------------------------------------
+news_draw_all() =>
+    if showNews
+        sz = array.size(newsLevels)
+        if sz > 0
+            for i = 0 to sz - 1
+                nl = array.get(newsLevels, i)
+
+                if not nl.hiSwept
+                    if na(nl.hiLine)
+                        nl.hiLine := line.new(
+                            nl.originT, nl.hi,
+                            time, nl.hi,
+                            xloc = xloc.bar_time,
+                            extend = extend.right,
+                            color  = news_color,
+                            width  = news_width,
+                            style  = news_style)
+                    else
+                        line.set_x2(nl.hiLine, time)
+
+                    if not na(nl.hiLbl)
+                        label.delete(nl.hiLbl)
+                    nl.hiLbl := label.new(
+                        time, nl.hi,
+                        news_name_hi,
+                        xloc = xloc.bar_time,
+                        style = label.style_label_left,
+                        textcolor = color.white,
+                        color = color.new(news_color, 80))
+
+                if not nl.loSwept
+                    if na(nl.loLine)
+                        nl.loLine := line.new(
+                            nl.originT, nl.lo,
+                            time, nl.lo,
+                            xloc = xloc.bar_time,
+                            extend = extend.right,
+                            color  = news_color,
+                            width  = news_width,
+                            style  = news_style)
+                    else
+                        line.set_x2(nl.loLine, time)
+
+                    if not na(nl.loLbl)
+                        label.delete(nl.loLbl)
+                    nl.loLbl := label.new(
+                        time, nl.lo,
+                        news_name_lo,
+                        xloc = xloc.bar_time,
+                        style = label.style_label_left,
+                        textcolor = color.white,
+                        color = color.new(news_color, 80))
+
+//-----------------------------------------------------
+// Execute module
+//-----------------------------------------------------
+detect_news_candle()
+news_check_sweeps()
+news_draw_all()
+
+
+//=====================================================
+// NEW WEEK OPENING GAP (NWOG)
+//=====================================================
+
+groupNWOG = "New Week Opening Gap (NWOG)"
+
+showNWOG      = input.bool(true, "Show NWOG", group = groupNWOG)
+nwogColor     = input.color(color.new(color.blue, 97), "NWOG Box Color", group = groupNWOG)
+nwogLineColor = input.color(color.new(color.blue, 0), "NWOG 50% Line Color", group = groupNWOG)
+nwogLineWidth = input.int(1, "NWOG Line Width", minval = 1, maxval = 5, group = groupNWOG)
+nwogLineStyle = input.string("Dashed", "NWOG 50% Line Style", options = ["Solid", "Dashed", "Dotted"], group = groupNWOG)
+
+nwogLineStyleConst =
+      nwogLineStyle == "Solid"  ? line.style_solid  :
+      nwogLineStyle == "Dotted" ? line.style_dotted :
+                                  line.style_dashed
+
+// Storage
+var float fridayClose = na
+var float sundayOpen  = na
+var float nwogHigh    = na
+var float nwogLow     = na
+var float nwogMid     = na
+var int   nwogStartT  = na
+var int   nwogEndT    = na
+var box   nwogBox     = na
+var line  nwogMidLine = na
+var label nwogMidLabel = na
+
+// Friday 16:59 close (NY time)
+isFriday1659() =>
+    dayofweek(time, "America/New_York") == dayofweek.friday and hour(time, "America/New_York") == 16 and minute(time, "America/New_York") == 59
+
+// Sunday 18:00 open (NY time) using adjusted time
+sunTimeAdj = time - 60
+
+isSunday1800() =>
+    dayofweek(sunTimeAdj, "America/New_York") == dayofweek.sunday and hour(sunTimeAdj, "America/New_York") == 18 and minute(sunTimeAdj, "America/New_York") == 0
+
+//-----------------------------------------------------
+// CAPTURE FRIDAY CLOSE
+//-----------------------------------------------------
+if isFriday1659()
+    fridayClose := close
+    nwogStartT  := time
+
+//-----------------------------------------------------
+// CAPTURE SUNDAY OPEN (using the correct bar)
+//-----------------------------------------------------
+if isSunday1800()
+    sundayOpen := open
+    nwogEndT   := time
+
+    // Normalize top/bottom
+    nwogHigh := math.max(fridayClose, sundayOpen)
+    nwogLow  := math.min(fridayClose, sundayOpen)
+    nwogMid  := (nwogHigh + nwogLow) / 2
+
+    // Clear old drawings
+    if not na(nwogBox)
+        box.delete(nwogBox)
+    if not na(nwogMidLine)
+        line.delete(nwogMidLine)
+    if not na(nwogMidLabel)
+        label.delete(nwogMidLabel)
+
+    // Draw NWOG
+    if showNWOG
+        nwogBox := box.new(
+            nwogStartT, nwogHigh,
+            time, nwogLow,
+            xloc = xloc.bar_time,
+            bgcolor = nwogColor,
+            border_color = color.new(color.blue, 0)
+        )
+
+        nwogMidLine := line.new(
+            nwogStartT, nwogMid,
+            time, nwogMid,
+            xloc = xloc.bar_time,
+            color = nwogLineColor,
+            width = nwogLineWidth,
+            style = nwogLineStyleConst
+        )
+
+        nwogMidLabel := label.new(
+            time, nwogMid,
+            "50% NWOG",
+            xloc = xloc.bar_time,
+            style = label.style_label_left,
+            color = color.new(nwogLineColor, 80),
+            textcolor = color.white
+        )
+
+// Extend box + line
+if showNWOG
+    if not na(nwogBox)
+        box.set_left(nwogBox, nwogStartT)
+        box.set_right(nwogBox, time)
+        box.set_top(nwogBox, nwogHigh)
+        box.set_bottom(nwogBox, nwogLow)
+
+    if not na(nwogMidLine)
+        line.set_x1(nwogMidLine, nwogStartT)
+        line.set_x2(nwogMidLine, time)
+        line.set_y1(nwogMidLine, nwogMid)
+        line.set_y2(nwogMidLine, nwogMid)
+        line.set_style(nwogMidLine, nwogLineStyleConst)
+
+    if not na(nwogMidLabel)
+        label.set_x(nwogMidLabel, time)
+        label.set_y(nwogMidLabel, nwogMid)
+
+// Remove 50% line when touched
+if showNWOG and not na(nwogMidLine)
+    midTouched = high >= nwogMid and low <= nwogMid
+    if midTouched
+        line.delete(nwogMidLine)
+        nwogMidLine := na
+        if not na(nwogMidLabel)
+            label.delete(nwogMidLabel)
+        nwogMidLabel := na
+
+// Remove box only when fully filled
+if showNWOG and not na(nwogBox)
+    fullyFilled = high >= nwogHigh and low <= nwogLow
+    if fullyFilled
+        box.delete(nwogBox)
+        nwogBox := na
+
+// Hide when toggle off
+if not showNWOG
+    if not na(nwogBox)
+        box.delete(nwogBox)
+        nwogBox := na
+    if not na(nwogMidLine)
+        line.delete(nwogMidLine)
+        nwogMidLine := na
+    if not na(nwogMidLabel)
+        label.delete(nwogMidLabel)
+        nwogMidLabel := na

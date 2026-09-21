@@ -1,0 +1,11 @@
+//@version=6
+indicator(title="ATR Log", shorttitle="ATRLOG", overlay=false, timeframe="", timeframe_gaps=true)
+length = input.int(title="Length", defval=11, minval=1)
+smoothing = input.string(title="Smoothing", defval="RMA", options=["RMA", "SMA", "EMA", "WMA"])
+ma_function(source, length) =>
+	switch smoothing
+		"RMA" => ta.rma(source, length)
+		"SMA" => ta.sma(source, length)
+		"EMA" => ta.ema(source, length)
+		=> ta.wma(source, length)
+plot(ma_function(((ta.tr(true)/close)*100), length), title = "ATRLOG", color=color.new(#B71C1C, 0))

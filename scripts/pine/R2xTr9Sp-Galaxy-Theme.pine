@@ -1,0 +1,48 @@
+//@version=6
+indicator("Galaxy Theme", overlay=true)
+
+// Create a 10x10 grid. The table background is 100% transparent so your candles remain completely visible!
+var table space = table.new(position.top_left, 10, 10, bgcolor=color.new(color.black, 100), border_width=0)
+
+// Deterministic seeds so the stars stay perfectly still and don't flicker when the price moves
+var int seed1 = 17
+var int seed2 = 23
+
+if barstate.islast
+    for r = 0 to 9
+        for c = 0 to 9
+            // Complex pseudo-randomization for a highly natural scatter effect
+            int starRand = (r * seed1 + c * seed2) % 12
+            
+            string stardust = ""
+            color starColor = color.new(color.white, 100)
+            string tSize = size.small
+            
+            // Organic placement using varied line breaks (\n) and spacing so it doesn't look like a grid
+            if starRand == 0
+                stardust := "✦"
+                starColor := color.new(#babbff, 30) // Soft glowing purple
+                tSize := size.normal
+            else if starRand == 1
+                stardust := " \n\n ★"
+                starColor := color.new(color.white, 50)
+            else if starRand == 2
+                stardust := "      ·"
+                starColor := color.new(#ffd1ff, 30) // Faint pink nebula dust
+            else if starRand == 3
+                stardust := " \n ✦ \n "
+                starColor := color.new(#9bf6ff, 30) // Distant cyan twinkle
+            else if starRand == 5
+                stardust := "★\n\n"
+                starColor := color.new(color.white, 60)
+                tSize := size.tiny
+            else if starRand == 7
+                stardust := "   ·   "
+                starColor := color.new(#c8b6ff, 40) // Lavender
+            else
+                // Leave empty cells to create the dark void of deep space
+                stardust := ""
+            
+            // THE MAGIC TRICK: width=10.0 and height=10.0 forces each cell to stretch.
+            // 10 cells x 10% = exactly 100% full screen coverage edge-to-edge!
+            table.cell(space, c, r, text=stardust, text_color=starColor, text_size=tSize, width=10.0, height=10.0)

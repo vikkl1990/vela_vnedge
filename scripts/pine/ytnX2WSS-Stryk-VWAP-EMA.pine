@@ -1,0 +1,270 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// Stryk: VWAP + EMA — rolling VWAP with deviation bands, EMA with a smoothing MA,
+// and delta-coloured candles. Nothing else: no tags, no signals, no display box.
+//
+// ROLLING VWAP: volume-weighted average price over the last N candles of a
+//   chosen delta timeframe (60-min × 20 = the 20-hour VWAP), computed from chart
+//   bars on a ring buffer with running sums — replay-safe, no history lookback.
+//   Visual smoothing rounds the steps as the oldest candle drops out of the window.
+// EMA: TradingView's standard EMA with its optional smoothing MA / Bollinger
+//   bands, plus the same visual smoothing.
+// CANDLE PAINT: Stryk: ΔC's delta colouring. Delta per bar comes from
+//   request.footprint() (real bid/ask volume) where TradingView provides it,
+//   otherwise an ESTIMATE from lower-timeframe bar polarity (disclosed). Colour
+//   follows the LIVE delta of the delta-timeframe candle each bar belongs to.
+// ─────────────────────────────────────────────────────────────────────────────
+indicator("Stryk: VWAP + EMA", "Stryk: VE", overlay = true, max_bars_back = 300, dynamic_requests = true)
+
+string G0 = "0 · Master Switches"
+string G1 = "1 · Delta Engine (candle paint source)"
+string G2 = "2 · Rolling VWAP"
+string G3 = "3 · EMA"
+string G4 = "4 · Candle Paint"
+
+// ── 0 · Master switches ──────────────────────────────────────────────────────
+mVwap  = input.bool(true, "Rolling VWAP + bands", group = G0, inline = "m",
+     tooltip = "Master switches. OFF forces that block off regardless of its own toggles; ON hands control back with settings intact.")
+mEma   = input.bool(true, "EMA", group = G0, inline = "m")
+mPaint = input.bool(true, "Candle paint", group = G0, inline = "m")
+
+// ── 1 · Delta engine ─────────────────────────────────────────────────────────
+deltaSrc = input.string("Auto (footprint → estimate)", "Delta source", group = G1,
+     options = ["Auto (footprint → estimate)", "Estimate only"],
+     tooltip = "Auto: uses request.footprint() bid/ask volume whenever TradingView supplies it for the bar, otherwise the polarity estimate. Estimate only: ignores footprint. Footprint availability depends on plan and symbol; the footprint is built from TradingView's own tick feed, so a 'Delayed' chip on the chart means the colours are delayed by the same amount.")
+fpTicks  = input.int(4, "Footprint row size (ticks)", minval = 1, group = G1,
+     tooltip = "Row height for request.footprint(). Bar delta is the same at any row size; 4 ticks = 1 point on ES/NQ.")
+htfTf    = input.timeframe("60", "Delta timeframe", group = G1,
+     tooltip = "The candle delta accumulates into (candle colour follows this candle's LIVE delta) and the candle the VWAP window is counted in. Must be ≥ the chart timeframe; with auto-raise ON it is lifted to the chart timeframe when you go higher.")
+autoRaiseTf = input.bool(true, "Auto-raise delta timeframe to chart", group = G1,
+     tooltip = "ON: when the chart timeframe is above the delta timeframe, the delta timeframe becomes the chart timeframe for that session with the same lookback N — no error, same rule as Stryk: ΔC. OFF: strict, the script halts with an error.")
+lenN     = input.int(20, "Lookback N (VWAP window, paint scale)", minval = 1, maxval = 200, group = G1,
+     tooltip = "Completed delta-TF candles in the rolling VWAP window and in the average |Δ| the paint scale normalises to. 20 on a 60-min delta TF ≈ one day + overnight.")
+useAutoLtf = input.bool(true, "Auto intrabar resolution (estimate path)", group = G1,
+     tooltip = "Estimate path only. Picks the finest lower-timeframe resolution whose data budget still covers N candles × the history multiple. Same rule as Stryk: ΔC.")
+dataBudget = input.string("100K (Basic–Premium)", "Intrabar budget (your plan)", group = G1,
+     options = ["100K (Basic–Premium)", "125K (Expert)", "200K (Ultimate)"],
+     tooltip = "TradingView's cap on total lower-timeframe bars a script may pull, by plan. Estimate path only.")
+histMult = input.float(3.0, "History coverage (× N candles)", minval = 1.0, maxval = 10.0, step = 0.5, group = G1,
+     tooltip = "Multiples of N candles the estimate path must cover before accepting a resolution.")
+manualLtf = input.timeframe("1", "Manual intrabar resolution", group = G1,
+     tooltip = "Used when auto is OFF. Must be below the chart timeframe.")
+
+// ── 2 · Rolling VWAP ─────────────────────────────────────────────────────────
+vwapSmooth = input.int(5, "Smoothing (EMA length, 1 = off)", minval = 1, maxval = 50, group = G2,
+     tooltip = "VISUAL smoothing of the rolling VWAP and its bands. The raw window VWAP steps each time the oldest candle leaves the window; this EMA rounds the steps into a curve. 1 = raw stepped line; 5 = default; 10+ = glassier, slightly later on turns.")
+vwapCol   = input.color(#35d0e0, "VWAP colour", group = G2, inline = "vw")
+vwapWidth = input.int(3, "width", minval = 1, maxval = 5, group = G2, inline = "vw")
+showB1 = input.bool(true, "±1σ", group = G2, inline = "b1")
+multB1 = input.float(1.0, "×", minval = 0.1, step = 0.1, group = G2, inline = "b1",
+     tooltip = "Volume-weighted standard-deviation bands over the same window, with per-band multipliers.")
+showB2 = input.bool(true, "±2σ", group = G2, inline = "b2")
+multB2 = input.float(2.0, "×", minval = 0.1, step = 0.1, group = G2, inline = "b2")
+showB3 = input.bool(false, "±3σ", group = G2, inline = "b3")
+multB3 = input.float(3.0, "×", minval = 0.1, step = 0.1, group = G2, inline = "b3")
+bandCol1 = input.color(color.new(#35d0e0, 60), "±1σ", group = G2, inline = "bc")
+bandCol2 = input.color(color.new(#35d0e0, 72), "±2σ", group = G2, inline = "bc")
+bandCol3 = input.color(color.new(#35d0e0, 84), "±3σ", group = G2, inline = "bc",
+     tooltip = "One colour per band pair (transparency in the picker).")
+bandWidth = input.int(2, "Band width", minval = 1, maxval = 5, group = G2)
+bandFill  = input.bool(true, "Fill between ±1σ", group = G2, inline = "bf")
+bandFillCol = input.color(color.new(#35d0e0, 94), "", group = G2, inline = "bf")
+
+// ── 3 · EMA (TradingView standard + smoothing MA) ────────────────────────────
+emaLen = input.int(233, "Length", minval = 1, group = G3)
+emaSrc = input.source(close, "Source", group = G3)
+emaOffset = input.int(0, "Offset", minval = -500, maxval = 500, group = G3, display = display.none)
+emaSmooth = input.int(3, "Visual smoothing (EMA length, 1 = off)", minval = 1, maxval = 50, group = G3,
+     tooltip = "Extra EMA pass applied to the plotted EMA for a glassier line. 1 = the standard EMA exactly.")
+emaCol   = input.color(#2962ff, "EMA colour", group = G3, inline = "ec")
+emaWidth = input.int(2, "width", minval = 1, maxval = 5, group = G3, inline = "ec")
+string TT_BB = "Only applies when 'SMA + Bollinger Bands' is selected. Determines the distance between the SMA and the bands."
+maTypeInput = input.string("None", "Smoothing MA type", options = ["None", "SMA", "SMA + Bollinger Bands", "EMA", "SMMA (RMA)", "WMA", "VWMA"], group = G3, display = display.none,
+     tooltip = "TradingView's standard smoothing MA of the EMA. 'SMA + Bollinger Bands' adds bands around it.")
+var bool isBB = maTypeInput == "SMA + Bollinger Bands"
+maLengthInput = input.int(233, "Smoothing MA length", group = G3, display = display.none, active = maTypeInput != "None")
+bbMultInput = input.float(2.0, "BB StdDev", minval = 0.001, maxval = 50, step = 0.5, tooltip = TT_BB, group = G3, display = display.none, active = isBB)
+var bool enableMA = maTypeInput != "None"
+maCol = input.color(#ffd700, "Smoothing MA colour", group = G3, inline = "mc")
+bbCol = input.color(#4ade80, "BB colour", group = G3, inline = "mc")
+
+// ── 4 · Candle paint (Stryk: ΔC engine) ──────────────────────────────────────
+paintOn_i = input.bool(true, "Paint candles by delta", group = G4,
+     tooltip = "Colours every candle (body, wick, border) by the LIVE delta of the delta-TF candle it belongs to — price pushing up while candles fade toward the bear colour = selling into strength. Hide the chart's own candles so only the painted set shows.")
+colBull = input.color(#4ade80, "Bull", group = G4, inline = "c")
+colNeut = input.color(#3b82f6, "Neutral", group = G4, inline = "c")
+colBear = input.color(#e63030, "Bear", group = G4, inline = "c",
+     tooltip = "Bull = strong positive delta, Neutral = near zero, Bear = strong negative. Intensity scales with delta size relative to the average |Δ| of the lookback, fading through Neutral as delta flips.")
+paintMode = input.string("Delta % (imbalance)", "Paint mode", group = G4, options = ["Delta size", "Delta % (imbalance)"],
+     tooltip = "Delta size = intensity from delta magnitude vs the recent average. Delta % = intensity from delta as a share of total volume — reacts to imbalance quality regardless of size and flips colour fastest.")
+paintSens = input.float(1.5, "Paint sensitivity", minval = 0.5, maxval = 5.0, step = 0.25, group = G4,
+     tooltip = "Delta size: full colour at sensitivity × average |Δ|. Delta %: full colour at (15 ÷ sensitivity)% imbalance — 1.5 = full at 10%.")
+paintCurve = input.string("Boosted", "Paint curve", group = G4, options = ["Linear", "Boosted"],
+     tooltip = "Boosted = square-root response: mid deltas render more colourful while extremes still cap at full. Tested optimal on Stryk: ΔC.")
+paintFloor = input.float(0.0, "Minimum flip colour (0 = off)", minval = 0.0, maxval = 0.8, step = 0.05, group = G4,
+     tooltip = "Snap-to-colour floor. Tested OFF: the Boosted curve alone shows real flips within ~2 bars and a floor tripled false wrong-side flashes.")
+
+// ── Effective delta timeframe (auto-raise) ───────────────────────────────────
+string dTf = autoRaiseTf and timeframe.in_seconds(htfTf) < timeframe.in_seconds(timeframe.period) ? timeframe.period : htfTf
+if barstate.isfirst and not autoRaiseTf and timeframe.in_seconds(htfTf) < timeframe.in_seconds(timeframe.period)
+    runtime.error("Stryk: VE — delta timeframe must be equal to or higher than the chart timeframe. Turn on 'Auto-raise delta timeframe to chart' to have this handled automatically.")
+
+// ── Estimate path: intrabar resolution (same rule as Stryk: ΔC) ─────────────
+int ibBudget = dataBudget == "200K (Ultimate)" ? 200000 : dataBudget == "125K (Expert)" ? 125000 : 100000
+int chartSec = timeframe.in_seconds(timeframe.period)
+float needSec = math.max(lenN * timeframe.in_seconds(dTf) * histMult, 2.0 * 86400)
+ltfAutoSec() =>
+    array<int> lad = array.from(1, 5, 10, 15, 30, 60, 300, 900)
+    int best = -1
+    for s in lad
+        if s < chartSec and best == -1 and ibBudget * s >= needSec
+            best := s
+    if best == -1
+        for s in lad
+            if s < chartSec
+                best := s
+    best
+tfStrOf(int s) =>
+    s == 1 ? "1S" : s == 5 ? "5S" : s == 10 ? "10S" : s == 15 ? "15S" : s == 30 ? "30S" : s == 60 ? "1" : s == 300 ? "5" : "15"
+int autoSec = ltfAutoSec()
+string ltf = useAutoLtf ? (autoSec > 0 ? tfStrOf(autoSec) : "1") : manualLtf
+signedVol() =>
+    float v = nz(volume)
+    float out = 0.0
+    if close > open
+        out := v
+    else if close < open
+        out := -v
+    else if close > close[1]
+        out := v
+    else if close < close[1]
+        out := -v
+    out
+
+// footprint first (unconditional); estimate requested only when needed (dynamic request)
+footprint fp = request.footprint(fpTicks, 70, 300)
+bool fpOk = deltaSrc != "Estimate only" and not na(fp)
+bool needEst = deltaSrc == "Estimate only" or na(fp)
+array<float> ivS = needEst ? request.security_lower_tf(syminfo.tickerid, ltf, signedVol()) : array.new_float()
+
+// ── Per-bar delta ────────────────────────────────────────────────────────────
+float barBuy  = 0.0
+float barSell = 0.0
+if fpOk
+    barBuy  := nz(fp.buy_volume())
+    barSell := nz(fp.sell_volume())
+else
+    int nIB = array.size(ivS)
+    if nIB > 0
+        for i = 0 to nIB - 1
+            float sv = nz(array.get(ivS, i))
+            if sv > 0
+                barBuy += sv
+            else
+                barSell -= sv
+    else
+        float v0 = nz(volume)
+        barBuy  := close > open ? v0 : 0.0
+        barSell := close < open ? v0 : 0.0
+float barDelta = barBuy - barSell
+
+// ── Delta-TF candle state ────────────────────────────────────────────────────
+var float liveDelta = 0.0
+var float liveBuy   = 0.0
+var float liveSell  = 0.0
+var float htfOpen   = na
+var array<float> deltaHist = array.new_float()
+bool htfRoll = timeframe.change(dTf)
+if htfRoll
+    if not na(htfOpen)
+        array.push(deltaHist, liveDelta)
+        if array.size(deltaHist) > lenN
+            array.shift(deltaHist)
+    liveDelta := 0.0
+    liveBuy := 0.0
+    liveSell := 0.0
+    htfOpen := open
+liveDelta += nz(barDelta)
+liveBuy   += nz(barBuy)
+liveSell  += nz(barSell)
+
+// ── Rolling VWAP over N delta-TF candles — ring buffer, running sums ────────
+int winBars = math.min(4000, math.max(1, math.round(lenN * timeframe.in_seconds(dTf) / chartSec)))
+var array<float> rbV  = array.new_float()
+var array<float> rbPv = array.new_float()
+var array<float> rbP2 = array.new_float()
+var float vSum  = 0.0
+var float pvSum = 0.0
+var float p2Sum = 0.0
+float vNow  = nz(volume)
+float pvNow = hlc3 * vNow
+float p2Now = hlc3 * hlc3 * vNow
+bool commit = barstate.isconfirmed or barstate.ishistory
+if commit
+    array.push(rbV, vNow)
+    array.push(rbPv, pvNow)
+    array.push(rbP2, p2Now)
+    vSum  += vNow
+    pvSum += pvNow
+    p2Sum += p2Now
+    while array.size(rbV) > winBars
+        vSum  -= array.shift(rbV)
+        pvSum -= array.shift(rbPv)
+        p2Sum -= array.shift(rbP2)
+float vSumL  = commit ? vSum  : vSum  + vNow
+float pvSumL = commit ? pvSum : pvSum + pvNow
+float p2SumL = commit ? p2Sum : p2Sum + p2Now
+float rvwap = vSumL > 0 ? pvSumL / vSumL : na
+float rvar  = vSumL > 0 ? math.max(0.0, p2SumL / vSumL - rvwap * rvwap) : na
+float rsd   = na(rvar) ? na : math.sqrt(rvar)
+// visual smoothing (calls unconditional)
+float rvwapS = ta.ema(rvwap, vwapSmooth)
+float rsdS   = ta.ema(rsd, vwapSmooth)
+
+// ── EMA + smoothing MA (TradingView standard) ────────────────────────────────
+float emaRaw = ta.ema(emaSrc, emaLen)
+float emaOut = ta.ema(emaRaw, emaSmooth)
+ma(source, length, MAtype) =>
+    switch MAtype
+        "SMA"                   => ta.sma(source, length)
+        "SMA + Bollinger Bands" => ta.sma(source, length)
+        "EMA"                   => ta.ema(source, length)
+        "SMMA (RMA)"            => ta.rma(source, length)
+        "WMA"                   => ta.wma(source, length)
+        "VWMA"                  => ta.vwma(source, length)
+float smoothingMA    = enableMA ? ma(emaOut, maLengthInput, maTypeInput) : na
+float smoothingStDev = isBB ? ta.stdev(emaOut, maLengthInput) * bbMultInput : na
+
+// ── Candle paint (Stryk: ΔC) ─────────────────────────────────────────────────
+float avgAbsD = 0.0
+if array.size(deltaHist) > 0
+    for d in deltaHist
+        avgAbsD += math.abs(nz(d))
+    avgAbsD /= array.size(deltaHist)
+float scaleRef = avgAbsD > 0 ? avgAbsD * paintSens : math.abs(nz(liveDelta))
+float totVLive = liveBuy + liveSell
+float dPctRaw  = totVLive > 0 ? nz(liveDelta) / totVLive : 0.0
+float rawN = paintMode == "Delta % (imbalance)" ? math.max(-1.0, math.min(1.0, dPctRaw * paintSens / 0.15)) : scaleRef > 0 ? math.max(-1.0, math.min(1.0, nz(liveDelta) / scaleRef)) : 0.0
+float curvedN = paintCurve == "Boosted" ? math.sign(rawN) * math.pow(math.abs(rawN), 0.55) : rawN
+float normD = paintFloor > 0 and math.abs(curvedN) > 0.05 ? math.sign(curvedN) * math.max(math.abs(curvedN), paintFloor) : curvedN
+color gradCol = normD >= 0 ? color.from_gradient(normD, 0, 1, colNeut, colBull) : color.from_gradient(normD, -1, 0, colBear, colNeut)
+color dCol = na(gradCol) ? colNeut : gradCol
+bool paintOn = mPaint and paintOn_i
+barcolor(paintOn ? dCol : na, title = "Δ candle paint")
+plotcandle(open, high, low, close, "Δ Candles", color = paintOn ? dCol : na, wickcolor = paintOn ? dCol : na, bordercolor = paintOn ? dCol : na)
+
+// ── Plots ────────────────────────────────────────────────────────────────────
+plot(mVwap and showB3 ? rvwapS + multB3 * rsdS : na, "VWAP +3σ", color = bandCol3, linewidth = bandWidth)
+plot(mVwap and showB2 ? rvwapS + multB2 * rsdS : na, "VWAP +2σ", color = bandCol2, linewidth = bandWidth)
+pU1 = plot(mVwap and showB1 ? rvwapS + multB1 * rsdS : na, "VWAP +1σ", color = bandCol1, linewidth = bandWidth)
+plot(mVwap ? rvwapS : na, "Rolling VWAP", color = vwapCol, linewidth = vwapWidth)
+pD1 = plot(mVwap and showB1 ? rvwapS - multB1 * rsdS : na, "VWAP −1σ", color = bandCol1, linewidth = bandWidth)
+plot(mVwap and showB2 ? rvwapS - multB2 * rsdS : na, "VWAP −2σ", color = bandCol2, linewidth = bandWidth)
+plot(mVwap and showB3 ? rvwapS - multB3 * rsdS : na, "VWAP −3σ", color = bandCol3, linewidth = bandWidth)
+fill(pU1, pD1, color = mVwap and showB1 and bandFill ? bandFillCol : na, title = "±1σ fill")
+
+plot(mEma ? emaOut : na, "EMA", color = emaCol, linewidth = emaWidth, offset = emaOffset)
+plot(mEma ? smoothingMA : na, "EMA-based MA", color = maCol, display = enableMA ? display.all : display.none, editable = enableMA)
+bbUpperBand = plot(mEma ? smoothingMA + smoothingStDev : na, "Upper Bollinger Band", color = bbCol, display = isBB ? display.all : display.none, editable = isBB)
+bbLowerBand = plot(mEma ? smoothingMA - smoothingStDev : na, "Lower Bollinger Band", color = bbCol, display = isBB ? display.all : display.none, editable = isBB)
+fill(bbUpperBand, bbLowerBand, color = isBB and mEma ? color.new(bbCol, 90) : na, title = "Bollinger Bands Background Fill", display = isBB ? display.all : display.none, editable = isBB)

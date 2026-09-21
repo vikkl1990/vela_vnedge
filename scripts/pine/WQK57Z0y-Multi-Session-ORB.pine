@@ -1,0 +1,350 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © cornelio_j_luna
+//@version=6
+indicator("Multi Session ORB",
+     overlay = true,
+     max_bars_back = 500,
+     max_boxes_count = 200,
+     max_labels_count = 200)
+
+string gOR    = "Opening Range"
+string gZone  = "OR Zones"
+string gEntry = "Entry / Filter"
+string gRet   = "Retest / Rejection"
+string gSess  = "Session (ET)"
+string gAlert = "Alerts"
+
+int   orMinutes   = input.int(15, "OR length (minutes)", minval = 5, maxval = 60, group = gOR)
+float maxOrPts    = input.float(80.0, "Mark wide if OR > (pts)", minval = 20, step = 5, group = gOR)
+float minBreakPts = input.float(1.0, "Breakout min close beyond OR (pts)", minval = 0, step = 0.25, group = gOR)
+bool  showWords   = input.bool(true, "Show BUY / SELL text on signals", group = gZone)
+
+color asiaCol = input.color(color.new(#ab47bc, 0), "Asia zone color", group = gZone)
+int   asiaOp  = input.int(80, "Asia zone opacity", minval = 0, maxval = 100, group = gZone)
+color lonCol  = input.color(color.new(#ffa726, 0), "London zone color", group = gZone)
+int   lonOp   = input.int(80, "London zone opacity", minval = 0, maxval = 100, group = gZone)
+color nyCol   = input.color(color.new(#26a69a, 0), "NY zone color", group = gZone)
+int   nyOp    = input.int(80, "NY zone opacity", minval = 0, maxval = 100, group = gZone)
+bool  showAsiaZone = input.bool(true, "Show Asia zone", group = gZone)
+bool  showLonZone  = input.bool(true, "Show London zone", group = gZone)
+bool  showNyZone   = input.bool(true, "Show NY zone", group = gZone)
+
+bool  useVwap     = input.bool(false, "Require VWAP alignment", group = gEntry)
+float chopBuf     = input.float(0.5, "Reject: must close this far inside (pts)", minval = 0, step = 0.25, group = gEntry)
+bool  requireWick = input.bool(false, "Require rejection wick", group = gRet)
+float minWickPts  = input.float(0.5, "Min rejection wick (pts)", minval = 0, step = 0.25, group = gRet)
+bool  oneEach     = input.bool(true, "Only first BO / first RJ per side per session", group = gRet)
+
+int asiaH    = input.int(18, "Asia open hour", minval = 0, maxval = 23, group = gSess)
+int asiaM    = input.int(0,  "Asia open minute", minval = 0, maxval = 59, group = gSess)
+int asiaEndH = input.int(3,  "Asia close hour", minval = 0, maxval = 23, group = gSess)
+int asiaEndM = input.int(0,  "Asia close minute", minval = 0, maxval = 59, group = gSess)
+int lonH     = input.int(3,  "London open hour", minval = 0, maxval = 23, group = gSess)
+int lonM     = input.int(0,  "London open minute", minval = 0, maxval = 59, group = gSess)
+int lonEndH  = input.int(9,  "London close hour", minval = 0, maxval = 23, group = gSess)
+int lonEndM  = input.int(30, "London close minute", minval = 0, maxval = 59, group = gSess)
+int orStartH = input.int(9,  "NY / RTH open hour", minval = 0, maxval = 23, group = gSess)
+int orStartM = input.int(30, "NY / RTH open minute", minval = 0, maxval = 59, group = gSess)
+int nyEndH   = input.int(16, "NY close hour", minval = 0, maxval = 23, group = gSess)
+int nyEndM   = input.int(0,  "NY close minute", minval = 0, maxval = 59, group = gSess)
+int cutH     = input.int(16, "No new NY signals after hour", minval = 9, maxval = 16, group = gSess)
+int cutM     = input.int(0,  "No new NY signals after minute", minval = 0, maxval = 59, group = gSess)
+bool fireAlerts = input.bool(true, "Fire alert() webhooks", group = gAlert)
+
+int nyH = hour(time, "America/New_York")
+int nyM = minute(time, "America/New_York")
+int barMin = nyH * 60 + nyM
+bool newDay = ta.change(time("D", "America/New_York")) != 0
+int orOpenMin = orStartH * 60 + orStartM
+int cutMin = cutH * 60 + cutM
+bool inOrBuild = barMin >= orOpenMin and barMin < orOpenMin + orMinutes
+bool afterOr = barMin >= orOpenMin + orMinutes
+bool pastCut = barMin >= cutMin
+
+f_endMin(int startMin) =>
+    (startMin + orMinutes) % 1440
+
+f_inWindow(int startMin, int endMin) =>
+    endMin > startMin ? (barMin >= startMin and barMin < endMin) : (barMin >= startMin or barMin < endMin)
+
+f_crossedStart(int startMin) =>
+    (barMin >= startMin and nz(barMin[1], startMin) < startMin) or (barMin < nz(barMin[1], barMin) and (startMin <= barMin or startMin > nz(barMin[1], startMin)))
+
+int asiaOpenMin = asiaH * 60 + asiaM
+int asiaCloseMin = asiaEndH * 60 + asiaEndM
+int lonOpenMin  = lonH * 60 + lonM
+int lonCloseMin = lonEndH * 60 + lonEndM
+int nyCloseMin  = nyEndH * 60 + nyEndM
+bool asiaStart = f_crossedStart(asiaOpenMin)
+bool lonStart  = f_crossedStart(lonOpenMin)
+bool nyStart   = f_crossedStart(orOpenMin)
+bool inAsiaBuild = f_inWindow(asiaOpenMin, f_endMin(asiaOpenMin))
+bool inLonBuild  = f_inWindow(lonOpenMin, f_endMin(lonOpenMin))
+bool inAsiaSess = f_inWindow(asiaOpenMin, asiaCloseMin)
+bool inLonSess  = f_inWindow(lonOpenMin, lonCloseMin)
+bool inNySess   = barMin >= orOpenMin and barMin < nyCloseMin
+
+var float sumPV = 0.0
+var float sumV = 0.0
+if newDay
+    sumPV := 0.0
+    sumV := 0.0
+sumPV += hlc3 * volume
+sumV += volume
+float vwap = sumV > 0.0 ? sumPV / sumV : na
+
+var float asiaHi = na
+var float asiaLo = na
+var bool  asiaDone = false
+var bool  asiaWide = false
+var float lonHi = na
+var float lonLo = na
+var bool  lonDone = false
+var bool  lonWide = false
+var float orHi = na
+var float orLo = na
+var bool orDone = false
+var bool orWide = false
+
+if asiaStart
+    asiaHi := na
+    asiaLo := na
+    asiaDone := false
+    asiaWide := false
+if lonStart
+    lonHi := na
+    lonLo := na
+    lonDone := false
+    lonWide := false
+if nyStart or newDay
+    orHi := na
+    orLo := na
+    orDone := false
+    orWide := false
+
+if inAsiaBuild
+    asiaHi := na(asiaHi) ? high : math.max(asiaHi, high)
+    asiaLo := na(asiaLo) ? low : math.min(asiaLo, low)
+if not inAsiaBuild and not asiaDone and not na(asiaHi) and not na(asiaLo)
+    asiaDone := true
+    asiaWide := (asiaHi - asiaLo) > maxOrPts
+
+if inLonBuild
+    lonHi := na(lonHi) ? high : math.max(lonHi, high)
+    lonLo := na(lonLo) ? low : math.min(lonLo, low)
+if not inLonBuild and not lonDone and not na(lonHi) and not na(lonLo)
+    lonDone := true
+    lonWide := (lonHi - lonLo) > maxOrPts
+
+if inOrBuild
+    orHi := na(orHi) ? high : math.max(orHi, high)
+    orLo := na(orLo) ? low : math.min(orLo, low)
+if afterOr and not orDone and not na(orHi) and not na(orLo)
+    orDone := true
+    orWide := (orHi - orLo) > maxOrPts
+
+float asiaRange = not na(asiaHi) and not na(asiaLo) ? asiaHi - asiaLo : na
+float lonRange  = not na(lonHi) and not na(lonLo) ? lonHi - lonLo : na
+float orRange   = not na(orHi) and not na(orLo) ? orHi - orLo : na
+
+var box asiaBox = na
+var box lonBox = na
+var box nyBox = na
+
+if asiaStart
+    asiaBox := na
+if showAsiaZone and inAsiaSess and not na(asiaHi) and not na(asiaLo)
+    if na(asiaBox)
+        asiaBox := box.new(bar_index, asiaHi, bar_index + 1, asiaLo, xloc = xloc.bar_index, bgcolor = color.new(asiaCol, asiaOp), border_color = asiaCol, border_width = 1)
+    else
+        box.set_top(asiaBox, asiaHi)
+        box.set_bottom(asiaBox, asiaLo)
+        box.set_right(asiaBox, bar_index + 1)
+        box.set_bgcolor(asiaBox, color.new(asiaCol, asiaOp))
+        box.set_border_color(asiaBox, asiaCol)
+
+if lonStart
+    lonBox := na
+if showLonZone and inLonSess and not na(lonHi) and not na(lonLo)
+    if na(lonBox)
+        lonBox := box.new(bar_index, lonHi, bar_index + 1, lonLo, xloc = xloc.bar_index, bgcolor = color.new(lonCol, lonOp), border_color = lonCol, border_width = 1)
+    else
+        box.set_top(lonBox, lonHi)
+        box.set_bottom(lonBox, lonLo)
+        box.set_right(lonBox, bar_index + 1)
+        box.set_bgcolor(lonBox, color.new(lonCol, lonOp))
+        box.set_border_color(lonBox, lonCol)
+
+if nyStart or newDay
+    nyBox := na
+if showNyZone and inNySess and not na(orHi) and not na(orLo)
+    if na(nyBox)
+        nyBox := box.new(bar_index, orHi, bar_index + 1, orLo, xloc = xloc.bar_index, bgcolor = color.new(nyCol, nyOp), border_color = nyCol, border_width = 1)
+    else
+        box.set_top(nyBox, orHi)
+        box.set_bottom(nyBox, orLo)
+        box.set_right(nyBox, bar_index + 1)
+        box.set_bgcolor(nyBox, color.new(nyCol, nyOp))
+        box.set_border_color(nyBox, nyCol)
+
+var bool aBoH = false
+var bool aBoL = false
+var bool aRjH = false
+var bool aRjL = false
+var bool lBoH = false
+var bool lBoL = false
+var bool lRjH = false
+var bool lRjL = false
+var bool nBoH = false
+var bool nBoL = false
+var bool nRjH = false
+var bool nRjL = false
+
+if asiaStart
+    aBoH := false
+    aBoL := false
+    aRjH := false
+    aRjL := false
+if lonStart
+    lBoH := false
+    lBoL := false
+    lRjH := false
+    lRjL := false
+if nyStart or newDay
+    nBoH := false
+    nBoL := false
+    nRjH := false
+    nRjL := false
+
+f_boH(bool on, float hi, bool used) =>
+    on and not na(hi) and close >= hi + minBreakPts and nz(close[1], hi) < hi + minBreakPts and (not oneEach or not used)
+
+f_boL(bool on, float lo, bool used) =>
+    on and not na(lo) and close <= lo - minBreakPts and nz(close[1], lo) > lo - minBreakPts and (not oneEach or not used)
+
+f_rjH(bool on, float hi, float lo, bool used, bool isBo) =>
+    on and not na(hi) and not na(lo) and not isBo and high >= hi and close <= hi - chopBuf and close >= lo and (not requireWick or high - close >= minWickPts) and (not oneEach or not used)
+
+f_rjL(bool on, float hi, float lo, bool used, bool isBo) =>
+    on and not na(hi) and not na(lo) and not isBo and low <= lo and close >= lo + chopBuf and close <= hi and (not requireWick or close - low >= minWickPts) and (not oneEach or not used)
+
+bool vwapLongOk = not useVwap or (not na(vwap) and close > vwap)
+bool vwapShortOk = not useVwap or (not na(vwap) and close < vwap)
+bool asiaReady = asiaDone and inAsiaSess and not inAsiaBuild
+bool lonReady  = lonDone and inLonSess and not inLonBuild
+bool nyReady   = orDone and inNySess and not inOrBuild and not pastCut
+
+bool asiaBoH = f_boH(asiaReady, asiaHi, aBoH)
+bool asiaBoL = f_boL(asiaReady, asiaLo, aBoL)
+bool lonBoH  = f_boH(lonReady, lonHi, lBoH)
+bool lonBoL  = f_boL(lonReady, lonLo, lBoL)
+bool nyBoH   = f_boH(nyReady, orHi, nBoH)
+bool nyBoL   = f_boL(nyReady, orLo, nBoL)
+bool asiaRjH = f_rjH(asiaReady, asiaHi, asiaLo, aRjH, asiaBoH or asiaBoL)
+bool asiaRjL = f_rjL(asiaReady, asiaHi, asiaLo, aRjL, asiaBoH or asiaBoL)
+bool lonRjH  = f_rjH(lonReady, lonHi, lonLo, lRjH, lonBoH or lonBoL)
+bool lonRjL  = f_rjL(lonReady, lonHi, lonLo, lRjL, lonBoH or lonBoL)
+bool nyRjH   = f_rjH(nyReady, orHi, orLo, nRjH, nyBoH or nyBoL)
+bool nyRjL   = f_rjL(nyReady, orHi, orLo, nRjL, nyBoH or nyBoL)
+
+if asiaBoH
+    aBoH := true
+if asiaBoL
+    aBoL := true
+if asiaRjH
+    aRjH := true
+if asiaRjL
+    aRjL := true
+if lonBoH
+    lBoH := true
+if lonBoL
+    lBoL := true
+if lonRjH
+    lRjH := true
+if lonRjL
+    lRjL := true
+if nyBoH
+    nBoH := true
+if nyBoL
+    nBoL := true
+if nyRjH
+    nRjH := true
+if nyRjL
+    nRjL := true
+
+bool buyBo  = (asiaBoH or lonBoH or nyBoH) and vwapLongOk
+bool sellBo = (asiaBoL or lonBoL or nyBoL) and vwapShortOk
+bool sellRj = (asiaRjH or lonRjH or nyRjH) and vwapShortOk
+bool buyRj  = (asiaRjL or lonRjL or nyRjL) and vwapLongOk
+bool sellAbove = sellRj or sellBo
+bool buyBelow  = buyRj or buyBo
+
+plot(vwap, "VWAP", color = color.new(#2962ff, 0), linewidth = 2)
+bgcolor(inAsiaBuild ? color.new(asiaCol, 92) : na, title = "Asia OR window")
+bgcolor(inLonBuild ? color.new(lonCol, 92) : na, title = "London OR window")
+bgcolor(inOrBuild ? color.new(nyCol, 92) : na, title = "NY OR window")
+
+plotshape(showWords and sellRj, title = "SELL reject high", style = shape.triangledown, location = location.abovebar, color = color.maroon, size = size.small, text = "SELL")
+plotshape(not showWords and sellRj, title = "SELL reject high mark", style = shape.triangledown, location = location.abovebar, color = color.maroon, size = size.small)
+plotshape(showWords and sellBo, title = "SELL break low", style = shape.triangledown, location = location.abovebar, color = color.red, size = size.small, text = "SELL")
+plotshape(not showWords and sellBo, title = "SELL break low mark", style = shape.triangledown, location = location.abovebar, color = color.red, size = size.small)
+plotshape(showWords and buyRj, title = "BUY reject low", style = shape.triangleup, location = location.belowbar, color = color.green, size = size.small, text = "BUY")
+plotshape(not showWords and buyRj, title = "BUY reject low mark", style = shape.triangleup, location = location.belowbar, color = color.green, size = size.small)
+plotshape(showWords and buyBo, title = "BUY break high", style = shape.triangleup, location = location.belowbar, color = color.lime, size = size.small, text = "BUY")
+plotshape(not showWords and buyBo, title = "BUY break high mark", style = shape.triangleup, location = location.belowbar, color = color.lime, size = size.small)
+
+var table hud = table.new(position.top_right, 2, 10, bgcolor = color.new(#111111, 25), border_width = 1)
+if barstate.islast
+    string st = inOrBuild ? "NY BUILD" : inLonBuild ? "LON BUILD" : inAsiaBuild ? "ASIA BUILD" : pastCut ? "NY CUTOFF" : orDone ? "LIVE" : "WAIT"
+    string bias = nyBoH ? "NY BUY BO" : nyBoL ? "NY SELL BO" : nyRjH ? "NY SELL RJ" : nyRjL ? "NY BUY RJ" : lonBoH ? "LON BUY BO" : lonBoL ? "LON SELL BO" : asiaBoH ? "ASIA BUY BO" : asiaBoL ? "ASIA SELL BO" : "none"
+    table.cell(hud, 0, 0, "Asia pts", text_color = asiaCol, text_size = size.small)
+    table.cell(hud, 1, 0, not na(asiaRange) ? str.tostring(asiaRange, "#.#") : "—", text_color = asiaWide ? color.red : color.white, text_size = size.small)
+    table.cell(hud, 0, 1, "Lon pts", text_color = lonCol, text_size = size.small)
+    table.cell(hud, 1, 1, not na(lonRange) ? str.tostring(lonRange, "#.#") : "—", text_color = lonWide ? color.red : color.white, text_size = size.small)
+    table.cell(hud, 0, 2, "NY pts", text_color = nyCol, text_size = size.small)
+    table.cell(hud, 1, 2, not na(orRange) ? str.tostring(orRange, "#.#") : "—", text_color = orWide ? color.red : color.white, text_size = size.small)
+    table.cell(hud, 0, 3, "State", text_color = color.gray, text_size = size.small)
+    table.cell(hud, 1, 3, st, text_color = color.white, text_size = size.small)
+    table.cell(hud, 0, 4, "▼ above", text_color = color.red, text_size = size.small)
+    table.cell(hud, 1, 4, "SELL", text_color = color.gray, text_size = size.small)
+    table.cell(hud, 0, 5, "▲ below", text_color = color.lime, text_size = size.small)
+    table.cell(hud, 1, 5, "BUY", text_color = color.gray, text_size = size.small)
+    table.cell(hud, 0, 6, "Asia sig", text_color = color.gray, text_size = size.small)
+    table.cell(hud, 1, 6, (aBoH ? "BOH " : "") + (aBoL ? "BOL " : "") + (aRjH ? "RJH " : "") + (aRjL ? "RJL" : "") + (not aBoH and not aBoL and not aRjH and not aRjL ? "—" : ""), text_color = color.white, text_size = size.small)
+    table.cell(hud, 0, 7, "Lon sig", text_color = color.gray, text_size = size.small)
+    table.cell(hud, 1, 7, (lBoH ? "BOH " : "") + (lBoL ? "BOL " : "") + (lRjH ? "RJH " : "") + (lRjL ? "RJL" : "") + (not lBoH and not lBoL and not lRjH and not lRjL ? "—" : ""), text_color = color.white, text_size = size.small)
+    table.cell(hud, 0, 8, "NY sig", text_color = color.gray, text_size = size.small)
+    table.cell(hud, 1, 8, (nBoH ? "BOH " : "") + (nBoL ? "BOL " : "") + (nRjH ? "RJH " : "") + (nRjL ? "RJL" : "") + (not nBoH and not nBoL and not nRjH and not nRjL ? "—" : ""), text_color = color.white, text_size = size.small)
+    table.cell(hud, 0, 9, "Bias", text_color = color.gray, text_size = size.small)
+    table.cell(hud, 1, 9, bias, text_color = color.white, text_size = size.small)
+
+alertcondition(buyBo, "ORB BUY breakout", "ORB breakout high — BUY")
+alertcondition(sellBo, "ORB SELL breakdown", "ORB breakdown low — SELL")
+alertcondition(sellRj, "ORB SELL reject high", "ORB high rejected — SELL")
+alertcondition(buyRj, "ORB BUY reject low", "ORB low rejected — BUY")
+
+if fireAlerts
+    if asiaBoH
+        alert("ASIA BUY | BO HIGH | " + syminfo.ticker, alert.freq_once_per_bar)
+    if asiaBoL
+        alert("ASIA SELL | BO LOW | " + syminfo.ticker, alert.freq_once_per_bar)
+    if asiaRjH
+        alert("ASIA SELL | RJ HIGH | " + syminfo.ticker, alert.freq_once_per_bar)
+    if asiaRjL
+        alert("ASIA BUY | RJ LOW | " + syminfo.ticker, alert.freq_once_per_bar)
+    if lonBoH
+        alert("LON BUY | BO HIGH | " + syminfo.ticker, alert.freq_once_per_bar)
+    if lonBoL
+        alert("LON SELL | BO LOW | " + syminfo.ticker, alert.freq_once_per_bar)
+    if lonRjH
+        alert("LON SELL | RJ HIGH | " + syminfo.ticker, alert.freq_once_per_bar)
+    if lonRjL
+        alert("LON BUY | RJ LOW | " + syminfo.ticker, alert.freq_once_per_bar)
+    if nyBoH
+        alert("NY BUY | BO HIGH | " + syminfo.ticker, alert.freq_once_per_bar)
+    if nyBoL
+        alert("NY SELL | BO LOW | " + syminfo.ticker, alert.freq_once_per_bar)
+    if nyRjH
+        alert("NY SELL | RJ HIGH | " + syminfo.ticker, alert.freq_once_per_bar)
+    if nyRjL
+        alert("NY BUY | RJ LOW | " + syminfo.ticker, alert.freq_once_per_bar)

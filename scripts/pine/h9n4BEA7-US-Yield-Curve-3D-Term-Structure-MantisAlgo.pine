@@ -1,0 +1,524 @@
+// © 2026 MantisAlgo
+// All rights reserved.
+//@version=6
+// Title: US Yield Curve 3D Term Structure
+// Kind: indicator
+// Surface: pane
+// Signal: contextual
+// Universe: multi_symbol
+// Repaint: bar_close
+// Horizon: swing
+// Data: ohlc
+// Tags: Correlation, Dashboard, Drawing_Tool, Alerts
+
+indicator("US Yield Curve 3D Term Structure", shorttitle="US Yield", overlay=false, max_polylines_count=100, max_labels_count=50, max_lines_count=100)
+
+// -----------------------------------------------------------------------------
+// US Yield Curve 3D Term Structure
+// Official US Treasury benchmark yields as a pane-native 3D surface plus a
+// chart-timeframe ribbon. Core set: 3M, 2Y, 5Y, 10Y, 30Y. Extended tenors
+// (default OFF): 6M, 1Y, 3Y, 7Y, 20Y for a smoother curve. Macro HUD on price.
+// Mesh Y uses the 10-slice surface min-to-max yield band (not a 0% origin).
+// Current yields stay on the HUD; the Y axis nameplate is YIELD only.
+//
+// Curve State = UPWARD SLOPING / DOWNWARD SLOPING / FLAT / HUMPED / MIXED
+// from the core five (3M, 2Y, 5Y, 10Y, 30Y).
+// UPWARD = 3M is the low and 30Y is the high.
+// DOWNWARD = 3M is the high.
+// Curve Shift = how 10Y-2Y just changed vs the previous daily session:
+// BULLISH/BEARISH STEEPENING or FLATTENING, or UNCHANGED.
+// -----------------------------------------------------------------------------
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 01 — Inputs
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+grpSurface = "Surface"
+grpCamera = "Camera"
+grpHud = "HUD"
+
+bool uycShowRibbon = true
+bool uycShowFill = true
+bool uycShowAxes = true
+uycHistory = input.string("10 Months", "Surface history", options=["10 Months", "10 Sessions"], tooltip="Depth of the 3D time axis. 10 Months = current month plus nine prior monthly closes (≈10 months of curve change). 10 Sessions = current daily close plus nine prior sessions. Missing older months are skipped on the mesh when a symbol has gaps. Heat averages stay on daily data either way.", group=grpSurface)
+uycExtended = input.bool(false, "Extended tenors", tooltip="OFF (default): classic five-tenor set 3M/2Y/5Y/10Y/30Y. ON: add 6M, 1Y, 3Y, 7Y, and 20Y for a smoother curve. Data for all tenors is still fetched; this only changes what is drawn.", group=grpSurface)
+uycHeatLookback = input.int(63, "Heat average length", options=[21, 63, 126, 252], tooltip="Daily sessions used as each tenor's yield baseline: 21 = 1 month, 63 = 1 quarter, 126 = 6 months, 252 = 1 year. Always daily, even when Surface history is monthly.", group=grpSurface)
+uycSteepness = input.string("Soft", "Surface steepness", options=["Soft", "Normal", "Sharp"], tooltip="3D mesh only (ribbon scale unchanged). Heights use the 10-slice surface min-to-max yield band as the Y axis, not 0%. Soft is the default hood. Sharp stretches the same min-max contrast. Current yields stay on the HUD. Values, spreads, and alerts are unchanged.", group=grpSurface)
+uycSurfLabels = input.string("Tenor", "Surface labels", options=["Tenor", "Tenor + %", "Off"], tooltip="Labels on the live 3D curve. Tenor = names only (less clutter). Tenor + % adds the yield number on the mesh. Off hides curve flags. Exact yields stay on the HUD.", group=grpSurface)
+
+uycCamera = input.string("Back-left", "View", options=["Near-right", "Back-left", "Straight-up", "Side-right", "Side-left", "Top-down", "Top-reverse", "Custom"], tooltip="Choose the surface rotation. Default Back-left recedes TIME to the back-left so the live curve faces you. Side is a full side view; Top looks down on the term×time plane.", group=grpCamera)
+uycCustomAngle = input.float(-60.0, "Custom angle (°)", minval=-90.0, maxval=90.0, step=5.0, tooltip="Left-right rotation when View is Custom. -90° is full left side; +90° is full right side. -60° matches Back-left.", group=grpCamera)
+
+uycPanel = input.string("top_right", "Panel", options=["top_right", "top_left", "bottom_right", "bottom_left"], tooltip="Choose where the display-only HUD sits on the price chart.", group=grpHud)
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 02 — Constants and display settings
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+int UYC_DEPTH = 9
+// Compact right pocket, same footprint as VIX 3D Term Structure.
+int UYC_SPAN = 112
+int UYC_DEPTH_RUN = 30
+int UYC_GAP = 36
+int UYC_NAME_OFF = 14
+
+uycSteepLiftFrac(string mode) =>
+    mode == "Sharp" ? 0.16 : 0.11
+
+uycSteepLiftMin(string mode) =>
+    mode == "Sharp" ? 0.28 : 0.22
+
+uycSteepDepthYScale(string mode) =>
+    mode == "Sharp" ? 1.15 : 1.0
+
+uycSurfLabelText(string tenor, float v) =>
+    uycSurfLabels == "Tenor + %" ? tenor + "  " + str.tostring(v, "#.00") + "%" : tenor
+
+color UYC_GO = #00B96B
+color UYC_CAUTION = #FFA028
+color UYC_STOP = #F23645
+color UYC_INK = #E8ECF4
+color UYC_MUTED = #5E6680
+color UYC_SURFACE = #0A0A0A
+color UYC_RAISED = #1A1A1A
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 05 — Runtime orchestration
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Always fetch the full smoother ladder so the Extended toggle only changes drawing.
+// Surface knots: close[k] on "M" is k months back; on "D" is k sessions back.
+bool uycHistMonths = uycHistory == "10 Months"
+string uycSurfTf = uycHistMonths ? "M" : "D"
+
+[d3m0, d3m1, d3m2, d3m3, d3m4, d3m5, d3m6, d3m7, d3m8, d3m9] = request.security("TVC:US03MY", uycSurfTf, [close, close[1], close[2], close[3], close[4], close[5], close[6], close[7], close[8], close[9]], lookahead=barmerge.lookahead_off)
+[d6m0, d6m1, d6m2, d6m3, d6m4, d6m5, d6m6, d6m7, d6m8, d6m9] = request.security("TVC:US06MY", uycSurfTf, [close, close[1], close[2], close[3], close[4], close[5], close[6], close[7], close[8], close[9]], lookahead=barmerge.lookahead_off)
+[d1y0, d1y1, d1y2, d1y3, d1y4, d1y5, d1y6, d1y7, d1y8, d1y9] = request.security("TVC:US01Y", uycSurfTf, [close, close[1], close[2], close[3], close[4], close[5], close[6], close[7], close[8], close[9]], lookahead=barmerge.lookahead_off)
+[d2y0, d2y1, d2y2, d2y3, d2y4, d2y5, d2y6, d2y7, d2y8, d2y9] = request.security("TVC:US02Y", uycSurfTf, [close, close[1], close[2], close[3], close[4], close[5], close[6], close[7], close[8], close[9]], lookahead=barmerge.lookahead_off)
+[d3y0, d3y1, d3y2, d3y3, d3y4, d3y5, d3y6, d3y7, d3y8, d3y9] = request.security("TVC:US03Y", uycSurfTf, [close, close[1], close[2], close[3], close[4], close[5], close[6], close[7], close[8], close[9]], lookahead=barmerge.lookahead_off)
+[d5y0, d5y1, d5y2, d5y3, d5y4, d5y5, d5y6, d5y7, d5y8, d5y9] = request.security("TVC:US05Y", uycSurfTf, [close, close[1], close[2], close[3], close[4], close[5], close[6], close[7], close[8], close[9]], lookahead=barmerge.lookahead_off)
+[d7y0, d7y1, d7y2, d7y3, d7y4, d7y5, d7y6, d7y7, d7y8, d7y9] = request.security("TVC:US07Y", uycSurfTf, [close, close[1], close[2], close[3], close[4], close[5], close[6], close[7], close[8], close[9]], lookahead=barmerge.lookahead_off)
+[d100, d101, d102, d103, d104, d105, d106, d107, d108, d109] = request.security("TVC:US10Y", uycSurfTf, [close, close[1], close[2], close[3], close[4], close[5], close[6], close[7], close[8], close[9]], lookahead=barmerge.lookahead_off)
+[d200, d201, d202, d203, d204, d205, d206, d207, d208, d209] = request.security("TVC:US20Y", uycSurfTf, [close, close[1], close[2], close[3], close[4], close[5], close[6], close[7], close[8], close[9]], lookahead=barmerge.lookahead_off)
+[d300, d301, d302, d303, d304, d305, d306, d307, d308, d309] = request.security("TVC:US30Y", uycSurfTf, [close, close[1], close[2], close[3], close[4], close[5], close[6], close[7], close[8], close[9]], lookahead=barmerge.lookahead_off)
+
+avg3m = request.security("TVC:US03MY", "D", ta.sma(close, uycHeatLookback), lookahead=barmerge.lookahead_off)
+avg6m = request.security("TVC:US06MY", "D", ta.sma(close, uycHeatLookback), lookahead=barmerge.lookahead_off)
+avg1y = request.security("TVC:US01Y", "D", ta.sma(close, uycHeatLookback), lookahead=barmerge.lookahead_off)
+[avg2y, uycDay2y, uycDay2yPrev] = request.security("TVC:US02Y", "D", [ta.sma(close, uycHeatLookback), close, close[1]], lookahead=barmerge.lookahead_off)
+avg3y = request.security("TVC:US03Y", "D", ta.sma(close, uycHeatLookback), lookahead=barmerge.lookahead_off)
+avg5y = request.security("TVC:US05Y", "D", ta.sma(close, uycHeatLookback), lookahead=barmerge.lookahead_off)
+avg7y = request.security("TVC:US07Y", "D", ta.sma(close, uycHeatLookback), lookahead=barmerge.lookahead_off)
+[avg10, uycDay10, uycDay10Prev] = request.security("TVC:US10Y", "D", [ta.sma(close, uycHeatLookback), close, close[1]], lookahead=barmerge.lookahead_off)
+avg20 = request.security("TVC:US20Y", "D", ta.sma(close, uycHeatLookback), lookahead=barmerge.lookahead_off)
+avg30 = request.security("TVC:US30Y", "D", ta.sma(close, uycHeatLookback), lookahead=barmerge.lookahead_off)
+
+r3m = request.security("TVC:US03MY", timeframe.period, close, lookahead=barmerge.lookahead_off)
+r6m = request.security("TVC:US06MY", timeframe.period, close, lookahead=barmerge.lookahead_off)
+r1y = request.security("TVC:US01Y", timeframe.period, close, lookahead=barmerge.lookahead_off)
+r2y = request.security("TVC:US02Y", timeframe.period, close, lookahead=barmerge.lookahead_off)
+r3y = request.security("TVC:US03Y", timeframe.period, close, lookahead=barmerge.lookahead_off)
+r5y = request.security("TVC:US05Y", timeframe.period, close, lookahead=barmerge.lookahead_off)
+r7y = request.security("TVC:US07Y", timeframe.period, close, lookahead=barmerge.lookahead_off)
+r10 = request.security("TVC:US10Y", timeframe.period, close, lookahead=barmerge.lookahead_off)
+r20 = request.security("TVC:US20Y", timeframe.period, close, lookahead=barmerge.lookahead_off)
+r30 = request.security("TVC:US30Y", timeframe.period, close, lookahead=barmerge.lookahead_off)
+
+uycKnotOk(float v) =>
+    not na(v) and v > 0.0
+
+uycTermU(float years) =>
+    math.max(years, 0.0) / 30.0
+
+uycPick(int lag, float v0, float v1, float v2, float v3, float v4, float v5, float v6, float v7, float v8, float v9) =>
+    lag <= 0 ? v0 : lag == 1 ? v1 : lag == 2 ? v2 : lag == 3 ? v3 : lag == 4 ? v4 : lag == 5 ? v5 : lag == 6 ? v6 : lag == 7 ? v7 : lag == 8 ? v8 : v9
+
+uyc3mAt(int lag) =>
+    uycPick(lag, d3m0, d3m1, d3m2, d3m3, d3m4, d3m5, d3m6, d3m7, d3m8, d3m9)
+uyc6mAt(int lag) =>
+    uycPick(lag, d6m0, d6m1, d6m2, d6m3, d6m4, d6m5, d6m6, d6m7, d6m8, d6m9)
+uyc1yAt(int lag) =>
+    uycPick(lag, d1y0, d1y1, d1y2, d1y3, d1y4, d1y5, d1y6, d1y7, d1y8, d1y9)
+uyc2yAt(int lag) =>
+    uycPick(lag, d2y0, d2y1, d2y2, d2y3, d2y4, d2y5, d2y6, d2y7, d2y8, d2y9)
+uyc3yAt(int lag) =>
+    uycPick(lag, d3y0, d3y1, d3y2, d3y3, d3y4, d3y5, d3y6, d3y7, d3y8, d3y9)
+uyc5yAt(int lag) =>
+    uycPick(lag, d5y0, d5y1, d5y2, d5y3, d5y4, d5y5, d5y6, d5y7, d5y8, d5y9)
+uyc7yAt(int lag) =>
+    uycPick(lag, d7y0, d7y1, d7y2, d7y3, d7y4, d7y5, d7y6, d7y7, d7y8, d7y9)
+uyc10At(int lag) =>
+    uycPick(lag, d100, d101, d102, d103, d104, d105, d106, d107, d108, d109)
+uyc20At(int lag) =>
+    uycPick(lag, d200, d201, d202, d203, d204, d205, d206, d207, d208, d209)
+uyc30At(int lag) =>
+    uycPick(lag, d300, d301, d302, d303, d304, d305, d306, d307, d308, d309)
+
+uycTenorAt(string id, int lag) =>
+    id == "3M" ? uyc3mAt(lag) : id == "6M" ? uyc6mAt(lag) : id == "1Y" ? uyc1yAt(lag) : id == "2Y" ? uyc2yAt(lag) : id == "3Y" ? uyc3yAt(lag) : id == "5Y" ? uyc5yAt(lag) : id == "7Y" ? uyc7yAt(lag) : id == "10Y" ? uyc10At(lag) : id == "20Y" ? uyc20At(lag) : uyc30At(lag)
+
+uycKnotNow(string id) =>
+    id == "3M" ? r3m : id == "6M" ? r6m : id == "1Y" ? r1y : id == "2Y" ? r2y : id == "3Y" ? r3y : id == "5Y" ? r5y : id == "7Y" ? r7y : id == "10Y" ? r10 : id == "20Y" ? r20 : r30
+
+uycSurfAt(string id, int lag) =>
+    lag <= 0 ? uycKnotNow(id) : uycTenorAt(id, lag)
+
+uycAvgId(string id) =>
+    id == "3M" ? avg3m : id == "6M" ? avg6m : id == "1Y" ? avg1y : id == "2Y" ? avg2y : id == "3Y" ? avg3y : id == "5Y" ? avg5y : id == "7Y" ? avg7y : id == "10Y" ? avg10 : id == "20Y" ? avg20 : avg30
+
+uycHeat(float v, float avg) =>
+    uycKnotOk(v) and uycKnotOk(avg) ? v / avg : 1.0
+
+uycPaint(float heat, int transp) =>
+    float h = math.max(0.0, heat)
+    color raw = h <= 0.90 ? UYC_GO : h < 1.08 ? color.from_gradient(h, 0.90, 1.08, UYC_GO, UYC_CAUTION) : color.from_gradient(math.min(h, 1.35), 1.08, 1.35, UYC_CAUTION, UYC_STOP)
+    color.new(raw, transp)
+
+f_fmt(float value, string format) =>
+    na(value) ? "—" : str.tostring(value, format)
+
+uycMax2(float a, float b) =>
+    math.max(nz(a), nz(b))
+
+uycMin2(float a, float b) =>
+    math.min(nz(a, 1e6), nz(b, 1e6))
+
+// Curve State uses the core five. Humped = 2Y/5Y/10Y above both 3M and 30Y.
+// Upward = 3M is the low and 30Y is the high. Downward = 3M is the high.
+// Curve Shift always uses the latest daily 10Y-2Y versus the previous session.
+bool uycStateOk = uycKnotOk(d3m0) and uycKnotOk(d2y0) and uycKnotOk(d5y0) and uycKnotOk(d100) and uycKnotOk(d300)
+float uycCoreHi = uycStateOk ? math.max(d3m0, math.max(d2y0, math.max(d5y0, math.max(d100, d300)))) : na
+float uycCoreLo = uycStateOk ? math.min(d3m0, math.min(d2y0, math.min(d5y0, math.min(d100, d300)))) : na
+float uycCoreRange = uycStateOk ? uycCoreHi - uycCoreLo : na
+float uycBelly = uycStateOk ? math.max(d2y0, math.max(d5y0, d100)) : na
+bool uycHumped = uycStateOk and uycBelly > d3m0 + 0.05 and uycBelly > d300 + 0.05
+bool uycPeak30 = uycStateOk and d300 >= d3m0 and d300 >= d2y0 and d300 >= d5y0 and d300 >= d100
+bool uycTrough3m = uycStateOk and d3m0 <= d2y0 and d3m0 <= d5y0 and d3m0 <= d100 and d3m0 <= d300
+bool uycPeak3m = uycStateOk and d3m0 >= d2y0 and d3m0 >= d5y0 and d3m0 >= d100 and d3m0 >= d300
+string uycShape = not uycStateOk ? "NO DATA" : uycCoreRange <= 0.05 ? "FLAT" : uycHumped ? "HUMPED" : (uycTrough3m and uycPeak30) ? "UPWARD SLOPING" : uycPeak3m ? "DOWNWARD SLOPING" : "MIXED"
+color uycShapeCol = not uycStateOk ? UYC_MUTED : uycShape == "DOWNWARD SLOPING" ? UYC_STOP : uycShape == "UPWARD SLOPING" ? UYC_GO : UYC_CAUTION
+bool uycUpward = uycShape == "UPWARD SLOPING"
+bool uycDownward = uycShape == "DOWNWARD SLOPING"
+
+bool uycShiftOk = uycKnotOk(uycDay10) and uycKnotOk(uycDay2y) and uycKnotOk(uycDay10Prev) and uycKnotOk(uycDay2yPrev)
+float deltaSpread = uycShiftOk ? (uycDay10 - uycDay2y) - (uycDay10Prev - uycDay2yPrev) : 0.0
+float delta10 = uycShiftOk ? uycDay10 - uycDay10Prev : 0.0
+float delta2 = uycShiftOk ? uycDay2y - uycDay2yPrev : 0.0
+float uycStableBand = 0.015
+
+string uycShift = not uycShiftOk ? "NO DATA" : math.abs(deltaSpread) < uycStableBand ? "UNCHANGED" : deltaSpread > 0.0 ? (delta10 >= delta2 ? "BEARISH STEEPENING" : "BULLISH STEEPENING") : (delta2 >= delta10 ? "BEARISH FLATTENING" : "BULLISH FLATTENING")
+color uycShiftCol = not uycShiftOk ? UYC_MUTED : uycShift == "BULLISH STEEPENING" ? UYC_GO : uycShift == "BEARISH STEEPENING" ? UYC_CAUTION : uycShift == "BEARISH FLATTENING" ? UYC_STOP : uycShift == "BULLISH FLATTENING" ? UYC_INK : UYC_MUTED
+
+float uycH3m = uycHeat(d3m0, avg3m)
+float uycH6m = uycHeat(d6m0, avg6m)
+float uycH1y = uycHeat(d1y0, avg1y)
+float uycH2y = uycHeat(d2y0, avg2y)
+float uycH3y = uycHeat(d3y0, avg3y)
+float uycH5y = uycHeat(d5y0, avg5y)
+float uycH7y = uycHeat(d7y0, avg7y)
+float uycH10 = uycHeat(d100, avg10)
+float uycH20 = uycHeat(d200, avg20)
+float uycH30 = uycHeat(d300, avg30)
+
+bool uycCoreHeatOk = uycKnotOk(d2y0) and uycKnotOk(avg2y) and uycKnotOk(d5y0) and uycKnotOk(avg5y) and uycKnotOk(d100) and uycKnotOk(avg10)
+float uycCoreHeat = uycCoreHeatOk ? uycH2y + uycH5y + uycH10 - math.min(uycH2y, math.min(uycH5y, uycH10)) - math.max(uycH2y, math.max(uycH5y, uycH10)) : na
+string uycHeatState = not uycCoreHeatOk ? "NO DATA" : uycCoreHeat >= 1.08 ? "HIGH RATE" : uycCoreHeat <= 0.90 ? "LOW RATE" : "MID RATE"
+color uycHeatCol = uycCoreHeatOk ? uycPaint(uycCoreHeat, 0) : UYC_MUTED
+color uycStateCol = not uycCoreHeatOk ? UYC_MUTED : uycHeatState == "HIGH RATE" ? UYC_STOP : uycHeatState == "LOW RATE" ? UYC_GO : UYC_CAUTION
+
+float rH3m = uycHeat(r3m, avg3m)
+float rH6m = uycHeat(r6m, avg6m)
+float rH1y = uycHeat(r1y, avg1y)
+float rH2y = uycHeat(r2y, avg2y)
+float rH3y = uycHeat(r3y, avg3y)
+float rH5y = uycHeat(r5y, avg5y)
+float rH7y = uycHeat(r7y, avg7y)
+float rH10 = uycHeat(r10, avg10)
+float rH20 = uycHeat(r20, avg20)
+float rH30 = uycHeat(r30, avg30)
+color rC3m = uycKnotOk(r3m) ? uycPaint(rH3m, 0) : UYC_MUTED
+color rC6m = uycKnotOk(r6m) ? uycPaint(rH6m, 0) : UYC_MUTED
+color rC1y = uycKnotOk(r1y) ? uycPaint(rH1y, 0) : UYC_MUTED
+color rC2y = uycKnotOk(r2y) ? uycPaint(rH2y, 0) : UYC_MUTED
+color rC3y = uycKnotOk(r3y) ? uycPaint(rH3y, 0) : UYC_MUTED
+color rC5y = uycKnotOk(r5y) ? uycPaint(rH5y, 0) : UYC_MUTED
+color rC7y = uycKnotOk(r7y) ? uycPaint(rH7y, 0) : UYC_MUTED
+color rC10 = uycKnotOk(r10) ? uycPaint(rH10, 0) : UYC_MUTED
+color rC20 = uycKnotOk(r20) ? uycPaint(rH20, 0) : UYC_MUTED
+color rC30 = uycKnotOk(r30) ? uycPaint(rH30, 0) : UYC_MUTED
+
+uycHi = uycMax2(d3m0, uycMax2(d2y0, uycMax2(d5y0, uycMax2(d100, d300))))
+uycLo = uycMin2(d3m0, uycMin2(d2y0, uycMin2(d5y0, uycMin2(d100, d300))))
+if uycExtended
+    uycHi := uycMax2(uycHi, uycMax2(d6m0, uycMax2(d1y0, uycMax2(d3y0, uycMax2(d7y0, d200)))))
+    uycLo := uycMin2(uycLo, uycMin2(d6m0, uycMin2(d1y0, uycMin2(d3y0, uycMin2(d7y0, d200)))))
+rHi = uycMax2(r3m, uycMax2(r2y, uycMax2(r5y, uycMax2(r10, r30))))
+rLo = uycMin2(r3m, uycMin2(r2y, uycMin2(r5y, uycMin2(r10, r30))))
+if uycExtended
+    rHi := uycMax2(rHi, uycMax2(r6m, uycMax2(r1y, uycMax2(r3y, uycMax2(r7y, r20)))))
+    rLo := uycMin2(rLo, uycMin2(r6m, uycMin2(r1y, uycMin2(r3y, uycMin2(r7y, r20)))))
+paneHi = rHi
+paneLo = rLo
+float uycLiftFrac = uycSteepLiftFrac(uycSteepness)
+float uycLiftMin = uycSteepLiftMin(uycSteepness)
+float uycDepthYScale = uycSteepDepthYScale(uycSteepness)
+float uycLiftEst = math.max((nz(uycHi) - nz(uycLo, nz(uycHi))) * uycLiftFrac, uycLiftMin)
+float paneScaleHi = math.max(nz(paneHi), nz(uycHi) + UYC_DEPTH * uycLiftEst * uycDepthYScale)
+float paneScaleLo = math.min(nz(paneLo, nz(uycLo)), nz(uycLo, nz(uycHi)))
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 06 — Rendering and drawing lifecycle
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+plot(ta.highest(paneScaleHi, 2) * 1.08, "US Yield 3D scale high", display=display.none)
+plot(ta.lowest(paneScaleLo, 2) * 0.96, "US Yield 3D scale low", display=display.none)
+plot(uycShowRibbon ? r3m : na, "3M", color=rC3m, linewidth=1)
+plot(uycShowRibbon and uycExtended ? r6m : na, "6M", color=rC6m, linewidth=1)
+plot(uycShowRibbon and uycExtended ? r1y : na, "1Y", color=rC1y, linewidth=1)
+plot(uycShowRibbon ? r2y : na, "2Y", color=rC2y, linewidth=2)
+plot(uycShowRibbon and uycExtended ? r3y : na, "3Y", color=rC3y, linewidth=1)
+plot(uycShowRibbon ? r5y : na, "5Y", color=rC5y, linewidth=1)
+plot(uycShowRibbon and uycExtended ? r7y : na, "7Y", color=rC7y, linewidth=1)
+plot(uycShowRibbon ? r10 : na, "10Y", color=rC10, linewidth=2)
+plot(uycShowRibbon and uycExtended ? r20 : na, "20Y", color=rC20, linewidth=1)
+plot(uycShowRibbon ? r30 : na, "30Y", color=rC30, linewidth=1)
+
+var array<polyline> uycPolys = array.new<polyline>()
+var array<label> uycLabs = array.new<label>()
+var array<line> uycNowLines = array.new<line>()
+var line uycJoin = na
+var table uycHud = table.new(position.top_right, 2, 9, bgcolor=color.new(UYC_SURFACE, 8), frame_color=color.new(UYC_CAUTION, 35), frame_width=1, border_color=color.new(UYC_MUTED, 55), border_width=1, force_overlay=true)
+if barstate.isfirst
+    table.merge_cells(uycHud, 0, 0, 1, 0)
+var bool uycDrawn = false
+var label uycName3m = na
+var label uycName6m = na
+var label uycName1y = na
+var label uycName2y = na
+var label uycName3y = na
+var label uycName5y = na
+var label uycName7y = na
+var label uycName10 = na
+var label uycName20 = na
+var label uycName30 = na
+
+uycCameraAngle(string preset, float customAngle) =>
+    preset == "Near-right" ? 30.0 : preset == "Back-left" ? -60.0 : preset == "Straight-up" ? 0.0 : preset == "Side-right" ? 90.0 : preset == "Side-left" ? -90.0 : preset == "Top-down" or preset == "Top-reverse" ? 0.0 : customAngle
+
+uycProjX(float u, float lagF, int origin, int span, int depthRun, float depthX) =>
+    float zN = lagF / UYC_DEPTH
+    float termScale = math.max(math.sqrt(math.max(1.0 - depthX * depthX, 0.0)), 0.12)
+    int(math.round(origin + u * span * termScale + zN * depthRun * depthX))
+
+// Surface-band Y: min and max across the drawn 10-slice mesh. Soft is 1:1
+// in that band. Normal/Sharp only stretch the same min-max contrast.
+uycMeshY(float val, float yFloor, float yPeak, string mode) =>
+    float band = math.max(yPeak - yFloor, 0.01)
+    float t = (val - yFloor) / band
+    float gain = mode == "Sharp" ? 1.22 : mode == "Normal" ? 1.10 : 1.00
+    yFloor + t * band * gain
+
+uycProjY(float val, float lagF, float lift, float depthY, int cameraMode, float topBase) =>
+    cameraMode == 1 ? topBase + lagF * lift * 1.25 : cameraMode == -1 ? topBase + (UYC_DEPTH - lagF) * lift * 1.25 : val + lagF * lift * depthY
+
+uycHeatOf(string id, float v) =>
+    uycHeat(v, uycAvgId(id))
+
+bool uycRefreshSurface = barstate.islast and (not uycDrawn or barstate.isnew or barstate.isconfirmed)
+if uycRefreshSurface
+    while array.size(uycPolys) > 0
+        polyline.delete(array.pop(uycPolys))
+    while array.size(uycLabs) > 0
+        label.delete(array.pop(uycLabs))
+    while array.size(uycNowLines) > 0
+        line.delete(array.pop(uycNowLines))
+    if not na(uycJoin)
+        line.delete(uycJoin)
+        uycJoin := na
+
+    array<string> tIds = array.new_string()
+    array<float> tYrs = array.new_float()
+    array.push(tIds, "3M")
+    array.push(tYrs, 0.25)
+    if uycExtended
+        array.push(tIds, "6M")
+        array.push(tYrs, 0.5)
+        array.push(tIds, "1Y")
+        array.push(tYrs, 1.0)
+    array.push(tIds, "2Y")
+    array.push(tYrs, 2.0)
+    if uycExtended
+        array.push(tIds, "3Y")
+        array.push(tYrs, 3.0)
+    array.push(tIds, "5Y")
+    array.push(tYrs, 5.0)
+    if uycExtended
+        array.push(tIds, "7Y")
+        array.push(tYrs, 7.0)
+    array.push(tIds, "10Y")
+    array.push(tYrs, 10.0)
+    if uycExtended
+        array.push(tIds, "20Y")
+        array.push(tYrs, 20.0)
+    array.push(tIds, "30Y")
+    array.push(tYrs, 30.0)
+    int tN = array.size(tIds)
+
+    float yPeak = na
+    float yFloor = na
+    for lagScan = 0 to UYC_DEPTH
+        for ti = 0 to tN - 1
+            float sv = uycSurfAt(array.get(tIds, ti), lagScan)
+            if uycKnotOk(sv)
+                yPeak := na(yPeak) ? sv : math.max(yPeak, sv)
+                yFloor := na(yFloor) ? sv : math.min(yFloor, sv)
+    yPeak := nz(yPeak)
+    yFloor := nz(yFloor, yPeak)
+    float lift = math.max((yPeak - yFloor) * uycLiftFrac, uycLiftMin)
+
+    int origin = bar_index + UYC_GAP
+    int span = UYC_SPAN
+    int dRun = UYC_DEPTH_RUN
+    string cameraPreset = uycCamera
+    float customAngle = uycCustomAngle
+    float cameraAngle = uycCameraAngle(cameraPreset, customAngle)
+    bool topView = cameraPreset == "Top-down" or cameraPreset == "Top-reverse"
+    int cameraMode = cameraPreset == "Top-reverse" ? -1 : topView ? 1 : 0
+    float depthX = topView ? 0.0 : math.sin(cameraAngle * 0.0174532925199433)
+    float depthY = topView ? 0.0 : math.cos(cameraAngle * 0.0174532925199433) * uycDepthYScale
+    float meshBase = yFloor
+    float meshTop = uycMeshY(yPeak, yFloor, yPeak, uycSteepness)
+
+    if uycShowFill and tN >= 2
+        for lag = UYC_DEPTH to 1
+            int fade = int(math.min(62, 32 + lag * 3))
+            for rib = 0 to tN - 2
+                string idA = array.get(tIds, rib)
+                string idB = array.get(tIds, rib + 1)
+                float dA = array.get(tYrs, rib)
+                float dB = array.get(tYrs, rib + 1)
+                float aFar = uycSurfAt(idA, lag)
+                float bFar = uycSurfAt(idB, lag)
+                float aNear = uycSurfAt(idA, lag - 1)
+                float bNear = uycSurfAt(idB, lag - 1)
+                if uycKnotOk(aFar) and uycKnotOk(bFar) and uycKnotOk(aNear) and uycKnotOk(bNear)
+                    float heatQ = (uycHeatOf(idA, aFar) + uycHeatOf(idB, bFar) + uycHeatOf(idA, aNear) + uycHeatOf(idB, bNear)) / 4.0
+                    color fillC = uycPaint(heatQ, fade)
+                    color edgeC = uycPaint(heatQ, math.min(fade + 28, 82))
+                    int xAf = uycProjX(uycTermU(dA), lag, origin, span, dRun, depthX)
+                    int xBf = uycProjX(uycTermU(dB), lag, origin, span, dRun, depthX)
+                    int xBn = uycProjX(uycTermU(dB), lag - 1, origin, span, dRun, depthX)
+                    int xAn = uycProjX(uycTermU(dA), lag - 1, origin, span, dRun, depthX)
+                    float yAf = uycProjY(uycMeshY(aFar, yFloor, yPeak, uycSteepness), lag, lift, depthY, cameraMode, meshBase)
+                    float yBf = uycProjY(uycMeshY(bFar, yFloor, yPeak, uycSteepness), lag, lift, depthY, cameraMode, meshBase)
+                    float yBn = uycProjY(uycMeshY(bNear, yFloor, yPeak, uycSteepness), lag - 1, lift, depthY, cameraMode, meshBase)
+                    float yAn = uycProjY(uycMeshY(aNear, yFloor, yPeak, uycSteepness), lag - 1, lift, depthY, cameraMode, meshBase)
+                    array<chart.point> quad = array.new<chart.point>()
+                    if depthX < 0.0
+                        array.push(quad, chart.point.from_index(xAn, yAn))
+                        array.push(quad, chart.point.from_index(xBn, yBn))
+                        array.push(quad, chart.point.from_index(xBf, yBf))
+                        array.push(quad, chart.point.from_index(xAf, yAf))
+                    else
+                        array.push(quad, chart.point.from_index(xAf, yAf))
+                        array.push(quad, chart.point.from_index(xBf, yBf))
+                        array.push(quad, chart.point.from_index(xBn, yBn))
+                        array.push(quad, chart.point.from_index(xAn, yAn))
+                    array.push(uycPolys, polyline.new(quad, closed=true, xloc=xloc.bar_index, fill_color=fillC, line_color=edgeC, line_width=1, force_overlay=false))
+
+    array<int> nowX = array.new_int()
+    array<float> nowY = array.new_float()
+    array<string> nowIds = array.new_string()
+    array<float> nowVals = array.new_float()
+    for ti = 0 to tN - 1
+        string tid = array.get(tIds, ti)
+        float tv = uycSurfAt(tid, 0)
+        if uycKnotOk(tv)
+            array.push(nowX, uycProjX(uycTermU(array.get(tYrs, ti)), 0, origin, span, dRun, depthX))
+            array.push(nowY, uycProjY(uycMeshY(tv, yFloor, yPeak, uycSteepness), 0, lift, depthY, cameraMode, meshBase))
+            array.push(nowIds, tid)
+            array.push(nowVals, tv)
+    int nowN = array.size(nowX)
+    if nowN >= 2
+        color nowCol = color.new(UYC_CAUTION, 0)
+        for i = 0 to nowN - 2
+            array.push(uycNowLines, line.new(array.get(nowX, i), array.get(nowY, i), array.get(nowX, i + 1), array.get(nowY, i + 1), xloc=xloc.bar_index, extend=extend.none, color=nowCol, width=3, style=line.style_solid, force_overlay=false))
+
+    if uycSurfLabels != "Off"
+        for i = 0 to nowN - 1
+            string nid = array.get(nowIds, i)
+            float nv = array.get(nowVals, i)
+            bool tipUp = i % 2 == 1
+            array.push(uycLabs, label.new(array.get(nowX, i), array.get(nowY, i), uycSurfLabelText(nid, nv), style=tipUp ? label.style_label_up : label.style_label_down, color=color.new(UYC_SURFACE, 35), textcolor=uycPaint(uycHeatOf(nid, nv), 0), size=size.tiny, force_overlay=false))
+
+    if uycShowAxes
+        color ax = color.new(UYC_CAUTION, 0)
+        array<chart.point> axYld = array.new<chart.point>()
+        array.push(axYld, chart.point.from_index(uycProjX(0.0, 0.0, origin, span, dRun, depthX), uycProjY(meshBase, 0.0, lift, depthY, cameraMode, meshBase)))
+        array.push(axYld, chart.point.from_index(uycProjX(0.0, 0.0, origin, span, dRun, depthX), uycProjY(meshTop, 0.0, lift, depthY, cameraMode, meshBase)))
+        array.push(uycPolys, polyline.new(axYld, closed=false, xloc=xloc.bar_index, line_color=ax, line_width=2, force_overlay=false))
+        array<chart.point> axTerm = array.new<chart.point>()
+        array.push(axTerm, chart.point.from_index(uycProjX(0.0, 0.0, origin, span, dRun, depthX), uycProjY(meshBase, 0.0, lift, depthY, cameraMode, meshBase)))
+        array.push(axTerm, chart.point.from_index(uycProjX(1.0, 0.0, origin, span, dRun, depthX), uycProjY(meshBase, 0.0, lift, depthY, cameraMode, meshBase)))
+        array.push(uycPolys, polyline.new(axTerm, closed=false, xloc=xloc.bar_index, line_color=ax, line_width=2, force_overlay=false))
+        array<chart.point> axTime = array.new<chart.point>()
+        array.push(axTime, chart.point.from_index(uycProjX(0.0, 0.0, origin, span, dRun, depthX), uycProjY(meshBase, 0.0, lift, depthY, cameraMode, meshBase)))
+        array.push(axTime, chart.point.from_index(uycProjX(0.0, UYC_DEPTH, origin, span, dRun, depthX), uycProjY(meshBase, UYC_DEPTH, lift, depthY, cameraMode, meshBase)))
+        array.push(uycPolys, polyline.new(axTime, closed=false, xloc=xloc.bar_index, line_color=ax, line_width=2, force_overlay=false))
+        array.push(uycLabs, label.new(uycProjX(0.0, 0.0, origin, span, dRun, depthX), uycProjY(meshTop, 0.0, lift, depthY, cameraMode, meshBase), "YIELD", style=label.style_label_left, color=color.new(UYC_CAUTION, 25), textcolor=UYC_INK, size=size.small, force_overlay=false))
+        array.push(uycLabs, label.new(uycProjX(1.0, 0.0, origin, span, dRun, depthX), uycProjY(meshBase, 0.0, lift, depthY, cameraMode, meshBase), "TERM → 30Y", style=label.style_label_lower_right, color=color.new(UYC_CAUTION, 25), textcolor=UYC_INK, size=size.small, force_overlay=false))
+        array.push(uycLabs, label.new(uycProjX(0.0, UYC_DEPTH, origin, span, dRun, depthX), uycProjY(meshBase, UYC_DEPTH, lift, depthY, cameraMode, meshBase), uycHistMonths ? "TIME → 10 MO" : "TIME → 10 SESS", style=label.style_label_right, color=color.new(UYC_CAUTION, 25), textcolor=UYC_INK, size=size.small, force_overlay=false))
+    uycJoin := line.new(bar_index, paneLo, bar_index, paneHi, xloc=xloc.bar_index, extend=extend.none, color=color.new(UYC_CAUTION, 25), width=1, style=line.style_dashed, force_overlay=false)
+    uycDrawn := true
+
+uycSetRibbonName(label lab, float y, string txt, color c, bool on) =>
+    label out = lab
+    if on and uycKnotOk(y)
+        if na(out)
+            out := label.new(bar_index - UYC_NAME_OFF, y, txt, xloc=xloc.bar_index, style=label.style_label_left, color=color.new(UYC_SURFACE, 15), textcolor=c, size=size.tiny, force_overlay=false)
+        else
+            label.set_xy(out, bar_index - UYC_NAME_OFF, y)
+            label.set_text(out, txt)
+            label.set_textcolor(out, c)
+    else if not na(out)
+        label.set_text(out, "")
+    out
+
+if barstate.islast
+    uycName3m := uycSetRibbonName(uycName3m, r3m, "3M", rC3m, uycShowRibbon)
+    uycName6m := uycSetRibbonName(uycName6m, r6m, "6M", rC6m, uycShowRibbon and uycExtended)
+    uycName1y := uycSetRibbonName(uycName1y, r1y, "1Y", rC1y, uycShowRibbon and uycExtended)
+    uycName2y := uycSetRibbonName(uycName2y, r2y, "2Y", rC2y, uycShowRibbon)
+    uycName3y := uycSetRibbonName(uycName3y, r3y, "3Y", rC3y, uycShowRibbon and uycExtended)
+    uycName5y := uycSetRibbonName(uycName5y, r5y, "5Y", rC5y, uycShowRibbon)
+    uycName7y := uycSetRibbonName(uycName7y, r7y, "7Y", rC7y, uycShowRibbon and uycExtended)
+    uycName10 := uycSetRibbonName(uycName10, r10, "10Y", rC10, uycShowRibbon)
+    uycName20 := uycSetRibbonName(uycName20, r20, "20Y", rC20, uycShowRibbon and uycExtended)
+    uycName30 := uycSetRibbonName(uycName30, r30, "30Y", rC30, uycShowRibbon)
+
+    uycPos = uycPanel == "top_left" ? position.top_left : uycPanel == "bottom_right" ? position.bottom_right : uycPanel == "bottom_left" ? position.bottom_left : position.top_right
+    table.set_position(uycHud, uycPos)
+    string uycLevelText = uycCoreHeatOk ? uycHeatState + "  " + str.tostring((uycCoreHeat - 1.0) * 100.0, "+#.#;-#.#") + "%" : "NO DATA"
+
+    // HUD stays on the core five. Extended tenors remain on the mesh and ribbon only.
+    table.cell(uycHud, 0, 0, "US YIELD 3D", text_color=UYC_CAUTION, text_size=size.small, bgcolor=UYC_RAISED, text_halign=text.align_center)
+    table.cell(uycHud, 0, 1, "Curve State", text_color=UYC_INK, text_size=size.small)
+    table.cell(uycHud, 1, 1, uycShape, text_color=uycShapeCol, text_size=size.small)
+    table.cell(uycHud, 0, 2, "Curve Shift", text_color=UYC_INK, text_size=size.small)
+    table.cell(uycHud, 1, 2, uycShift, text_color=uycShiftCol, text_size=size.small)
+    table.cell(uycHud, 0, 3, "3M", text_color=UYC_INK, text_size=size.small)
+    table.cell(uycHud, 1, 3, f_fmt(r3m, "#.00") + "%", text_color=rC3m, text_size=size.small)
+    table.cell(uycHud, 0, 4, "2Y", text_color=UYC_INK, text_size=size.small)
+    table.cell(uycHud, 1, 4, f_fmt(r2y, "#.00") + "%", text_color=rC2y, text_size=size.small)
+    table.cell(uycHud, 0, 5, "5Y", text_color=UYC_INK, text_size=size.small)
+    table.cell(uycHud, 1, 5, f_fmt(r5y, "#.00") + "%", text_color=rC5y, text_size=size.small)
+    table.cell(uycHud, 0, 6, "10Y", text_color=UYC_INK, text_size=size.small)
+    table.cell(uycHud, 1, 6, f_fmt(r10, "#.00") + "%", text_color=rC10, text_size=size.small)
+    table.cell(uycHud, 0, 7, "30Y", text_color=UYC_INK, text_size=size.small)
+    table.cell(uycHud, 1, 7, f_fmt(r30, "#.00") + "%", text_color=rC30, text_size=size.small)
+    table.cell(uycHud, 0, 8, "Rate Level", text_color=UYC_INK, text_size=size.small)
+    table.cell(uycHud, 1, 8, uycLevelText, text_color=uycStateCol, text_size=size.small)
+
+alertcondition(barstate.isconfirmed and uycDownward and not uycDownward[1], "State DOWNWARD SLOPING", "US Treasury curve downward sloping")
+alertcondition(barstate.isconfirmed and uycUpward and not uycUpward[1], "State UPWARD SLOPING", "US Treasury curve upward sloping")
+alertcondition(barstate.isconfirmed and uycShape == "HUMPED" and uycShape[1] != "HUMPED", "State HUMPED", "US Treasury curve humped")
+alertcondition(barstate.isconfirmed and uycShift == "BULLISH STEEPENING" and uycShift[1] != "BULLISH STEEPENING", "Shift BULLISH STEEPENING", "US 10Y-2Y bullish steepening")
+alertcondition(barstate.isconfirmed and uycShift == "BEARISH STEEPENING" and uycShift[1] != "BEARISH STEEPENING", "Shift BEARISH STEEPENING", "US 10Y-2Y bearish steepening")
+alertcondition(barstate.isconfirmed and uycShift == "BULLISH FLATTENING" and uycShift[1] != "BULLISH FLATTENING", "Shift BULLISH FLATTENING", "US 10Y-2Y bullish flattening")
+alertcondition(barstate.isconfirmed and uycShift == "BEARISH FLATTENING" and uycShift[1] != "BEARISH FLATTENING", "Shift BEARISH FLATTENING", "US 10Y-2Y bearish flattening")

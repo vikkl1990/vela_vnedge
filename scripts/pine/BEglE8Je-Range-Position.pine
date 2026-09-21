@@ -1,0 +1,199 @@
+//@version=6
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │ Range Position — the fill stamp (rng_1m/3m/5m/15m/1h/4h/sess), on price │
+// └─────────────────────────────────────────────────────────────────────────────┘
+// Same definition as trader-brain/range-tracker.js + scripts/backfill-range-pos.js:
+//   rng = (price − windowLow) / (windowHigh − windowLow) × 100
+// over the CLOSED 1-minute bars in the window that ends at the current minute
+// (the bar you are in is never included). Side-relative "ext": BUY ext = rng,
+// SELL ext = 100 − rng. Low ext = entering at the favourable extreme.
+//
+// This overlay draws, for EVERY window, the window high and low on the price
+// chart and shades the fill band:
+//   BUY  band = from the window low  up   to low  + ext% of the range   (green)
+//   SELL band = from the window high down to high − ext% of the range   (red)
+// so "4h ext ≤ 35" is simply: price inside the green band of the 4h window
+// (for a BUY) or inside the red band (for a SELL). One colour per window, a
+// toggle per window; one window is the alert window.
+//
+// Multi-timeframe: the windows are always built from the 1-minute series via
+// request.security, so the levels are the same on a 1m, 5m or 1h chart — on a
+// higher-timeframe chart each bar shows the levels at its LAST minute.
+//   1m / 3m / 5m / 15m / 1h / 4h : the last N closed 1-minute bars
+//   sess                         : closed 1-minute bars since 18:00 ET
+// ⚠ Windows count 1-minute BARS (ta.highest/lowest), the brain counts minutes of
+// ts_open; they differ only across gaps (nothing traded). Session = 18:00 ET,
+// DST-correct via the exchange-time hour/minute of the 1-minute bar.
+indicator("Range Position", "↕", overlay = true, max_lines_count = 8)
+
+// ── inputs ──────────────────────────────────────────────────────────────────
+winSel   = input.string("4h", "Alert window", options = ["1m", "3m", "5m", "15m", "1h", "4h", "sess"], tooltip = "The window the alerts and the JSON payload use. All windows draw regardless.")
+// Per window: draw it, and its own fill band as ext ≤ % of the window's range
+// (from the low for a BUY, from the high for a SELL). 35 on the 4h = the
+// '4h ext 0–35' rule; the fast windows usually want a tighter band.
+grpW     = "Windows — draw · band ext ≤ %"
+show1    = input.bool(false, "1m",   group = grpW, inline = "w1")
+ext1     = input.float(25, "",        group = grpW, inline = "w1", minval = 0, maxval = 100, step = 1)
+show3    = input.bool(false, "3m",   group = grpW, inline = "w3")
+ext3     = input.float(25, "",        group = grpW, inline = "w3", minval = 0, maxval = 100, step = 1)
+show5    = input.bool(true,  "5m",   group = grpW, inline = "w5")
+ext5     = input.float(25, "",        group = grpW, inline = "w5", minval = 0, maxval = 100, step = 1)
+show15   = input.bool(true,  "15m",  group = grpW, inline = "w15")
+ext15    = input.float(30, "",        group = grpW, inline = "w15", minval = 0, maxval = 100, step = 1)
+show1h   = input.bool(true,  "1h",   group = grpW, inline = "w1h")
+ext1h    = input.float(35, "",        group = grpW, inline = "w1h", minval = 0, maxval = 100, step = 1)
+show4h   = input.bool(true,  "4h",   group = grpW, inline = "w4h")
+ext4h    = input.float(35, "",        group = grpW, inline = "w4h", minval = 0, maxval = 100, step = 1)
+showS    = input.bool(true,  "sess", group = grpW, inline = "wS")
+extS     = input.float(35, "",        group = grpW, inline = "wS", minval = 0, maxval = 100, step = 1)
+grpB     = "Bands"
+showBuy  = input.bool(true, "BUY bands (from the low)",   group = grpB, inline = "b")
+showSell = input.bool(true, "SELL bands (from the high)", group = grpB, inline = "b")
+// Colours per window — the line, the BUY band fill and the SELL band fill.
+// Transparency is part of each colour picker (the default fills are ~88 %).
+grpC  = "Colours (line · BUY band · SELL band)"
+c1    = input.color(color.new(#94a3b8, 40), "1m",   group = grpC, inline = "c1")
+b1c   = input.color(color.new(#22c55e, 90), "",     group = grpC, inline = "c1")
+s1c   = input.color(color.new(#ef4444, 90), "",     group = grpC, inline = "c1")
+c3    = input.color(color.new(#a3e635, 35), "3m",   group = grpC, inline = "c3")
+b3c   = input.color(color.new(#22c55e, 90), "",     group = grpC, inline = "c3")
+s3c   = input.color(color.new(#ef4444, 90), "",     group = grpC, inline = "c3")
+c5    = input.color(color.new(#fbbf24, 25), "5m",   group = grpC, inline = "c5")
+b5c   = input.color(color.new(#22c55e, 88), "",     group = grpC, inline = "c5")
+s5c   = input.color(color.new(#ef4444, 88), "",     group = grpC, inline = "c5")
+c15   = input.color(color.new(#fb923c, 10), "15m",  group = grpC, inline = "c15")
+b15c  = input.color(color.new(#22c55e, 88), "",     group = grpC, inline = "c15")
+s15c  = input.color(color.new(#ef4444, 88), "",     group = grpC, inline = "c15")
+c1h   = input.color(color.new(#22d3ee, 0),  "1h",   group = grpC, inline = "c1h")
+b1hc  = input.color(color.new(#22c55e, 86), "",     group = grpC, inline = "c1h")
+s1hc  = input.color(color.new(#ef4444, 86), "",     group = grpC, inline = "c1h")
+c4h   = input.color(color.new(#f472b6, 0),  "4h",   group = grpC, inline = "c4h")
+b4hc  = input.color(color.new(#22c55e, 80), "",     group = grpC, inline = "c4h")
+s4hc  = input.color(color.new(#ef4444, 80), "",     group = grpC, inline = "c4h")
+cS    = input.color(color.new(#e5e7eb, 0),  "sess", group = grpC, inline = "cS")
+bSc   = input.color(color.new(#22c55e, 86), "",     group = grpC, inline = "cS")
+sSc   = input.color(color.new(#ef4444, 86), "",     group = grpC, inline = "cS")
+showTbl  = input.bool(true, "Table: ext per window at the close")
+fireJson = input.bool(false, "alert() JSON on band entry", tooltip = "Emits {\"algo\":\"range-position\", ...} on the bar that ENTERS the alert window's band. Alert type: Any alert() function call.")
+
+// ── 1-minute windows (closed bars only: [1]) ────────────────────────────────
+f_win(n) =>
+    [ta.highest(high, n)[1], ta.lowest(low, n)[1]]
+
+f_sess() =>
+    isOpen = hour(time, "America/New_York") == 18 and minute(time, "America/New_York") == 0
+    var float sHi = na
+    var float sLo = na
+    sHi := isOpen ? high : math.max(nz(sHi, high), high)
+    sLo := isOpen ? low  : math.min(nz(sLo, low),  low)
+    [isOpen ? na : sHi[1], isOpen ? na : sLo[1]]
+
+f_all() =>
+    [a1, b1]     = f_win(1)
+    [a3, b3]     = f_win(3)
+    [a5, b5]     = f_win(5)
+    [a15, b15]   = f_win(15)
+    [a60, b60]   = f_win(60)
+    [a240, b240] = f_win(240)
+    [aS, bS]     = f_sess()
+    [a1, b1, a3, b3, a5, b5, a15, b15, a60, b60, a240, b240, aS, bS]
+
+[h1, l1, h3, l3, h5, l5, h15, l15, h60, l60, h240, l240, hS, lS] = request.security(syminfo.tickerid, "1", f_all(), lookahead = barmerge.lookahead_off)
+
+// ── band edges ──────────────────────────────────────────────────────────────
+// BUY band top  = low  + ext% × range      SELL band bottom = high − ext% × range
+f_buyTop(wHi, wLo, pct)  => na(wHi) or na(wLo) or wHi <= wLo ? na : wLo + (wHi - wLo) * pct / 100
+f_sellBot(wHi, wLo, pct) => na(wHi) or na(wLo) or wHi <= wLo ? na : wHi - (wHi - wLo) * pct / 100
+f_rng(px, wHi, wLo) => na(wHi) or na(wLo) or wHi <= wLo ? na : math.max(-9999, math.min(9999, (px - wLo) / (wHi - wLo) * 100))
+
+// ── draw: one colour per window; the high/low lines and the two bands ───────
+// 1m
+p1h = plot(show1 ? h1 : na, "1m high", color = c1, linewidth = 1, style = plot.style_linebr)
+p1l = plot(show1 ? l1 : na, "1m low",  color = c1, linewidth = 1, style = plot.style_linebr)
+p1b = plot(show1 and showBuy  ? f_buyTop(h1, l1, ext1)  : na, "1m BUY band top",     color = color.new(color.green, 100), style = plot.style_linebr, display = display.none)
+p1s = plot(show1 and showSell ? f_sellBot(h1, l1, ext1) : na, "1m SELL band bottom", color = color.new(color.red, 100),   style = plot.style_linebr, display = display.none)
+fill(p1l, p1b, color = b1c, title = "1m BUY band")
+fill(p1s, p1h, color = s1c, title = "1m SELL band")
+// 3m
+p3h = plot(show3 ? h3 : na, "3m high", color = c3, linewidth = 1, style = plot.style_linebr)
+p3l = plot(show3 ? l3 : na, "3m low",  color = c3, linewidth = 1, style = plot.style_linebr)
+p3b = plot(show3 and showBuy  ? f_buyTop(h3, l3, ext3)  : na, "3m BUY band top",     color = color.new(color.green, 100), style = plot.style_linebr, display = display.none)
+p3s = plot(show3 and showSell ? f_sellBot(h3, l3, ext3) : na, "3m SELL band bottom", color = color.new(color.red, 100),   style = plot.style_linebr, display = display.none)
+fill(p3l, p3b, color = b3c, title = "3m BUY band")
+fill(p3s, p3h, color = s3c, title = "3m SELL band")
+// 5m
+p5h = plot(show5 ? h5 : na, "5m high", color = c5, linewidth = 1, style = plot.style_linebr)
+p5l = plot(show5 ? l5 : na, "5m low",  color = c5, linewidth = 1, style = plot.style_linebr)
+p5b = plot(show5 and showBuy  ? f_buyTop(h5, l5, ext5)  : na, "5m BUY band top",     color = color.new(color.green, 100), style = plot.style_linebr, display = display.none)
+p5s = plot(show5 and showSell ? f_sellBot(h5, l5, ext5) : na, "5m SELL band bottom", color = color.new(color.red, 100),   style = plot.style_linebr, display = display.none)
+fill(p5l, p5b, color = b5c, title = "5m BUY band")
+fill(p5s, p5h, color = s5c, title = "5m SELL band")
+// 15m
+p15h = plot(show15 ? h15 : na, "15m high", color = c15, linewidth = 2, style = plot.style_linebr)
+p15l = plot(show15 ? l15 : na, "15m low",  color = c15, linewidth = 2, style = plot.style_linebr)
+p15b = plot(show15 and showBuy  ? f_buyTop(h15, l15, ext15)  : na, "15m BUY band top",     color = color.new(color.green, 100), style = plot.style_linebr, display = display.none)
+p15s = plot(show15 and showSell ? f_sellBot(h15, l15, ext15) : na, "15m SELL band bottom", color = color.new(color.red, 100),   style = plot.style_linebr, display = display.none)
+fill(p15l, p15b, color = b15c, title = "15m BUY band")
+fill(p15s, p15h, color = s15c, title = "15m SELL band")
+// 1h
+p1hh = plot(show1h ? h60 : na, "1h high", color = c1h, linewidth = 2, style = plot.style_linebr)
+p1hl = plot(show1h ? l60 : na, "1h low",  color = c1h, linewidth = 2, style = plot.style_linebr)
+p1hb = plot(show1h and showBuy  ? f_buyTop(h60, l60, ext1h)  : na, "1h BUY band top",     color = color.new(color.green, 100), style = plot.style_linebr, display = display.none)
+p1hs = plot(show1h and showSell ? f_sellBot(h60, l60, ext1h) : na, "1h SELL band bottom", color = color.new(color.red, 100),   style = plot.style_linebr, display = display.none)
+fill(p1hl, p1hb, color = b1hc, title = "1h BUY band")
+fill(p1hs, p1hh, color = s1hc, title = "1h SELL band")
+// 4h
+p4hh = plot(show4h ? h240 : na, "4h high", color = c4h, linewidth = 3, style = plot.style_linebr)
+p4hl = plot(show4h ? l240 : na, "4h low",  color = c4h, linewidth = 3, style = plot.style_linebr)
+p4hb = plot(show4h and showBuy  ? f_buyTop(h240, l240, ext4h)  : na, "4h BUY band top",     color = color.new(color.green, 100), style = plot.style_linebr, display = display.none)
+p4hs = plot(show4h and showSell ? f_sellBot(h240, l240, ext4h) : na, "4h SELL band bottom", color = color.new(color.red, 100),   style = plot.style_linebr, display = display.none)
+fill(p4hl, p4hb, color = b4hc, title = "4h BUY band")
+fill(p4hs, p4hh, color = s4hc, title = "4h SELL band")
+// session
+pSh = plot(showS ? hS : na, "sess high", color = cS, linewidth = 2, style = plot.style_linebr)
+pSl = plot(showS ? lS : na, "sess low",  color = cS, linewidth = 2, style = plot.style_linebr)
+pSb = plot(showS and showBuy  ? f_buyTop(hS, lS, extS)  : na, "sess BUY band top",     color = color.new(color.green, 100), style = plot.style_linebr, display = display.none)
+pSs = plot(showS and showSell ? f_sellBot(hS, lS, extS) : na, "sess SELL band bottom", color = color.new(color.red, 100),   style = plot.style_linebr, display = display.none)
+fill(pSl, pSb, color = bSc, title = "sess BUY band")
+fill(pSs, pSh, color = sSc, title = "sess SELL band")
+
+// ── the alert window: is price inside its band? ─────────────────────────────
+selHi = winSel == "1m" ? h1 : winSel == "3m" ? h3 : winSel == "5m" ? h5 : winSel == "15m" ? h15 : winSel == "1h" ? h60 : winSel == "4h" ? h240 : hS
+selLo = winSel == "1m" ? l1 : winSel == "3m" ? l3 : winSel == "5m" ? l5 : winSel == "15m" ? l15 : winSel == "1h" ? l60 : winSel == "4h" ? l240 : lS
+selExt = winSel == "1m" ? ext1 : winSel == "3m" ? ext3 : winSel == "5m" ? ext5 : winSel == "15m" ? ext15 : winSel == "1h" ? ext1h : winSel == "4h" ? ext4h : extS
+rSel     = f_rng(close, selHi, selLo)
+inBuy    = not na(rSel) and rSel <= selExt                 // BUY ext = rng ≤ that window's band
+inSell   = not na(rSel) and (100 - rSel) <= selExt         // SELL ext = 100 − rng ≤ that window's band
+plotshape(inBuy  and not inBuy[1],  "BUY band entry",  shape.triangleup,   location.belowbar, color = color.new(color.green, 0), size = size.tiny)
+plotshape(inSell and not inSell[1], "SELL band entry", shape.triangledown, location.abovebar, color = color.new(color.red, 0),   size = size.tiny)
+
+// ── table: ext per window at the close ──────────────────────────────────────
+var table t = table.new(position.top_right, 3, 8, bgcolor = color.new(color.black, 60), border_width = 1, border_color = color.new(color.gray, 70))
+f_cell(row, name, wHi, wLo, pct) =>
+    r  = f_rng(close, wHi, wLo)
+    eb = r
+    es = 100 - r
+    table.cell(t, 0, row, name + " ≤" + str.tostring(pct, "#"), text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, row, na(eb) ? "—" : str.tostring(eb, "#.0"), text_color = not na(eb) and eb <= pct ? color.lime : color.silver, text_size = size.small, bgcolor = not na(eb) and eb <= pct ? color.new(color.green, 80) : na)
+    table.cell(t, 2, row, na(es) ? "—" : str.tostring(es, "#.0"), text_color = not na(es) and es <= pct ? color.orange : color.silver, text_size = size.small, bgcolor = not na(es) and es <= pct ? color.new(color.red, 80) : na)
+if showTbl and barstate.islast
+    table.cell(t, 0, 0, "window",   text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 0, "BUY ext",  text_color = color.gray, text_size = size.small)
+    table.cell(t, 2, 0, "SELL ext", text_color = color.gray, text_size = size.small)
+    f_cell(1, "1m",   h1,   l1,   ext1)
+    f_cell(2, "3m",   h3,   l3,   ext3)
+    f_cell(3, "5m",   h5,   l5,   ext5)
+    f_cell(4, "15m",  h15,  l15,  ext15)
+    f_cell(5, "1h",   h60,  l60,  ext1h)
+    f_cell(6, "4h",   h240, l240, ext4h)
+    f_cell(7, "sess", hS,   lS,   extS)
+
+// ── alerts (the alert window) ───────────────────────────────────────────────
+alertcondition(inBuy  and not inBuy[1],  "BUY band entry",  "RngPos: price entered the BUY band")
+alertcondition(inSell and not inSell[1], "SELL band entry", "RngPos: price entered the SELL band")
+if fireJson and barstate.isconfirmed
+    side = inBuy and not inBuy[1] ? "BUY" : inSell and not inSell[1] ? "SELL" : ""
+    if side != ""
+        alert('{"algo":"range-position","ticker":"' + syminfo.ticker + '","tf":"' + winSel + '","chartTf":"' + timeframe.period + '","side":"' + side +
+              '","close":' + str.tostring(close) + ',"rng":' + str.tostring(rSel, "#.0") + ',"ext":' + str.tostring(side == "BUY" ? rSel : 100 - rSel, "#.0") +
+              ',"band":' + str.tostring(selExt, "#") + ',"windowHigh":' + str.tostring(selHi) + ',"windowLow":' + str.tostring(selLo) + '}', alert.freq_once_per_bar_close)

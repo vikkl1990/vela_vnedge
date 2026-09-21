@@ -1,0 +1,352 @@
+// Volatility Supply and Demand Zones
+// Original work. Written from the geometry, not adapted from any other publication.
+//
+// Zones: a confirmed pivot marks the edge of a zone whose depth is a fraction of ATR(50),
+// so the same settings produce proportionate zones on a quiet instrument and a violent one.
+// A new zone is refused when its midpoint sits too close to a live zone on the same side,
+// and a zone stops being live the moment price trades through it against its direction.
+//
+// Structure: a separate, stricter detector marks the swing points that price actually
+// staircased into, then classifies each break as a shift of phase or a continuation of it.
+//@version=6
+indicator('Volatility Supply and Demand Zones', shorttitle = 'Zones', overlay = true,
+     max_boxes_count = 300, max_lines_count = 400, max_labels_count = 200, max_bars_back = 1000)
+
+//=====================================================================================================================
+// INPUTS
+//=====================================================================================================================
+G_ZONE  = 'Zones'
+G_BREAK = 'Broken zones'
+G_GUARD = 'Overlap filter'
+G_MS    = 'Market structure'
+G_VIS   = 'Visuals'
+
+pivotLen   = input.int(10, 'Pivot length', minval = 2, maxval = 100, group = G_ZONE, tooltip = 'Bars required on each side of a swing before it counts as a zone edge. A pivot is only confirmed this many bars after it forms, which is inherent to pivot detection.')
+zoneDepth  = input.float(2.5, 'Zone depth', minval = 1, maxval = 10, step = 0.5, group = G_ZONE, tooltip = 'How thick the zone is, as a tenth of ATR(50). 2.5 means the zone spans a quarter of one ATR. Raise it for wider zones on the same pivots.')
+zoneMemory = input.int(20, 'Zones to remember', minval = 1, maxval = 50, group = G_ZONE, tooltip = 'How many live zones per side stay on the chart. When the limit is reached the oldest one is deleted to make room for the newest.')
+
+brokenMode = input.string('Remove', 'When price closes through a zone', options = ['Remove', 'Freeze at the break', 'Leave it running'], group = G_BREAK, tooltip = 'A sell zone is broken by a close above its top, a buy zone by a close below its bottom.\n\nRemove deletes it. Freeze stops it extending so it stays as history at the bar it died. Leave it running is the old behaviour, where every zone projects to the right edge forever.')
+useWick    = input.bool(false, 'Break on wicks instead of closes', group = G_BREAK, tooltip = 'Off, a zone survives until a bar CLOSES through it. On, a single wick through the level is enough. Wicks retire zones far more aggressively.')
+
+useGuard   = input.bool(true, 'Reject zones that sit too close', group = G_GUARD, tooltip = 'A new zone is refused when its midpoint falls inside the separation band of a live zone on the same side. This is what stops a cluster of near-identical zones forming during consolidation. Retired zones never block a new one.')
+guardMult  = input.float(2.0, 'Separation (x ATR)', minval = 0.1, maxval = 10, step = 0.1, group = G_GUARD, tooltip = 'Half-width of the band measured around each live zone midpoint. Larger values spread the zones further apart and draw fewer of them.')
+
+showStruct = input.bool(true, 'Show structure breaks', group = G_MS)
+structSpan = input.int(5, 'Structure span (bars)', minval = 3, maxval = 101, group = G_MS, tooltip = 'Total width of the swing window. An even number rounds down to the nearest odd one, because the window is always the pivot bar plus an equal number of bars on either side.')
+strictRun  = input.bool(true, 'Strict staircase', group = G_MS, tooltip = 'On, every bar approaching the swing must be strictly higher (or lower) than the one before it, and every bar leaving it strictly the other way. A single equal high or low anywhere in the window rejects the swing.\n\nOff, equal bars are tolerated: only a bar moving the wrong way rejects the swing. This finds noticeably more structure, especially on instruments that print repeated highs.')
+showRays   = input.bool(false, 'Support and resistance rays', group = G_MS, tooltip = 'After a break, scan back to the swing that was broken and mark the extreme reached in between, then extend it forward until a close takes it out.\n\nThis runs a backward scan on every break, so it is off by default. Lower the scan limit if the script becomes slow.')
+scanCap    = input.int(300, 'Ray scan limit (bars)', minval = 20, maxval = 1000, group = G_MS, tooltip = 'Hard ceiling on how far back the scan may walk. It bounds the work done on a single bar.')
+structKeep = input.int(20, 'Structure marks to keep', minval = 1, maxval = 100, group = G_MS)
+
+cSellEdge  = input.color(color.new(#ff2e63, 15), 'Sell', group = G_VIS, inline = 's', tooltip = 'The edge carries the level, so it stays close to solid. The fill is only a wash, so it stays close to invisible.')
+cSellFill  = input.color(color.new(#ff2e63, 88), 'fill', group = G_VIS, inline = 's')
+cBuyEdge   = input.color(color.new(#00ff9d, 15), 'Buy',  group = G_VIS, inline = 'b')
+cBuyFill   = input.color(color.new(#00ff9d, 88), 'fill', group = G_VIS, inline = 'b')
+showMid    = input.bool(true, 'Mid line', group = G_VIS, inline = 'm')
+cMid       = input.color(color.new(#ffffff, 62), '',     group = G_VIS, inline = 'm')
+showText   = input.bool(true, 'Label the zones', group = G_VIS)
+zSizeIn    = input.string('Small', 'Label size', options = ['Tiny', 'Small', 'Normal', 'Large'], group = G_VIS)
+edgeWidth  = input.int(1, 'Edge weight', minval = 1, maxval = 4, group = G_VIS)
+
+zSize = zSizeIn == 'Tiny' ? size.tiny : zSizeIn == 'Small' ? size.small : zSizeIn == 'Normal' ? size.normal : size.large
+
+//=====================================================================================================================
+// MEASUREMENTS
+//
+//   buffer = ATR(50) * zoneDepth / 10
+//
+//   sell zone   top = pivot high            buy zone   bottom = pivot low
+//               bottom = top - buffer                  top    = bottom + buffer
+//               mid = top - buffer / 2                 mid    = bottom + buffer / 2
+//=====================================================================================================================
+atrRef = ta.atr(50)
+buffer = atrRef * zoneDepth / 10
+band   = atrRef * guardMult
+
+pivHigh = ta.pivothigh(high, pivotLen, pivotLen)
+pivLow  = ta.pivotlow (low,  pivotLen, pivotLen)
+
+// what price has to clear for a zone to count as broken
+sellProbe = useWick ? high : close
+buyProbe  = useWick ? low  : close
+
+//=====================================================================================================================
+// ZONE STATE
+// Live zones and their mid lines are kept side by side so the two always age together.
+// Retired drawings move to their own lists: they are no longer tested, and no longer block
+// a new zone through the overlap filter.
+//=====================================================================================================================
+var array<box>  sellZones = array.new<box>()
+var array<box>  buyZones  = array.new<box>()
+var array<line> sellMids  = array.new<line>()
+var array<line> buyMids   = array.new<line>()
+
+var array<box>  deadZones = array.new<box>()
+var array<line> deadMids  = array.new<line>()
+
+//=====================================================================================================================
+// ZONE FUNCTIONS
+//=====================================================================================================================
+
+// Is the proposed midpoint clear of every live zone on this side?
+// for-in is used deliberately: it is a no-op on an empty array, where a counted loop
+// from 0 to size-1 would run backwards and read index -1.
+f_isClear(array<box> zones, float mid) =>
+    bool clear = true
+    for z in zones
+        float m = (box.get_top(z) + box.get_bottom(z)) / 2
+        if math.abs(mid - m) <= band
+            clear := false
+            break
+    clear
+
+// Newest to the front, oldest off the back, drawings released as they leave.
+f_pushFifo(array<box> zones, array<line> mids, box z, line m, int cap) =>
+    zones.unshift(z)
+    mids.unshift(m)
+    while zones.size() > cap
+        box.delete(zones.pop())
+    while mids.size() > cap
+        line.delete(mids.pop())
+
+// Retire every live zone that price has traded through.
+// Walks backwards because entries are removed during the pass, which would make a forward
+// loop skip the element that slides into the vacated index.
+f_retire(array<box> zones, array<line> mids, bool isSell) =>
+    int killed = 0
+    if brokenMode != 'Leave it running' and zones.size() > 0
+        for i = zones.size() - 1 to 0
+            box z = zones.get(i)
+            bool broken = isSell ? sellProbe > box.get_top(z) : buyProbe < box.get_bottom(z)
+            if broken
+                line m = mids.get(i)
+                if brokenMode == 'Remove'
+                    box.delete(z)
+                    line.delete(m)
+                else
+                    box.set_extend(z, extend.none)
+                    box.set_right(z, bar_index)
+                    box.set_text(z, '')
+                    deadZones.unshift(z)
+                    if not na(m)
+                        line.set_extend(m, extend.none)
+                        line.set_x2(m, bar_index)
+                        deadMids.unshift(m)
+                zones.remove(i)
+                mids.remove(i)
+                killed += 1
+    while deadZones.size() > zoneMemory
+        box.delete(deadZones.pop())
+    while deadMids.size() > zoneMemory
+        line.delete(deadMids.pop())
+    killed
+
+// Builds one zone and its mid line, then files them. Returns true when a zone was drawn.
+f_openZone(bool isSell, float edge, int leftBar) =>
+    float top = isSell ? edge : edge + buffer
+    float bot = isSell ? edge - buffer : edge
+    float mid = (top + bot) / 2
+
+    array<box>  zones = isSell ? sellZones : buyZones
+    array<line> mids  = isSell ? sellMids  : buyMids
+
+    bool drawn = false
+    if not useGuard or f_isClear(zones, mid)
+        box z = box.new(leftBar, top, bar_index, bot,
+             border_color = isSell ? cSellEdge : cBuyEdge,
+             bgcolor      = isSell ? cSellFill : cBuyFill,
+             extend       = extend.right,
+             border_width = edgeWidth,
+             text         = showText ? (isSell ? 'SELL' : 'BUY') : '',
+             text_color   = isSell ? cSellEdge : cBuyEdge,
+             text_halign  = text.align_left,
+             text_valign  = isSell ? text.align_top : text.align_bottom)
+        box.set_text_size(z, zSize)
+
+        line m = na
+        if showMid
+            m := line.new(leftBar, mid, bar_index, mid, extend = extend.right, color = cMid, style = line.style_dotted)
+
+        f_pushFifo(zones, mids, z, m, zoneMemory)
+        drawn := true
+    drawn
+
+//=====================================================================================================================
+// MARKET STRUCTURE
+//
+// A swing is only accepted when price staircased into it and staircased back out. The window
+// is always symmetric: wing bars in, the swing bar itself, wing bars out.
+//
+//   wing = floor(structSpan / 2)      span = 2 * wing + 1
+//
+// span is rebuilt from wing rather than taken from the input. Deriving the extreme test from
+// structSpan directly would check a shorter window than the staircase tests span whenever
+// structSpan is even, and could accept a bar that is not the extreme of its own window.
+//=====================================================================================================================
+wing = math.max(1, int(structSpan / 2))
+span = 2 * wing + 1
+
+// signed step counts across wing bars, and the plain up and down tallies used by the
+// tolerant mode, where an equal bar is neither a rise nor a fall
+hiSteps = math.sum(math.sign(high - high[1]), wing)
+loSteps = math.sum(math.sign(low  - low[1]),  wing)
+hiUp    = math.sum(high > high[1] ? 1 : 0, wing)
+hiDn    = math.sum(high < high[1] ? 1 : 0, wing)
+loUp    = math.sum(low  > low[1]  ? 1 : 0, wing)
+loDn    = math.sum(low  < low[1]  ? 1 : 0, wing)
+
+// a top needs a rise into it and a fall away from it; a bottom the reverse
+risesIn  = strictRun ? hiSteps[wing] ==  wing : hiDn[wing] == 0
+fallsOut = strictRun ? hiSteps       == -wing : hiUp       == 0
+fallsIn  = strictRun ? loSteps[wing] == -wing : loUp[wing] == 0
+risesOut = strictRun ? loSteps       ==  wing : loDn       == 0
+
+// ta.highest and ta.lowest carry rolling state and must run on every bar. Left inside the
+// conditions below, `and` short-circuits past them whenever the staircase test fails first,
+// their window is then built from a sparse history, and the equality never matches.
+winHigh = ta.highest(span)
+winLow  = ta.lowest(span)
+
+topFound = risesIn  and fallsOut and high[wing] == winHigh
+botFound = fallsIn  and risesOut and low[wing]  == winLow
+
+var float topLevel = na
+var int   topBar   = na
+var bool  topLive  = false
+var float botLevel = na
+var int   botBar   = na
+var bool  botLive  = false
+var int   phase    = 0          // -1 down, +1 up, 0 before the first break
+
+var array<line>  msLines  = array.new<line>()
+var array<label> msLabels = array.new<label>()
+
+var line floorRay = na
+var line ceilRay  = na
+var bool floorGone = true
+var bool ceilGone  = true
+
+// One structure break: a dotted line back to the swing it took out, and a tag at the break.
+f_markBreak(int fromBar, float level, string tag, color css, bool up) =>
+    line l = line.new(fromBar, level, bar_index, level, color = color.new(css, 25), style = line.style_dotted, width = edgeWidth)
+    // the tag sits midway along the line rather than at its right end, so it reads as a
+    // label for the whole move instead of an annotation on the bar that happened to break it
+    int tagBar = int(math.avg(fromBar, bar_index))
+    label t = label.new(tagBar, level, tag, style = up ? label.style_label_down : label.style_label_up,
+         color = color(na), textcolor = css, size = zSize)
+    msLines.unshift(l)
+    msLabels.unshift(t)
+    while msLines.size() > structKeep
+        line.delete(msLines.pop())
+    while msLabels.size() > structKeep
+        label.delete(msLabels.pop())
+
+//=====================================================================================================================
+// EXECUTION
+//
+// Retiring runs first. A zone that dies on this bar must not sit in the overlap filter and
+// block the zone that replaces it, and a pivot confirmed on this bar cannot have been broken
+// before it existed.
+//=====================================================================================================================
+deadSell = f_retire(sellZones, sellMids, true)
+deadBuy  = f_retire(buyZones,  buyMids,  false)
+
+bool newSell = false
+bool newBuy  = false
+
+// A pivot high opens a sell zone below it; a pivot low opens a buy zone above it.
+// Both are anchored to the bar the pivot actually formed on, not the bar that confirmed it.
+if not na(pivHigh)
+    newSell := f_openZone(true, pivHigh, bar_index - pivotLen)
+
+if not na(pivLow)
+    newBuy := f_openZone(false, pivLow, bar_index - pivotLen)
+
+// --- structure: register the newest swing on each side ---------------------------------
+if topFound
+    topLevel := high[wing]
+    topBar   := bar_index - wing
+    topLive  := true
+if botFound
+    botLevel := low[wing]
+    botBar   := bar_index - wing
+    botLive  := true
+
+// A level fires once and is then spent. Testing the close directly rather than watching for
+// a crossover means a level that opens below price, or is jumped by a gap, still registers
+// instead of sitting unbroken forever.
+breakUp = showStruct and topLive and not na(topLevel) and close > topLevel
+breakDn = showStruct and botLive and not na(botLevel) and close < botLevel
+
+// A break that extends the standing phase is a continuation. Anything else is a shift,
+// including the very first break on the chart, where there is no phase to continue.
+shiftUp = breakUp and phase !=  1
+shiftDn = breakDn and phase != -1
+
+if breakUp
+    f_markBreak(topBar, topLevel, shiftUp ? 'shift' : 'cont', cBuyEdge, true)
+    topLive := false
+    phase   := 1
+if breakDn
+    f_markBreak(botBar, botLevel, shiftDn ? 'shift' : 'cont', cSellEdge, false)
+    botLive := false
+    phase   := -1
+
+// --- optional support and resistance rays ----------------------------------------------
+// Maintenance first, so a ray created on this bar is not measured against the close that
+// created it.
+if showRays and not na(floorRay) and not floorGone
+    line.set_x2(floorRay, bar_index)
+    if close < line.get_y2(floorRay)
+        floorGone := true
+if showRays and not na(ceilRay) and not ceilGone
+    line.set_x2(ceilRay, bar_index)
+    if close > line.get_y2(ceilRay)
+        ceilGone := true
+
+if showRays and breakUp
+    int reach = math.min(math.max(bar_index - topBar - 1, 1), scanCap)
+    float lo  = low[1]
+    int   off = 1
+    for i = 1 to reach
+        if low[i] < lo
+            lo  := low[i]
+            off := i
+    line.delete(floorRay)
+    floorRay  := line.new(bar_index - off, lo, bar_index, lo, color = cBuyEdge, style = line.style_dashed)
+    floorGone := false
+
+if showRays and breakDn
+    int reach = math.min(math.max(bar_index - botBar - 1, 1), scanCap)
+    float hi  = high[1]
+    int   off = 1
+    for i = 1 to reach
+        if high[i] > hi
+            hi  := high[i]
+            off := i
+    line.delete(ceilRay)
+    ceilRay  := line.new(bar_index - off, hi, bar_index, hi, color = cSellEdge, style = line.style_dashed)
+    ceilGone := false
+
+//=====================================================================================================================
+// ALERTS
+//=====================================================================================================================
+if newSell
+    alert('New sell zone  ' + str.tostring(pivHigh - buffer, format.mintick) + ' to ' + str.tostring(pivHigh, format.mintick), alert.freq_once_per_bar)
+if newBuy
+    alert('New buy zone  ' + str.tostring(pivLow, format.mintick) + ' to ' + str.tostring(pivLow + buffer, format.mintick), alert.freq_once_per_bar)
+if deadSell > 0
+    alert('Price closed above ' + str.tostring(deadSell) + ' sell zone(s)', alert.freq_once_per_bar)
+if deadBuy > 0
+    alert('Price closed below ' + str.tostring(deadBuy) + ' buy zone(s)', alert.freq_once_per_bar)
+if breakUp
+    alert((shiftUp ? 'Upward shift' : 'Upward continuation') + ' through ' + str.tostring(topLevel, format.mintick), alert.freq_once_per_bar)
+if breakDn
+    alert((shiftDn ? 'Downward shift' : 'Downward continuation') + ' through ' + str.tostring(botLevel, format.mintick), alert.freq_once_per_bar)
+
+alertcondition(newSell,      'New sell zone',    'A sell zone was drawn')
+alertcondition(newBuy,       'New buy zone',     'A buy zone was drawn')
+alertcondition(deadSell > 0, 'Sell zone broken', 'Price traded through a sell zone')
+alertcondition(deadBuy  > 0, 'Buy zone broken',  'Price traded through a buy zone')
+alertcondition(breakUp,      'Structure up',     'Price broke a swing high')
+alertcondition(breakDn,      'Structure down',   'Price broke a swing low')

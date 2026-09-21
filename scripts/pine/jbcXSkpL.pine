@@ -1,0 +1,522 @@
+//@version=6
+indicator(" ATK/DEF — Temporal Dual-Axis Market Engine", overlay=true, precision=0, max_labels_count=500, max_lines_count=500, max_boxes_count=200)
+
+// ===== Input Parameters =====
+leftBars = input.int(5, "Left Bars", minval=1, group="=== Swing High/Low ===")
+rightBars = input.int(5, "Right Bars", minval=1, group="=== Swing High/Low ===")
+showLabels = input.bool(true, "Show Pivot Labels", group="=== Swing High/Low ===")
+showTimeZones = input.bool(true, "Show Session Background", group="=== Session Settings ===")
+
+// ============================================
+// Layer 1: Multi-Timeframe Data (HTF/MTF/LTF)
+// ============================================
+
+// ===== HTF (Monthly) Data =====
+[hHigh, hLow, h1_open, h1_high, h1_low, h1_close, hVol1, hClose] = request.security(syminfo.tickerid, "M",
+    [high[1], low[1], open[1], high[1], low[1], close[1], volume[1], close])
+
+// ===== HTF (Weekly) Data =====
+[wHigh, wLow, w1_open, w1_high, w1_low, w1_close, wVol1, wClose] = request.security(syminfo.tickerid, "W",
+    [high[1], low[1], open[1], high[1], low[1], close[1], volume[1], close])
+
+// ===== MTF (Daily) Data =====
+[dHigh, dLow, d1_open, d1_high, d1_low, d1_close, dVol1, dClose] = request.security(syminfo.tickerid, "D",
+    [high[1], low[1], open[1], high[1], low[1], close[1], volume[1], close])
+
+// ===== LTF (4-Hour) Data =====
+[f4High, f4Low, f4_1_open, f4_1_high, f4_1_low, f4_1_close, f4Vol1, f4Close] = request.security(syminfo.tickerid, "240",
+    [high[1], low[1], open[1], high[1], low[1], close[1], volume[1], close])
+
+// ===== LTF (1-Hour) Data =====
+[f1High, f1Low, f1_1_open, f1_1_high, f1_1_low, f1_1_close, f1Vol1, f1Close] = request.security(syminfo.tickerid, "60",
+    [high[1], low[1], open[1], high[1], low[1], close[1], volume[1], close])
+
+// ============================================
+// New: Layering + POC + Market Structure + Impulse + Retracement
+// ============================================
+
+// ===== Layering (Price Levels) =====
+lookbackPeriod = 100
+highestPrice = ta.highest(high, lookbackPeriod)
+lowestPrice = ta.lowest(low, lookbackPeriod)
+priceRange = highestPrice - lowestPrice
+pricePosition = priceRange > 0 ? ((close - lowestPrice) / priceRange) * 100 : 50
+
+priceLayer = ""
+layerColor = color.white
+if pricePosition > 80
+    priceLayer := "🔴 Top Zone"
+    layerColor := color.rgb(255, 0, 0)
+else if pricePosition > 60
+    priceLayer := "🟡 High Zone"
+    layerColor := color.rgb(255, 165, 0)
+else if pricePosition > 40
+    priceLayer := "🟢 Mid Zone"
+    layerColor := color.rgb(0, 200, 0)
+else if pricePosition > 20
+    priceLayer := "🔵 Low Zone"
+    layerColor := color.rgb(0, 150, 255)
+else
+    priceLayer := "⚪ Bottom Zone"
+    layerColor := color.rgb(150, 150, 150)
+
+// ===== Point of Control (POC) =====
+pocPeriod = 50
+pocHigh = ta.highest(high, pocPeriod)
+pocLow = ta.lowest(low, pocPeriod)
+pocMid = (pocHigh + pocLow) / 2
+pocRange = pocHigh - pocLow
+
+// POC display
+pocDisplay = str.tostring(pocMid, "#.##")
+
+// Check if price is near POC zone (±5%)
+pocRange5 = pocRange * 0.05
+inPOC = close >= pocMid - pocRange5 and close <= pocMid + pocRange5
+pocStatus = inPOC ? "🟢 In POC" : "🔴 Outside POC"
+pocColor = inPOC ? color.rgb(0, 255, 0) : color.rgb(255, 0, 0)
+
+// Price distance from POC percentage
+pocDistance = (close - pocMid) / (pocMid + 0.0001) * 100
+pocDistanceDisplay = str.tostring(pocDistance, "#.1") + "%"
+
+// ===== Market Structure =====
+swingHighStruct = ta.pivothigh(5, 5)
+swingLowStruct = ta.pivotlow(5, 5)
+
+structure = ""
+structureColor = color.white
+if not na(swingHighStruct) and not na(swingLowStruct)
+    structure := "📈 Uptrend"
+    structureColor := color.rgb(0, 255, 0)
+else if not na(swingHighStruct) and na(swingLowStruct)
+    structure := "📉 Downtrend"
+    structureColor := color.rgb(255, 0, 0)
+else if na(swingHighStruct) and not na(swingLowStruct)
+    structure := "📊 Base Forming"
+    structureColor := color.rgb(255, 200, 0)
+else
+    structure := "⚪ Consolidation"
+    structureColor := color.rgb(150, 150, 150)
+
+// ===== Impulse =====
+atrValue = ta.atr(14)
+priceChange = close - close[1]
+impulseStrength = priceChange >= 0 ? (priceChange / (atrValue + 0.0001)) : (-priceChange / (atrValue + 0.0001))
+
+impulse = ""
+impulseColor = color.white
+if impulseStrength > 2.0
+    impulse := priceChange > 0 ? "🚀 Strong Bullish" : "💀 Strong Bearish"
+    impulseColor := priceChange > 0 ? color.rgb(0, 255, 0) : color.rgb(255, 0, 0)
+else if impulseStrength > 1.0
+    impulse := priceChange > 0 ? "📈 Mild Bullish" : "📉 Mild Bearish"
+    impulseColor := priceChange > 0 ? color.rgb(100, 255, 100) : color.rgb(255, 100, 100)
+else
+    impulse := "➡️ No Impulse"
+    impulseColor := color.rgb(150, 150, 150)
+
+// ===== Retracement Behavior =====
+highestClose = ta.highest(close, 20)
+lowestClose = ta.lowest(close, 20)
+retracementRange = highestClose - lowestClose
+currentRetracement = retracementRange > 0 ? ((highestClose - close) / retracementRange) * 100 : 50
+
+retracement = ""
+retracementColor = color.white
+if currentRetracement < 23.6
+    retracement := "⚡ Shallow (<23.6%)"
+    retracementColor := color.rgb(0, 255, 0)
+else if currentRetracement < 38.2
+    retracement := "📊 Medium (23.6-38.2%)"
+    retracementColor := color.rgb(255, 200, 0)
+else if currentRetracement < 61.8
+    retracement := "🔴 Deep (38.2-61.8%)"
+    retracementColor := color.rgb(255, 165, 0)
+else
+    retracement := "💀 Extreme (>61.8%)"
+    retracementColor := color.rgb(255, 0, 0)
+
+// ============================================
+// Layer 2: Session Data (Asia/Europe/America)
+// ============================================
+
+// ===== Get Current Bar Time Data (using chart timezone for better compatibility) =====
+currentHour = hour(time)
+currentMinute = minute(time)
+
+// ===== Session Detection (based on chart timezone) =====
+utcHour = hour(time, "UTC")
+
+// Asian Session: Beijing 8:00-17:00 = UTC 0:00-9:00
+isAsia = utcHour >= 0 and utcHour < 9
+// European Session: Beijing 15:00-23:00 = UTC 7:00-15:00
+isEurope = utcHour >= 7 and utcHour < 15
+// American Session: Beijing 21:00-4:00 = UTC 13:00-20:00
+isUS = utcHour >= 13 or utcHour < 0
+
+// ===== Session Color Definitions =====
+asiaColor = color.rgb(255, 200, 100, 15)
+europeColor = color.rgb(100, 200, 255, 15)
+usColor = color.rgb(200, 200, 255, 15)
+
+// ===== Draw Session Background =====
+if showTimeZones
+    if isAsia
+        box.new(left=bar_index, top=high, right=bar_index+1, bottom=low, bgcolor=asiaColor, border_color=color.rgb(255, 200, 100, 50), border_width=0)
+    if isEurope
+        box.new(left=bar_index, top=high, right=bar_index+1, bottom=low, bgcolor=europeColor, border_color=color.rgb(100, 200, 255, 50), border_width=0)
+    if isUS
+        box.new(left=bar_index, top=high, right=bar_index+1, bottom=low, bgcolor=usColor, border_color=color.rgb(200, 200, 255, 50), border_width=0)
+
+// ===== Session Data Collection =====
+var float asiaHigh = na
+var float asiaLow = na
+var float asiaOpen = na
+var float asiaClose = na
+var float asiaVolume = 0.0
+var int asiaBars = 0
+
+var float europeHigh = na
+var float europeLow = na
+var float europeOpen = na
+var float europeClose = na
+var float europeVolume = 0.0
+var int europeBars = 0
+
+var float usHigh = na
+var float usLow = na
+var float usOpen = na
+var float usClose = na
+var float usVolume = 0.0
+var int usBars = 0
+
+// ===== Reset Session Data =====
+isNewDay = ta.change(time("D")) != 0
+
+if isNewDay
+    asiaHigh := na
+    asiaLow := na
+    asiaOpen := na
+    asiaClose := na
+    asiaVolume := 0.0
+    asiaBars := 0
+    europeHigh := na
+    europeLow := na
+    europeOpen := na
+    europeClose := na
+    europeVolume := 0.0
+    europeBars := 0
+    usHigh := na
+    usLow := na
+    usOpen := na
+    usClose := na
+    usVolume := 0.0
+    usBars := 0
+
+// ===== Collect Session Data =====
+if isAsia and not na(high) and not na(low)
+    if na(asiaHigh) or high > asiaHigh
+        asiaHigh := high
+    if na(asiaLow) or low < asiaLow
+        asiaLow := low
+    if na(asiaOpen)
+        asiaOpen := open
+    asiaClose := close
+    asiaVolume := asiaVolume + volume
+    asiaBars := asiaBars + 1
+
+if isEurope and not na(high) and not na(low)
+    if na(europeHigh) or high > europeHigh
+        europeHigh := high
+    if na(europeLow) or low < europeLow
+        europeLow := low
+    if na(europeOpen)
+        europeOpen := open
+    europeClose := close
+    europeVolume := europeVolume + volume
+    europeBars := europeBars + 1
+
+if isUS and not na(high) and not na(low)
+    if na(usHigh) or high > usHigh
+        usHigh := high
+    if na(usLow) or low < usLow
+        usLow := low
+    if na(usOpen)
+        usOpen := open
+    usClose := close
+    usVolume := usVolume + volume
+    usBars := usBars + 1
+
+// ===== Display Values (avoid na display) =====
+asiaHighDisplay = not na(asiaHigh) ? str.tostring(asiaHigh, "#.##") : "➖"
+asiaLowDisplay = not na(asiaLow) ? str.tostring(asiaLow, "#.##") : "➖"
+europeHighDisplay = not na(europeHigh) ? str.tostring(europeHigh, "#.##") : "➖"
+europeLowDisplay = not na(europeLow) ? str.tostring(europeLow, "#.##") : "➖"
+usHighDisplay = not na(usHigh) ? str.tostring(usHigh, "#.##") : "➖"
+usLowDisplay = not na(usLow) ? str.tostring(usLow, "#.##") : "➖"
+
+// ===== Calculate Session Metrics =====
+asiaLiquidity = asiaBars > 0 ? (asiaVolume / asiaBars) > ta.sma(volume, 20) ? "🔥 High" : (asiaVolume / asiaBars) > ta.sma(volume, 20) * 0.8 ? "📊 Medium" : "💧 Low" : "➖ None"
+asiaBreakout = asiaBars > 0 and not na(asiaHigh) and not na(asiaLow) ? (close > asiaHigh ? "✅ True" : close < asiaLow ? "⚠️ False" : "➖ None") : "➖ None"
+asiaDirection = asiaBars > 0 and not na(asiaClose) and not na(asiaOpen) ? (asiaClose > asiaOpen ? "📈 Bullish" : asiaClose < asiaOpen ? "📉 Bearish" : "➖ Neutral") : "➖ None"
+asiaInstitution = asiaLiquidity == "🔥 High" and asiaDirection == "📈 Bullish" ? "🚀 Accumulation" : asiaLiquidity == "🔥 High" and asiaDirection == "📉 Bearish" ? "💎 Distribution" : asiaDirection == "📈 Bullish" or asiaDirection == "📉 Bearish" ? "🌀 Shakeout" : "➖ Wait"
+
+europeLiquidity = europeBars > 0 ? (europeVolume / europeBars) > ta.sma(volume, 20) ? "🔥 High" : (europeVolume / europeBars) > ta.sma(volume, 20) * 0.8 ? "📊 Medium" : "💧 Low" : "➖ None"
+europeBreakout = europeBars > 0 and not na(europeHigh) and not na(europeLow) ? (close > europeHigh ? "✅ True" : close < europeLow ? "⚠️ False" : "➖ None") : "➖ None"
+europeDirection = europeBars > 0 and not na(europeClose) and not na(europeOpen) ? (europeClose > europeOpen ? "📈 Bullish" : europeClose < europeOpen ? "📉 Bearish" : "➖ Neutral") : "➖ None"
+europeInstitution = europeLiquidity == "🔥 High" and europeDirection == "📈 Bullish" ? "🚀 Accumulation" : europeLiquidity == "🔥 High" and europeDirection == "📉 Bearish" ? "💎 Distribution" : europeDirection == "📈 Bullish" or europeDirection == "📉 Bearish" ? "🌀 Shakeout" : "➖ Wait"
+
+usLiquidity = usBars > 0 ? (usVolume / usBars) > ta.sma(volume, 20) ? "🔥 High" : (usVolume / usBars) > ta.sma(volume, 20) * 0.8 ? "📊 Medium" : "💧 Low" : "➖ None"
+usBreakout = usBars > 0 and not na(usHigh) and not na(usLow) ? (close > usHigh ? "✅ True" : close < usLow ? "⚠️ False" : "➖ None") : "➖ None"
+usDirection = usBars > 0 and not na(usClose) and not na(usOpen) ? (usClose > usOpen ? "📈 Bullish" : usClose < usOpen ? "📉 Bearish" : "➖ Neutral") : "➖ None"
+usInstitution = usLiquidity == "🔥 High" and usDirection == "📈 Bullish" ? "🚀 Accumulation" : usLiquidity == "🔥 High" and usDirection == "📉 Bearish" ? "💎 Distribution" : usDirection == "📈 Bullish" or usDirection == "📉 Bearish" ? "🌀 Shakeout" : "➖ Wait"
+
+// ============================================
+// Utility Functions
+// ============================================
+f_getLiquidity(volume, period) =>
+    avgVol = ta.sma(request.security(syminfo.tickerid, period, volume), 20)
+    volume > avgVol * 1.2 ? "🔥 High" : volume > avgVol * 0.8 ? "📊 Medium" : "💧 Low"
+
+f_getBreakout(price, high, low) =>
+    price > high ? "✅ True" : price < low ? "⚠️ False" : "➖ None"
+
+f_getMomentum(price, prevPrice) =>
+    price > prevPrice * 1.01 ? "🐂 Bullish" : price < prevPrice * 0.99 ? "🐻 Bearish" : "➖ Neutral"
+
+f_getDirection(close, open) =>
+    close > open * 1.01 ? "📈 Bullish" : close < open * 0.99 ? "📉 Bearish" : "➖ Neutral"
+
+f_getInstitution(volume, direction) =>
+    highVol = volume > ta.sma(request.security(syminfo.tickerid, "D", volume), 20) * 1.2
+    if highVol and direction == "📈 Bullish"
+        "🚀 Accumulation"
+    else if highVol and direction == "📉 Bearish"
+        "💎 Distribution"
+    else if direction == "📈 Bullish" or direction == "📉 Bearish"
+        "🌀 Shakeout"
+    else
+        "➖ Wait"
+
+f_getDrive(direction, momentum) =>
+    if direction == "📈 Bullish" and momentum == "🐂 Bullish"
+        "🔥 Bullish Drive"
+    else if direction == "📉 Bearish" and momentum == "🐻 Bearish"
+        "🔥 Bearish Drive"
+    else if direction == "📈 Bullish" and momentum != "🐂 Bullish"
+        "⏳ Bullish Weak"
+    else if direction == "📉 Bearish" and momentum != "🐻 Bearish"
+        "⏳ Bearish Weak"
+    else
+        "➖ Wait"
+
+// ===== Calculate Layer 1 Metrics =====
+hLiquidity = f_getLiquidity(hVol1, "M")
+hBreakout = f_getBreakout(hClose, hHigh, hLow)
+hMomentum = f_getMomentum(hClose, h1_close)
+hDirection = f_getDirection(h1_close, h1_open)
+hInstitution = f_getInstitution(hVol1, hDirection)
+hDrive = f_getDrive(hDirection, hMomentum)
+
+wLiquidity = f_getLiquidity(wVol1, "W")
+wBreakout = f_getBreakout(wClose, wHigh, wLow)
+wMomentum = f_getMomentum(wClose, w1_close)
+wDirection = f_getDirection(w1_close, w1_open)
+wInstitution = f_getInstitution(wVol1, wDirection)
+wDrive = f_getDrive(wDirection, wMomentum)
+
+dLiquidity = f_getLiquidity(dVol1, "D")
+dBreakout = f_getBreakout(dClose, dHigh, dLow)
+dMomentum = f_getMomentum(dClose, d1_close)
+dDirection = f_getDirection(d1_close, d1_open)
+dInstitution = f_getInstitution(dVol1, dDirection)
+dDrive = f_getDrive(dDirection, dMomentum)
+
+f4Liquidity = f_getLiquidity(f4Vol1, "240")
+f4Breakout = f_getBreakout(f4Close, f4High, f4Low)
+f4Momentum = f_getMomentum(f4Close, f4_1_close)
+f4Direction = f_getDirection(f4_1_close, f4_1_open)
+f4Institution = f_getInstitution(f4Vol1, f4Direction)
+f4Drive = f_getDrive(f4Direction, f4Momentum)
+
+f1Liquidity = f_getLiquidity(f1Vol1, "60")
+f1Breakout = f_getBreakout(f1Close, f1High, f1Low)
+f1Momentum = f_getMomentum(f1Close, f1_1_close)
+f1Direction = f_getDirection(f1_1_close, f1_1_open)
+f1Institution = f_getInstitution(f1Vol1, f1Direction)
+f1Drive = f_getDrive(f1Direction, f1Momentum)
+
+// ============================================
+// Layer 1 Table: Multi-Timeframe Analysis (Top Right)
+// ============================================
+var table panel1 = table.new(
+    position = position.top_right,
+    columns = 10,
+    rows = 6,
+    bgcolor = color.rgb(0, 0, 0, 85),
+    border_color = color.rgb(80, 80, 80, 80),
+    border_width = 1
+)
+
+if barstate.islast
+    table.cell(panel1, 0, 0, "Layer", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+    table.cell(panel1, 1, 0, "Period", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+    table.cell(panel1, 2, 0, "High", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+    table.cell(panel1, 3, 0, "Low", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+    table.cell(panel1, 4, 0, "Liquidity", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+    table.cell(panel1, 5, 0, "Breakout", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+    table.cell(panel1, 6, 0, "Drive", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+    table.cell(panel1, 7, 0, "Retrace", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+    table.cell(panel1, 8, 0, "Structure", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+    table.cell(panel1, 9, 0, "Institution", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+
+    // HTF Monthly
+    table.cell(panel1, 0, 1, priceLayer, text_color=layerColor, text_size=size.small, bgcolor=color.rgb(60, 30, 0))
+    table.cell(panel1, 1, 1, "Monthly", text_color=color.rgb(255, 200, 100), text_size=size.small, bgcolor=color.rgb(60, 30, 0))
+    table.cell(panel1, 2, 1, str.tostring(hHigh, "#.##"), text_color=color.rgb(255, 100, 100), text_size=size.small)
+    table.cell(panel1, 3, 1, str.tostring(hLow, "#.##"), text_color=color.rgb(100, 255, 100), text_size=size.small)
+    table.cell(panel1, 4, 1, hLiquidity, text_color= hLiquidity == "🔥 High" ? color.rgb(255, 100, 100) : hLiquidity == "📊 Medium" ? color.rgb(255, 200, 100) : color.rgb(100, 200, 255), text_size=size.small)
+    table.cell(panel1, 5, 1, hBreakout, text_color= hBreakout == "✅ True" ? color.rgb(0, 255, 0) : hBreakout == "⚠️ False" ? color.rgb(255, 100, 100) : color.rgb(150, 150, 150), text_size=size.small)
+    table.cell(panel1, 6, 1, hDrive, text_color= hDrive == "🔥 Bullish Drive" ? color.rgb(0, 255, 0) : hDrive == "🔥 Bearish Drive" ? color.rgb(255, 0, 0) : color.rgb(255, 200, 100), text_size=size.small)
+    table.cell(panel1, 7, 1, retracement, text_color=retracementColor, text_size=size.small)
+    table.cell(panel1, 8, 1, structure, text_color=structureColor, text_size=size.small)
+    table.cell(panel1, 9, 1, hInstitution, text_color= hInstitution == "🚀 Accumulation" ? color.rgb(0, 255, 100) : hInstitution == "💎 Distribution" ? color.rgb(255, 100, 100) : hInstitution == "🌀 Shakeout" ? color.rgb(255, 200, 100) : color.rgb(150, 150, 150), text_size=size.small)
+
+    // HTF Weekly
+    table.cell(panel1, 0, 2, priceLayer, text_color=layerColor, text_size=size.small, bgcolor=color.rgb(60, 30, 0))
+    table.cell(panel1, 1, 2, "Weekly", text_color=color.rgb(255, 200, 100), text_size=size.small, bgcolor=color.rgb(60, 30, 0))
+    table.cell(panel1, 2, 2, str.tostring(wHigh, "#.##"), text_color=color.rgb(255, 100, 100), text_size=size.small)
+    table.cell(panel1, 3, 2, str.tostring(wLow, "#.##"), text_color=color.rgb(100, 255, 100), text_size=size.small)
+    table.cell(panel1, 4, 2, wLiquidity, text_color= wLiquidity == "🔥 High" ? color.rgb(255, 100, 100) : wLiquidity == "📊 Medium" ? color.rgb(255, 200, 100) : color.rgb(100, 200, 255), text_size=size.small)
+    table.cell(panel1, 5, 2, wBreakout, text_color= wBreakout == "✅ True" ? color.rgb(0, 255, 0) : wBreakout == "⚠️ False" ? color.rgb(255, 100, 100) : color.rgb(150, 150, 150), text_size=size.small)
+    table.cell(panel1, 6, 2, wDrive, text_color= wDrive == "🔥 Bullish Drive" ? color.rgb(0, 255, 0) : wDrive == "🔥 Bearish Drive" ? color.rgb(255, 0, 0) : color.rgb(255, 200, 100), text_size=size.small)
+    table.cell(panel1, 7, 2, retracement, text_color=retracementColor, text_size=size.small)
+    table.cell(panel1, 8, 2, structure, text_color=structureColor, text_size=size.small)
+    table.cell(panel1, 9, 2, wInstitution, text_color= wInstitution == "🚀 Accumulation" ? color.rgb(0, 255, 100) : wInstitution == "💎 Distribution" ? color.rgb(255, 100, 100) : wInstitution == "🌀 Shakeout" ? color.rgb(255, 200, 100) : color.rgb(150, 150, 150), text_size=size.small)
+
+    // MTF Daily
+    table.cell(panel1, 0, 3, priceLayer, text_color=layerColor, text_size=size.small, bgcolor=color.rgb(0, 40, 60))
+    table.cell(panel1, 1, 3, "Daily", text_color=color.rgb(100, 200, 255), text_size=size.small, bgcolor=color.rgb(0, 40, 60))
+    table.cell(panel1, 2, 3, str.tostring(dHigh, "#.##"), text_color=color.rgb(255, 100, 100), text_size=size.small)
+    table.cell(panel1, 3, 3, str.tostring(dLow, "#.##"), text_color=color.rgb(100, 255, 100), text_size=size.small)
+    table.cell(panel1, 4, 3, dLiquidity, text_color= dLiquidity == "🔥 High" ? color.rgb(255, 100, 100) : dLiquidity == "📊 Medium" ? color.rgb(255, 200, 100) : color.rgb(100, 200, 255), text_size=size.small)
+    table.cell(panel1, 5, 3, dBreakout, text_color= dBreakout == "✅ True" ? color.rgb(0, 255, 0) : dBreakout == "⚠️ False" ? color.rgb(255, 100, 100) : color.rgb(150, 150, 150), text_size=size.small)
+    table.cell(panel1, 6, 3, dDrive, text_color= dDrive == "🔥 Bullish Drive" ? color.rgb(0, 255, 0) : dDrive == "🔥 Bearish Drive" ? color.rgb(255, 0, 0) : color.rgb(255, 200, 100), text_size=size.small)
+    table.cell(panel1, 7, 3, retracement, text_color=retracementColor, text_size=size.small)
+    table.cell(panel1, 8, 3, structure, text_color=structureColor, text_size=size.small)
+    table.cell(panel1, 9, 3, dInstitution, text_color= dInstitution == "🚀 Accumulation" ? color.rgb(0, 255, 100) : dInstitution == "💎 Distribution" ? color.rgb(255, 100, 100) : dInstitution == "🌀 Shakeout" ? color.rgb(255, 200, 100) : color.rgb(150, 150, 150), text_size=size.small)
+
+    // LTF 4-Hour
+    table.cell(panel1, 0, 4, priceLayer, text_color=layerColor, text_size=size.small, bgcolor=color.rgb(30, 30, 60))
+    table.cell(panel1, 1, 4, "4-Hour", text_color=color.rgb(200, 200, 255), text_size=size.small, bgcolor=color.rgb(30, 30, 60))
+    table.cell(panel1, 2, 4, str.tostring(f4High, "#.##"), text_color=color.rgb(255, 100, 100), text_size=size.small)
+    table.cell(panel1, 3, 4, str.tostring(f4Low, "#.##"), text_color=color.rgb(100, 255, 100), text_size=size.small)
+    table.cell(panel1, 4, 4, f4Liquidity, text_color= f4Liquidity == "🔥 High" ? color.rgb(255, 100, 100) : f4Liquidity == "📊 Medium" ? color.rgb(255, 200, 100) : color.rgb(100, 200, 255), text_size=size.small)
+    table.cell(panel1, 5, 4, f4Breakout, text_color= f4Breakout == "✅ True" ? color.rgb(0, 255, 0) : f4Breakout == "⚠️ False" ? color.rgb(255, 100, 100) : color.rgb(150, 150, 150), text_size=size.small)
+    table.cell(panel1, 6, 4, f4Drive, text_color= f4Drive == "🔥 Bullish Drive" ? color.rgb(0, 255, 0) : f4Drive == "🔥 Bearish Drive" ? color.rgb(255, 0, 0) : color.rgb(255, 200, 100), text_size=size.small)
+    table.cell(panel1, 7, 4, retracement, text_color=retracementColor, text_size=size.small)
+    table.cell(panel1, 8, 4, structure, text_color=structureColor, text_size=size.small)
+    table.cell(panel1, 9, 4, f4Institution, text_color= f4Institution == "🚀 Accumulation" ? color.rgb(0, 255, 100) : f4Institution == "💎 Distribution" ? color.rgb(255, 100, 100) : f4Institution == "🌀 Shakeout" ? color.rgb(255, 200, 100) : color.rgb(150, 150, 150), text_size=size.small)
+
+    // LTF 1-Hour
+    table.cell(panel1, 0, 5, priceLayer, text_color=layerColor, text_size=size.small, bgcolor=color.rgb(30, 30, 60))
+    table.cell(panel1, 1, 5, "1-Hour", text_color=color.rgb(200, 200, 255), text_size=size.small, bgcolor=color.rgb(30, 30, 60))
+    table.cell(panel1, 2, 5, str.tostring(f1High, "#.##"), text_color=color.rgb(255, 100, 100), text_size=size.small)
+    table.cell(panel1, 3, 5, str.tostring(f1Low, "#.##"), text_color=color.rgb(100, 255, 100), text_size=size.small)
+    table.cell(panel1, 4, 5, f1Liquidity, text_color= f1Liquidity == "🔥 High" ? color.rgb(255, 100, 100) : f1Liquidity == "📊 Medium" ? color.rgb(255, 200, 100) : color.rgb(100, 200, 255), text_size=size.small)
+    table.cell(panel1, 5, 5, f1Breakout, text_color= f1Breakout == "✅ True" ? color.rgb(0, 255, 0) : f1Breakout == "⚠️ False" ? color.rgb(255, 100, 100) : color.rgb(150, 150, 150), text_size=size.small)
+    table.cell(panel1, 6, 5, f1Drive, text_color= f1Drive == "🔥 Bullish Drive" ? color.rgb(0, 255, 0) : f1Drive == "🔥 Bearish Drive" ? color.rgb(255, 0, 0) : color.rgb(255, 200, 100), text_size=size.small)
+    table.cell(panel1, 7, 5, retracement, text_color=retracementColor, text_size=size.small)
+    table.cell(panel1, 8, 5, structure, text_color=structureColor, text_size=size.small)
+    table.cell(panel1, 9, 5, f1Institution, text_color= f1Institution == "🚀 Accumulation" ? color.rgb(0, 255, 100) : f1Institution == "💎 Distribution" ? color.rgb(255, 100, 100) : f1Institution == "🌀 Shakeout" ? color.rgb(255, 200, 100) : color.rgb(150, 150, 150), text_size=size.small)
+
+// ============================================
+// Layer 2 Table: Session Analysis (Bottom Right)
+// ============================================
+var table panel2 = table.new(
+    position = position.bottom_right,
+    columns = 10,
+    rows = 4,
+    bgcolor = color.rgb(0, 0, 0, 85),
+    border_color = color.rgb(80, 80, 80, 80),
+    border_width = 1
+)
+
+if barstate.islast
+    table.cell(panel2, 0, 0, "Session", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+    table.cell(panel2, 1, 0, "Time", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+    table.cell(panel2, 2, 0, "High", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+    table.cell(panel2, 3, 0, "Low", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+    table.cell(panel2, 4, 0, "Liquidity", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+    table.cell(panel2, 5, 0, "Breakout", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+    table.cell(panel2, 6, 0, "Direction", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+    table.cell(panel2, 7, 0, "POC", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+    table.cell(panel2, 8, 0, "Deviation", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+    table.cell(panel2, 9, 0, "Institution", text_color=color.rgb(255, 255, 255), text_size=size.small, bgcolor=color.rgb(40, 40, 40))
+
+    // Asian Session
+    table.cell(panel2, 0, 1, "🌏 Asia", text_color=color.rgb(255, 200, 100), text_size=size.small, bgcolor=color.rgb(60, 30, 0))
+    table.cell(panel2, 1, 1, "8:00-17:00", text_color=color.rgb(200, 200, 200), text_size=size.small)
+    table.cell(panel2, 2, 1, asiaHighDisplay, text_color=color.rgb(255, 200, 100), text_size=size.small)
+    table.cell(panel2, 3, 1, asiaLowDisplay, text_color=color.rgb(255, 200, 100), text_size=size.small)
+    table.cell(panel2, 4, 1, asiaLiquidity, text_color= asiaLiquidity == "🔥 High" ? color.rgb(255, 100, 100) : asiaLiquidity == "📊 Medium" ? color.rgb(255, 200, 100) : color.rgb(100, 200, 255), text_size=size.small)
+    table.cell(panel2, 5, 1, asiaBreakout, text_color= asiaBreakout == "✅ True" ? color.rgb(0, 255, 0) : asiaBreakout == "⚠️ False" ? color.rgb(255, 100, 100) : color.rgb(150, 150, 150), text_size=size.small)
+    table.cell(panel2, 6, 1, asiaDirection, text_color= asiaDirection == "📈 Bullish" ? color.rgb(0, 255, 0) : asiaDirection == "📉 Bearish" ? color.rgb(255, 0, 0) : color.rgb(255, 200, 100), text_size=size.small)
+    table.cell(panel2, 7, 1, pocDisplay, text_color=pocColor, text_size=size.small)
+    table.cell(panel2, 8, 1, pocDistanceDisplay, text_color=pocColor, text_size=size.small)
+    table.cell(panel2, 9, 1, asiaInstitution, text_color= asiaInstitution == "🚀 Accumulation" ? color.rgb(0, 255, 100) : asiaInstitution == "💎 Distribution" ? color.rgb(255, 100, 100) : asiaInstitution == "🌀 Shakeout" ? color.rgb(255, 200, 100) : color.rgb(150, 150, 150), text_size=size.small)
+
+    // European Session
+    table.cell(panel2, 0, 2, "🌍 Europe", text_color=color.rgb(100, 200, 255), text_size=size.small, bgcolor=color.rgb(0, 40, 60))
+    table.cell(panel2, 1, 2, "15:00-23:00", text_color=color.rgb(200, 200, 200), text_size=size.small)
+    table.cell(panel2, 2, 2, europeHighDisplay, text_color=color.rgb(100, 200, 255), text_size=size.small)
+    table.cell(panel2, 3, 2, europeLowDisplay, text_color=color.rgb(100, 200, 255), text_size=size.small)
+    table.cell(panel2, 4, 2, europeLiquidity, text_color= europeLiquidity == "🔥 High" ? color.rgb(255, 100, 100) : europeLiquidity == "📊 Medium" ? color.rgb(255, 200, 100) : color.rgb(100, 200, 255), text_size=size.small)
+    table.cell(panel2, 5, 2, europeBreakout, text_color= europeBreakout == "✅ True" ? color.rgb(0, 255, 0) : europeBreakout == "⚠️ False" ? color.rgb(255, 100, 100) : color.rgb(150, 150, 150), text_size=size.small)
+    table.cell(panel2, 6, 2, europeDirection, text_color= europeDirection == "📈 Bullish" ? color.rgb(0, 255, 0) : europeDirection == "📉 Bearish" ? color.rgb(255, 0, 0) : color.rgb(255, 200, 100), text_size=size.small)
+    table.cell(panel2, 7, 2, pocDisplay, text_color=pocColor, text_size=size.small)
+    table.cell(panel2, 8, 2, pocDistanceDisplay, text_color=pocColor, text_size=size.small)
+    table.cell(panel2, 9, 2, europeInstitution, text_color= europeInstitution == "🚀 Accumulation" ? color.rgb(0, 255, 100) : europeInstitution == "💎 Distribution" ? color.rgb(255, 100, 100) : europeInstitution == "🌀 Shakeout" ? color.rgb(255, 200, 100) : color.rgb(150, 150, 150), text_size=size.small)
+
+    // American Session
+    table.cell(panel2, 0, 3, "🌎 America", text_color=color.rgb(200, 200, 255), text_size=size.small, bgcolor=color.rgb(30, 30, 60))
+    table.cell(panel2, 1, 3, "21:00-4:00", text_color=color.rgb(200, 200, 200), text_size=size.small)
+    table.cell(panel2, 2, 3, usHighDisplay, text_color=color.rgb(200, 200, 255), text_size=size.small)
+    table.cell(panel2, 3, 3, usLowDisplay, text_color=color.rgb(200, 200, 255), text_size=size.small)
+    table.cell(panel2, 4, 3, usLiquidity, text_color= usLiquidity == "🔥 High" ? color.rgb(255, 100, 100) : usLiquidity == "📊 Medium" ? color.rgb(255, 200, 100) : color.rgb(100, 200, 255), text_size=size.small)
+    table.cell(panel2, 5, 3, usBreakout, text_color= usBreakout == "✅ True" ? color.rgb(0, 255, 0) : usBreakout == "⚠️ False" ? color.rgb(255, 100, 100) : color.rgb(150, 150, 150), text_size=size.small)
+    table.cell(panel2, 6, 3, usDirection, text_color= usDirection == "📈 Bullish" ? color.rgb(0, 255, 0) : usDirection == "📉 Bearish" ? color.rgb(255, 0, 0) : color.rgb(255, 200, 100), text_size=size.small)
+    table.cell(panel2, 7, 3, pocDisplay, text_color=pocColor, text_size=size.small)
+    table.cell(panel2, 8, 3, pocDistanceDisplay, text_color=pocColor, text_size=size.small)
+    table.cell(panel2, 9, 3, usInstitution, text_color= usInstitution == "🚀 Accumulation" ? color.rgb(0, 255, 100) : usInstitution == "💎 Distribution" ? color.rgb(255, 100, 100) : usInstitution == "🌀 Shakeout" ? color.rgb(255, 200, 100) : color.rgb(150, 150, 150), text_size=size.small)
+
+// ============================================
+// Swing High/Low (FIFO Management, Keep 1)
+// ============================================
+var label[] swingHighLabels = array.new_label()
+var label[] swingLowLabels = array.new_label()
+
+f_manageFIFO_label(arr, newLabel, maxCount=1) =>
+    if array.size(arr) >= maxCount
+        oldLabel = array.shift(arr)
+        label.delete(oldLabel)
+    array.push(arr, newLabel)
+
+swingHigh = ta.pivothigh(leftBars, rightBars)
+swingLow = ta.pivotlow(leftBars, rightBars)
+
+if showLabels
+    if not na(swingHigh)
+        newLabel = label.new(bar_index[rightBars], swingHigh,
+                  text="🔴 Resistance\n" + str.tostring(swingHigh, "#.##"),
+                  color=color.rgb(200,0,0, 85), textcolor=color.white,
+                  style=label.style_label_down, size=size.small)
+        f_manageFIFO_label(swingHighLabels, newLabel, 1)
+    
+    if not na(swingLow)
+        newLabel = label.new(bar_index[rightBars], swingLow,
+                  text="🟢 Support\n" + str.tostring(swingLow, "#.##"),
+                  color=color.rgb(0,150,0, 85), textcolor=color.white,
+                  style=label.style_label_up, size=size.small)
+        f_manageFIFO_label(swingLowLabels, newLabel, 1)

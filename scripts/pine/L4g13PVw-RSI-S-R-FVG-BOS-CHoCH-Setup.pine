@@ -1,0 +1,225 @@
+//@version=6
+indicator("RSI + S/R + FVG + BOS + CHoCH Setup", overlay=true, max_boxes_count=100, max_labels_count=500)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INPUTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+groupRSI = "RSI"
+rsiLength = input.int(14, "RSI Length", minval=2, group=groupRSI)
+rsiBull = input.float(50.0, "Bullish RSI Level", group=groupRSI)
+rsiBear = input.float(50.0, "Bearish RSI Level", group=groupRSI)
+
+groupStructure = "Market Structure"
+swingLen = input.int(5, "Swing Length", minval=2, group=groupStructure)
+showBOS = input.bool(true, "Show BOS", group=groupStructure)
+showCHoCH = input.bool(true, "Show CHoCH", group=groupStructure)
+
+groupSR = "Support / Resistance"
+showSR = input.bool(true, "Show Support / Resistance", group=groupSR)
+srTolerance = input.float(0.5, "S/R Tolerance %", minval=0.1, step=0.1, group=groupSR)
+
+groupFVG = "Fair Value Gap"
+showFVG = input.bool(true, "Show FVG", group=groupFVG)
+fvgExtend = input.int(20, "FVG Extension Bars", minval=1, group=groupFVG)
+
+groupSetup = "Setup"
+requireFVG = input.bool(true, "Require FVG", group=groupSetup)
+requireStructure = input.bool(true, "Require BOS/CHoCH", group=groupSetup)
+signalWindow = input.int(10, "Bars Allowed After Structure Break", minval=1, group=groupSetup)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// RSI
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+rsi = ta.rsi(close, rsiLength)
+
+bullRSI = rsi > rsiBull
+bearRSI = rsi < rsiBear
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SWING HIGH / LOW
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+pivotHigh = ta.pivothigh(high, swingLen, swingLen)
+pivotLow = ta.pivotlow(low, swingLen, swingLen)
+
+var float lastSwingHigh = na
+var float lastSwingLow = na
+
+if not na(pivotHigh)
+    lastSwingHigh := pivotHigh
+
+if not na(pivotLow)
+    lastSwingLow := pivotLow
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SUPPORT / RESISTANCE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+support = lastSwingLow
+resistance = lastSwingHigh
+
+nearSupport = not na(support) and close <= support * (1 + srTolerance / 100) and close >= support * (1 - srTolerance / 100)
+nearResistance = not na(resistance) and close <= resistance * (1 + srTolerance / 100) and close >= resistance * (1 - srTolerance / 100)
+
+plot(showSR ? support : na, "Support", color=color.new(color.green, 25), linewidth=2, style=plot.style_linebr)
+plot(showSR ? resistance : na, "Resistance", color=color.new(color.red, 25), linewidth=2, style=plot.style_linebr)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// BOS / CHoCH
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var int structureTrend = 0
+// 1 = bullish
+// -1 = bearish
+// 0 = neutral
+
+bullBreak = not na(lastSwingHigh) and close > lastSwingHigh
+bearBreak = not na(lastSwingLow) and close < lastSwingLow
+
+bullCHoCH = bullBreak and structureTrend == -1
+bearCHoCH = bearBreak and structureTrend == 1
+
+bullBOS = bullBreak and structureTrend != -1
+bearBOS = bearBreak and structureTrend != 1
+
+if bullBreak
+    structureTrend := 1
+
+if bearBreak
+    structureTrend := -1
+
+if showBOS and bullBOS
+    label.new(bar_index, low, "BOS ↑", style=label.style_label_up, color=color.green, textcolor=color.white)
+
+if showBOS and bearBOS
+    label.new(bar_index, high, "BOS ↓", style=label.style_label_down, color=color.red, textcolor=color.white)
+
+if showCHoCH and bullCHoCH
+    label.new(bar_index, low, "CHoCH ↑", style=label.style_label_up, color=color.blue, textcolor=color.white)
+
+if showCHoCH and bearCHoCH
+    label.new(bar_index, high, "CHoCH ↓", style=label.style_label_down, color=color.orange, textcolor=color.white)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// FVG DETECTION
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Bullish FVG: current low > high from 2 bars ago
+bullFVG = low > high[2]
+
+// Bearish FVG: current high < low from 2 bars ago
+bearFVG = high < low[2]
+
+var float bullFVGTop = na
+var float bullFVGBottom = na
+var float bearFVGTop = na
+var float bearFVGBottom = na
+
+var int bullFVGBar = na
+var int bearFVGBar = na
+
+if bullFVG
+    bullFVGTop := low
+    bullFVGBottom := high[2]
+    bullFVGBar := bar_index
+
+    if showFVG
+        box.new(
+             left=bar_index - 2,
+             top=low,
+             right=bar_index + fvgExtend,
+             bottom=high[2],
+             bgcolor=color.new(color.green, 85),
+             border_color=color.new(color.green, 40)
+         )
+
+if bearFVG
+    bearFVGTop := low[2]
+    bearFVGBottom := high
+    bearFVGBar := bar_index
+
+    if showFVG
+        box.new(
+             left=bar_index - 2,
+             top=low[2],
+             right=bar_index + fvgExtend,
+             bottom=high,
+             bgcolor=color.new(color.red, 85),
+             border_color=color.new(color.red, 40)
+         )
+
+// Price inside latest FVG
+inBullFVG = not na(bullFVGTop) and not na(bullFVGBottom) and close <= bullFVGTop and close >= bullFVGBottom
+inBearFVG = not na(bearFVGTop) and not na(bearFVGBottom) and close >= bearFVGBottom and close <= bearFVGTop
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// STRUCTURE WINDOW
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var int lastBullStructureBar = na
+var int lastBearStructureBar = na
+
+if bullBreak
+    lastBullStructureBar := bar_index
+
+if bearBreak
+    lastBearStructureBar := bar_index
+
+bullStructureRecent = not na(lastBullStructureBar) and bar_index - lastBullStructureBar <= signalWindow
+bearStructureRecent = not na(lastBearStructureBar) and bar_index - lastBearStructureBar <= signalWindow
+
+structureBullOK = requireStructure ? bullStructureRecent : true
+structureBearOK = requireStructure ? bearStructureRecent : true
+
+fvgBullOK = requireFVG ? (bullFVG or inBullFVG) : true
+fvgBearOK = requireFVG ? (bearFVG or inBearFVG) : true
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// FINAL SETUPS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+longSetup =
+     nearSupport and
+     bullRSI and
+     structureBullOK and
+     fvgBullOK
+
+shortSetup =
+     nearResistance and
+     bearRSI and
+     structureBearOK and
+     fvgBearOK
+
+// Prevent repeated signals on every candle
+longSignal = longSetup and not longSetup[1]
+shortSignal = shortSetup and not shortSetup[1]
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SIGNALS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+plotshape(
+     longSignal,
+     title="BUY",
+     style=shape.labelup,
+     location=location.belowbar,
+     color=color.lime,
+     text="BUY",
+     textcolor=color.black,
+     size=size.small
+ )
+
+plotshape(
+     shortSignal,
+     title="SELL",
+     style=shape.labeldown,
+     location=location.abovebar,
+     color=color.red,
+     text="SELL",
+     textcolor=color.white,
+     size=size.small
+ )
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ALERTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+alertcondition(longSignal, "BUY Setup", "BUY: RSI + Support + BOS/CHoCH + Bullish FVG")
+alertcondition(shortSignal, "SELL Setup", "SELL: RSI + Resistance + BOS/CHoCH + Bearish FVG")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// OPTIONAL BAR COLOR
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+barcolor(longSetup ? color.new(color.green, 70) : shortSetup ? color.new(color.red, 70) : na)

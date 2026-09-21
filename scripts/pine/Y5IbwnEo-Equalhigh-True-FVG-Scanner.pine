@@ -1,0 +1,563 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0
+// © Equalhigh
+
+//@version=6
+indicator("Equalhigh — True FVG Scanner v5.2", shorttitle="Equalhigh FVG v5.2", overlay=true,
+     max_boxes_count=400, max_lines_count=200, max_labels_count=500)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 1. INPUTS
+// ═════════════════════════════════════════════════════════════════════════════
+groupDetection = "1. FVG detection"
+minGapAtr       = input.float(0.10, "Minimum FVG size (ATR)", minval=0.0, step=0.05, group=groupDetection)
+minBodyAtr      = input.float(0.80, "Middle candle body (ATR)", minval=0.0, step=0.05, group=groupDetection)
+minBodyPercent  = input.float(65.0, "Minimum body / candle range (%)", minval=0.0, maxval=100.0, step=5.0, group=groupDetection)
+requireBOS      = input.bool(true, "Require structure break", group=groupDetection)
+structureLength = input.int(10, "Structure lookback", minval=2, maxval=100, group=groupDetection)
+
+groupScore      = "2. Quality score"
+minimumScore    = input.int(70, "Minimum displayed score", minval=0, maxval=100, group=groupScore)
+sweepLength     = input.int(10, "Liquidity sweep lookback", minval=2, maxval=100, group=groupScore)
+pdLength        = input.int(50, "Premium / discount range", minval=10, maxval=500, group=groupScore)
+useSession      = input.bool(false, "Score active session", group=groupScore)
+activeSession   = input.session("0700-1700", "Active session", group=groupScore)
+sessionTimezone = input.string("Etc/UTC", "Session timezone", group=groupScore,
+     tooltip="Examples: Etc/UTC, Europe/Paris, America/New_York")
+
+groupDisplay    = "3. Display and lifecycle"
+extendBars      = input.int(40, "Projection bars", minval=1, maxval=500, group=groupDisplay)
+maxZones        = input.int(30, "Maximum stored zones", minval=1, maxval=100, group=groupDisplay)
+showCE          = input.bool(true, "Show 50% Consequent Encroachment", group=groupDisplay)
+showLabels      = input.bool(true, "Show score labels", group=groupDisplay)
+removeFilled    = input.bool(true, "Remove fully filled FVG", group=groupDisplay)
+invalidateClose = input.bool(true, "Invalidate only on close through zone", group=groupDisplay)
+bullColor       = input.color(color.rgb(0, 235, 190), "Bullish FVG", group=groupDisplay)
+bearColor       = input.color(color.rgb(255, 45, 125), "Bearish FVG", group=groupDisplay)
+
+groupLevels     = "4. Key levels"
+nearestOnly     = input.bool(true, "Show nearest active FVG only", group=groupLevels)
+zonesPerSide    = input.int(2, "FVG per side of price", minval=1, maxval=10, group=groupLevels,
+     tooltip="Ranked by distance to the closest boundary, using the last closed chart candle. Zones containing price are also shown. Hidden zones remain tracked within the storage limit.")
+showPrices      = input.bool(true, "Show FVG price cards on the right", group=groupLevels,
+     tooltip="One card per visible active FVG: upper boundary, 50% and lower boundary. Prices use the symbol tick precision.")
+showEvents      = input.bool(false, "Show historical FVG creation triangles", group=groupLevels)
+showPivots      = input.bool(true, "Show confirmed swing levels", group=groupLevels)
+pivotLeft       = input.int(5, "Pivot candles on left", minval=1, maxval=50, group=groupLevels)
+pivotRight      = input.int(5, "Pivot confirmation candles", minval=1, maxval=50, group=groupLevels,
+     tooltip="A pivot becomes available only after this many candles have closed to its right. Lines start at confirmation, never backdated to the pivot.")
+pivotLimit      = input.int(20, "Maximum stored swing levels", minval=2, maxval=50, group=groupLevels)
+pivotsPerSide   = input.int(2, "Visible swing levels per side", minval=1, maxval=5, group=groupLevels)
+pivotColor      = input.color(color.rgb(210, 155, 25), "Confirmed swing levels", group=groupLevels)
+
+groupGaps       = "5. Classic two-candle gaps (lower timeframe)"
+showGaps        = input.bool(true, "Show classic lower-timeframe gaps", group=groupGaps)
+autoGapTF       = input.bool(true, "Automatic gap timeframe (about chart / 4)", group=groupGaps)
+manualGapTF     = input.timeframe("60", "Gap timeframe (when automatic is off)", group=groupGaps)
+gapMinTicks     = input.int(2, "Minimum initial gap (ticks)", minval=1, group=groupGaps)
+gapMinATR       = input.float(0.05, "Minimum initial gap (lower-TF ATR)", minval=0.0, step=0.01, group=groupGaps,
+     tooltip="Both minimum-size conditions apply at creation. Subsequent remaining portions are kept even if smaller. Set ATR to zero to use ticks only.")
+gapStorage      = input.int(40, "Maximum stored open gap portions", minval=1, maxval=80, group=groupGaps)
+gapNearest      = input.bool(true, "Show nearest gaps only", group=groupGaps)
+gapPerSide      = input.int(2, "Gaps per side of price", minval=1, maxval=10, group=groupGaps)
+gapScaleLabels  = input.bool(true, "GAP prices on the price scale", group=groupGaps,
+     tooltip="Native scale labels for both remaining boundaries of up to 10 nearest visible gaps. Enable indicator value labels in TradingView scale settings. These labels contain prices; floating cards can additionally show timeframe and direction.")
+gapPriceLabels  = input.bool(false, "Show optional floating GAP text cards", group=groupGaps)
+gapLabelOffset  = input.int(80, "GAP label right offset (bars)", minval=0, maxval=500, group=groupGaps,
+     tooltip="Positions the right edge of GAP labels this many bars after the latest candle. Match this to your chart right margin to place them beside the price scale. Pine labels are anchored to bars, not screen pixels.")
+gapStatus       = input.bool(true, "Show gap coverage status", group=groupGaps)
+gapColor        = input.color(color.rgb(95, 95, 240), "Classic gap colour", group=groupGaps)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 2. CORE MEASUREMENTS
+// ═════════════════════════════════════════════════════════════════════════════
+atr = ta.atr(14)
+
+middleRange = high[1] - low[1]
+middleBody  = math.abs(close[1] - open[1])
+bodyRatio   = middleRange > 0 ? middleBody / middleRange * 100.0 : 0.0
+
+displacementBull = close[1] > open[1] and middleBody >= atr[1] * minBodyAtr and bodyRatio >= minBodyPercent
+displacementBear = close[1] < open[1] and middleBody >= atr[1] * minBodyAtr and bodyRatio >= minBodyPercent
+
+// The middle displacement candle must close beyond the preceding structure.
+priorHigh = ta.highest(high, structureLength)[2]
+priorLow  = ta.lowest(low, structureLength)[2]
+bosBull   = close[1] > priorHigh
+bosBear   = close[1] < priorLow
+
+// Candle 1 sweeps liquidity and closes back inside the previous range.
+sweptLow  = ta.lowest(low, sweepLength)[3]
+sweptHigh = ta.highest(high, sweepLength)[3]
+sweepBull = low[2] < sweptLow and close[2] > sweptLow
+sweepBear = high[2] > sweptHigh and close[2] < sweptHigh
+
+rangeHigh   = ta.highest(high, pdLength)[1]
+rangeLow    = ta.lowest(low, pdLength)[1]
+equilibrium = (rangeHigh + rangeLow) / 2.0
+inSession   = not na(time(timeframe.period, activeSession, sessionTimezone))
+
+// Strict three-candle imbalance.
+bullGapSize = low - high[2]
+bearGapSize = low[2] - high
+rawBullFVG  = low > high[2] and bullGapSize >= atr * minGapAtr
+rawBearFVG  = high < low[2] and bearGapSize >= atr * minGapAtr
+
+bullTop    = low
+bullBottom = high[2]
+bearTop    = low[2]
+bearBottom = high
+bullMid    = (bullTop + bullBottom) / 2.0
+bearMid    = (bearTop + bearBottom) / 2.0
+
+discountBull = bullMid <= equilibrium
+premiumBear  = bearMid >= equilibrium
+
+// Simple order-block confluence: the pre-displacement candle is opposite-coloured.
+bullOB = close[2] < open[2]
+bearOB = close[2] > open[2]
+
+// v3: removed higher-timeframe bias; its 15 points are redistributed equally
+// to displacement, structure break and sweep. Threshold remains user adjustable.
+// Score: displacement 25, BOS 25, sweep 20,
+// premium/discount 10, fresh 10, session 5, order-block confluence 5.
+bullScore = (displacementBull ? 25 : 0) + (bosBull ? 25 : 0) + (sweepBull ? 20 : 0) +
+     (discountBull ? 10 : 0) + 10 +
+     ((not useSession or inSession) ? 5 : 0) + (bullOB ? 5 : 0)
+
+bearScore = (displacementBear ? 25 : 0) + (bosBear ? 25 : 0) + (sweepBear ? 20 : 0) +
+     (premiumBear ? 10 : 0) + 10 +
+     ((not useSession or inSession) ? 5 : 0) + (bearOB ? 5 : 0)
+
+validBull = barstate.isconfirmed and rawBullFVG and displacementBull and (not requireBOS or bosBull) and bullScore >= minimumScore
+validBear = barstate.isconfirmed and rawBearFVG and displacementBear and (not requireBOS or bosBear) and bearScore >= minimumScore
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 3. ZONE STORAGE
+// ═════════════════════════════════════════════════════════════════════════════
+var boxes   = array.new_box()
+var ceLines = array.new_line()
+var labels  = array.new_label()
+var tops    = array.new_float()
+var bottoms = array.new_float()
+var dirs    = array.new_int()   // +1 bullish, -1 bearish
+var states  = array.new_int()   // 0 fresh, 1 touched, 2 CE reached, 3 inactive
+var births  = array.new_int()
+var scores  = array.new_int()   // Immutable creation score, NOT a probability.
+var priceCards = array.new_label()
+
+f_tag(int direction, int score, string status) =>
+    (direction == 1 ? "BULL" : "BEAR") + " FVG " + str.tostring(score) + " | " + status
+
+f_deleteOldest() =>
+    if array.size(boxes) >= maxZones
+        box.delete(array.shift(boxes))
+        line.delete(array.shift(ceLines))
+        label.delete(array.shift(labels))
+        array.shift(tops)
+        array.shift(bottoms)
+        array.shift(dirs)
+        array.shift(states)
+        array.shift(births)
+        array.shift(scores)
+
+f_addZone(float zoneTop, float zoneBottom, int direction, int score) =>
+    f_deleteOldest()
+    color zoneColor = direction == 1 ? bullColor : bearColor
+    box newBox = box.new(bar_index - 2, zoneTop, bar_index + extendBars, zoneBottom,
+         xloc=xloc.bar_index, border_color=color.new(zoneColor, 15),
+         bgcolor=color.new(zoneColor, 84))
+    float ce = (zoneTop + zoneBottom) / 2.0
+    line newLine = line.new(bar_index - 2, ce, bar_index + extendBars, ce,
+         xloc=xloc.bar_index, color=showCE ? color.new(zoneColor, 5) : color.new(zoneColor, 100),
+         style=line.style_dashed, width=1)
+    string side = direction == 1 ? "BULL" : "BEAR"
+    label newLabel = label.new(bar_index, direction == 1 ? zoneBottom : zoneTop,
+         showLabels ? f_tag(direction, score, "FRESH") : "",
+         xloc=xloc.bar_index, style=direction == 1 ? label.style_label_up : label.style_label_down,
+         color=showLabels ? color.new(zoneColor, 10) : color.new(zoneColor, 100),
+         textcolor=showLabels ? color.white : color.new(color.white, 100), size=size.tiny)
+    array.push(boxes, newBox)
+    array.push(ceLines, newLine)
+    array.push(labels, newLabel)
+    array.push(tops, zoneTop)
+    array.push(bottoms, zoneBottom)
+    array.push(dirs, direction)
+    array.push(states, 0)
+    array.push(births, bar_index)
+    array.push(scores, score)
+
+if validBull
+    f_addZone(bullTop, bullBottom, 1, bullScore)
+
+if validBear
+    f_addZone(bearTop, bearBottom, -1, bearScore)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 4. MITIGATION AND INVALIDATION
+// ═════════════════════════════════════════════════════════════════════════════
+// All lifecycle changes use CLOSED chart candles; no transient intrabar states.
+// Bounds stay fixed. State records the deepest historical penetration.
+if barstate.isconfirmed and array.size(boxes) > 0
+    for i = 0 to array.size(boxes) - 1
+        int state = array.get(states, i)
+        if state < 3
+            box zoneBox = array.get(boxes, i)
+            line ceLine  = array.get(ceLines, i)
+            label tag    = array.get(labels, i)
+            float top    = array.get(tops, i)
+            float bottom = array.get(bottoms, i)
+            int dir      = array.get(dirs, i)
+            int born     = array.get(births, i)
+            color zoneColor = dir == 1 ? bullColor : bearColor
+
+            box.set_right(zoneBox, bar_index + extendBars)
+            line.set_x2(ceLine, bar_index + extendBars)
+
+            if bar_index > born
+                float midpoint = (top + bottom) / 2.0
+                bool touched = low <= top and high >= bottom
+                bool reachedCE = touched and (dir == 1 ? low <= midpoint : high >= midpoint)
+                bool filled  = dir == 1 ? low <= bottom : high >= top
+                bool invalid = dir == 1 ? (invalidateClose ? close < bottom : low < bottom) :
+                     (invalidateClose ? close > top : high > top)
+
+                if invalid or (filled and removeFilled)
+                    array.set(states, i, 3)
+                    box.delete(zoneBox)
+                    line.delete(ceLine)
+                    label.delete(tag)
+                    array.set(boxes, i, na)
+                    array.set(ceLines, i, na)
+                    array.set(labels, i, na)
+                else if filled
+                    array.set(states, i, 3)
+                    box.set_right(zoneBox, bar_index)
+                    line.set_x2(ceLine, bar_index)
+                    box.set_bgcolor(zoneBox, color.new(color.gray, 94))
+                    box.set_border_color(zoneBox, color.new(color.gray, 75))
+                    line.set_color(ceLine, showCE ? color.gray : color.new(color.gray, 100))
+                    label.set_text(tag, showLabels ? f_tag(dir, array.get(scores, i), "FILLED") : "")
+                    label.set_color(tag, showLabels ? color.gray : color.new(color.gray, 100))
+                    // Restore neutral archive style even if the zone was hidden.
+                    label.set_textcolor(tag, showLabels ? color.white : color.new(color.white, 100))
+                    box.set_border_style(zoneBox, line.style_dotted)
+                else
+                    int nextState = reachedCE ? 2 : touched ? math.max(state, 1) : state
+                    if nextState > state
+                        array.set(states, i, nextState)
+                        bool mitigated = nextState == 2
+                        box.set_bgcolor(zoneBox, color.new(zoneColor, mitigated ? 94 : 90))
+                        box.set_border_color(zoneBox, color.new(zoneColor, mitigated ? 60 : 35))
+                        box.set_border_style(zoneBox, mitigated ? line.style_dotted : line.style_dashed)
+                        line.set_width(ceLine, mitigated ? 2 : 1)
+                        line.set_style(ceLine, mitigated ? line.style_solid : line.style_dashed)
+                        label.set_text(tag, showLabels ? f_tag(dir, array.get(scores, i), mitigated ? "MITIGATED 50%" : "TOUCHED") : "")
+                        label.set_color(tag, showLabels ? color.new(zoneColor, mitigated ? 60 : 35) : color.new(zoneColor, 100))
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 5. CONFIRMED SWING LEVELS (independent of the FVG score)
+// ═════════════════════════════════════════════════════════════════════════════
+var swingLines = array.new_line()
+var swingPrices = array.new_float()
+var swingDirections = array.new_int()  // +1 = swing high; -1 = swing low
+var swingTags = array.new_label()
+
+f_addSwing(float level, int direction) =>
+    if array.size(swingLines) >= pivotLimit
+        line.delete(array.shift(swingLines))
+        label.delete(array.shift(swingTags))
+        array.shift(swingPrices)
+        array.shift(swingDirections)
+    // Time coordinates allow old levels to remain active beyond 10,000 bars.
+    line levelLine = line.new(time, level, time_close, level, xloc=xloc.bar_time,
+         extend=extend.right, color=pivotColor, style=line.style_dashed)
+    label levelTag = label.new(bar_index, level, "", style=label.style_label_left,
+         color=color.new(pivotColor, 100), textcolor=color.new(pivotColor, 100), size=size.tiny)
+    array.push(swingLines, levelLine)
+    array.push(swingPrices, level)
+    array.push(swingDirections, direction)
+    array.push(swingTags, levelTag)
+
+confirmedHigh = ta.pivothigh(high, pivotLeft, pivotRight)
+confirmedLow = ta.pivotlow(low, pivotLeft, pivotRight)
+if barstate.isconfirmed and showPivots
+    // Remove on a closing break; a wick alone does not remove the level.
+    if array.size(swingLines) > 0
+        for i = array.size(swingLines) - 1 to 0
+            float level = array.get(swingPrices, i)
+            int direction = array.get(swingDirections, i)
+            if direction == 1 ? close > level : close < level
+                line.delete(array.remove(swingLines, i))
+                label.delete(array.remove(swingTags, i))
+                array.remove(swingPrices, i)
+                array.remove(swingDirections, i)
+    if not na(confirmedHigh)
+        f_addSwing(confirmedHigh, 1)
+    if not na(confirmedLow)
+        f_addSwing(confirmedLow, -1)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 6. CURRENT LEVEL MAP
+// Visibility is separate from detection/mitigation. It is intentionally dynamic:
+// a hidden zone can return when price approaches it. Equal distances favor newer zones.
+// ═════════════════════════════════════════════════════════════════════════════
+if barstate.islast
+    float referencePrice = barstate.isconfirmed ? close : close[1]
+    if array.size(priceCards) > 0
+        for card in priceCards
+            label.delete(card)
+        array.clear(priceCards)
+
+    if array.size(boxes) > 0
+        for i = 0 to array.size(boxes) - 1
+            int state = array.get(states, i)
+            if state < 3
+                float top = array.get(tops, i)
+                float bottom = array.get(bottoms, i)
+                int side = bottom > referencePrice ? 1 : top < referencePrice ? -1 : 0
+                float distance = side == 1 ? bottom - referencePrice : side == -1 ? referencePrice - top : 0.0
+                int rank = 0
+                if nearestOnly and side != 0
+                    for j = 0 to array.size(boxes) - 1
+                        if j != i and array.get(states, j) < 3
+                            float otherTop = array.get(tops, j)
+                            float otherBottom = array.get(bottoms, j)
+                            int otherSide = otherBottom > referencePrice ? 1 : otherTop < referencePrice ? -1 : 0
+                            float otherDistance = otherSide == 1 ? otherBottom - referencePrice : referencePrice - otherTop
+                            if otherSide == side and (otherDistance < distance or (otherDistance == distance and j > i))
+                                rank += 1
+                bool visible = not nearestOnly or side == 0 or rank < zonesPerSide
+                color zoneColor = array.get(dirs, i) == 1 ? bullColor : bearColor
+                box zoneBox = array.get(boxes, i)
+                line ceLine = array.get(ceLines, i)
+                label tag = array.get(labels, i)
+                string status = state == 0 ? "FRESH" : state == 1 ? "TOUCHED" : "MITIGATED 50%"
+                box.set_bgcolor(zoneBox, color.new(zoneColor, visible ? (state == 0 ? 84 : state == 1 ? 90 : 94) : 100))
+                box.set_border_color(zoneBox, color.new(zoneColor, visible ? (state == 0 ? 15 : state == 1 ? 35 : 60) : 100))
+                box.set_border_style(zoneBox, state == 0 ? line.style_solid : state == 1 ? line.style_dashed : line.style_dotted)
+                line.set_color(ceLine, color.new(zoneColor, visible and showCE ? 5 : 100))
+                line.set_width(ceLine, state == 2 ? 2 : 1)
+                line.set_style(ceLine, state == 2 ? line.style_solid : line.style_dashed)
+                label.set_text(tag, visible and showLabels ? f_tag(array.get(dirs, i), array.get(scores, i), status) : "")
+                label.set_color(tag, color.new(zoneColor, visible and showLabels ? 15 : 100))
+                label.set_textcolor(tag, color.new(color.white, visible and showLabels ? 0 : 100))
+                box.set_right(zoneBox, bar_index + extendBars)
+                line.set_x2(ceLine, bar_index + extendBars)
+                if visible and showPrices and barstate.islast
+                    float midpoint = (top + bottom) / 2.0
+                    string cardText = f_tag(array.get(dirs, i), array.get(scores, i), status) +
+                         "\nHIGH  " + str.tostring(top, format.mintick) +
+                         "\n50%   " + str.tostring(midpoint, format.mintick) +
+                         "\nLOW   " + str.tostring(bottom, format.mintick)
+                    label card = label.new(bar_index + extendBars, midpoint, cardText,
+                         style=label.style_label_left, color=color.new(zoneColor, 15),
+                         textcolor=color.white, textalign=text.align_left, size=size.small)
+                    array.push(priceCards, card)
+            else if nearestOnly and not na(array.get(boxes, i))
+                // In focused mode hide retained filled archives as well.
+                box.set_bgcolor(array.get(boxes, i), color.new(color.gray, 100))
+                box.set_border_color(array.get(boxes, i), color.new(color.gray, 100))
+                line.set_color(array.get(ceLines, i), color.new(color.gray, 100))
+                label.set_text(array.get(labels, i), "")
+                label.set_color(array.get(labels, i), color.new(color.gray, 100))
+
+    if array.size(swingLines) > 0
+        for i = 0 to array.size(swingLines) - 1
+            float level = array.get(swingPrices, i)
+            int side = level >= referencePrice ? 1 : -1
+            float distance = math.abs(level - referencePrice)
+            int rank = 0
+            for j = 0 to array.size(swingLines) - 1
+                if j != i
+                    float otherLevel = array.get(swingPrices, j)
+                    int otherSide = otherLevel >= referencePrice ? 1 : -1
+                    float otherDistance = math.abs(otherLevel - referencePrice)
+                    if otherSide == side and (otherDistance < distance or (otherDistance == distance and j > i))
+                        rank += 1
+            bool visible = showPivots and rank < pivotsPerSide
+            line.set_color(array.get(swingLines, i), color.new(pivotColor, visible ? 15 : 100))
+            label tag = array.get(swingTags, i)
+            label.set_x(tag, bar_index + math.min(12, extendBars))
+            label.set_text(tag, visible ? (array.get(swingDirections, i) == 1 ? "SWING HIGH " : "SWING LOW ") + str.tostring(level, format.mintick) : "")
+            label.set_color(tag, color.new(pivotColor, visible ? 15 : 100))
+            label.set_textcolor(tag, color.new(color.white, visible ? 0 : 100))
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 7. CLASSIC LOWER-TIMEFRAME GAPS — TWO candles, independent of FVG scores
+// Arrays include EVERY available intrabar in chronological order.
+// Process only at chart close: lower-bar detections and fills are committed together.
+// Detection compares full high/low ranges, never close-to-open or three candles.
+// ═════════════════════════════════════════════════════════════════════════════
+float chartSeconds = timeframe.in_seconds()
+string gapTF = autoGapTF ? timeframe.from_seconds(int(math.max(1.0, chartSeconds / 4.0))) : manualGapTF
+bool gapTFValid = timeframe.in_seconds(gapTF) < chartSeconds
+var gapBoxes = array.new_box()
+var gapTops = array.new_float()
+var gapBottoms = array.new_float()
+var gapTimes = array.new_int()
+var gapDirections = array.new_int()
+var gapCards = array.new_label()
+// Fresh na values each execution prevent obsolete scale prices from persisting.
+gapScaleValues = array.new_float(20, na)
+gapScaleCandidates = array.new_int()
+gapScaleDistances = array.new_float()
+var int firstGapDataTime = na
+var int lastGapDataTime = na
+var gapInfo = table.new(position.bottom_right, 1, 1)
+
+f_deleteGap(int index) =>
+    box.delete(array.remove(gapBoxes, index))
+    array.remove(gapTops, index)
+    array.remove(gapBottoms, index)
+    array.remove(gapTimes, index)
+    array.remove(gapDirections, index)
+
+f_addGap(float top, float bottom, int direction, int confirmedAt, int rightTime) =>
+    box zone = box.new(confirmedAt, top, rightTime, bottom, xloc=xloc.bar_time,
+         extend=extend.right, bgcolor=color.new(gapColor, 88),
+         border_color=color.new(gapColor, 15), border_style=line.style_dashed)
+    array.push(gapBoxes, zone)
+    array.push(gapTops, top)
+    array.push(gapBottoms, bottom)
+    array.push(gapTimes, confirmedAt)
+    array.push(gapDirections, direction)
+
+bool newClassicBull = false
+bool newClassicBear = false
+if showGaps and gapTFValid
+    [lowerHighs, lowerLows, previousHighs, previousLows, lowerATRs, lowerCloses] = request.security_lower_tf(
+         syminfo.tickerid, gapTF, [high, low, high[1], low[1], ta.atr(14)[1], time_close])
+    if barstate.isconfirmed and array.size(lowerHighs) > 0
+        for intrabar = 0 to array.size(lowerHighs) - 1
+            float h = array.get(lowerHighs, intrabar)
+            float l = array.get(lowerLows, intrabar)
+            float ph = array.get(previousHighs, intrabar)
+            float pl = array.get(previousLows, intrabar)
+            float a = array.get(lowerATRs, intrabar)
+            int confirmedAt = array.get(lowerCloses, intrabar)
+            if na(firstGapDataTime)
+                firstGapDataTime := confirmedAt
+            lastGapDataTime := confirmedAt
+
+            // Subtract actual overlapping candle ranges from existing open portions.
+            // A jump entirely across a gap does NOT count as a traded fill.
+            // A candle inside a gap can leave two disconnected remaining portions.
+            if array.size(gapBoxes) > 0
+                for i = array.size(gapBoxes) - 1 to 0
+                    float top = array.get(gapTops, i)
+                    float bottom = array.get(gapBottoms, i)
+                    if h >= bottom and l <= top
+                        if l <= bottom and h >= top
+                            f_deleteGap(i)
+                        else if l <= bottom
+                            array.set(gapBottoms, i, math.min(h, top))
+                            box.set_bottom(array.get(gapBoxes, i), math.min(h, top))
+                        else if h >= top
+                            array.set(gapTops, i, math.max(l, bottom))
+                            box.set_top(array.get(gapBoxes, i), math.max(l, bottom))
+                        else
+                            array.set(gapTops, i, l)
+                            box.set_top(array.get(gapBoxes, i), l)
+                            f_addGap(top, h, array.get(gapDirections, i), confirmedAt, confirmedAt + 1)
+
+            float threshold = math.max(gapMinTicks * syminfo.mintick, gapMinATR > 0 ? a * gapMinATR : 0.0)
+            bool bull = not na(ph) and l > ph and l - ph >= threshold
+            bool bear = not na(pl) and h < pl and pl - h >= threshold
+            if bull
+                f_addGap(l, ph, 1, confirmedAt, confirmedAt + 1)
+                newClassicBull := true
+            if bear
+                f_addGap(pl, h, -1, confirmedAt, confirmedAt + 1)
+                newClassicBear := true
+            // Prune after the full intrabar update, so reverse-loop indices stay valid.
+            while array.size(gapBoxes) > gapStorage
+                f_deleteGap(0)
+
+if barstate.islast
+    if array.size(gapCards) > 0
+        for card in gapCards
+            label.delete(card)
+        array.clear(gapCards)
+    float referencePrice = barstate.isconfirmed ? close : close[1]
+    string tfCaption = str.tostring(timeframe.in_seconds(gapTF)) + "s"
+    if timeframe.in_seconds(gapTF) >= 86400
+        tfCaption := gapTF
+    else if timeframe.in_seconds(gapTF) >= 60
+        tfCaption := str.tostring(timeframe.in_seconds(gapTF) / 60.0, "#.##") + "m"
+    if showGaps and array.size(gapBoxes) > 0
+        for i = 0 to array.size(gapBoxes) - 1
+            float top = array.get(gapTops, i)
+            float bottom = array.get(gapBottoms, i)
+            int side = bottom > referencePrice ? 1 : top < referencePrice ? -1 : 0
+            float distance = side == 1 ? bottom - referencePrice : side == -1 ? referencePrice - top : 0.0
+            int rank = 0
+            if gapNearest and side != 0
+                for j = 0 to array.size(gapBoxes) - 1
+                    if i != j
+                        float otherTop = array.get(gapTops, j)
+                        float otherBottom = array.get(gapBottoms, j)
+                        int otherSide = otherBottom > referencePrice ? 1 : otherTop < referencePrice ? -1 : 0
+                        float otherDistance = otherSide == 1 ? otherBottom - referencePrice : referencePrice - otherTop
+                        if otherSide == side and (otherDistance < distance or (otherDistance == distance and j > i))
+                            rank += 1
+            bool visible = not gapNearest or side == 0 or rank < gapPerSide
+            box zone = array.get(gapBoxes, i)
+            box.set_bgcolor(zone, color.new(gapColor, visible ? 88 : 100))
+            box.set_border_color(zone, color.new(gapColor, visible ? 15 : 100))
+            if visible and gapScaleLabels
+                array.push(gapScaleCandidates, i)
+                array.push(gapScaleDistances, distance)
+            if visible and gapPriceLabels
+                string gapText = "GAP " + (array.get(gapDirections, i) == 1 ? "UP" : "DOWN") + " · " + tfCaption +
+                     "\nOPEN " + str.tostring(bottom, format.mintick) + " — " + str.tostring(top, format.mintick)
+                // Right-anchored text extends leftwards into the chart, toward the gap.
+                label card = label.new(bar_index + gapLabelOffset, (top + bottom) / 2.0,
+                     gapText, style=label.style_label_right, textalign=text.align_right,
+                     color=color.new(gapColor, 15), textcolor=color.white, size=size.small)
+                array.push(gapCards, card)
+    if array.size(gapScaleCandidates) > 0
+        array<int> sortedGaps = array.sort_indices(gapScaleDistances, order.ascending)
+        for slot = 0 to math.min(9, array.size(sortedGaps) - 1)
+            int gapIndex = array.get(gapScaleCandidates, array.get(sortedGaps, slot))
+            array.set(gapScaleValues, slot * 2, array.get(gapBottoms, gapIndex))
+            array.set(gapScaleValues, slot * 2 + 1, array.get(gapTops, gapIndex))
+    string status = not gapTFValid ? "GAP: choose a timeframe below the chart" : na(firstGapDataTime) ? "GAP: no confirmed lower-TF data available" :
+         "GAP · " + tfCaption + " | data from " + str.format_time(firstGapDataTime, "yyyy-MM-dd", syminfo.timezone) +
+         "\nUpdated " + str.format_time(lastGapDataTime, "MM-dd HH:mm", syminfo.timezone) + " | chart close"
+    table.cell(gapInfo, 0, 0, showGaps and gapStatus ? status : "",
+         text_color=chart.fg_color, bgcolor=showGaps and gapStatus ? color.new(chart.bg_color, 15) : color.new(chart.bg_color, 100), text_size=size.tiny)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Native price-scale values: do not move with chart margin or bar spacing.
+plot(array.get(gapScaleValues, 0), title="GAP 1 LOW", color=gapColor, show_last=1, display=display.price_scale)
+plot(array.get(gapScaleValues, 1), title="GAP 1 HIGH", color=gapColor, show_last=1, display=display.price_scale)
+plot(array.get(gapScaleValues, 2), title="GAP 2 LOW", color=gapColor, show_last=1, display=display.price_scale)
+plot(array.get(gapScaleValues, 3), title="GAP 2 HIGH", color=gapColor, show_last=1, display=display.price_scale)
+plot(array.get(gapScaleValues, 4), title="GAP 3 LOW", color=gapColor, show_last=1, display=display.price_scale)
+plot(array.get(gapScaleValues, 5), title="GAP 3 HIGH", color=gapColor, show_last=1, display=display.price_scale)
+plot(array.get(gapScaleValues, 6), title="GAP 4 LOW", color=gapColor, show_last=1, display=display.price_scale)
+plot(array.get(gapScaleValues, 7), title="GAP 4 HIGH", color=gapColor, show_last=1, display=display.price_scale)
+plot(array.get(gapScaleValues, 8), title="GAP 5 LOW", color=gapColor, show_last=1, display=display.price_scale)
+plot(array.get(gapScaleValues, 9), title="GAP 5 HIGH", color=gapColor, show_last=1, display=display.price_scale)
+plot(array.get(gapScaleValues, 10), title="GAP 6 LOW", color=gapColor, show_last=1, display=display.price_scale)
+plot(array.get(gapScaleValues, 11), title="GAP 6 HIGH", color=gapColor, show_last=1, display=display.price_scale)
+plot(array.get(gapScaleValues, 12), title="GAP 7 LOW", color=gapColor, show_last=1, display=display.price_scale)
+plot(array.get(gapScaleValues, 13), title="GAP 7 HIGH", color=gapColor, show_last=1, display=display.price_scale)
+plot(array.get(gapScaleValues, 14), title="GAP 8 LOW", color=gapColor, show_last=1, display=display.price_scale)
+plot(array.get(gapScaleValues, 15), title="GAP 8 HIGH", color=gapColor, show_last=1, display=display.price_scale)
+plot(array.get(gapScaleValues, 16), title="GAP 9 LOW", color=gapColor, show_last=1, display=display.price_scale)
+plot(array.get(gapScaleValues, 17), title="GAP 9 HIGH", color=gapColor, show_last=1, display=display.price_scale)
+plot(array.get(gapScaleValues, 18), title="GAP 10 LOW", color=gapColor, show_last=1, display=display.price_scale)
+plot(array.get(gapScaleValues, 19), title="GAP 10 HIGH", color=gapColor, show_last=1, display=display.price_scale)
+
+// 8. ALERTS — all qualifying creations, independent of proximity display
+// ═════════════════════════════════════════════════════════════════════════════
+alertcondition(validBull, "High-quality bullish FVG", "Equalhigh: high-quality bullish FVG on {{ticker}} {{interval}}")
+alertcondition(validBear, "High-quality bearish FVG", "Equalhigh: high-quality bearish FVG on {{ticker}} {{interval}}")
+alertcondition(newClassicBull, "Classic bullish lower-TF gap created", "Equalhigh: classic two-candle bullish gap detected in lower-TF data on {{ticker}}. It may already be filled by chart close.")
+alertcondition(newClassicBear, "Classic bearish lower-TF gap created", "Equalhigh: classic two-candle bearish gap detected in lower-TF data on {{ticker}}. It may already be filled by chart close.")
+
+plotchar(showEvents and validBull, title="Bullish FVG event", char="▲", location=location.belowbar,
+     color=color.new(bullColor, 0), size=size.tiny)
+plotchar(showEvents and validBear, title="Bearish FVG event", char="▼", location=location.abovebar,
+     color=color.new(bearColor, 0), size=size.tiny)

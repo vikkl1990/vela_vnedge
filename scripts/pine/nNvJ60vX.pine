@@ -1,0 +1,966 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © luiscaballero
+//
+// ═══════════════════════════════════════════════════════════════════════════════
+//      0DTE MOVE STUDY [SPX]   ·   HOW OFTEN DOES THE DAY TRAVEL FAR ENOUGH?
+//                    RESEARCH TABLE + SIGNAL PANE — v19.1.0
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// ONE MEASUREMENT PER DAY
+//       gap = | SPX at 16:00 ET  −  SPX at 09:30 ET |
+//   The distance between the open and the close, direction ignored. Not the high,
+//   not the low, not the path — the position is held to cash settlement, so only
+//   where it finished matters.
+//
+// WHICH CHART — DAILY, NOW
+//   A daily bar's open IS the 09:30 print and its close IS the 16:00 print, so the
+//   measurement is the same one and the history runs to decades instead of the
+//   ~1500 days an intraday chart can hold. Two conditions:
+//
+//     · the chart must be on the REGULAR session. On extended hours `open` is an
+//       overnight print and the whole study is wrong; the table says so if it is.
+//     · Entry Offset does nothing on daily — a daily bar has no 10:00.
+//
+//   Intraday still works, unchanged, and is the only way to use Entry Offset. Run
+//   both over the same window once and compare: if the tables agree, the daily
+//   source is verified and the long history can be trusted.
+//
+// HOW TO READ THE TABLE
+//   Every cell is the same kind of number — the share of the days in that ROW whose
+//   gap finished beyond that COLUMN's distance. Nothing else is anywhere in it.
+//
+//       VIX 15 – 18   ·   340 days   ·   over 17 pts   60%
+//
+//   reads: of the 340 days that opened with VIX between 15 and 18, 60% finished
+//   more than 17 points away from where they opened.
+//
+// DOES ATR ADD ANYTHING? — the VIX × ATR view
+//   No indicator can tell you today will clear 17 points. The only question worth
+//   asking is narrower and answerable: among days that already look alike in VIX,
+//   does splitting them by ATR move that frequency, by how much, and does it move
+//   the same way in every band?
+//
+//   So each VIX row can open into sub-rows, one per ATR bucket, and each sub-row
+//   carries the gap against its OWN band:
+//
+//       VIX 15 – 18                     340   60%
+//         ↳ ATR under 100% of avg       180   54%   (−6)
+//         ↳ ATR over 100% of avg        160   67%   (+7)
+//
+//   That bracket is the whole point. +7 means those days beat their own VIX band
+//   by 7 points of frequency; the VIX band is the control, so it is not a
+//   comparison against all days and it cannot be volatility leaking back in.
+//
+//   The line under the table collects one such number per band and counts how many
+//   agree in sign. THAT is the test. VIX9D/VIX scored a respectable spread and
+//   still died here: three bands agreed, the fourth reversed hard on 202 days. A
+//   real effect does not flip sign between adjacent bands.
+//
+// THE SIGNAL PANE — the table's number, painted on the days
+//   Every day is coloured by the hit rate of the row it belongs to, on distance 1:
+//   green at or above 70%, yellow 50-70%, red below. Two rules keep it honest:
+//
+//     · a day is scored from the days BEFORE it and nothing else. The tally is
+//       built as the script walks forward, read before the day is folded into it,
+//       so no bar is ever coloured with its own outcome or a later day's. This is
+//       why early history is blank and the colours settle down as the sample grows.
+//     · a row with fewer than Min Days in it has no colour at all. A 6-day row's
+//       83% is a coincidence, not a signal.
+//
+//   The tally is evicted in step with the lookback, so the plot and the table are
+//   always describing the same sample.
+//
+//   ATR is plotted as a PERCENTAGE of its own average — 100 is the average, above
+//   the line is the "over its average" bucket, and the gap from the line is how far
+//   above. That is also why VIX, ATR and the traffic light can share one scale:
+//   they are all percentages. An ATR ratio of 0.94 beside a VIX of 17 could not be.
+//
+//   FOR A SEPARATE PANE: add the indicator a second time, and on the copy switch
+//   "Show the table" off. One pane holds the table, the other the traffic light.
+//
+// TWO THINGS THAT WOULD FAKE A RESULT, both handled in the code
+//   1. ATR is read from the PREVIOUS CLOSED daily bar, always. Today's ATR
+//      contains today's range, and today's range contains the very move the table
+//      is predicting. Reading it would score the answer against itself.
+//   2. Only ATR ÷ EMA(ATR) is bucketed, never ATR in points. ATR 25 with SPX at
+//      2000 and ATR 67 with SPX at 7500 describe the same market; a fixed points
+//      threshold across decades sorts days by what the index was worth, which is a
+//      calendar, not a signal. Dividing by its own average removes the units.
+//
+// WHAT WAS ALREADY TESTED AND DROPPED (928 days)
+//       VIX level                spread 32%   ← the only survivor
+//       VIX9D / VIX              spread 18%
+//       opening gap size         spread 17%
+//       day of week (control)    spread 13%   ← the noise floor
+//       prior day close position spread  6%
+//
+//   Day of week cannot move SPX, so whatever it scores is what chance produces at
+//   that sample size. It is still selectable here on purpose: the floor moves with
+//   the sample, so it has to be re-measured on whatever history is loaded.
+//
+// EXPORT
+//   Settings → Display → "Export CSV to Pine Logs", then open the Pine Logs tab in
+//   the Pine Editor panel and copy. Or right-click the chart → "Export chart
+//   data…" and use the `day` column as the date.
+//
+// PUTTING IT IN ITS OWN PANE — READ THIS IF THE PLOTS ARE A FLAT LINE
+//   overlay=false only applies when the indicator is ADDED to a chart. TradingView
+//   remembers the pane an instance is already in, so editing this line does NOTHING
+//   to a copy that is already on the chart. An instance left on the price pane
+//   shares its scale with price near 7600 and volume in the billions, and every
+//   plot here — all of them percentages between 0 and 150 — is squashed into a
+//   coloured smear along the bottom axis.
+//
+//   The fix, either way round:
+//     · its ⋮ menu → "Move to" → "New pane below", or
+//     · remove the indicator and add it again.
+//
+//   The scale is declared as a percentage with no decimals, so a correctly placed
+//   pane reads 0% … 100% down the right-hand side. If the axis says 2 400,00, the
+//   indicator is still on the price pane.
+//
+// ═══════════════════════════════════════════════════════════════════════════════
+
+//@version=6
+indicator("0DTE Move Study [SPX] v19.1.0", shorttitle="MoveStudy",
+     overlay=false, format=format.percent, precision=0, max_bars_back=5000)
+
+// ─── CONSTANTS ────────────────────────────────────────────────────────────────
+string TZ_NY       = "America/New_York"
+string RTH         = "0930-1600"
+int    OPEN_MINUTE = 570
+string VERSION     = "19.1.0"
+
+// ─── INPUTS ───────────────────────────────────────────────────────────────────
+string GP_MAIN = "Distances"
+string GP_VIX  = "VIX Bands"
+string GP_ATR  = "ATR Regime"
+string GP_VIS  = "Display"
+
+// What the rows are. The columns and the counting never change.
+string i_view = input.string("VIX × ATR", "Table", group=GP_MAIN,
+     options=["VIX", "ATR", "VIX × ATR", "Day of week (control)"],
+     tooltip="VIX × ATR opens every VIX band into ATR sub-rows and states what the ATR split adds inside that band. Day of week is the control: it cannot move SPX, so whatever it scores on THIS lookback is the noise floor.")
+
+int VIEW = i_view == "VIX" ? 0 : i_view == "ATR" ? 1 : i_view == "VIX × ATR" ? 2 : 3
+
+float i_d1 = input.float(17.0, "Distance 1 (points)", minval=1, maxval=500, step=1, group=GP_MAIN,
+     tooltip="Each distance becomes one column: the share of days in that row whose open-to-close gap exceeded it. Distance 1 is also the one the sub-row brackets and the verdict line are measured on.")
+float i_d2 = input.float(25.0, "Distance 2 (points)", minval=1, maxval=500, step=1, group=GP_MAIN)
+float i_d3 = input.float(35.0, "Distance 3 (points)", minval=1, maxval=500, step=1, group=GP_MAIN)
+float i_d4 = input.float(50.0, "Distance 4 (points)", minval=1, maxval=500, step=1, group=GP_MAIN)
+
+int i_nDists = input.int(3, "How many distance columns", minval=1, maxval=4, group=GP_MAIN,
+     tooltip="Distances past this count are still measured and still exported to CSV — they just stop taking up a column.")
+
+// Label + days + the distance columns + one SPACER. Full-width rows merge across
+// every column; a merged cell wider than its span pushes the surplus into the LAST
+// column of that span, so the spacer swallows it and every visible column stays
+// sized to its own content. Without it the overflow landed on the VIX label column
+// and stretched it across the screen.
+int NDIST  = i_nDists
+int TCOLS  = 3 + NDIST
+int SPACER = TCOLS - 1
+
+int i_entryOffset = input.int(0, "Entry Offset (minutes after 09:30 ET)", minval=0, maxval=180, step=5, group=GP_MAIN,
+     tooltip="INTRADAY CHARTS ONLY. A daily bar has no 10:00, so on daily the reading is always the open. 0 = the opening print.")
+
+int i_lookback = input.int(2000, "Lookback (trading days)", minval=30, maxval=20000, group=GP_MAIN,
+     tooltip="252 ≈ 1 year. On a daily chart this is the only limit that matters — 8000 ≈ 32 years, as far back as VIX goes. It still applies inside a date range: the range decides which days qualify, this decides how many of the most recent ones are kept.")
+
+bool i_useRange = input.bool(false, "Limit to a date range", group=GP_MAIN,
+     tooltip="Off, the study uses the most recent days the chart has loaded, up to the Lookback. On, only days inside the range are counted — for cutting 2020 out, or for asking whether a result survives in a window it was not found in.")
+int i_from = input.time(timestamp("01 Jan 2015 00:00 +0000"), "From", group=GP_MAIN,
+     tooltip="Inclusive. The chart still has to have that history loaded — scroll left if the table's own date span comes up short of what you asked for.")
+int i_to = input.time(timestamp("01 Jan 2035 00:00 +0000"), "To", group=GP_MAIN,
+     tooltip="Inclusive of the whole day you pick, not of the midnight that starts it.")
+
+int i_minSample = input.int(30, "Min Days per Band", minval=5, maxval=200, group=GP_MAIN,
+     tooltip="Rows holding fewer days than this are greyed out, flagged, and left out of the verdict line. Under ~30 days these percentages are noise.")
+
+int i_nEdges = input.int(3, "How many VIX splits", minval=2, maxval=5, group=GP_VIX,
+     tooltip="3 splits gives four bands: below the first edge, the two between, and everything above the last.")
+float i_v1 = input.float(13.0, "VIX edge 1", minval=5, maxval=90, step=0.5, group=GP_VIX)
+float i_v2 = input.float(15.0, "VIX edge 2", minval=5, maxval=90, step=0.5, group=GP_VIX)
+float i_v3 = input.float(18.0, "VIX edge 3", minval=5, maxval=90, step=0.5, group=GP_VIX)
+float i_v4 = input.float(22.0, "VIX edge 4", minval=5, maxval=90, step=0.5, group=GP_VIX)
+float i_v5 = input.float(28.0, "VIX edge 5", minval=5, maxval=90, step=0.5, group=GP_VIX)
+
+int NBVIX = i_nEdges + 1
+
+string i_atrSplit = input.string("Over / under its average", "ATR split", group=GP_ATR,
+     options=["Over / under its average", "Rising / falling", "Four states"],
+     tooltip="Two buckets read cleanly inside a VIX band. Four states (over/under crossed with rising/falling) quarters every band's sample, so only reach for it once there is a lot of history loaded.")
+
+int ASPLIT = i_atrSplit == "Over / under its average" ? 0 : i_atrSplit == "Rising / falling" ? 1 : 2
+int NATR   = ASPLIT == 2 ? 4 : 2
+
+int i_atrLen = input.int(14, "ATR length (daily bars)", minval=2, maxval=100, group=GP_ATR,
+     tooltip="Always read from the DAILY chart, whatever timeframe this runs on, and always from the last CLOSED daily bar — today's ATR would already contain today's move.")
+int i_atrEmaLen = input.int(20, "EMA of ATR (daily bars)", minval=2, maxval=200, group=GP_ATR,
+     tooltip="The average the ATR is measured against. What gets bucketed is ATR / EMA(ATR), never ATR in points: a points threshold across decades mostly sorts days by what SPX was worth.")
+float i_atrThr = input.float(1.0, "Over its average when ATR / EMA exceeds", minval=0.5, maxval=3.0, step=0.05, group=GP_ATR,
+     tooltip="1.00 splits at the average. Raise it to 1.10 or 1.20 to define a bucket only real peaks reach — at the cost of the sample in it.")
+int i_atrDirLen = input.int(3, "Rising when ATR is above its value N days ago", minval=1, maxval=30, group=GP_ATR,
+     tooltip="1 is the raw day-to-day change and is noisy. 3 to 5 daily bars reads the direction of the move rather than one day's wobble.")
+
+string i_tblPos = input.string("Bottom Right", "Table Position",
+     options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=GP_VIS)
+string i_txtSize = input.string("Normal", "Text Size", options=["Tiny", "Small", "Normal"], group=GP_VIS)
+
+bool i_showTable = input.bool(true, "Show the table", group=GP_VIS,
+     tooltip="Off leaves only the plots. Add the indicator a SECOND time in its own pane with the table off and the traffic light on, and you get a signal pane under the table's pane. The CSV export is written during the table pass, so keep the table on when exporting.")
+
+bool i_plotScore = input.bool(true, "Traffic light: this day's odds over distance 1", group=GP_VIS,
+     tooltip="Each day is coloured by the historical hit rate of the row it belongs to, using ONLY the days before it. Nothing here is coloured with knowledge of its own outcome, or of any later day's.")
+float i_grnAt = input.float(70, "Green at or above (%)", minval=0, maxval=100, step=1, group=GP_VIS)
+float i_ylwAt = input.float(50, "Yellow at or above (%)", minval=0, maxval=100, step=1, group=GP_VIS)
+bool i_plotBg = input.bool(false, "Tint the pane background with it", group=GP_VIS)
+
+bool i_plotVix = input.bool(false, "Plot VIX with the band lines", group=GP_VIS,
+     tooltip="ONLY switch this on once the indicator sits in its OWN pane. On the price pane a VIX near 17 next to a price near 7600 forces the scale to 0-8000 and flattens the candles.")
+
+bool i_plotAtr = input.bool(true, "Plot ATR as a % of its average", group=GP_VIS,
+     tooltip="100 IS the average, so above the line is the 'over its average' bucket and the distance from it is how far above. Plotted as a percentage rather than a ratio so it shares a scale with VIX and with the traffic light.")
+
+bool i_showHelp  = input.bool(false, "Show how-to-read line", group=GP_VIS)
+bool i_showSum   = input.bool(false, "Show ALL DAYS and the verdict line", group=GP_VIS,
+     tooltip="The baseline row and the line that scores the split — the spread on a flat table, the per-band ATR effect and its sign agreement on VIX × ATR. Switch it on when you are weighing a predictor rather than reading today's row.")
+bool i_exportCsv = input.bool(false, "Export CSV to Pine Logs", group=GP_VIS,
+     tooltip="One row per day into the Pine Logs pane. Open the Pine Editor panel, switch to the Pine Logs tab, copy from there.")
+
+color i_colBg   = input.color(color.new(#1a1a2e, 0), "Background", group=GP_VIS)
+color i_colTxt  = input.color(color.new(#E0E0E0, 0), "Text", group=GP_VIS)
+color i_colHdr  = input.color(color.new(#4FC3F7, 0), "Header", group=GP_VIS)
+color i_colGood = input.color(color.new(#4CAF50, 0), "Today", group=GP_VIS)
+color i_colMed  = input.color(color.new(#FFC107, 0), "Totals", group=GP_VIS)
+color i_colDim  = input.color(color.new(#9E9E9E, 40), "Low Sample", group=GP_VIS)
+
+string TSIZE = i_txtSize == "Tiny" ? size.tiny : i_txtSize == "Normal" ? size.normal : size.small
+
+// ─── BUCKET NAMES ─────────────────────────────────────────────────────────────
+// Four-state index = (ATR over its average ? 2 : 0) + (ATR rising ? 1 : 0)
+var array<string> ATR4_NAMES = array.from(
+     "ATR < avg, falling",
+     "ATR < avg, rising",
+     "ATR ≥ avg, falling",
+     "ATR ≥ avg, rising")
+var array<string> ATR4_SHORT = array.from("quiet", "coiling", "cooling", "expanding")
+var array<string> DOW_NAMES  = array.from("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
+
+// ─── VIX EDGES ────────────────────────────────────────────────────────────────
+// Built once, at the first bar, because the per-bar traffic light needs to know a
+// day's band as the script walks forward — not only at the end when the table is
+// drawn. The table reads this same array, so the two cannot drift apart.
+var array<float> EDGES = array.new_float()
+if barstate.isfirst
+    array<float> allEdges = array.from(i_v1, i_v2, i_v3, i_v4, i_v5)
+    for e = 0 to i_nEdges - 1
+        array.push(EDGES, array.get(allEdges, e))
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+lastOf(array<float> a) =>
+    float v = na
+    if array.size(a) > 0
+        v := array.get(a, array.size(a) - 1)
+    v
+
+fmtNum(float v, string f) =>
+    na(v) ? "—" : str.tostring(v, f)
+
+//@function A CSV field wants to be empty when a value is missing, not to carry the
+// table's em dash into a column that is otherwise numeric.
+csvNum(float v, string f) =>
+    na(v) ? "" : str.tostring(v, f)
+
+fmtPct(float v) =>
+    na(v) ? "—" : str.tostring(math.round(v), "#0") + "%"
+
+//@function A signed difference in points of frequency, for the sub-row brackets.
+fmtDelta(float v) =>
+    na(v) ? "—" : (v >= 0 ? "+" : "−") + str.tostring(math.round(math.abs(v)), "#0")
+
+fmtDate(int ts) =>
+    na(ts) ? "—" : str.format("{0,date,yyyy-MM-dd}", ts)
+
+//@function Month precision, for the title line where the exact days do not earn
+// the width they cost.
+fmtMonth(int ts) =>
+    na(ts) ? "—" : str.format("{0,date,yyyy-MM}", ts)
+
+//@function Which VIX band v falls into. −1 when na or there are no edges. The
+// ne > 0 guard also stops the loop running backwards: in Pine `for e = 0 to -1`
+// counts DOWN and would read index 0 of an empty array.
+bandOf(float v, array<float> edges) =>
+    int ne = array.size(edges)
+    int idx = na(v) or ne == 0 ? -1 : ne
+    if not na(v) and ne > 0
+        for e = 0 to ne - 1
+            if v < array.get(edges, e)
+                idx := e
+                break
+    idx
+
+//@function Which ATR bucket a day falls into under the selected split. −1 when the
+// ATR has no reading yet, which costs that day its sub-row but not its VIX row.
+atrOf(float r, float up) =>
+    int lv = na(r)  ? -1 : r > i_atrThr ? 1 : 0
+    int ld = na(up) ? -1 : up > 0.5 ? 1 : 0
+    int res = ASPLIT == 0 ? lv : ASPLIT == 1 ? ld : (lv < 0 or ld < 0 ? -1 : lv * 2 + ld)
+    res
+
+//@function Hit rate of bucket b at distance d, as a percentage. na on an empty
+// bucket, which fmtPct renders as the em dash.
+rateOf(array<int> cnt, array<int> hit, int b, int d) =>
+    int c = array.get(cnt, b)
+    c > 0 ? array.get(hit, b * 4 + d) / float(c) * 100.0 : na
+
+//@function The row a day belongs to in the active view, computed as the script
+// walks FORWARD. The table buckets the same way at the end; this is the same rule
+// applied bar by bar, so the plot and the table can never describe different rows.
+liveBucket(float v, float r, float up, float dw) =>
+    int vb  = bandOf(v, EDGES)
+    int ab  = atrOf(r, up)
+    int dwi = na(dw) ? -1 : int(dw)
+    int res = VIEW == 0 ? vb : VIEW == 1 ? ab :
+         VIEW == 2 ? (vb < 0 or ab < 0 ? -1 : vb * NATR + ab) :
+         (dwi < 0 or dwi > 4 ? -1 : dwi)
+    res
+
+//@function What history said about this row BEFORE today was folded into it. This
+// is the whole honesty of the traffic light: a day is coloured by days that had
+// already finished when it opened, never by its own outcome and never by a later
+// day's. na until the row holds the minimum sample — a 6-day row's 83% is not a
+// colour, it is a coincidence.
+scoreOf(array<int> cnt, array<int> hit, int b) =>
+    float v = na
+    if b >= 0
+        int c = array.get(cnt, b)
+        if c >= i_minSample
+            v := array.get(hit, b) / float(c) * 100.0
+    v
+
+//@function Fold a finished day into the running tally, or with step −1 evict one
+// that has fallen out of the lookback.
+bumpDay(array<int> cnt, array<int> hit, int b, bool cleared, int step) =>
+    if b >= 0
+        array.set(cnt, b, array.get(cnt, b) + step)
+        if cleared
+            array.set(hit, b, array.get(hit, b) + step)
+
+// ─── TABLE HELPERS ────────────────────────────────────────────────────────────
+//@function A row merged across every column. KEEP THE TEXT SHORT — around 75
+// characters. A table is exactly as wide as its widest row, and it grows AWAY from
+// whichever corner it is anchored to, so one long sentence here pushes the whole
+// table off the side of the pane and takes the readable rows with it. Anything
+// longer than a label belongs in `tip`, which the reader hovers for.
+fullRow(table t, int row, string txt, color fg, bool hdr, string tip = "") =>
+    color bg = hdr ? color.new(i_colHdr, 88) : i_colBg
+    table.cell(t, 0, row, txt, text_color=fg, text_size=TSIZE, text_halign=text.align_left,
+         bgcolor=bg, tooltip=tip)
+    for c = 1 to TCOLS - 1
+        table.cell(t, c, row, "", bgcolor=bg)
+    table.merge_cells(t, 0, row, TCOLS - 1, row)
+
+cell(table t, int col, int row, string txt, color fg) =>
+    table.cell(t, col, row, txt, text_color=fg, text_size=TSIZE, text_halign=text.align_right)
+
+//@function One data row: its label, its day count, its four frequencies, spacer.
+statRow(table t, int row, string lbl, array<int> cnt, array<int> hit, int b, color fg) =>
+    table.cell(t, 0, row, lbl, text_color=fg, text_size=TSIZE, text_halign=text.align_left)
+    cell(t, 1, row, str.tostring(array.get(cnt, b)), fg)
+    for d = 0 to NDIST - 1
+        cell(t, 2 + d, row, fmtPct(rateOf(cnt, hit, b, d)), fg)
+    table.cell(t, SPACER, row, "", text_size=TSIZE)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MARKET DATA
+// ═══════════════════════════════════════════════════════════════════════════════
+// The live VIX, on whatever timeframe the chart is. Used for the TODAY line, and
+// on an intraday chart it is also what stamps each day at its entry bar.
+float vixNow = request.security("CBOE:VIX", timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+
+// On a DAILY chart there is no 09:30 bar to read the VIX from, and the day's VIX
+// CLOSE would be the end of the day judging the start of it. The daily OPEN is the
+// honest analogue: the 09:30 print, known when the position would go on.
+float vixOpenD = request.security("CBOE:VIX", "D", open, barmerge.gaps_off, barmerge.lookahead_off)
+
+// ─── DAILY ATR, AS IT STOOD BEFORE THE OPEN ───────────────────────────────────
+// Every element is taken at [1], i.e. from the last CLOSED daily bar. On an
+// intraday chart lookahead_off alone is not enough: the CURRENT daily bar is
+// legitimately available and still forming, and its true range already contains
+// part of today's move — the quantity this table is trying to predict.
+[atrDaily, atrAvg, atrChg] = request.security(syminfo.tickerid, "D",
+     [ta.atr(i_atrLen)[1], ta.ema(ta.atr(i_atrLen), i_atrEmaLen)[1], ta.change(ta.atr(i_atrLen), i_atrDirLen)[1]],
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+// The ratio, not the points, is what gets bucketed — see the header. Where ATR sits
+// against its own average is the "is this a peak" term…
+float atrRatio = na(atrAvg) or atrAvg == 0 ? na : atrDaily / atrAvg
+// …and its change over i_atrDirLen daily bars is the direction term. Kept as a
+// float rather than a bool so a day's whole state fits in float arrays.
+float atrUp    = na(atrChg) ? na : atrChg > 0 ? 1.0 : 0.0
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CHART MODE
+// ═══════════════════════════════════════════════════════════════════════════════
+bool useDaily = timeframe.isdaily
+bool useIntra = timeframe.isintraday
+// On extended hours a daily bar opens overnight, so `open` stops being the 09:30
+// print and every measurement below silently shifts. The table refuses to pretend.
+bool extendedWarn = useDaily and syminfo.session == session.extended
+
+// ─── SESSION DETECTION (intraday only) ────────────────────────────────────────
+int  sessTime = time(timeframe.period, RTH, TZ_NY)
+bool inSess   = not na(sessTime)
+
+// The day boundary needs BOTH tests. On an SPX chart every bar already sits inside
+// RTH, so inSess never goes false and an inSess[1] edge would fire once in the
+// whole history — the ET calendar date is what changes between Monday's 15:30 bar
+// and Tuesday's 09:30 bar.
+int  etDay    = dayofmonth(time, TZ_NY)
+int  etMonth  = month(time, TZ_NY)
+int  etYear   = year(time, TZ_NY)
+bool newEtDay = not barstate.isfirst and (etDay != etDay[1] or etMonth != etMonth[1] or etYear != etYear[1])
+bool sessStart = inSess and (not inSess[1] or newEtDay)
+
+// ─── PER-DAY STATE ────────────────────────────────────────────────────────────
+var bool  dayActive     = false
+var float dayEntryPx    = na
+var float dayVix        = na
+var float dayAtrPts     = na
+var float dayAtrRatio   = na
+var float dayAtrUp      = na
+var float dayDow        = na
+var int   dayB          = -1
+var float dayScore      = na
+var int   dayTs         = na
+var float lastSessClose = na
+
+// ─── DATA STORAGE ─────────────────────────────────────────────────────────────
+var array<int>   tsArr      = array.new_int()
+var array<float> dateNumArr = array.new_float()
+var array<float> entryPxArr = array.new_float()
+var array<float> closePxArr = array.new_float()
+var array<float> movePtsArr = array.new_float()
+var array<float> absMoveArr = array.new_float()
+var array<float> vixArr     = array.new_float()
+var array<float> atrPtsArr  = array.new_float()
+var array<float> atrRatArr  = array.new_float()
+var array<float> atrUpArr   = array.new_float()
+var array<float> dowArr     = array.new_float()
+var array<int>   bktArr     = array.new_int()
+var array<float> scoreArr   = array.new_float()
+
+// Running tally behind the traffic light: one pair of counters per row, kept in
+// step with the stored days — a day folded in on arrival, evicted when the lookback
+// drops it — so the plot is always scoring against exactly the sample the table is
+// summarising. Sized for the widest view there can be: 6 VIX bands × 4 ATR states.
+var array<int> liveCnt = array.new_int(24, 0)
+var array<int> liveHit = array.new_int(24, 0)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DAY RECORDING
+// ═══════════════════════════════════════════════════════════════════════════════
+// Everything is passed in: a Pine function may mutate the arrays it is handed, but
+// it may not assign to a global, so the caller owns the day state.
+// A missing ATR does NOT reject a day: the VIX rows must not lose sample because a
+// candidate predictor has no reading yet. Such a day simply gets no sub-row.
+// The date range is enforced here rather than at the call sites so that every path
+// — daily, intraday, and the last unfinished day — obeys it. `i_to` is pushed to the
+// END of the day chosen: input.time hands back that date at 00:00, and a trading day
+// stamped 09:30 would otherwise fall outside a range that names its own date.
+recordDay(float entryPx, float settlePx, float vix, int ts,
+     float atrPts, float atrRat, float atrRise, float dow, int bkt, float sc) =>
+    bool inRange = not i_useRange or (not na(ts) and ts >= i_from and ts < i_to + 86400000)
+    bool ok = inRange and not na(entryPx) and not na(settlePx) and not na(vix) and vix > 0 and entryPx > 0
+    if ok
+        float movePts = settlePx - entryPx
+        array.push(tsArr, ts)
+        array.push(dateNumArr, year(ts, TZ_NY) * 10000 + month(ts, TZ_NY) * 100 + dayofmonth(ts, TZ_NY))
+        array.push(entryPxArr, entryPx)
+        array.push(closePxArr, settlePx)
+        array.push(movePtsArr, movePts)
+        array.push(absMoveArr, math.abs(movePts))
+        array.push(vixArr, vix)
+        array.push(atrPtsArr, atrPts)
+        array.push(atrRatArr, atrRat)
+        array.push(atrUpArr, atrRise)
+        array.push(dowArr, dow)
+        array.push(bktArr, bkt)
+        array.push(scoreArr, sc)
+
+        if array.size(tsArr) > i_lookback
+            // Evict the oldest day from the running tally too. Without this the
+            // traffic light would quietly score against every day since the chart
+            // began while the table reported the last i_lookback of them.
+            bumpDay(liveCnt, liveHit, array.get(bktArr, 0), array.get(absMoveArr, 0) > i_d1, -1)
+            array.shift(tsArr)
+            array.shift(dateNumArr)
+            array.shift(entryPxArr)
+            array.shift(closePxArr)
+            array.shift(movePtsArr)
+            array.shift(absMoveArr)
+            array.shift(vixArr)
+            array.shift(atrPtsArr)
+            array.shift(atrRatArr)
+            array.shift(atrUpArr)
+            array.shift(dowArr)
+            array.shift(bktArr)
+            array.shift(scoreArr)
+    ok
+
+var bool recordedThisBar = false
+recordedThisBar := false
+
+if useDaily
+    // Scored FIRST, folded in second: at this point the tally holds every day
+    // before this one and none of this one, which is what makes the colour a
+    // forecast rather than a report.
+    dayB     := liveBucket(vixOpenD, atrRatio, atrUp, float(dayofweek(time, TZ_NY) - 2))
+    dayScore := scoreOf(liveCnt, liveHit, dayB)
+    // One bar IS one day: its open is 09:30, its close is 16:00. Only confirmed
+    // bars are taken, so the day in progress is never half-counted into history —
+    // it is what the TODAY line is for.
+    if barstate.isconfirmed
+        recordedThisBar := recordDay(open, close, vixOpenD, time,
+             atrDaily, atrRatio, atrUp, float(dayofweek(time, TZ_NY) - 2), dayB, dayScore)
+        if recordedThisBar
+            bumpDay(liveCnt, liveHit, dayB, math.abs(close - open) > i_d1, 1)
+else if useIntra
+    if sessStart
+        if dayActive
+            recordedThisBar := recordDay(dayEntryPx, lastSessClose, dayVix, dayTs,
+                 dayAtrPts, dayAtrRatio, dayAtrUp, dayDow, dayB, dayScore)
+            if recordedThisBar
+                bumpDay(liveCnt, liveHit, dayB, math.abs(lastSessClose - dayEntryPx) > i_d1, 1)
+        dayActive    := true
+        dayEntryPx   := na
+        dayVix       := na
+        dayAtrPts    := na
+        dayAtrRatio  := na
+        dayAtrUp     := na
+        dayDow       := na
+        dayB         := -1
+        dayScore     := na
+        dayTs        := time
+
+    if inSess
+        lastSessClose := close
+        int minsFromOpen = hour(time, TZ_NY) * 60 + minute(time, TZ_NY) - OPEN_MINUTE
+        if na(dayEntryPx) and minsFromOpen >= i_entryOffset
+            dayEntryPx  := open
+            dayVix      := vixNow
+            dayAtrPts   := atrDaily
+            dayAtrRatio := atrRatio
+            dayAtrUp    := atrUp
+            // dayofweek() is 1=Sunday, so Monday..Friday becomes 0..4.
+            dayDow      := float(dayofweek(time, TZ_NY) - 2)
+            // Scored at the open, from days that had already finished by then.
+            dayB        := liveBucket(dayVix, dayAtrRatio, dayAtrUp, dayDow)
+            dayScore    := scoreOf(liveCnt, liveHit, dayB)
+
+    if barstate.islast and dayActive and not inSess
+        recordedThisBar := recordDay(dayEntryPx, lastSessClose, dayVix, dayTs,
+             dayAtrPts, dayAtrRatio, dayAtrUp, dayDow, dayB, dayScore)
+        if recordedThisBar
+            bumpDay(liveCnt, liveHit, dayB, math.abs(lastSessClose - dayEntryPx) > i_d1, 1)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SIGNAL PANE
+// ═══════════════════════════════════════════════════════════════════════════════
+// Everything here is a PERCENTAGE, on purpose. The traffic light is a hit rate, ATR
+// is stated as a share of its own average, and VIX is already in the same numeric
+// neighbourhood — so all three can share one scale and be read against each other.
+// An ATR ratio of 0.94 on the same axis as a VIX of 17 could not.
+
+// ─── THE TRAFFIC LIGHT ────────────────────────────────────────────────────────
+// The table's first-distance percentage for the row this day belongs to, painted on
+// the day itself. Read it as "days that looked like this one finished past 17 points
+// N% of the time" — a base rate, never a forecast of this particular day.
+color scoreCol = na(dayScore) ? na :
+     dayScore >= i_grnAt ? #26A69A : dayScore >= i_ylwAt ? #FFB300 : #EF5350
+plot(i_plotScore ? dayScore : na, "odds over D1 (%)", color=scoreCol,
+     style=plot.style_columns, linewidth=2)
+plot(i_plotScore ? i_grnAt : na, "green line", color=color.new(#26A69A, 45), linewidth=1)
+plot(i_plotScore ? i_ylwAt : na, "yellow line", color=color.new(#FFB300, 45), linewidth=1)
+bgcolor(i_plotBg and not na(dayScore) ? color.new(scoreCol, 88) : na, title="traffic light tint")
+
+// ─── ATR AGAINST ITS OWN AVERAGE ──────────────────────────────────────────────
+// 100 IS the average. Above the line is the "over its average" bucket and the gap
+// from the line is how far above — which is the question the ATR pane could not
+// answer in points, because 25 points meant something else when SPX was at 2000.
+plot(i_plotAtr ? atrRatio * 100 : na, "ATR % of avg", color=color.new(#FF9800, 0), linewidth=2)
+plot(i_plotAtr ? i_atrThr * 100 : na, "ATR threshold", color=color.new(color.gray, 40), linewidth=1)
+
+// ─── VIX ──────────────────────────────────────────────────────────────────────
+// Band edges use plot() rather than hline() because hline cannot be switched off
+// conditionally, and only i_nEdges of the five are ever in use.
+plot(i_plotVix ? vixNow : na, "VIX", color=i_colHdr, linewidth=2)
+plot(i_plotVix and i_nEdges >= 1 ? i_v1 : na, "edge 1", color=color.new(color.gray, 50), linewidth=1)
+plot(i_plotVix and i_nEdges >= 2 ? i_v2 : na, "edge 2", color=color.new(color.gray, 50), linewidth=1)
+plot(i_plotVix and i_nEdges >= 3 ? i_v3 : na, "edge 3", color=color.new(color.gray, 50), linewidth=1)
+plot(i_plotVix and i_nEdges >= 4 ? i_v4 : na, "edge 4", color=color.new(color.gray, 50), linewidth=1)
+plot(i_plotVix and i_nEdges >= 5 ? i_v5 : na, "edge 5", color=color.new(color.gray, 50), linewidth=1)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXPORT SERIES   (right-click chart → "Export chart data…")
+// ═══════════════════════════════════════════════════════════════════════════════
+// On an intraday chart a finished day is written on the FIRST bar of the NEXT
+// session, so ignore the chart's timestamp column and use `day`. Every other bar is
+// blank. On a daily chart each bar writes its own day.
+plot(recordedThisBar ? lastOf(dateNumArr) : na, "day",          display=display.data_window)
+plot(recordedThisBar ? lastOf(entryPxArr) : na, "open_0930",    display=display.data_window)
+plot(recordedThisBar ? lastOf(closePxArr) : na, "close_1600",   display=display.data_window)
+plot(recordedThisBar ? lastOf(movePtsArr) : na, "move_pts",     display=display.data_window)
+plot(recordedThisBar ? lastOf(absMoveArr) : na, "abs_move_pts", display=display.data_window)
+plot(recordedThisBar ? lastOf(vixArr)     : na, "vix",          display=display.data_window)
+plot(recordedThisBar ? lastOf(atrPtsArr)  : na, "atr_d",        display=display.data_window)
+plot(recordedThisBar ? lastOf(atrRatArr)  : na, "atr_ratio",    display=display.data_window)
+plot(recordedThisBar ? lastOf(atrUpArr)   : na, "atr_rising",   display=display.data_window)
+plot(recordedThisBar ? lastOf(dowArr)     : na, "dow",          display=display.data_window)
+plot(recordedThisBar ? lastOf(scoreArr)   : na, "odds_pct",     display=display.data_window)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TABLE
+// ═══════════════════════════════════════════════════════════════════════════════
+var table tbl = na
+
+tablePos = switch i_tblPos
+    "Top Right"    => position.top_right
+    "Top Left"     => position.top_left
+    "Bottom Right" => position.bottom_right
+    => position.bottom_left
+
+if barstate.islast and i_showTable
+    int n = array.size(absMoveArr)
+
+    if not useDaily and not useIntra
+        tbl := table.new(tablePos, 1, 2, bgcolor=i_colBg, border_width=1, border_color=color.new(color.gray, 30))
+        table.cell(tbl, 0, 0, "⚠ Daily or intraday chart required", text_color=i_colMed, text_size=size.normal)
+        table.cell(tbl, 0, 1, "Daily is preferred: the bar's open is 09:30 and its close is 16:00, with decades of history.", text_color=i_colTxt, text_size=size.small)
+    else if extendedWarn
+        tbl := table.new(tablePos, 1, 2, bgcolor=i_colBg, border_width=1, border_color=color.new(color.gray, 30))
+        table.cell(tbl, 0, 0, "⚠ Switch the chart to the regular session", text_color=i_colMed, text_size=size.normal)
+        table.cell(tbl, 0, 1, "On extended hours a daily bar opens overnight, so its open is not the 09:30 print and every number here would be measuring the wrong thing.", text_color=i_colTxt, text_size=size.small)
+    else if n < 10
+        tbl := table.new(tablePos, 1, 2, bgcolor=i_colBg, border_width=1, border_color=color.new(color.gray, 30))
+        table.cell(tbl, 0, 0, "Collecting data…", text_color=i_colMed, text_size=size.normal)
+        table.cell(tbl, 0, 1, str.tostring(n) + " days so far. Scroll left to load more history.", text_color=i_colTxt, text_size=size.small)
+    else
+        // ── VIX bands ─────────────────────────────────────────────────────────
+        array<float> edges = array.new_float()
+        array<string> vixLabels = array.new_string()
+        array<string> vixShort  = array.new_string()
+        array<float> allE = array.from(i_v1, i_v2, i_v3, i_v4, i_v5)
+        for e = 0 to i_nEdges - 1
+            array.push(edges, array.get(allE, e))
+        array.push(vixLabels, "VIX under " + fmtNum(array.get(edges, 0), "#0.#"))
+        array.push(vixShort,  "<" + fmtNum(array.get(edges, 0), "#0.#"))
+        if i_nEdges >= 2
+            for e = 1 to i_nEdges - 1
+                array.push(vixLabels, "VIX " + fmtNum(array.get(edges, e - 1), "#0.#") +
+                     " – " + fmtNum(array.get(edges, e), "#0.#"))
+                array.push(vixShort, fmtNum(array.get(edges, e - 1), "#0.#") +
+                     "–" + fmtNum(array.get(edges, e), "#0.#"))
+        array.push(vixLabels, "VIX over " + fmtNum(array.get(edges, i_nEdges - 1), "#0.#"))
+        array.push(vixShort,  ">" + fmtNum(array.get(edges, i_nEdges - 1), "#0.#"))
+
+        // ── ATR bucket labels ─────────────────────────────────────────────────
+        // The threshold goes INTO the label rather than being left implicit: "over
+        // its average" means something else entirely once it is set to 1.20.
+        string thrTxt = fmtNum(i_atrThr * 100, "#0.#") + "% of avg"
+        array<string> atrLabels = array.new_string()
+        if ASPLIT == 0
+            array.push(atrLabels, "ATR < " + thrTxt)
+            array.push(atrLabels, "ATR ≥ " + thrTxt)
+        else if ASPLIT == 1
+            array.push(atrLabels, "ATR falling")
+            array.push(atrLabels, "ATR rising")
+        else
+            for st = 0 to 3
+                array.push(atrLabels, array.get(ATR4_NAMES, st))
+
+        // ── Row labels for the flat views ─────────────────────────────────────
+        array<string> labels = array.new_string()
+        string col0 = "If VIX is…"
+        if VIEW == 0
+            for b = 0 to NBVIX - 1
+                array.push(labels, array.get(vixLabels, b))
+        else if VIEW == 1
+            col0 := "If ATR is…"
+            for st = 0 to NATR - 1
+                array.push(labels, array.get(atrLabels, st))
+        else if VIEW == 2
+            col0 := "If VIX is…"
+        else
+            col0 := "If the weekday is…"
+            for d = 0 to 4
+                array.push(labels, array.get(DOW_NAMES, d))
+
+        array<float> dists = array.from(i_d1, i_d2, i_d3, i_d4)
+
+        // ── Bucket every day once ─────────────────────────────────────────────
+        // pIdx is the row a day belongs to in the active view; sIdx is its VIX band,
+        // which the nested view needs as well so a sub-row can be read against the
+        // band it sits in rather than against all days.
+        int nP = VIEW == 0 ? NBVIX : VIEW == 1 ? NATR : VIEW == 2 ? NBVIX * NATR : 5
+        array<int> pIdx = array.new_int()
+        array<int> sIdx = array.new_int()
+        for i = 0 to n - 1
+            int vb = bandOf(array.get(vixArr, i), edges)
+            int ab = atrOf(array.get(atrRatArr, i), array.get(atrUpArr, i))
+            float dwf = array.get(dowArr, i)
+            int dw = na(dwf) ? -1 : int(dwf)
+            int pb = VIEW == 0 ? vb : VIEW == 1 ? ab :
+                 VIEW == 2 ? (vb < 0 or ab < 0 ? -1 : vb * NATR + ab) :
+                 (dw < 0 or dw > 4 ? -1 : dw)
+            array.push(pIdx, pb)
+            array.push(sIdx, vb)
+
+        // ── Count in ONE pass ─────────────────────────────────────────────────
+        // A pass per row would be 20 000 days × up to 24 rows on a long daily
+        // history. Accumulating into flat counters keeps it linear.
+        array<int> pCnt = array.new_int(nP, 0)
+        array<int> pHit = array.new_int(nP * 4, 0)
+        array<int> sCnt = array.new_int(NBVIX, 0)
+        array<int> sHit = array.new_int(NBVIX * 4, 0)
+        array<int> allHits = array.from(0, 0, 0, 0)
+        int classified = 0
+        for i = 0 to n - 1
+            float am = array.get(absMoveArr, i)
+            int pb = array.get(pIdx, i)
+            int sb = array.get(sIdx, i)
+            if pb >= 0
+                classified += 1
+                array.set(pCnt, pb, array.get(pCnt, pb) + 1)
+            if VIEW == 2 and sb >= 0
+                array.set(sCnt, sb, array.get(sCnt, sb) + 1)
+            for d = 0 to 3
+                if am > array.get(dists, d)
+                    array.set(allHits, d, array.get(allHits, d) + 1)
+                    if pb >= 0
+                        array.set(pHit, pb * 4 + d, array.get(pHit, pb * 4 + d) + 1)
+                    if VIEW == 2 and sb >= 0
+                        array.set(sHit, sb * 4 + d, array.get(sHit, sb * 4 + d) + 1)
+
+        // ── Today ─────────────────────────────────────────────────────────────
+        int todayVix = bandOf(vixNow, edges)
+        int todayAtr = atrOf(atrRatio, atrUp)
+        int todayDow = dayofweek(time, TZ_NY) - 2
+        int todayP = VIEW == 0 ? todayVix : VIEW == 1 ? todayAtr :
+             VIEW == 2 ? (todayVix < 0 or todayAtr < 0 ? -1 : todayVix * NATR + todayAtr) :
+             (todayDow < 0 or todayDow > 4 ? -1 : todayDow)
+
+        int nRows = VIEW == 2 ? NBVIX * (1 + NATR) : nP
+        int help1 = i_showHelp ? 1 : 0
+        int sum2  = i_showSum ? 2 : 0
+        int tRows = 3 + help1 + sum2 + nRows   // title + today + [note] + colhdr + rows + [ALL + verdict]
+        tbl := table.new(tablePos, TCOLS, tRows, bgcolor=i_colBg, border_width=1,
+             border_color=color.new(color.gray, 30))
+        int r = 0
+
+        fullRow(tbl, r, "0DTE MOVE STUDY · " + str.tostring(n) + " days · " +
+             fmtMonth(array.get(tsArr, 0)) + " → " + fmtMonth(array.get(tsArr, n - 1)) +
+             " · " + (useDaily ? "daily" : "intraday +" + str.tostring(i_entryOffset) + "m") +
+             (i_useRange ? " · ranged" : ""),
+             i_colHdr, true,
+             "|open − close| per day, " + fmtDate(array.get(tsArr, 0)) + " to " +
+             fmtDate(array.get(tsArr, n - 1)) + ". " + (i_useRange ?
+             "Date range on: " + fmtDate(i_from) + " to " + fmtDate(i_to) +
+             ". If the span above starts later than that, the chart has not loaded the rest — scroll left." :
+             "Lookback and distances are in the settings."))
+        r += 1
+
+        // Today's row and how often it cleared the first distance. Stated as a
+        // fact, not a recommendation — the call is the reader's.
+        // Written as if-blocks, not a ternary chain: Pine does not promise to skip
+        // the branch it does not take, and an array.get() at index −1 is a runtime
+        // error, not an na. −1 is exactly what an unclassifiable today produces.
+        int tCnt = 0
+        float tRate = na
+        string todayWhere = "—"
+        if todayP >= 0
+            tCnt := array.get(pCnt, todayP)
+            if tCnt > 0
+                tRate := rateOf(pCnt, pHit, todayP, 0)
+            if VIEW == 0
+                todayWhere := array.get(vixLabels, todayVix)
+            else if VIEW == 1
+                todayWhere := array.get(atrLabels, todayAtr)
+            else if VIEW == 2
+                todayWhere := array.get(vixLabels, todayVix) + "  ·  " + array.get(atrLabels, todayAtr)
+            else
+                todayWhere := array.get(DOW_NAMES, todayDow)
+        // The row it matches is already marked "← today", so naming the band here
+        // as well would only cost width.
+        string atrTxt = na(atrRatio) ? "ATR —" :
+             "ATR " + fmtNum(atrRatio * 100, "#0") + "%" +
+             (na(atrUp) ? "" : atrUp > 0.5 ? " ↑" : " ↓")
+        fullRow(tbl, r, "TODAY · VIX " + fmtNum(vixNow, "#0.0") + " · " + atrTxt + " · " +
+             str.tostring(tCnt) + " days · " + fmtPct(tRate) + " over " + fmtNum(i_d1, "#0") + " pts",
+             i_colGood, false,
+             todayWhere + ". ATR " + fmtNum(atrDaily, "#0.0") + " points, " +
+             fmtNum(atrRatio * 100, "#0") + "% of its " + str.tostring(i_atrEmaLen) + "-day average, " +
+             (na(atrUp) ? "direction unknown" : atrUp > 0.5 ? "rising" : "falling") +
+             " over " + str.tostring(i_atrDirLen) + " days. Taken from the last closed daily bar.")
+        r += 1
+
+        if i_showHelp
+            string helpTxt = VIEW == 2 ?
+                 "cell = % of the row's days past that distance · (±) = vs its own band" :
+                 "cell = % of the row's days past that distance"
+            string helpTip = "Every cell is the share of that ROW's days whose 09:30→16:00 gap " +
+                 "finished beyond that COLUMN's distance." + (VIEW == 2 ?
+                 "  A ↳ sub-row's bracket is its rate on " + fmtNum(i_d1, "#0") +
+                 " pts minus its own VIX band's rate on " + fmtNum(i_d1, "#0") +
+                 " pts — what the ATR split adds, or costs, inside a band that already holds VIX fixed." : "")
+            fullRow(tbl, r, helpTxt, i_colMed, false, helpTip)
+            r += 1
+
+        array<string> hdr = array.new_string()
+        array.push(hdr, col0)
+        array.push(hdr, "days")
+        for d = 0 to NDIST - 1
+            array.push(hdr, "over " + fmtNum(array.get(dists, d), "#0") + " pts")
+        array.push(hdr, "")
+        for c = 0 to TCOLS - 1
+            table.cell(tbl, c, r, array.get(hdr, c), text_color=i_colHdr, text_size=TSIZE,
+                 text_halign=text.align_center, bgcolor=color.new(i_colHdr, 92))
+        r += 1
+
+        // ── ROWS ──────────────────────────────────────────────────────────────
+        float bestP  = na
+        float worstP = na
+        int   qual   = 0
+        string verdict    = ""
+        string verdictTip = ""
+        string bandList   = ""
+
+        if VIEW == 2
+            // Nested: a VIX band, then its ATR sub-rows, each measured against that
+            // band's own rate. The band is the control for its own sub-rows.
+            int agree = 0
+            int bands = 0
+            for b = 0 to NBVIX - 1
+                int bc = array.get(sCnt, b)
+                bool bThin = bc < i_minSample
+                color bCol = bc == 0 or bThin ? i_colDim : b == todayVix ? i_colGood : i_colTxt
+                statRow(tbl, r, array.get(vixLabels, b) + (bThin and bc > 0 ? "  ⚠" : "") +
+                     (b == todayVix ? "   ← today" : ""), sCnt, sHit, b, bCol)
+                r += 1
+
+                float base = rateOf(sCnt, sHit, b, 0)
+                float bBest = na
+                float bWorst = na
+                float firstR = na
+                float lastR = na
+                for st = 0 to NATR - 1
+                    int fb = b * NATR + st
+                    int fc = array.get(pCnt, fb)
+                    bool fThin = fc < i_minSample
+                    float fr = rateOf(pCnt, pHit, fb, 0)
+                    color fCol = fc == 0 or fThin ? i_colDim : fb == todayP ? i_colGood : i_colTxt
+                    string dlt = fThin or na(fr) or na(base) ? "" : "   (" + fmtDelta(fr - base) + ")"
+                    statRow(tbl, r, "   ↳ " + array.get(atrLabels, st) +
+                         (fThin and fc > 0 ? "  ⚠" : "") + dlt, pCnt, pHit, fb, fCol)
+                    r += 1
+                    if not fThin and fc > 0
+                        bBest  := na(bBest)  ? fr : math.max(bBest, fr)
+                        bWorst := na(bWorst) ? fr : math.min(bWorst, fr)
+                        if st == 0
+                            firstR := fr
+                        if st == NATR - 1
+                            lastR := fr
+
+                // Two buckets have a direction — last minus first, so a positive
+                // number always means "the second bucket travelled further". Four
+                // states have no ordering, so they report their range instead.
+                float eff = NATR == 2 ? (na(firstR) or na(lastR) ? na : lastR - firstR) :
+                     (na(bBest) or na(bWorst) ? na : bBest - bWorst)
+                if not na(eff)
+                    bands += 1
+                    if eff > 0
+                        agree += 1
+                    bandList := bandList + (bandList == "" ? "" : " · ") + array.get(vixShort, b) + " " + fmtDelta(eff)
+            string effName = NATR == 2 ? "ATR EFFECT" : "ATR RANGE"
+            if bands == 0
+                verdict := effName + " · no band holds two ATR buckets of " + str.tostring(i_minSample) + "+ days"
+            else
+                // Past four bands the per-band list stops fitting on one row, and a
+                // row that does not fit drags the whole table off the pane.
+                string tail = NATR == 2 ?
+                     str.tostring(math.max(agree, bands - agree)) + "/" + str.tostring(bands) + " same sign" :
+                     str.tostring(bands) + " bands"
+                verdict := effName + " " + fmtNum(i_d1, "#0") + "pts · " +
+                     (NBVIX <= 4 ? bandList + " · " : "") + tail
+            verdictTip := "Per VIX band, the ATR split's effect on " + fmtNum(i_d1, "#0") +
+                 " pts: " + (NATR == 2 ?
+                 "the second bucket's rate minus the first, so positive means the higher-ATR days travelled further. " :
+                 "the band's best ATR bucket minus its worst. ") +
+                 (bandList == "" ? "" : bandList + ". ") +
+                 "Bands without two buckets over the minimum sample are left out. The sign agreement is the test: " +
+                 "VIX9D/VIX scored a good spread and still died here, three bands agreeing and the fourth reversing " +
+                 "on 202 days. A real effect does not flip between adjacent bands."
+        else
+            for b = 0 to nP - 1
+                int c = array.get(pCnt, b)
+                bool thin = c < i_minSample
+                color txtC = c == 0 or thin ? i_colDim : b == todayP ? i_colGood : i_colTxt
+                // The spread is read off the first distance and only over rows that
+                // clear the minimum — otherwise an 8-day row's 88% sets the range
+                // and every split scores high, the control included.
+                if not thin and c > 0
+                    float p = rateOf(pCnt, pHit, b, 0)
+                    bestP  := na(bestP)  ? p : math.max(bestP, p)
+                    worstP := na(worstP) ? p : math.min(worstP, p)
+                    qual += 1
+                statRow(tbl, r, array.get(labels, b) + (thin and c > 0 ? "  ⚠" : "") +
+                     (b == todayP ? "   ← today" : ""), pCnt, pHit, b, txtC)
+                r += 1
+            verdict := qual < 2 ?
+                 "SPREAD · needs two rows holding " + str.tostring(i_minSample) + "+ days" :
+                 "SPREAD " + fmtNum(i_d1, "#0") + "pts · best " + fmtPct(bestP) + " − worst " +
+                 fmtPct(worstP) + " = " + fmtPct(bestP - worstP) + " · " + str.tostring(qual) +
+                 "/" + str.tostring(nP) + " rows"
+            verdictTip := "Best row minus worst on " + fmtNum(i_d1, "#0") +
+                 " pts, counting only rows over the minimum sample — otherwise an 8-day row's 88% sets the range " +
+                 "and every split scores high, the control included. Read it against 'Day of week (control)' on " +
+                 "this same lookback: that is the noise floor, and it moves with the sample size."
+
+        // ── ALL DAYS + VERDICT ────────────────────────────────────────────────
+        // Both are off by default: they answer "is this split worth anything",
+        // which is a different question from "what are today's odds".
+        // A day with no ATR reading yet still belongs in the baseline, so the rows
+        // can add up to less than ALL DAYS. Saying by how much beats a silent gap.
+        if i_showSum
+            int unclass = n - classified
+            table.cell(tbl, 0, r, "ALL DAYS" + (unclass > 0 ? "  (" + str.tostring(unclass) + " unclassified)" : ""),
+                 text_color=i_colMed, text_size=TSIZE, text_halign=text.align_left)
+            cell(tbl, 1, r, str.tostring(n), i_colMed)
+            for d = 0 to NDIST - 1
+                cell(tbl, 2 + d, r, fmtPct(array.get(allHits, d) / float(n) * 100.0), i_colMed)
+            table.cell(tbl, SPACER, r, "", text_size=TSIZE)
+            r += 1
+
+            fullRow(tbl, r, verdict, i_colMed, false, verdictTip)
+            r += 1
+
+        // ── CSV EXPORT ────────────────────────────────────────────────────────
+        if i_exportCsv
+            log.info("day,open0930,close1600,movePts,absMovePts,vix,atrD,atrRatio,atrRising,dow,row,oddsPct")
+            for i = 0 to n - 1
+                log.info(str.tostring(array.get(dateNumArr, i), "#") + "," +
+                     str.tostring(array.get(entryPxArr, i), "#0.00") + "," +
+                     str.tostring(array.get(closePxArr, i), "#0.00") + "," +
+                     str.tostring(array.get(movePtsArr, i), "#0.00") + "," +
+                     str.tostring(array.get(absMoveArr, i), "#0.00") + "," +
+                     str.tostring(array.get(vixArr, i), "#0.00") + "," +
+                     csvNum(array.get(atrPtsArr, i), "#0.00") + "," +
+                     csvNum(array.get(atrRatArr, i), "#0.0000") + "," +
+                     csvNum(array.get(atrUpArr, i), "#0") + "," +
+                     csvNum(array.get(dowArr, i), "#0") + "," +
+                     str.tostring(array.get(pIdx, i)) + "," +
+                     csvNum(array.get(scoreArr, i), "#0.0"))

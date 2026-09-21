@@ -1,0 +1,895 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © gogaz
+
+//@version=6
+indicator("Advanced Physics Trading System + Analytics Suite",
+          overlay=false,
+          precision=4,
+          max_labels_count=500,
+          max_lines_count=500)
+
+// ==================== TIMEFRAME PRESETS ====================
+preset = input.string("Auto", "Timeframe Preset",
+     options=["Auto", "Scalp (5m)", "Intraday (15m)", "Swing (1H)", "Swing (4H)", "Position (D)", "Manual"],
+     group="Timeframe Presets",
+     tooltip="Auto = detect from chart timeframe. Manual = use the raw input values below.")
+
+length_manual     = input.int(14, "Lookback (manual)", minval=1, group="Timeframe Presets", inline="m1")
+vol_ma_manual     = input.int(20, "Vol MA (manual)", minval=1, group="Timeframe Presets", inline="m2")
+thr_vel_manual    = input.float(0.5, "Vel Thr (manual)", step=0.1, group="Timeframe Presets", inline="m3")
+thr_energy_manual = input.float(2.0, "Energy Thr (manual)", step=0.1, group="Timeframe Presets", inline="m4")
+entropy_manual    = input.float(0.85, "Entropy (manual)", step=0.05, group="Timeframe Presets", inline="m5")
+
+// ==================== CORE PHYSICS ====================
+spring_constant = input.float(0.5, "Spring Constant (k)", step=0.1, minval=0.1, maxval=2.0, group="Physics Settings")
+
+// Display Options
+show_dashboard      = input.bool(true, "Show Physics Dashboard", group="Display")
+show_colored_bars   = input.bool(true, "Color Bars by Physics State", group="Display")
+show_signals        = input.bool(true, "Show Buy/Sell Signals", group="Display")
+show_mean_reversion = input.bool(true, "Show Mean Reversion Zone", group="Display")
+show_force_on_bars  = input.bool(true, "Show Force Signal Shapes", group="Display")
+
+// Background
+use_custom_bg       = input.bool(false, "Use Custom Background", group="Background")
+bg_color            = input.color(color.black, "Background Color", group="Background", inline="bg")
+bg_transparency     = input.int(90, "Background Transparency", minval=0, maxval=100, group="Background", inline="bg")
+
+// Physics Dashboard Style
+phys_pos  = input.string("Top Right", "Physics Dashboard Position", options=["Top Left","Top Center","Top Right","Middle Left","Middle Center","Middle Right","Bottom Left","Bottom Center","Bottom Right"], group="Physics Dashboard")
+phys_size = input.string("Small", "Physics Dashboard Text Size", options=["Tiny","Small","Normal","Large","Huge"], group="Physics Dashboard")
+table_bg_transparency = input.int(80, "Table Background Transparency", minval=0, maxval=100, group="Physics Dashboard")
+table_border_width    = input.int(1, "Table Border Width", minval=0, maxval=5, group="Physics Dashboard")
+
+// ==================== ANALYTICS SETTINGS ====================
+rollLookback = input.int(20, "Rolling Lookback (physics flips)", minval=5, group="Analytics",
+     tooltip="Number of recent physics state flips used for geometry and time-symmetry metrics.")
+
+symBullThresh   = input.float(1.2, "Time Symmetry Bull", minval=1.0, step=0.05, group="Analytics Thresholds")
+symBearThresh   = input.float(0.8, "Time Symmetry Bear", minval=0.1, step=0.05, group="Analytics Thresholds")
+geomSwingThresh = input.float(3.0, "Geometry Swing %", minval=0.5, step=0.5, group="Analytics Thresholds")
+compRatio       = input.float(0.6, "Compression Ratio", minval=0.1, step=0.05, group="Analytics Thresholds")
+expRatio        = input.float(1.4, "Expansion Ratio", minval=1.0, step=0.05, group="Analytics Thresholds")
+minCompStreak   = input.int(3, "Min Compression Streak", minval=2, group="Analytics Thresholds")
+nearExtremePct  = input.float(1.0, "Near Extreme Band %", minval=0.1, step=0.1, group="Analytics Thresholds")
+
+// ==================== ANALYTICS TABLES ====================
+t1_show = input.bool(true, "Show", group="Table 1 – Physics State")
+t1_pos  = input.string("Middle Right", "Position", options=["Top Left","Top Center","Top Right","Middle Left","Middle Center","Middle Right","Bottom Left","Bottom Center","Bottom Right"], group="Table 1 – Physics State")
+t1_size = input.string("Normal", "Size", options=["Tiny","Small","Normal","Large","Huge"], group="Table 1 – Physics State")
+
+t2_show = input.bool(true, "Show", group="Table 2 – Dimension Agreement")
+t2_pos  = input.string("Top Left", "Position", options=["Top Left","Top Center","Top Right","Middle Left","Middle Center","Middle Right","Bottom Left","Bottom Center","Bottom Right"], group="Table 2 – Dimension Agreement")
+t2_size = input.string("Normal", "Size", options=["Tiny","Small","Normal","Large","Huge"], group="Table 2 – Dimension Agreement")
+
+t3_show = input.bool(true, "Show", group="Table 3 – Physics Geometry")
+t3_pos  = input.string("Bottom Right", "Position", options=["Top Left","Top Center","Top Right","Middle Left","Middle Center","Middle Right","Bottom Left","Bottom Center","Bottom Right"], group="Table 3 – Physics Geometry")
+t3_size = input.string("Normal", "Size", options=["Tiny","Small","Normal","Large","Huge"], group="Table 3 – Physics Geometry")
+
+t4_show = input.bool(true, "Show", group="Table 4 – Time Metrics")
+t4_pos  = input.string("Bottom Left", "Position", options=["Top Left","Top Center","Top Right","Middle Left","Middle Center","Middle Right","Bottom Left","Bottom Center","Bottom Right"], group="Table 4 – Time Metrics")
+t4_size = input.string("Normal", "Size", options=["Tiny","Small","Normal","Large","Huge"], group="Table 4 – Time Metrics")
+
+t5_show = input.bool(true, "Show", group="Table 5 – Regime Persistence")
+t5_pos  = input.string("Middle Left", "Position", options=["Top Left","Top Center","Top Right","Middle Left","Middle Center","Middle Right","Bottom Left","Bottom Center","Bottom Right"], group="Table 5 – Regime Persistence")
+t5_size = input.string("Normal", "Size", options=["Tiny","Small","Normal","Large","Huge"], group="Table 5 – Regime Persistence")
+
+t6_show = input.bool(true, "Show", group="Table 6 – Situation")
+t6_pos  = input.string("Top Center", "Position", options=["Top Left","Top Center","Top Right","Middle Left","Middle Center","Middle Right","Bottom Left","Bottom Center","Bottom Right"], group="Table 6 – Situation")
+t6_size = input.string("Normal", "Size", options=["Tiny","Small","Normal","Large","Huge"], group="Table 6 – Situation")
+
+// Global style
+tbl_bg     = input.color(color.black, "Table Background", group="Global Table Style")
+tbl_bg_t   = input.int(15, "Background Transparency", minval=0, maxval=100, group="Global Table Style")
+tbl_border = input.color(color.gray, "Border Color", group="Global Table Style")
+tbl_text   = input.color(color.silver, "Text Color", group="Global Table Style")
+
+// ==================== PRESET RESOLUTION ====================
+string activePreset = preset
+
+if preset == "Auto"
+    int tfSeconds = timeframe.in_seconds(timeframe.period)
+    if tfSeconds <= 5 * 60
+        activePreset := "Scalp (5m)"
+    else if tfSeconds <= 15 * 60
+        activePreset := "Intraday (15m)"
+    else if tfSeconds <= 60 * 60
+        activePreset := "Swing (1H)"
+    else if tfSeconds <= 4 * 60 * 60
+        activePreset := "Swing (4H)"
+    else if tfSeconds <= 24 * 60 * 60
+        activePreset := "Position (D)"
+    else
+        activePreset := "Swing (1H)"
+
+int   eff_length     = length_manual
+int   eff_vol_ma     = vol_ma_manual
+float eff_thr_vel    = thr_vel_manual
+float eff_thr_energy = thr_energy_manual
+float eff_entropy    = entropy_manual
+
+switch activePreset
+    "Scalp (5m)" =>
+        eff_length     := 20
+        eff_vol_ma     := 30
+        eff_thr_vel    := 0.8
+        eff_thr_energy := 3.0
+        eff_entropy    := 0.75
+    "Intraday (15m)" =>
+        eff_length     := 18
+        eff_vol_ma     := 25
+        eff_thr_vel    := 0.6
+        eff_thr_energy := 2.5
+        eff_entropy    := 0.80
+    "Swing (1H)" =>
+        eff_length     := 14
+        eff_vol_ma     := 20
+        eff_thr_vel    := 0.5
+        eff_thr_energy := 2.0
+        eff_entropy    := 0.85
+    "Swing (4H)" =>
+        eff_length     := 14
+        eff_vol_ma     := 20
+        eff_thr_vel    := 0.4
+        eff_thr_energy := 1.8
+        eff_entropy    := 0.87
+    "Position (D)" =>
+        eff_length     := 12
+        eff_vol_ma     := 20
+        eff_thr_vel    := 0.3
+        eff_thr_energy := 1.5
+        eff_entropy    := 0.90
+    "Manual" =>
+        eff_length     := length_manual
+        eff_vol_ma     := vol_ma_manual
+        eff_thr_vel    := thr_vel_manual
+        eff_thr_energy := thr_energy_manual
+        eff_entropy    := entropy_manual
+
+// ==================== PHYSICS ENGINE ====================
+volatility = ta.atr(eff_vol_ma)
+velocity   = volatility != 0 ? (close - close[1]) / volatility : 0.0
+acceleration = velocity - velocity[1]
+
+sma_vol = ta.sma(volume, eff_length)
+mass    = sma_vol != 0 ? volume / sma_vol : 1.0
+normalized_mass = math.min(mass, 5.0)
+
+price_pct_change = ta.roc(close, 1)
+volume_work_pct  = price_pct_change * normalized_mass
+
+kinetic_energy   = 0.5 * normalized_mass * math.pow(velocity, 2)
+price_offset     = close - ta.sma(close, eff_length)
+potential_energy = 0.5 * spring_constant * math.pow(price_offset / (volatility != 0 ? volatility : 1.0), 2)
+
+force        = normalized_mass * acceleration
+impulse      = force * 1.0
+total_energy = kinetic_energy + potential_energy
+temperature  = ta.sma(math.abs(velocity), 5)
+
+// Shannon Entropy (5 bins, uses eff_length)
+f_bin1 = 0, f_bin2 = 0, f_bin3 = 0, f_bin4 = 0, f_bin5 = 0
+for i = 0 to eff_length - 1
+    val = volume_work_pct[i]
+    if val < -2.0
+        f_bin1 += 1
+    else if val >= -2.0 and val < -0.5
+        f_bin2 += 1
+    else if val >= -0.5 and val <= 0.5
+        f_bin3 += 1
+    else if val > 0.5 and val <= 2.0
+        f_bin4 += 1
+    else
+        f_bin5 += 1
+
+p1 = f_bin1 / eff_length
+p2 = f_bin2 / eff_length
+p3 = f_bin3 / eff_length
+p4 = f_bin4 / eff_length
+p5 = f_bin5 / eff_length
+
+calc_p_log_p(p) => p > 0 ? p * (math.log(p) / math.log(2)) : 0.0
+raw_entropy = -(calc_p_log_p(p1) + calc_p_log_p(p2) + calc_p_log_p(p3) + calc_p_log_p(p4) + calc_p_log_p(p5))
+normalized_entropy = raw_entropy / 2.321928
+
+// ==================== SIGNALS ====================
+orderly_market    = normalized_entropy <= eff_entropy
+bullish_condition = acceleration > 0 and velocity > eff_thr_vel and kinetic_energy > eff_thr_energy and volume_work_pct > 0 and orderly_market
+bearish_condition = acceleration < 0 and velocity < -eff_thr_vel and kinetic_energy > eff_thr_energy and volume_work_pct < 0 and orderly_market
+
+mean_reversion_condition = potential_energy > 2.5 and price_offset < 0
+exhaustion_bullish       = kinetic_energy > eff_thr_energy * 3 and acceleration < 0 and velocity > 0
+exhaustion_bearish       = kinetic_energy > eff_thr_energy * 3 and acceleration > 0 and velocity < 0
+
+buy_signal  = bullish_condition and not exhaustion_bullish
+sell_signal = bearish_condition and not exhaustion_bearish
+
+// ==================== DIMENSION AGREEMENT MATRIX ====================
+bool dim_velocity_bull = velocity > 0
+bool dim_velocity_bear = velocity < 0
+bool dim_accel_bull    = acceleration > 0
+bool dim_accel_bear    = acceleration < 0
+bool dim_force_bull    = force > 0.3
+bool dim_force_bear    = force < -0.3
+bool dim_entropy_low   = orderly_market
+bool dim_volwork_bull  = volume_work_pct > 0
+bool dim_volwork_bear  = volume_work_pct < 0
+
+int bullAgreement = (dim_velocity_bull ? 1 : 0) + (dim_accel_bull ? 1 : 0) + (dim_force_bull ? 1 : 0) + (dim_entropy_low ? 1 : 0) + (dim_volwork_bull ? 1 : 0)
+int bearAgreement = (dim_velocity_bear ? 1 : 0) + (dim_accel_bear ? 1 : 0) + (dim_force_bear ? 1 : 0) + (dim_entropy_low ? 1 : 0) + (dim_volwork_bear ? 1 : 0)
+
+int netAgreement = bullAgreement - bearAgreement
+
+// ==================== PHYSICS FLIP DETECTION ====================
+var int physRegime = 0
+
+bool physBullFlip = netAgreement >= 2 and physRegime != 1
+bool physBearFlip = netAgreement <= -2 and physRegime != -1
+
+if physBullFlip
+    physRegime := 1
+else if physBearFlip
+    physRegime := -1
+
+// ==================== FLIP STORE ====================
+var array<float> flips_p = array.new_float(0)
+var array<int>   flips_b = array.new_int(0)
+var array<int>   flips_d = array.new_int(0)
+
+pushFlip(p, b, d) =>
+    array.push(flips_p, p)
+    array.push(flips_b, b)
+    array.push(flips_d, d)
+    int cap = rollLookback * 2
+    while array.size(flips_b) > cap
+        array.shift(flips_p)
+        array.shift(flips_b)
+        array.shift(flips_d)
+
+if physBullFlip
+    pushFlip(close, bar_index, 1)
+if physBearFlip
+    pushFlip(close, bar_index, -1)
+
+// ==================== GEOMETRY + TIME SYMMETRY ====================
+float gHeightPct  = 0.0
+float gTimeBars   = 0.0
+float gTimeSym    = 0.0
+float gEfficiency = 0.0
+
+int fN = array.size(flips_p)
+if fN >= 3
+    float sumH = 0.0
+    float sumT = 0.0
+    int   cnt  = 0
+    float sumUpT = 0.0, sumDnT = 0.0
+    int   cntUp = 0, cntDn = 0
+
+    for i = 1 to fN - 1
+        float p0 = array.get(flips_p, i - 1)
+        float p1 = array.get(flips_p, i)
+        int   b0 = array.get(flips_b, i - 1)
+        int   b1 = array.get(flips_b, i)
+        int   d1 = array.get(flips_d, i)
+
+        float hPct = p0 != 0 ? (math.abs(p1 - p0) / p0) * 100.0 : 0.0
+        int   dt = math.abs(b1 - b0)
+
+        sumH += hPct
+        sumT += dt
+        cnt  += 1
+
+        if d1 == 1
+            sumUpT += dt
+            cntUp  += 1
+        else
+            sumDnT += dt
+            cntDn  += 1
+
+    gHeightPct := cnt > 0 ? sumH / cnt : 0.0
+    gTimeBars  := cnt > 0 ? sumT / cnt : 0.0
+
+    float avgUp = cntUp > 0 ? sumUpT / cntUp : na
+    float avgDn = cntDn > 0 ? sumDnT / cntDn : na
+    gTimeSym := (not na(avgUp) and not na(avgDn) and avgDn > 0) ? avgUp / avgDn : 0.0
+
+    gEfficiency := (gTimeBars > 0 and gHeightPct > 0) ? gHeightPct / math.max(gTimeBars, 1) : 0.0
+
+// ==================== COMPOSITE SCORE ====================
+float agreeNorm  = netAgreement / 5.0
+float symScore   = gTimeSym > 0 ? (gTimeSym - 1.0) : 0.0
+float geomScore  = gHeightPct > 0 ? math.log(gHeightPct / 3.0) : 0.0
+float entropyPen = (1.0 - normalized_entropy) * 0.5
+
+float gComposite = agreeNorm * 2.0 + symScore * 1.5 + geomScore * 1.0 + entropyPen
+
+// ==================== STREAKS ====================
+var int gCompStreak = 0
+var int gExpStreak  = 0
+
+if physBullFlip or physBearFlip
+    if fN >= 2
+        float lastH = math.abs(array.get(flips_p, fN - 1) - array.get(flips_p, fN - 2))
+        float lastP = array.get(flips_p, fN - 2)
+        float lastHPct = lastP != 0 ? (lastH / lastP) * 100.0 : 0.0
+        float ratio = gHeightPct > 0 ? lastHPct / gHeightPct : 1.0
+
+        if ratio < compRatio
+            gCompStreak += 1
+            gExpStreak  := 0
+        else if ratio > expRatio
+            gExpStreak  += 1
+            gCompStreak := 0
+        else
+            gCompStreak := 0
+            gExpStreak  := 0
+
+// ==================== ROLLING HIGH/LOW ====================
+float rollHigh = na
+float rollLow  = na
+if fN >= 2
+    int startIdx = math.max(0, fN - 1 - rollLookback)
+    float hMax = -1e10
+    float lMin =  1e10
+    for i = startIdx to fN - 1
+        float pv = array.get(flips_p, i)
+        if pv > hMax
+            hMax := pv
+        if pv < lMin
+            lMin := pv
+    rollHigh := hMax
+    rollLow  := lMin
+
+float pctToHigh = (not na(rollHigh) and close > 0) ? ((rollHigh - close) / close) * 100.0 : 0.0
+float pctToLow  = (not na(rollLow)  and close > 0) ? ((close - rollLow)  / close) * 100.0 : 0.0
+
+// ==================== PHYSICS-SPECIFIC FLAGS ====================
+bool coilFormation   = kinetic_energy < eff_thr_energy and potential_energy > 2.5 and orderly_market
+bool springRelease   = coilFormation[1] and force > 1.0
+bool exhaustionTop   = exhaustion_bullish
+bool exhaustionBot   = exhaustion_bearish
+bool fullAgreement   = bullAgreement == 5 or bearAgreement == 5
+bool physicsDisagree = bullAgreement >= 2 and bearAgreement >= 2
+bool phaseTransition = (velocity > 0 and acceleration < 0) or (velocity < 0 and acceleration > 0)
+bool entropyShift    = (normalized_entropy > eff_entropy and normalized_entropy[1] <= eff_entropy) or
+                       (normalized_entropy <= eff_entropy and normalized_entropy[1] > eff_entropy)
+
+// Breakout / continuation flags
+bool breakoutWatch      = gCompStreak >= minCompStreak
+bool readyBreakoutUp    = breakoutWatch and math.abs(pctToHigh) <= nearExtremePct and netAgreement > 0
+bool readyBreakdownDown = breakoutWatch and math.abs(pctToLow)  <= nearExtremePct and netAgreement < 0
+bool confirmedBreakout  = gExpStreak >= 1 and not na(rollHigh) and close > rollHigh and netAgreement >= 2
+bool confirmedBreakdown = gExpStreak >= 1 and not na(rollLow)  and close < rollLow  and netAgreement <= -2
+bool continuationUp     = gExpStreak >= 1 and gTimeSym > symBullThresh and netAgreement >= 2
+bool continuationDown   = gExpStreak >= 1 and gTimeSym < symBearThresh and netAgreement <= -2
+
+bool trendingBull = netAgreement >= 2 and gTimeSym > symBullThresh and gHeightPct > geomSwingThresh and orderly_market
+bool trendingBear = netAgreement <= -2 and gTimeSym < symBearThresh and gHeightPct > geomSwingThresh and orderly_market
+
+// ==================== RANK SCORE ====================
+float rankScore = gComposite + netAgreement / 3.0 + (gTimeSym - 1.0) * 1.5
+
+// ==================== SITUATION LOGIC ====================
+string situation  = "NO CLEAR SETUP"
+color  sitColor   = color.gray
+string suggestion = "Wait for clearer conditions."
+color  sugColor   = color.gray
+
+if fullAgreement and netAgreement > 0
+    situation  := "FULL BULL AGREEMENT"
+    sitColor   := color.lime
+    suggestion := "All 5 physics dimensions bullish — strongest long setup."
+    sugColor   := color.lime
+else if fullAgreement and netAgreement < 0
+    situation  := "FULL BEAR AGREEMENT"
+    sitColor   := color.red
+    suggestion := "All 5 physics dimensions bearish — strongest short setup."
+    sugColor   := color.red
+else if springRelease and netAgreement > 0
+    situation  := "SPRING RELEASE ▲"
+    sitColor   := color.aqua
+    suggestion := "Coil released bullish — momentum entry."
+    sugColor   := color.aqua
+else if springRelease and netAgreement < 0
+    situation  := "SPRING RELEASE ▼"
+    sitColor   := color.orange
+    suggestion := "Coil released bearish — momentum entry."
+    sugColor   := color.orange
+else if confirmedBreakout
+    situation  := "CONFIRMED BREAKOUT ▲"
+    sitColor   := color.lime
+    suggestion := "Upside break confirmed with physics agreement."
+    sugColor   := color.lime
+else if confirmedBreakdown
+    situation  := "CONFIRMED BREAKDOWN ▼"
+    sitColor   := color.red
+    suggestion := "Downside break confirmed with physics agreement."
+    sugColor   := color.red
+else if readyBreakoutUp
+    situation  := "READY TO BREAKOUT ▲"
+    sitColor   := color.aqua
+    suggestion := "Coiled near resistance — prep long above rolling high."
+    sugColor   := color.aqua
+else if readyBreakdownDown
+    situation  := "READY TO BREAKDOWN ▼"
+    sitColor   := color.orange
+    suggestion := "Coiled near support — prep short below rolling low."
+    sugColor   := color.orange
+else if coilFormation
+    situation  := "COIL FORMATION"
+    sitColor   := color.yellow
+    suggestion := "Potential energy high, kinetic low — spring loading."
+    sugColor   := color.yellow
+else if exhaustionTop
+    situation  := "EXHAUSTION TOP"
+    sitColor   := color.orange
+    suggestion := "Bullish momentum decelerating — consider taking profits."
+    sugColor   := color.orange
+else if exhaustionBot
+    situation  := "EXHAUSTION BOTTOM"
+    sitColor   := color.aqua
+    suggestion := "Bearish momentum decelerating — reversal possible."
+    sugColor   := color.aqua
+else if physicsDisagree
+    situation  := "PHYSICS DISAGREE"
+    sitColor   := color.yellow
+    suggestion := "Dimensions conflict — reduce size, wait for resolution."
+    sugColor   := color.yellow
+else if trendingBull
+    situation  := "TRENDING BULL"
+    sitColor   := color.green
+    suggestion := "Physics-consistent bull regime — hold longs."
+    sugColor   := color.green
+else if trendingBear
+    situation  := "TRENDING BEAR"
+    sitColor   := color.maroon
+    suggestion := "Physics-consistent bear regime — hold shorts."
+    sugColor   := color.maroon
+else if not orderly_market
+    situation  := "CHAOTIC REGIME"
+    sitColor   := color.gray
+    suggestion := "High entropy — stand aside."
+    sugColor   := color.gray
+
+// ==================== LOWER PANE PLOTS ====================
+impulse_color = impulse > 0 ? (impulse > impulse[1] ? color.lime : color.green) : impulse < 0 ? (impulse < impulse[1] ? color.red : color.maroon) : color.gray
+
+plot(force, title="Force", color=force > 0 ? color.new(color.green, 40) : color.new(color.red, 40), style=plot.style_histogram, linewidth=2)
+plot(velocity, title="Velocity", color=color.blue, linewidth=2)
+plot(acceleration, title="G-Force (Accel)", color=color.orange, linewidth=1)
+plot(normalized_entropy, title="Normalized Entropy", color=normalized_entropy > eff_entropy ? color.red : color.yellow, linewidth=2)
+
+hline(0, title="Zero Line", color=color.gray, linestyle=hline.style_dashed)
+
+// ==================== MAIN CHART OVERLAYS ====================
+force_bullish_lvl3 = show_force_on_bars and force > 1.5
+force_bullish_lvl2 = show_force_on_bars and force > 0.8 and force <= 1.5
+force_bullish_lvl1 = show_force_on_bars and force > 0.3 and force <= 0.8
+
+force_bearish_lvl3 = show_force_on_bars and force < -1.5
+force_bearish_lvl2 = show_force_on_bars and force < -0.8 and force >= -1.5
+force_bearish_lvl1 = show_force_on_bars and force < -0.3 and force >= -0.8
+
+plotshape(force_bullish_lvl3, title="Bull Force L3", location=location.belowbar, color=color.lime, style=shape.triangleup, size=size.normal, force_overlay=true)
+plotshape(force_bullish_lvl2, title="Bull Force L2", location=location.belowbar, color=color.lime, style=shape.triangleup, size=size.small, force_overlay=true)
+plotshape(force_bullish_lvl1, title="Bull Force L1", location=location.belowbar, color=color.lime, style=shape.triangleup, size=size.tiny, force_overlay=true)
+
+plotshape(force_bearish_lvl3, title="Bear Force L3", location=location.abovebar, color=color.fuchsia, style=shape.triangledown, size=size.normal, force_overlay=true)
+plotshape(force_bearish_lvl2, title="Bear Force L2", location=location.abovebar, color=color.fuchsia, style=shape.triangledown, size=size.small, force_overlay=true)
+plotshape(force_bearish_lvl1, title="Bear Force L1", location=location.abovebar, color=color.fuchsia, style=shape.triangledown, size=size.tiny, force_overlay=true)
+
+if show_signals
+    if buy_signal
+        label.new(bar_index, low - (ta.atr(20) * 0.5), "BUY",
+                  color=color.green, style=label.style_label_up,
+                  textcolor=color.white, size=size.small, force_overlay=true)
+    if sell_signal
+        label.new(bar_index, high + (ta.atr(20) * 0.5), "SELL",
+                  color=color.red, style=label.style_label_down,
+                  textcolor=color.white, size=size.small, force_overlay=true)
+
+upper_band = ta.sma(close, eff_length) + (volatility * 1.5)
+lower_band = ta.sma(close, eff_length) - (volatility * 1.5)
+
+plot(show_mean_reversion ? upper_band : na, color=color.new(color.purple, 30), linewidth=1, title="Upper Spring Band", force_overlay=true)
+plot(show_mean_reversion ? lower_band : na, color=color.new(color.purple, 30), linewidth=1, title="Lower Spring Band", force_overlay=true)
+
+bar_color = show_colored_bars ?
+             (buy_signal ? color.green :
+              sell_signal ? color.red :
+              exhaustion_bullish ? color.yellow :
+              exhaustion_bearish ? color.orange :
+              mean_reversion_condition ? color.purple :
+              force > 0.5 ? color.lime :
+              force < -0.5 ? color.fuchsia : color.gray) : na
+
+barcolor(bar_color)
+bgcolor(color.new(bg_color, bg_transparency), force_overlay=true)
+
+// ==================== HELPER FUNCTIONS ====================
+f_pos(pos) =>
+    switch pos
+        "Top Left"      => position.top_left
+        "Top Center"    => position.top_center
+        "Top Right"     => position.top_right
+        "Middle Left"   => position.middle_left
+        "Middle Center" => position.middle_center
+        "Middle Right"  => position.middle_right
+        "Bottom Left"   => position.bottom_left
+        "Bottom Center" => position.bottom_center
+        "Bottom Right"  => position.bottom_right
+        => position.top_right
+
+f_size(sz) =>
+    switch sz
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        "Huge"   => size.huge
+        => size.small
+
+f_trunc(n, d) =>
+    factor = math.pow(10, d)
+    math.floor(n * factor) / factor
+
+bgFinal = color.new(tbl_bg, tbl_bg_t)
+
+// ==================== PHYSICS DASHBOARD ====================
+var dashboard = table.new(f_pos(phys_pos), 2, 13,
+                          bgcolor=color.new(color.black, table_bg_transparency),
+                          border_color=color.gray,
+                          border_width=table_border_width,
+                          force_overlay=true)
+
+if show_dashboard and barstate.islast
+    t_size = f_size(phys_size)
+
+    table.cell(dashboard, 0, 0, "Physics Metric", text_color=color.white, bgcolor=color.gray, text_size=t_size)
+    table.cell(dashboard, 1, 0, "Value", text_color=color.white, bgcolor=color.gray, text_size=t_size)
+
+    c_vel = velocity > 0 ? color.green : color.red
+    table.cell(dashboard, 0, 1, "Velocity", text_color=color.white, text_size=t_size)
+    table.cell(dashboard, 1, 1, str.tostring(velocity, "#.##"), text_color=c_vel, text_size=t_size)
+
+    c_acc = acceleration > 0 ? color.green : color.red
+    table.cell(dashboard, 0, 2, "G-Force (Accel)", text_color=color.white, text_size=t_size)
+    table.cell(dashboard, 1, 2, str.tostring(acceleration, "#.##"), text_color=c_acc, text_size=t_size)
+
+    c_frc = force > 0.5 ? color.lime : force < -0.5 ? color.fuchsia : color.gray
+    table.cell(dashboard, 0, 3, "⚡ Force", text_color=color.white, text_size=t_size)
+    table.cell(dashboard, 1, 3, str.tostring(force, "#.##"), text_color=c_frc, text_size=t_size)
+
+    c_wrk = volume_work_pct > 0 ? color.green : color.red
+    table.cell(dashboard, 0, 4, "Volume Work (%)", text_color=color.white, text_size=t_size)
+    table.cell(dashboard, 1, 4, str.tostring(volume_work_pct, "#.##") + "%", text_color=c_wrk, text_size=t_size)
+
+    c_ent = orderly_market ? color.green : color.red
+    table.cell(dashboard, 0, 5, "Entropy (Disorder)", text_color=color.white, text_size=t_size)
+    table.cell(dashboard, 1, 5, str.tostring(normalized_entropy, "#.##"), text_color=c_ent, text_size=t_size)
+
+    table.cell(dashboard, 0, 6, "Impulse", text_color=color.white, text_size=t_size)
+    table.cell(dashboard, 1, 6, str.tostring(impulse, "#.##"), text_color=impulse_color, text_size=t_size)
+
+    c_kin = kinetic_energy > eff_thr_energy ? color.green : color.orange
+    table.cell(dashboard, 0, 7, "Kinetic Energy", text_color=color.white, text_size=t_size)
+    table.cell(dashboard, 1, 7, str.tostring(kinetic_energy, "#.##"), text_color=c_kin, text_size=t_size)
+
+    c_pot = potential_energy > 2.5 ? color.purple : color.gray
+    table.cell(dashboard, 0, 8, "Tension (Potential)", text_color=color.white, text_size=t_size)
+    table.cell(dashboard, 1, 8, str.tostring(potential_energy, "#.##"), text_color=c_pot, text_size=t_size)
+
+    c_tot = total_energy > 4.0 ? color.yellow : color.white
+    table.cell(dashboard, 0, 9, "Total Energy", text_color=color.white, text_size=t_size)
+    table.cell(dashboard, 1, 9, str.tostring(total_energy, "#.##"), text_color=c_tot, text_size=t_size)
+
+    c_tmp = temperature > 1.0 ? color.red : color.orange
+    table.cell(dashboard, 0, 10, "Temperature", text_color=color.white, text_size=t_size)
+    table.cell(dashboard, 1, 10, str.tostring(temperature, "#.##"), text_color=c_tmp, text_size=t_size)
+
+    signal_text = buy_signal ? "⚡ BUY" : sell_signal ? "⚠️ SELL" : "NEUTRAL"
+    signal_color = buy_signal ? color.green : sell_signal ? color.red : color.silver
+    table.cell(dashboard, 0, 11, "Signal", text_color=color.white, text_size=t_size)
+    table.cell(dashboard, 1, 11, signal_text, text_color=signal_color, text_size=t_size)
+
+    table.cell(dashboard, 0, 12, "Preset", text_color=color.white, text_size=t_size, bgcolor=color.gray)
+    table.cell(dashboard, 1, 12, activePreset, text_color=color.aqua, text_size=t_size, bgcolor=color.gray)
+
+// ==================== ANALYTICS TABLES ====================
+var table t1 = table.new(f_pos(t1_pos), 2, 8, bgcolor=bgFinal, border_width=1, border_color=tbl_border)
+var table t2 = table.new(f_pos(t2_pos), 3, 7, bgcolor=bgFinal, border_width=1, border_color=tbl_border)
+var table t3 = table.new(f_pos(t3_pos), 4, 5, bgcolor=bgFinal, border_width=1, border_color=tbl_border)
+var table t4 = table.new(f_pos(t4_pos), 3, 7, bgcolor=bgFinal, border_width=1, border_color=tbl_border)
+var table t5 = table.new(f_pos(t5_pos), 3, 7, bgcolor=bgFinal, border_width=1, border_color=tbl_border)
+var table t6 = table.new(f_pos(t6_pos), 2, 8, bgcolor=bgFinal, border_width=1, border_color=tbl_border)
+
+if barstate.islast
+    // ===== TABLE 1 – PHYSICS STATE =====
+    if t1_show
+        table.set_position(t1, f_pos(t1_pos))
+        sz1 = f_size(t1_size)
+
+        table.cell(t1, 0, 0, "Physics State", bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=sz1)
+        table.cell(t1, 1, 0, "Value",         bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=sz1)
+
+        table.cell(t1, 0, 1, "Regime", bgcolor=bgFinal, text_color=tbl_text, text_size=sz1)
+        string regTxt = physRegime == 1 ? "BULL" : physRegime == -1 ? "BEAR" : "NEUTRAL"
+        color  regCol = physRegime == 1 ? color.green : physRegime == -1 ? color.red : color.gray
+        table.cell(t1, 1, 1, regTxt, bgcolor=bgFinal, text_color=regCol, text_size=sz1)
+
+        table.cell(t1, 0, 2, "Net Agreement", bgcolor=bgFinal, text_color=tbl_text, text_size=sz1)
+        color netCol = netAgreement >= 2 ? color.green : netAgreement <= -2 ? color.red : color.yellow
+        table.cell(t1, 1, 2, str.tostring(netAgreement) + " / 5", bgcolor=bgFinal, text_color=netCol, text_size=sz1)
+
+        table.cell(t1, 0, 3, "Bull Dims", bgcolor=bgFinal, text_color=tbl_text, text_size=sz1)
+        table.cell(t1, 1, 3, str.tostring(bullAgreement) + " / 5", bgcolor=bgFinal, text_color=color.green, text_size=sz1)
+
+        table.cell(t1, 0, 4, "Bear Dims", bgcolor=bgFinal, text_color=tbl_text, text_size=sz1)
+        table.cell(t1, 1, 4, str.tostring(bearAgreement) + " / 5", bgcolor=bgFinal, text_color=color.red, text_size=sz1)
+
+        table.cell(t1, 0, 5, "Entropy", bgcolor=bgFinal, text_color=tbl_text, text_size=sz1)
+        table.cell(t1, 1, 5, str.tostring(f_trunc(normalized_entropy, 2)), bgcolor=bgFinal, text_color=orderly_market ? color.green : color.red, text_size=sz1)
+
+        table.cell(t1, 0, 6, "Temp", bgcolor=bgFinal, text_color=tbl_text, text_size=sz1)
+        table.cell(t1, 1, 6, str.tostring(f_trunc(temperature, 2)), bgcolor=bgFinal, text_color=temperature > 1.0 ? color.orange : tbl_text, text_size=sz1)
+
+        table.cell(t1, 0, 7, "Rank Score", bgcolor=color.new(color.blue, 90), text_color=color.white, text_size=sz1)
+        color rankCol = rankScore > 1.0 ? color.lime : rankScore < -1.0 ? color.red : color.yellow
+        table.cell(t1, 1, 7, str.tostring(f_trunc(rankScore, 2)), bgcolor=color.new(color.blue, 90), text_color=rankCol, text_size=sz1)
+
+    // ===== TABLE 2 – DIMENSION AGREEMENT =====
+    if t2_show
+        table.set_position(t2, f_pos(t2_pos))
+        sz2 = f_size(t2_size)
+
+        table.cell(t2, 0, 0, "Dimension", bgcolor=color.new(color.purple, 70), text_color=color.white, text_size=sz2)
+        table.cell(t2, 1, 0, "Status",    bgcolor=color.new(color.purple, 70), text_color=color.white, text_size=sz2)
+        table.cell(t2, 2, 0, "Dir",       bgcolor=color.new(color.purple, 70), text_color=color.white, text_size=sz2)
+
+        table.cell(t2, 0, 1, "Velocity", bgcolor=bgFinal, text_color=tbl_text, text_size=sz2)
+        table.cell(t2, 1, 1, str.tostring(f_trunc(velocity, 2)), bgcolor=bgFinal, text_color=velocity > 0 ? color.green : color.red, text_size=sz2)
+        table.cell(t2, 2, 1, velocity > 0 ? "▲" : velocity < 0 ? "▼" : "→", bgcolor=bgFinal, text_color=velocity > 0 ? color.green : color.red, text_size=sz2)
+
+        table.cell(t2, 0, 2, "Acceleration", bgcolor=bgFinal, text_color=tbl_text, text_size=sz2)
+        table.cell(t2, 1, 2, str.tostring(f_trunc(acceleration, 2)), bgcolor=bgFinal, text_color=acceleration > 0 ? color.green : color.red, text_size=sz2)
+        table.cell(t2, 2, 2, acceleration > 0 ? "▲" : acceleration < 0 ? "▼" : "→", bgcolor=bgFinal, text_color=acceleration > 0 ? color.green : color.red, text_size=sz2)
+
+        table.cell(t2, 0, 3, "Force", bgcolor=bgFinal, text_color=tbl_text, text_size=sz2)
+        table.cell(t2, 1, 3, str.tostring(f_trunc(force, 2)), bgcolor=bgFinal, text_color=force > 0.3 ? color.green : force < -0.3 ? color.red : color.gray, text_size=sz2)
+        table.cell(t2, 2, 3, force > 0.3 ? "▲" : force < -0.3 ? "▼" : "→", bgcolor=bgFinal, text_color=force > 0.3 ? color.green : force < -0.3 ? color.red : color.gray, text_size=sz2)
+
+        table.cell(t2, 0, 4, "Volume Work", bgcolor=bgFinal, text_color=tbl_text, text_size=sz2)
+        table.cell(t2, 1, 4, str.tostring(f_trunc(volume_work_pct, 2)) + "%", bgcolor=bgFinal, text_color=volume_work_pct > 0 ? color.green : color.red, text_size=sz2)
+        table.cell(t2, 2, 4, volume_work_pct > 0 ? "▲" : volume_work_pct < 0 ? "▼" : "→", bgcolor=bgFinal, text_color=volume_work_pct > 0 ? color.green : color.red, text_size=sz2)
+
+        table.cell(t2, 0, 5, "Entropy (order)", bgcolor=bgFinal, text_color=tbl_text, text_size=sz2)
+        table.cell(t2, 1, 5, orderly_market ? "LOW ✓" : "HIGH ✗", bgcolor=bgFinal, text_color=orderly_market ? color.green : color.red, text_size=sz2)
+        table.cell(t2, 2, 5, orderly_market ? "▲" : "→", bgcolor=bgFinal, text_color=orderly_market ? color.green : color.gray, text_size=sz2)
+
+        table.cell(t2, 0, 6, "AGREEMENT", bgcolor=color.new(color.blue, 90), text_color=color.white, text_size=sz2)
+        table.cell(t2, 1, 6, "Bull " + str.tostring(bullAgreement) + " / Bear " + str.tostring(bearAgreement),
+                   bgcolor=color.new(color.blue, 90), text_color=netAgreement >= 2 ? color.green : netAgreement <= -2 ? color.red : color.yellow, text_size=sz2)
+        table.cell(t2, 2, 6, netAgreement > 0 ? "NET ▲" : netAgreement < 0 ? "NET ▼" : "NET →",
+                   bgcolor=color.new(color.blue, 90), text_color=netAgreement > 0 ? color.green : netAgreement < 0 ? color.red : color.gray, text_size=sz2)
+
+    // ===== TABLE 3 – PHYSICS GEOMETRY =====
+    if t3_show
+        table.set_position(t3, f_pos(t3_pos))
+        sz3 = f_size(t3_size)
+
+        table.cell(t3, 0, 0, "Geometry",  bgcolor=color.new(color.teal, 70), text_color=color.white, text_size=sz3)
+        table.cell(t3, 1, 0, "Height %",  bgcolor=color.new(color.teal, 70), text_color=color.white, text_size=sz3)
+        table.cell(t3, 2, 0, "Duration",  bgcolor=color.new(color.teal, 70), text_color=color.white, text_size=sz3)
+        table.cell(t3, 3, 0, "Efficiency", bgcolor=color.new(color.teal, 70), text_color=color.white, text_size=sz3)
+
+        table.cell(t3, 0, 1, "Average", bgcolor=bgFinal, text_color=tbl_text, text_size=sz3)
+        table.cell(t3, 1, 1, str.tostring(f_trunc(gHeightPct, 2)) + "%", bgcolor=bgFinal, text_color=tbl_text, text_size=sz3)
+        table.cell(t3, 2, 1, str.tostring(f_trunc(gTimeBars, 0)), bgcolor=bgFinal, text_color=tbl_text, text_size=sz3)
+        table.cell(t3, 3, 1, str.tostring(f_trunc(gEfficiency, 3)), bgcolor=bgFinal, text_color=tbl_text, text_size=sz3)
+
+        table.cell(t3, 0, 2, "Flips", bgcolor=bgFinal, text_color=tbl_text, text_size=sz3)
+        table.cell(t3, 1, 2, str.tostring(fN), bgcolor=bgFinal, text_color=tbl_text, text_size=sz3)
+        table.cell(t3, 2, 2, str.tostring(f_trunc(gTimeBars, 1)) + " bars", bgcolor=bgFinal, text_color=tbl_text, text_size=sz3)
+        table.cell(t3, 3, 2, gHeightPct > geomSwingThresh ? "HIGH" : "LOW", bgcolor=bgFinal, text_color=gHeightPct > geomSwingThresh ? color.green : color.orange, text_size=sz3)
+
+        table.cell(t3, 0, 3, "Distance to High", bgcolor=bgFinal, text_color=tbl_text, text_size=sz3)
+        table.cell(t3, 1, 3, str.tostring(f_trunc(pctToHigh, 2)) + "%", bgcolor=bgFinal, text_color=tbl_text, text_size=sz3)
+        table.cell(t3, 2, 3, "Rolling High: " + str.tostring(na(rollHigh) ? 0 : f_trunc(rollHigh, 2)), bgcolor=bgFinal, text_color=tbl_text, text_size=sz3)
+        table.cell(t3, 3, 3, "", bgcolor=bgFinal, text_size=sz3)
+
+        table.cell(t3, 0, 4, "Distance to Low", bgcolor=bgFinal, text_color=tbl_text, text_size=sz3)
+        table.cell(t3, 1, 4, str.tostring(f_trunc(pctToLow, 2)) + "%", bgcolor=bgFinal, text_color=tbl_text, text_size=sz3)
+        table.cell(t3, 2, 4, "Rolling Low: " + str.tostring(na(rollLow) ? 0 : f_trunc(rollLow, 2)), bgcolor=bgFinal, text_color=tbl_text, text_size=sz3)
+        table.cell(t3, 3, 4, "", bgcolor=bgFinal, text_size=sz3)
+
+    // ===== TABLE 4 – TIME METRICS =====
+    if t4_show
+        table.set_position(t4, f_pos(t4_pos))
+        sz4 = f_size(t4_size)
+
+        table.cell(t4, 0, 0, "Time Metric", bgcolor=color.new(color.aqua, 70), text_color=color.black, text_size=sz4)
+        table.cell(t4, 1, 0, "Value",       bgcolor=color.new(color.aqua, 70), text_color=color.black, text_size=sz4)
+        table.cell(t4, 2, 0, "Note",        bgcolor=color.new(color.aqua, 70), text_color=color.black, text_size=sz4)
+
+        table.cell(t4, 0, 1, "Time Symmetry", bgcolor=bgFinal, text_color=tbl_text, text_size=sz4)
+        color symCol = gTimeSym > symBullThresh ? color.green : gTimeSym < symBearThresh ? color.red : color.yellow
+        table.cell(t4, 1, 1, str.tostring(f_trunc(gTimeSym, 2)) + "x", bgcolor=bgFinal, text_color=symCol, text_size=sz4)
+        table.cell(t4, 2, 1, "Up/Down duration", bgcolor=bgFinal, text_color=tbl_text, text_size=sz4)
+
+        table.cell(t4, 0, 2, "Avg Duration", bgcolor=bgFinal, text_color=tbl_text, text_size=sz4)
+        table.cell(t4, 1, 2, str.tostring(f_trunc(gTimeBars, 1)), bgcolor=bgFinal, text_color=tbl_text, text_size=sz4)
+        table.cell(t4, 2, 2, "bars per flip", bgcolor=bgFinal, text_color=tbl_text, text_size=sz4)
+
+        table.cell(t4, 0, 3, "Bars per Height", bgcolor=bgFinal, text_color=tbl_text, text_size=sz4)
+        float bpH = gHeightPct > 0 ? gTimeBars / gHeightPct : na
+        table.cell(t4, 1, 3, na(bpH) ? "-" : str.tostring(f_trunc(bpH, 3)), bgcolor=bgFinal, text_color=tbl_text, text_size=sz4)
+        table.cell(t4, 2, 3, "Lower = faster", bgcolor=bgFinal, text_color=tbl_text, text_size=sz4)
+
+        table.cell(t4, 0, 4, "Efficiency", bgcolor=bgFinal, text_color=tbl_text, text_size=sz4)
+        table.cell(t4, 1, 4, str.tostring(f_trunc(gEfficiency, 3)), bgcolor=bgFinal, text_color=tbl_text, text_size=sz4)
+        table.cell(t4, 2, 4, "% per bar", bgcolor=bgFinal, text_color=tbl_text, text_size=sz4)
+
+        table.cell(t4, 0, 5, "Comp Streak", bgcolor=bgFinal, text_color=tbl_text, text_size=sz4)
+        table.cell(t4, 1, 5, str.tostring(gCompStreak), bgcolor=bgFinal, text_color=gCompStreak >= minCompStreak ? color.orange : tbl_text, text_size=sz4)
+        table.cell(t4, 2, 5, "consecutive", bgcolor=bgFinal, text_color=tbl_text, text_size=sz4)
+
+        table.cell(t4, 0, 6, "Exp Streak", bgcolor=bgFinal, text_color=tbl_text, text_size=sz4)
+        table.cell(t4, 1, 6, str.tostring(gExpStreak), bgcolor=bgFinal, text_color=gExpStreak >= 1 ? color.lime : tbl_text, text_size=sz4)
+        table.cell(t4, 2, 6, "consecutive", bgcolor=bgFinal, text_color=tbl_text, text_size=sz4)
+
+    // ===== TABLE 5 – REGIME PERSISTENCE =====
+    if t5_show
+        table.set_position(t5, f_pos(t5_pos))
+        sz5 = f_size(t5_size)
+
+        table.cell(t5, 0, 0, "Persistence", bgcolor=color.new(color.olive, 70), text_color=color.white, text_size=sz5)
+        table.cell(t5, 1, 0, "Value",       bgcolor=color.new(color.olive, 70), text_color=color.white, text_size=sz5)
+        table.cell(t5, 2, 0, "Note",        bgcolor=color.new(color.olive, 70), text_color=color.white, text_size=sz5)
+
+        float entropySlope = normalized_entropy - normalized_entropy[5]
+        table.cell(t5, 0, 1, "Entropy Slope", bgcolor=bgFinal, text_color=tbl_text, text_size=sz5)
+        table.cell(t5, 1, 1, str.tostring(f_trunc(entropySlope, 3)), bgcolor=bgFinal, text_color=entropySlope > 0 ? color.red : color.green, text_size=sz5)
+        table.cell(t5, 2, 1, entropySlope > 0 ? "Regime breaking" : "Regime stabilizing", bgcolor=bgFinal, text_color=tbl_text, text_size=sz5)
+
+        table.cell(t5, 0, 2, "Regime", bgcolor=bgFinal, text_color=tbl_text, text_size=sz5)
+        string regTxt5 = physRegime == 1 ? "BULL" : physRegime == -1 ? "BEAR" : "NEUTRAL"
+        color  regCol5 = physRegime == 1 ? color.green : physRegime == -1 ? color.red : color.gray
+        table.cell(t5, 1, 2, regTxt5, bgcolor=bgFinal, text_color=regCol5, text_size=sz5)
+        table.cell(t5, 2, 2, physRegime != 0 ? "Active" : "Waiting", bgcolor=bgFinal, text_color=tbl_text, text_size=sz5)
+
+        table.cell(t5, 0, 3, "Comp Streak", bgcolor=bgFinal, text_color=tbl_text, text_size=sz5)
+        table.cell(t5, 1, 3, str.tostring(gCompStreak), bgcolor=bgFinal, text_color=gCompStreak >= minCompStreak ? color.orange : tbl_text, text_size=sz5)
+        table.cell(t5, 2, 3, gCompStreak >= minCompStreak ? "Coiled" : "—", bgcolor=bgFinal, text_color=tbl_text, text_size=sz5)
+
+        table.cell(t5, 0, 4, "Exp Streak", bgcolor=bgFinal, text_color=tbl_text, text_size=sz5)
+        table.cell(t5, 1, 4, str.tostring(gExpStreak), bgcolor=bgFinal, text_color=gExpStreak >= 1 ? color.lime : tbl_text, text_size=sz5)
+        table.cell(t5, 2, 4, gExpStreak >= 1 ? "Breaking" : "—", bgcolor=bgFinal, text_color=tbl_text, text_size=sz5)
+
+        table.cell(t5, 0, 5, "Coil Status", bgcolor=bgFinal, text_color=tbl_text, text_size=sz5)
+        table.cell(t5, 1, 5, coilFormation ? "ACTIVE" : "—", bgcolor=bgFinal, text_color=coilFormation ? color.yellow : color.gray, text_size=sz5)
+        table.cell(t5, 2, 5, coilFormation ? "Spring loading" : "—", bgcolor=bgFinal, text_color=tbl_text, text_size=sz5)
+
+        table.cell(t5, 0, 6, "Phase State", bgcolor=color.new(color.blue, 90), text_color=color.white, text_size=sz5)
+        table.cell(t5, 1, 6, phaseTransition ? "SHIFTING" : "STABLE", bgcolor=color.new(color.blue, 90), text_color=phaseTransition ? color.yellow : color.green, text_size=sz5)
+        table.cell(t5, 2, 6, phaseTransition ? "Velocity vs Accel diverge" : "—", bgcolor=color.new(color.blue, 90), text_color=color.white, text_size=sz5)
+
+    // ===== TABLE 6 – SITUATION =====
+    if t6_show
+        table.set_position(t6, f_pos(t6_pos))
+        sz6 = f_size(t6_size)
+
+        table.cell(t6, 0, 0, "Metric", bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=sz6)
+        table.cell(t6, 1, 0, "Value",  bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=sz6)
+
+        table.cell(t6, 0, 1, "Situation", bgcolor=bgFinal, text_color=tbl_text, text_size=sz6)
+        table.cell(t6, 1, 1, situation, bgcolor=color.new(sitColor, 80), text_color=sitColor, text_size=sz6)
+
+        table.cell(t6, 0, 2, "Net Agreement", bgcolor=bgFinal, text_color=tbl_text, text_size=sz6)
+        table.cell(t6, 1, 2, str.tostring(netAgreement) + " / 5", bgcolor=bgFinal, text_color=netAgreement > 0 ? color.green : netAgreement < 0 ? color.red : color.gray, text_size=sz6)
+
+        table.cell(t6, 0, 3, "Time Symmetry", bgcolor=bgFinal, text_color=tbl_text, text_size=sz6)
+        table.cell(t6, 1, 3, str.tostring(f_trunc(gTimeSym, 2)) + "x", bgcolor=bgFinal, text_color=color.white, text_size=sz6)
+
+        table.cell(t6, 0, 4, "Composite", bgcolor=bgFinal, text_color=tbl_text, text_size=sz6)
+        color compCol = gComposite > 0.5 ? color.green : gComposite < -0.3 ? color.red : color.yellow
+        table.cell(t6, 1, 4, str.tostring(f_trunc(gComposite, 2)), bgcolor=bgFinal, text_color=compCol, text_size=sz6)
+
+        table.cell(t6, 0, 5, "Rank Score", bgcolor=bgFinal, text_color=tbl_text, text_size=sz6)
+        table.cell(t6, 1, 5, str.tostring(f_trunc(rankScore, 2)), bgcolor=bgFinal, text_color=color.white, text_size=sz6)
+
+        table.cell(t6, 0, 6, "Preset", bgcolor=bgFinal, text_color=tbl_text, text_size=sz6)
+        table.cell(t6, 1, 6, activePreset, bgcolor=bgFinal, text_color=color.aqua, text_size=sz6)
+
+        table.cell(t6, 0, 7, "Suggestion", bgcolor=color.new(color.blue, 90), text_color=color.white, text_size=sz6)
+        table.cell(t6, 1, 7, suggestion, bgcolor=color.new(sugColor, 85), text_color=sugColor, text_size=sz6)
+
+// ==================== SCANNER PLOTS ====================
+plot(normalized_entropy, "Physics Entropy",       color=color.new(color.blue, 0),   display=display.data_window)
+plot(netAgreement,       "Physics Agreement",     color=color.new(color.aqua, 0),   display=display.data_window)
+plot(gHeightPct,         "Physics Geometry %",    color=color.new(color.orange, 0), display=display.data_window)
+plot(gTimeSym,           "Physics Time Symmetry", color=color.new(color.yellow, 0), display=display.data_window)
+plot(gComposite,         "Physics Composite",     color=color.new(color.lime, 0),   display=display.data_window)
+plot(rankScore,          "Physics Rank Score",    color=color.new(color.white, 0),  display=display.data_window)
+plot(gCompStreak,        "Physics Compression Streak", color=color.new(color.gray, 0), display=display.data_window)
+plot(gExpStreak,         "Physics Expansion Streak",   color=color.new(color.purple, 0), display=display.data_window)
+plot(pctToHigh,          "Physics % To High",     color=color.new(color.red, 0),    display=display.data_window)
+plot(pctToLow,           "Physics % To Low",      color=color.new(color.green, 0),  display=display.data_window)
+
+// ==================== GROUPED FLAG PLOTS (BIT-PACKED) ====================
+float group1 = 0
+if trendingBull and netAgreement > 0
+    group1 += 1
+if continuationUp
+    group1 += 2
+if confirmedBreakout
+    group1 += 4
+if readyBreakoutUp
+    group1 += 8
+if springRelease and netAgreement > 0
+    group1 += 16
+if fullAgreement and netAgreement > 0
+    group1 += 32
+
+float group2 = 0
+if trendingBear and netAgreement < 0
+    group2 += 1
+if continuationDown
+    group2 += 2
+if confirmedBreakdown
+    group2 += 4
+if readyBreakdownDown
+    group2 += 8
+if springRelease and netAgreement < 0
+    group2 += 16
+if fullAgreement and netAgreement < 0
+    group2 += 32
+
+float group3 = 0
+if exhaustionTop
+    group3 += 1
+if exhaustionBot
+    group3 += 2
+if physicsDisagree
+    group3 += 4
+if phaseTransition
+    group3 += 8
+if entropyShift and normalized_entropy > eff_entropy
+    group3 += 16
+
+float group4 = 0
+if coilFormation
+    group4 += 1
+if breakoutWatch
+    group4 += 2
+if not orderly_market
+    group4 += 4
+
+plot(group1, "Group 1: Bullish Setups", color=color.new(color.lime, 0),   display=display.data_window)
+plot(group2, "Group 2: Bearish Setups", color=color.new(color.red, 0),    display=display.data_window)
+plot(group3, "Group 3: Warnings",       color=color.new(color.orange, 0), display=display.data_window)
+plot(group4, "Group 4: Coil/Regime",    color=color.new(color.purple, 0), display=display.data_window)
+
+// ==================== ALERTS ====================
+alertcondition(buy_signal, title="Physics Buy Signal", message="Physics System: Low Entropy Buy Signal")
+alertcondition(sell_signal, title="Physics Sell Signal", message="Physics System: Low Entropy Sell Signal")
+alertcondition(normalized_entropy > eff_entropy, title="High Market Entropy", message="Physics System: Chaotic regime detected")
+
+alertcondition(coilFormation,   title="Coil Formation",    message="Physics: Energy coiling — spring loading")
+alertcondition(springRelease,   title="Spring Release",    message="Physics: Coil released — impulse entry")
+alertcondition(exhaustionTop,   title="Exhaustion Top",    message="Physics: Bullish momentum decelerating")
+alertcondition(exhaustionBot,   title="Exhaustion Bottom", message="Physics: Bearish momentum decelerating")
+alertcondition(fullAgreement,   title="Full Physics Agreement", message="Physics: All 5 dimensions agree")
+alertcondition(physicsDisagree, title="Physics Disagreement",   message="Physics: Dimensions conflict — reduce size")
+alertcondition(phaseTransition, title="Phase Transition",       message="Physics: Velocity vs acceleration diverging")
+
+alertcondition(readyBreakoutUp,    title="Ready Breakout Up",     message="Physics: Coiling near resistance")
+alertcondition(readyBreakdownDown, title="Ready Breakdown Down",  message="Physics: Coiling near support")
+alertcondition(confirmedBreakout,  title="Confirmed Breakout",    message="Physics: Breakout confirmed")
+alertcondition(confirmedBreakdown, title="Confirmed Breakdown",   message="Physics: Breakdown confirmed")
+alertcondition(continuationUp,     title="Continuation Up",       message="Physics: Bull continuation")
+alertcondition(continuationDown,   title="Continuation Down",     message="Physics: Bear continuation")
+alertcondition(trendingBull,       title="Trending Bull",         message="Physics: Consistent bull regime")
+alertcondition(trendingBear,       title="Trending Bear",         message="Physics: Consistent bear regime")
+
+alertcondition(rankScore > 2.0,  title="Rank Score > 2 (Top Bull)",  message="Top-ranked physics bull setup")
+alertcondition(rankScore < -2.0, title="Rank Score < -2 (Top Bear)", message="Top-ranked physics bear setup")

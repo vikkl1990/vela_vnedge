@@ -1,0 +1,333 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © rcj101208
+
+//@version=6
+// ══════════════════════════════════════════════════════════════════════════
+//  MSX HARMONIC PRO
+//
+//  XABCD harmonic detection with entry, stop and targets drawn as horizontal
+//  levels, a projection arrow from D, and buy/sell signals at the reversal.
+//
+//    GREEN lines = take profit        RED lines = stop loss
+//    Score at D  = fib ratio accuracy of that pattern
+//    Stats table = the ACTUAL hit rate measured on this chart
+//
+//  Nothing else is drawn.
+// ══════════════════════════════════════════════════════════════════════════
+indicator("MSX Harmonic Pro", "MSX·H", overlay = true, max_lines_count = 500, max_labels_count = 500, max_bars_back = 1000)
+
+string G_P = "PATTERNS"
+string G_T = "ENTRY · STOP · TARGETS"
+string G_A = "PROJECTION ARROW"
+string G_S = "SIGNALS"
+string G_D = "DISPLAY"
+
+// ── Patterns ──────────────────────────────────────────────────────────────
+pivLen   = input.int(5, "Pivot length", minval = 2, maxval = 40, group = G_P, tooltip = "Lower finds more patterns on faster charts.")
+tolPct   = input.float(12.0, "Allowed fib error %", minval = 2.0, maxval = 40.0, step = 1.0, group = G_P)
+minScore = input.float(75.0, "Minimum pattern score", minval = 0.0, maxval = 100.0, step = 1.0, group = G_P, tooltip = "Only patterns scoring above this are drawn and traded.")
+onGar = input.bool(true, "Gartley",   group = G_P, inline = "p1")
+onBat = input.bool(true, "Bat",       group = G_P, inline = "p1")
+onBfl = input.bool(true, "Butterfly", group = G_P, inline = "p1")
+onCrb = input.bool(true, "Crab",      group = G_P, inline = "p2")
+onShk = input.bool(true, "Shark",     group = G_P, inline = "p2")
+onCyp = input.bool(true, "Cypher",    group = G_P, inline = "p2")
+onBull = input.bool(true, "Bullish",  group = G_P, inline = "p3")
+onBear = input.bool(true, "Bearish",  group = G_P, inline = "p3")
+
+// ── Entry / stop / targets ────────────────────────────────────────────────
+t1Fib   = input.float(0.382, "Target 1 (fib of AD)", minval = 0.1, maxval = 2.0, step = 0.018, group = G_T)
+t2Fib   = input.float(0.618, "Target 2 (fib of AD)", minval = 0.1, maxval = 3.0, step = 0.018, group = G_T)
+t3Fib   = input.float(1.000, "Target 3 (fib of AD)", minval = 0.1, maxval = 4.0, step = 0.018, group = G_T, tooltip = "1.0 puts T3 back at point A, the classic full retracement of the AD leg.")
+stopPct = input.float(38.0, "Stop (% of D-to-T1 beyond D)", minval = 5.0, maxval = 200.0, step = 1.0, group = G_T)
+levelLen = input.int(60, "Level length (bars right of D)", minval = 5, maxval = 400, group = G_T)
+timeout  = input.int(90, "Pattern timeout (bars)", minval = 10, maxval = 500, group = G_T)
+keepN    = input.int(4, "Patterns tracked at once", minval = 1, maxval = 8, group = G_T)
+
+// ── Arrow ─────────────────────────────────────────────────────────────────
+arrowOn  = input.bool(true, "Projection arrow from D", group = G_A)
+arrowTgt = input.string("Target 1", "Arrow points to", options = ["Target 1", "Target 2", "Target 3"], group = G_A)
+arrowLen = input.int(26, "Arrow length (bars)", minval = 4, maxval = 200, group = G_A)
+
+// ── Signals ───────────────────────────────────────────────────────────────
+sigOn    = input.bool(true, "Buy / Sell labels at D", group = G_S)
+sigPrice = input.bool(true, "Show price on label", group = G_S)
+
+// ── Display ───────────────────────────────────────────────────────────────
+showLegs  = input.bool(true, "Draw pattern legs", group = G_D)
+showScore = input.bool(true, "Score label at D", group = G_D)
+showStats = input.bool(true, "Stats table", group = G_D)
+bullCol   = input.color(#26a69a, "Bullish legs", group = G_D, inline = "c")
+bearCol   = input.color(#ef5350, "Bearish legs", group = G_D, inline = "c")
+tpCol     = input.color(#26a69a, "Target lines", group = G_D, inline = "l")
+slCol     = input.color(#ef5350, "Stop lines", group = G_D, inline = "l")
+entCol    = input.color(#9e9e9e, "Entry line", group = G_D, inline = "l")
+
+// ══════════════════════════════════════════════════════════════════════════
+//  PIVOT LADDER
+// ══════════════════════════════════════════════════════════════════════════
+ph = ta.pivothigh(high, pivLen, pivLen)
+pl = ta.pivotlow(low, pivLen, pivLen)
+atr = ta.atr(14)
+
+var float[] pvP = array.new_float()
+var int[]   pvB = array.new_int()
+var bool[]  pvH = array.new_bool()
+
+pushPivot(float p, int b, bool isHigh) =>
+    int n = array.size(pvP)
+    bool same = n > 0 and array.get(pvH, n - 1) == isHigh
+    float prev = n > 0 ? array.get(pvP, n - 1) : na
+    bool better = same and (isHigh ? p > prev : p < prev)
+    if better
+        array.set(pvP, n - 1, p)
+        array.set(pvB, n - 1, b)
+    if not same
+        array.push(pvP, p)
+        array.push(pvB, b)
+        array.push(pvH, isHigh)
+    if array.size(pvP) > 9
+        array.shift(pvP)
+        array.shift(pvB)
+        array.shift(pvH)
+    array.size(pvP)
+
+if not na(ph)
+    pushPivot(ph, bar_index - pivLen, true)
+
+if not na(pl)
+    pushPivot(pl, bar_index - pivLen, false)
+
+// ══════════════════════════════════════════════════════════════════════════
+//  RATIOS
+// ══════════════════════════════════════════════════════════════════════════
+nPv  = array.size(pvP)
+canH = nPv >= 5
+
+X  = canH ? array.get(pvP, nPv - 5) : na
+Ay = canH ? array.get(pvP, nPv - 4) : na
+By = canH ? array.get(pvP, nPv - 3) : na
+Cy = canH ? array.get(pvP, nPv - 2) : na
+Dy = canH ? array.get(pvP, nPv - 1) : na
+Xb = canH ? array.get(pvB, nPv - 5) : na
+Ab = canH ? array.get(pvB, nPv - 4) : na
+Bb = canH ? array.get(pvB, nPv - 3) : na
+Cb = canH ? array.get(pvB, nPv - 2) : na
+Db = canH ? array.get(pvB, nPv - 1) : na
+
+lXA = canH ? math.abs(Ay - X)  : 0.0
+lAB = canH ? math.abs(By - Ay) : 0.0
+lBC = canH ? math.abs(Cy - By) : 0.0
+lCD = canH ? math.abs(Dy - Cy) : 0.0
+lAD = canH ? math.abs(Dy - Ay) : 0.0
+lXC = canH ? math.abs(Cy - X)  : 0.0
+
+rAB = lXA > 0 ? lAB / lXA : 0.0
+rBC = lAB > 0 ? lBC / lAB : 0.0
+rCD = lBC > 0 ? lCD / lBC : 0.0
+rAD = lXA > 0 ? lAD / lXA : 0.0
+rXC = lXC > 0 ? lCD / lXC : 0.0
+
+tol = tolPct / 100.0
+
+// error of a ratio against its ideal, 0 = perfect
+fibErr(float actual, float ideal) =>
+    float e = ideal > 0 ? math.abs(actual - ideal) / ideal : 1.0
+    e
+
+// error against a permitted band, 0 anywhere inside it
+bandErr(float actual, float lo, float hi) =>
+    float e = actual < lo ? (lo - actual) / lo : actual > hi ? (actual - hi) / hi : 0.0
+    e
+
+// ── per-pattern error, then score ──
+eGar = canH and onGar ? (fibErr(rAB, 0.618) + bandErr(rBC, 0.382, 0.886) + bandErr(rCD, 1.13, 1.618)  + fibErr(rAD, 0.786)) / 4.0 : 1e9
+eBat = canH and onBat ? (bandErr(rAB, 0.382, 0.5) + bandErr(rBC, 0.382, 0.886) + bandErr(rCD, 1.618, 2.618) + fibErr(rAD, 0.886)) / 4.0 : 1e9
+eBfl = canH and onBfl ? (fibErr(rAB, 0.786) + bandErr(rBC, 0.382, 0.886) + bandErr(rCD, 1.618, 2.24) + bandErr(rAD, 1.27, 1.618)) / 4.0 : 1e9
+eCrb = canH and onCrb ? (bandErr(rAB, 0.382, 0.618) + bandErr(rBC, 0.382, 0.886) + bandErr(rCD, 2.618, 3.618) + fibErr(rAD, 1.618)) / 4.0 : 1e9
+eShk = canH and onShk ? (bandErr(rAB, 0.382, 0.618) + bandErr(rBC, 1.13, 1.618) + fibErr(rXC, 0.886) + bandErr(rAD, 1.13, 1.618)) / 4.0 : 1e9
+eCyp = canH and onCyp ? (bandErr(rAB, 0.382, 0.618) + bandErr(rBC, 1.13, 1.414) + fibErr(rXC, 0.786) + bandErr(rAD, 1.13, 1.414)) / 4.0 : 1e9
+
+bestErr = math.min(math.min(math.min(eGar, eBat), math.min(eBfl, eCrb)), math.min(eShk, eCyp))
+bestNm  = bestErr == eGar ? "Gartley" : bestErr == eBat ? "Bat" : bestErr == eBfl ? "Butterfly" : bestErr == eCrb ? "Crab" : bestErr == eShk ? "Shark" : "Cypher"
+pScore  = bestErr < 1e8 ? math.max(0.0, (1.0 - bestErr) * 100.0) : 0.0
+
+dIsLow  = canH and not array.get(pvH, nPv - 1)
+dirOk   = dIsLow ? onBull : onBear
+
+var int lastD = -100000
+valid = canH and bestErr <= tol and pScore >= minScore and dirOk and Db != lastD
+
+// ══════════════════════════════════════════════════════════════════════════
+//  ACTIVE PATTERN TRACKING
+// ══════════════════════════════════════════════════════════════════════════
+var int[]   tDir  = array.new_int()
+var float[] tEnt  = array.new_float()
+var float[] tStp  = array.new_float()
+var float[] tTg1  = array.new_float()
+var float[] tTg2  = array.new_float()
+var float[] tTg3  = array.new_float()
+var int[]   tBar  = array.new_int()
+var int[]   tStat = array.new_int()      // 0 pending · 1 T1 · 2 T2 · 3 T3 · -1 stopped · -2 timed out
+var label[] tLbl  = array.new<label>()
+
+var int nT1 = 0
+var int nT2 = 0
+var int nT3 = 0
+var int nSL = 0
+var int nTO = 0
+
+// ── new valid pattern: build levels and draw ──
+newDir = dIsLow ? 1 : -1
+newEnt = Dy
+distAD = math.abs(Ay - Dy)
+newTg1 = dIsLow ? Dy + distAD * t1Fib : Dy - distAD * t1Fib
+newTg2 = dIsLow ? Dy + distAD * t2Fib : Dy - distAD * t2Fib
+newTg3 = dIsLow ? Dy + distAD * t3Fib : Dy - distAD * t3Fib
+newStp = dIsLow ? Dy - math.abs(newTg1 - Dy) * stopPct / 100.0 : Dy + math.abs(newTg1 - Dy) * stopPct / 100.0
+
+legCol = dIsLow ? bullCol : bearCol
+rightX = Db + levelLen
+
+if valid
+    lastD := Db
+    array.push(tDir, newDir)
+    array.push(tEnt, newEnt)
+    array.push(tStp, newStp)
+    array.push(tTg1, newTg1)
+    array.push(tTg2, newTg2)
+    array.push(tTg3, newTg3)
+    array.push(tBar, Db)
+    array.push(tStat, 0)
+    array.push(tLbl, label.new(Db, Dy, str.tostring(pScore, "#.#"), style = dIsLow ? label.style_label_up : label.style_label_down, color = color.new(legCol, 20), textcolor = color.white, size = size.small, tooltip = bestNm + "\nScore " + str.tostring(pScore, "#.#") + "\nAB/XA " + str.tostring(rAB, "0.000") + "\nBC/AB " + str.tostring(rBC, "0.000") + "\nCD/BC " + str.tostring(rCD, "0.000") + "\nAD/XA " + str.tostring(rAD, "0.000")))
+
+// legs
+if valid and showLegs
+    line.new(Xb, X,  Ab, Ay, color = color.new(legCol, 30), width = 1)
+    line.new(Ab, Ay, Bb, By, color = color.new(legCol, 30), width = 1)
+    line.new(Bb, By, Cb, Cy, color = color.new(legCol, 30), width = 1)
+    line.new(Cb, Cy, Db, Dy, color = color.new(legCol, 30), width = 1)
+    line.new(Xb, X,  Db, Dy, color = color.new(legCol, 70), style = line.style_dotted, width = 1)
+    line.new(Ab, Ay, Cb, Cy, color = color.new(legCol, 80), style = line.style_dotted, width = 1)
+
+// entry, stop, target levels
+if valid
+    line.new(Db, newEnt, rightX, newEnt, color = color.new(entCol, 25), style = line.style_dotted, width = 1)
+    line.new(Db, newStp, rightX, newStp, color = color.new(slCol, 20), width = 3)
+    line.new(Db, newTg1, rightX, newTg1, color = color.new(tpCol, 25), width = 3)
+    line.new(Db, newTg2, rightX, newTg2, color = color.new(tpCol, 45), width = 3)
+    line.new(Db, newTg3, rightX, newTg3, color = color.new(tpCol, 62), width = 3)
+    label.new(rightX, newStp, "SL  " + str.tostring(newStp, format.mintick), style = label.style_label_left, color = color.new(slCol, 82), textcolor = slCol, size = size.tiny)
+    label.new(rightX, newTg1, "T1  " + str.tostring(newTg1, format.mintick), style = label.style_label_left, color = color.new(tpCol, 82), textcolor = tpCol, size = size.tiny)
+    label.new(rightX, newTg2, "T2  " + str.tostring(newTg2, format.mintick), style = label.style_label_left, color = color.new(tpCol, 88), textcolor = tpCol, size = size.tiny)
+    label.new(rightX, newTg3, "T3  " + str.tostring(newTg3, format.mintick), style = label.style_label_left, color = color.new(tpCol, 92), textcolor = tpCol, size = size.tiny)
+
+// projection arrow from D
+arrowEnd = arrowTgt == "Target 1" ? newTg1 : arrowTgt == "Target 2" ? newTg2 : newTg3
+tipX     = Db + arrowLen
+backX    = Db + arrowLen - math.max(int(arrowLen * 0.18), 2)
+headOff  = atr * 0.45
+
+if valid and arrowOn
+    line.new(Db, Dy, tipX, arrowEnd, color = color.new(legCol, 10), width = 2)
+    line.new(backX, arrowEnd + (dIsLow ? -headOff : headOff), tipX, arrowEnd, color = color.new(legCol, 10), width = 2)
+    line.new(backX, arrowEnd, tipX, arrowEnd, color = color.new(legCol, 10), width = 2)
+
+// buy / sell label at D
+sigTxt = dIsLow ? (sigPrice ? "BUY\n" + str.tostring(Dy, format.mintick) : "BUY") : (sigPrice ? "SELL\n" + str.tostring(Dy, format.mintick) : "SELL")
+
+if valid and sigOn
+    label.new(Db, Dy, sigTxt, style = dIsLow ? label.style_label_upper_right : label.style_label_lower_right, color = dIsLow ? bullCol : bearCol, textcolor = color.white, size = size.small)
+
+if array.size(tDir) > keepN
+    label.delete(array.shift(tLbl))
+    array.shift(tDir)
+    array.shift(tEnt)
+    array.shift(tStp)
+    array.shift(tTg1)
+    array.shift(tTg2)
+    array.shift(tTg3)
+    array.shift(tBar)
+    array.shift(tStat)
+
+// ══════════════════════════════════════════════════════════════════════════
+//  OUTCOME TRACKING  ·  this is where the real hit rate comes from
+// ══════════════════════════════════════════════════════════════════════════
+if array.size(tDir) > 0
+    for i = 0 to array.size(tDir) - 1
+        int st = array.get(tStat, i)
+        int dr = array.get(tDir, i)
+        float sp = array.get(tStp, i)
+        float g1 = array.get(tTg1, i)
+        float g2 = array.get(tTg2, i)
+        float g3 = array.get(tTg3, i)
+        int ob = array.get(tBar, i)
+        bool open1 = st == 0
+        bool open2 = st == 1
+        bool open3 = st == 2
+        bool hitS  = dr == 1 ? low <= sp : high >= sp
+        bool hit1  = dr == 1 ? high >= g1 : low <= g1
+        bool hit2  = dr == 1 ? high >= g2 : low <= g2
+        bool hit3  = dr == 1 ? high >= g3 : low <= g3
+        bool aged  = bar_index - ob > timeout
+        if open1 and hitS
+            array.set(tStat, i, -1)
+            nSL := nSL + 1
+            label.set_text(array.get(tLbl, i), label.get_text(array.get(tLbl, i)) + "  X")
+        if open1 and hit1 and not hitS
+            array.set(tStat, i, 1)
+            nT1 := nT1 + 1
+            label.set_text(array.get(tLbl, i), label.get_text(array.get(tLbl, i)) + "  T1")
+        if open2 and hit2
+            array.set(tStat, i, 2)
+            nT2 := nT2 + 1
+            label.set_text(array.get(tLbl, i), label.get_text(array.get(tLbl, i)) + " T2")
+        if open3 and hit3
+            array.set(tStat, i, 3)
+            nT3 := nT3 + 1
+            label.set_text(array.get(tLbl, i), label.get_text(array.get(tLbl, i)) + " T3")
+        if open1 and aged and not hitS and not hit1
+            array.set(tStat, i, -2)
+            nTO := nTO + 1
+
+// ══════════════════════════════════════════════════════════════════════════
+//  STATS
+// ══════════════════════════════════════════════════════════════════════════
+resolved = nT1 + nSL
+rate1    = resolved > 0 ? nT1 / resolved * 100.0 : 0.0
+rate2    = nT1 > 0 ? nT2 / nT1 * 100.0 : 0.0
+rate3    = nT2 > 0 ? nT3 / nT2 * 100.0 : 0.0
+
+var table tb = na
+drawTb = showStats and barstate.islast
+
+if drawTb and na(tb)
+    tb := table.new(position.bottom_left, 2, 7, border_width = 1, frame_color = color.new(color.gray, 60), frame_width = 1, bgcolor = color.new(#101014, 15))
+
+if drawTb
+    table.cell(tb, 0, 0, "MSX HARMONIC PRO", text_color = color.white, bgcolor = color.new(#2b2b3d, 0), text_size = size.small)
+    table.cell(tb, 1, 0, timeframe.period, text_color = color.white, bgcolor = color.new(#2b2b3d, 0), text_size = size.small)
+    table.cell(tb, 0, 1, "Patterns resolved", text_color = color.gray, text_size = size.tiny)
+    table.cell(tb, 1, 1, str.tostring(resolved), text_color = color.new(color.white, 15), text_size = size.tiny)
+    table.cell(tb, 0, 2, "Target 1 hit", text_color = color.gray, text_size = size.tiny)
+    table.cell(tb, 1, 2, str.tostring(nT1) + "   " + str.tostring(rate1, "#.#") + "%", text_color = rate1 >= 50 ? tpCol : slCol, text_size = size.tiny)
+    table.cell(tb, 0, 3, "Target 2 hit", text_color = color.gray, text_size = size.tiny)
+    table.cell(tb, 1, 3, str.tostring(nT2) + "   " + str.tostring(rate2, "#.#") + "% of T1", text_color = tpCol, text_size = size.tiny)
+    table.cell(tb, 0, 4, "Target 3 hit", text_color = color.gray, text_size = size.tiny)
+    table.cell(tb, 1, 4, str.tostring(nT3) + "   " + str.tostring(rate3, "#.#") + "% of T2", text_color = tpCol, text_size = size.tiny)
+    table.cell(tb, 0, 5, "Stopped", text_color = color.gray, text_size = size.tiny)
+    table.cell(tb, 1, 5, str.tostring(nSL), text_color = slCol, text_size = size.tiny)
+    table.cell(tb, 0, 6, "Timed out", text_color = color.gray, text_size = size.tiny)
+    table.cell(tb, 1, 6, str.tostring(nTO), text_color = color.gray, text_size = size.tiny)
+
+// ══════════════════════════════════════════════════════════════════════════
+//  ALERTS
+// ══════════════════════════════════════════════════════════════════════════
+plotshape(valid and dIsLow, "Buy", shape.triangleup, location.belowbar, color.new(#26a69a, 0), size = size.tiny)
+plotshape(valid and not dIsLow, "Sell", shape.triangledown, location.abovebar, color.new(#ef5350, 0), size = size.tiny)
+
+if valid
+    alert("MSX " + bestNm + (dIsLow ? " BULLISH" : " BEARISH") + "  " + syminfo.ticker + "  score " + str.tostring(pScore, "#.#") + "  |  entry " + str.tostring(newEnt, format.mintick) + "  SL " + str.tostring(newStp, format.mintick) + "  T1 " + str.tostring(newTg1, format.mintick) + "  T2 " + str.tostring(newTg2, format.mintick) + "  T3 " + str.tostring(newTg3, format.mintick), alert.freq_once_per_bar_close)
+
+alertcondition(valid and dIsLow, "MSX Bullish Harmonic", "MSX: bullish harmonic completed")
+alertcondition(valid and not dIsLow, "MSX Bearish Harmonic", "MSX: bearish harmonic completed")

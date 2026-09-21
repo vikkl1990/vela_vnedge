@@ -1,0 +1,1152 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © RealSebastianMoya
+//@version=6
+indicator(" MOYA Quarterly Theory & Higher Timeframe Suite [RealSebastianMoya]", shorttitle="MOYA Quarterly Theory & Higher Timeframe Suite [RealSebastianMoya]", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+// ----------------------------------------------------------------------------
+// Higher Timeframe (HTF) Overlay:
+//   Projects the open, high, low, and close of a larger timeframe directly
+//   onto the current chart, so the higher timeframe structure, bias, and key
+//   levels stay visible without switching charts
+//
+// Quarterly Theory (Q23 / Q90 / Q360):
+//   A time-based framework that divides a trading cycle into four equal
+//   quarters, commonly associated with the Accumulation, Manipulation,
+//   Distribution, and Reversal/Continuation (AMDX) phases, applied across
+//   multiple fractal cycles: 23-minute, 90-minute, and 6-hour sessions.
+//
+// Macro Cycles (Monthly / Weekly Quarters + True Opens):
+//   Extends the same fractal logic to the macro scale:
+//     - Monthly cycle split into 4 quarters (Q1, Q2, Q3, Q4)
+//     - Weekly cycle split into 5 quarters (Q1 Mon, Q2 Tue, Q3 Wed, Q4 Thu, Q5 Fri)
+//   Also plots True Opens (True Day / Week / Month / Quarter) as reference lines.
+// =============================================================================
+// ============================================================
+// MAIN TOGGLES
+// ============================================================
+
+enable_htf_candles = input(true, "Enable Higher Timeframe Candle Overlay", group="MAIN TOGGLES")
+enable_sessions    = input(true, "Enable Quarterly Theory Sessions", group="MAIN TOGGLES")
+enable_macro       = input(true, "Enable Macro Cycles", group="MAIN TOGGLES")
+enable_true_opens  = input(true, "Enable True Opens", group="MAIN TOGGLES")
+
+// ============================================================
+// HIGHER TIMEFRAME CANDLE OVERLAY
+// ============================================================
+
+htf_period_selection = input.string("1 Day", "candlestick overlay", options=["1 Minute", "3 Minutes", "5 Minutes", "10 Minutes", "15 Minutes", "30 Minutes", "45 Minutes", "1 Hour", "2 Hours", "3 Hours", "4 Hours", "5 Hours", "6 Hours", "8 Hours", "10 Hours", "12 Hours", "1 Day", "2 Days", "3 Days", "4 Days", "5 Days", "6 Days", "7 Days", "1 Week", "2 Weeks", "3 Weeks", "4 Weeks", "5 Weeks", "1 Month", "2 Months", "3 Months", "4 Months", "5 Months", "6 Months", "7 Months"], group="HIGHER TIMEFRAME CANDLE OVERLAY")
+
+higher_timeframe = switch htf_period_selection
+    "1 Minute"    => "1"
+    "3 Minutes"   => "3"
+    "5 Minutes"   => "5"
+    "10 Minutes"  => "10"
+    "15 Minutes"  => "15"
+    "30 Minutes"  => "30"
+    "45 Minutes"  => "45"
+    "1 Hour"      => "60"
+    "2 Hours"     => "120"
+    "3 Hours"     => "180"
+    "4 Hours"     => "240"
+    "5 Hours"     => "300"
+    "6 Hours"     => "360"
+    "8 Hours"     => "480"
+    "10 Hours"    => "600"
+    "12 Hours"    => "720"
+    "1 Day"       => "1D"
+    "2 Days"      => "2D"
+    "3 Days"      => "3D"
+    "4 Days"      => "4D"
+    "5 Days"      => "5D"
+    "6 Days"      => "6D"
+    "7 Days"      => "7D"
+    "1 Week"      => "1W"
+    "2 Weeks"     => "2W"
+    "3 Weeks"     => "3W"
+    "4 Weeks"     => "4W"
+    "5 Weeks"     => "5W"
+    "1 Month"     => "1M"
+    "2 Months"    => "2M"
+    "3 Months"    => "3M"
+    "4 Months"    => "4M"
+    "5 Months"    => "5M"
+    "6 Months"    => "6M"
+    "7 Months"    => "7M"
+    => "1D"
+
+show_timeframe_label = input(true, "Show Timeframe Label on Candle", group="HIGHER TIMEFRAME CANDLE OVERLAY")
+label_text_size = input.string("Small", "Label Text Size", options=["Tiny", "Small", "Normal", "Large", "Huge"], group="HIGHER TIMEFRAME CANDLE OVERLAY")
+
+bullish_fill_color       = input.color(color.new(color.lime, 20), title="Bullish Fill Color", group="HIGHER TIMEFRAME CANDLE OVERLAY")
+bullish_line_color       = input.color(color.lime, title="Bullish Line Color", group="HIGHER TIMEFRAME CANDLE OVERLAY")
+bearish_fill_color       = input.color(color.new(color.red, 20), title="Bearish Fill Color", group="HIGHER TIMEFRAME CANDLE OVERLAY")
+bearish_line_color       = input.color(color.rgb(255, 120, 120), title="Bearish Line Color", group="HIGHER TIMEFRAME CANDLE OVERLAY")
+candle_body_transparency = input.int(95, title="Candle Body Transparency", minval=0, maxval=100, group="HIGHER TIMEFRAME CANDLE OVERLAY")
+line_thickness           = input.int(2, title="Line Thickness", minval=1, maxval=10, group="HIGHER TIMEFRAME CANDLE OVERLAY")
+
+
+// ============================================================
+// QUARTERLY THEORY - GENERAL SETTINGS
+// ============================================================
+tz_incr      = input.int(-5, 'UTC Offset (+/-)', group='QUARTERLY THEORY - GENERAL SETTINGS')
+use_exchange = input(false, 'Use Exchange Timezone', group='QUARTERLY THEORY - GENERAL SETTINGS')
+
+show_indicator23  = input(true, 'Show Q23 (23-Minute Quarters)',  group='QUARTERLY THEORY - GENERAL SETTINGS')
+show_indicator90  = input(true, 'Show Q90 (90-Minute Quarters)',  group='QUARTERLY THEORY - GENERAL SETTINGS')
+show_indicator360 = input(true, 'Show Q360 (6-Hour Quarters)', group='QUARTERLY THEORY - GENERAL SETTINGS')
+
+// ============================================================
+// QUARTERLY THEORY - Q90 SETTINGS
+// ============================================================
+bg_transp    = input.float(93, 'Q90 Box Transparency', group='QUARTERLY THEORY - Q90 SETTINGS')
+show_outline = input(true, 'Q90 Box Border', group='QUARTERLY THEORY - Q90 SETTINGS')
+show_txt     = input(true, 'Q90 Box Labels', group='QUARTERLY THEORY - Q90 SETTINGS')
+line_width   = input.int(1, 'Q90 Line Width', group='QUARTERLY THEORY - Q90 SETTINGS', minval=1)
+
+show_ses90A1 = input(true, '', inline='ses90A1', group='Q90 SESSIONS - ASIA')
+ses90A1_txt  = input('Q1', '', inline='ses90A1', group='Q90 SESSIONS - ASIA')
+ses90A1_ses  = input.session('1800-1931', '', inline='ses90A1', group='Q90 SESSIONS - ASIA')
+ses90A1_css  = input.color(color.new(color.purple, 0), '', inline='ses90A1', group='Q90 SESSIONS - ASIA')
+show_ses90A2 = input(true, '', inline='ses90A2', group='Q90 SESSIONS - ASIA')
+ses90A2_txt  = input('Q2', '', inline='ses90A2', group='Q90 SESSIONS - ASIA')
+ses90A2_ses  = input.session('1930-2101', '', inline='ses90A2', group='Q90 SESSIONS - ASIA')
+ses90A2_css  = input.color(color.new(color.red, 0), '', inline='ses90A2', group='Q90 SESSIONS - ASIA')
+show_ses90A3 = input(true, '', inline='ses90A3', group='Q90 SESSIONS - ASIA')
+ses90A3_txt  = input('Q3', '', inline='ses90A3', group='Q90 SESSIONS - ASIA')
+ses90A3_ses  = input.session('2100-2231', '', inline='ses90A3', group='Q90 SESSIONS - ASIA')
+ses90A3_css  = input.color(color.new(color.blue, 0), '', inline='ses90A3', group='Q90 SESSIONS - ASIA')
+show_ses90A4 = input(true, '', inline='ses90A4', group='Q90 SESSIONS - ASIA')
+ses90A4_txt  = input('Q4', '', inline='ses90A4', group='Q90 SESSIONS - ASIA')
+ses90A4_ses  = input.session('2230-0001', '', inline='ses90A4', group='Q90 SESSIONS - ASIA')
+ses90A4_css  = input.color(color.new(color.green, 0), '', inline='ses90A4', group='Q90 SESSIONS - ASIA')
+
+show_ses90L1 = input(true, '', inline='ses90L1', group='Q90 SESSIONS - LONDON')
+ses90L1_txt  = input('Q1', '', inline='ses90L1', group='Q90 SESSIONS - LONDON')
+ses90L1_ses  = input.session('0000-0131', '', inline='ses90L1', group='Q90 SESSIONS - LONDON')
+ses90L1_css  = input.color(color.new(color.purple, 0), '', inline='ses90L1', group='Q90 SESSIONS - LONDON')
+show_ses90L2 = input(true, '', inline='ses90L2', group='Q90 SESSIONS - LONDON')
+ses90L2_txt  = input('Q2', '', inline='ses90L2', group='Q90 SESSIONS - LONDON')
+ses90L2_ses  = input.session('0130-0301', '', inline='ses90L2', group='Q90 SESSIONS - LONDON')
+ses90L2_css  = input.color(color.new(color.red, 0), '', inline='ses90L2', group='Q90 SESSIONS - LONDON')
+show_ses90L3 = input(true, '', inline='ses90L3', group='Q90 SESSIONS - LONDON')
+ses90L3_txt  = input('Q3', '', inline='ses90L3', group='Q90 SESSIONS - LONDON')
+ses90L3_ses  = input.session('0300-0431', '', inline='ses90L3', group='Q90 SESSIONS - LONDON')
+ses90L3_css  = input.color(color.new(color.blue, 0), '', inline='ses90L3', group='Q90 SESSIONS - LONDON')
+show_ses90L4 = input(true, '', inline='ses90L4', group='Q90 SESSIONS - LONDON')
+ses90L4_txt  = input('Q4', '', inline='ses90L4', group='Q90 SESSIONS - LONDON')
+ses90L4_ses  = input.session('0430-0601', '', inline='ses90L4', group='Q90 SESSIONS - LONDON')
+ses90L4_css  = input.color(color.new(color.green, 0), '', inline='ses90L4', group='Q90 SESSIONS - LONDON')
+
+show_ses90NY1 = input(true, '', inline='ses90NY1', group='Q90 SESSIONS - NEW YORK')
+ses90NY1_txt  = input('Q1', '', inline='ses90NY1', group='Q90 SESSIONS - NEW YORK')
+ses90NY1_ses  = input.session('0600-0731', '', inline='ses90NY1', group='Q90 SESSIONS - NEW YORK')
+ses90NY1_css  = input.color(color.new(color.purple, 0), '', inline='ses90NY1', group='Q90 SESSIONS - NEW YORK')
+show_ses90NY2 = input(true, '', inline='ses90NY2', group='Q90 SESSIONS - NEW YORK')
+ses90NY2_txt  = input('Q2', '', inline='ses90NY2', group='Q90 SESSIONS - NEW YORK')
+ses90NY2_ses  = input.session('0730-0901', '', inline='ses90NY2', group='Q90 SESSIONS - NEW YORK')
+ses90NY2_css  = input.color(color.new(color.red, 0), '', inline='ses90NY2', group='Q90 SESSIONS - NEW YORK')
+show_ses90NY3 = input(true, '', inline='ses90NY3', group='Q90 SESSIONS - NEW YORK')
+ses90NY3_txt  = input('Q3', '', inline='ses90NY3', group='Q90 SESSIONS - NEW YORK')
+ses90NY3_ses  = input.session('0900-1031', '', inline='ses90NY3', group='Q90 SESSIONS - NEW YORK')
+ses90NY3_css  = input.color(color.new(color.blue, 0), '', inline='ses90NY3', group='Q90 SESSIONS - NEW YORK')
+show_ses90NY4 = input(true, '', inline='ses90NY4', group='Q90 SESSIONS - NEW YORK')
+ses90NY4_txt  = input('Q4', '', inline='ses90NY4', group='Q90 SESSIONS - NEW YORK')
+ses90NY4_ses  = input.session('1030-1201', '', inline='ses90NY4', group='Q90 SESSIONS - NEW YORK')
+ses90NY4_css  = input.color(color.new(color.green, 0), '', inline='ses90NY4', group='Q90 SESSIONS - NEW YORK')
+
+show_ses90CBDR1 = input(true, '', inline='ses90CBDR1', group='Q90 SESSIONS - CBDR')
+ses90CBDR1_txt  = input('Q1', '', inline='ses90CBDR1', group='Q90 SESSIONS - CBDR')
+ses90CBDR1_ses  = input.session('1200-1331', '', inline='ses90CBDR1', group='Q90 SESSIONS - CBDR')
+ses90CBDR1_css  = input.color(color.new(color.purple, 0), '', inline='ses90CBDR1', group='Q90 SESSIONS - CBDR')
+show_ses90CBDR2 = input(true, '', inline='ses90CBDR2', group='Q90 SESSIONS - CBDR')
+ses90CBDR2_txt  = input('Q2', '', inline='ses90CBDR2', group='Q90 SESSIONS - CBDR')
+ses90CBDR2_ses  = input.session('1330-1501', '', inline='ses90CBDR2', group='Q90 SESSIONS - CBDR')
+ses90CBDR2_css  = input.color(color.new(color.red, 0), '', inline='ses90CBDR2', group='Q90 SESSIONS - CBDR')
+show_ses90CBDR3 = input(true, '', inline='ses90CBDR3', group='Q90 SESSIONS - CBDR')
+ses90CBDR3_txt  = input('Q3', '', inline='ses90CBDR3', group='Q90 SESSIONS - CBDR')
+ses90CBDR3_ses  = input.session('1500-1631', '', inline='ses90CBDR3', group='Q90 SESSIONS - CBDR')
+ses90CBDR3_css  = input.color(color.new(color.blue, 0), '', inline='ses90CBDR3', group='Q90 SESSIONS - CBDR')
+show_ses90CBDR4 = input(true, '', inline='ses90CBDR4', group='Q90 SESSIONS - CBDR')
+ses90CBDR4_txt  = input('Q4', '', inline='ses90CBDR4', group='Q90 SESSIONS - CBDR')
+ses90CBDR4_ses  = input.session('1630-1801', '', inline='ses90CBDR4', group='Q90 SESSIONS - CBDR')
+ses90CBDR4_css  = input.color(color.new(color.green, 0), '', inline='ses90CBDR4', group='Q90 SESSIONS - CBDR')
+
+// ============================================================
+// QUARTERLY THEORY - Q360 SETTINGS
+// ============================================================
+bg_transp360    = input.float(100, 'Q360 Box Transparency', group='QUARTERLY THEORY - Q360 SETTINGS')
+show_outline360 = input(true, 'Q360 Box Border', group='QUARTERLY THEORY - Q360 SETTINGS')
+show_txt360     = input(true, 'Q360 Box Labels', group='QUARTERLY THEORY - Q360 SETTINGS')
+line_width360   = input.int(1, 'Q360 Line Width', group='QUARTERLY THEORY - Q360 SETTINGS', minval=1)
+
+show_ses360A1    = input(true, '', inline='ses360A1', group='Q360 SESSIONS - 6 HOUR CYCLE')
+ses360A1_txt     = input('Q1', '', inline='ses360A1', group='Q360 SESSIONS - 6 HOUR CYCLE')
+ses360A1_ses     = input.session('1800-0001', '', inline='ses360A1', group='Q360 SESSIONS - 6 HOUR CYCLE')
+ses360A1_css     = input.color(color.new(color.purple, 0), '', inline='ses360A1', group='Q360 SESSIONS - 6 HOUR CYCLE')
+show_ses360L1    = input(true, '', inline='ses360L1', group='Q360 SESSIONS - 6 HOUR CYCLE')
+ses360L1_txt     = input('Q2', '', inline='ses360L1', group='Q360 SESSIONS - 6 HOUR CYCLE')
+ses360L1_ses     = input.session('0000-0601', '', inline='ses360L1', group='Q360 SESSIONS - 6 HOUR CYCLE')
+ses360L1_css     = input.color(color.new(color.red, 0), '', inline='ses360L1', group='Q360 SESSIONS - 6 HOUR CYCLE')
+show_ses360NY1   = input(true, '', inline='ses360NY1', group='Q360 SESSIONS - 6 HOUR CYCLE')
+ses360NY1_txt    = input('Q3', '', inline='ses360NY1', group='Q360 SESSIONS - 6 HOUR CYCLE')
+ses360NY1_ses    = input.session('0600-1201', '', inline='ses360NY1', group='Q360 SESSIONS - 6 HOUR CYCLE')
+ses360NY1_css    = input.color(color.new(color.blue, 0), '', inline='ses360NY1', group='Q360 SESSIONS - 6 HOUR CYCLE')
+show_ses360CBDR1 = input(true, '', inline='ses360CBDR1', group='Q360 SESSIONS - 6 HOUR CYCLE')
+ses360CBDR1_txt  = input('Q4', '', inline='ses360CBDR1', group='Q360 SESSIONS - 6 HOUR CYCLE')
+ses360CBDR1_ses  = input.session('1200-1801', '', inline='ses360CBDR1', group='Q360 SESSIONS - 6 HOUR CYCLE')
+ses360CBDR1_css  = input.color(color.new(color.green, 0), '', inline='ses360CBDR1', group='Q360 SESSIONS - 6 HOUR CYCLE')
+
+// ============================================================
+// QUARTERLY THEORY - Q23 SETTINGS
+// ============================================================
+bg_transp23    = input.float(93, 'Q23 Box Transparency', group='QUARTERLY THEORY - Q23 SETTINGS')
+show_outline23 = input(true, 'Q23 Box Border', group='QUARTERLY THEORY - Q23 SETTINGS')
+show_txt23     = input(true, 'Q23 Box Labels', group='QUARTERLY THEORY - Q23 SETTINGS')
+line_width23   = input.int(1, 'Q23 Line Width', group='QUARTERLY THEORY - Q23 SETTINGS', minval=1)
+
+show_ses23A11 = input(true, '', inline='ses23A11', group='Q23 SESSIONS - ASIA')
+ses23A11_txt  = input('1', '', inline='ses23A11', group='Q23 SESSIONS - ASIA')
+ses23A11_ses  = input.session('1800-1824', '', inline='ses23A11', group='Q23 SESSIONS - ASIA')
+ses23A11_css  = input.color(color.new(color.black, 85), '', inline='ses23A11', group='Q23 SESSIONS - ASIA')
+show_ses23A12 = input(true, '', inline='ses23A12', group='Q23 SESSIONS - ASIA')
+ses23A12_txt  = input('2', '', inline='ses23A12', group='Q23 SESSIONS - ASIA')
+ses23A12_ses  = input.session('1823-1846', '', inline='ses23A12', group='Q23 SESSIONS - ASIA')
+ses23A12_css  = input.color(color.new(color.black, 85), '', inline='ses23A12', group='Q23 SESSIONS - ASIA')
+show_ses23A13 = input(true, '', inline='ses23A13', group='Q23 SESSIONS - ASIA')
+ses23A13_txt  = input('3', '', inline='ses23A13', group='Q23 SESSIONS - ASIA')
+ses23A13_ses  = input.session('1845-1909', '', inline='ses23A13', group='Q23 SESSIONS - ASIA')
+ses23A13_css  = input.color(color.new(color.black, 85), '', inline='ses23A13', group='Q23 SESSIONS - ASIA')
+show_ses23A14 = input(true, '', inline='ses23A14', group='Q23 SESSIONS - ASIA')
+ses23A14_txt  = input('4', '', inline='ses23A14', group='Q23 SESSIONS - ASIA')
+ses23A14_ses  = input.session('1908-1931', '', inline='ses23A14', group='Q23 SESSIONS - ASIA')
+ses23A14_css  = input.color(color.new(color.black, 85), '', inline='ses23A14', group='Q23 SESSIONS - ASIA')
+show_ses23A21 = input(true, '', inline='ses23A21', group='Q23 SESSIONS - ASIA')
+ses23A21_txt  = input('1', '', inline='ses23A21', group='Q23 SESSIONS - ASIA')
+ses23A21_ses  = input.session('1930-1954', '', inline='ses23A21', group='Q23 SESSIONS - ASIA')
+ses23A21_css  = input.color(color.new(color.black, 85), '', inline='ses23A21', group='Q23 SESSIONS - ASIA')
+show_ses23A22 = input(true, '', inline='ses23A22', group='Q23 SESSIONS - ASIA')
+ses23A22_txt  = input('2', '', inline='ses23A22', group='Q23 SESSIONS - ASIA')
+ses23A22_ses  = input.session('1953-2016', '', inline='ses23A22', group='Q23 SESSIONS - ASIA')
+ses23A22_css  = input.color(color.new(color.black, 85), '', inline='ses23A22', group='Q23 SESSIONS - ASIA')
+show_ses23A23 = input(true, '', inline='ses23A23', group='Q23 SESSIONS - ASIA')
+ses23A23_txt  = input('3', '', inline='ses23A23', group='Q23 SESSIONS - ASIA')
+ses23A23_ses  = input.session('2015-2039', '', inline='ses23A23', group='Q23 SESSIONS - ASIA')
+ses23A23_css  = input.color(color.new(color.black, 85), '', inline='ses23A23', group='Q23 SESSIONS - ASIA')
+show_ses23A24 = input(true, '', inline='ses23A24', group='Q23 SESSIONS - ASIA')
+ses23A24_txt  = input('4', '', inline='ses23A24', group='Q23 SESSIONS - ASIA')
+ses23A24_ses  = input.session('2038-2101', '', inline='ses23A24', group='Q23 SESSIONS - ASIA')
+ses23A24_css  = input.color(color.new(color.black, 85), '', inline='ses23A24', group='Q23 SESSIONS - ASIA')
+show_ses23A31 = input(true, '', inline='ses23A31', group='Q23 SESSIONS - ASIA')
+ses23A31_txt  = input('1', '', inline='ses23A31', group='Q23 SESSIONS - ASIA')
+ses23A31_ses  = input.session('2100-2124', '', inline='ses23A31', group='Q23 SESSIONS - ASIA')
+ses23A31_css  = input.color(color.new(color.black, 85), '', inline='ses23A31', group='Q23 SESSIONS - ASIA')
+show_ses23A32 = input(true, '', inline='ses23A32', group='Q23 SESSIONS - ASIA')
+ses23A32_txt  = input('2', '', inline='ses23A32', group='Q23 SESSIONS - ASIA')
+ses23A32_ses  = input.session('2123-2146', '', inline='ses23A32', group='Q23 SESSIONS - ASIA')
+ses23A32_css  = input.color(color.new(color.black, 85), '', inline='ses23A32', group='Q23 SESSIONS - ASIA')
+show_ses23A33 = input(true, '', inline='ses23A33', group='Q23 SESSIONS - ASIA')
+ses23A33_txt  = input('3', '', inline='ses23A33', group='Q23 SESSIONS - ASIA')
+ses23A33_ses  = input.session('2145-2209', '', inline='ses23A33', group='Q23 SESSIONS - ASIA')
+ses23A33_css  = input.color(color.new(color.black, 85), '', inline='ses23A33', group='Q23 SESSIONS - ASIA')
+show_ses23A34 = input(true, '', inline='ses23A34', group='Q23 SESSIONS - ASIA')
+ses23A34_txt  = input('4', '', inline='ses23A34', group='Q23 SESSIONS - ASIA')
+ses23A34_ses  = input.session('2208-2231', '', inline='ses23A34', group='Q23 SESSIONS - ASIA')
+ses23A34_css  = input.color(color.new(color.black, 85), '', inline='ses23A34', group='Q23 SESSIONS - ASIA')
+show_ses23A41 = input(true, '', inline='ses23A41', group='Q23 SESSIONS - ASIA')
+ses23A41_txt  = input('1', '', inline='ses23A41', group='Q23 SESSIONS - ASIA')
+ses23A41_ses  = input.session('2230-2254', '', inline='ses23A41', group='Q23 SESSIONS - ASIA')
+ses23A41_css  = input.color(color.new(color.black, 85), '', inline='ses23A41', group='Q23 SESSIONS - ASIA')
+show_ses23A42 = input(true, '', inline='ses23A42', group='Q23 SESSIONS - ASIA')
+ses23A42_txt  = input('2', '', inline='ses23A42', group='Q23 SESSIONS - ASIA')
+ses23A42_ses  = input.session('2253-2316', '', inline='ses23A42', group='Q23 SESSIONS - ASIA')
+ses23A42_css  = input.color(color.new(color.black, 85), '', inline='ses23A42', group='Q23 SESSIONS - ASIA')
+show_ses23A43 = input(true, '', inline='ses23A43', group='Q23 SESSIONS - ASIA')
+ses23A43_txt  = input('3', '', inline='ses23A43', group='Q23 SESSIONS - ASIA')
+ses23A43_ses  = input.session('2315-2339', '', inline='ses23A43', group='Q23 SESSIONS - ASIA')
+ses23A43_css  = input.color(color.new(color.black, 85), '', inline='ses23A43', group='Q23 SESSIONS - ASIA')
+show_ses23A44 = input(true, '', inline='ses23A44', group='Q23 SESSIONS - ASIA')
+ses23A44_txt  = input('4', '', inline='ses23A44', group='Q23 SESSIONS - ASIA')
+ses23A44_ses  = input.session('2338-0001', '', inline='ses23A44', group='Q23 SESSIONS - ASIA')
+ses23A44_css  = input.color(color.new(color.black, 85), '', inline='ses23A44', group='Q23 SESSIONS - ASIA')
+
+show_ses23L11 = input(true, '', inline='ses23L11', group='Q23 SESSIONS - LONDON')
+ses23L11_txt  = input('1', '', inline='ses23L11', group='Q23 SESSIONS - LONDON')
+ses23L11_ses  = input.session('0000-0024', '', inline='ses23L11', group='Q23 SESSIONS - LONDON')
+ses23L11_css  = input.color(color.new(color.black, 85), '', inline='ses23L11', group='Q23 SESSIONS - LONDON')
+show_ses23L12 = input(true, '', inline='ses23L12', group='Q23 SESSIONS - LONDON')
+ses23L12_txt  = input('2', '', inline='ses23L12', group='Q23 SESSIONS - LONDON')
+ses23L12_ses  = input.session('0023-0046', '', inline='ses23L12', group='Q23 SESSIONS - LONDON')
+ses23L12_css  = input.color(color.new(color.black, 85), '', inline='ses23L12', group='Q23 SESSIONS - LONDON')
+show_ses23L13 = input(true, '', inline='ses23L13', group='Q23 SESSIONS - LONDON')
+ses23L13_txt  = input('3', '', inline='ses23L13', group='Q23 SESSIONS - LONDON')
+ses23L13_ses  = input.session('0045-0109', '', inline='ses23L13', group='Q23 SESSIONS - LONDON')
+ses23L13_css  = input.color(color.new(color.black, 85), '', inline='ses23L13', group='Q23 SESSIONS - LONDON')
+show_ses23L14 = input(true, '', inline='ses23L14', group='Q23 SESSIONS - LONDON')
+ses23L14_txt  = input('4', '', inline='ses23L14', group='Q23 SESSIONS - LONDON')
+ses23L14_ses  = input.session('0108-0131', '', inline='ses23L14', group='Q23 SESSIONS - LONDON')
+ses23L14_css  = input.color(color.new(color.black, 85), '', inline='ses23L14', group='Q23 SESSIONS - LONDON')
+show_ses23L21 = input(true, '', inline='ses23L21', group='Q23 SESSIONS - LONDON')
+ses23L21_txt  = input('1', '', inline='ses23L21', group='Q23 SESSIONS - LONDON')
+ses23L21_ses  = input.session('0130-0154', '', inline='ses23L21', group='Q23 SESSIONS - LONDON')
+ses23L21_css  = input.color(color.new(color.black, 85), '', inline='ses23L21', group='Q23 SESSIONS - LONDON')
+show_ses23L22 = input(true, '', inline='ses23L22', group='Q23 SESSIONS - LONDON')
+ses23L22_txt  = input('2', '', inline='ses23L22', group='Q23 SESSIONS - LONDON')
+ses23L22_ses  = input.session('0153-0216', '', inline='ses23L22', group='Q23 SESSIONS - LONDON')
+ses23L22_css  = input.color(color.new(color.black, 85), '', inline='ses23L22', group='Q23 SESSIONS - LONDON')
+show_ses23L23 = input(true, '', inline='ses23L23', group='Q23 SESSIONS - LONDON')
+ses23L23_txt  = input('3', '', inline='ses23L23', group='Q23 SESSIONS - LONDON')
+ses23L23_ses  = input.session('0215-0239', '', inline='ses23L23', group='Q23 SESSIONS - LONDON')
+ses23L23_css  = input.color(color.new(color.black, 85), '', inline='ses23L23', group='Q23 SESSIONS - LONDON')
+show_ses23L24 = input(true, '', inline='ses23L24', group='Q23 SESSIONS - LONDON')
+ses23L24_txt  = input('4', '', inline='ses23L24', group='Q23 SESSIONS - LONDON')
+ses23L24_ses  = input.session('0238-0301', '', inline='ses23L24', group='Q23 SESSIONS - LONDON')
+ses23L24_css  = input.color(color.new(color.black, 85), '', inline='ses23L24', group='Q23 SESSIONS - LONDON')
+show_ses23L31 = input(true, '', inline='ses23L31', group='Q23 SESSIONS - LONDON')
+ses23L31_txt  = input('1', '', inline='ses23L31', group='Q23 SESSIONS - LONDON')
+ses23L31_ses  = input.session('0300-0324', '', inline='ses23L31', group='Q23 SESSIONS - LONDON')
+ses23L31_css  = input.color(color.new(color.black, 85), '', inline='ses23L31', group='Q23 SESSIONS - LONDON')
+show_ses23L32 = input(true, '', inline='ses23L32', group='Q23 SESSIONS - LONDON')
+ses23L32_txt  = input('2', '', inline='ses23L32', group='Q23 SESSIONS - LONDON')
+ses23L32_ses  = input.session('0323-0346', '', inline='ses23L32', group='Q23 SESSIONS - LONDON')
+ses23L32_css  = input.color(color.new(color.black, 85), '', inline='ses23L32', group='Q23 SESSIONS - LONDON')
+show_ses23L33 = input(true, '', inline='ses23L33', group='Q23 SESSIONS - LONDON')
+ses23L33_txt  = input('3', '', inline='ses23L33', group='Q23 SESSIONS - LONDON')
+ses23L33_ses  = input.session('0345-0409', '', inline='ses23L33', group='Q23 SESSIONS - LONDON')
+ses23L33_css  = input.color(color.new(color.black, 85), '', inline='ses23L33', group='Q23 SESSIONS - LONDON')
+show_ses23L34 = input(true, '', inline='ses23L34', group='Q23 SESSIONS - LONDON')
+ses23L34_txt  = input('4', '', inline='ses23L34', group='Q23 SESSIONS - LONDON')
+ses23L34_ses  = input.session('0408-0431', '', inline='ses23L34', group='Q23 SESSIONS - LONDON')
+ses23L34_css  = input.color(color.new(color.black, 85), '', inline='ses23L34', group='Q23 SESSIONS - LONDON')
+show_ses23L41 = input(true, '', inline='ses23L41', group='Q23 SESSIONS - LONDON')
+ses23L41_txt  = input('1', '', inline='ses23L41', group='Q23 SESSIONS - LONDON')
+ses23L41_ses  = input.session('0430-0454', '', inline='ses23L41', group='Q23 SESSIONS - LONDON')
+ses23L41_css  = input.color(color.new(color.black, 85), '', inline='ses23L41', group='Q23 SESSIONS - LONDON')
+show_ses23L42 = input(true, '', inline='ses23L42', group='Q23 SESSIONS - LONDON')
+ses23L42_txt  = input('2', '', inline='ses23L42', group='Q23 SESSIONS - LONDON')
+ses23L42_ses  = input.session('0453-0516', '', inline='ses23L42', group='Q23 SESSIONS - LONDON')
+ses23L42_css  = input.color(color.new(color.black, 85), '', inline='ses23L42', group='Q23 SESSIONS - LONDON')
+show_ses23L43 = input(true, '', inline='ses23L43', group='Q23 SESSIONS - LONDON')
+ses23L43_txt  = input('3', '', inline='ses23L43', group='Q23 SESSIONS - LONDON')
+ses23L43_ses  = input.session('0515-0539', '', inline='ses23L43', group='Q23 SESSIONS - LONDON')
+ses23L43_css  = input.color(color.new(color.black, 85), '', inline='ses23L43', group='Q23 SESSIONS - LONDON')
+show_ses23L44 = input(true, '', inline='ses23L44', group='Q23 SESSIONS - LONDON')
+ses23L44_txt  = input('4', '', inline='ses23L44', group='Q23 SESSIONS - LONDON')
+ses23L44_ses  = input.session('0538-0601', '', inline='ses23L44', group='Q23 SESSIONS - LONDON')
+ses23L44_css  = input.color(color.new(color.black, 85), '', inline='ses23L44', group='Q23 SESSIONS - LONDON')
+
+show_ses23NY11 = input(true, '', inline='ses23NY11', group='Q23 SESSIONS - NEW YORK')
+ses23NY11_txt  = input('1', '', inline='ses23NY11', group='Q23 SESSIONS - NEW YORK')
+ses23NY11_ses  = input.session('0600-0624', '', inline='ses23NY11', group='Q23 SESSIONS - NEW YORK')
+ses23NY11_css  = input.color(color.new(color.black, 85), '', inline='ses23NY11', group='Q23 SESSIONS - NEW YORK')
+show_ses23NY12 = input(true, '', inline='ses23NY12', group='Q23 SESSIONS - NEW YORK')
+ses23NY12_txt  = input('2', '', inline='ses23NY12', group='Q23 SESSIONS - NEW YORK')
+ses23NY12_ses  = input.session('0623-0646', '', inline='ses23NY12', group='Q23 SESSIONS - NEW YORK')
+ses23NY12_css  = input.color(color.new(color.black, 85), '', inline='ses23NY12', group='Q23 SESSIONS - NEW YORK')
+show_ses23NY13 = input(true, '', inline='ses23NY13', group='Q23 SESSIONS - NEW YORK')
+ses23NY13_txt  = input('3', '', inline='ses23NY13', group='Q23 SESSIONS - NEW YORK')
+ses23NY13_ses  = input.session('0645-0709', '', inline='ses23NY13', group='Q23 SESSIONS - NEW YORK')
+ses23NY13_css  = input.color(color.new(color.black, 85), '', inline='ses23NY13', group='Q23 SESSIONS - NEW YORK')
+show_ses23NY14 = input(true, '', inline='ses23NY14', group='Q23 SESSIONS - NEW YORK')
+ses23NY14_txt  = input('4', '', inline='ses23NY14', group='Q23 SESSIONS - NEW YORK')
+ses23NY14_ses  = input.session('0708-0731', '', inline='ses23NY14', group='Q23 SESSIONS - NEW YORK')
+ses23NY14_css  = input.color(color.new(color.black, 85), '', inline='ses23NY14', group='Q23 SESSIONS - NEW YORK')
+show_ses23NY21 = input(true, '', inline='ses23NY21', group='Q23 SESSIONS - NEW YORK')
+ses23NY21_txt  = input('1', '', inline='ses23NY21', group='Q23 SESSIONS - NEW YORK')
+ses23NY21_ses  = input.session('0730-0754', '', inline='ses23NY21', group='Q23 SESSIONS - NEW YORK')
+ses23NY21_css  = input.color(color.new(color.black, 85), '', inline='ses23NY21', group='Q23 SESSIONS - NEW YORK')
+show_ses23NY22 = input(true, '', inline='ses23NY22', group='Q23 SESSIONS - NEW YORK')
+ses23NY22_txt  = input('2', '', inline='ses23NY22', group='Q23 SESSIONS - NEW YORK')
+ses23NY22_ses  = input.session('0753-0816', '', inline='ses23NY22', group='Q23 SESSIONS - NEW YORK')
+ses23NY22_css  = input.color(color.new(color.black, 85), '', inline='ses23NY22', group='Q23 SESSIONS - NEW YORK')
+show_ses23NY23 = input(true, '', inline='ses23NY23', group='Q23 SESSIONS - NEW YORK')
+ses23NY23_txt  = input('3', '', inline='ses23NY23', group='Q23 SESSIONS - NEW YORK')
+ses23NY23_ses  = input.session('0815-0839', '', inline='ses23NY23', group='Q23 SESSIONS - NEW YORK')
+ses23NY23_css  = input.color(color.new(color.black, 85), '', inline='ses23NY23', group='Q23 SESSIONS - NEW YORK')
+show_ses23NY24 = input(true, '', inline='ses23NY24', group='Q23 SESSIONS - NEW YORK')
+ses23NY24_txt  = input('4', '', inline='ses23NY24', group='Q23 SESSIONS - NEW YORK')
+ses23NY24_ses  = input.session('0838-0901', '', inline='ses23NY24', group='Q23 SESSIONS - NEW YORK')
+ses23NY24_css  = input.color(color.new(color.black, 85), '', inline='ses23NY24', group='Q23 SESSIONS - NEW YORK')
+show_ses23NY31 = input(true, '', inline='ses23NY31', group='Q23 SESSIONS - NEW YORK')
+ses23NY31_txt  = input('1', '', inline='ses23NY31', group='Q23 SESSIONS - NEW YORK')
+ses23NY31_ses  = input.session('0900-0924', '', inline='ses23NY31', group='Q23 SESSIONS - NEW YORK')
+ses23NY31_css  = input.color(color.new(color.black, 85), '', inline='ses23NY31', group='Q23 SESSIONS - NEW YORK')
+show_ses23NY32 = input(true, '', inline='ses23NY32', group='Q23 SESSIONS - NEW YORK')
+ses23NY32_txt  = input('2', '', inline='ses23NY32', group='Q23 SESSIONS - NEW YORK')
+ses23NY32_ses  = input.session('0923-0946', '', inline='ses23NY32', group='Q23 SESSIONS - NEW YORK')
+ses23NY32_css  = input.color(color.new(color.black, 85), '', inline='ses23NY32', group='Q23 SESSIONS - NEW YORK')
+show_ses23NY33 = input(true, '', inline='ses23NY33', group='Q23 SESSIONS - NEW YORK')
+ses23NY33_txt  = input('3', '', inline='ses23NY33', group='Q23 SESSIONS - NEW YORK')
+ses23NY33_ses  = input.session('0945-1009', '', inline='ses23NY33', group='Q23 SESSIONS - NEW YORK')
+ses23NY33_css  = input.color(color.new(color.black, 85), '', inline='ses23NY33', group='Q23 SESSIONS - NEW YORK')
+show_ses23NY34 = input(true, '', inline='ses23NY34', group='Q23 SESSIONS - NEW YORK')
+ses23NY34_txt  = input('4', '', inline='ses23NY34', group='Q23 SESSIONS - NEW YORK')
+ses23NY34_ses  = input.session('1008-1031', '', inline='ses23NY34', group='Q23 SESSIONS - NEW YORK')
+ses23NY34_css  = input.color(color.new(color.black, 85), '', inline='ses23NY34', group='Q23 SESSIONS - NEW YORK')
+show_ses23NY41 = input(true, '', inline='ses23NY41', group='Q23 SESSIONS - NEW YORK')
+ses23NY41_txt  = input('1', '', inline='ses23NY41', group='Q23 SESSIONS - NEW YORK')
+ses23NY41_ses  = input.session('1030-1054', '', inline='ses23NY41', group='Q23 SESSIONS - NEW YORK')
+ses23NY41_css  = input.color(color.new(color.black, 85), '', inline='ses23NY41', group='Q23 SESSIONS - NEW YORK')
+show_ses23NY42 = input(true, '', inline='ses23NY42', group='Q23 SESSIONS - NEW YORK')
+ses23NY42_txt  = input('2', '', inline='ses23NY42', group='Q23 SESSIONS - NEW YORK')
+ses23NY42_ses  = input.session('1053-1116', '', inline='ses23NY42', group='Q23 SESSIONS - NEW YORK')
+ses23NY42_css  = input.color(color.new(color.black, 85), '', inline='ses23NY42', group='Q23 SESSIONS - NEW YORK')
+show_ses23NY43 = input(true, '', inline='ses23NY43', group='Q23 SESSIONS - NEW YORK')
+ses23NY43_txt  = input('3', '', inline='ses23NY43', group='Q23 SESSIONS - NEW YORK')
+ses23NY43_ses  = input.session('1115-1139', '', inline='ses23NY43', group='Q23 SESSIONS - NEW YORK')
+ses23NY43_css  = input.color(color.new(color.black, 85), '', inline='ses23NY43', group='Q23 SESSIONS - NEW YORK')
+show_ses23NY44 = input(true, '', inline='ses23NY44', group='Q23 SESSIONS - NEW YORK')
+ses23NY44_txt  = input('4', '', inline='ses23NY44', group='Q23 SESSIONS - NEW YORK')
+ses23NY44_ses  = input.session('1138-1201', '', inline='ses23NY44', group='Q23 SESSIONS - NEW YORK')
+ses23NY44_css  = input.color(color.new(color.black, 85), '', inline='ses23NY44', group='Q23 SESSIONS - NEW YORK')
+
+show_ses23CBDR2311 = input(true, '', inline='ses23CBDR2311', group='Q23 SESSIONS - CBDR')
+ses23CBDR2311_txt  = input('1', '', inline='ses23CBDR2311', group='Q23 SESSIONS - CBDR')
+ses23CBDR2311_ses  = input.session('1200-1224', '', inline='ses23CBDR2311', group='Q23 SESSIONS - CBDR')
+ses23CBDR2311_css  = input.color(color.new(color.black, 85), '', inline='ses23CBDR2311', group='Q23 SESSIONS - CBDR')
+show_ses23CBDR2312 = input(true, '', inline='ses23CBDR2312', group='Q23 SESSIONS - CBDR')
+ses23CBDR2312_txt  = input('2', '', inline='ses23CBDR2312', group='Q23 SESSIONS - CBDR')
+ses23CBDR2312_ses  = input.session('1223-1246', '', inline='ses23CBDR2312', group='Q23 SESSIONS - CBDR')
+ses23CBDR2312_css  = input.color(color.new(color.black, 85), '', inline='ses23CBDR2312', group='Q23 SESSIONS - CBDR')
+show_ses23CBDR2313 = input(true, '', inline='ses23CBDR2313', group='Q23 SESSIONS - CBDR')
+ses23CBDR2313_txt  = input('3', '', inline='ses23CBDR2313', group='Q23 SESSIONS - CBDR')
+ses23CBDR2313_ses  = input.session('1245-1309', '', inline='ses23CBDR2313', group='Q23 SESSIONS - CBDR')
+ses23CBDR2313_css  = input.color(color.new(color.black, 85), '', inline='ses23CBDR2313', group='Q23 SESSIONS - CBDR')
+show_ses23CBDR2314 = input(true, '', inline='ses23CBDR2314', group='Q23 SESSIONS - CBDR')
+ses23CBDR2314_txt  = input('4', '', inline='ses23CBDR2314', group='Q23 SESSIONS - CBDR')
+ses23CBDR2314_ses  = input.session('1308-1331', '', inline='ses23CBDR2314', group='Q23 SESSIONS - CBDR')
+ses23CBDR2314_css  = input.color(color.new(color.black, 85), '', inline='ses23CBDR2314', group='Q23 SESSIONS - CBDR')
+show_ses23CBDR2321 = input(true, '', inline='ses23CBDR2321', group='Q23 SESSIONS - CBDR')
+ses23CBDR2321_txt  = input('1', '', inline='ses23CBDR2321', group='Q23 SESSIONS - CBDR')
+ses23CBDR2321_ses  = input.session('1330-1354', '', inline='ses23CBDR2321', group='Q23 SESSIONS - CBDR')
+ses23CBDR2321_css  = input.color(color.new(color.black, 85), '', inline='ses23CBDR2321', group='Q23 SESSIONS - CBDR')
+show_ses23CBDR2322 = input(true, '', inline='ses23CBDR2322', group='Q23 SESSIONS - CBDR')
+ses23CBDR2322_txt  = input('2', '', inline='ses23CBDR2322', group='Q23 SESSIONS - CBDR')
+ses23CBDR2322_ses  = input.session('1353-1416', '', inline='ses23CBDR2322', group='Q23 SESSIONS - CBDR')
+ses23CBDR2322_css  = input.color(color.new(color.black, 85), '', inline='ses23CBDR2322', group='Q23 SESSIONS - CBDR')
+show_ses23CBDR2323 = input(true, '', inline='ses23CBDR2323', group='Q23 SESSIONS - CBDR')
+ses23CBDR2323_txt  = input('3', '', inline='ses23CBDR2323', group='Q23 SESSIONS - CBDR')
+ses23CBDR2323_ses  = input.session('1415-1439', '', inline='ses23CBDR2323', group='Q23 SESSIONS - CBDR')
+ses23CBDR2323_css  = input.color(color.new(color.black, 85), '', inline='ses23CBDR2323', group='Q23 SESSIONS - CBDR')
+show_ses23CBDR2324 = input(true, '', inline='ses23CBDR2324', group='Q23 SESSIONS - CBDR')
+ses23CBDR2324_txt  = input('4', '', inline='ses23CBDR2324', group='Q23 SESSIONS - CBDR')
+ses23CBDR2324_ses  = input.session('1438-1501', '', inline='ses23CBDR2324', group='Q23 SESSIONS - CBDR')
+ses23CBDR2324_css  = input.color(color.new(color.black, 85), '', inline='ses23CBDR2324', group='Q23 SESSIONS - CBDR')
+show_ses23CBDR2331 = input(true, '', inline='ses23CBDR2331', group='Q23 SESSIONS - CBDR')
+ses23CBDR2331_txt  = input('1', '', inline='ses23CBDR2331', group='Q23 SESSIONS - CBDR')
+ses23CBDR2331_ses  = input.session('1500-1524', '', inline='ses23CBDR2331', group='Q23 SESSIONS - CBDR')
+ses23CBDR2331_css  = input.color(color.new(color.black, 85), '', inline='ses23CBDR2331', group='Q23 SESSIONS - CBDR')
+show_ses23CBDR2332 = input(true, '', inline='ses23CBDR2332', group='Q23 SESSIONS - CBDR')
+ses23CBDR2332_txt  = input('2', '', inline='ses23CBDR2332', group='Q23 SESSIONS - CBDR')
+ses23CBDR2332_ses  = input.session('1523-1546', '', inline='ses23CBDR2332', group='Q23 SESSIONS - CBDR')
+ses23CBDR2332_css  = input.color(color.new(color.black, 85), '', inline='ses23CBDR2332', group='Q23 SESSIONS - CBDR')
+show_ses23CBDR2333 = input(true, '', inline='ses23CBDR2333', group='Q23 SESSIONS - CBDR')
+ses23CBDR2333_txt  = input('3', '', inline='ses23CBDR2333', group='Q23 SESSIONS - CBDR')
+ses23CBDR2333_ses  = input.session('1545-1609', '', inline='ses23CBDR2333', group='Q23 SESSIONS - CBDR')
+ses23CBDR2333_css  = input.color(color.new(color.black, 85), '', inline='ses23CBDR2333', group='Q23 SESSIONS - CBDR')
+show_ses23CBDR2334 = input(true, '', inline='ses23CBDR2334', group='Q23 SESSIONS - CBDR')
+ses23CBDR2334_txt  = input('4', '', inline='ses23CBDR2334', group='Q23 SESSIONS - CBDR')
+ses23CBDR2334_ses  = input.session('1608-1631', '', inline='ses23CBDR2334', group='Q23 SESSIONS - CBDR')
+ses23CBDR2334_css  = input.color(color.new(color.black, 85), '', inline='ses23CBDR2334', group='Q23 SESSIONS - CBDR')
+show_ses23CBDR2341 = input(true, '', inline='ses23CBDR2341', group='Q23 SESSIONS - CBDR')
+ses23CBDR2341_txt  = input('1', '', inline='ses23CBDR2341', group='Q23 SESSIONS - CBDR')
+ses23CBDR2341_ses  = input.session('1630-1654', '', inline='ses23CBDR2341', group='Q23 SESSIONS - CBDR')
+ses23CBDR2341_css  = input.color(color.new(color.black, 85), '', inline='ses23CBDR2341', group='Q23 SESSIONS - CBDR')
+show_ses23CBDR2342 = input(true, '', inline='ses23CBDR2342', group='Q23 SESSIONS - CBDR')
+ses23CBDR2342_txt  = input('2', '', inline='ses23CBDR2342', group='Q23 SESSIONS - CBDR')
+ses23CBDR2342_ses  = input.session('1653-1716', '', inline='ses23CBDR2342', group='Q23 SESSIONS - CBDR')
+ses23CBDR2342_css  = input.color(color.new(color.black, 85), '', inline='ses23CBDR2342', group='Q23 SESSIONS - CBDR')
+show_ses23CBDR2343 = input(true, '', inline='ses23CBDR2343', group='Q23 SESSIONS - CBDR')
+ses23CBDR2343_txt  = input('3', '', inline='ses23CBDR2343', group='Q23 SESSIONS - CBDR')
+ses23CBDR2343_ses  = input.session('1715-1739', '', inline='ses23CBDR2343', group='Q23 SESSIONS - CBDR')
+ses23CBDR2343_css  = input.color(color.new(color.black, 85), '', inline='ses23CBDR2343', group='Q23 SESSIONS - CBDR')
+show_ses23CBDR2344 = input(true, '', inline='ses23CBDR2344', group='Q23 SESSIONS - CBDR')
+ses23CBDR2344_txt  = input('4', '', inline='ses23CBDR2344', group='Q23 SESSIONS - CBDR')
+ses23CBDR2344_ses  = input.session('1738-1801', '', inline='ses23CBDR2344', group='Q23 SESSIONS - CBDR')
+ses23CBDR2344_css  = input.color(color.new(color.black, 85), '', inline='ses23CBDR2344', group='Q23 SESSIONS - CBDR')
+// ============================================================
+// MACRO CYCLES - MONTHLY QUARTERS
+// ============================================================
+show_macro_monthly  = input(true, 'Show Monthly Quarters (Q1-Q4)', group='MACRO CYCLES - MONTHLY QUARTERS')
+bg_transp_mw    = input.float(95, 'Box Transparency', group='MACRO CYCLES - MONTHLY QUARTERS')
+show_outline_mw = input(true, 'Box Border', group='MACRO CYCLES - MONTHLY QUARTERS')
+show_txt_mw     = input(true, 'Box Labels', group='MACRO CYCLES - MONTHLY QUARTERS')
+line_width_mw   = input.int(1, 'Line Width', minval=1, group='MACRO CYCLES - MONTHLY QUARTERS')
+
+show_mw1 = input(true, 'Q1 (d1-d7)',   inline='mw1', group='MACRO CYCLES - MONTHLY QUARTERS')
+mw1_txt  = input('Q1', '',             inline='mw1', group='MACRO CYCLES - MONTHLY QUARTERS')
+mw1_css  = input.color(color.new(color.purple, 0), '', inline='mw1', group='MACRO CYCLES - MONTHLY QUARTERS')
+
+show_mw2 = input(true, 'Q2 (d8-d14)',  inline='mw2', group='MACRO CYCLES - MONTHLY QUARTERS')
+mw2_txt  = input('Q2', '',             inline='mw2', group='MACRO CYCLES - MONTHLY QUARTERS')
+mw2_css  = input.color(color.new(color.red, 0), '', inline='mw2', group='MACRO CYCLES - MONTHLY QUARTERS')
+
+show_mw3 = input(true, 'Q3 (d15-d21)', inline='mw3', group='MACRO CYCLES - MONTHLY QUARTERS')
+mw3_txt  = input('Q3', '',             inline='mw3', group='MACRO CYCLES - MONTHLY QUARTERS')
+mw3_css  = input.color(color.new(color.blue, 0), '', inline='mw3', group='MACRO CYCLES - MONTHLY QUARTERS')
+
+show_mw4 = input(true, 'Q4 (d22-end)', inline='mw4', group='MACRO CYCLES - MONTHLY QUARTERS')
+mw4_txt  = input('Q4', '',             inline='mw4', group='MACRO CYCLES - MONTHLY QUARTERS')
+mw4_css  = input.color(color.new(color.green, 0), '', inline='mw4', group='MACRO CYCLES - MONTHLY QUARTERS')
+
+// ============================================================
+// MACRO CYCLES - WEEKLY QUARTERS
+// ============================================================
+show_macro_weekly   = input(true, 'Show Weekly Quarters (Q1-Q5)', group='MACRO CYCLES - WEEKLY QUARTERS')
+bg_transp_wd    = input.float(95, 'Box Transparency', group='MACRO CYCLES - WEEKLY QUARTERS')
+show_outline_wd = input(true, 'Box Border', group='MACRO CYCLES - WEEKLY QUARTERS')
+show_txt_wd     = input(true, 'Box Labels', group='MACRO CYCLES - WEEKLY QUARTERS')
+line_width_wd   = input.int(1, 'Line Width', minval=1, group='MACRO CYCLES - WEEKLY QUARTERS')
+
+show_wd1 = input(true, 'Q1 (Monday)',    inline='wd1', group='MACRO CYCLES - WEEKLY QUARTERS')
+wd1_txt  = input('Q1', '',               inline='wd1', group='MACRO CYCLES - WEEKLY QUARTERS')
+wd1_css  = input.color(color.new(color.purple, 0), '', inline='wd1', group='MACRO CYCLES - WEEKLY QUARTERS')
+
+show_wd2 = input(true, 'Q2 (Tuesday)',   inline='wd2', group='MACRO CYCLES - WEEKLY QUARTERS')
+wd2_txt  = input('Q2', '',               inline='wd2', group='MACRO CYCLES - WEEKLY QUARTERS')
+wd2_css  = input.color(color.new(color.red, 0), '', inline='wd2', group='MACRO CYCLES - WEEKLY QUARTERS')
+
+show_wd3 = input(true, 'Q3 (Wednesday)', inline='wd3', group='MACRO CYCLES - WEEKLY QUARTERS')
+wd3_txt  = input('Q3', '',               inline='wd3', group='MACRO CYCLES - WEEKLY QUARTERS')
+wd3_css  = input.color(color.new(color.blue, 0), '', inline='wd3', group='MACRO CYCLES - WEEKLY QUARTERS')
+
+show_wd4 = input(true, 'Q4 (Thursday)',  inline='wd4', group='MACRO CYCLES - WEEKLY QUARTERS')
+wd4_txt  = input('Q4', '',               inline='wd4', group='MACRO CYCLES - WEEKLY QUARTERS')
+wd4_css  = input.color(color.new(color.green, 0), '', inline='wd4', group='MACRO CYCLES - WEEKLY QUARTERS')
+
+show_wd5 = input(true, 'Q5 (Friday)',    inline='wd5', group='MACRO CYCLES - WEEKLY QUARTERS')
+wd5_txt  = input('Q5', '',               inline='wd5', group='MACRO CYCLES - WEEKLY QUARTERS')
+wd5_css  = input.color(color.new(color.orange, 0), '', inline='wd5', group='MACRO CYCLES - WEEKLY QUARTERS')
+
+// ============================================================
+// TRUE OPENS - SETTINGS
+// ============================================================
+true_open_style      = input.string('Dashed', 'True Opens Line Style', options=['Solid', 'Dotted', 'Dashed'], group='TRUE OPENS')
+true_open_width      = input.int(1, 'True Opens Line Width', minval=1, maxval=5, group='TRUE OPENS')
+true_open_show_label = input(true, 'Show True Opens Labels', group='TRUE OPENS')
+true_open_label_size = input.string('Small', 'True Opens Label Size', options=['Tiny', 'Small', 'Normal', 'Large', 'Huge'], group='TRUE OPENS')
+
+show_true_day_open     = input(true, 'True Day Open (00:00)',     inline='tdo', group='TRUE OPENS')
+true_day_open_color    = input.color(color.new(color.yellow, 0),   '', inline='tdo', group='TRUE OPENS')
+
+show_true_week_open    = input(true, 'True Week Open (Mon 00:00)', inline='two', group='TRUE OPENS')
+true_week_open_color   = input.color(color.new(color.aqua, 0),     '', inline='two', group='TRUE OPENS')
+
+show_true_month_open   = input(true, 'True Month Open (1st 00:00)', inline='tmo', group='TRUE OPENS')
+true_month_open_color  = input.color(color.new(color.orange, 0),   '', inline='tmo', group='TRUE OPENS')
+
+show_true_quarter_open = input(true, 'True Quarter Open',          inline='tqo', group='TRUE OPENS')
+true_quarter_open_color= input.color(color.new(color.fuchsia, 0),  '', inline='tqo', group='TRUE OPENS')
+
+// ============================================================
+// FUNCTIONS (top level, no conditional blocks)
+// ============================================================
+
+// --- Range builders for Quarterly Theory ---
+get_range(session, session_name, session_css) =>
+    var t = 0
+    var max = high
+    var min = low
+    var box bx = na
+    var label lbl = na
+    if session > session[1]
+        t := time
+        max := high
+        min := low
+        bx := box.new(bar_index, max, bar_index, min, bgcolor=color.new(session_css, bg_transp), border_color=show_outline ? session_css : na, border_style=line.style_dotted, border_width=line_width)
+        if show_txt
+            lbl := label.new(t, max, session_name, xloc=xloc.bar_time, textcolor=color.new(color.blue, 0), style=label.style_label_down, color=color.new(color.white, 90), size=size.normal)
+    if session != 0 and session == session[1]
+        max := math.max(high, max)
+        min := math.min(low, min)
+        box.set_top(bx, max)
+        box.set_rightbottom(bx, bar_index, min)
+        if show_txt
+            label.set_xy(lbl, int(math.avg(t, time)), max)
+
+get_range360(session, session_name, session_css) =>
+    var t = 0
+    var max = high
+    var min = low
+    var box bx = na
+    var label lbl = na
+    if session > session[1]
+        t := time
+        max := high
+        min := low
+        bx := box.new(bar_index, max, bar_index, min, bgcolor=color.new(session_css, bg_transp360), border_color=session_css, border_style=line.style_solid, border_width=line_width360)
+        if show_txt360
+            lbl := label.new(t, max, session_name, xloc=xloc.bar_time, textcolor=session_css, style=label.style_label_down, color=color.new(color.white, 100), size=size.normal)
+    if session != 0 and session == session[1]
+        max := math.max(high, max)
+        min := math.min(low, min)
+        box.set_top(bx, max)
+        box.set_rightbottom(bx, bar_index, min)
+        if show_txt360
+            label.set_xy(lbl, int(math.avg(t, time)), max)
+
+get_range23(session, session_name, session_css) =>
+    var t = 0
+    var max = high
+    var min = low
+    var box bx = na
+    var label lbl = na
+    if session > session[1]
+        t := time
+        max := high
+        min := low
+        bx := box.new(bar_index, max, bar_index, min, bgcolor=color.new(session_css, bg_transp23), border_color=color.new(color.black, 0), border_style=line.style_dotted, border_width=line_width23)
+        if show_txt23
+            lbl := label.new(t, max, session_name, xloc=xloc.bar_time, textcolor=color.new(color.black, 0), style=label.style_label_down, color=color.new(color.white, 100), size=size.normal)
+    if session != 0 and session == session[1]
+        max := math.max(high, max)
+        min := math.min(low, min)
+        box.set_top(bx, max)
+        box.set_rightbottom(bx, bar_index, min)
+        if show_txt23
+            label.set_xy(lbl, int(math.avg(t, time)), max)
+
+// --- Generic Range builder for Macro Cycles ---
+get_range_macro(trigger, session_name, session_css, box_transp, box_border_show, box_labels_show, box_line_width) =>
+    var t = 0
+    var max = high
+    var min = low
+    var box bx = na
+    var label lbl = na
+    int trig = trigger ? 1 : 0
+    int trigPrev = trigger[1] ? 1 : 0
+    if trig > trigPrev
+        t := time
+        max := high
+        min := low
+        bx := box.new(bar_index, max, bar_index, min, bgcolor=color.new(session_css, box_transp), border_color=box_border_show ? session_css : na, border_style=line.style_dotted, border_width=box_line_width)
+        if box_labels_show
+            lbl := label.new(t, max, session_name, xloc=xloc.bar_time, textcolor=color.new(color.white, 0), style=label.style_label_down, color=color.new(color.black, 30), size=size.normal)
+    if trig == 1 and trigPrev == 1
+        max := math.max(high, max)
+        min := math.min(low, min)
+        box.set_top(bx, max)
+        box.set_rightbottom(bx, bar_index, min)
+        if box_labels_show
+            label.set_xy(lbl, int(math.avg(t, time)), max)
+
+// --- Line style selector for True Opens ---
+lineStyle() =>
+    switch true_open_style
+        'Solid'  => line.style_solid
+        'Dotted' => line.style_dotted
+        'Dashed' => line.style_dashed
+        => line.style_dashed
+
+// --- Label size selector for True Opens ---
+getLabelSizeMacro(s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        "Huge"   => size.huge
+        => size.small
+
+// ============================================================
+// MODULE 1: HIGHER TIMEFRAME CANDLE OVERLAY
+// ============================================================
+if enable_htf_candles
+    new_htf_candle_started = timeframe.change(higher_timeframe)
+
+    var float current_htf_open_price = na
+    var float current_htf_high_price = na
+    var float current_htf_low_price = na
+    var float current_htf_close_price = na
+    var int htf_candle_start_bar = na
+
+    var color current_fill_color = na
+    var color current_line_color = na
+
+    var box[] all_candle_bodies = array.new_box()
+    var line[] all_upper_shadows = array.new_line()
+    var line[] all_lower_shadows = array.new_line()
+    var label[] all_timeframe_labels = array.new_label()
+
+    if new_htf_candle_started
+        if not na(current_htf_open_price)
+            int middle_bar = htf_candle_start_bar + int((bar_index - 1 - htf_candle_start_bar) / 2)
+
+            body_top = math.max(current_htf_open_price, current_htf_close_price)
+            body_bottom = math.min(current_htf_open_price, current_htf_close_price)
+            body_mid = (body_top + body_bottom) / 2
+
+            var box permanent_candle_body = na
+            permanent_candle_body := box.new(
+                 left=htf_candle_start_bar,
+                 right=bar_index - 1,
+                 top=body_top,
+                 bottom=body_bottom,
+                 bgcolor=color.new(current_fill_color, candle_body_transparency),
+                 border_color=current_line_color,
+                 border_width=line_thickness
+             )
+            array.push(all_candle_bodies, permanent_candle_body)
+
+            if show_timeframe_label
+                label_text = htf_period_selection
+                size_const = switch label_text_size
+                    "Tiny"  => size.tiny
+                    "Small" => size.small
+                    "Normal"=> size.normal
+                    "Large" => size.large
+                    "Huge"  => size.huge
+                    =>       size.small
+                var label timeframe_label = na
+                timeframe_label := label.new(
+                    x=htf_candle_start_bar + int((bar_index - 1 - htf_candle_start_bar) / 2),
+                    y=body_mid,
+                    text=label_text,
+                    xloc=xloc.bar_index,
+                    color=color.new(color.white, 100),
+                    textcolor=current_line_color,
+                    style=label.style_label_center,
+                    size=size_const
+                )
+                array.push(all_timeframe_labels, timeframe_label)
+
+            if current_htf_high_price > body_top
+                var line permanent_upper_shadow = na
+                permanent_upper_shadow := line.new(
+                     x1=middle_bar,
+                     y1=body_top,
+                     x2=middle_bar,
+                     y2=current_htf_high_price,
+                     color=current_line_color,
+                     width=line_thickness
+                 )
+                array.push(all_upper_shadows, permanent_upper_shadow)
+
+            if current_htf_low_price < body_bottom
+                var line permanent_lower_shadow = na
+                permanent_lower_shadow := line.new(
+                     x1=middle_bar,
+                     y1=body_bottom,
+                     x2=middle_bar,
+                     y2=current_htf_low_price,
+                     color=current_line_color,
+                     width=line_thickness
+                 )
+                array.push(all_lower_shadows, permanent_lower_shadow)
+
+        current_htf_open_price := open
+        current_htf_high_price := high
+        current_htf_low_price := low
+        current_htf_close_price := close
+        htf_candle_start_bar := bar_index
+
+        is_bullish = current_htf_close_price >= current_htf_open_price
+        current_fill_color := is_bullish ? bullish_fill_color : bearish_fill_color
+        current_line_color := is_bullish ? bullish_line_color : bearish_line_color
+
+    else
+        current_htf_high_price := math.max(current_htf_high_price, high)
+        current_htf_low_price := math.min(current_htf_low_price, low)
+        current_htf_close_price := close
+
+        is_bullish = current_htf_close_price >= current_htf_open_price
+        current_fill_color := is_bullish ? bullish_fill_color : bearish_fill_color
+        current_line_color := is_bullish ? bullish_line_color : bearish_line_color
+
+    if not na(current_htf_open_price) and barstate.islast
+        int middle_bar = htf_candle_start_bar + int((bar_index - htf_candle_start_bar) / 2)
+
+        body_top = math.max(current_htf_open_price, current_htf_close_price)
+        body_bottom = math.min(current_htf_open_price, current_htf_close_price)
+        body_mid = (body_top + body_bottom) / 2
+
+        current_candle_body = box.new(
+             left=htf_candle_start_bar,
+             right=bar_index,
+             top=body_top,
+             bottom=body_bottom,
+             bgcolor=color.new(current_fill_color, candle_body_transparency),
+             border_color=current_line_color,
+             border_width=line_thickness
+         )
+
+        if show_timeframe_label
+            label_text = htf_period_selection
+            size_const = switch label_text_size
+                "Tiny"  => size.tiny
+                "Small" => size.small
+                "Normal"=> size.normal
+                "Large" => size.large
+                "Huge"  => size.huge
+                =>       size.small
+            var label current_timeframe_label = na
+            current_timeframe_label := label.new(
+                x=htf_candle_start_bar + int((bar_index - htf_candle_start_bar) / 2),
+                y=body_mid,
+                text=label_text,
+                xloc=xloc.bar_index,
+                color=color.new(color.white, 100),
+                textcolor=current_line_color,
+                style=label.style_label_center,
+                size=size_const
+            )
+
+        if current_htf_high_price > body_top
+            current_upper_shadow = line.new(
+                 x1=middle_bar,
+                 y1=body_top,
+                 x2=middle_bar,
+                 y2=current_htf_high_price,
+                 color=current_line_color,
+                 width=line_thickness
+             )
+
+        if current_htf_low_price < body_bottom
+            current_lower_shadow = line.new(
+                 x1=middle_bar,
+                 y1=body_bottom,
+                 x2=middle_bar,
+                 y2=current_htf_low_price,
+                 color=current_line_color,
+                 width=line_thickness
+             )
+
+// ============================================================
+// MODULE 2: QUARTERLY THEORY SESSIONS
+// ============================================================
+if enable_sessions
+    tf = timeframe.period
+    var tz = use_exchange ? syminfo.timezone : str.format('UTC{0}{1}', tz_incr >= 0 ? '+' : '-', math.abs(tz_incr))
+
+    is_ses90A1 = math.sign(nz(time(tf, ses90A1_ses, tz)))
+    is_ses90A2 = math.sign(nz(time(tf, ses90A2_ses, tz)))
+    is_ses90A3 = math.sign(nz(time(tf, ses90A3_ses, tz)))
+    is_ses90A4 = math.sign(nz(time(tf, ses90A4_ses, tz)))
+    is_ses90L1 = math.sign(nz(time(tf, ses90L1_ses, tz)))
+    is_ses90L2 = math.sign(nz(time(tf, ses90L2_ses, tz)))
+    is_ses90L3 = math.sign(nz(time(tf, ses90L3_ses, tz)))
+    is_ses90L4 = math.sign(nz(time(tf, ses90L4_ses, tz)))
+    is_ses90NY1 = math.sign(nz(time(tf, ses90NY1_ses, tz)))
+    is_ses90NY2 = math.sign(nz(time(tf, ses90NY2_ses, tz)))
+    is_ses90NY3 = math.sign(nz(time(tf, ses90NY3_ses, tz)))
+    is_ses90NY4 = math.sign(nz(time(tf, ses90NY4_ses, tz)))
+    is_ses90CBDR1 = math.sign(nz(time(tf, ses90CBDR1_ses, tz)))
+    is_ses90CBDR2 = math.sign(nz(time(tf, ses90CBDR2_ses, tz)))
+    is_ses90CBDR3 = math.sign(nz(time(tf, ses90CBDR3_ses, tz)))
+    is_ses90CBDR4 = math.sign(nz(time(tf, ses90CBDR4_ses, tz)))
+
+    is_ses360A1 = math.sign(nz(time(tf, ses360A1_ses, tz)))
+    is_ses360L1 = math.sign(nz(time(tf, ses360L1_ses, tz)))
+    is_ses360NY1 = math.sign(nz(time(tf, ses360NY1_ses, tz)))
+    is_ses360CBDR1 = math.sign(nz(time(tf, ses360CBDR1_ses, tz)))
+
+    is_ses23A11 = math.sign(nz(time(tf, ses23A11_ses, tz)))
+    is_ses23A12 = math.sign(nz(time(tf, ses23A12_ses, tz)))
+    is_ses23A13 = math.sign(nz(time(tf, ses23A13_ses, tz)))
+    is_ses23A14 = math.sign(nz(time(tf, ses23A14_ses, tz)))
+    is_ses23A21 = math.sign(nz(time(tf, ses23A21_ses, tz)))
+    is_ses23A22 = math.sign(nz(time(tf, ses23A22_ses, tz)))
+    is_ses23A23 = math.sign(nz(time(tf, ses23A23_ses, tz)))
+    is_ses23A24 = math.sign(nz(time(tf, ses23A24_ses, tz)))
+    is_ses23A31 = math.sign(nz(time(tf, ses23A31_ses, tz)))
+    is_ses23A32 = math.sign(nz(time(tf, ses23A32_ses, tz)))
+    is_ses23A33 = math.sign(nz(time(tf, ses23A33_ses, tz)))
+    is_ses23A34 = math.sign(nz(time(tf, ses23A34_ses, tz)))
+    is_ses23A41 = math.sign(nz(time(tf, ses23A41_ses, tz)))
+    is_ses23A42 = math.sign(nz(time(tf, ses23A42_ses, tz)))
+    is_ses23A43 = math.sign(nz(time(tf, ses23A43_ses, tz)))
+    is_ses23A44 = math.sign(nz(time(tf, ses23A44_ses, tz)))
+    is_ses23L11 = math.sign(nz(time(tf, ses23L11_ses, tz)))
+    is_ses23L12 = math.sign(nz(time(tf, ses23L12_ses, tz)))
+    is_ses23L13 = math.sign(nz(time(tf, ses23L13_ses, tz)))
+    is_ses23L14 = math.sign(nz(time(tf, ses23L14_ses, tz)))
+    is_ses23L21 = math.sign(nz(time(tf, ses23L21_ses, tz)))
+    is_ses23L22 = math.sign(nz(time(tf, ses23L22_ses, tz)))
+    is_ses23L23 = math.sign(nz(time(tf, ses23L23_ses, tz)))
+    is_ses23L24 = math.sign(nz(time(tf, ses23L24_ses, tz)))
+    is_ses23L31 = math.sign(nz(time(tf, ses23L31_ses, tz)))
+    is_ses23L32 = math.sign(nz(time(tf, ses23L32_ses, tz)))
+    is_ses23L33 = math.sign(nz(time(tf, ses23L33_ses, tz)))
+    is_ses23L34 = math.sign(nz(time(tf, ses23L34_ses, tz)))
+    is_ses23L41 = math.sign(nz(time(tf, ses23L41_ses, tz)))
+    is_ses23L42 = math.sign(nz(time(tf, ses23L42_ses, tz)))
+    is_ses23L43 = math.sign(nz(time(tf, ses23L43_ses, tz)))
+    is_ses23L44 = math.sign(nz(time(tf, ses23L44_ses, tz)))
+    is_ses23NY11 = math.sign(nz(time(tf, ses23NY11_ses, tz)))
+    is_ses23NY12 = math.sign(nz(time(tf, ses23NY12_ses, tz)))
+    is_ses23NY13 = math.sign(nz(time(tf, ses23NY13_ses, tz)))
+    is_ses23NY14 = math.sign(nz(time(tf, ses23NY14_ses, tz)))
+    is_ses23NY21 = math.sign(nz(time(tf, ses23NY21_ses, tz)))
+    is_ses23NY22 = math.sign(nz(time(tf, ses23NY22_ses, tz)))
+    is_ses23NY23 = math.sign(nz(time(tf, ses23NY23_ses, tz)))
+    is_ses23NY24 = math.sign(nz(time(tf, ses23NY24_ses, tz)))
+    is_ses23NY31 = math.sign(nz(time(tf, ses23NY31_ses, tz)))
+    is_ses23NY32 = math.sign(nz(time(tf, ses23NY32_ses, tz)))
+    is_ses23NY33 = math.sign(nz(time(tf, ses23NY33_ses, tz)))
+    is_ses23NY34 = math.sign(nz(time(tf, ses23NY34_ses, tz)))
+    is_ses23NY41 = math.sign(nz(time(tf, ses23NY41_ses, tz)))
+    is_ses23NY42 = math.sign(nz(time(tf, ses23NY42_ses, tz)))
+    is_ses23NY43 = math.sign(nz(time(tf, ses23NY43_ses, tz)))
+    is_ses23NY44 = math.sign(nz(time(tf, ses23NY44_ses, tz)))
+    is_ses23CBDR2311 = math.sign(nz(time(tf, ses23CBDR2311_ses, tz)))
+    is_ses23CBDR2312 = math.sign(nz(time(tf, ses23CBDR2312_ses, tz)))
+    is_ses23CBDR2313 = math.sign(nz(time(tf, ses23CBDR2313_ses, tz)))
+    is_ses23CBDR2314 = math.sign(nz(time(tf, ses23CBDR2314_ses, tz)))
+    is_ses23CBDR2321 = math.sign(nz(time(tf, ses23CBDR2321_ses, tz)))
+    is_ses23CBDR2322 = math.sign(nz(time(tf, ses23CBDR2322_ses, tz)))
+    is_ses23CBDR2323 = math.sign(nz(time(tf, ses23CBDR2323_ses, tz)))
+    is_ses23CBDR2324 = math.sign(nz(time(tf, ses23CBDR2324_ses, tz)))
+    is_ses23CBDR2331 = math.sign(nz(time(tf, ses23CBDR2331_ses, tz)))
+    is_ses23CBDR2332 = math.sign(nz(time(tf, ses23CBDR2332_ses, tz)))
+    is_ses23CBDR2333 = math.sign(nz(time(tf, ses23CBDR2333_ses, tz)))
+    is_ses23CBDR2334 = math.sign(nz(time(tf, ses23CBDR2334_ses, tz)))
+    is_ses23CBDR2341 = math.sign(nz(time(tf, ses23CBDR2341_ses, tz)))
+    is_ses23CBDR2342 = math.sign(nz(time(tf, ses23CBDR2342_ses, tz)))
+    is_ses23CBDR2343 = math.sign(nz(time(tf, ses23CBDR2343_ses, tz)))
+    is_ses23CBDR2344 = math.sign(nz(time(tf, ses23CBDR2344_ses, tz)))
+
+    if show_indicator90 and timeframe.isintraday and timeframe.multiplier <= 15
+        if show_ses90A1
+            get_range(is_ses90A1, ses90A1_txt, ses90A1_css)
+        if show_ses90A2
+            get_range(is_ses90A2, ses90A2_txt, ses90A2_css)
+        if show_ses90A3
+            get_range(is_ses90A3, ses90A3_txt, ses90A3_css)
+        if show_ses90A4
+            get_range(is_ses90A4, ses90A4_txt, ses90A4_css)
+        if show_ses90L1
+            get_range(is_ses90L1, ses90L1_txt, ses90L1_css)
+        if show_ses90L2
+            get_range(is_ses90L2, ses90L2_txt, ses90L2_css)
+        if show_ses90L3
+            get_range(is_ses90L3, ses90L3_txt, ses90L3_css)
+        if show_ses90L4
+            get_range(is_ses90L4, ses90L4_txt, ses90L4_css)
+        if show_ses90NY1
+            get_range(is_ses90NY1, ses90NY1_txt, ses90NY1_css)
+        if show_ses90NY2
+            get_range(is_ses90NY2, ses90NY2_txt, ses90NY2_css)
+        if show_ses90NY3
+            get_range(is_ses90NY3, ses90NY3_txt, ses90NY3_css)
+        if show_ses90NY4
+            get_range(is_ses90NY4, ses90NY4_txt, ses90NY4_css)
+        if show_ses90CBDR1
+            get_range(is_ses90CBDR1, ses90CBDR1_txt, ses90CBDR1_css)
+        if show_ses90CBDR2
+            get_range(is_ses90CBDR2, ses90CBDR2_txt, ses90CBDR2_css)
+        if show_ses90CBDR3
+            get_range(is_ses90CBDR3, ses90CBDR3_txt, ses90CBDR3_css)
+        if show_ses90CBDR4
+            get_range(is_ses90CBDR4, ses90CBDR4_txt, ses90CBDR4_css)
+
+    if show_indicator360 and timeframe.isintraday and timeframe.multiplier >= 15 and timeframe.multiplier <= 60
+        if show_ses360A1
+            get_range360(is_ses360A1, ses360A1_txt, ses360A1_css)
+        if show_ses360L1
+            get_range360(is_ses360L1, ses360L1_txt, ses360L1_css)
+        if show_ses360NY1
+            get_range360(is_ses360NY1, ses360NY1_txt, ses360NY1_css)
+        if show_ses360CBDR1
+            get_range360(is_ses360CBDR1, ses360CBDR1_txt, ses360CBDR1_css)
+
+    if show_indicator23 and timeframe.isintraday and timeframe.multiplier <= 1
+        if show_ses23A11
+            get_range23(is_ses23A11, ses23A11_txt, ses23A11_css)
+        if show_ses23A12
+            get_range23(is_ses23A12, ses23A12_txt, ses23A12_css)
+        if show_ses23A13
+            get_range23(is_ses23A13, ses23A13_txt, ses23A13_css)
+        if show_ses23A14
+            get_range23(is_ses23A14, ses23A14_txt, ses23A14_css)
+        if show_ses23A21
+            get_range23(is_ses23A21, ses23A21_txt, ses23A21_css)
+        if show_ses23A22
+            get_range23(is_ses23A22, ses23A22_txt, ses23A22_css)
+        if show_ses23A23
+            get_range23(is_ses23A23, ses23A23_txt, ses23A23_css)
+        if show_ses23A24
+            get_range23(is_ses23A24, ses23A24_txt, ses23A24_css)
+        if show_ses23A31
+            get_range23(is_ses23A31, ses23A31_txt, ses23A31_css)
+        if show_ses23A32
+            get_range23(is_ses23A32, ses23A32_txt, ses23A32_css)
+        if show_ses23A33
+            get_range23(is_ses23A33, ses23A33_txt, ses23A33_css)
+        if show_ses23A34
+            get_range23(is_ses23A34, ses23A34_txt, ses23A34_css)
+        if show_ses23A41
+            get_range23(is_ses23A41, ses23A41_txt, ses23A41_css)
+        if show_ses23A42
+            get_range23(is_ses23A42, ses23A42_txt, ses23A42_css)
+        if show_ses23A43
+            get_range23(is_ses23A43, ses23A43_txt, ses23A43_css)
+        if show_ses23A44
+            get_range23(is_ses23A44, ses23A44_txt, ses23A44_css)
+        if show_ses23L11
+            get_range23(is_ses23L11, ses23L11_txt, ses23L11_css)
+        if show_ses23L12
+            get_range23(is_ses23L12, ses23L12_txt, ses23L12_css)
+        if show_ses23L13
+            get_range23(is_ses23L13, ses23L13_txt, ses23L13_css)
+        if show_ses23L14
+            get_range23(is_ses23L14, ses23L14_txt, ses23L14_css)
+        if show_ses23L21
+            get_range23(is_ses23L21, ses23L21_txt, ses23L21_css)
+        if show_ses23L22
+            get_range23(is_ses23L22, ses23L22_txt, ses23L22_css)
+        if show_ses23L23
+            get_range23(is_ses23L23, ses23L23_txt, ses23L23_css)
+        if show_ses23L24
+            get_range23(is_ses23L24, ses23L24_txt, ses23L24_css)
+        if show_ses23L31
+            get_range23(is_ses23L31, ses23L31_txt, ses23L31_css)
+        if show_ses23L32
+            get_range23(is_ses23L32, ses23L32_txt, ses23L32_css)
+        if show_ses23L33
+            get_range23(is_ses23L33, ses23L33_txt, ses23L33_css)
+        if show_ses23L34
+            get_range23(is_ses23L34, ses23L34_txt, ses23L34_css)
+        if show_ses23L41
+            get_range23(is_ses23L41, ses23L41_txt, ses23L41_css)
+        if show_ses23L42
+            get_range23(is_ses23L42, ses23L42_txt, ses23L42_css)
+        if show_ses23L43
+            get_range23(is_ses23L43, ses23L43_txt, ses23L43_css)
+        if show_ses23L44
+            get_range23(is_ses23L44, ses23L44_txt, ses23L44_css)
+        if show_ses23NY11
+            get_range23(is_ses23NY11, ses23NY11_txt, ses23NY11_css)
+        if show_ses23NY12
+            get_range23(is_ses23NY12, ses23NY12_txt, ses23NY12_css)
+        if show_ses23NY13
+            get_range23(is_ses23NY13, ses23NY13_txt, ses23NY13_css)
+        if show_ses23NY14
+            get_range23(is_ses23NY14, ses23NY14_txt, ses23NY14_css)
+        if show_ses23NY21
+            get_range23(is_ses23NY21, ses23NY21_txt, ses23NY21_css)
+        if show_ses23NY22
+            get_range23(is_ses23NY22, ses23NY22_txt, ses23NY22_css)
+        if show_ses23NY23
+            get_range23(is_ses23NY23, ses23NY23_txt, ses23NY23_css)
+        if show_ses23NY24
+            get_range23(is_ses23NY24, ses23NY24_txt, ses23NY24_css)
+        if show_ses23NY31
+            get_range23(is_ses23NY31, ses23NY31_txt, ses23NY31_css)
+        if show_ses23NY32
+            get_range23(is_ses23NY32, ses23NY32_txt, ses23NY32_css)
+        if show_ses23NY33
+            get_range23(is_ses23NY33, ses23NY33_txt, ses23NY33_css)
+        if show_ses23NY34
+            get_range23(is_ses23NY34, ses23NY34_txt, ses23NY34_css)
+        if show_ses23NY41
+            get_range23(is_ses23NY41, ses23NY41_txt, ses23NY41_css)
+        if show_ses23NY42
+            get_range23(is_ses23NY42, ses23NY42_txt, ses23NY42_css)
+        if show_ses23NY43
+            get_range23(is_ses23NY43, ses23NY43_txt, ses23NY43_css)
+        if show_ses23NY44
+            get_range23(is_ses23NY44, ses23NY44_txt, ses23NY44_css)
+        if show_ses23CBDR2311
+            get_range23(is_ses23CBDR2311, ses23CBDR2311_txt, ses23CBDR2311_css)
+        if show_ses23CBDR2312
+            get_range23(is_ses23CBDR2312, ses23CBDR2312_txt, ses23CBDR2312_css)
+        if show_ses23CBDR2313
+            get_range23(is_ses23CBDR2313, ses23CBDR2313_txt, ses23CBDR2313_css)
+        if show_ses23CBDR2314
+            get_range23(is_ses23CBDR2314, ses23CBDR2314_txt, ses23CBDR2314_css)
+        if show_ses23CBDR2321
+            get_range23(is_ses23CBDR2321, ses23CBDR2321_txt, ses23CBDR2321_css)
+        if show_ses23CBDR2322
+            get_range23(is_ses23CBDR2322, ses23CBDR2322_txt, ses23CBDR2322_css)
+        if show_ses23CBDR2323
+            get_range23(is_ses23CBDR2323, ses23CBDR2323_txt, ses23CBDR2323_css)
+        if show_ses23CBDR2324
+            get_range23(is_ses23CBDR2324, ses23CBDR2324_txt, ses23CBDR2324_css)
+        if show_ses23CBDR2331
+            get_range23(is_ses23CBDR2331, ses23CBDR2331_txt, ses23CBDR2331_css)
+        if show_ses23CBDR2332
+            get_range23(is_ses23CBDR2332, ses23CBDR2332_txt, ses23CBDR2332_css)
+        if show_ses23CBDR2333
+            get_range23(is_ses23CBDR2333, ses23CBDR2333_txt, ses23CBDR2333_css)
+        if show_ses23CBDR2334
+            get_range23(is_ses23CBDR2334, ses23CBDR2334_txt, ses23CBDR2334_css)
+        if show_ses23CBDR2341
+            get_range23(is_ses23CBDR2341, ses23CBDR2341_txt, ses23CBDR2341_css)
+        if show_ses23CBDR2342
+            get_range23(is_ses23CBDR2342, ses23CBDR2342_txt, ses23CBDR2342_css)
+        if show_ses23CBDR2343
+            get_range23(is_ses23CBDR2343, ses23CBDR2343_txt, ses23CBDR2343_css)
+        if show_ses23CBDR2344
+            get_range23(is_ses23CBDR2344, ses23CBDR2344_txt, ses23CBDR2344_css)
+
+// ============================================================
+// MODULE 3: MACRO CYCLES (Monthly / Weekly Quarters)
+// ============================================================
+if enable_macro
+    tf = timeframe.period
+    var tz = use_exchange ? syminfo.timezone : str.format('UTC{0}{1}', tz_incr >= 0 ? '+' : '-', math.abs(tz_incr))
+
+    // ------------------- Monthly Quarters (Q1-Q4) -------------------
+    if show_macro_monthly
+        dayOfMonth = dayofmonth(time, tz)
+        is_mw1 = dayOfMonth >= 1  and dayOfMonth <= 7
+        is_mw2 = dayOfMonth >= 8  and dayOfMonth <= 14
+        is_mw3 = dayOfMonth >= 15 and dayOfMonth <= 21
+        is_mw4 = dayOfMonth >= 22
+        if show_mw1
+            get_range_macro(is_mw1, mw1_txt, mw1_css, bg_transp_mw, show_outline_mw, show_txt_mw, line_width_mw)
+        if show_mw2
+            get_range_macro(is_mw2, mw2_txt, mw2_css, bg_transp_mw, show_outline_mw, show_txt_mw, line_width_mw)
+        if show_mw3
+            get_range_macro(is_mw3, mw3_txt, mw3_css, bg_transp_mw, show_outline_mw, show_txt_mw, line_width_mw)
+        if show_mw4
+            get_range_macro(is_mw4, mw4_txt, mw4_css, bg_transp_mw, show_outline_mw, show_txt_mw, line_width_mw)
+
+    // ------------------- Weekly Quarters (Q1-Q5) -------------------
+    if show_macro_weekly
+        dow = dayofweek(time, tz)
+        is_wd1 = dow == dayofweek.monday
+        is_wd2 = dow == dayofweek.tuesday
+        is_wd3 = dow == dayofweek.wednesday
+        is_wd4 = dow == dayofweek.thursday
+        is_wd5 = dow == dayofweek.friday
+        if show_wd1
+            get_range_macro(is_wd1, wd1_txt, wd1_css, bg_transp_wd, show_outline_wd, show_txt_wd, line_width_wd)
+        if show_wd2
+            get_range_macro(is_wd2, wd2_txt, wd2_css, bg_transp_wd, show_outline_wd, show_txt_wd, line_width_wd)
+        if show_wd3
+            get_range_macro(is_wd3, wd3_txt, wd3_css, bg_transp_wd, show_outline_wd, show_txt_wd, line_width_wd)
+        if show_wd4
+            get_range_macro(is_wd4, wd4_txt, wd4_css, bg_transp_wd, show_outline_wd, show_txt_wd, line_width_wd)
+        if show_wd5
+            get_range_macro(is_wd5, wd5_txt, wd5_css, bg_transp_wd, show_outline_wd, show_txt_wd, line_width_wd)
+
+// ============================================================
+// MODULE 4: TRUE OPENS
+// ============================================================
+if enable_true_opens and timeframe.isintraday
+    if show_true_day_open
+        isNewDay = timeframe.change("D")
+        if isNewDay
+            line.new(bar_index, open, bar_index, open, color=true_day_open_color, width=true_open_width, style=lineStyle())
+            if true_open_show_label
+                label.new(bar_index, open, "True Day Open", color=color.new(color.black, 100), textcolor=true_day_open_color, style=label.style_label_left, size=getLabelSizeMacro(true_open_label_size))
+
+    if show_true_week_open
+        isNewWeek = timeframe.change("W")
+        if isNewWeek
+            line.new(bar_index, open, bar_index, open, color=true_week_open_color, width=true_open_width, style=lineStyle())
+            if true_open_show_label
+                label.new(bar_index, open, "True Week Open", color=color.new(color.black, 100), textcolor=true_week_open_color, style=label.style_label_left, size=getLabelSizeMacro(true_open_label_size))
+
+    if show_true_month_open
+        isNewMonth = timeframe.change("M")
+        if isNewMonth
+            line.new(bar_index, open, bar_index, open, color=true_month_open_color, width=true_open_width, style=lineStyle())
+            if true_open_show_label
+                label.new(bar_index, open, "True Month Open", color=color.new(color.black, 100), textcolor=true_month_open_color, style=label.style_label_left, size=getLabelSizeMacro(true_open_label_size))
+
+    if show_true_quarter_open
+        isNewQuarter = timeframe.change("3M")
+        if isNewQuarter
+            line.new(bar_index, open, bar_index, open, color=true_quarter_open_color, width=true_open_width, style=lineStyle())
+            if true_open_show_label
+                label.new(bar_index, open, "True Quarter Open", color=color.new(color.black, 100), textcolor=true_quarter_open_color, style=label.style_label_left, size=getLabelSizeMacro(true_open_label_size))

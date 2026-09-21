@@ -1,0 +1,110 @@
+//@version=6
+// FrenchFinance_Funding — v0.1 (2026-09-08)
+// Displays the perpetual funding rate of the charted coin, averaged across Binance / Bybit / OKX USDT perpetuals,
+// as coloured columns (height = z-score or raw %, colour intensity = how unusual the value is), with alerts on extremes.
+// It is a display tool: it shows who pays whom and how unusual it is. It does not tell you what to trade.
+// Uses the TradingView "Request" library (import below) for the funding metric.
+//
+// Default settings were checked against Binance public data (77 USDT perpetuals, 8h funding, 2019-2026):
+// a z-score over 100 periods with a 1.5 threshold isolates the extremes well (100 to 400 similar, 50 worse).
+import TradingView/Request/3 as req
+
+indicator("FrenchFinance_Funding v0.1", "FrenchFinance_Funding v0.1", overlay = false, precision = 4)
+
+//─────────────── INPUTS ───────────────
+gS = "Source"
+useChartBase = input.bool(true, "Use the chart's base currency", group = gS, tooltip = "ON = coin detected from the chart symbol (BTC, ETH…), even on spot or on another exchange; on a stock, index or forex chart nothing is shown. OFF = the manual coin below is used on any chart. Data ALWAYS comes from the average of the selected venues, never from the charted ticker alone.")
+manualBase   = input.string("BTC", "Coin (manual override)", group = gS)
+reqTF        = input.timeframe("", "Data timeframe", group = gS, tooltip = "Empty = chart timeframe (continuous predicted funding, smooth columns). Avoid 480: it forces the settled 8h rate and creates saw-tooth spikes.")
+
+gV = "Venues"
+useBin = input.bool(true, "Binance", group = gV)
+useByb = input.bool(true, "Bybit",   group = gV)
+useOkx = input.bool(true, "OKX",     group = gV)
+
+gE = "Extremes (alerts and colour)"
+mode  = input.string("Z-Score", "Mode", options = ["Z-Score", "Absolute"], group = gE)
+zLen  = input.int(100, "Z lookback", minval = 5, group = gE, tooltip = "100 to 400 gave similar results in the test; 50 was worse.")
+zTh   = input.float(1.5, "|Z| threshold", minval = 0.1, step = 0.1, group = gE)
+posTh = input.float(0.05, "Absolute + threshold %", step = 0.01, group = gE)
+negTh = input.float(-0.05, "Absolute − threshold %", step = 0.01, group = gE)
+
+gD = "Display"
+barH    = input.string("Z-Score", "Bar height", options = ["Z-Score", "Funding %"], group = gD, tooltip = "Z-Score = normalised height, never squashed. Funding % = raw value (clipped below).")
+clipPct = input.float(0.03, "Display clip % (Funding % mode)", minval = 0.001, step = 0.005, group = gD)
+scaleIn = input.string("Already in % (×1)", "Data scale", options = ["Fraction → % (×100)", "Already in % (×1)"], group = gD)
+zSat    = input.float(2.5, "Colour saturation |Z|", minval = 0.5, step = 0.1, group = gD)
+fadeMax = input.int(65, "Fade when |Z| is small", minval = 0, maxval = 90, group = gD)
+showLbl = input.bool(true, "Value label on last bar", group = gD)
+cPos    = input.color(#26a69a,       "Positive (low |z|)",        group = gD)
+cHotPos = input.color(color.yellow,  "Positive strong (|z| max)", group = gD)
+cNeg    = input.color(#ef5350,       "Negative (low |z|)",        group = gD)
+cHotNeg = input.color(color.fuchsia, "Negative strong (|z| max)", group = gD)
+
+//─────────────── DATA ───────────────
+float mult = scaleIn == "Fraction → % (×100)" ? 100.0 : 1.0
+
+// Chart base currency when the chart is a crypto ; nothing at all on a stock, index, forex… (unless the manual coin is used)
+bool   chartIsCrypto = str.length(syminfo.basecurrency) > 0 and (syminfo.type == "crypto" or syminfo.type == "spot" or syminfo.type == "swap" or syminfo.type == "futures")
+string base   = useChartBase ? (chartIsCrypto ? str.upper(syminfo.basecurrency) : "") : str.upper(manualBase)
+bool   active = str.length(base) > 0
+
+// Equal-weight multi-venue funding (chart timeframe)
+float vB = active and useBin ? req.cryptoDerivativeMetric("BINANCE:" + base + "USDT.P", "Funding Rate", reqTF) : na
+float vY = active and useByb ? req.cryptoDerivativeMetric("BYBIT:"   + base + "USDT.P", "Funding Rate", reqTF) : na
+float vO = active and useOkx ? req.cryptoDerivativeMetric("OKX:"     + base + "USDT.P", "Funding Rate", reqTF) : na
+float sum = 0.0
+int   cnt = 0
+if not na(vB)
+    sum += vB
+    cnt += 1
+if not na(vY)
+    sum += vY
+    cnt += 1
+if not na(vO)
+    sum += vO
+    cnt += 1
+float fr = cnt > 0 ? sum / cnt * mult : na
+
+//─────────────── CALCULATIONS ───────────────
+float basis = ta.sma(fr, zLen)
+float sd    = ta.stdev(fr, zLen)
+float z     = sd != 0 ? (fr - basis) / sd : 0.0
+
+// extPos = longs pay, extreme ; extNeg = shorts pay, extreme
+bool extPos = mode == "Z-Score" ? z >=  zTh : fr >= posTh
+bool extNeg = mode == "Z-Score" ? z <= -zTh : fr <= negTh
+
+//─────────────── COLOUR ───────────────
+float az = math.min(math.abs(z), zSat)
+color cool = fr >= 0 ? cPos : cNeg
+color hot  = fr >= 0 ? cHotPos : cHotNeg
+color colSolid = na(fr) ? na : color.from_gradient(az, 0.0, zSat, cool, hot)
+color col      = na(fr) ? na : color.new(colSolid, int(fadeMax * (1 - az / zSat)))
+
+//─────────────── HEIGHT ───────────────
+float zClamp  = math.max(-6.0, math.min(6.0, z))
+float frClip  = na(fr) ? na : math.max(-clipPct, math.min(clipPct, fr))
+float plotVal = barH == "Z-Score" ? zClamp : frClip
+
+//─────────────── PLOTS ───────────────
+plot(plotVal, "Funding (venue average)", color = col, style = plot.style_columns)
+hline(0, "Zero", color = color.new(color.gray, 40))
+
+//─────────────── LABEL ───────────────
+var label fundLbl = na
+if barstate.islast
+    label.delete(fundLbl)
+    if na(fr)
+        fundLbl := label.new(bar_index + 1, 0.0, "Funding not available on this pair", style = label.style_label_left, color = color.new(chart.bg_color, 30), textcolor = color.gray, size = size.small)
+    else if showLbl
+        fundLbl := label.new(bar_index + 1, plotVal, str.tostring(fr, "#.####") + " %", style = label.style_label_left, color = color.new(chart.bg_color, 30), textcolor = colSolid, size = size.normal)
+
+//─────────────── ALERTS ─────────────── (descriptive: they report an extreme, not a trade)
+alertcondition(extPos, "Funding extreme +", "{{ticker}}: funding extremely positive (longs pay)")
+alertcondition(extNeg, "Funding extreme −", "{{ticker}}: funding extremely negative (shorts pay)")
+
+if extPos and not extPos[1]
+    alert(base + " funding extreme + (z=" + str.tostring(z, "#.##") + ", " + str.tostring(fr, "#.####") + "%): longs pay", alert.freq_once_per_bar_close)
+if extNeg and not extNeg[1]
+    alert(base + " funding extreme − (z=" + str.tostring(z, "#.##") + ", " + str.tostring(fr, "#.####") + "%): shorts pay", alert.freq_once_per_bar_close)

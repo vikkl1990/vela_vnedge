@@ -1,0 +1,19 @@
+//@version=6
+indicator("PRO TREND BOX", overlay=true)
+
+ema20 = ta.ema(close,20)
+ema50 = ta.ema(close,50)
+
+up = ema20 > ema50
+dn = ema20 < ema50
+
+plot(ema20, "Trend", color=color.blue, linewidth=3)
+plot(ema50, "Base", color=color.orange, linewidth=2)
+
+buy = ta.crossover(ema20,ema50)
+sell = ta.crossunder(ema20,ema50)
+
+plotshape(buy, title="BUY", style=shape.labelup, location=location.belowbar, color=color.green, text="BUY", textcolor=color.white)
+plotshape(sell, title="SELL", style=shape.labeldown, location=location.abovebar, color=color.red, text="SELL", textcolor=color.white)
+
+bgcolor(up ? color.new(color.green,90) : dn ? color.new(color.red,90) : na)

@@ -1,0 +1,275 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © CryptoNejc
+
+//@version=6
+indicator("Range Detector [NJ]", "RD [NJ]", overlay = true)
+
+// ✧═════════════════✧
+// ║      INPUTS      ║
+// ✧═════════════════✧
+
+t1 = "How far price may close beyond the range before invalidation."
+t2 = "Required first retracement after the range boundaries are formed."
+t3 = "Required return level after the first confirmation."
+t4 = "Maximum bars allowed for the current range candidate to be confirmed."
+t5 = "Sensitivity of pivot high/low detection."
+
+showTolerance = input.bool(true, "Show tolerance lines")
+rangeTol = input.int(22, "Range tolerance %", minval = 0, maxval = 100, tooltip = t1) / 100
+rangeConf1 = input.int(70, "Range first confirmation %", minval = 10, maxval = 100, tooltip = t2) / 100
+rangeConf2 = input.int(50, "Range second confirmation %", minval = 0, maxval = 100, tooltip = t3) / 100
+confirmationTime = input.int(75, "Bars to confirm the range", minval = 1, tooltip = t4)
+pivotLen = input.int(7, "Pivot high/low lookback", minval = 1, tooltip = t5)
+
+// ✧════════════════════✧
+// ║      VARIABLES      ║
+// ✧════════════════════✧
+
+var float newHigh = na
+var float newLow  = na
+
+var int barsHigh = na
+var int barsLow  = na
+
+var int candidateStartBar = na
+
+var int resetBar = na
+
+var bool inRange = false
+
+var bool reachedFirstConf = false
+var int reachedFirstConfBar = na
+
+var box rangeBox = na
+
+var line upperTolLine = na
+var line lowerTolLine = na
+
+// ✧═════════════════✧
+// ║      PIVOTS      ║
+// ✧═════════════════✧
+
+pivotHigh = ta.pivothigh(high, pivotLen, pivotLen)
+
+pivotLow = ta.pivotlow(low, pivotLen, pivotLen)
+
+pivotBar = bar_index - pivotLen
+
+// ✧════════════════════════✧
+// ║      CURRENT RANGE      ║
+// ✧════════════════════════✧
+
+rangeReady = not na(newHigh) and not na(newLow) and newHigh > newLow
+
+rangeSize = rangeReady ? newHigh - newLow : na
+
+upperTol = rangeReady ? newHigh + rangeSize * rangeTol : na
+
+lowerTol = rangeReady ? newLow - rangeSize * rangeTol : na
+
+// ✧══════════════════════════════════════════════════✧
+// ║      INVALIDATE CANDIDATE OR CONFIRMED RANGE      ║
+// ✧══════════════════════════════════════════════════✧
+
+rangeInvalidated = rangeReady and (close > upperTol or close < lowerTol)
+
+if rangeInvalidated
+
+    newHigh := na
+    newLow := na
+
+    barsHigh := na
+    barsLow := na
+
+    candidateStartBar := na
+
+    reachedFirstConf := false
+    reachedFirstConfBar := na
+
+    inRange := false
+
+    resetBar := bar_index
+
+    rangeBox := na
+    
+    upperTolLine := na
+    lowerTolLine := na
+
+// ✧════════════════════════════════✧
+// ║      BUILD A NEW CANDIDATE      ║
+// ✧════════════════════════════════✧
+
+if not inRange
+    validPivotHigh = not na(pivotHigh) and (na(resetBar) or pivotBar >= resetBar)
+    validPivotLow = not na(pivotLow) and (na(resetBar) or pivotBar >= resetBar)
+
+    if na(newHigh) and na(newLow)
+
+        if validPivotHigh and not validPivotLow
+
+            newHigh := pivotHigh
+            barsHigh := pivotBar
+
+            candidateStartBar := bar_index
+
+            reachedFirstConf := false
+            reachedFirstConfBar := na
+
+
+        else if validPivotLow and not validPivotHigh
+
+            newLow := pivotLow
+            barsLow := pivotBar
+
+            candidateStartBar := bar_index
+
+            reachedFirstConf := false
+            reachedFirstConfBar := na
+
+    else if not na(newHigh) and na(newLow)
+
+        if validPivotHigh and pivotBar > barsHigh
+
+            newHigh := pivotHigh
+            barsHigh := pivotBar
+
+            candidateStartBar := bar_index
+
+            reachedFirstConf := false
+            reachedFirstConfBar := na
+
+        if validPivotLow and pivotBar > barsHigh
+
+            if pivotLow < newHigh
+
+                newLow := pivotLow
+                barsLow := pivotBar
+
+            else
+
+                newHigh := na
+                barsHigh := na
+
+                newLow := pivotLow
+                barsLow := pivotBar
+
+                candidateStartBar := bar_index
+
+                reachedFirstConf := false
+                reachedFirstConfBar := na
+
+    else if not na(newLow) and na(newHigh)
+
+        if validPivotLow and pivotBar > barsLow
+
+            newLow := pivotLow
+            barsLow := pivotBar
+
+            candidateStartBar := bar_index
+
+            reachedFirstConf := false
+            reachedFirstConfBar := na
+
+        if validPivotHigh and pivotBar > barsLow
+
+            if pivotHigh > newLow
+
+                newHigh := pivotHigh
+                barsHigh := pivotBar
+
+            else
+
+                newLow := na
+                barsLow := na
+
+                newHigh := pivotHigh
+                barsHigh := pivotBar
+
+                candidateStartBar := bar_index
+
+                reachedFirstConf := false
+                reachedFirstConfBar := na
+
+// ✧═════════════════════════════════════════════════════════✧
+// ║      RECALCULATE RANGE AFTER POSSIBLE PIVOT CHANGES      ║
+// ✧═════════════════════════════════════════════════════════✧
+
+candidateReady = not inRange and not na(newHigh) and not na(newLow) and newHigh > newLow
+
+// ✧════════════════════════✧
+// ║      CONFIRM RANGE      ║
+// ✧════════════════════════✧
+
+if candidateReady
+    currentRange = newHigh - newLow
+    secondConfLevel = newLow + currentRange * rangeConf2
+
+    if barsHigh < barsLow
+        firstConfLevel = newLow + currentRange * rangeConf1
+
+        if not reachedFirstConf and high >= firstConfLevel
+            reachedFirstConf := true
+            reachedFirstConfBar := bar_index
+
+        if reachedFirstConf and bar_index > reachedFirstConfBar and low <= secondConfLevel
+            inRange := true
+
+    else if barsLow < barsHigh
+        firstConfLevel = newHigh - currentRange * rangeConf1
+
+        if not reachedFirstConf and low <= firstConfLevel
+            reachedFirstConf := true
+            reachedFirstConfBar := bar_index
+
+        if reachedFirstConf and bar_index > reachedFirstConfBar and high >= secondConfLevel
+            inRange := true
+
+// ✧════════════════════════════✧
+// ║      CANDIDATE TIMEOUT      ║
+// ✧════════════════════════════✧
+
+candidateExpired = not inRange and not na(candidateStartBar) and bar_index - candidateStartBar >= confirmationTime
+
+if candidateExpired
+
+    newHigh := na
+    newLow := na
+
+    barsHigh := na
+    barsLow := na
+
+    candidateStartBar := na
+
+    reachedFirstConf := false
+    reachedFirstConfBar := na
+
+    resetBar := bar_index
+
+// ✧═══════════════════════════════✧
+// ║      PLOT CONFIRMED RANGE      ║
+// ✧═══════════════════════════════✧
+
+if inRange and na(rangeBox)
+    rangeBox := box.new(left = math.min(barsHigh, barsLow), top = newHigh, right = bar_index, bottom = newLow, xloc = xloc.bar_index, border_color = color.rgb(0, 136, 100), border_width = 1, bgcolor = color.new(color.rgb(0, 136, 100), 80))
+
+// ✧══════════════════════════════✧
+// ║      EXTEND ACTIVE RANGE      ║
+// ✧══════════════════════════════✧
+
+if inRange and not na(rangeBox)
+    box.set_right(rangeBox, bar_index)
+
+// ✧══════════════════════════✧
+// ║      TOLERANCE LINES      ║
+// ✧══════════════════════════✧
+
+if inRange and showTolerance and na(upperTolLine)
+    rangeStart = math.min(barsHigh, barsLow)
+    upperTolLine := line.new(x1 = rangeStart, y1 = upperTol, x2 = bar_index, y2 = upperTol, xloc = xloc.bar_index, color = color.rgb(120, 0, 32), style = line.style_dashed)
+    lowerTolLine := line.new( x1 = rangeStart, y1 = lowerTol, x2 = bar_index, y2 = lowerTol, xloc = xloc.bar_index, color = color.rgb(120, 0, 32), style = line.style_dashed)
+
+if inRange and showTolerance
+    if not na(upperTolLine)
+        line.set_x2(upperTolLine, bar_index)
+    if not na(lowerTolLine)
+        line.set_x2(lowerTolLine, bar_index)

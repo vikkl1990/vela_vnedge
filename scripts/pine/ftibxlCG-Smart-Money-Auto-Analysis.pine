@@ -1,0 +1,149 @@
+//@version=6
+indicator("Smart Money Auto Analysis", overlay=true)
+
+swingLen = input.int(3, "Swing Strength", minval=2, maxval=10)
+atrLen = input.int(14, "ATR Length", minval=5, maxval=50)
+zoneMult = input.float(0.5, "Zone Width ATR", minval=0.1, maxval=2.0)
+emaFastLen = input.int(50, "Fast EMA", minval=5, maxval=200)
+emaSlowLen = input.int(200, "Slow EMA", minval=20, maxval=500)
+showZones = input.bool(true, "Supply Demand")
+showStructure = input.bool(true, "BOS CHoCH")
+showLiquidity = input.bool(true, "Liquidity")
+showOB = input.bool(true, "Order Blocks")
+showLevels = input.bool(true, "Entry SL TP")
+showEMA = input.bool(true, "EMA")
+
+atrValue = ta.atr(atrLen)
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+
+pivotHigh = ta.pivothigh(high, swingLen, swingLen)
+pivotLow = ta.pivotlow(low, swingLen, swingLen)
+
+lastHigh = ta.valuewhen(not na(pivotHigh), pivotHigh, 0)
+lastLow = ta.valuewhen(not na(pivotLow), pivotLow, 0)
+
+supplyHigh = lastHigh + atrValue * zoneMult
+supplyLow = lastHigh - atrValue * zoneMult
+
+demandHigh = lastLow + atrValue * zoneMult
+demandLow = lastLow - atrValue * zoneMult
+
+supplyHighPlot = plot(showZones ? supplyHigh : na, "Supply High", color=color.new(color.red, 55))
+supplyLowPlot = plot(showZones ? supplyLow : na, "Supply Low", color=color.new(color.red, 55))
+demandHighPlot = plot(showZones ? demandHigh : na, "Demand High", color=color.new(color.green, 55))
+demandLowPlot = plot(showZones ? demandLow : na, "Demand Low", color=color.new(color.green, 55))
+
+fill(supplyHighPlot, supplyLowPlot, color=color.new(color.red, 88))
+fill(demandHighPlot, demandLowPlot, color=color.new(color.green, 88))
+
+plot(showZones ? lastHigh : na, "Resistance", color=color.new(color.red, 20), linewidth=2, style=plot.style_stepline)
+plot(showZones ? lastLow : na, "Support", color=color.new(color.green, 20), linewidth=2, style=plot.style_stepline)
+
+plot(showEMA ? emaFast : na, "EMA 50", color=color.aqua, linewidth=2)
+plot(showEMA ? emaSlow : na, "EMA 200", color=color.orange, linewidth=2)
+
+bullBreak = not na(lastHigh) and close > lastHigh and close[1] <= lastHigh
+bearBreak = not na(lastLow) and close < lastLow and close[1] >= lastLow
+
+bullSince = nz(ta.barssince(bullBreak), 10000)
+bearSince = nz(ta.barssince(bearBreak), 10000)
+
+bullSincePrev = nz(ta.barssince(bullBreak)[1], 10000)
+bearSincePrev = nz(ta.barssince(bearBreak)[1], 10000)
+
+bullCHoCH = bullBreak and bearSincePrev < bullSincePrev
+bearCHoCH = bearBreak and bullSincePrev < bearSincePrev
+
+bullBOS = bullBreak and not bullCHoCH
+bearBOS = bearBreak and not bearCHoCH
+
+buySideSweep = not na(lastHigh) and high > lastHigh and close < lastHigh
+sellSideSweep = not na(lastLow) and low < lastLow and close > lastLow
+
+plotshape(showStructure and bullBOS, title="Bullish BOS", style=shape.labelup, location=location.belowbar, color=color.green, text="BOS", textcolor=color.white, size=size.tiny)
+plotshape(showStructure and bearBOS, title="Bearish BOS", style=shape.labeldown, location=location.abovebar, color=color.red, text="BOS", textcolor=color.white, size=size.tiny)
+
+plotshape(showStructure and bullCHoCH, title="Bullish CHoCH", style=shape.labelup, location=location.belowbar, color=color.aqua, text="CHoCH", textcolor=color.black, size=size.tiny)
+plotshape(showStructure and bearCHoCH, title="Bearish CHoCH", style=shape.labeldown, location=location.abovebar, color=color.orange, text="CHoCH", textcolor=color.black, size=size.tiny)
+
+plotshape(showLiquidity and buySideSweep, title="BSL Sweep", style=shape.labeldown, location=location.abovebar, color=color.red, text="BSL", textcolor=color.white, size=size.tiny)
+plotshape(showLiquidity and sellSideSweep, title="SSL Sweep", style=shape.labelup, location=location.belowbar, color=color.green, text="SSL", textcolor=color.white, size=size.tiny)
+
+bullOBHigh = ta.valuewhen(bullBreak, high[1], 0)
+bullOBLow = ta.valuewhen(bullBreak, low[1], 0)
+bearOBHigh = ta.valuewhen(bearBreak, high[1], 0)
+bearOBLow = ta.valuewhen(bearBreak, low[1], 0)
+
+bullOBHighPlot = plot(showOB ? bullOBHigh : na, "Bullish OB High", color=color.new(color.blue, 65))
+bullOBLowPlot = plot(showOB ? bullOBLow : na, "Bullish OB Low", color=color.new(color.blue, 65))
+bearOBHighPlot = plot(showOB ? bearOBHigh : na, "Bearish OB High", color=color.new(color.purple, 65))
+bearOBLowPlot = plot(showOB ? bearOBLow : na, "Bearish OB Low", color=color.new(color.purple, 65))
+
+fill(bullOBHighPlot, bullOBLowPlot, color=color.new(color.blue, 90))
+fill(bearOBHighPlot, bearOBLowPlot, color=color.new(color.purple, 90))
+
+rangeHigh = ta.highest(high, 50)
+rangeLow = ta.lowest(low, 50)
+equilibrium = (rangeHigh + rangeLow) / 2.0
+
+plot(equilibrium, "Equilibrium", color=color.new(color.yellow, 35), linewidth=1)
+
+bullTrend = close > emaFast and emaFast > emaSlow
+bearTrend = close < emaFast and emaFast < emaSlow
+
+inDiscount = close < equilibrium
+inPremium = close > equilibrium
+
+buySetup = bullTrend and inDiscount and (sellSideSweep or bullCHoCH or bullBOS)
+sellSetup = bearTrend and inPremium and (buySideSweep or bearCHoCH or bearBOS)
+
+buySignal = buySetup and not buySetup[1]
+sellSignal = sellSetup and not sellSetup[1]
+
+buyEntry = ta.valuewhen(buySignal, close, 0)
+buySL = ta.valuewhen(buySignal, demandLow, 0)
+buyRisk = math.max(math.abs(buyEntry - buySL), syminfo.mintick)
+buyTP1 = buyEntry + buyRisk
+buyTP2 = buyEntry + buyRisk * 2.0
+buyTP3 = buyEntry + buyRisk * 3.0
+
+sellEntry = ta.valuewhen(sellSignal, close, 0)
+sellSL = ta.valuewhen(sellSignal, supplyHigh, 0)
+sellRisk = math.max(math.abs(sellSL - sellEntry), syminfo.mintick)
+sellTP1 = sellEntry - sellRisk
+sellTP2 = sellEntry - sellRisk * 2.0
+sellTP3 = sellEntry - sellRisk * 3.0
+
+lastBuy = nz(ta.barssince(buySignal), 10000)
+lastSell = nz(ta.barssince(sellSignal), 10000)
+
+activeBuy = lastBuy < lastSell
+activeSell = lastSell < lastBuy
+
+entryPlot = activeBuy ? buyEntry : activeSell ? sellEntry : na
+slPlot = activeBuy ? buySL : activeSell ? sellSL : na
+tp1Plot = activeBuy ? buyTP1 : activeSell ? sellTP1 : na
+tp2Plot = activeBuy ? buyTP2 : activeSell ? sellTP2 : na
+tp3Plot = activeBuy ? buyTP3 : activeSell ? sellTP3 : na
+
+plot(showLevels ? entryPlot : na, "ENTRY", color=color.yellow, linewidth=2, style=plot.style_stepline)
+plot(showLevels ? slPlot : na, "SL", color=color.red, linewidth=2, style=plot.style_stepline)
+plot(showLevels ? tp1Plot : na, "TP1", color=color.green, linewidth=1, style=plot.style_stepline)
+plot(showLevels ? tp2Plot : na, "TP2", color=color.green, linewidth=2, style=plot.style_stepline)
+plot(showLevels ? tp3Plot : na, "TP3", color=color.lime, linewidth=2, style=plot.style_stepline)
+
+plotshape(buySignal, title="BUY", style=shape.labelup, location=location.belowbar, color=color.green, text="BUY", textcolor=color.white, size=size.small)
+plotshape(sellSignal, title="SELL", style=shape.labeldown, location=location.abovebar, color=color.red, text="SELL", textcolor=color.white, size=size.small)
+
+bgColor = bullTrend and inDiscount ? color.new(color.green, 94) : bearTrend and inPremium ? color.new(color.red, 94) : na
+bgcolor(bgColor)
+
+alertcondition(buySignal, title="BUY Setup", message="Smart Money BUY setup detected")
+alertcondition(sellSignal, title="SELL Setup", message="Smart Money SELL setup detected")
+alertcondition(buySideSweep, title="BSL Sweep", message="Buy-side liquidity sweep detected")
+alertcondition(sellSideSweep, title="SSL Sweep", message="Sell-side liquidity sweep detected")
+alertcondition(bullBOS, title="Bullish BOS", message="Bullish BOS detected")
+alertcondition(bearBOS, title="Bearish BOS", message="Bearish BOS detected")
+alertcondition(bullCHoCH, title="Bullish CHoCH", message="Bullish CHoCH detected")
+alertcondition(bearCHoCH, title="Bearish CHoCH", message="Bearish CHoCH detected")

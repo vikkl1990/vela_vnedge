@@ -1,0 +1,754 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//@version=6
+indicator("Volume Profile Breakout Continuation", shorttitle="VP Breakout", overlay=true, max_lines_count=150, max_labels_count=250, max_boxes_count=500)
+
+//==================================================================================================
+// INPUTS
+//==================================================================================================
+gA = "1 · Accumulation"
+accLen     = input.int(20,    "Range lookback (bars)",            minval=5,   maxval=200, group=gA, tooltip="Window used to detect compression.")
+accAtrMult = input.float(5.0, "Compression: range ≤ k × ATR",     minval=0.5, maxval=20,  step=0.5, group=gA, tooltip="The lookback range must be at or under k x ATR to count as accumulation. 5 = balanced; lower = fewer, tighter boxes.")
+accAbandon = input.float(2.0, "Abandon when range > k × threshold", minval=1.1, maxval=5.0, step=0.1, group=gA, tooltip="A forming box is dropped once its height exceeds this multiple of the compression threshold.")
+accMinBars = input.int(8,     "Min bars in accumulation",         minval=3,   maxval=200, group=gA)
+accMaxBars = input.int(120,   "Max bars in accumulation",         minval=10,  maxval=400, group=gA, tooltip="Box is abandoned past this many bars.")
+atrLen     = input.int(14,    "ATR length",                       minval=1,   maxval=200, group=gA)
+
+gV = "2 · Setup Volume Profile"
+vpRows  = input.int(24,   "Profile rows",      minval=6,  maxval=60, group=gV)
+vpVaPct = input.float(70, "Value Area %",      minval=50, maxval=90, group=gV, tooltip="Percent of profile volume that defines the value area, expanded outward from the POC. Shared by the setup and session profiles.")
+vpShow  = input.bool(true, "Draw setup histogram in the teal box", group=gV)
+vpHistW = input.int(10,   "Histogram max width (bars)", minval=3, maxval=60, group=gV, tooltip="Width of the POC row inside the purple accumulation box (never wider than half the box). Other rows scale from it.")
+setupFade = input.int(90, "Past setup fade", minval=70, maxval=97, group=gV, tooltip="Transparency for finished / abandoned accumulation boxes.")
+keepSetups = input.int(20, "Past setups to keep", minval=2, maxval=40, group=gV)
+
+gD = "2b · Session Volume Profile (always on chart)"
+dvpShow   = input.bool(true,    "Draw developing day profile",    group=gD, tooltip="Volume-at-price histogram of the CURRENT day, floated off the last bar. Redrawn as the day builds.")
+dvpRows   = input.int(30,       "Max rows per day profile",       minval=10, maxval=50, group=gD, tooltip="Row height auto-sizes from the daily ATR so a typical day fills up to this many rows. Also bounds the box budget for past profiles.")
+dvpWidth  = input.int(18,       "Profile width (bars)",           minval=6,  maxval=150, group=gD)
+dvpOffset = input.int(10,       "Profile offset (bars)",          minval=2,  maxval=100, group=gD, tooltip="Gap between the last candle and the histogram.")
+dvpSide   = input.string("Right", "Profile side", options=["Right", "Left"], group=gD)
+dvpLevels = input.bool(true,    "Day POC / VAL / VAH lines",      group=gD)
+dvpPast   = input.int(10,       "Past day profiles to keep",      minval=0,  maxval=10, group=gD, tooltip="Each FINISHED day's profile is painted in place at the rollover and never redrawn (non-repainting by construction). Oldest is deleted as new days complete.")
+dvpPastTr = input.int(88,       "Past profile transparency",      minval=50, maxval=97, group=gD)
+dvpPastW  = input.int(30,       "Past profile width (% of day)",  minval=10, maxval=90, group=gD, tooltip="How far a finished day's profile extends across that day. Small = context, big = wall.")
+dvpColor  = input.string("Heatmap", "Profile color mode", options=["Teal", "Heatmap"], group=gD, tooltip="Teal = single-hue intensity, POC gold. Heatmap = thermal ramp by volume share (violet = thin, red = heaviest), POC gold. Applies to the day profile, past profiles and the setup histogram.")
+
+gH = "3 · HTF Bias"
+htfOn  = input.bool(true,     "Filter breakouts by HTF bias", group=gH, tooltip="Long breakouts only when the HTF is bullish, shorts only when bearish.")
+htfTf  = input.string("Auto", "HTF timeframe", options=["Auto", "15", "60", "240", "D", "W"], group=gH, tooltip="Auto: ≤5m → 60m · ≤60m → D · ≤D → W.")
+htfLen = input.int(50,        "HTF EMA length", minval=2, maxval=500, group=gH)
+
+gP = "4 · Pullback + Trigger"
+pbTolPct   = input.float(15, "POC zone half-width (% of range)", minval=1, maxval=50, group=gP, tooltip="How close to the POC price must come to count as a pullback, as a % of the accumulation range height.")
+pbWaitBars = input.int(40,   "Max bars to wait for pullback",    minval=3, maxval=300, group=gP)
+
+gR = "Trade Management"
+killSw      = input.bool(true,       "Engine ON (kill switch)",     group=gR)
+tpSlMode    = input.string("Fixed %", "TP/SL Mode", options=["Fixed %", "ATR ×"], group=gR, tooltip="Fixed % = TP/SL as % of entry. ATR × = multiples of the chart ATR.")
+tpPct       = input.float(1.0,       "TP %",                        group=gR, minval=0.05, maxval=20.0, step=0.05)
+slPct       = input.float(0.5,       "SL %",                        group=gR, minval=0.05, maxval=20.0, step=0.05)
+tpAtr       = input.float(3.0,       "TP (ATR ×)",                  group=gR, minval=0.1,  maxval=20.0, step=0.1)
+slAtr       = input.float(1.5,       "SL (ATR ×)",                  group=gR, minval=0.1,  maxval=20.0, step=0.1)
+maxBars     = input.int(50,          "Max Bars in Trade",           group=gR, minval=5,  maxval=500)
+cooldown    = input.int(3,           "Cooldown Bars",               group=gR, minval=0,  maxval=100, tooltip="Anchored to the entry bar. Gates the next entry.")
+enableExitCd= input.bool(false,      "Enable Post-Exit Cooldowns", group=gR, tooltip="DEFAULT OFF. A second timer starts the bar a trade CLOSES, sized by HOW it closed (TP / SL / TIME-EOD). The entry-anchored cooldown stays active alongside it.")
+cdAfterTP   = input.int(8,           "  ↳ Cooldown after TP",       group=gR, minval=0, maxval=500)
+cdAfterSL   = input.int(16,          "  ↳ Cooldown after SL",       group=gR, minval=0, maxval=500, tooltip="Double the TP timer by default — a stop-out usually means the read was wrong, not early.")
+cdAfterTime = input.int(4,           "  ↳ Cooldown after TIME/EOD", group=gR, minval=0, maxval=500)
+pastBoxFade = input.int(92,          "Past Trade Box Fade %",       group=gR, minval=80, maxval=99)
+
+gE = "Session"
+useEOD      = input.bool(true,  "Flatten at EOD",  group=gE)
+eodHour     = input.int(16,     "EOD Hour (NY)",   group=gE, minval=0, maxval=23)
+eodMinute   = input.int(50,     "EOD Minute",      group=gE, minval=0, maxval=59)
+
+gW = "Webhook"
+enableWebhook = input.bool(false, "Enable Webhook JSON", group=gW, tooltip="Off = no alert() payloads. On = one JSON payload per entry and per exit through alert().")
+STRATEGY_ID   = input.string("vp_breakout_v1", "Strategy ID", group=gW, tooltip="Identifier carried in the JSON payload.")
+whQty    = input.float(1.0, "Quantity", group=gW, minval=0.01, maxval=100.0, step=0.01)
+
+gS = "Visuals"
+showAccBox = input.bool(true, "Accumulation Box (purple, live)", group=gS)
+showPbBox  = input.bool(true, "VP + Pullback Box (teal)",        group=gS)
+showLevels = input.bool(true, "Setup POC / VAL / VAH lines",     group=gS)
+showTradeBoxes = input.bool(true, "Show TP/SL Boxes",            group=gS)
+showSig    = input.bool(true, "Show Entry / Exit Labels",        group=gS)
+showEod    = input.bool(true, "Daily EOD Marker",                group=gS)
+showDash   = input.bool(true, "Show Dashboard",           group=gS)
+keepTrades = input.int(30,    "Past Trades to Keep",             group=gS, minval=1, maxval=60, tooltip="Past TP/SL boxes + entry/exit labels kept on the chart. Boxes render at Past Trade Box Fade; labels stay full strength (SOT).")
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
+color C_TEAL   = #00F5D4
+color C_PURPLE = #AA00FF
+color C_GOLD   = #FFD700
+color C_BULL   = #00FF88
+color C_BEAR   = #FF4466
+color C_ORANGE = #FF8800
+color C_MUTED  = color.new(#AAAAAA, 40)
+color C_HDR_BG = color.new(#0d1f1e,  0)
+color C_COL_BG = color.new(#0a0a14, 10)
+color C_COL_ALT= color.new(#0d1117, 30)
+color C_STRIPE = color.new(#00F5D4, 20)
+color C_PURP   = C_PURPLE
+color C_INK    = #e8ecf2
+color C_MUTE   = #8b91a0
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
+getInstrument() => na(syminfo.current_contract) ? syminfo.ticker : syminfo.current_contract
+buildEntryPayload(string side, float e, float sl, float tp) =>
+    '{"strategy_id":"' + STRATEGY_ID + '","instrument":"' + getInstrument() + '","action":"enter","side":"' + side + '","entry":' + str.tostring(e, '#.##') + ',"stop":' + str.tostring(sl, '#.##') + ',"profit":' + str.tostring(tp, '#.##') + ',"instrument_multiplier":' + str.tostring(syminfo.pointvalue) + ',"quantity":' + str.tostring(whQty) + '}'
+buildExitPayload() =>
+    '{"strategy_id":"' + STRATEGY_ID + '","instrument":"' + getInstrument() + '","action":"exit-all"}'
+
+//==================================================================================================
+// CONTEXT — ATR, compression, HTF bias (non-repaint: [1] inside security + lookahead_off)
+//==================================================================================================
+float atr    = ta.atr(atrLen)
+float dayAtr = request.security(syminfo.tickerid, "D", ta.atr(14)[1], lookahead=barmerge.lookahead_off)
+float rngHi = ta.highest(high, accLen)
+float rngLo = ta.lowest(low, accLen)
+bool  compressed = not na(atr) and atr > 0 and (rngHi - rngLo) <= accAtrMult * atr
+
+string htfAuto = timeframe.in_seconds() <= 300 ? "60" : timeframe.in_seconds() <= 3600 ? "D" : timeframe.in_seconds() <= 86400 ? "W" : "M"
+string htfUse  = htfTf == "Auto" ? htfAuto : htfTf
+float htfClose = request.security(syminfo.tickerid, htfUse, close[1], lookahead=barmerge.lookahead_off)
+float htfEma   = request.security(syminfo.tickerid, htfUse, ta.ema(close, htfLen)[1], lookahead=barmerge.lookahead_off)
+int   htfBias  = na(htfClose) or na(htfEma) ? 0 : htfClose > htfEma ? 1 : htfClose < htfEma ? -1 : 0
+
+string tzNY = "America/New_York"
+int    nyHr = hour(time, tzNY)
+int    nyMn = minute(time, tzNY)
+bool   isEOD = useEOD and ((nyHr > eodHour) or (nyHr == eodHour and nyMn >= eodMinute))
+
+//==================================================================================================
+// STATE — setup machine, trade, arbiter, drawings
+//==================================================================================================
+// setup: 0 IDLE · 1 ACCUM · 2 BREAKOUT (waiting for pullback) · 3 PULLBACK (POC touched)
+var int   st       = 0
+var float accHi    = na
+var float accLo    = na
+var int   accStart = na
+var int   dir      = 0
+var int   boBar    = na
+var float vpPOC    = na
+var float vpVAL    = na
+var float vpVAH    = na
+var int   lastSetupEnd  = -1000000   // bar the last setup ended (no-overlap guard)
+var bool  lastSetupKeep = false      // keep the histogram of setups that at least broke out
+
+// rolling bar log (feeds the profile; no history-offset reads anywhere)
+var array<float> rH = array.new<float>()
+var array<float> rL = array.new<float>()
+var array<float> rV = array.new<float>()
+int rollCap = accMaxBars + accLen + 5
+
+var bool  g_inTrade  = false
+var int   entryDir   = 0
+var float entryPx    = na
+var float tpPx       = na
+var float slPx       = na
+var int   entryBar   = na
+var int   lastSigBar = -1000000
+var int   exitCdUntil = na
+var int   wins       = 0
+var int   losses     = 0
+var string lastExitTxt = "--"
+bool closedThisBar = false
+bool cdOK     = bar_index - lastSigBar >= cooldown
+bool exitCdOK = not enableExitCd or (na(exitCdUntil) or bar_index >= exitCdUntil)
+
+// webhook arbiter — intents captured here, ONE dispatcher fires below
+var int g_fireIntent     = 0
+var int g_fireFiredCount = 0
+bool    g_fireExit  = false
+bool    sigLong     = false
+bool    sigShort    = false
+bool    sigExit     = false
+string  exitReason  = ""
+float   exitPx      = na
+
+// drawings
+var box   accBox  = na
+var array<box>   vpBoxes = array.new<box>()
+var line  pocLine = na
+var line  valLine = na
+var line  vahLine = na
+var label pocLbl  = na
+var box   pbBox   = na
+var label pbLbl   = na
+var box   tpBox   = na
+var box   slBox   = na
+var label entLbl  = na
+var label exLbl   = na
+var array<box>   oldBoxes = array.new<box>()
+var array<line>  oldLines = array.new<line>()
+var array<label> oldLbls  = array.new<label>()
+var array<box>   pastTrBoxes = array.new<box>()
+var array<label> pastTrLbls  = array.new<label>()
+var array<line>  eodLines = array.new<line>()
+var array<label> eodLbls  = array.new<label>()
+
+//==================================================================================================
+// HELPERS
+//==================================================================================================
+f_trimOld() =>
+    while oldBoxes.size() > keepSetups * 3 + 24
+        box.delete(oldBoxes.shift())
+    while oldLines.size() > 40
+        line.delete(oldLines.shift())
+    while oldLbls.size() > 60
+        label.delete(oldLbls.shift())
+
+// fade helpers (Pine functions may read globals but not assign them — callers null the refs)
+f_fadeBox(box _b, color _c) =>
+    if not na(_b)
+        box.set_bgcolor(_b, color.new(_c, 95))
+        box.set_border_color(_b, color.new(_c, 92))
+        oldBoxes.push(_b)
+f_fadeLine(line _l, color _c) =>
+    if not na(_l)
+        line.set_color(_l, color.new(_c, 88))
+        oldLines.push(_l)
+f_fadeLbl(label _x, color _c) =>
+    if not na(_x)
+        label.set_color(_x, color.new(_c, 95))
+        label.set_textcolor(_x, color.new(_c, 75))
+        oldLbls.push(_x)
+
+// value-area levels from any count array: POC = heaviest row, VA expanded outward to vpVaPct
+f_vaLevels(array<float> cnt, float base, float rs) =>
+    int   n     = cnt.size()
+    float total = n > 0 ? cnt.sum() : 0.0
+    int   pi    = n > 0 and total > 0 ? cnt.indexof(cnt.max()) : math.max(0, int(n / 2))
+    int   iLo   = pi
+    int   iHi   = pi
+    float acc   = n > 0 ? cnt.get(pi) : 0.0
+    while total > 0 and acc * 100.0 / total < vpVaPct and (iLo > 0 or iHi < n - 1)
+        float below = iLo > 0 ? cnt.get(iLo - 1) : -1.0
+        float above = iHi < n - 1 ? cnt.get(iHi + 1) : -1.0
+        if above >= below
+            iHi := iHi + 1
+            acc := acc + above
+        else
+            iLo := iLo - 1
+            acc := acc + below
+    float poc = n > 0 ? base + pi * rs + rs / 2.0 : na
+    float val = n > 0 ? base + iLo * rs : na
+    float vah = n > 0 ? base + (iHi + 1) * rs : na
+    [val, poc, vah, pi, iLo, iHi]
+
+// thermal ramp 0..1 → violet · blue · cyan · green · yellow · red (volume share of the POC row)
+f_heat(float _t) =>
+    float t = math.max(0.0, math.min(1.0, _t))
+    color c = switch
+        t < 0.20 => color.from_gradient(t, 0.00, 0.20, #5B2CFF, #0066FF)
+        t < 0.40 => color.from_gradient(t, 0.20, 0.40, #0066FF, #00D4FF)
+        t < 0.60 => color.from_gradient(t, 0.40, 0.60, #00D4FF, #00FF88)
+        t < 0.80 => color.from_gradient(t, 0.60, 0.80, #00FF88, #FFD700)
+        =>          color.from_gradient(t, 0.80, 1.00, #FFD700, #FF3B30)
+    c
+
+// one place to color a profile row — mode-aware, POC gold in both modes, _tr = extra fade (0 live)
+f_rowCol(float _c, float _mx, bool _inVA, bool _isPoc, int _tr) =>
+    color out = na
+    if _isPoc
+        out := color.new(C_GOLD, math.min(97, 15 + _tr))
+    else if dvpColor == "Heatmap"
+        float t = _mx > 0 ? _c / _mx : 0.0
+        out := color.new(f_heat(t), math.min(97, (_inVA ? 10 : 32) + _tr))
+    else
+        out := color.from_gradient(_c, 0, _mx, color.new(C_TEAL, math.min(97, 88 + _tr)), color.new(C_TEAL, math.min(97, (_inVA ? 30 : 62) + _tr)))
+    out
+
+// setup profile over the last n logged bars, bounded to [accLo, accHi]
+f_buildVP(int n) =>
+    float lo = accLo
+    float rs = (accHi - accLo) / vpRows
+    array<float> cnt = array.new<float>(vpRows, 0.0)
+    int sz = rH.size()
+    if rs > 0 and n >= 1 and sz >= n
+        for k = sz - n to sz - 1
+            float bh = rH.get(k)
+            float bl = rL.get(k)
+            float bv = rV.get(k)
+            int i0 = math.max(0, math.min(vpRows - 1, int(math.floor((bl - lo) / rs))))
+            int i1 = math.max(0, math.min(vpRows - 1, int(math.floor((bh - lo) / rs))))
+            int iA = math.min(i0, i1)
+            int iB = math.max(i0, i1)
+            float share = bv / (iB - iA + 1)
+            for i = iA to iB
+                cnt.set(i, cnt.get(i) + share)
+    [val, poc, vah, pi, iLo, iHi] = f_vaLevels(cnt, lo, rs)
+    [cnt, rs, poc, val, vah, pi, iLo, iHi]
+
+//==================================================================================================
+//    Exit label ✦ TP/SL with the % actually taken · box truncation · post-exit cooldown stamp
+//==================================================================================================
+if g_inTrade and bar_index > entryBar
+    bool hitSL = entryDir == 1 ? low <= slPx : high >= slPx
+    bool hitTP = entryDir == 1 ? high >= tpPx : low <= tpPx
+    bool timeX = barstate.isconfirmed and bar_index - entryBar >= maxBars
+    bool eodX  = barstate.isconfirmed and isEOD
+    if hitSL or hitTP or timeX or eodX
+        exitReason := hitSL ? "SL" : hitTP ? "TP" : timeX ? "TIME" : "EOD"
+        exitPx     := hitSL ? slPx : hitTP ? tpPx : close
+        float pnl  = entryDir == 1 ? (exitPx - entryPx) / entryPx * 100.0 : (entryPx - exitPx) / entryPx * 100.0
+        if pnl > 0
+            wins += 1
+        else
+            losses += 1
+        int   tot   = wins + losses
+        float wr    = tot > 0 ? wins * 100.0 / tot : 0.0
+        if not na(tpBox)
+            box.set_right(tpBox, bar_index)
+        if not na(slBox)
+            box.set_right(slBox, bar_index)
+        if showSig
+            bool   wasWin = pnl > 0
+            string pnlS   = (pnl >= 0 ? "+" : "") + str.tostring(pnl, "#.##") + "%"
+            if exitReason == "TP" or exitReason == "SL"
+                exLbl := label.new(bar_index, exitPx, " ✦ " + exitReason + " " + pnlS + " ", style=entryDir == 1 ? label.style_label_down : label.style_label_up, color=color.new(C_HDR_BG, 20), textcolor=wasWin ? C_TEAL : C_BEAR, size=size.small, text_font_family=font.family_monospace)
+            else
+                exLbl := label.new(bar_index, exitPx, " " + exitReason + "  " + pnlS + " ", style=entryDir == 1 ? label.style_label_down : label.style_label_up, color=color.new(C_GOLD, 75), textcolor=C_GOLD, size=size.tiny, text_font_family=font.family_monospace)
+        int exCdBars = (exitReason == "TIME" or exitReason == "EOD") ? cdAfterTime : pnl > 0 ? cdAfterTP : cdAfterSL
+        exitCdUntil := bar_index + exCdBars
+        g_inTrade   := false
+        closedThisBar := true
+        lastExitTxt := exitReason + " " + (pnl >= 0 ? "+" : "") + str.tostring(pnl, "#.##") + "%"
+        g_fireExit  := true
+        sigExit     := true
+else if g_inTrade
+    if not na(tpBox)
+        box.set_right(tpBox, bar_index + 1)
+    if not na(slBox)
+        box.set_right(slBox, bar_index + 1)
+
+bool ready = killSw and not g_inTrade and not closedThisBar and cdOK and exitCdOK and barstate.isconfirmed and not isEOD
+
+//==================================================================================================
+// 2 · SETUP STATE MACHINE — confirmed bars only, never while in a trade
+//    Furniture: purple accBox (live) · teal pbBox + histogram + bold POC (breakout→trigger)
+//==================================================================================================
+// retire everything the current setup drew. _tr = transparency (fizzle 96 / completed 90)
+f_fadeSetup(int _tr) =>
+    if not na(accBox)
+        box.set_bgcolor(accBox, color.new(C_PURP, _tr))
+        box.set_border_color(accBox, color.new(C_PURP, _tr - 4))
+        box.set_text_color(accBox, color.new(C_PURP, _tr - 10))
+        oldBoxes.push(accBox)
+    if not na(pbBox)
+        box.set_bgcolor(pbBox, color.new(C_TEAL, _tr))
+        box.set_border_color(pbBox, color.new(C_TEAL, _tr - 4))
+        box.set_text_color(pbBox, color.new(C_TEAL, _tr - 10))
+        oldBoxes.push(pbBox)
+    while vpBoxes.size() > 0
+        box _vb = vpBoxes.shift()
+        if lastSetupKeep
+            oldBoxes.push(_vb)
+        else
+            box.delete(_vb)
+    f_fadeLine(pocLine, C_GOLD)
+    f_fadeLine(valLine, C_TEAL)
+    f_fadeLine(vahLine, C_TEAL)
+    f_fadeLbl(pocLbl, C_GOLD)
+    f_fadeLbl(pbLbl, C_TEAL)
+    f_trimOld()
+
+if barstate.isconfirmed and killSw
+    bool fizzle = false
+    // ---- IDLE: compression pinpointed -> purple box opens NOW (live, not hindsight)
+    if st == 0 and compressed and bar_index - lastSetupEnd >= 3
+        f_fadeSetup(setupFade)
+        accBox  := na
+        pbBox   := na
+        pocLine := na
+        valLine := na
+        vahLine := na
+        pocLbl  := na
+        pbLbl   := na
+        st       := 1
+        accStart := math.max(bar_index - accLen + 1, lastSetupEnd + 1)
+        accHi    := rngHi
+        accLo    := rngLo
+        dir      := 0
+        if showAccBox
+            accBox := box.new(accStart, accHi, bar_index, accLo, border_color=color.new(C_PURP, 35), bgcolor=color.new(C_PURP, 88), border_width=1, text="ACCUMULATION", text_color=color.new(C_PURP, 20), text_size=size.tiny, text_halign=text.align_left, text_valign=text.align_top)
+    // ---- ACCUM: extend the purple box, abandon, or break out
+    else if st == 1
+        int  nAcc = bar_index - accStart
+        bool up   = close > accHi
+        bool dn   = close < accLo
+        if up or dn
+            int  d      = up ? 1 : -1
+            bool biasOk = not htfOn or htfBias == d
+            if nAcc >= accMinBars and biasOk
+                [cnt, rs, poc, val, vah, pi, iLo, iHi] = f_buildVP(nAcc)
+                vpPOC := poc
+                vpVAL := val
+                vpVAH := vah
+                dir   := d
+                boBar := bar_index
+                st    := 2
+                if not na(accBox)
+                    box.set_right(accBox, bar_index)
+                // teal VP + pullback box opens on the breakout bar; extends live until trigger/fizzle
+                if showPbBox
+                    pbBox := box.new(bar_index, accHi, bar_index + 1, accLo, border_color=color.new(C_TEAL, 40), bgcolor=color.new(C_TEAL, 92), border_width=1, text=(d == 1 ? "VP · PULLBACK ▲" : "VP · PULLBACK ▼"), text_color=color.new(C_TEAL, 20), text_size=size.tiny, text_halign=text.align_right, text_valign=text.align_top)
+                lastSetupEnd := bar_index
+                // the histogram already lives inside the purple box (rebuilt live below) — freeze it now,
+                // extend the POC/VA levels through the teal box
+                if showLevels
+                    pocLine := line.new(accStart, vpPOC, bar_index + 1, vpPOC, color=color.new(C_GOLD, 10), width=3, style=line.style_solid)
+                    valLine := line.new(accStart, vpVAL, bar_index + 1, vpVAL, color=color.new(C_TEAL, 55), width=1, style=line.style_dotted)
+                    vahLine := line.new(accStart, vpVAH, bar_index + 1, vpVAH, color=color.new(C_TEAL, 55), width=1, style=line.style_dotted)
+                    pocLbl  := label.new(bar_index + 1, vpPOC, "POC " + str.tostring(vpPOC, format.mintick), style=label.style_label_left, color=color.new(C_GOLD, 90), textcolor=C_GOLD, size=size.tiny)
+            else
+                fizzle := true
+        else
+            accHi := math.max(accHi, high)
+            accLo := math.min(accLo, low)
+            if (accHi - accLo) > accAtrMult * atr * accAbandon or nAcc > accMaxBars
+                fizzle := true
+            else
+                if not na(accBox)
+                    box.set_right(accBox, bar_index)
+                    box.set_top(accBox, accHi)
+                    box.set_bottom(accBox, accLo)
+                // LIVE profile inside the purple box — small, left-anchored, rebuilt each confirmed bar
+                if vpShow and nAcc >= 3
+                    [cntL, rsL, pocL, valL, vahL, piL, iLoL, iHiL] = f_buildVP(nAcc)
+                    while vpBoxes.size() > 0
+                        box.delete(vpBoxes.shift())
+                    float mxL = cntL.max()
+                    int   wMax = math.max(2, math.min(vpHistW, int(nAcc / 2)))
+                    for r = 0 to vpRows - 1
+                        float c = cntL.get(r)
+                        if c > 0 and mxL > 0
+                            float rowLo = accLo + r * rsL
+                            int   w     = math.max(1, int(math.round(c / mxL * wMax)))
+                            bool  inVA  = r >= iLoL and r <= iHiL
+                            vpBoxes.push(box.new(accStart, rowLo + rsL, accStart + w, rowLo, border_width=0, bgcolor=f_rowCol(c, mxL, inVA, r == piL, 15)))
+    // ---- BREAKOUT / PULLBACK: grow the teal box and the POC line every bar
+    if st >= 2 and not fizzle
+        if not na(pbBox)
+            box.set_right(pbBox, bar_index)
+        if not na(pocLine)
+            line.set_x2(pocLine, bar_index)
+            line.set_x2(valLine, bar_index)
+            line.set_x2(vahLine, bar_index)
+            label.set_x(pocLbl, bar_index)
+    // ---- BREAKOUT: wait for the pullback into the POC zone
+    if st == 2 and not fizzle
+        int   waited  = bar_index - boBar
+        float tol     = pbTolPct / 100.0 * (accHi - accLo)
+        bool  touch   = dir == 1 ? low <= vpPOC + tol : high >= vpPOC - tol
+        bool  tooDeep = dir == 1 ? close < vpVAL : close > vpVAH
+        if tooDeep or waited > pbWaitBars
+            fizzle := true
+        else if touch and waited >= 1
+            st := 3
+            if showPbBox
+                pbLbl := label.new(bar_index, dir == 1 ? low : high, "PULLBACK → POC", style=dir == 1 ? label.style_label_up : label.style_label_down, color=color.new(C_TEAL, 80), textcolor=C_TEAL, size=size.tiny)
+    // ---- PULLBACK: trigger = confirmed close back through POC in the breakout direction
+    if st == 3 and not fizzle
+        int  waited2  = bar_index - boBar
+        bool tooDeep2 = dir == 1 ? close < vpVAL : close > vpVAH
+        bool trig     = dir == 1 ? (close > vpPOC and close > open) : (close < vpPOC and close < open)
+        if tooDeep2 or waited2 > pbWaitBars
+            fizzle := true
+        else if trig and not ready
+            fizzle := true
+        else if trig
+            // ---- ENTRY (intent only; the dispatcher below fires the webhook)
+            if not na(tpBox)
+                box.set_bgcolor(tpBox, color.new(C_TEAL, pastBoxFade))
+                box.set_border_color(tpBox, color.new(C_TEAL, pastBoxFade))
+                pastTrBoxes.push(tpBox)
+            if not na(slBox)
+                box.set_bgcolor(slBox, color.new(C_BEAR, pastBoxFade))
+                box.set_border_color(slBox, color.new(C_BEAR, pastBoxFade))
+                pastTrBoxes.push(slBox)
+            if not na(entLbl)
+                pastTrLbls.push(entLbl)
+            if not na(exLbl)
+                pastTrLbls.push(exLbl)
+            tpBox  := na
+            slBox  := na
+            entLbl := na
+            exLbl  := na
+            while pastTrBoxes.size() > keepTrades * 2
+                box.delete(pastTrBoxes.shift())
+            while pastTrLbls.size() > keepTrades * 2
+                label.delete(pastTrLbls.shift())
+            g_inTrade  := true
+            entryDir   := dir
+            entryPx    := close
+            entryBar   := bar_index
+            lastSigBar := bar_index
+            float tpD = tpSlMode == "ATR ×" ? tpAtr * atr : entryPx * tpPct / 100.0
+            float slD = tpSlMode == "ATR ×" ? slAtr * atr : entryPx * slPct / 100.0
+            tpPx := dir == 1 ? entryPx + tpD : entryPx - tpD
+            slPx := dir == 1 ? entryPx - slD : entryPx + slD
+            if showTradeBoxes
+                tpBox := box.new(bar_index, math.max(entryPx, tpPx), bar_index + maxBars, math.min(entryPx, tpPx), border_color=color.new(C_TEAL, 22), bgcolor=color.new(#00F5D4, 87), border_width=2)
+                slBox := box.new(bar_index, math.max(entryPx, slPx), bar_index + maxBars, math.min(entryPx, slPx), border_color=color.new(C_BEAR, 22), bgcolor=color.new(#FF4466, 87), border_width=2)
+            if showSig
+                string enTxt = (dir == 1 ? "▲ BUY" : "▼ SELL") + "\nIN " + str.tostring(entryPx, format.mintick) + "\nTP " + str.tostring(tpPx, format.mintick) + "\nSL " + str.tostring(slPx, format.mintick)
+                entLbl := label.new(bar_index, dir == 1 ? low : high, enTxt, style=dir == 1 ? label.style_label_up : label.style_label_down, color=dir == 1 ? color.new(C_BULL, 20) : color.new(C_BEAR, 20), textcolor=color.white, size=size.normal, text_font_family=font.family_monospace)
+            g_fireIntent := dir
+            sigLong  := dir == 1
+            sigShort := dir == -1
+            lastSetupKeep := true
+            st := 0
+    // ---- FIZZLE: setup died at any stage -> fade it hard right now, reset
+    if fizzle
+        lastSetupEnd := bar_index
+        lastSetupKeep := st >= 2
+        f_fadeSetup(setupFade)
+        accBox  := na
+        pbBox   := na
+        pocLine := na
+        valLine := na
+        vahLine := na
+        pocLbl  := na
+        pbLbl   := na
+        st := 0
+
+//==================================================================================================
+// 3 · ROLLING BAR LOG — appended AFTER the machine so the breakout bar never enters its own profile
+//==================================================================================================
+if barstate.isconfirmed
+    rH.push(high)
+    rL.push(low)
+    rV.push(nz(volume) > 0 ? volume : 1.0)
+    while rH.size() > rollCap
+        rH.shift()
+        rL.shift()
+        rV.shift()
+
+//==================================================================================================
+// 4 · EOD MARKER — vertical purple dashed line + ◈ EOD label at each daily rollover
+//==================================================================================================
+if showEod and timeframe.in_seconds() < 86400 and timeframe.change("D") and barstate.isconfirmed
+    eodLines.push(line.new(bar_index, low, bar_index, high, extend=extend.both, color=color.new(C_PURPLE, 70), width=1, style=line.style_dashed))
+    eodLbls.push(label.new(bar_index, high, "◈ EOD", style=label.style_label_down, color=color.new(C_PURPLE, 95), textcolor=color.new(C_PURPLE, 30), size=size.tiny))
+    while eodLines.size() > 20
+        line.delete(eodLines.shift())
+    while eodLbls.size() > 20
+        label.delete(eodLbls.shift())
+
+//==================================================================================================
+// 4b · SESSION VOLUME PROFILE — the chart's always-on context. Volume-at-price for the current
+//      day, rows sized from the daily ATR. Finished days are painted in place ONCE at the
+//      rollover (never redrawn); the developing day floats off the last bar and redraws live.
+//==================================================================================================
+var float        dRowSz   = na
+var float        dBase    = na
+var int          dStart   = na
+var array<float> dCnt     = array.new<float>()
+var float        dPOC     = na
+var float        dVAL     = na
+var float        dVAH     = na
+var array<box>   dLiveBox = array.new<box>()
+var line         dPocLn   = na
+var line         dValLn   = na
+var line         dVahLn   = na
+var label        dPocLb   = na
+var label        dValLb   = na
+var label        dVahLb   = na
+var array<box>   dPastBox = array.new<box>()
+var array<int>   dPastSz  = array.new<int>()
+bool dNewDay = timeframe.in_seconds() < 86400 and timeframe.change("D")
+
+f_dayRowSize() =>
+    float rng = not na(dayAtr) and dayAtr > 0 ? dayAtr : nz(atr) * 12.0
+    float raw = rng / (dvpRows * 0.8)
+    math.max(syminfo.mintick, math.round(raw / syminfo.mintick) * syminfo.mintick)
+
+// paint the finished day in place; result = boxes used
+f_paintDay() =>
+    int used = 0
+    int n = dCnt.size()
+    if dvpPast > 0 and n > 0 and not na(dRowSz) and not na(dStart) and dCnt.sum() > 0
+        [pv, pp, pa, ppi, pli, phi] = f_vaLevels(dCnt, dBase, dRowSz)
+        float mx   = dCnt.max()
+        int   span = math.max(4, bar_index - dStart)
+        for r = 0 to n - 1
+            float c = dCnt.get(r)
+            if c > 0 and mx > 0 and dPastBox.size() < 350
+                float rowLo = dBase + r * dRowSz
+                int   w     = math.max(1, int(math.round(c / mx * span * dvpPastW / 100.0)))
+                bool  inVA  = r >= pli and r <= phi
+                color bg    = f_rowCol(c, mx, inVA, r == ppi, math.max(0, dvpPastTr - 30))
+                dPastBox.push(box.new(dStart, rowLo + dRowSz, dStart + w, rowLo, border_width=0, bgcolor=bg))
+                used += 1
+    used
+
+if dNewDay and barstate.isconfirmed
+    int painted = f_paintDay()
+    if painted > 0
+        dPastSz.push(painted)
+    while dPastSz.size() > dvpPast
+        int old = dPastSz.shift()
+        for k = 1 to old
+            box.delete(dPastBox.shift())
+    dRowSz := f_dayRowSize()
+    dBase  := math.floor(low / dRowSz) * dRowSz
+    dStart := bar_index
+    dCnt   := array.new<float>(1, 0.0)
+
+if not na(dRowSz) and barstate.isconfirmed
+    float bv = nz(volume) > 0 ? volume : 1.0
+    while low < dBase and dCnt.size() < dvpRows
+        dCnt.unshift(0.0)
+        dBase := dBase - dRowSz
+    float top = dBase + dCnt.size() * dRowSz
+    while high > top and dCnt.size() < dvpRows
+        dCnt.push(0.0)
+        top := top + dRowSz
+    int iLoD = math.max(0, math.min(dCnt.size() - 1, int(math.floor((low - dBase) / dRowSz))))
+    int iHiD = math.max(0, math.min(dCnt.size() - 1, int(math.floor((high - dBase) / dRowSz))))
+    int iA = math.min(iLoD, iHiD)
+    int iB = math.max(iLoD, iHiD)
+    float share = bv / (iA == iB ? 1 : iB - iA + 1)
+    for r = iA to iB
+        dCnt.set(r, dCnt.get(r) + share)
+
+[dVALn, dPOCn, dVAHn, dPi, dLo, dHi] = f_vaLevels(dCnt, dBase, dRowSz)
+dPOC := dPOCn
+dVAL := dVALn
+dVAH := dVAHn
+
+// live render — last bar only, redrawn each update
+if dvpShow and barstate.islast and not na(dPOC) and dCnt.size() > 0 and dCnt.sum() > 0
+    while dLiveBox.size() > 0
+        box.delete(dLiveBox.shift())
+    line.delete(dPocLn)
+    line.delete(dValLn)
+    line.delete(dVahLn)
+    label.delete(dPocLb)
+    label.delete(dValLb)
+    label.delete(dVahLb)
+    int anchor = dvpSide == "Right" ? bar_index + dvpOffset : bar_index - dvpOffset
+    int far    = dvpSide == "Right" ? anchor + dvpWidth + 4 : anchor - dvpWidth - 4
+    int lnA    = math.min(nz(dStart, bar_index - 50), far)
+    int lnB    = math.max(nz(dStart, bar_index - 50), far)
+    float mxD  = dCnt.max()
+    for r = 0 to dCnt.size() - 1
+        float c = dCnt.get(r)
+        if c > 0 and mxD > 0 and dLiveBox.size() < 60
+            float rowLo = dBase + r * dRowSz
+            int   w     = math.max(1, int(math.round(c / mxD * dvpWidth)))
+            int   x1    = dvpSide == "Right" ? anchor : anchor - w
+            int   x2    = dvpSide == "Right" ? anchor + w : anchor
+            bool  inVA  = r >= dLo and r <= dHi
+            color bg    = f_rowCol(c, mxD, inVA, r == dPi, 0)
+            dLiveBox.push(box.new(x1, rowLo + dRowSz, x2, rowLo, border_width=0, bgcolor=bg))
+    if dvpLevels
+        dPocLn := line.new(lnA, dPOC, lnB, dPOC, color=color.new(C_GOLD, 20), width=1, style=line.style_solid)
+        dValLn := line.new(lnA, dVAL, lnB, dVAL, color=color.new(C_TEAL, 45), width=1, style=line.style_dotted)
+        dVahLn := line.new(lnA, dVAH, lnB, dVAH, color=color.new(C_TEAL, 45), width=1, style=line.style_dotted)
+        string lsty = dvpSide == "Right" ? label.style_label_left : label.style_label_right
+        dPocLb := label.new(far, dPOC, "POC", style=lsty, color=color.new(C_GOLD, 90), textcolor=C_GOLD, size=size.tiny)
+        dValLb := label.new(far, dVAL, "VAL", style=lsty, color=color.new(C_TEAL, 90), textcolor=C_TEAL, size=size.tiny)
+        dVahLb := label.new(far, dVAH, "VAH", style=lsty, color=color.new(C_TEAL, 90), textcolor=C_TEAL, size=size.tiny)
+
+//==================================================================================================
+//==================================================================================================
+f_drawDash() =>
+    string stageTxt = st == 3 ? "④ PULLBACK ✓" : st == 2 ? "③ BREAKOUT ✓" : st == 1 ? "② ACCUM ✓" : "① SCANNING"
+    color  stageCol = st == 3 ? C_BULL : st == 2 ? C_GOLD : st == 1 ? C_PURPLE : C_MUTED
+    string htfTxt   = not htfOn ? "OFF" : htfBias == 1 ? "BULLISH ▲" : htfBias == -1 ? "BEARISH ▼" : "NEUTRAL"
+    color  htfCol   = not htfOn ? C_MUTED : htfBias == 1 ? C_BULL : htfBias == -1 ? C_BEAR : C_MUTED
+    string accTxt   = st >= 1 and not na(accLo) ? str.tostring(accLo, format.mintick) + "–" + str.tostring(accHi, format.mintick) : "--"
+    string spocTxt  = st >= 2 and not na(vpPOC) ? str.tostring(vpPOC, format.mintick) + (dir == 1 ? " ▲" : " ▼") : "--"
+    color  spocCol  = st >= 2 ? C_GOLD : C_MUTED
+    string dpocTxt  = na(dPOC) ? "--" : str.tostring(dPOC, format.mintick)
+    string dvaTxt   = na(dVAL) ? "--" : str.tostring(dVAL, format.mintick) + "–" + str.tostring(dVAH, format.mintick)
+    float  tolNow   = st >= 2 ? pbTolPct / 100.0 * (accHi - accLo) : na
+    string pbTxt    = st == 3 ? "TOUCHED ✓" : st == 2 ? "WAIT " + str.tostring(bar_index - boBar) + "/" + str.tostring(pbWaitBars) : "--"
+    color  pbCol    = st == 3 ? C_BULL : st == 2 ? C_ORANGE : C_MUTED
+    string posTxt   = g_inTrade ? (entryDir == 1 ? "LONG ●" : "SHORT ●") : "FLAT"
+    color  posCol   = g_inTrade ? (entryDir == 1 ? C_BULL : C_BEAR) : C_MUTED
+    string tpTxt    = g_inTrade and not na(tpPx) ? str.tostring(tpPx, format.mintick) : "--"
+    string slTxt    = g_inTrade and not na(slPx) ? str.tostring(slPx, format.mintick) : "--"
+    bool   exCdLive = enableExitCd and not na(exitCdUntil) and bar_index < exitCdUntil
+    string cdTxt    = not killSw ? "OFF ⛔" : g_inTrade ? "IN TRADE" : isEOD ? "EOD ⛔" : exCdLive ? "CD " + str.tostring(exitCdUntil - bar_index) + "b ⏳" : bar_index - lastSigBar < cooldown ? "CD " + str.tostring(cooldown - (bar_index - lastSigBar)) + "b" : "READY ✅"
+    color  cdCol    = not killSw ? C_BEAR : g_inTrade ? C_GOLD : isEOD ? C_PURPLE : (exCdLive or bar_index - lastSigBar < cooldown) ? C_GOLD : C_BULL
+    int    tot      = wins + losses
+    float  wr       = tot > 0 ? wins * 100.0 / tot : 0.0
+    float  upnl     = g_inTrade ? (entryDir == 1 ? (close - entryPx) : (entryPx - close)) / entryPx * 100.0 : na
+    string upnlTxt  = na(upnl) ? "--" : (upnl >= 0 ? "+" : "") + str.tostring(upnl, "#.##") + "%"
+
+    var table dash = table.new(position.bottom_center, 11, 4, bgcolor=C_COL_BG, border_width=1, border_color=color.new(C_TEAL, 55))
+
+    // Row 0 — stripe header
+    for _c = 0 to 10
+        table.cell(dash, _c, 0, "", bgcolor=C_STRIPE, text_size=size.tiny)
+    table.cell(dash, 0, 0, " VP BREAKOUT CONTINUATION ", text_color=C_TEAL, bgcolor=C_HDR_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 10, 0, "  DASHBOARD ", text_color=C_GOLD, bgcolor=C_HDR_BG, text_size=size.small, text_font_family=font.family_monospace)
+
+    // Row 1 — headers
+    table.cell(dash, 0, 1, " ◈ STAGE ",      text_color=C_TEAL, bgcolor=C_HDR_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 1, 1, " ◈ HTF BIAS ",   text_color=C_TEAL, bgcolor=C_COL_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 2, 1, " ◈ ACCUM RANGE ",text_color=C_TEAL, bgcolor=C_COL_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 3, 1, " ◈ SETUP POC ",  text_color=C_TEAL, bgcolor=C_COL_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 4, 1, " ◈ DAY POC ",    text_color=C_TEAL, bgcolor=C_COL_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 5, 1, " ◈ DAY VALUE ",  text_color=C_TEAL, bgcolor=C_COL_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 6, 1, " ◈ PULLBACK ",   text_color=C_TEAL, bgcolor=C_COL_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 7, 1, " ◈ POSITION ",   text_color=C_TEAL, bgcolor=C_COL_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 8, 1, " ◈ TP / SL ",    text_color=C_TEAL, bgcolor=C_COL_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 9, 1, " ◈ RECORD ",     text_color=C_TEAL, bgcolor=C_COL_BG, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 10,1, " ◈ STATUS ",     text_color=C_TEAL, bgcolor=C_HDR_BG, text_size=size.small, text_font_family=font.family_monospace)
+
+    // Row 2 — values
+    table.cell(dash, 0, 2, " " + stageTxt, text_color=stageCol, bgcolor=C_HDR_BG,  text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 1, 2, " " + htfTxt,   text_color=htfCol,   bgcolor=C_COL_ALT, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 2, 2, " " + accTxt,   text_color=st >= 1 ? C_PURPLE : C_MUTED, bgcolor=C_COL_ALT, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 3, 2, " " + spocTxt,  text_color=spocCol,  bgcolor=C_COL_ALT, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 4, 2, " " + dpocTxt,  text_color=C_GOLD,   bgcolor=C_COL_ALT, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 5, 2, " " + dvaTxt,   text_color=C_TEAL,   bgcolor=C_COL_ALT, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 6, 2, " " + pbTxt,    text_color=pbCol,    bgcolor=C_COL_ALT, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 7, 2, " " + posTxt,   text_color=posCol,   bgcolor=C_COL_ALT, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 8, 2, " TP " + tpTxt, text_color=C_TEAL,   bgcolor=C_COL_ALT, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 9, 2, " " + str.tostring(wins) + "W " + str.tostring(losses) + "L " + str.tostring(wr, "#") + "%", text_color=wr >= 50 ? C_TEAL : C_ORANGE, bgcolor=C_COL_ALT, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(dash, 10,2, " " + cdTxt,    text_color=cdCol,    bgcolor=C_HDR_BG,  text_size=size.small, text_font_family=font.family_monospace)
+
+    // Row 3 — config
+    table.cell(dash, 0, 3, " ①Accum ②Break ③Pull ④Go", text_color=color.new(stageCol, 50), bgcolor=C_HDR_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 1, 3, " EMA " + str.tostring(htfLen) + " @ " + htfUse, text_color=C_MUTED, bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 2, 3, " ≤ " + str.tostring(accAtrMult, "#.#") + "×ATR " + (st == 1 ? str.tostring(bar_index - accStart) + "b" : ""), text_color=C_MUTED, bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 3, 3, " VA " + (st >= 2 and not na(vpVAL) ? str.tostring(vpVAL, format.mintick) + "–" + str.tostring(vpVAH, format.mintick) : "--"), text_color=C_MUTED, bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 4, 3, " rows " + str.tostring(dCnt.size()) + "/" + str.tostring(dvpRows), text_color=C_MUTED, bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 5, 3, " VA " + str.tostring(vpVaPct, "#") + "% · past " + str.tostring(dPastSz.size()), text_color=C_MUTED, bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 6, 3, " zone ±" + (na(tolNow) ? "--" : str.tostring(tolNow, format.mintick)), text_color=C_MUTED, bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 7, 3, " Bars " + (g_inTrade ? str.tostring(bar_index - entryBar) + "/" + str.tostring(maxBars) + "  " + upnlTxt : "--"), text_color=C_MUTED, bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 8, 3, " SL " + slTxt,        text_color=color.new(C_BEAR, 50), bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 9, 3, " last " + lastExitTxt, text_color=C_MUTED, bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    table.cell(dash, 10,3, " " + (tpSlMode == "Fixed %" ? "Fix " + str.tostring(tpPct) + "/" + str.tostring(slPct) : "ATR " + str.tostring(tpAtr, "#.#") + "/" + str.tostring(slAtr, "#.#")) + (enableWebhook ? " 🔗" : ""), text_color=C_MUTED, bgcolor=C_COL_BG, text_size=size.tiny, text_font_family=font.family_monospace)
+    0
+
+if showDash and barstate.islast
+    f_drawDash()
+
+//==================================================================================================
+// 6 · WEBHOOK ARBITER — the ONLY alert() call in the file; one payload per bar
+//==================================================================================================
+if (g_fireIntent != 0 or g_fireExit) and enableWebhook
+    string msg = g_fireExit ? buildExitPayload() : buildEntryPayload(g_fireIntent == 1 ? "buy" : "sell", entryPx, slPx, tpPx)
+    alert(msg, alert.freq_once_per_bar)   // entries only arm on confirmed bars, so once_per_bar == bar close for them
+    g_fireFiredCount += 1
+if g_fireIntent != 0
+    g_fireIntent := 0
+
+alertcondition(sigLong,  "Long Entry",  "VP Breakout long entry {{ticker}} @ {{close}}")
+alertcondition(sigShort, "Short Entry", "VP Breakout short entry {{ticker}} @ {{close}}")
+alertcondition(sigExit,  "Exit",        "VP Breakout exit {{ticker}} @ {{close}}")
+
+plot(vpPOC,  "POC",   display=display.none)
+plot(vpVAL,  "VAL",   display=display.none)
+plot(vpVAH,  "VAH",   display=display.none)
+plot(st,     "State", display=display.none)
+plot(g_inTrade ? entryDir : 0, "Position", display=display.none)

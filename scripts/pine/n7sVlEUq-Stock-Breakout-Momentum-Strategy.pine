@@ -1,0 +1,103 @@
+//@version=6
+strategy("Stock Breakout Momentum Strategy", overlay=true, initial_capital=10000, currency=currency.USD, default_qty_type=strategy.fixed, default_qty_value=1, commission_type=strategy.commission.percent, commission_value=0.05, slippage=2, pyramiding=0, process_orders_on_close=false)
+
+// ===================== INPUTS =====================
+int breakoutLength   = input.int(20, "Breakout Lookback (bars)", minval=1)
+int barsInTrade      = input.int(20, "Time-Based Exit (bars)", minval=1)
+int atrLength        = input.int(14, "ATR Length", minval=1)
+float atrMultiplier  = input.float(2.0, "ATR Trailing Stop Multiplier", minval=0.1)
+float accountRiskPct = input.float(100.0, "Percent of Equity to Allocate per Trade (%)", minval=1.0, maxval=500.0, tooltip="100% = use the full account for each trade (cash account). Values above 100% assume a margin account.")
+bool  allowShort     = input.bool(true, "Allow Short Entries", tooltip="Turn off if your broker/stock doesn't support shorting, to backtest long-only.")
+
+bool  useProfitTarget    = input.bool(true, "Use Profit Target", group="Profit Target")
+float profitTargetATRMult = input.float(3.0, "Profit Target ATR Multiplier", group="Profit Target")
+
+bool useTrendFilter      = input.bool(true, "Use Trend Filter", group="Filters")
+int  trendLength         = input.int(50, "Trend SMA Length", group="Filters")
+bool useVolumeFilter     = input.bool(true, "Use Volume Filter", group="Filters")
+int  volLength           = input.int(20, "Volume SMA Length", group="Filters")
+float volumeMultiplier   = input.float(1.2, "Volume Multiplier", group="Filters")
+
+// ===================== VARIABLES =====================
+var float longSL = na
+var float shortSL = na
+var float longTP = na
+var float shortTP = na
+var int entryBarIndex = na
+var bool justEntered = false
+
+// ===================== CALCULATIONS =====================
+float highestHigh = ta.highest(high, breakoutLength)
+float lowestLow = ta.lowest(low, breakoutLength)
+float atrValue = ta.atr(atrLength)
+float trendSMA = ta.sma(close, trendLength)
+float volSMA = ta.sma(volume, volLength)
+
+bool dataReady = not na(highestHigh[1]) and not na(lowestLow[1]) and not na(atrValue) and (not useTrendFilter or not na(trendSMA)) and (not useVolumeFilter or not na(volSMA))
+
+bool trendOKLong = not useTrendFilter or close > trendSMA
+bool trendOKShort = not useTrendFilter or close < trendSMA
+bool volOK = not useVolumeFilter or volume > volSMA * volumeMultiplier
+
+bool longBreakout = dataReady and barstate.isconfirmed and close > highestHigh[1] and trendOKLong and volOK
+bool shortBreakout = allowShort and dataReady and barstate.isconfirmed and close < lowestLow[1] and trendOKShort and volOK
+
+// ===================== SHARE SIZING =====================
+float availableEquity = strategy.equity * (accountRiskPct / 100.0)
+int sharesToTrade = close > 0 ? math.max(1, math.floor(availableEquity / close)) : 1
+
+// ===================== ENTRY =====================
+if longBreakout and strategy.position_size == 0
+    justEntered := true
+    entryBarIndex := bar_index
+    longSL := open - atrValue * atrMultiplier
+    longTP := useProfitTarget ? open + atrValue * profitTargetATRMult : na
+    strategy.entry("Long", strategy.long, qty=sharesToTrade)
+
+if shortBreakout and strategy.position_size == 0
+    justEntered := true
+    entryBarIndex := bar_index
+    shortSL := open + atrValue * atrMultiplier
+    shortTP := useProfitTarget ? open - atrValue * profitTargetATRMult : na
+    strategy.entry("Short", strategy.short, qty=sharesToTrade)
+
+// ===================== TRAILING STOP UPDATE =====================
+if strategy.position_size > 0
+    longSL := math.max(nz(longSL, open), close - atrValue * atrMultiplier)
+if strategy.position_size < 0
+    shortSL := math.min(nz(shortSL, open), close + atrValue * atrMultiplier)
+
+// ===================== EXIT LOGIC =====================
+bool timeExitLong = strategy.position_size > 0 and not na(entryBarIndex) and (bar_index - entryBarIndex) >= barsInTrade
+bool timeExitShort = strategy.position_size < 0 and not na(entryBarIndex) and (bar_index - entryBarIndex) >= barsInTrade
+
+if strategy.position_size > 0
+    if timeExitLong
+        strategy.close("Long", comment="Time Exit")
+    else
+        strategy.exit("Trail Exit Long", "Long", stop=longSL, limit=longTP)
+if strategy.position_size < 0
+    if timeExitShort
+        strategy.close("Short", comment="Time Exit")
+    else
+        strategy.exit("Trail Exit Short", "Short", stop=shortSL, limit=shortTP)
+
+// ===================== RESET BLOCK =====================
+if strategy.position_size == 0 and not justEntered
+    longSL := na
+    shortSL := na
+    longTP := na
+    shortTP := na
+    entryBarIndex := na
+
+// ===================== CLEAR LATCH =====================
+justEntered := false
+
+// ===================== PLOTS =====================
+plot(highestHigh, "20-Bar Highest High", color=color.green, linewidth=1)
+plot(lowestLow, "20-Bar Lowest Low", color=color.red, linewidth=1)
+plot(strategy.position_size > 0 ? longSL : na, "Long Trailing Stop", color=color.aqua, style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size < 0 ? shortSL : na, "Short Trailing Stop", color=color.orange, style=plot.style_linebr, linewidth=2)
+plot(trendSMA, "Trend SMA", color=color.yellow, linewidth=1)
+plot(strategy.position_size > 0 ? longTP : na, "Long Profit Target", color=color.blue, style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size < 0 ? shortTP : na, "Short Profit Target", color=color.blue, style=plot.style_linebr, linewidth=2)

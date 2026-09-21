@@ -1,0 +1,229 @@
+// © ITA Trading Tools - itamardrori_
+//@version=6
+// =============================================================================
+// Consolidation Ranges [ITA]
+//
+// Finding a sideways range is the easy half. Every tool in this category draws
+// the box and marks the bar that closed outside it, and then stops - which is
+// exactly where the trader's actual problem starts, because the single most
+// common complaint about trading ranges is that the breakout fails and price
+// comes straight back in.
+//
+// So this one keeps watching. After a breakout it waits a set number of bars.
+// If price closes back inside the range in that window the breakout is marked
+// Failed. If it stays outside, it is marked Held. The running count of both
+// sits in the corner.
+//
+// That count is the point. On a symbol where two thirds of breakouts fail, the
+// honest thing for a tool to do is say so rather than keep drawing arrows.
+// =============================================================================
+
+indicator("Consolidation Ranges [ITA]", overlay = true,
+     max_boxes_count = 100, max_labels_count = 200, max_lines_count = 100)
+
+// ─── INPUTS ──────────────────────────────────────────────────────────────────
+grpDetect = "Detection"
+len       = input.int(20, "Range Length (bars)", minval = 5, maxval = 200, group = grpDetect,
+     tooltip = "How many bars have to sit inside the range before it counts as a consolidation. Higher means fewer and more significant ranges.")
+// This compares the span of Range Length bars against the average range of ONE
+// bar, so the sensible multiple is larger than it first looks. Twenty bars of
+// genuinely quiet price still cover roughly four times a single bar's ATR. Set
+// at 1.5 the condition is never true and the indicator silently draws nothing.
+maxWidth  = input.float(4.0, "Max Width (x ATR)", minval = 0.5, maxval = 15.0, step = 0.5, group = grpDetect,
+     tooltip = "How tall the range is allowed to be, as a multiple of one bar's ATR. This is the span of the whole range against a single bar, so 4 is tight and 8 is loose. Nothing being drawn means this is too low - raise it until ranges appear, then lower it until only the clean ones remain.")
+confirmBars = input.int(5, "Bars To Confirm A Breakout", minval = 1, maxval = 50, group = grpDetect,
+     tooltip = "After price closes outside the range it has this many bars to stay out. Close back inside within the window and the breakout is marked Failed.")
+
+grpShow  = "Display"
+showBox      = input.bool(true, "Draw The Range Box", group = grpShow)
+showBreak    = input.bool(true, "Mark Breakouts", group = grpShow)
+showOutcome  = input.bool(true, "Mark Held and Failed", group = grpShow)
+showStats    = input.bool(true, "Show The Count", group = grpShow)
+statPos      = input.string("Top Right", "Count Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = grpShow)
+lblSizeStr   = input.string("Normal", "Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = grpShow)
+lblOffset    = input.float(0.8, "Label Offset (x ATR)", minval = 0.0, maxval = 5.0, step = 0.1, group = grpShow,
+     tooltip = "How far the labels sit away from the bar they belong to. At zero they sit on the price and the candles run through the text. Raise it if the labels still collide on your chart.")
+statSizeStr  = input.string("Normal", "Count Text Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = grpShow)
+
+sizeOf(string s) =>
+    r = size.normal
+    if s == "Tiny"
+        r := size.tiny
+    else if s == "Small"
+        r := size.small
+    else if s == "Large"
+        r := size.large
+    else if s == "Huge"
+        r := size.huge
+    r
+
+lblSize  = sizeOf(lblSizeStr)
+statSize = sizeOf(statSizeStr)
+
+grpCol = "Colors"
+rangeCol  = input.color(color.new(#2962ff, 78), "Range Fill", group = grpCol)
+borderCol = input.color(color.new(#787b86, 30), "Range Border", group = grpCol)
+upCol     = input.color(#089981, "Breakout Up", group = grpCol)
+dnCol     = input.color(#f23645, "Breakout Down", group = grpCol)
+heldCol   = input.color(#089981, "Held", group = grpCol)
+failCol   = input.color(#ff9800, "Failed", group = grpCol)
+
+// ─── DETECTION ───────────────────────────────────────────────────────────────
+atr   = ta.atr(14)
+hiN   = ta.highest(high, len)
+loN   = ta.lowest(low, len)
+tight = (hiN - loN) <= atr * maxWidth
+
+var bool  inRange  = false
+var float rTop     = na
+var float rBot     = na
+var int   rStart   = na
+var box   rBox     = na
+
+// A breakout under observation. Only one is tracked at a time, which is not a
+// limitation in practice - a new range cannot form while price is still
+// leaving the last one.
+var bool  pending  = false
+var int   pendBar  = na
+var int   pendDir  = 0
+var float pendTop  = na
+var float pendBot  = na
+
+var int heldCount = 0
+var int failCount = 0
+
+brokeUp = false
+brokeDn = false
+
+if not inRange and tight and not pending
+    inRange := true
+    rStart  := bar_index - len + 1
+    rTop    := hiN
+    rBot    := loN
+    if showBox
+        rBox := box.new(rStart, rTop, bar_index, rBot, bgcolor = rangeCol, border_color = borderCol, border_width = 1)
+
+else if inRange
+    brokeUp := close > rTop
+    brokeDn := close < rBot
+    if brokeUp or brokeDn
+        inRange := false
+        pending := true
+        pendBar := bar_index
+        pendTop := rTop
+        pendBot := rBot
+        pendDir := brokeUp ? 1 : -1
+        if not na(rBox)
+            box.set_right(rBox, bar_index)
+    else
+        nTop = math.max(rTop, high)
+        nBot = math.min(rBot, low)
+        // Only widen while the range is still a range. Without this a slow
+        // drift never breaks out, it just drags the box along with it.
+        if (nTop - nBot) <= atr * maxWidth
+            rTop := nTop
+            rBot := nBot
+            if not na(rBox)
+                box.set_top(rBox, rTop)
+                box.set_bottom(rBox, rBot)
+                box.set_right(rBox, bar_index)
+
+// Labels are pushed clear of the bar rather than sitting on the close. Placed
+// at the price itself the candles run straight through the text, which is
+// unreadable on any chart busy enough to be worth looking at.
+gap = atr * lblOffset
+
+if showBreak and brokeUp
+    label.new(bar_index, high + gap, "Break ↑", style = label.style_label_down, color = color.new(upCol, 10), textcolor = color.white, size = lblSize)
+if showBreak and brokeDn
+    label.new(bar_index, low - gap, "Break ↓", style = label.style_label_up, color = color.new(dnCol, 10), textcolor = color.white, size = lblSize)
+
+// ─── OUTCOME ─────────────────────────────────────────────────────────────────
+// Failed means price closed back inside the range it just left. Held means it
+// stayed outside for the whole confirmation window. Nothing here predicts
+// which one is coming - it reports what happened.
+justFailed = false
+justHeld   = false
+
+if pending
+    backInside = pendDir == 1 ? close < pendTop : close > pendBot
+    elapsed    = bar_index - pendBar
+    if backInside
+        pending    := false
+        failCount  += 1
+        justFailed := true
+    else if elapsed >= confirmBars
+        pending  := false
+        heldCount += 1
+        justHeld := true
+
+// The outcome label goes on the side the breakout went, so it never lands in
+// the middle of the bars it is describing.
+//
+// It also sits further out than the Break label rather than at the same
+// height. An outcome lands within a few bars of the break that produced it, and
+// on neighbouring bars with similar highs two labels at one height overlap and
+// hide each other. Two lanes, so a break and its outcome are always both
+// readable.
+outUp    = pendDir == 1
+outGap   = gap * 2.6
+outY     = outUp ? high + outGap : low - outGap
+outStyle = outUp ? label.style_label_down : label.style_label_up
+
+if showOutcome and justFailed
+    label.new(bar_index, outY, "Failed", style = outStyle, color = color.new(failCol, 10), textcolor = color.white, size = lblSize)
+if showOutcome and justHeld
+    label.new(bar_index, outY, "Held", style = outStyle, color = color.new(heldCol, 10), textcolor = color.white, size = lblSize)
+
+// ─── COUNT ───────────────────────────────────────────────────────────────────
+posOf(string s) =>
+    r = position.top_right
+    if s == "Top Left"
+        r := position.top_left
+    else if s == "Bottom Right"
+        r := position.bottom_right
+    else if s == "Bottom Left"
+        r := position.bottom_left
+    r
+
+var table stats = na
+
+if showStats and barstate.islast
+    total = heldCount + failCount
+    pct   = total > 0 ? heldCount / total * 100 : 0.0
+    if na(stats)
+        stats := table.new(posOf(statPos), 2, 4, border_width = 1)
+    table.cell(stats, 0, 0, "BREAKOUTS", text_color = #d1a44a, text_size = statSize)
+    table.cell(stats, 1, 0, syminfo.ticker + " " + timeframe.period, text_color = #d1a44a, text_size = statSize)
+    table.cell(stats, 0, 1, "Held", text_color = heldCol, text_size = statSize)
+    table.cell(stats, 1, 1, str.tostring(heldCount), text_color = heldCol, text_size = statSize)
+    table.cell(stats, 0, 2, "Failed", text_color = failCol, text_size = statSize)
+    table.cell(stats, 1, 2, str.tostring(failCount), text_color = failCol, text_size = statSize)
+    table.cell(stats, 0, 3, "Held rate", text_color = color.white, text_size = statSize)
+    table.cell(stats, 1, 3, total > 0 ? str.tostring(pct, "#") + "%  (" + str.tostring(heldCount) + "/" + str.tostring(total) + ")" : "-", text_color = color.white, text_size = statSize)
+
+// ─── GUARD: NOTHING FOUND ────────────────────────────────────────────────────
+// An empty chart is ambiguous. It either means this symbol never consolidates
+// or the settings are too strict, and the user cannot tell which. Say which.
+var int rangesFound = 0
+if not inRange[1] and inRange
+    rangesFound += 1
+
+var label hintLbl = na
+
+if barstate.islast and rangesFound == 0
+    msg = "No consolidation found with these settings. Raise Max Width (currently " + str.tostring(maxWidth) + ") or lower Range Length (currently " + str.tostring(len) + ")."
+    if na(hintLbl)
+        hintLbl := label.new(bar_index, high + gap, msg, style = label.style_label_down, color = color.new(#ff9800, 15), textcolor = color.white, size = lblSize)
+    else
+        label.set_xy(hintLbl, bar_index, high + gap)
+        label.set_text(hintLbl, msg)
+else if not na(hintLbl)
+    label.delete(hintLbl)
+    hintLbl := na
+
+// ─── ALERTS ──────────────────────────────────────────────────────────────────
+alertcondition(brokeUp,    "Range Broken Up",     "Price closed above the consolidation range")
+alertcondition(brokeDn,    "Range Broken Down",   "Price closed below the consolidation range")
+alertcondition(justFailed, "Breakout Failed",     "Price closed back inside the range it just left")
+alertcondition(justHeld,   "Breakout Held",       "The breakout stayed outside the range for the confirmation window")

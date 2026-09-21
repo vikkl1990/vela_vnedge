@@ -1,0 +1,421 @@
+//@version=6
+indicator("TBR Stats+ (M1D)", shorttitle = "TBR Stats+ (M1D)", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+
+// Time-based range statistics.
+// A fixed New York window opens at a known price. Once price closes a set distance away from
+// that open, the window has "broken" in one direction. Every past session that broke the SAME
+// way is measured, and the median / 75th / 90th percentile of two distances are drawn:
+//   Ext - how far past the open price travelled in the break direction before the window closed
+//   Rev - how far back through the open it travelled after the break (0 = never came back)
+// The sample is built on the Sample timeframe, so a 1-minute chart draws from months of sessions
+// rather than the few days it has loaded. It is conditional on direction and built only from
+// sessions already closed, so the current session never feeds its own boxes. TBR Open and the
+// break itself are always read on the chart's own candles.
+
+// == INPUTS ==
+const string G_WIN   = "Window"
+const string G_STATS = "Statistics"
+const string G_DRAW  = "Drawing"
+const string G_CON   = "Console"
+
+string winSess   = input.session("0800-1200", "Window (New York)", group = G_WIN,
+     tooltip = "The window is read in New York time. Its first bar's open is the TBR Open; the window's last close decides whether a break held.")
+bool   useArchive = input.bool(true, "Use the 5-year archive on NQ / MNQ", group = G_STATS,
+     tooltip = "On NQ and MNQ, with the default window, trigger and SD lookback, the boxes and held rates come from five years of 1-minute sessions instead of the chart's loaded history. Box sizes still scale with the live SD. Any other symbol or setting uses the chart's own sample.")
+string sampleTf  = input.timeframe("5", "Sample timeframe", group = G_STATS,
+     tooltip = "The past sessions are measured on this timeframe. A chart at or above it uses its own candles instead. Lower gives finer break timing, higher gives more sessions.")
+float  trigMult  = input.float(0.25, "Break trigger (x SD)", minval = 0.05, maxval = 3.0, step = 0.05, group = G_STATS,
+     tooltip = "A break is a bar CLOSE beyond TBR Open +/- this many standard deviations of past windows' open-to-close change.")
+int    sdLen     = input.int(20, "SD lookback (sessions)", minval = 5, maxval = 250, group = G_STATS)
+int    sampleMax = input.int(250, "Sample cap per side (sessions)", minval = 20, maxval = 1000, group = G_STATS)
+int    minSample = input.int(15, "Minimum sample to draw", minval = 5, maxval = 200, group = G_STATS,
+     tooltip = "Boxes stay hidden until at least this many sessions broke the same way. Fewer than this and a percentile is noise.")
+string heldMode  = input.string("Closed past open", "A break held when the window", options = ["Closed past open", "Closed past trigger"], group = G_STATS,
+     tooltip = "Closed past open: the window's last close is on the break side of TBR Open. Closed past trigger: it is beyond the break line itself, the stricter reading.")
+string pctLabels = input.string("One caption per box", "Percentile labels", options = ["One caption per box", "Every edge"], group = G_DRAW,
+     tooltip = "One caption per box names the box and lists its P50 / P75 / P90 prices in one block. Every edge prints a label at each of the three prices.")
+int    showN     = input.int(5, "Sessions kept on chart", minval = 1, maxval = 40, group = G_DRAW)
+bool   showPreview = input.bool(true, "Show both sides before a break", group = G_DRAW,
+     tooltip = "Until the window breaks, each side's extension box is drawn faintly. On the break the faint pair is replaced by the break side's Ext and Rev boxes.")
+int    runwayBars = input.int(0, "Right offset (bars)", minval = 0, maxval = 100, group = G_DRAW,
+     tooltip = "How far past the window's last bar the drawings and their names reach. 0 keeps everything inside the window.")
+string labelSide = input.string("Left", "Label side", options = ["Left", "Right"], group = G_DRAW,
+     tooltip = "Where the Ext and Rev box names sit. Left: before the window opens, clear of the session's candles. Right: beside the window's right edge. The TBR Open name always sits on the right.")
+string labelSize = input.string("small", "Text size", options = ["tiny", "small", "normal", "large"], group = G_DRAW)
+bool   showCon   = input.bool(true, "Show console", group = G_CON)
+string conPos    = input.string("Top right", "Position", options = ["Top right", "Bottom right", "Top left", "Bottom left"], group = G_CON)
+
+// == CONSTANTS ==
+const color  C_BULL = #7246CE
+const color  C_BEAR = #DB1D9C
+const color  C_INK  = #000000
+const string TZ     = "America/New_York"
+
+//@function Resolves the text-size input.
+//@param s (string) The input value
+//@returns (string) A size.* constant
+f_lblSize(string s) =>
+    switch s
+        "tiny"  => size.tiny
+        "small" => size.small
+        "large" => size.large
+        =>         size.normal
+
+//@function Resolves the console position input.
+//@param s (string) The input value
+//@returns (string) A position.* constant
+f_pos(string s) =>
+    switch s
+        "Bottom right" => position.bottom_right
+        "Top left"     => position.top_left
+        "Bottom left"  => position.bottom_left
+        =>                position.top_right
+
+string LBL_SZ    = f_lblSize(labelSize)
+bool   LBL_LEFT  = labelSide == "Left"
+int    msPerBar  = timeframe.in_seconds(timeframe.period) * 1000
+bool   TF_OK     = timeframe.isintraday and timeframe.in_seconds(timeframe.period) <= 3600
+// A request below the chart's own timeframe cannot rebuild the sessions, so the chart's candles
+// are used whenever the chart is already at or above the sample timeframe.
+string SAMPLE_TF = timeframe.in_seconds(sampleTf) > timeframe.in_seconds(timeframe.period) ? sampleTf : timeframe.period
+
+// == STATISTICS ENGINE (runs on the sample timeframe) ==
+
+//@function Percentile of a sample, na when the sample is empty.
+//@param a (array<float>) Sample
+//@param p (float) Percentile, 0-100
+//@returns (float) The percentile or na
+f_pct(array<float> a, float p) =>
+    a.size() == 0 ? float(na) : a.percentile_linear_interpolation(p)
+
+//@function Share of 1s in a held/failed record, na when empty.
+//@param a (array<int>) 1 = held, 0 = failed
+//@returns (float) 0-1 or na
+f_share(array<int> a) =>
+    a.size() == 0 ? float(na) : float(a.sum()) / a.size()
+
+//@function Files every closed window into a direction-conditional sample and reports its percentiles.
+//@returns ([float, ...]) Trigger distance, the 12 percentile distances, counts and held shares
+f_engine() =>
+    var array<float> changes = array.new<float>()
+    var array<float> upExt   = array.new<float>()
+    var array<float> upRev   = array.new<float>()
+    var array<int>   upHeld  = array.new<int>()
+    var array<float> dnExt   = array.new<float>()
+    var array<float> dnRev   = array.new<float>()
+    var array<int>   dnHeld  = array.new<int>()
+    var int   noBreak = 0
+    var bool  wasIn   = false
+    var float wOpen   = na
+    var float wTrig   = na
+    var float wClose  = na
+    var float aHi     = na
+    var float aLo     = na
+    var int   dir     = 0
+
+    // No barstate.isconfirmed gate here: its value inside request.security is undefined. Every
+    // historical bar is closed, and on the live bar the var rollback discards unconfirmed ticks.
+    bool inWin = not na(time(timeframe.period, winSess, TZ))
+    if wasIn and not inWin and not na(wOpen)
+        changes.push(wClose - wOpen)
+        while changes.size() > sdLen
+            changes.shift()
+        float need = heldMode == "Closed past trigger" ? nz(wTrig) : 0.0
+        if dir == 1
+            upExt.push(aHi - wOpen)
+            upRev.push(math.max(0.0, wOpen - aLo))
+            upHeld.push(wClose - wOpen > need ? 1 : 0)
+        else if dir == -1
+            dnExt.push(wOpen - aLo)
+            dnRev.push(math.max(0.0, aHi - wOpen))
+            dnHeld.push(wOpen - wClose > need ? 1 : 0)
+        else
+            noBreak += 1
+        while upExt.size() > sampleMax
+            upExt.shift()
+            upRev.shift()
+            upHeld.shift()
+        while dnExt.size() > sampleMax
+            dnExt.shift()
+            dnRev.shift()
+            dnHeld.shift()
+    if inWin and not wasIn
+        wOpen := open
+        wTrig := changes.size() >= 5 ? trigMult * changes.stdev() : na
+        dir   := 0
+        aHi   := na
+        aLo   := na
+    if inWin and not na(wOpen)
+        wClose := close
+        if dir == 0 and not na(wTrig)
+            if close > wOpen + wTrig
+                dir := 1
+                aHi := high
+                aLo := close
+            else if close < wOpen - wTrig
+                dir := -1
+                aLo := low
+                aHi := close
+        else if dir != 0
+            aHi := math.max(aHi, high)
+            aLo := math.min(aLo, low)
+    wasIn := inWin
+
+    float trigNow = changes.size() >= 5 ? trigMult * changes.stdev() : na
+    [trigNow, f_pct(upExt, 50), f_pct(upExt, 75), f_pct(upExt, 90), f_pct(upRev, 50), f_pct(upRev, 75), f_pct(upRev, 90), f_pct(dnExt, 50), f_pct(dnExt, 75), f_pct(dnExt, 90), f_pct(dnRev, 50), f_pct(dnRev, 75), f_pct(dnRev, 90), upExt.size(), dnExt.size(), f_share(upHeld), f_share(dnHeld), noBreak]
+
+[eTrig, cUE50, cUE75, cUE90, cUR50, cUR75, cUR90, cDE50, cDE75, cDE90, cDR50, cDR75, cDR90, cNUp, cNDn, cHUp, cHDn, cNNo] = request.security(syminfo.tickerid, SAMPLE_TF, f_engine())
+
+// == ARCHIVE (NQ / MNQ) ==
+// Five years of MNQ 1-minute bars, October 2021 to September 2026, 08:00-12:00 New York, 0.25 SD
+// trigger, 20-session SD, same rules as below. Distances are in SD units and scale with the live SD, so a
+// 2021 range does not stand in for a 2026 one. They only describe these exact settings, so any
+// other window, trigger or lookback falls back to the chart's own sample.
+const int    ARC_UP_N = 614
+const int    ARC_DN_N = 643
+const int    ARC_NO_N = 12
+const float  ARC_UP_E50 = 0.9225
+const float  ARC_UP_E75 = 1.4414
+const float  ARC_UP_E90 = 1.8485
+const float  ARC_UP_R50 = 0.3328
+const float  ARC_UP_R75 = 0.8415
+const float  ARC_UP_R90 = 1.4998
+const float  ARC_UP_HELD_OPEN = 0.6678
+const float  ARC_UP_HELD_TRIG = 0.5814
+const float  ARC_DN_E50 = 0.9233
+const float  ARC_DN_E75 = 1.4736
+const float  ARC_DN_E90 = 2.1412
+const float  ARC_DN_R50 = 0.2938
+const float  ARC_DN_R75 = 0.6982
+const float  ARC_DN_R90 = 1.215
+const float  ARC_DN_HELD_OPEN = 0.6221
+const float  ARC_DN_HELD_TRIG = 0.4914
+const string ARC_SPAN = "2021-2026"
+
+bool  ARC_OK = useArchive and (syminfo.root == "NQ" or syminfo.root == "MNQ") and winSess == "0800-1200" and trigMult == 0.25 and sdLen == 20
+float eSD    = na(eTrig) ? na : eTrig / trigMult
+bool  strict = heldMode == "Closed past trigger"
+
+float uE50 = ARC_OK ? ARC_UP_E50 * eSD : cUE50
+float uE75 = ARC_OK ? ARC_UP_E75 * eSD : cUE75
+float uE90 = ARC_OK ? ARC_UP_E90 * eSD : cUE90
+float uR50 = ARC_OK ? ARC_UP_R50 * eSD : cUR50
+float uR75 = ARC_OK ? ARC_UP_R75 * eSD : cUR75
+float uR90 = ARC_OK ? ARC_UP_R90 * eSD : cUR90
+float dE50 = ARC_OK ? ARC_DN_E50 * eSD : cDE50
+float dE75 = ARC_OK ? ARC_DN_E75 * eSD : cDE75
+float dE90 = ARC_OK ? ARC_DN_E90 * eSD : cDE90
+float dR50 = ARC_OK ? ARC_DN_R50 * eSD : cDR50
+float dR75 = ARC_OK ? ARC_DN_R75 * eSD : cDR75
+float dR90 = ARC_OK ? ARC_DN_R90 * eSD : cDR90
+int   nUp  = ARC_OK ? ARC_UP_N : cNUp
+int   nDn  = ARC_OK ? ARC_DN_N : cNDn
+int   nNo  = ARC_OK ? ARC_NO_N : cNNo
+float hUp  = ARC_OK ? (strict ? ARC_UP_HELD_TRIG : ARC_UP_HELD_OPEN) : cHUp
+float hDn  = ARC_OK ? (strict ? ARC_DN_HELD_TRIG : ARC_DN_HELD_OPEN) : cHDn
+
+// == DRAWING STORE ==
+type SessionDraw
+    array<line>  lines
+    array<box>   boxes
+    array<label> labels
+    array<box>   pBoxes
+    array<label> pLabels
+    array<label> rLabels
+
+//@function Deletes the faint pre-break boxes and their names.
+//@param d (SessionDraw) The session's store
+//@returns (bool) true
+f_clearPreview(SessionDraw d) =>
+    for bx in d.pBoxes
+        box.delete(bx)
+    for lb in d.pLabels
+        label.delete(lb)
+    d.pBoxes.clear()
+    d.pLabels.clear()
+    true
+
+//@function Deletes every object a session drew.
+//@param d (SessionDraw) The session's store
+//@returns (bool) true
+f_kill(SessionDraw d) =>
+    for ln in d.lines
+        line.delete(ln)
+    for bx in d.boxes
+        box.delete(bx)
+    for lb in d.labels
+        label.delete(lb)
+    for lb in d.rLabels
+        label.delete(lb)
+    f_clearPreview(d)
+
+//@function Moves every right edge of a session's drawings to one x.
+//@param d (SessionDraw) The session's store
+//@param x (int) Bar time of the right edge
+//@returns (bool) true
+f_extend(SessionDraw d, int x) =>
+    for ln in d.lines
+        line.set_x2(ln, x)
+    for bx in d.boxes
+        box.set_right(bx, x)
+    for bx in d.pBoxes
+        box.set_right(bx, x)
+    for lb in d.rLabels
+        label.set_x(lb, x)
+    if not LBL_LEFT
+        for lb in d.labels
+            label.set_x(lb, x)
+        for lb in d.pLabels
+            label.set_x(lb, x)
+    true
+
+//@function A level label: transparent callout beside the window's left or right edge.
+//@param xLeft (int) Bar time of the window's left edge
+//@param xRight (int) Bar time of the window's right edge
+//@param y (float) Price
+//@param txt (string) Text
+//@param left (bool) True sits the name before the window's left edge
+//@returns (label) The label
+f_lbl(int xLeft, int xRight, float y, string txt, bool left) =>
+    label lb = label.new(left ? xLeft : xRight, y, txt, xloc = xloc.bar_time,
+         style = left ? label.style_label_right : label.style_label_left,
+         color = color.new(#FFFFFF, 100), textcolor = C_INK, size = LBL_SZ,
+         textalign = left ? text.align_right : text.align_left)
+    label.set_text_font_family(lb, font.family_monospace)
+    lb
+
+//@function Draws one percentile band: median-75th heavy, 75th-90th light, prices labelled.
+//@param bxs (array<box>) Box store to add to
+//@param lbs (array<label>) Label store to add to
+//@param base (float) TBR Open
+//@param sgn (int) +1 draws above the open, -1 below
+//@param d50 (float) Median distance from the open
+//@param d75 (float) 75th percentile distance
+//@param d90 (float) 90th percentile distance
+//@param col (color) Band colour
+//@param tag (string) Label prefix
+//@param x0 (int) Left edge bar time
+//@param x1 (int) Right edge bar time
+//@param faint (bool) Pre-break preview weight
+//@returns (bool) true
+f_band(array<box> bxs, array<label> lbs, float base, int sgn, float d50, float d75, float d90, color col, string tag, int x0, int x1, bool faint) =>
+    float y50 = base + sgn * d50
+    float y75 = base + sgn * d75
+    float y90 = base + sgn * d90
+    color edge = faint ? color.new(col, 60) : col
+    bxs.push(box.new(x0, math.max(y50, y75), x1, math.min(y50, y75), xloc = xloc.bar_time,
+         border_color = edge, border_width = 1, bgcolor = color.new(col, faint ? 90 : 80)))
+    bxs.push(box.new(x0, math.max(y75, y90), x1, math.min(y75, y90), xloc = xloc.bar_time,
+         border_color = edge, border_width = 1, bgcolor = color.new(col, faint ? 96 : 92)))
+    if pctLabels == "Every edge"
+        lbs.push(f_lbl(x0, x1, y50, tag + " P50", LBL_LEFT))
+        lbs.push(f_lbl(x0, x1, y75, tag + " P75", LBL_LEFT))
+        lbs.push(f_lbl(x0, x1, y90, tag + " P90", LBL_LEFT))
+    else
+        // Listed in chart order: the P90 row sits on top when the box is above the open.
+        string r50 = "P50 " + str.tostring(y50, format.mintick)
+        string r75 = "P75 " + str.tostring(y75, format.mintick)
+        string r90 = "P90 " + str.tostring(y90, format.mintick)
+        string rows = sgn > 0 ? r90 + "\n" + r75 + "\n" + r50 : r50 + "\n" + r75 + "\n" + r90
+        lbs.push(f_lbl(x0, x1, math.avg(y50, y90), tag + "\n" + rows, LBL_LEFT))
+    true
+
+//@function Held share as a percentage string.
+//@param s (float) 0-1 or na
+//@returns (string) "62%" or a dash
+f_rate(float s) =>
+    na(s) ? "-" : str.tostring(100.0 * s, "#") + "%"
+
+// == CHART SESSION ==
+var float sOpen    = na
+var int   sStart   = na
+var float sTrig    = na
+//@variable 0 no break yet, +1 broke up, -1 broke down
+var int   breakDir = 0
+var bool  wasIn    = false
+var SessionDraw        cur   = na
+var array<SessionDraw> drawn = array.new<SessionDraw>()
+
+bool inWin   = TF_OK and not na(time(timeframe.period, winSess, TZ))
+bool upBreak = false
+bool dnBreak = false
+
+if barstate.isconfirmed
+    int x1 = time + runwayBars * msPerBar
+
+    // -- the window just opened
+    if inWin and not wasIn
+        sOpen    := open
+        sStart   := time
+        sTrig    := eTrig
+        breakDir := 0
+        cur      := SessionDraw.new(array.new<line>(), array.new<box>(), array.new<label>(), array.new<box>(), array.new<label>(), array.new<label>())
+        drawn.push(cur)
+        while drawn.size() > showN
+            f_kill(drawn.shift())
+        cur.lines.push(line.new(time, sOpen, x1, sOpen, xloc = xloc.bar_time, color = C_INK, width = 1, style = line.style_solid))
+        // One name for the open and both trigger lines: they sit a few points apart, and three
+        // labels there always overlap. The dotted lines' colour already says which side is which.
+        string openTxt = na(sTrig) ? "TBR Open" : "TBR Open\n±" + str.tostring(trigMult) + " SD"
+        cur.rLabels.push(f_lbl(time, x1, sOpen, openTxt, false))
+        if not na(sTrig)
+            cur.lines.push(line.new(time, sOpen + sTrig, x1, sOpen + sTrig, xloc = xloc.bar_time, color = C_BULL, width = 1, style = line.style_dotted))
+            cur.lines.push(line.new(time, sOpen - sTrig, x1, sOpen - sTrig, xloc = xloc.bar_time, color = C_BEAR, width = 1, style = line.style_dotted))
+            if showPreview and nUp >= minSample
+                f_band(cur.pBoxes, cur.pLabels, sOpen, 1, uE50, uE75, uE90, C_BULL, "Up Ext", time, x1, true)
+            if showPreview and nDn >= minSample
+                f_band(cur.pBoxes, cur.pLabels, sOpen, -1, dE50, dE75, dE90, C_BEAR, "Down Ext", time, x1, true)
+
+    // -- inside the window
+    if inWin and not na(sOpen)
+        if breakDir == 0 and not na(sTrig)
+            if close > sOpen + sTrig
+                breakDir := 1
+                upBreak  := true
+                f_clearPreview(cur)
+                if nUp >= minSample
+                    f_band(cur.boxes, cur.labels, sOpen, 1, uE50, uE75, uE90, C_BULL, "Ext", sStart, x1, false)
+                    f_band(cur.boxes, cur.labels, sOpen, -1, uR50, uR75, uR90, C_BEAR, "Rev", sStart, x1, false)
+            else if close < sOpen - sTrig
+                breakDir := -1
+                dnBreak  := true
+                f_clearPreview(cur)
+                if nDn >= minSample
+                    f_band(cur.boxes, cur.labels, sOpen, -1, dE50, dE75, dE90, C_BEAR, "Ext", sStart, x1, false)
+                    f_band(cur.boxes, cur.labels, sOpen, 1, dR50, dR75, dR90, C_BULL, "Rev", sStart, x1, false)
+        f_extend(cur, x1)
+
+    wasIn := inWin
+
+// == ALERTS ==
+alertcondition(upBreak, "TBR break up", "TBR break up on {{ticker}}")
+alertcondition(dnBreak, "TBR break down", "TBR break down on {{ticker}}")
+
+// == CONSOLE ==
+//@function Writes one name/value row in the house table style.
+//@param t (table) The console
+//@param r (int) Row
+//@param name (string) Left cell
+//@param val (string) Right cell
+//@returns (bool) true
+f_row(table t, int r, string name, string val) =>
+    table.cell(t, 0, r, " " + name + " ", text_color = C_INK, bgcolor = #FFFFFF, text_size = LBL_SZ,
+         text_halign = text.align_left, text_font_family = font.family_monospace, text_formatting = text.format_italic)
+    table.cell(t, 1, r, " " + val + " ", text_color = C_INK, bgcolor = #FFFFFF, text_size = LBL_SZ,
+         text_halign = text.align_right, text_font_family = font.family_monospace, text_formatting = text.format_bold)
+    true
+
+var table con = na
+if showCon and barstate.islast
+    if na(con)
+        con := table.new(f_pos(conPos), 2, 7, bgcolor = #FFFFFF, frame_color = C_INK, frame_width = 1, border_color = C_INK, border_width = 1)
+        table.merge_cells(con, 0, 0, 1, 0)
+    table.cell(con, 0, 0, " M1D · TBR Stats+ ", text_color = C_INK, bgcolor = color.new(#cd82ff, 49), text_size = LBL_SZ,
+         text_halign = text.align_center, text_font_family = font.family_monospace)
+    string state = not TF_OK ? "1m-60m charts only" : na(sOpen) ? "waiting for a window" : breakDir == 1 ? "broke up" : breakDir == -1 ? "broke down" : inWin ? "no break yet" : "no break"
+    f_row(con, 1, inWin ? "This window" : "Last window", state)
+    f_row(con, 2, "Up breaks", str.tostring(nUp) + " · held " + f_rate(hUp))
+    f_row(con, 3, "Down breaks", str.tostring(nDn) + " · held " + f_rate(hDn))
+    f_row(con, 4, "No break", str.tostring(nNo))
+    f_row(con, 5, "Trigger", na(sTrig) ? "building sample" : str.tostring(sTrig, format.mintick) + " pts")
+    f_row(con, 6, "Sample from", ARC_OK ? "MNQ 1m " + ARC_SPAN : timeframe.in_seconds(SAMPLE_TF) >= 60 ? str.tostring(timeframe.in_seconds(SAMPLE_TF) / 60, "#") + "m candles" : SAMPLE_TF)

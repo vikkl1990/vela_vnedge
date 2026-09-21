@@ -1,0 +1,553 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+// Linear Regression Channel + Visible Range Volume Profile
+// "LR Channel VRVP v1"
+//
+// A multi-factor overlay that combines:
+//   • Linear-Regression smoothed candles with doji detection
+//   • Static mean channel (SMA ± 2σ) with PNR-symmetric bands
+//   • Bollinger %B oscillator for zone shading
+//   • Visible-Range Volume Profile with POC, 68.2% VA (68.2% Value Area / ±1σ analogy) and
+//     95.45% VA (95.45% Extended Value Area / ±2σ analogy), split by up/down volume
+//   • Hull-PPO percentile rank, DMI/ADX trend filter, KDJ momentum
+//   • Auto-merging pivot Support/Resistance levels
+//   • Optional extreme-oscillator candle recolor when price closes
+//     outside both the PNR band and the Bollinger band
+//
+// NOTES
+//   • Volume Profile recomputes on each realtime tick and reflects the
+//     currently visible chart range.
+//   • Drawing limits: 500 boxes / 500 lines / 500 labels.
+// ═══════════════════════════════════════════════════════════════════════════
+indicator("Linear Regression Channel Visible Range Volume Profile", "LR Channel VRVP v1",
+     overlay=true, max_bars_back=1000,
+     max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ═══════════════════════════════════════════════════════════════
+// INPUTS
+// ═══════════════════════════════════════════════════════════════
+linRegLength   = input.int(20, "Linear Regression Period", 1, 350, group="Linear Regression Candles")
+dojiThreshold  = input.float(0.08, "LinReg Doji Sensitivity", step=0.01, group="Linear Regression Candles",
+     tooltip="Body/range ratio below which a candle is treated as a doji")
+channelLength  = input.int(50, "Channel Sample Size", 10, 500, group="Static Mean Channel")
+
+// ═══════════════════════════════════════════════════════════════
+// EXTREME OSCILLATOR CANDLE COLOR
+// ═══════════════════════════════════════════════════════════════
+grp_osc = "Extreme Oscillator Candle Color"
+oscExtremeColor  = input.color(#00E5FF, "Candle Color When Outside Both Channels", group=grp_osc)
+oscExtremeEnable = input.bool(true, "Enable Extreme Color Override", group=grp_osc,
+     tooltip="When BB%B is above 1 and RSI > OB and price closes above the PNR upper band, OR BB%B is below 0 and RSI < OS and price closes below the PNR lower band, candles switch to this color")
+
+// ═══════════════════════════════════════════════════════════════
+// LINEAR REGRESSION CANDLES
+// ═══════════════════════════════════════════════════════════════
+lo     = ta.linreg(open,  linRegLength, 0)
+lh     = ta.linreg(high,  linRegLength, 0)
+llow   = ta.linreg(low,   linRegLength, 0)
+lclose = ta.linreg(close, linRegLength, 0)
+r      = lo < lclose
+
+linRange  = lh - llow
+linBody   = math.abs(lclose - lo)
+upperWick = lh - math.max(lo, lclose)
+lowerWick = math.min(lo, lclose) - llow
+isDoji2   = linRange > 0 and linBody <= linRange * dojiThreshold
+isDoji    = isDoji2 and upperWick > linBody and lowerWick > linBody
+
+// ═══════════════════════════════════════════════════════════════
+// STATIC MEAN CHANNEL
+// ═══════════════════════════════════════════════════════════════
+meanPrice = ta.sma(close, channelLength)
+stdDev    = ta.stdev(close, channelLength) * 2
+upperBand = meanPrice + stdDev
+lowerBand = meanPrice - stdDev
+
+// ═══════════════════════════════════════════════════════════════
+// BOLLINGER %B
+// ═══════════════════════════════════════════════════════════════
+bbBasis = ta.sma(close, 200)
+bbStdev = ta.stdev(close, 200)
+upper   = bbBasis + (2 * bbStdev)
+lower   = bbBasis - (2 * bbStdev)
+bbpc    = upper != lower ? ((close - lower) / (upper - lower)) : 0.5
+bbpcsma = ta.sma(bbpc, 200)
+
+// ═══════════════════════════════════════════════════════════════
+// RSI
+// ═══════════════════════════════════════════════════════════════
+rsiValue = ta.rsi(close, channelLength)
+rsi_ma   = ta.sma(rsiValue, 20)
+cond_ob  = channelLength > 30 ? 60 : 70
+cond_os  = channelLength < 30 ? 30 : 40
+
+priceAboveMean = close > meanPrice and bbpc > bbpcsma
+
+// ═══════════════════════════════════════════════════════════════
+// PERCENTILE NEAREST RANK
+// ═══════════════════════════════════════════════════════════════
+grp_pnr  = "Percentile Nearest Rank"
+pnr_sens = input.float(85.0, "PNR Sensitivity", minval=50, maxval=100, step=0.5, group=grp_pnr,
+     tooltip="Percentile threshold (higher = more extreme zones)")
+priceDeviation = close - meanPrice
+pnr_abs        = ta.percentile_nearest_rank(math.abs(priceDeviation), channelLength, pnr_sens)
+pnr_upper_sym  = meanPrice + pnr_abs
+pnr_lower_sym  = meanPrice - pnr_abs
+
+// ═══════════════════════════════════════════════════════════════
+// HELPER FUNCTIONS
+// ═══════════════════════════════════════════════════════════════
+hull_ma(source, length) =>
+    int len = math.max(1, math.round(length))
+    ta.wma(2 * ta.wma(source, len / 2) - ta.wma(source, len), math.round(math.sqrt(len)))
+
+xsa(src_f, len_f, wei) =>
+    int len = math.max(1, len_f)
+    float w = math.max(1, math.min(wei, len))
+    var float sumf = 0.0
+    var float out  = float(na)
+    sumf := nz(sumf[1]) - nz(src_f[len], 0) + src_f
+    float ma_f = sumf / len
+    out  := na(out[1]) ? ma_f : (src_f * w + out[1] * (len - w)) / len
+    out
+
+// ═══════════════════════════════════════════════════════════════
+// HULL PPO PERCENTILE RANK
+// ═══════════════════════════════════════════════════════════════
+hull_short = hull_ma(close, 37)
+hull_mid   = hull_ma(close, math.round((37 + 74) / 2))
+hull_long  = hull_ma(close, 74)
+
+ppo_bull = ((hull_short - hull_long) + (hull_mid - hull_long)) / hull_long * 100
+ppo_bear = ((hull_long - hull_short) + (hull_long - hull_mid)) / hull_long * 100
+pctRankT = ta.percentrank(ppo_bull, 350)
+pctRankB = ta.percentrank(ppo_bear, 350) * -1
+
+// ═══════════════════════════════════════════════════════════════
+// VOLUME PROFILE — TRUE VISIBLE RANGE
+// 68.2% VALUE AREA + 95.45% 2σ-EQUIVALENT VALUE AREA
+// ═══════════════════════════════════════════════════════════════
+vpEnable             = input.bool(true,  "Show Volume Profile", group="Volume Profile")
+vpRows               = input.int(50,     "Number of Rows", minval=10, maxval=100, group="Volume Profile")
+vpWidthBars          = input.int(30,     "Profile Width (bars)", minval=5, maxval=200, group="Volume Profile")
+vpValueAreaPct       = input.float(68.2, "Value Area %", minval=50.0, maxval=100.0, step=0.05, group="Volume Profile")
+vpValueAreaPct2      = input.float(95.45,"2σ Value Area %", minval=50.0, maxval=100.0, step=0.05, group="Volume Profile")
+vpMaxBarsStored      = input.int(5000,   "Max Bars Stored (history depth)", minval=500, maxval=20000, group="Volume Profile")
+vpUpColor            = input.color(color.new(color.teal,60),   "Up-Volume Color", group="Volume Profile")
+vpDownColor          = input.color(color.new(color.orange,60), "Down-Volume Color", group="Volume Profile")
+vpOutside2SigmaColor = input.color(color.new(color.red,35),    "Outside 2σ Color", group="Volume Profile")
+vpShowLabels         = input.bool(true, "Show Price Level Labels", group="Volume Profile")
+vpExtendLeft         = input.bool(true, "Extend Level Lines Left", group="Volume Profile",
+     tooltip="Extend POC / VAH / VAL lines leftwards across the chart")
+
+var int[]   vpTime   = array.new_int()
+var int[]   vpBarIdx = array.new_int()
+var float[] vpOpen   = array.new_float()
+var float[] vpHigh   = array.new_float()
+var float[] vpLow    = array.new_float()
+var float[] vpClose  = array.new_float()
+var float[] vpVol    = array.new_float()
+
+if barstate.isconfirmed
+    array.push(vpTime,   time)
+    array.push(vpBarIdx, bar_index)
+    array.push(vpOpen,   open)
+    array.push(vpHigh,   high)
+    array.push(vpLow,    low)
+    array.push(vpClose,  close)
+    array.push(vpVol,    nz(volume, 0.0))
+    while array.size(vpTime) > vpMaxBarsStored
+        array.shift(vpTime)
+        array.shift(vpBarIdx)
+        array.shift(vpOpen)
+        array.shift(vpHigh)
+        array.shift(vpLow)
+        array.shift(vpClose)
+        array.shift(vpVol)
+
+var box[]  vpBoxesBuy  = array.new_box()
+var box[]  vpBoxesSell = array.new_box()
+var line   vpPOCLine   = na
+var line   vpVAHLine   = na
+var line   vpVALLine   = na
+var line   vpVAH2Line  = na
+var line   vpVAL2Line  = na
+var label  vpPOCLabel  = na
+var label  vpVAHLabel  = na
+var label  vpVALLabel  = na
+var label  vpVAH2Label = na
+var label  vpVAL2Label = na
+
+if vpEnable and barstate.islast
+    // ── Cleanup previous drawings ──
+    if array.size(vpBoxesBuy) > 0
+        for i = 0 to array.size(vpBoxesBuy) - 1
+            box.delete(array.get(vpBoxesBuy, i))
+        array.clear(vpBoxesBuy)
+    if array.size(vpBoxesSell) > 0
+        for i = 0 to array.size(vpBoxesSell) - 1
+            box.delete(array.get(vpBoxesSell, i))
+        array.clear(vpBoxesSell)
+    if not na(vpPOCLine)
+        line.delete(vpPOCLine),  vpPOCLine  := na
+    if not na(vpVAHLine)
+        line.delete(vpVAHLine),  vpVAHLine  := na
+    if not na(vpVALLine)
+        line.delete(vpVALLine),  vpVALLine  := na
+    if not na(vpVAH2Line)
+        line.delete(vpVAH2Line), vpVAH2Line := na
+    if not na(vpVAL2Line)
+        line.delete(vpVAL2Line), vpVAL2Line := na
+    if not na(vpPOCLabel)
+        label.delete(vpPOCLabel),  vpPOCLabel  := na
+    if not na(vpVAHLabel)
+        label.delete(vpVAHLabel),  vpVAHLabel  := na
+    if not na(vpVALLabel)
+        label.delete(vpVALLabel),  vpVALLabel  := na
+    if not na(vpVAH2Label)
+        label.delete(vpVAH2Label), vpVAH2Label := na
+    if not na(vpVAL2Label)
+        label.delete(vpVAL2Label), vpVAL2Label := na
+
+    int leftVisibleTime  = chart.left_visible_bar_time
+    int rightVisibleTime = chart.right_visible_bar_time
+
+    float rangeHigh       = na
+    float rangeLow        = na
+    int   leftVisibleIdx  = na
+    int   rightVisibleIdx = na
+    int   n = array.size(vpTime)
+
+    if n > 0
+        for i = 0 to n - 1
+            int t = array.get(vpTime, i)
+            if t >= leftVisibleTime and t <= rightVisibleTime
+                float h  = array.get(vpHigh, i)
+                float l  = array.get(vpLow, i)
+                int   bi = array.get(vpBarIdx, i)
+                rangeHigh       := na(rangeHigh) ? h : math.max(rangeHigh, h)
+                rangeLow        := na(rangeLow)  ? l : math.min(rangeLow,  l)
+                leftVisibleIdx  := na(leftVisibleIdx)  ? bi : math.min(leftVisibleIdx,  bi)
+                rightVisibleIdx := na(rightVisibleIdx) ? bi : math.max(rightVisibleIdx, bi)
+
+    if not na(rangeHigh) and not na(rangeLow) and rangeHigh > rangeLow and not na(rightVisibleIdx)
+        float binSize = (rangeHigh - rangeLow) / vpRows
+        float[] buyBins  = array.new_float(vpRows, 0.0)
+        float[] sellBins = array.new_float(vpRows, 0.0)
+
+        for i = 0 to n - 1
+            int t = array.get(vpTime, i)
+            if t >= leftVisibleTime and t <= rightVisibleTime
+                float bh = array.get(vpHigh, i)
+                float bl = array.get(vpLow, i)
+                float bv = array.get(vpVol, i)
+                float barRange = bh - bl
+                bool  isUp = array.get(vpClose, i) >= array.get(vpOpen, i)
+                if barRange <= 0
+                    int binIdx = int(math.floor((bh - rangeLow) / binSize))
+                    binIdx := math.max(0, math.min(vpRows - 1, binIdx))
+                    if isUp
+                        array.set(buyBins,  binIdx, array.get(buyBins,  binIdx) + bv)
+                    else
+                        array.set(sellBins, binIdx, array.get(sellBins, binIdx) + bv)
+                else
+                    for b = 0 to vpRows - 1
+                        float binLow  = rangeLow + b * binSize
+                        float binHigh = binLow + binSize
+                        float overlap = math.min(bh, binHigh) - math.max(bl, binLow)
+                        if overlap > 0
+                            float portion = bv * (overlap / barRange)
+                            if isUp
+                                array.set(buyBins,  b, array.get(buyBins,  b) + portion)
+                            else
+                                array.set(sellBins, b, array.get(sellBins, b) + portion)
+
+        float maxBinTotal = 0.0
+        float totalVol    = 0.0
+        int   pocIdx      = 0
+        for b = 0 to vpRows - 1
+            float binTotal = array.get(buyBins, b) + array.get(sellBins, b)
+            totalVol += binTotal
+            if binTotal > maxBinTotal
+                maxBinTotal := binTotal
+                pocIdx      := b
+
+        // 68.2% VALUE AREA/±1σ analogy
+        float va70Vol  = array.get(buyBins, pocIdx) + array.get(sellBins, pocIdx)
+        int   va70Low  = pocIdx
+        int   va70High = pocIdx
+        float target70 = totalVol * (vpValueAreaPct / 100.0)
+        while va70Vol < target70 and (va70Low > 0 or va70High < vpRows - 1)
+            float lowerVol = va70Low  > 0          ? array.get(buyBins, va70Low - 1)  + array.get(sellBins, va70Low - 1)  : -1.0
+            float upperVol = va70High < vpRows - 1 ? array.get(buyBins, va70High + 1) + array.get(sellBins, va70High + 1) : -1.0
+            if upperVol >= lowerVol
+                va70High += 1
+                va70Vol  += upperVol
+            else
+                va70Low  -= 1
+                va70Vol  += lowerVol
+
+        // 95.45% Extended Value Area / ±2σ analogy
+        float va95Vol  = array.get(buyBins, pocIdx) + array.get(sellBins, pocIdx)
+        int   va95Low  = pocIdx
+        int   va95High = pocIdx
+        float target95 = totalVol * (vpValueAreaPct2 / 100.0)
+        while va95Vol < target95 and (va95Low > 0 or va95High < vpRows - 1)
+            float lowerVol95 = va95Low  > 0          ? array.get(buyBins, va95Low - 1)  + array.get(sellBins, va95Low - 1)  : -1.0
+            float upperVol95 = va95High < vpRows - 1 ? array.get(buyBins, va95High + 1) + array.get(sellBins, va95High + 1) : -1.0
+            if upperVol95 >= lowerVol95
+                va95High += 1
+                va95Vol  += upperVol95
+            else
+                va95Low  -= 1
+                va95Vol  += lowerVol95
+
+        // ── DRAW PROFILE ──
+        int anchorX = rightVisibleIdx + 1
+        for b = 0 to vpRows - 1
+            float binLow   = rangeLow + b * binSize
+            float binHigh  = binLow + binSize
+            float buyV     = array.get(buyBins, b)
+            float sellV    = array.get(sellBins, b)
+            float binTotal = buyV + sellV
+            float widthBars = maxBinTotal > 0 ? (binTotal / maxBinTotal) * vpWidthBars : 0.0
+            float buyWidth  = binTotal > 0 ? widthBars * (buyV / binTotal) : 0.0
+            float sellWidth = widthBars - buyWidth
+            bool  inside95  = b >= va95Low  and b <= va95High
+            bool  inside70  = b >= va70Low  and b <= va70High
+            bool  outside2Sigma = not inside95
+            color buyColor  = outside2Sigma ? vpOutside2SigmaColor : inside70 ? vpUpColor   : color.new(vpUpColor,  78)
+            color sellColor = outside2Sigma ? color.new(vpOutside2SigmaColor, 20) : inside70 ? vpDownColor : color.new(vpDownColor, 78)
+
+            if buyWidth >= 1
+                box buyBox = box.new(left=anchorX, top=binHigh, right=anchorX + int(math.round(buyWidth)), bottom=binLow,
+                     xloc=xloc.bar_index, bgcolor=buyColor, border_color=color.new(color.black, 100))
+                array.push(vpBoxesBuy, buyBox)
+            if sellWidth >= 1
+                int sellLeft  = anchorX + int(math.round(buyWidth))
+                int sellRight = anchorX + int(math.round(widthBars))
+                if sellRight > sellLeft
+                    box sellBox = box.new(left=sellLeft, top=binHigh, right=sellRight, bottom=binLow,
+                         xloc=xloc.bar_index, bgcolor=sellColor, border_color=color.new(color.black, 100))
+                    array.push(vpBoxesSell, sellBox)
+
+        // ── PRICE LEVELS ──
+        float pocPrice   = rangeLow + (pocIdx + 0.5) * binSize
+        float vah70Price = rangeLow + (va70High + 1) * binSize
+        float val70Price = rangeLow + va70Low * binSize
+        float vah95Price = rangeLow + (va95High + 1) * binSize
+        float val95Price = rangeLow + va95Low * binSize
+
+        int labelX = anchorX + vpWidthBars + 1
+        int lineX1 = vpExtendLeft and not na(leftVisibleIdx) ? leftVisibleIdx : anchorX
+
+        vpPOCLine := line.new(x1=lineX1, y1=pocPrice, x2=anchorX + vpWidthBars, y2=pocPrice,
+             xloc=xloc.bar_index, color=color.yellow, width=2, style=line.style_solid)
+        if vpShowLabels
+            vpPOCLabel := label.new(x=labelX, y=pocPrice, text="POC @ " + str.tostring(pocPrice, format.mintick),
+                 xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.yellow, 70),
+                 textcolor=color.yellow, style=label.style_label_left, size=size.small)
+
+        vpVAHLine := line.new(x1=lineX1, y1=vah70Price, x2=anchorX + vpWidthBars, y2=vah70Price,
+             xloc=xloc.bar_index, color=color.new(color.white, 10), width=2, style=line.style_dashed)
+        if vpShowLabels
+            vpVAHLabel := label.new(x=labelX, y=vah70Price, text="+1σ (VAH 34.1%) @ " + str.tostring(vah70Price, format.mintick),
+                 xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.white, 70),
+                 textcolor=color.white, style=label.style_label_left, size=size.small)
+
+        vpVALLine := line.new(x1=lineX1, y1=val70Price, x2=anchorX + vpWidthBars, y2=val70Price,
+             xloc=xloc.bar_index, color=color.new(color.white, 10), width=2, style=line.style_dashed)
+        if vpShowLabels
+            vpVALLabel := label.new(x=labelX, y=val70Price, text="-1σ (VAL 34.1%) @ " + str.tostring(val70Price, format.mintick),
+                 xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.white, 70),
+                 textcolor=color.white, style=label.style_label_left, size=size.small)
+
+        vpVAH2Line := line.new(x1=lineX1, y1=vah95Price, x2=anchorX + vpWidthBars, y2=vah95Price,
+             xloc=xloc.bar_index, color=color.purple, width=2, style=line.style_solid)
+        if vpShowLabels
+            vpVAH2Label := label.new(x=labelX, y=vah95Price, text="+2σ (47.7%) @ " + str.tostring(vah95Price, format.mintick),
+                 xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.purple, 70),
+                 textcolor=color.purple, style=label.style_label_left, size=size.small)
+
+        vpVAL2Line := line.new(x1=lineX1, y1=val95Price, x2=anchorX + vpWidthBars, y2=val95Price,
+             xloc=xloc.bar_index, color=color.purple, width=2, style=line.style_solid)
+        if vpShowLabels
+            vpVAL2Label := label.new(x=labelX, y=val95Price, text="-2σ (47.7%) @ " + str.tostring(val95Price, format.mintick),
+                 xloc=xloc.bar_index, yloc=yloc.price, color=color.new(color.purple, 70),
+                 textcolor=color.purple, style=label.style_label_left, size=size.small)
+
+// ═══════════════════════════════════════════════════════════════
+// DMI / ADX
+// ═══════════════════════════════════════════════════════════════
+up_move     = ta.change(high)
+down_move   = -ta.change(low)
+true_range  = ta.rma(ta.tr, 10)
+plus_di     = fixnan(100 * ta.rma(up_move   > down_move and up_move   > 0 ? up_move   : 0, 10) / true_range) * 3
+minus_di    = fixnan(100 * ta.rma(down_move > up_move   and down_move > 0 ? down_move : 0, 10) / true_range) * 3
+di_diff     = plus_di - minus_di
+di_hma_fast = ta.hma(di_diff, 50)
+di_hma_slow = ta.hma(di_diff, 74)
+di_hma_avg  = math.avg(di_hma_fast, di_hma_slow)
+
+// ═══════════════════════════════════════════════════════════════
+// KDJ CALCULATIONS (blended with DMI HMA average)
+// ═══════════════════════════════════════════════════════════════
+rsv = (close - ta.lowest(low, 127)) / (ta.highest(high, 200) - ta.lowest(low, 127)) * 100
+k   = xsa(rsv, 100, 1)
+d   = xsa(k,   100, 1)
+j   = 3 * k - 2 * d
+
+// ═══════════════════════════════════════════════════════════════
+// DYNAMIC ZONES (Percentile Nearest Rank)
+// ═══════════════════════════════════════════════════════════════
+dZ  = math.avg(di_diff, rsi_ma) / 2
+dza = ta.percentile_nearest_rank(dZ, 10, 85)
+dzb = -dza
+
+// ═══════════════════════════════════════════════════════════════
+// SUPPORT / RESISTANCE (Pivot-Based, Auto-Merging)
+// ═══════════════════════════════════════════════════════════════
+grp_sr         = "Support & Resistance"
+srEnable       = input.bool(true, "Show Support/Resistance", group=grp_sr)
+srPivotLen     = input.int(15, "Pivot Lookback (L/R)", minval=2, maxval=100, group=grp_sr,
+     tooltip="Bars on each side of a swing point required to confirm it as a pivot")
+srMaxLevels    = input.int(6, "Max Levels per Side", minval=1, maxval=20, group=grp_sr)
+srMergeATRmult = input.float(0.5, "Merge Tolerance (x ATR)", minval=0.05, step=0.05, group=grp_sr,
+     tooltip="New pivots within this many ATRs of an existing level get merged into it")
+srExtendRight  = input.bool(true, "Extend Lines Right", group=grp_sr)
+srResColor     = input.color(color.new(color.red,  20), "Resistance Color", group=grp_sr)
+srSupColor     = input.color(color.new(color.teal, 20), "Support Color",    group=grp_sr)
+srLineWidth    = input.int(1, "Line Width", minval=1, maxval=4, group=grp_sr)
+srShowLabels   = input.bool(true, "Show Price Labels", group=grp_sr)
+
+srATR = ta.atr(14)
+
+var float[] srResLevels = array.new_float()
+var float[] srSupLevels = array.new_float()
+var line[]  srResLines  = array.new_line()
+var line[]  srSupLines  = array.new_line()
+var label[] srResLabels = array.new_label()
+var label[] srSupLabels = array.new_label()
+
+srPH = ta.pivothigh(high, srPivotLen, srPivotLen)
+srPL = ta.pivotlow(low,  srPivotLen, srPivotLen)
+
+sr_find_near(arr, price, tol) =>
+    int idx = -1
+    float best = tol
+    if array.size(arr) > 0
+        for i = 0 to array.size(arr) - 1
+            float d = math.abs(array.get(arr, i) - price)
+            if d <= best
+                best := d
+                idx  := i
+    idx
+
+sr_update_side(levelsArr, linesArr, labelsArr, newPrice, pivotBarIdx, lineColor, isRes) =>
+    float tol = srATR * srMergeATRmult
+    int nearIdx = sr_find_near(levelsArr, newPrice, tol)
+    if nearIdx >= 0
+        float updated = (array.get(levelsArr, nearIdx) + newPrice) / 2
+        array.set(levelsArr, nearIdx, updated)
+        line existingLine = array.get(linesArr, nearIdx)
+        line.set_y1(existingLine, updated)
+        line.set_y2(existingLine, updated)
+        line.set_x2(existingLine, bar_index)
+        if srShowLabels
+            label existingLabel = array.get(labelsArr, nearIdx)
+            label.set_y(existingLabel, updated)
+            label.set_x(existingLabel, bar_index)
+            label.set_text(existingLabel, (isRes ? "R " : "S ") + str.tostring(updated, format.mintick))
+    else
+        line newLine = line.new(x1=pivotBarIdx, y1=newPrice, x2=bar_index, y2=newPrice,
+             color=lineColor, width=srLineWidth,
+             extend=srExtendRight ? extend.right : extend.none)
+        array.push(levelsArr, newPrice)
+        array.push(linesArr, newLine)
+        if srShowLabels
+            label newLabel = label.new(x=bar_index, y=newPrice,
+                 text=(isRes ? "R " : "S ") + str.tostring(newPrice, format.mintick),
+                 xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_left,
+                 color=color.new(color.black, 100), textcolor=lineColor, size=size.tiny)
+            array.push(labelsArr, newLabel)
+        if array.size(levelsArr) > srMaxLevels
+            array.shift(levelsArr)
+            line oldLine = array.shift(linesArr)
+            line.delete(oldLine)
+            if srShowLabels and array.size(labelsArr) > 0
+                label oldLabel = array.shift(labelsArr)
+                label.delete(oldLabel)
+
+if srEnable and not na(srPH)
+    sr_update_side(srResLevels, srResLines, srResLabels, srPH, bar_index - srPivotLen, srResColor, true)
+
+if srEnable and not na(srPL)
+    sr_update_side(srSupLevels, srSupLines, srSupLabels, srPL, bar_index - srPivotLen, srSupColor, false)
+
+// ═══════════════════════════════════════════════════════════════
+// BACKGROUND CONDITIONS
+// ═══════════════════════════════════════════════════════════════
+bgBuyCondition  = bbpc < 0 and rsiValue < cond_os
+bgSellCondition = bbpc > 1 and rsiValue > cond_ob
+
+// ═══════════════════════════════════════════════════════════════
+// EXTREME OSCILLATOR DETECTION
+// Fires when BB%B is outside its band AND RSI confirms the extreme
+// AND price closes beyond the corresponding PNR symmetric band.
+// ═══════════════════════════════════════════════════════════════
+oscAboveUpper   = bbpc > 1
+oscBelowLower   = bbpc < 0
+oscUpperExtreme = oscAboveUpper and (close > upperBand or rsiValue > cond_ob) and lclose > pnr_upper_sym
+oscLowerExtreme = oscBelowLower and (close < lowerBand or rsiValue < cond_os) and lclose < pnr_lower_sym
+oscOutsideBoth  = oscUpperExtreme or oscLowerExtreme
+
+// ═══════════════════════════════════════════════════════════════
+// COLORS
+// ═══════════════════════════════════════════════════════════════
+yellow       = color.yellow
+channelColor = priceAboveMean ? color.new(color.green, 50) : color.new(color.red, 50)
+bullCol      = isDoji ? yellow : (oscExtremeEnable and oscOutsideBoth ? oscExtremeColor : (lclose > upperBand ? color.blue : color.green))
+bearCol      = isDoji ? yellow : (oscExtremeEnable and oscOutsideBoth ? oscExtremeColor : (lclose < lowerBand ? color.blue : color.new(#D2042D, 50)))
+bullWick     = isDoji2 ? yellow : (oscExtremeEnable and oscOutsideBoth ? oscExtremeColor : #2DD204)
+bearWick     = isDoji2 ? yellow : (oscExtremeEnable and oscOutsideBoth ? oscExtremeColor : #D2042D)
+
+// ═══════════════════════════════════════════════════════════════
+// PLOTS
+// ═══════════════════════════════════════════════════════════════
+plotcandle(r ? lo : na, r ? lh : na, r ? llow : na, r ? lclose : na,
+     title="LinReg Candles-Bullish", color=bullCol, wickcolor=bullWick,
+     bordercolor=isDoji2 ? yellow : color.new(#46f03e, 40), editable=false)
+
+plotcandle(r ? na : lo, r ? na : lh, r ? na : llow, r ? na : lclose,
+     title="LinReg Candles-Bearish", color=bearCol, wickcolor=bearWick,
+     bordercolor=isDoji2 ? yellow : color.new(#D2042D, 50), editable=false)
+
+plot(meanPrice, color=rsiValue > cond_ob ? #D2042D : rsiValue < cond_os ? color.blue : color.new(color.white, 80),
+     title="Mean Center", linewidth=2)
+plot(meanPrice, color=bbpc > 1 or bbpc < 0 ? color.white : na,
+     title="OB and OS Areas", style=plot.style_circles, linewidth=2)
+
+upperBandPlot = plot(upperBand, color=channelColor, title="Upper Band (Mean + 2σ)", linewidth=1)
+lowerBandPlot = plot(lowerBand, color=channelColor, title="Lower Band (Mean - 2σ)", linewidth=1)
+
+plot(pnr_upper_sym, color=color.new(color.gray, 50), title="PNR Sym Upper", linewidth=1, style=plot.style_circles)
+plot(pnr_lower_sym, color=color.new(color.gray, 50), title="PNR Sym Lower", linewidth=1, style=plot.style_circles)
+
+fill(upperBandPlot, lowerBandPlot,
+     color=color.new(bbpc > 1 or bbpc < 0 ? color.white : priceAboveMean ? color.green : color.red, 90),
+     title="Channel Fill")
+
+// ═══════════════════════════════════════════════════════════════
+// BACKGROUNDS
+// ═══════════════════════════════════════════════════════════════
+bgcolor(bgBuyCondition  ? color.new(color.green, 55) : na, title="Buy Zone BG")
+bgcolor(bgSellCondition ? color.new(color.red,   55) : na, title="Sell Zone BG")
+
+dza_pos = dza < 0                                   // momentum percentile positive
+primeAccum = dza_pos and bbpc < bbpcsma and rsiValue < cond_os
+bgcolor(primeAccum ? color.new(#9c27b0, 50) : na, title="Prime Accumulation Zone")
+// ═══════════════════════════════════════════════════════════════
+// ALERTS
+// ═══════════════════════════════════════════════════════════════
+alertcondition(oscUpperExtreme, title="Upper Extreme Zone", message="LR Channel VRVP — price closed above both PNR upper band and Bollinger upper band with BB%B > 1")
+alertcondition(oscLowerExtreme, title="Lower Extreme Zone", message="LR Channel VRVP — price closed below both PNR lower band and Bollinger lower band with BB%B < 0")

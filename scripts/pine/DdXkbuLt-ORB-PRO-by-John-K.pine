@@ -1,0 +1,701 @@
+//@version=6
+indicator("ORB PRO — BO Close Tolerance 100", overlay = true, max_lines_count = 500, max_boxes_count = 500, max_labels_count = 500, max_bars_back = 5000)
+
+// ─────────────────────────────────────────────────────────────
+// SETTINGS
+// ─────────────────────────────────────────────────────────────
+
+groupORB = "1. ORB & Sessions"
+showORB = input.bool(true, "Show ORB High / Low", group = groupORB)
+orbSession = input.session("0930-0945", "ORB Formation", group = groupORB)
+tradeSession = input.session("0945-1200", "Signal Window", group = groupORB)
+displaySession = input.session("0930-1600", "ORB Line Display Session", group = groupORB)
+sessionTimezone = input.string("America/New_York", "Session Timezone", group = groupORB)
+
+groupLiquidity = "2. Liquidity"
+showLiquidity = input.bool(true, "Show Liquidity Levels", group = groupLiquidity)
+showLiquiditySweeps = input.bool(true, "Enable Liquidity Sweep Signals", group = groupLiquidity)
+pivotStrength = input.int(1, "Liquidity Pivot Strength", minval = 1, maxval = 20, group = groupLiquidity)
+liquidityLookback = input.int(150, "Liquidity Lookback Bars", minval = 20, maxval = 1000, group = groupLiquidity)
+maxLiquidityLevels = input.int(60, "Maximum Liquidity Levels", minval = 5, maxval = 150, group = groupLiquidity)
+removeSweptLiquidity = input.bool(true, "Stop Liquidity Line After Sweep", group = groupLiquidity)
+requireSeparateSweepCandle = input.bool(true, "Require Separate Confirmation Candle", group = groupLiquidity, tooltip = "The sweep candle cannot also be the entry candle. A later directional candle must close inside the ORB.")
+pre0945LiquidityOnly = input.bool(true, "Only pre-09:45 liquidity", group = groupLiquidity, tooltip = "Keep only unswept external swings confirmed by 09:45 when the ORB locks. Turn off to continue adding external liquidity afterward.")
+
+groupRejection = "3. ORB Rejection / BO Candle Filters"
+showORBRejections = input.bool(true, "Enable ORB Rejection Signals", group = groupRejection)
+requirePreviousOppositeCandle = input.bool(true, "BO engulf: previous candle opposite color", group = groupRejection)
+requireBodyEngulf = input.bool(true, "BO engulf: require full body engulf", group = groupRejection)
+
+groupBreakout = "4. Breakout / Retest"
+enableBreakoutSetup = input.bool(true, "Enable Breakout Retest Signals", group = groupBreakout)
+breakoutRequireClose = input.bool(true, "Require Candle Close Outside ORB", group = groupBreakout)
+breakoutRetestToleranceTicks = input.int(2, "Retest Tolerance (Ticks)", minval = 0, maxval = 100, group = groupBreakout, tooltip = "How close the retest must get to the ORB boundary.")
+enableBOCloseTolerance = input.bool(true, "Allow small BO retest closes inside ORB", group = groupBreakout)
+boCloseToleranceTicks = input.int(4, "BO close tolerance (ticks)", minval = 0, maxval = 100, group = groupBreakout, tooltip = "Allows a small close inside the ORB without locking ordinary BO signals. The confirmation candle must still close outside the actual ORB. Does not relax EMA close rules.")
+breakoutRequireEngulf = input.bool(true, "Require Engulfing Candle", group = groupBreakout)
+showBreakoutLevels = input.bool(false, "Highlight Armed Breakout Level", group = groupBreakout)
+
+boCloseTolerance = enableBOCloseTolerance ? boCloseToleranceTicks * syminfo.mintick : 0.0
+
+groupEMABO = "4B. EMA Breakout / Retest"
+enableEMABO = input.bool(true, "Enable EMA BO signals", group = groupEMABO)
+emaBOOutsideOnly = input.bool(true, "Require EMA outside ORB when range locks", group = groupEMABO, tooltip = "Buy: EMA above ORB High. Sell: EMA below ORB Low. Uses the EMA at the end of ORB formation.")
+emaBORetestTicks = input.int(0, "EMA retest tolerance (ticks)", minval = 0, maxval = 100, group = groupEMABO, tooltip = "Distance allowed for an EMA retest. A wrong-side close after the EMA break still locks both EMA BO directions for the session.")
+showEMABOLock = input.bool(false, "Show EMA BO session-lock marker", group = groupEMABO)
+
+groupVP = "5. ORB Volume Profile"
+showVolumeProfile = input.bool(true, "Show ORB Volume Profile", group = groupVP)
+profileRows = input.int(20, "Volume Profile Rows", minval = 5, maxval = 50, group = groupVP)
+highlightPOC = input.bool(true, "Highlight POC", group = groupVP)
+profileTransparency = input.int(75, "Profile Transparency", minval = 0, maxval = 95, group = groupVP)
+
+groupEMA = "6. EMA"
+showEMA = input.bool(true, "Show EMA", group = groupEMA)
+emaLength = input.int(200, "EMA Length", minval = 1, group = groupEMA)
+
+groupSignals = "7. Signals"
+showBuySignals = input.bool(true, "Show Buy Signals", group = groupSignals)
+showSellSignals = input.bool(true, "Show Sell Signals", group = groupSignals)
+showTradeWindowBackground = input.bool(false, "Highlight Signal Window", group = groupSignals)
+
+groupBody = "9. Signal Candle Body Filter"
+enableBodyRangeFilter = input.bool(true, "Enable minimum candle body filter", group = groupBody)
+minimumBodyPercent = input.float(30.0, "Minimum body (% of candle range)", minval = 0.0, maxval = 100.0, step = 1.0, group = groupBody)
+
+signalRange = high - low
+signalBodyPercent = signalRange > 0 ? math.abs(close - open) / signalRange * 100.0 : 0.0
+signalBodyAllowed = not enableBodyRangeFilter or (signalRange > 0 and signalBodyPercent >= minimumBodyPercent)
+
+// ─────────────────────────────────────────────────────────────
+// SESSIONS AND STATE
+// ─────────────────────────────────────────────────────────────
+
+inORB = not na(time(timeframe.period, orbSession, sessionTimezone))
+inTradeWindow = not na(time(timeframe.period, tradeSession, sessionTimezone))
+inDisplaySession = not na(time(timeframe.period, displaySession, sessionTimezone))
+orbStart = inORB and not inORB[1]
+orbEnd = not inORB and inORB[1]
+
+var float orbHigh = na
+var float orbLow = na
+var int orbStartBar = na
+var int orbEndBar = na
+var bool orbReady = false
+var line orbHighLine = na
+var line orbLowLine = na
+
+var bool boSessionLocked = false
+var bool upsideBreakoutArmed = false
+var bool downsideBreakoutArmed = false
+var int upsideBreakoutBar = na
+var int downsideBreakoutBar = na
+
+var array<float> vpHighs = array.new_float()
+var array<float> vpLows = array.new_float()
+var array<float> vpVolumes = array.new_float()
+
+var array<float> liquidityPrices = array.new_float()
+var array<bool> liquidityIsHigh = array.new_bool()
+var array<bool> liquidityActive = array.new_bool()
+var array<line> liquidityLines = array.new_line()
+
+var bool orbLowClosedThrough = false
+var bool orbHighClosedThrough = false
+var bool externalLowSweptThisSession = false
+var bool externalHighSweptThisSession = false
+
+var bool pendingLiquidityBuy = false
+var bool pendingLiquiditySell = false
+var int liquidityBuySweepBar = na
+var int liquiditySellSweepBar = na
+
+clearLiquidity() =>
+    if array.size(liquidityLines) > 0
+        for i = 0 to array.size(liquidityLines) - 1
+            line currentLine = array.get(liquidityLines, i)
+            if not na(currentLine)
+                line.delete(currentLine)
+    array.clear(liquidityPrices)
+    array.clear(liquidityIsHigh)
+    array.clear(liquidityActive)
+    array.clear(liquidityLines)
+
+liquidityExists(float price) =>
+    bool exists = false
+    if array.size(liquidityPrices) > 0
+        for i = 0 to array.size(liquidityPrices) - 1
+            float existingPrice = array.get(liquidityPrices, i)
+            if array.get(liquidityActive, i) and math.abs(existingPrice - price) <= syminfo.mintick * 2
+                exists := true
+    exists
+
+addLiquidity(float price, int originBar, bool highSide) =>
+    bool duplicate = liquidityExists(price)
+    bool hasRoom = array.size(liquidityPrices) < maxLiquidityLevels
+    if not duplicate and hasRoom
+        line newLiquidityLine = na
+        if showLiquidity
+            newLiquidityLine := line.new(x1 = originBar, y1 = price, x2 = bar_index, y2 = price, xloc = xloc.bar_index, extend = extend.right, color = highSide ? color.new(color.red, 30) : color.new(color.green, 30), style = line.style_dotted, width = 1)
+        array.push(liquidityPrices, price)
+        array.push(liquidityIsHigh, highSide)
+        array.push(liquidityActive, true)
+        array.push(liquidityLines, newLiquidityLine)
+
+// ─────────────────────────────────────────────────────────────
+// BUILD AND DISPLAY ORB
+// ─────────────────────────────────────────────────────────────
+
+if orbStart
+    boSessionLocked := false
+    orbLowClosedThrough := false
+    orbHighClosedThrough := false
+    externalLowSweptThisSession := false
+    externalHighSweptThisSession := false
+    orbHigh := high
+    orbLow := low
+    orbStartBar := bar_index
+    orbEndBar := na
+    orbReady := false
+    pendingLiquidityBuy := false
+    pendingLiquiditySell := false
+    liquidityBuySweepBar := na
+    liquiditySellSweepBar := na
+    upsideBreakoutArmed := false
+    downsideBreakoutArmed := false
+    upsideBreakoutBar := na
+    downsideBreakoutBar := na
+    clearLiquidity()
+    array.clear(vpHighs)
+    array.clear(vpLows)
+    array.clear(vpVolumes)
+
+if inORB
+    orbHigh := na(orbHigh) ? high : math.max(orbHigh, high)
+    orbLow := na(orbLow) ? low : math.min(orbLow, low)
+    array.push(vpHighs, high)
+    array.push(vpLows, low)
+    array.push(vpVolumes, volume)
+
+if orbEnd
+    orbReady := true
+    orbEndBar := bar_index - 1
+    if showORB
+        orbHighLine := line.new(x1 = orbStartBar, y1 = orbHigh, x2 = bar_index, y2 = orbHigh, xloc = xloc.bar_index, extend = extend.none, color = color.green, width = 2)
+        orbLowLine := line.new(x1 = orbStartBar, y1 = orbLow, x2 = bar_index, y2 = orbLow, xloc = xloc.bar_index, extend = extend.none, color = color.red, width = 2)
+
+if orbReady and inDisplaySession and showORB
+    if not na(orbHighLine)
+        line.set_x2(orbHighLine, bar_index)
+    if not na(orbLowLine)
+        line.set_x2(orbLowLine, bar_index)
+
+// ─────────────────────────────────────────────────────────────
+// ORB VOLUME PROFILE
+// ─────────────────────────────────────────────────────────────
+
+if orbEnd and showVolumeProfile and array.size(vpVolumes) > 0 and orbHigh > orbLow
+    array<float> volumeBins = array.new_float(profileRows, 0.0)
+    float rowHeight = (orbHigh - orbLow) / profileRows
+
+    for candleIndex = 0 to array.size(vpVolumes) - 1
+        float candleHigh = array.get(vpHighs, candleIndex)
+        float candleLow = array.get(vpLows, candleIndex)
+        float candleVolume = array.get(vpVolumes, candleIndex)
+        float candleRange = math.max(candleHigh - candleLow, syminfo.mintick)
+
+        for row = 0 to profileRows - 1
+            float rowBottom = orbLow + row * rowHeight
+            float rowTop = rowBottom + rowHeight
+            float overlap = math.max(0.0, math.min(candleHigh, rowTop) - math.max(candleLow, rowBottom))
+            if overlap > 0
+                float volumeShare = candleVolume * (overlap / candleRange)
+                float existingVolume = array.get(volumeBins, row)
+                array.set(volumeBins, row, existingVolume + volumeShare)
+
+    float maximumVolume = 0.0
+    int pocRow = 0
+
+    for row = 0 to profileRows - 1
+        float currentVolume = array.get(volumeBins, row)
+        if currentVolume > maximumVolume
+            maximumVolume := currentVolume
+            pocRow := row
+
+    int availableWidth = math.max(orbEndBar - orbStartBar + 1, 1)
+
+    for row = 0 to profileRows - 1
+        float rowVolume = array.get(volumeBins, row)
+        float relativeVolume = maximumVolume > 0 ? rowVolume / maximumVolume : 0.0
+        int profileWidth = math.max(1, int(math.round(availableWidth * relativeVolume)))
+        float rowBottom = orbLow + row * rowHeight
+        float rowTop = rowBottom + rowHeight
+        bool isPOC = row == pocRow
+        color vpColor = isPOC and highlightPOC ? color.new(color.orange, math.max(profileTransparency - 20, 0)) : color.new(color.gray, profileTransparency)
+        int boxRight = math.min(orbStartBar + profileWidth, orbEndBar)
+        box.new(left = orbStartBar, top = rowTop, right = boxRight, bottom = rowBottom, xloc = xloc.bar_index, bgcolor = vpColor, border_color = color.new(vpColor, 100))
+
+// ─────────────────────────────────────────────────────────────
+// LIQUIDITY LEVELS
+// ─────────────────────────────────────────────────────────────
+
+pivotHigh = ta.pivothigh(high, pivotStrength, pivotStrength)
+pivotLow = ta.pivotlow(low, pivotStrength, pivotStrength)
+
+liquidityCutoff = timestamp(sessionTimezone, year(time, sessionTimezone), month(time, sessionTimezone), dayofmonth(time, sessionTimezone), 9, 45)
+
+if orbEnd and (showLiquidity or showLiquiditySweeps)
+    float interveningHigh = na
+    float interveningLow = na
+
+    for i = 1 to liquidityLookback
+        interveningHigh := na(interveningHigh) ? high[i] : math.max(interveningHigh, high[i])
+        interveningLow := na(interveningLow) ? low[i] : math.min(interveningLow, low[i])
+
+        bool knownByCutoff = not pre0945LiquidityOnly or time_close[i] <= liquidityCutoff
+
+        if knownByCutoff and not na(pivotHigh[i]) and pivotHigh[i] > orbHigh and interveningHigh <= pivotHigh[i]
+            addLiquidity(pivotHigh[i], bar_index - i - pivotStrength, true)
+
+        if knownByCutoff and not na(pivotLow[i]) and pivotLow[i] < orbLow and interveningLow >= pivotLow[i]
+            addLiquidity(pivotLow[i], bar_index - i - pivotStrength, false)
+
+// ─────────────────────────────────────────────────────────────
+// LIQUIDITY SWEEP SIGNALS
+// ─────────────────────────────────────────────────────────────
+
+closeInsideORB = orbReady and close < orbHigh and close > orbLow
+
+bool liquidityBuy = false
+bool liquiditySell = false
+
+if not orbReady or inORB or not inTradeWindow or not showLiquiditySweeps
+    pendingLiquidityBuy := false
+    pendingLiquiditySell := false
+    liquidityBuySweepBar := na
+    liquiditySellSweepBar := na
+
+if orbReady and not inORB and barstate.isconfirmed
+    if array.size(liquidityPrices) > 0
+        for i = 0 to array.size(liquidityPrices) - 1
+            if array.get(liquidityActive, i)
+                float level = array.get(liquidityPrices, i)
+                bool highSide = array.get(liquidityIsHigh, i)
+                bool sweptHigh = highSide and level > orbHigh and high > level
+                bool sweptLow = not highSide and level < orbLow and low < level
+
+                if sweptHigh or sweptLow
+                    if sweptHigh
+                        externalHighSweptThisSession := true
+                    if sweptLow
+                        externalLowSweptThisSession := true
+
+                    array.set(liquidityActive, i, false)
+                    line levelLine = array.get(liquidityLines, i)
+
+                    if removeSweptLiquidity and not na(levelLine)
+                        line.set_extend(levelLine, extend.none)
+                        line.set_x2(levelLine, bar_index)
+
+                    if inTradeWindow and showLiquiditySweeps
+                        if sweptHigh
+                            pendingLiquiditySell := true
+                            liquiditySellSweepBar := bar_index
+                        if sweptLow
+                            pendingLiquidityBuy := true
+                            liquidityBuySweepBar := bar_index
+
+    if inTradeWindow and showLiquiditySweeps
+        if close <= orbLow
+            pendingLiquiditySell := false
+            liquiditySellSweepBar := na
+
+        if close >= orbHigh
+            pendingLiquidityBuy := false
+            liquidityBuySweepBar := na
+
+        bool buyConfirmationAllowed = not requireSeparateSweepCandle or (not na(liquidityBuySweepBar) and bar_index > liquidityBuySweepBar)
+        bool sellConfirmationAllowed = not requireSeparateSweepCandle or (not na(liquiditySellSweepBar) and bar_index > liquiditySellSweepBar)
+
+        liquidityBuy := signalBodyAllowed and pendingLiquidityBuy and buyConfirmationAllowed and closeInsideORB and close > open
+        liquiditySell := signalBodyAllowed and pendingLiquiditySell and sellConfirmationAllowed and closeInsideORB and close < open
+
+        if liquidityBuy or liquiditySell
+            pendingLiquidityBuy := false
+            pendingLiquiditySell := false
+            liquidityBuySweepBar := na
+            liquiditySellSweepBar := na
+
+// New pivots become available after the current bar's sweep processing.
+if not pre0945LiquidityOnly and orbReady and inDisplaySession and barstate.isconfirmed and (showLiquidity or showLiquiditySweeps)
+    if not na(pivotHigh) and pivotHigh > orbHigh
+        addLiquidity(pivotHigh, bar_index - pivotStrength, true)
+    if not na(pivotLow) and pivotLow < orbLow
+        addLiquidity(pivotLow, bar_index - pivotStrength, false)
+
+// ─────────────────────────────────────────────────────────────
+// CANDLE FILTERS
+// ─────────────────────────────────────────────────────────────
+
+previousBearish = close[1] < open[1]
+previousBullish = close[1] > open[1]
+currentBullish = close > open
+currentBearish = close < open
+
+currentCandleBody = math.abs(close - open)
+previousCandleBody = math.abs(close[1] - open[1])
+signalBodyLarger = not na(previousCandleBody) and currentCandleBody > previousCandleBody
+
+bullishBodyEngulf = currentBullish and open <= close[1] and close >= open[1]
+bearishBodyEngulf = currentBearish and open >= close[1] and close <= open[1]
+
+bullishEngulfValid = currentBullish and (not requirePreviousOppositeCandle or previousBearish) and (not requireBodyEngulf or bullishBodyEngulf)
+bearishEngulfValid = currentBearish and (not requirePreviousOppositeCandle or previousBullish) and (not requireBodyEngulf or bearishBodyEngulf)
+
+// ─────────────────────────────────────────────────────────────
+// ORB REJECTION SIGNALS
+// ─────────────────────────────────────────────────────────────
+
+if barstate.isconfirmed and orbReady and not inORB
+    if close < orbLow
+        orbLowClosedThrough := true
+    if close > orbHigh
+        orbHighClosedThrough := true
+
+orbBuy = signalBodyAllowed and barstate.isconfirmed and orbReady and not inORB and inTradeWindow and showORBRejections and not orbLowClosedThrough and not externalLowSweptThisSession and low <= orbLow and closeInsideORB and currentBullish and signalBodyLarger
+orbSell = signalBodyAllowed and barstate.isconfirmed and orbReady and not inORB and inTradeWindow and showORBRejections and not orbHighClosedThrough and not externalHighSweptThisSession and high >= orbHigh and closeInsideORB and currentBearish and signalBodyLarger
+
+// ─────────────────────────────────────────────────────────────
+// ORDINARY BO SESSION LOCK
+// A close beyond the allowed band locks both BO directions.
+// Confirmation entries still require the actual ORB boundary.
+// ─────────────────────────────────────────────────────────────
+
+if barstate.isconfirmed and orbReady and not inORB and not boSessionLocked
+    bool failedUp = upsideBreakoutArmed and not na(upsideBreakoutBar) and bar_index > upsideBreakoutBar and close < orbHigh - boCloseTolerance
+    bool failedDown = downsideBreakoutArmed and not na(downsideBreakoutBar) and bar_index > downsideBreakoutBar and close > orbLow + boCloseTolerance
+
+    if failedUp or failedDown
+        boSessionLocked := true
+        upsideBreakoutArmed := false
+        downsideBreakoutArmed := false
+        upsideBreakoutBar := na
+        downsideBreakoutBar := na
+
+upsideBreakout = orbReady and inTradeWindow and enableBreakoutSetup and not boSessionLocked and barstate.isconfirmed and (breakoutRequireClose ? close > orbHigh : high > orbHigh)
+downsideBreakout = orbReady and inTradeWindow and enableBreakoutSetup and not boSessionLocked and barstate.isconfirmed and (breakoutRequireClose ? close < orbLow : low < orbLow)
+
+if upsideBreakout and not upsideBreakoutArmed
+    upsideBreakoutArmed := true
+    upsideBreakoutBar := bar_index
+    downsideBreakoutArmed := false
+    downsideBreakoutBar := na
+
+if downsideBreakout and not downsideBreakoutArmed
+    downsideBreakoutArmed := true
+    downsideBreakoutBar := bar_index
+    upsideBreakoutArmed := false
+    upsideBreakoutBar := na
+
+// ─────────────────────────────────────────────────────────────
+// BO RETEST AND CONFIRMATION
+// ─────────────────────────────────────────────────────────────
+
+retestTolerance = breakoutRetestToleranceTicks * syminfo.mintick
+
+upsideRetestTouches = low <= orbHigh + retestTolerance
+downsideRetestTouches = high >= orbLow - retestTolerance
+
+// Entries always close strictly outside the actual ORB.
+upsideRetestHolds = close > orbHigh
+downsideRetestHolds = close < orbLow
+
+breakoutBullishPattern = breakoutRequireEngulf ? bullishEngulfValid : currentBullish
+breakoutBearishPattern = breakoutRequireEngulf ? bearishEngulfValid : currentBearish
+
+// The retest candle may close slightly inside when tolerance is enabled.
+upsideRetestValid = orbReady and inTradeWindow and upsideBreakoutArmed and not na(upsideBreakoutBar) and bar_index > upsideBreakoutBar and upsideRetestTouches and (upsideRetestHolds or (enableBOCloseTolerance and close >= orbHigh - boCloseTolerance))
+downsideRetestValid = orbReady and inTradeWindow and downsideBreakoutArmed and not na(downsideBreakoutBar) and bar_index > downsideBreakoutBar and downsideRetestTouches and (downsideRetestHolds or (enableBOCloseTolerance and close <= orbLow + boCloseTolerance))
+
+// Next-candle route:
+// BUY: previous red retest, current green, strictly larger body.
+// SELL: previous green retest, current red, strictly larger body.
+// [1] requires the immediately preceding candle to be the retest.
+breakoutBuy = signalBodyAllowed and orbReady and inTradeWindow and enableBreakoutSetup and not boSessionLocked and barstate.isconfirmed and upsideBreakoutArmed and not na(upsideBreakoutBar) and bar_index > upsideBreakoutBar and upsideRetestHolds and ((upsideRetestTouches and breakoutBullishPattern) or (upsideRetestValid[1] and previousBearish and currentBullish)) and signalBodyLarger
+breakoutSell = signalBodyAllowed and orbReady and inTradeWindow and enableBreakoutSetup and not boSessionLocked and barstate.isconfirmed and downsideBreakoutArmed and not na(downsideBreakoutBar) and bar_index > downsideBreakoutBar and downsideRetestHolds and ((downsideRetestTouches and breakoutBearishPattern) or (downsideRetestValid[1] and previousBullish and currentBearish)) and signalBodyLarger
+
+if breakoutBuy
+    upsideBreakoutArmed := false
+    upsideBreakoutBar := na
+
+if breakoutSell
+    downsideBreakoutArmed := false
+    downsideBreakoutBar := na
+
+if orbReady and not inTradeWindow and not inORB
+    upsideBreakoutArmed := false
+    downsideBreakoutArmed := false
+    upsideBreakoutBar := na
+    downsideBreakoutBar := na
+
+// ─────────────────────────────────────────────────────────────
+// EMA BO
+// ─────────────────────────────────────────────────────────────
+
+emaValue = ta.ema(close, emaLength)
+emaCrossUp = ta.crossover(close, emaValue)
+emaCrossDown = ta.crossunder(close, emaValue)
+
+var int emaBOStage = 0
+var int emaBOBreakBar = na
+var bool emaBORetestSeen = false
+var bool emaBOLocked = false
+var float emaAtORBLock = na
+
+bool emaBOBuy = false
+bool emaBOSell = false
+bool emaBOLockNow = false
+bool emaLongRetestNow = false
+bool emaShortRetestNow = false
+
+if orbStart
+    emaBOStage := 0
+    emaBOBreakBar := na
+    emaBORetestSeen := false
+    emaBOLocked := false
+    emaAtORBLock := na
+
+if orbEnd
+    emaAtORBLock := emaValue[1]
+
+emaBORetestTolerance = emaBORetestTicks * syminfo.mintick
+
+if barstate.isconfirmed and orbReady and not inORB
+    if not emaBOLocked and not na(emaBOBreakBar) and bar_index > emaBOBreakBar
+        bool failedLongEMA = emaBOStage == 2 and close < emaValue
+        bool failedShortEMA = emaBOStage == -2 and close > emaValue
+
+        if failedLongEMA or failedShortEMA
+            emaBOLocked := true
+            emaBOLockNow := true
+            emaBOStage := 0
+            emaBOBreakBar := na
+            emaBORetestSeen := false
+
+    if enableEMABO and inTradeWindow and not emaBOLocked
+        if (emaBOStage == 1 and close <= orbHigh) or (emaBOStage == -1 and close >= orbLow)
+            emaBOStage := 0
+
+        if emaBOStage == 0
+            bool freshORBBreakUp = close > orbHigh and close[1] <= orbHigh
+            bool freshORBBreakDown = close < orbLow and close[1] >= orbLow
+            bool eligibleEMAAbove = not emaBOOutsideOnly or (not na(emaAtORBLock) and emaAtORBLock > orbHigh)
+            bool eligibleEMABelow = not emaBOOutsideOnly or (not na(emaAtORBLock) and emaAtORBLock < orbLow)
+
+            if freshORBBreakUp and eligibleEMAAbove
+                emaBOStage := 1
+                emaBOBreakBar := na
+                emaBORetestSeen := false
+            else if freshORBBreakDown and eligibleEMABelow
+                emaBOStage := -1
+                emaBOBreakBar := na
+                emaBORetestSeen := false
+
+        if emaBOStage == 1 and emaCrossUp and close > orbHigh
+            emaBOStage := 2
+            emaBOBreakBar := bar_index
+            emaBORetestSeen := false
+        else if emaBOStage == -1 and emaCrossDown and close < orbLow
+            emaBOStage := -2
+            emaBOBreakBar := bar_index
+            emaBORetestSeen := false
+
+        if emaBOStage == 2 and not na(emaBOBreakBar) and bar_index > emaBOBreakBar
+            bool touchesEMA = low <= emaValue + emaBORetestTolerance and high >= emaValue - emaBORetestTolerance
+            emaLongRetestNow := touchesEMA and close >= emaValue and close > orbHigh
+
+            if touchesEMA
+                emaBORetestSeen := true
+
+            if signalBodyAllowed and ((emaBORetestSeen and previousBearish and bullishBodyEngulf) or (emaLongRetestNow[1] and previousBearish and currentBullish)) and signalBodyLarger and close > emaValue and close > orbHigh
+                emaBOBuy := true
+                emaBOStage := 0
+                emaBOBreakBar := na
+                emaBORetestSeen := false
+
+        else if emaBOStage == -2 and not na(emaBOBreakBar) and bar_index > emaBOBreakBar
+            bool touchesEMA = high >= emaValue - emaBORetestTolerance and low <= emaValue + emaBORetestTolerance
+            emaShortRetestNow := touchesEMA and close <= emaValue and close < orbLow
+
+            if touchesEMA
+                emaBORetestSeen := true
+
+            if signalBodyAllowed and ((emaBORetestSeen and previousBullish and bearishBodyEngulf) or (emaShortRetestNow[1] and previousBullish and currentBearish)) and signalBodyLarger and close < emaValue and close < orbLow
+                emaBOSell := true
+                emaBOStage := 0
+                emaBOBreakBar := na
+                emaBORetestSeen := false
+    else
+        emaBOStage := 0
+        emaBOBreakBar := na
+        emaBORetestSeen := false
+
+// ─────────────────────────────────────────────────────────────
+// SIGNAL DISPLAY
+// ─────────────────────────────────────────────────────────────
+
+finalBuy = liquidityBuy or orbBuy or breakoutBuy or emaBOBuy
+finalSell = liquiditySell or orbSell or breakoutSell or emaBOSell
+
+plot(showEMA ? emaValue : na, title = "EMA", color = color.blue, linewidth = 2)
+plot(showBreakoutLevels and upsideBreakoutArmed ? orbHigh : na, title = "Armed Upside Breakout Level", color = color.new(color.green, 40), linewidth = 3, style = plot.style_linebr)
+plot(showBreakoutLevels and downsideBreakoutArmed ? orbLow : na, title = "Armed Downside Breakout Level", color = color.new(color.red, 40), linewidth = 3, style = plot.style_linebr)
+
+plotshape(showBuySignals and showLiquiditySweeps and liquidityBuy, title = "Liquidity Sweep BUY", text = "LQ BUY", style = shape.labelup, location = location.belowbar, color = color.green, textcolor = color.white, size = size.small)
+plotshape(showSellSignals and showLiquiditySweeps and liquiditySell, title = "Liquidity Sweep SELL", text = "LQ SELL", style = shape.labeldown, location = location.abovebar, color = color.red, textcolor = color.white, size = size.small)
+
+plotshape(showBuySignals and showORBRejections and orbBuy, title = "ORB Rejection BUY", text = "ORB BUY", style = shape.labelup, location = location.belowbar, color = color.lime, textcolor = color.black, size = size.small)
+plotshape(showSellSignals and showORBRejections and orbSell, title = "ORB Rejection SELL", text = "ORB SELL", style = shape.labeldown, location = location.abovebar, color = color.maroon, textcolor = color.white, size = size.small)
+
+plotshape(showBuySignals and enableBreakoutSetup and breakoutBuy and not emaBOBuy, title = "Breakout Retest BUY", text = "BO BUY", style = shape.labelup, location = location.belowbar, color = color.aqua, textcolor = color.black, size = size.small)
+plotshape(showSellSignals and enableBreakoutSetup and breakoutSell and not emaBOSell, title = "Breakout Retest SELL", text = "BO SELL", style = shape.labeldown, location = location.abovebar, color = color.orange, textcolor = color.black, size = size.small)
+
+plotshape(showBuySignals and emaBOBuy, title = "EMA Breakout Retest BUY", text = "EMA BO BUY", style = shape.labelup, location = location.belowbar, color = color.teal, textcolor = color.white, size = size.small)
+plotshape(showSellSignals and emaBOSell, title = "EMA Breakout Retest SELL", text = "EMA BO SELL", style = shape.labeldown, location = location.abovebar, color = color.purple, textcolor = color.white, size = size.small)
+
+plotshape(showEMABOLock and emaBOLockNow, title = "EMA BO locked for session", text = "EMA BO\nLOCKED", style = shape.xcross, location = location.abovebar, color = color.orange, textcolor = color.orange, size = size.tiny)
+
+plot(boSessionLocked ? 1 : 0, title = "BO session locked", display = display.data_window)
+plot(emaBOLocked ? 1 : 0, title = "EMA BO session locked", display = display.data_window)
+
+bgcolor(showTradeWindowBackground and inTradeWindow ? color.new(color.blue, 94) : na)
+
+// ─────────────────────────────────────────────────────────────
+// ALERTS
+// ─────────────────────────────────────────────────────────────
+
+alertcondition(liquidityBuy, title = "Liquidity Sweep BUY", message = "LQ BUY: A swing low below the ORB was swept, then a bullish candle closed inside the ORB.")
+alertcondition(liquiditySell, title = "Liquidity Sweep SELL", message = "LQ SELL: A swing high above the ORB was swept, then a bearish candle closed inside the ORB.")
+
+alertcondition(orbBuy, title = "ORB Rejection BUY", message = "ORB BUY: Unbroken ORB Low held as support with a larger bullish body and a close inside the ORB.")
+alertcondition(orbSell, title = "ORB Rejection SELL", message = "ORB SELL: Unbroken ORB High held as resistance with a larger bearish body and a close inside the ORB.")
+
+alertcondition(breakoutBuy, title = "Breakout Retest BUY", message = "BO BUY: ORB High breakout and retest confirmed by a larger bullish candle closing above ORB High.")
+alertcondition(breakoutSell, title = "Breakout Retest SELL", message = "BO SELL: ORB Low breakout and retest confirmed by a larger bearish candle closing below ORB Low.")
+
+alertcondition(emaBOBuy, title = "EMA Breakout Retest BUY", message = "EMA BO BUY: ORB and EMA broken upward, EMA retested, then a larger bullish confirmation candle.")
+alertcondition(emaBOSell, title = "EMA Breakout Retest SELL", message = "EMA BO SELL: ORB and EMA broken downward, EMA retested, then a larger bearish confirmation candle.")
+
+alertcondition(finalBuy, title = "ANY BUY Signal", message = "ORB PRO BUY signal.")
+alertcondition(finalSell, title = "ANY SELL Signal", message = "ORB PRO SELL signal.")
+
+// ─────────────────────────────────────────────────────────────
+// OPTIONAL SL / TP BOXES — DISPLAY ONLY
+// ─────────────────────────────────────────────────────────────
+
+groupRiskBoxes = "8. SL / TP Boxes"
+showSLTPBoxes = input.bool(true, "Show SL / TP boxes", group = groupRiskBoxes)
+boxTransparency = input.int(85, "Box transparency", minval = 0, maxval = 100, group = groupRiskBoxes)
+boxHistoryLimit = input.int(30, "Number of signal box pairs to keep", minval = 1, maxval = 100, group = groupRiskBoxes)
+
+boxStopMode = input.string("Signal candle", "Stop placement", options = ["Signal candle", "ATR", "Opposite ORB boundary", "Confirmed swing"], group = groupRiskBoxes)
+boxStopBufferTicks = input.int(2, "Stop buffer (ticks)", minval = 0, group = groupRiskBoxes)
+boxATRLength = input.int(14, "ATR length", minval = 1, group = groupRiskBoxes)
+boxATRMultiplier = input.float(1.5, "ATR multiplier", minval = 0.1, step = 0.1, group = groupRiskBoxes)
+boxSwingStrength = input.int(2, "Stop swing strength", minval = 1, maxval = 20, group = groupRiskBoxes)
+
+boxLQTarget = input.string("2R", "LQ target", options = ["1R", "2R", "Custom R", "ORB boundary", "ORB range extension"], group = groupRiskBoxes)
+boxORBTarget = input.string("ORB boundary", "ORB target", options = ["1R", "2R", "Custom R", "ORB boundary", "ORB range extension"], group = groupRiskBoxes)
+boxBOTarget = input.string("2R", "BO target", options = ["1R", "2R", "Custom R", "ORB range extension"], group = groupRiskBoxes)
+boxCustomR = input.float(2.0, "Custom reward / risk", minval = 0.1, step = 0.1, group = groupRiskBoxes)
+boxRangeMultiple = input.float(1.0, "ORB extension multiple", minval = 0.1, step = 0.1, group = groupRiskBoxes)
+
+boxATRValue = ta.atr(boxATRLength)
+boxPivotHigh = ta.pivothigh(high, boxSwingStrength, boxSwingStrength)
+boxPivotLow = ta.pivotlow(low, boxSwingStrength, boxSwingStrength)
+
+var float boxLastSwingHigh = na
+var float boxLastSwingLow = na
+
+if not na(boxPivotHigh)
+    boxLastSwingHigh := boxPivotHigh
+if not na(boxPivotLow)
+    boxLastSwingLow := boxPivotLow
+
+boxStopPrice(bool isLong, float entryPrice) =>
+    float buffer = boxStopBufferTicks * syminfo.mintick
+    float result = switch boxStopMode
+        "Signal candle" => isLong ? low - buffer : high + buffer
+        "ATR" => isLong ? entryPrice - boxATRValue * boxATRMultiplier : entryPrice + boxATRValue * boxATRMultiplier
+        "Opposite ORB boundary" => isLong ? orbLow - buffer : orbHigh + buffer
+        "Confirmed swing" => isLong ? boxLastSwingLow - buffer : boxLastSwingHigh + buffer
+        => na
+    isLong ? math.floor(result / syminfo.mintick) * syminfo.mintick : math.ceil(result / syminfo.mintick) * syminfo.mintick
+
+boxTargetPrice(bool isLong, float entryPrice, float stopPrice, string mode) =>
+    float risk = math.abs(entryPrice - stopPrice)
+    float multiple = mode == "1R" ? 1.0 : mode == "2R" ? 2.0 : boxCustomR
+    float result = switch mode
+        "ORB boundary" => isLong ? orbHigh : orbLow
+        "ORB range extension" => isLong ? orbHigh + (orbHigh - orbLow) * boxRangeMultiple : orbLow - (orbHigh - orbLow) * boxRangeMultiple
+        => isLong ? entryPrice + risk * multiple : entryPrice - risk * multiple
+    math.round_to_mintick(result)
+
+var array<box> signalSLBoxes = array.new_box()
+var array<box> signalTPBoxes = array.new_box()
+var array<float> signalBoxStops = array.new_float()
+var array<float> signalBoxTargets = array.new_float()
+var array<bool> signalBoxLongs = array.new_bool()
+var array<bool> signalBoxActive = array.new_bool()
+var array<int> signalBoxBars = array.new_int()
+
+if showSLTPBoxes and barstate.isconfirmed
+    if array.size(signalSLBoxes) > 0
+        for i = 0 to array.size(signalSLBoxes) - 1
+            if array.get(signalBoxActive, i) and bar_index > array.get(signalBoxBars, i)
+                box.set_right(array.get(signalSLBoxes, i), bar_index)
+                box.set_right(array.get(signalTPBoxes, i), bar_index)
+
+                bool isLong = array.get(signalBoxLongs, i)
+                float stopPrice = array.get(signalBoxStops, i)
+                float targetPrice = array.get(signalBoxTargets, i)
+                bool levelTouched = isLong ? (low <= stopPrice or high >= targetPrice) : (high >= stopPrice or low <= targetPrice)
+
+                if levelTouched
+                    array.set(signalBoxActive, i, false)
+
+    bool buyBoxSignal = showBuySignals and finalBuy
+    bool sellBoxSignal = showSellSignals and finalSell
+
+    if buyBoxSignal != sellBoxSignal
+        bool isLong = buyBoxSignal
+        string setup = isLong ? (liquidityBuy ? "LQ" : orbBuy ? "ORB" : emaBOBuy ? "EMA BO" : "BO") : (liquiditySell ? "LQ" : orbSell ? "ORB" : emaBOSell ? "EMA BO" : "BO")
+        string mode = setup == "LQ" ? boxLQTarget : setup == "ORB" ? boxORBTarget : boxBOTarget
+
+        float entryPrice = close
+        float stopPrice = boxStopPrice(isLong, entryPrice)
+        float targetPrice = boxTargetPrice(isLong, entryPrice, stopPrice, mode)
+
+        bool validStop = not na(stopPrice) and (isLong ? stopPrice < entryPrice : stopPrice > entryPrice)
+        bool validTarget = not na(targetPrice) and (isLong ? targetPrice > entryPrice : targetPrice < entryPrice)
+
+        if validStop and validTarget
+            if array.size(signalSLBoxes) >= boxHistoryLimit
+                box.delete(array.shift(signalSLBoxes))
+                box.delete(array.shift(signalTPBoxes))
+                array.shift(signalBoxStops)
+                array.shift(signalBoxTargets)
+                array.shift(signalBoxLongs)
+                array.shift(signalBoxActive)
+                array.shift(signalBoxBars)
+
+            box redBox = box.new(left = bar_index, top = math.max(entryPrice, stopPrice), right = bar_index + 1, bottom = math.min(entryPrice, stopPrice), xloc = xloc.bar_index, border_color = color.new(color.red, 30), bgcolor = color.new(color.red, boxTransparency))
+            box greenBox = box.new(left = bar_index, top = math.max(entryPrice, targetPrice), right = bar_index + 1, bottom = math.min(entryPrice, targetPrice), xloc = xloc.bar_index, border_color = color.new(color.green, 30), bgcolor = color.new(color.green, boxTransparency))
+
+            array.push(signalSLBoxes, redBox)
+            array.push(signalTPBoxes, greenBox)
+            array.push(signalBoxStops, stopPrice)
+            array.push(signalBoxTargets, targetPrice)
+            array.push(signalBoxLongs, isLong)
+            array.push(signalBoxActive, true)
+            array.push(signalBoxBars, bar_index)

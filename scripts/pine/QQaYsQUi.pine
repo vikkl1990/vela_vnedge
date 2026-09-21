@@ -1,0 +1,2346 @@
+//@version=6
+indicator(
+     "Tien Sanh - ABX V14 UNIVERSAL",
+     overlay=true,
+     max_bars_back=4000,
+     max_lines_count=500,
+     max_labels_count=500)
+
+//====================================================================
+// 1. MODE
+//====================================================================
+
+mode = input.string(
+     "AUTO (ATR)",
+     "Chế độ",
+     options=["AUTO (ATR)", "MANUAL"],
+     group="1. UNIVERSAL MODE")
+
+autoMode = mode == "AUTO (ATR)"
+
+atrLength = input.int(
+     14,
+     "ATR Length",
+     minval=5,
+     maxval=100,
+     group="1. UNIVERSAL MODE")
+
+atrValue = ta.atr(atrLength)
+
+//====================================================================
+// 2. AUTO ATR MULTIPLIERS
+//====================================================================
+
+moveATRMult = input.float(
+     1.50,
+     "Pha tăng/giảm tối thiểu × ATR",
+     minval=0.20,
+     step=0.10,
+     group="2. AUTO ATR")
+
+depthATRMult = input.float(
+     2.00,
+     "Depth / Height × ATR",
+     minval=0.20,
+     step=0.10,
+     group="2. AUTO ATR")
+
+escapeATRMult = input.float(
+     1.00,
+     "Escape × ATR",
+     minval=0.10,
+     step=0.10,
+     group="2. AUTO ATR")
+
+nearATRMult = input.float(
+     0.70,
+     "Near Zone × ATR",
+     minval=0.10,
+     step=0.10,
+     group="2. AUTO ATR")
+
+breakoutATRMult = input.float(
+     0.70,
+     "Breakout CHECK × ATR",
+     minval=0.10,
+     step=0.10,
+     group="2. AUTO ATR")
+
+wickATRMult = input.float(
+     0.60,
+     "Râu Anchor tối đa × ATR",
+     minval=0.05,
+     step=0.05,
+     group="2. AUTO ATR")
+
+clusterATRMult = input.float(
+     0.35,
+     "Cluster giá × ATR",
+     minval=0.05,
+     step=0.05,
+     group="2. AUTO ATR")
+
+extraATRMult = input.float(
+     0.35,
+     "C/D/E tolerance × ATR",
+     minval=0.05,
+     step=0.05,
+     group="2. AUTO ATR")
+
+//====================================================================
+// 3. MANUAL VALUES
+//
+// Gần với V12/V13.
+// Chỉ dùng khi MODE = MANUAL.
+//====================================================================
+
+manualMinMove = input.float(
+     20.0,
+     "Pha tăng/giảm tối thiểu",
+     minval=0.00001,
+     step=0.1,
+     group="3. MANUAL")
+
+manualDepth = input.float(
+     30.0,
+     "Depth / Height",
+     minval=0.00001,
+     step=0.1,
+     group="3. MANUAL")
+
+manualEscape = input.float(
+     15.0,
+     "Escape",
+     minval=0.00001,
+     step=0.1,
+     group="3. MANUAL")
+
+manualNear = input.float(
+     10.0,
+     "Near Zone",
+     minval=0.00001,
+     step=0.1,
+     group="3. MANUAL")
+
+manualBreakout = input.float(
+     10.0,
+     "Breakout CHECK",
+     minval=0.00001,
+     step=0.1,
+     group="3. MANUAL")
+
+manualMaxWick = input.float(
+     10.0,
+     "Râu Anchor tối đa",
+     minval=0.0,
+     step=0.1,
+     group="3. MANUAL")
+
+manualClusterPrice = input.float(
+     5.0,
+     "Cluster giá",
+     minval=0.00001,
+     step=0.1,
+     group="3. MANUAL")
+
+manualExtraTolerance = input.float(
+     5.0,
+     "C/D/E tolerance",
+     minval=0.0,
+     step=0.1,
+     group="3. MANUAL")
+
+//====================================================================
+// 4. PHASE STRUCTURE
+//====================================================================
+
+pivotLeft = input.int(
+     2,
+     "Pivot Left",
+     minval=1,
+     maxval=10,
+     group="4. PHASE")
+
+pivotRight = input.int(
+     5,
+     "Nến xác nhận phía sau",
+     minval=5,
+     maxval=20,
+     group="4. PHASE")
+
+minPhaseBars = input.int(
+     5,
+     "Số nến tối thiểu mỗi pha",
+     minval=5,
+     maxval=20,
+     group="4. PHASE")
+
+maxPhaseBars = input.int(
+     20,
+     "Số nến tìm tối đa mỗi pha",
+     minval=5,
+     maxval=50,
+     group="4. PHASE")
+
+anchorSearch = input.int(
+     8,
+     "Tìm nến màu cuối trong tối đa",
+     minval=2,
+     maxval=20,
+     group="4. PHASE")
+
+//====================================================================
+// 5. A-B STRUCTURE
+//====================================================================
+
+minABBars = input.int(
+     12,
+     "A → B tối thiểu",
+     minval=5,
+     maxval=100,
+     group="5. A-B")
+
+maxABBars = input.int(
+     300,
+     "A → B tối đa",
+     minval=30,
+     maxval=1500,
+     group="5. A-B")
+
+clusterBars = input.int(
+     4,
+     "Cluster nến",
+     minval=1,
+     maxval=20,
+     group="5. A-B")
+
+//====================================================================
+// 6. SEPARATION
+//====================================================================
+
+useSeparationFilter = input.bool(
+     true,
+     "Bật Separation",
+     group="6. SEPARATION")
+
+maxNearRatio = input.float(
+     0.65,
+     "Tỷ lệ nến gần X tối đa",
+     minval=0.10,
+     maxval=1.00,
+     step=0.05,
+     group="6. SEPARATION")
+
+minEscapeRatio = input.float(
+     0.20,
+     "Escape Ratio tối thiểu",
+     minval=0.05,
+     maxval=1.00,
+     step=0.05,
+     group="6. SEPARATION")
+
+//====================================================================
+// 7. SIGNAL
+//====================================================================
+
+maxBarsAfterB = input.int(
+     199,
+     "B → CHECK tối đa",
+     minval=1,
+     group="7. SIGNAL")
+
+enableTop = input.bool(
+     true,
+     "Bật ĐỈNH",
+     group="7. SIGNAL")
+
+enableBottom = input.bool(
+     true,
+     "Bật ĐÁY",
+     group="7. SIGNAL")
+
+//====================================================================
+// 8. DISPLAY
+//====================================================================
+
+showABCD = input.bool(
+     true,
+     "Hiện A/B/C/D/E",
+     group="8. DISPLAY")
+
+showStops = input.bool(
+     true,
+     "Hiện STOP",
+     group="8. DISPLAY")
+
+showCheck = input.bool(
+     true,
+     "Hiện CHECK",
+     group="8. DISPLAY")
+
+showDebug = input.bool(
+     true,
+     "Hiện DEBUG",
+     group="8. DISPLAY")
+
+//====================================================================
+// 9. COMMON FUNCTION
+//====================================================================
+
+// X được phép nằm đúng Open/Close.
+// Chỉ cấm X nằm BÊN TRONG thân.
+
+f_bodyCutsLine(int aBar, int bBar, float level) =>
+
+    bool cuts = false
+
+    int distance = bBar - aBar
+
+    if distance > 1
+
+        for j = 1 to distance - 1
+
+            int offset = bar_index - (aBar + j)
+
+            if offset >= 0
+
+                float candleTop = math.max(open[offset], close[offset])
+                float candleBottom = math.min(open[offset], close[offset])
+
+                if candleBottom < level and level < candleTop
+                    cuts := true
+
+    cuts
+
+//====================================================================
+// 10. TOP OVERLAP
+//====================================================================
+
+f_findTopX(
+     int aBar,
+     int bBar,
+     float A1,
+     float A2,
+     float B1,
+     float B2) =>
+
+    float overlapLow = math.max(A2, B2)
+    float overlapHigh = math.min(A1, B1)
+
+    bool hasOverlap = overlapLow <= overlapHigh
+
+    float candidate = na
+    bool finished = false
+
+    if hasOverlap
+
+        candidate := overlapLow
+
+        int loopCount = 0
+
+        while not finished and loopCount < 30
+
+            loopCount += 1
+
+            if candidate > overlapHigh
+
+                candidate := na
+                finished := true
+
+            else
+
+                float nextCandidate = candidate
+                int distance = bBar - aBar
+
+                if distance > 1
+
+                    for j = 1 to distance - 1
+
+                        int offset = bar_index - (aBar + j)
+
+                        if offset >= 0
+
+                            float candleTop = math.max(open[offset], close[offset])
+                            float candleBottom = math.min(open[offset], close[offset])
+
+                            if candleBottom < candidate and candidate < candleTop
+                                nextCandidate := math.max(nextCandidate, candleTop)
+
+                if nextCandidate == candidate
+                    finished := true
+                else
+                    candidate := nextCandidate
+
+    if not na(candidate)
+
+        if candidate > overlapHigh
+            candidate := na
+
+    [candidate, hasOverlap]
+
+//====================================================================
+// 11. BOTTOM OVERLAP
+//====================================================================
+
+f_findBottomX(
+     int aBar,
+     int bBar,
+     float A1,
+     float A2,
+     float B1,
+     float B2) =>
+
+    float overlapLow = math.max(A1, B1)
+    float overlapHigh = math.min(A2, B2)
+
+    bool hasOverlap = overlapLow <= overlapHigh
+
+    float candidate = na
+    bool finished = false
+
+    if hasOverlap
+
+        candidate := overlapHigh
+
+        int loopCount = 0
+
+        while not finished and loopCount < 30
+
+            loopCount += 1
+
+            if candidate < overlapLow
+
+                candidate := na
+                finished := true
+
+            else
+
+                float nextCandidate = candidate
+                int distance = bBar - aBar
+
+                if distance > 1
+
+                    for j = 1 to distance - 1
+
+                        int offset = bar_index - (aBar + j)
+
+                        if offset >= 0
+
+                            float candleTop = math.max(open[offset], close[offset])
+                            float candleBottom = math.min(open[offset], close[offset])
+
+                            if candleBottom < candidate and candidate < candleTop
+                                nextCandidate := math.min(nextCandidate, candleBottom)
+
+                if nextCandidate == candidate
+                    finished := true
+                else
+                    candidate := nextCandidate
+
+    if not na(candidate)
+
+        if candidate < overlapLow
+            candidate := na
+
+    [candidate, hasOverlap]
+
+//====================================================================
+// 12. TOP SEPARATION
+//====================================================================
+
+f_topDepth(int aBar, int bBar, float level) =>
+
+    float lowest = level
+    int distance = bBar - aBar
+
+    if distance > 1
+
+        for j = 1 to distance - 1
+
+            int offset = bar_index - (aBar + j)
+
+            if offset >= 0
+                lowest := math.min(lowest, low[offset])
+
+    level - lowest
+
+
+f_topNearRatio(
+     int aBar,
+     int bBar,
+     float level,
+     float zoneDistance) =>
+
+    int nearCount = 0
+    int totalCount = 0
+
+    int distance = bBar - aBar
+
+    if distance > 1
+
+        for j = 1 to distance - 1
+
+            int offset = bar_index - (aBar + j)
+
+            if offset >= 0
+
+                totalCount += 1
+
+                float candleTop = math.max(open[offset], close[offset])
+                float dist = level - candleTop
+
+                if dist >= 0 and dist <= zoneDistance
+                    nearCount += 1
+
+    totalCount > 0 ? float(nearCount) / float(totalCount) : 1.0
+
+
+f_topEscapeRatio(
+     int aBar,
+     int bBar,
+     float level,
+     float requiredDistance) =>
+
+    int escapeCount = 0
+    int totalCount = 0
+
+    int distance = bBar - aBar
+
+    if distance > 1
+
+        for j = 1 to distance - 1
+
+            int offset = bar_index - (aBar + j)
+
+            if offset >= 0
+
+                totalCount += 1
+
+                float candleTop = math.max(open[offset], close[offset])
+
+                if level - candleTop >= requiredDistance
+                    escapeCount += 1
+
+    totalCount > 0 ? float(escapeCount) / float(totalCount) : 0.0
+
+//====================================================================
+// 13. BOTTOM SEPARATION
+//====================================================================
+
+f_bottomHeight(int aBar, int bBar, float level) =>
+
+    float highest = level
+    int distance = bBar - aBar
+
+    if distance > 1
+
+        for j = 1 to distance - 1
+
+            int offset = bar_index - (aBar + j)
+
+            if offset >= 0
+                highest := math.max(highest, high[offset])
+
+    highest - level
+
+
+f_bottomNearRatio(
+     int aBar,
+     int bBar,
+     float level,
+     float zoneDistance) =>
+
+    int nearCount = 0
+    int totalCount = 0
+
+    int distance = bBar - aBar
+
+    if distance > 1
+
+        for j = 1 to distance - 1
+
+            int offset = bar_index - (aBar + j)
+
+            if offset >= 0
+
+                totalCount += 1
+
+                float candleBottom = math.min(open[offset], close[offset])
+                float dist = candleBottom - level
+
+                if dist >= 0 and dist <= zoneDistance
+                    nearCount += 1
+
+    totalCount > 0 ? float(nearCount) / float(totalCount) : 1.0
+
+
+f_bottomEscapeRatio(
+     int aBar,
+     int bBar,
+     float level,
+     float requiredDistance) =>
+
+    int escapeCount = 0
+    int totalCount = 0
+
+    int distance = bBar - aBar
+
+    if distance > 1
+
+        for j = 1 to distance - 1
+
+            int offset = bar_index - (aBar + j)
+
+            if offset >= 0
+
+                totalCount += 1
+
+                float candleBottom = math.min(open[offset], close[offset])
+
+                if candleBottom - level >= requiredDistance
+                    escapeCount += 1
+
+    totalCount > 0 ? float(escapeCount) / float(totalCount) : 0.0
+
+//====================================================================
+// 14. DEBUG COUNTERS
+//====================================================================
+
+var int topCandidateCount = 0
+var int topPhaseCount = 0
+var int topPairCount = 0
+var int topOverlapCount = 0
+var int topClearCount = 0
+var int topXCreated = 0
+
+var int bottomCandidateCount = 0
+var int bottomPhaseCount = 0
+var int bottomPairCount = 0
+var int bottomOverlapCount = 0
+var int bottomClearCount = 0
+var int bottomXCreated = 0
+
+//====================================================================
+// 15. TOP DETECTION
+//====================================================================
+
+topPivot = ta.pivothigh(high, pivotLeft, pivotRight)
+
+bool validTopZone = false
+
+float topZoneHigh = na
+float topZoneClose = na
+float topZoneATR = na
+
+int topZoneBar = na
+
+if enableTop and not na(topPivot)
+
+    topCandidateCount += 1
+
+    int pivotOffset = pivotRight
+    int anchorOffset = na
+
+    //---------------------------------------------------------------
+    // GREEN ANCHOR
+    //---------------------------------------------------------------
+
+    for j = 0 to anchorSearch - 1
+
+        int idx = pivotOffset + j
+
+        if idx <= bar_index and na(anchorOffset)
+
+            if close[idx] > open[idx]
+                anchorOffset := idx
+
+    if not na(anchorOffset)
+
+        float anchorHigh = high[anchorOffset]
+        float anchorClose = close[anchorOffset]
+
+        float anchorATR = atrValue[anchorOffset]
+
+        float effectiveMove =
+             autoMode ?
+             anchorATR * moveATRMult :
+             manualMinMove
+
+        float effectiveWick =
+             autoMode ?
+             anchorATR * wickATRMult :
+             manualMaxWick
+
+        float upperWick = anchorHigh - anchorClose
+
+        bool wickOK = upperWick <= effectiveWick
+
+        if wickOK
+
+            //-----------------------------------------------------------
+            // UP PHASE
+            //-----------------------------------------------------------
+
+            bool upPhaseOK = false
+            float lowestBefore = low[anchorOffset]
+
+            for j = 1 to maxPhaseBars - 1
+
+                int idx = anchorOffset + j
+
+                if idx <= bar_index
+
+                    lowestBefore := math.min(lowestBefore, low[idx])
+
+                    int phaseBars = j + 1
+
+                    if phaseBars >= minPhaseBars
+
+                        bool netUp =
+                             close[anchorOffset] >
+                             close[idx]
+
+                        bool enoughMove =
+                             anchorHigh -
+                             lowestBefore >=
+                             effectiveMove
+
+                        if netUp and enoughMove
+                            upPhaseOK := true
+
+            //-----------------------------------------------------------
+            // DOWN PHASE
+            //-----------------------------------------------------------
+
+            bool downPhaseOK = false
+            float lowestAfter = anchorHigh
+            int afterBars = 0
+
+            for j = 1 to maxPhaseBars
+
+                int idx = anchorOffset - j
+
+                if idx >= 0
+
+                    afterBars += 1
+
+                    lowestAfter :=
+                         math.min(
+                             lowestAfter,
+                             low[idx])
+
+                    if afterBars >= minPhaseBars
+
+                        bool netDown =
+                             close[idx] <
+                             close[anchorOffset]
+
+                        bool enoughMove =
+                             anchorHigh -
+                             lowestAfter >=
+                             effectiveMove
+
+                        if netDown and enoughMove
+                            downPhaseOK := true
+
+            //-----------------------------------------------------------
+            // VALID TOP
+            //-----------------------------------------------------------
+
+            if upPhaseOK and downPhaseOK
+
+                topPhaseCount += 1
+
+                validTopZone := true
+
+                topZoneHigh := anchorHigh
+                topZoneClose := anchorClose
+                topZoneATR := anchorATR
+
+                topZoneBar :=
+                     bar_index -
+                     anchorOffset
+
+//====================================================================
+// 16. BOTTOM DETECTION
+//====================================================================
+
+bottomPivot = ta.pivotlow(low, pivotLeft, pivotRight)
+
+bool validBottomZone = false
+
+float bottomZoneLow = na
+float bottomZoneClose = na
+float bottomZoneATR = na
+
+int bottomZoneBar = na
+
+if enableBottom and not na(bottomPivot)
+
+    bottomCandidateCount += 1
+
+    int pivotOffset = pivotRight
+    int anchorOffset = na
+
+    //---------------------------------------------------------------
+    // RED ANCHOR
+    //---------------------------------------------------------------
+
+    for j = 0 to anchorSearch - 1
+
+        int idx = pivotOffset + j
+
+        if idx <= bar_index and na(anchorOffset)
+
+            if close[idx] < open[idx]
+                anchorOffset := idx
+
+    if not na(anchorOffset)
+
+        float anchorLow = low[anchorOffset]
+        float anchorClose = close[anchorOffset]
+
+        float anchorATR = atrValue[anchorOffset]
+
+        float effectiveMove =
+             autoMode ?
+             anchorATR * moveATRMult :
+             manualMinMove
+
+        float effectiveWick =
+             autoMode ?
+             anchorATR * wickATRMult :
+             manualMaxWick
+
+        float lowerWick =
+             anchorClose -
+             anchorLow
+
+        bool wickOK =
+             lowerWick <=
+             effectiveWick
+
+        if wickOK
+
+            //-----------------------------------------------------------
+            // DOWN PHASE BEFORE BOTTOM
+            //-----------------------------------------------------------
+
+            bool downPhaseOK = false
+            float highestBefore = high[anchorOffset]
+
+            for j = 1 to maxPhaseBars - 1
+
+                int idx = anchorOffset + j
+
+                if idx <= bar_index
+
+                    highestBefore :=
+                         math.max(
+                             highestBefore,
+                             high[idx])
+
+                    int phaseBars = j + 1
+
+                    if phaseBars >= minPhaseBars
+
+                        bool netDown =
+                             close[anchorOffset] <
+                             close[idx]
+
+                        bool enoughMove =
+                             highestBefore -
+                             anchorLow >=
+                             effectiveMove
+
+                        if netDown and enoughMove
+                            downPhaseOK := true
+
+            //-----------------------------------------------------------
+            // UP PHASE AFTER BOTTOM
+            //-----------------------------------------------------------
+
+            bool upPhaseOK = false
+            float highestAfter = anchorLow
+            int afterBars = 0
+
+            for j = 1 to maxPhaseBars
+
+                int idx = anchorOffset - j
+
+                if idx >= 0
+
+                    afterBars += 1
+
+                    highestAfter :=
+                         math.max(
+                             highestAfter,
+                             high[idx])
+
+                    if afterBars >= minPhaseBars
+
+                        bool netUp =
+                             close[idx] >
+                             close[anchorOffset]
+
+                        bool enoughMove =
+                             highestAfter -
+                             anchorLow >=
+                             effectiveMove
+
+                        if netUp and enoughMove
+                            upPhaseOK := true
+
+            //-----------------------------------------------------------
+            // VALID BOTTOM
+            //-----------------------------------------------------------
+
+            if downPhaseOK and upPhaseOK
+
+                bottomPhaseCount += 1
+
+                validBottomZone := true
+
+                bottomZoneLow := anchorLow
+                bottomZoneClose := anchorClose
+                bottomZoneATR := anchorATR
+
+                bottomZoneBar :=
+                     bar_index -
+                     anchorOffset
+
+//====================================================================
+// 17. STORE TOP ZONES
+//====================================================================
+
+var topHighs = array.new_float()
+var topCloses = array.new_float()
+var topBars = array.new_int()
+var topATRs = array.new_float()
+
+bool acceptedTop = false
+
+float acceptedTopHigh = na
+float acceptedTopClose = na
+float acceptedTopATR = na
+
+int acceptedTopBar = na
+
+if validTopZone
+
+    int count = array.size(topBars)
+
+    bool merged = false
+
+    if count > 0
+
+        int lastIndex = count - 1
+
+        float oldHigh =
+             array.get(
+                 topHighs,
+                 lastIndex)
+
+        float oldATR =
+             array.get(
+                 topATRs,
+                 lastIndex)
+
+        int oldBar =
+             array.get(
+                 topBars,
+                 lastIndex)
+
+        float avgATR =
+             (oldATR +
+             topZoneATR) /
+             2.0
+
+        float effectiveCluster =
+             autoMode ?
+             avgATR * clusterATRMult :
+             manualClusterPrice
+
+        int barDistance =
+             topZoneBar -
+             oldBar
+
+        float priceDistance =
+             math.abs(
+                 topZoneHigh -
+                 oldHigh)
+
+        bool sameCluster =
+             barDistance >= 0 and
+             barDistance <= clusterBars and
+             priceDistance <= effectiveCluster
+
+        if sameCluster
+
+            merged := true
+
+            if topZoneHigh > oldHigh
+
+                array.set(topHighs, lastIndex, topZoneHigh)
+                array.set(topCloses, lastIndex, topZoneClose)
+                array.set(topBars, lastIndex, topZoneBar)
+                array.set(topATRs, lastIndex, topZoneATR)
+
+    if not merged
+
+        array.push(topHighs, topZoneHigh)
+        array.push(topCloses, topZoneClose)
+        array.push(topBars, topZoneBar)
+        array.push(topATRs, topZoneATR)
+
+        acceptedTop := true
+
+        acceptedTopHigh := topZoneHigh
+        acceptedTopClose := topZoneClose
+        acceptedTopATR := topZoneATR
+        acceptedTopBar := topZoneBar
+
+//====================================================================
+// 18. STORE BOTTOM ZONES
+//====================================================================
+
+var bottomLows = array.new_float()
+var bottomCloses = array.new_float()
+var bottomBars = array.new_int()
+var bottomATRs = array.new_float()
+
+bool acceptedBottom = false
+
+float acceptedBottomLow = na
+float acceptedBottomClose = na
+float acceptedBottomATR = na
+
+int acceptedBottomBar = na
+
+if validBottomZone
+
+    int count = array.size(bottomBars)
+
+    bool merged = false
+
+    if count > 0
+
+        int lastIndex = count - 1
+
+        float oldLow =
+             array.get(
+                 bottomLows,
+                 lastIndex)
+
+        float oldATR =
+             array.get(
+                 bottomATRs,
+                 lastIndex)
+
+        int oldBar =
+             array.get(
+                 bottomBars,
+                 lastIndex)
+
+        float avgATR =
+             (oldATR +
+             bottomZoneATR) /
+             2.0
+
+        float effectiveCluster =
+             autoMode ?
+             avgATR * clusterATRMult :
+             manualClusterPrice
+
+        int barDistance =
+             bottomZoneBar -
+             oldBar
+
+        float priceDistance =
+             math.abs(
+                 bottomZoneLow -
+                 oldLow)
+
+        bool sameCluster =
+             barDistance >= 0 and
+             barDistance <= clusterBars and
+             priceDistance <= effectiveCluster
+
+        if sameCluster
+
+            merged := true
+
+            if bottomZoneLow < oldLow
+
+                array.set(bottomLows, lastIndex, bottomZoneLow)
+                array.set(bottomCloses, lastIndex, bottomZoneClose)
+                array.set(bottomBars, lastIndex, bottomZoneBar)
+                array.set(bottomATRs, lastIndex, bottomZoneATR)
+
+    if not merged
+
+        array.push(bottomLows, bottomZoneLow)
+        array.push(bottomCloses, bottomZoneClose)
+        array.push(bottomBars, bottomZoneBar)
+        array.push(bottomATRs, bottomZoneATR)
+
+        acceptedBottom := true
+
+        acceptedBottomLow := bottomZoneLow
+        acceptedBottomClose := bottomZoneClose
+        acceptedBottomATR := bottomZoneATR
+        acceptedBottomBar := bottomZoneBar
+
+//====================================================================
+// 19. TOP X STORAGE
+//====================================================================
+
+var topXLevels = array.new_float()
+var topXABars = array.new_int()
+var topXBBars = array.new_int()
+
+var topXLastTouch = array.new_int()
+var topXTouchCount = array.new_int()
+
+var topXLineAlive = array.new_bool()
+var topXSetupAlive = array.new_bool()
+var topXTriggered = array.new_bool()
+
+var topXBreakout = array.new_float()
+var topXTolerance = array.new_float()
+
+var topXLines = array.new_line()
+
+//====================================================================
+// 20. BOTTOM X STORAGE
+//====================================================================
+
+var bottomXLevels = array.new_float()
+var bottomXABars = array.new_int()
+var bottomXBBars = array.new_int()
+
+var bottomXLastTouch = array.new_int()
+var bottomXTouchCount = array.new_int()
+
+var bottomXLineAlive = array.new_bool()
+var bottomXSetupAlive = array.new_bool()
+var bottomXTriggered = array.new_bool()
+
+var bottomXBreakout = array.new_float()
+var bottomXTolerance = array.new_float()
+
+var bottomXLines = array.new_line()
+
+//====================================================================
+// 21. PROCESS TOP
+//====================================================================
+
+if acceptedTop
+
+    //---------------------------------------------------------------
+    // C/D/E TOP
+    //---------------------------------------------------------------
+
+    int existingTopX =
+         array.size(
+             topXLevels)
+
+    if existingTopX > 0
+
+        for xi = 0 to existingTopX - 1
+
+            bool alive =
+                 array.get(
+                     topXLineAlive,
+                     xi)
+
+            if alive
+
+                float level =
+                     array.get(
+                         topXLevels,
+                         xi)
+
+                float oldTolerance =
+                     array.get(
+                         topXTolerance,
+                         xi)
+
+                float currentTolerance =
+                     autoMode ?
+                     acceptedTopATR * extraATRMult :
+                     manualExtraTolerance
+
+                float touchTolerance =
+                     math.max(
+                         oldTolerance,
+                         currentTolerance)
+
+                bool touches =
+                     level >=
+                     acceptedTopClose -
+                     touchTolerance and
+                     level <=
+                     acceptedTopHigh +
+                     touchTolerance
+
+                if touches
+
+                    int lastTouch =
+                         array.get(
+                             topXLastTouch,
+                             xi)
+
+                    if acceptedTopBar > lastTouch
+
+                        int oldCount =
+                             array.get(
+                                 topXTouchCount,
+                                 xi)
+
+                        int newCount =
+                             oldCount + 1
+
+                        array.set(
+                             topXTouchCount,
+                             xi,
+                             newCount)
+
+                        array.set(
+                             topXLastTouch,
+                             xi,
+                             acceptedTopBar)
+
+                        if showABCD
+
+                            string touchName =
+                                 "T" +
+                                 str.tostring(
+                                     newCount)
+
+                            if newCount == 3
+                                touchName := "C"
+                            if newCount == 4
+                                touchName := "D"
+                            if newCount == 5
+                                touchName := "E"
+                            if newCount == 6
+                                touchName := "F"
+
+                            label.new(
+                                 acceptedTopBar,
+                                 level,
+                                 touchName,
+                                 xloc=xloc.bar_index,
+                                 style=label.style_label_down,
+                                 color=color.red,
+                                 textcolor=color.white,
+                                 size=size.tiny)
+
+    //---------------------------------------------------------------
+    // CURRENT TOP AS B
+    //---------------------------------------------------------------
+
+    int totalTopZones =
+         array.size(
+             topBars)
+
+    if totalTopZones >= 2
+
+        int Bbar =
+             acceptedTopBar
+
+        float B1 =
+             acceptedTopHigh
+
+        float B2 =
+             acceptedTopClose
+
+        float Batr =
+             acceptedTopATR
+
+        bool foundAB =
+             false
+
+        int searchIndex =
+             totalTopZones -
+             2
+
+        while searchIndex >= 0 and
+              not foundAB
+
+            int Abar =
+                 array.get(
+                     topBars,
+                     searchIndex)
+
+            int distanceAB =
+                 Bbar -
+                 Abar
+
+            if distanceAB > maxABBars
+
+                searchIndex :=
+                     -1
+
+            else if distanceAB >= minABBars
+
+                topPairCount += 1
+
+                float A1 =
+                     array.get(
+                         topHighs,
+                         searchIndex)
+
+                float A2 =
+                     array.get(
+                         topCloses,
+                         searchIndex)
+
+                float Aatr =
+                     array.get(
+                         topATRs,
+                         searchIndex)
+
+                float pairATR =
+                     (Aatr + Batr) /
+                     2.0
+
+                [candidateX, hasOverlap] =
+                     f_findTopX(
+                         Abar,
+                         Bbar,
+                         A1,
+                         A2,
+                         B1,
+                         B2)
+
+                if hasOverlap
+                    topOverlapCount += 1
+
+                if not na(candidateX)
+
+                    topClearCount += 1
+
+                    float effectiveDepth =
+                         autoMode ?
+                         pairATR * depthATRMult :
+                         manualDepth
+
+                    float effectiveNear =
+                         autoMode ?
+                         pairATR * nearATRMult :
+                         manualNear
+
+                    float effectiveEscape =
+                         autoMode ?
+                         pairATR * escapeATRMult :
+                         manualEscape
+
+                    float effectiveBreakout =
+                         autoMode ?
+                         pairATR * breakoutATRMult :
+                         manualBreakout
+
+                    float effectiveExtra =
+                         autoMode ?
+                         pairATR * extraATRMult :
+                         manualExtraTolerance
+
+                    float depth =
+                         f_topDepth(
+                             Abar,
+                             Bbar,
+                             candidateX)
+
+                    float nearRatioValue =
+                         f_topNearRatio(
+                             Abar,
+                             Bbar,
+                             candidateX,
+                             effectiveNear)
+
+                    float escapeRatioValue =
+                         f_topEscapeRatio(
+                             Abar,
+                             Bbar,
+                             candidateX,
+                             effectiveEscape)
+
+                    bool depthOK =
+                         depth >=
+                         effectiveDepth
+
+                    bool nearOK =
+                         nearRatioValue <=
+                         maxNearRatio
+
+                    bool escapeOK =
+                         escapeRatioValue >=
+                         minEscapeRatio
+
+                    bool separationOK =
+                         depthOK and
+                         nearOK and
+                         escapeOK
+
+                    bool structureOK =
+                         not useSeparationFilter or
+                         separationOK
+
+                    if structureOK
+
+                        bool duplicate =
+                             false
+
+                        int oldCount =
+                             array.size(
+                                 topXLevels)
+
+                        float duplicateTolerance =
+                             autoMode ?
+                             pairATR * 0.05 :
+                             0.5
+
+                        if oldCount > 0
+
+                            for dx = 0 to oldCount - 1
+
+                                float oldLevel =
+                                     array.get(
+                                         topXLevels,
+                                         dx)
+
+                                int oldA =
+                                     array.get(
+                                         topXABars,
+                                         dx)
+
+                                int oldB =
+                                     array.get(
+                                         topXBBars,
+                                         dx)
+
+                                bool samePrice =
+                                     math.abs(
+                                         oldLevel -
+                                         candidateX) <=
+                                     duplicateTolerance
+
+                                bool sameA =
+                                     math.abs(
+                                         oldA -
+                                         Abar) <=
+                                     clusterBars
+
+                                bool sameB =
+                                     math.abs(
+                                         oldB -
+                                         Bbar) <=
+                                     clusterBars
+
+                                if samePrice and
+                                   (sameA or sameB)
+
+                                    duplicate := true
+
+                        if not duplicate
+
+                            line newLine =
+                                 line.new(
+                                     x1=Abar,
+                                     y1=candidateX,
+                                     x2=Bbar,
+                                     y2=candidateX,
+                                     xloc=xloc.bar_index,
+                                     extend=extend.right,
+                                     color=color.red,
+                                     width=2)
+
+                            array.push(topXLevels, candidateX)
+                            array.push(topXABars, Abar)
+                            array.push(topXBBars, Bbar)
+
+                            array.push(topXLastTouch, Bbar)
+                            array.push(topXTouchCount, 2)
+
+                            array.push(topXLineAlive, true)
+                            array.push(topXSetupAlive, true)
+                            array.push(topXTriggered, false)
+
+                            array.push(topXBreakout, effectiveBreakout)
+                            array.push(topXTolerance, effectiveExtra)
+
+                            array.push(topXLines, newLine)
+
+                            topXCreated += 1
+                            foundAB := true
+
+                            if showABCD
+
+                                label.new(
+                                     Abar,
+                                     candidateX,
+                                     "A",
+                                     xloc=xloc.bar_index,
+                                     style=label.style_label_down,
+                                     color=color.red,
+                                     textcolor=color.white,
+                                     size=size.small)
+
+                                label.new(
+                                     Bbar,
+                                     candidateX,
+                                     "B",
+                                     xloc=xloc.bar_index,
+                                     style=label.style_label_down,
+                                     color=color.red,
+                                     textcolor=color.white,
+                                     size=size.small)
+
+            searchIndex -= 1
+
+//====================================================================
+// 22. PROCESS BOTTOM
+//====================================================================
+
+if acceptedBottom
+
+    //---------------------------------------------------------------
+    // C/D/E BOTTOM
+    //---------------------------------------------------------------
+
+    int existingBottomX =
+         array.size(
+             bottomXLevels)
+
+    if existingBottomX > 0
+
+        for xi = 0 to existingBottomX - 1
+
+            bool alive =
+                 array.get(
+                     bottomXLineAlive,
+                     xi)
+
+            if alive
+
+                float level =
+                     array.get(
+                         bottomXLevels,
+                         xi)
+
+                float oldTolerance =
+                     array.get(
+                         bottomXTolerance,
+                         xi)
+
+                float currentTolerance =
+                     autoMode ?
+                     acceptedBottomATR * extraATRMult :
+                     manualExtraTolerance
+
+                float touchTolerance =
+                     math.max(
+                         oldTolerance,
+                         currentTolerance)
+
+                bool touches =
+                     level >=
+                     acceptedBottomLow -
+                     touchTolerance and
+                     level <=
+                     acceptedBottomClose +
+                     touchTolerance
+
+                if touches
+
+                    int lastTouch =
+                         array.get(
+                             bottomXLastTouch,
+                             xi)
+
+                    if acceptedBottomBar > lastTouch
+
+                        int oldCount =
+                             array.get(
+                                 bottomXTouchCount,
+                                 xi)
+
+                        int newCount =
+                             oldCount + 1
+
+                        array.set(
+                             bottomXTouchCount,
+                             xi,
+                             newCount)
+
+                        array.set(
+                             bottomXLastTouch,
+                             xi,
+                             acceptedBottomBar)
+
+                        if showABCD
+
+                            string touchName =
+                                 "T" +
+                                 str.tostring(
+                                     newCount)
+
+                            if newCount == 3
+                                touchName := "C"
+                            if newCount == 4
+                                touchName := "D"
+                            if newCount == 5
+                                touchName := "E"
+                            if newCount == 6
+                                touchName := "F"
+
+                            label.new(
+                                 acceptedBottomBar,
+                                 level,
+                                 touchName,
+                                 xloc=xloc.bar_index,
+                                 style=label.style_label_up,
+                                 color=color.green,
+                                 textcolor=color.white,
+                                 size=size.tiny)
+
+    //---------------------------------------------------------------
+    // CURRENT BOTTOM AS B
+    //---------------------------------------------------------------
+
+    int totalBottomZones =
+         array.size(
+             bottomBars)
+
+    if totalBottomZones >= 2
+
+        int Bbar =
+             acceptedBottomBar
+
+        float B1 =
+             acceptedBottomLow
+
+        float B2 =
+             acceptedBottomClose
+
+        float Batr =
+             acceptedBottomATR
+
+        bool foundAB =
+             false
+
+        int searchIndex =
+             totalBottomZones -
+             2
+
+        while searchIndex >= 0 and
+              not foundAB
+
+            int Abar =
+                 array.get(
+                     bottomBars,
+                     searchIndex)
+
+            int distanceAB =
+                 Bbar -
+                 Abar
+
+            if distanceAB > maxABBars
+
+                searchIndex :=
+                     -1
+
+            else if distanceAB >= minABBars
+
+                bottomPairCount += 1
+
+                float A1 =
+                     array.get(
+                         bottomLows,
+                         searchIndex)
+
+                float A2 =
+                     array.get(
+                         bottomCloses,
+                         searchIndex)
+
+                float Aatr =
+                     array.get(
+                         bottomATRs,
+                         searchIndex)
+
+                float pairATR =
+                     (Aatr + Batr) /
+                     2.0
+
+                [candidateX, hasOverlap] =
+                     f_findBottomX(
+                         Abar,
+                         Bbar,
+                         A1,
+                         A2,
+                         B1,
+                         B2)
+
+                if hasOverlap
+                    bottomOverlapCount += 1
+
+                if not na(candidateX)
+
+                    bottomClearCount += 1
+
+                    float effectiveHeight =
+                         autoMode ?
+                         pairATR * depthATRMult :
+                         manualDepth
+
+                    float effectiveNear =
+                         autoMode ?
+                         pairATR * nearATRMult :
+                         manualNear
+
+                    float effectiveEscape =
+                         autoMode ?
+                         pairATR * escapeATRMult :
+                         manualEscape
+
+                    float effectiveBreakout =
+                         autoMode ?
+                         pairATR * breakoutATRMult :
+                         manualBreakout
+
+                    float effectiveExtra =
+                         autoMode ?
+                         pairATR * extraATRMult :
+                         manualExtraTolerance
+
+                    float height =
+                         f_bottomHeight(
+                             Abar,
+                             Bbar,
+                             candidateX)
+
+                    float nearRatioValue =
+                         f_bottomNearRatio(
+                             Abar,
+                             Bbar,
+                             candidateX,
+                             effectiveNear)
+
+                    float escapeRatioValue =
+                         f_bottomEscapeRatio(
+                             Abar,
+                             Bbar,
+                             candidateX,
+                             effectiveEscape)
+
+                    bool heightOK =
+                         height >=
+                         effectiveHeight
+
+                    bool nearOK =
+                         nearRatioValue <=
+                         maxNearRatio
+
+                    bool escapeOK =
+                         escapeRatioValue >=
+                         minEscapeRatio
+
+                    bool separationOK =
+                         heightOK and
+                         nearOK and
+                         escapeOK
+
+                    bool structureOK =
+                         not useSeparationFilter or
+                         separationOK
+
+                    if structureOK
+
+                        bool duplicate =
+                             false
+
+                        int oldCount =
+                             array.size(
+                                 bottomXLevels)
+
+                        float duplicateTolerance =
+                             autoMode ?
+                             pairATR * 0.05 :
+                             0.5
+
+                        if oldCount > 0
+
+                            for dx = 0 to oldCount - 1
+
+                                float oldLevel =
+                                     array.get(
+                                         bottomXLevels,
+                                         dx)
+
+                                int oldA =
+                                     array.get(
+                                         bottomXABars,
+                                         dx)
+
+                                int oldB =
+                                     array.get(
+                                         bottomXBBars,
+                                         dx)
+
+                                bool samePrice =
+                                     math.abs(
+                                         oldLevel -
+                                         candidateX) <=
+                                     duplicateTolerance
+
+                                bool sameA =
+                                     math.abs(
+                                         oldA -
+                                         Abar) <=
+                                     clusterBars
+
+                                bool sameB =
+                                     math.abs(
+                                         oldB -
+                                         Bbar) <=
+                                     clusterBars
+
+                                if samePrice and
+                                   (sameA or sameB)
+
+                                    duplicate := true
+
+                        if not duplicate
+
+                            line newLine =
+                                 line.new(
+                                     x1=Abar,
+                                     y1=candidateX,
+                                     x2=Bbar,
+                                     y2=candidateX,
+                                     xloc=xloc.bar_index,
+                                     extend=extend.right,
+                                     color=color.green,
+                                     width=2)
+
+                            array.push(bottomXLevels, candidateX)
+                            array.push(bottomXABars, Abar)
+                            array.push(bottomXBBars, Bbar)
+
+                            array.push(bottomXLastTouch, Bbar)
+                            array.push(bottomXTouchCount, 2)
+
+                            array.push(bottomXLineAlive, true)
+                            array.push(bottomXSetupAlive, true)
+                            array.push(bottomXTriggered, false)
+
+                            array.push(bottomXBreakout, effectiveBreakout)
+                            array.push(bottomXTolerance, effectiveExtra)
+
+                            array.push(bottomXLines, newLine)
+
+                            bottomXCreated += 1
+                            foundAB := true
+
+                            if showABCD
+
+                                label.new(
+                                     Abar,
+                                     candidateX,
+                                     "A",
+                                     xloc=xloc.bar_index,
+                                     style=label.style_label_up,
+                                     color=color.green,
+                                     textcolor=color.white,
+                                     size=size.small)
+
+                                label.new(
+                                     Bbar,
+                                     candidateX,
+                                     "B",
+                                     xloc=xloc.bar_index,
+                                     style=label.style_label_up,
+                                     color=color.green,
+                                     textcolor=color.white,
+                                     size=size.small)
+
+            searchIndex -= 1
+
+//====================================================================
+// 23. TOP STOP + CHECK
+//====================================================================
+
+bool topStopSignal = false
+bool topCheckSignal = false
+
+float topSignalX = na
+
+int totalTopX =
+     array.size(
+         topXLevels)
+
+if totalTopX > 0
+
+    for i = 0 to totalTopX - 1
+
+        float level =
+             array.get(
+                 topXLevels,
+                 i)
+
+        //-----------------------------------------------------------
+        // STOP
+        //-----------------------------------------------------------
+
+        bool lineAlive =
+             array.get(
+                 topXLineAlive,
+                 i)
+
+        if lineAlive
+
+            int lastTouch =
+                 array.get(
+                     topXLastTouch,
+                     i)
+
+            if bar_index > lastTouch
+
+                float candleTop =
+                     math.max(open, close)
+
+                float candleBottom =
+                     math.min(open, close)
+
+                bool bodyTouches =
+                     candleBottom <= level and
+                     candleTop >= level
+
+                if bodyTouches
+
+                    array.set(
+                         topXLineAlive,
+                         i,
+                         false)
+
+                    line currentLine =
+                         array.get(
+                             topXLines,
+                             i)
+
+                    line.set_extend(
+                         currentLine,
+                         extend.none)
+
+                    line.set_x2(
+                         currentLine,
+                         bar_index)
+
+                    topStopSignal := true
+
+                    if showStops
+
+                        label.new(
+                             bar_index,
+                             level,
+                             "STOP",
+                             xloc=xloc.bar_index,
+                             style=label.style_label_left,
+                             color=color.gray,
+                             textcolor=color.white,
+                             size=size.tiny)
+
+        //-----------------------------------------------------------
+        // CHECK TOP
+        //-----------------------------------------------------------
+
+        bool setupAlive =
+             array.get(
+                 topXSetupAlive,
+                 i)
+
+        bool triggered =
+             array.get(
+                 topXTriggered,
+                 i)
+
+        if setupAlive and
+           not triggered
+
+            int Bbar =
+                 array.get(
+                     topXBBars,
+                     i)
+
+            float breakoutDistance =
+                 array.get(
+                     topXBreakout,
+                     i)
+
+            int barsFromB =
+                 bar_index -
+                 Bbar
+
+            bool expired =
+                 barsFromB >
+                 maxBarsAfterB
+
+            bool breakoutNow =
+                 barsFromB > 0 and
+                 high >=
+                 level +
+                 breakoutDistance
+
+            if expired
+
+                array.set(
+                     topXSetupAlive,
+                     i,
+                     false)
+
+            else if breakoutNow
+
+                array.set(
+                     topXTriggered,
+                     i,
+                     true)
+
+                array.set(
+                     topXSetupAlive,
+                     i,
+                     false)
+
+                topCheckSignal := true
+                topSignalX := level
+
+                if showCheck
+
+                    string topCheckText =
+                         "TOP CHECK\nX = " +
+                         str.tostring(
+                             level,
+                             format.mintick)
+
+                    label.new(
+                         bar_index,
+                         high,
+                         topCheckText,
+                         xloc=xloc.bar_index,
+                         style=label.style_label_down,
+                         color=color.red,
+                         textcolor=color.white,
+                         size=size.normal)
+
+//====================================================================
+// 24. BOTTOM STOP + CHECK
+//====================================================================
+
+bool bottomStopSignal = false
+bool bottomCheckSignal = false
+
+float bottomSignalX = na
+
+int totalBottomX =
+     array.size(
+         bottomXLevels)
+
+if totalBottomX > 0
+
+    for i = 0 to totalBottomX - 1
+
+        float level =
+             array.get(
+                 bottomXLevels,
+                 i)
+
+        //-----------------------------------------------------------
+        // STOP
+        //-----------------------------------------------------------
+
+        bool lineAlive =
+             array.get(
+                 bottomXLineAlive,
+                 i)
+
+        if lineAlive
+
+            int lastTouch =
+                 array.get(
+                     bottomXLastTouch,
+                     i)
+
+            if bar_index > lastTouch
+
+                float candleTop =
+                     math.max(open, close)
+
+                float candleBottom =
+                     math.min(open, close)
+
+                bool bodyTouches =
+                     candleBottom <= level and
+                     candleTop >= level
+
+                if bodyTouches
+
+                    array.set(
+                         bottomXLineAlive,
+                         i,
+                         false)
+
+                    line currentLine =
+                         array.get(
+                             bottomXLines,
+                             i)
+
+                    line.set_extend(
+                         currentLine,
+                         extend.none)
+
+                    line.set_x2(
+                         currentLine,
+                         bar_index)
+
+                    bottomStopSignal := true
+
+                    if showStops
+
+                        label.new(
+                             bar_index,
+                             level,
+                             "STOP",
+                             xloc=xloc.bar_index,
+                             style=label.style_label_left,
+                             color=color.gray,
+                             textcolor=color.white,
+                             size=size.tiny)
+
+        //-----------------------------------------------------------
+        // CHECK BOTTOM
+        //-----------------------------------------------------------
+
+        bool setupAlive =
+             array.get(
+                 bottomXSetupAlive,
+                 i)
+
+        bool triggered =
+             array.get(
+                 bottomXTriggered,
+                 i)
+
+        if setupAlive and
+           not triggered
+
+            int Bbar =
+                 array.get(
+                     bottomXBBars,
+                     i)
+
+            float breakoutDistance =
+                 array.get(
+                     bottomXBreakout,
+                     i)
+
+            int barsFromB =
+                 bar_index -
+                 Bbar
+
+            bool expired =
+                 barsFromB >
+                 maxBarsAfterB
+
+            bool breakoutNow =
+                 barsFromB > 0 and
+                 low <=
+                 level -
+                 breakoutDistance
+
+            if expired
+
+                array.set(
+                     bottomXSetupAlive,
+                     i,
+                     false)
+
+            else if breakoutNow
+
+                array.set(
+                     bottomXTriggered,
+                     i,
+                     true)
+
+                array.set(
+                     bottomXSetupAlive,
+                     i,
+                     false)
+
+                bottomCheckSignal := true
+                bottomSignalX := level
+
+                if showCheck
+
+                    string bottomCheckText =
+                         "BOTTOM CHECK\nX = " +
+                         str.tostring(
+                             level,
+                             format.mintick)
+
+                    label.new(
+                         bar_index,
+                         low,
+                         bottomCheckText,
+                         xloc=xloc.bar_index,
+                         style=label.style_label_up,
+                         color=color.green,
+                         textcolor=color.white,
+                         size=size.normal)
+
+//====================================================================
+// 25. PLOT + ALERT
+//====================================================================
+
+plotshape(
+     topCheckSignal,
+     title="TOP CHECK",
+     style=shape.triangleup,
+     location=location.abovebar,
+     color=color.red,
+     size=size.small,
+     text="TOP")
+
+plotshape(
+     bottomCheckSignal,
+     title="BOTTOM CHECK",
+     style=shape.triangledown,
+     location=location.belowbar,
+     color=color.green,
+     size=size.small,
+     text="BOT")
+
+plot(
+     topSignalX,
+     title="TOP Signal X",
+     display=display.none)
+
+plot(
+     bottomSignalX,
+     title="BOTTOM Signal X",
+     display=display.none)
+
+alertcondition(
+     topCheckSignal,
+     title="Tien Sanh ABX V14 TOP CHECK",
+     message="ABX V14: TOP CHECK.")
+
+alertcondition(
+     bottomCheckSignal,
+     title="Tien Sanh ABX V14 BOTTOM CHECK",
+     message="ABX V14: BOTTOM CHECK.")
+
+alertcondition(
+     topStopSignal,
+     title="Tien Sanh ABX V14 TOP STOP",
+     message="ABX V14: TOP X STOP.")
+
+alertcondition(
+     bottomStopSignal,
+     title="Tien Sanh ABX V14 BOTTOM STOP",
+     message="ABX V14: BOTTOM X STOP.")
+
+//====================================================================
+// 26. ACTIVE COUNTS
+//====================================================================
+
+int activeTopX = 0
+int activeBottomX = 0
+
+if totalTopX > 0
+
+    for i = 0 to totalTopX - 1
+
+        if array.get(topXLineAlive, i)
+            activeTopX += 1
+
+if totalBottomX > 0
+
+    for i = 0 to totalBottomX - 1
+
+        if array.get(bottomXLineAlive, i)
+            activeBottomX += 1
+
+//====================================================================
+// 27. DEBUG TABLE
+//====================================================================
+
+var table debugTable =
+     table.new(
+         position.top_right,
+         3,
+         10)
+
+if barstate.islast and
+   showDebug
+
+    table.cell(
+         debugTable,
+         0,
+         0,
+         "ABX V14",
+         bgcolor=color.black,
+         text_color=color.white)
+
+    table.cell(
+         debugTable,
+         1,
+         0,
+         "TOP",
+         bgcolor=color.red,
+         text_color=color.white)
+
+    table.cell(
+         debugTable,
+         2,
+         0,
+         "BOTTOM",
+         bgcolor=color.green,
+         text_color=color.white)
+
+    table.cell(debugTable, 0, 1, "Mode")
+    table.cell(debugTable, 1, 1, autoMode ? "ATR" : "Manual")
+    table.cell(debugTable, 2, 1, autoMode ? "ATR" : "Manual")
+
+    table.cell(debugTable, 0, 2, "ATR")
+    table.cell(debugTable, 1, 2, str.tostring(atrValue, format.mintick))
+    table.cell(debugTable, 2, 2, str.tostring(atrValue, format.mintick))
+
+    table.cell(debugTable, 0, 3, "Candidate")
+    table.cell(debugTable, 1, 3, str.tostring(topCandidateCount))
+    table.cell(debugTable, 2, 3, str.tostring(bottomCandidateCount))
+
+    table.cell(debugTable, 0, 4, "Phase 5-5")
+    table.cell(debugTable, 1, 4, str.tostring(topPhaseCount))
+    table.cell(debugTable, 2, 4, str.tostring(bottomPhaseCount))
+
+    table.cell(debugTable, 0, 5, "Stored Zone")
+    table.cell(debugTable, 1, 5, str.tostring(array.size(topBars)))
+    table.cell(debugTable, 2, 5, str.tostring(array.size(bottomBars)))
+
+    table.cell(debugTable, 0, 6, "Pair Test")
+    table.cell(debugTable, 1, 6, str.tostring(topPairCount))
+    table.cell(debugTable, 2, 6, str.tostring(bottomPairCount))
+
+    table.cell(debugTable, 0, 7, "Overlap")
+    table.cell(debugTable, 1, 7, str.tostring(topOverlapCount))
+    table.cell(debugTable, 2, 7, str.tostring(bottomOverlapCount))
+
+    table.cell(debugTable, 0, 8, "X Total")
+    table.cell(debugTable, 1, 8, str.tostring(topXCreated))
+    table.cell(debugTable, 2, 8, str.tostring(bottomXCreated))
+
+    table.cell(debugTable, 0, 9, "X Active")
+    table.cell(debugTable, 1, 9, str.tostring(activeTopX))
+    table.cell(debugTable, 2, 9, str.tostring(activeBottomX))

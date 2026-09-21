@@ -1,0 +1,197 @@
+//@version=6
+// overlay + scale.none = drawn on the price chart without a scale of its own, like the built-in Volume.
+indicator("Relative Volume Tiers", shorttitle = "RVOL Tiers", overlay = true, scale = scale.none, format = format.volume, precision = 0)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inputs
+// ─────────────────────────────────────────────────────────────────────────────
+string GRP_BASE = "Baseline (what counts as 'usual' volume)"
+string avgType   = input.string("Median", "Average type", options = ["SMA", "Median"], group = GRP_BASE, tooltip = "Median ignores outliers: one huge bar or one news day will not inflate the baseline for the bars that follow it.")
+int    simpleLen = input.int(20, "Simple baseline length (bars)", minval = 2, group = GRP_BASE, tooltip = "Used when time-of-day mode is off, unavailable, or still warming up. The current bar is never included in its own baseline.")
+bool   useTod    = input.bool(true, "Use time-of-day baseline (intraday)", group = GRP_BASE, tooltip = "Compares each bar with the volume seen at the SAME time of day over the previous N days, so the session open/close are not flagged just for being the open/close.")
+int    todDays   = input.int(20, "Time-of-day lookback (days)", minval = 2, maxval = 60, group = GRP_BASE)
+int    todMinIn  = input.int(5, "Min days of data before time-of-day is used", minval = 1, group = GRP_BASE, tooltip = "Until a time slot has this many past samples, the simple baseline is used instead.")
+string todBucket = input.timeframe("5", "Time-of-day bucket for small timeframes", options = ["1", "2", "3", "5", "10", "15", "30", "60"], group = GRP_BASE, tooltip = "On chart timeframes smaller than this (e.g. 5s, 15s, 1m), the time-of-day profile is built on this timeframe and scaled down to the chart bar size. This gives many more days of history than seconds charts can load. Only applied when the chart timeframe divides the bucket exactly (5s/10s/15s/30s/1m for a 5m bucket); otherwise, and on larger chart timeframes, the chart timeframe itself is used.")
+
+string GRP_TIER = "Tiers"
+bool  autoTiers   = input.bool(true, "Auto multipliers: pick by chart timeframe", group = GRP_TIER, tooltip = "ON: the High / Extreme multipliers come from the 'Auto multipliers' table below and change automatically when you change the chart timeframe (small bars have wilder volume, so they need higher multipliers). The info label shows which pair is active.\n\nOFF: the two manual multipliers below are used on every timeframe.")
+float highMult    = input.float(1.8, "Manual — High volume: baseline ×", minval = 1.0, step = 0.1, group = GRP_TIER)
+float extremeMult = input.float(3.0, "Manual — Extreme volume: baseline ×", minval = 1.0, step = 0.1, group = GRP_TIER, tooltip = "Must be larger than the High multiplier.")
+
+string GRP_AUTO = "Auto multipliers (left: High ×, right: Extreme ×)"
+float aH1 = input.float(2.5, "10s and below ", minval = 1.0, step = 0.1, inline = "a1", group = GRP_AUTO)
+float aE1 = input.float(5.0, "", minval = 1.0, step = 0.1, inline = "a1", group = GRP_AUTO)
+float aH2 = input.float(2.0, "15s to 30s    ", minval = 1.0, step = 0.1, inline = "a2", group = GRP_AUTO)
+float aE2 = input.float(4.0, "", minval = 1.0, step = 0.1, inline = "a2", group = GRP_AUTO)
+float aH3 = input.float(1.8, "45s to 4m     ", minval = 1.0, step = 0.1, inline = "a3", group = GRP_AUTO)
+float aE3 = input.float(3.0, "", minval = 1.0, step = 0.1, inline = "a3", group = GRP_AUTO)
+float aH4 = input.float(1.5, "5m to 20m     ", minval = 1.0, step = 0.1, inline = "a4", group = GRP_AUTO)
+float aE4 = input.float(2.5, "", minval = 1.0, step = 0.1, inline = "a4", group = GRP_AUTO)
+float aH5 = input.float(1.4, "30m and above ", minval = 1.0, step = 0.1, inline = "a5", group = GRP_AUTO)
+float aE5 = input.float(2.0, "", minval = 1.0, step = 0.1, inline = "a5", group = GRP_AUTO)
+
+string GRP_COL = "Colors"
+color colNormal  = input.color(color.new(#787B86, 50), "Normal", group = GRP_COL)
+color colHigh    = input.color(#FF9800, "High", group = GRP_COL)
+color colExtreme = input.color(#E040FB, "Extreme", group = GRP_COL)
+color colBase    = input.color(color.new(#B2B5BE, 20), "Baseline line (SMA / Median)", inline = "base", group = GRP_COL)
+int   baseWidth  = input.int(1, "Width", minval = 1, maxval = 4, inline = "base", group = GRP_COL)
+bool  shadeDir   = input.bool(true, "Shade down bars (close < open) darker", group = GRP_COL)
+int   downTransp = input.int(55, "Down-bar transparency", minval = 0, maxval = 95, group = GRP_COL)
+bool  paintBars  = input.bool(true, "Paint price candles on High / Extreme volume", group = GRP_COL)
+
+string GRP_LIVE = "Live bar"
+bool projOn     = input.bool(true, "Color the live bar by projected final volume", group = GRP_LIVE, tooltip = "Volume so far ÷ fraction of the bar elapsed. Provisional: the color can change until the bar closes. The column height always shows actual volume. Alerts ignore this and only use closed bars.")
+int  projMinPct = input.int(35, "Start projecting after % of bar elapsed", minval = 5, maxval = 95, group = GRP_LIVE, tooltip = "Projections made in the first moments of a bar are wildly noisy.")
+
+string GRP_VIS = "Display"
+int    heightPct  = input.int(22, "Volume height (% of pane)", minval = 5, maxval = 100, step = 1, group = GRP_VIS, tooltip = "Roughly how much of the pane the tallest visible volume bar may occupy. 20 looks like the built-in Volume. Use 100 if you move the indicator into its own pane.\n\nTo make the columns sit exactly on the bottom edge of the chart: Chart settings → Canvas → Margins → Bottom = 0. TradingView applies that margin to every custom overlay (only its own built-in Volume is exempt) and a script cannot change it.")
+bool   showBase   = input.bool(true, "Show baseline line", group = GRP_VIS)
+bool   showThresh = input.bool(false, "Show High / Extreme threshold lines", group = GRP_VIS)
+bool   showInfo   = input.bool(true, "Show info label (RVOL + active baseline)", group = GRP_VIS)
+string infoPosIn  = input.string("Top right", "Info label position", options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = GRP_VIS)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Time-of-day baseline
+// Runs inside request.security(). For every time-of-day slot it keeps the volume
+// of the last `days` sessions and returns their average/median for the current
+// slot. The current bar's own volume is never part of the value returned for it,
+// so requesting it with lookahead_on leaks no future data.
+// ─────────────────────────────────────────────────────────────────────────────
+type SlotData
+    array<float> vols
+
+f_todBaseline(int days, int minSamples, bool useMedian) =>
+    var map<int, SlotData> store = map.new<int, SlotData>()
+    int key = hour(time) * 3600 + minute(time) * 60 + second(time) // exchange time
+    int prevKey = key[1]
+    float prevVol = volume[1]
+    // Commit the previous (now final) bar to its slot.
+    if not na(prevKey) and not na(prevVol)
+        SlotData s = store.get(prevKey)
+        if na(s)
+            s := SlotData.new(array.new<float>())
+            store.put(prevKey, s)
+        s.vols.push(prevVol)
+        if s.vols.size() > days
+            s.vols.shift()
+    // Look up the history of the current slot.
+    SlotData cur = store.get(key)
+    float base = na
+    int samples = 0
+    if not na(cur)
+        samples := cur.vols.size()
+        if samples >= minSamples
+            base := useMedian ? cur.vols.median() : cur.vols.avg()
+    [base, samples]
+
+bool useMedian = avgType == "Median"
+int  todMin    = math.min(todMinIn, todDays)
+
+// Time-of-day slots only make sense on time-based bars (not Renko / range / tick charts).
+bool   priceBars = chart.is_renko or chart.is_kagi or chart.is_linebreak or chart.is_pnf or chart.is_range
+bool   timeBars  = not priceBars and (timeframe.isseconds or timeframe.isminutes)
+int    chartSec  = timeframe.in_seconds()
+int    bucketSec = timeframe.in_seconds(todBucket)
+// The bucket is used only when chart bars nest exactly inside it. A 2m or 3m bar would straddle two
+// 5m buckets and could be judged against a different slot live than after a reload.
+bool   useBucket = timeBars and chartSec < bucketSec and bucketSec % chartSec == 0
+string todTf     = useBucket ? todBucket : timeframe.period
+float  todScale  = useBucket ? float(chartSec) / float(bucketSec) : 1.0
+bool   todOk     = timeBars and timeframe.in_seconds(todTf) < 86400
+
+[todRaw, todSamples] = request.security(syminfo.tickerid, todTf, f_todBaseline(todDays, todMin, useMedian), lookahead = barmerge.lookahead_on)
+float todBase = todRaw * todScale
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Simple baseline (previous bars only)
+// ─────────────────────────────────────────────────────────────────────────────
+float smaBase    = ta.sma(volume, simpleLen)[1]
+float medBase    = ta.median(volume, simpleLen)[1]
+float simpleBase = useMedian ? medBase : smaBase
+
+bool  todActive = useTod and todOk and not na(todBase) and todBase > 0
+float baseline  = todActive ? todBase : simpleBase
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Live-bar projection (optional)
+// ─────────────────────────────────────────────────────────────────────────────
+bool  isLive  = barstate.isrealtime and not barstate.isconfirmed
+float barSpan = float(time_close - time)
+float frac    = isLive and not na(barSpan) and barSpan > 0 ? math.max(0.0, math.min(1.0, float(timenow - time) / barSpan)) : 1.0
+bool  useProj = projOn and isLive and frac >= projMinPct / 100.0 and frac < 1.0
+float evalVol = useProj ? volume / frac : volume
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tiers
+// ─────────────────────────────────────────────────────────────────────────────
+// Active multipliers: from the auto table (by chart timeframe) or the two manual inputs.
+float autoHigh = chartSec <= 10 ? aH1 : chartSec <= 30 ? aH2 : chartSec < 300 ? aH3 : chartSec < 1800 ? aH4 : aH5
+float autoExt  = chartSec <= 10 ? aE1 : chartSec <= 30 ? aE2 : chartSec < 300 ? aE3 : chartSec < 1800 ? aE4 : aE5
+float highM    = autoTiers ? autoHigh : highMult
+float extM     = autoTiers ? autoExt : extremeMult
+
+if extM <= highM
+    runtime.error("The Extreme multiplier must be larger than the High multiplier (check the row for this timeframe).")
+
+bool  hasBase = not na(baseline) and baseline > 0
+float rvol    = hasBase ? evalVol / baseline : na
+int   tier    = not hasBase ? 0 : rvol >= extM ? 2 : rvol >= highM ? 1 : 0
+
+color tierCol = tier == 2 ? colExtreme : tier == 1 ? colHigh : colNormal
+// Fade down bars relative to whatever opacity the user picked for the tier color.
+float baseT   = color.t(tierCol)
+color barCol  = shadeDir and close < open ? color.new(tierCol, baseT + (100.0 - baseT) * downTransp / 100.0) : tierCol
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Plots
+// ─────────────────────────────────────────────────────────────────────────────
+plot(volume, "Volume", color = barCol, style = plot.style_columns)
+plot(showBase ? baseline : na, "Baseline", color = colBase, linewidth = baseWidth, display = display.all - display.price_scale)
+plot(showThresh ? baseline * highM : na, "High threshold", color = color.new(colHigh, 50), style = plot.style_stepline, display = display.all - display.price_scale)
+plot(showThresh ? baseline * extM : na, "Extreme threshold", color = color.new(colExtreme, 50), style = plot.style_stepline, display = display.all - display.price_scale)
+
+// Height control. An invisible plot sits above the tallest visible bar so that TradingView's
+// auto-scale squeezes the columns into the bottom `heightPct` of the pane. It follows the
+// visible range, so the height stays the same while scrolling and zooming.
+bool  inView = time >= chart.left_visible_bar_time and time <= chart.right_visible_bar_time
+float topVal = math.max(nz(volume), showBase ? nz(baseline) : 0.0, showThresh ? nz(baseline) * extM : 0.0)
+var float visMax = 0.0
+if inView
+    visMax := math.max(visMax, topVal)
+float ceiling = inView and heightPct < 100 ? visMax * 100.0 / heightPct : na
+plot(ceiling, "Scale ceiling", color = color.new(#000000, 100), editable = false, display = display.pane)
+
+barcolor(paintBars and tier > 0 ? tierCol : na, title = "Candle color")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Info label
+// ─────────────────────────────────────────────────────────────────────────────
+string infoPos = infoPosIn == "Top left" ? position.top_left : infoPosIn == "Bottom right" ? position.bottom_right : infoPosIn == "Bottom left" ? position.bottom_left : position.top_right
+var table info = table.new(infoPos, 1, 1)
+if showInfo and barstate.islast
+    string ratioTxt = na(rvol) ? "—" : str.tostring(rvol, "#.##") + "×"
+    string modeTxt = "Simple " + avgType + " " + str.tostring(simpleLen)
+    if todActive
+        modeTxt := "Time-of-day " + avgType + " · " + str.tostring(nz(todSamples)) + "/" + str.tostring(todDays) + " days" + (useBucket ? " · bucket TF " + todBucket : "")
+    else if useTod and todOk
+        modeTxt := modeTxt + " (time-of-day warming up: " + str.tostring(nz(todSamples)) + "/" + str.tostring(todMin) + " days)"
+    else if useTod
+        modeTxt := modeTxt + " (time-of-day n/a on this chart type / timeframe)"
+    string tierTxt = "High " + str.tostring(highM, "#.##") + "× / Extreme " + str.tostring(extM, "#.##") + "×" + (autoTiers ? " (auto)" : "")
+    string txt = (useProj ? "RVOL (projected) " : "RVOL ") + ratioTxt + "  ·  " + tierTxt + "  ·  " + modeTxt
+    table.cell(info, 0, 0, txt, text_color = color.new(tierCol, 0), text_size = size.small, bgcolor = color.new(color.black, 70))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Alerts (closed bars only)
+// ─────────────────────────────────────────────────────────────────────────────
+bool closed = barstate.isconfirmed
+alertcondition(closed and tier == 1, "High volume bar", "Volume closed in the HIGH tier")
+alertcondition(closed and tier == 2, "Extreme volume bar", "Volume closed in the EXTREME tier")
+alertcondition(closed and tier >= 1, "High or Extreme volume bar", "Volume closed at or above the HIGH tier")
+
+// Same behaviour as the built-in Volume indicator when the feed has no volume.
+var float cumVol = 0.0
+cumVol += nz(volume)
+if barstate.islast and cumVol == 0
+    runtime.error("No volume is provided by the data vendor.")

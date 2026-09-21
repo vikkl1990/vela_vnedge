@@ -1,0 +1,172 @@
+// SPDX-License-Identifier: MPL-2.0
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0
+// at https://mozilla.org/MPL/2.0/
+
+// ═══════════════════════════════════════════════════════════════
+// Chop Guard — Ranging Market Filter · v1.0.0
+// Educational chop-regime filter. Paints a subtle red background
+// band when the market is in a low-conviction ranging regime — so
+// you can see, at a glance, when NOT to trade a breakout or trend
+// setup.
+//
+// Three independent chop tests, majority vote:
+//   1. ADX      · directional strength below threshold (weak)
+//   2. ATR      · current ATR compressed vs its longer average
+//   3. BBW      · Bollinger Band Width in the bottom Nth pctile
+//
+// When N-of-3 agree (default 2-of-3), the background fills with a
+// subtle red "CHOP" band. When all disagree, the chart is clean and
+// a small "TREND" tag prints at the top-right.
+//
+// Distinct visual identity vs single-metric ADX filters: three
+// independent tests + configurable majority rule → fewer false
+// "avoid" prints, more trust in the ones that do fire.
+//
+// Optional HTF gate: run the chop test on a higher timeframe (e.g.
+// paint the 5-min chart based on 15-min chop reading) — a common
+// pro workflow for filtering LTF signals against HTF regime.
+//
+// No buy/sell signals · no performance claims · not financial
+// advice. Companion to the Trding.ai indicator suite.
+// ═══════════════════════════════════════════════════════════════
+//
+// v1.0.0 (2026-09-16) — Initial release. 3-test confluence chop
+//   detector · configurable thresholds + majority rule · band vs
+//   top-strip display modes · HTF gate · regime-flip alerts ·
+//   brand palette (navy / red / green).
+//
+// ═══════════════════════════════════════════════════════════════
+
+//@version=6
+indicator("Chop Guard - Ranging Market Filter", shorttitle="ChopGuard", overlay=true, max_labels_count=50, max_boxes_count=50)
+
+// ═══════════════════════════════════════════════════════════════
+// PALETTE (Trding_AI brand)
+// ═══════════════════════════════════════════════════════════════
+var color C_CHOP     = #DC2626    // Warning red — chop regime
+var color C_TREND    = #7AB648    // Trding green — trend regime
+var color C_NAVY     = #1A2240    // Trding navy — strip mode background
+var color C_GOLD     = #C9A253    // Trding gold — accents
+var color C_TEXT     = color.white
+
+// ═══════════════════════════════════════════════════════════════
+// INPUTS
+// ═══════════════════════════════════════════════════════════════
+grpADX = "ADX Test (directional strength)"
+adxLen       = input.int(14,   "ADX length",            minval=5,  maxval=50, group=grpADX, tooltip="Lookback for both DI and ADX calculation.")
+adxThresh    = input.float(20.0, "ADX threshold (below = chop)", minval=10, maxval=40, step=0.5, group=grpADX, tooltip="Classic value is 20. Below this = weak directional strength.")
+
+grpATR = "ATR Test (volatility compression)"
+atrLen       = input.int(14,   "ATR length",            minval=5,  maxval=50, group=grpATR)
+atrAvgLen    = input.int(50,   "ATR baseline length",   minval=20, maxval=200, group=grpATR, tooltip="Longer-window ATR average. Current ATR is compared to this.")
+atrRatioThresh = input.float(0.85, "ATR compression ratio (below = chop)", minval=0.3, maxval=1.5, step=0.05, group=grpATR, tooltip="If current ATR / baseline ATR is below this, volatility is compressed.")
+
+grpBBW = "BBW Test (price coiled)"
+bbwLen       = input.int(20,   "BB length",             minval=10, maxval=50, group=grpBBW)
+bbwLookback  = input.int(100,  "BBW percentile window", minval=20, maxval=300, group=grpBBW, tooltip="How many bars to compute the BBW percentile over.")
+bbwPctile    = input.float(20.0, "BBW percentile threshold (bottom N% = chop)", minval=5, maxval=50, step=1, group=grpBBW, tooltip="If BBW is in the bottom Nth percentile of its recent range, price is coiled.")
+
+grpRule = "Rule"
+majority     = input.int(2,    "Majority (N-of-3 required)", options=[2, 3], group=grpRule, tooltip="2 = classic 2-of-3 majority. 3 = strict, only paints when all three agree.")
+
+grpDisp = "Display"
+useBandMode  = input.bool(true, "Use background band (else top-of-chart strip)", group=grpDisp)
+bandOpacity  = input.int(90,   "Band opacity (0=solid · 100=invisible)", minval=60, maxval=98, group=grpDisp, tooltip="Higher = more subtle. Default 90 keeps candles fully readable.")
+showTrendTag = input.bool(true, "Show TREND tag when regime is clean", group=grpDisp)
+
+grpHTF = "Higher Timeframe Gate (optional)"
+useHTF       = input.bool(false, "Enable HTF gate", group=grpHTF)
+htf          = input.timeframe("15", "HTF timeframe", group=grpHTF, tooltip="Chop test runs on this timeframe. Common workflow: 5m chart, 15m gate — or 15m chart, 1h gate.")
+
+grpAlerts = "Alerts"
+alertOnFlip  = input.bool(true, "Alert on regime flips", group=grpAlerts)
+
+// ═══════════════════════════════════════════════════════════════
+// CHOP TEST FUNCTION (encapsulates all 3 checks · re-usable for HTF)
+// ═══════════════════════════════════════════════════════════════
+chop_tests(int _adxLen, float _adxThresh,
+           int _atrLen, int _atrAvgLen, float _atrRatioThresh,
+           int _bbwLen, int _bbwLookback, float _bbwPctile) =>
+    // 1 · ADX
+    [_diPlus, _diMinus, _adx] = ta.dmi(_adxLen, _adxLen)
+    _chopADX = _adx < _adxThresh
+
+    // 2 · ATR compression
+    _atr    = ta.atr(_atrLen)
+    _atrAvg = ta.sma(_atr, _atrAvgLen)
+    _chopATR = _atrAvg > 0 and (_atr / _atrAvg) < _atrRatioThresh
+
+    // 3 · BBW percentile
+    _basis = ta.sma(close, _bbwLen)
+    _dev   = 2.0 * ta.stdev(close, _bbwLen)
+    _bbw   = _basis > 0 ? (2.0 * _dev) / _basis : 0.0
+    _bbwFloor = ta.percentile_nearest_rank(_bbw, _bbwLookback, _bbwPctile)
+    _chopBBW  = _bbw < _bbwFloor
+
+    _count = (_chopADX ? 1 : 0) + (_chopATR ? 1 : 0) + (_chopBBW ? 1 : 0)
+    [_chopADX, _chopATR, _chopBBW, _count]
+
+// ═══════════════════════════════════════════════════════════════
+// RUN THE TESTS
+//   Always call request.security once. When useHTF is false we
+//   pass timeframe.period, which makes the security call a no-op
+//   (same TF as the chart). Pine v6 ternary cannot return tuples,
+//   and tuple destructures cannot span multiple lines, so this
+//   single-call pattern is the cleanest way to gate HTF.
+// ═══════════════════════════════════════════════════════════════
+htfTF = useHTF ? htf : timeframe.period
+[chopADX, chopATR, chopBBW, chopCount] = request.security(syminfo.tickerid, htfTF, chop_tests(adxLen, adxThresh, atrLen, atrAvgLen, atrRatioThresh, bbwLen, bbwLookback, bbwPctile), lookahead=barmerge.lookahead_off)
+
+isChop = chopCount >= majority
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER · BAND MODE (background fill)
+// ═══════════════════════════════════════════════════════════════
+bandColor = color.new(C_CHOP, bandOpacity)
+bgcolor(isChop and useBandMode ? bandColor : na, title="Chop band")
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER · TOP-OF-CHART STRIP MODE (small colored box up top)
+// ═══════════════════════════════════════════════════════════════
+var box stripBox = na
+if not useBandMode
+    if not na(stripBox)
+        box.delete(stripBox)
+    stripColor = isChop ? color.new(C_CHOP, 30) : color.new(C_TREND, 40)
+    // Draw a thin strip in the top ~2% of the visible price range for this bar
+    strip_top = high + (high - low) * 0.35
+    strip_bot = high + (high - low) * 0.20
+    stripBox := box.new(bar_index, strip_top, bar_index, strip_bot,
+                       border_color=stripColor, bgcolor=stripColor, xloc=xloc.bar_index)
+
+// ═══════════════════════════════════════════════════════════════
+// TREND TAG (single label · deleted each bar so only latest lives)
+// ═══════════════════════════════════════════════════════════════
+var label trendLbl = na
+if barstate.islast and showTrendTag
+    if not na(trendLbl)
+        label.delete(trendLbl)
+    if not isChop
+        trendLbl := label.new(bar_index, high, "TREND",
+                              style=label.style_label_lower_left,
+                              color=color.new(C_TREND, 70),
+                              textcolor=C_TEXT, size=size.small,
+                              yloc=yloc.abovebar)
+
+// ═══════════════════════════════════════════════════════════════
+// STATUS-LINE PLOTS (invisible on chart · appear in Data Window / status line)
+// ═══════════════════════════════════════════════════════════════
+plot(chopCount,           title="Chop count (0-3)",  display=display.data_window)
+plot(chopADX ? 1 : 0,     title="ADX chop",          display=display.data_window)
+plot(chopATR ? 1 : 0,     title="ATR chop",          display=display.data_window)
+plot(chopBBW ? 1 : 0,     title="BBW chop",          display=display.data_window)
+plot(isChop ? 1 : 0,      title="Regime (1=chop)",   display=display.data_window)
+
+// ═══════════════════════════════════════════════════════════════
+// ALERTS · regime flips (barstate.isconfirmed guard: only on close)
+// ═══════════════════════════════════════════════════════════════
+regimeFlipToChop  = alertOnFlip and ta.change(isChop) and isChop     and barstate.isconfirmed
+regimeFlipToTrend = alertOnFlip and ta.change(isChop) and not isChop and barstate.isconfirmed
+
+alertcondition(regimeFlipToChop,  title="Regime flip: TREND -> CHOP",  message="Chop Guard: market entered CHOP regime on {{ticker}} {{interval}}")
+alertcondition(regimeFlipToTrend, title="Regime flip: CHOP -> TREND",  message="Chop Guard: market exited CHOP regime on {{ticker}} {{interval}}")

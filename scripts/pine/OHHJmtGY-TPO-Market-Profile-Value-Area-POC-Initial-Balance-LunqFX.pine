@@ -1,0 +1,445 @@
+//@version=6
+// ============================================================================
+//  TPO Market Profile, Value Area, POC & Initial Balance [LunqFX]
+// ----------------------------------------------------------------------------
+//  A volume profile answers how MUCH traded at each price. This answers a
+//  different question: how LONG price stayed there.
+//
+//  Every session is split into half-hour brackets, each bracket gets a letter,
+//  and that letter is printed at every price the bracket traded through. The
+//  shape the letters build is the session's Market Profile — the auction seen
+//  as time at price rather than volume at price. Price can sit on a level for
+//  four hours on almost no volume, and only one of the two profiles will ever
+//  show you that.
+//
+//    1  THE PROFILE   each price row drawn to the length of the time it held
+//    2  POC           the price that collected the most time
+//    3  VALUE AREA    the band holding 70% of the session's time
+//    4  INITIAL BAL   the range set by the first hour, drawn separately
+//    5  PANEL         where price sits against that structure right now
+//
+//  The classic letter view is available in the settings. It is not the
+//  default because a true TPO grid needs one text object per row per bracket,
+//  which is over a thousand objects for a single session against a platform
+//  cap of five hundred for the entire script.
+//
+//  NON-REPAINTING: a completed session's profile is drawn once, from closed
+//  bars, and is never recalculated. Only the developing session updates, and
+//  it rebuilds once per closed bar rather than on every tick.
+// ============================================================================
+// No max_bars_back is declared: the deepest historical reference in the whole
+// script is [1], and reserving a large history buffer for nothing costs memory
+// the drawings actually need.
+indicator("TPO Market Profile, Value Area, POC & Initial Balance [LunqFX]",
+     "TPO", overlay = true, max_labels_count = 500, max_lines_count = 500,
+     max_boxes_count = 500)
+
+// ─────────────────────────────────────────────────────────────────────────
+//  PALETTE
+// ─────────────────────────────────────────────────────────────────────────
+VALUE = #00F5D4      // rows inside the value area, and rising candles
+FALL  = #FF2E88      // falling candles — the matched half of the pair
+OUT   = #6B7688      // rows outside the value area
+POC_C = #FBBF24      // the price that held the most time
+IB_C  = #A78BFA      // initial balance
+CARD  = #131A24
+CARD2 = #1B2431
+TXT   = #F1F5F9
+MUTE  = #94A3B8
+
+// ─────────────────────────────────────────────────────────────────────────
+//  INPUTS
+// ─────────────────────────────────────────────────────────────────────────
+gP    = "Profile"
+brkMin= input.int(30, "Bracket size (minutes)", minval = 5, maxval = 240, step = 5, group = gP, tooltip = "The classic Market Profile bracket is thirty minutes: each half hour of the session becomes one letter. Larger brackets give a coarser, faster profile.")
+rows  = input.int(40, "Price rows per session", minval = 10, maxval = 80, group = gP, tooltip = "How finely the session's range is divided. More rows give a more detailed shape and cost more to draw.")
+vaPct = input.float(70.0, "Value area %", minval = 40.0, maxval = 95.0, step = 1.0, group = gP, tooltip = "The share of the session's time the value area must contain. Seventy percent is the convention Market Profile was built around.")
+nSess = input.int(5, "Sessions shown", minval = 1, maxval = 10, group = gP)
+
+gL    = "Levels"
+showPOC = input.bool(true, "Point of Control", group = gL)
+showVA  = input.bool(true, "Value area edges", group = gL)
+showIB  = input.bool(true, "Initial balance", group = gL, tooltip = "The range set during the first two brackets — the first hour of the session on default settings. Leaving it is the classic sign the session has found a direction.")
+extRight= input.int(20, "Extend levels right (bars)", minval = 0, maxval = 200, group = gL)
+
+gV    = "Visuals"
+// Blocks rather than letters by default, and the reason is a hard platform
+// limit rather than taste. A real TPO grid is one letter per row per bracket:
+// forty rows across twenty-six brackets is over a thousand objects for a
+// single session, against a cap of five hundred for the whole script. Packing
+// a row's letters into one text object instead makes Pine centre the string
+// on its anchor, which is how the profile ends up as an unreadable column of
+// type sitting on the candles. A row drawn as a bar of its own length says
+// the same thing and can actually be read.
+blocks  = input.bool(true, "Draw the profile as blocks", group = gV)
+blockW  = input.int(30, "Profile width (bars)", minval = 5, maxval = 200, group = gV, tooltip = "How many bars wide the longest row of the profile is drawn. Everything else is scaled against it.")
+blockOp = input.int(58, "Profile transparency", minval = 20, maxval = 90, group = gV, tooltip = "Higher lets more of the price action through. The profile sits over the session it describes, so this is the setting that decides which of the two you read first.")
+letters = input.bool(false, "Draw the TPO letters instead", group = gV, tooltip = "The authentic letter view. Pine centres a label's text on its anchor and cannot left-align it, so the letters spread both ways from the anchor point — use the shift setting below to move them clear of price.")
+txtSize = input.string("Small", "Letter size", options = ["Tiny","Small","Normal"], group = gV)
+// Pine centres the text of a label on its anchor, so a profile drawn at the
+// session's first bar spreads both ways from it and lands on the candles.
+// This pushes the whole profile sideways so the two stop fighting.
+shiftX  = input.int(0, "Shift the profile (bars)", minval = -300, maxval = 300, group = gV, tooltip = "Negative moves the profile left of the session, positive moves it right. Zero draws it over the session, which is the classic Market Profile placement.")
+candOn  = input.bool(true, "Neon candles", group = gV, tooltip = "Translucent bodies against solid outlines, so the candles sit in the chart rather than on top of it. Turn off to keep your own colours.")
+showHUD = input.bool(true, "Dashboard", group = gV)
+hudPos  = input.string("Top Right", "Dashboard position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right"], group = gV)
+
+// ─────────────────────────────────────────────────────────────────────────
+//  HELPERS
+// ─────────────────────────────────────────────────────────────────────────
+// Pine has no character-from-code function, so the bracket alphabet is a
+// lookup string. Fifty-two letters covers a twenty-six hour session at
+// half-hour brackets, which is longer than any listed market runs.
+ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+letterOf(int i) =>
+    j = math.min(math.max(i, 0), 51)
+    str.substring(ALPHA, j, j + 1)
+
+sizeOf(string s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Normal" => size.normal
+        => size.small
+
+hudP(string s) =>
+    switch s
+        "Top Right"    => position.top_right
+        "Top Left"     => position.top_left
+        "Bottom Right" => position.bottom_right
+        "Bottom Left"  => position.bottom_left
+        => position.middle_right
+
+// ─────────────────────────────────────────────────────────────────────────
+//  SESSION AND BRACKETS
+//  The session is the symbol's own trading day, so nothing has to be set per
+//  market. A bracket is the whole-numbered slice of elapsed session time,
+//  which keeps letters tied to the clock rather than to the bar count — the
+//  same profile therefore appears on a 5-minute and on a 15-minute chart.
+// ─────────────────────────────────────────────────────────────────────────
+// A Market Profile needs many bars inside one session. On a daily chart or
+// higher a bar IS the session, so every "session" holds one bracket and the
+// profile of a single bar is not a profile at all. The script draws nothing
+// there and the panel says why, rather than printing a meaningless block.
+intraday = timeframe.in_seconds() < 86400
+
+// A bracket cannot be finer than a bar. Ask for thirty-minute brackets on a
+// one-hour chart and every bar jumps the bracket counter by two, so half the
+// brackets are never filled: the count reads twenty-nine where fifteen were
+// actually traded, and the letter view prints A, C, E with the gaps missing.
+// The requested size is therefore floored at the chart's own timeframe.
+tfMin    = math.max(1, int(timeframe.in_seconds() / 60))
+brkEff   = math.max(brkMin, tfMin)
+
+dTime   = time("D")
+sessNew = na(dTime[1]) ? false : dTime != dTime[1]
+
+var int sessOpenTime = na
+var int sessOpenBar  = na
+
+// per-bar record of the session being built
+var array<float> bh = array.new<float>()
+var array<float> bl = array.new<float>()
+var array<int>   bk = array.new<int>()
+
+// ─────────────────────────────────────────────────────────────────────────
+//  DRAWING STORE
+//  Completed sessions keep their drawings. The developing one is rebuilt as
+//  the session grows, so the two sets are held apart and only the developing
+//  set is ever deleted.
+// ─────────────────────────────────────────────────────────────────────────
+var array<label> keptLbl = array.new<label>()
+var array<line>  keptLin = array.new<line>()
+var array<box>   keptBox = array.new<box>()
+var array<label> devLbl  = array.new<label>()
+var array<line>  devLin  = array.new<line>()
+var array<box>   devBox  = array.new<box>()
+
+// Every function here takes the arrays it works on as parameters rather than
+// reaching for them in the outer scope. It reads the same way at each call
+// site and it keeps one rule throughout: nothing in this script touches state
+// it was not handed.
+wipe(array<label> lbls, array<line> lins, array<box> bxs) =>
+    if array.size(lbls) > 0
+        for i = 0 to array.size(lbls) - 1
+            label.delete(array.get(lbls, i))
+        array.clear(lbls)
+    if array.size(lins) > 0
+        for i = 0 to array.size(lins) - 1
+            line.delete(array.get(lins, i))
+        array.clear(lins)
+    if array.size(bxs) > 0
+        for i = 0 to array.size(bxs) - 1
+            box.delete(array.get(bxs, i))
+        array.clear(bxs)
+    0
+
+// The platform hard-caps a script at 500 objects of each kind, and rows x
+// sessions can be set past that. Pine would then drop the oldest silently
+// while the array kept holding references to them, so the cap is enforced
+// here — and it has to be measured from `rows`, because the developing
+// session adds a whole profile of its own on top of whatever is kept.
+trim(array<label> lbls, array<line> lins, array<box> bxs) =>
+    cap = math.min(rows * nSess, 500 - rows)
+    while array.size(lbls) > cap
+        label.delete(array.get(lbls, 0))
+        array.shift(lbls)
+    while array.size(bxs) > cap
+        box.delete(array.get(bxs, 0))
+        array.shift(bxs)
+    while array.size(lins) > 6 * nSess
+        line.delete(array.get(lins, 0))
+        array.shift(lins)
+    0
+
+// ─────────────────────────────────────────────────────────────────────────
+//  THE PROFILE
+//  Rows are cut from the session's own range. A bracket counts once for a row
+//  when it traded anywhere inside it, however many bars of that bracket
+//  touched it — that single rule is what makes this a measure of time rather
+//  than of activity, and it is the whole difference from a volume profile.
+//
+//  Two things are deliberate in the signature. The measurements come back as
+//  a tuple, because Pine does not allow a function to assign to a variable
+//  declared outside it. And the drawing stores are passed IN rather than
+//  reached for as globals, which removes any question about a function
+//  mutating outer state and drops the branching this used to need.
+// ─────────────────────────────────────────────────────────────────────────
+build(array<label> lblStore, array<line> linStore, array<box> boxStore) =>
+    float pocY = na
+    float vahY = na
+    float valY = na
+    float ibH  = na
+    float ibL  = na
+    int   nBrk = 0
+
+    n = array.size(bh)
+    if n > 0 and not na(sessOpenBar)
+        hi  = array.max(bh)
+        lo  = array.min(bl)
+        rng = hi - lo
+        if rng > 0
+            rh   = rng / rows
+            maxB = array.max(bk)
+            nBrk := maxB + 1
+
+            counts = array.new<int>(rows, 0)
+            texts  = array.new<string>(rows, "")
+            // allocated once and refilled per row: creating a fresh array
+            // inside the row loop makes one throwaway object per row per build
+            seen   = array.new<bool>(maxB + 1, false)
+
+            for r = 0 to rows - 1
+                rLo  = lo + rh * r
+                rHi  = rLo + rh
+                array.fill(seen, false)
+                for i = 0 to n - 1
+                    if array.get(bh, i) >= rLo and array.get(bl, i) <= rHi
+                        array.set(seen, array.get(bk, i), true)
+                c = 0
+                s = ""
+                for b = 0 to maxB
+                    if array.get(seen, b)
+                        c += 1
+                        // the letter string is only assembled when it will be
+                        // drawn; building it regardless is a string join per
+                        // bracket per row on every rebuild, for nothing
+                        if letters
+                            s := s + letterOf(b)
+                array.set(counts, r, c)
+                array.set(texts, r, s)
+
+            total = array.sum(counts)
+            pocR  = array.indexof(counts, array.max(counts))
+
+            // Value area: grow outward from the POC, always taking the richer
+            // neighbour, until the target share of the session's time is
+            // enclosed. The loop condition alone guarantees a side is still
+            // available, so no early exit is needed — Pine has no `break`.
+            need = total * vaPct / 100.0
+            acc  = array.get(counts, pocR)
+            up   = pocR
+            dn   = pocR
+            while acc < need and (up < rows - 1 or dn > 0)
+                cu = up < rows - 1 ? array.get(counts, up + 1) : -1
+                cd = dn > 0        ? array.get(counts, dn - 1) : -1
+                if cu >= cd and cu >= 0
+                    up  += 1
+                    acc += cu
+                else if cd >= 0
+                    dn  -= 1
+                    acc += cd
+
+            pocY := lo + rh * (pocR + 0.5)
+            vahY := lo + rh * (up + 1)
+            valY := lo + rh * dn
+
+            // initial balance: the range of the first two brackets
+            for i = 0 to n - 1
+                if array.get(bk, i) <= 1
+                    ibH := na(ibH) ? array.get(bh, i) : math.max(ibH, array.get(bh, i))
+                    ibL := na(ibL) ? array.get(bl, i) : math.min(ibL, array.get(bl, i))
+
+            xL = sessOpenBar + shiftX
+            xR = bar_index + extRight
+
+            // Rows drawn as bars: length is the row's bracket count against the
+            // busiest row, so the shape IS the distribution of time. The POC is
+            // by construction the longest bar on the profile.
+            // Width is capped at the session's own bar count. A profile wider
+            // than the session it describes runs over the top of the next one,
+            // which is visible the moment the chart timeframe is coarse enough
+            // that a session holds fewer bars than the requested width.
+            maxC = array.max(counts)
+            wMax = math.min(blockW, n)
+            if blocks and maxC > 0
+                for r = 0 to rows - 1
+                    c2 = array.get(counts, r)
+                    if c2 > 0
+                        col = r == pocR ? POC_C : (r >= dn and r <= up) ? VALUE : OUT
+                        w   = math.max(1, int(math.round(c2 / float(maxC) * wMax)))
+                        y0  = lo + rh * r
+                        y1  = y0 + rh * 0.82          // a gap between rows keeps them legible
+                        array.push(boxStore, box.new(xL, y1, xL + w, y0,
+                             border_color = color.new(col, 100),
+                             bgcolor = color.new(col, r == pocR ? math.max(10, blockOp - 30) : blockOp)))
+
+            if letters
+                for r = 0 to rows - 1
+                    t = array.get(texts, r)
+                    if str.length(t) > 0
+                        col = r == pocR ? POC_C : (r >= dn and r <= up) ? VALUE : OUT
+                        array.push(lblStore, label.new(xL, lo + rh * (r + 0.5), t,
+                             xloc = xloc.bar_index, style = label.style_none,
+                             textcolor = col, size = sizeOf(txtSize), textalign = text.align_left))
+
+            if showPOC
+                array.push(linStore, line.new(xL, pocY, xR, pocY, color = POC_C, width = 2))
+
+            if showVA
+                array.push(linStore, line.new(xL, vahY, xR, vahY, color = color.new(VALUE, 25), width = 1, style = line.style_dashed))
+                array.push(linStore, line.new(xL, valY, xR, valY, color = color.new(VALUE, 25), width = 1, style = line.style_dashed))
+
+            if showIB and not na(ibH) and not na(ibL)
+                array.push(linStore, line.new(xL, ibH, xR, ibH, color = color.new(IB_C, 30), width = 1, style = line.style_dotted))
+                array.push(linStore, line.new(xL, ibL, xR, ibL, color = color.new(IB_C, 30), width = 1, style = line.style_dotted))
+
+    [pocY, vahY, valY, ibH, ibL, nBrk]
+
+// ─────────────────────────────────────────────────────────────────────────
+//  SESSION LOOP
+// ─────────────────────────────────────────────────────────────────────────
+var float curPOC = na
+var float curVAH = na
+var float curVAL = na
+var float curIBH = na
+var float curIBL = na
+var int   curBrk = 0
+
+if intraday and sessNew and barstate.isconfirmed
+    // Only sessions close enough to the end of the chart are ever built. The
+    // script keeps `nSess` of them, so building every session in a two-year
+    // history and then deleting all but five is thousands of full passes done
+    // for nothing — which is how a profile script times out on load.
+    sessBars = array.size(bh)
+    if sessBars > 0 and bar_index >= last_bar_index - sessBars * (nSess + 1)
+        wipe(devLbl, devLin, devBox)
+        [p0, v0, l0, h0, o0, b0] = build(keptLbl, keptLin, keptBox)
+        trim(keptLbl, keptLin, keptBox)
+    array.clear(bh)
+    array.clear(bl)
+    array.clear(bk)
+    sessOpenTime := time
+    sessOpenBar  := bar_index
+
+if na(sessOpenTime)
+    sessOpenTime := time
+    sessOpenBar  := bar_index
+
+// The intraday guard belongs here too, not only on the drawing. Without it a
+// daily chart keeps pushing every bar into these arrays while the block that
+// clears them never runs, so the script quietly accumulates the entire history
+// and frees none of it.
+if intraday and barstate.isconfirmed
+    elapsedMin = math.max(0, int((time - sessOpenTime) / 60000))
+    array.push(bh, high)
+    array.push(bl, low)
+    array.push(bk, int(elapsedMin / brkEff))
+
+// The developing profile is rebuilt once per closed bar, not on every tick.
+// Rebuilding is an O(rows x bars) pass, and running it tick by tick on a fast
+// chart is enough to make the whole script stutter.
+var int lastDevBar = -1
+if intraday and barstate.islast and bar_index != lastDevBar
+    lastDevBar := bar_index
+    wipe(devLbl, devLin, devBox)
+    [p, vh, vl, ih, il, nb] = build(devLbl, devLin, devBox)
+    curPOC := p
+    curVAH := vh
+    curVAL := vl
+    curIBH := ih
+    curIBL := il
+    curBrk := nb
+
+// ─────────────────────────────────────────────────────────────────────────
+//  CANDLES
+//  A matched neon pair at the same saturation and lightness, with translucent
+//  bodies against solid outlines. The background shows faintly through the
+//  body while the edge stays crisp, which is what makes a candle read as part
+//  of the chart rather than a sticker placed over it.
+// ─────────────────────────────────────────────────────────────────────────
+cEdge = close >= open ? VALUE : FALL
+plotcandle(candOn ? open : na, high, low, close, "Candles",
+     color = color.new(cEdge, 24), wickcolor = color.new(cEdge, 18), bordercolor = cEdge)
+
+// ─────────────────────────────────────────────────────────────────────────
+//  DASHBOARD
+// ─────────────────────────────────────────────────────────────────────────
+var table hud = table.new(position.top_right, 2, 6)
+if showHUD and barstate.islast
+    table.delete(hud)
+    hud := table.new(hudP(hudPos), 2, 6, bgcolor = CARD,
+         border_color = color.new(#28323F, 0), border_width = 1)
+
+    inValue = not na(curVAH) and not na(curVAL) and close <= curVAH and close >= curVAL
+    aboveVA = not na(curVAH) and close > curVAH
+    ibBroke = not na(curIBH) and not na(curIBL) and (close > curIBH or close < curIBL)
+
+    hTx = not intraday ? "USE AN INTRADAY CHART" :
+          na(curPOC)   ? "building the session" :
+          inValue      ? "IN VALUE  ·  balanced" :
+          aboveVA      ? "ABOVE VALUE  ·  seeking higher" : "BELOW VALUE  ·  seeking lower"
+    hBg = not intraday ? #4A3410 : na(curPOC) ? CARD2 : inValue ? #23324A : aboveVA ? #0A5F55 : #8E1148
+    // the effective bracket is shown, not the requested one, so a chart whose
+    // timeframe forced the size up says so instead of quietly disagreeing
+    hSub= not intraday ? "a daily bar is one bracket  " : str.tostring(curBrk) + " x " + str.tostring(brkEff) + "m  "
+
+    table.cell(hud, 0, 0, "  " + hTx + "  ", text_color = color.white, text_size = size.large, text_halign = text.align_left, bgcolor = hBg)
+    table.cell(hud, 1, 0, hSub, text_color = color.white, text_size = size.normal, text_halign = text.align_right, bgcolor = hBg)
+
+    table.cell(hud, 0, 1, "  Point of Control", text_color = MUTE, text_size = size.normal, text_halign = text.align_left, bgcolor = CARD)
+    // size.large, not huge: a price is six to eight characters, and at huge
+    // the cell grows wide enough to push the whole panel under the price
+    // scale on the right of the chart
+    table.cell(hud, 1, 1, (na(curPOC) ? "—" : str.tostring(curPOC, format.mintick)) + "  ", text_color = POC_C, text_size = size.large, text_halign = text.align_right, bgcolor = CARD)
+
+    table.cell(hud, 0, 2, "  Value area high", text_color = MUTE, text_size = size.normal, text_halign = text.align_left, bgcolor = CARD2)
+    table.cell(hud, 1, 2, (na(curVAH) ? "—" : str.tostring(curVAH, format.mintick)) + "  ", text_color = TXT, text_size = size.normal, text_halign = text.align_right, bgcolor = CARD2)
+
+    table.cell(hud, 0, 3, "  Value area low", text_color = MUTE, text_size = size.normal, text_halign = text.align_left, bgcolor = CARD2)
+    table.cell(hud, 1, 3, (na(curVAL) ? "—" : str.tostring(curVAL, format.mintick)) + "  ", text_color = TXT, text_size = size.normal, text_halign = text.align_right, bgcolor = CARD2)
+
+    ibTx = na(curIBH) or na(curIBL) ? "—" : str.tostring(curIBL, format.mintick) + "  –  " + str.tostring(curIBH, format.mintick)
+    table.cell(hud, 0, 4, "  Initial balance", text_color = MUTE, text_size = size.normal, text_halign = text.align_left, bgcolor = CARD)
+    table.cell(hud, 1, 4, ibTx + "  ", text_color = IB_C, text_size = size.normal, text_halign = text.align_right, bgcolor = CARD)
+
+    table.cell(hud, 0, 5, "  Day so far", text_color = MUTE, text_size = size.normal, text_halign = text.align_left, bgcolor = CARD2)
+    table.cell(hud, 1, 5, (na(curIBH) ? "—" : ibBroke ? "initial balance broken" : "holding inside first hour") + "  ", text_color = na(curIBH) ? MUTE : ibBroke ? POC_C : MUTE, text_size = size.normal, text_halign = text.align_right, bgcolor = CARD2)
+
+// ─────────────────────────────────────────────────────────────────────────
+//  ALERTS — closed bars only
+// ─────────────────────────────────────────────────────────────────────────
+alertcondition(barstate.isconfirmed and not na(curVAH) and close > curVAH and close[1] <= curVAH, "Accepted above value", "LunqFX TPO: price closed above the value area high")
+alertcondition(barstate.isconfirmed and not na(curVAL) and close < curVAL and close[1] >= curVAL, "Accepted below value", "LunqFX TPO: price closed below the value area low")
+alertcondition(barstate.isconfirmed and not na(curIBH) and close > curIBH and close[1] <= curIBH, "Initial balance broken up", "LunqFX TPO: price closed above the initial balance high")
+alertcondition(barstate.isconfirmed and not na(curIBL) and close < curIBL and close[1] >= curIBL, "Initial balance broken down", "LunqFX TPO: price closed below the initial balance low")

@@ -1,0 +1,166 @@
+//@version=6
+strategy(
+     "XGBoost Mini Strategy [The Quant Science]",
+     overlay = false,
+     default_qty_type = strategy.cash,
+     initial_capital = 10000,
+     default_qty_value = 500,
+     pyramiding = 1,
+     currency = currency.USDT,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.05,
+     slippage = 5,
+     process_orders_on_close = true,
+     close_entries_rule = "ANY"
+     )
+
+import thequantscience/XGBoostMini/1 as xgb
+
+i_threshold  = input.float(defval = 0.54, title = "Probability Threshold", minval = 0.50, maxval = 0.55, step = 0.01, group="Settings")
+
+f1 = ta.rsi(close, 14) / 100.0                      
+f2 = (close - ta.ema(close, 50)) / close            
+f3 = ta.roc(close, 5) / 10.0                        
+f4 = ta.atr(14) / close                             
+f5 = nz(volume / ta.sma(volume, 20)) - 1.0          
+float h_high = ta.highest(high, 14)
+float h_low  = ta.lowest(low, 14)
+f6 = (h_high - h_low) > 0 ? (close - h_low) / (h_high - h_low) : 0.5 
+
+int n_features = 6
+int n_samples  = 50
+
+var xgb.XGBModel model = na
+
+bool can_trade = bar_index > 300
+bool condition_train = can_trade and (bar_index % 50 == 0)
+
+if condition_train
+    matrix<float> temp_X = matrix.new<float>(n_samples, n_features, 0.0)
+    array<float>  temp_y = array.new_float(n_samples, 0.0)
+    
+    for i = 0 to n_samples - 1
+        int offset = n_samples - i + 10
+        matrix.set(temp_X, i, 0, nz(f1[offset]))
+        matrix.set(temp_X, i, 1, nz(f2[offset]))
+        matrix.set(temp_X, i, 2, nz(f3[offset]))
+        matrix.set(temp_X, i, 3, nz(f4[offset]))
+        matrix.set(temp_X, i, 4, nz(f5[offset]))
+        matrix.set(temp_X, i, 5, nz(f6[offset]))
+        
+        float future_return = close[offset - 2] - close[offset]
+        array.set(temp_y, i, future_return > 0 ? 1.0 : 0.0)
+        
+    model := xgb.train_model(temp_X, temp_y, 3, 0.1, 1.0, 4, 10, 1.0, 1.0, 0.0, 1)
+
+array<float> current_features = array.new_float(0)
+array.push(current_features, nz(f1))
+array.push(current_features, nz(f2))
+array.push(current_features, nz(f3))
+array.push(current_features, nz(f4))
+array.push(current_features, nz(f5))
+array.push(current_features, nz(f6))
+
+float prob = 0.5
+if not na(model) and can_trade
+    prob := xgb.predict_probability(model, current_features, 0.1)
+
+var int last_exit_bar = -999
+if nz(strategy.position_size[1]) > 0 and strategy.position_size == 0
+    last_exit_bar := bar_index
+
+bool cool_down = (bar_index - last_exit_bar) > 1
+
+bool long_cond  = not na(model) and can_trade and (prob > i_threshold) and cool_down
+bool close_cond = not na(model) and can_trade and (prob < (1.0 - i_threshold))
+
+sma15 = ta.sma(close, 15) 
+var float price_entry = 0.00 
+var int bar_filter = 0 
+
+if long_cond and close > sma15
+    price_entry := strategy.equity
+    bar_filter := bar_index + 3
+    strategy.entry(id = "XGB-Mini", direction = strategy.long)
+
+if close_cond and strategy.equity > price_entry and bar_index > bar_filter
+    strategy.close("XGB-Mini", comment = "XGB Exit")
+
+var float trail_price = na
+var float high_water = na
+var bool position_active = false
+
+bool is_in_pos = strategy.position_size > 0
+bool pos_just_opened = is_in_pos and not position_active
+
+if pos_just_opened
+    high_water := strategy.position_avg_price
+    trail_price := high_water * (1.0 - (10 / 100.0))
+else if is_in_pos
+    high_water := math.max(high_water, high)
+    float candidate_stop = high_water * (1.0 - (10 / 100.0))
+    trail_price := math.max(trail_price, candidate_stop)
+else
+    high_water := na
+    trail_price := na
+
+position_active := is_in_pos
+
+bool ts_triggered = position_active and not pos_just_opened and (low <= trail_price)
+
+if ts_triggered
+    strategy.close("XGB-Mini", comment = "Trailing Exit")
+
+color sma_col = close >= sma15 ? color.new(#00ff00, 0) : color.new(#ff0000, 0)
+plot(sma15, title="Smart SMA Trend Filter", color=sma_col, linewidth=1, force_overlay=true)
+
+float range_val = position_active ? (close - trail_price) : 0.0
+float s1 = position_active and range_val > 0 ? trail_price + range_val * 0.1  : na
+float s2 = position_active and range_val > 0 ? trail_price + range_val * 0.2  : na
+float s3 = position_active and range_val > 0 ? trail_price + range_val * 0.3  : na
+float s4 = position_active and range_val > 0 ? trail_price + range_val * 0.4  : na
+float s5 = position_active and range_val > 0 ? trail_price + range_val * 0.5  : na
+float s6 = position_active and range_val > 0 ? trail_price + range_val * 0.6  : na
+float s7 = position_active and range_val > 0 ? trail_price + range_val * 0.7  : na
+float s8 = position_active and range_val > 0 ? trail_price + range_val * 0.8  : na
+float s9 = position_active and range_val > 0 ? trail_price + range_val * 0.9  : na
+
+p0 = plot(position_active ? trail_price : na, title="Trail Base", color=color.rgb(255, 0, 0, 80), style=plot.style_linebr, linewidth=2, force_overlay=true)
+p1 = plot(s1, display=display.none, force_overlay=true)
+p2 = plot(s2, display=display.none, force_overlay=true)
+p3 = plot(s3, display=display.none, force_overlay=true)
+p4 = plot(s4, display=display.none, force_overlay=true)
+p5 = plot(s5, display=display.none, force_overlay=true)
+p6 = plot(s6, display=display.none, force_overlay=true)
+p7 = plot(s7, display=display.none, force_overlay=true)
+p8 = plot(s8, display=display.none, force_overlay=true)
+p9 = plot(s9, display=display.none, force_overlay=true)
+p10 = plot(position_active ? close : na, title="Close Ref", color=color.blue, display=display.none, force_overlay=true)
+
+fill(p0, p1, color=color.new(#ff0000, 80), title="Grad 1")
+fill(p1, p2, color=color.new(#ff3300, 82), title="Grad 2")
+fill(p2, p3, color=color.new(#ff6600, 84), title="Grad 3")
+fill(p3, p4, color=color.new(#ff9900, 86), title="Grad 4")
+fill(p4, p5, color=color.new(#ffcc00, 88), title="Grad 5")
+fill(p5, p6, color=color.new(#ccff00, 88), title="Grad 6")
+fill(p6, p7, color=color.new(#99ff00, 86), title="Grad 7")
+fill(p7, p8, color=color.new(#66ff00, 84), title="Grad 8")
+fill(p8, p9, color=color.new(#33ff00, 82), title="Grad 9")
+fill(p9, p10, color=color.new(#00ff00, 80), title="Grad 10")
+
+hline(0.50, title="Neutral Midline", color=#bcbcbe89, linestyle=hline.style_dotted)
+h_upper = hline(i_threshold, title="Upper Threshold", color=color.new(#00ff00, 35), linestyle=hline.style_dashed)
+h_lower = hline(1.0 - i_threshold, title="Lower Threshold", color=color.new(#ff0000, 35), linestyle=hline.style_dashed)
+
+color line_col = prob > i_threshold ? #00ff00 : prob < (1.0 - i_threshold) ? #ff0000 : #bcbcbe00
+p_prob = plot(prob, title="Main Probability Line", color=line_col, linewidth=2, style=plot.style_line)
+
+p_mid = plot(0.50, title="Zero Baseline", display=display.none)
+
+fill(p_prob, p_mid, color=color.new(line_col, 88), title="Probability Momentum Fill")
+plot(prob, title="Glow Outer Layer", color=color.new(line_col, 75), linewidth=5, style=plot.style_line)
+
+plotshape(long_cond and close > sma15 and strategy.opentrades==0, title="Long Entry Signal", style=shape.circle, location=location.top, color=#00ff00, size=size.tiny, text="[XGB]", textcolor=#00ff00)
+plotshape(close_cond and strategy.equity > price_entry and bar_index > bar_filter and strategy.opentrades==1, title="Model Exit Signal", style=shape.circle, location=location.bottom, color=#ff0000, size=size.tiny, text="[XGB]", textcolor=#ff0000)
+
+bgcolor(prob > i_threshold ? color.new(#00ff00, 95) : prob < (1.0 - i_threshold) ? color.new(#ff0000, 95) : na, title="Zone Background Highlight")

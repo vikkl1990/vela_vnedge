@@ -1,0 +1,523 @@
+//@version=6
+indicator("North AMD PD Map 12.9", overlay=true, max_boxes_count=500, max_lines_count=200, max_labels_count=200)
+
+// 9.0 — every TF toggle works on every chart. Boxes glued to candle time. No 8-bar filter.
+// FVG = wick gap candle 0 vs candle 2. Dies only on close-through.
+// OB  = last opposite candle (body default). Confirms when that TF closes through the other swing of the same leg.
+gTf    = "This chart"
+gTfFvg = "FVG on these TFs"
+gTfOb  = "Order blocks on these TFs"
+gFvg   = "FVG / IFVG"
+gFvgMit = "FVG mitigation"
+gOb    = "Order Blocks"
+gObMit = "OB mitigation"
+gLab   = "Labels"
+gVis   = "Visual"
+gHud   = "Key"
+
+fvgW   = input.bool(true, "Weekly FVG", group=gTfFvg)
+fvgD   = input.bool(true, "Daily FVG", group=gTfFvg)
+fvgH4  = input.bool(true, "4H FVG", group=gTfFvg)
+fvgH1  = input.bool(true, "1H FVG", group=gTfFvg)
+fvgM30 = input.bool(false, "30m FVG", group=gTfFvg)
+fvgM15 = input.bool(true, "15m FVG", group=gTfFvg)
+fvgM5  = input.bool(false, "5m FVG", group=gTfFvg)
+
+obW   = input.bool(true, "Weekly OB", group=gTfOb)
+obD   = input.bool(true, "Daily OB", group=gTfOb)
+obH4  = input.bool(true, "4H OB", group=gTfOb)
+obH1  = input.bool(true, "1H OB", group=gTfOb)
+obM30 = input.bool(false, "30m OB", group=gTfOb)
+obM15 = input.bool(true, "15m OB", group=gTfOb)
+obM5  = input.bool(false, "5m OB", group=gTfOb)
+
+showFvg       = input.bool(true, "Draw FVGs", group=gFvg)
+showIfvg      = input.bool(true, "Flip to IFVG when price closes through", group=gFvg)
+showInvalidFv = input.bool(true, "Also draw small / no-displacement gaps", group=gFvg)
+minFvgPts     = input.float(0.5, "Min WICK gap (points)", minval=0.0, step=0.5, group=gFvg)
+minDispPts    = input.float(0.0, "Min middle-candle range for VALID (0 = all valid)", minval=0.0, step=0.5, group=gFvg)
+maxKeepFvg    = input.int(8, "Live FVGs per TF", minval=1, maxval=100, group=gFvg)
+maxKeepIfvg   = input.int(3, "IFVGs per TF", minval=1, maxval=100, group=gFvg)
+
+showFreshFvg  = input.bool(true, "Show live FVGs", group=gFvgMit)
+
+showOb     = input.bool(true, "Draw order blocks", group=gOb)
+obWickOn   = input.bool(true, "OB wick ON (off = body only)", group=gOb)
+minObSize  = input.float(0.0, "Min OB height (points)", minval=0.0, step=0.5, group=gOb)
+maxKeepOb  = input.int(8, "Live OBs per TF", minval=1, maxval=40, group=gOb)
+
+showFreshOb  = input.bool(true, "Show live OBs", group=gObMit)
+
+labSz   = input.string("small", "Label size", options=["tiny", "small", "normal", "large"], group=gLab)
+labDock = input.string("Right of screen (price axis)", "Labels sit", options=["Right of screen (price axis)", "On last candle"], group=gLab)
+labV    = input.string("top", "Label vertical on the zone", options=["top", "middle", "bottom"], group=gLab)
+labCaps = input.bool(false, "ALL CAPS", group=gLab)
+labBox  = input.bool(true, "Box around labels", group=gLab)
+labTxtC = input.color(#ffffff, "Label text", group=gLab)
+labBgC  = input.color(color.new(#000000, 45), "Label background", group=gLab)
+wordFvg  = input.string("FVG", "Word: FVG", group=gLab)
+wordIfvg = input.string("IFVG", "Word: IFVG", group=gLab)
+wordOb   = input.string("OB", "Word: OB", group=gLab)
+wordMit  = input.string("", "Word: unused", group=gLab)
+
+bullFvgC = input.color(color.new(#00e5ff, 70), "Bull FVG fill", group=gVis)
+bullFvgB = input.color(#00e5ff, "Bull FVG border", group=gVis)
+bearFvgC = input.color(color.new(#ff3d71, 70), "Bear FVG fill", group=gVis)
+bearFvgB = input.color(#ff3d71, "Bear FVG border", group=gVis)
+bullIfvgC = input.color(color.new(#7c4dff, 68), "Bull IFVG fill", group=gVis)
+bearIfvgC = input.color(color.new(#ff9100, 68), "Bear IFVG fill", group=gVis)
+invFvgC  = input.color(color.new(#9e9e9e, 82), "Invalid FVG fill", group=gVis)
+bullObC  = input.color(color.new(#00c853, 75), "Bull OB fill", group=gVis)
+bullObB  = input.color(#00c853, "Bull OB border", group=gVis)
+bearObC  = input.color(color.new(#ff1744, 75), "Bear OB fill", group=gVis)
+bearObB  = input.color(#ff1744, "Bear OB border", group=gVis)
+mitC     = input.color(color.new(#607d8b, 88), "Mitigated fill", group=gVis)
+ceCol    = input.color(#ffd54f, "CE 50%", group=gVis)
+showCe   = input.bool(true, "Draw 50% CE", group=gVis)
+ceW      = input.int(1, "CE thickness", minval=1, maxval=4, group=gVis)
+ceStyle  = input.string("dotted", "CE style", options=["solid", "dashed", "dotted"], group=gVis)
+bW       = input.int(2, "Border width", minval=1, maxval=4, group=gVis)
+
+showHud = input.bool(false, "Show key", group=gHud)
+hudPos  = input.string("top right", "Key placement", options=["top left", "top center", "top right", "middle left", "middle right", "bottom left", "bottom center", "bottom right"], group=gHud)
+
+f_lsz(s) =>
+    s == "tiny" ? size.tiny : s == "small" ? size.small : s == "normal" ? size.normal : size.large
+
+f_txt(s) =>
+    labCaps ? str.upper(s) : s
+
+f_kindWord(k) =>
+    k == "IFVG" ? wordIfvg : k == "OB" ? wordOb : wordFvg
+
+f_grade(valid, pct, kind) =>
+    kind == "IFVG" ? "A" : not valid ? "INV" : pct >= 50 ? "B" : "A"
+
+f_fillC(kind, bull, valid) =>
+    kind == "IFVG" ? (bull ? bullIfvgC : bearIfvgC) : kind == "OB" ? (bull ? bullObC : bearObC) : valid ? (bull ? bullFvgC : bearFvgC) : invFvgC
+
+f_bordC(kind, bull, valid) =>
+    kind == "OB" ? (bull ? bullObB : bearObB) : valid ? (bull ? bullFvgB : bearFvgB) : #9e9e9e
+
+f_labY(top, bot) =>
+    labV == "middle" ? (top + bot) * 0.5 : labV == "bottom" ? bot : top
+
+f_labBg() =>
+    labBox ? labBgC : color.new(#000000, 100)
+
+f_ceSt() =>
+    ceStyle == "solid" ? line.style_solid : ceStyle == "dashed" ? line.style_dashed : line.style_dotted
+
+f_labX() =>
+    labDock == "On last candle" ? time : timenow + 86400000 * 400
+
+chartName = timeframe.isweekly ? "W" : timeframe.isdaily ? "D" : (timeframe.isintraday and timeframe.multiplier == 240) ? "H4" : (timeframe.isintraday and timeframe.multiplier == 60) ? "H1" : (timeframe.isintraday and timeframe.multiplier == 30) ? "M30" : (timeframe.isintraday and timeframe.multiplier == 15) ? "M15" : (timeframe.isintraday and timeframe.multiplier == 5) ? "M5" : timeframe.period
+
+f_onFvg(tf) =>
+    showFvg and (tf == "W" ? fvgW : tf == "D" ? fvgD : tf == "H4" ? fvgH4 : tf == "H1" ? fvgH1 : tf == "M30" ? fvgM30 : tf == "M15" ? fvgM15 : tf == "M5" ? fvgM5 : false)
+
+f_onOb(tf) =>
+    showOb and (tf == "W" ? obW : tf == "D" ? obD : tf == "H4" ? obH4 : tf == "H1" ? obH1 : tf == "M30" ? obM30 : tf == "M15" ? obM15 : tf == "M5" ? obM5 : false)
+
+type Pd
+    box bx
+    line ce
+    label lb
+    float top
+    float bot
+    bool bull
+    bool valid
+    string kind
+    string tf
+    bool dead
+    bool mitigated
+    int leftT
+    float maxFill
+
+var Pd[] bag = array.new<Pd>()
+
+f_n(tf, kind) =>
+    int n = 0
+    if array.size(bag) > 0
+        for i = 0 to array.size(bag) - 1
+            Pd p = array.get(bag, i)
+            if not p.dead and p.tf == tf and p.kind == kind
+                n += 1
+    n
+
+f_drop(i) =>
+    Pd p = array.get(bag, i)
+    p.dead := true
+    box.delete(p.bx)
+    if not na(p.ce)
+        line.delete(p.ce)
+    if not na(p.lb)
+        label.delete(p.lb)
+
+f_capLim(kind) =>
+    kind == "OB" ? maxKeepOb : kind == "IFVG" ? maxKeepIfvg : maxKeepFvg
+
+f_cap(tf, kind) =>
+    while f_n(tf, kind) >= f_capLim(kind)
+        int hit = -1
+        if array.size(bag) > 0
+            for i = 0 to array.size(bag) - 1
+                Pd p = array.get(bag, i)
+                if not p.dead and p.tf == tf and p.kind == kind and p.mitigated
+                    hit := i
+                    break
+            if hit < 0
+                for i = 0 to array.size(bag) - 1
+                    Pd p2 = array.get(bag, i)
+                    if not p2.dead and p2.tf == tf and p2.kind == kind
+                        hit := i
+                        break
+        if hit < 0
+            break
+        f_drop(hit)
+
+f_add(tf, kind, bull, valid, top, bot, leftT) =>
+    bool ok = not na(leftT) and top > bot and (top - bot) >= (kind == "OB" ? minObSize : minFvgPts)
+    if ok
+        f_cap(tf, kind)
+        string g = f_grade(valid, 0.0, kind)
+        box bx = box.new(leftT, top, time, bot, xloc=xloc.bar_time, border_color=f_bordC(kind, bull, valid), border_width=bW, bgcolor=f_fillC(kind, bull, valid), extend=extend.right)
+        line ce = showCe ? line.new(leftT, (top + bot) * 0.5, time, (top + bot) * 0.5, xloc=xloc.bar_time, color=ceCol, style=f_ceSt(), width=ceW, extend=extend.right) : na
+        label lb = na
+        array.push(bag, Pd.new(bx, ce, lb, top, bot, bull, valid, kind, tf, false, false, leftT, 0.0))
+    ok
+
+if barstate.islast and array.size(bag) > 1
+    for a = array.size(bag) - 1 to 0
+        Pd pa = array.get(bag, a)
+        if pa.dead or pa.kind != "OB" or pa.mitigated
+            continue
+        for b = array.size(bag) - 1 to 0
+            if b == a
+                continue
+            Pd pb = array.get(bag, b)
+            if pb.dead or pb.kind != "OB" or pb.tf != pa.tf or pb.bull != pa.bull or pb.mitigated
+                continue
+            bool overlap = not (pa.top < pb.bot or pb.top < pa.bot)
+            if not overlap
+                continue
+            bool dropA = pa.bull ? (pa.bot > pb.bot) : (pa.top < pb.top)
+            if dropA
+                f_drop(a)
+                break
+
+if array.size(bag) > 0
+    for i = 0 to array.size(bag) - 1
+        Pd p = array.get(bag, i)
+        if p.dead
+            continue
+        bool brokeThru = (p.bull and close < p.bot) or (not p.bull and close > p.top)
+        if showIfvg and p.kind == "FVG" and p.valid and brokeThru
+            p.kind := "IFVG"
+            p.bull := not p.bull
+            f_cap(p.tf, "IFVG")
+            brokeThru := false
+        if brokeThru and p.kind != "IFVG"
+            f_drop(i)
+            continue
+        bool showFresh = p.kind == "OB" ? showFreshOb : showFreshFvg
+        if not showFresh
+            f_drop(i)
+            continue
+        box.set_bgcolor(p.bx, f_fillC(p.kind, p.bull, p.valid))
+        box.set_border_color(p.bx, f_bordC(p.kind, p.bull, p.valid))
+        if not na(p.ce)
+            line.set_color(p.ce, ceCol)
+            line.set_width(p.ce, ceW)
+            line.set_style(p.ce, f_ceSt())
+        if not na(p.lb)
+            if barstate.islast
+                label.set_xy(p.lb, f_labX(), f_labY(p.top, p.bot))
+            label.set_text(p.lb, f_txt(p.tf + " " + f_kindWord(p.kind)))
+            label.set_textcolor(p.lb, labTxtC)
+            label.set_color(p.lb, f_labBg())
+            label.set_size(p.lb, f_lsz(labSz))
+
+// One HTF / chart engine. last opposite candle. other-swing = most recent opposite flip, with fallback.
+f_obTop(h, o, c) =>
+    obWickOn ? h : math.max(o, c)
+
+f_obBot(l, o, c) =>
+    obWickOn ? l : math.min(o, c)
+
+f_obScan() =>
+    var int lastPhT = 0
+    var int lastPlT = 0
+    var float pendBearTop = na
+    var float pendBearBot = na
+    var int pendBearT = na
+    var float pendBullTop = na
+    var float pendBullBot = na
+    var int pendBullT = na
+    var float legLow = na
+    var float legHigh = na
+    int side = 0
+    float ot = na
+    float ob = na
+    int lt = na
+    if barstate.isconfirmed
+        if na(legLow)
+            legLow := low
+            legHigh := high
+        else
+            legLow := math.min(legLow, low)
+            legHigh := math.max(legHigh, high)
+        bool sweepHi = high > ta.highest(high[1], 10)
+        bool sweepLo = low < ta.lowest(low[1], 10)
+        if sweepHi
+            int pk = close > open ? 0 : 0
+            if close <= open
+                for i = 1 to 8
+                    if close[i] > open[i]
+                        pk := i
+                        break
+            else
+                pk := 0
+            pendBearTop := f_obTop(high[pk], open[pk], close[pk])
+            pendBearBot := f_obBot(low[pk], open[pk], close[pk])
+            pendBearT := time[pk]
+            legLow := low
+        if sweepLo
+            int pk2 = 0
+            if close >= open
+                for i = 1 to 8
+                    if close[i] < open[i]
+                        pk2 := i
+                        break
+            pendBullTop := f_obTop(high[pk2], open[pk2], close[pk2])
+            pendBullBot := f_obBot(low[pk2], open[pk2], close[pk2])
+            pendBullT := time[pk2]
+            legHigh := high
+        bool mssDn = not na(pendBearT) and close < pendBearBot and close < open
+        bool mssUp = not na(pendBullT) and close > pendBullTop and close > open
+        if mssDn and pendBearT != lastPhT and (pendBearTop - pendBearBot) >= minObSize
+            side := 1
+            ot := pendBearTop
+            ob := pendBearBot
+            lt := pendBearT
+            lastPhT := pendBearT
+            pendBearT := na
+            legHigh := high
+        if mssUp and pendBullT != lastPlT and (pendBullTop - pendBullBot) >= minObSize
+            side := 2
+            ot := pendBullTop
+            ob := pendBullBot
+            lt := pendBullT
+            lastPlT := pendBullT
+            pendBullT := na
+            legLow := low
+    [side, ot, ob, lt]
+
+f_paintClosed(tf, o0, h0, l0, c0, t0, o1, h1, l1, c1, t1, h2, l2, t2, sh, sl) =>
+    float nsh = sh
+    float nsl = sl
+    if not na(h2) and f_onFvg(tf)
+        float gB = l0 - h2
+        float gS = l2 - h0
+        float midR = h1 - l1
+        bool v = midR >= minDispPts
+        if gB >= minFvgPts and (v or showInvalidFv)
+            f_add(tf, "FVG", true, v, l0, h2, t2)
+        if gS >= minFvgPts and (v or showInvalidFv)
+            f_add(tf, "FVG", false, v, l2, h0, t2)
+    [nsh, nsl]
+
+type St
+    float o
+    float h
+    float l
+    float c
+    int t
+    float o1
+    float h1
+    float l1
+    float c1
+    int t1
+    float h2
+    float l2
+    int t2
+    float sh
+    float sl
+    float bt
+    float bb
+    int bT
+    float bNeed
+    float st
+    float sb
+    int sT
+    float sNeed
+    bool bSwp
+    bool sSwp
+    float lastUpTop
+    float lastUpBot
+    int lastUpT
+    float lastDnTop
+    float lastDnBot
+    int lastDnT
+    float pendBearTop
+    float pendBearBot
+    int pendBearT
+    float pendBullTop
+    float pendBullBot
+    int pendBullT
+    int lastPhT
+    int lastPlT
+    int shAge
+    int slAge
+
+f_roll(s, o, h, l, c, t) =>
+    St n = s
+    n.h2 := s.h1
+    n.l2 := s.l1
+    n.t2 := s.t1
+    n.o1 := s.o
+    n.h1 := s.h
+    n.l1 := s.l
+    n.c1 := s.c
+    n.t1 := s.t
+    n.o := o
+    n.h := h
+    n.l := l
+    n.c := c
+    n.t := t
+    n
+
+f_step(tf, s, o, h, l, c, t) =>
+    St n = s
+    bool first = na(s.t)
+    bool fresh = not first and t != s.t
+    if first
+        n.o := o
+        n.h := h
+        n.l := l
+        n.c := c
+        n.t := t
+    else if fresh
+        n := f_roll(s, o, h, l, c, t)
+        if not na(n.h2)
+            [nsh, nsl] = f_paintClosed(tf, n.o, n.h, n.l, n.c, n.t, n.o1, n.h1, n.l1, n.c1, n.t1, n.h2, n.l2, n.t2, n.sh, n.sl)
+            n.sh := nsh
+            n.sl := nsl
+        if f_onOb(tf) and not na(n.c1)
+            if n.c1 > n.o1
+                n.lastUpTop := f_obTop(n.h1, n.o1, n.c1)
+                n.lastUpBot := f_obBot(n.l1, n.o1, n.c1)
+                n.lastUpT := n.t1
+            if n.c1 < n.o1
+                n.lastDnTop := f_obTop(n.h1, n.o1, n.c1)
+                n.lastDnBot := f_obBot(n.l1, n.o1, n.c1)
+                n.lastDnT := n.t1
+            if n.c1 < n.o1 and not na(n.lastUpT) and n.c1 < n.lastUpBot and n.lastUpT != n.lastPhT and (n.lastUpTop - n.lastUpBot) >= minObSize
+                f_add(tf, "OB", false, true, n.lastUpTop, n.lastUpBot, n.lastUpT)
+                n.lastPhT := n.lastUpT
+            if n.c1 > n.o1 and not na(n.lastDnT) and n.c1 > n.lastDnTop and n.lastDnT != n.lastPlT and (n.lastDnTop - n.lastDnBot) >= minObSize
+                f_add(tf, "OB", true, true, n.lastDnTop, n.lastDnBot, n.lastDnT)
+                n.lastPlT := n.lastDnT
+            if n.h1 >= n.sh
+                n.sh := n.h1
+                n.shAge := 0
+            else
+                n.shAge += 1
+                if n.shAge >= 10
+                    n.sh := n.h1
+                    n.shAge := 0
+            if n.l1 <= n.sl
+                n.sl := n.l1
+                n.slAge := 0
+            else
+                n.slAge += 1
+                if n.slAge >= 10
+                    n.sl := n.l1
+                    n.slAge := 0
+    else
+        n.h := math.max(n.h, h)
+        n.l := math.min(n.l, l)
+        n.c := c
+    n
+
+var St stW = St.new()
+var St stD = St.new()
+var St stH4 = St.new()
+var St stH1 = St.new()
+var St stM30 = St.new()
+var St stM15 = St.new()
+var St stM5 = St.new()
+var St stCh = St.new()
+
+[wt, wo, wh, wl, wc] = request.security(syminfo.tickerid, "W", [time, open, high, low, close], barmerge.gaps_off, barmerge.lookahead_off)
+[dt, d_o, dh, dl, dc] = request.security(syminfo.tickerid, "D", [time, open, high, low, close], barmerge.gaps_off, barmerge.lookahead_off)
+[h4t, h4o, h4h, h4l, h4c] = request.security(syminfo.tickerid, "240", [time, open, high, low, close], barmerge.gaps_off, barmerge.lookahead_off)
+[h1t, h1o, h1h, h1l, h1c] = request.security(syminfo.tickerid, "60", [time, open, high, low, close], barmerge.gaps_off, barmerge.lookahead_off)
+[m30t, m30o, m30h, m30l, m30c] = request.security(syminfo.tickerid, "30", [time, open, high, low, close], barmerge.gaps_off, barmerge.lookahead_off)
+[m15t, m15o, m15h, m15l, m15c] = request.security(syminfo.tickerid, "15", [time, open, high, low, close], barmerge.gaps_off, barmerge.lookahead_off)
+[m5t, m5o, m5h, m5l, m5c] = request.security(syminfo.tickerid, "5", [time, open, high, low, close], barmerge.gaps_off, barmerge.lookahead_off)
+
+[wSide, wTop, wBot, wLt] = request.security(syminfo.tickerid, "W", f_obScan(), barmerge.gaps_off, barmerge.lookahead_off)
+[dSide, dTop, dBot, dLt] = request.security(syminfo.tickerid, "D", f_obScan(), barmerge.gaps_off, barmerge.lookahead_off)
+[h4Side, h4Top, h4Bot, h4Lt] = request.security(syminfo.tickerid, "240", f_obScan(), barmerge.gaps_off, barmerge.lookahead_off)
+[h1Side, h1Top, h1Bot, h1Lt] = request.security(syminfo.tickerid, "60", f_obScan(), barmerge.gaps_off, barmerge.lookahead_off)
+[m30Side, m30Top, m30Bot, m30Lt] = request.security(syminfo.tickerid, "30", f_obScan(), barmerge.gaps_off, barmerge.lookahead_off)
+[m15Side, m15Top, m15Bot, m15Lt] = request.security(syminfo.tickerid, "15", f_obScan(), barmerge.gaps_off, barmerge.lookahead_off)
+[m5Side, m5Top, m5Bot, m5Lt] = request.security(syminfo.tickerid, "5", f_obScan(), barmerge.gaps_off, barmerge.lookahead_off)
+
+var int seenW = 0
+var int seenD = 0
+var int seenH4 = 0
+var int seenH1 = 0
+var int seenM30 = 0
+var int seenM15 = 0
+var int seenM5 = 0
+
+f_take(tf, side, top, bot, lt, lastSeen) =>
+    int ns = lastSeen
+    if f_onOb(tf) and not na(lt) and lt != lastSeen and side > 0 and (top - bot) >= minObSize
+        f_add(tf, "OB", side == 2, true, top, bot, lt)
+        ns := lt
+    ns
+
+if barstate.isconfirmed
+    seenW := f_take("W", wSide, wTop, wBot, wLt, seenW)
+    seenD := f_take("D", dSide, dTop, dBot, dLt, seenD)
+    seenH4 := f_take("H4", h4Side, h4Top, h4Bot, h4Lt, seenH4)
+    seenH1 := f_take("H1", h1Side, h1Top, h1Bot, h1Lt, seenH1)
+    seenM30 := f_take("M30", m30Side, m30Top, m30Bot, m30Lt, seenM30)
+    seenM15 := f_take("M15", m15Side, m15Top, m15Bot, m15Lt, seenM15)
+    seenM5 := f_take("M5", m5Side, m5Top, m5Bot, m5Lt, seenM5)
+
+if barstate.isconfirmed
+    if (fvgW or obW) and not na(wt)
+        stW := f_step("W", stW, wo, wh, wl, wc, wt)
+    if (fvgD or obD) and not na(dt)
+        stD := f_step("D", stD, d_o, dh, dl, dc, dt)
+    if (fvgH4 or obH4) and not na(h4t)
+        stH4 := f_step("H4", stH4, h4o, h4h, h4l, h4c, h4t)
+    if (fvgH1 or obH1) and not na(h1t)
+        stH1 := f_step("H1", stH1, h1o, h1h, h1l, h1c, h1t)
+    if (fvgM30 or obM30) and not na(m30t)
+        stM30 := f_step("M30", stM30, m30o, m30h, m30l, m30c, m30t)
+    if (fvgM15 or obM15) and not na(m15t)
+        stM15 := f_step("M15", stM15, m15o, m15h, m15l, m15c, m15t)
+    if (fvgM5 or obM5) and not na(m5t)
+        stM5 := f_step("M5", stM5, m5o, m5h, m5l, m5c, m5t)
+
+f_hudPos() =>
+    hudPos == "top left" ? position.top_left : hudPos == "top center" ? position.top_center : hudPos == "top right" ? position.top_right : hudPos == "middle left" ? position.middle_left : hudPos == "middle right" ? position.middle_right : hudPos == "bottom left" ? position.bottom_left : hudPos == "bottom center" ? position.bottom_center : position.bottom_right
+
+var table hud = table.new(position.top_right, 2, 6, bgcolor=color.new(#0b0f14, 18), border_color=color.new(#00e5ff, 45), border_width=1)
+if barstate.islast and showHud
+    table.set_position(hud, f_hudPos())
+    table.cell(hud, 0, 0, "NORTH AMD", text_color=#b0bec5, text_size=size.tiny)
+    table.cell(hud, 1, 0, "PD MAP 12.8", text_color=#00e5ff, text_size=size.tiny)
+    table.cell(hud, 0, 1, "Chart", text_color=#b0bec5, text_size=size.tiny)
+    table.cell(hud, 1, 1, chartName, text_color=#ffffff, text_size=size.tiny)
+    table.cell(hud, 0, 2, "Boxes", text_color=#b0bec5, text_size=size.tiny)
+    table.cell(hud, 1, 2, str.tostring(array.size(bag)), text_color=#ffffff, text_size=size.tiny)
+    table.cell(hud, 0, 3, "OB", text_color=#b0bec5, text_size=size.tiny)
+    table.cell(hud, 1, 3, "New leg closes through prior leg swing", text_color=#ffffff, text_size=size.tiny)
+    table.cell(hud, 0, 4, "FVG", text_color=#b0bec5, text_size=size.tiny)
+    table.cell(hud, 1, 4, "Wick gap. Dies on close through", text_color=#ffffff, text_size=size.tiny)

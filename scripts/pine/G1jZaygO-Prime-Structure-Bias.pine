@@ -1,0 +1,305 @@
+//@version=6
+indicator("Prime Structure Bias", overlay=true)
+
+//────────────────────────────────────────────────────────────
+// INPUTS
+//────────────────────────────────────────────────────────────
+string TF = "60"
+
+int swingLen = input.int(3, "Swing Length", minval=2, maxval=10)
+int rangeLookback = input.int(20, "Range Lookback", minval=10, maxval=100)
+float rangeThreshold = input.float(0.60, "Range Threshold", minval=0.10, maxval=1.00, step=0.05)
+
+//────────────────────────────────────────────────────────────
+// 1H DATA
+//────────────────────────────────────────────────────────────
+[h1High, h1Low, h1Close] = request.security(
+     syminfo.tickerid,
+     TF,
+     [high, low, close],
+     lookahead=barmerge.lookahead_off
+)
+
+// Get confirmed 1H pivot structure
+[h1PivotHigh, h1PivotLow] = request.security(
+     syminfo.tickerid,
+     TF,
+     [
+         ta.pivothigh(high, swingLen, swingLen),
+         ta.pivotlow(low, swingLen, swingLen)
+     ],
+     lookahead=barmerge.lookahead_off
+)
+
+//────────────────────────────────────────────────────────────
+// STRUCTURE VARIABLES
+//────────────────────────────────────────────────────────────
+var float lastSwingHigh = na
+var float previousSwingHigh = na
+var float lastSwingLow = na
+var float previousSwingLow = na
+
+var string highStructure = "—"
+var string lowStructure = "—"
+
+var string lastEvent = "—"
+var string bias = "NEUTRAL"
+
+//────────────────────────────────────────────────────────────
+// UPDATE SWING HIGHS
+//────────────────────────────────────────────────────────────
+newPivotHigh = not na(h1PivotHigh) and
+     (na(h1PivotHigh[1]) or h1PivotHigh != h1PivotHigh[1])
+
+if newPivotHigh
+    previousSwingHigh := lastSwingHigh
+    lastSwingHigh := h1PivotHigh
+
+    if not na(previousSwingHigh)
+        if lastSwingHigh > previousSwingHigh
+            highStructure := "HH"
+        else
+            highStructure := "LH"
+
+//────────────────────────────────────────────────────────────
+// UPDATE SWING LOWS
+//────────────────────────────────────────────────────────────
+newPivotLow = not na(h1PivotLow) and
+     (na(h1PivotLow[1]) or h1PivotLow != h1PivotLow[1])
+
+if newPivotLow
+    previousSwingLow := lastSwingLow
+    lastSwingLow := h1PivotLow
+
+    if not na(previousSwingLow)
+        if lastSwingLow > previousSwingLow
+            lowStructure := "HL"
+        else
+            lowStructure := "LL"
+
+//────────────────────────────────────────────────────────────
+// BOS / CHOCH DETECTION
+//────────────────────────────────────────────────────────────
+bullBreak = not na(lastSwingHigh) and h1Close > lastSwingHigh
+bearBreak = not na(lastSwingLow) and h1Close < lastSwingLow
+
+if bullBreak
+    if bias == "BEARISH"
+        lastEvent := "CHOCH ↑"
+    else
+        lastEvent := "BOS ↑"
+
+    bias := "BULLISH"
+
+if bearBreak
+    if bias == "BULLISH"
+        lastEvent := "CHOCH ↓"
+    else
+        lastEvent := "BOS ↓"
+
+    bias := "BEARISH"
+
+//────────────────────────────────────────────────────────────
+// STRUCTURE CONFIRMATION
+//────────────────────────────────────────────────────────────
+bullStructure =
+     highStructure == "HH" and
+     lowStructure == "HL"
+
+bearStructure =
+     highStructure == "LH" and
+     lowStructure == "LL"
+
+// Stronger structure confirmation
+if bullStructure and not bearBreak
+    bias := "BULLISH"
+
+if bearStructure and not bullBreak
+    bias := "BEARISH"
+
+//────────────────────────────────────────────────────────────
+// MARKET CONDITION
+//────────────────────────────────────────────────────────────
+atr1h = request.security(
+     syminfo.tickerid,
+     TF,
+     ta.atr(14),
+     lookahead=barmerge.lookahead_off
+)
+
+rangeHigh = request.security(
+     syminfo.tickerid,
+     TF,
+     ta.highest(high, rangeLookback),
+     lookahead=barmerge.lookahead_off
+)
+
+rangeLow = request.security(
+     syminfo.tickerid,
+     TF,
+     ta.lowest(low, rangeLookback),
+     lookahead=barmerge.lookahead_off
+)
+
+rangeSize = rangeHigh - rangeLow
+
+rangeRatio = atr1h > 0 ? rangeSize / atr1h : 0.0
+
+isRanging = rangeRatio < (rangeLookback * rangeThreshold)
+
+marketCondition = isRanging ? "RANGING" : "TRENDING"
+
+//────────────────────────────────────────────────────────────
+// TREND STRENGTH
+//────────────────────────────────────────────────────────────
+int strengthScore = 0
+
+if highStructure == "HH"
+    strengthScore += 1
+
+if lowStructure == "HL"
+    strengthScore += 1
+
+if highStructure == "LH"
+    strengthScore += 1
+
+if lowStructure == "LL"
+    strengthScore += 1
+
+if lastEvent == "BOS ↑" or lastEvent == "BOS ↓"
+    strengthScore += 1
+
+trendStrength =
+     isRanging ? "WEAK" :
+     strengthScore >= 3 ? "STRONG" :
+     strengthScore >= 2 ? "MODERATE" :
+     "WEAK"
+
+//────────────────────────────────────────────────────────────
+// FINAL TRADING BIAS
+//────────────────────────────────────────────────────────────
+tradingBias =
+     isRanging ? "NO TRADE" :
+     bias == "BULLISH" ? "BUY" :
+     bias == "BEARISH" ? "SELL" :
+     "WAIT"
+
+//────────────────────────────────────────────────────────────
+// TABLE
+//────────────────────────────────────────────────────────────
+var table dashboard = table.new(
+     position.top_right,
+     2,
+     9,
+     border_width=1
+)
+
+// Helper function
+f_cell(row, title, value) =>
+    table.cell(
+         dashboard,
+         0,
+         row,
+         title,
+         text_color=color.white,
+         bgcolor=color.rgb(35, 35, 35),
+         text_size=size.small
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         row,
+         value,
+         text_color=color.white,
+         bgcolor=color.rgb(20, 20, 20),
+         text_size=size.small
+    )
+
+//────────────────────────────────────────────────────────────
+// TABLE UPDATE
+//────────────────────────────────────────────────────────────
+if barstate.islast
+
+    // Header
+    table.cell(
+         dashboard,
+         0,
+         0,
+         "1H MARKET STRUCTURE",
+         text_color=color.white,
+         bgcolor=color.rgb(25, 25, 25),
+         text_size=size.normal
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         0,
+         "STATUS",
+         text_color=color.white,
+         bgcolor=color.rgb(25, 25, 25),
+         text_size=size.normal
+    )
+
+    // Bias
+    biasColor =
+         bias == "BULLISH" ? color.green :
+         bias == "BEARISH" ? color.red :
+         color.orange
+
+    f_cell(1, "Market Bias", bias)
+
+    table.cell(
+         dashboard,
+         1,
+         1,
+         bias,
+         text_color=color.white,
+         bgcolor=biasColor,
+         text_size=size.small
+    )
+
+    // Structure
+    structureText =
+         highStructure + " → " + lowStructure
+
+    f_cell(2, "Structure", structureText)
+
+    // Direction
+    direction =
+         bias == "BULLISH" ? "UP" :
+         bias == "BEARISH" ? "DOWN" :
+         "SIDEWAYS"
+
+    f_cell(3, "Direction", direction)
+
+    // Event
+    f_cell(4, "Last Event", lastEvent)
+
+    // Strength
+    f_cell(5, "Trend Strength", trendStrength)
+
+    // Condition
+    f_cell(6, "Market Condition", marketCondition)
+
+    // Trading Bias
+    tradeColor =
+         tradingBias == "BUY" ? color.green :
+         tradingBias == "SELL" ? color.red :
+         color.orange
+
+    f_cell(7, "Trading Bias", tradingBias)
+
+    table.cell(
+         dashboard,
+         1,
+         7,
+         tradingBias,
+         text_color=color.white,
+         bgcolor=tradeColor,
+         text_size=size.small
+    )
+
+    // Timeframe
+    f_cell(8, "Analysis TF", "1 HOUR")

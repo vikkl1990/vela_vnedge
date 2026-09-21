@@ -1,0 +1,80 @@
+//@version=6
+indicator("Intra-Candle Absorption & Volume Spike (Fixed)", overlay=true, max_labels_count=500)
+
+// ==========================================
+// ⚙️ INPUTS & SETTINGS
+// ==========================================
+var string G_VOL  = "Volume & Momentum Settings"
+var string G_ABS  = "Absorption Settings"
+var string G_STYL = "Style & Visuals"
+
+// Volume Spike Inputs
+volSpikeMult = input.float(2.0, title="Volume Spike Threshold (2.0 = 200%)", group=G_VOL, minval=0.5, step=0.1)
+volAvgLength = input.int(20, title="Internal Volume MA Length", group=G_VOL, minval=5)
+
+// Absorption Inputs
+absVolMult   = input.float(1.5, title="Absorption Volume Threshold", group=G_ABS, minval=0.5, step=0.1)
+absRangePct  = input.float(25.0, title="Stall Range Percentile (Max)", group=G_ABS, minval=1.0, maxval=100.0, step=5.0)
+rangeLength  = input.int(20, title="Internal Range MA Length", group=G_ABS, minval=5)
+
+// Visual Toggles
+showAbs   = input.bool(true, title="Show Absorption Bubbles (Circles)", group=G_STYL)
+showSpike = input.bool(true, title="Show Clear Volume Spikes (Arrows)", group=G_STYL)
+
+// ==========================================
+// 🔍 LOWER TIMEFRAME DATA ARRIVAL
+// ==========================================
+[ltfClose, ltfOpen, ltfHigh, ltfLow, ltfVolume] = request.security_lower_tf(syminfo.tickerid, "1", [close, open, high, low, volume])
+
+// Fixed-allocated circular arrays act as an efficient Ring Buffer
+var float[] allLtfVolumes = array.new_float(200, 0.0)
+var float[] allLtfRanges  = array.new_float(200, 0.0)
+
+// Initialize signal variables at the bar root level
+bool macroBuySignal  = false
+bool macroSellSignal = false
+
+int ltfSize = array.size(ltfVolume)
+if ltfSize > 0
+    // Process intra-candle data linearly
+    for i = 0 to ltfSize - 1
+        v = array.get(ltfVolume, i)
+        h = array.get(ltfHigh, i)
+        l = array.get(ltfLow, i)
+        o = array.get(ltfOpen, i)
+        c = array.get(ltfClose, i)
+        r = h - l
+        
+        // --- HIGH EFFICIENCY RING BUFFER PIPELINE ---
+        array.shift(allLtfVolumes)
+        array.push(allLtfVolumes, v)
+        
+        array.shift(allLtfRanges)
+        array.push(allLtfRanges, r)
+        
+        // --- OPTIMIZED MATHEMATICAL AVERAGING ---
+        float avgVol   = array.avg(allLtfVolumes)
+        float avgRange = array.avg(allLtfRanges)
+        
+        // --- SIGNAL CONDITIONAL EVALUATIONS ---
+        bool highVolAbs  = v >= (avgVol * absVolMult)
+        bool rangeStalls = r <= (avgRange * (absRangePct / 100.0))
+        bool isAbsorbed  = highVolAbs and rangeStalls
+        
+        if isAbsorbed and showAbs
+            color absColor = c >= (h + l) * 0.5 ? color.new(color.green, 40) : color.new(color.red, 40)
+            label.new(x=bar_index, y=h, text="●", color=color.new(color.white, 100), textcolor=absColor, style=label.style_label_down, size=size.small)
+            
+        bool isVolSpike = v >= (avgVol * volSpikeMult)
+        if isVolSpike and not isAbsorbed
+            if c > o  
+                macroBuySignal := true
+            else if c < o  
+                macroSellSignal := true
+
+// ==========================================
+// 🏷️ PLOTTING SIGNALS
+// ==========================================
+// Fixed: Using the actual condition inside plotshape instead of forcing 'true'
+plotshape(macroBuySignal and showSpike, title="Volume Spike Buy", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small)
+plotshape(macroSellSignal and showSpike, title="Volume Spike Sell", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small)

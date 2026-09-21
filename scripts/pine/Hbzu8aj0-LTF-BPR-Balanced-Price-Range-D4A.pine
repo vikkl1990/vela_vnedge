@@ -1,0 +1,256 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © dub4art
+
+//@version=6
+indicator('LTF Balanced Price Range (BPR)', 'LTFBPRT', overlay=true, max_lines_count=500)
+
+var g_LTFBPR = "LTF BPR - Balanced Price Range"
+show_ltfbpr  = input.bool(true,   'Show LTF BPRs',                     inline='bpra',    group=g_LTFBPR)
+bar_count_ltf = input.int(500,     '   Lookback (chart bars)',              inline='bpra',    group=g_LTFBPR, maxval=1000, tooltip="How many recent chart bars are checked for active BPRs. Max = 1000")
+autoLTF      = input.bool(true,   'Auto Lower Timeframe (one step down)',                group=g_LTFBPR, tooltip="Automatically steps one TF level below the chart (e.g. 5m→1m, 1m→15s, 1H→15m). Disable to use the manual TF below.")
+ltf           = input.timeframe("1","Manual LTF",                                         group=g_LTFBPR, tooltip="Manual lower timeframe to scan for BPRs (used only when Auto Lower Timeframe is disabled)")
+lookback_ltf  = input.int(50,      'Max BPR Length (LTF bars)',                           group=g_LTFBPR, maxval=400, tooltip="Max LTF-bar distance between the two FVGs that form a BPR. Max = 400")
+closeBPR_ltf  = input.int(300,     'Stop Drawing BPR after X Chart Bars',                 group=g_LTFBPR)
+VI_included  = input.bool(false,  'Volume Imbalance Included',                           group=g_LTFBPR, tooltip="Adjusts FVG zone boundaries to include volume imbalances. Can reduce BPR detection — disable if results seem sparse.")
+filterBPR    = input.float(0.0,   'FVG Size Filter (× LTF ATR)',                           group=g_LTFBPR, minval=0, step=0.1, tooltip="Component FVGs must be larger than this multiple of ATR(200) on the LTF. Default 0 = no filter. Raise to suppress noise.")
+bullCol      = input.color(color.new(color.aqua, 20),       'Bull/Bear Average Line',  inline='ltfbpr1',   group=g_LTFBPR)
+bearCol      = input.color(color.rgb(255,30,170,20),        '',      inline='ltfbpr1',   group=g_LTFBPR)
+ltfbpr_style = input.string(line.style_dotted, '', options=[line.style_dashed, line.style_dotted, line.style_solid],  inline='ltfbpr1', group=g_LTFBPR)
+ln_width     = input.int(2,       '',                                   inline='ltfbpr1', group=g_LTFBPR)
+filledBpr_ltf = input.string('Remove', 'Mitigated BPR', ['Remove', 'Highlight'], inline='mit', group=g_LTFBPR)
+mitigCol     = input.color(color.silver, '',                            inline='mit',     group=g_LTFBPR)
+
+ltfbpr_switch = last_bar_index - bar_index <= bar_count_ltf
+tf_ms         = time - time[1]
+
+resolve_auto_ltf() =>
+    string r = ltf
+    if timeframe.isminutes
+        m = timeframe.multiplier
+        if m <= 1
+            r := "15S"          // 1m  → 15s
+        else if m <= 5
+            r := "1"            // 5m  → 1m
+        else if m <= 15
+            r := "5"            // 15m → 5m
+        else if m <= 60
+            r := "15"           // 1H  → 15m
+        else if m <= 240
+            r := "60"           // 4H  → 1H
+        else
+            r := "240"          // >4H → 4H
+    else if timeframe.isdaily
+        r := "240"              // D   → 4H
+    else if timeframe.isweekly
+        r := "1D"               // W   → D
+    else if timeframe.ismonthly
+        r := "1W"               // M   → W
+    else
+        r := ltf
+    r
+
+type LTF
+    array<float> o
+    array<float> h
+    array<float> l
+    array<float> c
+    array<int>   t
+
+type fvg
+    float top       
+    float bottom   
+    int   t1      
+    int   t2 
+
+type bpr_ltf
+    bool  act        = false
+    bool  bull       = true
+    int   start_time            
+    float top                   
+    float bottom                
+    line  ln             
+
+method manageBPR(array<bpr_ltf> this, float ltf_close, int limit_ms) =>
+    if this.size() > 0
+        for i = this.size() - 1 to 0
+            b = this.get(i)
+
+            if (time - b.start_time) > limit_ms
+                line.delete(b.ln)
+                this.remove(i)
+                continue     
+
+            line.set_x2(b.ln, b.start_time + tf_ms * 3)
+
+            if b.bull and b.act and ltf_close < b.bottom
+                b.act := false
+                if filledBpr_ltf == 'Remove'
+                    line.delete(b.ln)
+                    this.remove(i)
+                    continue
+                else
+                    line.set_color(b.ln, mitigCol)
+                    line.set_style(b.ln, line.style_dashed)
+                    line.set_width(b.ln, 1)
+
+            if not b.bull and b.act and ltf_close > b.top
+                b.act := false
+                if filledBpr_ltf == 'Remove'
+                    line.delete(b.ln)
+                    this.remove(i)
+                    continue
+                else
+                    line.set_color(b.ln, mitigCol)
+                    line.set_style(b.ln, line.style_dashed)
+                    line.set_width(b.ln, 1)
+
+var ltfData     = LTF.new(array.new<float>(), array.new<float>(), array.new<float>(), array.new<float>(), array.new<int>())
+var ltfDataPrev = LTF.new(array.new<float>(), array.new<float>(), array.new<float>(), array.new<float>(), array.new<int>())
+
+var array<fvg> bull_fvgs = array.new<fvg>()
+var array<fvg> bear_fvgs = array.new<fvg>()
+var array<bpr_ltf> bprArr    = array.new<bpr_ltf>()
+
+effective_ltf = autoLTF ? resolve_auto_ltf() : ltf
+lookback_ms   = lookback_ltf * timeframe.in_seconds(effective_ltf) * 1000 
+ltf_atr       = nz(request.security(syminfo.tickerid, effective_ltf, ta.atr(200)))
+
+filter_fvg(float a, float b) => a - b > ltf_atr * filterBPR
+
+ltfO = request.security_lower_tf(syminfo.tickerid, effective_ltf, open)
+ltfH = request.security_lower_tf(syminfo.tickerid, effective_ltf, high)
+ltfL = request.security_lower_tf(syminfo.tickerid, effective_ltf, low)
+ltfC = request.security_lower_tf(syminfo.tickerid, effective_ltf, close)
+ltfT = request.security_lower_tf(syminfo.tickerid, effective_ltf, time)
+
+prune_old_fvgs(int ref_t) =>
+    while bull_fvgs.size() > 0 and ref_t - bull_fvgs.get(0).t2 > lookback_ms
+        bull_fvgs.shift()
+    while bear_fvgs.size() > 0 and ref_t - bear_fvgs.get(0).t2 > lookback_ms
+        bear_fvgs.shift()
+
+check_bpr_overlap(float new_top, float new_bot, int new_t1, int new_t2, bool is_bull) =>
+    opposite = is_bull ? bear_fvgs : bull_fvgs
+    if opposite.size() > 0
+        for idx = opposite.size() - 1 to 0
+            h = opposite.get(idx)
+            if new_t2 - h.t2 > lookback_ms
+                break                             
+            ovl_top = math.min(new_top, h.top)
+            ovl_bot = math.max(new_bot, h.bottom)
+            if ovl_top > ovl_bot                 
+                mid = math.avg(ovl_top, ovl_bot)
+                bprArr.push(bpr_ltf.new(
+                     act          = true,
+                     bull       = is_bull,
+                     start_time = time,
+                     top        = ovl_top,
+                     bottom     = ovl_bot,
+                     ln         = line.new(math.min(new_t1, h.t1), mid, new_t2, mid, color = is_bull ? bullCol : bearCol, style = ltfbpr_style, width = ln_width, xloc  = xloc.bar_time)
+                     ))
+                break  
+
+register_bull_fvg(float o0, float l0, float c0, float o1, float c1, float o2, float h2, float c2, int t1_ms, int t2_ms) =>
+    top = VI_included and c0 > o0 and o0 > c1 ? o0 : VI_included and c0 < o0 and c0 > c1 ? c0 : l0
+    btm = VI_included and o2 < c2 and c2 < o1 ? c2 : h2
+    if top > btm
+        bull_fvgs.push(fvg.new(top=top, bottom=btm, t1=t1_ms, t2=t2_ms))
+        check_bpr_overlap(top, btm, t1_ms, t2_ms, true)
+
+register_bear_fvg(float o0, float h0, float c0, float o1, float c1, float o2, float l2, float c2, int t1_ms, int t2_ms) =>
+    top = VI_included and o2 > c2 and c2 > o1 ? c2 : l2
+    btm = VI_included and o0 > c0 and o0 < c1 ? o0 : VI_included and o0 < c0 and c0 < c1 ? c0 : h0
+    if top > btm
+        bear_fvgs.push(fvg.new(top=top, bottom=btm, t1=t1_ms, t2=t2_ms))
+        check_bpr_overlap(top, btm, t1_ms, t2_ms, false)
+
+scan_fvgs(LTF d) =>
+    n = d.h.size()
+    if n >= 3
+        for i = 2 to n - 1
+            o0 = d.o.get(i)
+            h0 = d.h.get(i)
+            l0 = d.l.get(i)
+            c0 = d.c.get(i)
+            o1 = d.o.get(i-1)
+            h1 = d.h.get(i-1)
+            l1 = d.l.get(i-1)
+            c1 = d.c.get(i-1)
+            o2 = d.o.get(i-2)
+            h2 = d.h.get(i-2)
+            l2 = d.l.get(i-2)
+            c2 = d.c.get(i-2)
+            t1_ms = d.t.get(i-2)
+            t2_ms = d.t.get(i)
+            if h1 > h2 and l0 > h2 and filter_fvg(l0, h2)
+                register_bull_fvg(o0, l0, c0, o1, c1, o2, h2, c2, t1_ms, t2_ms)
+            if l1 < l2 and h0 < l2 and filter_fvg(l2, h0)
+                register_bear_fvg(o0, h0, c0, o1, c1, o2, l2, c2, t1_ms, t2_ms)
+
+scan_cross_bar_fvgs(LTF prev, LTF cur) =>
+    np = prev.h.size()
+    nc = cur.h.size()
+
+    if np >= 2 and nc >= 1
+        o2 = prev.o.get(np-2)
+        h2 = prev.h.get(np-2)
+        l2 = prev.l.get(np-2)
+        c2 = prev.c.get(np-2)
+        o1 = prev.o.get(np-1)
+        h1 = prev.h.get(np-1)
+        l1 = prev.l.get(np-1)
+        c1 = prev.c.get(np-1)
+        o0 = cur.o.get(0)
+        h0 = cur.h.get(0)
+        l0 = cur.l.get(0)
+        c0 = cur.c.get(0)
+        t1_ms = prev.t.get(np-2)
+        t2_ms = cur.t.get(0)
+        if h1 > h2 and l0 > h2 and filter_fvg(l0, h2)
+            register_bull_fvg(o0, l0, c0, o1, c1, o2, h2, c2, t1_ms, t2_ms)
+        if l1 < l2 and h0 < l2 and filter_fvg(l2, h0)
+            register_bear_fvg(o0, h0, c0, o1, c1, o2, l2, c2, t1_ms, t2_ms)
+
+    if np >= 1 and nc >= 2
+        o2 = prev.o.get(np-1)
+        h2 = prev.h.get(np-1)
+        l2 = prev.l.get(np-1)
+        c2 = prev.c.get(np-1)
+        o1 = cur.o.get(0)
+        h1 = cur.h.get(0)
+        l1 = cur.l.get(0)
+        c1 = cur.c.get(0)
+        o0 = cur.o.get(1)
+        h0 = cur.h.get(1)
+        l0 = cur.l.get(1)
+        c0 = cur.c.get(1)
+        t1_ms = prev.t.get(np-1)
+        t2_ms = cur.t.get(1)
+        if h1 > h2 and l0 > h2 and filter_fvg(l0, h2)
+            register_bull_fvg(o0, l0, c0, o1, c1, o2, h2, c2, t1_ms, t2_ms)
+        if l1 < l2 and h0 < l2 and filter_fvg(l2, h0)
+            register_bear_fvg(o0, h0, c0, o1, c1, o2, l2, c2, t1_ms, t2_ms)
+
+if timeframe.change(timeframe.period) and show_ltfbpr and ltfbpr_switch
+    ltfDataPrev.o := array.copy(ltfData.o)
+    ltfDataPrev.h := array.copy(ltfData.h)
+    ltfDataPrev.l := array.copy(ltfData.l)
+    ltfDataPrev.c := array.copy(ltfData.c)
+    ltfDataPrev.t := array.copy(ltfData.t)
+    ltfData.o := ltfO
+    ltfData.h := ltfH
+    ltfData.l := ltfL
+    ltfData.c := ltfC
+    ltfData.t := ltfT
+
+    if ltfT.size() > 0
+        prune_old_fvgs(ltfT.get(ltfT.size() - 1))
+    
+    scan_cross_bar_fvgs(ltfDataPrev, ltfData)
+    scan_fvgs(ltfData)
+
+ltf_close = ltfC.size() > 0 ? ltfC.get(ltfC.size() - 1) : close
+limit_ms  = closeBPR_ltf * timeframe.in_seconds(timeframe.period) * 1000
+
+if show_ltfbpr
+    bprArr.manageBPR(ltf_close, limit_ms)

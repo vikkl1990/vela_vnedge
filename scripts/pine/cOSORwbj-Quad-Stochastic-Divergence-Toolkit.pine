@@ -1,0 +1,648 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © RUbiddingme
+//@version=6
+indicator("Quad Stochastic Divergence Toolkit", overlay=false, max_lines_count=500, max_labels_count=500)
+
+getLineStyle(s) =>
+    s == "solid" ? line.style_solid :
+     s == "dashed" ? line.style_dashed :
+     s == "dotted" ? line.style_dotted : line.style_solid
+
+spacing = syminfo.mintick * 5
+
+f_update_label(label lab, bool enabled, bool show, int xOffset, float y, string txt, color col, color txtCol) =>
+    label _lab = lab
+    if enabled and show and barstate.islast
+        if na(_lab)
+            _lab := label.new(bar_index + xOffset, y, txt, xloc=xloc.bar_index, style=label.style_label_center, textcolor=txtCol, color=color.new(col, 0), size=size.small)
+        else
+            label.set_x(_lab, bar_index + xOffset)
+            label.set_y(_lab, y)
+            label.set_text(_lab, txt)
+            label.set_color(_lab, color.new(col, 0))
+            label.set_textcolor(_lab, txtCol)
+        _lab
+    else
+        if not na(_lab)
+            label.delete(_lab)
+        na
+
+f_stoch(len, smK, smD) =>
+    k = ta.sma(ta.stoch(close, high, low, len), smK)
+    ta.sma(k, smD)
+
+// Stochastic 1
+enable1    = input.bool(true, "Enable Stoch 1", group="Stoch 1")
+len1       = input.int(9, "Length", minval=1, group="Stoch 1")
+smK1       = input.int(1, "K Smoothing", minval=1, group="Stoch 1")
+smD1       = input.int(3, "D Smoothing", minval=1, group="Stoch 1")
+off1       = input.float(170, "Vertical Offset", group="Stoch 1")
+col1       = input.color(color.rgb(197, 121, 22), "Stoch Line Color", group="Stoch 1")
+showLabel1 = input.bool(true, "Show Value Label", group="Stoch 1")
+labelOffset1 = input.int(3, "Value Label Bars Right", minval=0, maxval=100, group="Stoch 1")
+labelTextColor1 = input.color(color.black, "Value Label Text Color", group="Stoch 1")
+
+d1_raw = f_stoch(len1, smK1, smD1)
+d1 = d1_raw + off1
+
+plot(enable1 ? d1 : na, title="Stoch 1", color=col1, linewidth=1)
+
+var label stoch1Label = na
+stoch1Label := f_update_label(stoch1Label, enable1, showLabel1, labelOffset1, d1, str.tostring(d1_raw, "#"), col1, labelTextColor1)
+
+h20_1 = hline(off1 + 20, "Stoch1 20", color=color.new(color.white, 70), linestyle=hline.style_solid)
+h80_1 = hline(off1 + 80, "Stoch1 80", color=color.new(color.white, 70), linestyle=hline.style_solid)
+h50_1 = hline(off1 + 50, "Stoch1 50", color=color.new(color.white, 80), linestyle=hline.style_dashed)
+fill(h20_1, h80_1, color=color.new(#2196F3, 95))
+
+// Divergence A
+div1A_bull_on = input.bool(true, "Enable Bullish / Long", group="Stoch 1 - Div A")
+div1A_bear_on = input.bool(true, "Enable Bearish / Short", group="Stoch 1 - Div A")
+longLeft1A   = input.int(3, "Long Left A", minval=1, group="Stoch 1 - Div A")
+longRight1A  = input.int(3, "Long Right A", minval=1, group="Stoch 1 - Div A")
+shortLeft1A  = input.int(3, "Short Left A", minval=1, group="Stoch 1 - Div A")
+shortRight1A = input.int(3, "Short Right A", minval=1, group="Stoch 1 - Div A")
+bullP1A = input.color(color.lime, "Price Line A (Bullish)", group="Stoch 1 - Div A")
+bullS1A = input.color(color.lime, "Stoch Line A (Bullish)", group="Stoch 1 - Div A")
+bearP1A = input.color(color.red, "Price Line A (Bearish)", group="Stoch 1 - Div A")
+bearS1A = input.color(color.red, "Stoch Line A (Bearish)", group="Stoch 1 - Div A")
+width1A = input.int(1, "Width A", minval=1, maxval=5, group="Stoch 1 - Div A")
+style1A = input.string("solid", "Style A", options=["solid", "dashed", "dotted"], group="Stoch 1 - Div A")
+
+// Divergence B
+div1B_bull_on = input.bool(true, "Enable Bullish / Long", group="Stoch 1 - Div B")
+div1B_bear_on = input.bool(true, "Enable Bearish / Short", group="Stoch 1 - Div B")
+longLeft1B   = input.int(6, "Long Left B", minval=1, group="Stoch 1 - Div B")
+longRight1B  = input.int(6, "Long Right B", minval=1, group="Stoch 1 - Div B")
+shortLeft1B  = input.int(6, "Short Left B", minval=1, group="Stoch 1 - Div B")
+shortRight1B = input.int(6, "Short Right B", minval=1, group="Stoch 1 - Div B")
+bullP1B = input.color(color.green, "Price Line B (Bullish)", group="Stoch 1 - Div B")
+bullS1B = input.color(color.green, "Stoch Line B (Bullish)", group="Stoch 1 - Div B")
+bearP1B = input.color(color.maroon, "Price Line B (Bearish)", group="Stoch 1 - Div B")
+bearS1B = input.color(color.maroon, "Stoch Line B (Bearish)", group="Stoch 1 - Div B")
+width1B = input.int(1, "Width B", minval=1, maxval=5, group="Stoch 1 - Div B")
+style1B = input.string("dashed", "Style B", options=["solid", "dashed", "dotted"], group="Stoch 1 - Div B")
+
+// Bullish pivot state
+var float lp1A = na
+var float ls1A = na
+var int lbp1A = na
+var int lsp1A = na
+var float lp1B = na
+var float ls1B = na
+var int lbp1B = na
+var int lsp1B = na
+
+// Bearish pivot state
+var float hp1A = na
+var float hs1A = na
+var int hbp1A = na
+var int hsp1A = na
+var float hp1B = na
+var float hs1B = na
+var int hbp1B = na
+var int hsp1B = na
+
+var int lastBullDiv1ABar = na
+var int lastBearDiv1ABar = na
+
+if enable1
+    // A bullish: price lower low, stochastic higher low
+    price1A_bull = ta.pivotlow(low, longLeft1A, longRight1A)
+    stoch1A_bull = ta.pivotlow(d1_raw, longLeft1A, longRight1A)
+
+    if div1A_bull_on and not na(price1A_bull) and not na(stoch1A_bull)
+        bidx = bar_index - longRight1A
+        pr = low[longRight1A]
+        st = d1_raw[longRight1A] + off1
+
+        if not na(lp1A) and not na(ls1A) and pr < lp1A and st > ls1A
+            line.new(bidx, pr, lbp1A, lp1A, xloc=xloc.bar_index, color=bullP1A, width=width1A, style=getLineStyle(style1A), force_overlay=true)
+            line.new(bidx, st, lsp1A, ls1A, xloc=xloc.bar_index, color=bullS1A, width=width1A, style=getLineStyle(style1A))
+            lastBullDiv1ABar := bidx
+
+        lp1A := pr
+        lbp1A := bidx
+        ls1A := st
+        lsp1A := bidx
+
+    // A bearish: price higher high, stochastic lower high
+    price1A_bear = ta.pivothigh(high, shortLeft1A, shortRight1A)
+    stoch1A_bear = ta.pivothigh(d1_raw, shortLeft1A, shortRight1A)
+
+    if div1A_bear_on and not na(price1A_bear) and not na(stoch1A_bear)
+        bidx = bar_index - shortRight1A
+        pr = high[shortRight1A]
+        st = d1_raw[shortRight1A] + off1
+
+        if not na(hp1A) and not na(hs1A) and pr > hp1A and st < hs1A
+            line.new(bidx, pr, hbp1A, hp1A, xloc=xloc.bar_index, color=bearP1A, width=width1A, style=getLineStyle(style1A), force_overlay=true)
+            line.new(bidx, st, hsp1A, hs1A, xloc=xloc.bar_index, color=bearS1A, width=width1A, style=getLineStyle(style1A))
+            lastBearDiv1ABar := bidx
+
+        hp1A := pr
+        hbp1A := bidx
+        hs1A := st
+        hsp1A := bidx
+
+    // B bullish
+    price1B_bull = ta.pivotlow(low, longLeft1B, longRight1B)
+    stoch1B_bull = ta.pivotlow(d1_raw, longLeft1B, longRight1B)
+
+    if div1B_bull_on and not na(price1B_bull) and not na(stoch1B_bull)
+        bidx = bar_index - longRight1B
+        isOverlapBull = lastBullDiv1ABar == bidx
+        prRaw = low[longRight1B]
+        prDraw = prRaw - (isOverlapBull ? spacing : 0)
+        st = d1_raw[longRight1B] + off1
+
+        if not na(lp1B) and not na(ls1B) and prRaw < lp1B and st > ls1B
+            line.new(bidx, prDraw, lbp1B, lp1B, xloc=xloc.bar_index, color=bullP1B, width=width1B, style=getLineStyle(style1B), force_overlay=true)
+            line.new(bidx, st, lsp1B, ls1B, xloc=xloc.bar_index, color=bullS1B, width=width1B, style=getLineStyle(style1B))
+
+        lp1B := prRaw
+        lbp1B := bidx
+        ls1B := st
+        lsp1B := bidx
+
+    // B bearish
+    price1B_bear = ta.pivothigh(high, shortLeft1B, shortRight1B)
+    stoch1B_bear = ta.pivothigh(d1_raw, shortLeft1B, shortRight1B)
+
+    if div1B_bear_on and not na(price1B_bear) and not na(stoch1B_bear)
+        bidx = bar_index - shortRight1B
+        isOverlapBear = lastBearDiv1ABar == bidx
+        prRaw = high[shortRight1B]
+        prDraw = prRaw + (isOverlapBear ? spacing : 0)
+        st = d1_raw[shortRight1B] + off1
+
+        if not na(hp1B) and not na(hs1B) and prRaw > hp1B and st < hs1B
+            line.new(bidx, prDraw, hbp1B, hp1B, xloc=xloc.bar_index, color=bearP1B, width=width1B, style=getLineStyle(style1B), force_overlay=true)
+            line.new(bidx, st, hsp1B, hs1B, xloc=xloc.bar_index, color=bearS1B, width=width1B, style=getLineStyle(style1B))
+
+        hp1B := prRaw
+        hbp1B := bidx
+        hs1B := st
+        hsp1B := bidx
+
+// Stochastic 2
+enable2    = input.bool(true, "Enable Stoch 2", group="Stoch 2")
+len2       = input.int(14, "Length", minval=1, group="Stoch 2")
+smK2       = input.int(1, "K Smoothing", minval=1, group="Stoch 2")
+smD2       = input.int(3, "D Smoothing", minval=1, group="Stoch 2")
+off2       = input.float(41, "Vertical Offset", group="Stoch 2")
+col2       = input.color(color.rgb(58, 185, 189), "Stoch Line Color", group="Stoch 2")
+showLabel2 = input.bool(true, "Show Value Label", group="Stoch 2")
+labelOffset2 = input.int(3, "Value Label Bars Right", minval=0, maxval=100, group="Stoch 2")
+labelTextColor2 = input.color(color.black, "Value Label Text Color", group="Stoch 2")
+
+d2_raw = f_stoch(len2, smK2, smD2)
+d2 = d2_raw + off2
+
+plot(enable2 ? d2 : na, title="Stoch 2", color=col2, linewidth=1)
+
+var label stoch2Label = na
+stoch2Label := f_update_label(stoch2Label, enable2, showLabel2, labelOffset2, d2, str.tostring(d2_raw, "#"), col2, labelTextColor2)
+
+h20_2 = hline(off2 + 20, "Stoch2 20", color=color.new(color.white, 70), linestyle=hline.style_solid)
+h80_2 = hline(off2 + 80, "Stoch2 80", color=color.new(color.white, 70), linestyle=hline.style_solid)
+h50_2 = hline(off2 + 50, "Stoch2 50", color=color.new(color.white, 80), linestyle=hline.style_dashed)
+fill(h20_2, h80_2, color=color.new(#2196F3, 95))
+
+// Divergence A
+div2A_bull_on = input.bool(true, "Enable Bullish / Long", group="Stoch 2 - Div A")
+div2A_bear_on = input.bool(true, "Enable Bearish / Short", group="Stoch 2 - Div A")
+longLeft2A   = input.int(3, "Long Left A", minval=1, group="Stoch 2 - Div A")
+longRight2A  = input.int(3, "Long Right A", minval=1, group="Stoch 2 - Div A")
+shortLeft2A  = input.int(3, "Short Left A", minval=1, group="Stoch 2 - Div A")
+shortRight2A = input.int(3, "Short Right A", minval=1, group="Stoch 2 - Div A")
+bullP2A = input.color(color.lime, "Price Line A (Bullish)", group="Stoch 2 - Div A")
+bullS2A = input.color(color.lime, "Stoch Line A (Bullish)", group="Stoch 2 - Div A")
+bearP2A = input.color(color.red, "Price Line A (Bearish)", group="Stoch 2 - Div A")
+bearS2A = input.color(color.red, "Stoch Line A (Bearish)", group="Stoch 2 - Div A")
+width2A = input.int(1, "Width A", minval=1, maxval=5, group="Stoch 2 - Div A")
+style2A = input.string("solid", "Style A", options=["solid", "dashed", "dotted"], group="Stoch 2 - Div A")
+
+// Divergence B
+div2B_bull_on = input.bool(true, "Enable Bullish / Long", group="Stoch 2 - Div B")
+div2B_bear_on = input.bool(true, "Enable Bearish / Short", group="Stoch 2 - Div B")
+longLeft2B   = input.int(6, "Long Left B", minval=1, group="Stoch 2 - Div B")
+longRight2B  = input.int(6, "Long Right B", minval=1, group="Stoch 2 - Div B")
+shortLeft2B  = input.int(6, "Short Left B", minval=1, group="Stoch 2 - Div B")
+shortRight2B = input.int(6, "Short Right B", minval=1, group="Stoch 2 - Div B")
+bullP2B = input.color(color.green, "Price Line B (Bullish)", group="Stoch 2 - Div B")
+bullS2B = input.color(color.green, "Stoch Line B (Bullish)", group="Stoch 2 - Div B")
+bearP2B = input.color(color.maroon, "Price Line B (Bearish)", group="Stoch 2 - Div B")
+bearS2B = input.color(color.maroon, "Stoch Line B (Bearish)", group="Stoch 2 - Div B")
+width2B = input.int(1, "Width B", minval=1, maxval=5, group="Stoch 2 - Div B")
+style2B = input.string("dashed", "Style B", options=["solid", "dashed", "dotted"], group="Stoch 2 - Div B")
+
+// Bullish pivot state
+var float lp2A = na
+var float ls2A = na
+var int lbp2A = na
+var int lsp2A = na
+var float lp2B = na
+var float ls2B = na
+var int lbp2B = na
+var int lsp2B = na
+
+// Bearish pivot state
+var float hp2A = na
+var float hs2A = na
+var int hbp2A = na
+var int hsp2A = na
+var float hp2B = na
+var float hs2B = na
+var int hbp2B = na
+var int hsp2B = na
+
+var int lastBullDiv2ABar = na
+var int lastBearDiv2ABar = na
+
+if enable2
+    // A bullish: price lower low, stochastic higher low
+    price2A_bull = ta.pivotlow(low, longLeft2A, longRight2A)
+    stoch2A_bull = ta.pivotlow(d2_raw, longLeft2A, longRight2A)
+
+    if div2A_bull_on and not na(price2A_bull) and not na(stoch2A_bull)
+        bidx = bar_index - longRight2A
+        pr = low[longRight2A]
+        st = d2_raw[longRight2A] + off2
+
+        if not na(lp2A) and not na(ls2A) and pr < lp2A and st > ls2A
+            line.new(bidx, pr, lbp2A, lp2A, xloc=xloc.bar_index, color=bullP2A, width=width2A, style=getLineStyle(style2A), force_overlay=true)
+            line.new(bidx, st, lsp2A, ls2A, xloc=xloc.bar_index, color=bullS2A, width=width2A, style=getLineStyle(style2A))
+            lastBullDiv2ABar := bidx
+
+        lp2A := pr
+        lbp2A := bidx
+        ls2A := st
+        lsp2A := bidx
+
+    // A bearish: price higher high, stochastic lower high
+    price2A_bear = ta.pivothigh(high, shortLeft2A, shortRight2A)
+    stoch2A_bear = ta.pivothigh(d2_raw, shortLeft2A, shortRight2A)
+
+    if div2A_bear_on and not na(price2A_bear) and not na(stoch2A_bear)
+        bidx = bar_index - shortRight2A
+        pr = high[shortRight2A]
+        st = d2_raw[shortRight2A] + off2
+
+        if not na(hp2A) and not na(hs2A) and pr > hp2A and st < hs2A
+            line.new(bidx, pr, hbp2A, hp2A, xloc=xloc.bar_index, color=bearP2A, width=width2A, style=getLineStyle(style2A), force_overlay=true)
+            line.new(bidx, st, hsp2A, hs2A, xloc=xloc.bar_index, color=bearS2A, width=width2A, style=getLineStyle(style2A))
+            lastBearDiv2ABar := bidx
+
+        hp2A := pr
+        hbp2A := bidx
+        hs2A := st
+        hsp2A := bidx
+
+    // B bullish
+    price2B_bull = ta.pivotlow(low, longLeft2B, longRight2B)
+    stoch2B_bull = ta.pivotlow(d2_raw, longLeft2B, longRight2B)
+
+    if div2B_bull_on and not na(price2B_bull) and not na(stoch2B_bull)
+        bidx = bar_index - longRight2B
+        isOverlapBull = lastBullDiv2ABar == bidx
+        prRaw = low[longRight2B]
+        prDraw = prRaw - (isOverlapBull ? spacing : 0)
+        st = d2_raw[longRight2B] + off2
+
+        if not na(lp2B) and not na(ls2B) and prRaw < lp2B and st > ls2B
+            line.new(bidx, prDraw, lbp2B, lp2B, xloc=xloc.bar_index, color=bullP2B, width=width2B, style=getLineStyle(style2B), force_overlay=true)
+            line.new(bidx, st, lsp2B, ls2B, xloc=xloc.bar_index, color=bullS2B, width=width2B, style=getLineStyle(style2B))
+
+        lp2B := prRaw
+        lbp2B := bidx
+        ls2B := st
+        lsp2B := bidx
+
+    // B bearish
+    price2B_bear = ta.pivothigh(high, shortLeft2B, shortRight2B)
+    stoch2B_bear = ta.pivothigh(d2_raw, shortLeft2B, shortRight2B)
+
+    if div2B_bear_on and not na(price2B_bear) and not na(stoch2B_bear)
+        bidx = bar_index - shortRight2B
+        isOverlapBear = lastBearDiv2ABar == bidx
+        prRaw = high[shortRight2B]
+        prDraw = prRaw + (isOverlapBear ? spacing : 0)
+        st = d2_raw[shortRight2B] + off2
+
+        if not na(hp2B) and not na(hs2B) and prRaw > hp2B and st < hs2B
+            line.new(bidx, prDraw, hbp2B, hp2B, xloc=xloc.bar_index, color=bearP2B, width=width2B, style=getLineStyle(style2B), force_overlay=true)
+            line.new(bidx, st, hsp2B, hs2B, xloc=xloc.bar_index, color=bearS2B, width=width2B, style=getLineStyle(style2B))
+
+        hp2B := prRaw
+        hbp2B := bidx
+        hs2B := st
+        hsp2B := bidx
+
+// Stochastic 3
+enable3    = input.bool(true, "Enable Stoch 3", group="Stoch 3")
+len3       = input.int(40, "Length", minval=1, group="Stoch 3")
+smK3       = input.int(1, "K Smoothing", minval=1, group="Stoch 3")
+smD3       = input.int(4, "D Smoothing", minval=1, group="Stoch 3")
+off3       = input.float(-78, "Vertical Offset", group="Stoch 3")
+col3       = input.color(color.rgb(215, 209, 26), "Stoch Line Color", group="Stoch 3")
+showLabel3 = input.bool(true, "Show Value Label", group="Stoch 3")
+labelOffset3 = input.int(3, "Value Label Bars Right", minval=0, maxval=100, group="Stoch 3")
+labelTextColor3 = input.color(color.black, "Value Label Text Color", group="Stoch 3")
+
+d3_raw = f_stoch(len3, smK3, smD3)
+d3 = d3_raw + off3
+
+plot(enable3 ? d3 : na, title="Stoch 3", color=col3, linewidth=1)
+
+var label stoch3Label = na
+stoch3Label := f_update_label(stoch3Label, enable3, showLabel3, labelOffset3, d3, str.tostring(d3_raw, "#"), col3, labelTextColor3)
+
+h20_3 = hline(off3 + 20, "Stoch3 20", color=color.new(color.white, 70), linestyle=hline.style_solid)
+h80_3 = hline(off3 + 80, "Stoch3 80", color=color.new(color.white, 70), linestyle=hline.style_solid)
+h50_3 = hline(off3 + 50, "Stoch3 50", color=color.new(color.white, 80), linestyle=hline.style_dashed)
+fill(h20_3, h80_3, color=color.new(#2196F3, 95))
+
+// Divergence A
+div3A_bull_on = input.bool(true, "Enable Bullish / Long", group="Stoch 3 - Div A")
+div3A_bear_on = input.bool(true, "Enable Bearish / Short", group="Stoch 3 - Div A")
+longLeft3A   = input.int(3, "Long Left A", minval=1, group="Stoch 3 - Div A")
+longRight3A  = input.int(3, "Long Right A", minval=1, group="Stoch 3 - Div A")
+shortLeft3A  = input.int(3, "Short Left A", minval=1, group="Stoch 3 - Div A")
+shortRight3A = input.int(3, "Short Right A", minval=1, group="Stoch 3 - Div A")
+bullP3A = input.color(color.lime, "Price Line A (Bullish)", group="Stoch 3 - Div A")
+bullS3A = input.color(color.lime, "Stoch Line A (Bullish)", group="Stoch 3 - Div A")
+bearP3A = input.color(color.red, "Price Line A (Bearish)", group="Stoch 3 - Div A")
+bearS3A = input.color(color.red, "Stoch Line A (Bearish)", group="Stoch 3 - Div A")
+width3A = input.int(1, "Width A", minval=1, maxval=5, group="Stoch 3 - Div A")
+style3A = input.string("solid", "Style A", options=["solid", "dashed", "dotted"], group="Stoch 3 - Div A")
+
+// Divergence B
+div3B_bull_on = input.bool(true, "Enable Bullish / Long", group="Stoch 3 - Div B")
+div3B_bear_on = input.bool(true, "Enable Bearish / Short", group="Stoch 3 - Div B")
+longLeft3B   = input.int(6, "Long Left B", minval=1, group="Stoch 3 - Div B")
+longRight3B  = input.int(6, "Long Right B", minval=1, group="Stoch 3 - Div B")
+shortLeft3B  = input.int(6, "Short Left B", minval=1, group="Stoch 3 - Div B")
+shortRight3B = input.int(6, "Short Right B", minval=1, group="Stoch 3 - Div B")
+bullP3B = input.color(color.green, "Price Line B (Bullish)", group="Stoch 3 - Div B")
+bullS3B = input.color(color.green, "Stoch Line B (Bullish)", group="Stoch 3 - Div B")
+bearP3B = input.color(color.maroon, "Price Line B (Bearish)", group="Stoch 3 - Div B")
+bearS3B = input.color(color.maroon, "Stoch Line B (Bearish)", group="Stoch 3 - Div B")
+width3B = input.int(1, "Width B", minval=1, maxval=5, group="Stoch 3 - Div B")
+style3B = input.string("dashed", "Style B", options=["solid", "dashed", "dotted"], group="Stoch 3 - Div B")
+
+// Bullish pivot state
+var float lp3A = na
+var float ls3A = na
+var int lbp3A = na
+var int lsp3A = na
+var float lp3B = na
+var float ls3B = na
+var int lbp3B = na
+var int lsp3B = na
+
+// Bearish pivot state
+var float hp3A = na
+var float hs3A = na
+var int hbp3A = na
+var int hsp3A = na
+var float hp3B = na
+var float hs3B = na
+var int hbp3B = na
+var int hsp3B = na
+
+var int lastBullDiv3ABar = na
+var int lastBearDiv3ABar = na
+
+if enable3
+    // A bullish: price lower low, stochastic higher low
+    price3A_bull = ta.pivotlow(low, longLeft3A, longRight3A)
+    stoch3A_bull = ta.pivotlow(d3_raw, longLeft3A, longRight3A)
+
+    if div3A_bull_on and not na(price3A_bull) and not na(stoch3A_bull)
+        bidx = bar_index - longRight3A
+        pr = low[longRight3A]
+        st = d3_raw[longRight3A] + off3
+
+        if not na(lp3A) and not na(ls3A) and pr < lp3A and st > ls3A
+            line.new(bidx, pr, lbp3A, lp3A, xloc=xloc.bar_index, color=bullP3A, width=width3A, style=getLineStyle(style3A), force_overlay=true)
+            line.new(bidx, st, lsp3A, ls3A, xloc=xloc.bar_index, color=bullS3A, width=width3A, style=getLineStyle(style3A))
+            lastBullDiv3ABar := bidx
+
+        lp3A := pr
+        lbp3A := bidx
+        ls3A := st
+        lsp3A := bidx
+
+    // A bearish: price higher high, stochastic lower high
+    price3A_bear = ta.pivothigh(high, shortLeft3A, shortRight3A)
+    stoch3A_bear = ta.pivothigh(d3_raw, shortLeft3A, shortRight3A)
+
+    if div3A_bear_on and not na(price3A_bear) and not na(stoch3A_bear)
+        bidx = bar_index - shortRight3A
+        pr = high[shortRight3A]
+        st = d3_raw[shortRight3A] + off3
+
+        if not na(hp3A) and not na(hs3A) and pr > hp3A and st < hs3A
+            line.new(bidx, pr, hbp3A, hp3A, xloc=xloc.bar_index, color=bearP3A, width=width3A, style=getLineStyle(style3A), force_overlay=true)
+            line.new(bidx, st, hsp3A, hs3A, xloc=xloc.bar_index, color=bearS3A, width=width3A, style=getLineStyle(style3A))
+            lastBearDiv3ABar := bidx
+
+        hp3A := pr
+        hbp3A := bidx
+        hs3A := st
+        hsp3A := bidx
+
+    // B bullish
+    price3B_bull = ta.pivotlow(low, longLeft3B, longRight3B)
+    stoch3B_bull = ta.pivotlow(d3_raw, longLeft3B, longRight3B)
+
+    if div3B_bull_on and not na(price3B_bull) and not na(stoch3B_bull)
+        bidx = bar_index - longRight3B
+        isOverlapBull = lastBullDiv3ABar == bidx
+        prRaw = low[longRight3B]
+        prDraw = prRaw - (isOverlapBull ? spacing : 0)
+        st = d3_raw[longRight3B] + off3
+
+        if not na(lp3B) and not na(ls3B) and prRaw < lp3B and st > ls3B
+            line.new(bidx, prDraw, lbp3B, lp3B, xloc=xloc.bar_index, color=bullP3B, width=width3B, style=getLineStyle(style3B), force_overlay=true)
+            line.new(bidx, st, lsp3B, ls3B, xloc=xloc.bar_index, color=bullS3B, width=width3B, style=getLineStyle(style3B))
+
+        lp3B := prRaw
+        lbp3B := bidx
+        ls3B := st
+        lsp3B := bidx
+
+    // B bearish
+    price3B_bear = ta.pivothigh(high, shortLeft3B, shortRight3B)
+    stoch3B_bear = ta.pivothigh(d3_raw, shortLeft3B, shortRight3B)
+
+    if div3B_bear_on and not na(price3B_bear) and not na(stoch3B_bear)
+        bidx = bar_index - shortRight3B
+        isOverlapBear = lastBearDiv3ABar == bidx
+        prRaw = high[shortRight3B]
+        prDraw = prRaw + (isOverlapBear ? spacing : 0)
+        st = d3_raw[shortRight3B] + off3
+
+        if not na(hp3B) and not na(hs3B) and prRaw > hp3B and st < hs3B
+            line.new(bidx, prDraw, hbp3B, hp3B, xloc=xloc.bar_index, color=bearP3B, width=width3B, style=getLineStyle(style3B), force_overlay=true)
+            line.new(bidx, st, hsp3B, hs3B, xloc=xloc.bar_index, color=bearS3B, width=width3B, style=getLineStyle(style3B))
+
+        hp3B := prRaw
+        hbp3B := bidx
+        hs3B := st
+        hsp3B := bidx
+
+// Stochastic 4
+enable4    = input.bool(true, "Enable Stoch 4", group="Stoch 4")
+len4       = input.int(60, "Length", minval=1, group="Stoch 4")
+smK4       = input.int(1, "K Smoothing", minval=1, group="Stoch 4")
+smD4       = input.int(10, "D Smoothing", minval=1, group="Stoch 4")
+off4       = input.float(-191, "Vertical Offset", group="Stoch 4")
+col4       = input.color(color.rgb(31, 210, 126), "Stoch Line Color", group="Stoch 4")
+showLabel4 = input.bool(true, "Show Value Label", group="Stoch 4")
+labelOffset4 = input.int(3, "Value Label Bars Right", minval=0, maxval=100, group="Stoch 4")
+labelTextColor4 = input.color(color.black, "Value Label Text Color", group="Stoch 4")
+
+d4_raw = f_stoch(len4, smK4, smD4)
+d4 = d4_raw + off4
+
+plot(enable4 ? d4 : na, title="Stoch 4", color=col4, linewidth=1)
+
+var label stoch4Label = na
+stoch4Label := f_update_label(stoch4Label, enable4, showLabel4, labelOffset4, d4, str.tostring(d4_raw, "#"), col4, labelTextColor4)
+
+h20_4 = hline(off4 + 20, "Stoch4 20", color=color.new(color.white, 70), linestyle=hline.style_solid)
+h80_4 = hline(off4 + 80, "Stoch4 80", color=color.new(color.white, 70), linestyle=hline.style_solid)
+h50_4 = hline(off4 + 50, "Stoch4 50", color=color.new(color.white, 80), linestyle=hline.style_dashed)
+fill(h20_4, h80_4, color=color.new(#2196F3, 95))
+
+// Divergence A
+div4A_bull_on = input.bool(true, "Enable Bullish / Long", group="Stoch 4 - Div A")
+div4A_bear_on = input.bool(true, "Enable Bearish / Short", group="Stoch 4 - Div A")
+longLeft4A   = input.int(3, "Long Left A", minval=1, group="Stoch 4 - Div A")
+longRight4A  = input.int(3, "Long Right A", minval=1, group="Stoch 4 - Div A")
+shortLeft4A  = input.int(3, "Short Left A", minval=1, group="Stoch 4 - Div A")
+shortRight4A = input.int(3, "Short Right A", minval=1, group="Stoch 4 - Div A")
+bullP4A = input.color(color.lime, "Price Line A (Bullish)", group="Stoch 4 - Div A")
+bullS4A = input.color(color.lime, "Stoch Line A (Bullish)", group="Stoch 4 - Div A")
+bearP4A = input.color(color.red, "Price Line A (Bearish)", group="Stoch 4 - Div A")
+bearS4A = input.color(color.red, "Stoch Line A (Bearish)", group="Stoch 4 - Div A")
+width4A = input.int(1, "Width A", minval=1, maxval=5, group="Stoch 4 - Div A")
+style4A = input.string("solid", "Style A", options=["solid", "dashed", "dotted"], group="Stoch 4 - Div A")
+
+// Divergence B
+div4B_bull_on = input.bool(true, "Enable Bullish / Long", group="Stoch 4 - Div B")
+div4B_bear_on = input.bool(true, "Enable Bearish / Short", group="Stoch 4 - Div B")
+longLeft4B   = input.int(6, "Long Left B", minval=1, group="Stoch 4 - Div B")
+longRight4B  = input.int(6, "Long Right B", minval=1, group="Stoch 4 - Div B")
+shortLeft4B  = input.int(6, "Short Left B", minval=1, group="Stoch 4 - Div B")
+shortRight4B = input.int(6, "Short Right B", minval=1, group="Stoch 4 - Div B")
+bullP4B = input.color(color.green, "Price Line B (Bullish)", group="Stoch 4 - Div B")
+bullS4B = input.color(color.green, "Stoch Line B (Bullish)", group="Stoch 4 - Div B")
+bearP4B = input.color(color.maroon, "Price Line B (Bearish)", group="Stoch 4 - Div B")
+bearS4B = input.color(color.maroon, "Stoch Line B (Bearish)", group="Stoch 4 - Div B")
+width4B = input.int(1, "Width B", minval=1, maxval=5, group="Stoch 4 - Div B")
+style4B = input.string("dashed", "Style B", options=["solid", "dashed", "dotted"], group="Stoch 4 - Div B")
+
+// Bullish pivot state
+var float lp4A = na
+var float ls4A = na
+var int lbp4A = na
+var int lsp4A = na
+var float lp4B = na
+var float ls4B = na
+var int lbp4B = na
+var int lsp4B = na
+
+// Bearish pivot state
+var float hp4A = na
+var float hs4A = na
+var int hbp4A = na
+var int hsp4A = na
+var float hp4B = na
+var float hs4B = na
+var int hbp4B = na
+var int hsp4B = na
+
+var int lastBullDiv4ABar = na
+var int lastBearDiv4ABar = na
+
+if enable4
+    // A bullish: price lower low, stochastic higher low
+    price4A_bull = ta.pivotlow(low, longLeft4A, longRight4A)
+    stoch4A_bull = ta.pivotlow(d4_raw, longLeft4A, longRight4A)
+
+    if div4A_bull_on and not na(price4A_bull) and not na(stoch4A_bull)
+        bidx = bar_index - longRight4A
+        pr = low[longRight4A]
+        st = d4_raw[longRight4A] + off4
+
+        if not na(lp4A) and not na(ls4A) and pr < lp4A and st > ls4A
+            line.new(bidx, pr, lbp4A, lp4A, xloc=xloc.bar_index, color=bullP4A, width=width4A, style=getLineStyle(style4A), force_overlay=true)
+            line.new(bidx, st, lsp4A, ls4A, xloc=xloc.bar_index, color=bullS4A, width=width4A, style=getLineStyle(style4A))
+            lastBullDiv4ABar := bidx
+
+        lp4A := pr
+        lbp4A := bidx
+        ls4A := st
+        lsp4A := bidx
+
+    // A bearish: price higher high, stochastic lower high
+    price4A_bear = ta.pivothigh(high, shortLeft4A, shortRight4A)
+    stoch4A_bear = ta.pivothigh(d4_raw, shortLeft4A, shortRight4A)
+
+    if div4A_bear_on and not na(price4A_bear) and not na(stoch4A_bear)
+        bidx = bar_index - shortRight4A
+        pr = high[shortRight4A]
+        st = d4_raw[shortRight4A] + off4
+
+        if not na(hp4A) and not na(hs4A) and pr > hp4A and st < hs4A
+            line.new(bidx, pr, hbp4A, hp4A, xloc=xloc.bar_index, color=bearP4A, width=width4A, style=getLineStyle(style4A), force_overlay=true)
+            line.new(bidx, st, hsp4A, hs4A, xloc=xloc.bar_index, color=bearS4A, width=width4A, style=getLineStyle(style4A))
+            lastBearDiv4ABar := bidx
+
+        hp4A := pr
+        hbp4A := bidx
+        hs4A := st
+        hsp4A := bidx
+
+    // B bullish
+    price4B_bull = ta.pivotlow(low, longLeft4B, longRight4B)
+    stoch4B_bull = ta.pivotlow(d4_raw, longLeft4B, longRight4B)
+
+    if div4B_bull_on and not na(price4B_bull) and not na(stoch4B_bull)
+        bidx = bar_index - longRight4B
+        isOverlapBull = lastBullDiv4ABar == bidx
+        prRaw = low[longRight4B]
+        prDraw = prRaw - (isOverlapBull ? spacing : 0)
+        st = d4_raw[longRight4B] + off4
+
+        if not na(lp4B) and not na(ls4B) and prRaw < lp4B and st > ls4B
+            line.new(bidx, prDraw, lbp4B, lp4B, xloc=xloc.bar_index, color=bullP4B, width=width4B, style=getLineStyle(style4B), force_overlay=true)
+            line.new(bidx, st, lsp4B, ls4B, xloc=xloc.bar_index, color=bullS4B, width=width4B, style=getLineStyle(style4B))
+
+        lp4B := prRaw
+        lbp4B := bidx
+        ls4B := st
+        lsp4B := bidx
+
+    // B bearish
+    price4B_bear = ta.pivothigh(high, shortLeft4B, shortRight4B)
+    stoch4B_bear = ta.pivothigh(d4_raw, shortLeft4B, shortRight4B)
+
+    if div4B_bear_on and not na(price4B_bear) and not na(stoch4B_bear)
+        bidx = bar_index - shortRight4B
+        isOverlapBear = lastBearDiv4ABar == bidx
+        prRaw = high[shortRight4B]
+        prDraw = prRaw + (isOverlapBear ? spacing : 0)
+        st = d4_raw[shortRight4B] + off4
+
+        if not na(hp4B) and not na(hs4B) and prRaw > hp4B and st < hs4B
+            line.new(bidx, prDraw, hbp4B, hp4B, xloc=xloc.bar_index, color=bearP4B, width=width4B, style=getLineStyle(style4B), force_overlay=true)
+            line.new(bidx, st, hsp4B, hs4B, xloc=xloc.bar_index, color=bearS4B, width=width4B, style=getLineStyle(style4B))
+
+        hp4B := prRaw
+        hbp4B := bidx
+        hs4B := st
+        hsp4B := bidx

@@ -1,0 +1,269 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Bybllo
+
+//@version=6
+// ══════════════════════════════════════════════════════════════════
+// Multiday Anchored Auto VWAP by Bybllo
+// ══════════════════════════════════════════════════════════════════
+// OVERVIEW
+// This indicator plots up to 10 automatically anchored, rolling
+// Volume Weighted Average Price (VWAP) lines - Rolling Day #0
+// (today) through Rolling Day #9 (9 days ago) - plus 5 fully
+// independent manual VWAP lines you anchor to any date/time you
+// choose. Each line accumulates price*volume continuously from its
+// own anchor point up to the current bar, giving a set of rolling,
+// multi-day reference levels rather than a single VWAP that resets
+// every day.
+//
+// INTENDED USE - FUTURES SCALPING / LOWER TIMEFRAMES
+// This indicator is well suited to short-term futures scalping on
+// instruments such as Nasdaq futures (NQ/MNQ). It's primarily used
+// on the 1-minute chart, but the rolling VWAP levels hold up just as
+// well on 2, 3, and 5-minute charts and other intraday timeframes -
+// the anchor logic doesn't depend on your chart's timeframe at all,
+// so the same 10 rolling-day levels stay valid however you're
+// viewing the chart.
+//
+// AUTO MODE AND MANUAL MODE RUN TOGETHER, NOT AS A TOGGLE
+// Unlike some anchored-VWAP tools that force you to choose between
+// an automatic mode or a manual mode, the 10 automatic Rolling Day
+// lines and the 5 Manual Input lines here are completely independent
+// of each other and can be shown at the same time. You can, for
+// example, keep the last 3 rolling days visible for a constantly
+// up-to-date short-term picture while also anchoring a Manual Input
+// line to a specific earnings date or session open that doesn't fall
+// on a simple day count - both layers coexist without conflicting.
+//
+// WHY THE AUTO LINES NEVER GO STALE
+// Every one of the 10 automatic Rolling Day anchor dates is
+// recalculated from the live "now" (via timenow) every time the
+// script runs, rather than being written as a fixed date in the
+// code. This means there is no hardcoded date anywhere in the
+// automatic section - the lines are always exactly "N days ago from
+// today," permanently, with no need to ever edit or republish the
+// script just because time has passed. The Manual Input lines work
+// differently by necessity (Pine Script requires input() defaults to
+// be fixed compile-time constants), so those 5 dates are hardcoded
+// example values meant to be edited to whatever dates you actually
+// want to anchor to.
+//
+// CALENDAR DAYS, NOT TRADING DAYS
+// The 10 automatic lines count back in plain calendar days from
+// today - weekends and holidays are not skipped or excluded. "3 days
+// ago" always means exactly 3 x 24 hours back from the configured
+// session start time, regardless of whether the market was open on
+// that day. This is a deliberate design choice for simplicity and
+// predictability; if you need trading-day-aware anchoring instead,
+// see this author's companion script "Multiday VWAP by Bybllo."
+//
+// SESSION START TIME INPUT
+// Instead of a full date/time picker for every automatic line, the
+// auto section uses a single "Auto Mode Session Start Time (HHMM)"
+// number field (default 1800 = 18:00, America/New_York time) that
+// applies to all 10 rolling lines at once. Entering a value under
+// 100 is automatically treated as an hour-only entry and expanded to
+// HHMM format (e.g. entering 7 becomes 0700 / 07:00); entering a
+// full 3-4 digit value like 715 sets both hour and minute (07:15).
+// This lets you match the anchor time to your instrument's actual
+// session open without touching 10 separate date pickers.
+// The default of 18:00 (America/New_York) lines up directly with the
+// Nasdaq futures (Globex) session open at 18:00 US Eastern Time.
+// Because the calculation uses the named "America/New_York" timezone
+// rather than a fixed UTC offset, Pine Script automatically applies
+// the correct US Eastern Time / Eastern Daylight Time (EST/EDT) rule
+// for whatever date is currently being evaluated - so this anchor
+// stays aligned with the actual futures session open year-round, with
+// no manual adjustment needed across the US daylight saving
+// transition.
+//
+// ANCHOR START LABELS
+// A single "Show Anchor Start Labels" toggle controls small
+// speech-bubble labels (#0-#9 for the automatic lines, M1-M5 for the
+// manual lines) at all 15 possible anchor points at once, each
+// colored to exactly match its corresponding line. If a given line's
+// own display toggle is off, its label is hidden too - you don't get
+// orphaned labels for lines that aren't shown. These labels are kept
+// out of the Style tab entirely and controlled only from the single
+// Inputs-tab toggle, to keep the settings panel simple.
+//
+// CHART-TYPE COMPATIBILITY
+// All price data is pulled via request.security() against the
+// chart's own ticker rather than read directly off the chart, so the
+// VWAP values are identical whether your chart is displaying
+// candlesticks, Heikin Ashi, Renko, or any other non-standard chart
+// type. Volume is unaffected by chart type and is used as-is.
+//
+// ANCHOR-POINT SAFETY GUARD
+// Every VWAP calculation is guarded so that no price*volume
+// accumulation happens before a line's actual anchor point - without
+// this guard, anchored-VWAP calculations can show an artificial spike
+// right at the anchor bar as leftover accumulated values get divided
+// incorrectly. Each line here only starts accumulating exactly at
+// its own anchor time, so the line begins cleanly with no distortion.
+//
+// HOW TO USE
+// - Leave the automatic Rolling Day lines on for a quick, always-
+//   current view of the last several sessions' VWAP levels. Adjust
+//   "Auto Mode Session Start Time (HHMM)" if your market's session
+//   doesn't start at 18:00 (America/New_York).
+// - Enable any of the 5 Manual Input lines and pick an exact date/
+//   time to anchor a VWAP to a specific event or session that
+//   doesn't line up with a simple day count.
+// - Turn on "Show Anchor Start Labels" to see a small badge at each
+//   line's starting point on the chart.
+// - Use the resulting lines as dynamic support/resistance or
+//   fair-value reference levels, the same way a session VWAP is
+//   used, but for whichever multi-day or custom-anchored period each
+//   line represents.
+// - Works well on Nasdaq futures 1-minute scalping charts, and holds
+//   up just as well on 2/3/5-minute and other intraday timeframes.
+//
+// NOTES
+// - The 10 automatic lines use plain calendar days (not trading
+//   days), counted back from today - weekends are not skipped.
+// - The default 18:00 (America/New_York) session start lines up
+//   directly with the Nasdaq futures (Globex) session open. Since
+//   the calculation uses the named "America/New_York" timezone,
+//   Pine Script automatically applies the correct EST/EDT offset for
+//   the current date, so this anchor stays aligned with the futures
+//   session open year-round with no manual adjustment needed across
+//   the US daylight saving transition.
+// - Manual Input default dates are fixed values set at publish time
+//   and will not update automatically; edit them periodically if you
+//   want them to track recent dates.
+// - This script requires volume data from your data provider. If no
+//   volume is available for the symbol, the VWAP values will not
+//   calculate correctly.
+//
+// DISCLAIMER
+// For educational and informational purposes only. This is not
+// financial advice. Past performance does not guarantee future
+// results. Always verify how these levels behave on your specific
+// symbol and timeframe before relying on them for live trading.
+// ══════════════════════════════════════════════════
+indicator("Multiday Anchored Auto VWAP by Bybllo", overlay = true)
+// ============================================
+// INPUTS
+// ============================================
+// Auto mode session start time - no date, single field, entered as a
+// number (HHMM). Default 1800 (=18:00, America/New_York). Entering a
+// value under 100 (e.g. 7 or 07) is treated as an hour and
+// auto-expanded to HHMM (7 -> 0700, i.e. 07:00. To set minutes too,
+// e.g. 07:15, enter 715).
+sessionTimeValue = input.int(1800, "Auto Mode Session Start Time (HHMM)", minval = 0, maxval = 2359, group = "Settings")
+sessionTimeAdj = sessionTimeValue < 100 ? sessionTimeValue * 100 : sessionTimeValue
+sessionHourFinal = int(sessionTimeAdj / 100)
+sessionMinuteFinal = sessionTimeAdj % 100
+show0 = input.bool(true, "Rolling Day #0 VWAP [Today]", group = "Auto - Display")
+show1 = input.bool(true, "Rolling Day #1 VWAP [1 Day Ago]", group = "Auto - Display")
+show2 = input.bool(true, "Rolling Day #2 VWAP [2 Days Ago]", group = "Auto - Display")
+show3 = input.bool(true, "Rolling Day #3 VWAP [3 Days Ago]", group = "Auto - Display")
+show4 = input.bool(true, "Rolling Day #4 VWAP [4 Days Ago]", group = "Auto - Display")
+show5 = input.bool(true, "Rolling Day #5 VWAP [5 Days Ago]", group = "Auto - Display")
+show6 = input.bool(true, "Rolling Day #6 VWAP [6 Days Ago]", group = "Auto - Display")
+show7 = input.bool(true, "Rolling Day #7 VWAP [7 Days Ago]", group = "Auto - Display")
+show8 = input.bool(true, "Rolling Day #8 VWAP [8 Days Ago]", group = "Auto - Display")
+show9 = input.bool(true, "Rolling Day #9 VWAP [9 Days Ago]", group = "Auto - Display")
+showLabels = input.bool(true, "Show Anchor Start Labels", group = "Display")
+// ---- Manual Input #1-#5 (fully independent from Auto mode, 5 separate toggles) ----
+// Defaults: today (2026-08-31) counting back one day at a time, 18:00 America/New_York
+// (written as explicit -04:00 / EDT offsets here since input.time()
+// requires a compile-time constant, which a named-timezone timestamp()
+// call cannot provide - this only affects these fixed default values,
+// not the auto rolling-day calculation below).
+// These are fixed values - update periodically by editing the code.
+showM1 = input.bool(false, "Manual Input #1", inline = "m1", group = "Manual Input")
+mDate1 = input.time(timestamp('2026-08-31T18:00:00-04:00'), "", inline = "m1", group = "Manual Input")
+showM2 = input.bool(false, "Manual Input #2", inline = "m2", group = "Manual Input")
+mDate2 = input.time(timestamp('2026-08-30T18:00:00-04:00'), "", inline = "m2", group = "Manual Input")
+showM3 = input.bool(false, "Manual Input #3", inline = "m3", group = "Manual Input")
+mDate3 = input.time(timestamp('2026-08-29T18:00:00-04:00'), "", inline = "m3", group = "Manual Input")
+showM4 = input.bool(false, "Manual Input #4", inline = "m4", group = "Manual Input")
+mDate4 = input.time(timestamp('2026-08-28T18:00:00-04:00'), "", inline = "m4", group = "Manual Input")
+showM5 = input.bool(false, "Manual Input #5", inline = "m5", group = "Manual Input")
+mDate5 = input.time(timestamp('2026-08-27T18:00:00-04:00'), "", inline = "m5", group = "Manual Input")
+// ============================================
+// Force real market prices regardless of chart type (Heikin Ashi,
+// Renko, etc.)
+// ============================================
+t = ticker.new(syminfo.prefix, syminfo.ticker)
+[rh, rl, rc] = request.security(t, timeframe.period, [high, low, close])
+realSrc = (rh + rl + rc) / 3
+// ============================================
+// Auto mode: recalculates "today" fresh every run and derives 0-9
+// days ago from it. Session start time comes from sessionHourFinal /
+// sessionMinuteFinal (default 18:00, America/New_York). No calendar
+// UI here - the timenow-based approach means there is no hardcoded
+// date, so it stays permanently up to date.
+// ============================================
+msPerDay = 86400000
+todayY = year(timenow, 'America/New_York')
+todayM = month(timenow, 'America/New_York')
+todayD = dayofmonth(timenow, 'America/New_York')
+startOfToday = timestamp('America/New_York', todayY, todayM, todayD, sessionHourFinal, sessionMinuteFinal, 0)
+autoDate0 = startOfToday - 0 * msPerDay
+autoDate1 = startOfToday - 1 * msPerDay
+autoDate2 = startOfToday - 2 * msPerDay
+autoDate3 = startOfToday - 3 * msPerDay
+autoDate4 = startOfToday - 4 * msPerDay
+autoDate5 = startOfToday - 5 * msPerDay
+autoDate6 = startOfToday - 6 * msPerDay
+autoDate7 = startOfToday - 7 * msPerDay
+autoDate8 = startOfToday - 8 * msPerDay
+autoDate9 = startOfToday - 9 * msPerDay
+// ============================================
+// Anchored VWAP accumulation
+// ============================================
+f_avwap(date) =>
+    start = not na(date) and time >= date and time[1] < date
+    sumSrc = realSrc * volume
+    sumVol = volume
+    sumSrc := start ? sumSrc : sumSrc + sumSrc[1]
+    sumVol := start ? sumVol : sumVol + sumVol[1]
+    sumSrc / sumVol
+// ============================================
+// PLOTS - Auto (guarded with time >= date so no accumulation happens
+// before each line's anchor point, preventing a value spike)
+// ============================================
+plot(show0 and time >= autoDate0 ? f_avwap(autoDate0) : na, color = color.new(#ffe31b, 10),  title = "Rolling Day #0", linewidth = 1)
+plot(show1 and time >= autoDate1 ? f_avwap(autoDate1) : na, color = color.new(#93af12, 10),  title = "Rolling Day #1", linewidth = 1)
+plot(show2 and time >= autoDate2 ? f_avwap(autoDate2) : na, color = color.new(#f23645, 0),  title = "Rolling Day #2", linewidth = 1)
+plot(show3 and time >= autoDate3 ? f_avwap(autoDate3) : na, color = color.new(#f57c00, 0),  title = "Rolling Day #3", linewidth = 1)
+plot(show4 and time >= autoDate4 ? f_avwap(autoDate4) : na, color = color.new(#2962ff, 0),  title = "Rolling Day #4", linewidth = 1)
+plot(show5 and time >= autoDate5 ? f_avwap(autoDate5) : na, color = color.new(#4caf50, 0),  title = "Rolling Day #5", linewidth = 1)
+plot(show6 and time >= autoDate6 ? f_avwap(autoDate6) : na, color = color.new(#9c27b0, 0), title = "Rolling Day #6", linewidth = 1)
+plot(show7 and time >= autoDate7 ? f_avwap(autoDate7) : na, color = color.new(#ffc107, 20), title = "Rolling Day #7", linewidth = 1)
+plot(show8 and time >= autoDate8 ? f_avwap(autoDate8) : na, color = color.new(#067814, 20), title = "Rolling Day #8", linewidth = 1)
+plot(show9 and time >= autoDate9 ? f_avwap(autoDate9) : na, color = color.new(#607d8b, 20), title = "Rolling Day #9", linewidth = 1)
+// ============================================
+// PLOTS - Manual Input #1-#5 (fully independent from Auto mode)
+// Checkbox + color still appear normally in the Style tab (no
+// editable restriction here).
+// ============================================
+plot(showM1 and not na(mDate1) and time >= mDate1 ? f_avwap(mDate1) : na, color = color.new(#f23645, 0),  title = "Manual Input #1", linewidth = 1)
+plot(showM2 and not na(mDate2) and time >= mDate2 ? f_avwap(mDate2) : na, color = color.new(#f57c00, 0),  title = "Manual Input #2", linewidth = 1)
+plot(showM3 and not na(mDate3) and time >= mDate3 ? f_avwap(mDate3) : na, color = color.new(#2962ff, 0),  title = "Manual Input #3", linewidth = 1)
+plot(showM4 and not na(mDate4) and time >= mDate4 ? f_avwap(mDate4) : na, color = color.new(#4caf50, 0),  title = "Manual Input #4", linewidth = 1)
+plot(showM5 and not na(mDate5) and time >= mDate5 ? f_avwap(mDate5) : na, color = color.new(#9c27b0, 0),  title = "Manual Input #5", linewidth = 1)
+// ============================================
+// Anchor start labels - a single "showLabels" toggle controls all 15
+// possible labels at once. Each label's color exactly matches its
+// corresponding line's color/opacity. If a given line's own display
+// toggle is off, that line's label is hidden too. editable = false
+// keeps these out of the Style tab entirely.
+// ============================================
+plotshape(showLabels and show0 and time >= autoDate0 and time[1] < autoDate0, text = "#0", textcolor = color.white, color = color.new(#ffe31b, 10), location = location.belowbar, style = shape.labelup, size = size.small, editable = false)
+plotshape(showLabels and show1 and time >= autoDate1 and time[1] < autoDate1, text = "#1", textcolor = color.white, color = color.new(#93af12, 10), location = location.belowbar, style = shape.labelup, size = size.small, editable = false)
+plotshape(showLabels and show2 and time >= autoDate2 and time[1] < autoDate2, text = "#2", textcolor = color.white, color = color.new(#f23645, 0),  location = location.belowbar, style = shape.labelup, size = size.small, editable = false)
+plotshape(showLabels and show3 and time >= autoDate3 and time[1] < autoDate3, text = "#3", textcolor = color.white, color = color.new(#f57c00, 0),  location = location.belowbar, style = shape.labelup, size = size.small, editable = false)
+plotshape(showLabels and show4 and time >= autoDate4 and time[1] < autoDate4, text = "#4", textcolor = color.white, color = color.new(#2962ff, 0),  location = location.belowbar, style = shape.labelup, size = size.small, editable = false)
+plotshape(showLabels and show5 and time >= autoDate5 and time[1] < autoDate5, text = "#5", textcolor = color.white, color = color.new(#4caf50, 0),  location = location.belowbar, style = shape.labelup, size = size.small, editable = false)
+plotshape(showLabels and show6 and time >= autoDate6 and time[1] < autoDate6, text = "#6", textcolor = color.white, color = color.new(#9c27b0, 0), location = location.belowbar, style = shape.labelup, size = size.small, editable = false)
+plotshape(showLabels and show7 and time >= autoDate7 and time[1] < autoDate7, text = "#7", textcolor = color.white, color = color.new(#ffc107, 50), location = location.belowbar, style = shape.labelup, size = size.small, editable = false)
+plotshape(showLabels and show8 and time >= autoDate8 and time[1] < autoDate8, text = "#8", textcolor = color.white, color = color.new(#067814, 40), location = location.belowbar, style = shape.labelup, size = size.small, editable = false)
+plotshape(showLabels and show9 and time >= autoDate9 and time[1] < autoDate9, text = "#9", textcolor = color.white, color = color.new(#607d8b, 30), location = location.belowbar, style = shape.labelup, size = size.small, editable = false)
+plotshape(showLabels and showM1 and not na(mDate1) and time >= mDate1 and time[1] < mDate1, text = "M1", textcolor = color.white, color = color.new(#f23645, 0),  location = location.belowbar, style = shape.labelup, size = size.small, editable = false)
+plotshape(showLabels and showM2 and not na(mDate2) and time >= mDate2 and time[1] < mDate2, text = "M2", textcolor = color.white, color = color.new(#f57c00, 0),  location = location.belowbar, style = shape.labelup, size = size.small, editable = false)
+plotshape(showLabels and showM3 and not na(mDate3) and time >= mDate3 and time[1] < mDate3, text = "M3", textcolor = color.white, color = color.new(#2962ff, 0),  location = location.belowbar, style = shape.labelup, size = size.small, editable = false)
+plotshape(showLabels and showM4 and not na(mDate4) and time >= mDate4 and time[1] < mDate4, text = "M4", textcolor = color.white, color = color.new(#4caf50, 0),  location = location.belowbar, style = shape.labelup, size = size.small, editable = false)
+plotshape(showLabels and showM5 and not na(mDate5) and time >= mDate5 and time[1] < mDate5, text = "M5", textcolor = color.white, color = color.new(#9c27b0, 0),  location = location.belowbar, style = shape.labelup, size = size.small, editable = false)

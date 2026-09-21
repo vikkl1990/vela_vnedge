@@ -1,0 +1,192 @@
+//@version=6
+// Original implementation for BotTradeLab. Rule-based context, not an execution strategy.
+indicator("Trend Pullback Guard", "Pullback Guard", overlay = true, precision = 2)
+
+int fastLen = input.int(21, "Fast EMA", minval = 2, group = "Trend", display = display.none)
+int slowLen = input.int(55, "Slow EMA", minval = 3, group = "Trend", display = display.none)
+int slopeLen = input.int(3, "Slow EMA slope bars", minval = 1, maxval = 20, group = "Trend", display = display.none)
+string side = input.string("Both", "Direction", options = ["Both", "Long", "Short"], group = "Trend", display = display.none)
+int atrLen = input.int(14, "ATR length", minval = 2, group = "Pullback", display = display.none)
+float bandATR = input.float(0.25, "EMA touch band (ATR)", minval = 0, step = 0.05, group = "Pullback", display = display.none)
+int structureLen = input.int(10, "Pre-pullback structure lookback", minval = 2, maxval = 100, group = "Pullback", display = display.none)
+float bufferATR = input.float(0.1, "Structure / confirmation buffer (ATR)", minval = 0, step = 0.05, group = "Pullback", display = display.none)
+int stableBars = input.int(2, "Stabilization bars", minval = 1, maxval = 5, group = "Guard", display = display.none)
+int maxBars = input.int(12, "Maximum bars after detection", minval = 2, maxval = 100, group = "Guard", display = display.none)
+float maxDepth = input.float(3.0, "Maximum depth for confirmation (ATR)", minval = 0.25, step = 0.25, group = "Guard", display = display.none)
+float maxOverlap = input.float(70, "Maximum mean candle overlap (%)", minval = 0, maxval = 100, step = 5, group = "Guard", display = display.none, tooltip = "Intersection of consecutive candle ranges divided by their smaller range. Mean since detection; high values suggest congestion. Zero-range candles count as 100% overlap.")
+bool showEMA = input.bool(true, "Show trend EMAs", group = "Display", display = display.none)
+bool showZone = input.bool(true, "Show monitored pullback zone", group = "Display", display = display.none)
+bool showMarks = input.bool(true, "Show event markers", group = "Display", display = display.none)
+bool showPanel = input.bool(true, "Show compact dashboard", group = "Display", display = display.none)
+string corner = input.string("Bottom right", "Dashboard position", options = ["Top right", "Bottom right", "Top left", "Bottom left"], group = "Display", display = display.none)
+
+if barstate.isfirst and (not chart.is_standard or fastLen >= slowLen)
+    runtime.error("Use standard candles and a fast EMA length smaller than the slow EMA length.")
+float fast = ta.ema(close, fastLen)
+float slow = ta.ema(close, slowLen)
+float atr = ta.atr(atrLen)
+float priorLow = ta.lowest(low, structureLen)[1]
+float priorHigh = ta.highest(high, structureLen)[1]
+float stableHigh = ta.highest(high, stableBars)
+float stableLow = ta.lowest(low, stableBars)
+bool ready = bar_index >= math.max(slowLen + slopeLen, math.max(structureLen, atrLen)) and not na(atr[1]) and atr[1] > 0
+int trend = ready ? (fast > slow and slow > slow[slopeLen] ? 1 : fast < slow and slow < slow[slopeLen] ? -1 : 0) : 0
+float smallerRange = math.min(high - low, high[1] - low[1])
+float overlap = smallerRange > 0 ? 100 * math.max(0, math.min(high, high[1]) - math.max(low, low[1])) / smallerRange : 100
+
+var bool active = false
+var int armed = 0
+var int direction = 0
+var int startBar = na
+var int age = 0
+var int stableCount = 0
+var int triggerBar = na
+var float frozenATR = na
+var float structure = na
+var float peak = na
+var float pbLow = na
+var float pbHigh = na
+var float trigger = na
+var float depth = na
+var float overlapSum = 0
+var int samples = 0
+var float meanOverlap = na
+var string state = "WAITING FOR IMPULSE"
+var string quality = "—"
+var int confirmedCount = 0
+var int brokenCount = 0
+var int expiredCount = 0
+var int cancelledCount = 0
+bool started = false
+bool stabilized = false
+bool confirmed = false
+bool broken = false
+bool expired = false
+bool cancelled = false
+
+if barstate.isconfirmed
+    if not active
+        if armed != trend
+            armed := 0
+        bool permitted = trend == 1 ? side != "Short" : trend == -1 ? side != "Long" : false
+        bool touch = trend == 1 ? low <= fast + bandATR * atr[1] and close < close[1] : trend == -1 ? high >= fast - bandATR * atr[1] and close > close[1] : false
+        if ready and permitted and armed == trend and armed != 0 and touch
+            active := true
+            started := true
+            direction := trend
+            armed := 0
+            startBar := bar_index
+            age := 0
+            frozenATR := atr[1]
+            structure := direction == 1 ? priorLow - bufferATR * frozenATR : priorHigh + bufferATR * frozenATR
+            peak := direction == 1 ? priorHigh : priorLow
+            pbLow := low
+            pbHigh := high
+            stableCount := 0
+            trigger := na
+            triggerBar := na
+            overlapSum := 0
+            samples := 0
+            state := "PULLBACK"
+        else
+            bool impulse = trend == 1 ? low > fast + bandATR * atr[1] and close > close[1] : trend == -1 ? high < fast - bandATR * atr[1] and close < close[1] : false
+            if ready and permitted and impulse
+                armed := trend
+    if active
+        age := bar_index - startBar
+        bool newExtreme = not started and (direction == 1 ? low < pbLow : high > pbHigh)
+        pbLow := math.min(pbLow, low)
+        pbHigh := math.max(pbHigh, high)
+        depth := math.max(0, direction == 1 ? peak - pbLow : pbHigh - peak) / frozenATR
+        overlapSum += overlap
+        samples += 1
+        meanOverlap := overlapSum / samples
+        quality := depth > maxDepth ? "TOO DEEP" : meanOverlap > maxOverlap ? "HIGH OVERLAP" : "WITHIN LIMITS"
+        if newExtreme
+            stableCount := 0
+            trigger := na
+            triggerBar := na
+            state := "PULLBACK"
+        // Structure first. A bar that makes a new adverse extreme cannot also confirm.
+        if direction == 1 ? close < structure : close > structure
+            broken := true
+            active := false
+            brokenCount += 1
+            state := "STRUCTURE BROKEN"
+        else if trend != direction
+            cancelled := true
+            active := false
+            cancelledCount += 1
+            state := "TREND LOST"
+        else if not na(trigger) and bar_index > triggerBar and (direction == 1 ? close > trigger and close > fast : close < trigger and close < fast) and quality == "WITHIN LIMITS"
+            confirmed := true
+            active := false
+            confirmedCount += 1
+            state := "CONTINUATION CONFIRMED"
+        else if age >= maxBars
+            expired := true
+            active := false
+            expiredCount += 1
+            state := "WINDOW ENDED"
+        else if not started and not newExtreme and na(trigger)
+            bool holds = direction == 1 ? low >= low[1] : high <= high[1]
+            stableCount := holds ? stableCount + 1 : 0
+            if stableCount >= stableBars
+                trigger := direction == 1 ? stableHigh + bufferATR * frozenATR : stableLow - bufferATR * frozenATR
+                triggerBar := bar_index
+                stabilized := true
+                state := "STABILIZED"
+
+color mint = color.rgb(51, 194, 153)
+color red = color.rgb(238, 97, 111)
+color amber = color.rgb(239, 182, 73)
+color blue = color.rgb(105, 158, 239)
+bool drawing = active or started or confirmed or broken or expired or cancelled
+color directionColor = direction == 1 ? mint : red
+plot(showEMA ? fast : na, "Fast EMA", color.new(blue, 10), 2)
+plot(showEMA ? slow : na, "Slow EMA", color.new(color.silver, 40), 1)
+zoneTop = plot(showZone and drawing ? pbHigh : na, "Pullback high", color.new(directionColor, 85), 1, plot.style_linebr, display = display.pane)
+zoneBottom = plot(showZone and drawing ? pbLow : na, "Pullback low", color.new(directionColor, 85), 1, plot.style_linebr, display = display.pane)
+fill(zoneTop, zoneBottom, color.new(directionColor, 93), title = "Monitored pullback", fillgaps = false)
+plot(drawing ? structure : na, "Frozen structure", color.new(red, 20), 1, plot.style_linebr, display = display.pane + display.data_window)
+plot(drawing ? trigger : na, "Confirmation level", amber, 2, plot.style_linebr, display = display.pane + display.data_window)
+plotshape(showMarks and started and direction == 1, "Long pullback detected", shape.circle, location.belowbar, blue, size = size.tiny, display = display.pane)
+plotshape(showMarks and started and direction == -1, "Short pullback detected", shape.circle, location.abovebar, blue, size = size.tiny, display = display.pane)
+plotshape(showMarks and confirmed and direction == 1, "Long continuation", shape.triangleup, location.belowbar, mint, size = size.small, display = display.pane)
+plotshape(showMarks and confirmed and direction == -1, "Short continuation", shape.triangledown, location.abovebar, red, size = size.small, display = display.pane)
+plotshape(showMarks and broken and direction == 1, "Long structure broken", shape.xcross, location.belowbar, red, size = size.tiny, display = display.pane)
+plotshape(showMarks and broken and direction == -1, "Short structure broken", shape.xcross, location.abovebar, red, size = size.tiny, display = display.pane)
+plotshape(showMarks and (expired or cancelled), "Expired / trend lost", shape.square, location.abovebar, color.gray, size = size.tiny, display = display.pane)
+plot(drawing ? depth : na, "Pullback depth (frozen ATR)", display = display.data_window)
+plot(drawing ? meanOverlap : na, "Mean candle overlap (%)", display = display.data_window)
+
+f_num(float value) =>
+    na(value) ? "—" : str.tostring(value, "0.00")
+string panelPosition = corner == "Top left" ? position.top_left : corner == "Bottom left" ? position.bottom_left : corner == "Bottom right" ? position.bottom_right : position.top_right
+var table panel = table.new(panelPosition, 2, 7, bgcolor = color.new(color.rgb(20, 27, 40), 10), border_width = 0)
+f_cell(int col, int row, string txt, color ink = color.silver) =>
+    table.cell(panel, col, row, txt, text_color = ink, text_size = size.small)
+if barstate.islast and showPanel
+    f_cell(0, 0, "PULLBACK GUARD", color.white)
+    f_cell(1, 0, active ? "LAST CLOSE" : na(startBar) ? "READY" : "LAST EPISODE", color.white)
+    f_cell(0, 1, "Status")
+    f_cell(1, 1, state, state == "CONTINUATION CONFIRMED" ? mint : state == "STRUCTURE BROKEN" ? red : amber)
+    f_cell(0, 2, "Side / age")
+    f_cell(1, 2, na(startBar) ? "—" : (direction == 1 ? "LONG" : "SHORT") + " · " + str.tostring(age) + "/" + str.tostring(maxBars))
+    f_cell(0, 3, "Depth / overlap")
+    f_cell(1, 3, f_num(depth) + " ATR · " + f_num(meanOverlap) + "%")
+    f_cell(0, 4, "Guard")
+    f_cell(1, 4, quality, quality == "WITHIN LIMITS" ? mint : amber)
+    f_cell(0, 5, "Structure / trigger")
+    f_cell(1, 5, (na(structure) ? "—" : str.tostring(structure, format.mintick)) + " / " + (na(trigger) ? "—" : str.tostring(trigger, format.mintick)))
+    f_cell(0, 6, "Confirmed / broken / other")
+    f_cell(1, 6, str.tostring(confirmedCount) + " / " + str.tostring(brokenCount) + " / " + str.tostring(expiredCount + cancelledCount))
+
+alertcondition(started, "Pullback detected", "Trend Pullback Guard: pullback detected on {{ticker}} ({{interval}}). Close confirmed.")
+alertcondition(stabilized, "Pullback stabilized", "Trend Pullback Guard: stabilization established on {{ticker}}. Await a later confirmation close.")
+alertcondition(confirmed and direction == 1, "Long continuation confirmed", "Trend Pullback Guard: long continuation conditions confirmed on {{ticker}} ({{interval}}).")
+alertcondition(confirmed and direction == -1, "Short continuation confirmed", "Trend Pullback Guard: short continuation conditions confirmed on {{ticker}} ({{interval}}).")
+alertcondition(broken, "Structure broken", "Trend Pullback Guard: frozen pullback structure broken by the close on {{ticker}}.")
+alertcondition(cancelled, "Trend lost", "Trend Pullback Guard: trend filter no longer supports the monitored pullback on {{ticker}}.")
+alertcondition(expired, "Observation window ended", "Trend Pullback Guard: pullback observation window ended without confirmation on {{ticker}}.")
+ 

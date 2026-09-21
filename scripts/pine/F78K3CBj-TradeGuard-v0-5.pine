@@ -1,0 +1,1609 @@
+//@version=6
+indicator("TradeGuard-v0.5", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500)
+
+// ─────────────────────────────────────────────
+//  INPUTS
+// ─────────────────────────────────────────────
+fastLen      = input.int(13,   "Fast EMA",              group="EMA")
+slowLen      = input.int(48,   "Slow EMA",              group="EMA")
+slowestLen   = input.int(200,  "Slowest EMA",           group="EMA")
+showVWAP     = input.bool(true,"Show VWAP",             group="VWAP")
+showPDHL     = input.bool(true,"Show PDH/PDL",          group="Levels")
+showPMHL     = input.bool(true,"Show Premarket H/L",    group="Levels")
+showDayHL    = input.bool(true,"Show Today H/L",        group="Levels")
+showORB      = input.bool(true,"Show ORB",              group="ORB")
+orbMins      = input.int(5,    "ORB minutes",           group="ORB")
+showSR       = input.bool(true,"Show S/R",              group="S/R")
+srLookback   = input.int(15,   "S/R lookback",         group="S/R")
+showZones    = input.bool(true,"Show S/D zones",        group="Zones")
+zoneLen      = input.int(5,    "Zone length",           group="Zones")
+volLen       = input.int(10,   "Volume avg length",     group="Volume")
+is0DTE       = input.bool(true,"0DTE mode",             group="Filters")
+bounceLimit  = input.int(3,    "0DTE bounce bars",      group="Filters")
+stallLimit   = input.int(5,    "Stall bars",            group="Filters")
+choppyThresh = input.float(0.08,"Chop threshold %",     group="Filters", step=0.01)
+
+// ─────────────────────────────────────────────
+//  SESSION — declare first, used everywhere
+// ─────────────────────────────────────────────
+minsSinceOpen = (time - timestamp(year, month, dayofmonth, 9, 30, 0)) / 60000
+currentHHMM   = hour * 100 + minute
+isRegularSession = currentHHMM >= 930  and currentHHMM < 1600
+isPremarket      = currentHHMM >= 400  and currentHHMM < 930
+pastOpen15       = minsSinceOpen >= 15
+inSession        = pastOpen15 and currentHHMM <= 1530
+lateDay          = currentHHMM >= 1330 and currentHHMM < 1400
+past2pm          = currentHHMM >= 1400
+openingWindow    = minsSinceOpen >= 0  and minsSinceOpen < 15
+
+// ─────────────────────────────────────────────
+//  EMAs
+// ─────────────────────────────────────────────
+fastEMA    = ta.ema(close, fastLen)
+slowEMA    = ta.ema(close, slowLen)
+slowestEMA = ta.ema(close, slowestLen)
+
+plot(fastEMA,    "13 EMA",  color=color.new(color.yellow, 0),  linewidth=1)
+plot(slowEMA,    "48 EMA",  color=color.new(color.purple, 0),  linewidth=1)
+plot(slowestEMA, "200 EMA", color=color.new(color.red, 20), linewidth=2)
+// EMA cloud fill removed to stay under plot limit
+
+// ─────────────────────────────────────────────
+//  VWAP
+// ─────────────────────────────────────────────
+vwapVal = ta.vwap(hlc3)
+// Session VWAP plot removed — value still shown in table
+
+// ─────────────────────────────────────────────
+//  SATY VOLUME
+// ─────────────────────────────────────────────
+buy_volume     = volume * (close - low)  / (high - low)
+sell_volume    = volume * (high - close) / (high - low)
+buyers_winning = buy_volume >= sell_volume
+volAvg         = ta.sma(volume, volLen)
+volAboveAvg    = volume > volAvg
+volConfirmedUp = buyers_winning and volAboveAvg
+volConfirmedDn = not buyers_winning and volAboveAvg
+
+// ─────────────────────────────────────────────
+//  TREND STATE
+// ─────────────────────────────────────────────
+emaSep    = math.abs(fastEMA - slowEMA) / slowEMA * 100
+bbLength  = 25
+bbBasis   = ta.sma(close, bbLength)
+kcBasis   = ta.ema(close, bbLength)
+kcRange   = ta.atr(bbLength) * 1.5
+kcUpper   = kcBasis + kcRange
+kcLower   = kcBasis - kcRange
+bbUpper   = bbBasis + 2.0 * ta.stdev(close, bbLength)
+bbLower   = bbBasis - 2.0 * ta.stdev(close, bbLength)
+sqzOn     = bbUpper < kcUpper and bbLower > kcLower
+
+choppy    = emaSep < choppyThresh or sqzOn
+uptrend   = not choppy and fastEMA > slowEMA and slowEMA > slowestEMA and close > fastEMA
+downtrend = not choppy and fastEMA < slowEMA and slowEMA < slowestEMA and close < fastEMA
+noTrend   = not uptrend and not downtrend
+
+// ─────────────────────────────────────────────
+//  HIGHER TIMEFRAME
+// ─────────────────────────────────────────────
+[fastEMA_5m, slowEMA_5m, slow200_5m, close_5m] = request.security(syminfo.tickerid, "5", [ta.ema(close, fastLen), ta.ema(close, slowLen), ta.ema(close, slowestLen), close])
+[fastEMA_15m, slowEMA_15m, slow200_15m, close_15m] = request.security(syminfo.tickerid, "15", [ta.ema(close, fastLen), ta.ema(close, slowLen), ta.ema(close, slowestLen), close])
+
+bull5m  = fastEMA_5m  > slowEMA_5m  and close_5m  > slow200_5m
+bear5m  = fastEMA_5m  < slowEMA_5m  and close_5m  < slow200_5m
+bull15m = fastEMA_15m > slowEMA_15m and close_15m > slow200_15m
+bear15m = fastEMA_15m < slowEMA_15m and close_15m < slow200_15m
+chop5m  = math.abs(fastEMA_5m  - slowEMA_5m)  / slowEMA_5m  * 100 < choppyThresh
+chop15m = math.abs(fastEMA_15m - slowEMA_15m) / slowEMA_15m * 100 < choppyThresh
+
+emaSep15m      = math.abs(fastEMA_15m - slowEMA_15m) / slowEMA_15m * 100
+trendStrong15m = emaSep15m > 0.3
+trendWeak15m   = emaSep15m < 0.15
+allBull        = uptrend   and bull5m and bull15m
+allBear        = downtrend and bear5m and bear15m
+mixedTF        = (uptrend and not bull5m) or (downtrend and not bear5m)
+
+expiryStr = (chop15m or chop5m) ? "WAIT - HTF choppy" : mixedTF ? "WAIT - TFs mixed" : (allBull and trendStrong15m and not past2pm) ? "LEAPS / Weekly" : (allBear and trendStrong15m and not past2pm) ? "LEAPS / Weekly" : ((bull5m and bull15m) or (bear5m and bear15m)) ? "Weekly preferred" : (trendWeak15m and inSession and not past2pm) ? "0DTE only" : past2pm ? "0DTE - last chance" : "Weekly preferred"
+expiryCol = str.contains(expiryStr, "LEAPS") ? color.new(color.green, 5) : str.contains(expiryStr, "Weekly") ? color.new(color.teal, 10) : str.contains(expiryStr, "0DTE") ? color.new(color.orange, 10) : color.new(color.red, 10)
+
+// ─────────────────────────────────────────────
+//  REGIME QUALITY SCORE
+//  Based on structure only — not volume
+//  Volume is a confirmation, not a gate
+//  HIGH (3 conditions) = all systems go
+//  MEDIUM (2 conditions) = trade with caution
+//  LOW (0-1 conditions) = stand aside
+// ─────────────────────────────────────────────
+
+// 4 structural conditions — volume excluded from regime
+regime_trend   = uptrend or downtrend                                                          // 2m trend clear
+regime_htf     = (uptrend and bull5m) or (downtrend and bear5m)                               // 5m agrees
+regime_htf15   = (uptrend and bull15m) or (downtrend and bear15m)                             // 15m agrees
+regime_vwap    = (uptrend and close > vwapVal) or (downtrend and close < vwapVal)             // price on right side of VWAP
+regime_nosqz   = not sqzOn                                                                     // not in squeeze
+regime_session = inSession and not openingWindow                                               // clean time
+
+regimeScore = (regime_trend ? 1 : 0) + (regime_htf ? 1 : 0) + (regime_htf15 ? 1 : 0) + (regime_vwap ? 1 : 0) + (regime_nosqz ? 1 : 0) + (regime_session ? 1 : 0)
+
+regimeHigh = regimeScore >= 5
+regimeMed  = regimeScore >= 3 and regimeScore < 5
+regimeLow  = regimeScore < 3
+
+// Regime only blocks entries when structure is genuinely broken
+// Volume is still checked at entry level but doesn't kill regime
+regimeOk = regimeHigh or regimeMed
+
+regimeText = regimeHigh ? "HIGH (" + str.tostring(regimeScore) + "/6)" : regimeMed ? "MED (" + str.tostring(regimeScore) + "/6)" : "LOW (" + str.tostring(regimeScore) + "/6)"
+regimeCol  = regimeHigh ? color.new(color.green, 5) : regimeMed ? color.new(color.orange, 10) : color.new(color.red, 10)
+
+// What's missing — shown in label when LOW
+regimeMissingTrend  = not regime_trend
+regimeMissingHTF    = not regime_htf
+regimeMissingHTF15  = not regime_htf15
+regimeMissingVWAP   = not regime_vwap
+regimeMissingSqz    = not regime_nosqz
+
+
+// ─────────────────────────────────────────────
+//  ASIA + LONDON SESSION BIAS
+//  Only meaningful on indices (SPY/QQQ/ES/NQ)
+//  Individual stocks have no real overnight session volume
+// ─────────────────────────────────────────────
+// Auto-detect if this is an index/ETF by checking the ticker
+isIndex = syminfo.ticker == "SPY" or syminfo.ticker == "QQQ" or syminfo.ticker == "SPX" or syminfo.ticker == "ES1!" or syminfo.ticker == "NQ1!" or syminfo.ticker == "IWM" or syminfo.ticker == "DIA" or syminfo.ticker == "MNQ1!" or syminfo.ticker == "MES1!"
+
+// ─────────────────────────────────────────────
+//  ASIA + LONDON SESSION BIAS
+//  Asia:   8pm  - 3am  ET (20:00 - 03:00)
+//  London: 3am  - 8am  ET (03:00 - 08:00)
+//  US Pre: 8am  - 9:30 ET (08:00 - 09:30)
+//  Shows shaded backgrounds + bias at US open
+// ─────────────────────────────────────────────
+var string GRP_SESS = "Session Bias"
+showAsia      = input.bool(true,  "Show Asia session",   group=GRP_SESS)
+showLondon    = input.bool(true,  "Show London session", group=GRP_SESS)
+showBiasLabel = input.bool(true,  "Show bias label at open", group=GRP_SESS)
+asiaCol       = input.color(color.new(#1a3a5c, 88),  "Asia background",   group=GRP_SESS)
+londonCol     = input.color(color.new(#1a4a2e, 88),  "London background", group=GRP_SESS)
+
+// Session detection (ET based)
+isAsia   = (hour >= 20 and hour <= 23) or (hour >= 0 and hour < 3)
+isLondon = hour >= 3  and hour < 8
+isPreMkt = hour >= 8  and (hour * 100 + minute) < 930
+
+// Background shading
+bgcolor(showAsia   and isAsia   and isIndex ? asiaCol   : na, title="Asia session")
+bgcolor(showLondon and isLondon and isIndex ? londonCol : na, title="London session")
+
+// Track Asia high/low
+var float asiaHigh    = na
+var float asiaLow     = na
+var float asiaOpen    = na
+var float asiaClose   = na
+var float asiaHighTmp = na
+var float asiaLowTmp  = na
+// asiaOpenTmp removed
+
+// Track London high/low
+var float londonHigh    = na
+var float londonLow     = na
+var float londonOpen    = na
+var float londonClose   = na
+var float londonHighTmp = na
+var float londonLowTmp  = na
+// londonOpenTmp removed
+
+// Asia session tracking
+asiaStart = hour == 20 and minute == 0
+asiaEnd   = hour == 3  and minute == 0
+
+if asiaStart
+    asiaHighTmp := high
+    asiaLowTmp  := low
+    
+if isAsia and not asiaStart
+    asiaHighTmp := na(asiaHighTmp) ? high : math.max(asiaHighTmp, high)
+    asiaLowTmp  := na(asiaLowTmp)  ? low  : math.min(asiaLowTmp,  low)
+
+if asiaEnd
+    asiaHigh  := asiaHighTmp
+    asiaLow   := asiaLowTmp
+    asiaClose := close
+
+// London session tracking
+londonStart = hour == 3 and minute == 0
+londonEnd   = hour == 8 and minute == 0
+
+if londonStart
+    londonHighTmp := high
+    londonLowTmp  := low
+    
+if isLondon and not londonStart
+    londonHighTmp := na(londonHighTmp) ? high : math.max(londonHighTmp, high)
+    londonLowTmp  := na(londonLowTmp)  ? low  : math.min(londonLowTmp,  low)
+
+if londonEnd
+    londonHigh  := londonHighTmp
+    londonLow   := londonLowTmp
+    londonClose := close
+
+// ── BIAS CALCULATION ──
+// Smarter bias — uses close position within session range
+// not just open vs close (which gives neutral too often)
+
+// Asia bias — where did price close relative to session range?
+asiaRange     = na(asiaHigh) or na(asiaLow) ? 0.0 : asiaHigh - asiaLow
+asiaClosePos  = asiaRange > 0 and not na(asiaClose) and not na(asiaLow) ? (asiaClose - asiaLow) / asiaRange : 0.5
+// Above 60% of range = bullish, below 40% = bearish, 40-60% = neutral
+asiaBias      = na(asiaHigh) ? 0 : asiaClosePos > 0.6 ? 1 : asiaClosePos < 0.4 ? -1 : 0
+asiaBiasStr   = asiaBias == 1 ? "Bullish" : asiaBias == -1 ? "Bearish" : "Neutral"
+asiaBiasCol   = asiaBias == 1 ? color.new(color.green, 10) : asiaBias == -1 ? color.new(color.red, 10) : color.new(color.gray, 20)
+
+// London bias — same logic
+londonRange    = na(londonHigh) or na(londonLow) ? 0.0 : londonHigh - londonLow
+londonClosePos = londonRange > 0 and not na(londonClose) and not na(londonLow) ? (londonClose - londonLow) / londonRange : 0.5
+londonBias     = na(londonHigh) ? 0 : londonClosePos > 0.6 ? 1 : londonClosePos < 0.4 ? -1 : 0
+londonBiasStr  = londonBias == 1 ? "Bullish" : londonBias == -1 ? "Bearish" : "Neutral"
+londonBiasCol  = londonBias == 1 ? color.new(color.green, 10) : londonBias == -1 ? color.new(color.red, 10) : color.new(color.gray, 20)
+
+// London sweep detection
+londonSweptAsiaHigh = not na(asiaHigh) and not na(londonHigh) and londonHigh > asiaHigh and londonClose < asiaHigh
+londonSweptAsiaLow  = not na(asiaLow)  and not na(londonLow)  and londonLow  < asiaLow  and londonClose > asiaLow
+sweepStr = londonSweptAsiaHigh ? "London swept Asia HIGH - PUT bias" : londonSweptAsiaLow ? "London swept Asia LOW - CALL bias" : ""
+
+// Combined US session bias
+bothBull   = asiaBias == 1  and londonBias == 1
+bothBear   = asiaBias == -1 and londonBias == -1
+conflicted = asiaBias != londonBias and asiaBias != 0 and londonBias != 0
+sweepBull  = londonSweptAsiaLow
+sweepBear  = londonSweptAsiaHigh
+
+// Also factor in where London closed vs Asia range
+londonClosedAboveAsia = not na(asiaHigh) and not na(londonClose) and londonClose > asiaHigh
+londonClosedBelowAsia = not na(asiaLow)  and not na(londonClose) and londonClose < asiaLow
+
+usBias = sweepBull ? "CALL - London swept lows" : sweepBear ? "PUT - London swept highs" : londonClosedAboveAsia ? "CALL - London closed above Asia" : londonClosedBelowAsia ? "PUT - London closed below Asia" : bothBull ? "CALL - both sessions bull" : bothBear ? "PUT - both sessions bear" : conflicted ? "Mixed - be selective" : londonBias == 1 ? "Mild CALL - London bull" : londonBias == -1 ? "Mild PUT - London bear" : "Neutral - wait for US open"
+
+usBiasCol = str.contains(usBias, "CALL") ? color.new(color.green, 5) : str.contains(usBias, "PUT") ? color.new(color.red, 5) : color.new(color.orange, 10)
+
+// ── SESSION HIGH/LOW LINES ──
+var line asiaHighLine  = na
+var line asiaLowLine   = na
+var line londonHighLine = na
+var line londonLowLine  = na
+var label asiaHighLbl  = na
+var label asiaLowLbl   = na
+var label londonHighLbl = na
+var label londonLowLbl  = na
+
+if barstate.islast and isIndex
+    if showAsia and not na(asiaHigh)
+        if not na(asiaHighLine)
+            line.delete(asiaHighLine)
+        if not na(asiaLowLine)
+            line.delete(asiaLowLine)
+        if not na(asiaHighLbl)
+            label.delete(asiaHighLbl)
+        if not na(asiaLowLbl)
+            label.delete(asiaLowLbl)
+        asiaHighLine := line.new(bar_index-200, asiaHigh, bar_index+10, asiaHigh, color=color.new(#1a6aac, 30), width=1, style=line.style_dotted)
+        asiaLowLine  := line.new(bar_index-200, asiaLow,  bar_index+10, asiaLow,  color=color.new(#1a6aac, 30), width=1, style=line.style_dotted)
+        asiaHighLbl  := label.new(bar_index+2, asiaHigh, "Asia H", style=label.style_label_left, color=color.new(#1a3a5c, 40), textcolor=color.new(#4a9adc, 0), size=size.small)
+        asiaLowLbl   := label.new(bar_index+2, asiaLow,  "Asia L", style=label.style_label_left, color=color.new(#1a3a5c, 40), textcolor=color.new(#4a9adc, 0), size=size.small)
+
+    if showLondon and not na(londonHigh)
+        if not na(londonHighLine)
+            line.delete(londonHighLine)
+        if not na(londonLowLine)
+            line.delete(londonLowLine)
+        if not na(londonHighLbl)
+            label.delete(londonHighLbl)
+        if not na(londonLowLbl)
+            label.delete(londonLowLbl)
+        londonHighLine := line.new(bar_index-200, londonHigh, bar_index+10, londonHigh, color=color.new(#1a6a3e, 30), width=1, style=line.style_dotted)
+        londonLowLine  := line.new(bar_index-200, londonLow,  bar_index+10, londonLow,  color=color.new(#1a6a3e, 30), width=1, style=line.style_dotted)
+        londonHighLbl  := label.new(bar_index+2, londonHigh, "London H", style=label.style_label_left, color=color.new(#1a4a2e, 40), textcolor=color.new(#4ada8e, 0), size=size.small)
+        londonLowLbl   := label.new(bar_index+2, londonLow,  "London L", style=label.style_label_left, color=color.new(#1a4a2e, 40), textcolor=color.new(#4ada8e, 0), size=size.small)
+
+// ── BIAS LABEL AT US OPEN ──
+var label biasLabel = na
+usOpenBar = hour == 9 and minute == 30 and not na(londonClose)
+
+if usOpenBar and showBiasLabel and isIndex
+    if not na(biasLabel)
+        label.delete(biasLabel)
+    biasText = "Asia: " + asiaBiasStr + "  |  London: " + londonBiasStr + "\n" + (sweepStr != "" ? sweepStr : usBias)
+    biasLabel := label.new(bar_index, low * 0.9985, biasText, style=label.style_label_up, color=usBiasCol, textcolor=color.white, size=size.normal)
+
+
+// ─────────────────────────────────────────────
+//  KEY LEVELS
+// ─────────────────────────────────────────────
+newDay = ta.change(time("D")) != 0
+
+var float pdHigh    = na
+var float pdLow     = na
+var float curDayH   = na
+var float curDayL   = na
+var float pmHigh    = na
+var float pmLow     = na
+var float pmHighTmp = na
+var float pmLowTmp  = na
+
+if newDay
+    pdHigh    := curDayH
+    pdLow     := curDayL
+    curDayH   := na
+    curDayL   := na
+    pmHigh    := pmHighTmp
+    pmLow     := pmLowTmp
+    pmHighTmp := na
+    pmLowTmp  := na
+
+if isRegularSession
+    curDayH := na(curDayH) ? high : math.max(curDayH, high)
+    curDayL := na(curDayL) ? low  : math.min(curDayL, low)
+
+if isPremarket
+    pmHighTmp := na(pmHighTmp) ? high : math.max(pmHighTmp, high)
+    pmLowTmp  := na(pmLowTmp)  ? low  : math.min(pmLowTmp,  low)
+
+// ORB
+var float orbHigh = na
+var float orbLow  = na
+var bool  orbSet  = false
+orbWindow = minsSinceOpen >= 0 and minsSinceOpen <= orbMins and isRegularSession
+
+if newDay
+    orbHigh := na
+    orbLow  := na
+    orbSet  := false
+
+if orbWindow
+    orbHigh := na(orbHigh) ? high : math.max(orbHigh, high)
+    orbLow  := na(orbLow)  ? low  : math.min(orbLow,  low)
+
+if not orbWindow and not orbSet and not na(orbHigh)
+    orbSet := true
+
+// ─────────────────────────────────────────────
+//  SUPPORT & RESISTANCE
+// ─────────────────────────────────────────────
+srHigh = ta.pivothigh(high, srLookback, srLookback)
+srLow  = ta.pivotlow(low,   srLookback, srLookback)
+// S/R circles removed to stay under plot limit — supply/demand zones provide same info
+
+// ─────────────────────────────────────────────
+//  SUPPLY & DEMAND ZONES
+// ─────────────────────────────────────────────
+atrVal           = ta.atr(14)
+supplyZoneTop    = ta.pivothigh(high, zoneLen, zoneLen)
+supplyZoneBottom = not na(supplyZoneTop)    ? supplyZoneTop    - atrVal * 0.3 : na
+demandZoneBottom = ta.pivotlow(low,  zoneLen, zoneLen)
+demandZoneTop    = not na(demandZoneBottom) ? demandZoneBottom + atrVal * 0.3 : na
+
+var array<box>   supplyBoxes = array.new_box()
+var array<box>   demandBoxes = array.new_box()
+
+if showZones and not na(supplyZoneTop) and bar_index >= zoneLen
+    b = box.new(bar_index-zoneLen, supplyZoneTop, bar_index+15, supplyZoneBottom, border_color=color.new(color.red,60), bgcolor=color.new(color.red,88))
+    array.push(supplyBoxes, b)
+    if array.size(supplyBoxes) > 5
+        box.delete(array.shift(supplyBoxes))
+
+if showZones and not na(demandZoneBottom) and bar_index >= zoneLen
+    b = box.new(bar_index-zoneLen, demandZoneTop, bar_index+15, demandZoneBottom, border_color=color.new(color.green,60), bgcolor=color.new(color.green,88))
+    array.push(demandBoxes, b)
+    if array.size(demandBoxes) > 5
+        box.delete(array.shift(demandBoxes))
+
+// ─────────────────────────────────────────────
+//  LINES — PDH/PDL, PMH/PML, ORB, Today
+// ─────────────────────────────────────────────
+var line pdhLine    = na
+var line pdlLine    = na
+var label pdhLbl    = na
+var label pdlLbl    = na
+var line pmhLine    = na
+var line pmlLine    = na
+var label pmhLbl    = na
+var label pmlLbl    = na
+var line orbHLine   = na
+var line orbLLine   = na
+var label orbHLbl   = na
+var label orbLLbl   = na
+var line todayHLine = na
+var line todayLLine = na
+
+if barstate.islast
+    if showPDHL and not na(pdHigh)
+        if not na(pdhLine)
+            line.delete(pdhLine)
+        if not na(pdlLine)
+            line.delete(pdlLine)
+        if not na(pdhLbl)
+            label.delete(pdhLbl)
+        if not na(pdlLbl)
+            label.delete(pdlLbl)
+        pdhLine := line.new(bar_index-200, pdHigh, bar_index+10, pdHigh, color=color.new(color.yellow,30), width=1, style=line.style_dashed)
+        pdlLine := line.new(bar_index-200, pdLow,  bar_index+10, pdLow,  color=color.new(color.yellow,30), width=1, style=line.style_dashed)
+        pdhLbl  := label.new(bar_index+2,  pdHigh, "PDH", style=label.style_label_left, color=color.new(color.yellow,60), textcolor=color.yellow, size=size.small)
+        pdlLbl  := label.new(bar_index+2,  pdLow,  "PDL", style=label.style_label_left, color=color.new(color.yellow,60), textcolor=color.yellow, size=size.small)
+
+    if showPMHL
+        if not na(pmhLine)
+            line.delete(pmhLine)
+        if not na(pmlLine)
+            line.delete(pmlLine)
+        if not na(pmhLbl)
+            label.delete(pmhLbl)
+        if not na(pmlLbl)
+            label.delete(pmlLbl)
+        // Use real PMH/PML if available, otherwise show note
+        pmhVal = na(pmHigh) ? pdHigh * 1.001 : pmHigh
+        pmlVal = na(pmLow)  ? pdLow  * 0.999 : pmLow
+        pmhTxt = na(pmHigh) ? "PMH ~" : "PMH"
+        pmlTxt = na(pmLow)  ? "PML ~" : "PML"
+        if not na(pmhVal)
+            pmhLine := line.new(bar_index-200, pmhVal, bar_index+10, pmhVal, color=color.new(color.orange,20), width=1, style=line.style_dashed)
+            pmlLine := line.new(bar_index-200, pmlVal, bar_index+10, pmlVal, color=color.new(color.orange,20), width=1, style=line.style_dashed)
+            pmhLbl  := label.new(bar_index+2, pmhVal, pmhTxt, style=label.style_label_left, color=color.new(color.orange,50), textcolor=color.orange, size=size.small)
+            pmlLbl  := label.new(bar_index+2, pmlVal, pmlTxt, style=label.style_label_left, color=color.new(color.orange,50), textcolor=color.orange, size=size.small)
+
+    if showORB and orbSet
+        if not na(orbHLine)
+            line.delete(orbHLine)
+        if not na(orbLLine)
+            line.delete(orbLLine)
+        if not na(orbHLbl)
+            label.delete(orbHLbl)
+        if not na(orbLLbl)
+            label.delete(orbLLbl)
+        orbHLine := line.new(bar_index-200, orbHigh, bar_index+10, orbHigh, color=color.new(color.aqua,30), width=1, style=line.style_dashed)
+        orbLLine := line.new(bar_index-200, orbLow,  bar_index+10, orbLow,  color=color.new(color.aqua,30), width=1, style=line.style_dashed)
+        orbHLbl  := label.new(bar_index+2,  orbHigh, "ORB H", style=label.style_label_left, color=color.new(color.aqua,60), textcolor=color.aqua, size=size.small)
+        orbLLbl  := label.new(bar_index+2,  orbLow,  "ORB L", style=label.style_label_left, color=color.new(color.aqua,60), textcolor=color.aqua, size=size.small)
+
+    if showDayHL and not na(curDayH)
+        if not na(todayHLine)
+            line.delete(todayHLine)
+        if not na(todayLLine)
+            line.delete(todayLLine)
+        todayHLine := line.new(bar_index-50, curDayH, bar_index+5, curDayH, color=color.new(color.white,60), width=1, style=line.style_dotted)
+        todayLLine := line.new(bar_index-50, curDayL, bar_index+5, curDayL, color=color.new(color.white,60), width=1, style=line.style_dotted)
+
+// ─────────────────────────────────────────────
+//  GEX APPROXIMATION
+//  Since Pine Script has no options chain data,
+//  we approximate using 4 signals that correlate
+//  strongly with real GEX levels:
+//  1. Round number grid ($1 and $5 levels)
+//  2. High volume nodes from previous session
+//  3. Multi-touch price reaction zones
+//  4. ATR-based gamma regime (pinned vs volatile)
+// ─────────────────────────────────────────────
+var string GRP_GEX = "GEX Approximation"
+showGEXLevels  = input.bool(true,  "Show GEX proxy levels",    group=GRP_GEX)
+showGammaRegime= input.bool(true,  "Show gamma regime",        group=GRP_GEX)
+roundNumStep   = input.float(1.0,  "Round number grid step ($)",group=GRP_GEX, step=0.5, tooltip="1.0 for stocks, 5.0 for SPX/SPY")
+gexLookback    = input.int(20,     "Reaction zone lookback",   group=GRP_GEX, tooltip="Bars to look back for multi-touch levels")
+
+// ── 1. ROUND NUMBER LEVELS ──
+// Auto-detect nearest $1 and $5 levels around current price
+// These are where options open interest naturally clusters
+nearestDollar = math.round(close / roundNumStep) * roundNumStep
+roundAbove1   = nearestDollar + roundNumStep
+roundBelow1   = nearestDollar - roundNumStep
+roundAbove2   = nearestDollar + roundNumStep * 2
+roundBelow2   = nearestDollar - roundNumStep * 2
+
+// $5 levels — stronger gamma concentration
+step5         = roundNumStep * 5
+nearest5      = math.round(close / step5) * step5
+roundAbove5   = nearest5 + step5
+roundBelow5   = nearest5 - step5
+
+// ── 2. ATR GAMMA REGIME ──
+// High GEX (positive gamma) = price is PINNED, small ATR, mean reverting
+// Low GEX (negative gamma)  = price is VOLATILE, large ATR, trending
+// We use ATR ratio to detect which regime we're in
+atr14     = ta.atr(14)
+atr50     = ta.atr(50)
+atrRatio  = atr14 / atr50
+
+// Positive gamma regime = current volatility BELOW average = dealers suppressing moves
+// Negative gamma regime = current volatility ABOVE average = dealers amplifying moves
+positiveGamma = atrRatio < 0.85   // current vol compressed vs baseline = pinned
+negativeGamma = atrRatio > 1.15   // current vol expanded vs baseline  = trending
+neutralGamma  = not positiveGamma and not negativeGamma
+
+gammaRegimeStr = positiveGamma ? "POSITIVE (Pinned)" : negativeGamma ? "NEGATIVE (Trending)" : "NEUTRAL"
+gammaRegimeCol = positiveGamma ? color.new(color.blue,  10) : negativeGamma ? color.new(color.orange, 10) : color.new(color.gray, 20)
+
+// Gamma regime affects strategy:
+// Positive = mean revert at levels, EMA bounces more reliable, avoid breakouts
+// Negative = momentum runs, breakouts more reliable, EMA may not hold
+
+// ── 3. MULTI-TOUCH REACTION ZONES ──
+// Price levels that have been tested multiple times = institutional interest
+// These proxy for gamma walls where dealers must hedge repeatedly
+touchThresh  = atr14 * 0.1   // within 10% of ATR = "same level"
+// reactionLevels removed
+
+// Reaction level tracking removed to reduce plot count
+
+// ── 4. GAMMA FLIP PROXY ──
+// The real gamma flip = where GEX changes sign
+// Our proxy = VWAP + PDH/PDL midpoint (where most hedging pressure balances)
+// Price above = positive gamma behaviour expected
+// Price below = negative gamma behaviour expected
+gammaFlipProxy = na(pdHigh) or na(pdLow) ? vwapVal : (pdHigh + pdLow) / 2
+aboveFlip      = close > gammaFlipProxy
+gammaFlipStr   = aboveFlip ? "Above flip - pinned bias" : "Below flip - volatile bias"
+gammaFlipCol   = aboveFlip ? color.new(color.green, 20) : color.new(color.red, 20)
+
+// ── DRAW GEX PROXY LEVELS ──
+var line gexFlipLine  = na
+var line gexAbove5    = na
+var line gexBelow5    = na
+var line gexAbove1    = na
+var line gexBelow1    = na
+var label gexFlipLbl  = na
+var label gexAbove5Lb = na
+var label gexBelow5Lb = na
+
+if barstate.islast and showGEXLevels
+    if not na(gexFlipLine)
+        line.delete(gexFlipLine)
+    if not na(gexAbove5)
+        line.delete(gexAbove5)
+    if not na(gexBelow5)
+        line.delete(gexBelow5)
+    if not na(gexAbove1)
+        line.delete(gexAbove1)
+    if not na(gexBelow1)
+        line.delete(gexBelow1)
+    if not na(gexFlipLbl)
+        label.delete(gexFlipLbl)
+    if not na(gexAbove5Lb)
+        label.delete(gexAbove5Lb)
+    if not na(gexBelow5Lb)
+        label.delete(gexBelow5Lb)
+
+    // Gamma flip proxy — white dashed
+    gexFlipLine := line.new(bar_index-100, gammaFlipProxy, bar_index+15, gammaFlipProxy,
+         color=color.new(color.white, 30), width=2, style=line.style_dashed)
+    gexFlipLbl  := label.new(bar_index+2, gammaFlipProxy, "~Flip",
+         style=label.style_label_left, color=color.new(color.white,60), textcolor=color.white, size=size.small)
+
+    // $5 round levels — call wall proxy above, put wall proxy below
+    gexAbove5 := line.new(bar_index-100, roundAbove5, bar_index+15, roundAbove5,
+         color=color.new(color.blue, 30), width=1, style=line.style_dashed)
+    gexBelow5 := line.new(bar_index-100, roundBelow5, bar_index+15, roundBelow5,
+         color=color.new(color.blue, 30), width=1, style=line.style_dashed)
+    gexAbove5Lb := label.new(bar_index+2, roundAbove5, "~CW " + str.tostring(roundAbove5),
+         style=label.style_label_left, color=color.new(color.blue,60), textcolor=color.new(color.blue,0), size=size.small)
+    gexBelow5Lb := label.new(bar_index+2, roundBelow5, "~PW " + str.tostring(roundBelow5),
+         style=label.style_label_left, color=color.new(color.blue,60), textcolor=color.new(color.blue,0), size=size.small)
+
+    // $1 levels — lighter
+    gexAbove1 := line.new(bar_index-50, roundAbove1, bar_index+10, roundAbove1,
+         color=color.new(color.blue, 70), width=1, style=line.style_dotted)
+    gexBelow1 := line.new(bar_index-50, roundBelow1, bar_index+10, roundBelow1,
+         color=color.new(color.blue, 70), width=1, style=line.style_dotted)
+
+// ── GAMMA REGIME BACKGROUND ──
+// Subtle background color when in extreme gamma regime
+// Positive gamma bgcolor removed to stay under plot limit
+// Negative gamma bgcolor removed to stay under plot limit
+
+// ── PRICE AT KEY GEX LEVEL ALERT ──
+// Fire when price approaches a $5 round number (proxy call/put wall)
+nearCallWall = math.abs(close - roundAbove5) / close * 100 < 0.15
+nearPutWall  = math.abs(close - roundBelow5) / close * 100 < 0.15
+nearFlip     = math.abs(close - gammaFlipProxy) / close * 100 < 0.1
+
+alertcondition(nearCallWall, "Near ~Call Wall", "TradeGuard: Price approaching call wall proxy. Watch for resistance.")
+alertcondition(nearPutWall,  "Near ~Put Wall",  "TradeGuard: Price approaching put wall proxy. Watch for support.")
+alertcondition(nearFlip,     "Near ~Gamma Flip","TradeGuard: Price at gamma flip proxy. Regime may change.")
+
+
+// ─────────────────────────────────────────────
+//  MTF KEY LEVELS
+//  Daily / Weekly / Monthly / Yearly
+//  OHLC + Equilibrium + Multi-timeframe VWAPs
+//  Converted from Frien_dd open source v4→v5
+// ─────────────────────────────────────────────
+var string GRP_MTF = "MTF Key Levels"
+showMTF       = input.bool(true,  "Show MTF levels",        group=GRP_MTF)
+showMTFVWAPs  = input.bool(true,  "Show MTF VWAPs",         group=GRP_MTF)
+showPrevD     = input.bool(true,  "Previous day OHLC+EQ",   group=GRP_MTF)
+showPrevW     = input.bool(true,  "Previous week OHLC+EQ",  group=GRP_MTF)
+showPrevM     = input.bool(true,  "Previous month OHLC",    group=GRP_MTF)
+showCurrW     = input.bool(true,  "Current week H/L",       group=GRP_MTF)
+showCurrM     = input.bool(true,  "Current month H/L",      group=GRP_MTF)
+showCurrY     = input.bool(true,  "Current year H/L",       group=GRP_MTF)
+mtfExtend     = input.int(30,     "Line extend (bars)",      group=GRP_MTF)
+
+// Colors
+dCol  = input.color(color.new(color.blue,   30), "Daily color",   group=GRP_MTF)
+wCol  = input.color(color.new(color.yellow, 30), "Weekly color",  group=GRP_MTF)
+mCol  = input.color(color.new(color.purple, 30), "Monthly color", group=GRP_MTF)
+yCol  = input.color(color.new(color.red,    30), "Yearly color",  group=GRP_MTF)
+
+x1mtf = bar_index
+x2mtf = bar_index + mtfExtend
+
+// ── PREVIOUS DAY ──
+[pdHighMTF, pdLowMTF] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead=barmerge.lookahead_on)
+pdOpenMTF = pdHighMTF  // simplified
+pdEQMTF   = (pdHighMTF + pdLowMTF) / 2
+
+// ── PREVIOUS WEEK ──
+[pwHighMTF, pwLowMTF] = request.security(syminfo.tickerid, "W", [high[1], low[1]], lookahead=barmerge.lookahead_on)
+pwOpenMTF = pwHighMTF  // simplified
+pwEQMTF   = (pwHighMTF + pwLowMTF) / 2
+
+// ── PREVIOUS MONTH ──
+[pmHighMTF, pmLowMTF] = request.security(syminfo.tickerid, "M", [high[1], low[1]], lookahead=barmerge.lookahead_on)
+pmOpenMTF = pmHighMTF  // simplified
+
+// ── CURRENT WEEK HIGH/LOW ──
+var float wHighMTF = na
+var float wLowMTF  = na
+var int   lastWk   = 0
+thisWk = int(time("W"))
+newWk  = thisWk != lastWk
+lastWk := thisWk
+wHighMTF := newWk or na(wHighMTF) or high > wHighMTF ? high : wHighMTF
+wLowMTF  := newWk or na(wLowMTF)  or low  < wLowMTF  ? low  : wLowMTF
+
+// ── CURRENT MONTH HIGH/LOW ──
+var float mHighMTF = na
+var float mLowMTF  = na
+var int   lastMo   = 0
+thisMo = int(time("M"))
+newMo  = thisMo != lastMo
+lastMo := thisMo
+mHighMTF := newMo or na(mHighMTF) or high > mHighMTF ? high : mHighMTF
+mLowMTF  := newMo or na(mLowMTF)  or low  < mLowMTF  ? low  : mLowMTF
+
+// ── CURRENT YEAR HIGH/LOW ──
+var float yHighMTF = na
+var float yLowMTF  = na
+var int   lastYr   = 0
+thisYr = int(time("12M"))
+newYr  = thisYr != lastYr
+lastYr := thisYr
+yHighMTF := newYr or na(yHighMTF) or high > yHighMTF ? high : yHighMTF
+yLowMTF  := newYr or na(yLowMTF)  or low  < yLowMTF  ? low  : yLowMTF
+
+// ── MTF VWAPs ──
+// Weekly VWAP
+wVwapSrc    = hlc3 * volume
+wVwapVol    = volume
+// W/M VWAP removed to stay under plot limit — Y-VWAP kept
+wVWAP = vwapVal  // fallback to session VWAP for swing bias calc
+mVWAP = vwapVal  // fallback to session VWAP for swing bias calc
+
+// Yearly VWAP
+var float yVwapCumSrc = 0.0
+var float yVwapCumVol = 0.0
+yVwapStart = ta.change(time("12M")) != 0
+yVwapCumSrc := yVwapStart ? hlc3 * volume : yVwapCumSrc + hlc3 * volume
+yVwapCumVol := yVwapStart ? volume        : yVwapCumVol + volume
+yVWAP = yVwapCumSrc / yVwapCumVol
+
+// Swing bias — needs Y/M/W VWAP all declared above
+aboveYVWAP    = close > yVWAP
+swingBullBias = close > yVWAP and close > mVWAP and close > wVWAP
+swingBearBias = close < yVWAP and close < mVWAP and close < wVWAP
+
+// Plot MTF VWAPs
+plot(showMTFVWAPs ? yVWAP : na, "Y-VWAP", color=color.new(color.red, 30), linewidth=2)
+// W-VWAP and M-VWAP removed from plot — values still in table
+
+// ── DRAW MTF LINES ──
+// Using arrays to manage lines cleanly
+var array<line>  mtfLines  = array.new_line()
+var array<label> mtfLabels = array.new_label()
+
+f_mtfLine(lvl, col, lbl) =>
+    if not na(lvl) and showMTF
+        // Make PWH/PWL lines thicker
+        lineWidth = str.contains(lbl, "PWH") or str.contains(lbl, "PWL") ? 2 : 1
+        ln = line.new(x1mtf-100, lvl, x2mtf, lvl, color=col, width=lineWidth, style=line.style_dashed)
+        lb = label.new(x2mtf, lvl, lbl, style=label.style_label_left, color=color.new(col,70), textcolor=col, size=size.small)
+        array.push(mtfLines,  ln)
+        array.push(mtfLabels, lb)
+
+if barstate.islast and showMTF
+    // Clean old lines
+    if array.size(mtfLines) > 0
+        for i = 0 to array.size(mtfLines) - 1
+            line.delete(array.get(mtfLines, i))
+    if array.size(mtfLabels) > 0
+        for i = 0 to array.size(mtfLabels) - 1
+            label.delete(array.get(mtfLabels, i))
+    array.clear(mtfLines)
+    array.clear(mtfLabels)
+
+    // Previous Day
+    if showPrevD
+        f_mtfLine(pdHighMTF, dCol, "pdH")
+        f_mtfLine(pdLowMTF,  dCol, "pdL")
+        f_mtfLine(pdOpenMTF, color.new(dCol,50), "pdO")
+        f_mtfLine(pdEQMTF,   color.new(dCol,60), "pdEQ")
+
+    // Previous Week
+    if showPrevW
+        f_mtfLine(pwHighMTF, wCol, "PWH ← key level")
+        f_mtfLine(pwLowMTF,  wCol, "PWL ← key level")
+        f_mtfLine(pwOpenMTF, color.new(wCol,50), "pwO")
+        f_mtfLine(pwEQMTF,   color.new(wCol,60), "pwEQ 50%")
+
+    // Previous Month
+    if showPrevM
+        f_mtfLine(pmHighMTF, mCol, "pmH")
+        f_mtfLine(pmLowMTF,  mCol, "pmL")
+        f_mtfLine(pmOpenMTF, color.new(mCol,50), "pmO")
+
+    // Current Week H/L
+    if showCurrW
+        f_mtfLine(wHighMTF, color.new(wCol,40), "wH")
+        f_mtfLine(wLowMTF,  color.new(wCol,40), "wL")
+
+    // Current Month H/L
+    if showCurrM
+        f_mtfLine(mHighMTF, color.new(mCol,40), "mH")
+        f_mtfLine(mLowMTF,  color.new(mCol,40), "mL")
+
+    // Current Year H/L
+    if showCurrY
+        f_mtfLine(yHighMTF, color.new(yCol,40), "yH")
+        f_mtfLine(yLowMTF,  color.new(yCol,40), "yL")
+
+// ── STANDALONE PWH/PWL LINES ──
+// Separate from MTF array so they're always prominent
+var line pwhStandalone = na
+var line pwlStandalone = na
+var label pwhStandaloneLbl = na
+var label pwlStandaloneLbl = na
+
+if barstate.islast and not na(pwHighMTF)
+    if not na(pwhStandalone)
+        line.delete(pwhStandalone)
+    if not na(pwlStandalone)
+        line.delete(pwlStandalone)
+    if not na(pwhStandaloneLbl)
+        label.delete(pwhStandaloneLbl)
+    if not na(pwlStandaloneLbl)
+        label.delete(pwlStandaloneLbl)
+    pwhStandalone    := line.new(bar_index-300, pwHighMTF, bar_index+20, pwHighMTF, color=color.new(color.yellow, 0), width=2, style=line.style_dashed)
+    pwlStandalone    := line.new(bar_index-300, pwLowMTF,  bar_index+20, pwLowMTF,  color=color.new(color.yellow, 0), width=2, style=line.style_dashed)
+    pwhStandaloneLbl := label.new(bar_index+3, pwHighMTF, "PWH " + str.tostring(math.round(pwHighMTF,2)), style=label.style_label_left, color=color.new(color.yellow,20), textcolor=color.yellow, size=size.normal)
+    pwlStandaloneLbl := label.new(bar_index+3, pwLowMTF,  "PWL " + str.tostring(math.round(pwLowMTF,2)),  style=label.style_label_left, color=color.new(color.yellow,20), textcolor=color.yellow, size=size.normal)
+
+// ── VWAP LABELS ──
+var label wVwapLbl = na
+var label mVwapLbl = na
+var label yVwapLbl = na
+
+if barstate.islast and showMTFVWAPs
+    if not na(wVwapLbl)
+        label.delete(wVwapLbl)
+    if not na(mVwapLbl)
+        label.delete(mVwapLbl)
+    if not na(yVwapLbl)
+        label.delete(yVwapLbl)
+    wVwapLbl := label.new(bar_index+2, wVWAP, "W-VWAP", style=label.style_label_left, color=color.new(color.yellow,70), textcolor=color.yellow, size=size.small)
+    mVwapLbl := label.new(bar_index+2, mVWAP, "M-VWAP", style=label.style_label_left, color=color.new(color.purple,70), textcolor=color.purple, size=size.small)
+    yVwapLbl := label.new(bar_index+2, yVWAP, "Y-VWAP", style=label.style_label_left, color=color.new(color.red,   60), textcolor=color.red,    size=size.small)
+
+
+// ─────────────────────────────────────────────
+//  LIQUIDITY SWEEP DETECTION
+//  Detects stop hunts at key levels then reversal
+//  These are highest probability entries for options
+//
+//  Types:
+//  1. PDH/PDL sweep — wick beyond prev day level, closes back
+//  2. PWH/PWL sweep — wick beyond prev week level, closes back
+//  3. EMA sweep — wick through 13 EMA, closes back above/below
+//  4. Equal highs/lows sweep — price takes out clustered stops
+// ─────────────────────────────────────────────
+var string GRP_SWEEP = "Liquidity Sweeps"
+showSweeps    = input.bool(true, "Show sweep signals",    group=GRP_SWEEP)
+sweepBuffer   = input.float(0.05, "Sweep buffer %",       group=GRP_SWEEP, step=0.01, tooltip="How far price must wick beyond level to count as a sweep")
+eqLookback    = input.int(10,    "Equal H/L lookback",    group=GRP_SWEEP, tooltip="Bars to look back for equal highs/lows (clustered stops)")
+eqThresh      = input.float(0.05, "Equal H/L threshold %", group=GRP_SWEEP, step=0.01, tooltip="How close two highs/lows must be to count as equal")
+
+// ── 1. PDH/PDL SWEEP ──
+// Bullish sweep: wick below PDL, candle closes ABOVE PDL = stops taken, buy signal
+// Bearish sweep: wick above PDH, candle closes BELOW PDH = stops taken, sell signal
+pdlSweepBull = not na(pdLow)  and low  < pdLow  * (1 - sweepBuffer/100) and close > pdLow  and close > open
+pdhSweepBear = not na(pdHigh) and high > pdHigh * (1 + sweepBuffer/100) and close < pdHigh and close < open
+
+// ── 2. PWH/PWL SWEEP ──
+pwlSweepBull = not na(pwLowMTF)  and low  < pwLowMTF  * (1 - sweepBuffer/100) and close > pwLowMTF  and close > open
+pwhSweepBear = not na(pwHighMTF) and high > pwHighMTF * (1 + sweepBuffer/100) and close < pwHighMTF and close < open
+
+// ── 3. EMA LIQUIDITY SWEEP ──
+// Bullish: wick below 13 EMA, closes back above = stops below EMA taken
+// Bearish: wick above 13 EMA, closes back below = stops above EMA taken
+emaSweepBull = low < fastEMA * (1 - sweepBuffer/100) and close > fastEMA and close > open and (uptrend or fastEMA > slowEMA)
+emaSweepBear = high > fastEMA * (1 + sweepBuffer/100) and close < fastEMA and close < open and (downtrend or fastEMA < slowEMA)
+
+// ── 4. EQUAL HIGHS / EQUAL LOWS SWEEP ──
+// Equal highs = two highs within threshold = stop cluster above
+// Equal lows  = two lows  within threshold = stop cluster below
+// Sweep = price takes them out then reverses
+
+// Find previous swing high/low within lookback
+prevSwingHigh = ta.highest(high, eqLookback)[1]
+prevSwingLow  = ta.lowest(low,   eqLookback)[1]
+
+// Equal highs: current high within threshold of previous swing high
+eqHighDiff = math.abs(high - prevSwingHigh) / prevSwingHigh * 100
+eqLowDiff  = math.abs(low  - prevSwingLow)  / prevSwingLow  * 100
+
+equalHighs = eqHighDiff < eqThresh
+equalLows  = eqLowDiff  < eqThresh
+
+// Sweep of equal highs: price wicks above equal high zone then closes below
+// Require price was near that high at least once before (confirmed cluster)
+eqHighSweepBear = high > prevSwingHigh * (1 + sweepBuffer/100) and close < prevSwingHigh and close < open and equalHighs[1] and volume > ta.sma(volume, 10)
+
+// Sweep of equal lows: price wicks below equal low zone then closes above
+eqLowSweepBull  = low  < prevSwingLow  * (1 - sweepBuffer/100) and close > prevSwingLow  and close > open and equalLows[1]  and volume > ta.sma(volume, 10)
+
+// ── COMBINED SWEEP SIGNALS ──
+anySweepBull = pdlSweepBull or pwlSweepBull or emaSweepBull or eqLowSweepBull
+anySweepBear = pdhSweepBear or pwhSweepBear or emaSweepBear or eqHighSweepBear
+
+// Sweep type label
+sweepTypeBull = pdlSweepBull ? "PDL sweep" : pwlSweepBull ? "PWL sweep" : emaSweepBull ? "EMA sweep" : eqLowSweepBull ? "EQ lows sweep" : ""
+sweepTypeBear = pdhSweepBear ? "PDH sweep" : pwhSweepBear ? "PWH sweep" : emaSweepBear ? "EMA sweep" : eqHighSweepBear ? "EQ highs sweep" : ""
+
+// ── DRAW SWEEP SIGNALS ──
+// Diamond shape — different from entry triangles
+plotshape(showSweeps and anySweepBull, "Sweep Bull",
+     style=shape.diamond, location=location.belowbar,
+     color=color.new(color.lime, 0), size=size.small,
+     text="SW", textcolor=color.white)
+
+plotshape(showSweeps and anySweepBear, "Sweep Bear",
+     style=shape.diamond, location=location.abovebar,
+     color=color.new(color.fuchsia, 0), size=size.small,
+     text="SW", textcolor=color.white)
+
+// Equal highs/lows markers removed — too noisy on 2min chart
+
+// ── SWEEP LABELS ──
+var label sweepLabel = na
+
+if (anySweepBull or anySweepBear) and showSweeps and barstate.isconfirmed
+    if not na(sweepLabel)
+        label.delete(sweepLabel)
+    if anySweepBull
+        sweepLabel := label.new(bar_index, low * 0.999,
+             "SWEEP CALL\n" + sweepTypeBull + " — stops taken\nInstitutions buying here",
+             style=label.style_label_up,
+             color=color.new(color.lime, 10),
+             textcolor=color.black, size=size.normal)
+    else if anySweepBear
+        sweepLabel := label.new(bar_index, high * 1.001,
+             "SWEEP PUT\n" + sweepTypeBear + " — stops taken\nInstitutions selling here",
+             style=label.style_label_down,
+             color=color.new(color.fuchsia, 10),
+             textcolor=color.white, size=size.normal)
+
+// ── SWEEP ALERTS ──
+alertcondition(pdlSweepBull,    "PDL Sweep — CALL",      "TradeGuard: PDL swept and reclaimed. Strong call setup.")
+alertcondition(pdhSweepBear,    "PDH Sweep — PUT",       "TradeGuard: PDH swept and rejected. Strong put setup.")
+alertcondition(pwlSweepBull,    "PWL Sweep — CALL",      "TradeGuard: Previous week low swept. Weekly call setup.")
+alertcondition(pwhSweepBear,    "PWH Sweep — PUT",       "TradeGuard: Previous week high swept. Weekly put setup.")
+alertcondition(emaSweepBull,    "EMA Sweep — CALL",      "TradeGuard: 13 EMA swept bullish. Stops taken — call entry.")
+alertcondition(emaSweepBear,    "EMA Sweep — PUT",       "TradeGuard: 13 EMA swept bearish. Stops taken — put entry.")
+alertcondition(eqLowSweepBull,  "Equal Lows Sweep — CALL","TradeGuard: Equal lows swept. Stop cluster cleared — call entry.")
+alertcondition(eqHighSweepBear, "Equal Highs Sweep — PUT","TradeGuard: Equal highs swept. Stop cluster cleared — put entry.")
+alertcondition(anySweepBull,    "ANY Sweep — CALL",      "TradeGuard: Liquidity sweep bullish. Stops taken — look for calls.")
+alertcondition(anySweepBear,    "ANY Sweep — PUT",       "TradeGuard: Liquidity sweep bearish. Stops taken — look for puts.")
+
+
+// ─────────────────────────────────────────────
+//  INTRADAY FIBONACCI LEVELS
+//  Uses today's high/low to auto-draw 0.5 and 0.618
+//  These are the highest probability retracement entries
+//  0.5  = equilibrium — fair value
+//  0.618 = golden ratio — institutional accumulation zone
+// ─────────────────────────────────────────────
+var string GRP_FIB = "Fibonacci Levels"
+showFib     = input.bool(true,  "Show intraday Fib levels", group=GRP_FIB)
+showFib236  = input.bool(false, "Show 0.236 level",         group=GRP_FIB)
+showFib786  = input.bool(false, "Show 0.786 level",         group=GRP_FIB)
+
+// Use today's high/low (curDayH/curDayL already declared above)
+fibRange   = na(curDayH) or na(curDayL) ? 0.0 : curDayH - curDayL
+
+// Bullish fib (retracement from low to high — looking for pullback entries)
+fib50Bull  = na(curDayL) ? na : curDayL + fibRange * 0.5
+fib618Bull = na(curDayL) ? na : curDayL + fibRange * 0.382   // 0.618 retracement = 0.382 of range from low
+fib236Bull = na(curDayL) ? na : curDayL + fibRange * 0.764
+fib786Bull = na(curDayL) ? na : curDayL + fibRange * 0.214
+
+// Price at fib level detection
+nearFib50  = not na(fib50Bull)  and math.abs(close - fib50Bull)  / close * 100 < 0.15
+nearFib618 = not na(fib618Bull) and math.abs(close - fib618Bull) / close * 100 < 0.15
+
+// Draw fib lines
+var line fib50Line  = na
+var line fib618Line = na
+var line fib236Line = na
+var line fib786Line = na
+var label fib50Lbl  = na
+var label fib618Lbl = na
+var label fib236Lbl = na
+var label fib786Lbl = na
+
+if barstate.islast and showFib and not na(curDayH)
+    if not na(fib50Line)
+        line.delete(fib50Line)
+    if not na(fib618Line)
+        line.delete(fib618Line)
+    if not na(fib50Lbl)
+        label.delete(fib50Lbl)
+    if not na(fib618Lbl)
+        label.delete(fib618Lbl)
+    fib50Line  := line.new(bar_index-100, fib50Bull,  bar_index+10, fib50Bull,  color=color.new(color.yellow, 30), width=1, style=line.style_dotted)
+    fib618Line := line.new(bar_index-100, fib618Bull, bar_index+10, fib618Bull, color=color.new(color.orange, 20), width=2, style=line.style_dotted)
+    fib50Lbl   := label.new(bar_index+2, fib50Bull,  "0.5",  style=label.style_label_left, color=color.new(color.yellow,60), textcolor=color.yellow, size=size.small)
+    fib618Lbl  := label.new(bar_index+2, fib618Bull, "0.618", style=label.style_label_left, color=color.new(color.orange,50), textcolor=color.orange, size=size.small)
+
+    if showFib236 and not na(fib236Line)
+        line.delete(fib236Line)
+    if showFib786 and not na(fib786Line)
+        line.delete(fib786Line)
+    if showFib236 and not na(fib236Lbl)
+        label.delete(fib236Lbl)
+    if showFib786 and not na(fib786Lbl)
+        label.delete(fib786Lbl)
+    if showFib236
+        fib236Line := line.new(bar_index-100, fib236Bull, bar_index+10, fib236Bull, color=color.new(color.gray, 50), width=1, style=line.style_dotted)
+        fib236Lbl  := label.new(bar_index+2, fib236Bull, "0.236", style=label.style_label_left, color=color.new(color.gray,60), textcolor=color.gray, size=size.small)
+    if showFib786
+        fib786Line := line.new(bar_index-100, fib786Bull, bar_index+10, fib786Bull, color=color.new(color.gray, 50), width=1, style=line.style_dotted)
+        fib786Lbl  := label.new(bar_index+2, fib786Bull, "0.786", style=label.style_label_left, color=color.new(color.gray,60), textcolor=color.gray, size=size.small)
+
+alertcondition(nearFib50,  "Price at 0.5 Fib",  "TradeGuard: Price at 0.5 intraday fib. Key retracement level.")
+alertcondition(nearFib618, "Price at 0.618 Fib", "TradeGuard: Price at 0.618 intraday fib. Golden ratio — institutional zone.")
+
+// ─────────────────────────────────────────────
+//  OPENING RANGE BREAKOUT (ORB) EXTENDED
+//  First 15 min range — the most important
+//  levels of the entire session
+//  Breakout above = call bias
+//  Breakdown below = put bias
+//  50% of ORB = key magnet level
+// ─────────────────────────────────────────────
+// ORB levels already calculated above (orbHigh/orbLow)
+// Add ORB 50% and extensions
+orbMid      = na(orbHigh) or na(orbLow) ? na : (orbHigh + orbLow) / 2
+orbRange    = na(orbHigh) or na(orbLow) ? na : orbHigh - orbLow
+orb150Bull  = na(orbHigh) or na(orbRange) ? na : orbHigh + orbRange * 0.5   // 1.5x extension
+orb200Bull  = na(orbHigh) or na(orbRange) ? na : orbHigh + orbRange          // 2x extension
+orb150Bear  = na(orbLow)  or na(orbRange) ? na : orbLow  - orbRange * 0.5
+orb200Bear  = na(orbLow)  or na(orbRange) ? na : orbLow  - orbRange
+
+// ORB status
+aboveORB    = orbSet and not na(orbHigh) and close > orbHigh
+belowORB    = orbSet and not na(orbLow)  and close < orbLow
+inORB       = orbSet and not na(orbHigh) and not na(orbLow) and close >= orbLow and close <= orbHigh
+
+orbStatus   = not orbSet ? "Not set" : aboveORB ? "Above — CALL bias" : belowORB ? "Below — PUT bias" : "Inside — wait"
+orbStatusCol= aboveORB ? color.new(color.green,10) : belowORB ? color.new(color.red,10) : color.new(color.orange,10)
+
+// ORB extension lines
+var line orbMidLine   = na
+var line orb150BLine  = na
+var line orb200BLine  = na
+var line orb150BrLine = na
+var line orb200BrLine = na
+var label orbMidLbl   = na
+var label orb150BLbl  = na
+var label orb200BLbl  = na
+
+if barstate.islast and showORB and orbSet
+    if not na(orbMidLine)
+        line.delete(orbMidLine)
+    if not na(orb150BLine)
+        line.delete(orb150BLine)
+    if not na(orb200BLine)
+        line.delete(orb200BLine)
+    if not na(orbMidLbl)
+        label.delete(orbMidLbl)
+    if not na(orb150BLbl)
+        label.delete(orb150BLbl)
+    if not na(orb200BLbl)
+        label.delete(orb200BLbl)
+    orbMidLine  := line.new(bar_index-100, orbMid,     bar_index+10, orbMid,     color=color.new(color.aqua,50), width=1, style=line.style_dotted)
+    orb150BLine := line.new(bar_index-100, orb150Bull, bar_index+10, orb150Bull, color=color.new(color.aqua,40), width=1, style=line.style_dashed)
+    orb200BLine := line.new(bar_index-100, orb200Bull, bar_index+10, orb200Bull, color=color.new(color.aqua,30), width=1, style=line.style_dashed)
+    orbMidLbl   := label.new(bar_index+2, orbMid,     "ORB 50%",  style=label.style_label_left, color=color.new(color.aqua,70), textcolor=color.aqua, size=size.small)
+    orb150BLbl  := label.new(bar_index+2, orb150Bull, "ORB 1.5x", style=label.style_label_left, color=color.new(color.aqua,60), textcolor=color.aqua, size=size.small)
+    orb200BLbl  := label.new(bar_index+2, orb200Bull, "ORB 2x",   style=label.style_label_left, color=color.new(color.aqua,50), textcolor=color.aqua, size=size.small)
+
+// ─────────────────────────────────────────────
+//  CHART PATTERN DETECTION
+//  Bull Flag, Bear Flag, Double Bottom, Double Top
+//  Simple but effective pattern recognition
+// ─────────────────────────────────────────────
+var string GRP_PAT = "Chart Patterns"
+showPatterns = input.bool(true, "Show chart patterns", group=GRP_PAT)
+patLookback  = input.int(10,   "Pattern lookback bars", group=GRP_PAT)
+
+// ── BULL FLAG ──
+// Strong up move (pole) followed by tight consolidation (flag)
+// then breakout above flag = entry
+poleLen    = 5   // bars for the pole
+flagLen    = patLookback
+
+// Pole: strong up move in last poleLen bars
+poleHigh   = ta.highest(high, poleLen)
+poleLow    = ta.lowest(low,   poleLen)
+poleSize   = poleHigh - poleLow
+poleReturn = poleSize / poleLow * 100
+strongPole = poleReturn > 0.5 and close > close[poleLen]  // 0.5% move up
+
+// Flag: tight consolidation after pole (small range relative to pole)
+flagHigh   = ta.highest(high, flagLen)
+flagLow    = ta.lowest(low,   flagLen)
+flagRange  = flagHigh - flagLow
+flagTight  = flagRange < poleSize * 0.5   // flag range < 50% of pole
+
+// Bull flag: pole up + tight flag + price still above midpoint
+bullFlag   = strongPole and flagTight and close > (flagHigh + flagLow) / 2 and uptrend and volAboveAvg
+bullFlagBO = bullFlag and close > flagHigh and close[1] <= flagHigh[1]   // breakout above flag
+
+// ── BEAR FLAG ──
+strongPoleDn = poleReturn > 0.5 and close < close[poleLen]
+bearFlag     = strongPoleDn and flagTight and close < (flagHigh + flagLow) / 2 and downtrend and volAboveAvg
+bearFlagBO   = bearFlag and close < flagLow and close[1] >= flagLow[1]
+
+// ── DOUBLE BOTTOM ──
+// Two lows at similar level with higher close = reversal
+dblBotLen  = 20
+prevLow1   = ta.lowest(low, dblBotLen)
+lowDiff    = math.abs(low - prevLow1) / prevLow1 * 100
+dblBottom  = lowDiff < 0.3 and low > low[1] and close > close[1] and close > (ta.highest(high, dblBotLen) + prevLow1) / 2
+dblBottomConf = dblBottom and volAboveAvg and uptrend
+
+// ── DOUBLE TOP ──
+prevHigh1  = ta.highest(high, dblBotLen)
+highDiff   = math.abs(high - prevHigh1) / prevHigh1 * 100
+dblTop     = highDiff < 0.3 and high < high[1] and close < close[1] and close < (prevHigh1 + ta.lowest(low, dblBotLen)) / 2
+dblTopConf = dblTop and volAboveAvg and downtrend
+
+// ── PATTERN SHAPES ──
+// Bull/bear flag plotshapes removed — shown in table Pattern row
+// Double bottom/top shapes removed to stay under plot limit — still detected in table
+
+// Pattern alerts
+alertcondition(bullFlagBO,    "Bull Flag Breakout",  "TradeGuard: Bull flag breakout. Call entry setup.")
+alertcondition(bearFlagBO,    "Bear Flag Breakout",  "TradeGuard: Bear flag breakout. Put entry setup.")
+alertcondition(dblBottomConf, "Double Bottom",       "TradeGuard: Double bottom confirmed. Reversal call setup.")
+alertcondition(dblTopConf,    "Double Top",          "TradeGuard: Double top confirmed. Reversal put setup.")
+alertcondition(nearFib618,    "Price at 0.618 Fib",  "TradeGuard: Price at golden ratio fib. Watch for bounce.")
+
+
+// ─────────────────────────────────────────────
+//  ORDER FLOW APPROXIMATION
+//  Plain English signals for what institutions
+//  are doing based on price/volume footprint
+//
+//  HIDDEN = Large order hiding at this level (iceberg)
+//  WALL   = Big money blocking the move (absorption)
+//  BIG FISH = Institution just filled here (large print)
+//  FLIP   = Big money changed direction (high vol reversal)
+// ─────────────────────────────────────────────
+var string GRP_OF = "Order Flow"
+showOrderFlow  = input.bool(true,  "Show order flow signals", group=GRP_OF)
+ofVolMult      = input.float(2.5,  "Big Fish volume multiplier", group=GRP_OF, step=0.5, tooltip="How many times above average volume to count as a large print")
+hiddenTouches  = input.int(3,      "Hidden: touches needed",    group=GRP_OF, tooltip="How many times price must test same level before Hidden fires")
+hiddenLookback = input.int(15,     "Hidden: lookback bars",     group=GRP_OF, tooltip="How many bars to look back for repeated level tests")
+wallBars       = input.int(3,      "Wall: consecutive bars",    group=GRP_OF, tooltip="How many bars price must fail to break level")
+
+// Volume baseline
+volMA   = ta.sma(volume, 20)
+volMA50 = ta.sma(volume, 50)
+
+// ── BIG FISH ──
+// Institution filled here — large volume, tiny range
+// Range small = price didn't move much despite huge volume
+// Someone absorbed all that flow at this price
+candleRange  = high - low
+avgRange     = ta.sma(candleRange, 20)
+bigVolume    = volume > volMA * ofVolMult
+tinyRange    = candleRange < avgRange * 0.5
+bigFishBull  = bigVolume and tinyRange and close > open  // big fill, buyers won
+bigFishBear  = bigVolume and tinyRange and close < open  // big fill, sellers won
+bigFish      = bigVolume and tinyRange                    // either direction
+
+// ── WALL ──
+// Big money blocking the move — price keeps hitting level with volume but won't break
+// Bull wall: price repeatedly tests low, high volume each time, won't go lower
+// Bear wall: price repeatedly tests high, high volume each time, won't go higher
+
+// Recent high/low being tested repeatedly
+recentHigh = ta.highest(high, wallBars)
+recentLow  = ta.lowest(low,   wallBars)
+
+// Volume above average on each of the last wallBars bars
+volConsistentHigh = volume > volMA and volume[1] > volMA[1] and volume[2] > volMA[2]
+
+// Price tried to break but failed
+failedBreakUp   = recentHigh == recentHigh[1] and high >= recentHigh * 0.999 and close < recentHigh  // kept testing high, failed
+failedBreakDown = recentLow  == recentLow[1]  and low  <= recentLow  * 1.001 and close > recentLow   // kept testing low, failed
+
+wallAbove = failedBreakUp   and volConsistentHigh  // wall above = resistance, PUT bias
+wallBelow = failedBreakDown and volConsistentHigh  // wall below = support, CALL bias
+
+// ── HIDDEN (Iceberg) ──
+// Large order hiding at a level — same price tested multiple times
+// Each touch has volume but price bounces back
+// Level is being defended by a hidden large order
+
+// Count how many times price touched a level within lookback
+touchLevel    = ta.lowest(low, hiddenLookback)   // support level being tested
+touchLevelR   = ta.highest(high, hiddenLookback) // resistance level being tested
+
+// Simplified Hidden detection without for loops
+// Use pivot touches at lowest/highest level
+pivLow15  = ta.pivotlow(low,  5, 5)
+pivHigh15 = ta.pivothigh(high, 5, 5)
+
+// Count how many recent pivots are near the current level
+nearLow  = not na(pivLow15)  and math.abs(pivLow15  - touchLevel)  / touchLevel  * 100 < 0.2
+nearHigh = not na(pivHigh15) and math.abs(pivHigh15 - touchLevelR) / touchLevelR * 100 < 0.2
+
+// Multiple pivots at same level = hidden order
+hiddenSupport    = nearLow  and low  <= touchLevel  * 1.002 and close > touchLevel  and volume > volMA
+hiddenResistance = nearHigh and high >= touchLevelR * 0.998 and close < touchLevelR and volume > volMA
+
+// ── FLIP ──
+// Big money changed direction — high volume reversal candle at key level
+// Price was going one way, big candle reverses it with massive volume
+// This is where institutions switched from buying to selling or vice versa
+
+priceWasUp    = close[2] > close[3] and close[1] > close[2]  // trending up last 3 bars
+priceWasDn    = close[2] < close[3] and close[1] < close[2]  // trending down last 3 bars
+
+flipBear = priceWasUp and close < open and bigVolume and candleRange > avgRange * 1.2  // big red candle after uptrend
+flipBull = priceWasDn and close > open and bigVolume and candleRange > avgRange * 1.2  // big green candle after downtrend
+
+// ── COMBINED ORDER FLOW BIAS ──
+ofBullBias = (hiddenSupport or wallBelow or bigFishBull or flipBull)
+ofBearBias = (hiddenResistance or wallAbove or bigFishBear or flipBear)
+
+// Story building — what sequence is happening
+hiddenThenWall  = (hiddenSupport and wallBelow) or (hiddenResistance and wallAbove)
+wallThenFish    = (wallBelow and bigFishBull) or (wallAbove and bigFishBear)
+fullSequenceBull = hiddenSupport and wallBelow and (bigFishBull or anySweepBull)
+fullSequenceBear = hiddenResistance and wallAbove and (bigFishBear or anySweepBear)
+
+// ── CHART SIGNALS ──
+// Keep labels minimal — show letter codes on candles
+// Full label only on the important ones
+
+// Order flow combined signals — single shape per bar
+// Shows most important signal: Full sequence > Flip > Big Fish > Wall
+ofBullSignal = showOrderFlow and (fullSequenceBull or flipBull or bigFishBull or wallBelow)
+ofBearSignal = showOrderFlow and (fullSequenceBear or flipBear or bigFishBear or wallAbove)
+ofBullText = fullSequenceBull ? "★" : flipBull ? "F" : bigFishBull ? "🐟" : "W"
+ofBearText = fullSequenceBear ? "★" : flipBear ? "F" : bigFishBear ? "🐟" : "W"
+
+// OF plotshapes removed — signals shown in table and labels only
+
+// Wall plotshapes removed — shown in table and label only
+
+// Flip plotshapes removed — shown in table and label only
+
+// ── ORDER FLOW LABEL — fires on full sequence only ──
+var label ofLabel = na
+
+if barstate.isconfirmed and showOrderFlow
+    if not na(ofLabel)
+        label.delete(ofLabel)
+
+    if fullSequenceBull
+        ofLabel := label.new(bar_index, low * 0.998,
+             "CALL SETUP BUILDING\nHidden + Wall + Big Fish at same level\nInstitution accumulated — ready to run",
+             style=label.style_label_up,
+             color=color.new(color.green, 5),
+             textcolor=color.white, size=size.normal)
+    else if fullSequenceBear
+        ofLabel := label.new(bar_index, high * 1.002,
+             "PUT SETUP BUILDING\nHidden + Wall + Big Fish at same level\nInstitution distributed — ready to drop",
+             style=label.style_label_down,
+             color=color.new(color.red, 5),
+             textcolor=color.white, size=size.normal)
+    else if hiddenSupport and not wallBelow
+        ofLabel := label.new(bar_index, low * 0.998,
+             "Hidden buyer at this level\nWatch for Wall + Big Fish to confirm CALL",
+             style=label.style_label_up,
+             color=color.new(color.teal, 20),
+             textcolor=color.white, size=size.small)
+    else if hiddenResistance and not wallAbove
+        ofLabel := label.new(bar_index, high * 1.002,
+             "Hidden seller at this level\nWatch for Wall + Big Fish to confirm PUT",
+             style=label.style_label_down,
+             color=color.new(color.orange, 20),
+             textcolor=color.white, size=size.small)
+
+// ── ORDER FLOW ALERTS ──
+alertcondition(fullSequenceBull,   "CALL SETUP — Full sequence",    "TradeGuard: Hidden + Wall + Big Fish bull. Institution accumulated. Watch for CALL entry.")
+alertcondition(fullSequenceBear,   "PUT SETUP — Full sequence",     "TradeGuard: Hidden + Wall + Big Fish bear. Institution distributed. Watch for PUT entry.")
+alertcondition(bigFishBull,        "Big Fish — bull fill",          "TradeGuard: Large bull order filled. Institution bought here.")
+alertcondition(bigFishBear,        "Big Fish — bear fill",          "TradeGuard: Large bear order filled. Institution sold here.")
+alertcondition(flipBull,           "Flip — bull reversal",          "TradeGuard: High volume bull reversal. Big money changed direction up.")
+alertcondition(flipBear,           "Flip — bear reversal",          "TradeGuard: High volume bear reversal. Big money changed direction down.")
+alertcondition(hiddenSupport,      "Hidden — buyer below",          "TradeGuard: Hidden buyer detected. Large order defending this level.")
+alertcondition(hiddenResistance,   "Hidden — seller above",         "TradeGuard: Hidden seller detected. Large order capping this level.")
+alertcondition(wallBelow,          "Wall — support",                "TradeGuard: Wall below. Big money absorbing sellers here.")
+alertcondition(wallAbove,          "Wall — resistance",             "TradeGuard: Wall above. Big money absorbing buyers here.")
+
+// ─────────────────────────────────────────────
+//  ENTRY CONDITIONS
+// ─────────────────────────────────────────────
+pullbackCall = uptrend   and low  <= fastEMA*1.002 and close > fastEMA and close > open and volConfirmedUp and inSession
+pullbackPut  = downtrend and high >= fastEMA*0.998 and close < fastEMA and close < open and volConfirmedDn and inSession
+
+var bool pmhBroken = false
+var bool pmlBroken = false
+var bool pdhBroken = false
+var bool pdlBroken = false
+var int  bsPmh = 0
+var int  bsPml = 0
+var int  bsPdh = 0
+var int  bsPdl = 0
+
+pmhBD = not na(pmHigh) and close > pmHigh and close[1] <= pmHigh and volAboveAvg and uptrend and inSession
+pmlBD = not na(pmLow)  and close < pmLow  and close[1] >= pmLow  and volAboveAvg and downtrend and inSession
+pdhBD = not na(pdHigh) and close > pdHigh and close[1] <= pdHigh and volAboveAvg and uptrend and inSession
+pdlBD = not na(pdLow)  and close < pdLow  and close[1] >= pdLow  and volAboveAvg and downtrend and inSession
+orbHB = orbSet and not na(orbHigh) and close > orbHigh and close[1] <= orbHigh and volAboveAvg and uptrend and inSession
+orbLB = orbSet and not na(orbLow)  and close < orbLow  and close[1] >= orbLow  and volAboveAvg and downtrend and inSession
+
+pmhBroken := pmhBD ? true : close < pmHigh*0.998 ? false : pmhBroken
+pmlBroken := pmlBD ? true : close > pmLow*1.002  ? false : pmlBroken
+pdhBroken := pdhBD ? true : close < pdHigh*0.998 ? false : pdhBroken
+pdlBroken := pdlBD ? true : close > pdLow*1.002  ? false : pdlBroken
+
+bsPmh := pmhBD ? 0 : pmhBroken ? bsPmh+1 : 0
+bsPml := pmlBD ? 0 : pmlBroken ? bsPml+1 : 0
+bsPdh := pdhBD ? 0 : pdhBroken ? bsPdh+1 : 0
+bsPdl := pdlBD ? 0 : pdlBroken ? bsPdl+1 : 0
+
+pmhRC = pmhBroken and bsPmh>0 and bsPmh<=10 and low<=pmHigh*1.0015 and close>=pmHigh and close>open and volConfirmedUp
+pmlRP = pmlBroken and bsPml>0 and bsPml<=10 and high>=pmLow*0.9985  and close<=pmLow  and close<open and volConfirmedDn
+pdhRC = pdhBroken and bsPdh>0 and bsPdh<=10 and low<=pdHigh*1.0015  and close>=pdHigh and close>open and volConfirmedUp
+pdlRP = pdlBroken and bsPdl>0 and bsPdl<=10 and high>=pdLow*0.9985  and close<=pdLow  and close<open and volConfirmedDn
+orbHR = orbHB and low<=orbHigh*1.0015 and close>=orbHigh and close>open and volConfirmedUp
+orbLR = orbLB and high>=orbLow*0.9985 and close<=orbLow  and close<open and volConfirmedDn
+
+var bool emaBrokeDown = false
+var bool emaBrokeUp   = false
+emaBrokeDown := close<fastEMA and close[1]>=fastEMA ? true : close>fastEMA*1.002 ? false : emaBrokeDown
+emaBrokeUp   := close>fastEMA and close[1]<=fastEMA ? true : close<fastEMA*0.998 ? false : emaBrokeUp
+emaRC = emaBrokeDown and low<=fastEMA*1.002 and close>fastEMA and close>open and uptrend   and volConfirmedUp and inSession
+emaRP = emaBrokeUp   and high>=fastEMA*0.998 and close<fastEMA and close<open and downtrend and volConfirmedDn and inSession
+
+buyCall = (pullbackCall or pmhRC or pdhRC or orbHR or emaRC or (anySweepBull and uptrend)) and not (is0DTE and past2pm) and regimeOk
+buyPut  = (pullbackPut  or pmlRP or pdlRP or orbLR or emaRP or (anySweepBear and downtrend)) and not (is0DTE and past2pm) and regimeOk
+
+entryTypeCall = pullbackCall ? "Pullback" : pmhRC ? "PMH Retest" : pdhRC ? "PDH Retest" : orbHR ? "ORB Break" : emaRC ? "EMA Reclaim" : anySweepBull ? sweepTypeBull : ""
+entryTypePut  = pullbackPut  ? "Pullback" : pmlRP ? "PML Retest" : pdlRP ? "PDL Retest" : orbLR ? "ORB Break" : emaRP ? "EMA Reclaim" : anySweepBear ? sweepTypeBear : ""
+
+// ─────────────────────────────────────────────
+//  EXIT CONDITIONS
+// ─────────────────────────────────────────────
+emaBrokenCall = close < fastEMA
+emaBrokenPut  = close > fastEMA
+
+var int barsSinceTouch = 0
+emaTouchedCall  = low  <= fastEMA*1.002 and close > fastEMA
+emaTouchedPut   = high >= fastEMA*0.998 and close < fastEMA
+barsSinceTouch := (emaTouchedCall or emaTouchedPut) ? 1 : (close>fastEMA or close<fastEMA) ? 0 : barsSinceTouch+1
+noBounce        = barsSinceTouch >= bounceLimit and barsSinceTouch > 0
+
+var int stalled = 0
+stalled := close != close[1] ? 0 : stalled+1
+timeStop = stalled >= stallLimit
+
+// ─────────────────────────────────────────────
+//  SHAPES
+// ─────────────────────────────────────────────
+plotshape(buyCall, "BUY CALL", style=shape.triangleup,   location=location.belowbar, color=color.new(color.green,0), size=size.small)
+plotshape(buyPut,  "BUY PUT",  style=shape.triangledown,  location=location.abovebar, color=color.new(color.red,0),   size=size.small)
+// Level break diamonds removed to stay under plot limit
+
+// ─────────────────────────────────────────────
+//  STATE CHANGE LABELS
+// ─────────────────────────────────────────────
+currentState = openingWindow ? 11 : (is0DTE and past2pm) ? 10 : (choppy or noTrend) ? 5 : regimeLow ? 14 : buyCall ? 1 : buyPut ? 2 : (uptrend and (emaBrokenCall or (is0DTE and noBounce) or timeStop)) ? 3 : (downtrend and (emaBrokenPut or (is0DTE and noBounce) or timeStop)) ? 4 : (emaTouchedCall or emaTouchedPut) ? 8 : (is0DTE and lateDay) ? 9 : uptrend ? 12 : downtrend ? 13 : 5
+
+var int lastState = 0
+stateChanged = currentState != lastState
+lastState := currentState
+
+var label warnLabel = na
+
+choppyReason = sqzOn ? "Squeeze active" : not (uptrend or downtrend) ? "EMAs not aligned" : "Low momentum"
+missing = (regimeMissingTrend ? "No trend " : "") + (regimeMissingHTF ? "5m mis " : "") + (regimeMissingHTF15 ? "15m mis " : "") + (regimeMissingVWAP ? "Wrong VWAP " : "") + (regimeMissingSqz ? "Squeeze " : "")
+wTxt  = pmhBroken ? "PMH broken-wait retest" : pdhBroken ? "PDH broken-wait retest" : "Waiting for entry"
+wTxt2 = pmlBroken ? "PML broken-wait retest" : pdlBroken ? "PDL broken-wait retest" : "Waiting for entry"
+
+if stateChanged
+    if not na(warnLabel)
+        label.delete(warnLabel)
+    txt = ""
+    col = color.gray
+    if currentState == 11
+        txt := "Opening 15 mins - NO TRADE\n" + str.tostring(math.round(15-minsSinceOpen,0)) + " mins remaining"
+        col := color.new(color.red, 5)
+    else if currentState == 10
+        txt := "PAST 2PM - no new 0DTE\nTheta destroying premium"
+        col := color.new(color.red, 5)
+    else if currentState == 1
+        txt := "BUY CALL - " + entryTypeCall + "\nUptrend + vol confirmed"
+        col := color.new(color.green, 5)
+    else if currentState == 2
+        txt := "BUY PUT - " + entryTypePut + "\nDowntrend + vol confirmed"
+        col := color.new(color.red, 5)
+    else if currentState == 3
+        txt := "CUT CALL - EMA broken\n" + (is0DTE ? "0DTE: out NOW" : "Weekly: CUT NOW")
+        col := color.new(color.red, 5)
+    else if currentState == 4
+        txt := "CUT PUT - EMA broken\n" + (is0DTE ? "0DTE: out NOW" : "Weekly: CUT NOW")
+        col := color.new(color.red, 5)
+    else if currentState == 5
+        txt := "CHOPPY - " + choppyReason + "\nNo trade until trend clears"
+        col := color.new(color.orange, 5)
+    else if currentState == 8
+        txt := "EMA touch - watching\n" + (is0DTE ? "CUT if no bounce in " + str.tostring(bounceLimit) + " bars" : "Wait for candle close")
+        col := color.new(color.orange, 15)
+    else if currentState == 9
+        txt := "1:30pm+ tighten stop\nTheta accelerating"
+        col := color.new(color.orange, 10)
+    else if currentState == 14
+        txt := "LOW REGIME (" + str.tostring(regimeScore) + "/6) - stand aside\nMissing: " + missing
+        col := color.new(color.red, 10)
+    // States 12/13 (waiting) — no label, table shows trend status
+    if txt != ""
+        warnLabel := label.new(bar_index, uptrend ? high*1.0015 : low*0.9985, txt, style=label.style_label_down, color=col, textcolor=color.white, size=size.normal)
+
+// ─────────────────────────────────────────────
+//  CONFLUENCE SCORE + ALERT
+//  Counts how many signals align right now
+//  Only fires when multiple things confirm
+//  This is the signal worth acting on
+// ─────────────────────────────────────────────
+
+// ── BULL CONFLUENCE ──
+conf_trend    = uptrend ? 1 : 0
+conf_htf      = bull5m ? 1 : 0
+conf_htf15    = bull15m ? 1 : 0
+conf_vwap     = close > vwapVal ? 1 : 0
+conf_wvwap    = close > wVWAP ? 1 : 0
+conf_vol      = volConfirmedUp ? 1 : 0
+conf_sweep    = anySweepBull ? 1 : 0
+conf_level    = (pmhRC or pdhRC or orbHR or emaRC or pullbackCall) ? 1 : 0
+conf_regime   = regimeHigh ? 1 : 0
+conf_session  = inSession and not openingWindow ? 1 : 0
+
+bullConfScore = conf_trend + conf_htf + conf_htf15 + conf_vwap + conf_wvwap + conf_vol + conf_sweep + conf_level + conf_regime + conf_session
+
+// ── BEAR CONFLUENCE ──
+bconf_trend   = downtrend ? 1 : 0
+bconf_htf     = bear5m ? 1 : 0
+bconf_htf15   = bear15m ? 1 : 0
+bconf_vwap    = close < vwapVal ? 1 : 0
+bconf_wvwap   = close < wVWAP ? 1 : 0
+bconf_vol     = volConfirmedDn ? 1 : 0
+bconf_sweep   = anySweepBear ? 1 : 0
+bconf_level   = (pmlRP or pdlRP or orbLR or emaRP or pullbackPut) ? 1 : 0
+bconf_regime  = regimeHigh ? 1 : 0
+bconf_session = inSession and not openingWindow ? 1 : 0
+
+bearConfScore = bconf_trend + bconf_htf + bconf_htf15 + bconf_vwap + bconf_wvwap + bconf_vol + bconf_sweep + bconf_level + bconf_regime + bconf_session
+
+// ── CONFLUENCE THRESHOLDS ──
+highConfBull = bullConfScore >= 7 and uptrend
+highConfBear = bearConfScore >= 7 and downtrend
+medConfBull  = bullConfScore >= 5 and bullConfScore < 7 and uptrend
+medConfBear  = bearConfScore >= 5 and bearConfScore < 7 and downtrend
+
+// ─────────────────────────────────────────────
+//  TABLE
+// ─────────────────────────────────────────────
+var table tbl = na
+if barstate.islast
+    if not na(tbl)
+        table.delete(tbl)
+    tbl := table.new(position.top_right, 2, 26, bgcolor=color.new(color.black,72), border_color=color.new(color.gray,55), border_width=1, frame_color=color.new(color.gray,45), frame_width=1)
+
+    trendText = uptrend ? "UPTREND" : downtrend ? "DOWNTREND" : choppy ? "CHOPPY" : "No trend"
+    trendCol  = uptrend ? color.new(color.green,10) : downtrend ? color.new(color.red,10) : color.new(color.orange,10)
+    emaText   = (uptrend and close>fastEMA) or (downtrend and close<fastEMA) ? "Holding" : "BROKEN"
+    emaCol    = (uptrend and close>fastEMA) or (downtrend and close<fastEMA) ? color.new(color.green,10) : color.new(color.red,10)
+    volText   = volConfirmedUp ? "Buyers" : volConfirmedDn ? "Sellers" : volAboveAvg ? "Above avg" : "Low"
+    volCol    = (uptrend and volConfirmedUp) or (downtrend and volConfirmedDn) ? color.new(color.green,10) : color.new(color.orange,10)
+    timeText  = openingWindow ? "Opening" : (is0DTE and past2pm) ? "PAST 2PM" : lateDay ? "Late" : "Open"
+    timeCol   = openingWindow or (is0DTE and past2pm) ? color.new(color.red,10) : lateDay ? color.new(color.orange,10) : color.new(color.green,10)
+    sigText   = buyCall ? "BUY CALL" : buyPut ? "BUY PUT" : (currentState==3 or currentState==4) ? "CUT" : "Waiting"
+    sigCol    = buyCall ? color.new(color.green,5) : buyPut ? color.new(color.red,5) : (currentState==3 or currentState==4) ? color.new(color.red,10) : color.new(color.gray,20)
+    vwapText  = close>vwapVal ? "Above" : "Below"
+    vwapCol   = (uptrend and close>vwapVal) or (downtrend and close<vwapVal) ? color.new(color.green,10) : color.new(color.red,10)
+    sqzText   = sqzOn ? "Squeeze ON" : "Normal"
+    sqzCol    = sqzOn ? color.new(color.orange,10) : color.new(color.gray,20)
+
+    table.cell(tbl,0,0,  "TradeGuard Full",  text_color=color.white, text_size=size.small, bgcolor=trendCol)
+    table.cell(tbl,1,0,  is0DTE ? "0DTE" : "Weekly", text_color=color.white, text_size=size.small, bgcolor=trendCol)
+    table.cell(tbl,0,1,  "Trend",     text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,1,  trendText,   text_color=trendCol,  text_size=size.small)
+    table.cell(tbl,0,2,  "13 EMA",    text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,2,  emaText,     text_color=emaCol,    text_size=size.small)
+    table.cell(tbl,0,3,  "VWAP",      text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,3,  vwapText,    text_color=vwapCol,   text_size=size.small)
+    table.cell(tbl,0,4,  "Volume",    text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,4,  volText,     text_color=volCol,    text_size=size.small)
+    table.cell(tbl,0,5,  "Squeeze",   text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,5,  sqzText,     text_color=sqzCol,    text_size=size.small)
+    table.cell(tbl,0,6,  "PMH/PML",   text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,6,  not na(pmHigh) ? str.tostring(math.round(pmHigh,2)) + "/" + str.tostring(math.round(pmLow,2)) : "Calculating", text_color=color.new(color.orange,10), text_size=size.small)
+    table.cell(tbl,0,7,  "PDH/PDL",   text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,7,  not na(pdHigh) ? str.tostring(math.round(pdHigh,2)) + "/" + str.tostring(math.round(pdLow,2)) : "Calculating", text_color=color.new(color.yellow,10), text_size=size.small)
+    table.cell(tbl,0,8,  "Session",   text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,8,  timeText,    text_color=timeCol,   text_size=size.small)
+    table.cell(tbl,0,9,  "Order Flow",  text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,9,  fullSequenceBull ? "CALL building" : fullSequenceBear ? "PUT building" : hiddenSupport ? "Hidden buyer" : hiddenResistance ? "Hidden seller" : wallBelow ? "Wall below" : wallAbove ? "Wall above" : bigFish ? "Big Fish" : flipBull or flipBear ? "Flip" : "Watching", text_color=fullSequenceBull or hiddenSupport or wallBelow or flipBull ? color.new(color.green,10) : fullSequenceBear or hiddenResistance or wallAbove or flipBear ? color.new(color.red,10) : bigFish ? color.new(color.blue,10) : color.new(color.gray,30), text_size=size.small)
+    table.cell(tbl,0,10, "ORB",       text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,9,  orbStatus,   text_color=orbStatusCol,             text_size=size.small)
+    table.cell(tbl,0,11, "Pattern",   text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,11, bullFlagBO ? "Bull Flag" : bearFlagBO ? "Bear Flag" : dblBottomConf ? "Dbl Bottom" : dblTopConf ? "Dbl Top" : nearFib618 ? "At 0.618" : nearFib50 ? "At 0.5" : "None", text_color=bullFlagBO or dblBottomConf ? color.new(color.green,10) : bearFlagBO or dblTopConf ? color.new(color.red,10) : nearFib618 ? color.new(color.orange,10) : color.new(color.gray,30), text_size=size.small)
+    table.cell(tbl,0,12, "5m trend",  text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,12, bull5m ? "Bull" : bear5m ? "Bear" : "Chop", text_color=bull5m ? color.new(color.green,10) : bear5m ? color.new(color.red,10) : color.new(color.orange,10), text_size=size.small)
+    table.cell(tbl,0,13, "15m trend", text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,13, bull15m ? "Bull" : bear15m ? "Bear" : "Chop", text_color=bull15m ? color.new(color.green,10) : bear15m ? color.new(color.red,10) : color.new(color.orange,10), text_size=size.small)
+    table.cell(tbl,0,14, "Confluence", text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,14, (uptrend ? str.tostring(bullConfScore) : str.tostring(bearConfScore)) + "/10", text_color=((uptrend and bullConfScore >= 7) or (downtrend and bearConfScore >= 7)) ? color.new(color.green,5) : ((uptrend and bullConfScore >= 5) or (downtrend and bearConfScore >= 5)) ? color.new(color.orange,10) : color.new(color.red,10), text_size=size.small)
+    table.cell(tbl,0,15, "Signal",    text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,15, sigText,     text_color=sigCol,    text_size=size.small)
+    table.cell(tbl,0,16, "Regime",    text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,16, regimeText,  text_color=regimeCol,  text_size=size.small)
+    table.cell(tbl,0,17, "~Gamma",     text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,17, gammaRegimeStr, text_color=gammaRegimeCol, text_size=size.small)
+    table.cell(tbl,0,18, "~Flip",      text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,18, gammaFlipStr, text_color=gammaFlipCol,    text_size=size.small)
+    table.cell(tbl,0,19, "Asia bias",   text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,19, isIndex ? asiaBiasStr   : "Index only", text_color=isIndex ? asiaBiasCol   : color.new(color.gray,40), text_size=size.small)
+    table.cell(tbl,0,20, "London bias", text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,20, isIndex ? londonBiasStr : "Index only", text_color=isIndex ? londonBiasCol : color.new(color.gray,40), text_size=size.small)
+    table.cell(tbl,0,21, "US bias",     text_color=color.white, text_size=size.small, bgcolor=isIndex ? usBiasCol : color.new(color.gray,50))
+    table.cell(tbl,1,21, isIndex ? usBias : "Index only", text_color=color.white, text_size=size.small, bgcolor=isIndex ? usBiasCol : color.new(color.gray,50))
+    table.cell(tbl,0,22, "Swing bias",  text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,22, swingBullBias ? "BULL VWAPs" : swingBearBias ? "BEAR VWAPs" : "Mixed", text_color=swingBullBias ? color.new(color.green,5) : swingBearBias ? color.new(color.red,5) : color.new(color.orange,10), text_size=size.small)
+    table.cell(tbl,0,23, "Y-VWAP",      text_color=color.new(color.gray,20), text_size=size.small)
+    table.cell(tbl,1,23, close > yVWAP ? "Above" : "Below", text_color=close > yVWAP ? color.new(color.green,10) : color.new(color.red,10), text_size=size.small)
+    table.cell(tbl,0,24, "Expiry",      text_color=color.white,   text_size=size.small, bgcolor=color.new(color.navy,15))
+    table.cell(tbl,1,24, expiryStr,     text_color=expiryCol,     text_size=size.small, bgcolor=color.new(color.navy,15))
+    table.cell(tbl,0,25, "Stalled",     text_color=color.new(color.gray,30), text_size=size.tiny)
+    table.cell(tbl,1,25, str.tostring(stalled) + "/" + str.tostring(stallLimit), text_color=stalled>=stallLimit ? color.new(color.red,10) : color.new(color.gray,30), text_size=size.tiny)
+
+
+// ─────────────────────────────────────────────
+//  MTF KEY ALERTS — Weekly + Swing Trading
+// ─────────────────────────────────────────────
+
+// Y-VWAP cross — macro bias change
+yvwapCrossUp   = ta.crossover(close,  yVWAP)
+yvwapCrossDown = ta.crossunder(close, yVWAP)
+
+// M-VWAP cross — monthly bias change, often runs 2-3 days
+mvwapCrossUp   = ta.crossover(close,  mVWAP)
+mvwapCrossDown = ta.crossunder(close, mVWAP)
+
+// W-VWAP cross — weekly bias
+wvwapCrossUp   = ta.crossover(close,  wVWAP)
+wvwapCrossDown = ta.crossunder(close, wVWAP)
+
+// pwH/pwL break — weekly options level break
+pwHighBreak = close > pwHighMTF and close[1] <= pwHighMTF and volAboveAvg
+pwLowBreak  = close < pwLowMTF  and close[1] >= pwLowMTF  and volAboveAvg
+
+// pwEQ touch — 50% of last week's range
+nearPwEQ = math.abs(close - pwEQMTF) / close * 100 < 0.15
+
+// pdEQ touch — daily magnet level
+nearPdEQ = math.abs(close - pdEQMTF) / close * 100 < 0.1
+
+// Combined swing bias — declared earlier, used in table and alerts
+
+alertcondition(yvwapCrossUp,   "Y-VWAP reclaim — CALL bias",    "TradeGuard: Price reclaimed Y-VWAP. Institutional bias turned bullish. Look for calls.")
+alertcondition(yvwapCrossDown, "Y-VWAP lost — PUT bias",        "TradeGuard: Price lost Y-VWAP. Institutional bias turned bearish. Look for puts.")
+alertcondition(mvwapCrossUp,   "M-VWAP reclaim — bullish",      "TradeGuard: Price crossed above M-VWAP. Monthly bias bullish. Weekly calls favoured.")
+alertcondition(mvwapCrossDown, "M-VWAP lost — bearish",         "TradeGuard: Price crossed below M-VWAP. Monthly bias bearish. Weekly puts favoured.")
+alertcondition(wvwapCrossUp,   "W-VWAP cross up",               "TradeGuard: Price above W-VWAP. Weekly bias bullish.")
+alertcondition(wvwapCrossDown, "W-VWAP cross down",             "TradeGuard: Price below W-VWAP. Weekly bias bearish.")
+alertcondition(pwHighBreak,    "pwH break — weekly call setup",  "TradeGuard: Previous week high broken with volume. Watch for retest — call entry.")
+alertcondition(pwLowBreak,     "pwL break — weekly put setup",   "TradeGuard: Previous week low broken with volume. Watch for retest — put entry.")
+alertcondition(nearPwEQ,       "Near pwEQ — weekly magnet",      "TradeGuard: Price at previous week equilibrium. Key target and reversal level.")
+alertcondition(nearPdEQ,       "Near pdEQ — daily magnet",       "TradeGuard: Price at previous day equilibrium. Magnet level — watch for reaction.")
+alertcondition(swingBullBias,  "Swing BULL — all VWAPs aligned", "TradeGuard: Price above Y/M/W VWAP. Full swing bull bias. Calls on pullbacks.")
+alertcondition(swingBearBias,  "Swing BEAR — all VWAPs aligned", "TradeGuard: Price below Y/M/W VWAP. Full swing bear bias. Puts on bounces.")
+
+
+
+// ── CONFLUENCE LABEL ON CHART ──
+// Only fires when score changes significantly
+var int lastBullScore = 0
+var int lastBearScore = 0
+var label confLabel   = na
+
+bullScoreChanged = bullConfScore != lastBullScore and uptrend
+bearScoreChanged = bearConfScore != lastBearScore and downtrend
+lastBullScore   := bullConfScore
+lastBearScore   := bearConfScore
+
+if (highConfBull or highConfBear or medConfBull or medConfBear) and barstate.isconfirmed
+    scoreChanged = (uptrend and bullScoreChanged) or (downtrend and bearScoreChanged)
+    if scoreChanged
+        if not na(confLabel)
+            label.delete(confLabel)
+
+        if highConfBull
+            confLabel := label.new(bar_index, low * 0.998,
+                 "CALL " + str.tostring(bullConfScore) + "/10 ★★★\nMax confluence — size up",
+                 style=label.style_label_up,
+                 color=color.new(color.green, 0),
+                 textcolor=color.white, size=size.large)
+
+        else if highConfBear
+            confLabel := label.new(bar_index, high * 1.002,
+                 "PUT " + str.tostring(bearConfScore) + "/10 ★★★\nMax confluence — size up",
+                 style=label.style_label_down,
+                 color=color.new(color.red, 0),
+                 textcolor=color.white, size=size.large)
+
+        else if medConfBull
+            confLabel := label.new(bar_index, low * 0.9985,
+                 "CALL " + str.tostring(bullConfScore) + "/10 ★★\nGood setup — normal size",
+                 style=label.style_label_up,
+                 color=color.new(color.green, 20),
+                 textcolor=color.white, size=size.normal)
+
+        else if medConfBear
+            confLabel := label.new(bar_index, high * 1.0015,
+                 "PUT " + str.tostring(bearConfScore) + "/10 ★★\nGood setup — normal size",
+                 style=label.style_label_down,
+                 color=color.new(color.red, 20),
+                 textcolor=color.white, size=size.normal)
+
+// ── CONFLUENCE ALERTS ──
+alertcondition(highConfBull, "HIGH CONFLUENCE CALL ★★★", "TradeGuard: HIGH CONFLUENCE CALL - 7+ signals aligned. Size up.")
+alertcondition(highConfBear, "HIGH CONFLUENCE PUT ★★★",  "TradeGuard: HIGH CONFLUENCE PUT - 7+ signals aligned. Size up.")
+alertcondition(medConfBull,  "GOOD CONFLUENCE CALL ★★",  "TradeGuard: Good confluence call setup - 5-6 signals aligned.")
+alertcondition(medConfBear,  "GOOD CONFLUENCE PUT ★★",   "TradeGuard: Good confluence put setup - 5-6 signals aligned.")
+
+// ─────────────────────────────────────────────
+//  ALERTS
+// ─────────────────────────────────────────────
+alertcondition(buyCall,            "BUY CALL",       "TradeGuard: BUY CALL signal fired")
+alertcondition(buyPut,             "BUY PUT",        "TradeGuard: BUY PUT signal fired")
+alertcondition(currentState == 3,  "CUT CALL",       "TradeGuard: CUT CALL. EMA broken.")
+alertcondition(currentState == 4,  "CUT PUT",        "TradeGuard: CUT PUT. EMA broken.")
+alertcondition(choppy,             "CHOPPY",         "TradeGuard: Choppy market. No trade.")
+alertcondition(is0DTE and past2pm, "0DTE past 2pm",  "TradeGuard: Past 2pm. No new 0DTE.")
+alertcondition(pmhBD,              "PMH Break",      "TradeGuard: PMH broken. Watch for retest.")
+alertcondition(pdhBD,              "PDH Break",      "TradeGuard: PDH broken. Watch for retest.")

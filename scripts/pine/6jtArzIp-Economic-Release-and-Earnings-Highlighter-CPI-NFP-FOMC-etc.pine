@@ -1,0 +1,281 @@
+//@version=6
+indicator("Economic Release & Earnings Highlighter — CPI/NFP/FOMC/Earnings/PPI/PCE/JH", overlay=true, max_bars_back=5000)
+
+// ============================================================================
+// Economic Release & Earnings Highlighter
+//
+// SOURCES / CONFIDENCE:
+//   - CPI, NFP, PPI, PCE: BLS/BEA official schedules (bls.gov, bea.gov) and
+//     ALFRED (St. Louis Fed) historical release-date archives. High confidence,
+//     includes actual 2025 shutdown-disrupted dates.
+//   - FOMC & FOMC Minutes: federalreserve.gov calendar. Minutes are always
+//     exactly 21 days after the decision, 2:00 PM ET — derived, not guessed.
+//   - Jackson Hole: Kansas City Fed symposium keynote (final-day Friday). High confidence.
+//   - Triple/Quad Witching: COMPUTED (3rd Friday of Mar/Jun/Sep/Dec) — not
+//     hardcoded, so it never goes stale.
+//   - Earnings (AAPL/MSFT/NVDA/AMZN/GOOGL/META/COST/WMT/TGT/JPM): compiled
+//     from company reporting patterns + spot-verified quarters. LOWER
+//     confidence than the econ data — no single authoritative long-range
+//     source exists. BMO earnings (WMT/TGT/JPM) highlight a 6:00-9:30 AM ET
+//     WINDOW rather than one timestamp, since exact release minute varies
+//     company to company and the real reaction often keeps building into
+//     the cash open (this fixed a real miss on TGT 8/19/26).
+//
+// MAINTENANCE: earnings & witching aside, this needs the least upkeep of any
+// part of this script since witching is computed. Earnings need the most —
+// append new YYYYMMDD values as each company confirms its next date.
+// Last verified: Sep 2026.
+// ============================================================================
+
+// ---------------- Inputs ----------------
+showCPI      = input.bool(true, "Show CPI",           group = "Toggles")
+showNFP      = input.bool(true, "Show NFP",           group = "Toggles")
+showFOMC     = input.bool(true, "Show FOMC",          group = "Toggles")
+showMinutes  = input.bool(true, "Show FOMC Minutes",  group = "Toggles")
+showPPI      = input.bool(true, "Show PPI",           group = "Toggles")
+showPCE      = input.bool(true, "Show PCE",           group = "Toggles")
+showJH       = input.bool(true, "Show Jackson Hole",  group = "Toggles")
+showWitching = input.bool(true, "Show Triple/Quad Witching", group = "Toggles")
+showEarnings = input.bool(true, "Show Earnings",      group = "Toggles")
+showLabels   = input.bool(true, "Show text labels on release bars", group = "Toggles")
+
+colorCPI      = input.color(color.new(#ffeb3b, 80), "CPI color",             group = "Colors")
+colorNFP      = input.color(color.new(#2962ff, 62), "NFP color",             group = "Colors")
+colorFOMC     = input.color(color.new(#00bcd4, 77), "FOMC color",            group = "Colors")
+colorMinutes  = input.color(color.new(#ce93d8, 42), "FOMC Minutes color",    group = "Colors")
+colorPPI      = input.color(color.new(#dbdbdb, 42), "PPI color",             group = "Colors")
+colorPCE      = input.color(color.new(#f77c80, 77), "PCE color",             group = "Colors")
+colorJH       = input.color(color.new(#e91e63, 77), "Jackson Hole color",    group = "Colors")
+colorWitching = input.color(color.new(#e132ff, 77), "Witching color",       group = "Colors")
+colorEarnBMO  = input.color(color.new(#da3cf5, 62), "Earnings BMO color",    group = "Colors")
+colorEarnAMC  = input.color(color.new(#ff813e, 52), "Earnings AMC color",    group = "Colors")
+
+labelSize = input.string("small", "Label size", options = ["tiny", "small", "normal"], group = "Toggles")
+lblSize = labelSize == "tiny" ? size.tiny : labelSize == "normal" ? size.normal : size.small
+
+// ---------------- Econ release dates (YYYYMMDD) ----------------
+
+var int[] cpiDates = array.from(
+     20210113,20210210,20210310,20210413,20210512,20210610,20210713,20210811,20210914,20211013,20211110,20211210,
+     20220112,20220210,20220310,20220412,20220511,20220610,20220713,20220810,20220913,20221013,20221110,20221213,
+     20230112,20230214,20230314,20230412,20230510,20230613,20230712,20230810,20230913,20231012,20231114,20231212,
+     20240111,20240213,20240312,20240410,20240515,20240612,20240711,20240814,20240911,20241010,20241113,20241211,
+     20250115,20250212,20250312,20250410,20250513,20250611,20250715,20250812,20250911,20251024,20251218,
+     20260113,20260213,20260311,20260410,20260512,20260610,20260714,20260812,20260911,20261014,20261110,20261210)
+
+var int[] nfpDates = array.from(
+     20210108,20210205,20210305,20210402,20210507,20210604,20210702,20210806,20210903,20211008,20211105,20211203,
+     20220107,20220204,20220304,20220401,20220506,20220603,20220708,20220805,20220902,20221007,20221104,20221202,
+     20230106,20230203,20230310,20230407,20230505,20230602,20230707,20230804,20230901,20231006,20231103,20231208,
+     20240105,20240202,20240308,20240405,20240503,20240607,20240705,20240802,20240906,20241004,20241101,20241206,
+     20250110,20250207,20250307,20250404,20250502,20250606,20250703,20250801,20250905,20251120,20251216,
+     20260109,20260211,20260306,20260403,20260508,20260605,20260702,20260807,20260904,20261002,20261106,20261204)
+
+var int[] fomcDates = array.from(
+     20210127,20210317,20210428,20210616,20210728,20210922,20211103,20211215,
+     20220126,20220316,20220504,20220615,20220727,20220921,20221102,20221214,
+     20230201,20230322,20230503,20230614,20230726,20230920,20231101,20231213,
+     20240131,20240320,20240501,20240612,20240731,20240918,20241107,20241218,
+     20250129,20250319,20250507,20250618,20250730,20250917,20251029,20251210,
+     20260128,20260318,20260429,20260617,20260729,20260916,20261028,20261209,
+     20270127)
+
+// Derived: 21 days after each FOMC decision, always a Wednesday, 2:00 PM ET
+var int[] fomcMinutesDates = array.from(
+     20210217,20210407,20210519,20210707,20210818,20211013,20211124,20220105,
+     20220216,20220406,20220525,20220706,20220817,20221012,20221123,20230104,
+     20230222,20230412,20230524,20230705,20230816,20231011,20231122,20240103,
+     20240221,20240410,20240522,20240703,20240821,20241009,20241128,20250108,
+     20250219,20250409,20250528,20250709,20250820,20251008,20251119,20251231,
+     20260218,20260408,20260520,20260708,20260819,20261007,20261118,20261230)
+
+var int[] ppiDates = array.from(
+     20210115,20210217,20210312,20210409,20210513,20210615,20210714,20210812,20210910,20211014,20211109,20211214,
+     20220113,20220215,20220315,20220413,20220512,20220614,20220714,20220811,20220914,20221012,20221115,20221209,
+     20230118,20230216,20230315,20230413,20230511,20230614,20230713,20230811,20230914,20231011,20231115,20231213,
+     20240112,20240216,20240314,20240411,20240514,20240613,20240712,20240813,20240912,20241011,20241114,20241212,
+     20250114,20250213,20250313,20250411,20250515,20250612,20250716,20250814,20250910,20251125,
+     20260114,20260130,20260227,20260318,20260414,20260513,20260611,20260715,20260813,20260910)
+
+var int[] pceDates = array.from(
+     20210129,20210226,20210326,20210430,20210528,20210625,20210730,20210827,20211001,20211029,20211124,20211223,
+     20220128,20220225,20220331,20220429,20220527,20220630,20220729,20220826,20220930,20221028,20221201,20221223,
+     20230127,20230224,20230331,20230428,20230526,20230630,20230728,20230831,20230929,20231027,20231130,20231222,
+     20240126,20240229,20240329,20240426,20240531,20240628,20240726,20240830,20240927,20241031,20241127,20241220,
+     20250131,20250228,20250328,20250430,20250530,20250627,20250731,20250829,20250926,20251205,20251223,
+     20260122,20260220,20260313,20260409,20260430,20260528,20260625,20260730,20260826,20260930)
+
+// Jackson Hole Fed Chair keynote (final day of symposium, Friday, ~10:00 AM ET)
+var int[] jhDates = array.from(20210827,20220826,20230825,20240823,20250822,20260828)
+
+// ---------------- Earnings dates (YYYYMMDD) — BMO names ----------------
+
+var int[] wmtDates = array.from(
+     20210218,20210518,20210817,20211116,
+     20220217,20220517,20220816,20221115,
+     20230221,20230518,20230817,20231116,
+     20240220,20240516,20240815,20241119,
+     20250220,20250515,20250821,20251120,
+     20260220,20260515,20260820,20261119)
+
+var int[] tgtDates = array.from(
+     20210302,20210519,20210818,20211117,
+     20220301,20220518,20220817,20221116,
+     20230301,20230517,20230816,20231115,
+     20240305,20240522,20240821,20241120,
+     20250304,20250521,20250820,20251119,
+     20260303,20260520,20260819)
+
+var int[] jpmDates = array.from(
+     20210115,20210414,20210713,20211013,
+     20220114,20220413,20220714,20221014,
+     20230113,20230414,20230714,20231013,
+     20240112,20240412,20240712,20241011,
+     20250115,20250411,20250715,20251014,
+     20260113,20260414,20260714,20261013)
+
+// ---------------- Earnings dates (YYYYMMDD) — AMC names ----------------
+
+var int[] aaplDates = array.from(
+     20210127,20210428,20210727,20211028,
+     20220127,20220428,20220728,20221027,
+     20230202,20230504,20230803,20231102,
+     20240201,20240502,20240801,20241031,
+     20250130,20250501,20250731,20251030,
+     20260129,20260730)
+
+var int[] msftDates = array.from(
+     20210126,20210427,20210727,20211026,
+     20220125,20220426,20220726,20221025,
+     20230124,20230425,20230725,20231024,
+     20240130,20240425,20240730,20241030,
+     20250129,20250430,20250730,20251029,
+     20260729)
+
+var int[] nvdaDates = array.from(
+     20210224,20210526,20210818,20211117,
+     20220216,20220525,20220824,20221116,
+     20230222,20230524,20230823,20231121,
+     20240221,20240522,20240828,20241120,
+     20250226,20250528,20250827,20251119,
+     20260826)
+
+var int[] amznDates = array.from(
+     20210202,20210429,20210729,20211028,
+     20220203,20220428,20220728,20221027,
+     20230202,20230427,20230803,20231026,
+     20240201,20240430,20240801,20241031,
+     20250206,20250501,20250731,20251030)
+
+var int[] googlDates = array.from(
+     20210202,20210427,20210727,20211026,
+     20220201,20220426,20220726,20221025,
+     20230202,20230425,20230725,20231024,
+     20240130,20240425,20240723,20241029,
+     20250204,20250424,20250723,20251029)
+
+var int[] metaDates = array.from(
+     20210127,20210428,20210728,20211025,
+     20220202,20220427,20220727,20221026,
+     20230201,20230426,20230726,20231025,
+     20240201,20240424,20240731,20241030,
+     20250129,20250430,20250730,20251029)
+
+var int[] costDates = array.from(
+     20210304,20210527,20210923,20211209,
+     20220303,20220526,20220922,20221208,
+     20230302,20230525,20230926,20231214,
+     20240307,20240530,20240926,20241212,
+     20250306,20250529,20250925,20251211)
+
+// ---------------- Logic ----------------
+f_match(arr, val) => array.indexof(arr, val) >= 0
+
+nyYear  = year(time, "America/New_York")
+nyMonth = month(time, "America/New_York")
+nyDay   = dayofmonth(time, "America/New_York")
+dateVal = nyYear * 10000 + nyMonth * 100 + nyDay
+
+t_830  = timestamp("America/New_York", nyYear, nyMonth, nyDay, 8, 30)
+t_1000 = timestamp("America/New_York", nyYear, nyMonth, nyDay, 10, 0)   // Jackson Hole keynote
+t_1400 = timestamp("America/New_York", nyYear, nyMonth, nyDay, 14, 0)   // FOMC / Minutes
+t_amc  = timestamp("America/New_York", nyYear, nyMonth, nyDay, 16, 0)   // earnings AMC
+t_bmoStart = timestamp("America/New_York", nyYear, nyMonth, nyDay, 6, 0)
+t_bmoEnd   = timestamp("America/New_York", nyYear, nyMonth, nyDay, 9, 30)
+t_witchStart = timestamp("America/New_York", nyYear, nyMonth, nyDay, 15, 0)
+t_witchEnd   = timestamp("America/New_York", nyYear, nyMonth, nyDay, 16, 0)
+
+f_inBar(t) => t >= time and t < time_close
+f_inRange(rangeStart, rangeEnd) => time < rangeEnd and time_close > rangeStart
+
+isCPI     = showCPI     and f_match(cpiDates, dateVal)        and f_inBar(t_830)
+isNFP     = showNFP     and f_match(nfpDates, dateVal)        and f_inBar(t_830)
+isFOMC    = showFOMC    and f_match(fomcDates, dateVal)       and f_inBar(t_1400)
+isMinutes = showMinutes and f_match(fomcMinutesDates, dateVal) and f_inBar(t_1400)
+isPPI     = showPPI     and f_match(ppiDates, dateVal)        and f_inBar(t_830)
+isPCE     = showPCE     and f_match(pceDates, dateVal)        and f_inBar(t_830)
+isJH      = showJH      and f_match(jhDates, dateVal)         and f_inBar(t_1000)
+
+isWitchingMonth = nyMonth == 3 or nyMonth == 6 or nyMonth == 9 or nyMonth == 12
+isThirdFriday   = dayofweek(time, "America/New_York") == dayofweek.friday and nyDay >= 15 and nyDay <= 21
+isWitching = showWitching and isWitchingMonth and isThirdFriday and f_inRange(t_witchStart, t_witchEnd)
+
+isWMT  = showEarnings and f_match(wmtDates,  dateVal) and f_inRange(t_bmoStart, t_bmoEnd)
+isTGT  = showEarnings and f_match(tgtDates,  dateVal) and f_inRange(t_bmoStart, t_bmoEnd)
+isJPM  = showEarnings and f_match(jpmDates,  dateVal) and f_inRange(t_bmoStart, t_bmoEnd)
+isAAPL = showEarnings and f_match(aaplDates, dateVal) and f_inBar(t_amc)
+isMSFT = showEarnings and f_match(msftDates, dateVal) and f_inBar(t_amc)
+isNVDA = showEarnings and f_match(nvdaDates, dateVal) and f_inBar(t_amc)
+isAMZN = showEarnings and f_match(amznDates, dateVal) and f_inBar(t_amc)
+isGOOGL= showEarnings and f_match(googlDates,dateVal) and f_inBar(t_amc)
+isMETA = showEarnings and f_match(metaDates, dateVal) and f_inBar(t_amc)
+isCOST = showEarnings and f_match(costDates, dateVal) and f_inBar(t_amc)
+
+isBMOEarn  = isWMT or isTGT or isJPM
+isAMCEarn  = isAAPL or isMSFT or isNVDA or isAMZN or isGOOGL or isMETA or isCOST
+isEarnings = isBMOEarn or isAMCEarn
+
+earnLabel = isWMT ? "WMT" : isTGT ? "TGT" : isJPM ? "JPM" : isAAPL ? "AAPL" : isMSFT ? "MSFT" : isNVDA ? "NVDA" : isAMZN ? "AMZN" : isGOOGL ? "GOOGL" : isMETA ? "META" : isCOST ? "COST" : na
+
+// ---------------- Rendering ----------------
+bgcolor(isFOMC ? colorFOMC : isNFP ? colorNFP : isCPI ? colorCPI : na, title = "Econ release highlight")
+bgcolor(isMinutes ? colorMinutes : na, title = "FOMC Minutes highlight")
+bgcolor(isPPI ? colorPPI : na, title = "PPI highlight")
+bgcolor(isPCE ? colorPCE : na, title = "PCE highlight")
+bgcolor(isJH ? colorJH : na, title = "Jackson Hole highlight")
+bgcolor(isWitching ? colorWitching : na, title = "Witching highlight")
+bgcolor(isEarnings ? (isBMOEarn ? colorEarnBMO : colorEarnAMC) : na, title = "Earnings highlight")
+
+if showLabels and isCPI
+    label.new(bar_index, high, "CPI", style = label.style_label_down, color = color.new(colorCPI, 0), textcolor = color.black, size = lblSize)
+if showLabels and isNFP
+    label.new(bar_index, high, "NFP", style = label.style_label_down, color = color.new(colorNFP, 0), textcolor = color.white, size = lblSize)
+if showLabels and isFOMC
+    label.new(bar_index, low, "FOMC", style = label.style_label_up, color = color.new(colorFOMC, 0), textcolor = color.white, size = lblSize)
+if showLabels and isMinutes
+    label.new(bar_index, low, "MIN", style = label.style_label_up, color = color.new(colorMinutes, 0), textcolor = color.white, size = lblSize)
+if showLabels and isPPI
+    label.new(bar_index, high, "PPI", style = label.style_label_down, color = color.new(colorPPI, 0), textcolor = color.black, size = lblSize)
+if showLabels and isPCE
+    label.new(bar_index, high, "PCE", style = label.style_label_down, color = color.new(colorPCE, 0), textcolor = color.white, size = lblSize)
+if showLabels and isJH
+    label.new(bar_index, low, "JH", style = label.style_label_up, color = color.new(colorJH, 0), textcolor = color.white, size = lblSize)
+if showLabels and isWitching
+    label.new(bar_index, high, "OPEX", style = label.style_label_down, color = color.new(colorWitching, 0), textcolor = color.white, size = lblSize)
+if showLabels and isEarnings
+    label.new(bar_index, isBMOEarn ? low : high, earnLabel, style = isBMOEarn ? label.style_label_up : label.style_label_down, color = color.new(isBMOEarn ? colorEarnBMO : colorEarnAMC, 0), textcolor = color.white, size = lblSize)
+
+// ---------------- Legend table ----------------
+var table legend = table.new(position.top_right, 1, 11, bgcolor = color.new(color.black, 70), border_width = 1)
+if barstate.islast
+    table.cell(legend, 0, 0,  "Releases",           text_color = color.white,   text_size = size.small)
+    table.cell(legend, 0, 1,  "■ CPI",               text_color = colorCPI,      text_size = size.small)
+    table.cell(legend, 0, 2,  "■ NFP",               text_color = colorNFP,      text_size = size.small)
+    table.cell(legend, 0, 3,  "■ FOMC",              text_color = colorFOMC,     text_size = size.small)
+    table.cell(legend, 0, 4,  "■ FOMC Minutes",      text_color = colorMinutes,  text_size = size.small)
+    table.cell(legend, 0, 5,  "■ PPI",               text_color = colorPPI,      text_size = size.small)
+    table.cell(legend, 0, 6,  "■ PCE",               text_color = colorPCE,      text_size = size.small)
+    table.cell(legend, 0, 7,  "■ Jackson Hole",      text_color = colorJH,       text_size = size.small)
+    table.cell(legend, 0, 8,  "■ Witching",          text_color = colorWitching, text_size = size.small)
+    table.cell(legend, 0, 9,  "■ Earnings (BMO)",    text_color = colorEarnBMO,  text_size = size.small)
+    table.cell(legend, 0, 10, "■ Earnings (AMC)",    text_color = colorEarnAMC,  text_size = size.small)

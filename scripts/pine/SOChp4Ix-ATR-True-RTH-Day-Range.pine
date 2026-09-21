@@ -1,0 +1,50 @@
+//@version=6
+indicator("ATR + True RTH Day Range", overlay=true)
+
+atrLength = input.int(14, "ATR Length", minval=1)
+mode = input.string("Always", "Display Mode", options=["Always", "Only Today"])
+string rthTimezone = "America/New_York"
+// Explicit regular-session standard candles, independent of chart session/type.
+string rthTicker = ticker.new(syminfo.prefix, syminfo.ticker, session.regular)
+
+calculateRTH() =>
+    bool inside = not na(time("1", "0930-1600:23456", rthTimezone))
+    int dateKey = year(time, rthTimezone) * 10000 + month(time, rthTimezone) * 100 + dayofmonth(time, rthTimezone)
+    var int sessionDate = na
+    var float sessionHigh = na
+    var float sessionLow = na
+    var float sessionClose = na
+    var float priorHigh = na
+    var float priorLow = na
+    if inside
+        if na(sessionDate) or dateKey != sessionDate
+            priorHigh := sessionHigh
+            priorLow := sessionLow
+            sessionHigh := high
+            sessionLow := low
+            sessionDate := dateKey
+        else
+            sessionHigh := math.max(sessionHigh, high)
+            sessionLow := math.min(sessionLow, low)
+        sessionClose := close
+    [sessionHigh, sessionLow, sessionClose, priorHigh, priorLow, sessionDate]
+
+[dayHigh, dayLow, rthLastClose, previousDayHigh, previousDayLow, rthDate] = request.security(rthTicker, "1", calculateRTH(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+dailyATR = request.security(rthTicker, "D", ta.atr(atrLength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+dayRange = dayHigh - dayLow
+atrUsed = dailyATR > 0 ? dayRange / dailyATR * 100 : na
+abovePreviousHigh = not na(previousDayHigh) and rthLastClose > previousDayHigh
+belowPreviousLow = not na(previousDayLow) and rthLastClose < previousDayLow
+bg = abovePreviousHigh ? color.green : belowPreviousLow ? color.red : color.gray
+
+int todayKey = year(timenow, rthTimezone) * 10000 + month(timenow, rthTimezone) * 100 + dayofmonth(timenow, rthTimezone)
+showData = mode == "Always" or rthDate == todayKey
+var table t = table.new(position.top_right, 1, 2)
+txt = "ATR(D): " + str.tostring(dailyATR, format.mintick) + "\nRange RTH: " + str.tostring(dayRange, format.mintick) + "\nUsed: " + str.tostring(atrUsed, "#.##") + "%"
+if barstate.islast
+    if showData
+        table.cell(t, 0, 0, "\n", text_color=color.new(color.white, 100), bgcolor=color.new(bg, 100))
+        table.cell(t, 0, 1, txt, text_color=color.white, bgcolor=bg, text_size=size.normal)
+    else
+        table.clear(t, 0, 0, 0, 1)
+        

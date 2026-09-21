@@ -1,0 +1,1562 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0
+// Based on the user's Wedge & Channel Detector (AWCD) structure engine
+// MTF X-RAY prototype — explicit presets + clearly separated custom mode
+//@version=6
+
+
+indicator(
+    "Trendline X-RAY — MTF Wedges & Channels",
+    overlay = true,
+    max_bars_back = 5000,
+    max_lines_count = 20,
+    max_labels_count = 10
+)
+
+
+// ============================================================================
+// ANALYSIS MODE + TIMEFRAMES
+// ============================================================================
+
+
+groupMode = "Analysis Mode"
+
+
+analysisMode = input.string(
+    "Swing — W / D / 4H / 1H",
+    "Mode",
+    options = [
+         "Swing — W / D / 4H / 1H",
+         "Intraday — 4H / 1H / 30M / 15M",
+         "Day Trade — 1H / 30M / 15M / 5M",
+         "Scalp — 30M / 15M / 5M / 1M",
+         "Custom"
+    ],
+    group = groupMode,
+    tooltip = "Preset modes automatically select the four structural timeframes shown in the mode name. Choose Custom to use the four Custom Timeframes settings below."
+)
+
+
+// Slot visibility applies to every mode.
+groupSlots = "Active Slots"
+showWeekly = input.bool(true, "Show Slot 1", group = groupSlots)
+showDaily  = input.bool(true, "Show Slot 2", group = groupSlots)
+show4H     = input.bool(true, "Show Slot 3", group = groupSlots)
+show1H     = input.bool(true, "Show Slot 4", group = groupSlots)
+
+
+// Pine inputs cannot be programmatically rewritten by another input.
+// These values are therefore clearly separated and used only in Custom mode.
+groupCustomTF = "Custom Timeframes — Custom Mode Only"
+customTF1 = input.timeframe("1W",  "Custom Slot 1", group = groupCustomTF, tooltip = "Used only when Analysis Mode is Custom.")
+customTF2 = input.timeframe("1D",  "Custom Slot 2", group = groupCustomTF, tooltip = "Used only when Analysis Mode is Custom.")
+customTF3 = input.timeframe("240", "Custom Slot 3", group = groupCustomTF, tooltip = "Used only when Analysis Mode is Custom.")
+customTF4 = input.timeframe("60",  "Custom Slot 4", group = groupCustomTF, tooltip = "Used only when Analysis Mode is Custom.")
+
+
+bool modeSwing    = analysisMode == "Swing — W / D / 4H / 1H"
+bool modeIntraday = analysisMode == "Intraday — 4H / 1H / 30M / 15M"
+bool modeDayTrade = analysisMode == "Day Trade — 1H / 30M / 15M / 5M"
+bool modeScalp    = analysisMode == "Scalp — 30M / 15M / 5M / 1M"
+
+string activeModeLabel = modeSwing ? "SWING" : modeIntraday ? "INTRADAY" : modeDayTrade ? "DAY TRADE" : modeScalp ? "SCALP" : "CUSTOM"
+
+
+string activeTF1 = modeSwing ? "1W" : modeIntraday ? "240" : modeDayTrade ? "60" : modeScalp ? "30" : customTF1
+string activeTF2 = modeSwing ? "1D" : modeIntraday ? "60"  : modeDayTrade ? "30" : modeScalp ? "15" : customTF2
+string activeTF3 = modeSwing ? "240" : modeIntraday ? "30" : modeDayTrade ? "15" : modeScalp ? "5"  : customTF3
+string activeTF4 = modeSwing ? "60"  : modeIntraday ? "15" : modeDayTrade ? "5"  : modeScalp ? "1"  : customTF4
+
+
+// ============================================================================
+// AWCD STRUCTURE ENGINE SETTINGS
+// ============================================================================
+
+
+groupStructure = "AWCD Structure Engine"
+
+
+autoPivotCount = input.int(
+    5,
+    "Recent Pivots To Test",
+    minval = 3,
+    maxval = 7,
+    group = groupStructure
+)
+
+
+autoLookbackBars = input.int(
+    250,
+    "Auto Scoring Lookback",
+    minval = 50,
+    maxval = 500,
+    group = groupStructure,
+    tooltip = "Draft 2A keeps the original 250-bar scoring depth. The first optimization targets redundant chart-level work before reducing AWCD detection quality."
+)
+
+
+minAnchorSpacing = input.int(
+    10,
+    "Minimum Anchor Spacing",
+    minval = 2,
+    maxval = 200,
+    group = groupStructure
+)
+
+
+upperLen = input.int(
+    20,
+    "Upper Pivot Length",
+    minval = 1,
+    group = groupStructure
+)
+
+
+lowerLen = input.int(
+    20,
+    "Lower Pivot Length",
+    minval = 1,
+    group = groupStructure
+)
+
+
+// ============================================================================
+// QUALITY SETTINGS
+// ============================================================================
+
+
+groupQuality = "Structure Quality"
+
+
+touchToleranceATR = input.float(
+    0.20,
+    "Touch Tolerance (ATR)",
+    minval = 0.05,
+    maxval = 2.0,
+    step = 0.05,
+    group = groupQuality
+)
+
+
+violationToleranceATR = input.float(
+    0.35,
+    "Violation Tolerance (ATR)",
+    minval = 0.05,
+    maxval = 3.0,
+    step = 0.05,
+    group = groupQuality
+)
+
+
+minTouchSpacing = input.int(
+    5,
+    "Minimum Bars Between Touches",
+    minval = 1,
+    maxval = 100,
+    group = groupQuality
+)
+
+
+minStructureWidthATR = input.float(
+    1.0,
+    "Minimum Width (ATR)",
+    minval = 0.1,
+    maxval = 20.0,
+    step = 0.1,
+    group = groupQuality
+)
+
+
+maxStructureWidthATR = input.float(
+    20.0,
+    "Maximum Preferred Width (ATR)",
+    minval = 2.0,
+    maxval = 100.0,
+    step = 1.0,
+    group = groupQuality
+)
+
+
+balancePenaltyStart = input.float(
+    1.50,
+    "Touch Imbalance Penalty Starts At",
+    minval = 1.0,
+    maxval = 5.0,
+    step = 0.25,
+    group = groupQuality
+)
+
+
+balancePenaltyStrength = input.float(
+    8.0,
+    "Touch Imbalance Penalty Strength",
+    minval = 1.0,
+    maxval = 20.0,
+    step = 1.0,
+    group = groupQuality
+)
+
+
+minDisplayScore = input.float(
+    45.0,
+    "Minimum Quality To Display",
+    minval = 0.0,
+    maxval = 100.0,
+    step = 1.0,
+    group = groupQuality,
+    tooltip = "Structure Quality measures how well the detected wedge/channel satisfies the X-RAY structural criteria. Higher values indicate cleaner, better-supported geometry based on boundary touches, violations, touch balance, span, width, and recency. Quality is not directional and does not represent win probability. Higher = stronger structural validation; lower = weaker structural validation."
+)
+
+
+// ============================================================================
+// VISUALS
+// ============================================================================
+
+
+groupVisual = "X-RAY Visuals"
+
+
+// All timeframe boundaries default to solid. Each timeframe can be changed independently.
+
+
+weeklyColor = input.color(#BB6BD9, "Slot 1", group = groupVisual, inline = "C2")
+weeklyWidth = input.int(4, "", minval = 1, maxval = 4, group = groupVisual, inline = "C2")
+
+
+dailyColor = input.color(#56CCF2, "Slot 2", group = groupVisual, inline = "C3")
+dailyWidth = input.int(3, "", minval = 1, maxval = 4, group = groupVisual, inline = "C3")
+
+
+fourHourColor = input.color(#26C6B8, "Slot 3", group = groupVisual, inline = "C4")
+fourHourWidth = input.int(2, "", minval = 1, maxval = 4, group = groupVisual, inline = "C4")
+
+
+oneHourColor = input.color(#A0AEC0, "Slot 4", group = groupVisual, inline = "C5")
+oneHourWidth = input.int(1, "", minval = 1, maxval = 4, group = groupVisual, inline = "C5")
+
+
+
+
+weeklyStyle = input.string(
+    "Solid",
+    "Slot 1 Style",
+    options = ["Solid", "Dashed", "Dotted"],
+    group = groupVisual
+)
+
+
+dailyStyle = input.string(
+    "Solid",
+    "Slot 2 Style",
+    options = ["Solid", "Dashed", "Dotted"],
+    group = groupVisual
+)
+
+
+fourHourStyle = input.string(
+    "Solid",
+    "Slot 3 Style",
+    options = ["Solid", "Dashed", "Dotted"],
+    group = groupVisual
+)
+
+
+oneHourStyle = input.string(
+    "Solid",
+    "Slot 4 Style",
+    options = ["Solid", "Dashed", "Dotted"],
+    group = groupVisual
+)
+
+
+showLegend = input.bool(true, "Show Structure Legend", group = groupVisual)
+
+dashboardLocation = input.string(
+    "Top Right",
+    "Dashboard Position",
+    options = [
+        "Top Left", "Top Center", "Top Right",
+        "Middle Left", "Middle Center", "Middle Right",
+        "Bottom Left", "Bottom Center", "Bottom Right"
+    ],
+    group = groupVisual,
+    tooltip = "Select where the Trendline X-RAY dashboard appears on the chart."
+)
+
+string dashboardPosition = switch dashboardLocation
+    "Top Left"      => position.top_left
+    "Top Center"    => position.top_center
+    "Top Right"     => position.top_right
+    "Middle Left"   => position.middle_left
+    "Middle Center" => position.middle_center
+    "Middle Right"  => position.middle_right
+    "Bottom Left"   => position.bottom_left
+    "Bottom Center" => position.bottom_center
+    => position.bottom_right
+
+
+
+
+// ============================================================================
+// CORE HELPERS
+// ============================================================================
+
+
+f_line_price(
+    int x1,
+    float y1,
+    int x2,
+    float y2,
+    int targetX
+) =>
+    float result = na
+
+
+    if not na(x1) and not na(x2) and x1 != x2
+        float slope = (y2 - y1) / float(x2 - x1)
+        result := y1 + slope * float(targetX - x1)
+
+
+    result
+
+
+// ============================================================================
+// AWCD JOINT STRUCTURE SCORE
+// Adapted from the uploaded AWCD.
+// ============================================================================
+
+
+f_score_structure(
+    int ux1,
+    float uy1,
+    int ux2,
+    float uy2,
+    int lx1,
+    float ly1,
+    int lx2,
+    float ly2
+) =>
+    float finalScore = na
+
+
+    int upperTouchesLocal = 0
+    int lowerTouchesLocal = 0
+    int upperViolationsLocal = 0
+    int lowerViolationsLocal = 0
+
+
+    int lastUpperTouchX = na
+    int lastLowerTouchX = na
+
+
+    bool candidateValid = (
+        ux2 > ux1 and
+        lx2 > lx1 and
+        ux2 - ux1 >= minAnchorSpacing and
+        lx2 - lx1 >= minAnchorSpacing
+    )
+
+
+    if candidateValid
+        float atrLocal = ta.atr(14)
+
+
+        float uSlope = (uy2 - uy1) / float(ux2 - ux1)
+        float lSlope = (ly2 - ly1) / float(lx2 - lx1)
+
+
+        int structureStart = math.max(ux1, lx1)
+
+
+        float upperAtStart = f_line_price(
+            ux1, uy1, ux2, uy2, structureStart
+        )
+
+
+        float lowerAtStart = f_line_price(
+            lx1, ly1, lx2, ly2, structureStart
+        )
+
+
+        float widthAtStart = upperAtStart - lowerAtStart
+
+
+        float upperCurrent = f_line_price(
+            ux1, uy1, ux2, uy2, bar_index
+        )
+
+
+        float lowerCurrent = f_line_price(
+            lx1, ly1, lx2, ly2, bar_index
+        )
+
+
+        float currentWidthLocal = upperCurrent - lowerCurrent
+
+
+        bool convergingCandidate = uSlope < lSlope
+
+
+        float candidateApexX = na
+        float denominator = uSlope - lSlope
+
+
+        if math.abs(denominator) > 0.0000001
+            float upperIntercept = uy1 - uSlope * float(ux1)
+            float lowerIntercept = ly1 - lSlope * float(lx1)
+
+
+            candidateApexX := (
+                lowerIntercept -
+                upperIntercept
+            ) / denominator
+
+
+        bool apexAlreadyPassed = (
+            convergingCandidate and
+            not na(candidateApexX) and
+            candidateApexX <= float(bar_index)
+        )
+
+
+        bool orderedAtStart = widthAtStart > 0.0
+        bool orderedNow = currentWidthLocal > 0.0
+
+
+        if orderedAtStart and orderedNow and not apexAlreadyPassed
+            int availableBars = bar_index - structureStart
+
+
+            int scanBars = math.min(
+                autoLookbackBars,
+                math.max(0, availableBars)
+            )
+
+
+            for offset = 0 to scanBars
+                int testX = bar_index - offset
+
+
+                if testX >= structureStart
+                    float testUpper = f_line_price(
+                        ux1, uy1, ux2, uy2, testX
+                    )
+
+
+                    float testLower = f_line_price(
+                        lx1, ly1, lx2, ly2, testX
+                    )
+
+
+                    float testATR = atrLocal[offset]
+
+
+                    float touchTol = (
+                        not na(testATR)
+                        ? testATR * touchToleranceATR
+                        : 0.0
+                    )
+
+
+                    float violationTol = (
+                        not na(testATR)
+                        ? testATR * violationToleranceATR
+                        : 0.0
+                    )
+
+
+                    bool upperNear = (
+                        math.abs(high[offset] - testUpper) <= touchTol
+                    )
+
+
+                    bool lowerNear = (
+                        math.abs(low[offset] - testLower) <= touchTol
+                    )
+
+
+                    bool upperViolation = (
+                        close[offset] > testUpper + violationTol
+                    )
+
+
+                    bool lowerViolation = (
+                        close[offset] < testLower - violationTol
+                    )
+
+
+                    if upperNear
+                        bool spacedUpper = (
+                            na(lastUpperTouchX) or
+                            math.abs(testX - lastUpperTouchX) >= minTouchSpacing
+                        )
+
+
+                        if spacedUpper
+                            upperTouchesLocal += 1
+                            lastUpperTouchX := testX
+
+
+                    if lowerNear
+                        bool spacedLower = (
+                            na(lastLowerTouchX) or
+                            math.abs(testX - lastLowerTouchX) >= minTouchSpacing
+                        )
+
+
+                        if spacedLower
+                            lowerTouchesLocal += 1
+                            lastLowerTouchX := testX
+
+
+                    if upperViolation
+                        upperViolationsLocal += 1
+
+
+                    if lowerViolation
+                        lowerViolationsLocal += 1
+
+
+            int totalTouchesLocal = (
+                upperTouchesLocal +
+                lowerTouchesLocal
+            )
+
+
+            int totalViolationsLocal = (
+                upperViolationsLocal +
+                lowerViolationsLocal
+            )
+
+
+            int minTouches = math.min(
+                upperTouchesLocal,
+                lowerTouchesLocal
+            )
+
+
+            int maxTouches = math.max(
+                upperTouchesLocal,
+                lowerTouchesLocal
+            )
+
+
+            float touchScore = math.min(
+                35.0,
+                float(totalTouchesLocal) * 5.0
+            )
+
+
+            float balanceFactor = (
+                totalTouchesLocal > 0
+                ? (
+                     1.0 -
+                     math.abs(
+                          float(
+                                upperTouchesLocal -
+                                lowerTouchesLocal
+                          )
+                     ) /
+                     float(totalTouchesLocal)
+                  )
+                : 0.0
+            )
+
+
+            float balanceScore = balanceFactor * 15.0
+
+
+            float violationScore = math.max(
+                0.0,
+                25.0 -
+                float(totalViolationsLocal) * 3.0
+            )
+
+
+            int upperSpan = ux2 - ux1
+            int lowerSpan = lx2 - lx1
+
+
+            float averageSpan = (
+                float(upperSpan) +
+                float(lowerSpan)
+            ) / 2.0
+
+
+            float spanScore = math.min(
+                10.0,
+                averageSpan / 15.0
+            )
+
+
+            int newestAnchor = math.max(ux2, lx2)
+
+
+            float recencyScore = math.max(
+                0.0,
+                10.0 -
+                float(bar_index - newestAnchor) * 0.15
+            )
+
+
+            float candidateWidthATR = (
+                atrLocal > 0.0
+                ? currentWidthLocal / atrLocal
+                : na
+            )
+
+
+            float widthScore = 0.0
+
+
+            if not na(candidateWidthATR)
+                if (
+                    candidateWidthATR >= minStructureWidthATR and
+                    candidateWidthATR <= maxStructureWidthATR
+                )
+                    widthScore := 5.0
+
+
+                else if candidateWidthATR < minStructureWidthATR
+                    widthScore := math.max(
+                        0.0,
+                        (candidateWidthATR / minStructureWidthATR) * 5.0
+                    )
+
+
+                else
+                    widthScore := math.max(
+                        0.0,
+                        5.0 -
+                        (
+                             candidateWidthATR -
+                             maxStructureWidthATR
+                        ) * 0.25
+                    )
+
+
+            finalScore := (
+                touchScore +
+                balanceScore +
+                violationScore +
+                spanScore +
+                recencyScore +
+                widthScore
+            )
+
+
+            // Bilateral validation
+            if minTouches < 2
+                finalScore := math.min(finalScore, 59.0)
+
+
+            else if minTouches < 3
+                finalScore := math.min(finalScore, 84.0)
+
+
+            // Imbalance penalty
+            if minTouches > 0
+                float touchRatio = (
+                    float(maxTouches) /
+                    float(minTouches)
+                )
+
+
+                if touchRatio > balancePenaltyStart
+                    float imbalancePenalty = (
+                        touchRatio -
+                        balancePenaltyStart
+                    ) * balancePenaltyStrength
+
+
+                    finalScore -= imbalancePenalty
+
+
+                if touchRatio >= 2.0
+                    finalScore := math.min(finalScore, 84.0)
+
+
+                if touchRatio >= 2.5
+                    finalScore := math.min(finalScore, 74.0)
+
+
+                if touchRatio >= 3.0
+                    finalScore := math.min(finalScore, 59.0)
+
+
+            finalScore := math.max(
+                0.0,
+                math.min(100.0, finalScore)
+            )
+
+
+    finalScore
+
+
+// ============================================================================
+// MTF STRUCTURE DETECTOR
+//
+// IMPORTANT:
+// Internally AWCD still scores structures in each requested timeframe's own
+// bar_index space. We additionally store anchor TIMES so the selected geometry
+// can be redrawn correctly on the chart using xloc.bar_time.
+// ============================================================================
+
+
+f_detect_structure() =>
+    float pivotHigh = ta.pivothigh(
+        high,
+        upperLen,
+        upperLen
+    )
+
+
+    float pivotLow = ta.pivotlow(
+        low,
+        lowerLen,
+        lowerLen
+    )
+
+
+    bool newUpperPivot = not na(pivotHigh)
+    bool newLowerPivot = not na(pivotLow)
+
+
+    var array<int> upperPivotBars = array.new_int()
+    var array<int> upperPivotTimes = array.new_int()
+    var array<int> upperPivotCloseTimes = array.new_int()
+    var array<float> upperPivotPrices = array.new_float()
+
+
+    var array<int> lowerPivotBars = array.new_int()
+    var array<int> lowerPivotTimes = array.new_int()
+    var array<int> lowerPivotCloseTimes = array.new_int()
+    var array<float> lowerPivotPrices = array.new_float()
+
+
+    if newUpperPivot
+        array.unshift(upperPivotBars, bar_index - upperLen)
+        array.unshift(upperPivotTimes, time[upperLen])
+        array.unshift(upperPivotCloseTimes, time_close[upperLen])
+        array.unshift(upperPivotPrices, pivotHigh)
+
+
+        if array.size(upperPivotBars) > autoPivotCount
+            array.pop(upperPivotBars)
+            array.pop(upperPivotTimes)
+            array.pop(upperPivotCloseTimes)
+            array.pop(upperPivotPrices)
+
+
+    if newLowerPivot
+        array.unshift(lowerPivotBars, bar_index - lowerLen)
+        array.unshift(lowerPivotTimes, time[lowerLen])
+        array.unshift(lowerPivotCloseTimes, time_close[lowerLen])
+        array.unshift(lowerPivotPrices, pivotLow)
+
+
+        if array.size(lowerPivotBars) > autoPivotCount
+            array.pop(lowerPivotBars)
+            array.pop(lowerPivotTimes)
+            array.pop(lowerPivotCloseTimes)
+            array.pop(lowerPivotPrices)
+
+
+    var int bestUpperT1 = na
+    var int bestUpperC1 = na
+    var float bestUpperY1 = na
+
+
+    var int bestUpperT2 = na
+    var int bestUpperC2 = na
+    var float bestUpperY2 = na
+
+
+    var int bestLowerT1 = na
+    var int bestLowerC1 = na
+    var float bestLowerY1 = na
+
+
+    var int bestLowerT2 = na
+    var int bestLowerC2 = na
+    var float bestLowerY2 = na
+
+
+    var float selectedScore = na
+
+
+    bool shouldRescan = newUpperPivot or newLowerPivot or na(selectedScore)
+
+
+    if shouldRescan and array.size(upperPivotBars) >= 2 and array.size(lowerPivotBars) >= 2
+        float scanBestScore = na
+
+
+        int scanBestUpperT1 = na
+        int scanBestUpperC1 = na
+        float scanBestUpperY1 = na
+
+
+        int scanBestUpperT2 = na
+        int scanBestUpperC2 = na
+        float scanBestUpperY2 = na
+
+
+        int scanBestLowerT1 = na
+        int scanBestLowerC1 = na
+        float scanBestLowerY1 = na
+
+
+        int scanBestLowerT2 = na
+        int scanBestLowerC2 = na
+        float scanBestLowerY2 = na
+
+
+        int upperCount = array.size(upperPivotBars)
+        int lowerCount = array.size(lowerPivotBars)
+
+
+        for uNew = 0 to upperCount - 2
+            for uOld = uNew + 1 to upperCount - 1
+                int testUX1 = array.get(upperPivotBars, uOld)
+                int testUT1 = array.get(upperPivotTimes, uOld)
+                int testUC1 = array.get(upperPivotCloseTimes, uOld)
+                float testUY1 = array.get(upperPivotPrices, uOld)
+
+
+                int testUX2 = array.get(upperPivotBars, uNew)
+                int testUT2 = array.get(upperPivotTimes, uNew)
+                int testUC2 = array.get(upperPivotCloseTimes, uNew)
+                float testUY2 = array.get(upperPivotPrices, uNew)
+
+
+                for lNew = 0 to lowerCount - 2
+                    for lOld = lNew + 1 to lowerCount - 1
+                        int testLX1 = array.get(lowerPivotBars, lOld)
+                        int testLT1 = array.get(lowerPivotTimes, lOld)
+                        int testLC1 = array.get(lowerPivotCloseTimes, lOld)
+                        float testLY1 = array.get(lowerPivotPrices, lOld)
+
+
+                        int testLX2 = array.get(lowerPivotBars, lNew)
+                        int testLT2 = array.get(lowerPivotTimes, lNew)
+                        int testLC2 = array.get(lowerPivotCloseTimes, lNew)
+                        float testLY2 = array.get(lowerPivotPrices, lNew)
+
+
+                        float candidateScore = f_score_structure(
+                            testUX1,
+                            testUY1,
+                            testUX2,
+                            testUY2,
+                            testLX1,
+                            testLY1,
+                            testLX2,
+                            testLY2
+                        )
+
+
+                        bool betterCandidate = not na(candidateScore) and (na(scanBestScore) or candidateScore > scanBestScore)
+
+
+                        if betterCandidate
+                            scanBestScore := candidateScore
+
+
+                            scanBestUpperT1 := testUT1
+                            scanBestUpperC1 := testUC1
+                            scanBestUpperY1 := testUY1
+
+
+                            scanBestUpperT2 := testUT2
+                            scanBestUpperC2 := testUC2
+                            scanBestUpperY2 := testUY2
+
+
+                            scanBestLowerT1 := testLT1
+                            scanBestLowerC1 := testLC1
+                            scanBestLowerY1 := testLY1
+
+
+                            scanBestLowerT2 := testLT2
+                            scanBestLowerC2 := testLC2
+                            scanBestLowerY2 := testLY2
+
+
+        if not na(scanBestScore)
+            bestUpperT1 := scanBestUpperT1
+            bestUpperC1 := scanBestUpperC1
+            bestUpperY1 := scanBestUpperY1
+
+
+            bestUpperT2 := scanBestUpperT2
+            bestUpperC2 := scanBestUpperC2
+            bestUpperY2 := scanBestUpperY2
+
+
+            bestLowerT1 := scanBestLowerT1
+            bestLowerC1 := scanBestLowerC1
+            bestLowerY1 := scanBestLowerY1
+
+
+            bestLowerT2 := scanBestLowerT2
+            bestLowerC2 := scanBestLowerC2
+            bestLowerY2 := scanBestLowerY2
+
+
+            selectedScore := scanBestScore
+
+
+    [bestUpperT1, bestUpperC1, bestUpperY1, bestUpperT2, bestUpperC2, bestUpperY2, bestLowerT1, bestLowerC1, bestLowerY1, bestLowerT2, bestLowerC2, bestLowerY2, selectedScore]
+
+
+// ============================================================================
+// REQUEST EACH AWCD STRUCTURE INDEPENDENTLY
+// ============================================================================
+
+
+[wUT1, wUC1, wUY1, wUT2, wUC2, wUY2, wLT1, wLC1, wLY1, wLT2, wLC2, wLY2, wScore] = request.security(
+    syminfo.tickerid,
+    activeTF1,
+    f_detect_structure(),
+    gaps = barmerge.gaps_off,
+    lookahead = barmerge.lookahead_off
+)
+
+
+[dUT1, dUC1, dUY1, dUT2, dUC2, dUY2, dLT1, dLC1, dLY1, dLT2, dLC2, dLY2, dScore] = request.security(
+    syminfo.tickerid,
+    activeTF2,
+    f_detect_structure(),
+    gaps = barmerge.gaps_off,
+    lookahead = barmerge.lookahead_off
+)
+
+
+[h4UT1, h4UC1, h4UY1, h4UT2, h4UC2, h4UY2, h4LT1, h4LC1, h4LY1, h4LT2, h4LC2, h4LY2, h4Score] = request.security(
+    syminfo.tickerid,
+    activeTF3,
+    f_detect_structure(),
+    gaps = barmerge.gaps_off,
+    lookahead = barmerge.lookahead_off
+)
+
+
+[h1UT1, h1UC1, h1UY1, h1UT2, h1UC2, h1UY2, h1LT1, h1LC1, h1LY1, h1LT2, h1LC2, h1LY2, h1Score] = request.security(
+    syminfo.tickerid,
+    activeTF4,
+    f_detect_structure(),
+    gaps = barmerge.gaps_off,
+    lookahead = barmerge.lookahead_off
+)
+
+
+// ============================================================================
+// SNAP HTF/LTF PIVOT WINDOWS TO THE ACTUAL VISIBLE CHART CANDLES
+// ============================================================================
+
+
+f_resolve_four_anchor_times(
+    int uT1, int uC1, float uY1,
+    int uT2, int uC2, float uY2,
+    int lT1, int lC1, float lY1,
+    int lT2, int lC2, float lY2
+) =>
+    int resolvedUT1 = uT1
+    int resolvedUT2 = uT2
+    int resolvedLT1 = lT1
+    int resolvedLT2 = lT2
+
+
+    float bestUDist1 = 1e100
+    float bestUDist2 = 1e100
+    float bestLDist1 = 1e100
+    float bestLDist2 = 1e100
+
+
+    // PERFORMANCE:
+    // These resolved timestamps are only needed for the current drawing.
+    // Draft 2 scanned up to 5,000 chart bars for every timeframe on every
+    // historical chart bar. That was extremely expensive on 1H charts.
+    // We now do the visible-candle anchor search only once, on the last bar.
+    if barstate.islast
+        int scanBars = math.min(bar_index, 4999)
+
+
+        for offset = 0 to scanBars
+            int chartOpen = time[offset]
+            int chartClose = time_close[offset]
+
+
+            if not na(uT1) and not na(uC1) and chartOpen < uC1 and chartClose > uT1
+                float d = math.abs(high[offset] - uY1)
+                if d < bestUDist1
+                    bestUDist1 := d
+                    resolvedUT1 := chartOpen
+
+
+            if not na(uT2) and not na(uC2) and chartOpen < uC2 and chartClose > uT2
+                float d = math.abs(high[offset] - uY2)
+                if d < bestUDist2
+                    bestUDist2 := d
+                    resolvedUT2 := chartOpen
+
+
+            if not na(lT1) and not na(lC1) and chartOpen < lC1 and chartClose > lT1
+                float d = math.abs(low[offset] - lY1)
+                if d < bestLDist1
+                    bestLDist1 := d
+                    resolvedLT1 := chartOpen
+
+
+            if not na(lT2) and not na(lC2) and chartOpen < lC2 and chartClose > lT2
+                float d = math.abs(low[offset] - lY2)
+                if d < bestLDist2
+                    bestLDist2 := d
+                    resolvedLT2 := chartOpen
+
+
+    [resolvedUT1, resolvedUT2, resolvedLT1, resolvedLT2]
+
+
+[wRUT1, wRUT2, wRLT1, wRLT2] = f_resolve_four_anchor_times(wUT1, wUC1, wUY1, wUT2, wUC2, wUY2, wLT1, wLC1, wLY1, wLT2, wLC2, wLY2)
+[dRUT1, dRUT2, dRLT1, dRLT2] = f_resolve_four_anchor_times(dUT1, dUC1, dUY1, dUT2, dUC2, dUY2, dLT1, dLC1, dLY1, dLT2, dLC2, dLY2)
+[h4RUT1, h4RUT2, h4RLT1, h4RLT2] = f_resolve_four_anchor_times(h4UT1, h4UC1, h4UY1, h4UT2, h4UC2, h4UY2, h4LT1, h4LC1, h4LY1, h4LT2, h4LC2, h4LY2)
+[h1RUT1, h1RUT2, h1RLT1, h1RLT2] = f_resolve_four_anchor_times(h1UT1, h1UC1, h1UY1, h1UT2, h1UC2, h1UY2, h1LT1, h1LC1, h1LY1, h1LT2, h1LC2, h1LY2)
+
+
+// ============================================================================
+// TIMEFRAME DISPLAY HELPER
+// ============================================================================
+
+
+f_tf_label(string tf) =>
+    string result = tf
+
+
+    if tf == "1"
+        result := "1M"
+    else if tf == "3"
+        result := "3M"
+    else if tf == "5"
+        result := "5M"
+    else if tf == "15"
+        result := "15M"
+    else if tf == "30"
+        result := "30M"
+    else if tf == "45"
+        result := "45M"
+    else if tf == "60"
+        result := "1H"
+    else if tf == "120"
+        result := "2H"
+    else if tf == "180"
+        result := "3H"
+    else if tf == "240"
+        result := "4H"
+    else if tf == "360"
+        result := "6H"
+    else if tf == "480"
+        result := "8H"
+    else if tf == "720"
+        result := "12H"
+    else if tf == "1D" or tf == "D"
+        result := "D"
+    else if tf == "1W" or tf == "W"
+        result := "W"
+    else if tf == "1M" or tf == "M"
+        result := "MO"
+
+
+    result
+
+
+// ============================================================================
+// LINE STYLE HELPER
+// ============================================================================
+
+
+f_style_name(string styleInput) =>
+    string result = "solid"
+
+
+    if styleInput == "Dashed"
+        result := "dashed"
+
+
+    else if styleInput == "Dotted"
+        result := "dotted"
+
+
+    result
+
+
+// ============================================================================
+// DRAWING HELPER
+// ============================================================================
+
+
+f_update_line(
+    line existingLine,
+    bool shouldShow,
+    int t1,
+    float y1,
+    int t2,
+    float y2,
+    color lineColor,
+    int width,
+    string styleName
+) =>
+    line resultLine = existingLine
+
+
+    lineStyle = (
+        styleName == "dashed"
+        ? line.style_dashed
+        : styleName == "dotted"
+        ? line.style_dotted
+        : line.style_solid
+    )
+
+
+    bool validLine = (
+        shouldShow and
+        not na(t1) and
+        not na(t2) and
+        not na(y1) and
+        not na(y2) and
+        t1 != t2
+    )
+
+
+    if validLine
+        if na(resultLine)
+            resultLine := line.new(
+                t1,
+                y1,
+                t2,
+                y2,
+                xloc = xloc.bar_time,
+                extend = extend.right,
+                color = lineColor,
+                width = width,
+                style = lineStyle
+            )
+
+
+        else
+            line.set_xy1(
+                resultLine,
+                t1,
+                y1
+            )
+
+
+            line.set_xy2(
+                resultLine,
+                t2,
+                y2
+            )
+
+
+            line.set_xloc(
+                resultLine,
+                t1,
+                t2,
+                xloc.bar_time
+            )
+
+
+            line.set_extend(
+                resultLine,
+                extend.right
+            )
+
+
+            line.set_color(
+                resultLine,
+                lineColor
+            )
+
+
+            line.set_width(
+                resultLine,
+                width
+            )
+
+
+            line.set_style(
+                resultLine,
+                lineStyle
+            )
+
+
+    else
+        if not na(resultLine)
+            line.delete(resultLine)
+            resultLine := na
+
+
+    resultLine
+
+
+// ============================================================================
+// STRUCTURE TYPE HELPER
+// ============================================================================
+
+
+f_structure_type_time(
+    int uT1,
+    float uY1,
+    int uT2,
+    float uY2,
+    int lT1,
+    float lY1,
+    int lT2,
+    float lY2
+) =>
+    string result = "Structure"
+
+
+    bool validGeometry = (
+        not na(uT1) and
+        not na(uT2) and
+        not na(lT1) and
+        not na(lT2) and
+        uT1 != uT2 and
+        lT1 != lT2
+    )
+
+
+    if validGeometry
+        float uSlope = (
+            uY2 - uY1
+        ) / float(
+            uT2 - uT1
+        )
+
+
+        float lSlope = (
+            lY2 - lY1
+        ) / float(
+            lT2 - lT1
+        )
+
+
+        float slopeDiff = math.abs(
+            uSlope -
+            lSlope
+        )
+
+
+        float largestSlope = math.max(
+            math.abs(uSlope),
+            math.abs(lSlope)
+        )
+
+
+        bool roughlyParallel = (
+            largestSlope == 0.0 or
+            slopeDiff <=
+            largestSlope *
+            0.10
+        )
+
+
+        bool converging = (
+            uSlope <
+            lSlope
+        )
+
+
+        bool expanding = (
+            uSlope >
+            lSlope
+        )
+
+
+        if roughlyParallel
+            result := "Channel"
+
+
+        else if converging
+            if (
+                uSlope < 0.0 and
+                lSlope > 0.0
+            )
+                result := "Triangle"
+
+
+            else
+                result := "Wedge"
+
+
+        else if expanding
+            result := "Expanding"
+
+
+    result
+
+
+// ============================================================================
+// ONE PAIR PER TIMEFRAME
+// ============================================================================
+
+
+bool wVisible = (
+    showWeekly and
+    not na(wScore) and
+    wScore >= minDisplayScore
+)
+
+
+bool dVisible = (
+    showDaily and
+    not na(dScore) and
+    dScore >= minDisplayScore
+)
+
+
+bool h4Visible = (
+    show4H and
+    not na(h4Score) and
+    h4Score >= minDisplayScore
+)
+
+
+bool h1Visible = (
+    show1H and
+    not na(h1Score) and
+    h1Score >= minDisplayScore
+)
+
+
+var line weeklyUpperLine = na
+var line weeklyLowerLine = na
+
+
+var line dailyUpperLine = na
+var line dailyLowerLine = na
+
+
+var line fourHourUpperLine = na
+var line fourHourLowerLine = na
+
+
+var line oneHourUpperLine = na
+var line oneHourLowerLine = na
+
+
+weeklyUpperLine := f_update_line(
+    weeklyUpperLine,
+    wVisible,
+    wRUT1,
+    wUY1,
+    wRUT2,
+    wUY2,
+    weeklyColor,
+    weeklyWidth,
+    f_style_name(weeklyStyle)
+)
+
+
+weeklyLowerLine := f_update_line(
+    weeklyLowerLine,
+    wVisible,
+    wRLT1,
+    wLY1,
+    wRLT2,
+    wLY2,
+    weeklyColor,
+    weeklyWidth,
+    f_style_name(weeklyStyle)
+)
+
+
+dailyUpperLine := f_update_line(
+    dailyUpperLine,
+    dVisible,
+    dRUT1,
+    dUY1,
+    dRUT2,
+    dUY2,
+    dailyColor,
+    dailyWidth,
+    f_style_name(dailyStyle)
+)
+
+
+dailyLowerLine := f_update_line(
+    dailyLowerLine,
+    dVisible,
+    dRLT1,
+    dLY1,
+    dRLT2,
+    dLY2,
+    dailyColor,
+    dailyWidth,
+    f_style_name(dailyStyle)
+)
+
+
+fourHourUpperLine := f_update_line(
+    fourHourUpperLine,
+    h4Visible,
+    h4RUT1,
+    h4UY1,
+    h4RUT2,
+    h4UY2,
+    fourHourColor,
+    fourHourWidth,
+    f_style_name(fourHourStyle)
+)
+
+
+fourHourLowerLine := f_update_line(
+    fourHourLowerLine,
+    h4Visible,
+    h4RLT1,
+    h4LY1,
+    h4RLT2,
+    h4LY2,
+    fourHourColor,
+    fourHourWidth,
+    f_style_name(fourHourStyle)
+)
+
+
+oneHourUpperLine := f_update_line(
+    oneHourUpperLine,
+    h1Visible,
+    h1RUT1,
+    h1UY1,
+    h1RUT2,
+    h1UY2,
+    oneHourColor,
+    oneHourWidth,
+    f_style_name(oneHourStyle)
+)
+
+
+oneHourLowerLine := f_update_line(
+    oneHourLowerLine,
+    h1Visible,
+    h1RLT1,
+    h1LY1,
+    h1RLT2,
+    h1LY2,
+    oneHourColor,
+    oneHourWidth,
+    f_style_name(oneHourStyle)
+)
+
+
+
+
+// ============================================================================
+// STRUCTURE TYPES FOR DASHBOARD
+// ============================================================================
+
+
+string wType = f_structure_type_time(
+    wRUT1, wUY1, wRUT2, wUY2,
+    wRLT1, wLY1, wRLT2, wLY2
+)
+
+
+string dType = f_structure_type_time(
+    dRUT1, dUY1, dRUT2, dUY2,
+    dRLT1, dLY1, dRLT2, dLY2
+)
+
+
+string h4Type = f_structure_type_time(
+    h4RUT1, h4UY1, h4RUT2, h4UY2,
+    h4RLT1, h4LY1, h4RLT2, h4LY2
+)
+
+
+string h1Type = f_structure_type_time(
+    h1RUT1, h1UY1, h1RUT2, h1UY2,
+    h1RLT1, h1LY1, h1RLT2, h1LY2
+)
+
+
+// ============================================================================
+// OPTIONAL STRUCTURE LEGEND
+// ============================================================================
+
+
+f_score_text(float score, bool visible) =>
+    string result = "—"
+
+
+    if not na(score)
+        result := (
+            visible
+            ? str.tostring(score, "#.0")
+            : str.tostring(score, "#.0") + " hidden"
+        )
+
+
+    result
+
+
+var table legend = table.new(
+    dashboardPosition,
+    4,
+    9,
+    border_width = 1
+)
+
+
+// Dashboard title, dividers, and mode footer span the dashboard width.
+table.merge_cells(legend, 0, 0, 3, 0)
+table.merge_cells(legend, 0, 1, 3, 1)
+table.merge_cells(legend, 0, 7, 3, 7)
+table.merge_cells(legend, 1, 8, 3, 8)
+
+
+if barstate.islast
+    if showLegend
+        table.cell(legend, 0, 0, "TRENDLINE X-RAY", text_color = color.white, text_halign = text.align_center)
+        table.cell(legend, 0, 1, "────────────────────────", text_color = color.new(color.white, 55), text_size = size.tiny, text_halign = text.align_center)
+
+
+        // Column 1 is intentionally blank: the colored line sample acts as its own legend key.
+        table.cell(legend, 0, 2, "", text_color = color.white)
+        table.cell(legend, 1, 2, "TF", text_color = color.white)
+        table.cell(legend, 2, 2, "Quality", text_color = color.white)
+        table.cell(legend, 3, 2, "Type", text_color = color.white)
+
+
+        table.cell(legend, 0, 3, "━", text_color = weeklyColor)
+        table.cell(legend, 1, 3, f_tf_label(activeTF1), text_color = weeklyColor)
+        table.cell(legend, 2, 3, f_score_text(wScore, wVisible), text_color = weeklyColor)
+        table.cell(legend, 3, 3, wType, text_color = weeklyColor)
+
+
+        table.cell(legend, 0, 4, "━", text_color = dailyColor)
+        table.cell(legend, 1, 4, f_tf_label(activeTF2), text_color = dailyColor)
+        table.cell(legend, 2, 4, f_score_text(dScore, dVisible), text_color = dailyColor)
+        table.cell(legend, 3, 4, dType, text_color = dailyColor)
+
+
+        table.cell(legend, 0, 5, "━", text_color = fourHourColor)
+        table.cell(legend, 1, 5, f_tf_label(activeTF3), text_color = fourHourColor)
+        table.cell(legend, 2, 5, f_score_text(h4Score, h4Visible), text_color = fourHourColor)
+        table.cell(legend, 3, 5, h4Type, text_color = fourHourColor)
+
+
+        table.cell(legend, 0, 6, "━", text_color = oneHourColor)
+        table.cell(legend, 1, 6, f_tf_label(activeTF4), text_color = oneHourColor)
+        table.cell(legend, 2, 6, f_score_text(h1Score, h1Visible), text_color = oneHourColor)
+        table.cell(legend, 3, 6, h1Type, text_color = oneHourColor)
+
+
+        table.cell(legend, 0, 7, "────────────────────────", text_color = color.new(color.white, 55), text_size = size.tiny, text_halign = text.align_center)
+        table.cell(legend, 0, 8, "MODE", text_color = color.new(color.white, 35), text_size = size.tiny, text_halign = text.align_left)
+        table.cell(legend, 1, 8, activeModeLabel, text_color = color.white, text_size = size.small, text_halign = text.align_left)
+
+
+    else
+        table.clear(legend, 0, 0, 3, 8)

@@ -1,0 +1,1665 @@
+// This Pine Script code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © MadMonkTrading
+//@version=6
+indicator(title="RTH 1st Presented FVG", shorttitle="RTH 1st FVG", overlay=true, max_lines_count=500, max_boxes_count=200, max_labels_count=500, dynamic_requests=true)
+
+var string G_GENERAL = "General Settings"
+max_tf = input.string("15", "Max Timeframe (minutes)", options=["1", "3", "5", "15", "30", "60", "120", "240", "D"], group=G_GENERAL)
+use_chart_tf = input.bool(false, "Use Chart Timeframe for 1st Presented", group=G_GENERAL, tooltip="Off (default): use 1-minute bars when the chart is higher than 1m. On a 1-minute chart, native 1m bars are always used so Market Replay can see older days. On: detect on the chart's own timeframe.")
+rth_session = input.session("0930-1615", "RTH Session", group=G_GENERAL)
+tz = input.string("America/New_York", "Timezone", group=G_GENERAL)
+
+get_tf_minutes(string tf) =>
+    switch tf
+        "1" => 1
+        "3" => 3
+        "5" => 5
+        "15" => 15
+        "30" => 30
+        "60" => 60
+        "120" => 120
+        "240" => 240
+        "D" => 1440
+        => 0
+
+show_indicator = timeframe.in_seconds() / 60 <= get_tf_minutes(max_tf)
+
+var string G_FVG = "FVG Settings"
+show_fvg = input.bool(true, "Show 1st Presented RTH FVG", group=G_FVG)
+minFvgSize = input.int(5, "Min FVG Size (Ticks)", minval=0, group=G_FVG)
+boxesToShow = input.int(5, "Historical FVGs to show", minval=0, maxval=50, group=G_FVG, tooltip="One history window for every FVG type (standard, displacement, reflection). 0 hides rolling history including today. Prior-week Mon/Fri and Current Week Days are independent of this count.")
+col_FVG_bull = input.color(color.new(#2962ff, 95), "Bull box", inline="C", group=G_FVG)
+col_FVG_bear = input.color(color.new(#2962ff, 95), "Bear box", inline="C", group=G_FVG)
+show_midline = input.bool(true, "Show midline", inline="M", group=G_FVG)
+col_FVG_mid = input.color(color.new(color.blue, 0), "", inline="M", group=G_FVG)
+midline_style = input.string("Dashed", "Mid style", options=["Solid", "Dashed", "Dotted"], inline="M", group=G_FVG)
+show_edges = input.bool(true, "Show high/low lines", inline="E", group=G_FVG)
+edgeCol = input.color(color.new(color.blue, 10), "", inline="E", group=G_FVG)
+edgeStyle = input.string(line.style_solid, "| style:", options=[line.style_solid, line.style_dotted, line.style_dashed], inline="E", group=G_FVG)
+edgeWidth = input.int(1, "| width", minval=1, maxval=4, inline="E", group=G_FVG)
+showQuart = input.bool(false, "Show quartile lines", inline="Q", group=G_FVG)
+quartCol = input.color(color.new(color.blue, 50), "", inline="Q", group=G_FVG)
+quartStyle = input.string(line.style_dotted, "| style:", options=[line.style_solid, line.style_dotted, line.style_dashed], inline="Q", group=G_FVG)
+quartWidth = input.int(1, "| width", minval=1, maxval=4, inline="Q", group=G_FVG)
+showEighth = input.bool(false, "Show 1/8th lines", inline="8", group=G_FVG)
+eighthCol = input.color(color.new(color.blue, 70), "", inline="8", group=G_FVG)
+eighthStyle = input.string(line.style_dotted, "| style:", options=[line.style_solid, line.style_dotted, line.style_dashed], inline="8", group=G_FVG)
+eighthWidth = input.int(1, "| width", minval=1, maxval=4, inline="8", group=G_FVG)
+extendBoxRight = input.bool(true, "Extend boxes & lines right", inline="X", group=G_FVG)
+bufferBars = input.int(5, "| buffer bars", minval=0, inline="X", group=G_FVG)
+showTxt = input.bool(false, "Box text", inline="T", group=G_FVG)
+boxTxtCol = input.color(color.new(color.gray, 100), "", inline="T", group=G_FVG)
+showSpecialMF = input.bool(false, "Show Monday and Friday FVGs", inline="MF", group=G_FVG, tooltip="ICT: plot Mondays and Fridays from the last N completed weeks BEFORE the week you are trading. Default 2 = two prior weeks' Mon+Fri. Does not include the current week.")
+specialMFCount = input.int(2, "Prior weeks", minval=1, maxval=20, inline="MF", group=G_FVG, tooltip="Completed NY calendar weeks immediately before the cursor's week. Trading week of Sep 8 with Weeks=2 shows Mon/Fri of the Aug 25 and Sep 1 weeks — not this week's Mon/Fri.")
+excludeCurrentDaySpecial = input.bool(false, "Don't include current day in Mon/Fri calc", group=G_FVG, tooltip="Rarely needed now that prior weeks exclude the current week. If a prior-week Monday/Friday is still the live session (replay), skip it until 16:15 NY.")
+includeHolidayWeeks = input.bool(true, "Force holiday RTH (clock 09:30–16:15 NY)", group=G_FVG, tooltip="On holidays TradingView often treats RTH as closed even when futures still print after 09:30 NY. On: treat 09:30–16:15 NY clock as RTH so those 1st Presented FVGs are detected. Mon/Fri lookback still uses only PRIOR completed weeks from the replay cursor — the week you are in is never included.")
+var string G_WEEKDAYS = "Current Week Days"
+showCurMon = input.bool(false, "Monday", inline="CW1", group=G_WEEKDAYS, tooltip="Plot this week's Monday 1st FVG (standard, displacement, reflection). Separate from prior-weeks Mon/Fri.")
+showCurTue = input.bool(false, "Tuesday", inline="CW1", group=G_WEEKDAYS)
+showCurWed = input.bool(false, "Wednesday", inline="CW1", group=G_WEEKDAYS)
+showCurThu = input.bool(false, "Thursday", inline="CW2", group=G_WEEKDAYS)
+showCurFri = input.bool(false, "Friday", inline="CW2", group=G_WEEKDAYS, tooltip="This week's Friday only unless Isolation mode is on.")
+isolateWeekdays = input.bool(false, "Isolation mode", inline="ISO", group=G_WEEKDAYS, tooltip="On: plot the last N weeks of each checked weekday (e.g. last 4 Wednesdays). Off: only this calendar week.")
+isolateWeeks = input.int(2, "Isolation weeks", minval=1, maxval=20, inline="ISO", group=G_WEEKDAYS, tooltip="NY weeks of each checked weekday, including this week. Only 1-minute first FVGs are plotted. Dates before your 1m history (subscription limit) cannot be reconstructed.")
+excludeCurrentDayWeekday = input.bool(false, "Don't include current session until RTH close", group=G_WEEKDAYS, tooltip="If checked, today's selected weekday is hidden until 16:15 NY so Market Replay matches a completed session.")
+
+var string G_DISP = "1st FVG with Displacement"
+show_disp_fvg = input.bool(true, "Show 1st Presented FVG w/ Displacement", group=G_DISP, tooltip="Separate from the standard 1st FVG. Plots the first RTH FVG whose 3-candle move displaces above a recent swing high (bull) or below a recent swing low (bear).")
+onlyFirstDispPerSession = input.bool(true, "Only first Displacement FVG per session", group=G_DISP, tooltip="On (default): one displacement FVG per RTH session. Off: later displacing FVGs can also plot.")
+noDispAfterRefl = input.bool(true, "No Displacement FVGs after Reflection", group=G_DISP, tooltip="On (default): once the 1st Reflection FVG is set, do not plot any further displacement gaps.")
+swingLookback = input.int(8, "Swing lookback (bars)", minval=3, maxval=50, group=G_DISP, tooltip="How far back a swing may sit. Any 3-bar swing in that window qualifies — it does not need to be a major swing.")
+requireCloseBeyond = input.bool(true, "Require close beyond swing", group=G_DISP, tooltip="On: the 2nd (middle) candle of the FVG must CLOSE through the nearest swing still in front of the move. Candle 1 or 3 closing through it is not enough. Off: the 2nd candle wick through the swing is enough.")
+minDispBodyTicks = input.int(40, "Min displacement body (ticks)", minval=0, group=G_DISP, tooltip="0 = off. Optional energy filter on the middle (displacement) candle body.")
+col_DISP_bull = input.color(color.new(#00c853, 88), "Disp bull box", inline="DC", group=G_DISP)
+col_DISP_bear = input.color(color.new(#ff1744, 88), "Disp bear box", inline="DC", group=G_DISP)
+show_disp_mid = input.bool(true, "Disp midline", inline="DM", group=G_DISP)
+col_DISP_mid = input.color(color.new(#00c853, 0), "", inline="DM", group=G_DISP)
+show_disp_edges = input.bool(true, "Disp high/low lines", inline="DE", group=G_DISP)
+dispEdgeCol = input.color(color.new(#00c853, 10), "", inline="DE", group=G_DISP)
+show_disp_labels = input.bool(true, "Disp labels", group=G_DISP)
+
+var string G_REFL = "1st Presented Reflection FVG"
+show_refl_fvg = input.bool(true, "Show 1st Presented Reflection FVG", group=G_REFL, tooltip="First opposite-side FVG after the 1st displacement FVG (BISI↔SIBI). If no displacement FVG exists, uses the regular 1st Presented FVG as the reference.")
+col_REFL_bull = input.color(color.new(#00c853, 88), "Refl bull box (BISI)", inline="RC", group=G_REFL)
+col_REFL_bear = input.color(color.new(#ff1744, 88), "Refl bear box (SIBI)", inline="RC", group=G_REFL)
+show_refl_mid = input.bool(true, "Refl midline", inline="RM", group=G_REFL)
+col_REFL_mid = input.color(color.new(#00c853, 0), "", inline="RM", group=G_REFL)
+show_refl_edges = input.bool(true, "Refl high/low lines", inline="RE", group=G_REFL)
+reflEdgeCol = input.color(color.new(#00c853, 10), "", inline="RE", group=G_REFL)
+show_refl_labels = input.bool(true, "Refl labels", group=G_REFL)
+onlyShowDispRefl = input.bool(false, "Only Show Displacement & Reflection FVGs", group=G_REFL, tooltip="Hides the standard 1st Presented FVG, Mon/Fri 1st FVGs, overlapping FVGs. Displacement and Reflection boxes still plot. PD table stays and uses visible gaps.")
+showStdIfNoDisp = input.bool(true, "Show 1st Presented FVG if no Displacement", group=G_REFL, tooltip="Used with Only Show Displacement & Reflection. If the session has no displacement FVG, the regular 1st Presented FVG is shown. It is removed if a displacement FVG appears later.")
+
+var string G_DAY = "Day Specific Features"
+useDayColors = input.bool(false, "Use Day-Specific Colors", group=G_DAY)
+monColor = input.color(color.blue, "Monday Color", group=G_DAY)
+tueColor = input.color(color.orange, "Tuesday Color", group=G_DAY)
+wedColor = input.color(color.red, "Wednesday Color", group=G_DAY)
+thuColor = input.color(color.green, "Thursday Color", group=G_DAY)
+friColor = input.color(color.purple, "Friday Color", group=G_DAY)
+
+var string G_LABELS = "Label Settings"
+showLabels = input.bool(true, "Show Labels", group=G_LABELS)
+showDayInLabel = input.bool(true, "Show Abbreviated Day in Labels", group=G_LABELS)
+useDayColorsForLabels = input.bool(false, "Use Day-Specific Colors for Labels", group=G_LABELS)
+labelColor = input.color(color.black, "Label Color", group=G_LABELS)
+labelSizeIn = input.string("Tiny", "Label Size", options=["Tiny", "Small", "Normal", "Large"], group=G_LABELS)
+
+var string G_OV = "Overlapping FVGs"
+show_ov_fvg = input.bool(false, "Show FVGs Overlapping 1st FVG Gradients", group=G_OV)
+ov_visible_only = input.bool(true, "Only visible 1st / Disp / Refl FVGs", group=G_OV, tooltip="On: overlapping FVGs must touch a plotted 1st Presented, Displacement, or Reflection FVG. Off: any stored 1st/disp/refl gradient can trigger an overlap.")
+ov_first_only = input.bool(false, "First Overlapping FVG Only", group=G_OV, tooltip="On: each visible 1st Presented FVG gets only the first later FVG that overlaps its gradients. A later 1st P.FVG can still get its own first overlap. Off: every overlapping FVG plots.")
+ov_macros_only = input.bool(false, "Only during macros", group=G_OV, tooltip="On: plot overlapping FVGs only if the gap forms in a macro window: any hour xx:50–xx:10 NY, plus 15:15–15:45 NY.")
+ov_min = input.int(2, "Min FVG Size (Ticks)", minval=0, group=G_OV)
+ov_bull = input.color(color.new(#673ab7, 85), "Bull", inline="OV", group=G_OV)
+ov_bear = input.color(color.new(#673ab7, 85), "Bear", inline="OV", group=G_OV)
+ov_ext = input.int(20, "Box Right Extension (bars)", minval=0, maxval=200, group=G_OV)
+ov_mid = input.bool(true, "Mid Line", inline="OVM", group=G_OV)
+ov_mid_col = input.color(color.new(color.black, 0), "", inline="OVM", group=G_OV)
+ov_mid_style = input.string("Dotted", "Mid style", options=["Solid", "Dashed", "Dotted"], inline="OVM", group=G_OV)
+onlyShowOvFVG = input.bool(false, "Only Show Overlapping FVGs", group=G_OV)
+
+var string G_PD = "Premium/Discount"
+showPDTable = input.bool(true, "Show Premium/Discount Table", group=G_PD)
+useHistoricalCount = input.bool(true, "Use Historical Days for PD", group=G_PD, tooltip="On: PD high/low uses the same session-day count as Historical FVGs to show. Off: PD uses Number of session days for PD below. Neither setting hides or shows FVG boxes.")
+pdGaps = input.int(5, "Number of session days for PD", minval=1, group=G_PD, tooltip="Session days used only for Premium/Discount high/low. Does not control which FVG boxes plot.")
+pdDisplayMode = input.string("Both", "PD Display Mode", options=["Status", "Percentage", "Both"], group=G_PD)
+showPDGradients = input.bool(false, "Show PD Gradient Levels", group=G_PD)
+pdEighthCol = input.color(color.new(color.black, 10), "", group=G_PD)
+pdEighthStyle = input.string(line.style_solid, "| style:", options=[line.style_solid, line.style_dotted, line.style_dashed], group=G_PD)
+pdEighthWidth = input.int(1, "| width", minval=1, maxval=4, group=G_PD)
+showPDEighthLabels = input.bool(true, "Show PD Labels", group=G_PD)
+onlyShowPD = input.bool(false, "Only Show PD Gradients & Table", group=G_PD)
+pdTableSize = input.string("Small", "PD Table Size", options=["Tiny", "Small", "Normal", "Large"], group=G_PD)
+pdTablePosition = input.string("Bottom Right", "PD Table Position", options=["Bottom Right", "Top Right", "Bottom Left", "Bottom Center", "Top Left", "Top Center"], group=G_PD)
+
+getLabelSize(size) =>
+    size == "Tiny" ? size.tiny : size == "Small" ? size.small : size == "Large" ? size.large : size.normal
+
+getTablePosition(pos) =>
+    pos == "Bottom Right" ? position.bottom_right : pos == "Top Right" ? position.top_right : pos == "Bottom Left" ? position.bottom_left : pos == "Bottom Center" ? position.bottom_center : pos == "Top Left" ? position.top_left : position.top_center
+
+formatDateFromTime(int t) =>
+    mon = month(t, tz)
+    d = dayofmonth(t, tz)
+    str.format("{0}/{1}", mon < 10 ? "0" + str.tostring(mon) : str.tostring(mon), d < 10 ? "0" + str.tostring(d) : str.tostring(d))
+
+nyNoon(int t) =>
+    timestamp(tz, year(t, tz), month(t, tz), dayofmonth(t, tz), 12, 0, 0)
+
+nyDow(int t) =>
+    dayofweek(t, tz)
+
+isNyMonday(int t) =>
+    nyDow(t) == dayofweek.monday
+
+isNyFriday(int t) =>
+    nyDow(t) == dayofweek.friday
+
+isNyMonFri(int t) =>
+    isNyMonday(t) or isNyFriday(t)
+
+ny_ymd(int t) =>
+    year(t, tz) * 10000 + month(t, tz) * 100 + dayofmonth(t, tz)
+
+session_still_open(int orgT, int cursorT) =>
+    ny_ymd(orgT) == ny_ymd(cursorT) and cursorT < timestamp(tz, year(cursorT, tz), month(cursorT, tz), dayofmonth(cursorT, tz), 16, 15, 0)
+
+dayColorOf(int t) =>
+    int dow = nyDow(t)
+    switch dow
+        dayofweek.monday => monColor
+        dayofweek.tuesday => tueColor
+        dayofweek.wednesday => wedColor
+        dayofweek.thursday => thuColor
+        dayofweek.friday => friColor
+        => color.gray
+
+dayStrOf(int t) =>
+    int dow = nyDow(t)
+    switch dow
+        dayofweek.monday => "Mon"
+        dayofweek.tuesday => "Tue"
+        dayofweek.wednesday => "Wed"
+        dayofweek.thursday => "Thu"
+        dayofweek.friday => "Fri"
+        => ""
+
+midStyle() =>
+    midline_style == "Dashed" ? line.style_dashed : midline_style == "Dotted" ? line.style_dotted : line.style_solid
+
+barTime = timeframe.in_seconds(timeframe.period) * 1000
+extended_time = time + bufferBars * barTime
+showOrgVisuals = not onlyShowPD and not onlyShowOvFVG and not onlyShowDispRefl
+showDispReflVisuals = not onlyShowPD and not onlyShowOvFVG
+showStdFvgVisuals = showOrgVisuals and boxesToShow > 0
+useNativeBars = use_chart_tf or timeframe.in_seconds() == 60
+
+clockInRth(int t) =>
+    int m = hour(t, tz) * 60 + minute(t, tz)
+    m >= 9 * 60 + 30 and m < 16 * 60 + 15
+
+inMacroWindow(int t) =>
+    int mins = hour(t, tz) * 60 + minute(t, tz)
+    int mm = minute(t, tz)
+    bool crossHour = mm >= 50 or mm <= 10
+    bool lateDay = mins >= 15 * 60 + 15 and mins <= 15 * 60 + 45
+    crossHour or lateDay
+
+bool sessRth = not na(time(timeframe.period, rth_session, tz))
+inRTH = sessRth or (includeHolidayWeeks and clockInRth(time))
+rthStart = inRTH and not inRTH[1]
+
+detectFvg() =>
+    float minGap = minFvgSize * syminfo.mintick
+    bool bullGap = low > high[2] and (low - high[2]) >= minGap
+    bool bearGap = high < low[2] and (low[2] - high) >= minGap
+    float fvgTop = na
+    float fvgBot = na
+    bool isBull = false
+    if bullGap
+        fvgTop := low
+        fvgBot := high[2]
+        if math.max(close[2], open[2]) < math.min(close[1], open[1])
+            fvgBot := math.max(close[2], open[2])
+        if math.max(close[1], open[1]) < math.min(close, open)
+            fvgTop := math.min(close, open)
+        isBull := true
+    else if bearGap
+        fvgTop := low[2]
+        fvgBot := high
+        if math.min(close[2], open[2]) > math.max(close[1], open[1])
+            fvgTop := math.min(close[2], open[2])
+        if math.min(close[1], open[1]) > math.max(close, open)
+            fvgBot := math.max(close, open)
+        isBull := false
+    [bullGap or bearGap, isBull, fvgTop, fvgBot]
+
+[boolFVG, isBullFVG, fTop, fBot] = detectFvg()
+
+inRthTs(int t) =>
+    clockInRth(t)
+
+fvgFrom(float h0, float l0, float o0, float c0, float h1, float l1, float o1, float c1, float h2, float l2, float o2, float c2) =>
+    float minGap = minFvgSize * syminfo.mintick
+    bool bullGap = l0 > h2 and (l0 - h2) >= minGap
+    bool bearGap = h0 < l2 and (l2 - h0) >= minGap
+    float fvgTop = na
+    float fvgBot = na
+    bool isBull = false
+    if bullGap
+        fvgTop := l0
+        fvgBot := h2
+        if math.max(c2, o2) < math.min(c1, o1)
+            fvgBot := math.max(c2, o2)
+        if math.max(c1, o1) < math.min(c0, o0)
+            fvgTop := math.min(c0, o0)
+        isBull := true
+    else if bearGap
+        fvgTop := l2
+        fvgBot := h0
+        if math.min(c2, o2) > math.max(c1, o1)
+            fvgTop := math.min(c2, o2)
+        if math.min(c1, o1) > math.max(c0, o0)
+            fvgBot := math.max(c0, o0)
+        isBull := false
+    [bullGap or bearGap, isBull, fvgTop, fvgBot]
+
+// Displacement: take out the nearest swing still in front of the 3-candle FVG run.
+// requireCloseBeyond: a candle in the run must CLOSE through that swing (wick-only fails).
+priorExtreme(float[] arr, bool wantMax) =>
+    float out = float(na)
+    int n = arr.size()
+    if n > 2
+        int fromIdx = math.max(0, n - 2 - swingLookback)
+        int endIdx = n - 3
+        if endIdx >= fromIdx
+            out := arr.get(fromIdx)
+            if endIdx > fromIdx
+                for i = fromIdx + 1 to endIdx
+                    out := wantMax ? math.max(out, arr.get(i)) : math.min(out, arr.get(i))
+    out
+
+hasDispOC(bool isBull, float midOpen, float midClose, float midHigh, float midLow, float priorHigh, float priorLow) =>
+    float minBody = minDispBodyTicks * syminfo.mintick
+    bool energyOk = minDispBodyTicks == 0 or math.abs(midClose - midOpen) >= minBody
+    bool ok = false
+    if energyOk and not na(priorHigh) and not na(priorLow)
+        if isBull
+            ok := requireCloseBeyond ? midClose > priorHigh : midHigh > priorHigh
+        else
+            ok := requireCloseBeyond ? midClose < priorLow : midLow < priorLow
+    ok
+
+pushSwingWindow(float[] arr, float v, int maxN) =>
+    arr.push(v)
+    while arr.size() > maxN
+        arr.shift()
+
+var bool waiting = true
+var bool found1mDay = false
+var int found1mDate = int(na)
+var float pH1 = float(na)
+var float pL1 = float(na)
+var float pO1 = float(na)
+var float pC1 = float(na)
+var float pH2 = float(na)
+var float pL2 = float(na)
+var float pO2 = float(na)
+var float pC2 = float(na)
+var int pT1 = int(na)
+var int pT2 = int(na)
+var bool hit1m = false
+var bool bull1m = false
+var float top1m = float(na)
+var float bot1m = float(na)
+var int t1m = int(na)
+
+// 1m displacement state (independent of standard 1st FVG)
+var bool found1mDispDay = false
+var int found1mDispDate = int(na)
+var bool hit1mDisp = false
+var bool bull1mDisp = false
+var float top1mDisp = float(na)
+var float bot1mDisp = float(na)
+var int t1mDisp = int(na)
+var float[] swHi1m = array.new_float()
+var float[] swLo1m = array.new_float()
+var float[] winH1m = array.new_float()
+var float[] winL1m = array.new_float()
+var float ppH = float(na)
+var float ppL = float(na)
+var float pppH = float(na)
+var float pppL = float(na)
+
+// 1m reflection state
+var bool found1mReflDay = false
+var int found1mReflDate = int(na)
+var bool hit1mRefl = false
+var bool bull1mRefl = false
+var float top1mRefl = float(na)
+var float bot1mRefl = float(na)
+var int t1mRefl = int(na)
+var bool have1mRef = false
+var bool ref1mBull = false
+var int ref1mT = int(na)
+var bool ref1mIsDisp = false
+
+if rthStart
+    waiting := true
+
+hit1m := false
+hit1mDisp := false
+hit1mRefl := false
+bool ov1mHit = false
+bool ov1mBull = false
+float ov1mTop = float(na)
+float ov1mBot = float(na)
+int ov1mT = int(na)
+if not useNativeBars and show_indicator
+    [hs, ls, os, cs, ts] = request.security_lower_tf(syminfo.tickerid, "1", [high, low, open, close, time])
+    if not na(ts) and ts.size() > 0
+        int d0 = year(ts.get(ts.size() - 1), tz) * 10000 + month(ts.get(ts.size() - 1), tz) * 100 + dayofmonth(ts.get(ts.size() - 1), tz)
+        if na(found1mDate) or found1mDate != d0
+            found1mDate := d0
+            found1mDay := false
+            pH1 := na
+            pL1 := na
+            pO1 := na
+            pC1 := na
+            pH2 := na
+            pL2 := na
+            pO2 := na
+            pC2 := na
+            pT1 := int(na)
+            pT2 := int(na)
+        if na(found1mDispDate) or found1mDispDate != d0
+            found1mDispDate := d0
+            found1mDispDay := false
+            swHi1m.clear()
+            swLo1m.clear()
+            winH1m.clear()
+            winL1m.clear()
+            ppH := na
+            ppL := na
+            pppH := na
+            pppL := na
+        if na(found1mReflDate) or found1mReflDate != d0
+            found1mReflDate := d0
+            found1mReflDay := false
+            have1mRef := false
+            ref1mIsDisp := false
+            ref1mT := int(na)
+        if hs.size() > 0
+            for i = 0 to hs.size() - 1
+                float h0 = hs.get(i)
+                float l0 = ls.get(i)
+                float o0 = os.get(i)
+                float c0 = cs.get(i)
+                int t0 = ts.get(i)
+                bool midOk = not na(pT1) and (hour(pT1, tz) * 60 + minute(pT1, tz)) >= 9 * 60 + 31
+                if not na(pH1) and not na(pH2) and inRthTs(t0) and midOk
+                    [ok, isB, tp, bt] = fvgFrom(h0, l0, o0, c0, pH1, pL1, pO1, pC1, pH2, pL2, pO2, pC2)
+                    if ok
+                        bool hadFirstAlready = found1mDay
+                        if hadFirstAlready and (show_ov_fvg or onlyShowOvFVG) and not onlyShowPD
+                            ov1mHit := true
+                            ov1mBull := isB
+                            ov1mTop := math.max(tp, bt)
+                            ov1mBot := math.min(tp, bt)
+                            ov1mT := pT2
+                        if not found1mDay
+                            found1mDay := true
+                            hit1m := true
+                            bull1m := isB
+                            top1m := tp
+                            bot1m := bt
+                            t1m := pT2
+                            if not have1mRef
+                                have1mRef := true
+                                ref1mBull := isB
+                                ref1mT := pT2
+                                ref1mIsDisp := false
+                        bool allowMoreDisp = not onlyFirstDispPerSession or not found1mDispDay
+                        bool blockAfterRefl = noDispAfterRefl and found1mReflDay
+                        float ph1m = priorExtreme(winH1m, true)
+                        float pl1m = priorExtreme(winL1m, false)
+                        if allowMoreDisp and not blockAfterRefl and hasDispOC(isB, pO1, pC1, pH1, pL1, ph1m, pl1m)
+                            found1mDispDay := true
+                            hit1mDisp := true
+                            bull1mDisp := isB
+                            top1mDisp := tp
+                            bot1mDisp := bt
+                            t1mDisp := pT2
+                            have1mRef := true
+                            ref1mBull := isB
+                            ref1mT := pT2
+                            ref1mIsDisp := true
+                            found1mReflDay := false
+                            hit1mRefl := false
+                        if show_refl_fvg and have1mRef and not found1mReflDay and isB != ref1mBull and not na(pT2) and pT2 > ref1mT
+                            found1mReflDay := true
+                            hit1mRefl := true
+                            bull1mRefl := isB
+                            top1mRefl := tp
+                            bot1mRefl := bt
+                            t1mRefl := pT2
+                // Confirm swings after the FVG test so the pattern cannot use its own mid-bar as the swing it "takes out".
+                if not na(ppH) and not na(pppH) and inRthTs(t0)
+                    if ppH > pppH and ppH > h0
+                        pushSwingWindow(swHi1m, ppH, swingLookback)
+                    if ppL < pppL and ppL < l0
+                        pushSwingWindow(swLo1m, ppL, swingLookback)
+                pppH := ppH
+                pppL := ppL
+                ppH := h0
+                ppL := l0
+                pH2 := pH1
+                pL2 := pL1
+                pO2 := pO1
+                pC2 := pC1
+                pT2 := pT1
+                pH1 := h0
+                pL1 := l0
+                pO1 := o0
+                pC1 := c0
+                pT1 := t0
+                winH1m.push(h0)
+                winL1m.push(l0)
+                while winH1m.size() > swingLookback + 8
+                    winH1m.shift()
+                    winL1m.shift()
+
+var box[] boxArr = array.new_box()
+var line[] midArr = array.new_line()
+var line[] hiArr = array.new_line()
+var line[] loArr = array.new_line()
+var label[] labArr = array.new_label()
+var line[] qArr = array.new_line()
+var line[] eArr = array.new_line()
+var box[] monBox = array.new_box()
+var line[] monMid = array.new_line()
+var line[] monHi = array.new_line()
+var line[] monLo = array.new_line()
+var label[] monLab = array.new_label()
+var line[] monQ = array.new_line()
+var line[] monE = array.new_line()
+var box[] friBox = array.new_box()
+var line[] friMid = array.new_line()
+var line[] friHi = array.new_line()
+var line[] friLo = array.new_line()
+var label[] friLab = array.new_label()
+var line[] friQ = array.new_line()
+var line[] friE = array.new_line()
+var float[] recentHi = array.new_float()
+var float[] recentLo = array.new_float()
+var int[] recentT = array.new_int()
+
+var box[] dBoxArr = array.new_box()
+var line[] dMidArr = array.new_line()
+var line[] dHiArr = array.new_line()
+var line[] dLoArr = array.new_line()
+var label[] dLabArr = array.new_label()
+var line[] dQArr = array.new_line()
+var line[] dEArr = array.new_line()
+var box[] rBoxArr = array.new_box()
+var line[] rMidArr = array.new_line()
+var line[] rHiArr = array.new_line()
+var line[] rLoArr = array.new_line()
+var label[] rLabArr = array.new_label()
+var line[] rQArr = array.new_line()
+var line[] rEArr = array.new_line()
+
+type RthLv
+    int t
+    float hi
+    float lo
+    float mid
+    float q25
+    float q75
+    float e125
+    float e375
+    float e625
+    float e875
+var RthLv[] histLv = array.new<RthLv>()
+var bool ov_armed = true
+var int[] ovClaimed = array.new_int()
+
+type MfFvg
+    int t
+    float top
+    float bot
+    bool bull
+var MfFvg[] monFvgsAll = array.new<MfFvg>()
+var MfFvg[] friFvgsAll = array.new<MfFvg>()
+var MfFvg[] monDispAll = array.new<MfFvg>()
+var MfFvg[] friDispAll = array.new<MfFvg>()
+var MfFvg[] monReflAll = array.new<MfFvg>()
+var MfFvg[] friReflAll = array.new<MfFvg>()
+var MfFvg[] rollStdAll = array.new<MfFvg>()
+var MfFvg[] rollDispAll = array.new<MfFvg>()
+var MfFvg[] rollReflAll = array.new<MfFvg>()
+var float mfPdHi = float(na)
+var float mfPdLo = float(na)
+var int mfPdT = int(na)
+var float visPdHi = float(na)
+var float visPdLo = float(na)
+var int visPdT = int(na)
+
+var box[] monDBox = array.new_box()
+var line[] monDMid = array.new_line()
+var line[] monDHi = array.new_line()
+var line[] monDLo = array.new_line()
+var label[] monDLab = array.new_label()
+var line[] monDQ = array.new_line()
+var line[] monDE = array.new_line()
+var box[] friDBox = array.new_box()
+var line[] friDMid = array.new_line()
+var line[] friDHi = array.new_line()
+var line[] friDLo = array.new_line()
+var label[] friDLab = array.new_label()
+var line[] friDQ = array.new_line()
+var line[] friDE = array.new_line()
+var box[] monRBox = array.new_box()
+var line[] monRMid = array.new_line()
+var line[] monRHi = array.new_line()
+var line[] monRLo = array.new_line()
+var label[] monRLab = array.new_label()
+var line[] monRQ = array.new_line()
+var line[] monRE = array.new_line()
+var box[] friRBox = array.new_box()
+var line[] friRMid = array.new_line()
+var line[] friRHi = array.new_line()
+var line[] friRLo = array.new_line()
+var label[] friRLab = array.new_label()
+var line[] friRQ = array.new_line()
+var line[] friRE = array.new_line()
+
+var box[] curBox = array.new_box()
+var line[] curMid = array.new_line()
+var line[] curHi = array.new_line()
+var line[] curLo = array.new_line()
+var label[] curLab = array.new_label()
+var line[] curQ = array.new_line()
+var line[] curE = array.new_line()
+var box[] curDBox = array.new_box()
+var line[] curDMid = array.new_line()
+var line[] curDHi = array.new_line()
+var line[] curDLo = array.new_line()
+var label[] curDLab = array.new_label()
+var line[] curDQ = array.new_line()
+var line[] curDE = array.new_line()
+var box[] curRBox = array.new_box()
+var line[] curRMid = array.new_line()
+var line[] curRHi = array.new_line()
+var line[] curRLo = array.new_line()
+var label[] curRLab = array.new_label()
+var line[] curRQ = array.new_line()
+var line[] curRE = array.new_line()
+
+pushMf(MfFvg[] arr, int t, float top, float bot, bool bull) =>
+    MfFvg rec = MfFvg.new()
+    rec.t := t
+    rec.top := top
+    rec.bot := bot
+    rec.bull := bull
+    arr.push(rec)
+    while arr.size() > math.max(specialMFCount * 2 + 6, 12)
+        arr.shift()
+
+pushRoll(MfFvg[] arr, int t, float top, float bot, bool bull) =>
+    MfFvg rec = MfFvg.new()
+    rec.t := t
+    rec.top := top
+    rec.bot := bot
+    rec.bull := bull
+    arr.push(rec)
+    while arr.size() > math.max(80, isolateWeeks * 12, specialMFCount * 12)
+        arr.shift()
+
+ymdIn(int[] ys, int y) =>
+    bool hit = false
+    if ys.size() > 0
+        for i = 0 to ys.size() - 1
+            if ys.get(i) == y
+                hit := true
+    hit
+
+lastYmds(MfFvg[] src, int cursorT, int n) =>
+    int[] ys = array.new_int()
+    if src.size() > 0 and n > 0
+        int cap = ny_ymd(cursorT)
+        for i = src.size() - 1 to 0
+            int y = ny_ymd(src.get(i).t)
+            if y <= cap and not ymdIn(ys, y)
+                ys.unshift(y)
+                if ys.size() >= n
+                    break
+    ys
+
+collectYmds(MfFvg[] src, int cap, int[] ys) =>
+    if src.size() > 0
+        for i = 0 to src.size() - 1
+            int y = ny_ymd(src.get(i).t)
+            if y <= cap and not ymdIn(ys, y)
+                ys.push(y)
+
+lastSessionDays(MfFvg[] a, MfFvg[] b, MfFvg[] c, int cursorT, int n) =>
+    int[] ys = array.new_int()
+    int cap = ny_ymd(cursorT)
+    collectYmds(a, cap, ys)
+    collectYmds(b, cap, ys)
+    collectYmds(c, cap, ys)
+    if ys.size() > 1
+        ys.sort()
+    while n >= 0 and ys.size() > n
+        ys.shift()
+    ys
+
+dayHasType(MfFvg[] src, int y) =>
+    bool hit = false
+    if src.size() > 0
+        for i = 0 to src.size() - 1
+            if ny_ymd(src.get(i).t) == y
+                hit := true
+    hit
+
+mergeYmds(int[] a, int[] b) =>
+    int[] out = array.new_int()
+    if a.size() > 0
+        for i = 0 to a.size() - 1
+            int y = a.get(i)
+            if not ymdIn(out, y)
+                out.push(y)
+    if b.size() > 0
+        for i = 0 to b.size() - 1
+            int y = b.get(i)
+            if not ymdIn(out, y)
+                out.push(y)
+    out
+
+scanRollOv(int ft, float loF, float hiF, MfFvg[] arr) =>
+    bool hit = false
+    if arr.size() > 0
+        for i = 0 to arr.size() - 1
+            MfFvg o = arr.get(i)
+            if o.t < ft
+                float mid = (o.top + o.bot) / 2.0
+                float rng = o.top - o.bot
+                bool lvlIn = (o.top >= loF and o.top <= hiF) or (o.bot >= loF and o.bot <= hiF) or (mid >= loF and mid <= hiF) or (o.bot + 0.25 * rng >= loF and o.bot + 0.25 * rng <= hiF) or (o.bot + 0.75 * rng >= loF and o.bot + 0.75 * rng <= hiF)
+                bool rngOv = o.top >= loF and o.bot <= hiF
+                if lvlIn or rngOv
+                    hit := true
+                    break
+    hit
+
+nyMidnight(int t) =>
+    timestamp(tz, year(t, tz), month(t, tz), dayofmonth(t, tz), 0, 0, 0)
+
+// DST-safe Monday 00:00 NY of the week containing t.
+nyWeekStart(int t) =>
+    int t0 = nyMidnight(t)
+    int dow = nyDow(t)
+    int daysFromMon = dow == dayofweek.sunday ? 6 : dow - dayofweek.monday
+    if daysFromMon > 0
+        for i = 1 to daysFromMon
+            t0 := nyMidnight(t0 - 12 * 3600 * 1000)
+    t0
+
+nyWeekId(int t) =>
+    // Days from a fixed Monday epoch, divided by 7. Rounded so DST hour slips do not collapse two weeks.
+    int diffDays = int(math.round((nyWeekStart(t) - timestamp(tz, 1970, 1, 5, 0, 0, 0)) / 86400000.0))
+    int(math.floor(diffDays / 7.0))
+
+weeksBeforeCursor(int gapT, int cursorT) =>
+    int diffDays = int(math.round((nyWeekStart(cursorT) - nyWeekStart(gapT)) / 86400000.0))
+    int(math.round(diffDays / 7.0))
+
+weekStartBack(int t, int nWeeks) =>
+    int t0 = nyWeekStart(t)
+    if nWeeks > 0
+        for w = 1 to nWeeks
+            for d = 1 to 7
+                t0 := nyMidnight(t0 - 12 * 3600 * 1000)
+    t0
+
+weekStartForward(int t, int nWeeks) =>
+    int t0 = nyWeekStart(t)
+    if nWeeks > 0
+        for w = 1 to nWeeks
+            t0 := nyMidnight(t0 + 7 * 86400000 + 12 * 3600 * 1000)
+    t0
+
+// Week is complete after Friday 16:15 NY (or any Saturday/Sunday). Then you are "on" next week.
+rthWeekClosed(int t) =>
+    int dow = nyDow(t)
+    int rthEnd = timestamp(tz, year(t, tz), month(t, tz), dayofmonth(t, tz), 16, 15, 0)
+    int ref = (barstate.islast and ny_ymd(t) == ny_ymd(time)) ? time_close : t
+    dow == dayofweek.saturday or dow == dayofweek.sunday or (dow == dayofweek.friday and ref >= rthEnd)
+
+// Monday of the week you are trading on. After Friday close, that is NEXT Monday.
+tradingWeekStart(int cursorT) =>
+    rthWeekClosed(cursorT) ? weekStartForward(cursorT, 1) : nyWeekStart(cursorT)
+
+// ICT: last N weeks previous to the week you are trading on.
+// After Friday close (Sat morning), the week that just closed is week 1 of that lookback.
+inMfWeekWindow(int gapT, int cursorT) =>
+    int curWs = tradingWeekStart(cursorT)
+    int gapWs = nyWeekStart(gapT)
+    int oldest = weekStartBack(curWs, specialMFCount)
+    gapWs < curWs and gapWs >= oldest
+
+sameNyWeek(int a, int b) =>
+    nyWeekId(a) == nyWeekId(b)
+
+wantCurrentWeekday(int t) =>
+    int dow = nyDow(t)
+    dow == dayofweek.monday ? showCurMon : dow == dayofweek.tuesday ? showCurTue : dow == dayofweek.wednesday ? showCurWed : dow == dayofweek.thursday ? showCurThu : dow == dayofweek.friday ? showCurFri : false
+
+filterMf(MfFvg[] src, int cursorT) =>
+    MfFvg[] out = array.new<MfFvg>()
+    if src.size() > 0
+        for i = 0 to src.size() - 1
+            MfFvg o = src.get(i)
+            bool skipCur = excludeCurrentDaySpecial and session_still_open(o.t, cursorT)
+            if not skipCur and inMfWeekWindow(o.t, cursorT) and isNyMonFri(o.t)
+                out.push(o)
+    out
+
+inIsolateWeekWindow(int gapT, int cursorT) =>
+    int d = weeksBeforeCursor(gapT, cursorT)
+    d >= 0 and d < isolateWeeks
+
+filterCurWeek(MfFvg[] src, int cursorT) =>
+    MfFvg[] out = array.new<MfFvg>()
+    bool anyDay = showCurMon or showCurTue or showCurWed or showCurThu or showCurFri
+    if anyDay and src.size() > 0
+        for i = 0 to src.size() - 1
+            MfFvg o = src.get(i)
+            bool skipCur = excludeCurrentDayWeekday and session_still_open(o.t, cursorT)
+            bool weekOk = isolateWeekdays ? inIsolateWeekWindow(o.t, cursorT) : sameNyWeek(o.t, cursorT)
+            if not skipCur and weekOk and wantCurrentWeekday(o.t)
+                out.push(o)
+    out
+
+shownStdFirst(MfFvg o, int cursorT) =>
+    int y = ny_ymd(o.t)
+    bool tooNew = y > ny_ymd(cursorT)
+    bool byIso = false
+    bool byMf = false
+    bool byHist = false
+    if not tooNew
+        bool anyDay = showCurMon or showCurTue or showCurWed or showCurThu or showCurFri
+        bool weekOk = isolateWeekdays ? inIsolateWeekWindow(o.t, cursorT) : sameNyWeek(o.t, cursorT)
+        byIso := anyDay and wantCurrentWeekday(o.t) and weekOk
+        byMf := showSpecialMF and isNyMonFri(o.t) and inMfWeekWindow(o.t, cursorT)
+        if boxesToShow > 0
+            int[] ys = lastSessionDays(rollStdAll, rollDispAll, rollReflAll, cursorT, boxesToShow)
+            bool hideDup = showSpecialMF and isNyMonFri(o.t) and (sameNyWeek(o.t, cursorT) or inMfWeekWindow(o.t, cursorT))
+            byHist := ymdIn(ys, y) and not hideDup
+    byIso or byMf or byHist
+
+sameTInRoll(MfFvg[] arr, int t) =>
+    bool hit = false
+    if arr.size() > 0
+        for i = 0 to arr.size() - 1
+            if arr.get(i).t == t
+                hit := true
+    hit
+
+shownDispFirst(MfFvg o, int cursorT) =>
+    show_disp_fvg and not sameTInRoll(rollStdAll, o.t) and shownStdFirst(o, cursorT)
+
+shownReflFirst(MfFvg o, int cursorT) =>
+    show_refl_fvg and shownStdFirst(o, cursorT)
+
+scanVisibleStdOv(int ft, float loF, float hiF, int cursorT) =>
+    bool hit = false
+    if rollStdAll.size() > 0
+        for i = 0 to rollStdAll.size() - 1
+            MfFvg o = rollStdAll.get(i)
+            if o.t < ft and shownStdFirst(o, cursorT)
+                float mid = (o.top + o.bot) / 2.0
+                float rng = o.top - o.bot
+                bool lvlIn = (o.top >= loF and o.top <= hiF) or (o.bot >= loF and o.bot <= hiF) or (mid >= loF and mid <= hiF) or (o.bot + 0.25 * rng >= loF and o.bot + 0.25 * rng <= hiF) or (o.bot + 0.75 * rng >= loF and o.bot + 0.75 * rng <= hiF) or (o.bot + 0.125 * rng >= loF and o.bot + 0.125 * rng <= hiF) or (o.bot + 0.375 * rng >= loF and o.bot + 0.375 * rng <= hiF) or (o.bot + 0.625 * rng >= loF and o.bot + 0.625 * rng <= hiF) or (o.bot + 0.875 * rng >= loF and o.bot + 0.875 * rng <= hiF)
+                bool rngOv = o.top >= loF and o.bot <= hiF
+                if lvlIn or rngOv
+                    hit := true
+                    break
+    hit
+
+fvgTouchesHist(int ft, float loF, float hiF) =>
+    bool hit = false
+    float minOv = ov_min * syminfo.mintick
+    if (hiF - loF) >= minOv
+        if ov_visible_only
+            hit := scanVisibleStdOv(ft, loF, hiF, time)
+        else
+            if histLv.size() > 0
+                for lv in histLv
+                    if lv.t < ft
+                        bool lvlIn = (lv.hi >= loF and lv.hi <= hiF) or (lv.lo >= loF and lv.lo <= hiF) or (lv.mid >= loF and lv.mid <= hiF) or (lv.q25 >= loF and lv.q25 <= hiF) or (lv.q75 >= loF and lv.q75 <= hiF) or (lv.e125 >= loF and lv.e125 <= hiF) or (lv.e375 >= loF and lv.e375 <= hiF) or (lv.e625 >= loF and lv.e625 <= hiF) or (lv.e875 >= loF and lv.e875 <= hiF)
+                        bool rngOv = lv.hi >= loF and lv.lo <= hiF
+                        if lvlIn or rngOv
+                            hit := true
+                            break
+            if not hit
+                hit := scanRollOv(ft, loF, hiF, rollStdAll) or scanRollOv(ft, loF, hiF, rollDispAll) or scanRollOv(ft, loF, hiF, rollReflAll)
+    hit
+
+ovClaimedHas(int t) =>
+    bool hit = false
+    if ovClaimed.size() > 0
+        for i = 0 to ovClaimed.size() - 1
+            if ovClaimed.get(i) == t
+                hit := true
+    hit
+
+levelsOverlap(float top, float bot, float loF, float hiF) =>
+    float mid = (top + bot) / 2.0
+    float rng = top - bot
+    bool lvlIn = (top >= loF and top <= hiF) or (bot >= loF and bot <= hiF) or (mid >= loF and mid <= hiF) or (bot + 0.25 * rng >= loF and bot + 0.25 * rng <= hiF) or (bot + 0.75 * rng >= loF and bot + 0.75 * rng <= hiF) or (bot + 0.125 * rng >= loF and bot + 0.125 * rng <= hiF) or (bot + 0.375 * rng >= loF and bot + 0.375 * rng <= hiF) or (bot + 0.625 * rng >= loF and bot + 0.625 * rng <= hiF) or (bot + 0.875 * rng >= loF and bot + 0.875 * rng <= hiF)
+    lvlIn or (top >= loF and bot <= hiF)
+
+// True if this FVG is the first overlap for at least one visible 1st Presented FVG.
+// Claims those 1st P.FVGs so later overlaps of the same box are skipped.
+firstOverlapForAnyStd(int ft, float loF, float hiF) =>
+    bool ok = false
+    float minOv = ov_min * syminfo.mintick
+    if (hiF - loF) >= minOv
+        if rollStdAll.size() > 0
+            for i = 0 to rollStdAll.size() - 1
+                MfFvg o = rollStdAll.get(i)
+                bool tgtOk = ov_visible_only ? shownStdFirst(o, time) : true
+                if o.t < ft and tgtOk and levelsOverlap(o.top, o.bot, loF, hiF)
+                    if not ov_first_only or not ovClaimedHas(o.t)
+                        ok := true
+                        if ov_first_only and not ovClaimedHas(o.t)
+                            ovClaimed.push(o.t)
+        if show_disp_fvg and rollDispAll.size() > 0
+            for i = 0 to rollDispAll.size() - 1
+                MfFvg o = rollDispAll.get(i)
+                bool tgtOk = ov_visible_only ? shownDispFirst(o, time) : not sameTInRoll(rollStdAll, o.t)
+                if o.t < ft and tgtOk and levelsOverlap(o.top, o.bot, loF, hiF)
+                    if not ov_first_only or not ovClaimedHas(o.t)
+                        ok := true
+                        if ov_first_only and not ovClaimedHas(o.t)
+                            ovClaimed.push(o.t)
+        if show_refl_fvg and rollReflAll.size() > 0
+            for i = 0 to rollReflAll.size() - 1
+                MfFvg o = rollReflAll.get(i)
+                bool tgtOk = ov_visible_only ? shownReflFirst(o, time) : true
+                if o.t < ft and tgtOk and levelsOverlap(o.top, o.bot, loF, hiF)
+                    if not ov_first_only or not ovClaimedHas(o.t)
+                        ok := true
+                        if ov_first_only and not ovClaimedHas(o.t)
+                            ovClaimed.push(o.t)
+    ok
+
+
+weekIdInArr(MfFvg[] arr, int wid) =>
+    bool hit = false
+    if arr.size() > 0
+        for i = 0 to arr.size() - 1
+            if nyWeekId(arr.get(i).t) == wid
+                hit := true
+    hit
+
+pickWeekStandIn(MfFvg[] src, int wid, int cursorT, bool wantFirst) =>
+    bool found = false
+    int bestT = wantFirst ? 2147483647 : 0
+    float pTop = float(na)
+    float pBot = float(na)
+    bool pBull = false
+    int pT = int(na)
+    if src.size() > 0
+        for i = 0 to src.size() - 1
+            MfFvg o = src.get(i)
+            bool skipCur = excludeCurrentDaySpecial and session_still_open(o.t, cursorT)
+            if not skipCur and nyWeekId(o.t) == wid
+                bool better = wantFirst ? o.t < bestT : o.t >= bestT
+                if better
+                    found := true
+                    bestT := o.t
+                    pT := o.t
+                    pTop := o.top
+                    pBot := o.bot
+                    pBull := o.bull
+    MfFvg picked = MfFvg.new()
+    if found
+        picked.t := pT
+        picked.top := pTop
+        picked.bot := pBot
+        picked.bull := pBull
+    else
+        picked.t := int(na)
+    picked
+
+fillHolidayMf(MfFvg[] existing, MfFvg[] rollSrc, int cursorT, bool mondaySide) =>
+    MfFvg[] out = array.new<MfFvg>()
+    if existing.size() > 0
+        for i = 0 to existing.size() - 1
+            out.push(existing.get(i))
+    if includeHolidayWeeks
+        int curW = nyWeekId(tradingWeekStart(cursorT))
+        for w = 1 to specialMFCount
+            int wid = curW - w
+            if not weekIdInArr(out, wid)
+                MfFvg sub = pickWeekStandIn(rollSrc, wid, cursorT, mondaySide)
+                bool sideOk = mondaySide ? isNyMonday(sub.t) : isNyFriday(sub.t)
+                if not na(sub.t) and sideOk
+                    out.push(sub)
+    out
+
+fillHolidayCurWeek(MfFvg[] existing, MfFvg[] rollSrc, int cursorT) =>
+    MfFvg[] out = array.new<MfFvg>()
+    if existing.size() > 0
+        for i = 0 to existing.size() - 1
+            out.push(existing.get(i))
+    if includeHolidayWeeks and showCurMon
+        int wid = nyWeekId(cursorT)
+        if not weekIdInArr(out, wid)
+            MfFvg sub = pickWeekStandIn(rollSrc, wid, cursorT, true)
+            if not na(sub.t) and isNyMonday(sub.t)
+                bool skipCur = excludeCurrentDayWeekday and session_still_open(sub.t, cursorT)
+                if not skipCur
+                    out.push(sub)
+    out
+
+mfHasT(MfFvg[] arr, int t) =>
+    bool hit = false
+    if arr.size() > 0
+        for i = 0 to arr.size() - 1
+            if arr.get(i).t == t
+                hit := true
+    hit
+
+trimLines(line[] arr, int n) =>
+    while arr.size() > n
+        line.delete(arr.shift())
+
+clearLines(line[] arr) =>
+    while arr.size() > 0
+        line.delete(arr.shift())
+
+clearBoxes(box[] arr) =>
+    while arr.size() > 0
+        box.delete(arr.shift())
+
+clearLabels(label[] arr) =>
+    while arr.size() > 0
+        label.delete(arr.shift())
+
+clearSet(box[] bx, line[] md, line[] hi, line[] lo, label[] lb, line[] q, line[] e) =>
+    clearBoxes(bx)
+    clearLines(md)
+    clearLines(hi)
+    clearLines(lo)
+    clearLabels(lb)
+    clearLines(q)
+    clearLines(e)
+
+trimArr(box[] bx, line[] md, line[] hi, line[] lo, label[] lb, line[] q, line[] e, int n) =>
+    while bx.size() > n
+        box.delete(bx.shift())
+        if md.size() > 0
+            line.delete(md.shift())
+        if hi.size() > 0
+            line.delete(hi.shift())
+        if lo.size() > 0
+            line.delete(lo.shift())
+        if lb.size() > 0
+            label.delete(lb.shift())
+    trimLines(q, n * 2)
+    trimLines(e, n * 4)
+
+popLastSet(box[] bx, line[] md, line[] hi, line[] lo, label[] lb, line[] q, line[] e) =>
+    if bx.size() > 0
+        box.delete(bx.pop())
+    if md.size() > 0
+        line.delete(md.pop())
+    if hi.size() > 0
+        line.delete(hi.pop())
+    if lo.size() > 0
+        line.delete(lo.pop())
+    if lb.size() > 0
+        label.delete(lb.pop())
+    if q.size() > 1
+        line.delete(q.pop())
+        line.delete(q.pop())
+    else if q.size() > 0
+        line.delete(q.pop())
+    if e.size() > 3
+        line.delete(e.pop())
+        line.delete(e.pop())
+        line.delete(e.pop())
+        line.delete(e.pop())
+
+drawFvg(box[] bx, line[] md, line[] hi, line[] lo, label[] lb, line[] q, line[] e, float top, float bot, bool isBull, int keep, int xStart, bool forceDraw = false) =>
+    color dCol = dayColorOf(xStart)
+    color boxCol = isBull ? col_FVG_bull : col_FVG_bear
+    if useDayColors
+        boxCol := color.new(dCol, 85)
+    float mid = (top + bot) / 2.0
+    int x1 = xStart
+    int x2 = extendBoxRight ? extended_time : time
+    string dStr = formatDateFromTime(xStart)
+    string dayAdd = showDayInLabel ? dayStrOf(xStart) + " " : ""
+    string side = isBull ? "BULL" : "BEAR"
+    color labCol = useDayColorsForLabels ? dCol : labelColor
+    if showOrgVisuals or forceDraw
+        bx.push(box.new(x1, top, x2, bot, xloc=xloc.bar_time, bgcolor=boxCol, border_color=color.new(color.white, 70), text=showTxt ? "1st FVG " + side + " " + dStr : "", text_color=boxTxtCol, text_size=size.small))
+        if show_edges
+            hi.push(line.new(x1, top, x2, top, xloc=xloc.bar_time, color=useDayColors ? dCol : edgeCol, style=edgeStyle, width=edgeWidth))
+            lo.push(line.new(x1, bot, x2, bot, xloc=xloc.bar_time, color=useDayColors ? dCol : edgeCol, style=edgeStyle, width=edgeWidth))
+        if show_midline
+            md.push(line.new(x1, mid, x2, mid, xloc=xloc.bar_time, color=col_FVG_mid, style=midStyle()))
+        float rng = top - bot
+        color qC = useDayColors ? color.new(dCol, 50) : quartCol
+        color eC = useDayColors ? color.new(dCol, 70) : eighthCol
+        if showQuart
+            q.push(line.new(x1, bot + 0.25 * rng, x2, bot + 0.25 * rng, xloc=xloc.bar_time, color=qC, style=quartStyle, width=quartWidth))
+            q.push(line.new(x1, bot + 0.75 * rng, x2, bot + 0.75 * rng, xloc=xloc.bar_time, color=qC, style=quartStyle, width=quartWidth))
+        if showEighth
+            q125 = bot + 0.125 * rng
+            q375 = bot + 0.375 * rng
+            q625 = bot + 0.625 * rng
+            q875 = bot + 0.875 * rng
+            e.push(line.new(x1, q125, x2, q125, xloc=xloc.bar_time, color=eC, style=eighthStyle, width=eighthWidth))
+            e.push(line.new(x1, q375, x2, q375, xloc=xloc.bar_time, color=eC, style=eighthStyle, width=eighthWidth))
+            e.push(line.new(x1, q625, x2, q625, xloc=xloc.bar_time, color=eC, style=eighthStyle, width=eighthWidth))
+            e.push(line.new(x1, q875, x2, q875, xloc=xloc.bar_time, color=eC, style=eighthStyle, width=eighthWidth))
+        if showLabels
+            lb.push(label.new(x2, mid, "1st FVG " + dayAdd + dStr, xloc=xloc.bar_time, color=color.new(color.white, 100), textcolor=labCol, style=label.style_label_left, size=getLabelSize(labelSizeIn)))
+    trimArr(bx, md, hi, lo, lb, q, e, keep)
+
+drawDispFvg(box[] bx, line[] md, line[] hi, line[] lo, label[] lb, line[] q, line[] e, float top, float bot, bool isBull, int keep, int xStart) =>
+    color boxCol = isBull ? col_DISP_bull : col_DISP_bear
+    color lineCol = isBull ? dispEdgeCol : color.new(#ff1744, 10)
+    float mid = (top + bot) / 2.0
+    int x1 = xStart
+    int x2 = extendBoxRight ? extended_time : time
+    string dStr = formatDateFromTime(xStart)
+    string dayAdd = showDayInLabel ? dayStrOf(xStart) + " " : ""
+    string side = isBull ? "BULL" : "BEAR"
+    if showDispReflVisuals
+        bx.push(box.new(x1, top, x2, bot, xloc=xloc.bar_time, bgcolor=boxCol, border_color=color.new(color.white, 60), text=showTxt ? "1st FVG DISP " + side + " " + dStr : "", text_color=boxTxtCol, text_size=size.small))
+        if show_disp_edges
+            hi.push(line.new(x1, top, x2, top, xloc=xloc.bar_time, color=lineCol, style=edgeStyle, width=edgeWidth))
+            lo.push(line.new(x1, bot, x2, bot, xloc=xloc.bar_time, color=lineCol, style=edgeStyle, width=edgeWidth))
+        if show_disp_mid
+            md.push(line.new(x1, mid, x2, mid, xloc=xloc.bar_time, color=col_DISP_mid, style=midStyle()))
+        float rng = top - bot
+        if showQuart
+            q.push(line.new(x1, bot + 0.25 * rng, x2, bot + 0.25 * rng, xloc=xloc.bar_time, color=quartCol, style=quartStyle, width=quartWidth))
+            q.push(line.new(x1, bot + 0.75 * rng, x2, bot + 0.75 * rng, xloc=xloc.bar_time, color=quartCol, style=quartStyle, width=quartWidth))
+        if showEighth
+            e.push(line.new(x1, bot + 0.125 * rng, x2, bot + 0.125 * rng, xloc=xloc.bar_time, color=eighthCol, style=eighthStyle, width=eighthWidth))
+            e.push(line.new(x1, bot + 0.375 * rng, x2, bot + 0.375 * rng, xloc=xloc.bar_time, color=eighthCol, style=eighthStyle, width=eighthWidth))
+            e.push(line.new(x1, bot + 0.625 * rng, x2, bot + 0.625 * rng, xloc=xloc.bar_time, color=eighthCol, style=eighthStyle, width=eighthWidth))
+            e.push(line.new(x1, bot + 0.875 * rng, x2, bot + 0.875 * rng, xloc=xloc.bar_time, color=eighthCol, style=eighthStyle, width=eighthWidth))
+        if show_disp_labels
+            lb.push(label.new(x2, mid, "1st FVG DISP " + dayAdd + dStr, xloc=xloc.bar_time, color=color.new(color.white, 100), textcolor=isBull ? color.new(#00c853, 0) : color.new(#ff1744, 0), style=label.style_label_left, size=getLabelSize(labelSizeIn)))
+    trimArr(bx, md, hi, lo, lb, q, e, keep)
+
+drawReflFvg(box[] bx, line[] md, line[] hi, line[] lo, label[] lb, line[] q, line[] e, float top, float bot, bool isBull, int keep, int xStart) =>
+    color boxCol = isBull ? col_REFL_bull : col_REFL_bear
+    color lineCol = isBull ? color.new(#00c853, 10) : color.new(#ff1744, 10)
+    float mid = (top + bot) / 2.0
+    int x1 = xStart
+    int x2 = extendBoxRight ? extended_time : time
+    string dStr = formatDateFromTime(xStart)
+    string dayAdd = showDayInLabel ? dayStrOf(xStart) + " " : ""
+    string kind = isBull ? "BISI" : "SIBI"
+    if showDispReflVisuals
+        bx.push(box.new(x1, top, x2, bot, xloc=xloc.bar_time, bgcolor=boxCol, border_color=color.new(color.white, 60), text=showTxt ? "1st REFL " + kind + " " + dStr : "", text_color=boxTxtCol, text_size=size.small))
+        if show_refl_edges
+            hi.push(line.new(x1, top, x2, top, xloc=xloc.bar_time, color=lineCol, style=edgeStyle, width=edgeWidth))
+            lo.push(line.new(x1, bot, x2, bot, xloc=xloc.bar_time, color=lineCol, style=edgeStyle, width=edgeWidth))
+        if show_refl_mid
+            md.push(line.new(x1, mid, x2, mid, xloc=xloc.bar_time, color=col_REFL_mid, style=midStyle()))
+        float rng = top - bot
+        if showQuart
+            q.push(line.new(x1, bot + 0.25 * rng, x2, bot + 0.25 * rng, xloc=xloc.bar_time, color=quartCol, style=quartStyle, width=quartWidth))
+            q.push(line.new(x1, bot + 0.75 * rng, x2, bot + 0.75 * rng, xloc=xloc.bar_time, color=quartCol, style=quartStyle, width=quartWidth))
+        if showEighth
+            e.push(line.new(x1, bot + 0.125 * rng, x2, bot + 0.125 * rng, xloc=xloc.bar_time, color=eighthCol, style=eighthStyle, width=eighthWidth))
+            e.push(line.new(x1, bot + 0.375 * rng, x2, bot + 0.375 * rng, xloc=xloc.bar_time, color=eighthCol, style=eighthStyle, width=eighthWidth))
+            e.push(line.new(x1, bot + 0.625 * rng, x2, bot + 0.625 * rng, xloc=xloc.bar_time, color=eighthCol, style=eighthStyle, width=eighthWidth))
+            e.push(line.new(x1, bot + 0.875 * rng, x2, bot + 0.875 * rng, xloc=xloc.bar_time, color=eighthCol, style=eighthStyle, width=eighthWidth))
+        if show_refl_labels
+            lb.push(label.new(x2, mid, "1st REFL " + kind + " " + dayAdd + dStr, xloc=xloc.bar_time, color=color.new(color.white, 100), textcolor=isBull ? color.new(#00c853, 0) : color.new(#ff1744, 0), style=label.style_label_left, size=getLabelSize(labelSizeIn)))
+    trimArr(bx, md, hi, lo, lb, q, e, keep)
+
+bool fire = false
+bool fireBull = false
+float fireTop = na
+float fireBot = na
+int fireT = na
+if useNativeBars
+    int midMin = hour(time[1], tz) * 60 + minute(time[1], tz)
+    bool midOkChart = midMin >= 9 * 60 + 31
+    if show_indicator and show_fvg and waiting and inRTH and boolFVG and midOkChart
+        waiting := false
+        fire := true
+        fireBull := isBullFVG
+        fireTop := fTop
+        fireBot := fBot
+        fireT := time[2]
+else
+    if show_indicator and show_fvg and hit1m
+        fire := true
+        fireBull := bull1m
+        fireTop := top1m
+        fireBot := bot1m
+        fireT := t1m
+
+if fire
+    float top = math.max(fireTop, fireBot)
+    float bot = math.min(fireTop, fireBot)
+    bool firstIsAlsoDisp = not useNativeBars and found1mDispDay and not na(t1m) and not na(t1mDisp) and t1m == t1mDisp
+    bool fallbackStd = onlyShowDispRefl and showStdIfNoDisp and (not found1mDispDay or firstIsAlsoDisp)
+    int dow = nyDow(fireT)
+    bool mfDay = showSpecialMF and isNyMonFri(fireT)
+    pushRoll(rollStdAll, fireT, top, bot, fireBull)
+    if showSpecialMF and isNyMonFri(fireT)
+        MfFvg rec = MfFvg.new()
+        rec.t := fireT
+        rec.top := top
+        rec.bot := bot
+        rec.bull := fireBull
+        if isNyMonday(fireT)
+            monFvgsAll.push(rec)
+            while monFvgsAll.size() > math.max(specialMFCount * 2 + 6, 12)
+                monFvgsAll.shift()
+        else if isNyFriday(fireT)
+            friFvgsAll.push(rec)
+            while friFvgsAll.size() > math.max(specialMFCount * 2 + 6, 12)
+                friFvgsAll.shift()
+    if not onlyShowDispRefl or (showStdIfNoDisp and not found1mDispDay)
+        int pdN = useHistoricalCount ? math.max(boxesToShow, 1) : pdGaps
+        recentHi.push(top)
+        recentLo.push(bot)
+        recentT.push(fireT)
+        if recentHi.size() > pdN
+            recentHi.shift()
+            recentLo.shift()
+            recentT.shift()
+    float rng = top - bot
+    histLv.push(RthLv.new(fireT, top, bot, (top+bot)/2, bot+0.25*rng, bot+0.75*rng, bot+0.125*rng, bot+0.375*rng, bot+0.625*rng, bot+0.875*rng))
+    if histLv.size() > math.max(boxesToShow, 1)
+        histLv.shift()
+
+// Chart-TF swing tracking for displacement filter
+var bool waitingDisp = true
+var bool waitingRefl = true
+var bool fireDisp = false
+var bool fireDispBull = false
+var float fireDispTop = na
+var float fireDispBot = na
+var int fireDispT = na
+
+if rthStart
+    waitingDisp := true
+
+var int winNatYmd = int(na)
+if useNativeBars
+    int yNow = ny_ymd(time)
+    if na(winNatYmd) or winNatYmd != yNow
+        winNatYmd := yNow
+        winH1m.clear()
+        winL1m.clear()
+
+fireDisp := false
+if useNativeBars
+    int midMinD = hour(time[1], tz) * 60 + minute(time[1], tz)
+    bool midOkChartD = midMinD >= 9 * 60 + 31
+    bool allowChartDisp = not onlyFirstDispPerSession or waitingDisp
+    bool blockChartDispRefl = noDispAfterRefl and not waitingRefl
+    if show_indicator and show_disp_fvg and allowChartDisp and not blockChartDispRefl and inRTH and boolFVG and midOkChartD
+        float priorHighC = priorExtreme(winH1m, true)
+        float priorLowC = priorExtreme(winL1m, false)
+        if hasDispOC(isBullFVG, open[1], close[1], high[1], low[1], priorHighC, priorLowC)
+            waitingDisp := false
+            fireDisp := true
+            fireDispBull := isBullFVG
+            fireDispTop := fTop
+            fireDispBot := fBot
+            fireDispT := time[2]
+    winH1m.push(high)
+    winL1m.push(low)
+    while winH1m.size() > swingLookback + 8
+        winH1m.shift()
+        winL1m.shift()
+
+if not useNativeBars
+    if show_indicator and show_disp_fvg and hit1mDisp
+        fireDisp := true
+        fireDispBull := bull1mDisp
+        fireDispTop := top1mDisp
+        fireDispBot := bot1mDisp
+        fireDispT := t1mDisp
+
+var int dispDrawnYmd = int(na)
+var int dispDrawnN = 0
+if fireDisp
+    int dYmd = ny_ymd(fireDispT)
+    if na(dispDrawnYmd) or dispDrawnYmd != dYmd
+        dispDrawnYmd := dYmd
+        dispDrawnN := 0
+    if onlyFirstDispPerSession and dispDrawnN >= 1
+        fireDisp := false
+
+if fireDisp
+    dispDrawnN += 1
+    float dTop = math.max(fireDispTop, fireDispBot)
+    float dBot = math.min(fireDispTop, fireDispBot)
+    bool sameAsFirst = fire and not na(fireT) and fireT == fireDispT
+    bool dMfDay = showSpecialMF and isNyMonFri(fireDispT)
+    if not sameAsFirst
+        pushRoll(rollDispAll, fireDispT, dTop, dBot, fireDispBull)
+    if dMfDay and not sameAsFirst
+        if isNyMonday(fireDispT)
+            pushMf(monDispAll, fireDispT, dTop, dBot, fireDispBull)
+        else if isNyFriday(fireDispT)
+            pushMf(friDispAll, fireDispT, dTop, dBot, fireDispBull)
+    if onlyShowDispRefl
+        int pdNd = useHistoricalCount ? math.max(boxesToShow, 1) : pdGaps
+        recentHi.push(dTop)
+        recentLo.push(dBot)
+        recentT.push(fireDispT)
+        if recentHi.size() > pdNd
+            recentHi.shift()
+            recentLo.shift()
+            recentT.shift()
+
+var bool haveChartRef = false
+var bool chartRefBull = false
+var int chartRefT = int(na)
+var bool fireRefl = false
+var bool fireReflBull = false
+var float fireReflTop = na
+var float fireReflBot = na
+var int fireReflT = na
+
+if rthStart
+    waitingRefl := true
+    haveChartRef := false
+    chartRefT := int(na)
+
+fireRefl := false
+if useNativeBars
+    int midMinR = hour(time[1], tz) * 60 + minute(time[1], tz)
+    bool midOkChartR = midMinR >= 9 * 60 + 31
+    if show_indicator and inRTH and boolFVG and midOkChartR
+        if fire
+            haveChartRef := true
+            chartRefBull := fireBull
+            chartRefT := fireT
+        if fireDisp
+            haveChartRef := true
+            chartRefBull := fireDispBull
+            chartRefT := fireDispT
+            waitingRefl := true
+        if show_refl_fvg and waitingRefl and haveChartRef and isBullFVG != chartRefBull and time[2] > chartRefT
+            waitingRefl := false
+            fireRefl := true
+            fireReflBull := isBullFVG
+            fireReflTop := fTop
+            fireReflBot := fBot
+            fireReflT := time[2]
+else
+    if show_indicator and show_refl_fvg and hit1mRefl
+        fireRefl := true
+        fireReflBull := bull1mRefl
+        fireReflTop := top1mRefl
+        fireReflBot := bot1mRefl
+        fireReflT := t1mRefl
+
+if fireRefl
+    float rTop = math.max(fireReflTop, fireReflBot)
+    float rBot = math.min(fireReflTop, fireReflBot)
+    bool rMfDay = showSpecialMF and isNyMonFri(fireReflT)
+    pushRoll(rollReflAll, fireReflT, rTop, rBot, fireReflBull)
+    if rMfDay
+        if isNyMonday(fireReflT)
+            pushMf(monReflAll, fireReflT, rTop, rBot, fireReflBull)
+        else if isNyFriday(fireReflT)
+            pushMf(friReflAll, fireReflT, rTop, rBot, fireReflBull)
+    if onlyShowDispRefl
+        int pdNr = useHistoricalCount ? math.max(boxesToShow, 1) : pdGaps
+        recentHi.push(rTop)
+        recentLo.push(rBot)
+        recentT.push(fireReflT)
+        if recentHi.size() > pdNr
+            recentHi.shift()
+            recentLo.shift()
+            recentT.shift()
+
+if barstate.islast and show_indicator
+    int cursorRoll = time
+    int[] yVis = lastSessionDays(rollStdAll, rollDispAll, rollReflAll, cursorRoll, boxesToShow)
+    int pdDays = useHistoricalCount ? math.max(boxesToShow, 1) : pdGaps
+    int[] yPd = lastSessionDays(rollStdAll, rollDispAll, rollReflAll, cursorRoll, pdDays)
+    int capY = ny_ymd(cursorRoll)
+    visPdHi := float(na)
+    visPdLo := float(na)
+    visPdT := int(na)
+    if boxesToShow > 0 and not onlyShowPD
+        clearSet(boxArr, midArr, hiArr, loArr, labArr, qArr, eArr)
+        clearSet(dBoxArr, dMidArr, dHiArr, dLoArr, dLabArr, dQArr, dEArr)
+        clearSet(rBoxArr, rMidArr, rHiArr, rLoArr, rLabArr, rQArr, rEArr)
+    if rollStdAll.size() > 0
+        for i = 0 to rollStdAll.size() - 1
+            MfFvg o = rollStdAll.get(i)
+            int y = ny_ymd(o.t)
+            if y <= capY
+                bool dayHasDisp = dayHasType(rollDispAll, y)
+                bool showStd = not onlyShowDispRefl or showStdIfNoDisp or not dayHasDisp
+                if showStd and ymdIn(yPd, y)
+                    visPdHi := na(visPdHi) ? o.top : math.max(visPdHi, o.top)
+                    visPdLo := na(visPdLo) ? o.bot : math.min(visPdLo, o.bot)
+                    visPdT := na(visPdT) ? o.t : int(math.min(visPdT, o.t))
+                bool hideMfDup = showSpecialMF and isNyMonFri(o.t) and (sameNyWeek(o.t, cursorRoll) or inMfWeekWindow(o.t, cursorRoll))
+                if showStd and ymdIn(yVis, y) and boxesToShow > 0 and not onlyShowPD and not hideMfDup
+                    drawFvg(boxArr, midArr, hiArr, loArr, labArr, qArr, eArr, o.top, o.bot, o.bull, 50, o.t, onlyShowDispRefl)
+    if show_disp_fvg and rollDispAll.size() > 0
+        for i = 0 to rollDispAll.size() - 1
+            MfFvg o = rollDispAll.get(i)
+            int y = ny_ymd(o.t)
+            if y <= capY
+                if ymdIn(yPd, y)
+                    visPdHi := na(visPdHi) ? o.top : math.max(visPdHi, o.top)
+                    visPdLo := na(visPdLo) ? o.bot : math.min(visPdLo, o.bot)
+                    visPdT := na(visPdT) ? o.t : int(math.min(visPdT, o.t))
+                bool hideMfDupD = showSpecialMF and isNyMonFri(o.t) and (sameNyWeek(o.t, cursorRoll) or inMfWeekWindow(o.t, cursorRoll))
+                if ymdIn(yVis, y) and boxesToShow > 0 and not onlyShowPD and not hideMfDupD and not mfHasT(rollStdAll, o.t)
+                    drawDispFvg(dBoxArr, dMidArr, dHiArr, dLoArr, dLabArr, dQArr, dEArr, o.top, o.bot, o.bull, 50, o.t)
+    if show_refl_fvg and rollReflAll.size() > 0
+        for i = 0 to rollReflAll.size() - 1
+            MfFvg o = rollReflAll.get(i)
+            int y = ny_ymd(o.t)
+            if y <= capY
+                if ymdIn(yPd, y)
+                    visPdHi := na(visPdHi) ? o.top : math.max(visPdHi, o.top)
+                    visPdLo := na(visPdLo) ? o.bot : math.min(visPdLo, o.bot)
+                    visPdT := na(visPdT) ? o.t : int(math.min(visPdT, o.t))
+                bool hideMfDupR = showSpecialMF and isNyMonFri(o.t) and (sameNyWeek(o.t, cursorRoll) or inMfWeekWindow(o.t, cursorRoll))
+                if ymdIn(yVis, y) and boxesToShow > 0 and not onlyShowPD and not hideMfDupR
+                    drawReflFvg(rBoxArr, rMidArr, rHiArr, rLoArr, rLabArr, rQArr, rEArr, o.top, o.bot, o.bull, 50, o.t)
+
+if barstate.islast and not showSpecialMF and show_indicator
+    clearSet(monBox, monMid, monHi, monLo, monLab, monQ, monE)
+    clearSet(friBox, friMid, friHi, friLo, friLab, friQ, friE)
+    clearSet(monDBox, monDMid, monDHi, monDLo, monDLab, monDQ, monDE)
+    clearSet(friDBox, friDMid, friDHi, friDLo, friDLab, friDQ, friDE)
+    clearSet(monRBox, monRMid, monRHi, monRLo, monRLab, monRQ, monRE)
+    clearSet(friRBox, friRMid, friRHi, friRLo, friRLab, friRQ, friRE)
+
+// Replay-safe Mon/Fri redraw on the last bar (replay cursor or live last bar)
+if barstate.islast and showSpecialMF and show_indicator and not onlyShowPD
+    int cursorT = time
+    clearSet(monBox, monMid, monHi, monLo, monLab, monQ, monE)
+    clearSet(friBox, friMid, friHi, friLo, friLab, friQ, friE)
+    MfFvg[] monDraw = fillHolidayMf(filterMf(monFvgsAll, cursorT), rollStdAll, cursorT, true)
+    MfFvg[] friDraw = fillHolidayMf(filterMf(friFvgsAll, cursorT), rollStdAll, cursorT, false)
+    if monDraw.size() > 0
+        for i = 0 to monDraw.size() - 1
+            MfFvg o = monDraw.get(i)
+            drawFvg(monBox, monMid, monHi, monLo, monLab, monQ, monE, o.top, o.bot, o.bull, specialMFCount * 3 + 4, o.t, onlyShowDispRefl)
+    if friDraw.size() > 0
+        for i = 0 to friDraw.size() - 1
+            MfFvg o = friDraw.get(i)
+            drawFvg(friBox, friMid, friHi, friLo, friLab, friQ, friE, o.top, o.bot, o.bull, specialMFCount * 3 + 4, o.t, onlyShowDispRefl)
+    clearSet(monDBox, monDMid, monDHi, monDLo, monDLab, monDQ, monDE)
+    clearSet(friDBox, friDMid, friDHi, friDLo, friDLab, friDQ, friDE)
+    clearSet(monRBox, monRMid, monRHi, monRLo, monRLab, monRQ, monRE)
+    clearSet(friRBox, friRMid, friRHi, friRLo, friRLab, friRQ, friRE)
+    MfFvg[] monDDraw = fillHolidayMf(filterMf(monDispAll, cursorT), rollDispAll, cursorT, true)
+    MfFvg[] friDDraw = fillHolidayMf(filterMf(friDispAll, cursorT), rollDispAll, cursorT, false)
+    MfFvg[] monRDraw = fillHolidayMf(filterMf(monReflAll, cursorT), rollReflAll, cursorT, true)
+    MfFvg[] friRDraw = fillHolidayMf(filterMf(friReflAll, cursorT), rollReflAll, cursorT, false)
+    if monDDraw.size() > 0
+        for i = 0 to monDDraw.size() - 1
+            MfFvg o = monDDraw.get(i)
+            if not mfHasT(monDraw, o.t)
+                drawDispFvg(monDBox, monDMid, monDHi, monDLo, monDLab, monDQ, monDE, o.top, o.bot, o.bull, specialMFCount * 3 + 4, o.t)
+    if friDDraw.size() > 0
+        for i = 0 to friDDraw.size() - 1
+            MfFvg o = friDDraw.get(i)
+            if not mfHasT(friDraw, o.t)
+                drawDispFvg(friDBox, friDMid, friDHi, friDLo, friDLab, friDQ, friDE, o.top, o.bot, o.bull, specialMFCount * 3 + 4, o.t)
+    if monRDraw.size() > 0
+        for i = 0 to monRDraw.size() - 1
+            MfFvg o = monRDraw.get(i)
+            drawReflFvg(monRBox, monRMid, monRHi, monRLo, monRLab, monRQ, monRE, o.top, o.bot, o.bull, specialMFCount * 3 + 4, o.t)
+    if friRDraw.size() > 0
+        for i = 0 to friRDraw.size() - 1
+            MfFvg o = friRDraw.get(i)
+            drawReflFvg(friRBox, friRMid, friRHi, friRLo, friRLab, friRQ, friRE, o.top, o.bot, o.bull, specialMFCount * 3 + 4, o.t)
+    mfPdHi := float(na)
+    mfPdLo := float(na)
+    mfPdT := int(na)
+    if not onlyShowDispRefl or showStdIfNoDisp
+        if monDraw.size() > 0
+            for i = 0 to monDraw.size() - 1
+                MfFvg o = monDraw.get(i)
+                mfPdHi := na(mfPdHi) ? o.top : math.max(mfPdHi, o.top)
+                mfPdLo := na(mfPdLo) ? o.bot : math.min(mfPdLo, o.bot)
+                mfPdT := na(mfPdT) ? o.t : int(math.min(mfPdT, o.t))
+        if friDraw.size() > 0
+            for i = 0 to friDraw.size() - 1
+                MfFvg o = friDraw.get(i)
+                mfPdHi := na(mfPdHi) ? o.top : math.max(mfPdHi, o.top)
+                mfPdLo := na(mfPdLo) ? o.bot : math.min(mfPdLo, o.bot)
+                mfPdT := na(mfPdT) ? o.t : int(math.min(mfPdT, o.t))
+    if show_disp_fvg
+        if monDDraw.size() > 0
+            for i = 0 to monDDraw.size() - 1
+                MfFvg o = monDDraw.get(i)
+                mfPdHi := na(mfPdHi) ? o.top : math.max(mfPdHi, o.top)
+                mfPdLo := na(mfPdLo) ? o.bot : math.min(mfPdLo, o.bot)
+                mfPdT := na(mfPdT) ? o.t : int(math.min(mfPdT, o.t))
+        if friDDraw.size() > 0
+            for i = 0 to friDDraw.size() - 1
+                MfFvg o = friDDraw.get(i)
+                mfPdHi := na(mfPdHi) ? o.top : math.max(mfPdHi, o.top)
+                mfPdLo := na(mfPdLo) ? o.bot : math.min(mfPdLo, o.bot)
+                mfPdT := na(mfPdT) ? o.t : int(math.min(mfPdT, o.t))
+    if show_refl_fvg
+        if monRDraw.size() > 0
+            for i = 0 to monRDraw.size() - 1
+                MfFvg o = monRDraw.get(i)
+                mfPdHi := na(mfPdHi) ? o.top : math.max(mfPdHi, o.top)
+                mfPdLo := na(mfPdLo) ? o.bot : math.min(mfPdLo, o.bot)
+                mfPdT := na(mfPdT) ? o.t : int(math.min(mfPdT, o.t))
+        if friRDraw.size() > 0
+            for i = 0 to friRDraw.size() - 1
+                MfFvg o = friRDraw.get(i)
+                mfPdHi := na(mfPdHi) ? o.top : math.max(mfPdHi, o.top)
+                mfPdLo := na(mfPdLo) ? o.bot : math.min(mfPdLo, o.bot)
+                mfPdT := na(mfPdT) ? o.t : int(math.min(mfPdT, o.t))
+    if not na(mfPdHi)
+        visPdHi := na(visPdHi) ? mfPdHi : math.max(visPdHi, mfPdHi)
+        visPdLo := na(visPdLo) ? mfPdLo : math.min(visPdLo, mfPdLo)
+        visPdT := na(visPdT) ? mfPdT : int(math.min(visPdT, mfPdT))
+
+bool anyCurWeekDay = showCurMon or showCurTue or showCurWed or showCurThu or showCurFri
+if barstate.islast and show_indicator
+    clearSet(curBox, curMid, curHi, curLo, curLab, curQ, curE)
+    clearSet(curDBox, curDMid, curDHi, curDLo, curDLab, curDQ, curDE)
+    clearSet(curRBox, curRMid, curRHi, curRLo, curRLab, curRQ, curRE)
+    if anyCurWeekDay
+        int cursorCw = time
+        MfFvg[] rawStd = filterCurWeek(rollStdAll, cursorCw)
+        MfFvg[] rawDisp = filterCurWeek(rollDispAll, cursorCw)
+        MfFvg[] rawRefl = filterCurWeek(rollReflAll, cursorCw)
+        MfFvg[] cwStd = isolateWeekdays ? rawStd : fillHolidayCurWeek(rawStd, rollStdAll, cursorCw)
+        MfFvg[] cwDisp = isolateWeekdays ? rawDisp : fillHolidayCurWeek(rawDisp, rollDispAll, cursorCw)
+        MfFvg[] cwRefl = isolateWeekdays ? rawRefl : fillHolidayCurWeek(rawRefl, rollReflAll, cursorCw)
+        if cwStd.size() > 0
+            for i = 0 to cwStd.size() - 1
+                MfFvg o = cwStd.get(i)
+                bool dayHasDispCw = dayHasType(rollDispAll, ny_ymd(o.t))
+                bool showStdCw = not onlyShowDispRefl or showStdIfNoDisp or not dayHasDispCw
+                if showStdCw
+                    visPdHi := na(visPdHi) ? o.top : math.max(visPdHi, o.top)
+                    visPdLo := na(visPdLo) ? o.bot : math.min(visPdLo, o.bot)
+                    visPdT := na(visPdT) ? o.t : int(math.min(visPdT, o.t))
+                    if not onlyShowPD
+                        drawFvg(curBox, curMid, curHi, curLo, curLab, curQ, curE, o.top, o.bot, o.bull, math.max(isolateWeeks * 3, 8), o.t, onlyShowDispRefl)
+        if show_disp_fvg and cwDisp.size() > 0
+            for i = 0 to cwDisp.size() - 1
+                MfFvg o = cwDisp.get(i)
+                if not mfHasT(cwStd, o.t)
+                    visPdHi := na(visPdHi) ? o.top : math.max(visPdHi, o.top)
+                    visPdLo := na(visPdLo) ? o.bot : math.min(visPdLo, o.bot)
+                    visPdT := na(visPdT) ? o.t : int(math.min(visPdT, o.t))
+                    if not onlyShowPD
+                        drawDispFvg(curDBox, curDMid, curDHi, curDLo, curDLab, curDQ, curDE, o.top, o.bot, o.bull, math.max(isolateWeeks * 3, 8), o.t)
+        if show_refl_fvg and cwRefl.size() > 0
+            for i = 0 to cwRefl.size() - 1
+                MfFvg o = cwRefl.get(i)
+                visPdHi := na(visPdHi) ? o.top : math.max(visPdHi, o.top)
+                visPdLo := na(visPdLo) ? o.bot : math.min(visPdLo, o.bot)
+                visPdT := na(visPdT) ? o.t : int(math.min(visPdT, o.t))
+                if not onlyShowPD
+                    drawReflFvg(curRBox, curRMid, curRHi, curRLo, curRLab, curRQ, curRE, o.top, o.bot, o.bull, math.max(isolateWeeks * 3, 8), o.t)
+
+extLines(line[] arr, int xt) =>
+    if arr.size() > 0
+        for i = 0 to arr.size() - 1
+            line.set_x2(arr.get(i), xt)
+
+extendSet(box[] bx, line[] md, line[] hi, line[] lo, label[] lb, line[] q, line[] e, int xt) =>
+    if bx.size() > 0
+        for i = 0 to bx.size() - 1
+            box.set_right(bx.get(i), xt)
+    extLines(md, xt)
+    extLines(hi, xt)
+    extLines(lo, xt)
+    extLines(q, xt)
+    extLines(e, xt)
+    if lb.size() > 0
+        for i = 0 to lb.size() - 1
+            label.set_x(lb.get(i), xt)
+
+if extendBoxRight and show_indicator
+    extendSet(boxArr, midArr, hiArr, loArr, labArr, qArr, eArr, extended_time)
+    extendSet(monBox, monMid, monHi, monLo, monLab, monQ, monE, extended_time)
+    extendSet(friBox, friMid, friHi, friLo, friLab, friQ, friE, extended_time)
+    extendSet(dBoxArr, dMidArr, dHiArr, dLoArr, dLabArr, dQArr, dEArr, extended_time)
+    extendSet(rBoxArr, rMidArr, rHiArr, rLoArr, rLabArr, rQArr, rEArr, extended_time)
+    extendSet(monDBox, monDMid, monDHi, monDLo, monDLab, monDQ, monDE, extended_time)
+    extendSet(friDBox, friDMid, friDHi, friDLo, friDLab, friDQ, friDE, extended_time)
+    extendSet(monRBox, monRMid, monRHi, monRLo, monRLab, monRQ, monRE, extended_time)
+    extendSet(friRBox, friRMid, friRHi, friRLo, friRLab, friRQ, friRE, extended_time)
+    extendSet(curBox, curMid, curHi, curLo, curLab, curQ, curE, extended_time)
+    extendSet(curDBox, curDMid, curDHi, curDLo, curDLab, curDQ, curDE, extended_time)
+    extendSet(curRBox, curRMid, curRHi, curRLo, curRLab, curRQ, curRE, extended_time)
+
+
+drawOvBox(int x1, float tp, float bt, bool isBull) =>
+    color bg = isBull ? ov_bull : ov_bear
+    int x2 = x1 + ov_ext
+    box.new(x1, tp, x2, bt, bgcolor=bg, border_color=color.new(color.white, 70), xloc=xloc.bar_index)
+    if ov_mid
+        string st = ov_mid_style == "Dashed" ? line.style_dashed : ov_mid_style == "Dotted" ? line.style_dotted : line.style_solid
+        line.new(x1, (tp + bt) / 2, x2, (tp + bt) / 2, color=ov_mid_col, style=st, xloc=xloc.bar_index)
+
+if rthStart
+    ov_armed := true
+    ovClaimed.clear()
+
+ov_hit = false
+bool ovOn = (show_ov_fvg or onlyShowOvFVG) and not onlyShowPD and show_indicator
+if ovOn and useNativeBars and boolFVG and rollStdAll.size() > 0
+    bool macOkN = not ov_macros_only or inMacroWindow(time[2])
+    if macOkN
+        ov_hit := firstOverlapForAnyStd(time[2], math.min(fTop, fBot), math.max(fTop, fBot))
+
+if ovOn and useNativeBars and boolFVG and ov_hit
+    drawOvBox(bar_index - 2, math.max(fTop, fBot), math.min(fTop, fBot), isBullFVG)
+
+if ovOn and not useNativeBars and ov1mHit and (not ov_macros_only or inMacroWindow(ov1mT)) and firstOverlapForAnyStd(ov1mT, ov1mBot, ov1mTop)
+    drawOvBox(bar_index - 2, ov1mTop, ov1mBot, ov1mBull)
+
+var table pdTable = table.new(getTablePosition(pdTablePosition), 1, 1, bgcolor=color.gray, border_width=1, border_color=color.black)
+bool useVisPd = not na(visPdHi) and not na(visPdLo)
+if (showPDTable or onlyShowPD) and (useVisPd or recentHi.size() > 0) and show_indicator
+    float pdHH = useVisPd ? visPdHi : recentHi.max()
+    float pdLL = useVisPd ? visPdLo : recentLo.min()
+    float pdRange = pdHH - pdLL
+    float pdMidv = pdLL + pdRange * 0.5
+    float pdPercent = pdRange != 0 ? (close - pdMidv) / (pdRange / 2) * 100 : na
+    string pdStatus = pdPercent > 0 ? "Premium" : "Discount"
+    color pdBg = pdPercent > 0 ? color.green : color.red
+    string pdDisplay = switch pdDisplayMode
+        "Status" => pdStatus
+        "Percentage" => str.tostring(math.abs(pdPercent), "#.#") + "%"
+        "Both" => pdStatus + " (" + str.tostring(math.abs(pdPercent), "#.#") + "%)"
+        => pdStatus
+    table.cell(pdTable, 0, 0, pdDisplay, text_color=color.white, bgcolor=pdBg, text_size=getLabelSize(pdTableSize))
+
+var line pdLnHigh = na
+var line pdLnLow = na
+var line pdLnMid = na
+var line pdLn25 = na
+var line pdLn75 = na
+var line pdLn125 = na
+var line pdLn375 = na
+var line pdLn625 = na
+var line pdLn875 = na
+var label pdLabHigh = na
+var label pdLabLow = na
+var label pdLabMid = na
+var label pdLab25 = na
+var label pdLab75 = na
+var label pdLab125 = na
+var label pdLab375 = na
+var label pdLab625 = na
+var label pdLab875 = na
+
+setLn(line ln, int x1, float y, int x2, color col, string st, int w) =>
+    line out = ln
+    if na(out)
+        out := line.new(x1, y, x2, y, xloc=xloc.bar_time, color=col, style=st, width=w)
+    else
+        line.set_xy1(out, x1, y)
+        line.set_xy2(out, x2, y)
+    out
+
+setLb(label lb, int x, float y, string txt) =>
+    label out = lb
+    if na(out)
+        out := label.new(x, y, txt, xloc=xloc.bar_time, color=color.new(color.white, 100), textcolor=pdEighthCol, style=label.style_label_left, size=getLabelSize(labelSizeIn))
+    else
+        label.set_xy(out, x, y)
+        label.set_text(out, txt)
+    out
+
+if (useVisPd or recentHi.size() > 0) and (showPDGradients or onlyShowPD) and show_indicator
+    float pdHH = useVisPd ? visPdHi : recentHi.max()
+    float pdLL = useVisPd ? visPdLo : recentLo.min()
+    float pdR = pdHH - pdLL
+    int x1 = useVisPd ? visPdT : recentT.get(0)
+    int x2 = extended_time
+    pdLnHigh := setLn(pdLnHigh, x1, pdHH, x2, pdEighthCol, pdEighthStyle, pdEighthWidth + 1)
+    pdLnLow := setLn(pdLnLow, x1, pdLL, x2, pdEighthCol, pdEighthStyle, pdEighthWidth + 1)
+    pdLnMid := setLn(pdLnMid, x1, pdLL + 0.5 * pdR, x2, pdEighthCol, line.style_dashed, pdEighthWidth)
+    pdLn25 := setLn(pdLn25, x1, pdLL + 0.25 * pdR, x2, pdEighthCol, pdEighthStyle, pdEighthWidth)
+    pdLn75 := setLn(pdLn75, x1, pdLL + 0.75 * pdR, x2, pdEighthCol, pdEighthStyle, pdEighthWidth)
+    pdLn125 := setLn(pdLn125, x1, pdLL + 0.125 * pdR, x2, pdEighthCol, pdEighthStyle, pdEighthWidth)
+    pdLn375 := setLn(pdLn375, x1, pdLL + 0.375 * pdR, x2, pdEighthCol, pdEighthStyle, pdEighthWidth)
+    pdLn625 := setLn(pdLn625, x1, pdLL + 0.625 * pdR, x2, pdEighthCol, pdEighthStyle, pdEighthWidth)
+    pdLn875 := setLn(pdLn875, x1, pdLL + 0.875 * pdR, x2, pdEighthCol, pdEighthStyle, pdEighthWidth)
+    if showPDEighthLabels
+        pdLabHigh := setLb(pdLabHigh, x2, pdHH, "PD HIGH")
+        pdLabLow := setLb(pdLabLow, x2, pdLL, "PD LOW")
+        pdLabMid := setLb(pdLabMid, x2, pdLL + 0.5 * pdR, "PD C.E.")
+        pdLab25 := setLb(pdLab25, x2, pdLL + 0.25 * pdR, "PD .25")
+        pdLab75 := setLb(pdLab75, x2, pdLL + 0.75 * pdR, "PD .75")
+        pdLab125 := setLb(pdLab125, x2, pdLL + 0.125 * pdR, "PD .125")
+        pdLab375 := setLb(pdLab375, x2, pdLL + 0.375 * pdR, "PD .375")
+        pdLab625 := setLb(pdLab625, x2, pdLL + 0.625 * pdR, "PD .625")
+        pdLab875 := setLb(pdLab875, x2, pdLL + 0.875 * pdR, "PD .875")

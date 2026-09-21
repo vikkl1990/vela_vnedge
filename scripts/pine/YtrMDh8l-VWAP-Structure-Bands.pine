@@ -1,0 +1,101 @@
+//@version=6
+indicator("VWAP Structure & Bands", shorttitle="VWAP Bands", overlay=true)
+
+//------------------------------------------------------------------------------
+// Inputs
+//------------------------------------------------------------------------------
+src = input.source(hlc3, "Source")
+bandMult = input.float(1.0, "Band Multiplier", minval=0.1, step=0.1)
+
+showBands = input.bool(true, "Show VWAP Bands")
+showFill  = input.bool(true, "Fill Bands")
+showCross = input.bool(true, "Show VWAP Crosses")
+
+//------------------------------------------------------------------------------
+// Session VWAP
+//------------------------------------------------------------------------------
+isNewSession = timeframe.change("D")
+
+var float cumulativePV = na
+var float cumulativeVolume = na
+var float cumulativePriceSquaredVolume = na
+
+if isNewSession or na(cumulativePV)
+    cumulativePV := src * volume
+    cumulativeVolume := volume
+    cumulativePriceSquaredVolume := src * src * volume
+else
+    cumulativePV += src * volume
+    cumulativeVolume += volume
+    cumulativePriceSquaredVolume += src * src * volume
+
+vwap = cumulativePV / cumulativeVolume
+
+//------------------------------------------------------------------------------
+// Volume-weighted standard deviation
+//------------------------------------------------------------------------------
+variance = cumulativePriceSquaredVolume / cumulativeVolume - vwap * vwap
+variance := math.max(variance, 0)
+
+stdev = math.sqrt(variance)
+
+//------------------------------------------------------------------------------
+// VWAP Bands
+//------------------------------------------------------------------------------
+upperBand = vwap + stdev * bandMult
+lowerBand = vwap - stdev * bandMult
+
+//------------------------------------------------------------------------------
+// VWAP Direction
+//------------------------------------------------------------------------------
+vwapRising = vwap > vwap[1]
+vwapFalling = vwap < vwap[1]
+
+//------------------------------------------------------------------------------
+// Plots
+//------------------------------------------------------------------------------
+vwapPlot = plot(
+     vwap,
+     title="VWAP",
+     linewidth=2)
+
+upperPlot = plot(
+     showBands ? upperBand : na,
+     title="Upper VWAP Band",
+     linewidth=1)
+
+lowerPlot = plot(
+     showBands ? lowerBand : na,
+     title="Lower VWAP Band",
+     linewidth=1)
+
+//------------------------------------------------------------------------------
+// Band Fill
+//------------------------------------------------------------------------------
+fill(
+     upperPlot,
+     lowerPlot,
+     title="VWAP Band",
+     color=showFill ? color.new(color.blue, 90) : na)
+
+//------------------------------------------------------------------------------
+// VWAP Crosses
+//------------------------------------------------------------------------------
+bullCross = ta.crossover(close, vwap)
+bearCross = ta.crossunder(close, vwap)
+
+plotshape(
+     showCross and bullCross,
+     title="Bullish VWAP Cross",
+     style=shape.triangleup,
+     location=location.belowbar,
+     size=size.tiny,
+     text="VWAP")
+
+plotshape(
+     showCross and bearCross,
+     title="Bearish VWAP Cross",
+     style=shape.triangledown,
+     location=location.abovebar,
+     size=size.tiny,
+     text="VWAP")

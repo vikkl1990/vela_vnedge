@@ -1,0 +1,162 @@
+//@version=6
+indicator("Market Structure Break & Retest", overlay=true, max_labels_count=500)
+
+// ─────────────────────────────────────────────────────────────
+// Inputs
+// ─────────────────────────────────────────────────────────────
+swingLength = input.int(5, "Swing Length", minval=2)
+retestBars  = input.int(12, "Retest Window", minval=1)
+showLevels  = input.bool(true, "Show Broken Levels")
+showLabels  = input.bool(true, "Show Signals")
+
+// ─────────────────────────────────────────────────────────────
+// Swing structure
+// ─────────────────────────────────────────────────────────────
+pivotHigh = ta.pivothigh(high, swingLength, swingLength)
+pivotLow  = ta.pivotlow(low, swingLength, swingLength)
+
+var float lastSwingHigh = na
+var float lastSwingLow  = na
+
+if not na(pivotHigh)
+    lastSwingHigh := pivotHigh
+
+if not na(pivotLow)
+    lastSwingLow := pivotLow
+
+// ─────────────────────────────────────────────────────────────
+// Structure breaks
+// ─────────────────────────────────────────────────────────────
+bullBreak = not na(lastSwingHigh) and close > lastSwingHigh and close[1] <= lastSwingHigh
+bearBreak = not na(lastSwingLow) and close < lastSwingLow and close[1] >= lastSwingLow
+
+// ─────────────────────────────────────────────────────────────
+// Track latest broken structures
+// ─────────────────────────────────────────────────────────────
+var float brokenResistance = na
+var float brokenSupport    = na
+
+var int resistanceBreakBar = na
+var int supportBreakBar    = na
+
+if bullBreak
+    brokenResistance := lastSwingHigh
+    resistanceBreakBar := bar_index
+
+if bearBreak
+    brokenSupport := lastSwingLow
+    supportBreakBar := bar_index
+
+// ─────────────────────────────────────────────────────────────
+// Retest detection
+// ─────────────────────────────────────────────────────────────
+supportRetest =
+     not na(brokenResistance) and
+     not na(resistanceBreakBar) and
+     bar_index > resistanceBreakBar and
+     bar_index - resistanceBreakBar <= retestBars and
+     low <= brokenResistance and
+     close > brokenResistance
+
+supportFailure =
+     not na(brokenResistance) and
+     not na(resistanceBreakBar) and
+     bar_index > resistanceBreakBar and
+     bar_index - resistanceBreakBar <= retestBars and
+     close < brokenResistance
+
+resistanceRetest =
+     not na(brokenSupport) and
+     not na(supportBreakBar) and
+     bar_index > supportBreakBar and
+     bar_index - supportBreakBar <= retestBars and
+     high >= brokenSupport and
+     close < brokenSupport
+
+resistanceFailure =
+     not na(brokenSupport) and
+     not na(supportBreakBar) and
+     bar_index > supportBreakBar and
+     bar_index - supportBreakBar <= retestBars and
+     close > brokenSupport
+
+// ─────────────────────────────────────────────────────────────
+// Visual structure levels
+// ─────────────────────────────────────────────────────────────
+plot(
+     showLevels ? brokenResistance : na,
+     title="Broken Resistance",
+     style=plot.style_linebr
+)
+
+plot(
+     showLevels ? brokenSupport : na,
+     title="Broken Support",
+     style=plot.style_linebr
+)
+
+// ─────────────────────────────────────────────────────────────
+// Signals
+// ─────────────────────────────────────────────────────────────
+plotshape(
+     showLabels and bullBreak,
+     title="Bullish Structure Break",
+     style=shape.triangleup,
+     location=location.belowbar,
+     text="Break",
+     size=size.tiny
+)
+
+plotshape(
+     showLabels and bearBreak,
+     title="Bearish Structure Break",
+     style=shape.triangledown,
+     location=location.abovebar,
+     text="Break",
+     size=size.tiny
+)
+
+plotshape(
+     showLabels and supportRetest,
+     title="Resistance Holds",
+     style=shape.circle,
+     location=location.abovebar,
+     text="Retest",
+     size=size.tiny
+)
+
+plotshape(
+     showLabels and resistanceRetest,
+     title="Support Holds",
+     style=shape.circle,
+     location=location.belowbar,
+     text="Retest",
+     size=size.tiny
+)
+
+// ─────────────────────────────────────────────────────────────
+// Alerts
+// ─────────────────────────────────────────────────────────────
+alertcondition(
+     bullBreak,
+     title="Bullish Structure Break",
+     message="Bullish market structure break detected."
+)
+
+alertcondition(
+     bearBreak,
+     title="Bearish Structure Break",
+     message="Bearish market structure break detected."
+)
+
+alertcondition(
+     supportRetest,
+     title="Resistance Holds",
+     message="Price retested broken resistance and remained above it."
+)
+
+alertcondition(
+     resistanceRetest,
+     title="Support Holds",
+     message="Price retested broken support and remained below it."
+)

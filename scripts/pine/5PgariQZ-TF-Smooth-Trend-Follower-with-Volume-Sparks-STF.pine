@@ -1,0 +1,131 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © realanthonyc https://www.tradingview.com/u/realanthonyc
+
+//@version=6
+// ----------------------------------------------------------------------
+//  TradingFlow: Smooth Trend Follower with Volume Sparks
+// ----------------------------------------------------------------------
+indicator("TradingFlow: Smooth Trend Follower with Volume Sparks (STF) v3.1.3", shorttitle = "TF: STF", overlay = true)
+
+// Inputs
+
+upDirection = -1
+downDirection = 1
+
+src = input.source(hlcc4, "Source")
+
+groupSettings = "Settings"
+useAdaptiveFactor = input.bool(true, "Use ATR-Adaptive Factor", group = groupSettings, tooltip = "Adjusts the factor using current ATR versus average ATR. The trend bands still use the script's smoothed range distance.")
+baseFactor = input.float(2.75, "Base Factor", minval = 0.05, step = 0.05, group = groupSettings, tooltip = "Sets the fixed factor and the baseline from which the adaptive factor is calculated.")
+minFactor = input.float(2.25, "Minimum Adaptive Factor", minval = 0.05, step = 0.05, group = groupSettings, active = useAdaptiveFactor)
+maxFactor = input.float(3.75, "Maximum Adaptive Factor", minval = 0.05, step = 0.05, group = groupSettings, active = useAdaptiveFactor)
+atrLength = input.int(10, "ATR Length", minval = 1, group = groupSettings, tooltip = "Used by adaptive factor calculations and the visual ATR offset.")
+atrAverageLength = input.int(16, "ATR Average Length", minval = 1, group = groupSettings, active = useAdaptiveFactor)
+rangeLength = input.int(200, "Smoothed Range Length", minval = 2, group = groupSettings, tooltip = "Hull moving-average length used to smooth each bar's high-low range.")
+
+groupVisuals = "Visuals"
+col_up = input.color(color.rgb(145, 205, 88), "Up Color", group = groupVisuals)
+col_dn = input.color(color.rgb(255, 60, 90), "Down Color", group = groupVisuals)
+showFill = input.bool(true, "Show Trend Shadow", group = groupVisuals)
+visualOffsetAtr = input.float(0.5, "Visual Offset ATR", minval = 0.0, step = 0.1, group = groupVisuals, tooltip = "Moves the plotted trend line and start marker away from candles. This does not affect trend calculations.")
+
+groupVolumeSparks = "Volume Sparks"
+showVolumeSparks = input.bool(true, "Show Volume Sparks", group = groupVolumeSparks, tooltip = "Overlays relative-volume intensity inside the trend shadow without affecting trend calculations. The layer is suppressed automatically when volume data is missing, sparse, or unvarying.")
+volumeSparkMode = input.string("Sparks", "Mode", options = ["Sparks", "Continuous"], group = groupVolumeSparks, active = showVolumeSparks, tooltip = "Sparks mode highlights only exceptional volume. Continuous mode shows a faint intensity layer on all bars.")
+volumeLookback = input.int(100, "Volume Lookback", minval = 20, group = groupVolumeSparks, active = showVolumeSparks)
+volumeSparkThreshold = input.float(85, "Spark Threshold Percentile", minval = 50, maxval = 99, step = 1, group = groupVolumeSparks, active = showVolumeSparks and volumeSparkMode == "Sparks")
+volumeSparkStrength = input.int(28, "Maximum Spark Opacity", minval = 0, maxval = 100, step = 1, group = groupVolumeSparks, active = showVolumeSparks, tooltip = "Caps the overlay opacity so volume spikes do not obscure candles.")
+
+// Core
+
+atrValue = ta.atr(atrLength)
+
+calc_trend_line(factor) =>
+    atrAverage = ta.sma(atrValue, atrAverageLength)
+    atrRatio = not na(atrAverage) and atrAverage > 0 ? atrValue / atrAverage : 1.0
+    lowerFactorLimit = math.min(minFactor, maxFactor)
+    upperFactorLimit = math.max(minFactor, maxFactor)
+    adaptiveFactor = math.max(lowerFactorLimit, math.min(upperFactorLimit, factor * atrRatio))
+    activeFactor = useAdaptiveFactor ? adaptiveFactor : factor
+    smoothedRange = ta.hma(high - low, rangeLength)
+    rangeDistance = na(smoothedRange) ? na : math.max(smoothedRange, syminfo.mintick)
+    upperBand = src + activeFactor * rangeDistance
+    lowerBand = src - activeFactor * rangeDistance
+    prevLowerBand = nz(lowerBand[1], lowerBand)
+    prevUpperBand = nz(upperBand[1], upperBand)
+
+    lowerBand := lowerBand > prevLowerBand or close[1] < prevLowerBand ? lowerBand : prevLowerBand
+    upperBand := upperBand < prevUpperBand or close[1] > prevUpperBand ? upperBand : prevUpperBand
+
+    int _direction = na
+    float trend_line = na
+    prevTrendLine = trend_line[1]
+    if na(rangeDistance[1])
+        _direction := downDirection
+    else if prevTrendLine == prevUpperBand
+        _direction := close > upperBand ? upDirection : downDirection
+    else
+        _direction := close < lowerBand ? downDirection : upDirection
+
+    trend_line := _direction == upDirection ? lowerBand : upperBand
+
+    [trend_line, _direction]
+
+[trend_line, _direction] = calc_trend_line(baseFactor)
+
+rawTrendChanged = not na(_direction[1]) and _direction != _direction[1]
+rawUpTrendStarted = rawTrendChanged and _direction == upDirection
+rawDownTrendStarted = rawTrendChanged and _direction == downDirection
+
+trendChanged = barstate.isconfirmed and rawTrendChanged
+upTrendStarted = trendChanged and _direction == upDirection
+downTrendStarted = trendChanged and _direction == downDirection
+
+visualOffset = atrValue * visualOffsetAtr
+upTrendPlot = _direction == upDirection ? trend_line - visualOffset : na
+downTrendPlot = _direction == downDirection ? trend_line + visualOffset : na
+
+safeVolume = nz(volume, 0.0)
+positiveVolumeBar = not na(volume) and volume > 0
+volumeDataCoverage = ta.sma(positiveVolumeBar ? 1.0 : 0.0, volumeLookback)
+volumeDeviation = ta.stdev(safeVolume, volumeLookback)
+volumePercentile = ta.percentrank(safeVolume, volumeLookback)
+volumeUsable = positiveVolumeBar and not na(volumeDataCoverage) and volumeDataCoverage >= 0.8 and not na(volumeDeviation) and volumeDeviation > 0 and not na(volumePercentile)
+safeVolumePercentile = volumeUsable ? volumePercentile : 0.0
+sparkRange = 100.0 - volumeSparkThreshold
+sparkIntensity = sparkRange > 0 ? math.max(0.0, math.min(1.0, (safeVolumePercentile - volumeSparkThreshold) / sparkRange)) : 0.0
+continuousIntensity = math.max(0.0, math.min(1.0, safeVolumePercentile / 100.0))
+volumeIntensity = showVolumeSparks and volumeUsable ? (volumeSparkMode == "Sparks" ? sparkIntensity : continuousIntensity) : 0.0
+maximumSparkTransparency = 100 - volumeSparkStrength
+upVolumeColor = color.from_gradient(volumeIntensity, 0.0, 1.0, color.new(col_up, 100), color.new(col_up, maximumSparkTransparency))
+downVolumeColor = color.from_gradient(volumeIntensity, 0.0, 1.0, color.new(col_dn, 100), color.new(col_dn, maximumSparkTransparency))
+
+// Plotting
+
+plotshape(upTrendStarted ? trend_line - visualOffset : na, "Uptrend Start", style = shape.circle, location = location.absolute, color = col_up, size = size.tiny, display = display.pane)
+plotshape(downTrendStarted ? trend_line + visualOffset : na, "Downtrend Start", style = shape.circle, location = location.absolute, color = col_dn, size = size.tiny, display = display.pane)
+
+up_p = plot(upTrendPlot, "Uptrend Line", color = col_up, linewidth = 2, style = plot.style_linebr, linestyle = plot.linestyle_dotted, display = display.pane)
+down_p = plot(downTrendPlot, "Downtrend Line", color = col_dn, linewidth = 2, style = plot.style_linebr, linestyle = plot.linestyle_dotted, display = display.pane)
+
+activeTrendPlot = _direction == upDirection ? upTrendPlot : downTrendPlot
+plot(activeTrendPlot, "Trend Line", color = _direction == upDirection ? col_up : col_dn, display = display.status_line, editable = false)
+
+m_p = plot(src, "Price Line", color = color(na), display = display.none, editable = false)
+
+fill(up_p, m_p, src, upTrendPlot, showFill ? color.new(col_up, 97) : color(na), showFill ? color.new(col_up, 93) : color(na), fillgaps = false)
+fill(down_p, m_p, src, downTrendPlot, showFill ? color.new(col_dn, 97) : color(na), showFill ? color.new(col_dn, 93) : color(na), fillgaps = false)
+
+// Volume overlay: strongest at the trend line, fading toward price.
+fill(up_p, m_p, src, upTrendPlot, color.new(col_up, 100), upVolumeColor, fillgaps = false)
+fill(down_p, m_p, downTrendPlot, src, downVolumeColor, color.new(col_dn, 100), fillgaps = false)
+
+plot(showVolumeSparks and volumeUsable ? volumePercentile : na, "Volume Percentile", display = display.data_window, editable = false)
+
+// Alerts
+// Alert frequency is selected in TradingView's alert dialog.
+// Standalone trend alerts use raw events; combined alerts below follow each marker's timing settings.
+
+alertcondition(rawUpTrendStarted, "STF: Uptrend Start", "STF detected an uptrend.")
+alertcondition(rawDownTrendStarted, "STF: Downtrend Start", "STF detected a downtrend.")
+alertcondition(trendChanged, "STF: Trend Change", "STF confirmed a trend change.")

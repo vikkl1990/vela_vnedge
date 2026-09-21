@@ -1,0 +1,766 @@
+//@version=6
+indicator(
+     "EMA Stack Auto Trendlines",
+     overlay=true,
+     max_lines_count=500,
+     max_labels_count=500)
+
+
+//=====================================================================
+// 1. EMA SETTINGS
+//=====================================================================
+
+groupEMA = "1. EMA Settings"
+
+ema5Length = input.int(5, "EMA 5", minval=1, group=groupEMA)
+ema12Length = input.int(12, "EMA 12", minval=1, group=groupEMA)
+ema34Length = input.int(34, "EMA 34", minval=1, group=groupEMA)
+ema50Length = input.int(50, "EMA 50", minval=1, group=groupEMA)
+ema72Length = input.int(72, "EMA 72", minval=1, group=groupEMA)
+ema89Length = input.int(89, "EMA 89", minval=1, group=groupEMA)
+
+src = input.source(hl2, "Source", group=groupEMA)
+
+
+//=====================================================================
+// 2. EMA STACK CONFIRMATION
+//=====================================================================
+
+groupStack = "2. EMA Stack Confirmation"
+
+stackConfirmationBars = input.int(
+     3,
+     "Confirmation Bars",
+     minval=1,
+     maxval=20,
+     tooltip=
+         "Number of consecutive bars the full opposite EMA stack " +
+         "must remain valid before a swing changes direction.",
+     group=groupStack)
+
+
+//=====================================================================
+// 3. SWING DEPTH FILTER
+//=====================================================================
+
+groupFilter = "3. Swing Filter"
+
+filterMode = input.string(
+     "Percent",
+     "Minimum Swing Measured In",
+     options=["ATR", "Percent", "Off"],
+     tooltip=
+         "Rejects swings that are too small. Percent travels better " +
+         "across timeframes than ATR, because the same ATR multiple " +
+         "means very different things on 5m and 1h.",
+     group=groupFilter)
+
+atrLength = input.int(14, "ATR Length", minval=1, group=groupFilter)
+
+atrMultiplier = input.float(
+     3.0,
+     "ATR Multiple",
+     minval=0.0,
+     step=0.25,
+     group=groupFilter)
+
+percentMove = input.float(
+     2.0,
+     "Percent Move",
+     minval=0.0,
+     step=0.1,
+     group=groupFilter)
+
+minimumBarsBetweenPivots = input.int(
+     5,
+     "Minimum Bars Between Pivots",
+     minval=0,
+     tooltip=
+         "Minimum distance between the previous opposite pivot " +
+         "and the new candidate pivot. Set to 0 to disable.",
+     group=groupFilter)
+
+rejectedPivotBehavior = input.string(
+     "Continue Current Swing",
+     "When A Pivot Is Rejected",
+     options=["Continue Current Swing", "Switch Anyway"],
+     tooltip=
+         "Continue Current Swing: the swing keeps running and keeps " +
+         "tracking the same extreme, so a shallow counter-move " +
+         "leaves NO pivot on either side of it. This is what you " +
+         "want in almost every case.\n\n" +
+         "Switch Anyway: the swing ends even though no pivot is " +
+         "recorded. This permits two highs in a row with no low " +
+         "between them, but it also lets the far side of a shallow " +
+         "wiggle register as a pivot.",
+     group=groupFilter)
+
+continueOnReject = rejectedPivotBehavior == "Continue Current Swing"
+
+
+//=====================================================================
+// 4. GENERAL TRENDLINE SETTINGS
+//=====================================================================
+
+groupGeneral = "4. General Trendline Settings"
+
+historicLinesToShow = input.int(
+     10,
+     "Historic Trendlines To Show",
+     minval=0,
+     maxval=50,
+     tooltip=
+         "Number of older HIGH lines and older LOW lines to keep. " +
+         "The current recent high and recent low are additional.",
+     group=groupGeneral)
+
+showHighLines = input.bool(true, "Show High Trendlines", group=groupGeneral)
+showLowLines = input.bool(true, "Show Low Trendlines", group=groupGeneral)
+showSwingPoints = input.bool(false, "Show Swing Points", group=groupGeneral)
+
+showFormingLeg = input.bool(
+     true,
+     "Show Forming Trendline",
+     tooltip=
+         "Shows the unconfirmed line from the previous confirmed " +
+         "same-side pivot to the current developing extreme.",
+     group=groupGeneral)
+
+formingLegWidth = input.int(
+     1,
+     "Forming Line Thickness",
+     minval=1,
+     maxval=5,
+     group=groupGeneral)
+
+formingTransparency = input.int(
+     50,
+     "Forming Line Transparency",
+     minval=0,
+     maxval=95,
+     group=groupGeneral)
+
+
+//=====================================================================
+// 5. RECENT HIGH TRENDLINE STYLE
+//=====================================================================
+
+groupRecentHigh = "5. Recent High Trendline"
+
+recentHighColor = input.color(color.red, "Color", group=groupRecentHigh)
+recentHighWidth = input.int(2, "Thickness", minval=1, maxval=5, group=groupRecentHigh)
+
+recentHighStyleInput = input.string(
+     "Solid",
+     "Line Type",
+     options=["Solid", "Dashed", "Dotted"],
+     group=groupRecentHigh)
+
+recentHighExtendInput = input.string(
+     "Right",
+     "Extend",
+     options=["None", "Right"],
+     group=groupRecentHigh)
+
+
+//=====================================================================
+// 6. RECENT LOW TRENDLINE STYLE
+//=====================================================================
+
+groupRecentLow = "6. Recent Low Trendline"
+
+recentLowColor = input.color(color.green, "Color", group=groupRecentLow)
+recentLowWidth = input.int(2, "Thickness", minval=1, maxval=5, group=groupRecentLow)
+
+recentLowStyleInput = input.string(
+     "Solid",
+     "Line Type",
+     options=["Solid", "Dashed", "Dotted"],
+     group=groupRecentLow)
+
+recentLowExtendInput = input.string(
+     "Right",
+     "Extend",
+     options=["None", "Right"],
+     group=groupRecentLow)
+
+
+//=====================================================================
+// 7. HISTORIC HIGH TRENDLINE STYLE
+//=====================================================================
+
+groupHistoricHigh = "7. Historic High Trendlines"
+
+historicHighColor = input.color(color.new(color.red, 60), "Color", group=groupHistoricHigh)
+historicHighWidth = input.int(1, "Thickness", minval=1, maxval=5, group=groupHistoricHigh)
+
+historicHighStyleInput = input.string(
+     "Dashed",
+     "Line Type",
+     options=["Solid", "Dashed", "Dotted"],
+     group=groupHistoricHigh)
+
+historicHighExtendInput = input.string(
+     "None",
+     "Extend",
+     options=["None", "Right"],
+     group=groupHistoricHigh)
+
+
+//=====================================================================
+// 8. HISTORIC LOW TRENDLINE STYLE
+//=====================================================================
+
+groupHistoricLow = "8. Historic Low Trendlines"
+
+historicLowColor = input.color(color.new(color.green, 60), "Color", group=groupHistoricLow)
+historicLowWidth = input.int(1, "Thickness", minval=1, maxval=5, group=groupHistoricLow)
+
+historicLowStyleInput = input.string(
+     "Dashed",
+     "Line Type",
+     options=["Solid", "Dashed", "Dotted"],
+     group=groupHistoricLow)
+
+historicLowExtendInput = input.string(
+     "None",
+     "Extend",
+     options=["None", "Right"],
+     group=groupHistoricLow)
+
+
+//=====================================================================
+// 9. CONVERT VISUAL SETTINGS
+//=====================================================================
+
+getLineStyle(string value) =>
+    value == "Dashed" ? line.style_dashed :
+     value == "Dotted" ? line.style_dotted :
+     line.style_solid
+
+getLineExtend(string value) =>
+    value == "Right" ? extend.right : extend.none
+
+recentHighStyle = getLineStyle(recentHighStyleInput)
+recentLowStyle = getLineStyle(recentLowStyleInput)
+
+historicHighStyle = getLineStyle(historicHighStyleInput)
+historicLowStyle = getLineStyle(historicLowStyleInput)
+
+recentHighExtend = getLineExtend(recentHighExtendInput)
+recentLowExtend = getLineExtend(recentLowExtendInput)
+
+historicHighExtend = getLineExtend(historicHighExtendInput)
+historicLowExtend = getLineExtend(historicLowExtendInput)
+
+
+//=====================================================================
+// 10. EMA CALCULATIONS
+//=====================================================================
+
+ema5 = ta.ema(src, ema5Length)
+ema12 = ta.ema(src, ema12Length)
+ema34 = ta.ema(src, ema34Length)
+ema50 = ta.ema(src, ema50Length)
+ema72 = ta.ema(src, ema72Length)
+ema89 = ta.ema(src, ema89Length)
+
+atrValue = ta.atr(atrLength)
+
+
+//=====================================================================
+// 11. EXACT EMA STACK CONDITIONS
+//=====================================================================
+
+bullStack =
+     ema5 > ema12 and
+     ema12 > ema34 and
+     ema34 > ema50 and
+     ema50 > ema72 and
+     ema72 > ema89
+
+bearStack =
+     ema5 < ema12 and
+     ema12 < ema34 and
+     ema34 < ema50 and
+     ema50 < ema72 and
+     ema72 < ema89
+
+
+//=====================================================================
+// 12. COUNT CONSECUTIVE STACK BARS
+//=====================================================================
+
+var int bullStackCount = 0
+var int bearStackCount = 0
+
+if bullStack
+    bullStackCount := bullStackCount + 1
+else
+    bullStackCount := 0
+
+if bearStack
+    bearStackCount := bearStackCount + 1
+else
+    bearStackCount := 0
+
+confirmedBullStack = bullStackCount >= stackConfirmationBars
+confirmedBearStack = bearStackCount >= stackConfirmationBars
+
+
+//=====================================================================
+// 13. MINIMUM SWING DISTANCE
+//=====================================================================
+
+getMinimumSwingDistance(float pivotPrice) =>
+
+    float result = 0.0
+
+    if filterMode == "ATR"
+        result := atrMultiplier * atrValue
+
+    else if filterMode == "Percent"
+        result := pivotPrice * percentMove / 100.0
+
+    result
+
+
+//=====================================================================
+// 14. TREND STATE
+//=====================================================================
+//
+//  0 = Waiting for first confirmed full EMA stack
+//  1 = Bullish swing
+// -1 = Bearish swing
+//
+// During bullish state: track EVERY candle high.
+// During bearish state: track EVERY candle low.
+//
+// Direction changes only after the COMPLETE opposite six-EMA stack
+// remains valid for stackConfirmationBars consecutive candles AND the
+// candidate pivot passes the swing filter.
+//
+// If the candidate FAILS the filter, the swing does not end. It keeps
+// running and keeps tracking the same extreme, so a shallow wiggle
+// leaves no pivot on either side of it.
+//=====================================================================
+
+var int trendState = 0
+
+
+//=====================================================================
+// 15. ACTIVE SWING EXTREMES
+//=====================================================================
+
+var float bullHigh = na
+var int bullHighBar = na
+
+var float bearLow = na
+var int bearLowBar = na
+
+
+//=====================================================================
+// 16. PREVIOUS CONFIRMED PIVOTS
+//=====================================================================
+
+var float previousHigh = na
+var int previousHighBar = na
+
+var float previousLow = na
+var int previousLowBar = na
+
+var int lastConfirmedPivotBar = na
+
+
+//=====================================================================
+// 17. TRENDLINE STORAGE
+//=====================================================================
+
+var line recentHighLine = na
+var line recentLowLine = na
+
+var line formingLine = na
+
+var array<line> historicHighLines = array.new_line()
+var array<line> historicLowLines = array.new_line()
+
+
+//=====================================================================
+// 18. HISTORIC STYLE FUNCTIONS
+//=====================================================================
+
+makeHighHistoric(line ln) =>
+    line.set_color(ln, historicHighColor)
+    line.set_width(ln, historicHighWidth)
+    line.set_style(ln, historicHighStyle)
+    line.set_extend(ln, historicHighExtend)
+
+makeLowHistoric(line ln) =>
+    line.set_color(ln, historicLowColor)
+    line.set_width(ln, historicLowWidth)
+    line.set_style(ln, historicLowStyle)
+    line.set_extend(ln, historicLowExtend)
+
+
+//=====================================================================
+// 19. ALERT FLAGS
+//=====================================================================
+
+bool newHighConfirmed = false
+bool newLowConfirmed = false
+
+
+//=====================================================================
+// 20. INITIALIZE FIRST TREND
+//=====================================================================
+
+if trendState == 0
+
+    if confirmedBullStack
+        trendState := 1
+        bullHigh := high
+        bullHighBar := bar_index
+
+    else if confirmedBearStack
+        trendState := -1
+        bearLow := low
+        bearLowBar := bar_index
+
+
+//=====================================================================
+// 21. BULLISH SWING
+//=====================================================================
+
+else if trendState == 1
+
+    //-----------------------------------------------------------------
+    // Track EVERY high while the bullish swing is active.
+    //-----------------------------------------------------------------
+
+    if na(bullHigh) or high > bullHigh
+        bullHigh := high
+        bullHighBar := bar_index
+
+
+    //-----------------------------------------------------------------
+    // Full persistent bearish stack offers to end the bullish swing.
+    //-----------------------------------------------------------------
+
+    if confirmedBearStack
+
+        //-------------------------------------------------------------
+        // SWING DEPTH FILTER
+        //-------------------------------------------------------------
+
+        bool depthAccepted = true
+
+        if not na(previousLow)
+            if filterMode != "Off"
+                depthAccepted :=
+                     bullHigh - previousLow >=
+                     getMinimumSwingDistance(bullHigh)
+
+
+        //-------------------------------------------------------------
+        // MINIMUM BAR SEPARATION FILTER
+        //-------------------------------------------------------------
+
+        bool barsAccepted = true
+
+        if not na(lastConfirmedPivotBar)
+            if minimumBarsBetweenPivots > 0
+                barsAccepted :=
+                     bullHighBar - lastConfirmedPivotBar >=
+                     minimumBarsBetweenPivots
+
+
+        bool highAccepted =
+             not na(bullHigh) and
+             depthAccepted and
+             barsAccepted
+
+
+        //-------------------------------------------------------------
+        // RELEASE VALVE
+        //
+        // If the swing has been held open by a failed depth test but
+        // price has now travelled a full swing distance DOWN from the
+        // tracked high, the high is real regardless of where the last
+        // confirmed low sits. Without this the state machine can lock
+        // in one direction permanently when the rejected leg never
+        // deepens.
+        //-------------------------------------------------------------
+
+        if continueOnReject and not highAccepted and barsAccepted
+            if not na(bullHigh)
+                if bullHigh - low >= getMinimumSwingDistance(bullHigh)
+                    highAccepted := true
+
+
+        //-------------------------------------------------------------
+        // CONFIRM HIGH
+        //-------------------------------------------------------------
+
+        if highAccepted
+
+            newHighConfirmed := true
+
+            if not na(previousHigh)
+
+                if showHighLines
+
+                    if not na(recentHighLine)
+
+                        makeHighHistoric(recentHighLine)
+
+                        array.push(historicHighLines, recentHighLine)
+
+                        while array.size(historicHighLines) > historicLinesToShow
+
+                            oldHighLine = array.shift(historicHighLines)
+
+                            line.delete(oldHighLine)
+
+                    recentHighLine :=
+                         line.new(
+                             x1=previousHighBar,
+                             y1=previousHigh,
+                             x2=bullHighBar,
+                             y2=bullHigh,
+                             xloc=xloc.bar_index,
+                             extend=recentHighExtend,
+                             color=recentHighColor,
+                             style=recentHighStyle,
+                             width=recentHighWidth)
+
+            if showSwingPoints
+
+                label.new(
+                     x=bullHighBar,
+                     y=bullHigh,
+                     text="H",
+                     xloc=xloc.bar_index,
+                     yloc=yloc.price,
+                     style=label.style_label_down,
+                     color=recentHighColor,
+                     textcolor=color.white,
+                     size=size.tiny)
+
+            previousHigh := bullHigh
+            previousHighBar := bullHighBar
+
+            lastConfirmedPivotBar := bullHighBar
+
+
+        //-------------------------------------------------------------
+        // END THE SWING
+        //
+        // Only when the high was actually confirmed, or when the user
+        // has chosen Switch Anyway. If the candidate was rejected and
+        // Continue Current Swing is set, the bullish swing stays open
+        // and bullHigh keeps tracking, so the shallow dip that follows
+        // can never be recorded as a low.
+        //-------------------------------------------------------------
+
+        if highAccepted or not continueOnReject
+
+            trendState := -1
+
+            bearLow := low
+            bearLowBar := bar_index
+
+            bullHigh := na
+            bullHighBar := na
+
+
+//=====================================================================
+// 22. BEARISH SWING
+//=====================================================================
+
+else if trendState == -1
+
+    //-----------------------------------------------------------------
+    // Track EVERY low while the bearish swing is active.
+    //-----------------------------------------------------------------
+
+    if na(bearLow) or low < bearLow
+        bearLow := low
+        bearLowBar := bar_index
+
+
+    //-----------------------------------------------------------------
+    // Full persistent bullish stack offers to end the bearish swing.
+    //-----------------------------------------------------------------
+
+    if confirmedBullStack
+
+        //-------------------------------------------------------------
+        // SWING DEPTH FILTER
+        //-------------------------------------------------------------
+
+        bool depthAccepted = true
+
+        if not na(previousHigh)
+            if filterMode != "Off"
+                depthAccepted :=
+                     previousHigh - bearLow >=
+                     getMinimumSwingDistance(bearLow)
+
+
+        //-------------------------------------------------------------
+        // MINIMUM BAR SEPARATION FILTER
+        //-------------------------------------------------------------
+
+        bool barsAccepted = true
+
+        if not na(lastConfirmedPivotBar)
+            if minimumBarsBetweenPivots > 0
+                barsAccepted :=
+                     bearLowBar - lastConfirmedPivotBar >=
+                     minimumBarsBetweenPivots
+
+
+        bool lowAccepted =
+             not na(bearLow) and
+             depthAccepted and
+             barsAccepted
+
+
+        //-------------------------------------------------------------
+        // RELEASE VALVE
+        //-------------------------------------------------------------
+
+        if continueOnReject and not lowAccepted and barsAccepted
+            if not na(bearLow)
+                if high - bearLow >= getMinimumSwingDistance(bearLow)
+                    lowAccepted := true
+
+
+        //-------------------------------------------------------------
+        // CONFIRM LOW
+        //-------------------------------------------------------------
+
+        if lowAccepted
+
+            newLowConfirmed := true
+
+            if not na(previousLow)
+
+                if showLowLines
+
+                    if not na(recentLowLine)
+
+                        makeLowHistoric(recentLowLine)
+
+                        array.push(historicLowLines, recentLowLine)
+
+                        while array.size(historicLowLines) > historicLinesToShow
+
+                            oldLowLine = array.shift(historicLowLines)
+
+                            line.delete(oldLowLine)
+
+                    recentLowLine :=
+                         line.new(
+                             x1=previousLowBar,
+                             y1=previousLow,
+                             x2=bearLowBar,
+                             y2=bearLow,
+                             xloc=xloc.bar_index,
+                             extend=recentLowExtend,
+                             color=recentLowColor,
+                             style=recentLowStyle,
+                             width=recentLowWidth)
+
+            if showSwingPoints
+
+                label.new(
+                     x=bearLowBar,
+                     y=bearLow,
+                     text="L",
+                     xloc=xloc.bar_index,
+                     yloc=yloc.price,
+                     style=label.style_label_up,
+                     color=recentLowColor,
+                     textcolor=color.white,
+                     size=size.tiny)
+
+            previousLow := bearLow
+            previousLowBar := bearLowBar
+
+            lastConfirmedPivotBar := bearLowBar
+
+
+        //-------------------------------------------------------------
+        // END THE SWING
+        //-------------------------------------------------------------
+
+        if lowAccepted or not continueOnReject
+
+            trendState := 1
+
+            bullHigh := high
+            bullHighBar := bar_index
+
+            bearLow := na
+            bearLowBar := na
+
+
+//=====================================================================
+// 23. FORMING TRENDLINE
+//=====================================================================
+
+if barstate.islast
+
+    if not na(formingLine)
+        line.delete(formingLine)
+        formingLine := na
+
+    if showFormingLeg
+
+        if trendState == 1
+
+            if showHighLines and not na(previousHighBar) and not na(bullHighBar)
+                if bullHighBar > previousHighBar
+                    formingLine :=
+                         line.new(
+                             x1=previousHighBar,
+                             y1=previousHigh,
+                             x2=bullHighBar,
+                             y2=bullHigh,
+                             xloc=xloc.bar_index,
+                             extend=recentHighExtend,
+                             color=color.new(recentHighColor, formingTransparency),
+                             style=line.style_dotted,
+                             width=formingLegWidth)
+
+        else if trendState == -1
+
+            if showLowLines and not na(previousLowBar) and not na(bearLowBar)
+                if bearLowBar > previousLowBar
+                    formingLine :=
+                         line.new(
+                             x1=previousLowBar,
+                             y1=previousLow,
+                             x2=bearLowBar,
+                             y2=bearLow,
+                             xloc=xloc.bar_index,
+                             extend=recentLowExtend,
+                             color=color.new(recentLowColor, formingTransparency),
+                             style=line.style_dotted,
+                             width=formingLegWidth)
+
+
+//=====================================================================
+// 24. ALERTS
+//=====================================================================
+
+alertcondition(
+     newHighConfirmed,
+     "New Confirmed EMA Swing High",
+     "New EMA-stack swing HIGH confirmed.")
+
+alertcondition(
+     newLowConfirmed,
+     "New Confirmed EMA Swing Low",
+     "New EMA-stack swing LOW confirmed.")

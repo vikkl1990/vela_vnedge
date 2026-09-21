@@ -1,0 +1,1065 @@
+//@version=6
+indicator("TradeBee Info Labels", shorttitle = "TBlabels", overlay = true, max_bars_back = 5000)
+
+// --- Groups ---
+var string G_STATS = "Stats Panel"
+var string G_VIS   = "Visibility Settings"
+var string G_LEVEL = "Level Visuals for GAP% Lines"
+
+// --- Inputs ---
+displayTable = input(title = 'Display price panel?', defval = true, group = G_STATS)
+posInput      = input.string("Top Right", "Panel Position", options = ["Top Right", "Bottom Right", "Top Left", "Bottom Left", "Middle Right"], group = G_STATS)
+textSizeInput = input.string("Small", "Label Text Size", options = ["Tiny", "Small", "Normal", "Large"], group = G_STATS)
+plotSizeInput = input.string("Small", "Plot Text Size", options = ["Tiny", "Small", "Normal", "Large"], group = G_STATS)
+bgColorInput  = input.color(color.new(#32373f, 82), "Background Color", group = G_STATS)
+txtColorInput = input.color(#c5bdbd, "Default Text Color", group = G_STATS)
+highlightBGColorInput  = input.color(color.yellow, "Price Highlight Background Color", group = G_STATS)
+highlightPrice = input.bool(true, "Highlight Price Labels BG", group = G_STATS, tooltip="Highlights emas/prices background.")
+highlightCond = input.bool(true, "Highlight emas/price only if moving up", group = G_STATS, tooltip="When enabled, highlights only on rising bars, otherwise it stays highlighted while price is within the alert proximity % and current price is higher than the previous candle")
+showHardReversal = input.bool(true, "Show Hard Reversal Signal", group = G_STATS, tooltip = "Shows a flashing label when price first reaches the breakout threshold and then reverses down to the configured entry threshold.")
+showHardReversalArmed = input.bool(true, "Show Hard Reversal Armed Plot", group = G_STATS, tooltip = "Shows a label when the breakout threshold is reached and the hard reversal signal becomes armed.")
+showHardReversalEntryPlot = input.bool(true, "Show Hard Reversal Entry Plot", group = G_STATS, inline = "hr_entry_style", tooltip = "Shows the projected entry price line after the hard reversal setup becomes armed.")
+hardReversalEntryColor = input.color(#f23645, "", group = G_STATS, inline = "hr_entry_style")
+hardReversalBreakoutPct = input.float(100.0, "Hard Reversal Breakout %", minval = 0.0, step = 1.0, group = G_STATS, tooltip = "Percentage gain from the previous close that arms the hard reversal signal.")
+hardReversalEntryPct = input.float(30.0, "Hard Reversal Entry % of DPP Move", minval = 0.0, maxval = 100.0, step = 1.0, group = G_STATS, tooltip = "Percentage of the DPP% move used to calculate the projected hard reversal entry. For example, 30% of a 110% DPP% move equals a 33% gain from the previous close.")
+
+// Visibility Toggles & MA Settings
+hideOverlapInput = input.bool(true, "Hide Overlapping Plots/Labels", group = G_VIS, tooltip="Prevents labels and lines from overlapping if they are at the exact same or very similar price levels.")
+hideNoValue      = input.bool(true, "Hide No Value Labels", group = G_VIS, tooltip="Hides table rows that do not have any values (NaN).")
+showVWAP    = input.bool(true, "Show VWAP", group = G_VIS)
+showGap     = input.bool(true, "Show Gap% (Current %)", group = G_VIS)
+showFloat   = input.bool(true, "Show Float/Total Shares", group = G_VIS)
+int floatMaxSize = input.int(20000000, "Float max size to consider", minval = 1, tooltip = "If share size is more than configured, for SmallCap and below the Float label will appear in RED color",group = G_VIS)
+showDPP     = input.bool(true, "Show DPP% (Daily Peak %)", group = G_VIS)
+showPMH     = input.bool(true, "Show PMH(Pre Market High)", group = G_VIS, inline = "pmh_source")
+pmhSource   = input.string("Body", "Source", options = ["Body", "Wick"], group = G_VIS, inline = "pmh_source", tooltip = "Select whether PMH uses the highest candle body price or the highest wick price during premarket.")
+showDH      = input.bool(true, "Show DH/PDH(Daily High/Previous Day High)", group = G_VIS, inline = "dh_source")
+dhSource    = input.string("Body", "Source", options = ["Body", "Wick"], group = G_VIS, inline = "dh_source", tooltip = "Body uses the highest 1-minute candle body price during the regular session for DH/PDH. Wick uses the highest 1-minute wick price.")
+showPDH     = input.bool(true, "Show PDH(Previous Day High during market time)", group = G_VIS)
+showDP      = input.bool(true, "Show DPiH1-4 (Daily Pivot Highs)", group = G_VIS)
+showDPH     = input.bool(true, "Show PDH1-5 (Previous Daily Highs)", group = G_VIS)
+minPivotDiff = input.float(0.09, "Min Price Diff for Highs ($)", step = 0.01, group = G_VIS, tooltip = "Minimum price difference required to register consecutive DPiH and PDH levels.")
+int pivotLookbackInput = input.int(150, "Daily High Lookback", minval = 50, maxval = 300, group = G_VIS, tooltip = "Number of previous daily candles scanned when finding DPiH and PDH levels. Limited to 150 to improve loading performance.")
+dynamicHide = input.bool(false, "Dynamic Hide Passed Levels", group = G_VIS, tooltip = "Hides PDH, PMkH, DH, PDH1-5, and DPiH from the table if the current price is above them.")
+showMaxTargets = input.bool(false, "Show Max DPiH/PDH Targets", group = G_VIS, tooltip = "If checked, table shows the highest overall DPiH/PDH target. If unchecked, dynamically shows the immediate next target above current price.")
+
+
+
+showVWAPPlot = input.bool(true, "Plot VWAP", group = G_VIS, inline = "vwap_style")
+vwapCol      = input.color(#98a1ad, "", group = G_VIS, inline = "vwap_style")
+vwapStyleStr = input.string("Dotted", "", options=["Solid", "Dashed", "Dotted"], group = G_VIS, inline = "vwap_style")
+
+showDHPlot  = input.bool(true, "Plot DH/PDH", group = G_VIS, inline = "dh_style")
+showPDHPlot  = input.bool(true, "Plot PDH at regular market", group = G_VIS, inline = "dh_style")
+dhCol       = input.color(#f48fb1, "", group = G_VIS, inline = "dh_style")
+dhStyleStr  = input.string("Dotted", "", options=["Solid", "Dashed", "Dotted"], group = G_VIS, inline = "dh_style")
+
+showPMHPlot = input.bool(true, "Plot Pre-Market High", group = G_VIS, inline = "pmh_style")
+pmhCol      = input.color(#ff9800, "", group = G_VIS, inline = "pmh_style")
+pmhStyleStr = input.string("Dotted", "", options=["Solid", "Dashed", "Dotted"], group = G_VIS, inline = "pmh_style")
+
+show52WHPlot = input.bool(true, "Plot 52W High", group = G_VIS, inline = "52wh_style")
+high52Col    = input.color(#add8e6, "", group = G_VIS, inline = "52wh_style")
+high52StyleStr = input.string("Dotted", "", options=["Solid", "Dashed", "Dotted"], group = G_VIS, inline = "52wh_style")
+
+showDPPlot  = input.bool(true, "Plot Daily Pivot", group = G_VIS, inline = "dp_style")
+dpCol       = input.color(#ff9800, "", group = G_VIS, inline = "dp_style")
+dpStyleStr  = input.string("Dotted", "", options=["Solid", "Dashed", "Dotted"], group = G_VIS, inline = "dp_style")
+
+showDPHPlot = input.bool(true, "Plot 4 Previous Daily High", group = G_VIS, inline = "dph_style")
+dphCol      = input.color(color.rgb(183, 26, 78, 19), "", group = G_VIS, inline = "dph_style")
+dphStyleStr = input.string("Dotted", "", options=["Solid", "Dashed", "Dotted"], group = G_VIS, inline = "dph_style")
+
+showPrevHighsPlot = input.bool(true, "Plot 4 Prev Daily Pivot Highs", group = G_VIS, inline = "ph_style")
+prevHighsCol = input.color(#4caf50, "", group = G_VIS, inline = "ph_style")
+prevHighsStyleStr = input.string("Dotted", "", options=["Solid", "Dashed", "Dotted"], group = G_VIS, inline = "ph_style")
+
+lineWidthInput = input.int(1, "Lines Width", minval=1, maxval=4, tooltip="Width for all horizontal levels", group = G_VIS)
+
+showLevels  = input.bool(true, "Show Upper/Lower % Levels", group = G_VIS)
+
+showMA1     = input.bool(true, "Show MA 1", group = G_VIS, inline = "ma1")
+ma1Type     = input.string("EMA", "", options = ["EMA", "SMA"], group = G_VIS, inline = "ma1")
+ma1Length   = input.int(9, "Length", group = G_VIS, inline = "ma1")
+
+showMA1Plot = input.bool(true, "Plot MA1", group = G_VIS, inline = "ma1_style")
+ma1Col      = input.color(color.rgb(33, 150, 243), "", group = G_VIS, inline = "ma1_style")
+ma1StyleStr = input.string("Dotted", "", options=["Solid", "Dashed", "Dotted"], group = G_VIS, inline = "ma1_style")
+
+showMA2     = input.bool(true, "Show MA 2", group = G_VIS, inline = "ma2")
+ma2Type     = input.string("EMA", "", options = ["EMA", "SMA"], group = G_VIS, inline = "ma2")
+ma2Length   = input.int(200, "Length", group = G_VIS, inline = "ma2")
+
+showMA2Plot = input.bool(true, "Plot MA2", group = G_VIS, inline = "ma2_style")
+ma2Col      = input.color(#dd2fe0, "", group = G_VIS, inline = "ma2_style")
+ma2StyleStr = input.string("Dotted", "", options=["Solid", "Dashed", "Dotted"], group = G_VIS, inline = "ma2_style")
+
+showDMA3    = input.bool(true, "Show Daily MA", group = G_VIS, inline = "ma3")
+ma3Type     = input.string("EMA", "", options = ["EMA", "SMA"], group = G_VIS, inline = "ma3")
+ma3Length   = input.int(200, "Length", group = G_VIS, inline = "ma3")
+
+showDMA3Plot = input.bool(true, "Plot MA3", group = G_VIS, inline = "ma3_style")
+dma3Col      = input.color(#dd2fe0, "", group = G_VIS, inline = "ma3_style")
+dma3StyleStr = input.string("Dotted", "", options=["Solid", "Dashed", "Dotted"], group = G_VIS, inline = "ma3_style")
+
+emaAlertPct = input.float(30.0, "Highlight Alert Proximity %", tooltip = "Highlights the MA's and price rows in yellow(default) only if price is below the MA/Prices and within this % proximity, and price is currently higher than previous candle", group = G_STATS)
+
+showPBVol   = input.bool(true, "Show PBVol(Previous Bar Volume)", group = G_VIS)
+showDlyVol  = input.bool(true, "Show Daily Volume", group = G_VIS)
+showMktCap  = input.bool(true, "Show Market Cap", group = G_VIS)
+show52WH    = input.bool(true, "Show 52WH", group = G_VIS)
+showHPctRun = input.bool(true, "Show High% run", group = G_VIS)
+use4HCheck  = input.bool(true, "Include 4H timeframe for High% run", group = G_VIS, tooltip = "Checks both daily and 4H timeframes and displays whichever had the highest run")
+showHPctRunDate = input.bool(true, "Show High% run Date", group = G_VIS)
+int lookbackDaysInput = input.int(60, "Lookback Days for Hgh% run", minval = 1, tooltip = "Number of daily bars to look back, excluding the current day.",group = G_VIS)
+
+showRVOL1   = input.bool(true, "Show RVOL 1", group = G_VIS, inline = "rvol1")
+rvol1TF     = input.timeframe("5", "", group = G_VIS, inline = "rvol1")
+rvol1Length = input.int(30, "Len", group = G_VIS, inline = "rvol1")
+
+showRVOL2   = input.bool(true, "Show RVOL 2", group = G_VIS, inline = "rvol2")
+rvol2TF     = input.timeframe("60", "", group = G_VIS, inline = "rvol2")
+rvol2Length = input.int(10, "Len", group = G_VIS, inline = "rvol2")
+
+showRVOL3   = input.bool(true, "Show RVOL 3", group = G_VIS, inline = "rvol3")
+rvol3TF     = input.timeframe("D", "", group = G_VIS, inline = "rvol3")
+rvol3Length = input.int(30, "Len", group = G_VIS, inline = "rvol3")
+
+showTurnover= input.bool(true, "Show Float Turnover %", group = G_VIS)
+
+// Level Line Visuals
+plotLevels     = input.bool(true, "Draw % Levels on Chart", group = G_LEVEL)
+showMidLevels  = input.bool(true, "Show 25% Mid Levels", group = G_LEVEL)
+showBelowLevel = input.bool(true, "Show Previous 100% Level", group = G_LEVEL)
+lineStyleInput = input.string("Dotted", "Line Style", options = ["Solid", "Dashed", "Dotted"], group = G_LEVEL)
+upperLevelCol  = input.color(#f05461, "Upper Level Color", group = G_LEVEL)
+lowerLevelCol  = input.color(#aaf1b4, "Lower Level Color", group = G_LEVEL)
+midLevelCol    = input.color(color.gray, "Mid Level Color", group = G_LEVEL)
+
+// --- Helper Functions ---
+
+formatNumber(float value) =>
+    if na(value)
+        "NaN"
+    else if value >= 1000000000000
+        str.format("{0,number,#.#}T", value / 1000000000000)
+    else if value >= 1000000000
+        str.format("{0,number,#.#}B", value / 1000000000)
+    else if value >= 1000000
+        str.format("{0,number,#.#}M", value / 1000000)
+    else if value >= 1000
+        str.format("{0,number,#.#}K", value / 1000)
+    else
+        str.format("{0,number,#.##}", value)
+
+formatPrice(float value) =>
+    if na(value)
+        "NaN"
+    else if value >= 1000000000
+        "$" + str.format("{0,number,#.#}B", value / 1000000000)
+    else if value >= 1000000
+        "$" + str.format("{0,number,#.#}M", value / 1000000)
+    else if value >= 1000
+        "$" + str.format("{0,number,#.#}K", value / 1000)
+    else
+        "$" + str.format("{0,number,#.##}", value)
+
+getLineStyle(string style) =>
+    switch style
+        "Solid"  => line.style_solid
+        "Dashed" => line.style_dashed
+        => line.style_dotted
+
+getSelectedHigh(string source) =>
+    source == "Wick" ? high : math.max(open, close)
+
+getRegularSessionHighs(string source) =>
+    float selectedHigh = getSelectedHigh(source)
+    var float currentHigh = na
+    var float previousHigh = na
+    bool isNewSessionDay = ta.change(time("D")) != 0
+    if isNewSessionDay
+        previousHigh := currentHigh
+        currentHigh := selectedHigh
+    else
+        currentHigh := math.max(nz(currentHigh, selectedHigh), selectedHigh)
+    [currentHigh, previousHigh]
+
+get_rvol(len) => volume / nz(ta.sma(volume, len), 1)
+
+getDailyData(lookback) =>
+    dailyReturn = 100 * (high - close[1]) / close[1] 
+    maxRet = ta.highest(dailyReturn[1], lookback)
+    maxOffset = ta.highestbars(dailyReturn[1], lookback)
+    maxBarsAgo = not na(maxOffset) ? math.abs(maxOffset) + 1 : na
+    timeAtMax = not na(maxBarsAgo) and bar_index >= maxBarsAgo ? time[maxBarsAgo] : na
+    [maxRet, timeAtMax]
+
+get4HData(daysLookback) =>
+    ret = 100 * (high - close[1]) / close[1]
+    isNewDay4H = ta.change(time("D")) != 0
+    
+    var float[] dailyMaxRets = array.new_float()
+    var int[] dailyMaxTimes = array.new_int()
+    
+    var float currentDayMax = na
+    var int currentDayMaxTime = 0
+    
+    if isNewDay4H
+        if not na(currentDayMax)
+            array.push(dailyMaxRets, currentDayMax)
+            array.push(dailyMaxTimes, currentDayMaxTime)
+            if array.size(dailyMaxRets) > daysLookback
+                array.shift(dailyMaxRets)
+                array.shift(dailyMaxTimes)
+        currentDayMax := ret
+        currentDayMaxTime := time
+    else
+        if na(currentDayMax) or ret > currentDayMax
+            currentDayMax := ret
+            currentDayMaxTime := time
+            
+    float maxRet = na
+    int timeAtMax = 0
+    
+    int size = array.size(dailyMaxRets)
+    if size > 0
+        maxRet := array.get(dailyMaxRets, 0)
+        timeAtMax := array.get(dailyMaxTimes, 0)
+        if size > 1
+            for i = 1 to size - 1
+                float val = array.get(dailyMaxRets, i)
+                if val > maxRet
+                    maxRet := val
+                    timeAtMax := array.get(dailyMaxTimes, i)
+                    
+    [maxRet, timeAtMax]
+
+method checkOverlap(array<float> arr, float val, bool doHide, float refPrice) =>
+    overlap = false
+    if doHide and not na(val)
+        if array.size(arr) > 0
+            for p in arr
+                // If price is within ~0.3% of an already plotted price, consider it an overlap
+                if math.abs(val - p) / refPrice < 0.003
+                    overlap := true
+                    break
+        if not overlap
+            array.push(arr, val)
+    overlap
+
+// --- highalert ---
+highlightPrices(_priceVal, _emaAlertPct) =>
+    baseCond = close < _priceVal and
+               close >= _priceVal * (1 - _emaAlertPct / 100) and
+               close > close[1]
+    finalCond = highlightCond ? (baseCond and close > open) : baseCond
+    finalCond
+// --- highalert ---
+
+// --- Core Calculations ---
+
+// 1. Moving Averages & VWAP
+ma1 = ma1Type == "EMA" ? ta.ema(close, ma1Length) : ta.sma(close, ma1Length)
+ma2 = ma2Type == "EMA" ? ta.ema(close, ma2Length) : ta.sma(close, ma2Length)
+vwapVal = ta.vwap
+
+// 2. Highs & Peak Tracking
+var float pmh       = na
+var float peakPrice = na
+
+
+isNewDay    = ta.change(time("D")) != 0
+isPremarket = session.ispremarket
+
+float pmhBarHigh = getSelectedHigh(pmhSource)
+
+if isNewDay
+    pmh       := na
+    peakPrice := high
+
+peakPrice := math.max(nz(peakPrice, high), high)
+
+if isPremarket
+    pmh := math.max(nz(pmh, pmhBarHigh), pmhBarHigh)
+
+// 3. Grouped Security Calls
+regTicker = ticker.new(syminfo.prefix, syminfo.ticker, session.regular)
+extTicker = ticker.new(syminfo.prefix, syminfo.ticker, session.extended)
+
+// Group Daily Request
+dMa3Temp = ma3Type == "EMA" ? ta.ema(close, ma3Length) : ta.sma(close, ma3Length)
+[dVolSec, high52, dMa3, dHigh] = request.security(regTicker, "D", [volume, ta.highest(high[1], 252), dMa3Temp, getSelectedHigh(dhSource)], lookahead = barmerge.lookahead_on)
+
+// Calculate the highest selected price across regular-session 1-minute bars.
+[regularDhHigh, regularPdhHigh] = request.security(regTicker, "1", getRegularSessionHighs(dhSource), lookahead = barmerge.lookahead_off)
+
+// PDH based on the previous regular session.
+pdh_ext = regularPdhHigh
+
+// Group RVOL 1
+[rvol1_std, avgVol1] = request.security(extTicker, rvol1TF, [get_rvol(rvol1Length), ta.sma(volume, rvol1Length)])
+// Group RVOL 2
+[rvol2_std, avgVol2] = request.security(extTicker, rvol2TF, [get_rvol(rvol2Length), ta.sma(volume, rvol2Length)])
+// Group RVOL 3
+[rvol3_std, avgVol3] = request.security(extTicker, rvol3TF, [get_rvol(rvol3Length), ta.sma(volume, rvol3Length)])
+
+// High% Run Requests
+[highestGainD, dateOfGainD] = request.security(extTicker, "D", getDailyData(lookbackDaysInput))
+[highestGain4H, dateOfGain4H] = request.security(extTicker, "240", get4HData(lookbackDaysInput))
+
+// 4. Financials (Called only on historical bars as needed, cached by Pine)
+floatShares = request.financial(syminfo.tickerid, "FLOAT_SHARES_OUTSTANDING", "FY", ignore_invalid_symbol = true)
+totalShares = request.financial(syminfo.tickerid, "TOTAL_SHARES_OUTSTANDING", "FY", ignore_invalid_symbol = true)
+mktCapStandard = request.financial(syminfo.tickerid, "MARKET_CAPITALIZATION", "FQ", ignore_invalid_symbol = true)
+
+// --- Price & Percents ---
+prevClose = request.security(syminfo.tickerid, "D", close[1], lookahead = barmerge.lookahead_on)
+if session.ispremarket or session.ispostmarket
+    prevClose := request.security(syminfo.tickerid, "D", close[0], lookahead = barmerge.lookahead_on)
+currentPct = ((close / prevClose) - 1) * 100
+dppPct     = ((peakPrice / prevClose) - 1) * 100
+
+// --- Hard Reversal Signal ---
+varip bool hardReversalArmed = false
+varip bool hardReversalTriggered = false
+varip bool hardReversalEntryBreached = false
+varip int hardReversalEntryCrossCount = 0
+var line hardReversalEntryLine = na
+var label hardReversalEntryLabel = na
+var label hardReversalArmedLabel = na
+var label hardReversalLabel = na
+varip int hardReversalArmedBar = na
+varip float hardReversalArmedHigh = na
+varip int hardReversalSignalBar = na
+varip float hardReversalSignalHigh = na
+
+if isNewDay
+    hardReversalArmed := false
+    hardReversalTriggered := false
+    hardReversalEntryBreached := false
+    hardReversalEntryCrossCount := 0
+    hardReversalArmedBar := na
+    hardReversalArmedHigh := na
+    hardReversalSignalBar := na
+    hardReversalSignalHigh := na
+    if not na(hardReversalEntryLine)
+        line.delete(hardReversalEntryLine)
+        hardReversalEntryLine := na
+    if not na(hardReversalEntryLabel)
+        label.delete(hardReversalEntryLabel)
+        hardReversalEntryLabel := na
+    if not na(hardReversalArmedLabel)
+        label.delete(hardReversalArmedLabel)
+        hardReversalArmedLabel := na
+    if not na(hardReversalLabel)
+        label.delete(hardReversalLabel)
+        hardReversalLabel := na
+
+hardReversalEntryDppPct = dppPct * hardReversalEntryPct / 100
+hardReversalEntryPrice = prevClose * (1 + hardReversalEntryDppPct / 100)
+
+if not showHardReversal and not showHardReversalArmed and not showHardReversalEntryPlot
+    hardReversalArmed := false
+    hardReversalTriggered := false
+    hardReversalEntryBreached := false
+    hardReversalEntryCrossCount := 0
+    hardReversalArmedBar := na
+    hardReversalArmedHigh := na
+    hardReversalSignalBar := na
+    hardReversalSignalHigh := na
+    if not na(hardReversalEntryLine)
+        line.delete(hardReversalEntryLine)
+        hardReversalEntryLine := na
+    if not na(hardReversalEntryLabel)
+        label.delete(hardReversalEntryLabel)
+        hardReversalEntryLabel := na
+    if not na(hardReversalArmedLabel)
+        label.delete(hardReversalArmedLabel)
+        hardReversalArmedLabel := na
+    if not na(hardReversalLabel)
+        label.delete(hardReversalLabel)
+        hardReversalLabel := na
+else
+    if not hardReversalArmed and not na(dppPct) and dppPct >= hardReversalBreakoutPct
+        hardReversalArmed := true
+        hardReversalArmedBar := bar_index
+        hardReversalArmedHigh := high
+        if showHardReversalArmed
+            hardReversalArmedLabel := label.new(
+                 hardReversalArmedBar,
+                 hardReversalArmedHigh,
+                 "HR Armed\n" + str.format("{0,number,#.##}% - {1}", hardReversalBreakoutPct, formatPrice(prevClose * (1 + hardReversalBreakoutPct / 100))),
+                 color = #ff9800,
+                 textcolor = color.white,
+                 style = label.style_label_down,
+                 size = size.small)
+
+    if not showHardReversalArmed and not na(hardReversalArmedLabel)
+        label.delete(hardReversalArmedLabel)
+        hardReversalArmedLabel := na
+
+    if hardReversalArmed and not na(currentPct) and not na(hardReversalEntryDppPct)
+        if currentPct <= hardReversalEntryDppPct
+            hardReversalEntryBreached := true
+        else if hardReversalEntryBreached and close > hardReversalEntryPrice and close > open
+            hardReversalEntryCrossCount += 1
+            hardReversalEntryBreached := false
+
+    if showHardReversalEntryPlot and hardReversalArmed and not na(hardReversalEntryPrice)
+        if na(hardReversalEntryLine)
+            hardReversalEntryLine := line.new(bar_index - 60, hardReversalEntryPrice, bar_index, hardReversalEntryPrice, color = hardReversalEntryColor, style = line.style_dashed, width = lineWidthInput)
+        else
+            line.set_xy1(hardReversalEntryLine, bar_index - 60, hardReversalEntryPrice)
+            line.set_xy2(hardReversalEntryLine, bar_index, hardReversalEntryPrice)
+            line.set_color(hardReversalEntryLine, hardReversalEntryColor)
+        if na(hardReversalEntryLabel)
+            hardReversalEntryLabel := label.new(bar_index, hardReversalEntryPrice, "HR Entry(" + str.tostring(hardReversalEntryCrossCount) + ") - " + str.format("{0,number,#.##}% - {1}", hardReversalEntryDppPct, formatPrice(hardReversalEntryPrice)), color = #00000000, textcolor = hardReversalEntryColor, style = label.style_label_left, size = plotSizeInput == "Tiny" ? size.tiny : plotSizeInput == "Small" ? size.small : plotSizeInput == "Normal" ? size.normal : size.large)
+        else
+            label.set_xy(hardReversalEntryLabel, bar_index, hardReversalEntryPrice)
+            label.set_text(hardReversalEntryLabel, "HR Entry(" + str.tostring(hardReversalEntryCrossCount) + ") - " + str.format("{0,number,#.##}% - {1}", hardReversalEntryDppPct, formatPrice(hardReversalEntryPrice)))
+            label.set_textcolor(hardReversalEntryLabel, hardReversalEntryColor)
+    else
+        if not na(hardReversalEntryLine)
+            line.delete(hardReversalEntryLine)
+            hardReversalEntryLine := na
+        if not na(hardReversalEntryLabel)
+            label.delete(hardReversalEntryLabel)
+            hardReversalEntryLabel := na
+
+    if not showHardReversal and not na(hardReversalLabel)
+        label.delete(hardReversalLabel)
+        hardReversalLabel := na
+
+    if showHardReversal and hardReversalArmed and not hardReversalTriggered and not na(currentPct) and not na(hardReversalEntryPrice) and currentPct <= hardReversalEntryDppPct
+        hardReversalTriggered := true
+        hardReversalSignalBar := bar_index
+        hardReversalSignalHigh := high
+        hardReversalLabel := label.new(
+             hardReversalSignalBar,
+             hardReversalSignalHigh,
+             "Hard Reversal\n" + str.format("{0,number,#.##}% - {1}", hardReversalEntryPct, formatPrice(hardReversalEntryPrice)),
+             color = #f23645,
+             textcolor = color.white,
+             style = label.style_label_down,
+             size = size.small)
+
+    if hardReversalTriggered and not na(hardReversalLabel)
+        int flashStep = int(math.floor(timenow / 500))
+        bool flashOn = not barstate.isrealtime or flashStep % 2 == 0
+        label.set_xy(hardReversalLabel, hardReversalSignalBar, hardReversalSignalHigh)
+        label.set_color(hardReversalLabel, flashOn ? #f23645 : color.new(#f23645, 70))
+        label.set_textcolor(hardReversalLabel, color.white)
+
+// --- Financial Fallbacks ---
+finalFloatValue = nz(floatShares, syminfo.shares_outstanding_float)
+finalTotalValue = nz(totalShares, syminfo.shares_outstanding_total)
+
+floatAvailable = not na(finalFloatValue)
+displayShares  = floatAvailable ? finalFloatValue : finalTotalValue
+sharesLabel    = floatAvailable ? "Float" : "TShares"
+
+calculatedMktCap = totalShares * nz(dHigh, close)
+finalMktCap      = not na(mktCapStandard) ? mktCapStandard : calculatedMktCap
+
+// --- Volume Calculations ---
+pbVol   = volume[1]
+pbColor = close[1] > open[1] ? #1e9b29 : #f14a3f
+
+var float totalvolumeinfloat = na
+if not session.ispremarket[1] and session.ispremarket
+    totalvolumeinfloat := 0
+if session.ispremarket
+    totalvolumeinfloat += nz(volume)
+
+dailyVolExt = session.ispremarket ? totalvolumeinfloat : dVolSec
+dlyVol = formatNumber(dailyVolExt)
+
+isDaily(tf) => tf == "D" or tf == "1D"
+
+rvol1 = isDaily(rvol1TF) ? dailyVolExt / nz(avgVol1, 1) : rvol1_std
+rvol2 = isDaily(rvol2TF) ? dailyVolExt / nz(avgVol2, 1) : rvol2_std
+rvol3 = isDaily(rvol3TF) ? dailyVolExt / nz(avgVol3, 1) : rvol3_std
+
+floatTurnover = displayShares > 0 ? (dailyVolExt / displayShares) * 100 : na
+flToColor = floatTurnover > 1000 ? #2fe03e : floatTurnover >= 350 ? color.yellow : floatTurnover > 100 ? color.orange : #f23645
+
+// --- Dynamic % Price Levels ---
+pctChange      = currentPct
+lowerLimitPct  = math.floor(pctChange / 100) * 100
+upperLimitPct  = lowerLimitPct + 100
+lowerLimitPrice = prevClose * (1 + lowerLimitPct / 100)
+upperLimitPrice = prevClose * (1 + upperLimitPct / 100)
+
+// --- Table Setup & Visual Variables ---
+var table statsTable = table.new(
+     posInput == "Top Right" ? position.top_right : 
+     posInput == "Bottom Right" ? position.bottom_right : 
+     posInput == "Top Left" ? position.top_left : 
+     posInput == "Bottom Left" ? position.bottom_left : position.middle_right, 
+     1, 26, 
+     bgcolor = displayTable ? bgColorInput : na, 
+     border_width = displayTable ? 1 : 0, 
+     border_color = displayTable ? color.new(color.gray, 50) : na,
+     frame_width = displayTable ? 1 : 0, 
+     frame_color = displayTable ? color.new(color.gray, 50) : na
+ )
+
+tSize = textSizeInput == "Tiny" ? size.tiny : textSizeInput == "Small" ? size.small : textSizeInput == "Normal" ? size.normal : size.large
+pTSize = plotSizeInput == "Tiny" ? size.tiny : plotSizeInput == "Small" ? size.small : plotSizeInput == "Normal" ? size.normal : size.large
+
+gapColor = currentPct > 60 ? #2fe03e : currentPct >= 25 ? color.yellow : currentPct > 0 ? color.orange : #f23645
+
+highestGain = highestGainD
+dateOfGain = dateOfGainD
+is4H_Highest = false
+
+if use4HCheck and not na(highestGain4H) and (na(highestGain) or highestGain4H > highestGain)
+    highestGain := highestGain4H
+    dateOfGain := dateOfGain4H
+    is4H_Highest := true
+
+string dateString = not na(dateOfGain) ? str.format_time(dateOfGain, "MM/dd/yy") : "N/A"
+string gainString = not na(highestGain) ? str.format("{0,number,#.##}%", highestGain) : "N/A"
+highPercentColor = highestGain > 100 ? #f23645 : highestGain >= 75 ? color.orange : highestGain > 50 ? color.rgb(59, 216, 255) : #1e9b29
+string hPctLabelString = is4H_Highest ? "H%(4h) - " : "H%(" + str.tostring(lookbackDaysInput) + "d) - "
+
+ma1Label = str.tostring(ma1Length) + ma1Type
+ma2Label = str.tostring(ma2Length) + ma2Type
+dMa3Label = "D" + str.tostring(ma3Length) + ma3Type
+
+float MEGA_CAP  = 200000000000
+float LARGE_CAP = 10000000000
+float MID_CAP   = 2000000000
+float SMALL_CAP = 250000000
+float MICRO_CAP = 50000000
+
+color mktCapColor = switch
+    finalMktCap >= MEGA_CAP  => color.rgb(122, 120, 240)
+    finalMktCap >= LARGE_CAP => color.rgb(33, 150, 243)
+    finalMktCap >= MID_CAP   => color.rgb(223, 213, 82)
+    finalMktCap >= SMALL_CAP => color.rgb(238, 158, 38)
+    finalMktCap >= MICRO_CAP => color.rgb(203, 84, 240)
+    => color.rgb(184, 178, 178)
+
+isSmallTier = finalMktCap < MID_CAP
+floatTextColor = na(displayShares) ? color.rgb(150, 154, 167) : 
+             (displayShares > floatMaxSize and isSmallTier) ? color.rgb(226, 94, 105) : 
+             (displayShares <= floatMaxSize) ? #35cd78 : 
+             mktCapColor
+
+string mktCapLabel = switch
+    finalMktCap >= MEGA_CAP  => "MeCap"
+    finalMktCap >= LARGE_CAP => "LgCap"
+    finalMktCap >= MID_CAP   => "MdCap"
+    finalMktCap >= SMALL_CAP => "SmCap"
+    finalMktCap >= MICRO_CAP => "MoCap"
+    => "NaCap"
+
+// Daily Pivots
+getPreviousHigherHighs() =>
+    float p1 = 0, float p2 = 0, float p3 = 0, float p4 = 0, float p5 = 0
+    float currentMax = na
+    int count = 0
+    
+    // Look back up to 500 days starting from yesterday (index 1)
+    for i = 1 to pivotLookbackInput
+        // We define a simple local peak (swing high) looking at 1 bar on each side
+        bool isPivot = true
+        // Check left side (older bars)
+        if high[i+1] > high[i]
+            isPivot := false
+        // Check right side (newer bars)
+        // If i == 1, we exclude today (high[0]) from the swing check
+        if i > 1 and high[i-1] > high[i]
+            isPivot := false
+            
+        if isPivot
+            if na(currentMax) or math.round(high[i] - currentMax, 2) > minPivotDiff
+                currentMax := high[i]
+                count += 1
+                if count == 1
+                    p1 := currentMax
+                else if count == 2
+                    p2 := currentMax
+                else if count == 3
+                    p3 := currentMax
+                else if count == 4
+                    p4 := currentMax
+                else if count == 5
+                    p5 := currentMax
+                    break
+    [p1, p2, p3, p4, p5]
+
+getDailyPreviousHighs() =>
+    float p1 = high[1]
+    float p2 = 0, float p3 = 0, float p4 = 0, float p5 = 0
+    float currentMax = p1
+    int count = 1
+    
+    for i = 2 to pivotLookbackInput
+        if math.round(high[i] - currentMax, 2) > minPivotDiff
+            currentMax := high[i]
+            count += 1
+            if count == 2
+                p2 := currentMax
+            else if count == 3
+                p3 := currentMax
+            else if count == 4
+                p4 := currentMax
+            else if count == 5
+                p5 := currentMax
+                break
+    [p1, p2, p3, p4, p5]
+
+// Daily Pivot Calculations & Previous 4 Highs
+[dailyPivot_r, ph1_r, ph2_r, ph3_r, ph4_r] = request.security(syminfo.tickerid, "D", getPreviousHigherHighs(), lookahead = barmerge.lookahead_on)
+[dph1_r, dph2_r, dph3_r, dph4_r, dph5_r] = request.security(syminfo.tickerid, "D", getDailyPreviousHighs(), lookahead = barmerge.lookahead_on)
+
+dailyPivot = dailyPivot_r == 0 ? na : dailyPivot_r
+ph1 = ph1_r == 0 ? na : ph1_r
+ph2 = ph2_r == 0 ? na : ph2_r
+ph3 = ph3_r == 0 ? na : ph3_r
+ph4 = ph4_r == 0 ? na : ph4_r
+
+dph1 = dph1_r == 0 ? na : dph1_r
+dph2 = dph2_r == 0 ? na : dph2_r
+dph3 = dph3_r == 0 ? na : dph3_r
+dph4 = dph4_r == 0 ? na : dph4_r
+dph5 = dph5_r == 0 ? na : dph5_r
+
+// --- Chart Visual Definitions ---
+var line upperLine = line.new(na, na, na, na, color = upperLevelCol, style = getLineStyle(lineStyleInput), width = lineWidthInput)
+var line lowerLine = line.new(na, na, na, na, color = lowerLevelCol, style = getLineStyle(lineStyleInput), width = lineWidthInput)
+var label upperLbl = label.new(na, na, "", color = #00000000, textcolor = upperLevelCol, style = label.style_label_left, size = pTSize)
+var label lowerLbl = label.new(na, na, "", color = #00000000, textcolor = lowerLevelCol, style = label.style_label_left, size = pTSize)
+
+var line midLine1 = line.new(na, na, na, na, color = midLevelCol, style = getLineStyle(lineStyleInput), width = lineWidthInput)
+var line midLine2 = line.new(na, na, na, na, color = midLevelCol, style = getLineStyle(lineStyleInput), width = lineWidthInput)
+var line midLine3 = line.new(na, na, na, na, color = midLevelCol, style = getLineStyle(lineStyleInput), width = lineWidthInput)
+
+var label midLbl1 = label.new(na, na, "", color = #00000000, textcolor = midLevelCol, style = label.style_label_left, size = pTSize)
+var label midLbl2 = label.new(na, na, "", color = #00000000, textcolor = midLevelCol, style = label.style_label_left, size = pTSize)
+var label midLbl3 = label.new(na, na, "", color = #00000000, textcolor = midLevelCol, style = label.style_label_left, size = pTSize)
+
+var line belowLine = line.new(na, na, na, na, color = midLevelCol, style = getLineStyle(lineStyleInput), width = lineWidthInput)
+var label belowLbl = label.new(na, na, "", color = #00000000, textcolor = midLevelCol, style = label.style_label_left, size = pTSize)
+
+var line vwapLine = line.new(na, na, na, na, color = vwapCol, style = getLineStyle(vwapStyleStr), width = lineWidthInput)
+var label vwapLbl = label.new(na, na, "", color = #00000000, textcolor = vwapCol, style = label.style_label_left, size = pTSize)
+
+var line ma1Line = line.new(na, na, na, na, color = ma1Col, style = getLineStyle(ma1StyleStr), width = lineWidthInput)
+var line ma2Line = line.new(na, na, na, na, color = ma2Col, style = getLineStyle(ma2StyleStr), width = lineWidthInput)
+var line dma3Line = line.new(na, na, na, na, color = dma3Col, style = getLineStyle(dma3StyleStr), width = lineWidthInput)
+
+var label ma1Lbl = label.new(na, na, "", color = #00000000, textcolor = ma1Col, style = label.style_label_left, size = pTSize)
+var label ma2Lbl = label.new(na, na, "", color = #00000000, textcolor = ma2Col, style = label.style_label_left, size = pTSize)
+var label dma3Lbl = label.new(na, na, "", color = #00000000, textcolor = dma3Col, style = label.style_label_left, size = pTSize)
+
+var line dhLine = line.new(na, na, na, na, color = dhCol, style = getLineStyle(dhStyleStr), width = lineWidthInput)
+var label dhLbl = label.new(na, na, "", color = #00000000, textcolor = dhCol, style = label.style_label_left, size = pTSize)
+var line  pdhLine = line.new(na, na, na, na, color = dhCol, style = getLineStyle(dhStyleStr), width = lineWidthInput)
+var label pdhLbl = label.new(na, na, "", color = #00000000, textcolor = dhCol, style = label.style_label_left, size = pTSize)
+
+var line dpLine = line.new(na, na, na, na, color = dpCol, style = getLineStyle(dpStyleStr), width = lineWidthInput)
+var label dpLbl = label.new(na, na, "", color = #00000000, textcolor = dpCol, style = label.style_label_left, size = pTSize)
+
+var line ph1Line = line.new(na, na, na, na, color = prevHighsCol, style = getLineStyle(prevHighsStyleStr), width = lineWidthInput)
+var label ph1Lbl = label.new(na, na, "", color = #00000000, textcolor = prevHighsCol, style = label.style_label_left, size = pTSize)
+var line ph2Line = line.new(na, na, na, na, color = prevHighsCol, style = getLineStyle(prevHighsStyleStr), width = lineWidthInput)
+var label ph2Lbl = label.new(na, na, "", color = #00000000, textcolor = prevHighsCol, style = label.style_label_left, size = pTSize)
+var line ph3Line = line.new(na, na, na, na, color = prevHighsCol, style = getLineStyle(prevHighsStyleStr), width = lineWidthInput)
+var label ph3Lbl = label.new(na, na, "", color = #00000000, textcolor = prevHighsCol, style = label.style_label_left, size = pTSize)
+var line ph4Line = line.new(na, na, na, na, color = prevHighsCol, style = getLineStyle(prevHighsStyleStr), width = lineWidthInput)
+var label ph4Lbl = label.new(na, na, "", color = #00000000, textcolor = prevHighsCol, style = label.style_label_left, size = pTSize)
+
+// DPH visual elements
+var line dph1Line = line.new(na, na, na, na, color = dphCol, style = getLineStyle(dphStyleStr), width = lineWidthInput)
+var label dph1Lbl = label.new(na, na, "", color = #00000000, textcolor = dphCol, style = label.style_label_left, size = pTSize)
+var line dph2Line = line.new(na, na, na, na, color = dphCol, style = getLineStyle(dphStyleStr), width = lineWidthInput)
+var label dph2Lbl = label.new(na, na, "", color = #00000000, textcolor = dphCol, style = label.style_label_left, size = pTSize)
+var line dph3Line = line.new(na, na, na, na, color = dphCol, style = getLineStyle(dphStyleStr), width = lineWidthInput)
+var label dph3Lbl = label.new(na, na, "", color = #00000000, textcolor = dphCol, style = label.style_label_left, size = pTSize)
+var line dph4Line = line.new(na, na, na, na, color = dphCol, style = getLineStyle(dphStyleStr), width = lineWidthInput)
+var label dph4Lbl = label.new(na, na, "", color = #00000000, textcolor = dphCol, style = label.style_label_left, size = pTSize)
+var line dph5Line = line.new(na, na, na, na, color = dphCol, style = getLineStyle(dphStyleStr), width = lineWidthInput)
+var label dph5Lbl = label.new(na, na, "", color = #00000000, textcolor = dphCol, style = label.style_label_left, size = pTSize)
+
+var line pmhLine = line.new(na, na, na, na, color = pmhCol, style = getLineStyle(pmhStyleStr), width = lineWidthInput)
+var label pmhLbl = label.new(na, na, "", color = #00000000, textcolor = pmhCol, style = label.style_label_left, size = pTSize)
+var line high52Line = line.new(na, na, na, na, color = high52Col, style = getLineStyle(high52StyleStr), width = lineWidthInput)
+var label high52Lbl = label.new(na, na, "", color = #00000000, textcolor = high52Col, style = label.style_label_left, size = pTSize)
+
+// Determine DH/PDH values globally so they can be plotted properly
+//bool isPdh = session.ispremarket and na(dh)
+float valToUse = isPremarket ? regularPdhHigh : regularDhHigh
+string labelStr = isPremarket ? "PDH" : "DH"
+
+// --- End of Chart Logic Updates ---
+var drawnPrices = array.new_float()
+
+if barstate.islast
+    table.clear(statsTable, 0, 0, 0, 25)
+    int currentRow = 0
+    
+    if displayTable
+        if showVWAP and (not hideNoValue or not na(vwapVal))
+            bool vwapAlert = highlightPrice ? highlightPrices(vwapVal, emaAlertPct) : false
+            table.cell(statsTable, 0, currentRow, "VWAP - " + formatPrice(vwapVal), text_color = close > vwapVal ? #35cd78 : (vwapAlert ? color.black : txtColorInput), bgcolor = vwapAlert ? highlightBGColorInput : na, text_size = tSize)
+            currentRow += 1
+        if showGap and (not hideNoValue or not na(currentPct))
+            table.cell(statsTable, 0, currentRow, "Gap% : " + str.format("{0,number,#.##}", currentPct)+"%", text_color = gapColor, text_size = tSize)
+            currentRow += 1
+        if showFloat and (not hideNoValue or not na(displayShares))
+            table.cell(statsTable, 0, currentRow, sharesLabel + " - " + formatNumber(displayShares), text_color = floatTextColor, text_size = tSize)
+            currentRow += 1
+        if showDPP and (not hideNoValue or not na(dppPct))
+            table.cell(statsTable, 0, currentRow, "DPP% - " + str.format("{0,number,#.##}", dppPct)+"%", text_color = dppPct < currentPct ? #089981 : #f23645, text_size = tSize)
+            currentRow += 1
+        if showPMH and (not hideNoValue or not na(pmh)) and not (dynamicHide and not na(pmh) and close > pmh)
+            pmh_alert = highlightPrice ? highlightPrices(pmh, emaAlertPct) : false
+            table.cell(statsTable, 0, currentRow, "PMkH - " + formatPrice(pmh), text_color = close > pmh ? #089981 : (pmh_alert ? color.black : txtColorInput), bgcolor = pmh_alert ? highlightBGColorInput : na, text_size = tSize)
+            currentRow += 1
+        if showDH and (not hideNoValue or not na(valToUse)) and not (dynamicHide and not na(valToUse) and close > valToUse)
+            dphval_alert = highlightPrice ? highlightPrices(valToUse, emaAlertPct) : false
+            table.cell(statsTable, 0, currentRow, labelStr + " - " + formatPrice(valToUse), text_color = close > valToUse ? #089981 : (dphval_alert ? color.black : txtColorInput), bgcolor = dphval_alert ? highlightBGColorInput : na, text_size = tSize)
+            currentRow += 1
+        if showPDH and not isPremarket and (not hideNoValue or not na(pdh_ext)) and not (dynamicHide and not na(pdh_ext) and close > pdh_ext)
+            pdh_ext_alert = highlightPrice ? highlightPrices(pdh_ext, emaAlertPct) : false
+            table.cell(statsTable, 0, currentRow, "PDH" + " - " + formatPrice(pdh_ext), text_color = close > pdh_ext ? #089981 : (pdh_ext_alert ? color.black : txtColorInput), bgcolor = pdh_ext_alert ? highlightBGColorInput : na, text_size = tSize)
+            currentRow += 1
+        if showDPH
+            string highestDPHLbl = "PDH1"
+            float highestDPHVal = dph1
+            if showMaxTargets
+                if not na(dph5)
+                    highestDPHVal := dph5
+                    highestDPHLbl := "PDH5"
+                else if not na(dph4)
+                    highestDPHVal := dph4
+                    highestDPHLbl := "PDH4"
+                else if not na(dph3)
+                    highestDPHVal := dph3
+                    highestDPHLbl := "PDH3"
+                else if not na(dph2)
+                    highestDPHVal := dph2
+                    highestDPHLbl := "PDH2"
+            else
+                if not na(dph1) and dph1 > close
+                    highestDPHVal := dph1
+                    highestDPHLbl := "PDH1"
+                else if not na(dph2) and dph2 > close
+                    highestDPHVal := dph2
+                    highestDPHLbl := "PDH2"
+                else if not na(dph3) and dph3 > close
+                    highestDPHVal := dph3
+                    highestDPHLbl := "PDH3"
+                else if not na(dph4) and dph4 > close
+                    highestDPHVal := dph4
+                    highestDPHLbl := "PDH4"
+                else if not na(dph5) and dph5 > close
+                    highestDPHVal := dph5
+                    highestDPHLbl := "PDH5"
+                else
+                    if not na(dph5)
+                        highestDPHVal := dph5
+                        highestDPHLbl := "PDH5"
+                    else if not na(dph4)
+                        highestDPHVal := dph4
+                        highestDPHLbl := "PDH4"
+                    else if not na(dph3)
+                        highestDPHVal := dph3
+                        highestDPHLbl := "PDH3"
+                    else if not na(dph2)
+                        highestDPHVal := dph2
+                        highestDPHLbl := "PDH2"
+                
+            if (not hideNoValue or not na(highestDPHVal)) and not (dynamicHide and not na(highestDPHVal) and close > highestDPHVal)
+                dph_alert = highlightPrice ? highlightPrices(highestDPHVal, emaAlertPct) : false
+                table.cell(statsTable, 0, currentRow, highestDPHLbl + " - " + formatPrice(highestDPHVal), text_color = close > highestDPHVal ? #089981 : (dph_alert ? color.black : txtColorInput), bgcolor = dph_alert ? highlightBGColorInput : na, text_size = tSize)
+                currentRow += 1
+        if showDP
+            string highestLbl = "DPiH"
+            float highestVal = dailyPivot
+            if showMaxTargets
+                if not na(ph4)
+                    highestVal := ph4
+                    highestLbl := "DPiH4"
+                else if not na(ph3)
+                    highestVal := ph3
+                    highestLbl := "DPiH3"
+                else if not na(ph2)
+                    highestVal := ph2
+                    highestLbl := "DPiH2"
+                else if not na(ph1)
+                    highestVal := ph1
+                    highestLbl := "DPiH1"
+            else
+                if not na(dailyPivot) and dailyPivot > close
+                    highestVal := dailyPivot
+                    highestLbl := "DPiH"
+                else if not na(ph1) and ph1 > close
+                    highestVal := ph1
+                    highestLbl := "DPiH1"
+                else if not na(ph2) and ph2 > close
+                    highestVal := ph2
+                    highestLbl := "DPiH2"
+                else if not na(ph3) and ph3 > close
+                    highestVal := ph3
+                    highestLbl := "DPiH3"
+                else if not na(ph4) and ph4 > close
+                    highestVal := ph4
+                    highestLbl := "DPiH4"
+                else
+                    if not na(ph4)
+                        highestVal := ph4
+                        highestLbl := "DPiH4"
+                    else if not na(ph3)
+                        highestVal := ph3
+                        highestLbl := "DPiH3"
+                    else if not na(ph2)
+                        highestVal := ph2
+                        highestLbl := "DPiH2"
+                    else if not na(ph1)
+                        highestVal := ph1
+                        highestLbl := "DPiH1"
+                
+            dpih_alert = highlightPrice ? highlightPrices(highestVal, emaAlertPct) : false
+            if (not hideNoValue or not na(highestVal)) and not (dynamicHide and not na(highestVal) and close > highestVal)
+                table.cell(statsTable, 0, currentRow, highestLbl + " - " + formatPrice(highestVal), text_color = close > highestVal ? #089981 : (dpih_alert ? color.black : txtColorInput), bgcolor = dpih_alert ? highlightBGColorInput : na, text_size = tSize)
+                currentRow += 1
+        if showLevels and (not hideNoValue or not na(lowerLimitPct))
+            lPctStr = lowerLimitPct == 0 ? "BP%" : str.format("{0,number,#}%", lowerLimitPct)
+            upperLimitAlert = highlightPrice ? highlightPrices(upperLimitPrice, emaAlertPct) : false
+            table.cell(statsTable, 0, currentRow, str.format("{0,number,#}% - {1}", upperLimitPct, formatPrice(upperLimitPrice)), text_color = upperLimitAlert ? color.black : upperLevelCol, bgcolor = upperLimitAlert ? highlightBGColorInput : na, text_size = tSize)
+            currentRow += 1
+            table.cell(statsTable, 0, currentRow, str.format("{0} - {1}", lPctStr, formatPrice(lowerLimitPrice)), text_color = lowerLevelCol, text_size = tSize)
+            currentRow += 1
+        if showMA1 and (not hideNoValue or not na(ma1))
+            ma1_alert = highlightPrice ? highlightPrices(ma1, emaAlertPct) : false
+            table.cell(statsTable, 0, currentRow, ma1Label + " - " + formatPrice(ma1), text_color = close > ma1 ? #089981 : (ma1_alert ? color.black : ma1Col), bgcolor = ma1_alert ? highlightBGColorInput : na, text_size = tSize)
+            currentRow += 1
+        if showMA2 and (not hideNoValue or not na(ma2))
+            ma2_alert = highlightPrice ? highlightPrices(ma2, emaAlertPct) : false
+            table.cell(statsTable, 0, currentRow, ma2Label + " - " + formatPrice(ma2), text_color = close > ma2 ? #089981 : (ma2_alert ? color.black : ma2Col), bgcolor = ma2_alert ? highlightBGColorInput : na, text_size = tSize)
+            currentRow += 1
+        if showDMA3 and (not hideNoValue or not na(dMa3))
+            dma3_alert = highlightPrice ? highlightPrices(dMa3, emaAlertPct) : false
+            table.cell(statsTable, 0, currentRow, dMa3Label + " - " + formatPrice(dMa3), text_color = close > dMa3 ? #089981 : (dma3_alert ? color.black : dma3Col), bgcolor = dma3_alert ? highlightBGColorInput : na, text_size = tSize)
+            currentRow += 1
+        if showPBVol and (not hideNoValue or not na(pbVol))
+            table.cell(statsTable, 0, currentRow, "PBVol - " + formatNumber(pbVol), text_color = pbColor, text_size = tSize)
+            currentRow += 1
+        if showDlyVol and (not hideNoValue or not na(dailyVolExt))
+            table.cell(statsTable, 0, currentRow, "DlyVOL - " + dlyVol, text_color = color.white, text_size = tSize)
+            currentRow += 1
+        if showRVOL1 and (not hideNoValue or not na(rvol1))
+            rvolStr1 = "RVOL(" + rvol1TF + "): " + formatNumber(rvol1 * 100) + "%"
+            table.cell(statsTable, 0, currentRow, rvolStr1, text_color = (timeframe.in_seconds(rvol1TF) <= 300 and((rvol1 * 100)) > 125)  ? #089981 : (rvol1 * 100) > 900 ? #089981:color.yellow, text_size = tSize)
+            currentRow += 1
+        if showRVOL2 and (not hideNoValue or not na(rvol2))
+            rvolStr2 = "RVOL(" + rvol2TF + "): " + formatNumber(rvol2 * 100) + "%"
+            table.cell(statsTable, 0, currentRow, rvolStr2, text_color =  (timeframe.in_seconds(rvol2TF) <= 300 and((rvol2 * 100)) > 125)  ? #089981 : (rvol2 * 100) > 900 ? #089981:color.yellow, text_size = tSize)
+            currentRow += 1
+        if showRVOL3 and (not hideNoValue or not na(rvol3))
+            rvolStr3 = "RVOL(" + rvol3TF + "): " + formatNumber(rvol3 * 100) + "%"
+            table.cell(statsTable, 0, currentRow, rvolStr3, text_color =  (timeframe.in_seconds(rvol3TF) <= 300 and((rvol3 * 100)) > 125)  ? #089981 : (rvol3 * 100) > 900 ? #089981:color.yellow, text_size = tSize)
+            currentRow += 1
+        if showTurnover and (not hideNoValue or not na(floatTurnover))
+            turnoverStr = na(floatTurnover) ? "N/A" : formatNumber(floatTurnover) + "%"
+            table.cell(statsTable, 0, currentRow, "FlTo - " + turnoverStr, text_color = flToColor, text_size = tSize)
+            currentRow += 1
+        if showMktCap and (not hideNoValue or not na(finalMktCap))
+            table.cell(statsTable, 0, currentRow, mktCapLabel+" - $" + formatNumber(finalMktCap), text_color = mktCapColor, text_size = tSize)
+            currentRow += 1
+        if show52WH and (not hideNoValue or not na(high52))
+            high52_alert = close < high52 and close >= high52 * (1 - emaAlertPct / 100) and close > close[1] and close > open
+            table.cell(statsTable, 0, currentRow, "52WH - " + formatPrice(high52), text_color = close > high52 ? color.rgb(4, 18, 145) : (high52_alert ? color.rgb(221, 227, 241) : txtColorInput), bgcolor = close > high52 ? color.new(#84c0f1, 1) : (high52_alert ? color.new(#3e5ff5, 1) : na), text_size = tSize)
+            currentRow += 1
+        if showHPctRun and (not hideNoValue or not na(highestGain))
+            table.cell(statsTable, 0, currentRow, hPctLabelString + gainString, text_color = highPercentColor, text_size = tSize)
+            currentRow += 1
+        if showHPctRunDate and (not hideNoValue or not na(dateOfGain))
+            table.cell(statsTable, 0, currentRow, "H%Date - " +dateString, text_color = highPercentColor, text_size = tSize)
+
+    // Chart Line Updates
+    array.clear(drawnPrices)
+
+    if showVWAPPlot and not na(vwapVal) and not drawnPrices.checkOverlap(vwapVal, hideOverlapInput, close)
+        line.set_xy1(vwapLine, bar_index - 60, vwapVal), line.set_xy2(vwapLine, bar_index, vwapVal)
+        label.set_xy(vwapLbl, bar_index, vwapVal), label.set_text(vwapLbl, "VWAP - " + formatPrice(vwapVal))
+    else
+        line.set_xy1(vwapLine, na, na), label.set_xy(vwapLbl, na, na)
+
+    if showMA1Plot and not na(ma1) and not drawnPrices.checkOverlap(ma1, hideOverlapInput, close)
+        line.set_xy1(ma1Line, bar_index - 60, ma1), line.set_xy2(ma1Line, bar_index, ma1)
+        label.set_xy(ma1Lbl, bar_index, ma1), label.set_text(ma1Lbl, ma1Label + " - " + formatPrice(ma1))
+    else
+        line.set_xy1(ma1Line, na, na), label.set_xy(ma1Lbl, na, na)
+
+    if showMA2Plot and not na(ma2) and not drawnPrices.checkOverlap(ma2, hideOverlapInput, close)
+        line.set_xy1(ma2Line, bar_index - 60, ma2), line.set_xy2(ma2Line, bar_index, ma2)
+        label.set_xy(ma2Lbl, bar_index, ma2), label.set_text(ma2Lbl, ma2Label + " - " + formatPrice(ma2))
+    else
+        line.set_xy1(ma2Line, na, na), label.set_xy(ma2Lbl, na, na)
+
+    if showDMA3Plot and not na(dMa3) and not drawnPrices.checkOverlap(dMa3, hideOverlapInput, close)
+        line.set_xy1(dma3Line, bar_index - 60, dMa3), line.set_xy2(dma3Line, bar_index, dMa3)
+        label.set_xy(dma3Lbl, bar_index, dMa3), label.set_text(dma3Lbl, dMa3Label + " - " + formatPrice(dMa3))
+    else
+        line.set_xy1(dma3Line, na, na), label.set_xy(dma3Lbl, na, na)
+        
+    if showDHPlot and not na(valToUse) and not drawnPrices.checkOverlap(valToUse, hideOverlapInput, close)
+        line.set_xy1(dhLine, bar_index - 60, valToUse), line.set_xy2(dhLine, bar_index, valToUse)
+        label.set_xy(dhLbl, bar_index, valToUse), label.set_text(dhLbl, labelStr + " - " + formatPrice(valToUse))
+    else
+        line.set_xy1(dhLine, na, na), label.set_xy(dhLbl, na, na)
+    
+    if showPDHPlot and not isPremarket and not na(pdh_ext) and not drawnPrices.checkOverlap(pdh_ext, hideOverlapInput, close)
+        line.set_xy1(pdhLine, bar_index - 60, pdh_ext), line.set_xy2(pdhLine, bar_index, pdh_ext)
+        label.set_xy(pdhLbl, bar_index, pdh_ext), label.set_text(pdhLbl, "PDH - " + formatPrice(pdh_ext))
+    else
+        line.set_xy1(pdhLine, na, na), label.set_xy(pdhLbl, na, na)
+
+    if showDPPlot and not na(dailyPivot) and not drawnPrices.checkOverlap(dailyPivot, hideOverlapInput, close)
+        line.set_xy1(dpLine, bar_index - 60, dailyPivot), line.set_xy2(dpLine, bar_index, dailyPivot)
+        label.set_xy(dpLbl, bar_index, dailyPivot), label.set_text(dpLbl, "DPiH - " + formatPrice(dailyPivot))
+    else
+        line.set_xy1(dpLine, na, na), label.set_xy(dpLbl, na, na)
+
+    if showPMHPlot and not na(pmh) and not drawnPrices.checkOverlap(pmh, hideOverlapInput, close)
+        line.set_xy1(pmhLine, bar_index - 60, pmh), line.set_xy2(pmhLine, bar_index, pmh)
+        label.set_xy(pmhLbl, bar_index, pmh), label.set_text(pmhLbl, "PMkH - " + formatPrice(pmh))
+    else
+        line.set_xy1(pmhLine, na, na), label.set_xy(pmhLbl, na, na)
+        
+    if show52WHPlot and not na(high52) and not drawnPrices.checkOverlap(high52, hideOverlapInput, close)
+        line.set_xy1(high52Line, bar_index - 60, high52), line.set_xy2(high52Line, bar_index, high52)
+        label.set_xy(high52Lbl, bar_index, high52), label.set_text(high52Lbl, "52WH - " + formatPrice(high52))
+    else
+        line.set_xy1(high52Line, na, na), label.set_xy(high52Lbl, na, na)
+
+    if showPrevHighsPlot
+        if not na(ph1) and not drawnPrices.checkOverlap(ph1, hideOverlapInput, close)
+            line.set_xy1(ph1Line, bar_index - 60, ph1), line.set_xy2(ph1Line, bar_index, ph1)
+            label.set_xy(ph1Lbl, bar_index, ph1), label.set_text(ph1Lbl, "DPiH1 - " + formatPrice(ph1))
+        else
+            line.set_xy1(ph1Line, na, na), label.set_xy(ph1Lbl, na, na)
+            
+        if not na(ph2) and not drawnPrices.checkOverlap(ph2, hideOverlapInput, close)
+            line.set_xy1(ph2Line, bar_index - 60, ph2), line.set_xy2(ph2Line, bar_index, ph2)
+            label.set_xy(ph2Lbl, bar_index, ph2), label.set_text(ph2Lbl, "DPiH2 - " + formatPrice(ph2))
+        else
+            line.set_xy1(ph2Line, na, na), label.set_xy(ph2Lbl, na, na)
+            
+        if not na(ph3) and not drawnPrices.checkOverlap(ph3, hideOverlapInput, close)
+            line.set_xy1(ph3Line, bar_index - 60, ph3), line.set_xy2(ph3Line, bar_index, ph3)
+            label.set_xy(ph3Lbl, bar_index, ph3), label.set_text(ph3Lbl, "DPiH3 - " + formatPrice(ph3))
+        else
+            line.set_xy1(ph3Line, na, na), label.set_xy(ph3Lbl, na, na)
+            
+        if not na(ph4) and not drawnPrices.checkOverlap(ph4, hideOverlapInput, close)
+            line.set_xy1(ph4Line, bar_index - 60, ph4), line.set_xy2(ph4Line, bar_index, ph4)
+            label.set_xy(ph4Lbl, bar_index, ph4), label.set_text(ph4Lbl, "DPiH4 - " + formatPrice(ph4))
+        else
+            line.set_xy1(ph4Line, na, na), label.set_xy(ph4Lbl, na, na)
+    else
+        line.set_xy1(ph1Line, na, na), label.set_xy(ph1Lbl, na, na)
+        line.set_xy1(ph2Line, na, na), label.set_xy(ph2Lbl, na, na)
+        line.set_xy1(ph3Line, na, na), label.set_xy(ph3Lbl, na, na)
+        line.set_xy1(ph4Line, na, na), label.set_xy(ph4Lbl, na, na)
+
+    if showDPHPlot
+        if not na(dph1) and not drawnPrices.checkOverlap(dph1, hideOverlapInput, close)
+            line.set_xy1(dph1Line, bar_index - 60, dph1), line.set_xy2(dph1Line, bar_index, dph1)
+            label.set_xy(dph1Lbl, bar_index, dph1), label.set_text(dph1Lbl, "PDH1 - " + formatPrice(dph1))
+        else
+            line.set_xy1(dph1Line, na, na), label.set_xy(dph1Lbl, na, na)
+            
+        if not na(dph2) and not drawnPrices.checkOverlap(dph2, hideOverlapInput, close)
+            line.set_xy1(dph2Line, bar_index - 60, dph2), line.set_xy2(dph2Line, bar_index, dph2)
+            label.set_xy(dph2Lbl, bar_index, dph2), label.set_text(dph2Lbl, "PDH2 - " + formatPrice(dph2))
+        else
+            line.set_xy1(dph2Line, na, na), label.set_xy(dph2Lbl, na, na)
+            
+        if not na(dph3) and not drawnPrices.checkOverlap(dph3, hideOverlapInput, close)
+            line.set_xy1(dph3Line, bar_index - 60, dph3), line.set_xy2(dph3Line, bar_index, dph3)
+            label.set_xy(dph3Lbl, bar_index, dph3), label.set_text(dph3Lbl, "PDH3 - " + formatPrice(dph3))
+        else
+            line.set_xy1(dph3Line, na, na), label.set_xy(dph3Lbl, na, na)
+            
+        if not na(dph4) and not drawnPrices.checkOverlap(dph4, hideOverlapInput, close)
+            line.set_xy1(dph4Line, bar_index - 60, dph4), line.set_xy2(dph4Line, bar_index, dph4)
+            label.set_xy(dph4Lbl, bar_index, dph4), label.set_text(dph4Lbl, "PDH4 - " + formatPrice(dph4))
+        else
+            line.set_xy1(dph4Line, na, na), label.set_xy(dph4Lbl, na, na)
+            
+        if not na(dph5) and not drawnPrices.checkOverlap(dph5, hideOverlapInput, close)
+            line.set_xy1(dph5Line, bar_index - 60, dph5), line.set_xy2(dph5Line, bar_index, dph5)
+            label.set_xy(dph5Lbl, bar_index, dph5), label.set_text(dph5Lbl, "PDH5 - " + formatPrice(dph5))
+        else
+            line.set_xy1(dph5Line, na, na), label.set_xy(dph5Lbl, na, na)
+    else
+        line.set_xy1(dph1Line, na, na), label.set_xy(dph1Lbl, na, na)
+        line.set_xy1(dph2Line, na, na), label.set_xy(dph2Lbl, na, na)
+        line.set_xy1(dph3Line, na, na), label.set_xy(dph3Lbl, na, na)
+        line.set_xy1(dph4Line, na, na), label.set_xy(dph4Lbl, na, na)
+        line.set_xy1(dph5Line, na, na), label.set_xy(dph5Lbl, na, na)
+
+
+    if plotLevels
+        if not drawnPrices.checkOverlap(upperLimitPrice, hideOverlapInput, close)
+            line.set_xy1(upperLine, bar_index - 60, upperLimitPrice), line.set_xy2(upperLine, bar_index, upperLimitPrice)
+            label.set_xy(upperLbl, bar_index, upperLimitPrice), label.set_text(upperLbl, str.format("{0,number,#}% - {1}", upperLimitPct, formatPrice(upperLimitPrice)))
+        else
+            line.set_xy1(upperLine, na, na), label.set_xy(upperLbl, na, na)
+            
+        if not drawnPrices.checkOverlap(lowerLimitPrice, hideOverlapInput, close)
+            line.set_xy1(lowerLine, bar_index - 60, lowerLimitPrice), line.set_xy2(lowerLine, bar_index, lowerLimitPrice)
+            string chartLPctStr = lowerLimitPct == 0 ? "BP%" : str.format("{0,number,#}%", lowerLimitPct)
+            label.set_xy(lowerLbl, bar_index, lowerLimitPrice), label.set_text(lowerLbl, chartLPctStr + " - " + formatPrice(lowerLimitPrice))
+        else
+            line.set_xy1(lowerLine, na, na), label.set_xy(lowerLbl, na, na)
+            
+        if showMidLevels
+            mid1Pct = lowerLimitPct + 25, mid1Price = prevClose * (1 + mid1Pct / 100)
+            if not drawnPrices.checkOverlap(mid1Price, hideOverlapInput, close)
+                line.set_xy1(midLine1, bar_index - 60, mid1Price), line.set_xy2(midLine1, bar_index, mid1Price)
+                label.set_xy(midLbl1, bar_index, mid1Price), label.set_text(midLbl1, str.format("{0,number,#}% - {1}", mid1Pct, formatPrice(mid1Price)))
+            else
+                line.set_xy1(midLine1, na, na), label.set_xy(midLbl1, na, na)
+
+            mid2Pct = lowerLimitPct + 50, mid2Price = prevClose * (1 + mid2Pct / 100)
+            if not drawnPrices.checkOverlap(mid2Price, hideOverlapInput, close)
+                line.set_xy1(midLine2, bar_index - 60, mid2Price), line.set_xy2(midLine2, bar_index, mid2Price)
+                label.set_xy(midLbl2, bar_index, mid2Price), label.set_text(midLbl2, str.format("{0,number,#}% - {1}", mid2Pct, formatPrice(mid2Price)))
+            else
+                line.set_xy1(midLine2, na, na), label.set_xy(midLbl2, na, na)
+
+            mid3Pct = lowerLimitPct + 75, mid3Price = prevClose * (1 + mid3Pct / 100)
+            if not drawnPrices.checkOverlap(mid3Price, hideOverlapInput, close)
+                line.set_xy1(midLine3, bar_index - 60, mid3Price), line.set_xy2(midLine3, bar_index, mid3Price)
+                label.set_xy(midLbl3, bar_index, mid3Price), label.set_text(midLbl3, str.format("{0,number,#}% - {1}", mid3Pct, formatPrice(mid3Price)))
+            else
+                line.set_xy1(midLine3, na, na), label.set_xy(midLbl3, na, na)
+        else
+            line.set_xy1(midLine1, na, na), label.set_xy(midLbl1, na, na)
+            line.set_xy1(midLine2, na, na), label.set_xy(midLbl2, na, na)
+            line.set_xy1(midLine3, na, na), label.set_xy(midLbl3, na, na)
+
+        if showBelowLevel
+            belowPct = lowerLimitPct - 100, belowPrice = prevClose * (1 + belowPct / 100)
+            if not drawnPrices.checkOverlap(belowPrice, hideOverlapInput, close)
+                line.set_xy1(belowLine, bar_index - 60, belowPrice), line.set_xy2(belowLine, bar_index, belowPrice)
+                label.set_xy(belowLbl, bar_index, belowPrice), label.set_text(belowLbl, str.format("{0,number,#}% - {1}", belowPct, formatPrice(belowPrice)))
+            else
+                line.set_xy1(belowLine, na, na), label.set_xy(belowLbl, na, na)
+        else
+            line.set_xy1(belowLine, na, na), label.set_xy(belowLbl, na, na)
+    else
+        line.set_xy1(upperLine, na, na), label.set_xy(upperLbl, na, na)
+        line.set_xy1(lowerLine, na, na), label.set_xy(lowerLbl, na, na)
+        line.set_xy1(midLine1, na, na), label.set_xy(midLbl1, na, na)
+        line.set_xy1(midLine2, na, na), label.set_xy(midLbl2, na, na)
+        line.set_xy1(midLine3, na, na), label.set_xy(midLbl3, na, na)
+        line.set_xy1(belowLine, na, na), label.set_xy(belowLbl, na, na)

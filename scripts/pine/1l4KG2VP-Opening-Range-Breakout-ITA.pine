@@ -1,0 +1,128 @@
+// © ITA Trading Tools - itamardrori_
+//@version=6
+indicator("Opening Range Breakout [ITA]", overlay=true, max_boxes_count=100, max_lines_count=200, max_labels_count=200)
+
+// ─── INPUTS ──────────────────────────────────────────────────────────────────
+rangeMins  = input.string("15", "Opening Range Length", options=["5","15","30","60"], group="Range")
+sessStart  = input.session("0930-0931", "Session Open Time", group="Range", tooltip="Market open in exchange time. 0930 for US stocks/futures.")
+tz         = input.string("America/New_York", "Timezone", options=["America/New_York","Europe/London","Asia/Tokyo","Exchange"], group="Range")
+maxDays    = input.int(5, "Days to Display", minval=1, maxval=30, group="Range")
+
+showTargets = input.bool(true, "Show Extension Targets", group="Targets")
+t1Mult      = input.float(1.0, "Target 1 (x range)", minval=0.5, maxval=5, step=0.5, group="Targets")
+t2Mult      = input.float(2.0, "Target 2 (x range)", minval=0.5, maxval=5, step=0.5, group="Targets")
+
+// 85 transparency was the original default and the box was almost invisible on
+// a dark chart. The box is the whole point of the indicator, and on 4.9.2026
+// the boost data showed the three weakest scripts were the three with the
+// faintest drawings. A default nobody can see is a bad default.
+rangeColor  = input.color(color.new(#2962ff, 75), "Range Fill", group="Style")
+highColor   = input.color(color.new(#089981, 0),  "Range High", group="Style")
+lowColor    = input.color(color.new(#f23645, 0),  "Range Low",  group="Style")
+targetColor = input.color(color.new(#787b86, 30), "Target Lines", group="Style")
+showLabels  = input.bool(true, "Show Labels", group="Style")
+lblSizeStr  = input.string("Small", "Label Size", options=["Tiny","Small","Normal","Large"], group="Style")
+
+lblSize = lblSizeStr == "Tiny" ? size.tiny : lblSizeStr == "Normal" ? size.normal : lblSizeStr == "Large" ? size.large : size.small
+
+// ─── SESSION LOGIC ───────────────────────────────────────────────────────────
+rangeLen = str.tonumber(rangeMins)
+tzStr    = tz == "Exchange" ? syminfo.timezone : tz
+
+// build the opening-range session string, e.g. "0930-0945"
+openHH = str.substring(sessStart, 0, 2)
+openMM = str.substring(sessStart, 2, 4)
+openMinutes = str.tonumber(openHH) * 60 + str.tonumber(openMM)
+closeMinutes = openMinutes + rangeLen
+closeHH = math.floor(closeMinutes / 60)
+closeMM = closeMinutes % 60
+closeStr = (closeHH < 10 ? "0" : "") + str.tostring(closeHH) + (closeMM < 10 ? "0" : "") + str.tostring(closeMM)
+orSession = str.substring(sessStart, 0, 4) + "-" + closeStr
+
+inOR = not na(time(timeframe.period, orSession, tzStr))
+
+// ─── STATE ───────────────────────────────────────────────────────────────────
+var float orHigh    = na
+var float orLow     = na
+var int   orStart   = na
+var bool  orDone    = false
+var bool  brokeUp   = false
+var bool  brokeDown = false
+
+var box   orBox   = na
+var line  hiLine  = na
+var line  loLine  = na
+var line  t1Up    = na
+var line  t2Up    = na
+var line  t1Dn    = na
+var line  t2Dn    = na
+var label hiLbl   = na
+var label loLbl   = na
+
+cutoff = timenow - maxDays * 86400000
+recent = time > cutoff
+
+newSession = inOR and not inOR[1]
+
+// start of a new opening range
+if newSession and recent
+    orHigh    := high
+    orLow     := low
+    orStart   := bar_index
+    orDone    := false
+    brokeUp   := false
+    brokeDown := false
+    orBox  := box.new(bar_index, orHigh, bar_index, orLow, bgcolor=rangeColor, border_color=color.new(color.gray, 40), border_width=2)
+    hiLine := line.new(bar_index, orHigh, bar_index, orHigh, color=highColor, style=line.style_solid, width=2)
+    loLine := line.new(bar_index, orLow,  bar_index, orLow,  color=lowColor,  style=line.style_solid, width=2)
+    if showTargets
+        t1Up := line.new(bar_index, orHigh, bar_index, orHigh, color=targetColor, style=line.style_dotted, width=1)
+        t2Up := line.new(bar_index, orHigh, bar_index, orHigh, color=targetColor, style=line.style_dotted, width=1)
+        t1Dn := line.new(bar_index, orLow,  bar_index, orLow,  color=targetColor, style=line.style_dotted, width=1)
+        t2Dn := line.new(bar_index, orLow,  bar_index, orLow,  color=targetColor, style=line.style_dotted, width=1)
+
+// building the range
+else if inOR and not na(orBox)
+    orHigh := math.max(orHigh, high)
+    orLow  := math.min(orLow,  low)
+    box.set_top(orBox, orHigh)
+    box.set_bottom(orBox, orLow)
+    box.set_right(orBox, bar_index)
+    line.set_xy1(hiLine, orStart, orHigh)
+    line.set_xy2(hiLine, bar_index, orHigh)
+    line.set_xy1(loLine, orStart, orLow)
+    line.set_xy2(loLine, bar_index, orLow)
+
+// range closed - extend levels and targets forward
+else if not inOR and not na(orBox) and not na(orHigh)
+    if not orDone
+        orDone := true
+    rng = orHigh - orLow
+    line.set_xy2(hiLine, bar_index, orHigh)
+    line.set_xy2(loLine, bar_index, orLow)
+    if showTargets and not na(t1Up)
+        line.set_xy1(t1Up, orStart, orHigh + rng * t1Mult)
+        line.set_xy2(t1Up, bar_index, orHigh + rng * t1Mult)
+        line.set_xy1(t2Up, orStart, orHigh + rng * t2Mult)
+        line.set_xy2(t2Up, bar_index, orHigh + rng * t2Mult)
+        line.set_xy1(t1Dn, orStart, orLow - rng * t1Mult)
+        line.set_xy2(t1Dn, bar_index, orLow - rng * t1Mult)
+        line.set_xy1(t2Dn, orStart, orLow - rng * t2Mult)
+        line.set_xy2(t2Dn, bar_index, orLow - rng * t2Mult)
+
+// ─── BREAKOUT DETECTION ──────────────────────────────────────────────────────
+breakUp   = orDone and not brokeUp   and not na(orHigh) and close > orHigh
+breakDown = orDone and not brokeDown and not na(orLow)  and close < orLow
+
+if breakUp
+    brokeUp := true
+    if showLabels
+        label.new(bar_index, high, "ORB ↑", style=label.style_label_down, color=color.new(highColor, 10), textcolor=color.white, size=lblSize)
+if breakDown
+    brokeDown := true
+    if showLabels
+        label.new(bar_index, low, "ORB ↓", style=label.style_label_up, color=color.new(lowColor, 10), textcolor=color.white, size=lblSize)
+
+// ─── ALERTS ──────────────────────────────────────────────────────────────────
+alertcondition(breakUp,   "Opening Range Breakout Up",   "Price broke above the opening range high")
+alertcondition(breakDown, "Opening Range Breakout Down", "Price broke below the opening range low")

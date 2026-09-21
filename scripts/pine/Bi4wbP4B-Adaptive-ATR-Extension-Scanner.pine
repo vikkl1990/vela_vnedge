@@ -1,0 +1,377 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © chardogg74
+
+//@version=6
+indicator("Adaptive ATR% Extension Scanner", overlay=true, max_labels_count=50)
+
+// --- Inputs ---
+grp_main = "Core Settings"
+activeMA = input.string("Auto (Best Fit)", title="MA for Chart Signals", options=["8 EMA", "10 EMA", "20 EMA", "50 SMA", "100 SMA", "200 SMA", "Auto (Best Fit)"], group=grp_main)
+trackDir = input.string("Both", title="Track Direction", options=["Upper", "Lower", "Both"], group=grp_main)
+showBands = input.bool(true, title="Show Dynamic Bands", group=grp_main)
+
+grp_toggles = "Active Moving Averages"
+use8   = input.bool(true,  title="Include 8 EMA", inline="t1", group=grp_toggles)
+use10  = input.bool(true,  title="Include 10 EMA", inline="t1", group=grp_toggles)
+use20  = input.bool(true,  title="Include 20 EMA", inline="t1", group=grp_toggles)
+use50  = input.bool(false, title="Include 50 SMA", inline="t2", group=grp_toggles)
+use100 = input.bool(false, title="Include 100 SMA", inline="t2", group=grp_toggles)
+use200 = input.bool(false, title="Include 200 SMA", inline="t2", group=grp_toggles)
+
+grp_up = "Upside Dots Customization"
+showWarnDotUp = input.bool(true, title="Show Up Warning", inline="u1", group=grp_up)
+warnCharUp = input.string("•", title="Char", inline="u1", group=grp_up)
+warnColorUp = input.color(color.new(#d98254, 50), title="Color", inline="u1", group=grp_up)
+showExtDotUp = input.bool(true, title="Show Up Extreme", inline="u2", group=grp_up)
+extCharUp = input.string("•", title="Char", inline="u2", group=grp_up)
+extColorUp = input.color(color.new(#995960, 50), title="Color", inline="u2", group=grp_up)
+dotSize = input.string("tiny", title="Dot Size", options=["auto", "tiny", "small", "normal", "large", "huge"], group=grp_up)
+
+grp_dn = "Downside Dots Customization"
+showWarnDotDn = input.bool(true, title="Show Dn Warning", inline="d1", group=grp_dn)
+warnCharDn = input.string("•", title="Char", inline="d1", group=grp_dn)
+warnColorDn = input.color(color.new(#88a383, 50), title="Color", inline="d1", group=grp_dn)
+showExtDotDn = input.bool(true, title="Show Dn Extreme", inline="d2", group=grp_dn)
+extCharDn = input.string("•", title="Char", inline="d2", group=grp_dn)
+extColorDn = input.color(color.new(#5e7568, 50), title="Color", inline="d2", group=grp_dn)
+
+grp_bands = "Bands Customization"
+bandWarnUpCol = input.color(color.new(#d98254, 50), title="Up Warn Band", inline="b1", group=grp_bands)
+bandExtUpCol  = input.color(color.new(#995960, 30), title="Up Ext Band", inline="b1", group=grp_bands)
+fillUpCol     = input.color(color.new(#995960, 90), title="Up Fill Background", inline="b1", group=grp_bands)
+bandWarnDnCol = input.color(color.new(#88a383, 50), title="Dn Warn Band", inline="b2", group=grp_bands)
+bandExtDnCol  = input.color(color.new(#5e7568, 30), title="Dn Ext Band", inline="b2", group=grp_bands)
+fillDnCol     = input.color(color.new(#5e7568, 90), title="Dn Fill Background", inline="b2", group=grp_bands)
+
+grp_dash = "Dashboard Settings"
+showTable = input.bool(true, title="Show Dashboard", group=grp_dash)
+showVar = input.bool(true, title="Show Variance Scanner", group=grp_dash)
+tbBgColor = input.color(color.new(color.white, 100), title="Background Color", group=grp_dash)
+tbTxtColor = input.color(color.new(color.black, 0), title="Base Text Color", group=grp_dash)
+tbSize = input.string("small", title="Text Size", options=["auto", "tiny", "small", "normal", "large", "huge"], group=grp_dash)
+
+grp_dyn = "Dynamic Lookback Settings"
+lookback = input.int(20, title="Past Pullbacks to Analyze", group=grp_dyn)
+warnPctile = input.int(75, title="Warning Percentile", group=grp_dyn)
+extPctile = input.int(90, title="Extreme Percentile", group=grp_dyn)
+pivotLeft = input.int(10, title="Swing High/Low Left Bars", group=grp_dyn)
+pivotRight = input.int(5, title="Swing High/Low Right Bars", group=grp_dyn)
+spikeCap = input.float(3.0, title="Anti-Spike Visual Cap (x Median)", tooltip="Limits visual bands using the median (ignores outliers better than average).", group=grp_dyn)
+
+// --- Custom Functions ---
+f_get_percentile(float[] arr, int pct) =>
+    int sz = array.size(arr)
+    if sz == 0
+        na
+    else
+        float[] arr_copy = array.copy(arr)
+        array.sort(arr_copy)
+        int idx = math.round((sz - 1) * (pct / 100.0))
+        array.get(arr_copy, idx)
+
+f_variance(float[] arr) =>
+    int sz = array.size(arr)
+    if sz < 2
+        na
+    else
+        float mean = array.avg(arr)
+        float sumSq = 0.0
+        for val in arr
+            sumSq += math.pow(val - mean, 2)
+        sumSq / (sz - 1)
+
+calcBandPriceUp(float m, float ma, float atr) =>
+    if na(m) or m <= 0
+        na
+    else
+        (ma + math.sqrt(math.pow(ma, 2) + (4 * m * ma * atr))) / 2
+
+calcBandPriceDn(float m, float ma, float atr) =>
+    if na(m) or m <= 0
+        na
+    else
+        float inner = math.pow(ma, 2) - (4 * m * ma * atr)
+        inner >= 0 ? (ma + math.sqrt(inner)) / 2 : na 
+
+f_draw_row(table tb, int r, string label, float curMult, float[] arr, float vScore, bool isBest, int wPct, int ePct, color wCol, color eCol, bool sVar, color tCol, string tSize) =>
+    color cColor = isBest ? color.new(color.green, 0) : tCol
+    float wMult = f_get_percentile(arr, wPct)
+    float eMult = f_get_percentile(arr, ePct)
+    
+    table.cell(tb, 0, r, label + (isBest ? " (BEST)" : ""), text_color=cColor, text_size=tSize)
+    table.cell(tb, 1, r, str.tostring(curMult, "#.##")+"x", text_color=tCol, text_size=tSize)
+    table.cell(tb, 2, r, str.tostring(wMult, "#.##")+"x", text_color=wCol, text_size=tSize)
+    table.cell(tb, 3, r, str.tostring(eMult, "#.##")+"x", text_color=eCol, text_size=tSize)
+    if sVar
+        table.cell(tb, 4, r, str.tostring(vScore, "#.##"), text_color=tCol, text_size=tSize)
+
+// --- Core Calculations ---
+float ma8   = ta.ema(close, 8)
+float ma10  = ta.ema(close, 10)
+float ma20  = ta.ema(close, 20)
+float ma50  = ta.sma(close, 50)
+float ma100 = ta.sma(close, 100)
+float ma200 = ta.sma(close, 200)
+
+float atrVal = ta.atr(14)
+float atrPct = atrVal / close
+
+float m8_up   = close > ma8   ? ((close - ma8) / ma8) / atrPct : 0
+float m8_dn   = close < ma8   ? ((ma8 - close) / ma8) / atrPct : 0
+float m10_up  = close > ma10  ? ((close - ma10) / ma10) / atrPct : 0
+float m10_dn  = close < ma10  ? ((ma10 - close) / ma10) / atrPct : 0
+float m20_up  = close > ma20  ? ((close - ma20) / ma20) / atrPct : 0
+float m20_dn  = close < ma20  ? ((ma20 - close) / ma20) / atrPct : 0
+float m50_up  = close > ma50  ? ((close - ma50) / ma50) / atrPct : 0
+float m50_dn  = close < ma50  ? ((ma50 - close) / ma50) / atrPct : 0
+float m100_up = close > ma100 ? ((close - ma100) / ma100) / atrPct : 0
+float m100_dn = close < ma100 ? ((ma100 - close) / ma100) / atrPct : 0
+float m200_up = close > ma200 ? ((close - ma200) / ma200) / atrPct : 0
+float m200_dn = close < ma200 ? ((ma200 - close) / ma200) / atrPct : 0
+
+var float[] arr8_up   = array.new_float(0)
+var float[] arr8_dn   = array.new_float(0)
+var float[] arr10_up  = array.new_float(0)
+var float[] arr10_dn  = array.new_float(0)
+var float[] arr20_up  = array.new_float(0)
+var float[] arr20_dn  = array.new_float(0)
+var float[] arr50_up  = array.new_float(0)
+var float[] arr50_dn  = array.new_float(0)
+var float[] arr100_up = array.new_float(0)
+var float[] arr100_dn = array.new_float(0)
+var float[] arr200_up = array.new_float(0)
+var float[] arr200_dn = array.new_float(0)
+
+float ph = ta.pivothigh(high, pivotLeft, pivotRight)
+float pl = ta.pivotlow(low, pivotLeft, pivotRight)
+
+if not na(ph)
+    float aP = atrVal[pivotRight] / close[pivotRight]
+    if use8
+        float m8 = ((close[pivotRight] - ma8[pivotRight]) / ma8[pivotRight]) / aP
+        if m8 > 0
+            array.unshift(arr8_up, m8)
+            if array.size(arr8_up) > lookback
+                array.pop(arr8_up)
+    if use10
+        float m10 = ((close[pivotRight] - ma10[pivotRight]) / ma10[pivotRight]) / aP
+        if m10 > 0
+            array.unshift(arr10_up, m10)
+            if array.size(arr10_up) > lookback
+                array.pop(arr10_up)
+    if use20
+        float m20 = ((close[pivotRight] - ma20[pivotRight]) / ma20[pivotRight]) / aP
+        if m20 > 0
+            array.unshift(arr20_up, m20)
+            if array.size(arr20_up) > lookback
+                array.pop(arr20_up)
+    if use50
+        float m50 = ((close[pivotRight] - ma50[pivotRight]) / ma50[pivotRight]) / aP
+        if m50 > 0
+            array.unshift(arr50_up, m50)
+            if array.size(arr50_up) > lookback
+                array.pop(arr50_up)
+    if use100
+        float m100 = ((close[pivotRight] - ma100[pivotRight]) / ma100[pivotRight]) / aP
+        if m100 > 0
+            array.unshift(arr100_up, m100)
+            if array.size(arr100_up) > lookback
+                array.pop(arr100_up)
+    if use200
+        float m200 = ((close[pivotRight] - ma200[pivotRight]) / ma200[pivotRight]) / aP
+        if m200 > 0
+            array.unshift(arr200_up, m200)
+            if array.size(arr200_up) > lookback
+                array.pop(arr200_up)
+
+if not na(pl)
+    float aP = atrVal[pivotRight] / close[pivotRight]
+    if use8
+        float m8 = ((ma8[pivotRight] - close[pivotRight]) / ma8[pivotRight]) / aP
+        if m8 > 0
+            array.unshift(arr8_dn, m8)
+            if array.size(arr8_dn) > lookback
+                array.pop(arr8_dn)
+    if use10
+        float m10 = ((ma10[pivotRight] - close[pivotRight]) / ma10[pivotRight]) / aP
+        if m10 > 0
+            array.unshift(arr10_dn, m10)
+            if array.size(arr10_dn) > lookback
+                array.pop(arr10_dn)
+    if use20
+        float m20 = ((ma20[pivotRight] - close[pivotRight]) / ma20[pivotRight]) / aP
+        if m20 > 0
+            array.unshift(arr20_dn, m20)
+            if array.size(arr20_dn) > lookback
+                array.pop(arr20_dn)
+    if use50
+        float m50 = ((ma50[pivotRight] - close[pivotRight]) / ma50[pivotRight]) / aP
+        if m50 > 0
+            array.unshift(arr50_dn, m50)
+            if array.size(arr50_dn) > lookback
+                array.pop(arr50_dn)
+    if use100
+        float m100 = ((ma100[pivotRight] - close[pivotRight]) / ma100[pivotRight]) / aP
+        if m100 > 0
+            array.unshift(arr100_dn, m100)
+            if array.size(arr100_dn) > lookback
+                array.pop(arr100_dn)
+    if use200
+        float m200 = ((ma200[pivotRight] - close[pivotRight]) / ma200[pivotRight]) / aP
+        if m200 > 0
+            array.unshift(arr200_dn, m200)
+            if array.size(arr200_dn) > lookback
+                array.pop(arr200_dn)
+
+bool isUpContext = close >= ma50
+
+float var8   = isUpContext ? f_variance(arr8_up)   : f_variance(arr8_dn)
+float var10  = isUpContext ? f_variance(arr10_up)  : f_variance(arr10_dn)
+float var20  = isUpContext ? f_variance(arr20_up)  : f_variance(arr20_dn)
+float var50  = isUpContext ? f_variance(arr50_up)  : f_variance(arr50_dn)
+float var100 = isUpContext ? f_variance(arr100_up) : f_variance(arr100_dn)
+float var200 = isUpContext ? f_variance(arr200_up) : f_variance(arr200_dn)
+
+float v8_chk   = use8   ? nz(var8, 999999)   : 999999
+float v10_chk  = use10  ? nz(var10, 999999)  : 999999
+float v20_chk  = use20  ? nz(var20, 999999)  : 999999
+float v50_chk  = use50  ? nz(var50, 999999)  : 999999
+float v100_chk = use100 ? nz(var100, 999999) : 999999
+float v200_chk = use200 ? nz(var200, 999999) : 999999
+
+float minVar = math.min(v8_chk, v10_chk, v20_chk, v50_chk, v100_chk, v200_chk)
+string bestFitStr = minVar == 999999 ? "N/A" : minVar == v8_chk ? "8 EMA" : minVar == v10_chk ? "10 EMA" : minVar == v20_chk ? "20 EMA" : minVar == v50_chk ? "50 SMA" : minVar == v100_chk ? "100 SMA" : "200 SMA"
+
+string selectedMA = activeMA == "Auto (Best Fit)" ? bestFitStr : activeMA
+
+float chartMA = selectedMA == "8 EMA" ? ma8 : selectedMA == "10 EMA" ? ma10 : selectedMA == "20 EMA" ? ma20 : selectedMA == "50 SMA" ? ma50 : selectedMA == "100 SMA" ? ma100 : selectedMA == "200 SMA" ? ma200 : na
+bool chartUpContext = close >= chartMA
+
+float chartMultUp = selectedMA == "8 EMA" ? m8_up : selectedMA == "10 EMA" ? m10_up : selectedMA == "20 EMA" ? m20_up : selectedMA == "50 SMA" ? m50_up : selectedMA == "100 SMA" ? m100_up : m200_up
+float chartMultDn = selectedMA == "8 EMA" ? m8_dn : selectedMA == "10 EMA" ? m10_dn : selectedMA == "20 EMA" ? m20_dn : selectedMA == "50 SMA" ? m50_dn : selectedMA == "100 SMA" ? m100_dn : m200_dn
+
+float[] chartArrUp = selectedMA == "8 EMA" ? arr8_up : selectedMA == "10 EMA" ? arr10_up : selectedMA == "20 EMA" ? arr20_up : selectedMA == "50 SMA" ? arr50_up : selectedMA == "100 SMA" ? arr100_up : arr200_up
+float[] chartArrDn = selectedMA == "8 EMA" ? arr8_dn : selectedMA == "10 EMA" ? arr10_dn : selectedMA == "20 EMA" ? arr20_dn : selectedMA == "50 SMA" ? arr50_dn : selectedMA == "100 SMA" ? arr100_dn : arr200_dn
+
+// Visual Caps using MEDIAN instead of AVERAGE
+float chartMedianUp = array.size(chartArrUp) > 0 ? f_get_percentile(chartArrUp, 50) : 1.0
+float chartMedianDn = array.size(chartArrDn) > 0 ? f_get_percentile(chartArrDn, 50) : 1.0
+
+float chartWarnMultUp_raw = array.size(chartArrUp) >= 5 ? f_get_percentile(chartArrUp, warnPctile) : na
+float chartExtMultUp_raw  = array.size(chartArrUp) >= 5 ? f_get_percentile(chartArrUp, extPctile) : na
+float chartWarnMultDn_raw = array.size(chartArrDn) >= 5 ? f_get_percentile(chartArrDn, warnPctile) : na
+float chartExtMultDn_raw  = array.size(chartArrDn) >= 5 ? f_get_percentile(chartArrDn, extPctile) : na
+
+float limit_up = chartMedianUp * spikeCap
+float max_math_dn = na(chartMA) ? 9999 : chartMA / (4 * atrVal) 
+float limit_dn = math.min(chartMedianDn * spikeCap, max_math_dn) 
+
+float chartWarnMultUp = not na(chartWarnMultUp_raw) ? math.min(chartWarnMultUp_raw, limit_up) : na
+float chartExtMultUp  = not na(chartExtMultUp_raw)  ? math.min(chartExtMultUp_raw,  limit_up) : na
+float chartWarnMultDn = not na(chartWarnMultDn_raw) ? math.min(chartWarnMultDn_raw, limit_dn) : na
+float chartExtMultDn  = not na(chartExtMultDn_raw)  ? math.min(chartExtMultDn_raw,  limit_dn) : na
+
+float bandWarnUp = calcBandPriceUp(chartWarnMultUp, chartMA, atrVal)
+float bandExtUp  = calcBandPriceUp(chartExtMultUp, chartMA, atrVal)
+float bandWarnDn = calcBandPriceDn(chartWarnMultDn, chartMA, atrVal)
+float bandExtDn  = calcBandPriceDn(chartExtMultDn, chartMA, atrVal)
+
+plot(chartMA, color=color.new(color.blue, 0), title="Selected Baseline", linewidth=2)
+
+bool doUp = trackDir == "Upper" or trackDir == "Both"
+bool doDn = trackDir == "Lower" or trackDir == "Both"
+
+p1_up = plot(showBands and doUp ? bandWarnUp : na, color=bandWarnUpCol, title="Up Warn Band", style=plot.style_linebr)
+p2_up = plot(showBands and doUp ? bandExtUp : na, color=bandExtUpCol, title="Up Ext Band", style=plot.style_linebr)
+fill(p1_up, p2_up, color=showBands and doUp ? fillUpCol : na, title="Up Fill Background")
+
+p1_dn = plot(showBands and doDn ? bandWarnDn : na, color=bandWarnDnCol, title="Dn Warn Band", style=plot.style_linebr)
+p2_dn = plot(showBands and doDn ? bandExtDn : na, color=bandExtDnCol, title="Dn Ext Band", style=plot.style_linebr)
+fill(p1_dn, p2_dn, color=showBands and doDn ? fillDnCol : na, title="Dn Fill Background")
+
+bool isWarnUp = doUp and not na(chartWarnMultUp_raw) and chartMultUp >= chartWarnMultUp_raw and chartMultUp < chartExtMultUp_raw
+bool isExtUp  = doUp and not na(chartExtMultUp_raw)  and chartMultUp >= chartExtMultUp_raw
+bool isWarnDn = doDn and not na(chartWarnMultDn_raw) and chartMultDn >= chartWarnMultDn_raw and chartMultDn < chartExtMultDn_raw
+bool isExtDn  = doDn and not na(chartExtMultDn_raw)  and chartMultDn >= chartExtMultDn_raw
+
+plotchar(showWarnDotUp and isWarnUp and dotSize == "auto", title="Up Warn", char=warnCharUp, location=location.abovebar, color=warnColorUp, size=size.auto)
+plotchar(showWarnDotUp and isWarnUp and dotSize == "tiny", title="Up Warn", char=warnCharUp, location=location.abovebar, color=warnColorUp, size=size.tiny)
+plotchar(showWarnDotUp and isWarnUp and dotSize == "small", title="Up Warn", char=warnCharUp, location=location.abovebar, color=warnColorUp, size=size.small)
+plotchar(showExtDotUp and isExtUp and dotSize == "auto", title="Up Ext", char=extCharUp, location=location.abovebar, color=extColorUp, size=size.auto)
+plotchar(showExtDotUp and isExtUp and dotSize == "tiny", title="Up Ext", char=extCharUp, location=location.abovebar, color=extColorUp, size=size.tiny)
+plotchar(showExtDotUp and isExtUp and dotSize == "small", title="Up Ext", char=extCharUp, location=location.abovebar, color=extColorUp, size=size.small)
+
+plotchar(showWarnDotDn and isWarnDn and dotSize == "auto", title="Dn Warn", char=warnCharDn, location=location.belowbar, color=warnColorDn, size=size.auto)
+plotchar(showWarnDotDn and isWarnDn and dotSize == "tiny", title="Dn Warn", char=warnCharDn, location=location.belowbar, color=warnColorDn, size=size.tiny)
+plotchar(showWarnDotDn and isWarnDn and dotSize == "small", title="Dn Warn", char=warnCharDn, location=location.belowbar, color=warnColorDn, size=size.small)
+plotchar(showExtDotDn and isExtDn and dotSize == "auto", title="Dn Ext", char=extCharDn, location=location.belowbar, color=extColorDn, size=size.auto)
+plotchar(showExtDotDn and isExtDn and dotSize == "tiny", title="Dn Ext", char=extCharDn, location=location.belowbar, color=extColorDn, size=size.tiny)
+plotchar(showExtDotDn and isExtDn and dotSize == "small", title="Dn Ext", char=extCharDn, location=location.belowbar, color=extColorDn, size=size.small)
+
+// --- Dashboard Drawing ---
+if showTable
+    int cols = showVar ? 5 : 4
+    
+    // Count active rows to size table properly
+    int activeRows = 1 // Header
+    if use8 
+        activeRows += 1
+    if use10 
+        activeRows += 1
+    if use20 
+        activeRows += 1
+    if use50 
+        activeRows += 1
+    if use100 
+        activeRows += 1
+    if use200 
+        activeRows += 1
+
+    var table tb = table.new(position.bottom_right, cols, activeRows + 1, bgcolor=tbBgColor, border_width=1, border_color=color.gray)
+    
+    color ctxWarnCol = chartUpContext ? warnColorUp : warnColorDn
+    color ctxExtCol  = chartUpContext ? extColorUp  : extColorDn
+    string ctxTitle  = chartUpContext ? "UPSIDE METRICS" : "DOWNSIDE METRICS"
+    
+    table.merge_cells(tb, 0, 0, cols - 1, 0)
+    table.cell(tb, 0, 0, ctxTitle, text_color=color.gray, text_size=tbSize)
+    table.cell(tb, 0, 1, "BASELINE", text_color=tbTxtColor, text_size=tbSize)
+    table.cell(tb, 1, 1, "CURRENT", text_color=tbTxtColor, text_size=tbSize)
+    table.cell(tb, 2, 1, "WARN", text_color=ctxWarnCol, text_size=tbSize)
+    table.cell(tb, 3, 1, "EXTREME", text_color=ctxExtCol, text_size=tbSize)
+    if showVar
+        table.cell(tb, 4, 1, "VARIANCE", text_color=tbTxtColor, text_size=tbSize)
+
+    float m8   = chartUpContext ? m8_up   : m8_dn
+    float m10  = chartUpContext ? m10_up  : m10_dn
+    float m20  = chartUpContext ? m20_up  : m20_dn
+    float m50  = chartUpContext ? m50_up  : m50_dn
+    float m100 = chartUpContext ? m100_up : m100_dn
+    float m200 = chartUpContext ? m200_up : m200_dn
+    
+    float[] a8   = chartUpContext ? arr8_up   : arr8_dn
+    float[] a10  = chartUpContext ? arr10_up  : arr10_dn
+    float[] a20  = chartUpContext ? arr20_up  : arr20_dn
+    float[] a50  = chartUpContext ? arr50_up  : arr50_dn
+    float[] a100 = chartUpContext ? arr100_up : arr100_dn
+    float[] a200 = chartUpContext ? arr200_up : arr200_dn
+
+    int r = 2
+    if use8
+        f_draw_row(tb, r, "8 EMA", m8, a8, var8, bestFitStr == "8 EMA", warnPctile, extPctile, ctxWarnCol, ctxExtCol, showVar, tbTxtColor, tbSize)
+        r += 1
+    if use10
+        f_draw_row(tb, r, "10 EMA", m10, a10, var10, bestFitStr == "10 EMA", warnPctile, extPctile, ctxWarnCol, ctxExtCol, showVar, tbTxtColor, tbSize)
+        r += 1
+    if use20
+        f_draw_row(tb, r, "20 EMA", m20, a20, var20, bestFitStr == "20 EMA", warnPctile, extPctile, ctxWarnCol, ctxExtCol, showVar, tbTxtColor, tbSize)
+        r += 1
+    if use50
+        f_draw_row(tb, r, "50 SMA", m50, a50, var50, bestFitStr == "50 SMA", warnPctile, extPctile, ctxWarnCol, ctxExtCol, showVar, tbTxtColor, tbSize)
+        r += 1
+    if use100
+        f_draw_row(tb, r, "100 SMA", m100, a100, var100, bestFitStr == "100 SMA", warnPctile, extPctile, ctxWarnCol, ctxExtCol, showVar, tbTxtColor, tbSize)
+        r += 1
+    if use200
+        f_draw_row(tb, r, "200 SMA", m200, a200, var200, bestFitStr == "200 SMA", warnPctile, extPctile, ctxWarnCol, ctxExtCol, showVar, tbTxtColor, tbSize)
+

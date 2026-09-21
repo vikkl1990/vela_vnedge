@@ -1,0 +1,450 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AxeAlgo
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+//  Volume Spike Radar [AxeAlgo]
+// ─────────────────────────────────────────────────────────────────────────────
+//  Flags statistically abnormal volume the moment it prints, and mathematically
+//  deconstructs the Volume/Price Spread relationship (VSA) to determine the
+//  underlying institutional market mechanics:
+//
+//   • ABSORPTION — massive volume on compressed range. Institutional limit orders
+//     are absorbing market flow without letting price travel. Classic reversal tell.
+//   • BREAKOUT — massive volume on expanded range. Aggressive momentum orders
+//     pushing price across key levels.
+//   • CLIMAX — extreme volume capping an extended directional run without
+//     fresh range expansion. Classic exhaustion / blow-off top/bottom signature.
+//   • Plain SPIKE — elevated volume with standard range progression.
+//
+//  Also flags EFFORT/RESULT DIVERGENCE (extreme volume failing to clear recent
+//  high/low — trapped participants), projects INSTITUTIONAL ABSORPTION DEFENSE
+//  LEVELS, applies SMART VSA CANDLESTICK COLORING, tracks Cumulative Volume Delta
+//  (CVD), aggregates rapid spike clusters, and adapts for time-of-day.
+//
+//  NON-REPAINTING: tags, badges, CVD, and every alert are evaluated on
+//  confirmed bar closes only and never move once printed. The background
+//  glow and the smart candle coloring are the two LIVE elements — both
+//  track the forming bar in real time and settle the instant it closes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+indicator("Volume Spike Radar [AxeAlgo]", overlay = true, max_labels_count = 180, max_lines_count = 100, max_bars_back = 500)
+
+// ═════════════════════════ Inputs ═════════════════════════
+
+// ───────── 1. QUICK START & DISPLAY MODES ─────────
+g00 = "1. QUICK START & DISPLAY"
+badgeMode      = input.string("Key VSA & Outliers (Clean)", "Spike Badges On Chart", options = ["Key VSA & Outliers (Clean)", "Extreme Outliers Only (4.0×+)", "All Spikes (Moderate + Extreme)", "Hidden (Candle Colors Only)"], group = g00, tooltip = "Key VSA (Default): Shows only High-Value institutional events (Breakouts, Absorptions, Climaxes, Trapped Divergences, and 4.0× Extreme Spikes). Moderate plain spikes are filtered out to keep your chart clean.")
+colorBars      = input.bool(true, "🎨 Smart Candlestick Coloring", group = g00, tooltip = "Tints candles by spike type: Absorption (Purple), Breakout (Cyan), Climax (Red), and Plain Spikes (Gold/Copper).")
+showDash       = input.bool(true, "Show Institutional Dashboard", group = g00, tooltip = "Real-time institutional HUD tracking volume regime, CVD trend, time-of-day ratio, and VSA market state.")
+
+// ───────── 2. BADGE & CHART VISUALS ─────────
+g01 = "2. BADGE & CHART VISUALS"
+badgeSizeTxt   = input.string("Small", "Badge Text Size", options = ["Tiny", "Small", "Normal"], group = g01)
+labelOffsetAtr = input.float(0.45, "Badge Distance from Wick (× ATR)", minval = 0.1, maxval = 2.0, step = 0.05, group = g01, tooltip = "Adjusts vertical spacing of spike tags from candle highs/lows.")
+showAbsLines   = input.bool(true, "Show Absorption Defense Lines", group = g01, tooltip = "Draws forward projection lines from absorption candles to monitor institutional defense levels on retests.")
+showSessions   = input.bool(false, "Highlight Session Opens (Intraday)", group = g01, tooltip = "Draws subtle vertical markers at London, New York, and Asia opens.")
+showBgFlash    = input.bool(false, "Extreme Spike Background Glow", group = g01, tooltip = "Faint background highlight on 4.0× Extreme volume bars.")
+
+// ───────── 3. VOLUME SENSITIVITY ─────────
+g02 = "3. VOLUME SENSITIVITY"
+autoTune      = input.bool(true, "🎯 Auto-Tune To Chart Timeframe", group = g02, tooltip = "Automatically calibrates the volume lookback window to your chart timeframe.")
+method        = input.string("Relative Volume (× Avg)", "Calculation Method", options = ["Relative Volume (× Avg)", "Z-Score (Statistical)"], group = g02, tooltip = "Relative Volume: Multiple of rolling average (e.g. 2.0× or 4.0×). Z-Score: Standard deviations above mean.")
+rvolModerate  = input.float(2.0, "Moderate Spike Threshold (× Avg)", minval = 1.2, maxval = 10.0, step = 0.1, group = g02)
+rvolExtreme   = input.float(4.0, "Extreme Spike Threshold (× Avg)", minval = 1.5, maxval = 20.0, step = 0.5, group = g02)
+zModerate     = input.float(2.0, "Moderate Threshold (Z-Score)", minval = 1.0, maxval = 6.0, step = 0.1, group = g02)
+zExtreme      = input.float(3.5, "Extreme Threshold (Z-Score)", minval = 1.5, maxval = 10.0, step = 0.1, group = g02)
+volLenIn      = input.int(20, "Manual Averaging Window (bars)", minval = 5, maxval = 200, group = g02, tooltip = "Used only when Auto-Tune is off.")
+quietRvol     = input.float(0.5, "Quiet Regime Ceiling (× Avg)", minval = 0.1, maxval = 1.0, step = 0.05, group = g02, tooltip = "Below this multiple of average volume, the dashboard reads QUIET.")
+
+// ───────── 4. ADVANCED VSA TUNING ─────────
+g03 = "4. ADVANCED VSA TUNING"
+groupSpikes    = input.bool(true, "Merge Rapid Spikes Into Event Badges", group = g03, tooltip = "Merges consecutive high-volume bars within 3 bars into a single cluster badge (e.g. ⚡×3) to prevent stacked label clutter.")
+clusterGapBars = input.int(3, "Merge Gap (bars)", minval = 1, maxval = 20, group = g03)
+useDivergence  = input.bool(true, "Flag Trapped Traders (Effort/Result)", group = g03, tooltip = "Marks ⚠ when an Extreme volume bar fails to make a new high/low.")
+divLookback    = input.int(10, "Divergence Lookback (bars)", minval = 3, maxval = 50, group = g03)
+useSessionRel  = input.bool(true, "Time-Of-Day Volume Normalization", group = g03, tooltip = "Compares volume to its own historical average at this hour (intraday only) — eliminates false alerts on regular session opens.")
+sessTolMult    = input.float(1.5, "Session-Atypical Threshold (×)", minval = 1.0, maxval = 5.0, step = 0.1, group = g03)
+atrLen         = input.int(14, "ATR Length", minval = 2, maxval = 100, group = g03)
+rangeAtrLow    = input.float(0.8, "Absorption Ceiling (× ATR range)", minval = 0.1, maxval = 2.0, step = 0.05, group = g03)
+rangeAtrHigh   = input.float(1.3, "Breakout Floor (× ATR range)", minval = 0.5, maxval = 4.0, step = 0.05, group = g03)
+climaxRunBars  = input.int(5, "Climax Run Length (bars)", minval = 2, maxval = 20, group = g03)
+alertOnModerateToo = input.bool(false, "Also Alert On Moderate Spikes", group = g03, tooltip = "Off by default — alerts only trigger on Extreme / Key VSA events.")
+maxSpikeLabels = input.int(50, "Max Spike Badges Kept", minval = 5, maxval = 150, group = g03)
+maxAbsLines    = input.int(6, "Max Absorption Lines Kept", minval = 2, maxval = 20, group = g03)
+sessLondon     = input.session("0700-0900", "London Open Window", group = g03)
+sessNY         = input.session("1330-1530", "New York Open Window", group = g03)
+sessAsia       = input.session("0000-0200", "Asia Open Window", group = g03)
+sessTzIn       = input.string("UTC", "Session Timezone", group = g03)
+
+// ───────── 5. COLORS & WATERMARK ─────────
+g04 = "5. COLORS & THEME"
+bullCol    = input.color(#D4AF37, "Bullish Volume", inline = "c1", group = g04)
+bearCol    = input.color(#C77B5A, "Bearish Volume", inline = "c1", group = g04)
+absCol     = input.color(#A855F7, "Absorption (VSA)", inline = "c2", group = g04)
+brkCol     = input.color(#06B6D4, "Breakout (VSA)", inline = "c2", group = g04)
+clxCol     = input.color(#EF4444, "Climax (VSA)", inline = "c3", group = g04)
+tblPosTxt  = input.string("Top Right", "Dashboard Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = g04)
+tblSizeTxt = input.string("Small", "Dashboard Text Size", options = ["Tiny", "Small", "Normal"], group = g04)
+wmTheme    = input.string("Dark", "Watermark Theme", options = ["Auto", "Dark", "Light"], group = g04)
+showWm     = input.bool(true, "Show Watermark", group = g04)
+
+// ═════════════════════════ Helpers ═════════════════════════
+
+f_tablePos(t) =>
+    switch t
+        "Top Right"    => position.top_right
+        "Top Left"     => position.top_left
+        "Bottom Right" => position.bottom_right
+        "Bottom Left"  => position.bottom_left
+        => position.top_right
+
+f_size(t) =>
+    switch t
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        => size.small
+
+f_autoVolLen() =>
+    s = timeframe.in_seconds(timeframe.period)
+    switch
+        s <= 300   => 30
+        s <= 3600  => 20
+        s <= 86400 => 20
+        => 15
+
+f_capLabels(a, c) =>
+    while array.size(a) > c
+        label.delete(array.shift(a))
+
+f_capLines(a, c) =>
+    while array.size(a) > c
+        line.delete(array.shift(a))
+
+// ═════════════════════════ Core series ═════════════════════════
+volLen     = autoTune ? f_autoVolLen() : volLenIn
+atrVal     = ta.atr(atrLen)
+isIntraday = timeframe.isintraday
+
+avgVol = ta.sma(volume, volLen)
+stdVol = ta.stdev(volume, volLen)
+rvol   = avgVol > 0 ? volume / avgVol : na
+zsc    = stdVol > 0 ? (volume - avgVol) / stdVol : na
+
+useRvol    = method == "Relative Volume (× Avg)"
+isModerate = useRvol ? (not na(rvol) and rvol >= rvolModerate) : (not na(zsc) and zsc >= zModerate)
+isExtreme  = useRvol ? (not na(rvol) and rvol >= rvolExtreme)  : (not na(zsc) and zsc >= zExtreme)
+
+// Precise delta calculation with doji / neutral spread tie-breaking
+rng       = high - low
+bodyDelta = close - open
+wickDelta = (close - low) - (high - close)
+delta     = rng > 0 ? (wickDelta != 0 ? wickDelta / rng : (bodyDelta != 0 ? (bodyDelta > 0 ? 0.5 : -0.5) : 0.0)) : 0.0
+dirUp     = delta > 0 or (delta == 0 and close >= open)
+
+rngAtr = (not na(atrVal) and atrVal > 0) ? rng / atrVal : na
+
+noVolData = ta.cum(nz(volume)) == 0
+
+// Recent extremes for divergence (measured before this bar)
+recentHigh = ta.highest(high, divLookback)[1]
+recentLow  = ta.lowest(low, divLookback)[1]
+
+// ═════════════════════════ Run-length & Cumulative Volume Delta ═════════════════════════
+var int   runDir = 0
+var int   runLen = 0
+var float cvd    = 0.0
+if barstate.isconfirmed
+    if dirUp
+        runLen := runDir > 0 ? runLen + 1 : 1
+        runDir := 1
+    else
+        runLen := runDir < 0 ? runLen + 1 : 1
+        runDir := -1
+    buyVol = rng > 0 ? volume * (close - low) / rng : volume * 0.5
+    cvd += buyVol - (volume - buyVol)
+
+cvdSlopeLen = 20
+cvdChg      = cvd - cvd[cvdSlopeLen]
+cvdTrendTxt = na(cvdChg) ? "—" : cvdChg > 0 ? "▲ Accumulating" : cvdChg < 0 ? "▼ Distributing" : "− Flat"
+cvdTrendCol = na(cvdChg) ? #C9B37E : cvdChg > 0 ? bullCol : cvdChg < 0 ? bearCol : #C9B37E
+
+// ═════════════════════════ Session-relative volume (intraday only) ═════════════════════════
+var array<float> hourAvgVol = array.new<float>(24, na)
+hIdx        = isIntraday ? hour(time, sessTzIn) : 0
+prevHourAvg = isIntraday ? array.get(hourAvgVol, hIdx) : na
+srvol       = (isIntraday and not na(prevHourAvg) and prevHourAvg > 0) ? volume / prevHourAvg : na
+if barstate.isconfirmed and isIntraday
+    newHourAvg = na(prevHourAvg) ? volume : prevHourAvg + (volume - prevHourAvg) / 20.0
+    array.set(hourAvgVol, hIdx, newHourAvg)
+
+// ═════════════════════════ Session windows (intraday only) ═════════════════════════
+inLondon = isIntraday and showSessions and not na(time(timeframe.period, sessLondon, sessTzIn))
+inNY     = isIntraday and showSessions and not na(time(timeframe.period, sessNY, sessTzIn))
+inAsia   = isIntraday and showSessions and not na(time(timeframe.period, sessAsia, sessTzIn))
+
+inLondonOpen = inLondon and not inLondon[1]
+inNYOpen     = inNY and not inNY[1]
+inAsiaOpen   = inAsia and not inAsia[1]
+sessCol      = inLondonOpen ? color.new(#4C82C7, 75) : inNYOpen ? color.new(#D4AF37, 78) : inAsiaOpen ? color.new(#8E5FBF, 75) : na
+bgcolor(sessCol, title = "Session Open Highlight")
+
+// ═════════════════════════ Tags, classification, absorption lines & alerts ═════════════════════════
+var array<label> spikeLbls = array.new<label>()
+var array<line>  absLines  = array.new<line>()
+
+// clustering state
+var label  clusterLbl     = na
+var int    clusterLastB   = na
+var int    clusterCount   = 0
+var float  clusterPeak    = na
+var bool   clusterDiv     = false
+var string clusterKindSet = ""
+var bool   clusterUp      = true
+
+// bar-scope alert flags
+var bool sigBullSpike   = false
+var bool sigBearSpike   = false
+var bool sigExtreme     = false
+var bool sigAbsorption  = false
+var bool sigBreakout    = false
+var bool sigClimax      = false
+var bool sigDivergence  = false
+sigBullSpike   := false
+sigBearSpike   := false
+sigExtreme     := false
+sigAbsorption  := false
+sigBreakout    := false
+sigClimax      := false
+sigDivergence  := false
+
+// regime/dashboard rolling state
+var int    spikesToday   = 0
+var float  lastDayStart  = na
+var int    lastSpikeBar  = na
+var string lastSpikeKind = "—"
+var bool   lastSpikeUp   = true
+
+curDayStart = time("D")
+if na(lastDayStart) or curDayStart != lastDayStart
+    spikesToday  := 0
+    lastDayStart := curDayStart
+
+// VSA Classification on confirmed bars
+isClimaxConf     = isExtreme and runLen >= climaxRunBars and not na(rngAtr) and rngAtr < rangeAtrHigh
+kindConf         = isClimaxConf ? "Climax" : (not na(rngAtr) and rngAtr <= rangeAtrLow ? "Absorption" : (not na(rngAtr) and rngAtr >= rangeAtrHigh ? "Breakout" : "Spike"))
+divBearConf      = useDivergence and isExtreme and dirUp and not na(recentHigh) and high <= recentHigh
+divBullConf      = useDivergence and isExtreme and not dirUp and not na(recentLow) and low >= recentLow
+isDivConf        = divBearConf or divBullConf
+sessAnomalyConf  = isIntraday and useSessionRel and not na(srvol) and srvol >= sessTolMult
+sessTagConf      = inLondon ? "LDN" : inNY ? "NY" : inAsia ? "ASIA" : ""
+
+// Smart De-Cluttering Filter for On-Chart Labels
+isKeyVsa = isExtreme or kindConf == "Absorption" or kindConf == "Breakout" or kindConf == "Climax" or isDivConf
+shouldCreateBadge = switch badgeMode
+    "Key VSA & Outliers (Clean)"    => isKeyVsa
+    "Extreme Outliers Only (4.0×+)" => isExtreme
+    "All Spikes (Moderate + Extreme)" => isModerate or isExtreme
+    "Hidden (Candle Colors Only)"   => false
+    => isKeyVsa
+
+if barstate.isconfirmed and (isModerate or isExtreme) and not noVolData
+    kindTxt = kindConf == "Absorption" ? "ABS" : kindConf == "Breakout" ? "BRK" : kindConf == "Climax" ? "CLX" : ""
+    icon    = kindConf == "Absorption" ? "🛡" : kindConf == "Breakout" ? "▶" : kindConf == "Climax" ? "◉" : "⚡"
+    
+    measureVal = useRvol ? rvol : zsc
+    measureTxt = useRvol ? str.tostring(rvol, "#.#") + "×" : str.tostring(zsc, "#.#") + "σ"
+    star       = isExtreme ? "★ " : ""
+    tagTxt     = star + icon + " " + measureTxt + (kindTxt != "" ? " | " + kindTxt : "") + (isDivConf ? " ⚠" : "") + (sessAnomalyConf ? " ✓" : "") + (sessTagConf != "" ? " " + sessTagConf : "")
+
+    atrOff = not na(atrVal) and atrVal > 0 ? atrVal * labelOffsetAtr : 0.0
+    anchor = dirUp ? low - atrOff : high + atrOff
+    
+    // High-contrast badge color styling
+    badgeTxtCol = kindConf == "Absorption" ? #E9D5FF : kindConf == "Breakout" ? #A5F3FC : kindConf == "Climax" ? #FECACA : (dirUp ? #FDE68A : #FED7AA)
+    badgeBgCol  = kindConf == "Absorption" ? color.new(#3B0764, 8) : kindConf == "Breakout" ? color.new(#083344, 8) : kindConf == "Climax" ? color.new(#450A0A, 8) : color.new(#14110B, 8)
+
+    // Rich on-hover explanatory tooltips
+    vsaExplanation = kindConf == "Absorption" ? "🛡 ABSORPTION: Abnormally heavy volume on a compressed candle range. Institutional limit orders are soaking up supply/demand without allowing price to travel (classic reversal signature)." :
+                     kindConf == "Breakout"   ? "💥 BREAKOUT: Heavy volume on wide range expansion. Aggressive market orders pushing price through levels." :
+                     kindConf == "Climax"     ? "◉ CLIMAX / EXHAUSTION: Extreme volume capping a multi-bar directional run without fresh range expansion (blow-off top/bottom)." :
+                     "⚡ VOLUME SPIKE: Statistically elevated volume with standard range progression."
+
+    spikeTooltip = (isExtreme ? "🔥 EXTREME " : "⚡ ELEVATED ") + (dirUp ? "BULLISH" : "BEARISH") + " VOLUME\n" +
+                   "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                   "• Relative Volume: " + measureTxt + (useRvol ? " of rolling average" : " standard deviations") + "\n" +
+                   "• VSA Classification: " + kindConf + "\n" +
+                   "• Estimated CVD Flow: " + (dirUp ? "Net Buying Delta" : "Net Selling Delta") + "\n" +
+                   (isDivConf ? "• ⚠ Effort/Result Divergence: High volume failed to make a new extreme (Trapped Traders)!\n" : "") +
+                   (sessAnomalyConf ? "• ✓ Session Atypical: Volume is abnormal even for this specific hour.\n" : "") +
+                   (sessTagConf != "" ? "• Active Session: " + sessTagConf + " Open\n" : "") +
+                   "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                   vsaExplanation
+
+    if groupSpikes
+        if not na(clusterLastB) and bar_index - clusterLastB <= clusterGapBars
+            clusterCount   += 1
+            clusterPeak    := na(clusterPeak) ? measureVal : math.max(clusterPeak, measureVal)
+            clusterDiv     := clusterDiv or isDivConf
+            clusterKindSet := clusterKindSet == "" or clusterKindSet == kindConf ? kindConf : "Mixed"
+            clusterUp      := dirUp
+            if shouldCreateBadge
+                peakTxt = useRvol ? str.tostring(clusterPeak, "#.#") + "×" : str.tostring(clusterPeak, "#.#") + "σ"
+                kTxt    = clusterKindSet == "Mixed" ? "MIX" : clusterKindSet == "Absorption" ? "ABS" : clusterKindSet == "Breakout" ? "BRK" : clusterKindSet == "Climax" ? "CLX" : ""
+                aggTxt  = "⚡×" + str.tostring(clusterCount) + " | pk " + peakTxt + (kTxt != "" ? " " + kTxt : "") + (clusterDiv ? " ⚠" : "")
+
+                clusterTooltip = "⚡ VOLUME EVENT CLUSTER\n" +
+                                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                                 "• Consecutive Spike Bars: " + str.tostring(clusterCount) + " bars in close succession\n" +
+                                 "• Peak Volume: " + peakTxt + "\n" +
+                                 "• Primary VSA Classification: " + clusterKindSet + "\n" +
+                                 (clusterDiv ? "• ⚠ Effort/Result Divergence Detected\n" : "") +
+                                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                                 "Rapid-fire spikes merged into a single event badge to keep your chart clean."
+
+                // A cluster that started with a non-qualifying bar (e.g. a
+                // plain Moderate spike under "Key VSA" mode) has no label
+                // yet — create it lazily the first time any bar within the
+                // cluster actually qualifies, instead of silently dropping
+                // it because bar one of the cluster didn't.
+                if na(clusterLbl)
+                    clusterLbl := label.new(bar_index, anchor, aggTxt, xloc = xloc.bar_index, yloc = yloc.price, style = dirUp ? label.style_label_up : label.style_label_down, color = badgeBgCol, textcolor = badgeTxtCol, size = f_size(badgeSizeTxt), text_formatting = text.format_bold, tooltip = clusterTooltip)
+                    array.push(spikeLbls, clusterLbl)
+                    f_capLabels(spikeLbls, maxSpikeLabels)
+                else
+                    label.set_text(clusterLbl, aggTxt)
+                    label.set_x(clusterLbl, bar_index)
+                    label.set_y(clusterLbl, anchor)
+                    label.set_style(clusterLbl, dirUp ? label.style_label_up : label.style_label_down)
+                    label.set_textcolor(clusterLbl, badgeTxtCol)
+                    label.set_color(clusterLbl, badgeBgCol)
+                    label.set_tooltip(clusterLbl, clusterTooltip)
+        else
+            clusterCount   := 1
+            clusterPeak    := measureVal
+            clusterDiv     := isDivConf
+            clusterKindSet := kindConf
+            clusterUp      := dirUp
+            if shouldCreateBadge
+                clusterLbl := label.new(bar_index, anchor, tagTxt, xloc = xloc.bar_index, yloc = yloc.price, style = dirUp ? label.style_label_up : label.style_label_down, color = badgeBgCol, textcolor = badgeTxtCol, size = f_size(badgeSizeTxt), text_formatting = text.format_bold, tooltip = spikeTooltip)
+                array.push(spikeLbls, clusterLbl)
+                f_capLabels(spikeLbls, maxSpikeLabels)
+        clusterLastB := bar_index
+    else
+        if shouldCreateBadge
+            lb = label.new(bar_index, anchor, tagTxt, xloc = xloc.bar_index, yloc = yloc.price, style = dirUp ? label.style_label_up : label.style_label_down, color = badgeBgCol, textcolor = badgeTxtCol, size = f_size(badgeSizeTxt), text_formatting = text.format_bold, tooltip = spikeTooltip)
+            array.push(spikeLbls, lb)
+            f_capLabels(spikeLbls, maxSpikeLabels)
+
+    // Project Institutional Absorption Defense Line
+    if showAbsLines and kindConf == "Absorption"
+        absLevel = (open + close) / 2
+        ln = line.new(bar_index, absLevel, bar_index + 20, absLevel, xloc = xloc.bar_index, style = line.style_dashed, color = color.new(absCol, 20), width = 2)
+        array.push(absLines, ln)
+        f_capLines(absLines, maxAbsLines)
+
+    fireDirectional = isExtreme or alertOnModerateToo
+    if fireDirectional
+        if dirUp
+            sigBullSpike := true
+        else
+            sigBearSpike := true
+    if isExtreme
+        sigExtreme := true
+    if kindConf == "Absorption" and fireDirectional
+        sigAbsorption := true
+    if kindConf == "Breakout" and fireDirectional
+        sigBreakout := true
+    if isClimaxConf and fireDirectional
+        sigClimax := true
+    if isDivConf and fireDirectional
+        sigDivergence := true
+
+    spikesToday  += 1
+    lastSpikeBar  := bar_index
+    lastSpikeKind := (isExtreme ? "Extreme" : "Moderate") + (kindConf != "Spike" ? " " + kindConf : "") + (isDivConf ? " ⚠" : "")
+    lastSpikeUp   := dirUp
+
+// ═════════════════════════ Smart VSA Candlestick Coloring ═════════════════════════
+barCol = not colorBars or noVolData ? na :
+         (isExtreme or isModerate) ? (
+             kindConf == "Absorption" ? color.new(absCol, isExtreme ? 0 : 25) :
+             kindConf == "Breakout"   ? color.new(brkCol, isExtreme ? 0 : 25) :
+             kindConf == "Climax"     ? color.new(clxCol, isExtreme ? 0 : 25) :
+             color.new(dirUp ? bullCol : bearCol, isExtreme ? 0 : 25)
+         ) : na
+barcolor(barCol, title = "Smart VSA Candlestick Color")
+
+// Live background glow — tracks the forming bar in real time, settles on close
+bgcolor(showBgFlash and isExtreme and not noVolData ? color.new(dirUp ? bullCol : bearCol, 85) : na)
+
+// ═════════════════════════ Dashboard ═════════════════════════
+var table dash = table.new(f_tablePos(tblPosTxt), 2, 6, bgcolor = color.new(#14110B, 8), border_color = color.new(#D4AF37, 64), border_width = 1, frame_color = color.new(#D4AF37, 52), frame_width = 1)
+if showDash and barstate.islast
+    ts   = f_size(tblSizeTxt)
+    lblC = #C9B37E
+    valC = #F5F5F5
+    ttlC = #FFD400
+
+    table.cell(dash, 0, 0, "◆ VOLUME RADAR", text_color = ttlC, text_size = ts, tooltip = "Institutional Volume Spread Analysis (VSA) classifying market mechanics into Absorption, Breakout, Climax, and Effort/Result Divergence with CVD trend and Time-of-Day normalization.")
+
+    if noVolData
+        table.cell(dash, 1, 0, "No Volume Feed", text_color = valC, text_size = ts)
+    else
+        regime = isExtreme ? "EXTREME" : isModerate ? "ELEVATED" : (not na(rvol) and rvol < quietRvol ? "QUIET" : "NORMAL")
+        regimeCol = isExtreme ? #EF4444 : isModerate ? bullCol : (regime == "QUIET" ? #94A3B8 : #C9B37E)
+        table.cell(dash, 1, 0, regime, text_color = regimeCol, text_size = ts, text_formatting = text.format_bold)
+
+        curTxt = useRvol ? (na(rvol) ? "—" : str.tostring(rvol, "#.##") + "×  avg") : (na(zsc) ? "—" : str.tostring(zsc, "#.##") + "σ")
+        table.cell(dash, 0, 1, "Current Volume", text_color = lblC, text_size = ts)
+        table.cell(dash, 1, 1, curTxt, text_color = valC, text_size = ts)
+
+        table.cell(dash, 0, 2, "CVD Trend (20 bars)", text_color = lblC, text_size = ts, tooltip = "Estimated Cumulative Volume Delta — running sum of buy vs. sell volume per bar. Rising = net accumulation, falling = net distribution.")
+        table.cell(dash, 1, 2, cvdTrendTxt, text_color = cvdTrendCol, text_size = ts)
+
+        hourTxt = not isIntraday ? "1D+ Chart" : not useSessionRel ? "Off" : na(srvol) ? "Warming up" : str.tostring(srvol, "#.##") + "× typical"
+        table.cell(dash, 0, 3, "This Hour vs Avg", text_color = lblC, text_size = ts, tooltip = "Current volume relative to its own historical average at this hour — filters out regular session open noise.")
+        table.cell(dash, 1, 3, hourTxt, text_color = valC, text_size = ts)
+
+        table.cell(dash, 0, 4, "Spikes Today", text_color = lblC, text_size = ts)
+        table.cell(dash, 1, 4, str.tostring(spikesToday), text_color = valC, text_size = ts)
+
+        barsSince = na(lastSpikeBar) ? na : bar_index - lastSpikeBar
+        lastTxt = na(lastSpikeBar) ? "—" : (lastSpikeUp ? "▲ " : "▼ ") + lastSpikeKind + "  (" + str.tostring(barsSince) + " bars ago)"
+        table.cell(dash, 0, 5, "Last VSA Event", text_color = lblC, text_size = ts)
+        table.cell(dash, 1, 5, lastTxt, text_color = lastSpikeUp ? bullCol : bearCol, text_size = ts)
+
+// ═════════════════════════ Alerts ═════════════════════════
+alertcondition(sigBullSpike,   title = "Bullish Volume Spike", message = "{{ticker}} {{interval}}: Unusual bullish volume detected.")
+alertcondition(sigBearSpike,   title = "Bearish Volume Spike", message = "{{ticker}} {{interval}}: Unusual bearish volume detected.")
+alertcondition(sigExtreme,     title = "⚠ Extreme Volume Spike", message = "{{ticker}} {{interval}}: Extreme volume outlier.")
+alertcondition(sigAbsorption,  title = "Absorption Detected", message = "{{ticker}} {{interval}}: Heavy volume on compressed range — institutional absorption.")
+alertcondition(sigBreakout,    title = "💥 Breakout Volume Detected", message = "{{ticker}} {{interval}}: Heavy volume on expanded range — breakout momentum.")
+alertcondition(sigClimax,      title = "◉ Volume Climax / Exhaustion", message = "{{ticker}} {{interval}}: Extreme volume capping extended run — climax exhaustion.")
+alertcondition(sigDivergence,  title = "⚠ Effort/Result Divergence", message = "{{ticker}} {{interval}}: Extreme volume failed to clear recent extreme — trapped participants.")
+
+// Dynamic Webhook-Friendly Alert Dispatcher
+if barstate.isconfirmed
+    volStr = useRvol ? str.tostring(rvol, "#.##") + "x" : str.tostring(zsc, "#.##") + "σ"
+    if sigAbsorption
+        alert(syminfo.ticker + " [" + timeframe.period + "] VSA ABSORPTION: Institutional absorption detected @ " + str.tostring(close, format.mintick) + " (" + volStr + ")", alert.freq_once_per_bar_close)
+    if sigBreakout
+        alert(syminfo.ticker + " [" + timeframe.period + "] VSA BREAKOUT: Momentum breakout volume detected @ " + str.tostring(close, format.mintick) + " (" + volStr + ")", alert.freq_once_per_bar_close)
+    if sigClimax
+        alert(syminfo.ticker + " [" + timeframe.period + "] VSA CLIMAX: Volume exhaustion blow-off detected @ " + str.tostring(close, format.mintick) + " (" + volStr + ")", alert.freq_once_per_bar_close)
+    if sigDivergence
+        alert(syminfo.ticker + " [" + timeframe.period + "] VSA DIVERGENCE: Effort vs Result failure (Trapped Traders) @ " + str.tostring(close, format.mintick) + " (" + volStr + ")", alert.freq_once_per_bar_close)
+    if sigExtreme and not (sigAbsorption or sigBreakout or sigClimax or sigDivergence)
+        alert(syminfo.ticker + " [" + timeframe.period + "] VSA EXTREME: Extreme volume spike (" + (dirUp ? "Bullish" : "Bearish") + ") @ " + str.tostring(close, format.mintick) + " (" + volStr + ")", alert.freq_once_per_bar_close)
+
+// ═════════════════════════ Watermark ═════════════════════════
+var table wm = table.new(position.bottom_center, 2, 1, frame_width = 1, border_width = 0)
+if showWm and barstate.islast
+    wmDark     = wmTheme == "Dark" or (wmTheme == "Auto" and (color.r(chart.bg_color) * 299 + color.g(chart.bg_color) * 587 + color.b(chart.bg_color) * 114) / 1000 < 128)
+    wm_bg      = wmDark ? color.new(#14110B, 0) : color.new(#F2EAD3, 0)
+    wm_dot_col = wmDark ? color.new(#D4AF37, 15) : color.new(#B8860B, 10)
+    wm_txt_col = wmDark ? color.new(#C9B37E, 0)  : color.new(#7A6423, 0)
+    wm_frm_col = wmDark ? color.new(#C9A227, 60) : color.new(#B8860B, 60)
+    table.set_frame_color(wm, wm_frm_col)
+    table.cell(wm, 0, 0, " ◆ ", bgcolor = wm_bg, text_color = wm_dot_col, text_size = size.small, text_halign = text.align_center, text_valign = text.align_center)
+    table.cell(wm, 1, 0, " A X E A L G O ", bgcolor = wm_bg, text_color = wm_txt_col, text_size = size.small, text_halign = text.align_left, text_valign = text.align_center)

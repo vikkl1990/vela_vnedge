@@ -1,0 +1,195 @@
+//@version=6
+indicator("SpxSnipper - Intraday Candle vs Daily ATR", overlay=true, max_labels_count=500)
+
+// ─────────────────────────────────────────────
+// Inputs
+// ─────────────────────────────────────────────
+atrLength = input.int(
+     14,
+     "Daily ATR Length",
+     minval=1
+)
+
+atrMode = input.string(
+     "Previous Completed Daily ATR",
+     "Daily ATR Mode",
+     options=["Previous Completed Daily ATR", "Current Developing Daily ATR"]
+)
+
+thresholdPct = input.float(
+     25.0,
+     "Minimum Candle Size - % of Daily ATR",
+     minval=0.1,
+     maxval=100.0,
+     step=0.5
+)
+
+measureMode = input.string(
+     "Full Candle Range",
+     "Intraday Candle Measurement",
+     options=["Full Candle Range", "Real Body"]
+)
+
+requireClosedBar = input.bool(
+     true,
+     "Signal Only After Candle Close"
+)
+
+showSignals = input.bool(true, "Show Signals")
+showPctLabels = input.bool(false, "Show % ATR Label")
+colorSignalCandles = input.bool(true, "Color Important Candles")
+
+bullColor = input.color(color.new(color.lime, 0), "Bullish Signal Color")
+bearColor = input.color(color.new(color.red, 0), "Bearish Signal Color")
+neutralColor = input.color(color.new(color.orange, 0), "Neutral Signal Color")
+
+labelSizeInput = input.string(
+     "Small",
+     "Label Size",
+     options=["Tiny", "Small", "Normal"]
+)
+
+f_labelSize(string s) =>
+    switch s
+        "Tiny" => size.tiny
+        "Small" => size.small
+        "Normal" => size.normal
+
+labelSize = f_labelSize(labelSizeInput)
+
+// ─────────────────────────────────────────────
+// Daily ATR from Daily timeframe
+// ─────────────────────────────────────────────
+// Previous completed daily ATR = stable / non-developing
+previousDailyATR = request.security(
+     syminfo.tickerid,
+     "D",
+     ta.atr(atrLength)[1],
+     gaps=barmerge.gaps_off,
+     lookahead=barmerge.lookahead_on
+)
+
+// Current developing daily ATR = updates intraday
+currentDailyATR = request.security(
+     syminfo.tickerid,
+     "D",
+     ta.atr(atrLength),
+     gaps=barmerge.gaps_off,
+     lookahead=barmerge.lookahead_off
+)
+
+dailyATR =
+     atrMode == "Previous Completed Daily ATR" ?
+     previousDailyATR :
+     currentDailyATR
+
+// ─────────────────────────────────────────────
+// Intraday candle size
+// ─────────────────────────────────────────────
+realBody = math.abs(close - open)
+fullRange = high - low
+
+candleSize =
+     measureMode == "Real Body" ?
+     realBody :
+     fullRange
+
+requiredSize = dailyATR * thresholdPct / 100.0
+
+candleAtrPct =
+     dailyATR > 0 ?
+     candleSize / dailyATR * 100.0 :
+     na
+
+confirmedOk =
+     requireClosedBar ?
+     barstate.isconfirmed :
+     true
+
+importantCandle =
+     confirmedOk and
+     not na(candleAtrPct) and
+     candleAtrPct >= thresholdPct
+
+bullImportant = importantCandle and close > open
+bearImportant = importantCandle and close < open
+neutralImportant = importantCandle and close == open
+
+// ─────────────────────────────────────────────
+// Plot signals
+// ─────────────────────────────────────────────
+plotshape(
+     showSignals and bullImportant,
+     title="Bullish Important Candle",
+     style=shape.triangleup,
+     location=location.belowbar,
+     color=bullColor,
+     size=size.small,
+     text="ATR"
+)
+
+plotshape(
+     showSignals and bearImportant,
+     title="Bearish Important Candle",
+     style=shape.triangledown,
+     location=location.abovebar,
+     color=bearColor,
+     size=size.small,
+     text="ATR"
+)
+
+plotshape(
+     showSignals and neutralImportant,
+     title="Neutral Important Candle",
+     style=shape.circle,
+     location=location.abovebar,
+     color=neutralColor,
+     size=size.tiny,
+     text="ATR"
+)
+
+// ─────────────────────────────────────────────
+// Candle coloring
+// ─────────────────────────────────────────────
+barcolor(
+     colorSignalCandles and bullImportant ? color.new(bullColor, 0) :
+     colorSignalCandles and bearImportant ? color.new(bearColor, 0) :
+     colorSignalCandles and neutralImportant ? color.new(neutralColor, 0) :
+     na
+)
+
+// ─────────────────────────────────────────────
+// Optional % label
+// ─────────────────────────────────────────────
+if showPctLabels and importantCandle
+    label.new(
+         x=bar_index,
+         y=bullImportant ? low : high,
+         text=str.tostring(candleAtrPct, "#.0") + "% ATR",
+         xloc=xloc.bar_index,
+         style=bullImportant ? label.style_label_up : label.style_label_down,
+         color=bullImportant ? bullColor : bearImportant ? bearColor : neutralColor,
+         textcolor=color.white,
+         size=labelSize
+    )
+
+// ─────────────────────────────────────────────
+// Alerts
+// ─────────────────────────────────────────────
+alertcondition(
+     bullImportant,
+     title="Bullish Important Candle vs Daily ATR",
+     message="Bullish intraday candle is larger than selected % of Daily ATR."
+)
+
+alertcondition(
+     bearImportant,
+     title="Bearish Important Candle vs Daily ATR",
+     message="Bearish intraday candle is larger than selected % of Daily ATR."
+)
+
+alertcondition(
+     importantCandle,
+     title="Any Important Candle vs Daily ATR",
+     message="Intraday candle is larger than selected % of Daily ATR."
+)

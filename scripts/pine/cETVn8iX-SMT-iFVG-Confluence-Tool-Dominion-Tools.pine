@@ -1,0 +1,322 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+//  Levels + Gaps  (visual only)
+//  · Last N FVGs and last N inverted iFVGs, tracked in separate pools
+//  · Last N swing highs / swing lows on the chart timeframe
+//  · Highlights and lists any gap sitting on a swing level
+//  Single symbol. No multi-timeframe requests. No trade logic.
+// ═══════════════════════════════════════════════════════════════════════════
+indicator("Levels + Gaps", "Lvl+Gaps", overlay = true,
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+// ─────────────────────────── Inputs ───────────────────────────
+gF = "1 · FVG / iFVG"
+showBox   = input.bool(true, "Draw gap boxes", group = gF)
+minTicks  = input.float(0.0, "Minimum gap size (ticks)", minval = 0, step = 0.25, group = gF,
+     tooltip = "0 = any 3-candle gap qualifies. Raise if the chart gets noisy.")
+maxActive = input.int(5, "Active FVGs kept", minval = 1, maxval = 30, group = gF)
+maxInvert = input.int(5, "Inverted iFVGs kept", minval = 1, maxval = 30, group = gF)
+cBull     = input.color(color.new(color.teal,   82), "Bullish FVG", group = gF)
+cBear     = input.color(color.new(color.maroon, 82), "Bearish FVG", group = gF)
+cInv      = input.color(color.new(color.orange, 72), "Inverted (iFVG)", group = gF)
+
+gW = "2 · Swing levels"
+showSwing = input.bool(true, "Plot swing highs / lows", group = gW)
+swLen     = input.int(5, "Swing pivot length (left = right)", minval = 1, maxval = 50, group = gW,
+     tooltip = "Higher = cleaner structure. Confirms swLen bars after the swing prints.")
+swKeep    = input.int(5, "Swing levels kept per side", minval = 1, maxval = 20, group = gW)
+swLabels  = input.bool(true, "Show swing price labels", group = gW)
+rayLen    = input.int(40, "Ray length (bars past current)", minval = 5, group = gW)
+cSwHi     = input.color(color.new(color.red,  30), "Swing high", group = gW)
+cSwLo     = input.color(color.new(color.lime, 30), "Swing low",  group = gW)
+
+gP = "3 · Gap-at-structure"
+nearMode  = input.string("ATR", "Proximity measured in", options = ["ATR", "Ticks"], group = gP)
+nearATR   = input.float(0.5, "ATR multiple", minval = 0.05, step = 0.05, group = gP,
+     tooltip = "Self-scales across timeframes. 0.5 = within half an ATR of a swing level.")
+nearTicks = input.float(8.0, "Ticks", minval = 1, step = 1, group = gP)
+cNear     = input.color(color.yellow, "Highlight colour", group = gP)
+showZones = input.bool(true, "Show 'gaps at structure' table", group = gP)
+
+gV = "4 · Display"
+showTbl   = input.bool(true, "Show status panel", group = gV)
+shadeSess = input.bool(false, "Shade session window", group = gV)
+sessStr   = input.session("0830-1000", "Session window", group = gV)
+tzStr     = input.string("America/Chicago", "Timezone", group = gV)
+confirmed = input.bool(true, "Confirmed bars only (no repaint)", group = gV,
+     tooltip = "ON: gaps and swings commit only on bar close. OFF: they can appear then vanish.")
+
+// State changes are gated so historical and live drawing behave the same.
+canUpdate = confirmed ? barstate.isconfirmed : true
+
+// ═══════════════ Swing structure ═══════════════
+// Confirms swLen bars after the fact — unavoidable with pivots.
+var array<float> shPx = array.new_float()   // swing HIGH prices, oldest first
+var array<line>  shLn = array.new_line()
+var array<label> shLb = array.new_label()
+var array<float> slPx = array.new_float()   // swing LOW prices
+var array<line>  slLn = array.new_line()
+var array<label> slLb = array.new_label()
+
+swHi = ta.pivothigh(high, swLen, swLen)
+swLo = ta.pivotlow(low,   swLen, swLen)
+
+if canUpdate and not na(swHi)
+    array.push(shPx, swHi)
+    ln = showSwing ? line.new(bar_index - swLen, swHi, bar_index + rayLen, swHi,
+             color = cSwHi, width = 1, style = line.style_dotted) : na
+    array.push(shLn, ln)
+    lb = showSwing and swLabels ? label.new(bar_index + rayLen, swHi,
+             "SH " + str.tostring(swHi, format.mintick), style = label.style_label_left,
+             color = color.new(color.black, 100), textcolor = cSwHi, size = size.tiny) : na
+    array.push(shLb, lb)
+    while array.size(shPx) > swKeep
+        ol = array.shift(shLn)
+        if not na(ol)
+            line.delete(ol)
+        oq = array.shift(shLb)
+        if not na(oq)
+            label.delete(oq)
+        array.shift(shPx)
+
+if canUpdate and not na(swLo)
+    array.push(slPx, swLo)
+    ln = showSwing ? line.new(bar_index - swLen, swLo, bar_index + rayLen, swLo,
+             color = cSwLo, width = 1, style = line.style_dotted) : na
+    array.push(slLn, ln)
+    lb = showSwing and swLabels ? label.new(bar_index + rayLen, swLo,
+             "SL " + str.tostring(swLo, format.mintick), style = label.style_label_left,
+             color = color.new(color.black, 100), textcolor = cSwLo, size = size.tiny) : na
+    array.push(slLb, lb)
+    while array.size(slPx) > swKeep
+        ol = array.shift(slLn)
+        if not na(ol)
+            line.delete(ol)
+        oq = array.shift(slLb)
+        if not na(oq)
+            label.delete(oq)
+        array.shift(slPx)
+
+// Keep swing rays and their labels riding the right edge.
+if barstate.islast and showSwing
+    if array.size(shLn) > 0
+        for i = 0 to array.size(shLn) - 1
+            l = array.get(shLn, i)
+            if not na(l)
+                line.set_x2(l, bar_index + rayLen)
+            q = array.get(shLb, i)
+            if not na(q)
+                label.set_x(q, bar_index + rayLen)
+    if array.size(slLn) > 0
+        for i = 0 to array.size(slLn) - 1
+            l = array.get(slLn, i)
+            if not na(l)
+                line.set_x2(l, bar_index + rayLen)
+            q = array.get(slLb, i)
+            if not na(q)
+                label.set_x(q, bar_index + rayLen)
+
+// ─────────────────── Proximity engine ───────────────────
+atrVal  = ta.atr(14)
+nearTol = nearMode == "ATR" ? nearATR * atrVal : nearTicks * syminfo.mintick
+
+// Returns [distance, matched level price, level is a swing HIGH].
+// Distance is 0 when the level cuts through the gap.
+f_nearest(float t, float b) =>
+    float bd = na
+    float bp = na
+    bool  bh = false
+    if array.size(shPx) > 0
+        for i = 0 to array.size(shPx) - 1
+            p = array.get(shPx, i)
+            d = p >= b and p <= t ? 0.0 : math.min(math.abs(p - t), math.abs(p - b))
+            if na(bd) or d < bd
+                bd := d
+                bp := p
+                bh := true
+    if array.size(slPx) > 0
+        for i = 0 to array.size(slPx) - 1
+            p = array.get(slPx, i)
+            d = p >= b and p <= t ? 0.0 : math.min(math.abs(p - t), math.abs(p - b))
+            if na(bd) or d < bd
+                bd := d
+                bp := p
+                bh := false
+    [bd, bp, bh]
+
+// ─────────────────── Two pools: active FVGs, inverted iFVGs ───────────────────
+var array<float> aTop  = array.new_float()   // ACTIVE, not yet inverted
+var array<float> aBot  = array.new_float()
+var array<bool>  aBull = array.new_bool()
+var array<box>   aBox  = array.new_box()
+
+var array<float> iTop  = array.new_float()   // INVERTED (iFVG)
+var array<float> iBot  = array.new_float()
+var array<bool>  iBull = array.new_bool()    // original gap direction
+var array<box>   iBox  = array.new_box()
+
+minGap = minTicks * syminfo.mintick
+
+bullGap = low  > high[2] and (low  - high[2]) >= minGap
+bearGap = high < low[2]  and (low[2] - high)  >= minGap
+
+if canUpdate and (bullGap or bearGap)
+    float t = bullGap ? low     : low[2]
+    float b = bullGap ? high[2] : high
+    array.push(aTop,  t)
+    array.push(aBot,  b)
+    array.push(aBull, bullGap)
+    bx = showBox ? box.new(bar_index - 2, t, bar_index, b,
+             border_color = color.new(bullGap ? color.teal : color.maroon, 40),
+             bgcolor = bullGap ? cBull : cBear) : na
+    array.push(aBox, bx)
+    while array.size(aTop) > maxActive
+        ob = array.shift(aBox)
+        if not na(ob)
+            box.delete(ob)
+        array.shift(aTop)
+        array.shift(aBot)
+        array.shift(aBull)
+
+// ─────────────────── Inversion → move to the iFVG pool ───────────────────
+bool didInvertUp   = false   // a bearish gap was closed through upward
+bool didInvertDown = false   // a bullish gap was closed through downward
+
+// Iterate backwards so removing an element mid-loop doesn't skip the next one.
+if canUpdate and array.size(aTop) > 0
+    for i = array.size(aTop) - 1 to 0
+        top    = array.get(aTop,  i)
+        bot    = array.get(aBot,  i)
+        isBull = array.get(aBull, i)
+        inverted = (not isBull and close > top) or (isBull and close < bot)
+        if inverted
+            if not isBull
+                didInvertUp := true
+            else
+                didInvertDown := true
+            rb = array.remove(aBox, i)
+            array.remove(aTop,  i)
+            array.remove(aBot,  i)
+            array.remove(aBull, i)
+            if not na(rb)
+                box.set_bgcolor(rb, cInv)
+                box.set_border_style(rb, line.style_dashed)
+            array.push(iTop,  top)
+            array.push(iBot,  bot)
+            array.push(iBull, isBull)
+            array.push(iBox,  rb)
+            while array.size(iTop) > maxInvert
+                ob = array.shift(iBox)
+                if not na(ob)
+                    box.delete(ob)
+                array.shift(iTop)
+                array.shift(iBot)
+                array.shift(iBull)
+
+// ─── Cosmetics + proximity run EVERY bar, outside the confirm gate ───
+int nearCnt = 0
+
+// Collected for the "gaps at structure" table, nearest first.
+zDist = array.new_float()
+zType = array.new_string()
+zZone = array.new_string()
+zLvl  = array.new_string()
+
+if array.size(aTop) > 0
+    for i = 0 to array.size(aTop) - 1
+        t = array.get(aTop, i)
+        b = array.get(aBot, i)
+        isBull = array.get(aBull, i)
+        [d, p, isHi] = f_nearest(t, b)
+        near = not na(d) and d <= nearTol
+        bx = array.get(aBox, i)
+        if not na(bx)
+            box.set_right(bx, bar_index)
+            box.set_border_color(bx, near ? cNear : color.new(isBull ? color.teal : color.maroon, 40))
+            box.set_border_width(bx, near ? 2 : 1)
+        if near
+            nearCnt += 1
+            array.push(zDist, d)
+            array.push(zType, "FVG " + (isBull ? "▲" : "▼"))
+            array.push(zZone, str.tostring(b, format.mintick) + " – " + str.tostring(t, format.mintick))
+            array.push(zLvl,  (isHi ? "SH " : "SL ") + str.tostring(p, format.mintick))
+
+if array.size(iTop) > 0
+    for j = 0 to array.size(iTop) - 1
+        t = array.get(iTop, j)
+        b = array.get(iBot, j)
+        isBull = array.get(iBull, j)
+        [d, p, isHi] = f_nearest(t, b)
+        near = not na(d) and d <= nearTol
+        eb = array.get(iBox, j)
+        if not na(eb)
+            box.set_right(eb, bar_index)
+            box.set_border_color(eb, near ? cNear : color.orange)
+            box.set_border_width(eb, near ? 2 : 1)
+        if near
+            nearCnt += 1
+            array.push(zDist, d)
+            // An inverted BULLISH gap now acts as resistance, and vice versa.
+            array.push(zType, "iFVG " + (isBull ? "▼" : "▲"))
+            array.push(zZone, str.tostring(b, format.mintick) + " – " + str.tostring(t, format.mintick))
+            array.push(zLvl,  (isHi ? "SH " : "SL ") + str.tostring(p, format.mintick))
+
+// ─────────────────── Session shading (context only) ───────────────────
+inSess = not na(time(timeframe.period, sessStr, tzStr))
+bgcolor(shadeSess and inSess ? color.new(color.blue, 94) : na, title = "Session window")
+
+// ─────────────────── Status panel ───────────────────
+var table tbl = table.new(position.top_right, 2, 4,
+     border_width = 1, border_color = color.new(color.gray, 70),
+     bgcolor = color.new(color.black, 15))
+
+if showTbl and barstate.islast
+    table.cell(tbl, 0, 0, "LEVELS + GAPS", text_color = color.white, text_size = size.small)
+    table.cell(tbl, 1, 0, timeframe.period, text_color = color.silver, text_size = size.tiny)
+    table.cell(tbl, 0, 1, "FVG / iFVG", text_color = color.silver, text_size = size.small)
+    table.cell(tbl, 1, 1, str.tostring(array.size(aTop)) + "/" + str.tostring(maxActive) + "  ·  " +
+         str.tostring(array.size(iTop)) + "/" + str.tostring(maxInvert),
+         text_color = array.size(aTop) + array.size(iTop) > 0 ? color.white : color.gray, text_size = size.tiny)
+    table.cell(tbl, 0, 2, "Swings H/L", text_color = color.silver, text_size = size.small)
+    table.cell(tbl, 1, 2, str.tostring(array.size(shPx)) + " / " + str.tostring(array.size(slPx)),
+         text_color = color.white, text_size = size.tiny)
+    table.cell(tbl, 0, 3, "At structure", text_color = color.silver, text_size = size.small)
+    table.cell(tbl, 1, 3, str.tostring(nearCnt) + " gap" + (nearCnt == 1 ? "" : "s"),
+         text_color = nearCnt > 0 ? cNear : color.gray, text_size = size.tiny)
+
+// ─────────────── GAPS AT STRUCTURE — the list ───────────────
+var table ztbl = table.new(position.bottom_right, 4, 32,
+     border_width = 1, border_color = color.new(color.gray, 70),
+     bgcolor = color.new(color.black, 15))
+
+if showZones and barstate.islast
+    table.clear(ztbl, 0, 0, 3, 31)
+    table.cell(ztbl, 0, 0, "GAP",   text_color = color.white, text_size = size.tiny)
+    table.cell(ztbl, 1, 0, "RANGE", text_color = color.white, text_size = size.tiny)
+    table.cell(ztbl, 2, 0, "SWING", text_color = color.white, text_size = size.tiny)
+    table.cell(ztbl, 3, 0, "DIST",  text_color = color.white, text_size = size.tiny)
+    n = array.size(zDist)
+    if n == 0
+        table.cell(ztbl, 0, 1, "none at structure", text_color = color.gray, text_size = size.tiny)
+    else
+        idx  = array.sort_indices(zDist, order.ascending)   // nearest first
+        rows = math.min(n, 30)
+        for k = 0 to rows - 1
+            s = array.get(idx, k)
+            d = array.get(zDist, s)
+            ticksAway = d / syminfo.mintick
+            isTouch = d == 0.0
+            table.cell(ztbl, 0, k + 1, array.get(zType, s),
+                 text_color = isTouch ? cNear : color.silver, text_size = size.tiny)
+            table.cell(ztbl, 1, k + 1, array.get(zZone, s),
+                 text_color = color.silver, text_size = size.tiny)
+            table.cell(ztbl, 2, k + 1, array.get(zLvl, s),
+                 text_color = color.silver, text_size = size.tiny)
+            table.cell(ztbl, 3, k + 1, isTouch ? "TOUCH" : str.tostring(math.round(ticksAway, 1)) + "t",
+                 text_color = isTouch ? cNear : color.silver, text_size = size.tiny)
+
+// ─────────────────── Alerts (events, not signals) ───────────────────
+alertcondition(didInvertUp,   "Gap inverted upward",   "Bearish FVG closed through upward on {{ticker}}")
+alertcondition(didInvertDown, "Gap inverted downward", "Bullish FVG closed through downward on {{ticker}}")
+alertcondition(not na(swHi),  "Swing high confirmed",  "Swing high confirmed on {{ticker}}")
+alertcondition(not na(swLo),  "Swing low confirmed",   "Swing low confirmed on {{ticker}}")

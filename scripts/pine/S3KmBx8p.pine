@@ -1,0 +1,161 @@
+//@version=6
+//© LoopTheWave
+indicator('Waves [LTW] v0.5', shorttitle = '🌊Waves [LTW]', overlay = false, format = format.volume)
+
+// =====================================================================
+// 1. Tooltip Strings 
+// =====================================================================
+string tooltip_length = 'Wave Length Adjustment: You can adjust the smoothing length here. Using Fibonacci sequence numbers like 21, 34, or 55 will group the market\'s large volume cycles into smooth, flowing waves.\n\nLow Volatility: In consolidation zones where trading volume is minimal, the line stays completely flat near the bottom. This indicates that energy is condensing for the next expansion.\n\nVolume Spike: The wave gradually rises, peaks, and then falls. Near the absolute peak of this wave, a trend climax or Liquidity Sweep is highly probable.'
+
+string tooltip_smooth = 'ALMA (Arnaud Legoux): Uses a Gaussian filter to draw an exceptionally smooth, sine-wave-like curve with minimal lag. Highly recommended for volume.\n\nHMA (Hull): Extremely fast and responsive. Eliminates lag almost completely, but can look slightly sharper on sudden spikes.\n\nEMA (Exponential): Places more weight on recent volume data. Faster than SMA.\n\nSMA (Simple): Standard average. Smooth, but suffers from the most significant lag.'
+
+// =====================================================================
+// 2. Wave Calculation Settings
+// =====================================================================
+grp_wave = 'Wave Calculation Settings'
+length = input.int(55, title = 'Waves Length', minval = 1, tooltip = tooltip_length, group = grp_wave)
+
+// Independent smoothing settings
+smoothTypeBase = input.string('HMA', title = 'Smoothing: Base Wave', options = ['ALMA', 'HMA', 'SMA', 'EMA'], tooltip = tooltip_smooth, group = grp_wave)
+smoothTypeA    = input.string('HMA', title = 'Smoothing: Multiplier A', options = ['ALMA', 'HMA', 'SMA', 'EMA'], group = grp_wave)
+smoothTypeB    = input.string('ALMA', title = 'Smoothing: Multiplier B', options = ['ALMA', 'HMA', 'SMA', 'EMA'], group = grp_wave)
+
+// =====================================================================
+// 3. Breakout Multiplier Settings
+// =====================================================================
+grp_breakout_mult = 'Breakout Multiplier Settings'
+breakoutMultA = input.float(2.0, title = 'Multiplier A', step = 0.1, group = grp_breakout_mult)
+breakoutMultB = input.float(3.0, title = 'Multiplier B', step = 0.1, group = grp_breakout_mult)
+
+// =====================================================================
+// 4. Up / Down Column Colors
+// =====================================================================
+grp_color_up = 'Up Volume Column Colors'
+upNormColor = input.color(color.new(#00897b, 100), title = 'Up Fill (Base)', group = grp_color_up)
+upNormBorder = input.color(color.new(#089981, 50), title = 'Up Border (Base)', group = grp_color_up)
+upBreakAColor = input.color(color.new(#089981, 30), title = 'Up Fill (Breakout A)', group = grp_color_up)
+upBreakABorder = input.color(color.new(#089981, 30), title = 'Up Border (Breakout A)', group = grp_color_up)
+upBreakBColor = input.color(color.new(#056656, 0), title = 'Up Fill (Breakout B)', group = grp_color_up)
+upBreakBBorder = input.color(color.new(#00332a, 0), title = 'Up Border (Breakout B)', group = grp_color_up)
+
+grp_color_down = 'Down Volume Column Colors'
+downNormColor = input.color(color.new(#ff5252, 100), title = 'Down Fill (Base)', group = grp_color_down)
+downNormBorder = input.color(color.new(#f23645, 40), title = 'Down Border (Base)', group = grp_color_down)
+downBreakAColor = input.color(color.new(#ff5252, 30), title = 'Down Fill (Breakout A)', group = grp_color_down)
+downBreakABorder = input.color(color.new(#ff5252, 30), title = 'Down Border (Breakout A)', group = grp_color_down)
+downBreakBColor = input.color(color.new(#e91e63, 0), title = 'Down Fill (Breakout B)', group = grp_color_down)
+downBreakBBorder = input.color(color.new(#880e4f, 0), title = 'Down Border (Breakout B)', group = grp_color_down)
+
+// =====================================================================
+// 5. Label Settings 
+// =====================================================================
+grp_label = 'Live Label Settings'
+lblTextColor = input.color(color.white, title = 'Label Text Color', group = grp_label)
+lblTextSizeStr = input.string('Small', title = 'Label Text Size', options = ['Tiny', 'Small', 'Normal', 'Large', 'Huge'], group = grp_label)
+
+lblTextSize = lblTextSizeStr == 'Tiny' ? size.tiny : lblTextSizeStr == 'Small' ? size.small : lblTextSizeStr == 'Normal' ? size.normal : lblTextSizeStr == 'Large' ? size.large : size.huge
+
+// =====================================================================
+// 6. Smoothing & Threshold Calculations
+// =====================================================================
+get_smoothed_vol(src, len, type) =>
+    float result = na
+    if type == 'HMA'
+        result := ta.hma(src, len)
+    else if type == 'ALMA'
+        result := ta.alma(src, len, 0.85, 6)
+    else if type == 'EMA'
+        result := ta.ema(src, len)
+    else
+        result := ta.sma(src, len)
+    result
+
+// Direct use of input smoothing variables
+smoothed_volBase = get_smoothed_vol(volume, length, smoothTypeBase)
+smoothed_volA    = get_smoothed_vol(volume, length, smoothTypeA)
+smoothed_volB    = get_smoothed_vol(volume, length, smoothTypeB)
+
+threshold_volA = smoothed_volA * breakoutMultA
+threshold_volB = smoothed_volB * breakoutMultB
+
+// =====================================================================
+// 7. Conditions & Extended Levels
+// =====================================================================
+isUp = close > open
+
+isBreakoutB = volume >= threshold_volB
+isBreakoutA = volume >= threshold_volA and volume < threshold_volB
+
+volColor = isUp ? isBreakoutB ? upBreakBColor : isBreakoutA ? upBreakAColor : upNormColor : isBreakoutB ? downBreakBColor : isBreakoutA ? downBreakAColor : downNormColor
+borderColor = isUp ? isBreakoutB ? upBreakBBorder : isBreakoutA ? upBreakABorder : upNormBorder : isBreakoutB ? downBreakBBorder : isBreakoutA ? downBreakABorder : downNormBorder
+
+var float ext_levelA = na
+var float ext_levelB = na
+
+if volume >= threshold_volA
+    ext_levelA := volume
+if volume >= threshold_volB
+    ext_levelB := volume
+
+// =====================================================================
+// 8. Plotting
+// =====================================================================
+plotcandle(0, volume, 0, volume, title = 'Volume Columns', color = volColor, bordercolor = borderColor, wickcolor = na, editable = false)
+
+// Hide Y-axis 0 label (display = display.none)
+p_zero = plot(0, color = na, title = 'Zero Anchor', display = display.none, editable = false)
+
+p_wave = plot(smoothed_volBase, color = color.new(#2e2e2e, 90), linewidth = 1, style = plot.style_line, title = 'Wave Line')
+p_multA = plot(threshold_volA, color = color.new(#808080, 90), linewidth = 1, style = plot.style_line, title = 'Mult A Line')
+p_multB = plot(threshold_volB, color = color.new(#dbdbdb, 90), linewidth = 1, style = plot.style_line, title = 'Mult B Line')
+
+fill(p_wave, p_zero, color = color.new(#2e2e2e, 85), title = 'Wave Area')
+fill(p_multA, p_zero, color = color.new(#808080, 85), title = 'Mult A Area')
+fill(p_multB, p_zero, color = color.new(#b8b8b8, 85), title = 'Mult B Area')
+
+plot(ext_levelA, color = color.new(#ff9800,30), linewidth = 1, style = plot.style_line, title = 'Ext Level A (Peak)')
+plot(ext_levelB, color = color.new(#591efd, 30), linewidth = 1, style = plot.style_line, title = 'Ext Level B (Peak)')
+
+// =====================================================================
+// 9. Volume Difference Analysis (Data Window & Live Label)
+// =====================================================================
+diffA = ext_levelA - volume
+diffB = ext_levelB - volume
+
+plot(diffA, title = 'Diff to Peak A', color=color.new(color.gray, 100), display = display.data_window)
+plot(diffB, title = 'Diff to Peak B', color=color.new(color.gray, 100), display = display.data_window)
+
+format_vol(v) =>
+    v_abs = math.abs(v)
+    string res = ""
+    if v_abs >= 1000000000
+        res := str.tostring(v / 1000000000, "#.##") + "B"
+    else if v_abs >= 1000000
+        res := str.tostring(v / 1000000, "#.##") + "M"
+    else if v_abs >= 1000
+        res := str.tostring(v / 1000, "#.##") + "K"
+    else
+        res := str.tostring(v, "#.##")
+    res
+
+var label diff_label = na
+if barstate.islast
+    string txt = "Vol to Break:\n"
+    txt += "Peak A: " + (na(ext_levelA) ? "N/A" : (diffA > 0 ? format_vol(diffA) : "Breakout!")) + "\n"
+    txt += "Peak B: " + (na(ext_levelB) ? "N/A" : (diffB > 0 ? format_vol(diffB) : "Breakout!"))
+    
+    // Label Y position (based on the higher of Ext Level A or B)
+    float y_pos = math.max(nz(ext_levelA, volume), nz(ext_levelB, volume))
+    
+    // Apply offset to shift label to the right
+    int x_offset = 0 
+    
+    if na(diff_label)
+        diff_label := label.new(bar_index + x_offset, y_pos, text = txt, color = borderColor, style = label.style_label_left, textcolor = lblTextColor, size = lblTextSize, textalign = text.align_center)
+    else
+        label.set_xy(diff_label, bar_index + x_offset, y_pos)
+        label.set_text(diff_label, txt)
+        label.set_style(diff_label, label.style_label_left)
+        label.set_color(diff_label, borderColor) 
+        label.set_textcolor(diff_label, lblTextColor)
+        label.set_size(diff_label, lblTextSize)

@@ -1,0 +1,108 @@
+//@version=6
+// A swing high becomes VALID only when price breaks the last swing low.
+// A swing low becomes VALID only when price breaks the last swing high.
+// The valid point is the extreme (highest high / lowest low) reached since the previous valid point.
+// Until confirmation, the candidate is shown in gray with a "?".
+indicator("Valid Highs & Lows (Structure Break)", "Valid H/L", overlay=true, max_labels_count=500, max_lines_count=20)
+
+pivN       = input.int(5, "Bars on each side", minval=1, tooltip="Controls how significant a local swing must be to act as the break reference. Higher = fewer and larger structure points, slower confirmation.")
+useClose   = input.bool(true, "Confirm break on close", tooltip="On: the break only counts when a candle closes beyond the reference. Off: a wick is enough.")
+onBarClose = input.bool(false, "Validate only on closed bars", tooltip="On: points are confirmed only when the bar closes, so nothing appears or disappears while the candle is still forming.")
+showPts    = input.bool(true, "Mark H / L")
+showLvl    = input.bool(true, "Show current levels")
+showPend   = input.bool(true, "Show pending candidate")
+showBreak  = input.bool(true, "Show break levels", tooltip="Plots the pivot that price must break in order to validate the pending point.")
+activeOnly = input.bool(true, "Only the level in play", tooltip="On: shows just the reference that matters now — the last pivot low while a high is pending, the last pivot high while a low is pending.")
+
+ph = ta.pivothigh(high, pivN, pivN)
+pl = ta.pivotlow(low,  pivN, pivN)
+
+var float lastPH = na
+var float lastPL = na
+
+if not na(ph)
+    lastPH := ph
+if not na(pl)
+    lastPL := pl
+
+// running extremes since the last confirmed point
+var float runHigh    = na
+var int   runHighBar = na
+var float runLow     = na
+var int   runLowBar  = na
+
+if na(runHigh) or high > runHigh
+    runHigh    := high
+    runHighBar := bar_index
+if na(runLow) or low < runLow
+    runLow    := low
+    runLowBar := bar_index
+
+var float VH   = na   // last valid high
+var float VL   = na   // last valid low
+var int   mode = 1    // 1 = waiting to validate a HIGH | 2 = waiting to validate a LOW
+
+var line lnHigh = na
+var line lnLow  = na
+
+// both conditions are evaluated against the mode as it stood at the start of the bar,
+// so a single candle can never validate a high and a low at the same time
+ready     = not onBarClose or barstate.isconfirmed
+breakDown = ready and mode == 1 and not na(lastPL) and not na(runHigh) and (useClose ? close < lastPL : low  < lastPL)
+breakUp   = ready and mode == 2 and not na(lastPH) and not na(runLow)  and (useClose ? close > lastPH : high > lastPH)
+
+// price broke the last low -> the high is validated
+if breakDown
+    VH   := runHigh
+    mode := 2
+    if showPts
+        label.new(runHighBar, runHigh, "H", style=label.style_label_down, color=color.new(color.red, 30), textcolor=color.white, size=size.tiny)
+    if showLvl
+        if not na(lnHigh)
+            line.delete(lnHigh)
+        lnHigh := line.new(runHighBar, runHigh, bar_index, runHigh, extend=extend.right, color=color.new(color.red, 40), width=1)
+    runLow    := low
+    runLowBar := bar_index
+
+// price broke the last high -> the low is validated
+else if breakUp
+    VL   := runLow
+    mode := 1
+    if showPts
+        label.new(runLowBar, runLow, "L", style=label.style_label_up, color=color.new(color.green, 30), textcolor=color.white, size=size.tiny)
+    if showLvl
+        if not na(lnLow)
+            line.delete(lnLow)
+        lnLow := line.new(runLowBar, runLow, bar_index, runLow, extend=extend.right, color=color.new(color.green, 40), width=1)
+    runHigh    := high
+    runHighBar := bar_index
+
+// reference levels price has to break — what the pending point is waiting for
+plot(showBreak and (not activeOnly or mode == 2) ? lastPH : na, "Break level (last pivot high)", color=color.new(color.red, 20),   style=plot.style_circles, linewidth=1)
+plot(showBreak and (not activeOnly or mode == 1) ? lastPL : na, "Break level (last pivot low)",  color=color.new(color.green, 20), style=plot.style_circles, linewidth=1)
+
+// pending candidate — one object at a time, last bar only
+var label lbPend = na
+var line  lnPend = na
+
+if barstate.islast and showPend
+    if not na(lbPend)
+        label.delete(lbPend)
+    if not na(lnPend)
+        line.delete(lnPend)
+    if mode == 1 and not na(runHighBar)
+        lbPend := label.new(runHighBar, runHigh, "h?", style=label.style_label_down, color=color.new(color.gray, 40), textcolor=color.white, size=size.tiny)
+        lnPend := line.new(runHighBar, runHigh, bar_index, runHigh, color=color.new(color.gray, 50), style=line.style_dashed, width=1)
+    if mode == 2 and not na(runLowBar)
+        lbPend := label.new(runLowBar, runLow, "l?", style=label.style_label_up, color=color.new(color.gray, 40), textcolor=color.white, size=size.tiny)
+        lnPend := line.new(runLowBar, runLow, bar_index, runLow, color=color.new(color.gray, 50), style=line.style_dashed, width=1)
+
+// values for other scripts and for the data window
+plot(VH, "Valid high", display=display.data_window)
+plot(VL, "Valid low",  display=display.data_window)
+
+// 1 = last confirmed point was a LOW (structure is up) | -1 = last confirmed point was a HIGH (structure is down)
+plot(mode == 1 ? 1 : mode == 2 ? -1 : 0, "Structure bias", display=display.none)
+
+alertcondition(mode == 2 and mode[1] == 1, "Valid high confirmed", "A swing high has been validated by a structure break")
+alertcondition(mode == 1 and mode[1] == 2, "Valid low confirmed",  "A swing low has been validated by a structure break")

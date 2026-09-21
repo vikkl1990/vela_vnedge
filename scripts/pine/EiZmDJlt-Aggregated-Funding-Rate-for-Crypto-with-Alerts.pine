@@ -1,0 +1,111 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LuckSoon
+
+//@version=6
+indicator("Aggregated Funding Rate for Crypto with Alerts", shorttitle = "AFR with Alerts", overlay = false, format = format.percent, precision = 4)
+
+base = syminfo.basecurrency
+
+// ─── GENERAL ───────────────────────────────────────────────────────────────
+mode         = input.string("Open Interest Weighted", "Mode",       ["Open Interest Weighted", "Average"],                           group = "General")
+display_mode = input.string("Line",                "Display",    ["Line", "Columns"],                                             group = "General")
+measure      = input.string("Rate (%)",               "Measure",    ["Rate (%)", "Total Spend Rate ($)", "Total Spend Rate (Coins)"], group = "General")
+scale        = input.string("8 Hours",                "Scaled Per", ["1 Hour", "8 Hours", "24 Hours", "1 Year"],                     group = "General")
+
+// ─── EXCHANGES ─────────────────────────────────────────────────────────────
+enableBinance  = input.bool(true, "Enable Binance",  group = "Exchanges", tooltip = "Pairs: USDT.P")
+enableBybit    = input.bool(true, "Enable Bybit",    group = "Exchanges", tooltip = "Pairs: USDT.P")
+enableOKX      = input.bool(true, "Enable OKX",      group = "Exchanges", tooltip = "Pairs: USDT.P")
+enableBitget   = input.bool(true, "Enable Bitget",   group = "Exchanges", tooltip = "Pairs: USDT.P")
+enableCoinbase = input.bool(true, "Enable Coinbase", group = "Exchanges", tooltip = "Pairs: USDC.P")
+
+// ─── SCALING ───────────────────────────────────────────────────────────────
+scaleMult = switch scale
+    "1 Hour"   => 1.0 / 8.0
+    "8 Hours"  => 1.0
+    "24 Hours" => 3.0
+    "1 Year"   => 1095.0
+
+// ─── FUNDING REQUESTS ──────────────────────────────────────────────────────
+binanceUSDT_FR  = enableBinance  ? request.security("BINANCE:"  + base + "USDT.P_FR", timeframe.period, close, ignore_invalid_symbol = true) : na
+bybitUSDT_FR    = enableBybit    ? request.security("BYBIT:"    + base + "USDT.P_FR", timeframe.period, close, ignore_invalid_symbol = true) : na
+okxUSDT_FR      = enableOKX      ? request.security("OKX:"      + base + "USDT.P_FR", timeframe.period, close, ignore_invalid_symbol = true) : na
+bitgetUSDT_FR   = enableBitget   ? request.security("BITGET:"   + base + "USDT.P_FR", timeframe.period, close, ignore_invalid_symbol = true) : na
+coinbaseUSDC_FR = enableCoinbase ? request.security("COINBASE:" + base + "USDC.P_FR", timeframe.period, close, ignore_invalid_symbol = true) : na
+
+// ─── OI REQUESTS ───────────────────────────────────────────────────────────
+binanceUSDTClose  = enableBinance  ? request.security("BINANCE:"  + base + "USDT.P_OI", timeframe.period, close, ignore_invalid_symbol = true) : na
+bybitUSDTClose    = enableBybit    ? request.security("BYBIT:"    + base + "USDT.P_OI", timeframe.period, close, ignore_invalid_symbol = true) : na
+okxUSDTClose      = enableOKX      ? request.security("OKX:"      + base + "USDT.P_OI", timeframe.period, close, ignore_invalid_symbol = true) : na
+bitgetUSDTClose   = enableBitget   ? request.security("BITGET:"   + base + "USDT.P_OI", timeframe.period, close, ignore_invalid_symbol = true) : na
+coinbaseUSDCClose = enableCoinbase ? request.security("COINBASE:" + base + "USDC.P_OI", timeframe.period, close, ignore_invalid_symbol = true) : na
+
+binanceTotalClose  = nz(enableBinance  ? binanceUSDTClose       : na, 0)
+bybitTotalClose    = nz(enableBybit    ? bybitUSDTClose         : na, 0)
+okxTotalClose      = nz(enableOKX      ? (okxUSDTClose / close) : na, 0)
+bitgetTotalClose   = nz(enableBitget   ? bitgetUSDTClose        : na, 0)
+coinbaseTotalClose = nz(enableCoinbase ? coinbaseUSDCClose      : na, 0)
+
+// ─── AGGREGATION ───────────────────────────────────────────────────────────
+var float sum_oi_coins     = 0.0
+var float sum_spend_coins  = 0.0
+var float avg_fr_sum       = 0.0
+var int   active_exchanges = 0
+
+sum_oi_coins     := 0.0
+sum_spend_coins  := 0.0
+avg_fr_sum       := 0.0
+active_exchanges := 0
+
+if enableBinance and not na(binanceUSDT_FR)
+    sum_oi_coins     += binanceTotalClose
+    sum_spend_coins  += binanceTotalClose * binanceUSDT_FR
+    avg_fr_sum       += binanceUSDT_FR
+    active_exchanges += 1
+
+if enableBybit and not na(bybitUSDT_FR)
+    sum_oi_coins     += bybitTotalClose
+    sum_spend_coins  += bybitTotalClose * bybitUSDT_FR
+    avg_fr_sum       += bybitUSDT_FR
+    active_exchanges += 1
+
+if enableOKX and not na(okxUSDT_FR)
+    sum_oi_coins     += okxTotalClose
+    sum_spend_coins  += okxTotalClose * okxUSDT_FR
+    avg_fr_sum       += okxUSDT_FR
+    active_exchanges += 1
+
+if enableBitget and not na(bitgetUSDT_FR)
+    sum_oi_coins     += bitgetTotalClose
+    sum_spend_coins  += bitgetTotalClose * bitgetUSDT_FR
+    avg_fr_sum       += bitgetUSDT_FR
+    active_exchanges += 1
+
+if enableCoinbase and not na(coinbaseUSDC_FR)
+    sum_oi_coins     += coinbaseTotalClose
+    sum_spend_coins  += coinbaseTotalClose * coinbaseUSDC_FR
+    avg_fr_sum       += coinbaseUSDC_FR
+    active_exchanges += 1
+
+// ─── FINAL VALUE ───────────────────────────────────────────────────────────
+weighted_fr_raw       = sum_oi_coins > 0 ? (sum_spend_coins / sum_oi_coins) : 0.0
+average_fr_raw        = active_exchanges > 0 ? (avg_fr_sum / active_exchanges) : 0.0
+selected_fr_raw       = mode == "Open Interest Weighted" ? weighted_fr_raw : average_fr_raw
+total_spend_coins_raw = mode == "Open Interest Weighted" ? sum_spend_coins  : (sum_oi_coins * average_fr_raw)
+
+final_value = 0.0
+if measure == "Rate (%)"
+    final_value := selected_fr_raw * 100 * scaleMult
+else if measure == "Total Spend Rate ($)"
+    final_value := total_spend_coins_raw * close * scaleMult
+else if measure == "Total Spend Rate (Coins)"
+    final_value := total_spend_coins_raw * scaleMult
+
+// ─── PLOT ──────────────────────────────────────────────────────────────────
+plot_color = final_value > 0 ? color.teal : color.red
+plot_style = display_mode == "Line" ? plot.style_line : plot.style_columns
+plot(final_value, "Aggregated Funding Value", plot_color, style = plot_style)
+
+//────────────────────────────────────────────────────────────────────────────
+//   THE END
+//────────────────────────────────────────────────────────────────────────────

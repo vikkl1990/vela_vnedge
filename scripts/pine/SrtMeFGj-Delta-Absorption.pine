@@ -1,0 +1,546 @@
+//@version=6
+indicator("Delta Absorption", shorttitle="Delta Absorption", overlay=true)
+
+//====================================================================
+// 1. ABSORPTION SETTINGS
+//====================================================================
+
+groupAbsorption = "ABSORPTION"
+
+deltaLookback = input.int(
+     20,
+     "Delta Lookback",
+     minval=5,
+     group=groupAbsorption,
+     display=display.none
+     )
+
+absorptionMult = input.float(
+     2.0,
+     "Absorption Delta Threshold",
+     minval=0.1,
+     step=0.1,
+     group=groupAbsorption,
+     display=display.none
+     )
+
+atrLength = input.int(
+     14,
+     "ATR Length",
+     minval=1,
+     group=groupAbsorption,
+     display=display.none
+     )
+
+maxPriceResponseATR = input.float(
+     0.20,
+     "Maximum Price Response",
+     minval=0.01,
+     step=0.05,
+     group=groupAbsorption,
+     display=display.none
+     )
+
+//====================================================================
+// 2. CONFIRMATION SETTINGS
+//====================================================================
+
+groupConfirmation = "CONFIRMATION"
+
+// CHANGED:
+// Shock Lookback can now go as low as 2.
+
+shockLookback = input.int(
+     5,
+     "Shock Lookback",
+     minval=2,
+     group=groupConfirmation,
+     display=display.none
+     )
+
+flipThreshold = input.float(
+     2.5,
+     "Flip Threshold",
+     minval=0.1,
+     step=0.1,
+     group=groupConfirmation,
+     display=display.none
+     )
+
+confirmationBars = input.int(
+     3,
+     "Confirmation Bars",
+     minval=1,
+     maxval=20,
+     group=groupConfirmation,
+     display=display.none
+     )
+
+//====================================================================
+// 3. VOLUME FILTER
+//====================================================================
+
+groupVolume = "VOLUME FILTER"
+
+useVolumeFilter = input.bool(
+     true,
+     "Use Volume Filter",
+     group=groupVolume,
+     display=display.none
+     )
+
+volumeLookback = input.int(
+     20,
+     "Volume Average Length",
+     minval=2,
+     group=groupVolume,
+     display=display.none
+     )
+
+volumeMult = input.float(
+     1.0,
+     "Minimum Volume vs Average",
+     minval=0.1,
+     step=0.1,
+     group=groupVolume,
+     display=display.none
+     )
+
+//====================================================================
+// 4. DISPLAY SETTINGS
+//====================================================================
+
+groupDisplay = "DISPLAY"
+
+showPotential = input.bool(
+     true,
+     "Show Possible Absorption",
+     group=groupDisplay,
+     display=display.none
+     )
+
+showConfirmed = input.bool(
+     true,
+     "Show Confirmed Absorption",
+     group=groupDisplay,
+     display=display.none
+     )
+
+bullColor = input.color(
+     color.lime,
+     "Bull Color",
+     group=groupDisplay,
+     display=display.none
+     )
+
+bearColor = input.color(
+     color.red,
+     "Bear Color",
+     group=groupDisplay,
+     display=display.none
+     )
+
+//====================================================================
+// 5. ESTIMATED BUY / SELL VOLUME
+//====================================================================
+
+// IMPORTANT:
+//
+// This is estimated Delta based on candle price and volume.
+//
+// It is NOT true exchange Bid/Ask aggressor Delta.
+
+barRange = high - low
+
+buyVolume =
+     barRange > 0
+     ? volume * (close - low) / barRange
+     : volume * 0.5
+
+sellVolume =
+     barRange > 0
+     ? volume * (high - close) / barRange
+     : volume * 0.5
+
+//====================================================================
+// 6. DELTA
+//====================================================================
+
+delta = buyVolume - sellVolume
+
+absDelta = math.abs(delta)
+
+//====================================================================
+// 7. NORMAL DELTA
+//====================================================================
+
+// Use previous candles to determine what normal Delta looks like.
+
+avgAbsDelta = ta.sma(absDelta[1], deltaLookback)
+
+// Compare the current Delta against normal Delta.
+
+aggressionRatio =
+     avgAbsDelta > 0
+     ? absDelta / avgAbsDelta
+     : 0.0
+
+//====================================================================
+// 8. VOLUME FILTER
+//====================================================================
+
+// Determine normal volume.
+
+avgVolume = ta.sma(volume[1], volumeLookback)
+
+// Candle passes volume filter if:
+//
+// Volume Filter OFF
+//
+// OR
+//
+// Current volume is large enough.
+
+volumeOK =
+     not useVolumeFilter or
+     volume >= avgVolume * volumeMult
+
+//====================================================================
+// 9. ATR / PRICE RESPONSE
+//====================================================================
+
+// ATR gives us a measurement of normal price movement.
+
+atrValue = ta.atr(atrLength)
+
+// Measure candle body movement.
+
+priceChange = close - open
+
+// Maximum amount price is allowed to move in the aggression
+// direction before we stop calling it possible absorption.
+
+maxPriceResponse =
+     atrValue * maxPriceResponseATR
+
+//====================================================================
+// 10. POSSIBLE BEARISH ABSORPTION
+//====================================================================
+
+// Buyers are aggressive.
+//
+// Delta is strongly positive.
+//
+// BUT price does not move upward enough.
+//
+// This MAY mean passive sellers are absorbing
+// the aggressive buyers.
+
+buyersAbsorbed =
+     barstate.isconfirmed and
+     delta > 0 and
+     aggressionRatio >= absorptionMult and
+     priceChange <= maxPriceResponse and
+     volumeOK
+
+//====================================================================
+// 11. POSSIBLE BULLISH ABSORPTION
+//====================================================================
+
+// Sellers are aggressive.
+//
+// Delta is strongly negative.
+//
+// BUT price does not move downward enough.
+//
+// This MAY mean passive buyers are absorbing
+// the aggressive sellers.
+
+sellersAbsorbed =
+     barstate.isconfirmed and
+     delta < 0 and
+     aggressionRatio >= absorptionMult and
+     priceChange >= -maxPriceResponse and
+     volumeOK
+
+//====================================================================
+// 12. DELTA SHOCK
+//====================================================================
+
+// Measure the change in Delta from the previous candle.
+//
+// Example:
+//
+// Previous Delta = -2000
+// Current Delta  = +1500
+//
+// Shock = +3500
+
+shock = delta - delta[1]
+
+absShock = math.abs(shock)
+
+//====================================================================
+// 13. NORMAL SHOCK
+//====================================================================
+
+// Shock Lookback determines how many recent candles
+// are used to determine what a normal Delta change is.
+//
+// NOW YOU CAN SET THIS AS LOW AS 2.
+
+avgAbsShock =
+     ta.sma(absShock[1], shockLookback)
+
+//====================================================================
+// 14. SHOCK RATIO
+//====================================================================
+
+// Compare current Shock with normal Shock.
+//
+// Example:
+//
+// Current Shock = 3000
+// Normal Shock  = 1000
+//
+// Shock Ratio = 3.0x
+
+shockRatio =
+     avgAbsShock > 0
+     ? absShock / avgAbsShock
+     : 0.0
+
+//====================================================================
+// 15. BULLISH AGGRESSION FLIP
+//====================================================================
+
+// Previous candle:
+// Negative Delta = sellers controlled aggression.
+//
+// Current candle:
+// Positive Delta = buyers now control aggression.
+//
+// The change must also pass the Flip Threshold.
+
+bullFlip =
+     barstate.isconfirmed and
+     delta[1] < 0 and
+     delta > 0 and
+     shock > 0 and
+     shockRatio >= flipThreshold and
+     volumeOK
+
+//====================================================================
+// 16. BEARISH AGGRESSION FLIP
+//====================================================================
+
+// Previous candle:
+// Positive Delta = buyers controlled aggression.
+//
+// Current candle:
+// Negative Delta = sellers now control aggression.
+//
+// The change must also pass the Flip Threshold.
+
+bearFlip =
+     barstate.isconfirmed and
+     delta[1] > 0 and
+     delta < 0 and
+     shock < 0 and
+     shockRatio >= flipThreshold and
+     volumeOK
+
+//====================================================================
+// 17. FIND RECENT POSSIBLE ABSORPTION
+//====================================================================
+
+// Count how many candles have passed since
+// possible seller absorption.
+
+barsSinceSellerAbsorption =
+     ta.barssince(sellersAbsorbed)
+
+// Count how many candles have passed since
+// possible buyer absorption.
+
+barsSinceBuyerAbsorption =
+     ta.barssince(buyersAbsorbed)
+
+//====================================================================
+// 18. CONFIRMED BULLISH ABSORPTION
+//====================================================================
+
+// Requirements:
+//
+// 1. Strong selling happened.
+//
+// 2. Price resisted that selling.
+//
+// 3. Possible Bull Absorption was detected.
+//
+// 4. Within the Confirmation Bars window,
+//    aggression strongly flips bullish.
+
+confirmedBullAbsorption =
+     bullFlip and
+     not na(barsSinceSellerAbsorption) and
+     barsSinceSellerAbsorption > 0 and
+     barsSinceSellerAbsorption <= confirmationBars
+
+//====================================================================
+// 19. CONFIRMED BEARISH ABSORPTION
+//====================================================================
+
+// Requirements:
+//
+// 1. Strong buying happened.
+//
+// 2. Price resisted that buying.
+//
+// 3. Possible Bear Absorption was detected.
+//
+// 4. Within the Confirmation Bars window,
+//    aggression strongly flips bearish.
+
+confirmedBearAbsorption =
+     bearFlip and
+     not na(barsSinceBuyerAbsorption) and
+     barsSinceBuyerAbsorption > 0 and
+     barsSinceBuyerAbsorption <= confirmationBars
+
+//====================================================================
+// 20. POSSIBLE BULL ABSORPTION MARKER
+//====================================================================
+
+// GREEN SQUARE BELOW CANDLE
+//
+// Strong selling aggression,
+// but price resisted going lower.
+
+plotshape(
+     showPotential and sellersAbsorbed,
+     title="Possible Bull Absorption",
+     style=shape.square,
+     location=location.belowbar,
+     color=bullColor,
+     size=size.tiny
+     )
+
+//====================================================================
+// 21. POSSIBLE BEAR ABSORPTION MARKER
+//====================================================================
+
+// RED SQUARE ABOVE CANDLE
+//
+// Strong buying aggression,
+// but price resisted going higher.
+
+plotshape(
+     showPotential and buyersAbsorbed,
+     title="Possible Bear Absorption",
+     style=shape.square,
+     location=location.abovebar,
+     color=bearColor,
+     size=size.tiny
+     )
+
+//====================================================================
+// 22. CONFIRMED BULL ABSORPTION
+//====================================================================
+
+// GREEN DIAMOND BELOW CANDLE
+//
+// Seller absorption happened first,
+// then aggression strongly flipped bullish.
+
+plotshape(
+     showConfirmed and confirmedBullAbsorption,
+     title="Confirmed Bull Absorption",
+     style=shape.diamond,
+     location=location.belowbar,
+     color=bullColor,
+     size=size.tiny
+     )
+
+//====================================================================
+// 23. CONFIRMED BEAR ABSORPTION
+//====================================================================
+
+// RED DIAMOND ABOVE CANDLE
+//
+// Buyer absorption happened first,
+// then aggression strongly flipped bearish.
+
+plotshape(
+     showConfirmed and confirmedBearAbsorption,
+     title="Confirmed Bear Absorption",
+     style=shape.diamond,
+     location=location.abovebar,
+     color=bearColor,
+     size=size.tiny
+     )
+
+//====================================================================
+// 24. HIDDEN DATA
+//====================================================================
+
+// Hidden so TradingView does not clutter
+// the top of the chart with values.
+
+plot(
+     delta,
+     title="Estimated Delta",
+     display=display.none
+     )
+
+plot(
+     aggressionRatio,
+     title="Aggression Ratio",
+     display=display.none
+     )
+
+plot(
+     shock,
+     title="Delta Shock",
+     display=display.none
+     )
+
+plot(
+     shockRatio,
+     title="Shock Ratio",
+     display=display.none
+     )
+
+plot(
+     priceChange,
+     title="Price Response",
+     display=display.none
+     )
+
+//====================================================================
+// 25. ALERTS
+//====================================================================
+
+alertcondition(
+     sellersAbsorbed,
+     title="Possible Bull Absorption",
+     message="Aggressive selling may be getting absorbed by buyers"
+     )
+
+alertcondition(
+     buyersAbsorbed,
+     title="Possible Bear Absorption",
+     message="Aggressive buying may be getting absorbed by sellers"
+     )
+
+alertcondition(
+     confirmedBullAbsorption,
+     title="Confirmed Bull Absorption",
+     message="Seller absorption followed by a strong bullish aggression flip"
+     )
+
+alertcondition(
+     confirmedBearAbsorption,
+     title="Confirmed Bear Absorption",
+     message="Buyer absorption followed by a strong bearish aggression flip"
+     )

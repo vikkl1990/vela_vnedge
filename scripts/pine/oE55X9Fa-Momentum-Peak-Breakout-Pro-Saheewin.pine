@@ -1,0 +1,1664 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © SaheeWin
+//@version=6
+
+indicator("Momentum Peak Breakout-Pro [Saheewin]", overlay=false, max_labels_count=500, max_lines_count=500, max_boxes_count=500)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// 1. MOMENTUM ENGINE
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+groupMom = "1. Momentum Engine"
+
+momLen = input.int(
+
+     14,
+
+     "Momentum Length",
+
+     minval=2,
+
+     group=groupMom)
+
+smoothLen = input.int(
+
+     5,
+
+     "Momentum Smoothing",
+
+     minval=1,
+
+     group=groupMom)
+
+useVolumeWeight = input.bool(
+
+     false,
+
+     "Volume-Weighted Momentum",
+
+     group=groupMom)
+
+volumeLen = input.int(
+
+     50,
+
+     "Volume Average Length",
+
+     minval=2,
+
+     group=groupMom)
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// 2. LIQUIDITY PEAK DETECTION
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+groupPeak = "2. Momentum Liquidity Detection"
+
+pivotLeft = input.int(
+
+     3,
+
+     "Pivot Left Bars",
+
+     minval=1,
+
+     group=groupPeak)
+
+pivotRight = input.int(
+
+     3,
+
+     "Pivot Right Bars",
+
+     minval=1,
+
+     group=groupPeak)
+
+minPeakStrength = input.float(
+
+     0.0,
+
+     "Minimum Peak Strength",
+
+     step=0.1,
+
+     group=groupPeak)
+
+minPeakDistance = input.int(
+
+     5,
+
+     "Minimum Bars Between Liquidity Levels",
+
+     minval=1,
+
+     group=groupPeak)
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// 3. SWEEP SETTINGS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+groupSweep = "3. Liquidity Sweep"
+
+sweepMode = input.string(
+
+     "Percent",
+
+     "Sweep Threshold",
+
+     options=["Percent", "Absolute"],
+
+     group=groupSweep)
+
+sweepPercent = input.float(
+
+     5.0,
+
+     "Sweep % Above/Below Level",
+
+     minval=0.0,
+
+     step=0.5,
+
+     group=groupSweep)
+
+sweepAbsolute = input.float(
+
+     1.0,
+
+     "Absolute Sweep Distance",
+
+     minval=0.0,
+
+     step=0.1,
+
+     group=groupSweep)
+
+returnMode = input.string(
+
+     "Cross Back",
+
+     "Return Confirmation",
+
+     options=["Cross Back", "Close Back"],
+
+     group=groupSweep)
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// 4. PRICE CONFIRMATION
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+groupConfirm = "4. Reversal Confirmation"
+
+usePriceConfirmation = input.bool(
+
+     true,
+
+     "Use Price Confirmation",
+
+     group=groupConfirm)
+
+priceConfirmBars = input.int(
+
+     3,
+
+     "Price Confirmation Lookback",
+
+     minval=1,
+
+     group=groupConfirm)
+
+useVolumeConfirmation = input.bool(
+
+     false,
+
+     "Use Volume Confirmation",
+
+     group=groupConfirm)
+
+cooldownBars = input.int(
+
+     10,
+
+     "Signal Cooldown",
+
+     minval=0,
+
+     group=groupConfirm)
+
+
+// Signal cooldown state
+var int lastSignalBar = na
+cooldownOK = na(lastSignalBar) or bar_index - lastSignalBar >= cooldownBars
+
+// Same-direction signal spacing
+sameDirectionGroup = "4. Reversal Confirmation"
+sameDirectionBars = input.int(
+     100,
+     "Minimum Bars Between Same-Direction Signals",
+     minval=0,
+     group=sameDirectionGroup)
+
+// Track the most recent accepted BUY and SELL independently.
+// Opposite-direction signals are still governed by the existing live-trade lock.
+var int lastBuySignalBar = na
+var int lastSellSignalBar = na
+
+sameDirectionBuyOK = na(lastBuySignalBar) or bar_index - lastBuySignalBar >= sameDirectionBars
+sameDirectionSellOK = na(lastSellSignalBar) or bar_index - lastSellSignalBar >= sameDirectionBars
+
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// 5. DISPLAY
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+groupDisplay = "5. Display"
+
+showMomentum = input.bool(
+
+     true,
+
+     "Show Momentum",
+
+     group=groupDisplay)
+
+showHistogram = input.bool(
+
+     true,
+
+     "Show Histogram",
+
+     group=groupDisplay)
+
+showLiquidity = input.bool(
+
+     true,
+
+     "Show Liquidity Levels",
+
+     group=groupDisplay)
+
+showPeaks = input.bool(
+
+     true,
+
+     "Show Peak Markers",
+
+     group=groupDisplay)
+
+showSweeps = input.bool(
+
+     true,
+
+     "Show Sweep Markers",
+
+     group=groupDisplay)
+
+showSignals = input.bool(
+
+     true,
+
+     "Show Buy/Sell Signals",
+
+     group=groupDisplay)
+
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// MOMENTUM COLORS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+bullColor = color.rgb(0, 200, 100)
+
+bearColor = color.rgb(235, 55, 70)
+
+bullLiquidityColor = color.rgb(0, 150, 80)
+
+bearLiquidityColor = color.rgb(200, 45, 60)
+
+bullSweepColor = color.rgb(0, 220, 120)
+
+bearSweepColor = color.rgb(255, 70, 80)
+
+bullSignalColor = color.rgb(0, 200, 100)
+
+bearSignalColor = color.rgb(235, 50, 65)
+
+
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// MOMENTUM CALCULATION
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Rate-of-change momentum
+
+rawMomentum = ta.roc(close, momLen)
+
+// Smooth momentum
+
+momentum = ta.ema(rawMomentum, smoothLen)
+
+// Volume weighting
+
+volMA = ta.sma(volume, volumeLen)
+
+volumeRatio = volMA > 0 ? volume / volMA : 1.0
+
+volumeFactor = math.min(volumeRatio, 2.0)
+
+workingMomentum =
+
+     useVolumeWeight
+
+     ? momentum * volumeFactor
+
+     : momentum
+
+m = workingMomentum
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// ZERO LINE
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+hline(
+
+     0,
+
+     "Zero",
+
+     linestyle=hline.style_dotted)
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// MOMENTUM PIVOTS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Positive momentum peak
+
+bullPivot = ta.pivothigh(
+
+     m,
+
+     pivotLeft,
+
+     pivotRight)
+
+// Negative momentum trough
+
+bearPivot = ta.pivotlow(
+
+     m,
+
+     pivotLeft,
+
+     pivotRight)
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// PEAK DISTANCE CONTROL
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var int lastBullPeakBar = na
+
+var int lastBearPeakBar = na
+
+bullPivotBar = bar_index - pivotRight
+
+bearPivotBar = bar_index - pivotRight
+
+validBullPeak =
+
+     not na(bullPivot) and
+
+     bullPivot > minPeakStrength and
+
+     (
+
+         na(lastBullPeakBar) or
+
+         bullPivotBar - lastBullPeakBar >= minPeakDistance
+
+     )
+
+validBearPeak =
+
+     not na(bearPivot) and
+
+     bearPivot < -minPeakStrength and
+
+     (
+
+         na(lastBearPeakBar) or
+
+         bearPivotBar - lastBearPeakBar >= minPeakDistance
+
+     )
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// MOMENTUM LIQUIDITY LEVELS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var float bullLiquidity = na
+
+var float bearLiquidity = na
+
+var float bullPricePeak = na
+var float bearPricePeak = na
+
+if validBullPeak
+
+    bullLiquidity := bullPivot
+    bullPricePeak := high[pivotRight]
+
+    lastBullPeakBar := bullPivotBar
+
+if validBearPeak
+
+    bearLiquidity := bearPivot
+    bearPricePeak := low[pivotRight]
+
+    lastBearPeakBar := bearPivotBar
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// SWEEP THRESHOLDS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+bullThreshold =
+
+     not na(bullLiquidity)
+
+     ? (
+
+         sweepMode == "Percent"
+
+         ? math.abs(bullLiquidity) * sweepPercent / 100.0
+
+         : sweepAbsolute
+
+       )
+
+     : na
+
+bearThreshold =
+
+     not na(bearLiquidity)
+
+     ? (
+
+         sweepMode == "Percent"
+
+         ? math.abs(bearLiquidity) * sweepPercent / 100.0
+
+         : sweepAbsolute
+
+       )
+
+     : na
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// LIQUIDITY SWEEPS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Momentum breaks above previous positive momentum peak
+
+bullLiquiditySweep =
+
+     not na(bullLiquidity) and
+
+     not na(bullThreshold) and
+
+     m > bullLiquidity + bullThreshold
+
+// Momentum breaks below previous negative momentum trough
+
+bearLiquiditySweep =
+
+     not na(bearLiquidity) and
+
+     not na(bearThreshold) and
+
+     m < bearLiquidity - bearThreshold
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// SWEEP STATE
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var bool bullSweepActive = false
+
+var bool bearSweepActive = false
+
+var float sweptBullLevel = na
+
+var float sweptBearLevel = na
+
+var int bullSweepBar = na
+
+var int bearSweepBar = na
+
+
+
+// Activate bullish-side sweep
+
+newBullSweep =
+
+     bullLiquiditySweep and
+
+     not bullSweepActive
+
+if newBullSweep
+
+    bullSweepActive := true
+
+    sweptBullLevel := bullLiquidity
+
+    bullSweepBar := bar_index
+
+
+
+// Activate bearish-side sweep
+
+newBearSweep =
+
+     bearLiquiditySweep and
+
+     not bearSweepActive
+
+if newBearSweep
+
+    bearSweepActive := true
+
+    sweptBearLevel := bearLiquidity
+
+    bearSweepBar := bar_index
+
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// INVALIDATE OLD SWEEP
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// A stronger new momentum peak invalidates the old bullish setup.
+
+if bullSweepActive and validBullPeak and bullPivot > sweptBullLevel
+
+    bullSweepActive := false
+
+    sweptBullLevel := na
+
+    bullSweepBar := na
+
+
+
+
+// A stronger new negative momentum trough invalidates the old bearish setup.
+
+if bearSweepActive and validBearPeak and bearPivot < sweptBearLevel
+
+    bearSweepActive := false
+
+    sweptBearLevel := na
+
+    bearSweepBar := na
+
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+groupMTFEMA = "8. Multi-Timeframe EMAs"
+
+showMTFEMAs = input.bool(
+     true,
+     "Show Multi-Timeframe EMAs",
+     group=groupMTFEMA)
+
+ema1Length = input.int(
+     9,
+     "EMA 1 Length",
+     minval=1,
+     group=groupMTFEMA)
+
+ema2Length = input.int(
+     21,
+     "EMA 2 Length",
+     minval=1,
+     group=groupMTFEMA)
+
+ema3Length = input.int(
+     50,
+     "EMA 3 Length",
+     minval=1,
+     group=groupMTFEMA)
+
+ema1Color = input.color(
+     color.aqua,
+     "EMA 1 Color",
+     group=groupMTFEMA)
+
+ema2Color = input.color(
+     color.orange,
+     "EMA 2 Color",
+     group=groupMTFEMA)
+
+ema3Color = input.color(
+     color.fuchsia,
+     "EMA 3 Color",
+     group=groupMTFEMA)
+
+emaLineWidth = input.int(
+     2,
+     "EMA Line Width",
+     minval=1,
+     maxval=5,
+     group=groupMTFEMA)
+
+// Convert the current chart timeframe into the requested automatic timeframe strings.
+// Special cases use the exact user-defined mapping above.
+string chartTF = timeframe.period
+string mtfTF1 = chartTF
+string mtfTF2 = chartTF
+string mtfTF3 = chartTF
+
+if timeframe.isminutes
+    int chartMinutes = timeframe.multiplier
+    if chartMinutes == 1
+        mtfTF1 := "1"
+        mtfTF2 := "5"
+        mtfTF3 := "15"
+    else if chartMinutes == 5
+        mtfTF1 := "5"
+        mtfTF2 := "15"
+        mtfTF3 := "60"
+    else if chartMinutes == 15
+        mtfTF1 := "15"
+        mtfTF2 := "60"
+        mtfTF3 := "240"
+    else if chartMinutes == 60
+        mtfTF1 := "60"
+        mtfTF2 := "240"
+        mtfTF3 := "1D"
+    else if chartMinutes == 240
+        mtfTF1 := "240"
+        mtfTF2 := "1D"
+        mtfTF3 := "1W"
+    else
+        mtfTF1 := str.tostring(chartMinutes)
+        mtfTF2 := str.tostring(chartMinutes * 6)
+        mtfTF3 := str.tostring(chartMinutes * 36)
+else if timeframe.isseconds
+    int chartSeconds = timeframe.multiplier
+    mtfTF1 := str.tostring(chartSeconds) + "S"
+    mtfTF2 := str.tostring(chartSeconds * 6) + "S"
+    mtfTF3 := str.tostring(chartSeconds * 36) + "S"
+else if timeframe.isminutes == false and timeframe.isseconds == false and timeframe.isdaily
+    int chartDays = timeframe.multiplier
+    if chartDays == 1
+        mtfTF1 := "1D"
+        mtfTF2 := "1W"
+        mtfTF3 := "1M"
+    else
+        mtfTF1 := str.tostring(chartDays) + "D"
+        mtfTF2 := str.tostring(chartDays * 6) + "D"
+        mtfTF3 := str.tostring(chartDays * 36) + "D"
+else if timeframe.isweekly
+    int chartWeeks = timeframe.multiplier
+    mtfTF1 := str.tostring(chartWeeks) + "W"
+    mtfTF2 := str.tostring(chartWeeks * 6) + "W"
+    mtfTF3 := str.tostring(chartWeeks * 36) + "W"
+else if timeframe.ismonthly
+    int chartMonths = timeframe.multiplier
+    mtfTF1 := str.tostring(chartMonths) + "M"
+    mtfTF2 := str.tostring(chartMonths * 6) + "M"
+    mtfTF3 := str.tostring(chartMonths * 36) + "M"
+
+ema1MTF = request.security(syminfo.tickerid, mtfTF1, ta.ema(close, ema1Length), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+ema2MTF = request.security(syminfo.tickerid, mtfTF2, ta.ema(close, ema2Length), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+ema3MTF = request.security(syminfo.tickerid, mtfTF3, ta.ema(close, ema3Length), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+plot(
+     showMTFEMAs ? ema1MTF : na,
+     title="MTF EMA 1",
+     color=ema1Color,
+     linewidth=emaLineWidth,
+     force_overlay=true)
+
+plot(
+     showMTFEMAs ? ema2MTF : na,
+     title="MTF EMA 2",
+     color=ema2Color,
+     linewidth=emaLineWidth,
+     force_overlay=true)
+
+plot(
+     showMTFEMAs ? ema3MTF : na,
+     title="MTF EMA 3",
+     color=ema3Color,
+     linewidth=emaLineWidth,
+     force_overlay=true)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// TRADE BOX SETTINGS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// EMA 1 / EMA 2 SIGNAL VALIDATION
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// BUY signals are valid only when EMA 1 is above EMA 2.
+// SELL signals are valid only when EMA 1 is below EMA 2.
+
+emaBullFilter = ema1MTF > ema2MTF
+emaBearFilter = ema1MTF < ema2MTF
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// NEW BUY / SELL SIGNAL LOGIC
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// BUY: A green momentum histogram bar crosses above the PREVIOUS
+//      green momentum peak AND price closes above that peak candle high,
+//      while EMA 1 is above EMA 2.
+// SELL: A red momentum histogram bar crosses below the PREVIOUS
+//       red momentum trough AND price closes below that trough candle low,
+//       while EMA 1 is below EMA 2.
+// The [1] reference deliberately uses the peak/trough available
+// before the current bar, preventing the current pivot from being
+// treated as its own previous level.
+
+previousGreenPeak = bullLiquidity[1]
+previousRedPeak = bearLiquidity[1]
+previousGreenPricePeak = bullPricePeak[1]
+previousRedPricePeak = bearPricePeak[1]
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 9. OPTIONAL SIGNAL QUALITY FILTERS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// These filters refine the existing momentum/price peak-break signal.
+// They are optional and do not alter the underlying peak detection logic.
+
+groupQuality = "9. Signal Quality Filters"
+
+useMomentumExpansion = input.bool(
+     false,
+     "Use Momentum Expansion Filter",
+     group=groupQuality)
+
+momentumExpansionMin = input.float(
+     10.0,
+     "Minimum Momentum Expansion (%)",
+     minval=0.0,
+     step=1.0,
+     group=groupQuality)
+
+useBreakoutDisplacement = input.bool(
+     false,
+     "Use Breakout Displacement Filter",
+     group=groupQuality)
+
+breakoutDisplacementMinATR = input.float(
+     0.10,
+     "Minimum Breakout Displacement (ATR)",
+     minval=0.0,
+     step=0.05,
+     group=groupQuality)
+
+breakoutATRLength = input.int(
+     14,
+     "Breakout ATR Length",
+     minval=1,
+     group=groupQuality)
+
+useEfficiencyRatio = input.bool(
+     false,
+     "Use Market Efficiency Ratio Filter",
+     group=groupQuality)
+
+efficiencyLength = input.int(
+     20,
+     "Efficiency Ratio Length",
+     minval=2,
+     group=groupQuality)
+
+minimumEfficiencyRatio = input.float(
+     0.35,
+     "Minimum Efficiency Ratio",
+     minval=0.0,
+     maxval=1.0,
+     step=0.05,
+     group=groupQuality)
+
+// Momentum expansion: how decisively the current momentum exceeds the
+// previous structural momentum peak/trough.
+buyMomentumExpansionPct = not na(previousGreenPeak) and math.abs(previousGreenPeak) > 0 ?
+     (m - previousGreenPeak) / math.abs(previousGreenPeak) * 100.0 : 0.0
+
+sellMomentumExpansionPct = not na(previousRedPeak) and math.abs(previousRedPeak) > 0 ?
+     (previousRedPeak - m) / math.abs(previousRedPeak) * 100.0 : 0.0
+
+momentumExpansionBuyOK = not useMomentumExpansion or buyMomentumExpansionPct >= momentumExpansionMin
+momentumExpansionSellOK = not useMomentumExpansion or sellMomentumExpansionPct >= momentumExpansionMin
+
+// Price breakout displacement normalized by ATR.
+breakoutATR = ta.atr(breakoutATRLength)
+
+buyBreakoutDisplacementATR = not na(previousGreenPricePeak) and breakoutATR > 0 ?
+     (close - previousGreenPricePeak) / breakoutATR : 0.0
+
+sellBreakoutDisplacementATR = not na(previousRedPricePeak) and breakoutATR > 0 ?
+     (previousRedPricePeak - close) / breakoutATR : 0.0
+
+breakoutDisplacementBuyOK = not useBreakoutDisplacement or buyBreakoutDisplacementATR >= breakoutDisplacementMinATR
+breakoutDisplacementSellOK = not useBreakoutDisplacement or sellBreakoutDisplacementATR >= breakoutDisplacementMinATR
+
+// Kaufman's-style Market Efficiency Ratio: directional travel divided by
+// the sum of all absolute bar-to-bar movement over the selected window.
+priceChangeER = math.abs(close - close[efficiencyLength])
+float priceNoiseER = 0.0
+for i = 0 to efficiencyLength - 1
+    priceNoiseER += math.abs(close[i] - close[i + 1])
+efficiencyRatio = priceNoiseER > 0 ? priceChangeER / priceNoiseER : 0.0
+
+efficiencyBuyOK = not useEfficiencyRatio or efficiencyRatio >= minimumEfficiencyRatio
+efficiencySellOK = not useEfficiencyRatio or efficiencyRatio >= minimumEfficiencyRatio
+
+histogramBuySignal =
+     m > 0 and
+     not na(previousGreenPeak) and
+     not na(previousGreenPricePeak) and
+     ta.crossover(m, previousGreenPeak) and
+     close > previousGreenPricePeak and
+     emaBullFilter and
+     momentumExpansionBuyOK and
+     breakoutDisplacementBuyOK and
+     efficiencyBuyOK and
+     cooldownOK and
+     sameDirectionSellOK and
+     sameDirectionBuyOK
+
+histogramSellSignal =
+     m < 0 and
+     not na(previousRedPeak) and
+     not na(previousRedPricePeak) and
+     ta.crossunder(m, previousRedPeak) and
+     close < previousRedPricePeak and
+     emaBearFilter and
+     momentumExpansionSellOK and
+     breakoutDisplacementSellOK and
+     efficiencySellOK and
+     cooldownOK
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// LIVE TRADE SIGNAL LOCK
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Do not allow another signal while a previous Trade Box/statistical
+// trade is still live. A new signal is permitted only after the active
+// trade has been closed by SL or TP3.
+var bool tradeIsLive = false
+
+validatedBuySignal = histogramBuySignal and not tradeIsLive
+validatedSellSignal = histogramSellSignal and not tradeIsLive and not validatedBuySignal
+
+if validatedBuySignal or validatedSellSignal
+    lastSignalBar := bar_index
+
+    // Record the accepted signal bar separately by direction so that
+    // repeated same-direction signals must respect the user-set interval.
+    if validatedBuySignal
+        lastBuySignalBar := bar_index
+    if validatedSellSignal
+        lastSellSignalBar := bar_index
+
+    // Only lock the signal stream when the Trade Box can actually be
+    // created with a valid EMA2-based stop.
+    bool validBuyTrade = validatedBuySignal and close > ema2MTF
+    bool validSellTrade = validatedSellSignal and close < ema2MTF
+    if validBuyTrade or validSellTrade
+        tradeIsLive := true
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// MOMENTUM PLOT
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+plot(
+
+     showMomentum ? m : na,
+
+     title="Momentum",
+
+     color=m >= 0 ? bullColor : bearColor,
+
+     linewidth=2)
+
+plot(
+
+     showHistogram ? m : na,
+
+     title="Momentum Histogram",
+
+     color=m >= 0 ? color.new(bullColor, 25) : color.new(bearColor, 25),
+
+     style=plot.style_columns,
+
+     histbase=0)
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// LIQUIDITY LEVEL PLOTS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+plot(
+
+     showLiquidity ? bullLiquidity : na,
+
+     title="Bullish Momentum Liquidity",
+
+     color=bullLiquidityColor,
+
+     linewidth=2,
+
+     style=plot.style_stepline)
+
+plot(
+
+     showLiquidity ? bearLiquidity : na,
+
+     title="Bearish Momentum Liquidity",
+
+     color=bearLiquidityColor,
+
+     linewidth=2,
+
+     style=plot.style_stepline)
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// PEAK MARKERS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// IMPORTANT:
+
+// plotshape() does NOT have a "y" argument.
+
+// With location.absolute, the first argument is the Y value.
+
+plotshape(
+
+     showPeaks and validBullPeak
+
+     ? bullPivot
+
+     : na,
+
+     title="Bullish Momentum Peak",
+
+     style=shape.circle,
+
+     location=location.absolute,
+
+     color=bullColor,
+
+     size=size.tiny)
+
+plotshape(
+
+     showPeaks and validBearPeak
+
+     ? bearPivot
+
+     : na,
+
+     title="Bearish Momentum Trough",
+
+     style=shape.circle,
+
+     location=location.absolute,
+
+     color=bearColor,
+
+     size=size.tiny)
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// SWEEP MARKERS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+plotshape(
+
+     showSweeps and newBullSweep
+
+     ? m
+
+     : na,
+
+     title="Bullish Liquidity Sweep",
+
+     style=shape.triangleup,
+
+     location=location.absolute,
+
+     color=bullSweepColor,
+
+     textcolor=color.white,
+
+     size=size.tiny,
+
+     text="SWEEP")
+
+plotshape(
+
+     showSweeps and newBearSweep
+
+     ? m
+
+     : na,
+
+     title="Bearish Liquidity Sweep",
+
+     style=shape.triangledown,
+
+     location=location.absolute,
+
+     color=bearSweepColor,
+
+     textcolor=color.white,
+
+     size=size.tiny,
+
+     text="SWEEP")
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// BUY / SELL SIGNALS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+plotshape(
+
+     showSignals and validatedBuySignal
+
+     ? m
+
+     : na,
+
+     title="BUY",
+
+     style=shape.labelup,
+
+     location=location.absolute,
+
+     color=bullSignalColor,
+
+     textcolor=color.white,
+
+     size=size.small,
+
+     text="BUY")
+
+plotshape(
+
+     showSignals and validatedSellSignal
+
+     ? m
+
+     : na,
+
+     title="SELL",
+
+     style=shape.labeldown,
+
+     location=location.absolute,
+
+     color=bearSignalColor,
+
+     textcolor=color.white,
+
+     size=size.small,
+
+     text="SELL")
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// force_overlay=true plots the EMAs on the main price chart while preserving
+// this indicator's existing overlay=false behavior.
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+groupTradeBox = "6. Trade Box"
+
+showTradeBoxes = input.bool(
+     true,
+     "Show Trade Boxes",
+     group=groupTradeBox)
+
+tradeBoxBars = input.int(
+     20,
+     "Trade Box Length (Bars)",
+     minval=1,
+     group=groupTradeBox)
+
+// Entry = signal candle close.
+// BUY/SELL SL = the second MTF EMA.
+// TP1 = 1:1.5, TP2 = 1:3, TP3 = 1:5.
+
+tradeBuySignal = validatedBuySignal
+tradeSellSignal = validatedSellSignal
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TRADE STATISTICS SETTINGS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+groupTradeStats = "7. Trade Statistics"
+
+showTradeStats = input.bool(
+     true,
+     "Show Trade Statistics",
+     group=groupTradeStats)
+
+statsTradeCount = input.int(
+     50,
+     "Last N Closed Trades",
+     minval=1,
+     maxval=500,
+     group=groupTradeStats)
+
+statsPosition = input.string(
+     "Top Right",
+     "Table Position",
+     options=["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"],
+     group=groupTradeStats)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TRADE STATISTICS ENGINE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Each signal creates an independent trade record.
+// A trade is a LOSS only when SL is reached before any TP.
+// Once TP1/TP2/TP3 is reached, the trade is a WIN and is
+// classified by the highest TP reached before the trade ends.
+// TP3 is therefore the full 1:5 target hit.
+
+var array<int> openTradeDir = array.new_int()
+var array<float> openTradeEntry = array.new_float()
+var array<float> openTradeSL = array.new_float()
+var array<float> openTradeTP1 = array.new_float()
+var array<float> openTradeTP2 = array.new_float()
+var array<float> openTradeTP3 = array.new_float()
+var array<int> openTradeHighestTP = array.new_int()
+var array<int> openTradeBar = array.new_int()
+
+// Closed result: 0 = SL loss, 1 = TP1 win, 2 = TP2 win, 3 = TP3 win.
+var array<int> closedTradeResult = array.new_int()
+
+// Register a new BUY trade.
+if tradeBuySignal
+    float statEntry = close
+    float statSL = ema2MTF
+    float statRisk = statEntry - statSL
+
+    if statRisk > 0
+        array.push(openTradeDir, 1)
+        array.push(openTradeEntry, statEntry)
+        array.push(openTradeSL, statSL)
+        array.push(openTradeTP1, statEntry + statRisk * 1.5)
+        array.push(openTradeTP2, statEntry + statRisk * 3.0)
+        array.push(openTradeTP3, statEntry + statRisk * 5.0)
+        array.push(openTradeHighestTP, 0)
+        array.push(openTradeBar, bar_index)
+
+// Register a new SELL trade.
+if tradeSellSignal
+    float statEntry = close
+    float statSL = ema2MTF
+    float statRisk = statSL - statEntry
+
+    if statRisk > 0
+        array.push(openTradeDir, -1)
+        array.push(openTradeEntry, statEntry)
+        array.push(openTradeSL, statSL)
+        array.push(openTradeTP1, statEntry - statRisk * 1.5)
+        array.push(openTradeTP2, statEntry - statRisk * 3.0)
+        array.push(openTradeTP3, statEntry - statRisk * 5.0)
+        array.push(openTradeHighestTP, 0)
+        array.push(openTradeBar, bar_index)
+
+// Evaluate every open trade.
+// SL gets priority when no TP was previously reached and both
+// SL and TP are inside the same candle range. This is conservative.
+if array.size(openTradeDir) > 0
+    int i = array.size(openTradeDir) - 1
+
+    while i >= 0
+        int direction = array.get(openTradeDir, i)
+        float entry = array.get(openTradeEntry, i)
+        float sl = array.get(openTradeSL, i)
+        float tp1 = array.get(openTradeTP1, i)
+        float tp2 = array.get(openTradeTP2, i)
+        float tp3 = array.get(openTradeTP3, i)
+        int highestTP = array.get(openTradeHighestTP, i)
+        int signalBar = array.get(openTradeBar, i)
+
+        // Do not evaluate the signal candle itself.
+        if bar_index > signalBar
+            bool slHit = direction == 1 ? low <= sl : high >= sl
+            bool tp1Hit = direction == 1 ? high >= tp1 : low <= tp1
+            bool tp2Hit = direction == 1 ? high >= tp2 : low <= tp2
+            bool tp3Hit = direction == 1 ? high >= tp3 : low <= tp3
+
+            int newHighestTP = highestTP
+            if tp1Hit
+                newHighestTP := math.max(newHighestTP, 1)
+            if tp2Hit
+                newHighestTP := math.max(newHighestTP, 2)
+            if tp3Hit
+                newHighestTP := math.max(newHighestTP, 3)
+
+            array.set(openTradeHighestTP, i, newHighestTP)
+
+            bool closeTrade = false
+            int result = 0
+
+            // A trade remains active after TP1/TP2 so that the highest
+            // target reached can be recorded. It is closed at SL or TP3.
+            // If SL occurs after TP1/TP2, the highest reached TP remains a WIN.
+            if slHit
+                result := newHighestTP
+                closeTrade := true
+            else if newHighestTP >= 3
+                result := 3
+                closeTrade := true
+
+            if closeTrade
+                array.push(closedTradeResult, result)
+                tradeIsLive := false
+                while array.size(closedTradeResult) > statsTradeCount
+                    array.shift(closedTradeResult)
+
+                array.remove(openTradeDir, i)
+                array.remove(openTradeEntry, i)
+                array.remove(openTradeSL, i)
+                array.remove(openTradeTP1, i)
+                array.remove(openTradeTP2, i)
+                array.remove(openTradeTP3, i)
+                array.remove(openTradeHighestTP, i)
+                array.remove(openTradeBar, i)
+
+        i -= 1
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TRADE BOX CREATION
+// SL is the second MTF EMA (EMA 2) for both BUY and SELL.
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if showTradeBoxes and tradeBuySignal
+    float tradeEntry = close
+    float tradeSL = ema2MTF
+    float tradeRisk = tradeEntry - tradeSL
+
+    if tradeRisk > 0
+        float tradeTP1 = tradeEntry + tradeRisk * 1.5
+        float tradeTP2 = tradeEntry + tradeRisk * 3.0
+        float tradeTP3 = tradeEntry + tradeRisk * 5.0
+        int tradeRight = bar_index + tradeBoxBars
+
+        // BUY: Entry-to-SL risk area in RED.
+        box.new(
+             left=bar_index,
+             top=tradeEntry,
+             right=tradeRight,
+             bottom=tradeSL,
+             xloc=xloc.bar_index,
+             border_color=color.new(color.red, 65),
+             border_width=1,
+             bgcolor=color.new(color.red, 85),
+             force_overlay=true)
+
+        // BUY: Entry-to-TP3 reward area in GREEN.
+        box.new(
+             left=bar_index,
+             top=tradeTP3,
+             right=tradeRight,
+             bottom=tradeEntry,
+             xloc=xloc.bar_index,
+             border_color=color.new(color.green, 65),
+             border_width=1,
+             bgcolor=color.new(color.green, 88),
+             force_overlay=true)
+
+        line.new(bar_index, tradeEntry, tradeRight, tradeEntry, xloc=xloc.bar_index, color=color.white, width=2, force_overlay=true)
+        line.new(bar_index, tradeSL, tradeRight, tradeSL, xloc=xloc.bar_index, color=color.red, width=2, force_overlay=true)
+        line.new(bar_index, tradeTP1, tradeRight, tradeTP1, xloc=xloc.bar_index, color=color.green, width=1, style=line.style_dashed, force_overlay=true)
+        line.new(bar_index, tradeTP2, tradeRight, tradeTP2, xloc=xloc.bar_index, color=color.green, width=1, style=line.style_dashed, force_overlay=true)
+        line.new(bar_index, tradeTP3, tradeRight, tradeTP3, xloc=xloc.bar_index, color=color.green, width=1, style=line.style_dashed, force_overlay=true)
+
+        label.new(tradeRight, tradeEntry, "ENTRY\n" + str.tostring(tradeEntry, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, color=color.white, textcolor=color.black, size=size.tiny, force_overlay=true)
+        label.new(tradeRight, tradeSL, "SL\n" + str.tostring(tradeSL, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, color=color.red, textcolor=color.white, size=size.tiny, force_overlay=true)
+        label.new(tradeRight, tradeTP1, "TP1  1:1.5\n" + str.tostring(tradeTP1, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, color=color.green, textcolor=color.white, size=size.tiny, force_overlay=true)
+        label.new(tradeRight, tradeTP2, "TP2  1:3\n" + str.tostring(tradeTP2, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, color=color.green, textcolor=color.white, size=size.tiny, force_overlay=true)
+        label.new(tradeRight, tradeTP3, "TP3  1:5\n" + str.tostring(tradeTP3, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, color=color.green, textcolor=color.white, size=size.tiny, force_overlay=true)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SHORT TRADE BOX
+// SL is the second MTF EMA (EMA 2).
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if showTradeBoxes and tradeSellSignal
+    float tradeEntry = close
+    float tradeSL = ema2MTF
+    float tradeRisk = tradeSL - tradeEntry
+
+    if tradeRisk > 0
+        float tradeTP1 = tradeEntry - tradeRisk * 1.5
+        float tradeTP2 = tradeEntry - tradeRisk * 3.0
+        float tradeTP3 = tradeEntry - tradeRisk * 5.0
+        int tradeRight = bar_index + tradeBoxBars
+
+        // SELL: Entry-to-SL risk area in RED.
+        box.new(
+             left=bar_index,
+             top=tradeSL,
+             right=tradeRight,
+             bottom=tradeEntry,
+             xloc=xloc.bar_index,
+             border_color=color.new(color.red, 65),
+             border_width=1,
+             bgcolor=color.new(color.red, 85),
+             force_overlay=true)
+
+        // SELL: Entry-to-TP3 reward area in GREEN.
+        box.new(
+             left=bar_index,
+             top=tradeEntry,
+             right=tradeRight,
+             bottom=tradeTP3,
+             xloc=xloc.bar_index,
+             border_color=color.new(color.green, 65),
+             border_width=1,
+             bgcolor=color.new(color.green, 88),
+             force_overlay=true)
+
+        line.new(bar_index, tradeEntry, tradeRight, tradeEntry, xloc=xloc.bar_index, color=color.white, width=2, force_overlay=true)
+        line.new(bar_index, tradeSL, tradeRight, tradeSL, xloc=xloc.bar_index, color=color.red, width=2, force_overlay=true)
+        line.new(bar_index, tradeTP1, tradeRight, tradeTP1, xloc=xloc.bar_index, color=color.green, width=1, style=line.style_dashed, force_overlay=true)
+        line.new(bar_index, tradeTP2, tradeRight, tradeTP2, xloc=xloc.bar_index, color=color.green, width=1, style=line.style_dashed, force_overlay=true)
+        line.new(bar_index, tradeTP3, tradeRight, tradeTP3, xloc=xloc.bar_index, color=color.green, width=1, style=line.style_dashed, force_overlay=true)
+
+        label.new(tradeRight, tradeEntry, "ENTRY\n" + str.tostring(tradeEntry, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, color=color.white, textcolor=color.black, size=size.tiny, force_overlay=true)
+        label.new(tradeRight, tradeSL, "SL\n" + str.tostring(tradeSL, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, color=color.red, textcolor=color.white, size=size.tiny, force_overlay=true)
+        label.new(tradeRight, tradeTP1, "TP1  1:1.5\n" + str.tostring(tradeTP1, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, color=color.green, textcolor=color.white, size=size.tiny, force_overlay=true)
+        label.new(tradeRight, tradeTP2, "TP2  1:3\n" + str.tostring(tradeTP2, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, color=color.green, textcolor=color.white, size=size.tiny, force_overlay=true)
+        label.new(tradeRight, tradeTP3, "TP3  1:5\n" + str.tostring(tradeTP3, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, color=color.green, textcolor=color.white, size=size.tiny, force_overlay=true)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// OPTIONAL TRADE STATISTICS TABLE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+string tablePos = statsPosition == "Top Left" ? position.top_left :
+     statsPosition == "Top Center" ? position.top_center :
+     statsPosition == "Top Right" ? position.top_right :
+     statsPosition == "Middle Left" ? position.middle_left :
+     statsPosition == "Middle Center" ? position.middle_center :
+     statsPosition == "Middle Right" ? position.middle_right :
+     statsPosition == "Bottom Left" ? position.bottom_left :
+     statsPosition == "Bottom Center" ? position.bottom_center :
+     position.bottom_right
+
+var table tradeStatsTable = table.new(position.top_right, 2, 10, border_width=1)
+
+if barstate.islast
+    if showTradeStats
+        int totalStatsTrades = array.size(closedTradeResult)
+        int wins = 0
+        int losses = 0
+        int tp1Wins = 0
+        int tp2Wins = 0
+        int tp3Wins = 0
+
+        if totalStatsTrades > 0
+            for j = 0 to totalStatsTrades - 1
+                int result = array.get(closedTradeResult, j)
+                if result == 0
+                    losses += 1
+                else
+                    wins += 1
+                    if result == 1
+                        tp1Wins += 1
+                    else if result == 2
+                        tp2Wins += 1
+                    else if result == 3
+                        tp3Wins += 1
+
+        float winRate = totalStatsTrades > 0 ? wins * 100.0 / totalStatsTrades : 0.0
+
+        table.clear(tradeStatsTable, 0, 0, 1, 9)
+        table.set_position(tradeStatsTable, statsPosition == "Top Left" ? position.top_left : statsPosition == "Top Center" ? position.top_center : statsPosition == "Top Right" ? position.top_right : statsPosition == "Middle Left" ? position.middle_left : statsPosition == "Middle Center" ? position.middle_center : statsPosition == "Middle Right" ? position.middle_right : statsPosition == "Bottom Left" ? position.bottom_left : statsPosition == "Bottom Center" ? position.bottom_center : position.bottom_right)
+
+        table.cell(tradeStatsTable, 0, 0, "TRADE STATISTICS", bgcolor=color.rgb(35, 35, 35), text_color=color.white)
+        table.cell(tradeStatsTable, 1, 0, "LAST " + str.tostring(statsTradeCount), bgcolor=color.rgb(35, 35, 35), text_color=color.white)
+        table.cell(tradeStatsTable, 0, 1, "Total Trades", text_color=color.white)
+        table.cell(tradeStatsTable, 1, 1, str.tostring(totalStatsTrades), text_color=color.white)
+        table.cell(tradeStatsTable, 0, 2, "Winning Trades", text_color=color.white)
+        table.cell(tradeStatsTable, 1, 2, str.tostring(wins), text_color=color.green)
+        table.cell(tradeStatsTable, 0, 3, "SL Trades", text_color=color.white)
+        table.cell(tradeStatsTable, 1, 3, str.tostring(losses), text_color=color.red)
+        table.cell(tradeStatsTable, 0, 4, "TP1 Wins  1:1.5", text_color=color.white)
+        table.cell(tradeStatsTable, 1, 4, str.tostring(tp1Wins), text_color=color.green)
+        table.cell(tradeStatsTable, 0, 5, "TP2 Wins  1:3", text_color=color.white)
+        table.cell(tradeStatsTable, 1, 5, str.tostring(tp2Wins), text_color=color.green)
+        table.cell(tradeStatsTable, 0, 6, "TP3 Wins  1:5", text_color=color.white)
+        table.cell(tradeStatsTable, 1, 6, str.tostring(tp3Wins), text_color=color.green)
+        table.cell(tradeStatsTable, 0, 7, "Winning Rate", text_color=color.white)
+        table.cell(tradeStatsTable, 1, 7, str.tostring(winRate, "#.##") + "%", text_color=winRate >= 50 ? color.green : color.red)
+        table.cell(tradeStatsTable, 0, 8, "Open Trades", text_color=color.white)
+        table.cell(tradeStatsTable, 1, 8, str.tostring(array.size(openTradeDir)), text_color=color.yellow)
+
+        string lastTradeStatus = "No closed trades"
+        color lastTradeColor = color.gray
+        if totalStatsTrades > 0
+            int lastResult = array.get(closedTradeResult, totalStatsTrades - 1)
+            lastTradeStatus := lastResult == 0 ? "SL - LOSS" : lastResult == 1 ? "TP1 - WIN" : lastResult == 2 ? "TP2 - WIN" : "TP3 - FULL WIN"
+            lastTradeColor := lastResult == 0 ? color.red : color.green
+
+        table.cell(tradeStatsTable, 0, 9, "Last Trade", text_color=color.white)
+        table.cell(tradeStatsTable, 1, 9, lastTradeStatus, text_color=lastTradeColor)
+    else
+        table.clear(tradeStatsTable, 0, 0, 1, 9)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 8. AUTO MULTI-TIMEFRAME EMA
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// The three EMA timeframes are selected automatically from the chart timeframe.
+// For the explicitly requested chart timeframes:
+// 1m  -> 1m, 5m, 15m
+// 5m  -> 5m, 15m, 1h
+// 15m -> 15m, 1h, 4h
+// 1h  -> 1h, 4h, 1D
+// 4h  -> 4h, 1D, 1W
+// 1D  -> 1D, 1W, 1M
+// All other timeframes -> chart TF, chart TF x6, chart TF x36.
+// EMA lengths are independently user-settable.
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 9. OPTIONAL PRICE / MOMENTUM DIVERGENCE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Bullish divergence: price makes a lower low while the confirmed
+// bearish momentum trough makes a higher low (less negative).
+// Bearish divergence: price makes a higher high while the confirmed
+// bullish momentum peak makes a lower high.
+// This section is independent of the primary BUY/SELL signals and
+// does not modify Trade Boxes, SL/TP logic, or Trade Statistics.
+
+groupDivergence = "9. Price / Momentum Divergence"
+
+showDivergenceSignals = input.bool(
+     false,
+     "Show Divergence Buy/Sell Signals",
+     group=groupDivergence)
+
+showDivergenceLines = input.bool(
+     false,
+     "Show Divergence Lines",
+     group=groupDivergence)
+
+// Previous confirmed bullish momentum peak and its corresponding price high.
+var float prevBullMomentumPeak = na
+var float prevBullPricePeak = na
+var int prevBullPeakBar = na
+
+// Previous confirmed bearish momentum trough and its corresponding price low.
+var float prevBearMomentumPeak = na
+var float prevBearPricePeak = na
+var int prevBearPeakBar = na
+
+// Divergence is evaluated only when a new confirmed peak/trough appears.
+// Bearish divergence: higher price high + lower momentum high.
+bearishDivergence =
+     validBullPeak and
+     not na(prevBullMomentumPeak) and
+     not na(prevBullPricePeak) and
+     high[pivotRight] > prevBullPricePeak and
+     bullPivot < prevBullMomentumPeak
+
+// The actual bullish divergence condition is: lower price low + higher momentum low.
+bullishDivergence =
+     validBearPeak and
+     not na(prevBearMomentumPeak) and
+     not na(prevBearPricePeak) and
+     low[pivotRight] < prevBearPricePeak and
+     bearPivot > prevBearMomentumPeak
+
+// Plot divergence signals on the main price chart.
+plotshape(
+     showDivergenceSignals and bullishDivergence ? low[pivotRight] : na,
+     title="Bullish Price/Momentum Divergence",
+     style=shape.labelup,
+     location=location.absolute,
+     color=color.lime,
+     textcolor=color.black,
+     text="DIV BUY",
+     size=size.tiny,
+     offset=-pivotRight,
+     force_overlay=true)
+
+plotshape(
+     showDivergenceSignals and bearishDivergence ? high[pivotRight] : na,
+     title="Bearish Price/Momentum Divergence",
+     style=shape.labeldown,
+     location=location.absolute,
+     color=color.red,
+     textcolor=color.white,
+     text="DIV SELL",
+     size=size.tiny,
+     offset=-pivotRight,
+     force_overlay=true)
+
+// Optional visual connection between the two price peaks/troughs.
+if showDivergenceLines and bearishDivergence
+    line.new(
+         prevBullPeakBar,
+         prevBullPricePeak,
+         bullPivotBar,
+         high[pivotRight],
+         xloc=xloc.bar_index,
+         color=color.red,
+         width=2,
+         style=line.style_dashed,
+         force_overlay=true)
+
+if showDivergenceLines and bullishDivergence
+    line.new(
+         prevBearPeakBar,
+         prevBearPricePeak,
+         bearPivotBar,
+         low[pivotRight],
+         xloc=xloc.bar_index,
+         color=color.lime,
+         width=2,
+         style=line.style_dashed,
+         force_overlay=true)
+
+// Store the newest confirmed peaks AFTER evaluating divergence so the
+// current peak is always compared with the previous confirmed peak.
+if validBullPeak
+    prevBullMomentumPeak := bullPivot
+    prevBullPricePeak := high[pivotRight]
+    prevBullPeakBar := bullPivotBar
+
+if validBearPeak
+    prevBearMomentumPeak := bearPivot
+    prevBearPricePeak := low[pivotRight]
+    prevBearPeakBar := bearPivotBar
+
+
+// ALERTS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+alertcondition(
+
+     validatedBuySignal,
+
+     title="Momentum Liquidity BUY",
+
+     message="BUY: Green momentum histogram crossed above the previous green histogram peak with EMA 1 above EMA 2.")
+
+alertcondition(
+
+     validatedSellSignal,
+
+     title="Momentum Liquidity SELL",
+
+     message="SELL: Red momentum histogram crossed below the previous red histogram trough with EMA 1 below EMA 2.")
+
+alertcondition(
+
+     newBullSweep,
+
+     title="Bullish Momentum Liquidity Sweep",
+
+     message="Momentum swept the previous bullish momentum liquidity level.")
+
+alertcondition(
+
+     newBearSweep,
+
+     title="Bearish Momentum Liquidity Sweep",
+
+     message="Momentum swept the previous bearish momentum liquidity level.")
+
+
+
+
+alertcondition(
+     bullishDivergence,
+     title="Bullish Price/Momentum Divergence",
+     message="Bullish divergence: price made a lower low while momentum made a higher low.")
+
+alertcondition(
+     bearishDivergence,
+     title="Bearish Price/Momentum Divergence",
+     message="Bearish divergence: price made a higher high while momentum made a lower high.")

@@ -1,0 +1,621 @@
+//@version=6
+// ============================================================
+// Sphinx Range Budget  v2.3.1
+// ------------------------------------------------------------
+// Rolling points-from-open tracker with range exhaustion
+// context. Answers one question: has this move already been
+// paid for before I take the level?
+//
+// Open   = anchor reference open (default CME 18:00 NY)
+// Ext    = signed points from the open to current price
+// Up leg = points from the session low to current price
+// Dn leg = points from the session high to current price
+// DR     = trailing daily range statistic, completed days only
+// Room   = points to the upper / lower projection
+//
+// v2.3.1 changes
+//   - FIX: compile error, syntax error at input "=>". The
+//     session format helper was declared inside the panel's
+//     `if i_show_sess` block. Pine v5 permits function
+//     declarations only at global scope, so it is hoisted out.
+//     Nothing else changed.
+//
+// v2.3 changes
+//   - SESSION EXTENSION DECOMPOSITION. Two rows showing how the
+//     day's range was built across Asia, London and NY.
+//
+//     Measured as EXTENSION CONTRIBUTION, not internal range.
+//     A session's internal high minus low does not answer the
+//     budget question: London can swing forty points entirely
+//     inside Asia's range and consume nothing, because the
+//     day's envelope never grew. Contribution counts only the
+//     points by which a session pushed the RUNNING day high or
+//     low into new territory. The three therefore sum to the
+//     day's range exactly, and as a share of DR they decompose
+//     the gauge percentage rather than restating it.
+//
+//     One denominator throughout. A second, faster denominator
+//     for the session rows would make them stop reconciling
+//     with the gauge above them.
+//
+//   - BODY RATIO on the leading session: |close-open| / range.
+//     A large session is ambiguous on size alone - it is either
+//     range genuinely spent or the manipulation leg that hands
+//     the next session a reversal. What separates them is where
+//     the session CLOSED. High ratio means directional delivery
+//     and the range is gone; low ratio means the range was
+//     taken and given back, which is the AMD sweep expressed as
+//     a magnitude rather than as a structural test.
+//
+//     NO VERDICT LABEL IS APPLIED. Both readings occur and
+//     their relative frequency on this instrument has not been
+//     measured, so a caution word would fire identically on the
+//     day being finished and on the setup being formed. The two
+//     numbers are shown and the read is left to the operator.
+//
+//   - Session boundaries are inputs so they can be aligned with
+//     whatever the rest of the stack uses. They must remain
+//     contiguous or the contributions will not sum.
+//
+// v2.2 changes
+//   - Vertical anchor lines marking the session boundary.
+//
+// v2.1 changes
+//   - Mini daily candles at TRUE price levels.
+//   - Denominator row states its own method and window.
+//
+// v2.0 changes
+//   - FIXED: Pine v5 has no \u escape in string literals, so
+//     v1.x printed "u2588" and "u2191" as literal text.
+//   - Chart footprint cut to the current anchor period only.
+//   - Up leg / Dn leg added, colour graded against DR.
+// ============================================================
+
+indicator('Sphinx Range Budget', 'Sphinx RB', overlay = true, max_lines_count = 100, max_labels_count = 30, max_boxes_count = 20)
+
+// ============================================================
+// === INPUTS ===
+// ============================================================
+g_a = 'Anchor'
+i_tz = input.string('America/New_York', 'Timezone', group = g_a)
+i_anchor = input.string('CME Open 18:00', 'Anchor Reference', options = ['CME Open 18:00', 'Midnight 00:00', '08:30 Open', 'RTH 09:30 Open'], group = g_a)
+i_wk_reset = input.bool(true, 'Re-anchor on weekend gap', group = g_a)
+
+g_s = 'Session Budget'
+i_show_sess = input.bool(true, 'Show session decomposition', tooltip = 'Two rows: how the day\'s range was built across Asia, London and NY, and the body ratio of whichever session did the most work.', group = g_s)
+i_sess_pct = input.bool(false, 'Show contributions as % of DR', tooltip = 'Off: points. On: each session\'s share of the daily range statistic, which sums to the gauge percentage above.', group = g_s)
+i_bnd_asia = input.int(1080, 'Asia starts (min from NY midnight)', minval = 0, maxval = 1439, tooltip = '1080 = 18:00. This is also the day boundary for the decomposition, so it should match the CME open regardless of the anchor setting above.', group = g_s)
+i_bnd_lon = input.int(180, 'London starts', minval = 0, maxval = 1439, tooltip = '180 = 03:00.', group = g_s)
+i_bnd_ny = input.int(510, 'NY starts', minval = 0, maxval = 1439, tooltip = '510 = 08:30. Note this does not fall on an hourly bar, so on a 1H chart the 08:00 bar is attributed to London and NY\'s contribution begins at 09:00.', group = g_s)
+
+g_v = 'Anchor Vertical'
+i_show_vl = input.bool(true, 'Show vertical line', group = g_v)
+i_vl_hist = input.int(3, 'Prior anchors retained', minval = 0, maxval = 30, group = g_v)
+c_vl = input.color(color.new(#787b86, 45), 'Vertical colour', group = g_v)
+i_vl_style = input.string('Dashed', 'Vertical style', options = ['Solid', 'Dashed', 'Dotted'], group = g_v)
+i_vl_w = input.int(1, 'Vertical width', minval = 1, maxval = 4, group = g_v)
+
+g_l = 'Chart Lines'
+i_show_open = input.bool(true, 'Open line (horizontal)', group = g_l)
+i_o_ext = input.string('Right', 'Open line extend', options = ['Right', 'Both'], group = g_l)
+i_show_hl = input.bool(true, 'Session high / low', group = g_l)
+i_show_lbl = input.bool(true, 'Price labels', group = g_l)
+i_lbl_off = input.int(14, 'Label offset (bars)', minval = 0, maxval = 60, group = g_l)
+i_show_prj = input.bool(false, 'Range projections', group = g_l)
+i_show_rt = input.bool(false, 'Pullback retracements', group = g_l)
+i_prior = input.bool(false, 'Show prior period opens', group = g_l)
+c_anc = input.color(color.new(#787b86, 0), 'Open colour', group = g_l)
+c_hi = input.color(color.new(#ef5350, 40), 'High colour', group = g_l)
+c_lo = input.color(color.new(#26a69a, 40), 'Low colour', group = g_l)
+c_prj = input.color(color.new(#f57c00, 0), 'Projection colour', group = g_l)
+c_rt = input.color(color.new(#2962ff, 0), 'Retracement colour', group = g_l)
+
+g_c = 'Daily Candles'
+i_show_cd = input.bool(true, 'Show daily candles', group = g_c)
+i_cd_off = input.int(26, 'Offset from last bar (bars)', minval = 2, maxval = 200, group = g_c)
+i_cd_gap = input.int(8, 'Spacing (bars)', minval = 3, maxval = 60, group = g_c)
+i_cd_w = input.int(4, 'Body width (bars)', minval = 1, maxval = 20, group = g_c)
+i_cd_lbl = input.bool(true, 'Candle labels', group = g_c)
+c_cd_up = input.color(color.new(#26a69a, 0), 'Up candle', group = g_c)
+c_cd_dn = input.color(color.new(#ef5350, 0), 'Down candle', group = g_c)
+
+g_r = 'Range Budget'
+i_method = input.string('Median', 'Denominator method', options = ['Median', 'Mean (SMA)', 'EMA'], tooltip = 'Median is default. It is not distorted by one outlier day or a holiday half-day inside the window.', group = g_r)
+i_len = input.int(20, 'Slow lookback (days)', tooltip = 'Drives the denominator, the gauge, the projections and Room.', minval = 3, maxval = 120, group = g_r)
+i_fast = input.int(5, 'Fast lookback (days)', tooltip = 'Drives the regime ratio only.', minval = 2, maxval = 30, group = g_r)
+i_ctx = input.int(40, 'Context lookback (days)', tooltip = 'Drives the min/max and Typical rows only.', minval = 5, maxval = 250, group = g_r)
+i_basis = input.string('Full Session', 'Range basis', options = ['Full Session', 'RTH Only'], group = g_r)
+i_manual = input.float(0.0, 'Manual denominator override', minval = 0, tooltip = 'Points. Pin the denominator when a regime break has outrun the window. Zero disables.', group = g_r)
+
+g_t = 'Thresholds'
+i_comp = input.float(35.0, 'Compressed below (% of DR)', minval = 1, group = g_t)
+i_warn = input.float(70.0, 'Caution above (% of DR)', minval = 1, group = g_t)
+i_exh = input.float(100.0, 'Exhausted above (% of DR)', minval = 1, group = g_t)
+i_expand = input.float(1.30, 'Expansion ratio', minval = 1.01, step = 0.05, group = g_t)
+i_contract = input.float(0.75, 'Contraction ratio', minval = 0.1, maxval = 0.99, step = 0.05, group = g_t)
+
+g_p = 'Pullback Levels'
+i_r1 = input.float(50.0, 'Level 1 %', minval = 1, maxval = 99, group = g_p)
+i_r2 = input.float(61.8, 'Level 2 %', minval = 1, maxval = 99, group = g_p)
+
+g_tb = 'Panel'
+i_show_tb = input.bool(true, 'Show panel', group = g_tb)
+i_compact = input.bool(true, 'Compact panel', group = g_tb)
+i_pos = input.string('Top Right', 'Position', options = ['Top Right', 'Top Left', 'Middle Right', 'Bottom Right', 'Bottom Left'], group = g_tb)
+i_txt = input.string('Normal', 'Text size', options = ['Tiny', 'Small', 'Normal', 'Large'], group = g_tb)
+c_ok = input.color(color.new(#26a69a, 0), 'Available colour', group = g_tb)
+c_mid = input.color(color.new(#f9a825, 0), 'Caution colour', group = g_tb)
+c_bad = input.color(color.new(#ef5350, 0), 'Exhausted colour', group = g_tb)
+c_exp = input.color(color.new(#ab47bc, 0), 'Expansion colour', group = g_tb)
+
+// ============================================================
+// === HELPERS ===
+// ============================================================
+f2(x) =>
+    na(x) ? '-' : str.tostring(x, '#.##')
+f0(x) =>
+    na(x) ? '-' : str.tostring(x, '#')
+sgn(x) =>
+    na(x) ? '-' : (x >= 0 ? '+' : '') + str.tostring(x, '#.##')
+
+// Characters embedded directly. Pine v5 has no \u escape.
+gauge(p) =>
+    n = math.min(10, math.max(0, math.round(nz(p) / 10)))
+    s = ''
+    for i = 0 to 9 by 1
+        s := s + (i < n ? '█' : '░')
+        s
+    s
+
+grade(p) =>
+    na(p) ? color.gray : p >= i_exh ? c_bad : p >= i_warn ? c_mid : c_ok
+
+_txtsz = i_txt == 'Tiny' ? size.tiny : i_txt == 'Small' ? size.small : i_txt == 'Large' ? size.large : size.normal
+_tbpos = i_pos == 'Top Left' ? position.top_left : i_pos == 'Middle Right' ? position.middle_right : i_pos == 'Bottom Right' ? position.bottom_right : i_pos == 'Bottom Left' ? position.bottom_left : position.top_right
+_vlsty = i_vl_style == 'Solid' ? line.style_solid : i_vl_style == 'Dotted' ? line.style_dotted : line.style_dashed
+_oext = i_o_ext == 'Both' ? extend.both : extend.right
+
+// ============================================================
+// === ANCHOR TRACKING ===
+// ============================================================
+nyH = hour(time, i_tz)
+nyM = minute(time, i_tz)
+_mod = nyH * 60 + nyM
+
+anchor_min = i_anchor == 'CME Open 18:00' ? 1080 : i_anchor == 'Midnight 00:00' ? 0 : i_anchor == '08:30 Open' ? 510 : 570
+anchor_txt = i_anchor == 'CME Open 18:00' ? '18:00' : i_anchor == 'Midnight 00:00' ? '00:00' : i_anchor == '08:30 Open' ? '08:30' : '09:30'
+
+mins_since = _mod >= anchor_min ? _mod - anchor_min : _mod + 1440 - anchor_min
+gap_reset = i_wk_reset and time - time[1] > 43200000
+new_anchor = barstate.isfirst or mins_since < nz(mins_since[1], 1e9) or gap_reset
+
+var float a_px = na
+var float a_hi = na
+var float a_lo = na
+var int a_bar = na
+
+if new_anchor
+    a_px := open
+    a_hi := high
+    a_lo := low
+    a_bar := bar_index
+    a_bar
+else
+    a_hi := na(a_hi) ? high : math.max(a_hi, high)
+    a_lo := na(a_lo) ? low : math.min(a_lo, low)
+    a_lo
+
+ext = close - a_px
+sess_rg = a_hi - a_lo
+up_leg = close - a_lo
+dn_leg = a_hi - close
+up_bias = ext >= 0
+
+// ============================================================
+// === SESSION EXTENSION DECOMPOSITION ===
+// Index 0 Asia, 1 London, 2 NY. The boundaries partition the
+// whole CME day, so every bar is attributed to exactly one
+// session and the three contributions sum to the day's range.
+//
+// Contribution is the amount by which a bar pushed the RUNNING
+// day high or low outward. A bar trading entirely inside the
+// range established so far contributes nothing, which is the
+// point: a violent session that stays within a prior session's
+// envelope has not consumed any of the day's budget.
+// ============================================================
+_sessIdx(m) =>
+    _a = i_bnd_asia
+    _l = i_bnd_lon
+    _n = i_bnd_ny
+    // Asia runs from its start, wrapping midnight, until London.
+    _inA = _a > _l ? m >= _a or m < _l : m >= _a and m < _l
+    _inL = _l < _n ? m >= _l and m < _n : m >= _l or m < _n
+    _inA ? 0 : _inL ? 1 : 2
+
+_si = _sessIdx(_mod)
+
+// Day boundary for the decomposition is the Asia start, which
+// is the CME open. Deliberately independent of the anchor
+// setting: with an 08:30 anchor a session breakdown keyed to
+// the anchor would begin mid-London and mean nothing.
+_dmins = _mod >= i_bnd_asia ? _mod - i_bnd_asia : _mod + 1440 - i_bnd_asia
+new_cme = barstate.isfirst or _dmins < nz(_dmins[1], 1e9) or gap_reset
+
+var array<float> sExt = array.new_float(3, 0.0)
+var array<float> sOpen = array.new_float(3, na)
+var array<float> sHi = array.new_float(3, na)
+var array<float> sLo = array.new_float(3, na)
+var array<float> sCls = array.new_float(3, na)
+var array<bool> sSeen = array.new_bool(3, false)
+var float run_hi = na
+var float run_lo = na
+
+if new_cme
+    for _i = 0 to 2 by 1
+        array.set(sExt, _i, 0.0)
+        array.set(sOpen, _i, na)
+        array.set(sHi, _i, na)
+        array.set(sLo, _i, na)
+        array.set(sCls, _i, na)
+        array.set(sSeen, _i, false)
+    run_hi := high
+    run_lo := low
+    array.set(sExt, _si, high - low)
+else
+    _up = math.max(0.0, high - nz(run_hi, high))
+    _dn = math.max(0.0, nz(run_lo, low) - low)
+    array.set(sExt, _si, array.get(sExt, _si) + _up + _dn)
+    run_hi := na(run_hi) ? high : math.max(run_hi, high)
+    run_lo := na(run_lo) ? low : math.min(run_lo, low)
+    run_lo
+
+// Per-session internal OHLC, for the body ratio
+if not array.get(sSeen, _si)
+    array.set(sSeen, _si, true)
+    array.set(sOpen, _si, open)
+    array.set(sHi, _si, high)
+    array.set(sLo, _si, low)
+else
+    array.set(sHi, _si, math.max(array.get(sHi, _si), high))
+    array.set(sLo, _si, math.min(array.get(sLo, _si), low))
+array.set(sCls, _si, close)
+
+_sName(i) =>
+    i == 0 ? 'Asia' : i == 1 ? 'London' : 'NY'
+
+// Body ratio: directional delivery versus round trip.
+_bodyR(i) =>
+    _h = array.get(sHi, i)
+    _l = array.get(sLo, i)
+    _o = array.get(sOpen, i)
+    _c = array.get(sCls, i)
+    na(_h) or na(_l) or _h - _l <= 0 ? na : math.abs(_c - _o) / (_h - _l)
+
+// ============================================================
+// === DAILY DATA ===
+// All statistics use a [1] offset so the forming day is
+// excluded. The denominator must be constant intraday. If the
+// DR row moves between the open and the close, this is broken.
+// ============================================================
+_tid = i_basis == 'RTH Only' ? ticker.new(syminfo.prefix, syminfo.ticker, session = session.regular) : syminfo.tickerid
+
+get_denoms() =>
+    r = high - low
+    _mean = ta.sma(r, i_len)[1]
+    _med = ta.percentile_nearest_rank(r, i_len, 50)[1]
+    _ema = ta.ema(r, i_len)[1]
+    _fast = ta.percentile_nearest_rank(r, i_fast, 50)[1]
+    [_mean, _med, _ema, _fast]
+
+get_context() =>
+    r = high - low
+    _n = ta.lowest(r, i_ctx)[1]
+    _x = ta.highest(r, i_ctx)[1]
+    _q1 = ta.percentile_nearest_rank(r, i_ctx, 25)[1]
+    _q3 = ta.percentile_nearest_rank(r, i_ctx, 75)[1]
+    [_n, _x, _q1, _q3]
+
+get_d0() =>
+    [open, high, low, close]
+get_d1() =>
+    [open[1], high[1], low[1], close[1]]
+get_d2() =>
+    [open[2], high[2], low[2], close[2]]
+
+[dr_mean, dr_med, dr_ema, dr_fast] = request.security(_tid, 'D', get_denoms(), lookahead = barmerge.lookahead_off)
+[dr_min, dr_max, dr_q1, dr_q3] = request.security(_tid, 'D', get_context(), lookahead = barmerge.lookahead_off)
+[d0o, d0h, d0l, d0c] = request.security(_tid, 'D', get_d0(), lookahead = barmerge.lookahead_off)
+[d1o, d1h, d1l, d1c] = request.security(_tid, 'D', get_d1(), lookahead = barmerge.lookahead_off)
+[d2o, d2h, d2l, d2c] = request.security(_tid, 'D', get_d2(), lookahead = barmerge.lookahead_off)
+
+_auto = i_method == 'Mean (SMA)' ? dr_mean : i_method == 'EMA' ? dr_ema : dr_med
+adr = i_manual > 0 ? i_manual : _auto
+
+day_rng = d0h - d0l
+_valid = not na(adr) and adr > 0
+pct_used = _valid ? day_rng / adr * 100.0 : na
+pct_up = _valid ? up_leg / adr * 100.0 : na
+pct_dn = _valid ? dn_leg / adr * 100.0 : na
+
+regime_ratio = na(dr_med) or dr_med == 0 ? na : dr_fast / dr_med
+expanding = not na(regime_ratio) and regime_ratio >= i_expand
+contracting = not na(regime_ratio) and regime_ratio <= i_contract
+regime_txt = na(regime_ratio) ? '-' : expanding ? 'EXPANDING' : contracting ? 'CONTRACTING' : 'STABLE'
+c_regime = expanding ? c_exp : contracting ? color.new(color.gray, 0) : c_ok
+
+// Leading session by extension contribution
+_lead = 0
+_leadV = array.get(sExt, 0)
+if array.get(sExt, 1) > _leadV
+    _lead := 1
+    _leadV := array.get(sExt, 1)
+    _leadV
+if array.get(sExt, 2) > _leadV
+    _lead := 2
+    _leadV := array.get(sExt, 2)
+    _leadV
+    // Session contribution formatted for the panel, current session
+    // flagged with an asterisk. Declared at global scope: Pine v5
+    // permits function declarations only at the top level, and this
+    // previously sat inside the panel's `if i_show_sess` block.
+_sFmt(i) =>
+    _v = i_sess_pct and _valid ? array.get(sExt, i) / adr * 100.0 : array.get(sExt, i)
+    f0(_v) + (i == _si ? '*' : '')
+
+_locRng = nz(run_hi, high) - nz(run_lo, low)
+_leadPctD = _locRng > 0 ? _leadV / _locRng * 100.0 : na
+_leadPctR = _valid ? _leadV / adr * 100.0 : na
+_leadBR = _bodyR(_lead)
+
+// ============================================================
+// === PROJECTIONS, ROOM & PULLBACK ===
+// ============================================================
+proj_hi = _valid ? d0l + adr : na
+proj_lo = _valid ? d0h - adr : na
+rem_up = na(proj_hi) ? na : proj_hi - close
+rem_dn = na(proj_lo) ? na : close - proj_lo
+
+rt1 = sess_rg <= 0 ? na : up_bias ? a_hi - sess_rg * i_r1 / 100.0 : a_lo + sess_rg * i_r1 / 100.0
+rt2 = sess_rg <= 0 ? na : up_bias ? a_hi - sess_rg * i_r2 / 100.0 : a_lo + sess_rg * i_r2 / 100.0
+
+// ============================================================
+// === STATE ===
+// ============================================================
+state = na(pct_used) ? 'NO DATA' : pct_used >= i_exh and expanding ? 'EXPANSION' : pct_used >= i_exh ? 'EXHAUSTED' : pct_used >= i_warn ? 'EXTENDED' : pct_used < i_comp ? 'COMPRESSED' : 'NORMAL'
+arrow = up_bias ? ' ▲' : ' ▼'
+c_state = state == 'EXPANSION' ? c_exp : state == 'EXHAUSTED' ? c_bad : state == 'EXTENDED' ? c_mid : state == 'COMPRESSED' ? color.new(color.gray, 0) : c_ok
+
+// ============================================================
+// === ANCHOR VERTICAL LINES ===
+// ============================================================
+var array<line> vls = array.new_line()
+
+if new_anchor and i_show_vl
+    array.push(vls, line.new(a_bar, low, a_bar, high, extend = extend.both, color = c_vl, width = i_vl_w, style = _vlsty))
+    while array.size(vls) > i_vl_hist + 1
+        line.delete(array.shift(vls))
+
+// ============================================================
+// === CHART LINES (current anchor period only) ===
+// ============================================================
+var line ln_o = na
+var line ln_h = na
+var line ln_l = na
+var line ln_ph = na
+var line ln_pl = na
+var line ln_r1 = na
+var line ln_r2 = na
+var label lb_o = na
+var label lb_h = na
+var label lb_l = na
+
+if new_anchor
+    line.delete(ln_o)
+    line.delete(ln_h)
+    line.delete(ln_l)
+    line.delete(ln_ph)
+    line.delete(ln_pl)
+    line.delete(ln_r1)
+    line.delete(ln_r2)
+    label.delete(lb_o)
+    label.delete(lb_h)
+    label.delete(lb_l)
+    ln_o := i_show_open ? line.new(a_bar, a_px, bar_index, a_px, extend = _oext, color = c_anc, width = 2) : na
+    ln_h := i_show_hl ? line.new(a_bar, a_hi, bar_index, a_hi, extend = extend.right, color = c_hi, width = 1, style = line.style_dotted) : na
+    ln_l := i_show_hl ? line.new(a_bar, a_lo, bar_index, a_lo, extend = extend.right, color = c_lo, width = 1, style = line.style_dotted) : na
+    ln_ph := i_show_prj ? line.new(a_bar, na, bar_index, na, extend = extend.right, color = c_prj, width = 1, style = line.style_dashed) : na
+    ln_pl := i_show_prj ? line.new(a_bar, na, bar_index, na, extend = extend.right, color = c_prj, width = 1, style = line.style_dashed) : na
+    ln_r1 := i_show_rt ? line.new(a_bar, na, bar_index, na, extend = extend.right, color = c_rt, width = 1, style = line.style_dashed) : na
+    ln_r2 := i_show_rt ? line.new(a_bar, na, bar_index, na, extend = extend.right, color = color.new(c_rt, 45), width = 1, style = line.style_dashed) : na
+    lb_o := i_show_lbl and i_show_open ? label.new(bar_index, a_px, '', style = label.style_label_left, color = color.new(color.black, 100), textcolor = c_anc, size = size.small) : na
+    lb_h := i_show_lbl and i_show_hl ? label.new(bar_index, a_hi, '', style = label.style_label_left, color = color.new(color.black, 100), textcolor = c_hi, size = size.small) : na
+    lb_l := i_show_lbl and i_show_hl ? label.new(bar_index, a_lo, '', style = label.style_label_left, color = color.new(color.black, 100), textcolor = c_lo, size = size.small) : na
+    lb_l
+
+if not na(ln_h)
+    line.set_y1(ln_h, a_hi)
+    line.set_y2(ln_h, a_hi)
+if not na(ln_l)
+    line.set_y1(ln_l, a_lo)
+    line.set_y2(ln_l, a_lo)
+if not na(ln_ph)
+    line.set_y1(ln_ph, proj_hi)
+    line.set_y2(ln_ph, proj_hi)
+if not na(ln_pl)
+    line.set_y1(ln_pl, proj_lo)
+    line.set_y2(ln_pl, proj_lo)
+if not na(ln_r1)
+    line.set_y1(ln_r1, rt1)
+    line.set_y2(ln_r1, rt1)
+if not na(ln_r2)
+    line.set_y1(ln_r2, rt2)
+    line.set_y2(ln_r2, rt2)
+
+if barstate.islast
+    _lx = bar_index + i_lbl_off
+    if not na(lb_o)
+        label.set_xy(lb_o, _lx, a_px)
+        label.set_text(lb_o, anchor_txt + ' ' + f2(a_px) + '   ' + sgn(ext))
+    if not na(lb_h)
+        label.set_xy(lb_h, _lx, a_hi)
+        label.set_text(lb_h, 'H ' + f2(a_hi) + '   ' + sgn(a_hi - a_px))
+    if not na(lb_l)
+        label.set_xy(lb_l, _lx, a_lo)
+        label.set_text(lb_l, 'L ' + f2(a_lo) + '   ' + sgn(a_lo - a_px))
+
+// ============================================================
+// === MINI DAILY CANDLES ===
+// ============================================================
+var box bx0 = na
+var box bx1 = na
+var box bx2 = na
+var line wk0 = na
+var line wk1 = na
+var line wk2 = na
+var label cl0 = na
+var label cl1 = na
+var label cl2 = na
+
+if barstate.isfirst and i_show_cd
+    bx0 := box.new(0, na, 0, na, border_width = 1, border_style = line.style_dashed)
+    bx1 := box.new(0, na, 0, na, border_width = 1)
+    bx2 := box.new(0, na, 0, na, border_width = 1)
+    wk0 := line.new(0, na, 0, na, width = 1)
+    wk1 := line.new(0, na, 0, na, width = 1)
+    wk2 := line.new(0, na, 0, na, width = 1)
+    cl0 := label.new(0, na, '', style = label.style_label_up, color = color.new(color.black, 100), size = size.tiny)
+    cl1 := label.new(0, na, '', style = label.style_label_up, color = color.new(color.black, 100), size = size.tiny)
+    cl2 := label.new(0, na, '', style = label.style_label_up, color = color.new(color.black, 100), size = size.tiny)
+    cl2
+
+draw_candle(_bx, _wk, _lb, _x, _o, _h, _l, _c, _tag, _show_lb) =>
+    _col = _c >= _o ? c_cd_up : c_cd_dn
+    _top = math.max(_o, _c)
+    _bot = math.min(_o, _c)
+    _pad = _top == _bot ? syminfo.mintick * 0.5 : 0.0
+    _hw = math.max(1, math.round(i_cd_w / 2))
+    box.set_lefttop(_bx, _x - _hw, _top + _pad)
+    box.set_rightbottom(_bx, _x + _hw, _bot - _pad)
+    box.set_bgcolor(_bx, color.new(_col, 25))
+    box.set_border_color(_bx, _col)
+    line.set_xy1(_wk, _x, _h)
+    line.set_xy2(_wk, _x, _l)
+    line.set_color(_wk, _col)
+    label.set_xy(_lb, _x, _l)
+    label.set_text(_lb, _show_lb ? _tag + '\n' + f0(_h - _l) : '')
+    label.set_textcolor(_lb, _show_lb ? color.gray : color.new(color.gray, 100))
+
+if barstate.islast and i_show_cd and not na(bx0)
+    _base = bar_index + i_cd_off
+    draw_candle(bx2, wk2, cl2, _base, d2o, d2h, d2l, d2c, 'D-2', i_cd_lbl)
+    draw_candle(bx1, wk1, cl1, _base + i_cd_gap, d1o, d1h, d1l, d1c, 'D-1', i_cd_lbl)
+    draw_candle(bx0, wk0, cl0, _base + i_cd_gap * 2, d0o, d0h, d0l, d0c, 'TODAY', i_cd_lbl)
+
+// Optional stepped plot of every prior period open
+plot(i_prior and not new_anchor ? a_px : na, 'Prior Opens', color = color.new(c_anc, 55), style = plot.style_linebr, linewidth = 1)
+
+// Data window exports
+plot(ext, 'Extension', display = display.data_window)
+plot(up_leg, 'Up Leg', display = display.data_window)
+plot(dn_leg, 'Dn Leg', display = display.data_window)
+plot(sess_rg, 'Session Range', display = display.data_window)
+plot(day_rng, 'Day Range', display = display.data_window)
+plot(adr, 'Denominator', display = display.data_window)
+plot(pct_used, 'Budget Used %', display = display.data_window)
+plot(regime_ratio, 'Regime Ratio', display = display.data_window)
+plot(rem_up, 'Room Up', display = display.data_window)
+plot(rem_dn, 'Room Down', display = display.data_window)
+plot(array.get(sExt, 0), 'Asia Ext', display = display.data_window)
+plot(array.get(sExt, 1), 'London Ext', display = display.data_window)
+plot(array.get(sExt, 2), 'NY Ext', display = display.data_window)
+plot(_lead, 'Lead Session', display = display.data_window)
+plot(_leadBR, 'Lead Body Ratio', display = display.data_window)
+plot(_bodyR(0), 'Asia Body Ratio', display = display.data_window)
+plot(_bodyR(1), 'London Body Ratio', display = display.data_window)
+plot(_bodyR(2), 'NY Body Ratio', display = display.data_window)
+
+// ============================================================
+// === PANEL ===
+// ============================================================
+var table tb = table.new(_tbpos, 2, 18, border_width = 0)
+
+put(_r, _k, _v, _cv) =>
+    table.cell(tb, 0, _r, _k, text_color = color.gray, text_size = _txtsz)
+    table.cell(tb, 1, _r, _v, text_color = _cv, text_size = _txtsz)
+
+if barstate.islast and i_show_tb
+    table.clear(tb, 0, 0, 1, 17)
+    _bg = color.new(color.gray, 88)
+    table.cell(tb, 0, 0, 'Range Budget', text_color = color.gray, text_size = _txtsz, bgcolor = _bg)
+    table.cell(tb, 1, 0, anchor_txt, text_color = color.gray, text_size = _txtsz, bgcolor = _bg)
+
+    _mname = i_method == 'Mean (SMA)' ? 'Mean' : i_method == 'EMA' ? 'EMA' : 'Med'
+
+    int rw = 1
+    put(rw, 'Open', f2(a_px), color.gray)
+    rw := rw + 1
+    put(rw, 'Extension', sgn(ext), up_bias ? c_ok : c_bad)
+    rw := rw + 1
+    put(rw, 'Session range', f2(sess_rg), color.gray)
+    rw := rw + 1
+    put(rw, 'Up leg', f2(up_leg) + '   ' + f0(pct_up) + '%', grade(pct_up))
+    rw := rw + 1
+    put(rw, 'Dn leg', f2(dn_leg) + '   ' + f0(pct_dn) + '%', grade(pct_dn))
+    rw := rw + 1
+    put(rw, gauge(pct_used), f0(pct_used) + '%', c_state)
+    rw := rw + 1
+    put(rw, 'Room ▲', f2(rem_up), nz(rem_up, 1) <= 0 ? c_bad : c_ok)
+    rw := rw + 1
+    put(rw, 'Room ▼', f2(rem_dn), nz(rem_dn, 1) <= 0 ? c_bad : c_ok)
+    rw := rw + 1
+
+    if i_show_sess
+        // Contributions, current session flagged with an asterisk.
+        // Shown as points by default; as a share of DR they sum to
+        // the gauge percentage above.
+        put(rw, 'Session ext', 'A ' + _sFmt(0) + '  L ' + _sFmt(1) + '  NY ' + _sFmt(2), color.gray)
+        rw := rw + 1
+        // Body ratio is deliberately unlabelled. A large session is
+        // either range spent or the sweep that sets up the next one,
+        // and the close location is what separates them.
+        put(rw, 'Led  ' + _sName(_lead), f0(_leadPctD) + '% day   br ' + (na(_leadBR) ? '-' : str.tostring(_leadBR, '#.00')), grade(_leadPctR))
+        rw := rw + 1
+        rw
+
+    put(rw, i_manual > 0 ? 'DR manual' : 'DR ' + _mname + ' ' + str.tostring(i_len), f2(adr), i_manual > 0 ? c_mid : color.gray)
+    rw := rw + 1
+    put(rw, 'Regime ' + str.tostring(i_fast) + '/' + str.tostring(i_len), regime_txt + '  ' + (na(regime_ratio) ? '-' : str.tostring(regime_ratio, '#.00')), c_regime)
+    rw := rw + 1
+
+    if not i_compact
+        put(rw, 'Range min/max', f0(dr_min) + ' - ' + f0(dr_max), color.gray)
+        rw := rw + 1
+        put(rw, 'Typical', f0(dr_q1) + ' - ' + f0(dr_q3), color.gray)
+        rw := rw + 1
+        put(rw, 'DR / Day %', (not _valid ? '-' : str.tostring(adr / close * 100.0, '#.00')) + ' / ' + str.tostring(day_rng / close * 100.0, '#.00'), color.gray)
+        rw := rw + 1
+        rw
+
+    table.cell(tb, 0, rw, 'State', text_color = color.gray, text_size = _txtsz)
+    table.cell(tb, 1, rw, state + arrow, text_color = color.white, bgcolor = color.new(c_state, 25), text_size = _txtsz)
+
+// ============================================================
+// === ALERTS ===
+// ============================================================
+cross_warn = not na(pct_used) and pct_used >= i_warn and nz(pct_used[1], 0) < i_warn
+cross_exh = not na(pct_used) and pct_used >= i_exh and nz(pct_used[1], 0) < i_exh
+leg_up_ful = not na(pct_up) and pct_up >= i_exh and nz(pct_up[1], 0) < i_exh
+leg_dn_ful = not na(pct_dn) and pct_dn >= i_exh and nz(pct_dn[1], 0) < i_exh
+tag_hi = not na(proj_hi) and high >= proj_hi and nz(high[1], 0) < nz(proj_hi[1], 1e9)
+tag_lo = not na(proj_lo) and low <= proj_lo and nz(low[1], 1e9) > nz(proj_lo[1], 0)
+reg_shift = expanding and not expanding[1]
+reg_calm = contracting and not contracting[1]
+
+alertcondition(cross_warn, 'Budget caution', 'Daily range budget crossed the caution threshold')
+alertcondition(cross_exh, 'Budget exhausted', 'Daily range budget fully consumed')
+alertcondition(leg_up_ful, 'Up leg full range', 'Rally from the session low has run a full daily range')
+alertcondition(leg_dn_ful, 'Dn leg full range', 'Decline from the session high has run a full daily range')
+alertcondition(tag_hi, 'Projection high tagged', 'Price reached the upper range projection')
+alertcondition(tag_lo, 'Projection low tagged', 'Price reached the lower range projection')
+alertcondition(reg_shift, 'Volatility expanding', 'Fast range median crossed above the expansion ratio')
+alertcondition(reg_calm, 'Volatility contracting', 'Fast range median crossed below the contraction ratio')

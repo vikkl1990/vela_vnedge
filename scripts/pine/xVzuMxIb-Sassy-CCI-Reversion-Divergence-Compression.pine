@@ -1,0 +1,1774 @@
+//@version=6
+indicator("Sassy CCI: Reversion, Divergence, & Compression",
+     shorttitle="Sassy CCI",
+     overlay=false,
+     precision=2,
+     explicit_plot_zorder=true,
+     max_bars_back=5000,
+     max_lines_count=500,
+     max_labels_count=500)
+
+//=============================================================================
+// GROUPS
+//=============================================================================
+
+string G_CCI  = "1. CCI"
+string G_BB   = "2. CCI Bollinger Bands"
+string G_COMP = "3. Compression & Bias"
+string G_DIV  = "4. Divergences"
+string G_EXT  = "5. CCI Pressure / Extremes"
+string G_SS   = "6. Slingshot Context"
+string G_ALRT = "7. Alerts"
+string G_MOOD = "8. Mood Dashboard"
+
+//=============================================================================
+// CCI SETTINGS
+//=============================================================================
+
+showCCI = input.bool(true, "Show CCI", group=G_CCI)
+cciLength = input.int(14, "CCI Length", minval=1, group=G_CCI)
+cciSource = input.source(hlc3, "CCI Source", group=G_CCI)
+cciSignalLength = input.int(14, "CCI Signal Length", minval=1, group=G_CCI)
+
+cciColor = input.color(color.yellow, "CCI Color", group=G_CCI)
+cciSignalColor = input.color(color.rgb(0, 75, 85), "Signal Color", group=G_CCI)
+
+cciLineTransparency =
+     input.int(15, "CCI Line Transparency", minval=0, maxval=100, group=G_CCI)
+
+cciFillOpacity =
+     input.int(65, "CCI / Signal Fill Transparency",
+     minval=0, maxval=100, group=G_CCI)
+
+zeroFluxOpacity =
+     input.int(82, "Zero Flux Transparency",
+     minval=0, maxval=100, group=G_CCI)
+
+//=============================================================================
+// CCI CALCULATION
+//=============================================================================
+
+cciMean = ta.sma(cciSource, cciLength)
+cciDeviation = ta.dev(cciSource, cciLength)
+cciDenominator = 0.015 * cciDeviation
+
+cci =
+     cciDenominator != 0 ?
+     (cciSource - cciMean) / cciDenominator :
+     0.0
+
+cciSignal = ta.sma(cci, cciSignalLength)
+
+cciIncreasing = cci > cci[1]
+cciDecreasing = cci < cci[1]
+
+//=============================================================================
+// CCI PLOTS
+//=============================================================================
+
+cciPlot =
+     plot(
+         showCCI ? cci : na,
+         title="CCI",
+         color=color.new(cciColor, cciLineTransparency),
+         linewidth=1)
+
+cciSignalPlot =
+     plot(
+         showCCI ? cciSignal : na,
+         title="CCI Signal",
+         color=cciSignalColor,
+         linewidth=1)
+
+cciSignalFillColor =
+     cci > cciSignal ?
+     color.new(color.green, cciFillOpacity) :
+     color.new(color.red, cciFillOpacity)
+
+fill(
+     cciPlot,
+     cciSignalPlot,
+     color=showCCI ? cciSignalFillColor : na,
+     title="CCI Signal Fill")
+
+//=============================================================================
+// ZERO FLUX
+//=============================================================================
+
+zeroPlot =
+     plot(
+         0,
+         title="CCI Zero",
+         color=color.new(color.gray, 100),
+         linewidth=1)
+
+cciZeroFluxColor =
+     cci > 0 ?
+     color.new(color.green, zeroFluxOpacity) :
+     color.new(color.red, zeroFluxOpacity)
+
+fill(
+     cciPlot,
+     zeroPlot,
+     color=showCCI ? cciZeroFluxColor : na,
+     title="CCI Zero Flux")
+
+//=============================================================================
+// CCI BOLLINGER BANDS
+//=============================================================================
+
+showCCIBB =
+     input.bool(true, "Show CCI Bollinger Bands", group=G_BB)
+
+cciBBLength =
+     input.int(14, "BB Length", minval=1, group=G_BB)
+
+cciBBMult =
+     input.float(2.0, "BB Multiplier", minval=0.1, step=0.1, group=G_BB)
+
+cciBBColor =
+     input.color(color.white, "BB Color", group=G_BB)
+
+cciBBLineTransparency =
+     input.int(40, "BB Line Transparency",
+     minval=0, maxval=100, group=G_BB)
+
+showCCIBBFill =
+     input.bool(true, "Show BB Fill", group=G_BB)
+
+cciBasis = ta.sma(cci, cciBBLength)
+cciDev = cciBBMult * ta.stdev(cci, cciBBLength)
+
+cciUpper = cciBasis + cciDev
+cciLower = cciBasis - cciDev
+
+cciBBWidth = cciUpper - cciLower
+
+cciBBUpperPlot =
+     plot(
+         showCCIBB ? cciUpper : na,
+         title="CCI BB Upper",
+         color=color.new(cciBBColor, cciBBLineTransparency),
+         linewidth=2)
+
+cciBBLowerPlot =
+     plot(
+         showCCIBB ? cciLower : na,
+         title="CCI BB Lower",
+         color=color.new(cciBBColor, cciBBLineTransparency),
+         linewidth=2)
+
+//=============================================================================
+// EXTREME REFERENCE LEVELS
+//=============================================================================
+
+plot(
+     220,
+     title="CCI +220 Extreme",
+     color=color.new(color.red, 80),
+     linewidth=3)
+
+plot(
+     -220,
+     title="CCI -220 Extreme",
+     color=color.new(color.green, 80),
+     linewidth=3)
+
+//=============================================================================
+// COMPRESSION SETTINGS
+//=============================================================================
+
+showCompressionFill =
+     input.bool(true, "Show Compression Fill", group=G_COMP)
+
+compressionLookback =
+     input.int(
+         100,
+         "BB Width Average Lookback",
+         minval=5,
+         group=G_COMP)
+
+compressionThreshold =
+     input.float(
+         60.0,
+         "Compression Threshold %",
+         minval=10.0,
+         maxval=100.0,
+         step=1.0,
+         group=G_COMP)
+
+compressionZonePercent =
+     input.float(
+         85.0,
+         "Directional Zone % of BB Width",
+         minval=50.0,
+         maxval=100.0,
+         step=1.0,
+         group=G_COMP)
+
+compressionFillTransparency =
+     input.int(
+         74,
+         "Compression Fill Transparency",
+         minval=0,
+         maxval=100,
+         group=G_COMP)
+
+compressionBullColor =
+     input.color(
+         color.rgb(190, 220, 40),
+         "Bull Compression Color",
+         group=G_COMP)
+
+compressionBasketColor =
+     input.color(
+         color.yellow,
+         "Basket Compression Color",
+         group=G_COMP)
+
+compressionBearColor =
+     input.color(
+         color.rgb(255, 180, 0),
+         "Bear Compression Color",
+         group=G_COMP)
+
+//=============================================================================
+// COMPRESSION CALCULATION
+//=============================================================================
+
+averageCCIWidth = ta.sma(cciBBWidth, compressionLookback)
+
+compressionPercent =
+     averageCCIWidth != 0 ?
+     cciBBWidth / averageCCIWidth * 100.0 :
+     100.0
+
+bbCompression =
+     compressionPercent <= compressionThreshold
+
+bbWidthSafe =
+     math.max(cciBBWidth, 0.000001)
+
+belowZeroWidth =
+     math.max(
+         0.0,
+         math.min(cciUpper, 0.0) - cciLower)
+
+aboveZeroWidth =
+     math.max(
+         0.0,
+         cciUpper - math.max(cciLower, 0.0))
+
+belowZeroPercent =
+     belowZeroWidth / bbWidthSafe * 100.0
+
+aboveZeroPercent =
+     aboveZeroWidth / bbWidthSafe * 100.0
+
+bullCompressionZone =
+     bbCompression and
+     belowZeroPercent >= compressionZonePercent
+
+bearCompressionZone =
+     bbCompression and
+     aboveZeroPercent >= compressionZonePercent
+
+basketCompressionZone =
+     bbCompression and
+     not bullCompressionZone and
+     not bearCompressionZone
+
+compressionState = bbCompression
+
+compressionStarting =
+     compressionState and
+     not compressionState[1]
+
+//=============================================================================
+// COMPRESSION FILL
+//=============================================================================
+
+compressionFillColor =
+     bullCompressionZone ?
+     color.new(compressionBullColor, compressionFillTransparency) :
+     bearCompressionZone ?
+     color.new(compressionBearColor, compressionFillTransparency) :
+     color.new(compressionBasketColor, compressionFillTransparency)
+
+normalBBFillColor =
+     color.new(cciBBColor, 100)
+
+cciBBFill =
+     compressionState and showCompressionFill ?
+     compressionFillColor :
+     normalBBFillColor
+
+fill(
+     cciBBUpperPlot,
+     cciBBLowerPlot,
+     color=showCCIBB and showCCIBBFill ? cciBBFill : na,
+     title="CCI BB Fill")
+
+//=============================================================================
+// BIAS SETTINGS
+//=============================================================================
+
+biasThreshold =
+     input.float(
+         20.0,
+         "Bias Threshold",
+         minval=0.0,
+         maxval=100.0,
+         step=5.0,
+         group=G_COMP)
+
+showCompressionScore =
+     input.bool(
+         true,
+         "Show Compression Bias Label",
+         group=G_COMP)
+
+compressionScoreDisplay =
+     input.string(
+         "Bias",
+         "Score Display",
+         options=["Bias", "Bias / C", "C", "Off"],
+         group=G_COMP)
+
+showFirstHalfScore =
+     input.bool(
+         false,
+         "Show First-Half Score",
+         group=G_COMP)
+
+compressionScoreOffset =
+     input.float(
+         8.0,
+         "Score Label Offset",
+         minval=1.0,
+         step=1.0,
+         group=G_COMP)
+
+compressionScoreBullColor =
+     input.color(
+         color.lime,
+         "Bullish Score Color",
+         group=G_COMP)
+
+compressionScoreBearColor =
+     input.color(
+         color.red,
+         "Bearish Score Color",
+         group=G_COMP)
+
+compressionScoreNeutralColor =
+     input.color(
+         color.yellow,
+         "Neutral Score Color",
+         group=G_COMP)
+
+//=============================================================================
+// PRICE / ATR SETTINGS
+//=============================================================================
+
+priceATRLength =
+     input.int(
+         14,
+         "Price ATR Length",
+         minval=1,
+         group=G_COMP)
+
+priceATRMultiplier =
+     input.float(
+         1.0,
+         "Price ATR Normalization",
+         minval=0.1,
+         step=0.1,
+         group=G_COMP)
+
+//=============================================================================
+// COMPRESSION SCORE VARIABLES
+//=============================================================================
+
+var bool scoreCompressionActive = false
+var int scoreCompressionStartBar = na
+
+var float scoreStartCCI = na
+var float scoreStartPrice = na
+var float scoreStartATR = na
+
+var float scoreCCIChange = 0.0
+var float scoreCCIAbsChange = 0.0
+
+var float firstHalfChange = 0.0
+var float firstHalfAbsChange = 0.0
+
+var float secondHalfChange = 0.0
+var float secondHalfAbsChange = 0.0
+
+var int compressionBars = 0
+var bool firstHalfComplete = false
+
+var float firstHalfScore = na
+var float secondHalfScore = na
+
+var float finalCompressionScore = na
+var float finalPriceScore = na
+var float finalBiasScore = na
+
+var int scoreMidpointBar = na
+var label liveScoreLabel = na
+
+//=============================================================================
+// ATR
+//=============================================================================
+
+priceATR = ta.atr(priceATRLength)
+
+//=============================================================================
+// LIVE CCI COMPRESSION SCORE
+//=============================================================================
+
+liveCompressionScore =
+     scoreCCIAbsChange != 0 ?
+     scoreCCIChange / scoreCCIAbsChange * 100.0 :
+     0.0
+
+//=============================================================================
+// LIVE ATR-NORMALIZED PRICE SCORE
+//=============================================================================
+
+livePriceScore =
+     scoreCompressionActive and
+     not na(scoreStartPrice) and
+     not na(scoreStartATR) and
+     scoreStartATR > 0 ?
+     math.max(
+         -100.0,
+         math.min(
+             100.0,
+             ((close - scoreStartPrice) /
+             (scoreStartATR * priceATRMultiplier)) *
+             100.0)) :
+     0.0
+
+//=============================================================================
+// LIVE PRICE / CCI RELATIONSHIP
+//=============================================================================
+
+cciRelationshipComponent =
+     liveCompressionScore *
+     (1.0 - math.abs(livePriceScore) / 100.0)
+
+priceRelationshipComponent =
+     livePriceScore *
+     (1.0 - math.abs(liveCompressionScore) / 100.0)
+
+liveBiasScore =
+     math.max(
+         -100.0,
+         math.min(
+             100.0,
+             cciRelationshipComponent -
+             priceRelationshipComponent))
+
+//=============================================================================
+// START COMPRESSION
+//=============================================================================
+
+if compressionStarting
+    scoreCompressionActive := true
+    scoreCompressionStartBar := bar_index
+
+    scoreStartCCI := cci
+    scoreStartPrice := close
+    scoreStartATR := priceATR
+
+    scoreCCIChange := 0.0
+    scoreCCIAbsChange := 0.0
+
+    firstHalfChange := 0.0
+    firstHalfAbsChange := 0.0
+
+    secondHalfChange := 0.0
+    secondHalfAbsChange := 0.0
+
+    compressionBars := 0
+    firstHalfComplete := false
+
+    firstHalfScore := na
+    secondHalfScore := na
+
+    finalCompressionScore := na
+    finalPriceScore := na
+    finalBiasScore := na
+
+    scoreMidpointBar := na
+
+    if not na(liveScoreLabel)
+        label.delete(liveScoreLabel)
+
+    liveScoreLabel := na
+
+//=============================================================================
+// ACCUMULATE COMPRESSION
+//=============================================================================
+
+if scoreCompressionActive
+    compressionBars += 1
+
+    currentChange = cci - cci[1]
+
+    scoreCCIChange += currentChange
+    scoreCCIAbsChange += math.abs(currentChange)
+
+//=============================================================================
+// FIRST / SECOND HALF TRACKING
+//=============================================================================
+
+if scoreCompressionActive and compressionBars >= 2
+
+    midpointBars =
+         math.max(
+             1,
+             int(math.ceil(compressionBars / 2.0)))
+
+    if not firstHalfComplete and compressionBars >= midpointBars
+
+        firstHalfChange := scoreCCIChange
+        firstHalfAbsChange := scoreCCIAbsChange
+
+        firstHalfScore =
+             firstHalfAbsChange != 0 ?
+             firstHalfChange / firstHalfAbsChange * 100.0 :
+             0.0
+
+        firstHalfComplete := true
+        scoreMidpointBar := bar_index
+
+//=============================================================================
+// SECOND HALF SCORE
+//=============================================================================
+
+if scoreCompressionActive and firstHalfComplete
+
+    secondHalfChange =
+         scoreCCIChange - firstHalfChange
+
+    secondHalfAbsChange =
+         scoreCCIAbsChange - firstHalfAbsChange
+
+    secondHalfScore :=
+         secondHalfAbsChange != 0 ?
+         secondHalfChange / secondHalfAbsChange * 100.0 :
+         0.0
+
+//=============================================================================
+// BIAS ENGINE
+//=============================================================================
+// The latter half of compression is the primary directional bias.
+
+biasEngineScore =
+     scoreCompressionActive and
+     not na(secondHalfScore) ?
+     secondHalfScore :
+     0.0
+
+scoreBullish =
+     scoreCompressionActive and
+     not na(secondHalfScore) and
+     biasEngineScore > biasThreshold
+
+scoreBearish =
+     scoreCompressionActive and
+     not na(secondHalfScore) and
+     biasEngineScore < -biasThreshold
+
+scoreNeutral =
+     not scoreBullish and
+     not scoreBearish
+
+liveScoreColor =
+     scoreBullish ?
+     compressionScoreBullColor :
+     scoreBearish ?
+     compressionScoreBearColor :
+     compressionScoreNeutralColor
+
+//=============================================================================
+// LIVE BIAS LABEL
+//=============================================================================
+
+if showCompressionScore and
+   compressionScoreDisplay != "Off" and
+   scoreCompressionActive and
+   barstate.islast
+
+    liveBiasText =
+         "Bias: " +
+         (biasEngineScore >= 0 ? "+" : "") +
+         str.tostring(biasEngineScore, "#")
+
+    liveComparisonText =
+         "Bias: " +
+         (biasEngineScore >= 0 ? "+" : "") +
+         str.tostring(biasEngineScore, "#") +
+         " / " +
+         (liveCompressionScore >= 0 ? "+" : "") +
+         str.tostring(liveCompressionScore, "#")
+
+    liveCText =
+         "C: " +
+         (liveCompressionScore >= 0 ? "+" : "") +
+         str.tostring(liveCompressionScore, "#")
+
+    liveText =
+         compressionScoreDisplay == "Bias" ?
+         liveBiasText :
+         compressionScoreDisplay == "Bias / C" ?
+         liveComparisonText :
+         liveCText
+
+    liveY =
+         bullCompressionZone ?
+         cciLower - compressionScoreOffset :
+         bearCompressionZone ?
+         cciUpper + compressionScoreOffset :
+         cciBasis
+
+    liveStyle =
+         bullCompressionZone ?
+         label.style_label_up :
+         bearCompressionZone ?
+         label.style_label_down :
+         label.style_label_left
+
+    if not na(liveScoreLabel)
+        label.delete(liveScoreLabel)
+
+    liveScoreLabel :=
+         label.new(
+             bar_index,
+             liveY,
+             liveText,
+             xloc=xloc.bar_index,
+             style=liveStyle,
+             color=color.new(liveScoreColor, 5),
+             textcolor=color.black,
+             size=size.tiny)
+
+//=============================================================================
+// COMPRESSION RELEASE
+//=============================================================================
+
+compressionScoreRelease =
+     scoreCompressionActive and
+     not compressionState and
+     compressionState[1]
+
+//=============================================================================
+// FREEZE FINAL SCORES
+//=============================================================================
+
+if compressionScoreRelease
+
+    finalCompressionScore :=
+         scoreCCIAbsChange != 0 ?
+         scoreCCIChange / scoreCCIAbsChange * 100.0 :
+         0.0
+
+    if firstHalfAbsChange != 0
+        firstHalfScore :=
+             firstHalfChange /
+             firstHalfAbsChange *
+             100.0
+
+    secondHalfChange :=
+         scoreCCIChange - firstHalfChange
+
+    secondHalfAbsChange :=
+         scoreCCIAbsChange - firstHalfAbsChange
+
+    secondHalfScore :=
+         secondHalfAbsChange != 0 ?
+         secondHalfChange /
+         secondHalfAbsChange *
+         100.0 :
+         0.0
+
+    finalPriceScore :=
+         not na(scoreStartPrice) and
+         not na(scoreStartATR) and
+         scoreStartATR > 0 ?
+         math.max(
+             -100.0,
+             math.min(
+                 100.0,
+                 ((close - scoreStartPrice) /
+                 (scoreStartATR * priceATRMultiplier)) *
+                 100.0)) :
+         0.0
+
+    finalCCIComponent =
+         finalCompressionScore *
+         (1.0 - math.abs(finalPriceScore) / 100.0)
+
+    finalPriceComponent =
+         finalPriceScore *
+         (1.0 - math.abs(finalCompressionScore) / 100.0)
+
+    finalBiasScore :=
+         math.max(
+             -100.0,
+             math.min(
+                 100.0,
+                 finalCCIComponent -
+                 finalPriceComponent))
+
+    if showCompressionScore and
+       compressionScoreDisplay != "Off"
+
+        finalColor =
+             finalBiasScore > biasThreshold ?
+             compressionScoreBullColor :
+             finalBiasScore < -biasThreshold ?
+             compressionScoreBearColor :
+             compressionScoreNeutralColor
+
+        finalBiasText =
+             "Bias: " +
+             (finalBiasScore >= 0 ? "+" : "") +
+             str.tostring(finalBiasScore, "#")
+
+        finalComparisonText =
+             "Bias: " +
+             (finalBiasScore >= 0 ? "+" : "") +
+             str.tostring(finalBiasScore, "#") +
+             " / " +
+             (finalCompressionScore >= 0 ? "+" : "") +
+             str.tostring(finalCompressionScore, "#")
+
+        finalCText =
+             "C: " +
+             (finalCompressionScore >= 0 ? "+" : "") +
+             str.tostring(finalCompressionScore, "#")
+
+        finalText =
+             compressionScoreDisplay == "Bias" ?
+             finalBiasText :
+             compressionScoreDisplay == "Bias / C" ?
+             finalComparisonText :
+             finalCText
+
+        finalBullZone = bullCompressionZone[1]
+        finalBearZone = bearCompressionZone[1]
+
+        finalY =
+             finalBullZone ?
+             cciLower[1] - compressionScoreOffset :
+             finalBearZone ?
+             cciUpper[1] + compressionScoreOffset :
+             cciBasis[1]
+
+        finalStyle =
+             finalBullZone ?
+             label.style_label_up :
+             finalBearZone ?
+             label.style_label_down :
+             label.style_label_left
+
+        label.new(
+             bar_index,
+             finalY,
+             finalText,
+             xloc=xloc.bar_index,
+             style=finalStyle,
+             color=color.new(finalColor, 5),
+             textcolor=color.black,
+             size=size.tiny)
+
+    if not na(liveScoreLabel)
+        label.delete(liveScoreLabel)
+
+    liveScoreLabel := na
+    scoreCompressionActive := false
+
+//=============================================================================
+// SECOND-HALF CHARACTER CHANGE
+//=============================================================================
+
+secondHalfWinningBull =
+     not na(firstHalfScore) and
+     not na(secondHalfScore) and
+     secondHalfScore > firstHalfScore + 10
+
+secondHalfWinningBear =
+     not na(firstHalfScore) and
+     not na(secondHalfScore) and
+     secondHalfScore < firstHalfScore - 10
+
+secondHalfShift =
+     secondHalfWinningBull or
+     secondHalfWinningBear
+
+//=============================================================================
+// OPTIONAL FIRST-HALF SCORE
+//=============================================================================
+
+if compressionScoreRelease and
+   showFirstHalfScore and
+   not na(firstHalfScore)
+
+    firstColor =
+         firstHalfScore > biasThreshold ?
+         compressionScoreBullColor :
+         firstHalfScore < -biasThreshold ?
+         compressionScoreBearColor :
+         compressionScoreNeutralColor
+
+    firstText =
+         "1/2 " +
+         (firstHalfScore >= 0 ? "+" : "") +
+         str.tostring(firstHalfScore, "#")
+
+    firstY =
+         firstHalfScore >= 0 ?
+         cciUpper[1] + compressionScoreOffset :
+         cciLower[1] - compressionScoreOffset
+
+    firstStyle =
+         firstHalfScore >= 0 ?
+         label.style_label_down :
+         label.style_label_up
+
+    label.new(
+         scoreMidpointBar,
+         firstY,
+         firstText,
+         xloc=xloc.bar_index,
+         style=firstStyle,
+         color=color.new(firstColor, 20),
+         textcolor=color.white,
+         size=size.tiny)
+
+//=============================================================================
+// COMPRESSION BIAS
+//=============================================================================
+
+compressionBull =
+     compressionState and
+     scoreBullish
+
+compressionBear =
+     compressionState and
+     scoreBearish
+
+bullCompressionBias = compressionBull
+bearCompressionBias = compressionBear
+
+//=============================================================================
+// REFERENCE LEVELS
+//=============================================================================
+
+hline(
+     0,
+     "CCI Zero",
+     color=color.gray,
+     linestyle=hline.style_solid)
+
+hline(
+     200,
+     "CCI +200",
+     color=color.new(color.red, 50),
+     linewidth=2,
+     linestyle=hline.style_solid)
+
+hline(
+     -200,
+     "CCI -200",
+     color=color.new(color.green, 50),
+     linewidth=2,
+     linestyle=hline.style_solid)
+
+//=============================================================================
+// PRESSURE / EXTREMES
+//=============================================================================
+
+showPressureDots =
+     input.bool(true, "Show Pressure Dots", group=G_EXT)
+
+pressureLevel1 =
+     input.float(
+         123.0,
+         "Yellow Pressure Level",
+         minval=1.0,
+         group=G_EXT)
+
+pressureLevel2 =
+     input.float(
+         150.0,
+         "Orange Pressure Level",
+         minval=1.0,
+         group=G_EXT)
+
+pressureLevel3 =
+     input.float(
+         200.0,
+         "Red Pressure Level",
+         minval=1.0,
+         group=G_EXT)
+
+requireOutsideBB =
+     input.bool(
+         true,
+         "Require Red Pressure Outside BB",
+         group=G_EXT)
+
+yellowPressureColor =
+     input.color(
+         color.yellow,
+         "Yellow Pressure Color",
+         group=G_EXT)
+
+orangePressureColor =
+     input.color(
+         color.orange,
+         "Orange Pressure Color",
+         group=G_EXT)
+
+redPressureColor =
+     input.color(
+         color.red,
+         "Red Pressure Color",
+         group=G_EXT)
+
+pressureDotSize =
+     input.int(
+         2,
+         "Pressure Dot Size",
+         minval=1,
+         maxval=10,
+         group=G_EXT)
+
+bullLevel1 = cci >= pressureLevel1
+bearLevel1 = cci <= -pressureLevel1
+
+bullLevel2 = cci >= pressureLevel2
+bearLevel2 = cci <= -pressureLevel2
+
+bullLevel3 =
+     cci >= pressureLevel3 and
+     (not requireOutsideBB or cci > cciUpper)
+
+bearLevel3 =
+     cci <= -pressureLevel3 and
+     (not requireOutsideBB or cci < cciLower)
+
+pressureIsBull =
+     bullLevel1 or
+     bullLevel2 or
+     bullLevel3
+
+pressureIsBear =
+     bearLevel1 or
+     bearLevel2 or
+     bearLevel3
+
+pressureColor =
+     bullLevel3 or bearLevel3 ?
+     redPressureColor :
+     bullLevel2 or bearLevel2 ?
+     orangePressureColor :
+     bullLevel1 or bearLevel1 ?
+     yellowPressureColor :
+     na
+
+pressureValue =
+     pressureIsBull or pressureIsBear ?
+     cci :
+     na
+
+plot(
+     showPressureDots ? pressureValue : na,
+     title="CCI Pressure Dots",
+     color=pressureColor,
+     linewidth=pressureDotSize,
+     style=plot.style_circles)
+
+//=============================================================================
+// REVERSION ALERT TRIGGERS
+//=============================================================================
+
+// First bar that CCI breaks outside its own CCI Bollinger Band.
+
+bullishReversionBBBreak =
+     cci < cciLower and
+     (na(cci[1]) or cci[1] >= cciLower[1])
+
+bearishReversionBBBreak =
+     cci > cciUpper and
+     (na(cci[1]) or cci[1] <= cciUpper[1])
+
+reversionBBBreak =
+     bullishReversionBBBreak or
+     bearishReversionBBBreak
+
+// First orange/red pressure bar at ±150.
+
+redOrangeBull150Trigger =
+     cci <= -pressureLevel2 and
+     (na(cci[1]) or cci[1] > -pressureLevel2)
+
+redOrangeBear150Trigger =
+     cci >= pressureLevel2 and
+     (na(cci[1]) or cci[1] < pressureLevel2)
+
+//=============================================================================
+// IMPORTANT: ±200 RED TRIGGER
+//=============================================================================
+// This is intentionally ONE variable.
+// It fires only when CCI ENTERS the red ±200 extreme.
+// It does NOT repeatedly fire while CCI remains extreme.
+
+red200Trigger =
+     (bullLevel3 and not bullLevel3[1]) or
+     (bearLevel3 and not bearLevel3[1])
+
+//=============================================================================
+// EXTREME REVERSAL LOGIC
+//=============================================================================
+
+var bool bullExtremeArmed = false
+var bool bearExtremeArmed = false
+
+if bullLevel3
+    bullExtremeArmed := true
+
+if bearLevel3
+    bearExtremeArmed := true
+
+extremeBearReversal =
+     bullExtremeArmed and
+     cci < cci[1] and
+     cci[1] >= cci[2]
+
+extremeBullReversal =
+     bearExtremeArmed and
+     cci > cci[1] and
+     cci[1] <= cci[2]
+
+if extremeBearReversal
+    bullExtremeArmed := false
+
+if extremeBullReversal
+    bearExtremeArmed := false
+
+showReversalLabels =
+     input.bool(
+         true,
+         "Show Extreme Reversal Arrows",
+         group=G_EXT)
+
+reversalArrowOffset =
+     input.float(
+         20.0,
+         "Arrow Offset",
+         minval=1.0,
+         group=G_EXT)
+
+plotshape(
+     showReversalLabels and extremeBearReversal ?
+     pressureLevel3 + reversalArrowOffset :
+     na,
+     title="SC Arrow",
+     style=shape.arrowdown,
+     location=location.absolute,
+     color=color.red,
+     size=size.small)
+
+plotshape(
+     showReversalLabels and extremeBullReversal ?
+     -pressureLevel3 - reversalArrowOffset :
+     na,
+     title="BC Arrow",
+     style=shape.arrowup,
+     location=location.absolute,
+     color=color.green,
+     size=size.small)
+
+//=============================================================================
+// DIVERGENCES
+//=============================================================================
+
+showDivergences =
+     input.bool(true, "Show Divergences", group=G_DIV)
+
+divergencePivotLength =
+     input.int(
+         5,
+         "Pivot Length",
+         minval=1,
+         group=G_DIV)
+
+regularBullColor =
+     input.color(
+         color.lime,
+         "Regular Bullish Color",
+         group=G_DIV)
+
+hiddenBullColor =
+     input.color(
+         color.aqua,
+         "Hidden Bullish Color",
+         group=G_DIV)
+
+regularBearColor =
+     input.color(
+         color.red,
+         "Regular Bearish Color",
+         group=G_DIV)
+
+hiddenBearColor =
+     input.color(
+         color.fuchsia,
+         "Hidden Bearish Color",
+         group=G_DIV)
+
+divergenceLineWidth =
+     input.int(
+         2,
+         "Divergence Line Width",
+         minval=1,
+         maxval=4,
+         group=G_DIV)
+
+showDivergenceLabels =
+     input.bool(
+         true,
+         "Show D+ / D- Labels",
+         group=G_DIV)
+
+pricePivotLow =
+     ta.pivotlow(
+         low,
+         divergencePivotLength,
+         divergencePivotLength)
+
+pricePivotHigh =
+     ta.pivothigh(
+         high,
+         divergencePivotLength,
+         divergencePivotLength)
+
+cciPivotLow =
+     ta.pivotlow(
+         cci,
+         divergencePivotLength,
+         divergencePivotLength)
+
+cciPivotHigh =
+     ta.pivothigh(
+         cci,
+         divergencePivotLength,
+         divergencePivotLength)
+
+var float previousPriceLow = na
+var float previousCCILow = na
+var int previousLowBar = na
+
+var float previousPriceHigh = na
+var float previousCCIHigh = na
+var int previousHighBar = na
+
+bool regularBullDiv = false
+bool hiddenBullDiv = false
+bool regularBearDiv = false
+bool hiddenBearDiv = false
+
+float bullDivCurrentCCI = na
+float bullDivPreviousCCI = na
+
+float bearDivCurrentCCI = na
+float bearDivPreviousCCI = na
+
+//=============================================================================
+// BULLISH DIVERGENCE
+//=============================================================================
+
+if not na(pricePivotLow) and not na(cciPivotLow)
+
+    currentPriceLow = pricePivotLow
+    currentCCILow = cciPivotLow
+
+    currentBar =
+         bar_index - divergencePivotLength
+
+    if not na(previousPriceLow) and not na(previousCCILow)
+
+        regularBullDiv =
+             currentPriceLow < previousPriceLow and
+             currentCCILow > previousCCILow
+
+        hiddenBullDiv =
+             currentPriceLow > previousPriceLow and
+             currentCCILow < previousCCILow
+
+        if regularBullDiv
+
+            bullDivCurrentCCI := currentCCILow
+            bullDivPreviousCCI := previousCCILow
+
+            if showDivergences
+                line.new(
+                     previousLowBar,
+                     previousCCILow,
+                     currentBar,
+                     currentCCILow,
+                     color=regularBullColor,
+                     width=divergenceLineWidth)
+
+        if hiddenBullDiv
+
+            bullDivCurrentCCI := currentCCILow
+            bullDivPreviousCCI := previousCCILow
+
+            if showDivergences
+                line.new(
+                     previousLowBar,
+                     previousCCILow,
+                     currentBar,
+                     currentCCILow,
+                     color=hiddenBullColor,
+                     width=divergenceLineWidth)
+
+    previousPriceLow := currentPriceLow
+    previousCCILow := currentCCILow
+    previousLowBar := currentBar
+
+//=============================================================================
+// BEARISH DIVERGENCE
+//=============================================================================
+
+if not na(pricePivotHigh) and not na(cciPivotHigh)
+
+    currentPriceHigh = pricePivotHigh
+    currentCCIHigh = cciPivotHigh
+
+    currentBar =
+         bar_index - divergencePivotLength
+
+    if not na(previousPriceHigh) and not na(previousCCIHigh)
+
+        regularBearDiv =
+             currentPriceHigh > previousPriceHigh and
+             currentCCIHigh < previousCCIHigh
+
+        hiddenBearDiv =
+             currentPriceHigh < previousPriceHigh and
+             currentCCIHigh > previousCCIHigh
+
+        if regularBearDiv
+
+            bearDivCurrentCCI := currentCCIHigh
+            bearDivPreviousCCI := previousCCIHigh
+
+            if showDivergences
+                line.new(
+                     previousHighBar,
+                     previousCCIHigh,
+                     currentBar,
+                     currentCCIHigh,
+                     color=regularBearColor,
+                     width=divergenceLineWidth)
+
+        if hiddenBearDiv
+
+            bearDivCurrentCCI := currentCCIHigh
+            bearDivPreviousCCI := previousCCIHigh
+
+            if showDivergences
+                line.new(
+                     previousHighBar,
+                     previousCCIHigh,
+                     currentBar,
+                     currentCCIHigh,
+                     color=hiddenBearColor,
+                     width=divergenceLineWidth)
+
+    previousPriceHigh := currentPriceHigh
+    previousCCIHigh := currentCCIHigh
+    previousHighBar := currentBar
+
+//=============================================================================
+// DIVERGENCE FLAGS
+//=============================================================================
+
+bullishDivergence =
+     regularBullDiv or
+     hiddenBullDiv
+
+bearishDivergence =
+     regularBearDiv or
+     hiddenBearDiv
+
+if showDivergenceLabels and showDivergences
+
+    if bullishDivergence
+
+        label.new(
+             bar_index - divergencePivotLength,
+             bullDivCurrentCCI,
+             "D+",
+             style=label.style_label_up,
+             color=regularBullDiv ? regularBullColor : hiddenBullColor,
+             textcolor=color.white,
+             size=size.tiny)
+
+    if bearishDivergence
+
+        label.new(
+             bar_index - divergencePivotLength,
+             bearDivCurrentCCI,
+             "D-",
+             style=label.style_label_down,
+             color=regularBearDiv ? regularBearColor : hiddenBearColor,
+             textcolor=color.white,
+             size=size.tiny)
+
+//=============================================================================
+// DIVERGENCE + PRESSURE
+//=============================================================================
+
+bullDivTouchesPressure =
+     bullishDivergence and
+     math.abs(bullDivCurrentCCI) >= pressureLevel1
+
+bearDivTouchesPressure =
+     bearishDivergence and
+     math.abs(bearDivCurrentCCI) >= pressureLevel1
+
+bullDivergencePlus =
+     bullDivTouchesPressure
+
+bearDivergencePlus =
+     bearDivTouchesPressure
+
+divergencePlus =
+     bullDivergencePlus or
+     bearDivergencePlus
+
+//=============================================================================
+// SLINGSHOT CONTEXT
+//=============================================================================
+
+showSlingshotContext =
+     input.bool(
+         true,
+         "Calculate Slingshot Context",
+         group=G_SS)
+
+ema38 = ta.ema(close, 38)
+ema62 = ta.ema(close, 62)
+
+slingshotBull =
+     showSlingshotContext and
+     ema38 > ema62
+
+slingshotBear =
+     showSlingshotContext and
+     ema38 < ema62
+
+//=============================================================================
+// ALERTS
+//=============================================================================
+
+enableAlerts =
+     input.bool(
+         true,
+         "Enable Alert Conditions",
+         group=G_ALRT)
+
+//----------------------------------------------------------------------------
+// 1. CCI COMPRESSION
+//----------------------------------------------------------------------------
+
+alertCCICompression =
+     enableAlerts and
+     compressionStarting
+
+//----------------------------------------------------------------------------
+// 2. COMPRESSION + BIAS
+//----------------------------------------------------------------------------
+
+alertCompressionBias =
+     enableAlerts and
+     compressionState and
+     (
+         (compressionBull and not compressionBull[1]) or
+         (compressionBear and not compressionBear[1])
+     )
+
+//----------------------------------------------------------------------------
+// 3. COMPRESSION ZONE + BIAS
+//----------------------------------------------------------------------------
+
+alertCompressionZoneBias =
+     enableAlerts and
+     (
+         (bullCompressionZone and compressionBull) or
+         (bearCompressionZone and compressionBear) or
+         (basketCompressionZone and
+          (compressionBull or compressionBear))
+     ) and
+     not (
+         (bullCompressionZone[1] and compressionBull[1]) or
+         (bearCompressionZone[1] and compressionBear[1]) or
+         (basketCompressionZone[1] and
+          (compressionBull[1] or compressionBear[1]))
+     )
+
+//----------------------------------------------------------------------------
+// 4. REVERSION BB BREAK
+//----------------------------------------------------------------------------
+
+alertReversionBBBreak =
+     enableAlerts and
+     reversionBBBreak
+
+//----------------------------------------------------------------------------
+// 5. ±150 PRESSURE
+//----------------------------------------------------------------------------
+
+alertRedOrange150 =
+     enableAlerts and
+     (
+         redOrangeBull150Trigger or
+         redOrangeBear150Trigger
+     )
+
+//----------------------------------------------------------------------------
+// 6. ±200 RED PRESSURE
+//----------------------------------------------------------------------------
+// IMPORTANT: This references the single red200Trigger variable above.
+
+alertRed200 =
+     enableAlerts and
+     red200Trigger
+
+//----------------------------------------------------------------------------
+// 7. BULL/BEAR DIVERGENCE
+//----------------------------------------------------------------------------
+
+alertBullBearDivergence =
+     enableAlerts and
+     (
+         bullishDivergence or
+         bearishDivergence
+     )
+
+//----------------------------------------------------------------------------
+// 8. BULL/BEAR DIVERGENCE +
+//----------------------------------------------------------------------------
+
+alertBullBearDivergencePlus =
+     enableAlerts and
+     divergencePlus
+
+//=============================================================================
+// ALERT CONDITIONS
+//=============================================================================
+
+alertcondition(
+     alertCCICompression,
+     title="CCI Compression",
+     message="Sassy CCI — CCI Compression: CCI Bollinger Bands entered a compression decision zone.")
+
+alertcondition(
+     alertCompressionBias,
+     title="Compression + Bias",
+     message="Sassy CCI — Compression + Bias: bullish or bearish directional pressure is developing during CCI BB compression.")
+
+alertcondition(
+     alertCompressionZoneBias,
+     title="Compression Zone + Bias",
+     message="Sassy CCI — Compression Zone + Bias: CCI BB compression is predominantly bullish, bearish, or straddling zero with directional bias.")
+
+alertcondition(
+     alertReversionBBBreak,
+     title="Reversion BB Break Alert",
+     message="Sassy CCI — Reversion BB Break Alert: Bullish when CCI breaks below the lower BB; Bearish when CCI breaks above the upper BB.")
+
+alertcondition(
+     alertRedOrange150,
+     title="Red & Orange ±150 Dots",
+     message="Sassy CCI — Red & Orange ±150 Dots: Bullish at -150 or lower; Bearish at +150 or higher. Orange/red pressure only.")
+
+alertcondition(
+     alertRed200,
+     title="±200 Red Dot",
+     message="Sassy CCI — ±200 Red Dot: Bullish red extreme at -200 or lower; Bearish red extreme at +200 or higher.")
+
+alertcondition(
+     alertBullBearDivergence,
+     title="Bull/Bear Divergence",
+     message="Sassy CCI — Bull/Bear Divergence detected.")
+
+alertcondition(
+     alertBullBearDivergencePlus,
+     title="Bull/Bear Divergence +",
+     message="Sassy CCI — Bull/Bear Divergence + Pressure: divergence endpoint is interacting with a CCI pressure zone.")
+
+//=============================================================================
+// MOOD DASHBOARD
+//=============================================================================
+
+showMoodDashboard =
+     input.bool(
+         true,
+         "Show Mood Dashboard",
+         group=G_MOOD)
+
+moodCalmColor =
+     color.rgb(40, 110, 220)
+
+moodBuildingColor =
+     color.rgb(0, 190, 255)
+
+moodIntenseColor =
+     color.yellow
+
+moodGroovingColor =
+     color.fuchsia
+
+moodAgitatedColor =
+     color.orange
+
+moodExhaustedColor =
+     color.red
+
+dashboardCCI =
+     scoreCompressionActive ?
+     liveCompressionScore :
+     nz(finalCompressionScore, 0.0)
+
+dashboardPrice =
+     scoreCompressionActive ?
+     livePriceScore :
+     nz(finalPriceScore, 0.0)
+
+dashboardBias =
+     scoreCompressionActive ?
+     liveBiasScore :
+     nz(finalBiasScore, 0.0)
+
+//=============================================================================
+// MOOD LOGIC
+//=============================================================================
+
+sameDirection =
+     dashboardCCI != 0 and
+     dashboardPrice != 0 and
+     (
+         (dashboardCCI > 0 and dashboardPrice > 0) or
+         (dashboardCCI < 0 and dashboardPrice < 0)
+     )
+
+oppositeDirection =
+     dashboardCCI != 0 and
+     dashboardPrice != 0 and
+     (
+         (dashboardCCI > 0 and dashboardPrice < 0) or
+         (dashboardCCI < 0 and dashboardPrice > 0)
+     )
+
+moodBuilding =
+     not compressionState and
+     compressionPercent <= compressionThreshold * 1.15 and
+     compressionPercent < compressionPercent[1]
+
+moodExhausted =
+     bullLevel3 or
+     bearLevel3
+
+moodIntense =
+     compressionState
+
+moodAgitated =
+     not compressionState and
+     not moodExhausted and
+     (
+         (
+             oppositeDirection and
+             math.abs(dashboardBias) >= biasThreshold
+         ) or
+         math.abs(dashboardBias) >= biasThreshold * 2.0
+     )
+
+moodGrooving =
+     not compressionState and
+     not moodExhausted and
+     not moodAgitated and
+     sameDirection
+
+moodCalm =
+     not moodExhausted and
+     not moodIntense and
+     not moodAgitated and
+     not moodGrooving and
+     not moodBuilding
+
+moodText =
+     moodExhausted ? "EXHAUSTED" :
+     moodIntense ? "INTENSE" :
+     moodAgitated ? "AGITATED" :
+     moodGrooving ? "GROOVING" :
+     moodBuilding ? "BUILDING" :
+     "CALM"
+
+moodSymbol =
+     moodExhausted ? "★" :
+     moodIntense ? "★" :
+     moodAgitated ? "◆" :
+     moodGrooving ? "●" :
+     moodBuilding ? "■" :
+     "●"
+
+moodColor =
+     moodExhausted ? moodExhaustedColor :
+     moodIntense ? moodIntenseColor :
+     moodAgitated ? moodAgitatedColor :
+     moodGrooving ? moodGroovingColor :
+     moodBuilding ? moodBuildingColor :
+     moodCalmColor
+
+dashboardBiasText =
+     "Bias: " +
+     (dashboardBias >= 0 ? "+" : "") +
+     str.tostring(dashboardBias, "#")
+
+dashboardCText =
+     "C: " +
+     (dashboardCCI >= 0 ? "+" : "") +
+     str.tostring(dashboardCCI, "#")
+
+//=============================================================================
+// DASHBOARD TABLE
+//=============================================================================
+
+var table moodTable =
+     table.new(
+         position.top_right,
+         1,
+         3,
+         bgcolor=color.new(color.black, 20),
+         frame_color=color.new(color.gray, 65),
+         frame_width=1,
+         border_width=0)
+
+if barstate.islast
+
+    if showMoodDashboard
+
+        table.cell(
+             moodTable,
+             0,
+             0,
+             "SASSY CCI",
+             bgcolor=color.new(color.black, 15),
+             text_color=color.white,
+             text_size=size.tiny)
+
+        table.cell(
+             moodTable,
+             0,
+             1,
+             moodSymbol + "  " + moodText,
+             bgcolor=color.new(moodColor, 10),
+             text_color=color.black,
+             text_size=size.small)
+
+        table.cell(
+             moodTable,
+             0,
+             2,
+             dashboardBiasText + "   " + dashboardCText,
+             bgcolor=color.new(color.black, 15),
+             text_color=color.white,
+             text_size=size.tiny)
+
+    else
+        table.clear(moodTable, 0, 0, 0, 2)
+
+//=============================================================================
+// DATA WINDOW
+//=============================================================================
+
+plot(
+     cci,
+     title="CCI Data",
+     display=display.data_window)
+
+plot(
+     cciSignal,
+     title="CCI Signal Data",
+     display=display.data_window)
+
+plot(
+     cciUpper,
+     title="CCI BB Upper Data",
+     display=display.data_window)
+
+plot(
+     cciLower,
+     title="CCI BB Lower Data",
+     display=display.data_window)
+
+plot(
+     compressionPercent,
+     title="CCI BB Compression %",
+     display=display.data_window)
+
+plot(
+     liveCompressionScore,
+     title="Live CCI Compression Score",
+     display=display.data_window)
+
+plot(
+     finalCompressionScore,
+     title="Final CCI Compression Score",
+     display=display.data_window)
+
+plot(
+     secondHalfScore,
+     title="Second-Half Compression Bias Score",
+     display=display.data_window)
+
+plot(
+     livePriceScore,
+     title="Live ATR-Normalized Price Score",
+     display=display.data_window)
+
+plot(
+     finalPriceScore,
+     title="Final ATR-Normalized Price Score",
+     display=display.data_window)
+
+plot(
+     biasEngineScore,
+     title="Compression Bias (Latter Half)",
+     display=display.data_window)
+
+plot(
+     finalBiasScore,
+     title="Final Price-vs-CCI Bias",
+     display=display.data_window)
+
+plot(
+     belowZeroPercent,
+     title="CCI BB Below-Zero %",
+     display=display.data_window)
+
+plot(
+     aboveZeroPercent,
+     title="CCI BB Above-Zero %",
+     display=display.data_window)

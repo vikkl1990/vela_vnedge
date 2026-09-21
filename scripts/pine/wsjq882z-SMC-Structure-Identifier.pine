@@ -1,0 +1,333 @@
+//@version=6
+indicator("SMC Structure Identification", overlay=true, max_labels_count=500, max_lines_count=500)
+
+lookback = input.int(10, "Lookback", minval=1)
+forward = input.int(4, "Forward", minval=1)
+
+showRawIgnored = input.bool(true, "Show Ignored/Overwritten Swings", group="Swings")
+showStructural = input.bool(true, "Show Structural Swings", group="Swings")
+showSwingLabels = input.bool(false, "Show Structural Labels", group="Labels")
+showBos = input.bool(false, "Show BOS", group="BOS")
+showBosText = input.bool(true, "Show BOS Text", group="BOS")
+
+structuralColor = input.color(color.new(color.rgb(120, 160, 255), 0), "Structural Swing Color", group="Swings")
+ignoredColor = input.color(color.new(color.gray, 70), "Ignored/Overwritten Swing Color", group="Swings")
+textColor = input.color(color.white, "Marker Text Color", group="Swings")
+labelTextColor = input.color(color.black, "Structural Label Text Color", group="Labels")
+bullishBosColor = input.color(color.green, "Bullish BOS Color", group="BOS")
+bearishBosColor = input.color(color.red, "Bearish BOS Color", group="BOS")
+bosLineWidth = input.int(2, "BOS Line Width", minval=1, maxval=5, group="BOS")
+bosLinePadding = input.int(3, "BOS Line End Before Confirmation", minval=0, maxval=20, group="BOS")
+bosTextOffsetAtr = input.float(0.03, "BOS Text Offset ATR", minval=0.0, maxval=0.5, step=0.01, group="BOS")
+markerSizeInput = input.string("Tiny", "Swing Marker Size", options=["Tiny", "Small", "Normal", "Large", "Huge"], group="Swings")
+labelSizeInput = input.string("Tiny", "Label Size", options=["Tiny", "Small", "Normal", "Large", "Huge"], group="Labels")
+
+markerSize = switch markerSizeInput
+    "Tiny" => size.tiny
+    "Small" => size.small
+    "Normal" => size.normal
+    "Large" => size.large
+    => size.huge
+
+labelSize = switch labelSizeInput
+    "Tiny" => size.tiny
+    "Small" => size.small
+    "Normal" => size.normal
+    "Large" => size.large
+    => size.huge
+
+candidateHigh = high[forward]
+candidateLow = low[forward]
+
+isSwingHigh = true
+isSwingLow = true
+
+for j = 1 to lookback
+    if high[forward + j] > candidateHigh
+        isSwingHigh := false
+
+    if low[forward + j] < candidateLow
+        isSwingLow := false
+
+for j = 0 to forward - 1
+    if high[j] > candidateHigh
+        isSwingHigh := false
+
+    if low[j] < candidateLow
+        isSwingLow := false
+
+rawHigh = isSwingHigh ? candidateHigh : na
+rawLow = isSwingLow ? candidateLow : na
+rawHighBar = bar_index - forward
+rawLowBar = bar_index - forward
+bosTextOffset = ta.atr(14) * bosTextOffsetAtr
+bearishBosTextOffset = bosTextOffset * 6.0
+
+var int activeType = 0
+var float activeValue = na
+var int activeBar = na
+var label activeLabel = na
+
+var float lastStructuralHigh = na
+var float lastStructuralLow = na
+var int lastStructuralHighBar = na
+var int lastStructuralLowBar = na
+var string lastStructuralLabel = na
+
+var int trend = 0
+var float protectedHigh = na
+var int protectedHighBar = na
+var float protectedLow = na
+var int protectedLowBar = na
+
+makeMarker(int x, float y, bool isHigh, color markerColor) =>
+    label.new(
+         x=x,
+         y=y,
+         text="",
+         xloc=xloc.bar_index,
+         yloc=yloc.price,
+         style=isHigh ? label.style_circle : label.style_circle,
+         color=markerColor,
+         textcolor=textColor,
+         size=markerSize)
+
+paintIgnored(label marker) =>
+    if not na(marker)
+        if showRawIgnored
+            label.set_color(marker, ignoredColor)
+        else
+            label.delete(marker)
+
+paintStructural(label marker) =>
+    if not na(marker)
+        label.set_color(marker, structuralColor)
+
+makeStructureText(int x, float y, string labelText, bool isHigh) =>
+    label.new(
+         x=x,
+         y=y,
+         text=labelText,
+         xloc=xloc.bar_index,
+         yloc=yloc.price,
+         style=isHigh ? label.style_label_down : label.style_label_up,
+         color=color.new(color.white, 100),
+         textcolor=labelTextColor,
+         size=labelSize)
+
+confirmStructuralSwing(int swingType, float swingValue, int swingBar, float previousHigh, float previousLow) =>
+    string structureLabel = na
+    float nextHigh = previousHigh
+    float nextLow = previousLow
+    bool isHigh = swingType == 1
+
+    if isHigh
+        if not na(previousHigh)
+            if swingValue > previousHigh
+                structureLabel := "HH"
+            else if swingValue < previousHigh
+                structureLabel := "LH"
+        nextHigh := swingValue
+    else
+        if not na(previousLow)
+            if swingValue < previousLow
+                structureLabel := "LL"
+            else if swingValue > previousLow
+                structureLabel := "HL"
+        nextLow := swingValue
+
+    if showSwingLabels and not na(structureLabel)
+        makeStructureText(swingBar, swingValue, structureLabel, isHigh)
+
+    [nextHigh, nextLow, structureLabel]
+
+processSwing(int swingType, float swingValue, int swingBar, int currentType, float currentValue, int currentBar, label currentLabel, float currentLastHigh, float currentLastLow) =>
+    bool isHigh = swingType == 1
+    label newMarker = na
+    int nextType = currentType
+    float nextValue = currentValue
+    int nextBar = currentBar
+    label nextLabel = currentLabel
+    float nextLastHigh = currentLastHigh
+    float nextLastLow = currentLastLow
+    int confirmedType = 0
+    float confirmedValue = na
+    int confirmedBar = na
+    string confirmedStructureLabel = na
+
+    if showRawIgnored or showStructural
+        newMarker := makeMarker(swingBar, swingValue, isHigh, ignoredColor)
+
+    if currentType == 0
+        nextType := swingType
+        nextValue := swingValue
+        nextBar := swingBar
+        nextLabel := newMarker
+        if showStructural
+            paintStructural(nextLabel)
+
+    else if swingType != currentType
+        // Opposite type confirms the previous active candidate as structural.
+        if showStructural
+            paintStructural(currentLabel)
+        [confirmedHigh, confirmedLow, structureLabel] = confirmStructuralSwing(currentType, currentValue, currentBar, currentLastHigh, currentLastLow)
+        nextLastHigh := confirmedHigh
+        nextLastLow := confirmedLow
+        confirmedType := currentType
+        confirmedValue := currentValue
+        confirmedBar := currentBar
+        confirmedStructureLabel := structureLabel
+
+        nextType := swingType
+        nextValue := swingValue
+        nextBar := swingBar
+        nextLabel := newMarker
+        if showStructural
+            paintStructural(nextLabel)
+
+    else
+        bool replacesActive = swingType == 1 ? swingValue > currentValue : swingValue < currentValue
+
+        if replacesActive
+            // Same-side run: only the more extreme swing survives.
+            paintIgnored(currentLabel)
+            nextType := swingType
+            nextValue := swingValue
+            nextBar := swingBar
+            nextLabel := newMarker
+            if showStructural
+                paintStructural(nextLabel)
+        else
+            // Same-side but not more extreme: keep the active structural candidate.
+            paintIgnored(newMarker)
+
+    [nextType, nextValue, nextBar, nextLabel, nextLastHigh, nextLastLow, confirmedType, confirmedValue, confirmedBar, confirmedStructureLabel]
+
+if isSwingHigh
+    [highType, highValue, highBar, highLabel, highLastStructuralHigh, highLastStructuralLow, highConfirmedType, highConfirmedValue, highConfirmedBar, highConfirmedStructureLabel] = processSwing(1, rawHigh, rawHighBar, activeType, activeValue, activeBar, activeLabel, lastStructuralHigh, lastStructuralLow)
+    activeType := highType
+    activeValue := highValue
+    activeBar := highBar
+    activeLabel := highLabel
+
+    if highConfirmedType != 0
+        if trend == 0 and not na(highConfirmedStructureLabel)
+            if lastStructuralLabel == "HL" and highConfirmedStructureLabel == "HH"
+                trend := 1
+                protectedLow := lastStructuralLow
+                protectedLowBar := lastStructuralLowBar
+            else if lastStructuralLabel == "LH" and highConfirmedStructureLabel == "LL"
+                trend := -1
+                protectedHigh := lastStructuralHigh
+                protectedHighBar := lastStructuralHighBar
+
+            lastStructuralLabel := highConfirmedStructureLabel
+
+        if highConfirmedType == 1
+            lastStructuralHigh := highConfirmedValue
+            lastStructuralHighBar := highConfirmedBar
+
+        if highConfirmedType == -1
+            lastStructuralLow := highConfirmedValue
+            lastStructuralLowBar := highConfirmedBar
+
+        if trend == 1 and highConfirmedType == -1
+            protectedLow := highConfirmedValue
+            protectedLowBar := highConfirmedBar
+
+        if trend == -1 and highConfirmedType == 1
+            protectedHigh := highConfirmedValue
+            protectedHighBar := highConfirmedBar
+
+if isSwingLow
+    [lowType, lowValue, lowBar, lowLabel, lowLastStructuralHigh, lowLastStructuralLow, lowConfirmedType, lowConfirmedValue, lowConfirmedBar, lowConfirmedStructureLabel] = processSwing(-1, rawLow, rawLowBar, activeType, activeValue, activeBar, activeLabel, lastStructuralHigh, lastStructuralLow)
+    activeType := lowType
+    activeValue := lowValue
+    activeBar := lowBar
+    activeLabel := lowLabel
+
+    if lowConfirmedType != 0
+        if trend == 0 and not na(lowConfirmedStructureLabel)
+            if lastStructuralLabel == "HL" and lowConfirmedStructureLabel == "HH"
+                trend := 1
+                protectedLow := lastStructuralLow
+                protectedLowBar := lastStructuralLowBar
+            else if lastStructuralLabel == "LH" and lowConfirmedStructureLabel == "LL"
+                trend := -1
+                protectedHigh := lastStructuralHigh
+                protectedHighBar := lastStructuralHighBar
+
+            lastStructuralLabel := lowConfirmedStructureLabel
+
+        if lowConfirmedType == 1
+            lastStructuralHigh := lowConfirmedValue
+            lastStructuralHighBar := lowConfirmedBar
+
+        if lowConfirmedType == -1
+            lastStructuralLow := lowConfirmedValue
+            lastStructuralLowBar := lowConfirmedBar
+
+        if trend == 1 and lowConfirmedType == -1
+            protectedLow := lowConfirmedValue
+            protectedLowBar := lowConfirmedBar
+
+        if trend == -1 and lowConfirmedType == 1
+            protectedHigh := lowConfirmedValue
+            protectedHighBar := lowConfirmedBar
+
+bullishBos = showBos and trend == -1 and not na(protectedHigh) and close > protectedHigh
+bearishBos = showBos and trend == 1 and not na(protectedLow) and close < protectedLow
+
+if bullishBos
+    line.new(
+         x1=protectedHighBar,
+         y1=protectedHigh,
+         x2=math.max(protectedHighBar, bar_index - bosLinePadding),
+         y2=protectedHigh,
+         xloc=xloc.bar_index,
+         extend=extend.none,
+         color=bullishBosColor,
+         width=bosLineWidth)
+    if showBosText
+        label.new(
+             x=math.max(protectedHighBar, bar_index - bosLinePadding),
+             y=protectedHigh + bosTextOffset,
+             text="BOS",
+             xloc=xloc.bar_index,
+             yloc=yloc.price,
+             style=label.style_none,
+             color=color.new(bullishBosColor, 100),
+             textcolor=bullishBosColor,
+             size=labelSize)
+    trend := 1
+    protectedHigh := na
+    protectedHighBar := na
+    protectedLow := lastStructuralLow
+    protectedLowBar := lastStructuralLowBar
+
+if bearishBos
+    line.new(
+         x1=protectedLowBar,
+         y1=protectedLow,
+         x2=math.max(protectedLowBar, bar_index - bosLinePadding),
+         y2=protectedLow,
+         xloc=xloc.bar_index,
+         extend=extend.none,
+         color=bearishBosColor,
+         width=bosLineWidth)
+    if showBosText
+        label.new(
+             x=math.max(protectedLowBar, bar_index - bosLinePadding),
+             y=protectedLow - bearishBosTextOffset,
+             text="BOS",
+             xloc=xloc.bar_index,
+             yloc=yloc.price,
+             style=label.style_none,
+             color=color.new(bearishBosColor, 100),
+             textcolor=bearishBosColor,
+             size=labelSize)
+    trend := -1
+    protectedLow := na
+    protectedLowBar := na
+    protectedHigh := lastStructuralHigh
+    protectedHighBar := lastStructuralHighBar

@@ -1,0 +1,1739 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Westfelt
+
+//@version=6
+// ============================================================================
+// ICONE v1 (Investment Circle)
+// A+ setup-motor (impuls -> kompression -> breakout -> retest) med riskbaserad
+// sizing och riktig backtest, plus IC Pro ICT-modulerna: key levels, sessioner,
+// BSL/SSL-likviditet, premium/discount, MTF-trend, makro och positionskalkylator.
+// ASCII-only. Tabeller skapas EN gang (ingen minneslacka).
+// ============================================================================
+
+strategy(
+     title                   = "ICone v1",
+     shorttitle              = "ICone",
+     overlay                 = true,
+     initial_capital         = 100000,
+     currency                = currency.USD,
+     pyramiding              = 0,
+     commission_type         = strategy.commission.percent,
+     commission_value        = 0.02,
+     default_qty_type        = strategy.fixed,
+     default_qty_value       = 1,
+     process_orders_on_close = true,
+     max_bars_back           = 600,
+     calc_on_every_tick      = true,
+     max_labels_count        = 500,
+     max_lines_count         = 300,
+     max_boxes_count         = 100
+)
+
+// ===================================================================
+// 01. GRUND
+// ===================================================================
+gGen = "01. Grund"
+profile = input.string("Guld optimerad", "Profil", options=["Guld optimerad", "Index optimerad", "5m Scalping", "15m Intraday", "1H Swing", "1D Swing", "Custom"], group=gGen, tooltip="Styr alla motor-parametrar. GULD OPTIMERAD (ädelmetaller): trend+sweep-signaler, daglig trendgrind bada hallen, session 07-21 UTC, precisionsfilter - från backtest 2024-2026. INDEX OPTIMERAD (Nasdaq m.fl.): utbrott/retest+sweep, shorts kraver dags-bear, makrogrind av. Ovriga profiler styr bara motor-parametrarna.")
+tradeDirection = input.string("Long & Short", "Handelsriktning", options=["Long & Short", "Endast Long", "Endast Short"], group=gGen)
+entryMode = input.string("Retest prioriterad", "Entrymodell", options=["Breakout direkt", "Retest prioriterad", "Endast Retest"], group=gGen, tooltip="Retest = vänta på återbesok av breakout-nivån (färre, renare). Breakout direkt = snabbare men fler fakeouts.")
+gateMode = input.string("Score-styrd", "Grindläge", options=["Score-styrd", "Filter + Score (strikt)"], group=gGen, tooltip="Score-styrd = poangen är enda kravet (mjuk viktning, fler signaler). Strikt = alla filter måste dessutom vara sanna.")
+minimumScore = input.int(65, "Minsta IC Score", minval=40, maxval=100, group=gGen, tooltip="Sänk för fler signaler, höj för färre och renare.")
+useConfirmedBars = input.bool(true, "Krav: stängd candle", group=gGen)
+enableTrend  = input.bool(true, "Trend-läget: pullback-entries", group=gGen, tooltip="Ger signaler ÄVEN i stark trend (inte bara vid kompressionsutbrott): när priset pullbackar till MA20 och sedan återupptar trenden. Detta är signalen som fangar langa rörelser.")
+pullbackBars = input.int(5, "Max barer sedan MA20-touch", minval=1, maxval=20, group=gGen, tooltip="Hur nyligen priset ska ha nuddat MA20 för att en återupptagning ska ge signal.")
+sigQuality = input.string("Hög", "Signalkvalitet", options=["Normal", "Hög"], group=gGen, tooltip="Hög = trend-signaler kraver även RSI i trendens riktning, ordentlig candle-kropp, ok volym och MTF-stöd. Färre men bättre signaler.")
+enableSweep = input.bool(true, "Sweep-entries (falskt utbrott = signal)", group=gGen, tooltip="Ett bekraftat falskt utbrott blir en riktig signal: falskt utbrott NEDAT (koptecken) ger SWEEP LONG, falskt utbrott UPPAT (säljtecken) ger SWEEP SHORT. SL hamnar naturligt bortom svepet.")
+sweepWithTrend = input.bool(true, "Sweep bara i regimens riktning", group=gGen, tooltip="På = SWEEP LONG tas inte i short-regim och tvartom. Av = ta alla sweep-vändningar (fler signaler, lagre träffsakerhet).")
+enableBO   = input.bool(true, "Utbrott/retest-signaler", group=gGen, tooltip="Kompression -> utbrott -> retest-signalerna. Backtest-tips: på ÄDELMETALLER är trend-läget starkast - prova att stänga AV dessa där. På INDEX (t.ex. Nasdaq) är det tvartom: dessa är starkast, stäng hellre av trend-läget.")
+dGateShort = input.bool(true, "Shorts kraver daglig bear-trend", group=gGen, tooltip="Blankning tillats bara när dagsgrafen (EMA50) är bearish. Storsta enskilda förbättringen i backtest 2024-2026 på både guld och index. OBS: sweep-signaler (falska utbrott) undantas från grinden - de är vändningsspel och far ta position mot dagstrenden.")
+dGateLong  = input.bool(false, "Longs kraver daglig bull-trend", group=gGen, tooltip="Köp tillats bara när dagsgrafen (EMA50) är bullish. Backtest-tips: PÅ på ädelmetaller (hojde både träffsakerhet och vinst, sankte drawdown). AV på index, där utbrott från bottnar annars missas.")
+precFilter = input.bool(false, "Precisionsfilter (fritt utrymme)", group=gGen, tooltip="Kraver minst 1 ATR fritt utrymme till narmaste strukturvagg (eller att priset redan brutit igenom den). Slipper trades som går rakt in i motstånd: något färre/lagre netto men klart lugnare kurva. Ingar automatiskt i Guld optimerad.")
+
+// ===================================================================
+// 02. RISK OCH SIZING
+// ===================================================================
+gRisk = "02. Risk och sizing"
+riskPercent = input.float(1.0, "Risk per trade (% av equity)", minval=0.1, maxval=10, step=0.1, group=gRisk, tooltip="Positionsstorleken räknas från stop-avståndet så varje trade riskerar exakt så har mycket. Viktigaste inställningen.")
+scaleByScore = input.bool(true, "Skala storlek med score", group=gRisk, tooltip="Score på gränsen = halv risk, score 100 = full risk.")
+maxExposurePct = input.float(100, "Max exponering (% av equity)", minval=10, maxval=1000, step=10, group=gRisk)
+stopMethod = input.string("ATR + struktur", "Stopmodell", options=["ATR", "Struktur", "ATR + struktur"], group=gRisk)
+rr1 = input.float(1.0, "TP1 - R", minval=0.25, step=0.25, group=gRisk)
+rr2 = input.float(2.0, "TP2 - R", minval=0.5,  step=0.25, group=gRisk)
+rr3 = input.float(3.0, "TP3 - R", minval=0.75, step=0.25, group=gRisk)
+rr4 = input.float(4.5, "TP4 - R", minval=1.0,  step=0.25, group=gRisk)
+pct1 = input.float(25, "Stäng vid TP1 (%)", minval=0, maxval=100, group=gRisk)
+pct2 = input.float(25, "Stäng vid TP2 (%)", minval=0, maxval=100, group=gRisk)
+pct3 = input.float(25, "Stäng vid TP3 (%)", minval=0, maxval=100, group=gRisk)
+useBreakEven = input.bool(true, "Break-even efter TP1", group=gRisk)
+beBufferAtr  = input.float(0.05, "BE-buffert (ATR)", minval=0, maxval=1, step=0.05, group=gRisk)
+useTrailing  = input.bool(true, "Trailing stop efter TP2", group=gRisk)
+trailAtr     = input.float(2.0, "Trailing-avstånd (ATR)", minval=0.5, maxval=10, step=0.1, group=gRisk)
+
+// ===================================================================
+// 03. TIMING
+// ===================================================================
+gTime = "03. Timing"
+useSession   = input.bool(false, "Handla bara vald session", group=gTime)
+sessWindow   = input.session("0800-2100", "Handelssession", group=gTime, tooltip="Tider i chart-tidszonen.")
+cooldownBars = input.int(5, "Cooldown (barer)", minval=0, maxval=100, group=gTime)
+maxPerDay    = input.int(3, "Max trades per dag (0 = fritt)", minval=0, maxval=50, group=gTime)
+allowFlip    = input.bool(false, "Vänd på motsatt signal", group=gTime)
+minHistory   = input.int(200, "Min historik (barer)", minval=0, group=gTime, tooltip="Skydd mot nya noteringar utan historik.")
+
+
+// ===================================================================
+// 04. HTF
+// ===================================================================
+gHtf = "04. Hogre timeframe"
+useHtf = input.bool(true, "Krav: HTF-trend håller med", group=gHtf)
+htfTF  = input.timeframe("240", "HTF", group=gHtf)
+htfLen = input.int(50, "HTF EMA", minval=10, maxval=200, group=gHtf)
+
+// ===================================================================
+// 05. CUSTOM
+// ===================================================================
+gCus = "05. Custom-parametrar"
+cStructLen  = input.int(20,   "Structure lookback",   minval=8,  maxval=100, group=gCus)
+cImpulseLen = input.int(40,   "Impulse lookback",     minval=10, maxval=200, group=gCus)
+cAtrLen     = input.int(14,   "ATR längd",            minval=5,  maxval=100, group=gCus)
+cAtrStop    = input.float(1.8,"Stop-loss ATR",        minval=0.3,maxval=10, step=0.1, group=gCus)
+cCompress   = input.float(0.78,"Kompressionsfaktor",  minval=0.3,maxval=1.0,step=0.01, group=gCus)
+cBuffer     = input.float(0.12,"Breakout-buffer ATR", minval=0,  maxval=2,  step=0.01, group=gCus)
+cRetestBars = input.int(8,    "Max candles till retest", minval=1, maxval=50, group=gCus)
+retestTolAtr= input.float(0.35,"Retest-tolerans (ATR)", minval=0.05, maxval=2, step=0.05, group=gCus)
+
+// ===================================================================
+// 06. KVALITETSFILTER
+// ===================================================================
+gFil = "06. Kvalitetsfilter"
+useVolumeFilter  = input.bool(false, "Volymfilter", group=gFil, tooltip="CFD/index kan ha tickvolym - testa separat.")
+volumeMultiplier = input.float(1.15, "Minsta relativ volym", minval=0.5, maxval=5, step=0.05, group=gFil)
+useRsiFilter     = input.bool(true, "RSI-filter", group=gFil)
+rsiLength        = input.int(14, "RSI längd", minval=2, maxval=100, group=gFil)
+useCandleFilter  = input.bool(true, "Krav: stark breakout-candle", group=gFil)
+minBodyPct       = input.float(0.45, "Minsta body/range", minval=0.1, maxval=1, step=0.05, group=gFil)
+useMa200Filter   = input.bool(true, "Krav: rätt sida av MA200", group=gFil)
+useMa20Slope     = input.bool(true, "Krav: MA20-riktning", group=gFil)
+
+// ===================================================================
+// 07. NIVAER, LIKVIDITET OCH SESSIONER
+// ===================================================================
+gLvls = "07. Nivåer och likviditet"
+showPD  = input.bool(true, "PDH / PDL", group=gLvls)
+showPW  = input.bool(true, "PWH / PWL", group=gLvls)
+showEQ  = input.bool(true, "Premium / Discount (EQ)", group=gLvls, tooltip="Equilibrium från strukturens range. Över = premium (dyrt), under = discount (billigt).")
+showLiq = input.bool(true, "Liquidity BSL / SSL", group=gLvls, tooltip="Lika toppar/bottnar = likviditetspooler. Markeras 'swept' när de tas ut.")
+showSMC  = input.bool(true, "Marknadsstruktur (HH/HL + BOS/CHoCH)", group=gLvls, tooltip="Smart Money-struktur: swingar markeras HH/HL/LH/LL, brott ritas som BOS (i trendens riktning) eller CHoCH (trendskifte).")
+showOB   = input.bool(true, "Köp- och säljzoner (Order Blocks)", group=gLvls, tooltip="Vid varje strukturbrott ritas zonen som startade rörelsen: gron KÖPZON under priset (där man vill köpa retest), rod SÄLJZON över (där man vill sälja). Zonen tas bort när priset stänger igenom den.")
+showPOC  = input.bool(true, "POC (gardagens volympunkt)", group=gLvls, tooltip="Point of Control: prisnivån där mest volym handlades igar. Fungerar som magnet och stöd/motstånd.")
+showVP   = input.bool(true, "Volymprofil på sidan", group=gLvls, tooltip="Volymprofil över de senaste barerna, ritad från vänsterkanten: var volymen ligger per prisnivå (40 nivåer). Bredare stapel = mer handel = starkare stöd/motstånd. Guldstapeln + HÖGSTA VOLYM = profilens POC.")
+vpLookback = input.int(200, "Volymprofil: antal barer", minval=50, maxval=500, step=50, group=gLvls)
+showFVG  = input.bool(false, "FVG (färska obalanser)", group=gLvls, tooltip="Färska Fair Value Gaps. Av som standard - kryssa i för att visa. Zonerna spåras ändå i bakgrunden så inverterade (iFVG) alltid blir rätt.")
+showIFVG = input.bool(true, "iFVG (inverterade zoner)", group=gLvls, tooltip="När priset stänger igenom en FVG byter den roll: stöd blir motstånd och tvartom. Ofta de starkaste zonerna.")
+ifvgMin  = input.float(0.3, "Min FVG-storlek (ATR)", minval=0.05, maxval=3, step=0.05, group=gLvls, tooltip="Filtrerar bort sma obetydliga gaps.")
+eqTolAtr = input.float(0.5, "EQH/EQL tolerans (ATR)", minval=0.1, maxval=2, step=0.1, group=gLvls)
+
+gSes = "08. Sessioner (high/low-nivåer)"
+sessAsiaOn = input.bool(true, "Asia",   group=gSes, inline="a", tooltip="Sessionernas high/low ritas som horisontella nivåer. Tider i chart-tidszonen.")
+sessAsia   = input.session("0000-0800", "", group=gSes, inline="a")
+sessLonOn  = input.bool(true, "London", group=gSes, inline="l")
+sessLon    = input.session("0800-1600", "", group=gSes, inline="l")
+sessNYOn   = input.bool(true, "NY",     group=gSes, inline="n")
+sessNY     = input.session("1330-2200", "", group=gSes, inline="n")
+colA       = input.color(#5aa0c7, "Asia",   group=gSes, inline="c")
+colL       = input.color(#c79a3a, "London", group=gSes, inline="c")
+colN       = input.color(#a86bb0, "NY",     group=gSes, inline="c")
+
+// ===================================================================
+// 09. MAKRO
+// ===================================================================
+gMac = "09. Gold Macro Score"
+showMacro    = input.bool(true, "Visa Gold Score i panelen", group=gMac)
+macroCompact = input.bool(false, "Kompakt: endast totalen", group=gMac, tooltip="Panelen visar bara TOTAL + Bekraftelse (2 rader istället för 13). Kryssa ur för att se alla drivare.")
+useMacroGate = input.bool(true, "Krav: Gold Score i linje med traden", group=gMac, tooltip="Blockerar bara trades där Gold Score är EMOT: long stoppas om score under -tröskel, short om över +tröskel. Neutralt läge slapper igenom bada. STÄNG AV på instrument som inte är ädelmetaller.")
+macroGate    = input.int(20, "Score-tröskel", minval=0, maxval=60, group=gMac)
+realSym = input.symbol("FRED:DFII10",      "10Y realränta (TIPS)", group=gMac)
+dxySym  = input.symbol("TVC:DXY",          "DXY", group=gMac)
+goldSym = input.symbol("TVC:GOLD",         "Guld", group=gMac)
+gldSym  = input.symbol("AMEX:GLD",         "GLD (ETF-flodesproxy)", group=gMac)
+gdxSym  = input.symbol("AMEX:GDX",         "GDX gruvor", group=gMac)
+silSym  = input.symbol("TVC:SILVER",       "Silver", group=gMac)
+walSym  = input.symbol("FRED:WALCL",       "Fed balansrakning (likviditet)", group=gMac)
+hygSym  = input.symbol("AMEX:HYG",         "High yield (HYG)", group=gMac)
+vixSym  = input.symbol("TVC:VIX",          "VIX", group=gMac)
+jpySym  = input.symbol("FX:USDJPY",        "USDJPY", group=gMac)
+cnhSym  = input.symbol("FX_IDC:USDCNH",    "USDCNH", group=gMac)
+copSym  = input.symbol("CAPITALCOM:COPPER","Köppar", group=gMac)
+btcSym  = input.symbol("BITSTAMP:BTCUSD",  "Bitcoin", group=gMac)
+
+// ===================================================================
+// 10. POSITIONSKALKYLATOR
+// ===================================================================
+// ===================================================================
+// 10. LIVE POSITION GUIDE (radgivare)
+// ===================================================================
+gGd = "10. Position Guide (live radgivare)"
+guideOn = input.bool(true, "Aktivera radgivaren", group=gGd, tooltip="Läser grafen LIVE medan du är i position och trappar upp rad: VINSTSAKRA 25% -> SÄLJ 75% -> EXIT ALLT. Varningar: falskt utbrott emot dig, momentum viker, volymen avtar, säljtryck i flodet, motståndszon nära, makro viker (Gold Score), strukturbrott. Kraftigt negativ makro hoppar direkt till SÄLJ 75%.")
+guideWaitTp1 = input.bool(true, "Vänta med säljrad tills TP1 är nådd", group=gGd, tooltip="På = radgivaren börjar inte trappa upp säljrad förrän traden natt TP1 (1R) - ger traden chansen att jobba. Harda strukturbrott och kraftigt negativ makro går fortfarande före direkt.")
+posMode = input.string("Auto (motorns trades)", "Position", options=["Auto (motorns trades)", "Manuell Long", "Manuell Short"], group=gGd, tooltip="Auto = följer motorns egna trades. Manuell = du sitter i en egen position och vill ha live-rad. Fyll i ditt entry nedan.")
+manualEntry = input.float(0.0, "Manuellt entry-pris (0 = okant)", group=gGd, tooltip="Ditt ingangspris. Används för att veta om du är i vinst.")
+
+gCal = "11. Positionskalkylator"
+showCalc  = input.bool(false, "Visa kalkylator i panelen", group=gCal, tooltip="Av som standard för renare panel - kryssa i här när du vill räkna på en position.")
+calcAuto  = input.bool(false, "Auto: SL/TP från aktiv trade", group=gCal, tooltip="På = SL% och TP% räknas från den aktiva tradens nivåer x hävstång.")
+tradeKr   = input.float(10000, "Tradestorlek (kr)", step=1000, group=gCal)
+kop2On    = input.bool(false,  "Lägg till Köp 2", group=gCal)
+kop2Kr    = input.float(10000, "Köp 2 (kr)", step=1000, group=gCal)
+slCalcPct = input.float(5.0,   "SL % (av tradesumman)", step=0.5, group=gCal)
+tpCalcPct = input.float(10.0,  "TP %", step=0.5, group=gCal)
+levCalc   = input.float(10,    "Hävstång", step=1, group=gCal)
+
+// ===================================================================
+// 11. VISNING OCH LAYOUT
+// ===================================================================
+gVis = "11. Visning"
+showMAs        = input.bool(true, "MA20 och MA200", group=gVis)
+showStructure  = input.bool(true, "Struktur och retest-nivåer", group=gVis)
+showTradeLevels= input.bool(true, "Entry, SL och TP", group=gVis)
+showTable      = input.bool(true, "IC-panel", group=gVis)
+showBg         = input.bool(true, "Markera kompression", group=gVis)
+showSweeps     = input.bool(false, "Fakeouts / traps", group=gVis)
+fakeCool       = input.int(12, "Fakeout-avstånd (barer)", minval=1, maxval=100, group=gVis, tooltip="Min antal barer mellan FALSKT UTBROTT-markeringar. Högre = färre etiketter, bara de första/viktigaste per område visas.")
+showExitMk     = input.bool(true, "Delsalj- och exit-markörer", group=gVis, tooltip="Visar SÄLJ X% vid varje TP och EXIT när traden är helt stängd (SL, BE eller TP4).")
+showAllSigs    = input.bool(false, "Visa även blockerade signaler", group=gVis, tooltip="AV (standard): grafen visar bara ENTRY LONG/SHORT där motorn FAKTISKT tar position - rent och tydligt. PÅ: visar alla rasignaler även när de blockeras av daglig grind, session eller makro (bra för analys, men rorigt).")
+showMkt        = input.bool(true, "Marknadsdashboard i panelen", group=gVis, tooltip="Oversikt: guld, silver, GDX, koppar, DXY, USDJPY, Bitcoin och VIX med pris och 5-dagars riktning. Samma data som Gold Score - inga extra datakall.")
+showMtfRows    = input.bool(true, "Trend per timeframe i panelen", group=gVis)
+mtfCompact     = input.bool(false, "Kompakt trend-rad", group=gVis, tooltip="Alla fem tidsramar på EN rad: + = uppat, - = nedat. Kryssa ur för en rad per tidsram.")
+showStats      = input.bool(false, "Veckostatistik i panelen", group=gVis, tooltip="Veckans och totala resultat från Strategy Testern: trades, winrate, profit factor och netto.")
+showPnl        = input.bool(true, "Live P/L-etikett (%)", group=gVis, tooltip="Etikett vid priset som visar hur manga procent positionen ligger på just nu. Följer motorns trade, eller din manuella position (Position Guide).")
+showK2         = input.bool(true, "Påfyllnadsnivå (Köp 2)", group=gVis, tooltip="Frivillig påfyllnadsnivå halvvägs mellan entry och SL. Går priset EMOT dig hit kan du öka positionen till ett bättre snittpris - samma SL skyddar helheten. Motorn handlar den INTE själv, ren guide för manuell påfyllnad. Kryssa ur för att dölja linjen.")
+showRR         = input.bool(true, "Risk/Reward-boxar", group=gVis, tooltip="Röd yta = risken (entry till SL). Gröna ytor i trappsteg = belöningen upp till varje TP. Hela tradens risk/reward syns direkt i grafen.")
+showCard       = input.bool(true, "Trade-kort i kronor", group=gVis, tooltip="Litet kort uppe till vänster under aktiv trade: insats, risk till SL, potential vid TP4, RR och live-resultat - allt i KRONOR. Beloppen hämtas från Positionskalkylatorns insats och hävstång.")
+showNext       = input.bool(true, "NÄSTA MÅL-flagga", group=gVis, tooltip="Guldflagga som pekar på nästa TP och visar hur många procent som är kvar dit.")
+showWatch      = input.bool(true, "BEVAKAR-etikett när flat", group=gVis, tooltip="När ingen trade är aktiv visar en diskret etikett vad motorn väntar på - så grafen aldrig känns tom.")
+dashPos = input.string("Top Right", "Panel: placering", options=["Top Right", "Top Center", "Top Left", "Middle Right", "Middle Left", "Bottom Right", "Bottom Center", "Bottom Left"], group=gVis)
+dashSz  = input.string("Small", "Panel: textstorlek", options=["Tiny", "Small", "Normal", "Large"], group=gVis)
+
+// ===================================================================
+// 11b. FÄRGER OCH STYRKA
+// ===================================================================
+gClr = "11b. Färger och styrka"
+rrRiskCol  = input.color(#a8413d, "RR-box: risk", group=gClr, inline="rr")
+rrWinCol   = input.color(#2f7d5b, "vinst", group=gClr, inline="rr")
+rrOpa      = input.int(28, "RR-boxar: styrka %", minval=5, maxval=70, group=gClr, tooltip="Hur synliga risk/reward-ytorna är. Högre = starkare färg.")
+obBullCol  = input.color(#2f7d5b, "Zoner: köp", group=gClr, inline="ob")
+obBearCol  = input.color(#a8413d, "sälj", group=gClr, inline="ob")
+obOpa      = input.int(16, "Zoner: styrka %", minval=5, maxval=70, group=gClr, tooltip="KÖPZON/SÄLJZON-boxarnas synlighet.")
+fvgBullCol = input.color(#2f7d5b, "FVG: bull", group=gClr, inline="fv")
+fvgBearCol = input.color(#a8413d, "bear", group=gClr, inline="fv")
+fvgOpa     = input.int(14, "FVG/iFVG: styrka %", minval=5, maxval=70, group=gClr, tooltip="Obalanszonernas synlighet.")
+
+// ===================================================================
+// 12. PROFILPARAMETRAR
+// ===================================================================
+int structureLength = switch profile
+    "Guld optimerad" => 24
+    "Index optimerad" => 24
+    "5m Scalping"  => 18
+    "15m Intraday" => 20
+    "1H Swing"     => 24
+    "1D Swing"     => 20
+    => cStructLen
+int impulseLength = switch profile
+    "Guld optimerad" => 50
+    "Index optimerad" => 50
+    "5m Scalping"  => 36
+    "15m Intraday" => 40
+    "1H Swing"     => 50
+    "1D Swing"     => 45
+    => cImpulseLen
+int atrLength = profile == "Custom" ? cAtrLen : 14
+float atrStopMult = switch profile
+    "Guld optimerad" => 1.70
+    "Index optimerad" => 1.70
+    "5m Scalping"  => 1.30
+    "15m Intraday" => 1.50
+    "1H Swing"     => 1.70
+    "1D Swing"     => 2.00
+    => cAtrStop
+float compressionFactor = switch profile
+    "Guld optimerad" => 0.78
+    "Index optimerad" => 0.78
+    "5m Scalping"  => 0.82
+    "15m Intraday" => 0.80
+    "1H Swing"     => 0.78
+    "1D Swing"     => 0.76
+    => cCompress
+float breakoutBufferAtr = switch profile
+    "Guld optimerad" => 0.12
+    "Index optimerad" => 0.12
+    "5m Scalping"  => 0.08
+    "15m Intraday" => 0.10
+    "1H Swing"     => 0.12
+    "1D Swing"     => 0.15
+    => cBuffer
+int maxRetestBars = switch profile
+    "Guld optimerad" => 10
+    "Index optimerad" => 10
+    "5m Scalping"  => 6
+    "15m Intraday" => 8
+    "1H Swing"     => 10
+    "1D Swing"     => 12
+    => cRetestBars
+float impulseAtrReq = switch profile
+    "Guld optimerad" => 5.0
+    "Index optimerad" => 5.0
+    "5m Scalping"  => 4.0
+    "15m Intraday" => 4.5
+    "1H Swing"     => 5.0
+    "1D Swing"     => 5.5
+    => 5.0
+
+// Optimerade profiler (backtest 2024-2026) overstyra vissa strombrytare
+bool profGold = profile == "Guld optimerad"
+bool profIdx  = profile == "Index optimerad"
+bool effTrendOn  = profIdx ? false : enableTrend
+bool effBOOn     = profGold ? false : profIdx ? true : enableBO
+bool effDLong    = profGold ? true : profIdx ? false : dGateLong
+bool effDShort   = (profGold or profIdx) ? true : dGateShort
+bool effMacroOn  = profIdx ? false : useMacroGate
+bool effHeadroom = profGold ? true : precFilter
+int   effPbBars = profGold ? 8 : pullbackBars
+int   effCool   = profGold ? 3 : cooldownBars
+float effRvMin  = profGold ? 0.85 : 0.95
+int   effFkCool = profGold ? 6 : fakeCool
+
+// ===================================================================
+// 13. GRUNDINDIKATORER
+// ===================================================================
+float ma20  = ta.ema(close, 20)
+float ma200 = ta.ema(close, 200)
+float atr   = ta.atr(atrLength)
+float atrAvg= ta.sma(atr, structureLength)
+float rsi   = ta.rsi(close, rsiLength)
+float volAvg = ta.sma(volume, 20)
+float relVol = volAvg > 0 ? volume / volAvg : 1.0
+float cRange = math.max(high - low, syminfo.mintick)
+float bodyRatio = math.abs(close - open) / cRange
+bool bullCandle = close > open
+bool bearCandle = close < open
+bool confirmed  = not useConfirmedBars or barstate.isconfirmed
+
+// Statuslampa for felsokning: syns denna men inte panelen har nagot kraschat senare i skriptet
+var table beac = table.new(position.bottom_left, 1, 1)
+if barstate.islast
+    table.cell(beac, 0, 0, "ICone v2.6", text_color=color.new(#5a6470, 30), text_size=size.tiny, bgcolor=color.new(#0a0d12, 30))
+
+// HTF (bekraftad, ingen lookahead)
+f_htf() =>
+    [close[1], ta.ema(close, htfLen)[1]]
+[htfClose, htfMa] = request.security(syminfo.tickerid, htfTF, f_htf(), lookahead=barmerge.lookahead_off)
+bool htfBull = na(htfMa) or htfClose > htfMa
+bool htfBear = na(htfMa) or htfClose < htfMa
+bool htfLongOk  = not useHtf or htfBull
+bool htfShortOk = not useHtf or htfBear
+
+// MTF-trend (panel): EMA-baserad riktning + styrka
+f_tf() =>
+    e = ta.ema(close, 50)
+    b = close[1] > e[1]
+    s = math.round(math.min(math.abs(close[1] - e[1]) / math.max(ta.atr(14)[1], syminfo.mintick) * 20, 100))
+    [b, s]
+[tf5b,  tf5s]  = request.security(syminfo.tickerid, "5",   f_tf(), lookahead=barmerge.lookahead_off)
+[tf15b, tf15s] = request.security(syminfo.tickerid, "15",  f_tf(), lookahead=barmerge.lookahead_off)
+[tf60b, tf60s] = request.security(syminfo.tickerid, "60",  f_tf(), lookahead=barmerge.lookahead_off)
+[tf4hb, tf4hs] = request.security(syminfo.tickerid, "240", f_tf(), lookahead=barmerge.lookahead_off)
+[tf1db, tf1ds] = request.security(syminfo.tickerid, "D",   f_tf(), lookahead=barmerge.lookahead_off)
+int mtfBulls = (tf5b?1:0) + (tf15b?1:0) + (tf60b?1:0) + (tf4hb?1:0) + (tf1db?1:0)
+
+// ===== GOLD MACRO SCORE (-100..+100) =====
+// Bekraftade dagliga nivaer: [igar, for 6 dagar sedan] -> 5-dagars forandring.
+f_lv() =>
+    [close[1], close[6]]
+[rr1d, rr6d]   = request.security(realSym, "D", f_lv(), lookahead=barmerge.lookahead_off)
+[dx1d, dx6d]   = request.security(dxySym,  "D", f_lv(), lookahead=barmerge.lookahead_off)
+[au1d, au6d]   = request.security(goldSym, "D", f_lv(), lookahead=barmerge.lookahead_off)
+[gx1d, gx6d]   = request.security(gdxSym,  "D", f_lv(), lookahead=barmerge.lookahead_off)
+[ag1d, ag6d]   = request.security(silSym,  "D", f_lv(), lookahead=barmerge.lookahead_off)
+[wl1w, wl6w]   = request.security(walSym,  "W", f_lv(), lookahead=barmerge.lookahead_off)
+[hy1d, hy6d]   = request.security(hygSym,  "D", f_lv(), lookahead=barmerge.lookahead_off)
+[vx1d, vx6d]   = request.security(vixSym,  "D", f_lv(), lookahead=barmerge.lookahead_off)
+[jp1d, jp6d]   = request.security(jpySym,  "D", f_lv(), lookahead=barmerge.lookahead_off)
+[cn1d, cn6d]   = request.security(cnhSym,  "D", f_lv(), lookahead=barmerge.lookahead_off)
+[cu1d, cu6d]   = request.security(copSym,  "D", f_lv(), lookahead=barmerge.lookahead_off)
+[bt1d, bt6d]   = request.security(btcSym,  "D", f_lv(), lookahead=barmerge.lookahead_off)
+obvFlow = request.security(gldSym, "D", ta.obv[1] - ta.obv[6], lookahead=barmerge.lookahead_off)
+
+f_pc(a, b) => b != 0 and not na(a) and not na(b) ? (a - b) / b * 100 : 0.0
+rrChg  = not na(rr1d) and not na(rr6d) ? rr1d - rr6d : 0.0
+walChg = f_pc(wl1w, wl6w)
+dxC5   = f_pc(dx1d, dx6d)
+auC5   = f_pc(au1d, au6d)
+gxC5   = f_pc(gx1d, gx6d)
+agC5   = f_pc(ag1d, ag6d)
+hyC5   = f_pc(hy1d, hy6d)
+vxC5   = f_pc(vx1d, vx6d)
+jpC5   = f_pc(jp1d, jp6d)
+cnC5   = f_pc(cn1d, cn6d)
+cuC5   = f_pc(cu1d, cu6d)
+btC5   = f_pc(bt1d, bt6d)
+gsRatC = na(au1d) or na(ag1d) or na(au6d) or na(ag6d) or ag1d == 0 or ag6d == 0 ? 0.0 : ((au1d / ag1d) / (au6d / ag6d) - 1) * 100
+cgRatC = na(cu1d) or na(au1d) or na(cu6d) or na(au6d) or au1d == 0 or au6d == 0 ? 0.0 : ((cu1d / au1d) / (cu6d / au6d) - 1) * 100
+
+// Bidrag per drivare - vikter enligt Gold Matrix:
+// Realranta 25, DXY 20, Fed-likviditet 15, ETF 15, Trend 10, Bekraftelse & Risk ~15.
+float ma50 = ta.ema(close, 50)
+int pReal = rrChg < -0.01 ? 25 : rrChg > 0.01 ? -25 : 0
+int pDxy  = dxC5 < -0.15 ? 20 : dxC5 > 0.15 ? -20 : 0
+int pFed  = walChg > 0.05 ? 15 : walChg < -0.05 ? -15 : 0
+int pFlow = obvFlow > 0 ? 15 : obvFlow < 0 ? -15 : 0
+int pTrend = close > ma50 and close > ma200 ? 10 : close < ma50 and close < ma200 ? -10 : 0
+int pGdx  = (gxC5 - auC5) > 0.5 ? 4 : (gxC5 - auC5) < -0.5 ? -4 : 0
+int pSil  = agC5 > 0.3 ? 3 : agC5 < -0.3 ? -3 : 0
+int pRat  = gsRatC < -0.3 ? 2 : gsRatC > 0.3 ? (vxC5 > 3 ? 1 : -2) : 0
+int pHyg  = hyC5 < -0.4 ? 2 : hyC5 > 0.4 ? -1 : 0
+int pVix  = vxC5 > 5 ? 1 : vxC5 < -5 ? -1 : 0
+int pJpy  = jpC5 < -0.4 ? 1 : jpC5 > 0.4 ? -1 : 0
+int pCnh  = cnC5 < -0.2 ? 1 : cnC5 > 0.2 ? -1 : 0
+int pCg   = cgRatC < -0.5 ? 1 : cgRatC > 0.5 ? -1 : 0
+int pBtc  = btC5 > 2 ? 1 : btC5 < -2 ? -1 : 0
+int goldScore = math.max(-100, math.min(100, pReal + pDxy + pFed + pFlow + pTrend + pGdx + pSil + pRat + pHyg + pVix + pJpy + pCnh + pCg + pBtc))
+int alignPos = (pReal>0?1:0)+(pDxy>0?1:0)+(pFed>0?1:0)+(pFlow>0?1:0)+(pTrend>0?1:0)+(pGdx>0?1:0)+(pSil>0?1:0)+(pRat>0?1:0)+(pHyg>0?1:0)+(pVix>0?1:0)+(pJpy>0?1:0)+(pCnh>0?1:0)+(pCg>0?1:0)+(pBtc>0?1:0)
+int alignNeg = (pReal<0?1:0)+(pDxy<0?1:0)+(pFed<0?1:0)+(pFlow<0?1:0)+(pTrend<0?1:0)+(pGdx<0?1:0)+(pSil<0?1:0)+(pRat<0?1:0)+(pHyg<0?1:0)+(pVix<0?1:0)+(pJpy<0?1:0)+(pCnh<0?1:0)+(pCg<0?1:0)+(pBtc<0?1:0)
+
+// Key levels (PD/PW)
+pdH = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_on)
+pdL = request.security(syminfo.tickerid, "D", low[1],  lookahead=barmerge.lookahead_on)
+pwH = request.security(syminfo.tickerid, "W", high[1], lookahead=barmerge.lookahead_on)
+pwL = request.security(syminfo.tickerid, "W", low[1],  lookahead=barmerge.lookahead_on)
+
+// ===================================================================
+// 14. TRENDREGIM
+// ===================================================================
+bool aboveMa200 = close > ma200
+bool belowMa200 = close < ma200
+bool ma20Rising = ma20 > ma20[3]
+bool ma20Falling= ma20 < ma20[3]
+bool ma200Rising = ma200 > ma200[10]
+bool ma200Falling= ma200 < ma200[10]
+bool bullTrend = (not useMa200Filter or aboveMa200) and (not useMa20Slope or ma20Rising)
+bool bearTrend = (not useMa200Filter or belowMa200) and (not useMa20Slope or ma20Falling)
+
+// REGIM: dominant riktning. LONG-regim = kop dippar (trend-longs ar huvudaffarerna).
+int regimeDir = aboveMa200 and htfBull ? 1 : belowMa200 and htfBear ? -1 : 0
+
+// ===================================================================
+// 15. IMPULS
+// ===================================================================
+float impulseLow  = ta.lowest(low, impulseLength)
+float impulseHigh = ta.highest(high, impulseLength)
+bool bullImpulse = (close - impulseLow) >= atr * impulseAtrReq and close > ma20
+bool bearImpulse = (impulseHigh - close) >= atr * impulseAtrReq and close < ma20
+float netMove   = math.abs(close - close[impulseLength])
+float totalPath = math.sum(math.abs(close - close[1]), impulseLength)
+float efficiency = totalPath > 0 ? netMove / totalPath : 0
+
+// ===================================================================
+// 16. STRUKTUR OCH KOMPRESSION
+// ===================================================================
+float structHigh = ta.highest(high[1], structureLength)
+float structLow  = ta.lowest(low[1], structureLength)
+float structRange = structHigh - structLow
+float prevHigh = ta.highest(high[structureLength + 1], structureLength)
+float prevLow  = ta.lowest(low[structureLength + 1], structureLength)
+float prevRange = prevHigh - prevLow
+bool rangeContracting = prevRange > 0 and structRange < prevRange * compressionFactor
+bool atrContracting   = atrAvg > 0 and atr < atrAvg
+float hiReg0 = ta.linreg(high[1], structureLength, 0)
+float hiReg1 = ta.linreg(high[1], structureLength, 1)
+float loReg0 = ta.linreg(low[1],  structureLength, 0)
+float loReg1 = ta.linreg(low[1],  structureLength, 1)
+bool descHighs = (hiReg0 - hiReg1) < 0
+bool ascLows   = (loReg0 - loReg1) > 0
+bool triangleShape = descHighs and ascLows
+float widthAtr = atr > 0 ? structRange / atr : 0
+bool okWidth = widthAtr >= 2 and widthAtr <= 14
+bool compression = rangeContracting and atrContracting and okWidth
+bool triangle    = compression and triangleShape
+bool pennant     = compression and (descHighs or ascLows)
+bool validStruct = triangle or pennant
+
+// Premium/Discount fran strukturens range
+float eqLevel = (structHigh + structLow) / 2
+bool inDiscount = close < eqLevel
+bool inPremium  = close > eqLevel
+
+// ===================================================================
+// 17. BSL/SSL-LIKVIDITET (lika toppar/bottnar + sweep)
+// ===================================================================
+float ph = ta.pivothigh(high, 5, 5)
+float pl = ta.pivotlow(low, 5, 5)
+var float lastPH = na
+var float lastPL = na
+
+var array<line>  liqLn  = array.new<line>()
+var array<label> liqLb  = array.new<label>()
+var array<float> liqLvl = array.new<float>()
+var array<int>   liqDir = array.new<int>()
+var array<bool>  liqOn  = array.new<bool>()
+
+bool sweptPool = false
+if showLiq and not na(ph)
+    if not na(lastPH) and math.abs(ph - lastPH) <= eqTolAtr * atr
+        lvl = math.max(ph, lastPH)
+        array.push(liqLn, line.new(bar_index - 5, lvl, bar_index + 10, lvl, color=color.new(#c79a3a, 15), width=1, style=line.style_dotted))
+        array.push(liqLb, label.new(bar_index + 10, lvl, "BSL", style=label.style_none, textcolor=color.new(#c79a3a, 0), size=size.tiny, textalign=text.align_left))
+        array.push(liqLvl, lvl)
+        array.push(liqDir, 1)
+        array.push(liqOn, true)
+    lastPH := ph
+if showLiq and not na(pl)
+    if not na(lastPL) and math.abs(pl - lastPL) <= eqTolAtr * atr
+        lvl = math.min(pl, lastPL)
+        array.push(liqLn, line.new(bar_index - 5, lvl, bar_index + 10, lvl, color=color.new(#5aa0c7, 15), width=1, style=line.style_dotted))
+        array.push(liqLb, label.new(bar_index + 10, lvl, "SSL", style=label.style_none, textcolor=color.new(#5aa0c7, 0), size=size.tiny, textalign=text.align_left))
+        array.push(liqLvl, lvl)
+        array.push(liqDir, -1)
+        array.push(liqOn, true)
+    lastPL := pl
+
+if showLiq and array.size(liqLn) > 0
+    for i = array.size(liqLn) - 1 to 0
+        if array.get(liqOn, i)
+            lvl = array.get(liqLvl, i)
+            d   = array.get(liqDir, i)
+            taken = d == 1 ? high >= lvl : low <= lvl
+            ln = array.get(liqLn, i)
+            lb = array.get(liqLb, i)
+            if taken
+                array.set(liqOn, i, false)
+                sweptPool := true
+                line.set_x2(ln, bar_index)
+                line.set_color(ln, color.new(#5a6470, 55))
+                line.set_style(ln, line.style_dashed)
+                label.set_text(lb, (d == 1 ? "BSL" : "SSL") + " swept")
+                label.set_x(lb, bar_index)
+                label.set_textcolor(lb, color.new(#5a6470, 25))
+            else
+                line.set_x2(ln, bar_index + 10)
+                label.set_x(lb, bar_index + 10)
+    if array.size(liqLn) > 12
+        line.delete(array.shift(liqLn))
+        label.delete(array.shift(liqLb))
+        array.shift(liqLvl)
+        array.shift(liqDir)
+        array.shift(liqOn)
+
+// ===================================================================
+// 17b. MARKNADSSTRUKTUR (HH/HL/LH/LL + BOS/CHoCH)
+// ===================================================================
+var float smcHi = na
+var float smcLo = na
+var int   smcHiBar = na
+var int   smcLoBar = na
+var bool  smcHiBroken = false
+var bool  smcLoBroken = false
+var int   smcDir = 0
+
+if not na(ph)
+    txt = na(smcHi) or ph > smcHi ? "HH" : "LH"
+    if showSMC
+        label.new(bar_index - 5, ph, txt, style=label.style_none, textcolor=color.new(txt == "HH" ? #2f7d5b : #a8413d, 10), size=size.tiny, textalign=text.align_center)
+    smcHi := ph
+    smcHiBar := bar_index - 5
+    smcHiBroken := false
+if not na(pl)
+    txt = na(smcLo) or pl > smcLo ? "HL" : "LL"
+    if showSMC
+        label.new(bar_index - 5, pl, txt, style=label.style_none, textcolor=color.new(txt == "HL" ? #2f7d5b : #a8413d, 10), size=size.tiny, textalign=text.align_center)
+    smcLo := pl
+    smcLoBar := bar_index - 5
+    smcLoBroken := false
+
+// Order Block-zoner: candlen som startade brottet = kop-/saljzon
+var array<box> obB = array.new<box>()
+var array<int> obDir = array.new<int>()
+
+if barstate.isconfirmed
+    if not na(smcHi) and not smcHiBroken and close > smcHi
+        bool isBos = smcDir >= 0
+        if showSMC
+            line.new(smcHiBar, smcHi, bar_index, smcHi, color=color.new(isBos ? #8a929e : #c7a45a, 20), width=1, style=line.style_dashed)
+            label.new(math.round((smcHiBar + bar_index) / 2), smcHi, isBos ? "BOS" : "CHoCH", style=label.style_none, textcolor=color.new(isBos ? #8a929e : #c7a45a, 0), size=size.tiny, textalign=text.align_center)
+        if showOB
+            int fnd = -1
+            for k = 1 to 15
+                if fnd < 0 and close[k] < open[k]
+                    fnd := k
+            if fnd > 0 and (high[fnd] - low[fnd]) <= atr * 2
+                array.push(obB, box.new(bar_index - fnd, high[fnd], bar_index + 10, low[fnd], bgcolor=color.new(obBullCol, 100 - obOpa), border_color=color.new(obBullCol, math.max(100 - obOpa - 25, 0)), border_width=1, text="KÖPZON", text_color=color.new(obBullCol, math.max(100 - obOpa - 45, 0)), text_size=size.tiny, text_halign=text.align_right))
+                array.push(obDir, 1)
+        smcHiBroken := true
+        smcDir := 1
+    if not na(smcLo) and not smcLoBroken and close < smcLo
+        bool isBos = smcDir <= 0
+        if showSMC
+            line.new(smcLoBar, smcLo, bar_index, smcLo, color=color.new(isBos ? #8a929e : #c7a45a, 20), width=1, style=line.style_dashed)
+            label.new(math.round((smcLoBar + bar_index) / 2), smcLo, isBos ? "BOS" : "CHoCH", style=label.style_none, textcolor=color.new(isBos ? #8a929e : #c7a45a, 0), size=size.tiny, textalign=text.align_center)
+        if showOB
+            int fnd = -1
+            for k = 1 to 15
+                if fnd < 0 and close[k] > open[k]
+                    fnd := k
+            if fnd > 0 and (high[fnd] - low[fnd]) <= atr * 2
+                array.push(obB, box.new(bar_index - fnd, high[fnd], bar_index + 10, low[fnd], bgcolor=color.new(obBearCol, 100 - obOpa), border_color=color.new(obBearCol, math.max(100 - obOpa - 25, 0)), border_width=1, text="SÄLJZON", text_color=color.new(obBearCol, math.max(100 - obOpa - 45, 0)), text_size=size.tiny, text_halign=text.align_right))
+                array.push(obDir, -1)
+        smcLoBroken := true
+        smcDir := -1
+
+// OB-underhall: forlang, ta bort nar genombruten
+if showOB and barstate.isconfirmed and array.size(obB) > 0
+    for i = array.size(obB) - 1 to 0
+        bx = array.get(obB, i)
+        d  = array.get(obDir, i)
+        bTop = box.get_top(bx)
+        bBot = box.get_bottom(bx)
+        if (d == 1 and close < bBot) or (d == -1 and close > bTop)
+            box.delete(bx)
+            array.remove(obB, i)
+            array.remove(obDir, i)
+        else
+            box.set_right(bx, bar_index + 10)
+    while array.size(obB) > 6
+        box.delete(array.shift(obB))
+        array.shift(obDir)
+
+// ===================================================================
+// 17c. FVG / iFVG-ZONER
+// ===================================================================
+var array<box>   fvB   = array.new<box>()
+var array<float> fvTop = array.new<float>()
+var array<float> fvBot = array.new<float>()
+var array<int>   fvDir = array.new<int>()
+var array<bool>  fvInv = array.new<bool>()
+
+bool bullFvg = (showFVG or showIFVG) and barstate.isconfirmed and low > high[2] and (low - high[2]) >= ifvgMin * atr
+bool bearFvg = (showFVG or showIFVG) and barstate.isconfirmed and high < low[2] and (low[2] - high) >= ifvgMin * atr
+
+int fvBgT = showFVG ? 100 - fvgOpa : 100
+int fvBoT = showFVG ? math.max(100 - fvgOpa - 25, 0) : 100
+int fvTxT = showFVG ? math.max(100 - fvgOpa - 50, 0) : 100
+if bullFvg
+    array.push(fvB, box.new(bar_index - 2, low, bar_index + 8, high[2], bgcolor=color.new(fvgBullCol, fvBgT), border_color=color.new(fvgBullCol, fvBoT), border_width=1, text="FVG", text_color=color.new(fvgBullCol, fvTxT), text_size=size.tiny, text_halign=text.align_right))
+    array.push(fvTop, low)
+    array.push(fvBot, high[2])
+    array.push(fvDir, 1)
+    array.push(fvInv, false)
+if bearFvg
+    array.push(fvB, box.new(bar_index - 2, low[2], bar_index + 8, high, bgcolor=color.new(fvgBearCol, fvBgT), border_color=color.new(fvgBearCol, fvBoT), border_width=1, text="FVG", text_color=color.new(fvgBearCol, fvTxT), text_size=size.tiny, text_halign=text.align_right))
+    array.push(fvTop, low[2])
+    array.push(fvBot, high)
+    array.push(fvDir, -1)
+    array.push(fvInv, false)
+
+if (showFVG or showIFVG) and barstate.isconfirmed and array.size(fvB) > 0
+    for i = array.size(fvB) - 1 to 0
+        bx  = array.get(fvB, i)
+        top = array.get(fvTop, i)
+        bot = array.get(fvBot, i)
+        d   = array.get(fvDir, i)
+        inv = array.get(fvInv, i)
+        box.set_right(bx, bar_index + 8)
+        if not inv
+            if d == 1 and close < bot
+                array.set(fvInv, i, true)
+                box.set_bgcolor(bx, color.new(fvgBearCol, showIFVG ? 100 - fvgOpa : 100))
+                box.set_border_color(bx, color.new(fvgBearCol, showIFVG ? math.max(100 - fvgOpa - 30, 0) : 100))
+                box.set_text(bx, "iFVG")
+                box.set_text_color(bx, color.new(fvgBearCol, showIFVG ? math.max(100 - fvgOpa - 55, 0) : 100))
+            if d == -1 and close > top
+                array.set(fvInv, i, true)
+                box.set_bgcolor(bx, color.new(fvgBullCol, showIFVG ? 100 - fvgOpa : 100))
+                box.set_border_color(bx, color.new(fvgBullCol, showIFVG ? math.max(100 - fvgOpa - 30, 0) : 100))
+                box.set_text(bx, "iFVG")
+                box.set_text_color(bx, color.new(fvgBullCol, showIFVG ? math.max(100 - fvgOpa - 55, 0) : 100))
+        else
+            if (d == 1 and close > top) or (d == -1 and close < bot)
+                box.delete(bx)
+                array.remove(fvB, i)
+                array.remove(fvTop, i)
+                array.remove(fvBot, i)
+                array.remove(fvDir, i)
+                array.remove(fvInv, i)
+    while array.size(fvB) > 8
+        box.delete(array.shift(fvB))
+        array.shift(fvTop)
+        array.shift(fvBot)
+        array.shift(fvDir)
+        array.shift(fvInv)
+
+// ===================================================================
+// 18. KEY LEVELS OCH EQ (ritas en gang, uppdateras)
+// ===================================================================
+var line lnPdH = na
+var line lnPdL = na
+var line lnPwH = na
+var line lnPwL = na
+var line lnEq  = na
+var label lbPdH = na
+var label lbPdL = na
+var label lbPwH = na
+var label lbPwL = na
+var label lbEq  = na
+
+f_lvlLine(ln, lb, y, txt, col, sty) =>
+    l1 = ln
+    l2 = lb
+    if na(l1)
+        l1 := line.new(bar_index - 1, y, bar_index + 5, y, color=col, width=1, style=sty, extend=extend.both)
+        l2 := label.new(bar_index + 3, y, txt, style=label.style_none, textcolor=col, size=size.small)
+    else
+        line.set_y1(l1, y)
+        line.set_y2(l1, y)
+        label.set_y(l2, y)
+        label.set_x(l2, bar_index + 3)
+    [l1, l2]
+
+if barstate.islast
+    if showPD
+        [a1, a2] = f_lvlLine(lnPdH, lbPdH, pdH, "PDH", color.new(color.white, 25), line.style_solid)
+        lnPdH := a1
+        lbPdH := a2
+        [b1, b2] = f_lvlLine(lnPdL, lbPdL, pdL, "PDL", color.new(color.white, 25), line.style_solid)
+        lnPdL := b1
+        lbPdL := b2
+    if showPW
+        [c1, c2] = f_lvlLine(lnPwH, lbPwH, pwH, "PWH", color.new(color.white, 55), line.style_dashed)
+        lnPwH := c1
+        lbPwH := c2
+        [d1, d2] = f_lvlLine(lnPwL, lbPwL, pwL, "PWL", color.new(color.white, 55), line.style_dashed)
+        lnPwL := d1
+        lbPwL := d2
+    if showEQ
+        [e1, e2] = f_lvlLine(lnEq, lbEq, eqLevel, "EQ", color.new(#c7a45a, 20), line.style_dotted)
+        lnEq := e1
+        lbEq := e2
+
+// ===================================================================
+// 19. SESSIONER (high/low-nivaer, PDL-stil)
+// ===================================================================
+var array<float> ssHi  = array.new<float>(3, na)
+var array<float> ssLo  = array.new<float>(3, na)
+var array<line>  ssHiL = array.new<line>(3, na)
+var array<line>  ssLoL = array.new<line>(3, na)
+var array<label> ssHiB = array.new<label>(3, na)
+var array<label> ssLoB = array.new<label>(3, na)
+
+aIn = sessAsiaOn and not na(time(timeframe.period, sessAsia))
+lIn = sessLonOn  and not na(time(timeframe.period, sessLon))
+nIn = sessNYOn   and not na(time(timeframe.period, sessNY))
+insArr   = array.from(aIn, lIn, nIn)
+startArr = array.from(aIn and not aIn[1], lIn and not lIn[1], nIn and not nIn[1])
+nmArr    = array.from("Asia", "London", "NY")
+colArr   = array.from(colA, colL, colN)
+
+if barstate.isconfirmed
+    for i = 0 to 2
+        ins = array.get(insArr, i)
+        st  = array.get(startArr, i)
+        nm  = array.get(nmArr, i)
+        col = array.get(colArr, i)
+        if st
+            array.set(ssHi, i, high)
+            array.set(ssLo, i, low)
+            line.delete(array.get(ssHiL, i))
+            line.delete(array.get(ssLoL, i))
+            label.delete(array.get(ssHiB, i))
+            label.delete(array.get(ssLoB, i))
+            array.set(ssHiL, i, line.new(bar_index, high, bar_index + 5, high, color=color.new(col, 40), width=1, style=line.style_dotted, extend=extend.right))
+            array.set(ssLoL, i, line.new(bar_index, low,  bar_index + 5, low,  color=color.new(col, 40), width=1, style=line.style_dotted, extend=extend.right))
+            array.set(ssHiB, i, label.new(bar_index + 3, high, nm + " H", style=label.style_none, textcolor=color.new(col, 12), size=size.small))
+            array.set(ssLoB, i, label.new(bar_index + 3, low,  nm + " L", style=label.style_none, textcolor=color.new(col, 12), size=size.small))
+        else if ins
+            nh = math.max(array.get(ssHi, i), high)
+            nl = math.min(array.get(ssLo, i), low)
+            array.set(ssHi, i, nh)
+            array.set(ssLo, i, nl)
+            hl = array.get(ssHiL, i)
+            if not na(hl)
+                line.set_y1(hl, nh)
+                line.set_y2(hl, nh)
+                ll = array.get(ssLoL, i)
+                line.set_y1(ll, nl)
+                line.set_y2(ll, nl)
+                label.set_y(array.get(ssHiB, i), nh)
+                label.set_y(array.get(ssLoB, i), nl)
+        hb = array.get(ssHiB, i)
+        if not na(hb)
+            label.set_x(hb, bar_index + 3)
+            label.set_x(array.get(ssLoB, i), bar_index + 3)
+
+// ===================================================================
+// 20. BREAKOUT-KVALITET
+// ===================================================================
+float boBuffer = atr * breakoutBufferAtr
+bool strongBull = bullCandle and bodyRatio >= minBodyPct and close >= high - cRange * 0.25
+bool strongBear = bearCandle and bodyRatio >= minBodyPct and close <= low + cRange * 0.25
+bool volOk      = not useVolumeFilter or relVol >= volumeMultiplier
+bool longRsiOk  = not useRsiFilter or (rsi >= 50 and rsi <= 78)
+bool shortRsiOk = not useRsiFilter or (rsi <= 50 and rsi >= 22)
+bool longCandleOk  = not useCandleFilter or strongBull
+bool shortCandleOk = not useCandleFilter or strongBear
+bool rawLongBO  = validStruct[1] and close > structHigh + boBuffer and close[1] <= structHigh[1] + boBuffer[1]
+bool rawShortBO = validStruct[1] and close < structLow - boBuffer and close[1] >= structLow[1] - boBuffer[1]
+
+// Fakeouts - bara vid GILTIG struktur, meningsfullt stick (0.15 ATR) och cooldown (mot spam)
+float fkBuf = atr * 0.15
+bool rawBullFk = validStruct[1] and high > structHigh + fkBuf and close < structHigh and bearCandle
+bool rawBearFk = validStruct[1] and low < structLow - fkBuf and close > structLow and bullCandle
+var int lastFkBar = na
+bool fkCoolOk = na(lastFkBar) or bar_index - lastFkBar >= effFkCool
+bool bullFakeout = rawBullFk and fkCoolOk
+bool bearFakeout = rawBearFk and fkCoolOk
+if (bullFakeout or bearFakeout) and barstate.isconfirmed
+    lastFkBar := bar_index
+bool sweptLows  = low < structLow and close > structLow
+bool sweptHighs = high > structHigh and close < structHigh
+
+// ===================================================================
+// 21. IC SCORE 0-100
+// ===================================================================
+int longTrendS  = (aboveMa200 ? 8 : 0) + (ma20Rising ? 7 : 0) + (ma200Rising ? 5 : 0)
+int shortTrendS = (belowMa200 ? 8 : 0) + (ma20Falling ? 7 : 0) + (ma200Falling ? 5 : 0)
+int longImpS  = (bullImpulse ? 10 : 0) + (efficiency >= 0.25 ? 5 : efficiency >= 0.15 ? 3 : 0)
+int shortImpS = (bearImpulse ? 10 : 0) + (efficiency >= 0.25 ? 5 : efficiency >= 0.15 ? 3 : 0)
+int compS = (rangeContracting ? 6 : 0) + (atrContracting ? 5 : 0) + (okWidth ? 4 : 0)
+int structS = (triangleShape ? 10 : 0) + (validStruct ? 5 : 0)
+int longBoS  = (rawLongBO ? 8 : 0) + (strongBull ? 4 : 0) + (close > structHigh + atr * 0.25 ? 3 : 0)
+int shortBoS = (rawShortBO ? 8 : 0) + (strongBear ? 4 : 0) + (close < structLow - atr * 0.25 ? 3 : 0)
+int longMomS  = (longRsiOk ? 5 : 0) + (volOk ? 5 : 0)
+int shortMomS = (shortRsiOk ? 5 : 0) + (volOk ? 5 : 0)
+// HTF 3 + sweep 4 + lage 3 + EQ-boost 4
+bool nearEQ = math.abs(close - eqLevel) <= atr * 0.5
+int longLiqS  = (htfBull ? 3 : 0) + (sweptLows ? 4 : 0) + (inDiscount ? 3 : 0) + (nearEQ ? 4 : 0)
+int shortLiqS = (htfBear ? 3 : 0) + (sweptHighs ? 4 : 0) + (inPremium ? 3 : 0) + (nearEQ ? 4 : 0)
+
+int longScore  = math.min(100, longTrendS + longImpS + compS + structS + longBoS + longMomS + longLiqS)
+int shortScore = math.min(100, shortTrendS + shortImpS + compS + structS + shortBoS + shortMomS + shortLiqS)
+
+// ===================================================================
+// 22. GRINDAR
+// ===================================================================
+bool longAllowed  = tradeDirection == "Long & Short" or tradeDirection == "Endast Long"
+bool shortAllowed = tradeDirection == "Long & Short" or tradeDirection == "Endast Short"
+bool strictMode = gateMode == "Filter + Score (strikt)"
+bool longFilters  = bullTrend and bullImpulse and volOk and longRsiOk and longCandleOk and htfLongOk
+bool shortFilters = bearTrend and bearImpulse and volOk and shortRsiOk and shortCandleOk and htfShortOk
+
+bool approvedLongBO = confirmed and rawLongBO and longAllowed and longScore >= minimumScore and (not strictMode or longFilters)
+bool approvedShortBO = confirmed and rawShortBO and shortAllowed and shortScore >= minimumScore and (not strictMode or shortFilters)
+
+// ===================================================================
+// 23. RETEST-MOTOR
+// ===================================================================
+var float pendLongLvl = na
+var float pendShortLvl = na
+var int   pendLongBar = na
+var int   pendShortBar = na
+var bool  waitLong = false
+var bool  waitShort = false
+
+if approvedLongBO
+    pendLongLvl := structHigh
+    pendLongBar := bar_index
+    waitLong := true
+    waitShort := false
+    pendShortLvl := na
+    pendShortBar := na
+if approvedShortBO
+    pendShortLvl := structLow
+    pendShortBar := bar_index
+    waitShort := true
+    waitLong := false
+    pendLongLvl := na
+    pendLongBar := na
+
+int sinceLongBO  = not na(pendLongBar)  ? bar_index - pendLongBar  : 100000
+int sinceShortBO = not na(pendShortBar) ? bar_index - pendShortBar : 100000
+float retestTol = atr * retestTolAtr
+
+bool longRetestTouch = waitLong and sinceLongBO >= 1 and sinceLongBO <= maxRetestBars and low <= pendLongLvl + retestTol and low >= pendLongLvl - atr * 0.75
+bool shortRetestTouch = waitShort and sinceShortBO >= 1 and sinceShortBO <= maxRetestBars and high >= pendShortLvl - retestTol and high <= pendShortLvl + atr * 0.75
+
+bool approvedLongRetest = confirmed and longRetestTouch and close > pendLongLvl and bullCandle and longAllowed and (not strictMode or (bullTrend and htfLongOk))
+bool approvedShortRetest = confirmed and shortRetestTouch and close < pendShortLvl and bearCandle and shortAllowed and (not strictMode or (bearTrend and htfShortOk))
+
+if approvedLongRetest
+    waitLong := false
+if approvedShortRetest
+    waitShort := false
+
+bool failedLong  = waitLong and close < pendLongLvl - atr * 0.50
+bool failedShort = waitShort and close > pendShortLvl + atr * 0.50
+if sinceLongBO > maxRetestBars or failedLong
+    waitLong := false
+    pendLongLvl := na
+    pendLongBar := na
+if sinceShortBO > maxRetestBars or failedShort
+    waitShort := false
+    pendShortLvl := na
+    pendShortBar := na
+
+// ===================================================================
+// 24. ENTRYLOGIK OCH TIMING
+// ===================================================================
+bool longSignal = switch entryMode
+    "Breakout direkt"    => approvedLongBO
+    "Retest prioriterad" => approvedLongRetest or (approvedLongBO and bodyRatio >= 0.70 and relVol >= 1.30)
+    => approvedLongRetest
+bool shortSignal = switch entryMode
+    "Breakout direkt"    => approvedShortBO
+    "Retest prioriterad" => approvedShortRetest or (approvedShortBO and bodyRatio >= 0.70 and relVol >= 1.30)
+    => approvedShortRetest
+
+// Strombrytare for utbrott/retest-blocket (trend och sweep har egna)
+if not effBOOn
+    longSignal := false
+    shortSignal := false
+
+// TREND-LAGET: pullback till MA20 + aterupptagning = continuation-signal.
+// Fangar starka trender dar kompression aldrig hinner bildas.
+int sinceTouchLo = ta.barssince(low <= ma20)
+int sinceTouchHi = ta.barssince(high >= ma20)
+bool qHi = sigQuality == "Hög"
+bool trendLong = effTrendOn and confirmed and bullTrend and htfLongOk and
+     sinceTouchLo >= 0 and sinceTouchLo <= effPbBars and
+     close > ma20 and bullCandle and close > high[1] and
+     longAllowed and
+     (not qHi or (rsi >= 50 and bodyRatio >= 0.35 and relVol >= effRvMin and mtfBulls >= 3))
+bool trendShort = effTrendOn and confirmed and bearTrend and htfShortOk and
+     sinceTouchHi >= 0 and sinceTouchHi <= effPbBars and
+     close < ma20 and bearCandle and close < low[1] and
+     shortAllowed and
+     (not qHi or (rsi <= 50 and bodyRatio >= 0.35 and relVol >= effRvMin and mtfBulls <= 2))
+
+longSignal := longSignal or trendLong
+shortSignal := shortSignal or trendShort
+
+// SWEEP-ENTRIES: bekraftat falskt utbrott = signal at motsatt hall (likviditetssvep)
+bool sweepLong  = enableSweep and confirmed and bearFakeout and longAllowed and (not sweepWithTrend or regimeDir >= 0)
+bool sweepShort = enableSweep and confirmed and bullFakeout and shortAllowed and (not sweepWithTrend or regimeDir <= 0)
+longSignal := longSignal or sweepLong
+shortSignal := shortSignal or sweepShort
+
+// Precisionsfilter: krav pa fritt utrymme (1 ATR) till narmaste strukturvagg
+if effHeadroom
+    if not (close > structHigh or (structHigh - close) >= atr)
+        longSignal := false
+    if not (close < structLow or (close - structLow) >= atr)
+        shortSignal := false
+
+int utcHour = int((time / 3600000) % 24)
+bool profSessOk = not profGold or (utcHour >= 7 and utcHour <= 21)
+bool inSession = (not useSession or not na(time(timeframe.period, sessWindow))) and profSessOk
+var int lastTradeBar = na
+bool coolOk = na(lastTradeBar) or (bar_index - lastTradeBar) >= effCool
+var int tradesToday = 0
+bool newDay = ta.change(time("D")) != 0
+if newDay
+    tradesToday := 0
+bool dayOk = maxPerDay == 0 or tradesToday < maxPerDay
+bool histOk = bar_index >= minHistory
+bool timingOk = inSession and coolOk and dayOk and histOk
+
+bool flat = strategy.position_size == 0
+bool macroLongOk  = not effMacroOn or goldScore > -macroGate
+bool macroShortOk = not effMacroOn or goldScore < macroGate
+// Daglig trendgrind (EMA50 pa dagsgrafen via MTF-blocket)
+bool dailyLongOk  = not effDLong or tf1db or sweepLong
+bool dailyShortOk = not effDShort or not tf1db or sweepShort
+bool canLong  = longSignal  and timingOk and macroLongOk  and dailyLongOk  and (flat or (allowFlip and strategy.position_size < 0))
+bool canShort = shortSignal and timingOk and macroShortOk and dailyShortOk and (flat or (allowFlip and strategy.position_size > 0))
+
+// ===================================================================
+// 25. STOP, TARGETS, SIZING, BE OCH TRAILING
+// ===================================================================
+float longAtrStop  = close - atr * atrStopMult
+float shortAtrStop = close + atr * atrStopMult
+float longStructStop  = math.min(ta.lowest(low, math.min(structureLength, 10)), nz(pendLongLvl, structLow) - atr * 0.25)
+float shortStructStop = math.max(ta.highest(high, math.min(structureLength, 10)), nz(pendShortLvl, structHigh) + atr * 0.25)
+float calcLongStop = switch stopMethod
+    "ATR"      => longAtrStop
+    "Struktur" => longStructStop
+    => math.min(longAtrStop, longStructStop)
+float calcShortStop = switch stopMethod
+    "ATR"      => shortAtrStop
+    "Struktur" => shortStructStop
+    => math.max(shortAtrStop, shortStructStop)
+
+f_qty(entryPx, stopPx, score) =>
+    float perUnit = math.max(math.abs(entryPx - stopPx), syminfo.mintick * 10)
+    float rPct = riskPercent
+    if scaleByScore
+        float span = math.max(100 - minimumScore, 1)
+        float f = 0.5 + 0.5 * math.min(math.max(score - minimumScore, 0) / span, 1)
+        rPct := riskPercent * f
+    float riskCash = strategy.equity * rPct / 100
+    float q = riskCash / perUnit
+    float maxQ = entryPx > 0 ? (strategy.equity * maxExposurePct / 100) / entryPx : q
+    math.min(q, maxQ)
+
+var float aEntry = na
+var float aStop  = na
+var float aRisk  = na
+var float aTp1 = na
+var float aTp2 = na
+var float aTp3 = na
+var float aTp4 = na
+var float aQty = na
+var int   aDir = 0
+var bool  tp1Done = false
+var bool  tp2Done = false
+var bool  tp3Done = false
+var float aK2 = na
+var bool  k2Hit = false
+var float curStop = na
+bool newTradeBar = false
+
+if canLong
+    q = f_qty(close, calcLongStop, longScore)
+    if q > 0
+        aEntry := close
+        aStop  := calcLongStop
+        aRisk  := math.max(aEntry - aStop, syminfo.mintick * 10)
+        aTp1 := aEntry + aRisk * rr1
+        aTp2 := aEntry + aRisk * rr2
+        aTp3 := aEntry + aRisk * rr3
+        aTp4 := aEntry + aRisk * rr4
+        aK2  := aEntry - aRisk * 0.5
+        k2Hit := false
+        aQty := q
+        aDir := 1
+        curStop := aStop
+        tp1Done := false
+        tp2Done := false
+        tp3Done := false
+        lastTradeBar := bar_index
+        tradesToday := tradesToday + 1
+        newTradeBar := true
+        strategy.entry("IC Long", strategy.long, qty=q, comment="LONG")
+
+if canShort
+    q = f_qty(close, calcShortStop, shortScore)
+    if q > 0
+        aEntry := close
+        aStop  := calcShortStop
+        aRisk  := math.max(aStop - aEntry, syminfo.mintick * 10)
+        aTp1 := aEntry - aRisk * rr1
+        aTp2 := aEntry - aRisk * rr2
+        aTp3 := aEntry - aRisk * rr3
+        aTp4 := aEntry - aRisk * rr4
+        aK2  := aEntry + aRisk * 0.5
+        k2Hit := false
+        aQty := q
+        aDir := -1
+        curStop := aStop
+        tp1Done := false
+        tp2Done := false
+        tp3Done := false
+        lastTradeBar := bar_index
+        tradesToday := tradesToday + 1
+        newTradeBar := true
+        strategy.entry("IC Short", strategy.short, qty=q, comment="SHORT")
+
+if aDir == 1 and strategy.position_size > 0
+    if not na(aK2) and low <= aK2
+        k2Hit := true
+    if high >= aTp1
+        tp1Done := true
+    if high >= aTp2
+        tp2Done := true
+    if high >= aTp3
+        tp3Done := true
+    if useBreakEven and tp1Done
+        curStop := math.max(curStop, aEntry + atr * beBufferAtr)
+    if useTrailing and tp2Done
+        curStop := math.max(curStop, close - atr * trailAtr)
+if aDir == -1 and strategy.position_size < 0
+    if not na(aK2) and high >= aK2
+        k2Hit := true
+    if low <= aTp1
+        tp1Done := true
+    if low <= aTp2
+        tp2Done := true
+    if low <= aTp3
+        tp3Done := true
+    if useBreakEven and tp1Done
+        curStop := math.min(curStop, aEntry - atr * beBufferAtr)
+    if useTrailing and tp2Done
+        curStop := math.min(curStop, close + atr * trailAtr)
+
+var array<label> evLbs = array.new<label>()
+// Delsalj-markorer: visar nar varje TP nas och hur mycket som saljs
+bool tp1Evt = tp1Done and not tp1Done[1] and strategy.position_size != 0
+bool tp2Evt = tp2Done and not tp2Done[1] and strategy.position_size != 0
+bool tp3Evt = tp3Done and not tp3Done[1] and strategy.position_size != 0
+if showExitMk and barstate.isconfirmed
+    if tp1Evt
+        array.push(evLbs, label.new(bar_index, aDir == 1 ? high + atr * 0.5 : low - atr * 0.5, "SÄLJ " + str.tostring(pct1, "#") + "%" + (useBreakEven ? "\nstop -> BE" : ""), style=aDir == 1 ? label.style_label_down : label.style_label_up, color=color.new(#7a6326, 0), textcolor=color.white, size=size.small))
+    if tp2Evt
+        array.push(evLbs, label.new(bar_index, aDir == 1 ? high + atr * 0.5 : low - atr * 0.5, "SÄLJ " + str.tostring(pct2, "#") + "%" + (useTrailing ? "\ntrail på" : ""), style=aDir == 1 ? label.style_label_down : label.style_label_up, color=color.new(#7a6326, 0), textcolor=color.white, size=size.small))
+    if tp3Evt
+        array.push(evLbs, label.new(bar_index, aDir == 1 ? high + atr * 0.5 : low - atr * 0.5, "SÄLJ " + str.tostring(pct3, "#") + "%\nlat resten glida", style=aDir == 1 ? label.style_label_down : label.style_label_up, color=color.new(#7a6326, 0), textcolor=color.white, size=size.small))
+
+if aDir == 1 and strategy.position_size > 0
+    strategy.exit("L TP1", from_entry="IC Long", stop=curStop, limit=aTp1, qty=aQty * pct1 / 100)
+    strategy.exit("L TP2", from_entry="IC Long", stop=curStop, limit=aTp2, qty=aQty * pct2 / 100)
+    strategy.exit("L TP3", from_entry="IC Long", stop=curStop, limit=aTp3, qty=aQty * pct3 / 100)
+    strategy.exit("L TP4", from_entry="IC Long", stop=curStop, limit=aTp4)
+if aDir == -1 and strategy.position_size < 0
+    strategy.exit("S TP1", from_entry="IC Short", stop=curStop, limit=aTp1, qty=aQty * pct1 / 100)
+    strategy.exit("S TP2", from_entry="IC Short", stop=curStop, limit=aTp2, qty=aQty * pct2 / 100)
+    strategy.exit("S TP3", from_entry="IC Short", stop=curStop, limit=aTp3, qty=aQty * pct3 / 100)
+    strategy.exit("S TP4", from_entry="IC Short", stop=curStop, limit=aTp4)
+
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    aEntry := na
+    aStop := na
+    aRisk := na
+    aTp1 := na
+    aTp2 := na
+    aTp3 := na
+    aTp4 := na
+    aQty := na
+    aK2 := na
+    k2Hit := false
+    curStop := na
+    aDir := 0
+    tp1Done := false
+    tp2Done := false
+    tp3Done := false
+
+// ===================================================================
+// 25s. VECKOSTATISTIK (spara startvarden vid ny vecka)
+// ===================================================================
+var float weekEq0 = na
+var int weekTr0 = 0
+var int weekWin0 = 0
+bool newWeek = ta.change(time("W")) != 0
+if na(weekEq0) or newWeek
+    weekEq0 := strategy.equity
+    weekTr0 := strategy.closedtrades
+    weekWin0 := strategy.wintrades
+
+// ===================================================================
+// 25c. TRADE-NIVAER SOM LINJER (med saljprocent pa linjen)
+// ===================================================================
+var line lnE = na
+var line lnS = na
+var line lnT1 = na
+var line lnT2 = na
+var line lnT3 = na
+var line lnT4 = na
+var line lnK2 = na
+var label lbE = na
+var label lbS = na
+var label lbT1 = na
+var label lbT2 = na
+var label lbT3 = na
+var label lbT4 = na
+var label lbK2 = na
+var label entLb = na
+var box rrRisk = na
+var array<box> rrTps = array.new<box>()
+
+f_tl(y, txt, col, sty) =>
+    l = line.new(bar_index, y, bar_index + 1, y, color=col, width=1, style=sty)
+    b = label.new(bar_index + 2, y, txt, style=label.style_none, textcolor=col, size=size.small)
+    [l, b]
+
+if newTradeBar and showTradeLevels
+    line.delete(lnE)
+    line.delete(lnS)
+    line.delete(lnT1)
+    line.delete(lnT2)
+    line.delete(lnT3)
+    line.delete(lnT4)
+    line.delete(lnK2)
+    label.delete(lbE)
+    label.delete(lbS)
+    label.delete(lbT1)
+    label.delete(lbT2)
+    label.delete(lbT3)
+    label.delete(lbT4)
+    label.delete(lbK2)
+    label.delete(entLb)
+    box.delete(rrRisk)
+    while array.size(rrTps) > 0
+        box.delete(array.pop(rrTps))
+    while array.size(evLbs) > 0
+        label.delete(array.pop(evLbs))
+    restPct = math.max(100 - pct1 - pct2 - pct3, 0)
+    [e1, e2] = f_tl(aEntry, aDir == 1 ? "ENTRY LONG" : "ENTRY SHORT", color.new(color.white, 0), line.style_solid)
+    lnE := e1
+    lbE := e2
+    [s1, s2] = f_tl(curStop, "SL  (-1R)", color.new(#a8413d, 0), line.style_solid)
+    lnS := s1
+    lbS := s2
+    [a1, a2] = f_tl(aTp1, "TP1 - SÄLJ " + str.tostring(pct1, "#") + "%  (+" + str.tostring(rr1, "#.#") + "R)", color.new(#2f7d5b, 25), line.style_dashed)
+    lnT1 := a1
+    lbT1 := a2
+    [b1, b2] = f_tl(aTp2, "TP2 - SÄLJ " + str.tostring(pct2, "#") + "%  (+" + str.tostring(rr2, "#.#") + "R)", color.new(#2f7d5b, 15), line.style_dashed)
+    lnT2 := b1
+    lbT2 := b2
+    [c1, c2] = f_tl(aTp3, "TP3 - SÄLJ " + str.tostring(pct3, "#") + "%  (+" + str.tostring(rr3, "#.#") + "R)", color.new(#2f7d5b, 5), line.style_dashed)
+    lnT3 := c1
+    lbT3 := c2
+    [d1, d2] = f_tl(aTp4, "TP4 - SISTA " + str.tostring(restPct, "#") + "%  (+" + str.tostring(rr4, "#.#") + "R)", color.new(#5aa0c7, 0), line.style_dashed)
+    lnT4 := d1
+    lbT4 := d2
+    if showK2
+        [k1, k2] = f_tl(aK2, "PÅFYLLNAD 2 (-0,5R): öka positionen här", color.new(#c7a45a, 10), line.style_dotted)
+        lnK2 := k1
+        lbK2 := k2
+        label.set_tooltip(lbK2, "Påfyllnadsnivå halvvägs till SL. Går priset hit emot dig kan du öka positionen till bättre snitt - SL skyddar hela positionen. Frivilligt: motorn fyller inte på själv.")
+    entLb := label.new(bar_index, aDir == 1 ? low - atr * 0.3 : high + atr * 0.3, aDir == 1 ? "ENTRY LONG" : "ENTRY SHORT", style=aDir == 1 ? label.style_label_up : label.style_label_down, color=color.new(aDir == 1 ? #2f7d5b : #a8413d, 0), textcolor=color.white, size=size.small)
+    if showRR
+        int rrT = 100 - rrOpa
+        rrRisk := box.new(bar_index, math.max(aEntry, aStop), bar_index + 1, math.min(aEntry, aStop), bgcolor=color.new(rrRiskCol, rrT), border_color=color.new(rrRiskCol, math.max(rrT - 20, 0)), border_width=1)
+        float pPrev = aEntry
+        for tpi = 0 to 3
+            float tpY = tpi == 0 ? aTp1 : tpi == 1 ? aTp2 : tpi == 2 ? aTp3 : aTp4
+            int tpA = math.min(97, rrT + tpi * 4)
+            array.push(rrTps, box.new(bar_index, math.max(pPrev, tpY), bar_index + 1, math.min(pPrev, tpY), bgcolor=color.new(rrWinCol, tpA), border_color=color.new(rrWinCol, 100), border_width=1))
+            pPrev := tpY
+
+if strategy.position_size != 0 and showTradeLevels and not na(lnE)
+    line.set_x2(lnE, bar_index + 1)
+    line.set_x2(lnS, bar_index + 1)
+    line.set_x2(lnT1, bar_index + 1)
+    line.set_x2(lnT2, bar_index + 1)
+    line.set_x2(lnT3, bar_index + 1)
+    line.set_x2(lnT4, bar_index + 1)
+    if not na(lnK2)
+        line.set_x2(lnK2, bar_index + 1)
+    if not na(rrRisk)
+        box.set_right(rrRisk, bar_index + 1)
+    if array.size(rrTps) > 0
+        for bi = 0 to array.size(rrTps) - 1
+            box.set_right(array.get(rrTps, bi), bar_index + 1)
+    label.set_x(lbE, bar_index + 2)
+    label.set_x(lbS, bar_index + 2)
+    label.set_x(lbT1, bar_index + 2)
+    label.set_x(lbT2, bar_index + 2)
+    label.set_x(lbT3, bar_index + 2)
+    label.set_x(lbT4, bar_index + 2)
+    if not na(lbK2)
+        label.set_x(lbK2, bar_index + 2)
+    line.set_y1(lnS, curStop)
+    line.set_y2(lnS, curStop)
+    label.set_y(lbS, curStop)
+    label.set_text(lbS, tp2Done and useTrailing ? "SL (TRAIL)" : tp1Done and useBreakEven ? "SL (BE)" : "SL")
+    if tp1Done
+        line.set_color(lnT1, color.new(#5a6470, 45))
+        label.set_text(lbT1, "TP1 KLAR - " + str.tostring(pct1, "#") + "% salt")
+        label.set_textcolor(lbT1, color.new(#5a6470, 15))
+    if tp2Done
+        line.set_color(lnT2, color.new(#5a6470, 45))
+        label.set_text(lbT2, "TP2 KLAR - " + str.tostring(pct2, "#") + "% salt")
+        label.set_textcolor(lbT2, color.new(#5a6470, 15))
+    if tp3Done
+        line.set_color(lnT3, color.new(#5a6470, 45))
+        label.set_text(lbT3, "TP3 KLAR - " + str.tostring(pct3, "#") + "% salt")
+        label.set_textcolor(lbT3, color.new(#5a6470, 15))
+    if k2Hit and not na(lnK2)
+        line.set_color(lnK2, color.new(#5a6470, 45))
+        label.set_text(lbK2, "PÅFYLLNAD 2 TRÄFFAD")
+        label.set_textcolor(lbK2, color.new(#5a6470, 15))
+
+// Nar traden stangs: ta bort ALL grafik for den - bara aktiv trade visas
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    line.delete(lnE)
+    line.delete(lnS)
+    line.delete(lnT1)
+    line.delete(lnT2)
+    line.delete(lnT3)
+    line.delete(lnT4)
+    line.delete(lnK2)
+    label.delete(lbE)
+    label.delete(lbS)
+    label.delete(lbT1)
+    label.delete(lbT2)
+    label.delete(lbT3)
+    label.delete(lbT4)
+    label.delete(lbK2)
+    label.delete(entLb)
+    box.delete(rrRisk)
+    rrRisk := na
+    while array.size(rrTps) > 0
+        box.delete(array.pop(rrTps))
+    lnE := na
+    lnK2 := na
+    lbK2 := na
+    entLb := na
+    while array.size(evLbs) > 0
+        label.delete(array.pop(evLbs))
+
+// ===================================================================
+// 25d. LIVE P/L-MATARE
+// ===================================================================
+var label pnlLb = na
+int pnlDir = aDir != 0 ? aDir : posMode == "Manuell Long" ? 1 : posMode == "Manuell Short" ? -1 : 0
+float pnlEntry = aDir != 0 ? aEntry : (posMode != "Auto (motorns trades)" and manualEntry > 0 ? manualEntry : na)
+float livePnl = pnlDir != 0 and not na(pnlEntry) and pnlEntry != 0 ? (close - pnlEntry) / pnlEntry * 100 * pnlDir : na
+if barstate.islast
+    if showPnl and not na(livePnl)
+        if na(pnlLb)
+            pnlLb := label.new(bar_index + 4, close, "", style=label.style_label_left, size=size.small, textcolor=color.white)
+        label.set_xy(pnlLb, bar_index + 4, close)
+        label.set_text(pnlLb, (livePnl >= 0 ? "+" : "") + str.tostring(livePnl, "#.##") + "%")
+        label.set_color(pnlLb, livePnl >= 0 ? color.new(#2f7d5b, 0) : color.new(#a8413d, 0))
+    else if not na(pnlLb)
+        label.delete(pnlLb)
+        pnlLb := na
+
+// ===================================================================
+// 25d2. TRADE-KORT (KRONOR), NÄSTA MÅL OCH BEVAKAR
+// ===================================================================
+var table tCard = na
+var label nextLb = na
+var label watchLb = na
+if barstate.islast
+    if showCard and strategy.position_size != 0 and not na(aEntry) and aEntry != 0
+        if na(tCard)
+            tCard := table.new(position.top_left, 2, 6, bgcolor=color.new(#10151c, 0), border_width=1, border_color=color.new(#222a35, 0), frame_width=1, frame_color=color.new(#c7a45a, 30))
+        float expo = tradeKr * levCalc
+        float rkKr = expo * math.abs(aEntry - aStop) / aEntry
+        float tp4Kr = expo * math.abs(aTp4 - aEntry) / aEntry
+        float liveKr = expo * nz(livePnl, 0) / 100
+        table.cell(tCard, 0, 0, "TRADE-KORT", text_color=color.new(#c7a45a, 0), text_size=size.small, text_halign=text.align_left, bgcolor=color.new(#161d27, 0))
+        table.cell(tCard, 1, 0, aDir == 1 ? "LONG" : "SHORT", text_color=aDir == 1 ? color.new(#2f7d5b, 0) : color.new(#a8413d, 0), text_size=size.small, text_halign=text.align_right, bgcolor=color.new(#161d27, 0))
+        table.cell(tCard, 0, 1, "Insats (häv " + str.tostring(levCalc, "#") + "x)", text_color=color.new(#737d8a, 0), text_size=size.small, text_halign=text.align_left)
+        table.cell(tCard, 1, 1, str.tostring(math.round(tradeKr)) + " kr", text_color=color.white, text_size=size.small, text_halign=text.align_right)
+        table.cell(tCard, 0, 2, "Risk till SL", text_color=color.new(#737d8a, 0), text_size=size.small, text_halign=text.align_left)
+        table.cell(tCard, 1, 2, "-" + str.tostring(math.round(rkKr)) + " kr", text_color=color.new(#d99a94, 0), text_size=size.small, text_halign=text.align_right)
+        table.cell(tCard, 0, 3, "Vid TP4", text_color=color.new(#737d8a, 0), text_size=size.small, text_halign=text.align_left)
+        table.cell(tCard, 1, 3, "+" + str.tostring(math.round(tp4Kr)) + " kr", text_color=color.new(#7fc9a0, 0), text_size=size.small, text_halign=text.align_right)
+        table.cell(tCard, 0, 4, "Risk/Reward", text_color=color.new(#737d8a, 0), text_size=size.small, text_halign=text.align_left)
+        table.cell(tCard, 1, 4, "1:" + str.tostring(rr4, "#.#"), text_color=color.white, text_size=size.small, text_halign=text.align_right)
+        table.cell(tCard, 0, 5, "Live", text_color=color.new(#737d8a, 0), text_size=size.small, text_halign=text.align_left)
+        table.cell(tCard, 1, 5, (liveKr >= 0 ? "+" : "") + str.tostring(math.round(liveKr)) + " kr (" + (nz(livePnl, 0) >= 0 ? "+" : "") + str.tostring(nz(livePnl, 0), "#.##") + "%)", text_color=nz(livePnl, 0) >= 0 ? color.new(#7fc9a0, 0) : color.new(#d99a94, 0), text_size=size.small, text_halign=text.align_right)
+    else if not na(tCard)
+        table.delete(tCard)
+        tCard := na
+    if showNext and strategy.position_size != 0 and not na(aTp1)
+        float tgtY = not tp1Done ? aTp1 : not tp2Done ? aTp2 : not tp3Done ? aTp3 : aTp4
+        string tgtN = not tp1Done ? "TP1" : not tp2Done ? "TP2" : not tp3Done ? "TP3" : "TP4"
+        float dpct = close != 0 ? (tgtY - close) / close * 100 * aDir : 0
+        if na(nextLb)
+            nextLb := label.new(bar_index + 6, tgtY, "", style=label.style_label_left, color=color.new(#e0b64f, 0), textcolor=color.new(#000000, 0), size=size.small)
+        label.set_xy(nextLb, bar_index + 6, tgtY)
+        label.set_text(nextLb, "NÄSTA MÅL: " + tgtN + "  " + (dpct >= 0 ? "+" : "") + str.tostring(dpct, "#.##") + "% kvar")
+    else if not na(nextLb)
+        label.delete(nextLb)
+        nextLb := na
+    if showWatch and strategy.position_size == 0
+        string wTxt = waitLong ? "BEVAKAR: retest uppåt - köpsignal kan komma" : waitShort ? "BEVAKAR: retest nedåt - säljsignal kan komma" : validStruct ? "BEVAKAR: mönster laddas - inväntar utbrott" : regimeDir == 1 ? "BEVAKAR: köpsignal (BULL-läge)" : regimeDir == -1 ? "BEVAKAR: säljsignal (BEAR-läge)" : "AVVAKTAR - otydligt läge"
+        color wCol = regimeDir == 1 ? color.new(#7fc9a0, 0) : regimeDir == -1 ? color.new(#d99a94, 0) : color.new(#8a929e, 0)
+        if na(watchLb)
+            watchLb := label.new(bar_index + 4, close, "", style=label.style_label_left, size=size.small, color=color.new(#10151c, 15), textcolor=color.white)
+        label.set_xy(watchLb, bar_index + 4, close)
+        label.set_text(watchLb, wTxt)
+        label.set_textcolor(watchLb, wCol)
+    else if not na(watchLb)
+        label.delete(watchLb)
+        watchLb := na
+
+// ===================================================================
+// 25e. POC - GARDAGENS VOLYMPUNKT
+// ===================================================================
+var int dayStartBar = na
+var int prevDayStart = na
+var line pocLn = na
+var label pocLb = na
+if newDay and barstate.isconfirmed
+    prevDayStart := dayStartBar
+    dayStartBar := bar_index
+    if showPOC and not na(prevDayStart)
+        int nb = bar_index - prevDayStart
+        if nb > 1 and nb <= 300
+            float hiY = high[1]
+            float loY = low[1]
+            for o = 1 to nb
+                hiY := math.max(hiY, nz(high[o], hiY))
+                loY := math.min(loY, nz(low[o], loY))
+            float rngY = hiY - loY
+            if rngY > 0
+                var array<float> binV = array.new<float>()
+                array.clear(binV)
+                for b = 0 to 23
+                    array.push(binV, 0.0)
+                for o = 1 to nb
+                    float hv = hl2[o]
+                    if not na(hv)
+                        int bi = int(math.min(23, math.max(0, math.floor((hv - loY) / rngY * 24))))
+                        array.set(binV, bi, array.get(binV, bi) + nz(volume[o]))
+                int best = 0
+                for b = 1 to 23
+                    if array.get(binV, b) > array.get(binV, best)
+                        best := b
+                float pocY = loY + (best + 0.5) * rngY / 24
+                line.delete(pocLn)
+                label.delete(pocLb)
+                pocLn := line.new(bar_index, pocY, bar_index + 5, pocY, color=color.new(#e0b64f, 25), width=2, extend=extend.right)
+                pocLb := label.new(bar_index + 3, pocY, "POC", style=label.style_none, textcolor=color.new(#e0b64f, 10), size=size.small)
+
+// ===================================================================
+// 25f. VOLYMPROFIL PA SIDAN
+// ===================================================================
+var array<box> vpB = array.new<box>()
+var label vpPocLb = na
+if barstate.islast
+    while array.size(vpB) > 0
+        box.delete(array.pop(vpB))
+    label.delete(vpPocLb)
+    if showVP
+        int lb = math.min(vpLookback, bar_index - 1)
+        if lb > 20
+            float hiY = high
+            float loY = low
+            for o = 0 to lb
+                hiY := math.max(hiY, nz(high[o], hiY))
+                loY := math.min(loY, nz(low[o], loY))
+            float rngY = hiY - loY
+            if rngY > 0
+                var array<float> vv = array.new<float>()
+                array.clear(vv)
+                for b = 0 to 39
+                    array.push(vv, 0.0)
+                for o = 0 to lb
+                    float hv = hl2[o]
+                    if not na(hv)
+                        int bi = int(math.min(39, math.max(0, math.floor((hv - loY) / rngY * 40))))
+                        array.set(vv, bi, array.get(vv, bi) + nz(volume[o]))
+                float mx = 0.0
+                int best = 0
+                for b = 0 to 39
+                    if array.get(vv, b) > mx
+                        mx := array.get(vv, b)
+                        best := b
+                if mx > 0
+                    int wMax = 45
+                    int anchorX = bar_index - 2
+                    for b = 0 to 39
+                        int w = math.max(1, math.round(array.get(vv, b) / mx * wMax))
+                        float y0 = loY + b * rngY / 40
+                        float y1 = loY + (b + 1) * rngY / 40
+                        bool isP = b == best
+                        array.push(vpB, box.new(anchorX - w, y1, anchorX, y0, bgcolor=color.new(isP ? #e0b64f : #8a929e, isP ? 42 : 85), border_color=color.new(#000000, 100), border_width=1))
+                        if isP
+                            vpPocLb := label.new(anchorX - w - 2, (y0 + y1) / 2, "HÖGSTA VOLYM", style=label.style_none, textcolor=color.new(#e0b64f, 10), size=size.tiny, textalign=text.align_right)
+
+// ===================================================================
+// 25b. LIVE POSITION GUIDE - trappar upp rad medan du ar i position
+// ===================================================================
+int guideDir = posMode == "Manuell Long" ? 1 : posMode == "Manuell Short" ? -1 : aDir
+float guideEntry = posMode == "Auto (motorns trades)" ? aEntry : (manualEntry > 0 ? manualEntry : na)
+bool inGuide = guideOn and guideDir != 0
+
+// Varningssignaler (riktningsmedvetna)
+bool wFake = guideDir == 1 ? bullFakeout : guideDir == -1 ? bearFakeout : false
+bool crossDn20 = ta.crossunder(close, ma20)
+bool crossUp20 = ta.crossover(close, ma20)
+bool wMomo = guideDir == 1 ? crossDn20 : guideDir == -1 ? crossUp20 : false
+bool inProfit = na(guideEntry) or (guideDir == 1 ? close > guideEntry : close < guideEntry)
+bool wVol = volume < volAvg and volume[1] < volAvg and inProfit and (guideDir == 1 ? bearCandle : bullCandle)
+float upVol5 = math.sum(bullCandle ? volume : 0.0, 5)
+float dnVol5 = math.sum(bearCandle ? volume : 0.0, 5)
+bool wFlow = guideDir == 1 ? dnVol5 > upVol5 * 1.3 : guideDir == -1 ? upVol5 > dnVol5 * 1.3 : false
+// Makro: Gold Score som viker emot positionen (bara pa adelmetaller, styrs av useMacroGate)
+bool wMac = effMacroOn and (guideDir == 1 ? goldScore < -10 : guideDir == -1 ? goldScore > 10 : false)
+bool wMacHard = effMacroOn and (guideDir == 1 ? goldScore <= -40 : guideDir == -1 ? goldScore >= 40 : false)
+
+// Motstands-/stodzon nara: struktur, PDH/PWH och aktiva BSL/SSL-pooler
+float zoneDist = na
+if guideDir == 1
+    zoneDist := math.min(math.max(structHigh - close, 0), math.min(math.max(pdH - close, 0) == 0 ? 1e10 : pdH - close, math.max(pwH - close, 0) == 0 ? 1e10 : pwH - close))
+    if array.size(liqLvl) > 0
+        for i = 0 to array.size(liqLvl) - 1
+            if array.get(liqOn, i) and array.get(liqDir, i) == 1 and array.get(liqLvl, i) > close
+                zoneDist := math.min(zoneDist, array.get(liqLvl, i) - close)
+if guideDir == -1
+    zoneDist := math.min(math.max(close - structLow, 0), math.min(math.max(close - pdL, 0) == 0 ? 1e10 : close - pdL, math.max(close - pwL, 0) == 0 ? 1e10 : close - pwL))
+    if array.size(liqLvl) > 0
+        for i = 0 to array.size(liqLvl) - 1
+            if array.get(liqOn, i) and array.get(liqDir, i) == -1 and array.get(liqLvl, i) < close
+                zoneDist := math.min(zoneDist, close - array.get(liqLvl, i))
+bool wZone = not na(zoneDist) and zoneDist <= atr * 0.6 and inProfit
+
+// Hart strukturbrott = direkt exit-rad
+bool wHard = guideDir == 1 ? close < structLow : guideDir == -1 ? close > structHigh : false
+
+// Eskalering: varje NY varning hojer nivan ett steg. Hart brott -> exit direkt.
+var int guideLvl = 0
+var int gDirPrev = 0
+if guideDir != gDirPrev
+    guideLvl := 0
+    gDirPrev := guideDir
+
+bool newWarn = (wFake and not wFake[1]) or (wMomo and not wMomo[1]) or (wVol and not wVol[1]) or (wFlow and not wFlow[1]) or (wZone and not wZone[1]) or (wMac and not wMac[1])
+string wReason = wFake and not wFake[1] ? "falskt utbrott emot" : wMomo and not wMomo[1] ? "momentum viker" : wVol and not wVol[1] ? "volymen avtar" : wFlow and not wFlow[1] ? "säljtryck tar över" : wMac and not wMac[1] ? "makro viker (Gold Score)" : wZone and not wZone[1] ? "motståndszon nära" : wMacHard ? "makro kraftigt emot" : "strukturbrott"
+
+bool tpGuardOk = not guideWaitTp1 or posMode != "Auto (motorns trades)" or tp1Done
+if inGuide and barstate.isconfirmed
+    if wHard and guideLvl < 3
+        guideLvl := 3
+    else if wMacHard and guideLvl < 2
+        guideLvl := 2
+    else if newWarn and guideLvl < 3 and tpGuardOk
+        guideLvl := guideLvl + 1
+
+bool g1Evt = inGuide and guideLvl == 1 and guideLvl[1] < 1
+bool g2Evt = inGuide and guideLvl == 2 and guideLvl[1] < 2
+bool g3Evt = inGuide and guideLvl == 3 and guideLvl[1] < 3
+
+if barstate.isconfirmed and inGuide
+    if g1Evt
+        array.push(evLbs, label.new(bar_index, guideDir == 1 ? high + atr * 0.6 : low - atr * 0.6, "SÄLJ 25% AV POSITIONEN NU\n(" + wReason + ")", style=guideDir == 1 ? label.style_label_down : label.style_label_up, color=color.new(#7a6326, 0), textcolor=color.white, size=size.small))
+    if g2Evt
+        array.push(evLbs, label.new(bar_index, guideDir == 1 ? high + atr * 0.6 : low - atr * 0.6, "SÄLJ 75% AV POSITIONEN NU\n(" + wReason + ")", style=guideDir == 1 ? label.style_label_down : label.style_label_up, color=color.new(#b05c2a, 0), textcolor=color.white, size=size.small))
+    if g3Evt
+        array.push(evLbs, label.new(bar_index, guideDir == 1 ? high + atr * 0.6 : low - atr * 0.6, "STÄNG HELA POSITIONEN NU\n(" + wReason + ")", style=guideDir == 1 ? label.style_label_down : label.style_label_up, color=color.new(#a8413d, 0), textcolor=color.white, size=size.small))
+
+
+
+// ===================================================================
+// 26. PLOTS OCH MARKORER
+// ===================================================================
+plot(showMAs ? ma20 : na,  "EMA 20",  color=color.new(#7fc9a0, 0), linewidth=1)
+plot(showMAs ? ma200 : na, "EMA 200", color=color.new(#c98b8b, 0), linewidth=2)
+plot(showStructure and waitLong  ? pendLongLvl  : na, "Long Retest",  color=color.new(#2f7d5b, 10), linewidth=2, style=plot.style_linebr)
+plot(showStructure and waitShort ? pendShortLvl : na, "Short Retest", color=color.new(#a8413d, 10), linewidth=2, style=plot.style_linebr)
+
+bool inPos = strategy.position_size != 0
+// Trade-nivaer ritas som linjer med saljprocent (sektion 25c)
+
+bgcolor(showBg and validStruct ? color.new(#4a6fa5, 92) : na, title="Kompression")
+
+plotshape(showAllSigs and approvedLongBO,  "Long BO",  text="UTBROTT",  style=shape.labelup,   location=location.belowbar, color=color.new(#2f7d5b, 0), textcolor=color.white, size=size.tiny)
+plotshape(showAllSigs and approvedShortBO, "Short BO", text="UTBROTT",  style=shape.labeldown, location=location.abovebar, color=color.new(#a8413d, 0), textcolor=color.white, size=size.tiny)
+plotshape(showAllSigs and approvedLongRetest,  "Long",  text="LONG",  style=shape.labelup,   location=location.belowbar, color=color.new(#2f7d5b, 0), textcolor=color.white, size=size.tiny)
+plotshape(showAllSigs and approvedShortRetest, "Short", text="SHORT", style=shape.labeldown, location=location.abovebar, color=color.new(#a8413d, 0), textcolor=color.white, size=size.tiny)
+plotshape(showAllSigs and trendLong,  "Trend Long",  style=shape.triangleup,   location=location.belowbar, color=color.new(#2f7d5b, 0), size=size.small)
+plotshape(showAllSigs and trendShort, "Trend Short", style=shape.triangledown, location=location.abovebar, color=color.new(#a8413d, 0), size=size.small)
+plotshape(showSweeps and bullFakeout, "Bull Trap", text="FALSKT UTBROTT\nSALJTECKEN", style=shape.labeldown, location=location.abovebar, color=color.new(#a8413d, 35), textcolor=color.white, size=size.tiny)
+plotshape(showSweeps and bearFakeout, "Bear Trap", text="FALSKT UTBROTT\nKOPTECKEN", style=shape.labelup,   location=location.belowbar, color=color.new(#2f7d5b, 35), textcolor=color.white, size=size.tiny)
+plotshape(showAllSigs and sweepLong,  "Sweep Long",  text="SWEEP\nLONG",  style=shape.labelup,   location=location.belowbar, color=color.new(#2f7d5b, 0), textcolor=color.white, size=size.tiny)
+plotshape(showAllSigs and sweepShort, "Sweep Short", text="SWEEP\nSHORT", style=shape.labeldown, location=location.abovebar, color=color.new(#a8413d, 0), textcolor=color.white, size=size.tiny)
+
+// ===================================================================
+// 27. IC-PANEL (skapas EN gang, uppdateras)
+// ===================================================================
+f_pos(s) =>
+    s == "Top Center" ? position.top_center : s == "Top Left" ? position.top_left : s == "Middle Right" ? position.middle_right : s == "Middle Left" ? position.middle_left : s == "Bottom Right" ? position.bottom_right : s == "Bottom Center" ? position.bottom_center : s == "Bottom Left" ? position.bottom_left : position.top_right
+f_sz(s) =>
+    s == "Tiny" ? size.tiny : s == "Normal" ? size.normal : s == "Large" ? size.large : size.small
+
+var color cBg   = color.new(#0a0d12, 0)
+var color cBg2  = color.new(#10151c, 0)
+var color cHdr  = color.new(#161d27, 0)
+var color cLine = color.new(#222a35, 0)
+var color cUp   = color.new(#2f7d5b, 0)
+var color cDn   = color.new(#a8413d, 0)
+var color cNu   = color.new(#1a212c, 0)
+var color cGold = color.new(#c7a45a, 0)
+
+var string tblTxt = size.small
+var table dash = na
+var string dashSig = ""
+
+f_hdr(r, txt) =>
+    table.cell(dash, 0, r, txt, text_color=color.new(#9fb0c3, 0), text_size=tblTxt, bgcolor=cHdr, text_halign=text.align_left)
+    table.cell(dash, 1, r, "",  text_size=tblTxt, bgcolor=cHdr)
+    table.cell(dash, 2, r, "",  text_size=tblTxt, bgcolor=cHdr)
+    table.cell(dash, 3, r, "",  text_size=tblTxt, bgcolor=cHdr)
+    table.merge_cells(dash, 0, r, 3, r)
+f_row(r, k, v, bg, tip) =>
+    table.cell(dash, 0, r, k, text_color=color.new(#737d8a, 0), text_size=tblTxt, text_halign=text.align_left, bgcolor=cBg, tooltip=tip)
+    table.cell(dash, 1, r, v, text_color=color.new(#e6ebf1, 0), text_size=tblTxt, text_halign=text.align_right, bgcolor=bg)
+f_rowL(r, k, v, bg, tip) =>
+    table.cell(dash, 0, r, k, text_color=color.new(#737d8a, 0), text_size=tblTxt, text_halign=text.align_left, bgcolor=cBg, tooltip=tip)
+    table.cell(dash, 1, r, v, text_color=color.new(#e6ebf1, 0), text_size=tblTxt, text_halign=text.align_right, bgcolor=bg)
+f_rowR(r, k, v, bg, tip) =>
+    table.cell(dash, 2, r, k, text_color=color.new(#737d8a, 0), text_size=tblTxt, text_halign=text.align_left, bgcolor=cBg, tooltip=tip)
+    table.cell(dash, 3, r, v, text_color=color.new(#e6ebf1, 0), text_size=tblTxt, text_halign=text.align_right, bgcolor=bg)
+f_rowW(r, k, v, bg, tip) =>
+    table.cell(dash, 0, r, k, text_color=color.new(#737d8a, 0), text_size=tblTxt, text_halign=text.align_left, bgcolor=cBg, tooltip=tip)
+    table.cell(dash, 1, r, v, text_color=color.new(#e6ebf1, 0), text_size=tblTxt, text_halign=text.align_right, bgcolor=bg)
+    table.cell(dash, 2, r, "", text_size=tblTxt, bgcolor=bg)
+    table.cell(dash, 3, r, "", text_size=tblTxt, bgcolor=bg)
+    table.merge_cells(dash, 1, r, 3, r)
+f_pt(x) =>
+    (x > 0 ? "+" : "") + str.tostring(x)
+f_px(v) =>
+    na(v) ? "-" : v >= 1000 ? str.tostring(v, "#,###") : str.tostring(v, "#.##")
+f_c5(x) =>
+    "  " + (x >= 0 ? "+" : "") + str.tostring(x, "#.#") + "%"
+f_verd(x) =>
+    x >= 40 ? "STARKT BULL" : x >= 10 ? "BULL" : x > -10 ? "NEUTRAL" : x > -40 ? "BEAR" : "STARKT BEAR"
+f_col(x) =>
+    x > 0 ? cUp : x < 0 ? cDn : cNu
+
+if showTable and barstate.islast
+    tblTxt := f_sz(dashSz)
+    int mtfN = showMtfRows ? (mtfCompact ? 2 : 4) : 0
+    int macN = showMacro ? (macroCompact ? 3 : 8) : 0
+    int staN = showStats ? 4 : 0
+    int mktN = showMkt ? 5 : 0
+    int calN = showCalc ? 4 : 0
+    int rows = 8 + mtfN + macN + staN + mktN + calN + 1
+    sig = dashPos + "|" + dashSz + "|" + str.tostring(rows)
+    if na(dash) or dashSig != sig
+        if not na(dash)
+            table.delete(dash)
+        dash := table.new(f_pos(dashPos), 4, rows, bgcolor=cBg, border_width=1, border_color=cLine, frame_width=1, frame_color=cLine)
+        dashSig := sig
+
+    string regime = regimeDir == 1 ? "BULL - köp dippar" : regimeDir == -1 ? "BEAR - sälj rekyler" : "NEUTRAL - avvakta"
+    color  regCol = regimeDir == 1 ? cUp : regimeDir == -1 ? cDn : cNu
+    string strukt = triangle ? "TRIANGEL laddas" : pennant ? "KOMPRESSION" : "Inget just nu"
+    string status = approvedLongRetest ? "A+ LONG RETEST" : approvedShortRetest ? "A+ SHORT RETEST" :
+         approvedLongBO ? "LONG BREAKOUT" : approvedShortBO ? "SHORT BREAKOUT" :
+         waitLong ? "VÄNTAR LONG RETEST" : waitShort ? "VÄNTAR SHORT RETEST" :
+         validStruct ? "VÄNTAR BREAKOUT" : "NO TRADE"
+    color statCol = approvedLongBO or approvedLongRetest ? cUp : approvedShortBO or approvedShortRetest ? cDn : validStruct ? color.new(#7a6326, 0) : cNu
+
+    table.cell(dash, 0, 0, "ICONE v2.6", text_color=color.white, text_size=tblTxt, text_halign=text.align_left, bgcolor=cBg, tooltip="A+ setup-motor + SMC-nivåer. Hovra över raderna för förklaring.")
+    table.cell(dash, 1, 0, "", text_size=tblTxt, bgcolor=cBg)
+    table.cell(dash, 2, 0, "", text_size=tblTxt, bgcolor=cBg)
+    table.cell(dash, 3, 0, profile, text_color=cGold, text_size=tblTxt, text_halign=text.align_right, bgcolor=cBg)
+
+    string nowTxt = inPos ? "I POSITION - följ radgivaren" : waitLong or waitShort ? "SETUP PÅ GÅNG - vänta på bekraftelse" : validStruct ? "MÖNSTER BYGGS - håll koll" : regimeDir == 1 ? "KÖPLÄGE - väntar på signal" : regimeDir == -1 ? "SÄLJLÄGE - väntar på signal" : "AVVAKTA - otydligt läge"
+    color nowCol = inPos ? cGold : regimeDir == 1 ? cUp : regimeDir == -1 ? cDn : cNu
+    f_rowW(1, "LÄGE JUST NU", nowTxt, nowCol, "Sammanfattning i klartext: vad ska du göra just nu? Detaljerna förklaras i raderna under - hovra för hjälp.")
+    f_hdr(2, "MARKNAD")
+    f_rowL(3, "Marknadsläge", regime, regCol, "BULL = köp dippar. BEAR = sälj rekyler. NEUTRAL = stå hellre utanför.")
+    f_rowR(3, "Trend " + htfTF, htfBull ? "Uppat" : "Nedat", htfBull ? cUp : cDn, "Trenden på den högre tidsramen. Handla helst i dess riktning.")
+    f_rowL(4, "Pris i rangen", inDiscount ? "Billigt" : "Dyrt", inDiscount ? cUp : cDn, "Var priset står i den senaste rangen. Köp hellre billigt (discount), sälj hellre dyrt (premium).")
+    f_rowR(4, "Mönster", strukt, cBg2, "Triangel/kompression = marknaden laddar energi infor ett utbrott.")
+    f_hdr(5, "SETUP")
+    f_rowL(6, "Köpstyrka", str.tostring(longScore) + "/100" + (longScore >= minimumScore ? " OK" : ""), longScore >= minimumScore ? cUp : cNu, "Hur bra är förutsättningarna för en KÖP-trade? Över " + str.tostring(minimumScore) + " = godkand setup.")
+    f_rowR(6, "Säljstyrka", str.tostring(shortScore) + "/100" + (shortScore >= minimumScore ? " OK" : ""), shortScore >= minimumScore ? cDn : cNu, "Hur bra är förutsättningarna för en SÄLJ-trade? Över " + str.tostring(minimumScore) + " = godkand.")
+    string gTxt = not inGuide ? "av / ingen pos" : guideLvl == 0 ? "HÅLL - följer" : guideLvl == 1 ? "SÄLJ 25%" : guideLvl == 2 ? "SÄLJ 75%" : "STÄNG ALLT"
+    color gCol = not inGuide ? cNu : guideLvl == 0 ? cUp : guideLvl == 1 ? color.new(#7a6326, 0) : guideLvl == 2 ? color.new(#b05c2a, 0) : cDn
+    f_rowL(7, "Status", status, statCol, "Vad motorn gör just nu: väntar, bevakar retest eller har signal.")
+    f_rowR(7, "Radgivare", gTxt, gCol, "Live-rad för din position. Trappas upp av varningar. Välj Manuell Long/Short i inställningarna om du sitter i egen position.")
+
+    int r = 8
+    if showMtfRows
+        f_hdr(r, "TREND PER TIMEFRAME")
+        if mtfCompact
+            string mtfTxt = (tf5b ? "+" : "-") + " " + (tf15b ? "+" : "-") + " " + (tf60b ? "+" : "-") + " " + (tf4hb ? "+" : "-") + " " + (tf1db ? "+" : "-") + "  (" + str.tostring(mtfBulls) + " av 5 upp)"
+            f_rowW(r + 1, "5m 15m 1h 4h 1d", mtfTxt, mtfBulls >= 4 ? cUp : mtfBulls <= 1 ? cDn : cNu, "Alla fem tidsramar: + = uppat, - = nedat.")
+            r := r + 2
+        else
+            f_rowL(r + 1, "5 min",  (tf5b ? "Upp " : "Ned ") + str.tostring(tf5s) + "%",  tf5b ? cUp : cDn, "Trendens riktning och styrka på 5 minuter.")
+            f_rowR(r + 1, "15 min", (tf15b ? "Upp " : "Ned ") + str.tostring(tf15s) + "%", tf15b ? cUp : cDn, "Trendens riktning och styrka på 15 minuter.")
+            f_rowL(r + 2, "1 timme", (tf60b ? "Upp " : "Ned ") + str.tostring(tf60s) + "%", tf60b ? cUp : cDn, "Trendens riktning och styrka på 1 timme.")
+            f_rowR(r + 2, "4 timmar", (tf4hb ? "Upp " : "Ned ") + str.tostring(tf4hs) + "%", tf4hb ? cUp : cDn, "Trendens riktning och styrka på 4 timmar.")
+            f_rowW(r + 3, "1 dag", (tf1db ? "Upp " : "Ned ") + str.tostring(tf1ds) + "%", tf1db ? cUp : cDn, "Trendens riktning och styrka på dagsgrafen. Styr de dagliga grindarna.")
+            r := r + 4
+    if showMacro
+        f_hdr(r, "GOLD MACRO SCORE")
+        if macroCompact
+            f_rowW(r + 1, "TOTAL", f_pt(goldScore) + " av 100 - " + f_verd(goldScore), goldScore >= 30 ? cUp : goldScore <= -30 ? cDn : color.new(#7a6326, 0), "Viktad summa av alla drivare, -100 till +100.")
+            f_rowW(r + 2, "Bekraftelse", str.tostring(goldScore >= 0 ? alignPos : alignNeg) + " av 14 drivare i linje", math.max(alignPos, alignNeg) >= 8 ? cUp : cNu, "Få i linje = motstridiga signaler - lita mindre på scoren.")
+            r := r + 3
+        else
+            f_rowL(r + 1, "Realränta 10Y", (rrChg <= 0 ? "Ned " : "Upp ") + f_pt(pReal), f_col(pReal), "TYNGST (25). Realränta NED = BULL för guld. FRED:DFII10.")
+            f_rowR(r + 1, "Dollar (DXY)", (dxC5 <= 0 ? "Ned " : "Upp ") + f_pt(pDxy), f_col(pDxy), "Vikt 20. Ned = BULL, upp = BEAR. 5-dagars riktning.")
+            f_rowL(r + 2, "Fed-likviditet", (walChg > 0 ? "Mer " : "Mindre ") + f_pt(pFed), f_col(pFed), "Vikt 15. Feds balansrakning (veckodata). Stiger = mer likviditet = BULL.")
+            f_rowR(r + 2, "ETF-flode", (obvFlow > 0 ? "In " : "Ut ") + f_pt(pFlow), f_col(pFlow), "Vikt 15. PROXY: OBV-trend i GLD.")
+            f_rowL(r + 3, "Teknisk trend", f_pt(pTrend), f_col(pTrend), "Vikt 10. Över MA50+MA200 = BULL, under bada = BEAR.")
+            f_rowR(r + 3, "GDX vs guld", f_pt(pGdx), f_col(pGdx), "Gruvor som leder = bekraftelse. Slapar de = varning.")
+            f_rowL(r + 4, "Silver", f_pt(pSil), f_col(pSil), "Stiger med guld = BULL. Svagt silver = varning.")
+            f_rowR(r + 4, "G/S-kvot", f_pt(pRat), f_col(pRat), "Guld/silver-kvot ned + metaller upp = bredd. Upp = stress.")
+            f_rowL(r + 5, "HYG / VIX", f_pt(pHyg) + " / " + f_pt(pVix), f_col(pHyg + pVix), "Kreditstress + skräckindex. Stress + guld upp = safe haven.")
+            f_rowR(r + 5, "JPY / CNH", f_pt(pJpy) + " / " + f_pt(pCnh), f_col(pJpy + pCnh), "Carry trade (yen) och Kina-efterfragan (yuan).")
+            f_rowL(r + 6, "Köppar + BTC", f_pt(pCg) + " / " + f_pt(pBtc), f_col(pCg + pBtc), "Köppar/guld ned = svag konjunktur. BTC = riskaptit. Lag vikt.")
+            f_rowR(r + 6, "Bekraftelse", str.tostring(goldScore >= 0 ? alignPos : alignNeg) + " av 14", math.max(alignPos, alignNeg) >= 8 ? cUp : cNu, "Antal drivare i samma riktning. Få = motstridigt, lita mindre på scoren.")
+            f_rowW(r + 7, "TOTAL", f_pt(goldScore) + " av 100 - " + f_verd(goldScore), goldScore >= 30 ? cUp : goldScore <= -30 ? cDn : color.new(#7a6326, 0), "Viktad summa av alla drivare, -100 till +100. BULL = medvind för guld, BEAR = motvind.")
+            r := r + 8
+    if showStats
+        int wTr = strategy.closedtrades - weekTr0
+        int wWin = strategy.wintrades - weekWin0
+        float wWr = wTr > 0 ? wWin * 100.0 / wTr : 0
+        float wPnlP = not na(weekEq0) and weekEq0 != 0 ? (strategy.equity - weekEq0) / weekEq0 * 100 : 0
+        int tTr = strategy.closedtrades
+        float tWr = tTr > 0 ? strategy.wintrades * 100.0 / tTr : 0
+        float pf = strategy.grossloss > 0 ? strategy.grossprofit / strategy.grossloss : 0
+        float netP = strategy.initial_capital != 0 ? strategy.netprofit / strategy.initial_capital * 100 : 0
+        f_hdr(r, "STATISTIK")
+        f_rowL(r + 1, "Vecka", str.tostring(wTr) + " st, " + str.tostring(wWr, "#") + "% win", wTr == 0 ? cNu : wWr >= 50 ? cUp : cDn, "Stängda trades denna vecka och andel vinnare.")
+        f_rowR(r + 1, "Vecka +/-", (wPnlP >= 0 ? "+" : "") + str.tostring(wPnlP, "#.##") + "%", wPnlP > 0 ? cUp : wPnlP < 0 ? cDn : cNu, "Veckans resultat i procent av kapitalet.")
+        f_rowL(r + 2, "Totalt", str.tostring(tTr) + " st, " + str.tostring(tWr, "#") + "% win", tTr == 0 ? cNu : tWr >= 50 ? cUp : cNu, "Alla stängda trades i backtestet och total winrate.")
+        f_rowR(r + 2, "Profit factor", str.tostring(pf, "#.##"), pf >= 1.5 ? cUp : pf >= 1 ? cNu : cDn, "Bruttovinst/bruttoforlust. Över 1.5 = bra, under 1 = förlorande.")
+        f_rowW(r + 3, "Netto sedan start", (netP >= 0 ? "+" : "") + str.tostring(netP, "#.##") + "%", netP > 0 ? cUp : netP < 0 ? cDn : cNu, "Total avkastning på startkapitalet i backtestet.")
+        r := r + 4
+    if showMkt
+        f_hdr(r, "MARKNADER (5 DAGAR)")
+        f_rowL(r + 1, "Guld",   f_px(au1d) + f_c5(auC5), auC5 > 0 ? cUp : auC5 < 0 ? cDn : cNu, "Guld spot: gardagens stängning och 5-dagars förändring.")
+        f_rowR(r + 1, "Silver", f_px(ag1d) + f_c5(agC5), agC5 > 0 ? cUp : agC5 < 0 ? cDn : cNu, "Silver spot.")
+        f_rowL(r + 2, "GDX",    f_px(gx1d) + f_c5(gxC5), gxC5 > 0 ? cUp : gxC5 < 0 ? cDn : cNu, "Guldgruvebolag - leder ofta guldet.")
+        f_rowR(r + 2, "Köppar", f_px(cu1d) + f_c5(cuC5), cuC5 > 0 ? cUp : cuC5 < 0 ? cDn : cNu, "Köppar - industrisignal.")
+        f_rowL(r + 3, "DXY",    f_px(dx1d) + f_c5(dxC5), dxC5 < 0 ? cUp : dxC5 > 0 ? cDn : cNu, "Dollarindex. Ned = medvind för metaller (gron när den faller).")
+        f_rowR(r + 3, "USDJPY", f_px(jp1d) + f_c5(jpC5), jpC5 < 0 ? cUp : jpC5 > 0 ? cDn : cNu, "Yen-styrka (ned) = risk-off = ofta guldvanligt.")
+        f_rowL(r + 4, "Bitcoin", f_px(bt1d) + f_c5(btC5), btC5 > 0 ? cUp : btC5 < 0 ? cDn : cNu, "Riskaptit och alternativ till guld.")
+        f_rowR(r + 4, "VIX",    f_px(vx1d) + f_c5(vxC5), vxC5 > 5 ? cDn : cNu, "Skräckindex. Över +5 procent på 5 dagar = stress.")
+        r := r + 5
+    if showCalc
+        float slP = slCalcPct
+        float tpP = tpCalcPct
+        if calcAuto and inPos and not na(aEntry) and aEntry != 0
+            slP := math.abs(aEntry - curStop) / aEntry * 100 * levCalc
+            tpP := math.abs(aTp3 - aEntry) / aEntry * 100 * levCalc
+        float totalKr = tradeKr + (kop2On ? kop2Kr : 0)
+        f_hdr(r, "POSITION CALC" + (calcAuto and inPos ? " (auto)" : ""))
+        f_rowL(r + 1, "Insats", str.tostring(math.round(totalKr)) + " kr", cBg2, "Tradestorlek plus eventuell Köp 2.")
+        f_rowR(r + 1, "Exponering", str.tostring(math.round(totalKr * levCalc)) + " kr", cBg2, "Insats x hävstång.")
+        f_rowL(r + 2, "Vid SL", "-" + str.tostring(math.round(totalKr * slP / 100)) + " kr", cDn, "Kronor du förlorar om SL träffas (" + str.tostring(slP, "#.##") + " procent).")
+        f_rowR(r + 2, "Vid TP", "+" + str.tostring(math.round(totalKr * tpP / 100)) + " kr", cUp, "Kronor du tjanar om TP träffas (" + str.tostring(tpP, "#.##") + " procent).")
+        f_rowW(r + 3, "RR / Prisrörelse", str.tostring(slP != 0 ? tpP / slP : 0, "#.##") + "  /  SL " + str.tostring(levCalc != 0 ? slP / levCalc : slP, "#.##") + "%", cBg2, "Risk/reward, samt prisrorelsen som kravs för SL med din hävstång.")
+        r := r + 4
+
+    table.cell(dash, 0, r, "ICone v2.6", text_color=color.new(#3f4855, 0), text_size=size.tiny, text_halign=text.align_left, bgcolor=cBg)
+    table.cell(dash, 1, r, "", text_size=size.tiny, bgcolor=cBg)
+    table.cell(dash, 2, r, "", text_size=size.tiny, bgcolor=cBg)
+    string ftr = pnlDir != 0 and not na(livePnl) ? (pnlDir == 1 ? "LONG " : "SHORT ") + (livePnl >= 0 ? "+" : "") + str.tostring(livePnl, "#.##") + "%" + (tp1Done ? " BE" : "") : "flat"
+    table.cell(dash, 3, r, ftr, text_color=pnlDir != 0 and not na(livePnl) ? (livePnl >= 0 ? cUp : cDn) : color.new(#737d8a, 0), text_size=size.tiny, text_halign=text.align_right, bgcolor=cBg)
+
+// ===================================================================
+// 28. ALERTS
+// ===================================================================
+// Strategier anvander alert() - skapa alerten med villkoret "Any alert() function call"
+f_al(msg) =>
+    alert(msg + " | " + syminfo.ticker + " " + timeframe.period + " @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+
+if barstate.isconfirmed
+    if newTradeBar and aDir == 1
+        f_al("ICone ENTRY LONG")
+    if newTradeBar and aDir == -1
+        f_al("ICone ENTRY SHORT")
+    if tp1Evt
+        f_al("ICone TP1 träffad - SÄLJ " + str.tostring(pct1, "#") + "% (stop till BE)")
+    if tp2Evt
+        f_al("ICone TP2 träffad - SÄLJ " + str.tostring(pct2, "#") + "% (trail på)")
+    if tp3Evt
+        f_al("ICone TP3 träffad - SÄLJ " + str.tostring(pct3, "#") + "%")
+    if bullFakeout
+        f_al("ICone FALSKT UTBROTT UPPAT - säljtecken")
+    if bearFakeout
+        f_al("ICone FALSKT UTBROTT NEDAT - koptecken")
+    if g1Evt
+        f_al("ICone GUIDE: SÄLJ 25% AV POSITIONEN NU")
+    if g2Evt
+        f_al("ICone GUIDE: SÄLJ 75% AV POSITIONEN NU")
+    if g3Evt
+        f_al("ICone GUIDE: STÄNG HELA POSITIONEN NU")
+
+// ===== SLUT PA KODEN - ICone v1 (om du inte ser denna rad ar inklistringen ofullstandig) =====

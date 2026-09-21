@@ -1,0 +1,195 @@
+//@version=6
+indicator(
+     "I have levels",
+     overlay = true
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SETTINGS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+fastLength = input.int(21, "Fast EMA Length", minval = 1)
+slowLength = input.int(55, "Slow EMA Length", minval = 1)
+
+showEMAs    = input.bool(true, "Show EMAs")
+showSignals = input.bool(true, "Show Opposite Signals")
+showCrayon  = input.bool(true, "Show Full-History Crayon")
+
+crayonWidth = input.int(
+     4,
+     "Crayon Thickness",
+     minval = 1,
+     maxval = 8
+)
+
+shortColor = input.color(
+     color.rgb(255, 20, 20),
+     "Wintuition SHORT Color"
+)
+
+longColor = input.color(
+     color.rgb(0, 230, 100),
+     "Which Way Did It Joe? LONG Color"
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 21/55 EMA CALCULATIONS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+fastEMA = ta.ema(close, fastLength)
+slowEMA = ta.ema(close, slowLength)
+
+bullishCross =
+     ta.crossover(fastEMA, slowEMA) and
+     barstate.isconfirmed
+
+bearishCross =
+     ta.crossunder(fastEMA, slowEMA) and
+     barstate.isconfirmed
+
+// Intentionally opposite signals:
+//
+// 21 crosses above 55 = Wintuition SHORT
+// 21 crosses below 55 = Which Way Did It Joe? LONG
+
+wintuitionShort = bullishCross
+joeLong         = bearishCross
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// EMA PLOTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+plot(
+     showEMAs ? fastEMA : na,
+     title = "21 EMA",
+     color = color.aqua,
+     linewidth = 2
+)
+
+plot(
+     showEMAs ? slowEMA : na,
+     title = "55 EMA",
+     color = color.purple,
+     linewidth = 2
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// WINTUITION SHORT
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Bullish cross intentionally prints
+// a red opposite SHORT above the candle.
+
+plotshape(
+     showSignals and wintuitionShort,
+     title = "Wintuition SHORT",
+     style = shape.labeldown,
+     location = location.abovebar,
+     color = shortColor,
+     textcolor = color.white,
+     text = "☹️🔻\nWINTUITION\nSHORT",
+     size = size.small
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// WHICH WAY DID IT JOE? LONG
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Bearish cross intentionally prints
+// a green opposite LONG below the candle.
+
+plotshape(
+     showSignals and joeLong,
+     title = "Which Way Did It Joe? LONG",
+     style = shape.labelup,
+     location = location.belowbar,
+     color = longColor,
+     textcolor = color.black,
+     text = "😏⬆️⬆️\nWHICH WAY DID IT JOE?\nLONG",
+     size = size.small
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// FULL-HISTORY OPPOSITE CRAYON
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Mode:
+//  1 = Wintuition SHORT
+// -1 = Which Way Did It Joe? LONG
+//  0 = waiting for first signal
+
+var int activeMode = 0
+var float anchorMarketPrice = na
+var float anchorCrayonPrice = na
+
+// Wintuition SHORT starts at the candle high.
+
+if wintuitionShort
+    activeMode        := 1
+    anchorMarketPrice := close
+    anchorCrayonPrice := high
+
+// Joe LONG starts at the candle low.
+
+else if joeLong
+    activeMode        := -1
+    anchorMarketPrice := close
+    anchorCrayonPrice := low
+
+// Create an upside-down copy of price movement.
+//
+// Price rises → crayon falls.
+// Price falls → crayon rises.
+
+priceMovement =
+     activeMode != 0
+     ? close - anchorMarketPrice
+     : na
+
+oppositeCrayon =
+     activeMode != 0
+     ? anchorCrayonPrice - priceMovement
+     : na
+
+crayonColor =
+     activeMode == 1
+     ? shortColor
+     : longColor
+
+// Insert a one-bar break at every new signal.
+// This prevents separate crayon drawings
+// from being connected together.
+
+newSignal = wintuitionShort or joeLong
+
+crayonPlot =
+     showCrayon and not newSignal
+     ? oppositeCrayon
+     : na
+
+// A plot preserves all available loaded history
+// and avoids Pine's 500-line-object limit.
+
+plot(
+     crayonPlot,
+     title = "Opposite Crayon",
+     color = crayonColor,
+     linewidth = crayonWidth,
+     style = plot.style_linebr
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ALERTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+alertcondition(
+     wintuitionShort,
+     title = "Wintuition SHORT",
+     message = "Wintuition SHORT: the 21 EMA crossed above the 55 EMA and printed the intentionally opposite red signal."
+)
+
+alertcondition(
+     joeLong,
+     title = "Which Way Did It Joe? LONG",
+     message = "Which Way Did It Joe? LONG: the 21 EMA crossed below the 55 EMA and printed the intentionally opposite green signal."
+)

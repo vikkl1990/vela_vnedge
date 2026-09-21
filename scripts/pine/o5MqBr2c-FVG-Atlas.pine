@@ -1,0 +1,1715 @@
+//@version=6
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © lgbarn
+//
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  FVG ATLAS — Multi-Timeframe Imbalances and First-Touch Reactions
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//
+//  Four independent timeframe "strata" of Fair Value Gaps on one chart. Every stratum carries its
+//  own timeframe, colours, name and invalidation rule.
+//
+//  HOW THE ENGINE WORKS
+//  --------------------
+//  Higher-timeframe candles are assembled bar by bar from chart data — no request.security, so
+//  completed patterns use no future candles. Live previews and display selection can change.
+//  Each stratum keeps a rolling
+//  window of the last three completed HTF candles plus the one currently forming.
+//
+//  A bullish FVG exists when candle 3's low sits above candle 1's high. The zone is the untraded
+//  space between them. Bearish is the mirror.
+//
+//  WHAT IS DRAWN
+//  -------------
+//    · Live zone    — a box carrying its size in points and ticks as centred text
+//    · CE line      — the 50% "consequent encroachment" level inside each zone
+//    · Marker       — once a zone is invalidated the box is destroyed and a small outline box
+//                     (default blue) is left hugging the candle that created the gap, spanning
+//                     the gap's original price range; retained by default within drawing limits
+//    · Inverse FVG  — optionally an invalidated FVG spawns an inverse zone from that bar: a
+//                     spent bullish gap acts as resistance (and vice-versa) until price closes
+//                     back through it
+//    · BPR          — where a bullish and a bearish gap from the same stratum overlap in price,
+//                     the shared band is a Balanced Price Range: price was delivered through it
+//                     in both directions; this overlap does not measure support/resistance strength
+//    · Confluence   — where zones from two or more strata overlap, the intersection is shaded
+//    · VI / OG      — optional confirmed two-candle body / wick gaps, counted separately
+//    · Dashboard    — per-stratum counts, distance to the nearest active zone above and below
+//                     price, plus lifecycle statistics measured over chart history
+//    · Lifecycle    — touch, CE, full penetration and rule-based invalidation are distinct events
+//    · Alerts       — optional chart-close event batches and first inverse-zone retest alerts
+//
+//  A NOTE ON STYLE
+//  ---------------
+//  This script uses paired independent `if` blocks (`if x` / `if not x`) rather than `if/else`.
+//  Pine unifies the return types of if/else branches, and these blocks routinely end in calls
+//  like array.remove(), which yields the removed element, against a sibling branch that yields
+//  void — a CE10235 compile error. Independent blocks are never type-compared against each other.
+//
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+indicator('FVG Atlas', 'ATLAS', overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+// Index-based drawings internally read time history, including set_left/set_x1.
+// Focus can reveal an older origin on a realtime bar after Pine inferred a smaller
+// buffer during loading. The allocation function accepts at most 5000, so every
+// historical drawing anchor below is clamped to 4999 bars back. Only time needs
+// this explicit buffer; detection depth and tracked zone records are unchanged.
+max_bars_back(time, 5000)
+
+DSP = display.all - display.status_line
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  INPUTS
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+G_ENG = 'Detection'
+G_DIS = 'Display & Focus'
+G_SES = 'Session Labels'
+G_INV = 'Inverse FVG'
+G_LIM = 'Tracking Limits (Advanced)'
+G_TXT = 'Zone Text & Hover'
+G_GRD = 'Grading'
+G_CE = '50% Line (CE)'
+G_TRC = 'Invalidation Markers'
+G_BPR = 'Balanced Price Range (BPR)'
+G_CNF = 'Multi-Timeframe Confluence'
+G_DSH = 'Dashboard & Nearest Zones'
+G_IMB = 'Optional Imbalances'
+G_ALT = 'Alerts'
+G_REJ = 'First-Touch Reactions'
+G_S1 = 'Timeframe Layer 1'
+G_S2 = 'Timeframe Layer 2'
+G_S3 = 'Timeframe Layer 3'
+G_S4 = 'Timeframe Layer 4'
+
+TIP_TF = 'Timeframe this stratum detects gaps on. Chart uses the current chart timeframe.\n\n' +
+   'Higher timeframe candles are assembled from whole chart bars; live previews can change until confirmed. ' +
+   'Lower or incompatible timeframe requests fall back to the chart with a dashboard notice. ' +
+   'Duplicate effective timeframes are disabled: the earliest enabled stratum wins. ' +
+   'Labels always identify the effective timeframe, including custom names.'
+
+TIP_NAME = 'Optional custom prefix. The effective timeframe stays in brackets, followed by pattern type and direction. For example, HTF becomes HTF [4hr] FVG Bull. Leave blank to use the timeframe alone as the prefix.'
+
+TIP_FILL = 'Choose when an active zone retires.\n\nAny Touch: price reaches the near edge.\nMidpoint Reached: price reaches the original 50% level.\nWick Sweep: price reaches or passes the far edge.\nBody Beyond: a confirmed CHART candle closes at or beyond the far edge.\n\nInvalidation is not necessarily a full fill. Retired FVGs can leave origin markers or create inverse zones when enabled.'
+
+TIP_DETECT = 'Live previews update while candle 3 forms and may shrink or disappear. Dashed borders identify forming zones. On Bar Close waits for a completed pattern.\n\nIn both modes, confirmation is processed when the NEXT candle of that timeframe begins. A session break can delay it until trading resumes. Confirmed zones still follow invalidation, shrinking and display settings. Live Previews: Chart TF Only below limits previews to the chart timeframe.'
+
+TIP_LIVECHART = 'On: Live previews are drawn only for strata whose EFFECTIVE timeframe equals the chart timeframe. Higher-timeframe strata wait for the completed pattern, exactly as in On Bar Close.\n\nOff (default): every enabled stratum shows live previews.\n\nHas no effect when Detect Zones is On Bar Close. Confirmed zones are identical either way.'
+
+TIP_DEPTH = 'Recent chart bars scanned for detection and statistics. Effective depth is at least Drawing Lookback. Older tracked zones can contribute to statistics without being drawn.\n\nIncrease for a larger sample; reduce if processing is too slow. The initial partial higher-timeframe candle is skipped. Record caps still limit active tracking.'
+
+TIP_MAXBARS = 'Drawing eligibility by zone formation age, measured in CHART bars when the script loads. Older detected zones still count in statistics but do not receive drawings. Eligible surviving zones can remain visible as new bars arrive. This is separate from Detection Depth and the internal historical buffer.'
+
+TIP_SHRINK = 'Off (default): the zone box always shows the ENTIRE original gap until it is ' +
+   'invalidated by the stratum\'s rule.\n\n' +
+   'On: as price eats into the zone, the entered edge is pulled along with it so the box shows ' +
+   'only the imbalance that is left.\n\n' +
+   'The points / ticks readout reports the ORIGINAL size either way.'
+
+TIP_MINGAP = 'Ignore gaps narrower than this many points (price units — 5.25 on ES is five and a ' +
+   'quarter handles). 0 disables the filter.\n\n' +
+   'Applies to every stratum. A gap that fails the test is never created, so it does not count ' +
+   'toward the lifecycle statistics, cannot form a BPR and leaves no marker.\n\n' +
+   'In Live mode a forming gap can shrink below the threshold before its candle closes; when it ' +
+   'does, the zone is dropped exactly as if the gap had closed up.'
+
+TIP_ANCHOR = 'Where the left edge of the zone box sits.\n\n' +
+   '• Formation Start — the first candle of the three-candle sequence. ICT convention.\n' +
+   '• Gap Candle — the candle that actually printed the gap. Produces narrower boxes when viewing ' +
+   'a high timeframe from a low chart timeframe.'
+
+TIP_TRACE = 'Leave a blue-by-default outline at the original FVG after invalidation. It marks the original price range, not the invalidation candle.\n\nMarker Lifetime applies only when Keep Markers Without Age Expiry is off. Retention is limited to 100 markers per layer and available drawing capacity; newer markers can replace older markers. Active zones take priority.'
+
+TIP_IFVG = 'Create an opposite-direction zone when an FVG is invalidated. It starts at the invalidation candle and ends at its maximum age or a confirmed CHART close strictly back through its far edge.\n\nCreation follows the layer invalidation rule: Any Touch can create an inverse on a first probe, without a close through the original gap. This is not independent reversal confirmation.'
+
+TIP_BPR = 'A BPR is the overlapping price range of opposing confirmed FVGs from the SAME timeframe layer.\n\nDetected when the newer gap confirms, using gaps within Pairing Window, including previously invalidated gaps. Direction follows the newer gap. A confirmed CHART close strictly beyond the far edge retires the band.\n\nFocus can hide bands while their records continue tracking. This overlap does not establish support/resistance strength.'
+
+TIP_CNF = 'Shade exact price bands covered by confirmed active FVGs from distinct effective timeframes.\n\n' +
+   'All tracked FVGs eligible for the drawing window participate, including zones hidden by Focus Mode. Each band has a uniform TF count; ' +
+   'same-direction mode keeps bullish and bearish bands separate. The nearest pockets to price get display priority. ' +
+   'The left edge starts when all contributing timeframe layers were present.'
+
+TIP_STATS = 'Separate statistics for FVG, Volume Imbalance (VI), and Opening Gap (OG).\n\n' +
+   '• Retired — invalidated by the selected mitigation rule / all detected zones. NOT a full-fill or win rate.\n' +
+   '• Bars — median chart bars to invalidation, latest 400 invalidations for that type.\n' +
+   '• Hover counts or statistics for detected, active, invalidated, fully filled and cap-evicted totals.\n\n' +
+   'Fully filled means 100% penetration observed AFTER confirmation while tracked. A fully filled zone may still be active. ' +
+   'Tracking stops at invalidation or cap eviction; later fills are unknown. Forming zones are excluded. ' +
+   'Counts include undrawn zones in Detection Depth; these are not trading success probabilities.'
+
+TIP_TXT = 'Zone text is drawn INSIDE the box, which costs zero label objects. A thin or narrow ' +
+   'zone may not have room for it — the Hover Markers below carry the full details as a tooltip ' +
+   'regardless, and the Text Position row moves the text away from the 50% line.'
+
+TIP_HOVER = 'Show a diamond at the right edge of each drawn zone. Hover for boundaries, original size, lifecycle, session, third-candle class and grade when available.\n\nIndependent of Show Zone Text. Each diamond uses one label from the shared drawing budget; hidden zones do not have hover diamonds.'
+
+TIP_GRADE = 'A descriptive score for confirmed FVG formation: candle-direction agreement, middle-candle body/range, gap size versus average range, and volume versus average. It is not a measured win probability.\n\nWeights are relative; zero removes a component. Missing or zero average volume excludes volume. With every weight zero, the score is zero.\n\nA+ >= 85; A >= 72; B >= 58; C >= 42; D below 42.'
+
+// G_ENG
+detectMode = input.string('Live', 'Detect Zones', options = ['Live', 'On Bar Close'], group = G_ENG, display = DSP, tooltip = TIP_DETECT)
+liveChartOnly = input.bool(false, 'Live Previews: Chart TF Only', group = G_ENG, display = DSP, tooltip = TIP_LIVECHART)
+minGapPts  = input.float(0, 'Min Gap Size (points)', minval = 0, step = 0.25, group = G_ENG, display = DSP, tooltip = TIP_MINGAP)
+
+// G_S1
+on1 = input.bool(true, 'Enable', inline = 's', group = G_S1)
+tf1 = input.string('Chart', '', options = ['Chart', '1m', '2m', '3m', '5m', '10m', '15m', '30m', '45m', '1hr', '2hr', '3hr', '4hr', '6hr', '8hr', '12hr', 'Daily', 'Weekly', 'Monthly'], inline = 's', group = G_S1, display = DSP, tooltip = TIP_TF)
+nm1 = input.string('', 'Name Override', group = G_S1, display = DSP, tooltip = TIP_NAME)
+cb1 = input.color(#26A69A, 'Bull  /  Bear', inline = 'c', group = G_S1)
+cs1 = input.color(#9575CD, '', inline = 'c', group = G_S1)
+fm1 = input.string('Wick Sweep', 'Mitigation / Invalidation Rule', options = ['Any Touch', 'Midpoint Reached', 'Wick Sweep', 'Body Beyond'], group = G_S1, display = DSP, tooltip = TIP_FILL)
+
+// G_S2
+on2 = input.bool(true, 'Enable', inline = 's', group = G_S2)
+tf2 = input.string('15m', '', options = ['Chart', '1m', '2m', '3m', '5m', '10m', '15m', '30m', '45m', '1hr', '2hr', '3hr', '4hr', '6hr', '8hr', '12hr', 'Daily', 'Weekly', 'Monthly'], inline = 's', group = G_S2, display = DSP, tooltip = TIP_TF)
+nm2 = input.string('', 'Name Override', group = G_S2, display = DSP, tooltip = TIP_NAME)
+cb2 = input.color(#FFFFFF, 'Bull  /  Bear', inline = 'c', group = G_S2)
+cs2 = input.color(#80DEEA, '', inline = 'c', group = G_S2)
+fm2 = input.string('Wick Sweep', 'Mitigation / Invalidation Rule', options = ['Any Touch', 'Midpoint Reached', 'Wick Sweep', 'Body Beyond'], group = G_S2, display = DSP, tooltip = TIP_FILL)
+
+// G_S3
+on3 = input.bool(true, 'Enable', inline = 's', group = G_S3)
+tf3 = input.string('1hr', '', options = ['Chart', '1m', '2m', '3m', '5m', '10m', '15m', '30m', '45m', '1hr', '2hr', '3hr', '4hr', '6hr', '8hr', '12hr', 'Daily', 'Weekly', 'Monthly'], inline = 's', group = G_S3, display = DSP, tooltip = TIP_TF)
+nm3 = input.string('', 'Name Override', group = G_S3, display = DSP, tooltip = TIP_NAME)
+cb3 = input.color(#FFFFFF, 'Bull  /  Bear', inline = 'c', group = G_S3)
+cs3 = input.color(#80DEEA, '', inline = 'c', group = G_S3)
+fm3 = input.string('Body Beyond', 'Mitigation / Invalidation Rule', options = ['Any Touch', 'Midpoint Reached', 'Wick Sweep', 'Body Beyond'], group = G_S3, display = DSP, tooltip = TIP_FILL)
+
+// G_S4
+on4 = input.bool(true, 'Enable', inline = 's', group = G_S4)
+tf4 = input.string('4hr', '', options = ['Chart', '1m', '2m', '3m', '5m', '10m', '15m', '30m', '45m', '1hr', '2hr', '3hr', '4hr', '6hr', '8hr', '12hr', 'Daily', 'Weekly', 'Monthly'], inline = 's', group = G_S4, display = DSP, tooltip = TIP_TF)
+nm4 = input.string('', 'Name Override', group = G_S4, display = DSP, tooltip = TIP_NAME)
+cb4 = input.color(#FFFFFF, 'Bull  /  Bear', inline = 'c', group = G_S4)
+cs4 = input.color(#80DEEA, '', inline = 'c', group = G_S4)
+fm4 = input.string('Body Beyond', 'Mitigation / Invalidation Rule', options = ['Any Touch', 'Midpoint Reached', 'Wick Sweep', 'Body Beyond'], group = G_S4, display = DSP, tooltip = TIP_FILL)
+
+// G_DIS
+focusOn = input.bool(true, 'Focus: Nearest Zones', group = G_DIS, display = DSP, tooltip = 'Focus active zones, BPRs and confluence around price. BPRs use their own per-side setting; confluence also respects its total pocket cap.')
+focusCount = input.int(3, 'Zones Above / Below Price', minval = 1, maxval = 20, group = G_DIS, display = DSP, tooltip = 'Across all enabled strata and FVG/VI/OG types. Also limits confluence pockets per side; BPRs have a separate setting. Zones containing price also remain visible. Hidden records continue tracking fills, alerts and statistics.')
+maxBars    = input.int(500, 'Drawing Lookback (chart bars)', minval = 20, maxval = 5000, step = 20, group = G_DIS, display = DSP, tooltip = TIP_MAXBARS)
+extendR    = input.int(3, 'Extend Zones Right (bars)', minval = 0, maxval = 100, group = G_DIS, display = DSP, tooltip = 'Extend drawn zones this many CHART bars to the right of the current candle. Changes display only.')
+anchorMode = input.string('Formation Start', 'Zone Left Anchor', options = ['Formation Start', 'Gap Candle'], group = G_DIS, display = DSP, tooltip = TIP_ANCHOR)
+shrinkFill = input.bool(false, 'Shrink Zone As It Fills', group = G_DIS, display = DSP, tooltip = TIP_SHRINK)
+fillTrsp   = input.int(88, 'Transparency — Fill', minval = 0, maxval = 100, inline = 'tr', group = G_DIS, display = DSP)
+bordTrsp   = input.int(70, 'Border', minval = 0, maxval = 100, inline = 'tr', group = G_DIS, display = DSP, tooltip = 'Zone fill and border transparency. 0 = opaque; 100 = invisible.')
+
+// G_TXT
+showTxt  = input.bool(true, 'Show Zone Text', group = G_TXT, display = DSP, tooltip = TIP_TXT)
+txtName  = input.bool(true,  'Name',   inline = 'a', group = G_TXT, display = DSP)
+txtPts   = input.bool(true,  'Points', inline = 'a', group = G_TXT, display = DSP)
+txtTicks = input.bool(false, 'Ticks',  inline = 'a', group = G_TXT, display = DSP)
+txtGrade = input.bool(true, 'Grade',  inline = 'b', group = G_TXT, display = DSP)
+txtFill  = input.bool(false, 'Fill %', inline = 'b', group = G_TXT, display = DSP, tooltip = 'Grade displays only when Enable Grading is on. Fill % shows deepest penetration of the original zone while tracked; this row does not enable grading or change invalidation.')
+txtState = input.bool(false, 'Lifecycle State', group = G_TXT, display = DSP, tooltip = 'Show the lifecycle state in the box. State details are always included in hover tooltips.')
+txtThird = input.bool(false, 'Third-Candle Class', group = G_TXT, display = DSP, tooltip = 'Show EXP / IN / OPP / NEU in confirmed FVG text. Full names remain in hover details. Classification is stored when the next timeframe candle opens. Forming gaps remain pending. Describes formation, not a forecast or a later REJ event.')
+txtSizeI = input.string('Small', 'Text Size', options = ['Tiny', 'Small', 'Normal', 'Large'], inline = 'c', group = G_TXT, display = DSP)
+txtMono  = input.bool(true, 'Monospace', inline = 'c', group = G_TXT, display = DSP)
+txtWrap  = input.bool(false, 'Wrap', inline = 'c', group = G_TXT, display = DSP, tooltip = 'Wrap: allow the text to break onto multiple lines instead of spilling past a narrow zone\'s edges. Best combined with a Top or Bottom position.')
+txtVA    = input.string('Top', 'Text Position', options = ['Top', 'Center', 'Bottom'], inline = 'd', group = G_TXT, display = DSP)
+txtHA    = input.string('Center', '', options = ['Left', 'Center', 'Right'], inline = 'd', group = G_TXT, display = DSP, tooltip = 'Vertical · horizontal placement of the text inside the zone. Anything off Center vertically keeps the 50% line from striking through it.')
+bullWord   = input.string('Bull', 'Direction Words', inline = 'w', group = G_TXT, display = DSP)
+bearWord   = input.string('Bear', '', inline = 'w', group = G_TXT, display = DSP, tooltip = 'Custom direction words appended after the timeframe and pattern type. For example: 4hr FVG Bull. These change text only.')
+hoverOn  = input.bool(true, 'Hover Markers (1 label per zone)', group = G_TXT, display = DSP, tooltip = TIP_HOVER)
+
+// G_SES
+txtSession = input.bool(true, 'Session Label', group = G_SES, display = DSP, tooltip = 'Add RTH or ON to zone text. Session hours classify formation time only; they do not filter detection, alerts or statistics. Session details remain in hover information even when this text is off.')
+regularHours = input.session('0930-1600', 'Regular Session Window', group = G_SES, display = DSP, tooltip = 'Weekdays in the selected timezone. Outside this window is labeled ON (overnight/outside regular hours). Uses the opening of the final formation candle, including for HTF gaps. Clock-based; does not adjust for holiday early closes.')
+sessionTZ = input.string('America/New_York', 'Session Timezone', group = G_SES, display = DSP, tooltip = 'IANA timezone, such as America/New_York; independent of chart timezone.')
+
+// G_CE
+ceOn   = input.bool(true, 'Show 50% Line', group = G_CE, display = DSP, tooltip = 'Draw the ORIGINAL gap midpoint (50%), also called consequent encroachment. Showing this line does not change the invalidation rule. The line stays at the original midpoint when the box shrinks.')
+ceStyI = input.string('Dotted', 'Style', options = ['Dotted', 'Dashed', 'Solid'], inline = 'ce', group = G_CE, display = DSP)
+ceTrsp = input.int(30, 'Transparency', minval = 0, maxval = 100, inline = 'ce', group = G_CE, display = DSP, tooltip = '50% line style and transparency. 0 = opaque; 100 = invisible.')
+ceMark = input.bool(true, 'Thicken Once Reached', group = G_CE, display = DSP, tooltip = 'When price trades to the 50% level the line turns solid and heavier, so a glance tells you which zones have been probed to the middle.')
+
+// G_TRC
+trcOn    = input.bool(true, 'Show Marker After FVG Invalidation', group = G_TRC, display = DSP, tooltip = TIP_TRACE)
+trcKeep  = input.bool(true, 'Keep Markers Without Age Expiry', group = G_TRC, display = DSP, tooltip = 'Disable age-based expiry. Up to 100 markers per layer are retained within the shared drawing budget. Newer markers can replace older markers; active zones take priority. A marker means invalidation, not necessarily a full fill.')
+trcBars  = input.int(20, 'Marker Lifetime (chart bars)', minval = 1, maxval = 500, group = G_TRC, display = DSP, tooltip = 'How many chart bars a marker survives after invalidation. Ignored while Keep Markers Without Age Expiry is on.')
+trcCol   = input.color(#80DEEA, 'Marker Colour / Width', inline = 't0', group = G_TRC)
+trcW     = input.int(1, '', minval = 1, maxval = 4, inline = 't0', group = G_TRC, display = DSP)
+trcMid   = input.bool(false, '50% Line',    inline = 't1', group = G_TRC, display = DSP)
+trcShade = input.bool(false, 'Faint Shade', inline = 't1', group = G_TRC, display = DSP)
+
+// G_INV
+ifvgOn   = input.bool(false, 'Spawn Inverse FVG Zone', group = G_INV, display = DSP, tooltip = TIP_IFVG)
+ifvgBar  = input.int(60, 'Inverse Lifetime (chart bars)', minval = 1, maxval = 500, group = G_INV, display = DSP, tooltip = 'Maximum age in CHART bars after the inverse zone is created. A confirmed chart close strictly back through its far edge can remove it earlier.')
+
+// G_BPR
+bprOn   = input.bool(true, 'Detect BPR / Double FVG', group = G_BPR, display = DSP, tooltip = TIP_BPR)
+bprFocusCount = input.int(2, 'BPRs Above / Below in Focus', minval = 1, maxval = 10, group = G_BPR, display = DSP, tooltip = 'With Focus enabled, show the nearest BPRs on each side plus bands containing price. Hidden BPR records continue tracking and can reappear when price moves.')
+bprWin  = input.int(8, 'Pairing Window (layer candles)', minval = 1, maxval = 100, group = G_BPR, display = DSP, tooltip = 'How far apart the two opposing gaps may confirm, in candles of the stratum\'s own timeframe. The tighter this is, the more the pattern demands a genuine two-way displacement rather than two unrelated gaps that happen to share prices.')
+bprCol  = input.color(#FF8A65, 'Colour', inline = 'bp', group = G_BPR)
+bprTrsp = input.int(78, 'Transparency', minval = 0, maxval = 100, inline = 'bp', group = G_BPR, display = DSP)
+bprMid  = input.bool(true, '50% Line', inline = 'bp', group = G_BPR, display = DSP, tooltip = 'Band color, fill transparency (0 = opaque; 100 = invisible), and optional midpoint line.')
+
+// G_CNF
+cnfOn    = input.bool(true, 'Highlight Confluence Pockets', group = G_CNF, display = DSP, tooltip = TIP_CNF)
+cnfMin   = input.int(2, 'Distinct Timeframes Required', minval = 2, maxval = 4, group = G_CNF, display = DSP)
+cnfSame  = input.bool(true, 'Same Direction Only', group = G_CNF, display = DSP, tooltip = 'On: only stack zones that agree. Off: also highlight where a bullish and a bearish zone from different strata collide, which is a genuine conflict zone.')
+cnfCol   = input.color(#FFD54F, 'Colour', inline = 'cn', group = G_CNF)
+cnfTrsp  = input.int(90, 'Transparency', minval = 0, maxval = 100, inline = 'cn', group = G_CNF, display = DSP, tooltip = 'Confluence color and fill transparency. 0 = opaque; 100 = invisible. Borders use a slightly lower transparency.')
+cnfLabel = input.bool(true, 'Label Pockets', inline = 'cl', group = G_CNF, display = DSP)
+cnfMax   = input.int(3, 'Max Pockets', minval = 1, maxval = 20, inline = 'cl', group = G_CNF, display = DSP, tooltip = 'Nearest confluence pockets overall. Focus also limits pockets above and below using Zones Above / Below Price. Counts remain based on all eligible parent FVGs; hiding parents does not inflate or reduce the count.')
+
+// G_IMB
+viOn = input.bool(false, 'Detect Volume Imbalances (VI)', group = G_IMB, display = DSP, tooltip = 'Two adjacent completed candles with strictly separated bodies and overlapping wick ranges (boundary contact allowed). A PRICE pattern, not measured buy/sell volume.\n\nAlways confirmed; appears at the next stratum boundary. Defining candles do not count as a retest. Uses Min Gap Size and the stratum mitigation rule. Grading, BPR, confluence, markers and inversion remain FVG-only.')
+ogOn = input.bool(false, 'Detect Opening Gaps (OG)', group = G_IMB, display = DSP, tooltip = 'Two adjacent completed candles with strictly separated wick ranges. Does not require a session boundary.\n\nAlways confirmed; appears at the next stratum boundary. Uses Min Gap Size and the stratum mitigation rule. Counted independently from FVG and VI.')
+viCol = input.color(#BA68C8, 'VI Colour', inline = 'ic', group = G_IMB)
+ogCol = input.color(#FFB74D, 'OG Colour', inline = 'ic', group = G_IMB)
+
+// G_GRD
+gradeOn = input.bool(false, 'Enable Grading', group = G_GRD, display = DSP, tooltip = TIP_GRADE)
+wTrin   = input.float(40, 'Weight — Three-Candle Agreement', minval = 0, maxval = 100, step = 5, group = G_GRD, display = DSP, tooltip = 'How many of the three candles that built the gap point the same way as the gap does.')
+wDisp   = input.float(25, 'Weight — Displacement Body',      minval = 0, maxval = 100, step = 5, group = G_GRD, display = DSP, tooltip = 'Body as a share of total range on the middle candle. A full-bodied candle means the move was one-directional.')
+wSize   = input.float(20, 'Weight — Size vs Average Range',  minval = 0, maxval = 100, step = 5, group = G_GRD, display = DSP, tooltip = 'Gap height against the average range of the last 14 candles on that timeframe. Demotes gaps that are technically valid but trivially small.')
+wVol    = input.float(15, 'Weight — Volume Surge',           minval = 0, maxval = 100, step = 5, group = G_GRD, display = DSP, tooltip = 'Volume on the displacement candle against the 14-candle average. Ignored on symbols without volume.')
+
+// G_REJ
+reactOn = input.bool(true, 'Track First-Touch Rejections', group = G_REJ, display = DSP, tooltip = 'After the first actual wick-range overlap, watch for a confirmed CHART close back outside the near edge: above a bullish zone or below a bearish zone. The touch candle is the first opportunity. A close at/beyond the far edge fails the observation. Tracking continues after Any Touch, midpoint or wick invalidation removes the active zone; this is a reaction observation, not a trade win.')
+reactBars = input.int(3, 'Confirmation Window (chart bars)', minval = 1, maxval = 20, group = G_REJ, display = DSP, tooltip = 'Chart candles allowed for rejection confirmation, INCLUDING the touch candle. On a 1-minute chart, 3 allows the touch candle and the next two. A qualifying close can confirm on the touch candle itself.')
+reactMarks = input.bool(true, 'Show Rejection Markers', group = G_REJ, display = DSP, tooltip = 'Show a triangle on the chart candle confirming a first-touch rejection. Multiple same-direction rejections share a triangle. REJ text is optional. Markers follow Drawing Lookback, independent of Focus.')
+reactText = input.bool(false, 'Show REJ Text', group = G_REJ, display = DSP, tooltip = 'Off: small triangles only. Green marks a bullish first-touch rejection; purple marks a bearish rejection. These mark observed reactions, not trade instructions.')
+reactHover = input.bool(true, 'Rejection Hover Details', group = G_REJ, display = DSP, tooltip = 'Hover a recent triangle to see all contributing zones. Keeps the latest 100 hover targets within the shared drawing budget; older triangles remain visible.')
+
+// G_ALT
+alertLife = input.bool(false, 'Enable Selected Zone Alerts', group = G_ALT, display = DSP, tooltip = 'Master switch for the selected lifecycle and rejection events below. All selected events are combined into one message at the CHART bar close. Create a TradingView alert using Any alert() function call. Focus visibility does not filter alerts; stratum/type filters below do.')
+alertConfirm = input.bool(false, 'Confirmed', inline = 'ae1', group = G_ALT, display = DSP)
+alertTouch = input.bool(true, 'First Touch', inline = 'ae1', group = G_ALT, display = DSP)
+alertCE = input.bool(false, 'CE Reached', inline = 'ae1', group = G_ALT, display = DSP, tooltip = 'Confirmation, first near-edge contact, and original midpoint contact. Requires Enable Selected Zone Alerts. Confirmation is detected at the next layer opening; alert batches are sent at the chart close.')
+alertFull = input.bool(false, 'Fully Filled', inline = 'ae2', group = G_ALT, display = DSP)
+alertInvalid = input.bool(false, 'Invalidated', inline = 'ae2', group = G_ALT, display = DSP)
+alertReject = input.bool(true, 'First-Touch Rejection', inline = 'ae2', group = G_ALT, display = DSP, tooltip = 'Fully Filled means 100% penetration while tracked. Invalidated means the selected retirement rule fired. Rejection requires Track First-Touch Rejections. All three also require Enable Selected Zone Alerts and the relevant layer/type filters.')
+alertS1 = input.bool(true, 'Stratum 1', inline = 'as', group = G_ALT, display = DSP)
+alertS2 = input.bool(true, '2', inline = 'as', group = G_ALT, display = DSP)
+alertS3 = input.bool(true, '3', inline = 'as', group = G_ALT, display = DSP)
+alertS4 = input.bool(true, '4', inline = 'as', group = G_ALT, display = DSP)
+alertFvg = input.bool(true, 'FVG', inline = 'at', group = G_ALT, display = DSP)
+alertVi = input.bool(true, 'VI', inline = 'at', group = G_ALT, display = DSP)
+alertOg = input.bool(true, 'OG', inline = 'at', group = G_ALT, display = DSP)
+alertRetest = input.bool(false, 'First Inverse FVG Retest', group = G_ALT, display = DSP, tooltip = 'Separate alert switch, independent of the selected-zone master. Respects stratum and FVG filters. First wick-range overlap after inverse creation, provided it survives that chart close. A retest is an interaction, not a successful rejection. Enable Spawn Inverse FVG Zone as well.')
+
+// G_DSH
+dshOn   = input.bool(true, 'Show Dashboard', group = G_DSH, display = DSP)
+dshPosI = input.string('Top Right', 'Position', options = ['Top Left', 'Top Right', 'Middle Left', 'Middle Right', 'Bottom Left', 'Bottom Right'], group = G_DSH, display = DSP, tooltip = 'Position of the main dashboard only. The nearest-zone panel stays bottom right, moving to bottom left if the dashboard occupies bottom right.')
+dshSzI  = input.string('Small', 'Text Size', options = ['Tiny', 'Small', 'Normal'], group = G_DSH, display = DSP)
+dshStat = input.bool(true, 'Include Lifecycle Statistics', group = G_DSH, display = DSP, tooltip = TIP_STATS)
+sampleMin = input.int(30, 'Small Sample Threshold', minval = 5, maxval = 200, group = G_DSH, display = DSP, tooltip = 'Highlight a statistic when its own sample is below this count: detected zones for retirement, invalidations for Bars, completed observations for rejection. This is a display threshold, not proof of statistical significance.')
+dshUnit = input.string('Points', 'Dashboard Distance Units', options = ['Points', 'Ticks'], group = G_DSH, display = DSP, tooltip = 'Units for dashboard Above/Below distances only. The separate Nearest Bull / Bear Panel always uses points.')
+nearestOn = input.bool(true, 'Nearest Bull / Bear Panel', group = G_DSH, display = DSP, tooltip = 'Nearest confirmed active bullish and bearish FVGs across enabled layers, including hidden zones. Distances always use POINTS; Inside means zero. Excludes forming gaps, VI, OG, BPR and inverse zones. Bottom right, or bottom left if the dashboard uses bottom right. Shares dashboard text size and background.')
+dshBg   = input.color(#131722E6, 'Background', inline = 'dc', group = G_DSH)
+dshFg   = input.color(#D1D4DC,   'Text',       inline = 'dc', group = G_DSH)
+
+// G_LIM
+scanDepth  = input.int(3000, 'Detection Depth (bars)', minval = 100, maxval = 20000, step = 100, group = G_LIM, display = DSP, tooltip = TIP_DEPTH)
+maxPerTF   = input.int(30, 'Max Active FVGs per Stratum', minval = 1, maxval = 100, group = G_LIM, display = DSP, tooltip = 'Hard cap on active FVG records per stratum; oldest are dropped first.\n\nA dropped zone is forgotten — later invalidation and fill events are unknown. Cap evictions are counted separately. VI and OG have their own caps under Optional Imbalances.')
+auxCap = input.int(10, 'Max Active Zones per Type per Stratum', minval = 1, maxval = 25, group = G_LIM, display = DSP, tooltip = 'Separate caps for VI and OG. Oldest records are evicted and counted separately. Focus and the global drawing budget affect visibility only; records and statistics continue.')
+reactCap = input.int(100, 'Max Pending Observations per Stratum', minval = 10, maxval = 400, group = G_LIM, display = DSP, tooltip = 'Observation records do not require drawings. Overflow is reported as unknown/cap evicted, never as failed rejection.')
+drawBudget = input.int(480, 'Global Drawing Budget', minval = 50, maxval = 480, group = G_LIM, display = DSP, tooltip = 'Maximum boxes, lines and labels individually. Active zones take priority over origin markers and derived bands. Drawing suppression never evicts a tracked zone.')
+
+// Per-chart-bar event buffers and session classification.
+var array<string> EVENTS = array.new<string>()
+EVENTS.clear()
+var array<bool> REJECTIONS = array.from(false, false)
+REJECTIONS.fill(false)
+var array<string> REJECTION_DETAILS = array.new<string>(2, '')
+REJECTION_DETAILS.fill('')
+var array<label> REJECTION_TIPS = array.new<label>()
+string chartSessionTag = not na(time(timeframe.period, regularHours + ':23456', sessionTZ)) ? 'RTH' : 'ON'
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  DERIVED CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+LIVE    = detectMode == 'Live'
+
+// Size gate shared by both detection paths. `h` is the raw gap height in price units — the
+// distance between the two wicks that fail to overlap. Must return true when the filter is
+// disabled so the default behaviour is unchanged.
+gapOk(float h) =>
+    // Hundredth-of-a-tick tolerance: prices are tick sums, so a gap nominally equal to the
+    // threshold can land a rounding error below it on symbols with ticks like 0.1.
+    minGapPts <= 0 or h >= minGapPts - syminfo.mintick * 0.01
+NOCOL   = #00000000
+DEPTH   = math.max(scanDepth, maxBars)
+TRC_CAP = 100   // safety cap on invalidation markers held per stratum
+IZ_CAP  = 50    // safety cap on inverse zones held per stratum
+BPR_CAP = 20    // safety cap on balanced price ranges held per stratum
+
+TSIZE = switch txtSizeI
+    'Tiny'   => size.tiny
+    'Normal' => size.normal
+    'Large'  => size.large
+    => size.small
+
+TVA = switch txtVA
+    'Top'    => text.align_top
+    'Bottom' => text.align_bottom
+    => text.align_center
+
+THA = switch txtHA
+    'Left'  => text.align_left
+    'Right' => text.align_right
+    => text.align_center
+
+TFONT = txtMono ? font.family_monospace : font.family_default
+
+CESTY = switch ceStyI
+    'Dashed' => line.style_dashed
+    'Solid'  => line.style_solid
+    => line.style_dotted
+
+DPOS = switch dshPosI
+    'Top Left'     => position.top_left
+    'Middle Left'  => position.middle_left
+    'Middle Right' => position.middle_right
+    'Bottom Left'  => position.bottom_left
+    'Bottom Right' => position.bottom_right
+    => position.top_right
+
+DSZ = switch dshSzI
+    'Small'  => size.small
+    'Normal' => size.normal
+    => size.tiny
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+// Menu label → Pine timeframe code.
+tfCode(simple string sel) =>
+    switch sel
+        '1m'      => '1'
+        '2m'      => '2'
+        '3m'      => '3'
+        '5m'      => '5'
+        '10m'     => '10'
+        '15m'     => '15'
+        '30m'     => '30'
+        '45m'     => '45'
+        '1hr'     => '60'
+        '2hr'     => '120'
+        '3hr'     => '180'
+        '4hr'     => '240'
+        '6hr'     => '360'
+        '8hr'     => '480'
+        '12hr'    => '720'
+        'Daily'   => 'D'
+        'Weekly'  => 'W'
+        'Monthly' => 'M'
+        => timeframe.period
+
+// Manual aggregation requires whole chart bars. Incompatible requests use the chart,
+// and the dashboard explains the fallback. Calendar HTFs remain session dependent.
+tfFallback(simple string sel) =>
+    code = tfCode(sel)
+    chartSecs = timeframe.in_seconds(timeframe.period)
+    targetSecs = timeframe.in_seconds(code)
+    targetSecs < chartSecs ? 'Requested ' + sel + ': lower than chart; using chart' :
+       targetSecs <= 86400 and targetSecs % chartSecs != 0 ? 'Requested ' + sel + ': unaligned bars; using chart' :
+       chartSecs >= 86400 and code != timeframe.period and (timeframe.isweekly or timeframe.ismonthly or timeframe.multiplier > 1) ? 'Requested ' + sel + ': calendar bars cannot be split; using chart' : ''
+
+// Inferred simple string is required by timeframe.change().
+resolveTF(simple string sel) =>
+    tfFallback(sel) != '' ? timeframe.period : tfCode(sel)
+
+prettyTF(simple string code) =>
+    secs = timeframe.in_seconds(code)
+    str.contains(code, 'D') or str.contains(code, 'W') or str.contains(code, 'M') ? code :
+       secs < 60 ? str.tostring(secs) + 's' :
+       secs % 3600 == 0 ? str.tostring(int(secs / 3600)) + 'hr' : str.tostring(int(secs / 60)) + 'm'
+
+prettyChartTF() =>
+    prettyTF(timeframe.period)
+
+tagOf(simple string sel, simple string override) =>
+    string actual = prettyTF(resolveTF(sel))
+    override != '' ? override + ' [' + actual + ']' : actual
+
+fmtPts(float v) =>
+    str.tostring(v, format.mintick)
+
+fmtTicks(float v) =>
+    str.tostring(int(math.round(v / syminfo.mintick)))
+
+pct(float ratio) =>
+    str.tostring(int(math.round(ratio * 100))) + '%'
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  TYPES
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+// One assembled higher-timeframe candle.
+type HBar
+    float o  = na
+    float h  = na
+    float l  = na
+    float c  = na
+    float v  = 0.0
+    int   iL = na    // chart bar_index where this HTF candle opened
+    string sessionTag = ''
+    int openedAt = na
+
+// Result of the grading pass. A UDT rather than a tuple, because tuple destructuring inside a
+// conditional block is not reliably supported.
+type Grade
+    float  score  = 0.0
+    string letter = ''
+    string detail = ''
+
+// A single fair value gap.
+type Gap
+    string thirdClass = ''
+    color  tint = na
+    bool   renderEligible = false
+    bool   selected = false
+    box    zone
+    line   ce
+    label  tip
+    bool   bull
+    float  top          // working top    (moves when Shrink As It Fills is on)
+    float  bot          // working bottom
+    float  top0         // original top   (drives the size readout and invalidation)
+    float  bot0         // original bottom
+    float  mid
+    int    left         // left anchor bar_index
+    int    orgL         // displacement candle's first chart bar — marker left edge
+    int    orgR         // displacement candle's end — marker right edge
+    int    born         // bar_index at which the gap was confirmed
+    int    hborn = 0    // stratum HTF-candle count at confirmation — drives BPR proximity
+    float  deepest = 0.0
+    bool   touched = false
+    int    slotId = 0
+    int    touchBar = -1
+    string reactionStatus = ''
+    int    rejectionBar = -1
+    string sessionTag = ''
+    int formedAt = na
+    string kind = 'FVG'
+    string rule = ''
+    bool   ceHit   = false
+    bool   locked  = false   // false while the third candle is still forming
+    string name    = ''
+    string grade   = ''
+    float  score   = 0.0
+    string detail  = ''
+
+// The small outline box left at a gap's origin after the gap is filled.
+type Trace
+    box  bx
+    line lm
+    int  born
+
+// An inverse zone — an invalidated FVG re-drawn from its invalidation bar, acting in the opposite direction.
+type IZone
+    box   bx
+    int   born
+    float top
+    float bot
+    bool  bullOrig
+    bool  retested = false
+
+// A balanced price range — the overlap of a bullish and a bearish gap from the same stratum.
+type Bpr
+    box   bx
+    line  mid
+    float top
+    float bot
+    bool  bull   // direction of the NEWER of the two parent gaps
+    int   left = 0
+    string name = ''
+    bool selected = false
+
+// Full penetration and invalidation are independent events, counted separately by pattern.
+type LifeStats
+    int made = 0
+    int invalidated = 0
+    int full = 0
+    int evicted = 0
+    int touched = 0
+    int reactionSeen = 0
+    int rejected = 0
+    int reactionFailed = 0
+    int reactionExpired = 0
+    int reactionDropped = 0
+    array<float> bars
+
+// One timeframe layer.
+type Slot
+    int          id
+    bool         on
+    string       tag
+    string       effectiveTF = ''
+    string       notice = ''
+    color        cb
+    color        cs
+    string       fill
+    bool         live = false   // this stratum draws forming previews (per-slot form of LIVE)
+    HBar         cur
+    bool         curFull = false
+    HBar         b1     // most recently completed HTF candle
+    HBar         b2
+    HBar         b3
+    Gap          forming
+    array<Gap>   gaps
+    array<Gap>   vis
+    array<Gap>   ogs
+    array<Gap>   reactions
+    LifeStats    fvgStats
+    LifeStats    viStats
+    LifeStats    ogStats
+    array<Gap>   hist   // recently confirmed gaps, live or not — the BPR pattern's memory
+    array<Trace> trs
+    array<IZone> izs
+    array<Bpr>   bprs
+    array<float> rngs
+    array<float> vols
+    int          hIdx  = 0   // completed HTF candles seen so far
+
+// Shared before rendering helpers; populated by wiring once on the first bar.
+var array<Slot> SL = array.new<Slot>()
+
+// Every creation reserves one of each handle type. Conservative for box-only objects.
+// Deleting through owner records keeps their handles coherent; lifecycle records survive.
+drawingRoom() =>
+    array.size(box.all) < drawBudget and array.size(line.all) < drawBudget and array.size(label.all) < drawBudget
+
+reserveDrawing(int priority) =>
+    while not drawingRoom() and priority > 0 and REJECTION_TIPS.size() > 0
+        label.delete(REJECTION_TIPS.shift())
+    if not drawingRoom() and priority > 0
+        for s in SL
+            while not drawingRoom() and s.trs.size() > 0
+                Trace old = s.trs.shift()
+                if not na(old.bx)
+                    old.bx.delete()
+                    old.bx := na
+                if not na(old.lm)
+                    old.lm.delete()
+                    old.lm := na
+    if not drawingRoom() and priority > 1
+        for s in SL
+            for z in s.bprs
+                if not drawingRoom() and not na(z.bx)
+                    z.bx.delete()
+                    z.bx := na
+                    if not na(z.mid)
+                        z.mid.delete()
+                        z.mid := na
+            for z in s.izs
+                if not drawingRoom() and not na(z.bx)
+                    z.bx.delete()
+                    z.bx := na
+    drawingRoom()
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  GAP RENDERING
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+// Exact near-edge contact is distinct from positive penetration.
+lifeState(Gap g) =>
+    not g.locked ? 'Forming' : g.deepest >= 1 ? 'Fully filled — 100%' :
+       g.deepest >= 0.5 ? 'CE reached — ' + pct(g.deepest) :
+       g.deepest > 0 ? 'Partially filled — ' + pct(g.deepest) : g.touched ? 'Touched — 0%' : 'Untouched'
+
+eventAllowed(int slotId, string kind, string eventCode) =>
+    bool slotOn = slotId == 0 ? alertS1 : slotId == 1 ? alertS2 : slotId == 2 ? alertS3 : alertS4
+    bool typeOn = kind == 'FVG' ? alertFvg : kind == 'VI' ? alertVi : alertOg
+    bool selectedEvent = eventCode == 'Confirmed' ? alertConfirm : eventCode == 'Touch' ? alertTouch :
+       eventCode == 'CE' ? alertCE : eventCode == 'Full' ? alertFull :
+       eventCode == 'Invalidated' ? alertInvalid : eventCode == 'Rejection' ? alertReject : false
+    slotOn and typeOn and (eventCode == 'Retest' ? alertRetest : alertLife and selectedEvent)
+
+queueEvent(Gap g, string eventName, string eventCode = '') =>
+    if eventAllowed(g.slotId, g.kind, eventCode) and barstate.isconfirmed
+        EVENTS.push(g.name + ' [' + fmtPts(g.bot0) + '–' + fmtPts(g.top0) + '] ' + eventName)
+
+rejectionDetail(Gap g) =>
+    g.name + ' [' + fmtPts(g.bot0) + '–' + fmtPts(g.top0) + ']' +
+     '\nSession: ' + g.sessionTag + ' · formation: ' + str.format_time(g.formedAt, 'MM-dd HH:mm', sessionTZ) +
+     '\nTouch → confirmation: ' + str.tostring(bar_index - g.touchBar + 1) + ' chart candle(s)' +
+     '\nClose ' + fmtPts(close) + (g.bull ? ' above top ' + fmtPts(g.top0) : ' below bottom ' + fmtPts(g.bot0))
+
+// Formation classification uses completed stratum candles; independent of later reactions.
+thirdCandleClass(HBar c2, HBar c3, bool bull) =>
+    string result = 'Neutral'
+    bool valid = not na(c2.h) and not na(c2.l) and not na(c3.o) and not na(c3.c)
+    if valid and c3.c != c3.o
+        bool supporting = bull ? c3.c > c3.o : c3.c < c3.o
+        bool expansion = bull ? c3.c > c2.h : c3.c < c2.l
+        bool inside = c3.c >= c2.l and c3.c <= c2.h
+        if not supporting
+            result := 'Opposing'
+        if supporting and expansion
+            result := 'Expansion'
+        if supporting and inside
+            result := 'Inside'
+    result
+
+thirdCandleShort(string classification) =>
+    classification == 'Expansion' ? 'EXP' : classification == 'Inside' ? 'IN' : classification == 'Opposing' ? 'OPP' : 'NEU'
+
+zoneText(Gap g) =>
+    string t = ''
+    if showTxt
+        if txtName
+            t := g.name
+        if txtSession
+            t := t + (t != '' ? ' · ' : '') + g.sessionTag
+        if txtThird and g.thirdClass != ''
+            t := t + (t != '' ? ' · ' : '') + thirdCandleShort(g.thirdClass)
+        if not g.locked and not txtState
+            t := t + (t != '' ? ' · ' : '') + 'forming'
+        if txtGrade and g.grade != ''
+            t := t + (t != '' ? ' ' : '') + '(' + g.grade + ')'
+        string sz = ''
+        if txtPts
+            sz := fmtPts(g.top0 - g.bot0) + ' pts'
+        if txtTicks
+            sz := sz + (sz != '' ? ' / ' : '') + fmtTicks(g.top0 - g.bot0) + ' ticks'
+        if sz != ''
+            t := t + (t != '' ? '  ·  ' : '') + sz
+        if txtState
+            t := t + (t != '' ? '  ·  ' : '') + lifeState(g)
+        if txtFill and not txtState and g.deepest > 0
+            t := t + (t != '' ? '  ·  ' : '') + pct(g.deepest)
+    t
+
+// Everything the box text has no room for, shown on the hover marker.
+hoverText(Gap g) =>
+    'Ƒ  ' + g.name + (g.locked ? '' : '   · forming ·') +
+     (g.kind == 'FVG' ? '\nCandle 3  ' + (g.thirdClass == '' ? 'Pending close' : g.thirdClass + ' (formation behavior)') : '') +
+     '\n────────────────────────────' +
+     '\nSession   ' + g.sessionTag + ' (final formation candle opens)' +
+     '\nFormed    ' + str.format_time(g.formedAt, 'yyyy-MM-dd HH:mm', sessionTZ) + ' ' + sessionTZ +
+     '\nTop       ' + fmtPts(g.top0) +
+     '\nCE 50%    ' + fmtPts(g.mid) +
+     '\nBottom    ' + fmtPts(g.bot0) +
+     '\nSize      ' + fmtPts(g.top0 - g.bot0) + ' pts  /  ' + fmtTicks(g.top0 - g.bot0) + ' ticks' +
+     (g.grade != '' ? '\nGrade     ' + g.grade + '  (' + str.tostring(int(math.round(g.score))) + ')' + g.detail : '') +
+     '\nState     ' + lifeState(g) +
+     (g.reactionStatus != '' ? '\nFirst-touch reaction: ' + g.reactionStatus : '') +
+     '\nRule      ' + g.rule +
+     '\nDeepest   ' + pct(g.deepest) + ' filled after confirmation' +
+     '\nRemaining ' + fmtPts((1 - g.deepest) * (g.top0 - g.bot0)) + ' pts'
+
+method kill(Gap g) =>
+    if not na(g.zone)
+        g.zone.delete()
+        g.zone := na
+    if not na(g.ce)
+        g.ce.delete()
+        g.ce := na
+    if not na(g.tip)
+        g.tip.delete()
+        g.tip := na
+
+// Per-bar geometry refresh. Deliberately lean — text, colours and styles are only rewritten at
+// the moments they actually change, since this runs for every live zone on every bar.
+method redraw(Gap g) =>
+    if not na(g.zone)
+        int rgt = bar_index + extendR
+        g.zone.set_left(math.max(g.left, bar_index - 4999))
+        g.zone.set_rightbottom(rgt, g.bot)
+        g.zone.set_top(g.top)
+        if not na(g.ce)
+            g.ce.set_x1(math.max(g.left, bar_index - 4999))
+            g.ce.set_y1(g.mid)
+            g.ce.set_xy2(rgt, g.mid)
+        if not na(g.tip)
+            g.tip.set_x(rgt)
+            g.tip.set_y(g.mid)
+
+method retext(Gap g) =>
+    if not na(g.zone)
+        g.zone.set_text(zoneText(g))
+    if not na(g.tip)
+        g.tip.set_tooltip(hoverText(g))
+
+method showDrawing(Gap g) =>
+    if na(g.zone) and g.renderEligible and reserveDrawing(2)
+        g.zone := box.new(math.max(g.left, bar_index - 4999), g.top, bar_index + extendR, g.bot, xloc = xloc.bar_index,
+           border_color = color.new(g.tint, bordTrsp), border_width = 1,
+           border_style = g.kind == 'VI' ? line.style_dotted : g.kind == 'OG' ? line.style_dashed : g.locked ? line.style_solid : line.style_dashed,
+           bgcolor = color.new(g.tint, fillTrsp), text = zoneText(g), text_size = TSIZE,
+           text_color = color.new(g.tint, 0), text_halign = THA, text_valign = TVA,
+           text_font_family = TFONT, text_wrap = txtWrap ? text.wrap_auto : text.wrap_none)
+
+        if ceOn
+            g.ce := line.new(math.max(g.left, bar_index - 4999), g.mid, bar_index + extendR, g.mid, xloc = xloc.bar_index,
+               color = color.new(g.tint, ceTrsp), style = CESTY, width = 1)
+
+        if hoverOn
+            g.tip := label.new(bar_index + extendR, g.mid, '', xloc = xloc.bar_index,
+               style = label.style_diamond, size = size.tiny,
+               color = color.new(g.tint, 45), textcolor = NOCOL, tooltip = hoverText(g))
+        if ceMark and g.ceHit and not na(g.ce)
+            g.ce.set_style(line.style_solid)
+            g.ce.set_width(2)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  GRADING
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+// c1 oldest → c3 newest. `gapH` rather than `size` so the size.* namespace stays visible.
+gradeGap(HBar c1, HBar c2, HBar c3, bool bull, float gapH, float avgRng, float avgVol) =>
+    bool u1 = c1.c >= c1.o
+    bool u2 = c2.c >= c2.o
+    bool u3 = c3.c >= c3.o
+    int agree = bull ? (u1 ? 1 : 0) + (u2 ? 1 : 0) + (u3 ? 1 : 0)
+                     : (u1 ? 0 : 1) + (u2 ? 0 : 1) + (u3 ? 0 : 1)
+
+    float fTrin = agree / 3.0
+    float rng2  = c2.h - c2.l
+    float fDisp = rng2 > 0 ? math.abs(c2.c - c2.o) / rng2 : 0.0
+    float fSize = avgRng > 0 ? math.min(gapH / avgRng, 1.0) : 0.0
+    bool  useV  = wVol > 0 and avgVol > 0
+    float fVol  = useV ? math.min(c2.v / avgVol, 2.0) / 2.0 : 0.0
+
+    float wSum  = wTrin + wDisp + wSize + (useV ? wVol : 0.0)
+    float score = wSum > 0 ? (fTrin * wTrin + fDisp * wDisp + fSize * wSize + (useV ? fVol * wVol : 0.0)) / wSum * 100.0 : 0.0
+
+    Grade.new(
+       score  = score,
+       letter = score >= 85 ? 'A+' : score >= 72 ? 'A' : score >= 58 ? 'B' : score >= 42 ? 'C' : 'D',
+       detail = '\n   · candle agreement   ' + str.tostring(agree) + '/3' +
+                '\n   · displacement body  ' + pct(fDisp) +
+                '\n   · size vs avg range  ' + pct(fSize) +
+                (useV ? '\n   · volume surge       ' + pct(fVol * 2) : ''))
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  SLOT ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+// Builds a gap object and, when it falls inside the render window, its drawings.
+method spawn(Slot s, HBar c1, HBar c2, HBar c3, bool bull, bool locked, string kind = 'FVG', float topOverride = na, float botOverride = na) =>
+    float t  = na(topOverride) ? (bull ? c3.l : c1.l) : topOverride
+    float b  = na(botOverride) ? (bull ? c1.h : c3.h) : botOverride
+    float m  = math.avg(t, b)
+    int   lf = anchorMode == 'Formation Start' ? c1.iL : c3.iL
+    color c  = kind == 'VI' ? viCol : kind == 'OG' ? ogCol : bull ? s.cb : s.cs
+
+    Gap g = Gap.new(slotId = s.id, bull = bull, top = t, bot = b, top0 = t, bot0 = b, mid = m,
+       left = lf, orgL = c2.iL, orgR = c3.iL, born = bar_index, locked = locked, sessionTag = c3.sessionTag, formedAt = c3.openedAt,
+       kind = kind, rule = s.fill, name = s.tag + ' ' + kind + ' ' + (bull ? bullWord : bearWord))
+
+    if locked and kind == 'FVG'
+        g.thirdClass := thirdCandleClass(c2, c3, bull)
+
+    if gradeOn and kind == 'FVG'
+        float avgRng = s.rngs.size() > 0 ? s.rngs.avg() : na
+        float avgVol = s.vols.size() > 0 ? s.vols.avg() : na
+        Grade gr = gradeGap(c1, c2, c3, bull, t - b, nz(avgRng), nz(avgVol))
+        g.score  := gr.score
+        g.grade  := gr.letter
+        g.detail := gr.detail
+
+    g.tint := c
+    g.renderEligible := last_bar_index - bar_index <= maxBars
+    g
+
+// Leaves the origin marker: a small outline box at the gap's birthplace, hugging the candle that
+// created it and spanning the gap's ORIGINAL price range.
+markerRoom() =>
+    array.size(box.all) < drawBudget and (not trcMid or array.size(line.all) < drawBudget)
+
+// Reclaim only old markers using a resource the new marker needs. Active zones survive.
+evictOldestMarker() =>
+    int owner = -1
+    int index = -1
+    int oldest = na
+    bool boxesFull = array.size(box.all) >= drawBudget
+    bool linesFull = trcMid and array.size(line.all) >= drawBudget
+    for slotIndex = 0 to SL.size() - 1
+        Slot layer = SL.get(slotIndex)
+        if layer.trs.size() > 0
+            for traceIndex = 0 to layer.trs.size() - 1
+                Trace t = layer.trs.get(traceIndex)
+                bool useful = (boxesFull and not na(t.bx)) or (linesFull and not na(t.lm))
+                if useful and (na(oldest) or t.born < oldest)
+                    oldest := t.born
+                    owner := slotIndex
+                    index := traceIndex
+    if owner >= 0
+        Trace old = SL.get(owner).trs.remove(index)
+        if not na(old.bx)
+            old.bx.delete()
+        if not na(old.lm)
+            old.lm.delete()
+    owner >= 0
+
+method addTrace(Slot s, Gap g) =>
+    while s.trs.size() >= TRC_CAP
+        Trace old = s.trs.shift()
+        if not na(old.bx)
+            old.bx.delete()
+        if not na(old.lm)
+            old.lm.delete()
+    while not markerRoom()
+        if not evictOldestMarker()
+            break
+    box bx = na
+    bool room = markerRoom()
+    if room
+        bx := box.new(math.max(g.orgL, bar_index - 4999), g.top0, math.max(g.orgR, bar_index - 4999), g.bot0, xloc = xloc.bar_index,
+           border_color = trcCol, border_width = trcW, border_style = line.style_solid,
+           bgcolor = trcShade ? color.new(trcCol, 92) : color(na))
+    line lm = na
+    if trcMid and room
+        lm := line.new(math.max(g.orgL, bar_index - 4999), g.mid, math.max(g.orgR, bar_index - 4999), g.mid, xloc = xloc.bar_index,
+           color = color.new(trcCol, 40), style = line.style_dotted, width = 1)
+
+    if room
+        s.trs.push(Trace.new(bx = bx, lm = lm, born = bar_index))
+
+// Spawns the inverse zone from the invalidation bar, wearing the flipped polarity colour.
+method addIZone(Slot s, Gap g) =>
+    color c = g.bull ? s.cs : s.cb
+    box bx = na
+    bool room = reserveDrawing(1)
+    if room
+        bx := box.new(bar_index, g.top0, bar_index + extendR, g.bot0, xloc = xloc.bar_index,
+           border_color = color.new(c, bordTrsp), border_width = 1, border_style = line.style_dashed,
+           bgcolor = color.new(c, math.min(99, fillTrsp + 4)),
+           text = showTxt ? s.tag + ' Inverse FVG' : '', text_size = size.tiny, text_color = color.new(c, 20),
+           text_halign = text.align_right, text_valign = text.align_center, text_font_family = TFONT)
+
+    s.izs.push(IZone.new(bx = bx, born = bar_index, top = g.top0, bot = g.bot0, bullOrig = g.bull))
+
+    if s.izs.size() > IZ_CAP
+        IZone old = s.izs.shift()
+        old.bx.delete()
+
+// BPR visibility is independent of its retained lifecycle record.
+method hideBpr(Bpr z) =>
+    if not na(z.bx)
+        z.bx.delete()
+        z.bx := na
+    if not na(z.mid)
+        z.mid.delete()
+        z.mid := na
+
+method showBpr(Bpr z) =>
+    if na(z.bx) and reserveDrawing(1)
+        int lf = math.max(z.left, bar_index - 4999)
+        float m = math.avg(z.top, z.bot)
+        z.bx := box.new(lf, z.top, bar_index + extendR, z.bot, xloc = xloc.bar_index,
+           border_color = color.new(bprCol, bordTrsp), border_width = 1, border_style = line.style_solid,
+           bgcolor = color.new(bprCol, bprTrsp),
+           text = showTxt ? z.name : '', text_size = size.tiny,
+           text_color = color.new(bprCol, 10), text_halign = text.align_right,
+           text_valign = text.align_center, text_font_family = TFONT)
+        if bprMid
+            z.mid := line.new(lf, m, bar_index + extendR, m, xloc = xloc.bar_index,
+               color = color.new(bprCol, 40), style = line.style_dotted, width = 1)
+
+// Store first; the last-bar focus pass decides which BPRs receive drawings.
+method addBpr(Slot s, int lf, float t, float b, bool bull) =>
+    s.bprs.push(Bpr.new(top = t, bot = b, bull = bull, left = lf,
+       name = s.tag + ' BPR ' + (bull ? '▲' : '▼')))
+    if s.bprs.size() > BPR_CAP
+        Bpr old = s.bprs.shift()
+        old.hideBpr()
+
+// Checks a freshly confirmed gap against the stratum's recent-gap memory for the BPR pattern:
+// an opposite-polarity gap, confirmed within the proximity window, sharing prices. The memory
+// deliberately includes gaps that are already invalidated — the displacement that prints the
+// second gap usually trades straight through the first one, which IS the classic sequence.
+// Direction follows the newer gap. One band per new gap, against the most recent match.
+method tryBpr(Slot s, Gap gNew) =>
+    if bprOn and s.hist.size() > 0 and last_bar_index - bar_index <= maxBars
+        bool made = false
+        for i = s.hist.size() - 1 to 0
+            Gap g = s.hist.get(i)
+            if not made and g.bull != gNew.bull
+                float t = math.min(g.top0, gNew.top0)
+                float b = math.max(g.bot0, gNew.bot0)
+                if t > b
+                    made := true
+                    s.addBpr(math.min(g.left, gNew.left), t, b, gNew.bull)
+
+// Advances BPR bands; a close through the far edge ends the idea — a bullish band is expected
+// support, so a close below its bottom kills it, and mirror for bearish.
+method sweepBprs(Slot s) =>
+    if s.bprs.size() > 0
+        for i = s.bprs.size() - 1 to 0
+            Bpr z = s.bprs.get(i)
+            bool gone = barstate.isconfirmed and (z.bull ? close < z.bot : close > z.top)
+            if gone
+                s.bprs.remove(i)
+                z.bx.delete()
+                if not na(z.mid)
+                    z.mid.delete()
+            if not gone
+                if not na(z.bx)
+                    z.bx.set_left(math.max(z.bx.get_left(), bar_index - 4999))
+                    z.bx.set_right(bar_index + extendR)
+                if not na(z.mid)
+                    z.mid.set_x1(math.max(z.mid.get_x1(), bar_index - 4999))
+                    z.mid.set_x2(bar_index + extendR)
+
+// Expires origin markers on age. They are static drawings, so there is nothing to advance.
+method sweepTraces(Slot s) =>
+    if not trcKeep and s.trs.size() > 0
+        for i = s.trs.size() - 1 to 0
+            Trace t = s.trs.get(i)
+            if bar_index - t.born > trcBars
+                s.trs.remove(i)
+                t.bx.delete()
+                if not na(t.lm)
+                    t.lm.delete()
+
+// Advances inverse zones; kills them on age, or early once price closes back through.
+method sweepIZones(Slot s) =>
+    if s.izs.size() > 0
+        for i = s.izs.size() - 1 to 0
+            IZone z = s.izs.get(i)
+            // A spent bullish gap is now resistance — a close back above it ends the idea.
+            bool gone = bar_index - z.born > ifvgBar or (barstate.isconfirmed and (z.bullOrig ? close > z.top : close < z.bot))
+            if gone
+                s.izs.remove(i)
+                z.bx.delete()
+            if not gone
+                bool retest = barstate.isconfirmed and bar_index > z.born and not z.retested and high >= z.bot and low <= z.top
+                if retest
+                    z.retested := true
+                    if showTxt and not na(z.bx)
+                        z.bx.set_text(s.tag + ' Inverse FVG · retested')
+                    if eventAllowed(s.id, 'FVG', 'Retest')
+                        EVENTS.push(s.tag + ' Inverse FVG [' + fmtPts(z.bot) + '–' + fmtPts(z.top) + '] first retest')
+                if not na(z.bx)
+                    z.bx.set_right(bar_index + extendR)
+
+// VI and OG are mutually exclusive for a candle pair. Uses completed candles only.
+method detectExtras(Slot s) =>
+    if (viOn or ogOn) and not na(s.b2.o)
+        HBar a = s.b2
+        HBar b = s.b1
+        float aTop = math.max(a.o, a.c)
+        float aBot = math.min(a.o, a.c)
+        float bTop = math.max(b.o, b.c)
+        float bBot = math.min(b.o, b.c)
+        bool wickOverlap = b.l <= a.h and b.h >= a.l
+        bool viBull = bBot > aTop
+        bool viBear = bTop < aBot
+        if viOn and wickOverlap and (viBull or viBear)
+            float t = viBull ? bBot : aBot
+            float lo = viBull ? aTop : bTop
+            if gapOk(t - lo)
+                Gap g = s.spawn(a, a, b, viBull, true, 'VI', t, lo)
+                s.vis.push(g)
+                s.viStats.made += 1
+                queueEvent(g, 'Confirmed', 'Confirmed')
+        bool ogBull = b.l > a.h
+        bool ogBear = b.h < a.l
+        if ogOn and (ogBull or ogBear)
+            float t = ogBull ? b.l : a.l
+            float lo = ogBull ? a.h : b.h
+            if gapOk(t - lo)
+                Gap g = s.spawn(a, a, b, ogBull, true, 'OG', t, lo)
+                s.ogs.push(g)
+                s.ogStats.made += 1
+                queueEvent(g, 'Confirmed', 'Confirmed')
+
+// Retirement removes a record; 100% penetration is counted independently, once.
+method sweepGaps(Slot s, array<Gap> zones, LifeStats stats, bool isFvg) =>
+    if zones.size() > 0
+        int lastZone = zones.size() - 1
+        for i = lastZone to 0
+            Gap g = zones.get(i)
+            float h = g.top0 - g.bot0
+            float pen = h > 0 ? (g.bull ? (g.top0 - low) / h : (high - g.bot0) / h) : 0.0
+            pen := math.max(0.0, math.min(1.0, pen))
+            bool deeper = pen > g.deepest
+            bool firstTouch = not g.touched and (g.bull ? low <= g.top0 : high >= g.bot0)
+            bool firstCE = not g.ceHit and pen >= 0.5
+            bool firstFull = g.deepest < 1 and pen >= 1
+            if firstTouch
+                g.touched := true
+                stats.touched += 1
+                queueEvent(g, 'First touch', 'Touch')
+                if reactOn and barstate.isconfirmed and high >= g.bot0 and low <= g.top0
+                    g.touchBar := bar_index
+                    g.reactionStatus := 'Pending'
+                    stats.reactionSeen += 1
+                    s.reactions.push(g)
+            if deeper
+                g.deepest := pen
+            if firstCE
+                g.ceHit := true
+                queueEvent(g, 'CE reached', 'CE')
+                if ceMark and not na(g.ce)
+                    g.ce.set_style(line.style_solid)
+                    g.ce.set_width(2)
+            if firstFull
+                stats.full += 1
+                queueEvent(g, 'Fully filled — 100%', 'Full')
+
+            bool dead = false
+            if s.fill == 'Any Touch'
+                dead := g.bull ? low <= g.top0 : high >= g.bot0
+            if s.fill == 'Midpoint Reached'
+                dead := g.bull ? low <= g.mid : high >= g.mid
+            if s.fill == 'Wick Sweep'
+                dead := g.bull ? low <= g.bot0 : high >= g.top0
+            if s.fill == 'Body Beyond'
+                dead := barstate.isconfirmed and (g.bull ? close <= g.bot0 : close >= g.top0)
+
+            if dead
+                stats.invalidated += 1
+                stats.bars.push(math.max(0, bar_index - g.born))
+                if stats.bars.size() > 400
+                    stats.bars.shift()
+                queueEvent(g, 'Invalidated — ' + s.fill + '; ' + lifeState(g), 'Invalidated')
+                g.kill()
+                if isFvg and trcOn and g.renderEligible
+                    s.addTrace(g)
+                if isFvg and ifvgOn and g.renderEligible
+                    s.addIZone(g)
+                zones.remove(i)
+
+            if not dead
+                if shrinkFill
+                    if g.bull and low < g.top
+                        g.top := math.max(g.bot0, low)
+                    if not g.bull and high > g.bot
+                        g.bot := math.min(g.top0, high)
+                g.redraw()
+                if deeper or firstTouch
+                    g.retext()
+
+    // Sweep before caps so an invalidation on this bar is not misclassified as an eviction.
+    int cap = isFvg ? maxPerTF : auxCap
+    while zones.size() > cap
+        Gap old = zones.shift()
+        stats.evicted += 1
+        old.kill()
+
+// Observations outlive active-zone invalidation, so Any Touch can still produce a rejection.
+// Use original edges and chart-close events only; this records a reaction, not a trading win.
+method sweepReactions(Slot s) =>
+    if barstate.isconfirmed and s.reactions.size() > 0
+        int lastReaction = s.reactions.size() - 1
+        for i = lastReaction to 0
+            Gap g = s.reactions.get(i)
+            LifeStats stats = g.kind == 'FVG' ? s.fvgStats : g.kind == 'VI' ? s.viStats : s.ogStats
+            bool failed = g.bull ? close <= g.bot0 : close >= g.top0
+            bool rejected = g.bull ? close > g.top0 : close < g.bot0
+            bool outsideWindow = bar_index - g.touchBar >= reactBars
+            bool lastOpportunity = bar_index - g.touchBar >= reactBars - 1
+            if outsideWindow
+                g.reactionStatus := 'Expired'
+                stats.reactionExpired += 1
+            if not outsideWindow and failed
+                g.reactionStatus := 'Failed — far-edge close'
+                stats.reactionFailed += 1
+            if not outsideWindow and not failed and rejected
+                g.reactionStatus := 'Rejected'
+                g.rejectionBar := bar_index
+                stats.rejected += 1
+                REJECTIONS.set(g.bull ? 0 : 1, true)
+                int direction = g.bull ? 0 : 1
+                string previous = REJECTION_DETAILS.get(direction)
+                REJECTION_DETAILS.set(direction, previous + (previous == '' ? '' : '\n\n') + rejectionDetail(g))
+                queueEvent(g, 'First-touch rejection', 'Rejection')
+            if not outsideWindow and not failed and not rejected and lastOpportunity
+                g.reactionStatus := 'Expired'
+                stats.reactionExpired += 1
+            if g.reactionStatus != 'Pending'
+                g.retext()
+                s.reactions.remove(i)
+        while s.reactions.size() > reactCap
+            Gap old = s.reactions.shift()
+            LifeStats stats = old.kind == 'FVG' ? s.fvgStats : old.kind == 'VI' ? s.viStats : s.ogStats
+            old.reactionStatus := 'Cap evicted — outcome unknown'
+            stats.reactionDropped += 1
+            old.retext()
+
+// Assembles HTF candles, detects gaps, ages live zones. Runs once per chart bar per stratum.
+method process(Slot s, bool newBar) =>
+    // `na(s.cur.o)` catches the very first bar of the scan window. Without it, a window that
+    // opens mid-period would accumulate into an unopened candle and poison it with na.
+    bool opening = newBar or na(s.cur.o)
+
+    if opening
+        // ── close out the candle that was forming and roll the window
+        if not na(s.cur.o) and s.curFull
+            s.b3 := s.b2
+            s.b2 := s.b1
+            s.b1 := s.cur
+            s.hIdx := s.hIdx + 1
+
+            // Age the BPR memory: gaps confirmed too long ago can no longer pair up.
+            while s.hist.size() > 0 and s.hIdx - s.hist.get(0).hborn > bprWin
+                s.hist.shift()
+
+            s.rngs.push(s.b1.h - s.b1.l)
+            if s.rngs.size() > 14
+                s.rngs.shift()
+            s.vols.push(s.b1.v)
+            if s.vols.size() > 14
+                s.vols.shift()
+
+            // Lock in whatever was drawn live, or detect now if we were waiting for the close.
+            bool sealed = not na(s.forming)
+
+            if sealed
+                s.forming.locked := true
+                s.forming.thirdClass := thirdCandleClass(s.b2, s.b1, s.forming.bull)
+                s.forming.born   := bar_index
+                s.forming.hborn  := s.hIdx
+                if not na(s.forming.zone)
+                    s.forming.zone.set_border_style(line.style_solid)
+                if gradeOn
+                    Grade gr = gradeGap(s.b3, s.b2, s.b1, s.forming.bull, s.forming.top0 - s.forming.bot0, nz(s.rngs.avg()), nz(s.vols.avg()))
+                    s.forming.score := gr.score
+                    s.forming.grade := gr.letter
+                    s.forming.detail := gr.detail
+                s.forming.retext()
+                queueEvent(s.forming, 'Confirmed', 'Confirmed')
+                s.tryBpr(s.forming)
+                s.gaps.push(s.forming)
+                s.hist.push(s.forming)
+                s.fvgStats.made += 1
+                s.forming := na
+
+            if not sealed and not s.live and not na(s.b3.o)
+                bool bullC = s.b1.l > s.b3.h and gapOk(s.b1.l - s.b3.h)
+                bool bearC = s.b1.h < s.b3.l and gapOk(s.b3.l - s.b1.h)
+                if bullC or bearC
+                    Gap gN = s.spawn(s.b3, s.b2, s.b1, bullC, true)
+                    gN.hborn := s.hIdx
+                    queueEvent(gN, 'Confirmed', 'Confirmed')
+                    s.tryBpr(gN)
+                    s.gaps.push(gN)
+                    s.hist.push(gN)
+                    s.fvgStats.made += 1
+
+            s.detectExtras()
+
+        // ── open the next one
+        // The initial scan candle may start mid-period; never use that partial candle in a pattern.
+        s.curFull := not na(s.cur.o) or time == time(s.effectiveTF)
+        s.cur := HBar.new(open, high, low, close, nz(volume), bar_index, chartSessionTag, time)
+
+    if not opening
+        s.cur.h := math.max(s.cur.h, high)
+        s.cur.l := math.min(s.cur.l, low)
+        s.cur.c := close
+        s.cur.v := s.cur.v + nz(volume)
+
+    // ── live detection against the still-forming candle
+    if s.live and not na(s.b2.o)
+        bool bullF = s.cur.l > s.b2.h and gapOk(s.cur.l - s.b2.h)
+        bool bearF = s.cur.h < s.b2.l and gapOk(s.b2.l - s.cur.h)
+
+        // Start tracking as soon as the gap appears.
+        if na(s.forming) and (bullF or bearF)
+            s.forming := s.spawn(s.b2, s.b1, s.cur, bullF, false)
+
+        // Drop it again if the gap closes up before the candle finishes.
+        if not na(s.forming) and not (s.forming.bull ? bullF : bearF)
+            s.forming.kill()
+            s.forming := na
+
+        // Otherwise follow the edge, which can only retreat while the candle develops.
+        if not na(s.forming)
+            float t = s.forming.bull ? s.cur.l : s.b2.l
+            float b = s.forming.bull ? s.b2.h : s.cur.h
+            bool moved = t != s.forming.top0 or b != s.forming.bot0
+            s.forming.top  := t
+            s.forming.bot  := b
+            s.forming.top0 := t
+            s.forming.bot0 := b
+            s.forming.mid  := math.avg(t, b)
+            s.forming.redraw()
+            if moved
+                s.forming.retext()
+
+    s.sweepGaps(s.gaps, s.fvgStats, true)
+    if viOn
+        s.sweepGaps(s.vis, s.viStats, false)
+    if ogOn
+        s.sweepGaps(s.ogs, s.ogStats, false)
+
+    s.sweepReactions()
+    s.sweepTraces()
+    s.sweepIZones()
+    s.sweepBprs()
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  WIRING
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+// timeframe.change() has to be evaluated on every bar to stay accurate, so it lives at top level
+// rather than inside the conditionally-executed engine.
+TF1 = resolveTF(tf1)
+TF2 = resolveTF(tf2)
+TF3 = resolveTF(tf3)
+TF4 = resolveTF(tf4)
+
+bool NB1 = timeframe.change(TF1)
+bool NB2 = timeframe.change(TF2)
+bool NB3 = timeframe.change(TF3)
+bool NB4 = timeframe.change(TF4)
+
+// Equality by duration also recognizes equivalent chart/menu codes such as 1D and D.
+sameTF(simple string a, simple string b) =>
+    timeframe.in_seconds(a) == timeframe.in_seconds(b)
+
+bool USE1 = on1
+bool USE2 = on2 and not (USE1 and sameTF(TF1, TF2))
+bool USE3 = on3 and not (USE1 and sameTF(TF1, TF3) or USE2 and sameTF(TF2, TF3))
+bool USE4 = on4 and not (USE1 and sameTF(TF1, TF4) or USE2 and sameTF(TF2, TF4) or USE3 and sameTF(TF3, TF4))
+
+// Decides whether one stratum draws forming previews. Global LIVE still gates everything;
+// the Chart-TF-only switch additionally restricts previews to strata whose effective
+// timeframe matches the chart. `effectiveTF` is already resolved (fallbacks applied).
+slotLive(simple string effectiveTF) =>
+    LIVE and (not liveChartOnly or sameTF(effectiveTF, timeframe.period))
+
+mkSlot(int id, bool on, string tag, color cb, color cs, string fill, string effectiveTF, string notice) =>
+    Slot.new(id = id, on = on, tag = tag, cb = cb, cs = cs, fill = fill, effectiveTF = effectiveTF, notice = notice, live = slotLive(effectiveTF),
+       cur = HBar.new(), b1 = HBar.new(), b2 = HBar.new(), b3 = HBar.new(),
+       gaps = array.new<Gap>(), vis = array.new<Gap>(), ogs = array.new<Gap>(), reactions = array.new<Gap>(),
+       fvgStats = LifeStats.new(bars = array.new<float>()),
+       viStats = LifeStats.new(bars = array.new<float>()),
+       ogStats = LifeStats.new(bars = array.new<float>()),
+       hist = array.new<Gap>(), trs = array.new<Trace>(),
+       izs = array.new<IZone>(), bprs = array.new<Bpr>(),
+       rngs = array.new<float>(), vols = array.new<float>())
+
+var Slot S1 = mkSlot(0, USE1, tagOf(tf1, nm1), cb1, cs1, fm1, TF1, on1 ? tfFallback(tf1) : '')
+var Slot S2 = mkSlot(1, USE2, tagOf(tf2, nm2), cb2, cs2, fm2, TF2, on2 and not USE2 ? 'Disabled: duplicate effective TF ' + prettyTF(TF2) : on2 ? tfFallback(tf2) : '')
+var Slot S3 = mkSlot(2, USE3, tagOf(tf3, nm3), cb3, cs3, fm3, TF3, on3 and not USE3 ? 'Disabled: duplicate effective TF ' + prettyTF(TF3) : on3 ? tfFallback(tf3) : '')
+var Slot S4 = mkSlot(3, USE4, tagOf(tf4, nm4), cb4, cs4, fm4, TF4, on4 and not USE4 ? 'Disabled: duplicate effective TF ' + prettyTF(TF4) : on4 ? tfFallback(tf4) : '')
+if barstate.isfirst
+    SL.push(S1)
+    SL.push(S2)
+    SL.push(S3)
+    SL.push(S4)
+
+if last_bar_index - bar_index <= DEPTH
+    if S1.on
+        S1.process(NB1)
+    if S2.on
+        S2.process(NB2)
+    if S3.on
+        S3.process(NB3)
+    if S4.on
+        S4.process(NB4)
+
+var array<box> CNF = array.new<box>()
+if barstate.islast
+    for bx in CNF
+        bx.delete()
+    CNF.clear()
+
+// Active zones receive budget first; selected BPR overlays are rebuilt afterward.
+if barstate.islast
+    for s in SL
+        for z in s.bprs
+            z.hideBpr()
+
+// FOCUS DRAWING PASS
+// Select globally by distance; ties use stable pool order (stratum, type, oldest first).
+// Sorting avoids a quadratic nearest-neighbour scan even with focus disabled.
+focusOrder(array<float> distances) =>
+    distances.sort_indices(order.ascending)
+
+if barstate.islast
+    array<Gap> pool = array.new<Gap>()
+    array<float> distances = array.new<float>()
+    for s in SL
+        if s.on
+            for g in s.gaps
+                pool.push(g)
+            for g in s.vis
+                pool.push(g)
+            for g in s.ogs
+                pool.push(g)
+            if not na(s.forming)
+                pool.push(s.forming)
+    for g in pool
+        g.selected := false
+        distances.push(math.max(0.0, math.max(g.bot0 - close, close - g.top0)))
+    array<int> nearest = focusOrder(distances)
+    int above = 0
+    int below = 0
+    int chosen = 0
+    for index in nearest
+        Gap g = pool.get(index)
+        bool isAbove = g.bot0 > close
+        bool isBelow = g.top0 < close
+        bool allowed = not focusOn or (isAbove ? above < focusCount : isBelow ? below < focusCount : true)
+        if g.renderEligible and allowed and chosen < drawBudget
+            g.selected := true
+            chosen += 1
+            above += isAbove ? 1 : 0
+            below += isBelow ? 1 : 0
+    // Release hidden drawings before allocating replacements; tracking arrays never change.
+    for g in pool
+        if not g.selected
+            g.kill()
+    for index in nearest
+        Gap g = pool.get(index)
+        if g.selected
+            g.showDrawing()
+            g.redraw()
+
+// BPR FOCUS DRAWING PASS
+// Independent per-side quotas preserve the FVG focus allowance and all BPR records.
+if barstate.islast and bprOn
+    array<Bpr> bprPool = array.new<Bpr>()
+    array<float> bprDistances = array.new<float>()
+    for s in SL
+        if s.on
+            for z in s.bprs
+                z.selected := false
+                bprPool.push(z)
+                bprDistances.push(math.max(0.0, math.max(z.bot - close, close - z.top)))
+    array<int> bprNearest = focusOrder(bprDistances)
+    int bprAbove = 0
+    int bprBelow = 0
+    for index in bprNearest
+        Bpr z = bprPool.get(index)
+        bool isAbove = z.bot > close
+        bool isBelow = z.top < close
+        bool allowed = not focusOn or (isAbove ? bprAbove < bprFocusCount : isBelow ? bprBelow < bprFocusCount : true)
+        if allowed
+            z.selected := true
+            bprAbove += isAbove ? 1 : 0
+            bprBelow += isBelow ? 1 : 0
+            z.showBpr()
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  CONFLUENCE POCKETS
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+
+// Snapshot is independent of render handles and focus selection. No shared stratum cap.
+var array<float> zT = array.new<float>()
+var array<float> zB = array.new<float>()
+var array<int> zS = array.new<int>()
+var array<int> zL = array.new<int>()
+var array<bool> zU = array.new<bool>()
+
+type CnfBand
+    float lo
+    float hi
+    int left
+    int count
+    int mask
+    int dir
+
+var array<CnfBand> BANDS = array.new<CnfBand>()
+
+snapshotZones() =>
+    zT.clear()
+    zB.clear()
+    zS.clear()
+    zL.clear()
+    zU.clear()
+    for s in SL
+        if s.on and s.gaps.size() > 0
+            for g in s.gaps
+                if g.locked and g.renderEligible
+                    zT.push(g.top0)
+                    zB.push(g.bot0)
+                    zS.push(s.id)
+                    zL.push(g.left)
+                    zU.push(g.bull)
+    zT.size()
+
+// Sweep sorted endpoints, updating active membership at each price. Coverage is constant
+// between successive endpoints. Same-direction passes never absorb each other's bands.
+sweepPockets(int dir) =>
+    array<float> prices = array.new<float>()
+    array<int> events = array.new<int>()
+    int n = zT.size()
+    for i = 0 to n - 1
+        if dir == 0 or (dir == 1) == zU.get(i)
+            prices.push(zB.get(i))
+            events.push(i + 1)
+            prices.push(zT.get(i))
+            events.push(-(i + 1))
+    if prices.size() > 1
+        array<int> sortedEvents = prices.sort_indices(order.ascending)
+        array<bool> active = array.new<bool>(n, false)
+        array<int> counts = array.new<int>(4, 0)
+        array<int> oldest = array.new<int>(4, na)
+        int pos = 0
+        while pos < sortedEvents.size()
+            float lo = prices.get(sortedEvents.get(pos))
+            array<bool> dirty = array.new<bool>(4, false)
+            // Process coincident endpoints together: touching alone creates no band.
+            while pos < sortedEvents.size()
+                int eventIdx = sortedEvents.get(pos)
+                if prices.get(eventIdx) != lo
+                    break
+                int ev = events.get(eventIdx)
+                int k = math.abs(ev) - 1
+                int sid = zS.get(k)
+                bool adding = ev > 0
+                active.set(k, adding)
+                counts.set(sid, counts.get(sid) + (adding ? 1 : -1))
+                if adding
+                    oldest.set(sid, na(oldest.get(sid)) ? zL.get(k) : math.min(oldest.get(sid), zL.get(k)))
+                else if zL.get(k) == oldest.get(sid)
+                    dirty.set(sid, true)
+                pos += 1
+            // Earliest still-active origin per TF; latest among those is the first bar
+            // on which the complete labelled set of TFs could have covered this band.
+            for sid = 0 to 3
+                if dirty.get(sid)
+                    int first = na
+                    if counts.get(sid) > 0
+                        for k = 0 to n - 1
+                            if active.get(k) and zS.get(k) == sid
+                                first := na(first) ? zL.get(k) : math.min(first, zL.get(k))
+                    oldest.set(sid, first)
+            if pos < sortedEvents.size()
+                float hi = prices.get(sortedEvents.get(pos))
+                int cnt = 0
+                int mask = 0
+                int lft = na
+                for sid = 0 to 3
+                    if counts.get(sid) > 0
+                        cnt += 1
+                        mask += int(math.pow(2, sid))
+                        lft := na(lft) ? oldest.get(sid) : math.max(lft, oldest.get(sid))
+                if cnt >= cnfMin and hi > lo
+                    bool merged = false
+                    if BANDS.size() > 0
+                        CnfBand prev = BANDS.last()
+                        if prev.hi == lo and prev.mask == mask and prev.dir == dir and prev.left == lft
+                            prev.hi := hi
+                            merged := true
+                    if not merged
+                        BANDS.push(CnfBand.new(lo, hi, lft, cnt, mask, dir))
+    BANDS.size()
+
+newPocket(CnfBand band) =>
+    if reserveDrawing(1)
+        string direction = band.dir == 1 ? ' ▲' : band.dir == -1 ? ' ▼' : ''
+        CNF.push(box.new(math.max(band.left, bar_index - 4999), band.hi, bar_index + extendR, band.lo, xloc = xloc.bar_index,
+           border_color = color.new(cnfCol, math.max(0, cnfTrsp - 10)), border_width = 1,
+           bgcolor = color.new(cnfCol, cnfTrsp),
+           text = cnfLabel ? '⊕ ' + str.tostring(band.count) + ' TF' + direction : '',
+           text_size = size.tiny, text_color = color.new(cnfCol, 0),
+           text_halign = text.align_right, text_valign = text.align_center,
+           text_font_family = TFONT))
+
+if barstate.islast
+    for bx in CNF
+        bx.delete()
+    CNF.clear()
+    BANDS.clear()
+    if cnfOn and snapshotZones() > 1
+        if cnfSame
+            sweepPockets(1)
+            sweepPockets(-1)
+        else
+            sweepPockets(0)
+        if BANDS.size() > 0
+            array<float> distances = array.new<float>()
+            for band in BANDS
+                distances.push(close > band.hi ? close - band.hi : close < band.lo ? band.lo - close : 0.0)
+            array<int> nearest = distances.sort_indices(order.ascending)
+            int pocketAbove = 0
+            int pocketBelow = 0
+            for index in nearest
+                CnfBand band = BANDS.get(index)
+                bool isAbove = band.lo > close
+                bool isBelow = band.hi < close
+                bool allowed = not focusOn or (isAbove ? pocketAbove < focusCount : isBelow ? pocketBelow < focusCount : true)
+                if allowed and CNF.size() < cnfMax
+                    newPocket(band)
+                    pocketAbove += isAbove ? 1 : 0
+                    pocketBelow += isBelow ? 1 : 0
+                if CNF.size() >= cnfMax
+                    break
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+var table DASH = table.new(DPOS, 8, 14, bgcolor = na, border_width = 0)
+
+gapDist(float raw) =>
+    na(raw) ? '—' : dshUnit == 'Ticks' ? fmtTicks(raw) : fmtPts(raw)
+
+// Each statistic uses its own sample, not the overall detected count.
+smallSample(int n) =>
+    n < sampleMin ? '*' : ''
+
+if dshOn and barstate.islast
+    DASH.clear(0, 0, 7, 13)
+    color hdr = color.new(dshFg, 35)
+    color weak = #FFB74D
+    DASH.cell(0, 0, ' TF / Type ', text_color = hdr, text_size = DSZ, bgcolor = dshBg)
+    DASH.cell(1, 0, ' Active ', text_color = hdr, text_size = DSZ, bgcolor = dshBg, tooltip = 'All tracked active records, including drawings hidden by Focus Mode or the drawing budget. Hover for the number currently drawn.')
+    DASH.cell(2, 0, ' Above ', text_color = hdr, text_size = DSZ, bgcolor = dshBg, tooltip = 'Distance to the nearest active zone above price, including hidden records.')
+    DASH.cell(3, 0, ' Below ', text_color = hdr, text_size = DSZ, bgcolor = dshBg, tooltip = 'Distance to the nearest active zone below price, including hidden records.')
+    DASH.cell(4, 0, ' N ', text_color = hdr, text_size = DSZ, bgcolor = dshBg, tooltip = 'Detected zones for this type and timeframe. Amber * means below the small-sample threshold; not a significance test.')
+    if dshStat
+        DASH.cell(5, 0, ' Retired ', text_color = hdr, text_size = DSZ, bgcolor = dshBg, tooltip = TIP_STATS)
+        DASH.cell(6, 0, ' Bars ', text_color = hdr, text_size = DSZ, bgcolor = dshBg, tooltip = 'Median chart bars to invalidation. * uses the number of invalidations in this median (up to 400).')
+        if reactOn
+            DASH.cell(7, 0, ' Rej / n ', text_color = hdr, text_size = DSZ, bgcolor = dshBg, tooltip = 'First-touch rejection percentage and completed-observation count. Pending and cap-evicted observations excluded; expiries count as no rejection. This is not a trade win rate.')
+
+    int r = 0
+    int totBull = 0
+    int totBear = 0
+    int totMade = 0
+    int totRejected = 0
+    int totObserved = 0
+    float nrUp = na
+    float nrDn = na
+    bool inside = false
+    for i = 0 to 3
+        Slot s = SL.get(i)
+        if not s.on and s.notice != ''
+            r += 1
+            DASH.cell(0, r, ' ' + s.tag + ' ', text_color = weak, text_size = DSZ, bgcolor = dshBg, tooltip = s.notice)
+            DASH.cell(1, r, ' Disabled ', text_color = weak, text_size = DSZ, bgcolor = dshBg, tooltip = s.notice)
+        if s.on
+            for kindIdx = 0 to 2
+                bool enabled = kindIdx == 0 or (kindIdx == 1 and viOn) or (kindIdx == 2 and ogOn)
+                if enabled
+                    r += 1
+                    string kind = kindIdx == 0 ? 'FVG' : kindIdx == 1 ? 'VI' : 'OG'
+                    array<Gap> zones = kindIdx == 0 ? s.gaps : kindIdx == 1 ? s.vis : s.ogs
+                    LifeStats stats = kindIdx == 0 ? s.fvgStats : kindIdx == 1 ? s.viStats : s.ogStats
+                    int nb = 0
+                    int ns = 0
+                    int drawn = 0
+                    float up = na
+                    float dn = na
+                    if zones.size() > 0
+                        for j = 0 to zones.size() - 1
+                            Gap g = zones.get(j)
+                            if g.bull
+                                nb += 1
+                            if not g.bull
+                                ns += 1
+                            if not na(g.zone)
+                                drawn += 1
+                            if close >= g.bot and close <= g.top
+                                inside := true
+                            if g.bot > close
+                                up := na(up) ? g.bot - close : math.min(up, g.bot - close)
+                            if g.top < close
+                                dn := na(dn) ? close - g.top : math.min(dn, close - g.top)
+                    totBull += nb
+                    totBear += ns
+                    totMade += stats.made
+                    int completed = stats.rejected + stats.reactionFailed + stats.reactionExpired
+                    int pending = stats.reactionSeen - completed - stats.reactionDropped
+                    totRejected += stats.rejected
+                    totObserved += completed
+                    nrUp := na(up) ? nrUp : na(nrUp) ? up : math.min(nrUp, up)
+                    nrDn := na(dn) ? nrDn : na(nrDn) ? dn : math.min(nrDn, dn)
+                    string summary = kind + ' · ' + s.tag + '\nDetected: ' + str.tostring(stats.made) +
+                       '\nActive: ' + str.tostring(zones.size()) + ' (drawn: ' + str.tostring(drawn) + ')' +
+                       '\nInvalidated: ' + str.tostring(stats.invalidated) + '\nFully filled while tracked: ' + str.tostring(stats.full) +
+                       '\nCap evicted: ' + str.tostring(stats.evicted) + '\nRule: ' + s.fill +
+                       '\nFull fills overlap active/invalidated counts; do not add them together.'
+                    string reactionSummary = 'First-touch observations: ' + str.tostring(stats.reactionSeen) +
+                       '\nRejected: ' + str.tostring(stats.rejected) + '\nFailed far-edge close: ' + str.tostring(stats.reactionFailed) +
+                       '\nExpired: ' + str.tostring(stats.reactionExpired) + '\nPending: ' + str.tostring(pending) +
+                       '\nCap evicted (unknown): ' + str.tostring(stats.reactionDropped) +
+                       '\nWindow: ' + str.tostring(reactBars) + ' chart candles, including touch candle.\nThese are price reactions, not trade outcomes.'
+                    color rowCol = kindIdx == 1 ? viCol : kindIdx == 2 ? ogCol : dshFg
+                    DASH.cell(0, r, ' ' + s.tag + ' ' + kind + (s.notice != '' ? ' !' : '') + ' ', text_color = rowCol, text_size = DSZ, bgcolor = dshBg, tooltip = s.notice)
+                    DASH.cell(1, r, ' ' + str.tostring(nb) + '▲ ' + str.tostring(ns) + '▼ ', text_color = nb > ns ? s.cb : ns > nb ? s.cs : dshFg, text_size = DSZ, bgcolor = dshBg, tooltip = summary)
+                    DASH.cell(2, r, ' ' + gapDist(up) + ' ', text_color = s.cb, text_size = DSZ, bgcolor = dshBg)
+                    DASH.cell(3, r, ' ' + gapDist(dn) + ' ', text_color = s.cs, text_size = DSZ, bgcolor = dshBg)
+                    DASH.cell(4, r, ' ' + str.tostring(stats.made) + smallSample(stats.made) + ' ', text_color = stats.made < sampleMin ? weak : dshFg, text_size = DSZ, bgcolor = dshBg, tooltip = summary + '\n* Small sample: fewer than ' + str.tostring(sampleMin) + ' detected zones.')
+                    if dshStat
+                        string retired = stats.made > 0 ? pct(stats.invalidated * 1.0 / stats.made) + smallSample(stats.made) : '—'
+                        int invalidSamples = stats.bars.size()
+                        string md = invalidSamples > 0 ? str.tostring(int(math.round(stats.bars.median()))) + smallSample(invalidSamples) : '—'
+                        DASH.cell(5, r, ' ' + retired + ' ', text_color = stats.made < sampleMin ? weak : dshFg, text_size = DSZ, bgcolor = dshBg, tooltip = summary + '\n\n' + TIP_STATS)
+                        DASH.cell(6, r, ' ' + md + ' ', text_color = invalidSamples < sampleMin ? weak : dshFg, text_size = DSZ, bgcolor = dshBg, tooltip = 'Latest ' + str.tostring(invalidSamples) + ' invalidations.\n' + TIP_STATS)
+                        if reactOn
+                            string reactionRate = completed > 0 ? pct(stats.rejected * 1.0 / completed) : '—'
+                            DASH.cell(7, r, ' ' + reactionRate + ' · ' + str.tostring(completed) + smallSample(completed) + ' ', text_color = completed < sampleMin ? weak : dshFg, text_size = DSZ, bgcolor = dshBg, tooltip = reactionSummary)
+
+    r += 1
+    color accent = color.new(dshFg, 15)
+    color solid = color.new(dshBg, 0)
+    DASH.cell(0, r, ' ALL ', text_color = accent, text_size = DSZ, bgcolor = solid, tooltip = 'Enabled, distinct effective timeframes only. Focus Mode changes drawings, not these totals.')
+    DASH.cell(1, r, ' ' + str.tostring(totBull) + '▲ ' + str.tostring(totBear) + '▼ ', text_color = accent, text_size = DSZ, bgcolor = solid)
+    DASH.cell(2, r, ' ' + (inside ? '• IN' : gapDist(nrUp)) + ' ', text_color = accent, text_size = DSZ, bgcolor = solid)
+    DASH.cell(3, r, ' ' + (inside ? '• IN' : gapDist(nrDn)) + ' ', text_color = accent, text_size = DSZ, bgcolor = solid)
+    DASH.cell(4, r, ' ' + str.tostring(totMade) + ' ', text_color = accent, text_size = DSZ, bgcolor = solid, tooltip = 'Detected records summed across enabled types and timeframes; not independent market observations.')
+    if dshStat
+        DASH.cell(5, r, cnfOn ? ' ⊕' + str.tostring(CNF.size()) + ' ' : ' ', text_color = cnfCol, text_size = DSZ, bgcolor = solid, tooltip = 'Confluence pockets currently drawn.')
+        int bprTot = 0
+        for s in SL
+            for z in s.bprs
+                if not na(z.bx)
+                    bprTot += 1
+        DASH.cell(6, r, bprOn ? ' ◫' + str.tostring(bprTot) + ' ' : ' ', text_color = bprCol, text_size = DSZ, bgcolor = solid, tooltip = 'Balanced price ranges currently drawn.')
+        if reactOn
+            DASH.cell(7, r, ' ' + str.tostring(totRejected) + '/' + str.tostring(totObserved) + ' ', text_color = accent, text_size = DSZ, bgcolor = solid, tooltip = 'Rejected / completed observations, summed across enabled types and strata. One chart reaction can involve several zones.')
+
+// Nearest confirmed FVG by polarity, independent of Focus visibility.
+zoneDistance(Gap g) =>
+    math.max(0.0, math.max(g.bot - close, close - g.top))
+
+nearestText(Gap g) =>
+    string result = '—'
+    if not na(g)
+        float distance = zoneDistance(g)
+        result := (distance == 0 ? 'Inside' : fmtPts(distance) + ' pts ' + (g.bot > close ? 'above' : 'below')) + ' · ' + g.name
+    result
+
+var table NEAREST = table.new(dshOn and dshPosI == 'Bottom Right' ? position.bottom_left : position.bottom_right, 2, 2, border_width = 0)
+if barstate.islast and nearestOn
+    Gap nearestBull = na
+    Gap nearestBear = na
+    for s in SL
+        if s.on
+            for g in s.gaps
+                if g.locked
+                    if g.bull
+                        if na(nearestBull)
+                            nearestBull := g
+                        else if zoneDistance(g) < zoneDistance(nearestBull)
+                            nearestBull := g
+                    if not g.bull
+                        if na(nearestBear)
+                            nearestBear := g
+                        else if zoneDistance(g) < zoneDistance(nearestBear)
+                            nearestBear := g
+    NEAREST.cell(0, 0, ' Bull ', text_color = #26A69A, bgcolor = dshBg, text_size = DSZ)
+    NEAREST.cell(1, 0, nearestText(nearestBull), text_color = #26A69A, bgcolor = dshBg, text_size = DSZ, tooltip = na(nearestBull) ? 'No active confirmed bullish FVG' : hoverText(nearestBull))
+    NEAREST.cell(0, 1, ' Bear ', text_color = #9575CD, bgcolor = dshBg, text_size = DSZ)
+    NEAREST.cell(1, 1, nearestText(nearestBear), text_color = #9575CD, bgcolor = dshBg, text_size = DSZ, tooltip = na(nearestBear) ? 'No active confirmed bearish FVG' : hoverText(nearestBear))
+
+// Transparent triangle labels add hover targets to plot markers without consuming boxes/lines.
+// Plot triangles remain available when old hover targets are capped or budget-evicted.
+if reactMarks and reactHover and barstate.isconfirmed and last_bar_index - bar_index <= maxBars
+    for direction = 0 to 1
+        if REJECTIONS.get(direction)
+            while REJECTION_TIPS.size() >= 100
+                label.delete(REJECTION_TIPS.shift())
+            if array.size(label.all) < drawBudget
+                bool bullish = direction == 0
+                label tip = label.new(bar_index, bullish ? low : high, '', yloc = bullish ? yloc.belowbar : yloc.abovebar,
+                   style = bullish ? label.style_triangleup : label.style_triangledown, size = size.tiny,
+                   color = color.new(color.white, 100), tooltip = 'First-touch rejection · ' + sessionTZ + '\n\n' + REJECTION_DETAILS.get(direction))
+                REJECTION_TIPS.push(tip)
+
+// One close-confirmed batch preserves simultaneous events from several zones and strata.
+if barstate.isconfirmed and EVENTS.size() > 0
+    alert('FVG Atlas | ' + syminfo.tickerid + ' · chart ' + timeframe.period + '\n' + EVENTS.join('\n'), alert.freq_once_per_bar_close)
+
+bool bullReactionMark = reactMarks and last_bar_index - bar_index <= maxBars and REJECTIONS.get(0)
+bool bearReactionMark = reactMarks and last_bar_index - bar_index <= maxBars and REJECTIONS.get(1)
+plotshape(bullReactionMark and not reactText, title = 'Bullish rejection triangle', style = shape.triangleup, location = location.belowbar, color = #26A69A, size = size.tiny)
+plotshape(bearReactionMark and not reactText, title = 'Bearish rejection triangle', style = shape.triangledown, location = location.abovebar, color = #9575CD, size = size.tiny)
+plotshape(bullReactionMark and reactText, title = 'Bullish rejection with text', style = shape.triangleup, location = location.belowbar, color = #26A69A, size = size.tiny, text = 'REJ', textcolor = #26A69A)
+plotshape(bearReactionMark and reactText, title = 'Bearish rejection with text', style = shape.triangledown, location = location.abovebar, color = #9575CD, size = size.tiny, text = 'REJ', textcolor = #9575CD)

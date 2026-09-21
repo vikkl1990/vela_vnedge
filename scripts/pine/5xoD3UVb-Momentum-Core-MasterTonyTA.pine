@@ -1,0 +1,227 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © MasterTonyTA
+
+//@version=6
+indicator("Momentum Core [MasterTonyTA]", shorttitle="MOM Core", overlay=false, precision=2)
+
+// ═══════════════════════════════════════════════════════════
+// INPUTS
+// ═══════════════════════════════════════════════════════════
+grpC = "Core Engine"
+tsiS    = input.int(13,  "TSI Short",        group=grpC, minval=1)
+tsiL    = input.int(25,  "TSI Long",         group=grpC, minval=1)
+rocLen  = input.int(14,  "ROC Length",       group=grpC, minval=1)
+atrLen  = input.int(14,  "ATR Norm Length",  group=grpC, minval=1)
+rsiLen  = input.int(14,  "RSI Length",       group=grpC, minval=1)
+velLen  = input.int(3,   "RSI Velocity Len", group=grpC, minval=1)
+obvLen  = input.int(10,  "OBV Slope Len",    group=grpC, minval=1)
+zLen    = input.int(100, "Z-Score Lookback", group=grpC, minval=20)
+sigLen  = input.int(9,   "Signal EMA",       group=grpC, minval=1)
+
+grpW = "Weights"
+wTsi = input.float(1.2, "TSI",          group=grpW, step=0.1)
+wRoc = input.float(1.0, "ROC (ATR-N)",  group=grpW, step=0.1)
+wRsi = input.float(0.8, "RSI Velocity", group=grpW, step=0.1)
+wObv = input.float(0.7, "OBV Slope",    group=grpW, step=0.1)
+
+grpM = "Momentum Wave (MACD)"
+showWave = input.bool(true,  "Show Wave",               group=grpM)
+macdF    = input.int(12,     "Fast",                    group=grpM, minval=1)
+macdS    = input.int(26,     "Slow",                    group=grpM, minval=1)
+macdSigL = input.int(9,      "Signal",                  group=grpM, minval=1)
+waveAmp  = input.float(0.7,  "Wave Amplitude",          group=grpM, step=0.1, minval=0.1, maxval=1.0)
+wWave    = input.float(0.0,  "Wave Weight in Composite",group=grpM, step=0.1, minval=0, maxval=2)
+
+grpG = "Regime Gate"
+useGate    = input.bool(true, "Enable Gate",       group=grpG)
+diLen      = input.int(14,    "DI Length",         group=grpG, minval=1)
+adxLen     = input.int(14,    "ADX Smoothing",     group=grpG, minval=1)
+adxMin     = input.float(20,  "Min ADX",           group=grpG, step=1)
+rvMin      = input.float(0.8, "Min Rel Volume",    group=grpG, step=0.1)
+flipThresh = input.float(10,  "Regime Flip Level", group=grpG, step=1, minval=0)
+confirmBars= input.int(2,     "Confirm Bars",      group=grpG, minval=1)
+
+grpD = "Divergence"
+useDiv = input.bool(true, "Show Divergence", group=grpD)
+divL   = input.int(5,     "Pivot Left",      group=grpD, minval=1)
+divR   = input.int(3,     "Pivot Right",     group=grpD, minval=1)
+
+
+grpV = "Visuals"
+showBg  = input.bool(true, "State Background", group=grpV)
+bgTrans = input.int(92, "Background Transparency", group=grpV, minval=70, maxval=99)
+cBull = input.color(#00c853, "Bull", group=grpV, inline="c")
+cBear = input.color(#ff1744, "Bear", group=grpV, inline="c")
+cNeut = input.color(#78909c, "Chop", group=grpV, inline="c")
+
+slopeDead = input.float(0.15, "Slope Deadzone", group=grpV, step=0.05, minval=0)
+dimTrans  = input.int(55, "Weak State Transparency", group=grpV, minval=0, maxval=90)
+
+grpZ = "Zones"
+showZones = input.bool(true, "Show Zones",      group=grpZ)
+bullEntry = input.float(15,  "Bull Zone Start", group=grpZ, step=1)
+bearEntry = input.float(-15, "Bear Zone Start", group=grpZ, step=1)
+exhaustUpLvl = input.float(60,  "Bull Exhaustion", group=grpZ, step=1)
+exhaustDnLvl = input.float(-60, "Bear Exhaustion", group=grpZ, step=1)
+zoneTrans = input.int(90, "Zone Transparency", group=grpZ, minval=70, maxval=99)
+// ═══════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════
+f_z(src, len) =>
+    m = ta.sma(src, len)
+    s = ta.stdev(src, len)
+    s == 0 ? 0.0 : (src - m) / s
+
+f_squash(x) => 100 * (2 / (1 + math.exp(-x * 0.9)) - 1)
+
+// ═══════════════════════════════════════════════════════════
+// COMPONENTS
+// ═══════════════════════════════════════════════════════════
+// 1. TSI — double-smoothed momentum
+tsiRaw = ta.tsi(close, tsiS, tsiL) * 100
+zTsi   = f_z(tsiRaw, zLen)
+
+// 2. ATR-normalized ROC — volatility-adjusted velocity
+atrV   = ta.atr(atrLen)
+rocRaw = atrV == 0 ? 0.0 : (close - close[rocLen]) / atrV
+zRoc   = f_z(rocRaw, zLen)
+
+// 3. RSI velocity — thrust, not level
+rsiV   = ta.change(ta.rsi(close, rsiLen), velLen)
+zRsi   = f_z(rsiV, zLen)
+
+// 4. OBV slope — participation confirmation
+obvS   = ta.change(ta.obv, obvLen)
+avgVol = ta.sma(volume, 20)
+obvN   = avgVol == 0 ? 0.0 : obvS / (avgVol * obvLen)
+zObv   = f_z(obvN, zLen)
+
+// 5. MACD momentum wave — cycle rhythm / impulse decay
+[mcdLine, mcdSigLine, mcdHist] = ta.macd(close, macdF, macdS, macdSigL)
+zWave  = f_z(mcdHist, zLen)
+wave   = f_squash(zWave) * waveAmp
+waveUp = wave > wave[1]
+
+// ═══════════════════════════════════════════════════════════
+// COMPOSITE
+// ═══════════════════════════════════════════════════════════
+wSum   = wTsi + wRoc + wRsi + wObv + wWave
+rawMom = wSum == 0 ? 0.0 : (zTsi*wTsi + zRoc*wRoc + zRsi*wRsi + zObv*wObv + zWave*wWave) / wSum
+mom    = f_squash(rawMom)
+sig    = ta.ema(mom, sigLen)
+accel  = ta.ema(ta.change(mom, 1), 3)
+
+// ═══════════════════════════════════════════════════════════
+// REGIME GATE
+// ═══════════════════════════════════════════════════════════
+[diP, diM, adxV] = ta.dmi(diLen, adxLen)
+relVol = avgVol == 0 ? 1.0 : volume / avgVol
+gateOK = not useGate or (adxV >= adxMin and relVol >= rvMin)
+
+// ═══════════════════════════════════════════════════════════
+// STATE + COLOR
+// ═══════════════════════════════════════════════════════════
+rising  = accel >  slopeDead
+falling = accel < -slopeDead
+above   = mom > sig
+
+// Slope sets direction, mom/sig spread sets conviction
+var bool dirBull = true
+if rising
+    dirBull := true
+else if falling
+    dirBull := false
+
+strong = (dirBull and above) or (not dirBull and not above)
+
+bull = dirBull
+bear = not dirBull
+baseCol = not gateOK ? cNeut : bull ? cBull : cBear
+momCol  = color.new(baseCol, not gateOK ? 45 : strong ? 0 : dimTrans)
+
+// Macro regime — held until confirmed flip
+flipBullRaw = bull and gateOK
+flipBearRaw = bear and gateOK
+
+var int bullBars = 0
+var int bearBars = 0
+bullBars := flipBullRaw ? bullBars + 1 : 0
+bearBars := flipBearRaw ? bearBars + 1 : 0
+
+var int regime = 0
+if bullBars >= confirmBars
+    regime := 1
+else if bearBars >= confirmBars
+    regime := -1
+
+bgCol = not showBg ? na : regime == 1 ? color.new(cBull, bgTrans) : regime == -1 ? color.new(cBear, bgTrans) : na
+
+
+// ═══════════════════════════════════════════════════════════
+// PLOTS
+// ═══════════════════════════════════════════════════════════
+waveStr = math.min(math.abs(wave) / 50, 1.0)
+waveCol = color.new(wave >= 0 ? cBull : cBear, int(88 - waveStr * 30))
+plot(showWave ? wave : na, "Momentum Wave", color=waveCol, style=plot.style_area, linewidth=1)
+
+// Zone boundaries
+pBullEnt = plot(showZones ? bullEntry : na, "Bull Entry", color=color.new(cBull, 55), style=plot.style_linebr)
+pBullExh = plot(showZones ? exhaustUpLvl : na, "Bull Exhaust", color=color.new(cBull, 55), style=plot.style_linebr)
+pBearEnt = plot(showZones ? bearEntry : na, "Bear Entry", color=color.new(cBear, 55), style=plot.style_linebr)
+pBearExh = plot(showZones ? exhaustDnLvl : na, "Bear Exhaust", color=color.new(cBear, 55), style=plot.style_linebr)
+
+fill(pBullEnt, pBullExh, color=color.new(cBull, zoneTrans), title="Bull Good Zone")
+fill(pBearEnt, pBearExh, color=color.new(cBear, zoneTrans), title="Bear Good Zone")
+fill(pBullEnt, pBearEnt, color=color.new(cNeut, zoneTrans + 4), title="Chop Zone")
+
+plot(mom, "Momentum", color=momCol, linewidth=2)
+plot(sig, "Signal",   color=color.new(color.orange, 20), linewidth=1)
+
+hline(0, "Zero", color=color.new(color.gray, 40), linestyle=hline.style_solid)
+
+
+
+// ═══════════════════════════════════════════════════════════
+// DIVERGENCE
+// ═══════════════════════════════════════════════════════════
+pl = ta.pivotlow(mom, divL, divR)
+ph = ta.pivothigh(mom, divL, divR)
+
+prevPL     = ta.valuewhen(not na(pl), pl, 1)
+currPL     = ta.valuewhen(not na(pl), pl, 0)
+prevPLbar  = ta.valuewhen(not na(pl), low[divR], 1)
+currPLbar  = ta.valuewhen(not na(pl), low[divR], 0)
+
+prevPH     = ta.valuewhen(not na(ph), ph, 1)
+currPH     = ta.valuewhen(not na(ph), ph, 0)
+prevPHbar  = ta.valuewhen(not na(ph), high[divR], 1)
+currPHbar  = ta.valuewhen(not na(ph), high[divR], 0)
+
+bullDiv = useDiv and not na(pl) and currPL > prevPL and currPLbar < prevPLbar
+bearDiv = useDiv and not na(ph) and currPH < prevPH and currPHbar > prevPHbar
+
+plotshape(bullDiv ? mom[divR] : na, "Bull Div", shape.labelup,   location.absolute, color.new(cBull, 20), text="D", textcolor=color.white, size=size.tiny, offset=-divR)
+plotshape(bearDiv ? mom[divR] : na, "Bear Div", shape.labeldown, location.absolute, color.new(cBear, 20), text="D", textcolor=color.white, size=size.tiny, offset=-divR)
+
+// ═══════════════════════════════════════════════════════════
+// ALERTS
+// ═══════════════════════════════════════════════════════════
+crossUp   = ta.crossover(mom, 0)  and gateOK
+crossDn   = ta.crossunder(mom, 0) and gateOK
+exhaustUp = mom > 60  and accel < 0
+exhaustDn = mom < -60 and accel > 0
+
+alertcondition(crossUp,   "Momentum Flip Bull", "MOM Core: bullish zero cross, gate passed")
+alertcondition(crossDn,   "Momentum Flip Bear", "MOM Core: bearish zero cross, gate passed")
+alertcondition(exhaustUp, "Bull Exhaustion",    "MOM Core: momentum decelerating at extreme high")
+alertcondition(exhaustDn, "Bear Exhaustion",    "MOM Core: momentum decelerating at extreme low")
+alertcondition(bullDiv,   "Bullish Divergence", "MOM Core: bullish divergence")
+alertcondition(bearDiv,   "Bearish Divergence", "MOM Core: bearish divergence")
+
+waveFlipUp = ta.crossover(wave, 0)
+waveFlipDn = ta.crossunder(wave, 0)
+waveStall  = (wave > 0 and not waveUp and waveUp[1]) or (wave < 0 and waveUp and not waveUp[1])
+
+alertcondition(waveFlipUp, "Wave Flip Bull", "MOM Core: momentum wave crossed above zero")
+alertcondition(waveFlipDn, "Wave Flip Bear", "MOM Core: momentum wave crossed below zero")
+alertcondition(waveStall,  "Wave Stalling",  "MOM Core: momentum wave rolled over")

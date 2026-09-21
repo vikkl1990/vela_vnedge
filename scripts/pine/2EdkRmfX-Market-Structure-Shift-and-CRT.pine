@@ -1,0 +1,790 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+//  BODY ZIGZAG + DUAL-TIMEFRAME STRUCTURE
+//  Zigzag through candle bodies on TF1, structure read from TF1 and TF2,
+//  HTF sweep detection, and a table showing whether the timeframes agree.
+//  No user-defined functions anywhere in this script.
+// ═══════════════════════════════════════════════════════════════════════════
+indicator("Body ZigZag + HTF Sweeps", "BodyZZ+Sweeps", overlay = true,
+     max_lines_count = 500, max_labels_count = 300, max_boxes_count = 300,
+     max_bars_back = 5000)
+
+// ───────────────────────────── TIMEFRAMES ──────────────────────────────────
+gTF = "① Structure Timeframes"
+tf1In = input.timeframe("",   "Structure TF 1",    group = gTF,
+     tooltip = "Blank = chart timeframe. Drives the zigzag and on-chart labels.")
+tf2In = input.timeframe("15", "Structure TF 2",    group = gTF,
+     tooltip = "Higher timeframe used for the alignment check. Table only, " +
+               "unless you enable its levels below.")
+
+// ───────────────────────────────── ZIGZAG ──────────────────────────────────
+gZZ = "② ZigZag"
+zzOn    = input.bool(true, "Enable", group = gZZ)
+zzLen   = input.int(1, "ZigZag Length", minval = 1, maxval = 10, group = gZZ,
+     tooltip = "1 = dense, traces nearly every bar.")
+useBody = input.bool(true, "Use Candle Bodies", group = gZZ)
+zzCol   = input.color(#00e676, "Color", group = gZZ)
+zzWidth = input.int(1, "Width", minval = 1, maxval = 4, group = gZZ)
+zzKeep  = input.int(300, "Max Legs Kept", minval = 50, maxval = 450, group = gZZ)
+
+// ──────────────────────────────── STRUCTURE ────────────────────────────────
+gST = "③ Structure Labels"
+stLeft1   = input.int(5, "TF1 Pivot  Left", minval = 1, inline = "p1", group = gST)
+stRight1  = input.int(2, "Right",             minval = 1, inline = "p1", group = gST,
+     tooltip = "RIGHT bars decide the lag: a pivot cannot confirm until this " +
+               "many bars print after it. Left defines how significant the " +
+               "swing must be. Left 5 / Right 2 keeps quality but confirms " +
+               "in 2 bars instead of 5.")
+stLeft2   = input.int(5, "TF2 Pivot  Left", minval = 1, inline = "p2", group = gST)
+stRight2  = input.int(2, "Right",             minval = 1, inline = "p2", group = gST)
+
+brkEval   = input.string("Chart Bar", "Evaluate Breaks On",
+     options = ["Chart Bar", "TF Close"], group = gST,
+     tooltip = "Chart Bar = a break registers the moment price crosses the " +
+               "level on your chart. TF Close = waits for the higher-timeframe " +
+               "bar to close (slower, fewer false breaks).")
+brkSrc    = input.string("Close", "Break Confirmed By",
+     options = ["Close", "Wick"], group = gST,
+     tooltip = "Wick fires the instant price trades through the level. " +
+               "Close waits for the bar to settle beyond it.")
+showSwLbl = input.bool(true, "Show HH / HL / LH / LL  (TF1)", group = gST)
+showBos   = input.bool(true, "Show BOS / CHoCH  (TF1)",       group = gST)
+showLn1   = input.bool(true, "Show TF1 Levels",               group = gST)
+showLn2   = input.bool(false,"Show TF2 Levels",               group = gST)
+bullCol   = input.color(#089981, "Bull", inline = "sc", group = gST)
+bearCol   = input.color(#f23645, "Bear", inline = "sc", group = gST)
+tf1HiCol  = input.color(#ff9800, "TF1 High", inline = "t1c", group = gST)
+tf1LoCol  = input.color(#ffd54f, "TF1 Low",  inline = "t1c", group = gST)
+tf2HiCol  = input.color(#ef5350, "TF2 High", inline = "t2c", group = gST)
+tf2LoCol  = input.color(#26a69a, "TF2 Low",  inline = "t2c", group = gST)
+lvlTag    = input.bool(true, "Label Levels", group = gST,
+     tooltip = "Writes TF1 H / TF1 L / TF2 H / TF2 L at the right edge of " +
+               "each pending structure level so you can tell them apart.")
+lblSizeIn = input.string("Small", "Label Size",
+     options = ["Tiny", "Small", "Normal"], group = gST)
+
+// ────────────────────────────────── TABLE ──────────────────────────────────
+gTB = "⑦ Status Table"
+tblOn    = input.bool(true, "Show Table", group = gTB)
+tblPos   = input.string("Top Right", "Position", group = gTB,
+     options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right"])
+tblSize  = input.string("Small", "Text Size", group = gTB,
+     options = ["Tiny", "Small", "Normal"])
+tblBg    = input.color(color.new(color.black, 25), "Background", group = gTB)
+tintOn   = input.bool(false, "Tint Background When Aligned", group = gTB)
+alignCol = input.color(#ffb300, "Conflict Color", group = gTB)
+
+
+// ──────────────────────────────── TIMEFRAMES ───────────────────────────────
+gT = "④ Sweep Timeframes"
+t1On  = input.bool(true,  "Sweep TF 1", inline = "t1", group = gT)
+t1TF  = input.timeframe("5",  "",  inline = "t1", group = gT)
+t1Col = input.color(#2962ff, "",   inline = "t1", group = gT)
+
+t2On  = input.bool(true,  "Sweep TF 2", inline = "t2", group = gT)
+t2TF  = input.timeframe("15", "",  inline = "t2", group = gT)
+t2Col = input.color(#9c27b0, "",   inline = "t2", group = gT)
+
+t3On  = input.bool(false, "Sweep TF 3", inline = "t3", group = gT)
+t3TF  = input.timeframe("60", "",  inline = "t3", group = gT)
+t3Col = input.color(#ff9800, "",   inline = "t3", group = gT)
+
+swDepth = input.int(6, "Candles Compared", minval = 2, maxval = 20, group = gT,
+     tooltip = "How many prior HTF candles the forming candle is checked " +
+               "against for a sweep.")
+
+// ──────────────────────────────── DETECTION ────────────────────────────────
+gD = "⑤ Sweep Detection"
+doBull   = input.bool(true, "Sweep of Highs", group = gD,
+     tooltip = "Wick above a prior high, body closing back below it.")
+doBear   = input.bool(true, "Sweep of Lows",  group = gD,
+     tooltip = "Wick below a prior low, body closing back above it.")
+onlyDone = input.bool(true, "Confirmed Sweeps Only", group = gD,
+     tooltip = "Wait for the HTF candle to close before drawing. Off = draw " +
+               "live, which may repaint while the candle is still forming.")
+
+// ───────────────────────────────── DISPLAY ─────────────────────────────────
+gV = "⑥ Sweep Display"
+lnStyle  = input.string("Solid", "Sweep Line", options = ["Solid", "Dashed", "Dotted"],
+     inline = "ls", group = gV)
+lnWidth  = input.int(1, "", minval = 1, maxval = 4, inline = "ls", group = gV)
+showInv  = input.bool(true, "Show Invalidated", inline = "iv", group = gV)
+invCol   = input.color(color.new(#787b86, 40), "", inline = "iv", group = gV)
+showTag  = input.bool(true, "Label With Timeframe", group = gV)
+showZone = input.bool(true, "Draw 50% Zone", group = gV)
+zoneOpac = input.int(85, "Zone Opacity", minval = 0, maxval = 100, group = gV)
+swExtend  = input.int(50, "Extend Right (bars)", minval = 1, maxval = 300, group = gV)
+
+// ══════════════════════════════════════════════════════════════════════════
+lblSz = lblSizeIn == "Tiny" ? size.tiny : lblSizeIn == "Small" ? size.small : size.normal
+tblSz = tblSize   == "Tiny" ? size.tiny : tblSize   == "Small" ? size.small : size.normal
+
+tf1  = tf1In == "" ? timeframe.period : tf1In
+tf2  = tf2In == "" ? timeframe.period : tf2In
+tf1N = tf1In == "" ? timeframe.period : tf1In
+tf2N = tf2In == "" ? timeframe.period : tf2In
+
+// ── data from TF1 ──
+[zPh1, zPl1] = request.security(syminfo.tickerid, tf1,
+     [ta.pivothigh(useBody ? math.max(open, close) : high, zzLen, zzLen),
+      ta.pivotlow( useBody ? math.min(open, close) : low,  zzLen, zzLen)],
+     lookahead = barmerge.lookahead_off)
+
+[sPh1, sPl1, c1, tfHi1, tfLo1] = request.security(syminfo.tickerid, tf1,
+     [ta.pivothigh(useBody ? math.max(open, close) : high, stLeft1, stRight1),
+      ta.pivotlow( useBody ? math.min(open, close) : low,  stLeft1, stRight1),
+      close, high, low],
+     lookahead = barmerge.lookahead_off)
+
+// ── data from TF2 ──
+[sPh2, sPl2, c2, tfHi2, tfLo2] = request.security(syminfo.tickerid, tf2,
+     [ta.pivothigh(useBody ? math.max(open, close) : high, stLeft2, stRight2),
+      ta.pivotlow( useBody ? math.min(open, close) : low,  stLeft2, stRight2),
+      close, high, low],
+     lookahead = barmerge.lookahead_off)
+
+// ── break sources: chart bar reacts immediately, TF close waits ──
+up1 = brkEval == "Chart Bar" ? (brkSrc == "Wick" ? high : close)
+     : (brkSrc == "Wick" ? tfHi1 : c1)
+dn1 = brkEval == "Chart Bar" ? (brkSrc == "Wick" ? low  : close)
+     : (brkSrc == "Wick" ? tfLo1 : c1)
+up2 = brkEval == "Chart Bar" ? (brkSrc == "Wick" ? high : close)
+     : (brkSrc == "Wick" ? tfHi2 : c2)
+dn2 = brkEval == "Chart Bar" ? (brkSrc == "Wick" ? low  : close)
+     : (brkSrc == "Wick" ? tfLo2 : c2)
+
+// bars of THIS chart that fit inside one bar of each structure timeframe,
+// used to anchor a level back to where its pivot actually printed
+barsPer1 = math.max(1, math.round(timeframe.in_seconds(tf1) / timeframe.in_seconds(timeframe.period)))
+barsPer2 = math.max(1, math.round(timeframe.in_seconds(tf2) / timeframe.in_seconds(timeframe.period)))
+back1    = barsPer1 * stRight1
+back2    = barsPer2 * stRight2
+
+new1 = timeframe.change(tf1)
+new2 = timeframe.change(tf2)
+
+zHiNow = useBody ? math.max(open, close) : high
+zLoNow = useBody ? math.min(open, close) : low
+
+// ══════════════════════════════════════════════════════════════════════════
+//  ZIGZAG  (TF1)
+// ══════════════════════════════════════════════════════════════════════════
+var array<line> legs   = array.new<line>()
+var float       pPrice = na
+var int         pBar   = na
+var int         pDir   = 0
+
+if zzOn and new1 and not na(zPh1)
+    int d0 = pDir
+    if d0 == 0
+        pDir   := 1
+        pPrice := zPh1
+        pBar   := bar_index
+    if d0 == 1 and zPh1 > pPrice
+        pPrice := zPh1
+        pBar   := bar_index
+        if array.size(legs) > 0
+            line.set_xy2(array.get(legs, array.size(legs) - 1), pBar, pPrice)
+    if d0 == -1
+        array.push(legs, line.new(pBar, pPrice, bar_index, zPh1,
+             color = zzCol, width = zzWidth))
+        if array.size(legs) > zzKeep
+            line.delete(array.shift(legs))
+        pDir   := 1
+        pPrice := zPh1
+        pBar   := bar_index
+
+if zzOn and new1 and not na(zPl1)
+    int d0 = pDir
+    if d0 == 0
+        pDir   := -1
+        pPrice := zPl1
+        pBar   := bar_index
+    if d0 == -1 and zPl1 < pPrice
+        pPrice := zPl1
+        pBar   := bar_index
+        if array.size(legs) > 0
+            line.set_xy2(array.get(legs, array.size(legs) - 1), pBar, pPrice)
+    if d0 == 1
+        array.push(legs, line.new(pBar, pPrice, bar_index, zPl1,
+             color = zzCol, width = zzWidth))
+        if array.size(legs) > zzKeep
+            line.delete(array.shift(legs))
+        pDir   := -1
+        pPrice := zPl1
+        pBar   := bar_index
+
+var line liveLn = na
+if zzOn and barstate.islast and not na(pBar)
+    line.delete(liveLn)
+    liveLn := line.new(pBar, pPrice, bar_index, pDir == 1 ? zLoNow : zHiNow,
+         color = color.new(zzCol, 40), width = zzWidth, style = line.style_dotted)
+
+// ══════════════════════════════════════════════════════════════════════════
+//  STRUCTURE  —  TF1
+// ══════════════════════════════════════════════════════════════════════════
+var float  hi1     = na
+var float  hi1Old  = na
+var bool   hi1Take = true
+var float  lo1     = na
+var float  lo1Old  = na
+var bool   lo1Take = true
+var int    bias1   = 0
+var string ev1     = "—"
+var int    ev1Dir  = 0
+var string pv1     = "—"
+var line   hi1Ln   = na
+var line   lo1Ln   = na
+var label  hi1Lb   = na
+var label  lo1Lb   = na
+
+if new1 and not na(sPh1)
+    hi1Old  := hi1
+    hi1     := sPh1
+    hi1Take := false
+    if not na(hi1Old)
+        pv1 := sPh1 > hi1Old ? "HH" : "LH"
+        if showSwLbl
+            label.new(bar_index, sPh1, pv1, color = color.new(color.black, 100),
+                 textcolor = sPh1 > hi1Old ? bullCol : bearCol,
+                 style = label.style_label_down, size = lblSz)
+    if showLn1
+        line.delete(hi1Ln)
+        label.delete(hi1Lb)
+        hi1Ln := line.new(math.max(0, bar_index - back1), sPh1, bar_index, sPh1,
+             color = tf1HiCol, style = line.style_dashed)
+        hi1Lb := lvlTag
+             ? label.new(bar_index, sPh1, "TF1 H", color = color.new(color.black, 100),
+                  textcolor = tf1HiCol, style = label.style_label_left, size = size.tiny)
+             : label.new(na, na, "")
+
+if new1 and not na(sPl1)
+    lo1Old  := lo1
+    lo1     := sPl1
+    lo1Take := false
+    if not na(lo1Old)
+        pv1 := sPl1 < lo1Old ? "LL" : "HL"
+        if showSwLbl
+            label.new(bar_index, sPl1, pv1, color = color.new(color.black, 100),
+                 textcolor = sPl1 < lo1Old ? bearCol : bullCol,
+                 style = label.style_label_up, size = lblSz)
+    if showLn1
+        line.delete(lo1Ln)
+        label.delete(lo1Lb)
+        lo1Ln := line.new(math.max(0, bar_index - back1), sPl1, bar_index, sPl1,
+             color = tf1LoCol, style = line.style_dashed)
+        lo1Lb := lvlTag
+             ? label.new(bar_index, sPl1, "TF1 L", color = color.new(color.black, 100),
+                  textcolor = tf1LoCol, style = label.style_label_left, size = size.tiny)
+             : label.new(na, na, "")
+
+if showLn1 and not na(hi1Ln) and not hi1Take
+    line.set_x2(hi1Ln, bar_index)
+    label.set_x(hi1Lb, bar_index)
+if showLn1 and not na(lo1Ln) and not lo1Take
+    line.set_x2(lo1Ln, bar_index)
+    label.set_x(lo1Lb, bar_index)
+
+if not hi1Take and not na(hi1) and up1 > hi1
+    ev1    := bias1 < 0 ? "CHoCH" : "BOS"
+    ev1Dir := 1
+    if showBos
+        label.new(bar_index, hi1, ev1, color = color.new(color.black, 100),
+             textcolor = bullCol, style = label.style_label_down,
+             size = lblSz, yloc = yloc.price)
+    hi1Take := true
+    bias1   := 1
+
+if not lo1Take and not na(lo1) and dn1 < lo1
+    ev1    := bias1 > 0 ? "CHoCH" : "BOS"
+    ev1Dir := -1
+    if showBos
+        label.new(bar_index, lo1, ev1, color = color.new(color.black, 100),
+             textcolor = bearCol, style = label.style_label_up,
+             size = lblSz, yloc = yloc.price)
+    lo1Take := true
+    bias1   := -1
+
+// ══════════════════════════════════════════════════════════════════════════
+//  STRUCTURE  —  TF2
+// ══════════════════════════════════════════════════════════════════════════
+var float  hi2     = na
+var float  hi2Old  = na
+var bool   hi2Take = true
+var float  lo2     = na
+var float  lo2Old  = na
+var bool   lo2Take = true
+var int    bias2   = 0
+var string ev2     = "—"
+var int    ev2Dir  = 0
+var string pv2     = "—"
+var line   hi2Ln   = na
+var line   lo2Ln   = na
+var label  hi2Lb   = na
+var label  lo2Lb   = na
+
+if new2 and not na(sPh2)
+    hi2Old  := hi2
+    hi2     := sPh2
+    hi2Take := false
+    if not na(hi2Old)
+        pv2 := sPh2 > hi2Old ? "HH" : "LH"
+    if showLn2
+        line.delete(hi2Ln)
+        label.delete(hi2Lb)
+        hi2Ln := line.new(math.max(0, bar_index - back2), sPh2, bar_index, sPh2,
+             color = tf2HiCol, style = line.style_dotted, width = 2)
+        hi2Lb := lvlTag
+             ? label.new(bar_index, sPh2, "TF2 H", color = color.new(color.black, 100),
+                  textcolor = tf2HiCol, style = label.style_label_left, size = size.tiny)
+             : label.new(na, na, "")
+
+if new2 and not na(sPl2)
+    lo2Old  := lo2
+    lo2     := sPl2
+    lo2Take := false
+    if not na(lo2Old)
+        pv2 := sPl2 < lo2Old ? "LL" : "HL"
+    if showLn2
+        line.delete(lo2Ln)
+        label.delete(lo2Lb)
+        lo2Ln := line.new(math.max(0, bar_index - back2), sPl2, bar_index, sPl2,
+             color = tf2LoCol, style = line.style_dotted, width = 2)
+        lo2Lb := lvlTag
+             ? label.new(bar_index, sPl2, "TF2 L", color = color.new(color.black, 100),
+                  textcolor = tf2LoCol, style = label.style_label_left, size = size.tiny)
+             : label.new(na, na, "")
+
+if showLn2 and not na(hi2Ln) and not hi2Take
+    line.set_x2(hi2Ln, bar_index)
+    label.set_x(hi2Lb, bar_index)
+if showLn2 and not na(lo2Ln) and not lo2Take
+    line.set_x2(lo2Ln, bar_index)
+    label.set_x(lo2Lb, bar_index)
+
+if not hi2Take and not na(hi2) and up2 > hi2
+    ev2     := bias2 < 0 ? "CHoCH" : "BOS"
+    ev2Dir  := 1
+    hi2Take := true
+    bias2   := 1
+    label.delete(hi2Lb)
+
+if not lo2Take and not na(lo2) and dn2 < lo2
+    ev2     := bias2 > 0 ? "CHoCH" : "BOS"
+    ev2Dir  := -1
+    lo2Take := true
+    bias2   := -1
+    label.delete(lo2Lb)
+
+// ══════════════════════════════════════════════════════════════════════════
+//  ALIGNMENT
+// ══════════════════════════════════════════════════════════════════════════
+alignedBull = bias1 > 0 and bias2 > 0
+alignedBear = bias1 < 0 and bias2 < 0
+conflict    = bias1 != 0 and bias2 != 0 and bias1 != bias2
+
+string alignTxt = alignedBull ? "ALIGNED  ▲"
+     : alignedBear ? "ALIGNED  ▼"
+     : conflict ? "CONFLICT" : "—"
+color  alignC   = alignedBull ? bullCol
+     : alignedBear ? bearCol
+     : conflict ? alignCol : color.gray
+
+bgcolor(tintOn and alignedBull ? color.new(bullCol, 94)
+     : tintOn and alignedBear ? color.new(bearCol, 94) : na,
+     title = "Alignment Tint")
+
+// ══════════════════════════════════════════════════════════════════════════
+swChartSec = timeframe.in_seconds(timeframe.period)
+swOk1 = t1On and timeframe.in_seconds(t1TF) > swChartSec
+swOk2 = t2On and timeframe.in_seconds(t2TF) > swChartSec
+swOk3 = t3On and timeframe.in_seconds(t3TF) > swChartSec
+
+swLineStyle = lnStyle == "Solid" ? line.style_solid
+     : lnStyle == "Dashed"  ? line.style_dashed : line.style_dotted
+
+// ── per-timeframe HTF candle stores (index 0 = the forming candle) ────────
+var array<float> wo1 = array.new<float>(), var array<float> wh1 = array.new<float>()
+var array<float> wl1 = array.new<float>(), var array<float> wc1 = array.new<float>()
+var array<int>   whi1 = array.new<int>(),  var array<int>   wli1 = array.new<int>()
+var array<bool>  wsh1 = array.new<bool>(), var array<bool>  wsl1 = array.new<bool>()
+
+var array<float> wo2 = array.new<float>(), var array<float> wh2 = array.new<float>()
+var array<float> wl2 = array.new<float>(), var array<float> wc2 = array.new<float>()
+var array<int>   whi2 = array.new<int>(),  var array<int>   wli2 = array.new<int>()
+var array<bool>  wsh2 = array.new<bool>(), var array<bool>  wsl2 = array.new<bool>()
+
+var array<float> wo3 = array.new<float>(), var array<float> wh3 = array.new<float>()
+var array<float> wl3 = array.new<float>(), var array<float> wc3 = array.new<float>()
+var array<int>   whi3 = array.new<int>(),  var array<int>   wli3 = array.new<int>()
+var array<bool>  wsh3 = array.new<bool>(), var array<bool>  wsl3 = array.new<bool>()
+
+// ── live sweep records ────────────────────────────────────────────────────
+var array<line>  swLn   = array.new<line>()
+var array<label> swLb   = array.new<label>()
+var array<box>   swBx   = array.new<box>()
+var array<float> swLvl  = array.new<float>()
+var array<bool>  swBull = array.new<bool>()
+var array<bool>  swDead = array.new<bool>()
+
+newB1 = ta.change(time(t1TF)) != 0
+newB2 = ta.change(time(t2TF)) != 0
+newB3 = ta.change(time(t3TF)) != 0
+
+// ══════════════════════════════════════════════════════════════════════════
+//  HTF 1 — assemble candle, then test the forming candle for a sweep
+// ══════════════════════════════════════════════════════════════════════════
+if swOk1
+    if newB1 or array.size(wo1) == 0
+        array.unshift(wo1, open),  array.unshift(wh1, high)
+        array.unshift(wl1, low),   array.unshift(wc1, close)
+        array.unshift(whi1, bar_index), array.unshift(wli1, bar_index)
+        array.unshift(wsh1, false),     array.unshift(wsl1, false)
+        if array.size(wo1) > swDepth + 1
+            array.pop(wo1),  array.pop(wh1),  array.pop(wl1),  array.pop(wc1)
+            array.pop(whi1), array.pop(wli1), array.pop(wsh1), array.pop(wsl1)
+    else
+        array.set(wc1, 0, close)
+        if high > array.get(wh1, 0)
+            array.set(wh1, 0, high)
+            array.set(whi1, 0, bar_index)
+        if low < array.get(wl1, 0)
+            array.set(wl1, 0, low)
+            array.set(wli1, 0, bar_index)
+
+    int  swBase1  = onlyDone ? 1 : 0
+    bool swReady1 = onlyDone ? newB1 : true
+
+    if swReady1 and array.size(wo1) > swBase1 + 1
+        float fO = array.get(wo1, swBase1), float fC = array.get(wc1, swBase1)
+        float fH = array.get(wh1, swBase1), float fL = array.get(wl1, swBase1)
+        float bodyTop = math.max(fO, fC), float bodyBot = math.min(fO, fC)
+
+        for i = swBase1 + 1 to array.size(wh1) - 1
+            // sweep of a prior HIGH: wick above it, body back below
+            if doBull and not array.get(wsh1, i)
+                float pH = array.get(wh1, i)
+                if fH > pH and bodyTop < pH
+                    array.set(wsh1, i, true)
+                    line ln = line.new(array.get(whi1, i), pH, bar_index + swExtend, pH,
+                         color = t1Col, style = swLineStyle, width = lnWidth)
+                    array.push(swLn, ln), array.push(swLvl, pH)
+                    array.push(swBull, true), array.push(swDead, false)
+                    array.push(swLb, showTag
+                         ? label.new(bar_index, pH, t1TF, color = color.new(color.black, 100),
+                              textcolor = t1Col, style = label.style_label_left,
+                              size = size.tiny)
+                         : label.new(na, na, ""))
+                    array.push(swBx, showZone
+                         ? box.new(bar_index, math.max((fH+fL)/2, fC),
+                              bar_index + swExtend,
+                              math.min((fH+fL)/2, fC),
+                              border_color = t1Col, bgcolor = color.new(t1Col, zoneOpac))
+                         : box.new(na, na, na, na))
+
+            // sweep of a prior LOW: wick below it, body back above
+            if doBear and not array.get(wsl1, i)
+                float pL = array.get(wl1, i)
+                if fL < pL and bodyBot > pL
+                    array.set(wsl1, i, true)
+                    line ln = line.new(array.get(wli1, i), pL, bar_index + swExtend, pL,
+                         color = t1Col, style = swLineStyle, width = lnWidth)
+                    array.push(swLn, ln), array.push(swLvl, pL)
+                    array.push(swBull, false), array.push(swDead, false)
+                    array.push(swLb, showTag
+                         ? label.new(bar_index, pL, t1TF, color = color.new(color.black, 100),
+                              textcolor = t1Col, style = label.style_label_left,
+                              size = size.tiny)
+                         : label.new(na, na, ""))
+                    array.push(swBx, showZone
+                         ? box.new(bar_index, math.max((fH+fL)/2, fC),
+                              bar_index + swExtend,
+                              math.min((fH+fL)/2, fC),
+                              border_color = t1Col, bgcolor = color.new(t1Col, zoneOpac))
+                         : box.new(na, na, na, na))
+
+// ══════════════════════════════════════════════════════════════════════════
+//  HTF 2
+// ══════════════════════════════════════════════════════════════════════════
+if swOk2
+    if newB2 or array.size(wo2) == 0
+        array.unshift(wo2, open),  array.unshift(wh2, high)
+        array.unshift(wl2, low),   array.unshift(wc2, close)
+        array.unshift(whi2, bar_index), array.unshift(wli2, bar_index)
+        array.unshift(wsh2, false),     array.unshift(wsl2, false)
+        if array.size(wo2) > swDepth + 1
+            array.pop(wo2),  array.pop(wh2),  array.pop(wl2),  array.pop(wc2)
+            array.pop(whi2), array.pop(wli2), array.pop(wsh2), array.pop(wsl2)
+    else
+        array.set(wc2, 0, close)
+        if high > array.get(wh2, 0)
+            array.set(wh2, 0, high)
+            array.set(whi2, 0, bar_index)
+        if low < array.get(wl2, 0)
+            array.set(wl2, 0, low)
+            array.set(wli2, 0, bar_index)
+
+    int  swBase2  = onlyDone ? 1 : 0
+    bool swReady2 = onlyDone ? newB2 : true
+
+    if swReady2 and array.size(wo2) > swBase2 + 1
+        float fO = array.get(wo2, swBase2), float fC = array.get(wc2, swBase2)
+        float fH = array.get(wh2, swBase2), float fL = array.get(wl2, swBase2)
+        float bodyTop = math.max(fO, fC), float bodyBot = math.min(fO, fC)
+
+        for i = swBase2 + 1 to array.size(wh2) - 1
+            if doBull and not array.get(wsh2, i)
+                float pH = array.get(wh2, i)
+                if fH > pH and bodyTop < pH
+                    array.set(wsh2, i, true)
+                    array.push(swLn, line.new(array.get(whi2, i), pH,
+                         bar_index + swExtend, pH, color = t2Col,
+                         style = swLineStyle, width = lnWidth))
+                    array.push(swLvl, pH), array.push(swBull, true)
+                    array.push(swDead, false)
+                    array.push(swLb, showTag
+                         ? label.new(bar_index, pH, t2TF, color = color.new(color.black, 100),
+                              textcolor = t2Col, style = label.style_label_left,
+                              size = size.tiny)
+                         : label.new(na, na, ""))
+                    array.push(swBx, showZone
+                         ? box.new(bar_index, math.max((fH+fL)/2, fC),
+                              bar_index + swExtend,
+                              math.min((fH+fL)/2, fC),
+                              border_color = t2Col, bgcolor = color.new(t2Col, zoneOpac))
+                         : box.new(na, na, na, na))
+
+            if doBear and not array.get(wsl2, i)
+                float pL = array.get(wl2, i)
+                if fL < pL and bodyBot > pL
+                    array.set(wsl2, i, true)
+                    array.push(swLn, line.new(array.get(wli2, i), pL,
+                         bar_index + swExtend, pL, color = t2Col,
+                         style = swLineStyle, width = lnWidth))
+                    array.push(swLvl, pL), array.push(swBull, false)
+                    array.push(swDead, false)
+                    array.push(swLb, showTag
+                         ? label.new(bar_index, pL, t2TF, color = color.new(color.black, 100),
+                              textcolor = t2Col, style = label.style_label_left,
+                              size = size.tiny)
+                         : label.new(na, na, ""))
+                    array.push(swBx, showZone
+                         ? box.new(bar_index, math.max((fH+fL)/2, fC),
+                              bar_index + swExtend,
+                              math.min((fH+fL)/2, fC),
+                              border_color = t2Col, bgcolor = color.new(t2Col, zoneOpac))
+                         : box.new(na, na, na, na))
+
+// ══════════════════════════════════════════════════════════════════════════
+//  HTF 3
+// ══════════════════════════════════════════════════════════════════════════
+if swOk3
+    if newB3 or array.size(wo3) == 0
+        array.unshift(wo3, open),  array.unshift(wh3, high)
+        array.unshift(wl3, low),   array.unshift(wc3, close)
+        array.unshift(whi3, bar_index), array.unshift(wli3, bar_index)
+        array.unshift(wsh3, false),     array.unshift(wsl3, false)
+        if array.size(wo3) > swDepth + 1
+            array.pop(wo3),  array.pop(wh3),  array.pop(wl3),  array.pop(wc3)
+            array.pop(whi3), array.pop(wli3), array.pop(wsh3), array.pop(wsl3)
+    else
+        array.set(wc3, 0, close)
+        if high > array.get(wh3, 0)
+            array.set(wh3, 0, high)
+            array.set(whi3, 0, bar_index)
+        if low < array.get(wl3, 0)
+            array.set(wl3, 0, low)
+            array.set(wli3, 0, bar_index)
+
+    int  swBase3  = onlyDone ? 1 : 0
+    bool swReady3 = onlyDone ? newB3 : true
+
+    if swReady3 and array.size(wo3) > swBase3 + 1
+        float fO = array.get(wo3, swBase3), float fC = array.get(wc3, swBase3)
+        float fH = array.get(wh3, swBase3), float fL = array.get(wl3, swBase3)
+        float bodyTop = math.max(fO, fC), float bodyBot = math.min(fO, fC)
+
+        for i = swBase3 + 1 to array.size(wh3) - 1
+            if doBull and not array.get(wsh3, i)
+                float pH = array.get(wh3, i)
+                if fH > pH and bodyTop < pH
+                    array.set(wsh3, i, true)
+                    array.push(swLn, line.new(array.get(whi3, i), pH,
+                         bar_index + swExtend, pH, color = t3Col,
+                         style = swLineStyle, width = lnWidth))
+                    array.push(swLvl, pH), array.push(swBull, true)
+                    array.push(swDead, false)
+                    array.push(swLb, showTag
+                         ? label.new(bar_index, pH, t3TF, color = color.new(color.black, 100),
+                              textcolor = t3Col, style = label.style_label_left,
+                              size = size.tiny)
+                         : label.new(na, na, ""))
+                    array.push(swBx, showZone
+                         ? box.new(bar_index, math.max((fH+fL)/2, fC),
+                              bar_index + swExtend,
+                              math.min((fH+fL)/2, fC),
+                              border_color = t3Col, bgcolor = color.new(t3Col, zoneOpac))
+                         : box.new(na, na, na, na))
+
+            if doBear and not array.get(wsl3, i)
+                float pL = array.get(wl3, i)
+                if fL < pL and bodyBot > pL
+                    array.set(wsl3, i, true)
+                    array.push(swLn, line.new(array.get(wli3, i), pL,
+                         bar_index + swExtend, pL, color = t3Col,
+                         style = swLineStyle, width = lnWidth))
+                    array.push(swLvl, pL), array.push(swBull, false)
+                    array.push(swDead, false)
+                    array.push(swLb, showTag
+                         ? label.new(bar_index, pL, t3TF, color = color.new(color.black, 100),
+                              textcolor = t3Col, style = label.style_label_left,
+                              size = size.tiny)
+                         : label.new(na, na, ""))
+                    array.push(swBx, showZone
+                         ? box.new(bar_index, math.max((fH+fL)/2, fC),
+                              bar_index + swExtend,
+                              math.min((fH+fL)/2, fC),
+                              border_color = t3Col, bgcolor = color.new(t3Col, zoneOpac))
+                         : box.new(na, na, na, na))
+
+// ══════════════════════════════════════════════════════════════════════════
+//  MAINTAIN  —  extend live sweeps, invalidate on a body close through
+// ══════════════════════════════════════════════════════════════════════════
+if array.size(swLn) > 0
+    float bTop = math.max(open, close)
+    float bBot = math.min(open, close)
+
+    for i = array.size(swLn) - 1 to 0
+        if not array.get(swDead, i)
+            float lvl  = array.get(swLvl, i)
+            bool  bull = array.get(swBull, i)
+            // body closing through the level kills the sweep
+            bool  gone = bull ? bBot > lvl : bTop < lvl
+
+            if gone
+                array.set(swDead, i, true)
+                line ln = array.get(swLn, i)
+                if showInv
+                    line.set_color(ln, invCol)
+                    line.set_style(ln, line.style_dashed)
+                    line.set_x2(ln, bar_index)
+                else
+                    line.delete(ln)
+                    label.delete(array.get(swLb, i))
+                box.delete(array.get(swBx, i))
+            else
+                line.set_x2(array.get(swLn, i), bar_index + swExtend)
+                label.set_x(array.get(swLb, i), bar_index + swExtend)
+                box.set_right(array.get(swBx, i), bar_index + swExtend)
+
+    // keep the object count under the platform ceiling
+    if array.size(swLn) > 120
+        line.delete(array.shift(swLn))
+        label.delete(array.shift(swLb))
+        box.delete(array.shift(swBx))
+        array.shift(swLvl), array.shift(swBull), array.shift(swDead)
+
+
+// ══════════════════════════════════════════════════════════════════════════
+//  TABLE
+// ══════════════════════════════════════════════════════════════════════════
+tPos = tblPos == "Top Right"    ? position.top_right
+     : tblPos == "Top Left"     ? position.top_left
+     : tblPos == "Bottom Right" ? position.bottom_right
+     : tblPos == "Bottom Left"  ? position.bottom_left
+     : position.middle_right
+
+var table st = table.new(tPos, 3, 9, bgcolor = tblBg, border_width = 1,
+     border_color = color.new(color.gray, 60), frame_width = 1,
+     frame_color = color.new(color.gray, 40))
+
+if tblOn and barstate.islast
+    string b1 = bias1 > 0 ? "BULL" : bias1 < 0 ? "BEAR" : "—"
+    color  b1c= bias1 > 0 ? bullCol : bias1 < 0 ? bearCol : color.gray
+    string b2 = bias2 > 0 ? "BULL" : bias2 < 0 ? "BEAR" : "—"
+    color  b2c= bias2 > 0 ? bullCol : bias2 < 0 ? bearCol : color.gray
+
+    string e1 = ev1 == "—" ? "—" : ev1 + (ev1Dir > 0 ? " ▲" : " ▼")
+    color  e1c= ev1Dir > 0 ? bullCol : ev1Dir < 0 ? bearCol : color.gray
+    string e2 = ev2 == "—" ? "—" : ev2 + (ev2Dir > 0 ? " ▲" : " ▼")
+    color  e2c= ev2Dir > 0 ? bullCol : ev2Dir < 0 ? bearCol : color.gray
+
+    color p1c = pv1 == "HH" or pv1 == "HL" ? bullCol
+         : pv1 == "LL" or pv1 == "LH" ? bearCol : color.gray
+    color p2c = pv2 == "HH" or pv2 == "HL" ? bullCol
+         : pv2 == "LL" or pv2 == "LH" ? bearCol : color.gray
+
+    // header
+    table.cell(st, 0, 0, "",   text_color = color.silver, text_size = tblSz)
+    table.cell(st, 1, 0, tf1N, text_color = color.white,  text_size = tblSz,
+         bgcolor = color.new(color.gray, 75))
+    table.cell(st, 2, 0, tf2N, text_color = color.white,  text_size = tblSz,
+         bgcolor = color.new(color.gray, 75))
+
+    table.cell(st, 0, 1, "Bias",  text_color = color.silver, text_size = tblSz)
+    table.cell(st, 1, 1, b1,      text_color = b1c,          text_size = tblSz)
+    table.cell(st, 2, 1, b2,      text_color = b2c,          text_size = tblSz)
+
+    table.cell(st, 0, 2, "Event", text_color = color.silver, text_size = tblSz)
+    table.cell(st, 1, 2, e1,      text_color = e1c,          text_size = tblSz)
+    table.cell(st, 2, 2, e2,      text_color = e2c,          text_size = tblSz)
+
+    table.cell(st, 0, 3, "Pivot", text_color = color.silver, text_size = tblSz)
+    table.cell(st, 1, 3, pv1,     text_color = p1c,          text_size = tblSz)
+    table.cell(st, 2, 3, pv2,     text_color = p2c,          text_size = tblSz)
+
+    table.cell(st, 0, 4, "Sw High", text_color = color.silver, text_size = tblSz)
+    table.cell(st, 1, 4, na(hi1) ? "—" : str.tostring(hi1, format.mintick),
+         text_color = bearCol, text_size = tblSz)
+    table.cell(st, 2, 4, na(hi2) ? "—" : str.tostring(hi2, format.mintick),
+         text_color = bearCol, text_size = tblSz)
+
+    table.cell(st, 0, 5, "Sw Low", text_color = color.silver, text_size = tblSz)
+    table.cell(st, 1, 5, na(lo1) ? "—" : str.tostring(lo1, format.mintick),
+         text_color = bullCol, text_size = tblSz)
+    table.cell(st, 2, 5, na(lo2) ? "—" : str.tostring(lo2, format.mintick),
+         text_color = bullCol, text_size = tblSz)
+
+    // alignment row spans both TF columns
+    table.cell(st, 0, 6, "SYNC", text_color = color.silver, text_size = tblSz)
+    table.cell(st, 1, 6, alignTxt, text_color = alignC, text_size = tblSz)
+    table.cell(st, 2, 6, "",       text_color = alignC, text_size = tblSz)
+    table.merge_cells(st, 1, 6, 2, 6)
+
+
+    // ── live HTF sweeps ──
+    int liveHi = 0
+    int liveLo = 0
+    if array.size(swDead) > 0
+        for i = 0 to array.size(swDead) - 1
+            if not array.get(swDead, i)
+                if array.get(swBull, i)
+                    liveHi += 1
+                else
+                    liveLo += 1
+
+    table.cell(st, 0, 7, "Swept Highs", text_color = color.silver, text_size = tblSz)
+    table.cell(st, 1, 7, str.tostring(liveHi),
+         text_color = liveHi > 0 ? bearCol : color.gray, text_size = tblSz)
+    table.cell(st, 2, 7, "", text_size = tblSz)
+    table.merge_cells(st, 1, 7, 2, 7)
+
+    table.cell(st, 0, 8, "Swept Lows", text_color = color.silver, text_size = tblSz)
+    table.cell(st, 1, 8, str.tostring(liveLo),
+         text_color = liveLo > 0 ? bullCol : color.gray, text_size = tblSz)
+    table.cell(st, 2, 8, "", text_size = tblSz)
+    table.merge_cells(st, 1, 8, 2, 8)
+
+// ══════════════════════════════════════════════════════════════════════════
+//  ALERTS
+// ══════════════════════════════════════════════════════════════════════════
+alertcondition(alignedBull and not alignedBull[1],
+     "Timeframes Aligned Bullish", "TF1 and TF2 both bullish")
+alertcondition(alignedBear and not alignedBear[1],
+     "Timeframes Aligned Bearish", "TF1 and TF2 both bearish")
+alertcondition(conflict and not conflict[1],
+     "Timeframe Conflict", "TF1 and TF2 disagree")
+alertcondition(ta.change(bias1) != 0, "TF1 Structure Shift", "TF1 structure flipped")
+alertcondition(ta.change(bias2) != 0, "TF2 Structure Shift", "TF2 structure flipped")
+alertcondition(array.size(swLn) > array.size(swLn)[1], "New HTF Sweep",
+     "A higher-timeframe sweep formed")

@@ -1,0 +1,1628 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/ MPL-2.0
+//@version=6
+// --- Latest Integrated Build ---
+indicator("Entry Terminal", shorttitle = "Entry Terminal", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_polylines_count = 10, calc_bars_count = 50000)
+
+// --- Constants ---
+const color BULL_COLOR = #089981
+const color BEAR_COLOR = #f23645
+const color BLUE_COLOR = #5b9cf6
+const int ZONE_FILL_TRANSPARENCY = 84
+const int ZONE_BORDER_TRANSPARENCY = 35
+const int MIDLINE_TRANSPARENCY = 25
+const string STRUCTURE_GROUP = "Market Structure"
+const string CANDIDATE_GROUP = "BLVL Candidates"
+const string REJECTION_GROUP = "Rejected Block"
+const string FVG_GROUP = "FVG Sequence"
+const string ATR_TRAIL_GROUP = "CHoCH ATR Trail"
+const string ATR_BOUNDARY_GROUP = "CHoCH ATR Boundaries"
+const string LIQUIDITY_GROUP = "CHoCH Liquidity Targets"
+const string HTF_REFERENCE_GROUP = "HTF Reference Levels"
+const string TREND_LINE_GROUP = "CHoCH Two-Pivot Trend Line"
+const string FIBONACCI_GROUP = "CHoCH Fibonacci Zones"
+const string ALERT_GROUP = "Alerts"
+const string AVERAGE_GROUP = "VWAP & Averages"
+const string DASHBOARD_GROUP = "Dashboard"
+const string WATERMARK_GROUP = "Watermark"
+const string STYLE_GROUP = "Style"
+
+// --- Inputs ---
+fractalLengthInput = input.int(12, "Fractal Length", minval = 3, maxval = 51, group = STRUCTURE_GROUP, tooltip = "BLVL fractal length. To preserve the supplied BLVL method, even values are internally increased by one before calculating the half-length pivots.")
+requireBodyInput = input.bool(true, "Break With Close", group = STRUCTURE_GROUP, tooltip = "When enabled, a close beyond the BLVL level confirms the break. Otherwise, a wick beyond the level is sufficient.")
+showBosInput = input.bool(true, "Show Directional BOS", group = STRUCTURE_GROUP, tooltip = "Shows only BOS events occurring after the latest CHoCH and in that CHoCH direction.")
+maxStructureInput = input.int(100, "Maximum Current-Regime Breaks", minval = 10, maxval = 200, group = STRUCTURE_GROUP, tooltip = "Safety limit for CHoCH and BOS drawings kept inside the current regime.")
+
+showCandidatesInput = input.bool(true, "Show Candidate Engine", group = CANDIDATE_GROUP, tooltip = "Displays live, unbroken BLVL levels after a CHoCH. Same-direction candidates are Trend Continuation; opposite-direction candidates are Potential CHoCH.")
+showCandidateTextInput = input.bool(true, "Show Candidate Text", group = CANDIDATE_GROUP, tooltip = "Displays the classification of each live candidate level.")
+candidateBarsRightInput = input.int(12, "Extend Right (Bars)", minval = 1, maxval = 300, group = CANDIDATE_GROUP, tooltip = "Number of chart bars used to project each live candidate into the future.")
+candidateWidthInput = input.int(1, "Candidate Width", minval = 1, maxval = 4, group = CANDIDATE_GROUP, tooltip = "Width of live BLVL candidate lines.")
+candidateTransparencyInput = input.int(25, "Candidate Transparency", minval = 0, maxval = 90, group = CANDIDATE_GROUP, tooltip = "Transparency applied to directional candidate lines and text.")
+
+rbPivotLengthInput = input.int(12, "Pivot Length", minval = 1, maxval = 100, group = REJECTION_GROUP, tooltip = "Bars on each side used to confirm the rejected-block pivot. Default is 12.")
+minWickPercentInput = input.float(50.0, "Minimum Wick %", minval = 0.0, maxval = 100.0, step = 5.0, group = REJECTION_GROUP, tooltip = "The rejection candle wick must occupy at least this percentage of its full range.")
+minWickAtrInput = input.float(0.5, "Minimum Wick × ATR", minval = 0.0, step = 0.1, group = REJECTION_GROUP, tooltip = "Minimum rejection wick size measured in ATR. Set to zero to disable this filter.")
+atrLengthInput = input.int(14, "ATR Length", minval = 1, group = REJECTION_GROUP, tooltip = "ATR length used by the rejected-block wick-size filter.")
+showRbMidlineInput = input.bool(true, "Show RB Midline", group = REJECTION_GROUP, tooltip = "Shows the midpoint of the active rejected-block wick zone.")
+
+fvgBosWindowInput = input.int(3, "FVG/BOS Association Window", minval = 0, maxval = 20, group = FVG_GROUP, tooltip = "Maximum bars allowed between the directional BOS and its FVG. Zero requires both on the same bar; the default allows displacement to complete over three bars.")
+showEntryLabelsInput = input.bool(true, "Show BUY/SELL Entry", group = FVG_GROUP, tooltip = "Marks the first valid retest of the final FVG after the complete sequence.")
+fvgEnableInput = input.bool(true, "Enable Engine", inline = "fvg1", group = FVG_GROUP, tooltip = "Enables the supplied FVG/Breaker engine and allows FVG sequence confirmation.")
+fvgModeInput = input.string("Breakers", "Mode", options = ["FVG", "Breakers"], inline = "fvg1", group = FVG_GROUP, tooltip = "FVG removes mitigated gaps. Breakers converts mitigated gaps into inverse FVG (IFVG) zones. Breakers is the default mode.")
+fvgShowLastInput = input.int(1, "Show Last", minval = 0, maxval = 50, group = FVG_GROUP, tooltip = "Maximum number of bullish and bearish engine zones displayed.")
+fvgMitigationInput = input.string("Close", "Mitigation", options = ["Close", "Wick", "Avg"], group = FVG_GROUP, tooltip = "Close uses the body extreme, Wick uses the candle extreme, and Avg uses the FVG midpoint as the mitigation trigger.")
+fvgThresholdInput = input.float(0.0, "Threshold", minval = 0.0, maxval = 2.0, step = 0.1, group = FVG_GROUP, tooltip = "Filters insignificant FVG displacement using ATR(200), as in the supplied engine.")
+fvgHideOverlapInput = input.bool(true, "Hide Overlap", group = FVG_GROUP, tooltip = "Removes overlapping FVG records using the supplied overlap rules.")
+fvgShowMidlineInput = input.bool(true, "Show Mid-Line", group = FVG_GROUP, tooltip = "Displays the midpoint of each FVG or breaker zone.")
+fvgExtendInput = input.bool(false, "Extend FVG", group = FVG_GROUP, tooltip = "Extends displayed FVG and breaker zones to the right.")
+fvgDisplayRaidsInput = input.bool(true, "Display Raids", group = FVG_GROUP, tooltip = "Displays FVG raid levels tracked by the supplied engine.")
+fvgChochDirectionOnlyInput = input.bool(false, "Show Only CHoCH-Direction FVG", group = FVG_GROUP, tooltip = "When enabled, the engine displays only bullish FVGs during a bullish CHoCH regime and only bearish FVGs during a bearish CHoCH regime. Detection remains active in both directions.")
+
+showAtrTrailInput = input.bool(false, "Show ATR Trail", group = ATR_TRAIL_GROUP, tooltip = "Displays a one-way ATR trailing level for the active CHoCH regime. A new opposite CHoCH deletes the previous trail.")
+atrTrailLengthInput = input.int(14, "ATR Length", minval = 1, group = ATR_TRAIL_GROUP, tooltip = "ATR calculation length used by the CHoCH trail.")
+atrTrailMultiplierInput = input.float(3.0, "ATR Multiplier", minval = 0.1, step = 0.1, group = ATR_TRAIL_GROUP, tooltip = "Distance between the active directional price basis and the trail, measured in ATR.")
+atrTrailSmoothingInput = input.int(3, "Visual Smoothing", minval = 1, maxval = 20, group = ATR_TRAIL_GROUP, tooltip = "Smooths movement toward the one-way ATR stop. Higher values create softer transitions without changing CHoCH direction.")
+atrTrailBasisInput = input.string("High/Low", "Price Basis", options = ["High/Low", "Close"], group = ATR_TRAIL_GROUP, tooltip = "High/Low trails from highs in bullish regimes and lows in bearish regimes. Close uses closing price in both directions.")
+atrTrailSegmentsInput = input.int(150, "Maximum Trail Segments", minval = 10, maxval = 150, group = ATR_TRAIL_GROUP, tooltip = "Maximum number of active-regime trail segments retained on the chart.")
+atrTrailWidthInput = input.int(2, "Trail Width", minval = 1, maxval = 4, group = ATR_TRAIL_GROUP, tooltip = "Width of the active CHoCH ATR trail core.")
+atrTrailGlowInput = input.bool(true, "Soft Glow", group = ATR_TRAIL_GROUP, tooltip = "Adds a wider transparent layer behind the smoothed trail for a softer visual appearance.")
+atrTrailGlowTransparencyInput = input.int(78, "Glow Transparency", minval = 50, maxval = 95, group = ATR_TRAIL_GROUP, tooltip = "Transparency of the trail's outer glow layer.")
+
+showAtrBoundariesInput = input.bool(true, "Show ATR High/Low", group = ATR_BOUNDARY_GROUP, tooltip = "Creates ATR High and ATR Low boundaries from each CHoCH candle and reports whether the first boundary break agrees with the CHoCH direction.")
+atrBoundaryLengthInput = input.int(14, "ATR Length", minval = 1, group = ATR_BOUNDARY_GROUP, tooltip = "ATR length used for CHoCH boundaries and HH/LL target boxes.")
+atrBoundaryMultiplierInput = input.float(0.5, "Boundary ATR Multiplier", minval = 0.1, step = 0.1, group = ATR_BOUNDARY_GROUP, tooltip = "Distance added above the CHoCH high and below the CHoCH low, measured in ATR.")
+atrBoundaryBarsRightInput = input.int(5, "Bars to Right", minval = 1, maxval = 50, group = ATR_BOUNDARY_GROUP, tooltip = "Projects active ATR boundaries this many chart bars to the right. The lines freeze at the first confirmed boundary break.")
+showAtrBoundaryLabelsInput = input.bool(true, "Show Boundary Labels", group = ATR_BOUNDARY_GROUP, tooltip = "Shows normal-size ATR High/Low labels and the MATCH or COUNTER result after a break.")
+showAtrTargetBoxesInput = input.bool(false, "Show HH/LL ATR Target Boxes", group = ATR_BOUNDARY_GROUP, tooltip = "Projects optional ATR target boxes above HH Liquidity and below LL Liquidity.")
+atrTargetMultiplierInput = input.float(0.5, "Target Box ATR Multiplier", minval = 0.1, step = 0.1, group = ATR_BOUNDARY_GROUP, tooltip = "Thickness of the HH and LL target boxes measured in ATR. The default is 0.5 ATR.")
+
+showLiquidityTargetsInput = input.bool(true, "Show HH/LL Liquidity", group = LIQUIDITY_GROUP, tooltip = "At each new CHoCH, projects the previous CHoCH regime's highest high and lowest low as liquidity targets.")
+showLiquidityLabelsInput = input.bool(true, "Show Liquidity Labels", group = LIQUIDITY_GROUP, tooltip = "Displays confirmed and potential HH/LL liquidity labels at their originating wick candles.")
+liquidityWidthInput = input.int(1, "Target Width", minval = 1, maxval = 4, group = LIQUIDITY_GROUP, tooltip = "Width of the projected HH and LL liquidity target lines.")
+
+showHtfOpeningInput = input.bool(true, "Show HTF Opening Line", group = HTF_REFERENCE_GROUP, tooltip = "Displays the opening price of the selected reference timeframe. The opening follows the symbol's exchange session and TradingView timeframe boundaries.")
+htfReferenceTimeframeInput = input.timeframe("D", "Reference Timeframe", group = HTF_REFERENCE_GROUP, tooltip = "Timeframe used by the opening line and optional previous high/low levels. Day is the default.")
+showHtfPreviousLevelsInput = input.bool(false, "Show Previous High/Low", group = HTF_REFERENCE_GROUP, tooltip = "Draws confirmed previous HTF high and low levels from the exact chart candle wicks that created them.")
+htfReferenceBarsRightInput = input.int(5, "Bars to Right", minval = 1, maxval = 50, group = HTF_REFERENCE_GROUP, tooltip = "Projects active HTF levels this many chart bars to the right. Previous high/low lines freeze at the candle that first touches them.")
+htfPreviousLevelsLimitInput = input.int(40, "Maximum PH/PL Levels", minval = 4, maxval = 100, group = HTF_REFERENCE_GROUP, tooltip = "Maximum number of historical previous high/low drawings retained for safety.")
+
+showLiquidityTrendLineInput = input.bool(true, "Show Two-Pivot Trend Line", group = TREND_LINE_GROUP, tooltip = "Bearish CHoCH starts from HH Liquidity and waits for the first lower pivot high. Bullish CHoCH starts from LL Liquidity and waits for the first higher pivot low.")
+liquidityTrendStyleInput = input.string("Dotted", "Line Style", options = ["Solid", "Dashed", "Dotted"], group = TREND_LINE_GROUP, tooltip = "Style of the validated two-pivot trend line.")
+liquidityTrendLineWidthInput = input.int(2, "Line Width", minval = 1, maxval = 4, group = TREND_LINE_GROUP, tooltip = "Width of the validated trend line.")
+liquidityTrendBarsRightInput = input.int(3, "Bars to Right", minval = 1, maxval = 50, group = TREND_LINE_GROUP, tooltip = "Projects the validated line this many bars beyond the current bar. Default is 3.")
+showLiquidityTrendBreakInput = input.bool(true, "Show Break Marker", group = TREND_LINE_GROUP, tooltip = "Marks the first confirmed break of the validated line.")
+liquidityTrendBreakWithCloseInput = input.bool(true, "Break With Close", group = TREND_LINE_GROUP, tooltip = "Uses close for line-break confirmation. Disable to use the wick.")
+
+enableFibZonesInput = input.bool(true, "Enable Fibonacci Zones", group = FIBONACCI_GROUP, tooltip = "Creates active-CHoCH retracement and directional extension zones from the pre-break opposite pivot (0) to the CHoCH candle extreme (1). Disable this option to hide the complete Fibonacci engine.")
+showEntryBoxInput = input.bool(true, "Entry Box 0.382–0.618", group = FIBONACCI_GROUP, tooltip = "Displays the retracement entry box between Fibonacci 0.382 and 0.618.")
+showProjectionZonesInput = input.bool(true, "Reaction/Expansion Zones", group = FIBONACCI_GROUP, tooltip = "Displays the 1.47–1.55 and 2.56–2.68 zones, then creates higher expansion zones as price exceeds the prior zone.")
+maxProjectionZoneInput = input.int(6, "Maximum Expansion Number", minval = 2, maxval = 20, group = FIBONACCI_GROUP, tooltip = "Highest expansion number that can be generated dynamically.")
+fibBarsRightInput = input.int(5, "Bars to Right", minval = 1, maxval = 100, group = FIBONACCI_GROUP, tooltip = "Each Fibonacci box ends this many bars to the right and advances by one bar as each new chart bar forms.")
+fibFillTransparencyInput = input.int(84, "Box Transparency", minval = 0, maxval = 100, group = FIBONACCI_GROUP, tooltip = "Transparency of Entry Box and reaction/expansion zone fills.")
+fibMidlineTransparencyInput = input.int(35, "Middle-Line Transparency", minval = 0, maxval = 100, group = FIBONACCI_GROUP, tooltip = "Transparency of the midpoint line inside each Fibonacci box.")
+
+selectedAlertsEnabledInput = input.bool(true, "Enable Selected Alerts", group = ALERT_GROUP, tooltip = "Enables the combined selected-alert stream. Create one alert using 'Any alert() function call' to receive the enabled event categories.")
+alertChochInput = input.bool(true, "CHoCH", inline = "alert1", group = ALERT_GROUP, tooltip = "Includes bullish and bearish CHoCH events in the selected-alert stream.")
+alertBosInput = input.bool(false, "BOS", inline = "alert1", group = ALERT_GROUP, tooltip = "Includes directional BOS events in the selected-alert stream.")
+alertRbFormedInput = input.bool(false, "RB Formed", inline = "alert2", group = ALERT_GROUP, tooltip = "Includes rejected-block formation events in the selected-alert stream.")
+alertRbRetestInput = input.bool(true, "RB Retest", inline = "alert2", group = ALERT_GROUP, tooltip = "Includes bullish and bearish rejected-block retests in the selected-alert stream.")
+alertFvgBosInput = input.bool(false, "FVG BOS", inline = "alert3", group = ALERT_GROUP, tooltip = "Includes FVG/BOS association events in the selected-alert stream.")
+alertEntryInput = input.bool(true, "BUY/SELL", inline = "alert3", group = ALERT_GROUP, tooltip = "Includes final BUY and SELL entry events in the selected-alert stream.")
+alertIfvgInput = input.bool(true, "IFVG", group = ALERT_GROUP, tooltip = "Includes bullish and bearish inverse FVG conversions in the selected-alert stream when Breakers mode is active.")
+alertFibEntryExitInput = input.bool(true, "Entry Box Exit", group = ALERT_GROUP, tooltip = "Includes the first directional exit from a touched Fibonacci Entry Box in the selected-alert stream.")
+alertLiquidityTrendBreakInput = input.bool(false, "Liquidity Trend Break", group = ALERT_GROUP, tooltip = "Includes validated liquidity trend-line breaks in the selected-alert stream.")
+
+averageSourceInput = input.source(close, "Average Source", group = AVERAGE_GROUP, tooltip = "Source used by VWAP, SMA, EMA, and WMA overlays.")
+showVwapInput = input.bool(false, "Show VWAP", group = AVERAGE_GROUP, tooltip = "Displays a session-anchored VWAP. This is visual only and does not filter entries.")
+showSmaInput = input.bool(false, "Show SMA", inline = "sma", group = AVERAGE_GROUP, tooltip = "Displays an optional simple moving average.")
+smaLengthInput = input.int(50, "Length", minval = 1, inline = "sma", group = AVERAGE_GROUP, tooltip = "SMA calculation length.")
+showEmaInput = input.bool(false, "Show EMA", inline = "ema", group = AVERAGE_GROUP, tooltip = "Displays an optional exponential moving average.")
+emaLengthInput = input.int(50, "Length", minval = 1, inline = "ema", group = AVERAGE_GROUP, tooltip = "EMA calculation length.")
+showWmaInput = input.bool(false, "Show WMA", inline = "wma", group = AVERAGE_GROUP, tooltip = "Displays an optional weighted moving average.")
+wmaLengthInput = input.int(50, "Length", minval = 1, inline = "wma", group = AVERAGE_GROUP, tooltip = "WMA calculation length.")
+
+showDashboardInput = input.bool(true, "Show Dashboard", group = DASHBOARD_GROUP, tooltip = "Displays correlation/reference structure, DMI, ADX, momentum, and Elder Force information.")
+dashboardPositionInput = input.string("Top Right", "Position", options = ["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group = DASHBOARD_GROUP, tooltip = "Selects the dashboard location on the chart. Changing this setting recreates the panel at the selected anchor.")
+dashboardSizeInput = input.string("Normal", "Panel Size", options = ["Small", "Normal", "Large"], group = DASHBOARD_GROUP, tooltip = "Controls all dashboard text. Normal is the default balanced size.")
+correlationSymbolInput = input.symbol("CRYPTOCAP:USDT.D", "Correlation Reference", group = DASHBOARD_GROUP, tooltip = "Reference market used for correlation and market-structure information. USDT Dominance is the default for crypto markets.")
+correlationLengthInput = input.int(50, "Correlation Length", minval = 5, maxval = 500, group = DASHBOARD_GROUP, tooltip = "Number of bars used to calculate the correlation coefficient. Values near +1 move together; values near -1 move inversely.")
+dmiLengthInput = input.int(14, "DI Length", minval = 1, group = DASHBOARD_GROUP, tooltip = "Length used for Directional Movement calculations. DI values above 20 are commonly considered meaningful.")
+adxSmoothingInput = input.int(14, "ADX Smoothing", minval = 1, group = DASHBOARD_GROUP, tooltip = "Smoothing length used by ADX. ADX at or above 25 commonly indicates a strong trend; below 20 indicates a weak trend.")
+momentumLengthInput = input.int(10, "Momentum Length", minval = 1, group = DASHBOARD_GROUP, tooltip = "Lookback used for percentage momentum. Positive values indicate upward momentum and negative values indicate downward momentum.")
+elderForceLengthInput = input.int(13, "Elder Force Length", minval = 1, group = DASHBOARD_GROUP, tooltip = "EMA smoothing length for the Elder Force Index. Above zero favors buyers; below zero favors sellers.")
+
+showWatermarkInput = input.bool(true, "Show Watermark", group = WATERMARK_GROUP, tooltip = "Shows or hides the erdensedat watermark at the bottom center of the chart.")
+
+bullColorInput = input.color(BULL_COLOR, "Bullish", inline = "direction", group = STYLE_GROUP, tooltip = "Color used for bullish structure, candidates, zones, and entries.")
+bearColorInput = input.color(BEAR_COLOR, "Bearish", inline = "direction", group = STYLE_GROUP, tooltip = "Color used for bearish structure, candidates, zones, and entries.")
+fvgBullColorInput = input.color(color.new(BULL_COLOR, 80), "Bull FVG", inline = "fvgColors", group = STYLE_GROUP, tooltip = "Bullish FVG engine zone color.")
+fvgBearColorInput = input.color(color.new(BEAR_COLOR, 80), "Bear FVG", inline = "fvgColors", group = STYLE_GROUP, tooltip = "Bearish FVG engine zone color.")
+structureWidthInput = input.int(1, "Structure Width", minval = 1, maxval = 4, group = STYLE_GROUP, tooltip = "Width of current-regime CHoCH and BOS lines.")
+labelSizeInput = input.string("Normal", "Label Size", options = ["Tiny", "Small", "Normal", "Large"], group = STYLE_GROUP, tooltip = "Controls the size of CHoCH, BOS, candidate, retest, FVG BOS, raid, and BUY/SELL labels.")
+vwapColorInput = input.color(BLUE_COLOR, "VWAP", inline = "averages", group = STYLE_GROUP, tooltip = "VWAP plot color.")
+smaColorInput = input.color(#f59e0b, "SMA", inline = "averages", group = STYLE_GROUP, tooltip = "SMA plot color.")
+emaColorInput = input.color(#8b5cf6, "EMA", inline = "averages2", group = STYLE_GROUP, tooltip = "EMA plot color.")
+wmaColorInput = input.color(#06b6d4, "WMA", inline = "averages2", group = STYLE_GROUP, tooltip = "WMA plot color.")
+
+labelSize = switch labelSizeInput
+    "Small" => size.small
+    "Normal" => size.normal
+    "Large" => size.large
+    => size.tiny
+
+dashboardTextSize = switch dashboardSizeInput
+    "Small" => size.small
+    "Large" => size.large
+    => size.normal
+
+// --- Helpers ---
+f_clearStructure(array<line> lineArray, array<label> labelArray) =>
+    while array.size(lineArray) > 0
+        line.delete(array.pop(lineArray))
+    while array.size(labelArray) > 0
+        label.delete(array.pop(labelArray))
+
+f_addStructureBreak(array<line> lineArray, array<label> labelArray, int startTime, float level, int direction, string breakText) =>
+    color breakColor = direction == 1 ? bullColorInput : bearColorInput
+    line breakLine = line.new(startTime, level, time, level, xloc = xloc.bar_time, color = breakColor, width = structureWidthInput)
+    label breakLabel = label.new(int(math.avg(startTime, time)), level, breakText, xloc = xloc.bar_time, style = direction == 1 ? label.style_label_down : label.style_label_up, color = #00000000, textcolor = breakColor, size = labelSize)
+    array.push(lineArray, breakLine)
+    array.push(labelArray, breakLabel)
+    while array.size(lineArray) > maxStructureInput
+        line.delete(array.shift(lineArray))
+    while array.size(labelArray) > maxStructureInput
+        label.delete(array.shift(labelArray))
+
+f_deleteBox(box boxId) =>
+    if not na(boxId)
+        box.delete(boxId)
+
+f_deleteLine(line lineId) =>
+    if not na(lineId)
+        line.delete(lineId)
+
+f_deleteLabel(label labelId) =>
+    if not na(labelId)
+        label.delete(labelId)
+
+f_clearFibProjectionZones(array<box> boxArray, array<line> lineArray) =>
+    while array.size(boxArray) > 0
+        box.delete(array.pop(boxArray))
+    while array.size(lineArray) > 0
+        line.delete(array.pop(lineArray))
+
+f_createFibZone(float anchorZero, float signedUnit, float firstRatio, float secondRatio, string zoneText, color zoneColor, int leftTime, int rightTime) =>
+    float firstPrice = anchorZero + signedUnit * firstRatio
+    float secondPrice = anchorZero + signedUnit * secondRatio
+    float zoneTop = math.max(firstPrice, secondPrice)
+    float zoneBottom = math.min(firstPrice, secondPrice)
+    float zoneMidpoint = math.avg(zoneTop, zoneBottom)
+    box zoneBox = box.new(left = leftTime, top = zoneTop, right = rightTime, bottom = zoneBottom, xloc = xloc.bar_time, extend = extend.right, border_color = na, bgcolor = color.new(zoneColor, fibFillTransparencyInput), text = zoneText, text_color = color.new(zoneColor, 10), text_size = size.tiny)
+    line middleLine = line.new(leftTime, zoneMidpoint, rightTime, zoneMidpoint, xloc = xloc.bar_time, extend = extend.right, color = color.new(zoneColor, fibMidlineTransparencyInput), style = line.style_dotted)
+    [zoneBox, middleLine]
+
+f_clearFibProjectionZonesWithLabels(array<box> boxArray, array<line> lineArray, array<label> labelArray) =>
+    while array.size(boxArray) > 0
+        box.delete(array.pop(boxArray))
+    while array.size(lineArray) > 0
+        line.delete(array.pop(lineArray))
+    while array.size(labelArray) > 0
+        label.delete(array.pop(labelArray))
+
+f_createFibZoneWithLabel(float anchorZero, float signedUnit, float firstRatio, float secondRatio, string zoneText, color zoneColor, int leftTime, int rightTime) =>
+    float firstPrice = anchorZero + signedUnit * firstRatio
+    float secondPrice = anchorZero + signedUnit * secondRatio
+    float zoneTop = math.max(firstPrice, secondPrice)
+    float zoneBottom = math.min(firstPrice, secondPrice)
+    float zoneMidpoint = math.avg(zoneTop, zoneBottom)
+    box zoneBox = box.new(left = leftTime, top = zoneTop, right = rightTime, bottom = zoneBottom, xloc = xloc.bar_time, extend = extend.none, border_color = na, bgcolor = color.new(zoneColor, fibFillTransparencyInput))
+    line middleLine = line.new(leftTime, zoneMidpoint, rightTime, zoneMidpoint, xloc = xloc.bar_time, extend = extend.none, color = color.new(zoneColor, fibMidlineTransparencyInput), style = line.style_dotted)
+    label rightLabel = label.new(rightTime, zoneMidpoint, zoneText, xloc = xloc.bar_time, style = label.style_label_left, color = #00000000, textcolor = zoneColor, size = labelSize)
+    [zoneBox, middleLine, rightLabel]
+
+f_zonesOverlap(float firstTop, float firstBottom, float secondTop, float secondBottom) =>
+    math.max(firstBottom, secondBottom) < math.min(firstTop, secondTop)
+
+f_referenceMarketStructure(int fractalLength, bool breakWithClose) =>
+    int oddReferenceLength = fractalLength % 2 == 0 ? fractalLength + 1 : fractalLength
+    int referencePivotSide = int(oddReferenceLength / 2)
+    float referencePivotHigh = ta.pivothigh(high, referencePivotSide, referencePivotSide)
+    float referencePivotLow = ta.pivotlow(low, referencePivotSide, referencePivotSide)
+    var float referenceUpperLevel = na
+    var float referenceLowerLevel = na
+    var bool referenceUpperBroken = false
+    var bool referenceLowerBroken = false
+    var int referenceDirection = 0
+    if not na(referencePivotHigh)
+        referenceUpperLevel := referencePivotHigh
+        referenceUpperBroken := false
+    if not na(referencePivotLow)
+        referenceLowerLevel := referencePivotLow
+        referenceLowerBroken := false
+    bool referenceBreakUpRaw = not na(referenceUpperLevel) and not referenceUpperBroken and (breakWithClose ? close > referenceUpperLevel : high > referenceUpperLevel)
+    bool referenceBreakDownRaw = not na(referenceLowerLevel) and not referenceLowerBroken and (breakWithClose ? close < referenceLowerLevel : low < referenceLowerLevel)
+    bool referenceBreakUp = referenceBreakUpRaw and (not referenceBreakDownRaw or close >= open)
+    bool referenceBreakDown = referenceBreakDownRaw and (not referenceBreakUpRaw or close < open)
+    if referenceBreakUp
+        referenceUpperBroken := true
+        referenceDirection := 1
+    if referenceBreakDown
+        referenceLowerBroken := true
+        referenceDirection := -1
+    referenceDirection
+
+// --- HTF Reference Type ---
+type HtfLevelRecord
+    float price = na
+    int direction = 0
+    line lineId = na
+    label labelId = na
+    bool active = true
+
+// --- FVG Engine Types ---
+type FvgRecord
+    float top = na
+    float bottom = na
+    int locationTime = na
+    bool isBreaker = false
+    int breakerTime = na
+    bool isRaid = false
+    float raidPrice = na
+    int raidStartTime = na
+    int raidEndTime = na
+    bool raidActive = false
+    color raidColor = na
+
+type FvgDrawingStore
+    array<line> lines
+    array<label> labels
+    array<box> boxes
+
+var array<FvgRecord> bullFvgArray = array.new<FvgRecord>()
+var array<FvgRecord> bearFvgArray = array.new<FvgRecord>()
+var FvgDrawingStore fvgDrawings = FvgDrawingStore.new(array.new_line(), array.new_label(), array.new_box())
+
+f_removeOverlappingFvgs(array<FvgRecord> bullArray, array<FvgRecord> bearArray) =>
+    if array.size(bullArray) > 1
+        FvgRecord current = array.get(bullArray, 0)
+        for i = array.size(bullArray) - 1 to 1
+            FvgRecord older = array.get(bullArray, i)
+            if f_zonesOverlap(older.top, older.bottom, current.top, current.bottom)
+                array.remove(bullArray, i)
+    if array.size(bearArray) > 1
+        FvgRecord current = array.get(bearArray, 0)
+        for i = array.size(bearArray) - 1 to 1
+            FvgRecord older = array.get(bearArray, i)
+            if f_zonesOverlap(older.top, older.bottom, current.top, current.bottom)
+                array.remove(bearArray, i)
+    if array.size(bullArray) > 0 and array.size(bearArray) > 0
+        FvgRecord newestBear = array.get(bearArray, 0)
+        for i = array.size(bullArray) - 1 to 0
+            FvgRecord bullGap = array.get(bullArray, i)
+            if f_zonesOverlap(bullGap.top, bullGap.bottom, newestBear.top, newestBear.bottom)
+                array.remove(bullArray, i)
+    if array.size(bullArray) > 0 and array.size(bearArray) > 0
+        FvgRecord newestBull = array.get(bullArray, 0)
+        for i = array.size(bearArray) - 1 to 0
+            FvgRecord bearGap = array.get(bearArray, i)
+            if f_zonesOverlap(bearGap.top, bearGap.bottom, newestBull.top, newestBull.bottom)
+                array.remove(bearArray, i)
+
+f_displayEngineFvg(FvgRecord fvg, bool isBull) =>
+    string extension = fvgExtendInput ? extend.right : extend.none
+    color zoneColor = isBull ? fvgBullColorInput : fvgBearColorInput
+    color oppositeColor = isBull ? fvgBearColorInput : fvgBullColorInput
+    if not fvg.isBreaker
+        array.unshift(fvgDrawings.boxes, box.new(left = fvg.locationTime, top = fvg.top, right = time, bottom = fvg.bottom, xloc = xloc.bar_time, extend = extension, border_color = na, bgcolor = zoneColor))
+        if fvgShowMidlineInput
+            array.unshift(fvgDrawings.lines, line.new(fvg.locationTime, math.avg(fvg.top, fvg.bottom), time, math.avg(fvg.top, fvg.bottom), xloc = xloc.bar_time, extend = extension, color = color.new(zoneColor, 0)))
+        if fvgDisplayRaidsInput and fvg.isRaid and not na(fvg.raidStartTime)
+            array.unshift(fvgDrawings.lines, line.new(fvg.raidStartTime, fvg.raidPrice, fvg.raidEndTime, fvg.raidPrice, xloc = xloc.bar_time, color = fvg.raidColor))
+            array.unshift(fvgDrawings.labels, label.new(int(math.avg(fvg.raidStartTime, fvg.raidEndTime)), fvg.raidPrice, "x", xloc = xloc.bar_time, style = isBull ? label.style_label_up : label.style_label_down, color = #00000000, textcolor = fvg.raidColor, size = labelSize))
+    else
+        array.unshift(fvgDrawings.boxes, box.new(left = fvg.locationTime, top = fvg.top, right = fvg.breakerTime, bottom = fvg.bottom, xloc = xloc.bar_time, border_color = na, bgcolor = zoneColor))
+        array.unshift(fvgDrawings.boxes, box.new(left = fvg.breakerTime, top = fvg.top, right = time, bottom = fvg.bottom, xloc = xloc.bar_time, extend = extension, border_color = oppositeColor, bgcolor = oppositeColor))
+        if fvgShowMidlineInput
+            float midpoint = math.avg(fvg.top, fvg.bottom)
+            array.unshift(fvgDrawings.lines, line.new(fvg.locationTime, midpoint, fvg.breakerTime, midpoint, xloc = xloc.bar_time, color = color.new(zoneColor, 0)))
+            array.unshift(fvgDrawings.lines, line.new(fvg.breakerTime, midpoint, time, midpoint, xloc = xloc.bar_time, extend = extension, style = line.style_dashed, color = color.new(oppositeColor, 0)))
+
+// --- Persistent State ---
+var float upperLevel = na
+var int upperTime = na
+var bool upperBroken = false
+var float lowerLevel = na
+var int lowerTime = na
+var bool lowerBroken = false
+var line upperCandidateLine = na
+var label upperCandidateLabel = na
+var line lowerCandidateLine = na
+var label lowerCandidateLabel = na
+
+var int marketDirection = 0
+var int activeDirection = 0
+var int chochBarIndex = na
+var array<line> structureLines = array.new_line()
+var array<label> structureLabels = array.new_label()
+var float chochRegimeHigh = na
+var float chochRegimeLow = na
+var int chochRegimeHighTime = na
+var int chochRegimeLowTime = na
+var line hhLiquidityLine = na
+var line llLiquidityLine = na
+var label hhLiquidityLabel = na
+var label llLiquidityLabel = na
+var float hhLiquidityLevel = na
+var float llLiquidityLevel = na
+var int hhLiquidityOriginTime = na
+var int llLiquidityOriginTime = na
+var bool hhLiquidityActive = false
+var bool llLiquidityActive = false
+var line atrHighBoundaryLine = na
+var line atrLowBoundaryLine = na
+var label atrHighBoundaryLabel = na
+var label atrLowBoundaryLabel = na
+var float atrHighBoundary = na
+var float atrLowBoundary = na
+var int atrBoundaryDirection = 0
+var bool atrBoundaryBreakDetected = false
+var box hhAtrTargetBox = na
+var box llAtrTargetBox = na
+var bool hhAtrTargetActive = false
+var bool llAtrTargetActive = false
+var line htfOpeningLine = na
+var label htfOpeningLabel = na
+var float developingHtfHigh = na
+var float developingHtfLow = na
+var int developingHtfHighTime = na
+var int developingHtfLowTime = na
+var bool htfTrackingReady = false
+var array<HtfLevelRecord> htfLevelArray = array.new<HtfLevelRecord>()
+var int liquidityTrendDirection = 0
+var float liquidityTrendStartPrice = na
+var int liquidityTrendStartTime = na
+var int liquidityTrendChochTime = na
+var float liquidityTrendSlopePerMs = na
+var bool liquidityTrendWaitingForSecondPivot = false
+var bool liquidityTrendValidated = false
+var bool liquidityTrendBreakSignaled = false
+var int liquidityTrendValidationBar = na
+var line liquidityPivotTrendLine = na
+var label liquidityTrendBreakLabel = na
+var label liquidityTrendFirstPivotLabel = na
+var label liquidityTrendSecondPivotLabel = na
+var table dashboardTable = switch dashboardPositionInput
+    "Top Left" => table.new(position.top_left, 2, 6, frame_color = color.new(BLUE_COLOR, 40), frame_width = 1, border_color = color.new(chart.fg_color, 88), border_width = 1)
+    "Top Center" => table.new(position.top_center, 2, 6, frame_color = color.new(BLUE_COLOR, 40), frame_width = 1, border_color = color.new(chart.fg_color, 88), border_width = 1)
+    "Middle Left" => table.new(position.middle_left, 2, 6, frame_color = color.new(BLUE_COLOR, 40), frame_width = 1, border_color = color.new(chart.fg_color, 88), border_width = 1)
+    "Middle Center" => table.new(position.middle_center, 2, 6, frame_color = color.new(BLUE_COLOR, 40), frame_width = 1, border_color = color.new(chart.fg_color, 88), border_width = 1)
+    "Middle Right" => table.new(position.middle_right, 2, 6, frame_color = color.new(BLUE_COLOR, 40), frame_width = 1, border_color = color.new(chart.fg_color, 88), border_width = 1)
+    "Bottom Left" => table.new(position.bottom_left, 2, 6, frame_color = color.new(BLUE_COLOR, 40), frame_width = 1, border_color = color.new(chart.fg_color, 88), border_width = 1)
+    "Bottom Center" => table.new(position.bottom_center, 2, 6, frame_color = color.new(BLUE_COLOR, 40), frame_width = 1, border_color = color.new(chart.fg_color, 88), border_width = 1)
+    "Bottom Right" => table.new(position.bottom_right, 2, 6, frame_color = color.new(BLUE_COLOR, 40), frame_width = 1, border_color = color.new(chart.fg_color, 88), border_width = 1)
+    => table.new(position.top_right, 2, 6, frame_color = color.new(BLUE_COLOR, 40), frame_width = 1, border_color = color.new(chart.fg_color, 88), border_width = 1)
+var table watermarkTable = table.new(position.bottom_center, 1, 1, bgcolor = #00000000, frame_color = #00000000, border_color = #00000000)
+var box fibEntryBox = na
+var line fibEntryMidline = na
+var label fibEntryBoxLabel = na
+var array<box> fibProjectionBoxes = array.new_box()
+var array<line> fibProjectionMidlines = array.new_line()
+var array<label> fibProjectionLabels = array.new_label()
+var float fibAnchorZero = na
+var float fibSignedUnit = na
+var int fibNextZoneNumber = 3
+var int fibChochTime = na
+var int fibChochBarIndex = na
+var float fibEntryTop = na
+var float fibEntryBottom = na
+var bool fibEntryTouched = false
+var bool fibEntryExitSignaled = false
+var label fibEntryExitLabel = na
+var array<chart.point> atrTrailPoints = array.new<chart.point>()
+var polyline atrTrailGlowPolyline = na
+var polyline atrTrailCorePolyline = na
+var float atrTrailRawValue = na
+var float atrTrailValue = na
+var int atrTrailBarIndex = na
+
+// Sequence: 0 = rejected block, 1 = RB retest, 2 = FVG/BOS pair, 3 = final FVG retest, 4 = completed.
+var int sequenceStage = 0
+var box rbBox = na
+var line rbMidline = na
+var float rbTop = na
+var float rbBottom = na
+var bool rbArmed = false
+var int rbConfirmBar = na
+var int rbRetestBar = na
+var label rbRetestLabel = na
+var box finalFvgBox = na
+var float finalFvgTop = na
+var float finalFvgBottom = na
+var int finalFvgBar = na
+var label fvgBosLabel = na
+var label entryLabel = na
+var int lastSequenceBosBar = na
+var int lastDirectionalFvgBar = na
+var int lastDirectionalFvgTime = na
+var float lastDirectionalFvgTop = na
+var float lastDirectionalFvgBottom = na
+
+// --- BLVL Pivots ---
+int oddLength = fractalLengthInput % 2 == 0 ? fractalLengthInput + 1 : fractalLengthInput
+int pivotSide = int(oddLength / 2)
+float pivotHighValue = ta.pivothigh(high, pivotSide, pivotSide)
+float pivotLowValue = ta.pivotlow(low, pivotSide, pivotSide)
+float chochAtrValue = ta.atr(atrBoundaryLengthInput)
+float chartBarSeconds = nz(timeframe.in_seconds(timeframe.period), 86400.0)
+int chartBarMilliseconds = int(chartBarSeconds * 1000.0)
+int atrBoundaryRightTime = time + chartBarMilliseconds * atrBoundaryBarsRightInput
+int htfReferenceRightTime = time + chartBarMilliseconds * htfReferenceBarsRightInput
+
+if barstate.isconfirmed
+    if not na(pivotHighValue)
+        f_deleteLine(upperCandidateLine)
+        f_deleteLabel(upperCandidateLabel)
+        upperCandidateLine := na
+        upperCandidateLabel := na
+        upperLevel := pivotHighValue
+        upperTime := time[pivotSide]
+        upperBroken := false
+    if not na(pivotLowValue)
+        f_deleteLine(lowerCandidateLine)
+        f_deleteLabel(lowerCandidateLabel)
+        lowerCandidateLine := na
+        lowerCandidateLabel := na
+        lowerLevel := pivotLowValue
+        lowerTime := time[pivotSide]
+        lowerBroken := false
+
+bool rawBreakUp = barstate.isconfirmed and not na(upperLevel) and not upperBroken and (requireBodyInput ? close > upperLevel : high > upperLevel)
+bool rawBreakDown = barstate.isconfirmed and not na(lowerLevel) and not lowerBroken and (requireBodyInput ? close < lowerLevel : low < lowerLevel)
+bool breakUp = rawBreakUp and (not rawBreakDown or close >= open)
+bool breakDown = rawBreakDown and (not rawBreakUp or close < open)
+
+// --- Active CHoCH and Directional BOS ---
+bool bullChochEvent = false
+bool bearChochEvent = false
+bool bullBosEvent = false
+bool bearBosEvent = false
+
+if breakUp
+    upperBroken := true
+    f_deleteLine(upperCandidateLine)
+    f_deleteLabel(upperCandidateLabel)
+    upperCandidateLine := na
+    upperCandidateLabel := na
+    bool isChoch = marketDirection == -1
+    bool isBos = marketDirection == 1
+    if isChoch
+        f_clearStructure(structureLines, structureLabels)
+        f_addStructureBreak(structureLines, structureLabels, upperTime, upperLevel, 1, "CHoCH")
+        bullChochEvent := true
+        activeDirection := 1
+        chochBarIndex := bar_index
+        sequenceStage := 0
+        f_deleteBox(rbBox)
+        f_deleteLine(rbMidline)
+        f_deleteLabel(rbRetestLabel)
+        f_deleteBox(finalFvgBox)
+        f_deleteLabel(fvgBosLabel)
+        f_deleteLabel(entryLabel)
+        rbBox := na
+        rbMidline := na
+        rbTop := na
+        rbBottom := na
+        rbArmed := false
+        rbConfirmBar := na
+        rbRetestBar := na
+        rbRetestLabel := na
+        finalFvgBox := na
+        finalFvgTop := na
+        finalFvgBottom := na
+        finalFvgBar := na
+        fvgBosLabel := na
+        entryLabel := na
+        lastSequenceBosBar := na
+        lastDirectionalFvgBar := na
+        lastDirectionalFvgTime := na
+        lastDirectionalFvgTop := na
+        lastDirectionalFvgBottom := na
+    else if isBos and activeDirection == 1
+        if showBosInput
+            f_addStructureBreak(structureLines, structureLabels, upperTime, upperLevel, 1, "BOS")
+        bullBosEvent := true
+    marketDirection := 1
+
+if breakDown
+    lowerBroken := true
+    f_deleteLine(lowerCandidateLine)
+    f_deleteLabel(lowerCandidateLabel)
+    lowerCandidateLine := na
+    lowerCandidateLabel := na
+    bool isChoch = marketDirection == 1
+    bool isBos = marketDirection == -1
+    if isChoch
+        f_clearStructure(structureLines, structureLabels)
+        f_addStructureBreak(structureLines, structureLabels, lowerTime, lowerLevel, -1, "CHoCH")
+        bearChochEvent := true
+        activeDirection := -1
+        chochBarIndex := bar_index
+        sequenceStage := 0
+        f_deleteBox(rbBox)
+        f_deleteLine(rbMidline)
+        f_deleteLabel(rbRetestLabel)
+        f_deleteBox(finalFvgBox)
+        f_deleteLabel(fvgBosLabel)
+        f_deleteLabel(entryLabel)
+        rbBox := na
+        rbMidline := na
+        rbTop := na
+        rbBottom := na
+        rbArmed := false
+        rbConfirmBar := na
+        rbRetestBar := na
+        rbRetestLabel := na
+        finalFvgBox := na
+        finalFvgTop := na
+        finalFvgBottom := na
+        finalFvgBar := na
+        fvgBosLabel := na
+        entryLabel := na
+        lastSequenceBosBar := na
+        lastDirectionalFvgBar := na
+        lastDirectionalFvgTime := na
+        lastDirectionalFvgTop := na
+        lastDirectionalFvgBottom := na
+    else if isBos and activeDirection == -1
+        if showBosInput
+            f_addStructureBreak(structureLines, structureLabels, lowerTime, lowerLevel, -1, "BOS")
+        bearBosEvent := true
+    marketDirection := -1
+
+bool anyChochEvent = bullChochEvent or bearChochEvent
+
+// --- CHoCH ATR High/Low Boundaries ---
+if anyChochEvent
+    f_deleteLine(atrHighBoundaryLine)
+    f_deleteLine(atrLowBoundaryLine)
+    f_deleteLabel(atrHighBoundaryLabel)
+    f_deleteLabel(atrLowBoundaryLabel)
+    atrHighBoundaryLine := na
+    atrLowBoundaryLine := na
+    atrHighBoundaryLabel := na
+    atrLowBoundaryLabel := na
+    atrHighBoundary := not na(chochAtrValue) ? high + chochAtrValue * atrBoundaryMultiplierInput : na
+    atrLowBoundary := not na(chochAtrValue) ? low - chochAtrValue * atrBoundaryMultiplierInput : na
+    atrBoundaryDirection := activeDirection
+    atrBoundaryBreakDetected := false
+    if showAtrBoundariesInput and not na(atrHighBoundary) and not na(atrLowBoundary)
+        atrHighBoundaryLine := line.new(time, atrHighBoundary, atrBoundaryRightTime, atrHighBoundary, xloc = xloc.bar_time, color = bullColorInput, style = line.style_dashed)
+        atrLowBoundaryLine := line.new(time, atrLowBoundary, atrBoundaryRightTime, atrLowBoundary, xloc = xloc.bar_time, color = bearColorInput, style = line.style_dashed)
+        if showAtrBoundaryLabelsInput
+            atrHighBoundaryLabel := label.new(atrBoundaryRightTime, atrHighBoundary, "ATR HIGH", xloc = xloc.bar_time, style = label.style_label_left, color = #00000000, textcolor = bullColorInput, size = size.normal)
+            atrLowBoundaryLabel := label.new(atrBoundaryRightTime, atrLowBoundary, "ATR LOW", xloc = xloc.bar_time, style = label.style_label_left, color = #00000000, textcolor = bearColorInput, size = size.normal)
+
+if not showAtrBoundariesInput
+    f_deleteLine(atrHighBoundaryLine)
+    f_deleteLine(atrLowBoundaryLine)
+    f_deleteLabel(atrHighBoundaryLabel)
+    f_deleteLabel(atrLowBoundaryLabel)
+    atrHighBoundaryLine := na
+    atrLowBoundaryLine := na
+    atrHighBoundaryLabel := na
+    atrLowBoundaryLabel := na
+    atrHighBoundary := na
+    atrLowBoundary := na
+    atrBoundaryBreakDetected := false
+else if not anyChochEvent and not atrBoundaryBreakDetected and not na(atrHighBoundaryLine) and not na(atrLowBoundaryLine)
+    line.set_x2(atrHighBoundaryLine, atrBoundaryRightTime)
+    line.set_x2(atrLowBoundaryLine, atrBoundaryRightTime)
+    if not na(atrHighBoundaryLabel)
+        label.set_x(atrHighBoundaryLabel, atrBoundaryRightTime)
+    if not na(atrLowBoundaryLabel)
+        label.set_x(atrLowBoundaryLabel, atrBoundaryRightTime)
+    if barstate.isconfirmed
+        float atrUpperBreakSource = requireBodyInput ? close : high
+        float atrLowerBreakSource = requireBodyInput ? close : low
+        bool atrUpperBrokenRaw = atrUpperBreakSource > atrHighBoundary
+        bool atrLowerBrokenRaw = atrLowerBreakSource < atrLowBoundary
+        bool atrUpperBroken = atrUpperBrokenRaw and (not atrLowerBrokenRaw or close >= open)
+        bool atrLowerBroken = atrLowerBrokenRaw and (not atrUpperBrokenRaw or close < open)
+        if atrUpperBroken or atrLowerBroken
+            atrBoundaryBreakDetected := true
+            bool atrBreakMatchesChoch = atrUpperBroken ? atrBoundaryDirection == 1 : atrBoundaryDirection == -1
+            line.set_x2(atrHighBoundaryLine, time)
+            line.set_x2(atrLowBoundaryLine, time)
+            if showAtrBoundaryLabelsInput
+                if not na(atrHighBoundaryLabel)
+                    label.set_x(atrHighBoundaryLabel, time)
+                    label.set_text(atrHighBoundaryLabel, atrUpperBroken ? "ATR HIGH | " + (atrBreakMatchesChoch ? "MATCH" : "COUNTER") : "ATR HIGH")
+                if not na(atrLowBoundaryLabel)
+                    label.set_x(atrLowBoundaryLabel, time)
+                    label.set_text(atrLowBoundaryLabel, atrLowerBroken ? "ATR LOW | " + (atrBreakMatchesChoch ? "MATCH" : "COUNTER") : "ATR LOW")
+
+if showAtrBoundariesInput and not showAtrBoundaryLabelsInput
+    f_deleteLabel(atrHighBoundaryLabel)
+    f_deleteLabel(atrLowBoundaryLabel)
+    atrHighBoundaryLabel := na
+    atrLowBoundaryLabel := na
+
+// --- Confirmed CHoCH Liquidity ---
+if anyChochEvent
+    float completedRegimeHigh = chochRegimeHigh
+    float completedRegimeLow = chochRegimeLow
+    int completedRegimeHighTime = chochRegimeHighTime
+    int completedRegimeLowTime = chochRegimeLowTime
+    f_deleteLine(hhLiquidityLine)
+    f_deleteLine(llLiquidityLine)
+    f_deleteLabel(hhLiquidityLabel)
+    f_deleteLabel(llLiquidityLabel)
+    hhLiquidityLine := na
+    llLiquidityLine := na
+    hhLiquidityLabel := na
+    llLiquidityLabel := na
+    bool completedLiquidityValid = not na(completedRegimeHigh) and not na(completedRegimeLow) and not na(completedRegimeHighTime) and not na(completedRegimeLowTime)
+    hhLiquidityLevel := completedLiquidityValid ? completedRegimeHigh : na
+    llLiquidityLevel := completedLiquidityValid ? completedRegimeLow : na
+    hhLiquidityOriginTime := completedLiquidityValid ? completedRegimeHighTime : na
+    llLiquidityOriginTime := completedLiquidityValid ? completedRegimeLowTime : na
+    hhLiquidityActive := false
+    llLiquidityActive := false
+
+    if showLiquidityTargetsInput and completedLiquidityValid
+        hhLiquidityLine := line.new(hhLiquidityOriginTime, hhLiquidityLevel, time, hhLiquidityLevel, xloc = xloc.bar_time, extend = extend.right, color = bullColorInput, style = line.style_dashed, width = liquidityWidthInput)
+        llLiquidityLine := line.new(llLiquidityOriginTime, llLiquidityLevel, time, llLiquidityLevel, xloc = xloc.bar_time, extend = extend.right, color = bearColorInput, style = line.style_dashed, width = liquidityWidthInput)
+        hhLiquidityActive := true
+        llLiquidityActive := true
+        if showLiquidityLabelsInput
+            hhLiquidityLabel := label.new(completedRegimeHighTime, hhLiquidityLevel, "HH Liquidity", xloc = xloc.bar_time, style = label.style_label_down, color = #00000000, textcolor = bullColorInput, size = labelSize)
+            llLiquidityLabel := label.new(completedRegimeLowTime, llLiquidityLevel, "LL Liquidity", xloc = xloc.bar_time, style = label.style_label_up, color = #00000000, textcolor = bearColorInput, size = labelSize)
+
+    if bullChochEvent
+        chochRegimeHigh := high
+        chochRegimeHighTime := time
+        chochRegimeLow := low
+        chochRegimeLowTime := time
+        if not na(completedRegimeLow) and not na(completedRegimeLowTime) and completedRegimeLow < chochRegimeLow
+            chochRegimeLow := completedRegimeLow
+            chochRegimeLowTime := completedRegimeLowTime
+        if not na(lowerLevel) and not na(lowerTime) and lowerLevel < chochRegimeLow
+            chochRegimeLow := lowerLevel
+            chochRegimeLowTime := lowerTime
+    else
+        chochRegimeLow := low
+        chochRegimeLowTime := time
+        chochRegimeHigh := high
+        chochRegimeHighTime := time
+        if not na(completedRegimeHigh) and not na(completedRegimeHighTime) and completedRegimeHigh > chochRegimeHigh
+            chochRegimeHigh := completedRegimeHigh
+            chochRegimeHighTime := completedRegimeHighTime
+        if not na(upperLevel) and not na(upperTime) and upperLevel > chochRegimeHigh
+            chochRegimeHigh := upperLevel
+            chochRegimeHighTime := upperTime
+else if activeDirection != 0
+    if na(chochRegimeHigh) or high > chochRegimeHigh
+        chochRegimeHigh := high
+        chochRegimeHighTime := time
+    if na(chochRegimeLow) or low < chochRegimeLow
+        chochRegimeLow := low
+        chochRegimeLowTime := time
+
+if barstate.isconfirmed and hhLiquidityActive and not na(hhLiquidityLine) and high >= hhLiquidityLevel
+    line.set_x2(hhLiquidityLine, time)
+    line.set_extend(hhLiquidityLine, extend.none)
+    hhLiquidityActive := false
+    if not na(hhLiquidityLabel)
+        label.set_text(hhLiquidityLabel, "HH Liquidity ✓")
+        label.set_textcolor(hhLiquidityLabel, color.new(bullColorInput, 45))
+
+if barstate.isconfirmed and llLiquidityActive and not na(llLiquidityLine) and low <= llLiquidityLevel
+    line.set_x2(llLiquidityLine, time)
+    line.set_extend(llLiquidityLine, extend.none)
+    llLiquidityActive := false
+    if not na(llLiquidityLabel)
+        label.set_text(llLiquidityLabel, "LL Liquidity ✓")
+        label.set_textcolor(llLiquidityLabel, color.new(bearColorInput, 45))
+
+if not showLiquidityTargetsInput
+    f_deleteLine(hhLiquidityLine)
+    f_deleteLine(llLiquidityLine)
+    f_deleteLabel(hhLiquidityLabel)
+    f_deleteLabel(llLiquidityLabel)
+    hhLiquidityLine := na
+    llLiquidityLine := na
+    hhLiquidityLabel := na
+    llLiquidityLabel := na
+    hhLiquidityActive := false
+    llLiquidityActive := false
+else if not showLiquidityLabelsInput
+    f_deleteLabel(hhLiquidityLabel)
+    f_deleteLabel(llLiquidityLabel)
+    hhLiquidityLabel := na
+    llLiquidityLabel := na
+
+// --- HH/LL ATR Target Boxes ---
+if anyChochEvent
+    f_deleteBox(hhAtrTargetBox)
+    f_deleteBox(llAtrTargetBox)
+    hhAtrTargetBox := na
+    llAtrTargetBox := na
+    hhAtrTargetActive := false
+    llAtrTargetActive := false
+    if showAtrTargetBoxesInput and not na(chochAtrValue)
+        if not na(hhLiquidityLevel)
+            hhAtrTargetBox := box.new(left = time, top = hhLiquidityLevel + chochAtrValue * atrTargetMultiplierInput, right = atrBoundaryRightTime, bottom = hhLiquidityLevel, xloc = xloc.bar_time, border_color = color.new(bullColorInput, 35), bgcolor = color.new(bullColorInput, 88), text = "HH +" + str.tostring(atrTargetMultiplierInput, "#.##") + " ATR", text_color = bullColorInput, text_size = size.small)
+            hhAtrTargetActive := true
+        if not na(llLiquidityLevel)
+            llAtrTargetBox := box.new(left = time, top = llLiquidityLevel, right = atrBoundaryRightTime, bottom = llLiquidityLevel - chochAtrValue * atrTargetMultiplierInput, xloc = xloc.bar_time, border_color = color.new(bearColorInput, 35), bgcolor = color.new(bearColorInput, 88), text = "LL -" + str.tostring(atrTargetMultiplierInput, "#.##") + " ATR", text_color = bearColorInput, text_size = size.small)
+            llAtrTargetActive := true
+
+if not showAtrTargetBoxesInput
+    f_deleteBox(hhAtrTargetBox)
+    f_deleteBox(llAtrTargetBox)
+    hhAtrTargetBox := na
+    llAtrTargetBox := na
+    hhAtrTargetActive := false
+    llAtrTargetActive := false
+else
+    if hhAtrTargetActive and not na(hhAtrTargetBox)
+        box.set_right(hhAtrTargetBox, atrBoundaryRightTime)
+        if barstate.isconfirmed and high >= hhLiquidityLevel
+            box.set_right(hhAtrTargetBox, time)
+            hhAtrTargetActive := false
+    if llAtrTargetActive and not na(llAtrTargetBox)
+        box.set_right(llAtrTargetBox, atrBoundaryRightTime)
+        if barstate.isconfirmed and low <= llLiquidityLevel
+            box.set_right(llAtrTargetBox, time)
+            llAtrTargetActive := false
+
+// --- Selected HTF Opening and Previous High/Low ---
+[selectedHtfOpen, selectedHtfOpenTime] = request.security(syminfo.tickerid, htfReferenceTimeframeInput, [open, time], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+bool selectedHtfChanged = timeframe.change(htfReferenceTimeframeInput)
+
+if not showHtfOpeningInput
+    f_deleteLine(htfOpeningLine)
+    f_deleteLabel(htfOpeningLabel)
+    htfOpeningLine := na
+    htfOpeningLabel := na
+else if not na(selectedHtfOpen) and not na(selectedHtfOpenTime)
+    if na(htfOpeningLine)
+        htfOpeningLine := line.new(selectedHtfOpenTime, selectedHtfOpen, htfReferenceRightTime, selectedHtfOpen, xloc = xloc.bar_time, color = BLUE_COLOR, width = 2)
+        htfOpeningLabel := label.new(htfReferenceRightTime, selectedHtfOpen, htfReferenceTimeframeInput + " OPEN", xloc = xloc.bar_time, style = label.style_label_left, color = #00000000, textcolor = BLUE_COLOR, size = size.normal)
+    else
+        line.set_xy1(htfOpeningLine, selectedHtfOpenTime, selectedHtfOpen)
+        line.set_xy2(htfOpeningLine, htfReferenceRightTime, selectedHtfOpen)
+        if not na(htfOpeningLabel)
+            label.set_xy(htfOpeningLabel, htfReferenceRightTime, selectedHtfOpen)
+            label.set_text(htfOpeningLabel, htfReferenceTimeframeInput + " OPEN")
+
+if na(developingHtfHigh) or na(developingHtfLow)
+    developingHtfHigh := high
+    developingHtfLow := low
+    developingHtfHighTime := time
+    developingHtfLowTime := time
+else if selectedHtfChanged
+    if htfTrackingReady and showHtfPreviousLevelsInput
+        line previousHighLine = line.new(developingHtfHighTime, developingHtfHigh, htfReferenceRightTime, developingHtfHigh, xloc = xloc.bar_time, color = bullColorInput, style = line.style_dashed)
+        label previousHighLabel = label.new(htfReferenceRightTime, developingHtfHigh, "PH", xloc = xloc.bar_time, style = label.style_label_left, color = #00000000, textcolor = bullColorInput, size = size.normal)
+        array.push(htfLevelArray, HtfLevelRecord.new(price = developingHtfHigh, direction = 1, lineId = previousHighLine, labelId = previousHighLabel))
+        line previousLowLine = line.new(developingHtfLowTime, developingHtfLow, htfReferenceRightTime, developingHtfLow, xloc = xloc.bar_time, color = bearColorInput, style = line.style_dashed)
+        label previousLowLabel = label.new(htfReferenceRightTime, developingHtfLow, "PL", xloc = xloc.bar_time, style = label.style_label_left, color = #00000000, textcolor = bearColorInput, size = size.normal)
+        array.push(htfLevelArray, HtfLevelRecord.new(price = developingHtfLow, direction = -1, lineId = previousLowLine, labelId = previousLowLabel))
+        while array.size(htfLevelArray) > htfPreviousLevelsLimitInput
+            HtfLevelRecord removedLevel = array.shift(htfLevelArray)
+            f_deleteLine(removedLevel.lineId)
+            f_deleteLabel(removedLevel.labelId)
+    htfTrackingReady := true
+    developingHtfHigh := high
+    developingHtfLow := low
+    developingHtfHighTime := time
+    developingHtfLowTime := time
+else
+    if high > developingHtfHigh
+        developingHtfHigh := high
+        developingHtfHighTime := time
+    if low < developingHtfLow
+        developingHtfLow := low
+        developingHtfLowTime := time
+
+if not showHtfPreviousLevelsInput
+    while array.size(htfLevelArray) > 0
+        HtfLevelRecord removedLevel = array.pop(htfLevelArray)
+        f_deleteLine(removedLevel.lineId)
+        f_deleteLabel(removedLevel.labelId)
+else if array.size(htfLevelArray) > 0
+    for htfLevelIndex = 0 to array.size(htfLevelArray) - 1
+        HtfLevelRecord htfLevel = array.get(htfLevelArray, htfLevelIndex)
+        if htfLevel.active
+            line.set_x2(htfLevel.lineId, htfReferenceRightTime)
+            label.set_x(htfLevel.labelId, htfReferenceRightTime)
+            bool htfLevelTouched = barstate.isconfirmed and (htfLevel.direction == 1 ? high >= htfLevel.price : low <= htfLevel.price)
+            if htfLevelTouched
+                htfLevel.active := false
+                line.set_x2(htfLevel.lineId, time)
+                label.set_x(htfLevel.labelId, time)
+                label.set_text(htfLevel.labelId, htfLevel.direction == 1 ? "PH ✓" : "PL ✓")
+
+// --- Two-Pivot Liquidity Trend Line ---
+float liquidityTrendTimeframeSeconds = timeframe.in_seconds(timeframe.period)
+float liquidityTrendBarMilliseconds = nz(liquidityTrendTimeframeSeconds, 86400.0) * 1000.0
+string liquidityTrendStyle = liquidityTrendStyleInput == "Solid" ? line.style_solid : liquidityTrendStyleInput == "Dashed" ? line.style_dashed : line.style_dotted
+bool bullLiquidityTrendBreakEvent = false
+bool bearLiquidityTrendBreakEvent = false
+
+if not showLiquidityTrendLineInput
+    f_deleteLine(liquidityPivotTrendLine)
+    f_deleteLabel(liquidityTrendBreakLabel)
+    f_deleteLabel(liquidityTrendFirstPivotLabel)
+    f_deleteLabel(liquidityTrendSecondPivotLabel)
+    liquidityPivotTrendLine := na
+    liquidityTrendBreakLabel := na
+    liquidityTrendFirstPivotLabel := na
+    liquidityTrendSecondPivotLabel := na
+    liquidityTrendDirection := 0
+    liquidityTrendStartPrice := na
+    liquidityTrendStartTime := na
+    liquidityTrendChochTime := na
+    liquidityTrendSlopePerMs := na
+    liquidityTrendWaitingForSecondPivot := false
+    liquidityTrendValidated := false
+    liquidityTrendBreakSignaled := false
+    liquidityTrendValidationBar := na
+else if anyChochEvent
+    f_deleteLine(liquidityPivotTrendLine)
+    f_deleteLabel(liquidityTrendBreakLabel)
+    f_deleteLabel(liquidityTrendFirstPivotLabel)
+    f_deleteLabel(liquidityTrendSecondPivotLabel)
+    liquidityPivotTrendLine := na
+    liquidityTrendBreakLabel := na
+    liquidityTrendFirstPivotLabel := na
+    liquidityTrendSecondPivotLabel := na
+    liquidityTrendDirection := bullChochEvent ? 1 : -1
+    liquidityTrendStartPrice := liquidityTrendDirection == 1 ? llLiquidityLevel : hhLiquidityLevel
+    liquidityTrendStartTime := liquidityTrendDirection == 1 ? llLiquidityOriginTime : hhLiquidityOriginTime
+    liquidityTrendChochTime := time
+    liquidityTrendSlopePerMs := na
+    liquidityTrendWaitingForSecondPivot := not na(liquidityTrendStartPrice) and not na(liquidityTrendStartTime)
+    liquidityTrendValidated := false
+    liquidityTrendBreakSignaled := false
+    liquidityTrendValidationBar := na
+
+if showLiquidityTrendLineInput and liquidityTrendWaitingForSecondPivot and not liquidityTrendValidated
+    bool secondPivotAvailable = liquidityTrendDirection == 1 ? not na(pivotLowValue) : not na(pivotHighValue)
+    if secondPivotAvailable
+        float secondPivotPrice = liquidityTrendDirection == 1 ? pivotLowValue : pivotHighValue
+        int secondPivotTime = time[pivotSide]
+        bool secondPivotAfterChoch = secondPivotTime > liquidityTrendChochTime
+        bool correctPivotDirection = liquidityTrendDirection == 1 ? secondPivotPrice > liquidityTrendStartPrice : secondPivotPrice < liquidityTrendStartPrice
+        if secondPivotAfterChoch and correctPivotDirection and secondPivotTime > liquidityTrendStartTime
+            liquidityTrendSlopePerMs := (secondPivotPrice - liquidityTrendStartPrice) / (secondPivotTime - liquidityTrendStartTime)
+            liquidityTrendWaitingForSecondPivot := false
+            liquidityTrendValidated := true
+            liquidityTrendValidationBar := bar_index
+            int futureTrendTime = time + int(liquidityTrendBarMilliseconds * liquidityTrendBarsRightInput)
+            float futureTrendPrice = liquidityTrendStartPrice + liquidityTrendSlopePerMs * (futureTrendTime - liquidityTrendStartTime)
+            color trendColor = liquidityTrendDirection == 1 ? BLUE_COLOR : #8b5cf6
+            liquidityPivotTrendLine := line.new(liquidityTrendStartTime, liquidityTrendStartPrice, futureTrendTime, futureTrendPrice, xloc = xloc.bar_time, extend = extend.none, color = trendColor, style = liquidityTrendStyle, width = liquidityTrendLineWidthInput)
+            liquidityTrendFirstPivotLabel := label.new(liquidityTrendStartTime, liquidityTrendStartPrice, "", xloc = xloc.bar_time, style = label.style_circle, color = trendColor, textcolor = trendColor, size = size.small, tooltip = "First liquidity pivot defining the trend line")
+            liquidityTrendSecondPivotLabel := label.new(secondPivotTime, secondPivotPrice, "", xloc = xloc.bar_time, style = label.style_circle, color = trendColor, textcolor = trendColor, size = size.small, tooltip = "Second pivot confirming the trend line")
+
+if showLiquidityTrendLineInput and liquidityTrendValidated and not na(liquidityPivotTrendLine) and not na(liquidityTrendSlopePerMs)
+    int futureTrendTime = time + int(liquidityTrendBarMilliseconds * liquidityTrendBarsRightInput)
+    float futureTrendPrice = liquidityTrendStartPrice + liquidityTrendSlopePerMs * (futureTrendTime - liquidityTrendStartTime)
+    line.set_x2(liquidityPivotTrendLine, futureTrendTime)
+    line.set_y2(liquidityPivotTrendLine, futureTrendPrice)
+    if not liquidityTrendBreakSignaled and barstate.isconfirmed and bar_index > liquidityTrendValidationBar
+        float currentTrendPrice = liquidityTrendStartPrice + liquidityTrendSlopePerMs * (time - liquidityTrendStartTime)
+        float breakSource = liquidityTrendBreakWithCloseInput ? close : liquidityTrendDirection == 1 ? low : high
+        bool trendLineBroken = liquidityTrendDirection == 1 ? breakSource < currentTrendPrice : breakSource > currentTrendPrice
+        if trendLineBroken
+            liquidityTrendBreakSignaled := true
+            bullLiquidityTrendBreakEvent := liquidityTrendDirection == -1
+            bearLiquidityTrendBreakEvent := liquidityTrendDirection == 1
+            if showLiquidityTrendBreakInput
+                color breakColor = bullLiquidityTrendBreakEvent ? BULL_COLOR : BEAR_COLOR
+                liquidityTrendBreakLabel := label.new(bar_index, bullLiquidityTrendBreakEvent ? low : high, "", yloc = bullLiquidityTrendBreakEvent ? yloc.belowbar : yloc.abovebar, style = label.style_xcross, color = breakColor, textcolor = breakColor, size = labelSize, tooltip = "Liquidity trend line broken")
+
+// --- Active CHoCH Fibonacci Zones ---
+float fibTimeframeSeconds = timeframe.in_seconds(timeframe.period)
+int fibBarMilliseconds = int(nz(fibTimeframeSeconds, 86400.0) * 1000.0)
+int fibRightTime = time + fibBarMilliseconds * fibBarsRightInput
+bool bullFibEntryExitEvent = false
+bool bearFibEntryExitEvent = false
+
+if anyChochEvent
+    f_deleteBox(fibEntryBox)
+    f_deleteLine(fibEntryMidline)
+    f_deleteLabel(fibEntryBoxLabel)
+    f_deleteLabel(fibEntryExitLabel)
+    f_clearFibProjectionZonesWithLabels(fibProjectionBoxes, fibProjectionMidlines, fibProjectionLabels)
+    fibEntryBox := na
+    fibEntryMidline := na
+    fibEntryBoxLabel := na
+    fibEntryExitLabel := na
+    fibAnchorZero := bullChochEvent ? nz(lowerLevel, low) : nz(upperLevel, high)
+    float fibAnchorOne = bullChochEvent ? high : low
+    fibSignedUnit := fibAnchorOne - fibAnchorZero
+    fibChochTime := time
+    fibChochBarIndex := bar_index
+    fibNextZoneNumber := 3
+    fibEntryTop := na
+    fibEntryBottom := na
+    fibEntryTouched := false
+    fibEntryExitSignaled := false
+    bool validFibDirection = bullChochEvent ? fibSignedUnit > syminfo.mintick : fibSignedUnit < -syminfo.mintick
+    if enableFibZonesInput and validFibDirection
+        color fibDirectionColor = bullChochEvent ? bullColorInput : bearColorInput
+        float entryFirstPrice = fibAnchorZero + fibSignedUnit * 0.382
+        float entrySecondPrice = fibAnchorZero + fibSignedUnit * 0.618
+        fibEntryTop := math.max(entryFirstPrice, entrySecondPrice)
+        fibEntryBottom := math.min(entryFirstPrice, entrySecondPrice)
+        if showEntryBoxInput
+            [newEntryBox, newEntryMidline, newEntryLabel] = f_createFibZoneWithLabel(fibAnchorZero, fibSignedUnit, 0.382, 0.618, "Entry Box", fibDirectionColor, fibChochTime, fibRightTime)
+            fibEntryBox := newEntryBox
+            fibEntryMidline := newEntryMidline
+            fibEntryBoxLabel := newEntryLabel
+        if showProjectionZonesInput
+            [firstReactionBox, firstReactionMidline, firstReactionLabel] = f_createFibZoneWithLabel(fibAnchorZero, fibSignedUnit, 1.47, 1.55, "First Reaction Zone", fibDirectionColor, fibChochTime, fibRightTime)
+            array.push(fibProjectionBoxes, firstReactionBox)
+            array.push(fibProjectionMidlines, firstReactionMidline)
+            array.push(fibProjectionLabels, firstReactionLabel)
+            [secondReactionBox, secondReactionMidline, secondReactionLabel] = f_createFibZoneWithLabel(fibAnchorZero, fibSignedUnit, 2.56, 2.68, "Second Reaction Zone", fibDirectionColor, fibChochTime, fibRightTime)
+            array.push(fibProjectionBoxes, secondReactionBox)
+            array.push(fibProjectionMidlines, secondReactionMidline)
+            array.push(fibProjectionLabels, secondReactionLabel)
+
+if not enableFibZonesInput
+    f_deleteBox(fibEntryBox)
+    f_deleteLine(fibEntryMidline)
+    f_deleteLabel(fibEntryBoxLabel)
+    f_deleteLabel(fibEntryExitLabel)
+    f_clearFibProjectionZonesWithLabels(fibProjectionBoxes, fibProjectionMidlines, fibProjectionLabels)
+    fibEntryBox := na
+    fibEntryMidline := na
+    fibEntryBoxLabel := na
+    fibEntryExitLabel := na
+    fibAnchorZero := na
+    fibSignedUnit := na
+    fibChochTime := na
+    fibChochBarIndex := na
+    fibNextZoneNumber := 3
+    fibEntryTop := na
+    fibEntryBottom := na
+    fibEntryTouched := false
+    fibEntryExitSignaled := false
+else
+    if not showEntryBoxInput
+        f_deleteBox(fibEntryBox)
+        f_deleteLine(fibEntryMidline)
+        f_deleteLabel(fibEntryBoxLabel)
+        fibEntryBox := na
+        fibEntryMidline := na
+        fibEntryBoxLabel := na
+        fibEntryTouched := false
+        fibEntryExitSignaled := false
+    if not showProjectionZonesInput
+        f_clearFibProjectionZonesWithLabels(fibProjectionBoxes, fibProjectionMidlines, fibProjectionLabels)
+        fibNextZoneNumber := 3
+
+if enableFibZonesInput
+    if not na(fibEntryBox)
+        box.set_right(fibEntryBox, fibRightTime)
+    if not na(fibEntryMidline)
+        line.set_x2(fibEntryMidline, fibRightTime)
+    if not na(fibEntryBoxLabel)
+        label.set_x(fibEntryBoxLabel, fibRightTime)
+    if array.size(fibProjectionBoxes) > 0
+        for projectionIndex = 0 to array.size(fibProjectionBoxes) - 1
+            box.set_right(array.get(fibProjectionBoxes, projectionIndex), fibRightTime)
+            line.set_x2(array.get(fibProjectionMidlines, projectionIndex), fibRightTime)
+            label.set_x(array.get(fibProjectionLabels, projectionIndex), fibRightTime)
+
+if enableFibZonesInput and showProjectionZonesInput and not anyChochEvent and activeDirection != 0 and not na(fibAnchorZero) and not na(fibSignedUnit)
+    bool searchForNextZone = true
+    while searchForNextZone and fibNextZoneNumber <= maxProjectionZoneInput
+        float previousFarRatio = fibNextZoneNumber == 3 ? 2.68 : fibNextZoneNumber - 1 + 0.68
+        float previousFarPrice = fibAnchorZero + fibSignedUnit * previousFarRatio
+        bool previousZoneExceeded = fibSignedUnit > 0 ? high > previousFarPrice : low < previousFarPrice
+        if previousZoneExceeded
+            float nextNearRatio = fibNextZoneNumber + 0.56
+            float nextFarRatio = fibNextZoneNumber + 0.68
+            string nextZoneText = "Expansion Zone " + str.tostring(fibNextZoneNumber)
+            color fibDirectionColor = activeDirection == 1 ? bullColorInput : bearColorInput
+            [nextZoneBox, nextZoneMidline, nextZoneLabel] = f_createFibZoneWithLabel(fibAnchorZero, fibSignedUnit, nextNearRatio, nextFarRatio, nextZoneText, fibDirectionColor, time, fibRightTime)
+            array.push(fibProjectionBoxes, nextZoneBox)
+            array.push(fibProjectionMidlines, nextZoneMidline)
+            array.push(fibProjectionLabels, nextZoneLabel)
+            fibNextZoneNumber += 1
+        else
+            searchForNextZone := false
+
+if enableFibZonesInput and showEntryBoxInput and not fibEntryExitSignaled and not na(fibEntryTop) and not na(fibEntryBottom) and not na(fibChochBarIndex) and bar_index > fibChochBarIndex
+    bool priceTouchesEntryBox = low <= fibEntryTop and high >= fibEntryBottom
+    if priceTouchesEntryBox
+        fibEntryTouched := true
+    bool directionalExit = fibEntryTouched and (activeDirection == 1 ? close > fibEntryTop : close < fibEntryBottom)
+    if directionalExit and barstate.isconfirmed
+        fibEntryExitSignaled := true
+        bullFibEntryExitEvent := activeDirection == 1
+        bearFibEntryExitEvent := activeDirection == -1
+        color exitColor = activeDirection == 1 ? bullColorInput : bearColorInput
+        fibEntryExitLabel := label.new(bar_index, activeDirection == 1 ? low : high, "", yloc = activeDirection == 1 ? yloc.belowbar : yloc.abovebar, style = label.style_diamond, color = exitColor, textcolor = exitColor, size = labelSize, tooltip = "Price exited the Entry Box")
+
+// --- Optional BLVL Candidate Engine ---
+float timeframeSeconds = timeframe.in_seconds(timeframe.period)
+int candidateExtensionMs = int(nz(timeframeSeconds, 86400.0) * 1000.0 * candidateBarsRightInput)
+bool candidatesActive = showCandidatesInput and activeDirection != 0
+
+if not candidatesActive
+    f_deleteLine(upperCandidateLine)
+    f_deleteLabel(upperCandidateLabel)
+    f_deleteLine(lowerCandidateLine)
+    f_deleteLabel(lowerCandidateLabel)
+    upperCandidateLine := na
+    upperCandidateLabel := na
+    lowerCandidateLine := na
+    lowerCandidateLabel := na
+else
+    if not upperBroken and not na(upperLevel)
+        bool isContinuation = activeDirection == 1
+        color candidateColor = color.new(bullColorInput, candidateTransparencyInput)
+        string candidateText = isContinuation ? "Trend Continuation" : "Potential CHoCH"
+        string candidateStyle = isContinuation ? line.style_solid : line.style_dotted
+        if na(upperCandidateLine)
+            upperCandidateLine := line.new(upperTime, upperLevel, time + candidateExtensionMs, upperLevel, xloc = xloc.bar_time, color = candidateColor, style = candidateStyle, width = candidateWidthInput)
+        else
+            line.set_x2(upperCandidateLine, time + candidateExtensionMs)
+            line.set_color(upperCandidateLine, candidateColor)
+            line.set_style(upperCandidateLine, candidateStyle)
+            line.set_width(upperCandidateLine, candidateWidthInput)
+        if showCandidateTextInput
+            if na(upperCandidateLabel)
+                upperCandidateLabel := label.new(int(math.avg(upperTime, time + candidateExtensionMs)), upperLevel, candidateText, xloc = xloc.bar_time, style = label.style_label_down, color = #00000000, textcolor = candidateColor, size = labelSize)
+            else
+                label.set_x(upperCandidateLabel, int(math.avg(upperTime, time + candidateExtensionMs)))
+                label.set_text(upperCandidateLabel, candidateText)
+                label.set_textcolor(upperCandidateLabel, candidateColor)
+        else
+            f_deleteLabel(upperCandidateLabel)
+            upperCandidateLabel := na
+    else
+        f_deleteLine(upperCandidateLine)
+        f_deleteLabel(upperCandidateLabel)
+        upperCandidateLine := na
+        upperCandidateLabel := na
+
+    if not lowerBroken and not na(lowerLevel)
+        bool isContinuation = activeDirection == -1
+        color candidateColor = color.new(bearColorInput, candidateTransparencyInput)
+        string candidateText = isContinuation ? "Trend Continuation" : "Potential CHoCH"
+        string candidateStyle = isContinuation ? line.style_solid : line.style_dotted
+        if na(lowerCandidateLine)
+            lowerCandidateLine := line.new(lowerTime, lowerLevel, time + candidateExtensionMs, lowerLevel, xloc = xloc.bar_time, color = candidateColor, style = candidateStyle, width = candidateWidthInput)
+        else
+            line.set_x2(lowerCandidateLine, time + candidateExtensionMs)
+            line.set_color(lowerCandidateLine, candidateColor)
+            line.set_style(lowerCandidateLine, candidateStyle)
+            line.set_width(lowerCandidateLine, candidateWidthInput)
+        if showCandidateTextInput
+            if na(lowerCandidateLabel)
+                lowerCandidateLabel := label.new(int(math.avg(lowerTime, time + candidateExtensionMs)), lowerLevel, candidateText, xloc = xloc.bar_time, style = label.style_label_up, color = #00000000, textcolor = candidateColor, size = labelSize)
+            else
+                label.set_x(lowerCandidateLabel, int(math.avg(lowerTime, time + candidateExtensionMs)))
+                label.set_text(lowerCandidateLabel, candidateText)
+                label.set_textcolor(lowerCandidateLabel, candidateColor)
+        else
+            f_deleteLabel(lowerCandidateLabel)
+            lowerCandidateLabel := na
+    else
+        f_deleteLine(lowerCandidateLine)
+        f_deleteLabel(lowerCandidateLabel)
+        lowerCandidateLine := na
+        lowerCandidateLabel := na
+
+// --- Active CHoCH ATR Trail ---
+float atrTrailAtr = ta.atr(atrTrailLengthInput)
+float bullishTrailBasis = atrTrailBasisInput == "Close" ? close : high
+float bearishTrailBasis = atrTrailBasisInput == "Close" ? close : low
+float bullishTrailCandidate = bullishTrailBasis - atrTrailAtr * atrTrailMultiplierInput
+float bearishTrailCandidate = bearishTrailBasis + atrTrailAtr * atrTrailMultiplierInput
+
+if not showAtrTrailInput
+    if not na(atrTrailGlowPolyline)
+        polyline.delete(atrTrailGlowPolyline)
+    if not na(atrTrailCorePolyline)
+        polyline.delete(atrTrailCorePolyline)
+    atrTrailGlowPolyline := na
+    atrTrailCorePolyline := na
+    array.clear(atrTrailPoints)
+    atrTrailRawValue := na
+    atrTrailValue := na
+    atrTrailBarIndex := na
+else if bullChochEvent or bearChochEvent
+    if not na(atrTrailGlowPolyline)
+        polyline.delete(atrTrailGlowPolyline)
+    if not na(atrTrailCorePolyline)
+        polyline.delete(atrTrailCorePolyline)
+    atrTrailGlowPolyline := na
+    atrTrailCorePolyline := na
+    array.clear(atrTrailPoints)
+    atrTrailRawValue := activeDirection == 1 ? bullishTrailCandidate : bearishTrailCandidate
+    atrTrailValue := atrTrailRawValue
+    atrTrailBarIndex := bar_index
+    if not na(atrTrailValue)
+        array.push(atrTrailPoints, chart.point.from_index(bar_index, atrTrailValue))
+else if barstate.isconfirmed and activeDirection != 0 and not na(atrTrailAtr)
+    if na(atrTrailValue) or na(atrTrailRawValue)
+        atrTrailRawValue := activeDirection == 1 ? bullishTrailCandidate : bearishTrailCandidate
+        atrTrailValue := atrTrailRawValue
+        atrTrailBarIndex := bar_index
+        array.clear(atrTrailPoints)
+        array.push(atrTrailPoints, chart.point.from_index(bar_index, atrTrailValue))
+    else
+        atrTrailRawValue := activeDirection == 1 ? math.max(atrTrailRawValue, bullishTrailCandidate) : math.min(atrTrailRawValue, bearishTrailCandidate)
+        float smoothingAlpha = 2.0 / (atrTrailSmoothingInput + 1.0)
+        atrTrailValue += smoothingAlpha * (atrTrailRawValue - atrTrailValue)
+        atrTrailBarIndex := bar_index
+        array.push(atrTrailPoints, chart.point.from_index(bar_index, atrTrailValue))
+        int maximumTrailPoints = atrTrailSegmentsInput + 1
+        while array.size(atrTrailPoints) > maximumTrailPoints
+            array.shift(atrTrailPoints)
+        if not na(atrTrailGlowPolyline)
+            polyline.delete(atrTrailGlowPolyline)
+        if not na(atrTrailCorePolyline)
+            polyline.delete(atrTrailCorePolyline)
+        color trailColor = activeDirection == 1 ? bullColorInput : bearColorInput
+        if atrTrailGlowInput and array.size(atrTrailPoints) > 1
+            atrTrailGlowPolyline := polyline.new(atrTrailPoints, true, false, xloc.bar_index, color.new(trailColor, atrTrailGlowTransparencyInput), na, line.style_solid, atrTrailWidthInput + 4)
+        else
+            atrTrailGlowPolyline := na
+        if array.size(atrTrailPoints) > 1
+            atrTrailCorePolyline := polyline.new(atrTrailPoints, true, false, xloc.bar_index, trailColor, na, line.style_solid, atrTrailWidthInput)
+        else
+            atrTrailCorePolyline := na
+
+// --- Rejected Block Detection ---
+float atrValue = ta.atr(atrLengthInput)
+float rbPivotHigh = ta.pivothigh(high, rbPivotLengthInput, rbPivotLengthInput)
+float rbPivotLow = ta.pivotlow(low, rbPivotLengthInput, rbPivotLengthInput)
+float pivotRange = high[rbPivotLengthInput] - low[rbPivotLengthInput]
+float pivotBodyTop = math.max(open[rbPivotLengthInput], close[rbPivotLengthInput])
+float pivotBodyBottom = math.min(open[rbPivotLengthInput], close[rbPivotLengthInput])
+float pivotUpperWick = high[rbPivotLengthInput] - pivotBodyTop
+float pivotLowerWick = pivotBodyBottom - low[rbPivotLengthInput]
+float pivotAtr = atrValue[rbPivotLengthInput]
+int rbPivotBar = bar_index - rbPivotLengthInput
+
+bool bullRbFormedEvent = false
+bool bearRbFormedEvent = false
+bool bullRbRetestEvent = false
+bool bearRbRetestEvent = false
+
+bool bullRbQualified = activeDirection == 1 and sequenceStage <= 1 and not na(rbPivotLow) and rbPivotBar > chochBarIndex and pivotRange > 0 and pivotLowerWick > 0 and pivotLowerWick / pivotRange * 100.0 >= minWickPercentInput and (minWickAtrInput == 0 or not na(pivotAtr) and pivotLowerWick >= minWickAtrInput * pivotAtr)
+bool bearRbQualified = activeDirection == -1 and sequenceStage <= 1 and not na(rbPivotHigh) and rbPivotBar > chochBarIndex and pivotRange > 0 and pivotUpperWick > 0 and pivotUpperWick / pivotRange * 100.0 >= minWickPercentInput and (minWickAtrInput == 0 or not na(pivotAtr) and pivotUpperWick >= minWickAtrInput * pivotAtr)
+
+if barstate.isconfirmed and bullRbQualified
+    f_deleteBox(rbBox)
+    f_deleteLine(rbMidline)
+    f_deleteLabel(rbRetestLabel)
+    rbTop := pivotBodyBottom
+    rbBottom := low[rbPivotLengthInput]
+    rbBox := box.new(rbPivotBar, rbTop, bar_index, rbBottom, border_color = color.new(bullColorInput, ZONE_BORDER_TRANSPARENCY), bgcolor = color.new(bullColorInput, ZONE_FILL_TRANSPARENCY), text = "Bull RB", text_color = bullColorInput, text_size = labelSize)
+    rbMidline := line.new(rbPivotBar, math.avg(rbTop, rbBottom), bar_index, math.avg(rbTop, rbBottom), color = showRbMidlineInput ? color.new(bullColorInput, MIDLINE_TRANSPARENCY) : na, style = line.style_dotted)
+    rbArmed := false
+    rbConfirmBar := bar_index
+    rbRetestBar := na
+    rbRetestLabel := na
+    sequenceStage := 1
+    bullRbFormedEvent := true
+
+if barstate.isconfirmed and bearRbQualified
+    f_deleteBox(rbBox)
+    f_deleteLine(rbMidline)
+    f_deleteLabel(rbRetestLabel)
+    rbTop := high[rbPivotLengthInput]
+    rbBottom := pivotBodyTop
+    rbBox := box.new(rbPivotBar, rbTop, bar_index, rbBottom, border_color = color.new(bearColorInput, ZONE_BORDER_TRANSPARENCY), bgcolor = color.new(bearColorInput, ZONE_FILL_TRANSPARENCY), text = "Bear RB", text_color = bearColorInput, text_size = labelSize)
+    rbMidline := line.new(rbPivotBar, math.avg(rbTop, rbBottom), bar_index, math.avg(rbTop, rbBottom), color = showRbMidlineInput ? color.new(bearColorInput, MIDLINE_TRANSPARENCY) : na, style = line.style_dotted)
+    rbArmed := false
+    rbConfirmBar := bar_index
+    rbRetestBar := na
+    rbRetestLabel := na
+    sequenceStage := 1
+    bearRbFormedEvent := true
+
+if sequenceStage == 1 and not na(rbBox)
+    box.set_right(rbBox, bar_index)
+    line.set_x2(rbMidline, bar_index)
+    if barstate.isconfirmed and bar_index > rbConfirmBar
+        bool rbInvalidated = activeDirection == 1 ? close < rbBottom : close > rbTop
+        if rbInvalidated
+            f_deleteBox(rbBox)
+            f_deleteLine(rbMidline)
+            rbBox := na
+            rbMidline := na
+            rbTop := na
+            rbBottom := na
+            rbArmed := false
+            rbConfirmBar := na
+            sequenceStage := 0
+        else if not rbArmed
+            rbArmed := activeDirection == 1 ? low > rbTop : high < rbBottom
+        else
+            bool rbTouched = low <= rbTop and high >= rbBottom
+            if rbTouched
+                sequenceStage := 2
+                rbRetestBar := bar_index
+                lastSequenceBosBar := na
+                lastDirectionalFvgBar := na
+                lastDirectionalFvgTime := na
+                lastDirectionalFvgTop := na
+                lastDirectionalFvgBottom := na
+                color rbColor = activeDirection == 1 ? bullColorInput : bearColorInput
+                rbRetestLabel := label.new(bar_index, activeDirection == 1 ? rbBottom : rbTop, "", style = activeDirection == 1 ? label.style_triangleup : label.style_triangledown, color = rbColor, textcolor = rbColor, size = labelSize, tooltip = activeDirection == 1 ? "Bullish RB Retest" : "Bearish RB Retest")
+                bullRbRetestEvent := activeDirection == 1
+                bearRbRetestEvent := activeDirection == -1
+
+// --- Supplied FVG / Breaker Engine ---
+float fvgAtrValue = ta.atr(200)
+bool chartTimeframeChanged = timeframe.change(timeframe.period)
+float bullishThreshold = low[1] + fvgAtrValue[1] * fvgThresholdInput
+float bearishThreshold = high[1] - fvgAtrValue[1] * fvgThresholdInput
+bool bullishFvgSetup = low > high[2] and chartTimeframeChanged and close[1] > bullishThreshold
+bool bearishFvgSetup = low[2] > high and chartTimeframeChanged and close[1] < bearishThreshold
+bool newBullFvgEvent = false
+bool newBearFvgEvent = false
+bool bullIfvgEvent = false
+bool bearIfvgEvent = false
+float newBullFvgTop = na
+float newBullFvgBottom = na
+float newBearFvgTop = na
+float newBearFvgBottom = na
+int newBullFvgTime = na
+int newBearFvgTime = na
+
+if fvgEnableInput and barstate.isconfirmed
+    if bullishFvgSetup[1]
+        if array.size(bullFvgArray) > 0
+            FvgRecord latestBull = array.get(bullFvgArray, 0)
+            if latestBull.isRaid and not latestBull.raidActive
+                latestBull.raidActive := true
+                latestBull.raidStartTime := na
+                latestBull.raidEndTime := na
+                latestBull.raidPrice := na
+                latestBull.raidColor := #00000000
+        newBullFvgTop := low[1]
+        newBullFvgBottom := high[3]
+        newBullFvgTime := time[3]
+        array.unshift(bullFvgArray, FvgRecord.new(top = newBullFvgTop, bottom = newBullFvgBottom, locationTime = newBullFvgTime))
+        newBullFvgEvent := true
+
+    if bearishFvgSetup[1]
+        if array.size(bearFvgArray) > 0
+            FvgRecord latestBear = array.get(bearFvgArray, 0)
+            if latestBear.isRaid and not latestBear.raidActive
+                latestBear.raidActive := true
+                latestBear.raidStartTime := na
+                latestBear.raidEndTime := na
+                latestBear.raidPrice := na
+                latestBear.raidColor := #00000000
+        newBearFvgTop := low[3]
+        newBearFvgBottom := high[1]
+        newBearFvgTime := time[3]
+        array.unshift(bearFvgArray, FvgRecord.new(top = newBearFvgTop, bottom = newBearFvgBottom, locationTime = newBearFvgTime))
+        newBearFvgEvent := true
+
+    while array.size(bullFvgArray) > 500
+        array.pop(bullFvgArray)
+    while array.size(bearFvgArray) > 500
+        array.pop(bearFvgArray)
+
+    int bullIndex = 0
+    while bullIndex < array.size(bullFvgArray)
+        FvgRecord bullGap = array.get(bullFvgArray, bullIndex)
+        bool removeBull = false
+        if not bullGap.isBreaker
+            bool bullMitigated = fvgMitigationInput == "Close" ? math.min(close, open) < bullGap.bottom : fvgMitigationInput == "Wick" ? low < bullGap.bottom : low < math.avg(bullGap.top, bullGap.bottom)
+            if bullMitigated
+                bullGap.isBreaker := true
+                bullGap.breakerTime := time
+                bearIfvgEvent := fvgModeInput == "Breakers"
+                removeBull := fvgModeInput == "FVG"
+        else
+            bool bullBreakerMitigated = fvgMitigationInput == "Close" ? math.max(close, open) > bullGap.top : fvgMitigationInput == "Wick" ? high > bullGap.top : high > math.avg(bullGap.top, bullGap.bottom)
+            removeBull := bullBreakerMitigated and fvgModeInput == "Breakers"
+        if removeBull
+            array.remove(bullFvgArray, bullIndex)
+        else
+            bullIndex += 1
+
+    int bearIndex = 0
+    while bearIndex < array.size(bearFvgArray)
+        FvgRecord bearGap = array.get(bearFvgArray, bearIndex)
+        bool removeBear = false
+        if not bearGap.isBreaker
+            bool bearMitigated = fvgMitigationInput == "Close" ? math.max(close, open) > bearGap.top : fvgMitigationInput == "Wick" ? high > bearGap.top : high > math.avg(bearGap.top, bearGap.bottom)
+            if bearMitigated
+                bearGap.isBreaker := true
+                bearGap.breakerTime := time
+                bullIfvgEvent := fvgModeInput == "Breakers"
+                removeBear := fvgModeInput == "FVG"
+        else
+            bool bearBreakerMitigated = fvgMitigationInput == "Close" ? math.min(close, open) < bearGap.bottom : fvgMitigationInput == "Wick" ? low < bearGap.bottom : low < math.avg(bearGap.top, bearGap.bottom)
+            removeBear := bearBreakerMitigated and fvgModeInput == "Breakers"
+        if removeBear
+            array.remove(bearFvgArray, bearIndex)
+        else
+            bearIndex += 1
+
+    if fvgHideOverlapInput
+        f_removeOverlappingFvgs(bullFvgArray, bearFvgArray)
+
+    if fvgDisplayRaidsInput
+        if array.size(bullFvgArray) > 0
+            for i = 0 to array.size(bullFvgArray) - 1
+                FvgRecord bullGap = array.get(bullFvgArray, i)
+                if not bullGap.isRaid and not bullGap.isBreaker and low < bullGap.top and close > bullGap.top
+                    bullGap.isRaid := true
+                    bullGap.raidStartTime := time
+                    bullGap.raidEndTime := time
+                    bullGap.raidPrice := low
+                    bullGap.raidColor := chart.fg_color
+                else if bullGap.isRaid and not bullGap.raidActive and not bullGap.isBreaker
+                    if low <= bullGap.raidPrice
+                        bullGap.raidActive := true
+                    bullGap.raidEndTime := time
+        if array.size(bearFvgArray) > 0
+            for i = 0 to array.size(bearFvgArray) - 1
+                FvgRecord bearGap = array.get(bearFvgArray, i)
+                if not bearGap.isRaid and not bearGap.isBreaker and high > bearGap.bottom and close < bearGap.bottom
+                    bearGap.isRaid := true
+                    bearGap.raidStartTime := time
+                    bearGap.raidEndTime := time
+                    bearGap.raidPrice := high
+                    bearGap.raidColor := chart.fg_color
+                else if bearGap.isRaid and not bearGap.raidActive and not bearGap.isBreaker
+                    if high >= bearGap.raidPrice
+                        bearGap.raidActive := true
+                    bearGap.raidEndTime := time
+
+if barstate.islast
+    while array.size(fvgDrawings.lines) > 0
+        line.delete(array.pop(fvgDrawings.lines))
+    while array.size(fvgDrawings.labels) > 0
+        label.delete(array.pop(fvgDrawings.labels))
+    while array.size(fvgDrawings.boxes) > 0
+        box.delete(array.pop(fvgDrawings.boxes))
+    if fvgEnableInput and fvgShowLastInput > 0
+        bool displayBullFvgs = not fvgChochDirectionOnlyInput or activeDirection == 1
+        bool displayBearFvgs = not fvgChochDirectionOnlyInput or activeDirection == -1
+        if displayBullFvgs and array.size(bullFvgArray) > 0
+            for i = 0 to math.min(fvgShowLastInput - 1, array.size(bullFvgArray) - 1)
+                f_displayEngineFvg(array.get(bullFvgArray, i), true)
+        if displayBearFvgs and array.size(bearFvgArray) > 0
+            for i = 0 to math.min(fvgShowLastInput - 1, array.size(bearFvgArray) - 1)
+                f_displayEngineFvg(array.get(bearFvgArray, i), false)
+
+// --- FVG and BOS Sequence Association ---
+bool bullFvgBosEvent = false
+bool bearFvgBosEvent = false
+
+if fvgEnableInput and sequenceStage == 2 and bar_index > rbRetestBar
+    if activeDirection == 1
+        if bullBosEvent
+            lastSequenceBosBar := bar_index
+        if newBullFvgEvent
+            lastDirectionalFvgBar := bar_index
+            lastDirectionalFvgTime := newBullFvgTime
+            lastDirectionalFvgTop := newBullFvgTop
+            lastDirectionalFvgBottom := newBullFvgBottom
+        bool pairReady = not na(lastSequenceBosBar) and not na(lastDirectionalFvgBar) and math.abs(lastSequenceBosBar - lastDirectionalFvgBar) <= fvgBosWindowInput
+        if pairReady
+            bullFvgBosEvent := true
+    else if activeDirection == -1
+        if bearBosEvent
+            lastSequenceBosBar := bar_index
+        if newBearFvgEvent
+            lastDirectionalFvgBar := bar_index
+            lastDirectionalFvgTime := newBearFvgTime
+            lastDirectionalFvgTop := newBearFvgTop
+            lastDirectionalFvgBottom := newBearFvgBottom
+        bool pairReady = not na(lastSequenceBosBar) and not na(lastDirectionalFvgBar) and math.abs(lastSequenceBosBar - lastDirectionalFvgBar) <= fvgBosWindowInput
+        if pairReady
+            bearFvgBosEvent := true
+
+if bullFvgBosEvent or bearFvgBosEvent
+    f_deleteBox(finalFvgBox)
+    f_deleteLabel(fvgBosLabel)
+    color fvgColor = activeDirection == 1 ? bullColorInput : bearColorInput
+    color fvgFillColor = activeDirection == 1 ? fvgBullColorInput : fvgBearColorInput
+    finalFvgTop := lastDirectionalFvgTop
+    finalFvgBottom := lastDirectionalFvgBottom
+    finalFvgBar := lastDirectionalFvgBar
+    finalFvgBox := box.new(left = lastDirectionalFvgTime, top = finalFvgTop, right = time, bottom = finalFvgBottom, xloc = xloc.bar_time, border_color = color.new(fvgColor, ZONE_BORDER_TRANSPARENCY), bgcolor = fvgFillColor, text = activeDirection == 1 ? "Final Bull FVG" : "Final Bear FVG", text_color = fvgColor, text_size = labelSize)
+    fvgBosLabel := label.new(bar_index, activeDirection == 1 ? high : low, "FVG BOS", style = activeDirection == 1 ? label.style_label_down : label.style_label_up, color = #00000000, textcolor = fvgColor, size = labelSize)
+    sequenceStage := 3
+
+// --- Final FVG Retest Entry ---
+bool buyEntryEvent = false
+bool sellEntryEvent = false
+
+if sequenceStage == 3 and not na(finalFvgBox)
+    box.set_right(finalFvgBox, time)
+    if barstate.isconfirmed and bar_index > math.max(finalFvgBar, lastSequenceBosBar)
+        bool bullFinalMitigated = fvgMitigationInput == "Close" ? math.min(close, open) < finalFvgBottom : fvgMitigationInput == "Wick" ? low < finalFvgBottom : low < math.avg(finalFvgTop, finalFvgBottom)
+        bool bearFinalMitigated = fvgMitigationInput == "Close" ? math.max(close, open) > finalFvgTop : fvgMitigationInput == "Wick" ? high > finalFvgTop : high > math.avg(finalFvgTop, finalFvgBottom)
+        bool fvgInvalidated = activeDirection == 1 ? bullFinalMitigated : bearFinalMitigated
+        bool fvgTouched = activeDirection == 1 ? low < finalFvgTop : high > finalFvgBottom
+        if fvgInvalidated
+            f_deleteBox(finalFvgBox)
+            f_deleteLabel(fvgBosLabel)
+            finalFvgBox := na
+            finalFvgTop := na
+            finalFvgBottom := na
+            finalFvgBar := na
+            fvgBosLabel := na
+            lastSequenceBosBar := na
+            lastDirectionalFvgBar := na
+            lastDirectionalFvgTime := na
+            lastDirectionalFvgTop := na
+            lastDirectionalFvgBottom := na
+            sequenceStage := 2
+        else if fvgTouched
+            sequenceStage := 4
+            buyEntryEvent := activeDirection == 1
+            sellEntryEvent := activeDirection == -1
+            if showEntryLabelsInput
+                color entryColor = activeDirection == 1 ? bullColorInput : bearColorInput
+                entryLabel := label.new(bar_index, activeDirection == 1 ? low : high, activeDirection == 1 ? "BUY" : "SELL", style = activeDirection == 1 ? label.style_label_up : label.style_label_down, color = entryColor, textcolor = chart.bg_color, size = labelSize)
+
+// --- Optional VWAP and Moving Averages ---
+float vwapValue = ta.vwap(averageSourceInput)
+float smaValue = ta.sma(averageSourceInput, smaLengthInput)
+float emaValue = ta.ema(averageSourceInput, emaLengthInput)
+float wmaValue = ta.wma(averageSourceInput, wmaLengthInput)
+plot(showVwapInput ? vwapValue : na, "VWAP", color = vwapColorInput, linewidth = 2)
+plot(showSmaInput ? smaValue : na, "SMA", color = smaColorInput, linewidth = 1)
+plot(showEmaInput ? emaValue : na, "EMA", color = emaColorInput, linewidth = 1)
+plot(showWmaInput ? wmaValue : na, "WMA", color = wmaColorInput, linewidth = 1)
+
+// --- Dashboard ---
+[correlationReferenceClose, correlationReferenceStructure] = request.security(correlationSymbolInput, timeframe.period, [close, f_referenceMarketStructure(fractalLengthInput, requireBodyInput)], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+float correlationValue = ta.correlation(close, correlationReferenceClose, correlationLengthInput)
+[plusDiValue, minusDiValue, adxValue] = ta.dmi(dmiLengthInput, adxSmoothingInput)
+float momentumBase = close[momentumLengthInput]
+float momentumPercent = not na(momentumBase) and momentumBase != 0.0 ? (close / momentumBase - 1.0) * 100.0 : na
+float elderForceRaw = (close - close[1]) * nz(volume)
+float elderForceValue = ta.ema(elderForceRaw, elderForceLengthInput)
+
+if barstate.islast or barstate.islastconfirmedhistory
+    if showDashboardInput
+        bool referenceDataAvailable = not na(correlationReferenceClose)
+        bool isUsdtDominanceReference = correlationSymbolInput == "CRYPTOCAP:USDT.D"
+        string referenceName = isUsdtDominanceReference ? "USDT.D" : correlationSymbolInput
+        string referenceStructureText = not referenceDataAvailable ? "N/A" : correlationReferenceStructure == 1 ? "BULL" : correlationReferenceStructure == -1 ? "BEAR" : "NEUTRAL"
+        string correlationRelationText = na(correlationValue) ? "N/A" : correlationValue >= 0.5 ? "POS" : correlationValue <= -0.5 ? "INV" : "WEAK"
+        string riskText = not isUsdtDominanceReference or not referenceDataAvailable ? "" : correlationReferenceStructure == 1 ? " | RISK-OFF" : correlationReferenceStructure == -1 ? " | RISK-ON" : ""
+        string correlationText = (na(correlationValue) ? "N/A" : str.tostring(correlationValue, "#.##")) + " | " + correlationRelationText + " | " + referenceStructureText + riskText
+        bool dmiAvailable = not na(plusDiValue) and not na(minusDiValue)
+        bool plusDiDominant = dmiAvailable and plusDiValue >= minusDiValue
+        string dmiBiasText = not dmiAvailable ? "N/A" : plusDiDominant ? "BULL" : "BEAR"
+        string dmiText = not dmiAvailable ? "N/A" : "+" + str.tostring(plusDiValue, "#.0") + " / -" + str.tostring(minusDiValue, "#.0") + " | " + dmiBiasText + " (>20)"
+        string adxStateText = na(adxValue) ? "N/A" : adxValue >= 25.0 ? "STRONG" : adxValue >= 20.0 ? "BUILDING" : "WEAK"
+        string adxText = na(adxValue) ? "N/A" : str.tostring(adxValue, "#.0") + " | " + adxStateText + " (>=25)"
+        string momentumStateText = na(momentumPercent) ? "N/A" : momentumPercent > 0.0 ? "POS" : momentumPercent < 0.0 ? "NEG" : "FLAT"
+        string momentumText = na(momentumPercent) ? "N/A" : str.tostring(momentumPercent, "+#.00;-#.00") + "% | " + momentumStateText + " (>0)"
+        string elderStateText = na(elderForceValue) ? "N/A" : elderForceValue > 0.0 ? "BUYERS | ABOVE 0" : elderForceValue < 0.0 ? "SELLERS | BELOW 0" : "NEUTRAL | AT 0"
+        color referenceColor = not referenceDataAvailable ? BLUE_COLOR : correlationReferenceStructure == 1 ? bullColorInput : correlationReferenceStructure == -1 ? bearColorInput : BLUE_COLOR
+        color dmiColor = not dmiAvailable ? BLUE_COLOR : plusDiDominant ? bullColorInput : bearColorInput
+        color momentumColor = na(momentumPercent) ? BLUE_COLOR : momentumPercent >= 0.0 ? bullColorInput : bearColorInput
+        color elderColor = na(elderForceValue) ? BLUE_COLOR : elderForceValue >= 0.0 ? bullColorInput : bearColorInput
+        color headerBackground = color.new(BLUE_COLOR, 78)
+        color cellBackground = color.new(chart.bg_color, 4)
+        color keyColor = color.new(chart.fg_color, 30)
+        table.cell(dashboardTable, 0, 0, "ENTRY TERMINAL", text_color = chart.fg_color, text_size = dashboardTextSize, bgcolor = headerBackground, text_halign = text.align_left)
+        table.cell(dashboardTable, 1, 0, timeframe.period + " | LIVE", text_color = BLUE_COLOR, text_size = dashboardTextSize, bgcolor = headerBackground, text_halign = text.align_right)
+        table.cell(dashboardTable, 0, 1, referenceName, text_color = keyColor, text_size = dashboardTextSize, bgcolor = cellBackground, text_halign = text.align_left)
+        table.cell(dashboardTable, 1, 1, correlationText, text_color = referenceColor, text_size = dashboardTextSize, bgcolor = cellBackground, text_halign = text.align_right)
+        table.cell(dashboardTable, 0, 2, "DMI " + str.tostring(dmiLengthInput), text_color = keyColor, text_size = dashboardTextSize, bgcolor = cellBackground, text_halign = text.align_left)
+        table.cell(dashboardTable, 1, 2, dmiText, text_color = dmiColor, text_size = dashboardTextSize, bgcolor = cellBackground, text_halign = text.align_right)
+        table.cell(dashboardTable, 0, 3, "ADX " + str.tostring(adxSmoothingInput), text_color = keyColor, text_size = dashboardTextSize, bgcolor = cellBackground, text_halign = text.align_left)
+        table.cell(dashboardTable, 1, 3, adxText, text_color = BLUE_COLOR, text_size = dashboardTextSize, bgcolor = cellBackground, text_halign = text.align_right)
+        table.cell(dashboardTable, 0, 4, "MOM " + str.tostring(momentumLengthInput), text_color = keyColor, text_size = dashboardTextSize, bgcolor = cellBackground, text_halign = text.align_left)
+        table.cell(dashboardTable, 1, 4, momentumText, text_color = momentumColor, text_size = dashboardTextSize, bgcolor = cellBackground, text_halign = text.align_right)
+        table.cell(dashboardTable, 0, 5, "EFI " + str.tostring(elderForceLengthInput), text_color = keyColor, text_size = dashboardTextSize, bgcolor = cellBackground, text_halign = text.align_left)
+        table.cell(dashboardTable, 1, 5, elderStateText, text_color = elderColor, text_size = dashboardTextSize, bgcolor = cellBackground, text_halign = text.align_right)
+    else
+        table.clear(dashboardTable, 0, 0, 1, 5)
+
+// --- Watermark ---
+if barstate.islast
+    bool dashboardOverlapsWatermark = showDashboardInput and dashboardPositionInput == "Bottom Center"
+    table.cell(watermarkTable, 0, 0, showWatermarkInput and not dashboardOverlapsWatermark ? "erdensedat" : "", text_color = color.new(chart.fg_color, 35), text_size = size.normal, bgcolor = #00000000)
+
+// --- Alerts ---
+bool anyChochAlertEvent = bullChochEvent or bearChochEvent
+bool anyBosAlertEvent = bullBosEvent or bearBosEvent
+bool anyRbFormedAlertEvent = bullRbFormedEvent or bearRbFormedEvent
+bool anyRbRetestEvent = bullRbRetestEvent or bearRbRetestEvent
+bool anyFvgBosAlertEvent = bullFvgBosEvent or bearFvgBosEvent
+bool anyIfvgAlertEvent = bullIfvgEvent or bearIfvgEvent
+bool anyEntryAlertEvent = buyEntryEvent or sellEntryEvent
+bool anyFibEntryExitEvent = bullFibEntryExitEvent or bearFibEntryExitEvent
+bool anyLiquidityTrendBreakEvent = bullLiquidityTrendBreakEvent or bearLiquidityTrendBreakEvent
+
+alertcondition(alertChochInput and bullChochEvent, "Bullish CHoCH", "Bullish CHoCH confirmed on {{ticker}} ({{interval}}) at {{close}}.")
+alertcondition(alertChochInput and bearChochEvent, "Bearish CHoCH", "Bearish CHoCH confirmed on {{ticker}} ({{interval}}) at {{close}}.")
+alertcondition(alertBosInput and bullBosEvent, "Bullish BOS", "Bullish BOS confirmed on {{ticker}} ({{interval}}) at {{close}}.")
+alertcondition(alertBosInput and bearBosEvent, "Bearish BOS", "Bearish BOS confirmed on {{ticker}} ({{interval}}) at {{close}}.")
+alertcondition(alertRbFormedInput and bullRbFormedEvent, "Bullish Rejected Block", "Bullish rejected block confirmed on {{ticker}} ({{interval}}) at {{close}}.")
+alertcondition(alertRbFormedInput and bearRbFormedEvent, "Bearish Rejected Block", "Bearish rejected block confirmed on {{ticker}} ({{interval}}) at {{close}}.")
+alertcondition(alertRbRetestInput and bullRbRetestEvent, "Bullish RB Retest", "Bullish RB retest confirmed on {{ticker}} ({{interval}}) at {{close}}.")
+alertcondition(alertRbRetestInput and bearRbRetestEvent, "Bearish RB Retest", "Bearish RB retest confirmed on {{ticker}} ({{interval}}) at {{close}}.")
+alertcondition(alertRbRetestInput and anyRbRetestEvent, "Any RB Retest", "Directional RB retest confirmed on {{ticker}} ({{interval}}) at {{close}}.")
+alertcondition(alertFvgBosInput and bullFvgBosEvent, "Bullish FVG BOS", "Bullish FVG/BOS confirmed on {{ticker}} ({{interval}}) at {{close}}.")
+alertcondition(alertFvgBosInput and bearFvgBosEvent, "Bearish FVG BOS", "Bearish FVG/BOS confirmed on {{ticker}} ({{interval}}) at {{close}}.")
+alertcondition(alertIfvgInput and bullIfvgEvent, "Bullish IFVG", "A bearish FVG converted into a bullish IFVG on {{ticker}} ({{interval}}) at {{close}}.")
+alertcondition(alertIfvgInput and bearIfvgEvent, "Bearish IFVG", "A bullish FVG converted into a bearish IFVG on {{ticker}} ({{interval}}) at {{close}}.")
+alertcondition(alertIfvgInput and anyIfvgAlertEvent, "Any IFVG", "An inverse FVG was confirmed on {{ticker}} ({{interval}}) at {{close}}.")
+alertcondition(alertEntryInput and buyEntryEvent, "BUY Entry", "BUY entry confirmed on {{ticker}} ({{interval}}) at {{close}}.")
+alertcondition(alertEntryInput and sellEntryEvent, "SELL Entry", "SELL entry confirmed on {{ticker}} ({{interval}}) at {{close}}.")
+alertcondition(alertFibEntryExitInput and bullFibEntryExitEvent, "Bullish Entry Box Exit", "Price exited the bullish Entry Box: {{ticker}} ({{interval}}) {{close}}.")
+alertcondition(alertFibEntryExitInput and bearFibEntryExitEvent, "Bearish Entry Box Exit", "Price exited the bearish Entry Box: {{ticker}} ({{interval}}) {{close}}.")
+alertcondition(alertFibEntryExitInput and anyFibEntryExitEvent, "Any Entry Box Exit", "Price exited the Entry Box: {{ticker}} ({{interval}}) {{close}}.")
+alertcondition(alertLiquidityTrendBreakInput and bullLiquidityTrendBreakEvent, "Bullish Liquidity Trend Break", "Bearish liquidity trend line broke upward on {{ticker}} ({{interval}}) at {{close}}.")
+alertcondition(alertLiquidityTrendBreakInput and bearLiquidityTrendBreakEvent, "Bearish Liquidity Trend Break", "Bullish liquidity trend line broke downward on {{ticker}} ({{interval}}) at {{close}}.")
+
+bool selectedAlertEvent = selectedAlertsEnabledInput and (
+  (alertChochInput and anyChochAlertEvent) or
+  (alertBosInput and anyBosAlertEvent) or
+  (alertRbFormedInput and anyRbFormedAlertEvent) or
+  (alertRbRetestInput and anyRbRetestEvent) or
+  (alertFvgBosInput and anyFvgBosAlertEvent) or
+  (alertIfvgInput and anyIfvgAlertEvent) or
+  (alertEntryInput and anyEntryAlertEvent) or
+  (alertFibEntryExitInput and anyFibEntryExitEvent) or
+  (alertLiquidityTrendBreakInput and anyLiquidityTrendBreakEvent))
+alertcondition(selectedAlertEvent, "Selected Alerts", "A selected indicator event was confirmed on {{ticker}} ({{interval}}) at {{close}}.")
+
+string selectedAlertMessage = ""
+if selectedAlertsEnabledInput and barstate.isconfirmed
+    if alertChochInput and bullChochEvent
+        selectedAlertMessage += "Bullish CHoCH"
+    if alertChochInput and bearChochEvent
+        selectedAlertMessage += selectedAlertMessage == "" ? "Bearish CHoCH" : " | Bearish CHoCH"
+    if alertBosInput and bullBosEvent
+        selectedAlertMessage += selectedAlertMessage == "" ? "Bullish BOS" : " | Bullish BOS"
+    if alertBosInput and bearBosEvent
+        selectedAlertMessage += selectedAlertMessage == "" ? "Bearish BOS" : " | Bearish BOS"
+    if alertRbFormedInput and bullRbFormedEvent
+        selectedAlertMessage += selectedAlertMessage == "" ? "Bullish RB Formed" : " | Bullish RB Formed"
+    if alertRbFormedInput and bearRbFormedEvent
+        selectedAlertMessage += selectedAlertMessage == "" ? "Bearish RB Formed" : " | Bearish RB Formed"
+    if alertRbRetestInput and bullRbRetestEvent
+        selectedAlertMessage += selectedAlertMessage == "" ? "Bullish RB Retest" : " | Bullish RB Retest"
+    if alertRbRetestInput and bearRbRetestEvent
+        selectedAlertMessage += selectedAlertMessage == "" ? "Bearish RB Retest" : " | Bearish RB Retest"
+    if alertFvgBosInput and bullFvgBosEvent
+        selectedAlertMessage += selectedAlertMessage == "" ? "Bullish FVG BOS" : " | Bullish FVG BOS"
+    if alertFvgBosInput and bearFvgBosEvent
+        selectedAlertMessage += selectedAlertMessage == "" ? "Bearish FVG BOS" : " | Bearish FVG BOS"
+    if alertIfvgInput and bullIfvgEvent
+        selectedAlertMessage += selectedAlertMessage == "" ? "Bullish IFVG" : " | Bullish IFVG"
+    if alertIfvgInput and bearIfvgEvent
+        selectedAlertMessage += selectedAlertMessage == "" ? "Bearish IFVG" : " | Bearish IFVG"
+    if alertEntryInput and buyEntryEvent
+        selectedAlertMessage += selectedAlertMessage == "" ? "BUY Entry" : " | BUY Entry"
+    if alertEntryInput and sellEntryEvent
+        selectedAlertMessage += selectedAlertMessage == "" ? "SELL Entry" : " | SELL Entry"
+    if alertFibEntryExitInput and bullFibEntryExitEvent
+        selectedAlertMessage += selectedAlertMessage == "" ? "Bullish Entry Box Exit" : " | Bullish Entry Box Exit"
+    if alertFibEntryExitInput and bearFibEntryExitEvent
+        selectedAlertMessage += selectedAlertMessage == "" ? "Bearish Entry Box Exit" : " | Bearish Entry Box Exit"
+    if alertLiquidityTrendBreakInput and bullLiquidityTrendBreakEvent
+        selectedAlertMessage += selectedAlertMessage == "" ? "Bearish liquidity trend line broke upward" : " | Bearish liquidity trend line broke upward"
+    if alertLiquidityTrendBreakInput and bearLiquidityTrendBreakEvent
+        selectedAlertMessage += selectedAlertMessage == "" ? "Bullish liquidity trend line broke downward" : " | Bullish liquidity trend line broke downward"
+    if selectedAlertMessage != ""
+        string fullAlertMessage = selectedAlertMessage + " | " + syminfo.ticker + " | " + timeframe.period + " | Close: " + str.tostring(close, format.mintick)
+        alert(fullAlertMessage, alert.freq_once_per_bar_close)

@@ -1,0 +1,356 @@
+//@version=6
+indicator("dyor • DXY Pressure (Z52W)", overlay=false, max_labels_count=50, dynamic_requests=true)
+
+//────────────────────────────────────────────────────────────
+// Inputs
+//────────────────────────────────────────────────────────────
+grpData = "Data"
+grpCalc = "Calc"
+grpVis  = "Visuals"
+grpCol  = "Colors"
+grpGlow = "Glow"
+
+// Data
+symDXY  = input.symbol("TVC:DXY", "DXY Symbol", group=grpData)
+
+// Calc
+lenZ    = input.int(52, "Z Lookback (weeks)", minval=10, maxval=260, group=grpCalc)
+useEMA  = input.bool(true, "Smooth Z with EMA", group=grpCalc, inline="sm")
+lenEMA  = input.int(10, "EMA (weeks)", minval=2, maxval=52, group=grpCalc, inline="sm")
+
+// Visuals
+stepStyle   = input.bool(true, "Step style (Weekly-held on lower TFs)", group=grpVis)
+showBG      = input.bool(true, "Regime Background (|Z| ≥ 1)", group=grpVis)
+bgAlpha     = input.int(90, "BG Opacity (0=solid, 100=transparent)", minval=0, maxval=100, group=grpVis)
+showExtDots = input.bool(true, "Mark ±2 extremes", group=grpVis)
+
+// Colors (Main line colors)
+colNeutralIn = input.color(color.white, "Neutral", group=grpCol, inline="c1")
+colRiskIn    = input.color(color.red,   "Risk (Z ≥ +1)", group=grpCol, inline="c2")
+colLooseIn   = input.color(color.lime,  "Loose (Z ≤ -1)", group=grpCol, inline="c3")
+
+mainAlpha    = input.int(0, "Main Opacity (0..100)", minval=0, maxval=100, group=grpCol)
+
+// Glow controls
+glowOn          = input.bool(true, "Enable Glow", group=grpGlow)
+glowOnlyRegime  = input.bool(true, "Glow only in Regime (|Z|≥1)", group=grpGlow)
+
+useGlowColors   = input.bool(false, "Use separate Glow Colors", group=grpGlow)
+glowNeutralIn   = input.color(color.white, "Glow Neutral", group=grpGlow, inline="g1")
+glowRiskIn      = input.color(color.red,   "Glow Risk", group=grpGlow, inline="g2")
+glowLooseIn     = input.color(color.lime,  "Glow Loose", group=grpGlow, inline="g3")
+
+// Dual glow geometry
+innerWidth   = input.int(6,  "Inner width", minval=1, maxval=20, group=grpGlow, inline="w")
+outerWidth   = input.int(12, "Outer width", minval=1, maxval=30, group=grpGlow, inline="w")
+
+// Dual glow opacity (acts like gradient: outer more transparent than inner)
+innerAlpha   = input.int(70, "Inner opacity", minval=0, maxval=100, group=grpGlow, inline="a")
+outerAlpha   = input.int(88, "Outer opacity", minval=0, maxval=100, group=grpGlow, inline="a")
+
+// Safety clamps (so inputs never break)
+f_clamp(int v, int lo, int hi) =>
+    math.min(math.max(v, lo), hi)
+
+// Zscore helper
+f_zscore(float x, int n) =>
+    float m = ta.sma(x, n)
+    float s = ta.stdev(x, n)
+    s == 0.0 ? 0.0 : (x - m) / s
+
+//────────────────────────────────────────────────────────────
+// Weekly-fixed calc INSIDE request.security()
+//────────────────────────────────────────────────────────────
+zW = request.security(
+     symDXY, "W",
+     useEMA ? ta.ema(f_zscore(close, lenZ), lenEMA) : f_zscore(close, lenZ),
+     barmerge.gaps_off, barmerge.lookahead_off
+)
+
+// Regimes
+regimeStrong = zW >=  1.0
+regimeWeak   = zW <= -1.0
+inRegime     = regimeStrong or regimeWeak
+
+// Plot style
+pStyle = stepStyle ? plot.style_stepline : plot.style_line
+
+// Choose main colors per regime
+colNeutral = color.new(colNeutralIn, f_clamp(mainAlpha, 0, 100))
+colRisk    = color.new(colRiskIn,    f_clamp(mainAlpha, 0, 100))
+colLoose   = color.new(colLooseIn,   f_clamp(mainAlpha, 0, 100))
+
+colMain = regimeStrong ? colRisk : regimeWeak ? colLoose : colNeutral
+
+// Choose glow base color (either main or separate palette)
+gNeutral = useGlowColors ? glowNeutralIn : colNeutralIn
+gRisk    = useGlowColors ? glowRiskIn    : colRiskIn
+gLoose   = useGlowColors ? glowLooseIn   : colLooseIn
+
+gBase    = regimeStrong ? gRisk : regimeWeak ? gLoose : gNeutral
+
+// Dual-glow opacities
+ia = f_clamp(innerAlpha, 0, 100) 
+oa = f_clamp(outerAlpha, 0, 100)
+
+// Conditional series for glow (Top-level plot safe)
+zGlow = (glowOn and (not glowOnlyRegime or inRegime)) ? zW : na
+
+//────────────────────────────────────────────────────────────
+// Levels
+//────────────────────────────────────────────────────────────
+hline( 2.0, "+2", color=color.new(color.gray, 65), linestyle=hline.style_dotted)
+hline( 1.0, "+1", color=color.new(color.gray, 75), linestyle=hline.style_dotted)
+hline( 0.0, "0",  color=color.new(color.gray, 55))
+hline(-1.0, "-1", color=color.new(color.gray, 75), linestyle=hline.style_dotted)
+hline(-2.0, "-2", color=color.new(color.gray, 65), linestyle=hline.style_dotted)
+
+//────────────────────────────────────────────────────────────
+// Dual Glow (2 plots) + Main (1 plot)  => plot-safe
+//────────────────────────────────────────────────────────────
+plot(zGlow, "Glow Outer", color=color.new(gBase, oa), linewidth=outerWidth, style=pStyle)
+plot(zGlow, "Glow Inner", color=color.new(gBase, ia), linewidth=innerWidth, style=pStyle)
+plot(zW,    "DXY Z (Weekly-fixed)", color=colMain, linewidth=2, style=pStyle)
+
+// Background
+int bgA = f_clamp(bgAlpha, 0, 100)
+bgcolor(showBG ? (regimeStrong ? color.new(colRiskIn, bgA) : regimeWeak ? color.new(colLooseIn, bgA) : na) : na)
+
+// Extrem dots
+plotshape(showExtDots and zW >=  2.0, title="Extreme +2", style=shape.circle, size=size.tiny, location=location.top,    color=color.new(colRiskIn, 0))
+plotshape(showExtDots and zW <= -2.0, title="Extreme -2", style=shape.circle, size=size.tiny, location=location.bottom, color=color.new(colLooseIn, 0))
+
+
+//======================================================================
+// 01) LEGEND TABLE — Settings
+//======================================================================
+groupLegend = "Legend Table"
+
+legend_show          = input.bool(true,  "Show Legend Table", group=groupLegend)
+legendTitle          = input.string("LEGEND", "Title", group=groupLegend)
+legendShowTitle      = input.bool(true, "Show Title Row", group=groupLegend)
+
+legendRows           = input.int(6, "Rows", minval=1, maxval=20, group=groupLegend)
+legendPosOpt         = input.string("Top Right", "Position", options=[
+     "Top Right","Top Left","Bottom Right","Bottom Left",
+     "Middle Right","Middle Left","Middle Center",
+     "Top Center","Bottom Center"
+], group=groupLegend)
+
+legendTextSizeOpt    = input.string("Small", "Text Size", options=["Tiny","Small","Normal","Large","Huge"], group=groupLegend)
+legendBgTransp       = input.int(70, "Background Transparency (0-100)", minval=0, maxval=100, group=groupLegend)
+legendBorderWidth    = input.int(1, "Border Width", minval=0, maxval=4, group=groupLegend)
+legendFrameCol       = input.color(color.new(color.white, 70), "Frame Color", group=groupLegend)
+
+// Per-row inputs (max 20)
+groupLegendRows = "Legend Table — Rows"
+name1  = input.string("BTC Core", "Row 1 Name", group=groupLegendRows),  col1  = input.color(color.orange,  "Row 1 Color", group=groupLegendRows)
+name2  = input.string("ETH",      "Row 2 Name", group=groupLegendRows),  col2  = input.color(color.aqua,    "Row 2 Color", group=groupLegendRows)
+name3  = input.string("SOL",      "Row 3 Name", group=groupLegendRows),  col3  = input.color(color.lime,    "Row 3 Color", group=groupLegendRows)
+name4  = input.string("XRP",      "Row 4 Name", group=groupLegendRows),  col4  = input.color(color.fuchsia, "Row 4 Color", group=groupLegendRows)
+name5  = input.string("HEDGE",    "Row 5 Name", group=groupLegendRows),  col5  = input.color(color.red,     "Row 5 Color", group=groupLegendRows)
+name6  = input.string("CASHFLOW", "Row 6 Name", group=groupLegendRows),  col6  = input.color(color.yellow,  "Row 6 Color", group=groupLegendRows)
+name7  = input.string("",         "Row 7 Name", group=groupLegendRows),  col7  = input.color(color.gray,    "Row 7 Color", group=groupLegendRows)
+name8  = input.string("",         "Row 8 Name", group=groupLegendRows),  col8  = input.color(color.gray,    "Row 8 Color", group=groupLegendRows)
+name9  = input.string("",         "Row 9 Name", group=groupLegendRows),  col9  = input.color(color.gray,    "Row 9 Color", group=groupLegendRows)
+name10 = input.string("",        "Row 10 Name", group=groupLegendRows),  col10 = input.color(color.gray,   "Row 10 Color", group=groupLegendRows)
+name11 = input.string("",        "Row 11 Name", group=groupLegendRows),  col11 = input.color(color.gray,   "Row 11 Color", group=groupLegendRows)
+name12 = input.string("",        "Row 12 Name", group=groupLegendRows),  col12 = input.color(color.gray,   "Row 12 Color", group=groupLegendRows)
+name13 = input.string("",        "Row 13 Name", group=groupLegendRows),  col13 = input.color(color.gray,   "Row 13 Color", group=groupLegendRows)
+name14 = input.string("",        "Row 14 Name", group=groupLegendRows),  col14 = input.color(color.gray,   "Row 14 Color", group=groupLegendRows)
+name15 = input.string("",        "Row 15 Name", group=groupLegendRows),  col15 = input.color(color.gray,   "Row 15 Color", group=groupLegendRows)
+name16 = input.string("",        "Row 16 Name", group=groupLegendRows),  col16 = input.color(color.gray,   "Row 16 Color", group=groupLegendRows)
+name17 = input.string("",        "Row 17 Name", group=groupLegendRows),  col17 = input.color(color.gray,   "Row 17 Color", group=groupLegendRows)
+name18 = input.string("",        "Row 18 Name", group=groupLegendRows),  col18 = input.color(color.gray,   "Row 18 Color", group=groupLegendRows)
+name19 = input.string("",        "Row 19 Name", group=groupLegendRows),  col19 = input.color(color.gray,   "Row 19 Color", group=groupLegendRows)
+name20 = input.string("",        "Row 20 Name", group=groupLegendRows),  col20 = input.color(color.gray,   "Row 20 Color", group=groupLegendRows)
+
+
+//======================================================================
+// 02) WATERMARK — Settings
+//======================================================================
+groupWM = "Watermark"
+
+wm_show       = input.bool(true, "Show Watermark", group=groupWM)
+
+wm_brand      = input.string("dyor", "Brand Text", group=groupWM)
+wm_subBrand   = input.string("Product Name", "Sub Text (optional)", group=groupWM)
+
+wm_posOpt     = input.string("Bottom Right", "Position", options=["Top Right","Top Left","Bottom Right","Bottom Left"], group=groupWM)
+wm_sizeOpt    = input.string("Large", "Brand Size", options=["Tiny","Small","Normal","Large","Huge"], group=groupWM)
+
+wm_textCol    = input.color(color.new(color.white, 0),  "Brand Color", group=groupWM)
+wm_subCol     = input.color(color.new(color.white, 40), "Sub Color", group=groupWM)
+
+wm_bgCol      = input.color(color.new(color.black, 0), "Background Color", group=groupWM)
+wm_bgTransp   = input.int(85, "Background Transparency (0-100)", minval=0, maxval=100, group=groupWM)
+
+wm_borderCol  = input.color(color.new(color.white, 80), "Border Color", group=groupWM)
+wm_borderW    = input.int(1, "Border Width", minval=0, maxval=4, group=groupWM)
+
+wm_padLeft    = input.string("   ", "Left Padding (spaces)", group=groupWM)
+wm_padRight   = input.string("   ", "Right Padding (spaces)", group=groupWM)
+
+
+//======================================================================
+// Helpers
+//======================================================================
+f_posLegend(_p) =>
+    switch _p
+        "Top Right"      => position.top_right
+        "Top Left"       => position.top_left
+        "Bottom Right"   => position.bottom_right
+        "Bottom Left"    => position.bottom_left
+        "Middle Right"   => position.middle_right
+        "Middle Left"    => position.middle_left
+        "Middle Center"  => position.middle_center
+        "Top Center"     => position.top_center
+        "Bottom Center"  => position.bottom_center
+        => position.top_right
+
+f_posWM(_p) =>
+    switch _p
+        "Top Right"    => position.top_right
+        "Top Left"     => position.top_left
+        "Bottom Right" => position.bottom_right
+        "Bottom Left"  => position.bottom_left
+        => position.bottom_right
+
+f_size(_s) =>
+    switch _s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        "Huge"   => size.huge
+        => size.small
+
+f_legendBg(_c) =>
+    color.new(_c, legendBgTransp)
+
+f_getName(i) =>
+    switch i
+        1  => name1
+        2  => name2
+        3  => name3
+        4  => name4
+        5  => name5
+        6  => name6
+        7  => name7
+        8  => name8
+        9  => name9
+        10 => name10
+        11 => name11
+        12 => name12
+        13 => name13
+        14 => name14
+        15 => name15
+        16 => name16
+        17 => name17
+        18 => name18
+        19 => name19
+        20 => name20
+        => ""
+
+f_getColor(i) =>
+    switch i
+        1  => col1
+        2  => col2
+        3  => col3
+        4  => col4
+        5  => col5
+        6  => col6
+        7  => col7
+        8  => col8
+        9  => col9
+        10 => col10
+        11 => col11
+        12 => col12
+        13 => col13
+        14 => col14
+        15 => col15
+        16 => col16
+        17 => col17
+        18 => col18
+        19 => col19
+        20 => col20
+        => color.gray
+
+
+//======================================================================
+// 03) LEGEND TABLE — Render
+//======================================================================
+// Keep the table dims fixed (2 cols, 21 rows: title row + up to 20 rows)
+var table tLegend = table.new(
+     f_posLegend(legendPosOpt),
+     2, 21,
+     frame_color=legendFrameCol,
+     border_width=legendBorderWidth
+)
+
+f_legendClear() =>
+    for r = 0 to 20
+        for c = 0 to 1
+            table.cell(tLegend, c, r, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 0))
+
+f_legendDraw() =>
+    // title row at 0
+    if legendShowTitle
+        table.cell(tLegend, 0, 0, " ", bgcolor=f_legendBg(color.black))
+        table.cell(tLegend, 1, 0, legendTitle, text_color=color.white, text_size=f_size(legendTextSizeOpt), bgcolor=f_legendBg(color.black))
+    else
+        table.cell(tLegend, 0, 0, "", bgcolor=color.new(color.black, 100))
+        table.cell(tLegend, 1, 0, "", bgcolor=color.new(color.black, 100))
+
+    // rows start at table row 1
+    for i = 1 to legendRows
+        nm = f_getName(i)
+        co = f_getColor(i)
+
+        table.cell(tLegend, 0, i, "  ", bgcolor=f_legendBg(co))
+
+        txt = str.length(nm) > 0 ? nm : "—"
+        table.cell(tLegend, 1, i, txt, text_color=color.white, text_size=f_size(legendTextSizeOpt), bgcolor=f_legendBg(color.black))
+
+f_legendHide() =>
+    // wipe the full table so it doesn't keep stale content
+    f_legendClear()
+
+
+//======================================================================
+// 04) WATERMARK — Render
+//======================================================================
+var table tWM = table.new(
+     f_posWM(wm_posOpt),
+     1, 2,
+     frame_color=wm_borderCol,
+     border_width=wm_borderW
+)
+
+wm_bg = color.new(wm_bgCol, wm_bgTransp)
+
+f_wmClear() =>
+    table.cell(tWM, 0, 0, "", bgcolor=color.new(color.black, 100))
+    table.cell(tWM, 0, 1, "", bgcolor=color.new(color.black, 100))
+
+f_wmDraw() =>
+    table.cell(tWM, 0, 0, wm_padLeft + wm_brand + wm_padRight, text_color=wm_textCol, text_size=f_size(wm_sizeOpt), bgcolor=wm_bg)
+    table.cell(tWM, 0, 1, str.length(wm_subBrand) > 0 ? (wm_padLeft + wm_subBrand + wm_padRight) : "", text_color=wm_subCol, text_size=size.small, bgcolor=wm_bg)
+
+
+//======================================================================
+// 05) EXEC (last bar only)
+//======================================================================
+if barstate.islast
+    // Legend
+    if legend_show
+        f_legendClear()
+        f_legendDraw()
+    else
+        f_legendHide()
+
+    // Watermark
+    if wm_show
+        f_wmDraw()
+    else
+        f_wmClear()

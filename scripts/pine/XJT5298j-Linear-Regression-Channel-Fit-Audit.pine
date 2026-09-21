@@ -1,0 +1,1171 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// ©SG_Group
+//@version=6
+indicator("Linear Regression Channel Fit Audit", overlay = true, max_bars_back = 550, max_lines_count = 160, max_labels_count = 300)
+
+// Price-linear OLS; no imports, external requests, pivots, or trade instructions.
+// The current fitted segment is retrospective and redraws. Do not call the entire
+// indicator non-repainting. Confirmed audit references use earlier models only.
+// Residual envelopes are descriptive, not confidence or prediction intervals.
+// Research snapshots are selected by BAR CLOSE time. Future prices are excluded.
+// Later bar timestamps may position research annotations; they never enter models.
+// Frozen paths are scheduled before their outcomes, evaluated at confirmed Source
+// closes, and retained independently of their result. Outcome segments do not
+// overlap. Training windows can overlap; no independence or probability claim.
+
+const string G_RESEARCH = "00  Research target and horizon"
+const string G_MODEL = "01  Regression and residual width"
+const string G_AUDIT = "02  Fit diagnostics"
+const string G_CHART = "03  Channel and reference drawings"
+const string G_PANEL = "04  Compact information panel"
+const string G_COLOR = "05  Colors"
+const string G_WORK = "06  Historical workload and events"
+const string G_PATH = "07  Frozen paths and matched comparisons"
+const string G_HISTORY = "08  Numeric history output"
+
+viewInput = input.string("Latest", "View", options = ["Latest", "As-of research"], group = G_RESEARCH, display = display.none, tooltip = "Latest keeps the normal display. Research reconstructs the final available confirmed bar closing within the selected interval. Alerts are disabled in research. Use standard, time-based candles.")
+studyStartInput = input.time(timestamp("01 Jan 2026 00:00 +0000"), "Research start", group = G_RESEARCH, display = display.none, active = viewInput == "As-of research", tooltip = "First model close in the research interval. Training can use earlier source bars. One-step tests start one bar later; H-step tests start H bars later. Earlier fits are not silently invented.")
+studyEndInput = input.time(timestamp("01 Sep 2026 00:00 +0000"), "As-of cutoff", group = G_RESEARCH, display = display.none, active = viewInput == "As-of research", tooltip = "Only confirmed bars with close time at or before this timestamp are admitted. The panel date is the actual selected close, in exchange timezone. This does not move or crop the chart.")
+studyScopeInput = input.string("Rolling audit", "Research statistics", options = ["Rolling audit", "Selected interval"], group = G_RESEARCH, display = display.none, active = viewInput == "As-of research", tooltip = "Rolling uses the last K chart bars. Selected interval aggregates all valid tests in the admitted research interval. Missing results are excluded and actual counts are shown.")
+horizonInput = input.int(5, "Second frozen horizon, bars", minval = 2, maxval = 50, group = G_RESEARCH, display = display.none, tooltip = "At t, compare source[t] with the model fitted at t-H, extended H bars. Its original half-width is held constant. Results appear only at maturity. Every eligible endpoint is tested; overlapping outcomes are dependent.")
+
+sourceInput = input.source(close, "Source", group = G_MODEL, display = display.none, tooltip = "Use a price-valued source on this overlay. An external indicator source can carry its own repainting behavior. Missing observations invalidate a window; they are not silently skipped.")
+lengthInput = input.int(120, "Regression length", minval = 12, maxval = 500, group = G_MODEL, display = display.none)
+updateInput = input.string("Confirmed close", "Snapshot updates", options = ["Confirmed close", "Live preview"], group = G_MODEL, display = display.none, tooltip = "Confirmed close holds the last closed-bar snapshot during an open bar. Live preview refits that snapshot intrabar. Audit statistics, event markers, and alerts always use confirmed closes.")
+widthInput = input.string("Residual standard error", "Width method", options = ["Residual standard error", "Mean absolute residual", "Residual percentile"], group = G_MODEL, display = display.none)
+multiplierInput = input.float(2.0, "Residual multiplier", minval = 0.1, maxval = 8.0, step = 0.1, group = G_MODEL, display = display.none, active = widthInput != "Residual percentile", tooltip = "Standard error = sqrt(SSE / (N - 2)). Mean absolute residual = mean(abs(residual)). The multiplier applies to these two methods only. No normality or probability guarantee is implied.")
+percentileInput = input.float(90.0, "Absolute-residual percentile", minval = 50.0, maxval = 99.5, step = 0.5, group = G_MODEL, display = display.none, active = widthInput == "Residual percentile", tooltip = "Nearest-rank percentile of absolute residuals from the SAME fitted window. This is in-sample coverage, not a future hit-rate target. The multiplier is not used in this mode.")
+minimumTicksInput = input.float(2.0, "Minimum half-width, symbol ticks", minval = 0.1, maxval = 100.0, step = 0.1, group = G_MODEL, display = display.none, tooltip = "A disclosed price-width floor for flat or almost perfectly linear data. It also prevents zero denominators. Symbol tick units may be unsuitable for a non-price external source.")
+
+auditLengthInput = input.int(100, "Rolling audit window, bars", minval = 20, maxval = 500, group = G_AUDIT, display = display.none, tooltip = "The last K chart bars, counting only valid confirmed one-step observations. The panel shows the actual sample count. Overlapping fits are not independent statistical trials.")
+slopeSpanInput = input.int(20, "Slope measurement span, bars", minval = 1, maxval = 250, group = G_AUDIT, display = display.none, tooltip = "Slope is expressed as fitted price change over this span, divided by the current channel half-width. This is not an annualized return or an on-screen angle.")
+flatInput = input.float(0.05, "Flat slope threshold, half-widths", minval = 0.0, maxval = 3.0, step = 0.01, group = G_AUDIT, display = display.none)
+coverageGapInput = input.float(10.0, "Coverage-gap highlight, percentage points", minval = 1.0, maxval = 80.0, step = 1.0, group = G_AUDIT, display = display.none, tooltip = "Highlights when current in-fit coverage exceeds rolling next-bar coverage by this amount. Enabled only after the audit window has a full valid sample. The two measurements concern different samples.")
+lagHighlightInput = input.float(0.60, "Residual persistence highlight", minval = 0.10, maxval = 0.99, step = 0.05, group = G_AUDIT, display = display.none, tooltip = "Highlights the absolute lag-one residual product ratio. This is a descriptive persistence diagnostic, not a significance test.")
+
+showChannelInput = input.bool(true, "Current fitted channel", group = G_CHART, display = display.none)
+showInnerInput = input.bool(true, "Inner guides", inline = "inner", group = G_CHART, display = display.none)
+innerFractionInput = input.float(0.5, "Width fraction", minval = 0.1, maxval = 0.9, step = 0.1, inline = "inner", group = G_CHART, display = display.none, active = showInnerInput)
+showFillInput = input.bool(true, "Channel shading", inline = "fill", group = G_CHART, display = display.none)
+fillTransparencyInput = input.int(91, "Transparency", minval = 75, maxval = 99, inline = "fill", group = G_CHART, display = display.none, active = showFillInput)
+showExtensionInput = input.bool(true, "Dashed geometric extension", inline = "ext", group = G_CHART, display = display.none)
+extensionInput = input.int(12, "Bars", minval = 1, maxval = 100, inline = "ext", group = G_CHART, display = display.none, active = showExtensionInput, tooltip = "An explicitly labeled continuation of the current fitted slope and fixed width. Not a price forecast or an uncertainty interval. Not used in audit statistics or alerts.")
+showPriorInput = input.bool(true, "Previous-model reference", inline = "prior", group = G_CHART, display = display.none)
+priorSpanInput = input.int(18, "Visible bars", minval = 2, maxval = 120, inline = "prior", group = G_CHART, display = display.none, active = showPriorInput, tooltip = "Dashed amber center and boundaries from the model fitted BEFORE the displayed observation. Its endpoint at that observation is the one-step reference.")
+showSplitInput = input.bool(false, "Older / recent half-window fits", group = G_CHART, display = display.none, tooltip = "Two separate least-squares fits to the non-overlapping older and recent halves of the current window. Descriptive shape diagnostics, not additional trading systems.")
+showResidualInput = input.bool(true, "Latest one-step residual connector", group = G_CHART, display = display.none)
+showTagsInput = input.bool(true, "Compact endpoint tags", group = G_CHART, display = display.none)
+tagOffsetInput = input.int(2, "Tag offset, bars", minval = 1, maxval = 20, group = G_CHART, display = display.none)
+showTrailInput = input.bool(false, "Historical frozen one-step center", group = G_CHART, display = display.none)
+showTrailBandsInput = input.bool(false, "Historical frozen one-step boundaries", group = G_CHART, display = display.none)
+trailBarsInput = input.int(240, "Latest reference display, bars", minval = 50, maxval = 4000, group = G_CHART, display = display.none, active = viewInput == "Latest", tooltip = "Latest view only. In research, enabled frozen-reference traces cover the admitted interval instead.")
+centerWidthInput = input.int(3, "Center line thickness", minval = 1, maxval = 5, inline = "lines", group = G_CHART, display = display.none)
+boundaryWidthInput = input.int(2, "Boundary thickness", minval = 1, maxval = 5, inline = "lines", group = G_CHART, display = display.none)
+
+showPanelInput = input.bool(true, "Show information panel", group = G_PANEL, display = display.none)
+panelPageInput = input.string("Model", "Panel page", options = ["Model", "Refit research", "Horizon research", "Frozen paths"], group = G_PANEL, display = display.none, tooltip = "All four pages use the same eight-row layout and font size. Model preserves the original readout. Refit compares matched observations and center/width effects. Horizon compares matured one-step and H-step results. Frozen paths compares terminal containment with every-close containment, plus matched fixed/aligned/rolling references.")
+panelDetailInput = input.string("Compact", "Detail", options = ["Compact", "Detailed"], group = G_PANEL, display = display.none)
+panelFontInput = input.int(12, "Text size", minval = 9, maxval = 18, group = G_PANEL, display = display.none)
+boldInput = input.bool(true, "Bold values", group = G_PANEL, display = display.none)
+boldHeadingsInput = input.bool(true, "Bold row headings", group = G_PANEL, display = display.none)
+panelSymbolsInput = input.bool(true, "Panel symbols and meters", group = G_PANEL, display = display.none, tooltip = "Compact symbols supplement readable text. Disable to hide supplementary icons and the fit meter. Position, row count and font size do not change.")
+rightPaddingInput = input.float(3.0, "Right clearance, chart percent", minval = 0.0, maxval = 12.0, step = 0.5, group = G_PANEL, display = display.none)
+topPaddingInput = input.float(2.0, "Top clearance, chart percent", minval = 0.0, maxval = 12.0, step = 0.5, group = G_PANEL, display = display.none)
+
+upperColorInput = input.color(#24E4F2, "Upper / rising", inline = "colors1", group = G_COLOR, display = display.none)
+lowerColorInput = input.color(#FF55AB, "Lower / falling", inline = "colors1", group = G_COLOR, display = display.none)
+referenceColorInput = input.color(#FFD166, "Prior reference", inline = "colors2", group = G_COLOR, display = display.none)
+secondaryColorInput = input.color(#AF96FF, "Split fits / flat", inline = "colors2", group = G_COLOR, display = display.none)
+panelBackgroundInput = input.color(color.new(#101A2C, 5), "Panel background", group = G_COLOR, display = display.none)
+panelTextInput = input.color(#F0F6FF, "Panel text", inline = "colors3", group = G_COLOR, display = display.none)
+panelMutedInput = input.color(#C5D4E8, "Secondary text", inline = "colors3", group = G_COLOR, display = display.none)
+
+historyBarsInput = input.int(600, "Calculation budget, bars", minval = 100, maxval = 4000, step = 100, group = G_WORK, display = display.none, tooltip = "Latest: recent history budget plus audit/horizon warm-up. Research: hard limit on admitted interval bars. If exceeded, the research view is blocked rather than silently showing an earlier endpoint. Narrow the dates or increase this value. Longer fits and percentile sorting cost more. This never shortens the regression window.")
+showEventsInput = input.bool(true, "Confirmed descriptive event markers", group = G_WORK, display = display.none)
+eventLimitInput = input.int(60, "Retained event markers", minval = 0, maxval = 240, group = G_WORK, display = display.none)
+eventSizeInput = input.string("Tiny", "Event marker size", options = ["Tiny", "Small", "Normal"], group = G_WORK, display = display.none, tooltip = "Text-only markers: Tiny = 10 px, Small = 12 px, Normal = 14 px. No filled circle, diamond or label box.")
+eventWindowInput = input.int(240, "Event display window, bars", minval = 20, maxval = 4000, group = G_WORK, display = display.none, tooltip = "Display only. The actual visible span is limited by the historical calculation budget. This does not change the regression length, audit statistics or alerts.")
+researchAllEventsInput = input.bool(false, "Research: no marker spacing filter", group = G_WORK, display = display.none, active = viewInput == "As-of research", tooltip = "Disables spacing in research only. The marker count and display window still apply. All confirmed events remain in Data Window event flags, independently of drawing filters.")
+eventSpacingInput = input.int(4, "Minimum same-side marker spacing, bars", minval = 0, maxval = 100, group = G_WORK, display = display.none, tooltip = "Display-only spacing between retained markers above candles, and independently below candles. Zero shows every eligible transition. Hidden transitions still count in statistics and trigger their configured alerts.")
+eventPaddingInput = input.float(0.45, "Marker clearance, ATR units", minval = 0.1, maxval = 3.0, step = 0.05, group = G_WORK, display = display.none, tooltip = "Markers sit outside the current and previous two candle wicks plus this multiple of ATR(14), with a four-tick minimum. ATR is used ONLY for marker placement. Clearance is in price units, not a fixed screen-pixel guarantee at every zoom.")
+eventSymbolsInput = input.bool(true, "Event symbols instead of letters", group = G_WORK, display = display.none, tooltip = "! = outside the prior envelope; circular arrow = included after refitting; = = inside the prior envelope again. Plain-text fallback: O / R / I. These are not buy/sell signals.")
+
+
+// Drawing controls never change path membership or numerical totals.
+showPathsInput = input.bool(true, "Show historical frozen paths", group = G_PATH, display = display.none, tooltip = "ON by default: retain a few chronological frozen channels, drawn only through confirmed observations already reached. No outcome-based selection, filled circles or full-window shading. Disable drawings without disabling the path audit.")
+pathLengthInput = input.int(24, "Frozen path length, bars", minval = 4, maxval = 120, group = G_PATH, display = display.none, tooltip = "A path uses the center, slope and width at its origin for the next L source closes. Path statistics require all L outcomes. This is separate from the 1/H endpoint audit.")
+pathGapInput = input.int(24, "Gap between paths, bars", minval = 0, maxval = 240, group = G_PATH, display = display.none, tooltip = "Origins are scheduled every L + gap bars. With zero gap, an old path matures before the next starts on that close. Outcome segments never overlap, but fitted training windows can; statistical independence is NOT assumed.")
+pathAnchorInput = input.time(timestamp("01 Jan 2020 00:00 +0000"), "Path schedule anchor", group = G_PATH, display = display.none, tooltip = "The first loaded confirmed bar closing at or after this time seeds a bar-count schedule. Seed it within loaded history for reproducible phase when loading more history. If the anchor predates loaded data, the Frozen paths header shows PHASE* and the phase can change when older data load. No source values determine the schedule.")
+pathSamplesInput = input.int(32, "Matured path sample, slots", minval = 2, maxval = 200, group = G_PATH, display = display.none, tooltip = "Latest and Rolling research: last K completed path slots within the calculation range, INCLUDING missing-data slots in the retention count. Selected interval: all completed slots. Missing-data paths are reported and excluded from result denominators. Open paths are never counted as success or failure.")
+pathKeepInput = input.int(4, "Retained drawings, paths", minval = 0, maxval = 12, group = G_PATH, display = display.none, tooltip = "Most recent chronological paths, including an open path. Drawing retention is separate from the numerical sample. Zero hides all paths without removing observations.")
+pathDetailInput = input.string("Forward only", "Frozen path drawing", options = ["Forward only", "Fit + forward"], group = G_PATH, display = display.none, tooltip = "Forward only shows the origin model through later observed bars. Fit + forward also restores its entire original N-bar fitted segment, dotted. That fitted segment became known only at its origin; it is not a historical signal.")
+pathTransparencyInput = input.int(48, "Historical line transparency", minval = 10, maxval = 85, group = G_PATH, display = display.none)
+pathWidthInput = input.int(1, "Historical line thickness", minval = 1, maxval = 3, group = G_PATH, display = display.none)
+pathLabelsInput = input.bool(true, "Text-only path IDs and results", group = G_PATH, display = display.none, tooltip = "F = frozen path. ALL: every observed source close inside at maturity; BACK: final close inside after an earlier miss; OUT: final close outside; DATA: missing source; k/L: unfinished. ALL/BACK/OUT appear at maturity only. Labels are outside nearby candle wicks; hover for counts, first exit and error comparisons.")
+pathExitInput = input.bool(true, "First-exit residual connector", group = G_PATH, display = display.none, tooltip = "A thin amber connector at the FIRST observed source close outside the fixed path. It is not a stop, execution price or intrabar crossing claim.")
+pathEndInput = input.bool(true, "Observed-end residual connector", group = G_PATH, display = display.none)
+
+historyPageInput = input.string("Match panel", "Numeric history page", options = ["Match panel", "Model", "Refit research", "Horizon research", "Frozen paths"], group = G_HISTORY, display = display.none, tooltip = "Selects the historical numeric outputs only; it never changes models, statistics, alerts, or chart drawings. Match panel follows Panel page. Plot titles list M=Model, R=Refit, H=Horizon, F=Frozen paths; use the value belonging to the selected page. The page ID is exported alongside values. All 53 original fields remain available across pages, but not simultaneously. Switch this input and export again to obtain other fields.\n\n1 Model: 01 Endpoint; 02 Width; 03 Residual SE; 04 Slope w; 05 R2; 06 In-fit %; 07 1-step %; 08 1-step n; 09 1-step skill %; 10 Prior center; 11 Prior width; 12 Prior pos; 13 Now pos; 14 Lag; 15 Old slope; 16 Recent slope; 17 Width change %; 18 Prior state.\n\n2 Refit research: 01 Add; 02 Drop; 03 Center margin; 04 Width margin; 05 Before %; 06 After %; 07 Paired n; 08 Included n; 09 Excluded n; 10 In from out %; 11 Out from in %; 12 Center n; 13 Width n; 14 Joint n; 15 Either n; 16 In flag; 17 Out flag.\n\n3 Horizon research: 01 H center; 02 H width; 03 H n; 04 H cover %; 05 H skill %; 06 H MAE; 07 H baseline.\n\n4 Frozen paths: 01 Path age; 02 Path pos; 03 First exit; 04 Peak pos; 05 Paths n; 06 End %; 07 All %; 08 Updated-only %.")
+
+// ── Same-window residual statistics ─────────────────────────────────────────
+f_fit(float src, simple int span, simple string methodName, simple float multiplier, simple float percentile, float widthFloor, bool enabled) =>
+    float endValue = na
+    float slopeValue = na
+    float noiseValue = na
+    float halfWidthValue = na
+    float rSquaredValue = na
+    float coverageValue = na
+    float lagValue = na
+    float olderEndValue = na
+    float olderSlopeValue = na
+    float recentEndValue = na
+    float recentSlopeValue = na
+    float newestResidualValue = na
+    // Reuse a single workspace; it is never returned or history-referenced.
+    var array<float> magnitudes = array.new<float>(0)
+    if enabled and bar_index >= span - 1
+        float reference = src
+        float n = float(span)
+        float midpoint = (n - 1.0) * 0.5
+        float sxx = n * (n * n - 1.0) / 12.0
+        int recentCount = int(math.floor(n * 0.5))
+        int olderCount = span - recentCount
+        float recentMid = (float(recentCount) - 1.0) * 0.5
+        float olderMid = (float(olderCount) - 1.0) * 0.5
+        float sumDelta = 0.0
+        float sumXDelta = 0.0
+        float recentSum = 0.0
+        float olderSum = 0.0
+        float recentXSum = 0.0
+        float olderXSum = 0.0
+        bool usable = not na(reference)
+        // Center prices and the time coordinate to reduce cancellation.
+        for i = 0 to span - 1
+            float observation = src[i]
+            if na(observation)
+                usable := false
+                break
+            float delta = observation - reference
+            sumDelta += delta
+            sumXDelta += (midpoint - float(i)) * delta
+            if i < recentCount
+                recentSum += delta
+                recentXSum += (recentMid - float(i)) * delta
+            else
+                olderSum += delta
+                olderXSum += (olderMid - float(i - recentCount)) * delta
+        if usable
+            float meanDelta = sumDelta / n
+            slopeValue := sumXDelta / sxx
+            float endpointDelta = meanDelta + slopeValue * midpoint
+            endValue := reference + endpointDelta
+            newestResidualValue := -endpointDelta
+            float recentN = float(recentCount)
+            float olderN = float(olderCount)
+            recentSlopeValue := recentXSum / (recentN * (recentN * recentN - 1.0) / 12.0)
+            olderSlopeValue := olderXSum / (olderN * (olderN * olderN - 1.0) / 12.0)
+            recentEndValue := reference + recentSum / recentN + recentSlopeValue * recentMid
+            olderEndValue := reference + olderSum / olderN + olderSlopeValue * olderMid
+            float sse = 0.0
+            float sst = 0.0
+            float absoluteSum = 0.0
+            float lagProduct = 0.0
+            float previousResidual = na
+            array.clear(magnitudes)
+            for i = 0 to span - 1
+                float delta = src[i] - reference
+                float residual = delta - (meanDelta + slopeValue * (midpoint - float(i)))
+                float centered = delta - meanDelta
+                sse += residual * residual
+                sst += centered * centered
+                absoluteSum += math.abs(residual)
+                if i > 0
+                    lagProduct += residual * previousResidual
+                previousResidual := residual
+                array.push(magnitudes, math.abs(residual))
+            float numericalTolerance = math.max(math.abs(reference) * 1e-14, 1e-14)
+            float energyTolerance = numericalTolerance * numericalTolerance * n
+            noiseValue := math.sqrt(math.max(sse, 0.0) / (n - 2.0))
+            rSquaredValue := sst / energyTolerance > 1.0 ? math.max(0.0, math.min(1.0, 1.0 - sse / sst)) : na
+            lagValue := sse / energyTolerance > 1.0 ? math.max(-1.0, math.min(1.0, lagProduct / sse)) : na
+            float rawWidth = noiseValue * multiplier
+            if methodName == "Mean absolute residual"
+                rawWidth := absoluteSum / n * multiplier
+            else if methodName == "Residual percentile"
+                array.sort(magnitudes, order.ascending)
+                int rankIndex = math.max(0, math.min(span - 1, int(math.ceil(n * percentile * 0.01)) - 1))
+                rawWidth := array.get(magnitudes, rankIndex)
+            halfWidthValue := math.max(widthFloor, rawWidth)
+            int insideCount = 0
+            for i = 0 to span - 1
+                if array.get(magnitudes, i) / halfWidthValue <= 1.0 + numericalTolerance / halfWidthValue
+                    insideCount += 1
+            coverageValue := float(insideCount) / n
+    [endValue, slopeValue, noiseValue, halfWidthValue, rSquaredValue, coverageValue, lagValue, olderEndValue, olderSlopeValue, recentEndValue, recentSlopeValue, newestResidualValue]
+
+
+// All accumulators execute on every bar. Never call them conditionally.
+f_sum(float value, simple int span, simple bool entireInterval) =>
+    float cumulative = ta.cum(value)
+    entireInterval ? cumulative : cumulative - nz(cumulative[span], 0.0)
+
+f_ratio(float numerator, float denominator) =>
+    math.sign(denominator) == 1.0 ? numerator / denominator : na
+
+f_skill(float modelError, float baselineError) =>
+    math.sign(baselineError) == 1.0 ? 1.0 - math.max(modelError, 0.0) / baselineError : na
+
+f_number(float value) =>
+    string caption = "n/a"
+    if not na(value)
+        float magnitude = math.abs(value)
+        caption := magnitude >= 1000000.0 ? str.tostring(value / 1000000.0, "#.0") + "m" : magnitude >= 10000.0 ? str.tostring(value / 1000.0, "#.0") + "k" : str.tostring(value, "0.00")
+    caption
+
+f_signed(float value) =>
+    na(value) ? "n/a" : (value > 0.0 ? "+" : "") + f_number(value)
+
+f_percent(float value) =>
+    na(value) ? "n/a" : str.tostring(value * 100.0, "0") + "%"
+
+f_meter(float value) =>
+    string caption = ""
+    int filled = na(value) ? 0 : int(math.round(math.max(0.0, math.min(1.0, value)) * 5.0))
+    for i = 1 to 5
+        caption += i <= filled ? "▰" : "▱"
+    caption
+
+f_heading(string glyph, string caption) =>
+    panelSymbolsInput ? glyph + " " + caption : caption
+
+f_tint(color baseColor, color accent, float amount) =>
+    color.from_gradient(amount, 0.0, 1.0, baseColor, accent)
+
+f_direction(float value) =>
+    na(value) ? "·" : value > flatInput ? "↑" : value < -flatInput ? "↓" : "→"
+
+f_cause(int code) =>
+    code == 1 ? "CENTER" : code == 2 ? "WIDTH" : code == 3 ? "JOINT" : code == 4 ? "EITHER" : "--"
+
+f_line(line id, bool visible, int x1, float y1, int x2, float y2, color tint, int thickness, string styleName, string coordinates) =>
+    line.set_xloc(id, x1, x2, coordinates)
+    line.set_y1(id, visible ? y1 : na)
+    line.set_y2(id, visible ? y2 : na)
+    line.set_color(id, tint)
+    line.set_width(id, thickness)
+    line.set_style(id, styleName)
+
+f_tag(label id, bool visible, int x, float y, string caption, string tip, color tint, string coordinates) =>
+    label.set_xloc(id, x, coordinates)
+    label.set_y(id, visible ? y : na)
+    label.set_text(id, visible ? caption : "")
+    label.set_tooltip(id, tip)
+    label.set_color(id, panelBackgroundInput)
+    label.set_textcolor(id, tint)
+    label.set_size(id, math.max(9, panelFontInput - 1))
+    label.set_text_formatting(id, boldInput ? text.format_bold : text.format_none)
+
+f_row(table id, int row, string caption, string valueCaption, color tint, string tip, color background) =>
+    table.cell(id, 0, row, caption, text_color = row == 1 ? panelTextInput : panelMutedInput, bgcolor = background, text_size = panelFontInput, text_halign = text.align_left, tooltip = tip, text_formatting = boldHeadingsInput or row == 1 ? text.format_bold : text.format_none)
+    table.cell(id, 1, row, valueCaption, text_color = tint, bgcolor = background, text_size = panelFontInput, text_halign = text.align_right, tooltip = tip, text_formatting = boldInput or row == 1 ? text.format_bold : text.format_none)
+
+// ── Frozen-path records: one active cohort; bounded display and sample queues ──
+type FrozenPath
+    int id = 0
+    int origin = na
+    int originTime = na
+    int originClose = na
+    int trainTime = na
+    int endTime = na
+    int lastClose = na
+    int age = 0
+    int observed = 0
+    int inside = 0
+    int missing = 0
+    int firstExit = 0
+    int firstSide = 0
+    int exitTime = na
+    int paired = 0
+    int rollingOnly = 0
+    int frozenOnly = 0
+    int bothInside = 0
+    int bothOutside = 0
+    float center = na
+    float slope = na
+    float width = na
+    float originSource = na
+    float lastSource = na
+    float lastPosition = na
+    float peak = 0.0
+    float originGap = na
+    float r2 = na
+    float exitBoundary = na
+    float exitSource = na
+    float fixedSse = 0.0
+    float alignedSse = 0.0
+    float baselineSse = 0.0
+    float pairedFixedSse = 0.0
+    float rollingSse = 0.0
+    float pairedBaselineSse = 0.0
+    bool finished = false
+    bool valid = false
+    bool endInside = false
+    line midLine = na
+    line topLine = na
+    line bottomLine = na
+    line fitMid = na
+    line fitTop = na
+    line fitBottom = na
+    line originLine = na
+    line exitLine = na
+    line endLine = na
+    label originLabel = na
+    label endLabel = na
+
+type PathTotals
+    int slots = 0
+    int valid = 0
+    int invalid = 0
+    int endInside = 0
+    int allInside = 0
+    int returned = 0
+    int exited = 0
+    int exitAge = 0
+    int paired = 0
+    int rollingOnly = 0
+    int frozenOnly = 0
+    int bothInside = 0
+    int bothOutside = 0
+    float peakSum = 0.0
+    float fixedSse = 0.0
+    float alignedSse = 0.0
+    float baselineSse = 0.0
+    float pairedFixedSse = 0.0
+    float rollingSse = 0.0
+    float pairedBaselineSse = 0.0
+
+f_path_totals(PathTotals totals, FrozenPath p, int direction) =>
+    totals.slots += direction
+    totals.valid += direction * (p.valid ? 1 : 0)
+    totals.invalid += direction * (p.valid ? 0 : 1)
+    if p.valid
+        totals.endInside += direction * (p.endInside ? 1 : 0)
+        totals.allInside += direction * (p.firstExit == 0 ? 1 : 0)
+        totals.returned += direction * (p.firstExit > 0 and p.endInside ? 1 : 0)
+        totals.exited += direction * (p.firstExit > 0 ? 1 : 0)
+        totals.exitAge += direction * p.firstExit
+        totals.paired += direction * p.paired
+        totals.rollingOnly += direction * p.rollingOnly
+        totals.frozenOnly += direction * p.frozenOnly
+        totals.bothInside += direction * p.bothInside
+        totals.bothOutside += direction * p.bothOutside
+        totals.peakSum += float(direction) * p.peak
+        totals.fixedSse += float(direction) * p.fixedSse
+        totals.alignedSse += float(direction) * p.alignedSse
+        totals.baselineSse += float(direction) * p.baselineSse
+        totals.pairedFixedSse += float(direction) * p.pairedFixedSse
+        totals.rollingSse += float(direction) * p.rollingSse
+        totals.pairedBaselineSse += float(direction) * p.pairedBaselineSse
+    totals
+
+f_path_delete(FrozenPath p) =>
+    if not na(p.midLine)
+        line.delete(p.midLine)
+        line.delete(p.topLine)
+        line.delete(p.bottomLine)
+        line.delete(p.fitMid)
+        line.delete(p.fitTop)
+        line.delete(p.fitBottom)
+        line.delete(p.originLine)
+        line.delete(p.exitLine)
+        line.delete(p.endLine)
+        label.delete(p.originLabel)
+        label.delete(p.endLabel)
+        p.midLine := na
+        p.topLine := na
+        p.bottomLine := na
+        p.fitMid := na
+        p.fitTop := na
+        p.fitBottom := na
+        p.originLine := na
+        p.exitLine := na
+        p.endLine := na
+        p.originLabel := na
+        p.endLabel := na
+    p
+
+f_path_create(FrozenPath p, float originLabelY) =>
+    // Nine fixed lines and two unboxed labels per retained path, never per bar.
+    p.midLine := line.new(p.originTime, p.center, p.originTime, p.center, xloc = xloc.bar_time)
+    p.topLine := line.new(p.originTime, p.center, p.originTime, p.center, xloc = xloc.bar_time)
+    p.bottomLine := line.new(p.originTime, p.center, p.originTime, p.center, xloc = xloc.bar_time)
+    p.fitMid := line.new(p.originTime, na, p.originTime, na, xloc = xloc.bar_time)
+    p.fitTop := line.new(p.originTime, na, p.originTime, na, xloc = xloc.bar_time)
+    p.fitBottom := line.new(p.originTime, na, p.originTime, na, xloc = xloc.bar_time)
+    p.originLine := line.new(p.originTime, p.center, p.originTime, p.center, xloc = xloc.bar_time)
+    p.exitLine := line.new(p.originTime, na, p.originTime, na, xloc = xloc.bar_time)
+    p.endLine := line.new(p.originTime, na, p.originTime, na, xloc = xloc.bar_time)
+    string originTip = "Frozen path F" + str.tostring(p.id) + "\nModel origin close: " + str.format_time(p.originClose, "yyyy-MM-dd HH:mm", syminfo.timezone) + "\nWidth: " + str.tostring(p.width, format.mintick) + "\nR squared at origin: " + f_number(p.r2) + "\nFitted endpoint minus origin source: " + f_signed(p.originGap) + "w\nThe next " + str.tostring(pathLengthInput) + " source closes are evaluated without changing this model. Origin is scheduled without outcome selection. Any dotted training tail was fitted at this origin, not known at its older bars."
+    p.originLabel := label.new(p.originTime, pathLabelsInput ? originLabelY : na, pathLabelsInput ? "F" + str.tostring(p.id) : "", xloc = xloc.bar_time, style = label.style_none, textcolor = color.new(secondaryColorInput, 10), size = 10, tooltip = originTip, text_formatting = text.format_bold)
+    p.endLabel := label.new(p.originTime, na, "", xloc = xloc.bar_time, style = label.style_none, textcolor = referenceColorInput, size = 10, text_formatting = text.format_bold)
+    float trainingStart = p.center - p.slope * float(lengthInput - 1)
+    bool training = pathDetailInput == "Fit + forward"
+    int tailTransparency = math.min(90, pathTransparencyInput + 22)
+    f_line(p.fitMid, training, p.trainTime, trainingStart, p.originTime, p.center, color.new(secondaryColorInput, tailTransparency), 1, line.style_dotted, xloc.bar_time)
+    f_line(p.fitTop, training, p.trainTime, trainingStart + p.width, p.originTime, p.center + p.width, color.new(upperColorInput, tailTransparency), 1, line.style_dotted, xloc.bar_time)
+    f_line(p.fitBottom, training, p.trainTime, trainingStart - p.width, p.originTime, p.center - p.width, color.new(lowerColorInput, tailTransparency), 1, line.style_dotted, xloc.bar_time)
+    f_line(p.originLine, true, p.originTime, p.center - p.width, p.originTime, p.center + p.width, color.new(secondaryColorInput, pathTransparencyInput), 1, line.style_dotted, xloc.bar_time)
+    p
+
+f_path_draw(FrozenPath p, float endpointLabelY) =>
+    if not na(p.midLine)
+        float projected = p.center + p.slope * float(p.age)
+        // Style never recolors the entire past segment using the final outcome.
+        f_line(p.midLine, p.age > 0, p.originTime, p.center, p.endTime, projected, color.new(secondaryColorInput, pathTransparencyInput), pathWidthInput, line.style_dashed, xloc.bar_time)
+        f_line(p.topLine, p.age > 0, p.originTime, p.center + p.width, p.endTime, projected + p.width, color.new(upperColorInput, pathTransparencyInput), pathWidthInput, line.style_dashed, xloc.bar_time)
+        f_line(p.bottomLine, p.age > 0, p.originTime, p.center - p.width, p.endTime, projected - p.width, color.new(lowerColorInput, pathTransparencyInput), pathWidthInput, line.style_dashed, xloc.bar_time)
+        f_line(p.exitLine, pathExitInput and p.firstExit > 0, nz(p.exitTime, p.originTime), p.exitBoundary, nz(p.exitTime, p.originTime), p.exitSource, color.new(referenceColorInput, 18), 1, line.style_dotted, xloc.bar_time)
+        f_line(p.endLine, pathEndInput and p.age > 0 and not na(p.lastSource), p.endTime, projected, p.endTime, p.lastSource, color.new(referenceColorInput, 38), 1, line.style_dashed, xloc.bar_time)
+        string status = p.finished ? (not p.valid ? "DATA" : p.firstExit == 0 ? "ALL" : p.endInside ? "BACK" : "OUT") : str.tostring(p.age) + "/" + str.tostring(pathLengthInput)
+        string tip = "Frozen path F" + str.tostring(p.id) + " / " + status + "\nLast evaluated close: " + str.format_time(p.lastClose, "yyyy-MM-dd HH:mm", syminfo.timezone) + "\nObserved source closes: " + str.tostring(p.observed) + "; missing: " + str.tostring(p.missing) + "\nInside fixed envelope: " + str.tostring(p.inside) + " / " + str.tostring(p.observed) + "\nFirst exit age: " + (p.firstExit == 0 ? "none observed (not zero-time exit)" : str.tostring(p.firstExit) + (p.firstSide > 0 ? " above" : " below")) + "\nLargest |source - fixed center| / origin width: " + f_number(p.peak) + "\nFinal observed position: " + f_signed(p.lastPosition) + "w\nRolling-only / frozen-only inside closes: " + str.tostring(p.rollingOnly) + " / " + str.tostring(p.frozenOnly) + "; paired n: " + str.tostring(p.paired)
+        if p.finished and p.valid
+            tip += "\nFixed / level-aligned skill: " + f_signed(f_skill(p.fixedSse, p.baselineSse) * 100.0) + " / " + f_signed(f_skill(p.alignedSse, p.baselineSse) * 100.0) + "%\nBaseline = origin source held unchanged; identical future closes. Not return or win rate."
+        else
+            tip += "\nNo contribution to completed-result percentages until all L valid source closes are available. A missing-data path is excluded, not treated as a success."
+        tip += "\nALL means every sampled source close was inside; intrabar wicks are NOT tested. BACK means the endpoint is inside after an earlier sampled exit. The label is at the observation time and its y-position is not an execution price."
+        label.set_xy(p.endLabel, p.endTime, pathLabelsInput and p.age > 0 ? endpointLabelY : na)
+        label.set_text(p.endLabel, pathLabelsInput and p.age > 0 ? "F" + str.tostring(p.id) + " " + status : "")
+        label.set_tooltip(p.endLabel, tip)
+        label.set_textcolor(p.endLabel, p.finished and not p.valid ? panelMutedInput : referenceColorInput)
+    p
+
+// A single mutable display snapshot. No historical object-field references.
+type Snapshot
+    int endBar = na
+    int openTime = na
+    int closeTime = na
+    int startTime = na
+    int priorTime = na
+    int olderTime = na
+    int recentTime = na
+    int tagTime = na
+    int extTime = na
+    int extTagTime = na
+    float center = na
+    float slope = na
+    float width = na
+    float r2 = na
+    float coverage = na
+    float lag = na
+    float slopeW = na
+    float prior = na
+    float priorWidth = na
+    float priorSlope = na
+    float sourceValue = na
+    float priorPos = na
+    float currentPos = na
+    float addW = na
+    float dropW = na
+    float widthChange = na
+    float centerMargin = na
+    float widthMargin = na
+    float olderEnd = na
+    float olderSlope = na
+    float recentEnd = na
+    float recentSlope = na
+    float oldW = na
+    float recentW = na
+    float count1 = na
+    float cover1 = na
+    float skill1 = na
+    float pairedN = na
+    float pairedBefore = na
+    float pairedAfter = na
+    float includedN = na
+    float excludedN = na
+    float inclusionRate = na
+    float exclusionRate = na
+    float centerN = na
+    float widthN = na
+    float jointN = na
+    float eitherN = na
+    float countH = na
+    float coverH = na
+    float skillH = na
+    float maeH = na
+    float baselineMaeH = na
+    float errorWidthH = na
+    float upperMissH = na
+    float lowerMissH = na
+    int cause = 0
+    bool validPrior = false
+    bool included = false
+    bool outside = false
+    bool split = false
+
+// ── Eligibility: no prices after a research cutoff enter any fitted model ─────
+bool research = viewInput == "As-of research"
+bool wholeInterval = research and studyScopeInput == "Selected interval"
+bool validDates = studyStartInput <= studyEndInput
+bool inDates = not na(time_close) and time_close >= studyStartInput and time_close <= studyEndInput
+var int researchBars = 0
+var int firstResearchBar = na
+if research and inDates and barstate.isconfirmed
+    researchBars += 1
+    if na(firstResearchBar)
+        firstResearchBar := bar_index
+bool budgetExceeded = research and researchBars > historyBarsInput
+int latestStart = math.max(0, last_bar_index - historyBarsInput - auditLengthInput - horizonInput - 2)
+bool inRange = research ? validDates and inDates and not budgetExceeded : bar_index >= latestStart
+bool computeSnapshot = inRange and (barstate.isconfirmed or not research and updateInput == "Live preview")
+float widthFloor = math.max(syminfo.mintick * minimumTicksInput, math.max(math.abs(nz(sourceInput)) * 1e-14, 1e-14))
+[fitEnd, fitSlope, fitNoise, fitWidth, fitR2, fitCoverage, fitLag, olderEnd, olderSlope, recentEnd, recentSlope, newestResidual] = f_fit(sourceInput, lengthInput, widthInput, multiplierInput, percentileInput, widthFloor, computeSnapshot)
+
+bool fitReady = not na(fitEnd) and not na(fitWidth)
+float priorReference = fitEnd[1] + fitSlope[1]
+float priorWidth = fitWidth[1]
+bool testReady = inRange and not na(priorReference) and not na(priorWidth) and not na(sourceInput) and not na(sourceInput[1])
+float error1 = testReady ? sourceInput - priorReference : na
+float naive1 = testReady ? sourceInput - sourceInput[1] : na
+float tolerance = math.max(math.abs(nz(sourceInput)) * 1e-14, 1e-14)
+float priorPosition = testReady ? error1 / priorWidth : na
+float currentPosition = fitReady ? newestResidual / fitWidth : na
+bool outsidePrior = testReady and math.abs(priorPosition) > 1.0 + tolerance / priorWidth
+bool insideCurrent = fitReady and math.abs(currentPosition) <= 1.0 + tolerance / fitWidth
+bool included = testReady and outsidePrior and insideCurrent
+bool excluded = testReady and fitReady and not outsidePrior and not insideCurrent
+int priorState = outsidePrior ? (error1 > 0.0 ? 1 : -1) : 0
+
+// Ordered exact center update: remove oldest, then add newest; same timestamp.
+float nModel = float(lengthInput)
+float midpoint = (nModel - 1.0) * 0.5
+float sxx = nModel * (nModel * nModel - 1.0) / 12.0
+float leverage = 1.0 / nModel + midpoint * midpoint / sxx
+float addShift = fitReady and testReady ? leverage * newestResidual / (1.0 - leverage) : na
+float totalShift = fitReady and testReady ? fitEnd - priorReference : na
+float addW = testReady ? addShift / priorWidth : na
+float dropW = testReady ? (totalShift - addShift) / priorWidth : na
+float widthChange = fitReady and testReady ? fitWidth / priorWidth - 1.0 : na
+float slopeW = fitReady ? fitSlope * float(slopeSpanInput) / fitWidth : na
+float oldW = fitReady ? olderSlope * float(slopeSpanInput) / fitWidth : na
+float recentW = fitReady ? recentSlope * float(slopeSpanInput) / fitWidth : na
+bool splitDisagreement = fitReady and ((oldW > flatInput and recentW < -flatInput) or (oldW < -flatInput and recentW > flatInput))
+
+// Boundaries are compared in width units to avoid absolute-price rounding
+// swallowing very small quotes. This does not change the envelope definition.
+// Containment margin = width - abs(source - center).
+// Its change is EXACTLY centerMargin + widthMargin, both in prior widths.
+float centerMargin = fitReady and testReady ? (math.abs(error1) - math.abs(newestResidual)) / priorWidth : na
+float widthMargin = widthChange
+bool centerAlone = included and math.abs(newestResidual) / priorWidth <= 1.0 + tolerance / priorWidth
+bool widthAlone = included and math.abs(error1) / fitWidth <= 1.0 + tolerance / fitWidth
+// 1 center alone; 2 width alone; 3 both changes needed; 4 either sufficient.
+int causeCode = not included ? 0 : centerAlone and widthAlone ? 4 : centerAlone ? 1 : widthAlone ? 2 : 3
+
+// Fixed H-step reference: origin center, slope, and width never refit en route.
+float referenceH = fitEnd[horizonInput] + fitSlope[horizonInput] * float(horizonInput)
+float widthH = fitWidth[horizonInput]
+bool testH = inRange and not na(referenceH) and not na(widthH) and not na(sourceInput) and not na(sourceInput[horizonInput])
+float errorH = testH ? sourceInput - referenceH : na
+float naiveH = testH ? sourceInput - sourceInput[horizonInput] : na
+bool insideH = testH and math.abs(errorH) / widthH <= 1.0 + tolerance / widthH
+bool closed1 = testReady and barstate.isconfirmed
+bool paired = closed1 and fitReady
+bool closedH = testH and barstate.isconfirmed
+
+float count1 = f_sum(closed1 ? 1.0 : 0.0, auditLengthInput, wholeInterval)
+float hits1 = f_sum(closed1 and not outsidePrior ? 1.0 : 0.0, auditLengthInput, wholeInterval)
+float sse1 = f_sum(closed1 ? error1 * error1 : 0.0, auditLengthInput, wholeInterval)
+float naiveSse1 = f_sum(closed1 ? naive1 * naive1 : 0.0, auditLengthInput, wholeInterval)
+float cover1 = f_ratio(hits1, count1)
+float skill1 = f_skill(sse1, naiveSse1)
+float pairedN = f_sum(paired ? 1.0 : 0.0, auditLengthInput, wholeInterval)
+float pairedBeforeN = f_sum(paired and not outsidePrior ? 1.0 : 0.0, auditLengthInput, wholeInterval)
+float pairedAfterN = f_sum(paired and insideCurrent ? 1.0 : 0.0, auditLengthInput, wholeInterval)
+float includedN = f_sum(paired and included ? 1.0 : 0.0, auditLengthInput, wholeInterval)
+float excludedN = f_sum(paired and excluded ? 1.0 : 0.0, auditLengthInput, wholeInterval)
+float centerN = f_sum(paired and causeCode == 1 ? 1.0 : 0.0, auditLengthInput, wholeInterval)
+float widthN = f_sum(paired and causeCode == 2 ? 1.0 : 0.0, auditLengthInput, wholeInterval)
+float jointN = f_sum(paired and causeCode == 3 ? 1.0 : 0.0, auditLengthInput, wholeInterval)
+float eitherN = f_sum(paired and causeCode == 4 ? 1.0 : 0.0, auditLengthInput, wholeInterval)
+float beforeCover = f_ratio(pairedBeforeN, pairedN)
+float afterCover = f_ratio(pairedAfterN, pairedN)
+float inclusionRate = f_ratio(includedN, pairedN - pairedBeforeN)
+float exclusionRate = f_ratio(excludedN, pairedBeforeN)
+float countH = f_sum(closedH ? 1.0 : 0.0, auditLengthInput, wholeInterval)
+float hitsH = f_sum(closedH and insideH ? 1.0 : 0.0, auditLengthInput, wholeInterval)
+float sseH = f_sum(closedH ? errorH * errorH : 0.0, auditLengthInput, wholeInterval)
+float naiveSseH = f_sum(closedH ? naiveH * naiveH : 0.0, auditLengthInput, wholeInterval)
+float absoluteH = f_sum(closedH ? math.abs(errorH) : 0.0, auditLengthInput, wholeInterval)
+float naiveAbsoluteH = f_sum(closedH ? math.abs(naiveH) : 0.0, auditLengthInput, wholeInterval)
+float normalizedH = f_sum(closedH ? math.abs(errorH) / widthH : 0.0, auditLengthInput, wholeInterval)
+float upperMissH = f_sum(closedH and errorH / widthH > 1.0 + tolerance / widthH ? 1.0 : 0.0, auditLengthInput, wholeInterval)
+float lowerMissH = f_sum(closedH and errorH / widthH < -1.0 - tolerance / widthH ? 1.0 : 0.0, auditLengthInput, wholeInterval)
+float coverH = f_ratio(hitsH, countH)
+float skillH = f_skill(sseH, naiveSseH)
+bool coverageGap = fitReady and count1 >= float(auditLengthInput) and (fitCoverage - cover1) * 100.0 >= coverageGapInput
+
+// Events are calculated before any display filtering. Research never sends alerts.
+bool outsideEvent = closed1 and testReady[1] and priorState != 0 and priorState != priorState[1]
+bool insideEvent = closed1 and testReady[1] and priorState == 0 and priorState[1] != 0
+bool inclusionEvent = paired and testReady[1] and included and not included[1]
+bool exclusionEvent = paired and testReady[1] and excluded and not excluded[1]
+bool gapEvent = barstate.isconfirmed and coverageGap and not coverageGap[1]
+bool splitEvent = barstate.isconfirmed and fitReady and fitReady[1] and splitDisagreement and not splitDisagreement[1]
+int eventFlags = (outsideEvent ? 1 : 0) + (insideEvent ? 2 : 0) + (inclusionEvent ? 4 : 0) + (exclusionEvent ? 8 : 0) + (gapEvent ? 16 : 0) + (splitEvent ? 32 : 0)
+alertcondition(not research and outsideEvent, "Outside prior channel", "Fit Audit: confirmed transition outside a prior-model envelope. {{ticker}} / {{interval}}. Descriptive only.")
+alertcondition(not research and insideEvent, "Inside prior channel again", "Fit Audit: confirmed transition inside the respective prior-model envelope. {{ticker}} / {{interval}}. Descriptive only.")
+alertcondition(not research and inclusionEvent, "Refit inclusion appeared", "Fit Audit: outside the previous envelope, inside after refitting. {{ticker}} / {{interval}}. Inspect center and width effects.")
+alertcondition(not research and exclusionEvent, "Refit exclusion appeared", "Fit Audit: inside the previous envelope, outside after refitting. {{ticker}} / {{interval}}. Descriptive only.")
+alertcondition(not research and gapEvent, "Coverage gap appeared", "Fit Audit: configured in-fit versus next-bar coverage gap appeared. {{ticker}} / {{interval}}. Not a significance test.")
+alertcondition(not research and splitEvent, "Half-window slopes disagree", "Fit Audit: older and recent half-window slopes have opposite non-flat directions. {{ticker}} / {{interval}}.")
+
+// ── Scheduled forward paths: no fitting, triggers or selection from outcomes ──
+// The schedule runs on loaded bar timestamps, even if a source/model is missing.
+// A failed origin is skipped, NOT rescheduled to find a more flattering example.
+var int pathSeedBar = na
+var int pathFirstLoadedClose = time_close
+if barstate.isconfirmed and not na(time_close) and time_close >= pathAnchorInput and na(pathSeedBar)
+    pathSeedBar := bar_index
+bool pathPhasePartial = not na(pathFirstLoadedClose) and pathFirstLoadedClose >= pathAnchorInput
+int pathStride = pathLengthInput + pathGapInput
+int pathRecentStart = math.max(0, last_bar_index - historyBarsInput + 1)
+bool pathRange = inRange and (research or bar_index >= pathRecentStart)
+bool pathDue = not na(pathSeedBar) and (bar_index - pathSeedBar) % pathStride == 0
+var FrozenPath activePath = na
+var array<FrozenPath> pathDrawings = array.new<FrozenPath>(0)
+var array<FrozenPath> pathResults = array.new<FrozenPath>(0)
+var PathTotals pathTotals = PathTotals.new()
+var int pathSerial = 0
+var int pathSkippedOrigins = 0
+// ATR/high/low are used solely to put labels outside nearby candle wicks.
+float pathAtr = ta.atr(14)
+float pathNearbyHigh = ta.highest(high, 3)
+float pathNearbyLow = ta.lowest(low, 3)
+float pathPadding = math.max(nz(pathAtr, high - low) * 0.45, syminfo.mintick * 4.0)
+float pathRecordAge = na
+float pathRecordPosition = na
+float pathRecordExit = na
+float pathRecordPeak = na
+bool pathStarted = false
+bool pathMatured = false
+bool pathFirstExit = false
+
+if barstate.isconfirmed and pathRange
+    if not na(activePath)
+        int age = bar_index - activePath.origin
+        if age > 0 and age <= pathLengthInput
+            activePath.age := age
+            activePath.endTime := time
+            activePath.lastClose := time_close
+            activePath.lastSource := sourceInput
+            activePath.lastPosition := na
+            if na(sourceInput)
+                activePath.missing += 1
+                activePath.endInside := false
+            else
+                float fixedCenter = activePath.center + activePath.slope * float(age)
+                float alignedCenter = activePath.originSource + activePath.slope * float(age)
+                float fixedError = sourceInput - fixedCenter
+                float alignedError = sourceInput - alignedCenter
+                float heldError = sourceInput - activePath.originSource
+                float pathPosition = fixedError / activePath.width
+                bool contained = math.abs(pathPosition) <= 1.0 + tolerance / activePath.width
+                activePath.observed += 1
+                activePath.inside += contained ? 1 : 0
+                activePath.lastPosition := pathPosition
+                activePath.endInside := contained
+                activePath.peak := math.max(activePath.peak, math.abs(pathPosition))
+                activePath.fixedSse += fixedError * fixedError
+                activePath.alignedSse += alignedError * alignedError
+                activePath.baselineSse += heldError * heldError
+                if not contained and activePath.firstExit == 0
+                    activePath.firstExit := age
+                    activePath.firstSide := pathPosition > 0.0 ? 1 : -1
+                    activePath.exitTime := time
+                    activePath.exitBoundary := fixedCenter + float(activePath.firstSide) * activePath.width
+                    activePath.exitSource := sourceInput
+                    pathFirstExit := true
+                // Both references exclude the observation being tested. Rolling has
+                // intermediate data; it is NOT equally information-constrained.
+                if testReady
+                    bool rollingContained = not outsidePrior
+                    activePath.paired += 1
+                    activePath.rollingOnly += rollingContained and not contained ? 1 : 0
+                    activePath.frozenOnly += contained and not rollingContained ? 1 : 0
+                    activePath.bothInside += contained and rollingContained ? 1 : 0
+                    activePath.bothOutside += not contained and not rollingContained ? 1 : 0
+                    activePath.pairedFixedSse += fixedError * fixedError
+                    activePath.rollingSse += error1 * error1
+                    activePath.pairedBaselineSse += heldError * heldError
+            if age == pathLengthInput
+                activePath.finished := true
+                activePath.valid := activePath.missing == 0 and activePath.observed == pathLengthInput
+                f_path_totals(pathTotals, activePath, 1)
+                if not wholeInterval
+                    array.push(pathResults, activePath)
+                pathMatured := true
+            pathRecordAge := float(age)
+            pathRecordPosition := activePath.lastPosition
+            pathRecordExit := float(activePath.firstExit)
+            pathRecordPeak := activePath.peak
+            bool tagAbove = na(activePath.lastPosition) or activePath.lastPosition >= 0.0
+            float labelY = tagAbove ? math.max(pathNearbyHigh, nz(sourceInput, high)) + pathPadding : math.min(pathNearbyLow, nz(sourceInput, low)) - pathPadding
+            f_path_draw(activePath, labelY)
+            if activePath.finished
+                activePath := na
+    if pathDue
+        if fitReady and not na(sourceInput)
+            // No overlaps: L+gap >= L, and maturity is processed before launch.
+            pathSerial += 1
+            FrozenPath p = FrozenPath.new()
+            p.id := pathSerial
+            p.origin := bar_index
+            p.originTime := time
+            p.originClose := time_close
+            p.trainTime := time[lengthInput - 1]
+            p.endTime := time
+            p.lastClose := time_close
+            p.center := fitEnd
+            p.slope := fitSlope
+            p.width := fitWidth
+            p.r2 := fitR2
+            p.originSource := sourceInput
+            p.originGap := (fitEnd - sourceInput) / fitWidth
+            if showPathsInput and pathKeepInput > 0
+                // Evict BEFORE allocating, so even peak object use stays bounded.
+                while array.size(pathDrawings) >= pathKeepInput
+                    f_path_delete(array.shift(pathDrawings))
+                f_path_create(p, math.max(pathNearbyHigh, sourceInput) + pathPadding)
+                array.push(pathDrawings, p)
+            activePath := p
+            pathStarted := true
+            if na(pathRecordAge)
+                pathRecordAge := 0.0
+                pathRecordExit := 0.0
+                pathRecordPeak := 0.0
+        else
+            pathSkippedOrigins += 1
+    if not wholeInterval
+        while array.size(pathResults) > 0
+            FrozenPath firstResult = array.get(pathResults, 0)
+            bool removeResult = array.size(pathResults) > pathSamplesInput or not research and firstResult.origin < pathRecentStart
+            if not removeResult
+                break
+            f_path_totals(pathTotals, array.shift(pathResults), -1)
+
+// Remove old drawings by count/range, never by whether their outcome was good.
+if barstate.isconfirmed
+    while array.size(pathDrawings) > 0
+        FrozenPath firstDrawing = array.get(pathDrawings, 0)
+        bool removeDrawing = budgetExceeded or not showPathsInput or array.size(pathDrawings) > pathKeepInput or not research and firstDrawing.origin < pathRecentStart
+        if not removeDrawing
+            break
+        f_path_delete(array.shift(pathDrawings))
+    if budgetExceeded
+        activePath := na
+
+bool pathCountsOK = pathTotals.slots == pathTotals.valid + pathTotals.invalid and pathTotals.endInside == pathTotals.allInside + pathTotals.returned and pathTotals.valid == pathTotals.allInside + pathTotals.exited and pathTotals.paired == pathTotals.rollingOnly + pathTotals.frozenOnly + pathTotals.bothInside + pathTotals.bothOutside
+// Existing event flags retain their lower six bits and their alert definitions.
+eventFlags += (pathStarted ? 64 : 0) + (pathMatured ? 128 : 0) + (pathFirstExit ? 256 : 0)
+
+// ── Capture the display; later research bars cannot replace its statistics ─────
+var Snapshot v = Snapshot.new()
+int priorSpan = math.min(priorSpanInput, lengthInput - 1)
+int recentCount = int(math.floor(float(lengthInput) * 0.5))
+int olderCount = lengthInput - recentCount
+int statsOffset = barstate.isconfirmed ? 0 : 1
+if computeSnapshot
+    int stepTime = math.max(1, nz(time_close - time, nz(time - time[1], 60000)))
+    v.endBar := bar_index
+    v.openTime := time
+    v.closeTime := time_close
+    v.startTime := time[lengthInput - 1]
+    v.priorTime := time[priorSpan]
+    v.olderTime := time[recentCount]
+    v.recentTime := time[recentCount - 1]
+    v.tagTime := time + stepTime * tagOffsetInput
+    v.extTime := time + stepTime * extensionInput
+    v.extTagTime := time + stepTime * (extensionInput + 1)
+    v.center := fitEnd
+    v.slope := fitSlope
+    v.width := fitWidth
+    v.r2 := fitR2
+    v.coverage := fitCoverage
+    v.lag := fitLag
+    v.slopeW := slopeW
+    v.prior := priorReference
+    v.priorWidth := priorWidth
+    v.priorSlope := fitSlope[1]
+    v.sourceValue := sourceInput
+    v.priorPos := priorPosition
+    v.currentPos := currentPosition
+    v.addW := addW
+    v.dropW := dropW
+    v.widthChange := widthChange
+    v.centerMargin := centerMargin
+    v.widthMargin := widthMargin
+    v.olderEnd := olderEnd
+    v.olderSlope := olderSlope
+    v.recentEnd := recentEnd
+    v.recentSlope := recentSlope
+    v.oldW := oldW
+    v.recentW := recentW
+    v.count1 := count1[statsOffset]
+    v.cover1 := cover1[statsOffset]
+    v.skill1 := skill1[statsOffset]
+    v.pairedN := pairedN[statsOffset]
+    v.pairedBefore := beforeCover[statsOffset]
+    v.pairedAfter := afterCover[statsOffset]
+    v.includedN := includedN[statsOffset]
+    v.excludedN := excludedN[statsOffset]
+    v.inclusionRate := inclusionRate[statsOffset]
+    v.exclusionRate := exclusionRate[statsOffset]
+    v.centerN := centerN[statsOffset]
+    v.widthN := widthN[statsOffset]
+    v.jointN := jointN[statsOffset]
+    v.eitherN := eitherN[statsOffset]
+    v.countH := countH[statsOffset]
+    v.coverH := coverH[statsOffset]
+    v.skillH := skillH[statsOffset]
+    v.maeH := f_ratio(absoluteH[statsOffset], countH[statsOffset])
+    v.baselineMaeH := f_ratio(naiveAbsoluteH[statsOffset], countH[statsOffset])
+    v.errorWidthH := f_ratio(normalizedH[statsOffset], countH[statsOffset])
+    v.upperMissH := upperMissH[statsOffset]
+    v.lowerMissH := lowerMissH[statsOffset]
+    v.cause := causeCode
+    v.validPrior := testReady
+    v.included := included
+    v.outside := outsidePrior
+    v.split := splitDisagreement
+// Annotation coordinates ONLY: exact later bar timestamps when already loaded.
+// Beyond loaded data, research annotations use nominal elapsed-bar spacing.
+if research and not na(v.endBar)
+    if bar_index == v.endBar + tagOffsetInput
+        v.tagTime := time
+    if bar_index == v.endBar + extensionInput
+        v.extTime := time
+    if bar_index == v.endBar + extensionInput + 1
+        v.extTagTime := time
+
+// ── Approved text-only event glyphs; filters never alter the records above ─────
+float markerAtr = ta.atr(14)
+float markerHigh = ta.highest(high, 3)
+float markerLow = ta.lowest(low, 3)
+int visibleStart = research ? nz(firstResearchBar, bar_index) : math.max(0, last_bar_index - historyBarsInput + 1)
+int visualEnd = research ? nz(v.endBar, bar_index) : last_bar_index
+int eventStart = math.max(visibleStart, visualEnd - eventWindowInput + 1)
+var array<label> events = array.new<label>(0)
+var array<int> eventBars = array.new<int>(0)
+var int lastUpperEvent = na
+var int lastLowerEvent = na
+if barstate.isconfirmed
+    if inRange and showEventsInput and eventLimitInput > 0 and bar_index >= eventStart and (inclusionEvent or outsideEvent or insideEvent)
+        bool upperSide = insideEvent ? priorState[1] > 0 : error1 > 0.0
+        int lastEvent = upperSide ? lastUpperEvent : lastLowerEvent
+        bool noSpacing = research and researchAllEventsInput or eventSpacingInput == 0
+        if noSpacing or na(lastEvent) or bar_index - lastEvent >= eventSpacingInput
+            string caption = inclusionEvent ? "Refit inclusion" : outsideEvent ? "Outside prior envelope" : "Inside prior envelope again"
+            string tip = caption + "\nPrior / Now: " + f_signed(priorPosition) + " / " + f_signed(currentPosition) + "w\nAdd / Drop: " + f_signed(addW) + " / " + f_signed(dropW) + "w\nCenter / Width margin: " + f_signed(centerMargin) + " / " + f_signed(widthMargin) + "w\nInclusion cause: " + f_cause(causeCode) + "\nSource: " + str.tostring(sourceInput, format.mintick) + "\nGlyph height is not the event price. Not a trade instruction."
+            color tint = inclusionEvent ? secondaryColorInput : outsideEvent ? referenceColorInput : panelMutedInput
+            string glyph = eventSymbolsInput ? (inclusionEvent ? "↺" : outsideEvent ? "!" : "=") : (inclusionEvent ? "R" : outsideEvent ? "O" : "I")
+            int fontSize = eventSizeInput == "Normal" ? 14 : eventSizeInput == "Small" ? 12 : 10
+            float padding = math.max(nz(markerAtr, high - low) * eventPaddingInput, syminfo.mintick * 4.0)
+            float markerY = upperSide ? math.max(markerHigh, sourceInput) + padding : math.min(markerLow, sourceInput) - padding
+            label marker = label.new(time, markerY, glyph, xloc = xloc.bar_time, yloc = yloc.price, style = label.style_none, color = color.new(tint, 100), textcolor = tint, size = fontSize, tooltip = tip, text_formatting = text.format_bold)
+            array.push(events, marker)
+            array.push(eventBars, bar_index)
+            if upperSide
+                lastUpperEvent := bar_index
+            else
+                lastLowerEvent := bar_index
+    while array.size(events) > 0
+        bool removeEvent = array.size(events) > eventLimitInput or array.get(eventBars, 0) < eventStart or not showEventsInput or budgetExceeded
+        if not removeEvent
+            break
+        label.delete(array.shift(events))
+        array.shift(eventBars)
+
+// In research, the optional trace covers the processed interval. A plot cannot
+// retroactively crop earlier values around an endpoint learned later in execution.
+// Markers remain bounded by their separate count/window controls in both views.
+bool traceVisible = closed1 and (research or bar_index >= math.max(visibleStart, last_bar_index - trailBarsInput + 1))
+plot(showTrailInput and traceVisible ? priorReference : na, "Frozen one-step center", color = color.new(referenceColorInput, 35), linewidth = 2, style = plot.style_linebr, display = display.pane)
+plot(showTrailBandsInput and traceVisible ? priorReference + priorWidth : na, "Frozen one-step upper", color = color.new(referenceColorInput, 65), linewidth = 1, style = plot.style_linebr, display = display.pane)
+plot(showTrailBandsInput and traceVisible ? priorReference - priorWidth : na, "Frozen one-step lower", color = color.new(referenceColorInput, 65), linewidth = 1, style = plot.style_linebr, display = display.pane)
+
+// Numeric-history routing: all 53 former fields remain available across pages.
+// RE10140 mitigation: 22 numeric plot calls + 3 trace plot calls + 6 alerts.
+// Even allowing one extra color series for EVERY plot gives 25*2+6 = 56,
+// below the 64 plot-count limit. This is a conservative static bound, not
+// a measured TradingView runtime count. Drawing objects use separate limits.
+// Only the output layer is paged. All calculations above run unchanged.
+// Record conditions are preserved verbatim; future bars do not repeat a
+// research snapshot as though it were a new historical observation.
+bool record = inRange and barstate.isconfirmed
+string numericPage = historyPageInput == "Match panel" ? panelPageInput : historyPageInput
+int numericPageCode = numericPage == "Model" ? 1 : numericPage == "Refit research" ? 2 : numericPage == "Horizon research" ? 3 : 4
+int numericSlots = numericPageCode == 1 ? 18 : numericPageCode == 2 ? 17 : numericPageCode == 3 ? 7 : 8
+plot(record ? float(numericPageCode) : na, "Numeric history page 1-Model 2-Refit 3-Horizon 4-Paths", color = #C5D4E8, editable = false, display = display.data_window)
+plot(record ? sourceInput : na, "Source price used", color = #C5D4E8, editable = false, display = display.data_window)
+plot(paired ? float(causeCode) : na, "Inclusion cause 0-none 1-center 2-width 3-joint 4-either", color = #C5D4E8, editable = false, display = display.data_window)
+plot(record ? float(eventFlags) : na, "Event bits 1-out 2-in 4-refitIn 8-refitOut 16-gap 32-split 64-pathStart 128-pathDone 256-firstExit", color = #C5D4E8, editable = false, display = display.data_window)
+
+// The titles are intentionally constant. M / R / H / F identify the page.
+// Unused slots are hidden; hiding is NOT relied on to lower plot counts.
+float historyValue01 = switch numericPage
+    "Model" => record ? fitEnd : na
+    "Refit research" => record ? addW : na
+    "Horizon research" => closedH ? referenceH : na
+    "Frozen paths" => record ? pathRecordAge : na
+    => na
+plot(historyValue01, "01  M Endpoint | R Add | H H center | F Path age", color = #C5D4E8, editable = false, display = numericSlots >= 1 ? display.data_window : display.none)
+
+float historyValue02 = switch numericPage
+    "Model" => record ? fitWidth : na
+    "Refit research" => record ? dropW : na
+    "Horizon research" => closedH ? widthH : na
+    "Frozen paths" => record ? pathRecordPosition : na
+    => na
+plot(historyValue02, "02  M Width | R Drop | H H width | F Path pos", color = #C5D4E8, editable = false, display = numericSlots >= 2 ? display.data_window : display.none)
+
+float historyValue03 = switch numericPage
+    "Model" => record ? fitNoise : na
+    "Refit research" => record ? centerMargin : na
+    "Horizon research" => record ? countH : na
+    "Frozen paths" => record ? pathRecordExit : na
+    => na
+plot(historyValue03, "03  M Residual SE | R Center margin | H H n | F First exit", color = #C5D4E8, editable = false, display = numericSlots >= 3 ? display.data_window : display.none)
+
+float historyValue04 = switch numericPage
+    "Model" => record ? slopeW : na
+    "Refit research" => record ? widthMargin : na
+    "Horizon research" => record ? coverH * 100.0 : na
+    "Frozen paths" => record ? pathRecordPeak : na
+    => na
+plot(historyValue04, "04  M Slope w | R Width margin | H H cover % | F Peak pos", color = #C5D4E8, editable = false, display = numericSlots >= 4 ? display.data_window : display.none)
+
+float historyValue05 = switch numericPage
+    "Model" => record ? fitR2 : na
+    "Refit research" => record ? beforeCover * 100.0 : na
+    "Horizon research" => record ? skillH * 100.0 : na
+    "Frozen paths" => record ? float(pathTotals.valid) : na
+    => na
+plot(historyValue05, "05  M R2 | R Before % | H H skill % | F Paths n", color = #C5D4E8, editable = false, display = numericSlots >= 5 ? display.data_window : display.none)
+
+float historyValue06 = switch numericPage
+    "Model" => record ? fitCoverage * 100.0 : na
+    "Refit research" => record ? afterCover * 100.0 : na
+    "Horizon research" => record ? f_ratio(absoluteH, countH) : na
+    "Frozen paths" => record ? f_ratio(float(pathTotals.endInside), float(pathTotals.valid)) * 100.0 : na
+    => na
+plot(historyValue06, "06  M In-fit % | R After % | H H MAE | F End %", color = #C5D4E8, editable = false, display = numericSlots >= 6 ? display.data_window : display.none)
+
+float historyValue07 = switch numericPage
+    "Model" => record ? cover1 * 100.0 : na
+    "Refit research" => record ? pairedN : na
+    "Horizon research" => record ? f_ratio(naiveAbsoluteH, countH) : na
+    "Frozen paths" => record ? f_ratio(float(pathTotals.allInside), float(pathTotals.valid)) * 100.0 : na
+    => na
+plot(historyValue07, "07  M 1-step % | R Paired n | H H baseline | F All %", color = #C5D4E8, editable = false, display = numericSlots >= 7 ? display.data_window : display.none)
+
+float historyValue08 = switch numericPage
+    "Model" => record ? count1 : na
+    "Refit research" => record ? includedN : na
+    "Frozen paths" => record ? f_ratio(float(pathTotals.rollingOnly), float(pathTotals.paired)) * 100.0 : na
+    => na
+plot(historyValue08, "08  M 1-step n | R Included n | F Updated-only %", color = #C5D4E8, editable = false, display = numericSlots >= 8 ? display.data_window : display.none)
+
+float historyValue09 = switch numericPage
+    "Model" => record ? skill1 * 100.0 : na
+    "Refit research" => record ? excludedN : na
+    => na
+plot(historyValue09, "09  M 1-step skill % | R Excluded n", color = #C5D4E8, editable = false, display = numericSlots >= 9 ? display.data_window : display.none)
+
+float historyValue10 = switch numericPage
+    "Model" => record ? priorReference : na
+    "Refit research" => record ? inclusionRate * 100.0 : na
+    => na
+plot(historyValue10, "10  M Prior center | R In from out %", color = #C5D4E8, editable = false, display = numericSlots >= 10 ? display.data_window : display.none)
+
+float historyValue11 = switch numericPage
+    "Model" => record ? priorWidth : na
+    "Refit research" => record ? exclusionRate * 100.0 : na
+    => na
+plot(historyValue11, "11  M Prior width | R Out from in %", color = #C5D4E8, editable = false, display = numericSlots >= 11 ? display.data_window : display.none)
+
+float historyValue12 = switch numericPage
+    "Model" => record ? priorPosition : na
+    "Refit research" => record ? centerN : na
+    => na
+plot(historyValue12, "12  M Prior pos | R Center n", color = #C5D4E8, editable = false, display = numericSlots >= 12 ? display.data_window : display.none)
+
+float historyValue13 = switch numericPage
+    "Model" => record ? currentPosition : na
+    "Refit research" => record ? widthN : na
+    => na
+plot(historyValue13, "13  M Now pos | R Width n", color = #C5D4E8, editable = false, display = numericSlots >= 13 ? display.data_window : display.none)
+
+float historyValue14 = switch numericPage
+    "Model" => record ? fitLag : na
+    "Refit research" => record ? jointN : na
+    => na
+plot(historyValue14, "14  M Lag | R Joint n", color = #C5D4E8, editable = false, display = numericSlots >= 14 ? display.data_window : display.none)
+
+float historyValue15 = switch numericPage
+    "Model" => record ? oldW : na
+    "Refit research" => record ? eitherN : na
+    => na
+plot(historyValue15, "15  M Old slope | R Either n", color = #C5D4E8, editable = false, display = numericSlots >= 15 ? display.data_window : display.none)
+
+float historyValue16 = switch numericPage
+    "Model" => record ? recentW : na
+    "Refit research" => paired ? (included ? 1.0 : 0.0) : na
+    => na
+plot(historyValue16, "16  M Recent slope | R In flag", color = #C5D4E8, editable = false, display = numericSlots >= 16 ? display.data_window : display.none)
+
+float historyValue17 = switch numericPage
+    "Model" => record ? widthChange * 100.0 : na
+    "Refit research" => paired ? (excluded ? 1.0 : 0.0) : na
+    => na
+plot(historyValue17, "17  M Width change % | R Out flag", color = #C5D4E8, editable = false, display = numericSlots >= 17 ? display.data_window : display.none)
+
+float historyValue18 = switch numericPage
+    "Model" => closed1 ? float(priorState) : na
+    => na
+plot(historyValue18, "18  M Prior state", color = #C5D4E8, editable = false, display = numericSlots >= 18 ? display.data_window : display.none)
+
+// ── Fixed drawing pool; preserve the approved default chart appearance ────────
+var line basisLine = line.new(na, na, na, na)
+var line upperLine = line.new(na, na, na, na)
+var line lowerLine = line.new(na, na, na, na)
+var line innerUpperLine = line.new(na, na, na, na)
+var line innerLowerLine = line.new(na, na, na, na)
+var line extensionBasis = line.new(na, na, na, na)
+var line extensionUpper = line.new(na, na, na, na)
+var line extensionLower = line.new(na, na, na, na)
+var line priorBasisLine = line.new(na, na, na, na)
+var line priorUpperLine = line.new(na, na, na, na)
+var line priorLowerLine = line.new(na, na, na, na)
+var line olderFitLine = line.new(na, na, na, na)
+var line recentFitLine = line.new(na, na, na, na)
+var line residualLine = line.new(na, na, na, na)
+var linefill upperFill = linefill.new(basisLine, upperLine, color.new(upperColorInput, 100))
+var linefill lowerFill = linefill.new(basisLine, lowerLine, color.new(lowerColorInput, 100))
+var label upperTag = label.new(na, na, "", style = label.style_label_left)
+var label lowerTag = label.new(na, na, "", style = label.style_label_left)
+var label basisTag = label.new(na, na, "", style = label.style_label_left)
+var label extensionTag = label.new(na, na, "", style = label.style_label_left)
+var table info = table.new(position.top_right, 3, 14, bgcolor = color.new(color.black, 100), frame_width = 0, border_width = 0)
+
+if barstate.islast
+    bool ready = not na(v.center) and not budgetExceeded and (not research or validDates)
+    bool drawChannel = showChannelInput and ready
+    bool drawPrior = ready and v.validPrior and showPriorInput
+    bool drawExtension = drawChannel and showExtensionInput
+    bool livePreview = not research and updateInput == "Live preview" and not barstate.isconfirmed
+    string coordinates = research ? xloc.bar_time : xloc.bar_index
+    int endX = research ? nz(v.openTime, time) : nz(v.endBar, bar_index)
+    int startX = research ? nz(v.startTime, time) : nz(v.endBar, bar_index) - lengthInput + 1
+    int priorX = research ? nz(v.priorTime, time) : nz(v.endBar, bar_index) - priorSpan
+    int olderX = research ? nz(v.olderTime, time) : nz(v.endBar, bar_index) - recentCount
+    int recentX = research ? nz(v.recentTime, time) : nz(v.endBar, bar_index) - recentCount + 1
+    int tagX = research ? nz(v.tagTime, time) : nz(v.endBar, bar_index) + tagOffsetInput
+    int extensionX = research ? nz(v.extTime, time) : nz(v.endBar, bar_index) + extensionInput
+    int extensionTagX = research ? nz(v.extTagTime, time) : nz(v.endBar, bar_index) + extensionInput + 1
+    color slopeColor = na(v.slopeW) ? panelMutedInput : v.slopeW > flatInput ? upperColorInput : v.slopeW < -flatInput ? lowerColorInput : secondaryColorInput
+    float startValue = v.center - v.slope * float(lengthInput - 1)
+    float extensionValue = v.center + v.slope * float(extensionInput)
+    float priorStartValue = v.prior - v.priorSlope * float(priorSpan)
+    f_line(basisLine, drawChannel, startX, startValue, endX, v.center, slopeColor, centerWidthInput, line.style_solid, coordinates)
+    f_line(upperLine, drawChannel, startX, startValue + v.width, endX, v.center + v.width, upperColorInput, boundaryWidthInput, line.style_solid, coordinates)
+    f_line(lowerLine, drawChannel, startX, startValue - v.width, endX, v.center - v.width, lowerColorInput, boundaryWidthInput, line.style_solid, coordinates)
+    f_line(innerUpperLine, drawChannel and showInnerInput, startX, startValue + v.width * innerFractionInput, endX, v.center + v.width * innerFractionInput, color.new(upperColorInput, 45), 1, line.style_dotted, coordinates)
+    f_line(innerLowerLine, drawChannel and showInnerInput, startX, startValue - v.width * innerFractionInput, endX, v.center - v.width * innerFractionInput, color.new(lowerColorInput, 45), 1, line.style_dotted, coordinates)
+    linefill.set_color(upperFill, color.new(upperColorInput, drawChannel and showFillInput ? fillTransparencyInput : 100))
+    linefill.set_color(lowerFill, color.new(lowerColorInput, drawChannel and showFillInput ? fillTransparencyInput : 100))
+    f_line(extensionBasis, drawExtension, endX, v.center, extensionX, extensionValue, color.new(slopeColor, 15), centerWidthInput, line.style_dashed, coordinates)
+    f_line(extensionUpper, drawExtension, endX, v.center + v.width, extensionX, extensionValue + v.width, color.new(upperColorInput, 25), 1, line.style_dashed, coordinates)
+    f_line(extensionLower, drawExtension, endX, v.center - v.width, extensionX, extensionValue - v.width, color.new(lowerColorInput, 25), 1, line.style_dashed, coordinates)
+    f_line(priorBasisLine, drawPrior, priorX, priorStartValue, endX, v.prior, referenceColorInput, 2, line.style_dashed, coordinates)
+    f_line(priorUpperLine, drawPrior, priorX, priorStartValue + v.priorWidth, endX, v.prior + v.priorWidth, color.new(referenceColorInput, 30), 1, line.style_dashed, coordinates)
+    f_line(priorLowerLine, drawPrior, priorX, priorStartValue - v.priorWidth, endX, v.prior - v.priorWidth, color.new(referenceColorInput, 30), 1, line.style_dashed, coordinates)
+    f_line(olderFitLine, ready and showSplitInput, startX, v.olderEnd - v.olderSlope * float(olderCount - 1), olderX, v.olderEnd, secondaryColorInput, 2, line.style_dotted, coordinates)
+    f_line(recentFitLine, ready and showSplitInput, recentX, v.recentEnd - v.recentSlope * float(recentCount - 1), endX, v.recentEnd, secondaryColorInput, 2, line.style_dotted, coordinates)
+    f_line(residualLine, ready and v.validPrior and showResidualInput, endX, v.prior, endX, v.sourceValue, referenceColorInput, 3, line.style_solid, coordinates)
+    f_tag(upperTag, drawChannel and showTagsInput, tagX, v.center + v.width, "+1w", "Fitted center plus the selected half-width.", upperColorInput, coordinates)
+    f_tag(lowerTag, drawChannel and showTagsInput, tagX, v.center - v.width, "-1w", "Fitted center minus the selected half-width.", lowerColorInput, coordinates)
+    f_tag(basisTag, drawChannel and showTagsInput, tagX, v.center, "OLS", "Fit at the displayed endpoint. A retrospective fit, not a historical signal.", slopeColor, coordinates)
+    f_tag(extensionTag, drawExtension and showTagsInput, extensionTagX, extensionValue, "EXT", "Geometric continuation only. No confidence or prediction interval. Not used by any audit.", slopeColor, coordinates)
+    table.clear(info, 0, 0, 2, 13)
+    if showPanelInput
+        table.cell(info, 0, 0, "", height = topPaddingInput, bgcolor = color.new(color.black, 100))
+        table.cell(info, 2, 1, "", width = rightPaddingInput, bgcolor = color.new(color.black, 100))
+        color headerBg = f_tint(panelBackgroundInput, secondaryColorInput, 0.10)
+        color fitBg = f_tint(panelBackgroundInput, upperColorInput, 0.035)
+        color auditBg = f_tint(panelBackgroundInput, referenceColorInput, 0.035)
+        string stamp = na(v.closeTime) ? "No close" : str.format_time(v.closeTime, "yyyy-MM-dd HH:mm", syminfo.timezone)
+        string modeCaption = research ? (na(v.closeTime) ? "--" : str.format_time(v.closeTime, "yy-MM-dd", syminfo.timezone)) : livePreview ? (panelSymbolsInput ? "~ LIVE" : "LIVE") : (panelSymbolsInput ? "■ CLOSED" : "CLOSED")
+        string headerTip = "Snapshot close: " + stamp + " / " + syminfo.timezone + ". " + (research ? "As-of view; no alerts. " : "") + "Audit results are confirmed only. w = half-width."
+        string pageHeader = panelPageInput == "Frozen paths" ? "PATH AUDIT" : research ? "AS-OF AUDIT" : "FIT AUDIT"
+        string pageMode = panelPageInput == "Frozen paths" and pathPhasePartial ? "PHASE*" : modeCaption
+        string pathPhaseTip = pathPhasePartial ? " Path anchor precedes loaded data; schedule seeded at the first available close. Loading older bars can change phase." : " Path anchor is covered by loaded history."
+        f_row(info, 1, pageHeader, pageMode, livePreview or research or panelPageInput == "Frozen paths" and pathPhasePartial ? referenceColorInput : panelTextInput, headerTip + (panelPageInput == "Frozen paths" ? pathPhaseTip : ""), headerBg)
+        if not ready
+            string reason = research and not validDates ? "START > END" : budgetExceeded ? "RANGE > CAP" : na(v.endBar) ? "NO ELIGIBLE BAR" : "WARM-UP / DATA"
+            f_row(info, 2, f_heading("...", "Waiting"), reason, referenceColorInput, "Research needs loaded confirmed bars inside the dates. RANGE > CAP: narrow the interval or increase Calculation budget. Any earlier trace or Data Window records are partial if the budget is exceeded. Missing data and incomplete regression windows are not replaced with invented values.", panelBackgroundInput)
+        else
+            string sampleTip = wholeInterval ? "Actual valid tests in the selected interval. First one-step/H-step outcomes require 1/H earlier model bars. Counts are not significance tests." : "Actual valid tests / rolling chart-bar window. A check mark means a full sample, not a successful model."
+            string sample1 = wholeInterval ? str.tostring(v.count1, "0") + " obs" : str.tostring(v.count1, "0") + " / " + str.tostring(auditLengthInput) + (panelSymbolsInput ? (v.count1 >= float(auditLengthInput) ? " ✓" : " ~") : "")
+            if panelPageInput == "Model"
+                bool gap = v.count1 >= float(auditLengthInput) and (v.coverage - v.cover1) * 100.0 >= coverageGapInput
+                string slopeCaption = f_direction(v.slopeW) + " " + f_signed(v.slopeW) + "w / " + str.tostring(slopeSpanInput)
+                f_row(info, 2, f_heading("/", "Slope"), slopeCaption, slopeColor, "Slope over the selected span, divided by the current half-width. Not an angle, return, or trade direction.", fitBg)
+                color fitColor = na(v.r2) ? panelMutedInput : color.from_gradient(v.r2, 0.0, 1.0, panelMutedInput, upperColorInput)
+                f_row(info, 3, f_heading("▥", "R² fit"), (panelSymbolsInput and not na(v.r2) ? f_meter(v.r2) + " " : "") + f_number(v.r2), fitColor, "In-window fit, not predictive skill. Constant data have undefined R squared.", fitBg)
+                f_row(info, 4, f_heading("⊂", "In/Next"), f_percent(v.coverage) + " / " + f_percent(v.cover1), gap ? referenceColorInput : panelTextInput, "Current in-fit coverage / historical one-step coverage. Different samples. Use Refit research for a matched before/after comparison.", auditBg)
+                f_row(info, 5, f_heading("↔", "Prior/Now"), f_signed(v.priorPos) + " / " + f_signed(v.currentPos) + "w", v.outside ? referenceColorInput : panelTextInput, "Prior uses the old width; Now uses the new width. Do not subtract these as raw price distances.", auditBg)
+                f_row(info, 6, f_heading("±", "Add/Drop"), f_signed(v.addW) + " / " + f_signed(v.dropW) + "w", panelTextInput, "Newest addition / oldest removal. Both are center shifts at the same time, in prior widths. Sum = total center refit. Defined order: remove oldest, then add newest.", auditBg)
+                string state = not v.validPrior ? "NO PRIOR" : v.included ? (panelSymbolsInput ? "↺ REFIT IN" : "REFIT IN") : v.outside ? (panelSymbolsInput ? "! OUTSIDE" : "OUTSIDE") : (panelSymbolsInput ? "= INSIDE" : "INSIDE")
+                color stateColor = v.included ? secondaryColorInput : v.outside ? referenceColorInput : panelTextInput
+                f_row(info, 7, f_heading("◇", "State"), state, stateColor, "OUTSIDE/INSIDE refer to the prior model. REFIT IN means outside before, inside after updating. Not a price-reversal claim.", f_tint(panelBackgroundInput, stateColor, v.included or v.outside ? 0.13 : 0.04))
+                f_row(info, 8, f_heading("#", "Audit"), sample1, wholeInterval or v.count1 >= float(auditLengthInput) ? panelTextInput : referenceColorInput, sampleTip, panelBackgroundInput)
+                if panelDetailInput == "Detailed"
+                    f_row(info, 9, f_heading("=", "Skill"), na(v.skill1) ? "n/a" : f_signed(v.skill1 * 100.0) + "%", na(v.skill1) or v.skill1 < 0.0 ? referenceColorInput : upperColorInput, "100 * (1 - regression SSE / unchanged-source SSE), using identical matured observations. Not trading returns. Undefined if baseline SSE is zero.", auditBg)
+                    f_row(info, 10, f_heading("~", "Res. lag"), f_signed(v.lag), math.abs(nz(v.lag)) >= lagHighlightInput ? referenceColorInput : panelTextInput, "Adjacent residual products / SSE. Descriptive persistence only; no p-value.", fitBg)
+                    f_row(info, 11, f_heading("↔", "Old/New"), f_direction(v.oldW) + " " + f_signed(v.oldW) + " / " + f_direction(v.recentW) + " " + f_signed(v.recentW), v.split ? secondaryColorInput : panelTextInput, "Older/recent non-overlapping half-window slopes, using one common full-channel width.", fitBg)
+                    f_row(info, 12, f_heading("Δ", "Width"), na(v.widthChange) ? "n/a" : f_signed(v.widthChange * 100.0) + "%", panelTextInput, "Width change versus the preceding model.", fitBg)
+                    f_row(info, 13, f_heading("↺", "Incl. n"), str.tostring(v.includedN, "0"), secondaryColorInput, "All matched refit-inclusion observations, not only displayed transitions.", auditBg)
+            else if panelPageInput == "Refit research"
+                f_row(info, 2, f_heading("↔", "Before/After"), f_percent(v.pairedBefore) + " / " + f_percent(v.pairedAfter), panelTextInput, "Exactly the same confirmed observations before/after refitting. Coverage change = (included count - excluded count) / paired count. The After value is in-sample, not a forecast.", auditBg)
+                f_row(info, 3, f_heading("↺", "In/Out n"), str.tostring(v.includedN, "0") + " / " + str.tostring(v.excludedN, "0"), secondaryColorInput, "Outside-to-inside / inside-to-outside observation counts. Included among prior-outside: " + f_percent(v.inclusionRate) + "; excluded among prior-inside: " + f_percent(v.exclusionRate) + ". Not transition-marker counts or reversal probabilities.", auditBg)
+                f_row(info, 4, f_heading("±", "Center/Width"), f_signed(v.centerMargin) + " / " + f_signed(v.widthMargin) + "w", panelTextInput, "Latest containment-margin changes: abs(old residual)-abs(new residual), and new width-old width. Both divided by prior width; their sum is the exact margin change.", auditBg)
+                f_row(info, 5, f_heading("◇", "Cause"), f_cause(v.cause), secondaryColorInput, "For inclusion only: CENTER = center change alone suffices; WIDTH = width alone; JOINT = both needed; EITHER = either alone suffices. Counterfactual geometry, not economic causality.", auditBg)
+                f_row(info, 6, f_heading("↔", "C/W n"), str.tostring(v.centerN, "0") + " / " + str.tostring(v.widthN, "0"), panelTextInput, "Exclusive center-only / width-only inclusion counts over the paired sample.", auditBg)
+                f_row(info, 7, f_heading("⊂", "Joint/Either"), str.tostring(v.jointN, "0") + " / " + str.tostring(v.eitherN, "0"), panelTextInput, "Joint-required / either-sufficient inclusion counts. All four cause counts sum to In n.", auditBg)
+                f_row(info, 8, f_heading("#", "Paired"), str.tostring(v.pairedN, "0") + (wholeInterval ? " obs" : " / " + str.tostring(auditLengthInput)), panelTextInput, sampleTip + " Paired requires both prior and current fits.", panelBackgroundInput)
+            else if panelPageInput == "Horizon research"
+                string horizonCaption = "1/" + str.tostring(horizonInput)
+                string horizonTip = "Frozen origin model and width; only matured closes. Each horizon can have a different valid count. H is a bar count, not calendar time. These are dependent observations, not independent trials."
+                f_row(info, 2, f_heading("⊂", horizonCaption + " Cover"), f_percent(v.cover1) + " / " + f_percent(v.coverH), panelTextInput, horizonTip + " Wide bands can have high coverage without good forecasts.", auditBg)
+                f_row(info, 3, f_heading("=", horizonCaption + " Skill"), f_signed(v.skill1 * 100.0) + " / " + f_signed(v.skillH * 100.0) + "%", panelTextInput, "Each score compares squared error against unchanged source at that horizon, on matched observations. Negative is worse. Not profit or statistical significance.", auditBg)
+                f_row(info, 4, f_heading("Δ", "H MAE"), na(v.maeH) ? "n/a" : str.tostring(v.maeH, format.mintick), panelTextInput, "Mean absolute H-step regression error, in source price units. Smaller is less error, not necessarily more profit.", auditBg)
+                f_row(info, 5, f_heading("=", "H Baseline"), na(v.baselineMaeH) ? "n/a" : str.tostring(v.baselineMaeH, format.mintick), panelTextInput, "Mean absolute H-step error from holding the origin source unchanged. Uses exactly the same outcomes as H MAE.", auditBg)
+                f_row(info, 6, f_heading("↔", "H |err|/w"), f_number(v.errorWidthH), panelTextInput, "Mean absolute H-step error divided by each origin's width. Changing width settings changes this normalization.", auditBg)
+                f_row(info, 7, f_heading("±", "H miss +/-"), str.tostring(v.upperMissH, "0") + " / " + str.tostring(v.lowerMissH, "0"), referenceColorInput, "Confirmed endpoints above/below the frozen H-step envelope. These counts plus inside count equal H observations.", auditBg)
+                f_row(info, 8, f_heading("#", "n " + horizonCaption), str.tostring(v.count1, "0") + " / " + str.tostring(v.countH, "0"), panelTextInput, sampleTip + " " + horizonTip, panelBackgroundInput)
+            else if panelPageInput == "Frozen paths"
+                string scopeTip = wholeInterval ? "All completed path slots originating inside the selected research interval." : "Last " + str.tostring(pathSamplesInput) + " completed path slots originating inside the calculation range; missing-data slots count toward retention."
+                string pathSampleTip = scopeTip + " Completed valid: " + str.tostring(pathTotals.valid) + "; missing-data slots: " + str.tostring(pathTotals.invalid) + "; scheduled origins skipped for invalid fit/source in the processed range: " + str.tostring(pathSkippedOrigins) + ". Drawing retention never changes these totals. Non-overlapping outcome segments do not imply independent trials."
+                if not pathCountsOK
+                    f_row(info, 2, "Path check", "COUNT MISMATCH", referenceColorInput, "Path count identities failed. Do not interpret the path results.", panelBackgroundInput)
+                else
+                    f_row(info, 2, f_heading("⊂", "End/All"), f_percent(f_ratio(float(pathTotals.endInside), float(pathTotals.valid))) + " / " + f_percent(f_ratio(float(pathTotals.allInside), float(pathTotals.valid))), panelTextInput, "Same completed valid paths: endpoint inside / ALL L sampled source closes inside. The origin close is not tested. A return before maturity does not erase an earlier exit. No intrabar high/low testing.", auditBg)
+                    f_row(info, 3, f_heading("↺", "Back/Exit"), str.tostring(pathTotals.returned) + " / " + str.tostring(pathTotals.exited), referenceColorInput, "Paths ending inside after an earlier exit / paths with any sampled exit. Same fixed boundaries throughout each path. End count = All count + Back count. These are path counts, not trades.", auditBg)
+                    f_row(info, 4, f_heading("!", "First exit"), f_number(f_ratio(float(pathTotals.exitAge), float(pathTotals.exited))) + " / " + str.tostring(pathLengthInput), panelTextInput, "Mean first sampled-exit age among exited VALID completed paths only / path length. Non-exited and unfinished paths are not assigned an exit age of zero. Mean largest absolute source position: " + f_number(f_ratio(pathTotals.peakSum, float(pathTotals.valid))) + " origin widths. This is a descriptive conditional average, not a survival estimate.", auditBg)
+                    f_row(info, 5, f_heading("=", "F/A skill"), f_signed(f_skill(pathTotals.fixedSse, pathTotals.baselineSse) * 100.0) + " / " + f_signed(f_skill(pathTotals.alignedSse, pathTotals.baselineSse) * 100.0) + "%", panelTextInput, "F: frozen fitted endpoint + origin slope*k. A: origin source + SAME origin slope*k (level-aligned). Each compares pooled squared error with holding origin source unchanged, over exactly the same L closes of valid completed paths. Undefined if baseline error is zero. This separates endpoint displacement from slope contribution; not returns, significance, or a selected best model.", auditBg)
+                    f_row(info, 6, f_heading("↔", "Roll/Fix"), f_percent(f_ratio(float(pathTotals.rollingOnly), float(pathTotals.paired))) + " / " + f_percent(f_ratio(float(pathTotals.frozenOnly), float(pathTotals.paired))), panelTextInput, "Rolling-only inside / fixed-only inside among the SAME paired closes in valid completed paths. Both exclude the evaluated source, but rolling has intermediate information. Differences can come from center and width changes. Paired fixed/rolling skill against a common origin-held baseline: " + f_signed(f_skill(pathTotals.pairedFixedSse, pathTotals.pairedBaselineSse) * 100.0) + " / " + f_signed(f_skill(pathTotals.rollingSse, pathTotals.pairedBaselineSse) * 100.0) + "%.", auditBg)
+                    f_row(info, 7, f_heading("#", "Paired"), str.tostring(pathTotals.paired) + " closes", panelTextInput, "Number of valid rolling-prior/frozen comparisons. Both inside: " + str.tostring(pathTotals.bothInside) + "; both outside: " + str.tostring(pathTotals.bothOutside) + "; rolling only: " + str.tostring(pathTotals.rollingOnly) + "; frozen only: " + str.tostring(pathTotals.frozenOnly) + ". Four categories sum to this count. Fixed/aligned baseline sample: " + str.tostring(pathTotals.valid * pathLengthInput) + " source closes.", auditBg)
+                    string openCaption = na(activePath) ? "--" : str.tostring(activePath.age) + "/" + str.tostring(pathLengthInput)
+                    f_row(info, 8, f_heading("#", "Done/Open"), str.tostring(pathTotals.valid) + " / " + openCaption + (pathTotals.invalid > 0 ? " !" : ""), pathTotals.invalid > 0 ? referenceColorInput : panelTextInput, pathSampleTip + " Open shows observed age/L, NOT success. ALL/BACK/OUT badges appear only at maturity. Default drawings: last " + str.tostring(pathKeepInput) + " paths. " + pathPhaseTip, panelBackgroundInput)
+

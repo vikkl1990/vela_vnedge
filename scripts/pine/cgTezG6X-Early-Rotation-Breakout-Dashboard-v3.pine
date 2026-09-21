@@ -1,0 +1,1020 @@
+//@version=6
+indicator("Early Rotation & Breakout Dashboard v3", overlay=true, dynamic_requests=true)
+
+// ============================================================================
+// EARLY ROTATION & BREAKOUT DASHBOARD v3
+//
+// PURPOSE
+// Detect and track the full lifecycle:
+//
+// BASE BUILDING
+// EARLY SETUP
+// EARLY BREAKOUT
+// BREAKOUT HOLDING
+// MAJOR BREAKOUT
+// TREND HOLDING
+// HIGHER BASE
+// RE-SETUP
+// SECONDARY BREAKOUT
+// EXTENDED TREND
+// TREND FAILED
+//
+// Key v3 change:
+// A successful major breakout creates persistent trend memory.
+// The trend is NOT forgotten after five trading days.
+// ============================================================================
+
+
+// ============================================================================
+// SETTINGS
+// ============================================================================
+
+string TF = input.timeframe("D", "Calculation timeframe")
+
+int earlyBreakoutLen = input.int(20, "Early breakout lookback", minval=10)
+int majorBreakoutLen = input.int(55, "Major breakout lookback", minval=30)
+int baseLen = input.int(30, "Base lookback", minval=15)
+
+int rsLen = input.int(21, "Relative strength lookback", minval=10)
+int fastEmaLen = input.int(20, "Fast EMA", minval=5)
+int smaLen = input.int(50, "Trend SMA", minval=20)
+int volLen = input.int(20, "Volume average", minval=10)
+
+float earlySetupPct = input.float(5.0, "Max % below 20D breakout", minval=1.0, step=0.5)
+
+float maxBaseWidthPct = input.float(20.0, "Max base width %", minval=5.0, step=1.0)
+float preferredBaseWidthPct = input.float(12.0, "Preferred base width %", minval=5.0, step=1.0)
+
+float breakoutRVOL = input.float(1.20, "Minimum confirmed breakout RVOL", minval=0.5, step=0.1)
+
+float mildExtensionPct = input.float(15.0, "Mild extension % above 50MA", minval=5.0, step=1.0)
+float highExtensionPct = input.float(25.0, "High extension % above 50MA", minval=10.0, step=1.0)
+
+int setupMemoryBars = input.int(3, "Setup memory bars", minval=1, maxval=10)
+
+int breakoutHoldBars = input.int(5, "Initial breakout holding bars", minval=1, maxval=15)
+
+float trendFailureTolerancePct = input.float(8.0, "Trend failure % below major breakout", minval=2.0, maxval=20.0, step=0.5)
+
+float higherBaseTolerancePct = input.float(5.0, "Higher-base tolerance below breakout %", minval=1.0, maxval=15.0, step=0.5)
+
+int minSecondaryBaseBars = input.int(10, "Minimum bars before higher-base detection", minval=5, maxval=40)
+
+bool enableAlerts = input.bool(true, "Enable alerts")
+
+
+// ============================================================================
+// BENCHMARKS
+// ============================================================================
+
+string industryETF = input.symbol("AMEX:XOP", "Industry ETF")
+string sectorETF = input.symbol("AMEX:XLE", "Parent Sector ETF")
+
+
+// ============================================================================
+// STOCK UNIVERSE
+// ============================================================================
+
+string stock1 = input.symbol("NYSE:PBF", "Stock 1")
+string stock2 = input.symbol("NYSE:DK", "Stock 2")
+string stock3 = input.symbol("NYSE:DINO", "Stock 3")
+string stock4 = input.symbol("NYSE:MPC", "Stock 4")
+string stock5 = input.symbol("NYSE:VLO", "Stock 5")
+string stock6 = input.symbol("NYSE:PSX", "Stock 6")
+string stock7 = input.symbol("NYSE:PARR", "Stock 7")
+string stock8 = input.symbol("NASDAQ:CLMT", "Stock 8")
+string stock9 = input.symbol("NYSE:CRGY", "Stock 9")
+string stock10 = input.symbol("NASDAQ:APA", "Stock 10")
+
+var array<string> stocks = array.new_string()
+
+if barstate.isfirst
+    array.push(stocks, stock1)
+    array.push(stocks, stock2)
+    array.push(stocks, stock3)
+    array.push(stocks, stock4)
+    array.push(stocks, stock5)
+    array.push(stocks, stock6)
+    array.push(stocks, stock7)
+    array.push(stocks, stock8)
+    array.push(stocks, stock9)
+    array.push(stocks, stock10)
+
+int N = array.size(stocks)
+
+
+// ============================================================================
+// PERSISTENT MEMORY
+// ============================================================================
+
+// How long since a valid setup condition.
+var array<int> setupAge = array.new_int(10, 999)
+
+// Used only for the short initial post-breakout holding phase.
+var array<int> breakoutAge = array.new_int(10, 999)
+
+// Most recent breakout level.
+var array<float> activeBreakoutLevel = array.new_float(10, na)
+
+// Persistent major trend memory.
+var array<bool> trendActive = array.new_bool(10, false)
+
+// ORIGINAL major breakout level that started the trend.
+var array<float> primaryBreakoutLevel = array.new_float(10, na)
+
+// Age of persistent trend.
+var array<int> trendAge = array.new_int(10, 999)
+
+// Remembers that a valid higher base has formed.
+var array<bool> higherBaseSeen = array.new_bool(10, false)
+
+// Alert state memory.
+var array<string> previousState = array.new_string(10, "NO SETUP")
+
+
+// ============================================================================
+// DATA FUNCTIONS
+// ============================================================================
+
+f_stock_data() =>
+    float c0 = close
+    float c1 = close[1]
+    float c5 = close[5]
+
+    float c21 = close[rsLen]
+    float c26 = close[rsLen + 5]
+
+    float earlyHigh = ta.highest(high[1], earlyBreakoutLen)
+    float earlyHighPrev = ta.highest(high[2], earlyBreakoutLen)
+
+    float majorHigh = ta.highest(high[1], majorBreakoutLen)
+    float majorHighPrev = ta.highest(high[2], majorBreakoutLen)
+
+    float baseHigh = ta.highest(high, baseLen)
+    float baseLow = ta.lowest(low, baseLen)
+
+    float ema20 = ta.ema(close, fastEmaLen)
+    float ema20W1 = ema20[5]
+
+    float sma50 = ta.sma(close, smaLen)
+    float sma50W1 = sma50[5]
+
+    float vol = volume
+    float avgVol = ta.sma(volume, volLen)
+
+    [c0, c1, c5, c21, c26, earlyHigh, earlyHighPrev, majorHigh, majorHighPrev, baseHigh, baseLow, ema20, ema20W1, sma50, sma50W1, vol, avgVol]
+
+
+f_benchmark_data() =>
+    [close, close[5], close[rsLen], close[rsLen + 5]]
+
+
+// ============================================================================
+// HELPERS
+// ============================================================================
+
+f_return(float currentPrice, float oldPrice) =>
+    float result = na
+
+    if not na(currentPrice) and not na(oldPrice) and oldPrice != 0
+        result := currentPrice / oldPrice - 1.0
+
+    result
+
+
+f_relative(float assetReturn, float benchmarkReturn) =>
+    float result = na
+
+    if not na(assetReturn) and not na(benchmarkReturn)
+        result := (1.0 + assetReturn) / (1.0 + benchmarkReturn) - 1.0
+
+    result
+
+
+f_percent_rank(array<float> values, int idx) =>
+    float target = array.get(values, idx)
+
+    int valid = 0
+    int below = 0
+
+    for j = 0 to array.size(values) - 1
+        float other = array.get(values, j)
+
+        if not na(other)
+            valid += 1
+
+            if not na(target) and target > other
+                below += 1
+
+    float result = 50.0
+
+    if valid > 1 and not na(target)
+        result := 100.0 * below / (valid - 1)
+
+    result
+
+
+f_short_symbol(string fullSymbol) =>
+    string result = fullSymbol
+
+    result := str.replace(result, "NYSE:", "")
+    result := str.replace(result, "NASDAQ:", "")
+    result := str.replace(result, "AMEX:", "")
+    result := str.replace(result, "BATS:", "")
+
+    result
+
+
+f_state_color(string state) =>
+    color result = color.rgb(65, 65, 65)
+
+    if state == "CONFIRMED BREAKOUT"
+        result := color.rgb(0, 120, 60)
+
+    else if state == "SECONDARY BREAKOUT"
+        result := color.rgb(0, 145, 100)
+
+    else if state == "MAJOR BREAKOUT"
+        result := color.rgb(0, 100, 160)
+
+    else if state == "EARLY BREAKOUT"
+        result := color.rgb(25, 120, 185)
+
+    else if state == "BREAKOUT HOLDING"
+        result := color.rgb(20, 135, 140)
+
+    else if state == "RE-SETUP"
+        result := color.rgb(115, 55, 180)
+
+    else if state == "HIGHER BASE"
+        result := color.rgb(60, 115, 165)
+
+    else if state == "TREND HOLDING"
+        result := color.rgb(35, 105, 75)
+
+    else if state == "EARLY SETUP"
+        result := color.rgb(100, 70, 175)
+
+    else if state == "BASE BUILDING"
+        result := color.rgb(130, 95, 0)
+
+    else if state == "EXTENDED TREND"
+        result := color.rgb(185, 85, 20)
+
+    else if state == "TREND FAILED"
+        result := color.rgb(175, 40, 40)
+
+    result
+
+
+// ============================================================================
+// BENCHMARK DATA
+// ============================================================================
+
+[ind0, ind5, ind21, ind26] = request.security(industryETF, TF, f_benchmark_data(), barmerge.gaps_off, barmerge.lookahead_off, true)
+
+[sec0, sec5, sec21, sec26] = request.security(sectorETF, TF, f_benchmark_data(), barmerge.gaps_off, barmerge.lookahead_off, true)
+
+[spy0, spy5, spy21, spy26] = request.security("AMEX:SPY", TF, f_benchmark_data(), barmerge.gaps_off, barmerge.lookahead_off, true)
+
+
+// ============================================================================
+// BENCHMARK RELATIVE STRENGTH
+// ============================================================================
+
+float indRetNow = f_return(ind0, ind21)
+float indRetW1 = f_return(ind5, ind26)
+
+float secRetNow = f_return(sec0, sec21)
+float secRetW1 = f_return(sec5, sec26)
+
+float spyRetNow = f_return(spy0, spy21)
+float spyRetW1 = f_return(spy5, spy26)
+
+float indVsSecNow = f_relative(indRetNow, secRetNow)
+float indVsSecW1 = f_relative(indRetW1, secRetW1)
+
+float secVsSpyNow = f_relative(secRetNow, spyRetNow)
+float secVsSpyW1 = f_relative(secRetW1, spyRetW1)
+
+bool upperAligned = false
+bool upperBuilding = false
+
+if not na(indVsSecNow) and not na(secVsSpyNow)
+    upperAligned := indVsSecNow > 0 and secVsSpyNow > 0
+
+if not na(indVsSecNow) and not na(indVsSecW1) and not na(secVsSpyNow) and not na(secVsSpyW1)
+
+    bool indImproving = indVsSecNow > indVsSecW1
+    bool secImproving = secVsSpyNow > secVsSpyW1
+
+    bool indNearPositive = indVsSecNow > -0.03
+    bool secNearPositive = secVsSpyNow > -0.03
+
+    upperBuilding := indImproving and secImproving and indNearPositive and secNearPositive
+
+
+// ============================================================================
+// WORKING ARRAYS
+// ============================================================================
+
+array<float> scores = array.new_float(N, na)
+
+array<float> vsIndustry = array.new_float(N, na)
+array<float> rsDelta = array.new_float(N, na)
+
+array<float> distEarly = array.new_float(N, na)
+array<float> distMajor = array.new_float(N, na)
+
+array<float> earlyLevel = array.new_float(N, na)
+array<float> majorLevel = array.new_float(N, na)
+
+array<float> baseHighArr = array.new_float(N, na)
+array<float> baseLowArr = array.new_float(N, na)
+array<float> baseWidth = array.new_float(N, na)
+
+array<float> rvol = array.new_float(N, na)
+array<float> extension50 = array.new_float(N, na)
+
+array<float> lastClose = array.new_float(N, na)
+array<float> sma50Arr = array.new_float(N, na)
+
+array<bool> rawEarlyBreak = array.new_bool(N, false)
+array<bool> rawMajorBreak = array.new_bool(N, false)
+
+array<bool> baseCondition = array.new_bool(N, false)
+array<bool> rawSetupCondition = array.new_bool(N, false)
+
+array<bool> currentHigherBase = array.new_bool(N, false)
+array<bool> currentResetup = array.new_bool(N, false)
+
+array<bool> secondaryBreak = array.new_bool(N, false)
+array<bool> trendFailedToday = array.new_bool(N, false)
+
+
+// ============================================================================
+// COLLECT STOCK DATA
+// ============================================================================
+
+for i = 0 to N - 1
+
+    string sym = array.get(stocks, i)
+
+    [c0, c1, c5, c21, c26, earlyHigh, earlyHighPrev, majorHigh, majorHighPrev, baseHigh, baseLow, ema20, ema20W1, sma50, sma50W1, vol, avgVol] = request.security(sym, TF, f_stock_data(), barmerge.gaps_off, barmerge.lookahead_off, true)
+
+    float stockRetNow = f_return(c0, c21)
+    float stockRetW1 = f_return(c5, c26)
+
+    float rsNow = f_relative(stockRetNow, indRetNow)
+    float rsW1 = f_relative(stockRetW1, indRetW1)
+
+    float rsChange = na
+
+    if not na(rsNow) and not na(rsW1)
+        rsChange := rsNow - rsW1
+
+    float earlyDistance = na
+    float majorDistance = na
+
+    if not na(c0) and not na(earlyHigh) and earlyHigh != 0
+        earlyDistance := (earlyHigh - c0) / earlyHigh * 100.0
+
+    if not na(c0) and not na(majorHigh) and majorHigh != 0
+        majorDistance := (majorHigh - c0) / majorHigh * 100.0
+
+    float width = na
+
+    if not na(baseHigh) and not na(baseLow) and not na(c0) and c0 != 0
+        width := (baseHigh - baseLow) / c0 * 100.0
+
+    float relativeVol = na
+
+    if not na(vol) and not na(avgVol) and avgVol != 0
+        relativeVol := vol / avgVol
+
+    float extension = na
+
+    if not na(c0) and not na(sma50) and sma50 != 0
+        extension := (c0 / sma50 - 1.0) * 100.0
+
+    bool earlyBreakNow = false
+    bool earlyBreakPrev = false
+
+    if not na(c0) and not na(earlyHigh)
+        earlyBreakNow := c0 > earlyHigh
+
+    if not na(c1) and not na(earlyHighPrev)
+        earlyBreakPrev := c1 > earlyHighPrev
+
+    bool earlyBreakEvent = earlyBreakNow and not earlyBreakPrev
+
+    bool majorBreakNow = false
+    bool majorBreakPrev = false
+
+    if not na(c0) and not na(majorHigh)
+        majorBreakNow := c0 > majorHigh
+
+    if not na(c1) and not na(majorHighPrev)
+        majorBreakPrev := c1 > majorHighPrev
+
+    bool majorBreakEvent = majorBreakNow and not majorBreakPrev
+
+    bool baseBuilding = false
+
+    if not na(width) and not na(rsChange) and not na(c0) and not na(sma50)
+
+        bool widthOk = width <= maxBaseWidthPct
+        bool rsImproving = rsChange > 0
+        bool priceNearTrend = c0 > sma50 * 0.95
+
+        baseBuilding := widthOk and rsImproving and priceNearTrend
+
+    bool rawSetup = false
+
+    if not na(earlyDistance) and not na(rsChange) and not na(c0) and not na(ema20) and not na(sma50)
+
+        bool nearEarlyBreakout = earlyDistance >= 0 and earlyDistance <= earlySetupPct
+        bool rsImproving = rsChange > 0
+        bool trendTurning = c0 > sma50 and ema20 >= ema20W1 and sma50 >= sma50W1
+        bool upperOk = upperAligned or upperBuilding
+
+        rawSetup := nearEarlyBreakout and rsImproving and trendTurning and upperOk
+
+    array.set(vsIndustry, i, rsNow)
+    array.set(rsDelta, i, rsChange)
+
+    array.set(distEarly, i, earlyDistance)
+    array.set(distMajor, i, majorDistance)
+
+    array.set(earlyLevel, i, earlyHigh)
+    array.set(majorLevel, i, majorHigh)
+
+    array.set(baseHighArr, i, baseHigh)
+    array.set(baseLowArr, i, baseLow)
+    array.set(baseWidth, i, width)
+
+    array.set(rvol, i, relativeVol)
+    array.set(extension50, i, extension)
+
+    array.set(lastClose, i, c0)
+    array.set(sma50Arr, i, sma50)
+
+    array.set(rawEarlyBreak, i, earlyBreakEvent)
+    array.set(rawMajorBreak, i, majorBreakEvent)
+
+    array.set(baseCondition, i, baseBuilding)
+    array.set(rawSetupCondition, i, rawSetup)
+
+
+// ============================================================================
+// SETUP MEMORY
+// ============================================================================
+
+for i = 0 to N - 1
+
+    bool rawSetup = array.get(rawSetupCondition, i)
+    int oldAge = array.get(setupAge, i)
+
+    if rawSetup
+        array.set(setupAge, i, 0)
+
+    else if oldAge < 999
+        array.set(setupAge, i, oldAge + 1)
+
+
+// ============================================================================
+// PERSISTENT TREND MEMORY
+// ============================================================================
+
+for i = 0 to N - 1
+
+    float c0 = array.get(lastClose, i)
+    float sma50 = array.get(sma50Arr, i)
+
+    float rsNow = array.get(vsIndustry, i)
+    float rsChange = array.get(rsDelta, i)
+
+    float level20 = array.get(earlyLevel, i)
+    float level55 = array.get(majorLevel, i)
+
+    float bLow = array.get(baseLowArr, i)
+    float width = array.get(baseWidth, i)
+
+    bool earlyEvent = array.get(rawEarlyBreak, i)
+    bool majorEvent = array.get(rawMajorBreak, i)
+
+    bool wasTrendActive = array.get(trendActive, i)
+    float primaryLevel = array.get(primaryBreakoutLevel, i)
+    int oldTrendAge = array.get(trendAge, i)
+
+    bool oldHigherBaseSeen = array.get(higherBaseSeen, i)
+
+    bool rsPositive = not na(rsNow) and rsNow > 0
+    bool rsImproving = not na(rsChange) and rsChange > 0
+
+    bool upperOk = upperAligned or upperBuilding
+
+    bool qualifyingMajor = majorEvent and rsPositive and upperOk
+
+    // ------------------------------------------------------------------------
+    // Detect current higher base using existing persistent trend.
+    // ------------------------------------------------------------------------
+
+    bool higherBaseNow = false
+
+    if wasTrendActive and oldTrendAge >= minSecondaryBaseBars and not na(primaryLevel) and not na(c0) and not na(bLow) and not na(width) and not na(sma50)
+
+        float allowedBaseFloor = primaryLevel * (1.0 - higherBaseTolerancePct / 100.0)
+
+        bool priceAbovePrimary = c0 >= primaryLevel
+        bool baseHoldingPrimary = bLow >= allowedBaseFloor
+        bool baseCompressed = width <= maxBaseWidthPct
+        bool aboveTrend = c0 > sma50
+
+        higherBaseNow := priceAbovePrimary and baseHoldingPrimary and baseCompressed and aboveTrend
+
+    array.set(currentHigherBase, i, higherBaseNow)
+
+    // ------------------------------------------------------------------------
+    // A higher base becomes persistent once detected.
+    // ------------------------------------------------------------------------
+
+    if higherBaseNow
+        array.set(higherBaseSeen, i, true)
+
+    // ------------------------------------------------------------------------
+    // Detect a re-setup inside a higher base.
+    // ------------------------------------------------------------------------
+
+    bool resetupNow = false
+    float earlyDistance = array.get(distEarly, i)
+
+    if (higherBaseNow or oldHigherBaseSeen) and not na(earlyDistance)
+
+        bool nearResistance = earlyDistance >= 0 and earlyDistance <= earlySetupPct
+
+        resetupNow := nearResistance and rsImproving and upperOk
+
+    array.set(currentResetup, i, resetupNow)
+
+    // ------------------------------------------------------------------------
+    // Detect secondary breakout.
+    //
+    // Requires:
+    // 1. persistent prior trend
+    // 2. a higher base has already been seen
+    // 3. enough time since original major breakout
+    // 4. new 20D breakout
+    // 5. improving RS
+    // ------------------------------------------------------------------------
+
+    bool secondaryEvent = false
+
+    if wasTrendActive and oldTrendAge >= minSecondaryBaseBars and oldHigherBaseSeen
+        secondaryEvent := earlyEvent and rsImproving and upperOk
+
+    array.set(secondaryBreak, i, secondaryEvent)
+
+    // ------------------------------------------------------------------------
+    // Trend failure.
+    //
+    // A simple retest of the breakout level is NOT a failure.
+    //
+    // Failure requires BOTH:
+    // - materially below original major breakout level
+    // - below the 50-day moving average
+    //
+    // This allows normal breakout retests to remain TREND HOLDING.
+    // ------------------------------------------------------------------------
+
+    bool failureToday = false
+
+    if wasTrendActive and not na(primaryLevel) and not na(c0) and not na(sma50)
+
+        float failurePrice = primaryLevel * (1.0 - trendFailureTolerancePct / 100.0)
+
+        bool belowStructuralLevel = c0 < failurePrice
+        bool belowTrendAverage = c0 < sma50
+
+        failureToday := belowStructuralLevel and belowTrendAverage
+
+    array.set(trendFailedToday, i, failureToday)
+
+    // ------------------------------------------------------------------------
+    // If trend fails, clear persistent trend memory.
+    // ------------------------------------------------------------------------
+
+    if failureToday
+
+        array.set(trendActive, i, false)
+        array.set(primaryBreakoutLevel, i, na)
+        array.set(trendAge, i, 999)
+
+        array.set(higherBaseSeen, i, false)
+
+        array.set(breakoutAge, i, 999)
+        array.set(activeBreakoutLevel, i, na)
+
+    else
+
+        // --------------------------------------------------------------------
+        // FIRST QUALIFYING MAJOR BREAKOUT
+        // Starts persistent trend memory.
+        // --------------------------------------------------------------------
+
+        if qualifyingMajor and not wasTrendActive
+
+            array.set(trendActive, i, true)
+            array.set(primaryBreakoutLevel, i, level55)
+            array.set(trendAge, i, 0)
+
+            array.set(activeBreakoutLevel, i, level55)
+            array.set(breakoutAge, i, 0)
+
+            array.set(higherBaseSeen, i, false)
+
+        // --------------------------------------------------------------------
+        // SECONDARY BREAKOUT
+        // Persistent main trend remains active.
+        // Active breakout reference updates to new breakout level.
+        // --------------------------------------------------------------------
+
+        else if secondaryEvent
+
+            array.set(activeBreakoutLevel, i, level20)
+            array.set(breakoutAge, i, 0)
+
+            array.set(higherBaseSeen, i, false)
+
+            if oldTrendAge < 999
+                array.set(trendAge, i, oldTrendAge + 1)
+
+        // --------------------------------------------------------------------
+        // New major breakout during an already-active trend.
+        // Keep ORIGINAL primary level as long-term structural reference.
+        // --------------------------------------------------------------------
+
+        else if qualifyingMajor and wasTrendActive
+
+            array.set(activeBreakoutLevel, i, level55)
+            array.set(breakoutAge, i, 0)
+
+            if oldTrendAge < 999
+                array.set(trendAge, i, oldTrendAge + 1)
+
+        // --------------------------------------------------------------------
+        // Early breakout before major trend confirmation.
+        // --------------------------------------------------------------------
+
+        else if earlyEvent
+
+            array.set(activeBreakoutLevel, i, level20)
+            array.set(breakoutAge, i, 0)
+
+            if wasTrendActive and oldTrendAge < 999
+                array.set(trendAge, i, oldTrendAge + 1)
+
+        // --------------------------------------------------------------------
+        // Ordinary day.
+        // --------------------------------------------------------------------
+
+        else
+
+            int oldBreakAge = array.get(breakoutAge, i)
+
+            if oldBreakAge < 999
+                int nextBreakAge = oldBreakAge + 1
+
+                if nextBreakAge <= breakoutHoldBars
+                    array.set(breakoutAge, i, nextBreakAge)
+                else
+                    array.set(breakoutAge, i, 999)
+
+            if wasTrendActive and oldTrendAge < 999
+                array.set(trendAge, i, oldTrendAge + 1)
+
+
+// ============================================================================
+// SCORE
+// ============================================================================
+
+for i = 0 to N - 1
+
+    float earlyDistance = array.get(distEarly, i)
+    float width = array.get(baseWidth, i)
+    float rv = array.get(rvol, i)
+    float extension = array.get(extension50, i)
+
+    float score = 0.0
+
+    // ------------------------------------------------------------------------
+    // Breakout / proximity: max 25
+    // ------------------------------------------------------------------------
+
+    if array.get(secondaryBreak, i)
+        score += 25.0
+
+    else if array.get(rawMajorBreak, i)
+        score += 25.0
+
+    else if array.get(rawEarlyBreak, i)
+        score += 22.0
+
+    else if array.get(breakoutAge, i) <= breakoutHoldBars
+        score += 18.0
+
+    else if not na(earlyDistance)
+
+        if earlyDistance >= 0 and earlyDistance <= 2
+            score += 18.0
+
+        else if earlyDistance >= 0 and earlyDistance <= 5
+            score += 14.0
+
+        else if earlyDistance >= 0 and earlyDistance <= 10
+            score += 7.0
+
+    // ------------------------------------------------------------------------
+    // Relative strength: max 25
+    // ------------------------------------------------------------------------
+
+    score += f_percent_rank(vsIndustry, i) * 0.15
+    score += f_percent_rank(rsDelta, i) * 0.10
+
+    // ------------------------------------------------------------------------
+    // Base quality: max 20
+    // ------------------------------------------------------------------------
+
+    if not na(width)
+
+        if width <= preferredBaseWidthPct
+            score += 20.0
+
+        else if width <= maxBaseWidthPct
+            score += 12.0
+
+        else if width <= 25
+            score += 5.0
+
+    // ------------------------------------------------------------------------
+    // Volume: max 15
+    // ------------------------------------------------------------------------
+
+    if not na(rv)
+
+        if rv >= 2.0
+            score += 15.0
+
+        else if rv >= 1.5
+            score += 12.0
+
+        else if rv >= 1.2
+            score += 9.0
+
+        else if rv >= 1.0
+            score += 5.0
+
+    // ------------------------------------------------------------------------
+    // Extension control: max 15
+    // ------------------------------------------------------------------------
+
+    if not na(extension)
+
+        if extension <= 10
+            score += 15.0
+
+        else if extension <= mildExtensionPct
+            score += 10.0
+
+        else if extension <= highExtensionPct
+            score += 4.0
+
+    array.set(scores, i, score)
+
+
+// ============================================================================
+// STATE ENGINE
+// ============================================================================
+
+f_state(int idx) =>
+
+    bool earlyEvent = array.get(rawEarlyBreak, idx)
+    bool majorEvent = array.get(rawMajorBreak, idx)
+    bool secondaryEvent = array.get(secondaryBreak, idx)
+
+    bool higherBaseNow = array.get(currentHigherBase, idx)
+    bool resetupNow = array.get(currentResetup, idx)
+
+    bool baseBuilding = array.get(baseCondition, idx)
+    bool failed = array.get(trendFailedToday, idx)
+
+    bool persistentTrend = array.get(trendActive, idx)
+
+    int sAge = array.get(setupAge, idx)
+    int bAge = array.get(breakoutAge, idx)
+
+    float rs = array.get(vsIndustry, idx)
+    float rsChange = array.get(rsDelta, idx)
+    float rv = array.get(rvol, idx)
+    float extension = array.get(extension50, idx)
+
+    bool rsPositive = not na(rs) and rs > 0
+    bool rsImproving = not na(rsChange) and rsChange > 0
+
+    bool volumeConfirm = not na(rv) and rv >= breakoutRVOL
+
+    bool setupActive = sAge <= setupMemoryBars
+    bool breakoutHolding = bAge >= 1 and bAge <= breakoutHoldBars
+
+    string result = "NO SETUP"
+
+    if failed
+        result := "TREND FAILED"
+
+    else if secondaryEvent
+        result := "SECONDARY BREAKOUT"
+
+    else if majorEvent and rsPositive and volumeConfirm and upperAligned
+        result := "CONFIRMED BREAKOUT"
+
+    else if majorEvent and rsPositive and (upperAligned or upperBuilding)
+        result := "MAJOR BREAKOUT"
+
+    else if earlyEvent and rsImproving and (upperAligned or upperBuilding)
+        result := "EARLY BREAKOUT"
+
+    else if breakoutHolding
+        result := "BREAKOUT HOLDING"
+
+    else if resetupNow and persistentTrend
+        result := "RE-SETUP"
+
+    else if higherBaseNow and persistentTrend
+        result := "HIGHER BASE"
+
+    else if persistentTrend and not na(extension) and extension > highExtensionPct
+        result := "EXTENDED TREND"
+
+    else if persistentTrend
+        result := "TREND HOLDING"
+
+    else if setupActive
+        result := "EARLY SETUP"
+
+    else if baseBuilding
+        result := "BASE BUILDING"
+
+    else if not na(extension) and extension > highExtensionPct
+        result := "EXTENDED TREND"
+
+    result
+
+
+// ============================================================================
+// DASHBOARD
+// ============================================================================
+
+var table dash = table.new(position.top_right, 16, 12, frame_color=color.gray, frame_width=1, border_width=1)
+
+if barstate.islast
+
+    table.cell(dash, 0, 0, "Rank", bgcolor=color.black, text_color=color.white)
+    table.cell(dash, 1, 0, "Stock", bgcolor=color.black, text_color=color.white)
+    table.cell(dash, 2, 0, "Score", bgcolor=color.black, text_color=color.white)
+
+    table.cell(dash, 3, 0, "% to 20D", bgcolor=color.black, text_color=color.white)
+    table.cell(dash, 4, 0, "20D Level", bgcolor=color.black, text_color=color.white)
+
+    table.cell(dash, 5, 0, "% to 55D", bgcolor=color.black, text_color=color.white)
+    table.cell(dash, 6, 0, "55D Level", bgcolor=color.black, text_color=color.white)
+
+    table.cell(dash, 7, 0, "Trend Ref", bgcolor=color.black, text_color=color.white)
+    table.cell(dash, 8, 0, "Trend Age", bgcolor=color.black, text_color=color.white)
+
+    table.cell(dash, 9, 0, "Base %", bgcolor=color.black, text_color=color.white)
+    table.cell(dash, 10, 0, "vs Industry", bgcolor=color.black, text_color=color.white)
+    table.cell(dash, 11, 0, "RS d1W", bgcolor=color.black, text_color=color.white)
+
+    table.cell(dash, 12, 0, "RVOL", bgcolor=color.black, text_color=color.white)
+    table.cell(dash, 13, 0, "% > 50MA", bgcolor=color.black, text_color=color.white)
+
+    table.cell(dash, 14, 0, "Upper", bgcolor=color.black, text_color=color.white)
+    table.cell(dash, 15, 0, "State", bgcolor=color.black, text_color=color.white)
+
+    array<int> sortedIndices = array.sort_indices(scores, order.descending)
+
+    for row = 0 to N - 1
+
+        int found = array.get(sortedIndices, row)
+
+        float score = array.get(scores, found)
+
+        float d20 = array.get(distEarly, found)
+        float level20 = array.get(earlyLevel, found)
+
+        float d55 = array.get(distMajor, found)
+        float level55 = array.get(majorLevel, found)
+
+        float trendRef = array.get(primaryBreakoutLevel, found)
+        int tAge = array.get(trendAge, found)
+
+        float width = array.get(baseWidth, found)
+        float rs = array.get(vsIndustry, found)
+        float rsChg = array.get(rsDelta, found)
+
+        float rv = array.get(rvol, found)
+        float extension = array.get(extension50, found)
+
+        string stateText = f_state(found)
+
+        string upperText = "NO"
+
+        if upperAligned
+            upperText := "ALIGNED"
+
+        else if upperBuilding
+            upperText := "BUILDING"
+
+        color rowColor = f_state_color(stateText)
+
+        string tickerText = f_short_symbol(array.get(stocks, found))
+
+        string scoreText = str.tostring(score, "#.0")
+
+        string d20Text = na(d20) ? "N/A" : str.tostring(d20, "#.0") + "%"
+        string level20Text = na(level20) ? "N/A" : str.tostring(level20, "#.00")
+
+        string d55Text = na(d55) ? "N/A" : str.tostring(d55, "#.0") + "%"
+        string level55Text = na(level55) ? "N/A" : str.tostring(level55, "#.00")
+
+        string trendRefText = na(trendRef) ? "-" : str.tostring(trendRef, "#.00")
+
+        string trendAgeText = "-"
+
+        if tAge < 999
+            trendAgeText := str.tostring(tAge)
+
+        string widthText = na(width) ? "N/A" : str.tostring(width, "#.0") + "%"
+        string rsText = na(rs) ? "N/A" : str.tostring(rs * 100.0, "#.00") + "%"
+        string rsChgText = na(rsChg) ? "N/A" : str.tostring(rsChg * 100.0, "+#.00;-#.00") + "%"
+
+        string rvText = na(rv) ? "N/A" : str.tostring(rv, "#.00")
+        string extText = na(extension) ? "N/A" : str.tostring(extension, "#.0") + "%"
+
+        int outputRow = row + 1
+
+        table.cell(dash, 0, outputRow, str.tostring(outputRow), bgcolor=rowColor, text_color=color.white)
+        table.cell(dash, 1, outputRow, tickerText, bgcolor=rowColor, text_color=color.white)
+        table.cell(dash, 2, outputRow, scoreText, bgcolor=rowColor, text_color=color.white)
+
+        table.cell(dash, 3, outputRow, d20Text, bgcolor=rowColor, text_color=color.white)
+        table.cell(dash, 4, outputRow, level20Text, bgcolor=rowColor, text_color=color.white)
+
+        table.cell(dash, 5, outputRow, d55Text, bgcolor=rowColor, text_color=color.white)
+        table.cell(dash, 6, outputRow, level55Text, bgcolor=rowColor, text_color=color.white)
+
+        table.cell(dash, 7, outputRow, trendRefText, bgcolor=rowColor, text_color=color.white)
+        table.cell(dash, 8, outputRow, trendAgeText, bgcolor=rowColor, text_color=color.white)
+
+        table.cell(dash, 9, outputRow, widthText, bgcolor=rowColor, text_color=color.white)
+        table.cell(dash, 10, outputRow, rsText, bgcolor=rowColor, text_color=color.white)
+        table.cell(dash, 11, outputRow, rsChgText, bgcolor=rowColor, text_color=color.white)
+
+        table.cell(dash, 12, outputRow, rvText, bgcolor=rowColor, text_color=color.white)
+        table.cell(dash, 13, outputRow, extText, bgcolor=rowColor, text_color=color.white)
+
+        table.cell(dash, 14, outputRow, upperText, bgcolor=rowColor, text_color=color.white)
+        table.cell(dash, 15, outputRow, stateText, bgcolor=rowColor, text_color=color.white)
+
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+if enableAlerts and barstate.isconfirmed
+
+    for i = 0 to N - 1
+
+        string currentState = f_state(i)
+        string priorState = array.get(previousState, i)
+
+        bool changed = currentState != priorState
+
+        bool importantState = currentState == "EARLY SETUP" or currentState == "EARLY BREAKOUT" or currentState == "MAJOR BREAKOUT" or currentState == "CONFIRMED BREAKOUT" or currentState == "TREND HOLDING" or currentState == "HIGHER BASE" or currentState == "RE-SETUP" or currentState == "SECONDARY BREAKOUT" or currentState == "TREND FAILED"
+
+        if changed and importantState
+
+            string tickerText = f_short_symbol(array.get(stocks, i))
+
+            float score = array.get(scores, i)
+            float rv = array.get(rvol, i)
+            float rsChange = array.get(rsDelta, i)
+
+            float trendRef = array.get(primaryBreakoutLevel, i)
+            float activeLevel = array.get(activeBreakoutLevel, i)
+
+            string msg = currentState + ": " + tickerText + " | Score " + str.tostring(score, "#.0") + " | RVOL " + str.tostring(rv, "#.00") + " | RS Delta 1W " + str.tostring(rsChange * 100.0, "+#.00;-#.00") + "% | Trend Ref " + str.tostring(trendRef, "#.00") + " | Active BO " + str.tostring(activeLevel, "#.00")
+
+            alert(msg, alert.freq_once_per_bar_close)
+
+        array.set(previousState, i, currentState)

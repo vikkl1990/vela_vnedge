@@ -1,0 +1,233 @@
+//@version=6
+indicator("ATR Dashboard", overlay=true)
+
+//----------------------------------------------------
+// Inputs
+//----------------------------------------------------
+groupATR = "ATR Settings"
+
+shortLen = input.int(
+     5,
+     "Short ATR Length",
+     minval=1,
+     group=groupATR,
+     tooltip="Short-term ATR. Reacts quickly to changes in volatility."
+)
+
+standardLen = input.int(
+     14,
+     "Standard ATR Length",
+     minval=1,
+     group=groupATR,
+     tooltip="Standard ATR lookback. 14 is the traditional default."
+)
+
+longLen = input.int(
+     50,
+     "Long ATR Length",
+     minval=1,
+     group=groupATR,
+     tooltip="Longer-term ATR. Useful as a baseline for current volatility."
+)
+
+groupDisplay = "Display"
+
+showTicks = input.bool(
+     true,
+     "Show ATR in Ticks",
+     group=groupDisplay
+)
+
+showRatio = input.bool(
+     true,
+     "Show Short vs Long Ratio",
+     group=groupDisplay,
+     tooltip="Compares the short ATR to the long ATR. Above 100% means short-term volatility is elevated relative to the longer-term baseline."
+)
+
+textSizeInput = input.string(
+     "Small",
+     "Table Text Size",
+     options=["Tiny", "Small", "Normal", "Large"],
+     group=groupDisplay
+)
+
+//----------------------------------------------------
+// Text Size
+//----------------------------------------------------
+tableTextSize = switch textSizeInput
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    "Large"  => size.large
+
+//----------------------------------------------------
+// ATR Calculations
+//----------------------------------------------------
+atrShort = ta.atr(shortLen)
+atrStandard = ta.atr(standardLen)
+atrLong = ta.atr(longLen)
+
+// Convert ATR to ticks.
+// Uses the instrument's native minimum tick size,
+// so this works automatically for NQ, MNQ, ES, stocks, etc.
+shortTicks = atrShort / syminfo.mintick
+standardTicks = atrStandard / syminfo.mintick
+longTicks = atrLong / syminfo.mintick
+
+// Short-term ATR relative to long-term ATR.
+atrRatio = atrLong != 0 ? (atrShort / atrLong) * 100.0 : na
+
+//----------------------------------------------------
+// Colors
+//----------------------------------------------------
+headerBg = color.rgb(45, 45, 45)
+labelBg  = color.rgb(30, 30, 30)
+valueBg  = color.rgb(20, 20, 20)
+
+headerText = color.white
+labelText  = color.silver
+valueText  = color.white
+
+//----------------------------------------------------
+// Table
+//----------------------------------------------------
+var table atrTable = table.new(
+     position.top_right,
+     3,
+     5,
+     frame_color=color.rgb(80, 80, 80),
+     frame_width=1,
+     border_color=color.rgb(60, 60, 60),
+     border_width=1
+)
+
+//----------------------------------------------------
+// Update Table
+//----------------------------------------------------
+if barstate.islast
+
+    // Header
+    table.cell(
+         atrTable, 0, 0,
+         "ATR",
+         bgcolor=headerBg,
+         text_color=headerText,
+         text_size=tableTextSize
+    )
+
+    table.cell(
+         atrTable, 1, 0,
+         "Points",
+         bgcolor=headerBg,
+         text_color=headerText,
+         text_size=tableTextSize
+    )
+
+    table.cell(
+         atrTable, 2, 0,
+         "Ticks",
+         bgcolor=headerBg,
+         text_color=headerText,
+         text_size=tableTextSize
+    )
+
+    // Short ATR
+    table.cell(
+         atrTable, 0, 1,
+         "Short (" + str.tostring(shortLen) + ")",
+         bgcolor=labelBg,
+         text_color=labelText,
+         text_size=tableTextSize
+    )
+
+    table.cell(
+         atrTable, 1, 1,
+         str.tostring(atrShort, format.mintick),
+         bgcolor=valueBg,
+         text_color=valueText,
+         text_size=tableTextSize
+    )
+
+    table.cell(
+         atrTable, 2, 1,
+         showTicks ? str.tostring(shortTicks, "#.0") : "—",
+         bgcolor=valueBg,
+         text_color=valueText,
+         text_size=tableTextSize
+    )
+
+    // Standard ATR
+    table.cell(
+         atrTable, 0, 2,
+         "Standard (" + str.tostring(standardLen) + ")",
+         bgcolor=labelBg,
+         text_color=color.white,
+         text_size=tableTextSize
+    )
+
+    table.cell(
+         atrTable, 1, 2,
+         str.tostring(atrStandard, format.mintick),
+         bgcolor=valueBg,
+         text_color=color.white,
+         text_size=tableTextSize
+    )
+
+    table.cell(
+         atrTable, 2, 2,
+         showTicks ? str.tostring(standardTicks, "#.0") : "—",
+         bgcolor=valueBg,
+         text_color=color.white,
+         text_size=tableTextSize
+    )
+
+    // Long ATR
+    table.cell(
+         atrTable, 0, 3,
+         "Long (" + str.tostring(longLen) + ")",
+         bgcolor=labelBg,
+         text_color=labelText,
+         text_size=tableTextSize
+    )
+
+    table.cell(
+         atrTable, 1, 3,
+         str.tostring(atrLong, format.mintick),
+         bgcolor=valueBg,
+         text_color=valueText,
+         text_size=tableTextSize
+    )
+
+    table.cell(
+         atrTable, 2, 3,
+         showTicks ? str.tostring(longTicks, "#.0") : "—",
+         bgcolor=valueBg,
+         text_color=valueText,
+         text_size=tableTextSize
+    )
+
+    // Short / Long Ratio
+    table.cell(
+         atrTable, 0, 4,
+         "Short / Long",
+         bgcolor=labelBg,
+         text_color=labelText,
+         text_size=tableTextSize
+    )
+
+    table.cell(
+         atrTable, 1, 4,
+         showRatio ? str.tostring(atrRatio, "#.0") + "%" : "—",
+         bgcolor=valueBg,
+         text_color=valueText,
+         text_size=tableTextSize
+    )
+
+    table.cell(
+         atrTable, 2, 4,
+         "",
+         bgcolor=valueBg,
+         text_color=valueText,
+         text_size=tableTextSize
+    )

@@ -1,0 +1,303 @@
+//@version=6
+indicator("Adaptive Path Efficiency Profile", shorttitle="APEP", overlay=true, max_boxes_count=450, max_lines_count=100, max_labels_count=100)
+
+// v1.3 — FINAL VISUAL QA. Core v1.2 engine/math unchanged; presentation-only refinement.
+// Question: At which price regions has recent market movement historically
+// behaved efficiently (directional travel) versus inefficiently (rotation/churn)?
+// OHLC-derived context only. Not order-book data, probability, or trade signals.
+
+//──────────────────────────────────────────────────────────────────────────────
+// INPUTS
+//──────────────────────────────────────────────────────────────────────────────
+gE = "Engine"
+lookback   = input.int(180, "Observation Window", 80, 400, group=gE)
+rows       = input.int(28, "Profile Rows", 16, 40, group=gE)
+pathLen    = input.int(5, "Efficiency Path", 2, 12, group=gE)
+atrLen     = input.int(14, "ATR Length", 5, 100, group=gE)
+smoothRows = input.bool(true, "Smooth Neighboring Rows", group=gE)
+
+gV = "Visual"
+profileWidth = input.int(27, "Profile Width", 12, 45, group=gV)
+zoneBars     = input.int(75, "Core Zone Length", 30, 160, group=gV)
+showProfile  = input.bool(true, "Show Profile", group=gV)
+showZones    = input.bool(true, "Show Core Zones", group=gV)
+showDash     = input.bool(true, "Show Dashboard", group=gV)
+
+// Palette for user's navy/purple chart.
+cNavy   = color.rgb(22,27,68)
+cPanel  = color.rgb(31,34,82)
+cPanel2 = color.rgb(43,42,101)
+cText   = color.rgb(232,234,249)
+cMuted  = color.rgb(158,163,198)
+cTeal   = color.rgb(52,211,183)
+cViolet = color.rgb(137,108,230)
+cRose   = color.rgb(226,85,137)
+cAmber  = color.rgb(238,187,88)
+
+//──────────────────────────────────────────────────────────────────────────────
+// PRECOMPUTED SERIES — evaluated on every bar before historical indexing.
+//──────────────────────────────────────────────────────────────────────────────
+atrSeries = ta.atr(atrLen)
+rangeHighSeries = ta.highest(high, lookback)
+rangeLowSeries = ta.lowest(low, lookback)
+
+//──────────────────────────────────────────────────────────────────────────────
+// STORAGE
+//──────────────────────────────────────────────────────────────────────────────
+var array<float> countA = array.new_float()
+var array<float> effA   = array.new_float()
+var array<float> dispA  = array.new_float()
+var array<float> scoreE = array.new_float()
+var array<float> scoreC = array.new_float()
+var array<box> pBoxes   = array.new_box()
+var array<box> zBoxes   = array.new_box()
+
+var line effLine = na
+var line churnLine = na
+var label effLab = na
+var label churnLab = na
+
+f_clear_boxes(array<box> a) =>
+    int n = array.size(a)
+    if n > 0
+        for k = 0 to n - 1
+            box.delete(array.get(a,k))
+    array.clear(a)
+
+float globalEff = na
+float globalChurn = na
+float globalDisp = na
+float effCore = na
+float churnCore = na
+string regime = "WAITING"
+string positionText = "—"
+
+//──────────────────────────────────────────────────────────────────────────────
+// ENGINE
+// Uses completed historical windows only.
+// Efficiency Ratio = net displacement / cumulative path distance.
+// This is stable, bounded [0,1], and Pine-native.
+// Each window contributes to every price row its path actually traversed.
+//──────────────────────────────────────────────────────────────────────────────
+if barstate.islast
+    float hi = rangeHighSeries
+    float lo = rangeLowSeries
+    float span = math.max(hi - lo, syminfo.mintick * rows)
+    float step = span / rows
+
+    array.clear(countA)
+    array.clear(effA)
+    array.clear(dispA)
+    array.clear(scoreE)
+    array.clear(scoreC)
+
+    for r = 0 to rows - 1
+        array.push(countA, 0.0)
+        array.push(effA, 0.0)
+        array.push(dispA, 0.0)
+        array.push(scoreE, 0.0)
+        array.push(scoreC, 0.0)
+
+    int usable = math.min(lookback - 1, bar_index)
+
+    if usable >= pathLen + 10
+        for i = pathLen to usable
+            float pathDist = 0.0
+            float winHi = high[i]
+            float winLo = low[i]
+
+            // Correct chronological window: i bars ago toward i-pathLen bars ago.
+            for h = 0 to pathLen - 1
+                pathDist += math.abs(close[i-h] - close[i-h-1])
+                winHi := math.max(winHi, high[i-h-1])
+                winLo := math.min(winLo, low[i-h-1])
+
+            float net = math.abs(close[i-pathLen] - close[i])
+            float er = pathDist > syminfo.mintick ? math.min(net / pathDist, 1.0) : 0.0
+            float atrI = math.max(atrSeries[i], syminfo.mintick)
+            float disp = math.min(net / (atrI * math.sqrt(pathLen)), 2.0) / 2.0
+
+            int b0 = int(math.floor((winLo - lo) / step))
+            int b1 = int(math.floor((winHi - lo) / step))
+            b0 := math.max(0, math.min(rows-1, b0))
+            b1 := math.max(0, math.min(rows-1, b1))
+            int fromB = math.min(b0,b1)
+            int toB = math.max(b0,b1)
+
+            // Each traversed region receives the path observation.
+            // Displacement weighting prevents tiny/noisy paths dominating.
+            float w = 0.35 + 0.65 * disp
+            for r = fromB to toB
+                array.set(countA,r,array.get(countA,r)+w)
+                array.set(effA,r,array.get(effA,r)+er*w)
+                array.set(dispA,r,array.get(dispA,r)+disp*w)
+
+        float maxCount = 0.0
+        for r = 0 to rows-1
+            maxCount := math.max(maxCount,array.get(countA,r))
+
+        float totalW = 0.0
+        float sumEff = 0.0
+        float sumDisp = 0.0
+        float bestE = -1.0
+        float bestC = -1.0
+        int eIdx = 0
+        int cIdx = 0
+
+        for r = 0 to rows-1
+            float cnt = array.get(countA,r)
+            if cnt > 0
+                float e = array.get(effA,r)/cnt
+                float d = array.get(dispA,r)/cnt
+
+                // Optional one-neighbor smoothing, using only valid accumulated evidence.
+                if smoothRows
+                    float numE = e * cnt
+                    float numD = d * cnt
+                    float den = cnt
+                    if r > 0
+                        float lc = array.get(countA,r-1)
+                        if lc > 0
+                            numE += (array.get(effA,r-1)/lc) * lc * 0.35
+                            numD += (array.get(dispA,r-1)/lc) * lc * 0.35
+                            den += lc * 0.35
+                    if r < rows-1
+                        float rc = array.get(countA,r+1)
+                        if rc > 0
+                            numE += (array.get(effA,r+1)/rc) * rc * 0.35
+                            numD += (array.get(dispA,r+1)/rc) * rc * 0.35
+                            den += rc * 0.35
+                    e := den > 0 ? numE/den : e
+                    d := den > 0 ? numD/den : d
+
+                float maturity = maxCount > 0 ? math.min(cnt/(maxCount*0.35),1.0) : 0.0
+                float eScore = e * (0.55+0.45*d) * (0.55+0.45*maturity)
+                float cScore = (1.0-e) * (0.70+0.30*(1.0-d)) * (0.55+0.45*maturity)
+
+                array.set(scoreE,r,eScore)
+                array.set(scoreC,r,cScore)
+
+                sumEff += e*cnt
+                sumDisp += d*cnt
+                totalW += cnt
+
+                if eScore > bestE
+                    bestE := eScore
+                    eIdx := r
+                if cScore > bestC
+                    bestC := cScore
+                    cIdx := r
+
+        if totalW > 0
+            globalEff := sumEff/totalW
+            globalChurn := 1.0-globalEff
+            globalDisp := sumDisp/totalW
+            effCore := lo+(eIdx+0.5)*step
+            churnCore := lo+(cIdx+0.5)*step
+
+            regime := globalEff >= 0.58 ? "DIRECTIONAL" :
+                 globalEff <= 0.38 ? "ROTATIONAL" : "TRANSITION"
+
+            positionText := close > math.max(effCore,churnCore) ? "ABOVE CORES" :
+                 close < math.min(effCore,churnCore) ? "BELOW CORES" :
+                 math.abs(close-effCore) <= step ? "AT EFF. CORE" :
+                 math.abs(close-churnCore) <= step ? "AT CHURN CORE" : "BETWEEN CORES"
+
+        //──────────────────────────────────────────────────────────────────────
+        // RENDER
+        //──────────────────────────────────────────────────────────────────────
+        f_clear_boxes(pBoxes)
+        f_clear_boxes(zBoxes)
+
+        if not na(effLine)
+            line.delete(effLine)
+            effLine := na
+        if not na(churnLine)
+            line.delete(churnLine)
+            churnLine := na
+        if not na(effLab)
+            label.delete(effLab)
+            effLab := na
+        if not na(churnLab)
+            label.delete(churnLab)
+            churnLab := na
+
+        if totalW > 0
+            float maxES = 0.0
+            float maxCS = 0.0
+            for r=0 to rows-1
+                maxES := math.max(maxES,array.get(scoreE,r))
+                maxCS := math.max(maxCS,array.get(scoreC,r))
+
+            int xr = bar_index+2
+
+            if showProfile
+                for r=0 to rows-1
+                    float cnt=array.get(countA,r)
+                    if cnt>0
+                        float es=maxES>0?array.get(scoreE,r)/maxES:0.0
+                        float cs=maxCS>0?array.get(scoreC,r)/maxCS:0.0
+                        float strength=math.max(es,cs)
+                        if strength>=0.16
+                            float y1=lo+r*step
+                            float y2=y1+step*0.80
+                            bool eDom=es>cs*1.08
+                            bool cDom=cs>es*1.08
+                            color fill=eDom?color.new(cTeal,28):cDom?color.new(cRose,34):color.new(cViolet,50)
+                            int width=math.max(2,int(math.round(profileWidth*strength)))
+                            box pb=box.new(xr-width,y2,xr,y1,xloc=xloc.bar_index,bgcolor=fill,border_color=color.new(fill,100))
+                            array.push(pBoxes,pb)
+
+            // Soft structural zones around the two strongest regions.
+            if showZones
+                float half=step*0.55
+                if not na(effCore)
+                    box eb=box.new(bar_index-math.min(zoneBars,bar_index),effCore+half,bar_index+1,effCore-half,
+                         xloc=xloc.bar_index,bgcolor=color.new(cTeal,91),border_color=color.new(cTeal,52))
+                    array.push(zBoxes,eb)
+                if not na(churnCore) and math.abs(churnCore-effCore)>step*0.5
+                    box cb=box.new(bar_index-math.min(zoneBars,bar_index),churnCore+half,bar_index+1,churnCore-half,
+                         xloc=xloc.bar_index,bgcolor=color.new(cRose,92),border_color=color.new(cRose,58))
+                    array.push(zBoxes,cb)
+
+            if not na(effCore)
+                effLine:=line.new(bar_index-math.min(zoneBars,bar_index),effCore,bar_index+4,effCore,
+                     xloc=xloc.bar_index,color=color.new(cTeal,4),width=2)
+                effLab:=label.new(bar_index+4,effCore,"EFF. CORE  "+str.tostring(effCore,format.mintick),
+                     xloc=xloc.bar_index,style=label.style_label_left,color=cTeal,textcolor=cNavy,size=size.small)
+
+            if not na(churnCore)
+                churnLine:=line.new(bar_index-math.min(zoneBars,bar_index),churnCore,bar_index+3,churnCore,
+                     xloc=xloc.bar_index,color=color.new(cAmber,12),width=1,style=line.style_dashed)
+                churnLab:=label.new(bar_index+3,churnCore,"CHURN CORE  "+str.tostring(churnCore,format.mintick),
+                     xloc=xloc.bar_index,style=label.style_label_left,color=cAmber,textcolor=cNavy,size=size.tiny)
+
+//──────────────────────────────────────────────────────────────────────────────
+// DASHBOARD
+//──────────────────────────────────────────────────────────────────────────────
+var table dash=table.new(position.top_right,2,6,border_width=0)
+
+if barstate.islast and showDash
+    table.cell(dash,0,0,"PATH EFFICIENCY",bgcolor=cPanel2,text_color=cText,text_size=size.small)
+    table.cell(dash,1,0,"v1.3",bgcolor=cPanel2,text_color=cMuted,text_size=size.small)
+
+    table.cell(dash,0,1,"REGIME",bgcolor=cPanel,text_color=cMuted)
+    table.cell(dash,1,1,regime,bgcolor=cPanel,text_color=regime=="DIRECTIONAL"?cTeal:regime=="ROTATIONAL"?cRose:cViolet)
+
+    table.cell(dash,0,2,"EFFICIENCY",bgcolor=cPanel,text_color=cMuted)
+    table.cell(dash,1,2,na(globalEff)?"—":str.tostring(globalEff,"#.00"),bgcolor=cPanel,text_color=cText)
+
+    table.cell(dash,0,3,"CHURN",bgcolor=cPanel,text_color=cMuted)
+    table.cell(dash,1,3,na(globalChurn)?"—":str.tostring(globalChurn,"#.00"),bgcolor=cPanel,text_color=cText)
+
+    table.cell(dash,0,4,"DISPLACEMENT",bgcolor=cPanel,text_color=cMuted)
+    table.cell(dash,1,4,na(globalDisp)?"—":str.tostring(globalDisp,"#.00"),bgcolor=cPanel,text_color=cText)
+
+    table.cell(dash,0,5,"POSITION",bgcolor=cPanel,text_color=cMuted)
+    table.cell(dash,1,5,positionText,bgcolor=cPanel,text_color=cAmber)
+
+// Context-state alerts only.
+bool directional=barstate.isconfirmed and regime=="DIRECTIONAL"
+bool rotational=barstate.isconfirmed and regime=="ROTATIONAL"
+alertcondition(directional and not directional[1],"Directional Path Regime","Adaptive Path Efficiency Profile entered a directional regime.")
+alertcondition(rotational and not rotational[1],"Rotational Path Regime","Adaptive Path Efficiency Profile entered a rotational regime.")

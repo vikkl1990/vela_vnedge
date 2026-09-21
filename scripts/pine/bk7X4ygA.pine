@@ -1,0 +1,206 @@
+//@version=6
+// Original implementation for BotTradeLab. Descriptive event study, not a strategy.
+indicator("Earnings Drift Radar", "Earnings Drift", overlay = false, precision = 2)
+
+string market = input.symbol("AMEX:SPY", "Market benchmark", group = "Benchmarks", display = display.none)
+string sector = input.symbol("AMEX:XLK", "Sector benchmark (select for the stock)", group = "Benchmarks", tooltip = "XLK is a technology example, not automatic sector detection. Use USD benchmarks with matching US regular sessions.", display = display.none)
+string timing = input.string("Feed event bar", "Reaction day", options = ["Feed event bar", "Next trading bar", "Manual date"], group = "Earnings", tooltip = "The feed does not reliably specify before/after-market release time. Verify the reaction day. Next trading bar applies to ALL reports. Manual date studies one event only.", display = display.none)
+int manualDate = input.time(timestamp("01 Aug 2026 00:00 +0000"), "Manual reaction date (UTC date)", group = "Earnings", display = display.none)
+int historyCount = input.int(12, "Recent events in statistics", minval = 1, maxval = 40, group = "Earnings", display = display.none)
+float minReaction = input.float(0.5, "Minimum positive initial sector lead (pp)", minval = 0.1, step = 0.1, group = "States", display = display.none)
+float tolerance = input.float(0.1, "Daily lead change tolerance (pp)", minval = 0, step = 0.05, group = "States", display = display.none)
+bool showPanel = input.bool(true, "Show dashboard", group = "Display", display = display.none)
+bool detailedPanel = input.bool(false, "Expanded dashboard with historical statistics", group = "Display", tooltip = "Off: compact summary. On: full historical table and methodology. Both use the same indicator.", display = display.none)
+string panelCorner = input.string("Top left", "Dashboard position", options = ["Top left", "Bottom left", "Top right", "Bottom right"], group = "Display", display = display.none)
+bool showRaw = input.bool(false, "Show raw stock return", group = "Display", display = display.none)
+
+if barstate.isfirst and (not timeframe.isdaily or timeframe.multiplier != 1 or not chart.is_standard or syminfo.type != "stock" or syminfo.currency != "USD")
+    runtime.error("Use a standard 1D chart of a USD stock. Select matching US-session USD benchmarks.")
+
+string stockId = ticker.new(syminfo.prefix, syminfo.ticker, session.regular, adjustment.splits)
+string marketId = ticker.modify(market, session = session.regular, adjustment = adjustment.splits)
+string sectorId = ticker.modify(sector, session = session.regular, adjustment = adjustment.splits)
+[px, stockEnd] = request.security(stockId, "1D", [close, time_close], gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off)
+[mx, marketEnd] = request.security(marketId, "1D", [close, time_close], gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+[sx, sectorEnd] = request.security(sectorId, "1D", [close, time_close], gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+float eps = request.earnings(syminfo.tickerid, earnings.actual, gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+bool aligned = not na(px) and not na(mx) and not na(sx) and px > 0 and mx > 0 and sx > 0 and stockEnd == marketEnd and stockEnd == sectorEnd
+int utcDay = timestamp("UTC", year(time, "UTC"), month(time, "UTC"), dayofmonth(time, "UTC"), 0, 0)
+int chosenDay = timestamp("UTC", year(manualDate, "UTC"), month(manualDate, "UTC"), dayofmonth(manualDate, "UTC"), 0, 0)
+bool manualEvent = utcDay >= chosenDay and not na(utcDay[1]) and utcDay[1] < chosenDay
+bool event = timing == "Manual date" ? manualEvent : timing == "Next trading bar" ? not na(eps[1]) : not na(eps)
+
+// Each event owns one row. Unfinished / invalid horizons remain na, never zero.
+var array<float> hist5 = array.new_float()
+var array<float> hist10 = array.new_float()
+var array<float> hist20 = array.new_float()
+var float baseP = na
+var float baseM = na
+var float baseS = na
+var float initial = na
+var float sectorLead = na
+var float marketLead = na
+var float rawReturn = na
+var float previousLead = na
+var int startBar = na
+var int startTime = na
+var bool validEvent = false
+var bool hadLead = false
+var string state = "WAITING FOR EARNINGS"
+bool newEvent = false
+bool lostLead = false
+bool regainedLead = false
+bool fading = false
+
+if barstate.isconfirmed
+    if event
+        newEvent := true
+        startBar := bar_index
+        startTime := time
+        validEvent := aligned and aligned[1]
+        baseP := validEvent ? px[1] : na
+        baseM := validEvent ? mx[1] : na
+        baseS := validEvent ? sx[1] : na
+        initial := na
+        previousLead := na
+        hadLead := false
+        array.unshift(hist5, na)
+        array.unshift(hist10, na)
+        array.unshift(hist20, na)
+        if array.size(hist5) > historyCount
+            array.pop(hist5)
+            array.pop(hist10)
+            array.pop(hist20)
+    if not na(startBar)
+        // Once data breaks, invalidate the rest of this event; no silent stale-price fill.
+        validEvent := validEvent and aligned
+        if validEvent
+            rawReturn := 100 * (px / baseP - 1)
+            marketLead := rawReturn - 100 * (mx / baseM - 1)
+            sectorLead := rawReturn - 100 * (sx / baseS - 1)
+            if newEvent
+                initial := sectorLead
+            lostLead := not newEvent and hadLead and not na(previousLead) and previousLead > 0 and sectorLead <= 0
+            regainedLead := not newEvent and not na(previousLead) and previousLead <= 0 and sectorLead > 0
+            fading := not newEvent and sectorLead > 0 and not na(previousLead) and sectorLead < previousLead - tolerance
+            state := sectorLead <= 0 ? (hadLead ? "LEAD LOST" : "UNDERPERFORMING") : newEvent ? "INITIAL LEAD" : sectorLead > previousLead + tolerance ? "LEAD GROWING" : fading ? "LEAD FADING" : "LEAD HOLDING"
+            hadLead := hadLead or sectorLead > 0
+            previousLead := sectorLead
+            int age = bar_index - startBar
+            // D+5 means five complete stock sessions AFTER the reaction day D0.
+            if age == 5
+                array.set(hist5, 0, sectorLead)
+            if age == 10
+                array.set(hist10, 0, sectorLead)
+            if age == 20
+                array.set(hist20, 0, sectorLead)
+        else
+            rawReturn := na
+            sectorLead := na
+            marketLead := na
+            state := "DATA GAP / SESSION MISMATCH"
+
+float retained = not na(initial) and initial >= minReaction ? 100 * sectorLead / initial : na
+float afterReaction = sectorLead - initial
+color leadColor = sectorLead > 0 ? color.rgb(45, 212, 170) : color.rgb(251, 146, 90)
+hline(0, "No excess return", color.new(color.gray, 45), hline.style_dashed)
+plot(newEvent ? na : sectorLead, "Sector excess return (pp)", color.rgb(45, 212, 170), 2, plot.style_linebr)
+plot(newEvent ? na : marketLead, "Market excess return (pp)", color.rgb(96, 165, 250), 2, plot.style_linebr)
+plot(newEvent ? sectorLead : na, "Initial sector reaction (pp)", color.rgb(45, 212, 170), 3, plot.style_circles)
+plot(showRaw and not newEvent ? rawReturn : na, "Stock price return (%)", color.new(color.gray, 20), 1, plot.style_linebr)
+plot(initial, "Initial sector lead (pp)", display = display.data_window)
+plot(afterReaction, "Change in sector lead since D0 (pp)", display = display.data_window)
+plot(retained, "Initial positive lead retained (%)", display = display.data_window)
+bgcolor(newEvent ? color.new(color.blue, 88) : na, title = "Reaction day")
+plotshape(lostLead, "Lead lost marker", shape.triangledown, location.top, color.rgb(251, 146, 90), size = size.tiny)
+
+f_num(float v) =>
+    na(v) ? "—" : str.tostring(v, "0.00")
+f_stats(array<float> values) =>
+    array<float> completed = array.new_float()
+    int positives = 0
+    for value in values
+        if not na(value)
+            array.push(completed, value)
+            positives += value > 0 ? 1 : 0
+    int n = array.size(completed)
+    [n, n > 0 ? array.avg(completed) : na, n > 0 ? array.median(completed) : na, n > 0 ? 100.0 * positives / n : na]
+
+string panelPosition = panelCorner == "Top left" ? position.top_left : panelCorner == "Bottom left" ? position.bottom_left : panelCorner == "Bottom right" ? position.bottom_right : position.top_right
+var table panel = table.new(panelPosition, 5, 12, bgcolor = color.new(color.rgb(20, 27, 40), 12), border_width = 0)
+f_cell(int col, int row, string txt, color ink = color.silver) =>
+    table.cell(panel, col, row, txt, text_color = ink, text_size = size.small)
+if barstate.islast and showPanel and not detailedPanel
+    f_cell(0, 0, "EARNINGS DRIFT", color.white)
+    f_cell(1, 0, syminfo.ticker + " · LAST CLOSE", color.white)
+    f_cell(0, 1, "Sector lead", color.rgb(45, 212, 170))
+    f_cell(1, 1, f_num(sectorLead) + " pp", leadColor)
+    f_cell(0, 2, "Market lead", color.rgb(96, 165, 250))
+    f_cell(1, 2, f_num(marketLead) + " pp", color.rgb(96, 165, 250))
+    f_cell(0, 3, "Sector state")
+    f_cell(1, 3, state, leadColor)
+    f_cell(0, 4, "Reaction · verify D0", color.rgb(251, 191, 36))
+    f_cell(1, 4, na(startTime) ? "—" : str.format_time(startTime, "yyyy-MM-dd", "UTC") + " · D+" + str.tostring(bar_index - startBar - (barstate.isconfirmed ? 0 : 1)))
+    f_cell(0, 5, "Initial lead retained")
+    f_cell(1, 5, f_num(retained) + " %")
+else if barstate.islast and showPanel and detailedPanel
+    f_cell(0, 0, "EARNINGS DRIFT", color.white)
+    f_cell(1, 0, syminfo.ticker, color.white)
+    f_cell(2, 0, "1D · pp")
+    f_cell(3, 0, "CLOSE ONLY")
+    f_cell(4, 0, "v1.1")
+    f_cell(0, 1, "SECTOR STATE")
+    f_cell(1, 1, state, leadColor)
+    f_cell(2, 1, "Reaction date")
+    f_cell(3, 1, na(startTime) ? "—" : str.format_time(startTime, "yyyy-MM-dd", "UTC"))
+    f_cell(4, 1, na(startBar) ? "—" : "D+" + str.tostring(bar_index - startBar - (barstate.isconfirmed ? 0 : 1)))
+    f_cell(0, 2, "Sector / market")
+    f_cell(1, 2, sector)
+    f_cell(2, 2, f_num(sectorLead) + " pp", leadColor)
+    f_cell(3, 2, market)
+    f_cell(4, 2, f_num(marketLead) + " pp", color.rgb(96, 165, 250))
+    f_cell(0, 3, "Initial / later")
+    f_cell(1, 3, f_num(initial) + " pp")
+    f_cell(2, 3, f_num(afterReaction) + " pp")
+    f_cell(3, 3, "Lead retained")
+    f_cell(4, 3, f_num(retained) + " %")
+    f_cell(0, 4, "SECTOR HISTORY")
+    f_cell(1, 4, "N complete")
+    f_cell(2, 4, "Mean pp")
+    f_cell(3, 4, "Median pp")
+    f_cell(4, 4, "Positive %")
+    [n5, avg5, med5, pos5] = f_stats(hist5)
+    [n10, avg10, med10, pos10] = f_stats(hist10)
+    [n20, avg20, med20, pos20] = f_stats(hist20)
+    for row = 5 to 7
+        f_cell(0, row, row == 5 ? "D+5" : row == 6 ? "D+10" : "D+20")
+        f_cell(1, row, str.tostring(row == 5 ? n5 : row == 6 ? n10 : n20))
+        f_cell(2, row, f_num(row == 5 ? avg5 : row == 6 ? avg10 : avg20))
+        f_cell(3, row, f_num(row == 5 ? med5 : row == 6 ? med10 : med20))
+        f_cell(4, row, f_num(row == 5 ? pos5 : row == 6 ? pos10 : pos20))
+    f_cell(0, 8, "EVENT WINDOW")
+    f_cell(1, 8, str.tostring(array.size(hist5)) + " / " + str.tostring(historyCount))
+    f_cell(2, 8, "Price returns")
+    f_cell(3, 8, "No beta model")
+    f_cell(4, 8, "No trade win rate")
+    f_cell(0, 9, "TIMING")
+    f_cell(1, 9, timing, color.rgb(251, 191, 36))
+    f_cell(2, 9, "Verify D0", color.rgb(251, 191, 36))
+    f_cell(3, 9, "US sessions")
+    f_cell(4, 9, "USD")
+    f_cell(0, 10, "BENCHMARKS")
+    f_cell(1, 10, "Select sector ETF")
+    f_cell(2, 10, "No auto mapping")
+    f_cell(3, 10, "Split adjusted")
+    f_cell(4, 10, "No dividends")
+    f_cell(0, 11, "READING")
+    f_cell(1, 11, "Green: vs sector", color.rgb(45, 212, 170))
+    f_cell(2, 11, "Blue: vs market", color.rgb(96, 165, 250))
+    f_cell(3, 11, "Not causal")
+    f_cell(4, 11, "Research tool")
+
+alertcondition(newEvent, "New earnings reaction", "Earnings Drift Radar: new reaction day on {{ticker}}. Verify earnings timing.")
+alertcondition(lostLead, "Sector lead lost", "Earnings Drift Radar: positive sector lead crossed to zero or below on {{ticker}}.")
+alertcondition(regainedLead, "Sector lead recovered", "Earnings Drift Radar: sector excess return crossed above zero on {{ticker}}.")
+alertcondition(fading and not fading[1], "Sector lead starts fading", "Earnings Drift Radar: positive sector lead started shrinking on {{ticker}}.")
+ 

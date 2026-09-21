@@ -1,0 +1,386 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
+
+//@version=6
+indicator(
+     title = "+ Memory Match • Trader Edition",
+     shorttitle = "TraderMemory",
+     overlay = false,
+     behind_chart = false,
+     calc_bars_count = 50
+)
+
+//══════════════════════════════════════════════════════════════════════
+// ENUMS & GROUPS
+//══════════════════════════════════════════════════════════════════════
+
+enum BoardPosition
+    Centre = "Centre"
+    Left   = "Left"
+    Right  = "Right"
+
+const string G_PLAY   = "🕹️ GAMEPLAY CONTROLS"
+const string G_THEME  = "🎨 FLOOR STYLE"
+const string G_LAYOUT = "📐 TABLE DIMENSIONS"
+
+//══════════════════════════════════════════════════════════════════════
+// INPUTS
+//══════════════════════════════════════════════════════════════════════
+
+string movesRecord =
+     input.text_area(
+         defval = "",
+         title = "Flip History (Pairs of 1-16)",
+         tooltip =
+              "Enter card numbers (1-16) separated by spaces or commas.\n\n" +
+              "Each attempt uses 2 numbers (e.g., '1 7  4 12  3 16').\n\n" +
+              "If they match, they stay revealed forever!\n" +
+              "If they don't match, they flip back over.\n\n" +
+              "Clear this box to shuffle a new board.",
+         group = G_PLAY
+     )
+
+int gameSeed =
+     input.int(
+         defval = 42,
+         title = "Board Shuffle Seed",
+         minval = 1,
+         maxval = 9999,
+         tooltip = "Change this number to generate a completely new deck arrangement.",
+         group = G_PLAY
+     )
+
+string boardTheme =
+     input.string(
+         defval = "Cyber Neon",
+         title = "Floor Theme",
+         options = [
+             "Cyber Neon",
+             "Bulls & Bears",
+             "Terminal Green",
+             "Golden Bullion",
+             "High Contrast"
+         ],
+         group = G_THEME
+     )
+
+bool showTileNumbers =
+     input.bool(
+         true,
+         "Show Card Coordinate Numbers (1-16)",
+         group = G_THEME
+     )
+
+BoardPosition boardPosition =
+     input.enum(
+         BoardPosition.Centre,
+         "Screen Position",
+         group = G_LAYOUT
+     )
+
+float cellWidth =
+     input.float(
+         6.5,
+         "Card Width %",
+         minval = 3.0,
+         maxval = 15.0,
+         step = 0.5,
+         group = G_LAYOUT
+     )
+
+float cellHeight =
+     input.float(
+         8.5,
+         "Card Height %",
+         minval = 3.0,
+         maxval = 18.0,
+         step = 0.5,
+         group = G_LAYOUT
+     )
+
+//══════════════════════════════════════════════════════════════════════
+// THEME COLORS
+//══════════════════════════════════════════════════════════════════════
+
+color boardBg       = color.black
+color cardBackBg    = color.black
+color matchedBg     = color.black
+color openBg        = color.black
+color borderColor   = color.gray
+color headerBg      = color.black
+color labelBg       = color.black
+color cardBackText  = color.gray
+color textColor     = color.white
+
+if boardTheme == "Cyber Neon"
+    boardBg       := color.rgb(10, 12, 24)
+    cardBackBg    := color.rgb(18, 22, 45)
+    matchedBg     := color.rgb(12, 45, 35)
+    openBg        := color.rgb(45, 30, 65)
+    borderColor   := color.rgb(0, 229, 255)
+    headerBg      := color.rgb(22, 28, 55)
+    labelBg       := color.rgb(15, 18, 35)
+    cardBackText  := color.rgb(0, 229, 255)
+    textColor     := color.white
+else if boardTheme == "Bulls & Bears"
+    boardBg       := color.rgb(18, 18, 20)
+    cardBackBg    := color.rgb(32, 34, 40)
+    matchedBg     := color.rgb(20, 55, 30)
+    openBg        := color.rgb(65, 25, 25)
+    borderColor   := color.rgb(255, 75, 75)
+    headerBg      := color.rgb(40, 25, 25)
+    labelBg       := color.rgb(25, 25, 28)
+    cardBackText  := color.rgb(255, 215, 0)
+    textColor     := color.white
+else if boardTheme == "Terminal Green"
+    boardBg       := color.rgb(0, 10, 3)
+    cardBackBg    := color.rgb(0, 25, 8)
+    matchedBg     := color.rgb(0, 45, 15)
+    openBg        := color.rgb(0, 60, 20)
+    borderColor   := color.rgb(0, 255, 80)
+    headerBg      := color.rgb(0, 35, 10)
+    labelBg       := color.rgb(0, 18, 5)
+    cardBackText  := color.rgb(0, 255, 80)
+    textColor     := color.rgb(180, 255, 200)
+else if boardTheme == "Golden Bullion"
+    boardBg       := color.rgb(20, 17, 10)
+    cardBackBg    := color.rgb(40, 34, 20)
+    matchedBg     := color.rgb(60, 50, 15)
+    openBg        := color.rgb(80, 65, 25)
+    borderColor   := color.rgb(255, 200, 50)
+    headerBg      := color.rgb(55, 45, 15)
+    labelBg       := color.rgb(28, 24, 12)
+    cardBackText  := color.rgb(255, 215, 0)
+    textColor     := color.white
+else
+    boardBg       := color.black
+    cardBackBg    := color.rgb(28, 28, 28)
+    matchedBg     := color.rgb(20, 50, 20)
+    openBg        := color.rgb(50, 50, 50)
+    borderColor   := color.white
+    headerBg      := color.rgb(40, 40, 40)
+    labelBg       := color.black
+    cardBackText  := color.white
+    textColor     := color.white
+
+//══════════════════════════════════════════════════════════════════════
+// DECK GENERATION & PSEUDO-RANDOM SHUFFLE
+//══════════════════════════════════════════════════════════════════════
+
+// 8 + icons paired = 16 cards
+f_getEmoji(int id) =>
+    switch id
+        0 => "🚀"  // To The Moon
+        1 => "💎"  // Diamond Hands
+        2 => "🐻"  // Bear Market
+        3 => "🐂"  // Bull Market
+        4 => "💰"  // Bag of Cash
+        5 => "📉"  // Margin Call
+        6 => "🐳"  // Market Whale
+        7 => "☕"  // Pre-Market Coffee
+        => "❓"
+
+f_getCardName(int id) =>
+    switch id
+        0 => "Moon Rocket"
+        1 => "Diamond Hands"
+        2 => "Gay Bear"
+        3 => "Raging Bull"
+        4 => "Bags of Profit"
+        5 => "Margin Call"
+        6 => "Liquidity Whale"
+        7 => "Trader's Coffee"
+        => "Unknown"
+
+// Deterministic Linear Congruential Shuffle based on gameSeed
+f_generateDeck(int seed) =>
+    array<int> deck = array.new_int(16)
+    // Populate pairs: 0,0, 1,1, 2,2, 3,3, 4,4, 5,5, 6,6, 7,7
+    for i = 0 to 15
+        array.set(deck, i, int(math.floor(i / 2.0)))
+
+    // Fisher-Yates shuffle with LCG pseudo-random generator
+    int state = seed * 1664525 + 1013904223
+    for i = 15 to 1
+        state := (state * 1664525 + 1013904223) % 2147483647
+        int j = int(math.abs(state) % (i + 1))
+        int temp = array.get(deck, i)
+        array.set(deck, i, array.get(deck, j))
+        array.set(deck, j, temp)
+    deck
+
+//══════════════════════════════════════════════════════════════════════
+// TABLE INITIALIZATION
+//══════════════════════════════════════════════════════════════════════
+
+string tablePosition = switch boardPosition
+    BoardPosition.Left  => position.middle_left
+    BoardPosition.Right => position.middle_right
+    => position.middle_center
+
+var table matchTable = table.new(
+     position = tablePosition,
+     columns = 4,
+     rows = 6,
+     border_width = 2,
+     border_color = borderColor,
+     frame_width = 3,
+     frame_color = borderColor
+ )
+
+//══════════════════════════════════════════════════════════════════════
+// GAMEPLAY PARSER & TURN ENGINE
+//══════════════════════════════════════════════════════════════════════
+
+if barstate.islast
+    array<int> deck = f_generateDeck(gameSeed)
+    array<bool> matched = array.new_bool(16, false)
+
+    string errorText = ""
+    int pairsFound = 0
+    int totalAttempts = 0
+    int lastFlipped1 = -1
+    int lastFlipped2 = -1
+    string roundStatus = ""
+
+    // Parse player's input string
+    string clean = str.replace_all(str.replace_all(movesRecord, ",", " "), "\n", " ")
+    string[] tokens = str.split(clean, " ")
+    array<int> validMoves = array.new_int(0)
+
+    if array.size(tokens) > 0
+        for i = 0 to array.size(tokens) - 1
+            if errorText == ""
+                string tk = str.trim(array.get(tokens, i))
+                if tk != ""
+                    float num = str.tonumber(tk)
+                    if na(num)
+                        errorText := "Invalid entry '" + tk + "'! Use numbers 1-16."
+                    else
+                        int cardIndex = int(num) - 1
+                        if cardIndex < 0 or cardIndex > 15
+                            errorText := "Card " + tk + " out of bounds! Range is 1-16."
+                        else
+                            array.push(validMoves, cardIndex)
+
+    // Evaluate valid moves in pairs
+    int totalPushed = array.size(validMoves)
+    int completedPairs = int(math.floor(totalPushed / 2.0))
+    totalAttempts := completedPairs
+
+    if errorText == "" and completedPairs > 0
+        for p = 0 to completedPairs - 1
+            int idx1 = array.get(validMoves, p * 2)
+            int idx2 = array.get(validMoves, p * 2 + 1)
+
+            if idx1 == idx2
+                errorText := "Cannot pick the same card (Cell " + str.tostring(idx1 + 1) + ") twice in one turn!"
+            else
+                int icon1 = array.get(deck, idx1)
+                int icon2 = array.get(deck, idx2)
+
+                if icon1 == icon2
+                    array.set(matched, idx1, true)
+                    array.set(matched, idx2, true)
+                    pairsFound += 1
+                
+                // Track last attempt for current visuals
+                if p == completedPairs - 1
+                    lastFlipped1 := idx1
+                    lastFlipped2 := idx2
+                    if icon1 == icon2
+                        roundStatus := "MATCH FOUND! Found: " + f_getEmoji(icon1) + " " + f_getCardName(icon1)
+                    else
+                        roundStatus := "MISMATCH! " + f_getEmoji(icon1) + " vs " + f_getEmoji(icon2)
+
+    // Handle single card waiting for its partner
+    bool hasDanglingCard = (totalPushed % 2 != 0) and (errorText == "")
+    int danglingCardIdx = hasDanglingCard ? array.get(validMoves, totalPushed - 1) : -1
+
+    // Build Footer Message
+    string footerMsg = ""
+    color footerColor = headerBg
+
+    if errorText != ""
+        footerMsg := "⚠ " + errorText
+        footerColor := color.new(color.red, 20)
+    else if pairsFound == 8
+        footerMsg := "🎉 ALL MATCHED IN " + str.tostring(totalAttempts) + " TURNS! PURE ALPHA! 🚀"
+        footerColor := color.new(color.green, 30)
+    else if hasDanglingCard
+        int cardType = array.get(deck, danglingCardIdx)
+        footerMsg := "👀 Card " + str.tostring(danglingCardIdx + 1) + " is " + f_getEmoji(cardType) + " (" + f_getCardName(cardType) + "). Enter card #2!"
+        footerColor := color.new(color.blue, 30)
+    else if totalAttempts > 0
+        footerMsg := roundStatus + " | Enter your next pair!"
+        footerColor := pairsFound > 0 and str.contains(roundStatus, "MATCH") ? color.new(color.green, 40) : headerBg
+    else
+        footerMsg := "Enter two card numbers (e.g., '1 7') in Settings to start flipping!"
+
+    //──────────────────────────────────────────────────────────────────
+    // UI RENDER ENGINE
+    //──────────────────────────────────────────────────────────────────
+
+    // Row 0: Master Header
+    string header = "💎 + MEMORY MATCH  •  " + boardTheme
+    table.cell(matchTable, 0, 0, header, text_color = textColor, text_size = size.normal, bgcolor = headerBg, text_halign = text.align_center)
+
+    // Row 1: Trading Floor Scoreboard
+    string stats = "PAIRS: " + str.tostring(pairsFound) + " / 8   |   ATTEMPTS: " + str.tostring(totalAttempts) + "   |   SEED: #" + str.tostring(gameSeed)
+    table.cell(matchTable, 0, 1, stats, text_color = textColor, text_size = size.small, bgcolor = labelBg, text_halign = text.align_center)
+
+    // Rows 2 to 5: 4x4 Grid
+    for row = 0 to 3
+        int tRow = row + 2
+        for col = 0 to 3
+            int cellIdx = row * 4 + col
+            int iconId = array.get(deck, cellIdx)
+            bool isMatched = array.get(matched, cellIdx)
+
+            // Determine if card is currently face-up
+            bool isCurrentDangle = (cellIdx == danglingCardIdx)
+            bool isLastTried = (cellIdx == lastFlipped1 or cellIdx == lastFlipped2)
+
+            string displaySymbol = ""
+            color cellBackground = cardBackBg
+            color cardTextColor   = cardBackText
+            string cellTextSize   = size.huge
+
+            if isMatched
+                // Matched cards remain permanently open
+                displaySymbol := f_getEmoji(iconId)
+                cellBackground := matchedBg
+                cardTextColor := textColor
+            else if isCurrentDangle or isLastTried
+                // Active peek on current turn
+                displaySymbol := f_getEmoji(iconId)
+                cellBackground := openBg
+                cardTextColor := textColor
+            else
+                // Face-down card: show coordinate number
+                displaySymbol := showTileNumbers ? str.tostring(cellIdx + 1) : "🂠"
+                cellBackground := cardBackBg
+                cardTextColor := cardBackText
+                cellTextSize := showTileNumbers ? size.normal : size.huge
+
+            table.cell(
+                 matchTable,
+                 col,
+                 tRow,
+                 displaySymbol,
+                 text_color = cardTextColor,
+                 text_size = cellTextSize,
+                 bgcolor = cellBackground,
+                 width = cellWidth,
+                 height = cellHeight,
+                 text_halign = text.align_center,
+                 text_valign = text.align_center
+             )
+
+    // Row 5: Game Status Bar
+    table.cell(matchTable, 0, 5, footerMsg, text_color = textColor, text_size = size.small, bgcolor = footerColor, text_halign = text.align_center)
+
+    // Span header, stats, and footer across all 4 columns
+    table.merge_cells(matchTable, 0, 0, 3, 0)
+    table.merge_cells(matchTable, 0, 1, 3, 1)
+    table.merge_cells(matchTable, 0, 5, 3, 5)

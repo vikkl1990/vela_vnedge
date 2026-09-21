@@ -1,0 +1,221 @@
+//@version=6
+strategy("TMO Dual Timeframe Strategy [Hary]", shorttitle="TMO-DTF-STR", overlay=false,
+     max_bars_back=500, initial_capital=10000, currency=currency.USD,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=10,
+     commission_type=strategy.commission.percent, commission_value=0.05,
+     slippage=1)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+i_htmLabel = input.string("1hr", "HTM - Higher Timeframe (trend)", options=["1m","3m","5m","8m","10m","15m","30m","1hr","2hr","4hr","6hr","12hr","1D","2D","1W"], group="Timeframes")
+i_etmLabel = input.string("3m",  "ETM - Entry Timeframe (trigger)", options=["1m","3m","5m","8m","10m","15m","30m","1hr","2hr","4hr","6hr","12hr","1D","2D","1W"], group="Timeframes")
+
+i_length            = input.int(14, "Length", minval=1, group="TMO Settings")
+i_calcLength        = input.int(5,  "Calc length", minval=1, group="TMO Settings")
+i_smoothLength      = input.int(3,  "Smooth length", minval=1, group="TMO Settings")
+i_lengthType        = input.string("EMA", "Length MA type",  options=["EMA","SMA","RMA"], group="TMO Settings")
+i_calcLengthType    = input.string("EMA", "Calc length MA type", options=["EMA","SMA","RMA"], group="TMO Settings")
+i_smoothLengthType  = input.string("EMA", "Smooth length MA type", options=["EMA","SMA","RMA"], group="TMO Settings")
+
+i_showHTM   = input.bool(true, "Show HTM line", group="Display")
+i_showETM   = input.bool(true, "Show ETM line", group="Display")
+i_showBands = input.bool(true, "Show OB/OS + upper/lower bands", group="Display")
+
+i_allowLong  = input.bool(true,  "Allow long trades",  group="Strategy")
+i_allowShort = input.bool(true,  "Allow short trades", group="Strategy")
+
+i_showTPSL = input.bool(true, "Show TP/SL lines on chart", group="TP / SL")
+i_useSL    = input.bool(true,  "Use stop loss",   group="TP / SL")
+i_slUnit   = input.string("Percent", "Stop loss unit",   options=["Percent","Pips"], group="TP / SL")
+i_slAmount = input.float(2.0, "Stop loss amount",   minval=0.0, step=0.1, group="TP / SL")
+i_useTP    = input.bool(true,  "Use take profit", group="TP / SL")
+i_tpUnit   = input.string("Percent", "Take profit unit", options=["Percent","Pips"], group="TP / SL")
+i_tpAmount = input.float(4.0, "Take profit amount", minval=0.0, step=0.1, group="TP / SL")
+i_pipSize  = input.float(10, "Ticks per pip", minval=0.0001, step=1, tooltip="Used only when unit = Pips. E.g. 10 for most 5-decimal FX pairs, 1 for stocks/crypto ticks.", group="TP / SL")
+
+i_startDate = input.time(timestamp("2020-01-01T00:00:00"), "Start date", group="Backtest window")
+i_endDate   = input.time(timestamp("2099-01-01T00:00:00"), "End date",   group="Backtest window")
+inDateWindow = time >= i_startDate and time <= i_endDate
+
+// ============================================================================
+// TIMEFRAME LABEL -> PINE TIMEFRAME STRING
+// ============================================================================
+f_tfFromLabel(lbl) =>
+    switch lbl
+        "1m"  => "1"
+        "3m"  => "3"
+        "5m"  => "5"
+        "8m"  => "8"
+        "10m" => "10"
+        "15m" => "15"
+        "30m" => "30"
+        "1hr" => "60"
+        "2hr" => "120"
+        "4hr" => "240"
+        "6hr" => "360"
+        "12hr"=> "720"
+        "1D"  => "D"
+        "2D"  => "2D"
+        "1W"  => "W"
+        =>       "60"
+
+htmTF = f_tfFromLabel(i_htmLabel)
+etmTF = f_tfFromLabel(i_etmLabel)
+
+// ============================================================================
+// MA HELPER (top-level, no nested defs)
+// ============================================================================
+f_ma(maType, src, len) =>
+    float result = na
+    if maType == "EMA"
+        result := ta.ema(src, len)
+    else if maType == "SMA"
+        result := ta.sma(src, len)
+    else
+        result := ta.rma(src, len)
+    result
+
+// ============================================================================
+// TMO CORE CALC (top-level; safe to embed inside request.security since it
+// carries no var-state)
+// ============================================================================
+f_tmo(o, c, len, calcLen, smoothLen, lenType, calcType, smoothType) =>
+    s = 0.0
+    for i = 0 to len
+        s := s + (c > o[i] ? 1 : c < o[i] ? -1 : 0)
+    ma     = f_ma(lenType, s, calcLen)
+    main   = f_ma(calcType, ma, smoothLen)
+    signal = f_ma(smoothType, main, smoothLen)
+    [main, signal]
+
+// ============================================================================
+// MULTI-TIMEFRAME FETCH
+// evaluated in each timeframe's own context (open/close remap automatically)
+// gaps_off + lookahead_off => live, non-repainting on confirmed history
+// ============================================================================
+[htmMain, htmSignal] = request.security(syminfo.tickerid, htmTF,
+     f_tmo(open, close, i_length, i_calcLength, i_smoothLength, i_lengthType, i_calcLengthType, i_smoothLengthType),
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+[etmMain, etmSignal] = request.security(syminfo.tickerid, etmTF,
+     f_tmo(open, close, i_length, i_calcLength, i_smoothLength, i_lengthType, i_calcLengthType, i_smoothLengthType),
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+// ============================================================================
+// SIGNAL LOGIC
+// HTM: crossing up/above 0 (buy) or crossing down/below 0 (sell)
+// ETM: exact zero-cross, no delay -> ta.crossover / ta.crossunder on the
+//      security-resolved series itself
+// ============================================================================
+htmBullish = htmMain > 0
+htmBearish = htmMain < 0
+
+etmCrossUp   = ta.crossover(etmMain, 0)
+etmCrossDown = ta.crossunder(etmMain, 0)
+
+buySignal  = htmBullish and etmCrossUp
+sellSignal = htmBearish and etmCrossDown
+
+// ============================================================================
+// PLOTS - same look as the indicator version
+// ============================================================================
+ob    = hline(i_showBands ? math.round(i_length * 0.7)  : na, title="Overbought cutoff", color=color.gray)
+os    = hline(i_showBands ? -math.round(i_length * 0.7) : na, title="Oversold cutoff",   color=color.gray)
+upper = hline(i_showBands ? i_length  : na, title="Upper line", color=color.red)
+lower = hline(i_showBands ? -i_length : na, title="Lower line", color=color.green)
+zero  = hline(0, title="Zero line", color=color.gray)
+
+fill(ob, upper, title="Overbought zone", color=color.new(color.red, 90))
+fill(os, lower, title="Oversold zone",   color=color.new(color.green, 90))
+
+htmPlotMain   = i_showHTM ? htmMain   : na
+htmPlotSignal = i_showHTM ? htmSignal : na
+htmMainCol    = htmMain > htmSignal ? color.new(color.green, 40) : color.new(color.red, 40)
+htmMainPlot   = plot(htmPlotMain,   title="HTM Main",   color=htmMainCol, linewidth=3)
+htmSignalPlot = plot(htmPlotSignal, title="HTM Signal", color=htmMainCol, linewidth=1)
+fill(htmMainPlot, htmSignalPlot, title="HTM fill", color=color.new(htmMainCol, 85))
+
+etmPlotMain   = i_showETM ? etmMain   : na
+etmPlotSignal = i_showETM ? etmSignal : na
+etmMainCol    = etmMain > etmSignal ? color.green : color.red
+etmMainPlot   = plot(etmPlotMain,   title="ETM Main",   color=etmMainCol, linewidth=2)
+etmSignalPlot = plot(etmPlotSignal, title="ETM Signal", color=etmMainCol)
+etmCrossPlot  = plot(ta.cross(etmMain, etmSignal) ? etmMain : na, title="ETM cross dot",
+     color=etmMainCol, style=plot.style_circles, linewidth=3)
+fill(etmMainPlot, etmSignalPlot, title="ETM fill", color=etmMainCol)
+
+// Buy / Sell markers on the TMO pane
+plotshape(buySignal  ? 0.0 : na, title="Buy",  style=shape.triangleup,   location=location.absolute, color=color.lime, size=size.small)
+plotshape(sellSignal ? 0.0 : na, title="Sell", style=shape.triangledown, location=location.absolute, color=color.red,  size=size.small)
+
+// Same signals projected onto the main price chart
+plotshape(buySignal,  title="Buy (chart)",  style=shape.triangleup,   location=location.belowbar, color=color.lime, size=size.small, text="BUY",  textcolor=color.lime, force_overlay=true)
+plotshape(sellSignal, title="Sell (chart)", style=shape.triangledown, location=location.abovebar, color=color.red,  size=size.small, text="SELL", textcolor=color.red,  force_overlay=true)
+
+bgcolor(buySignal ? color.new(color.green, 85) : sellSignal ? color.new(color.red, 85) : na)
+
+// ============================================================================
+// STRATEGY EXECUTION
+// ============================================================================
+longCondition  = buySignal  and i_allowLong  and inDateWindow
+shortCondition = sellSignal and i_allowShort and inDateWindow
+
+if longCondition
+    strategy.entry("Long", strategy.long)
+
+if shortCondition
+    strategy.entry("Short", strategy.short)
+
+// Opposite signal closes the current position (flip)
+if sellSignal and i_allowLong
+    strategy.close("Long")
+
+if buySignal and i_allowShort
+    strategy.close("Short")
+
+// ============================================================================
+// TP / SL — unified percent/pips distance, based on the real fill price
+// ============================================================================
+pipValue = syminfo.mintick * i_pipSize
+
+f_dist(amount, unit, price) =>
+    unit == "Percent" ? price * amount / 100 : amount * pipValue
+
+inLong  = strategy.position_size > 0
+inShort = strategy.position_size < 0
+avgPx   = strategy.position_avg_price
+
+slDist = f_dist(i_slAmount, i_slUnit, avgPx)
+tpDist = f_dist(i_tpAmount, i_tpUnit, avgPx)
+
+longSL  = i_useSL and inLong  ? avgPx - slDist : na
+longTP  = i_useTP and inLong  ? avgPx + tpDist : na
+shortSL = i_useSL and inShort ? avgPx + slDist : na
+shortTP = i_useTP and inShort ? avgPx - tpDist : na
+
+if inLong and (i_useSL or i_useTP)
+    strategy.exit("Long Exit", from_entry="Long", stop=longSL, limit=longTP)
+if inShort and (i_useSL or i_useTP)
+    strategy.exit("Short Exit", from_entry="Short", stop=shortSL, limit=shortTP)
+
+// ============================================================================
+// TP / SL VISUALIZATION — projected onto the main chart
+// ============================================================================
+showLevels = i_showTPSL and strategy.position_size != 0
+entryPrice = strategy.position_size != 0 ? avgPx : na
+slPrice    = inLong ? longSL : inShort ? shortSL : na
+tpPrice    = inLong ? longTP : inShort ? shortTP : na
+
+entryPlot = plot(showLevels ? entryPrice : na, title="Entry (fill)",  color=color.new(color.gray, 30), style=plot.style_linebr, linewidth=1, force_overlay=true)
+tpPlot    = plot(showLevels and i_useTP ? tpPrice : na, title="Take Profit", color=color.new(color.green, 0), style=plot.style_linebr, linewidth=1, force_overlay=true)
+slPlot    = plot(showLevels and i_useSL ? slPrice : na, title="Stop Loss",   color=color.new(color.red, 0),   style=plot.style_linebr, linewidth=1, force_overlay=true)
+
+fill(entryPlot, tpPlot, title="TP zone", color=color.new(color.green, 90))
+fill(entryPlot, slPlot, title="SL zone", color=color.new(color.red, 90))
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+alertcondition(buySignal,  title="TMO DTF Buy",  message="TMO DTF Buy: HTM({{interval}}) bullish, ETM crossed up 0")
+alertcondition(sellSignal, title="TMO DTF Sell", message="TMO DTF Sell: HTM({{interval}}) bearish, ETM crossed down 0")

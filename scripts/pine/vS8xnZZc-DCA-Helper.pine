@@ -1,0 +1,320 @@
+//@version=6
+indicator("DCA Helper v5", overlay=true, max_boxes_count=500)
+
+// === INPUTS ===
+mode           = input.string("Long", "Strategy mode", options=["Long", "Long & Short", "Short"], group="General")
+numLevels      = input.int(5,  "DCA levels (1-10)", minval=1, maxval=10, group="General")
+levelProximity = input.float(0.5, "Trigger proximity to level (%)", minval=0.05, maxval=2.0, step=0.05, group="General")
+sustainedBars  = input.int(3,  "Bars in zone before signal", group="Timing")
+cooldown       = input.int(20, "Min bars between signals", group="Timing")
+resetAbovePct  = input.float(60, "Reset levels when above (% of range)", minval=30, maxval=100, step=5, group="Timing")
+
+fastMA         = input.int(50,  "Fast MA length", group="Trend")
+slowMA         = input.int(200, "Slow MA length", group="Trend")
+rsiLen         = input.int(14,  "RSI length", group="Momentum")
+rsiBuy         = input.float(35, "RSI buy (oversold)", group="Momentum")
+rsiSell        = input.float(65, "RSI sell (overbought)", group="Momentum")
+rangeLen       = input.int(50,  "Range lookback for POI", group="Timing")
+discountThr    = input.float(20, "Discount threshold (% from low)", group="Timing")
+premiumThr     = input.float(80, "Premium threshold (% from low)", group="Timing")
+
+// === INDICADORES ===
+fast  = ta.sma(close, fastMA)
+slow  = ta.sma(close, slowMA)
+rsi   = ta.rsi(close, rsiLen)
+
+// === POI: NIVELES DEL RANGO ===
+rangeHigh    = ta.highest(high, rangeLen)
+rangeLow     = ta.lowest(low,  rangeLen)
+rangeSize    = rangeHigh - rangeLow
+equilibrium  = rangeLow + rangeSize * 0.5
+positionInRange = rangeSize > 0 ? (close - rangeLow) / rangeSize * 100 : 50.0
+
+discountTop     = rangeLow + rangeSize * (discountThr / 100.0)
+premiumBottom    = rangeLow + rangeSize * (premiumThr / 100.0)
+inDiscount       = positionInRange <= discountThr
+inPremium        = positionInRange >= premiumThr
+
+longStep     = numLevels > 1 ? (discountTop - rangeLow) / (numLevels - 1) : 0.0
+shortStep    = numLevels > 1 ? (rangeHigh - premiumBottom) / (numLevels - 1) : 0.0
+completeLongAvg = numLevels > 1 ? rangeLow + (discountTop - rangeLow) / 2 : rangeLow
+completeShortAvg = numLevels > 1 ? premiumBottom + (rangeHigh - premiumBottom) / 2 : rangeHigh
+
+var int discountStreak = 0
+var int premiumStreak  = 0
+discountStreak := inDiscount ? discountStreak + 1 : 0
+premiumStreak  := inPremium  ? premiumStreak  + 1 : 0
+sustainedDiscount = discountStreak >= sustainedBars
+sustainedPremium  = premiumStreak  >= sustainedBars
+
+var int lastBuyBar  = 0
+var int lastSellBar = 0
+barsSinceBuy  = bar_index - lastBuyBar
+barsSinceSell = bar_index - lastSellBar
+
+var bool[] longFilled  = array.new_bool(numLevels, false)
+var bool[] shortFilled = array.new_bool(numLevels, false)
+
+var int   cycleBuys     = 0
+var float cycleSumLong  = 0.0
+var float longAvg       = na
+var int   cycleSells    = 0
+var float cycleSumShort = 0.0
+var float shortAvg      = na
+
+var float nearestLongPrice  = na
+var int   nearestLongIdx   = -1
+var float minLongDist       = 1e10
+var float nearestShortPrice = na
+var int   nearestShortIdx   = -1
+var float minShortDist      = 1e10
+
+allowLong  = (mode == "Long") or (mode == "Long & Short")
+allowShort = (mode == "Short") or (mode == "Long & Short")
+
+if numLevels > 1 and allowLong
+    for i = 0 to numLevels - 1
+        if not array.get(longFilled, i)
+            lvlPrice = rangeLow + longStep * i
+            dL   = math.abs(close - lvlPrice) / close
+            if dL < minLongDist
+                minLongDist      := dL
+                nearestLongPrice := lvlPrice
+                nearestLongIdx   := i
+
+if numLevels > 1 and allowShort
+    for i = 0 to numLevels - 1
+        if not array.get(shortFilled, i)
+            lvlPrice = premiumBottom + shortStep * i
+            dS   = math.abs(close - lvlPrice) / close
+            if dS < minShortDist
+                minShortDist      := dS
+                nearestShortPrice := lvlPrice
+                nearestShortIdx   := i
+
+canBuy  = allowLong and (close < fast) and (close < slow) and (rsi < rsiBuy) and sustainedDiscount and (minLongDist  < (levelProximity / 100.0)) and (barsSinceBuy  >= cooldown) and (nearestLongIdx  >= 0)
+canSell = allowShort and (close > fast) and (close > slow) and (rsi > rsiSell) and sustainedPremium and (minShortDist < (levelProximity / 100.0)) and (barsSinceSell >= cooldown) and (nearestShortIdx >= 0)
+
+buySignal  = canBuy
+sellSignal = canSell
+
+if buySignal
+    array.set(longFilled, nearestLongIdx, true)
+    cycleBuys    += 1
+    cycleSumLong += close
+    longAvg      := cycleSumLong / cycleBuys
+    lastBuyBar   := bar_index
+if sellSignal
+    array.set(shortFilled, nearestShortIdx, true)
+    cycleSells    += 1
+    cycleSumShort += close
+    shortAvg      := cycleSumShort / cycleSells
+    lastSellBar   := bar_index
+
+if not inDiscount and positionInRange > resetAbovePct and cycleBuys > 0
+    cycleBuys     := 0
+    cycleSumLong  := 0.0
+    longAvg       := na
+    for i = 0 to numLevels - 1
+        array.set(longFilled, i, false)
+
+if not inPremium and (100 - positionInRange) > (100 - resetAbovePct) and cycleSells > 0
+    cycleSells    := 0
+    cycleSumShort := 0.0
+    shortAvg      := na
+    for i = 0 to numLevels - 1
+        array.set(shortFilled, i, false)
+
+var line[] longLines  = array.new_line(numLevels, na)
+var label[] longLbls  = array.new_label(numLevels, na)
+var line[] shortLines = array.new_line(numLevels, na)
+var label[] shortLbls = array.new_label(numLevels, na)
+
+if barstate.islast
+    for i = 0 to numLevels - 1
+        lL = array.get(longLines, i)
+        if not na(lL)
+            line.delete(lL)
+        lblL = array.get(longLbls, i)
+        if not na(lblL)
+            label.delete(lblL)
+        lS = array.get(shortLines, i)
+        if not na(lS)
+            line.delete(lS)
+        lblS = array.get(shortLbls, i)
+        if not na(lblS)
+            label.delete(lblS)
+    
+    if allowLong
+        for i = 0 to numLevels - 1
+            lvlPrice = rangeLow + longStep * i
+            depthPct = (discountTop - lvlPrice) / math.max(discountTop - rangeLow, 0.0001) * 100.0
+            isFilled = array.get(longFilled, i)
+            lvlColor = isFilled ? color.lime : color.new(color.lime, 60)
+            lStyle = isFilled ? line.style_solid : line.style_dotted
+            lWidth = isFilled ? 2 : 1
+            l = line.new(x1=bar_index - rangeLen + 1, x2=bar_index + 50,
+                 y1=lvlPrice, y2=lvlPrice,
+                 color=lvlColor, style=lStyle, width=lWidth)
+            array.set(longLines, i, l)
+            
+            pctFromCurrent = (lvlPrice - close) / close * 100.0
+            mark = isFilled ? "✓" : ""
+            txt = mark + "L" + str.tostring(i+1) + " " + str.tostring(lvlPrice, format.mintick) + " (" + str.tostring(pctFromCurrent, "#.0") + "%)"
+            lbl = label.new(bar_index + 2, lvlPrice, txt,
+                 style=label.style_label_left, color=color.new(color.black, 60),
+                 textcolor=lvlColor, size=size.tiny)
+            array.set(longLbls, i, lbl)
+    
+    if allowShort
+        for i = 0 to numLevels - 1
+            lvlPrice = premiumBottom + shortStep * i
+            depthPct = (rangeHigh - lvlPrice) / math.max(rangeHigh - premiumBottom, 0.0001) * 100.0
+            isFilled = array.get(shortFilled, i)
+            lvlColor = isFilled ? color.red : color.new(color.red, 60)
+            lStyle = isFilled ? line.style_solid : line.style_dotted
+            lWidth = isFilled ? 2 : 1
+            l = line.new(x1=bar_index - rangeLen + 1, x2=bar_index + 50,
+                 y1=lvlPrice, y2=lvlPrice,
+                 color=lvlColor, style=lStyle, width=lWidth)
+            array.set(shortLines, i, l)
+            
+            pctFromCurrent = (lvlPrice - close) / close * 100.0
+            mark = isFilled ? "✓" : ""
+            txt = mark + "S" + str.tostring(i+1) + " " + str.tostring(lvlPrice, format.mintick) + " (" + str.tostring(pctFromCurrent, "#.0") + "%)"
+            lbl = label.new(bar_index + 2, lvlPrice, txt,
+                 style=label.style_label_left, color=color.new(color.black, 60),
+                 textcolor=lvlColor, size=size.tiny)
+            array.set(shortLbls, i, lbl)
+
+var box discountBox  = na
+var box discountBoxO = na
+discountBoxO := discountBox
+if not na(discountBoxO)
+    box.delete(discountBoxO)
+if inDiscount
+    discountBox := box.new(left=bar_index - rangeLen + 1, right=bar_index + 50,
+         top=discountTop, bottom=rangeLow,
+         bgcolor=color.new(color.lime, 93), border_color=color.new(color.lime, 40),
+         border_width=1, extend=extend.right)
+
+var box rangeBox  = na
+var box rangeBoxO = na
+rangeBoxO := rangeBox
+if not na(rangeBoxO)
+    box.delete(rangeBoxO)
+if positionInRange < 50
+    rangeBox := box.new(left=bar_index - rangeLen + 1, right=bar_index + 50,
+         top=rangeHigh, bottom=rangeLow,
+         bgcolor=color.new(color.blue, 96), border_color=color.new(color.blue, 50),
+         border_width=1, border_style=line.style_dashed, extend=extend.right)
+
+var box premiumBox  = na
+var box premiumBoxO = na
+premiumBoxO := premiumBox
+if not na(premiumBoxO)
+    box.delete(premiumBoxO)
+if inPremium
+    premiumBox := box.new(left=bar_index - rangeLen + 1, right=bar_index + 50,
+         top=rangeHigh, bottom=premiumBottom,
+         bgcolor=color.new(color.red, 93), border_color=color.new(color.red, 40),
+         border_width=1, extend=extend.right)
+
+plot(equilibrium, "EQ 50%",  color=color.new(color.white, 80), linewidth=1, style=plot.style_cross)
+plot(fast,        "MA 50",   color=color.new(color.gray, 70),  linewidth=1)
+plot(slow,        "MA 200",  color=color.new(color.gray, 30),  linewidth=1)
+
+plot(longAvg,  "Long Avg",  color=color.lime, linewidth=3, style=plot.style_linebr)
+plot(shortAvg, "Short Avg", color=color.red,  linewidth=3, style=plot.style_linebr)
+
+if barstate.islast
+    label.new(bar_index + 2, rangeLow,       "POI Low " + str.tostring(rangeLow, format.mintick),
+         style=label.style_label_left, color=color.new(color.green, 30),
+         textcolor=color.white, size=size.tiny)
+    label.new(bar_index + 2, discountTop,    "Discount " + str.tostring(discountThr, "#") + "%",
+         style=label.style_label_left, color=color.new(color.lime, 30),
+         textcolor=color.white, size=size.tiny)
+    label.new(bar_index + 2, equilibrium,     "EQ 50% " + str.tostring(equilibrium, format.mintick),
+         style=label.style_label_left, color=color.new(color.white, 70),
+         textcolor=color.white, size=size.tiny)
+    label.new(bar_index + 2, rangeHigh,      "POI High " + str.tostring(rangeHigh, format.mintick),
+         style=label.style_label_left, color=color.new(color.red, 30),
+         textcolor=color.white, size=size.tiny)
+    label.new(bar_index + 2, premiumBottom,  "Premium " + str.tostring(premiumThr, "#") + "%",
+         style=label.style_label_left, color=color.new(color.red, 30),
+         textcolor=color.white, size=size.tiny)
+
+plotshape(buySignal,  title="DCA BUY",  location=location.belowbar, color=color.lime, style=shape.diamond, size=size.normal, text="BUY",  textcolor=color.lime)
+plotshape(sellSignal, title="DCA SELL", location=location.abovebar, color=color.red,  style=shape.diamond, size=size.normal, text="SELL", textcolor=color.red)
+
+tableRows = 7 + 2 * numLevels
+var table info = table.new(position.top_right, tableRows, 4,
+     bgcolor=color.new(color.gray, 85), border_width=1)
+if barstate.islast
+    table.cell(info, 0, 0, "DCA Helper v5",                            text_color=color.white, text_size=size.normal)
+    table.cell(info, 0, 1, "Lvl",                                    text_color=color.gray,  text_size=size.small)
+    table.cell(info, 0, 2, "Price",                                  text_color=color.gray,  text_size=size.small)
+    table.cell(info, 0, 3, "% vs Now",                               text_color=color.gray,  text_size=size.small)
+    
+    table.cell(info, 1, 0, "Now",                                     text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 1, "—",                                       text_color=color.gray, text_size=size.small)
+    table.cell(info, 1, 2, str.tostring(close, format.mintick),       text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 3, "0.0%",                                   text_color=color.gray, text_size=size.small)
+    
+    table.cell(info, 2, 0, "Long (cycle)",                            text_color=color.lime, text_size=size.small)
+    table.cell(info, 2, 1, str.tostring(cycleBuys) + "/" + str.tostring(numLevels) + (allowLong ? "" : " off"),
+         text_color=color.lime, text_size=size.small)
+    table.cell(info, 2, 2, na(cycleSumLong) ? "—" : str.tostring(longAvg, format.mintick),
+         text_color=color.lime, text_size=size.small)
+    table.cell(info, 2, 3, na(cycleSumLong) ? "—" : str.tostring((longAvg - close) / close * 100, "#.0") + "%",
+         text_color=color.lime, text_size=size.small)
+    
+    table.cell(info, 3, 0, "Short (cycle)",                           text_color=color.red, text_size=size.small)
+    table.cell(info, 3, 1, str.tostring(cycleSells) + "/" + str.tostring(numLevels) + (allowShort ? "" : " off"),
+         text_color=color.red, text_size=size.small)
+    table.cell(info, 3, 2, na(cycleSumShort) ? "—" : str.tostring(shortAvg, format.mintick),
+         text_color=color.red, text_size=size.small)
+    table.cell(info, 3, 3, na(cycleSumShort) ? "—" : str.tostring((shortAvg - close) / close * 100, "#.0") + "%",
+         text_color=color.red, text_size=size.small)
+    
+    table.cell(info, 4, 0, "Net Pos",                                 text_color=color.yellow, text_size=size.small)
+    table.cell(info, 4, 1, (cycleBuys + cycleSells) > 0 ? str.tostring(cycleBuys + cycleSells) + "/" + str.tostring(numLevels * 2) : "0",
+         text_color=color.yellow, text_size=size.small)
+    table.cell(info, 4, 2, "—",                                       text_color=color.yellow, text_size=size.small)
+    table.cell(info, 4, 3, "—",                                       text_color=color.yellow, text_size=size.small)
+    
+    table.cell(info, 5, 0, "L Complete",                              text_color=color.lime, text_size=size.small)
+    table.cell(info, 5, 1, "0/" + str.tostring(numLevels),            text_color=color.lime, text_size=size.small)
+    table.cell(info, 5, 2, str.tostring(completeLongAvg, format.mintick), text_color=color.lime, text_size=size.small)
+    table.cell(info, 5, 3, str.tostring((completeLongAvg - close) / close * 100, "#.0") + "%", text_color=color.lime, text_size=size.small)
+    
+    table.cell(info, 6, 0, "S Complete",                              text_color=color.red, text_size=size.small)
+    table.cell(info, 6, 1, "0/" + str.tostring(numLevels),            text_color=color.red, text_size=size.small)
+    table.cell(info, 6, 2, str.tostring(completeShortAvg, format.mintick), text_color=color.red, text_size=size.small)
+    table.cell(info, 6, 3, str.tostring((completeShortAvg - close) / close * 100, "#.0") + "%", text_color=color.red, text_size=size.small)
+    
+    for i = 0 to numLevels - 1
+        lvlPrice = rangeLow + longStep * i
+        pctFromCurrent = (lvlPrice - close) / close * 100.0
+        isFilled = array.get(longFilled, i)
+        lvlColor = pctFromCurrent < -10 ? color.red : pctFromCurrent < -3 ? color.orange : color.lime
+        if isFilled
+            lvlColor := color.yellow
+        mark = isFilled ? "✓" : " "
+        table.cell(info, 7 + i, 0, "L" + str.tostring(i+1) + " " + mark, text_color=lvlColor, text_size=size.small)
+        table.cell(info, 7 + i, 1, "—",                                  text_color=color.gray, text_size=size.small)
+        table.cell(info, 7 + i, 2, str.tostring(lvlPrice, format.mintick),  text_color=lvlColor, text_size=size.small)
+        table.cell(info, 7 + i, 3, str.tostring(pctFromCurrent, "#.0") + "%", text_color=lvlColor, text_size=size.small)
+    
+    for i = 0 to numLevels - 1
+        lvlPrice = premiumBottom + shortStep * i
+        pctFromCurrent = (lvlPrice - close) / close * 100.0
+        isFilled = array.get(shortFilled, i)
+        lvlColor = pctFromCurrent > 10 ? color.green : pctFromCurrent > 3 ? color.yellow : color.red
+        if isFilled
+            lvlColor := color.yellow
+        mark = isFilled ? "✓" : " "
+        table.cell(info, 7 + numLevels + i, 0, "S" + str.tostring(i+1) + " " + mark, text_color=lvlColor, text_size=size.small)
+        table.cell(info, 7 + numLevels + i, 1, "—",                       text_color=color.gray, text_size=size.small)
+        table.cell(info, 7 + numLevels + i, 2, str.tostring(lvlPrice, format.mintick),  text_color=lvlColor, text_size=size.small)
+        table.cell(info, 7 + numLevels + i, 3, str.tostring(pctFromCurrent, "#.0") + "%", text_color=lvlColor, text_size=size.small)

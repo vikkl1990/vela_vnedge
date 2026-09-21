@@ -1,0 +1,65 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © rikyu04
+//@version=6
+indicator("SMA20 Tail Reversal", overlay=true)
+
+// ==========================================
+// [1] USER INPUTS
+// ==========================================
+grp_main = "Main Logic Settings"
+smaLen   = input.int(20, title="SMA Length", minval=1, group=grp_main)
+volLen   = input.int(20, title="Volume SMA Length", minval=1, group=grp_main)
+wickRatio= input.float(0.1, title="Wick Ratio Threshold", step=0.1, maxval=1.0, minval=0.1, group=grp_main)
+
+grp_vis  = "Visual Settings"
+showLabel= input.bool(true, title="Show STRONG BUY Labels", group=grp_vis)
+
+// Color Definitions
+color strongLongCol = color.new(#00BFFF, 0) // Strong Buy (Blue)
+
+// ==========================================
+// [2] CALCULATIONS (Executed internally for logic, not plotted)
+// ==========================================
+smaVal  = ta.sma(close, smaLen)
+volCond = volume > ta.sma(volume, volLen)
+
+bodySize  = math.abs(close - open)
+upperWick = high - math.max(close, open)
+lowerWick = math.min(close, open) - low
+
+bullCandle = (close > open) and (upperWick < (bodySize * wickRatio))
+bearCandle = (close < open) and (lowerWick < (bodySize * wickRatio))
+
+// Base signal calculation (for internal tracking)
+baseLongCond  = volCond and bullCandle and (high < smaVal) and (low < smaVal)
+baseShortCond = volCond and bearCandle and (low > smaVal) and (high > smaVal)
+
+// ==========================================
+// [3] CONSECUTIVE SIGNAL (Strong Buy) LOGIC
+// ==========================================
+var int   lastSignalType = 0  // 1 = Buy, -1 = Sell
+var float lastSignalLow  = na
+
+bool strongLongCond = false
+
+// On Buy Condition
+if baseLongCond
+    // If the previous signal was a BUY and the current low is higher than the previous low, it's a Strong Buy!
+    if lastSignalType == 1 and low > lastSignalLow
+        strongLongCond := true
+    lastSignalType := 1
+    lastSignalLow  := low
+
+// On Sell Condition (Internally tracked to break the consecutive buy flow)
+if baseShortCond
+    lastSignalType := -1
+
+// ==========================================
+// [4] VISUALS - Show labels only
+// ==========================================
+plotshape(showLabel and strongLongCond, title="Strong Buy Signal", style=shape.cross, location=location.belowbar, color=strongLongCol, text="★ BUY", textcolor=color.white, size=size.small)
+
+// ==========================================
+// [5] ALERTS
+// ==========================================
+alertcondition(strongLongCond, title="[Buy] STRONG (★)", message="Strong BUY! Consecutive & Higher Low")

@@ -1,0 +1,21 @@
+//@version=6
+indicator("Surf Distance", shorttitle="Surf", overlay=true, precision=3)
+
+// Inputs
+maLen    = input.int(10, "MA length (EMA)", minval=1)
+adrLen   = input.int(20, "ADR length", minval=1)
+tf       = input.timeframe("D", "Timeframe for MA and ADR")
+nearThr  = input.float(0.25, "On-the-surf band (+/-)", minval=0.0, step=0.05)
+extThr   = input.float(1.0, "Extended above", minval=0.0, step=0.25)
+
+// 10-day EMA and 20-day ADR (average of high minus low), pulled from the chosen timeframe
+[ma, adr] = request.security(syminfo.tickerid, tf, [ta.ema(close, maLen), ta.sma(high - low, adrLen)])
+
+// Surf Distance = (price - MA) / ADR
+surf = adr > 0 ? (close - ma) / adr : na
+
+// Colour only affects the status-line number
+col = surf > extThr ? color.red : surf > nearThr ? color.orange : surf >= -nearThr ? color.green : color.blue
+
+// Nothing is drawn on the chart: the value shows in the status line and Data Window only
+plot(surf, "Surf Distance", color=col, display=display.status_line + display.data_window)

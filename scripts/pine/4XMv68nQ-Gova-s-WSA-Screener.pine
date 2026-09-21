@@ -1,0 +1,133 @@
+//@version=6
+indicator("Gova's WSA Screener", shorttitle="Gova's WSA", overlay=true, max_bars_back=500)
+
+// ============================================================
+// WEINSTEIN STAGE ANALYSIS — SCREENER-READY
+// 8 boolean outputs, each usable as a Pine Screener filter column:
+//   Already in Stage 1 / Entering Stage 1
+//   Already in Stage 2 / Entering Stage 2
+//   Already in Stage 3 / Entering Stage 3
+//   Already in Stage 4 / Entering Stage 4
+//
+// HOW TO USE WITH PINE SCREENER:
+// 1. Add this script to your chart once (any symbol) to save it as a
+//    "Personal Script" so it appears in the Screener's indicator list.
+// 2. Open TradingView's Stock/Pine Screener, add this script as a column
+//    source, and choose your index/watchlist as the universe.
+// 3. Set the "Analysis Timeframe" input below to the timeline you want
+//    to screen on (e.g. Weekly, as per Weinstein's original method).
+// 4. In the Screener, click "Add filter" -> pick the plot you need
+//    (e.g. "Already in Stage 2") -> condition "Equal to" -> value 1.
+//    Repeat with a separate screener column/filter for each of the
+//    8 alert conditions you want to track.
+// ============================================================
+
+// ---------------- Inputs ----------------
+tf           = input.timeframe("W", title="Analysis Timeframe", tooltip="Weinstein's original method uses the Weekly timeframe with a 30-period MA")
+maLen        = input.int(30, title="Stage MA Length", minval=2)
+slopeLen     = input.int(4, title="MA Slope Lookback (bars)", minval=1, tooltip="How many bars back to compare the MA against, to judge if it's rising/falling/flat")
+flatThresh   = input.float(0.5, title="Flat Slope Threshold (%)", minval=0, step=0.1, tooltip="MA % change over the slope lookback below this magnitude is treated as 'flat' -> Stage 1 or Stage 3")
+useConfirmed = input.bool(true, title="Use Confirmed Bars Only (avoid repaint)", tooltip="Recommended ON. Uses the last closed bar of the Analysis Timeframe instead of the live/forming bar.")
+showBg       = input.bool(true, title="Show Stage Background")
+showMA       = input.bool(true, title="Show Stage MA Line")
+showTable    = input.bool(true, title="Show Stage Info Table")
+
+// ---------------- Fetch data on selected timeframe ----------------
+f_sec(_exp) => request.security(syminfo.tickerid, tf, _exp, lookahead=barmerge.lookahead_off, gaps=barmerge.gaps_off)
+
+closeExpr  = useConfirmed ? close[1]                         : close
+maNowExpr  = useConfirmed ? ta.sma(close, maLen)[1]           : ta.sma(close, maLen)
+maPrevExpr = useConfirmed ? ta.sma(close, maLen)[slopeLen+1]  : ta.sma(close, maLen)[slopeLen]
+
+c   = f_sec(closeExpr)
+ma  = f_sec(maNowExpr)
+maP = f_sec(maPrevExpr)
+
+slopePct = (ma - maP) / maP * 100
+
+isRising  = slopePct > flatThresh
+isFalling = slopePct < -flatThresh
+isFlat    = not isRising and not isFalling
+
+priceAbove = c > ma
+priceBelow = c < ma
+
+// Raw directional stage triggers
+stage2Raw = priceAbove and isRising   // Advancing
+stage4Raw = priceBelow and isFalling  // Declining
+
+// ---------------- Stage state machine ----------------
+// Stage 1 (Basing)   = flat MA following a prior Stage 4 (or script start)
+// Stage 3 (Topping)  = flat MA following a prior Stage 2
+var int stage        = 0   // 0 = undefined (only before enough history)
+var int prevDirStage = 0   // remembers the last directional stage (2 or 4)
+
+if stage2Raw
+    stage := 2
+    prevDirStage := 2
+else if stage4Raw
+    stage := 4
+    prevDirStage := 4
+else
+    if prevDirStage == 4 or prevDirStage == 0
+        stage := 1
+    else
+        stage := 3
+
+stagePrev = stage[1]
+
+// ---------------- 8 screener conditions ----------------
+already1 = stage == 1
+enter1   = stage == 1 and stagePrev != 1
+
+already2 = stage == 2
+enter2   = stage == 2 and stagePrev != 2
+
+already3 = stage == 3
+enter3   = stage == 3 and stagePrev != 3
+
+already4 = stage == 4
+enter4   = stage == 4 and stagePrev != 4
+
+// Plots kept out of the chart pane (display.data_window) but they still
+// register as filterable columns in the Pine Screener / Data Window.
+plot(already1 ? 1 : 0, title="Already in Stage 1", display=display.data_window)
+plot(enter1   ? 1 : 0, title="Entering Stage 1",   display=display.data_window)
+plot(already2 ? 1 : 0, title="Already in Stage 2", display=display.data_window)
+plot(enter2   ? 1 : 0, title="Entering Stage 2",   display=display.data_window)
+plot(already3 ? 1 : 0, title="Already in Stage 3", display=display.data_window)
+plot(enter3   ? 1 : 0, title="Entering Stage 3",   display=display.data_window)
+plot(already4 ? 1 : 0, title="Already in Stage 4", display=display.data_window)
+plot(enter4   ? 1 : 0, title="Entering Stage 4",   display=display.data_window)
+
+// ---------------- Visuals on the chart ----------------
+plot(showMA ? ma : na, title="Stage MA", color=color.new(color.blue, 0), linewidth=2)
+
+stageColor = stage == 1 ? color.new(#9E9E9E, 0) :
+             stage == 2 ? color.new(#00E676, 0) :
+             stage == 3 ? color.new(#FFA726, 0) :
+             stage == 4 ? color.new(#FF1744, 0) : color.new(color.black, 0)
+
+bgCol = stage == 1 ? color.new(#9E9E9E, 55) :
+         stage == 2 ? color.new(#00E676, 55) :
+         stage == 3 ? color.new(#FFA726, 55) :
+         stage == 4 ? color.new(#FF1744, 55) : na
+bgcolor(showBg ? bgCol : na)
+
+stageLabel = stage == 1 ? "STAGE 1 - BASING" :
+             stage == 2 ? "STAGE 2 - ADVANCING" :
+             stage == 3 ? "STAGE 3 - TOPPING" :
+             stage == 4 ? "STAGE 4 - DECLINING" : "UNDEFINED"
+
+if showTable and barstate.islast
+    var table t = table.new(position.top_right, 1, 3, border_width=2, frame_color=color.white, frame_width=2)
+    table.cell(t, 0, 0, "WEINSTEIN STAGE", bgcolor=color.new(color.black, 0), text_color=color.white, text_size=size.normal)
+    table.cell(t, 0, 1, stageLabel, bgcolor=stageColor, text_color=color.black, text_size=size.large)
+    table.cell(t, 0, 2, "MA Slope: " + str.tostring(slopePct, "#.##") + "%", bgcolor=color.new(color.black, 0), text_color=color.yellow, text_size=size.normal)
+
+// ---------------- Alerts (optional, for single-symbol chart alerts) ----------------
+alertcondition(enter1, title="Entering Stage 1", message="{{ticker}} is entering Stage 1 (Basing)")
+alertcondition(enter2, title="Entering Stage 2", message="{{ticker}} is entering Stage 2 (Advancing / Breakout)")
+alertcondition(enter3, title="Entering Stage 3", message="{{ticker}} is entering Stage 3 (Topping)")
+alertcondition(enter4, title="Entering Stage 4", message="{{ticker}} is entering Stage 4 (Declining / Breakdown)")
+

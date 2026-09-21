@@ -1,0 +1,279 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// Streak Reality Check
+//
+// Most people abandon a working strategy during a losing run rather than
+// because of anything in the numbers. The run feels like new information.
+// Usually it is not, and how long a run you should expect is calculable
+// before it happens.
+//
+// For n trades at a win rate w, the expected longest run of losses is
+// about log(n·w) / log(1/(1−w)) — the standard result for the longest run
+// of failures in n Bernoulli trials. Note that n is inside it: more trades
+// means more chances for a long run, so the bar you should be measuring
+// against grows as you collect data. Slowly, because it is logarithmic,
+// but it grows.
+//
+// Which is why a fixed limit — "abandon anything with a run above 10" —
+// gets stricter the more data you have. The same strategy passes early and
+// fails later, having done nothing different. This reports the ratio of
+// observed to expected instead, because that is the number that means the
+// same thing at every sample size.
+//
+// Not a strategy. It places no trades, gives no signals and predicts
+// nothing. It cannot tell you a strategy is broken; it tells you whether a
+// losing run is evidence of anything, which is a smaller and more useful
+// question.
+//
+// Companion to Edge Reality Check (the hit rate entering at random would
+// have produced) and Filter Reality Check (whether a condition beats it).
+//
+// Released under the Mozilla Public License 2.0
+// ─────────────────────────────────────────────────────────────────────────────
+
+indicator("Streak Reality Check", overlay = true, max_bars_back = 3000)
+
+// ── Inputs ───────────────────────────────────────────────────────────────────
+
+grpRisk = "Stop and target"
+grpTest = "How much history to measure"
+grpStyle = "Appearance"
+
+direction  = input.string("Long", "Direction", options = ["Long", "Short"], group = grpRisk)
+useAtr     = input.bool(true, "Size stop and target from ATR", group = grpRisk,
+   tooltip = "Distances scale with the volatility of each historical bar, not today's.")
+atrLen     = input.int(14, "ATR length", minval = 1, group = grpRisk)
+stopMult   = input.float(1.5, "Stop distance",   minval = 0.01, step = 0.1, group = grpRisk)
+targetMult = input.float(1.5, "Target distance", minval = 0.01, step = 0.1, group = grpRisk)
+
+sampleBars = input.int(3000, "Bars to sample", minval = 200, maxval = 3000, step = 100, group = grpTest,
+   tooltip = "Streaks are a tail statistic and need more history than a hit rate does. Use as much as your plan will load.")
+maxHold    = input.int(60, "Bars allowed to resolve", minval = 5, maxval = 500, step = 5, group = grpTest,
+   tooltip = "A trade reaching neither level within this many bars is reported as timed out, not counted as a loss.")
+
+tblPos  = input.string("Top right", "Position", options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = grpStyle)
+txtSize = input.string("Normal", "Text size", options = ["Tiny", "Small", "Normal", "Large"], group = grpStyle)
+
+// ── Expected longest losing run ──────────────────────────────────────────────
+
+expectedLongestRun(n, w) =>
+    // Guarded at both ends: a win rate of 0 or 1 has no meaningful run
+    // length, and below one expected win the formula returns nonsense.
+    //
+    // Written as a branch rather than a wrapped ternary. Pine will not
+    // continue a line whose continuation *begins* with ? or : — only one
+    // that ends on an operator — and this cost an afternoon once already.
+    lossRate = 1.0 - w
+    float out = na
+    if n > 0 and w > 0 and lossRate > 0 and n * w > 1
+        out := math.log(n * w) / math.log(1.0 / lossRate)
+    out
+
+atr = ta.atr(atrLen)
+rr  = stopMult > 0 ? targetMult / stopMult : na
+
+// ── Walk the history as a sequence of non-overlapping trades ─────────────────
+//
+// This is the one thing this script has to do differently from its two
+// companions. They resolve from *every* bar, which is correct for measuring
+// a hit rate: it uses the whole sample and the overlap does not bias the
+// average.
+//
+// It would wreck a streak measurement. Samples opened on consecutive bars
+// share almost all of their holding window, so their outcomes are strongly
+// correlated, and a single bad stretch of price would appear as one enormous
+// run of losses. Compared against a formula that assumes independent trades,
+// that produces a ratio of three or four and a verdict of catastrophe on
+// perfectly ordinary history.
+//
+// So: open a trade, resolve it, and only then look for the next entry. Fewer
+// trades from the same history, and a sequence whose runs mean something.
+
+var int   nTrades   = 0
+var int   nWins     = 0
+var int   nTimeouts = 0
+var int   longestRun = 0
+var int   runEndBar = na
+var int   sampleFrom = na
+var int   sampleTo   = na
+
+isLong = direction == "Long"
+
+if barstate.islast
+    trades = 0
+    wins = 0
+    touts = 0
+    worst = 0
+    current = 0
+    worstEnd = -1
+
+    start = int(math.min(sampleBars, bar_index))
+    sampleFrom := time[start]
+    sampleTo   := time
+
+    i = start
+    // Bounded so a pathological input cannot hang the script. One trade per
+    // bar is the theoretical ceiling, so this can never bind in practice.
+    guard = 0
+    while i > 0 and guard < 4000
+        guard += 1
+
+        entry = close[i]
+        sDist = useAtr ? nz(atr[i]) * stopMult   : stopMult
+        tDist = useAtr ? nz(atr[i]) * targetMult : targetMult
+
+        if sDist <= 0 or tDist <= 0 or na(entry)
+            i := i - 1
+        else
+            targetLevel = isLong ? entry + tDist : entry - tDist
+            stopLevel   = isLong ? entry - sDist : entry + sDist
+
+            settled = false
+            won = false
+            resolvedAt = i
+
+            for j = 1 to maxHold
+                idx = i - j
+                if idx >= 0 and not settled
+                    hi = high[idx]
+                    lo = low[idx]
+
+                    hitStop   = isLong ? lo <= stopLevel   : hi >= stopLevel
+                    hitTarget = isLong ? hi >= targetLevel : lo <= targetLevel
+
+                    // A bar spanning both levels counts as a loss. There is
+                    // no way to know which came first from bar data, and
+                    // being wrong pessimistically is the only honest way to
+                    // resolve it. It matters more here than in the other two
+                    // scripts: resolving those ties optimistically would
+                    // break up runs and flatter every streak on the chart.
+                    if hitStop
+                        settled := true
+                        won := false
+                        resolvedAt := idx
+                    else if hitTarget
+                        settled := true
+                        won := true
+                        resolvedAt := idx
+
+            if settled
+                trades += 1
+                if won
+                    wins += 1
+                    current := 0
+                else
+                    current += 1
+                    if current > worst
+                        worst := current
+                        worstEnd := resolvedAt
+                // The next trade starts after this one finished. This is the
+                // non-overlapping rule, and it is the whole reason the runs
+                // below can be compared with the formula.
+                i := resolvedAt - 1
+            else
+                touts += 1
+                i := i - maxHold - 1
+
+    nTrades := trades
+    nWins := wins
+    nTimeouts := touts
+    longestRun := worst
+    runEndBar := worstEnd
+
+winRate  = nTrades > 0 ? nWins / float(nTrades) : na
+expected = expectedLongestRun(nTrades, winRate)
+ratio    = na(expected) or expected <= 0 ? na : longestRun / expected
+
+// Break-even, so the table says whether the strategy being streaked is one
+// worth caring about in the first place.
+beRate = (stopMult + targetMult) > 0 ? stopMult / (stopMult + targetMult) : na
+
+// ── Verdict ──────────────────────────────────────────────────────────────────
+//
+// 1.30 is where a run starts being meaningfully worse than chance predicts,
+// and it is the same threshold the method behind this uses elsewhere. Below
+// it, a long run is a long run and not a signal.
+
+MIN_TRADES = 50  // A tail statistic needs more sample than an average does.
+RATIO_ORDINARY = 1.30
+RATIO_BAD = 1.80
+
+verdict = "Not enough resolved trades yet. Load more history."
+vcol = color.new(color.gray, 20)
+
+if nTrades >= MIN_TRADES and not na(ratio)
+    if ratio <= RATIO_ORDINARY
+        verdict := "A run of " + str.tostring(longestRun) + " is ordinary at this sample and win rate. It is not evidence of anything breaking."
+        vcol := color.new(#1f7a52, 0)
+    else if ratio <= RATIO_BAD
+        verdict := "A run of " + str.tostring(longestRun) + " is longer than chance predicts, but not by enough to conclude on its own. Worth looking at what happened."
+        vcol := color.new(#97621a, 0)
+    else
+        verdict := "A run of " + str.tostring(longestRun) + " is well past what chance predicts here. Something in that stretch is worth understanding."
+        vcol := color.new(#a83a2f, 0)
+else if nTrades > 0
+    verdict := "Only " + str.tostring(nTrades) + " non-overlapping trades resolved. Streaks need at least " + str.tostring(MIN_TRADES) + " before the comparison means anything."
+
+// ── Table ────────────────────────────────────────────────────────────────────
+
+pos = tblPos == "Top left"     ? position.top_left     :
+      tblPos == "Bottom right" ? position.bottom_right :
+      tblPos == "Bottom left"  ? position.bottom_left  : position.top_right
+
+size = txtSize == "Tiny"  ? size.tiny  :
+       txtSize == "Small" ? size.small :
+       txtSize == "Large" ? size.large : size.normal
+
+var table t = table.new(pos, 2, 10, border_width = 1, frame_width = 1,
+   frame_color = color.new(color.gray, 60), border_color = color.new(color.gray, 80))
+
+pct(x) => na(x) ? "—" : str.tostring(x * 100, "#.#") + "%"
+num(x) => na(x) ? "—" : str.tostring(x, "#.##")
+
+if barstate.islast
+    headBg = color.new(#16233a, 0)
+    rowBg  = color.new(color.gray, 92)
+
+    table.cell(t, 0, 0, "STREAK REALITY CHECK", text_color = color.white, bgcolor = headBg, text_size = size)
+    table.cell(t, 1, 0, direction, text_color = color.new(color.white, 30), bgcolor = headBg, text_size = size)
+
+    table.cell(t, 0, 1, "Reward : risk", text_size = size, bgcolor = rowBg)
+    table.cell(t, 1, 1, num(rr) + " : 1", text_size = size, bgcolor = rowBg)
+
+    table.cell(t, 0, 2, "Break-even win rate", text_size = size, bgcolor = rowBg)
+    table.cell(t, 1, 2, pct(beRate), text_size = size, bgcolor = rowBg)
+
+    // Non-overlapping is stated in the table, not just in the description.
+    // Someone comparing this trade count against Edge Reality Check on the
+    // same chart will find it much lower, and the reason has to be visible.
+    table.cell(t, 0, 3, "Trades (non-overlapping)", text_size = size, bgcolor = rowBg)
+    table.cell(t, 1, 3, str.tostring(nTrades) +
+       (nTimeouts > 0 ? "  (" + str.tostring(nTimeouts) + " timed out)" : ""),
+       text_size = size, bgcolor = rowBg)
+
+    table.cell(t, 0, 4, "Win rate", text_size = size, bgcolor = rowBg)
+    table.cell(t, 1, 4, pct(winRate), text_size = size, bgcolor = rowBg)
+
+    table.cell(t, 0, 5, "Worst losing run", text_size = size, bgcolor = rowBg)
+    table.cell(t, 1, 5, nTrades > 0 ? str.tostring(longestRun) : "—",
+       text_color = color.new(#16233a, 0), text_size = size, bgcolor = rowBg)
+
+    table.cell(t, 0, 6, "Expected at this sample", text_size = size, bgcolor = rowBg)
+    table.cell(t, 1, 6, num(expected), text_size = size, bgcolor = rowBg)
+
+    rcol = na(ratio) ? color.gray :
+           ratio <= RATIO_ORDINARY ? #1f7a52 : ratio <= RATIO_BAD ? #97621a : #a83a2f
+    table.cell(t, 0, 7, "Observed / expected", text_size = size, bgcolor = rowBg)
+    table.cell(t, 1, 7, num(ratio), text_color = rcol, text_size = size, bgcolor = rowBg)
+
+    // A percentage with no period attached invites more confidence than it
+    // has earned, and the same is true of a run length.
+    table.cell(t, 0, 8, "Sample covers", text_size = size, bgcolor = rowBg)
+    table.cell(t, 1, 8, na(sampleFrom) ? "—" :
+       str.format_time(sampleFrom, "d MMM yy", syminfo.timezone) + " to " +
+       str.format_time(sampleTo, "d MMM yy", syminfo.timezone),
+       text_size = size, bgcolor = rowBg)
+
+    table.cell(t, 0, 9, verdict, text_color = color.white, bgcolor = vcol,
+       text_size = size, text_halign = text.align_left)
+    table.merge_cells(t, 0, 9, 1, 9)

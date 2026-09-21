@@ -1,0 +1,1222 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// ©SG_Group
+//@version=6
+indicator(
+     "Parabolic SAR Constraint Kinematics & Run Geometry",
+     overlay = true,
+     behind_chart = false,
+     max_bars_back = 520,
+     dynamic_requests = false,
+     max_labels_count = 240,
+     max_lines_count = 2)
+
+// The status line intentionally shows only the full indicator name.
+// A user-adjustable code-level research window limits custom run-state,
+// kinematic, drawing, alert, and history work without exposing a value beside
+// the title. Canonical ta.sar() and the selected normalizer remain continuous.
+// This indicator makes no performance, prediction, or trading claims.
+
+//──────────────────────────────────────────────────────────────────────────────
+// Groups
+//──────────────────────────────────────────────────────────────────────────────
+const string GROUP_RUNTIME      = "01 · Runtime & Research Window"
+const string GROUP_ENGINE       = "02 · Parabolic SAR Engine"
+const string GROUP_GEOMETRY     = "03 · Run Geometry"
+const string GROUP_KINEMATICS   = "04 · Constraint Kinematics"
+const string GROUP_EVENTS       = "05 · Descriptive Events"
+const string GROUP_VISUALS      = "06 · Visual Clarity"
+const string GROUP_PANEL        = "07 · Study Panel"
+const string GROUP_COLORS       = "08 · Colors"
+const string GROUP_ALERTS       = "09 · Alerts & Data Window"
+
+const int MOTION_INIT   = 0
+const int MOTION_CHECK  = 1
+const int MOTION_FREE   = 2
+const int MOTION_TRACE  = 3
+const int MOTION_BRAKE  = 4
+const int MOTION_PINNED = 5
+
+//──────────────────────────────────────────────────────────────────────────────
+// Inputs — hidden from the status line so only the indicator name is shown.
+//──────────────────────────────────────────────────────────────────────────────
+string calculationScopeInput = input.string(
+     "Recent bars", "Calculation scope",
+     options = ["Recent bars", "All available bars"],
+     tooltip = "Recent bars limits the script's custom run-state, constraint, drawing, alert, and history work to a user-selected window. All available bars removes that code-level limit and can increase runtime substantially on deep intraday datasets.",
+     group = GROUP_RUNTIME, display = display.none)
+
+int researchWindowBarsInput = input.int(
+     3000, "Recent-bar research window",
+     minval = 500, maxval = 50000, step = 250,
+     tooltip = "Number of recent historical bars processed by the custom research layer when Calculation scope is Recent bars. The boundary is fixed when the script loads or an input changes; subsequent realtime bars are included. Canonical ta.sar() and the selected normalization series still evaluate before the boundary so values remain valid at the first processed bar. Higher values increase runtime.",
+     group = GROUP_RUNTIME, display = display.none,
+     active = calculationScopeInput == "Recent bars")
+
+float sarStartInput = input.float(
+     0.02, "Starting acceleration factor",
+     minval = 0.0001, maxval = 1.0, step = 0.001,
+     tooltip = "Acceleration factor used when a new Parabolic SAR run begins.",
+     group = GROUP_ENGINE, display = display.none)
+
+float sarIncrementInput = input.float(
+     0.02, "Acceleration increment",
+     minval = 0.0001, maxval = 1.0, step = 0.001,
+     tooltip = "Amount added to the observed acceleration-factor stage after each newly recorded extreme point.",
+     group = GROUP_ENGINE, display = display.none)
+
+float sarMaximumInput = input.float(
+     0.20, "Maximum acceleration factor",
+     minval = 0.0001, maxval = 2.0, step = 0.01,
+     tooltip = "Upper limit of the Parabolic SAR acceleration factor. A value below the starting factor is internally raised to the starting factor.",
+     group = GROUP_ENGINE, display = display.none)
+
+bool confirmedEventsOnly = input.bool(
+     true, "Confirm state changes at bar close",
+     tooltip = "Recommended for reproducible study. When enabled, run changes, extreme-point updates, and descriptive events are committed only on confirmed bars.",
+     group = GROUP_ENGINE, display = display.none)
+
+int normalizationLength = input.int(
+     14, "Normalization length",
+     minval = 1, maxval = 500,
+     tooltip = "Lookback used only when ATR normalization is selected. It does not alter Parabolic SAR state changes.",
+     group = GROUP_GEOMETRY, display = display.none)
+
+string normalizationSmoothing = input.string(
+     "RMA", "Normalization smoothing",
+     options = ["RMA", "SMA", "EMA", "WMA"],
+     tooltip = "Smoothing method for the normalization range. This is a measurement choice, not a directional filter.",
+     group = GROUP_GEOMETRY, display = display.none)
+
+string distanceUnit = input.string(
+     "ATR at run start", "Distance unit",
+     options = ["ATR at run start", "Percent from run origin", "Ticks", "Raw price"],
+     tooltip = "Unit used for excursion and arc-distance statistics. ATR is frozen at the beginning of each fully observed run.",
+     group = GROUP_GEOMETRY, display = display.none)
+
+int sequenceMemory = input.int(
+     20, "Completed-run memory",
+     minval = 3, maxval = 100,
+     tooltip = "Number of fully observed completed runs retained for duration, constraint-occupancy, and brief-run statistics.",
+     group = GROUP_GEOMETRY, display = display.none)
+
+float constraintMateriality = input.float(
+     12.5, "Material constraint threshold (%)",
+     minval = 1.0, maxval = 100.0, step = 0.5,
+     tooltip = "Minimum share of the free Parabolic SAR step removed by the canonical two-bar range guardrail before the bar is classified as materially constrained. Effects below 1% remain in the FREE state.",
+     group = GROUP_KINEMATICS, display = display.none)
+
+float kinematicToleranceTicks = input.float(
+     2.0, "Kinematic sync tolerance (ticks)",
+     minval = 0.1, maxval = 20.0, step = 0.1,
+     tooltip = "Maximum difference, measured in minimum ticks, allowed between the reconstructed guarded candidate and TradingView's ta.sar() value. Constraint metrics are withheld when this check is not satisfied.",
+     group = GROUP_KINEMATICS, display = display.none)
+
+bool showConstraintHalo = input.bool(
+     true, "Show material-constraint halo",
+     tooltip = "Places a restrained neon halo behind the canonical SAR dot when the two-bar guardrail materially reduces its free parabolic step.",
+     group = GROUP_KINEMATICS, display = display.none)
+
+int constraintHaloWidth = input.int(
+     4, "Constraint halo width",
+     minval = 2, maxval = 5,
+     group = GROUP_KINEMATICS, display = display.none)
+
+bool showFreeCandidatePoint = input.bool(
+     false, "Show unconstrained candidate point",
+     tooltip = "Shows the mechanically reconstructed SAR candidate before the canonical two-bar range guardrail is applied on materially constrained bars. Disabled by default to keep publication charts clean.",
+     group = GROUP_KINEMATICS, display = display.none)
+
+bool showConstraintBridge = input.bool(
+     false, "Fill free-to-guarded constraint bridge",
+     tooltip = "Fills the distance removed by the two-bar range guardrail on materially constrained bars. Disabled by default for visual restraint.",
+     group = GROUP_KINEMATICS, display = display.none)
+
+bool showRunSignature = input.bool(
+     true, "Show normalized run signature in panel",
+     tooltip = "Displays a four-axis descriptive address: Arc retention, AF progress, Extreme-point pause share, and current constraint load. It is a state fingerprint, not a score or forecast.",
+     group = GROUP_KINEMATICS, display = display.none)
+
+int compressionMinimumAge = input.int(
+     5, "Minimum age for arc contraction",
+     minval = 2, maxval = 100,
+     tooltip = "A run must reach this age before SAR-to-extreme-point contraction can be classified as a tight arc.",
+     group = GROUP_EVENTS, display = display.none)
+
+float compressionRetention = input.float(
+     35.0, "Tight-arc retention threshold (%)",
+     minval = 5.0, maxval = 95.0, step = 1.0,
+     tooltip = "A tight arc begins when the current SAR-to-extreme-point distance is at or below this percentage of the widest distance recorded in the same run.",
+     group = GROUP_EVENTS, display = display.none)
+
+float expansionHysteresis = input.float(
+     20.0, "Re-expansion hysteresis (percentage points)",
+     minval = 1.0, maxval = 90.0, step = 1.0,
+     tooltip = "After a tight arc, a new extreme point must raise retention by this additional amount before re-expansion is recorded.",
+     group = GROUP_EVENTS, display = display.none)
+
+int enduranceAge = input.int(
+     12, "Run-age milestone (bars)",
+     minval = 2, maxval = 500,
+     tooltip = "One-time age observation for each fully observed run.",
+     group = GROUP_EVENTS, display = display.none)
+
+int extremePauseBars = input.int(
+     5, "Extreme-point pause milestone (bars)",
+     minval = 1, maxval = 100,
+     tooltip = "Records a pause episode when no new run extreme point has appeared for this many confirmed bars.",
+     group = GROUP_EVENTS, display = display.none)
+
+int briefRunMaximum = input.int(
+     4, "Brief completed run (bars or fewer)",
+     minval = 1, maxval = 50,
+     tooltip = "A fully observed run ending at or below this duration is classified as brief for descriptive statistics only.",
+     group = GROUP_EVENTS, display = display.none)
+
+bool showSarDots = input.bool(
+     true, "Show Parabolic SAR dots",
+     group = GROUP_VISUALS, display = display.none)
+
+int sarDotWidth = input.int(
+     2, "SAR dot width",
+     minval = 1, maxval = 5,
+     tooltip = "A width of 2 keeps the dots clear without obscuring candle structure.",
+     group = GROUP_VISUALS, display = display.none)
+
+bool showExtremeTrace = input.bool(
+     true, "Show extreme-point trace",
+     tooltip = "Plots the highest high while SAR is below price, or the lowest low while SAR is above price.",
+     group = GROUP_VISUALS, display = display.none)
+
+int extremeTraceWidth = input.int(
+     1, "Extreme-point trace width",
+     minval = 1, maxval = 4,
+     group = GROUP_VISUALS, display = display.none)
+
+bool showArcFill = input.bool(
+     true, "Fill the SAR-to-extreme-point arc",
+     tooltip = "Fills the measured space between Parabolic SAR and the active run extreme point.",
+     group = GROUP_VISUALS, display = display.none)
+
+int normalArcTransparency = input.int(
+     90, "Normal arc transparency",
+     minval = 70, maxval = 100,
+     tooltip = "Higher values make the normal arc fill less prominent.",
+     group = GROUP_VISUALS, display = display.none)
+
+int tightArcTransparency = input.int(
+     78, "Tight-arc transparency",
+     minval = 60, maxval = 100,
+     tooltip = "The fill becomes slightly more visible while the active run is in a tight-arc state.",
+     group = GROUP_VISUALS, display = display.none)
+
+bool showActiveOriginLine = input.bool(
+     false, "Show current run origin line",
+     tooltip = "Draws one dotted line for the current fully observed run only. It is disabled by default because historical origin levels can resemble support or resistance.",
+     group = GROUP_VISUALS, display = display.none)
+
+bool showArcMidline = input.bool(
+     false, "Show arc midline",
+     group = GROUP_VISUALS, display = display.none)
+
+string markerPresentation = input.string(
+     "Icons", "Event marker presentation",
+     options = ["Off", "Icons", "Text badges"],
+     tooltip = "Icons provide the cleanest chart. Text badges are intended for detailed inspection rather than publication thumbnails.",
+     group = GROUP_VISUALS, display = display.none)
+
+bool showStateTurnMarkers = input.bool(
+     true, "Show PSAR side-change markers",
+     tooltip = "Places a neutral marker at the PSAR point when SAR changes sides relative to price.",
+     group = GROUP_VISUALS, display = display.none)
+
+bool showArcStateMarkers = input.bool(
+     false, "Show tight / wide arc markers",
+     tooltip = "Disabled by default because fill intensity and the study panel already show the arc state. Enable these neutral markers for detailed inspection.",
+     group = GROUP_VISUALS, display = display.none)
+
+bool showMilestoneMarkers = input.bool(
+     false, "Show age / AF / pause / brief markers",
+     tooltip = "Disabled by default to prevent label congestion. Enable for detailed run research.",
+     group = GROUP_VISUALS, display = display.none)
+
+bool showExtremeMarkers = input.bool(
+     false, "Show every new extreme point",
+     tooltip = "Useful for inspecting observed AF progression. Disabled by default for chart clarity.",
+     group = GROUP_VISUALS, display = display.none)
+
+float markerOffsetRange = input.float(
+     0.16, "Marker spacing (range units)",
+     minval = 0.00, maxval = 2.00, step = 0.01,
+     tooltip = "Offsets non-turn markers away from the extreme-point trace using the selected normalization range.",
+     group = GROUP_VISUALS, display = display.none)
+
+bool showCompletedRunLabels = input.bool(
+     false, "Show completed-run summaries",
+     tooltip = "Detailed summaries are disabled by default because they can obscure price. Old summaries are automatically deleted at the selected limit.",
+     group = GROUP_VISUALS, display = display.none)
+
+int completedLabelLimit = input.int(
+     12, "Maximum completed-run summaries",
+     minval = 1, maxval = 60,
+     group = GROUP_VISUALS, display = display.none)
+
+int eventMarkerLimit = input.int(
+     60, "Maximum descriptive event markers",
+     minval = 20, maxval = 180,
+     tooltip = "Caps historical markers to preserve readability and remain comfortably below the label-object limit.",
+     group = GROUP_VISUALS, display = display.none)
+
+bool tintBars = input.bool(
+     false, "Tint bars by current PSAR side",
+     tooltip = "Optional contextual coloring only. Disabled by default.",
+     group = GROUP_VISUALS, display = display.none)
+
+bool shadeTightArc = input.bool(
+     false, "Shade active tight-arc state",
+     tooltip = "Optional background emphasis only. Disabled by default.",
+     group = GROUP_VISUALS, display = display.none)
+
+bool showStudyPanel = input.bool(
+     true, "Show study panel",
+     group = GROUP_PANEL, display = display.none)
+
+string panelLayout = input.string(
+     "Compact", "Panel layout",
+     options = ["Compact", "Ribbon"],
+     tooltip = "Compact uses a three-row paired grid. Ribbon groups the same metrics into a horizontal reading order.",
+     group = GROUP_PANEL, display = display.none)
+
+string panelPosition = input.string(
+     "Top right", "Panel position",
+     options = ["Top left", "Top center", "Top right", "Middle left", "Middle center", "Middle right", "Bottom left", "Bottom center", "Bottom right"],
+     group = GROUP_PANEL, display = display.none)
+
+float panelRightInset = input.float(
+     1.00, "Right-edge clearance (%)",
+     minval = 0.0, maxval = 3.0, step = 0.25,
+     tooltip = "Adds a transparent gutter to right-anchored panel positions. The default shifts the visible upper-right panel slightly left without moving it away from the upper-right area.",
+     group = GROUP_PANEL, display = display.none)
+
+string panelTextSizeInput = input.string(
+     "Normal", "Panel text size",
+     options = ["Tiny", "Small", "Normal", "Large"],
+     group = GROUP_PANEL, display = display.none)
+
+bool boldPanelText = input.bool(
+     true, "Bold panel text",
+     tooltip = "Uses Pine Script text formatting to emphasize all visible panel cells.",
+     group = GROUP_PANEL, display = display.none)
+
+color sarBelowColor = input.color(
+     #00D9FF, "SAR below price",
+     group = GROUP_COLORS, display = display.none)
+
+color sarAboveColor = input.color(
+     #FF4D8D, "SAR above price",
+     group = GROUP_COLORS, display = display.none)
+
+color belowExtremeColor = input.color(
+     #7CFF6B, "Extreme trace while SAR is below",
+     group = GROUP_COLORS, display = display.none)
+
+color aboveExtremeColor = input.color(
+     #FFC857, "Extreme trace while SAR is above",
+     group = GROUP_COLORS, display = display.none)
+
+color originColor = input.color(
+     #F3F6FC, "Current run origin",
+     group = GROUP_COLORS, display = display.none)
+
+color tightColor = input.color(
+     #FFD166, "Tight-arc event",
+     group = GROUP_COLORS, display = display.none)
+
+color wideColor = input.color(
+     #B388FF, "Re-expansion event",
+     group = GROUP_COLORS, display = display.none)
+
+color milestoneColor = input.color(
+     #E6EDF7, "Research milestone",
+     group = GROUP_COLORS, display = display.none)
+
+color constraintColor = input.color(
+     #EFFF00, "Constraint mechanics",
+     group = GROUP_COLORS, display = display.none)
+
+color panelBackground = input.color(
+     #08101F, "Panel background",
+     group = GROUP_COLORS, display = display.none)
+
+color panelHeader = input.color(
+     #12253F, "Panel label cells",
+     group = GROUP_COLORS, display = display.none)
+
+color panelText = input.color(
+     #F8FCFF, "Panel text",
+     group = GROUP_COLORS, display = display.none)
+
+bool enableAlertConditions = input.bool(
+     false, "Enable descriptive alert conditions",
+     tooltip = "Disabled by default. Alerts report observed state changes and geometry events only.",
+     group = GROUP_ALERTS, display = display.none)
+
+bool exposeResearchData = input.bool(
+     false, "Expose extended metrics in Data Window",
+     tooltip = "Optional advanced output. Enable when inspecting numeric series in the Data Window; leave disabled for the lightest normal chart runtime.",
+     group = GROUP_ALERTS, display = display.none)
+
+//──────────────────────────────────────────────────────────────────────────────
+// Utility functions
+//──────────────────────────────────────────────────────────────────────────────
+f_clamp(float value, float lower, float upper) =>
+    math.max(lower, math.min(upper, value))
+
+f_normalizeDistance(float rawDistance, string unit, float atrBase, float priceBase) =>
+    switch unit
+        "ATR at run start" => not na(atrBase) and atrBase > 0.0 ? rawDistance / atrBase : na
+        "Percent from run origin" => not na(priceBase) and math.abs(priceBase) > 0.0 ? 100.0 * rawDistance / math.abs(priceBase) : na
+        "Ticks" => syminfo.mintick > 0.0 ? rawDistance / syminfo.mintick : na
+        => rawDistance
+
+f_distanceSuffix(string unit) =>
+    switch unit
+        "ATR at run start" => " ATR"
+        "Percent from run origin" => "%"
+        "Ticks" => " ticks"
+        => ""
+
+f_formatNumber(float value) =>
+    na(value) ? "n/a" : str.tostring(value, "#.##")
+
+f_formatPercent(float value) =>
+    na(value) ? "n/a" : str.tostring(value, "#.0") + "%"
+
+f_tablePosition(string selected) =>
+    switch selected
+        "Top left" => position.top_left
+        "Top center" => position.top_center
+        "Top right" => position.top_right
+        "Middle left" => position.middle_left
+        "Middle center" => position.middle_center
+        "Middle right" => position.middle_right
+        "Bottom left" => position.bottom_left
+        "Bottom center" => position.bottom_center
+        => position.bottom_right
+
+f_tableTextSize(string selected) =>
+    switch selected
+        "Tiny" => size.tiny
+        "Normal" => size.normal
+        "Large" => size.large
+        => size.small
+
+f_pushRolling(array<float> values, float runningSum, float value, int limit) =>
+    float nextSum = runningSum + value
+    array.push(values, value)
+    if array.size(values) > limit
+        nextSum -= array.shift(values)
+    nextSum
+
+f_rollingAverage(array<float> values, float runningSum) =>
+    int count = array.size(values)
+    count > 0 ? runningSum / count : na
+
+f_queueLabel(array<label> queue, label newLabel, int maximumCount) =>
+    array.push(queue, newLabel)
+    if array.size(queue) > maximumCount
+        label.delete(array.shift(queue))
+    array.size(queue)
+
+f_appendToken(string baseText, string token, string separator) =>
+    baseText == "" ? token : baseText + separator + token
+
+f_fixedBand(float value) =>
+    na(value) ? 0 : value < 25.0 ? 1 : value < 50.0 ? 2 : value < 75.0 ? 3 : 4
+
+f_constraintBand(float value) =>
+    na(value) ? -1 : value < 1.0 ? 0 : value < 25.0 ? 1 : value < 50.0 ? 2 : value < 75.0 ? 3 : 4
+
+f_signatureKey(int arcBand, int afBand, int pauseBand, int constraintBand) =>
+    arcBand == 0 or afBand == 0 or pauseBand == 0 ? 0 :
+         arcBand * 1000 + afBand * 100 + pauseBand * 10 + constraintBand + 1
+
+f_signatureCodeFromKey(int key) =>
+    if key <= 0
+        "A-·F-·P-·C-"
+    else
+        int arcBand = int(math.floor(key / 1000.0))
+        int afBand = int(math.floor((key % 1000) / 100.0))
+        int pauseBand = int(math.floor((key % 100) / 10.0))
+        int constraintBand = key % 10 - 1
+        string constraintToken = constraintBand < 0 ? "-" : str.tostring(constraintBand)
+        "A" + str.tostring(arcBand) +
+             "·F" + str.tostring(afBand) +
+             "·P" + str.tostring(pauseBand) +
+             "·C" + constraintToken
+
+f_signatureTrailFromKeys(int oldest, int middle, int newest) =>
+    string newestCode = f_signatureCodeFromKey(newest)
+    if oldest > 0
+        f_signatureCodeFromKey(oldest) + " › " + f_signatureCodeFromKey(middle) + " › " + newestCode
+    else if middle > 0
+        f_signatureCodeFromKey(middle) + " › " + newestCode
+    else if newest > 0
+        newestCode
+    else
+        ""
+
+f_motionName(int mode) =>
+    switch mode
+        MOTION_CHECK => "CHECK"
+        MOTION_FREE => "FREE"
+        MOTION_TRACE => "TRACE"
+        MOTION_BRAKE => "BRAKE"
+        MOTION_PINNED => "PINNED"
+        => "INIT"
+
+f_motionGlyph(int mode) =>
+    switch mode
+        MOTION_CHECK => "!"
+        MOTION_FREE => "○"
+        MOTION_TRACE => "◔"
+        MOTION_BRAKE => "◐"
+        MOTION_PINNED => "■"
+        => "…"
+
+//──────────────────────────────────────────────────────────────────────────────
+// User-controlled research window
+//
+// The start index is fixed on the script's first execution, mirroring the useful
+// "recent historical bars plus subsequent realtime bars" behavior of
+// calc_bars_count without exposing an auto-generated value beside the title.
+// Input changes trigger a complete reload and therefore rebuild the window.
+//──────────────────────────────────────────────────────────────────────────────
+bool processAllAvailableBars = calculationScopeInput == "All available bars"
+var int researchStartBar = 0
+if barstate.isfirst
+    researchStartBar := processAllAvailableBars ? 0 : math.max(0, last_bar_index - researchWindowBarsInput + 1)
+bool inResearchWindow = bar_index >= researchStartBar
+
+//──────────────────────────────────────────────────────────────────────────────
+// Canonical Parabolic SAR and normalization range
+//──────────────────────────────────────────────────────────────────────────────
+float sarStart = math.max(sarStartInput, 0.0001)
+float sarIncrement = math.max(sarIncrementInput, 0.0001)
+float sarMaximum = math.max(sarMaximumInput, sarStart)
+bool sarMaximumAdjusted = sarMaximumInput < sarStartInput
+
+float sarValue = ta.sar(sarStart, sarIncrement, sarMaximum)
+float trueRange = ta.tr(true)
+float normalizationRange = switch normalizationSmoothing
+    "SMA" => ta.sma(trueRange, normalizationLength)
+    "EMA" => ta.ema(trueRange, normalizationLength)
+    "WMA" => ta.wma(trueRange, normalizationLength)
+    => ta.rma(trueRange, normalizationLength)
+
+// Direction convention: +1 = SAR below price, -1 = SAR above price.
+var int rawDirection = 0
+rawDirection := na(sarValue) ? 0 : sarValue < close ? 1 : sarValue > close ? -1 : nz(rawDirection[1], 0)
+bool calculationGate = inResearchWindow and (not confirmedEventsOnly or barstate.isconfirmed)
+bool rawDirectionFlip = inResearchWindow and rawDirection != 0 and nz(rawDirection[1], 0) != 0 and rawDirection != rawDirection[1]
+bool confirmedDirectionFlip = rawDirectionFlip and calculationGate
+
+//──────────────────────────────────────────────────────────────────────────────
+// Persistent run state
+//──────────────────────────────────────────────────────────────────────────────
+var int runDirection = 0
+var int runStartBar = na
+var int runStartTime = na
+var float runOrigin = na
+var float runRangeAtStart = na
+var float runExtreme = na
+var int runExtremeUpdates = 0
+var int lastExtremeBar = na
+var float widestArc = na
+var bool fullyObservedRun = false
+var bool tightArcActive = false
+var int tightArcEpisodes = 0
+var bool ageMilestoneRecorded = false
+var bool afMaximumRecorded = false
+var bool extremePauseRecorded = false
+var int afMaximumBars = 0
+var int runKinematicBars = 0
+var int runConstraintBars = 0
+var int lastRunSignatureId = 0
+var int signatureTrailOldestId = 0
+var int signatureTrailMiddleId = 0
+var int signatureTrailNewestId = 0
+
+var array<float> durationMemory = array.new_float()
+var array<float> briefRunMemory = array.new_float()
+var array<float> constraintOccupancyMemory = array.new_float()
+var float durationMemorySum = 0.0
+var float briefRunMemorySum = 0.0
+var float constraintOccupancyMemorySum = 0.0
+var array<label> completedLabels = array.new_label()
+var array<label> eventLabels = array.new_label()
+
+// Per-bar events and completed-run payload.
+bool turnToBelowEvent = false
+bool turnToAboveEvent = false
+bool newExtremeEvent = false
+bool tightArcEvent = false
+bool wideArcEvent = false
+bool ageMilestoneEvent = false
+bool afMaximumEvent = false
+bool extremePauseEvent = false
+bool briefRunEndEvent = false
+bool constraintStartEvent = false
+bool completedRunEvent = false
+
+int completedDirection = 0
+int completedExtremeUpdates = 0
+float completedDuration = na
+float completedAfMaximumShare = na
+float completedConstraintOccupancy = na
+int completedTightArcEpisodes = 0
+
+//──────────────────────────────────────────────────────────────────────────────
+// Run lifecycle
+//──────────────────────────────────────────────────────────────────────────────
+if rawDirection != 0 and runDirection == 0 and calculationGate
+    bool boundaryObservedTurn = rawDirectionFlip
+    runDirection := rawDirection
+    runStartBar := bar_index
+    runStartTime := time
+    runOrigin := close
+    runRangeAtStart := normalizationRange
+    runExtreme := rawDirection == 1 ? high : low
+    runExtremeUpdates := 0
+    lastExtremeBar := bar_index
+    widestArc := math.abs(runExtreme - sarValue)
+    fullyObservedRun := boundaryObservedTurn
+    tightArcActive := false
+    tightArcEpisodes := 0
+    ageMilestoneRecorded := false
+    afMaximumRecorded := false
+    extremePauseRecorded := false
+    afMaximumBars := 0
+    runKinematicBars := 0
+    runConstraintBars := 0
+    lastRunSignatureId := 0
+    signatureTrailOldestId := 0
+    signatureTrailMiddleId := 0
+    signatureTrailNewestId := 0
+    turnToBelowEvent := boundaryObservedTurn and rawDirection == 1
+    turnToAboveEvent := boundaryObservedTurn and rawDirection == -1
+else if confirmedDirectionFlip and rawDirection != runDirection
+    // Finalize only runs whose beginning was observed inside the active research window.
+    if fullyObservedRun and not na(runStartBar) and not na(close[1])
+        completedRunEvent := true
+        completedDirection := runDirection
+        completedExtremeUpdates := runExtremeUpdates
+        completedDuration := math.max(bar_index - runStartBar, 1)
+        completedAfMaximumShare := completedDuration > 0.0 ? 100.0 * afMaximumBars / completedDuration : na
+        completedConstraintOccupancy := runKinematicBars > 0 ? 100.0 * runConstraintBars / runKinematicBars : na
+        completedTightArcEpisodes := tightArcEpisodes
+        briefRunEndEvent := completedDuration <= briefRunMaximum
+
+        durationMemorySum := f_pushRolling(durationMemory, durationMemorySum, completedDuration, sequenceMemory)
+        briefRunMemorySum := f_pushRolling(briefRunMemory, briefRunMemorySum, briefRunEndEvent ? 1.0 : 0.0, sequenceMemory)
+        if not na(completedConstraintOccupancy)
+            constraintOccupancyMemorySum := f_pushRolling(constraintOccupancyMemory, constraintOccupancyMemorySum, completedConstraintOccupancy, sequenceMemory)
+
+    // Start a clean, fully observed run on the confirmed side change.
+    runDirection := rawDirection
+    runStartBar := bar_index
+    runStartTime := time
+    runOrigin := close
+    runRangeAtStart := normalizationRange
+    runExtreme := rawDirection == 1 ? high : low
+    runExtremeUpdates := 0
+    lastExtremeBar := bar_index
+    widestArc := math.abs(runExtreme - sarValue)
+    fullyObservedRun := true
+    tightArcActive := false
+    tightArcEpisodes := 0
+    ageMilestoneRecorded := false
+    afMaximumRecorded := false
+    extremePauseRecorded := false
+    afMaximumBars := 0
+    runKinematicBars := 0
+    runConstraintBars := 0
+    lastRunSignatureId := 0
+    signatureTrailOldestId := 0
+    signatureTrailMiddleId := 0
+    signatureTrailNewestId := 0
+    turnToBelowEvent := rawDirection == 1
+    turnToAboveEvent := rawDirection == -1
+else if rawDirection != 0 and rawDirection == runDirection and calculationGate
+    bool isNewExtreme = runDirection == 1 ? high > runExtreme : low < runExtreme
+    if isNewExtreme
+        runExtreme := runDirection == 1 ? high : low
+        runExtremeUpdates += 1
+        lastExtremeBar := bar_index
+        extremePauseRecorded := false
+        newExtremeEvent := true
+
+    float liveArcAfterUpdate = math.abs(runExtreme - sarValue)
+    widestArc := na(widestArc) ? liveArcAfterUpdate : math.max(widestArc, liveArcAfterUpdate)
+
+//──────────────────────────────────────────────────────────────────────────────
+// Live run measurements
+//──────────────────────────────────────────────────────────────────────────────
+int runAge = inResearchWindow and runDirection != 0 and not na(runStartBar) ? bar_index - runStartBar + 1 : 0
+int barsSinceExtreme = inResearchWindow and runDirection != 0 and not na(lastExtremeBar) ? bar_index - lastExtremeBar : 0
+bool needExtendedNumericOutput = inResearchWindow and (exposeResearchData or barstate.islast)
+float currentArcRaw = inResearchWindow and runDirection != 0 and not na(runExtreme) and not na(sarValue) ? math.abs(runExtreme - sarValue) : na
+float currentArc = needExtendedNumericOutput ? f_normalizeDistance(currentArcRaw, distanceUnit, runRangeAtStart, runOrigin) : na
+float arcRetention = not na(currentArcRaw) and not na(widestArc) and widestArc > 0.0 ? 100.0 * currentArcRaw / widestArc : na
+bool sameRunContinuation = inResearchWindow and runDirection != 0 and runAge > 1 and not confirmedDirectionFlip
+float sarStepRaw = sameRunContinuation and not na(sarValue[1]) ? math.abs(sarValue - sarValue[1]) : na
+float currentSarStep = needExtendedNumericOutput ? f_normalizeDistance(sarStepRaw, distanceUnit, runRangeAtStart, runOrigin) : na
+float sarStepArcShare = needExtendedNumericOutput and not na(sarStepRaw) and not na(currentArcRaw) and currentArcRaw > 0.0 ? 100.0 * sarStepRaw / currentArcRaw : na
+float arcRetentionChange = exposeResearchData and sameRunContinuation and not na(arcRetention[1]) ? arcRetention - arcRetention[1] : na
+float afStage = runDirection != 0 ? math.min(sarStart + runExtremeUpdates * sarIncrement, sarMaximum) : na
+float afProgress = sarMaximum > sarStart and not na(afStage) ? 100.0 * (afStage - sarStart) / (sarMaximum - sarStart) : 100.0
+bool afAtMaximum = not na(afStage) and afStage >= sarMaximum - 1e-10
+
+bool needsMarkerOffset = inResearchWindow and (showCompletedRunLabels or (markerPresentation != "Off" and (showArcStateMarkers or showMilestoneMarkers or showExtremeMarkers)))
+float markerRange = needsMarkerOffset ? math.max(nz(normalizationRange, nz(trueRange, 0.0)), syminfo.mintick) : syminfo.mintick
+float markerOffset = markerRange * markerOffsetRange
+
+
+//──────────────────────────────────────────────────────────────────────────────
+// PSAR constraint kinematics and normalized run signature
+//
+// Free candidate:
+//   previous SAR + previous AF × (previous EP - previous SAR)
+// Canonical two-bar guardrail:
+//   SAR below price → candidate cannot exceed the lower of the prior two lows.
+//   SAR above price → candidate cannot fall below the higher of the prior two highs.
+// Constraint Load measures the share of the free step removed by that guardrail.
+// Step Transmission measures the share of the free step that remains after it.
+// All reconstructed values are checked against ta.sar() before they are exposed.
+//──────────────────────────────────────────────────────────────────────────────
+bool kinematicEligible =
+     inResearchWindow and fullyObservedRun and sameRunContinuation and rawDirection == runDirection and
+     not na(sarValue[1]) and not na(runExtreme[1]) and not na(afStage[1]) and
+     not na(low[2]) and not na(high[2])
+
+float freeSarCandidate = kinematicEligible ?
+     sarValue[1] + afStage[1] * (runExtreme[1] - sarValue[1]) : na
+
+float twoBarGuardrail = kinematicEligible ?
+     (runDirection == 1 ? math.min(low[1], low[2]) : math.max(high[1], high[2])) : na
+
+float guardedSarCandidate = kinematicEligible ?
+     (runDirection == 1 ? math.min(freeSarCandidate, twoBarGuardrail) : math.max(freeSarCandidate, twoBarGuardrail)) : na
+
+float freeSarStepRaw = kinematicEligible ? math.abs(freeSarCandidate - sarValue[1]) : na
+float freeSarStep = needExtendedNumericOutput ? f_normalizeDistance(freeSarStepRaw, distanceUnit, runRangeAtStart, runOrigin) : na
+float freeDirectionalStepRaw = kinematicEligible ? runDirection * (freeSarCandidate - sarValue[1]) : na
+float guardedDirectionalStepRaw = kinematicEligible ? runDirection * (guardedSarCandidate - sarValue[1]) : na
+float constraintResidualRaw = kinematicEligible ? math.abs(freeSarCandidate - guardedSarCandidate) : na
+float kinematicErrorRaw = kinematicEligible ? math.abs(sarValue - guardedSarCandidate) : na
+float kinematicToleranceRaw = math.max(syminfo.mintick * kinematicToleranceTicks, math.abs(nz(sarValue, 0.0)) * 1e-10)
+bool kinematicSynchronized = kinematicEligible and kinematicErrorRaw <= kinematicToleranceRaw
+float constraintLoad = kinematicSynchronized and freeSarStepRaw > 0.0 ?
+     100.0 * f_clamp(constraintResidualRaw / freeSarStepRaw, 0.0, 1.0) : na
+float stepTransmission = kinematicSynchronized and freeDirectionalStepRaw > 0.0 ?
+     f_clamp(100.0 * guardedDirectionalStepRaw / freeDirectionalStepRaw, 0.0, 100.0) : na
+bool measurableConstraint =
+     kinematicSynchronized and constraintResidualRaw >= syminfo.mintick * 0.25 and
+     constraintLoad >= 1.0
+bool materialConstraint = measurableConstraint and constraintLoad >= constraintMateriality
+float motionEpsilon = syminfo.mintick * 0.25
+int constraintModeId = not kinematicEligible ? MOTION_INIT : not kinematicSynchronized ? MOTION_CHECK :
+     not measurableConstraint ? MOTION_FREE : not materialConstraint ? MOTION_TRACE :
+     guardedDirectionalStepRaw <= motionEpsilon ? MOTION_PINNED : MOTION_BRAKE
+bool priorMaterialConstraint = materialConstraint[1] and nz(runDirection[1], 0) == runDirection
+constraintStartEvent := calculationGate and materialConstraint and not priorMaterialConstraint
+
+if fullyObservedRun and calculationGate and kinematicSynchronized and not confirmedDirectionFlip
+    runKinematicBars += 1
+    if materialConstraint
+        runConstraintBars += 1
+
+float runConstraintOccupancy = needExtendedNumericOutput and runKinematicBars > 0 ? 100.0 * runConstraintBars / runKinematicBars : na
+
+// Descriptive address using four fixed percentage bands, not sample quartiles.
+// A = Arc Retention, F = AF Progress, P = EP Pause Share, C = Constraint Load.
+float extremePauseShare = runAge > 1 ? 100.0 * barsSinceExtreme / (runAge - 1) : 0.0
+int signatureArcBand = f_fixedBand(arcRetention)
+int signatureAfBand = f_fixedBand(afProgress)
+int signaturePauseBand = f_fixedBand(extremePauseShare)
+int signatureConstraintBand = f_constraintBand(constraintLoad)
+int currentRunSignatureId = fullyObservedRun and runDirection != 0 ?
+     f_signatureKey(signatureArcBand, signatureAfBand, signaturePauseBand, signatureConstraintBand) : 0
+
+if showRunSignature and fullyObservedRun and calculationGate and kinematicSynchronized and currentRunSignatureId > 0 and currentRunSignatureId != lastRunSignatureId
+    signatureTrailOldestId := signatureTrailMiddleId
+    signatureTrailMiddleId := signatureTrailNewestId
+    signatureTrailNewestId := currentRunSignatureId
+    lastRunSignatureId := currentRunSignatureId
+
+//──────────────────────────────────────────────────────────────────────────────
+// Descriptive run events
+//──────────────────────────────────────────────────────────────────────────────
+if runDirection != 0 and fullyObservedRun and calculationGate and not confirmedDirectionFlip
+    bool tightCondition = runAge >= compressionMinimumAge and not na(arcRetention) and arcRetention <= compressionRetention
+    if not tightArcActive and tightCondition
+        tightArcActive := true
+        tightArcEpisodes += 1
+        tightArcEvent := true
+
+    float releaseThreshold = math.min(100.0, compressionRetention + expansionHysteresis)
+    if tightArcActive and newExtremeEvent and not na(arcRetention) and arcRetention >= releaseThreshold
+        tightArcActive := false
+        wideArcEvent := true
+
+    if not ageMilestoneRecorded and runAge >= enduranceAge
+        ageMilestoneRecorded := true
+        ageMilestoneEvent := true
+
+    if afAtMaximum
+        afMaximumBars += 1
+        if not afMaximumRecorded
+            afMaximumRecorded := true
+            afMaximumEvent := true
+
+    if not extremePauseRecorded and barsSinceExtreme >= extremePauseBars
+        extremePauseRecorded := true
+        extremePauseEvent := true
+
+bool stateTurnEvent = turnToBelowEvent or turnToAboveEvent
+bool useIconMarkers = markerPresentation == "Icons"
+bool useTextBadges = markerPresentation == "Text badges"
+bool markersEnabled = markerPresentation != "Off"
+
+//──────────────────────────────────────────────────────────────────────────────
+// Completed-run summaries — optional and intentionally off by default
+//──────────────────────────────────────────────────────────────────────────────
+if completedRunEvent and showCompletedRunLabels
+    string completedStateText = completedDirection == 1 ? "SAR BELOW RUN" : "SAR ABOVE RUN"
+    string briefText = briefRunEndEvent ? " · BRIEF" : ""
+    string completedText = completedStateText + briefText +
+         "\n" + str.tostring(completedDuration, "#") + " bars · EP " + str.tostring(completedExtremeUpdates) +
+         "\nAF max " + f_formatPercent(completedAfMaximumShare) + " · Constraint " + f_formatPercent(completedConstraintOccupancy) +
+         " · Tight " + str.tostring(completedTightArcEpisodes)
+    color completedColor = completedDirection == 1 ? sarBelowColor : sarAboveColor
+    float completedY = completedDirection == 1 ? high + markerOffset * 1.35 : low - markerOffset * 1.35
+    label completedLabel = label.new(
+         x = bar_index,
+         y = completedY,
+         text = completedText,
+         xloc = xloc.bar_index,
+         yloc = yloc.price,
+         style = label.style_label_center,
+         color = color.new(completedColor, 14),
+         textcolor = color.white,
+         size = size.tiny,
+         tooltip = "Descriptive summary of the fully observed run that ended on this bar.")
+    array.push(completedLabels, completedLabel)
+    if array.size(completedLabels) > completedLabelLimit
+        label.delete(array.shift(completedLabels))
+
+//──────────────────────────────────────────────────────────────────────────────
+// Visual layer — consolidated directional plots reduce runtime and plot count.
+//──────────────────────────────────────────────────────────────────────────────
+int visualDirection = inResearchWindow ? (confirmedEventsOnly ? runDirection : rawDirection) : 0
+color activeSarColor = visualDirection == 1 ? sarBelowColor : visualDirection == -1 ? sarAboveColor : na
+color activeExtremeColor = runDirection == 1 ? belowExtremeColor : runDirection == -1 ? aboveExtremeColor : na
+float sarSeries = inResearchWindow and visualDirection != 0 ? sarValue : na
+float extremeSeries = inResearchWindow and runDirection != 0 and not confirmedDirectionFlip ? runExtreme : na
+float midSeries = inResearchWindow and showArcMidline and runDirection != 0 and not confirmedDirectionFlip ? (sarValue + runExtreme) * 0.5 : na
+float constraintHaloSeries = inResearchWindow and showConstraintHalo and materialConstraint ? sarValue : na
+float freeCandidateSeries = inResearchWindow and materialConstraint ? freeSarCandidate : na
+
+plot(
+     constraintHaloSeries, "PSAR Material Constraint Halo",
+     color = color.new(constraintColor, 8),
+     linewidth = constraintHaloWidth,
+     style = plot.style_circles,
+     display = display.pane)
+
+freeCandidatePlot = plot(
+     freeCandidateSeries, "Unconstrained PSAR Candidate",
+     color = showFreeCandidatePoint ? constraintColor : na,
+     linewidth = 2,
+     style = plot.style_cross,
+     display = display.pane)
+
+sarPlot = plot(
+     sarSeries, "Canonical Parabolic SAR",
+     color = showSarDots ? activeSarColor : na,
+     linewidth = sarDotWidth,
+     style = plot.style_circles,
+     display = display.pane + display.data_window)
+
+extremePlot = plot(
+     extremeSeries, "Active Run Extreme Point",
+     color = showExtremeTrace ? color.new(activeExtremeColor, 8) : na,
+     linewidth = extremeTraceWidth,
+     style = plot.style_linebr,
+     display = display.pane + display.data_window)
+
+int arcTransparency = tightArcActive ? tightArcTransparency : normalArcTransparency
+color arcFillColor = inResearchWindow and showArcFill and runDirection != 0 ?
+     color.new(runDirection == 1 ? sarBelowColor : sarAboveColor, arcTransparency) : na
+fill(
+     sarPlot, extremePlot,
+     color = arcFillColor,
+     title = "SAR-to-Extreme-Point Arc")
+
+fill(
+     sarPlot, freeCandidatePlot,
+     color = showConstraintBridge ? color.new(constraintColor, 86) : na,
+     title = "Free-to-Guarded Constraint Bridge")
+
+plot(
+     midSeries, "SAR-to-EP Arc Midline",
+     color = runDirection == 1 ? color.new(sarBelowColor, 58) : color.new(sarAboveColor, 58),
+     linewidth = 1,
+     style = plot.style_linebr,
+     display = display.pane + display.data_window)
+
+// One current-run origin line only; historical horizontal levels are not drawn.
+var line activeOriginLine = na
+if barstate.islast
+    if inResearchWindow and showActiveOriginLine and fullyObservedRun and runDirection != 0 and not na(runStartTime) and not na(runOrigin)
+        if na(activeOriginLine)
+            activeOriginLine := line.new(
+                 runStartTime, runOrigin, time, runOrigin,
+                 xloc = xloc.bar_time,
+                 extend = extend.none,
+                 color = color.new(originColor, 55),
+                 style = line.style_dotted,
+                 width = 1)
+        else
+            line.set_xy1(activeOriginLine, runStartTime, runOrigin)
+            line.set_xy2(activeOriginLine, time, runOrigin)
+            line.set_color(activeOriginLine, color.new(originColor, 55))
+            line.set_style(activeOriginLine, line.style_dotted)
+            line.set_width(activeOriginLine, 1)
+    else if not na(activeOriginLine)
+        line.delete(activeOriginLine)
+        activeOriginLine := na
+
+// Neutral side-change marker anchored directly to the PSAR point.
+if markersEnabled and showStateTurnMarkers and stateTurnEvent
+    color stateColor = turnToBelowEvent ? sarBelowColor : sarAboveColor
+    string turnText = useIconMarkers ? "◆" : "TURN"
+    if showMilestoneMarkers and briefRunEndEvent
+        turnText := useIconMarkers ? turnText + " □" : turnText + " · BRIEF"
+    string turnTooltip = turnToBelowEvent ?
+         "Observed PSAR side change: SAR moved from above price to below price." :
+         "Observed PSAR side change: SAR moved from below price to above price."
+    if briefRunEndEvent and showMilestoneMarkers
+        turnTooltip += " The completed prior run was within the configured brief-run duration."
+    label turnLabel = label.new(
+         bar_index, sarValue, turnText,
+         xloc = xloc.bar_index,
+         yloc = yloc.price,
+         style = useIconMarkers ? label.style_none : label.style_label_center,
+         color = useTextBadges ? color.new(stateColor, 12) : color.new(stateColor, 100),
+         textcolor = useIconMarkers ? stateColor : color.white,
+         size = size.tiny,
+         tooltip = turnTooltip)
+    f_queueLabel(eventLabels, turnLabel, eventMarkerLimit)
+
+// Tight / wide arc events are placed near the extreme-point trace and use
+// non-directional shapes or neutral descriptive text.
+if markersEnabled and showArcStateMarkers and (tightArcEvent or wideArcEvent)
+    bool isTightEvent = tightArcEvent
+    color arcEventColor = isTightEvent ? tightColor : wideColor
+    string arcEventText = useIconMarkers ? (isTightEvent ? "●" : "◇") : (isTightEvent ? "TIGHT" : "WIDE")
+    float arcEventY = runDirection == 1 ? runExtreme + markerOffset * 0.35 : runExtreme - markerOffset * 0.35
+    string arcTooltip = isTightEvent ?
+         "The current SAR-to-extreme-point distance entered the configured tight-arc threshold." :
+         "A new extreme point restored the configured arc-retention hysteresis after a tight-arc episode."
+    label arcEventLabel = label.new(
+         bar_index, arcEventY, arcEventText,
+         xloc = xloc.bar_index,
+         yloc = yloc.price,
+         style = useIconMarkers ? label.style_none : label.style_label_center,
+         color = useTextBadges ? color.new(arcEventColor, 10) : color.new(arcEventColor, 100),
+         textcolor = useIconMarkers ? arcEventColor : color.black,
+         size = size.tiny,
+         tooltip = arcTooltip)
+    f_queueLabel(eventLabels, arcEventLabel, eventMarkerLimit)
+
+// Research milestones are consolidated into one marker per bar to prevent
+// overlapping AGE, AF, and EP labels.
+bool milestoneEvent = ageMilestoneEvent or afMaximumEvent or extremePauseEvent
+if markersEnabled and showMilestoneMarkers and milestoneEvent
+    string milestoneText = ""
+    string milestoneTooltip = ""
+    if ageMilestoneEvent
+        milestoneText := f_appendToken(milestoneText, useIconMarkers ? "■" : "AGE", useIconMarkers ? " " : " · ")
+        milestoneTooltip := f_appendToken(milestoneTooltip, "The run reached the configured age milestone.", "\n")
+    if afMaximumEvent
+        milestoneText := f_appendToken(milestoneText, useIconMarkers ? "×" : "AF MAX", useIconMarkers ? " " : " · ")
+        milestoneTooltip := f_appendToken(milestoneTooltip, "The observed acceleration-factor stage reached its configured maximum.", "\n")
+    if extremePauseEvent
+        milestoneText := f_appendToken(milestoneText, useIconMarkers ? "○" : "EP PAUSE", useIconMarkers ? " " : " · ")
+        milestoneTooltip := f_appendToken(milestoneTooltip, "No new run extreme point appeared for the configured number of bars.", "\n")
+    float milestoneY = runDirection == 1 ? runExtreme + markerOffset * 0.95 : runExtreme - markerOffset * 0.95
+    label milestoneLabel = label.new(
+         bar_index, milestoneY, milestoneText,
+         xloc = xloc.bar_index,
+         yloc = yloc.price,
+         style = useIconMarkers ? label.style_none : label.style_label_center,
+         color = useTextBadges ? color.new(milestoneColor, 18) : color.new(milestoneColor, 100),
+         textcolor = useIconMarkers ? milestoneColor : color.rgb(20, 28, 40),
+         size = size.tiny,
+         tooltip = milestoneTooltip)
+    f_queueLabel(eventLabels, milestoneLabel, eventMarkerLimit)
+
+// A separate brief-run marker is needed only when the side-change marker is hidden.
+if markersEnabled and showMilestoneMarkers and briefRunEndEvent and not showStateTurnMarkers
+    string briefText = useIconMarkers ? "□" : "BRIEF"
+    color briefColor = completedDirection == 1 ? sarBelowColor : sarAboveColor
+    label briefLabel = label.new(
+         bar_index, close, briefText,
+         xloc = xloc.bar_index,
+         yloc = yloc.price,
+         style = useIconMarkers ? label.style_none : label.style_label_center,
+         color = useTextBadges ? color.new(briefColor, 18) : color.new(briefColor, 100),
+         textcolor = useIconMarkers ? briefColor : color.white,
+         size = size.tiny,
+         tooltip = "The completed prior run was within the configured brief-run duration.")
+    f_queueLabel(eventLabels, briefLabel, eventMarkerLimit)
+
+if markersEnabled and showExtremeMarkers and newExtremeEvent and not wideArcEvent and not milestoneEvent
+    color extremeMarkerColor = runDirection == 1 ? belowExtremeColor : aboveExtremeColor
+    string extremeText = useIconMarkers ? "·" : "EP"
+    float extremeY = runDirection == 1 ? runExtreme + markerOffset * 0.20 : runExtreme - markerOffset * 0.20
+    label extremeLabel = label.new(
+         bar_index, extremeY, extremeText,
+         xloc = xloc.bar_index,
+         yloc = yloc.price,
+         style = label.style_none,
+         textcolor = extremeMarkerColor,
+         size = size.tiny,
+         tooltip = "New run extreme point; observed AF stage: " + f_formatNumber(afStage))
+    f_queueLabel(eventLabels, extremeLabel, eventMarkerLimit)
+
+barcolor(
+     inResearchWindow and tintBars and runDirection != 0 ?
+     color.new(runDirection == 1 ? sarBelowColor : sarAboveColor, 78) :
+     na)
+
+bgcolor(
+     inResearchWindow and shadeTightArc and tightArcActive ?
+     color.new(tightColor, 94) :
+     na)
+
+//──────────────────────────────────────────────────────────────────────────────
+// Compact study panel
+// Numeric rolling means are O(1). All string formatting executes only on the
+// chart's last bar instead of repeating across the historical dataset.
+//──────────────────────────────────────────────────────────────────────────────
+float averageDuration = needExtendedNumericOutput ? f_rollingAverage(durationMemory, durationMemorySum) : na
+float briefRunShare = needExtendedNumericOutput ? f_rollingAverage(briefRunMemory, briefRunMemorySum) * 100.0 : na
+float averageConstraintOccupancy = needExtendedNumericOutput ? f_rollingAverage(constraintOccupancyMemory, constraintOccupancyMemorySum) : na
+int memoryCount = needExtendedNumericOutput ? array.size(durationMemory) : 0
+
+var table studyPanel = table.new(
+     position.top_right, 5, 3,
+     bgcolor = color.new(panelBackground, 0),
+     frame_color = color.new(sarBelowColor, 8), frame_width = 2,
+     border_color = color.new(sarAboveColor, 8), border_width = 1)
+
+if barstate.islast
+    table.set_position(studyPanel, f_tablePosition(panelPosition))
+    if showStudyPanel
+        string constraintMode = f_motionName(constraintModeId)
+        string constraintModeGlyph = f_motionGlyph(constraintModeId)
+        string currentRunSignature = f_signatureCodeFromKey(currentRunSignatureId)
+        string currentSignatureTrail = f_signatureTrailFromKeys(signatureTrailOldestId, signatureTrailMiddleId, signatureTrailNewestId)
+        string distanceSuffix = f_distanceSuffix(distanceUnit)
+
+        string sideName = runDirection == 1 ? "● BELOW" : runDirection == -1 ? "● ABOVE" : "○ WAIT"
+        string observationState = fullyObservedRun ? "■ FULL" : "□ PARTIAL"
+        string arcStateText = tightArcActive ? " · ◎ TIGHT" : ""
+        string chartStateText = chart.is_standard ? "" : " · ◌ SYNTHETIC"
+        string stateCell = sideName + " · " + observationState + arcStateText + chartStateText
+        string runCell = runAge > 0 ? "" + str.tostring(runAge) + "b ✳" + str.tostring(runExtremeUpdates) + " ∥" + str.tostring(barsSinceExtreme) : "n/a"
+        string arcCell = "" + f_formatNumber(currentArc) + distanceSuffix + " · " + f_formatPercent(arcRetention)
+        string stepCell = "" + f_formatNumber(currentSarStep) + distanceSuffix + " · " + f_formatPercent(sarStepArcShare)
+        string syncGlyph = not kinematicEligible ? "…" : kinematicSynchronized ? "✓" : "!"
+        string motionCell = constraintModeGlyph + " " + constraintMode + " TX" + f_formatPercent(stepTransmission) + " AF" + f_formatNumber(afStage) + " " + syncGlyph
+        string historyFallback = memoryCount > 0 ? "n=" + str.tostring(memoryCount) + " avg" + f_formatNumber(averageDuration) + "b brief" + f_formatPercent(briefRunShare) : "No full run yet"
+        string signatureCell = showRunSignature ? "" + currentRunSignature + " n" + str.tostring(memoryCount) : historyFallback
+
+        string scopeDescription = processAllAvailableBars ? "All available bars" : str.tostring(researchWindowBarsInput) + " recent bars"
+        string stateTooltip = "BELOW / ABOVE = current observed PSAR side relative to price. FULL means the run began at an observed side change inside the active research window; PARTIAL means the window began during an already active run. Processing scope: " + scopeDescription + "."
+        string runTooltip = "b = current run age in bars; ✳ = number of new extreme points; ∥ = bars elapsed since the latest extreme point."
+        string arcTooltipPanel = "Current normalized SAR-to-extreme-point distance and its retention versus the widest arc recorded in the same run."
+        string stepTooltip = "Absolute one-bar movement of the canonical Parabolic SAR point, shown in the selected distance unit and as a percentage of the remaining SAR-to-extreme-point arc."
+        string motionTooltip = "Canonical PSAR motion reconstruction. TX = step transmission (%); AF = observed acceleration factor." +
+             "\nMode: " + constraintMode +
+             "\nFree step: " + f_formatNumber(freeSarStep) + distanceSuffix +
+             "\nStep transmission (TX): " + f_formatPercent(stepTransmission) +
+             "\nTwo-bar guarded candidate: " + (na(guardedSarCandidate) ? "n/a" : str.tostring(guardedSarCandidate, format.mintick)) +
+             "\nActual ta.sar(): " + (na(sarValue) ? "n/a" : str.tostring(sarValue, format.mintick)) +
+             "\nCurrent constraint load: " + f_formatPercent(constraintLoad) +
+             "\nRun constraint occupancy: " + f_formatPercent(runConstraintOccupancy) +
+             "\nFREE = no measurable guardrail effect; TRACE = below the materiality threshold; BRAKE = materially reduced step; PINNED = near-zero transmitted step." +
+             "\nReconstruction error: " + (na(kinematicErrorRaw) or syminfo.mintick <= 0.0 ? "n/a" : f_formatNumber(kinematicErrorRaw / syminfo.mintick) + " ticks") +
+             "\nSync symbol: ✓ within tolerance, ! outside tolerance, … not yet eligible." +
+             "\nProcessing scope: " + scopeDescription + "."
+        string signatureTooltip = "CODE = normalized PSAR run signature — descriptive state address, not a score. n = completed-run sample; avg = mean duration; brief = brief-run share." +
+             "\nA1–A4: Arc retention across four fixed percentage bands" +
+             "\nF1–F4: AF progress across four fixed percentage bands" +
+             "\nP1–P4: Extreme-point pause share across four fixed percentage bands" +
+             "\nC-: Kinematic reconstruction not yet synchronized" +
+             "\nC0–C4: Current two-bar constraint load from free to heavily constrained" +
+             "\nRecent distinct states: " + (currentSignatureTrail == "" ? "n/a" : currentSignatureTrail) +
+             "\nCompleted-run sample: n=" + str.tostring(memoryCount) +
+             "\nAverage duration: " + f_formatNumber(averageDuration) + " bars" +
+             "\nAverage constraint occupancy: " + f_formatPercent(averageConstraintOccupancy) +
+             "\nBrief-run share: " + f_formatPercent(briefRunShare) +
+             "\nProcessing scope: " + scopeDescription + "." +
+             (sarMaximumAdjusted ? "\nMaximum AF was raised internally to the starting AF." : "")
+
+        string panelSize = f_tableTextSize(panelTextSizeInput)
+        color stateBackground = runDirection == 1 ? color.new(sarBelowColor, 68) : runDirection == -1 ? color.new(sarAboveColor, 68) : color.new(panelHeader, 0)
+        color headerCyan = color.new(sarBelowColor, 62)
+        color headerPink = color.new(sarAboveColor, 62)
+        color cellDark = color.new(panelBackground, 0)
+        color neonCyanText = sarBelowColor
+        color neonPinkText = sarAboveColor
+        color motionText = materialConstraint ? constraintColor : panelText
+        color signatureText = runDirection == 1 ? sarBelowColor : runDirection == -1 ? sarAboveColor : panelText
+        color brightText = panelText
+
+        if panelLayout == "Compact"
+            table.cell(studyPanel, 0, 0, "◉ STATE", text_color = brightText, bgcolor = headerCyan, text_size = panelSize, tooltip = stateTooltip)
+            table.cell(studyPanel, 1, 0, stateCell, text_color = brightText, bgcolor = stateBackground, text_size = panelSize, tooltip = stateTooltip)
+            table.cell(studyPanel, 2, 0, "◌ ARC", text_color = brightText, bgcolor = headerPink, text_size = panelSize, tooltip = arcTooltipPanel)
+            table.cell(studyPanel, 3, 0, arcCell, text_color = tightArcActive ? tightColor : neonCyanText, bgcolor = cellDark, text_size = panelSize, tooltip = arcTooltipPanel)
+
+            table.cell(studyPanel, 0, 1, "⌛ RUN", text_color = brightText, bgcolor = headerPink, text_size = panelSize, tooltip = runTooltip)
+            table.cell(studyPanel, 1, 1, runCell, text_color = brightText, bgcolor = cellDark, text_size = panelSize, tooltip = runTooltip)
+            table.cell(studyPanel, 2, 1, "↺ STEP", text_color = brightText, bgcolor = headerCyan, text_size = panelSize, tooltip = stepTooltip)
+            table.cell(studyPanel, 3, 1, stepCell, text_color = neonPinkText, bgcolor = cellDark, text_size = panelSize, tooltip = stepTooltip)
+
+            table.cell(studyPanel, 0, 2, "⚙ MOTION", text_color = brightText, bgcolor = headerCyan, text_size = panelSize, tooltip = motionTooltip)
+            table.cell(studyPanel, 1, 2, motionCell, text_color = motionText, bgcolor = cellDark, text_size = panelSize, tooltip = motionTooltip)
+            table.cell(studyPanel, 2, 2, showRunSignature ? "▦ CODE" : "▣ HIST", text_color = brightText, bgcolor = headerPink, text_size = panelSize, tooltip = signatureTooltip)
+            table.cell(studyPanel, 3, 2, signatureCell, text_color = signatureText, bgcolor = cellDark, text_size = panelSize, tooltip = signatureTooltip)
+        else
+            table.cell(studyPanel, 0, 0, "◉ STATE", text_color = brightText, bgcolor = headerCyan, text_size = panelSize, tooltip = stateTooltip)
+            table.cell(studyPanel, 1, 0, "⌛ RUN", text_color = brightText, bgcolor = headerPink, text_size = panelSize, tooltip = runTooltip)
+            table.cell(studyPanel, 2, 0, "◌ ARC", text_color = brightText, bgcolor = headerCyan, text_size = panelSize, tooltip = arcTooltipPanel)
+            table.cell(studyPanel, 3, 0, "↺ STEP", text_color = brightText, bgcolor = headerPink, text_size = panelSize, tooltip = stepTooltip)
+
+            table.cell(studyPanel, 0, 1, stateCell, text_color = brightText, bgcolor = stateBackground, text_size = panelSize, tooltip = stateTooltip)
+            table.cell(studyPanel, 1, 1, runCell, text_color = brightText, bgcolor = cellDark, text_size = panelSize, tooltip = runTooltip)
+            table.cell(studyPanel, 2, 1, arcCell, text_color = tightArcActive ? tightColor : neonCyanText, bgcolor = cellDark, text_size = panelSize, tooltip = arcTooltipPanel)
+            table.cell(studyPanel, 3, 1, stepCell, text_color = neonPinkText, bgcolor = cellDark, text_size = panelSize, tooltip = stepTooltip)
+
+            table.cell(studyPanel, 0, 2, "⚙ MOTION", text_color = brightText, bgcolor = headerCyan, text_size = panelSize, tooltip = motionTooltip)
+            table.cell(studyPanel, 1, 2, motionCell, text_color = motionText, bgcolor = cellDark, text_size = panelSize, tooltip = motionTooltip)
+            table.cell(studyPanel, 2, 2, showRunSignature ? "▦ CODE" : "▣ HIST", text_color = brightText, bgcolor = headerPink, text_size = panelSize, tooltip = signatureTooltip)
+            table.cell(studyPanel, 3, 2, signatureCell, text_color = signatureText, bgcolor = cellDark, text_size = panelSize, tooltip = signatureTooltip)
+
+        bool rightAnchoredPanel = panelPosition == "Top right" or panelPosition == "Middle right" or panelPosition == "Bottom right"
+        float activeRightInset = rightAnchoredPanel ? panelRightInset : 0.0
+        color transparentPanelColor = color.new(panelBackground, 100)
+        color transparentPanelText = color.new(panelText, 100)
+        table.cell(studyPanel, 4, 0, "", width = activeRightInset, text_color = transparentPanelText, bgcolor = transparentPanelColor)
+        table.cell(studyPanel, 4, 1, "", width = activeRightInset, text_color = transparentPanelText, bgcolor = transparentPanelColor)
+        table.cell(studyPanel, 4, 2, "", width = activeRightInset, text_color = transparentPanelText, bgcolor = transparentPanelColor)
+
+        if boldPanelText
+            table.cell_set_text_formatting(studyPanel, 0, 0, text.format_bold)
+            table.cell_set_text_formatting(studyPanel, 1, 0, text.format_bold)
+            table.cell_set_text_formatting(studyPanel, 2, 0, text.format_bold)
+            table.cell_set_text_formatting(studyPanel, 3, 0, text.format_bold)
+            table.cell_set_text_formatting(studyPanel, 0, 1, text.format_bold)
+            table.cell_set_text_formatting(studyPanel, 1, 1, text.format_bold)
+            table.cell_set_text_formatting(studyPanel, 2, 1, text.format_bold)
+            table.cell_set_text_formatting(studyPanel, 3, 1, text.format_bold)
+            table.cell_set_text_formatting(studyPanel, 0, 2, text.format_bold)
+            table.cell_set_text_formatting(studyPanel, 1, 2, text.format_bold)
+            table.cell_set_text_formatting(studyPanel, 2, 2, text.format_bold)
+            table.cell_set_text_formatting(studyPanel, 3, 2, text.format_bold)
+        else
+            table.cell_set_text_formatting(studyPanel, 0, 0, text.format_none)
+            table.cell_set_text_formatting(studyPanel, 1, 0, text.format_none)
+            table.cell_set_text_formatting(studyPanel, 2, 0, text.format_none)
+            table.cell_set_text_formatting(studyPanel, 3, 0, text.format_none)
+            table.cell_set_text_formatting(studyPanel, 0, 1, text.format_none)
+            table.cell_set_text_formatting(studyPanel, 1, 1, text.format_none)
+            table.cell_set_text_formatting(studyPanel, 2, 1, text.format_none)
+            table.cell_set_text_formatting(studyPanel, 3, 1, text.format_none)
+            table.cell_set_text_formatting(studyPanel, 0, 2, text.format_none)
+            table.cell_set_text_formatting(studyPanel, 1, 2, text.format_none)
+            table.cell_set_text_formatting(studyPanel, 2, 2, text.format_none)
+            table.cell_set_text_formatting(studyPanel, 3, 2, text.format_none)
+
+        table.cell_set_text_font_family(studyPanel, 3, 2, font.family_monospace)
+//──────────────────────────────────────────────────────────────────────────────
+// Data Window — optional and intentionally excluded from the status line
+//──────────────────────────────────────────────────────────────────────────────
+plot(exposeResearchData and inResearchWindow ? runDirection : na, "PSAR Side State (+1 Below / -1 Above)", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? (fullyObservedRun ? 1 : 0) : na, "Fully Observed Run", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? runAge : na, "Run Age (bars)", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? runExtremeUpdates : na, "Extreme-Point Updates", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? barsSinceExtreme : na, "Bars Since Extreme Point", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? currentArc : na, "Current SAR-to-EP Arc", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? arcRetention : na, "Arc Retention (%)", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? arcRetentionChange : na, "Arc Retention Change (percentage points)", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? currentSarStep : na, "Current PSAR Step", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? sarStepArcShare : na, "PSAR Step as Remaining Arc (%)", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? afStage : na, "Observed AF Stage", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? afProgress : na, "AF Progress to Maximum (%)", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? afMaximumBars : na, "Bars at Maximum AF", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? freeSarCandidate : na, "Kinematic Free SAR Candidate", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? constraintLoad : na, "Current PSAR Constraint Load (%)", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? stepTransmission : na, "PSAR Step Transmission (%)", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? runConstraintOccupancy : na, "Run Constraint Occupancy (%)", display = display.data_window)
+plot(exposeResearchData and inResearchWindow and syminfo.mintick > 0.0 ? kinematicErrorRaw / syminfo.mintick : na, "Kinematic Reconstruction Error (ticks)", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? tightArcEpisodes : na, "Tight-Arc Episodes in Run", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? averageDuration : na, "Rolling Average Run Duration", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? averageConstraintOccupancy : na, "Rolling Average Constraint Occupancy (%)", display = display.data_window)
+plot(exposeResearchData and inResearchWindow ? briefRunShare : na, "Rolling Brief-Run Share (%)", display = display.data_window)
+
+//──────────────────────────────────────────────────────────────────────────────
+// Descriptive alerts — observational state changes only
+//──────────────────────────────────────────────────────────────────────────────
+alertcondition(
+     enableAlertConditions and stateTurnEvent,
+     "PSAR side change observed",
+     "The Parabolic SAR point changed sides relative to price on {{ticker}} {{interval}}.")
+
+alertcondition(
+     enableAlertConditions and tightArcEvent,
+     "PSAR arc contraction observed",
+     "The active Parabolic SAR run entered the configured tight-arc state on {{ticker}} {{interval}}.")
+
+alertcondition(
+     enableAlertConditions and wideArcEvent,
+     "PSAR arc re-expansion observed",
+     "The active Parabolic SAR run recorded a new extreme point and arc re-expansion on {{ticker}} {{interval}}.")
+
+alertcondition(
+     enableAlertConditions and constraintStartEvent,
+     "PSAR mechanical constraint observed",
+     "The canonical two-bar range guardrail materially constrained the free Parabolic SAR step on {{ticker}} {{interval}}.")
+
+alertcondition(
+     enableAlertConditions and ageMilestoneEvent,
+     "PSAR run-age milestone observed",
+     "The active Parabolic SAR run reached its configured age milestone on {{ticker}} {{interval}}.")
+
+alertcondition(
+     enableAlertConditions and afMaximumEvent,
+     "PSAR AF-stage maximum observed",
+     "The observed Parabolic SAR acceleration-factor stage reached its configured maximum on {{ticker}} {{interval}}.")
+
+alertcondition(
+     enableAlertConditions and extremePauseEvent,
+     "PSAR extreme-point pause observed",
+     "The active Parabolic SAR run reached its configured extreme-point pause on {{ticker}} {{interval}}.")
+
+alertcondition(
+     enableAlertConditions and briefRunEndEvent,
+     "Brief PSAR run completed",
+     "A fully observed Parabolic SAR run ended within the configured brief-run duration on {{ticker}} {{interval}}.")

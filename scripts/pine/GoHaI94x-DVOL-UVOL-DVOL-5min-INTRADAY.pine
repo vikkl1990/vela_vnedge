@@ -1,0 +1,75 @@
+//@version=6
+indicator("DVOL/(UVOL+DVOL) 5min INTRADAY", overlay=true)
+
+// User setting to restrict to Regular Trading Hours (9:30 AM - 4:00 PM ET)
+rthOnly = input.bool(true, "Only Trigger During Regular Trading Hours (09:30-16:00 ET)")
+
+// Check if current bar is within NYSE Regular Trading Hours (New York timezone)
+isRTH = not rthOnly or not na(time(timeframe.period, "0930-1600:23456", "America/New_York"))
+
+// Fetch DVOL/UVOL alongside their exact bar timestamps
+[dvol_5min, dvol_time] = request.security("USI:DVOL", "5", [close, time], gaps=barmerge.gaps_off)
+[uvol_5min, uvol_time] = request.security("USI:UVOL", "5", [close, time], gaps=barmerge.gaps_off)
+
+// Verify that the volume data belongs to TODAY's session (prevents yesterday's 4:00 PM close from leaking into 9:30 AM)
+isToday = not na(dvol_time) and dvol_time >= time("D")
+
+// Calculating the custom formula (returns 'na' if volume is 0 or if data is stale)
+totalVol_5min = uvol_5min + dvol_5min
+customFormula_5min = (isToday and totalVol_5min > 0) ? (dvol_5min / totalVol_5min) : na
+
+// Base Thresholds (Must be RTH, fresh data from today, and meet the extreme ratios)
+rawHighThreshold = isRTH and not na(customFormula_5min) and (customFormula_5min >= 0.899)
+rawLowThreshold  = isRTH and not na(customFormula_5min) and (customFormula_5min <= 0.099)
+
+// Signals ONLY trigger on CONFIRMED 5-minute candle close (eliminates tick spikes & phantom alerts)
+highThreshold_5min = rawHighThreshold and barstate.isconfirmed
+lowThreshold_5min  = rawLowThreshold and barstate.isconfirmed
+
+// Variables to track the thresholds (rolling 3-day window)
+var int[] countHighThreshold_5min = array.new<int>(3, 0)
+var int[] countLowThreshold_5min  = array.new<int>(3, 0)
+
+// New day detection
+isNewDay = timeframe.change("D")
+
+if isNewDay
+    // Shift arrays: drop the oldest day and add a fresh slot for today
+    array.unshift(countHighThreshold_5min, 0)
+    array.pop(countHighThreshold_5min)
+    array.unshift(countLowThreshold_5min, 0)
+    array.pop(countLowThreshold_5min)
+
+// Accumulate signals for today (only on confirmed candle close)
+if highThreshold_5min
+    array.set(countHighThreshold_5min, 0, array.get(countHighThreshold_5min, 0) + 1)
+if lowThreshold_5min
+    array.set(countLowThreshold_5min, 0, array.get(countLowThreshold_5min, 0) + 1)
+
+// Define repeated signals considering the past 3 days including today
+sumHighThresholds = array.sum(countHighThreshold_5min)
+sumLowThresholds  = array.sum(countLowThreshold_5min)
+repeatedHighSignal = sumHighThresholds >= 2 and highThreshold_5min
+repeatedLowSignal  = sumLowThresholds >= 2 and lowThreshold_5min
+
+// Single (first-time) daily signals
+singleHighSignal = highThreshold_5min and not repeatedHighSignal
+singleLowSignal  = lowThreshold_5min and not repeatedLowSignal
+
+priceAtAlert = str.tostring(close)
+symbol = syminfo.tickerid
+Chart = timeframe.period
+
+alertTitle = "Intraday SCALPING ONLY Short-Term trade SPY"
+
+// Alert instruction: Fires strictly at candle CLOSE
+if (repeatedHighSignal or repeatedLowSignal or singleHighSignal or singleLowSignal)
+    alert('{"text": "Trading Signal: ' + alertTitle + ' Triggered at ' + priceAtAlert + ' Ticker ' + symbol + ' Chart ' + Chart + '"}', alert.freq_once_per_bar_close)
+
+// Plot shapes for repeated thresholds
+plotshape(series=repeatedHighSignal, title="Repeated High Threshold 5min", location=location.belowbar, color=color.purple, style=shape.triangleup, size=size.small)
+plotshape(series=repeatedLowSignal, title="Repeated Low Threshold 5min", location=location.abovebar, color=color.yellow, style=shape.triangledown, size=size.small)
+
+// Plot shapes for first-time daily signals
+plotshape(series=singleHighSignal, title="High Threshold 5min", location=location.belowbar, color=color.orange, style=shape.triangleup, size=size.small)
+plotshape(series=singleLowSignal, title="Low Threshold 5min", location=location.abovebar, color=color.blue, style=shape.triangledown, size=size.small)

@@ -1,0 +1,501 @@
+//@version=6
+
+// ══════════════════════════════════════════════════════════════════
+//  PVT CROSS TRACKER — V6 (lines + cross AVWAP + setup + bracket)
+//
+//  Two lines, one cross, nothing else.
+//    - 47 SMA      — SMA(close, 47)
+//    - 3AM AVWAP   — anchors on the first 1m candle of the 3:00 AM hour
+//                    and carries forward until the next 3AM candle,
+//                    through Asia/overnight and across the weekend
+//    - TX          — the cross between them, either direction
+//
+//  Both lines are computed on NATIVE 1-MINUTE candles through one
+//  request.security call, so 30s / 1m / 3m charts all show identical
+//  values and identical crosses.
+//
+//  A cross is detected on the 1m candle itself and acted on only once
+//  that candle has closed — checked chart-side (_closed1m), never with
+//  barstate.isconfirmed inside request.security, which is not reliable
+//  there. Only exclusion: the 3:00 candle, where the AVWAP re-anchors
+//  onto price — that jump is not a real cross.
+//
+//  ALERT: create ONE alert on this indicator with "Any alert() function
+//  call" and it catches every TX cross PLUS every 47 SMA color flip
+//  (close crossing the 47 SMA, red↔green) — both use alert(), so one
+//  alert setup covers both.
+//
+//  SETUP (V6) — cross arms → close beyond BOTH lines → entry.
+//    1. A TX cross ARMS the setup and anchors a NEW AVWAP on that
+//       candle (the "cross AVWAP"). That line persists until the next
+//       TX cross replaces it.
+//    2. A box is drawn at the cross candle's high/low. PURELY VISUAL —
+//       no rule reads it.
+//    3. TRIGGER: the first candle to break beyond BOTH the 47 SMA and
+//       the cross AVWAP in the SAME direction. Both must be true on the
+//       SAME closed candle, so partial progress can never go stale.
+//       Below both = sell, above both = buy. Two selectable modes:
+//         Standard Break    — the candle CLOSES beyond both lines.
+//         Complete Breakout — the ENTIRE candle clears both (high below
+//                             both for a sell, low above both for a buy).
+//    4. ENTRY on the NEXT candle after the trigger — marked at its
+//       open, since a close cannot be filled while it is still forming.
+//    5. A new TX cross RE-ARMS: it re-anchors the AVWAP and clears any
+//       progress, because the line the setup was measuring against no
+//       longer exists.
+//    5b. RE-HUNT: if a trade is STOPPED OUT, the same cross re-arms in
+//       the OPPOSITE direction only — one flip per cross. The flip uses
+//       the same box for its stop. A trade that reaches TP ends the
+//       cross instead; the flip only arms on a stop-out.
+//    6. ONE TRADE AT A TIME. While a trade is live no new entry can
+//       fire — crosses keep arming, but the entry is suppressed until
+//       the trade closes. TP is 30pts from the entry candle's OPEN
+//       (configurable); the SL is the BOX EDGE — the cross candle's
+//       high for a sell, its low for a buy — so it varies with the
+//       cross candle's range rather than being a fixed distance.
+//    7. TP/SL are hit-checked on WICK TOUCH, not on a close — a resting
+//       order fills the instant price trades there. If one candle
+//       touches BOTH levels, the SL is taken: 1m data cannot say which
+//       came first, so the conservative read wins.
+//    8. The bracket is drawn as a green TP zone and a red SL zone from
+//       entry to each level. TradingView's own Long/Short Position tool
+//       can only be auto-plotted by a strategy() script, never by an
+//       indicator, so this is the visual equivalent.
+//    9. DAY RESET at 3:00 AM, the same anchor as the 3AM AVWAP.
+//
+//  MARKERS ONLY (no trading logic attached to any of these):
+//    - 9 EMA plotted, plus 9/47 and 9/3AM crosses on 1m, 5m and 15m.
+//      Higher-timeframe LINES are not plotted, only their crosses,
+//      labelled with the timeframe so a 5m cross is distinguishable.
+//    - Liquidity sweeps: a candle piercing the prior N-bar extreme and
+//      closing back inside it. Orange "S" above a swept high, teal
+//      below a swept low. Two alerts.
+//
+//  No table, no panel, no session logic, no bias, no hourly AVWAP.
+// ══════════════════════════════════════════════════════════════════
+
+indicator("PVT Cross Tracker", overlay=true, max_labels_count=500)
+
+// ── Inputs ────────────────────────────────────────────────────────
+grpGen = "General"
+i_timezone = input.string("America/Chicago", "Timezone", group=grpGen, tooltip="Used for the 3AM anchor and the alert timestamp.")
+
+grpLines = "Lines"
+i_showSma    = input.bool(true, "Show 47 SMA", group=grpLines)
+i_smaWidth   = input.int(2, "47 SMA Width", minval=1, maxval=4, group=grpLines)
+i_dynamicSma = input.bool(true, "Dynamic 47 SMA Colors (flips on price cross)", group=grpLines, tooltip="When on, the SMA flips to Bull/Bear the moment 1m price crosses it, and holds that color until the next cross. When off, uses the static color below.")
+i_smaBull    = input.color(color.lime, "47 SMA Bull Color", group=grpLines)
+i_smaBear    = input.color(color.red, "47 SMA Bear Color", group=grpLines)
+i_smaStatic  = input.color(color.new(#4D9DE0, 0), "47 SMA Static Color", group=grpLines)
+i_showCx     = input.bool(true, "Show Cross AVWAP", group=grpLines, tooltip="A fresh AVWAP anchored on each TX cross candle, persisting until the next cross replaces it. The entry needs price to close beyond BOTH this line and the 47 SMA in the same direction.")
+i_cxColor    = input.color(color.new(#2962FF, 0), "Cross AVWAP Color", group=grpLines)
+i_cxWidth    = input.int(3, "Cross AVWAP Width", minval=1, maxval=4, group=grpLines)
+i_showEma9   = input.bool(true, "Show 9 EMA", group=grpLines)
+i_ema9Color  = input.color(color.new(#FFD600, 0), "9 EMA Color", group=grpLines)
+i_ema9Width  = input.int(2, "9 EMA Width", minval=1, maxval=4, group=grpLines)
+i_show3am    = input.bool(true, "Show 3AM AVWAP", group=grpLines)
+i_3amColor   = input.color(color.new(#000000, 0), "3AM AVWAP Color", group=grpLines)
+i_3amWidth   = input.int(3, "3AM AVWAP Width", minval=1, maxval=4, group=grpLines)
+
+grpX = "TX Cross"
+i_showLabels = input.bool(true, "Show Cross Markers", group=grpX, tooltip="Label on the crossing candle — above for a cross up, below for a cross down. The alert still fires with markers hidden.")
+i_colTX      = input.color(color.new(#9C27B0, 0), "TX Marker Color", group=grpX)
+
+grpSetup = "Setup"
+i_setupOn    = input.bool(true, "Enable Setup (watch box → entry)", group=grpSetup, tooltip="A TX cross arms the setup and draws a box at that candle's high/low (visual only). The trigger is the first LATER candle to close beyond BOTH the 47 SMA and the cross AVWAP in the same direction (see Breakout Definition below). Entry is the candle after the trigger, at its open. A new TX cross always re-arms — it re-anchors the cross AVWAP, so any progress against the old one is cleared.")
+i_brkMode    = input.string("Standard Break", "Breakout Definition", options=["Standard Break", "Complete Breakout"], group=grpSetup, tooltip="Standard Break: the candle CLOSES beyond both lines (wicks ignored). Complete Breakout: the ENTIRE candle clears both — for a sell the whole high is below both lines, for a buy the whole low is above both. Complete fires later and far less often, since the cross AVWAP starts right at price and early candles tend to straddle it.")
+i_showBox    = input.bool(true, "Show Cross Box (visual only)", group=grpSetup)
+i_boxColor   = input.color(color.new(#9C27B0, 0), "Watch Box Border", group=grpSetup)
+i_boxFill    = input.color(color.new(#9C27B0, 88), "Watch Box Fill", group=grpSetup)
+i_boxKeep    = input.int(20, "Boxes to Keep", minval=1, maxval=100, group=grpSetup)
+i_colBuy     = input.color(color.new(#1D9E75, 0), "Entry Buy Color", group=grpSetup)
+i_colSell    = input.color(color.new(#E24B4A, 0), "Entry Sell Color", group=grpSetup)
+
+grpEma = "9 EMA Cross Markers"
+i_mkBuyCol  = input.color(color.new(#1D9E75, 0), "Cross Up Color", group=grpEma, tooltip="Marker-only: these crosses print on the chart and do nothing else — they never arm, cancel or trigger a trade. Higher-timeframe lines are not plotted, only their crosses.")
+i_mkSellCol = input.color(color.new(#FF9800, 0), "Cross Down Color", group=grpEma)
+i_mk947_1m  = input.bool(true, "9/47 — 1m", group=grpEma)
+i_mk9a_1m   = input.bool(true, "9/3AM — 1m", group=grpEma)
+i_mk947_5m  = input.bool(true, "9/47 — 5m", group=grpEma)
+i_mk9a_5m   = input.bool(true, "9/3AM — 5m", group=grpEma)
+i_mk947_15m = input.bool(true, "9/47 — 15m", group=grpEma)
+i_mk9a_15m  = input.bool(true, "9/3AM — 15m", group=grpEma)
+
+grpSweep = "Liquidity Sweeps"
+i_showSweeps     = input.bool(true, "Show Sweeps", group=grpSweep, tooltip="A candle whose HIGH exceeds the prior N-bar highest high but CLOSES back below it — the level was pierced and rejected. Mirrored for lows. Marker only. Computed on 1m like everything else, so 30s and 1m charts show identical sweeps.")
+i_sweepLookback  = input.int(14, "Sweep Lookback (bars)", minval=3, maxval=100, group=grpSweep)
+i_sweepHighColor = input.color(color.orange, "High Sweep Color", group=grpSweep)
+i_sweepLowColor  = input.color(color.teal, "Low Sweep Color", group=grpSweep)
+
+grpTrade = "Trade / Bracket"
+i_tp         = input.float(30.0, "Take Profit (points)", minval=0.25, step=0.25, group=grpTrade, tooltip="Measured from the entry candle's OPEN — the same price the ENTRY label marks.")
+// Stop is the BOX EDGE (v7) — the cross candle's high for a sell, its low
+// for a buy — not a fixed distance, so there is no SL points input.
+i_showBrk    = input.bool(true, "Show TP/SL Bracket", group=grpTrade, tooltip="Green zone entry→TP, red zone entry→SL, drawn from the entry bar and extended until the trade closes. Hit on wick touch; if one candle touches both, the SL is taken.")
+i_colTPzone  = input.color(color.new(#1D9E75, 82), "TP Zone Color", group=grpTrade)
+i_colSLzone  = input.color(color.new(#E24B4A, 82), "SL Zone Color", group=grpTrade)
+i_brkKeep    = input.int(20, "Brackets to Keep", minval=1, maxval=100, group=grpTrade)
+
+// ── Core: native 1-minute, one request.security ───────────────────
+//   All ta.* calls run unconditionally on every bar. The cross is
+//   returned as a running count plus its direction/price/time, so the
+//   chart side fires when the count changes — an event inside a 3m bar
+//   is never lost.
+f_core() =>
+    _hh  = hour(time, i_timezone)
+    _sma = ta.sma(close, 47)
+
+    // 3AM AVWAP — carries forward until the next 3AM candle
+    _n3 = bar_index > 0 and _hh == 3 and _hh[1] != 3
+    var float _pv3 = na
+    var float _vo3 = na
+    var int   _c3  = 0
+    if _n3
+        _pv3 := 0.0
+        _vo3 := 0.0
+        _c3  += 1
+    if not na(_pv3)
+        _pv3 += hlc3 * volume
+        _vo3 += volume
+    _vw3 = not na(_vo3) and _vo3 > 0 ? _pv3 / _vo3 : na
+
+    // 47 SMA sticky color state — both checks run every bar so a cross
+    // down on the bar right after a cross up is never skipped.
+    _pXup = ta.crossover(close, _sma)
+    _pXdn = ta.crossunder(close, _sma)
+    var int _smaState = 0
+    if _smaState == 0
+        _smaState := close >= _sma ? 1 : -1
+    if _pXup
+        _smaState := 1
+    else if _pXdn
+        _smaState := -1
+
+    // TX cross — unconditional, every bar
+    _txUp = ta.crossover(_sma, _vw3)
+    _txDn = ta.crossunder(_sma, _vw3)
+
+    var int   _txCnt = 0
+    var int   _txDir = 0
+    var float _txPx  = na
+    var int   _txT   = na
+    if not _n3 and (_txUp or _txDn)
+        _txCnt += 1
+        _txDir := _txUp ? -1 : 1   // SMA above 3AM = 3AM below SMA
+        _txPx  := close
+        _txT   := time
+
+    // Cross AVWAP — re-anchors on every TX cross candle and accumulates
+    // from there until the next cross replaces it. Same hlc3 * volume
+    // formula as the 3AM AVWAP.
+    var float _pvC = na
+    var float _voC = na
+    var int   _cC  = 0
+    if not _n3 and (_txUp or _txDn)
+        _pvC := 0.0
+        _voC := 0.0
+        _cC  += 1
+    if not na(_pvC)
+        _pvC += hlc3 * volume
+        _voC += volume
+    _vwC = not na(_voC) and _voC > 0 ? _pvC / _voC : na
+
+    // 9 EMA and its two marker-only crosses
+    _e9 = ta.ema(close, 9)
+    _x947up = ta.crossover(_e9, _sma)
+    _x947dn = ta.crossunder(_e9, _sma)
+    _x9aup  = ta.crossover(_e9, _vw3)
+    _x9adn  = ta.crossunder(_e9, _vw3)
+
+    // Liquidity sweep — ported as-is: the candle pierces the prior N-bar
+    // extreme and closes back inside it. Edge-triggered so only the first
+    // bar of a run prints.
+    _atr  = ta.atr(14)
+    _liqH = ta.highest(high, i_sweepLookback)
+    _liqL = ta.lowest(low, i_sweepLookback)
+    _swHraw = high > _liqH[1] and close < _liqH[1]
+    _swLraw = low  < _liqL[1] and close > _liqL[1]
+    _swH = _swHraw and not _swHraw[1]
+    _swL = _swLraw and not _swLraw[1]
+
+    [_sma, _vw3, _c3, _smaState, _txCnt, _txDir, _txPx, _txT, _n3, _vwC, _cC, _e9, _x947up, _x947dn, _x9aup, _x9adn, _swH, _swL, _atr]
+
+[_sma, _vw3, _amCount, _smaState, _txCnt, _txDir, _txPx, _txT, _dayReset, _vwC, _cxCount, _ema9, _x947up, _x947dn, _x9aup, _x9adn, _swHigh, _swLow, _swAtr] = request.security(syminfo.tickerid, "1", f_core(), lookahead=barmerge.lookahead_off)
+
+// ── Higher-timeframe 9 EMA crosses (markers only) ─────────────────
+//   Only the CROSS EVENTS are pulled; the 5m/15m lines themselves are
+//   not plotted. Same 3AM AVWAP definition as the 1m version, rebuilt
+//   inside each timeframe's own context.
+f_htfCross() =>
+    _hh  = hour(time, i_timezone)
+    _n3h = bar_index > 0 and _hh == 3 and _hh[1] != 3
+    _sm  = ta.sma(close, 47)
+    _e9h = ta.ema(close, 9)
+    var float _pv = na
+    var float _vo = na
+    if _n3h
+        _pv := 0.0
+        _vo := 0.0
+    if not na(_pv)
+        _pv += hlc3 * volume
+        _vo += volume
+    _v3 = not na(_vo) and _vo > 0 ? _pv / _vo : na
+    [ta.crossover(_e9h, _sm), ta.crossunder(_e9h, _sm), ta.crossover(_e9h, _v3), ta.crossunder(_e9h, _v3)]
+
+[_x947up5, _x947dn5, _x9aup5, _x9adn5]     = request.security(syminfo.tickerid, "5",  f_htfCross(), lookahead=barmerge.lookahead_off)
+[_x947up15, _x947dn15, _x9aup15, _x9adn15] = request.security(syminfo.tickerid, "15", f_htfCross(), lookahead=barmerge.lookahead_off)
+
+// ── "The 1m candle has closed" — chart-side gate ───────────────────
+//   Chart TF >= 1m: a confirmed chart bar means every 1m candle inside it
+//   has closed. Chart TF < 1m (e.g. 30s): only the LAST chart bar of each
+//   1m candle, once confirmed, marks that 1m candle's close.
+_closed1m = barstate.isconfirmed and (timeframe.in_seconds() >= 60 or time_close >= time_close("1"))
+
+// ── Plots ─────────────────────────────────────────────────────────
+//   The AVWAP alternates between two plot slots by anchor count, so a
+//   re-anchor breaks cleanly instead of drawing a connector from the old
+//   value to the new one.
+_smaCol = i_dynamicSma ? (_smaState == 1 ? i_smaBull : i_smaBear) : i_smaStatic
+
+plot(i_showSma ? _sma : na, title="47 SMA", color=_smaCol, linewidth=i_smaWidth)
+plot(i_show3am and _amCount % 2 == 0 ? _vw3 : na, title="3AM AVWAP", color=i_3amColor, linewidth=i_3amWidth, style=plot.style_linebr)
+plot(i_show3am and _amCount % 2 == 1 ? _vw3 : na, title="3AM AVWAP (alt segment)", color=i_3amColor, linewidth=i_3amWidth, style=plot.style_linebr)
+plot(i_showCx and _cxCount % 2 == 0 ? _vwC : na, title="Cross AVWAP", color=i_cxColor, linewidth=i_cxWidth, style=plot.style_linebr)
+plot(i_showEma9 ? _ema9 : na, title="9 EMA", color=i_ema9Color, linewidth=i_ema9Width)
+plot(i_showCx and _cxCount % 2 == 1 ? _vwC : na, title="Cross AVWAP (alt segment)", color=i_cxColor, linewidth=i_cxWidth, style=plot.style_linebr)
+
+// ── 9 EMA cross markers + sweeps (marker only, no trading logic) ──
+//   Each fires once the 1m candle has closed, same gate as everything
+//   else. Higher-timeframe events are edge-guarded on the chart side
+//   because request.security holds a value between its own updates.
+f_mk(bool up, string txt) =>
+    label.new(bar_index, up ? low : high, txt, style=up ? label.style_triangleup : label.style_triangledown, color=up ? i_mkBuyCol : i_mkSellCol, textcolor=color.white, size=size.tiny, yloc=up ? yloc.belowbar : yloc.abovebar)
+
+if _closed1m
+    if i_mk947_1m and _x947up
+        f_mk(true,  "9/47")
+    if i_mk947_1m and _x947dn
+        f_mk(false, "9/47")
+    if i_mk9a_1m and _x9aup
+        f_mk(true,  "9/3AM")
+    if i_mk9a_1m and _x9adn
+        f_mk(false, "9/3AM")
+    if i_mk947_5m and _x947up5 and not _x947up5[1]
+        f_mk(true,  "9/47 5m")
+    if i_mk947_5m and _x947dn5 and not _x947dn5[1]
+        f_mk(false, "9/47 5m")
+    if i_mk9a_5m and _x9aup5 and not _x9aup5[1]
+        f_mk(true,  "9/3AM 5m")
+    if i_mk9a_5m and _x9adn5 and not _x9adn5[1]
+        f_mk(false, "9/3AM 5m")
+    if i_mk947_15m and _x947up15 and not _x947up15[1]
+        f_mk(true,  "9/47 15m")
+    if i_mk947_15m and _x947dn15 and not _x947dn15[1]
+        f_mk(false, "9/47 15m")
+    if i_mk9a_15m and _x9aup15 and not _x9aup15[1]
+        f_mk(true,  "9/3AM 15m")
+    if i_mk9a_15m and _x9adn15 and not _x9adn15[1]
+        f_mk(false, "9/3AM 15m")
+
+_sweepHighNow = i_showSweeps and _closed1m and _swHigh
+_sweepLowNow  = i_showSweeps and _closed1m and _swLow
+
+if _sweepHighNow
+    label.new(bar_index, high + nz(_swAtr) * 0.35, "S", style=label.style_circle, color=color.new(i_sweepHighColor, 10), textcolor=color.black, size=size.tiny)
+if _sweepLowNow
+    label.new(bar_index, low - nz(_swAtr) * 0.35, "S", style=label.style_circle, color=color.new(i_sweepLowColor, 10), textcolor=color.black, size=size.tiny)
+
+alertcondition(_sweepHighNow, title="Sweep High", message="Cross Tracker: high liquidity sweep — prior high pierced and rejected.")
+alertcondition(_sweepLowNow,  title="Sweep Low",  message="Cross Tracker: low liquidity sweep — prior low pierced and rejected.")
+
+// ── Event detection: a count change on a closed 1m candle = new cross ──
+var int _txSeen = na
+bool _txNew = false
+
+if _closed1m
+    _txNew  := not na(_txSeen) and _txCnt != _txSeen
+    _txSeen := _txCnt
+
+// ── Marker ────────────────────────────────────────────────────────
+if i_showLabels and _txNew
+    label.new(bar_index, _txDir == 1 ? high : low, "TX", style=_txDir == 1 ? label.style_label_down : label.style_label_up, color=i_colTX, textcolor=color.white, size=size.tiny)
+
+// ── Alert ─────────────────────────────────────────────────────────
+if _txNew
+    alert(syminfo.root + " — 3AM AVWAP crossed " + (_txDir == 1 ? "ABOVE " : "BELOW ") + "47 SMA at " + str.format("{0,number,00}:{1,number,00}", hour(_txT, i_timezone), minute(_txT, i_timezone)) + " · price " + str.tostring(_txPx, format.mintick), alert.freq_once_per_bar_close)
+
+// ── 47 SMA color-flip event + alert ────────────────────────────────
+//   _smaState (from f_core) flips the instant 1m close crosses the 47
+//   SMA — the same event that drives the dynamic SMA color. Detected
+//   the same way as the TX cross: an edge on a closed 1m candle.
+var int _smaSeen = na
+bool _smaFlip = false
+
+if _closed1m
+    _smaFlip := not na(_smaSeen) and _smaState != _smaSeen
+    _smaSeen := _smaState
+
+if _smaFlip
+    alert(syminfo.root + " — 47 SMA flipped " + (_smaState == 1 ? "GREEN (bull)" : "RED (bear)") + " at " + str.format("{0,number,00}:{1,number,00}", hour(time, i_timezone), minute(time, i_timezone)) + " · price " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+
+
+// ══════════════════════════════════════════════════════════════════
+//  SETUP ENGINE — cross arms → close beyond both lines → entry
+//   State: stage 0 = idle, 1 = armed by a cross and waiting for a close
+//   beyond BOTH the 47 SMA and the cross AVWAP. Runs on CONFIRMED chart
+//   bars only, so nothing acts on a still-forming candle.
+//
+//   Both conditions are read on the SAME closed candle, so there is no
+//   partial state to go stale and no ordering to track. The box drawn
+//   at the arming candle is visual only — no rule reads it.
+// ══════════════════════════════════════════════════════════════════
+
+var int   stage   = 0
+var float boxHi   = na
+var float boxLo   = na
+var int   boxBar  = na
+var box   curBox  = na
+var array<box> boxes = array.new<box>()
+
+bool evBuy  = false
+bool evSell = false
+
+// The box restart is done with a flag rather than a helper function —
+// a function cannot assign to globals in Pine.
+bool _restart = false
+var int armedDir = 0   // set on the trigger candle, fired on the NEXT bar
+
+// ── Live trade state — one at a time ──────────────────────────────
+var int   tradeDir = 0     // 0 = flat, 1 = long, -1 = short
+var float tEntry   = na
+var float tTP      = na
+var float tSL      = na
+var int   tBoxBar  = na    // bar_index of the box that opened this trade
+var box   tpBox    = na
+var box   slBox    = na
+var array<box> brks = array.new<box>()
+
+// Re-hunt (v7): a stop-out re-arms the SAME cross in the OPPOSITE
+// direction only — the stop proved that side wrong, so retrying it would
+// be arguing with the market. One flip per cross; after the flip closes,
+// that cross is finished until a new TX cross arrives. A trade that
+// reaches TP also ends the cross — the flip only arms on a stop-out.
+var int  flipDir  = 0      // direction the flip is allowed to fire in
+var bool flipUsed = false  // one flip per cross
+
+if i_setupOn and barstate.isconfirmed
+    // 3AM day reset — clear any box or armed setup
+    if _dayReset
+        stage := 0
+        boxHi := na
+        boxLo := na
+        flipDir  := 0
+        flipUsed := false
+
+    // Any new cross RE-ARMS at that candle: it re-anchors the cross
+    // AVWAP, so whatever the old setup was measuring against is gone.
+    if _txNew
+        _restart := true
+
+    // ENTRY — the bar AFTER the trigger candle. armedDir was set when the
+    // trigger closed; it fires here, at this bar's open, because a close
+    // cannot be filled while it is still forming. Evaluated before the
+    // arming logic so a fresh cross on this same bar can't pre-empt it.
+    // Suppressed while a trade is live — armedDir is cleared either way,
+    // so a setup that matured during an open trade does not queue up and
+    // fire late once the trade closes.
+    if armedDir != 0
+        if tradeDir == 0
+            if armedDir == 1
+                evBuy := true
+            else
+                evSell := true
+        armedDir := 0
+
+    if _restart
+        boxHi  := high
+        boxLo  := low
+        boxBar := bar_index
+        stage  := 1
+        flipDir  := 0
+        flipUsed := false
+        if i_showBox
+            curBox := box.new(bar_index, high, bar_index, low, border_color=i_boxColor, border_width=1, bgcolor=i_boxFill)
+            array.push(boxes, curBox)
+            if array.size(boxes) > i_boxKeep
+                box.delete(array.shift(boxes))
+
+    // TRIGGER — beyond BOTH lines, same direction, on this one candle.
+    // Never the arming candle itself, since _restart is set there.
+    // Standard Break tests the close; Complete Breakout tests the whole
+    // candle (low above both / high below both), so no part of it touches
+    // either line. Clearing the FARTHER line implies clearing both, so
+    // one test covers it.
+    if stage == 1 and not _restart and not na(_sma) and not na(_vwC)
+        _std  = i_brkMode == "Standard Break"
+        _upOk = _std ? close > _sma and close > _vwC : low > math.max(_sma, _vwC)
+        _dnOk = _std ? close < _sma and close < _vwC : high < math.min(_sma, _vwC)
+        // When re-armed after a stop-out, only the flip direction may fire.
+        if _upOk and (flipDir == 0 or flipDir == 1)
+            armedDir := 1
+            stage := 0
+        else if _dnOk and (flipDir == 0 or flipDir == -1)
+            armedDir := -1
+            stage := 0
+
+    // The visual box extends to the right while the setup is armed.
+    if stage == 1 and i_showBox and not na(curBox)
+        box.set_right(curBox, bar_index)
+
+// ── Trade management — open on entry, close on wick touch of TP or SL ──
+//    Checked BEFORE the new-entry block below so a trade opened on this
+//    bar cannot also be closed by this same bar's range.
+if i_setupOn and barstate.isconfirmed and tradeDir != 0
+    _slHit = tradeDir == 1 ? low <= tSL : high >= tSL
+    _tpHit = tradeDir == 1 ? high >= tTP : low <= tTP
+    if _slHit or _tpHit
+        // SL wins a same-candle tie — 1m data can't order the two touches.
+        // The flip only fires if boxBar is still THIS trade's box — i.e. no
+        // newer TX cross has re-armed (and overwritten boxHi/boxLo/flipDir/
+        // flipUsed) since entry. If a newer cross already came in, the line
+        // this trade was measuring against is gone (same rationale as a
+        // normal re-arm), so the flip is skipped rather than firing against
+        // the wrong cross's box/AVWAP.
+        if _slHit and not flipUsed and boxBar == tBoxBar
+            flipDir  := -tradeDir
+            flipUsed := true
+            stage    := 1        // re-arm this same cross, opposite side only
+        tradeDir := 0
+    else if i_showBrk and not na(tpBox)
+        box.set_right(tpBox, bar_index)
+        box.set_right(slBox, bar_index)
+
+if evBuy or evSell
+    tradeDir := evBuy ? 1 : -1
+    tEntry   := open
+    tTP      := evBuy ? open + i_tp : open - i_tp
+    // SL is the BOX EDGE — the cross candle's low for a buy, high for a
+    // sell. Variable width by design: it is the level that invalidates
+    // the setup, not a fixed distance.
+    tSL      := evBuy ? boxLo : boxHi
+    tBoxBar  := boxBar
+    if i_showBrk
+        tpBox := box.new(bar_index, evBuy ? tTP : tEntry, bar_index, evBuy ? tEntry : tTP, border_color=color.new(#1D9E75, 0), bgcolor=i_colTPzone)
+        slBox := box.new(bar_index, evBuy ? tEntry : tSL, bar_index, evBuy ? tSL : tEntry, border_color=color.new(#E24B4A, 0), bgcolor=i_colSLzone)
+        array.push(brks, tpBox)
+        array.push(brks, slBox)
+        if array.size(brks) > i_brkKeep * 2
+            box.delete(array.shift(brks))
+            box.delete(array.shift(brks))
+
+if evBuy
+    label.new(bar_index, open, "ENTRY", style=label.style_label_up, color=i_colBuy, textcolor=color.white, size=size.small)
+if evSell
+    label.new(bar_index, open, "ENTRY", style=label.style_label_down, color=i_colSell, textcolor=color.white, size=size.small)
+
+alertcondition(evBuy,  title="TX Setup — Buy Entry",  message="TX Setup: BUY entry — bar after a candle closed beyond BOTH the 47 SMA and the cross AVWAP to the upside.")
+alertcondition(evSell, title="TX Setup — Sell Entry", message="TX Setup: SELL entry — bar after a candle closed beyond BOTH the 47 SMA and the cross AVWAP to the downside.")
+
+// ══════════════════════ END OF FILE — Cross Tracker V6 ══════════════════════
+
+

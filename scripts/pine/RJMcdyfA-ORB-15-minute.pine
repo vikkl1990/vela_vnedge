@@ -1,0 +1,102 @@
+//@version=6
+indicator(" ORB ", " ORB ", overlay = true, max_lines_count = 500, max_boxes_count = 500)
+
+//---------------------------------------------------------
+// MODE SELECTION
+//---------------------------------------------------------
+useDefault    = input.bool(true, "Use Default ORB (6:30–6:45)", inline = "mode")
+manualSession = input.session("0630-0645", "Manual ORB Session", inline = "mode")
+orbSession    = useDefault ? "0630-0645" : manualSession
+
+//---------------------------------------------------------
+// VISUAL TOGGLES
+//---------------------------------------------------------
+showBox      = input.bool(true, "Show ORB Box")
+showHighLine = input.bool(true, "Show ORB High Line")
+showLowLine  = input.bool(true, "Show ORB Low Line")
+showMeanLine = input.bool(true, "Show ORB Mean Line")
+showBreakout = input.bool(true, "Show Breakout Lines")
+showTargets  = input.bool(true, "Show Target Levels")
+showDeviate  = input.bool(true, "Show Deviation Levels")
+showFill     = input.bool(true, "Fill ORB Zone")
+
+//---------------------------------------------------------
+// SESSION DETECTION
+//---------------------------------------------------------
+issess = time(timeframe.period, orbSession, "America/Los_Angeles") == time
+
+var float orbHigh   = na
+var float orbLow    = na
+var float orbMean   = na
+var int   startIndex = na
+
+var float targetUp = na
+var float targetDn = na
+var float devUp    = na
+var float devDn    = na
+
+// Capture ORB start
+if issess and not issess[1]
+    orbHigh   := high
+    orbLow    := low
+    startIndex := bar_index
+
+// Update ORB until session ends
+if issess
+    orbHigh := math.max(orbHigh, high)
+    orbLow  := math.min(orbLow, low)
+    orbMean := (orbHigh + orbLow) / 2
+
+freeze = not issess and issess[1]
+
+//---------------------------------------------------------
+// OBJECTS
+//---------------------------------------------------------
+var line lnHigh      = na
+var line lnLow       = na
+var line lnMean      = na
+var line lnBreakUp   = na
+var line lnBreakDn   = na
+var line lnTargetUp  = na
+var line lnTargetDn  = na
+var line lnDevUp     = na
+var line lnDevDn     = na
+var box  orbBox      = na
+var linefill fillZone = na
+
+//---------------------------------------------------------
+// DRAW OBJECTS ON FREEZE — 20 BAR LINES
+//---------------------------------------------------------
+if freeze
+    endIndex = bar_index + 20
+
+    if showBox
+        orbBox := box.new(startIndex, orbHigh, bar_index, orbLow, xloc = xloc.bar_index, bgcolor = color.new(color.blue, 85))
+
+    if showHighLine
+        lnHigh := line.new(startIndex, orbHigh, endIndex, orbHigh, xloc = xloc.bar_index, color = color.new(color.green, 0))
+
+    if showLowLine
+        lnLow := line.new(startIndex, orbLow, endIndex, orbLow, xloc = xloc.bar_index, color = color.new(color.red, 0))
+
+    if showMeanLine
+        lnMean := line.new(startIndex, orbMean, endIndex, orbMean, xloc = xloc.bar_index, color = color.new(color.white, 0), style = line.style_dotted)
+
+    if showBreakout
+        lnBreakUp := line.new(startIndex, orbHigh + (orbHigh - orbLow), endIndex, orbHigh + (orbHigh - orbLow), xloc = xloc.bar_index, color = color.new(color.green, 0), style = line.style_dashed)
+        lnBreakDn := line.new(startIndex, orbLow - (orbHigh - orbLow), endIndex, orbLow - (orbHigh - orbLow), xloc = xloc.bar_index, color = color.new(color.red, 0), style = line.style_dashed)
+
+    if showTargets
+        targetUp := orbHigh + (orbHigh - orbLow) * 0.5
+        targetDn := orbLow  - (orbHigh - orbLow) * 0.5
+        lnTargetUp := line.new(startIndex, targetUp, endIndex, targetUp, xloc = xloc.bar_index, color = color.new(color.green, 0), style = line.style_dotted)
+        lnTargetDn := line.new(startIndex, targetDn, endIndex, targetDn, xloc = xloc.bar_index, color = color.new(color.red, 0), style = line.style_dotted)
+
+    if showDeviate
+        devUp := orbHigh + (orbHigh - orbLow)
+        devDn := orbLow  - (orbHigh - orbLow)
+        lnDevUp := line.new(startIndex, devUp, endIndex, devUp, xloc = xloc.bar_index, color = color.new(color.green, 0), style = line.style_dashed)
+        lnDevDn := line.new(startIndex, devDn, endIndex, devDn, xloc = xloc.bar_index, color = color.new(color.red, 0), style = line.style_dashed)
+
+    if showFill
+        fillZone := linefill.new(lnHigh, lnLow, color.new(color.blue, 90))

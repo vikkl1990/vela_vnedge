@@ -1,0 +1,162 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Coasyn
+
+//@version=6
+indicator("Coasyn Sovereign Futures OI", overlay=true, dynamic_requests=true)
+
+groupPanel = "PANEL"
+showPanel = input.bool(true, "Show panel", group=groupPanel)
+panelPosition = input.string("Top Right", "Panel position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=groupPanel)
+
+groupChange = "OPEN INTEREST"
+shortLookback = input.int(1, "Short OI change days", minval=1, maxval=20, group=groupChange)
+longLookback = input.int(5, "Long OI change days", minval=2, maxval=60, group=groupChange)
+
+f_future(string ccy) =>
+    string result = ""
+    if ccy == "USD"
+        result := "CBOT:ZN1!"
+    else if ccy == "EUR"
+        result := "EUREX:FGBL1!"
+    else if ccy == "GBP"
+        result := "ICEEUR:R1!"
+    else if ccy == "AUD"
+        result := "ASX24:XT1!"
+    else if ccy == "CAD"
+        result := "TMX:CGB1!"
+    else if ccy == "JPY"
+        result := "OSE:JBL1!"
+    else if ccy == "CHF"
+        result := "ICEEUR:C101!"
+    result
+
+f_future_name(string ccy) =>
+    string result = "UNSUPPORTED"
+    if ccy == "USD"
+        result := "US 10Y"
+    else if ccy == "EUR"
+        result := "EURO BUND"
+    else if ccy == "GBP"
+        result := "LONG GILT"
+    else if ccy == "AUD"
+        result := "AU 10Y"
+    else if ccy == "CAD"
+        result := "CA 10Y"
+    else if ccy == "JPY"
+        result := "JGB 10Y"
+    else if ccy == "CHF"
+        result := "SWISS 10Y"
+    result
+
+f_oi_symbol(string futureSymbol) => futureSymbol == "" ? "" : futureSymbol + "_OI"
+f_chf_fx_future() => "CME:6S1!"
+f_chf_fx_oi() => "CME:6S1!_OI"
+f_pct(float currentValue, float oldValue) => not na(currentValue) and not na(oldValue) and oldValue != 0.0 ? ((currentValue / oldValue) - 1.0) * 100.0 : na
+
+f_compact(float value) =>
+    string result = "N/A"
+    if not na(value)
+        if math.abs(value) >= 1000000
+            result := str.tostring(value / 1000000.0, "#.00") + "M"
+        else if math.abs(value) >= 1000
+            result := str.tostring(value / 1000.0, "#.0") + "K"
+        else
+            result := str.tostring(value, "#")
+    result
+
+f_change_text(float value) => na(value) ? "N/A" : (value > 0 ? "+" : "") + str.tostring(value, "#.00") + "%"
+
+f_state(float shortChange, float longChange, bool dataOk) =>
+    string result = "NO OI DATA"
+    if dataOk
+        if not na(shortChange) and not na(longChange)
+            if shortChange > 0 and longChange > 0
+                result := "BUILDING"
+            else if shortChange < 0 and longChange < 0
+                result := "FADING"
+            else
+                result := "MIXED"
+        else
+            result := "LIMITED"
+    result
+
+baseCCY = syminfo.basecurrency
+quoteCCY = syminfo.currency
+baseFuture = f_future(baseCCY)
+quoteFuture = f_future(quoteCCY)
+baseOI = f_oi_symbol(baseFuture)
+quoteOI = f_oi_symbol(quoteFuture)
+
+[basePrimaryNow, basePrimaryShortAgo, basePrimaryLongAgo] = request.security(baseOI, "1D", [close, close[shortLookback], close[longLookback]], barmerge.gaps_off, barmerge.lookahead_off, ignore_invalid_symbol=true)
+[quotePrimaryNow, quotePrimaryShortAgo, quotePrimaryLongAgo] = request.security(quoteOI, "1D", [close, close[shortLookback], close[longLookback]], barmerge.gaps_off, barmerge.lookahead_off, ignore_invalid_symbol=true)
+[chfFxNow, chfFxShortAgo, chfFxLongAgo] = request.security(f_chf_fx_oi(), "1D", [close, close[shortLookback], close[longLookback]], barmerge.gaps_off, barmerge.lookahead_off, ignore_invalid_symbol=true)
+
+baseUseChfFallback = baseCCY == "CHF" and (na(basePrimaryNow) or basePrimaryNow <= 0) and not na(chfFxNow) and chfFxNow > 0
+quoteUseChfFallback = quoteCCY == "CHF" and (na(quotePrimaryNow) or quotePrimaryNow <= 0) and not na(chfFxNow) and chfFxNow > 0
+
+baseNow = baseUseChfFallback ? chfFxNow : basePrimaryNow
+baseShortAgo = baseUseChfFallback ? chfFxShortAgo : basePrimaryShortAgo
+baseLongAgo = baseUseChfFallback ? chfFxLongAgo : basePrimaryLongAgo
+
+quoteNow = quoteUseChfFallback ? chfFxNow : quotePrimaryNow
+quoteShortAgo = quoteUseChfFallback ? chfFxShortAgo : quotePrimaryShortAgo
+quoteLongAgo = quoteUseChfFallback ? chfFxLongAgo : quotePrimaryLongAgo
+
+baseShortChange = f_pct(baseNow, baseShortAgo)
+baseLongChange = f_pct(baseNow, baseLongAgo)
+quoteShortChange = f_pct(quoteNow, quoteShortAgo)
+quoteLongChange = f_pct(quoteNow, quoteLongAgo)
+
+baseDataOk = baseFuture != "" and not na(baseNow) and baseNow > 0
+quoteDataOk = quoteFuture != "" and not na(quoteNow) and quoteNow > 0
+
+baseState = f_state(baseShortChange, baseLongChange, baseDataOk)
+quoteState = f_state(quoteShortChange, quoteLongChange, quoteDataOk)
+
+string baseSourceName = baseUseChfFallback ? "CHF FX FUTURES" : f_future_name(baseCCY)
+string quoteSourceName = quoteUseChfFallback ? "CHF FX FUTURES" : f_future_name(quoteCCY)
+
+bg = color.rgb(8, 11, 16)
+header = color.rgb(18, 24, 34)
+gold = color.rgb(218, 173, 78)
+textColor = color.rgb(235, 238, 244)
+muted = color.rgb(145, 150, 156)
+good = color.rgb(70, 200, 125)
+warn = color.rgb(230, 168, 72)
+bad = color.rgb(210, 80, 80)
+
+f_state_color(string state) => state == "BUILDING" ? good : state == "FADING" ? bad : state == "MIXED" ? warn : muted
+f_change_color(float value) => na(value) ? muted : value > 0 ? good : value < 0 ? bad : muted
+
+pos = switch panelPosition
+    "Top Left" => position.top_left
+    "Bottom Right" => position.bottom_right
+    "Bottom Left" => position.bottom_left
+    => position.top_right
+
+var table panel = table.new(pos, 5, 4, border_width=1)
+
+if barstate.islast and showPanel
+    table.cell(panel, 0, 0, "SOVEREIGN OI", bgcolor=header, text_color=gold, text_size=size.small)
+    table.cell(panel, 1, 0, "FUTURE", bgcolor=header, text_color=muted, text_size=size.tiny)
+    table.cell(panel, 2, 0, "OI", bgcolor=header, text_color=muted, text_size=size.tiny)
+    table.cell(panel, 3, 0, str.tostring(shortLookback) + "D / " + str.tostring(longLookback) + "D", bgcolor=header, text_color=muted, text_size=size.tiny)
+    table.cell(panel, 4, 0, "STATE", bgcolor=header, text_color=muted, text_size=size.tiny)
+    table.cell(panel, 0, 1, baseCCY, bgcolor=bg, text_color=gold, text_size=size.small)
+    table.cell(panel, 1, 1, baseSourceName, bgcolor=bg, text_color=textColor, text_size=size.tiny)
+    table.cell(panel, 2, 1, baseDataOk ? f_compact(baseNow) : "N/A", bgcolor=bg, text_color=textColor, text_size=size.small)
+    table.cell(panel, 3, 1, f_change_text(baseShortChange) + " / " + f_change_text(baseLongChange), bgcolor=bg, text_color=f_change_color(baseLongChange), text_size=size.tiny)
+    table.cell(panel, 4, 1, baseState, bgcolor=bg, text_color=f_state_color(baseState), text_size=size.tiny)
+    table.cell(panel, 0, 2, quoteCCY, bgcolor=bg, text_color=gold, text_size=size.small)
+    table.cell(panel, 1, 2, quoteSourceName, bgcolor=bg, text_color=textColor, text_size=size.tiny)
+    table.cell(panel, 2, 2, quoteDataOk ? f_compact(quoteNow) : "N/A", bgcolor=bg, text_color=textColor, text_size=size.small)
+    table.cell(panel, 3, 2, f_change_text(quoteShortChange) + " / " + f_change_text(quoteLongChange), bgcolor=bg, text_color=f_change_color(quoteLongChange), text_size=size.tiny)
+    table.cell(panel, 4, 2, quoteState, bgcolor=bg, text_color=f_state_color(quoteState), text_size=size.tiny)
+    table.cell(panel, 0, 3, "DAILY OI", bgcolor=header, text_color=muted, text_size=size.tiny)
+    table.cell(panel, 1, 3, baseFuture == "" or quoteFuture == "" ? "UNSUPPORTED CURRENCY IN PAIR" : "AUTO-MAPPED", bgcolor=header, text_color=muted, text_size=size.tiny)
+    table.cell(panel, 2, 3, baseUseChfFallback or quoteUseChfFallback ? "CHF FALLBACK ACTIVE" : "", bgcolor=header, text_color=baseUseChfFallback or quoteUseChfFallback ? warn : muted, text_size=size.tiny)
+    table.cell(panel, 3, 3, "", bgcolor=header)
+    table.cell(panel, 4, 3, "", bgcolor=header)
+
+if barstate.islast and not showPanel
+    table.clear(panel, 0, 0, 4, 3)

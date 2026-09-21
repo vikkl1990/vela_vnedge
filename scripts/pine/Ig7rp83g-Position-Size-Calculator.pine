@@ -1,0 +1,235 @@
+//@version=6
+indicator("Position Size Calculator", overlay = true)
+
+// Sizes a position against up to 4 stop definitions simultaneously (Current
+// Day extreme, Previous Day extreme, Fixed Price, Fixed %), so the columns
+// can be compared side by side rather than re-running the calculator per
+// stop choice. "Day"/"Prev Day" mean Low/High depending on Direction (Long
+// uses Low as the stop side, Short uses High) and are always shown; Fixed
+// Price and Fixed % each have their own enable checkbox and their columns
+// are omitted entirely (not just blanked) when off.
+//
+// Risk model: riskAmount (from Risk Mode: % of Account or Fixed ₹) divided
+// by per-share risk (|entry - stop|) gives quantity, floored to whole shares
+// (NSE cash-equity convention -- no fractional shares). A stop on the wrong
+// side of entry for the chosen direction (e.g. a Fixed Price stop above
+// entry on a Long) yields a non-positive per-share risk and renders "n/a"
+// rather than a nonsensical negative/inverted quantity.
+//
+// Entry is always the live current price (`close` on the forming bar) --
+// this is a live/dynamic calculator, not a what-if planner for a manual
+// entry price.
+//
+// R:R is computed only when Enable Target Price is checked and uses one
+// shared Reward/Share across all 4 columns (reward depends only on
+// entry/target/direction, not on the stop) -- not displayed on its own
+// (see directives/build_pine_indicator.md), only its downstream R:R.
+//
+// Pine's Settings dialog has no reactive show/hide/enable between inputs --
+// Risk % and Fixed Risk Amount are both always editable regardless of Risk
+// Mode. The tooltip on each says which mode reads it; only the selected
+// mode's value is actually used in the calculation (see riskAmount below),
+// so filling in the other field has no effect.
+
+// ---------------- Inputs ----------------
+accountValue   = input.float(100000.0, "Account Value", minval = 0.0, group = "Account & Risk")
+riskMode       = input.string("% of Account", "Risk Mode", options = ["% of Account", "Fixed Amount"], group = "Account & Risk")
+riskPct        = input.float(1.0, "Risk % of Account", minval = 0.0, step = 0.1, group = "Account & Risk", tooltip = "Only used when Risk Mode = '% of Account'. Pine cannot grey this out automatically -- it stays editable either way, but is ignored unless that mode is selected.")
+riskFixedAmt   = input.float(1000.0, "Fixed Risk Amount (₹)", minval = 0.0, group = "Account & Risk", tooltip = "Only used when Risk Mode = 'Fixed Amount'. Pine cannot grey this out automatically -- it stays editable either way, but is ignored unless that mode is selected.")
+
+direction      = input.string("Long", "Direction", options = ["Long", "Short"], group = "Trade Setup")
+useTarget      = input.bool(false, "Enable Target Price", group = "Trade Setup")
+targetPrice    = input.float(0.0, "Target Price", minval = 0.0, group = "Trade Setup", tooltip = "Only used when Enable Target Price is checked.")
+
+useFixedStop   = input.bool(false, "Enable Fixed Stop Price", group = "Stop Definitions")
+fixedStopPrice = input.float(0.0, "Fixed Stop Price", minval = 0.0, group = "Stop Definitions", tooltip = "Only used when Enable Fixed Stop Price is checked.")
+useFixedPct    = input.bool(false, "Enable Fixed Stop %", group = "Stop Definitions")
+fixedStopPct   = input.float(2.0, "Fixed Stop %", minval = 0.0, step = 0.1, group = "Stop Definitions", tooltip = "Only used when Enable Fixed Stop % is checked.")
+
+position_choice = input.string("Top Right", "Table Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right", "Middle Left"], group = "Table Appearance")
+textsize_choice = input.string("Normal", "Table Text Size", options = ["Small", "Normal", "Large"], group = "Table Appearance")
+border_color_setting = input.color(color.gray, "Border Color", group = "Table Appearance")
+border_width_setting = input.int(1, "Border Width", minval = 0, maxval = 5, group = "Table Appearance")
+
+label_text_color  = input.color(color.white, "Label Text Color", group = "Colors")
+label_col_color   = input.color(color.gray, "Label Column Color", group = "Colors")
+header_text_color = input.color(color.white, "Header Text Color", group = "Colors")
+header_row_color  = input.color(color.gray, "Header Row Color", group = "Colors")
+cell_text_color   = input.color(color.black, "Cell Text Color", group = "Colors")
+cell_bg_color     = input.color(color.new(color.blue, 80), "Cell Background Color", group = "Colors")
+info_bg_color     = input.color(color.new(color.gray, 60), "Info Row Color", group = "Colors")
+na_color          = input.color(color.new(color.gray, 70), "N/A Color", group = "Colors")
+
+// ---------------- Helpers ----------------
+f_getPosition(choice) =>
+    result = position.top_right
+    if choice == "Top Left"
+        result := position.top_left
+    if choice == "Bottom Right"
+        result := position.bottom_right
+    if choice == "Bottom Left"
+        result := position.bottom_left
+    if choice == "Middle Right"
+        result := position.middle_right
+    if choice == "Middle Left"
+        result := position.middle_left
+    result
+
+f_getTextSize(choice) =>
+    result = size.small
+    if choice == "Normal"
+        result := size.normal
+    if choice == "Large"
+        result := size.large
+    result
+
+tblTextSize = f_getTextSize(textsize_choice)
+
+// Indian digit grouping (1,23,244 -- last 3 digits, then pairs): groups a
+// plain non-negative digit string from the right, 2 digits per iteration
+// after the first 3. Termination is guaranteed since `idx` strictly
+// decreases by 1 or 2 every pass toward 0.
+f_indianGroup(intStr) =>
+    n = str.length(intStr)
+    result = n <= 3 ? intStr : str.substring(intStr, n - 3, n)
+    remaining = n <= 3 ? "" : str.substring(intStr, 0, n - 3)
+    idx = str.length(remaining)
+    while idx > 0
+        take = idx >= 2 ? 2 : 1
+        chunk = str.substring(remaining, idx - take, idx)
+        result := chunk + "," + result
+        idx := idx - take
+    result
+
+// Formats v with Indian-style comma grouping and a fixed decimal count.
+// Values cross this boundary as plain floats; grouping/rounding happens
+// entirely in string form via f_indianGroup, so no locale/API dependency.
+f_indianFormat(v, decimals) =>
+    neg = v < 0
+    av = math.abs(v)
+    mult = math.pow(10, decimals)
+    scaledTotal = math.round(av * mult)
+    intPart = decimals > 0 ? math.floor(scaledTotal / mult) : scaledTotal
+    fracPart = decimals > 0 ? scaledTotal - intPart * mult : 0.0
+    groupedInt = f_indianGroup(str.tostring(intPart, "#"))
+    fracStr = str.tostring(fracPart, "#")
+    while decimals > 0 and str.length(fracStr) < decimals
+        fracStr := "0" + fracStr
+    sign = neg ? "-" : ""
+    decimals > 0 ? sign + groupedInt + "." + fracStr : sign + groupedInt
+
+f_priceText(v) => na(v) ? "n/a" : f_indianFormat(v, 2)
+f_pctText(v)   => na(v) ? "n/a" : str.tostring(v, "#.##") + "%"
+f_rrText(v)    => na(v) ? "n/a" : str.tostring(v, "#.##") + "R"
+f_qtyText(v)   => na(v) ? "n/a" : f_indianFormat(v, 0)
+
+// ---------------- Core inputs derived ----------------
+isLong = direction == "Long"
+entry  = close
+riskAmount = riskMode == "% of Account" ? accountValue * riskPct / 100.0 : riskFixedAmt
+
+// request.security() can't reliably pull a timeframe lower than the chart's
+// own (returns stale/na) -- see directives/build_pine_indicator.md. Guard
+// explicitly rather than silently showing a wrong number if the chart is
+// ever set coarser than Daily.
+dayDataValid = timeframe.in_seconds(timeframe.period) <= timeframe.in_seconds("D")
+
+// request.security() calls stay unconditional (established pattern in this
+// codebase) -- the dayDataValid guard is applied to their results below
+// instead of wrapping the calls themselves in a ternary.
+dayLowRaw      = request.security(syminfo.tickerid, "D", low)
+dayHighRaw     = request.security(syminfo.tickerid, "D", high)
+// low[1]/high[1] inside the "D" security call = the prior CONFIRMED daily
+// bar, a standard repaint-free "yesterday's value" idiom.
+prevDayLowRaw  = request.security(syminfo.tickerid, "D", low[1])
+prevDayHighRaw = request.security(syminfo.tickerid, "D", high[1])
+
+dayLow      = dayDataValid ? dayLowRaw      : na
+dayHigh     = dayDataValid ? dayHighRaw     : na
+prevDayLow  = dayDataValid ? prevDayLowRaw  : na
+prevDayHigh = dayDataValid ? prevDayHighRaw : na
+
+stopDay        = isLong ? dayLow : dayHigh
+stopPrevDay    = isLong ? prevDayLow : prevDayHigh
+stopFixedPrice = useFixedStop ? fixedStopPrice : na
+stopFixedPct   = useFixedPct ? (isLong ? entry * (1 - fixedStopPct / 100.0) : entry * (1 + fixedStopPct / 100.0)) : na
+
+reward = useTarget ? (isLong ? targetPrice - entry : entry - targetPrice) : na
+
+// One function shared by all 4 columns: per-share risk -> qty -> position
+// size -> % of account -> R:R. `reward` is closed over from the outer scope
+// since it's identical for every column.
+f_calc(stopPrice) =>
+    rps = na(stopPrice) ? na : (isLong ? entry - stopPrice : stopPrice - entry)
+    qty = (na(rps) or rps <= 0) ? na : math.floor(riskAmount / rps)
+    pos = na(qty) ? na : qty * entry
+    pct = (na(pos) or accountValue <= 0) ? na : pos / accountValue * 100.0
+    rr  = (na(reward) or reward <= 0 or na(rps) or rps <= 0) ? na : reward / rps
+    [rps, qty, pos, pct, rr]
+
+[rps1, qty1, pos1, pct1, rr1] = f_calc(stopDay)
+[rps2, qty2, pos2, pct2, rr2] = f_calc(stopPrevDay)
+[rps3, qty3, pos3, pct3, rr3] = f_calc(stopFixedPrice)
+[rps4, qty4, pos4, pct4, rr4] = f_calc(stopFixedPct)
+
+// ---------------- Table ----------------
+// Columns: Label + Day + Prev Day (always shown) + Fixed Price (only if
+// useFixedStop) + Fixed % (only if useFixedPct). A disabled column isn't
+// just blanked -- it's omitted entirely, so the remaining columns' indices
+// must shift left to fill the gap rather than leaving a hole. Computed once
+// up front since useFixedStop/useFixedPct are fixed for the whole script
+// run (inputs, not per-bar values), same reasoning as totalRows below.
+nextCol = 3
+colFixedPrice = -1
+colFixedPct = -1
+if useFixedStop
+    colFixedPrice := nextCol
+    nextCol := nextCol + 1
+if useFixedPct
+    colFixedPct := nextCol
+    nextCol := nextCol + 1
+totalCols = nextCol
+
+// Rows: info banner, header, 4 metrics, plus an R:R row that only exists at
+// all when Enable Target Price is checked. Risk/Share is computed
+// internally (f_calc still returns rps, needed for qty/R:R) but never given
+// its own display row.
+totalRows = useTarget ? 7 : 6
+var table tbl = table.new(f_getPosition(position_choice), totalCols, totalRows, border_color = border_color_setting, border_width = border_width_setting)
+
+f_renderCol(_tbl, col, stopPrice, qty, pos, pct, rr) =>
+    table.cell(_tbl, col, 2, f_priceText(stopPrice), text_color = cell_text_color, bgcolor = na(stopPrice) ? na_color : cell_bg_color, text_size = tblTextSize)
+    table.cell(_tbl, col, 3, f_qtyText(qty),          text_color = cell_text_color, bgcolor = na(qty) ? na_color : cell_bg_color, text_size = tblTextSize)
+    table.cell(_tbl, col, 4, f_priceText(pos),        text_color = cell_text_color, bgcolor = na(pos) ? na_color : cell_bg_color, text_size = tblTextSize)
+    table.cell(_tbl, col, 5, f_pctText(pct),          text_color = cell_text_color, bgcolor = na(pct) ? na_color : cell_bg_color, text_size = tblTextSize)
+    if useTarget
+        table.cell(_tbl, col, 6, f_rrText(rr), text_color = cell_text_color, bgcolor = na(rr) ? na_color : cell_bg_color, text_size = tblTextSize)
+
+if barstate.islast
+    targetText = useTarget ? "  |  Target: " + f_priceText(targetPrice) : "  |  No Target Set"
+    tfWarnText = dayDataValid ? "" : "  |  Day/Prev-Day stops need chart tf <= Daily"
+    infoText = "Entry: " + f_priceText(entry) + "  |  " + direction + targetText + tfWarnText
+    table.cell(tbl, 0, 0, infoText, text_color = header_text_color, bgcolor = info_bg_color, text_size = tblTextSize)
+    table.merge_cells(tbl, 0, 0, totalCols - 1, 0)
+
+    table.cell(tbl, 0, 1, "", text_color = header_text_color, bgcolor = header_row_color, text_size = tblTextSize)
+    table.cell(tbl, 1, 1, isLong ? "Day Low" : "Day High", text_color = header_text_color, bgcolor = header_row_color, text_size = tblTextSize)
+    table.cell(tbl, 2, 1, isLong ? "Prev Day Low" : "Prev Day High", text_color = header_text_color, bgcolor = header_row_color, text_size = tblTextSize)
+    if useFixedStop
+        table.cell(tbl, colFixedPrice, 1, "Fixed Price", text_color = header_text_color, bgcolor = header_row_color, text_size = tblTextSize)
+    if useFixedPct
+        table.cell(tbl, colFixedPct, 1, "Fixed %", text_color = header_text_color, bgcolor = header_row_color, text_size = tblTextSize)
+
+    table.cell(tbl, 0, 2, "Stop Price",    text_color = label_text_color, bgcolor = label_col_color, text_size = tblTextSize)
+    table.cell(tbl, 0, 3, "Quantity",      text_color = label_text_color, bgcolor = label_col_color, text_size = tblTextSize)
+    table.cell(tbl, 0, 4, "Position Size", text_color = label_text_color, bgcolor = label_col_color, text_size = tblTextSize)
+    table.cell(tbl, 0, 5, "% of Account",  text_color = label_text_color, bgcolor = label_col_color, text_size = tblTextSize)
+    if useTarget
+        table.cell(tbl, 0, 6, "R:R", text_color = label_text_color, bgcolor = label_col_color, text_size = tblTextSize)
+
+    f_renderCol(tbl, 1, stopDay, qty1, pos1, pct1, rr1)
+    f_renderCol(tbl, 2, stopPrevDay, qty2, pos2, pct2, rr2)
+    if useFixedStop
+        f_renderCol(tbl, colFixedPrice, stopFixedPrice, qty3, pos3, pct3, rr3)
+    if useFixedPct
+        f_renderCol(tbl, colFixedPct, stopFixedPct, qty4, pos4, pct4, rr4)

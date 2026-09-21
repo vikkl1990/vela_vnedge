@@ -1,0 +1,355 @@
+//@version=6
+indicator(title="TP/SL Signals + Days & Zones (Light Theme)", shorttitle="TP/SL + Days", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// ==========================================
+// 1. VISIBILITY & RISK SETTINGS
+// ==========================================
+showSignals = input.bool(true, "Show Entry Signals", group="Visibility")
+showLabels  = input.bool(true, "Show TP/SL Labels on Signal", group="Visibility")
+
+// Limits & Leverage Settings
+maxDaysBack = input.int(28, "Limit History to (Days)", minval=1, maxval=365, group="Stats Settings")
+leverage    = input.int(10, "Leverage (x)", minval=1, maxval=125, step=1, group="Stats Settings")
+showTable   = input.bool(true, "Show Daily Breakdown Table", group="Stats Settings")
+
+// Stop Loss and Take Profit Settings (in percent)
+slPercent  = input.float(1.5, "Stop Loss %", minval=0.1, maxval=10, step=0.1, group="Risk Management")
+tp1Percent = input.float(2.0, "Take Profit 1 %", minval=0.1, maxval=20, step=0.1, group="Risk Management")
+tp2Percent = input.float(3.0, "Take Profit 3 %", minval=0.1, maxval=30, step=0.1, group="Risk Management")
+
+// HMA Settings
+hmaLength  = input.int(300, "HMA Length", minval=1, step=10, group="HMA Settings")
+
+// ==========================================
+// 2. DAYS OF WEEK & ZONES SETTINGS (LIGHT THEME PALETTE)
+// ==========================================
+showDayLabels = input.bool(true, "Show Day of Week Labels", group="Days of Week Settings")
+showDayZones  = input.bool(true, "Highlight Day Backgrounds", group="Days of Week Settings")
+
+// Contrast palette for Light Theme
+colorMon = input.color(color.new(#2196F3, 85), "Monday (Blue)", group="Days Colors")
+colorTue = input.color(color.new(#F57C00, 85), "Tuesday (Orange)", group="Days Colors")
+colorWed = input.color(color.new(#388E3C, 85), "Wednesday (Green)", group="Days Colors")
+colorThu = input.color(color.new(#00897B, 85), "Thursday (Teal)", group="Days Colors")
+colorFri = input.color(color.new(#7B1FA2, 85), "Friday (Purple)", group="Days Colors")
+colorSat = input.color(color.new(#D32F2F, 85), "Saturday (Red)", group="Days Colors")
+colorSun = input.color(color.new(#C2185B, 85), "Sunday (Pink/Maroon)", group="Days Colors")
+
+colorMonSolid = color.new(colorMon, 0)
+colorTueSolid = color.new(colorTue, 0)
+colorWedSolid = color.new(colorWed, 0)
+colorThuSolid = color.new(colorThu, 0)
+colorFriSolid = color.new(colorFri, 0)
+colorSatSolid = color.new(colorSat, 0)
+colorSunSolid = color.new(colorSun, 0)
+
+// ==========================================
+// 3. DAYS & BACKGROUND ZONES LOGIC
+// ==========================================
+var int lastTime = timenow
+if barstate.islast
+    lastTime := time
+
+msInLimit = maxDaysBack * 24 * 60 * 60 * 1000
+withinTimeRange = (lastTime - time) <= msInLimit
+
+f_getDayInfo() =>
+    string dayName = ""
+    color dayBg = na
+    
+    switch dayofweek
+        dayofweek.monday    => 
+            dayName := "Mon"
+            dayBg   := colorMon
+        dayofweek.tuesday   => 
+            dayName := "Tue"
+            dayBg   := colorTue
+        dayofweek.wednesday => 
+            dayName := "Wed"
+            dayBg   := colorWed
+        dayofweek.thursday  => 
+            dayName := "Thu"
+            dayBg   := colorThu
+        dayofweek.friday    => 
+            dayName := "Fri"
+            dayBg   := colorFri
+        dayofweek.saturday  => 
+            dayName := "Sat"
+            dayBg   := colorSat
+        dayofweek.sunday    => 
+            dayName := "Sun"
+            dayBg   := colorSun
+
+    [dayName, dayBg]
+
+[dayText, dayColor] = f_getDayInfo()
+
+// Background color for existing candles
+bgcolor(showDayZones and withinTimeRange ? dayColor : na, title="Day Background Zone")
+
+// Day Labels on chart
+isNewDay = ta.change(time("D")) != 0
+if showDayLabels and isNewDay and withinTimeRange
+    label.new(x=time, y=low, text=dayText, 
+              xloc=xloc.bar_time,
+              style=label.style_label_up, 
+              color=color.new(#E0E3EB, 10), 
+              textcolor=color.black, 
+              size=size.small, 
+              yloc=yloc.belowbar)
+
+// Background Box for future (fills whole empty space on the right)
+var box futureBox = na
+if showDayZones and barstate.islast
+    box.delete(futureBox)
+    int startTime = time
+    int maxFutureTime = 2147483647000 
+    
+    futureBox := box.new(left=startTime, top=10e10, right=maxFutureTime, bottom=-10e10, 
+                         xloc=xloc.bar_time, 
+                         bgcolor=dayColor, 
+                         border_color=color.new(color.white, 100))
+
+// ==========================================
+// 4. HMA & SIGNAL LOGIC
+// ==========================================
+hma(src, length) =>
+    ta.wma(2 * ta.wma(src, length / 2) - ta.wma(src, length), math.floor(math.sqrt(length)))
+
+hma1  = request.security(syminfo.tickerid, "1",  hma(close, hmaLength))
+hma5  = request.security(syminfo.tickerid, "5",  hma(close, hmaLength))
+hma15 = request.security(syminfo.tickerid, "15", hma(close, hmaLength))
+
+longCondition  = ta.crossover(hma5, hma15)
+shortCondition = ta.crossunder(hma5, hma15)
+
+// Trade Tracking Variables
+var float entryPrice = na
+var bool inTrade = false
+var bool isLong = false
+var int entryBar = 0
+var bool tp1Hit = false
+var int entryDay = 0
+
+// Level Variables
+var float entry = na
+var float sl    = na
+var float tp1   = na
+var float tp2   = na
+
+// Stats Variables
+var int totalTrades = 0
+var int winTrades   = 0
+var int lossTrades  = 0
+var float totalPnL  = 0.0
+
+var int monTrades = 0, var int monWins = 0, var float monPnL = 0.0
+var int tueTrades = 0, var int tueWins = 0, var float tuePnL = 0.0
+var int wedTrades = 0, var int wedWins = 0, var float wedPnL = 0.0
+var int thuTrades = 0, var int thuWins = 0, var float thuPnL = 0.0
+var int friTrades = 0, var int friWins = 0, var float friPnL = 0.0
+var int satTrades = 0, var int satWins = 0, var float satPnL = 0.0
+var int sunTrades = 0, var int sunWins = 0, var float sunPnL = 0.0
+
+// --- REVERSE OR SL/TP EXECUTION ---
+if withinTimeRange
+    float exitPrice = na
+    bool isWin = false
+    bool shouldClose = false
+
+    // 1. Check Signal Opposite Close (REVERSE LOGIC)
+    if inTrade
+        if isLong and shortCondition
+            exitPrice   := close
+            isWin       := close >= entryPrice or tp1Hit
+            shouldClose := true
+        else if not isLong and longCondition
+            exitPrice   := close
+            isWin       := close <= entryPrice or tp1Hit
+            shouldClose := true
+
+    // 2. Normal SL/TP Check (if not closed by reverse signal)
+    if inTrade and not shouldClose and not na(entryPrice) and not na(tp1) and not na(tp2) and not na(sl)
+        if not tp1Hit
+            if isLong and high >= tp1
+                tp1Hit := true
+                sl     := entryPrice
+            else if not isLong and low <= tp1
+                tp1Hit := true
+                sl     := entryPrice
+
+        if isLong
+            if high >= tp2
+                exitPrice   := tp2
+                isWin       := true
+                shouldClose := true
+            else if low <= sl
+                exitPrice   := sl
+                isWin       := tp1Hit
+                shouldClose := true
+        else
+            if low <= tp2
+                exitPrice   := tp2
+                isWin       := true
+                shouldClose := true
+            else if high >= sl
+                exitPrice   := sl
+                isWin       := tp1Hit
+                shouldClose := true
+
+    // 3. Process Trade Closing & Stats Updating
+    if shouldClose
+        float tradePnL = 0.0
+        if tp1Hit
+            float pnl1 = tp1Percent
+            float pnl2 = isLong ? ((exitPrice - entryPrice) / entryPrice) * 100 : ((entryPrice - exitPrice) / entryPrice) * 100
+            tradePnL := ((pnl1 * 0.5) + (pnl2 * 0.5)) * leverage
+        else
+            tradePnL := (isLong ? ((exitPrice - entryPrice) / entryPrice) * 100 : ((entryPrice - exitPrice) / entryPrice) * 100) * leverage
+
+        totalTrades += 1
+        totalPnL    += tradePnL
+        if isWin
+            winTrades += 1
+        else
+            lossTrades += 1
+
+        switch entryDay
+            dayofweek.monday    => 
+                monTrades += 1, monPnL += tradePnL
+                if isWin
+                    monWins += 1
+            dayofweek.tuesday   => 
+                tueTrades += 1, tuePnL += tradePnL
+                if isWin
+                    tueWins += 1
+            dayofweek.wednesday => 
+                wedTrades += 1, wedPnL += tradePnL
+                if isWin
+                    wedWins += 1
+            dayofweek.thursday  => 
+                thuTrades += 1, thuPnL += tradePnL
+                if isWin
+                    thuWins += 1
+            dayofweek.friday    => 
+                friTrades += 1, friPnL += tradePnL
+                if isWin
+                    friWins += 1
+            dayofweek.saturday  => 
+                satTrades += 1, satPnL += tradePnL
+                if isWin
+                    satWins += 1
+            dayofweek.sunday    => 
+                sunTrades += 1, sunPnL += tradePnL
+                if isWin
+                    sunWins += 1
+
+        inTrade    := false
+        entryPrice := na
+
+    // 4. Enter New Trade
+    if longCondition and not inTrade
+        entryPrice := close
+        inTrade    := true
+        isLong     := true
+        entryBar   := bar_index
+        tp1Hit     := false
+        entryDay   := dayofweek
+        entry      := entryPrice
+        sl         := entryPrice * (1 - slPercent / 100)
+        tp1        := entryPrice * (1 + tp1Percent / 100)
+        tp2        := entryPrice * (1 + tp2Percent / 100)
+
+    if shortCondition and not inTrade
+        entryPrice := close
+        inTrade    := true
+        isLong     := false
+        entryBar   := bar_index
+        tp1Hit     := false
+        entryDay   := dayofweek
+        entry      := entryPrice
+        sl         := entryPrice * (1 + slPercent / 100)
+        tp1        := entryPrice * (1 - tp1Percent / 100)
+        tp2        := entryPrice * (1 - tp2Percent / 100)
+
+// ==========================================
+// 5. DRAWING TP/SL LINES & LABELS
+// ==========================================
+var line l_entry = na
+var line l_sl    = na
+var line l_tp1   = na
+var line l_tp2   = na
+
+if inTrade and not na(entry) and not na(sl) and not na(tp1) and not na(tp2)
+    if ta.change(inTrade)
+        l_entry := line.new(x1=entryBar, y1=entry, x2=bar_index, y2=entry, color=color.new(#2962FF, 30), width=1, style=line.style_dashed)
+        l_sl    := line.new(x1=entryBar, y1=sl,    x2=bar_index, y2=sl,    color=color.new(#F23645, 30), width=1, style=line.style_dashed)
+        l_tp1   := line.new(x1=entryBar, y1=tp1,   x2=bar_index, y2=tp1,   color=color.new(#FF6D00, 30), width=1, style=line.style_dashed)
+        l_tp2   := line.new(x1=entryBar, y1=tp2,   x2=bar_index, y2=tp2,   color=color.new(#089981, 30), width=1, style=line.style_dashed)
+    else
+        line.set_x2(l_entry, bar_index)
+        line.set_x2(l_sl, bar_index)
+        line.set_x2(l_tp1, bar_index)
+        line.set_x2(l_tp2, bar_index)
+        line.set_y1(l_sl, sl)
+        line.set_y2(l_sl, sl)
+
+    if showLabels and bar_index == entryBar
+        slText    = "SL: " + (isLong ? "-" : "+") + str.tostring(slPercent, "#.##") + "%"
+        tp1Text   = "TP1: " + (isLong ? "+" : "-") + str.tostring(tp1Percent, "#.##") + "%"
+        tp2Text   = "TP2: " + (isLong ? "+" : "-") + str.tostring(tp2Percent, "#.##") + "%"
+        entryText = "Entry: " + str.tostring(entry, "#.##")
+        
+        label.new(x=entryBar, y=entry, text=entryText, color=color.new(#2962FF, 0), textcolor=color.white, style=label.style_label_right, size=size.small)
+        label.new(x=entryBar, y=sl,    text=slText,    color=color.new(#F23645, 0), textcolor=color.white, style=label.style_label_right, size=size.small)
+        label.new(x=entryBar, y=tp1,   text=tp1Text,   color=color.new(#FF6D00, 0), textcolor=color.white, style=label.style_label_right, size=size.small)
+        label.new(x=entryBar, y=tp2,   text=tp2Text,   color=color.new(#089981, 0), textcolor=color.white, style=label.style_label_right, size=size.small)
+
+// Plots
+plot(inTrade and not na(entry) ? entry : na, color=color.new(#2962FF, 0), linewidth=1, style=plot.style_circles, title="Entry Level")
+plot(inTrade and not na(sl)    ? sl    : na, color=color.new(#F23645, 0), linewidth=1, style=plot.style_circles, title="SL Level")
+plot(inTrade and not na(tp1)   ? tp1   : na, color=color.new(#FF6D00, 0), linewidth=1, style=plot.style_circles, title="TP1 Level")
+plot(inTrade and not na(tp2)   ? tp2   : na, color=color.new(#089981, 0), linewidth=1, style=plot.style_circles, title="TP2 Level")
+
+// Entry Signals
+plotshape(showSignals and longCondition and withinTimeRange, title="Long Signal", style=shape.triangleup, location=location.belowbar, color=color.new(#089981, 0), size=size.small)
+plotshape(showSignals and shortCondition and withinTimeRange, title="Short Signal", style=shape.triangledown, location=location.abovebar, color=color.new(#F23645, 0), size=size.small)
+
+// Alerts
+alertcondition(longCondition, title="Long Entry", message="🟢 ▲ LONG SIGNAL at {{close}}")
+alertcondition(shortCondition, title="Short Entry", message="🔴 ▼ SHORT SIGNAL at {{close}}")
+
+// ==========================================
+// 6. DAILY BREAKDOWN TABLE (LIGHT THEME)
+// ==========================================
+var table statsTable = table.new(position=position.top_right, columns=4, rows=9, bgcolor=color.new(color.white, 10), border_width=1, border_color=color.new(#D1D4DC, 0))
+
+f_fillRow(tbl, row, dayName, dayColor, trades, wins, pnl) =>
+    float wr = trades > 0 ? (wins / trades) * 100 : 0.0
+    color pnlColor = pnl >= 0 ? #089981 : #F23645
+    table.cell(tbl, 0, row, "■ " + dayName, text_color=dayColor, text_size=size.normal)
+    table.cell(tbl, 1, row, str.tostring(trades), text_color=color.black, text_size=size.normal)
+    table.cell(tbl, 2, row, str.tostring(wr, "#.#") + "%", text_color=color.black, text_size=size.normal)
+    table.cell(tbl, 3, row, str.tostring(pnl, "#.##") + "%", text_color=pnlColor, text_size=size.normal)
+
+if showTable and barstate.islast
+    table.cell(statsTable, 0, 0, "Day", text_color=#131722, text_size=size.normal)
+    table.cell(statsTable, 1, 0, "Trades", text_color=#131722, text_size=size.normal)
+    table.cell(statsTable, 2, 0, "Win Rate", text_color=#131722, text_size=size.normal)
+    table.cell(statsTable, 3, 0, "Net PnL", text_color=#131722, text_size=size.normal)
+    
+    f_fillRow(statsTable, 1, "Mon", colorMonSolid, monTrades, monWins, monPnL)
+    f_fillRow(statsTable, 2, "Tue", colorTueSolid, tueTrades, tueWins, tuePnL)
+    f_fillRow(statsTable, 3, "Wed", colorWedSolid, wedTrades, wedWins, wedPnL)
+    f_fillRow(statsTable, 4, "Thu", colorThuSolid, thuTrades, thuWins, thuPnL)
+    f_fillRow(statsTable, 5, "Fri", colorFriSolid, friTrades, friWins, friPnL)
+    f_fillRow(statsTable, 6, "Sat", colorSatSolid, satTrades, satWins, satPnL)
+    f_fillRow(statsTable, 7, "Sun", colorSunSolid, sunTrades, sunWins, sunPnL)
+
+    float totalWinRate = totalTrades > 0 ? (winTrades / totalTrades) * 100 : 0.0
+    color totalPnLColor = totalPnL >= 0 ? #089981 : #F23645
+
+    table.cell(statsTable, 0, 8, "TOTAL", text_color=#131722, text_size=size.normal)
+    table.cell(statsTable, 1, 8, str.tostring(totalTrades), text_color=#131722, text_size=size.normal)
+    table.cell(statsTable, 2, 8, str.tostring(totalWinRate, "#.#") + "%", text_color=#131722, text_size=size.normal)
+    table.cell(statsTable, 3, 8, str.tostring(totalPnL, "#.##") + "%", text_color=totalPnLColor, text_size=size.normal)

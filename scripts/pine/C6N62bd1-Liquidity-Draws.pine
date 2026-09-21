@@ -1,0 +1,714 @@
+//@version=6
+// ============================================================================
+//  THE DISTILLED SWEEP ZONE   v2
+//  The Inducement's likely-sweep projection, standalone, plus the RANGE whose
+//  boundary is the thing being swept - drawn as blue levels anchored on the
+//  chart candle that actually printed each extreme.
+//
+//  v3: AN ESTIMATED AREA, NOT JUST A PRICE BAND. The zone now has a TIME axis:
+//      where the sweep is likely to land AND roughly when. See the measurement
+//      block below - it changed what this script says.
+//
+//  v2: THE SECOND HIGHER TIER. Every entry frame pairs to a governing frame,
+//      and that frame pairs upward again - 1m to 15m to 4H, 5m to 1H to Daily.
+//      v1 stopped at the first. The tier above was the level an entry chart is
+//      often actually running at, and it was invisible on the chart taking the
+//      entry.
+//
+//  WHERE THE SWEEP IS LIKELY TO LAND. Measured across 25,666 raided setups on
+//  NQ and Gold at 1/3/5m: on raids that never closed beyond the level - the
+//  ones that went on to reach the break leg 45% of the time against 36% for
+//  close-throughs - the excursion past the level ran p25 0.10 ATR, median 0.23,
+//  p75 0.41. The band drawn is that interquartile range with the median marked.
+//
+//  MEASURED 7 SEPTEMBER 2026 for the time axis and to re-check the price band.
+//  9,700 confirmed swings taken, across BTC 5m/30m/6h, Gold 5m/1h and NQ 5m/1h.
+//  Between 90% and 98% of levels are eventually raided on every series.
+//
+//    WAIT, in bars from the swing confirming     p25  2   median  7   p75  29
+//    OVERSHOOT past the level, ALL raids         p25 0.16 median 0.36 p75 0.73
+//
+//  !! THE SHIPPED BAND IS A NARROWER QUESTION. The Inducement's 0.10/0.23/0.41
+//     was measured on raids that NEVER CLOSED beyond the level - the ones that
+//     reverted. That is a conditioned subset and it is naturally tighter than
+//     the unconditional 0.16/0.36/0.73. Both are honest; they answer different
+//     questions, so both ship and the preset says which you are reading.
+//
+//  !!! AN OLD LEVEL IS NOT DUE. THE OPPOSITE. The remaining wait RISES with age
+//      - median 7 more bars for a fresh level, 32 more at age 13, 72 more at
+//      age 34, 105 more at age 55. It holds on all 7 series independently. A
+//      level that has stood a long time is expected to stand much longer still,
+//      so the area is projected from the level's CURRENT AGE and never from a
+//      fixed distance. Reading age as "it must be about to go" is backwards.
+//
+//  !! IT IS STILL A PROJECTION, NOT A SIGNAL. It says where and roughly when
+//     the wick usually lands on levels that were taken. It does not say this
+//     one will be. A sweep running past the band is the close-through case,
+//     which is the worse half.
+// ============================================================================
+indicator("The Distilled Sweep Zone", "DSTL SWEEP Z", overlay = true,
+     max_lines_count = 500, max_labels_count = 500, max_boxes_count = 200,
+     max_bars_back = 2000)
+// max_bars_back is REQUIRED, not tidiness. f_ltfOrigin walks back a RUNTIME
+// number of bars to find the chart candle inside a higher-timeframe candle, and
+// Pine sizes each series' history buffer from the largest offset it can see at
+// COMPILE time. 2000 rather than 500 because the walk has to REACH the candle
+// before it can search it: a 4H extreme three candles back is 1,900 bars of 30s
+// away, and the SECOND tier reaches further still.
+
+gT_ = "Tiers"
+gR_ = "The range"
+gZ_ = "Likely sweep zone"
+
+// ---- tiers ----------------------------------------------------------------
+useChart = input.bool(true, "Chart timeframe", group = gT_, tooltip = "This chart's own last unbroken swing high and low. Its origin candle IS the pivot bar, so no search is needed.")
+useGov   = input.bool(true, "Higher timeframe 1 (governing)", group = gT_, tooltip = "The paired frame. Its extremes are anchored on the CHART candle that printed them, not on the governing candle's open - which is what makes the blue line start where you would point by eye.")
+useG2    = input.bool(true, "Higher timeframe 2 (the tier above it)", group = gT_, tooltip = "The frame the GOVERNING frame pairs to, by the same ladder - so a 1m chart shows 15m and 4H, a 5m chart shows 1H and Daily.\n\nAnchored the same way. The walk back is longer, which is why max_bars_back is declared at 2000.")
+govMode  = input.string("Auto (per timeframe)", "Pairing", options = ["Auto (per timeframe)", "Manual"], group = gT_)
+govMan   = input.timeframe("60", "  - manual HTF 1", group = gT_)
+g2Man    = input.timeframe("240", "  - manual HTF 2", group = gT_)
+pivStrIn = input.int(0, "Chart pivot strength (0 = auto)", minval = 0, maxval = 20, group = gT_, tooltip = "Auto is the ladder this house uses: 6 bars either side at 1m down to 2 on the slow frames, so one setting travels across timeframes.")
+govPiv   = input.int(2, "Higher-timeframe pivot strength", minval = 1, maxval = 10, group = gT_)
+
+// ---- the range ------------------------------------------------------------
+rngOn  = input.bool(true, "Draw the range", group = gR_, tooltip = "The two levels bounding what price is working inside on each tier - the last unbroken swing high and the last unbroken swing low. That IS the liquidity: the stops sit beyond each edge, which is what makes the edge worth sweeping.")
+cRng   = input.color(#2962ff, "  - level colour", group = gR_)
+rngW   = input.int(2, "  - width (HTF 2, stepped down per tier)", minval = 1, maxval = 5, inline = "rw", group = gR_)
+rngSty = input.string("Solid", "", options = ["Solid", "Dashed", "Dotted"], inline = "rw", group = gR_)
+rngFil = input.bool(false, "  - shade between them", group = gR_, tooltip = "Off by default: the two LEVELS are the object, and a wash across the middle of the chart is the one thing this must not be. Uses the highest tier you have enabled.")
+cRngF  = input.color(color.new(#2962ff, 93), "  - shade", group = gR_)
+rngTx  = input.bool(true, "  - label each edge", group = gR_)
+rngTkn = input.bool(true, "  - keep a taken edge, ticked", group = gR_, tooltip = "A level that has been run stops tracking the right edge, freezes on the candle that took it and changes its mark. Off removes it instead.")
+cTkn   = input.color(#787b86, "  - taken colour", group = gR_)
+
+// ---- the zone -------------------------------------------------------------
+zOn    = input.bool(true, "Project the likely sweep zone", group = gZ_, tooltip = "The interquartile excursion beyond a LIVE edge, in the direction a raid would have to come from. Rebuilt each bar so it tracks ATR, and removed the moment the edge is taken - a projection about an event that has already happened is not a projection.")
+zChart = input.bool(false, "  - on the chart range", inline = "zt", group = gZ_)
+zGov   = input.bool(true,  "HTF 1", inline = "zt", group = gZ_)
+zG2    = input.bool(true,  "HTF 2", inline = "zt", group = gZ_)
+zBand  = input.string("Reverting raids (0.10 / 0.23 / 0.41)", "  - price band", options = ["Reverting raids (0.10 / 0.23 / 0.41)", "All raids (0.16 / 0.36 / 0.73)", "Measured on this chart", "Custom"], group = gZ_, tooltip = "REVERTING RAIDS is the Inducement's band, measured only on raids that never closed beyond the level - the ones that turned. Tighter, because it is a conditioned subset.\n\nALL RAIDS is the unconditional band from 9,700 taken swings across BTC, Gold and NQ. Wider, and the honest one if you want to know where a wick lands rather than where a WORKING raid's wick lands.\n\nMEASURED ON THIS CHART learns from the levels this script has actually watched get taken here, and falls back to All raids until it has enough of them.")
+zLoA   = input.float(0.10, "  - custom: from (x ATR beyond)", minval = 0.0, maxval = 3.0, step = 0.01, group = gZ_)
+zHiA   = input.float(0.41, "  - custom: to (x ATR beyond)", minval = 0.01, maxval = 5.0, step = 0.01, group = gZ_)
+zMdA   = input.float(0.23, "  - custom: median mark", minval = 0.0, maxval = 5.0, step = 0.01, group = gZ_)
+
+// ---- the time axis --------------------------------------------------------
+zTime  = input.bool(true, "Give the zone a TIME axis (the estimated area)", group = gZ_, tooltip = "ON draws the zone as an AREA: the price band across the window the raid is likely to fall in, projected FORWARD from the current bar.\n\nOFF is the v2 behaviour - the price band spanning the level's whole life, which says where but nothing at all about when.\n\n!! THE WINDOW IS SET BY THE LEVEL'S CURRENT AGE, because the remaining wait RISES with age. A fresh level's median wait is 7 bars; one that has stood 34 bars has a median 72 more to go. Projecting a fixed distance would put the area in the wrong place for every level that is not brand new.")
+zSample = input.int(40, "  - learn from this chart after (raids)", minval = 8, maxval = 400, group = gZ_, tooltip = "Until this many levels have been taken ON THIS CHART, the window uses the measured fit from the 9,700-swing study: p25 = 2 + 0.56 x age, median = 7 + 1.8 x age, p75 = 29 + 5.1 x age, in bars.\n\nPast it the script uses its own raids, conditioned on age exactly as the study was - which is the same self-calibrating idea as a percentile, and needs no tuning per instrument.")
+zMedT  = input.bool(true, "  - mark the median time", group = gZ_)
+cZone  = input.color(#f23645, "  - colour", group = gZ_)
+zFill  = input.int(90, "  - fill / border", minval = 40, maxval = 100, inline = "zf", group = gZ_)
+zBord  = input.int(70, "", minval = 40, maxval = 100, inline = "zf", group = gZ_)
+zMedW  = input.int(1, "  - median width", minval = 1, maxval = 4, group = gZ_)
+
+// ============================================================================
+//  SHARED
+// ============================================================================
+color CIV = color.new(color.gray, 100)
+float atr = ta.atr(14)
+int   _tfs = timeframe.in_seconds()
+int   tfMs = _tfs * 1000
+int   pivStr = pivStrIn > 0 ? pivStrIn : _tfs <= 60 ? 6 : _tfs <= 300 ? 5 : _tfs <= 900 ? 4 : _tfs <= 3600 ? 3 : 2
+
+f_ax(int b) => math.max(nz(b, bar_index), bar_index - 4500)
+f_sty(string x) => x == "Dotted" ? line.style_dotted : x == "Dashed" ? line.style_dashed : line.style_solid
+
+// THE DSTL PAIRING, applied TWICE. 1m->15m, 3m->30m, 5m->1h, 15m->4h, 30m->6h,
+// 1h/2h/3h->D, 4h+->W, D->W, W->3M. The boundary is 10800s -> "D".
+//
+// !! WRITTEN OUT, NOT FACTORED INTO A FUNCTION. request.security demands a
+//    SIMPLE string, and a user function's return qualifier is inferred rather
+//    than declared - a helper here is a compile risk for two saved lines.
+string govAuto = _tfs <= 60 ? "15" : _tfs <= 180 ? "30" : _tfs <= 300 ? "60" : _tfs <= 900 ? "240" : _tfs <= 1800 ? "360" : _tfs <= 10800 ? "D" : _tfs <= 86400 ? "W" : "3M"
+string govTF   = govMode == "Manual" ? govMan : govAuto
+int    govSec  = timeframe.in_seconds(govTF)
+string govTFq  = govSec > _tfs ? govTF : timeframe.period
+bool   govOk   = useGov and govSec > _tfs
+
+string g2Auto  = govSec <= 60 ? "15" : govSec <= 180 ? "30" : govSec <= 300 ? "60" : govSec <= 900 ? "240" : govSec <= 1800 ? "360" : govSec <= 10800 ? "D" : govSec <= 86400 ? "W" : "3M"
+string g2TF    = govMode == "Manual" ? g2Man : g2Auto
+int    g2Sec   = timeframe.in_seconds(g2TF)
+string g2TFq   = g2Sec > govSec ? g2TF : govTFq
+bool   g2Ok    = useG2 and g2Sec > govSec
+
+f_tfTag(string tf) =>
+    int sc = timeframe.in_seconds(tf)
+    sc < 60 ? str.tostring(sc) + "s" : sc < 3600 ? str.tostring(sc / 60) + "m" : sc < 86400 ? str.tostring(sc / 3600) + "H" : sc < 604800 ? "D" : sc < 2592000 ? "W" : "3M"
+string curTag = f_tfTag(timeframe.period)
+string govTag = f_tfTag(govTFq)
+string g2Tag  = f_tfTag(g2TFq)
+
+// ============================================================================
+//  THE LTF ORIGIN CANDLE
+//  A higher-timeframe pivot's time is only that candle's OPEN - the start of a
+//  whole block, not the candle that printed the extreme. This walks the chart
+//  bars inside that block and returns the one that actually made the level.
+//
+//  !! THE WALK HAS TO REACH THE CANDLE BEFORE IT CAN SEARCH IT. Sizing the walk
+//     to the WIDTH of one HTF candle and starting from the CURRENT bar runs out
+//     of bars before ever arriving, finds nothing, and falls back to the block's
+//     open - which is the gap between where a line starts and the candle that
+//     printed the level. The distance is knowable: how far back in time the
+//     candle opened, plus its own width, converted to bars.
+//
+//  !! FIND THE EXTREME, DO NOT MATCH A PRICE. Requiring the chart high to equal
+//     the HTF high within a tick means one disagreement between the two
+//     aggregations - and they disagree, on session edges, on gaps, on any symbol
+//     whose HTF series is stitched differently - and the search silently returns
+//     nothing. Scanning for the extreme cannot fail, and >= / <= means that when
+//     several bars share it the walk keeps going back to the EARLIEST, which is
+//     the origin.
+// ============================================================================
+f_ltfOrigin(int t0, bool useHigh, int blockMs) =>
+    int found = na
+    if not na(t0)
+        float span = math.max(0.0, float(time - t0))
+        int   need = int(math.ceil((span + blockMs) / math.max(1.0, _tfs * 1000.0))) + 2
+        int   lim  = math.min(need, math.min(1950, bar_index))
+        float best = na
+        for o = 0 to lim
+            int tt = time[o]
+            if na(tt) or tt < t0
+                break
+            if tt < t0 + blockMs
+                float v = useHigh ? high[o] : low[o]
+                if na(best) or (useHigh ? v >= best : v <= best)
+                    best  := v
+                    found := tt
+    nz(found, t0)
+
+// ============================================================================
+//  ONE EDGE OF A RANGE
+//  price, the LTF origin TIME it is anchored on, whether it has been taken, and
+//  the drawings that belong to it.
+//    0/1 chart high/low   2/3 HTF1 high/low   4/5 HTF2 high/low
+// ============================================================================
+var array<float> eP  = array.new_float(6, na)
+var array<int>   eT  = array.new_int(6, na)      // anchor TIME, not bar - an HTF
+var array<bool>  eTk = array.new<bool>(6, false) //  anchor can outrun bar_index
+var array<line>  eLn = array.new<line>(6, na)
+var array<label> eLb = array.new<label>(6, na)
+var array<box>   eBx = array.new<box>(6, na)     // its sweep zone
+var array<line>  eMd = array.new<line>(6, na)    // and the median PRICE mark
+var array<line>  eMt = array.new<line>(6, na)    // and the median TIME mark
+var array<int>   eB  = array.new_int(6, na)      // the BAR it registered on, so
+var box rngFillBx = na                           //   its age is countable
+
+// ---- WHAT THIS CHART HAS ACTUALLY SEEN ------------------------------------
+// Every level this script has watched get taken: how long it stood, and how far
+// past it price went. Rolling, capped, and used to condition the projection on
+// age the same way the study did.
+var array<int>   wS = array.new_int()
+var array<float> oS = array.new_float()
+
+// A NEW EXTREME REPLACES THE OLD ONE AND ITS TICK GOES WITH IT. The level is
+// "the last unbroken swing", so a fresh one is a different level, not the same
+// level moved.
+f_edgeSet(int i, float px, int t0) =>
+    array.set(eP, i, px)
+    array.set(eT, i, t0)
+    array.set(eB, i, bar_index)
+    array.set(eTk, i, false)
+    0
+
+// REMAINING WAIT GIVEN THE LEVEL HAS ALREADY STOOD `age` BARS.
+// !! CONDITIONED, NEVER UNCONDITIONAL. The wait distribution has a long tail,
+//    so surviving pushes the expectation OUT rather than bringing it closer:
+//    measured, median remaining is 7 bars at age 0 and 105 at age 55. Taking
+//    the unconditional median and subtracting age gives a negative number for
+//    every level older than 7 bars, which is how a projection ends up drawn in
+//    the past.
+f_waitQ(int age, float pct) =>
+    float r = na
+    if array.size(wS) >= zSample
+        array<int> rem = array.new_int()
+        for k = 0 to array.size(wS) - 1
+            int w = array.get(wS, k)
+            if w >= age
+                array.push(rem, w - age)
+        int n = array.size(rem)
+        if n >= 8
+            array.sort(rem, order.ascending)
+            r := float(array.get(rem, math.min(int(pct * (n - 1)), n - 1)))
+    if na(r)
+        // the fit from the 9,700-swing study, in bars
+        r := pct <= 0.25 ? 2.0 + 0.56 * age : pct >= 0.75 ? 29.0 + 5.1 * age : 7.0 + 1.8 * age
+    math.max(1.0, r)
+
+// ---- chart tier -----------------------------------------------------------
+float cph = ta.pivothigh(pivStr, pivStr)
+float cpl = ta.pivotlow(pivStr, pivStr)
+if useChart and barstate.isconfirmed
+    if not na(cph)
+        f_edgeSet(0, cph, time[pivStr])
+    if not na(cpl)
+        f_edgeSet(1, cpl, time[pivStr])
+
+// ---- the two higher tiers -------------------------------------------------
+// lookahead_off with valuewhen is the non-repainting idiom here: the pivot is
+// only reported once its own confirmation has closed on that frame.
+[gH, gHt, gL, gLt] = request.security(syminfo.tickerid, govTFq,
+     [ta.valuewhen(not na(ta.pivothigh(govPiv, govPiv)), ta.pivothigh(govPiv, govPiv), 0),
+      ta.valuewhen(not na(ta.pivothigh(govPiv, govPiv)), time[govPiv], 0),
+      ta.valuewhen(not na(ta.pivotlow(govPiv, govPiv)), ta.pivotlow(govPiv, govPiv), 0),
+      ta.valuewhen(not na(ta.pivotlow(govPiv, govPiv)), time[govPiv], 0)],
+     lookahead = barmerge.lookahead_off)
+[kH, kHt, kL, kLt] = request.security(syminfo.tickerid, g2TFq,
+     [ta.valuewhen(not na(ta.pivothigh(govPiv, govPiv)), ta.pivothigh(govPiv, govPiv), 0),
+      ta.valuewhen(not na(ta.pivothigh(govPiv, govPiv)), time[govPiv], 0),
+      ta.valuewhen(not na(ta.pivotlow(govPiv, govPiv)), ta.pivotlow(govPiv, govPiv), 0),
+      ta.valuewhen(not na(ta.pivotlow(govPiv, govPiv)), time[govPiv], 0)],
+     lookahead = barmerge.lookahead_off)
+int govMs = timeframe.in_seconds(govTFq) * 1000
+int g2Ms  = timeframe.in_seconds(g2TFq) * 1000
+
+if barstate.isconfirmed
+    if govOk
+        if not na(gH) and not na(gHt) and gHt != nz(gHt[1])
+            f_edgeSet(2, gH, f_ltfOrigin(gHt, true, govMs))
+        if not na(gL) and not na(gLt) and gLt != nz(gLt[1])
+            f_edgeSet(3, gL, f_ltfOrigin(gLt, false, govMs))
+    if g2Ok
+        if not na(kH) and not na(kHt) and kHt != nz(kHt[1])
+            f_edgeSet(4, kH, f_ltfOrigin(kHt, true, g2Ms))
+        if not na(kL) and not na(kLt) and kLt != nz(kLt[1])
+            f_edgeSet(5, kL, f_ltfOrigin(kLt, false, g2Ms))
+
+// ---- the take -------------------------------------------------------------
+// WICK-BASED. The raid IS the trade through the level; a CLOSE beyond it is a
+// break, which is the opposite event and belongs to a different script.
+if barstate.isconfirmed
+    for i = 0 to 5
+        float px = array.get(eP, i)
+        if not na(px) and not array.get(eTk, i)
+            if i % 2 == 0 ? high > px : low < px
+                array.set(eTk, i, true)
+                // book it: this chart's own wait and overshoot
+                if not na(array.get(eB, i))
+                    array.push(wS, bar_index - array.get(eB, i))
+                    array.push(oS, not na(atr) and atr > 0 ? (i % 2 == 0 ? high - px : px - low) / atr : float(na))
+                    while array.size(wS) > 400
+                        array.shift(wS)
+                        array.shift(oS)
+
+// ============================================================================
+//  DRAW
+//  Rebuilt on the last bar. Nothing here is state, so a redraw cannot change
+//  what the engine above decided.
+// ============================================================================
+if barstate.islast
+    box.delete(rngFillBx)
+    rngFillBx := box(na)
+    for i = 0 to 5
+        line.delete(array.get(eLn, i))
+        label.delete(array.get(eLb, i))
+        box.delete(array.get(eBx, i))
+        line.delete(array.get(eMd, i))
+        line.delete(array.get(eMt, i))
+        array.set(eMt, i, line(na))
+        array.set(eLn, i, line(na))
+        array.set(eLb, i, label(na))
+        array.set(eBx, i, box(na))
+        array.set(eMd, i, line(na))
+        float px = array.get(eP, i)
+        int   t0 = array.get(eT, i)
+        int   tr = int(math.floor(i / 2.0))                        // 0 chart, 1 HTF1, 2 HTF2
+        bool  on = tr == 0 ? useChart : tr == 1 ? govOk : g2Ok
+        if rngOn and on and not na(px) and not na(t0)
+            bool  isH = i % 2 == 0
+            bool  tk  = array.get(eTk, i)
+            if not tk or rngTkn
+                color c9 = tk ? cTkn : cRng
+                // the heavier line is the higher tier, so the frames read apart
+                int   w9 = math.max(1, rngW - (2 - tr))
+                string tg = tr == 0 ? curTag : tr == 1 ? govTag : g2Tag
+                // xloc.bar_time, so an HTF anchor further back than the
+                // addressable bar window still starts on its own candle
+                array.set(eLn, i, line.new(t0, px, time + tfMs * 4, px, xloc = xloc.bar_time, color = c9, width = w9, style = tk ? line.style_solid : f_sty(rngSty)))
+                array.set(eLb, i, label.new(time + tfMs * 4, px, not rngTx ? "" : tg + (isH ? " BSL" : " SSL") + (tk ? " ok" : ""), xloc = xloc.bar_time, style = label.style_label_left, color = CIV, textcolor = c9, size = size.tiny))
+            // ---- the projection, on LIVE edges only ------------------------
+            bool zTier = tr == 0 ? zChart : tr == 1 ? zGov : zG2
+            if zOn and zTier and not tk and not na(atr) and atr > 0
+                // ---- the PRICE band ---------------------------------------
+                float a9 = zBand == "Custom" ? math.min(zLoA, zHiA) : zBand == "All raids (0.16 / 0.36 / 0.73)" ? 0.16 : 0.10
+                float b9 = zBand == "Custom" ? math.max(zLoA, zHiA) : zBand == "All raids (0.16 / 0.36 / 0.73)" ? 0.73 : 0.41
+                float m9 = zBand == "Custom" ? zMdA : zBand == "All raids (0.16 / 0.36 / 0.73)" ? 0.36 : 0.23
+                if zBand == "Measured on this chart" and array.size(oS) >= zSample
+                    array<float> ov = array.new_float()
+                    for k = 0 to array.size(oS) - 1
+                        if not na(array.get(oS, k))
+                            array.push(ov, array.get(oS, k))
+                    int no = array.size(ov)
+                    if no >= 8
+                        array.sort(ov, order.ascending)
+                        a9 := array.get(ov, int(0.25 * (no - 1)))
+                        m9 := array.get(ov, int(0.50 * (no - 1)))
+                        b9 := array.get(ov, int(0.75 * (no - 1)))
+                // BEYOND the level, in the direction a raid must come from
+                float za = isH ? px + math.min(a9, b9) * atr : px - math.min(a9, b9) * atr
+                float zb = isH ? px + math.max(a9, b9) * atr : px - math.max(a9, b9) * atr
+                float zm = isH ? px + m9 * atr : px - m9 * atr
+                // ---- the TIME axis ----------------------------------------
+                // FORWARD FROM NOW, sized by how long this level has ALREADY
+                // stood. Never from the level's own origin: an old level's
+                // window belongs ahead of price, not behind it.
+                int   age9 = math.max(0, bar_index - nz(array.get(eB, i), bar_index))
+                int   x1 = time
+                int   x2 = time + tfMs * 4
+                int   xm = na
+                if zTime
+                    x1 := time + int(f_waitQ(age9, 0.25)) * tfMs
+                    x2 := time + int(f_waitQ(age9, 0.75)) * tfMs
+                    xm := time + int(f_waitQ(age9, 0.50)) * tfMs
+                array.set(eBx, i, box.new(zTime ? x1 : t0, math.max(za, zb), x2, math.min(za, zb), xloc = xloc.bar_time, border_color = color.new(cZone, zBord), bgcolor = color.new(cZone, zFill)))
+                array.set(eMd, i, line.new(zTime ? x1 : t0, zm, x2, zm, xloc = xloc.bar_time, color = color.new(cZone, 35), width = zMedW, style = line.style_dotted))
+                if zTime and zMedT and not na(xm)
+                    array.set(eMt, i, line.new(xm, math.max(za, zb), xm, math.min(za, zb), xloc = xloc.bar_time, color = color.new(cZone, 35), width = zMedW, style = line.style_dotted))
+    // ---- shade between the two edges of the HIGHEST enabled tier -----------
+    if rngOn and rngFil
+        int b9 = g2Ok ? 4 : govOk ? 2 : 0
+        float hp = array.get(eP, b9)
+        float lp = array.get(eP, b9 + 1)
+        int   ht = array.get(eT, b9)
+        int   lt = array.get(eT, b9 + 1)
+        if not na(hp) and not na(lp) and not na(ht) and not na(lt) and hp > lp
+            rngFillBx := box.new(math.min(ht, lt), hp, time + tfMs * 4, lp, xloc = xloc.bar_time, border_color = CIV, bgcolor = cRngF)
+
+// an edge being taken is the event worth an alert - the projection is context.
+// !! array.get(x, i)[1] IS NOT A LEGAL HISTORY READ - the offset cannot be
+//    applied to a call result - so the previous state travels in its own array.
+var array<int>  tkN  = array.new_int(1, 0)
+var array<bool> eTkP = array.new<bool>(6, false)
+if barstate.isconfirmed
+    for i = 0 to 5
+        if array.get(eTk, i) and not array.get(eTkP, i)
+            array.set(tkN, 0, array.get(tkN, 0) + 1)
+        array.set(eTkP, i, array.get(eTk, i))
+int tkNv = array.get(tkN, 0)
+alertcondition(ta.change(tkNv) > 0, "Range edge taken", "DSTL: a range edge has been swept")
+
+
+
+ // Session / previous-day additions. Original swing engine remains unchanged.
+gAdd = "Session and previous-day liquidity"
+addSessions = input.bool(true, "Show completed session H/L (up to 1H)", group = gAdd)
+addPD = input.bool(true, "Show previous-day high / low", group = gAdd)
+circleOn = input.bool(true, "Circle markers on liquidity extremes", group = gAdd)
+extraLines = input.bool(true, "Session / PD level lines", group = gAdd)
+extraNames = input.bool(true, "Session / PD names at extremes", group = gAdd)
+sessTZ = input.string("America/New_York", "Session timezone", group = gAdd)
+sessAsia = input.session("1800-0000", "Asia", group = gAdd)
+sessLondon = input.session("0200-0500", "London", group = gAdd)
+sessNY = input.session("0930-1200", "New York AM", group = gAdd)
+sessPM = input.session("1300-1600", "New York PM", group = gAdd)
+asiaInk = input.color(color.yellow, "Asia colour", group = gAdd)
+londonInk = input.color(color.blue, "London colour", group = gAdd)
+nyInk = input.color(color.green, "New York AM colour", group = gAdd)
+pmInk = input.color(color.purple, "New York PM colour", group = gAdd)
+pdInk = input.color(#b54b57, "Previous-day colour", group = gAdd)
+swingInk = input.color(#607d8b, "BSL / SSL circle colour", group = gAdd)
+markerGap = input.float(0.08, "Circle gap (chart ATR)", minval = 0, step = 0.01, group = gAdd)
+
+// 0..7: last completed Asia/London/NY AM/NY PM H/L, 8..9: PDH/PDL.
+var array<float> xp = array.new_float(10, na)
+var array<int> xt = array.new_int(10, na)
+var array<bool> taken = array.new_bool(10, false)
+var array<float> sHi = array.new_float(4, na)
+var array<float> sLo = array.new_float(4, na)
+var array<int> sHt = array.new_int(4, na)
+var array<int> sLt = array.new_int(4, na)
+var array<bool> sWas = array.new_bool(4, false)
+var array<bool> sFull = array.new_bool(4, false)
+var array<bool> sSeen = array.new_bool(4, false)
+var array<label> addLabels = array.new<label>()
+var array<line> addLines = array.new<line>()
+
+f_extraName(int i) =>
+    i == 8 ? "PDH" : i == 9 ? "PDL" : (i < 2 ? "Asia" : i < 4 ? "London" : i < 6 ? "NY AM" : "NY PM") + (i % 2 == 0 ? " H" : " L")
+
+f_extraColour(int i) =>
+    i >= 8 ? pdInk : i < 2 ? asiaInk : i < 4 ? londonInk : i < 6 ? nyInk : pmInk
+
+f_sessionStep(int bt, float bh, float bl, bool a, bool l, bool n, bool p) =>
+    // Retire existing levels before creating newly completed session levels.
+    for j = 0 to 7
+        float px = array.get(xp, j)
+        if not na(px) and not array.get(taken, j) and (j % 2 == 0 ? bh >= px : bl <= px)
+            array.set(taken, j, true)
+    for j = 0 to 3
+        bool inside = j == 0 ? a : j == 1 ? l : j == 2 ? n : p
+        bool was = array.get(sWas, j)
+        if inside
+            if not was
+                array.set(sHi, j, bh)
+                array.set(sLo, j, bl)
+                array.set(sHt, j, bt)
+                array.set(sLt, j, bt)
+                // Do not publish a partial session at the beginning of history.
+                array.set(sFull, j, array.get(sSeen, j))
+            else
+                if bh > array.get(sHi, j)
+                    array.set(sHi, j, bh)
+                    array.set(sHt, j, bt)
+                if bl < array.get(sLo, j)
+                    array.set(sLo, j, bl)
+                    array.set(sLt, j, bt)
+        else if was and array.get(sFull, j)
+            array.set(xp, j * 2, array.get(sHi, j))
+            array.set(xp, j * 2 + 1, array.get(sLo, j))
+            array.set(xt, j * 2, array.get(sHt, j))
+            array.set(xt, j * 2 + 1, array.get(sLt, j))
+            // First out-of-session minute can already consume an extreme.
+            array.set(taken, j * 2, bh >= array.get(sHi, j))
+            array.set(taken, j * 2 + 1, bl <= array.get(sLo, j))
+        array.set(sWas, j, inside)
+        array.set(sSeen, j, true)
+
+[mt, mc, mh, ml, ma, mlo, mn, mp] = request.security_lower_tf(syminfo.tickerid, "1",
+     [time, time_close, high, low, not na(time("1", sessAsia, sessTZ)), not na(time("1", sessLondon, sessTZ)),
+      not na(time("1", sessNY, sessTZ)), not na(time("1", sessPM, sessTZ))], ignore_invalid_timeframe = true, calc_bars_count = 100000)
+bool sessionVisible = addSessions and _tfs <= 3600
+if sessionVisible
+    if _tfs <= 60
+        if barstate.isconfirmed
+            f_sessionStep(time, high, low, not na(time(timeframe.period, sessAsia, sessTZ)), not na(time(timeframe.period, sessLondon, sessTZ)), not na(time(timeframe.period, sessNY, sessTZ)), not na(time(timeframe.period, sessPM, sessTZ)))
+    else if array.size(mt) > 0
+        for j = 0 to array.size(mt) - 1
+            if barstate.ishistory or array.get(mc, j) <= timenow
+                f_sessionStep(array.get(mt, j), array.get(mh, j), array.get(ml, j), array.get(ma, j), array.get(mlo, j), array.get(mn, j), array.get(mp, j))
+
+// Confirmed feed daily values; daily boundaries follow the symbol's exchange/feed.
+[pdh, pdl, pdt, pdc] = request.security(syminfo.tickerid, "D", [high[1], low[1], time[1], time_close[1]], lookahead = barmerge.lookahead_on)
+bool pdVisible = addPD and _tfs <= 86400
+if pdVisible and not na(pdt)
+    if na(pdt[1]) or pdt != pdt[1]
+        array.set(xp, 8, pdh)
+        array.set(xp, 9, pdl)
+        array.set(xt, 8, f_ltfOrigin(pdt, true, pdc - pdt))
+        array.set(xt, 9, f_ltfOrigin(pdt, false, pdc - pdt))
+        array.set(taken, 8, false)
+        array.set(taken, 9, false)
+    if high >= pdh
+        array.set(taken, 8, true)
+    if low <= pdl
+        array.set(taken, 9, true)
+
+f_extraLive(int i) =>
+    float px = array.get(xp, i)
+    bool visible = i < 8 ? sessionVisible : pdVisible
+    // Session retirement is minute-based; do not use a whole chart bar that
+    // might include the session's own origin wick.
+    visible and not na(px) and not array.get(taken, i)
+
+if barstate.islast
+    while array.size(addLabels) > 0
+        label.delete(array.pop(addLabels))
+    while array.size(addLines) > 0
+        line.delete(array.pop(addLines))
+    float pad = math.max(syminfo.mintick * 2, nz(atr, syminfo.mintick) * markerGap)
+    for i = 0 to 15
+        bool swing = i < 6
+        int j = i - 6
+        bool isH = i % 2 == 0
+        bool live = false
+        float px = na
+        int origin = na
+        color ink = swingInk
+        string name = ""
+        if swing
+            bool enabled = i < 2 ? useChart : i < 4 ? govOk : g2Ok
+            px := array.get(eP, i)
+            origin := array.get(eT, i)
+            live := enabled and not na(px) and not array.get(eTk, i) and not (isH ? high > px : low < px)
+        else
+            px := array.get(xp, j)
+            origin := array.get(xt, j)
+            ink := f_extraColour(j)
+            name := f_extraName(j)
+            live := f_extraLive(j)
+        if live and not na(origin)
+            if circleOn
+                array.push(addLabels, label.new(origin, px + (isH ? pad : -pad), "○", xloc = xloc.bar_time, style = label.style_none, textcolor = ink, size = size.small))
+            if not swing
+                if extraNames
+                    array.push(addLabels, label.new(origin, px + (isH ? pad * 3 : -pad * 3), name, xloc = xloc.bar_time, style = label.style_none, textcolor = ink, size = size.tiny))
+                if extraLines
+                    array.push(addLines, line.new(origin, px, time + tfMs * 4, px, xloc = xloc.bar_time, color = color.new(ink, 35), width = 1, style = line.style_dotted))
+
+
+gGap = "HTF 1 unmitigated FVGs"
+chartGapOn = input.bool(true, "Include chart gaps in tables", group = gGap)
+chartGapShow = input.bool(false, "Show recent chart gaps on chart", group = gGap)
+chartGapRecent = input.int(3, "Recent chart gaps to draw", minval = 1, maxval = 20, group = gGap)
+gapOn = input.bool(true, "Show HTF 1 gaps", group = gGap, tooltip = "Uses the selected governing timeframe. Auto: 15-minute chart = 4H gaps. Only closed source candles form gaps.")
+gapBoxes = input.bool(true, "Draw gap boxes", group = gGap)
+gapNames = input.bool(true, "Label gaps", group = gGap)
+gapMit = input.string("First touch", "Remove gap after", options = ["First touch", "Full fill"], group = gGap)
+gapLimit = input.int(30, "Maximum retained gaps", minval = 1, maxval = 60, group = gGap)
+gapColour = input.color(#787b86, "Gap colour", group = gGap)
+gapTransparency = input.int(90, "Box transparency", minval = 0, maxval = 100, group = gGap)
+var array<float> gapLo = array.new_float()
+var array<float> gapHi = array.new_float()
+var array<int> gapDir = array.new_int()
+var array<bool> gapIsChart = array.new_bool()
+var array<int> gapOrigin = array.new_int()
+var array<box> gapInk = array.new<box>()
+var array<label> gapLabels = array.new<label>()
+var int gapSeen = na
+// Non-lookahead data: previous closed HTF candle and two candles before it.
+[fl1, fh1, fl3, fh3, ft1, ft3] = request.security(syminfo.tickerid, govTFq,
+     [low[1], high[1], low[3], high[3], time[1], time[3]], lookahead = barmerge.lookahead_on)
+bool gapEnabled = gapOn and govSec > _tfs
+if gapEnabled and not na(ft1) and (na(gapSeen) or ft1 != gapSeen)
+    gapSeen := ft1
+    bool bullGap = fl1 > fh3
+    bool bearGap = fh1 < fl3
+    if bullGap or bearGap
+        array.push(gapLo, bullGap ? fh3 : fh1)
+        array.push(gapHi, bullGap ? fl1 : fl3)
+        array.push(gapDir, bullGap ? 1 : -1)
+        array.push(gapIsChart, false)
+        array.push(gapOrigin, f_ltfOrigin(ft3, bullGap, govMs))
+// Current chart wicks retire a gap immediately, including the first bar after
+// HTF confirmation. Creation candles cannot consume their own new gap.
+if array.size(gapLo) > 0
+    for j = array.size(gapLo) - 1 to 0
+        bool bull = array.get(gapDir, j) == 1
+        float lo = array.get(gapLo, j)
+        float hi = array.get(gapHi, j)
+        bool hit = bull ? low <= (gapMit == "First touch" ? hi : lo) : high >= (gapMit == "First touch" ? lo : hi)
+        if hit
+            array.remove(gapLo, j)
+            array.remove(gapHi, j)
+            array.remove(gapDir, j)
+            array.remove(gapIsChart, j)
+            array.remove(gapOrigin, j)
+
+// Add chart gaps AFTER mitigation: a formation candle cannot fill its own gap.
+if chartGapOn and barstate.isconfirmed and bar_index >= 2
+    bool bullChartGap = low > high[2]
+    bool bearChartGap = high < low[2]
+    if bullChartGap or bearChartGap
+        array.push(gapLo, bullChartGap ? high[2] : high)
+        array.push(gapHi, bullChartGap ? low : low[2])
+        array.push(gapDir, bullChartGap ? 1 : -1)
+        array.push(gapIsChart, true)
+        array.push(gapOrigin, time[2])
+// Keep an independent cap per source, so frequent chart gaps cannot evict HTF gaps.
+for source = 0 to 1
+    int count = 0
+    if array.size(gapLo) > 0
+        for j = array.size(gapLo) - 1 to 0
+            if array.get(gapIsChart, j) == (source == 1)
+                count += 1
+                if count > gapLimit
+                    array.remove(gapLo, j)
+                    array.remove(gapHi, j)
+                    array.remove(gapDir, j)
+                    array.remove(gapIsChart, j)
+                    array.remove(gapOrigin, j)
+
+f_gapName(int j) =>
+    (array.get(gapIsChart, j) ? curTag : govTag) + " FVG"
+
+f_gapTarget(int j) =>
+    bool bull = array.get(gapDir, j) == 1
+    // With full-fill mode the far boundary remains the outstanding draw.
+    bull ? (gapMit == "First touch" ? array.get(gapHi, j) : array.get(gapLo, j)) : (gapMit == "First touch" ? array.get(gapLo, j) : array.get(gapHi, j))
+
+if barstate.islast
+    while array.size(gapInk) > 0
+        box.delete(array.pop(gapInk))
+    while array.size(gapLabels) > 0
+        label.delete(array.pop(gapLabels))
+    int recentChartCount = 0
+    if array.size(gapLo) > 0
+        for j = array.size(gapLo) - 1 to 0
+            bool chartSource = array.get(gapIsChart, j)
+            if chartSource
+                recentChartCount += 1
+            bool showGap = chartSource ? chartGapShow and recentChartCount <= chartGapRecent : gapEnabled
+            if not showGap
+                continue
+            if gapBoxes
+                array.push(gapInk, box.new(array.get(gapOrigin, j), array.get(gapHi, j), time + tfMs * 4, array.get(gapLo, j), xloc = xloc.bar_time, bgcolor = color.new(gapColour, gapTransparency), border_color = color.new(gapColour, 65)))
+            if gapNames
+                array.push(gapLabels, label.new(time + tfMs * 4, f_gapTarget(j), f_gapName(j), xloc = xloc.bar_time, style = label.style_label_left, color = CIV, textcolor = gapColour, size = size.tiny))
+
+// ============================================================================
+// LIQUIDITY DRAW TABLES — presentation only; existing engine above unchanged.
+// Reads enabled, untaken BSL/SSL edges. No additional liquidity detectors.
+// Reference layout: prices descend in both tables; above far-to-near, below near-to-far.
+// ============================================================================
+dtGroup = "Liquidity draw tables"
+dtOn = input.bool(true, "Show liquidity draw tables", group = dtGroup)
+dtSide = input.string("Right", "Table side", options = ["Right", "Left"], group = dtGroup)
+dtRows = input.int(6, "Maximum rows per table", minval = 1, maxval = 16, group = dtGroup)
+dtSize = input.string("Tiny", "Text size", options = ["Tiny", "Small", "Normal"], group = dtGroup)
+dtUnit = input.string("Points", "Distance unit", options = ["Points", "Ticks", "Percent"], group = dtGroup)
+dtBg = input.color(color.white, "Body background", group = dtGroup)
+dtHead = input.color(color.black, "Header background", group = dtGroup)
+dtText = input.color(color.black, "Body text", group = dtGroup)
+dtHeaderText = input.color(color.white, "Header text", group = dtGroup)
+dtChart = input.color(color.black, "Chart-tier text", group = dtGroup)
+dtGov = input.color(#2962ff, "HTF 1 text", group = dtGroup)
+dtG2 = input.color(#2962ff, "HTF 2 text", group = dtGroup)
+
+f_dtSize() =>
+    dtSize == "Tiny" ? size.tiny : dtSize == "Normal" ? size.normal : size.small
+
+f_dtDistance(float px) =>
+    float distance = math.abs(px - close)
+    dtUnit == "Ticks" ? str.tostring(distance / syminfo.mintick, "#.##") : dtUnit == "Percent" ? (close != 0 ? str.tostring(distance / math.abs(close) * 100, "#.###") + "%" : "—") : str.tostring(distance, format.mintick)
+
+f_dtPaint(table target, array<int> edges, string heading) =>
+    table.clear(target, 0, 0, 2, dtRows)
+    if dtOn
+        table.cell(target, 0, 0, heading, bgcolor = dtHead, text_color = dtHeaderText, text_size = f_dtSize(), text_font_family = font.family_monospace)
+        table.cell(target, 1, 0, "Price", bgcolor = dtHead, text_color = dtHeaderText, text_size = f_dtSize(), text_font_family = font.family_monospace)
+        table.cell(target, 2, 0, "Away", bgcolor = dtHead, text_color = dtHeaderText, text_size = f_dtSize(), text_font_family = font.family_monospace)
+        int count = math.min(array.size(edges), dtRows)
+        if count == 0
+            table.cell(target, 0, 1, "No active draws", bgcolor = dtBg, text_color = dtText, text_size = f_dtSize(), text_font_family = font.family_monospace)
+        else
+            for row = 0 to count - 1
+                int edge = array.get(edges, row)
+                int tier = int(edge / 2)
+                string tag = edge < 6 ? (tier == 0 ? curTag : tier == 1 ? govTag : g2Tag) + (edge % 2 == 0 ? " BSL" : " SSL") : edge < 16 ? f_extraName(edge - 6) : f_gapName(edge - 16)
+                color ink = edge < 6 ? (tier == 0 ? dtChart : tier == 1 ? dtGov : dtG2) : edge < 16 ? f_extraColour(edge - 6) : gapColour
+                float px = edge < 6 ? array.get(eP, edge) : edge < 16 ? array.get(xp, edge - 6) : f_gapTarget(edge - 16)
+                table.cell(target, 0, row + 1, tag, bgcolor = dtBg, text_color = ink, text_size = f_dtSize(), text_font_family = font.family_monospace)
+                table.cell(target, 1, row + 1, str.tostring(px, format.mintick), bgcolor = dtBg, text_color = ink, text_size = f_dtSize(), text_font_family = font.family_monospace)
+                table.cell(target, 2, row + 1, f_dtDistance(px), bgcolor = dtBg, text_color = dtText, text_size = f_dtSize(), text_font_family = font.family_monospace)
+
+var table dtAbove = table.new(dtSide == "Right" ? position.top_right : position.top_left, 3, dtRows + 1)
+var table dtBelow = table.new(dtSide == "Right" ? position.bottom_right : position.bottom_left, 3, dtRows + 1)
+if barstate.islast
+    array<int> above = array.new_int()
+    array<int> below = array.new_int()
+    int gapCount = array.size(gapLo)
+    array<float> distance = array.new_float(16 + gapCount, na)
+    for i = 0 to 5
+        bool enabled = i < 2 ? useChart : i < 4 ? govOk : g2Ok
+        float px = array.get(eP, i)
+        // Also hide an intrabar breach before the original close-confirmed
+        // engine retires it. This does not mutate its state or its alerts.
+        bool breachedNow = not na(px) and (i % 2 == 0 ? high > px : low < px)
+        if enabled and not na(px) and not array.get(eTk, i) and not breachedNow
+            array.set(distance, i, math.abs(px - close))
+    for j = 0 to 9
+        if f_extraLive(j)
+            array.set(distance, j + 6, math.abs(array.get(xp, j) - close))
+    if gapCount > 0
+        for j = 0 to gapCount - 1
+            array.set(distance, j + 16, math.abs(f_gapTarget(j) - close))
+    array<int> ranked = array.sort_indices(distance, order.ascending)
+    for j = 0 to array.size(ranked) - 1
+        int i = array.get(ranked, j)
+        if not na(array.get(distance, i))
+            float px = i < 6 ? array.get(eP, i) : i < 16 ? array.get(xp, i - 6) : f_gapTarget(i - 16)
+            if px > close
+                array.unshift(above, i)
+            else if px < close
+                array.push(below, i)
+    f_dtPaint(dtAbove, above, "Draw above")
+    f_dtPaint(dtBelow, below, "Draw below")

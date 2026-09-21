@@ -1,0 +1,1278 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// STP Flip
+// ══════════════════════════════════════════════════════════
+// Author:  Christian House and WillyAlgoTrader
+// Version: 1.4.0 PRO — optional anti-whipsaw filters, realistic trailing exits, smart sizing, progressive profit lock
+// Pine Script v6 syntax reviewed against the current TradingView v6 strategy API.
+// ══════════════════════════════════════════════════════════
+
+strategy(
+     title             = "STP Flip",
+     shorttitle        = "STP FLIP",
+     overlay           = true,
+     max_lines_count   = 500,
+     max_labels_count  = 500,
+     max_boxes_count   = 100,
+     max_bars_back     = 5000,
+     pyramiding        = 0,
+     process_orders_on_close = true,
+     calc_on_order_fills = false,
+     use_bar_magnifier = true,
+     margin_long       = 1,
+     margin_short      = 1,
+     default_qty_type  = strategy.fixed,
+     default_qty_value = 1)
+
+
+// ══════════════════════════════════════════════════════════
+// 2. CONSTANTS
+// ══════════════════════════════════════════════════════════
+
+INDICATOR_VERSION = "v1.4.0 PRO"
+
+// Group labels (consistent ordering across the panel)
+GRP_MAIN    = "⚙️ Main Settings"
+GRP_FILTER  = "🔍 Signal Filters"
+GRP_REGIME  = "🌊 Market Regime"
+GRP_RISK    = "🛡️ Risk Management"
+GRP_TRADE_RISK = "🎯 Per-Trade P/L Limits"
+GRP_PROFIT_TRAIL = "🪂 Profit Trailing Stop"
+GRP_FLIP_PRO = "🧠 Flip Protection & Smart Sizing"
+GRP_VISUAL  = "🎨 Visual"
+GRP_DASH    = "📊 Dashboard"
+GRP_ALERT   = "🔔 Alerts"
+GRP_COLORS  = "🎨 Colors"
+
+// Signal grade thresholds (Quality Score 0-100)
+GRADE_A_THRESHOLD = 75
+GRADE_B_THRESHOLD = 55
+
+// Regime thresholds
+REGIME_TRENDING = 60   // score >= 60 → trending
+REGIME_CHOPPY   = 35   // score < 35  → choppy
+
+// Visual layout constants (ported from VWSR)
+LINE_FORWARD_BARS = 20    // SL/TP line forward extension on entry
+LINE_UPDATE_BARS  = 5     // SL/TP line forward extension during update
+LABEL_OFFSET_BARS = 1     // label offset from line endpoint
+
+// Same-bar guard: ignore SL/TP hits on the very first bar of a trade.
+// Prevents a hairpin wick from closing a brand-new position.
+// 1 = the entry bar is excluded from hit checks (next bar onward is live).
+ENTRY_BAR_HOLD = 1
+
+
+// ══════════════════════════════════════════════════════════
+// 3. INPUTS
+// ══════════════════════════════════════════════════════════
+
+// ── Main ────────────────────────────────────────────────
+atrLenInput = input.int(13, "ATR Length", minval = 5, maxval = 100, group = GRP_MAIN,
+     tooltip = "ATR period for volatility band.\n" +
+               "• 13 = standard (recommended)\n" +
+               "• Lower = more reactive, more whipsaw\n" +
+               "• Higher = smoother, slower turns")
+
+baseMultInput = input.float(1.618, "Base ATR Multiplier", minval = 0.5, maxval = 6.0, step = 0.1, group = GRP_MAIN,
+     tooltip = "Base width of the trailing band.\n" +
+               "Auto-adjusted by volatility regime if adaptive is on.\n" +
+               "• 1.0-1.5 = aggressive (more signals)\n" +
+               "• 1.618 = golden ratio (default, balanced)\n" +
+               "• 2.0-2.5 = standard balanced\n" +
+               "• 3.5+ = conservative")
+
+trailLenInput = input.int(21, "Trail EMA Length", minval = 5, maxval = 100, group = GRP_MAIN,
+     tooltip = "EMA period for trail center.\n" +
+               "Trail = EMA(close) ± ATR×multiplier.\n" +
+               "Higher = smoother trail, fewer reversals")
+
+useAdaptiveMultInput = input.bool(false, "Adaptive Volatility Multiplier", group = GRP_MAIN,
+     tooltip = "When ON: multiplier auto-adjusts based on\n" +
+               "100-bar volatility percentile rank.\n" +
+               "• Low vol → narrower band\n" +
+               "• High vol → wider band\n" +
+               "Strongly recommended ON")
+
+useRatchetInput = input.bool(true, "Ratchet Trail (never loosens)", group = GRP_MAIN,
+     tooltip = "When ON: trail band only tightens in the\n" +
+               "direction of the position. Long: lower band\n" +
+               "never moves down; Short: upper band never\n" +
+               "moves up. Resets on direction flip.\n" +
+               "Standard SuperTrend-family behavior.")
+
+// ── Filters ─────────────────────────────────────────────
+minQualityInput = input.int(0, "Min Quality Score (0=show all)", minval = 0, maxval = 100, group = GRP_FILTER,
+     tooltip = "Hide signals below this Quality Score.\n" +
+               "• 0   = show all (default)\n" +
+               "• 55  = B grade or higher\n" +
+               "• 75  = A grade only")
+
+skipChoppyInput = input.bool(false, "Hard-skip Choppy Signals", group = GRP_FILTER,
+     tooltip = "When ON: signals in choppy regime are fully suppressed.\n" +
+               "When OFF: shown with ⚠ warning flag (recommended).\n" +
+               "Choppy regime = Market Regime Score below 35")
+
+useHtfFilterInput = input.bool(true, "Use HTF Bias Filter", group = GRP_FILTER,
+     tooltip = "Quality Score bonus for signals aligned with\n" +
+               "higher-timeframe trend (default 4× current TF).")
+
+htfTfInput = input.timeframe("", "HTF for Bias (empty = auto 4×)", group = GRP_FILTER,
+     tooltip = "Higher timeframe used for trend bias.\n" +
+               "Leave empty for automatic (4× current TF):\n" +
+               "• On 15M → 1H\n" +
+               "• On 1H  → 4H\n" +
+               "• On 4H  → 1D")
+
+useVolumeFilterInput = input.bool(false, "Use Volume Confirmation", group = GRP_FILTER,
+     tooltip = "Quality Score bonus when signal volume > avg.\n" +
+               "Auto-bypassed on FX (zero volume instruments).")
+
+volMultInput = input.float(1.3, "Volume Threshold (× SMA20)", minval = 1.0, maxval = 3.0, step = 0.1, group = GRP_FILTER,
+     tooltip = "Volume must exceed this multiple of 20-bar SMA\n" +
+               "to count as confirmation.")
+
+// ── Market Regime ───────────────────────────────────────
+adxLenInput = input.int(14, "ADX Length", minval = 5, maxval = 50, group = GRP_REGIME,
+     tooltip = "ADX period for trend strength measurement.\n" +
+               "ADX > 25 typically indicates trending market.")
+
+choppinessLenInput = input.int(14, "Choppiness Length", minval = 5, maxval = 50, group = GRP_REGIME,
+     tooltip = "Choppiness Index period.\n" +
+               "Higher values = smoother regime transitions.")
+
+regimeLenInput = input.int(50, "R² Regression Length", minval = 20, maxval = 200, group = GRP_REGIME,
+     tooltip = "Linear regression length for R² (linearity).\n" +
+               "Higher R² = more linear/trending price action.")
+
+// ── Optional anti-whipsaw / trend-quality controls ─────────
+useTrendAlignmentInput = input.bool(false, "Use EMA Trend Alignment", group = GRP_FILTER,
+     tooltip = "When ON: initial entries require EMA fast/slow alignment with the signal direction.")
+trendFastLenInput = input.int(21, "  Fast EMA Length", minval = 2, maxval = 100, group = GRP_FILTER)
+trendSlowLenInput = input.int(50, "  Slow EMA Length", minval = 5, maxval = 200, group = GRP_FILTER)
+useTrendSlopeInput = input.bool(false, "  Require Slow EMA Slope", group = GRP_FILTER,
+     tooltip = "When ON: long signals require a rising slow EMA; short signals require a falling slow EMA.")
+
+useVolExpansionInput = input.bool(false, "Use Volatility Expansion", group = GRP_FILTER,
+     tooltip = "When ON: entries require current ATR to exceed its ATR average by the configured multiplier.")
+volExpansionLenInput = input.int(20, "  ATR Expansion Average Length", minval = 5, maxval = 100, group = GRP_FILTER)
+volExpansionMultInput = input.float(1.0, "  ATR Expansion Threshold (× Average)", minval = 0.5, maxval = 3.0, step = 0.05, group = GRP_FILTER)
+
+useMinBreakoutInput = input.bool(false, "Use Minimum Breakout Distance", group = GRP_FILTER,
+     tooltip = "When ON: signals require the close to penetrate the prior Synapse band by at least the configured ATR amount.")
+minBreakoutAtrInput = input.float(0.20, "  Minimum Breakout (× ATR)", minval = 0.0, maxval = 2.0, step = 0.05, group = GRP_FILTER)
+
+// ── Strategy Management ─────────────────────────────────
+// This strategy has NO fixed SL/TP. A position stays open until the
+// Synapse direction flips (or, optionally, until a per-trade profit
+// target / loss limit below closes it early). On a flip, the strategy
+// reverses and uses the configured multiplier on the new direction.
+baseQtyInput = input.float(1.0, "Starting Contracts", minval = 0.01, step = 1.0, group = GRP_RISK,
+     tooltip = "Initial position size. The first signal uses this size.")
+flipMultiplierInput = input.float(2.0, "Flip Size Multiplier", minval = 1.0, step = 0.5, group = GRP_RISK,
+     tooltip = "Position size multiplier applied after every flip. 2.0 means 1 → 2 → 4 → 8...")
+maxQtyInput = input.float(0.0, "Maximum Contracts (0 = unlimited)", minval = 0.0, step = 1.0, group = GRP_RISK,
+     tooltip = "Safety cap for the doubling sequence. 0 disables the cap.")
+
+// ── Optional PRO flip controls ─────────────────────────────
+useFlipConfirmationInput = input.bool(false, "Use Flip Confirmation", group = GRP_FLIP_PRO,
+     tooltip = "When ON: opposite signals must remain valid for the configured number of bars and price must clear the flip trail by the configured ATR distance before the strategy reverses. Initial entries are unchanged.")
+flipConfirmBarsInput = input.int(1, "  Confirmation Bars", minval = 1, maxval = 5, group = GRP_FLIP_PRO,
+     tooltip = "Number of consecutive confirmed bars required after the raw direction flip. 1 = same-bar confirmation.")
+flipConfirmAtrInput = input.float(0.20, "  Minimum Flip Distance (× ATR)", minval = 0.0, maxval = 2.0, step = 0.05, group = GRP_FLIP_PRO,
+     tooltip = "Price must close this many ATR beyond the new Synapse trail before a flip is accepted. 0 disables the distance test.")
+
+useChopFlipProtectionInput = input.bool(false, "Protect Position From Choppy Flips", group = GRP_FLIP_PRO,
+     tooltip = "When ON: an opposite signal will NOT reverse an existing position while the Market Regime Score is below the Choppy threshold. Initial entries can still occur unless Hard-skip Choppy Signals is enabled.")
+
+useSmartFlipSizingInput = input.bool(false, "Use Smart Flip Sizing", group = GRP_FLIP_PRO,
+     tooltip = "When ON: replaces geometric doubling with a capped progression to reduce risk during repeated whipsaws.")
+smartFlip2xInput = input.float(2.0, "  Size After 1st Flip (× Base)", minval = 1.0, maxval = 5.0, step = 0.25, group = GRP_FLIP_PRO)
+smartFlip3xInput = input.float(2.0, "  Size After 2nd Flip (× Base)", minval = 1.0, maxval = 5.0, step = 0.25, group = GRP_FLIP_PRO)
+smartFlipMaxInput = input.float(3.0, "  Maximum Smart Size (× Base)", minval = 1.0, maxval = 10.0, step = 0.25, group = GRP_FLIP_PRO)
+resetSmartSizeAfterWinnerInput = input.bool(true, "Reset Smart Size After Winner", group = GRP_FLIP_PRO,
+     tooltip = "When ON: after a completed profitable trade, the smart flip progression resets so the next new position starts at the base size.")
+
+useFlipTrendFilterInput = input.bool(false, "Require Trend Alignment On Flips", group = GRP_FLIP_PRO,
+     tooltip = "When ON: reversals must also agree with the EMA trend alignment. Initial entries are unaffected.")
+useFlipVolExpansionInput = input.bool(false, "Require Volatility Expansion On Flips", group = GRP_FLIP_PRO,
+     tooltip = "When ON: reversals require ATR expansion. Initial entries are unaffected.")
+useFlipBreakoutInput = input.bool(false, "Require Stronger Breakout On Flips", group = GRP_FLIP_PRO,
+     tooltip = "When ON: reversals require the close to clear the prior Synapse band by at least the configured ATR distance.")
+flipMinBreakoutAtrInput = input.float(0.25, "  Minimum Flip Breakout (× ATR)", minval = 0.0, maxval = 2.0, step = 0.05, group = GRP_FLIP_PRO)
+useFlipCooldownInput = input.bool(false, "Minimum Bars Between Flips", group = GRP_FLIP_PRO,
+     tooltip = "When ON: prevents immediate flip-flop sequences. The counter resets after a new position is opened.")
+flipCooldownBarsInput = input.int(2, "  Cooldown Bars", minval = 1, maxval = 50, group = GRP_FLIP_PRO)
+
+useProgressiveLockInput = input.bool(false, "Use Progressive Profit Lock", group = GRP_PROFIT_TRAIL,
+     tooltip = "When ON: adds staged dollar profit locks to the existing profit trail. The original trail remains intact when OFF.")
+progressiveLock1Input = input.float(100.0, "  Stage 1 Profit ($)", minval = 0.0, step = 25.0, group = GRP_PROFIT_TRAIL)
+progressiveLock1PctInput = input.float(0.0, "  Stage 1 Lock ($)", minval = 0.0, step = 25.0, group = GRP_PROFIT_TRAIL)
+progressiveLock2Input = input.float(200.0, "  Stage 2 Profit ($)", minval = 0.0, step = 25.0, group = GRP_PROFIT_TRAIL)
+progressiveLock2PctInput = input.float(50.0, "  Stage 2 Lock ($)", minval = 0.0, step = 25.0, group = GRP_PROFIT_TRAIL)
+progressiveLock3Input = input.float(300.0, "  Stage 3 Profit ($)", minval = 0.0, step = 25.0, group = GRP_PROFIT_TRAIL)
+progressiveLock3PctInput = input.float(150.0, "  Stage 3 Lock ($)", minval = 0.0, step = 25.0, group = GRP_PROFIT_TRAIL)
+progressiveLock4Input = input.float(500.0, "  Stage 4 Profit ($)", minval = 0.0, step = 25.0, group = GRP_PROFIT_TRAIL)
+progressiveLock4PctInput = input.float(300.0, "  Stage 4 Lock ($)", minval = 0.0, step = 25.0, group = GRP_PROFIT_TRAIL)
+progressiveLockTrailAtrInput = input.float(1.5, "  Progressive Trail (× ATR)", minval = 0.1, maxval = 10.0, step = 0.1, group = GRP_PROFIT_TRAIL,
+     tooltip = "ATR trail used by the progressive lock mode. It is combined with the staged dollar lock and always ratchets tighter.")
+flattenOnDailyLimitInput = input.bool(true, "Flatten When Daily Limit Is Hit", group = GRP_RISK,
+     tooltip = "When enabled, an open position is closed when the daily profit target or loss limit is reached.")
+
+// ── Per-Trade P/L Limits (independent of the daily limits above) ──
+usePerTradeProfitInput = input.bool(false, "Enable Per-Trade Profit Target", group = GRP_TRADE_RISK,
+     tooltip = "When ON: closes the CURRENT open trade as soon as its\n" +
+               "unrealized profit reaches the target below.\n" +
+               "This is separate from the Daily Profit Target — it acts\n" +
+               "on a single trade, not the whole day.")
+perTradeProfitTargetInput = input.float(0.0, "Per-Trade Profit Target ($)", minval = 0.0, step = 25.0, group = GRP_TRADE_RISK,
+     tooltip = "Dollar profit target for the current open trade.\n" +
+               "0 = disabled even if the checkbox above is on.")
+usePerTradeLossInput = input.bool(false, "Enable Per-Trade Loss Limit", group = GRP_TRADE_RISK,
+     tooltip = "When ON: closes the CURRENT open trade as soon as its\n" +
+               "unrealized loss reaches the limit below.\n" +
+               "This is separate from the Daily Loss Limit — it acts\n" +
+               "on a single trade, not the whole day.")
+perTradeLossLimitInput = input.float(0.0, "Per-Trade Loss Limit ($)", minval = 0.0, step = 25.0, group = GRP_TRADE_RISK,
+     tooltip = "Dollar loss limit for the current open trade.\n" +
+               "0 = disabled even if the checkbox above is on.\n" +
+               "Note: since flip size doubles after every flip, a fixed\n" +
+               "dollar loss limit corresponds to a shrinking price move\n" +
+               "as size grows. Consider this alongside the Flip Size\n" +
+               "Multiplier and Maximum Contracts settings.")
+
+// ── Profit Trailing Stop (independent of the daily/per-trade limits above) ──
+useProfitTrailInput = input.bool(false, "Enable Profit Trailing Stop", group = GRP_PROFIT_TRAIL,
+     tooltip = "When ON: once the open trade's unrealized profit\n" +
+               "reaches the arming threshold below, a trailing stop\n" +
+               "attaches to the trade and follows price, locking in\n" +
+               "gains as the trade moves further in your favor.\n" +
+               "Independent of the Per-Trade Profit/Loss limits above —\n" +
+               "this trails behind price instead of exiting at one\n" +
+               "fixed level.")
+
+trailArmProfitInput = input.float(100.0, "Arm After Profit ($)", minval = 0.0, step = 25.0, group = GRP_PROFIT_TRAIL,
+     tooltip = "Unrealized profit (strategy.openprofit) required before\n" +
+               "the trailing stop arms and starts following price.\n" +
+               "0 = arm immediately on entry (trails from tick one).")
+
+trailStopModeInput = input.string("ATR Multiple", "Trail Distance Mode",
+     options = ["ATR Multiple", "Fixed Points"], group = GRP_PROFIT_TRAIL,
+     tooltip = "How the trailing distance behind the peak favorable\n" +
+               "price is measured.\n" +
+               "• ATR Multiple: scales with current volatility —\n" +
+               "  matches the Synapse trail's own logic (recommended)\n" +
+               "• Fixed Points: a constant price distance regardless\n" +
+               "  of volatility")
+
+trailStopAtrMultInput = input.float(1.5, "  Trail Distance (× ATR)", minval = 0.1, step = 0.1, group = GRP_PROFIT_TRAIL,
+     tooltip = "Distance behind the peak favorable price, in ATR\n" +
+               "multiples. Only used when mode = ATR Multiple.")
+
+trailStopPointsInput = input.float(20.0, "  Trail Distance (points)", minval = 0.25, step = 0.25, group = GRP_PROFIT_TRAIL,
+     tooltip = "Distance behind the peak favorable price, in price\n" +
+               "points. Only used when mode = Fixed Points.")
+
+lockBreakevenInput = input.bool(true, "Never Trail Below Breakeven", group = GRP_PROFIT_TRAIL,
+     tooltip = "When ON: once armed, the trailing stop is never placed\n" +
+               "worse than the position's average entry price — once\n" +
+               "armed, the trade can no longer turn into a net loss.\n" +
+               "When OFF: the trail can sit below breakeven early on,\n" +
+               "which means a pullback right after arming could still\n" +
+               "close the trade for a small loss.")
+
+// ── Time / Day Controls ──────────────────────────────────
+GRP_TIME = "⏰ Time & Day Controls"
+timeZoneInput = input.string("America/New_York", "Time Zone", options = ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Etc/UTC"], group = GRP_TIME)
+sessionInput = input.session("1801-1600", "Trading Time", group = GRP_TIME,
+     tooltip = "Trading window. Overnight sessions such as 1801-1600 are supported.")
+tradeMondayInput = input.bool(true, "Monday", inline = "days", group = GRP_TIME)
+tradeTuesdayInput = input.bool(true, "Tuesday", inline = "days", group = GRP_TIME)
+tradeWednesdayInput = input.bool(true, "Wednesday", inline = "days", group = GRP_TIME)
+tradeThursdayInput = input.bool(true, "Thursday", inline = "days", group = GRP_TIME)
+tradeFridayInput = input.bool(true, "Friday", inline = "days", group = GRP_TIME)
+tradeSaturdayInput = input.bool(false, "Saturday", inline = "days2", group = GRP_TIME)
+tradeSundayInput = input.bool(true, "Sunday", inline = "days2", group = GRP_TIME)
+
+useDelayedEntryInput = input.bool(false, "Delay Entries One Bar", group = GRP_TIME,
+     tooltip = "When ON: confirmed signals are queued and the market order is submitted on the following bar. With process_orders_on_close enabled, the submitted order fills on that bar's close; use Strategy Properties > Fill orders > On next available tick for the most conservative execution test.")
+
+GRP_DAILY = "💰 Daily P/L Limits"
+dailyProfitTargetInput = input.float(0.0, "Daily Profit Target ($, 0 = off)", minval = 0.0, step = 50.0, group = GRP_DAILY)
+dailyLossLimitInput = input.float(0.0, "Daily Loss Limit ($, 0 = off)", minval = 0.0, step = 50.0, group = GRP_DAILY)
+plResetTimeInput = input.string("18:00", "Daily P/L Reset Time", group = GRP_DAILY,
+     tooltip = "P/L day resets at this time in the selected time zone. 18:00 is useful for an overnight futures session.")
+
+// ── Visual ──────────────────────────────────────────────
+themeInput = input.string("Auto", "Theme",
+     options = ["Auto", "Dark", "Light"],
+     group   = GRP_VISUAL,
+     tooltip = "Chart color theme.\n" +
+               "• Auto: detects from chart background\n" +
+               "• Dark: optimized for dark backgrounds\n" +
+               "• Light: optimized for light backgrounds")
+
+showTrailInput      = input.bool(true,  "Show Trail Line",     group = GRP_VISUAL)
+trailStyleInput = input.string("Adaptive (Bull/Bear)", "Trail Color Scheme",
+     options = ["Adaptive (Bull/Bear)", "Premium Indigo", "Monochrome"],
+     group   = GRP_VISUAL,
+     tooltip = "Color philosophy for the trail line.\n" +
+               "• Adaptive: bright bull/bear colors (high visibility)\n" +
+               "• Premium Indigo: muted indigo/terracotta — keeps the\n" +
+               "  trail as background context, doesn't compete with\n" +
+               "  SL/TP levels (recommended for clean look)\n" +
+               "• Monochrome: theme-aware grey with subtle direction tint")
+trailWidthInput = input.int(2, "Trail Line Width", minval = 1, maxval = 4, group = GRP_VISUAL,
+     tooltip = "Trail line thickness in pixels.\n" +
+               "1 = ultra-thin (premium look, default)\n" +
+               "2 = standard\n" +
+               "3-4 = bold (legacy / high-visibility)")
+trailHistoryBarsInput = input.int(0, "Trail History Bars (0 = all)", minval = 0, maxval = 500, group = GRP_VISUAL,
+     tooltip = "Limit how far back the trail line is drawn.\n" +
+               "0 = full history (legacy)\n" +
+               "50 = last 50 bars only (default — keeps focus on\n" +
+               "     recent price action, reduces visual noise)")
+
+trailDoubleInput = input.bool(true, "Double Trail Line", group = GRP_VISUAL,
+     tooltip = "Draws a secondary dotted line parallel to the main\n" +
+               "trail, offset by a fraction of ATR in the direction of\n" +
+               "the trail's risk zone:\n" +
+               "• Long: secondary BELOW main trail\n" +
+               "• Short: secondary ABOVE main trail\n" +
+               "Creates a 'channel' visual that reads as the soft/hard\n" +
+               "limit zone. Premium fintech aesthetic.")
+
+trailOffsetInput = input.float(0.25, "  Double Trail Offset (× ATR)", minval = 0.05, maxval = 1.0, step = 0.05, group = GRP_VISUAL,
+     tooltip = "Distance between primary and secondary trail line,\n" +
+               "as a multiple of ATR. Scales naturally across symbols.\n" +
+               "• 0.1-0.2 = tight (subtle accent)\n" +
+               "• 0.25 = balanced (default)\n" +
+               "• 0.4+ = wide channel feel")
+
+showSignalsInput    = input.bool(true,  "Show Buy/Sell Labels", group = GRP_VISUAL)
+showGradeInput      = input.bool(true,  "Show Grade in Label", group = GRP_VISUAL,
+     tooltip = "Display A/B/C grade inside signal labels")
+showRegimeBgInput   = input.bool(false, "Show Regime Background", group = GRP_VISUAL,
+     tooltip = "Tint chart background by market regime.\n" +
+               "Off by default (can be busy on dark themes)")
+showWatermarkInput  = input.bool(true,  "Show Watermark",      group = GRP_VISUAL)
+
+labelFontSizeInput = input.string("Small", "Signal Label Font Size",
+     options = ["Tiny", "Small", "Normal", "Large", "Huge"],
+     group   = GRP_VISUAL,
+     tooltip = "Font size for signal labels.\n" +
+               "Default: Small. Use Tiny for compact look on busy charts.")
+
+signalFontSizeInput = input.string("Small", "Signal Marker Size",
+     options = ["Tiny", "Small", "Normal", "Large", "Huge"],
+     group   = GRP_VISUAL,
+     tooltip = "Font size for ▲ / ▼ Buy/Sell signal markers.")
+
+// ── Dashboard (Unified) ─────────────────────────────────
+// All info in a single positioned table with toggleable sections.
+showDashInput = input.bool(true, "Show Dashboard", group = GRP_DASH,
+     tooltip = "Master toggle for the dashboard.\n" +
+               "When off, none of the sections render regardless\n" +
+               "of individual section toggles below.")
+
+dashPosStr = input.string("Top Right", "Position",
+     options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right", "Middle Right", "Middle Left"],
+     group   = GRP_DASH)
+
+showTradeSectionInput = input.bool(true, "  ├ Trade Section", group = GRP_DASH,
+     tooltip = "Direction, Grade, SL/TP levels, R:R, Risk %, Bars in trade.")
+
+showMarketSectionInput = input.bool(true, "  ├ Market Section", group = GRP_DASH,
+     tooltip = "Regime, HTF bias, Volume, RSI, ATR / Vol-rank.")
+
+showStatsInput = input.bool(true, "  └ Statistics Section", group = GRP_DASH,
+     tooltip = "Per-session counters: signals by grade, W/L, win rate,\n" +
+               "avg R-multiple, BE saves, flips. Counters reset on\n" +
+               "script reload or any input change.\n\n" +
+               "Win definition: TP1 reached = WIN.")
+
+resetStatsInput = input.int(0, "Reset Stats Counter", minval = 0, maxval = 999, group = GRP_DASH,
+     tooltip = "Increment this value to deliberately reset stats.\n" +
+               "(Any input change re-initializes 'var' state; this\n" +
+               "input exists as a dedicated reset button.)\n" +
+               "Declaring it is sufficient — no further reference needed.")
+
+// ── Alerts ──────────────────────────────────────────────
+webhookInput = input.bool(false, "Webhook JSON Format", group = GRP_ALERT,
+     tooltip = "Send alerts as JSON for webhook integration.\n" +
+               "Includes price, SL, TP1/TP2/TP3, R:R, grade, regime.")
+
+alertTradeInput = input.bool(true, "Alert on Strategy Trades", group = GRP_ALERT,
+     tooltip = "Send a BUY/SELL/FLIP alert when the strategy changes direction.")
+
+alertFlipInput = input.bool(true, "Alert on Position Flip", group = GRP_ALERT,
+     tooltip = "Send a dedicated alert when an opposite signal\n" +
+               "fires while a position is still active.\n" +
+               "The opposite signal still triggers its own\n" +
+               "BUY/SELL alert — this is in addition.")
+
+// ── Colors ──────────────────────────────────────────────
+bullColorInput = input.color(#00E676, "Bull",    inline = "c1", group = GRP_COLORS)
+bearColorInput = input.color(#FF5252, "Bear",    inline = "c1", group = GRP_COLORS)
+neutralColorInput = input.color(#FFEB3B, "Warn", inline = "c1", group = GRP_COLORS)
+
+
+// ══════════════════════════════════════════════════════════
+// 4. THEME DETECTION & PALETTE
+// ══════════════════════════════════════════════════════════
+
+// Theme detection — ternary chain to avoid switch-on-input-string CE10173
+isDark = themeInput == "Dark" ? true : themeInput == "Light" ? false : color.r(chart.bg_color) < 128
+
+// ── Text colors ─────────────────────────────────────────
+TEXT_COLOR   = isDark ? #E0E0E0                : #1A1A1A
+TEXT_MUTED   = isDark ? color.new(#9E9E9E, 0)  : color.new(#757575, 0)
+TEXT_BRIGHT  = isDark ? #FFFFFF                : #000000
+
+// ── Adaptive signal colors (for text on chart) ──────────
+// Light theme orange (#BF360C burnt) chosen for contrast (~7.5:1)
+// AND to stay distinguishable from BE_COLOR (deep amber).
+BULL_TEXT    = isDark ? #00E676 : #00A152
+BEAR_TEXT    = isDark ? #FF5252 : #D32F2F
+NEUTRAL_TEXT = isDark ? #FFEB3B : #BF360C
+
+// ── Label text colors (text on colored label bg) ────────
+BULL_LABEL_TEXT = #004D25  // dark green on bright green (contrast 7.8:1)
+BEAR_LABEL_TEXT = #FFFFFF  // white on red (contrast ~4.0:1)
+WARN_LABEL_TEXT = #3E2C00  // dark brown on yellow (contrast ~9.0:1)
+
+// ── Table / Dashboard ───────────────────────────────────
+// Premium muted palette — closer to financial-terminal aesthetic
+// than Material Design primary colors.
+TABLE_BG      = isDark ? color.new(#131722, 5) : color.new(#FFFFFF, 5)
+TABLE_BORDER  = isDark ? color.new(#2A2E39, 0) : color.new(#D0D0D0, 0)
+TABLE_ROW_ALT = isDark ? color.new(#1C2030, 0) : color.new(#F0F4F8, 0)
+// Header bg: deep slate-indigo (was bright #1565C0 — too "material").
+// Slate works as accent without competing with risk-mgmt colors.
+HEADER_BG     = isDark ? color.new(#2C3E50, 0) : color.new(#1A2533, 0)
+HEADER_TEXT   = #FFFFFF
+
+// ── Lines ───────────────────────────────────────────────
+LINE_SUBTLE = isDark ? color.new(#666666, 0)  : color.new(#999999, 0)
+
+// ── Watermark ───────────────────────────────────────────
+// High transparency — watermark should be barely visible (signature, not branding spam)
+WM_COLOR = isDark ? color.new(#FFFFFF, 88) : color.new(#000000, 88)
+
+// ── Risk Management colors ──────────────────────────────
+// Premium palette: muted, desaturated, financial-terminal feel.
+// SL: deeper, less alarming red on dark; rich crimson on light.
+// TP: sage-green family instead of bright Material 500 green.
+// Entry: steel blue instead of vibrant primary blue.
+SL_COLOR    = isDark ? color.new(#E57373, 0)  : color.new(#B71C1C, 0)
+TP1_COLOR   = isDark ? color.new(#66BB6A, 30) : color.new(#388E3C, 30)
+TP2_COLOR   = isDark ? color.new(#66BB6A, 40) : color.new(#388E3C, 40)
+TP3_COLOR   = isDark ? color.new(#66BB6A, 0)  : color.new(#388E3C, 0)   // full opacity for emphasis
+ENTRY_COLOR = isDark ? color.new(#5C8AAE, 0)  : color.new(#34495E, 0)   // steel blue (was bright primary)
+
+// TP_LABEL_COLOR — full-opacity TP green for LABEL backgrounds.
+TP_LABEL_COLOR = isDark ? color.new(#66BB6A, 0) : color.new(#388E3C, 0)
+
+// LABEL_TEXT — text color on tinted SL/TP/Entry/BE label backgrounds.
+LABEL_TEXT = isDark ? #1A1A1A : #FFFFFF
+
+// TP_HIT_COLOR — soft teal (was cyan) — sophisticated, less neon
+TP_HIT_COLOR = isDark ? color.new(#4DB6AC, 0) : color.new(#00695C, 0)
+
+// BE_COLOR — amber, applied to the entry-as-SL marker when BE is active
+// AND to the BE-saves dashboard row. Distinct from any other indicator
+// color to avoid semantic clash with neutral/warn.
+// Light theme: deep amber (was #704214 dark brown — too neutral; amber
+// should feel warm and slightly urgent, like a caution light).
+BE_COLOR = isDark ? color.new(#FFA726, 0) : color.new(#E65100, 0)
+
+// ── Regime background tints ─────────────────────────────
+TREND_BG_BULL = color.new(#00E676, 92)
+TREND_BG_BEAR = color.new(#FF5252, 92)
+CHOPPY_BG     = isDark ? color.new(#FFEB3B, 94) : color.new(#FFC107, 94)
+
+// ── Trail palette ───────────────────────────────────────
+// Premium Indigo scheme — financial-terminal sophistication.
+// Long: deep indigo (sophisticated, calm, non-competing with green TPs).
+// Short: earth-brown (warm but darker than SL red, so the two never
+//        visually compete during an active short trade).
+// Both 30% transparency — muted enough to read as "background context".
+// Light-theme variants use more saturated source colors to compensate
+// for the transparency washing out against white background.
+TRAIL_INDIGO_LONG  = isDark ? color.new(#7986CB, 30) : color.new(#283593, 30)
+TRAIL_INDIGO_SHORT = isDark ? color.new(#A1887F, 30) : color.new(#4E342E, 30)
+
+// Monochrome scheme — pure neutrality, ultra-premium minimal look.
+// Direction inferred from chart context (bar colors), not the trail itself.
+TRAIL_MONO_LONG    = isDark ? color.new(#9E9E9E, 40) : color.new(#616161, 40)
+TRAIL_MONO_SHORT   = isDark ? color.new(#9E9E9E, 40) : color.new(#616161, 40)
+
+
+// ══════════════════════════════════════════════════════════
+// 5. FUNCTIONS
+// ══════════════════════════════════════════════════════════
+
+// Safe division — returns fallback if denominator is 0 or na
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+// R² of linear regression vs time index — measures linearity (0-1)
+// Uses correlation between price and bar index: R² = corr(price, n)²
+rSquared(float src, int len) =>
+    float corr = ta.correlation(src, bar_index, len)
+    na(corr) ? 0.0 : math.pow(corr, 2)
+
+// Auto HTF picker — 4× current timeframe
+autoHtf() =>
+    int curMin = timeframe.in_seconds(timeframe.period) / 60
+    int targetMin = curMin * 4
+    targetMin <= 5 ? "5" : targetMin <= 15 ? "15" : targetMin <= 30 ? "30" : targetMin <= 60 ? "60" : targetMin <= 240 ? "240" : targetMin <= 1440 ? "D" : "W"
+
+// Format price safely (handles na with em-dash for display)
+fmtPrice(float v) =>
+    na(v) ? "—" : str.tostring(v, format.mintick)
+
+// Format price for ALERTS (uses "n/a" instead of em-dash so it's
+// JSON-safe and reads naturally in webhook payloads / Telegram).
+fmtActive(float v) =>
+    na(v) ? "n/a" : str.tostring(v, format.mintick)
+
+// Build a unicode-block progress gauge (e.g. "▰▰▰▰▰▱▱▱").
+// `value` and `max` define the fill ratio; `width` is the number
+// of glyphs to render. Capped at [0, width] internally.
+//
+// Premium feel comes from using ▰ (U+25B0) / ▱ (U+25B1) — clean,
+// slightly rounded squares — instead of █/░ which look "pixel-art".
+buildGauge(float value, float maxVal, int width) =>
+    string result = ""
+    int filledCount = maxVal <= 0 ? 0 : math.round(math.min(width, math.max(0.0, value / maxVal * width)))
+    for i = 0 to width - 1
+        result += i < filledCount ? "▰" : "▱"
+    result
+
+// Resolve font-size string to Pine's size.* constant
+sizeFromString(string s) =>
+    s == "Tiny"   ? size.tiny :
+     s == "Small"  ? size.small :
+     s == "Normal" ? size.normal :
+     s == "Large"  ? size.large :
+     s == "Huge"   ? size.huge :
+     size.small
+
+// Resolve line-style string to Pine's line.style_* constant
+lineStyleFromString(string s) =>
+    s == "Dashed" ? line.style_dashed :
+     s == "Dotted" ? line.style_dotted :
+     line.style_solid
+
+// Position resolver
+resolveDashPos(string s) =>
+    s == "Top Left"     ? position.top_left :
+     s == "Top Right"    ? position.top_right :
+     s == "Bottom Left"  ? position.bottom_left :
+     s == "Bottom Right" ? position.bottom_right :
+     s == "Middle Right" ? position.middle_right :
+     s == "Middle Left"  ? position.middle_left :
+     position.top_right
+
+
+// ── Pre-resolved style/size constants (computed once per bar) ──
+signalMarkerSize  = sizeFromString(signalFontSizeInput)
+
+
+// ══════════════════════════════════════════════════════════
+// 6. CALCULATIONS
+// ══════════════════════════════════════════════════════════
+
+// ── Warmup gate ─────────────────────────────────────────
+int WARMUP_BARS = math.max(math.max(atrLenInput, trailLenInput), regimeLenInput) + 5
+bool isWarmedUp = bar_index >= WARMUP_BARS
+
+// ── Volume support detection ────────────────────────────
+float volumeSma20 = ta.sma(volume, 20)
+bool hasVolume = nz(volume, 0) > 0 and volumeSma20 > 0
+
+// ── ATR + adaptive multiplier ──────────────────────────
+float atrVal = nz(ta.atr(atrLenInput), 0.0)
+
+// Volatility regime: percentile rank of ATR over 100 bars
+float volRank = useAdaptiveMultInput ? nz(ta.percentrank(atrVal, 100), 50.0) : 50.0
+
+// Map volRank → multiplier adjustment:
+// • Low vol  (rank < 30) → multiplier ×0.8
+// • Mid vol  (30-70)     → multiplier ×1.0
+// • High vol (rank > 70) → multiplier ×1.25
+float multAdjust = useAdaptiveMultInput ? (volRank < 30 ? 0.8 : volRank > 70 ? 1.25 : 1.0) : 1.0
+float effectiveMult = baseMultInput * multAdjust
+
+// ── Synapse Trail (with optional ratchet) ─────────────
+float trailCenter = ta.ema(close, trailLenInput)
+float rawUpper    = trailCenter + atrVal * effectiveMult
+float rawLower    = trailCenter - atrVal * effectiveMult
+
+// Ratcheted bands — persistent state.
+// Long mode: lowerBand only moves UP (never down) until flip.
+// Short mode: upperBand only moves DOWN (never up) until flip.
+// Direction flip resets the relevant band to its raw value.
+// (No explicit init needed — the ratchet/legacy block below assigns
+// both bands on every bar; var declaration ensures persistence for the
+// [1] history reference used inside math.max/math.min.)
+var float upperBand = na
+var float lowerBand = na
+
+// Direction: long when close above upper of prev bar, short when below lower
+var int dir = 0
+if isWarmedUp
+    if close > nz(upperBand[1], close)
+        dir := 1
+    else if close < nz(lowerBand[1], close)
+        dir := -1
+
+// Apply ratchet OR free-running bands.
+// dir[1] = direction on the previous (closed) bar; `dir` here is current.
+// On a flip (dir != dir[1]) we seed the trail with the raw band value;
+// otherwise we lock it monotonically (max for long lower, min for short upper).
+bool dirFlipped = dir != nz(dir[1], 0)
+if useRatchetInput
+    if dir == 1
+        lowerBand := dirFlipped ? rawLower : math.max(rawLower, nz(lowerBand[1], rawLower))
+        upperBand := rawUpper
+    else if dir == -1
+        upperBand := dirFlipped ? rawUpper : math.min(rawUpper, nz(upperBand[1], rawUpper))
+        lowerBand := rawLower
+    else
+        upperBand := rawUpper
+        lowerBand := rawLower
+else
+    // Legacy v1.0.x behavior — bands recompute every bar
+    upperBand := rawUpper
+    lowerBand := rawLower
+
+// Trail line displayed = lowerBand if long, upperBand if short
+float trailLine = dir == 1 ? lowerBand : dir == -1 ? upperBand : na
+
+// ── Raw direction-change signals ───────────────────────
+bool rawBuy  = dir == 1  and dir[1] == -1 and isWarmedUp
+bool rawSell = dir == -1 and dir[1] == 1  and isWarmedUp
+
+
+// ══════════════════════════════════════════════════════════
+// 7. MARKET REGIME ANALYSIS
+// ══════════════════════════════════════════════════════════
+
+// ── ADX (manual implementation — ta.dmi returns tuple) ─
+[diPlus, diMinus, adxRaw] = ta.dmi(adxLenInput, adxLenInput)
+float adxVal = nz(adxRaw, 0.0)
+float adxScore = math.min(adxVal / 50.0 * 100.0, 100.0)  // 0-50 ADX → 0-100 score
+
+// ── Choppiness Index ───────────────────────────────────
+float ciHigh = ta.highest(high, choppinessLenInput)
+float ciLow  = ta.lowest(low, choppinessLenInput)
+float ciAtrSum = math.sum(ta.tr(true), choppinessLenInput)
+float ciRange = ciHigh - ciLow
+// When range is zero (extreme flat) → max choppiness (100)
+// When normal → log10(atrSum / range) / log10(N) * 100
+// Guard log10(N): N>=5 by input minval, but defensive max(N,2) anyway.
+float chopLogN = math.log10(math.max(choppinessLenInput, 2))
+float chopRaw = ciRange <= 0 ? 100.0 : ciAtrSum > 0 ? 100.0 * math.log10(ciAtrSum / ciRange) / chopLogN : 50.0
+// Choppiness 0-100: low = trending, high = choppy
+// Convert to "trend score": invert and clamp
+float chopScore = math.max(0.0, math.min(100.0, 100.0 - chopRaw))
+
+// ── R² (linear regression linearity) ───────────────────
+float r2 = rSquared(close, regimeLenInput)
+float r2Score = r2 * 100.0
+
+// ── Composite Market Regime Score (0-100) ──────────────
+// Weights: ADX 40%, Choppiness 35%, R² 25%
+float regimeScore = adxScore * 0.40 + chopScore * 0.35 + r2Score * 0.25
+
+bool isTrending = regimeScore >= REGIME_TRENDING
+bool isChoppy   = regimeScore <  REGIME_CHOPPY
+
+string regimeLabel = isTrending ? "Trending" : isChoppy ? "Choppy" : "Mixed"
+color  regimeColor = isTrending ? BULL_TEXT  : isChoppy ? BEAR_TEXT  : NEUTRAL_TEXT
+
+
+// ══════════════════════════════════════════════════════════
+// 8. QUALITY SCORE — multi-factor
+// ══════════════════════════════════════════════════════════
+
+// ── HTF bias (single security call — saves a slot) ─────
+// IMPORTANT: request.security must be called unconditionally on every bar.
+// We pass close[1] + ema[1] with lookahead_on — this is the canonical
+// non-repaint pattern: read closed HTF bar's value without future leakage.
+// Do not "simplify" by removing [1] or toggling lookahead — it will repaint.
+string htfRes = htfTfInput == "" ? autoHtf() : htfTfInput
+[htfClose, htfEma] = request.security(syminfo.tickerid, htfRes,
+     [close[1], ta.ema(close, 50)[1]],
+     barmerge.gaps_off, barmerge.lookahead_on)
+
+// htfBull/htfBear are TRUE only when filter is on AND data is valid AND condition holds.
+// When filter is off, both are false (semantically correct for dashboard).
+bool htfBull = useHtfFilterInput and not na(htfEma) and not na(htfClose) and htfClose > htfEma
+bool htfBear = useHtfFilterInput and not na(htfEma) and not na(htfClose) and htfClose < htfEma
+
+// ── Volume confirmation ────────────────────────────────
+// volConfirm  → used in Quality Score (semantic: did volume confirm?)
+// volStatus   → used in Dashboard (3 states: off / no-data / weak / confirmed)
+float volSma = hasVolume ? volumeSma20 : na
+bool  volConfirm = useVolumeFilterInput and hasVolume and volume > volSma * volMultInput
+
+// ── RSI momentum ───────────────────────────────────────
+float rsiVal = nz(ta.rsi(close, 14), 50.0)
+bool rsiBullOk = rsiVal > 50
+bool rsiBearOk = rsiVal < 50
+
+// ── Breakout strength: how far close pierced the band (capped at 3×ATR) ──
+float breakDist = dir == 1 ? close - nz(upperBand[1], close) : dir == -1 ? nz(lowerBand[1], close) - close : 0.0
+float breakStrength = atrVal != 0 ? math.min(math.abs(breakDist) / atrVal, 3.0) / 3.0 * 100.0 : 0.0  // 0-100
+
+// Optional EMA trend alignment.
+float trendFastEma = ta.ema(close, trendFastLenInput)
+float trendSlowEma = ta.ema(close, trendSlowLenInput)
+bool trendBull = trendFastEma > trendSlowEma and (not useTrendSlopeInput or trendSlowEma > trendSlowEma[1])
+bool trendBear = trendFastEma < trendSlowEma and (not useTrendSlopeInput or trendSlowEma < trendSlowEma[1])
+
+// Optional volatility expansion. Uses only completed/current-bar data and becomes an active
+// entry filter after the bar closes, so it does not inspect future candles.
+float atrAverage = ta.sma(atrVal, volExpansionLenInput)
+bool volatilityExpanded = not na(atrAverage) and atrAverage > 0 and atrVal >= atrAverage * volExpansionMultInput
+
+// Minimum breakout in ATR terms.
+float breakoutAtrDistance = atrVal > 0 ? math.abs(breakDist) / atrVal : 0.0
+bool minimumBreakoutOk = not useMinBreakoutInput or breakoutAtrDistance >= minBreakoutAtrInput
+
+// ── Compute Quality Score for current signal direction ─
+// Weights:
+//   HTF bias       30  (full match) / 15 (HTF flat or off) / 0 (against)
+//   Volume confirm 20  (full if filter off OR no volume data)
+//   RSI momentum   20
+//   Regime score   20
+//   Break strength 10
+calcQualityScore(bool isBuy) =>
+    // HTF: gradient, not binary (30 match / 15 off-or-flat / 0 against)
+    bool htfDataValid = useHtfFilterInput and not na(htfEma) and not na(htfClose)
+    bool htfMatches  = htfDataValid and ((isBuy and htfBull) or (not isBuy and htfBear))
+    bool htfAgainst  = htfDataValid and ((isBuy and htfBear) or (not isBuy and htfBull))
+    float htfPart = htfMatches ? 30.0 : htfAgainst ? 0.0 : 15.0
+
+    // Disabled filters are removed from the denominator rather than receiving free points.
+    float volRaw = (not useVolumeFilterInput) or (not hasVolume) ? na : (volConfirm ? 100.0 : 0.0)
+    float rsiRaw = (isBuy and rsiBullOk) or (not isBuy and rsiBearOk) ? 100.0 : 0.0
+    float regimeRaw = regimeScore
+    float breakRaw = breakStrength
+    float htfWeight = useHtfFilterInput and not na(htfEma) and not na(htfClose) ? 30.0 : 0.0
+    float volWeight = not na(volRaw) ? 20.0 : 0.0
+    float rsiWeight = 20.0
+    float regimeWeight = 20.0
+    float breakWeight = 10.0
+    float weightedTotal = (htfPart + (not na(volRaw) ? volRaw * 0.20 : 0.0) + rsiRaw * 0.20 + regimeRaw * 0.20 + breakRaw * 0.10)
+    float activeWeight = htfWeight + volWeight + rsiWeight + regimeWeight + breakWeight
+    activeWeight > 0 ? weightedTotal / activeWeight * 100.0 : 0.0
+
+float buyQuality  = rawBuy  ? calcQualityScore(true)  : na
+float sellQuality = rawSell ? calcQualityScore(false) : na
+
+// Grade resolver
+gradeFromScore(float s) =>
+    na(s) ? "—" : s >= GRADE_A_THRESHOLD ? "A" : s >= GRADE_B_THRESHOLD ? "B" : "C"
+
+
+// ══════════════════════════════════════════════════════════
+// 9. FINAL SIGNAL LOGIC (with filters)
+// ══════════════════════════════════════════════════════════
+
+// Apply filters: minimum quality, hard-skip choppy
+bool buyPasses  = rawBuy and barstate.isconfirmed and (na(buyQuality) or buyQuality >= minQualityInput) and not (skipChoppyInput and isChoppy) and (not useTrendAlignmentInput or trendBull) and (not useVolExpansionInput or volatilityExpanded) and minimumBreakoutOk
+bool sellPasses = rawSell and barstate.isconfirmed and (na(sellQuality) or sellQuality >= minQualityInput) and not (skipChoppyInput and isChoppy) and (not useTrendAlignmentInput or trendBear) and (not useVolExpansionInput or volatilityExpanded) and minimumBreakoutOk
+
+string buyGrade  = gradeFromScore(buyQuality)
+string sellGrade = gradeFromScore(sellQuality)
+
+// Choppy warning flag
+string chopFlag = isChoppy ? " ⚠" : ""
+
+
+
+// ══════════════════════════════════════════════════════════
+// 10. STRATEGY ENGINE — FLIP ONLY
+// ══════════════════════════════════════════════════════════
+// IMPORTANT: Orders are generated from the SAME confirmed signals that
+// drive the original indicator labels. This is what makes the entries
+// real TradingView strategy orders instead of visual-only signals.
+// `process_orders_on_close=true` makes the backtest fill on the signal bar
+// close, which keeps the Strategy Tester aligned with the displayed signal.
+
+bool isMonday    = dayofweek(time, timeZoneInput) == dayofweek.monday
+bool isTuesday   = dayofweek(time, timeZoneInput) == dayofweek.tuesday
+bool isWednesday = dayofweek(time, timeZoneInput) == dayofweek.wednesday
+bool isThursday  = dayofweek(time, timeZoneInput) == dayofweek.thursday
+bool isFriday    = dayofweek(time, timeZoneInput) == dayofweek.friday
+bool isSaturday  = dayofweek(time, timeZoneInput) == dayofweek.saturday
+bool isSunday    = dayofweek(time, timeZoneInput) == dayofweek.sunday
+
+bool selectedDay =
+     (isMonday and tradeMondayInput) or
+     (isTuesday and tradeTuesdayInput) or
+     (isWednesday and tradeWednesdayInput) or
+     (isThursday and tradeThursdayInput) or
+     (isFriday and tradeFridayInput) or
+     (isSaturday and tradeSaturdayInput) or
+     (isSunday and tradeSundayInput)
+
+bool inTradingTime = not na(time(timeframe.period, sessionInput, timeZoneInput))
+bool tradingWindowOpen = selectedDay and inTradingTime
+
+// ── Daily P/L accounting ──────────────────────────────────
+int resetHour = int(str.tonumber(str.substring(plResetTimeInput, 0, 2)))
+int resetMinute = int(str.tonumber(str.substring(plResetTimeInput, 3, 5)))
+int thisReset = timestamp(timeZoneInput, year(time, timeZoneInput), month(time, timeZoneInput), dayofmonth(time, timeZoneInput), resetHour, resetMinute)
+int priorReset = timestamp(timeZoneInput, year(time, timeZoneInput), month(time, timeZoneInput), dayofmonth(time, timeZoneInput) - 1, resetHour, resetMinute)
+int currentTradingDay = time >= thisReset ? thisReset : priorReset
+
+var int   trackedTradingDay = na
+var float dayStartNetProfit = 0.0
+if na(trackedTradingDay) or currentTradingDay != trackedTradingDay
+    trackedTradingDay := currentTradingDay
+    dayStartNetProfit := strategy.netprofit
+
+float dailyClosedPnl = strategy.netprofit - dayStartNetProfit
+float dailyOpenPnl   = strategy.openprofit
+float dailyPnl       = dailyClosedPnl + dailyOpenPnl
+
+bool profitLimitHit = dailyProfitTargetInput > 0 and dailyPnl >= dailyProfitTargetInput
+bool lossLimitHit   = dailyLossLimitInput > 0 and dailyPnl <= -dailyLossLimitInput
+bool dailyLimitHit  = profitLimitHit or lossLimitHit
+
+// A limit blocks ALL new entries until the next P/L reset.
+// If flattening is enabled, it also closes the current position once.
+var bool dailyLock = false
+if na(trackedTradingDay[1]) or currentTradingDay != trackedTradingDay[1]
+    dailyLock := false
+if dailyLimitHit
+    dailyLock := true
+
+if dailyLock and flattenOnDailyLimitInput and strategy.position_size != 0
+    strategy.close_all(comment = profitLimitHit ? "Daily Profit Target" : "Daily Loss Limit")
+
+// ── Per-trade P/L limits (independent of the daily limits above) ──
+// strategy.openprofit is the unrealized P/L of the currently open
+// position. Because pyramiding = 0, only one trade is ever open at a
+// time, so this is equivalent to "this trade's" open profit/loss.
+// Unlike the daily limits, hitting one of these does NOT lock out new
+// entries — the strategy simply goes flat and waits for the next
+// Synapse flip signal, which re-enters at the base contract size
+// (flip doubling only applies when reversing directly out of a
+// still-open position).
+bool perTradeProfitHit = usePerTradeProfitInput and perTradeProfitTargetInput > 0 and strategy.position_size != 0 and strategy.openprofit >= perTradeProfitTargetInput
+bool perTradeLossHit   = usePerTradeLossInput and perTradeLossLimitInput > 0 and strategy.position_size != 0 and strategy.openprofit <= -perTradeLossLimitInput
+
+if perTradeProfitHit
+    strategy.close_all(comment = "Per-Trade Profit Target")
+else if perTradeLossHit
+    strategy.close_all(comment = "Per-Trade Loss Limit")
+
+// ── Profit Trailing Stop ────────────────────────────────────
+// IMPORTANT: This version uses an actual strategy.exit() stop order.
+// The stop is calculated from completed-bar information and is submitted
+// after the bar closes, so the current candle cannot both create and hit
+// the newly tightened stop. This removes the prior same-bar peak/stop
+// sequencing problem.
+var float ptPeakPrice = na
+var bool ptArmed = false
+var float ptStopLevel = na
+
+bool ptPositionIsNew = strategy.position_size != 0 and
+     (nz(strategy.position_size[1], 0) == 0 or math.sign(strategy.position_size) != math.sign(nz(strategy.position_size[1], 0)))
+
+if useProfitTrailInput
+    if ptPositionIsNew
+        // Do not use the current bar's high/low as an immediately actionable peak.
+        // The peak becomes the basis for the stop on the following bar.
+        ptPeakPrice := strategy.position_size > 0 ? high : low
+        ptArmed := trailArmProfitInput <= 0
+        ptStopLevel := na
+    else if strategy.position_size != 0
+        ptPeakPrice := strategy.position_size > 0 ? math.max(nz(ptPeakPrice, high), high) : math.min(nz(ptPeakPrice, low), low)
+
+    if strategy.position_size != 0 and not ptArmed and strategy.openprofit >= trailArmProfitInput
+        ptArmed := true
+
+    if strategy.position_size != 0 and ptArmed and not na(ptPeakPrice)
+        float ptDist = useProgressiveLockInput ? atrVal * progressiveLockTrailAtrInput : (trailStopModeInput == "ATR Multiple" ? atrVal * trailStopAtrMultInput : trailStopPointsInput)
+        float ptRawStop = strategy.position_size > 0 ? ptPeakPrice - ptDist : ptPeakPrice + ptDist
+
+        float lockDollar = 0.0
+        if useProgressiveLockInput
+            lockDollar := strategy.openprofit >= progressiveLock4Input ? progressiveLock4PctInput : strategy.openprofit >= progressiveLock3Input ? progressiveLock3PctInput : strategy.openprofit >= progressiveLock2Input ? progressiveLock2PctInput : strategy.openprofit >= progressiveLock1Input ? progressiveLock1PctInput : 0.0
+        float pointValue = syminfo.pointvalue
+        float lockPoints = pointValue > 0 and math.abs(strategy.position_size) > 0 ? lockDollar / (pointValue * math.abs(strategy.position_size)) : 0.0
+        float progressiveStop = strategy.position_size > 0 ? strategy.position_avg_price + lockPoints : strategy.position_avg_price - lockPoints
+        float combinedStop = useProgressiveLockInput ? (strategy.position_size > 0 ? math.max(ptRawStop, progressiveStop) : math.min(ptRawStop, progressiveStop)) : ptRawStop
+        float ptBeGuard = lockBreakevenInput ? strategy.position_avg_price : na
+        float ptCandidate = strategy.position_size > 0 ? (na(ptBeGuard) ? combinedStop : math.max(combinedStop, ptBeGuard)) : (na(ptBeGuard) ? combinedStop : math.min(combinedStop, ptBeGuard))
+        ptStopLevel := strategy.position_size > 0 ? math.max(ptCandidate, nz(ptStopLevel, ptCandidate)) : math.min(ptCandidate, nz(ptStopLevel, ptCandidate))
+
+        // Actual predefined-price stop. The broker emulator can fill it intrabar
+        // at the stop level instead of waiting for a close-based close_all().
+        strategy.exit("PT_EXIT", stop = ptStopLevel, comment = "Profit Trail Stop")
+    else if strategy.position_size != 0 and not ptArmed
+        strategy.cancel("PT_EXIT")
+
+    if strategy.position_size == 0
+        strategy.cancel("PT_EXIT")
+        ptStopLevel := na
+        ptArmed := false
+        ptPeakPrice := na
+else
+    strategy.cancel("PT_EXIT")
+    ptStopLevel := na
+    ptArmed := false
+    ptPeakPrice := na
+
+// Diagnostic only: this no longer closes the position itself. The actual
+// exit is handled by strategy.exit() above.
+bool ptStopTouched = useProfitTrailInput and ptArmed and not na(ptStopLevel) and strategy.position_size != 0 and
+     ((strategy.position_size > 0 and low <= ptStopLevel) or (strategy.position_size < 0 and high >= ptStopLevel))
+
+// ── Flip sizing ────────────────────────────────────────────
+// flipCount is the number of accepted direction changes in the current
+// P/L day. It resets at the daily P/L reset time.
+var int flipCount = 0
+if na(trackedTradingDay[1]) or currentTradingDay != trackedTradingDay[1]
+    flipCount := 0
+
+bool strategyCanTrade = barstate.isconfirmed and tradingWindowOpen and not dailyLock
+bool longSignal = buyPasses and strategyCanTrade
+bool shortSignal = sellPasses and strategyCanTrade
+
+bool currentlyLong = strategy.position_size > 0
+bool currentlyShort = strategy.position_size < 0
+bool currentlyFlat = strategy.position_size == 0
+
+bool initialLong = longSignal and currentlyFlat
+bool initialShort = shortSignal and currentlyFlat
+bool rawFlipToLong = longSignal and currentlyShort
+bool rawFlipToShort = shortSignal and currentlyLong
+
+// ── Optional flip confirmation ─────────────────────────────
+var int pendingFlipDir = 0
+var int pendingFlipBars = 0
+
+bool flipLongDistanceOk = not useFlipConfirmationInput or flipConfirmAtrInput <= 0 or close > trailLine + atrVal * flipConfirmAtrInput
+bool flipShortDistanceOk = not useFlipConfirmationInput or flipConfirmAtrInput <= 0 or close < trailLine - atrVal * flipConfirmAtrInput
+
+if not useFlipConfirmationInput
+    pendingFlipDir := 0
+    pendingFlipBars := 0
+else if rawFlipToLong
+    int priorPendingDir = pendingFlipDir
+    if flipLongDistanceOk
+        pendingFlipBars := priorPendingDir == 1 ? pendingFlipBars + 1 : 1
+        pendingFlipDir := 1
+    else
+        pendingFlipDir := 0
+        pendingFlipBars := 0
+else if rawFlipToShort
+    int priorPendingDir = pendingFlipDir
+    if flipShortDistanceOk
+        pendingFlipBars := priorPendingDir == -1 ? pendingFlipBars + 1 : 1
+        pendingFlipDir := -1
+    else
+        pendingFlipDir := 0
+        pendingFlipBars := 0
+else if pendingFlipDir != 0
+    bool pendingStillValid = pendingFlipDir == 1 ? (dir == 1 and close > trailLine + atrVal * flipConfirmAtrInput) : (dir == -1 and close < trailLine - atrVal * flipConfirmAtrInput)
+    if pendingStillValid
+        pendingFlipBars += 1
+    else
+        pendingFlipDir := 0
+        pendingFlipBars := 0
+
+bool confirmedFlipLong = not useFlipConfirmationInput or (pendingFlipDir == 1 and pendingFlipBars >= flipConfirmBarsInput)
+bool confirmedFlipShort = not useFlipConfirmationInput or (pendingFlipDir == -1 and pendingFlipBars >= flipConfirmBarsInput)
+
+// Optional chop protection affects only reversals. It does not alter the
+// original initial-entry behavior unless Hard-skip Choppy Signals is enabled.
+bool flipAllowedLong = not useChopFlipProtectionInput or not isChoppy
+bool flipAllowedShort = not useChopFlipProtectionInput or not isChoppy
+bool flipTrendLongOk = not useFlipTrendFilterInput or trendBull
+bool flipTrendShortOk = not useFlipTrendFilterInput or trendBear
+bool flipVolLongOk = not useFlipVolExpansionInput or volatilityExpanded
+bool flipVolShortOk = not useFlipVolExpansionInput or volatilityExpanded
+bool flipBreakLongOk = not useFlipBreakoutInput or breakoutAtrDistance >= flipMinBreakoutAtrInput
+bool flipBreakShortOk = not useFlipBreakoutInput or breakoutAtrDistance >= flipMinBreakoutAtrInput
+
+var int barsSinceAcceptedFlip = 1000000
+barsSinceAcceptedFlip += 1
+bool flipCooldownOk = not useFlipCooldownInput or barsSinceAcceptedFlip >= flipCooldownBarsInput
+
+bool finalInitialLong = initialLong
+bool finalInitialShort = initialShort
+bool finalFlipToLong = useFlipConfirmationInput ? (currentlyShort and confirmedFlipLong and flipAllowedLong and flipTrendLongOk and flipVolLongOk and flipBreakLongOk and flipCooldownOk) : (rawFlipToLong and flipAllowedLong and flipTrendLongOk and flipVolLongOk and flipBreakLongOk and flipCooldownOk)
+bool finalFlipToShort = useFlipConfirmationInput ? (currentlyLong and confirmedFlipShort and flipAllowedShort and flipTrendShortOk and flipVolShortOk and flipBreakShortOk and flipCooldownOk) : (rawFlipToShort and flipAllowedShort and flipTrendShortOk and flipVolShortOk and flipBreakShortOk and flipCooldownOk)
+bool anyStrategyEntry = finalInitialLong or finalInitialShort or finalFlipToLong or finalFlipToShort
+
+// Clear a completed pending confirmation immediately so it cannot carry into
+// the newly opened position on the following bar.
+if finalFlipToLong or finalFlipToShort
+    pendingFlipDir := 0
+    pendingFlipBars := 0
+
+// Strategy-level signal counters. These are intentionally separate from
+// TradingView's Strategy Tester trade count; they help verify that signals
+// and actual orders are occurring on confirmed bars.
+var int statTotalSignals = 0
+if buyPasses or sellPasses
+    statTotalSignals += 1
+
+// ── Smart flip sizing ──────────────────────────────────────
+// OFF = original live-position geometric sizing: 1 → 2 → 4 → 8...
+// ON  = capped progression: base → stage 1 → stage 2 → max smart size.
+float smartMultipleBeforeFlip = flipCount <= 0 ? 1.0 : flipCount == 1 ? math.min(smartFlip2xInput, smartFlipMaxInput) : flipCount == 2 ? math.min(smartFlip3xInput, smartFlipMaxInput) : smartFlipMaxInput
+float rawNextQty = useSmartFlipSizingInput ? baseQtyInput * smartMultipleBeforeFlip : baseQtyInput * math.pow(flipMultiplierInput, flipCount)
+float nextQty = maxQtyInput > 0 ? math.min(rawNextQty, maxQtyInput) : rawNextQty
+nextQty := math.max(nextQty, baseQtyInput)
+
+// Only count an accepted flip. The first flip uses the configured stage-1
+// size, the second uses stage 2, etc.
+float smartMultipleForAcceptedFlip = flipCount <= 0 ? math.min(smartFlip2xInput, smartFlipMaxInput) : flipCount == 1 ? math.min(smartFlip3xInput, smartFlipMaxInput) : smartFlipMaxInput
+float flipQty = useSmartFlipSizingInput ? baseQtyInput * smartMultipleForAcceptedFlip : math.abs(strategy.position_size) * flipMultiplierInput
+float orderQty = finalFlipToLong or finalFlipToShort ? (maxQtyInput > 0 ? math.min(flipQty, maxQtyInput) : flipQty) : baseQtyInput
+
+if finalFlipToLong or finalFlipToShort
+    flipCount += 1
+    barsSinceAcceptedFlip := 0
+
+// Optional one-bar signal-to-order delay. Default OFF preserves the core strategy.
+var int delayedEntryDir = 0
+var float delayedEntryQty = na
+var bool delayedEntryIsFlip = false
+
+if useDelayedEntryInput
+    if delayedEntryDir != 0
+        bool delayedStillAllowed = strategyCanTrade and (strategy.position_size == 0 or (delayedEntryDir == 1 and strategy.position_size < 0) or (delayedEntryDir == -1 and strategy.position_size > 0))
+        if delayedStillAllowed
+            if delayedEntryDir == 1
+                strategy.entry("LONG", strategy.long, qty = delayedEntryQty, comment = delayedEntryIsFlip ? "FLIP LONG DELAYED" : "LONG DELAYED")
+            else
+                strategy.entry("SHORT", strategy.short, qty = delayedEntryQty, comment = delayedEntryIsFlip ? "FLIP SHORT DELAYED" : "SHORT DELAYED")
+        delayedEntryDir := 0
+        delayedEntryQty := na
+        delayedEntryIsFlip := false
+
+    if finalInitialLong
+        delayedEntryDir := 1
+        delayedEntryQty := orderQty
+        delayedEntryIsFlip := false
+    else if finalInitialShort
+        delayedEntryDir := -1
+        delayedEntryQty := orderQty
+        delayedEntryIsFlip := false
+    else if finalFlipToLong
+        delayedEntryDir := 1
+        delayedEntryQty := orderQty
+        delayedEntryIsFlip := true
+    else if finalFlipToShort
+        delayedEntryDir := -1
+        delayedEntryQty := orderQty
+        delayedEntryIsFlip := true
+else
+    if finalInitialLong
+        strategy.entry("LONG", strategy.long, qty = orderQty, comment = "LONG")
+        barsSinceAcceptedFlip := 1000000
+    else if finalInitialShort
+        strategy.entry("SHORT", strategy.short, qty = orderQty, comment = "SHORT")
+        barsSinceAcceptedFlip := 1000000
+    else if finalFlipToLong
+        strategy.entry("LONG", strategy.long, qty = orderQty, comment = "FLIP LONG")
+    else if finalFlipToShort
+        strategy.entry("SHORT", strategy.short, qty = orderQty, comment = "FLIP SHORT")
+
+// Optional reset after a completed profitable trade.
+var int lastClosedTrades = 0
+if strategy.closedtrades > lastClosedTrades
+    float latestTradeProfit = strategy.closedtrades.profit(strategy.closedtrades - 1)
+    if useSmartFlipSizingInput and resetSmartSizeAfterWinnerInput and latestTradeProfit > 0
+        flipCount := 0
+    lastClosedTrades := strategy.closedtrades
+
+// ── Optional session-end flatten ──────────────────────────
+// Off by default because the requested core behavior is to remain in a
+// position until Synapse flips. Turn this on if the backtest should never
+// carry a position outside the configured trading window.
+flattenAtSessionEndInput = input.bool(false, "Flatten At Trading Window End", group = GRP_TIME,
+     tooltip = "OFF = positions remain open until a flip. ON = close any open position when the selected trading window ends.")
+
+bool sessionJustEnded = not tradingWindowOpen and tradingWindowOpen[1]
+if flattenAtSessionEndInput and sessionJustEnded and strategy.position_size != 0
+    strategy.close_all(comment = "Session End")
+
+// ══════════════════════════════════════════════════════════
+// 11. TRAIL PLOT — preserved from the original indicator
+// ══════════════════════════════════════════════════════════
+
+color trailColorBull = trailStyleInput == "Premium Indigo" ? TRAIL_INDIGO_LONG  :
+     trailStyleInput == "Monochrome" ? TRAIL_MONO_LONG : bullColorInput
+color trailColorBear = trailStyleInput == "Premium Indigo" ? TRAIL_INDIGO_SHORT :
+     trailStyleInput == "Monochrome" ? TRAIL_MONO_SHORT : bearColorInput
+color trailColor = dir == 1 ? trailColorBull : dir == -1 ? trailColorBear : color.new(color.gray, 50)
+
+bool inTrailWindow = trailHistoryBarsInput == 0 or (last_bar_index - bar_index) < trailHistoryBarsInput
+float displayedTrail = showTrailInput and inTrailWindow and not na(trailLine) ? trailLine : na
+
+float trailOffsetVal = atrVal * trailOffsetInput
+float trailSecondaryNow = trailDoubleInput and showTrailInput and inTrailWindow and not na(trailLine) ?
+     (dir == 1 ? trailLine - trailOffsetVal : dir == -1 ? trailLine + trailOffsetVal : na) : na
+color trailColorSecondary = color.new(trailColor, math.min(95, color.t(trailColor) + 20))
+
+var int dashBufferSize = math.max(1, math.min(490, trailHistoryBarsInput == 0 ? 490 : trailHistoryBarsInput))
+var array<line> dashSegments = array.new<line>(dashBufferSize, na)
+var int dashWriteIdx = 0
+
+float prevSecondary = trailSecondaryNow[1]
+int prevDir = nz(dir[1], 0)
+bool drawDashSegment = trailDoubleInput and not na(trailSecondaryNow) and not na(prevSecondary) and dir == prevDir and dir != 0
+
+if drawDashSegment
+    line oldSeg = array.get(dashSegments, dashWriteIdx)
+    if not na(oldSeg)
+        line.delete(oldSeg)
+    line newSeg = line.new(bar_index - 1, prevSecondary, bar_index, trailSecondaryNow,
+         color = trailColorSecondary, style = line.style_dashed, width = 1)
+    array.set(dashSegments, dashWriteIdx, newSeg)
+    if barstate.isconfirmed
+        dashWriteIdx := (dashWriteIdx + 1) % dashBufferSize
+
+if dir != prevDir and prevDir != 0
+    for i = 0 to dashBufferSize - 1
+        line ghost = array.get(dashSegments, i)
+        if not na(ghost)
+            line.delete(ghost)
+            array.set(dashSegments, i, na)
+
+plot(displayedTrail, "Synapse Trail", color = trailColor, linewidth = trailWidthInput, style = plot.style_linebr)
+
+color bgRegimeColor = not showRegimeBgInput ? na :
+     isTrending and dir == 1 ? TREND_BG_BULL :
+     isTrending and dir == -1 ? TREND_BG_BEAR :
+     isChoppy ? CHOPPY_BG : na
+bgcolor(bgRegimeColor, title = "Regime Background")
+
+// ══════════════════════════════════════════════════════════
+// 12. SIGNAL LABELS
+// ══════════════════════════════════════════════════════════
+
+if showSignalsInput and buyPasses
+    string buyHtfStr = useHtfFilterInput ? (htfBull ? "Bullish ✓" : "Bearish ✗") : "off"
+    string buyVolStr = not useVolumeFilterInput ? "off" : not hasVolume ? "no data" : volConfirm ? "✓" : "✗"
+    string flipPrefix = finalFlipToLong ? "FLIP→LONG\n" : ""
+    string tipBuy = flipPrefix + "BUY Signal\nGrade: " + buyGrade + " (" + str.tostring(buyQuality, "#") + "/100)\nRegime: " + regimeLabel + " (" + str.tostring(regimeScore, "#") + ")\nHTF: " + buyHtfStr + "\nVolume: " + buyVolStr + "\nRSI: " + str.tostring(rsiVal, "#.0")
+    string buyLabelText = showGradeInput ? "Long ▲ " + buyGrade + chopFlag : "Long ▲" + chopFlag
+    label.new(bar_index, low, buyLabelText, color = isChoppy ? neutralColorInput : bullColorInput,
+         textcolor = isChoppy ? WARN_LABEL_TEXT : BULL_LABEL_TEXT, style = label.style_label_up,
+         size = signalMarkerSize, yloc = yloc.belowbar, tooltip = tipBuy)
+
+if showSignalsInput and sellPasses
+    string sellHtfStr = useHtfFilterInput ? (htfBear ? "Bearish ✓" : "Bullish ✗") : "off"
+    string sellVolStr = not useVolumeFilterInput ? "off" : not hasVolume ? "no data" : volConfirm ? "✓" : "✗"
+    string flipPrefix = finalFlipToShort ? "FLIP→SHORT\n" : ""
+    string tipSell = flipPrefix + "SELL Signal\nGrade: " + sellGrade + " (" + str.tostring(sellQuality, "#") + "/100)\nRegime: " + regimeLabel + " (" + str.tostring(regimeScore, "#") + ")\nHTF: " + sellHtfStr + "\nVolume: " + sellVolStr + "\nRSI: " + str.tostring(rsiVal, "#.0")
+    string sellLabelText = showGradeInput ? "Short ▼ " + sellGrade + chopFlag : "Short ▼" + chopFlag
+    label.new(bar_index, high, sellLabelText, color = isChoppy ? neutralColorInput : bearColorInput,
+         textcolor = isChoppy ? WARN_LABEL_TEXT : BEAR_LABEL_TEXT, style = label.style_label_down,
+         size = signalMarkerSize, yloc = yloc.abovebar, tooltip = tipSell)
+
+// ══════════════════════════════════════════════════════════
+// 13. STRATEGY DASHBOARD
+// ══════════════════════════════════════════════════════════
+
+if showDashInput and barstate.islast
+    var table dashTable = table.new(resolveDashPos(dashPosStr), 2, 14,
+         bgcolor = TABLE_BG, border_color = TABLE_BORDER, border_width = 1,
+         frame_color = TABLE_BORDER, frame_width = 1)
+
+    string posText = strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT"
+    color posColor = strategy.position_size > 0 ? BULL_TEXT : strategy.position_size < 0 ? BEAR_TEXT : TEXT_MUTED
+    string limitText = dailyLock ? (profitLimitHit ? "PROFIT LOCK" : "LOSS LOCK") : "ACTIVE"
+    color limitColor = dailyLock ? (profitLimitHit ? BULL_TEXT : BEAR_TEXT) : BULL_TEXT
+    string qtyText = strategy.position_size == 0 ? "0" : str.tostring(math.abs(strategy.position_size), "#.####")
+    string nextQtyText = str.tostring(orderQty, "#.####")
+    string dailyText = str.tostring(dailyPnl, "$#,##0.00")
+    string trailText = dir == 1 ? "BULL / GREEN" : dir == -1 ? "BEAR / RED" : "NEUTRAL"
+    color trailDashColor = dir == 1 ? BULL_TEXT : dir == -1 ? BEAR_TEXT : TEXT_MUTED
+    string tradeLimitText = strategy.position_size == 0 ? "—" :
+         (usePerTradeProfitInput or usePerTradeLossInput) ?
+         (str.tostring(strategy.openprofit, "$#,##0.00") +
+          (usePerTradeProfitInput and perTradeProfitTargetInput > 0 ? " / TP " + str.tostring(perTradeProfitTargetInput, "$#,##0") : "") +
+          (usePerTradeLossInput and perTradeLossLimitInput > 0 ? " / SL " + str.tostring(perTradeLossLimitInput, "$#,##0") : "")) :
+         "off"
+    color tradeLimitColor = strategy.openprofit >= 0 ? BULL_TEXT : BEAR_TEXT
+    string ptText = not useProfitTrailInput ? "off" :
+         strategy.position_size == 0 ? "—" :
+         not ptArmed ? "arming (" + str.tostring(strategy.openprofit, "$#,##0") + " / " + str.tostring(trailArmProfitInput, "$#,##0") + ")" :
+         "ARMED @ " + fmtActive(ptStopLevel)
+    color ptColor = not useProfitTrailInput or strategy.position_size == 0 ? TEXT_MUTED : ptArmed ? BULL_TEXT : NEUTRAL_TEXT
+
+    table.cell(dashTable, 0, 0, "◆ SYNAPSE TRAIL PRO", text_color = HEADER_TEXT, bgcolor = HEADER_BG, text_size = size.small, text_halign = text.align_center)
+    table.cell(dashTable, 1, 0, "STRATEGY", text_color = HEADER_TEXT, bgcolor = HEADER_BG, text_size = size.small, text_halign = text.align_center)
+    table.cell(dashTable, 0, 1, "Position", text_color = TEXT_MUTED, text_size = size.small)
+    table.cell(dashTable, 1, 1, posText, text_color = posColor, text_size = size.small)
+    table.cell(dashTable, 0, 2, "Contracts", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 2, qtyText, text_color = TEXT_BRIGHT, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 0, 3, "Next Flip Size", text_color = TEXT_MUTED, text_size = size.small)
+    table.cell(dashTable, 1, 3, nextQtyText, text_color = NEUTRAL_TEXT, text_size = size.small)
+    table.cell(dashTable, 0, 4, "Flip Count", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 4, str.tostring(flipCount), text_color = TEXT_BRIGHT, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 0, 5, "Trail Direction", text_color = TEXT_MUTED, text_size = size.small)
+    table.cell(dashTable, 1, 5, trailText, text_color = trailDashColor, text_size = size.small)
+    table.cell(dashTable, 0, 6, "Trade P/L", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 6, tradeLimitText, text_color = tradeLimitColor, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 0, 7, "Daily P/L", text_color = TEXT_MUTED, text_size = size.small)
+    table.cell(dashTable, 1, 7, dailyText, text_color = dailyPnl >= 0 ? BULL_TEXT : BEAR_TEXT, text_size = size.small)
+    table.cell(dashTable, 0, 8, "Daily Status", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 8, limitText, text_color = limitColor, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 0, 9, "Trading Window", text_color = TEXT_MUTED, text_size = size.small)
+    table.cell(dashTable, 1, 9, tradingWindowOpen ? "OPEN" : "CLOSED", text_color = tradingWindowOpen ? BULL_TEXT : TEXT_MUTED, text_size = size.small)
+    table.cell(dashTable, 0, 10, "Regime", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 10, regimeLabel + " / " + str.tostring(regimeScore, "#"), text_color = regimeColor, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 0, 11, "Signals", text_color = TEXT_MUTED, text_size = size.small)
+    table.cell(dashTable, 1, 11, str.tostring(statTotalSignals), text_color = TEXT_BRIGHT, text_size = size.small)
+    table.cell(dashTable, 0, 12, "Profit Trail", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 12, ptText, text_color = ptColor, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 0, 13, "STP FLIP v1.4 PRO", text_color = TEXT_MUTED, text_size = size.tiny)
+    table.cell(dashTable, 1, 13, "Tester Ready", text_color = BULL_TEXT, text_size = size.tiny)
+
+// ══════════════════════════════════════════════════════════
+// 14. WATERMARK
+// ══════════════════════════════════════════════════════════
+
+if barstate.islast and showWatermarkInput
+    var table wmTable = table.new(position.bottom_center, 1, 1,
+         bgcolor = color.new(color.black, 100), border_color = color.new(color.black, 100),
+         border_width = 0, frame_color = color.new(color.black, 100), frame_width = 0)
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader", text_color = WM_COLOR, text_size = size.tiny,
+         text_halign = text.align_center, bgcolor = color.new(color.black, 100))
+
+// ══════════════════════════════════════════════════════════
+// 15. ALERTS
+// ══════════════════════════════════════════════════════════
+
+if alertTradeInput and anyStrategyEntry
+    string action = finalFlipToLong ? "FLIP LONG" : finalFlipToShort ? "FLIP SHORT" : finalInitialLong ? "LONG" : "SHORT"
+    string qtyAlert = str.tostring(orderQty, "#.####")
+    string pnlAlert = str.tostring(dailyPnl, "$#,##0.00")
+    alert(action + " | " + syminfo.tickerid + " | Qty: " + qtyAlert + " | Price: " + str.tostring(close, format.mintick) + " | Daily P/L: " + pnlAlert,
+         alert.freq_once_per_bar_close)
+
+if dailyLimitHit and not dailyLimitHit[1]
+    string limitMsg = profitLimitHit ? "DAILY PROFIT TARGET HIT" : "DAILY LOSS LIMIT HIT"
+    alert(limitMsg + " | " + syminfo.tickerid + " | Daily P/L: " + str.tostring(dailyPnl, "$#,##0.00"), alert.freq_once_per_bar_close)
+
+if perTradeProfitHit or perTradeLossHit
+    string perTradeMsg = perTradeProfitHit ? "PER-TRADE PROFIT TARGET HIT" : "PER-TRADE LOSS LIMIT HIT"
+    alert(perTradeMsg + " | " + syminfo.tickerid + " | Trade P/L: " + str.tostring(strategy.openprofit, "$#,##0.00"), alert.freq_once_per_bar_close)
+
+if ptStopTouched
+    alert("PROFIT TRAIL STOP HIT | " + syminfo.tickerid + " | Trade P/L: " + str.tostring(strategy.openprofit, "$#,##0.00") + " | Stop: " + fmtActive(ptStopLevel), alert.freq_once_per_bar_close)

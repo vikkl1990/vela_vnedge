@@ -1,0 +1,110 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © sachinlanke
+
+// Supertrend + Moving Average Crossover Strategy
+// Long when the Moving Average crosses above the Supertrend line, short on the opposite cross
+// (or inverted, if Reverse Trading Mode is enabled).
+//
+// Both the Supertrend and the Moving Average take their own independently selectable price
+// source (Open/High/Low/Close/HL2/HLC3/OHLC4/HLCC4). The Moving Average additionally supports
+// "EMA of Supertrend" as a source - an EMA of the Supertrend line itself, which the chosen
+// Moving Average type is then applied on top of.
+
+//@version=6
+strategy("Supertrend + MA Crossover [SACHIN]", overlay = true, pyramiding = 0)
+
+// ═══════════════════════════ SUPERTREND ═══════════════════════════
+grp_st = "Supertrend"
+stSourceType = input.string(defval = "HL2", title = "Supertrend Source", options = ["Open", "High", "Low", "Close", "HL2", "HLC3", "OHLC4", "HLCC4"], group = grp_st, tooltip = "Price series used as the Supertrend basis (band midpoint) and for the trend-flip check. HL2 is the classic Supertrend default.")
+stAtrPeriod = input.int(defval = 10, title = "ATR Period", minval = 1, group = grp_st)
+stFactor = input.float(defval = 3.0, title = "ATR Factor", minval = 0.1, step = 0.1, group = grp_st)
+
+// ═══════════════════════════ MOVING AVERAGE ═══════════════════════════
+grp_ma = "Moving Average"
+maType = input.string(defval = "EMA", title = "MA Type", options = ["SMA", "EMA", "HMA", "WMA"], group = grp_ma)
+maLength = input.int(defval = 20, title = "MA Length", minval = 1, group = grp_ma)
+maSourceType = input.string(defval = "Close", title = "MA Source", options = ["Open", "High", "Low", "Close", "HL2", "HLC3", "OHLC4", "HLCC4", "EMA of Supertrend"], group = grp_ma, tooltip = "EMA of Supertrend: the Moving Average is applied on top of an EMA-smoothed Supertrend line instead of a raw price series.")
+emaOfStPeriod = input.int(defval = 5, title = "EMA of Supertrend Period", minval = 1, group = grp_ma, tooltip = "Only used when MA Source = EMA of Supertrend.")
+
+// ═══════════════════════════ TRADING MODE ═══════════════════════════
+grp_mode = "Trading Mode"
+reverseMode = input.bool(defval = false, title = "Reverse Trading Mode", group = grp_mode, tooltip = "When enabled, inverts the signal: short when MA crosses above Supertrend, long when MA crosses below.")
+
+// ═══════════════════════════ STOP LOSS / TAKE PROFIT ═══════════════════════════
+grp_sltp = "Stop Loss / Take Profit"
+useSL = input.bool(defval = true, title = "Use Stop Loss", group = grp_sltp)
+useTP = input.bool(defval = true, title = "Use Take Profit", group = grp_sltp)
+slTpMode = input.string(defval = "Percentage", title = "SL/TP Basis", options = ["Percentage", "Points"], group = grp_sltp)
+slValue = input.float(defval = 1.0, title = "Stop Loss Value", minval = 0.0, group = grp_sltp, tooltip = "Percent of entry price if Basis = Percentage, else price points.")
+tpValue = input.float(defval = 2.0, title = "Take Profit Value", minval = 0.0, group = grp_sltp, tooltip = "Percent of entry price if Basis = Percentage, else price points.")
+
+// ═══════════════════════════ SOURCE / MA HELPERS ═══════════════════════════
+f_getSource(t) =>
+    t == "Open" ? open :
+     t == "High" ? high :
+     t == "Low" ? low :
+     t == "Close" ? close :
+     t == "HL2" ? hl2 :
+     t == "HLC3" ? hlc3 :
+     t == "OHLC4" ? ohlc4 :
+     t == "HLCC4" ? hlcc4 : close
+
+f_ma(t, src, len) =>
+    t == "SMA" ? ta.sma(src, len) :
+     t == "EMA" ? ta.ema(src, len) :
+     t == "WMA" ? ta.wma(src, len) :
+     t == "HMA" ? ta.hma(src, len) : ta.sma(src, len)
+
+// ═══════════════════════════ SUPERTREND (custom, source-selectable) ═══════════════════════════
+stSrc = f_getSource(stSourceType)
+atrSt = ta.atr(stAtrPeriod)
+
+upperBand = stSrc + stFactor * atrSt
+lowerBand = stSrc - stFactor * atrSt
+
+var float finalUpperBand = na
+var float finalLowerBand = na
+finalUpperBand := na(finalUpperBand[1]) ? upperBand : (upperBand < finalUpperBand[1] or stSrc[1] > finalUpperBand[1]) ? upperBand : finalUpperBand[1]
+finalLowerBand := na(finalLowerBand[1]) ? lowerBand : (lowerBand > finalLowerBand[1] or stSrc[1] < finalLowerBand[1]) ? lowerBand : finalLowerBand[1]
+
+var int stDir = 1
+stDir := na(atrSt[1]) ? 1 : (stDir[1] == -1 and stSrc > finalUpperBand[1]) ? 1 : (stDir[1] == 1 and stSrc < finalLowerBand[1]) ? -1 : stDir[1]
+
+stLine = stDir == 1 ? finalLowerBand : finalUpperBand
+stColor = stDir == 1 ? color.lime : color.red
+
+// ═══════════════════════════ MOVING AVERAGE (source-selectable, incl. EMA of Supertrend) ═══════════════════════════
+maBaseSrc = maSourceType == "EMA of Supertrend" ? ta.ema(stLine, emaOfStPeriod) : f_getSource(maSourceType)
+maLine = f_ma(maType, maBaseSrc, maLength)
+
+// ═══════════════════════════ ENTRY LOGIC ═══════════════════════════
+crossUp = ta.crossover(maLine, stLine)
+crossDn = ta.crossunder(maLine, stLine)
+
+longCondition = (reverseMode ? crossDn : crossUp) and barstate.isconfirmed
+shortCondition = (reverseMode ? crossUp : crossDn) and barstate.isconfirmed
+
+if longCondition
+    strategy.entry("Long", strategy.long, comment = "Long")
+
+if shortCondition
+    strategy.entry("Short", strategy.short, comment = "Short")
+
+// ═══════════════════════════ STOP LOSS / TAKE PROFIT ═══════════════════════════
+longSLPrice  = slTpMode == "Percentage" ? strategy.position_avg_price * (1 - slValue / 100) : strategy.position_avg_price - slValue
+longTPPrice  = slTpMode == "Percentage" ? strategy.position_avg_price * (1 + tpValue / 100) : strategy.position_avg_price + tpValue
+shortSLPrice = slTpMode == "Percentage" ? strategy.position_avg_price * (1 + slValue / 100) : strategy.position_avg_price + slValue
+shortTPPrice = slTpMode == "Percentage" ? strategy.position_avg_price * (1 - tpValue / 100) : strategy.position_avg_price - tpValue
+
+if strategy.position_size > 0
+    strategy.exit("Long Exit", from_entry = "Long", limit = useTP ? longTPPrice : na, stop = useSL ? longSLPrice : na)
+
+if strategy.position_size < 0
+    strategy.exit("Short Exit", from_entry = "Short", limit = useTP ? shortTPPrice : na, stop = useSL ? shortSLPrice : na)
+
+// ═══════════════════════════ PLOTS ═══════════════════════════
+plot(stLine, title = "Supertrend", color = stColor, linewidth = 2)
+plot(maLine, title = "Moving Average", color = color.new(color.blue, 0), linewidth = 1)
+
+plotshape(longCondition, title = "Long Signal", style = shape.triangleup, location = location.belowbar, color = color.lime, size = size.tiny)
+plotshape(shortCondition, title = "Short Signal", style = shape.triangledown, location = location.abovebar, color = color.red, size = size.tiny)

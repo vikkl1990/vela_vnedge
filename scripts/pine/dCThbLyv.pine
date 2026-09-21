@@ -1,0 +1,265 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © A$hp1
+
+//@version=6
+
+indicator("VWAP & VWMA Dashboard", "VWAP-Dashboard CVD/VWMA", overlay=true)
+import liquid-trader/UtilityLibrary/5 as util
+// ---------------------------------------------------- EINSTELLUNGEN ----------------------------------------------------
+
+gDash = "Dashboard Einstellungen"
+dashPos = input.string("Bottom Left", "Position", ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=gDash)
+
+gTime = "Zeitzone & Session-Zeiten"
+zone  = input.string("Europe/Berlin", "Zeitzone", 
+    options=["America/New_York", "Europe/Berlin", "Europe/London", "UTC", "Asia/Tokyo", "Australia/Sydney"], 
+    group=gTime, 
+    tooltip="Wählen Sie die IANA-Zeitzone für sitzungsabhängige Berechnungen und Zeitfilter.")
+
+
+s1Time = input.session("1530-2300", "Session VWAP RTH", group=gTime)
+s2Time = input.session("0001-2300", "Session VWAP ETH", group=gTime)
+
+gInd  = "Indikator Werte"
+vwmaLen = input.int(22, "VWMA Length", minval=1, group=gInd)
+periodMa = input.int(title="CVD MA Length", minval=1, defval=30)
+
+cvd_tf = input.timeframe("1", title="CVD Timeframe")
+
+gColors = "Linien-Farben"
+cVWMA  = input.color(color.yellow, "VWMA 22", group=gColors)
+src1 = input(close, "Source")
+cVWAP1 = input.color(color.blue, "Session VWAP RTH", group=gColors)
+cVWAP2 = input.color(color.rgb(233, 30, 100), "Session VWAP ETH", group=gColors)
+cMid   = input.color(color.orange, "VWAP Middle Line", group=gColors)
+
+mktHrs = input.session("0930-1600", "Start / End Time", inline="mkt",  display=display.none)
+
+showOnlyLastTradingDay = input.bool(false, "Nur letzten Handelstag anzeigen", display=display.none)
+
+var timezone = zone == "syminfo.timezone" ? syminfo.timezone : zone
+const string minutesInDay = "1440"
+
+
+anchorMax = input.int(1, "", 1, inline="reset", display=display.none)
+mktHrsOnly = input.bool(false, "Limit anchor resets to Regular Trading Hours & New Sessions", display=display.none)
+sessionLimited = input.bool(true, "Limit anchor session continuation to", "Defines when a given anchor should be reset if its VWAP has not been broken.", inline="reset", display=display.none)
+marketHours = not na(time(minutesInDay, mktHrs, timezone))
+
+// ---------------------------------------------------- BERECHNUNG ----------------------------------------------------
+
+
+// 1. VWMA 22
+v_vwma = request.security(syminfo.tickerid, "1", ta.vwma(src1, vwmaLen), barmerge.gaps_off, barmerge.lookahead_off)
+
+newSession = timeframe.isdwm ? false : session.isfirstbar
+
+o = open
+h = high
+l = low
+c = close
+
+candleBody = math.abs(c - o)
+rising = c > o
+falling = o > c
+upWick = rising ? h - c : h - o
+dnWick = falling ? c - l : o - l
+doji = (upWick >= candleBody or dnWick >= candleBody) and (h != o and h != c and l != o and l != c)
+
+var hi = h
+var lo = l
+var anchoredHi = h
+var anchoredLo = l
+var hrH = h
+var hrL = l
+var lrH = h
+var lrL = l
+var resetHiAnchor = false
+var resetLoAnchor = false
+var bullish = false
+var bearish = false
+var hiSessionCount = 0
+var loSessionCount = 0
+
+breakingHigher = rising and (c > hi or (c[1] > anchoredHi and c > h[1] and o > anchoredHi and not doji))
+breakingLower = falling and (c < lo or (c[1] < anchoredLo and c < l[1] and o < anchoredLo and not doji))
+
+if newSession and sessionLimited
+    hiSessionCount += 1
+    loSessionCount += 1
+
+    if hiSessionCount == anchorMax
+        hiSessionCount := 0
+        hi := h
+        hrH := h
+        hrL := l
+        resetHiAnchor := true
+        bullish := true
+
+    if loSessionCount == anchorMax
+        loSessionCount := 0
+        lo := l
+        lrH := h
+        lrL := l
+        resetLoAnchor := true
+        bearish := true
+
+else if breakingHigher and (not mktHrsOnly or marketHours)
+    hiSessionCount := 0
+    hi := h
+    hrH := h
+    hrL := l
+    resetHiAnchor := true
+    bullish := true
+
+else if breakingLower and (not mktHrsOnly or marketHours)
+    loSessionCount := 0
+    lo := l
+    lrH := h
+    lrL := l
+    resetLoAnchor := true
+    bearish := true
+
+else
+    resetHiAnchor := false
+    resetLoAnchor := false
+
+price(s) =>
+    util.source(s, o, h, l, c)
+
+// VWAP eine Bar später ankern
+resetHiAnchorDelayed = resetHiAnchor[1] == true
+resetLoAnchorDelayed = resetLoAnchor[1] == true
+
+
+
+anchoredHi := ta.vwap(hlc3, resetHiAnchorDelayed)
+anchoredLo := ta.vwap(hlc3, resetLoAnchorDelayed)
+
+// ---------------------------------------------------- MEAN & BÄNDER BERECHNUNG ----------------------------------------------------
+v_mid = util.lerp(anchoredLo, anchoredHi, 0.5)
+
+v = volume
+// 2. Session VWAP 1
+t1 = time(timeframe.period, s1Time, zone)
+in_sess1 = not na(t1)
+newSess1 = in_sess1 and not in_sess1[1]
+
+var float pv1 = 0.0
+var float vol1 = 0.0
+if newSess1
+    pv1 := 0.0
+    vol1 := 0.0
+if in_sess1
+    pv1 += hlc3 * v
+    vol1 += v
+v_vwap1 = vol1 != 0 ? pv1 / vol1 : na
+
+// 3. Session VWAP 2
+t2 = time(timeframe.period, s2Time, zone)
+in_sess2 = not na(t2)
+newSess2 = in_sess2 and not in_sess2[1]
+
+var float pv2 = 0.0
+var float vol2 = 0.0
+if newSess2
+    pv2 := 0.0
+    vol2 := 0.0
+if in_sess2
+    pv2 += hlc3 * v
+    vol2 += v
+v_vwap2 = vol2 != 0 ? pv2 / vol2 : na
+
+//plot(v_mid,   "Middle Line", color=cMid,    linewidth=2)
+
+// ---------------------------------------------------- STATUS & BACKGROUND ----------------------------------------------------
+
+bool vwma_bull  = c > v_vwma
+bool vwap1_bull = c > v_vwap1
+bool vwap2_bull = c > v_vwap2
+bool mid_bull   = c > v_mid
+
+int bull_count = (vwma_bull ? 1 : 0) + (vwap1_bull ? 1 : 0) + (vwap2_bull ? 1 : 0) + (mid_bull ? 1 : 0)
+
+
+// ---------------------------------------------------- CHART PLOTS ----------------------------------------------------
+
+
+//@version=6asas
+
+
+
+plot(v_vwma,  "VWMA 22",      color=cVWMA,   linewidth=2)
+plot(in_sess1 ? v_vwap1 : na, "Session VWAP RTH", color=cVWAP1, linewidth=2, style=plot.style_linebr)
+plot(in_sess2 ? v_vwap2 : na, "Session VWAP ETH", color=cVWAP2, linewidth=2, style=plot.style_linebr)
+plot(v_mid,   "Middle Line", color=cMid,    linewidth=2)
+
+
+
+
+// Funktion kapselt die gesamte Logik für den 15-Sekunden-Chart
+calc_cvd() =>
+    bullPower = close < open ? (close[1] < open ? math.max(high - close[1], close - low) : math.max(high - open, close - low)) : close > open ? (close[1] > open ? high - low : math.max(open - close[1], high - low)) : high - close > close - low ? (close[1] < open ? math.max(high - close[1], close - low) : high - open) : high - close < close - low ? (close[1] > open ? high - low : math.max(open - close[1], high - low)) : close[1] > open ? math.max(high - open, close - low) : close[1] < open ? math.max(open - close[1], high - low) : high - low
+    
+    bearPower = close < open ? (close[1] > open ? math.max(close[1] - open, high - low) : high - low) : close > open ? (close[1] > open ? math.max(close[1] - low, high - close) : math.max(open - low, high - close)) : high - close > close - low ? (close[1] > open ? math.max(close[1] - open, high - low) : high - low) : high - close < close - low ? (close[1] > open ? math.max(close[1] - low, high - close) : open - low) : close[1] > open ? math.max(close[1] - open, high - low) : close[1] < open ? math.max(open - low, high - close) : high - low
+
+    total_power = math.abs(bullPower) + math.abs(bearPower)
+    bullVolume = total_power != 0 ? (math.abs(bullPower) / total_power) * nz(volume) : 0.0
+    bearVolume = total_power != 0 ? (math.abs(bearPower) / total_power) * nz(volume) : 0.0
+    
+    ta.cum(nz(bullVolume - bearVolume))
+
+
+// CVD aus dem 15-Sekunden-Chart ("15S") abrufen
+cvd = request.security(syminfo.tickerid, cvd_tf, calc_cvd())
+cvdMa = ta.sma(nz(cvd), periodMa)
+// Plotting
+customColor = nz(cvd) > nz(cvdMa)
+bg_transp = input.int(95, "Hintergrund Transparenz", minval=0, maxval=100)
+c_long    = input.color(color.rgb(76, 144, 175),  "Farbe Long")
+c_short   = input.color(color.rgb(255, 0, 85),    "Farbe Short")
+c_neutral = input.color(color.rgb(255, 255, 255), "Farbe Neutral/Konflikt")
+
+// 1. Input für die Anzahl der einzufärbenden Kerzen hinzufügen
+lookback_bars = input.int(100, title="Anzahl einzufärbender Kerzen", minval=1)
+
+// 2. Prüfen, ob die aktuelle Kerze innerhalb des Bereichs liegt
+is_in_range = (last_bar_index - bar_index) < lookback_bars
+
+// 3. Farb-Logik erweitern: Wenn außerhalb des Bereichs, dann transparent (na)
+color bg_color = is_in_range ? (
+   bull_count >= 3 ? (customColor ? color.new(c_long, bg_transp) : color.new(c_neutral, bg_transp)) : 
+   bull_count <= 1 ? (not customColor ? color.new(c_short, bg_transp) : color.new(c_neutral, bg_transp)) : 
+   customColor ? color.new(c_long, bg_transp) : color.new(c_short, bg_transp)
+   ) : color(na)
+
+// 4. Anwendung im Chart
+bgcolor(bg_color)
+
+display_mode = input.string("Background", title="Anzeige-Stil CVD", options=["Background", "Band Top", "Band Bottom"])
+plot(close, "Live Preis")
+bgcolor(display_mode == "Background" ? bg_color : na)
+plotshape(display_mode == "Band Top", style=shape.square, location=location.top, color=bg_color, size=size.tiny, title="Status Band Top")
+plotshape(display_mode == "Band Bottom", style=shape.square, location=location.bottom, color=bg_color, size=size.tiny, title="Status Band Bottom")
+// ---------------------------------------------------- DASHBOARD TABLE ----------------------------------------------------
+
+var pos = dashPos == "Top Left" ? position.top_left : dashPos == "Bottom Right" ? position.bottom_right : dashPos == "Bottom Left" ? position.bottom_left : position.top_right
+var table dash = table.new(pos, 2, 6, bgcolor=color.new(color.black, 20), border_color=color.gray, border_width=1)
+
+table.cell(dash, 0, 0, "Indikator", bgcolor=color.black, text_color=color.white, text_size=size.small)
+table.cell(dash, 1, 0, "Status",    bgcolor=color.black, text_color=color.white, text_size=size.small)
+
+table.cell(dash, 0, 1, "VWMA (" + str.tostring(vwmaLen) + ")", text_color=color.white, text_size=size.small)
+table.cell(dash, 1, 1, vwma_bull ? "BULLISH" : "BEARISH", bgcolor=vwma_bull ? color.green : color.red, text_color=color.white, text_size=size.small)
+
+table.cell(dash, 0, 2, "SVWAP RTH", text_color=color.white, text_size=size.small)
+table.cell(dash, 1, 2, vwap1_bull ? "BULLISH" : "BEARISH", bgcolor=vwap1_bull ? color.green : color.red, text_color=color.white, text_size=size.small)
+
+table.cell(dash, 0, 3, "SVWAP ETH", text_color=color.white, text_size=size.small)
+table.cell(dash, 1, 3, vwap2_bull ? "BULLISH" : "BEARISH", bgcolor=vwap2_bull ? color.green : color.red, text_color=color.white, text_size=size.small)
+
+table.cell(dash, 0, 4, "VWAP Middle Line", text_color=color.white, text_size=size.small)
+table.cell(dash, 1, 4, mid_bull ? "LONG" : "SHORT", bgcolor=mid_bull ? color.green : color.red, text_color=color.white, text_size=size.small)
+
+table.cell(dash, 0, 5, "CVD", text_color=color.white, text_size=size.small)
+table.cell(dash, 1, 5, customColor ? "LONG" : "SHORT", bgcolor=customColor ? color.green : color.red, text_color=color.white, text_size=size.small)

@@ -1,0 +1,238 @@
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// © BarState Labs
+//@version=6
+indicator("Cost-to-Range Gauge [BSL]", shorttitle = "BSL Cost To Range", overlay = true)
+
+// One reading, taken before any signal is discussed: is the typical bar on this
+// instrument and this timeframe large enough, relative to a round trip, for a
+// result to exist at all. The filled part of the bar is your cost, the full
+// width is the typical range. Under it, the share of bars whose entire range
+// could not pay for one round turn.
+//
+// There is no signal logic anywhere in this script and it emits no event. It
+// prints the ratio and the count and refuses to output a verdict.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inputs
+// ─────────────────────────────────────────────────────────────────────────────
+const string GROUP_COST = "01 · Round-trip cost"
+const string GROUP_WINDOW = "02 · Window"
+const string GROUP_DISPLAY = "03 · Display"
+
+const int MIN_BARS = 100
+const int BAR_CELLS = 20
+
+float spreadTicksInput = input.float(2.0, "Spread, ticks", minval = 0.0, maxval = 100000.0, step = 0.1,
+     group = GROUP_COST,
+     tooltip = "Both cost inputs are in TICKS, which is the one unit every instrument has. The script converts ticks to price with syminfo.mintick, and price to your account currency with syminfo.pointvalue where that exists.")
+float commissionTicksInput = input.float(1.0, "Commission per round turn, ticks", minval = 0.0,
+     maxval = 100000.0, step = 0.1, group = GROUP_COST,
+     tooltip = "The whole round turn, not one side. If your broker quotes commission in currency, divide it by the currency value of one tick for this instrument.")
+
+int windowInput = input.int(500, "Window, confirmed bars", minval = 20, maxval = 5000, group = GROUP_WINDOW,
+     tooltip = "The number of completed bars the typical range and the under-cost count are taken over. The forming bar is never in it.")
+
+string panelPositionInput = input.string("Bottom center", "Panel position", options = ["Auto", "Top right", "Bottom right", "Top left", "Bottom left", "Top center", "Bottom center"],
+     group = GROUP_DISPLAY, tooltip = "Auto keeps the gauge opposite the latest price within the visible chart range. Pick a corner by hand when another script already occupies this one.")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Palette
+// ─────────────────────────────────────────────────────────────────────────────
+color C_INK = color.rgb(11, 14, 13)
+color C_PANEL = color.rgb(20, 25, 23)
+color C_PAPER = color.rgb(242, 239, 232)
+color C_MUTED = color.rgb(137, 145, 141)
+color C_AMBER = color.rgb(244, 184, 96)
+color C_GREEN = color.rgb(114, 224, 165)
+color C_RED = color.rgb(240, 120, 103)
+color C_LINE = color.new(C_MUTED, 65)
+
+// The scale drawing. Filled cells are the cost, the full width is the typical
+// range. A cost wider than the range fills the bar completely, which is the
+// reading rather than an artefact, and the text beside it says so in words.
+f_cost_bar(float cost, float medianRange) =>
+    string drawing = ""
+    if na(medianRange) or medianRange <= 0.0 or na(cost) or cost < 0.0
+        for cell = 1 to BAR_CELLS
+            drawing += "·"
+    else
+        int filled = math.min(BAR_CELLS, int(math.round(BAR_CELLS * cost / medianRange)))
+        for cell = 1 to BAR_CELLS
+            drawing += cell <= filled ? "█" : "░"
+    drawing
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cost
+//
+// Ticks are the primary unit because every instrument has one. `mintick`
+// converts ticks to price and always exists. `pointvalue` converts price to
+// account currency and does not, so the currency reading is the only thing
+// suppressed when it is missing — the gauge never prints a figure it could not
+// compute.
+// ─────────────────────────────────────────────────────────────────────────────
+float costTicks = spreadTicksInput + commissionTicksInput
+bool configValid = costTicks > 0.0 and syminfo.mintick > 0.0
+bool standardChart = chart.is_standard
+float costPrice = configValid ? costTicks * syminfo.mintick : na
+
+bool currencyAvailable = not na(syminfo.pointvalue) and syminfo.pointvalue > 0.0
+float costCurrency = currencyAvailable and configValid ? costPrice * syminfo.pointvalue : na
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The window
+//
+// One float array, capped at the configured window, holding true ranges of
+// CONFIRMED bars only. `ta.tr(true)` is gap-aware and falls back to high minus
+// low on the first bar of the loaded history, so the window has no na hole at
+// its left end.
+//
+// The under-cost count is maintained incrementally: one addition on the bar
+// pushed in and one subtraction on the bar pushed out. Recounting five hundred
+// elements on every bar would produce the same number at five hundred times
+// the cost.
+// ─────────────────────────────────────────────────────────────────────────────
+bool resolved = configValid and standardChart and barstate.isconfirmed
+
+var array<float> ranges = array.new<float>(0)
+var int underCost = 0
+
+float barRange = ta.tr(true)
+
+if resolved
+    array.push(ranges, barRange)
+    underCost += barRange < costPrice ? 1 : 0
+    if array.size(ranges) > windowInput
+        float dropped = array.shift(ranges)
+        underCost -= dropped < costPrice ? 1 : 0
+
+int sample = array.size(ranges)
+
+// The window holds confirmed bars only, so its statistics on an open bar are
+// identical to their value at the previous close and no tick can revise them.
+// That is why the three streams below are NOT gated on bar confirmation the way
+// an event stream must be: gating them would publish na on a bar the product
+// has a perfectly good opinion about. The forming bar is still excluded — it is
+// never pushed into the array.
+bool publishable = configValid and standardChart and sample > 0
+
+// Written as a statement rather than a ternary. array.median on an empty array
+// is a runtime error, and Pine does not promise to leave the unused branch of
+// a ternary unevaluated.
+float medianRange = na
+if publishable
+    medianRange := array.median(ranges)
+
+float rangeToCost = not na(medianRange) and costPrice > 0.0 ? medianRange / costPrice : na
+float underCostShare = publishable ? 100.0 * underCost / sample : na
+bool faded = sample < MIN_BARS
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Exported streams
+//
+// BarState Labs producer stream contract 1.1.0, numeric-value profile, delay 0.
+// A ratio and a share cannot enumerate their value set, so 1.1.0 requires them
+// to declare a domain and a unit instead, and `dodge_violations` rejects a
+// symbolic code that tries to hide in this profile. None of the three is an
+// event: the product is a pre-trade screen, and calling any of these a signal
+// would be the exact overreach it exists to argue against.
+//
+//   Range to cost ratio      finite-real          multiples of the round-trip cost
+//   Share of bars under cost finite-real          percent of the resolved window
+//   Window sample size       nonnegative-integer  confirmed bars in the window
+//
+// The sample size is published because a consumer cannot see the panel. Without
+// it, a ratio computed over eleven bars and one computed over five hundred
+// arrive as the same number.
+//
+// na means the product has no opinion yet — an invalid configuration, a
+// non-standard chart, or a window with no confirmed bar in it. A consumer must
+// not read it as a zero ratio or a zero share, and must not carry it forward
+// with nz(). An open bar is NOT one of those cases, for the reason above.
+// ─────────────────────────────────────────────────────────────────────────────
+plot(rangeToCost, "Range to cost ratio", display = display.data_window)
+plot(underCostShare, "Share of bars under cost", display = display.data_window)
+plot(publishable ? float(sample) : na, "Window sample size", display = display.data_window)
+
+alertcondition(barstate.isconfirmed and not na(rangeToCost) and rangeToCost < 1.0,
+     "Typical range is smaller than the round trip",
+     "Cost-to-Range Gauge reports a typical bar range below the round-trip cost on this chart.")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Gauge
+//
+// One table of three rows and two columns. Everything that will not fit is
+// carried in cell tooltips rather than dropped.
+// ─────────────────────────────────────────────────────────────────────────────
+bool inVisibleWindow = time >= chart.left_visible_bar_time and time <= chart.right_visible_bar_time
+var float visibleWindowHigh = na
+var float visibleWindowLow = na
+var float visibleWindowRightClose = na
+if inVisibleWindow
+    visibleWindowHigh := na(visibleWindowHigh) ? high : math.max(visibleWindowHigh, high)
+    visibleWindowLow := na(visibleWindowLow) ? low : math.min(visibleWindowLow, low)
+    visibleWindowRightClose := close
+
+float visibleWindowMid = not na(visibleWindowHigh) and not na(visibleWindowLow) ?
+     (visibleWindowHigh + visibleWindowLow) / 2.0 : na
+string automaticPanelPosition = not na(visibleWindowMid) and visibleWindowRightClose > visibleWindowMid ?
+     position.bottom_right : position.top_right
+string resolvedPanelPosition = panelPositionInput == "Top right" ? position.top_right :
+     panelPositionInput == "Bottom right" ? position.bottom_right :
+     panelPositionInput == "Top left" ? position.top_left :
+     panelPositionInput == "Bottom left" ? position.bottom_left :
+     panelPositionInput == "Top center" ? position.top_center :
+     panelPositionInput == "Bottom center" ? position.bottom_center : automaticPanelPosition
+
+var table gauge = table.new(position.top_right, 2, 3, bgcolor = C_PANEL,
+     frame_color = C_LINE, frame_width = 1, border_color = C_LINE, border_width = 1)
+
+if barstate.islast
+    table.set_position(gauge, resolvedPanelPosition)
+
+    string statusText = not standardChart ? "FROZEN · NON-STANDARD BARS" :
+         not configValid ? "CONFIG ERROR · ENTER A COST" :
+         sample == 0 ? "WARM-UP · NO CONFIRMED BARS" :
+         faded ? "n=" + str.tostring(sample) + " · BELOW " + str.tostring(MIN_BARS) : "n=" + str.tostring(sample)
+    color statusColor = not standardChart or not configValid ? C_AMBER :
+         sample == 0 or faded ? C_AMBER : C_GREEN
+
+    // Transparency carries the sample size on the whole gauge, because every
+    // number on it comes from the same window.
+    int fade = not standardChart or not configValid ? 55 : sample == 0 ? 70 : faded ? 45 : 0
+
+    float medianTicks = not na(medianRange) and syminfo.mintick > 0.0 ? medianRange / syminfo.mintick : na
+    string costText = configValid ? str.tostring(costTicks, "#.##") + "T" : "—"
+    string rangeText = na(medianTicks) ? "—" : str.tostring(medianTicks, "#.##") + "T"
+    string ratioText = na(rangeToCost) ? "—" : str.tostring(rangeToCost, "#.##") + "×"
+    string currencyText = currencyAvailable and not na(costCurrency) and not na(medianRange) ?
+         "  ·  " + str.tostring(costCurrency, "#.####") + " / " +
+         str.tostring(medianRange * syminfo.pointvalue, "#.####") + " " + syminfo.currency :
+         "  ·  CURRENCY NOT AVAILABLE FOR THIS SYMBOL"
+    string exceedsText = not na(rangeToCost) and rangeToCost <= 1.0 ?
+         "  ·  COST EXCEEDS THE TYPICAL RANGE" : ""
+    string underText = na(underCostShare) ? "—" : str.tostring(underCost) + " OF " + str.tostring(sample) +
+         "  ·  " + str.tostring(underCostShare, "#.#") + "%"
+
+    table.cell(gauge, 0, 0, "BSL / COST TO RANGE", text_color = color.new(C_PAPER, fade),
+         bgcolor = C_INK, text_size = size.small, text_halign = text.align_left,
+         tooltip = "A pre-trade screen for an instrument and a timeframe, taken before any signal is discussed. It is not a signal and it issues no verdict.")
+    table.cell(gauge, 1, 0, syminfo.ticker + " " + timeframe.period + "  ·  " + statusText,
+         text_color = color.new(statusColor, fade), bgcolor = C_INK, text_size = size.small,
+         text_halign = text.align_left,
+         tooltip = "n is the number of CONFIRMED bars in the window. The bar still forming is excluded and pending: its range is still moving, so counting it would put a number in the window that the next tick can change. Below " + str.tostring(MIN_BARS) + " bars the whole gauge is faded and n is printed rather than hidden.")
+
+    table.cell(gauge, 0, 1, f_cost_bar(costPrice, medianRange),
+         text_color = color.new(na(rangeToCost) or rangeToCost > 1.0 ? C_AMBER : C_RED, fade),
+         text_size = size.small, text_halign = text.align_left,
+         tooltip = "Filled cells are the round-trip cost. The full width is the median true range of the window. Drawn to scale, so the comparison cannot be rounded away in words. A cost wider than the typical range fills the bar completely.")
+    table.cell(gauge, 1, 1, "COST " + costText + "  /  RANGE " + rangeText + "  =  " + ratioText +
+         currencyText + exceedsText, text_color = color.new(C_PAPER, fade), text_size = size.small,
+         text_halign = text.align_left,
+         tooltip = "Both cost inputs are in ticks. Ticks convert to price with syminfo.mintick, which every instrument has. The currency reading needs syminfo.pointvalue, which not every symbol class carries, so it is suppressed rather than guessed. The ratio is the typical range DIVIDED BY the cost: above 1 the typical bar covers a round turn, below 1 it does not.")
+
+    table.cell(gauge, 0, 2, "RANGE SMALLER THAN COST", text_color = color.new(C_MUTED, fade),
+         text_size = size.small, text_halign = text.align_left,
+         tooltip = "Bars in the window whose ENTIRE true range was smaller than one round trip. Such a bar cannot pay for a trade taken inside it, whichever way it went.")
+    table.cell(gauge, 1, 2, underText + "  ·  NO VERDICT ISSUED",
+         text_color = color.new(C_PAPER, fade), text_size = size.small, text_halign = text.align_left,
+         tooltip = "The denominator is always shown. The gauge reports the ratio and the count and refuses to say whether this instrument is tradeable, because that answer depends on a strategy this script has never seen. Confirmation lag is 0 bars for every reading on this panel, so all three rows share one cutoff — the last confirmed bar — and the only censored observation is the bar still forming. B-vis3-07 Eligible-Window Curtain owns the general form of that window.")

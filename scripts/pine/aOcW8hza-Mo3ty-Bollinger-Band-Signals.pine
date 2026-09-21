@@ -1,0 +1,246 @@
+//@version=6
+indicator("Mo3ty Bollinger Band Signals", shorttitle="Mo3ty BB Signals", overlay=true)
+
+//────────────────────────────────────
+// Bollinger Band Settings
+//────────────────────────────────────
+groupBB = "Bollinger Bands"
+
+bbLength = input.int(
+     50,
+     "BB Length",
+     minval=1,
+     group=groupBB
+)
+
+bbMultiplier = input.float(
+     2.0,
+     "Standard Deviation",
+     minval=0.1,
+     step=0.1,
+     group=groupBB
+)
+
+showBands = input.bool(
+     true,
+     "Show Bollinger Bands",
+     group=groupBB
+)
+
+//────────────────────────────────────
+// Confirmation Filters
+//────────────────────────────────────
+groupFilters = "Signal Confirmation Filters"
+
+useDirectionFilter = input.bool(
+     true,
+     "Candle Direction Confirmation",
+     group=groupFilters
+)
+
+useBodyFilter = input.bool(
+     true,
+     "Minimum Candle Body Strength",
+     group=groupFilters
+)
+
+minBodyStrength = input.float(
+     50.0,
+     "Minimum Body Strength (%)",
+     minval=0.0,
+     maxval=100.0,
+     step=5.0,
+     group=groupFilters
+)
+
+useClosePositionFilter = input.bool(
+     true,
+     "Close Position Confirmation",
+     group=groupFilters
+)
+
+closePositionThreshold = input.float(
+     50.0,
+     "Close Position Threshold (%)",
+     minval=0.0,
+     maxval=100.0,
+     step=5.0,
+     group=groupFilters
+)
+
+//────────────────────────────────────
+// Signal Display
+//────────────────────────────────────
+groupDisplay = "Signal Display"
+
+showBuySignals = input.bool(
+     true,
+     "Show BUY Signals",
+     group=groupDisplay
+)
+
+showSellSignals = input.bool(
+     true,
+     "Show SELL Signals",
+     group=groupDisplay
+)
+
+//────────────────────────────────────
+// Bollinger Band Calculation
+//────────────────────────────────────
+basis = ta.sma(close, bbLength)
+deviation = bbMultiplier * ta.stdev(close, bbLength)
+
+upperBand = basis + deviation
+lowerBand = basis - deviation
+
+//────────────────────────────────────
+// Plot Bollinger Bands
+//────────────────────────────────────
+plotBasis = plot(
+     showBands ? basis : na,
+     title="BB Basis",
+     linewidth=1
+)
+
+plotUpper = plot(
+     showBands ? upperBand : na,
+     title="BB Upper",
+     linewidth=1
+)
+
+plotLower = plot(
+     showBands ? lowerBand : na,
+     title="BB Lower",
+     linewidth=1
+)
+
+fill(
+     plotUpper,
+     plotLower,
+     title="Bollinger Band Range"
+)
+
+//────────────────────────────────────
+// Current Candle Calculations
+//────────────────────────────────────
+candleRange = high - low
+candleBody = math.abs(close - open)
+
+bodyStrength = candleRange > 0
+     ? (candleBody / candleRange) * 100.0
+     : 0.0
+
+closePosition = candleRange > 0
+     ? ((close - low) / candleRange) * 100.0
+     : 50.0
+
+//────────────────────────────────────
+// Core Re-Entry Logic
+//────────────────────────────────────
+
+// Previous candle closed outside the band
+previousBelowLower = close[1] < lowerBand[1]
+previousAboveUpper = close[1] > upperBand[1]
+
+// Current candle opens and closes inside the Bollinger Band range
+currentOpenInside =
+     open >= lowerBand and
+     open <= upperBand
+
+currentCloseInside =
+     close >= lowerBand and
+     close <= upperBand
+
+currentCandleInside =
+     currentOpenInside and
+     currentCloseInside
+
+//────────────────────────────────────
+// Confirmation Filters
+//────────────────────────────────────
+
+// Candle direction
+buyDirectionOK =
+     not useDirectionFilter or close > open
+
+sellDirectionOK =
+     not useDirectionFilter or close < open
+
+// Candle body strength
+buyBodyOK =
+     not useBodyFilter or bodyStrength >= minBodyStrength
+
+sellBodyOK =
+     not useBodyFilter or bodyStrength >= minBodyStrength
+
+// Close position inside candle
+buyClosePositionOK =
+     not useClosePositionFilter or
+     closePosition >= closePositionThreshold
+
+sellClosePositionOK =
+     not useClosePositionFilter or
+     closePosition <= (100.0 - closePositionThreshold)
+
+//────────────────────────────────────
+// Final Signal Conditions
+//────────────────────────────────────
+
+buySignal =
+     barstate.isconfirmed and
+     previousBelowLower and
+     currentCandleInside and
+     buyDirectionOK and
+     buyBodyOK and
+     buyClosePositionOK
+
+sellSignal =
+     barstate.isconfirmed and
+     previousAboveUpper and
+     currentCandleInside and
+     sellDirectionOK and
+     sellBodyOK and
+     sellClosePositionOK
+
+//────────────────────────────────────
+// BUY / SELL Plot
+//────────────────────────────────────
+
+plotshape(
+     showBuySignals and buySignal,
+     title="BUY Signal",
+     style=shape.labelup,
+     location=location.belowbar,
+     text="BUY",
+     textcolor=color.white,
+     size=size.small,
+     color=color.green
+)
+
+plotshape(
+     showSellSignals and sellSignal,
+     title="SELL Signal",
+     style=shape.labeldown,
+     location=location.abovebar,
+     text="SELL",
+     textcolor=color.white,
+     size=size.small,
+     color=color.red
+)
+
+//────────────────────────────────────
+// Alerts
+//────────────────────────────────────
+
+alertcondition(
+     buySignal,
+     title="Mo3ty BB BUY",
+     message="Mo3ty Bollinger Band Signals: BUY signal confirmed."
+)
+
+alertcondition(
+     sellSignal,
+     title="Mo3ty BB SELL",
+     message="Mo3ty Bollinger Band Signals: SELL signal confirmed."
+)

@@ -1,0 +1,396 @@
+//@version=6
+indicator("dyor • US Markt-Liquidität (Net YoY)", overlay=false, dynamic_requests=true, max_labels_count=50)
+
+//────────────────────────────────────────────────────────────
+// Groups
+//────────────────────────────────────────────────────────────
+grpData = "Data"
+grpCalc = "Calc"
+grpVis  = "Visuals"
+grpCol  = "Gradient Colors"
+grpGlow = "Glow"
+
+//────────────────────────────────────────────────────────────
+// Data Inputs
+//────────────────────────────────────────────────────────────
+symFED = input.symbol("FRED:WALCL",      "Fed Assets", group=grpData)
+symTGA = input.symbol("FRED:WTREGEN",    "Treasury General Account (TGA)", group=grpData)
+symRRP = input.symbol("FRED:RRPONTSYD",  "Reverse Repo (RRP)", group=grpData)
+
+//────────────────────────────────────────────────────────────
+// Calculation Settings
+//────────────────────────────────────────────────────────────
+lenYoY    = input.int(52, "YoY Lookback (weeks)", minval=26, maxval=156, group=grpCalc)
+useEMA    = input.bool(true, "Smooth (EMA)", group=grpCalc, inline="sm")
+lenEMA    = input.int(6, "EMA", minval=1, maxval=26, group=grpCalc, inline="sm")
+stepStyle = input.bool(true, "Step style (Weekly-held)", group=grpVis)
+
+//────────────────────────────────────────────────────────────
+// Gradient Settings
+//────────────────────────────────────────────────────────────
+negBound = input.float(-8.0,  "Negative bound", step=0.5, group=grpCol)
+posBound = input.float( 12.0, "Positive bound", step=0.5, group=grpCol)
+
+colNeg     = input.color(color.fuchsia, "Negative color", group=grpCol)
+colNeutral = input.color(color.white,   "Neutral color",  group=grpCol)
+colPos     = input.color(color.lime,    "Positive color", group=grpCol)
+
+mainAlpha = input.int(0, "Main opacity", minval=0, maxval=100, group=grpCol)
+
+//────────────────────────────────────────────────────────────
+// Glow Settings
+//────────────────────────────────────────────────────────────
+glowOn     = input.bool(true, "Enable Glow", group=grpGlow)
+innerWidth = input.int(7,  "Inner width", minval=1, maxval=20, group=grpGlow, inline="w")
+outerWidth = input.int(16, "Outer width", minval=1, maxval=30, group=grpGlow, inline="w")
+innerAlpha = input.int(64, "Inner opacity", minval=0, maxval=100, group=grpGlow, inline="a")
+outerAlpha = input.int(94, "Outer opacity", minval=0, maxval=100, group=grpGlow, inline="a")
+
+//────────────────────────────────────────────────────────────
+// Helpers
+//────────────────────────────────────────────────────────────
+f_clampInt(int v, int lo, int hi) =>
+    math.min(math.max(v, lo), hi)
+
+f_clampFloat(float v, float lo, float hi) =>
+    math.min(math.max(v, lo), hi)
+
+f_grad2(float v, float negB, float posB, color cNeg, color cNeu, color cPos) =>
+    float nB = math.min(negB, 0.0)
+    float pB = math.max(posB, 0.0)
+    if v <= 0
+        float x = f_clampFloat(v, nB, 0.0)
+        color.from_gradient(x, nB, 0.0, cNeg, cNeu)
+    else
+        float x = f_clampFloat(v, 0.0, pB)
+        color.from_gradient(x, 0.0, pB, cNeu, cPos)
+
+//────────────────────────────────────────────────────────────
+// Weekly Data Pull
+//────────────────────────────────────────────────────────────
+fedW = request.security(symFED, "W", close, barmerge.gaps_off, barmerge.lookahead_off)
+tgaW = request.security(symTGA, "W", close, barmerge.gaps_off, barmerge.lookahead_off)
+rrpW = request.security(symRRP, "W", close, barmerge.gaps_off, barmerge.lookahead_off)
+
+// Net Liquidity (absolute)
+netLiqW = fedW - tgaW - rrpW
+
+// YoY %
+yoyW = (netLiqW / netLiqW[lenYoY] - 1.0) * 100.0
+
+// Weekly-sampled update
+newWeek = ta.change(time("W")) != 0
+var float yoySample = na
+if newWeek
+    yoySample := yoyW
+else
+    yoySample := nz(yoySample[1], yoyW)
+
+// Optional smoothing
+y = useEMA ? ta.ema(yoySample, lenEMA) : yoySample
+
+// Style
+pStyle = stepStyle ? plot.style_stepline : plot.style_line
+
+// Gradient color
+baseCol = f_grad2(y, negBound, posBound, colNeg, colNeutral, colPos)
+mainCol = color.new(baseCol, f_clampInt(mainAlpha, 0, 100))
+
+yGlow = glowOn ? y : na
+
+//────────────────────────────────────────────────────────────
+// Plots (3 total)
+//────────────────────────────────────────────────────────────
+plot(yGlow, "Glow Outer", color=color.new(baseCol, outerAlpha), linewidth=outerWidth, style=pStyle)
+plot(yGlow, "Glow Inner", color=color.new(baseCol, innerAlpha), linewidth=innerWidth, style=pStyle)
+plot(y,     "Net Liquidity YoY", color=mainCol, linewidth=2, style=pStyle)
+
+hline(0, "0", color=color.new(color.gray, 78), linestyle=hline.style_dotted)
+hline(posBound, "+Bound", color=color.new(color.gray, 86), linestyle=hline.style_dotted)
+hline(negBound, "-Bound", color=color.new(color.gray, 86), linestyle=hline.style_dotted)
+
+//────────────────────────────────────────────────────────────
+// Info Label (Corner via price anchoring)
+//────────────────────────────────────────────────────────────
+grpInfo = "Info"
+
+showLabel = input.bool(true, "Show Info Label", group=grpInfo)
+labelPos  = input.string("Top Right", "Position", options=["Top Right","Top Left","Bottom Right","Bottom Left"], group=grpInfo)
+labelSize = input.string("Small", "Size", options=["Tiny","Small","Normal"], group=grpInfo)
+labelBgA  = input.int(78, "Background opacity", minval=0, maxval=100, group=grpInfo)
+
+// Size helper
+f_size(string s) =>
+    s == "Tiny" ? size.tiny :   s == "Normal" ? size.normal :  size.small
+
+// Determine Y anchor (top/bottom of visible range)
+float yTop = ta.highest(y, 200)
+float yBot = ta.lowest(y, 200)
+
+float yAnchor =
+     (labelPos == "Top Right" or labelPos == "Top Left") ? yTop :
+     yBot 
+
+// Determine style
+label_style =
+     (labelPos == "Top Right" or labelPos == "Bottom Right") ?
+     label.style_label_right :
+     label.style_label_left
+
+var label infoLabel = na
+
+if barstate.islast
+    string infoText = "US Netto Liquidität\nTatsächlich verfügbare Marktliquidität"
+
+    if showLabel
+        label.delete(infoLabel)
+        infoLabel := label.new(
+            bar_index,
+            yAnchor,
+            infoText,
+            xloc=xloc.bar_index,
+            yloc=yloc.price,
+            style=label_style,
+            textcolor=color.white,
+            color=color.new(color.black, labelBgA),
+            size=f_size(labelSize)
+        )
+    else
+        label.delete(infoLabel)
+        infoLabel := na
+
+
+
+//======================================================================
+// 01) LEGEND TABLE — Settings
+//======================================================================
+groupLegend = "Legend Table"
+
+legend_show          = input.bool(true,  "Show Legend Table", group=groupLegend)
+legendTitle          = input.string("LEGEND", "Title", group=groupLegend)
+legendShowTitle      = input.bool(true, "Show Title Row", group=groupLegend)
+
+legendRows           = input.int(6, "Rows", minval=1, maxval=20, group=groupLegend)
+legendPosOpt         = input.string("Top Right", "Position", options=[
+     "Top Right","Top Left","Bottom Right","Bottom Left",
+     "Middle Right","Middle Left","Middle Center",
+     "Top Center","Bottom Center"
+], group=groupLegend)
+
+legendTextSizeOpt    = input.string("Small", "Text Size", options=["Tiny","Small","Normal","Large","Huge"], group=groupLegend)
+legendBgTransp       = input.int(70, "Background Transparency (0-100)", minval=0, maxval=100, group=groupLegend)
+legendBorderWidth    = input.int(1, "Border Width", minval=0, maxval=4, group=groupLegend)
+legendFrameCol       = input.color(color.new(color.white, 70), "Frame Color", group=groupLegend)
+
+// Per-row inputs (max 20)
+groupLegendRows = "Legend Table — Rows"
+name1  = input.string("BTC Core", "Row 1 Name", group=groupLegendRows),  col1  = input.color(color.orange,  "Row 1 Color", group=groupLegendRows)
+name2  = input.string("ETH",      "Row 2 Name", group=groupLegendRows),  col2  = input.color(color.aqua,    "Row 2 Color", group=groupLegendRows)
+name3  = input.string("SOL",      "Row 3 Name", group=groupLegendRows),  col3  = input.color(color.lime,    "Row 3 Color", group=groupLegendRows)
+name4  = input.string("XRP",      "Row 4 Name", group=groupLegendRows),  col4  = input.color(color.fuchsia, "Row 4 Color", group=groupLegendRows)
+name5  = input.string("HEDGE",    "Row 5 Name", group=groupLegendRows),  col5  = input.color(color.red,     "Row 5 Color", group=groupLegendRows)
+name6  = input.string("CASHFLOW", "Row 6 Name", group=groupLegendRows),  col6  = input.color(color.yellow,  "Row 6 Color", group=groupLegendRows)
+name7  = input.string("",         "Row 7 Name", group=groupLegendRows),  col7  = input.color(color.gray,    "Row 7 Color", group=groupLegendRows)
+name8  = input.string("",         "Row 8 Name", group=groupLegendRows),  col8  = input.color(color.gray,    "Row 8 Color", group=groupLegendRows)
+name9  = input.string("",         "Row 9 Name", group=groupLegendRows),  col9  = input.color(color.gray,    "Row 9 Color", group=groupLegendRows)
+name10 = input.string("",        "Row 10 Name", group=groupLegendRows),  col10 = input.color(color.gray,   "Row 10 Color", group=groupLegendRows)
+name11 = input.string("",        "Row 11 Name", group=groupLegendRows),  col11 = input.color(color.gray,   "Row 11 Color", group=groupLegendRows)
+name12 = input.string("",        "Row 12 Name", group=groupLegendRows),  col12 = input.color(color.gray,   "Row 12 Color", group=groupLegendRows)
+name13 = input.string("",        "Row 13 Name", group=groupLegendRows),  col13 = input.color(color.gray,   "Row 13 Color", group=groupLegendRows)
+name14 = input.string("",        "Row 14 Name", group=groupLegendRows),  col14 = input.color(color.gray,   "Row 14 Color", group=groupLegendRows)
+name15 = input.string("",        "Row 15 Name", group=groupLegendRows),  col15 = input.color(color.gray,   "Row 15 Color", group=groupLegendRows)
+name16 = input.string("",        "Row 16 Name", group=groupLegendRows),  col16 = input.color(color.gray,   "Row 16 Color", group=groupLegendRows)
+name17 = input.string("",        "Row 17 Name", group=groupLegendRows),  col17 = input.color(color.gray,   "Row 17 Color", group=groupLegendRows)
+name18 = input.string("",        "Row 18 Name", group=groupLegendRows),  col18 = input.color(color.gray,   "Row 18 Color", group=groupLegendRows)
+name19 = input.string("",        "Row 19 Name", group=groupLegendRows),  col19 = input.color(color.gray,   "Row 19 Color", group=groupLegendRows)
+name20 = input.string("",        "Row 20 Name", group=groupLegendRows),  col20 = input.color(color.gray,   "Row 20 Color", group=groupLegendRows)
+
+
+//======================================================================
+// 02) WATERMARK — Settings
+//======================================================================
+groupWM = "Watermark"
+
+wm_show       = input.bool(true, "Show Watermark", group=groupWM)
+
+wm_brand      = input.string("dyor", "Brand Text", group=groupWM)
+wm_subBrand   = input.string("Product Name", "Sub Text (optional)", group=groupWM)
+
+wm_posOpt     = input.string("Bottom Right", "Position", options=["Top Right","Top Left","Bottom Right","Bottom Left"], group=groupWM)
+wm_sizeOpt    = input.string("Large", "Brand Size", options=["Tiny","Small","Normal","Large","Huge"], group=groupWM)
+
+wm_textCol    = input.color(color.new(color.white, 0),  "Brand Color", group=groupWM)
+wm_subCol     = input.color(color.new(color.white, 40), "Sub Color", group=groupWM)
+
+wm_bgCol      = input.color(color.new(color.black, 0), "Background Color", group=groupWM)
+wm_bgTransp   = input.int(85, "Background Transparency (0-100)", minval=0, maxval=100, group=groupWM)
+
+wm_borderCol  = input.color(color.new(color.white, 80), "Border Color", group=groupWM)
+wm_borderW    = input.int(1, "Border Width", minval=0, maxval=4, group=groupWM)
+
+wm_padLeft    = input.string("   ", "Left Padding (spaces)", group=groupWM)
+wm_padRight   = input.string("   ", "Right Padding (spaces)", group=groupWM)
+
+
+//======================================================================
+// Helpers
+//======================================================================
+f_posLegend(_p) =>
+    switch _p
+        "Top Right"      => position.top_right
+        "Top Left"       => position.top_left
+        "Bottom Right"   => position.bottom_right
+        "Bottom Left"    => position.bottom_left
+        "Middle Right"   => position.middle_right
+        "Middle Left"    => position.middle_left
+        "Middle Center"  => position.middle_center
+        "Top Center"     => position.top_center
+        "Bottom Center"  => position.bottom_center
+        => position.top_right
+
+f_posWM(_p) =>
+    switch _p
+        "Top Right"    => position.top_right
+        "Top Left"     => position.top_left
+        "Bottom Right" => position.bottom_right
+        "Bottom Left"  => position.bottom_left
+        => position.bottom_right
+
+f_size(_s) =>
+    switch _s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        "Huge"   => size.huge
+        => size.small
+
+f_legendBg(_c) =>
+    color.new(_c, legendBgTransp)
+
+f_getName(i) =>
+    switch i
+        1  => name1
+        2  => name2
+        3  => name3
+        4  => name4
+        5  => name5
+        6  => name6
+        7  => name7
+        8  => name8
+        9  => name9
+        10 => name10
+        11 => name11
+        12 => name12
+        13 => name13
+        14 => name14
+        15 => name15
+        16 => name16
+        17 => name17
+        18 => name18
+        19 => name19
+        20 => name20
+        => ""
+
+f_getColor(i) =>
+    switch i
+        1  => col1
+        2  => col2
+        3  => col3
+        4  => col4
+        5  => col5
+        6  => col6
+        7  => col7
+        8  => col8
+        9  => col9
+        10 => col10
+        11 => col11
+        12 => col12
+        13 => col13
+        14 => col14
+        15 => col15
+        16 => col16
+        17 => col17
+        18 => col18
+        19 => col19
+        20 => col20
+        => color.gray
+
+
+//======================================================================
+// 03) LEGEND TABLE — Render
+//======================================================================
+// Keep the table dims fixed (2 cols, 21 rows: title row + up to 20 rows)
+var table tLegend = table.new(
+     f_posLegend(legendPosOpt),
+     2, 21,
+     frame_color=legendFrameCol,
+     border_width=legendBorderWidth
+)
+
+f_legendClear() =>
+    for r = 0 to 20
+        for c = 0 to 1
+            table.cell(tLegend, c, r, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 0))
+
+f_legendDraw() =>
+    // title row at 0
+    if legendShowTitle
+        table.cell(tLegend, 0, 0, " ", bgcolor=f_legendBg(color.black))
+        table.cell(tLegend, 1, 0, legendTitle, text_color=color.white, text_size=f_size(legendTextSizeOpt), bgcolor=f_legendBg(color.black))
+    else
+        table.cell(tLegend, 0, 0, "", bgcolor=color.new(color.black, 100))
+        table.cell(tLegend, 1, 0, "", bgcolor=color.new(color.black, 100))
+
+    // rows start at table row 1
+    for i = 1 to legendRows
+        nm = f_getName(i)
+        co = f_getColor(i)
+
+        table.cell(tLegend, 0, i, "  ", bgcolor=f_legendBg(co))
+
+        txt = str.length(nm) > 0 ? nm : "—"
+        table.cell(tLegend, 1, i, txt, text_color=color.white, text_size=f_size(legendTextSizeOpt), bgcolor=f_legendBg(color.black))
+
+f_legendHide() =>
+    // wipe the full table so it doesn't keep stale content
+    f_legendClear()
+
+
+//======================================================================
+// 04) WATERMARK — Render
+//======================================================================
+var table tWM = table.new(
+     f_posWM(wm_posOpt),
+     1, 2,
+     frame_color=wm_borderCol,
+     border_width=wm_borderW
+)
+
+wm_bg = color.new(wm_bgCol, wm_bgTransp)
+
+f_wmClear() =>
+    table.cell(tWM, 0, 0, "", bgcolor=color.new(color.black, 100))
+    table.cell(tWM, 0, 1, "", bgcolor=color.new(color.black, 100))
+
+f_wmDraw() =>
+    table.cell(tWM, 0, 0, wm_padLeft + wm_brand + wm_padRight, text_color=wm_textCol, text_size=f_size(wm_sizeOpt), bgcolor=wm_bg)
+    table.cell(tWM, 0, 1, str.length(wm_subBrand) > 0 ? (wm_padLeft + wm_subBrand + wm_padRight) : "", text_color=wm_subCol, text_size=size.small, bgcolor=wm_bg)
+
+
+//======================================================================
+// 05) EXEC (last bar only)
+//======================================================================
+if barstate.islast
+    // Legend
+    if legend_show
+        f_legendClear()
+        f_legendDraw()
+    else
+        f_legendHide()
+
+    // Watermark
+    if wm_show
+        f_wmDraw()
+    else
+        f_wmClear()

@@ -1,0 +1,161 @@
+//@version=6
+indicator("VWAP + EMAs + Levels (ATR / Premarket / Yesterday)", shorttitle="VWAP+EMAs+Levels", overlay=true, max_lines_count=50, max_labels_count=50)
+
+// ══════════════════════════════════════════════════════════════════════
+//  1 · VWAP (no bands)
+// ══════════════════════════════════════════════════════════════════════
+gV = "VWAP"
+hideonDWM  = input.bool(false, "Hide VWAP on 1D or Above", group = gV)
+anchor     = input.string("Session", "Anchor Period", options = ["Session", "Week", "Month", "Quarter", "Year", "Decade", "Century", "Earnings", "Dividends", "Splits"], group = gV)
+srcVWAP    = input.source(hlc3, "Source", group = gV)
+offsetVWAP = input.int(0, "Offset", minval = 0, group = gV)
+colVWAP    = input.color(color.green, "VWAP Color", group = gV)
+
+cumVolume = ta.cum(volume)
+if barstate.islast and cumVolume == 0
+    runtime.error("No volume is provided by the data vendor.")
+
+newEarnings  = request.earnings(syminfo.tickerid, earnings.actual, barmerge.gaps_on, barmerge.lookahead_on, ignore_invalid_symbol = true)
+newDividends = request.dividends(syminfo.tickerid, dividends.gross, barmerge.gaps_on, barmerge.lookahead_on, ignore_invalid_symbol = true)
+newSplit     = request.splits(syminfo.tickerid, splits.denominator, barmerge.gaps_on, barmerge.lookahead_on, ignore_invalid_symbol = true)
+
+isNewPeriod = switch anchor
+    "Earnings"  => not na(newEarnings)
+    "Dividends" => not na(newDividends)
+    "Splits"    => not na(newSplit)
+    "Session"   => timeframe.change("D")
+    "Week"      => timeframe.change("W")
+    "Month"     => timeframe.change("M")
+    "Quarter"   => timeframe.change("3M")
+    "Year"      => timeframe.change("12M")
+    "Decade"    => timeframe.change("12M") and year % 10 == 0
+    "Century"   => timeframe.change("12M") and year % 100 == 0
+    => false
+
+isEsdAnchor = anchor == "Earnings" or anchor == "Dividends" or anchor == "Splits"
+if na(srcVWAP[1]) and not isEsdAnchor
+    isNewPeriod := true
+
+vwapRaw   = ta.vwap(srcVWAP, isNewPeriod)
+vwapValue = hideonDWM and timeframe.isdwm ? na : vwapRaw
+
+plot(vwapValue, title = "VWAP", color = colVWAP, linewidth = 1, offset = offsetVWAP)
+
+// ══════════════════════════════════════════════════════════════════════
+//  2 · EMAs 5 / 9 / 21 / 50 / 200
+// ══════════════════════════════════════════════════════════════════════
+gE = "EMAs"
+showEMAs  = input.bool(true, "Show EMAs", group = gE)
+colEma5   = input.color(color.white,  "EMA 5",   group = gE)
+colEma9   = input.color(color.blue,   "EMA 9",   group = gE)
+colEma21  = input.color(color.yellow, "EMA 21",  group = gE)
+colEma50  = input.color(color.red,    "EMA 50",  group = gE)
+colEma200 = input.color(color.gray,   "EMA 200", group = gE)
+
+ema5   = ta.ema(close, 5)
+ema9   = ta.ema(close, 9)
+ema21  = ta.ema(close, 21)
+ema50  = ta.ema(close, 50)
+ema200 = ta.ema(close, 200)
+
+plot(showEMAs ? ema5   : na, title = "EMA 5",   color = colEma5,   linewidth = 2)
+plot(showEMAs ? ema9   : na, title = "EMA 9",   color = colEma9,   linewidth = 2)
+plot(showEMAs ? ema21  : na, title = "EMA 21",  color = colEma21,  linewidth = 2)
+plot(showEMAs ? ema50  : na, title = "EMA 50",  color = colEma50,  linewidth = 2)
+plot(showEMAs ? ema200 : na, title = "EMA 200", color = colEma200, linewidth = 2)
+
+// ══════════════════════════════════════════════════════════════════════
+//  3 · Levels: daily ATR, yesterday's extremes and premarket
+// ══════════════════════════════════════════════════════════════════════
+gL = "Levels"
+showATR    = input.bool(true, "Top / Bottom ATR", group = gL)
+showYest   = input.bool(true, "Yesterday's High / Low", group = gL)
+showPM     = input.bool(true, "Premarket High / Low", group = gL)
+atrLength  = input.int(14, "ATR Length", minval = 1, group = gL)
+atrType    = input.string("RMA", "ATR Moving Average Type", options = ["RMA", "EMA", "SMA", "HULL"], group = gL)
+pmSession  = input.session("0400-0930", "Premarket Session", group = gL)
+rthSession = input.session("0930-1600", "Regular Session", group = gL)
+sessionTZ  = input.string("America/New_York", "Session Time Zone", group = gL)
+colATR     = input.color(color.red,    "ATR Color", group = gL)
+colYest    = input.color(color.yellow, "Yesterday Color", group = gL)
+colPM      = input.color(color.green,  "Premarket Color", group = gL)
+wATR       = input.int(3, "ATR Line Width", minval = 1, maxval = 4, group = gL)
+wLvl       = input.int(2, "Yesterday / Premarket Line Width", minval = 1, maxval = 4, group = gL)
+spanRTH    = input.bool(true, "Span Lines Across Regular Session", tooltip = "Off: lines simply extend to the right.", group = gL)
+
+gT = "Labels"
+colTxt = input.color(#787b86, "Text Color", group = gT)
+lblOff = input.int(15, "Label Offset (bars)", minval = 0, maxval = 300, group = gT)
+
+// ATR moving average (all types are computed, then selected, to keep series state intact)
+f_ma(simple string _type, series float _src, simple int _len) =>
+    _rma  = ta.rma(_src, _len)
+    _ema  = ta.ema(_src, _len)
+    _sma  = ta.sma(_src, _len)
+    _hull = ta.wma(2 * ta.wma(_src, int(math.round(_len / 2))) - ta.wma(_src, _len), int(math.round(math.sqrt(_len))))
+    switch _type
+        "EMA"  => _ema
+        "SMA"  => _sma
+        "HULL" => _hull
+        => _rma
+
+atrVal    = f_ma(atrType, ta.tr, atrLength)
+atrTop    = close[1] + atrVal
+atrBottom = close[1] - atrVal
+
+tkr    = ticker.new(syminfo.prefix, syminfo.ticker, session = session.regular)
+yHigh  = request.security(tkr, "D", high[1],   gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+yLow   = request.security(tkr, "D", low[1],    gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+atrHi  = request.security(tkr, "D", atrTop,    gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+atrLo  = request.security(tkr, "D", atrBottom, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+
+// Premarket high / low (04:00 - 09:30 NY by default)
+inPM = not na(time(timeframe.period, pmSession, sessionTZ))
+var float pmHigh = na
+var float pmLow  = na
+if inPM and not inPM[1]
+    pmHigh := high
+    pmLow  := low
+else if inPM
+    pmHigh := math.max(nz(pmHigh, high), high)
+    pmLow  := math.min(nz(pmLow,  low),  low)
+
+// ══════════════════════════════════════════════════════════════════════
+//  4 · Regular session start / end timestamps for the current day
+// ══════════════════════════════════════════════════════════════════════
+f_sessionBounds(simple string _sess, simple string _tz) =>
+    hStart = int(str.tonumber(str.substring(_sess, 0, 2)))
+    mStart = int(str.tonumber(str.substring(_sess, 2, 4)))
+    hEnd   = int(str.tonumber(str.substring(_sess, 5, 7)))
+    mEnd   = int(str.tonumber(str.substring(_sess, 7, 9)))
+    y  = year(time, _tz)
+    mo = month(time, _tz)
+    d  = dayofmonth(time, _tz)
+    int t1 = timestamp(_tz, y, mo, d, hStart, mStart, 0)
+    int t2 = timestamp(_tz, y, mo, d, hEnd, mEnd, 0)
+    if t2 <= t1
+        t2 += 86400000
+    [t1, t2]
+
+[rthStart, rthEnd] = f_sessionBounds(rthSession, sessionTZ)
+
+// ══════════════════════════════════════════════════════════════════════
+//  5 · Draw lines and labels (last bar only)
+// ══════════════════════════════════════════════════════════════════════
+drawLevel(float _price, color _col, int _width, string _txt, bool _show) =>
+    var line  ln = na
+    var label lb = na
+    if barstate.islast
+        line.delete(ln)
+        label.delete(lb)
+        if _show and not na(_price)
+            ln := spanRTH ? line.new(rthStart, _price, rthEnd, _price, xloc = xloc.bar_time, color = _col, width = _width) : line.new(bar_index - 1, _price, bar_index, _price, xloc = xloc.bar_index, extend = extend.right, color = _col, width = _width)
+            lb := label.new(bar_index + lblOff, _price, _txt, xloc = xloc.bar_index, style = label.style_none, textcolor = colTxt, size = size.small)
+    ln
+
+drawLevel(atrHi,  colATR,  wATR, "TOP ATR",           showATR)
+drawLevel(atrLo,  colATR,  wATR, "BOTTOM ATR",        showATR)
+drawLevel(yHigh,  colYest, wLvl, "Yesterday's High",  showYest)
+drawLevel(yLow,   colYest, wLvl, "Yesterday's Low",   showYest)
+drawLevel(pmHigh, colPM,   wLvl, "Premarket High",    showPM)
+drawLevel(pmLow,  colPM,   wLvl, "Premarket Low",     showPM)

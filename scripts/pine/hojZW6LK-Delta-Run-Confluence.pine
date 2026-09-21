@@ -1,0 +1,288 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0
+// International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © AlgoNorth
+//@version=6
+indicator("Delta Run Confluence", overlay = true, max_boxes_count = 500)
+
+// ─── Inputs ───────────────────────────────────────────────────────────────────
+
+string G_SIG = "Runs"
+runLen  = input.int(3, "Run length (bars)", minval = 2, maxval = 5, group = G_SIG, display = display.none, tooltip = "Number of consecutive bars whose estimated volume delta (buying volume minus selling volume) has the same sign, needed to complete a run.")
+ltfMode = input.string("Auto", "Delta source timeframe", options = ["Auto", "1S", "5S", "15S", "1", "5"], group = G_SIG, display = display.none, tooltip = "Lower timeframe used to estimate each bar's volume delta. Auto uses 1-second data on 1-minute charts, 1-minute data up to 15-minute charts and 5-minute data above that. A chosen timeframe that is not below the chart's falls back to Auto. Bars without intrabar data fall back to candle direction × volume.")
+effMode = input.string("Any", "Efficiency filter", options = ["Any", "Efficient", "Absorbed"], group = G_SIG, display = display.none, tooltip = "Range per unit of delta over the run, compared with its trailing average. Efficient = price travelled more than usual for the flow. Absorbed = heavy flow with little travel. Any = no filter.")
+effLen  = input.int(100, "Efficiency baseline (bars)", minval = 10, group = G_SIG, display = display.none, tooltip = "Bars used for the trailing average the run's efficiency is compared against.")
+useIso  = input.bool(true, "Require isolation", group = G_SIG, display = display.none, tooltip = "When on, a run only counts as a marked run if no opposite-direction run completed within the isolation window before it.")
+isoMin  = input.int(45, "Isolation window (minutes)", minval = 1, group = G_SIG, display = display.none, tooltip = "Look-back window, in minutes, for opposite-direction runs.")
+horizon = input.int(5, "Follow-through window (bars)", minval = 1, maxval = 50, group = G_SIG, display = display.none, tooltip = "Bars after a marked run over which follow-through and pullback are measured for the table.")
+
+string G_LOOK = "Look"
+palette  = input.string("Green / Red", "Palette", options = ["Green / Red", "Aurora", "Heat"], group = G_LOOK, display = display.none, tooltip = "Colours for buy-flow and sell-flow runs. Green / Red suits monochrome candles; Aurora (cyan / magenta) and Heat (yellow / orange) stand out on green/red candles.")
+dimOther = input.bool(false, "Dim all other candles", group = G_LOOK, display = display.none, tooltip = "Fade every candle that is not part of a marked run. Off keeps the chart's normal candle colours.")
+dimCol   = input.color(#4a4f5c, "Dimmed candle colour", group = G_LOOK, display = display.none, tooltip = "Colour for candles outside marked runs when dimming is on.")
+glowOn   = input.bool(true, "Glow on marked runs", group = G_LOOK, display = display.none, tooltip = "Soft layered glow around the candles of each marked run (most recent marked runs).")
+glowK    = input.float(1.0, "Glow size (× ATR)", minval = 0.2, maxval = 3.0, step = 0.1, group = G_LOOK, display = display.none, tooltip = "How far the glow fades out above and below the run's candles, in multiples of the 14-bar average true range (ATR), so it scales with volatility.")
+pipMode  = input.string("Completed runs", "Run dots", options = ["Marked runs only", "Completed runs", "All run bars", "Off"], group = G_LOOK, display = display.none, tooltip = "Stacked dots along the bottom. Marked runs only: a bright 1-2-3 staircase under each marked run. Completed runs: also a faded 3-dot stack under every completed run. All run bars: also 1 and 2 dots on the first bars of every run.")
+maxLines = input.int(0, "Dotted trails", minval = 0, maxval = 10, group = G_LOOK, display = display.none, tooltip = "Most recent marked runs that keep a dotted line from their close to the latest candle. 0 turns them off.")
+
+string G_TBL = "Table"
+showTbl = input.bool(true, "Show table", group = G_TBL, display = display.none, tooltip = "Show the statistics table.")
+tblPos  = input.string("Top right", "Table corner", options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = G_TBL, display = display.none, tooltip = "Chart corner for the statistics table. Use different corners when several instances are loaded.")
+tblSize = input.string("Small", "Text size", options = ["Tiny", "Small", "Normal"], group = G_TBL, display = display.none, tooltip = "Table text size.")
+
+// ─── Palette ──────────────────────────────────────────────────────────────────
+
+color buyHi  = palette == "Heat" ? #ffd23f : palette == "Aurora" ? #29e7ff : #089981
+color sellHi = palette == "Heat" ? #ff5a1f : palette == "Aurora" ? #ff4fd8 : #f23645
+color greyC  = #787b86
+
+// ─── Guards ───────────────────────────────────────────────────────────────────
+
+if not timeframe.isintraday or timeframe.isseconds
+    runtime.error("Delta Run Confluence needs a minute-based intraday timeframe.")
+
+float volCum = ta.cum(nz(volume))
+if barstate.islast and volCum == 0
+    runtime.error("Delta Run Confluence needs volume data. This symbol has none.")
+
+// ─── Volume delta ─────────────────────────────────────────────────────────────
+
+int    chartSec = timeframe.in_seconds()
+string autoLtf  = chartSec <= 60 ? "1S" : chartSec <= 900 ? "1" : "5"
+string ltfPick  = ltfMode == "Auto" ? autoLtf : ltfMode
+string ltfUse   = timeframe.in_seconds(ltfPick) < chartSec ? ltfPick : autoLtf
+
+[cArr, oArr, vArr] = request.security_lower_tf(syminfo.tickerid, ltfUse, [close, open, volume], ignore_invalid_timeframe = true)
+
+float d     = 0.0
+int   nIntr = array.size(vArr)
+if nIntr > 0
+    float prevC = na
+    for j = 0 to nIntr - 1
+        float c = array.get(cArr, j)
+        float o = array.get(oArr, j)
+        float v = array.get(vArr, j)
+        int   s = c > o ? 1 : c < o ? -1 : na(prevC) ? 0 : c > prevC ? 1 : c < prevC ? -1 : 0
+        d += s * nz(v)
+        prevC := c
+else
+    d := close > open ? nz(volume) : close < open ? -nz(volume) : 0.0
+
+var int ltfBars = 0
+if barstate.isconfirmed and nIntr > 0
+    ltfBars += 1
+
+// ─── Run ──────────────────────────────────────────────────────────────────────
+
+var int streak = 0
+int sgn = d > 0 ? 1 : d < 0 ? -1 : 0
+int cur = streak > 0 ? 1 : streak < 0 ? -1 : 0
+if sgn == 0
+    streak := 0
+else if cur == sgn
+    streak += sgn
+else
+    streak := sgn
+
+int  dir     = streak > 0 ? 1 : streak < 0 ? -1 : 0
+bool runFire = barstate.isconfirmed and math.abs(streak) == runLen
+
+// ─── Efficiency ───────────────────────────────────────────────────────────────
+
+float rngSum   = math.sum(high - low, runLen)
+float dSum     = math.sum(math.abs(d), runLen)
+float runEff   = dSum > 0 ? rngSum / dSum : na
+float effBase  = ta.sma(runEff, effLen)
+float effRatio = runEff / effBase[1]
+bool  effOK    = effMode == "Any" or (effMode == "Efficient" and effRatio >= 1) or (effMode == "Absorbed" and effRatio < 1)
+
+// ─── Isolation ────────────────────────────────────────────────────────────────
+
+var int lastBuyRun  = na
+var int lastSellRun = na
+int  isoBars = math.max(1, int(math.round(isoMin * 60.0 / chartSec)))
+int  lastOpp = dir == 1 ? lastSellRun : lastBuyRun
+bool isoOK   = not useIso or na(lastOpp) or bar_index - lastOpp > isoBars
+
+bool aligned = runFire and effOK and isoOK
+
+// ─── Descriptive statistics ───────────────────────────────────────────────────
+
+float runHi = ta.highest(high, runLen)
+float runLo = ta.lowest(low, runLen)
+float absAvg = ta.sma(math.abs(d), 50)
+
+var int   buyAl   = 0
+var int   sellAl  = 0
+var int   sessions = 0
+var float sizeSum = 0.0
+var float flowSum = 0.0
+var int   doneN   = 0
+var float mfeSum  = 0.0
+var float maeSum  = 0.0
+var int   nextCont = 0
+var int   nextRev  = 0
+
+var array<int>   pBar = array.new<int>()
+var array<float> pPx  = array.new<float>()
+var array<int>   pDir = array.new<int>()
+var array<float> pMfe = array.new<float>()
+var array<float> pMae = array.new<float>()
+
+if session.isfirstbar or barstate.isfirst
+    sessions += 1
+
+if barstate.isconfirmed and aligned[1]
+    float nextMv = (close - close[1]) * dir[1]
+    if nextMv > 0
+        nextCont += 1
+    else if nextMv < 0
+        nextRev += 1
+
+if barstate.isconfirmed
+    int k = array.size(pBar) - 1
+    while k >= 0
+        int   age = bar_index - array.get(pBar, k)
+        float px  = array.get(pPx, k)
+        int   dz  = array.get(pDir, k)
+        if age >= 1
+            float fav = (dz > 0 ? high - px : px - low) / syminfo.mintick
+            float adv = (dz > 0 ? px - low : high - px) / syminfo.mintick
+            array.set(pMfe, k, math.max(array.get(pMfe, k), fav))
+            array.set(pMae, k, math.max(array.get(pMae, k), adv))
+        if age >= horizon
+            doneN += 1
+            mfeSum += array.get(pMfe, k)
+            maeSum += array.get(pMae, k)
+            array.remove(pBar, k)
+            array.remove(pPx, k)
+            array.remove(pDir, k)
+            array.remove(pMfe, k)
+            array.remove(pMae, k)
+        k -= 1
+
+if runFire
+    if dir == 1
+        lastBuyRun := bar_index
+    else
+        lastSellRun := bar_index
+    if aligned
+        if dir == 1
+            buyAl += 1
+        else
+            sellAl += 1
+        sizeSum += (runHi - runLo) / syminfo.mintick
+        flowSum += absAvg[runLen] > 0 ? dSum / (runLen * absAvg[runLen]) : 1.0
+        array.push(pBar, bar_index)
+        array.push(pPx, close)
+        array.push(pDir, dir)
+        array.push(pMfe, 0.0)
+        array.push(pMae, 0.0)
+
+// ─── Candles ──────────────────────────────────────────────────────────────────
+
+color hotC = dir > 0 ? buyHi : sellHi
+color sigC = aligned ? hotC : na
+
+barcolor(dimOther ? dimCol : na, title = "Dimmed candles")
+barcolor(sigC, offset = 0, title = "Marked bar 1", editable = false)
+barcolor(runLen > 1 ? sigC : na, offset = -1, title = "Marked bar 2", editable = false)
+barcolor(runLen > 2 ? sigC : na, offset = -2, title = "Marked bar 3", editable = false)
+barcolor(runLen > 3 ? sigC : na, offset = -3, title = "Marked bar 4", editable = false)
+barcolor(runLen > 4 ? sigC : na, offset = -4, title = "Marked bar 5", editable = false)
+
+// ─── Layered glow around marked runs ──────────────────────────────────────────
+
+float atrV = ta.atr(14)
+
+var array<box> glowBoxes = array.new<box>()
+int GLOW_STEPS = 5
+
+if glowOn and aligned
+    while array.size(glowBoxes) > 489
+        box.delete(array.shift(glowBoxes))
+    float glowH = atrV * glowK
+    float stepH = glowH / GLOW_STEPS
+    int   xL    = bar_index - runLen + 1
+    int   xR    = bar_index
+    array.push(glowBoxes, box.new(xL, runHi, xR, runLo, border_width = 0, bgcolor = color.new(hotC, 80)))
+    for s = 0 to GLOW_STEPS - 1
+        int tr = int(math.round(58 + 40.0 * s / (GLOW_STEPS - 1)))
+        array.push(glowBoxes, box.new(xL, runHi + stepH * (s + 1), xR, runHi + stepH * s, border_width = 0, bgcolor = color.new(hotC, tr)))
+        array.push(glowBoxes, box.new(xL, runLo - stepH * s, xR, runLo - stepH * (s + 1), border_width = 0, bgcolor = color.new(hotC, tr)))
+
+// ─── Run markers ──────────────────────────────────────────────────────────────
+
+plotshape(aligned and dir > 0, "Buy-flow run", shape.triangleup, location.belowbar, color = buyHi, size = size.small)
+plotshape(aligned and dir < 0, "Sell-flow run", shape.triangledown, location.abovebar, color = sellHi, size = size.small)
+
+// ─── Alerts ───────────────────────────────────────────────────────────────────
+
+alertcondition(aligned and dir > 0, "Buy-flow run", "Delta Run Confluence: buy-flow run on {{exchange}}:{{ticker}}, {{interval}}-minute chart")
+alertcondition(aligned and dir < 0, "Sell-flow run", "Delta Run Confluence: sell-flow run on {{exchange}}:{{ticker}}, {{interval}}-minute chart")
+
+// ─── Run dots ─────────────────────────────────────────────────────────────────
+
+int   bSign  = d > 0 ? 1 : d < 0 ? -1 : 0
+int   runPos = bSign != 0 and bSign == dir ? math.min(math.abs(streak), 3) : 0
+color fadeC  = color.new(hotC, 55)
+bool  pipsOn = pipMode != "Off"
+bool  allBars = pipMode == "All run bars"
+bool  doneRuns = pipMode == "Completed runs" or allBars
+
+plotchar(pipsOn and allBars and runPos == 1, "Dot 1", "⡀", location.bottom, color = fadeC, size = size.large)
+plotchar(pipsOn and allBars and runPos == 2, "Dot 2", "⡄", location.bottom, color = fadeC, size = size.large)
+plotchar(pipsOn and doneRuns and runFire and not aligned, "Dot 3", "⡆", location.bottom, color = fadeC, size = size.large)
+
+plotchar(pipsOn and aligned and runLen >= 3, "Marked dot 1", "⡀", location.bottom, color = hotC, size = size.large, offset = -2, editable = false)
+plotchar(pipsOn and aligned and runLen >= 3, "Marked dot 2", "⡄", location.bottom, color = hotC, size = size.large, offset = -1, editable = false)
+plotchar(pipsOn and aligned and runLen >= 3, "Marked dot 3", "⡆", location.bottom, color = hotC, size = size.large, editable = false)
+plotchar(pipsOn and aligned and runLen == 2, "Marked dot 1 (2-bar run)", "⡀", location.bottom, color = hotC, size = size.large, offset = -1, editable = false)
+plotchar(pipsOn and aligned and runLen == 2, "Marked dot 2 (2-bar run)", "⡄", location.bottom, color = hotC, size = size.large, editable = false)
+
+// ─── Dotted trails ────────────────────────────────────────────────────────────
+
+var array<line> trails = array.new<line>()
+
+if aligned and maxLines > 0
+    array.push(trails, line.new(bar_index, close, bar_index, close, color = color.new(hotC, 30), style = line.style_dotted, width = 1))
+    if array.size(trails) > maxLines
+        line.delete(array.shift(trails))
+
+for ln in trails
+    line.set_x2(ln, bar_index)
+
+// ─── Table ────────────────────────────────────────────────────────────────────
+
+pct(int n, int t) =>
+    t > 0 ? str.tostring(100.0 * n / t, "#.0") + "%" : "–"
+
+tk(float s, int n) =>
+    n > 0 ? str.tostring(s / n, "#.0") + "t" : "–"
+
+tfTxt() =>
+    timeframe.isminutes ? (timeframe.multiplier % 60 == 0 ? str.tostring(timeframe.multiplier / 60) + "h" : timeframe.period + "m") : timeframe.period
+
+tPos  = tblPos == "Top left" ? position.top_left : tblPos == "Bottom left" ? position.bottom_left : tblPos == "Bottom right" ? position.bottom_right : position.top_right
+tSize = tblSize == "Tiny" ? size.tiny : tblSize == "Normal" ? size.normal : size.small
+
+var table tbl = table.new(tPos, 2, 10, bgcolor = color.new(#0b0e14, 15), border_width = 0, frame_color = color.new(greyC, 70), frame_width = 1)
+
+row(int r, string k, string v, color vc) =>
+    table.cell(tbl, 0, r, k, text_color = color.new(greyC, 0), text_size = tSize, text_halign = text.align_left)
+    table.cell(tbl, 1, r, v, text_color = vc, text_size = tSize, text_halign = text.align_right)
+
+if showTbl and barstate.islast
+    color pri  = color.new(#e1e4ea, 0)
+    int   nAl  = buyAl + sellAl
+    int   nNxt = nextCont + nextRev
+    table.cell(tbl, 0, 0, "DELTA RUN CONFLUENCE", text_color = buyHi, text_size = tSize, text_halign = text.align_left)
+    table.cell(tbl, 1, 0, syminfo.ticker + " · " + tfTxt(), text_color = pri, text_size = tSize, text_halign = text.align_right)
+    row(1, "Settings", "Run " + str.tostring(runLen) + " · Eff " + effMode + " · Iso " + (useIso ? str.tostring(isoMin) + "m" : "off"), pri)
+    row(2, "Marked runs ▲ / ▼", str.tostring(buyAl) + " / " + str.tostring(sellAl), pri)
+    row(3, "Marked runs per session", sessions > 0 ? str.tostring(nAl / float(sessions), "#.0") + " (" + str.tostring(sessions) + " sessions)" : "–", pri)
+    row(4, "Avg run size · flow strength", tk(sizeSum, nAl) + " · " + (nAl > 0 ? str.tostring(flowSum / nAl, "#.0") + "×" : "–"), pri)
+    row(5, "Next candle continued", pct(nextCont, nNxt), buyHi)
+    row(6, "Next candle reversed", pct(nextRev, nNxt), sellHi)
+    row(7, "Next " + str.tostring(horizon) + " bars · follow-through / pullback", tk(mfeSum, doneN) + " / " + tk(maeSum, doneN), pri)
+    row(8, "Delta source", ltfUse + " intrabar · " + pct(ltfBars, bar_index + 1) + " coverage", pri)
+    row(9, "Last bar", str.format_time(time, "yyyy-MM-dd HH:mm", "America/New_York") + " · " + str.tostring(bar_index + 1, "#,###") + " bars", pri)

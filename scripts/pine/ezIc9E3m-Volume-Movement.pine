@@ -1,0 +1,259 @@
+//@version=6
+indicator("Volume & Movement", shorttitle="V&M", overlay=false, precision=2, max_bars_back=1000)
+
+// Native chart candles; every historical baseline excludes the candle being assessed.
+string G1 = "1 · Volume comparisons"
+int blockSize = input.int(5, "Candles per group", minval=2, maxval=20, group=G1)
+bool showGroup = input.bool(true, "Show group comparison line", group=G1)
+float neutralPct = input.float(10, "Neutral zone around previous volume (%)", minval=0, maxval=50, group=G1)
+bool acrossGaps = input.bool(false, "Compare across session gaps / unequal candle durations", group=G1)
+string heightBasis = input.string("Previous candle", "Bar height compares with", options=["Previous candle", "Recent typical", "Matching clock time"], group=G1)
+
+string G2 = "2 · Time-of-day context"
+bool useClock = input.bool(true, "Calculate matching time-of-day volume", group=G2)
+string clockChoice = input.string("Exchange", "Comparison clock", options=["Exchange", "UTC", "Australia/Brisbane"], group=G2)
+string dayMode = input.string("Weekday / Saturday / Sunday", "Match days by", options=["All days", "Weekday / Saturday / Sunday", "Same weekday"], group=G2)
+int clockDays = input.int(28, "Prior calendar days", minval=3, maxval=60, group=G2)
+int minMatches = input.int(3, "Minimum matching days", minval=3, maxval=20, group=G2)
+
+string G3 = "3 · Unusual volume and candle behaviour"
+int history = input.int(100, "Previous candles for recent baseline", minval=20, maxval=500, group=G3)
+string anomalyBasis = input.string("Recent candles", "Volume anomaly baseline", options=["Recent candles", "Matching time when ready"], group=G3)
+int highPct = input.int(90, "High volume percentile", minval=70, maxval=99, group=G3)
+int lowPct = input.int(20, "Low volume percentile", minval=1, maxval=40, group=G3)
+float highMultiple = input.float(1.5, "High volume: minimum × typical", minval=1.1, step=0.1, group=G3)
+float lowMultiple = input.float(0.65, "Low volume: maximum × typical", minval=0.05, maxval=0.95, step=0.05, group=G3)
+int smallPct = input.int(30, "Small range percentile", minval=5, maxval=45, group=G3)
+int largePct = input.int(80, "Large range percentile", minval=55, maxval=99, group=G3)
+float wickMin = input.float(60, "Rejection: minimum wick % of range", minval=50, maxval=90, group=G3) / 100
+float bodyMin = input.float(60, "Advance: minimum body % of range", minval=50, maxval=90, group=G3) / 100
+float edgeMax = input.float(20, "Advance: close within % of candle edge", minval=5, maxval=35, group=G3) / 100
+bool showEvents = input.bool(true, "Show S / A / R / L markers", group=G3)
+bool newOnly = input.bool(true, "Alerts: only a new or changed anomaly episode", group=G3)
+
+string G4 = "4 · Display"
+bool livePreview = input.bool(false, "Show faded live candle preview (alerts still wait for close)", group=G4)
+float heightCap = input.float(0, "Visual height cap: 0 = uncapped", minval=0, maxval=100, group=G4)
+bool showTable = input.bool(true, "Show dashboard", group=G4)
+bool detailed = input.bool(false, "Detailed dashboard", group=G4)
+color risingColor = input.color(color.rgb(25, 146, 219), "More volume than previous", group=G4)
+color fallingColor = input.color(color.rgb(232, 164, 42), "Less volume than previous", group=G4)
+color neutralColor = input.color(color.rgb(135, 148, 159), "Similar volume", group=G4)
+color lineColor = input.color(color.rgb(87, 107, 135), "Group line", group=G4)
+color eventColor = input.color(color.rgb(165, 87, 210), "Unusual behaviour marker", group=G4)
+
+safeRatio(float n, float d) =>
+    not na(n) and n >= 0 and not na(d) and d > 0 ? n / d : na
+
+candleShape(float o, float h, float l, float c, float pc) =>
+    float span = h - l
+    [span, safeRatio(math.abs(c - o), span), safeRatio(h - math.max(o, c), span), safeRatio(math.min(o, c) - l, span), safeRatio(c - l, span), math.abs(c - pc)]
+
+classify(bool hv, bool lv, bool small, bool large, bool gap, float rr, float body, float upper, float lower, float location, float progress, float wick, float bodyFloor, float edge) =>
+    int result = 0
+    if not gap
+        if hv and small and rr <= 0.75 and progress <= 0.5
+            result := 1
+        else if hv and rr >= 1 and ((lower >= wick and location >= 0.65) or (upper >= wick and location <= 0.35))
+            result := 3
+        else if hv and large and rr >= 1.25 and body >= bodyFloor and (location >= 1 - edge or location <= edge)
+            result := 2
+        else if lv and large and rr >= 1.25
+            result := 4
+    result
+
+// These checks run inside Pine, including when installed on another chart.
+if barstate.isfirst
+    if not chart.is_standard
+        runtime.error("Use standard time-based candles for Volume & Movement.")
+    bool ratiosOK = safeRatio(300, 100) == 3 and safeRatio(0, 100) == 0 and na(safeRatio(100, 0)) and na(safeRatio(100, na))
+    [testRange, testBody, testUpper, testLower, testLocation, testProgress] = candleShape(10, 12, 9, 11, 10.5)
+    bool shapeOK = testRange == 3 and math.abs(testBody - 1.0 / 3) < 0.000001 and testProgress == 0.5
+    bool eventsOK = classify(true, false, true, false, false, 0.4, 0.2, 0.4, 0.4, 0.5, 0.1, 0.6, 0.6, 0.2) == 1 and classify(true, false, false, true, false, 2, 0.8, 0.1, 0.1, 0.9, 1.6, 0.6, 0.6, 0.2) == 2 and classify(true, false, false, true, false, 2, 0.2, 0.05, 0.75, 0.95, 0.4, 0.6, 0.6, 0.2) == 3 and classify(false, true, false, true, false, 2, 0.8, 0.1, 0.1, 0.9, 1.6, 0.6, 0.6, 0.2) == 4 and classify(true, false, true, false, true, 0.4, 0.2, 0.4, 0.4, 0.5, 0.1, 0.6, 0.6, 0.2) == 0
+    if not ratiosOK or not shapeOK or not eventsOK
+        runtime.error("Volume & Movement calculation self-check failed.")
+
+string comparisonTZ = clockChoice == "Exchange" ? syminfo.timezone : clockChoice
+float chartSeconds = timeframe.in_seconds()
+bool clockSupported = timeframe.isintraday and chartSeconds >= 60 and chartSeconds <= 14400 and chartSeconds % 60 == 0
+bool fullDuration = time_close - time == chartSeconds * 1000
+int clockSlots = clockSupported ? 1440 : 1
+int dayRing = clockDays + 2
+
+dayClass(int t) =>
+    int weekday = dayofweek(t, comparisonTZ)
+    dayMode == "All days" ? 0 : dayMode == "Same weekday" ? weekday : weekday == dayofweek.saturday ? 1 : weekday == dayofweek.sunday ? 2 : 0
+
+matchingClock() =>
+    // Bounded ring: at most 89,280 volume cells at 1 minute / 60 days.
+    var array<float> cells = array.new_float(dayRing * clockSlots, na)
+    var array<int> dates = array.new_int(dayRing, na)
+    var array<int> classes = array.new_int(dayRing, na)
+    float med = na
+    float qHigh = na
+    float qLow = na
+    int count = 0
+    if useClock and clockSupported and fullDuration
+        // Civil-date ordinal avoids using a fixed UTC offset across DST changes.
+        int civilDay = int(timestamp("UTC", year(time, comparisonTZ), month(time, comparisonTZ), dayofmonth(time, comparisonTZ), 0, 0) / 86400000)
+        int slot = hour(time, comparisonTZ) * 60 + minute(time, comparisonTZ)
+        int cls = dayClass(time)
+        array<float> prior = array.new_float()
+        for row = 0 to dayRing - 1
+            int savedDay = array.get(dates, row)
+            if not na(savedDay) and savedDay < civilDay and savedDay >= civilDay - clockDays and array.get(classes, row) == cls
+                float v = array.get(cells, row * clockSlots + slot)
+                if not na(v)
+                    array.push(prior, v)
+        count := array.size(prior)
+        if count >= minMatches
+            array.sort(prior, order.ascending)
+            med := array.median(prior)
+            qHigh := array.percentile_nearest_rank(prior, highPct)
+            qLow := array.percentile_nearest_rank(prior, lowPct)
+        // Write AFTER lookup; current day can never contribute to its own baseline.
+        if barstate.isconfirmed and not na(volume) and volume >= 0
+            int row = civilDay % dayRing
+            if na(array.get(dates, row)) or array.get(dates, row) != civilDay
+                for s = 0 to clockSlots - 1
+                    array.set(cells, row * clockSlots + s, na)
+                array.set(dates, row, civilDay)
+                array.set(classes, row, cls)
+            array.set(cells, row * clockSlots + slot, volume)
+    [med, qHigh, qLow, count]
+
+[clockMedian, clockHigh, clockLow, clockCount] = matchingClock()
+bool timeReady = clockCount >= minMatches and not na(clockMedian) and clockMedian > 0
+float timeRatio = safeRatio(volume, clockMedian)
+bool validVolume = not na(volume) and volume >= 0
+bool boundary = timeframe.isintraday and not acrossGaps and bar_index > 0 and (time != time_close[1] or time_close - time != time_close[1] - time[1])
+float previousRatio = boundary ? na : safeRatio(volume, volume[1])
+float groupSum = math.sum(nz(volume), blockSize)
+float missingGroup = math.sum(not validVolume ? 1 : 0, 2 * blockSize)
+float groupBoundaries = math.sum(boundary ? 1 : 0, 2 * blockSize - 1)
+bool groupReady = bar_index >= 2 * blockSize - 1 and missingGroup == 0 and groupBoundaries == 0
+float groupRatio = groupReady ? safeRatio(groupSum, groupSum[blockSize]) : na
+float volumeMedian = ta.median(volume[1], history)
+float volumeHigh = ta.percentile_nearest_rank(volume[1], history, highPct)
+float volumeLow = ta.percentile_nearest_rank(volume[1], history, lowPct)
+float missingReference = math.sum(not validVolume ? 1 : 0, history)[1]
+bool referenceReady = bar_index >= history and missingReference == 0
+[span, bodyPart, upperPart, lowerPart, closePosition, progress] = candleShape(open, high, low, close, close[1])
+float rangeMedian = ta.median(span[1], history)
+float smallRange = ta.percentile_nearest_rank(span[1], history, smallPct)
+float largeRange = ta.percentile_nearest_rank(span[1], history, largePct)
+float rangeRatio = safeRatio(span, rangeMedian)
+float progressRatio = safeRatio(progress, rangeMedian)
+float openingGap = safeRatio(math.abs(open - close[1]), rangeMedian)
+bool gapBar = openingGap > 0.5
+bool timeForAnomaly = anomalyBasis == "Matching time when ready" and timeReady
+float referenceVolume = timeForAnomaly ? clockMedian : volumeMedian
+float referenceHigh = timeForAnomaly ? clockHigh : volumeHigh
+float referenceLow = timeForAnomaly ? clockLow : volumeLow
+float activityRatio = safeRatio(volume, referenceVolume)
+bool usableReference = referenceReady and referenceVolume > 0 and rangeMedian > 0
+float recentRatio = safeRatio(volume, volumeMedian)
+bool highActivity = referenceReady and validVolume and volume > referenceHigh and activityRatio >= highMultiple
+bool lowActivity = referenceReady and validVolume and volume < referenceLow and activityRatio <= lowMultiple
+int anomalyCode = referenceReady and validVolume ? classify(highActivity, lowActivity, span <= smallRange, span >= largeRange, gapBar, rangeRatio, bodyPart, upperPart, lowerPart, closePosition, progressRatio, wickMin, bodyMin, edgeMax) : 0
+int eventDirection = anomalyCode == 3 ? (lowerPart >= wickMin ? 1 : -1) : close > open ? 1 : close < open ? -1 : 0
+int eventSignature = anomalyCode * 10 + (anomalyCode == 1 or anomalyCode == 0 ? 0 : eventDirection)
+float pathDistance = math.sum(math.abs(close - close[1]), blockSize)
+float groupEfficiency = groupReady ? safeRatio(math.abs(close - close[blockSize]), pathDistance) : na
+
+clampHeight(float v) =>
+    heightCap > 0 ? math.min(v, heightCap) : v
+
+bool visibleBar = barstate.isconfirmed or livePreview
+float heightValue = heightBasis == "Previous candle" ? previousRatio : heightBasis == "Recent typical" ? (referenceReady ? recentRatio : na) : timeRatio
+color barColor = na(previousRatio) ? neutralColor : previousRatio > 1 + neutralPct / 100 ? risingColor : previousRatio < 1 - neutralPct / 100 ? fallingColor : neutralColor
+plot(visibleBar ? clampHeight(heightValue) : na, "Selected volume comparison", color=color.new(barColor, barstate.isconfirmed ? 0 : 65), style=plot.style_columns)
+plot(visibleBar and showGroup ? clampHeight(groupRatio) : na, "Group versus preceding group", color=color.new(lineColor, barstate.isconfirmed ? 0 : 65), linewidth=2, style=plot.style_linebr)
+hline(1, "1× comparison baseline", color=color.gray, linestyle=hline.style_dashed)
+bool clipped = heightCap > 0 and (heightValue > heightCap or (showGroup and groupRatio > heightCap))
+plot(visibleBar and clipped ? heightCap : na, "Clipped: exact ratios in Data Window", color=color.orange, style=plot.style_circles, linewidth=2)
+float markerY = math.max(nz(clampHeight(heightValue), 1), showGroup ? nz(clampHeight(groupRatio), 1) : 1) + 0.12
+bool mark = barstate.isconfirmed and showEvents
+plotshape(mark and anomalyCode == 1 ? markerY : na, title="Busy / stalled", style=shape.diamond, location=location.absolute, color=eventColor, text="S", textcolor=eventColor, size=size.tiny)
+plotshape(mark and anomalyCode == 2 ? markerY : na, title="Busy / advancing", style=shape.diamond, location=location.absolute, color=eventColor, text="A", textcolor=eventColor, size=size.tiny)
+plotshape(mark and anomalyCode == 3 ? markerY : na, title="Busy / rejection", style=shape.diamond, location=location.absolute, color=eventColor, text="R", textcolor=eventColor, size=size.tiny)
+plotshape(mark and anomalyCode == 4 ? markerY : na, title="Large move / light volume", style=shape.diamond, location=location.absolute, color=eventColor, text="L", textcolor=eventColor, size=size.tiny)
+
+plot(visibleBar ? previousRatio : na, "Exact · previous candle ×", display=display.data_window)
+plot(visibleBar ? groupRatio : na, "Exact · group comparison ×", display=display.data_window)
+plot(visibleBar ? timeRatio : na, "Exact · matching time ×", display=display.data_window)
+plot(visibleBar and referenceReady ? recentRatio : na, "Exact · recent typical ×", display=display.data_window)
+plot(visibleBar and referenceReady ? rangeRatio : na, "Exact · range versus typical ×", display=display.data_window)
+plot(visibleBar and referenceReady ? progressRatio : na, "Exact · net progress / typical range", display=display.data_window)
+plot(visibleBar ? bodyPart * 100 : na, "Exact · body % of range", display=display.data_window)
+plot(visibleBar ? upperPart * 100 : na, "Exact · upper wick %", display=display.data_window)
+plot(visibleBar ? lowerPart * 100 : na, "Exact · lower wick %", display=display.data_window)
+plot(visibleBar ? volume : na, "Exact · feed volume", display=display.data_window)
+plot(visibleBar ? clockCount : na, "Exact · matching prior days", display=display.data_window)
+plot(barstate.isconfirmed ? anomalyCode : na, "Exact · event code (1=S, 2=A, 3=R, 4=L)", display=display.data_window)
+
+bool alertEvent = barstate.isconfirmed and anomalyCode > 0 and (not newOnly or eventSignature != eventSignature[1])
+alertcondition(alertEvent, "Any unusual volume / movement", "Volume & Movement: unusual completed candle on {{ticker}}, {{interval}}. Inspect the S/A/R/L marker.")
+alertcondition(alertEvent and anomalyCode == 1, "S · Busy / stalled", "Volume & Movement: high volume with little price progress on {{ticker}}, {{interval}}.")
+alertcondition(alertEvent and anomalyCode == 2, "A · Busy / advancing", "Volume & Movement: high volume with a large directional candle on {{ticker}}, {{interval}}.")
+alertcondition(alertEvent and anomalyCode == 3, "R · Busy / rejection", "Volume & Movement: high volume with a dominant rejection wick on {{ticker}}, {{interval}}.")
+alertcondition(alertEvent and anomalyCode == 4, "L · Large move / light volume", "Volume & Movement: large candle range on unusually light volume on {{ticker}}, {{interval}}.")
+
+multiple(float v) =>
+    na(v) ? "—" : str.tostring(v, "0.00") + "×"
+percent(float v) =>
+    na(v) ? "—" : str.tostring(v * 100, "0") + "%"
+eventText(int code, int direction) =>
+    string arrow = direction > 0 ? " ↑" : direction < 0 ? " ↓" : ""
+    code == 1 ? "S · BUSY / STALLED" : code == 2 ? "A · BUSY / ADVANCING" + arrow : code == 3 ? "R · BUSY / REJECTION" + arrow : code == 4 ? "L · LARGE MOVE / LIGHT VOLUME" + arrow : "No unusual combination"
+
+var table panel = table.new(position.top_right, 3, 13, bgcolor=color.rgb(21, 30, 40), border_width=0, frame_color=color.rgb(63, 78, 92), frame_width=1)
+cell(int col, int row, string value, color ink) =>
+    table.cell(panel, col, row, value, text_color=ink, text_size=size.small, text_halign=col == 0 ? text.align_left : text.align_right)
+
+if barstate.isfirst
+    table.merge_cells(panel, 0, 0, 2, 0)
+    table.merge_cells(panel, 0, 7, 2, 7)
+    table.merge_cells(panel, 0, 8, 2, 8)
+    table.merge_cells(panel, 0, 12, 2, 12)
+if barstate.islast
+    table.clear(panel, 0, 0, 2, 12)
+    if showTable
+        int d = barstate.isconfirmed or livePreview ? 0 : 1
+        color ink = color.rgb(232, 239, 245)
+        color muted = color.rgb(161, 177, 191)
+        string stamp = str.format_time(time[d], "EEE HH:mm", comparisonTZ)
+        cell(0, 0, "VOLUME & MOVEMENT · " + timeframe.period + " · " + stamp + (d == 0 and not barstate.isconfirmed ? " · LIVE" : " · CLOSED"), ink)
+        cell(0, 1, "COMPARISON", muted)
+        cell(1, 1, "READING", muted)
+        cell(2, 1, "CONTEXT", muted)
+        cell(0, 2, "Previous candle", ink)
+        cell(1, 2, multiple(previousRatio[d]), barColor[d])
+        cell(2, 2, boundary[d] ? "Session boundary" : na(previousRatio[d]) ? "No valid comparison" : previousRatio[d] > 1 ? "More activity" : previousRatio[d] < 1 ? "Less activity" : "Unchanged", muted)
+        cell(0, 3, str.tostring(blockSize) + " vs prior " + str.tostring(blockSize), ink)
+        cell(1, 3, multiple(groupRatio[d]), ink)
+        cell(2, 3, na(groupRatio[d]) ? "Need comparable groups" : groupRatio[d] > 1 ? "Building" : groupRatio[d] < 1 ? "Fading" : "Steady", muted)
+        cell(0, 4, "Same clock time", ink)
+        cell(1, 4, multiple(timeRatio[d]), ink)
+        cell(2, 4, not useClock ? "Off" : not clockSupported ? "Use 1m–4h chart" : not fullDuration[d] ? "Partial candle" : str.tostring(clockCount[d]) + " days" + (not timeReady[d] ? " · warming" : ""), muted)
+        cell(0, 5, "Candle range", ink)
+        cell(1, 5, referenceReady[d] ? multiple(rangeRatio[d]) : "—", ink)
+        cell(2, 5, "vs typical range", muted)
+        cell(0, 6, "Net price progress", ink)
+        cell(1, 6, referenceReady[d] ? multiple(progressRatio[d]) : "—", ink)
+        cell(2, 6, "Close to prior close", muted)
+        string status = not validVolume[d] ? "Volume unavailable from this feed" : not referenceReady[d] ? "Warming · need " + str.tostring(history) + " prior candles" : not usableReference[d] ? "Baseline unavailable · zero typical volume / range" : gapBar[d] ? "Opening price gap · shape classification skipped" : eventText(anomalyCode[d], eventDirection[d])
+        cell(0, 7, status, anomalyCode[d] > 0 ? eventColor : muted)
+        string referenceName = timeForAnomaly[d] ? "Matching time" : anomalyBasis == "Matching time when ready" ? "Recent baseline · time warming / unavailable" : "Recent baseline"
+        cell(0, 8, referenceName + " · " + (referenceReady[d] ? multiple(activityRatio[d]) : "—") + " volume", ink)
+        if detailed
+            cell(0, 9, "Body / upper / lower wick", muted)
+            cell(1, 9, percent(bodyPart[d]), ink)
+            cell(2, 9, percent(upperPart[d]) + " / " + percent(lowerPart[d]), ink)
+            cell(0, 10, "Group net / travelled distance", muted)
+            cell(1, 10, percent(groupEfficiency[d]), ink)
+            cell(2, 10, "100% = one direction", muted)
+            cell(0, 11, "Feed volume", muted)
+            cell(1, 11, str.tostring(volume[d], format.volume), ink)
+            cell(2, 11, syminfo.volumetype, muted)
+        cell(0, 12, "Colours = volume change, not buying / selling · " + comparisonTZ, muted)

@@ -1,0 +1,193 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0
+// at https://mozilla.org/MPL/2.0/
+// © 2026
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// LDO-PVSRA-Vol v1.2  —  PVSRA volume histogram
+//
+// The volume-pane companion to LDO-Vex. Every column is classified by the same
+// PVSRA rules that colour the candles above it, off the same volume feed, so
+// the two panes cannot tell different stories.
+//
+// Model — Trader's Reality 2-tier PVSRA:
+//   200% / climax   volume >= 2.0x the average of the PREVIOUS 10 candles,
+//                   OR (spread x volume) >= the highest of the previous 10.
+//   150% / rising   volume >= 1.5x that same average.
+//   normal          everything else, drawn faded.
+//
+// The averages deliberately exclude the current candle (volume[1], spread[1]).
+// This inline calculation was audited bar-for-bar against
+// TradersReality/Traders_Reality_Lib calcPvsra() on BINANCE:ZECUSDT.P 7m over
+// 21,363 bars: 0 mismatches with the [1] offsets, 864 without them. It is
+// computed here rather than imported so the thresholds can be inputs and the
+// script carries no external library pin. Do not "fix" the [1].
+//
+// v1.1 — palette matched to LDO-Vex v1.3 exactly, so the price pane and this
+// pane paint the same tier the same colour. No logic change; the classification
+// was audited at 0 mismatches over 417 bars of ZEC 2h before the swap.
+//
+// v1.2 — normal volume gains a colour MODE. "By direction" is v1.1 behaviour
+// unchanged (green up / blue down, faded). "Single colour" paints every
+// sub-threshold column the same hue, so the pane reads as vector-vs-background
+// instead of up-vs-down — useful when LDO-Vex above is already carrying
+// direction. No change to classification, thresholds or the vector tiers.
+// Note the per-direction normal colours were inputs in v1.1 too; they live in
+// the INPUTS tab. TradingView's Style tab cannot recolour a series-coloured
+// plot and its picker there does nothing.
+//
+// Colours: direction is the hue (green up / blue down) and the tier brightens
+// it, with the climax bear shifting to cyan so both 200% colours stand clear of
+// their 150% parents. Volume columns cannot be hollow the way normal candles
+// are, so normal volume carries the same hue at high transparency instead —
+// recessed rather than outlined.
+//
+// Volume source follows LDO-Candles: on crypto symbols the equivalent BINANCE
+// perpetual feed is used where it exists, because that is where the volume
+// PVSRA cares about actually trades. The resolved feed is named under the
+// version label, so a silent fallback to chart volume cannot go unnoticed.
+//
+// Derived from the open-source PVSRA volume work of infernix and peshocore
+// (MPL 2.0). Independent derivative; not affiliated with, and not named in
+// reference to, Traders Reality or Pattern Watchers.
+// ─────────────────────────────────────────────────────────────────────────────
+
+//@version=6
+// Version is carried in the title so it shows in the chart legend.
+// No shorttitle on purpose: the editor caps it at 10 characters, and with no
+// shorttitle the legend falls back to the full title, version included.
+indicator("LDO-PVSRA-Vol [1.2]", format = format.volume)
+
+// ─── Volume source ───────────────────────────────────────────────────────────
+string G_SRC = "Volume source"
+
+bool autoPerp = input.bool(true, "Use volume of the equivalent BINANCE PERP chart (if available)",
+     group   = G_SRC,
+     tooltip = "Crypto symbols only. Falls back to this chart's own volume when the perpetual does not exist. The resolved feed is shown under the version label.")
+
+bool forceOverride = input.bool(false, "Force override symbol", inline = "ovr", group = G_SRC)
+
+string overrideSym = input.symbol("BINANCE:BTCUSDT.P", "", inline = "ovr", group = G_SRC,
+     tooltip = "When checked, volume and OHLC are taken from this symbol and the setting above is ignored.")
+
+string perpSym = "BINANCE:" + syminfo.basecurrency + syminfo.currency + ".P"
+bool   isCrypto = syminfo.type == "crypto"
+
+string srcSym = forceOverride ? overrideSym : (autoPerp and isCrypto) ? perpSym : syminfo.tickerid
+
+[srcVol, srcHigh, srcLow, srcClose, srcOpen] = request.security(srcSym, "",
+     [volume, high, low, close, open],
+     barmerge.gaps_off, barmerge.lookahead_off, ignore_invalid_symbol = true)
+
+// A missing feed degrades to chart data per bar, exactly as LDO-Candles does.
+bool  fellBack = na(srcVol)
+float vol = fellBack ? volume : srcVol
+float hi  = fellBack ? high   : srcHigh
+float lo  = fellBack ? low    : srcLow
+float cl  = fellBack ? close  : srcClose
+float op  = fellBack ? open   : srcOpen
+
+// ─── PVSRA thresholds (Trader's Reality defaults) ────────────────────────────
+string G_PVSRA = "PVSRA thresholds"
+
+float climaxMult = input.float(2.0, "200% / climax  (× avg vol)", minval = 1.01, step = 0.1, group = G_PVSRA,
+     tooltip = "Trader's Reality uses 2.0. Changing this breaks parity with LDO-Vex and TR_main.")
+
+float risingMult = input.float(1.5, "150% / rising  (× avg vol)", minval = 1.01, step = 0.1, group = G_PVSRA,
+     tooltip = "Trader's Reality uses 1.5. Changing this breaks parity with LDO-Vex and TR_main.")
+
+// ─── Colours ─────────────────────────────────────────────────────────────────
+string G_C_NORM = "Normal volume — faded"
+string G_C_150  = "150% volume — rising"
+string G_C_200  = "200% volume — climax"
+
+// v1.2: normal volume can now drop direction entirely.
+string NORM_BY_DIR = "By direction"
+string NORM_SINGLE = "Single colour"
+
+string normalMode = input.string(NORM_BY_DIR, "Colour mode", options = [NORM_BY_DIR, NORM_SINGLE],
+     group   = G_C_NORM,
+     tooltip = "By direction keeps the green-up / blue-down hue of the tiers above (v1.1 behaviour). Single colour paints every sub-threshold column the same, so the pane reads as vector-vs-background rather than up-vs-down. The vector tiers are unaffected either way.")
+
+color normalUpColor   = input.color(#16A34A, "Up",   inline = "normal", group = G_C_NORM)
+color normalDownColor = input.color(#2563EB, "Down", inline = "normal", group = G_C_NORM)
+
+color normalSingleColor = input.color(#78909C, "Single", group = G_C_NORM,
+     tooltip = "Used only in Single colour mode. Neutral by default so it cannot be misread as a direction.")
+
+int normalFade = input.int(65, "Fade %", minval = 0, maxval = 95, group = G_C_NORM,
+     tooltip = "Columns cannot be drawn hollow, so sub-threshold volume is recessed with transparency instead. Applied to whichever colour the mode above selects, and it replaces that colour's own transparency. 0 = solid.")
+
+// 150% up carries 23% transparency by design — it sits a step below the 200%
+// tier without dropping to the faded-normal treatment.
+color vector150Up   = input.color(color.new(#4CAF50, 23), "Up", inline = "v150", group = G_C_150)
+color vector150Down = input.color(#2563EB, "Down", inline = "v150", group = G_C_150)
+
+color vector200Up   = input.color(#1CFE09, "Up",   inline = "v200", group = G_C_200)
+color vector200Down = input.color(#00BCD4, "Down", inline = "v200", group = G_C_200)
+
+// ─── PVSRA classification ────────────────────────────────────────────────────
+const int LOOKBACK = 10
+
+float averageVolume               = ta.sma(vol[1], LOOKBACK)
+float currentVolumeSpread         = (hi - lo) * vol
+float previousHighestVolumeSpread = ta.highest(currentVolumeSpread[1], LOOKBACK)
+
+bool calculationReady = not na(vol) and not na(averageVolume) and not na(previousHighestVolumeSpread)
+
+bool is200Percent = calculationReady and (vol >= averageVolume * climaxMult or currentVolumeSpread >= previousHighestVolumeSpread)
+bool is150Percent = calculationReady and not is200Percent and vol >= averageVolume * risingMult
+
+// Doji resolves bullish, matching LDO-Vex.
+bool isUpCandle = cl >= op
+bool isVector   = is150Percent or is200Percent
+
+// Mode picks the base hue; the fade is applied on top either way, so switching
+// modes never changes how recessed normal volume looks.
+color normalBase  = normalMode == NORM_SINGLE ? normalSingleColor : isUpCandle ? normalUpColor : normalDownColor
+color normalColor = color.new(normalBase, normalFade)
+
+color vector150Color = isUpCandle ? vector150Up : vector150Down
+color vector200Color = isUpCandle ? vector200Up : vector200Down
+
+color volColor = is200Percent ? vector200Color : is150Percent ? vector150Color : normalColor
+
+plot(vol, title = "PVSRA Volume", style = plot.style_columns, color = volColor)
+
+// ─── Volume moving average ───────────────────────────────────────────────────
+string G_MA = "Volume MA"
+
+bool  showMa  = input.bool(false, "Show", inline = "ma", group = G_MA)
+color maColor = input.color(#B0BEC5, "", inline = "ma", group = G_MA)
+int   maLen   = input.int(20, "Period", minval = 1, maxval = 2000, inline = "ma", group = G_MA,
+     tooltip = "Neutral grey by default: blue and green are tier colours here and would read as a classification.")
+
+plot(showMa ? ta.sma(vol, maLen) : na, title = "Volume MA", color = maColor, linewidth = 2)
+
+// ─── Price-pane candle colouring (off by default) ────────────────────────────
+string G_BAR = "Price pane"
+
+bool colorPriceCandles = input.bool(false, "Colour the price candles too", group = G_BAR,
+     tooltip = "Off by default: LDO-Vex / LDO-Candles already own candle colouring on the price pane, and normal candles would inherit this pane's fade.")
+
+barcolor(colorPriceCandles ? volColor : na)
+
+// ─── Alerts ──────────────────────────────────────────────────────────────────
+alertcondition(isVector,     title = "Vector volume (150% or 200%)", message = "LDO-PVSRA-Vol: vector volume candle on {{ticker}} {{interval}}")
+alertcondition(is200Percent, title = "Climax volume (200%)",         message = "LDO-PVSRA-Vol: 200% climax volume on {{ticker}} {{interval}}")
+
+// ─── Version label ───────────────────────────────────────────────────────────
+const string SCRIPT_VERSION = "v1.2"
+
+bool showVersion = input.bool(true, "Show version label", group = "Version display")
+bool showSource  = input.bool(true, "…and the resolved volume source", group = "Version display",
+     tooltip = "Names the feed the histogram is actually built from, so an auto-perp substitution or a fallback to chart volume is always visible.")
+
+string resolvedSym = fellBack ? syminfo.tickerid + " (chart)" : srcSym
+
+var table versionTable = na
+if showVersion and barstate.islast
+    if na(versionTable)
+        versionTable := table.new(position = position.bottom_right, columns = 1, rows = showSource ? 2 : 1, bgcolor = color.new(color.gray, 90), border_width = 1, border_color = color.new(color.gray, 0))
+    table.cell(versionTable, 0, 0, SCRIPT_VERSION, text_color = color.white, bgcolor = color.new(color.gray, 90))
+    if showSource
+        table.cell(versionTable, 0, 1, resolvedSym, text_color = color.new(color.white, 25), text_size = size.tiny, bgcolor = color.new(color.gray, 90))

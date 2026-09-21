@@ -1,0 +1,57 @@
+//@version=6
+indicator("EMA 9/20 Ribbon", overlay=true)
+
+// ─────────────────────────────────────
+// Inputs
+// ─────────────────────────────────────
+fastLength = input.int(9, "Fast EMA", minval=1)
+slowLength = input.int(20, "Slow EMA", minval=1)
+
+bullColor = input.color(color.rgb(57, 255, 20), "Bull Ribbon")
+bearColor = input.color(color.rgb(255, 7, 58), "Bear Ribbon")
+
+ribbonTransparency = input.int(
+     20,
+     "Ribbon Transparency",
+     minval=0,
+     maxval=100
+)
+
+// ─────────────────────────────────────
+// EMAs
+// ─────────────────────────────────────
+ema9  = ta.ema(close, fastLength)
+ema20 = ta.ema(close, slowLength)
+
+// ─────────────────────────────────────
+// Hidden boundaries
+// We don't need separate EMA lines because
+// the ribbon itself visualises the pair.
+// ─────────────────────────────────────
+p9 = plot(
+     ema9,
+     title="EMA 9",
+     color=color.new(color.white, 100),
+     display=display.none
+)
+
+p20 = plot(
+     ema20,
+     title="EMA 20",
+     color=color.new(color.white, 100),
+     display=display.none
+)
+
+// ─────────────────────────────────────
+// Ribbon
+// ─────────────────────────────────────
+ribbonColor = ema9 >= ema20
+     ? color.new(bullColor, ribbonTransparency)
+     : color.new(bearColor, ribbonTransparency)
+
+fill(
+     p9,
+     p20,
+     color=ribbonColor,
+     title="EMA 9/20 Ribbon"
+)

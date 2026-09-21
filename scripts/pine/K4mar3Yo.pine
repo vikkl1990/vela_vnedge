@@ -1,0 +1,198 @@
+//@version=6
+indicator("Risk Dispersion Regime Indicator", overlay = false, precision = 3)
+///
+// Windows below are counted in SESSIONS. On an intraday chart this would correlate
+// 120 five-minute candles without saying so, hence the check.
+bool isDaily = timeframe.isdaily
+
+// ---- settings ------------------------------------------------------------------------
+int len     = input.int(120, "Correlation window (sessions)", minval = 20,  maxval = 400,  group = "Calculation")
+int rankLen = input.int(750, "Historical rank window",        minval = 250, maxval = 5000, group = "Calculation")
+int n       = input.int(9,   "Slots used",                    minval = 3,   maxval = 20,   group = "Calculation",
+     tooltip = "Default is the 9 original S&P 500 sector SPDRs, quoted since 1998. Slots 10 (XLRE, listed Oct 2015) and 11 (XLC, listed Jun 2018) push the chart start forward by years, because every slot in use must be quoted. Set 20 and fill the slots with your own basket to read a live selection instead of sectors.")
+
+float strength = input.float(0.7, "Governor strength", minval = 0.0, maxval = 1.5, step = 0.1,  group = "Sizing")
+float minMult  = input.float(0.3, "Minimum size",      minval = 0.1, maxval = 1.0, step = 0.05, group = "Sizing")
+float maxMult  = input.float(1.7, "Maximum size",      minval = 1.0, maxval = 2.0, step = 0.05, group = "Sizing")
+
+// ---- the basket ----------------------------------------------------------------------
+string s1  = input.symbol("AMEX:XLK",   "01", group = "Basket")
+string s2  = input.symbol("AMEX:XLF",   "02", group = "Basket")
+string s3  = input.symbol("AMEX:XLE",   "03", group = "Basket")
+string s4  = input.symbol("AMEX:XLV",   "04", group = "Basket")
+string s5  = input.symbol("AMEX:XLY",   "05", group = "Basket")
+string s6  = input.symbol("AMEX:XLP",   "06", group = "Basket")
+string s7  = input.symbol("AMEX:XLI",   "07", group = "Basket")
+string s8  = input.symbol("AMEX:XLB",   "08", group = "Basket")
+string s9  = input.symbol("AMEX:XLU",   "09", group = "Basket")
+string s10 = input.symbol("AMEX:XLRE",  "10", group = "Basket")
+string s11 = input.symbol("AMEX:XLC",   "11", group = "Basket")
+string s12 = input.symbol("AMEX:SPY",   "12", group = "Basket")
+string s13 = input.symbol("NASDAQ:QQQ", "13", group = "Basket")
+string s14 = input.symbol("AMEX:IWM",   "14", group = "Basket")
+string s15 = input.symbol("NASDAQ:SMH", "15", group = "Basket")
+string s16 = input.symbol("AMEX:XBI",   "16", group = "Basket")
+string s17 = input.symbol("AMEX:XOP",   "17", group = "Basket")
+string s18 = input.symbol("AMEX:XRT",   "18", group = "Basket")
+string s19 = input.symbol("AMEX:KRE",   "19", group = "Basket")
+string s20 = input.symbol("AMEX:ITB",   "20", group = "Basket")
+
+// ---- quote to standardised return ------------------------------------------------------
+px(simple string sym) =>
+    request.security(sym, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+
+zscore(simple string sym, simple int win) =>
+    float c = px(sym)
+    float r = na(c[1]) or c[1] == 0.0 ? na : (c - c[1]) / c[1]
+    // ta.stdev and ta.sma are called UNCONDITIONALLY. A stateful function placed inside a
+    // ternary branch is not fed until that branch is taken, leaving holes in its window.
+    float sd = ta.stdev(r, win)
+    float mu = ta.sma(r, win)
+    na(sd) or sd == 0.0 or na(mu) ? na : (r - mu) / sd
+
+float z1  = zscore(s1,  len)
+float z2  = zscore(s2,  len)
+float z3  = zscore(s3,  len)
+float z4  = zscore(s4,  len)
+float z5  = zscore(s5,  len)
+float z6  = zscore(s6,  len)
+float z7  = zscore(s7,  len)
+float z8  = zscore(s8,  len)
+float z9  = zscore(s9,  len)
+float z10 = zscore(s10, len)
+float z11 = zscore(s11, len)
+float z12 = zscore(s12, len)
+float z13 = zscore(s13, len)
+float z14 = zscore(s14, len)
+float z15 = zscore(s15, len)
+float z16 = zscore(s16, len)
+float z17 = zscore(s17, len)
+float z18 = zscore(s18, len)
+float z19 = zscore(s19, len)
+float z20 = zscore(s20, len)
+
+// ---- basket mean, over the slots actually in use -----------------------------------------
+array<float> basket = array.from(z1, z2, z3, z4, z5, z6, z7, z8, z9, z10,
+                                 z11, z12, z13, z14, z15, z16, z17, z18, z19, z20)
+// Every slot in use must be quoted. Otherwise the member count would change mid-history and
+// the variance accumulated over `len` bars would mix two different counts — an artificial
+// jump contaminating the following `len` sessions. Better to show nothing than to show wrong.
+float  total       = 0.0
+int    missing     = 0
+string missingList = ""
+for i = 0 to n - 1
+    float x = array.get(basket, i)
+    if na(x)
+        missing     += 1
+        missingList := missingList + (missingList == "" ? "" : " ") + str.tostring(i + 1)
+    else
+        total += x
+
+float avg = missing == 0 ? total / n : na
+
+// ---- the identity: the variance of that mean CONTAINS the average correlation ------------
+//   rho = (n * variance(mean of standardised members) - 1) / (n - 1)
+// Exact, so 21 operations replace the n*(n-1)/2 pairwise calls (435 at 30 members).
+float vr  = ta.variance(avg, len)
+float rho = na(vr) ? na : math.max(-1.0, math.min(1.0, (n * vr - 1.0) / (n - 1.0)))
+
+// ---- walk-forward rank -------------------------------------------------------------------
+// ta.percentrank would require rankLen full bars before printing anything — years of blank
+// chart. Instead we rank today's value among values ALREADY seen, starting at 250
+// observations, and only append today's value AFTER ranking it. No lookahead.
+var array<float> history = array.new_float()
+float rank = na
+if not na(rho)
+    int cnt = array.size(history)
+    if cnt >= 250
+        float below = 0.0
+        for j = 0 to cnt - 1
+            if array.get(history, j) <= rho
+                below += 1.0
+        rank := below / cnt
+    array.push(history, rho)
+    if array.size(history) > rankLen
+        array.shift(history)
+
+// ---- resulting size multiplier ------------------------------------------------------------
+// rank 0.5 = normal size | rank 1.0 = minimum | rank 0.0 = maximum
+float mult = na(rank) ? na : math.min(maxMult, math.max(minMult, 1.0 - strength * 2.0 * (rank - 0.5)))
+
+// ---- plots ---------------------------------------------------------------------------------
+color tint = na(rank)     ? color.gray                 :
+             rank >= 0.90 ? color.new(color.red, 0)    :
+             rank >= 0.75 ? color.new(color.orange, 0) :
+             rank >= 0.50 ? color.new(color.gray, 0)   :
+             rank >= 0.25 ? color.new(color.teal, 0)   : color.new(color.green, 0)
+
+plot(rank, "Lockstep rank",       color = tint, linewidth = 2)
+plot(mult, "Size multiplier",     color = color.new(color.blue, 30), linewidth = 1)
+// Raw correlation prints well before the rank does. If this line draws and the rank does not,
+// observations are simply still accumulating — the script is not broken.
+plot(rho,  "Raw correlation",     color = color.new(color.purple, 40), linewidth = 1)
+
+hline(0.90, "very tight", color = color.new(color.red, 60),    linestyle = hline.style_dotted)
+hline(0.75, "tight",      color = color.new(color.orange, 60), linestyle = hline.style_dotted)
+hline(0.50, "neutral",    color = color.new(color.gray, 60),   linestyle = hline.style_dashed)
+hline(0.25, "loose",      color = color.new(color.teal, 60),   linestyle = hline.style_dotted)
+
+bgcolor(not na(rank) and rank >= 0.90 ? color.new(color.red, 90) :
+        not na(rank) and rank <= 0.25 ? color.new(color.green, 92) : na)
+
+// ---- readout ---------------------------------------------------------------------------------
+var table tb = table.new(position.top_right, 2, 7, border_width = 1)
+
+// If nothing prints, the table says WHY.
+if barstate.islast and na(rank)
+    table.cell(tb, 0, 0, "Lockstep — NO OUTPUT", bgcolor = color.new(color.maroon, 30),
+               text_color = color.white, text_size = size.small)
+    table.cell(tb, 1, 0, "diagnostic", bgcolor = color.new(color.maroon, 30),
+               text_color = color.white, text_size = size.small)
+    table.cell(tb, 0, 1, "slots not quoted", text_size = size.small)
+    table.cell(tb, 1, 1, missing == 0 ? "none" : str.tostring(missing) + " (no " + missingList + ")",
+               text_size = size.small, text_color = missing > 0 ? color.red : color.gray)
+    table.cell(tb, 0, 2, "bars on chart", text_size = size.small)
+    table.cell(tb, 1, 2, str.tostring(bar_index + 1), text_size = size.small)
+    table.cell(tb, 0, 3, "correlation computed?", text_size = size.small)
+    table.cell(tb, 1, 3, na(rho) ? "not yet" : str.tostring(rho, "#.###"),
+               text_size = size.small, text_color = na(rho) ? color.red : color.gray)
+    table.cell(tb, 0, 4, "observations stored", text_size = size.small)
+    table.cell(tb, 1, 4, str.tostring(array.size(history)) + " / 250 needed", text_size = size.small,
+               text_color = array.size(history) < 250 ? color.orange : color.gray)
+    table.cell(tb, 0, 5, "timeframe", text_size = size.small)
+    table.cell(tb, 1, 5, isDaily ? "daily — good" : "NOT daily", text_size = size.small,
+               text_color = isDaily ? color.gray : color.red)
+    table.cell(tb, 0, 6, "what to do", text_size = size.small, text_color = color.yellow)
+    table.cell(tb, 1, 6,
+               not isDaily         ? "switch the chart to daily" :
+               missing > 0         ? "lower Slots used, or pick quoted symbols" :
+               bar_index < len * 2 ? "chart too short: load more history" :
+                                     "still accumulating: load more history",
+               text_size = size.small, text_color = color.yellow)
+
+if barstate.islast and not na(rank)
+    string state = rank >= 0.90 ? "VERY TIGHT" :
+                   rank >= 0.75 ? "tight"      :
+                   rank >= 0.50 ? "average"    :
+                   rank >= 0.25 ? "loose"      : "very loose"
+    table.cell(tb, 0, 0, "Lockstep", bgcolor = color.new(color.black, 80),
+               text_color = color.white, text_size = size.small)
+    table.cell(tb, 1, 0, str.tostring(n) + " members", bgcolor = color.new(color.black, 80),
+               text_color = color.white, text_size = size.small)
+    table.cell(tb, 0, 1, "average correlation", text_size = size.small)
+    table.cell(tb, 1, 1, str.tostring(rho, "#.###"), text_size = size.small)
+    table.cell(tb, 0, 2, "rank over " + str.tostring(rankLen) + " sessions", text_size = size.small)
+    table.cell(tb, 1, 2, str.tostring(rank * 100, "0") + " %", text_size = size.small)
+    table.cell(tb, 0, 3, "state", text_size = size.small)
+    table.cell(tb, 1, 3, state, text_size = size.small, text_color = tint)
+    table.cell(tb, 0, 4, "size multiplier", text_size = size.small)
+    table.cell(tb, 1, 4, str.tostring(mult * 100, "0") + " % of normal", text_size = size.small,
+               text_color = mult < 0.8 ? color.red : mult > 1.2 ? color.green : color.gray)
+    table.cell(tb, 0, 5, isDaily ? "measurement only" : "!! WRONG TIMEFRAME",
+               text_size = size.tiny, text_color = isDaily ? color.gray : color.red)
+    table.cell(tb, 1, 5, isDaily ? "not a trading rule" : "windows are in SESSIONS — switch to daily",
+               text_size = size.tiny, text_color = isDaily ? color.gray : color.red)
+
+// ---- alerts -------------------------------------------------------------------------------------
+alertcondition(ta.crossover(rank, 0.90),  "Lockstep above 90th percentile", "Basket correlation very high")
+alertcondition(ta.crossunder(rank, 0.25), "Lockstep below 25th percentile", "Basket correlation low")

@@ -1,0 +1,698 @@
+//@version=6
+indicator("Silvara-Mcx-Comex", shorttitle="Silvara-Mcx-Comex", overlay=true, max_labels_count=500, dynamic_requests=true)
+
+
+// Pine can't detect the device automatically - pick it yourself, once, per device.
+displayMode = input.string("Laptop (Large)", "Display Size Mode", options=["Phone (Small)", "Laptop (Large)"], group="Display")
+string tblTextSize = size.small
+
+int target_seconds = input.int(30, "SILVER daily Target seconds to lock", minval=3, maxval=300, step=5, group="Timer Settings")
+string selected_level = input.string("All Levels", "SILVER daily", options = ["All Levels", "5.0", "4.5", "4.0", "3.5", "3.0", "2.5", "2.0", "1.5", "1.0", "0.5", "0.0", "-0.5", "-1.0", "-1.5", "-2.0", "-2.5", "-3.0", "-3.5", "-4.0", "-4.5", "-5.0"], group="Alert Settings")
+int target_seconds2 = input.int(30, "COMEX-MCX Target seconds to lock", minval=3, maxval=300, step=5, group="Timer Settings")
+string selected_level2 = input.string("All Levels", "COMEX-MCX ", options = ["All Levels","-1.5", "-2.0", "-2.5", "-3.0", "-3.5", "-4.0", "-4.5", "-5.0","-5.5", "-6.0", "-6.5", "-7.0", "-7.5", "-8.0", "-8.5", "-9.0","-9.5", "-10.0", "-10.5", "-11.0", "-11.5", "-12.0", "-12.5","-13.0", "-13.5", "-14.0", "-14.5", "-15.0"], group="Alert Settings_2")
+var color bg_table = #FFFFFF
+var color bg_header = #A97A2E
+var color bg_cell = #FFFFFF
+var color border_col = color.new(#ECDCDA, 0)
+var color frame_col = color.new(#ECDCDA, 0)
+var color text_white = #201113
+var color text_dim = #6C565A
+var color text_green = #4CAF50
+var color text_green2 = #66BB6A
+var color text_red = #EF5350
+var color text_orange = #FFA726
+var color text_yellow = #FFEE58
+var color accent_gold = #A97A2E
+var color text_blue = #42A5F5
+var color text_purple = #AB47BC
+var color text_teal = #26A69A
+string silver_mcx = "MCX:SILVER1!"
+string silver_comex = "COMEX:SI1!"
+string gold_mcx   = "MCX:GOLD1!"
+string gold_comex = "COMEX:GC1!"
+string usdinr     = "VANTAGE:USDINR"
+float s_mcx = request.security(silver_mcx, timeframe.period, close, lookahead=barmerge.lookahead_on, gaps=barmerge.gaps_off, ignore_invalid_symbol=true)
+float s_comex = request.security(silver_comex, timeframe.period, close, lookahead=barmerge.lookahead_on, gaps=barmerge.gaps_off, ignore_invalid_symbol=true)
+float g_mcx = request.security(gold_mcx, timeframe.period, close, lookahead=barmerge.lookahead_on, gaps=barmerge.gaps_off, ignore_invalid_symbol=true)
+float g_comex = request.security(gold_comex, timeframe.period, close, lookahead=barmerge.lookahead_on, gaps=barmerge.gaps_off, ignore_invalid_symbol=true)
+float usdinr_close = request.security(usdinr, timeframe.period, close, lookahead=barmerge.lookahead_on, gaps=barmerge.gaps_off, ignore_invalid_symbol=true)
+bool newDay = ta.change(time("D")) != 0
+var float sr = na
+var float scr = na
+var float gr = na
+var float gcr = na
+var float usdr = na
+if newDay
+    sr := nz(s_mcx[1])
+    scr := nz(s_comex[1])
+    gr := nz(g_mcx[1])
+    gcr := nz(g_comex[1])
+    usdr := nz(usdinr_close[1])
+float silver_mcx_pct = not na(sr) ? (s_mcx - sr) / sr * 100 : na
+float silver_comex_pct = not na(scr) ? (s_comex - scr) / scr * 100 : na
+float gold_mcx_pct = not na(gr) ? (g_mcx - gr) / gr * 100 : na
+float gold_comex_pct = not na(gcr) ? (g_comex - gcr) / gcr * 100 : na
+float silver_div = silver_comex_pct - silver_mcx_pct
+float gold_div = gold_comex_pct - gold_mcx_pct
+float usdinr_pct = not na(usdr) ? (usdinr_close - usdr) / usdr * 100 : na
+float s_abs = math.abs(silver_div)
+float g_abs = math.abs(gold_div)
+string comex_sym = "COMEX:SI1!"
+string mcx_sym = "MCX:SILVER1!"
+string usd_inr_sym = "VANTAGE:USDINR"
+
+int lot_size_comex = 5000
+float mcx_grams = 155
+float duty_percent = input.float(15.0, "Import Duty %", minval=0.0, maxval=100.0, step=0.5, group="Deviation Settings (Silver)")
+float comex_usd = request.security(comex_sym, timeframe.period, close, lookahead=barmerge.lookahead_on)
+float usd_inr = request.security(usd_inr_sym, timeframe.period, close, lookahead=barmerge.lookahead_on)
+float mcx_inr = request.security(mcx_sym, timeframe.period, close, lookahead=barmerge.lookahead_on)
+float A = (comex_usd * usd_inr * (1000.0 / 31.1034768) * (1.0 + duty_percent / 100.0))
+float B = mcx_inr
+float diff_AB = A - B
+float diff_percent = diff_AB / B * 100
+float change_A_pct = ta.change(A) / A[1] * 100
+float change_B_pct = ta.change(B) / B[1] * 100
+
+// ---- ₹ row Diff (C-M) alerts - touch/shoot-and-forget, Silver ----
+silverDiffEntryUp = input.float(0.0, "Silver ₹ Diff - Entry Upside Level", step=1.0, group="₹ Diff Alerts (Silver)")
+silverDiffExit = input.float(0.0, "Silver ₹ Diff - Exit Level", step=1.0, group="₹ Diff Alerts (Silver)")
+silverDiffEntryDown = input.float(0.0, "Silver ₹ Diff - Entry Downside Level", step=1.0, group="₹ Diff Alerts (Silver)")
+silverDiffEntryUpHit = ta.crossover(diff_AB, silverDiffEntryUp)
+silverDiffExitHit = ta.cross(diff_AB, silverDiffExit)
+silverDiffEntryDownHit = ta.crossunder(diff_AB, silverDiffEntryDown)
+alertcondition(silverDiffEntryUpHit, title="Silver ₹ Diff Entry Upside", message="Silver ₹ Diff (C-M) touched your Entry Upside level")
+alertcondition(silverDiffExitHit, title="Silver ₹ Diff Exit", message="Silver ₹ Diff (C-M) touched your Exit level")
+alertcondition(silverDiffEntryDownHit, title="Silver ₹ Diff Entry Downside", message="Silver ₹ Diff (C-M) touched your Entry Downside level")
+var float[] range_low = array.from(4.900, 4.400, 3.900, 3.400, 2.900, 2.400, 1.900, 1.400, 0.900, 0.400, -0.100, -0.600, -1.100, -1.600, -2.100, -2.600, -3.100, -3.600, -4.100, -4.600, -5.100)
+var float[] range_high = array.from(5.100, 4.600, 4.100, 3.600, 3.100, 2.600, 2.100, 1.600, 1.100, 0.600, 0.100, -0.400, -0.900, -1.400, -1.900, -2.400, -2.900, -3.400, -3.900, -4.400, -4.900)
+var float[] levels = array.from(5.0, 4.5, 4.0, 3.5, 3.0, 2.5, 2.0, 1.5, 1.0, 0.5, 0.0, -0.5, -1.0, -1.5, -2.0, -2.5, -3.0, -3.5, -4.0, -4.5, -5.0)
+var string[] range_names = array.from("Range 5.0 (4.900 – 5.100)", "Range 4.5 (4.400 – 4.600)", "Range 4.0 (3.900 – 4.100)", "Range 3.5 (3.400 – 3.600)","Range 3.0 (2.900 – 3.100)", "Range 2.5 (2.400 – 2.600)", "Range 2.0 (1.900 – 2.100)", "Range 1.5 (1.400 – 1.600)","Range 1.0 (0.900 – 1.100)", "Range 0.5 (0.400 – 0.600)", "Range 0.0 (-0.100 – 0.100)", "Range -0.5 (-0.600 – -0.400)","Range -1.0 (-1.100 – -0.900)", "Range -1.5 (-1.600 – -1.400)", "Range -2.0 (-2.100 – -1.900)", "Range -2.5 (-2.600 – -2.400)","Range -3.0 (-3.100 – -2.900)", "Range -3.5 (-3.600 – -3.400)", "Range -4.0 (-4.100 – -3.900)", "Range -4.5 (-4.600 – -4.400)","Range -5.0 (-5.100 – -4.900)")
+var float[] range_low_2 = array.from(-1.400, -1.900, -2.400, -2.900, -3.400, -3.900, -4.400, -4.900, -5.400, -5.900, -6.400, -6.900, -7.400, -7.900, -8.400, -8.900, -9.400, -9.900, -10.400, -10.900, -11.400, -11.900, -12.400, -12.900, -13.400, -13.900, -14.400, -14.900)
+var float[] range_high_2 = array.from(-1.600, -2.100, -2.600, -3.100, -3.600, -4.100, -4.600, -5.100, -5.600, -6.100, -6.600, -7.100, -7.600, -8.100, -8.600, -9.100, -9.600, -10.100, -10.600, -11.100, -11.600, -12.100, -12.600, -13.100, -13.600, -14.100, -14.600, -15.100)
+var float[] levels_2 = array.from(-1.5, -2.0, -2.5, -3.0, -3.5, -4.0, -4.5, -5.0, -5.5, -6.0, -6.5, -7.0, -7.5, -8.0, -8.5, -9.0, -9.5, -10.0, -10.5, -11.0, -11.5, -12.0, -12.5, -13.0, -13.5, -14.0, -14.5, -15.0)
+var string[] range_names_2 = array.from("Range -1.5 (-1.400–-1.600)", "Range -2.0 (-1.900–-2.100)", "Range -2.5 (-2.400–-2.600)", "Range -3.0 (-2.900–-3.100)","Range -3.5 (-3.400–-3.600)", "Range -4.0 (-3.900–-4.100)", "Range -4.5 (-4.400–-4.600)", "Range -5.0 (-4.900–-5.100)","Range -5.5 (-5.400–-5.600)", "Range -6.0 (-5.900–-6.100)", "Range -6.5 (-6.400–-6.600)", "Range -7.0 (-6.900–-7.100)","Range -7.5 (-7.400–-7.600)", "Range -8.0 (-7.900–-8.100)", "Range -8.5 (-8.400–-8.600)", "Range -9.0 (-8.900–-9.100)","Range -9.5 (-9.400–-9.600)", "Range -10.0 (-9.900–-10.100)", "Range -10.5 (-10.400–-10.600)", "Range -11.0 (-10.900–-11.100)","Range -11.5 (-11.400–-11.600)", "Range -12.0 (-11.900–-12.100)", "Range -12.5 (-12.400–-12.600)", "Range -13.0 (-12.900–-13.100)","Range -13.5 (-13.400–-13.600)", "Range -14.0 (-13.900–-14.100)", "Range -14.5 (-14.400–-14.600)", "Range -15.0 (-14.900–-15.100)")
+varip int[] first_entry_ms = array.new_int(21, 0)
+varip int[] max_seen_ms = array.new_int(21, 0)
+var int[] update_counter = array.new_int(21, 0)
+int TARGET_MS = target_seconds * 1000
+int BUFFER_MS = 1000
+varip int[] first_entry_ms_2 = array.new_int(28, 0)
+varip int[] max_seen_ms_2 = array.new_int(28, 0)
+var int[] update_counter_2 = array.new_int(28, 0)
+int TARGET_MS_2 = target_seconds2 * 1000
+int BUFFER_MS_2 = 1000
+if barstate.isrealtime and not na(silver_div)
+    for i = 0 to 20
+        bool inside = silver_div >= array.get(range_low, i) and silver_div <= array.get(range_high, i)
+        if inside
+            if array.get(first_entry_ms, i) == 0
+                array.set(first_entry_ms, i, timenow)
+            int elapsed_now = timenow - array.get(first_entry_ms, i)
+            array.set(max_seen_ms, i, math.max(array.get(max_seen_ms, i), elapsed_now))
+            array.set(update_counter, i, array.get(update_counter, i) + 1)
+            if elapsed_now >= TARGET_MS + BUFFER_MS
+                array.set(first_entry_ms, i, timenow)
+                array.set(max_seen_ms, i, 0)
+                array.set(update_counter, i, 0)
+        else
+            array.set(first_entry_ms, i, 0)
+            array.set(max_seen_ms, i, 0)
+            array.set(update_counter, i, 0)
+if barstate.isrealtime and not na(diff_percent)
+    for i = 0 to 27
+        bool inside_2 = diff_percent >= array.get(range_low_2, i) and diff_percent <= array.get(range_high_2, i)
+        if inside_2
+            if array.get(first_entry_ms_2, i) == 0
+                array.set(first_entry_ms_2, i, timenow)
+            int elapsed_now_2 = timenow - array.get(first_entry_ms_2, i)
+            array.set(max_seen_ms_2, i, math.max(array.get(max_seen_ms_2, i), elapsed_now_2))
+            array.set(update_counter_2, i, array.get(update_counter_2, i) + 1)
+            if elapsed_now_2 >= TARGET_MS_2 + BUFFER_MS_2
+                array.set(first_entry_ms_2, i, timenow)
+                array.set(max_seen_ms_2, i, 0)
+                array.set(update_counter_2, i, 0)
+        else
+            array.set(first_entry_ms_2, i, 0)
+            array.set(max_seen_ms_2, i, 0)
+            array.set(update_counter_2, i, 0)
+var bool[] alerted_this_stay = array.new_bool(21, false)
+var bool[] alerted_this_stay2 = array.new_bool(28, false)
+bool silver_just_locked = false
+bool comex_mcx_just_locked = false
+if barstate.isrealtime and not na(silver_div)
+    for i = 0 to 20
+        bool inside = silver_div >= array.get(range_low, i) and silver_div <= array.get(range_high, i)
+        if inside
+            int entry = array.get(first_entry_ms, i)
+            if entry > 0
+                int elapsed = timenow - entry
+                bool just_locked = elapsed >= TARGET_MS and nz(array.get(max_seen_ms, i)[1], 0) < TARGET_MS
+                bool allowed = false
+                if selected_level == "All Levels"
+                    allowed := true
+                else if selected_level == "5.0" and (i == 1)
+                    allowed := true
+                else if selected_level == "4.5" and (i == 0 or i == 2)
+                    allowed := true
+                else if selected_level == "4.0" and (i == 1 or i == 3)
+                    allowed := true
+                else if selected_level == "3.5" and (i == 2 or i == 4)
+                    allowed := true
+                else if selected_level == "3.0" and (i == 3 or i == 5)
+                    allowed := true
+                else if selected_level == "2.5" and (i == 4 or i == 6)
+                    allowed := true
+                else if selected_level == "2.0" and (i == 5 or i == 7)
+                    allowed := true
+                else if selected_level == "1.5" and (i == 6 or i == 8)
+                    allowed := true
+                else if selected_level == "1.0" and (i == 7 or i == 9)
+                    allowed := true
+                else if selected_level == "0.5" and (i == 8 or i == 10)
+                    allowed := true
+                else if selected_level == "0.0" and (i == 9 or i == 11)
+                    allowed := true
+                else if selected_level == "-0.5" and (i == 10 or i == 12)
+                    allowed := true
+                else if selected_level == "-1.0" and (i == 11 or i == 13)
+                    allowed := true
+                else if selected_level == "-1.5" and (i == 12 or i == 14)
+                    allowed := true
+                else if selected_level == "-2.0" and (i == 13 or i == 15)
+                    allowed := true
+                else if selected_level == "-2.5" and (i == 14 or i == 16)
+                    allowed := true
+                else if selected_level == "-3.0" and (i == 15 or i == 17)
+                    allowed := true
+                else if selected_level == "-3.5" and (i == 16 or i == 18)
+                    allowed := true
+                else if selected_level == "-4.0" and (i == 17 or i == 19)
+                    allowed := true
+                else if selected_level == "-4.5" and (i == 18 or i == 20)
+                    allowed := true
+                else if selected_level == "-5.0" and (i == 19)
+                    allowed := true
+                if just_locked and not array.get(alerted_this_stay, i) and allowed
+                    array.set(alerted_this_stay, i, true)
+                    silver_just_locked := true
+        else
+            array.set(alerted_this_stay, i, false)
+if barstate.isrealtime and not na(diff_percent)
+    for i = 0 to 27
+        bool inside_2 = diff_percent >= array.get(range_low_2, i) and diff_percent <= array.get(range_high_2, i)
+        if inside_2
+            int entry_2 = array.get(first_entry_ms_2, i)
+            if entry_2 > 0
+                int elapsed_2 = timenow - entry_2
+                bool just_locked_2 = elapsed_2 >= TARGET_MS_2 and nz(array.get(max_seen_ms_2, i)[1], 0) < TARGET_MS_2
+                bool allowed = false
+                if selected_level2 == "All Levels"
+                    allowed := true
+                else if selected_level2 == "-1.5" and (i == 1)
+                    allowed := true
+                else if selected_level2 == "-2.0" and (i == 0 or i == 2)
+                    allowed := true
+                else if selected_level2 == "-2.5" and (i == 1 or i == 3)
+                    allowed := true
+                else if selected_level2 == "-3.0" and (i == 2 or i == 4)
+                    allowed := true
+                else if selected_level2 == "-3.5" and (i == 3 or i == 5)
+                    allowed := true
+                else if selected_level2 == "-4.0" and (i == 4 or i == 6)
+                    allowed := true
+                else if selected_level2 == "-4.5" and (i == 5 or i == 7)
+                    allowed := true
+                else if selected_level2 == "-5.0" and (i == 6 or i == 8)
+                    allowed := true
+                else if selected_level2 == "-5.5" and (i == 7 or i == 9)
+                    allowed := true
+                else if selected_level2 == "-6.0" and (i == 8 or i == 10)
+                    allowed := true
+                else if selected_level2 == "-6.5" and (i == 9 or i == 11)
+                    allowed := true
+                else if selected_level2 == "-7.0" and (i == 10 or i == 12)
+                    allowed := true
+                else if selected_level2 == "-7.5" and (i == 11 or i == 13)
+                    allowed := true
+                else if selected_level2 == "-8.0" and (i == 12 or i == 14)
+                    allowed := true
+                else if selected_level2 == "-8.5" and (i == 13 or i == 15)
+                    allowed := true
+                else if selected_level2 == "-9.0" and (i == 14 or i == 16)
+                    allowed := true
+                else if selected_level2 == "-9.5" and (i == 15 or i == 17)
+                    allowed := true
+                else if selected_level2 == "-10.0" and (i == 16 or i == 18)
+                    allowed := true
+                else if selected_level2 == "-10.5" and (i == 17 or i == 19)
+                    allowed := true
+                else if selected_level2 == "-11.0" and (i == 18 or i == 20)
+                    allowed := true
+                else if selected_level2 == "-11.5" and (i == 19 or i == 21)
+                    allowed := true
+                else if selected_level2 == "-12.0" and (i == 20 or i == 22)
+                    allowed := true
+                else if selected_level2 == "-12.5" and (i == 21 or i == 23)
+                    allowed := true
+                else if selected_level2 == "-13.0" and (i == 22 or i == 24)
+                    allowed := true
+                else if selected_level2 == "-13.5" and (i == 23 or i == 25)
+                    allowed := true
+                else if selected_level2 == "-14.0" and (i == 24 or i == 26)
+                    allowed := true
+                else if selected_level2 == "-14.5" and (i == 25 or i == 27)
+                    allowed := true
+                else if selected_level2 == "-15.0" and (i == 26)
+                    allowed := true
+                if just_locked_2 and not array.get(alerted_this_stay2, i) and allowed
+                    array.set(alerted_this_stay2, i, true)
+                    comex_mcx_just_locked := true
+        else
+            array.set(alerted_this_stay2, i, false)
+alertcondition(silver_just_locked,   title="Silver Deviation Timer Locked",   message="LEVEL {{plot(\"Silver C-M %\")}} URGENT - TIMER LOCKED")
+alertcondition(comex_mcx_just_locked, title="COMEX-MCX Deviation Timer Locked", message="COMEX-MCX LEVEL {{plot(\"COMEX-MCX Diff %\")}}% URGENT - TIMER LOCKED")
+var label warn_label = na
+if barstate.islastconfirmedhistory
+    label.delete(warn_label)
+color butter_yellow = #FAF5F4
+color butter_yellow_dark = #F6E9E8
+color black_text = #201113
+
+//====================================================
+// ONE TABLE, not two - Pine only renders ONE table per position anchor. Two
+// separate tables both at position.middle_center don't layer; the later-created
+// one completely replaces the earlier one in that slot (that's why the curtain
+// disappeared). So curtain padding + dashboard content have to live in the SAME
+// table object, sharing one border setting (border is per-table, not per-cell).
+// Real dashboard content lives in the center 5 cols x 15 rows (cols 12-16, rows 14-28).
+// Soft off-white padding cells surround it (12 cols left/right, 14 rows top/bottom),
+// filled once on isfirst; dashboard content overwrites the center on top of it.
+// 29 columns x 43 rows total. Single anchor: middle_center = always centered.
+//====================================================
+// border_width/border_color draw a real grid line between EVERY adjacent cell pair
+// in the whole table (Pine has no per-region border). For this minimalist look the
+// hairline stays the SAME soft tone everywhere (curtain and dashboard alike) - a
+// consistent, barely-there grid rather than a hidden/revealed trick, which reads as
+// clean rather than boxed-in. frame_width stays 0 so the outer edge has no border.
+var table combinedTbl = table.new(position.middle_center, columns=53, rows=71, bgcolor=bg_table, border_width=1, border_color=color.new(#ECDCDA, 30), frame_width=0)
+
+// ---- CURTAIN: fill the entire 53x71 grid soft-white once; dashboard draws on top ----
+if barstate.isfirst
+    for curtain_r = 0 to 70
+        for curtain_c = 0 to 52
+            table.cell(combinedTbl, curtain_c, curtain_r, "       ", bgcolor=butter_yellow, text_color=butter_yellow, text_size=tblTextSize)
+
+    // ---- Card lift: minimalist doesn't want a heavy shadow, so this steps from the
+    // soft page tone up to pure white in two barely-different stages right at the
+    // dashboard's edge - just enough to read as "a card sitting on the page",
+    // nothing more.
+    for shadow_i = 22 to 30
+        table.cell(combinedTbl, shadow_i, 26, "       ", bgcolor=#F6E9E8, text_color=#F6E9E8, text_size=tblTextSize)
+        table.cell(combinedTbl, shadow_i, 44, "       ", bgcolor=#F6E9E8, text_color=#F6E9E8, text_size=tblTextSize)
+    for shadow_j = 26 to 44
+        table.cell(combinedTbl, 22, shadow_j, "       ", bgcolor=#F6E9E8, text_color=#F6E9E8, text_size=tblTextSize)
+        table.cell(combinedTbl, 30, shadow_j, "       ", bgcolor=#F6E9E8, text_color=#F6E9E8, text_size=tblTextSize)
+    for shadow_i2 = 23 to 29
+        table.cell(combinedTbl, shadow_i2, 27, "       ", bgcolor=#FFFFFF, text_color=#FFFFFF, text_size=tblTextSize)
+        table.cell(combinedTbl, shadow_i2, 43, "       ", bgcolor=#FFFFFF, text_color=#FFFFFF, text_size=tblTextSize)
+    for shadow_j2 = 27 to 43
+        table.cell(combinedTbl, 23, shadow_j2, "       ", bgcolor=#FFFFFF, text_color=#FFFFFF, text_size=tblTextSize)
+        table.cell(combinedTbl, 29, shadow_j2, "       ", bgcolor=#FFFFFF, text_color=#FFFFFF, text_size=tblTextSize)
+
+// ---- SILVER DEVIATION (rows 0-4) ----
+if barstate.isrealtime
+    table.cell(combinedTbl, 24, 28, "SILVER DEVIATION", text_color=#7A1B2B, bgcolor=#F7E3E5, text_halign=text.align_center, text_size=tblTextSize)
+    table.merge_cells(combinedTbl, 24, 28, 28, 28)
+    table.cell(combinedTbl, 24, 29, "", text_color=text_white, bgcolor=#F7E3E5, text_size=tblTextSize)
+    table.cell(combinedTbl, 25, 29, " COMEX % (USD) ", text_color=text_white, bgcolor=#F7E3E5, text_size=tblTextSize)
+    table.cell(combinedTbl, 26, 29, " MCX % (INR) ", text_color=text_white, bgcolor=#F7E3E5, text_size=tblTextSize)
+    table.cell(combinedTbl, 27, 29, " Diff (C-M) ", text_color=text_white, bgcolor=#F7E3E5, text_size=tblTextSize)
+    table.cell(combinedTbl, 28, 29, "", text_color=text_white, bgcolor=#F7E3E5, text_size=tblTextSize)
+    table.cell(combinedTbl, 24, 30, " DC% ", text_color=text_white, text_size=tblTextSize)
+    table.cell(combinedTbl, 24, 31, " ₹ ", text_color=text_white, text_size=tblTextSize)
+    table.cell(combinedTbl, 24, 32, " LTP ", text_color=text_white, text_size=tblTextSize)
+    table.cell(combinedTbl, 28, 30, "", text_color=text_white, text_size=tblTextSize)
+    table.cell(combinedTbl, 28, 31, "", text_color=text_white, text_size=tblTextSize)
+    table.cell(combinedTbl, 28, 32, "", text_color=text_white, text_size=tblTextSize)
+    if not na(silver_comex_pct)
+        table.cell(combinedTbl, 25, 30, str.tostring(silver_comex_pct, "#.####"), text_color = silver_comex_pct >= 0 ? color.new(#16A34A,0) : color.new(#DC2626,0), text_size=tblTextSize)
+        table.cell(combinedTbl, 26, 30, str.tostring(silver_mcx_pct, "#.####"), text_color = silver_mcx_pct >= 0 ? color.new(#16A34A,0) : color.new(#DC2626,0), text_size=tblTextSize)
+        table.cell(combinedTbl, 27, 30, str.tostring(silver_div, "#.####"), text_color = silver_div >= 0 ? color.new(#16A34A,0) : color.new(#DC2626,0), text_size=tblTextSize)
+    if not na(usdinr_close)
+        table.cell(combinedTbl, 25, 31, str.tostring(A, "#,##0"), text_color=text_white, text_size=tblTextSize)
+        table.cell(combinedTbl, 26, 31, str.tostring(B, "#,##0"), text_color=text_white, text_size=tblTextSize)
+        table.cell(combinedTbl, 27, 31, str.tostring(diff_AB, "#,##0"), text_color=text_white, text_size=tblTextSize)
+        table.cell(combinedTbl, 25, 32, str.tostring(s_comex, "#.#####"), text_color=text_white, text_size=tblTextSize)
+        table.cell(combinedTbl, 26, 32, str.tostring(s_mcx, "#.##"), text_color=text_white, text_size=tblTextSize)
+        table.cell(combinedTbl, 27, 32, str.tostring(diff_percent, "#.##") + "%", text_color = diff_percent >= 0 ? color.new(#16A34A,0) : color.new(#DC2626,0), text_size=tblTextSize)
+
+int target_seconds_gold = input.int(30, "GOLD daily Target seconds to lock", minval=3, maxval=300, step=5, group="Timer Settings Gold")
+string selected_level_gold = input.string("All Levels", "GOLD daily", options = ["All Levels", "5.0", "4.5", "4.0", "3.5", "3.0", "2.5", "2.0", "1.5", "1.0", "0.5", "0.0", "-0.5", "-1.0", "-1.5", "-2.0", "-2.5", "-3.0", "-3.5", "-4.0", "-4.5", "-5.0"], group="Alert Settings Gold")
+int target_seconds2_gold = input.int(30, "COMEX-MCX Target seconds to lock (Gold)", minval=3, maxval=300, step=5, group="Timer Settings Gold")
+string selected_level2_gold = input.string("All Levels", "COMEX-MCX (Gold)", options = ["All Levels","-1.5", "-2.0", "-2.5", "-3.0", "-3.5", "-4.0", "-4.5", "-5.0","-5.5", "-6.0", "-6.5", "-7.0", "-7.5", "-8.0", "-8.5", "-9.0","-9.5", "-10.0", "-10.5", "-11.0", "-11.5", "-12.0", "-12.5","-13.0", "-13.5", "-14.0", "-14.5", "-15.0"], group="Alert Settings_2 Gold")
+float g_mcx_gold   = request.security(gold_mcx,   timeframe.period, close, lookahead=barmerge.lookahead_on, gaps=barmerge.gaps_off, ignore_invalid_symbol=true)
+float g_comex_gold = request.security(gold_comex, timeframe.period, close, lookahead=barmerge.lookahead_on, gaps=barmerge.gaps_off, ignore_invalid_symbol=true)
+float usdinr_close_gold = request.security(usdinr, timeframe.period, close, lookahead=barmerge.lookahead_on, gaps=barmerge.gaps_off, ignore_invalid_symbol=true)
+bool newDay_gold = ta.change(time("D")) != 0
+var float gr_gold  = na
+var float gcr_gold = na
+var float usdr_gold = na
+if newDay_gold
+    gr_gold  := nz(g_mcx_gold[1])
+    gcr_gold := nz(g_comex_gold[1])
+    usdr_gold := nz(usdinr_close_gold[1])
+float gold_mcx_pct_gold   = not na(gr_gold)  ? (g_mcx_gold   - gr_gold)  / gr_gold  * 100 : na
+float gold_comex_pct_gold = not na(gcr_gold) ? (g_comex_gold - gcr_gold) / gcr_gold * 100 : na
+float gold_div_gold       = gold_comex_pct_gold - gold_mcx_pct_gold
+float usdinr_pct_gold = not na(usdr_gold) ? (usdinr_close_gold - usdr_gold) / usdr_gold * 100 : na
+string comex_sym_gold = "COMEX:GC1!"
+string mcx_sym_gold   = "MCX:GOLD1!"
+string usd_inr_sym_gold = "VANTAGE:USDINR"
+float duty_percent_gold = input.float(15.0, "Import Duty % (Gold)", minval=0.0, maxval=100.0, step=0.5, group="Deviation Settings (Gold)")
+int lot_size_comex_gold = 100
+float mcx_grams_gold    = 311
+float A_gold = (g_comex_gold * usdinr_close_gold * lot_size_comex_gold)/mcx_grams_gold * (1.0 + duty_percent_gold / 100.0)
+float B_gold = (g_mcx_gold   * mcx_grams_gold)/mcx_grams_gold
+float diff_AB_gold = A_gold - B_gold
+float diff_percent_gold = diff_AB_gold / B_gold * 100
+float change_A_pct_gold = ta.change(A_gold) / A_gold[1] * 100
+
+// ---- ₹ row Diff (C-M) alerts - touch/shoot-and-forget, Gold ----
+goldDiffEntryUp = input.float(0.0, "Gold ₹ Diff - Entry Upside Level", step=1.0, group="₹ Diff Alerts (Gold)")
+goldDiffExit = input.float(0.0, "Gold ₹ Diff - Exit Level", step=1.0, group="₹ Diff Alerts (Gold)")
+goldDiffEntryDown = input.float(0.0, "Gold ₹ Diff - Entry Downside Level", step=1.0, group="₹ Diff Alerts (Gold)")
+goldDiffEntryUpHit = ta.crossover(diff_AB_gold, goldDiffEntryUp)
+goldDiffExitHit = ta.cross(diff_AB_gold, goldDiffExit)
+goldDiffEntryDownHit = ta.crossunder(diff_AB_gold, goldDiffEntryDown)
+alertcondition(goldDiffEntryUpHit, title="Gold ₹ Diff Entry Upside", message="Gold ₹ Diff (C-M) touched your Entry Upside level")
+alertcondition(goldDiffExitHit, title="Gold ₹ Diff Exit", message="Gold ₹ Diff (C-M) touched your Exit level")
+alertcondition(goldDiffEntryDownHit, title="Gold ₹ Diff Entry Downside", message="Gold ₹ Diff (C-M) touched your Entry Downside level")
+float change_B_pct_gold = ta.change(B_gold) / B_gold[1] * 100
+var float[] range_low_gold = array.from(4.900, 4.400, 3.900, 3.400, 2.900, 2.400, 1.900, 1.400, 0.900, 0.400, -0.100, -0.600, -1.100, -1.600, -2.100, -2.600, -3.100, -3.600, -4.100, -4.600, -5.100)
+var float[] range_high_gold = array.from(5.100, 4.600, 4.100, 3.600, 3.100, 2.600, 2.100, 1.600, 1.100, 0.600, 0.100, -0.400, -0.900, -1.400, -1.900, -2.400, -2.900, -3.400, -3.900, -4.400, -4.900)
+var float[] levels_gold = array.from(5.0, 4.5, 4.0, 3.5, 3.0, 2.5, 2.0, 1.5, 1.0, 0.5, 0.0, -0.5, -1.0, -1.5, -2.0, -2.5, -3.0, -3.5, -4.0, -4.5, -5.0)
+var string[] range_names_gold = array.from("Range 5.0 (4.900 – 5.100)", "Range 4.5 (4.400 – 4.600)", "Range 4.0 (3.900 – 4.100)", "Range 3.5 (3.400 – 3.600)","Range 3.0 (2.900 – 3.100)", "Range 2.5 (2.400 – 2.600)", "Range 2.0 (1.900 – 2.100)", "Range 1.5 (1.400 – 1.600)","Range 1.0 (0.900 – 1.100)", "Range 0.5 (0.400 – 0.600)", "Range 0.0 (-0.100 – 0.100)", "Range -0.5 (-0.600 – -0.400)","Range -1.0 (-1.100 – -0.900)", "Range -1.5 (-1.600 – -1.400)", "Range -2.0 (-2.100 – -1.900)", "Range -2.5 (-2.600 – -2.400)","Range -3.0 (-3.100 – -2.900)", "Range -3.5 (-3.600 – -3.400)", "Range -4.0 (-4.100 – -3.900)", "Range -4.5 (-4.600 – -4.400)","Range -5.0 (-5.100 – -4.900)")
+var float[] range_low_2_gold = array.from(-1.400, -1.900, -2.400, -2.900, -3.400, -3.900, -4.400, -4.900, -5.400, -5.900, -6.400, -6.900, -7.400, -7.900, -8.400, -8.900, -9.400, -9.900, -10.400, -10.900, -11.400, -11.900, -12.400, -12.900, -13.400, -13.900, -14.400, -14.900)
+var float[] range_high_2_gold = array.from(-1.600, -2.100, -2.600, -3.100, -3.600, -4.100, -4.600, -5.100, -5.600, -6.100, -6.600, -7.100, -7.600, -8.100, -8.600, -9.100, -9.600, -10.100, -10.600, -11.100, -11.600, -12.100, -12.600, -13.100, -13.600, -14.100, -14.600, -15.100)
+var float[] levels_2_gold = array.from(-1.5, -2.0, -2.5, -3.0, -3.5, -4.0, -4.5, -5.0, -5.5, -6.0, -6.5, -7.0, -7.5, -8.0, -8.5, -9.0, -9.5, -10.0, -10.5, -11.0, -11.5, -12.0, -12.5, -13.0, -13.5, -14.0, -14.5, -15.0)
+var string[] range_names_2_gold = array.from("Range -1.5 (-1.400–-1.600)", "Range -2.0 (-1.900–-2.100)", "Range -2.5 (-2.400–-2.600)", "Range -3.0 (-2.900–-3.100)","Range -3.5 (-3.400–-3.600)", "Range -4.0 (-3.900–-4.100)", "Range -4.5 (-4.400–-4.600)", "Range -5.0 (-4.900–-5.100)","Range -5.5 (-5.400–-5.600)", "Range -6.0 (-5.900–-6.100)", "Range -6.5 (-6.400–-6.600)", "Range -7.0 (-6.900–-7.100)","Range -7.5 (-7.400–-7.600)", "Range -8.0 (-7.900–-8.100)", "Range -8.5 (-8.400–-8.600)", "Range -9.0 (-8.900–-9.100)","Range -9.5 (-9.400–-9.600)", "Range -10.0 (-9.900–-10.100)", "Range -10.5 (-10.400–-10.600)", "Range -11.0 (-10.900–-11.100)","Range -11.5 (-11.400–-11.600)", "Range -12.0 (-11.900–-12.100)", "Range -12.5 (-12.400–-12.600)", "Range -13.0 (-12.900–-13.100)",   "Range -13.5 (-13.400–-13.600)", "Range -14.0 (-13.900–-14.100)", "Range -14.5 (-14.400–-14.600)", "Range -15.0 (-14.900–-15.100)")
+varip int[] first_entry_ms_gold = array.new_int(21, 0)
+varip int[] max_seen_ms_gold    = array.new_int(21, 0)
+var int[]   update_counter_gold = array.new_int(21, 0)
+int TARGET_MS_gold  = target_seconds_gold  * 1000
+int BUFFER_MS_gold  = 1000
+varip int[] first_entry_ms_2_gold = array.new_int(28, 0)
+varip int[] max_seen_ms_2_gold    = array.new_int(28, 0)
+var int[]   update_counter_2_gold = array.new_int(28, 0)
+int TARGET_MS_2_gold = target_seconds2_gold * 1000
+int BUFFER_MS_2_gold = 1000
+if barstate.isrealtime and not na(gold_div_gold)
+    for i = 0 to 20
+        bool inside = gold_div_gold >= array.get(range_low_gold, i) and gold_div_gold <= array.get(range_high_gold, i)
+        if inside
+            if array.get(first_entry_ms_gold, i) == 0
+                array.set(first_entry_ms_gold, i, timenow)
+            int elapsed_now = timenow - array.get(first_entry_ms_gold, i)
+            array.set(max_seen_ms_gold, i, math.max(array.get(max_seen_ms_gold, i), elapsed_now))
+            array.set(update_counter_gold, i, array.get(update_counter_gold, i) + 1)
+            if elapsed_now >= TARGET_MS_gold + BUFFER_MS_gold
+                array.set(first_entry_ms_gold, i, timenow)
+                array.set(max_seen_ms_gold, i, 0)
+                array.set(update_counter_gold, i, 0)
+        else
+            array.set(first_entry_ms_gold, i, 0)
+            array.set(max_seen_ms_gold, i, 0)
+            array.set(update_counter_gold, i, 0)
+if barstate.isrealtime and not na(diff_percent_gold)
+    for i = 0 to 27
+        bool inside_2 = diff_percent_gold >= array.get(range_low_2_gold, i) and diff_percent_gold <= array.get(range_high_2_gold, i)
+        if inside_2
+            if array.get(first_entry_ms_2_gold, i) == 0
+                array.set(first_entry_ms_2_gold, i, timenow)
+            int elapsed_now_2 = timenow - array.get(first_entry_ms_2_gold, i)
+            array.set(max_seen_ms_2_gold, i, math.max(array.get(max_seen_ms_2_gold, i), elapsed_now_2))
+            array.set(update_counter_2_gold, i, array.get(update_counter_2_gold, i) + 1)
+            if elapsed_now_2 >= TARGET_MS_2_gold + BUFFER_MS_2_gold
+                array.set(first_entry_ms_2_gold, i, timenow)
+                array.set(max_seen_ms_2_gold, i, 0)
+                array.set(update_counter_2_gold, i, 0)
+        else
+            array.set(first_entry_ms_2_gold, i, 0)
+            array.set(max_seen_ms_2_gold, i, 0)
+            array.set(update_counter_2_gold, i, 0)
+var bool[] alerted_this_stay_gold  = array.new_bool(21, false)
+var bool[] alerted_this_stay2_gold = array.new_bool(28, false)
+bool gold_just_locked     = false
+bool comex_mcx_just_locked_gold = false
+if barstate.isrealtime and not na(gold_div_gold)
+    for i = 0 to 20
+        bool inside = gold_div_gold >= array.get(range_low_gold, i) and gold_div_gold <= array.get(range_high_gold, i)
+        if inside
+            int entry = array.get(first_entry_ms_gold, i)
+            if entry > 0
+                int elapsed = timenow - entry
+                bool just_locked = elapsed >= TARGET_MS_gold and nz(array.get(max_seen_ms_gold, i)[1], 0) < TARGET_MS_gold
+                bool allowed = false
+                if selected_level_gold == "All Levels"
+                    allowed := true
+                else if selected_level_gold == "5.0" and (i == 1)
+                    allowed := true
+                else if selected_level_gold == "4.5" and (i == 0 or i == 2)
+                    allowed := true
+                else if selected_level_gold == "4.0" and (i == 1 or i == 3)
+                    allowed := true
+                else if selected_level_gold == "3.5" and (i == 2 or i == 4)
+                    allowed := true
+                else if selected_level_gold == "3.0" and (i == 3 or i == 5)
+                    allowed := true
+                else if selected_level_gold == "2.5" and (i == 4 or i == 6)
+                    allowed := true
+                else if selected_level_gold == "2.0" and (i == 5 or i == 7)
+                    allowed := true
+                else if selected_level_gold == "1.5" and (i == 6 or i == 8)
+                    allowed := true
+                else if selected_level_gold == "1.0" and (i == 7 or i == 9)
+                    allowed := true
+                else if selected_level_gold == "0.5" and (i == 8 or i == 10)
+                    allowed := true
+                else if selected_level_gold == "0.0" and (i == 9 or i == 11)
+                    allowed := true
+                else if selected_level_gold == "-0.5" and (i == 10 or i == 12)
+                    allowed := true
+                else if selected_level_gold == "-1.0" and (i == 11 or i == 13)
+                    allowed := true
+                else if selected_level_gold == "-1.5" and (i == 12 or i == 14)
+                    allowed := true
+                else if selected_level_gold == "-2.0" and (i == 13 or i == 15)
+                    allowed := true
+                else if selected_level_gold == "-2.5" and (i == 14 or i == 16)
+                    allowed := true
+                else if selected_level_gold == "-3.0" and (i == 15 or i == 17)
+                    allowed := true
+                else if selected_level_gold == "-3.5" and (i == 16 or i == 18)
+                    allowed := true
+                else if selected_level_gold == "-4.0" and (i == 17 or i == 19)
+                    allowed := true
+                else if selected_level_gold == "-4.5" and (i == 18 or i == 20)
+                    allowed := true
+                else if selected_level_gold == "-5.0" and (i == 19)
+                    allowed := true
+                if just_locked and not array.get(alerted_this_stay_gold, i) and allowed
+                    array.set(alerted_this_stay_gold, i, true)
+                    gold_just_locked := true
+        else
+            array.set(alerted_this_stay_gold, i, false)
+if barstate.isrealtime and not na(diff_percent_gold)
+    for i = 0 to 27
+        bool inside_2 = diff_percent_gold >= array.get(range_low_2_gold, i) and diff_percent_gold <= array.get(range_high_2_gold, i)
+        if inside_2
+            int entry_2 = array.get(first_entry_ms_2_gold, i)
+            if entry_2 > 0
+                int elapsed_2 = timenow - entry_2
+                bool just_locked_2 = elapsed_2 >= TARGET_MS_2_gold and nz(array.get(max_seen_ms_2_gold, i)[1], 0) < TARGET_MS_2_gold
+                bool allowed = false
+                if selected_level2_gold == "All Levels"
+                    allowed := true
+                else if selected_level2_gold == "-1.5" and (i == 1)
+                    allowed := true
+                else if selected_level2_gold == "-2.0" and (i == 0 or i == 2)
+                    allowed := true
+                else if selected_level2_gold == "-2.5" and (i == 1 or i == 3)
+                    allowed := true
+                else if selected_level2_gold == "-3.0" and (i == 2 or i == 4)
+                    allowed := true
+                else if selected_level2_gold == "-3.5" and (i == 3 or i == 5)
+                    allowed := true
+                else if selected_level2_gold == "-4.0" and (i == 4 or i == 6)
+                    allowed := true
+                else if selected_level2_gold == "-4.5" and (i == 5 or i == 7)
+                    allowed := true
+                else if selected_level2_gold == "-5.0" and (i == 6 or i == 8)
+                    allowed := true
+                else if selected_level2_gold == "-5.5" and (i == 7 or i == 9)
+                    allowed := true
+                else if selected_level2_gold == "-6.0" and (i == 8 or i == 10)
+                    allowed := true
+                else if selected_level2_gold == "-6.5" and (i == 9 or i == 11)
+                    allowed := true
+                else if selected_level2_gold == "-7.0" and (i == 10 or i == 12)
+                    allowed := true
+                else if selected_level2_gold == "-7.5" and (i == 11 or i == 13)
+                    allowed := true
+                else if selected_level2_gold == "-8.0" and (i == 12 or i == 14)
+                    allowed := true
+                else if selected_level2_gold == "-8.5" and (i == 13 or i == 15)
+                    allowed := true
+                else if selected_level2_gold == "-9.0" and (i == 14 or i == 16)
+                    allowed := true
+                else if selected_level2_gold == "-9.5" and (i == 15 or i == 17)
+                    allowed := true
+                else if selected_level2_gold == "-10.0" and (i == 16 or i == 18)
+                    allowed := true
+                else if selected_level2_gold == "-10.5" and (i == 17 or i == 19)
+                    allowed := true
+                else if selected_level2_gold == "-11.0" and (i == 18 or i == 20)
+                    allowed := true
+                else if selected_level2_gold == "-11.5" and (i == 19 or i == 21)
+                    allowed := true
+                else if selected_level2_gold == "-12.0" and (i == 20 or i == 22)
+                    allowed := true
+                else if selected_level2_gold == "-12.5" and (i == 21 or i == 23)
+                    allowed := true
+                else if selected_level2_gold == "-13.0" and (i == 22 or i == 24)
+                    allowed := true
+                else if selected_level2_gold == "-13.5" and (i == 23 or i == 25)
+                    allowed := true
+                else if selected_level2_gold == "-14.0" and (i == 24 or i == 26)
+                    allowed := true
+                else if selected_level2_gold == "-14.5" and (i == 25 or i == 27)
+                    allowed := true
+                else if selected_level2_gold == "-15.0" and (i == 26)
+                    allowed := true
+                if just_locked_2 and not array.get(alerted_this_stay2_gold, i) and allowed
+                    array.set(alerted_this_stay2_gold, i, true)
+                    comex_mcx_just_locked_gold := true
+        else
+            array.set(alerted_this_stay2_gold, i, false)
+alertcondition(gold_just_locked,     title="Gold Deviation Timer Locked",       message="LEVEL {{plot(\"Gold C-M %\")}} URGENT - TIMER LOCKED")
+alertcondition(comex_mcx_just_locked_gold, title="COMEX-MCX Deviation Timer Locked (Gold)", message="COMEX-MCX LEVEL {{plot(\"COMEX-MCX Diff % Gold\")}}% URGENT - TIMER LOCKED")
+
+// ---- GOLD DEVIATION (rows 6-10) ----
+if barstate.isrealtime
+    table.cell(combinedTbl, 24, 33, "GOLD DEVIATION", text_color=#7A1B2B, bgcolor=#F7E3E5, text_halign=text.align_center, text_size=tblTextSize)
+    table.merge_cells(combinedTbl, 24, 33, 28, 33)
+    table.cell(combinedTbl, 24, 34, "", text_color=text_white, bgcolor=#F7E3E5, text_size=tblTextSize)
+    table.cell(combinedTbl, 25, 34, " COMEX % (USD) ", text_color=text_white, bgcolor=#F7E3E5, text_size=tblTextSize)
+    table.cell(combinedTbl, 26, 34, " MCX % (INR) ", text_color=text_white, bgcolor=#F7E3E5, text_size=tblTextSize)
+    table.cell(combinedTbl, 27, 34, " Diff (C-M) ", text_color=text_white, bgcolor=#F7E3E5, text_size=tblTextSize)
+    table.cell(combinedTbl, 28, 34, "", text_color=text_white, bgcolor=#F7E3E5, text_size=tblTextSize)
+    table.cell(combinedTbl, 24, 35, " DC% ", text_color=text_white, text_size=tblTextSize)
+    table.cell(combinedTbl, 24, 36, " ₹ ", text_color=text_white, text_size=tblTextSize)
+    table.cell(combinedTbl, 24, 37, " LTP ", text_color=text_white, text_size=tblTextSize)
+    table.cell(combinedTbl, 28, 35, "", text_color=text_white, text_size=tblTextSize)
+    table.cell(combinedTbl, 28, 36, "", text_color=text_white, text_size=tblTextSize)
+    table.cell(combinedTbl, 28, 37, "", text_color=text_white, text_size=tblTextSize)
+    if not na(gold_comex_pct_gold)
+        table.cell(combinedTbl, 25, 35, str.tostring(gold_comex_pct_gold, "#.####"), text_color = gold_comex_pct_gold >= 0 ? color.new(#16A34A,0) : color.new(#DC2626,0), text_size=tblTextSize)
+        table.cell(combinedTbl, 26, 35, str.tostring(gold_mcx_pct_gold, "#.####"), text_color = gold_mcx_pct_gold >= 0 ? color.new(#16A34A,0) : color.new(#DC2626,0), text_size=tblTextSize)
+        table.cell(combinedTbl, 27, 35, str.tostring(gold_div_gold, "#.####"), text_color = gold_div_gold >= 0 ? color.new(#16A34A,0) : color.new(#DC2626,0), text_size=tblTextSize)
+    if not na(usdinr_close_gold)
+        table.cell(combinedTbl, 25, 36, str.tostring(A_gold, "#,##0"), text_color=text_white, text_size=tblTextSize)
+        table.cell(combinedTbl, 26, 36, str.tostring(B_gold, "#,##0"), text_color=text_white, text_size=tblTextSize)
+        table.cell(combinedTbl, 27, 36, str.tostring(diff_AB_gold, "#,##0"), text_color=text_white, text_size=tblTextSize)
+        table.cell(combinedTbl, 25, 37, str.tostring(g_comex_gold, "#.#####"), text_color=text_white, text_size=tblTextSize)
+        table.cell(combinedTbl, 26, 37, str.tostring(g_mcx_gold, "#.##"), text_color=text_white, text_size=tblTextSize)
+        table.cell(combinedTbl, 27, 37, str.tostring(diff_percent_gold, "#.##") + "%", text_color = diff_percent_gold >= 0 ? color.new(#16A34A,0) : color.new(#DC2626,0), text_size=tblTextSize)
+
+//====================================================
+// RATIO DASHBOARD (G/S, G/P, P/S) - rows 12-16 of the combined table
+//====================================================
+gsBuyLevel = input.float(0.0, "G/S - Buy Level", step=0.01, group="Ratio Alerts")
+gsSellLevel = input.float(0.0, "G/S - Sell Level", step=0.01, group="Ratio Alerts")
+gsFreeLevel = input.float(0.0, "G/S - Free Level", step=0.01, group="Ratio Alerts")
+
+gpBuyLevel = input.float(0.0, "G/P - Buy Level", step=0.01, group="Ratio Alerts")
+gpSellLevel = input.float(0.0, "G/P - Sell Level", step=0.01, group="Ratio Alerts")
+gpFreeLevel = input.float(0.0, "G/P - Free Level", step=0.01, group="Ratio Alerts")
+
+psBuyLevel = input.float(0.0, "P/S - Buy Level", step=0.01, group="Ratio Alerts")
+psSellLevel = input.float(0.0, "P/S - Sell Level", step=0.01, group="Ratio Alerts")
+psFreeLevel = input.float(0.0, "P/S - Free Level", step=0.01, group="Ratio Alerts")
+
+ratioSym1 = "TVC:GOLD/TVC:SILVER"
+ratioSym2 = "TVC:GOLD/TVC:PLATINUM"
+ratioSym3 = "TVC:PLATINUM/TVC:SILVER"
+
+ratioName1 = "G/S"
+ratioName2 = "G/P"
+ratioName3 = "P/S"
+
+[ro1, rh1, rl1, rc1] = request.security(ratioSym1, "D", [open, high, low, close], lookahead=barmerge.lookahead_on)
+[ro2, rh2, rl2, rc2] = request.security(ratioSym2, "D", [open, high, low, close], lookahead=barmerge.lookahead_on)
+[ro3, rh3, rl3, rc3] = request.security(ratioSym3, "D", [open, high, low, close], lookahead=barmerge.lookahead_on)
+
+gsBuyHit = ta.crossunder(rc1, gsBuyLevel)
+gsSellHit = ta.crossover(rc1, gsSellLevel)
+gsFreeHit = ta.cross(rc1, gsFreeLevel)
+alertcondition(gsBuyHit, title="G/S Buy Level", message="G/S ratio touched your Buy level")
+alertcondition(gsSellHit, title="G/S Sell Level", message="G/S ratio touched your Sell level")
+alertcondition(gsFreeHit, title="G/S Free Level", message="G/S ratio touched your Free level")
+
+gpBuyHit = ta.crossunder(rc2, gpBuyLevel)
+gpSellHit = ta.crossover(rc2, gpSellLevel)
+gpFreeHit = ta.cross(rc2, gpFreeLevel)
+alertcondition(gpBuyHit, title="G/P Buy Level", message="G/P ratio touched your Buy level")
+alertcondition(gpSellHit, title="G/P Sell Level", message="G/P ratio touched your Sell level")
+alertcondition(gpFreeHit, title="G/P Free Level", message="G/P ratio touched your Free level")
+
+psBuyHit = ta.crossunder(rc3, psBuyLevel)
+psSellHit = ta.crossover(rc3, psSellLevel)
+psFreeHit = ta.cross(rc3, psFreeLevel)
+alertcondition(psBuyHit, title="P/S Buy Level", message="P/S ratio touched your Buy level")
+alertcondition(psSellHit, title="P/S Sell Level", message="P/S ratio touched your Sell level")
+alertcondition(psFreeHit, title="P/S Free Level", message="P/S ratio touched your Free level")
+
+ratioBgHeader = color.rgb(246, 233, 232)
+ratioBullRow = color.rgb(230, 247, 237)
+ratioBearRow = color.rgb(247, 227, 229)
+ratioTxtPrimary = color.rgb(32, 17, 19)
+ratioHeaderAccent = color.rgb(32, 17, 19)
+
+if barstate.isrealtime
+    table.cell(combinedTbl, 24, 38, "RATIO DASHBOARD", text_color=#7A1B2B, bgcolor=#F7E3E5, text_halign=text.align_center, text_size=tblTextSize)
+    table.merge_cells(combinedTbl, 24, 38, 28, 38)
+
+if barstate.isfirst
+    table.cell(combinedTbl, 24, 39, " R ", bgcolor=ratioBgHeader, text_color=ratioHeaderAccent, text_size=tblTextSize)
+    table.cell(combinedTbl, 25, 39, " O ", bgcolor=ratioBgHeader, text_color=ratioHeaderAccent, text_size=tblTextSize)
+    table.cell(combinedTbl, 26, 39, " H ", bgcolor=ratioBgHeader, text_color=ratioHeaderAccent, text_size=tblTextSize)
+    table.cell(combinedTbl, 27, 39, " L ", bgcolor=ratioBgHeader, text_color=ratioHeaderAccent, text_size=tblTextSize)
+    table.cell(combinedTbl, 28, 39, " C ", bgcolor=ratioBgHeader, text_color=ratioHeaderAccent, text_size=tblTextSize)
+
+ratioNamesArr = array.from(ratioName1, ratioName2, ratioName3)
+ratioOpensArr = array.from(ro1, ro2, ro3)
+ratioHighsArr = array.from(rh1, rh2, rh3)
+ratioLowsArr = array.from(rl1, rl2, rl3)
+ratioClosesArr = array.from(rc1, rc2, rc3)
+
+if barstate.islast
+    for i = 0 to 2
+        ro = array.get(ratioOpensArr, i)
+        rh = array.get(ratioHighsArr, i)
+        rl = array.get(ratioLowsArr, i)
+        rc = array.get(ratioClosesArr, i)
+
+        bool ratioBull = rc >= ro
+
+        ratioRowBg = ratioBull ? ratioBullRow : ratioBearRow
+
+        table.cell(combinedTbl, 24, i + 40, array.get(ratioNamesArr, i), bgcolor=ratioRowBg, text_color=ratioTxtPrimary, text_size=tblTextSize)
+
+        table.cell(combinedTbl, 25, i + 40, str.tostring(ro, "#.###"), bgcolor=ratioRowBg, text_color=ratioTxtPrimary, text_size=tblTextSize)
+
+        table.cell(combinedTbl, 26, i + 40, str.tostring(rh, "#.###"), bgcolor=ratioRowBg, text_color=ratioTxtPrimary, text_size=tblTextSize)
+
+        table.cell(combinedTbl, 27, i + 40, str.tostring(rl, "#.###"), bgcolor=ratioRowBg, text_color=ratioTxtPrimary, text_size=tblTextSize)
+
+        table.cell(combinedTbl, 28, i + 40, str.tostring(rc, "#.###"), bgcolor=ratioRowBg, text_color=ratioTxtPrimary, text_size=tblTextSize)

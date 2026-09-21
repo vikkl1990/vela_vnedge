@@ -1,0 +1,2258 @@
+//@version=6
+indicator("3-Candle Reclaim Detector", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500)
+
+//══════════════════════════════════════════════════════════════════════════════
+// INPUTS
+//══════════════════════════════════════════════════════════════════════════════
+
+groupPatterns = "3-Candle Reclaim"
+
+enableBullish = input.bool(
+     true,
+     "Enable Bullish Reclaim",
+     group=groupPatterns)
+
+enableBearish = input.bool(
+     true,
+     "Enable Bearish Reclaim",
+     group=groupPatterns)
+
+
+groupSteps = "Step Controls"
+
+enableStep2 = input.bool(
+     true,
+     "Enable Successive Invalidation",
+     group=groupSteps)
+
+showFailedReclaims = input.bool(
+     true,
+     "Show Failed Reclaims",
+     group=groupSteps)
+
+enableStep3 = input.bool(
+     true,
+     "Enable BOS Confirmation",
+     group=groupSteps)
+
+enableStep4 = input.bool(
+     true,
+     "Enable BOS 50% Confirmation",
+     group=groupSteps)
+
+
+groupStructure = "Structure Settings"
+
+structureSwingLength = input.int(
+     3,
+     "Structure Swing Length",
+     minval=1,
+     maxval=20,
+     group=groupStructure)
+
+showBOSLabel = input.bool(
+     true,
+     "Show BOS Labels",
+     group=groupStructure)
+
+
+groupTrade = "Trade Settings"
+
+enableTrade = input.bool(
+     true,
+     "Enable Trade",
+     group=groupTrade)
+
+finalRR = input.float(
+     2.0,
+     "Final RR / TP2",
+     minval=1.0,
+     step=0.5,
+     group=groupTrade)
+
+showTradePosition = input.bool(
+     true,
+     "Show Trade Position",
+     group=groupTrade)
+
+showTradeLabels = input.bool(
+     false,
+     "Show Trade Price Labels",
+     group=groupTrade)
+
+// OFF by default to keep the chart clean.
+showTradeResults = input.bool(
+     false,
+     "Show Trade Result Labels",
+     group=groupTrade)
+
+
+groupDisplay = "Display Filter"
+
+displayDays = input.float(
+     2.0,
+     "Show Setups From Last N Days",
+     minval=0.25,
+     step=0.25,
+     group=groupDisplay)
+
+
+groupDashboard = "Dashboard"
+
+showDashboard = input.bool(
+     true,
+     "Show Dashboard",
+     group=groupDashboard)
+
+dashboardPosition = input.string(
+     "Top Right",
+     "Dashboard Position",
+     options=[
+         "Top Right",
+         "Top Left",
+         "Bottom Right",
+         "Bottom Left"
+     ],
+     group=groupDashboard)
+
+
+//══════════════════════════════════════════════════════════════════════════════
+// DISPLAY WINDOW
+//══════════════════════════════════════════════════════════════════════════════
+
+int displayWindowMs =
+     int(displayDays * 24.0 * 60.0 * 60.0 * 1000.0)
+
+int displayCutoff =
+     timenow - displayWindowMs
+
+bool barInsideDisplayWindow =
+     time >= displayCutoff
+
+
+//══════════════════════════════════════════════════════════════════════════════
+// CONSTANTS
+//══════════════════════════════════════════════════════════════════════════════
+
+const int DIR_BULL = 1
+const int DIR_BEAR = -1
+
+
+//══════════════════════════════════════════════════════════════════════════════
+// COLORS
+//══════════════════════════════════════════════════════════════════════════════
+
+// Active position
+color ACTIVE_PROFIT_BG = color.new(color.green, 84)
+color ACTIVE_PROFIT_BORDER = color.new(color.green, 45)
+
+color ACTIVE_RISK_BG = color.new(color.red, 84)
+color ACTIVE_RISK_BORDER = color.new(color.red, 45)
+
+color ACTIVE_ENTRY_COLOR = color.blue
+color ACTIVE_TP_COLOR = color.green
+color ACTIVE_SL_COLOR = color.red
+
+
+// Historical position
+// Much lighter than the active trade.
+color HISTORY_PROFIT_BG = color.new(color.green, 94)
+color HISTORY_PROFIT_BORDER = color.new(color.green, 82)
+
+color HISTORY_RISK_BG = color.new(color.red, 94)
+color HISTORY_RISK_BORDER = color.new(color.red, 82)
+
+color HISTORY_ENTRY_COLOR = color.new(color.blue, 65)
+color HISTORY_TP_COLOR = color.new(color.green, 60)
+color HISTORY_SL_COLOR = color.new(color.red, 60)
+
+
+//══════════════════════════════════════════════════════════════════════════════
+// SETUP ARRAYS
+//══════════════════════════════════════════════════════════════════════════════
+
+var array<int> setupDirections = array.new_int()
+var array<float> setupLevels = array.new_float()
+var array<float> setupSweepLevels = array.new_float()
+var array<int> setupBars = array.new_int()
+var array<label> setupLabels = array.new_label()
+
+var array<float> setupStructureLevels = array.new_float()
+
+var array<bool> setupBOSConfirmed = array.new_bool()
+var array<int> setupBOSBars = array.new_int()
+var array<float> setupBOSHighs = array.new_float()
+var array<float> setupBOSLows = array.new_float()
+var array<label> bosLabels = array.new_label()
+
+var array<float> setupBOSMidpoints = array.new_float()
+var array<bool> setup50Confirmed = array.new_bool()
+
+var array<bool> setupFailed = array.new_bool()
+
+
+//══════════════════════════════════════════════════════════════════════════════
+// STRUCTURE
+//══════════════════════════════════════════════════════════════════════════════
+
+confirmedSwingHigh =
+     ta.pivothigh(
+         high,
+         structureSwingLength,
+         structureSwingLength)
+
+confirmedSwingLow =
+     ta.pivotlow(
+         low,
+         structureSwingLength,
+         structureSwingLength)
+
+
+var float latestStructureHigh = na
+var float latestStructureLow = na
+
+
+if not na(confirmedSwingHigh)
+    // Use the CLOSE of the confirmed pivot-high candle as the bullish BOS level.
+    // The pivot itself is still identified from the candle HIGH.
+    latestStructureHigh := close[structureSwingLength]
+
+if not na(confirmedSwingLow)
+    // Use the CLOSE of the confirmed pivot-low candle as the bearish BOS level.
+    // The pivot itself is still identified from the candle LOW.
+    latestStructureLow := close[structureSwingLength]
+
+
+//══════════════════════════════════════════════════════════════════════════════
+// 3-CANDLE RECLAIM
+//══════════════════════════════════════════════════════════════════════════════
+
+bullishReclaim =
+     barstate.isconfirmed and
+     close[2] < open[2] and
+     low[1] < low[2] and
+     close[1] > low[2] and
+     close > open and
+     close > low[2]
+
+
+bearishReclaim =
+     barstate.isconfirmed and
+     close[2] > open[2] and
+     high[1] > high[2] and
+     close[1] < high[2] and
+     close < open and
+     close < high[2]
+
+
+//══════════════════════════════════════════════════════════════════════════════
+// ACTIVE TRADE STATE
+//══════════════════════════════════════════════════════════════════════════════
+
+var bool activeTrade = false
+
+var int activeDirection = 0
+var int activeSetupIndex = na
+var int activeEntryBar = na
+
+var float activeEntry = na
+var float activeSL = na
+var float activeRisk = na
+var float activeTP1 = na
+var float activeTP2 = na
+
+var bool activeTP1Hit = false
+var bool activeTradeDrawn = false
+var bool tradePositionReadyNow = false
+
+
+//══════════════════════════════════════════════════════════════════════════════
+// ACTIVE DRAWING OBJECTS
+//══════════════════════════════════════════════════════════════════════════════
+
+var line activeEntryLine = na
+var line activeSLLine = na
+var line activeTP1Line = na
+var line activeTP2Line = na
+
+var box activeRiskBox = na
+var box activeProfitBox = na
+
+var label activeEntryLabel = na
+var label activeSLLabel = na
+var label activeTP1Label = na
+var label activeTP2Label = na
+
+
+//══════════════════════════════════════════════════════════════════════════════
+// TRADE STATISTICS
+//══════════════════════════════════════════════════════════════════════════════
+
+var int totalTrades = 0
+var int winningTrades = 0
+var int losingTrades = 0
+
+var float totalRealizedR = 0.0
+
+
+//══════════════════════════════════════════════════════════════════════════════
+// PROCESS EXISTING SETUPS
+//══════════════════════════════════════════════════════════════════════════════
+
+if barstate.isconfirmed and array.size(setupDirections) > 0
+
+    tradePositionReadyNow := false
+
+    int i = array.size(setupDirections) - 1
+
+    while i >= 0
+
+        int direction =
+             array.get(
+                 setupDirections,
+                 i)
+
+        float setupLevel =
+             array.get(
+                 setupLevels,
+                 i)
+
+        float sweepLevel =
+             array.get(
+                 setupSweepLevels,
+                 i)
+
+        int originalSetupBar =
+             array.get(
+                 setupBars,
+                 i)
+
+        label setupLabel =
+             array.get(
+                 setupLabels,
+                 i)
+
+        bool failed =
+             array.get(
+                 setupFailed,
+                 i)
+
+        bool bosConfirmed =
+             array.get(
+                 setupBOSConfirmed,
+                 i)
+
+        int bosBar =
+             array.get(
+                 setupBOSBars,
+                 i)
+
+        float bosMidpoint =
+             array.get(
+                 setupBOSMidpoints,
+                 i)
+
+        bool confirmation50 =
+             array.get(
+                 setup50Confirmed,
+                 i)
+
+
+        bool subsequentCandle =
+             bar_index > originalSetupBar
+
+        bool setupFailsNow = false
+        bool bosConfirmedNow = false
+        bool confirmation50Now = false
+
+
+        //══════════════════════════════════════════════════════════════════════
+        // SUCCESSIVE INVALIDATION
+        //══════════════════════════════════════════════════════════════════════
+
+        if enableStep2 and
+             subsequentCandle and
+             not failed and
+             not bosConfirmed
+
+            bool bullInvalidation =
+                 direction == DIR_BULL and
+                 close < setupLevel
+
+            bool bearInvalidation =
+                 direction == DIR_BEAR and
+                 close > setupLevel
+
+
+            if bullInvalidation or bearInvalidation
+                setupFailsNow := true
+
+
+        //══════════════════════════════════════════════════════════════════════
+        // BOS CONFIRMATION
+        //══════════════════════════════════════════════════════════════════════
+
+        if not setupFailsNow and
+             not failed and
+             enableStep3 and
+             not bosConfirmed and
+             subsequentCandle
+
+            float structureLevel =
+                 array.get(
+                     setupStructureLevels,
+                     i)
+
+
+            bool bullBOS =
+                 direction == DIR_BULL and
+                 not na(structureLevel) and
+                 close > structureLevel
+
+            bool bearBOS =
+                 direction == DIR_BEAR and
+                 not na(structureLevel) and
+                 close < structureLevel
+
+
+            if bullBOS
+
+                float midpoint =
+                     (high + low) / 2.0
+
+
+                array.set(
+                     setupBOSConfirmed,
+                     i,
+                     true)
+
+                array.set(
+                     setupBOSBars,
+                     i,
+                     bar_index)
+
+                array.set(
+                     setupBOSHighs,
+                     i,
+                     high)
+
+                array.set(
+                     setupBOSLows,
+                     i,
+                     low)
+
+                array.set(
+                     setupBOSMidpoints,
+                     i,
+                     midpoint)
+
+
+                bosConfirmedNow := true
+
+
+                if showBOSLabel and barInsideDisplayWindow
+
+                    label bosLabel =
+                         label.new(
+                             bar_index,
+                             high,
+                             "BULLISH BOS",
+                             style=label.style_label_down,
+                             color=color.green,
+                             textcolor=color.white)
+
+
+                    array.set(
+                         bosLabels,
+                         i,
+                         bosLabel)
+
+
+            else if bearBOS
+
+                float midpoint =
+                     (high + low) / 2.0
+
+
+                array.set(
+                     setupBOSConfirmed,
+                     i,
+                     true)
+
+                array.set(
+                     setupBOSBars,
+                     i,
+                     bar_index)
+
+                array.set(
+                     setupBOSHighs,
+                     i,
+                     high)
+
+                array.set(
+                     setupBOSLows,
+                     i,
+                     low)
+
+                array.set(
+                     setupBOSMidpoints,
+                     i,
+                     midpoint)
+
+
+                bosConfirmedNow := true
+
+
+                if showBOSLabel and barInsideDisplayWindow
+
+                    label bosLabel =
+                         label.new(
+                             bar_index,
+                             low,
+                             "BEARISH BOS",
+                             style=label.style_label_up,
+                             color=color.red,
+                             textcolor=color.white)
+
+
+                    array.set(
+                         bosLabels,
+                         i,
+                         bosLabel)
+
+
+        //══════════════════════════════════════════════════════════════════════
+        // BOS 50% CONFIRMATION
+        //══════════════════════════════════════════════════════════════════════
+
+        bool currentBOS =
+             bosConfirmed or bosConfirmedNow
+
+
+        int currentBOSBar =
+             bosConfirmedNow ?
+                 bar_index :
+                 bosBar
+
+
+        float currentMidpoint =
+             bosConfirmedNow ?
+                 (high + low) / 2.0 :
+                 bosMidpoint
+
+
+        if not setupFailsNow and
+             not failed and
+             enableStep3 and
+             enableStep4 and
+             currentBOS and
+             not confirmation50
+
+            bool immediateNextCandle =
+                 bar_index == currentBOSBar + 1
+
+
+            if immediateNextCandle
+
+                bool bull50Pass =
+                     direction == DIR_BULL and
+                     close >= currentMidpoint
+
+                bool bear50Pass =
+                     direction == DIR_BEAR and
+                     close <= currentMidpoint
+
+
+                if bull50Pass or bear50Pass
+
+                    array.set(
+                         setup50Confirmed,
+                         i,
+                         true)
+
+                    confirmation50Now := true
+                    if activeTrade and activeSetupIndex == i
+                        tradePositionReadyNow := true
+
+                else
+
+                    bool ownsActiveTrade =
+                         activeTrade and
+                         activeSetupIndex == i
+
+
+                    if not ownsActiveTrade
+                        setupFailsNow := true
+
+
+        //══════════════════════════════════════════════════════════════════════
+        // DRAW TRADE POSITION ONLY AFTER BOS 50% CONFIRMATION
+        //
+        // Trade state is still created on BOS, but visual position objects are
+        // intentionally hidden until the immediate next candle confirms 50%.
+        //══════════════════════════════════════════════════════════════════════
+
+        if confirmation50Now and
+             activeTrade and
+             activeSetupIndex == i and
+             showTradePosition and
+             not activeTradeDrawn
+
+            if activeDirection == DIR_BULL
+
+                activeRiskBox :=
+                     box.new(
+                         left=bar_index,
+                         top=activeEntry,
+                         right=bar_index + 1,
+                         bottom=activeSL,
+                         bgcolor=ACTIVE_RISK_BG,
+                         border_color=ACTIVE_RISK_BORDER,
+                         extend=extend.right)
+
+
+                activeProfitBox :=
+                     box.new(
+                         left=bar_index,
+                         top=activeTP2,
+                         right=bar_index + 1,
+                         bottom=activeEntry,
+                         bgcolor=ACTIVE_PROFIT_BG,
+                         border_color=ACTIVE_PROFIT_BORDER,
+                         extend=extend.right)
+
+
+            else
+
+                activeRiskBox :=
+                     box.new(
+                         left=bar_index,
+                         top=activeSL,
+                         right=bar_index + 1,
+                         bottom=activeEntry,
+                         bgcolor=ACTIVE_RISK_BG,
+                         border_color=ACTIVE_RISK_BORDER,
+                         extend=extend.right)
+
+
+                activeProfitBox :=
+                     box.new(
+                         left=bar_index,
+                         top=activeEntry,
+                         right=bar_index + 1,
+                         bottom=activeTP2,
+                         bgcolor=ACTIVE_PROFIT_BG,
+                         border_color=ACTIVE_PROFIT_BORDER,
+                         extend=extend.right)
+
+
+            activeEntryLine :=
+                 line.new(
+                     bar_index,
+                     activeEntry,
+                     bar_index + 1,
+                     activeEntry,
+                     extend=extend.right,
+                     color=ACTIVE_ENTRY_COLOR,
+                     style=line.style_dashed,
+                     width=2)
+
+
+            activeSLLine :=
+                 line.new(
+                     bar_index,
+                     activeSL,
+                     bar_index + 1,
+                     activeSL,
+                     extend=extend.right,
+                     color=ACTIVE_SL_COLOR,
+                     style=line.style_dashed,
+                     width=2)
+
+
+            activeTP1Line :=
+                 line.new(
+                     bar_index,
+                     activeTP1,
+                     bar_index + 1,
+                     activeTP1,
+                     extend=extend.right,
+                     color=ACTIVE_TP_COLOR,
+                     style=line.style_dashed,
+                     width=1)
+
+
+            activeTP2Line :=
+                 line.new(
+                     bar_index,
+                     activeTP2,
+                     bar_index + 1,
+                     activeTP2,
+                     extend=extend.right,
+                     color=ACTIVE_TP_COLOR,
+                     style=line.style_dashed,
+                     width=2)
+
+
+            if showTradeLabels
+
+                activeEntryLabel :=
+                     label.new(
+                         bar_index,
+                         activeEntry,
+                         "ENTRY\n" +
+                         str.tostring(
+                             activeEntry,
+                             format.mintick),
+                         style=label.style_label_left,
+                         color=color.blue,
+                         textcolor=color.white)
+
+
+                activeSLLabel :=
+                     label.new(
+                         bar_index,
+                         activeSL,
+                         "SL\n" +
+                         str.tostring(
+                             activeSL,
+                             format.mintick),
+                         style=label.style_label_left,
+                         color=color.red,
+                         textcolor=color.white)
+
+
+                activeTP1Label :=
+                     label.new(
+                         bar_index,
+                         activeTP1,
+                         "TP1 • 1R\n" +
+                         str.tostring(
+                             activeTP1,
+                             format.mintick),
+                         style=label.style_label_left,
+                         color=color.green,
+                         textcolor=color.white)
+
+
+                activeTP2Label :=
+                     label.new(
+                         bar_index,
+                         activeTP2,
+                         "TP2 • " +
+                         str.tostring(
+                             finalRR,
+                             "#.##") +
+                         "R\n" +
+                         str.tostring(
+                             activeTP2,
+                             format.mintick),
+                         style=label.style_label_left,
+                         color=color.green,
+                         textcolor=color.white)
+
+
+            activeTradeDrawn := true
+
+
+        //══════════════════════════════════════════════════════════════════════
+        // FAILURE
+        //══════════════════════════════════════════════════════════════════════
+
+        if setupFailsNow
+
+            array.set(
+                 setupFailed,
+                 i,
+                 true)
+
+
+            if showFailedReclaims and
+                 barInsideDisplayWindow
+
+                if direction == DIR_BULL
+
+                    label.set_text(
+                         setupLabel,
+                         "3C BULL RECLAIM - FAILED")
+
+                else
+
+                    label.set_text(
+                         setupLabel,
+                         "3C BEAR RECLAIM - FAILED")
+
+
+                label.set_color(
+                     setupLabel,
+                     color.new(color.gray, 60))
+
+
+            else
+
+                label.delete(
+                     setupLabel)
+
+
+        //══════════════════════════════════════════════════════════════════════
+        // CREATE TRADE ON BOS
+        //
+        // ONLY ONE ACTIVE TRADE.
+        //══════════════════════════════════════════════════════════════════════
+
+        if bosConfirmedNow and
+             enableTrade and
+             not activeTrade and
+             not setupFailsNow and
+             not failed and
+             barInsideDisplayWindow
+
+            float entryPrice =
+                 close
+
+            float stopPrice =
+                 sweepLevel
+
+
+            float risk =
+                 direction == DIR_BULL ?
+                     entryPrice - stopPrice :
+                     stopPrice - entryPrice
+
+
+            if risk > 0
+
+                float target1 =
+                     direction == DIR_BULL ?
+                         entryPrice + risk :
+                         entryPrice - risk
+
+
+                float target2 =
+                     direction == DIR_BULL ?
+                         entryPrice + risk * finalRR :
+                         entryPrice - risk * finalRR
+
+
+                // Activate
+                activeTrade := true
+
+                activeDirection := direction
+                activeSetupIndex := i
+                activeEntryBar := bar_index
+
+                activeEntry := entryPrice
+                activeSL := stopPrice
+                activeRisk := risk
+                activeTP1 := target1
+                activeTP2 := target2
+
+                activeTP1Hit := false
+                activeTradeDrawn := false
+
+                totalTrades += 1
+
+
+
+
+        i -= 1
+
+
+//══════════════════════════════════════════════════════════════════════════════
+// CREATE BULLISH SETUP
+//══════════════════════════════════════════════════════════════════════════════
+
+if enableBullish and
+     bullishReclaim and
+     barInsideDisplayWindow
+
+    float bullC1Level =
+         low[2]
+
+    float bullSweepLow =
+         low[1]
+
+    float bullStructureHigh =
+         latestStructureHigh
+
+
+    label bullLabel =
+         label.new(
+             bar_index,
+             low,
+             "3C BULL RECLAIM",
+             style=label.style_label_up,
+             color=color.green,
+             textcolor=color.white)
+
+
+    array.push(
+         setupDirections,
+         DIR_BULL)
+
+    array.push(
+         setupLevels,
+         bullC1Level)
+
+    array.push(
+         setupSweepLevels,
+         bullSweepLow)
+
+    array.push(
+         setupBars,
+         bar_index)
+
+    array.push(
+         setupLabels,
+         bullLabel)
+
+    array.push(
+         setupStructureLevels,
+         bullStructureHigh)
+
+    array.push(
+         setupBOSConfirmed,
+         false)
+
+    array.push(
+         setupBOSBars,
+         na)
+
+    array.push(
+         setupBOSHighs,
+         na)
+
+    array.push(
+         setupBOSLows,
+         na)
+
+    array.push(
+         bosLabels,
+         na)
+
+    array.push(
+         setupBOSMidpoints,
+         na)
+
+    array.push(
+         setup50Confirmed,
+         false)
+
+    array.push(
+         setupFailed,
+         false)
+
+
+//══════════════════════════════════════════════════════════════════════════════
+// CREATE BEARISH SETUP
+//══════════════════════════════════════════════════════════════════════════════
+
+if enableBearish and
+     bearishReclaim and
+     barInsideDisplayWindow
+
+    float bearC1Level =
+         high[2]
+
+    float bearSweepHigh =
+         high[1]
+
+    float bearStructureLow =
+         latestStructureLow
+
+
+    label bearLabel =
+         label.new(
+             bar_index,
+             high,
+             "3C BEAR RECLAIM",
+             style=label.style_label_down,
+             color=color.red,
+             textcolor=color.white)
+
+
+    array.push(
+         setupDirections,
+         DIR_BEAR)
+
+    array.push(
+         setupLevels,
+         bearC1Level)
+
+    array.push(
+         setupSweepLevels,
+         bearSweepHigh)
+
+    array.push(
+         setupBars,
+         bar_index)
+
+    array.push(
+         setupLabels,
+         bearLabel)
+
+    array.push(
+         setupStructureLevels,
+         bearStructureLow)
+
+    array.push(
+         setupBOSConfirmed,
+         false)
+
+    array.push(
+         setupBOSBars,
+         na)
+
+    array.push(
+         setupBOSHighs,
+         na)
+
+    array.push(
+         setupBOSLows,
+         na)
+
+    array.push(
+         bosLabels,
+         na)
+
+    array.push(
+         setupBOSMidpoints,
+         na)
+
+    array.push(
+         setup50Confirmed,
+         false)
+
+    array.push(
+         setupFailed,
+         false)
+
+
+//══════════════════════════════════════════════════════════════════════════════
+// ACTIVE TRADE MANAGEMENT
+//══════════════════════════════════════════════════════════════════════════════
+
+if barstate.isconfirmed and
+     activeTrade and
+     bar_index > activeEntryBar
+
+    bool stopHit = false
+    bool tp1Hit = false
+    bool tp2Hit = false
+
+
+    if activeDirection == DIR_BULL
+
+        stopHit := low <= activeSL
+        tp1Hit := high >= activeTP1
+        tp2Hit := high >= activeTP2
+
+    else
+
+        stopHit := high >= activeSL
+        tp1Hit := low <= activeTP1
+        tp2Hit := low <= activeTP2
+
+
+    //══════════════════════════════════════════════════════════════════════════
+    // STOP LOSS
+    //══════════════════════════════════════════════════════════════════════════
+
+    if stopHit
+
+        float exitR =
+             activeTP1Hit ?
+                 0.0 :
+                 -1.0
+
+
+        totalRealizedR += exitR
+
+        // A trade is considered a WIN once TP1 (1R) is achieved.
+        // Therefore a later SL after TP1 must not be counted as a loss.
+        if not activeTP1Hit
+            losingTrades += 1
+
+
+        //──────────────────────────────────────────────────────────────────────
+        // FREEZE ACTIVE POSITION AS HISTORICAL
+        //──────────────────────────────────────────────────────────────────────
+
+        if not na(activeEntryLine)
+
+            line.set_extend(
+                 activeEntryLine,
+                 extend.none)
+
+            line.set_x2(
+                 activeEntryLine,
+                 bar_index)
+
+            line.set_color(
+                 activeEntryLine,
+                 HISTORY_ENTRY_COLOR)
+
+
+        if not na(activeSLLine)
+
+            line.set_extend(
+                 activeSLLine,
+                 extend.none)
+
+            line.set_x2(
+                 activeSLLine,
+                 bar_index)
+
+            line.set_color(
+                 activeSLLine,
+                 HISTORY_SL_COLOR)
+
+
+        if not na(activeTP1Line)
+
+            line.set_extend(
+                 activeTP1Line,
+                 extend.none)
+
+            line.set_x2(
+                 activeTP1Line,
+                 bar_index)
+
+            line.set_color(
+                 activeTP1Line,
+                 HISTORY_TP_COLOR)
+
+
+        if not na(activeTP2Line)
+
+            line.set_extend(
+                 activeTP2Line,
+                 extend.none)
+
+            line.set_x2(
+                 activeTP2Line,
+                 bar_index)
+
+            line.set_color(
+                 activeTP2Line,
+                 HISTORY_TP_COLOR)
+
+
+        if not na(activeRiskBox)
+
+            box.set_extend(
+                 activeRiskBox,
+                 extend.none)
+
+            box.set_right(
+                 activeRiskBox,
+                 bar_index)
+
+            box.set_bgcolor(
+                 activeRiskBox,
+                 HISTORY_RISK_BG)
+
+            box.set_border_color(
+                 activeRiskBox,
+                 HISTORY_RISK_BORDER)
+
+
+        if not na(activeProfitBox)
+
+            box.set_extend(
+                 activeProfitBox,
+                 extend.none)
+
+            box.set_right(
+                 activeProfitBox,
+                 bar_index)
+
+            box.set_bgcolor(
+                 activeProfitBox,
+                 HISTORY_PROFIT_BG)
+
+            box.set_border_color(
+                 activeProfitBox,
+                 HISTORY_PROFIT_BORDER)
+
+
+        // Result label OFF by default.
+        if showTradeResults and barInsideDisplayWindow
+
+            label.new(
+                 bar_index,
+                 activeSL,
+                 activeTP1Hit ?
+                     "WIN\nTP1 HIT\n+0.5R" :
+                     "LOSS\nSL HIT\n" +
+                     str.tostring(
+                         exitR,
+                         "#.##") +
+                     "R",
+                 style=
+                     activeDirection == DIR_BULL ?
+                         label.style_label_down :
+                         label.style_label_up,
+                 color=activeTP1Hit ? color.green : color.red,
+                 textcolor=color.white)
+
+
+        // Historical objects remain on chart.
+        activeEntryLine := na
+        activeSLLine := na
+        activeTP1Line := na
+        activeTP2Line := na
+
+        activeRiskBox := na
+        activeProfitBox := na
+
+        activeEntryLabel := na
+        activeSLLabel := na
+        activeTP1Label := na
+        activeTP2Label := na
+
+
+        activeTrade := false
+
+        activeDirection := 0
+        activeSetupIndex := na
+        activeEntryBar := na
+
+        activeEntry := na
+        activeSL := na
+        activeRisk := na
+        activeTP1 := na
+        activeTP2 := na
+
+        activeTP1Hit := false
+        activeTradeDrawn := false
+
+
+    else
+
+        //══════════════════════════════════════════════════════════════════════
+        // TP1
+        //══════════════════════════════════════════════════════════════════════
+
+        if not activeTP1Hit and tp1Hit
+
+            activeTP1Hit := true
+
+            totalRealizedR += 0.5
+            winningTrades += 1
+
+
+            if showTradeResults and barInsideDisplayWindow
+
+                label.new(
+                     bar_index,
+                     activeTP1,
+                     "TP1\n50% CLOSED\n+0.5R",
+                     style=label.style_label_left,
+                     color=color.green,
+                     textcolor=color.white)
+
+
+        //══════════════════════════════════════════════════════════════════════
+        // TP2
+        //══════════════════════════════════════════════════════════════════════
+
+        if activeTP1Hit and tp2Hit
+
+            float finalTradeR =
+                 0.5 +
+                 finalRR * 0.5
+
+
+            totalRealizedR += finalRR * 0.5
+
+
+            //──────────────────────────────────────────────────────────────────
+            // FREEZE ACTIVE POSITION AS HISTORICAL
+            //──────────────────────────────────────────────────────────────────
+
+            if not na(activeEntryLine)
+
+                line.set_extend(
+                     activeEntryLine,
+                     extend.none)
+
+                line.set_x2(
+                     activeEntryLine,
+                     bar_index)
+
+                line.set_color(
+                     activeEntryLine,
+                     HISTORY_ENTRY_COLOR)
+
+
+            if not na(activeSLLine)
+
+                line.set_extend(
+                     activeSLLine,
+                     extend.none)
+
+                line.set_x2(
+                     activeSLLine,
+                     bar_index)
+
+                line.set_color(
+                     activeSLLine,
+                     HISTORY_SL_COLOR)
+
+
+            if not na(activeTP1Line)
+
+                line.set_extend(
+                     activeTP1Line,
+                     extend.none)
+
+                line.set_x2(
+                     activeTP1Line,
+                     bar_index)
+
+                line.set_color(
+                     activeTP1Line,
+                     HISTORY_TP_COLOR)
+
+
+            if not na(activeTP2Line)
+
+                line.set_extend(
+                     activeTP2Line,
+                     extend.none)
+
+                line.set_x2(
+                     activeTP2Line,
+                     bar_index)
+
+                line.set_color(
+                     activeTP2Line,
+                     HISTORY_TP_COLOR)
+
+
+            if not na(activeRiskBox)
+
+                box.set_extend(
+                     activeRiskBox,
+                     extend.none)
+
+                box.set_right(
+                     activeRiskBox,
+                     bar_index)
+
+                box.set_bgcolor(
+                     activeRiskBox,
+                     HISTORY_RISK_BG)
+
+                box.set_border_color(
+                     activeRiskBox,
+                     HISTORY_RISK_BORDER)
+
+
+            if not na(activeProfitBox)
+
+                box.set_extend(
+                     activeProfitBox,
+                     extend.none)
+
+                box.set_right(
+                     activeProfitBox,
+                     bar_index)
+
+                box.set_bgcolor(
+                     activeProfitBox,
+                     HISTORY_PROFIT_BG)
+
+                box.set_border_color(
+                     activeProfitBox,
+                     HISTORY_PROFIT_BORDER)
+
+
+            if showTradeResults and barInsideDisplayWindow
+
+                label.new(
+                     bar_index,
+                     activeTP2,
+                     "WIN\nTP2 HIT\n+" +
+                     str.tostring(
+                         finalTradeR,
+                         "#.##") +
+                     "R",
+                     style=label.style_label_left,
+                     color=color.green,
+                     textcolor=color.white)
+
+
+            // Keep historical drawings.
+            activeEntryLine := na
+            activeSLLine := na
+            activeTP1Line := na
+            activeTP2Line := na
+
+            activeRiskBox := na
+            activeProfitBox := na
+
+            activeEntryLabel := na
+            activeSLLabel := na
+            activeTP1Label := na
+            activeTP2Label := na
+
+
+            activeTrade := false
+
+            activeDirection := 0
+            activeSetupIndex := na
+            activeEntryBar := na
+
+            activeEntry := na
+            activeSL := na
+            activeRisk := na
+            activeTP1 := na
+            activeTP2 := na
+
+            activeTP1Hit := false
+            activeTradeDrawn := false
+
+
+//══════════════════════════════════════════════════════════════════════════════
+// DASHBOARD POSITION
+//══════════════════════════════════════════════════════════════════════════════
+
+dashboardPos =
+     dashboardPosition == "Top Left" ?
+         position.top_left :
+     dashboardPosition == "Bottom Right" ?
+         position.bottom_right :
+     dashboardPosition == "Bottom Left" ?
+         position.bottom_left :
+         position.top_right
+
+
+//══════════════════════════════════════════════════════════════════════════════
+// DASHBOARD
+//══════════════════════════════════════════════════════════════════════════════
+
+var table dashboard =
+     table.new(
+         dashboardPos,
+         3,
+         15,
+         bgcolor=color.rgb(18, 18, 18),
+         frame_color=color.gray,
+         frame_width=1,
+         border_color=color.rgb(70, 70, 70),
+         border_width=1)
+
+
+if barstate.islast
+
+    table.clear(
+         dashboard,
+         0,
+         0,
+         2,
+         14)
+
+
+    if showDashboard
+
+        //══════════════════════════════════════════════════════════════════════
+        // SELECT DASHBOARD SETUP
+        //
+        // Priority:
+        // 1. Active trade's setup
+        // 2. Most recent setup
+        //
+        // This prevents a newer failed setup from overwriting the
+        // dashboard of the currently active trade.
+        //══════════════════════════════════════════════════════════════════════
+
+        int dashboardSetupIndex = na
+
+
+        if activeTrade and
+             not na(activeSetupIndex)
+
+            dashboardSetupIndex :=
+                 activeSetupIndex
+
+        else
+
+            int totalSetups =
+                 array.size(setupDirections)
+
+
+            if totalSetups > 0
+
+                int searchIndex =
+                     totalSetups - 1
+
+
+                while searchIndex >= 0
+
+                    int setupBar =
+                         array.get(
+                             setupBars,
+                             searchIndex)
+
+
+                    bool recentSetup =
+                         setupBar >=
+                         bar_index - 1000000
+
+
+                    if recentSetup
+
+                        dashboardSetupIndex :=
+                             searchIndex
+
+                        break
+
+
+                    searchIndex -= 1
+
+
+        //══════════════════════════════════════════════════════════════════════
+        // HEADER
+        //══════════════════════════════════════════════════════════════════════
+
+        table.cell(
+             dashboard,
+             0,
+             0,
+             "3C RECLAIM",
+             text_color=color.white,
+             bgcolor=color.rgb(35, 55, 100))
+
+
+        table.cell(
+             dashboard,
+             1,
+             0,
+             "STATUS",
+             text_color=color.white,
+             bgcolor=color.rgb(35, 55, 100))
+
+
+        table.cell(
+             dashboard,
+             2,
+             0,
+             "DETAIL",
+             text_color=color.white,
+             bgcolor=color.rgb(35, 55, 100))
+
+
+        //══════════════════════════════════════════════════════════════════════
+        // NO SETUP
+        //══════════════════════════════════════════════════════════════════════
+
+        if na(dashboardSetupIndex)
+
+            table.cell(
+                 dashboard,
+                 0,
+                 1,
+                 "SETUP",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 1,
+                 1,
+                 "WAITING",
+                 text_color=color.yellow,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 2,
+                 1,
+                 "No setup in last " +
+                 str.tostring(displayDays) +
+                 " days",
+                 text_color=color.silver,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+        else
+
+            int idx =
+                 dashboardSetupIndex
+
+
+            int direction =
+                 array.get(
+                     setupDirections,
+                     idx)
+
+
+            bool failed =
+                 array.get(
+                     setupFailed,
+                     idx)
+
+
+            bool bosConfirmed =
+                 array.get(
+                     setupBOSConfirmed,
+                     idx)
+
+
+            bool confirmation50 =
+                 array.get(
+                     setup50Confirmed,
+                     idx)
+
+
+            float midpoint =
+                 array.get(
+                     setupBOSMidpoints,
+                     idx)
+
+
+            string directionText =
+                 direction == DIR_BULL ?
+                     "BULLISH" :
+                     "BEARISH"
+
+
+            string overallStatus =
+                 activeTrade and
+                 activeSetupIndex == idx ?
+                     "TRADE ACTIVE" :
+                 failed ?
+                     "FAILED" :
+                 bosConfirmed ?
+                     "BOS CONFIRMED" :
+                     "IN PROGRESS"
+
+
+            color directionBg =
+                 direction == DIR_BULL ?
+                     color.rgb(20, 100, 55) :
+                     color.rgb(120, 35, 35)
+
+
+            //══════════════════════════════════════════════════════════════════
+            // CURRENT SETUP
+            //══════════════════════════════════════════════════════════════════
+
+            table.cell(
+                 dashboard,
+                 0,
+                 1,
+                 directionText,
+                 text_color=color.white,
+                 bgcolor=directionBg)
+
+
+            table.cell(
+                 dashboard,
+                 1,
+                 1,
+                 overallStatus,
+                 text_color=
+                     activeTrade and
+                     activeSetupIndex == idx ?
+                         color.lime :
+                     failed ?
+                         color.red :
+                         color.lime,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 2,
+                 1,
+                 activeTrade and
+                 activeSetupIndex == idx ?
+                     "ACTIVE SETUP" :
+                     "LAST 2 DAYS",
+                 text_color=color.silver,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            //══════════════════════════════════════════════════════════════════
+            // 3C RECLAIM
+            //══════════════════════════════════════════════════════════════════
+
+            table.cell(
+                 dashboard,
+                 0,
+                 2,
+                 "3C RECLAIM",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 1,
+                 2,
+                 failed ?
+                     "FAILED" :
+                     "DONE",
+                 text_color=
+                     failed ?
+                         color.red :
+                         color.lime,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 2,
+                 2,
+                 "Pattern confirmed",
+                 text_color=color.silver,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            //══════════════════════════════════════════════════════════════════
+            // SUCCESSIVE INVALIDATION
+            //══════════════════════════════════════════════════════════════════
+
+            string invalidationStatus =
+                 not enableStep2 ?
+                     "OFF" :
+                 failed ?
+                     "FAILED" :
+                     "PASSED"
+
+
+            table.cell(
+                 dashboard,
+                 0,
+                 3,
+                 "SUCCESSIVE INVALIDATION",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 1,
+                 3,
+                 invalidationStatus,
+                 text_color=
+                     invalidationStatus == "FAILED" ?
+                         color.red :
+                     invalidationStatus == "PASSED" ?
+                         color.lime :
+                         color.gray,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 2,
+                 3,
+                 enableStep2 ?
+                     "C1 level protected" :
+                     "Disabled",
+                 text_color=color.silver,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            //══════════════════════════════════════════════════════════════════
+            // BOS
+            //══════════════════════════════════════════════════════════════════
+
+            string bosStatus =
+                 not enableStep3 ?
+                     "OFF" :
+                 failed ?
+                     "FAILED" :
+                 bosConfirmed ?
+                     "DONE" :
+                     "WAITING"
+
+
+            table.cell(
+                 dashboard,
+                 0,
+                 4,
+                 "BOS CONFIRMATION",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 1,
+                 4,
+                 bosStatus,
+                 text_color=
+                     bosStatus == "DONE" ?
+                         color.lime :
+                     bosStatus == "FAILED" ?
+                         color.red :
+                         color.yellow,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 2,
+                 4,
+                 bosConfirmed ?
+                     "Structure broken" :
+                     "Waiting for BOS",
+                 text_color=color.silver,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            //══════════════════════════════════════════════════════════════════
+            // BOS 50%
+            //══════════════════════════════════════════════════════════════════
+
+            string fiftyStatus =
+                 not enableStep4 ?
+                     "OFF" :
+                 not enableStep3 ?
+                     "LOCKED" :
+                 failed ?
+                     "FAILED" :
+                 not bosConfirmed ?
+                     "LOCKED" :
+                 confirmation50 ?
+                     "DONE" :
+                     "WAITING"
+
+
+            table.cell(
+                 dashboard,
+                 0,
+                 5,
+                 "BOS 50% CONFIRMATION",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 1,
+                 5,
+                 fiftyStatus,
+                 text_color=
+                     fiftyStatus == "DONE" ?
+                         color.lime :
+                     fiftyStatus == "FAILED" ?
+                         color.red :
+                     fiftyStatus == "WAITING" ?
+                         color.yellow :
+                         color.gray,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 2,
+                 5,
+                 not enableStep4 ?
+                     "Disabled" :
+                 not bosConfirmed ?
+                     "Waiting for BOS" :
+                 confirmation50 ?
+                     "Midpoint confirmed" :
+                     "Immediate next candle",
+                 text_color=color.silver,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            //══════════════════════════════════════════════════════════════════
+            // TRADE
+            //══════════════════════════════════════════════════════════════════
+
+            string tradeStatus =
+                 not enableTrade ?
+                     "OFF" :
+                 activeTrade and
+                 activeSetupIndex == idx ?
+                     "ACTIVE" :
+                     "WAITING"
+
+
+            table.cell(
+                 dashboard,
+                 0,
+                 6,
+                 "TRADE",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 1,
+                 6,
+                 tradeStatus,
+                 text_color=
+                     tradeStatus == "ACTIVE" ?
+                         color.lime :
+                         color.yellow,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 2,
+                 6,
+                 activeTrade and
+                 activeSetupIndex == idx ?
+                     "BOS close = Entry" :
+                     "Waiting for BOS",
+                 text_color=color.silver,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            //══════════════════════════════════════════════════════════════════
+            // ENTRY
+            //══════════════════════════════════════════════════════════════════
+
+            table.cell(
+                 dashboard,
+                 0,
+                 7,
+                 "ENTRY",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 1,
+                 7,
+                 activeTrade and
+                 activeSetupIndex == idx ?
+                     str.tostring(
+                         activeEntry,
+                         format.mintick) :
+                     "—",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 2,
+                 7,
+                 "BOS confirmed close",
+                 text_color=color.silver,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            //══════════════════════════════════════════════════════════════════
+            // SL
+            //══════════════════════════════════════════════════════════════════
+
+            table.cell(
+                 dashboard,
+                 0,
+                 8,
+                 "SL",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 1,
+                 8,
+                 activeTrade and
+                 activeSetupIndex == idx ?
+                     str.tostring(
+                         activeSL,
+                         format.mintick) :
+                     "—",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 2,
+                 8,
+                 "C2 sweep",
+                 text_color=color.silver,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            //══════════════════════════════════════════════════════════════════
+            // TP1
+            //══════════════════════════════════════════════════════════════════
+
+            table.cell(
+                 dashboard,
+                 0,
+                 9,
+                 "TP1 • 1R",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 1,
+                 9,
+                 activeTrade and
+                 activeSetupIndex == idx ?
+                     str.tostring(
+                         activeTP1,
+                         format.mintick) :
+                     "—",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 2,
+                 9,
+                 activeTrade and
+                 activeSetupIndex == idx and
+                 activeTP1Hit ?
+                     "50% CLOSED" :
+                     "1R TARGET",
+                 text_color=
+                     activeTrade and
+                     activeSetupIndex == idx and
+                     activeTP1Hit ?
+                         color.lime :
+                         color.silver,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            //══════════════════════════════════════════════════════════════════
+            // TP2
+            //══════════════════════════════════════════════════════════════════
+
+            table.cell(
+                 dashboard,
+                 0,
+                 10,
+                 "TP2",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 1,
+                 10,
+                 activeTrade and
+                 activeSetupIndex == idx ?
+                     str.tostring(
+                         activeTP2,
+                         format.mintick) :
+                     "—",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 2,
+                 10,
+                 str.tostring(
+                     finalRR,
+                     "#.##") +
+                 "R",
+                 text_color=color.silver,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            //══════════════════════════════════════════════════════════════════
+            // HISTORY
+            //══════════════════════════════════════════════════════════════════
+
+            float winRate =
+                 totalTrades > 0 ?
+                     winningTrades * 100.0 / totalTrades :
+                     0.0
+
+
+            table.cell(
+                 dashboard,
+                 0,
+                 11,
+                 "HISTORY",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 1,
+                 11,
+                 "W " +
+                 str.tostring(winningTrades) +
+                 " / L " +
+                 str.tostring(losingTrades),
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 2,
+                 11,
+                 str.tostring(
+                     winRate,
+                     "#.##") +
+                 "% | " +
+                 str.tostring(
+                     totalRealizedR,
+                     "#.##") +
+                 "R",
+                 text_color=color.silver,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            //══════════════════════════════════════════════════════════════════
+            // BOS MIDPOINT
+            //══════════════════════════════════════════════════════════════════
+
+            table.cell(
+                 dashboard,
+                 0,
+                 12,
+                 "BOS MIDPOINT",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 1,
+                 12,
+                 bosConfirmed and
+                 not na(midpoint) ?
+                     str.tostring(
+                         midpoint,
+                         format.mintick) :
+                     "—",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 2,
+                 12,
+                 "50% reference",
+                 text_color=color.silver,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 0,
+                 13,
+                 "BOS LEVEL",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            float frozenBOSLevel =
+                 array.get(
+                     setupStructureLevels,
+                     idx)
+
+
+            table.cell(
+                 dashboard,
+                 1,
+                 13,
+                 not na(frozenBOSLevel) ?
+                     str.tostring(
+                         frozenBOSLevel,
+                         format.mintick) :
+                     "—",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 2,
+                 13,
+                 "Pivot candle CLOSE",
+                 text_color=color.silver,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            //══════════════════════════════════════════════════════════════════
+            // LAST CONFIRMED CLOSE
+            //══════════════════════════════════════════════════════════════════
+
+            float lastConfirmedClose =
+                 barstate.isrealtime ?
+                     close[1] :
+                     close
+
+
+            bool bosCloseCondition =
+                 not na(frozenBOSLevel) and
+                 (direction == DIR_BULL ?
+                     lastConfirmedClose > frozenBOSLevel :
+                     lastConfirmedClose < frozenBOSLevel)
+
+
+            table.cell(
+                 dashboard,
+                 0,
+                 14,
+                 "CONFIRMED CLOSE",
+                 text_color=color.white,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 1,
+                 14,
+                 str.tostring(
+                     lastConfirmedClose,
+                     format.mintick),
+                 text_color=
+                     bosCloseCondition ?
+                         color.lime :
+                         color.yellow,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+            table.cell(
+                 dashboard,
+                 2,
+                 14,
+                 not na(frozenBOSLevel) ?
+                     direction == DIR_BULL ?
+                         (bosCloseCondition ?
+                             "CLOSE > BOS LEVEL" :
+                             "CLOSE <= BOS LEVEL") :
+                         (bosCloseCondition ?
+                             "CLOSE < BOS LEVEL" :
+                             "CLOSE >= BOS LEVEL") :
+                     "No BOS level",
+                 text_color=
+                     bosCloseCondition ?
+                         color.lime :
+                         color.silver,
+                 bgcolor=color.rgb(25, 25, 25))
+
+
+//══════════════════════════════════════════════════════════════════════════════
+// ALERTS
+//══════════════════════════════════════════════════════════════════════════════
+
+alertcondition(
+     tradePositionReadyNow,
+     title="TRADE POSITION READY",
+     message="3C TRADE POSITION READY - BOS 50% CONFIRMED")

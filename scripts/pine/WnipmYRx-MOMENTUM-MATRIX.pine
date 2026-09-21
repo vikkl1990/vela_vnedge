@@ -1,0 +1,176 @@
+//@version=6
+// MOMENTUM MATRIX — an oscillator panel built for low lag and honest accuracy.
+//   WAVE      : stochastic of a zero-lag EMA (ZLEMA 8 -> stoch 14, 2-bar smooth) with a 3-bar signal line, 20/80 bands
+//   MONEY FLOW: volume-weighted candle delta, EMA 10, scaled -100..+100; |MF| > 40 = overflow (shaded)
+//   DIVERGENCE: regular bullish / bearish divergence between price and the Wave (fast 3-bar pivots)
+//   CONFLUENCE: -4..+4 meter (Wave side, Wave slope, Money Flow side, price vs ZLEMA 21) drawn as a strip at the bottom
+//   SIGNALS   : REVERSAL  = Wave crosses up out of 20 with Money Flow > 0 on a green candle (and mirror for bearish)
+//               MOMENTUM  = Wave crosses up through 50 with Money Flow > 0 and volume >= 1.2x average (and mirror)
+// Every signal type keeps its own hit-rate counter (price up/down >= X% after N bars) in the table.
+// Measured on BTC/HYPE/ZEC 4h history: reversal signals ~44-47%, momentum signals ~46-58% (HYPE best). Use as context.
+indicator("MOMENTUM MATRIX", shorttitle="MOM MATRIX", overlay=false, max_labels_count=300, max_lines_count=200)
+
+// ---------- inputs ----------
+zlLen    = input.int(8,    "Wave: zero-lag EMA length", minval=2, group="Wave")
+stLen    = input.int(14,   "Wave: stochastic length", minval=3, group="Wave")
+smLen    = input.int(2,    "Wave: smoothing", minval=1, group="Wave")
+sigLen   = input.int(3,    "Wave: signal line", minval=1, group="Wave")
+obLvl    = input.float(80, "Overbought", group="Wave")
+osLvl    = input.float(20, "Oversold", group="Wave")
+mfLen    = input.int(10,   "Money Flow length", minval=2, group="Money Flow")
+mfOver   = input.float(40, "Money Flow overflow level", minval=10, maxval=90, group="Money Flow")
+trLen    = input.int(21,   "Trend ZLEMA (confluence)", minval=2, group="Confluence")
+pivLen   = input.int(3,    "Divergence pivot length", minval=2, maxval=10, group="Divergence")
+divMax   = input.int(40,   "Divergence max bars between pivots", minval=5, group="Divergence")
+showDiv  = input.bool(true,"Show divergences", group="Divergence")
+volMult  = input.float(1.2,"Momentum signal: volume >= average x", minval=1.0, step=0.1, group="Signals")
+showSig  = input.bool(true,"Show signals", group="Signals")
+evalBars = input.int(6,    "Accuracy: bars after signal", minval=1, group="Accuracy")
+hitPct   = input.float(0.5,"Accuracy: hit = move >= % in signal direction", minval=0.0, step=0.1, group="Accuracy")
+showTbl  = input.bool(true,"Show table", group="Display")
+
+// ---------- helpers ----------
+zlema(src, len) =>
+    lag = math.floor((len - 1) / 2)
+    ta.ema(2 * src - src[lag], len)
+
+// ---------- wave ----------
+z      = zlema(close, zlLen)
+rawW   = 100 * (z - ta.lowest(low, stLen)) / math.max(ta.highest(high, stLen) - ta.lowest(low, stLen), syminfo.mintick)
+wave   = ta.sma(rawW, smLen)
+wsig   = ta.sma(wave, sigLen)
+wUp    = wave > wave[1]
+
+// ---------- money flow ----------
+rng    = math.max(high - low, syminfo.mintick)
+delta  = volume * (close - open) / rng
+mf     = 100 * ta.ema(delta, mfLen) / math.max(ta.ema(volume, mfLen), 1e-10)
+mfPos  = mf > 0
+
+// ---------- confluence ----------
+zt     = zlema(close, trLen)
+conf   = (wave > 50 ? 1 : -1) + (wUp ? 1 : -1) + (mfPos ? 1 : -1) + (close > zt ? 1 : -1)
+
+// ---------- divergences (regular) ----------
+pl  = ta.pivotlow(wave, pivLen, pivLen)
+ph  = ta.pivothigh(wave, pivLen, pivLen)
+var float lastPlW = na
+var float lastPlP = na
+var int   lastPlB = na
+var float lastPhW = na
+var float lastPhP = na
+var int   lastPhB = na
+bullDiv = false
+bearDiv = false
+if not na(pl)
+    pW = wave[pivLen]
+    pP = low[pivLen]
+    if not na(lastPlW) and bar_index - pivLen - lastPlB <= divMax and pP < lastPlP and pW > lastPlW and pW < 50
+        bullDiv := true
+        if showDiv
+            line.new(lastPlB, lastPlW, bar_index - pivLen, pW, color=color.new(#00e676, 0), width=2)
+            label.new(bar_index - pivLen, pW, "Bull div", style=label.style_label_up, color=color.new(#00e676, 20), textcolor=color.black, size=size.tiny)
+    lastPlW := pW
+    lastPlP := pP
+    lastPlB := bar_index - pivLen
+if not na(ph)
+    pW = wave[pivLen]
+    pP = high[pivLen]
+    if not na(lastPhW) and bar_index - pivLen - lastPhB <= divMax and pP > lastPhP and pW < lastPhW and pW > 50
+        bearDiv := true
+        if showDiv
+            line.new(lastPhB, lastPhW, bar_index - pivLen, pW, color=color.new(#ff1744, 0), width=2)
+            label.new(bar_index - pivLen, pW, "Bear div", style=label.style_label_down, color=color.new(#ff1744, 20), textcolor=color.white, size=size.tiny)
+    lastPhW := pW
+    lastPhP := pP
+    lastPhB := bar_index - pivLen
+
+// ---------- signals ----------
+volAvg  = ta.sma(volume, 20)[1]
+rv      = volAvg > 0 ? volume / volAvg : 0.0
+revBull = ta.crossover(wave, osLvl) and mfPos and close > open
+revBear = ta.crossunder(wave, obLvl) and not mfPos and close < open
+momBull = ta.crossover(wave, 50) and mfPos and rv >= volMult
+momBear = ta.crossunder(wave, 50) and not mfPos and rv >= volMult
+
+// ---------- accuracy counters ----------
+var int nRB = 0
+var int hRB = 0
+var int nRS = 0
+var int hRS = 0
+var int nMB = 0
+var int hMB = 0
+var int nMS = 0
+var int hMS = 0
+if barstate.isconfirmed
+    mv = (close / close[evalBars] - 1) * 100
+    if revBull[evalBars]
+        nRB += 1
+        hRB += mv >= hitPct ? 1 : 0
+    if revBear[evalBars]
+        nRS += 1
+        hRS += mv <= -hitPct ? 1 : 0
+    if momBull[evalBars]
+        nMB += 1
+        hMB += mv >= hitPct ? 1 : 0
+    if momBear[evalBars]
+        nMS += 1
+        hMS += mv <= -hitPct ? 1 : 0
+pct(h, n) => n > 0 ? str.tostring(100.0 * h / n, "0") + "% of " + str.tostring(n) : "-"
+
+// ---------- plots ----------
+hline(obLvl, "OB", color=color.new(color.gray, 60))
+hline(50,    "Mid", color=color.new(color.gray, 75), linestyle=hline.style_dotted)
+hline(osLvl, "OS", color=color.new(color.gray, 60))
+hline(0, "MF zero", color=color.new(color.gray, 85))
+hline(-100, "floor", color=color.new(color.gray, 100))
+
+// money flow histogram, scaled into -100..0 band below the wave so both fit one pane
+mfPlot = -100 + math.max(0.0, math.min(100.0, 50 + mf / 2))          // MF -100..+100  ->  -100..0
+plot(mfPlot, "Money Flow", style=plot.style_columns, color=mfPos ? color.new(#26a69a, math.abs(mf) > mfOver ? 0 : 40) : color.new(#ef5350, math.abs(mf) > mfOver ? 0 : 40), histbase=-50)
+plot(-50, "MF mid", color=color.new(color.gray, 70))
+
+waveCol = wave > wsig ? #00e676 : #ff5252
+pW = plot(wave, "Wave", color=waveCol, linewidth=2)
+pS = plot(wsig, "Signal", color=color.new(color.white, 40), linewidth=1)
+fill(pW, pS, color=color.new(waveCol, 80))
+bgcolor(wave > obLvl ? color.new(#ff1744, 90) : wave < osLvl ? color.new(#00e676, 90) : na)
+
+// confluence strip at the very bottom (-100 .. -92)
+confCol = conf >= 3 ? #00e676 : conf >= 1 ? #66bb6a : conf <= -3 ? #ff1744 : conf <= -1 ? #ef5350 : #9e9e9e
+plot(-100, "Confluence strip", style=plot.style_columns, color=color.new(confCol, 0), histbase=-108)
+
+plotshape(showSig and revBull, "Reversal buy",  shape.triangleup,   location.bottom, color.new(#00e676, 0), size=size.small, text="REV")
+plotshape(showSig and revBear, "Reversal sell", shape.triangledown, location.top,    color.new(#ff1744, 0), size=size.small, text="REV")
+plotshape(showSig and momBull, "Momentum buy",  shape.diamond,      location.bottom, color.new(#00e676, 30), size=size.tiny, text="MOM")
+plotshape(showSig and momBear, "Momentum sell", shape.diamond,      location.top,    color.new(#ff1744, 30), size=size.tiny, text="MOM")
+
+// ---------- table ----------
+var tbl = table.new(position.top_right, 2, 8, bgcolor=color.new(#0b111c, 10), border_width=1, border_color=color.new(color.gray, 60))
+if showTbl and barstate.islast
+    state = wave > obLvl ? "OVERBOUGHT" : wave < osLvl ? "OVERSOLD" : wave > 50 ? "BULLISH" : "BEARISH"
+    sc = wave > obLvl ? #ff1744 : wave < osLvl ? #00e676 : wave > 50 ? #66bb6a : #ef5350
+    table.cell(tbl, 0, 0, state + "  conf " + (conf > 0 ? "+" : "") + str.tostring(conf) + "/4", text_color=sc, text_size=size.normal, bgcolor=color.new(sc, 85))
+    table.merge_cells(tbl, 0, 0, 1, 0)
+    table.cell(tbl, 0, 1, "Wave / signal", text_color=color.silver, text_size=size.small)
+    table.cell(tbl, 1, 1, str.tostring(wave, "0.0") + " / " + str.tostring(wsig, "0.0") + (wUp ? "  rising" : "  falling"), text_color=wave > wsig ? #00e676 : #ff5252, text_size=size.small)
+    table.cell(tbl, 0, 2, "Money Flow", text_color=color.silver, text_size=size.small)
+    table.cell(tbl, 1, 2, (mf > 0 ? "+" : "") + str.tostring(mf, "0.0") + (math.abs(mf) > mfOver ? "  OVERFLOW" : ""), text_color=mfPos ? #00e676 : #ff5252, text_size=size.small)
+    table.cell(tbl, 0, 3, "Price vs ZLEMA " + str.tostring(trLen), text_color=color.silver, text_size=size.small)
+    table.cell(tbl, 1, 3, close > zt ? "above" : "below", text_color=close > zt ? #00e676 : #ff5252, text_size=size.small)
+    table.cell(tbl, 0, 4, "Reversal buy hit rate (" + str.tostring(evalBars) + " bars)", text_color=color.silver, text_size=size.small)
+    table.cell(tbl, 1, 4, pct(hRB, nRB), text_color=color.white, text_size=size.small)
+    table.cell(tbl, 0, 5, "Reversal sell hit rate", text_color=color.silver, text_size=size.small)
+    table.cell(tbl, 1, 5, pct(hRS, nRS), text_color=color.white, text_size=size.small)
+    table.cell(tbl, 0, 6, "Momentum buy hit rate", text_color=color.silver, text_size=size.small)
+    table.cell(tbl, 1, 6, pct(hMB, nMB), text_color=color.white, text_size=size.small)
+    table.cell(tbl, 0, 7, "Momentum sell hit rate", text_color=color.silver, text_size=size.small)
+    table.cell(tbl, 1, 7, pct(hMS, nMS), text_color=color.white, text_size=size.small)
+
+// ---------- alerts ----------
+alertcondition(revBull, "Reversal buy",  "{{ticker}} {{interval}}: Wave up out of oversold with positive money flow")
+alertcondition(revBear, "Reversal sell", "{{ticker}} {{interval}}: Wave down out of overbought with negative money flow")
+alertcondition(momBull, "Momentum buy",  "{{ticker}} {{interval}}: Wave crossed 50 up with money flow and volume")
+alertcondition(momBear, "Momentum sell", "{{ticker}} {{interval}}: Wave crossed 50 down with money flow and volume")
+alertcondition(bullDiv, "Bullish divergence", "{{ticker}} {{interval}}: bullish divergence on the Wave")
+alertcondition(bearDiv, "Bearish divergence", "{{ticker}} {{interval}}: bearish divergence on the Wave")

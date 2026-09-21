@@ -1,0 +1,937 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TrendlineProject
+//@version=6
+indicator("Quantum STS Lite", shorttitle="Q-STS Lite", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+// ================================================================
+// 1. SESSION INPUTS
+// ================================================================
+
+var string G_SEP1 = "------------  1 - SESSION FAKEOUT  ------------"
+en_session = input.bool(true, "Enable Session Fakeout module", group=G_SEP1, tooltip="Master switch for all session boxes, entry levels and H/L extensions.")
+
+var string G_ASIA = "Asia Session"
+asia_show        = input.bool(true,            "Show",               group=G_ASIA, inline="a1")
+asia_col         = input.color(color.new(#2962aa, 80), "",           group=G_ASIA, inline="a1")
+asia_name        = "Asia"
+asia_tz          = input.string("Asia/Tokyo",  "Timezone",           group=G_ASIA, options=["Asia/Tokyo","Asia/Singapore","Europe/London","Europe/Berlin","Europe/Vilnius","America/New_York","America/Chicago","Australia/Sydney","UTC"])
+asia_start       = input.string("0900",        "Start (HHMM)",       group=G_ASIA, inline="a2")
+asia_end         = input.string("1300",        "End   (HHMM)",       group=G_ASIA, inline="a2")
+asia_s1_en       = input.bool(true,            "S1",                 group=G_ASIA, inline="a3")
+asia_s1_off      = input.int(0,                "offset",             group=G_ASIA, inline="a3", minval=0, tooltip="Points above session high")
+asia_l1_en       = input.bool(true,            "L1",                 group=G_ASIA, inline="a6")
+asia_l1_off      = input.int(0,                "offset",             group=G_ASIA, inline="a6", minval=0, tooltip="Points below session low")
+asia_hl_ext      = input.bool(true,            "Session H/L Extension", group=G_ASIA)
+
+var string G_LON = "London Session"
+lon_show         = input.bool(true,            "Show",               group=G_LON, inline="l1")
+lon_col          = input.color(color.new(#aa6b2a, 80), "",           group=G_LON, inline="l1")
+lon_name         = "London"
+lon_tz           = input.string("Europe/London","Timezone",          group=G_LON, options=["Asia/Tokyo","Asia/Singapore","Europe/London","Europe/Berlin","Europe/Vilnius","America/New_York","America/Chicago","Australia/Sydney","UTC"])
+lon_start        = input.string("0800",        "Start (HHMM)",       group=G_LON, inline="l2")
+lon_end          = input.string("1300",        "End   (HHMM)",       group=G_LON, inline="l2")
+lon_s1_en        = input.bool(true,            "S1",                 group=G_LON, inline="l3")
+lon_s1_off       = input.int(0,                "offset",             group=G_LON, inline="l3", minval=0)
+lon_l1_en        = input.bool(true,            "L1",                 group=G_LON, inline="l6")
+lon_l1_off       = input.int(0,                "offset",             group=G_LON, inline="l6", minval=0)
+lon_hl_ext       = input.bool(true,            "Session H/L Extension", group=G_LON)
+
+var string G_PRE = "NY Pre-Open Session"
+pre_show         = input.bool(true,            "Show",               group=G_PRE, inline="p1")
+pre_col          = input.color(color.new(#5c8a2a, 80), "",           group=G_PRE, inline="p1")
+pre_name         = "NY Pre-Open"
+pre_tz           = input.string("America/New_York","Timezone",       group=G_PRE, options=["Asia/Tokyo","Asia/Singapore","Europe/London","Europe/Berlin","Europe/Vilnius","America/New_York","America/Chicago","Australia/Sydney","UTC"])
+pre_start        = input.string("0800",        "Start (HHMM)",       group=G_PRE, inline="p2")
+pre_end          = input.string("0930",        "End   (HHMM)",       group=G_PRE, inline="p2")
+pre_s1_en        = input.bool(true,            "S1",                 group=G_PRE, inline="p3")
+pre_s1_off       = input.int(0,                "offset",             group=G_PRE, inline="p3", minval=0)
+pre_l1_en        = input.bool(true,            "L1",                 group=G_PRE, inline="p6")
+pre_l1_off       = input.int(0,                "offset",             group=G_PRE, inline="p6", minval=0)
+pre_hl_ext       = input.bool(true,            "Session H/L Extension", group=G_PRE)
+
+var string G_AM = "NY AM Session"
+am_show          = input.bool(true,            "Show",               group=G_AM, inline="am1")
+am_col           = input.color(color.new(#44aa88, 80), "",          group=G_AM, inline="am1")
+am_name          = "NY AM"
+am_tz            = input.string("America/New_York","Timezone",       group=G_AM, options=["Asia/Tokyo","Asia/Singapore","Europe/London","Europe/Berlin","Europe/Vilnius","America/New_York","America/Chicago","Australia/Sydney","UTC"])
+am_start         = input.string("0930",        "Start (HHMM)",       group=G_AM, inline="am2")
+am_end           = input.string("1130",        "End   (HHMM)",       group=G_AM, inline="am2")
+am_s1_en         = input.bool(true,            "S1",                 group=G_AM, inline="am3")
+am_s1_off        = input.int(0,                "offset",             group=G_AM, inline="am3", minval=0)
+am_l1_en         = input.bool(true,            "L1",                 group=G_AM, inline="am6")
+am_l1_off        = input.int(0,                "offset",             group=G_AM, inline="am6", minval=0)
+am_hl_ext        = input.bool(true,            "Session H/L Extension", group=G_AM)
+
+var string G_PM = "NY PM Session"
+pm_show          = input.bool(true,            "Show",               group=G_PM, inline="pm1")
+pm_col           = input.color(color.new(#7a2aaa, 80), "",          group=G_PM, inline="pm1")
+pm_name          = "NY PM"
+pm_tz            = input.string("America/New_York","Timezone",       group=G_PM, options=["Asia/Tokyo","Asia/Singapore","Europe/London","Europe/Berlin","Europe/Vilnius","America/New_York","America/Chicago","Australia/Sydney","UTC"])
+pm_start         = input.string("1300",        "Start (HHMM)",       group=G_PM, inline="pm2")
+pm_end           = input.string("1600",        "End   (HHMM)",       group=G_PM, inline="pm2")
+pm_s1_en         = input.bool(true,            "S1",                 group=G_PM, inline="pm3")
+pm_s1_off        = input.int(0,                "offset",             group=G_PM, inline="pm3", minval=0)
+pm_l1_en         = input.bool(true,            "L1",                 group=G_PM, inline="pm6")
+pm_l1_off        = input.int(0,                "offset",             group=G_PM, inline="pm6", minval=0)
+pm_hl_ext        = input.bool(true,            "Session H/L Extension", group=G_PM)
+
+// ================================================================
+// 2. BOX STYLING
+// ================================================================
+
+var string G_STYLE = "Box Styling"
+lbl_size_opt      = input.string("small", "Session Label Size", group=G_STYLE, options=["tiny","small","normal"])
+lbl_size          = lbl_size_opt == "tiny" ? size.tiny : lbl_size_opt == "normal" ? size.normal : size.small
+box_show_border   = input.bool(false, "Show Border",         group=G_STYLE)
+box_history       = input.int(5,      "History (sessions)",  group=G_STYLE, minval=1, maxval=100, tooltip="How many past sessions to keep visible per session type")
+
+// ================================================================
+// 3. ORDER LINE STYLING
+// ================================================================
+
+var string G_OL = "Order Lines"
+ol_line_width    = input.int(1,   "Line Width",        group=G_OL, minval=1, maxval=4)
+ol_long_col      = input.color(color.new(#00cc44, 0),  "Long Color",  group=G_OL)
+ol_short_col     = input.color(color.new(#cc0033, 0),  "Short Color", group=G_OL)
+ol_extend_bars   = input.int(4,  "Line Length (bars)", group=G_OL, minval=3, maxval=999)
+ol_lbl_size_opt  = input.string("tiny", "Label Size", group=G_OL, options=["tiny","small","normal"])
+ol_lbl_size      = ol_lbl_size_opt == "tiny" ? size.tiny : ol_lbl_size_opt == "normal" ? size.normal : size.small
+
+// ================================================================
+// 4. OPENING RANGE
+// ================================================================
+
+var string G_SEP2 = "------------  2 - OPENING RANGE  ------------"
+en_orb = input.bool(true, "Enable Opening Range module", group=G_SEP2, tooltip="Master switch for the OR box and break signals.")
+
+var string G_OR = "Opening Range"
+// - Range definition -
+or_show          = input.bool(true, "Show Opening Range", group=G_OR, tooltip="Mark the high/low of the first N minutes after the session open, then signal on the break.")
+or_minutes       = input.int(15, "OR Length (min)", group=G_OR, minval=1, maxval=120)
+or_history       = input.int(50, "OR History (boxes)", group=G_OR, minval=1, maxval=60, tooltip="How many past Opening Range boxes to keep on the chart (counts all sessions).")
+// - Entry behavior -
+or_retest        = input.bool(false, "Require Retest", group=G_OR, tooltip="Signal on the retest of the broken edge instead of the raw break (fewer fakeouts).")
+or_signals       = input.bool(true, "Break Signals", group=G_OR, tooltip="Show OR break markers and enable OR alerts.")
+or_box_long      = input.bool(true, "Long",  group=G_OR, inline="orside", tooltip="Which breakout direction the ORB signals, across all enabled sessions.")
+or_box_short     = input.bool(true, "Short", group=G_OR, inline="orside")
+// - Per-session OR enable (side comes from the global Long/Short toggle above) -
+asia_or_on   = input.bool(false, "Asia",     group=G_OR, inline="oras",  tooltip="Per session: enable an Opening Range at this session's open. Session open times come from the Session Fakeout module.")
+lon_or_on    = input.bool(true,  "London",   group=G_OR, inline="oras")
+pre_or_on    = input.bool(false, "Pre-Open", group=G_OR, inline="oras")
+am_or_on     = input.bool(false, "NY AM",    group=G_OR, inline="oras2")
+pm_or_on     = input.bool(false, "NY PM",    group=G_OR, inline="oras2")
+// - Appearance -
+or_msize_opt     = input.string("Tiny", "Marker Size", group=G_OR, options=["Tiny","Small","Normal","Large"])
+or_size          = or_msize_opt == "Tiny" ? size.tiny : or_msize_opt == "Small" ? size.small : or_msize_opt == "Normal" ? size.normal : size.large
+or_box_col       = input.color(color.new(#ff9800, 85), "Box Color", group=G_OR)
+or_bull_col      = input.color(color.new(#00cc44, 0), "Break Up",   group=G_OR, inline="orc")
+or_bear_col      = input.color(color.new(#cc0033, 0), "Break Down", group=G_OR, inline="orc")
+
+// ================================================================
+// 5. KEY STATIC LEVELS
+// ================================================================
+
+var string G_SEP4 = "------------  3 - LEVELS  ------------"
+en_levels = input.bool(true, "Enable Levels & Context module", group=G_SEP4, tooltip="Master switch for Key Levels and Session Box Levels.")
+
+var string G_KL = "Key Levels"
+kl_prev_day_hl   = input.bool(true,  "Prev Day H/L",    group=G_KL, inline="kl1")
+kl_pd_col        = input.color(color.new(#ff4444, 0),   "",         group=G_KL, inline="kl1")
+kl_prev_week_hl  = input.bool(false, "Prev Week H/L",   group=G_KL, inline="kl2")
+kl_pw_col        = input.color(color.new(#ff8800, 0),   "",         group=G_KL, inline="kl2")
+kl_prev_month_hl = input.bool(false, "Prev Month H/L",  group=G_KL, inline="kl3")
+kl_pm_col        = input.color(color.new(#cc44ff, 0),   "",         group=G_KL, inline="kl3")
+kl_day_open      = input.bool(true,  "Day Open",        group=G_KL, inline="kl4")
+kl_week_open     = input.bool(false, "Week Open",       group=G_KL, inline="kl5")
+kl_month_open    = input.bool(false, "Month Open",      group=G_KL, inline="kl6")
+kl_open_col      = input.color(color.new(#ffff44, 0),   "Open Color", group=G_KL)
+kl_round_numbers = input.bool(false, "Round Numbers",   group=G_KL, inline="kl7")
+kl_round_int     = input.int(50,     "Interval (pts)",  group=G_KL, inline="kl7", minval=10, maxval=500)
+kl_round_col     = input.color(color.new(#888888, 60),  "Round # Color", group=G_KL)
+
+var string G_SBL = "Session Box Levels"
+sbl_25_en  = input.bool(false, "25% Line",      group=G_SBL, inline="sbl1", tooltip="Quartile/midline levels of each session box's range, drawn inside the box and updating live as the session develops. Follows the session times, colors nothing outside the box.")
+sbl_25_col = input.color(color.new(#888888, 0), "",           group=G_SBL, inline="sbl1")
+sbl_50_en  = input.bool(true,  "Midline (50%)", group=G_SBL, inline="sbl2")
+sbl_50_col = input.color(color.new(#888888, 0), "",           group=G_SBL, inline="sbl2")
+sbl_75_en  = input.bool(false, "75% Line",      group=G_SBL, inline="sbl3")
+sbl_75_col = input.color(color.new(#888888, 0), "",           group=G_SBL, inline="sbl3")
+sbl_labels = input.bool(true,  "Show Labels",   group=G_SBL, tooltip="Print a tiny 25% / 50% / 75% tag at the left end of each line.")
+sbl_extend = input.bool(false, "Extend Levels", group=G_SBL, tooltip="When a session closes, extend its enabled levels to the right until that session opens again - same behavior as the Session H/L Extension.")
+sbl_style_opt = input.string("Dotted", "Line Style", group=G_SBL, inline="sbl4", options=["Dotted","Dashed","Solid"])
+sbl_width  = input.int(1, "Width", group=G_SBL, inline="sbl4", minval=1, maxval=4)
+sbl_style  = sbl_style_opt == "Solid" ? line.style_solid : sbl_style_opt == "Dashed" ? line.style_dashed : line.style_dotted
+sbl_any    = sbl_25_en or sbl_50_en or sbl_75_en
+
+// ================================================================
+// 6. TREND CONTEXT
+// ================================================================
+
+var string G_SEP5 = "------------  4 - TREND CONTEXT  ------------"
+show_ribbon = input.bool(false, "Show Ribbon", group=G_SEP5, tooltip="Fast/Slow EMA trend cloud - blue when bullish, pink when bearish.")
+
+var string G_RIB = "Trend Ribbon"
+rib_fast      = input.int(21, "Fast EMA", group=G_RIB, minval=1, maxval=200, tooltip="Faster EMA. The cloud is bullish (blue) when Fast is above Slow and bearish (pink) when below.")
+rib_slow      = input.int(55, "Slow EMA", group=G_RIB, minval=2, maxval=400, tooltip="Slower EMA. Widen the gap to the Fast EMA for an earlier flip; narrow it (e.g. 20 vs 21) for a smoother, later flip. Always forced above Fast.")
+
+var string G_VWAP = "VWAP"
+show_vwap        = input.bool(false, "Show VWAP", group=G_VWAP, tooltip="Anchored volume-weighted average price - a clean intraday bias line.")
+vwap_anchor      = input.string("Session", "Anchor", group=G_VWAP, options=["Session","Day","Week","Month"])
+vwap_col         = input.color(color.new(#2962ff, 0), "Color", group=G_VWAP)
+vwap_width       = input.int(1, "Thickness", group=G_VWAP, minval=1, maxval=4)
+
+// ================================================================
+// 7. SESSION TIME HELPERS
+// ================================================================
+
+f_sess_str(string s, string e) =>
+    s + "-" + e
+
+f_in_sess(string start_hhmm, string end_hhmm, string tz) =>
+    not na(time(timeframe.period, f_sess_str(start_hhmm, end_hhmm), tz))
+
+in_asia = f_in_sess(asia_start, asia_end, asia_tz)
+in_lon  = f_in_sess(lon_start,  lon_end,  lon_tz)
+in_pre  = f_in_sess(pre_start,  pre_end,  pre_tz)
+in_am   = f_in_sess(am_start,   am_end,   am_tz)
+in_pm   = f_in_sess(pm_start,   pm_end,   pm_tz)
+
+asia_started = in_asia and not in_asia[1]
+asia_ended   = not in_asia and in_asia[1]
+lon_started  = in_lon  and not in_lon[1]
+lon_ended    = not in_lon  and in_lon[1]
+pre_started  = in_pre  and not in_pre[1]
+pre_ended    = not in_pre  and in_pre[1]
+am_started   = in_am   and not in_am[1]
+am_ended     = not in_am   and in_am[1]
+pm_started   = in_pm   and not in_pm[1]
+pm_ended     = not in_pm   and in_pm[1]
+
+// ================================================================
+// 8. RUNNING H/L PER SESSION
+// ================================================================
+
+var float asia_h = na, var float asia_l = na
+var float lon_h  = na, var float lon_l  = na
+var float pre_h  = na, var float pre_l  = na
+var float am_h   = na, var float am_l   = na
+var float pm_h   = na, var float pm_l   = na
+
+if asia_started
+    asia_h := high, asia_l := low
+else if in_asia
+    asia_h := math.max(asia_h, high), asia_l := math.min(asia_l, low)
+
+if lon_started
+    lon_h := high, lon_l := low
+else if in_lon
+    lon_h := math.max(lon_h, high), lon_l := math.min(lon_l, low)
+
+if pre_started
+    pre_h := high, pre_l := low
+else if in_pre
+    pre_h := math.max(pre_h, high), pre_l := math.min(pre_l, low)
+
+if am_started
+    am_h := high, am_l := low
+else if in_am
+    am_h := math.max(am_h, high), am_l := math.min(am_l, low)
+
+if pm_started
+    pm_h := high, pm_l := low
+else if in_pm
+    pm_h := math.max(pm_h, high), pm_l := math.min(pm_l, low)
+
+// ================================================================
+// 9. SESSION BOXES
+// ================================================================
+
+var array<box>   asia_boxes = array.new<box>()
+var array<label> asia_lbls  = array.new<label>()
+var array<box>   lon_boxes  = array.new<box>()
+var array<label> lon_lbls   = array.new<label>()
+var array<box>   pre_boxes  = array.new<box>()
+var array<label> pre_lbls   = array.new<label>()
+var array<box>   am_boxes   = array.new<box>()
+var array<label> am_lbls    = array.new<label>()
+var array<box>   pm_boxes   = array.new<box>()
+var array<label> pm_lbls    = array.new<label>()
+
+f_prune(array<box> ba, array<label> la, int keep) =>
+    while array.size(ba) > keep
+        box.delete(array.shift(ba))
+    while array.size(la) > keep
+        label.delete(array.shift(la))
+
+f_open_box(array<box> ba, array<label> la, color bg, string name) =>
+    border_c = box_show_border ? color.new(bg, 0) : color.new(color.white, 100)
+    b = box.new(bar_index, high, bar_index, low,
+         bgcolor=bg, border_color=border_c, border_width=1)
+    l = label.new(bar_index, low, name,
+         color=color.new(color.black, 100), textcolor=color.new(bg, 0),
+         style=label.style_label_upper_left, size=lbl_size)
+    array.push(ba, b)
+    array.push(la, l)
+
+f_extend_box(array<box> ba, array<label> la) =>
+    if array.size(ba) > 0
+        b = array.last(ba)
+        box.set_right(b, bar_index)
+        box.set_top(b,    math.max(box.get_top(b),    high))
+        box.set_bottom(b, math.min(box.get_bottom(b), low))
+        if array.size(la) > 0
+            l = array.last(la)
+            label.set_y(l, box.get_bottom(b))
+
+// -- Session Box Levels (25% / 50% / 75% of each box's range) --
+type SblSet
+    line l25
+    line l50
+    line l75
+    label t25
+    label t50
+    label t75
+
+var array<SblSet> asia_sbl = array.new<SblSet>()
+var array<SblSet> lon_sbl  = array.new<SblSet>()
+var array<SblSet> pre_sbl  = array.new<SblSet>()
+var array<SblSet> am_sbl   = array.new<SblSet>()
+var array<SblSet> pm_sbl   = array.new<SblSet>()
+
+f_sbl_delete(SblSet s) =>
+    line.delete(s.l25),  line.delete(s.l50),  line.delete(s.l75)
+    label.delete(s.t25), label.delete(s.t50), label.delete(s.t75)
+
+f_sbl_prune(array<SblSet> sa, int keep) =>
+    while array.size(sa) > keep
+        f_sbl_delete(array.shift(sa))
+
+f_sbl_new() =>
+    s = SblSet.new()
+    if sbl_25_en
+        s.l25 := line.new(bar_index, high, bar_index, high, style=sbl_style, color=sbl_25_col, width=sbl_width)
+        if sbl_labels
+            s.t25 := label.new(bar_index, high, "25%", color=color.new(color.black, 100), textcolor=sbl_25_col, style=label.style_label_right, size=size.tiny)
+    if sbl_50_en
+        s.l50 := line.new(bar_index, high, bar_index, high, style=sbl_style, color=sbl_50_col, width=sbl_width)
+        if sbl_labels
+            s.t50 := label.new(bar_index, high, "50%", color=color.new(color.black, 100), textcolor=sbl_50_col, style=label.style_label_right, size=size.tiny)
+    if sbl_75_en
+        s.l75 := line.new(bar_index, high, bar_index, high, style=sbl_style, color=sbl_75_col, width=sbl_width)
+        if sbl_labels
+            s.t75 := label.new(bar_index, high, "75%", color=color.new(color.black, 100), textcolor=sbl_75_col, style=label.style_label_right, size=size.tiny)
+    s
+
+f_sbl_update(array<SblSet> sa, array<box> ba) =>
+    if array.size(sa) > 0 and array.size(ba) > 0
+        s   = array.last(sa)
+        b   = array.last(ba)
+        top = box.get_top(b)
+        btm = box.get_bottom(b)
+        lft = box.get_left(b)
+        rgt = box.get_right(b)
+        rng = top - btm
+        if not na(s.l25)
+            y = btm + rng * 0.25
+            line.set_xy1(s.l25, lft, y), line.set_xy2(s.l25, rgt, y)
+            if not na(s.t25)
+                label.set_xy(s.t25, lft, y)
+        if not na(s.l50)
+            y = btm + rng * 0.50
+            line.set_xy1(s.l50, lft, y), line.set_xy2(s.l50, rgt, y)
+            if not na(s.t50)
+                label.set_xy(s.t50, lft, y)
+        if not na(s.l75)
+            y = btm + rng * 0.75
+            line.set_xy1(s.l75, lft, y), line.set_xy2(s.l75, rgt, y)
+            if not na(s.t75)
+                label.set_xy(s.t75, lft, y)
+
+sbl_active = en_levels and sbl_any
+
+if en_session and asia_show
+    if asia_started
+        f_prune(asia_boxes, asia_lbls, box_history)
+        f_open_box(asia_boxes, asia_lbls, asia_col, asia_name)
+        if sbl_active
+            f_sbl_prune(asia_sbl, box_history)
+            array.push(asia_sbl, f_sbl_new())
+    if in_asia
+        f_extend_box(asia_boxes, asia_lbls)
+        if sbl_active
+            f_sbl_update(asia_sbl, asia_boxes)
+
+if en_session and lon_show
+    if lon_started
+        f_prune(lon_boxes, lon_lbls, box_history)
+        f_open_box(lon_boxes, lon_lbls, lon_col, lon_name)
+        if sbl_active
+            f_sbl_prune(lon_sbl, box_history)
+            array.push(lon_sbl, f_sbl_new())
+    if in_lon
+        f_extend_box(lon_boxes, lon_lbls)
+        if sbl_active
+            f_sbl_update(lon_sbl, lon_boxes)
+
+if en_session and pre_show
+    if pre_started
+        f_prune(pre_boxes, pre_lbls, box_history)
+        f_open_box(pre_boxes, pre_lbls, pre_col, pre_name)
+        if sbl_active
+            f_sbl_prune(pre_sbl, box_history)
+            array.push(pre_sbl, f_sbl_new())
+    if in_pre
+        f_extend_box(pre_boxes, pre_lbls)
+        if sbl_active
+            f_sbl_update(pre_sbl, pre_boxes)
+
+if en_session and am_show
+    if am_started
+        f_prune(am_boxes, am_lbls, box_history)
+        f_open_box(am_boxes, am_lbls, am_col, am_name)
+        if sbl_active
+            f_sbl_prune(am_sbl, box_history)
+            array.push(am_sbl, f_sbl_new())
+    if in_am
+        f_extend_box(am_boxes, am_lbls)
+        if sbl_active
+            f_sbl_update(am_sbl, am_boxes)
+
+if en_session and pm_show
+    if pm_started
+        f_prune(pm_boxes, pm_lbls, box_history)
+        f_open_box(pm_boxes, pm_lbls, pm_col, pm_name)
+        if sbl_active
+            f_sbl_prune(pm_sbl, box_history)
+            array.push(pm_sbl, f_sbl_new())
+    if in_pm
+        f_extend_box(pm_boxes, pm_lbls)
+        if sbl_active
+            f_sbl_update(pm_sbl, pm_boxes)
+
+// ================================================================
+// 10. ORDER LINES
+// ================================================================
+
+f_order_line(float price, color c) =>
+    line.new(bar_index, price, bar_index + ol_extend_bars, price,
+         style=line.style_dotted, color=c, width=ol_line_width)
+
+// Draw one level line + label
+f_draw_level(float anchor, int off_pts, bool is_long) =>
+    price = is_long ? anchor - off_pts : anchor + off_pts
+    c     = is_long ? ol_long_col : ol_short_col
+    txt   = is_long ? "L" : "S"
+    f_order_line(price, c)
+    label.new(bar_index, price, txt,
+         color=c, textcolor=color.white,
+         style=label.style_label_right, size=ol_lbl_size)
+
+// Draw all levels for a completed session
+f_draw_session(float sess_h, float sess_l,
+     bool l1_en, int l1_off, bool s1_en, int s1_off) =>
+    if s1_en and not na(sess_h)
+        f_draw_level(sess_h, s1_off, false)
+    if l1_en and not na(sess_l)
+        f_draw_level(sess_l, l1_off, true)
+
+// Asia ends -> draw London session entry levels
+if en_session and asia_ended
+    f_draw_session(asia_h, asia_l, lon_l1_en, lon_l1_off, lon_s1_en, lon_s1_off)
+
+// London ends -> draw NY Pre-Open entry levels
+if en_session and lon_ended
+    f_draw_session(lon_h, lon_l, pre_l1_en, pre_l1_off, pre_s1_en, pre_s1_off)
+
+// Pre-Open ends -> draw NY AM entry levels
+if en_session and pre_ended
+    f_draw_session(pre_h, pre_l, am_l1_en, am_l1_off, am_s1_en, am_s1_off)
+
+// NY AM ends -> draw NY PM entry levels
+if en_session and am_ended
+    f_draw_session(am_h, am_l, pm_l1_en, pm_l1_off, pm_s1_en, pm_s1_off)
+
+// NY PM ends -> draw Asia entry levels (next day)
+if en_session and pm_ended
+    f_draw_session(pm_h, pm_l, asia_l1_en, asia_l1_off, asia_s1_en, asia_s1_off)
+
+// ================================================================
+// 11. KEY STATIC LEVELS
+// ================================================================
+
+// Fetch D/W/M OHLC
+[d_high_prev, d_low_prev, d_open_val] = request.security(syminfo.tickerid, "D", [high[1], low[1], open], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+[w_high_prev, w_low_prev, w_open_val] = request.security(syminfo.tickerid, "W", [high[1], low[1], open], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+[m_high_prev, m_low_prev, m_open_val] = request.security(syminfo.tickerid, "M", [high[1], low[1], open], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+// Static level lines - created once, updated each bar
+var line kl_ln_pdh  = na
+var line kl_ln_pdl  = na
+var line kl_ln_pwh  = na
+var line kl_ln_pwl  = na
+var line kl_ln_pmh  = na
+var line kl_ln_pml  = na
+var line kl_ln_do   = na
+var line kl_ln_wo   = na
+var line kl_ln_mo   = na
+
+f_kl_line(line ln, float price, color c, string lbl, string sty) =>
+    line result = ln
+    if na(ln) and not na(price)
+        st = sty == "solid" ? line.style_solid : line.style_dashed
+        result := line.new(bar_index, price, bar_index + 1, price, extend=extend.right, style=st, color=c, width=1)
+        label.new(bar_index, price, lbl, color=color.new(color.black, 100), textcolor=c, style=label.style_label_left, size=size.tiny)
+    else if not na(price) and not na(result)
+        line.set_y1(result, price)
+        line.set_y2(result, price)
+    result
+
+if en_levels and barstate.islast
+    if kl_prev_day_hl
+        kl_ln_pdh := f_kl_line(kl_ln_pdh, d_high_prev, kl_pd_col, "PDH", "solid")
+        kl_ln_pdl := f_kl_line(kl_ln_pdl, d_low_prev,  kl_pd_col, "PDL", "solid")
+    if kl_prev_week_hl
+        kl_ln_pwh := f_kl_line(kl_ln_pwh, w_high_prev, kl_pw_col, "PWH", "solid")
+        kl_ln_pwl := f_kl_line(kl_ln_pwl, w_low_prev,  kl_pw_col, "PWL", "solid")
+    if kl_prev_month_hl
+        kl_ln_pmh := f_kl_line(kl_ln_pmh, m_high_prev, kl_pm_col, "PMH", "solid")
+        kl_ln_pml := f_kl_line(kl_ln_pml, m_low_prev,  kl_pm_col, "PML", "solid")
+    if kl_day_open
+        kl_ln_do  := f_kl_line(kl_ln_do,  d_open_val,  kl_open_col, "DO", "dashed")
+    if kl_week_open
+        kl_ln_wo  := f_kl_line(kl_ln_wo,  w_open_val,  kl_open_col, "WO", "dashed")
+    if kl_month_open
+        kl_ln_mo  := f_kl_line(kl_ln_mo,  m_open_val,  kl_open_col, "MO", "dashed")
+
+// Round numbers
+var array<line> rn_lines = array.new<line>()
+if en_levels and barstate.islast and kl_round_numbers
+    while array.size(rn_lines) > 0
+        line.delete(array.pop(rn_lines))
+    float rn_base = math.floor(close / kl_round_int) * kl_round_int
+    for i = -10 to 10
+        lvl = rn_base + i * kl_round_int
+        ln  = line.new(bar_index - 50, lvl, bar_index, lvl, extend=extend.right, style=line.style_dotted, color=kl_round_col, width=1)
+        array.push(rn_lines, ln)
+
+// ================================================================
+// 12. SESSION H/L EXTENSIONS
+// ================================================================
+
+// Each session: store H/L when it ends, draw dotted lines, delete when same session starts again
+var line asia_ext_h  = na, var line asia_ext_l  = na
+var line lon_ext_h   = na, var line lon_ext_l   = na
+var line pre_ext_h   = na, var line pre_ext_l   = na
+var line am_ext_h    = na, var line am_ext_l    = na
+var line pm_ext_h    = na, var line pm_ext_l    = na
+
+f_draw_hl_ext(float h, float l, color c) =>
+    lh = line.new(bar_index, h, bar_index + 1, h, extend=extend.right, style=line.style_dotted, color=color.new(c, 0), width=1)
+    ll = line.new(bar_index, l, bar_index + 1, l, extend=extend.right, style=line.style_dotted, color=color.new(c, 0), width=1)
+    [lh, ll]
+
+// Asia
+if asia_started
+    line.delete(asia_ext_h), line.delete(asia_ext_l)
+    asia_ext_h := na, asia_ext_l := na
+if en_session and asia_ended and asia_hl_ext and not na(asia_h)
+    [lh, ll] = f_draw_hl_ext(asia_h, asia_l, asia_col)
+    asia_ext_h := lh, asia_ext_l := ll
+
+// London
+if lon_started
+    line.delete(lon_ext_h), line.delete(lon_ext_l)
+    lon_ext_h := na, lon_ext_l := na
+if en_session and lon_ended and lon_hl_ext and not na(lon_h)
+    [lh, ll] = f_draw_hl_ext(lon_h, lon_l, lon_col)
+    lon_ext_h := lh, lon_ext_l := ll
+
+// Pre-Open
+if pre_started
+    line.delete(pre_ext_h), line.delete(pre_ext_l)
+    pre_ext_h := na, pre_ext_l := na
+if en_session and pre_ended and pre_hl_ext and not na(pre_h)
+    [lh, ll] = f_draw_hl_ext(pre_h, pre_l, pre_col)
+    pre_ext_h := lh, pre_ext_l := ll
+
+// NY AM
+if am_started
+    line.delete(am_ext_h), line.delete(am_ext_l)
+    am_ext_h := na, am_ext_l := na
+if en_session and am_ended and am_hl_ext and not na(am_h)
+    [lh, ll] = f_draw_hl_ext(am_h, am_l, am_col)
+    am_ext_h := lh, am_ext_l := ll
+
+// NY PM
+if pm_started
+    line.delete(pm_ext_h), line.delete(pm_ext_l)
+    pm_ext_h := na, pm_ext_l := na
+if en_session and pm_ended and pm_hl_ext and not na(pm_h)
+    [lh, ll] = f_draw_hl_ext(pm_h, pm_l, pm_col)
+    pm_ext_h := lh, pm_ext_l := ll
+
+// -- Session Box Level extensions (25/50/75) --
+// When a session ends, extend its enabled levels to the right; delete when the same session starts again
+var array<line>  asia_sblx = array.new<line>()
+var array<line>  lon_sblx  = array.new<line>()
+var array<line>  pre_sblx  = array.new<line>()
+var array<line>  am_sblx   = array.new<line>()
+var array<line>  pm_sblx   = array.new<line>()
+
+f_sbl_ext_clear(array<line> la) =>
+    while array.size(la) > 0
+        line.delete(array.pop(la))
+
+f_sbl_ext_one(array<line> la, float y, color c) =>
+    array.push(la, line.new(bar_index, y, bar_index + 1, y, extend=extend.right, style=sbl_style, color=c, width=sbl_width))
+
+f_sbl_ext_draw(array<line> la, float h, float l) =>
+    rng = h - l
+    if sbl_25_en
+        f_sbl_ext_one(la, l + rng * 0.25, sbl_25_col)
+    if sbl_50_en
+        f_sbl_ext_one(la, l + rng * 0.50, sbl_50_col)
+    if sbl_75_en
+        f_sbl_ext_one(la, l + rng * 0.75, sbl_75_col)
+
+if asia_started
+    f_sbl_ext_clear(asia_sblx)
+if en_session and sbl_active and sbl_extend and asia_ended and not na(asia_h)
+    f_sbl_ext_draw(asia_sblx, asia_h, asia_l)
+
+if lon_started
+    f_sbl_ext_clear(lon_sblx)
+if en_session and sbl_active and sbl_extend and lon_ended and not na(lon_h)
+    f_sbl_ext_draw(lon_sblx, lon_h, lon_l)
+
+if pre_started
+    f_sbl_ext_clear(pre_sblx)
+if en_session and sbl_active and sbl_extend and pre_ended and not na(pre_h)
+    f_sbl_ext_draw(pre_sblx, pre_h, pre_l)
+
+if am_started
+    f_sbl_ext_clear(am_sblx)
+if en_session and sbl_active and sbl_extend and am_ended and not na(am_h)
+    f_sbl_ext_draw(am_sblx, am_h, am_l)
+
+if pm_started
+    f_sbl_ext_clear(pm_sblx)
+if en_session and sbl_active and sbl_extend and pm_ended and not na(pm_h)
+    f_sbl_ext_draw(pm_sblx, pm_h, pm_l)
+
+// ================================================================
+// 13. VWAP
+// ================================================================
+
+is_new_day   = ta.change(time("D")) != 0
+is_new_week  = ta.change(time("W")) != 0
+is_new_month = ta.change(time("M")) != 0
+
+vwap_reset = vwap_anchor == "Session" ? (asia_started or lon_started or pre_started or am_started or pm_started) :
+             vwap_anchor == "Day"     ? is_new_day :
+             vwap_anchor == "Week"    ? is_new_week :
+             is_new_month
+
+var float vwap_cum_vol    = 0.0
+var float vwap_cum_tp_vol = 0.0
+
+if vwap_reset
+    vwap_cum_vol    := 0.0
+    vwap_cum_tp_vol := 0.0
+
+vwap_cum_vol    += volume
+vwap_cum_tp_vol += ((high + low + close) / 3.0) * volume
+
+vwap_val = vwap_cum_tp_vol / vwap_cum_vol
+
+plot(show_vwap ? vwap_val : na, "VWAP", color=vwap_col, linewidth=vwap_width)
+
+// ================================================================
+// 14. OPENING RANGE
+// ================================================================
+
+// Trend cloud state
+rib_fast_len = rib_fast
+rib_slow_len = math.max(rib_slow, rib_fast + 1)
+ema_fast = ta.ema(close, rib_fast_len)
+ema_slow = ta.ema(close, rib_slow_len)
+rib_is_bull  = ema_fast >= ema_slow
+
+// -- Opening Range (multi-session) - form an OR at each enabled session open --
+or_trigger = (asia_or_on and asia_started) or (lon_or_on and lon_started) or (pre_or_on and pre_started) or (am_or_on and am_started) or (pm_or_on and pm_started)
+
+var bool in_or = false
+var int  or_start_ms = 0
+if or_trigger
+    in_or := true
+    or_start_ms := time
+else if in_or and (time - or_start_ms) >= or_minutes * 60000
+    in_or := false
+
+or_started = or_trigger
+or_ended   = not in_or and in_or[1]
+
+var float or_h = na
+var float or_l = na
+var bool  or_set = false
+var bool  or_long_done = false
+var bool  or_short_done = false
+var bool  or_armed_up = false
+var bool  or_armed_dn = false
+var array<box> or_boxes = array.new<box>()
+var bool  or_day_active = false
+var int   or_box_session = 0      // which session owns the extending box: 1=Asia 2=London 3=Pre 4=AM 5=PM
+var bool  or_box_live    = false  // is the current box still extending (its session hasn't ended)
+
+if is_new_day
+    or_h := na
+    or_l := na
+    or_set := false
+    or_long_done := false
+    or_short_done := false
+    or_armed_up := false
+    or_armed_dn := false
+    or_day_active := false
+
+if or_started
+    or_h := high
+    or_l := low
+    or_set := false
+    or_long_done := false
+    or_short_done := false
+    or_armed_up := false
+    or_armed_dn := false
+    or_day_active := true
+    or_box_session := asia_or_on and asia_started ? 1 : lon_or_on and lon_started ? 2 : pre_or_on and pre_started ? 3 : am_or_on and am_started ? 4 : 5
+    or_box_live := true
+    if en_orb and or_show
+        while array.size(or_boxes) >= or_history
+            box.delete(array.shift(or_boxes))
+        nb = box.new(bar_index, or_h, bar_index, or_l, bgcolor=or_box_col, border_color=color.new(or_box_col, 0), border_width=1)
+        array.push(or_boxes, nb)
+else if in_or
+    or_h := math.max(or_h, high)
+    or_l := math.min(or_l, low)
+
+// Freeze the box when its owning session ends
+or_owner_ended = (or_box_session == 1 and asia_ended) or (or_box_session == 2 and lon_ended) or (or_box_session == 3 and pre_ended) or (or_box_session == 4 and am_ended) or (or_box_session == 5 and pm_ended)
+if or_owner_ended
+    or_box_live := false
+    // Invalidate the range: no breaks or pending retests after the owning session closes
+    or_set := false
+    or_armed_up := false
+    or_armed_dn := false
+
+// Extend the current (last) box until its session ends; past boxes stay frozen
+if en_orb and or_show and or_box_live and array.size(or_boxes) > 0
+    cb = array.last(or_boxes)
+    box.set_right(cb, bar_index)
+    box.set_top(cb, or_h)
+    box.set_bottom(cb, or_l)
+
+// ORB side filter - global Long/Short toggles, applied to every enabled session
+or_allow_long  = or_box_long
+or_allow_short = or_box_short
+
+if or_ended
+    or_set := true
+
+// Break detection (after OR finalized, same day, one per side)
+or_break_up_raw = or_set and not na(or_h) and close > or_h
+or_break_dn_raw = or_set and not na(or_l) and close < or_l
+
+bool or_sig_long = false
+bool or_sig_short = false
+
+if en_orb and or_signals and or_set and barstate.isconfirmed
+    if not or_retest
+        if or_break_up_raw and not or_long_done and or_allow_long
+            or_sig_long := true
+            or_long_done := true
+        if or_break_dn_raw and not or_short_done and or_allow_short
+            or_sig_short := true
+            or_short_done := true
+    else
+        // Fire on the retest first - armed on a PRIOR bar, so the break bar itself can't self-trigger
+        if or_armed_up and not or_long_done and or_allow_long and low <= or_h and close > or_h
+            or_sig_long := true
+            or_long_done := true
+            or_armed_up := false
+        if or_armed_dn and not or_short_done and or_allow_short and high >= or_l and close < or_l
+            or_sig_short := true
+            or_short_done := true
+            or_armed_dn := false
+        // Arm on the break
+        if or_break_up_raw and not or_long_done and not or_armed_up and or_allow_long
+            or_armed_up := true
+        if or_break_dn_raw and not or_short_done and not or_armed_dn and or_allow_short
+            or_armed_dn := true
+
+if or_sig_long
+    label.new(bar_index, low,  "ORB", style=label.style_label_up,   color=or_bull_col, textcolor=color.white, size=or_size)
+if or_sig_short
+    label.new(bar_index, high, "ORB", style=label.style_label_down, color=or_bear_col, textcolor=color.white, size=or_size)
+
+// ================================================================
+// 15. TREND CLOUD (Fast/Slow EMA, visual)
+// ================================================================
+
+rib_cloud_col = rib_is_bull ? #29A8F1 : #EC4899   // blue when bullish, pink when bearish
+
+rib_pf = plot(show_ribbon ? ema_fast : na, "Trend Cloud Fast EMA", color=na, display=display.none)
+rib_ps = plot(show_ribbon ? ema_slow : na, "Trend Cloud Slow EMA", color=na, display=display.none)
+fill(rib_pf, rib_ps, color=show_ribbon ? color.new(rib_cloud_col, 30) : na, title="Trend Cloud")
+
+// ================================================================
+// 16. ALERTS
+// ================================================================
+
+// -- Invisible extended level lines for price-touch detection --
+// Stored when session ends, valid for the next session's duration
+// Long levels (at session low) and short levels (at session high)
+
+var float alert_l1 = na
+var float alert_s1 = na
+var string alert_sess_name = ""
+
+// Reset level trackers when a new session starts (so stale levels don't persist)
+if asia_started or lon_started or pre_started or am_started or pm_started
+    alert_l1 := na
+    alert_s1 := na
+
+// Store level prices when session ends (mirrors f_draw_session logic)
+// Asia ends -> London levels
+if asia_ended
+    if lon_l1_en
+        alert_l1 := asia_l - lon_l1_off
+        alert_sess_name := lon_name
+    if lon_s1_en
+        alert_s1 := asia_h + lon_s1_off
+
+// London ends -> Pre-Open levels
+if lon_ended
+    if pre_l1_en
+        alert_l1 := lon_l - pre_l1_off
+        alert_sess_name := pre_name
+    if pre_s1_en
+        alert_s1 := lon_h + pre_s1_off
+
+// Pre-Open ends -> NY AM levels
+if pre_ended
+    if am_l1_en
+        alert_l1 := pre_l - am_l1_off
+        alert_sess_name := am_name
+    if am_s1_en
+        alert_s1 := pre_h + am_s1_off
+
+// NY AM ends -> NY PM levels
+if am_ended
+    if pm_l1_en
+        alert_l1 := am_l - pm_l1_off
+        alert_sess_name := pm_name
+    if pm_s1_en
+        alert_s1 := am_h + pm_s1_off
+
+// NY PM ends -> Asia levels
+if pm_ended
+    if asia_l1_en
+        alert_l1 := pm_l - asia_l1_off
+        alert_sess_name := asia_name
+    if asia_s1_en
+        alert_s1 := pm_h + asia_s1_off
+
+// -- Level touch detection (price crosses level) --
+// State tracking - fire once per cross
+var bool last_l1_touch = false
+var bool last_s1_touch = false
+
+l1_cross_raw = ta.cross(close, alert_l1)
+s1_cross_raw = ta.cross(close, alert_s1)
+l1_cross = not na(alert_l1) and l1_cross_raw
+s1_cross = not na(alert_s1) and s1_cross_raw
+
+// Fire only on new cross, reset when level resets (new session)
+l1_touch = l1_cross and not last_l1_touch
+s1_touch = s1_cross and not last_s1_touch
+
+// Update state - reset when session changes (alert_l1 resets to na)
+last_l1_touch := na(alert_l1) ? false : l1_cross ? true : last_l1_touch
+last_s1_touch := na(alert_s1) ? false : s1_cross ? true : last_s1_touch
+
+// -- VWAP cross detection --
+vwap_cross_bull = ta.crossover(close,  vwap_val)
+vwap_cross_bear = ta.crossunder(close, vwap_val)
+
+// -- alertcondition() - native TradingView alert dropdown --
+
+// Session start alerts
+alertcondition(asia_started, "Asia Session Started",     "Q-STS Lite: Asia session started")
+alertcondition(lon_started,  "London Session Started",   "Q-STS Lite: London session started")
+alertcondition(pre_started,  "NY Pre-Open Started",      "Q-STS Lite: NY Pre-Open session started")
+alertcondition(am_started,   "NY AM Started",            "Q-STS Lite: NY AM session started")
+alertcondition(pm_started,   "NY PM Started",            "Q-STS Lite: NY PM session started")
+
+// Session end / levels drawn alerts
+alertcondition(asia_ended, "Asia Ended - London Levels Ready",       "Q-STS Lite: Asia closed - London entry levels drawn")
+alertcondition(lon_ended,  "London Ended - Pre-Open Levels Ready",   "Q-STS Lite: London closed - NY Pre-Open entry levels drawn")
+alertcondition(pre_ended,  "Pre-Open Ended - NY AM Levels Ready",    "Q-STS Lite: NY Pre-Open closed - NY AM entry levels drawn")
+alertcondition(am_ended,   "NY AM Ended - NY PM Levels Ready",       "Q-STS Lite: NY AM closed - NY PM entry levels drawn")
+alertcondition(pm_ended,   "NY PM Ended - Asia Levels Ready",        "Q-STS Lite: NY PM closed - Asia entry levels drawn")
+
+// VWAP cross alerts
+alertcondition(vwap_cross_bull, "VWAP Cross Bullish", "Q-STS Lite: Price crossed above VWAP")
+alertcondition(vwap_cross_bear, "VWAP Cross Bearish", "Q-STS Lite: Price crossed below VWAP")
+
+// Level touch alerts
+alertcondition(l1_touch, "Long Level 1 Touched", "Q-STS Lite: Price reached Long Level 1")
+alertcondition(s1_touch, "Short Level 1 Touched", "Q-STS Lite: Price reached Short Level 1")
+
+// -- alert() - dynamic messages with price/session context --
+
+// Session start
+if asia_started
+    alert("Q-STS Lite: " + asia_name + " session started | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if lon_started
+    alert("Q-STS Lite: " + lon_name + " session started | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if pre_started
+    alert("Q-STS Lite: " + pre_name + " session started | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if am_started
+    alert("Q-STS Lite: " + am_name + " session started | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if pm_started
+    alert("Q-STS Lite: " + pm_name + " session started | " + syminfo.ticker, alert.freq_once_per_bar_close)
+
+// Session end / levels drawn
+if asia_ended
+    alert("Q-STS Lite: " + asia_name + " closed | " + lon_name + " levels drawn @ High: " + str.tostring(asia_h, format.mintick) + " Low: " + str.tostring(asia_l, format.mintick) + " | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if lon_ended
+    alert("Q-STS Lite: " + lon_name + " closed | " + pre_name + " levels drawn @ High: " + str.tostring(lon_h, format.mintick) + " Low: " + str.tostring(lon_l, format.mintick) + " | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if pre_ended
+    alert("Q-STS Lite: " + pre_name + " closed | " + am_name + " levels drawn @ High: " + str.tostring(pre_h, format.mintick) + " Low: " + str.tostring(pre_l, format.mintick) + " | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if am_ended
+    alert("Q-STS Lite: " + am_name + " closed | " + pm_name + " levels drawn @ High: " + str.tostring(am_h, format.mintick) + " Low: " + str.tostring(am_l, format.mintick) + " | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if pm_ended
+    alert("Q-STS Lite: " + pm_name + " closed | " + asia_name + " levels drawn @ High: " + str.tostring(pm_h, format.mintick) + " Low: " + str.tostring(pm_l, format.mintick) + " | " + syminfo.ticker, alert.freq_once_per_bar_close)
+
+// VWAP cross
+if vwap_cross_bull
+    alert("Q-STS Lite: Price crossed ABOVE VWAP @ " + str.tostring(close, format.mintick) + " | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if vwap_cross_bear
+    alert("Q-STS Lite: Price crossed BELOW VWAP @ " + str.tostring(close, format.mintick) + " | " + syminfo.ticker, alert.freq_once_per_bar_close)
+
+// Level touches
+if l1_touch
+    alert("Q-STS Lite: LONG L1 touched @ " + str.tostring(alert_l1, format.mintick) + " | Session: " + alert_sess_name + " | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if s1_touch
+    alert("Q-STS Lite: SHORT S1 touched @ " + str.tostring(alert_s1, format.mintick) + " | Session: " + alert_sess_name + " | " + syminfo.ticker, alert.freq_once_per_bar_close)
+
+// ================================================================
+// 17. OPENING RANGE ALERTS
+// ================================================================
+
+alertcondition(or_sig_long,  "OR Break Up",          "Q-STS Lite: Opening Range break UP")
+alertcondition(or_sig_short, "OR Break Down",        "Q-STS Lite: Opening Range break DOWN")
+
+if or_sig_long
+    alert("Q-STS Lite: Opening Range BREAK UP @ " + str.tostring(close, format.mintick) + " | OR High " + str.tostring(or_h, format.mintick) + " | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if or_sig_short
+    alert("Q-STS Lite: Opening Range BREAK DOWN @ " + str.tostring(close, format.mintick) + " | OR Low " + str.tostring(or_l, format.mintick) + " | " + syminfo.ticker, alert.freq_once_per_bar_close)

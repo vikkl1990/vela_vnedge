@@ -1,0 +1,99 @@
+//@version=6
+// Last updated (UTC): 2026-09-19 06:48:12 UTC
+indicator("BB Fill + Visible-Range Fib Retracement", overlay = true, max_lines_count = 20, max_labels_count = 20)
+
+// =========================================================================
+// SECTION 1 — Bollinger Bands (fill-only, no basis/upper/lower lines drawn)
+// =========================================================================
+bbLength      = input.int(20, "BB Length", minval = 1, group = "Bollinger Bands")
+bbSource      = input.source(close, "BB Source", group = "Bollinger Bands")
+bbMult        = input.float(2.0, "BB StdDev Multiplier", minval = 0.001, step = 0.1, group = "Bollinger Bands")
+bbFillColor   = input.color(color.gray, "BB Fill Color", group = "Bollinger Bands")
+bbFillTransp  = input.int(85, "BB Fill Transparency (%)", minval = 0, maxval = 100, group = "Bollinger Bands")
+
+bbBasis = ta.sma(bbSource, bbLength)
+bbDev   = bbMult * ta.stdev(bbSource, bbLength)
+bbUpper = bbBasis + bbDev
+bbLower = bbBasis - bbDev
+
+// plots are fully transparent so only the fill region between them is visible
+bbUpperPlot = plot(bbUpper, color = color.new(color.gray, 100), title = "BB Upper (hidden)")
+bbLowerPlot = plot(bbLower, color = color.new(color.gray, 100), title = "BB Lower (hidden)")
+fill(bbUpperPlot, bbLowerPlot, color = color.new(bbFillColor, bbFillTransp), title = "BB Fill")
+
+// =========================================================================
+// SECTION 2 — Fibonacci retracement over the currently visible chart range
+// =========================================================================
+showFib       = input.bool(true, "Show Fib Retracement", group = "Fibonacci")
+showFibLabels = input.bool(true, "Show Fib Price Labels", group = "Fibonacci")
+
+var float[] fibLevels = array.from(0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0)
+
+// history buffers used to find the highest high / lowest low inside the visible range
+var int[]   histTime = array.new<int>()
+var float[] histHigh = array.new<float>()
+var float[] histLow  = array.new<float>()
+
+array.push(histTime, time)
+array.push(histHigh, high)
+array.push(histLow, low)
+
+// reusable drawing objects (created once, then repositioned in place)
+var line[]  fibLines  = array.new<line>(7, na)
+var label[] fibLabels = array.new<label>(7, na)
+
+updateFib() =>
+    leftT  = chart.left_visible_bar_time
+    rightT = chart.right_visible_bar_time
+
+    hh = float(na)
+    hhTime = int(na)
+    ll = float(na)
+    llTime = int(na)
+
+    n = array.size(histTime)
+    for i = n - 1 to 0
+        t = array.get(histTime, i)
+        if t < leftT
+            break
+        if t <= rightT
+            h = array.get(histHigh, i)
+            l = array.get(histLow, i)
+            if na(hh) or h > hh
+                hh := h
+                hhTime := t
+            if na(ll) or l < ll
+                ll := l
+                llTime := t
+
+    if not na(hh) and not na(ll)
+        uptrend = hhTime > llTime // low happened first -> retracing down from the high
+        range_  = hh - ll
+
+        for idx = 0 to array.size(fibLevels) - 1
+            lvl = array.get(fibLevels, idx)
+            price = uptrend ? hh - range_ * lvl : ll + range_ * lvl
+
+            ln = array.get(fibLines, idx)
+            if na(ln)
+                ln := line.new(leftT, price, rightT, price, xloc = xloc.bar_time, color = color.new(color.orange, 40), width = 1)
+                array.set(fibLines, idx, ln)
+            else
+                line.set_xy1(ln, leftT, price)
+                line.set_xy2(ln, rightT, price)
+                line.set_color(ln, color.new(color.orange, 40))
+
+            lb = array.get(fibLabels, idx)
+            labelText = str.tostring(lvl, "0.000") + " (" + str.tostring(price, format.mintick) + ")"
+            if showFibLabels
+                if na(lb)
+                    lb := label.new(rightT, price, labelText, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.orange, 100), textcolor = color.orange, size = size.small)
+                    array.set(fibLabels, idx, lb)
+                else
+                    label.set_xy(lb, rightT, price)
+                    label.set_text(lb, labelText)
+            else if not na(lb)
+                label.set_text(lb, "")
+
+if showFib and barstate.islast
+    updateFib()

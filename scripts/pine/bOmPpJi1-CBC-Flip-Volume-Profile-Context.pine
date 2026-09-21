@@ -1,0 +1,415 @@
+//@version=6
+// =============================================================================
+// CBC Flip - Volume Profile Context
+// -----------------------------------------------------------------------------
+// Candle-By-Candle (CBC) control latch, qualified by rolling MASTER VOLUME
+// PROFILE context (point of control and value area of a trailing window).
+//
+// CBC engine (methodology popularized by maplestax; strictly close-based,
+// non-repainting by construction):
+//   - a candle CLOSES above the previous candle's HIGH -> bulls take control
+//   - a candle CLOSES below the previous candle's LOW  -> bears take control
+//   - otherwise the current control state PERSISTS (hysteresis)
+//   - labels print only on a control CHANGE; continuation breaks in the same
+//     direction do not re-print (this is what keeps the chart readable)
+//
+// What makes this build different from a plain CBC flip: it only surfaces the
+// TWO control changes that interact with the master profile, and tags each:
+//   BRK  = VALUE-AREA BREAKOUT — bull flip closing above mVAH / bear flip
+//          closing below mVAL: acceptance outside value, initiative activity
+//   REV  = MEAN REVERSION — bull flip from the lower half of value (the mVAL
+//          side) turning price back toward mPOC / bear flip from the upper
+//          half (the mVAH side) turning back toward mPOC. A dotted guide to
+//          the LIVE mPOC is drawn from the flip bar; it tracks the POC as it
+//          moves and disappears when the rotation reaches the POC or fails
+//          (flip candle's invalidation extreme broken / opposite signal).
+//   VA   = flip in the no-man's-land between mPOC and the value edge on the
+//          flip's own side — hidden by default (balanced-market noise)
+// The same signal class + direction never prints twice in a row: a repeat
+// BRK-long after a BRK-long is the same information re-shouted; a different
+// class or direction re-arms it.
+//   ~    = the flip fired INTO an absorbed (DEAD) volume node — treat with
+//          suspicion, the opposing flow already exhausted itself there
+// A BRK whose flip close is already far beyond the edge (see 'BRK: max
+// extension past the edge') is suppressed as too-late anti-chase noise.
+//
+// NON-TRADING BY DESIGN. No strategy, no entries/exits, no SL/TP, no sizing.
+// A passive technical readout for study — NOT financial advice.
+// Node states update on confirmed bars only (no intrabar preview).
+//
+// This source code is subject to the terms of the Mozilla Public License 2.0.
+// (c) kenkemdayfx
+// =============================================================================
+indicator("CBC Flip - Volume Profile Context", "CBC VP Flip", overlay=true, max_bars_back=1300,
+     max_lines_count=500, max_labels_count=500, max_boxes_count=100)
+// max_bars_back must cover the worst-case master VP window = vpLookback(max 300)
+// x masterMult(max 4.0) = 1200 bars (f_vp reads hlc3[useLen-1]/volume[useLen-1]),
+// or the script throws a runtime out-of-history error at extreme input settings.
+
+// =============================================================================
+// INPUTS (curated — this is open source; deeper tuning = edit the consts below)
+// =============================================================================
+gCbc = "CBC Engine"
+strictBreaks  = input.bool(true,  "Strict breaks (close beyond, not on, prior high/low)", group=gCbc, tooltip="ON (canonical CBC): a flip needs a close strictly ABOVE the prior high (long) or strictly BELOW the prior low (short) — equal closes do not flip. OFF: equal closes count.")
+minFlipAtr    = input.float(0.0,  "Min flip-candle range (x ATR, 0=off)", minval=0.0, maxval=3.0, step=0.1, group=gCbc, tooltip="Noise filter: a flip only registers if the flip candle's own range (high-low) is at least this x ATR. 0 (default) = canonical CBC, every flip counts. Try 0.5-1.0 on very low timeframes.")
+requireBody   = input.bool(true,  "Flip candle must close in the flip direction", group=gCbc, tooltip="ON (default): a bull flip additionally needs a green flip candle (close > open), a bear flip a red one. Filters weak flips where price closed beyond the prior high/low but the candle itself closed against the break (a fade-in-progress). OFF = canonical CBC, break alone is enough.")
+showInvDash   = input.bool(true,  "Show invalidation dash (flip candle high/low)", group=gCbc, tooltip="ON: draw the current control state's invalidation price — the flip candle's LOW while bulls hold control, its HIGH while bears hold. The level a close beyond would break the CBC structure that armed the state.")
+showVaFlips   = input.bool(false, "Show in-value (VA) flips", group=gCbc, tooltip="OFF (default): flips that fire in the dead zone between mPOC and the value edge on the flip's own side are hidden — that chop carries no structural information. What remains is the two profile-meaningful cases: BRK (value-area breakout) and REV (edge-side reversion toward mPOC). ON: show every control change, dead-zone ones included.")
+brkExtMaxPct  = input.float(10.0, "BRK: max extension past the edge (% of edge-to-POC, 0=off)", minval=0.0, maxval=100.0, step=5.0, group=gCbc, tooltip="Anti-chase filter. A breakout flip is hidden if the flip close is already further beyond mVAH/mVAL than this % of the edge-to-mPOC distance (default 10: with a $10 edge-to-POC span, a bull BRK more than $1 above mVAH is too extended to be informative). 0 = off, every breakout shows.")
+showRevGuide  = input.bool(true,  "REV: draw guide to mPOC", group=gCbc, tooltip="ON (default): a mean-reversion flip draws a short dotted guide from the flip price to the current master POC — the level a reversion leg is rotating toward. Display only; it is a structural readout, not a target or a recommendation.")
+
+gVP = "Volume Profile Context"
+vpLookback = input.int(100, "VP block bars (local window)", minval=20, maxval=300, step=5, group=gVP, tooltip="Completed bars in the local profile window. The MASTER profile (the one the flip context reads) uses this x the master multiplier.")
+masterMult = input.float(3.0, "Master VP window (x local)", minval=2.0, maxval=4.0, step=0.5, group=gVP)
+vpBins     = input.int(40,  "VP bins", minval=12, maxval=120, step=2, group=gVP)
+vaPct      = input.float(70.0, "Value area %", minval=50.0, maxval=95.0, step=5.0, group=gVP)
+
+gViz = "Visuals"
+showMasterNode = input.bool(true, "Show master profile levels (mPOC/mVAH/mVAL)", group=gViz)
+showFlipLabels = input.bool(true, "Show flip labels (BRK/REV/VA)", group=gViz)
+cbcBarColor    = input.bool(false, "Tint bars by CBC control state", group=gViz, tooltip="ON: bars tint green while bulls hold CBC control, red while bears hold, neutral otherwise. OFF (default): plain chart.")
+
+// --- Node-state engine consts (edit here; not exposed as inputs) ---
+float nodeTouchAtr    = 0.05
+float nodeDecay       = 0.94
+float nodeNeutralBand = 0.15
+float nodeSaturation  = 4.0
+int   atrLen          = 14
+
+atr = ta.atr(atrLen)
+
+f_clamp(v, lo, hi) => math.max(lo, math.min(hi, v))
+
+// =============================================================================
+// MASTER VOLUME PROFILE (trailing window, bar-resolution)
+// =============================================================================
+f_vp(_len, _bins, _vaPct) =>
+    int useLen = math.max(_bins, _len)
+    float lo = ta.lowest(low, useLen)
+    float hi = ta.highest(high, useLen)
+    float step = (hi - lo) / _bins
+    float poc = na
+    float vah = na
+    float val = na
+    if step > 0
+        float[] hist = array.new_float(_bins, 0.0)
+        for i = 0 to useLen - 1
+            float p = hlc3[i]
+            int bi = int(f_clamp(math.floor((p - lo) / step), 0, _bins - 1))
+            array.set(hist, bi, array.get(hist, bi) + volume[i])
+        float total = 0.0
+        int pocIdx = 0
+        float pocVol = -1.0
+        for b = 0 to _bins - 1
+            float hv = array.get(hist, b)
+            total += hv
+            if hv > pocVol
+                pocVol := hv
+                pocIdx := b
+        float target = total * (_vaPct * 0.01)
+        float acc = array.get(hist, pocIdx)
+        int loIdx = pocIdx
+        int hiIdx = pocIdx
+        while acc < target and (loIdx > 0 or hiIdx < _bins - 1)
+            float nextL = loIdx > 0 ? array.get(hist, loIdx - 1) : -1.0
+            float nextH = hiIdx < _bins - 1 ? array.get(hist, hiIdx + 1) : -1.0
+            if nextH >= nextL
+                hiIdx += 1
+                acc += array.get(hist, hiIdx)
+            else
+                loIdx -= 1
+                acc += array.get(hist, loIdx)
+        poc := lo + (pocIdx + 0.5) * step
+        vah := lo + (hiIdx + 1.0) * step
+        val := lo + loIdx * step
+    [poc, vah, val, hi, lo]
+
+[mPoc, mVah, mVal, mPh, mPl] = f_vp(int(vpLookback * masterMult), vpBins, vaPct)
+
+// =============================================================================
+// NODE STATE ENGINE (synthetic buy/sell pressure + absorption, confirmed bars)
+// =============================================================================
+var float[] nodeBuy   = array.new_float()
+var float[] nodeSell  = array.new_float()
+var float[] nodeTouch = array.new_float()
+
+if array.size(nodeBuy) != vpBins
+    nodeBuy   := array.new_float(vpBins, 0.0)
+    nodeSell  := array.new_float(vpBins, 0.0)
+    nodeTouch := array.new_float(vpBins, 0.0)
+
+float mLo = mPl
+float mHi = mPh
+float mStep = (mHi - mLo) / vpBins
+float touchDist = math.max(nodeTouchAtr * atr, 2 * syminfo.mintick)
+float dirProxy  = (close - open) / math.max(high - low, syminfo.mintick)
+float buyProxy  = volume * math.max(dirProxy, 0.0)
+float sellProxy = volume * math.max(-dirProxy, 0.0)
+
+if mStep > 0 and barstate.isconfirmed
+    for b = 0 to vpBins - 1
+        array.set(nodeBuy,   b, array.get(nodeBuy, b)   * nodeDecay)
+        array.set(nodeSell,  b, array.get(nodeSell, b)  * nodeDecay)
+        array.set(nodeTouch, b, array.get(nodeTouch, b) * nodeDecay)
+    int lowIdx  = int(f_clamp(math.floor((low  - mLo) / mStep), 0, vpBins - 1))
+    int highIdx = int(f_clamp(math.floor((high - mLo) / mStep), 0, vpBins - 1))
+    for b = lowIdx to highIdx
+        float nodePx = mLo + (b + 0.5) * mStep
+        bool touched = math.abs(close - nodePx) <= touchDist or (low <= nodePx and high >= nodePx)
+        if touched
+            array.set(nodeTouch, b, array.get(nodeTouch, b) + 1.0)
+            array.set(nodeBuy,   b, array.get(nodeBuy, b)   + buyProxy  / math.max(highIdx - lowIdx + 1, 1))
+            array.set(nodeSell,  b, array.get(nodeSell, b)  + sellProxy / math.max(highIdx - lowIdx + 1, 1))
+
+f_node_state(_idx) =>
+    float b = array.get(nodeBuy, _idx)
+    float s = array.get(nodeSell, _idx)
+    float t = array.get(nodeTouch, _idx)
+    float net = (b - s) / math.max(b + s, 1.0)
+    bool absorbed = t >= nodeSaturation and math.abs(net) <= nodeNeutralBand
+    int state = absorbed ? 0 : net > nodeNeutralBand ? 1 : net < -nodeNeutralBand ? -1 : 0
+    [state, net, t, absorbed]
+
+f_pick_idx(_px) =>
+    mStep > 0 ? int(f_clamp(math.floor((_px - mLo) / mStep), 0, vpBins - 1)) : 0
+
+[mPocState, mPocNet, mPocTouch, mPocAbs] = f_node_state(f_pick_idx(mPoc))
+[mVahState, mVahNet, mVahTouch, mVahAbs] = f_node_state(f_pick_idx(mVah))
+[mValState, mValNet, mValTouch, mValAbs] = f_node_state(f_pick_idx(mVal))
+
+f_tag_bg(_state, _absorbed) =>
+    _absorbed   ? color.new(#3E3E3E, 10) :
+     _state > 0 ? color.new(#1B5E20, 12) :
+     _state < 0 ? color.new(#8B1A1A, 12) :
+     color.new(#3E3E3E, 55)
+f_tag_txt(_state, _absorbed, _net) =>
+    _absorbed   ? "~" :
+     _state > 0 ? "▲" :
+     _state < 0 ? "▼" :
+     "flat"
+
+// =============================================================================
+// CBC ENGINE — control latch + flip detection (confirmed bars only)
+// =============================================================================
+var int   cbcState = 0        // +1 bulls in control, -1 bears, 0 unseeded
+var float invPrice = na       // flip candle low (bull state) / high (bear state)
+var int   flipBar  = na
+
+bool rangeOk    = minFlipAtr <= 0 or (high - low) >= minFlipAtr * atr
+bool bullBreak  = (strictBreaks ? close >  high[1] : close >= high[1]) and (not requireBody or close > open)
+bool bearBreak  = (strictBreaks ? close <  low[1]  : close <= low[1])  and (not requireBody or close < open)
+// State-change only: a break in the direction ALREADY in control is a
+// continuation, not a flip, and prints nothing.
+bool bullFlip   = barstate.isconfirmed and bar_index > 0 and bullBreak and rangeOk and cbcState != 1
+bool bearFlip   = barstate.isconfirmed and bar_index > 0 and bearBreak and rangeOk and cbcState != -1
+
+if bullFlip
+    cbcState := 1
+    invPrice := low
+    flipBar  := bar_index
+else if bearFlip
+    cbcState := -1
+    invPrice := high
+    flipBar  := bar_index
+
+// --- Flip context: the two profile-meaningful cases ----------------------
+// BRK (value-area breakout): the flip close is accepted OUTSIDE value.
+// REV (mean reversion): the flip turns price back from the edge-side half of
+// value toward mPOC (bull from at/below mPOC, bear from at/above mPOC).
+// VA: the dead zone between mPOC and the near edge — no structural read.
+f_flip_ctx(bool _isLong) =>
+    string ctx = "VA"
+    if not na(mVah) and not na(mVal) and not na(mPoc)
+        if _isLong
+            ctx := close > mVah ? "BRK" : close <= mPoc ? "REV" : "VA"
+        else
+            ctx := close < mVal ? "BRK" : close >= mPoc ? "REV" : "VA"
+    ctx
+
+// Dead-node check at the flip price: did the flip fire INTO absorbed flow?
+f_flip_dead() =>
+    bool d = false
+    if mStep > 0
+        [fState, fNet, fTouch, fAbs] = f_node_state(f_pick_idx(close))
+        d := fAbs
+    d
+
+// Anti-chase: is this BRK already too extended past the edge to be informative?
+f_brk_too_far(bool _isLong) =>
+    bool too = false
+    if brkExtMaxPct > 0 and not na(mVah) and not na(mVal) and not na(mPoc)
+        float ref = _isLong ? (mVah - mPoc) : (mPoc - mVal)   // edge-to-POC span
+        float ext = _isLong ? (close - mVah) : (mVal - close) // extension past the edge
+        too := ref > 0 and ext > ref * brkExtMaxPct / 100.0
+    too
+
+color cBull = #43A047
+color cBear = #E53935
+
+// Display gate: dead-zone (VA) flips are hidden by default — they are the
+// noise of a balanced market rotating between mPOC and the edges. The CBC
+// state latch itself stays canonical (it still flips); only the visuals and
+// alerts are gated.
+string ctxBull = bullFlip ? f_flip_ctx(true)  : ""
+string ctxBear = bearFlip ? f_flip_ctx(false) : ""
+
+// Dedup latch: the same class + direction never displays twice in a row.
+// A different class or a direction change re-arms it.
+var string lastShown = ""
+bool dupBull = bullFlip and (ctxBull + "_L") == lastShown
+bool dupBear = bearFlip and (ctxBear + "_S") == lastShown
+
+bool showBull = bullFlip and not dupBull and (showVaFlips or ctxBull != "VA") and not (ctxBull == "BRK" and f_brk_too_far(true))
+bool showBear = bearFlip and not dupBear and (showVaFlips or ctxBear != "VA") and not (ctxBear == "BRK" and f_brk_too_far(false))
+if showBull
+    lastShown := ctxBull + "_L"
+if showBear
+    lastShown := ctxBear + "_S"
+
+// Flip markers + context tags
+if showBull and showFlipLabels
+    string tag = ctxBull + (f_flip_dead() ? " ~" : "")
+    color lc = ctxBull == "BRK" ? color.new(#00C853, 0) : ctxBull == "REV" ? color.new(#69F0AE, 0) : color.new(cBull, 20)
+    label.new(bar_index, low, "▲ " + tag, style=label.style_label_up, color=color.new(lc, 65), textcolor=lc, size=size.normal)
+if showBear and showFlipLabels
+    string tag = ctxBear + (f_flip_dead() ? " ~" : "")
+    color lc = ctxBear == "BRK" ? color.new(#e20606, 0) : ctxBear == "REV" ? color.new(#ec2b19, 0) : color.new(cBear, 20)
+    label.new(bar_index, high, "▼ " + tag, style=label.style_label_down, color=color.new(lc, 65), textcolor=lc, size=size.normal)
+
+// REV guides: dotted line from the flip price to the LIVE master POC,
+// re-anchored at the target end every bar while the leg is open. The guide
+// disappears when the rotation is done (price reaches the moving mPOC) or
+// when it has failed (price breaks the flip candle's invalidation extreme,
+// or the opposite shown signal fires). One line per direction.
+var line  revLnL  = na
+var line  revLnS  = na
+var float revInvL = na   // flip candle low  — invalidation for the long guide
+var float revInvS = na   // flip candle high — invalidation for the short guide
+
+f_hide_line(_ln) =>
+    if not na(_ln)
+        line.set_color(_ln, color.new(color.gray, 100))
+
+bool revBull = showBull and ctxBull == "REV"
+bool revBear = showBear and ctxBear == "REV"
+
+// A new shown signal of the opposite side retires the standing guide.
+if showBear
+    f_hide_line(revLnL)
+    revInvL := na
+if showBull
+    f_hide_line(revLnS)
+    revInvS := na
+
+if revBull and showRevGuide
+    revInvL := low
+    if na(revLnL)
+        revLnL := line.new(bar_index, close, bar_index + 6, mPoc, color=color.new(#69F0AE, 40), style=line.style_dotted, width=1)
+    else
+        line.set_xy1(revLnL, bar_index, close)
+        line.set_color(revLnL, color.new(#69F0AE, 40))
+if revBear and showRevGuide
+    revInvS := high
+    if na(revLnS)
+        revLnS := line.new(bar_index, close, bar_index + 6, mPoc, color=color.new(#FF8A80, 40), style=line.style_dotted, width=1)
+    else
+        line.set_xy1(revLnS, bar_index, close)
+        line.set_color(revLnS, color.new(#FF8A80, 40))
+
+// Live target tracking + resolution (done = reached mPOC; fail = invalidation)
+if not na(revLnL) and not na(revInvL) and showRevGuide
+    if not na(mPoc)
+        line.set_xy2(revLnL, bar_index + 6, mPoc)
+    if (not na(mPoc) and high >= mPoc) or low < revInvL
+        f_hide_line(revLnL)
+        revInvL := na
+if not na(revLnS) and not na(revInvS) and showRevGuide
+    if not na(mPoc)
+        line.set_xy2(revLnS, bar_index + 6, mPoc)
+    if (not na(mPoc) and low <= mPoc) or high > revInvS
+        f_hide_line(revLnS)
+        revInvS := na
+
+// Toggle off: park both guides.
+if not showRevGuide
+    f_hide_line(revLnL)
+    f_hide_line(revLnS)
+    revInvL := na
+    revInvS := na
+
+// Invalidation dash — extends while the DISPLAYED state persists, re-anchors
+// on a shown flip. Uses its own anchor vars: hidden VA flips still move the
+// canonical latch (invPrice/flipBar), and the dash must not tilt toward them.
+var line  invLn      = na
+var float dispInv    = na
+var int   dispFlipAt = na
+if showBull or showBear
+    dispInv    := invPrice
+    dispFlipAt := flipBar
+if showInvDash
+    if showBull or showBear
+        color ic = showBull ? color.new(cBull, 30) : color.new(cBear, 30)
+        if na(invLn)
+            invLn := line.new(dispFlipAt, dispInv, bar_index + 2, dispInv, color=ic, style=line.style_dashed, width=1)
+        else
+            line.set_xy1(invLn, dispFlipAt, dispInv)
+            line.set_xy2(invLn, bar_index + 2, dispInv)
+            line.set_color(invLn, ic)
+    else if not na(invLn) and not na(dispInv)
+        line.set_xy2(invLn, bar_index + 2, dispInv)
+else if not na(invLn)
+    line.set_color(invLn, color.new(color.gray, 100))
+
+barcolor(cbcBarColor ? (cbcState == 1 ? color.new(cBull, 70) : cbcState == -1 ? color.new(cBear, 70) : na) : na, title="CBC control tint")
+
+// Passive technical-state alerts (bar close). Informational only.
+alertcondition(showBull, "CBC bull flip", "CBC bull flip: control changed hands at/beyond the master value area (technical state change, not advice)")
+alertcondition(showBear, "CBC bear flip", "CBC bear flip: control changed hands at/beyond the master value area (technical state change, not advice)")
+
+// =============================================================================
+// MASTER LEVEL VISUALS
+// =============================================================================
+color cMaster = #2962FF
+
+var line  lnMPoc = na
+var line  lnMVah = na
+var line  lnMVal = na
+var label lbMPoc = na
+var label lbMVah = na
+var label lbMVal = na
+
+f_paint(_ln, _lb, _show, _x1, _x2, _price, _lineCol, _bg, _name, _txt) =>
+    if _show and not na(_price)
+        line.set_xy1(_ln, _x1, _price)
+        line.set_xy2(_ln, _x2, _price)
+        line.set_color(_ln, _lineCol)
+        label.set_xy(_lb, _x2, _price)
+        label.set_text(_lb, _name + " " + _txt)
+        label.set_color(_lb, _bg)
+        label.set_textcolor(_lb, color.white)
+    else
+        line.set_color(_ln, color.new(color.gray, 100))
+        label.set_text(_lb, "")
+        label.set_color(_lb, color.new(color.gray, 100))
+        label.set_textcolor(_lb, color.new(color.gray, 100))
+
+if barstate.islast
+    int xR  = bar_index + 8
+    int xL  = math.max(0, bar_index - int(vpLookback * masterMult) + 1)
+    if na(lnMPoc)
+        lnMPoc := line.new(bar_index, close, bar_index, close, color=cMaster, style=line.style_solid,  width=3)
+        lnMVah := line.new(bar_index, close, bar_index, close, color=cMaster, style=line.style_dashed, width=1)
+        lnMVal := line.new(bar_index, close, bar_index, close, color=cMaster, style=line.style_dashed, width=1)
+        lbMPoc := label.new(bar_index, close, "", style=label.style_label_left, textcolor=color.white, size=size.small)
+        lbMVah := label.new(bar_index, close, "", style=label.style_label_left, textcolor=color.white, size=size.small)
+        lbMVal := label.new(bar_index, close, "", style=label.style_label_left, textcolor=color.white, size=size.small)
+    f_paint(lnMPoc, lbMPoc, showMasterNode, xL, xR, mPoc, cMaster, f_tag_bg(mPocState, mPocAbs), "mPOC", f_tag_txt(mPocState, mPocAbs, mPocNet))
+    f_paint(lnMVah, lbMVah, showMasterNode, xL, xR, mVah, cMaster, f_tag_bg(mVahState, mVahAbs), "mVAH", f_tag_txt(mVahState, mVahAbs, mVahNet))
+    f_paint(lnMVal, lbMVal, showMasterNode, xL, xR, mVal, cMaster, f_tag_bg(mValState, mValAbs), "mVAL", f_tag_txt(mValState, mValAbs, mValNet))
+
+// =============================================================================
+// PERSISTENT COMPLIANCE FOOTER — always-on, not user-toggleable by design.
+// =============================================================================
+var table discTbl = table.new(position.bottom_center, 1, 1, bgcolor=color.new(color.black, 60))
+if barstate.islast
+    table.cell(discTbl, 0, 0, "Technical readout only - not financial advice", text_color=color.new(color.yellow, 0), text_size=size.normal)

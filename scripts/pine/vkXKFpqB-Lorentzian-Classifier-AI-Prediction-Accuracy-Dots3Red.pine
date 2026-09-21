@@ -1,0 +1,230 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0
+// © Dots3Red
+// TradingView: https://www.tradingview.com/u/Dots3Red/
+
+//@version=6
+indicator("Lorentzian Classifier AI - Prediction Accuracy Tracker [Dots3Red]",
+          shorttitle = "Lorentzian AI [D3R]",
+          overlay    = true,
+          max_labels_count = 500)
+
+
+// COLORS
+C_GREEN   = color.new(#00c896, 0)
+C_RED     = color.new(#ff4466, 0)
+C_AMBER   = color.new(#ffb700, 0)
+C_NEUTRAL = color.new(#64748b, 0)
+C_BG      = color.new(#131722, 5)
+C_TXT     = color.new(#f8fafc, 0)
+C_DIM     = color.new(#94a3b8, 0)
+C_BORD    = color.new(#334155, 0)
+C_BAR     = color.new(#334155, 0)
+
+
+// INPUTS
+GRP_FEAT = "📐 Features"
+GRP_KNN  = "📊 Lorentzian Engine"
+GRP_VIS  = "🎨 Visualization"
+GRP_HUD  = "🖥️ Dashboard"
+
+rsi_len  = input.int(14, "RSI Length", group=GRP_FEAT)
+cci_len  = input.int(20, "CCI Length", group=GRP_FEAT)
+dmi_len  = input.int(14, "DMI Length", group=GRP_FEAT)
+roc_len  = input.int(9,  "ROC Length", group=GRP_FEAT)
+
+outcome_bars  = input.int(8, "Prediction Horizon (bars)", minval=2, maxval=50, group=GRP_KNN,
+                tooltip="How many bars ahead a prediction looks. Also the label used to train future predictions.")
+knn_k         = input.int(20, "K Neighbors", minval=3, maxval=60, group=GRP_KNN)
+knn_max_train = input.int(500, "Max Training Samples", minval=50, maxval=2000, group=GRP_KNN)
+knn_min_train = input.int(30, "Min Samples Before Display", minval=10, maxval=200, group=GRP_KNN)
+min_confidence = input.float(60.0, "Min Vote Confidence to Signal (%)", minval=50.0, maxval=95.0, step=1.0, group=GRP_KNN,
+                tooltip="A prediction label only appears when the vote split is at least this lopsided.")
+
+show_signals = input.bool(true, "Prediction Labels", group=GRP_VIS)
+show_bg      = input.bool(false, "Background Tint by Prediction", group=GRP_VIS)
+
+col_bull = input.color(#00f0ff, "Bullish Prediction", group=GRP_VIS)
+col_bear = input.color(#ff00aa, "Bearish Prediction", group=GRP_VIS)
+
+show_hud = input.bool(true, "Show Dashboard", group=GRP_HUD)
+hud_pos  = input.string("Top Right", "Position",
+           options=["Top Right","Top Left","Bottom Right","Bottom Left"], group=GRP_HUD)
+
+
+// FEATURES — normalized to roughly [-1, 1] 
+rsi_v = ta.rsi(close, rsi_len)
+cci_v = ta.cci(close, cci_len)
+[dp, dm, _] = ta.dmi(dmi_len, dmi_len)
+roc_v = ta.roc(close, roc_len)
+
+float f_rsi = (rsi_v - 50.0) / 50.0
+float f_cci = math.max(-1.0, math.min(1.0, cci_v / 200.0))
+float f_dmi = math.max(-1.0, math.min(1.0, (dp - dm) / 50.0))
+float f_roc = math.max(-1.0, math.min(1.0, roc_v / 10.0))
+
+
+// LORENTZIAN DISTANCE
+// log(1 + |a-b|) per dimension, summed. Compresses the influence of any
+// single feature being far apart, unlike squared Euclidean distance.
+f_lorentzian(float a1, float a2, float a3, float a4, float b1, float b2, float b3, float b4) =>
+    math.log(1.0 + math.abs(a1 - b1)) +
+     math.log(1.0 + math.abs(a2 - b2)) +
+     math.log(1.0 + math.abs(a3 - b3)) +
+     math.log(1.0 + math.abs(a4 - b4))
+
+
+int STRIDE = 4
+var float[] kf     = array.new<float>()
+var float[] klabel = array.new<float>()   // 1 = price rose, 0 = price fell
+
+f_knn_query(float q1, float q2, float q3, float q4) =>
+    int n = array.size(klabel)
+    int ku = math.min(knn_k, n)
+    float up_pct = 50.0
+    if n >= knn_min_train
+        float[] ds = array.new<float>(n, 0.0)
+        for i = 0 to n - 1
+            int b = i * STRIDE
+            array.set(ds, i, f_lorentzian(q1, q2, q3, q4,
+                       array.get(kf, b), array.get(kf, b + 1), array.get(kf, b + 2), array.get(kf, b + 3)))
+        float[] dc = array.copy(ds)
+        int[]   ix = array.new<int>(n, 0)
+        for i = 0 to n - 1
+            array.set(ix, i, i)
+        float s_up = 0.0
+        for k = 0 to ku - 1
+            int mp = k
+            float mv = array.get(dc, k)
+            if k + 1 <= n - 1
+                for j = k + 1 to n - 1
+                    v = array.get(dc, j)
+                    if v < mv
+                        mv := v
+                        mp := j
+            float td = array.get(dc, k)
+            array.set(dc, k, array.get(dc, mp))
+            array.set(dc, mp, td)
+            int ti = array.get(ix, k)
+            array.set(ix, k, array.get(ix, mp))
+            array.set(ix, mp, ti)
+            ni = array.get(ix, k)
+            s_up += array.get(klabel, ni)
+        up_pct := (s_up / float(ku)) * 100.0
+    [up_pct, n]
+
+f_push(float f1, float f2, float f3, float f4, float lbl) =>
+    array.push(kf, f1)
+    array.push(kf, f2)
+    array.push(kf, f3)
+    array.push(kf, f4)
+    array.push(klabel, lbl)
+    if array.size(klabel) > knn_max_train
+        for _i = 0 to STRIDE - 1
+            array.shift(kf)
+        array.shift(klabel)
+
+
+// ═══ PENDING PREDICTION GRADING ═══════════════════════════════════════
+var int   pend_bar = na
+var float pend_close = na
+var float pend_f1 = na
+var float pend_f2 = na
+var float pend_f3 = na
+var float pend_f4 = na
+var float pend_pred_up = na   // the vote AS IT STOOD when this prediction was made
+
+var int correct_preds = 0
+var int total_preds   = 0
+
+float up_pct = 50.0
+int   n_train = 0
+
+if barstate.isconfirmed
+    [up_pct_now, n_now] = f_knn_query(f_rsi, f_cci, f_dmi, f_roc)
+    up_pct := up_pct_now
+    n_train := n_now
+    if not na(pend_bar) and (bar_index - pend_bar) >= outcome_bars
+        float ret = close - pend_close
+        float lbl = ret > 0 ? 1.0 : 0.0
+        if n_train >= knn_min_train
+            float predicted_up = pend_pred_up >= 50.0 ? 1.0 : 0.0
+            total_preds += 1
+            if predicted_up == lbl
+                correct_preds += 1
+        f_push(pend_f1, pend_f2, pend_f3, pend_f4, lbl)
+        pend_bar := na
+
+    if na(pend_bar)
+        pend_bar     := bar_index
+        pend_close   := close
+        pend_f1 := f_rsi
+        pend_f2 := f_cci
+        pend_f3 := f_dmi
+        pend_f4 := f_roc
+        pend_pred_up := up_pct
+
+
+// VISUALS 
+bool strong_bull = up_pct >= min_confidence
+bool strong_bear = up_pct <= (100.0 - min_confidence)
+color pred_col = strong_bull ? col_bull : strong_bear ? col_bear : C_NEUTRAL
+
+bgcolor(show_bg ? color.new(pred_col, 90) : na)
+
+if show_signals and barstate.isconfirmed and n_train >= knn_min_train
+    bool flip_bull = strong_bull and not strong_bull[1]
+    bool flip_bear = strong_bear and not strong_bear[1]
+    if flip_bull
+        label.new(bar_index, low, "▲ " + str.tostring(math.round(up_pct)) + "%",
+                  style=label.style_label_up, color=color.new(col_bull, 20),
+                  textcolor=color.new(#000000,0), size=size.small)
+    if flip_bear
+        label.new(bar_index, high, "▼ " + str.tostring(math.round(100.0 - up_pct)) + "%",
+                  style=label.style_label_down, color=color.new(col_bear, 20),
+                  textcolor=color.white, size=size.small)
+
+
+// DASHBOARD
+f_hud_pos(string s) =>
+    switch s
+        "Top Right"    => position.top_right
+        "Top Left"     => position.top_left
+        "Bottom Right" => position.bottom_right
+        =>                position.bottom_left
+
+var table hud = table.new(f_hud_pos(hud_pos), 2, 6,
+                           bgcolor=C_BG, border_color=C_BORD,
+                           border_width=1, frame_color=C_BORD, frame_width=2)
+
+if show_hud and barstate.islast
+    table.cell(hud, 0, 0, "LORENTZIAN AI [D3R]", text_color=C_TXT,
+               bgcolor=color.new(#1e293b, 0), text_size=11, text_halign=text.align_center)
+    table.merge_cells(hud, 0, 0, 1, 0)
+
+    string vote_s = n_train >= knn_min_train ? str.tostring(math.round(up_pct)) + "% up / " + str.tostring(math.round(100.0 - up_pct)) + "% down" : "Training…"
+    table.cell(hud, 0, 1, "Current Vote", text_color=C_DIM, bgcolor=color.new(#1e293b, 40), text_size=11)
+    table.cell(hud, 1, 1, vote_s, text_color=pred_col, bgcolor=color.new(#1e293b, 40), text_size=11, text_halign=text.align_center)
+
+    table.cell(hud, 0, 2, "Training Samples", text_color=C_DIM, bgcolor=color.new(#0f172a, 40), text_size=11)
+    table.cell(hud, 1, 2, str.tostring(n_train) + " / " + str.tostring(knn_max_train),
+               text_color=n_train >= knn_min_train ? C_GREEN : C_AMBER,
+               bgcolor=color.new(#0f172a, 40), text_size=11, text_halign=text.align_center)
+
+    float acc = total_preds > 0 ? float(correct_preds) / float(total_preds) * 100.0 : na
+    table.cell(hud, 0, 3, "Accuracy", text_color=C_DIM, bgcolor=color.new(#1e293b, 40), text_size=11)
+    table.cell(hud, 1, 3, na(acc) ? "—" : str.tostring(math.round(acc)) + "% (n=" + str.tostring(total_preds) + ")",
+               text_color=na(acc) ? C_DIM : acc >= 50 ? C_GREEN : C_RED,
+               bgcolor=color.new(#1e293b, 40), text_size=11, text_halign=text.align_center)
+
+    table.cell(hud, 0, 4, "Prediction Horizon", text_color=C_DIM, bgcolor=color.new(#0f172a, 40), text_size=11)
+    table.cell(hud, 1, 4, str.tostring(outcome_bars) + " bars",
+               text_color=C_DIM, bgcolor=color.new(#0f172a, 40), text_size=11, text_halign=text.align_center)
+
+    table.cell(hud, 0, 5, "K Neighbors", text_color=C_DIM, bgcolor=color.new(#1e293b, 40), text_size=11)
+    table.cell(hud, 1, 5, str.tostring(knn_k),
+               text_color=C_DIM, bgcolor=color.new(#1e293b, 40), text_size=11, text_halign=text.align_center)
+
+
+// ALERTS
+alertcondition(strong_bull and not strong_bull[1], "Strong Bullish Vote", "D3R Lorentzian AI: classifier vote turned strongly bullish")
+alertcondition(strong_bear and not strong_bear[1], "Strong Bearish Vote", "D3R Lorentzian AI: classifier vote turned strongly bearish")

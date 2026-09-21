@@ -1,0 +1,75 @@
+//@version=6
+indicator("Quarter Vertical Start Lines - New York", overlay=true, max_lines_count=500)
+
+// New York timezone
+string tz = "America/New_York"
+
+// Current year in New York
+int y = year(time, tz)
+
+// Exact quarter start dates
+int jan1 = timestamp(tz, y, 1, 1, 0, 0)
+int apr1 = timestamp(tz, y, 4, 1, 0, 0)
+int jul1 = timestamp(tz, y, 7, 1, 0, 0)
+int oct1 = timestamp(tz, y, 10, 1, 0, 0)
+
+// Detect when the chart crosses each quarter date
+bool janTrigger = time >= jan1 and time[1] < jan1
+bool aprTrigger = time >= apr1 and time[1] < apr1
+bool julTrigger = time >= jul1 and time[1] < jul1
+bool octTrigger = time >= oct1 and time[1] < oct1
+
+// Previous calendar day
+int janLine = timestamp(tz, y, 1, 0, 0, 0)
+int aprLine = timestamp(tz, y, 4, 0, 0, 0)
+int julLine = timestamp(tz, y, 7, 0, 0, 0)
+int octLine = timestamp(tz, y, 10, 0, 0, 0)
+
+// Draw vertical lines one calendar day behind
+if janTrigger
+    line.new(
+         x1 = janLine,
+         y1 = -1000000,
+         x2 = janLine,
+         y2 = 1000000,
+         xloc = xloc.bar_time,
+         extend = extend.none,
+         color = color.blue,
+         width = 1
+     )
+
+if aprTrigger
+    line.new(
+         x1 = aprLine,
+         y1 = -1000000,
+         x2 = aprLine,
+         y2 = 1000000,
+         xloc = xloc.bar_time,
+         extend = extend.none,
+         color = color.blue,
+         width = 1
+     )
+
+if julTrigger
+    line.new(
+         x1 = julLine,
+         y1 = -1000000,
+         x2 = julLine,
+         y2 = 1000000,
+         xloc = xloc.bar_time,
+         extend = extend.none,
+         color = color.blue,
+         width = 1
+     )
+
+if octTrigger
+    line.new(
+         x1 = octLine,
+         y1 = -1000000,
+         x2 = octLine,
+         y2 = 1000000,
+         xloc = xloc.bar_time,
+         extend = extend.none,
+         color = color.blue,
+         width = 1
+     )

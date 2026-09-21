@@ -1,0 +1,571 @@
+//@version=6
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : Dual-Phase Reversal • Exhaustion, Pivots & Pressure
+//# * Author      : © dgtrd
+//# *
+//# * Revision History
+//# *  Release    : Sep 05, 2026  : Initial Release
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+f_drawLineX(_x1, _y1, _x2, _y2, _xloc, _extend, _color, _style, _width) =>
+    var id = line.new(_x1, _y1, _x2, _y2, _xloc, _extend, _color, _style, _width)
+    if _y1 > 0 and _y2 > 0
+        line.set_xy1(id, _x1, _y1)
+        line.set_xy2(id, _x2, _y2)
+        line.set_color(id, _color)
+    else
+        line.set_xy1(id, _x1, close)
+        line.set_xy2(id, _x2, close)
+        line.set_color(id, #00000000)
+
+f_drawLabelX(_x, _y, _text, _xloc, _yloc, _color, _style, _textcolor, _size, _textalign, _tooltip) =>
+    var id = label.new(_x, _y, _text, _xloc, _yloc, _color, _style, _textcolor, _size, _textalign, _tooltip)
+    label.set_text(id, _text)
+    label.set_tooltip(id, _tooltip)
+    if _y > 0
+        label.set_xy(id, _x, _y)
+        label.set_textcolor(id, _textcolor)
+    else
+        label.set_xy(id, _x, close)
+        label.set_textcolor(id, #00000000)
+
+f_crossingLevelX(_price, _level) =>
+    not na(_level) and _level != 0 and ((_level > _price and _level < _price[1]) or (_level < _price and _level > _price[1]))
+
+f_processPivotLevelX(_show, _x1, _y, _x2, _c, _s, _w, _lb, _tip) =>
+    if _show
+        style = _s == 'Solid' ? line.style_solid : _s == 'Dotted' ? line.style_dotted : line.style_dashed
+        f_drawLineX(_x1, _y, _x2, _y, xloc.bar_time, extend.none, _c, style, _w)
+        f_drawLabelX(_x2, _y, _lb + ' (' + str.tostring(_y, format.mintick) + ')', xloc.bar_time, yloc.price, #00000000, label.style_label_left, _c, size.normal, text.align_left, _tip + ' ' + _lb + '\n' + str.tostring(_y, format.mintick))
+    if f_crossingLevelX(close, _y) and _tip != 'Developing Range Pivot'
+        alert(syminfo.ticker + ' crossing ' + _tip + ' ' + _lb + ' level, price ' + str.tostring(_y, format.mintick))
+
+f_htf_ohlc(_htf) =>
+    var htf_o  = 0., var htf_h  = 0., var htf_l  = 0., htf_c  = close
+    var htf_ox = 0., var htf_hx = 0., var htf_lx = 0., var htf_cx = 0.
+    if ta.change(time(_htf)) != 0
+        htf_ox := htf_o
+        htf_o  := open
+        htf_hx := htf_h
+        htf_h  := high
+        htf_lx := htf_l
+        htf_l  := low
+        htf_cx := htf_c[1]
+        htf_c := close
+        htf_cx
+    else
+        htf_h := math.max(high, htf_h)
+        htf_l := math.min(low, htf_l)
+        htf_l
+    [htf_ox, htf_hx, htf_lx, htf_cx, htf_o, htf_h, htf_l, htf_c]
+
+f_get_pivot(_o, _h, _l, _c, _o0) =>
+    var r1x = 0., var px  = 0., var s1x = 0.
+    x = _c < _o ? _h + 2 * _l + _c : _c > _o ? 2 * _h + _l + _c : _h + _l + 2 * _c
+    px  := x / 4
+    s1x := x / 2 - _h
+    r1x := x / 2 - _l
+    [r1x, px, s1x]
+
+ma(_source, _length, _type) =>
+    switch _type
+        "SMA"  => ta.sma (_source, _length)
+        "EMA"  => ta.ema (_source, _length)
+        "RMA"  => ta.rma (_source, _length)
+        "WMA"  => ta.wma (_source, _length)
+        "VWMA" => ta.vwma(_source, _length)
+
+indicator("Dual-Phase Reversal by DGT", "DPR ☼☾", true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500, max_bars_back = 5000)
+
+display = display.all - display.status_line
+
+group_phase9   = 'Dual-Phase Exhaustion'
+tooltip_phase9 = 'Tracks sequential trend exhaustion across two distinct phases: Momentum Exhaustion and Terminal Exhaustion.\n\n' +
+                  '• Completed Only: Displays completed Momentum and Terminal phase markers.\n' +
+                  '• All Sequence Steps: Displays the full sequence as it develops.\n' +
+                  '• None: Hides phase markers.'
+
+showPhaseMarkers = input.string('Completed Only', 'Phase Display Mode', options = ['Completed Only', 'All Sequence Steps', 'None'], display = display, group = group_phase9, tooltip = tooltip_phase9)
+
+compltedPhases = showPhaseMarkers == 'Completed Only'
+showNone       = showPhaseMarkers == 'None' ? false : true
+
+phaseSRLevels = input.bool(true, 'Momentum Support & Resistance Levels', group = group_phase9, tooltip = 'Projects dynamic Support and Resistance levels derived from completed Momentum Exhaustion phases. Levels remain active until price crosses the corresponding level.')
+stopLevels    = input.bool(false, 'Momentum & Terminal Invalidation Levels', group = group_phase9, tooltip = 'Displays structural invalidation levels derived from the price extremes established during Momentum and Terminal Exhaustion phases. Each level remains active until price crosses it.')
+
+group_pivot = 'Range Pivot Settings'
+tooltip_pivot = 'Displays higher-timeframe Support (S), Pivot (P), and Resistance (R) levels calculated from the selected range.'
+
+htf        = input.string('Auto', 'Pivot Timeframe', display = display, options=['Auto', '1 Hour', '4 Hour', 'Daily', 'Weekly', 'Monthly', 'Quarterly', 'Yearly'], group=group_pivot, tooltip = 'Selects the higher-timeframe range used to calculate Support (S), Pivot (P), and Resistance (R) levels. Auto selects the range according to the chart timeframe.')
+htf_user   = htf == '1 Hour' ? '60' : htf == '4 Hour' ? '240' : htf == 'Daily' ? 'D' : htf == 'Weekly' ? 'W' : htf == 'Monthly' ? 'M' : htf == 'Quarterly' ? '3M' : '12M'
+htf_auto   = timeframe.period == '1'   ? '60'  :
+             timeframe.period == '3'   ? '60'  :
+             timeframe.period == '5'   ? '240' :
+             timeframe.period == '15'  ? '240' :
+             timeframe.period == '30'  ? 'D'   :
+             timeframe.period == '45'  ? 'D'   :
+             timeframe.period == '60'  ? 'D'   :
+             timeframe.period == '120' ? 'W'   :
+             timeframe.period == '180' ? 'W'   :
+             timeframe.period == '240' ? 'W'   :
+             timeframe.period == '1D'  ? 'M'   :
+             timeframe.period == '1W'  ? '3M'  : '12M'
+
+i_htf      = htf == 'Auto' ? htf_auto : htf_user
+i_isPivot  = input.bool(true, 'Range Pivot', group=group_pivot, tooltip = tooltip_pivot)
+i_dispPVT  = input.bool(false, 'Developing Range Pivot', group=group_pivot, tooltip = 'Projects Support, Pivot, and Resistance levels from the current, still-forming higher-timeframe range — an early preview of the next range\'s pivot, updating in real time as the range develops, before it closes.')
+i_disphist = input.bool(false, 'Historical Range Pivot', group=group_pivot, tooltip = 'Displays the historical Support, Pivot, and Resistance levels of completed higher-timeframe ranges.')
+color_r    = input.color(color.red, '  Resistance', inline='col', group=group_pivot)
+color_s    = input.color(color.teal, 'Support', inline='col', group=group_pivot)
+
+tooltip_pressure  = 'Volume Pressure Oscillator\nEstimates relative buying and selling pressure by weighting directional price movement within each bar\'s range by traded volume.\nThe resulting oscillator is normalized to a 0–100 scale, where higher values indicate greater relative buying pressure and lower values indicate greater relative selling pressure.'
+group_pressure    = 'Volume Pressure Settings'
+isPressureEnabled = input.bool(true, 'Volume Pressure', inline = 'PRS', group=group_pressure, tooltip = tooltip_pressure)
+oscColor          = input.color(#00bcd4, '', inline = 'PRS',  group=group_pressure)
+pressureLength    = input.int(13, '  Pressure Length', display = display, minval=1, group=group_pressure)
+upperBand         = input.int(75, '  Pressure Upper Band', display = display, group=group_pressure)
+lowerBand         = input.int(25, '  Pressure Lower Band', display = display, group=group_pressure)
+oscLookbackLength = input.int(200, '  Display Length', display = display, minval = 10, step = 10, maxval = 475, group=group_pressure)
+oscLookbackLength := last_bar_index < oscLookbackLength ? last_bar_index : oscLookbackLength
+oscPlacement      = input.string('Bottom', '  Placement', display = display, options = ['Top', 'Middle', 'Bottom'], group=group_pressure)
+oscHight          = 11 - input.int(9, '  Height' , display = display, minval = 1, maxval = 10 , group=group_pressure )
+oscVerticalOffset = input.int(5, "  Vertical Offset", display = display, minval = -3, maxval = 10, group=group_pressure) / 10
+fillColor         = color.new(#2962FF, 97)
+
+priceOpen  = open
+priceHigh  = high
+priceLow   = low
+priceClose = close
+
+buyPhaseCondition  = priceClose < priceClose[4]
+sellPhaseCondition = priceClose > priceClose[4]
+
+buyMomentumShift  = priceClose < priceClose[4] and priceClose[1] > priceClose[5]
+sellMomentumShift = priceClose > priceClose[4] and priceClose[1] < priceClose[5]
+
+var buyCount  = 0
+var sellCount = 0
+
+if buyPhaseCondition
+    buyCount  := (buyCount == 0 or buyCount == 9) ? (buyMomentumShift ? 1 : 0) : buyCount + 1
+    sellCount := 0
+else if sellPhaseCondition
+    sellCount := (sellCount == 0 or sellCount == 9) ? (sellMomentumShift ? 1 : 0) : sellCount + 1
+    buyCount  := 0
+else
+    buyCount  := 0
+    sellCount := 0
+
+buyPhaseQualified  = (priceLow  <= priceLow[3]  and priceLow  <= priceLow[2])  or (priceLow[1]  <= priceLow[3]  and priceLow[1]  <= priceLow[2] )
+sellPhaseQualified = (priceHigh >= priceHigh[3] and priceHigh >= priceHigh[2]) or (priceHigh[1] >= priceHigh[3] and priceHigh[1] >= priceHigh[2])
+
+plotshape(showNone and buyCount == 1 and not compltedPhases, 'Buy ME 1', shape.labeldown, location.abovebar, #00000000, 0, '₁', color.red, false, display = display)
+plotshape(showNone and buyCount == 2 and not compltedPhases, 'Buy ME 2', shape.labeldown, location.abovebar, #00000000, 0, '₂', color.red, false, display = display)
+plotshape(showNone and buyCount == 3 and not compltedPhases, 'Buy ME 3', shape.labeldown, location.abovebar, #00000000, 0, '₃', color.red, false, display = display)
+plotshape(showNone and buyCount == 4 and not compltedPhases, 'Buy ME 4', shape.labeldown, location.abovebar, #00000000, 0, '₄', color.red, false, display = display)
+plotshape(showNone and buyCount == 5 and not compltedPhases, 'Buy ME 5', shape.labeldown, location.abovebar, #00000000, 0, '₅', color.red, false, display = display)
+plotshape(showNone and buyCount == 6 and not compltedPhases, 'Buy ME 6', shape.labeldown, location.abovebar, #00000000, 0, '₆', color.red, false, display = display)
+plotshape(showNone and buyCount == 7 and not compltedPhases, 'Buy ME 7', shape.labeldown, location.abovebar, #00000000, 0, '₇', color.red, false, display = display)
+plotshape(showNone and buyCount == 8 and not compltedPhases and not buyPhaseQualified, 'Buy ME 8', shape.labeldown, location.abovebar, #00000000, 0, '₈', color.red, false, display = display)
+plotshape(showNone and buyCount == 8 and not compltedPhases and buyPhaseQualified, 'Buy ME 8 Qualified', shape.labeldown, location.abovebar, color.new(color.teal, 75), 0, 'ǫ₈', color.white, false, display = display)
+plotshape(showNone and buyCount == 9 and not buyPhaseQualified, 'Buy ME 9', shape.labelup, location.belowbar, color.new(color.teal, 25), 0, 'ᴍ', color.white, true, size.tiny, display = display)
+plotshape(showNone and buyCount == 9 and buyPhaseQualified, 'Buy ME 9 Qualified', shape.labelup, location.belowbar, color.new(color.teal, 25), 0, 'ᴍ\nǫ', color.white, true, size.tiny, display = display)
+
+phase9Resistance = ta.highest(9)
+buyPhaseResistance = 0.0
+buyPhaseResistance := buyCount == 9 ? phase9Resistance : priceClose > buyPhaseResistance[1] ? 0 : buyPhaseResistance[1]
+plot(phaseSRLevels and buyPhaseResistance > 0 ? buyPhaseResistance : na, "ME Resistance", color.red, 1, plot.style_linebr, display = display)
+
+var buyPhaseHigh   = 0.
+var buyPhaseLowest = 0.
+
+if buyCount == 1
+    buyPhaseLowest := priceLow
+
+if buyCount > 0
+    buyPhaseLowest := math.min(priceLow, buyPhaseLowest)
+    if priceLow == buyPhaseLowest
+        buyPhaseHigh := priceHigh
+
+buyPhaseStopPrice = 2 * buyPhaseLowest - buyPhaseHigh
+buyPhaseStopLevel = 0.0
+buyPhaseStopLevel := buyCount == 9 ? buyPhaseStopPrice : priceClose < buyPhaseStopLevel[1] ? 0 : buyPhaseStopLevel[1]
+plot(stopLevels and buyPhaseStopLevel > 0 ? buyPhaseStopLevel : na, "ME Buy Invalidation", color.blue, 1, plot.style_circles, display = display)
+
+plotshape(showNone and sellCount == 1 and not compltedPhases, 'Sell ME 1', shape.labeldown, location.abovebar, #00000000, 0, '₁', color.teal, false, display = display)
+plotshape(showNone and sellCount == 2 and not compltedPhases, 'Sell ME 2', shape.labeldown, location.abovebar, #00000000, 0, '₂', color.teal, false, display = display)
+plotshape(showNone and sellCount == 3 and not compltedPhases, 'Sell ME 3', shape.labeldown, location.abovebar, #00000000, 0, '₃', color.teal, false, display = display)
+plotshape(showNone and sellCount == 4 and not compltedPhases, 'Sell ME 4', shape.labeldown, location.abovebar, #00000000, 0, '₄', color.teal, false, display = display)
+plotshape(showNone and sellCount == 5 and not compltedPhases, 'Sell ME 5', shape.labeldown, location.abovebar, #00000000, 0, '₅', color.teal, false, display = display)
+plotshape(showNone and sellCount == 6 and not compltedPhases, 'Sell ME 6', shape.labeldown, location.abovebar, #00000000, 0, '₆', color.teal, false, display = display)
+plotshape(showNone and sellCount == 7 and not compltedPhases, 'Sell ME 7', shape.labeldown, location.abovebar, #00000000, 0, '₇', color.teal, false, display = display)
+plotshape(showNone and sellCount == 8 and not compltedPhases and not sellPhaseQualified, 'Sell ME 8', shape.labeldown, location.abovebar, #00000000, 0, '₈', color.teal, false, display = display)
+plotshape(showNone and sellCount == 8 and not compltedPhases and sellPhaseQualified, 'Sell ME 8 Qualified', shape.labeldown, location.abovebar, color.new(color.red, 75), 0, 'ǫ₈', color.white, false, display = display)
+plotshape(showNone and sellCount == 9 and not sellPhaseQualified, 'Sell ME 9', shape.labeldown, location.abovebar, color.new(color.red, 25), 0, 'ᴍ', color.white, true, size.tiny, display = display)
+plotshape(showNone and sellCount == 9 and sellPhaseQualified, 'Sell ME 9 Qualified', shape.labeldown, location.abovebar, color.new(color.red, 25), 0, 'ǫ\nᴍ', color.white, true, size.tiny, display = display)
+
+phase9Support = ta.lowest(9)
+sellPhaseSupport = 0.0
+sellPhaseSupport := sellCount == 9 ? phase9Support : priceClose < sellPhaseSupport[1] ? 0 : sellPhaseSupport[1]
+plot(phaseSRLevels and sellPhaseSupport > 0 ? sellPhaseSupport : na, "ME Support", color.teal, 1, plot.style_linebr, display = display)
+
+var sellPhaseHighest = 0.
+var sellPhaseLow     = 0.
+
+if sellCount == 1
+    sellPhaseHighest := priceHigh
+
+if sellCount > 0
+    sellPhaseHighest := math.max(priceHigh, sellPhaseHighest)
+    if priceHigh == sellPhaseHighest
+        sellPhaseLow := priceLow
+
+sellPhaseStopPrice = 2 * sellPhaseHighest - sellPhaseLow
+sellPhaseStopLevel = 0.0
+sellPhaseStopLevel := sellCount == 9 ? sellPhaseStopPrice : priceClose > sellPhaseStopLevel[1] ? 0 : sellPhaseStopLevel[1]
+plot(stopLevels and sellPhaseStopLevel > 0 ? sellPhaseStopLevel : na, "ME Sell Invalidation", color.blue, 1, plot.style_circles, display = display)
+
+var sellExhaustionCount = 0
+var buyExhaustionCount  = 0
+
+var startBuyExhaustion13     = false
+var buyExhaustion13RefClose8 = 0.
+buyExhaustion13Condition = priceClose <= priceLow[2] ? true : false
+buyExhaustionBar13Fails  = priceClose <= priceLow[2] and priceLow >= buyExhaustion13RefClose8 ? true : false
+
+startBuyExhaustion13 := if buyCount == 9 and buyExhaustionCount == 0
+    true
+else
+    if sellCount == 9 or buyExhaustionCount == 13 or priceClose > buyPhaseResistance
+        false
+    else
+        startBuyExhaustion13[1]
+
+buyExhaustionCount := startBuyExhaustion13 ? buyCount == 9 ? buyExhaustion13Condition ? 1 : 0 : buyExhaustion13Condition ? buyExhaustionCount + 1 : buyExhaustionCount : 0
+buyExhaustionCount := buyExhaustionCount == 13 and buyExhaustionBar13Fails ? buyExhaustionCount - 1 : buyExhaustionCount
+
+if buyExhaustionCount == 8 and buyExhaustionCount != buyExhaustionCount[1]
+    buyExhaustion13RefClose8 := priceClose
+
+plotshape(showNone and not compltedPhases and startBuyExhaustion13 and buyExhaustionCount != buyExhaustionCount[1] and buyExhaustionCount == 1, 'Buy TE', shape.labeldown, location.belowbar, #00000000, 0, '₁', color.red, false, display = display)
+plotshape(showNone and not compltedPhases and startBuyExhaustion13 and buyExhaustionCount != buyExhaustionCount[1] and buyExhaustionCount == 2, 'Buy TE', shape.labeldown, location.belowbar, #00000000, 0, '₂', color.red, false, display = display)
+plotshape(showNone and not compltedPhases and startBuyExhaustion13 and buyExhaustionCount != buyExhaustionCount[1] and buyExhaustionCount == 3, 'Buy TE', shape.labeldown, location.belowbar, #00000000, 0, '₃', color.red, false, display = display)
+plotshape(showNone and not compltedPhases and startBuyExhaustion13 and buyExhaustionCount != buyExhaustionCount[1] and buyExhaustionCount == 4, 'Buy TE', shape.labeldown, location.belowbar, #00000000, 0, '₄', color.red, false, display = display)
+plotshape(showNone and not compltedPhases and startBuyExhaustion13 and buyExhaustionCount != buyExhaustionCount[1] and buyExhaustionCount == 5, 'Buy TE', shape.labeldown, location.belowbar, #00000000, 0, '₅', color.red, false, display = display)
+plotshape(showNone and not compltedPhases and startBuyExhaustion13 and buyExhaustionCount != buyExhaustionCount[1] and buyExhaustionCount == 6, 'Buy TE', shape.labeldown, location.belowbar, #00000000, 0, '₆', color.red, false, display = display)
+plotshape(showNone and not compltedPhases and startBuyExhaustion13 and buyExhaustionCount != buyExhaustionCount[1] and buyExhaustionCount == 7, 'Buy TE', shape.labeldown, location.belowbar, #00000000, 0, '₇', color.red, false, display = display)
+plotshape(showNone and not compltedPhases and startBuyExhaustion13 and buyExhaustionCount != buyExhaustionCount[1] and buyExhaustionCount == 8, 'Buy TE', shape.labeldown, location.belowbar, #00000000, 0, '₈', color.red, false, display = display)
+plotshape(showNone and not compltedPhases and startBuyExhaustion13 and buyExhaustionCount != buyExhaustionCount[1] and buyExhaustionCount == 9, 'Buy TE', shape.labeldown, location.belowbar, #00000000, 0, '₉', color.red, false, display = display)
+plotshape(showNone and not compltedPhases and startBuyExhaustion13 and buyExhaustionCount != buyExhaustionCount[1] and buyExhaustionCount == 10, 'Buy TE', shape.labeldown, location.belowbar, #00000000, 0, '₁₀', color.red, false, display = display)
+plotshape(showNone and not compltedPhases and startBuyExhaustion13 and buyExhaustionCount != buyExhaustionCount[1] and buyExhaustionCount == 11, 'Buy TE', shape.labeldown, location.belowbar, #00000000, 0, '₁₁', color.red, false, display = display)
+plotshape(showNone and not compltedPhases and startBuyExhaustion13 and buyExhaustionCount != buyExhaustionCount[1] and buyExhaustionCount == 12, 'Buy TE', shape.labeldown, location.belowbar, #00000000, 0, '₁₂', color.red, false, display = display)
+plotshape(showNone and not compltedPhases and startBuyExhaustion13 and buyExhaustionCount == buyExhaustionCount[1] and buyExhaustionCount == 12 and buyExhaustionBar13Fails, 'Buy TE', shape.labeldown, location.belowbar, #00000000, 0, '₊', color.red, false, display = display)
+plotshape(showNone and startBuyExhaustion13 and buyExhaustionCount != buyExhaustionCount[1] and buyExhaustionCount == 13, 'Buy TE 13', shape.labelup, location.belowbar, color.new(#006400, 25), 0, 'ᴛ', color.white, true, size.tiny, display = display)
+
+var buyExhaustionHighest    = 0.
+var buyExhaustionHigh       = 0.
+var buyExhaustionLow        = 0.
+var buyExhaustionLowest     = 0.
+var buyExhaustionStopLevel  = 0.
+var buyExhaustionTargetLevel = 0.
+
+if buyExhaustionCount == 1
+    buyExhaustionLowest  := priceLow
+    buyExhaustionHighest := priceHigh
+
+if startBuyExhaustion13
+    buyExhaustionHighest := math.max(priceHigh, buyExhaustionHighest)
+    buyExhaustionLowest  := math.min(priceLow, buyExhaustionLowest)
+    if priceHigh == buyExhaustionHighest
+        buyExhaustionLow := priceLow
+    if priceLow == buyExhaustionLowest
+        buyExhaustionHigh := priceHigh
+
+buyExhaustionTargetPrice = 2 * buyExhaustionHighest - buyExhaustionLow
+buyExhaustionTargetLevel := buyExhaustionCount == 13 ? buyExhaustionTargetPrice : priceClose > buyExhaustionTargetLevel[1] or (buyExhaustionStopLevel == 0 and sellExhaustionCount == 13) ? 0. : buyExhaustionTargetLevel[1]
+plot(buyExhaustionTargetLevel > 0 ? buyExhaustionTargetLevel : na, "TE Buy Target", color.gray, 1, plot.style_circles, display=display.none)
+
+buyExhaustionStopPrice = 2 * buyExhaustionLowest - buyExhaustionHigh
+buyExhaustionStopLevel := buyExhaustionCount == 13 ? buyExhaustionStopPrice : priceClose < buyExhaustionStopLevel[1] or (buyExhaustionTargetLevel == 0 and sellExhaustionCount == 13) ? 0. : buyExhaustionStopLevel[1]
+plot(stopLevels and buyExhaustionStopLevel > 0 ? buyExhaustionStopLevel : na, "TE Buy Invalidation", color.blue, 1, plot.style_circles, display = display)
+
+var startSellExhaustion13     = false
+var sellExhaustion13RefClose8 = 0.
+sellExhaustion13Condition = priceClose >= priceHigh[2] ? true : false
+sellExhaustionBar13Fails  = priceClose >= priceHigh[2] and priceHigh <= sellExhaustion13RefClose8 ? true : false
+
+startSellExhaustion13 := if sellCount == 9 and sellExhaustionCount == 0
+    true
+else
+    if buyCount == 9 or sellExhaustionCount == 13 or priceClose < sellPhaseSupport
+        false
+    else
+        startSellExhaustion13[1]
+
+sellExhaustionCount := startSellExhaustion13 ? sellCount == 9 ? sellExhaustion13Condition ? 1 : 0 : sellExhaustion13Condition ? sellExhaustionCount + 1 : sellExhaustionCount : 0
+sellExhaustionCount := sellExhaustionCount == 13 and sellExhaustionBar13Fails ? sellExhaustionCount - 1 : sellExhaustionCount
+
+if sellExhaustionCount == 8 and sellExhaustionCount != sellExhaustionCount[1]
+    sellExhaustion13RefClose8 := priceClose
+
+plotshape(showNone and not compltedPhases and startSellExhaustion13 and sellExhaustionCount != sellExhaustionCount[1] and sellExhaustionCount == 1, 'Sell TE', shape.labeldown, location.belowbar, #00000000, 0, '₁', color.teal, false, display = display)
+plotshape(showNone and not compltedPhases and startSellExhaustion13 and sellExhaustionCount != sellExhaustionCount[1] and sellExhaustionCount == 2, 'Sell TE', shape.labeldown, location.belowbar, #00000000, 0, '₂', color.teal, false, display = display)
+plotshape(showNone and not compltedPhases and startSellExhaustion13 and sellExhaustionCount != sellExhaustionCount[1] and sellExhaustionCount == 3, 'Sell TE', shape.labeldown, location.belowbar, #00000000, 0, '₃', color.teal, false, display = display)
+plotshape(showNone and not compltedPhases and startSellExhaustion13 and sellExhaustionCount != sellExhaustionCount[1] and sellExhaustionCount == 4, 'Sell TE', shape.labeldown, location.belowbar, #00000000, 0, '₄', color.teal, false, display = display)
+plotshape(showNone and not compltedPhases and startSellExhaustion13 and sellExhaustionCount != sellExhaustionCount[1] and sellExhaustionCount == 5, 'Sell TE', shape.labeldown, location.belowbar, #00000000, 0, '₅', color.teal, false, display = display)
+plotshape(showNone and not compltedPhases and startSellExhaustion13 and sellExhaustionCount != sellExhaustionCount[1] and sellExhaustionCount == 6, 'Sell TE', shape.labeldown, location.belowbar, #00000000, 0, '₆', color.teal, false, display = display)
+plotshape(showNone and not compltedPhases and startSellExhaustion13 and sellExhaustionCount != sellExhaustionCount[1] and sellExhaustionCount == 7, 'Sell TE', shape.labeldown, location.belowbar, #00000000, 0, '₇', color.teal, false, display = display)
+plotshape(showNone and not compltedPhases and startSellExhaustion13 and sellExhaustionCount != sellExhaustionCount[1] and sellExhaustionCount == 8, 'Sell TE', shape.labeldown, location.belowbar, #00000000, 0, '₈', color.teal, false, display = display)
+plotshape(showNone and not compltedPhases and startSellExhaustion13 and sellExhaustionCount != sellExhaustionCount[1] and sellExhaustionCount == 9, 'Sell TE', shape.labeldown, location.belowbar, #00000000, 0, '₉', color.teal, false, display = display)
+plotshape(showNone and not compltedPhases and startSellExhaustion13 and sellExhaustionCount != sellExhaustionCount[1] and sellExhaustionCount == 10, 'Sell TE', shape.labeldown, location.belowbar, #00000000, 0, '₁₀', color.teal, false, display = display)
+plotshape(showNone and not compltedPhases and startSellExhaustion13 and sellExhaustionCount != sellExhaustionCount[1] and sellExhaustionCount == 11, 'Sell TE', shape.labeldown, location.belowbar, #00000000, 0, '₁₁', color.teal, false, display = display)
+plotshape(showNone and not compltedPhases and startSellExhaustion13 and sellExhaustionCount != sellExhaustionCount[1] and sellExhaustionCount == 12, 'Sell TE', shape.labeldown, location.belowbar, #00000000, 0, '₁₂', color.teal, false, display = display)
+plotshape(showNone and not compltedPhases and startSellExhaustion13 and sellExhaustionCount == sellExhaustionCount[1] and sellExhaustionCount == 12 and sellExhaustionBar13Fails, 'Sell TE', shape.labeldown, location.belowbar, #00000000, 0, '₊', color.teal, false, display = display)
+plotshape(showNone and startSellExhaustion13 and sellExhaustionCount != sellExhaustionCount[1] and sellExhaustionCount == 13, 'Sell TE 13', shape.labeldown, location.abovebar, color.new(#910000, 25), 0, 'ᴛ', color.white, true, size.tiny, display = display)
+
+var sellExhaustionHighest     = 0.
+var sellExhaustionHigh        = 0.
+var sellExhaustionLow         = 0.
+var sellExhaustionLowest      = 0.
+var sellExhaustionStopLevel   = 0.
+var sellExhaustionTargetLevel = 0.
+
+if sellExhaustionCount == 1
+    sellExhaustionLowest  := priceLow
+    sellExhaustionHighest := priceHigh
+
+if startSellExhaustion13
+    sellExhaustionHighest := math.max(priceHigh, sellExhaustionHighest)
+    sellExhaustionLowest  := math.min(priceLow, sellExhaustionLowest)
+    if priceHigh == sellExhaustionHighest
+        sellExhaustionLow := priceLow
+    if priceLow == sellExhaustionLowest
+        sellExhaustionHigh := priceHigh
+
+sellExhaustionStopPrice = 2 * sellExhaustionHighest - sellExhaustionLow
+sellExhaustionStopLevel := sellExhaustionCount == 13 ? sellExhaustionStopPrice : priceClose > sellExhaustionStopLevel[1] or (sellExhaustionTargetLevel == 0 and buyExhaustionCount == 13) ? 0. : sellExhaustionStopLevel[1]
+plot(stopLevels and sellExhaustionStopLevel > 0 ? sellExhaustionStopLevel : na, "TE Sell Invalidation", color.blue, 1, plot.style_circles, display = display)
+
+sellExhaustionTargetPrice = 2 * sellExhaustionLowest - sellExhaustionHigh
+sellExhaustionTargetLevel := sellExhaustionCount == 13 ? sellExhaustionTargetPrice : priceClose < sellExhaustionTargetLevel[1] or (sellExhaustionStopLevel == 0 and buyExhaustionCount == 13) ? 0. : sellExhaustionTargetLevel[1]
+plot(sellExhaustionTargetLevel > 0 ? sellExhaustionTargetLevel : na, "TE Sell Target", color.gray, 1, plot.style_circles, display=display.none)
+
+[O, H, L, C, O0, H0, L0, C0] = f_htf_ohlc(i_htf)
+
+time_x12 = ta.valuewhen(ta.change(time(i_htf)) != 0, time, 2)
+time_x11 = ta.valuewhen(ta.change(time(i_htf)) != 0, time, 1)
+time_x1  = ta.valuewhen(ta.change(time(i_htf)) != 0, time, 0)
+time_x2  = 2 * time_x1 - time_x11
+time_x20 = 3 * time_x1 - 2 * time_x11
+
+[R1, P, S1] = f_get_pivot(O, H, L, C, O0)
+[r1, p, s1] = f_get_pivot(O0, H0, L0, C0, O0)
+
+when = barstate.islast and i_isPivot
+f_processPivotLevelX(when, time_x1, S1, time_x2, color_s, 'Solid', 2, 'S', 'Range Pivot')
+f_processPivotLevelX(when, time_x1, R1, time_x2, color_r, 'Solid', 2, 'R', 'Range Pivot')
+f_processPivotLevelX(when, time_x1, P, time_x2, #2962ff, 'Solid', 2, 'P', 'Range Pivot')
+
+when := barstate.islast and i_dispPVT
+f_processPivotLevelX(when, time_x2, s1, time_x20, color_s, 'Solid', 1, 'S', 'Developing Range Pivot')
+f_processPivotLevelX(when, time_x2, r1, time_x20, color_r, 'Solid', 1, 'R', 'Developing Range Pivot')
+f_processPivotLevelX(when, time_x2, p, time_x20, #2962ff, 'Solid', 1, 'P', 'Developing Range Pivot')
+
+rColor = ta.change(time(i_htf)) != 0 ? na : color_r
+pColor = #2962ff
+sColor = ta.change(time(i_htf)) != 0 ? na : color_s
+
+plot(i_disphist and R1 > 0 ? R1 : na, 'Historical R', rColor, 1, plot.style_linebr, editable = false, display = display)
+plot(i_disphist and P > 0 ? P : na, 'Historical P', pColor, 1, plot.style_linebr, editable = false, display = display)
+plot(i_disphist and S1 > 0 ? S1 : na, 'Historical S', sColor, 1, plot.style_linebr, editable = false, display = display)
+
+nzVolume = nz(volume)
+
+buyPressure  = 0.
+sellPressure = 0.
+priceDelta   = 0.
+priceRange   = 0.
+osc          = 0.
+dominance    = 0.
+
+if isPressureEnabled and nzVolume != 0
+    for i = 0 to pressureLength - 1
+        priceDelta := priceClose[i] - priceOpen[i]
+        priceRange := priceHigh[i] - priceLow[i]
+        if priceRange > 0
+            if priceDelta > 0
+                buyPressure += priceDelta / priceRange * nzVolume[i]
+                buyPressure
+            if priceDelta < 0
+                sellPressure += priceDelta / priceRange * nzVolume[i]
+                sellPressure
+    dominance := buyPressure + math.abs(sellPressure)
+    if dominance != 0.
+        osc := 100 * (buyPressure / dominance)
+    else
+        osc := 50
+
+sigLength = 9
+sigMaType = 'SMA'
+signal    = ma(osc, sigLength, sigMaType)
+histogram = osc - signal
+histColor = histogram >= 0 ? histogram[1] < histogram ? #26A69A : #B2DFDB : histogram[1] < histogram ? #FFCDD2 : #FF5252
+
+var a_lines = array.new_line()
+var a_hist  = array.new_box()
+var a_fill  = array.new_linefill()
+
+priceHighest    = ta.highest(high, oscLookbackLength)
+priceLowest     = ta.lowest(low, oscLookbackLength)
+priceChangeRate = (priceHighest - priceLowest) / priceHighest
+priceLowest    := oscPlacement == 'Middle' ? priceLowest : priceLowest * (1 - priceChangeRate * oscVerticalOffset)
+priceHighest   := oscPlacement == 'Middle' ? priceHighest : priceHighest * (1 + priceChangeRate * oscVerticalOffset)
+oscHighestRaw = ta.highest(osc, oscLookbackLength)
+oscLowestRaw  = ta.lowest(osc, oscLookbackLength)
+oscHighest    = oscHighestRaw
+oscLowest     = oscHighestRaw == oscLowestRaw ? oscLowestRaw - 1 : oscLowestRaw
+
+if barstate.islast and nzVolume != 0 and isPressureEnabled
+    if array.size(a_lines) > 0
+        int aLinesSize = array.size(a_lines)
+        for i = 1 to aLinesSize
+            line.delete(array.shift(a_lines))
+    if array.size(a_hist) > 0
+        int aHistSize = array.size(a_hist)
+        for i = 1 to aHistSize
+            box.delete(array.shift(a_hist))
+    if array.size(a_fill) > 0
+        int aFillSize = array.size(a_fill)
+        for i = 1 to aFillSize
+            linefill.delete(array.shift(a_fill))
+
+    hight = priceChangeRate / oscHight
+    obLevel = oscPlacement == 'Middle' ? priceLowest + (upperBand - oscLowest) * (priceHighest - priceLowest) / (oscHighest - oscLowest) : (oscPlacement == 'Top' ? priceHighest : priceLowest) * (1 + upperBand / oscHighest * hight)
+    osLevel = oscPlacement == 'Middle' ? priceLowest + (lowerBand - oscLowest) * (priceHighest - priceLowest) / (oscHighest - oscLowest) : (oscPlacement == 'Top' ? priceHighest : priceLowest) * (1 + lowerBand / oscHighest * hight)
+
+    array.push(a_lines, line.new(bar_index[oscLookbackLength], obLevel, bar_index, obLevel, xloc.bar_index, extend.none, color.gray, line.style_dashed, 1))
+    array.push(a_lines, line.new(bar_index[oscLookbackLength], osLevel, bar_index, osLevel, xloc.bar_index, extend.none, color.gray, line.style_dashed, 1))
+    if oscPlacement != 'Middle'
+        array.push(a_fill, linefill.new(array.get(a_lines, 0), array.get(a_lines, 1), fillColor))
+
+    midLine  = 50
+    midLevel = oscPlacement == 'Middle' ? priceLowest + (midLine - oscLowest) * (priceHighest - priceLowest) / (oscHighest - oscLowest) : (oscPlacement == 'Top' ? priceHighest : priceLowest) * (1 + midLine / oscHighest * hight)
+    array.push(a_lines, line.new(bar_index[oscLookbackLength], midLevel, bar_index, midLevel, xloc.bar_index, extend.none, color.new(color.gray, 50), line.style_dashed, 1))
+
+    for barIndex = 0 to oscLookbackLength - 1
+        if array.size(a_lines) < 496
+            array.push(a_hist, box.new(bar_index[barIndex], oscPlacement == 'Top' ? priceHighest : priceLowest, bar_index[barIndex], (oscPlacement == 'Top' ? priceHighest : priceLowest) * (1 + histogram[barIndex] / oscHighest * hight), histColor[barIndex], 2, bgcolor = histColor[barIndex]))
+            array.push(a_lines, line.new(bar_index[barIndex], oscPlacement == 'Middle' ? priceLowest + (osc[barIndex] - oscLowest) * (priceHighest - priceLowest) / (oscHighest - oscLowest) : oscPlacement == 'Top' ? priceHighest * (1 + osc[barIndex] / oscHighest * hight) : priceLowest * (1 + osc[barIndex] / oscHighest * hight), bar_index[barIndex + 1], oscPlacement == 'Middle' ? priceLowest + (osc[barIndex + 1] - oscLowest) * (priceHighest - priceLowest) / (oscHighest - oscLowest) : oscPlacement == 'Top' ? priceHighest * (1 + osc[barIndex + 1] / oscHighest * hight) : priceLowest * (1 + osc[barIndex + 1] / oscHighest * hight), xloc.bar_index, extend.none, oscColor, line.style_solid, 1))
+
+group_volume_weighted_colored_bars = 'Volume-Weighted Bars'
+vwcb = input.bool(true, 'Volume-Weighted Bars', group=group_volume_weighted_colored_bars, tooltip='Volume-Weighted Bars\nColors bars according to current volume relative to its Volume Moving Average.\nHigher-volume and lower-volume bars receive stronger visual emphasis.')
+vSMA = ta.sma(nzVolume, input.int(89, '  Volume MA Length', display = display, group=group_volume_weighted_colored_bars))
+upThesh = input.float(1.618, '  High-Volume Multiplier', display = display, minval=1., step=.1, group=group_volume_weighted_colored_bars)
+barcolor(vwcb and nzVolume != 0 ? nzVolume > vSMA * upThesh ? open < close ? #006400 : #910000 : nzVolume < vSMA * input.float(0.618, '  Low-Volume Multiplier', display = display, minval=.1, step=.1, group=group_volume_weighted_colored_bars) ? open < close ? #7FFFD4 : #FF9800 : na : na, title='Volume-Weighted Bars', editable = false)
+
+group_dashboard   = 'Dashboard'
+showDashboard     = input.bool(true, 'Dashboard', inline = 'DB', group = group_dashboard)
+dashboardPosition = input.string('Top Right', '', inline = 'DB', display = display, options = ['Top Right', 'Top Left', 'Bottom Left'], group = group_dashboard)
+
+dashboardPos = dashboardPosition == 'Top Right' ? position.top_right : dashboardPosition == 'Top Left' ? position.top_left : position.bottom_left
+var table dashboard = table.new(dashboardPos, 2, 5, border_width = 1, border_color = color.new(color.gray, 60))
+bgDashboard = color.new(color.black, 80)
+
+if showDashboard and barstate.islast
+    bool isBuyME  = buyCount > 0
+    bool isSellME = sellCount > 0
+
+    momentumText  = isBuyME ? 'Buy-side ' + str.tostring(buyCount) + '/9' : isSellME ? 'Sell-side ' + str.tostring(sellCount) + '/9' : '—'
+    momentumColor = isBuyME ? color.red : isSellME ? color.teal : color.gray
+    momentumTip = isBuyME ? 'Buy-side Momentum Phase: Price is falling (Step ' + str.tostring(buyCount) + ' of 9 in progress) — a completed decline here is what the framework watches for a possible bullish reversal.' :
+              isSellME ? 'Sell-side Momentum Phase: Price is rising (Step ' + str.tostring(sellCount) + ' of 9 in progress) — a completed rise here is what the framework watches for a possible bearish reversal.' :
+              'No active Momentum Exhaustion phase'
+
+    bool isBuyTE  = buyExhaustionCount > 0
+    bool isSellTE = sellExhaustionCount > 0
+    terminalText  = isBuyTE ? 'Buy-side ' + str.tostring(buyExhaustionCount) + '/13' : isSellTE ? 'Sell-side ' + str.tostring(sellExhaustionCount) + '/13' : '—'
+    terminalColor = isBuyTE ? color.red : isSellTE ? color.teal : color.gray
+    terminalTip = isBuyTE ? 'Buy-side Terminal Exhaustion: Price is falling (Step ' + str.tostring(buyExhaustionCount) + ' of 13 in progress) — a completed decline here is what the framework watches for a possible bullish reversal.' :
+              isSellTE ? 'Sell-side Terminal Exhaustion: Price is rising (Step ' + str.tostring(sellExhaustionCount) + ' of 13 in progress) — a completed rise here is what the framework watches for a possible bearish reversal.' :
+              'No active Terminal Exhaustion phase'
+
+    pivotValid  = i_isPivot and R1 > 0 and P > 0 and S1 > 0
+    diffR = math.abs(priceClose - R1)
+    diffP = math.abs(priceClose - P)
+    diffS = math.abs(priceClose - S1)
+    nearestIsR = diffR <= diffP and diffR <= diffS
+    nearestIsP = not nearestIsR and diffP <= diffS
+    nearestName = nearestIsR ? 'R' : nearestIsP ? 'P' : 'S'
+    nearestVal  = nearestIsR ? R1 : nearestIsP ? P : S1
+    pctDist = pivotValid ? (nearestVal - priceClose) / priceClose * 100 : na
+    pivotText  = pivotValid ? nearestName + ' ' + (pctDist >= 0 ? '+' : '') + str.tostring(pctDist, '#.##') + '%' : '—'
+    pivotColor = not pivotValid ? color.gray : priceClose > R1 ? color.teal : priceClose < S1 ? color.red : color.gray
+    pivotTip = pivotValid ? 'Percentage distance to nearest Range Pivot level (' + nearestName + ' at ' + str.tostring(nearestVal, format.mintick) + ')' : 'Range Pivots disabled or unavailable'
+
+    pressureText  = not isPressureEnabled ? 'Off' : nzVolume != 0 ? osc >= 50 ? str.tostring(math.round(osc)) + '% Bull' : str.tostring(math.round(100 - osc)) + '% Bear' : 'No data'
+    pressureColor = not isPressureEnabled ? color.gray : nzVolume != 0 ?  osc >= 50 ? color.teal : color.red : color.gray
+    pressureTip   = not isPressureEnabled ? 'Volume Pressure is disabled' : 'Volume Pressure Oscillator ratio (' + str.tostring(math.round(osc)) + '% buying / ' + str.tostring(math.round(100 - osc)) + '% selling)'
+
+    table.merge_cells(dashboard, 0, 0, 1, 0)
+    table.cell(dashboard, 0, 0, 'Dual-Phase Reversal', text_color = chart.fg_color, bgcolor = bgDashboard, tooltip = 'Dual-Phase Reversal Framework\nIntegrates Momentum and Terminal Exhaustion, higher-timeframe Range Pivots, and Volume Pressure analytics.')
+
+    table.cell(dashboard, 0, 1, 'Momentum', text_color = chart.fg_color, text_halign = text.align_left, bgcolor = bgDashboard, tooltip = 'Momentum Exhaustion tracks the initial phase of directional overextension using a 4-bar close comparison. A new phase begins only after a Momentum Shift changes the direction of that relationship.')
+    table.cell(dashboard, 1, 1, momentumText, text_color = momentumColor, text_halign = text.align_right, bgcolor = bgDashboard, tooltip = momentumTip)
+
+    table.cell(dashboard, 0, 2, 'Terminal', text_color = chart.fg_color, text_halign = text.align_left, bgcolor = bgDashboard, tooltip = 'Terminal Exhaustion tracks the late-stage continuation of directional exhaustion. It begins after Momentum Exhaustion completes step 9 and progresses independently toward step 13.')
+    table.cell(dashboard, 1, 2, terminalText, text_color = terminalColor, text_halign = text.align_right, bgcolor = bgDashboard, tooltip = terminalTip)
+
+    table.cell(dashboard, 0, 3, 'Pivot', text_color = chart.fg_color, text_halign = text.align_left, bgcolor = bgDashboard, tooltip = 'Signed percentage distance to the nearest Range Pivot level. Positive values indicate the level is above price; negative values indicate it is below price.')
+    table.cell(dashboard, 1, 3, pivotText, text_color = pivotColor, text_halign = text.align_right, bgcolor = bgDashboard, tooltip = pivotTip)
+
+    table.cell(dashboard, 0, 4, 'Pressure', text_color = chart.fg_color, text_halign = text.align_left, bgcolor = bgDashboard, tooltip = 'Volume Pressure ratio based on directional price movement and traded volume. Higher values indicate greater relative buying pressure; lower values indicate greater relative selling pressure.')
+    table.cell(dashboard, 1, 4, pressureText, text_color = pressureColor, text_halign = text.align_right, bgcolor = bgDashboard, tooltip = pressureTip)
+
+priceCloseTxt = str.tostring(priceClose, format.mintick)
+tickerTxt = syminfo.ticker
+
+if f_crossingLevelX(priceClose, buyPhaseResistance) and phaseSRLevels
+    alert(tickerTxt + ' crossing buy-side phase resistance level, price ' + str.tostring(buyPhaseResistance, format.mintick))
+
+buyPhaseStopCrossed  = f_crossingLevelX(priceClose, buyPhaseStopLevel)
+sellPhaseStopCrossed = f_crossingLevelX(priceClose, sellPhaseStopLevel)
+if (buyPhaseStopCrossed or sellPhaseStopCrossed) and stopLevels
+    crossedPhaseStopLevel = buyPhaseStopCrossed ? buyPhaseStopLevel : sellPhaseStopLevel
+    alert(tickerTxt + ' crossing phase invalidation level, price ' + str.tostring(crossedPhaseStopLevel, format.mintick))
+
+if f_crossingLevelX(priceClose, sellPhaseSupport) and phaseSRLevels
+    alert(tickerTxt + ' crossing sell-side phase support level, price ' + str.tostring(sellPhaseSupport, format.mintick))
+
+buyExhaustionStopCrossed  = f_crossingLevelX(priceClose, buyExhaustionStopLevel)
+sellExhaustionStopCrossed = f_crossingLevelX(priceClose, sellExhaustionStopLevel)
+if (buyExhaustionStopCrossed or sellExhaustionStopCrossed) and stopLevels
+    crossedExhaustionStopLevel = buyExhaustionStopCrossed ? buyExhaustionStopLevel : sellExhaustionStopLevel
+    alert(tickerTxt + ' crossing exhaustion invalidation level, price ' + str.tostring(crossedExhaustionStopLevel, format.mintick))
+
+if buyCount == 9 and compltedPhases
+    alert(tickerTxt + ' buy-side Momentum Exhaustion completed, price ' + priceCloseTxt)
+
+if sellCount == 9 and compltedPhases
+    alert(tickerTxt + ' sell-side Momentum Exhaustion completed, price ' + priceCloseTxt)
+
+if buyExhaustionCount == 13 and compltedPhases
+    alert(tickerTxt + ' buy-side Terminal Exhaustion completed, price ' + priceCloseTxt)
+
+if sellExhaustionCount == 13 and compltedPhases
+    alert(tickerTxt + ' sell-side Terminal Exhaustion completed, price ' + priceCloseTxt)
+
+if osc > upperBand and osc[1] < upperBand and isPressureEnabled
+    alert(tickerTxt + ' volume pressure crossing overbought zone, price ' + priceCloseTxt)
+
+if osc < lowerBand and osc[1] > lowerBand and isPressureEnabled
+    alert(tickerTxt + ' volume pressure crossing oversold zone, price ' + priceCloseTxt)
+
+if nzVolume > vSMA * upThesh and vwcb
+    alert(tickerTxt + ' high volume, price ' + priceCloseTxt)
+
+var table logo = table.new(position.bottom_right, 1, 1)
+if barstate.islast
+    table.cell(logo, 0, 0, '☼☾  ', text_size = size.normal, text_color = color.teal, tooltip = 'SoleMare Analytics')

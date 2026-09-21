@@ -1,0 +1,433 @@
+//@version=6
+indicator("Adaptive Candlestick Context Scanner v1.1", "Candle Context Scanner v1.1", overlay=true, max_labels_count=400)
+
+// Original contextual candlestick scanner.
+// Pattern geometry is combined with prior-trend, ATR-normalized location and contextual quality.
+// No Buy/Sell signals, success probabilities, win-rate claims or performance claims.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 01 — CORE DETECTION
+// ─────────────────────────────────────────────────────────────────────────────
+g1="01 — Core Detection"
+defaultMode=input.string("STANDARD","Default Detection Mode",options=["STANDARD","STRICT"],group=g1)
+trendLen=input.int(20,"Trend Length",minval=5,maxval=100,group=g1)
+atrLen=input.int(14,"ATR Length",minval=5,group=g1)
+showBull=input.bool(true,"Bullish Patterns",group=g1)
+showBear=input.bool(true,"Bearish Patterns",group=g1)
+showNeutral=input.bool(true,"Neutral Patterns",group=g1)
+
+// Per-pattern override: DEFAULT inherits the global Standard/Strict mode.
+gB="02 — Bullish Pattern Controls"
+mMorning=input.string("DEFAULT","Morning Star",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gB)
+mSoldiers=input.string("DEFAULT","Three White Soldiers",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gB)
+mBullEngulf=input.string("DEFAULT","Bullish Engulfing",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gB)
+mPiercing=input.string("DEFAULT","Piercing Line",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gB)
+mBullHarami=input.string("DEFAULT","Bullish Harami",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gB)
+mTwBottom=input.string("DEFAULT","Tweezer Bottom",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gB)
+mHammer=input.string("DEFAULT","Hammer",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gB)
+mBullMar=input.string("DEFAULT","Bull Marubozu",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gB)
+mInvHammer=input.string("DEFAULT","Inverted Hammer",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gB)
+mBullCounter=input.string("DEFAULT","Bull Counter Attack",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gB)
+mBullSash=input.string("DEFAULT","Bull Sash",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gB)
+mBullSeparate=input.string("DEFAULT","Bull Separating Line",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gB)
+mRisingWindow=input.string("DEFAULT","Rising Window",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gB)
+mRisingThree=input.string("DEFAULT","Rising Three",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gB)
+
+gS="03 — Bearish Pattern Controls"
+mEvening=input.string("DEFAULT","Evening Star",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gS)
+mCrows=input.string("DEFAULT","Three Black Crows",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gS)
+mBearEngulf=input.string("DEFAULT","Bearish Engulfing",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gS)
+mDarkCloud=input.string("DEFAULT","Dark Cloud Cover",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gS)
+mBearHarami=input.string("DEFAULT","Bearish Harami",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gS)
+mTwTop=input.string("DEFAULT","Tweezer Top",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gS)
+mShooting=input.string("DEFAULT","Shooting Star",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gS)
+mBearMar=input.string("DEFAULT","Bear Marubozu",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gS)
+mHanging=input.string("DEFAULT","Hanging Man",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gS)
+mBearCounter=input.string("DEFAULT","Bear Counter Attack",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gS)
+mBearSash=input.string("DEFAULT","Bear Sash",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gS)
+mBearSeparate=input.string("DEFAULT","Bear Separating Line",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gS)
+mFallingWindow=input.string("DEFAULT","Falling Window",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gS)
+mFallingThree=input.string("DEFAULT","Falling Three",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gS)
+
+gN="04 — Neutral Pattern Controls"
+mHighWave=input.string("DEFAULT","High Wave",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gN)
+mDoji=input.string("DEFAULT","Doji",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gN)
+mSpinning=input.string("DEFAULT","Spinning Top",options=["DEFAULT","OFF","STANDARD","STRICT"],group=gN)
+
+g2="05 — Context Quality"
+useTrend=input.bool(true,"Prior Trend Context",group=g2)
+useLocation=input.bool(true,"Swing Location Context",group=g2)
+swingLen=input.int(8,"Swing Context Length",minval=3,maxval=30,group=g2)
+qualityMin=input.float(.52,"Minimum Context Quality",minval=.10,maxval=.95,step=.01,group=g2)
+selectionMode=input.string("HIGHEST QUALITY","Conflict Resolution",options=["HIGHEST QUALITY","HIGHEST PRIORITY","ALL QUALIFIED"],group=g2)
+
+g3="06 — Visuals"
+showLabels=input.bool(true,"Pattern Labels",group=g3)
+showQuality=input.bool(true,"Show Quality",group=g3)
+keepLabels=input.int(100,"Labels Kept",minval=20,maxval=300,group=g3)
+compact=input.bool(false,"Compact Names",group=g3)
+premiumView=input.bool(true,"Premium Candle Styling",group=g3)
+showScoreBadge=input.bool(true,"Score In Label",group=g3)
+showArrows=input.bool(true,"Pattern Direction Arrows",group=g3)
+labelSizeInput=input.string("TINY","Label Size",options=["TINY","SMALL"],group=g3)
+
+g4="07 — Alerts"
+dynamicAlerts=input.bool(true,"Dynamic Pattern Alerts",group=g4,tooltip="Create an alert using 'Any alert() function call' to receive the detected pattern name and context quality.")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+clamp01(float x)=>math.max(0.,math.min(1.,x))
+resolved(string m)=>m=="DEFAULT"?defaultMode:m
+enabled(string m)=>resolved(m)!="OFF"
+isStrict(string m)=>resolved(m)=="STRICT"
+patName(string fullName,string shortName)=>compact?shortName:fullName
+
+atr=ta.atr(atrLen)
+atrSafe=math.max(atr,syminfo.mintick)
+rng=math.max(high-low,syminfo.mintick)
+body=math.abs(close-open)
+uw=high-math.max(open,close)
+lw=math.min(open,close)-low
+bs=body/rng
+us=uw/rng
+ls=lw/rng
+bull=close>open
+bear=close<open
+
+ema=ta.ema(close,trendLen)
+slope=ema-ema[3]
+priorBull=close[1]>ema[1] and slope[1]>0
+priorBear=close[1]<ema[1] and slope[1]<0
+
+recentLow=ta.lowest(low,swingLen)
+recentHigh=ta.highest(high,swingLen)
+nearLow=low<=recentLow+atrSafe*.18
+nearHigh=high>=recentHigh-atrSafe*.18
+
+quality(bool wantsBull,float anatomy)=>
+    tq=useTrend?(wantsBull?(priorBear?1.:.35):(priorBull?1.:.35)):.70
+    lq=useLocation?(wantsBull?(nearLow?1.:.40):(nearHigh?1.:.40)):.70
+    clamp01(.52*anatomy+.28*tq+.20*lq)
+
+neutralQ(float anatomy)=>
+    clamp01(.70*anatomy+.30*(1.-math.min(math.abs(slope)/atrSafe,1.)))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATTERN-SPECIFIC MODES / THRESHOLDS
+// ─────────────────────────────────────────────────────────────────────────────
+sHammer=isStrict(mHammer)
+sShooting=isStrict(mShooting)
+sInvHammer=isStrict(mInvHammer)
+sHanging=isStrict(mHanging)
+sBullEngulf=isStrict(mBullEngulf)
+sBearEngulf=isStrict(mBearEngulf)
+sDoji=isStrict(mDoji)
+sSpinning=isStrict(mSpinning)
+sHighWave=isStrict(mHighWave)
+sMorning=isStrict(mMorning)
+sEvening=isStrict(mEvening)
+sTwBottom=isStrict(mTwBottom)
+sTwTop=isStrict(mTwTop)
+sBullCounter=isStrict(mBullCounter)
+sBearCounter=isStrict(mBearCounter)
+sBullSeparate=isStrict(mBullSeparate)
+sBearSeparate=isStrict(mBearSeparate)
+sBullMar=isStrict(mBullMar)
+sBearMar=isStrict(mBearMar)
+
+hammerWR=sHammer?2.4:1.8
+shootWR=sShooting?2.4:1.8
+invHammerWR=sInvHammer?2.4:1.8
+hangingWR=sHanging?2.4:1.8
+engBullFactor=sBullEngulf?1.08:1.00
+engBearFactor=sBearEngulf?1.08:1.00
+dojiMax=sDoji?.07:.10
+spinBodyMax=sSpinning?.22:.30
+waveBodyMax=sHighWave?.20:.28
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RAW PATTERN GEOMETRY
+// ─────────────────────────────────────────────────────────────────────────────
+hammer=body>atrSafe*.08 and lw>=body*hammerWR and uw<=body*.75 and bs<=.45
+shooting=body>atrSafe*.08 and uw>=body*shootWR and lw<=body*.75 and bs<=.45
+invertedHammer=body>atrSafe*.08 and uw>=body*invHammerWR and lw<=body*.75 and bs<=.45
+hangingMan=body>atrSafe*.08 and lw>=body*hangingWR and uw<=body*.75 and bs<=.45
+
+bullEngulf=bull and bear[1] and open<=close[1] and close>=open[1] and body>=body[1]*engBullFactor
+bearEngulf=bear and bull[1] and open>=close[1] and close<=open[1] and body>=body[1]*engBearFactor
+
+doji=bs<=dojiMax
+spinning=bs<=spinBodyMax and us>=.20 and ls>=.20 and not doji
+highWave=bs<=waveBodyMax and us>=.32 and ls>=.32
+
+bullHarami=bull and bear[1] and high<open[1] and low>close[1]
+bearHarami=bear and bull[1] and high<close[1] and low>open[1]
+mid1=(open[1]+close[1])*.5
+piercing=bull and bear[1] and close>mid1 and close<open[1]
+darkCloud=bear and bull[1] and close<mid1 and close>open[1]
+
+morningMidMax=sMorning?.25:.35
+eveningMidMax=sEvening?.25:.35
+morning=bear[2] and body[1]<=rng[1]*morningMidMax and bull and close>(open[2]+close[2])*.5
+evening=bull[2] and body[1]<=rng[1]*eveningMidMax and bear and close<(open[2]+close[2])*.5
+soldiers=bull and bull[1] and bull[2] and close>close[1] and close[1]>close[2]
+crows=bear and bear[1] and bear[2] and close<close[1] and close[1]<close[2]
+
+twBottomTol=atrSafe*(sTwBottom?.03:.06)
+twTopTol=atrSafe*(sTwTop?.03:.06)
+twBottom=math.abs(low-low[1])<=twBottomTol and bear[1] and bull
+twTop=math.abs(high-high[1])<=twTopTol and bull[1] and bear
+
+bullMar=bull and bs>=(sBullMar?.88:.80) and us<=.08 and ls<=.08
+bearMar=bear and bs>=(sBearMar?.88:.80) and us<=.08 and ls<=.08
+
+bullCounterTol=atrSafe*(sBullCounter?.04:.08)
+bearCounterTol=atrSafe*(sBearCounter?.04:.08)
+bullCounter=bull and bear[1] and math.abs(close-close[1])<=bullCounterTol and open<close[1]
+bearCounter=bear and bull[1] and math.abs(close-close[1])<=bearCounterTol and open>close[1]
+
+bullSash=bull and bear[1] and open<low[1] and close>close[1] and close<open[1]
+bearSash=bear and bull[1] and open>high[1] and close<close[1] and close>open[1]
+
+bullSepTol=atrSafe*(sBullSeparate?.03:.06)
+bearSepTol=atrSafe*(sBearSeparate?.03:.06)
+bullSeparate=bull and bear[1] and math.abs(open-open[1])<=bullSepTol and close>high[1]
+bearSeparate=bear and bull[1] and math.abs(open-open[1])<=bearSepTol and close<low[1]
+
+risingWindow=low>high[1]
+fallingWindow=high<low[1]
+risingThree=bull[4] and bull and close>high[4] and bear[1] and bear[2] and bear[3] and high[1]<high[4] and high[2]<high[4] and high[3]<high[4] and low[1]>low[4] and low[2]>low[4] and low[3]>low[4]
+fallingThree=bear[4] and bear and close<low[4] and bull[1] and bull[2] and bull[3] and high[1]<high[4] and high[2]<high[4] and high[3]<high[4] and low[1]>low[4] and low[2]>low[4] and low[3]>low[4]
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONTINUOUS ANATOMY QUALITY
+// These are fit measurements, not probabilities.
+// ─────────────────────────────────────────────────────────────────────────────
+aHammer=clamp01((lw/math.max(body*hammerWR,syminfo.mintick))*.75+(1.-math.min(uw/math.max(body*.75,syminfo.mintick),1.))*.25)
+aShooting=clamp01((uw/math.max(body*shootWR,syminfo.mintick))*.75+(1.-math.min(lw/math.max(body*.75,syminfo.mintick),1.))*.25)
+aInvHammer=clamp01((uw/math.max(body*invHammerWR,syminfo.mintick))*.75+(1.-math.min(lw/math.max(body*.75,syminfo.mintick),1.))*.25)
+aHanging=clamp01((lw/math.max(body*hangingWR,syminfo.mintick))*.75+(1.-math.min(uw/math.max(body*.75,syminfo.mintick),1.))*.25)
+aBullEngulf=clamp01(body/math.max(body[1]*1.35,syminfo.mintick))
+aBearEngulf=clamp01(body/math.max(body[1]*1.35,syminfo.mintick))
+aHarami=clamp01(1.-body/math.max(body[1],syminfo.mintick))
+aPierce=clamp01((close-mid1)/math.max(math.abs(open[1]-mid1),syminfo.mintick))
+aDark=clamp01((mid1-close)/math.max(math.abs(mid1-close[1]),syminfo.mintick))
+aMorning=clamp01(.50*(1.-body[1]/math.max(rng[1],syminfo.mintick))+.50*((close-((open[2]+close[2])*.5))/math.max(body[2]*.5,syminfo.mintick)))
+aEvening=clamp01(.50*(1.-body[1]/math.max(rng[1],syminfo.mintick))+.50*((((open[2]+close[2])*.5)-close)/math.max(body[2]*.5,syminfo.mintick)))
+aSoldiers=clamp01((body+body[1]+body[2])/math.max(atrSafe*1.8,syminfo.mintick))
+aCrows=clamp01((body+body[1]+body[2])/math.max(atrSafe*1.8,syminfo.mintick))
+aTwBottom=clamp01(1.-math.abs(low-low[1])/math.max(twBottomTol,syminfo.mintick))
+aTwTop=clamp01(1.-math.abs(high-high[1])/math.max(twTopTol,syminfo.mintick))
+aBullMar=clamp01(bs)
+aBearMar=clamp01(bs)
+aBullCounter=clamp01(1.-math.abs(close-close[1])/math.max(bullCounterTol,syminfo.mintick))
+aBearCounter=clamp01(1.-math.abs(close-close[1])/math.max(bearCounterTol,syminfo.mintick))
+aBullSash=clamp01((close-close[1])/math.max(math.abs(open[1]-close[1]),syminfo.mintick))
+aBearSash=clamp01((close[1]-close)/math.max(math.abs(close[1]-open[1]),syminfo.mintick))
+aBullSeparate=clamp01(.5*(1.-math.abs(open-open[1])/math.max(bullSepTol,syminfo.mintick))+.5*((close-high[1])/math.max(atrSafe*.25,syminfo.mintick)))
+aBearSeparate=clamp01(.5*(1.-math.abs(open-open[1])/math.max(bearSepTol,syminfo.mintick))+.5*((low[1]-close)/math.max(atrSafe*.25,syminfo.mintick)))
+aRisingWindow=clamp01((low-high[1])/math.max(atrSafe*.20,syminfo.mintick))
+aFallingWindow=clamp01((low[1]-high)/math.max(atrSafe*.20,syminfo.mintick))
+aRisingThree=clamp01((close-high[4])/math.max(atrSafe*.30,syminfo.mintick)+.65)
+aFallingThree=clamp01((low[4]-close)/math.max(atrSafe*.30,syminfo.mintick)+.65)
+aDoji=clamp01(1.-bs/math.max(dojiMax,.001))
+aSpin=clamp01(.50*(1.-bs/math.max(spinBodyMax,.001))+.25*math.min(us/.20,1.)+.25*math.min(ls/.20,1.))
+aWave=clamp01(.50*(1.-bs/math.max(waveBodyMax,.001))+.25*math.min(us/.32,1.)+.25*math.min(ls/.32,1.))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CANDIDATE REGISTRY
+// Priority order intentionally favors larger multi-candle structures before single-candle forms.
+// ─────────────────────────────────────────────────────────────────────────────
+var array<string> cNames=array.new_string()
+var array<float> cQ=array.new_float()
+var array<int> cDir=array.new_int()
+array.clear(cNames)
+array.clear(cQ)
+array.clear(cDir)
+
+addCandidate(bool ok,string nm,float cq,int cd,string pmode)=>
+    modeMin=isStrict(pmode)?math.max(qualityMin,.68):qualityMin
+    if ok and enabled(pmode) and cq>=modeMin
+        array.push(cNames,nm)
+        array.push(cQ,cq)
+        array.push(cDir,cd)
+
+addCandidate(showBull and morning,patName("MORNING STAR","MSTAR"),quality(true,aMorning),1,mMorning)
+addCandidate(showBear and evening,patName("EVENING STAR","ESTAR"),quality(false,aEvening),-1,mEvening)
+addCandidate(showBull and soldiers,patName("THREE WHITE SOLDIERS","3WS"),quality(true,aSoldiers),1,mSoldiers)
+addCandidate(showBear and crows,patName("THREE BLACK CROWS","3BC"),quality(false,aCrows),-1,mCrows)
+addCandidate(showBull and bullEngulf,patName("BULLISH ENGULFING","BENG"),quality(true,aBullEngulf),1,mBullEngulf)
+addCandidate(showBear and bearEngulf,patName("BEARISH ENGULFING","SENG"),quality(false,aBearEngulf),-1,mBearEngulf)
+addCandidate(showBull and piercing,patName("PIERCING LINE","PIERCE"),quality(true,aPierce),1,mPiercing)
+addCandidate(showBear and darkCloud,patName("DARK CLOUD COVER","DCLOUD"),quality(false,aDark),-1,mDarkCloud)
+addCandidate(showBull and bullHarami,patName("BULLISH HARAMI","BHAR"),quality(true,aHarami),1,mBullHarami)
+addCandidate(showBear and bearHarami,patName("BEARISH HARAMI","SHAR"),quality(false,aHarami),-1,mBearHarami)
+addCandidate(showBull and twBottom,patName("TWEEZER BOTTOM","TWB"),quality(true,aTwBottom),1,mTwBottom)
+addCandidate(showBear and twTop,patName("TWEEZER TOP","TWT"),quality(false,aTwTop),-1,mTwTop)
+addCandidate(showBull and hammer,patName("HAMMER","HAM"),quality(true,aHammer),1,mHammer)
+addCandidate(showBear and shooting,patName("SHOOTING STAR","SSTAR"),quality(false,aShooting),-1,mShooting)
+addCandidate(showBull and bullMar,patName("BULL MARUBOZU","BMAR"),quality(true,aBullMar),1,mBullMar)
+addCandidate(showBear and bearMar,patName("BEAR MARUBOZU","SMAR"),quality(false,aBearMar),-1,mBearMar)
+addCandidate(showBull and invertedHammer and priorBear,patName("INVERTED HAMMER","IHAM"),quality(true,aInvHammer),1,mInvHammer)
+addCandidate(showBear and hangingMan and priorBull,patName("HANGING MAN","HMAN"),quality(false,aHanging),-1,mHanging)
+addCandidate(showBull and bullCounter,patName("BULL COUNTER ATTACK","BCA"),quality(true,aBullCounter),1,mBullCounter)
+addCandidate(showBear and bearCounter,patName("BEAR COUNTER ATTACK","SCA"),quality(false,aBearCounter),-1,mBearCounter)
+addCandidate(showBull and bullSash,patName("BULL SASH","BSASH"),quality(true,aBullSash),1,mBullSash)
+addCandidate(showBear and bearSash,patName("BEAR SASH","SSASH"),quality(false,aBearSash),-1,mBearSash)
+addCandidate(showBull and bullSeparate,patName("BULL SEPARATING LINE","BSEP"),quality(true,aBullSeparate),1,mBullSeparate)
+addCandidate(showBear and bearSeparate,patName("BEAR SEPARATING LINE","SSEP"),quality(false,aBearSeparate),-1,mBearSeparate)
+addCandidate(showBull and risingWindow,patName("RISING WINDOW","RWIN"),quality(true,aRisingWindow),1,mRisingWindow)
+addCandidate(showBear and fallingWindow,patName("FALLING WINDOW","FWIN"),quality(false,aFallingWindow),-1,mFallingWindow)
+addCandidate(showBull and risingThree,patName("RISING THREE","R3"),quality(true,aRisingThree),1,mRisingThree)
+addCandidate(showBear and fallingThree,patName("FALLING THREE","F3"),quality(false,aFallingThree),-1,mFallingThree)
+addCandidate(showNeutral and highWave,patName("HIGH WAVE","HWAVE"),neutralQ(aWave),0,mHighWave)
+addCandidate(showNeutral and doji,"DOJI",neutralQ(aDoji),0,mDoji)
+addCandidate(showNeutral and spinning,patName("SPINNING TOP","SPIN"),neutralQ(aSpin),0,mSpinning)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONFLICT RESOLUTION
+// Dashboard/arrows always use one representative candidate.
+// ALL QUALIFIED affects labels; representative candidate is highest quality.
+// ─────────────────────────────────────────────────────────────────────────────
+string pat=""
+float q=na
+int dir=0
+int selectedIndex=-1
+candidateCount=array.size(cNames)
+
+if candidateCount>0
+    if selectionMode=="HIGHEST PRIORITY"
+        selectedIndex:=0
+    else
+        float bestQ=-1.
+        int bestI=0
+        for i=0 to candidateCount-1
+            qi=array.get(cQ,i)
+            if qi>bestQ
+                bestQ:=qi
+                bestI:=i
+        selectedIndex:=bestI
+    pat:=array.get(cNames,selectedIndex)
+    q:=array.get(cQ,selectedIndex)
+    dir:=array.get(cDir,selectedIndex)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PREMIUM VISUAL SYSTEM
+// ─────────────────────────────────────────────────────────────────────────────
+premiumBull=color.rgb(0,155,125)
+premiumBear=color.rgb(226,18,75)
+premiumNeutral=color.rgb(126,132,136)
+barcolor(premiumView ? color.new(color.white,100) : na)
+plotcandle(premiumView?open:na,premiumView?high:na,premiumView?low:na,premiumView?close:na,title="Premium Candles",color=bull?premiumBull:bear?premiumBear:premiumNeutral,wickcolor=bull?color.new(premiumBull,5):bear?color.new(premiumBear,5):premiumNeutral,bordercolor=bull?color.rgb(0,143,116):bear?color.rgb(205,15,62):premiumNeutral)
+
+var array<label> lbs=array.new<label>()
+var string lastPat="—"
+var float lastQ=na
+var int lastDir=0
+
+if barstate.isconfirmed and pat!=""
+    lastPat:=pat
+    lastQ:=q
+    lastDir:=dir
+
+labelSize=labelSizeInput=="SMALL"?size.small:size.tiny
+
+if barstate.isconfirmed and showLabels and candidateCount>0
+    labelPad=atrSafe*.20
+    neutralPad=atrSafe*.26
+    if selectionMode=="ALL QUALIFIED"
+        for i=0 to candidateCount-1
+            nm=array.get(cNames,i)
+            cq=array.get(cQ,i)
+            cd=array.get(cDir,i)
+            col=cd==1?color.rgb(0,137,112):cd==-1?color.rgb(214,18,67):color.rgb(99,106,112)
+            stack=atrSafe*.12*i
+            y=cd==1?low-labelPad-stack:cd==-1?high+labelPad+stack:high+neutralPad+stack
+            st=cd==1?label.style_label_up:label.style_label_down
+            scoreTxt=str.tostring(cq,"#.00")
+            txt=showQuality and showScoreBadge?nm+"   "+scoreTxt:nm
+            lb=label.new(bar_index,y,txt,style=st,size=labelSize,color=col,textcolor=color.white)
+            array.push(lbs,lb)
+    else
+        col=dir==1?color.rgb(0,137,112):dir==-1?color.rgb(214,18,67):color.rgb(99,106,112)
+        y=dir==1?low-labelPad:dir==-1?high+labelPad:high+neutralPad
+        st=dir==1?label.style_label_up:label.style_label_down
+        scoreTxt=str.tostring(q,"#.00")
+        txt=showQuality and showScoreBadge?pat+"   "+scoreTxt:pat
+        lb=label.new(bar_index,y,txt,style=st,size=labelSize,color=col,textcolor=color.white)
+        array.push(lbs,lb)
+
+while array.size(lbs)>keepLabels
+    label.delete(array.shift(lbs))
+
+bullArrow=barstate.isconfirmed and showArrows and pat!="" and dir==1
+bearArrow=barstate.isconfirmed and showArrows and pat!="" and dir==-1
+plotshape(bullArrow,title="Bullish Pattern Arrow",style=shape.triangleup,location=location.belowbar,color=color.rgb(0,143,116),size=size.tiny)
+plotshape(bearArrow,title="Bearish Pattern Arrow",style=shape.triangledown,location=location.abovebar,color=color.rgb(218,18,70),size=size.tiny)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DASHBOARD
+// ─────────────────────────────────────────────────────────────────────────────
+var table card=table.new(position.top_right,4,7,border_width=1,frame_width=1)
+if barstate.islast
+    white=color.rgb(255,255,255)
+    soft=color.rgb(247,249,250)
+    line=color.rgb(224,230,233)
+    muted=color.rgb(104,113,120)
+    dark=color.rgb(27,33,36)
+    bullCol=color.rgb(0,151,122)
+    bearCol=color.rgb(218,18,67)
+    neutralCol=color.rgb(96,103,109)
+    lastBg=lastDir==1?color.rgb(225,247,240):lastDir==-1?color.rgb(255,231,236):color.rgb(238,241,243)
+    lastFg=lastDir==1?color.rgb(0,130,105):lastDir==-1?color.rgb(201,14,60):neutralCol
+    qBg=na(lastQ)?soft:(lastQ>=.80?color.rgb(224,247,240):lastQ>=.65?color.rgb(238,244,241):soft)
+    qFg=na(lastQ)?muted:(lastQ>=.80?bullCol:dark)
+
+    table.merge_cells(card,0,0,2,0)
+    table.cell(card,0,0,"CANDLES SCANNER",text_color=dark,bgcolor=white,text_size=size.small)
+    table.cell(card,3,0,"v1.1",text_color=bullCol,bgcolor=white,text_size=size.small)
+
+    table.cell(card,0,1,"PATTERN",text_color=muted,bgcolor=soft,text_size=size.tiny)
+    table.cell(card,1,1,"CONTEXT",text_color=muted,bgcolor=soft,text_size=size.tiny)
+    table.cell(card,2,1,"QUALITY",text_color=muted,bgcolor=soft,text_size=size.tiny)
+    table.cell(card,3,1,"",text_color=muted,bgcolor=soft,text_size=size.tiny)
+
+    table.merge_cells(card,0,2,1,2)
+    table.cell(card,0,2,"DEFAULT MODE",text_color=muted,bgcolor=white)
+    table.merge_cells(card,2,2,3,2)
+    table.cell(card,2,2,defaultMode,text_color=dark,bgcolor=white)
+
+    table.merge_cells(card,0,3,1,3)
+    table.cell(card,0,3,"TREND",text_color=muted,bgcolor=soft)
+    table.merge_cells(card,2,3,3,3)
+    table.cell(card,2,3,priorBull?"▲  BULLISH":priorBear?"▼  BEARISH":"◆  MIXED",text_color=priorBull?bullCol:priorBear?bearCol:neutralCol,bgcolor=soft)
+
+    table.merge_cells(card,0,4,1,4)
+    table.cell(card,0,4,"LAST PATTERN",text_color=muted,bgcolor=white)
+    table.merge_cells(card,2,4,3,4)
+    table.cell(card,2,4,lastPat,text_color=lastFg,bgcolor=lastBg,text_size=size.small)
+
+    table.merge_cells(card,0,5,1,5)
+    table.cell(card,0,5,"QUALITY",text_color=muted,bgcolor=soft)
+    qTxt=na(lastQ)?"—":str.tostring(lastQ,"#.00")+"   "+(lastQ>=.80?"●●●":lastQ>=.65?"●●○":"●○○")
+    table.merge_cells(card,2,5,3,5)
+    table.cell(card,2,5,qTxt,text_color=qFg,bgcolor=qBg,text_size=size.small)
+
+    table.merge_cells(card,0,6,1,6)
+    table.cell(card,0,6,"RESOLUTION",text_color=muted,bgcolor=white)
+    table.merge_cells(card,2,6,3,6)
+    table.cell(card,2,6,selectionMode,text_color=dark,bgcolor=white,text_size=size.tiny)
+
+    table.set_frame_color(card,line)
+    table.set_border_color(card,line)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ALERTS
+// ─────────────────────────────────────────────────────────────────────────────
+alertcondition(barstate.isconfirmed and pat!="" and dir==1,"Bullish Candlestick Context","A bullish candlestick pattern passed the context-quality filter.")
+alertcondition(barstate.isconfirmed and pat!="" and dir==-1,"Bearish Candlestick Context","A bearish candlestick pattern passed the context-quality filter.")
+alertcondition(barstate.isconfirmed and pat!="" and dir==0,"Neutral Candlestick Context","A neutral candlestick pattern passed the context-quality filter.")
+
+if barstate.isconfirmed and dynamicAlerts and pat!=""
+    alert("Candlestick Context | "+pat+" | Quality "+str.tostring(q,"#.00"),alert.freq_once_per_bar_close)

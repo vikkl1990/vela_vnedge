@@ -1,0 +1,160 @@
+//@version=6
+indicator("GM RSI Hook v1.3 - Regular + Hidden Divergence", shorttitle="GM Hook Div 1.3", overlay=false, precision=2)
+
+// Both moving averages use the raw RSI, not price or each other.
+rsiLength = input.int(14, "RSI length", minval=1, group="Calculation")
+rsiSource = input.source(close, "RSI price source", group="Calculation")
+wmaLength = input.int(6, "WMA smoothing length", minval=1, group="Calculation")
+emaLength = input.int(3, "EMA length", minval=1, group="Calculation")
+
+showRsi = input.bool(true, "Show RSI", group="Display")
+showWma = input.bool(true, "Show WMA of RSI", group="Display")
+showEma = input.bool(true, "Show EMA of RSI", group="Display")
+rsiColor = input.color(color.silver, "RSI color", group="Display")
+wmaColor = input.color(color.orange, "WMA color", group="Display")
+emaColor = input.color(color.aqua, "EMA color", group="Display")
+upperLevel = input.float(70.0, "Upper reference", minval=50.0, maxval=100.0, group="Reference levels")
+lowerLevel = input.float(30.0, "Lower reference", minval=0.0, maxval=50.0, group="Reference levels")
+
+showHooks = input.bool(true, "Show RSI hooks", group="Hooks", tooltip="Up: RSI turns up after a trough strictly below the lower level. Down: RSI turns down after a peak strictly above the upper level. The confirming close may be back inside the levels. Signals appear on the confirming candle, never on an earlier candle.")
+enableAlerts = input.bool(true, "Enable hook alerts", group="Hooks")
+
+// ADX measures price trend strength on the chart timeframe, not RSI strength.
+adxMode = input.string("Off", "ADX filter", options=["Off", "Below limit", "Falling", "Both"], group="ADX Filter", tooltip="Below limit: ADX strictly below the limit. Falling: ADX below its previous candle value. Both: both conditions. Checked on the hook's confirming candle close. Rejected hooks are not delayed to later candles.")
+diLength = input.int(14, "DI length", minval=1, group="ADX Filter")
+adxSmoothing = input.int(14, "ADX smoothing", minval=1, group="ADX Filter")
+adxLimit = input.float(25.0, "ADX limit", minval=0.0, maxval=100.0, step=0.5, group="ADX Filter")
+showAdx = input.bool(false, "Show ADX line", group="ADX Filter")
+[plusDI, minusDI, adxValue] = ta.dmi(diLength, adxSmoothing)
+bool adxBelow = not na(adxValue) and adxValue < adxLimit
+bool adxFalling = not na(adxValue) and not na(adxValue[1]) and adxValue < adxValue[1]
+bool adxPass = switch adxMode
+    "Below limit" => adxBelow
+    "Falling" => adxFalling
+    "Both" => adxBelow and adxFalling
+    => true
+
+float rsiValue = ta.rsi(rsiSource, rsiLength)
+float wmaValue = ta.wma(rsiValue, wmaLength)
+float emaValue = ta.ema(rsiValue, emaLength)
+
+plot(showRsi ? rsiValue : na, "RSI", color=rsiColor, linewidth=1)
+plot(showWma ? wmaValue : na, "WMA of RSI", color=wmaColor, linewidth=2)
+plot(showEma ? emaValue : na, "EMA of RSI", color=emaColor, linewidth=2)
+hline(100, "100", color=color.new(color.gray, 85))
+highLine = hline(upperLevel, "Upper reference", color=color.new(color.red, 40), linestyle=hline.style_dashed)
+hline(50, "Midpoint", color=color.new(color.gray, 55), linestyle=hline.style_dotted)
+lowLine = hline(lowerLevel, "Lower reference", color=color.new(color.lime, 40), linestyle=hline.style_dashed)
+hline(0, "0", color=color.new(color.gray, 85))
+fill(highLine, lowLine, color=color.new(color.blue, 96), title="RSI reference area")
+
+plot(showAdx ? adxValue : na, "ADX line", color=color.purple, linewidth=1)
+plot(adxValue, "ADX value", display=display.data_window)
+
+// REGULAR AND HIDDEN DIVERGENCE: compare RSI at two consecutive confirmed PRICE pivots.
+// Markers are on the confirmation candle, never shifted back to the pivot.
+divergenceType = input.string("Both", "Divergence type", options=["Regular", "Hidden", "Both"], group="Divergence", tooltip="Controls divergence labels, alerts and the optional hook filter. Hidden divergence uses higher price lows/lower RSI lows for bullish, or lower price highs/higher RSI highs for bearish. No separate trend filter is applied.")
+bool useRegular = divergenceType != "Hidden"
+bool useHidden = divergenceType != "Regular"
+showDivergence = input.bool(true, "Show confirmed divergence", group="Divergence")
+requireDivergence = input.bool(false, "Require recent divergence for hooks", group="Divergence", tooltip="Only a NEW hook on or after divergence confirmation can pass. An earlier hook is not replayed. ADX still applies to hook signals.")
+leftBars = input.int(3, "Pivot left candles", minval=1, maxval=30, group="Divergence")
+rightBars = input.int(2, "Pivot confirmation candles", minval=1, maxval=30, group="Divergence", tooltip="A pivot requires this many later candles. With 2, divergence is known only at the close two candles after the pivot.")
+minGap = input.int(3, "Minimum candles between pivots", minval=1, maxval=200, group="Divergence")
+maxGap = input.int(60, "Maximum candles between pivots", minval=2, maxval=500, group="Divergence")
+validBars = input.int(10, "Divergence valid for subsequent candles", minval=0, maxval=100, group="Divergence", tooltip="0 means the confirmation candle only. An opposite confirmed divergence cancels the previous direction.")
+priceMode = input.string("High / Low", "Price pivot source", options=["High / Low", "Close"], group="Divergence")
+divAlerts = input.bool(false, "Enable separate divergence alerts", group="Divergence", tooltip="Divergence alerts are independent of ADX and RSI 30/70 hook thresholds.")
+if minGap > maxGap
+    runtime.error("Minimum pivot distance must not exceed maximum distance.")
+float lowSource = priceMode == "Close" ? close : low
+float highSource = priceMode == "Close" ? close : high
+float pivotLow = ta.pivotlow(lowSource, leftBars, rightBars)
+float pivotHigh = ta.pivothigh(highSource, leftBars, rightBars)
+var float prevLowPrice = na
+var float prevLowRsi = na
+var int prevLowBar = na
+var float prevHighPrice = na
+var float prevHighRsi = na
+var int prevHighBar = na
+bool regularBull = false
+bool regularBear = false
+bool hiddenBull = false
+bool hiddenBear = false
+if barstate.isconfirmed and not na(pivotLow) and not na(rsiValue[rightBars])
+    int pivotBar = bar_index - rightBars
+    int gap = pivotBar - prevLowBar
+    regularBull := not na(prevLowPrice) and not na(prevLowRsi) and gap >= minGap and gap <= maxGap and pivotLow < prevLowPrice and rsiValue[rightBars] > prevLowRsi
+    hiddenBull := not na(prevLowPrice) and not na(prevLowRsi) and gap >= minGap and gap <= maxGap and pivotLow > prevLowPrice and rsiValue[rightBars] < prevLowRsi
+    prevLowPrice := pivotLow
+    prevLowRsi := rsiValue[rightBars]
+    prevLowBar := pivotBar
+if barstate.isconfirmed and not na(pivotHigh) and not na(rsiValue[rightBars])
+    int pivotBar = bar_index - rightBars
+    int gap = pivotBar - prevHighBar
+    regularBear := not na(prevHighPrice) and not na(prevHighRsi) and gap >= minGap and gap <= maxGap and pivotHigh > prevHighPrice and rsiValue[rightBars] < prevHighRsi
+    hiddenBear := not na(prevHighPrice) and not na(prevHighRsi) and gap >= minGap and gap <= maxGap and pivotHigh < prevHighPrice and rsiValue[rightBars] > prevHighRsi
+    prevHighPrice := pivotHigh
+    prevHighRsi := rsiValue[rightBars]
+    prevHighBar := pivotBar
+bool bullishDiv = (useRegular and regularBull) or (useHidden and hiddenBull)
+bool bearishDiv = (useRegular and regularBear) or (useHidden and hiddenBear)
+var int lastBullDiv = na
+var int lastBearDiv = na
+if bullishDiv and bearishDiv
+    lastBullDiv := na
+    lastBearDiv := na
+else if bullishDiv
+    lastBullDiv := bar_index
+    lastBearDiv := na
+else if bearishDiv
+    lastBearDiv := bar_index
+    lastBullDiv := na
+bool bullDivReady = not requireDivergence or (not na(lastBullDiv) and bar_index - lastBullDiv <= validBars)
+bool bearDivReady = not requireDivergence or (not na(lastBearDiv) and bar_index - lastBearDiv <= validBars)
+plotshape(showDivergence and useRegular and regularBull ? rsiValue : na, title="Regular bullish divergence confirmed", style=shape.labelup, location=location.absolute, color=color.teal, text="REG+", textcolor=color.white, size=size.tiny)
+alertcondition(divAlerts and useRegular and regularBull, "Regular bullish RSI divergence", "{{ticker}} {{interval}}: Lower price low with higher RSI at confirmed price pivots.")
+plotshape(showDivergence and useRegular and regularBear ? rsiValue : na, title="Regular bearish divergence confirmed", style=shape.labeldown, location=location.absolute, color=color.maroon, text="REG-", textcolor=color.white, size=size.tiny)
+alertcondition(divAlerts and useRegular and regularBear, "Regular bearish RSI divergence", "{{ticker}} {{interval}}: Higher price high with lower RSI at confirmed price pivots.")
+plotshape(showDivergence and useHidden and hiddenBull ? rsiValue : na, title="Hidden bullish divergence confirmed", style=shape.labelup, location=location.absolute, color=color.blue, text="HID+", textcolor=color.white, size=size.tiny)
+alertcondition(divAlerts and useHidden and hiddenBull, "Hidden bullish RSI divergence", "{{ticker}} {{interval}}: Higher price low with lower RSI at confirmed price pivots.")
+plotshape(showDivergence and useHidden and hiddenBear ? rsiValue : na, title="Hidden bearish divergence confirmed", style=shape.labeldown, location=location.absolute, color=color.orange, text="HID-", textcolor=color.white, size=size.tiny)
+alertcondition(divAlerts and useHidden and hiddenBear, "Hidden bearish RSI divergence", "{{ticker}} {{interval}}: Lower price high with higher RSI at confirmed price pivots.")
+
+// A hook is a reversal of raw RSI slope. Equal RSI values retain the prior
+// direction so a flat top/bottom can still form a hook. No MA cross required.
+// Normal var state rolls back during realtime updates; only closed bars commit.
+var int lastDirection = 0
+float rsiChange = ta.change(rsiValue)
+bool rawHookUp = barstate.isconfirmed and not na(rsiValue[1]) and lastDirection == -1 and rsiChange > 0 and rsiValue[1] < lowerLevel
+bool rawHookDown = barstate.isconfirmed and not na(rsiValue[1]) and lastDirection == 1 and rsiChange < 0 and rsiValue[1] > upperLevel
+// Update direction even when ADX blocks a hook: never issue it late.
+bool hookUp = rawHookUp and adxPass and bullDivReady
+bool hookDown = rawHookDown and adxPass and bearDivReady
+if barstate.isconfirmed and not na(rsiChange)
+    if rsiChange > 0
+        lastDirection := 1
+    else if rsiChange < 0
+        lastDirection := -1
+
+// Mark the confirming candle at its RSI value; no backdated pivot markers.
+plotshape(showHooks and hookUp ? rsiValue : na, title="RSI hook up", style=shape.triangleup, location=location.absolute, color=color.lime, size=size.small)
+plotshape(showHooks and hookDown ? rsiValue : na, title="RSI hook down", style=shape.triangledown, location=location.absolute, color=color.red, size=size.small)
+alertcondition(enableAlerts and hookUp, "RSI Hook Up", "{{ticker}} {{interval}}: RSI turned up after a trough below its lower reference. Candle closed; selected ADX and divergence filters passed.")
+alertcondition(enableAlerts and hookDown, "RSI Hook Down", "{{ticker}} {{interval}}: RSI turned down after a peak above its upper reference. Candle closed; selected ADX and divergence filters passed.")
+// One combined message per confirmed bar, including enabled independent events.
+string eventText = ""
+if enableAlerts and hookUp
+    eventText += "HOOK UP; "
+if enableAlerts and hookDown
+    eventText += "HOOK DOWN; "
+if divAlerts and useRegular and regularBull
+    eventText += "REGULAR BULLISH DIV; "
+if divAlerts and useRegular and regularBear
+    eventText += "REGULAR BEARISH DIV; "
+if divAlerts and useHidden and hiddenBull
+    eventText += "HIDDEN BULLISH DIV; "
+if divAlerts and useHidden and hiddenBear
+    eventText += "HIDDEN BEARISH DIV; "
+if barstate.isconfirmed and eventText != ""
+    alert(syminfo.tickerid + " | " + eventText + "RSI " + str.tostring(rsiValue, "#.##") + " | ADX " + str.tostring(adxValue, "#.##"), alert.freq_once_per_bar_close)

@@ -1,0 +1,2064 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Yesid_Correa_Cano
+
+//@version=6
+strategy(
+     "Ichimoku 5 Rules Backtest",
+     shorttitle = "ICH5 BT",
+     overlay = true,
+     initial_capital = 3000,
+     currency = currency.USD,
+     pyramiding = 0,
+     default_qty_type = strategy.percent_of_equity,
+     default_qty_value = 10,
+     commission_type = strategy.commission.cash_per_order,
+     commission_value = 0.1,
+     process_orders_on_close = false,
+     calc_on_order_fills = true,
+     calc_on_every_tick = true,
+     max_labels_count = 500
+)
+
+//=============================================================================
+// 01. ICHIMOKU PARAMETERS
+//=============================================================================
+
+tenkanLen = input.int(
+     9,
+     "Tenkan-sen",
+     minval = 1,
+     group = "01. Ichimoku"
+)
+
+kijunLen = input.int(
+     26,
+     "Kijun-sen",
+     minval = 1,
+     group = "01. Ichimoku"
+)
+
+senkouBLen = input.int(
+     52,
+     "Senkou Span B",
+     minval = 1,
+     group = "01. Ichimoku"
+)
+
+rule4Lookback = input.int(
+     120,
+     "Rule 4 Lookback",
+     minval = 1,
+     group = "01. Ichimoku"
+)
+
+displacement = kijunLen
+
+//=============================================================================
+// 02. MACD MOMENTUM
+//=============================================================================
+
+macdFastLen = input.int(
+     12,
+     "MACD Fast",
+     minval = 1,
+     group = "02. MACD Momentum"
+)
+
+macdSlowLen = input.int(
+     26,
+     "MACD Slow",
+     minval = 1,
+     group = "02. MACD Momentum"
+)
+
+macdSignalLen = input.int(
+     9,
+     "MACD Signal",
+     minval = 1,
+     group = "02. MACD Momentum"
+)
+
+pivotL = input.int(
+     5,
+     "Pivot Left",
+     minval = 1,
+     group = "02. MACD Momentum"
+)
+
+pivotR = input.int(
+     5,
+     "Pivot Right",
+     minval = 1,
+     group = "02. MACD Momentum"
+)
+
+divMinBars = input.int(
+     5,
+     "Minimum Bars Between Pivots",
+     minval = 1,
+     group = "02. MACD Momentum"
+)
+
+divMaxBars = input.int(
+     60,
+     "Maximum Bars Between Pivots",
+     minval = 1,
+     group = "02. MACD Momentum"
+)
+
+useWhich = input.string(
+     "Both",
+     "Use for Divergence",
+     options = [
+         "MACD",
+         "Signal",
+         "Both"
+     ],
+     group = "02. MACD Momentum"
+)
+
+requireBelowZero = input.bool(
+     false,
+     "Require MACD / Signal Below Zero",
+     group = "02. MACD Momentum"
+)
+
+//=============================================================================
+// 03. RISK MANAGEMENT
+//=============================================================================
+
+riskPct = input.float(
+     1.0,
+     "Risk per Trade (% Total Capital)",
+     minval = 0.01,
+     maxval = 10.0,
+     step = 0.1,
+     group = "03. Risk Management"
+)
+
+rewardRisk = input.float(
+     3.5,
+     "Target R:R",
+     minval = 0.5,
+     step = 0.5,
+     group = "03. Risk Management"
+)
+
+//=============================================================================
+// 04. TRIM
+//=============================================================================
+
+showTrimLabel = input.bool(
+     true,
+     "Show TRIM Label",
+     group = "04. TRIM"
+)
+
+trimPct = input.float(
+     75.0,
+     "TRIM Level (% Entry to Target)",
+     minval = 1.0,
+     maxval = 99.0,
+     step = 1.0,
+     group = "04. TRIM"
+)
+
+trimLabelColor = input.color(
+     color.rgb(230, 145, 20),
+     "TRIM Label Color",
+     group = "04. TRIM"
+)
+
+trimTextColor = input.color(
+     color.white,
+     "TRIM Text Color",
+     group = "04. TRIM"
+)
+
+trimLabelSizeInput = input.string(
+     "Small",
+     "TRIM Label Size",
+     options = [
+         "Tiny",
+         "Small",
+         "Normal",
+         "Large",
+         "Huge"
+     ],
+     group = "04. TRIM"
+)
+
+//=============================================================================
+// 05. MAXIMUM HOLDING TIME
+//=============================================================================
+
+maxSessions = input.int(
+     15,
+     "Maximum Sessions",
+     minval = 1,
+     group = "05. Maximum Holding Time"
+)
+
+barsPerSession = input.int(
+     7,
+     "1H Bars per Session",
+     minval = 1,
+     group = "05. Maximum Holding Time"
+)
+
+maxHoldingBars =
+     maxSessions *
+     barsPerSession
+
+//=============================================================================
+// 06. SAMPLE CONFIDENCE
+//=============================================================================
+
+sampleLowThreshold = input.int(
+     50,
+     "Preliminary Threshold",
+     minval = 1,
+     group = "06. Sample Confidence"
+)
+
+sampleValidThreshold = input.int(
+     100,
+     "Valid Threshold",
+     minval = 1,
+     group = "06. Sample Confidence"
+)
+
+//=============================================================================
+// 07. BACKTEST TABLE
+//=============================================================================
+
+showTable = input.bool(
+     true,
+     "Show Backtest Table",
+     group = "07. Backtest Table"
+)
+
+tablePositionInput = input.string(
+     "Top Right",
+     "Table Position",
+     options = [
+         "Top Left",
+         "Top Center",
+         "Top Right",
+         "Middle Left",
+         "Middle Center",
+         "Middle Right",
+         "Bottom Left",
+         "Bottom Center",
+         "Bottom Right"
+     ],
+     group = "07. Backtest Table"
+)
+
+tableSizeInput = input.string(
+     "Small",
+     "Font Size",
+     options = [
+         "Tiny",
+         "Small",
+         "Normal",
+         "Large",
+         "Huge"
+     ],
+     group = "07. Backtest Table"
+)
+
+tableFontInput = input.string(
+     "Default",
+     "Font",
+     options = [
+         "Default",
+         "Monospace"
+     ],
+     group = "07. Backtest Table"
+)
+
+tableRightOffset = input.int(
+     2,
+     "Right Offset (% pane width)",
+     minval = 0,
+     maxval = 20,
+     step = 1,
+     group = "07. Backtest Table"
+)
+
+tableTopOffset = input.int(
+     2,
+     "Top Offset (% pane height)",
+     minval = 0,
+     maxval = 20,
+     step = 1,
+     group = "07. Backtest Table"
+)
+
+//=============================================================================
+// 08. TABLE COLORS
+//=============================================================================
+
+headerBg = input.color(
+     color.rgb(45, 47, 54),
+     "Header Background",
+     group = "08. Table Colors"
+)
+
+headerText = input.color(
+     color.white,
+     "Header Text",
+     group = "08. Table Colors"
+)
+
+bodyBg = input.color(
+     color.rgb(62, 64, 72),
+     "Body Background",
+     group = "08. Table Colors"
+)
+
+bodyText = input.color(
+     color.white,
+     "Body Text",
+     group = "08. Table Colors"
+)
+
+positiveBg = input.color(
+     color.rgb(0, 155, 90),
+     "Positive",
+     group = "08. Table Colors"
+)
+
+warningBg = input.color(
+     color.rgb(215, 165, 0),
+     "Warning",
+     group = "08. Table Colors"
+)
+
+negativeBg = input.color(
+     color.rgb(220, 55, 65),
+     "Negative",
+     group = "08. Table Colors"
+)
+
+neutralBg = input.color(
+     color.rgb(90, 92, 100),
+     "Neutral",
+     group = "08. Table Colors"
+)
+
+borderColor = input.color(
+     color.new(color.gray, 30),
+     "Border",
+     group = "08. Table Colors"
+)
+
+spacerColor =
+     color.new(
+         color.black,
+         100
+     )
+
+//=============================================================================
+// FUNCTIONS
+//=============================================================================
+
+f_tablePosition(string value) =>
+    switch value
+        "Top Left"      => position.top_left
+        "Top Center"    => position.top_center
+        "Top Right"     => position.top_right
+        "Middle Left"   => position.middle_left
+        "Middle Center" => position.middle_center
+        "Middle Right"  => position.middle_right
+        "Bottom Left"   => position.bottom_left
+        "Bottom Center" => position.bottom_center
+        "Bottom Right"  => position.bottom_right
+        => position.top_right
+
+f_textSize(string value) =>
+    switch value
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        "Huge"   => size.huge
+        => size.small
+
+f_font(string value) =>
+    value == "Monospace"
+         ? font.family_monospace
+         : font.family_default
+
+f_pct(float value) =>
+    na(value)
+         ? "N/A"
+         : str.tostring(
+             value,
+             "#.##"
+           ) + "%"
+
+f_num(float value) =>
+    na(value)
+         ? "N/A"
+         : str.tostring(
+             value,
+             "#.##"
+           )
+
+f_money(float value) =>
+    na(value)
+         ? "N/A"
+         : "$" +
+           str.tostring(
+               value,
+               "#.##"
+           )
+
+f_r(float value) =>
+    na(value)
+         ? "N/A"
+         : str.tostring(
+             value,
+             "#.##"
+           ) + "R"
+
+f_bucketPct(int count, int total) =>
+    total > 0
+         ? str.tostring(
+             count *
+             100.0 /
+             total,
+             "#.##"
+           ) + "%"
+         : "0.00%"
+
+//=============================================================================
+// TIMEFRAME VALIDATION
+//=============================================================================
+
+isOneHour =
+     timeframe.isintraday and
+     timeframe.multiplier == 60
+
+if barstate.isfirst and
+   not isOneHour
+
+    runtime.error(
+         "This strategy is designed for the 1H timeframe."
+    )
+
+//=============================================================================
+// ICHIMOKU CALCULATIONS
+//=============================================================================
+
+conversionLine =
+     (
+         ta.highest(
+             high,
+             tenkanLen
+         ) +
+         ta.lowest(
+             low,
+             tenkanLen
+         )
+     ) / 2.0
+
+baseLine =
+     (
+         ta.highest(
+             high,
+             kijunLen
+         ) +
+         ta.lowest(
+             low,
+             kijunLen
+         )
+     ) / 2.0
+
+spanA =
+     (
+         conversionLine +
+         baseLine
+     ) / 2.0
+
+spanB =
+     (
+         ta.highest(
+             high,
+             senkouBLen
+         ) +
+         ta.lowest(
+             low,
+             senkouBLen
+         )
+     ) / 2.0
+
+cloudA =
+     spanA[displacement]
+
+cloudB =
+     spanB[displacement]
+
+cloudTop =
+     math.max(
+         cloudA,
+         cloudB
+     )
+
+cloudBot =
+     math.min(
+         cloudA,
+         cloudB
+     )
+
+breakRef =
+     cloudB > cloudA
+     ? cloudB
+     : cloudA
+
+cloudReady =
+     not na(cloudA) and
+     not na(cloudB) and
+     not na(cloudTop) and
+     not na(cloudBot) and
+     not na(breakRef)
+
+//=============================================================================
+// MACD CALCULATIONS
+//=============================================================================
+
+macdFast =
+     ta.ema(
+         close,
+         macdFastLen
+     )
+
+macdSlow =
+     ta.ema(
+         close,
+         macdSlowLen
+     )
+
+macdLine =
+     macdFast -
+     macdSlow
+
+signalLine =
+     ta.ema(
+         macdLine,
+         macdSignalLen
+     )
+
+//=============================================================================
+// PIVOT STORAGE
+//=============================================================================
+
+plPrice =
+     ta.pivotlow(
+         low,
+         pivotL,
+         pivotR
+     )
+
+isPricePivot =
+     not na(plPrice)
+
+var float pricePivot1 = na
+var float pricePivot2 = na
+
+var float macdPivot1 = na
+var float macdPivot2 = na
+
+var float sigPivot1 = na
+var float sigPivot2 = na
+
+var int barPivot1 = na
+var int barPivot2 = na
+
+if isPricePivot
+
+    pricePivot1 :=
+         pricePivot2
+
+    macdPivot1 :=
+         macdPivot2
+
+    sigPivot1 :=
+         sigPivot2
+
+    barPivot1 :=
+         barPivot2
+
+    pricePivot2 :=
+         low[pivotR]
+
+    macdPivot2 :=
+         macdLine[pivotR]
+
+    sigPivot2 :=
+         signalLine[pivotR]
+
+    barPivot2 :=
+         bar_index -
+         pivotR
+
+//=============================================================================
+// RULE 3 — MACD MOMENTUM
+//=============================================================================
+
+canCheckPivots =
+     not na(pricePivot1) and
+     not na(pricePivot2) and
+     not na(barPivot1) and
+     not na(barPivot2)
+
+barsBetween =
+     canCheckPivots
+     ? barPivot2 -
+       barPivot1
+     : na
+
+inBarWindow =
+     canCheckPivots and
+     not na(barsBetween) and
+     barsBetween >= divMinBars and
+     barsBetween <= divMaxBars
+
+priceLL =
+     canCheckPivots and
+     pricePivot2 <
+     pricePivot1
+
+priceHL =
+     canCheckPivots and
+     pricePivot2 >
+     pricePivot1
+
+macdHL =
+     canCheckPivots and
+     macdPivot2 >
+     macdPivot1
+
+sigHL =
+     canCheckPivots and
+     sigPivot2 >
+     sigPivot1
+
+macdBelow0 =
+     not requireBelowZero or
+     macdPivot2 < 0
+
+sigBelow0 =
+     not requireBelowZero or
+     sigPivot2 < 0
+
+bullDivMacd =
+     inBarWindow and
+     priceLL and
+     macdHL and
+     macdBelow0
+
+bullDivSig =
+     inBarWindow and
+     priceLL and
+     sigHL and
+     sigBelow0
+
+bullConvMacd =
+     inBarWindow and
+     priceHL and
+     macdHL and
+     macdBelow0
+
+bullConvSig =
+     inBarWindow and
+     priceHL and
+     sigHL and
+     sigBelow0
+
+useMacd =
+     useWhich == "MACD" or
+     useWhich == "Both"
+
+useSig =
+     useWhich == "Signal" or
+     useWhich == "Both"
+
+bullMomentumSignal =
+     (
+         useMacd and
+         (
+             bullDivMacd or
+             bullConvMacd
+         )
+     ) or
+     (
+         useSig and
+         (
+             bullDivSig or
+             bullConvSig
+         )
+     )
+
+//=============================================================================
+// RULE 1 — CHIKOU ABOVE PRICE 26 BARS AGO
+//=============================================================================
+
+chikouAbovePrice =
+     close >
+     high[kijunLen]
+
+//=============================================================================
+// RULE 2 — TENKAN ABOVE KIJUN
+//=============================================================================
+
+tkBull =
+     conversionLine >
+     baseLine
+
+//=============================================================================
+// RULE 4 — KUMO BREAKOUT + PULLBACK
+//=============================================================================
+
+bsBelowCloud =
+     ta.barssince(
+         close <
+         cloudBot
+     )
+
+lowMinLB =
+     ta.lowest(
+         low,
+         rule4Lookback
+     )
+
+wasBelowCloudRecently =
+     cloudReady and
+     not na(bsBelowCloud) and
+     bsBelowCloud >= 0 and
+     bsBelowCloud <= rule4Lookback
+
+breakAboveRef =
+     cloudReady and
+     close >
+     breakRef
+
+touchedBelowOrInsideRecently =
+     cloudReady and
+     not na(lowMinLB) and
+     lowMinLB <= cloudTop
+
+kumoBreakAndPullback =
+     breakAboveRef and
+     wasBelowCloudRecently and
+     touchedBelowOrInsideRecently
+
+//=============================================================================
+// RULE 5 — BULLISH KUMO
+//=============================================================================
+
+bullKumoTwist =
+     spanA >
+     spanB
+
+//=============================================================================
+// COMPLETE 5/5 SETUP
+//=============================================================================
+
+allRules =
+     chikouAbovePrice and
+     tkBull and
+     bullMomentumSignal and
+     kumoBreakAndPullback and
+     bullKumoTwist
+
+confirmedSetup =
+     allRules and
+     barstate.isconfirmed
+
+newSetup =
+     confirmedSetup and
+     not confirmedSetup[1]
+
+//=============================================================================
+// ENTRY
+//=============================================================================
+
+if newSetup and
+   strategy.position_size == 0
+
+    strategy.entry(
+         "Long",
+         strategy.long,
+         comment = "Ichimoku 5/5"
+    )
+
+//=============================================================================
+// ACTIVE TRADE STATE
+//=============================================================================
+
+var float activeStop = na
+var float activeTarget = na
+var float activeTrim = na
+var float activeInitialRiskCash = na
+
+var bool trimTriggered = false
+
+var int entryBarIndex = na
+
+//=============================================================================
+// DETECT NEW LONG POSITION
+//=============================================================================
+
+newLong =
+     strategy.position_size > 0 and
+     strategy.position_size[1] <= 0
+
+if newLong
+
+    activeInitialRiskCash :=
+         strategy.equity *
+         (
+             riskPct /
+             100.0
+         )
+
+    riskPerShare =
+         activeInitialRiskCash /
+         math.abs(
+             strategy.position_size
+         )
+
+    activeStop :=
+         strategy.position_avg_price -
+         riskPerShare
+
+    activeTarget :=
+         strategy.position_avg_price +
+         (
+             riskPerShare *
+             rewardRisk
+         )
+
+    activeTrim :=
+         strategy.position_avg_price +
+         (
+             activeTarget -
+             strategy.position_avg_price
+         ) *
+         (
+             trimPct /
+             100.0
+         )
+
+    trimTriggered :=
+         false
+
+    entryBarIndex :=
+         bar_index
+
+//=============================================================================
+// TRIM DETECTION
+//
+// NORMAL MOVE:
+// Price trades through the theoretical TRIM level.
+//
+// GAP:
+// If the bar opens above the theoretical TRIM level, the label is placed
+// at the opening price because it is the first executable price.
+//
+// TRIM is visual only.
+// It does not reduce or close the position.
+//=============================================================================
+
+trimGapHit =
+     showTrimLabel and
+     not trimTriggered and
+     not na(activeTrim) and
+     open >= activeTrim
+
+trimNormalHit =
+     showTrimLabel and
+     not trimTriggered and
+     not na(activeTrim) and
+     open < activeTrim and
+     high >= activeTrim
+
+trimHit =
+     trimGapHit or
+     trimNormalHit
+
+if trimHit
+
+    trimExecutionPrice =
+         trimGapHit
+         ? open
+         : activeTrim
+
+    label.new(
+         bar_index,
+         trimExecutionPrice,
+         "TRIM",
+         style = label.style_label_down,
+         color = trimLabelColor,
+         textcolor = trimTextColor,
+         size = f_textSize(
+             trimLabelSizeInput
+         )
+    )
+
+    trimTriggered :=
+         true
+
+//=============================================================================
+// STOP + TARGET
+//=============================================================================
+
+if strategy.position_size > 0 and
+   not na(activeStop) and
+   not na(activeTarget)
+
+    strategy.exit(
+         "Risk Exit",
+         from_entry = "Long",
+         stop = activeStop,
+         limit = activeTarget,
+         comment_loss = "STOP",
+         comment_profit = "TARGET"
+    )
+
+//=============================================================================
+// TIME EXIT
+//=============================================================================
+
+barsHeld =
+     strategy.position_size > 0 and
+     not na(entryBarIndex)
+     ? bar_index -
+       entryBarIndex +
+       1
+     : 0
+
+if strategy.position_size > 0 and
+   barsHeld >= maxHoldingBars
+
+    strategy.close(
+         "Long",
+         comment = "TIME EXIT",
+         immediately = true
+    )
+
+//=============================================================================
+// R DISTRIBUTION STORAGE
+//=============================================================================
+
+var float sumR = 0.0
+var float sumRSquared = 0.0
+
+var int rTradeCount = 0
+
+var int bucketNeg1 = 0
+var int bucketNeg05 = 0
+var int bucketZero = 0
+var int bucketPos05 = 0
+var int bucketPos10 = 0
+var int bucketPos15 = 0
+var int bucketPos20 = 0
+var int bucketPos25 = 0
+var int bucketPos30 = 0
+var int bucketPos35 = 0
+
+var int stopExitCount = 0
+var int targetExitCount = 0
+var int timeExitCount = 0
+
+var float totalHoldingBars = 0.0
+
+//=============================================================================
+// CLOSED TRADE EVENT
+//=============================================================================
+
+closedTradeEvent =
+     strategy.closedtrades >
+     nz(
+         strategy.closedtrades[1],
+         0
+     )
+
+if closedTradeEvent
+
+    lastTradeIndex =
+         strategy.closedtrades -
+         1
+
+    tradeProfit =
+         strategy.closedtrades.profit(
+             lastTradeIndex
+         )
+
+    exitComment =
+         strategy.closedtrades.exit_comment(
+             lastTradeIndex
+         )
+
+    realizedR =
+         not na(activeInitialRiskCash) and
+         activeInitialRiskCash > 0
+         ? tradeProfit /
+           activeInitialRiskCash
+         : na
+
+    if not na(realizedR)
+
+        sumR +=
+             realizedR
+
+        sumRSquared +=
+             realizedR *
+             realizedR
+
+        rTradeCount +=
+             1
+
+        tradeHoldingBars =
+             not na(entryBarIndex)
+             ? bar_index -
+               entryBarIndex +
+               1
+             : 0
+
+        totalHoldingBars +=
+             tradeHoldingBars
+
+        if exitComment == "TARGET"
+
+            targetExitCount +=
+                 1
+
+        else if exitComment == "STOP"
+
+            stopExitCount +=
+                 1
+
+        else
+
+            timeExitCount +=
+                 1
+
+        roundedR =
+             math.round(
+                 realizedR *
+                 2.0
+             ) /
+             2.0
+
+        if roundedR <= -1.0
+
+            bucketNeg1 +=
+                 1
+
+        else if roundedR <= -0.5
+
+            bucketNeg05 +=
+                 1
+
+        else if roundedR < 0.5
+
+            bucketZero +=
+                 1
+
+        else if roundedR < 1.0
+
+            bucketPos05 +=
+                 1
+
+        else if roundedR < 1.5
+
+            bucketPos10 +=
+                 1
+
+        else if roundedR < 2.0
+
+            bucketPos15 +=
+                 1
+
+        else if roundedR < 2.5
+
+            bucketPos20 +=
+                 1
+
+        else if roundedR < 3.0
+
+            bucketPos25 +=
+                 1
+
+        else if roundedR < 3.5
+
+            bucketPos30 +=
+                 1
+
+        else
+
+            bucketPos35 +=
+                 1
+
+//=============================================================================
+// RESET ACTIVE TRADE
+//=============================================================================
+
+positionClosed =
+     strategy.position_size == 0 and
+     strategy.position_size[1] > 0
+
+if positionClosed
+
+    activeStop :=
+         na
+
+    activeTarget :=
+         na
+
+    activeTrim :=
+         na
+
+    activeInitialRiskCash :=
+         na
+
+    trimTriggered :=
+         false
+
+    entryBarIndex :=
+         na
+
+//=============================================================================
+// STANDARD BACKTEST METRICS
+//=============================================================================
+
+closedTrades =
+     strategy.closedtrades
+
+wins =
+     strategy.wintrades
+
+losses =
+     strategy.losstrades
+
+winRate =
+     closedTrades > 0
+     ? wins *
+       100.0 /
+       closedTrades
+     : na
+
+profitFactor =
+     math.abs(
+         strategy.grossloss
+     ) > 0
+     ? strategy.grossprofit /
+       math.abs(
+           strategy.grossloss
+       )
+     : na
+
+netProfit =
+     strategy.netprofit
+
+netROI =
+     netProfit /
+     3000.0 *
+     100.0
+
+//=============================================================================
+// R STATISTICS
+//=============================================================================
+
+meanR =
+     rTradeCount > 0
+     ? sumR /
+       rTradeCount
+     : na
+
+varianceR =
+     rTradeCount > 1
+     ? (
+         sumRSquared -
+         (
+             rTradeCount *
+             meanR *
+             meanR
+         )
+       ) /
+       (
+           rTradeCount -
+           1
+       )
+     : na
+
+stdR =
+     not na(varianceR)
+     ? math.sqrt(
+         math.max(
+             varianceR,
+             0.0
+         )
+       )
+     : na
+
+expectancyR =
+     meanR
+
+avgHoldingBars =
+     rTradeCount > 0
+     ? totalHoldingBars /
+       rTradeCount
+     : na
+
+avgHoldingSessions =
+     not na(avgHoldingBars)
+     ? avgHoldingBars /
+       barsPerSession
+     : na
+
+//=============================================================================
+// MAX DRAWDOWN
+//=============================================================================
+
+var float peakEquity =
+     3000.0
+
+var float maxDD =
+     0.0
+
+peakEquity :=
+     math.max(
+         peakEquity,
+         strategy.equity
+     )
+
+currentDD =
+     peakEquity > 0
+     ? (
+         peakEquity -
+         strategy.equity
+       ) /
+       peakEquity *
+       100.0
+     : 0.0
+
+maxDD :=
+     math.max(
+         maxDD,
+         currentDD
+     )
+
+//=============================================================================
+// SAMPLE CONFIDENCE
+//=============================================================================
+
+sampleStatus =
+     closedTrades >= sampleValidThreshold
+     ? "VALID"
+     : closedTrades >= sampleLowThreshold
+     ? "PRELIM."
+     : "LOW"
+
+sampleBg =
+     closedTrades >= sampleValidThreshold
+     ? positiveBg
+     : closedTrades >= sampleLowThreshold
+     ? warningBg
+     : negativeBg
+
+//=============================================================================
+// BACKTEST TABLE
+//
+// Column 3 is an invisible right-side spacer.
+// Row 0 is an invisible top-side spacer.
+//
+// This creates configurable visual distance from the chart edges.
+//=============================================================================
+
+var table stats =
+     table.new(
+         position.top_right,
+         4,
+         27,
+         bgcolor = spacerColor,
+         frame_color = spacerColor,
+         frame_width = 0,
+         border_color = borderColor,
+         border_width = 1
+     )
+
+//=============================================================================
+// TABLE UPDATE
+//=============================================================================
+
+if barstate.islast and
+   showTable
+
+    table.set_position(
+         stats,
+         f_tablePosition(
+             tablePositionInput
+         )
+    )
+
+    txtSize =
+         f_textSize(
+             tableSizeInput
+         )
+
+    txtFont =
+         f_font(
+             tableFontInput
+         )
+
+    //=========================================================================
+    // INVISIBLE TOP OFFSET ROW
+    //=========================================================================
+
+    table.cell(
+         stats,
+         0,
+         0,
+         "",
+         height = tableTopOffset,
+         bgcolor = spacerColor
+    )
+
+    table.cell(
+         stats,
+         1,
+         0,
+         "",
+         height = tableTopOffset,
+         bgcolor = spacerColor
+    )
+
+    table.cell(
+         stats,
+         2,
+         0,
+         "",
+         height = tableTopOffset,
+         bgcolor = spacerColor
+    )
+
+    table.cell(
+         stats,
+         3,
+         0,
+         "",
+         width = tableRightOffset,
+         height = tableTopOffset,
+         bgcolor = spacerColor
+    )
+
+    //=========================================================================
+    // INVISIBLE RIGHT OFFSET COLUMN
+    //=========================================================================
+
+    table.cell(
+         stats,
+         3,
+         1,
+         "",
+         width = tableRightOffset,
+         bgcolor = spacerColor
+    )
+
+    //=========================================================================
+    // HEADER
+    //=========================================================================
+
+    table.cell(
+         stats,
+         0,
+         1,
+         "ICHIMOKU 5/5",
+         bgcolor = headerBg,
+         text_color = headerText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         1,
+         1,
+         "BACKTEST",
+         bgcolor = headerBg,
+         text_color = headerText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         2,
+         1,
+         "1H",
+         bgcolor = headerBg,
+         text_color = headerText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    //=========================================================================
+    // TRADES
+    //=========================================================================
+
+    table.cell(
+         stats,
+         0,
+         2,
+         "Trades",
+         bgcolor = bodyBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         1,
+         2,
+         str.tostring(closedTrades),
+         bgcolor = sampleBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         2,
+         2,
+         sampleStatus,
+         bgcolor = sampleBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    //=========================================================================
+    // WINS
+    //=========================================================================
+
+    table.cell(
+         stats,
+         0,
+         3,
+         "Wins",
+         bgcolor = bodyBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         1,
+         3,
+         str.tostring(wins),
+         bgcolor = positiveBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         2,
+         3,
+         f_pct(
+             closedTrades > 0
+             ? wins * 100.0 / closedTrades
+             : na
+         ),
+         bgcolor = positiveBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    //=========================================================================
+    // LOSSES
+    //=========================================================================
+
+    table.cell(
+         stats,
+         0,
+         4,
+         "Losses",
+         bgcolor = bodyBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         1,
+         4,
+         str.tostring(losses),
+         bgcolor = negativeBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         2,
+         4,
+         f_pct(
+             closedTrades > 0
+             ? losses * 100.0 / closedTrades
+             : na
+         ),
+         bgcolor = negativeBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    //=========================================================================
+    // WIN RATE
+    //=========================================================================
+
+    table.cell(
+         stats,
+         0,
+         5,
+         "Win Rate",
+         bgcolor = bodyBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         1,
+         5,
+         f_pct(winRate),
+         bgcolor = na(winRate)
+             ? neutralBg
+             : winRate >= 50
+             ? positiveBg
+             : negativeBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         2,
+         5,
+         "",
+         bgcolor = neutralBg
+    )
+
+    //=========================================================================
+    // PROFIT FACTOR
+    //=========================================================================
+
+    table.cell(
+         stats,
+         0,
+         6,
+         "Profit Factor",
+         bgcolor = bodyBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         1,
+         6,
+         f_num(profitFactor),
+         bgcolor = na(profitFactor)
+             ? neutralBg
+             : profitFactor > 1
+             ? positiveBg
+             : negativeBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         2,
+         6,
+         "",
+         bgcolor = neutralBg
+    )
+
+    //=========================================================================
+    // EXPECTANCY
+    //=========================================================================
+
+    table.cell(
+         stats,
+         0,
+         7,
+         "Expectancy",
+         bgcolor = bodyBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         1,
+         7,
+         f_r(expectancyR),
+         bgcolor = na(expectancyR)
+             ? neutralBg
+             : expectancyR > 0
+             ? positiveBg
+             : negativeBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         2,
+         7,
+         "per trade",
+         bgcolor = neutralBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    //=========================================================================
+    // NET P&L
+    //=========================================================================
+
+    table.cell(
+         stats,
+         0,
+         8,
+         "Net P&L",
+         bgcolor = bodyBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         1,
+         8,
+         f_money(netProfit),
+         bgcolor = netProfit > 0
+             ? positiveBg
+             : netProfit < 0
+             ? negativeBg
+             : neutralBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         2,
+         8,
+         f_pct(netROI),
+         bgcolor = netROI > 0
+             ? positiveBg
+             : netROI < 0
+             ? negativeBg
+             : neutralBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    //=========================================================================
+    // MAX DRAWDOWN
+    //=========================================================================
+
+    table.cell(
+         stats,
+         0,
+         9,
+         "Max DD",
+         bgcolor = bodyBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         1,
+         9,
+         f_pct(maxDD),
+         bgcolor = maxDD > 0
+             ? negativeBg
+             : neutralBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         2,
+         9,
+         "",
+         bgcolor = neutralBg
+    )
+
+    //=========================================================================
+    // AVERAGE HOLDING TIME
+    //=========================================================================
+
+    table.cell(
+         stats,
+         0,
+         10,
+         "Avg Hold",
+         bgcolor = bodyBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         1,
+         10,
+         na(avgHoldingSessions)
+             ? "N/A"
+             : str.tostring(
+                 avgHoldingSessions,
+                 "#.##"
+               ),
+         bgcolor = neutralBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         2,
+         10,
+         "Max " + str.tostring(maxSessions),
+         bgcolor = neutralBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    //=========================================================================
+    // TARGET EXITS
+    //=========================================================================
+
+    table.cell(
+         stats,
+         0,
+         11,
+         "Target Exits",
+         bgcolor = bodyBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         1,
+         11,
+         str.tostring(targetExitCount),
+         bgcolor = positiveBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         2,
+         11,
+         f_pct(
+             rTradeCount > 0
+             ? targetExitCount * 100.0 / rTradeCount
+             : na
+         ),
+         bgcolor = positiveBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    //=========================================================================
+    // STOP EXITS
+    //=========================================================================
+
+    table.cell(
+         stats,
+         0,
+         12,
+         "Stop Exits",
+         bgcolor = bodyBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         1,
+         12,
+         str.tostring(stopExitCount),
+         bgcolor = negativeBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         2,
+         12,
+         f_pct(
+             rTradeCount > 0
+             ? stopExitCount * 100.0 / rTradeCount
+             : na
+         ),
+         bgcolor = negativeBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    //=========================================================================
+    // TIME EXITS
+    //=========================================================================
+
+    table.cell(
+         stats,
+         0,
+         13,
+         "Time Exits",
+         bgcolor = bodyBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         1,
+         13,
+         str.tostring(timeExitCount),
+         bgcolor = neutralBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         2,
+         13,
+         f_pct(
+             rTradeCount > 0
+             ? timeExitCount * 100.0 / rTradeCount
+             : na
+         ),
+         bgcolor = neutralBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    //=========================================================================
+    // R DISTRIBUTION HEADER
+    //=========================================================================
+
+    table.cell(
+         stats,
+         0,
+         14,
+         "R DIST.",
+         bgcolor = headerBg,
+         text_color = headerText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         1,
+         14,
+         "TRADES",
+         bgcolor = headerBg,
+         text_color = headerText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         2,
+         14,
+         "%",
+         bgcolor = headerBg,
+         text_color = headerText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    //=========================================================================
+    // R DISTRIBUTION
+    //=========================================================================
+
+    table.cell(stats, 0, 15, "<= -1.0R", bgcolor = bodyBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 1, 15, str.tostring(bucketNeg1), bgcolor = negativeBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 2, 15, f_bucketPct(bucketNeg1, rTradeCount), bgcolor = negativeBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+
+    table.cell(stats, 0, 16, "-0.5R", bgcolor = bodyBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 1, 16, str.tostring(bucketNeg05), bgcolor = negativeBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 2, 16, f_bucketPct(bucketNeg05, rTradeCount), bgcolor = negativeBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+
+    table.cell(stats, 0, 17, "0.0R", bgcolor = bodyBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 1, 17, str.tostring(bucketZero), bgcolor = neutralBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 2, 17, f_bucketPct(bucketZero, rTradeCount), bgcolor = neutralBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+
+    table.cell(stats, 0, 18, "+0.5R", bgcolor = bodyBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 1, 18, str.tostring(bucketPos05), bgcolor = positiveBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 2, 18, f_bucketPct(bucketPos05, rTradeCount), bgcolor = positiveBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+
+    table.cell(stats, 0, 19, "+1.0R", bgcolor = bodyBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 1, 19, str.tostring(bucketPos10), bgcolor = positiveBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 2, 19, f_bucketPct(bucketPos10, rTradeCount), bgcolor = positiveBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+
+    table.cell(stats, 0, 20, "+1.5R", bgcolor = bodyBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 1, 20, str.tostring(bucketPos15), bgcolor = positiveBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 2, 20, f_bucketPct(bucketPos15, rTradeCount), bgcolor = positiveBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+
+    table.cell(stats, 0, 21, "+2.0R", bgcolor = bodyBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 1, 21, str.tostring(bucketPos20), bgcolor = positiveBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 2, 21, f_bucketPct(bucketPos20, rTradeCount), bgcolor = positiveBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+
+    table.cell(stats, 0, 22, "+2.5R", bgcolor = bodyBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 1, 22, str.tostring(bucketPos25), bgcolor = positiveBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 2, 22, f_bucketPct(bucketPos25, rTradeCount), bgcolor = positiveBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+
+    table.cell(stats, 0, 23, "+3.0R", bgcolor = bodyBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 1, 23, str.tostring(bucketPos30), bgcolor = positiveBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 2, 23, f_bucketPct(bucketPos30, rTradeCount), bgcolor = positiveBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+
+    table.cell(stats, 0, 24, ">= +3.5R", bgcolor = bodyBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 1, 24, str.tostring(bucketPos35), bgcolor = positiveBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+    table.cell(stats, 2, 24, f_bucketPct(bucketPos35, rTradeCount), bgcolor = positiveBg, text_color = bodyText, text_size = txtSize, text_font_family = txtFont)
+
+    //=========================================================================
+    // MEAN R
+    //=========================================================================
+
+    table.cell(
+         stats,
+         0,
+         25,
+         "Mean R",
+         bgcolor = headerBg,
+         text_color = headerText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         1,
+         25,
+         f_r(meanR),
+         bgcolor = na(meanR)
+             ? neutralBg
+             : meanR > 0
+             ? positiveBg
+             : negativeBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         2,
+         25,
+         "Expectancy",
+         bgcolor = neutralBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    //=========================================================================
+    // STANDARD DEVIATION
+    //=========================================================================
+
+    table.cell(
+         stats,
+         0,
+         26,
+         "Std Dev",
+         bgcolor = headerBg,
+         text_color = headerText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         1,
+         26,
+         f_r(stdR),
+         bgcolor = neutralBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+    table.cell(
+         stats,
+         2,
+         26,
+         "Dispersion",
+         bgcolor = neutralBg,
+         text_color = bodyText,
+         text_size = txtSize,
+         text_font_family = txtFont
+    )
+
+//=============================================================================
+// CLEAR TABLE ONLY WHEN DISABLED
+//=============================================================================
+
+if barstate.islast and
+   not showTable
+
+    table.clear(
+         stats,
+         0,
+         0,
+         3,
+         26
+    )

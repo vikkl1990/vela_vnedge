@@ -1,0 +1,182 @@
+//@version=6
+indicator('Supertrend Zones + RSI Dots', 'ST Zones + Dots', format = format.price, precision = 2, timeframe = '', timeframe_gaps = true)
+
+// ---------------------------------------------------------------------------
+// HOW THIS WORKS
+// The script runs in its own pane (the RSI). Zone background, Supertrend line
+// and dots are drawn on the main chart using force_overlay = true.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// CONSTANTS
+// ---------------------------------------------------------------------------
+RSI_RAW = 'RSI'
+RSI_SMA = 'RSI SMA'
+
+ST_GROUP  = 'Supertrend Zones'
+DOT_GROUP = 'RSI Dots'
+RSI_GROUP = 'RSI Settings'
+SMOOTH_GROUP = 'Smoothing'
+
+// ---------------------------------------------------------------------------
+// INPUTS - SUPERTREND ZONES
+// ---------------------------------------------------------------------------
+stLength   = input.int(10, 'Supertrend ATR Length', group = ST_GROUP, minval = 1)
+stFactor   = input.float(3.0, 'Supertrend Factor', group = ST_GROUP, minval = 0.1, step = 0.1)
+buyColor   = input.color(color.new(color.green, 85), 'Buying Zone Color', group = ST_GROUP)
+sellColor  = input.color(color.new(color.red, 85), 'Selling Zone Color', group = ST_GROUP)
+showLabels = input.bool(false, 'Show Zone Start Markers', group = ST_GROUP)
+showLine   = input.bool(false, 'Show Supertrend Line', group = ST_GROUP)
+
+// ---------------------------------------------------------------------------
+// INPUTS - RSI DOTS (also drives the RSI pane)
+// ---------------------------------------------------------------------------
+showDots     = input.bool(true, 'Show Mid-Level Dots', group = DOT_GROUP)
+signalInput  = input.string(RSI_RAW, 'Dot Signal Based On', group = DOT_GROUP, options = [RSI_RAW, RSI_SMA], tooltip = 'RSI = raw RSI value\nRSI SMA = smoothed RSI (uses the Smoothing type below, SMA by default)')
+rsiLength    = input.int(10, 'RSI Length', group = DOT_GROUP, minval = 1)
+smaLength    = input.int(14, 'RSI SMA Length', group = DOT_GROUP, minval = 1, tooltip = 'Length of the smoothing line plotted on the RSI and used for the RSI SMA dot signal')
+rsiSource    = input.source(close, 'RSI Source', group = DOT_GROUP)
+midLevel     = input.float(50, 'Dot Level (mid line)', group = DOT_GROUP, minval = 0, maxval = 100)
+buyDotColor  = input.color(color.green, 'Buy Zone Dot Color', group = DOT_GROUP)
+sellDotColor = input.color(color.red, 'Sell Zone Dot Color', group = DOT_GROUP)
+
+// ---------------------------------------------------------------------------
+// INPUTS - RSI PANE
+// ---------------------------------------------------------------------------
+calculateDivergence = input.bool(false, title = 'Calculate Divergence', group = RSI_GROUP, display = display.none, tooltip = 'Calculating divergences is needed in order for divergence alerts to fire.')
+
+TT_BB = "Only applies when 'SMA + Bollinger Bands' is selected. Determines the distance between the SMA and the bands."
+maTypeInput = input.string('SMA', 'Type', options = ['None', 'SMA', 'SMA + Bollinger Bands', 'EMA', 'SMMA (RMA)', 'WMA', 'VWMA'], group = SMOOTH_GROUP, display = display.none)
+var isBB = maTypeInput == 'SMA + Bollinger Bands'
+bbMultInput = input.float(2.0, 'BB StdDev', minval = 0.001, maxval = 50, step = 0.5, tooltip = TT_BB, group = SMOOTH_GROUP, display = display.none, active = isBB)
+var enableMA = maTypeInput != 'None'
+
+// ---------------------------------------------------------------------------
+// RSI CALCULATION
+// ---------------------------------------------------------------------------
+change = ta.change(rsiSource)
+up = ta.rma(math.max(change, 0), rsiLength)
+down = ta.rma(-math.min(change, 0), rsiLength)
+rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - 100 / (1 + up / down)
+
+ma(source, length, MAtype) =>
+    switch MAtype
+        'SMA' => ta.sma(source, length)
+        'SMA + Bollinger Bands' => ta.sma(source, length)
+        'EMA' => ta.ema(source, length)
+        'SMMA (RMA)' => ta.rma(source, length)
+        'WMA' => ta.wma(source, length)
+        'VWMA' => ta.vwma(source, length)
+
+// Smoothed RSI (plotted as the yellow line, and used for the "RSI SMA" dot signal)
+smoothingMA = enableMA ? ma(rsi, smaLength, maTypeInput) : na
+smoothingStDev = isBB ? ta.stdev(rsi, smaLength) * bbMultInput : na
+rsiSma = enableMA ? smoothingMA : ta.sma(rsi, smaLength)
+
+// ---------------------------------------------------------------------------
+// SUPERTREND ZONES
+// ---------------------------------------------------------------------------
+[stValue, stDirection] = ta.supertrend(stFactor, stLength)
+
+// direction < 0 = uptrend (buy zone), direction > 0 = downtrend (sell zone)
+inBuyZone  = stDirection < 0
+inSellZone = stDirection > 0
+
+buyStart  = inBuyZone and not inBuyZone[1]
+sellStart = inSellZone and not inSellZone[1]
+
+// ---------------------------------------------------------------------------
+// DOT LOGIC
+// ---------------------------------------------------------------------------
+signalValue = signalInput == RSI_SMA ? rsiSma : rsi
+
+// buy zone -> cross UP mid level (green, below candle); sell zone -> cross DOWN mid level (red, above candle)
+buyDot  = inBuyZone and ta.crossover(signalValue, midLevel)
+sellDot = inSellZone and ta.crossunder(signalValue, midLevel)
+
+// ---------------------------------------------------------------------------
+// PLOTS - MAIN CHART (force_overlay)
+// ---------------------------------------------------------------------------
+bgcolor(inBuyZone ? buyColor : inSellZone ? sellColor : na, title = 'Zone Background', force_overlay = true)
+
+plot(showLine ? stValue : na, 'Supertrend', color = inBuyZone ? color.green : color.red, linewidth = 1, force_overlay = true)
+
+plotshape(showLabels and buyStart, 'Buy Zone Start', shape.triangleup, location.belowbar, color.green, size = size.tiny, text = 'BUY', textcolor = color.green, force_overlay = true)
+plotshape(showLabels and sellStart, 'Sell Zone Start', shape.triangledown, location.abovebar, color.red, size = size.tiny, text = 'SELL', textcolor = color.red, force_overlay = true)
+
+plotshape(showDots and buyDot, 'Green Dot (buy zone)', shape.circle, location.belowbar, buyDotColor, size = size.tiny, force_overlay = true)
+plotshape(showDots and sellDot, 'Red Dot (sell zone)', shape.circle, location.abovebar, sellDotColor, size = size.tiny, force_overlay = true)
+
+// ---------------------------------------------------------------------------
+// PLOTS - RSI PANE
+// ---------------------------------------------------------------------------
+rsiPlot = plot(rsi, 'RSI', color = #7E57C2)
+rsiUpperBand = hline(70, 'RSI Upper Band', color = #787B86)
+midline = hline(50, 'RSI Middle Band', color = color.new(#787B86, 50))
+rsiLowerBand = hline(30, 'RSI Lower Band', color = #787B86)
+fill(rsiUpperBand, rsiLowerBand, color = color.rgb(126, 87, 194, 90), title = 'RSI Background Fill')
+midLinePlot = plot(50, color = na, editable = false, display = display.none)
+fill(rsiPlot, midLinePlot, 100, 70, top_color = color.new(color.green, 0), bottom_color = color.new(color.green, 100), title = 'Overbought Gradient Fill')
+fill(rsiPlot, midLinePlot, 30, 0, top_color = color.new(color.red, 100), bottom_color = color.new(color.red, 0), title = 'Oversold Gradient Fill')
+
+plot(smoothingMA, 'RSI-based MA', color = color.yellow, display = enableMA ? display.all : display.none, editable = enableMA)
+bbUpperBand = plot(smoothingMA + smoothingStDev, title = 'Upper Bollinger Band', color = color.green, display = isBB ? display.all : display.none, editable = isBB)
+bbLowerBand = plot(smoothingMA - smoothingStDev, title = 'Lower Bollinger Band', color = color.green, display = isBB ? display.all : display.none, editable = isBB)
+fill(bbUpperBand, bbLowerBand, color = isBB ? color.new(color.green, 90) : na, title = 'Bollinger Bands Background Fill', display = isBB ? display.all : display.none, editable = isBB)
+
+// ---------------------------------------------------------------------------
+// DIVERGENCE
+// ---------------------------------------------------------------------------
+lookbackRight = 5
+lookbackLeft = 5
+rangeUpper = 60
+rangeLower = 5
+bearColor = color.red
+bullColor = color.green
+textColor = color.white
+noneColor = color.new(color.white, 100)
+
+_inRange(bool cond) =>
+    bars = ta.barssince(cond)
+    rangeLower <= bars and bars <= rangeUpper
+
+plFound = false
+phFound = false
+
+bullCond = false
+bearCond = false
+
+rsiLBR = rsi[lookbackRight]
+
+if calculateDivergence
+    // Regular Bullish: RSI higher low, price lower low
+    plFound := not na(ta.pivotlow(rsi, lookbackLeft, lookbackRight))
+    rsiHL = rsiLBR > ta.valuewhen(plFound, rsiLBR, 1) and _inRange(plFound[1])
+    lowLBR = low[lookbackRight]
+    priceLL = lowLBR < ta.valuewhen(plFound, lowLBR, 1)
+    bullCond := priceLL and rsiHL and plFound
+
+    // Regular Bearish: RSI lower high, price higher high
+    phFound := not na(ta.pivothigh(rsi, lookbackLeft, lookbackRight))
+    rsiLH = rsiLBR < ta.valuewhen(phFound, rsiLBR, 1) and _inRange(phFound[1])
+    highLBR = high[lookbackRight]
+    priceHH = highLBR > ta.valuewhen(phFound, highLBR, 1)
+    bearCond := priceHH and rsiLH and phFound
+
+plot(plFound ? rsiLBR : na, offset = -lookbackRight, title = 'Regular Bullish', linewidth = 2, color = bullCond ? bullColor : noneColor, display = display.pane, editable = calculateDivergence)
+
+plotshape(bullCond ? rsiLBR : na, offset = -lookbackRight, title = 'Regular Bullish Label', text = ' Bull ', style = shape.labelup, location = location.absolute, color = bullColor, textcolor = textColor, display = display.pane, editable = calculateDivergence)
+
+plot(phFound ? rsiLBR : na, offset = -lookbackRight, title = 'Regular Bearish', linewidth = 2, color = bearCond ? bearColor : noneColor, display = display.pane, editable = calculateDivergence)
+
+plotshape(bearCond ? rsiLBR : na, offset = -lookbackRight, title = 'Regular Bearish Label', text = ' Bear ', style = shape.labeldown, location = location.absolute, color = bearColor, textcolor = textColor, display = display.pane, editable = calculateDivergence)
+
+// ---------------------------------------------------------------------------
+// ALERTS
+// ---------------------------------------------------------------------------
+alertcondition(buyStart, 'Buying Zone Started', 'Supertrend buying zone started')
+alertcondition(sellStart, 'Selling Zone Started', 'Supertrend selling zone started')
+alertcondition(buyDot, 'Green Dot', 'Buy zone: RSI crossed up mid level')
+alertcondition(sellDot, 'Red Dot', 'Sell zone: RSI crossed down mid level')
+alertcondition(bullCond, title = 'Regular Bullish Divergence', message = 'Found a new Regular Bullish Divergence, `Pivot Lookback Right` number of bars to the left of the current bar.')
+alertcondition(bearCond, title = 'Regular Bearish Divergence', message = 'Found a new Regular Bearish Divergence, `Pivot Lookback Right` number of bars to the left of the current bar.')

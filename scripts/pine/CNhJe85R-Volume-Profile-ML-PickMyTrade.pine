@@ -1,0 +1,819 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © PickMyTrade_Official
+
+//@version=6
+
+// =============================================================================
+//  VOLUME PROFILE ML
+//  A volume profile that reports what has historically HAPPENED at each node,
+//  instead of only drawing where the nodes are.
+// =============================================================================
+//
+//  WHY THIS EXISTS
+//  ---------------
+//  A volume profile is a descriptive tool. It bins traded volume by price, marks
+//  the Point of Control, shades the Value Area, and tags High and Low Volume
+//  Nodes. Then it stops. What it leaves the trader with is the textbook claim -
+//  price rejects at HVN, accelerates through LVN - and no measurement of whether
+//  that claim has held on the instrument in front of them.
+//
+//  It frequently is not. A high volume node in a trending market is a shelf that
+//  price walks straight through. The same node in balance is a wall. Identical
+//  geometry, opposite outcome, and geometry alone cannot separate them.
+//
+//  This script measures it. Every time price arrives at a node it records a
+//  fingerprint of the arrival, waits for the outcome, and stores the resolved
+//  result. When a new arrival matches past ones, it votes.
+//
+//  WHAT IT REPORTS
+//  ---------------
+//  At an arrival: "HOLD 68%, n=9" - of the 9 most similar resolved arrivals on
+//  this chart, 68% rejected. n is the neighbour count K, not the library size.
+//  When the library is thin the script says so and shrinks the
+//  estimate toward the base rate rather than presenting a confident number built
+//  on four samples.
+//
+//  THE ML ENGINE
+//  -------------
+//  Lorentzian nearest-neighbour. Distance is log(1 + |a - b|) applied per axis
+//  and summed. Euclidean distance lets one unusual axis dominate; the log
+//  compresses outliers, so an arrival that is typical on eight axes and strange on
+//  the ninth still finds its true neighbours.
+//
+//  Neighbours are weighted by 1 / (1 + distance) rather than counted equally, and
+//  the shrinkage acts on that total weight rather than on the raw neighbour
+//  count, so a distant neighbourhood shrinks itself toward the base rate without
+//  needing a separate rule. That estimator is shared with this author's Supply
+//  Demand AI and is not claimed as new here.
+//
+//  What is new is that the engine is allowed to say it does not know. A nearest-neighbour
+//  method always returns a nearest neighbour; that is its characteristic failure.
+//  If the average distance to the K neighbours exceeds the configured ceiling,
+//  the arrival reports NO ANALOGUE rather than a percentage computed from
+//  whatever happened to be least dissimilar. The live distance is on the
+//  dashboard so the ceiling can be set from observation rather than guessed.
+//
+//  No independence assumption is made, which matters here because the features
+//  are plainly dependent - node share, local thickness and rank percentile all
+//  describe the same concentration of volume. A Naive Bayes model would multiply
+//  those densities and count one piece of evidence three times.
+//
+//  Every feature is written relative to the direction of approach, so an arrival
+//  from above and an arrival from below are described in the same terms and share
+//  one library. That doubles the effective sample count without mixing unlike
+//  distributions.
+//
+//  LABELLING DISCIPLINE
+//  --------------------
+//  An arrival resolves as HOLD if price reverses by the rejection threshold
+//  without closing beyond the node, and as BREAK if it closes through by the
+//  break threshold. The break test is checked FIRST, which is the conservative
+//  ordering - an arrival that did both within one bar is recorded as a break.
+//
+//  Arrivals that reach neither outcome inside the timeout are DISCARDED, not
+//  counted as breaks. Counting undecided drifts as failures deflates the library
+//  base rate and biases every displayed vote pessimistic. Only decisive outcomes
+//  teach.
+//
+//  NON-REPAINTING
+//  --------------
+//  Arrivals are detected and resolved only on confirmed bars. The profile itself
+//  is built from closed bars. Nothing is drawn or classified from a forming bar,
+//  so historical and realtime behaviour match. There are no request.security()
+//  calls, with or without lookahead.
+//
+//  One caveat that follows from the design and should be stated plainly: the
+//  library is built forward from the chart's own history, so the vote shown at a
+//  given bar depends on how many bars your chart had loaded when the script ran.
+//  Scroll back to load more history and the script recalculates from the new
+//  first bar, so earlier votes can differ from what you saw before. This is bar
+//  history dependence, not repainting - no value changes after its bar closes
+//  within a single run - but it does mean the displayed history is a record of
+//  what the script learned, not a backtest.
+//
+//  Recommended alert setting: Once Per Bar Close.
+//
+//  ATTRIBUTION
+//  -----------
+//  Volume profile construction - binning traded volume by price, the Point of
+//  Control, the Value Area, High and Low Volume Nodes - is long-established
+//  public technical analysis, implemented independently here.
+//
+//  The Lorentzian distance metric, log(1 + |a - b|) summed per axis, is a
+//  general-purpose idea, popularised for market classification by jdehorty's
+//  "Machine Learning: Lorentzian Classification". No code from that script is
+//  used.
+//
+//  No third-party code is reused. The distance-weighted vote and the
+//  weight-based shrinkage are shared with this author's own Supply Demand AI
+//  [PickMyTrade] - stated here plainly rather than left for a reader to find.
+//  Nothing else is: that script scores departures from a base-and-departure zone
+//  and resolves them on reaction magnitude; this one bins traded volume into a
+//  price grid, fingerprints an arrival at a high or low volume node on nine axes
+//  written relative to the approach direction, and resolves it as a hold or a
+//  break.
+//
+//  The original contribution here is the node-arrival model itself - the feature
+//  set, the resolution rules, the labelling discipline that discards undecided
+//  outcomes rather than scoring them as failures, and the analogue-distance
+//  ceiling below.
+//
+//  VOLUME DISTRIBUTION - AN HONEST NOTE
+//  ------------------------------------
+//  A chart bar reports one volume figure for its entire range, so any profile
+//  built from bar data must decide how to spread it. Most free scripts spread it
+//  uniformly, which implies the market traded as heavily at the wick extremes as
+//  at the body. That is not how bars fill.
+//
+//  This script uses a triangular weighting centred on the bar's typical price
+//  (hlc3), so volume concentrates where the bar actually spent its time and
+//  tapers toward the extremes. It is an approximation and is labelled as one. It
+//  is not tick data, and no bar-based profile is.
+//
+// =============================================================================
+
+// max_bars_back is set explicitly because the profile builder indexes history with
+// a loop variable (high[b], low[b], volume[b]). Pine cannot infer a buffer size from
+// a variable index and will otherwise fail at runtime once the lookback input is
+// raised - RE10143, and it surfaces only on the bar the deeper reference is first
+// requested, not at compile time.
+indicator("Volume Profile ML [PickMyTrade]", "VP-ML", overlay = true,
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500,
+     max_bars_back = 1100)
+
+// -----------------------------------------------------------------------------
+// INPUTS
+// -----------------------------------------------------------------------------
+string G_PRF = "1 - Profile"
+string G_NOD = "2 - Node detection"
+string G_ML  = "3 - ML engine"
+string G_LBL = "4 - Labelling rules"
+string G_VIS = "5 - Visuals"
+
+i_lookback = input.int(240, "Profile lookback (bars)", minval = 40, maxval = 1000, group = G_PRF,
+     tooltip = "How many closed bars the profile is built from. Larger windows describe structural value, smaller ones describe the current session's balance. 240 on a 5-minute chart is roughly one RTH day plus context.")
+
+i_rows = input.int(48, "Profile rows", minval = 12, maxval = 120, group = G_PRF,
+     tooltip = "Number of price bins. More rows resolve nodes more finely but cost execution time and drawing objects. Above roughly 80 rows on a long lookback the per-bar loop budget becomes the binding constraint.")
+
+i_rebuild = input.int(5, "Rebuild every N bars", minval = 1, maxval = 25, group = G_PRF,
+     tooltip = "The profile is recomputed on this cadence rather than every bar. Pine caps any single loop at 500ms; recomputing a 240-bar profile across 48 rows on every bar approaches that ceiling for no analytical gain, since the distribution barely moves bar to bar.")
+
+i_vaPct = input.float(70.0, "Value Area (%)", minval = 50.0, maxval = 95.0, step = 1.0, group = G_PRF,
+     tooltip = "Share of total profile volume defining the Value Area, expanded outward from the Point of Control. 70% is the convention inherited from Market Profile.")
+
+i_hvnPct = input.float(80.0, "HVN percentile", minval = 55.0, maxval = 99.0, step = 1.0, group = G_NOD,
+     tooltip = "A row qualifies as a High Volume Node when its volume sits at or above this percentile of all non-empty rows. Percentile rather than a fixed multiple, so the classification adapts to how concentrated a given profile happens to be.")
+
+i_lvnPct = input.float(20.0, "LVN percentile", minval = 1.0, maxval = 45.0, step = 1.0, group = G_NOD,
+     tooltip = "A row qualifies as a Low Volume Node at or below this percentile. Low volume nodes are where price historically moved fastest, so they matter as much as the peaks.")
+
+i_reArm = input.int(10, "Re-arm distance (bars)", minval = 2, maxval = 60, group = G_NOD,
+     tooltip = "Minimum bars before the same node can register a new arrival. Without this, a single approach that oscillates around a level would log a dozen near-identical arrivals and flood the library with one event counted many times.")
+
+i_useML = input.bool(true, "Enable outcome vote", group = G_ML,
+     tooltip = "Master switch for the classifier. Off, the script is a conventional volume profile with node markers and no historical outcome vote. On, every arrival is fingerprinted, resolved and voted on.")
+
+i_k = input.int(9, "K neighbours", minval = 3, maxval = 25, group = G_ML,
+     tooltip = "How many of the most similar past arrivals vote. Small K tracks local structure and is noisy; large K approaches the base rate and stops distinguishing anything.")
+
+i_libCap = input.int(100, "Library cap", minval = 30, maxval = 200, group = G_ML,
+     tooltip = "Maximum resolved arrivals retained. Oldest are evicted first. A cap keeps the vote responsive to the current regime instead of averaging across market conditions that no longer apply.")
+
+i_shrink = input.float(4.0, "Shrinkage weight", minval = 0.0, maxval = 20.0, step = 0.5, group = G_ML,
+     tooltip = "Pulls the vote toward the library base rate when few neighbours are available. With shrinkage 4, a 3-neighbour vote is heavily discounted while a 20-neighbour vote is nearly untouched. This is what stops the script displaying 100% off two samples.")
+
+i_maxDist = input.float(4.0, "Max analogue distance", minval = 0.5, maxval = 20.0, step = 0.25, group = G_ML,
+     tooltip = "Ceiling on the AVERAGE Lorentzian distance to the K nearest neighbours. Above it the script reports NO ANALOGUE instead of a percentage, because the nearest thing in the library is not actually similar and the vote would be extrapolation rather than analogy. The live mean distance is on the dashboard - watch it for a while, then set this a little above the typical reading. Raise it if NO ANALOGUE never clears.")
+
+i_minN = input.int(12, "Minimum library size to display", minval = 5, maxval = 60, group = G_ML,
+     tooltip = "Below this many resolved arrivals the script reports LEARNING rather than a percentage. An honest blank beats a confident guess.")
+
+i_rejATR = input.float(0.8, "Reject threshold (ATR)", minval = 0.2, step = 0.1, group = G_LBL,
+     tooltip = "Distance price must travel back away from the node, without closing through it, to resolve the arrival as a HOLD.")
+
+i_brkATR = input.float(0.5, "Break threshold (ATR)", minval = 0.1, step = 0.1, group = G_LBL,
+     tooltip = "Distance price must close BEYOND the node to resolve the arrival as a BREAK. Checked before the hold test, so an arrival that did both inside one bar is recorded as a break.")
+
+i_timeout = input.int(25, "Resolution timeout (bars)", minval = 5, maxval = 200, group = G_LBL,
+     tooltip = "Arrivals unresolved after this many bars are discarded, NOT recorded as breaks. Counting undecided drifts as failures would deflate the base rate and bias every vote pessimistic.")
+
+i_convict     = input.float(0.65, "Conviction threshold", minval = 0.55, maxval = 0.95, step = 0.01, group = G_ML,
+     tooltip = "Vote at or above which an arrival is marked as high conviction - a circle rather than a triangle - and at which the alert fires. The mirrored value below 0.5 marks the opposite case with equal strength.")
+
+i_showProfile = input.bool(true, "Show profile", group = G_VIS)
+i_showVA      = input.bool(true, "Show POC and Value Area", group = G_VIS)
+i_showNodes   = input.bool(true, "Show node markers", group = G_VIS)
+i_showDash    = input.bool(true, "Show dashboard", group = G_VIS)
+i_profWidth   = input.int(28, "Profile width (bars)", minval = 8, maxval = 90, group = G_VIS,
+     tooltip = "Horizontal length of the longest profile row, measured in bar widths to the right of the last bar. Purely cosmetic; it does not affect any calculation.")
+
+// Three colours, and only three. Blue is acceptance - a node price has traded
+// into and stayed at, and an arrival the library leans toward HOLDING. Orange is
+// rejection - a node price historically moved through fast, and an arrival the
+// library leans toward BREAKING. Grey is everything that has not earned a
+// direction yet: an ordinary row, and a reading taken while still learning.
+// The Point of Control gets no colour of its own. It is the strongest high
+// volume node, so it is blue, and it separates itself by WEIGHT - the boldest
+// border and the densest fill - the same way a heavily-merged zone separates
+// itself elsewhere in this account's scripts. A fourth hue would say the POC is
+// a different KIND of thing, and it is not.
+color i_cHi  = input.color(#2962FF, "Acceptance (HVN, hold)", group = G_VIS,
+     tooltip = "High volume nodes, the Point of Control, and arrivals the library leans toward holding. One colour, because these are one idea: price has been accepted here before.")
+color i_cLo  = input.color(#FF6D00, "Rejection (LVN, break)", group = G_VIS,
+     tooltip = "Low volume nodes and arrivals the library leans toward breaking. Price moved through these prices quickly rather than trading at them.")
+color i_cNeu = input.color(#787B86, "Neutral", group = G_VIS,
+     tooltip = "Ordinary rows that are neither a high nor a low volume node, and any reading taken before the library is large enough to report. Neither outcome has been earned, so neither colour is claimed.")
+
+// -----------------------------------------------------------------------------
+// STATE
+// -----------------------------------------------------------------------------
+var float[] rowVol = array.new_float(i_rows, 0.0)
+var float   pLo    = na
+var float   pHi    = na
+var float   rowH   = na
+var int     pocIdx = na
+var float   pocPx  = na
+var float   vahPx  = na
+var float   valPx  = na
+var float   totVol = 0.0
+var float   hvnCut = na
+var float   lvnCut = na
+
+float atr = ta.atr(14)
+
+// The library is hard-capped at i_libCap by the eviction below, so a minimum
+// display size ABOVE that cap can never be reached - the script would sit in
+// LEARNING with no vote and no alert on every bar, forever. Clamp it.
+int minN = math.min(i_minN, i_libCap)
+
+// Environment checks. Both are reported on the dashboard rather than blocking
+// execution: a hard runtime.error on a synthetic chart type is more hostile than
+// a visible warning, and a user may genuinely want to look anyway.
+float volAvgLong  = ta.sma(nz(volume), 100)
+bool  noVolFeed   = bar_index > 200 and nz(volAvgLong) <= 0
+bool  nonStdChart = not chart.is_standard
+
+// Every drawing coordinate in this script is TIME based, never bar-index based.
+// Bar-index coordinates on long-lived drawings throw RE10026 once a chart runs
+// deep into history - this account has been bitten twice before, at box.new and
+// at box.set_lefttop. A liquid intraday chart is 20,000+ bars in routinely.
+var int bar_ms = math.max(nz(timeframe.in_seconds(timeframe.period), 60) * 1000, 1)
+
+// Resolved-outcome library. One entry per decided arrival.
+type Arr
+    float z0 = 0.0   // node volume as a multiple of the average row
+    float z1 = 0.0   // node rank percentile among non-empty rows
+    float z2 = 0.0   // local thickness, 5 rows, in average-row multiples
+    float z3 = 0.0   // approach displacement into the node, ATR units
+    float z4 = 0.0   // signed distance from POC as a share of profile range
+    float z5 = 0.0   // node position within the profile range, 0 low to 1 high
+    float z6 = 0.0   // volume surge on approach versus 20-bar average
+    float z7 = 0.0   // profile concentration, POC as a multiple of the average row
+    float z8 = 0.0   // node position vs the Value Area, 0 = VAL, 1 = VAH
+    int   lbl = 0    // 1 = held, 0 = broke
+
+var array<Arr> g_lib = array.new<Arr>()
+
+// Pending arrivals awaiting resolution.
+var float[] p_lvl  = array.new_float(0)
+var int[]   p_dir  = array.new_int(0)     // +1 approached from below, -1 from above
+var int[]   p_bar  = array.new_int(0)
+var float[] p_atr  = array.new_float(0)   // ATR frozen at the arrival bar
+var float[] p_z0   = array.new_float(0)
+var float[] p_z1   = array.new_float(0)
+var float[] p_z2   = array.new_float(0)
+var float[] p_z3   = array.new_float(0)
+var float[] p_z4   = array.new_float(0)
+var float[] p_z5   = array.new_float(0)
+var float[] p_z6   = array.new_float(0)
+var float[] p_z7   = array.new_float(0)
+var float[] p_z8   = array.new_float(0)
+
+var int[]   lastArrBar = array.new_int(i_rows, -9999)
+
+// -----------------------------------------------------------------------------
+// PROFILE CONSTRUCTION
+// -----------------------------------------------------------------------------
+// Each bar contributes its volume across the rows its range spans, weighted
+// triangularly around hlc3. Uniform spreading implies the market traded as
+// heavily at the wick tips as at the body, which is not how bars fill.
+// The window extremes are computed by hand rather than with ta.highest/ta.lowest.
+// Those two carry internal rolling state and must be REACHED on every bar; this
+// function only runs on rebuild bars, so calling them here returned the extremes
+// of the last i_lookback EXECUTIONS - roughly i_lookback * i_rebuild chart bars,
+// sampled one in five - silently skipping the intra-window extremes a profile
+// exists to capture. Computing them in a loop we already run carries no hidden
+// state, costs one extra pass, and lets the window clamp to loaded history.
+f_buildProfile(int lb) =>
+    float hi = na
+    float lo = na
+    if lb > 0
+        for b = 0 to lb - 1
+            float bh = high[b]
+            float bl = low[b]
+            hi := na(hi) ? bh : math.max(hi, bh)
+            lo := na(lo) ? bl : math.min(lo, bl)
+    float rh = na(hi) or na(lo) ? 0.0 : (hi - lo) / i_rows
+    array.fill(rowVol, 0.0)
+    float tot = 0.0
+    if rh > 0
+        for b = 0 to lb - 1
+            float bh = high[b]
+            float bl = low[b]
+            float bv = nz(volume[b])
+            float bc = (bh + bl + close[b]) / 3.0
+            if bv > 0 and bh >= bl
+                int iLo = int(math.floor((bl - lo) / rh))
+                int iHi = int(math.floor((bh - lo) / rh))
+                iLo := math.max(0, math.min(i_rows - 1, iLo))
+                iHi := math.max(0, math.min(i_rows - 1, iHi))
+                int span = iHi - iLo + 1
+                if span == 1
+                    array.set(rowVol, iLo, array.get(rowVol, iLo) + bv)
+                    tot += bv
+                else
+                    // Triangular weights centred on the typical price.
+                    float wSum = 0.0
+                    for r = iLo to iHi
+                        float rc = lo + (r + 0.5) * rh
+                        float w  = 1.0 - math.abs(rc - bc) / math.max(rh * span * 0.5, rh)
+                        wSum += math.max(w, 0.05)
+                    if wSum > 0
+                        for r = iLo to iHi
+                            float rc = lo + (r + 0.5) * rh
+                            float w  = math.max(1.0 - math.abs(rc - bc) / math.max(rh * span * 0.5, rh), 0.05)
+                            float add = bv * w / wSum
+                            array.set(rowVol, r, array.get(rowVol, r) + add)
+                            tot += add
+    [lo, hi, rh, tot]
+
+// Percentile over non-empty rows only. Empty rows above and below the traded
+// range would otherwise drag every percentile down and make ordinary rows look
+// like low volume nodes.
+f_pct(float pct) =>
+    float[] tmp = array.new_float(0)
+    for i = 0 to i_rows - 1
+        float v = array.get(rowVol, i)
+        if v > 0
+            array.push(tmp, v)
+    array.size(tmp) > 0 ? array.percentile_linear_interpolation(tmp, pct) : 0.0
+
+bool doBuild = barstate.isconfirmed and (bar_index % i_rebuild == 0 or na(pLo))
+
+// Clamped to loaded history, so the script still works on a chart holding fewer
+// bars than the requested lookback instead of being silently inert forever.
+int lbEff = math.min(i_lookback, bar_index)
+
+if doBuild and bar_index >= 40
+    [lo, hi, rh, tot] = f_buildProfile(lbEff)
+    pLo    := lo
+    pHi    := hi
+    rowH   := rh
+    totVol := tot
+    // Point of Control
+    float mx = 0.0
+    int   mi = 0
+    for i = 0 to i_rows - 1
+        float v = array.get(rowVol, i)
+        if v > mx
+            mx := v
+            mi := i
+    pocIdx := mi
+    pocPx  := pLo + (mi + 0.5) * rowH
+    hvnCut := f_pct(i_hvnPct)
+    lvnCut := f_pct(i_lvnPct)
+    // Value Area: expand outward from POC, taking the richer neighbour each step.
+    float target = totVol * i_vaPct / 100.0
+    float acc    = mx
+    int   up     = mi
+    int   dn     = mi
+    while acc < target and (up < i_rows - 1 or dn > 0)
+        float vUp = up < i_rows - 1 ? array.get(rowVol, up + 1) : -1.0
+        float vDn = dn > 0 ? array.get(rowVol, dn - 1) : -1.0
+        if vUp >= vDn and up < i_rows - 1
+            up += 1
+            acc += vUp
+        else if dn > 0
+            dn -= 1
+            acc += vDn
+        else
+            break
+    vahPx := pLo + (up + 1) * rowH
+    valPx := pLo + dn * rowH
+
+// -----------------------------------------------------------------------------
+// KNN · LORENTZIAN ML ENGINE
+// -----------------------------------------------------------------------------
+f_lorentz(float a, float b) =>
+    math.log(1.0 + math.abs(a - b))
+
+f_baseRate() =>
+    int n = array.size(g_lib)
+    float s = 0.0
+    if n > 0
+        for i = 0 to n - 1
+            s += float(array.get(g_lib, i).lbl)
+    n > 0 ? s / float(n) : 0.5
+
+// K-nearest vote, shrunk toward the base rate so a thin neighbourhood cannot
+// produce a confident number.
+f_vote(float q0, float q1, float q2, float q3, float q4, float q5, float q6, float q7, float q8) =>
+    int n = array.size(g_lib)
+    float p = na
+    int   used = 0
+    float mdist = na
+    if n > 0
+        float[] dist = array.new_float(0)
+        int[]   idx  = array.new_int(0)
+        for i = 0 to n - 1
+            Arr e = array.get(g_lib, i)
+            float d = f_lorentz(q0, e.z0) + f_lorentz(q1, e.z1) + f_lorentz(q2, e.z2) +
+                     f_lorentz(q3, e.z3) + f_lorentz(q4, e.z4) + f_lorentz(q5, e.z5) +
+                     f_lorentz(q6, e.z6) + f_lorentz(q7, e.z7) + f_lorentz(q8, e.z8)
+            array.push(dist, d)
+            array.push(idx, i)
+        int kk = math.min(i_k, n)
+        // Neighbours are weighted by 1 / (1 + distance) rather than counted
+        // equally. A plain K-nearest vote gives the same say to the closest
+        // analogue in the library and to the ninth, which may be nothing like the
+        // current arrival at all - it just happened to be the ninth least
+        // dissimilar thing available.
+        float wHit = 0.0
+        float wTot = 0.0
+        float dSum = 0.0
+        for s = 0 to kk - 1
+            int   bi = 0
+            float bd = 1e12
+            for j = 0 to array.size(dist) - 1
+                float dv = array.get(dist, j)
+                if dv < bd
+                    bd := dv
+                    bi := j
+            float w = 1.0 / (1.0 + bd)
+            wHit += w * float(array.get(g_lib, array.get(idx, bi)).lbl)
+            wTot += w
+            dSum += bd
+            array.remove(dist, bi)
+            array.remove(idx, bi)
+        used  := kk
+        mdist := dSum / float(kk)
+        float br = f_baseRate()
+        // Shrinkage now acts on the total WEIGHT rather than the raw neighbour
+        // count, which makes it distance-aware for free: a neighbourhood of nine
+        // distant analogues carries little weight and is pulled hard toward the
+        // base rate, while nine close ones are left almost untouched. Counting
+        // them equally would have reported both with the same confidence.
+        p := (wHit + i_shrink * br) / (wTot + i_shrink)
+    [p, used, mdist]
+
+// -----------------------------------------------------------------------------
+// ARRIVAL DETECTION
+// -----------------------------------------------------------------------------
+f_rowShare(int i) =>
+    totVol > 0 ? array.get(rowVol, i) / totVol : 0.0
+
+f_thickness(int i) =>
+    float s = 0.0
+    for r = math.max(0, i - 2) to math.min(i_rows - 1, i + 2)
+        s += array.get(rowVol, r)
+    totVol > 0 ? s / totVol : 0.0
+
+f_rankPct(int i) =>
+    float v = array.get(rowVol, i)
+    int   below = 0
+    int   cnt   = 0
+    for r = 0 to i_rows - 1
+        float rv = array.get(rowVol, r)
+        if rv > 0
+            cnt += 1
+            if rv < v
+                below += 1
+    cnt > 0 ? float(below) / float(cnt) : 0.5
+
+float volAvg = ta.sma(volume, 20)
+
+if barstate.isconfirmed and not na(pLo) and not na(atr) and atr > 0 and rowH > 0
+    // Resolve pending arrivals first. Break is tested before hold.
+    if array.size(p_bar) > 0
+        for i = array.size(p_bar) - 1 to 0
+            float lvl = array.get(p_lvl, i)
+            int   dir = array.get(p_dir, i)
+            int   b0  = array.get(p_bar, i)
+            int   lbl = -1
+            if bar_index > b0
+                // Barriers use the ATR frozen AT ARRIVAL, not live ATR. Reading
+                // live ATR moves the goalposts on an outcome already in flight:
+                // a volatility spike silently widens both thresholds mid-test.
+                float a0 = array.get(p_atr, i)
+                // BREAK is a CLOSE beyond the node. HOLD is a rejection, which is
+                // an EXCURSION away from it - testing hold on the close made most
+                // arrivals drift past the timeout and get discarded unlearned.
+                bool broke = dir == 1 ? close >= lvl + i_brkATR * a0 : close <= lvl - i_brkATR * a0
+                bool held  = dir == 1 ? low   <= lvl - i_rejATR * a0 : high  >= lvl + i_rejATR * a0
+                if broke
+                    lbl := 0
+                else if held
+                    lbl := 1
+                else if bar_index - b0 >= i_timeout
+                    lbl := -2   // undecided, discarded
+            if lbl >= 0
+                Arr e = Arr.new(array.get(p_z0, i), array.get(p_z1, i), array.get(p_z2, i),
+                                 array.get(p_z3, i), array.get(p_z4, i), array.get(p_z5, i),
+                                 array.get(p_z6, i), array.get(p_z7, i), array.get(p_z8, i), lbl)
+                array.push(g_lib, e)
+                if array.size(g_lib) > i_libCap
+                    array.shift(g_lib)
+            if lbl != -1
+                array.remove(p_lvl, i)
+                array.remove(p_dir, i)
+                array.remove(p_bar, i)
+                array.remove(p_atr, i)
+                array.remove(p_z0, i)
+                array.remove(p_z1, i)
+                array.remove(p_z2, i)
+                array.remove(p_z3, i)
+                array.remove(p_z4, i)
+                array.remove(p_z5, i)
+                array.remove(p_z6, i)
+                array.remove(p_z7, i)
+                array.remove(p_z8, i)
+
+// -----------------------------------------------------------------------------
+// NEW ARRIVAL
+// -----------------------------------------------------------------------------
+var float voteP   = na
+var int   voteN   = 0
+var float voteD   = na   // mean Lorentzian distance to the K neighbours that voted
+var int   voteDir = 0
+// Fires on the arrival bar only. Without this the label condition stays true for
+// every bar price lingers in the same row, redrawing the same marker dozens of
+// times and exhausting the 500-label budget on a single test.
+bool newArrival = false
+var int lastRow = na
+
+if barstate.isconfirmed and not na(pLo) and rowH > 0 and not na(atr) and atr > 0 and bar_index >= 40
+    int hitRow = int(math.floor((close - pLo) / rowH))
+    if hitRow >= 0 and hitRow < i_rows
+        float lvl   = pLo + (hitRow + 0.5) * rowH
+        float share = f_rowShare(hitRow)
+        bool  isHVN = array.get(rowVol, hitRow) >= hvnCut and hvnCut > 0
+        bool  isLVN = array.get(rowVol, hitRow) <= lvnCut and array.get(rowVol, hitRow) > 0
+        // Re-arm is floored at the timeout. Below it, one approach registers a
+        // second and third pending arrival before the first has resolved; they
+        // then resolve identically off the same price action and the library
+        // counts one event three times - exactly what this input claims to stop.
+        bool  armed = bar_index - array.get(lastArrBar, hitRow) >= math.max(i_reArm, i_timeout)
+        // An arrival is price ENTERING the node on this bar. Without this test
+        // every bar price spends inside the row qualifies, and the distance test
+        // below cannot filter them: hitRow is derived FROM close, so close sits
+        // inside that row by construction and the test is near-vacuous.
+        bool  entered = na(lastRow) or hitRow != lastRow
+        if (isHVN or isLVN) and armed and entered
+            // Direction of APPROACH, read from where price sat before it arrived.
+            // The previous bar's candle direction says nothing about which side of
+            // the node price came from, and mislabelled about a third of entries.
+            int dir = nz(close[3], close) < lvl ? 1 : -1
+            // Every axis is written so its typical magnitude is order 1. The
+            // Lorentzian metric log(1 + |a - b|) is NOT scale invariant: an axis
+            // living in 0..0.05 shifts a distance by 0.05 where an ATR axis shifts
+            // it by 3, so unscaled volume shares were effectively ignored by the
+            // vote. They are therefore stated as MULTIPLES OF THE AVERAGE ROW.
+            // Every axis is CLAMPED as well as scaled. log(1 + |a - b|) is
+            // monotone and unbounded, so one open-ended axis can dominate the
+            // whole nine-axis sum: a 30x volume bar alone contributes log(31) =
+            // 3.4 against a typical whole-vector total of 3 to 4. It would then
+            // select the neighbours single-handedly - exactly the failure the
+            // Lorentzian metric is chosen to avoid - and inflate the mean
+            // distance so NO ANALOGUE fired on volume spikes rather than on
+            // genuinely unlike arrivals.
+            float z0 = math.min(share * i_rows, 8.0)
+            float z1 = f_rankPct(hitRow)
+            float z2 = math.min(f_thickness(hitRow) * i_rows / 5.0, 8.0)
+            float z3 = math.min(math.abs(close - nz(close[3], close)) / atr, 3.0)
+            // Bounded to the profile's own range. Measured in ATR this axis was
+            // unbounded and on its own dominated the nine-axis distance.
+            float z4 = (pocPx - lvl) / math.max(pHi - pLo, syminfo.mintick) * dir
+            float z5 = (lvl - pLo) / math.max(pHi - pLo, syminfo.mintick)
+            float z6 = volAvg > 0 ? math.min(nz(volume) / volAvg, 4.0) : 1.0
+            float z7 = totVol > 0 ? math.min(array.get(rowVol, pocIdx) / totVol * i_rows, 8.0) : 0.0
+            // Where the node sits relative to the Value Area: below 0 is beneath
+            // value, above 1 is above it. The axis here was previously
+            // bar_index % lookback - a sawtooth with no market meaning that fed
+            // pure noise into every distance calculation.
+            float z8 = na(vahPx) or na(valPx) ? 0.5 :
+                 math.max(math.min((lvl - valPx) / math.max(vahPx - valPx, syminfo.mintick), 3.0), -2.0)
+            array.push(p_lvl, lvl)
+            array.push(p_dir, dir)
+            array.push(p_bar, bar_index)
+            array.push(p_atr, atr)
+            array.push(p_z0, z0)
+            array.push(p_z1, z1)
+            array.push(p_z2, z2)
+            array.push(p_z3, z3)
+            array.push(p_z4, z4)
+            array.push(p_z5, z5)
+            array.push(p_z6, z6)
+            array.push(p_z7, z7)
+            array.push(p_z8, z8)
+            array.set(lastArrBar, hitRow, bar_index)
+            newArrival := true
+            // Assigned OUTSIDE the ML gate. The four plotshape calls test
+            // voteDir for +1/-1; left inside, it stayed 0 for the life of the
+            // script whenever the vote was switched off and not one node marker
+            // drew - directly contradicting this input's own tooltip, which
+            // promises a conventional profile WITH node markers in that mode.
+            voteDir := dir
+            if i_useML
+                [pv, nu, nd] = f_vote(z0, z1, z2, z3, z4, z5, z6, z7, z8)
+                voteP   := pv
+                voteN   := nu
+                voteD   := nd
+    lastRow := hitRow >= 0 and hitRow < i_rows ? hitRow : na
+
+// -----------------------------------------------------------------------------
+// RENDERING
+// -----------------------------------------------------------------------------
+// Fill stays translucent so candles read through the profile; the border stays
+// crisp so the row itself is never ambiguous. The POC is the same blue as any
+// other high volume node and separates itself by weight alone.
+f_rowFill(bool isPoc, bool isHi, bool isLo) =>
+    isPoc ? color.new(i_cHi, 75) : isHi ? color.new(i_cHi, 80) : isLo ? color.new(i_cLo, 80) : color.new(i_cNeu, 90)
+
+f_rowBorder(bool isPoc, bool isHi, bool isLo) =>
+    isPoc ? color.new(i_cHi, 0) : isHi ? color.new(i_cHi, 30) : isLo ? color.new(i_cLo, 30) : color.new(i_cNeu, 70)
+
+var box[] pBoxes = array.new<box>()
+
+if barstate.islast and i_showProfile and not na(pLo) and rowH > 0
+    // Pine picks a for loop's direction from its bounds, so `0 to size - 1` on an
+    // EMPTY array becomes `0 to -1` and runs DOWNWARD - executing at i = 0 and
+    // i = -1 against zero elements instead of not running at all. That is RE10045
+    // on the first render. Guard on size before iterating.
+    if array.size(pBoxes) > 0
+        for i = 0 to array.size(pBoxes) - 1
+            box.delete(array.get(pBoxes, i))
+        array.clear(pBoxes)
+    float mx = 0.0
+    for i = 0 to i_rows - 1
+        mx := math.max(mx, array.get(rowVol, i))
+    if mx > 0
+        for i = 0 to i_rows - 1
+            float v = array.get(rowVol, i)
+            if v > 0
+                // At least one bar wide. Rounding to zero made low volume nodes -
+                // half of what this script is about - invisible on most profiles.
+                int w = math.max(1, int(math.round(i_profWidth * v / mx)))
+                if w > 0
+                    bool isPoc = i == pocIdx
+                    bool isHi  = v >= hvnCut and hvnCut > 0
+                    bool isLo  = v <= lvnCut and v > 0
+                    // Solid border, width 1 - width 2 reads as heavy and smears the
+                    // seam between adjacent rows. The POC alone steps up to 2.
+                    box b = box.new(time + 2 * bar_ms, pLo + (i + 1) * rowH,
+                             time + (2 + w) * bar_ms, pLo + i * rowH, xloc = xloc.bar_time,
+                             border_color = f_rowBorder(isPoc, isHi, isLo),
+                             border_width = isPoc ? 2 : 1,
+                             bgcolor = f_rowFill(isPoc, isHi, isLo))
+                    array.push(pBoxes, b)
+
+var line lnPoc = na
+var line lnVah = na
+var line lnVal = na
+if barstate.islast and i_showVA and not na(pocPx)
+    line.delete(lnPoc)
+    line.delete(lnVah)
+    line.delete(lnVal)
+    int lT = time[math.min(i_lookback, bar_index)]
+    int rT = time + (i_profWidth + 4) * bar_ms
+    // The POC is the strongest acceptance level on the chart, so it carries the
+    // acceptance colour at full strength. The Value Area edges are structural
+    // boundaries rather than nodes - neither acceptance nor rejection - so they
+    // stay neutral and sit behind the profile instead of competing with it.
+    lnPoc := line.new(lT, pocPx, rT, pocPx, xloc = xloc.bar_time, color = i_cHi, width = 2)
+    lnVah := line.new(lT, vahPx, rT, vahPx, xloc = xloc.bar_time,
+             color = color.new(i_cNeu, 45), style = line.style_dashed)
+    lnVal := line.new(lT, valPx, rT, valPx, xloc = xloc.bar_time,
+             color = color.new(i_cNeu, 45), style = line.style_dashed)
+
+// Arrival marker carrying the vote.
+// Colour and conviction are computed at global scope because plotshape needs them
+// there. Grey until the library is large enough to report - a reading taken while
+// learning has earned neither direction.
+bool  arrLive   = i_useML and not na(voteP) and array.size(g_lib) >= minN
+// A vote is only reported when the library actually contains something SIMILAR.
+// Nearest-neighbour methods always return a nearest neighbour - that is the whole
+// failure mode. If the closest thing on record is not close, the honest output is
+// that there is no analogue, not a confident-looking percentage derived from
+// whatever happened to be least dissimilar.
+bool  arrAnalog = arrLive and not na(voteD) and voteD <= i_maxDist
+color arrCol    = not arrAnalog ? i_cNeu : voteP >= 0.5 ? i_cHi : i_cLo
+bool  arrHiConv = newArrival and arrAnalog and (voteP >= i_convict or voteP <= 1.0 - i_convict)
+bool  arrStd    = newArrival and not arrHiConv
+
+// Circle for high conviction, triangle for standard - fixed house convention, so
+// the shape alone carries strength and the colour alone carries direction. The
+// mark sits on the side price approached from.
+plotshape(i_showNodes and arrHiConv and voteDir ==  1, "High conviction arrival, approached from below",
+     shape.circle, location.belowbar, arrCol, size = size.small)
+plotshape(i_showNodes and arrHiConv and voteDir == -1, "High conviction arrival, approached from above",
+     shape.circle, location.abovebar, arrCol, size = size.small)
+plotshape(i_showNodes and arrStd and voteDir ==  1, "Arrival, approached from below",
+     shape.triangleup, location.belowbar, arrCol, size = size.small)
+plotshape(i_showNodes and arrStd and voteDir == -1, "Arrival, approached from above",
+     shape.triangledown, location.abovebar, arrCol, size = size.small)
+
+// Gated on newArrival, NOT on voteP being populated. f_vote returns na while the
+// library is empty, so requiring a vote suppressed this reading for precisely the
+// period the LEARNING state exists to communicate.
+// Offset to 1.2 ATR, well clear of the plotshape sitting just off the bar - two
+// marks sharing one anchor is how labels end up stacked into an unreadable blob.
+if i_showNodes and i_useML and newArrival
+    string txt = not arrLive ? "LEARNING n=" + str.tostring(array.size(g_lib)) :
+                 not arrAnalog ? "NO ANALOGUE d=" + str.tostring(voteD, "#.#") :
+                 (voteP >= 0.5 ? "HOLD " : "BREAK ") +
+                 str.tostring(math.round((voteP >= 0.5 ? voteP : 1.0 - voteP) * 100)) + "% n=" + str.tostring(voteN)
+    label.new(time, voteDir == 1 ? low - atr * 1.2 : high + atr * 1.2, txt,
+         xloc = xloc.bar_time,
+         style = voteDir == 1 ? label.style_label_up : label.style_label_down,
+         color = color.new(arrCol, 85), textcolor = arrCol, size = size.tiny)
+
+// -----------------------------------------------------------------------------
+// DASHBOARD
+// -----------------------------------------------------------------------------
+var table dash = table.new(position.top_right, 2, 15,
+     bgcolor = color.new(color.black, 75), border_color = color.new(color.gray, 60),
+     border_width = 1, frame_color = color.new(color.gray, 50), frame_width = 1)
+
+if barstate.islast and i_showDash
+    int libN = array.size(g_lib)
+    table.cell(dash, 0, 0, "Volume Profile ML", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 1, 0, libN >= minN ? "● LIVE" : "● LEARNING",
+         text_color = libN >= minN ? color.lime : color.yellow, text_size = size.small)
+    table.cell(dash, 0, 1, "POC", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 1, 1, na(pocPx) ? "-" : str.tostring(pocPx, format.mintick),
+         text_color = i_cHi, text_size = size.small)
+    table.cell(dash, 0, 2, "Value Area", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 1, 2, na(valPx) or na(vahPx) ? "-" :
+         str.tostring(valPx, format.mintick) + " - " + str.tostring(vahPx, format.mintick),
+         text_color = color.white, text_size = size.small)
+    table.cell(dash, 0, 3, "ML library", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 1, 3, str.tostring(libN) + " / " + str.tostring(i_libCap),
+         text_color = color.white, text_size = size.small)
+    table.cell(dash, 0, 4, "Base rate (hold)", text_color = color.gray, text_size = size.small,
+         tooltip = "Share of ALL resolved arrivals in the library that held. A property of this chart's recorded history, not a forecast.")
+    // An empty library has no base rate. f_baseRate() returns 0.5 as a neutral
+    // prior for the shrinkage maths, but printing "50%" states a measurement that
+    // was never taken.
+    table.cell(dash, 1, 4, libN == 0 ? "-" : str.tostring(math.round(f_baseRate() * 100)) + "%",
+         text_color = color.white, text_size = size.small)
+    table.cell(dash, 0, 5, "Pending", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 1, 5, str.tostring(array.size(p_bar)), text_color = color.white, text_size = size.small)
+    table.cell(dash, 0, 6, "Last arrival", text_color = color.gray, text_size = size.small,
+         tooltip = "The most recent arrival's reading, which may be many bars old - this row is a record of the last event, not a statement about the current bar. Suppressed when that arrival had no close analogue, matching the on-chart label.")
+    // Gated on voteD as well as voteP. Without it the panel printed a confident
+    // percentage for the very arrival the chart label had just refused to score.
+    table.cell(dash, 1, 6, na(voteP) or libN < minN ? "-" :
+         na(voteD) or voteD > i_maxDist ? "no analogue" :
+         str.tostring(math.round(voteP * 100)) + "% hold (n=" + str.tostring(voteN) + ")",
+         text_color = color.white, text_size = size.small)
+    table.cell(dash, 0, 7, "Analogue distance", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 1, 7, na(voteD) ? "-" : str.tostring(voteD, "#.##") + " / " + str.tostring(i_maxDist, "#.#"),
+         text_color = na(voteD) ? color.white : voteD <= i_maxDist ? i_cHi : i_cLo, text_size = size.small)
+    table.cell(dash, 0, 8, "─────", text_color = color.new(color.gray, 60), text_size = size.tiny)
+    table.cell(dash, 1, 8, "─────", text_color = color.new(color.gray, 60), text_size = size.tiny)
+
+    // Legend. Every coloured mark on the chart is explained here, so the chart
+    // documents itself without anyone reading the description. The swatch is drawn
+    // in the live input colour rather than named, so the legend cannot go stale
+    // the moment someone changes a colour.
+    table.cell(dash, 0, 9, "■  node", text_color = i_cHi, text_size = size.tiny)
+    table.cell(dash, 1, 9, "high volume · vote leans hold", text_color = color.new(color.gray, 20), text_size = size.tiny)
+    table.cell(dash, 0, 10, "■  node", text_color = i_cLo, text_size = size.tiny)
+    table.cell(dash, 1, 10, "low volume · vote leans break", text_color = color.new(color.gray, 20), text_size = size.tiny)
+    table.cell(dash, 0, 11, "■  row", text_color = i_cNeu, text_size = size.tiny)
+    table.cell(dash, 1, 11, "ordinary · or still learning", text_color = color.new(color.gray, 20), text_size = size.tiny)
+    table.cell(dash, 0, 12, "●  vs  ▲", text_color = color.new(color.gray, 20), text_size = size.tiny)
+    table.cell(dash, 1, 12, "high conviction · standard", text_color = color.new(color.gray, 20), text_size = size.tiny)
+
+    // Environment warnings. Reported, never enforced.
+    table.cell(dash, 0, 13, noVolFeed ? "⚠ No volume feed" : "", text_color = i_cLo, text_size = size.tiny)
+    table.cell(dash, 1, 13, noVolFeed ? "profile is meaningless" : "", text_color = i_cLo, text_size = size.tiny)
+    table.cell(dash, 0, 14, nonStdChart ? "⚠ Synthetic chart" : "", text_color = i_cLo, text_size = size.tiny)
+    table.cell(dash, 1, 14, nonStdChart ? "OHLC is not traded price" : "", text_color = i_cLo, text_size = size.tiny)
+
+// -----------------------------------------------------------------------------
+// ALERTS
+// -----------------------------------------------------------------------------
+// newArrival gates both. voteP is a var and is never cleared, so without the gate
+// each condition stays true on EVERY bar after the first qualifying arrival - an
+// Once Per Bar alert would fire continuously, describing an event long past.
+bool alertHold  = newArrival and arrAnalog and voteP >= i_convict
+bool alertBreak = newArrival and arrAnalog and voteP <= 1.0 - i_convict
+
+alertcondition(alertHold, "Arrival leaning hold",
+     "Volume Profile ML: price arrived at a volume node whose nearest resolved neighbours on this chart mostly held. A historical frequency on a limited sample. Informational, not a trade instruction.")
+alertcondition(alertBreak, "Arrival leaning break",
+     "Volume Profile ML: price arrived at a volume node whose nearest resolved neighbours on this chart mostly broke. A historical frequency on a limited sample. Informational, not a trade instruction.")
+alertcondition(alertHold or alertBreak, "Any high conviction arrival",
+     "Volume Profile ML: a node arrival resolved at or beyond the configured conviction threshold. Informational, not a trade instruction.")

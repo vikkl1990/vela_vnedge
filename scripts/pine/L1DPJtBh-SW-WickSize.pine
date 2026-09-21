@@ -1,0 +1,129 @@
+//@version=6
+indicator("SW_WickAvg2 - Wick Averages (One Box Per Bar)", shorttitle="SW_WickAvg2", overlay=false)
+
+// ═══════════════════════════════════════════════════════════════════
+// SW_WICKAVG2 — USER GUIDE
+// ═══════════════════════════════════════════════════════════════════
+//
+// WHAT IT DOES
+// Draws ONE box per bar, colored to match that bar's own candle color
+// (green candle -> green box, red candle -> red box). Each box crosses
+// a zero baseline: the part above zero is the rolling average of that
+// color's upper wick, the part below is the rolling average of that
+// color's lower wick.
+//
+// A bar where close == open (neither green nor red) draws no box.
+//
+// WICK DEFINITIONS
+//   Green upper wick = high - close      Green lower wick = open - low
+//   Red   upper wick = high - open       Red   lower wick = close - low
+//
+// AVERAGING
+// Both colors' wick values are computed on every bar (0 on bars that
+// don't match that color), then smoothed with a simple moving average
+// over the last `x` bars. This means the average reflects both how
+// large the wicks are AND how often that color occurs in the lookback
+// window — fewer bars of a color in the window pulls its average down
+// even if the bars that did occur had large wicks.
+//
+// BOX SIZE — REAL PRICE UNITS, NOT A PERCENTAGE
+// Box height is the actual averaged wick length on the same price
+// scale as the candles above, not a percentage or fraction of the bar.
+//
+// HOW THE BOX IS DRAWN (plotcandle, not box.new)
+// The box is drawn using plotcandle() — Pine's native candle-shape
+// plot — rather than box.new(). plotcandle(open, high, low, close)
+// normally draws OHLC; here open=high=top value and close=low=bottom
+// value, which collapses the "wick" to nothing and makes the "body"
+// span exactly [bottom, top], giving a solid rectangle crossing zero.
+// Using plotcandle guarantees the box aligns exactly under its own
+// candle at every zoom level, since it shares the same native
+// rendering pipeline as real candles (manual box.new() coordinates,
+// whether time-based or index-based, cannot achieve this reliably).
+//
+// PLOTCANDLE STYLE-TAB NOTE
+// plotcandle always exposes Body/Wick/Border as separate color pairs
+// in the Style tab — this is a fixed platform behavior. We only use the 
+// Body color setting.  Wick and Border color settings can be ignored.
+//
+// DOJI MARKER
+// A yellow diamond is drawn exactly on the zero line whenever a
+// candle's body is small relative to its full high-low range (default
+// 5%). This is a visual flag only — it never affects bar
+// classification or the wick averages. Drawn last so it renders above
+// both the boxes and the zero line.
+//
+// LAYERING
+// Draw order is: plotcandle (boxes) -> hline (zero line) -> plotshape
+// (doji marker). Pine renders later plot-family calls on top of
+// earlier ones, so the zero line sits above the boxes, and the doji
+// diamond sits above everything.
+//
+// INPUTS
+//   x                — lookback length for the averages (default 5)
+//   showGreenBox/showRedBox — per-color visibility toggle
+//   greenColor/redColor — box colors
+//   scaleHeadroomPts — additive invisible scale padding: adds a fixed
+//                       number of points above the tallest recent bar
+//                       to push the zero line further down in the
+//                       pane. 0 = off.
+//   dojiBodyPct      — doji threshold, as % of that bar's high-low
+//                       range (default 5%)
+// ═══════════════════════════════════════════════════════════════════
+
+x = input.int(5, title="Average Length (bars)", minval=1)
+
+showGreenBox = input.bool(true, title="Show Green Box", group="Colors")
+showRedBox   = input.bool(true, title="Show Red Box",   group="Colors")
+greenColor   = input.color(color.lime, title="Green Bar Color", group="Colors")
+redColor     = input.color(color.red,  title="Red Bar Color",   group="Colors")
+scaleHeadroomPts = input.float(0.0, title="Scale Headroom (points added above tallest bar, 0=off)", minval=0.0, step=0.1, group="Colors")
+
+dojiBodyPct = input.float(5.0, title="Doji Threshold (% of bar's High-Low range)", minval=0.0, step=0.5, group="Doji Marker")
+
+// ─── Bar Classification ─────────────────────────
+isGreen = close > open
+isRed   = close < open
+
+// ─── Wick Values (0 on non-matching bars) ────────
+grnUpperWick = isGreen ? (high - close) : 0.0
+grnLowerWick = isGreen ? (open - low)   : 0.0
+redUpperWick = isRed   ? (high - open)  : 0.0
+redLowerWick = isRed   ? (close - low)  : 0.0
+
+// ─── Rolling Averages ─────────────────────────────
+avgGrnUpper = ta.sma(grnUpperWick, x)
+avgGrnLower = ta.sma(grnLowerWick, x)
+avgRedUpper = ta.sma(redUpperWick, x)
+avgRedLower = ta.sma(redLowerWick, x)
+
+// ─── Doji Detection ───────────────────────────────
+bodySize  = math.abs(close - open)
+rangeSize = high - low
+isDoji    = rangeSize != 0 and (bodySize / rangeSize * 100.0 <= dojiBodyPct)
+
+// ─── Box (drawn via plotcandle — see User Guide above) ───────────
+showThisBar = (isGreen and showGreenBox) or (isRed and showRedBox)
+topVal   = isGreen ? avgGrnUpper : isRed ? avgRedUpper : na
+botVal   = isGreen ? avgGrnLower : isRed ? avgRedLower : na
+boxColor = isGreen ? greenColor : redColor
+
+plotcandle(
+     showThisBar ? topVal : na,
+     showThisBar ? topVal : na,
+     showThisBar ? -botVal : na,
+     showThisBar ? -botVal : na,
+     title="Wick Box", color=boxColor, wickcolor=boxColor, bordercolor=boxColor)
+
+// ─── Zero Baseline ─────────────────────────────────
+hline(0, "Zero", linewidth=2)
+
+// ─── Doji Marker ───────────────────────────────────
+dojiVal = isDoji ? 0.0 : na
+plotshape(dojiVal, title="Doji Marker", style=shape.diamond, location=location.absolute,
+     color=color.yellow, size=size.normal)
+
+// ─── Scale Headroom (invisible, additive) ─────────
+tallestRecent = ta.highest(math.max(math.max(avgGrnUpper, avgGrnLower), math.max(avgRedUpper, avgRedLower)), 50)
+headroomValue = tallestRecent + scaleHeadroomPts
+plot(scaleHeadroomPts > 0 ? headroomValue : na, title="Scale Headroom (invisible)", color=color.new(color.white, 100))

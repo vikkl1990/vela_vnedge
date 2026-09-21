@@ -1,0 +1,212 @@
+//@version=6
+indicator('BTC Liquidity Wave', 'Liquidity Wave', overlay = true, max_lines_count = 50, max_labels_count = 20, max_polylines_count = 20, max_bars_back = 5000)
+
+gLiq = 'Liquidity index'
+srcFed = input.symbol('FRED:WALCL',       'Fed total assets',      group = gLiq)
+srcTga = input.symbol('FRED:WTREGEN',     'Treasury account',      group = gLiq)
+srcRrp = input.symbol('FRED:RRPONTSYD',   'Reverse repo',          group = gLiq)
+srcEcb = input.symbol('FRED:ECBASSETSW',  'ECB (EUR)',             group = gLiq)
+srcBoj = input.symbol('FRED:JPNASSETS',   'BoJ (JPY)',             group = gLiq)
+srcPbc = input.symbol('ECONOMICS:CNCBBS', 'PBoC (CNY)',            group = gLiq)
+srcBoe = input.symbol('ECONOMICS:GBCBBS', 'BoE (GBP)',             group = gLiq)
+srcEur = input.symbol('FX_IDC:EURUSD',    'EUR/USD',               group = gLiq)
+srcJpy = input.symbol('FX_IDC:USDJPY',    'USD/JPY',               group = gLiq)
+srcCny = input.symbol('FX_IDC:USDCNY',    'USD/CNY',               group = gLiq)
+srcGbp = input.symbol('FX_IDC:GBPUSD',    'GBP/USD',               group = gLiq)
+incEcb = input.bool(true, 'ECB',  inline = 'cb', group = gLiq)
+incBoj = input.bool(true, 'BoJ',  inline = 'cb', group = gLiq)
+incPbc = input.bool(true, 'PBoC', inline = 'cb', group = gLiq)
+incBoe = input.bool(true, 'BoE',  inline = 'cb', group = gLiq)
+
+gFit = 'Fit'
+cA = input.float(-19.0242, 'A',  inline = 'p1', group = gFit, step = 0.01)
+cB = input.float(  1.4741, 'B',  inline = 'p1', group = gFit, step = 0.01)
+cC = input.float(  6.9375, 'C',  inline = 'p2', group = gFit, step = 0.01)
+cD = input.float( -0.3087, 'D',  inline = 'p2', group = gFit, step = 0.01)
+cK = input.float(  2.6863, 'Impulse gain', group = gFit, step = 0.01)
+dLeadBase = input.int(60,  'Liquidity lead → baseline (days)', group = gFit, minval = 0)
+dLeadWave = input.int(90,  'Liquidity lead → wave (days)',     group = gFit, minval = 0)
+dImpulse  = input.int(270, 'Impulse window (days)',            group = gFit, minval = 30)
+dSmooth   = input.int(60,  'Impulse smoothing (days)',         group = gFit, minval = 1)
+upA = input.float(5.6275, 'Upper envelope', inline = 'up', group = gFit, step = 0.01)
+upX = input.float(-1.2271,'exponent',       inline = 'up', group = gFit, step = 0.01)
+dnA = input.float(0.3074, 'Lower envelope', inline = 'dn', group = gFit, step = 0.01)
+dnX = input.float(-0.1482,'exponent',       inline = 'dn', group = gFit, step = 0.01)
+
+gView = 'View'
+showBase   = input.bool(true,  'Baseline',            group = gView)
+showSteps  = input.bool(false, 'Baseline channel',    group = gView)
+showLadder = input.bool(false, 'Baseline sub-levels', group = gView)
+showShade  = input.bool(false, 'Baseline shading',    group = gView)
+showWave   = input.bool(true,  'Wave',                group = gView)
+showOuter  = input.bool(true,  'Wave outer levels',   group = gView)
+showInner  = input.bool(true,  'Wave inner levels',   group = gView)
+showWfill  = input.bool(true,  'Wave shading',        group = gView)
+showTouch  = input.bool(true,  'Highlight touches of the outer levels', group = gView)
+showTurns  = input.bool(false, 'Impulse reversal marks', group = gView)
+paintClose = input.bool(false, 'Paint close by channel position', group = gView)
+paintWidth = input.int(4, 'Paint width', group = gView, minval = 1, maxval = 10)
+
+gProj = 'Projection'
+projBars = input.int(365, 'Bars ahead', group = gProj, minval = 0, maxval = 3000)
+projMode = input.string('Trailing 3y growth', 'Index growth after the lead', options = ['Trailing 3y growth', 'Fixed rate'], group = gProj)
+projRate = input.float(5.0, 'Fixed rate (%/yr)', group = gProj, step = 0.5)
+
+pull(simple string s) =>
+    fixnan(request.security(s, timeframe.period, close, gaps = barmerge.gaps_off, ignore_invalid_symbol = true))
+
+vFed = pull(srcFed)
+vTga = pull(srcTga)
+vRrp = pull(srcRrp)
+vEcb = pull(srcEcb)
+vBoj = pull(srcBoj)
+vPbc = pull(srcPbc)
+vBoe = pull(srcBoe)
+vEur = pull(srcEur)
+vJpy = pull(srcJpy)
+vCny = pull(srcCny)
+vGbp = pull(srcGbp)
+usdFed = vFed - nz(vTga) - nz(vRrp)
+usdEcb = incEcb ? vEcb * vEur : 0.0
+usdBoj = incBoj ? vBoj / vJpy : 0.0
+usdPbc = incPbc ? vPbc / vCny : 0.0
+usdBoe = incBoe ? vBoe * vGbp : 0.0
+liqT   = (usdFed + usdEcb + usdBoj + usdPbc + usdBoe) / 1e12
+liqLog = math.log10(liqT)
+
+
+dayPerBar = timeframe.in_seconds() / 86400.0
+msPerBar  = timeframe.in_seconds() * 1000
+toBars(float days) => math.max(0, math.round(days / dayPerBar))
+originMs  = timestamp(2009, 1, 3, 18, 15, 5)
+ageDays   = (time - originMs) / 86400000.0
+ageYears  = ageDays / 365.25
+
+nBase  = toBars(dLeadBase)
+nWave  = toBars(dLeadWave)
+nImp   = math.max(1, toBars(dImpulse))
+nSm    = math.max(1, toBars(dSmooth))
+
+impulseRaw = liqLog - liqLog[nImp]
+impulseAvg = ta.sma(impulseRaw, nSm)
+liqForBase = liqLog[nBase]
+impForWave = impulseAvg[nWave]
+
+baseline(float lq, float age) =>
+    la = math.log10(age)
+    cA + cB * lq + cC * la + cD * la * la
+envUp(float years) => upA * math.pow(years, upX)
+envDn(float years) => dnA * math.pow(years, dnX)
+
+lgBase = baseline(liqForBase, ageDays)
+lgWave = lgBase + cK * impForWave
+eU = envUp(ageYears)
+eD = envDn(ageYears)
+
+lvl(float lg, float off) => math.pow(10, lg + off)
+base = lvl(lgBase, 0)
+bM3  = lvl(lgBase, -eD)
+bM2  = lvl(lgBase, -eD * 2 / 3)
+bM1  = lvl(lgBase, -eD / 3)
+bP1  = lvl(lgBase,  eU / 3)
+bP2  = lvl(lgBase,  eU * 2 / 3)
+bP3  = lvl(lgBase,  eU)
+wave = lvl(lgWave, 0)
+wLo2 = lvl(lgWave, -eD)
+wLo1 = lvl(lgWave, -eD / 2)
+wHi1 = lvl(lgWave,  eU / 2)
+wHi2 = lvl(lgWave,  eU)
+
+ladder = showLadder or showShade
+qM3 = plot(showSteps or ladder ? bM3 : na, 'Channel low',     color.rgb(100, 0, 251), 2)
+qM2 = plot(ladder ? bM2 : na,              'Channel −2',      color.blue,   1)
+qM1 = plot(ladder ? bM1 : na,              'Channel −1',      color.aqua,   1)
+q0  = plot(showBase ? base : na,           'Baseline',        color.lime,   3)
+qP1 = plot(ladder ? bP1 : na,              'Channel +1',      color.yellow, 1)
+qP2 = plot(ladder ? bP2 : na,              'Channel +2',      color.orange, 1)
+qP3 = plot(showSteps or ladder ? bP3 : na, 'Channel high',    color.red,    2)
+fill(qM3, qM2, showShade ? color.new(color.rgb(80, 0, 200), 78) : na)
+fill(qM2, qM1, showShade ? color.new(color.blue, 78) : na)
+fill(qM1, q0,  showShade ? color.new(color.aqua, 80) : na)
+fill(q0,  qP1, showShade ? color.new(color.lime, 82) : na)
+fill(qP1, qP2, showShade ? color.new(color.orange, 78) : na)
+fill(qP2, qP3, showShade ? color.new(color.red, 78) : na)
+
+rLo2 = plot(showOuter or showWfill ? wLo2 : na, 'Wave low',   color.aqua,    2)
+rLo1 = plot(showInner or showWfill ? wLo1 : na, 'Wave −1',    color.blue,    1)
+r0   = plot(showWave ? wave : na,               'Wave',       color.fuchsia, 3)
+rHi1 = plot(showInner or showWfill ? wHi1 : na, 'Wave +1',    color.orange,  1)
+rHi2 = plot(showOuter or showWfill ? wHi2 : na, 'Wave high',  color.red,     2)
+fill(rHi1, rHi2, showWfill ? color.new(color.red, 85) : na)
+fill(r0,   rHi1, showInner ? color.new(color.orange, 85) : na)
+fill(rLo1, r0,   showInner ? color.new(color.green, 85) : na)
+fill(rLo2, rLo1, showWfill ? color.new(color.blue, 85) : na)
+
+touchLo = showTouch and low  <= wLo2 * 1.03
+touchHi = showTouch and high >= wHi2 * 0.97
+bgcolor(touchLo ? color.new(color.green, 72) : touchHi ? color.new(color.red, 72) : na)
+
+plotshape(showTurns and ta.crossover(impForWave, 0)  ? wLo2 * 0.9 : na, 'Impulse up',   shape.triangleup,   location.absolute, color.new(color.aqua, 0),    size = size.small)
+plotshape(showTurns and ta.crossunder(impForWave, 0) ? wHi2 * 1.1 : na, 'Impulse down', shape.triangledown, location.absolute, color.new(color.fuchsia, 0), size = size.small)
+
+color paint = na
+if paintClose and not na(base)
+    paint := close < bM3 ? color.rgb(100, 0, 251) : close < bM2 ? color.blue : close < bM1 ? color.aqua : close < base ? color.lime : close < bP1 ? color.yellow : close < bP2 ? color.orange : close < bP3 ? color.red : color.rgb(200, 0, 80)
+plot(paintClose ? close : na, 'Painted close', paint, paintWidth)
+
+n3y      = math.min(toBars(3 * 365.25), 4800)
+growth3y = (math.pow(liqT / liqT[n3y], 365.25 / (n3y * dayPerBar)) - 1) * 100
+rateUsed = projMode == 'Fixed rate' ? projRate : nz(growth3y, projRate)
+
+var polyline[] strokes = array.new<polyline>()
+var line  edge = na
+var label tag  = na
+if barstate.islast and projBars > 0
+    for s in strokes
+        polyline.delete(s)
+    array.clear(strokes)
+    line.delete(edge)
+    label.delete(tag)
+    pBase = array.new<chart.point>()
+    pWave = array.new<chart.point>()
+    pHi2  = array.new<chart.point>()
+    pLo2  = array.new<chart.point>()
+    pHi1  = array.new<chart.point>()
+    pLo1  = array.new<chart.point>()
+    pBP3  = array.new<chart.point>()
+    pBM3  = array.new<chart.point>()
+    perDay = math.log10(1 + rateUsed / 100) / 365.25
+    for i = 0 to projBars
+        ahead = i * dayPerBar
+        tAt   = time + i * msPerBar
+        ageAt = ageDays + ahead
+        lqAt  = ahead <= dLeadBase ? liqLog[math.max(0, nBase - i)] : liqLog + (ahead - dLeadBase) * perDay
+        imAt  = ahead <= dLeadWave ? impulseAvg[math.max(0, nWave - i)] : impulseAvg
+        bAt   = baseline(lqAt, ageAt)
+        wAt   = bAt + cK * imAt
+        uAt   = envUp(ageAt / 365.25)
+        dAt   = envDn(ageAt / 365.25)
+        array.push(pBase, chart.point.from_time(tAt, math.pow(10, bAt)))
+        array.push(pWave, chart.point.from_time(tAt, math.pow(10, wAt)))
+        array.push(pHi2,  chart.point.from_time(tAt, math.pow(10, wAt + uAt)))
+        array.push(pLo2,  chart.point.from_time(tAt, math.pow(10, wAt - dAt)))
+        array.push(pHi1,  chart.point.from_time(tAt, math.pow(10, wAt + uAt / 2)))
+        array.push(pLo1,  chart.point.from_time(tAt, math.pow(10, wAt - dAt / 2)))
+        array.push(pBP3,  chart.point.from_time(tAt, math.pow(10, bAt + uAt)))
+        array.push(pBM3,  chart.point.from_time(tAt, math.pow(10, bAt - dAt)))
+    if showBase
+        array.push(strokes, polyline.new(pBase, xloc = xloc.bar_time, line_color = color.new(color.lime, 30), line_width = 2))
+    if showSteps
+        array.push(strokes, polyline.new(pBP3, xloc = xloc.bar_time, line_color = color.new(color.red, 40), line_width = 1, line_style = line.style_dotted))
+        array.push(strokes, polyline.new(pBM3, xloc = xloc.bar_time, line_color = color.new(color.rgb(100, 0, 251), 40), line_width = 1, line_style = line.style_dotted))
+    if showWave
+        array.push(strokes, polyline.new(pWave, xloc = xloc.bar_time, line_color = color.new(color.fuchsia, 20), line_width = 3))
+    if showOuter
+        array.push(strokes, polyline.new(pHi2, xloc = xloc.bar_time, line_color = color.new(color.red, 30), line_width = 2))
+        array.push(strokes, polyline.new(pLo2, xloc = xloc.bar_time, line_color = color.new(color.aqua, 30), line_width = 2))
+    if showInner
+        array.push(strokes, polyline.new(pHi1, xloc = xloc.bar_time, line_color = color.new(color.orange, 40), line_width = 1))
+        array.push(strokes, polyline.new(pLo1, xloc = xloc.bar_time, line_color = color.new(color.blue, 40), line_width = 1))
+    tEdge = time + toBars(dLeadWave) * msPerBar
+    edge := line.new(tEdge, wLo2 * 0.5, tEdge, wHi2 * 2, xloc = xloc.bar_time, extend = extend.both, color = color.new(color.gray, 40), style = line.style_dashed)
+    tag  := label.new(tEdge, wHi2 * 1.6, 'published liquidity ends | index extended at ' + str.tostring(rateUsed, '#.#') + '%/yr', xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.gray, 20), textcolor = color.white, size = size.small)

@@ -1,0 +1,2204 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © mbedaiwi2
+
+// This work is licensed under a Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+// International (CC BY-NC-SA 4.0) license: https://creativecommons.org/licenses/by-nc-sa/4.0/
+//
+
+// v5: independent liquidity grabs, range bands, imbalance selector and pattern drawings.
+//@version=6
+indicator("mbedaiwi — Market Structure & Price Action [v5.4]", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 5000)
+
+const string G_GEN  = "General"
+const string G_MS   = "Market Structure"
+const string G_OB   = "Order Blocks"
+const string G_LIQ  = "Liquidity Concepts"
+const string G_IMB  = "Imbalance Concepts"
+const string G_FIB  = "Fibonacci Retracements"
+const string G_PD   = "Premium & Discount Zones"
+const string G_MTF  = "Highs & Lows MTF"
+const string G_FLT  = "Entry Filters"
+const string G_RISK = "Risk Management"
+const string G_VIS  = "Visuals"
+const string G_APP  = "Appearance"
+
+const int DIR_LONG  = 1
+const int DIR_SHORT = -1
+
+const int ST_NONE   = 0
+const int ST_ACTIVE = 1
+const int ST_TP1    = 2
+const int ST_TP2    = 3
+const int ST_TP3    = 4
+const int ST_STOP   = 5
+
+const string DISP_HISTORICAL = "Historical"
+const string DISP_PRESENT    = "Present"
+
+const color MONO_BULLISH   = #b2b5be
+const color MONO_BEARISH   = #5d606b
+const color MONO_NEUTRAL   = #878b94
+
+profile      = input.string("mbedaiwi", "Analysis profile", options = ["mbedaiwi", "Scalping", "Intraday", "Swing", "Custom"], group = G_GEN, tooltip = "Uses internal structure length 5 and swing structure length 50. Enable Override profile lengths to use your own lengths.")
+useInputs    = input.bool(false, "Override profile lengths (use my inputs)", group = G_GEN)
+structOnly   = input.bool(false, "Structure only (hide Fib / trade / MTF)", group = G_GEN)
+signalMode   = input.string("Score", "Signal mode", options = ["Strict", "Score"], group = G_GEN)
+confirmClose = input.bool(true, "Confirm signals on bar close", group = G_GEN, display = display.none)
+maxSignals   = input.int(20, "Max historical signals kept", minval = 1, maxval = 100, group = G_GEN, display = display.none)
+
+msPivotEngine = input.string("SMC leg transitions", "Structure pivot algorithm", options = ["Symmetric pivots", "SMC leg transitions"], group = G_MS, tooltip = "SMC leg transitions follows the supplied open mbedaiwi SMC leg rule; not evidence of PAC's private implementation. Controls structure, not the independent OB engine.")
+iLenIn       = input.int(5,  "Internal pivot length", minval = 2, group = G_MS)
+eLenIn       = input.int(15, "External pivot length", minval = 3, group = G_MS)
+breakMode    = input.string("Close", "Break confirmation", options = ["Close", "Wick"], group = G_MS, display = display.none)
+showInternal = input.bool(true,  "Show internal swings (HH/HL/LH/LL)", group = G_MS, display = display.none)
+showExternal = input.bool(false,  "Show external swings (HH/HL/LH/LL)", group = G_MS, display = display.none)
+showBos      = input.bool(true,  "Show BOS", group = G_MS, display = display.none)
+showChoch    = input.bool(true,  "Show CHoCH", group = G_MS, display = display.none)
+msInternal   = input.string("All", "Internal structure", options = ["All", "BOS", "CHoCH (All)", "CHoCH", "CHoCH+", "None"], group = G_MS, display = display.none)
+msSwing      = input.string("None", "Swing structure",    options = ["All", "BOS", "CHoCH (All)", "CHoCH", "CHoCH+", "None"], group = G_MS, display = display.none)
+showSwingHL  = input.bool(true,  "Show Swing High / Low levels", group = G_MS, display = display.none)
+showStrongWk = input.bool(true,  "Show Strong / Weak High-Low", group = G_MS, display = display.none)
+colorCandles = input.bool(false, "Color candles by structure", group = G_MS, display = display.none)
+structTheme  = input.string("Colored", "Structures theme", options = ["Colored", "Monochrome"], group = G_MS, display = display.none)
+dispMode     = input.string(DISP_HISTORICAL, "Structure display mode", options = [DISP_HISTORICAL, DISP_PRESENT], group = G_MS, tooltip = "Historical keeps every past BOS/CHoCH and EQH/EQL marking on the chart (default). Present keeps only the most recent one of each, redrawing it in place — mbedaiwi's 'Present' mode.")
+
+showOB       = input.bool(true, "Swing Order Blocks", group = G_OB, display = display.none)
+obShowLast   = input.int(5, "Swing OB - show last", minval = 1, maxval = 30, group = G_OB, display = display.none)
+showInternalOB     = input.bool(true, "Internal Order Blocks", group = G_OB, inline = "iiob", tooltip = "Order blocks built from internal-structure breaks, shown separately from Swing Order Blocks (mbedaiwi 'Internal Order Blocks').")
+internalObShowLast = input.int(5, "", minval = 1, maxval = 30, group = G_OB, inline = "iiob")
+obMode       = input.string("Refined", "Order Block zone", options = ["Full", "Body", "Refined"], group = G_OB, display = display.none)
+obInvalid    = input.string("Close", "OB invalidation", options = ["Close", "Wick", "Average"], group = G_OB, display = display.none)
+obMetrics    = input.bool(true,  "Show Metrics (OB volume)", group = G_OB, display = display.none)
+obMidline    = input.bool(true,  "Show Mid-Line", group = G_OB, display = display.none)
+obHideOverlap= input.bool(true,  "Hide Overlap", group = G_OB, display = display.none)
+showBreakers = input.bool(false, "Show Breakers", group = G_OB, display = display.none, tooltip = "When an Order Block is invalidated, keep it on the chart re-tinted in the opposite direction as a Breaker Block instead of deleting it.")
+bodyMult     = input.float(1.5, "Displacement body multiplier", minval = 0.1, step = 0.1, group = G_OB, display = display.none)
+atrMultDisp  = input.float(0.8, "Displacement ATR multiplier", minval = 0.1, step = 0.1, group = G_OB, display = display.none)
+obDetectMethod = input.string("Extreme In Leg (mbedaiwi)", "Order block detection method", options = ["Last Opposite Candle", "Extreme In Leg (mbedaiwi)"], group = G_OB, tooltip = "Last Opposite Candle scans back for the most recent opposite-colored candle (default). Extreme In Leg reproduces mbedaiwi's method: within the leg since the broken pivot, it picks the candle with the most extreme parsed high/low.")
+obVolFilter    = input.string("ATR", "Extreme-in-leg volatility filter", options = ["ATR", "Cumulative Mean Range"], group = G_OB, tooltip = "Only used by the Extreme In Leg detection method, to decide which bars are 'high volatility' and have their high/low swapped before searching for the order block candle (mbedaiwi behavior).")
+internalBullObColor = input.color(#3179f5, "Internal Bullish OB", group = G_OB)
+internalBearObColor = input.color(#f77c80, "Internal Bearish OB", group = G_OB)
+
+const string G_VOB = "Volumetric OB / Supply & Demand"
+vobEngine = input.string("Independent swing breaks", "OB detection engine", options = ["Independent swing breaks", "Volume pivots (open mbedaiwi)", "Legacy structure breaks"], group = G_VOB, tooltip = "Independent swing breaks uses its own OB length. Volume pivots adapts the supplied public Order Block Detector; it is NOT PAC's private engine. Legacy reproduces v1's structural coupling.")
+vobLength = input.int(5, "Independent OB length", minval = 1, maxval = 100, group = G_VOB)
+vobBounds = input.string("ATR-capped candle", "Independent swing OB boundaries", options = ["ATR-capped candle", "Full candle", "Half candle", "Body", "Refined"], group = G_VOB, tooltip = "Volume-pivot mode always uses the published half-candle boundaries. Legacy mode keeps the original boundary selection.")
+vobAtrLength = input.int(14, "OB boundary ATR length", minval = 1, maxval = 200, group = G_VOB, tooltip = "ATR cap is inferred from screenshot geometry; unlike total volumes it is not verified against exported numeric boundaries.")
+vobAtrMultiple = input.float(1.0, "OB boundary ATR multiplier", minval = 0.1, maxval = 5, step = 0.1, group = G_VOB)
+vobOriginRule = input.string("Raw extreme", "Independent swing origin selection", options = ["Raw extreme", "Volatility-filtered extreme"], group = G_VOB)
+vobWindow = input.int(3, "Origin volume window (N candles)", minval = 1, maxval = 100, group = G_VOB, tooltip = "Window ends at the origin candle. Three candles is a hypothesis for testing, not an identified PAC formula.")
+vobLayout = input.string("Reference overlay", "Layout", options = ["Reference overlay", "Side chart", "Both"], group = G_VOB)
+vobLast = input.int(5, "Total visible blocks (both structures)", minval = 1, maxval = 20, group = G_VOB)
+vobRight = input.int(80, "Right extension (bars)", minval = 10, maxval = 200, group = G_VOB)
+vobGap = input.int(8, "Side chart gap (bars)", minval = 2, maxval = 40, group = G_VOB)
+vobWidth = input.int(55, "Side chart width (bars)", minval = 10, maxval = 150, group = G_VOB)
+vobActivity = input.bool(true, "Internal buy/sell activity (estimated)", group = G_VOB)
+vobVolumeMode = input.string("Between broken pivot and break", "Volume interval", options = ["Between broken pivot and break", "Origin window (N)", "Origin to break", "Origin candle", "Three candles ending at origin"], group = G_VOB, tooltip = "Default sums candles strictly after the broken pivot and strictly before the break. Exactly matched four supplied PAC block totals. This sample result does not prove universal parity. Requires a structure-break engine; volume-pivot mode needs an origin-volume option.")
+vobSplit = input.string("Close location", "Estimated buy/sell split", options = ["Close location", "Candle direction"], group = G_VOB, tooltip = "OHLCV proxy, not measured bid/ask volume. Close location uses (close-low)/(high-low). Candle direction allocates volume by candle direction, with doji split 50/50.")
+vobRequireDisp = input.bool(false, "Require displacement for OB creation", group = G_VOB)
+vobStats = input.bool(false, "Filter display by origin volume Z-score", group = G_VOB)
+vobStatLen = input.int(100, "Log-volume statistics window", minval = 20, maxval = 500, group = G_VOB)
+vobMinZ = input.float(0.0, "Minimum origin log-volume Z-score", minval = -3, maxval = 5, step = 0.25, group = G_VOB)
+vobStatsText = input.bool(false, "Append Z-score to metrics", group = G_VOB)
+vobAge = input.int(2000, "Maximum OB age (bars)", minval = 50, maxval = 4900, group = G_VOB)
+vobBull = input.color(#00a995, "Demand / bullish", group = G_VOB)
+vobBear = input.color(#ff334b, "Supply / bearish", group = G_VOB)
+vobFill = input.int(91, "Zone transparency", minval = 50, maxval = 98, group = G_VOB)
+vobBarFill = input.int(48, "Activity transparency", minval = 0, maxval = 90, group = G_VOB)
+vobTextSize = input.string("Small", "Metrics size", options = ["Tiny", "Small", "Normal", "Large"], group = G_VOB)
+
+showLiq      = input.bool(false, "Equal Highs / Lows", group = G_LIQ)
+eqTol        = input.float(0.10, "Equal high/low tolerance (ATR x)", minval = 0.01, step = 0.01, group = G_LIQ)
+eqhlMode     = input.string("Long-Term", "Equal H&L range", options = ["Short-Term", "Intermediate", "Long-Term"], group = G_LIQ)
+showGrabs    = input.bool(false, "Liquidity Grabs", group = G_LIQ)
+grabLive = input.bool(true, "Preview Grabs on Live Candle", group = G_LIQ, tooltip = "Shows provisional wick grabs before candle close. A preview can disappear as price changes; alerts wait for candle close.")
+grabLabelsOn = input.bool(false, "Show L. Grab Labels", group = G_LIQ)
+grabHistory = input.int(2000, "Grab display history (bars)", minval = 1, maxval = 20000, group = G_LIQ)
+grabTerm = input.string("Short Term", "Grab Detection", options = ["Short Term", "Intermediate Term", "Long Term"], group = G_LIQ)
+grabBullCol = input.color(#0000ff, "Bullish Grab", group = G_LIQ)
+grabBearCol = input.color(#ff0000, "Bearish Grab", group = G_LIQ)
+grabLevels = input.bool(false, "Show Swept Levels", group = G_LIQ)
+grabKeep = input.int(60, "Grab labels / swept levels to keep", minval = 1, maxval = 100, group = G_LIQ)
+showTrendLines   = input.bool(false, "Trend Lines", inline = "tl", group = G_LIQ)
+trendLen         = input.int(5, "", inline = "tl", minval = 2, maxval = 80, group = G_LIQ)
+trendUpCol       = input.color(color.new(#2962ff, 0), "", inline = "tl", group = G_LIQ)
+trendDnCol       = input.color(color.new(#ef5350, 0), "", inline = "tl", group = G_LIQ)
+showPatterns     = input.bool(false, "Patterns", inline = "pt", group = G_LIQ)
+patternLen       = input.int(5, "", inline = "pt", minval = 3, maxval = 80, group = G_LIQ)
+patternBullCol   = input.color(color.new(#4caf50, 0), "", inline = "pt", group = G_LIQ)
+patternBearCol   = input.color(color.new(#e91e63, 0), "", inline = "pt", group = G_LIQ)
+showPatternZones = input.bool(true, "Show Pattern Zones", group = G_LIQ)
+
+patternDash = input.bool(true, "Pattern Dashboard", group = G_LIQ)
+patternTol = input.float(0.25, "Pattern tolerance (ATR)", minval = 0.01, step = 0.05, group = G_LIQ)
+showFvg      = input.bool(false, "Show Imbalances", group = G_IMB)
+imbLabelsOn = input.bool(false, "Show Imbalance Type on Zones", group = G_IMB)
+imbKind = input.string("FVG", "Imbalance Type", options = ["FVG", "Inverse FVG", "Double FVG", "Volume Imbalance", "Opening Gap"], group = G_IMB)
+imbBullCol = input.color(color.new(#089981, 80), "Bullish Imbalance", group = G_IMB)
+imbBearCol = input.color(color.new(#f23645, 80), "Bearish Imbalance", group = G_IMB)
+fvgRequireDisp = input.bool(false, "Require displacement for FVG", group = G_IMB)
+fvgTimeframeIn = input.timeframe("", "Imbalance Timeframe (blank = chart)", group = G_IMB, tooltip = "Chart or higher timeframe. Higher-timeframe signals use completed candles.")
+fvgMinIn     = input.float(0.15, "Minimum FVG size (ATR x)", minval = 0.0, step = 0.01, group = G_IMB, tooltip = "ATR size floor when custom profile lengths are enabled. The volatility threshold always applies.")
+fvgExtend    = input.int(10, "Extend imbalance (bars)", minval = 0, maxval = 200, group = G_IMB)
+fvgVolThr    = input.float(0.0, "Imbalance volatility threshold", minval = 0.0, step = 0.05, group = G_IMB)
+fvgMitig     = input.string("Close", "Imbalance mitigation", options = ["Close", "Wick", "Average", "None"], group = G_IMB)
+maxZoneAge   = input.int(300, "Maximum zone age (bars)", minval = 20, group = G_IMB)
+maxZones     = input.int(8, "Max active zones per type", minval = 1, maxval = 30, group = G_IMB)
+
+showFib      = input.bool(false, "Show Fibonacci levels", group = G_FIB, display = display.none)
+showPD       = input.bool(false, "Premium / Discount Zones", group = G_PD)
+pdRange = input.string("Swing", "Premium / Discount Range", options = ["Swing", "Internal", "Impulse"], group = G_PD)
+pdWidth = input.float(5.0, "Premium / Discount band (%)", minval = 1, maxval = 25, group = G_PD)
+showOTE      = input.bool(true, "Show OTE zone (0.618 - 0.786)", group = G_FIB, display = display.none)
+showExt      = input.bool(true, "Show extensions (1.272 / 1.618)", group = G_FIB, display = display.none)
+fibEntryLvl  = input.float(0.705, "Fibonacci limit-entry level", options = [0.5, 0.618, 0.705, 0.786], group = G_FIB, display = display.none)
+fibLblMode   = input.string("Ratio + Price", "Fibonacci label content", options = ["Ratio only", "Price only", "Ratio + Price"], group = G_FIB, display = display.none)
+fibLblSide   = input.string("Right", "Fibonacci label side", options = ["Right", "Left"], group = G_FIB, display = display.none)
+fibAnchor    = input.bool(true, "Anchor Fibonacci to impulse origin", group = G_FIB, display = display.none)
+fibTopBot    = input.bool(true, "Show top / bottom levels (0 & 1)", group = G_FIB, display = display.none)
+fib236On     = input.bool(true,  "0.236", inline = "f236", group = G_FIB, display = display.none)
+c236         = input.color(color.new(#ef5350, 0), "", inline = "f236", group = G_FIB, display = display.none)
+fib382On     = input.bool(true,  "0.382", inline = "f382", group = G_FIB, display = display.none)
+c382         = input.color(color.new(#ffeb3b, 0), "", inline = "f382", group = G_FIB, display = display.none)
+fib500On     = input.bool(true,  "0.5",   inline = "f500", group = G_FIB, display = display.none)
+c500         = input.color(color.new(#ff9800, 0), "", inline = "f500", group = G_FIB, display = display.none)
+fib618On     = input.bool(true,  "0.618", inline = "f618", group = G_FIB, display = display.none)
+c618         = input.color(color.new(#e91e63, 0), "", inline = "f618", group = G_FIB, display = display.none)
+fib705On     = input.bool(true,  "0.705 (OTE)", inline = "f705", group = G_FIB, display = display.none)
+c705         = input.color(color.new(#ff9800, 0), "", inline = "f705", group = G_FIB, display = display.none)
+fib786On     = input.bool(true,  "0.786", inline = "f786", group = G_FIB, display = display.none)
+c786         = input.color(color.new(#2962ff, 0), "", inline = "f786", group = G_FIB, display = display.none)
+cPrem        = input.color(color.new(#ef5350, 92), "Premium zone",     group = G_PD)
+cEqu         = input.color(color.new(#9598a1, 92), "Equilibrium zone", group = G_PD)
+cDisc        = input.color(color.new(#26a69a, 92), "Discount zone",    group = G_PD)
+
+mtfD         = input.bool(false, "Daily",     inline = "m1", group = G_MTF, display = display.none)
+mtfDStyle    = input.string("Dashed", "", options = ["Solid", "Dashed", "Dotted"], inline = "m1", group = G_MTF, display = display.none)
+mtfDCol      = input.color(color.new(#2962ff, 0), "", inline = "m1", group = G_MTF, display = display.none)
+mtfW         = input.bool(false, "Weekly",    inline = "m2", group = G_MTF, display = display.none)
+mtfWStyle    = input.string("Dashed", "", options = ["Solid", "Dashed", "Dotted"], inline = "m2", group = G_MTF, display = display.none)
+mtfWCol      = input.color(color.new(#2962ff, 0), "", inline = "m2", group = G_MTF, display = display.none)
+mtfM         = input.bool(false, "Monthly",   inline = "m3", group = G_MTF, display = display.none)
+mtfMStyle    = input.string("Dashed", "", options = ["Solid", "Dashed", "Dotted"], inline = "m3", group = G_MTF, display = display.none)
+mtfMCol      = input.color(color.new(#2962ff, 0), "", inline = "m3", group = G_MTF, display = display.none)
+mtfQ         = input.bool(false, "Quarterly", inline = "m4", group = G_MTF, display = display.none)
+mtfQStyle    = input.string("Dashed", "", options = ["Solid", "Dashed", "Dotted"], inline = "m4", group = G_MTF, display = display.none)
+mtfQCol      = input.color(color.new(#2962ff, 0), "", inline = "m4", group = G_MTF, display = display.none)
+mtfLabels    = input.bool(true, "Show MTF level labels", group = G_MTF, display = display.none)
+mtfPreciseAnchor = input.bool(true, "Precise period-high/low anchor (mbedaiwi)", group = G_MTF, tooltip = "Anchor each level line to the exact bar where that period's high/low occurred, instead of a generic lookback window. Disable on very long histories if you want to save a little memory/CPU.")
+
+minScore     = input.int(10, "Minimum confluence score", minval = 1, maxval = 16, group = G_FLT)
+reqSweep     = input.bool(false, "Require liquidity sweep", group = G_FLT, display = display.none)
+reqOB        = input.bool(false, "Require Order Block", group = G_FLT, display = display.none)
+reqFvg       = input.bool(false, "Require FVG", group = G_FLT, display = display.none)
+reqDisp      = input.bool(true,  "Require displacement", group = G_FLT, display = display.none)
+useHtf       = input.bool(true,  "Higher-timeframe filter", group = G_FLT, display = display.none)
+htfIn        = input.timeframe("60", "Higher timeframe", group = G_FLT, display = display.none)
+useEma       = input.bool(true,  "EMA filter (9/21/50)", group = G_FLT, display = display.none)
+useVol       = input.bool(true,  "Volume filter", group = G_FLT, display = display.none)
+volMult      = input.float(1.2, "Volume multiplier", minval = 0.1, step = 0.1, group = G_FLT, display = display.none)
+useRsi       = input.bool(true,  "RSI sanity filter", group = G_FLT, display = display.none)
+
+entryMethod  = input.string("Zone", "Entry method", options = ["Market", "Fibonacci", "Zone"], group = G_RISK, display = display.none)
+stopMethod   = input.string("Structure", "Stop method", options = ["Structure", "ATR", "Zone"], group = G_RISK, display = display.none)
+atrBufIn     = input.float(0.20, "ATR stop buffer", minval = 0.0, step = 0.05, group = G_RISK, display = display.none)
+targetMode   = input.string("Hybrid", "Target method", options = ["Risk multiple", "Smart money", "Hybrid"], group = G_RISK, display = display.none)
+tp1R         = input.float(1.0, "TP1 (R)", minval = 0.1, step = 0.1, group = G_RISK, display = display.none)
+tp2R         = input.float(2.0, "TP2 (R)", minval = 0.1, step = 0.1, group = G_RISK, display = display.none)
+tp3R         = input.float(3.0, "TP3 (R)", minval = 0.1, step = 0.1, group = G_RISK, display = display.none)
+minRR        = input.float(2.0, "Minimum risk / reward", minval = 0.1, step = 0.1, group = G_RISK, display = display.none)
+maxStopAtr   = input.float(4.0, "Maximum stop size (ATR x)", minval = 0.5, step = 0.5, group = G_RISK, display = display.none)
+beAfterTp1   = input.bool(true, "Move stop to breakeven after TP1", group = G_RISK, display = display.none)
+
+showTables   = input.bool(true, "Show tables", group = G_VIS, tooltip = "Master switch for every on-chart table. TradingView's Style > Tables checkbox only works while this is enabled.", display = display.none)
+showDashIn   = input.bool(false, "Show dashboard", group = G_VIS, display = display.none)
+statusLine   = input.bool(false, "Show summary on status line", group = G_VIS, tooltip = "Off: nothing is printed on the indicator status line. On: trend / setup / score summary values are shown.", display = display.none)
+showDash     = showTables and showDashIn
+showTrade    = input.bool(true, "Show trade layer (entry / SL / TP)", group = G_VIS, display = display.none)
+cBull        = input.color(color.new(#26a69a, 0), "Bullish", inline = "c1", group = G_VIS, display = display.none)
+cBear        = input.color(color.new(#ef5350, 0), "Bearish", inline = "c1", group = G_VIS, display = display.none)
+cChochUp     = input.color(color.new(#2962ff, 0), "CHoCH up", inline = "c2", group = G_VIS, display = display.none)
+cChochDn     = input.color(color.new(#ff9800, 0), "CHoCH dn", inline = "c2", group = G_VIS, display = display.none)
+cFib         = input.color(color.new(#9598a1, 0), "Fibonacci", inline = "c3", group = G_VIS, display = display.none)
+cOte         = input.color(color.new(#ffeb3b, 85), "OTE zone", inline = "c3", group = G_VIS, display = display.none)
+
+cleanChart   = input.bool(false, "Clean chart mode (auto de-clutter)", group = G_APP, display = display.none)
+fsInternal   = input.string("Tiny",  "Internal label size",           options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = G_APP, display = display.none)
+fsSwing      = input.string("Small", "Swing label size",              options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = G_APP, display = display.none)
+fsZone       = input.string("Tiny",  "Font size - zone labels",       options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = G_APP, display = display.none)
+fsObMetrics  = input.string("Small", "OB Metrics size",               options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = G_APP, display = display.none)
+fsLiq        = input.string("Tiny",  "EQHL size",                     options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = G_APP, display = display.none)
+fsFib        = input.string("Tiny",  "Font size - Fibonacci labels",  options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = G_APP, display = display.none)
+fsTrade      = input.string("Small", "Font size - trade labels",      options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = G_APP, display = display.none)
+fsDash       = input.string("Small", "Dashboard size",                options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = G_APP, display = display.none)
+dashPos      = input.string("Top right", "Dashboard position", options = ["Top left", "Top center", "Top right", "Middle left", "Middle center", "Middle right", "Bottom left", "Bottom center", "Bottom right"], group = G_APP, display = display.none)
+labelStyle   = input.string("Plain text", "Label style", options = ["Bubble", "Plain text"], group = G_APP, display = display.none)
+labelGap     = input.int(6, "Minimum bars between labels", minval = 0, maxval = 60, group = G_APP, display = display.none)
+zoneExtend   = input.int(6, "Zone extension to the right (bars)", minval = 0, maxval = 100, group = G_APP, display = display.none)
+hideDead     = input.bool(true, "Hide invalidated zones", group = G_APP, display = display.none)
+zoneOverlap  = input.float(0.60, "Merge zones overlapping more than", minval = 0.0, maxval = 1.0, step = 0.05, group = G_APP, display = display.none)
+showZoneText = input.bool(false, "Show zone labels (OB / FVG)", group = G_APP, display = display.none)
+showFibText  = input.bool(true,  "Show Fibonacci level labels", group = G_APP, display = display.none)
+obTrans      = input.int(85, "Order block transparency", minval = 50, maxval = 98, group = G_APP, display = display.none)
+fvgTrans     = input.int(90, "Fair value gap transparency", minval = 50, maxval = 98, group = G_APP, display = display.none)
+fibTrans     = input.int(95, "Premium / discount transparency", minval = 50, maxval = 98, group = G_APP, display = display.none)
+
+fsize(string s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        => size.huge
+
+dashPosition(string p) =>
+    switch p
+        "Top left"      => position.top_left
+        "Top center"    => position.top_center
+        "Top right"     => position.top_right
+        "Middle left"   => position.middle_left
+        "Middle center" => position.middle_center
+        "Middle right"  => position.middle_right
+        "Bottom left"   => position.bottom_left
+        "Bottom center" => position.bottom_center
+        => position.bottom_right
+
+lineStyleOf(string s) =>
+    switch s
+        "Solid"  => line.style_solid
+        "Dotted" => line.style_dotted
+        => line.style_dashed
+
+szInternal  = cleanChart ? size.tiny : fsize(fsInternal)
+szSwing     = cleanChart ? size.tiny : fsize(fsSwing)
+szZone      = cleanChart ? size.tiny : fsize(fsZone)
+szObMetrics = cleanChart ? size.tiny : fsize(fsObMetrics)
+szLiq       = cleanChart ? size.tiny : fsize(fsLiq)
+szFib       = cleanChart ? size.tiny : fsize(fsFib)
+szTrade     = cleanChart ? size.small : fsize(fsTrade)
+szDash      = fsize(fsDash)
+
+plainLbl   = labelStyle == "Plain text"
+showIntEff = showInternal and msInternal != "None" and not cleanChart
+showExtEff = showExternal and msSwing != "None"
+zoneTextOn = showZoneText and not cleanChart
+fibTextOn  = showFibText and not cleanChart
+zoneRight  = cleanChart ? math.min(zoneExtend, 3) : zoneExtend
+zoneKeep   = cleanChart ? math.min(maxZones, 4) : maxZones
+gapBars    = cleanChart ? math.max(labelGap, 10) : labelGap
+
+mono       = structTheme == "Monochrome"
+presentMode = dispMode == DISP_PRESENT
+extBosOn   = showBos   and (msSwing == "All" or msSwing == "BOS")
+extChochOn = showChoch and (msSwing == "All" or msSwing == "CHoCH (All)" or msSwing == "CHoCH" or msSwing == "CHoCH+")
+intBosOn   = showBos   and (msInternal == "All" or msInternal == "BOS")   and not cleanChart
+intChochOn = showChoch and (msInternal == "All" or msInternal == "CHoCH (All)" or msInternal == "CHoCH" or msInternal == "CHoCH+") and not cleanChart
+eqLen      = eqhlMode == "Short-Term" ? 1 : eqhlMode == "Intermediate" ? 2 : 3
+fvgRight   = cleanChart ? math.min(fvgExtend, 5) : fvgExtend
+obKeep     = cleanChart ? math.min(obShowLast, 3) : obShowLast
+internalObKeep = cleanChart ? math.min(internalObShowLast, 3) : internalObShowLast
+mtfOn      = not cleanChart and not structOnly
+obMetricsOn= obMetrics and not cleanChart
+fibLblRight= fibLblSide == "Right"
+trendLinesOn   = showTrendLines and not cleanChart
+patternsOn     = showPatterns
+patternZonesOn = showPatternZones
+
+lblBg(color c, int t) => plainLbl ? color.new(c, 100) : color.new(c, t)
+
+tBull = mono ? color.new(#b2b5be, 0) : cBull
+tBear = mono ? color.new(#787b86, 0) : cBear
+tChUp = mono ? color.new(#b2b5be, 0) : cChochUp
+tChDn = mono ? color.new(#787b86, 0) : cChochDn
+
+fvgBullEff = mono ? color.new(MONO_BULLISH, 70) : cBull
+fvgBearEff = mono ? color.new(MONO_BEARISH, 70) : cBear
+premEff    = mono ? MONO_BEARISH : cPrem
+equEff     = mono ? MONO_NEUTRAL : cEqu
+discEff    = mono ? MONO_BULLISH : cDisc
+
+eqTolEff = eqTol * eqLen
+
+mbedaiwiMode = profile == "mbedaiwi"
+followIn = useInputs or profile == "Custom"
+iLenP   = profile == "Scalping" ? 3 : profile == "Intraday" ? 5 : profile == "Swing" ? 7 : mbedaiwiMode ? 5 : iLenIn
+eLenP   = profile == "Scalping" ? 10 : profile == "Intraday" ? 15 : profile == "Swing" ? 20 : mbedaiwiMode ? 50 : eLenIn
+iLen    = followIn ? iLenIn : iLenP
+eLen    = followIn ? eLenIn : eLenP
+fvgMin  = followIn ? fvgMinIn : profile == "Scalping" ? 0.10 : profile == "Intraday" ? 0.15 : profile == "Swing" ? 0.20 : mbedaiwiMode ? 0.0 : fvgMinIn
+atrBuf  = followIn ? atrBufIn : profile == "Scalping" ? 0.15 : profile == "Intraday" ? 0.20 : profile == "Swing" ? 0.25 : atrBufIn
+htfTf   = profile == "Scalping" ? "15" : profile == "Intraday" ? "60" : profile == "Swing" ? "D" : mbedaiwiMode ? "D" : htfIn
+
+brkModeEff = mbedaiwiMode ? "Close" : breakMode
+
+hideExtras   = structOnly
+showFibEff   = showFib and not hideExtras
+showTradeEff = showTrade and not hideExtras and not mbedaiwiMode
+
+type SwingPoint
+    int   barIndex
+    int   timeValue
+    float price
+    bool  isHigh
+    bool  broken
+    string classification
+
+type Zone
+    int   leftBar
+    float top
+    float bottom
+    int   direction
+    string zoneType
+    bool  active
+    bool  mitigated
+    bool  isBreaker
+    box   drawing
+    label tag
+    line  midline
+    float totalVolume = na
+    float buyVolume = na
+    float sellVolume = na
+    float volumeZ = na
+    int createdBar = na
+    int originTime = na
+    float originVolume = na
+    float local3Volume = na
+    float localNVolume = na
+    float throughConfirmationVolume = na
+    float brokenIntervalVolume = na
+    int volumeStartTime = na
+    int volumeEndTime = na
+
+type TradeSetup
+    int   direction
+    int   signalBar
+    float entry
+    float stop
+    float tp1
+    float tp2
+    float tp3
+    int   score
+    int   status
+
+var array<SwingPoint> internalSwings = array.new<SwingPoint>()
+var array<SwingPoint> externalSwings = array.new<SwingPoint>()
+var array<Zone> orderBlocks         = array.new<Zone>()
+var array<Zone> internalOrderBlocks = array.new<Zone>()
+var array<Zone> fairValueGaps = array.new<Zone>()
+var array<line> structLines   = array.new<line>()
+var array<label> structLabels = array.new<label>()
+var array<line> fibLines      = array.new<line>()
+var array<box>  fibBoxes      = array.new<box>()
+var array<label> fibLabels    = array.new<label>()
+var array<line> tradeLines    = array.new<line>()
+var array<label> tradeLabels  = array.new<label>()
+
+var array<line>  intBullLines = array.new<line>()
+var array<label> intBullLbls  = array.new<label>()
+var array<line>  intBearLines = array.new<line>()
+var array<label> intBearLbls  = array.new<label>()
+var array<line>  extBullLines = array.new<line>()
+var array<label> extBullLbls  = array.new<label>()
+var array<line>  extBearLines = array.new<line>()
+var array<label> extBearLbls  = array.new<label>()
+var array<line>  eqhLines     = array.new<line>()
+var array<label> eqhLbls      = array.new<label>()
+var array<line>  eqlLines     = array.new<line>()
+var array<label> eqlLbls      = array.new<label>()
+
+var array<float> allHighsArr    = array.new<float>()
+var array<float> allLowsArr     = array.new<float>()
+var array<int>   allTimesArr    = array.new<int>()
+var array<float> parsedHighsArr = array.new<float>()
+var array<float> parsedLowsArr  = array.new<float>()
+
+var int lastHiLblBar  = -10000
+var int lastLoLblBar  = -10000
+var int lastLiqLblBar = -10000
+var int lastEvtLblBar = -10000
+
+var int internalTrend = 0
+var int externalTrend = 0
+
+var float intHighLvl = na
+var int   intHighBar = na
+var bool  intHighBroken = true
+var float intLowLvl = na
+var int   intLowBar = na
+var bool  intLowBroken = true
+var float extHighLvl = na
+var int   extHighBar = na
+var bool  extHighBroken = true
+var float extLowLvl = na
+var int   extLowBar = na
+var bool  extLowBroken = true
+
+// Supported CHoCH: latest confirmed opposite pivot failed to extend the prior trend.
+var bool intHasHL = false
+var bool intHasLH = false
+var bool extHasHL = false
+var bool extHasLH = false
+var float prevExtHigh = na
+var float prevExtLow  = na
+var float prevIntHigh = na
+var float prevIntLow  = na
+
+var float fibLow = na
+var float fibHigh = na
+var int   fibDir = 0
+var int   fibStart = na
+var string lastEvent = "None"
+var int lastEventBar = na
+
+var float eqhLevel = na
+var float eqlLevel = na
+var int   sweepBullBar = na
+var int   sweepBearBar = na
+var float sweepBullLow = na
+var float sweepBearHigh = na
+
+var TradeSetup trade = TradeSetup.new(0, na, na, na, na, na, na, 0, ST_NONE)
+var int lastScore = 0
+
+var line liqTrendHi = na
+var line liqTrendLo = na
+
+atr        = ta.atr(14)
+atrDisp    = ta.atr(14)
+obAtr200   = ta.atr(200)
+bodySize   = math.abs(close - open)
+avgBody    = ta.sma(math.abs(close - open), 20)
+ema9       = ta.ema(close, 9)
+ema21      = ta.ema(close, 21)
+ema50      = ta.ema(close, 50)
+rsi14      = ta.rsi(close, 14)
+volSma     = ta.sma(volume, 20)
+lo100      = ta.lowest(low, 100)
+hi100      = ta.highest(high, 100)
+patNeckLow  = ta.lowest(low, eLen)
+patNeckHigh = ta.highest(high, eLen)
+
+fibPriceBull(float lowPrice, float highPrice, float ratio) =>
+    highPrice - (highPrice - lowPrice) * ratio
+
+fibPriceBear(float lowPrice, float highPrice, float ratio) =>
+    lowPrice + (highPrice - lowPrice) * ratio
+
+pruneLines(array<line> a, int keep) =>
+    while array.size(a) > keep
+        line.delete(array.shift(a))
+
+pruneLabels(array<label> a, int keep) =>
+    while array.size(a) > keep
+        label.delete(array.shift(a))
+
+pruneBoxes(array<box> a, int keep) =>
+    while array.size(a) > keep
+        box.delete(array.shift(a))
+
+addLine(array<line> a, line l, int keep) =>
+    array.push(a, l)
+    pruneLines(a, keep)
+
+addLabel(array<label> a, label l, int keep) =>
+    array.push(a, l)
+    pruneLabels(a, keep)
+
+fmt(float v) => str.tostring(v, format.mintick)
+
+array.push(allHighsArr, high)
+array.push(allLowsArr, low)
+array.push(allTimesArr, time)
+obVolatilityMeasure = obVolFilter == "ATR" ? obAtr200 : ta.cum(ta.tr) / math.max(bar_index + 1, 1)
+obHighVolBar = (high - low) >= (2 * obVolatilityMeasure)
+array.push(parsedHighsArr, obHighVolBar ? low : high)
+array.push(parsedLowsArr,  obHighVolBar ? high : low)
+
+smcLegPivots(int length) =>
+    var int state = 0
+    float upper = ta.highest(high, length)
+    float lower = ta.lowest(low, length)
+    int prior = state
+    if barstate.isconfirmed
+        if high[length] > upper
+            state := 0
+        else if low[length] < lower
+            state := 1
+    bool changed = state != prior
+    [changed and state == 0 ? high[length] : na, changed and state == 1 ? low[length] : na]
+
+[legHiI, legLoI] = smcLegPivots(iLen)
+[legHiE, legLoE] = smcLegPivots(eLen)
+symHiI = ta.pivothigh(high, iLen, iLen)
+symLoI = ta.pivotlow(low, iLen, iLen)
+symHiE = ta.pivothigh(high, eLen, eLen)
+symLoE = ta.pivotlow(low, eLen, eLen)
+ph_i = msPivotEngine == "SMC leg transitions" ? legHiI : symHiI
+pl_i = msPivotEngine == "SMC leg transitions" ? legLoI : symLoI
+ph_e = msPivotEngine == "SMC leg transitions" ? legHiE : symHiE
+pl_e = msPivotEngine == "SMC leg transitions" ? legLoE : symLoE
+
+bool bullTrendBreak = false
+bool bearTrendBreak = false
+bool dtDetected = false
+bool dbDetected = false
+bool eqhFormed = false
+bool eqlFormed = false
+
+classifyHigh(float cur, float prev) => na(prev) ? "H" : cur > prev ? "HH" : "LH"
+classifyLow (float cur, float prev) => na(prev) ? "L" : cur > prev ? "HL" : "LL"
+
+if not na(ph_i)
+    cls = classifyHigh(ph_i, prevIntHigh)
+    array.push(internalSwings, SwingPoint.new(bar_index - iLen, time[iLen], ph_i, true, false, cls))
+    if array.size(internalSwings) > 60
+        array.shift(internalSwings)
+    intHasLH := not na(prevIntHigh) and ph_i < prevIntHigh
+    prevIntHigh := ph_i
+    intHighLvl  := ph_i
+    intHighBar  := bar_index - iLen
+    intHighBroken := false
+    if showIntEff and (bar_index - iLen) - lastHiLblBar >= gapBars
+        lastHiLblBar := bar_index - iLen
+        addLabel(structLabels, label.new(bar_index - iLen, ph_i, cls, style = label.style_label_down, color = lblBg(color.gray, 90), textcolor = cls == "HH" ? tBull : tBear, size = szInternal), 120)
+
+if not na(pl_i)
+    cls = classifyLow(pl_i, prevIntLow)
+    array.push(internalSwings, SwingPoint.new(bar_index - iLen, time[iLen], pl_i, false, false, cls))
+    if array.size(internalSwings) > 60
+        array.shift(internalSwings)
+    intHasHL := not na(prevIntLow) and pl_i > prevIntLow
+    prevIntLow := pl_i
+    intLowLvl  := pl_i
+    intLowBar  := bar_index - iLen
+    intLowBroken := false
+    if showIntEff and (bar_index - iLen) - lastLoLblBar >= gapBars
+        lastLoLblBar := bar_index - iLen
+        addLabel(structLabels, label.new(bar_index - iLen, pl_i, cls, style = label.style_label_up, color = lblBg(color.gray, 90), textcolor = cls == "HL" ? tBull : tBear, size = szInternal), 120)
+
+if not na(ph_e)
+    cls = classifyHigh(ph_e, prevExtHigh)
+    array.push(externalSwings, SwingPoint.new(bar_index - eLen, time[eLen], ph_e, true, false, cls))
+    if array.size(externalSwings) > 60
+        array.shift(externalSwings)
+
+    if not na(prevExtHigh) and math.abs(ph_e - prevExtHigh) <= atr * eqTolEff
+        eqhLevel := math.max(ph_e, prevExtHigh)
+        eqhFormed := true
+        if showLiq
+            addLine(eqhLines, line.new(bar_index - eLen, eqhLevel, bar_index, eqhLevel, color = tBear, style = line.style_dotted, width = 1), presentMode ? 1 : 200)
+            addLabel(eqhLbls, label.new(bar_index, eqhLevel, "EQH", style = label.style_label_left, color = lblBg(tBear, 80), textcolor = tBear, size = szLiq), presentMode ? 1 : 120)
+
+    if trendLinesOn and not na(prevExtHigh)
+        if ph_e < prevExtHigh and ((bar_index - eLen) - extHighBar) >= trendLen
+            line.delete(liqTrendHi)
+            liqTrendHi := line.new(extHighBar, prevExtHigh, bar_index - eLen, ph_e, extend = extend.right, color = trendDnCol, width = 1)
+        else
+            line.delete(liqTrendHi)
+            liqTrendHi := na
+
+    extHasLH := not na(prevExtHigh) and ph_e < prevExtHigh
+    prevExtHigh := ph_e
+    extHighLvl  := ph_e
+    extHighBar  := bar_index - eLen
+    extHighBroken := false
+    if showExtEff and (bar_index - eLen) - lastHiLblBar >= gapBars
+        lastHiLblBar := bar_index - eLen
+        addLabel(structLabels, label.new(bar_index - eLen, ph_e, cls, style = label.style_label_down, color = lblBg(tBear, 75), textcolor = plainLbl ? tBear : color.white, size = szSwing), 120)
+
+if not na(pl_e)
+    cls = classifyLow(pl_e, prevExtLow)
+    array.push(externalSwings, SwingPoint.new(bar_index - eLen, time[eLen], pl_e, false, false, cls))
+    if array.size(externalSwings) > 60
+        array.shift(externalSwings)
+    if not na(prevExtLow) and math.abs(pl_e - prevExtLow) <= atr * eqTolEff
+        eqlLevel := math.min(pl_e, prevExtLow)
+        eqlFormed := true
+        if showLiq
+            addLine(eqlLines, line.new(bar_index - eLen, eqlLevel, bar_index, eqlLevel, color = tBull, style = line.style_dotted, width = 1), presentMode ? 1 : 200)
+            addLabel(eqlLbls, label.new(bar_index, eqlLevel, "EQL", style = label.style_label_left, color = lblBg(tBull, 80), textcolor = tBull, size = szLiq), presentMode ? 1 : 120)
+
+    if trendLinesOn and not na(prevExtLow)
+        if pl_e > prevExtLow and ((bar_index - eLen) - extLowBar) >= trendLen
+            line.delete(liqTrendLo)
+            liqTrendLo := line.new(extLowBar, prevExtLow, bar_index - eLen, pl_e, extend = extend.right, color = trendUpCol, width = 1)
+        else
+            line.delete(liqTrendLo)
+            liqTrendLo := na
+
+    extHasHL := not na(prevExtLow) and pl_e > prevExtLow
+    prevExtLow := pl_e
+    extLowLvl  := pl_e
+    extLowBar  := bar_index - eLen
+    extLowBroken := false
+    if showExtEff and (bar_index - eLen) - lastLoLblBar >= gapBars
+        lastLoLblBar := bar_index - eLen
+        addLabel(structLabels, label.new(bar_index - eLen, pl_e, cls, style = label.style_label_up, color = lblBg(tBull, 75), textcolor = plainLbl ? tBull : color.white, size = szSwing), 120)
+
+if trendLinesOn and not na(liqTrendHi)
+    hiLineVal = line.get_price(liqTrendHi, bar_index)
+    if not na(hiLineVal) and close > hiLineVal
+        bullTrendBreak := true
+        addLabel(structLabels, label.new(bar_index, low, "Bullish Trendline Break", style = label.style_label_up, color = lblBg(tBull, 70), textcolor = plainLbl ? tBull : color.white, size = szLiq), 120)
+        line.delete(liqTrendHi)
+        liqTrendHi := na
+if trendLinesOn and not na(liqTrendLo)
+    loLineVal = line.get_price(liqTrendLo, bar_index)
+    if not na(loLineVal) and close < loLineVal
+        bearTrendBreak := true
+        addLabel(structLabels, label.new(bar_index, high, "Bearish Trendline Break", style = label.style_label_down, color = lblBg(tBear, 70), textcolor = plainLbl ? tBear : color.white, size = szLiq), 120)
+        line.delete(liqTrendLo)
+        liqTrendLo := na
+
+rangeSize = math.max(high - low, syminfo.mintick)
+bullDisp = close > open and bodySize > avgBody * bodyMult and bodySize > atrDisp * atrMultDisp and (close - low) / rangeSize >= 0.75
+bearDisp = close < open and bodySize > avgBody * bodyMult and bodySize > atrDisp * atrMultDisp and (high - close) / rangeSize >= 0.75
+
+var int lastBullDispBar = na
+var int lastBearDispBar = na
+if bullDisp
+    lastBullDispBar := bar_index
+if bearDisp
+    lastBearDispBar := bar_index
+
+recentBullDisp = not na(lastBullDispBar) and bar_index - lastBullDispBar <= 10
+recentBearDisp = not na(lastBearDispBar) and bar_index - lastBearDispBar <= 10
+
+brkUpSrc = brkModeEff == "Close" ? close : high
+brkDnSrc = brkModeEff == "Close" ? close : low
+
+chochVisible(string mode, bool supported) =>
+    mode == "All" or mode == "CHoCH (All)" or (mode == "CHoCH+" and supported) or (mode == "CHoCH" and not supported)
+
+bool intBullChochPlus = false
+bool intBearChochPlus = false
+bool bullChochPlus = false
+bool bearChochPlus = false
+bool bullBos = false
+bool bearBos = false
+bool bullChoch = false
+bool bearChoch = false
+bool intBullBos = false
+bool intBearBos = false
+bool intBullChoch = false
+bool intBearChoch = false
+
+if barstate.isconfirmed and not na(intHighLvl) and not intHighBroken and brkUpSrc > intHighLvl
+    isBos = internalTrend == 1
+    supported = internalTrend == -1 and intHasHL and intLowBar > intHighBar
+    intBullChochPlus := not isBos and supported
+    lvl = intHighLvl
+    startBar = intHighBar
+    intHighBroken := true
+    internalTrend := 1
+    intBullBos   := isBos
+    intBullChoch := not isBos
+    if (isBos and intBosOn) or (not isBos and intChochOn and chochVisible(msInternal, supported))
+        col = isBos ? tBull : tChUp
+        addLine(intBullLines, line.new(startBar, lvl, bar_index, lvl, color = color.new(col, 35), width = 1, style = line.style_dotted), presentMode ? 1 : 200)
+        addLabel(intBullLbls, label.new(int(math.avg(startBar, bar_index)), lvl, isBos ? "BOS" : supported ? "CHoCH+" : "CHoCH", style = label.style_label_down, color = lblBg(col, 90), textcolor = col, size = szInternal), presentMode ? 1 : 120)
+if barstate.isconfirmed and not na(intLowLvl) and not intLowBroken and brkDnSrc < intLowLvl
+    isBos = internalTrend == -1
+    supported = internalTrend == 1 and intHasLH and intHighBar > intLowBar
+    intBearChochPlus := not isBos and supported
+    lvl = intLowLvl
+    startBar = intLowBar
+    intLowBroken := true
+    internalTrend := -1
+    intBearBos   := isBos
+    intBearChoch := not isBos
+    if (isBos and intBosOn) or (not isBos and intChochOn and chochVisible(msInternal, supported))
+        col = isBos ? tBear : tChDn
+        addLine(intBearLines, line.new(startBar, lvl, bar_index, lvl, color = color.new(col, 35), width = 1, style = line.style_dotted), presentMode ? 1 : 200)
+        addLabel(intBearLbls, label.new(int(math.avg(startBar, bar_index)), lvl, isBos ? "BOS" : supported ? "CHoCH+" : "CHoCH", style = label.style_label_up, color = lblBg(col, 90), textcolor = col, size = szInternal), presentMode ? 1 : 120)
+
+if barstate.isconfirmed and not na(extHighLvl) and not extHighBroken and brkUpSrc > extHighLvl
+    isBos = externalTrend == 1
+    supported = externalTrend == -1 and extHasHL and extLowBar > extHighBar
+    bullChochPlus := not isBos and supported
+    bullBos := isBos
+    bullChoch := not isBos
+    lvl = extHighLvl
+    startBar = extHighBar
+    extHighBroken := true
+    externalTrend := 1
+    lastEvent := isBos ? "Bullish BOS" : supported ? "Bullish CHoCH+" : "Bullish CHoCH"
+    lastEventBar := bar_index
+
+    fibDir  := 1
+    fibLow  := na(extLowLvl) ? lo100 : extLowLvl
+    fibHigh := high
+    fibStart := bar_index
+    if (isBos and extBosOn) or (not isBos and extChochOn and chochVisible(msSwing, supported))
+        col = isBos ? tBull : tChUp
+        addLine(extBullLines, line.new(startBar, lvl, bar_index, lvl, color = col, width = 2, style = isBos ? line.style_solid : line.style_dashed), presentMode ? 1 : 200)
+        if bar_index - lastEvtLblBar >= gapBars
+            lastEvtLblBar := bar_index
+            addLabel(extBullLbls, label.new(int(math.avg(startBar, bar_index)), lvl, isBos ? "BOS" : supported ? "CHoCH+" : "CHoCH", style = label.style_label_down, color = lblBg(col, 80), textcolor = col, size = szSwing), presentMode ? 1 : 120)
+
+if barstate.isconfirmed and not na(extLowLvl) and not extLowBroken and brkDnSrc < extLowLvl
+    isBos = externalTrend == -1
+    supported = externalTrend == 1 and extHasLH and extHighBar > extLowBar
+    bearChochPlus := not isBos and supported
+    bearBos := isBos
+    bearChoch := not isBos
+    lvl = extLowLvl
+    startBar = extLowBar
+    extLowBroken := true
+    externalTrend := -1
+    lastEvent := isBos ? "Bearish BOS" : supported ? "Bearish CHoCH+" : "Bearish CHoCH"
+    lastEventBar := bar_index
+    fibDir  := -1
+    fibHigh := na(extHighLvl) ? hi100 : extHighLvl
+    fibLow  := low
+    fibStart := bar_index
+    if (isBos and extBosOn) or (not isBos and extChochOn and chochVisible(msSwing, supported))
+        col = isBos ? tBear : tChDn
+        addLine(extBearLines, line.new(startBar, lvl, bar_index, lvl, color = col, width = 2, style = isBos ? line.style_solid : line.style_dashed), presentMode ? 1 : 200)
+        if bar_index - lastEvtLblBar >= gapBars
+            lastEvtLblBar := bar_index
+            addLabel(extBearLbls, label.new(int(math.avg(startBar, bar_index)), lvl, isBos ? "BOS" : supported ? "CHoCH+" : "CHoCH", style = label.style_label_up, color = lblBg(col, 80), textcolor = col, size = szSwing), presentMode ? 1 : 120)
+
+if fibDir == 1 and high > fibHigh
+    fibHigh := high
+if fibDir == -1 and low < fibLow
+    fibLow := low
+
+liqLow  = na(eqlLevel) ? extLowLvl  : eqlLevel
+liqHigh = na(eqhLevel) ? extHighLvl : eqhLevel
+
+bullSweep = not na(liqLow)  and low  < liqLow  and close > liqLow  and close > open
+bearSweep = not na(liqHigh) and high > liqHigh and close < liqHigh and close < open
+
+if bullSweep
+    sweepBullBar := bar_index
+    sweepBullLow := low
+if bearSweep
+    sweepBearBar := bar_index
+    sweepBearHigh := high
+recentBullSweep = not na(sweepBullBar) and bar_index - sweepBullBar <= 15
+recentBearSweep = not na(sweepBearBar) and bar_index - sweepBearBar <= 15
+
+vobValidVolume = not na(volume) and volume >= 0
+vobV = vobValidVolume ? volume : 0.0
+vobFraction = vobSplit == "Candle direction" ? (close > open ? 1.0 : close < open ? 0.0 : 0.5) : (high > low ? math.max(0.0, math.min(1.0, (close - low) / (high - low))) : 0.5)
+vobBoundaryAtr = ta.atr(vobAtrLength)
+vobCumV = ta.cum(vobV)
+vobCumB = ta.cum(vobV * vobFraction)
+vobCumMissing = ta.cum(vobValidVolume ? 0.0 : 1.0)
+vobLogV = vobValidVolume ? math.log(1.0 + volume) : na
+vobMean = ta.sma(vobLogV, vobStatLen)
+vobSigma = ta.stdev(vobLogV, vobStatLen)
+vobZ = not na(vobSigma) and vobSigma > 0 ? (vobLogV - vobMean) / vobSigma : na
+
+const int VOB_HISTORY = 5001
+type VobSample
+    int index
+    int stamp
+    float total
+    float buy
+    float missing
+    float score
+    float boundaryAtr
+var array<VobSample> vobHistory = array.new<VobSample>(VOB_HISTORY)
+array.set(vobHistory, bar_index % VOB_HISTORY, VobSample.new(bar_index, time, vobCumV, vobCumB, vobCumMissing, vobZ, vobBoundaryAtr))
+
+vobSampleAt(int index) =>
+    VobSample sample = na
+    if not na(index) and index >= 0 and index <= bar_index and bar_index - index < VOB_HISTORY
+        VobSample candidate = array.get(vobHistory, index % VOB_HISTORY)
+        if not na(candidate) and candidate.index == index
+            sample := candidate
+    sample
+
+vobSumBetween(int first, int last) =>
+    float total = na
+    float buy = na
+    float sell = na
+    if not na(first) and not na(last) and first >= 0 and last <= bar_index
+        if last == first - 1
+            total := 0.0
+            buy := 0.0
+            sell := 0.0
+        else if last >= first
+            VobSample finish = vobSampleAt(last)
+            VobSample before = vobSampleAt(first - 1)
+            bool haveBefore = first == 0 or not na(before)
+            if not na(finish) and haveBefore
+                float previousTotal = first == 0 ? 0.0 : before.total
+                float previousBuy = first == 0 ? 0.0 : before.buy
+                float previousMissing = first == 0 ? 0.0 : before.missing
+                if finish.missing == previousMissing
+                    total := math.max(0.0, finish.total - previousTotal)
+                    buy := math.max(0.0, math.min(total, finish.buy - previousBuy))
+                    sell := total - buy
+    [total, buy, sell]
+
+vobInterval(int origin, int count, bool throughConfirmation) =>
+    int first = throughConfirmation ? origin : origin - count + 1
+    int last = throughConfirmation ? bar_index : origin
+    vobSumBetween(first, last)
+
+vobBrokenInterval(int brokenPivot) =>
+
+    vobSumBetween(na(brokenPivot) ? na : brokenPivot + 1, bar_index - 1)
+
+vobMeasures(int origin) =>
+    int count = vobVolumeMode == "Origin window (N)" ? vobWindow : vobVolumeMode == "Three candles ending at origin" ? 3 : 1
+    [vv, bv, sv] = vobInterval(origin, count, vobVolumeMode == "Origin to break")
+    VobSample sample = vobSampleAt(origin)
+    [vv, bv, sv, not na(sample) ? sample.score : na]
+
+vobInvalidated(Zone z) =>
+    float threshold = obInvalid == "Average" ? math.avg(z.top, z.bottom) : (z.direction == DIR_LONG ? z.bottom : z.top)
+    float source = obInvalid == "Close" ? close : (z.direction == DIR_LONG ? low : high)
+    barstate.isconfirmed and (z.direction == DIR_LONG ? source < threshold : source > threshold)
+
+newZone(int leftBar, float top, float bottom, int dir, string ztype, color col, color border, string metric = "", int brokenPivot = na) =>
+    rightBar = bar_index + (ztype == "FVG" ? fvgRight : zoneRight)
+    box b = ztype == "OB" ? na : box.new(leftBar, top, rightBar, bottom, border_color = border, bgcolor = col, extend = extend.none)
+    label tg = na
+    txt = metric == "" ? ztype : ztype + "  " + metric
+    lblSize = (ztype == "OB" and metric != "") ? szObMetrics : szZone
+    if ztype != "OB" and zoneTextOn
+        tg := label.new(rightBar, math.avg(top, bottom), txt, style = label.style_label_left, color = lblBg(border, 85), textcolor = border, size = lblSize)
+    line ml = na
+    if false
+        ml := line.new(leftBar, math.avg(top, bottom), rightBar, math.avg(top, bottom), color = color.new(border, 40), style = line.style_dashed, width = 1)
+    z = Zone.new(leftBar, top, bottom, dir, ztype, true, false, false, b, tg, ml)
+    z.createdBar := bar_index
+    if ztype == "OB"
+        [vv, bv, sv, zz] = vobMeasures(leftBar)
+        z.totalVolume := vv
+        z.buyVolume := bv
+        z.sellVolume := sv
+        z.volumeZ := zz
+        VobSample originSample = vobSampleAt(leftBar)
+        z.originTime := not na(originSample) ? originSample.stamp : na
+        [v1, b1, s1] = vobInterval(leftBar, 1, false)
+        [v3, b3, s3] = vobInterval(leftBar, 3, false)
+        [vn, bn, sn] = vobInterval(leftBar, vobWindow, false)
+        [vc, bc, sc] = vobInterval(leftBar, 1, true)
+        z.originVolume := v1
+        z.local3Volume := v3
+        z.localNVolume := vn
+        z.throughConfirmationVolume := vc
+        [pv, pb, ps] = vobBrokenInterval(brokenPivot)
+        z.brokenIntervalVolume := pv
+        if vobVolumeMode == "Between broken pivot and break"
+            z.totalVolume := pv
+            z.buyVolume := pb
+            z.sellVolume := ps
+            if not na(brokenPivot) and bar_index - brokenPivot >= 2 and bar_index - brokenPivot <= 4998
+                VobSample firstSample = vobSampleAt(brokenPivot + 1)
+                VobSample lastSample = vobSampleAt(bar_index - 1)
+                z.volumeStartTime := not na(firstSample) ? firstSample.stamp : na
+                z.volumeEndTime := not na(lastSample) ? lastSample.stamp : na
+    z
+
+pushZone(array<Zone> arr, Zone z, int keep) =>
+    bool merged = false
+    ovNeeded = (z.zoneType == "OB" and obHideOverlap) ? 0.01 : zoneOverlap
+    if z.zoneType == "OB" and array.size(arr) > 0
+        for i = array.size(arr) - 1 to 0
+            e = array.get(arr, i)
+            bool overlap = math.min(e.top, z.top) > math.max(e.bottom, z.bottom)
+            if not e.active or (obHideOverlap and overlap)
+                box.delete(e.drawing)
+                label.delete(e.tag)
+                line.delete(e.midline)
+                array.remove(arr, i)
+    if z.zoneType != "OB" and array.size(arr) > 0 and ovNeeded < 1.0
+        for i = array.size(arr) - 1 to 0
+            if not merged
+                e = array.get(arr, i)
+                if e.active and e.direction == z.direction and e.zoneType == z.zoneType
+                    ovTop = math.min(e.top, z.top)
+                    ovBot = math.max(e.bottom, z.bottom)
+                    ov = ovTop - ovBot
+                    ref = math.max(math.min(e.top - e.bottom, z.top - z.bottom), syminfo.mintick)
+                    if ov > 0 and ov / ref >= ovNeeded
+                        e.top := math.max(e.top, z.top)
+                        e.bottom := math.min(e.bottom, z.bottom)
+                        box.set_top(e.drawing, e.top)
+                        box.set_bottom(e.drawing, e.bottom)
+                        box.set_right(e.drawing, bar_index + zoneRight)
+                        array.set(arr, i, e)
+                        merged := true
+    if merged
+        box.delete(z.drawing)
+        label.delete(z.tag)
+        line.delete(z.midline)
+    else
+        array.push(arr, z)
+        while array.size(arr) > keep
+            old = array.shift(arr)
+            box.delete(old.drawing)
+            label.delete(old.tag)
+            line.delete(old.midline)
+    merged
+
+imbMitigated(float t, float b, int d, float h, float l, float c) =>
+    fvgMitig == "None" ? false : fvgMitig == "Close" ? (d == 1 ? c < b : c > t) : fvgMitig == "Average" ? (d == 1 ? l < math.avg(t, b) : h > math.avg(t, b)) : (d == 1 ? l < b : h > t)
+
+imbTf = fvgTimeframeIn == "" ? timeframe.period : fvgTimeframeIn
+imbHTF = timeframe.in_seconds(imbTf) > timeframe.in_seconds()
+if barstate.isfirst and timeframe.in_seconds(imbTf) < timeframe.in_seconds()
+    runtime.error("Imbalance Timeframe must be the chart timeframe or higher.")
+[iO, iH, iL, iC, iT, iPH, iPL, iPO, iPC, iPT, iH2, iL2, iT2, iATR] = request.security(syminfo.tickerid, imbTf, [open[1], high[1], low[1], close[1], time[1], high[2], low[2], open[2], close[2], time[2], high[3], low[3], time[3], ta.atr(14)[1]], lookahead = barmerge.lookahead_on)
+igO = imbHTF ? iO : open
+igH = imbHTF ? iH : high
+igL = imbHTF ? iL : low
+igC = imbHTF ? iC : close
+igT = imbHTF ? iT : time
+igPH = imbHTF ? iPH : high[1]
+igPL = imbHTF ? iPL : low[1]
+igPO = imbHTF ? iPO : open[1]
+igPC = imbHTF ? iPC : close[1]
+igPT = imbHTF ? iPT : time[1]
+igH2 = imbHTF ? iH2 : high[2]
+igL2 = imbHTF ? iL2 : low[2]
+igT2 = imbHTF ? iT2 : time[2]
+igATR = imbHTF ? iATR : atr
+var int imbLastTime = na
+imbStep = barstate.isconfirmed and not na(igT) and (na(imbLastTime) or igT != imbLastTime)
+imbFloor = igATR * math.max(fvgVolThr, fvgMin)
+var float seedTop = na
+var float seedBottom = na
+var int seedDir = 0
+var int seedTime = na
+var float priorBullTop = na
+var float priorBullBottom = na
+var float priorBearTop = na
+var float priorBearBottom = na
+var int priorBullAt = na
+var int priorBearAt = na
+var array<int> imbBorn = array.new<int>()
+var array<box> imbBoxes = array.new<box>()
+var array<line> imbMids = array.new<line>()
+var array<float> imbTops = array.new<float>()
+var array<float> imbBots = array.new<float>()
+var array<int> imbDirs = array.new<int>()
+var array<int> imbCreated = array.new<int>()
+
+removeImbalance(int j) =>
+    imbBorn.remove(j)
+    imbTops.remove(j)
+    imbBots.remove(j)
+    imbDirs.remove(j)
+    imbCreated.remove(j)
+    box.delete(imbBoxes.remove(j))
+    line.delete(imbMids.remove(j))
+
+addImbalance(float t, float b, int d, int origin) =>
+    if showFvg and not na(origin) and t > b and t - b >= imbFloor
+        col = d == 1 ? imbBullCol : imbBearCol
+        rightT = time + int(timeframe.in_seconds() * 1000) * fvgExtend
+        imbBoxes.push(box.new(origin, t, rightT, b, xloc = xloc.bar_time, border_color = color.new(col, 100), bgcolor = col, text = imbLabelsOn ? imbKind : "", text_color = color.new(col, 0), text_size = size.tiny))
+        imbMids.push(line.new(origin, math.avg(t,b), rightT, math.avg(t,b), xloc = xloc.bar_time, color = color.new(col, 0)))
+        imbBorn.push(igT)
+        imbTops.push(t)
+        imbBots.push(b)
+        imbDirs.push(d)
+        imbCreated.push(bar_index)
+        if imbBoxes.size() > maxZones
+            removeImbalance(0)
+
+maintainImbalances() =>
+    if imbBoxes.size() > 0
+        for j = imbBoxes.size() - 1 to 0
+            dead = imbStep and igT > imbBorn.get(j) and imbMitigated(imbTops.get(j), imbBots.get(j), imbDirs.get(j), igH, igL, igC)
+            if dead or bar_index - imbCreated.get(j) > maxZoneAge
+                removeImbalance(j)
+            else
+                rt = time + int(timeframe.in_seconds() * 1000) * fvgExtend
+                box.set_right(imbBoxes.get(j), rt)
+                line.set_x2(imbMids.get(j), rt)
+
+bool newBullImbalance = false
+bool newBearImbalance = false
+if imbStep
+    imbLastTime := igT
+    if imbKind == "Inverse FVG" and seedDir != 0 and igT > seedTime and imbMitigated(seedTop, seedBottom, seedDir, igH, igL, igC)
+        addImbalance(seedTop, seedBottom, -seedDir, seedTime)
+        newBullImbalance := showFvg and seedDir == -1
+        newBearImbalance := showFvg and seedDir == 1
+        seedDir := 0
+    gapDir = igL > igH2 ? 1 : igH < igL2 ? -1 : 0
+    gt = gapDir == 1 ? igL : igL2
+    gb = gapDir == 1 ? igH2 : igH
+    dispOK = not fvgRequireDisp or math.abs(igPC - igPO) >= igATR * 0.5
+    if gapDir != 0 and gt - gb >= imbFloor and dispOK
+        seedTop := gt
+        seedBottom := gb
+        seedDir := gapDir
+        seedTime := igT
+        if imbKind == "FVG"
+            addImbalance(gt, gb, gapDir, igT2)
+            newBullImbalance := showFvg and gapDir == 1
+            newBearImbalance := showFvg and gapDir == -1
+        if imbKind == "Double FVG"
+            ot = gapDir == 1 ? priorBearTop : priorBullTop
+            ob = gapDir == 1 ? priorBearBottom : priorBullBottom
+            oldAt = gapDir == 1 ? priorBearAt : priorBullAt
+            t = math.min(gt, ot)
+            b = math.max(gb, ob)
+            if not na(oldAt) and bar_index - oldAt <= maxZoneAge and t > b and t - b >= imbFloor
+                addImbalance(t, b, gapDir, igT2)
+                newBullImbalance := showFvg and gapDir == 1
+                newBearImbalance := showFvg and gapDir == -1
+        if gapDir == 1
+            priorBullTop := gt
+            priorBullBottom := gb
+            priorBullAt := bar_index
+        else
+            priorBearTop := gt
+            priorBearBottom := gb
+            priorBearAt := bar_index
+    bodyHi = math.max(igO, igC)
+    bodyLo = math.min(igO, igC)
+    prevHi = math.max(igPO, igPC)
+    prevLo = math.min(igPO, igPC)
+    wickOverlap = igL <= igPH and igH >= igPL
+    vd = bodyLo > prevHi and wickOverlap ? 1 : bodyHi < prevLo and wickOverlap ? -1 : 0
+    od = igL > igPH ? 1 : igH < igPL ? -1 : 0
+    dd = imbKind == "Volume Imbalance" ? vd : imbKind == "Opening Gap" ? od : 0
+    if dd != 0
+        t = imbKind == "Volume Imbalance" ? (dd == 1 ? bodyLo : prevLo) : (dd == 1 ? igL : igPL)
+        b = imbKind == "Volume Imbalance" ? (dd == 1 ? prevHi : bodyHi) : (dd == 1 ? igPH : igH)
+        if t - b >= imbFloor
+            addImbalance(t,b,dd,igPT)
+            newBullImbalance := showFvg and dd == 1
+            newBearImbalance := showFvg and dd == -1
+
+alertcondition(newBullImbalance, "Bullish Imbalance", "New bullish imbalance on {{ticker}} {{interval}}")
+alertcondition(newBearImbalance, "Bearish Imbalance", "New bearish imbalance on {{ticker}} {{interval}}")
+
+obLookback = 12
+
+findBullOb() =>
+    float t = na
+    float b = na
+    int bi = na
+    for i = 1 to obLookback
+        if close[i] < open[i]
+            t := obMode == "Full" ? high[i] : obMode == "Body" ? open[i] : open[i]
+            b := obMode == "Body" ? close[i] : low[i]
+            bi := bar_index - i
+            break
+    [t, b, bi]
+
+findBearOb() =>
+    float t = na
+    float b = na
+    int bi = na
+    for i = 1 to obLookback
+        if close[i] > open[i]
+            t := obMode == "Body" ? close[i] : high[i]
+            b := obMode == "Full" ? low[i] : open[i]
+            bi := bar_index - i
+            break
+    [t, b, bi]
+
+extremeInLegOb(int dir, int pivotBar) =>
+    float top = na
+    float bot = na
+    int obBar = na
+    if not na(pivotBar) and pivotBar >= 0 and pivotBar < bar_index
+        if dir == DIR_SHORT
+            start = math.max(pivotBar, bar_index - 4996)
+            arrSrc = parsedHighsArr.slice(start, bar_index)
+            if array.size(arrSrc) > 0
+                idx = start + arrSrc.indexof(arrSrc.max())
+                top := allHighsArr.get(idx)
+                bot := allLowsArr.get(idx)
+                obBar := idx
+        else
+            start = math.max(pivotBar, bar_index - 4996)
+            arrSrc = parsedLowsArr.slice(start, bar_index)
+            if array.size(arrSrc) > 0
+                idx = start + arrSrc.indexof(arrSrc.min())
+                top := allHighsArr.get(idx)
+                bot := allLowsArr.get(idx)
+                obBar := idx
+    [top, bot, obBar]
+
+pickOb(int dir, int pivotBar, bool detect) =>
+    float top = na
+    float bot = na
+    int obBar = na
+    if detect and obDetectMethod == "Extreme In Leg (mbedaiwi)"
+        [t, b, bi] = extremeInLegOb(dir, pivotBar)
+        top := t
+        bot := b
+        obBar := bi
+    else if detect and dir == DIR_LONG
+        [t, b, bi] = findBullOb()
+        top := t
+        bot := b
+        obBar := bi
+    else if detect
+        [t, b, bi] = findBearOb()
+        top := t
+        bot := b
+        obBar := bi
+    [top, bot, obBar]
+
+detectObBreak(array<Zone> arr) =>
+    bool bullObBroken = false
+    bool bearObBroken = false
+    if array.size(arr) > 0
+        for i = 0 to array.size(arr) - 1
+            z = array.get(arr, i)
+            if z.active and not z.isBreaker
+                invalidated = vobInvalidated(z)
+                if invalidated
+                    if z.direction == DIR_LONG
+                        bullObBroken := true
+                    else
+                        bearObBroken := true
+    [bullObBroken, bearObBroken]
+
+[bullObTop, bullObBot, bullObBar] = pickOb(DIR_LONG, extHighBar, vobEngine == "Legacy structure breaks" and (bullBos or bullChoch))
+[bearObTop, bearObBot, bearObBar] = pickOb(DIR_SHORT, extLowBar, vobEngine == "Legacy structure breaks" and (bearBos or bearChoch))
+
+newBullOb = showOB and (bullBos or bullChoch) and (not vobRequireDisp or recentBullDisp) and not na(bullObTop) and not na(bullObBot) and bullObTop > bullObBot
+newBearOb = showOB and (bearBos or bearChoch) and (not vobRequireDisp or recentBearDisp) and not na(bearObTop) and not na(bearObBot) and bearObTop > bearObBot
+
+obOffBull = na(bullObBar) ? 0 : math.max(bar_index - bullObBar, 0)
+obOffBear = na(bearObBar) ? 0 : math.max(bar_index - bearObBar, 0)
+bullObVol = float(na)
+bearObVol = float(na)
+
+if newBullOb
+    m = obMetricsOn and not na(bullObVol) ? str.tostring(bullObVol, format.volume) : ""
+    pushZone(orderBlocks, newZone(bullObBar, bullObTop, bullObBot, DIR_LONG, "OB", color.new(cBull, obTrans), cBull, m, extHighBar), 100)
+
+if newBearOb
+    m = obMetricsOn and not na(bearObVol) ? str.tostring(bearObVol, format.volume) : ""
+    pushZone(orderBlocks, newZone(bearObBar, bearObTop, bearObBot, DIR_SHORT, "OB", color.new(cBear, obTrans), cBear, m, extLowBar), 100)
+
+[intBullObTop, intBullObBot, intBullObBar] = pickOb(DIR_LONG, intHighBar, vobEngine == "Legacy structure breaks" and (intBullBos or intBullChoch))
+[intBearObTop, intBearObBot, intBearObBar] = pickOb(DIR_SHORT, intLowBar, vobEngine == "Legacy structure breaks" and (intBearBos or intBearChoch))
+
+newInternalBullOb = showInternalOB and (intBullBos or intBullChoch) and (not vobRequireDisp or recentBullDisp) and not na(intBullObTop) and not na(intBullObBot) and intBullObTop > intBullObBot
+newInternalBearOb = showInternalOB and (intBearBos or intBearChoch) and (not vobRequireDisp or recentBearDisp) and not na(intBearObTop) and not na(intBearObBot) and intBearObTop > intBearObBot
+
+intObOffBull = na(intBullObBar) ? 0 : math.max(bar_index - intBullObBar, 0)
+intObOffBear = na(intBearObBar) ? 0 : math.max(bar_index - intBearObBar, 0)
+intBullObVol = float(na)
+intBearObVol = float(na)
+
+if newInternalBullOb
+    m = obMetricsOn and not na(intBullObVol) ? str.tostring(intBullObVol, format.volume) : ""
+    pushZone(internalOrderBlocks, newZone(intBullObBar, intBullObTop, intBullObBot, DIR_LONG, "OB", color.new(internalBullObColor, obTrans), internalBullObColor, m, intHighBar), 100)
+
+if newInternalBearOb
+    m = obMetricsOn and not na(intBearObVol) ? str.tostring(intBearObVol, format.volume) : ""
+    pushZone(internalOrderBlocks, newZone(intBearObBar, intBearObTop, intBearObBot, DIR_SHORT, "OB", color.new(internalBearObColor, obTrans), internalBearObColor, m, intLowBar), 100)
+
+[obLegHigh, obLegLow] = smcLegPivots(vobLength)
+var float obHighLevel = na
+var float obLowLevel = na
+var int obHighOrigin = na
+var int obLowOrigin = na
+var bool obHighCrossed = true
+var bool obLowCrossed = true
+if not na(obLegHigh)
+    obHighLevel := obLegHigh
+    obHighOrigin := bar_index - vobLength
+    obHighCrossed := false
+if not na(obLegLow)
+    obLowLevel := obLegLow
+    obLowOrigin := bar_index - vobLength
+    obLowCrossed := false
+bool independentBull = barstate.isconfirmed and not obHighCrossed and close > obHighLevel
+bool independentBear = barstate.isconfirmed and not obLowCrossed and close < obLowLevel
+if independentBull
+    obHighCrossed := true
+if independentBear
+    obLowCrossed := true
+
+independentOrigin(int dir, int pivotBar) =>
+    float top = na
+    float bottom = na
+    int origin = na
+    if not na(pivotBar) and pivotBar < bar_index - 1
+        int start = math.max(pivotBar + 1, bar_index - 4800)
+        array<float> source = dir == DIR_LONG ? (vobOriginRule == "Raw extreme" ? allLowsArr : parsedLowsArr) : (vobOriginRule == "Raw extreme" ? allHighsArr : parsedHighsArr)
+        array<float> leg = array.slice(source, start, bar_index)
+        float extreme = dir == DIR_LONG ? array.min(leg) : array.max(leg)
+
+        origin := start + array.indexof(leg, extreme)
+        int off = bar_index - origin
+        float h = high[off]
+        float l = low[off]
+        float bodyTop = math.max(open[off], close[off])
+        float bodyBottom = math.min(open[off], close[off])
+        top := vobBounds == "Body" ? bodyTop : vobBounds == "Half candle" and dir == DIR_LONG ? math.avg(h, l) : vobBounds == "Refined" and dir == DIR_LONG ? bodyTop : h
+        bottom := vobBounds == "Body" ? bodyBottom : vobBounds == "Half candle" and dir == DIR_SHORT ? math.avg(h, l) : vobBounds == "Refined" and dir == DIR_SHORT ? bodyBottom : l
+        VobSample originSample = vobSampleAt(origin)
+        if vobBounds == "ATR-capped candle" and not na(originSample) and not na(originSample.boundaryAtr)
+            float height = math.min(h - l, originSample.boundaryAtr * vobAtrMultiple)
+            top := dir == DIR_LONG ? l + height : h
+            bottom := dir == DIR_LONG ? l : h - height
+    [top, bottom, origin]
+
+if vobEngine == "Independent swing breaks" and showOB
+    if independentBull and (not vobRequireDisp or recentBullDisp)
+        [top, bottom, origin] = independentOrigin(DIR_LONG, obHighOrigin)
+        if not na(top) and top > bottom
+            pushZone(orderBlocks, newZone(origin, top, bottom, DIR_LONG, "OB", color.new(cBull, obTrans), cBull, "", obHighOrigin), 100)
+    if independentBear and (not vobRequireDisp or recentBearDisp)
+        [top, bottom, origin] = independentOrigin(DIR_SHORT, obLowOrigin)
+        if not na(top) and top > bottom
+            pushZone(orderBlocks, newZone(origin, top, bottom, DIR_SHORT, "OB", color.new(cBear, obTrans), cBear, "", obLowOrigin), 100)
+
+volUpper = ta.highest(high, vobLength)
+volLower = ta.lowest(low, vobLength)
+volCloseLow = ta.lowest(close, vobLength)
+volCloseHigh = ta.highest(close, vobLength)
+volPivot = ta.pivothigh(volume, vobLength, vobLength)
+var int volumeRegime = 0
+if barstate.isconfirmed
+    if high[vobLength] > volUpper
+        volumeRegime := 0
+    else if low[vobLength] < volLower
+        volumeRegime := 1
+if vobEngine == "Volume pivots (open mbedaiwi)" and showOB and barstate.isconfirmed and not na(volPivot) and volPivot > 0
+    int dir = volumeRegime == 1 ? DIR_LONG : DIR_SHORT
+    float top = dir == DIR_LONG ? hl2[vobLength] : high[vobLength]
+    float bottom = dir == DIR_LONG ? low[vobLength] : hl2[vobLength]
+    float threshold = obInvalid == "Average" ? math.avg(top, bottom) : dir == DIR_LONG ? bottom : top
+    float source = obInvalid == "Close" ? (dir == DIR_LONG ? volCloseLow : volCloseHigh) : (dir == DIR_LONG ? volLower : volUpper)
+    bool invalidDuringConfirmation = dir == DIR_LONG ? source < threshold : source > threshold
+    if top > bottom and not invalidDuringConfirmation and (not vobRequireDisp or (dir == DIR_LONG ? recentBullDisp : recentBearDisp))
+        color col = dir == DIR_LONG ? cBull : cBear
+        pushZone(orderBlocks, newZone(bar_index - vobLength, top, bottom, dir, "OB", color.new(col, obTrans), col), 100)
+
+maintainZones(array<Zone> arr) =>
+    if array.size(arr) > 0
+        for i = array.size(arr) - 1 to 0
+            z = array.get(arr, i)
+            if z.active
+                mitigMode = z.zoneType == "FVG" ? fvgMitig : obInvalid
+                rightPad  = z.zoneType == "FVG" ? fvgRight : zoneRight
+                invalidated = z.zoneType == "OB" ? vobInvalidated(z) : barstate.isconfirmed and z.leftBar < bar_index and imbMitigated(z.top, z.bottom, z.direction, high, low, close)
+                aged = bar_index - z.leftBar > (z.zoneType == "OB" ? vobAge : maxZoneAge)
+                touched = z.direction == DIR_LONG ? (low <= z.top and low >= z.bottom) : (high >= z.bottom and high <= z.top)
+                stillValid = not (invalidated or aged)
+                z.mitigated := z.mitigated or (stillValid and touched)
+                if z.isBreaker
+
+                    breakerDone = barstate.isconfirmed and (z.direction == DIR_LONG ? high > z.top : low < z.bottom)
+                    if aged or breakerDone
+                        z.active := false
+                        label.delete(z.tag)
+                        line.delete(z.midline)
+                        if hideDead
+                            box.delete(z.drawing)
+                        else
+                            box.set_right(z.drawing, bar_index)
+                    else
+                        box.set_right(z.drawing, bar_index + rightPad)
+                        if not na(z.tag)
+                            label.set_x(z.tag, bar_index + rightPad)
+                            label.set_y(z.tag, math.avg(z.top, z.bottom))
+                else if invalidated and not aged and z.zoneType == "OB" and showBreakers
+
+                    z.isBreaker := true
+                    brkBorder = z.direction == DIR_LONG ? cBear : cBull
+                    box.set_bgcolor(z.drawing, color.new(brkBorder, obTrans))
+                    box.set_border_color(z.drawing, color.new(brkBorder, 20))
+                    box.set_right(z.drawing, bar_index + rightPad)
+                    if not na(z.tag)
+                        label.set_text(z.tag, "Breaker")
+                        label.set_color(z.tag, lblBg(brkBorder, 85))
+                        label.set_textcolor(z.tag, brkBorder)
+                        label.set_x(z.tag, bar_index + rightPad)
+                        label.set_y(z.tag, math.avg(z.top, z.bottom))
+                    if not na(z.midline)
+                        line.delete(z.midline)
+                        z.midline := na
+                else if invalidated or aged
+                    z.active := false
+                    label.delete(z.tag)
+                    line.delete(z.midline)
+                    if hideDead
+                        box.delete(z.drawing)
+                    else
+                        box.set_right(z.drawing, bar_index)
+                        box.set_bgcolor(z.drawing, color.new(color.gray, 94))
+                        box.set_border_color(z.drawing, color.new(color.gray, 80))
+                else
+                    box.set_right(z.drawing, bar_index + rightPad)
+                    if not na(z.tag)
+                        label.set_x(z.tag, bar_index + rightPad)
+                        label.set_y(z.tag, math.avg(z.top, z.bottom))
+                    if not na(z.midline)
+                        line.set_x2(z.midline, bar_index + rightPad)
+                        line.set_y1(z.midline, math.avg(z.top, z.bottom))
+                        line.set_y2(z.midline, math.avg(z.top, z.bottom))
+                array.set(arr, i, z)
+
+[extBullObBreak, extBearObBreak] = detectObBreak(orderBlocks)
+[intBullObBreak, intBearObBreak] = detectObBreak(internalOrderBlocks)
+
+maintainZones(orderBlocks)
+maintainZones(internalOrderBlocks)
+maintainImbalances()
+array.clear(fairValueGaps)
+if imbBoxes.size() > 0
+    for j = 0 to imbBoxes.size() - 1
+        fairValueGaps.push(Zone.new(imbCreated.get(j), imbTops.get(j), imbBots.get(j), imbDirs.get(j), "FVG", true, false, false, na, na, na))
+
+// Hierarchical price pivots adapted from Pure Price Action Liquidity Sweeps, © LuxAlgo, CC BY-NC-SA 4.0.
+type GrabPoint
+    float price
+    int index
+type GrabRank
+    array<GrabPoint> points
+type GrabLevel
+    float price
+    int index
+    bool highSide
+    bool swept = false
+
+promoteGrab(array<GrabRank> ranks, bool hi, int depth) =>
+    GrabPoint result = na
+    for k = 0 to depth - 1
+        pts = ranks.get(k).points
+        if pts.size() == 3
+            mid = pts.get(1)
+            extreme = hi ? math.max(pts.get(0).price, mid.price, pts.get(2).price) : math.min(pts.get(0).price, mid.price, pts.get(2).price)
+            if mid.price == extreme
+                if k < depth - 1
+                    nextPts = ranks.get(k + 1).points
+                    nextPts.unshift(mid)
+                    if nextPts.size() > 3
+                        nextPts.pop()
+                else
+                    result := mid
+                pts.pop()
+                pts.pop()
+    result
+
+grabDepth = grabTerm == "Short Term" ? 1 : grabTerm == "Intermediate Term" ? 2 : 3
+var array<GrabRank> grabHighRanks = array.new<GrabRank>()
+var array<GrabRank> grabLowRanks = array.new<GrabRank>()
+var array<GrabLevel> grabPool = array.new<GrabLevel>()
+var array<label> grabLabels = array.new<label>()
+var array<line> grabLines = array.new<line>()
+var int lastGrabH = na
+var int lastGrabL = na
+bool bullGrabEvent = false
+bool bearGrabEvent = false
+if barstate.isfirst
+    for k = 0 to grabDepth - 1
+        grabHighRanks.push(GrabRank.new(array.new<GrabPoint>()))
+        grabLowRanks.push(GrabRank.new(array.new<GrabPoint>()))
+if showGrabs and (grabLive or barstate.isconfirmed)
+    hs = grabHighRanks.get(0).points
+    ls = grabLowRanks.get(0).points
+    hs.unshift(GrabPoint.new(high, bar_index))
+    ls.unshift(GrabPoint.new(low, bar_index))
+    if hs.size() > 3
+        hs.pop()
+    if ls.size() > 3
+        ls.pop()
+    hp = promoteGrab(grabHighRanks, true, grabDepth)
+    lp = promoteGrab(grabLowRanks, false, grabDepth)
+    if not na(hp) and (na(lastGrabH) or hp.index != lastGrabH)
+        grabPool.push(GrabLevel.new(hp.price, hp.index, true))
+        lastGrabH := hp.index
+    if not na(lp) and (na(lastGrabL) or lp.index != lastGrabL)
+        grabPool.push(GrabLevel.new(lp.price, lp.index, false))
+        lastGrabL := lp.index
+    if grabPool.size() > 0
+        for k = grabPool.size() - 1 to 0
+            g = grabPool.get(k)
+            broken = g.highSide ? close > g.price : close < g.price
+            swept = not g.swept and (g.highSide ? high > g.price and close < g.price : low < g.price and close > g.price)
+            if swept and not broken
+                g.swept := true
+                bearGrabEvent := bearGrabEvent or g.highSide
+                bullGrabEvent := bullGrabEvent or not g.highSide
+                if grabLevels
+                    grabLines.push(line.new(g.index, g.price, bar_index, g.price, color = g.highSide ? grabBearCol : grabBullCol))
+            if broken or bar_index - g.index > 2000
+                grabPool.remove(k)
+    if grabPool.size() > 300
+        grabPool.shift()
+    if grabLabelsOn and bullGrabEvent
+        grabLabels.push(label.new(bar_index, low, "L. Grab", style = label.style_label_up, color = color.new(grabBullCol, 100), textcolor = grabBullCol, size = size.tiny, tooltip = barstate.isconfirmed ? "Confirmed bullish liquidity grab" : "Provisional bullish grab; candle still open"))
+    if grabLabelsOn and bearGrabEvent
+        grabLabels.push(label.new(bar_index, high, "L. Grab", style = label.style_label_down, color = color.new(grabBearCol, 100), textcolor = grabBearCol, size = size.tiny, tooltip = barstate.isconfirmed ? "Confirmed bearish liquidity grab" : "Provisional bearish grab; candle still open"))
+    while grabLabels.size() > grabKeep
+        label.delete(grabLabels.shift())
+    while grabLines.size() > grabKeep
+        line.delete(grabLines.shift())
+// Hollow candle bodies restricted to the wick interval keep the frame centered
+// and let TradingView scale its width with the chart candles.
+grabLowerTop = bullGrabEvent and low < math.min(open, close) ? math.min(open, close) : na
+grabLowerBottom = bullGrabEvent and low < math.min(open, close) ? low : na
+grabUpperTop = bearGrabEvent and high > math.max(open, close) ? high : na
+grabUpperBottom = bearGrabEvent and high > math.max(open, close) ? math.max(open, close) : na
+plotcandle(grabLowerTop, grabLowerTop, grabLowerBottom, grabLowerBottom, title = "Bullish L. Grab Wick Frame", color = color.new(grabBullCol, 100), wickcolor = na, bordercolor = grabBullCol, editable = false, show_last = grabHistory, display = display.pane)
+plotcandle(grabUpperBottom, grabUpperTop, grabUpperBottom, grabUpperTop, title = "Bearish L. Grab Wick Frame", color = color.new(grabBearCol, 100), wickcolor = na, bordercolor = grabBearCol, editable = false, show_last = grabHistory, display = display.pane)
+
+alertcondition(bullGrabEvent and barstate.isconfirmed, "Bullish Liquidity Grab", "Bullish liquidity grab on {{ticker}} {{interval}}")
+alertcondition(bearGrabEvent and barstate.isconfirmed, "Bearish Liquidity Grab", "Bearish liquidity grab on {{ticker}} {{interval}}")
+
+// Independent range bands; explicit switch does not require Fibonacci.
+pdInternalHigh = ta.pivothigh(high, iLen, iLen)
+pdInternalLow = ta.pivotlow(low, iLen, iLen)
+var float pdIH = na
+var float pdIL = na
+var int pdIXH = na
+var int pdIXL = na
+if not na(pdInternalHigh)
+    pdIH := pdInternalHigh
+    pdIXH := bar_index - iLen
+if not na(pdInternalLow)
+    pdIL := pdInternalLow
+    pdIXL := bar_index - iLen
+pdH = pdRange == "Internal" ? pdIH : pdRange == "Impulse" ? fibHigh : extHighLvl
+pdL = pdRange == "Internal" ? pdIL : pdRange == "Impulse" ? fibLow : extLowLvl
+pdX = pdRange == "Internal" ? math.min(pdIXH, pdIXL) : pdRange == "Impulse" ? fibStart : math.min(extHighBar, extLowBar)
+var array<box> pdBoxes = array.new<box>()
+if barstate.islast
+    while pdBoxes.size() > 0
+        box.delete(pdBoxes.pop())
+    if showPD and not na(pdX) and not na(pdH) and not na(pdL) and pdH > pdL
+        band = (pdH - pdL) * pdWidth / 100.0
+        mid = math.avg(pdH, pdL)
+        left = math.max(pdX, bar_index - 4999)
+        right = bar_index + zoneRight
+        pdBoxes.push(box.new(left, pdH, right, pdH - band, border_color = na, bgcolor = cPrem, text = "Premium", text_color = color.new(cPrem, 0), text_size = size.small))
+        pdBoxes.push(box.new(left, mid + band / 2, right, mid - band / 2, border_color = na, bgcolor = cEqu, text = "Equilibrium", text_color = color.new(cEqu, 0), text_size = size.small))
+        pdBoxes.push(box.new(left, pdL + band, right, pdL, border_color = na, bgcolor = cDisc, text = "Discount", text_color = color.new(cDisc, 0), text_size = size.small))
+
+// Independent pattern pivots, confirmed after patternLen bars.
+patPH = ta.pivothigh(high, patternLen, patternLen)
+patPL = ta.pivotlow(low, patternLen, patternLen)
+var array<float> patHs = array.new<float>()
+var array<float> patLs = array.new<float>()
+var array<int> patHX = array.new<int>()
+var array<int> patLX = array.new<int>()
+if barstate.isconfirmed
+    if not na(patPH)
+        patHs.unshift(patPH)
+        patHX.unshift(bar_index - patternLen)
+        if patHs.size() > 3
+            patHs.pop()
+            patHX.pop()
+    if not na(patPL)
+        patLs.unshift(patPL)
+        patLX.unshift(bar_index - patternLen)
+        if patLs.size() > 3
+            patLs.pop()
+            patLX.pop()
+var string detectedPattern = "Waiting for confirmed pivots"
+var string lastPatternSignal = ""
+var array<line> patternLines = array.new<line>()
+var array<linefill> patternFills = array.new<linefill>()
+var table patternTable = na
+bool patternEvent = false
+if showPatterns and patHs.size() >= 2 and patLs.size() >= 2
+    h0 = patHs.get(0)
+    h1 = patHs.get(1)
+    l0 = patLs.get(0)
+    l1 = patLs.get(1)
+    hx0 = patHX.get(0)
+    hx1 = patHX.get(1)
+    lx0 = patLX.get(0)
+    lx1 = patLX.get(1)
+    sh = (h0 - h1) / math.max(hx0 - hx1, 1)
+    sl = (l0 - l1) / math.max(lx0 - lx1, 1)
+    eps = atr * patternTol
+    flatH = math.abs(h0 - h1) <= eps
+    flatL = math.abs(l0 - l1) <= eps
+    commonLeft = math.max(hx1, lx1)
+    commonRight = math.max(hx0, lx0)
+    startGap = h1 + sh * (commonLeft - hx1) - (l1 + sl * (commonLeft - lx1))
+    endGap = h0 + sh * (commonRight - hx0) - (l0 + sl * (commonRight - lx0))
+    converge = endGap > 0 and endGap < startGap
+    diverge = endGap > startGap and startGap > 0
+    string name = "Support / Resistance"
+    if flatH and sl > 0 and converge
+        name := "Ascending Triangle"
+    else if flatL and sh < 0 and converge
+        name := "Descending Triangle"
+    else if sh < 0 and sl > 0 and converge
+        name := "Symmetrical Triangle"
+    else if sh > 0 and sl > 0 and converge
+        name := "Rising Wedge"
+    else if sh < 0 and sl < 0 and converge
+        name := "Falling Wedge"
+    else if sh > 0 and sl > 0 and diverge
+        name := "Ascending Broadening Wedge"
+    else if sh < 0 and sl < 0 and diverge
+        name := "Descending Broadening Wedge"
+    else if flatH and lx0 > hx1 and lx0 < hx0 and l0 < math.min(h0,h1) - eps
+        name := "Double Top"
+    else if flatL and hx0 > lx1 and hx0 < lx0 and h0 > math.max(l0,l1) + eps
+        name := "Double Bottom"
+    if patHs.size() == 3 and patLs.size() == 3
+        h2 = patHs.get(2)
+        l2 = patLs.get(2)
+        if math.abs(h0 - h2) <= eps * 2 and h1 > math.max(h0,h2) + eps and patHX.get(2) < lx1 and lx1 < hx1 and hx1 < lx0 and lx0 < hx0
+            name := "Head & Shoulders"
+        else if math.abs(l0 - l2) <= eps * 2 and l1 < math.min(l0,l2) - eps and patLX.get(2) < hx1 and hx1 < lx1 and lx1 < hx0 and hx0 < lx0
+            name := "Inverse Head & Shoulders"
+    currentUpper = h0 + sh * (bar_index - hx0)
+    currentLower = l0 + sl * (bar_index - lx0)
+    stale = bar_index - math.min(hx0, lx0) > maxZoneAge
+    crossed = currentUpper <= currentLower
+    if stale or crossed
+        name := "Support / Resistance"
+    detectedPattern := name
+    if barstate.isconfirmed and (not na(patPH) or not na(patPL)) and name != lastPatternSignal
+        patternEvent := name != "Support / Resistance"
+        lastPatternSignal := name
+    if barstate.islast
+        while patternFills.size() > 0
+            linefill.delete(patternFills.pop())
+        while patternLines.size() > 0
+            line.delete(patternLines.pop())
+        if not stale and math.min(hx1, lx1) >= bar_index - 4999
+            ls = name == "Support / Resistance" ? line.style_dashed : line.style_solid
+            upperLine = line.new(hx1, h1, bar_index, currentUpper, color = patternBearCol, style = ls, width = 2)
+            lowerLine = line.new(lx1, l1, bar_index, currentLower, color = patternBullCol, style = ls, width = 2)
+            patternLines.push(upperLine)
+            patternLines.push(lowerLine)
+            if showPatternZones
+                band = atr * 0.15
+                upperEdge = line.new(hx1, h1 + band, bar_index, currentUpper + band, color = patternBearCol)
+                lowerEdge = line.new(lx1, l1 - band, bar_index, currentLower - band, color = patternBullCol)
+                patternLines.push(upperEdge)
+                patternLines.push(lowerEdge)
+                patternFills.push(linefill.new(upperLine, upperEdge, color.new(patternBearCol, 85)))
+                patternFills.push(linefill.new(lowerLine, lowerEdge, color.new(patternBullCol, 85)))
+if barstate.islast and showPatterns and patternDash and showTables
+    if na(patternTable)
+        patternTable := table.new(position.top_right, 1, 2, border_width = 1)
+    table.set_position(patternTable, showDash ? position.bottom_right : position.top_right)
+    table.cell(patternTable, 0, 0, "Detected Pattern", text_color = color.white, bgcolor = #252832)
+    table.cell(patternTable, 0, 1, detectedPattern, text_color = color.white, bgcolor = #252832)
+
+inZone(array<Zone> arr, int dir) =>
+    bool res = false
+    if array.size(arr) > 0
+        for i = 0 to array.size(arr) - 1
+            z = array.get(arr, i)
+            if z.active and not z.isBreaker and z.direction == dir and low <= z.top and high >= z.bottom
+                res := true
+    res
+
+zoneMid(array<Zone> arr, int dir) =>
+    float res = na
+    if array.size(arr) > 0
+        for i = array.size(arr) - 1 to 0
+            z = array.get(arr, i)
+            if z.active and not z.isBreaker and z.direction == dir and na(res)
+                res := math.avg(z.top, z.bottom)
+    res
+
+zoneEdge(array<Zone> arr, int dir) =>
+    float res = na
+    if array.size(arr) > 0
+        for i = array.size(arr) - 1 to 0
+            z = array.get(arr, i)
+            if z.active and not z.isBreaker and z.direction == dir and na(res)
+                res := dir == DIR_LONG ? z.bottom : z.top
+    res
+
+inBullOb  = inZone(orderBlocks, DIR_LONG)
+inBearOb  = inZone(orderBlocks, DIR_SHORT)
+inBullFvg = inZone(fairValueGaps, DIR_LONG)
+inBearFvg = inZone(fairValueGaps, DIR_SHORT)
+
+fibValid = fibDir != 0 and not na(fibLow) and not na(fibHigh) and fibHigh > fibLow
+
+fibAt(float ratio) =>
+    fibDir == 1 ? fibPriceBull(fibLow, fibHigh, ratio) : fibPriceBear(fibLow, fibHigh, ratio)
+
+f0    = fibValid ? fibAt(0.0)   : na
+f236  = fibValid ? fibAt(0.236) : na
+f382  = fibValid ? fibAt(0.382) : na
+f500  = fibValid ? fibAt(0.5)   : na
+f618  = fibValid ? fibAt(0.618) : na
+f705  = fibValid ? fibAt(0.705) : na
+f786  = fibValid ? fibAt(0.786) : na
+f1    = fibValid ? fibAt(1.0)   : na
+fe272 = fibValid ? fibAt(-0.272): na
+fe618 = fibValid ? fibAt(-0.618): na
+fEntry = fibValid ? fibAt(fibEntryLvl) : na
+
+oteTop = fibValid ? math.max(f618, f786) : na
+oteBot = fibValid ? math.min(f618, f786) : na
+
+inDiscount = fibValid and (fibDir == 1 ? close <= f500 : close >= f500)
+inOte      = fibValid and close <= oteTop and close >= oteBot
+
+fibTxt(float ratio, float price, string tag) =>
+    rt = tag != "" ? tag : str.tostring(ratio, "#.###")
+    switch fibLblMode
+        "Ratio only" => rt
+        "Price only" => str.tostring(price, format.mintick)
+        => rt + "  " + str.tostring(price, format.mintick)
+
+drawFibLevel(float price, float ratio, string tag, color col, bool on, string ls, int left, int right, int lblX, string lblSt) =>
+    if on and not na(price)
+        st = ls == "solid" ? line.style_solid : ls == "dashed" ? line.style_dashed : line.style_dotted
+        array.push(fibLines, line.new(left, price, right, price, color = color.new(col, 30), style = st))
+        if fibTextOn
+            sty = lblSt == "left" ? label.style_label_left : label.style_label_right
+            array.push(fibLabels, label.new(lblX, price, fibTxt(ratio, price, tag), style = sty, color = lblBg(col, 85), textcolor = col, size = szFib))
+
+drawFib() =>
+    if array.size(fibLines) > 0
+        for i = 0 to array.size(fibLines) - 1
+            line.delete(array.get(fibLines, i))
+        array.clear(fibLines)
+    if array.size(fibBoxes) > 0
+        for i = 0 to array.size(fibBoxes) - 1
+            box.delete(array.get(fibBoxes, i))
+        array.clear(fibBoxes)
+    if array.size(fibLabels) > 0
+        for i = 0 to array.size(fibLabels) - 1
+            label.delete(array.get(fibLabels, i))
+        array.clear(fibLabels)
+    if fibValid and showFibEff
+        anchored = fibAnchor and not na(fibStart)
+        left  = int(anchored ? math.min(fibStart, bar_index) : bar_index - 50)
+        right = int(bar_index + math.max(zoneRight, 3))
+        lblX  = int(fibLblRight ? right : left)
+        lblSt = fibLblRight ? "left" : "right"
+
+        drawFibLevel(f0,    0.0,   "",          cFib,     fibTopBot, "dotted", left, right, lblX, lblSt)
+        drawFibLevel(f236,  0.236, "",          c236,     fib236On,  "dotted", left, right, lblX, lblSt)
+        drawFibLevel(f382,  0.382, "",          c382,     fib382On,  "dotted", left, right, lblX, lblSt)
+        drawFibLevel(f500,  0.5,   "",          c500,     fib500On,  "dashed", left, right, lblX, lblSt)
+        drawFibLevel(f618,  0.618, "",          c618,     fib618On,  "dotted", left, right, lblX, lblSt)
+        drawFibLevel(f705,  0.705, "OTE 0.705", c705,     fib705On,  "solid",  left, right, lblX, lblSt)
+        drawFibLevel(f786,  0.786, "",          c786,     fib786On,  "dotted", left, right, lblX, lblSt)
+        drawFibLevel(f1,    1.0,   "",          cFib,     fibTopBot, "dotted", left, right, lblX, lblSt)
+        drawFibLevel(fe272, -0.272, "1.272",    cChochUp, showExt,   "dotted", left, right, lblX, lblSt)
+        drawFibLevel(fe618, -0.618, "1.618",    cChochUp, showExt,   "dotted", left, right, lblX, lblSt)
+
+        if showOTE
+            array.push(fibBoxes, box.new(left, oteTop, right, oteBot, border_color = color.new(color.orange, 60), bgcolor = cOte))
+
+if barstate.islast
+    drawFib()
+
+var line  swHiLine = na
+var line  swLoLine = na
+var label swHiLbl  = na
+var label swLoLbl  = na
+
+var array<line>  mtfLines = array.new<line>(8)
+var array<label> mtfLbls  = array.new<label>(8)
+
+[dHi, dLo, dLeftT, dRightT] = request.security(syminfo.tickerid, "D",  [high[1], low[1], time[1], time], lookahead = barmerge.lookahead_on)
+[wHi, wLo, wLeftT, wRightT] = request.security(syminfo.tickerid, "W",  [high[1], low[1], time[1], time], lookahead = barmerge.lookahead_on)
+[mHi, mLo, mLeftT, mRightT] = request.security(syminfo.tickerid, "M",  [high[1], low[1], time[1], time], lookahead = barmerge.lookahead_on)
+[qHi, qLo, qLeftT, qRightT] = request.security(syminfo.tickerid, "3M", [high[1], low[1], time[1], time], lookahead = barmerge.lookahead_on)
+
+preciseAnchorIdx(string tf, int leftTime, int rightTime) =>
+    int topIdx = na
+    int botIdx = na
+    if mtfPreciseAnchor and timeframe.period != tf and array.size(allTimesArr) > 0 and not na(leftTime) and not na(rightTime)
+        int leftIndex  = allTimesArr.binary_search_rightmost(leftTime)
+        int rightIndex = allTimesArr.binary_search_rightmost(rightTime)
+        if leftIndex >= 0 and rightIndex >= leftIndex and rightIndex <= array.size(allHighsArr)
+            topSlice = allHighsArr.slice(leftIndex, rightIndex)
+            botSlice = allLowsArr.slice(leftIndex, rightIndex)
+            if array.size(topSlice) > 0
+                topIdx := leftIndex + topSlice.indexof(topSlice.max())
+                botIdx := leftIndex + botSlice.indexof(botSlice.min())
+    [topIdx, botIdx]
+
+setLevel(int idx, float price, int left, int right, color col, string sty, bool on, string txt) =>
+    line  rl = array.get(mtfLines, idx)
+    label rb = array.get(mtfLbls, idx)
+    if on and not na(price)
+        if na(rl)
+            rl := line.new(left, price, right, price, color = col, style = lineStyleOf(sty), width = 1)
+        else
+            line.set_xy1(rl, left, price)
+            line.set_xy2(rl, right, price)
+            line.set_color(rl, col)
+            line.set_style(rl, lineStyleOf(sty))
+        if mtfLabels
+            t = txt + "  " + str.tostring(price, format.mintick)
+            if na(rb)
+                rb := label.new(right, price, t, style = label.style_label_left, color = lblBg(col, 85), textcolor = col, size = szFib)
+            else
+                label.set_xy(rb, right, price)
+                label.set_text(rb, t)
+                label.set_textcolor(rb, col)
+        else
+            label.delete(rb)
+            rb := na
+    else
+        line.delete(rl)
+        label.delete(rb)
+        rl := na
+        rb := na
+    array.set(mtfLines, idx, rl)
+    array.set(mtfLbls, idx, rb)
+
+if barstate.islast
+    lft = bar_index - 200
+    rgt = bar_index + math.max(zoneRight, 3)
+
+    if showSwingHL and not na(extHighLvl)
+        if na(swHiLine)
+            swHiLine := line.new(int(extHighBar), extHighLvl, rgt, extHighLvl, color = color.new(tBear, 30), style = line.style_dashed)
+        else
+            line.set_xy1(swHiLine, int(extHighBar), extHighLvl)
+            line.set_xy2(swHiLine, rgt, extHighLvl)
+        txtH = (showStrongWk ? (externalTrend == 1 ? "Weak High" : "Strong High") : "Swing High") + "  " + str.tostring(extHighLvl, format.mintick)
+        if na(swHiLbl)
+            swHiLbl := label.new(rgt, extHighLvl, txtH, style = label.style_label_left, color = lblBg(tBear, 85), textcolor = tBear, size = szSwing)
+        else
+            label.set_xy(swHiLbl, rgt, extHighLvl)
+            label.set_text(swHiLbl, txtH)
+    else
+        line.delete(swHiLine)
+        label.delete(swHiLbl)
+        swHiLine := na
+        swHiLbl  := na
+
+    if showSwingHL and not na(extLowLvl)
+        if na(swLoLine)
+            swLoLine := line.new(int(extLowBar), extLowLvl, rgt, extLowLvl, color = color.new(tBull, 30), style = line.style_dashed)
+        else
+            line.set_xy1(swLoLine, int(extLowBar), extLowLvl)
+            line.set_xy2(swLoLine, rgt, extLowLvl)
+        txtL = (showStrongWk ? (externalTrend == -1 ? "Weak Low" : "Strong Low") : "Swing Low") + "  " + str.tostring(extLowLvl, format.mintick)
+        if na(swLoLbl)
+            swLoLbl := label.new(rgt, extLowLvl, txtL, style = label.style_label_left, color = lblBg(tBull, 85), textcolor = tBull, size = szSwing)
+        else
+            label.set_xy(swLoLbl, rgt, extLowLvl)
+            label.set_text(swLoLbl, txtL)
+    else
+        line.delete(swLoLine)
+        label.delete(swLoLbl)
+        swLoLine := na
+        swLoLbl  := na
+
+    [dTopIdx, dBotIdx] = preciseAnchorIdx("D",  dLeftT, dRightT)
+    [wTopIdx, wBotIdx] = preciseAnchorIdx("W",  wLeftT, wRightT)
+    [mTopIdx, mBotIdx] = preciseAnchorIdx("M",  mLeftT, mRightT)
+    [qTopIdx, qBotIdx] = preciseAnchorIdx("3M", qLeftT, qRightT)
+
+    dTopLeft = na(dTopIdx) ? lft : dTopIdx
+    dBotLeft = na(dBotIdx) ? lft : dBotIdx
+    wTopLeft = na(wTopIdx) ? lft : wTopIdx
+    wBotLeft = na(wBotIdx) ? lft : wBotIdx
+    mTopLeft = na(mTopIdx) ? lft : mTopIdx
+    mBotLeft = na(mBotIdx) ? lft : mBotIdx
+    qTopLeft = na(qTopIdx) ? lft : qTopIdx
+    qBotLeft = na(qBotIdx) ? lft : qBotIdx
+
+    setLevel(0, dHi, dTopLeft, rgt, mtfDCol, mtfDStyle, mtfD and mtfOn, "PDH")
+    setLevel(1, dLo, dBotLeft, rgt, mtfDCol, mtfDStyle, mtfD and mtfOn, "PDL")
+    setLevel(2, wHi, wTopLeft, rgt, mtfWCol, mtfWStyle, mtfW and mtfOn, "PWH")
+    setLevel(3, wLo, wBotLeft, rgt, mtfWCol, mtfWStyle, mtfW and mtfOn, "PWL")
+    setLevel(4, mHi, mTopLeft, rgt, mtfMCol, mtfMStyle, mtfM and mtfOn, "PMH")
+    setLevel(5, mLo, mBotLeft, rgt, mtfMCol, mtfMStyle, mtfM and mtfOn, "PML")
+    setLevel(6, qHi, qTopLeft, rgt, mtfQCol, mtfQStyle, mtfQ and mtfOn, "PQH")
+    setLevel(7, qLo, qBotLeft, rgt, mtfQCol, mtfQStyle, mtfQ and mtfOn, "PQL")
+
+barcolor(colorCandles ? (externalTrend == 1 ? tBull : externalTrend == -1 ? tBear : color.new(color.gray, 40)) : na)
+
+htfClose = request.security(syminfo.tickerid, htfTf, close[1], lookahead = barmerge.lookahead_on)
+htfEma   = request.security(syminfo.tickerid, htfTf, ta.ema(close, 50)[1], lookahead = barmerge.lookahead_on)
+
+htfTrend = na(htfClose) or na(htfEma) ? 0 : htfClose > htfEma ? 1 : htfClose < htfEma ? -1 : 0
+
+emaBull = ema9 > ema21 and close > ema50
+emaBear = ema9 < ema21 and close < ema50
+volOk   = na(volume) ? false : volume > volSma * volMult
+rsiLong  = rsi14 >= 45 and rsi14 <= 70
+rsiShort = rsi14 >= 30 and rsi14 <= 55
+
+recentBullStruct = (bullBos or bullChoch) or (externalTrend == 1 and not na(lastEventBar) and bar_index - lastEventBar <= 30)
+recentBearStruct = (bearBos or bearChoch) or (externalTrend == -1 and not na(lastEventBar) and bar_index - lastEventBar <= 30)
+
+scoreLong() =>
+    int s = 0
+    s := s + ((externalTrend == 1) ? 2 : 0)
+    s := s + ((internalTrend == 1) ? 1 : 0)
+    s := s + ((not useHtf or htfTrend == 1) ? 2 : 0)
+    s := s + ((bullBos or (externalTrend == 1 and not na(lastEventBar) and bar_index - lastEventBar <= 30 and str.contains(lastEvent, "BOS"))) ? 2 : 0)
+    s := s + ((bullChoch or (not na(lastEventBar) and bar_index - lastEventBar <= 30 and lastEvent == "Bullish CHoCH")) ? 1 : 0)
+    s := s + (recentBullSweep ? 2 : 0)
+    s := s + (inBullOb ? 1 : 0)
+    s := s + (inBullFvg ? 1 : 0)
+    s := s + ((inOte and fibDir == 1) ? 2 : 0)
+    s := s + (recentBullDisp ? 1 : 0)
+    s := s + ((useVol and volOk) ? 1 : 0)
+    s := s + ((useEma and emaBull) ? 1 : 0)
+    s
+
+scoreShort() =>
+    int s = 0
+    s := s + ((externalTrend == -1) ? 2 : 0)
+    s := s + ((internalTrend == -1) ? 1 : 0)
+    s := s + ((not useHtf or htfTrend == -1) ? 2 : 0)
+    s := s + ((bearBos or (externalTrend == -1 and not na(lastEventBar) and bar_index - lastEventBar <= 30 and str.contains(lastEvent, "BOS"))) ? 2 : 0)
+    s := s + ((bearChoch or (not na(lastEventBar) and bar_index - lastEventBar <= 30 and lastEvent == "Bearish CHoCH")) ? 1 : 0)
+    s := s + (recentBearSweep ? 2 : 0)
+    s := s + (inBearOb ? 1 : 0)
+    s := s + (inBearFvg ? 1 : 0)
+    s := s + ((inOte and fibDir == -1) ? 2 : 0)
+    s := s + (recentBearDisp ? 1 : 0)
+    s := s + ((useVol and volOk) ? 1 : 0)
+    s := s + ((useEma and emaBear) ? 1 : 0)
+    s
+
+longScore  = scoreLong()
+shortScore = scoreShort()
+
+bullCandle = close > open
+bearCandle = close < open
+
+strictLong = externalTrend == 1 and recentBullStruct and recentBullDisp and fibDir == 1 and inDiscount and inOte and (inBullOb or inBullFvg) and recentBullSweep and (not useHtf or htfTrend == 1) and bullCandle
+strictShort = externalTrend == -1 and recentBearStruct and recentBearDisp and fibDir == -1 and inDiscount and inOte and (inBearOb or inBearFvg) and recentBearSweep and (not useHtf or htfTrend == -1) and bearCandle
+
+scoreLongOk  = longScore  >= minScore and fibDir == 1 and inOte and bullCandle
+scoreShortOk = shortScore >= minScore and fibDir == -1 and inOte and bearCandle
+
+baseLong  = signalMode == "Strict" ? strictLong  : scoreLongOk
+baseShort = signalMode == "Strict" ? strictShort : scoreShortOk
+
+baseLong  := baseLong  and (not reqSweep or recentBullSweep) and (not reqOB or inBullOb) and (not reqFvg or inBullFvg) and (not reqDisp or recentBullDisp) and (not useRsi or rsiLong)
+baseShort := baseShort and (not reqSweep or recentBearSweep) and (not reqOB or inBearOb) and (not reqFvg or inBearFvg) and (not reqDisp or recentBearDisp) and (not useRsi or rsiShort)
+
+noActive = trade.status == ST_NONE or trade.status >= ST_TP3
+confirmed = not confirmClose or barstate.isconfirmed
+
+calcEntry(int dir) =>
+    float e = close
+    if entryMethod == "Fibonacci" and fibValid
+        e := fEntry
+    else if entryMethod == "Zone"
+        float zm = na(zoneMid(orderBlocks, dir)) ? zoneMid(fairValueGaps, dir) : zoneMid(orderBlocks, dir)
+        e := na(zm) ? close : zm
+    e
+
+calcStop(int dir, float entryP) =>
+    float s = na
+    structural = dir == DIR_LONG ? (na(sweepBullLow) ? low : math.min(sweepBullLow, low)) : (na(sweepBearHigh) ? high : math.max(sweepBearHigh, high))
+    zoneE = zoneEdge(orderBlocks, dir)
+    if stopMethod == "ATR"
+        s := dir == DIR_LONG ? entryP - atr * math.max(atrBuf, 1.0) : entryP + atr * math.max(atrBuf, 1.0)
+    else if stopMethod == "Zone" and not na(zoneE)
+        s := dir == DIR_LONG ? zoneE - atr * atrBuf : zoneE + atr * atrBuf
+    else
+        base = dir == DIR_LONG ? (na(zoneE) ? structural : math.min(structural, zoneE)) : (na(zoneE) ? structural : math.max(structural, zoneE))
+        s := dir == DIR_LONG ? base - atr * atrBuf : base + atr * atrBuf
+    s
+
+smartTargets(int dir, float entryP) =>
+    float t1 = na
+    float t2 = na
+    float t3 = na
+    if dir == DIR_LONG
+        t1 := not na(intHighLvl) and intHighLvl > entryP ? intHighLvl : na
+        t2 := not na(extHighLvl) and extHighLvl > entryP ? extHighLvl : (not na(eqhLevel) and eqhLevel > entryP ? eqhLevel : na)
+        t3 := fibValid ? math.max(fe272, entryP) : na
+    else
+        t1 := not na(intLowLvl) and intLowLvl < entryP ? intLowLvl : na
+        t2 := not na(extLowLvl) and extLowLvl < entryP ? extLowLvl : (not na(eqlLevel) and eqlLevel < entryP ? eqlLevel : na)
+        t3 := fibValid ? math.min(fe272, entryP) : na
+    [t1, t2, t3]
+
+bool longSignal  = false
+bool shortSignal = false
+
+tryOpen(int dir, int sc) =>
+    e = calcEntry(dir)
+    s = calcStop(dir, e)
+    [s1, s2, s3] = smartTargets(dir, e)
+    bool ok = not na(e) and not na(s)
+    float risk = ok ? (dir == DIR_LONG ? e - s : s - e) : na
+    ok := ok and not na(risk) and risk > 0 and risk <= atr * maxStopAtr
+    float t1 = na
+    float t2 = na
+    float t3 = na
+    if ok
+        rt1 = dir == DIR_LONG ? e + risk * tp1R : e - risk * tp1R
+        rt2 = dir == DIR_LONG ? e + risk * tp2R : e - risk * tp2R
+        rt3 = dir == DIR_LONG ? e + risk * tp3R : e - risk * tp3R
+        if targetMode == "Risk multiple"
+            t1 := rt1
+            t2 := rt2
+            t3 := rt3
+        else if targetMode == "Smart money"
+            t1 := na(s1) ? rt1 : s1
+            t2 := na(s2) ? rt2 : s2
+            t3 := na(s3) ? rt3 : s3
+        else
+            t1 := na(s1) ? rt1 : s1
+            t2 := na(s2) ? rt2 : s2
+            t3 := rt3
+
+        t1 := dir == DIR_LONG ? (t1 > e ? t1 : rt1) : (t1 < e ? t1 : rt1)
+        t2 := dir == DIR_LONG ? (t2 > t1 ? t2 : rt2) : (t2 < t1 ? t2 : rt2)
+        t3 := dir == DIR_LONG ? (t3 > t2 ? t3 : rt3) : (t3 < t2 ? t3 : rt3)
+        rr = math.abs(t2 - e) / risk
+        ok := ok and rr >= minRR
+    [ok, e, s, t1, t2, t3]
+
+[lOk, lE, lS, lT1, lT2, lT3] = tryOpen(DIR_LONG, longScore)
+[sOk, sE, sS, sT1, sT2, sT3] = tryOpen(DIR_SHORT, shortScore)
+
+if noActive and confirmed and baseLong and lOk
+    trade := TradeSetup.new(DIR_LONG, bar_index, lE, lS, lT1, lT2, lT3, longScore, ST_ACTIVE)
+    lastScore := longScore
+    longSignal := true
+
+if noActive and confirmed and baseShort and not longSignal and sOk
+    trade := TradeSetup.new(DIR_SHORT, bar_index, sE, sS, sT1, sT2, sT3, shortScore, ST_ACTIVE)
+    lastScore := shortScore
+    shortSignal := true
+
+bool tp1Hit = false
+bool tp2Hit = false
+bool tp3Hit = false
+bool slHit = false
+
+if trade.status >= ST_ACTIVE and trade.status < ST_TP3
+    if trade.direction == DIR_LONG
+        if low <= trade.stop
+            trade.status := ST_STOP
+            slHit := true
+        else
+            if high >= trade.tp1 and trade.status == ST_ACTIVE
+                trade.status := ST_TP1
+                tp1Hit := true
+                if beAfterTp1
+                    trade.stop := trade.entry
+            if high >= trade.tp2 and trade.status == ST_TP1
+                trade.status := ST_TP2
+                tp2Hit := true
+            if high >= trade.tp3 and trade.status == ST_TP2
+                trade.status := ST_TP3
+                tp3Hit := true
+            tp3Hit := tp3Hit
+    else
+        if high >= trade.stop
+            trade.status := ST_STOP
+            slHit := true
+        else
+            if low <= trade.tp1 and trade.status == ST_ACTIVE
+                trade.status := ST_TP1
+                tp1Hit := true
+                if beAfterTp1
+                    trade.stop := trade.entry
+            if low <= trade.tp2 and trade.status == ST_TP1
+                trade.status := ST_TP2
+                tp2Hit := true
+            if low <= trade.tp3 and trade.status == ST_TP2
+                trade.status := ST_TP3
+                tp3Hit := true
+            tp3Hit := tp3Hit
+
+if trade.status >= ST_ACTIVE and trade.status <= ST_TP2
+    if (trade.direction == DIR_LONG and (bearBos or bearChoch)) or (trade.direction == DIR_SHORT and (bullBos or bullChoch))
+        trade.status := ST_STOP
+
+if trade.status == ST_STOP
+    trade.status := ST_NONE
+    trade.direction := 0
+
+drawTrade(int dir, float e, float s, float t1, float t2, float t3, int sc) =>
+    l = bar_index
+    r = bar_index + math.max(zoneRight * 3, 10)
+    addLine(tradeLines, line.new(l, e, r, e, color = color.new(color.blue, 0), width = 2), 60)
+    addLine(tradeLines, line.new(l, s, r, s, color = color.new(cBear, 0), width = 1, style = line.style_dashed), 60)
+    addLine(tradeLines, line.new(l, t1, r, t1, color = color.new(cBull, 30), width = 1), 60)
+    addLine(tradeLines, line.new(l, t2, r, t2, color = color.new(cBull, 15), width = 1), 60)
+    addLine(tradeLines, line.new(l, t3, r, t3, color = color.new(cBull, 0), width = 1), 60)
+    rr = math.abs(t3 - e) / math.abs(e - s)
+    txt = (dir == DIR_LONG ? "BUY" : "SELL") + "  Score: " + str.tostring(sc) + "/16" + "\nEntry: " + fmt(e) + "\nSL: " + fmt(s) + "\nTP1: " + fmt(t1) + "\nTP2: " + fmt(t2) + "\nTP3: " + fmt(t3) + "\nRR: 1:" + str.tostring(rr, "#.##")
+    addLabel(tradeLabels, label.new(bar_index, dir == DIR_LONG ? low : high, txt, style = dir == DIR_LONG ? label.style_label_up : label.style_label_down, color = lblBg(dir == DIR_LONG ? cBull : cBear, 15), textcolor = plainLbl ? (dir == DIR_LONG ? cBull : cBear) : color.white, size = szTrade), maxSignals)
+
+if showTradeEff and (longSignal or shortSignal)
+    drawTrade(trade.direction, trade.entry, trade.stop, trade.tp1, trade.tp2, trade.tp3, trade.score)
+
+plotshape(longSignal,  "Long signal",  shape.triangleup,   location.belowbar, cBull, size = size.small)
+plotshape(shortSignal, "Short signal", shape.triangledown, location.abovebar, cBear, size = size.small)
+plotshape(tp1Hit, "TP1", shape.circle, location.abovebar, color.new(cBull, 30), size = size.tiny)
+plotshape(tp2Hit, "TP2", shape.circle, location.abovebar, color.new(cBull, 15), size = size.tiny)
+plotshape(tp3Hit, "TP3", shape.circle, location.abovebar, color.new(cBull, 0),  size = size.tiny)
+
+var table dash = na
+
+trendTxt(int t) => t == 1 ? "Bullish" : t == -1 ? "Bearish" : "Neutral"
+trendCol(int t) => t == 1 ? cBull : t == -1 ? cBear : color.gray
+
+if showDash and barstate.islast
+    if na(dash)
+        dash := table.new(position.top_right, 2, 10, border_width = 1, frame_width = 1, frame_color = color.new(color.gray, 60))
+    table.set_position(dash, dashPosition(dashPos))
+    bgH = color.new(color.black, 20)
+    txtC = color.white
+    table.cell(dash, 0, 0, "MS + SMC", bgcolor = color.new(color.blue, 30), text_color = txtC, text_size = szDash)
+    table.cell(dash, 1, 0, timeframe.period + " / HTF " + htfTf, bgcolor = color.new(color.blue, 30), text_color = txtC, text_size = szDash)
+    table.cell(dash, 0, 1, "External structure", bgcolor = bgH, text_color = txtC, text_size = szDash)
+    table.cell(dash, 1, 1, trendTxt(externalTrend), bgcolor = bgH, text_color = trendCol(externalTrend), text_size = szDash)
+    table.cell(dash, 0, 2, "Internal structure", bgcolor = bgH, text_color = txtC, text_size = szDash)
+    table.cell(dash, 1, 2, trendTxt(internalTrend), bgcolor = bgH, text_color = trendCol(internalTrend), text_size = szDash)
+    table.cell(dash, 0, 3, "HTF structure", bgcolor = bgH, text_color = txtC, text_size = szDash)
+    table.cell(dash, 1, 3, trendTxt(htfTrend), bgcolor = bgH, text_color = trendCol(htfTrend), text_size = szDash)
+    table.cell(dash, 0, 4, "Last event", bgcolor = bgH, text_color = txtC, text_size = szDash)
+    table.cell(dash, 1, 4, lastEvent, bgcolor = bgH, text_color = txtC, text_size = szDash)
+    table.cell(dash, 0, 5, "Price zone", bgcolor = bgH, text_color = txtC, text_size = szDash)
+    table.cell(dash, 1, 5, not fibValid ? "-" : inDiscount ? "Discount" : "Premium", bgcolor = bgH, text_color = txtC, text_size = szDash)
+    table.cell(dash, 0, 6, "Fib entry level", bgcolor = bgH, text_color = txtC, text_size = szDash)
+    table.cell(dash, 1, 6, fibValid ? fmt(fEntry) : "-", bgcolor = bgH, text_color = txtC, text_size = szDash)
+    table.cell(dash, 0, 7, "Liquidity", bgcolor = bgH, text_color = txtC, text_size = szDash)
+    table.cell(dash, 1, 7, recentBullSweep ? "Sell-side swept" : recentBearSweep ? "Buy-side swept" : "-", bgcolor = bgH, text_color = txtC, text_size = szDash)
+    table.cell(dash, 0, 8, "Order block / FVG", bgcolor = bgH, text_color = txtC, text_size = szDash)
+    table.cell(dash, 1, 8, (inBullOb or inBearOb ? "OB " : "") + (inBullFvg or inBearFvg ? "FVG" : "") + (not (inBullOb or inBearOb or inBullFvg or inBearFvg) ? "-" : ""), bgcolor = bgH, text_color = txtC, text_size = szDash)
+    table.cell(dash, 0, 9, "Order Blocks (Int/Swing)", bgcolor = bgH, text_color = txtC, text_size = szDash)
+    table.cell(dash, 1, 9, str.tostring(array.size(internalOrderBlocks)) + " / " + str.tostring(array.size(orderBlocks)), bgcolor = bgH, text_color = txtC, text_size = szDash)
+else
+    tdel = dash
+    dash := na
+    table.delete(tdel)
+
+plotchar(statusLine ? externalTrend : na, "Trend",       "", location.top, display = display.status_line)
+plotchar(statusLine ? longScore  : na,    "Long score",  "", location.top, display = display.status_line)
+plotchar(statusLine ? shortScore : na,    "Short score", "", location.top, display = display.status_line)
+
+alertcondition(intBullBos,   "Internal Bullish BOS",   "Internal Bullish BOS formed on {{ticker}} {{interval}}")
+alertcondition(intBullChoch, "Internal Bullish CHoCH", "Internal Bullish CHoCH formed on {{ticker}} {{interval}}")
+alertcondition(intBearBos,   "Internal Bearish BOS",   "Internal Bearish BOS formed on {{ticker}} {{interval}}")
+alertcondition(intBearChoch, "Internal Bearish CHoCH", "Internal Bearish CHoCH formed on {{ticker}} {{interval}}")
+
+alertcondition(bullBos,   "Swing Bullish BOS",   "Swing Bullish Break of Structure on {{ticker}} {{interval}}")
+alertcondition(bearBos,   "Swing Bearish BOS",   "Swing Bearish Break of Structure on {{ticker}} {{interval}}")
+alertcondition(bullChoch, "Swing Bullish CHoCH", "Swing Bullish Change of Character on {{ticker}} {{interval}}")
+alertcondition(bearChoch, "Swing Bearish CHoCH", "Swing Bearish Change of Character on {{ticker}} {{interval}}")
+
+alertcondition(intBullObBreak, "Internal Bullish OB Breakout", "Price broke a bullish internal order block on {{ticker}}")
+alertcondition(intBearObBreak, "Internal Bearish OB Breakout", "Price broke a bearish internal order block on {{ticker}}")
+alertcondition(extBullObBreak, "Swing Bullish OB Breakout",    "Price broke a bullish swing order block on {{ticker}}")
+alertcondition(extBearObBreak, "Swing Bearish OB Breakout",    "Price broke a bearish swing order block on {{ticker}}")
+alertcondition(inBullOb or inBearOb,  "Swing OB touched", "Price is inside a swing Order Block on {{ticker}}")
+alertcondition(inBullFvg or inBearFvg, "FVG touched", "Price is inside a Fair Value Gap on {{ticker}}")
+
+alertcondition(eqhFormed, "Equal Highs", "Equal highs detected on {{ticker}} {{interval}}")
+alertcondition(eqlFormed, "Equal Lows",  "Equal lows detected on {{ticker}} {{interval}}")
+alertcondition(bullSweep, "Sell-side liquidity swept", "Sell-side liquidity swept on {{ticker}} {{interval}}")
+alertcondition(bearSweep, "Buy-side liquidity swept", "Buy-side liquidity swept on {{ticker}} {{interval}}")
+alertcondition(bullTrendBreak, "Bullish Trendline Break", "Bullish liquidity trendline break on {{ticker}} {{interval}}")
+alertcondition(bearTrendBreak, "Bearish Trendline Break", "Bearish liquidity trendline break on {{ticker}} {{interval}}")
+alertcondition(patternEvent, "Detected Pattern", "Chart pattern detected on {{ticker}} {{interval}}")
+
+alertcondition(longSignal,  "Long entry",  "SMC LONG setup on {{ticker}} {{interval}}")
+alertcondition(shortSignal, "Short entry", "SMC SHORT setup on {{ticker}} {{interval}}")
+alertcondition(tp1Hit, "TP1 reached", "TP1 reached on {{ticker}} {{interval}}")
+alertcondition(tp2Hit, "TP2 reached", "TP2 reached on {{ticker}} {{interval}}")
+alertcondition(tp3Hit, "TP3 reached", "TP3 reached on {{ticker}} {{interval}}")
+alertcondition(slHit,  "Stop-loss reached", "Stop-loss hit on {{ticker}} {{interval}}")
+
+if longSignal or shortSignal
+    dirTxt = longSignal ? "LONG" : "SHORT"
+    alert("SMC " + dirTxt + " SETUP\nSymbol: " + syminfo.ticker + "\nTimeframe: " + timeframe.period + "\nEntry: " + fmt(trade.entry) + "\nStop: " + fmt(trade.stop) + "\nTP1: " + fmt(trade.tp1) + "\nTP2: " + fmt(trade.tp2) + "\nTP3: " + fmt(trade.tp3) + "\nScore: " + str.tostring(trade.score) + "/16", alert.freq_once_per_bar_close)
+
+var array<box> vobBoxes = array.new<box>()
+var array<line> vobLines = array.new<line>()
+var array<label> vobLabels = array.new<label>()
+
+vobDraw(Zone z, float denominator, bool side) =>
+    int left = side ? bar_index + vobGap : math.max(z.leftBar, bar_index - 9999)
+    int right = side ? left + vobWidth : bar_index + vobRight
+    int metricX = side ? right + 2 : bar_index + 2
+
+    int span = side ? vobWidth : math.max(1, bar_index - left)
+    float mid = math.avg(z.top, z.bottom)
+    color col = z.direction == DIR_LONG ? vobBull : vobBear
+    if z.isBreaker
+        col := z.direction == DIR_LONG ? vobBear : vobBull
+    array.push(vobBoxes, box.new(left, z.top, right, z.bottom, border_color = z.isBreaker ? color.new(col, 30) : na, border_style = line.style_dashed, bgcolor = color.new(col, z.isBreaker ? 98 : vobFill)))
+    if obMidline
+        array.push(vobLines, line.new(left, mid, right, mid, color = col, style = line.style_dashed))
+    if vobActivity and not z.isBreaker and not na(z.totalVolume) and z.totalVolume > 0
+        float ratio = math.max(0.0, math.min(1.0, z.buyVolume / z.totalVolume))
+        int buyWidth = int(math.round(span * ratio))
+        int sellWidth = int(math.round(span * (1.0 - ratio)))
+        if buyWidth > 0
+            array.push(vobBoxes, box.new(left, z.top, left + buyWidth, mid, border_color = na, bgcolor = color.new(vobBull, vobBarFill)))
+        if sellWidth > 0
+            array.push(vobBoxes, box.new(left, mid, left + sellWidth, z.bottom, border_color = na, bgcolor = color.new(vobBear, vobBarFill)))
+    if obMetrics or z.isBreaker
+        string txt = z.isBreaker ? "Breaker" : na(z.totalVolume) ? "Volume unavailable" : z.totalVolume == 0 ? "Zero interval volume" : str.tostring(z.totalVolume, format.volume) + (denominator > 0 ? " (" + str.tostring(100.0 * z.totalVolume / denominator, "#") + "%)" : " (N/A)")
+        if vobStatsText and not z.isBreaker
+            txt += "  Z=" + (na(z.volumeZ) ? "N/A" : str.tostring(z.volumeZ, "#.##"))
+        string tip = "Broken-pivot interval: " + str.tostring(z.brokenIntervalVolume, format.volume) + "\nVolume start: " + (na(z.volumeStartTime) ? "N/A" : str.format_time(z.volumeStartTime, "yyyy-MM-dd HH:mm", syminfo.timezone)) + "\nVolume end: " + (na(z.volumeEndTime) ? "N/A" : str.format_time(z.volumeEndTime, "yyyy-MM-dd HH:mm", syminfo.timezone)) + "\nEngine: " + vobEngine + "\nOrigin: " + str.format_time(z.originTime, "yyyy-MM-dd HH:mm", syminfo.timezone) + "\nV1: " + str.tostring(z.originVolume, format.volume) + " | V3: " + str.tostring(z.local3Volume, format.volume) + "\nVN: " + str.tostring(z.localNVolume, format.volume) + " | Origin-to-confirm: " + str.tostring(z.throughConfirmationVolume, format.volume) + "\nSupply = bearish OB; demand = bullish OB.\nConfirmed on bar " + str.tostring(z.createdBar) + ". Origin drawn retrospectively.\nVolume interval: " + vobVolumeMode + "\nBuy/sell: " + vobSplit + " OHLCV estimate, not bid/ask data.\nBuy: " + str.tostring(z.buyVolume, format.volume) + "\nSell: " + str.tostring(z.sellVolume, format.volume) + "\nPercentage denominator: visible, non-breaker blocks after overlap and statistical filtering.\nZ-score is descriptive, not a success probability."
+        array.push(vobLabels, label.new(metricX, mid, txt, style = label.style_label_left, color = color.new(col, 100), textcolor = col, size = fsize(vobTextSize), tooltip = tip))
+
+if barstate.islast
+
+    while array.size(vobBoxes) > 0
+        box.delete(array.pop(vobBoxes))
+    while array.size(vobLines) > 0
+        line.delete(array.pop(vobLines))
+    while array.size(vobLabels) > 0
+        label.delete(array.pop(vobLabels))
+    array<Zone> candidates = array.new<Zone>()
+    array<Zone> visible = array.new<Zone>()
+    int swingAdded = 0
+    if array.size(orderBlocks) > 0
+        for i = array.size(orderBlocks) - 1 to 0
+            z = array.get(orderBlocks, i)
+            if z.active and (vobEngine != "Legacy structure breaks" or swingAdded < obKeep)
+                array.push(candidates, z)
+                swingAdded += 1
+    int internalAdded = 0
+    if array.size(internalOrderBlocks) > 0
+        for i = array.size(internalOrderBlocks) - 1 to 0
+            z = array.get(internalOrderBlocks, i)
+            if z.active and internalAdded < internalObKeep
+                array.push(candidates, z)
+                internalAdded += 1
+
+    while array.size(candidates) > 0 and array.size(visible) < vobLast
+        int newest = 0
+        if array.size(candidates) > 1
+            for i = 1 to array.size(candidates) - 1
+                a = array.get(candidates, i)
+                b = array.get(candidates, newest)
+                if a.createdBar > b.createdBar or (a.createdBar == b.createdBar and a.leftBar > b.leftBar)
+                    newest := i
+        z = array.remove(candidates, newest)
+        bool suppress = vobStats and not z.isBreaker and (na(z.volumeZ) or z.volumeZ < vobMinZ)
+        for e in visible
+            bool same = z.leftBar == e.leftBar and z.direction == e.direction and z.top == e.top and z.bottom == e.bottom
+            bool overlap = math.min(z.top, e.top) > math.max(z.bottom, e.bottom)
+            if same or (obHideOverlap and overlap)
+                suppress := true
+        if not suppress
+            array.push(visible, z)
+    float total = 0.0
+    for z in visible
+        if not z.isBreaker
+            total += nz(z.totalVolume)
+    for z in visible
+        if vobLayout != "Side chart"
+            vobDraw(z, total, false)
+        if vobLayout != "Reference overlay"
+            vobDraw(z, total, true)
+
+alertcondition(intBullChochPlus, "Internal Bullish CHoCH+", "Supported internal bullish CHoCH on {{ticker}} {{interval}}")
+alertcondition(intBearChochPlus, "Internal Bearish CHoCH+", "Supported internal bearish CHoCH on {{ticker}} {{interval}}")
+alertcondition(bullChochPlus, "Swing Bullish CHoCH+", "Supported swing bullish CHoCH on {{ticker}} {{interval}}")
+alertcondition(bearChochPlus, "Swing Bearish CHoCH+", "Supported swing bearish CHoCH on {{ticker}} {{interval}}")

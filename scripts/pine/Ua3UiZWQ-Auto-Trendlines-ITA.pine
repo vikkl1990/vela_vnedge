@@ -1,0 +1,379 @@
+// © ITA Trading Tools - itamardrori_
+//@version=6
+// =============================================================================
+// Auto Trendlines [ITA]
+//
+// A line through two points is not a trendline. It is a line. Every automatic
+// trendline tool draws one the moment two pivots exist, and most of what ends
+// up on the chart is exactly that - a line connecting two arbitrary highs that
+// price has never once come back to.
+//
+// The number that separates the two is how many times price returned to the
+// line and turned away from it. A line with five touches is being respected.
+// A line with two is just the two points it was drawn through.
+//
+// Two things follow from that, and both were learned by getting them wrong.
+//
+// The line has to survive long enough to earn a count, so it is not rebuilt
+// every time a new swing forms. A swing sitting on the line is a touch. Only a
+// swing that clears it invalidates it.
+//
+// And a broken line stays on the chart. In any trend the opposing line breaks
+// constantly, so deleting broken lines leaves an empty chart most of the time -
+// while a line that held five touches and then broke is the most informative
+// thing here. It is kept, faded, with its final count still on it.
+// =============================================================================
+
+indicator("Auto Trendlines [ITA]", overlay = true,
+     max_lines_count = 100, max_labels_count = 200)
+
+// ─── INPUTS ──────────────────────────────────────────────────────────────────
+grpDetect = "Detection"
+pivotLen  = input.int(8, "Swing Lookback", minval = 2, maxval = 50, group = grpDetect,
+     tooltip = "Bars either side of a swing point. Higher means fewer and more significant pivots, and therefore fewer and longer lived lines.")
+// Was 0.5. On SPY daily that is about 4.5 points either side of the line, loose
+// enough to count a wick that visibly stopped a point short as a touch - which is
+// what a user found by zooming in. A count people can check by eye has to match
+// what they see.
+touchTol  = input.float(0.25, "Touch Tolerance (x ATR)", minval = 0.05, maxval = 3.0, step = 0.05, group = grpDetect,
+     tooltip = "How close price has to come to the line to count as a touch, measured in ATR so it behaves the same on a five dollar stock and a seven hundred dollar index.")
+touchGap  = input.int(3, "Minimum Bars Between Touches", minval = 1, maxval = 50, group = grpDetect,
+     tooltip = "Stops a single approach that sits on the line for several bars from being counted as several separate touches.")
+extendBars = input.int(20, "Extend Right (bars)", minval = 0, maxval = 200, group = grpDetect)
+
+grpShow = "Display"
+showRes    = input.bool(true, "Resistance Lines", group = grpShow)
+showSup    = input.bool(true, "Support Lines", group = grpShow)
+showBroken = input.bool(true, "Keep Broken Lines", group = grpShow,
+     tooltip = "A broken line is left on the chart, faded, with its final touch count. Turn this off for only the two live lines.")
+showCount  = input.bool(true, "Show Touch Count", group = grpShow)
+showBreak  = input.bool(true, "Mark Breaks", group = grpShow)
+minTouches = input.int(3, "Fade Lines Under This Many Touches", minval = 0, maxval = 10, group = grpShow,
+     tooltip = "Live lines with fewer touches than this are drawn faintly. Every line starts at two, because it is drawn through two swings. Three is the first number that means the market came back.")
+lblSizeStr = input.string("Normal", "Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = grpShow)
+lineWidth  = input.int(2, "Line Width", minval = 1, maxval = 4, group = grpShow)
+
+grpCol = "Colors"
+resCol   = input.color(#f23645, "Resistance", group = grpCol)
+supCol   = input.color(#089981, "Support", group = grpCol)
+brokeCol = input.color(color.new(#787b86, 45), "Broken Line", group = grpCol)
+breakCol = input.color(#ff9800, "Break Marker", group = grpCol)
+
+sizeOf(string s) =>
+    r = size.normal
+    if s == "Tiny"
+        r := size.tiny
+    else if s == "Small"
+        r := size.small
+    else if s == "Large"
+        r := size.large
+    else if s == "Huge"
+        r := size.huge
+    r
+
+lblSize = sizeOf(lblSizeStr)
+atr     = ta.atr(14)
+tol     = atr * touchTol
+
+// The price the line sits at on a given bar. Pure, so both sides can share it
+// without either writing to the other's state.
+lineVal(float x1, float y1, float x2, float y2, int b) =>
+    m = x2 == x1 ? 0.0 : (y2 - y1) / (x2 - x1)
+    y2 + m * (b - x2)
+
+// 72 was invisible on a dark chart. A faded line still has to be a line.
+alphaFor(int touches) =>
+    touches < minTouches ? 55 : 0
+
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+
+// ─── RESISTANCE ──────────────────────────────────────────────────────────────
+// Pivot memory and line anchors are kept apart on purpose. An earlier version
+// rebuilt the line from the two newest pivots on every pivot and reset the
+// count with it, so every chart read "0 touches".
+var float rp1x = na
+var float rp1y = na
+var float rp2x = na
+var float rp2y = na
+
+var float rlx1 = na
+var float rly1 = na
+var float rlx2 = na
+var float rly2 = na
+
+var int   rTouch   = 0
+var int   rLastHit = na
+var bool  rBroken  = true
+var line  rLine    = na
+var label rLbl     = na
+
+resBreak = false
+rebuildR = false
+
+if not na(ph)
+    rp1x := rp2x
+    rp1y := rp2y
+    rp2x := bar_index - pivotLen
+    rp2y := ph
+
+    rObsolete = false
+    if not rBroken
+        v = lineVal(rlx1, rly1, rlx2, rly2, int(rp2x))
+        if rp2y > v + tol
+            // The swing cleared the line. That line is finished, not touched.
+            rBroken := true
+        else if rp2y >= v - tol
+            // The live scan has usually counted this bar already, as it
+            // happened. Spacing is measured in bar positions so the same swing
+            // is not counted again when it is confirmed eight bars later.
+            if na(rLastHit) or (int(rp2x) - rLastHit) >= touchGap
+                rTouch   += 1
+                rLastHit := int(rp2x)
+        else
+            // A new high well below the line means price has left the line
+            // behind. Doing nothing here is what let a support line built in
+            // 2015 at 181 sit untouched under price at 763 for ten years.
+            rObsolete := true
+
+    // Only a lower high makes a falling resistance line. Connecting the two
+    // newest pivots regardless of shape was the earlier fault: in an uptrend
+    // every new high clears the previous line, so it was rebuilt on nearly
+    // every pivot and the count never got past two.
+    if (rBroken or rObsolete) and not na(rp1x) and rp2y < rp1y
+        rebuildR := true
+
+if rebuildR
+    // A broken line was already frozen and detached, so it stays as history.
+    // A line still attached here is an obsolete one price simply walked away
+    // from. It never broke, so it has nothing to say, and leaving it would
+    // draw a line from years ago straight across the chart.
+    if not na(rLine)
+        line.delete(rLine)
+    if not na(rLbl)
+        label.delete(rLbl)
+    rLine := na
+    rLbl  := na
+    rlx1  := rp1x
+    rly1  := rp1y
+    rlx2  := rp2x
+    rly2  := rp2y
+    // Drawn through two swings, so it starts at two.
+    rTouch   := 2
+    rLastHit := int(rlx2)
+    rBroken  := false
+    // A swing is only confirmed Swing Lookback bars after it happens, so by
+    // the time this line exists those bars are already in the past and the
+    // live scan never saw them. Any touch in that gap was silently dropped -
+    // SPY daily read 2 touches on a falling line with three clear highs on it.
+    // Scan the gap once, oldest bar first.
+    gapBars = bar_index - int(rlx2) - 1
+    if gapBars > 0
+        for i = gapBars to 1
+            b  = bar_index - i
+            lv = lineVal(rlx1, rly1, rlx2, rly2, b)
+            if math.abs(high[i] - lv) <= tol and (b - rLastHit) >= touchGap
+                rTouch   += 1
+                rLastHit := b
+
+if showRes and not rBroken and not na(rlx1)
+    v = lineVal(rlx1, rly1, rlx2, rly2, bar_index)
+    // A touch is price reaching the line, not closing through it.
+    near = math.abs(high - v) <= tol
+    ok   = na(rLastHit) or (bar_index - rLastHit) >= touchGap
+    if near and ok and bar_index > rlx2
+        rTouch   += 1
+        rLastHit := bar_index
+
+    broke = close > v + tol and bar_index > rlx2
+    endX  = broke ? bar_index : bar_index + extendBars
+    endY  = broke ? v : lineVal(rlx1, rly1, rlx2, rly2, bar_index + extendBars)
+    col   = broke ? brokeCol : color.new(resCol, alphaFor(rTouch))
+
+    if na(rLine)
+        rLine := line.new(int(rlx1), rly1, endX, endY, color = col, width = lineWidth)
+    else
+        line.set_xy1(rLine, int(rlx1), rly1)
+        line.set_xy2(rLine, endX, endY)
+        line.set_color(rLine, col)
+
+    if showCount
+        txt = str.tostring(rTouch) + (rTouch == 1 ? " touch" : " touches")
+        if na(rLbl)
+            // Above the line for resistance and below it for support. When the two lines
+            // converge into a triangle their ends meet, and side-by-side labels
+            // land on top of each other.
+            rLbl := label.new(endX, endY, txt, style = label.style_label_lower_left, color = color.new(broke ? brokeCol : resCol, 10), textcolor = color.white, size = lblSize)
+        else
+            label.set_xy(rLbl, endX, endY)
+            label.set_text(rLbl, txt)
+            label.set_color(rLbl, color.new(broke ? brokeCol : resCol, 10))
+
+    if broke
+        rBroken  := true
+        resBreak := true
+        if not showBroken
+            line.delete(rLine)
+            if not na(rLbl)
+                label.delete(rLbl)
+        rLine := na
+        rLbl  := na
+
+if showBreak and resBreak
+    label.new(bar_index, high + atr * 0.8, "Break ↑", style = label.style_label_down, color = color.new(breakCol, 10), textcolor = color.white, size = lblSize)
+
+// ─── SUPPORT ─────────────────────────────────────────────────────────────────
+var float sp1x = na
+var float sp1y = na
+var float sp2x = na
+var float sp2y = na
+
+var float slx1 = na
+var float sly1 = na
+var float slx2 = na
+var float sly2 = na
+
+var int   sTouch   = 0
+var int   sLastHit = na
+var bool  sBroken  = true
+var line  sLine    = na
+var label sLbl     = na
+
+supBreak = false
+rebuildS = false
+
+if not na(pl)
+    sp1x := sp2x
+    sp1y := sp2y
+    sp2x := bar_index - pivotLen
+    sp2y := pl
+
+    sObsolete = false
+    if not sBroken
+        v = lineVal(slx1, sly1, slx2, sly2, int(sp2x))
+        if sp2y < v - tol
+            sBroken := true
+        else if sp2y <= v + tol
+            if na(sLastHit) or (int(sp2x) - sLastHit) >= touchGap
+                sTouch   += 1
+                sLastHit := int(sp2x)
+        else
+            sObsolete := true
+
+    // Mirror of the resistance rule: only a higher low makes a rising support.
+    if (sBroken or sObsolete) and not na(sp1x) and sp2y > sp1y
+        rebuildS := true
+
+if rebuildS
+    if not na(sLine)
+        line.delete(sLine)
+    if not na(sLbl)
+        label.delete(sLbl)
+    sLine := na
+    sLbl  := na
+    slx1  := sp1x
+    sly1  := sp1y
+    slx2  := sp2x
+    sly2  := sp2y
+    sTouch   := 2
+    sLastHit := int(slx2)
+    sBroken  := false
+    gapBarsS = bar_index - int(slx2) - 1
+    if gapBarsS > 0
+        for i = gapBarsS to 1
+            b  = bar_index - i
+            lv = lineVal(slx1, sly1, slx2, sly2, b)
+            if math.abs(low[i] - lv) <= tol and (b - sLastHit) >= touchGap
+                sTouch   += 1
+                sLastHit := b
+
+if showSup and not sBroken and not na(slx1)
+    v = lineVal(slx1, sly1, slx2, sly2, bar_index)
+    near = math.abs(low - v) <= tol
+    ok   = na(sLastHit) or (bar_index - sLastHit) >= touchGap
+    if near and ok and bar_index > slx2
+        sTouch   += 1
+        sLastHit := bar_index
+
+    broke = close < v - tol and bar_index > slx2
+    endX  = broke ? bar_index : bar_index + extendBars
+    endY  = broke ? v : lineVal(slx1, sly1, slx2, sly2, bar_index + extendBars)
+    col   = broke ? brokeCol : color.new(supCol, alphaFor(sTouch))
+
+    if na(sLine)
+        sLine := line.new(int(slx1), sly1, endX, endY, color = col, width = lineWidth)
+    else
+        line.set_xy1(sLine, int(slx1), sly1)
+        line.set_xy2(sLine, endX, endY)
+        line.set_color(sLine, col)
+
+    if showCount
+        txt = str.tostring(sTouch) + (sTouch == 1 ? " touch" : " touches")
+        if na(sLbl)
+            sLbl := label.new(endX, endY, txt, style = label.style_label_upper_left, color = color.new(broke ? brokeCol : supCol, 10), textcolor = color.white, size = lblSize)
+        else
+            label.set_xy(sLbl, endX, endY)
+            label.set_text(sLbl, txt)
+            label.set_color(sLbl, color.new(broke ? brokeCol : supCol, 10))
+
+    if broke
+        sBroken  := true
+        supBreak := true
+        if not showBroken
+            line.delete(sLine)
+            if not na(sLbl)
+                label.delete(sLbl)
+        sLine := na
+        sLbl  := na
+
+if showBreak and supBreak
+    label.new(bar_index, low - atr * 0.8, "Break ↓", style = label.style_label_up, color = color.new(breakCol, 10), textcolor = color.white, size = lblSize)
+
+// ─── DIAGNOSTIC ──────────────────────────────────────────────────────────────
+// Off by default and kept deliberately. Two rounds of reading this code for an
+// empty chart found nothing; one round of reading its state found the cause
+// immediately. Worth the twenty lines the next time something looks wrong.
+showDebug = input.bool(false, "Diagnostic Panel", group = grpShow)
+
+var int pivotHighs = 0
+var int pivotLows  = 0
+if not na(ph)
+    pivotHighs += 1
+if not na(pl)
+    pivotLows += 1
+
+var table dbg = na
+
+if showDebug and barstate.islast
+    if na(dbg)
+        dbg := table.new(position.bottom_left, 2, 12, border_width = 1, bgcolor = color.new(color.black, 20))
+    table.cell(dbg, 0, 0, "DIAGNOSTIC", text_color = color.yellow, text_size = size.small)
+    table.cell(dbg, 1, 0, "", text_color = color.yellow, text_size = size.small)
+    table.cell(dbg, 0, 1, "pivot highs seen", text_color = color.white, text_size = size.small)
+    table.cell(dbg, 1, 1, str.tostring(pivotHighs), text_color = color.white, text_size = size.small)
+    table.cell(dbg, 0, 2, "pivot lows seen", text_color = color.white, text_size = size.small)
+    table.cell(dbg, 1, 2, str.tostring(pivotLows), text_color = color.white, text_size = size.small)
+    table.cell(dbg, 0, 3, "res broken", text_color = color.white, text_size = size.small)
+    table.cell(dbg, 1, 3, str.tostring(rBroken), text_color = color.white, text_size = size.small)
+    table.cell(dbg, 0, 4, "sup broken", text_color = color.white, text_size = size.small)
+    table.cell(dbg, 1, 4, str.tostring(sBroken), text_color = color.white, text_size = size.small)
+    table.cell(dbg, 0, 5, "res touches", text_color = color.white, text_size = size.small)
+    table.cell(dbg, 1, 5, str.tostring(rTouch), text_color = color.white, text_size = size.small)
+    table.cell(dbg, 0, 6, "sup touches", text_color = color.white, text_size = size.small)
+    table.cell(dbg, 1, 6, str.tostring(sTouch), text_color = color.white, text_size = size.small)
+    // Support side only. Resistance draws, support never has, so these are the
+    // numbers that say whether the line is missing, off-screen, or never built.
+    table.cell(dbg, 0, 7, "sup anchor 1", text_color = color.lime, text_size = size.small)
+    table.cell(dbg, 1, 7, na(slx1) ? "na" : str.tostring(bar_index - slx1, "#") + " bars ago @ " + str.tostring(sly1, "#.##"), text_color = color.lime, text_size = size.small)
+    table.cell(dbg, 0, 8, "sup anchor 2", text_color = color.lime, text_size = size.small)
+    table.cell(dbg, 1, 8, na(slx2) ? "na" : str.tostring(bar_index - slx2, "#") + " bars ago @ " + str.tostring(sly2, "#.##"), text_color = color.lime, text_size = size.small)
+    table.cell(dbg, 0, 9, "sup line now", text_color = color.lime, text_size = size.small)
+    table.cell(dbg, 1, 9, na(slx1) ? "na" : str.tostring(lineVal(slx1, sly1, slx2, sly2, bar_index), "#.##"), text_color = color.lime, text_size = size.small)
+    table.cell(dbg, 0, 10, "low now", text_color = color.lime, text_size = size.small)
+    table.cell(dbg, 1, 10, str.tostring(low, "#.##"), text_color = color.lime, text_size = size.small)
+    table.cell(dbg, 0, 11, "sLine exists", text_color = color.lime, text_size = size.small)
+    table.cell(dbg, 1, 11, str.tostring(not na(sLine)), text_color = color.lime, text_size = size.small)
+
+// ─── ALERTS ──────────────────────────────────────────────────────────────────
+alertcondition(resBreak, "Resistance Trendline Broken", "Price closed above the falling trendline")
+alertcondition(supBreak, "Support Trendline Broken",    "Price closed below the rising trendline")

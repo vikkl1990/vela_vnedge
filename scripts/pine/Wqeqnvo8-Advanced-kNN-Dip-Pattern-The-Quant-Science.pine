@@ -1,0 +1,71 @@
+//@version=6
+indicator("Advanced kNN Dip Pattern [The Quant Science]", overlay=true, max_bars_back=2000, max_boxes_count = 500)
+
+import thequantscience/kNNLorentzianMachineLearning/1 as ml
+
+analysis_period = input.int(defval = 2, title = "Analysis Period [Bars]", minval = 2, maxval = 100, group = "Settings")
+dip_move_value  = input.float(defval = -5.0, title = "Dip Threshold [%]", step = 0.50, maxval = -0.50, group = "Settings")
+
+past_highest = ta.highest(high[1], analysis_period - 1)
+dip_perf = ((low - past_highest) / past_highest) * 100.0
+is_dip = dip_perf <= dip_move_value
+
+float body_size = math.abs(close - open)
+float candle_rng = high - low
+float upper_wd = high - math.max(close, open)
+float lower_wd = math.min(close, open) - low
+
+float f1 = ml.f_minmax(body_size, 50)
+float f2 = ml.f_minmax(candle_rng, 50)
+float f3 = ml.f_minmax(upper_wd, 50)
+float f4 = ml.f_minmax(lower_wd, 50)
+
+array<float> current_features = array.from(f1, f2, f3, f4)
+
+var matrix<float> hist_matrix = matrix.new<float>(0, 5, na)
+
+float target_dir = na
+if bar_index >= 1
+    target_dir := (close > close[1]) ? 1.0 : 0.0
+
+ml.f_update_history_matrix(hist_matrix, current_features, target_dir, 300)
+
+[raw_signal, confidence] = ml.f_calc_knn_matrix(8, 0.75, current_features, hist_matrix, 1)
+
+// 6. Condizione di entrata finale
+bool buy_condition = is_dip and (raw_signal == 1)
+
+barcolor(buy_condition ? #ff0000 : na, title="Dip Bar")
+
+// Calcolo globale obbligatorio per ta.highestbars
+int raw_offset = -ta.highestbars(high[1], analysis_period - 1)
+int peak_offset = math.max(1, raw_offset)
+
+if (buy_condition) 
+    int peak_bar = bar_index - peak_offset
+    float peak_price = past_highest
+
+    string hudText = "kNN DIP\n" + 
+                     "• Conf: " + str.tostring(confidence * 100, "#.##") + "%\n" + 
+                     "• Depth: " + str.tostring(dip_perf, "#.##") + "%"
+    
+    label.new(bar_index, low, 
+              text=hudText, 
+              xloc=xloc.bar_index, 
+              yloc=yloc.belowbar, 
+              style=label.style_label_upper_left, 
+              color=color.new(#190b0b, 15), 
+              textcolor=#fdfdfd,             
+              size=size.small)
+
+    box.new(left=peak_bar, top=peak_price, right=bar_index, bottom=low, 
+            bgcolor=color.new(#ff0000, 85), 
+            border_color=color.new(#ff0000, 40), 
+            border_width=1, 
+            xloc=xloc.bar_index)
+
+    line.new(peak_bar, peak_price, bar_index, low, xloc=xloc.bar_index, color=#ff0000, style=line.style_solid, width=1)
+    line.new(peak_bar, peak_price, peak_bar, peak_price, xloc=xloc.bar_index, color=#ff0000, style=line.style_solid, width=1)
+    line.new(bar_index, low, bar_index, low, xloc=xloc.bar_index, color=#ff0000, style=line.style_solid, width=1)
+
+plotshape(buy_condition, title="Dip", style=shape.circle, location=location.belowbar, color=color.new(#ff0055, 40), size=size.tiny)

@@ -1,0 +1,365 @@
+//@version=6
+// ============================================================================
+//  SMT Divergence ICT, Smart Money Technique & Correlation [LunqFX]
+// ----------------------------------------------------------------------------
+//  Two instruments that normally move together stop agreeing. One makes a
+//  higher high, the other fails to. That disagreement is the Smart Money
+//  Technique divergence, and it is one of the few reversal reads that comes
+//  from outside the chart you are trading rather than from the chart itself.
+//
+//  Every published SMT tool marks the divergence and stops there. Two things
+//  here do not:
+//
+//    1  YOU SEE IT      the correlated symbol's own path is drawn on your
+//                       chart, rescaled into your price range, so the moment
+//                       the two structures part company is visible rather
+//                       than announced after the fact
+//    2  IT IS CHECKED   correlation between the two is measured live. SMT on
+//                       two instruments that are not actually correlated is
+//                       not a signal, it is a coincidence, and the panel says
+//                       which of the two you are looking at
+//
+//  NON-REPAINTING: divergences are built from CONFIRMED pivots and the second
+//  symbol is requested on the chart's own timeframe with lookahead off. A mark
+//  that has printed never moves.
+// ============================================================================
+// max_bars_back is declared because the rescaling window and the correlation
+// window both reach 500 bars, and a requested series indexed at the pivot
+// offset on top of that can push past the default buffer.
+indicator("SMT Divergence ICT, Smart Money Technique & Correlation [LunqFX]",
+     "SMT", overlay = true, max_lines_count = 500, max_labels_count = 500,
+     max_bars_back = 600)
+
+// ─────────────────────────────────────────────────────────────────────────
+//  PALETTE
+// ─────────────────────────────────────────────────────────────────────────
+UP    = #00F5D4
+DN    = #FF2E88
+GHOST = #7C8AA5
+INK   = #0B0E14
+WARN  = #FBBF24
+CARD  = #131A24
+CARD2 = #1B2431
+TXT   = #F1F5F9
+MUTE  = #94A3B8
+
+// ─────────────────────────────────────────────────────────────────────────
+//  INPUTS
+// ─────────────────────────────────────────────────────────────────────────
+gS   = "The pair being compared"
+autoPair = input.bool(true, "Pick the correlated symbol automatically", group = gS, tooltip = "Chooses the classic SMT partner for the chart's asset class: EURUSD ↔ GBPUSD, BTC ↔ ETH, ES ↔ NQ, gold ↔ silver, SPX ↔ NDX, a stock against SPY. Switch it off to name the symbol yourself below. The panel shows which symbol is in use either way.")
+corrIn   = input.symbol("OANDA:GBPUSD", "Correlated symbol (manual)", group = gS, tooltip = "Used only when automatic selection is off. It has to be an instrument that normally moves WITH yours — or exactly against it, inverse pairs are handled. Pick a symbol that is not correlated and every divergence the script finds is noise, which is why the correlation is measured and shown.")
+// Defaults set for a clean chart rather than a busy one. Correlated pairs
+// disagree at minor swings constantly: at a swing length of eight and a low
+// disagreement floor, EURUSD against GBPUSD produces a divergence at almost
+// every pivot, which is technically true and useless to look at.
+pivLen = input.int(8, "Swing length", minval = 2, maxval = 50, group = gS, tooltip = "How major a swing has to be before it counts as a pivot. Short lengths mark the divergences you can see forming between the two lines; long ones keep only the swing-level ones. Raise it if the chart gets busy.")
+minDiv = input.float(0.75, "Minimum disagreement", minval = 0.0, maxval = 3.0, step = 0.05, group = gS, tooltip = "How far the correlated symbol has to travel the OTHER way, measured against its own average bar range. Below about half a range the disagreement is noise. This is the first setting to change if you want more or fewer marks.")
+
+gC   = "Correlation check"
+corLen = input.int(100, "Correlation window", minval = 20, maxval = 500, group = gC)
+corMin = input.float(0.5, "Warn below", minval = 0.0, maxval = 0.95, step = 0.05, group = gC, tooltip = "Below this the panel turns amber. SMT between two instruments that are not moving together says nothing about smart money — it just says they are different instruments.")
+corGate= input.bool(true, "Only mark while correlated", group = gC, tooltip = "On by default. Two instruments that have stopped moving together disagree constantly, and every one of those disagreements would print as a divergence. Switch it off to see them anyway — the panel will still be telling you the reading is not trustworthy.")
+
+gV   = "Visuals"
+// One palette cannot suit every background, which is why the most-used candle
+// theming scripts ship a shelf of them rather than a single opinion. These are
+// schemes that circulate among traders rather than colours invented here.
+candSty = input.string("Neon Bloom", "Candle palette", options = ["Neon Bloom","Midnight Cyan","Vibrant Neon","Classic Soft","Cool Blue","Off"], group = gV, tooltip = "Neon Bloom is turquoise against magenta. Midnight Cyan is the common signature dark scheme. Vibrant Neon is the high-contrast crypto pairing, Classic Soft the muted everyday version. Cool Blue drops red entirely — a number of full-time traders run blue against grey because red carries a stress response that gets in the way of reading a chart for eight hours. Off keeps your own candles.")
+ghost   = input.bool(true, "Draw the correlated symbol", group = gV, tooltip = "The second symbol's path, rescaled into your chart's price range so the two structures can be compared by eye. It carries no price of its own — only shape.")
+ghostW  = input.int(100, "Rescaling window (bars)", minval = 30, maxval = 500, group = gV, tooltip = "How much history the rescaling is fitted to. Shorter tracks recent structure more closely; longer keeps the shape steadier.")
+ghostLw = input.int(2, "Correlated path width", minval = 1, maxval = 4, group = gV)
+showLink= input.bool(true, "Join the diverging swings", group = gV)
+maxSpan = input.int(120, "Longest connector (bars)", minval = 10, maxval = 1000, group = gV, tooltip = "A divergence is always against the previous pivot, however far back that was. Past this distance the connector is not drawn — a dashed line reaching five months across a daily chart tells you nothing — but the mark itself still prints.")
+lblSize = input.string("Large", "Mark size", options = ["Small","Normal","Large","Huge"], group = gV, tooltip = "How loudly the divergences are drawn. On a chart that is mostly context you want them big enough to find without hunting.")
+showHUD = input.bool(true, "Dashboard", group = gV)
+hudPos  = input.string("Top Right", "Dashboard position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right"], group = gV)
+
+// ─────────────────────────────────────────────────────────────────────────
+//  THE SECOND SYMBOL
+//  Requested on the chart's own timeframe, so there is no higher-timeframe
+//  boundary to look across and nothing to repaint. lookahead is left off
+//  regardless, because the default is not something a reader should have to
+//  take on trust.
+// ─────────────────────────────────────────────────────────────────────────
+// A fixed default suits one asset class and looks broken on every other:
+// Bitcoin against GBPUSD reads a correlation of nothing and holds every mark.
+// So the partner is chosen from the chart's own type — the pairing each
+// market's SMT traders actually use — unless the user names one. Metals are
+// checked by ticker first because brokers file them as CFDs, not as a class.
+tk  = str.upper(syminfo.ticker)
+typ = syminfo.type
+autoSym = str.contains(tk, "XAU") or str.contains(tk, "GOLD")   ? "OANDA:XAGUSD" :
+          str.contains(tk, "XAG") or str.contains(tk, "SILVER") ? "OANDA:XAUUSD" :
+          typ == "crypto"  ? (str.contains(tk, "ETH") ? "BINANCE:BTCUSDT" : "BINANCE:ETHUSDT") :
+          typ == "forex"   ? (str.contains(tk, "GBP") ? "OANDA:EURUSD" : "OANDA:GBPUSD") :
+          typ == "futures" ? (str.contains(tk, "NQ") ? "CME_MINI:ES1!" : "CME_MINI:NQ1!") :
+          typ == "index"   ? (str.contains(tk, "NDX") or str.contains(tk, "NAS") ? "SP:SPX" : "NASDAQ:NDX") :
+          typ == "stock"   ? "AMEX:SPY" :
+          str.contains(tk, "NAS") or str.contains(tk, "US100") ? "TVC:SPX" : "TVC:NDX"
+corr = autoPair ? autoSym : corrIn
+
+[cH, cL, cC] = request.security(corr, timeframe.period, [high, low, close],
+     lookahead = barmerge.lookahead_off)
+
+// A comparison of a symbol with itself produces a flat line and zero
+// divergences — which looks broken rather than unconfigured. The panel is
+// told to say so.
+sameSym = str.contains(syminfo.tickerid, corr) or str.contains(corr, syminfo.ticker)
+
+// ─────────────────────────────────────────────────────────────────────────
+//  CORRELATION
+//  The reading that decides whether anything below means anything at all.
+// ─────────────────────────────────────────────────────────────────────────
+cor = ta.correlation(close, cC, corLen)
+corOK = not na(cor) and math.abs(cor) >= corMin
+
+// Inverse pairs are legitimate SMT pairs — EURUSD against DXY is the classic
+// one — but their swings are mirrored: my high lines up with their LOW. So
+// when the correlation is negative the script reads their lows at my highs
+// and their highs at my lows, and asks whether they confirmed in the mirror.
+// Without this a negatively correlated pair reports every confirmation as a
+// divergence and every divergence as a confirmation.
+inv = not na(cor) and cor < 0
+
+// The correlated symbol's own average bar range, used as the yardstick for
+// how much of a move counts as real disagreement. Taken from the requested
+// highs and lows rather than a second security call — one request is enough.
+cRange = ta.sma(cH - cL, 14)
+
+// ─────────────────────────────────────────────────────────────────────────
+//  THE CORRELATED PATH, RESCALED
+//  The second symbol's close mapped onto your chart's range over a rolling
+//  window. The result carries no price — only shape — which is the entire
+//  point: two shapes side by side show the disagreement that a marker can
+//  only assert.
+// ─────────────────────────────────────────────────────────────────────────
+myHi = ta.highest(high, ghostW)
+myLo = ta.lowest(low, ghostW)
+coHi = ta.highest(cH, ghostW)
+coLo = ta.lowest(cL, ghostW)
+
+ghostY = ghost and not na(cC) and coHi > coLo and myHi > myLo ?
+         myLo + (cC - coLo) / (coHi - coLo) * (myHi - myLo) : na
+
+// two passes: a soft wide one behind and the line itself on top, so the
+// correlated path reads clearly without competing with the candles
+plot(ghostY, "Correlated glow", color = color.new(GHOST, 82), linewidth = ghostLw + 3)
+plot(ghostY, "Correlated path", color = color.new(GHOST, 15), linewidth = ghostLw)
+
+// ─────────────────────────────────────────────────────────────────────────
+//  CANDLES
+//  A matched neon pair with translucent bodies against solid outlines. The
+//  background shows faintly through the body while the edge stays crisp,
+//  which is what makes a candle read as part of the chart rather than a
+//  sticker placed over it. The grey correlated path then sits clearly behind
+//  them instead of competing with a default red and green.
+// ─────────────────────────────────────────────────────────────────────────
+// palettes as published, not nudged by eye afterwards
+cBull = switch candSty
+    "Neon Bloom"    => #00F5D4
+    "Midnight Cyan" => #34E89E
+    "Vibrant Neon"  => #00E5B0
+    "Classic Soft"  => #3FB68B
+    "Cool Blue"     => #4C9AFF
+    => #00F5D4
+
+cBear = switch candSty
+    "Neon Bloom"    => #FF2E88
+    "Midnight Cyan" => #FF4D7D
+    "Vibrant Neon"  => #FF2E63
+    "Classic Soft"  => #E0556B
+    "Cool Blue"     => #8A94A6
+    => #FF2E88
+
+cEdge = close >= open ? cBull : cBear
+plotcandle(candSty == "Off" ? na : open, high, low, close, "Candles",
+     color = color.new(cEdge, 24), wickcolor = color.new(cEdge, 18), bordercolor = cEdge)
+
+// ─────────────────────────────────────────────────────────────────────────
+//  HELPERS
+// ─────────────────────────────────────────────────────────────────────────
+sizeOf(string s) =>
+    switch s
+        "Small"  => size.small
+        "Large"  => size.large
+        "Huge"   => size.huge
+        => size.normal
+
+hudP(string s) =>
+    switch s
+        "Top Right"    => position.top_right
+        "Top Left"     => position.top_left
+        "Bottom Right" => position.bottom_right
+        "Bottom Left"  => position.bottom_left
+        => position.middle_right
+
+meter(float v) =>
+    n = int(math.round(math.min(math.max(v, 0.0), 1.0) * 10))
+    s = ""
+    for i = 1 to 10
+        s := s + (i <= n ? "█" : "░")
+    s
+
+// ─────────────────────────────────────────────────────────────────────────
+//  PIVOTS AND DIVERGENCE
+//  A pivot is confirmed, so it only exists once the bars on both sides of it
+//  have closed. At each new pivot the script compares the direction your
+//  symbol moved since its previous pivot with the direction the correlated
+//  symbol moved over the same two bars. When the two signs disagree, that is
+//  the divergence.
+// ─────────────────────────────────────────────────────────────────────────
+ph = ta.pivothigh(pivLen, pivLen)
+pl = ta.pivotlow(pivLen, pivLen)
+
+// The correlated symbol's swing rarely lands on exactly the same bar as mine,
+// so its extreme is taken over a three-bar window centred on my pivot rather
+// than read off one bar. The window is offset by pivLen - 1, which keeps its
+// most recent bar at least one closed bar back — nothing from the forming bar
+// can leak into a confirmed pivot.
+coHiWin = ta.highest(cH, 3)[pivLen - 1]
+coLoWin = ta.lowest(cL, 3)[pivLen - 1]
+
+var float prevPH  = na      // my previous pivot high
+var float prevPHc = na      // the correlated symbol's high at that same bar
+var int   prevPHx = na
+var float prevPL  = na
+var float prevPLc = na
+var int   prevPLx = na
+
+var int nBear = 0
+var int nBull = 0
+
+// What the panel actually needs: the most recent divergence, which way it
+// pointed and how long ago — not a lifetime tally. And how many divergences
+// the correlation gate has refused, so that a chart showing marks under a
+// WEAK CORRELATION header explains itself: those marks were placed when the
+// correlation at that bar was strong enough; the reading has since dropped.
+var int lastBar = na
+var int lastDir = 0
+var int nGated  = 0
+
+// If the correlation changes sign between two pivots, the stored value is a
+// low and the new one is a high, or the reverse, and comparing them means
+// nothing. The mode is remembered with the pivot, and a change of mode
+// discards the stored pivot rather than comparing across it.
+var bool prevInvH = false
+var bool prevInvL = false
+
+bearSMT = false
+bullSMT = false
+
+if not na(ph)
+    myNow = ph
+    // at my high: their high for a direct pair, their LOW for an inverse one
+    coNow = inv ? coLoWin : coHiWin
+    xNow  = bar_index - pivLen
+    if not na(prevPH) and not na(prevPHc) and not na(coNow) and inv == prevInvH
+        myUp = myNow > prevPH
+        // did they confirm? Direct pair: a higher high. Inverse: a lower low.
+        coConf = inv ? coNow < prevPHc : coNow > prevPHc
+        // One made the new extreme, the other did not — and the one that did
+        // not has to have travelled far enough for that to be a statement
+        // rather than a rounding error against its own average range.
+        big  = not na(cRange) and cRange > 0 and math.abs(coNow - prevPHc) >= cRange * minDiv
+        found = myUp != coConf and big
+        if found and (corOK or not corGate)
+            bearSMT := true
+            nBear += 1
+            lastBar := xNow
+            lastDir := -1
+            if showLink and xNow - prevPHx <= maxSpan
+                line.new(prevPHx, prevPH, xNow, myNow, color = color.new(DN, 10), width = 3, style = line.style_dashed)
+            // neon text on a dark ink card: dark ink on a saturated neon fill
+            // was the reverse of this and the word disappeared into the colour.
+            // Anchored at the pivot price itself, not abovebar — abovebar adds
+            // its own gap and the mark floats away from the swing it names
+            label.new(xNow, myNow, "▼ SMT", yloc = yloc.price,
+                 style = label.style_label_down, color = INK, textcolor = DN, size = sizeOf(lblSize))
+        else if found
+            nGated += 1
+    prevPH   := myNow
+    prevPHc  := coNow
+    prevPHx  := xNow
+    prevInvH := inv
+
+if not na(pl)
+    myNow = pl
+    // at my low: their low for a direct pair, their HIGH for an inverse one
+    coNow = inv ? coHiWin : coLoWin
+    xNow  = bar_index - pivLen
+    if not na(prevPL) and not na(prevPLc) and not na(coNow) and inv == prevInvL
+        myDn = myNow < prevPL
+        coConf = inv ? coNow > prevPLc : coNow < prevPLc
+        big  = not na(cRange) and cRange > 0 and math.abs(coNow - prevPLc) >= cRange * minDiv
+        found = myDn != coConf and big
+        if found and (corOK or not corGate)
+            bullSMT := true
+            nBull += 1
+            lastBar := xNow
+            lastDir := 1
+            if showLink and xNow - prevPLx <= maxSpan
+                line.new(prevPLx, prevPL, xNow, myNow, color = color.new(UP, 10), width = 3, style = line.style_dashed)
+            label.new(xNow, myNow, "▲ SMT", yloc = yloc.price,
+                 style = label.style_label_up, color = INK, textcolor = UP, size = sizeOf(lblSize))
+        else if found
+            nGated += 1
+    prevPL   := myNow
+    prevPLc  := coNow
+    prevPLx  := xNow
+    prevInvL := inv
+
+// ─────────────────────────────────────────────────────────────────────────
+//  DASHBOARD
+// ─────────────────────────────────────────────────────────────────────────
+var table hud = table.new(position.top_right, 2, 6)
+if showHUD and barstate.islast
+    table.delete(hud)
+    hud := table.new(hudP(hudPos), 2, 6, bgcolor = CARD,
+         border_color = color.new(#28323F, 0), border_width = 1)
+
+    cAbs = na(cor) ? 0.0 : math.abs(cor)
+
+    // The header answers the only question that matters first: is the last
+    // divergence bearish, bullish, or is there none — and how fresh is it.
+    ago  = na(lastBar) ? -1 : bar_index - lastBar
+    // A divergence is a reversal cue, and a cue from two hundred bars back is
+    // history, not a state. Past a few swings the header stops shouting the
+    // direction and simply records it — the colour is what a glance reads.
+    fresh = ago >= 0 and ago <= math.max(20, pivLen * 4)
+    hTx  = sameSym ? "PICK A CORRELATED SYMBOL" :
+           lastDir == 0 ? "NO DIVERGENCE YET" :
+           fresh ? (lastDir == -1 ? "▼  BEARISH SMT" : "▲  BULLISH SMT") :
+           (lastDir == -1 ? "▼  last SMT bearish" : "▲  last SMT bullish")
+    hSub = sameSym ? "same symbol  " : ago < 0 ? "  " : str.tostring(ago) + " bars ago  "
+    hBg  = sameSym ? #4A3410 : not fresh ? CARD2 : lastDir == -1 ? #8E1148 : #0A5F55
+    hFg  = fresh or sameSym ? color.white : lastDir == -1 ? DN : lastDir == 1 ? UP : MUTE
+
+    table.cell(hud, 0, 0, "  " + hTx + "  ", text_color = hFg, text_size = size.large, text_halign = text.align_left, bgcolor = hBg)
+    table.cell(hud, 1, 0, hSub, text_color = fresh ? color.white : MUTE, text_size = size.normal, text_halign = text.align_right, bgcolor = hBg)
+
+    table.cell(hud, 0, 1, "  " + syminfo.ticker + "  vs  " + corr + (autoPair ? "  · auto" : ""), text_color = MUTE, text_size = size.normal, text_halign = text.align_left, bgcolor = CARD)
+    table.cell(hud, 1, 1, (inv ? "inverse pair" : "direct pair") + "  ", text_color = MUTE, text_size = size.normal, text_halign = text.align_right, bgcolor = CARD)
+
+    // "now" is spelled out: marks already on the chart were placed when the
+    // correlation at THAT bar cleared the threshold, and the reading since
+    // may have fallen — a weak number here does not un-earn old marks
+    corTx = na(cor) ? "—" : str.tostring(cor, "0.00")
+    table.cell(hud, 0, 2, "  Correlation now", text_color = MUTE, text_size = size.normal, text_halign = text.align_left, bgcolor = CARD2)
+    table.cell(hud, 1, 2, corTx + "  ", text_color = corOK ? TXT : WARN, text_size = size.huge, text_halign = text.align_right, bgcolor = CARD2)
+
+    table.cell(hud, 0, 3, "  " + meter(cAbs), text_color = corOK ? UP : WARN, text_size = size.normal, text_halign = text.align_left, bgcolor = CARD2)
+    table.cell(hud, 1, 3, (corOK ? "marks armed" : "marks held — below " + str.tostring(corMin, "0.00")) + "  ", text_color = corOK ? UP : WARN, text_size = size.normal, text_halign = text.align_right, bgcolor = CARD2)
+
+    table.cell(hud, 0, 4, "  Found on this chart", text_color = MUTE, text_size = size.normal, text_halign = text.align_left, bgcolor = CARD)
+    table.cell(hud, 1, 4, str.tostring(nBear) + " ▼   " + str.tostring(nBull) + " ▲  ", text_color = TXT, text_size = size.normal, text_halign = text.align_right, bgcolor = CARD)
+
+    table.cell(hud, 0, 5, "  Held back by weak correlation", text_color = MUTE, text_size = size.normal, text_halign = text.align_left, bgcolor = CARD2)
+    table.cell(hud, 1, 5, (corGate ? str.tostring(nGated) : "gate off") + "  ", text_color = corGate and nGated > 0 ? WARN : MUTE, text_size = size.normal, text_halign = text.align_right, bgcolor = CARD2)
+
+// ─────────────────────────────────────────────────────────────────────────
+//  ALERTS — confirmed pivots only
+// ─────────────────────────────────────────────────────────────────────────
+alertcondition(bearSMT, "Bearish SMT divergence", "LunqFX SMT: the correlated symbol did not confirm this high")
+alertcondition(bullSMT, "Bullish SMT divergence", "LunqFX SMT: the correlated symbol did not confirm this low")
+alertcondition(bearSMT or bullSMT, "Any SMT divergence", "LunqFX SMT: a divergence has confirmed against the correlated symbol")

@@ -1,0 +1,687 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © SpokoStocks
+
+//@version=6
+indicator("Top Strategy Finder [SpokoStocks]", shorttitle = "Top Strategy Finder [SpokoStocks]", overlay = false, max_bars_back = 500, max_lines_count = 120, max_labels_count = 120, max_polylines_count = 10)
+
+// ═══════════════════════════════════ Inputs ═══════════════════════════════════
+gSearch = "1 · Search"
+sizeStr   = input.string("Standard (768)", "Search size", options = ["Quick (288)", "Standard (768)", "Deep (1536)", "Max (2304)"], group = gSearch,
+     tooltip = "Every strategy = entry signal × direction × exit rule × market filter. 24 entries, 8 exits, 6 filters. Larger sizes take longer to load; Max may need a Premium plan's time budget.")
+lastN     = input.int(2500, "Test the last N bars", minval = 300, maxval = 20000, group = gSearch, tooltip = "Fewer bars load faster. Older bars are ignored.")
+minTrades = input.int(30, "Minimum trades to qualify", minval = 10, maxval = 500, group = gSearch)
+profOnly  = input.bool(true, "Only profitable strategies qualify (net > 0 after costs)", group = gSearch)
+costPct   = input.float(0.05, "Cost per side (%: commission + slippage)", minval = 0.0, maxval = 1.0, step = 0.01, group = gSearch)
+dirMode   = input.string("Long and short", "Directions", options = ["Long and short", "Long only", "Short only"], group = gSearch)
+rankBy    = input.string("Win %", "Rank strategies by", options = ["Win %", "SQN", "Profit factor", "Net profit", "Expectancy", "Return / drawdown", "Average win / average loss"], group = gSearch,
+     tooltip = "Win %: share of winning trades. SQN = √trades × mean(R) / stdev(R), rewards consistent edges. Profit factor = gross wins / gross losses. Return / drawdown = net ÷ max drawdown. Only strategies with the minimum trades (and, by default, a profit) can rank.")
+followK   = input.int(5, "Walk-forward: follow the top K as a basket", minval = 1, maxval = 10, group = gSearch,
+     tooltip = "Following one winner whipsaws; an equal-weight basket of the current top K is far more stable. Tested: top 5 to 10 roughly halves the drawdown of following the single champion.")
+margin    = input.float(25, "Champion hysteresis (%)", minval = 0, maxval = 200, step = 5, group = gSearch,
+     tooltip = "A challenger replaces the champion only when its score is better by this margin, so the title does not flip on noise.")
+
+gPick = "2 · Trade a strategy from the leaderboard"
+pick      = input.int(1, "Leaderboard # to put on the chart", minval = 1, maxval = 10, group = gPick,
+     tooltip = "Pick any row of the top 10. Its recent trades are drawn on the price chart, its open trade shows entry / stop / target, its rule is spelled out under the table, and the alerts follow it.")
+follow    = input.string("Selected strategy", "Chart shading follows", options = ["Selected strategy", "Top-K basket"], group = gPick)
+drawTr    = input.int(30, "Draw its last N trades on the price chart", minval = 5, maxval = 120, group = gPick)
+
+gDisp = "3 · Display"
+showPos   = input.bool(true, "Price chart: shade exposure", group = gDisp)
+showTrade = input.bool(true, "Price chart: mark turns long / short / flat", group = gDisp)
+showLive  = input.bool(true, "Price chart: draw the selected strategy's trades and open position", group = gDisp)
+showBH    = input.bool(false, "Pane: buy & hold benchmark", group = gDisp)
+bhFrom    = input.string("Backtest start", "Buy & hold starts from", options = ["Backtest start", "First bar on chart"], group = gDisp,
+     tooltip = "Backtest start puts buy & hold on the same footing as every strategy: all curves begin at 0% on the same bar.")
+showChamp = input.bool(true, "Pane: champion #1 curve (in-sample)", group = gDisp)
+showSel   = input.bool(true, "Pane: selected # curve (in-sample)", group = gDisp)
+showDD    = input.bool(false, "Pane: basket underwater (drawdown) area", group = gDisp)
+paneLog   = input.bool(false, "Pane: log scale", group = gDisp)
+showDash  = input.bool(true, "Leaderboard", group = gDisp)
+dashPos   = input.string("Top right", "Leaderboard position", options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = gDisp)
+topRows   = input.int(6, "Leaderboard rows", minval = 3, maxval = 10, group = gDisp)
+tblSize   = input.string("Small", "Leaderboard text", options = ["Tiny", "Small", "Normal", "Large"], group = gDisp)
+
+gCol = "4 · Colours"
+cLong  = input.color(#2dd4bf, "Long", group = gCol)
+cShort = input.color(#ff3b5c, "Short", group = gCol)
+cBest  = input.color(#fbbf24, "Champion #1", group = gCol)
+cFol   = input.color(#60a5fa, "Basket (walk-forward)", group = gCol)
+cSel   = input.color(#a78bfa, "Selected #", group = gCol)
+cUp    = input.color(#22c55e, "Profit", group = gCol)
+cDown  = input.color(#ef4444, "Loss / drawdown", group = gCol)
+
+// ═══════════════════════ Building blocks (computed once per bar) ═══════════════════════
+E = 24      // entry signals
+XN = 8      // exit rules
+FN = 6      // filters
+atr    = ta.atr(14)
+ema9   = ta.ema(close, 9)
+ema21  = ta.ema(close, 21)
+ema20  = ta.ema(close, 20)
+ema50  = ta.ema(close, 50)
+sma20  = ta.sma(close, 20)
+sma50  = ta.sma(close, 50)
+sma200 = ta.sma(close, 200)
+rsi2   = ta.rsi(close, 2)
+rsi14  = ta.rsi(close, 14)
+bbDev  = ta.stdev(close, 20)
+hh10 = ta.highest(high, 10)[1]
+ll10 = ta.lowest(low, 10)[1]
+hh20 = ta.highest(high, 20)[1]
+ll20 = ta.lowest(low, 20)[1]
+hh55 = ta.highest(high, 55)[1]
+ll55 = ta.lowest(low, 55)[1]
+[macdL, macdS, macdH] = ta.macd(close, 12, 26, 9)
+[st1Val, st1Dir] = ta.supertrend(3, 10)
+[st2Val, st2Dir] = ta.supertrend(2, 14)
+stK = ta.sma(ta.stoch(close, high, low, 14), 3)
+inside = high[1] < high[2] and low[1] > low[2]
+[diP, diM, adx] = ta.dmi(14, 14)
+wpr = ta.wpr(14)
+ll10r = ta.lowest(low, 10)[2]
+hh10r = ta.highest(high, 10)[2]
+roc20 = ta.roc(close, 20)
+volRank = ta.percentrank(atr / close, 100)
+
+longSig  = array.new_bool(E, false)
+shortSig = array.new_bool(E, false)
+array.set(longSig, 0, ta.crossover(ema9, ema21))
+array.set(shortSig, 0, ta.crossunder(ema9, ema21))
+array.set(longSig, 1, ta.crossover(close, sma20))
+array.set(shortSig, 1, ta.crossunder(close, sma20))
+array.set(longSig, 2, rsi2 < 10)
+array.set(shortSig, 2, rsi2 > 90)
+array.set(longSig, 3, ta.crossover(rsi14, 30))
+array.set(shortSig, 3, ta.crossunder(rsi14, 70))
+array.set(longSig, 4, close < sma20 - 2 * bbDev)
+array.set(shortSig, 4, close > sma20 + 2 * bbDev)
+array.set(longSig, 5, close > hh20)
+array.set(shortSig, 5, close < ll20)
+array.set(longSig, 6, close > hh55)
+array.set(shortSig, 6, close < ll55)
+array.set(longSig, 7, ta.crossover(macdH, 0))
+array.set(shortSig, 7, ta.crossunder(macdH, 0))
+array.set(longSig, 8, st1Dir < 0 and st1Dir[1] > 0)
+array.set(shortSig, 8, st1Dir > 0 and st1Dir[1] < 0)
+array.set(longSig, 9, ta.crossover(stK, 20))
+array.set(shortSig, 9, ta.crossunder(stK, 80))
+array.set(longSig, 10, inside and close > high[1])
+array.set(shortSig, 10, inside and close < low[1])
+array.set(longSig, 11, close < close[1] and close[1] < close[2] and close[2] < close[3])
+array.set(shortSig, 11, close > close[1] and close[1] > close[2] and close[2] > close[3])
+array.set(longSig, 12, adx > 20 and ta.crossover(diP, diM))
+array.set(shortSig, 12, adx > 20 and ta.crossunder(diP, diM))
+array.set(longSig, 13, wpr < -90)
+array.set(shortSig, 13, wpr > -10)
+array.set(longSig, 14, low[1] <= ll10r and close > high[1])
+array.set(shortSig, 14, high[1] >= hh10r and close < low[1])
+array.set(longSig, 15, open > high[1] and close > open)
+array.set(shortSig, 15, open < low[1] and close < open)
+array.set(longSig, 16, ta.crossover(ema20, ema50))
+array.set(shortSig, 16, ta.crossunder(ema20, ema50))
+array.set(longSig, 17, ta.crossover(close, sma50))
+array.set(shortSig, 17, ta.crossunder(close, sma50))
+array.set(longSig, 18, rsi2 < 5)
+array.set(shortSig, 18, rsi2 > 95)
+array.set(longSig, 19, ta.crossover(rsi14, 50))
+array.set(shortSig, 19, ta.crossunder(rsi14, 50))
+array.set(longSig, 20, close < sma20 - 2.5 * bbDev)
+array.set(shortSig, 20, close > sma20 + 2.5 * bbDev)
+array.set(longSig, 21, close > hh10)
+array.set(shortSig, 21, close < ll10)
+array.set(longSig, 22, ta.crossover(macdL, macdS))
+array.set(shortSig, 22, ta.crossunder(macdL, macdS))
+array.set(longSig, 23, st2Dir < 0 and st2Dir[1] > 0)
+array.set(shortSig, 23, st2Dir > 0 and st2Dir[1] < 0)
+
+// filters, per direction
+fLong  = array.from(true, close > sma200, volRank < 50, roc20 > 0, volRank > 50, close < sma200)
+fShort = array.from(true, close < sma200, volRank < 50, roc20 < 0, volRank > 50, close > sma200)
+
+// ═══════════════════════ Plain-language names ═══════════════════════
+entryName(int e, int dir) =>
+    up = dir > 0
+    switch e
+        0 => up ? "EMA 9 crosses above EMA 21" : "EMA 9 crosses below EMA 21"
+        1 => up ? "close crosses above SMA 20" : "close crosses below SMA 20"
+        2 => up ? "RSI(2) oversold < 10" : "RSI(2) overbought > 90"
+        3 => up ? "RSI(14) climbs back above 30" : "RSI(14) falls back below 70"
+        4 => up ? "close below lower Bollinger (2σ)" : "close above upper Bollinger (2σ)"
+        5 => up ? "close above 20-bar high" : "close below 20-bar low"
+        6 => up ? "close above 55-bar high" : "close below 55-bar low"
+        7 => up ? "MACD histogram turns positive" : "MACD histogram turns negative"
+        8 => up ? "Supertrend (3,10) turns up" : "Supertrend (3,10) turns down"
+        9 => up ? "Stochastic climbs above 20" : "Stochastic falls below 80"
+        10 => up ? "inside bar, then break above it" : "inside bar, then break below it"
+        11 => up ? "3 falling closes in a row" : "3 rising closes in a row"
+        12 => up ? "ADX > 20 and DI+ crosses above DI−" : "ADX > 20 and DI− crosses above DI+"
+        13 => up ? "Williams %R below −90" : "Williams %R above −10"
+        14 => up ? "fresh 10-bar low, then close above prior high" : "fresh 10-bar high, then close below prior low"
+        15 => up ? "gap up that closes higher" : "gap down that closes lower"
+        16 => up ? "EMA 20 crosses above EMA 50" : "EMA 20 crosses below EMA 50"
+        17 => up ? "close crosses above SMA 50" : "close crosses below SMA 50"
+        18 => up ? "RSI(2) deeply oversold < 5" : "RSI(2) deeply overbought > 95"
+        19 => up ? "RSI(14) crosses above 50" : "RSI(14) crosses below 50"
+        20 => up ? "close below lower Bollinger (2.5σ)" : "close above upper Bollinger (2.5σ)"
+        21 => up ? "close above 10-bar high" : "close below 10-bar low"
+        22 => up ? "MACD line crosses above signal" : "MACD line crosses below signal"
+        => up ? "Supertrend (2,14) turns up" : "Supertrend (2,14) turns down"
+exitName(int x) =>
+    switch x
+        0 => "exit after 5 bars"
+        1 => "exit after 10 bars"
+        2 => "exit after 20 bars"
+        3 => "stop 2 ATR · target 3 ATR"
+        4 => "trailing stop 3 ATR"
+        5 => "exit on the reverse signal"
+        6 => "stop 1.5 ATR · target 1.5 ATR"
+        => "stop 1 ATR · target 2 ATR"
+filterName(int f) =>
+    switch f
+        0 => "any market"
+        1 => "with the 200-bar trend"
+        2 => "calm volatility"
+        3 => "with 20-bar momentum"
+        4 => "high volatility"
+        => "against the 200-bar trend"
+filterLong(int f, int dir) =>
+    switch f
+        0 => "in any market"
+        1 => dir > 0 ? "only while price is above its 200-bar average" : "only while price is below its 200-bar average"
+        2 => "only when volatility is calm (ATR in the lower half of its 100-bar range)"
+        3 => dir > 0 ? "only when the 20-bar rate of change is positive" : "only when the 20-bar rate of change is negative"
+        4 => "only when volatility is high (ATR in the upper half of its 100-bar range)"
+        => dir > 0 ? "only while price is below its 200-bar average (counter-trend)" : "only while price is above its 200-bar average (counter-trend)"
+exitLong(int x) =>
+    switch x
+        0 => "Exit at the close 5 bars later."
+        1 => "Exit at the close 10 bars later."
+        2 => "Exit at the close 20 bars later."
+        3 => "Stop 2 ATR from entry, target 3 ATR from entry."
+        4 => "Trail a stop 3 ATR behind the best close."
+        5 => "Exit when the opposite signal fires."
+        6 => "Stop and target both 1.5 ATR from entry."
+        => "Stop 1 ATR from entry, target 2 ATR from entry."
+
+// ═══════════════════════ Strategy universe ═══════════════════════
+var int N = 0
+var eOf = array.new_int(0)
+var dOf = array.new_int(0)
+var xOf = array.new_int(0)
+var fOf = array.new_int(0)
+if barstate.isfirst
+    quick = str.startswith(sizeStr, "Quick")
+    std   = str.startswith(sizeStr, "Standard")
+    deep  = str.startswith(sizeStr, "Deep")
+    for e = 0 to E - 1
+        for d = 0 to 1
+            dir = d == 0 ? 1 : -1
+            if (dirMode == "Long only" and dir < 0) or (dirMode == "Short only" and dir > 0)
+                continue
+            for x = 0 to XN - 1
+                if quick and not (x == 0 or x == 3 or x == 5)
+                    continue
+                for f = 0 to FN - 1
+                    if (quick or std) and f > 1
+                        continue
+                    if deep and f > 3
+                        continue
+                    array.push(eOf, e)
+                    array.push(dOf, dir)
+                    array.push(xOf, x)
+                    array.push(fOf, f)
+    N := array.size(eOf)
+
+// per-strategy state
+var pos    = array.new_int(N, 0)
+var entryP = array.new_float(N, float(na))
+var barsIn = array.new_int(N, 0)
+var stopP  = array.new_float(N, float(na))
+var targP  = array.new_float(N, float(na))
+var nTr    = array.new_int(N, 0)
+var nWin   = array.new_int(N, 0)
+var sumR   = array.new_float(N, 0.0)
+var sumR2  = array.new_float(N, 0.0)
+var grossP = array.new_float(N, 0.0)
+var grossL = array.new_float(N, 0.0)
+var eq     = array.new_float(N, 1.0)
+var peak   = array.new_float(N, 1.0)
+var mdd    = array.new_float(N, 0.0)
+var score  = array.new_float(N, float(na))
+TR = math.max(30, math.min(120, math.floor(90000 / math.max(N, 1))))   // trades remembered per strategy: 120 on Standard, 39 on Max
+var trEB = array.new_int(N * TR, -1)
+var trXB = array.new_int(N * TR, -1)
+var trEP = array.new_float(N * TR, float(na))
+var trXP = array.new_float(N * TR, float(na))
+var trHead = array.new_int(N, 0)
+
+cost = costPct / 100
+active = last_bar_index - bar_index < lastN and bar_index > 60
+
+scoreOf(int s) =>
+    n = array.get(nTr, s)
+    if n < minTrades or (profOnly and array.get(eq, s) <= 1)
+        float(na)
+    else
+        mean = array.get(sumR, s) / n
+        varR = array.get(sumR2, s) / n - mean * mean
+        sd = varR > 0 ? math.sqrt(varR) : 1e-9
+        gl = array.get(grossL, s)
+        gp = array.get(grossP, s)
+        nw = array.get(nWin, s)
+        switch rankBy
+            "Win %"                      => nw / n * 100
+            "Profit factor"              => gl > 0 ? gp / gl : gp > 0 ? 99.0 : 0.0
+            "Net profit"                 => (array.get(eq, s) - 1) * 100
+            "Expectancy"                 => mean * 100
+            "Return / drawdown"          => (array.get(eq, s) - 1) / math.max(array.get(mdd, s), 0.01)
+            "Average win / average loss" => (n - nw) > 0 and nw > 0 ? (gp / nw) / (gl / (n - nw)) : gp > 0 ? 99.0 : 0.0
+            => math.sqrt(n) * mean / sd
+
+if active and N > 0
+    for s = 0 to N - 1
+        e = array.get(eOf, s)
+        dir = array.get(dOf, s)
+        x = array.get(xOf, s)
+        f = array.get(fOf, s)
+        p = array.get(pos, s)
+        exited = false
+        if p != 0
+            b = array.get(barsIn, s) + 1
+            array.set(barsIn, s, b)
+            ep = array.get(entryP, s)
+            exitP = float(na)
+            if x == 0 and b >= 5
+                exitP := close
+            else if x == 1 and b >= 10
+                exitP := close
+            else if x == 2 and b >= 20
+                exitP := close
+            else if x == 3 or x == 6 or x == 7
+                sp = array.get(stopP, s)
+                tp = array.get(targP, s)
+                if dir > 0
+                    exitP := low <= sp ? sp : high >= tp ? tp : float(na)
+                else
+                    exitP := high >= sp ? sp : low <= tp ? tp : float(na)
+            else if x == 4
+                sp = array.get(stopP, s)
+                if dir > 0
+                    sp := math.max(sp, close - 3 * atr)
+                    exitP := low <= sp ? sp : float(na)
+                else
+                    sp := math.min(sp, close + 3 * atr)
+                    exitP := high >= sp ? sp : float(na)
+                array.set(stopP, s, sp)
+            else if x == 5
+                oppo = dir > 0 ? array.get(shortSig, e) : array.get(longSig, e)
+                if oppo
+                    exitP := close
+            if not na(exitP)
+                r = dir * (exitP / ep - 1) - 2 * cost
+                n = array.get(nTr, s) + 1
+                array.set(nTr, s, n)
+                array.set(nWin, s, array.get(nWin, s) + (r > 0 ? 1 : 0))
+                array.set(sumR, s, array.get(sumR, s) + r)
+                array.set(sumR2, s, array.get(sumR2, s) + r * r)
+                if r > 0
+                    array.set(grossP, s, array.get(grossP, s) + r)
+                else
+                    array.set(grossL, s, array.get(grossL, s) - r)
+                q = array.get(eq, s) * (1 + r)
+                array.set(eq, s, q)
+                pk = math.max(array.get(peak, s), q)
+                array.set(peak, s, pk)
+                array.set(mdd, s, math.max(array.get(mdd, s), 1 - q / pk))
+                array.set(pos, s, 0)
+                array.set(score, s, scoreOf(s))
+                hd = array.get(trHead, s)
+                slot = s * TR + hd
+                array.set(trEB, slot, bar_index - b)
+                array.set(trXB, slot, bar_index)
+                array.set(trEP, slot, ep)
+                array.set(trXP, slot, exitP)
+                array.set(trHead, s, (hd + 1) % TR)
+                exited := true
+                p := 0
+        if p == 0 and not exited
+            sig = dir > 0 ? array.get(longSig, e) : array.get(shortSig, e)
+            ok = dir > 0 ? array.get(fLong, f) : array.get(fShort, f)
+            if sig and ok and atr > 0
+                array.set(pos, s, dir)
+                array.set(entryP, s, close)
+                array.set(barsIn, s, 0)
+                if x == 3
+                    array.set(stopP, s, close - dir * 2 * atr)
+                    array.set(targP, s, close + dir * 3 * atr)
+                else if x == 6
+                    array.set(stopP, s, close - dir * 1.5 * atr)
+                    array.set(targP, s, close + dir * 1.5 * atr)
+                else if x == 7
+                    array.set(stopP, s, close - dir * 1 * atr)
+                    array.set(targP, s, close + dir * 2 * atr)
+                else if x == 4
+                    array.set(stopP, s, close - dir * 3 * atr)
+
+// ═══════════════════════ Champion (in-sample) and walk-forward basket ═══════════════════════
+var int champ = -1
+var int champSince = na
+var int prevChamp = -1
+var float folEq = 1.0
+var float folPeak = 1.0
+var float folMdd = 0.0
+var float folPos = 0.0          // basket exposure: mean position of the top K, from -1 to +1
+var float folPosPrev = 0.0
+var int nLongK = 0
+var int nShortK = 0
+var int nK = 0
+var int switches = 0
+var topIdx = array.new_int(10, -1)
+var topSc  = array.new_float(10, float(na))
+if active and N > 0
+    // walk-forward: the basket chosen at the END of the previous bar is exposed to this bar's move
+    folPosPrev := folPos
+    if nK > 0 or prevChamp >= 0
+        folEq := folEq * (1 + folPosPrev * (close / close[1] - 1))
+        folPeak := math.max(folPeak, folEq)
+        folMdd := math.max(folMdd, 1 - folEq / folPeak)
+    // rank everything known so far: keep the top 10 by insertion
+    array.fill(topIdx, -1)
+    array.fill(topSc, float(na))
+    for s = 0 to N - 1
+        sc = array.get(score, s)
+        if not na(sc)
+            j = 9
+            if na(array.get(topSc, j)) or sc > array.get(topSc, j)
+                while j > 0 and (na(array.get(topSc, j - 1)) or sc > array.get(topSc, j - 1))
+                    array.set(topSc, j, array.get(topSc, j - 1))
+                    array.set(topIdx, j, array.get(topIdx, j - 1))
+                    j -= 1
+                array.set(topSc, j, sc)
+                array.set(topIdx, j, s)
+    best = array.get(topIdx, 0)
+    bestSc = array.get(topSc, 0)
+    champSc = champ >= 0 ? array.get(score, champ) : float(na)
+    newChamp = champ
+    if best >= 0 and (champ < 0 or na(champSc) or bestSc - champSc > margin / 100 * math.abs(champSc))
+        newChamp := best
+    if newChamp != champ
+        champSince := bar_index
+        if champ >= 0
+            switches += 1
+    prevChamp := champ
+    champ := newChamp
+    sumPos = 0
+    nK := 0
+    nLongK := 0
+    nShortK := 0
+    for j = 0 to followK - 1
+        t = array.get(topIdx, j)
+        if t >= 0
+            ps = array.get(pos, t)
+            sumPos += ps
+            nK += 1
+            nLongK += ps > 0 ? 1 : 0
+            nShortK += ps < 0 ? 1 : 0
+    newPos = nK > 0 ? sumPos / nK : 0.0
+    if newPos != folPos
+        folEq := folEq * (1 - cost * math.abs(newPos - folPos))
+    folPos := newPos
+
+// ═══════════════════════ Selected strategy (leaderboard #pick) ═══════════════════════
+sel = array.get(topIdx, pick - 1)
+selPos = sel >= 0 ? array.get(pos, sel) : 0
+selDir = sel >= 0 ? array.get(dOf, sel) : 0
+champPos = champ >= 0 ? array.get(pos, champ) : 0
+chartPos = follow == "Selected strategy" ? float(selPos) : folPos
+chartPosPrev = follow == "Selected strategy" ? float(nz(selPos[1])) : folPosPrev
+ruleTxt(int s) => entryName(array.get(eOf, s), array.get(dOf, s)) + " · " + exitName(array.get(xOf, s)) + " · " + filterName(array.get(fOf, s))
+
+// ═══════════════════════ Performance pane ═══════════════════════
+// One idea: growth from the same start bar. 0% = where the test begins. Buy & hold, the walk-forward basket,
+// and the two in-sample curves (champion #1, selected #) all start there, so the lines can be compared by eye.
+var float bhStart = na
+if bhFrom == "First bar on chart" and barstate.isfirst
+    bhStart := close
+if bhFrom == "Backtest start" and active and na(bhStart)
+    bhStart := close
+bhEq = na(bhStart) ? float(na) : close / bhStart
+scaleV(float m) => na(m) ? float(na) : paneLog ? 100 * math.log(m) : (m - 1) * 100
+bhV  = showBH ? scaleV(bhEq) : float(na)
+folV = scaleV(folEq)
+ddV  = showDD ? scaleV(folEq / folPeak) : float(na)
+up = folV >= 0
+cBH = #9aa4b2
+pZero  = plot(0, "Zero", color = color.new(color.gray, 65))
+pBH    = plot(bhV, "Buy & hold", color = color.new(cBH, 10), linewidth = 2)
+pGlow  = plot(folV, "Basket glow", color = color.new(cFol, 80), linewidth = 4)
+pFol   = plot(folV, "Basket, walk-forward", color = cFol, linewidth = 2)
+fill(pZero, pFol, folV, 0, color.new(up ? cUp : cDown, 60), color.new(up ? cUp : cDown, 96), "Basket area")
+pDD = plot(ddV, "Basket drawdown", color = color.new(cDown, 40), linewidth = 1)
+fill(pZero, pDD, 0, ddV, color.new(cDown, 94), color.new(cDown, 60), "Underwater")
+
+// in-sample curves are rebuilt from each strategy's own trade log, so they never jump when the ranking changes
+var polyline plCh = na
+var polyline plSel = na
+var label lgBH = na
+var label lgFol = na
+var label lgCh = na
+var label lgSel = na
+var label lgDD = na
+pcv(float m) => (m >= 1 ? "+" : "") + str.tostring((m - 1) * 100, "#") + "%"
+mkLegend(label id, float y, string txt, color col) =>
+    if not na(id)
+        label.delete(id)
+    label out = na
+    if not na(y)
+        out := label.new(bar_index + 2, y, txt, xloc.bar_index, style = label.style_label_left, color = color.new(col, 15), textcolor = #0b1220, size = size.small)
+    out
+// returns [polyline, final equity multiple, trades drawn]. If the log is shorter than the record, the curve starts
+// at the equity level reached before the stored trades, so it always ends at the strategy's true net.
+curveOf(int t, color col) =>
+    pts = array.new<chart.point>()
+    m = 1.0
+    cnt = 0
+    polyline pl = na
+    if t >= 0
+        hd = array.get(trHead, t)
+        prod = 1.0
+        for k = 0 to TR - 1
+            slot = t * TR + (hd + k) % TR
+            if array.get(trEB, slot) >= 0
+                d = array.get(dOf, t)
+                prod := prod * (1 + d * (array.get(trXP, slot) / array.get(trEP, slot) - 1) - 2 * cost)
+        m := array.get(eq, t) / prod          // equity before the first stored trade (1.0 when the log is complete)
+        for k = 0 to TR - 1
+            slot = t * TR + (hd + k) % TR
+            eb = array.get(trEB, slot)
+            if eb >= 0
+                if cnt == 0
+                    array.push(pts, chart.point.from_index(eb, scaleV(m)))
+                d = array.get(dOf, t)
+                m := m * (1 + d * (array.get(trXP, slot) / array.get(trEP, slot) - 1) - 2 * cost)
+                array.push(pts, chart.point.from_index(array.get(trXB, slot), scaleV(m)))
+                cnt += 1
+        if array.size(pts) > 1
+            pl := polyline.new(pts, false, false, xloc.bar_index, color.new(col, 10), line_width = 2)
+    [pl, m, cnt]
+if barstate.islast
+    if not na(plCh)
+        polyline.delete(plCh)
+    if not na(plSel)
+        polyline.delete(plSel)
+    lgBH  := mkLegend(lgBH, bhV, "Buy & hold " + pcv(bhEq), cBH)
+    lgFol := mkLegend(lgFol, folV, "Top-" + str.tostring(followK) + " basket, walk-forward " + pcv(folEq), cFol)
+    lgDD  := mkLegend(lgDD, ddV < -1 ? ddV : float(na), "basket drawdown " + str.tostring(-(1 - folEq / folPeak) * 100, "#") + "%", cDown)
+    if showChamp and champ >= 0
+        [pl, m, cnt] = curveOf(champ, cBest)
+        plCh := pl
+        lgCh := mkLegend(lgCh, scaleV(m), "★ #1 in-sample " + pcv(m) + (cnt >= TR ? " (curve: last " + str.tostring(TR) + " trades)" : ""), cBest)
+    else
+        lgCh := mkLegend(lgCh, float(na), "", cBest)
+    if showSel and sel >= 0 and pick != 1
+        [pl, m, cnt] = curveOf(sel, cSel)
+        plSel := pl
+        lgSel := mkLegend(lgSel, scaleV(m), "▶ #" + str.tostring(pick) + " in-sample " + pcv(m) + (cnt >= TR ? " (curve: last " + str.tostring(TR) + " trades)" : ""), cSel)
+    else
+        lgSel := mkLegend(lgSel, float(na), "", cSel)
+
+// ═══════════════════════ Price chart ═══════════════════════
+bgcolor(showPos and chartPos > 0 ? color.new(cLong, 96 - int(12 * math.abs(chartPos))) : showPos and chartPos < 0 ? color.new(cShort, 96 - int(12 * math.abs(chartPos))) : na, title = "Exposure", force_overlay = true)
+plotshape(showTrade and chartPos > 0 and chartPosPrev <= 0, "Turns long", shape.triangleup, location.belowbar, cLong, size = size.small, force_overlay = true)
+plotshape(showTrade and chartPos < 0 and chartPosPrev >= 0, "Turns short", shape.triangledown, location.abovebar, cShort, size = size.small, force_overlay = true)
+plotshape(showTrade and chartPos == 0 and chartPosPrev != 0, "Flat", shape.xcross, location.abovebar, color.new(color.gray, 30), size = size.tiny, force_overlay = true)
+
+// selected strategy: its recent trades and its open trade, drawn on the last bar
+var line lEntry = na
+var line lStop = na
+var line lTarg = na
+var label lbTrade = na
+var trLines = array.new<line>()
+var trLabels = array.new<label>()
+if barstate.islast
+    if not na(lEntry)
+        line.delete(lEntry)
+    if not na(lStop)
+        line.delete(lStop)
+    if not na(lTarg)
+        line.delete(lTarg)
+    if not na(lbTrade)
+        label.delete(lbTrade)
+    for ln in trLines
+        line.delete(ln)
+    for lb in trLabels
+        label.delete(lb)
+    array.clear(trLines)
+    array.clear(trLabels)
+    if showLive and sel >= 0
+        hd = array.get(trHead, sel)
+        for k = 0 to TR - 1
+            slot = sel * TR + (hd + k) % TR
+            eb = array.get(trEB, slot)
+            if eb >= 0 and k >= TR - drawTr
+                xb = array.get(trXB, slot)
+                ep0 = array.get(trEP, slot)
+                xp0 = array.get(trXP, slot)
+                won = selDir * (xp0 / ep0 - 1) - 2 * cost > 0
+                array.push(trLines, line.new(eb, ep0, xb, xp0, xloc.bar_index, color = color.new(won ? cUp : cDown, 20), width = 2, force_overlay = true))
+                array.push(trLabels, label.new(eb, ep0, selDir > 0 ? "▲" : "▼", xloc.bar_index, style = label.style_none, textcolor = selDir > 0 ? cLong : cShort, size = size.small, force_overlay = true))
+        if selPos != 0
+            bIn = array.get(barsIn, sel)
+            x0 = bar_index - bIn
+            ep = array.get(entryP, sel)
+            xr = array.get(xOf, sel)
+            cDir = selPos > 0 ? cLong : cShort
+            lEntry := line.new(x0, ep, bar_index + 3, ep, xloc.bar_index, color = cDir, width = 2, force_overlay = true)
+            if xr == 3 or xr == 6 or xr == 7 or xr == 4
+                sp = array.get(stopP, sel)
+                lStop := line.new(x0, sp, bar_index + 3, sp, xloc.bar_index, color = cDown, style = line.style_dashed, width = 1, force_overlay = true)
+            if xr == 3 or xr == 6 or xr == 7
+                tp = array.get(targP, sel)
+                lTarg := line.new(x0, tp, bar_index + 3, tp, xloc.bar_index, color = cUp, style = line.style_dashed, width = 1, force_overlay = true)
+            lbTrade := label.new(bar_index + 3, ep, "#" + str.tostring(pick) + (selPos > 0 ? " long " : " short ") + str.tostring(bIn) + " bars · " + exitName(xr), xloc.bar_index,
+                 style = selPos > 0 ? label.style_label_lower_left : label.style_label_upper_left, color = color.new(cDir, 15), textcolor = #0b1220, size = size.small, force_overlay = true)
+
+// ═══════════════════════ Leaderboard ═══════════════════════
+posTbl = switch dashPos
+    "Top left"     => position.top_left
+    "Bottom right" => position.bottom_right
+    "Bottom left"  => position.bottom_left
+    => position.top_right
+cTblBg = color.new(#0b1220, 4)
+cRowA  = color.new(#0e1628, 4)
+cRowB  = color.new(#151d2e, 4)
+cText  = #e5e9f0
+cDim   = #8b95a7
+cHead  = #cbd5e1
+COLS = 6
+ROWS = 5 + topRows
+var table tb = table.new(posTbl, COLS, ROWS, bgcolor = cTblBg, border_width = 1, border_color = color.new(#0b1220, 0), frame_color = color.new(#3b4b66, 30), frame_width = 1, force_overlay = true)
+var bool merged = false
+txtSz = tblSize == "Tiny" ? size.tiny : tblSize == "Normal" ? size.normal : tblSize == "Large" ? size.large : size.small
+cell(int c, int r, string s, color col, color bg, string al = "right") => table.cell(tb, c, r, s, text_color = col, text_size = txtSz, bgcolor = bg, text_halign = al == "left" ? text.align_left : al == "center" ? text.align_center : text.align_right, text_valign = text.align_center)
+pc(float v) => (v >= 0 ? "+" : "") + str.tostring(v * 100, "#") + "%"
+scoreTxt(int s) =>
+    v = array.get(score, s)
+    rankBy == "Expectancy" ? str.tostring(v, "#.##") + "%" : str.tostring(v, "#.##")
+heat(float v, float lo, float hi) => color.from_gradient(v, lo, hi, cDown, cUp)
+winBar(float w) =>
+    k = math.round(math.max(0, math.min(5, w / 20)))
+    b = ""
+    for i = 1 to 5
+        b += i <= k ? "▰" : "▱"
+    b + " " + str.tostring(w, "#") + "%"
+rankCol(int j) => j == 0 ? #fbbf24 : j == 1 ? #cbd5e1 : j == 2 ? #d97706 : cDim
+scoreCol = not (rankBy == "Win %" or rankBy == "Profit factor" or rankBy == "Net profit")
+
+if barstate.islast and showDash
+    if not merged
+        table.merge_cells(tb, 0, 0, COLS - 1, 0)
+        table.merge_cells(tb, 1, ROWS - 3, COLS - 1, ROWS - 3)
+        table.merge_cells(tb, 1, ROWS - 2, COLS - 1, ROWS - 2)
+        table.merge_cells(tb, 1, ROWS - 1, COLS - 1, ROWS - 1)
+        merged := true
+    hdrBg = color.new(#1d4ed8, 25)
+    cell(0, 0, "TOP STRATEGY FINDER  ·  " + str.tostring(N) + " tested  ·  " + str.tostring(math.min(lastN, bar_index)) + " bars  ·  by " + rankBy, #ffffff, hdrBg, "left")
+    colBg = color.new(#16213a, 0)
+    cell(0, 1, "#", cHead, colBg, "center")
+    cell(1, 1, "Strategy: entry / exit · filter", cHead, colBg, "left")
+    cell(2, 1, "Trades · win", cHead, colBg)
+    cell(3, 1, "PF", cHead, colBg)
+    cell(4, 1, "Net · DD", cHead, colBg)
+    cell(5, 1, scoreCol ? (rankBy == "Expectancy" ? "Exp" : rankBy == "Return / drawdown" ? "R/DD" : rankBy == "Average win / average loss" ? "W/L" : "SQN") : "", cHead, colBg)
+    for j = 0 to topRows - 1
+        r = j + 2
+        t = array.get(topIdx, j)
+        bg = j % 2 == 0 ? cRowA : cRowB
+        if t < 0
+            cell(0, r, str.tostring(j + 1), cDim, bg, "center")
+            cell(1, r, j == 0 ? "no strategy has " + str.tostring(minTrades) + " trades yet" : "", cDim, bg, "left")
+            for c = 2 to COLS - 1
+                cell(c, r, "", cDim, bg)
+        else
+            n = array.get(nTr, t)
+            win = array.get(nWin, t) / n * 100
+            gl = array.get(grossL, t)
+            pf = gl > 0 ? array.get(grossP, t) / gl : 99.0
+            net = array.get(eq, t) - 1
+            dd = array.get(mdd, t)
+            isChamp = t == champ
+            isSel = j == pick - 1
+            dS = array.get(dOf, t)
+            dirCol = dS > 0 ? cLong : cShort
+            rowBg = isSel ? color.new(cSel, 76) : isChamp ? color.new(cBest, 84) : bg
+            cell(0, r, (isSel ? "▶ " : isChamp ? "★ " : "") + str.tostring(j + 1), isSel ? cSel : rankCol(j), rowBg, "center")
+            cell(1, r, (dS > 0 ? "▲ " : "▼ ") + entryName(array.get(eOf, t), dS) + "\n    " + exitName(array.get(xOf, t)) + " · " + filterName(array.get(fOf, t)), dirCol, rowBg, "left")
+            cell(2, r, str.tostring(n) + "  " + winBar(win), heat(win, 35, 70), rowBg)
+            cell(3, r, str.tostring(pf, "#.##"), heat(pf, 0.8, 2.5), rowBg)
+            cell(4, r, pc(net) + " · " + pc(-dd), heat(net, -0.1, 0.3), rowBg)
+            cell(5, r, scoreCol ? scoreTxt(t) : "", cText, rowBg)
+    // how to trade the selected strategy, in plain language (three short lines)
+    rowH = ROWS - 3
+    cell(0, rowH, "▶", cSel, cRowB, "center")
+    if sel >= 0
+        eS = array.get(eOf, sel)
+        dS = array.get(dOf, sel)
+        xS = array.get(xOf, sel)
+        fS = array.get(fOf, sel)
+        cell(1, rowH, "#" + str.tostring(pick) + "  " + (dS > 0 ? "BUY" : "SELL SHORT") + " at the close when " + entryName(eS, dS) + ",\n" + filterLong(fS, dS) + ".\n" + exitLong(xS) + "  Costs " + str.tostring(costPct, "#.##") + "% per side included.", cText, cRowB, "left")
+    else
+        cell(1, rowH, "pick a row once strategies qualify", cDim, cRowB, "left")
+    rowW = ROWS - 2
+    cell(0, rowW, "WF", cFol, cRowA, "center")
+    cell(1, rowW, "Walk-forward, top " + str.tostring(followK) + " basket chosen bar by bar, no hindsight:\n" + pc(folEq - 1) + " net  ·  max drawdown " + pc(-folMdd) + "  ·  champion changed " + str.tostring(switches) + "×", folEq > 1 ? cFol : cDown, cRowA, "left")
+    rowN = ROWS - 1
+    cell(0, rowN, "NOW", cDim, cRowB, "center")
+    cell(1, rowN, "#" + str.tostring(pick) + " " + (sel >= 0 ? (selPos > 0 ? "LONG, " + str.tostring(array.get(barsIn, sel)) + " bars in" : selPos < 0 ? "SHORT, " + str.tostring(array.get(barsIn, sel)) + " bars in" : "flat, waiting for entry") : "–") + "  ·  basket " + str.tostring(nLongK) + "▲ " + str.tostring(nShortK) + "▼ of " + str.tostring(nK) + "  ·  ★ title " + str.tostring(champ >= 0 ? bar_index - champSince : 0) + " bars", selPos > 0 ? cLong : selPos < 0 ? cShort : cText, cRowB, "left")
+
+// ═══════════════════════ Alerts ═══════════════════════
+alertcondition(selPos > 0 and selPos[1] <= 0, "Finder: selected # goes long", "{{ticker}}: the selected leaderboard strategy entered long")
+alertcondition(selPos < 0 and selPos[1] >= 0, "Finder: selected # goes short", "{{ticker}}: the selected leaderboard strategy entered short")
+alertcondition(selPos == 0 and selPos[1] != 0, "Finder: selected # exits", "{{ticker}}: the selected leaderboard strategy closed its trade")
+alertcondition(folPos > 0 and folPosPrev <= 0, "Finder: basket turns long", "{{ticker}}: the top-K basket is net long")
+alertcondition(folPos < 0 and folPosPrev >= 0, "Finder: basket turns short", "{{ticker}}: the top-K basket is net short")
+alertcondition(champPos > 0 and champPos[1] <= 0, "Finder: champion goes long", "{{ticker}}: the champion strategy entered long")
+alertcondition(champPos < 0 and champPos[1] >= 0, "Finder: champion goes short", "{{ticker}}: the champion strategy entered short")
+alertcondition(champ != prevChamp and prevChamp >= 0, "Finder: champion changed", "{{ticker}}: the best strategy changed")

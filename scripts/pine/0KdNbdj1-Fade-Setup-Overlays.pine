@@ -1,0 +1,442 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+// Fade Setup Overlays · by ZeroCoolAcidBurn
+//
+// PURPOSE
+//   A chart readout. It tracks a post-momentum "fade" setup (higher-timeframe
+//   ADX unlock → fresh swing extreme → reversal bar) and stacks three context
+//   flags beside it. Runs on either side: fade highs (short-side setup) or
+//   fade lows (long-side setup).
+//
+// DISCLAIMER
+//   Educational use only. Not financial advice. DYOR.
+//   This is a chart readout and execution aid, not an edge. It makes no
+//   predictions and carries no performance claims. "Short-side" / "long-side"
+//   name the direction of the setup being tracked; they are descriptions of
+//   chart state, not recommendations to trade. Alerts fire on state changes
+//   and mean exactly what the state name says, nothing more.
+//
+// RISK
+//   Crypto perpetual futures are high risk. Leverage can lose more than the
+//   initial margin. The author may hold positions in the assets discussed.
+//
+// APPROXIMATION NOTICE
+//   The three overlay flags are PROXIES, built only from data TradingView can
+//   load. Exchange-native CVD, perp premium and open-interest feeds use data
+//   that TradingView cannot see. Readings here are directionally similar to
+//   those feeds but numerically different.
+//     CVD-div  -> lower-timeframe volume signed by candle direction
+//                 (request.security_lower_tf)
+//     prem-z   -> perp-vs-spot close spread, z-scored over a trailing window
+//     OI-stall -> TradingView's open-interest symbol for the perp ("_OI")
+//
+// TIMEFRAMES
+//   Works on any chart from 1m to 1D. The setup is defined in "reference
+//   hours" on a 15m chart: 12h extreme, 2h CVD window, 24h premium z-score,
+//   and a 1h ADX regime gate. With "Auto-scale" on (default), every window
+//   scales by chart-minutes / 15 and the regime timeframe moves one rung above
+//   the chart, so the readout keeps the same proportions:
+//       chart   extreme   CVD     z-score   regime ADX   CVD intrabars
+//       15m     12h       2h      24h       1h           1m
+//       1h      48h       8h      4d        4h           5m
+//       4h      8d        32h     16d       1D           15m
+//       1D      48d       8d      96d       1W           1h
+//   Turn "Auto-scale" off to use the literal hour values on every chart.
+//
+// HOW TO USE
+//   1. Add it to a crypto perpetual chart, e.g. BINANCE:SOLUSDT.P on 15m or 4h.
+//   2. Pick the side: "Short (fade highs)" or "Long (fade lows)".
+//   3. Leave "Spot symbol" and "Open-interest symbol" blank to derive them from
+//      the chart (works for ".P" perp tickers), or type the matching symbols
+//      for your asset.
+//   4. A flag shows "?" when its data feed is unavailable.
+//
+// ALERTS — how to set them up
+//   OPTION A · ONE alert for everything (recommended)
+//     The script formats its own message with the side, state, price, extreme,
+//     regime ADX and the three flags. Create ONE alert and it covers every state
+//     change on the selected side:
+//       Alerts → Create alert → Condition: "Fade Setup Overlays"
+//       → event: "Any alert() function call" → Trigger: Once per bar close.
+//     The message text box is ignored for this event type; the script's own
+//     message is delivered. Untick "Include INVALIDATED events" in the Alerts
+//     group if you only want ARMED and WINDOW.
+//
+//     Message format (Alerts group):
+//       Readable text   — for app, email or messenger notifications.
+//       JSON (webhook)  — a single-alert JSON schema, for people who
+//                         already run their own webhook receiver:
+//         FADE WINDOW → {"action":"open","signal":"short|long",
+//                        "position_size_pct":10,"leverage":1,"symbol":"SOL-PERP",
+//                        "tv_symbol":"SOLUSDT.P","timeframe":"15","side":"short",
+//                        "mode":"FADE WINDOW","close":…,"extreme":…,
+//                        "extreme_age_h":…,"off_pct":…,"regime_tf":"60","adx":…,
+//                        "cvd_div":1,"prem_z":0,"oi_stall":-1,
+//                        "source":"fade_overlays"[,"secret":"…"]}
+//         INVALIDATED → {"action":"close_all","reason":"regime lost|extended away|aged out", …same fields…}
+//         FADE ARMED  → {"action":"info","state":"FADE ARMED", …}  (off by default)
+//       Flag values in JSON are the tri-state ints: 1 = yes, 0 = no, -1 = unknown.
+//       position_size_pct, leverage and secret are plain inputs passed through
+//       verbatim; the script never sizes, places, or sends anything itself.
+//       Put a webhook URL in the alert only if you own the receiver.
+//
+//   OPTION B · one alert per event (six conditions, three per side)
+//   Each fires once when the state CHANGES, not every bar the state is true.
+//     Short · FADE ARMED     a fresh swing high with price still near it
+//     Short · FADE WINDOW    a reversal-down bar printed inside the fresh-high window
+//     Short · INVALIDATED    the armed/window state ended (extended away, aged out, or regime lost)
+//     Long  · FADE ARMED     a fresh swing low with price still near it
+//     Long  · FADE WINDOW    a reversal-up bar printed inside the fresh-low window
+//     Long  · INVALIDATED    the armed/window state ended
+//   Steps in TradingView:
+//     1. Add the indicator to the chart and set the Side input to the side
+//        you want alerts for (each alert reads the settings it was created with).
+//     2. Open Alerts (clock icon or Alt+A) → Create alert.
+//     3. Condition: pick "Fade Setup Overlays", then the event
+//        (e.g. "Short · FADE WINDOW opened").
+//     4. Trigger: "Once per bar close". The reversal bar is judged on the
+//        closed candle, so intrabar triggers will fire early and then flip.
+//     5. Message: the default text includes the ticker, timeframe and state.
+//        Add {{close}} or your own note if you want more in the notification.
+//     6. Expiration: open-ended, notification channels as you like
+//        (app, email, webhook). The script only hands text to TradingView's
+//        alert system; it has no webhook, key, or network access of its own.
+//   To watch both sides, add the indicator twice (one per side) and create
+//   alerts on each. Alerts are informational: a state changed on the chart.
+//
+// LEGEND: modes (state descriptions, not instructions)
+//   CHOP         regime ADX is below the unlock threshold
+//   IMPULSE LEG  the swing extreme was set very recently; no reversal bar
+//   FADE ARMED   the swing extreme is fresh and price is still near it; no reversal bar
+//   FADE WINDOW  a reversal bar printed inside the fresh-extreme window
+//   EXTENDED     price has already moved more than 2.5% away from the extreme
+//   COOLING      none of the above
+// LEGEND: flag marks
+//   ✓  condition present    ·  condition absent    ?  data unavailable
+//
+// AUTHOR
+//   ZeroCoolAcidBurn on TradingView. Per TradingView's script publishing rules there are
+//   no links, contact details or social handles in this source or in the
+//   publication; anything beyond the script itself lives on the author profile.
+//
+// © ZeroCoolAcidBurn — released free for educational use. Open-source under the Mozilla Public License 2.0 (TradingView default for open-source scripts).
+// ═══════════════════════════════════════════════════════════════════════════
+// max_bars_back: the extreme-bar lookup below reads history with a variable
+// offset, and the z-score window can reach 1,440 bars on a 1m chart. Declaring
+// the buffer up front avoids "cannot determine referencing length" errors.
+indicator("Fade Setup Overlays", shorttitle="Fade Overlays", overlay=true, max_bars_back=1500)
+
+// ── Setup ──
+side      = input.string("Short (fade highs)", "Side", options=["Short (fade highs)", "Long (fade lows)"], group="Setup", tooltip="Short: tracks a fresh swing HIGH and a reversal-down bar. Long: tracks a fresh swing LOW and a reversal-up bar. All flags mirror accordingly.")
+adxMin    = input.float(25.0, "Regime ADX unlock threshold", group="Setup", tooltip="The setup is only tracked while ADX(14) on the last completed regime-timeframe bar is at or above this value. Below it the mode reads CHOP.")
+freshH    = input.float(4.0,  "Extreme freshness (hours @15m)", group="Setup", tooltip="How recent the swing extreme must be for the FADE ARMED / FADE WINDOW states. Reference value on a 15m chart; auto-scales with the chart timeframe.")
+nearPct   = input.float(2.5,  "max % from extreme to stay armed", group="Setup", tooltip="FADE ARMED requires price to be within this % of the swing extreme. Not auto-scaled: higher timeframes usually travel further, so widen it by hand on 4h/1D if needed.")
+
+// ── Scale ──
+autoScale = input.bool(true, "Auto-scale windows to chart timeframe", group="Scale", tooltip="On: every hour-based window is multiplied by chart-minutes / 15, so a 4h chart uses an 8-day extreme, 32h CVD window and 16-day z-score. Off: the literal hour values are used on every chart.")
+refHighH  = input.float(12.0, "Extreme lookback (hours @15m)", group="Scale", minval=1)
+refCvdH   = input.float(2.0,  "CVD window (hours @15m)", group="Scale", minval=0.25)
+refZH     = input.float(24.0, "Premium z window (hours @15m)", group="Scale", minval=2)
+regimeTf  = input.timeframe("", "Regime ADX timeframe", group="Scale", tooltip="Leave on 'Chart' for auto: 1h on charts up to 15m, 4h on 30m–1h, 1D on 2h–4h, 1W on 1D. If set by hand it must be higher than the chart timeframe.")
+
+// ── Overlays ──
+spotSym   = input.string("", "Spot symbol (premium proxy)", group="Overlays", tooltip="Leave blank to derive it from the chart: a perp such as BINANCE:SOLUSDT.P maps to BINANCE:SOLUSDT. On a chart that is not a '.P' perp, the derived symbol is the chart itself, so the flag shows '?'. To set it by hand, open Symbol Search and copy the spot pair from the same exchange as your perp (for example BINANCE:SOLUSDT).")
+oiSym     = input.string("", "Open-interest symbol", group="Overlays", tooltip="Leave blank to derive it from the chart by adding '_OI' (for example BINANCE:SOLUSDT.P_OI). To set it by hand, search '<asset> open interest' in Symbol Search. Not every perp has an OI symbol; if none loads, the flag shows '?'.")
+cvdLtfIn  = input.timeframe("", "CVD lower timeframe", group="Overlays", tooltip="Intrabar timeframe used to sign volume. Leave on 'Chart' for auto: 1m on charts up to 15m, 5m on 30m–1h, 15m on 2h–4h, 1h on 1D. TradingView caps intrabar requests at 100,000 bars, so a finer setting on a high chart timeframe shortens the history that the flag can read; it shows '?' beyond that.")
+
+// ── Alerts ──
+useOneAlert  = input.bool(true, "Combined alert() — one alert covers every state change", group="Alerts", tooltip="Fires through TradingView's 'Any alert() function call' event with a message the script formats itself (side, state, price, extreme, regime ADX, flags). Turn off if you only use the per-event alert conditions.")
+alertInvalid = input.bool(true, "Include INVALIDATED events", group="Alerts", tooltip="Also send a message when an ARMED / WINDOW state ends. Untick to receive only ARMED and WINDOW.")
+alertNote    = input.string("", "Personal note appended to alerts", group="Alerts", tooltip="Optional free text added to the end of every alert message, e.g. a reminder of your own checklist. Leave blank for none. Text format only.")
+msgFormat    = input.string("Readable text", "Message format", options=["Readable text", "JSON (webhook)"], group="Alerts", tooltip="Readable text: a human message for app/email notifications. JSON (webhook): one JSON object per event in a single-alert JSON schema (action = open / close_all / info) for people who run their own webhook receiver. The script sends nothing itself; TradingView delivers whatever you point the alert at.")
+jsonArmed    = input.bool(false, "JSON: also send FADE ARMED as action=info", group="Alerts", tooltip="Off by default so receivers that only understand open / close_all never see an unknown action.")
+jsonSizePct  = input.int(10, "JSON: position_size_pct", minval=1, maxval=100, group="Alerts", tooltip="Passed through verbatim in the JSON payload. The indicator does not size or place anything; your receiver decides what to do with it.")
+jsonLeverage = input.int(1, "JSON: leverage", minval=1, maxval=100, group="Alerts", tooltip="Passed through verbatim in the JSON payload. Default 1 on purpose.")
+jsonSecret   = input.string("", "JSON: webhook secret", group="Alerts", tooltip="Optional shared secret your receiver checks. Added as the secret field only when non-empty. Never hard-code it in the script; type it here so it stays in your chart settings.")
+
+// ── Visuals ──
+tblPos    = input.string("Bottom Right", "Table position", options=["Top Left","Top Right","Bottom Left","Bottom Right"], group="Visuals")
+szMode    = input.string("Normal", "Mode / flag text size", options=["Tiny","Small","Normal","Large","Huge"], group="Visuals")
+szLabel   = input.string("Small",  "Label text size",       options=["Tiny","Small","Normal","Large","Huge"], group="Visuals")
+szValue   = input.string("Small",  "Value text size",       options=["Tiny","Small","Normal","Large","Huge"], group="Visuals")
+cellPad   = input.bool(true,  "Pad cells (adds breathing room)", group="Visuals")
+compact   = input.bool(false, "Compact labels", group="Visuals", tooltip="Shortens the overlay row labels so the table stays narrow at large text sizes.")
+showCredit = input.bool(true, "Show credit row", group="Visuals", tooltip="Adds a small author line under the table.")
+
+// ── Timeframe check ──
+// Windows are expressed in hours and converted to bars, so the chart must be an
+// intraday or daily timeframe. Multi-day, weekly and monthly charts are refused.
+if not (timeframe.isminutes or timeframe.isdaily) or timeframe.in_seconds() > 86400
+    runtime.error("Fade Setup Overlays needs a chart timeframe from 1m to 1D (for example 15m or 4h).")
+
+// ── Scaling ──
+chartMin    = timeframe.in_seconds() / 60.0          // minutes per chart bar
+hoursPerBar = chartMin / 60.0
+scale       = autoScale ? chartMin / 15.0 : 1.0      // 1.0 on a 15m chart
+
+// Hour windows → bar counts (floors keep the math sane on coarse charts).
+barsExt = math.max(2, int(math.round(refHighH * scale / hoursPerBar)))
+barsCvd = math.max(1, int(math.round(refCvdH  * scale / hoursPerBar)))
+barsZ   = math.max(4, int(math.round(refZH    * scale / hoursPerBar)))
+winExtH = barsExt * hoursPerBar                      // actual extreme window in hours, for the label
+
+// Mode thresholds that are also defined in hours @15m.
+impulseH = 1.0    * scale                            // "extreme set within the last hour" @15m
+freshHs  = freshH * scale
+
+// Regime timeframe: one rung above the chart unless set by hand.
+f_autoRegimeTf() =>
+    chartMin <= 15 ? "60" : chartMin <= 60 ? "240" : chartMin <= 240 ? "D" : "W"
+adxTf = regimeTf == "" ? f_autoRegimeTf() : regimeTf
+if timeframe.in_seconds(adxTf) <= timeframe.in_seconds()
+    runtime.error("Regime ADX timeframe must be higher than the chart timeframe.")
+
+// CVD intrabar timeframe: follows the chart unless set by hand.
+cvdLtf = cvdLtfIn != "" ? cvdLtfIn : chartMin <= 15 ? "1" : chartMin <= 60 ? "5" : chartMin <= 240 ? "15" : "60"
+
+// Human-readable timeframe label for the table ("60" → "1h", "D" → "1D").
+f_tfLabel(string tf) =>
+    string out = tf
+    if str.contains(tf, "D") or str.contains(tf, "W") or str.contains(tf, "M")
+        out := str.length(tf) == 1 ? "1" + tf : tf
+    else
+        int m = int(str.tonumber(tf))
+        out := m % 60 == 0 ? str.tostring(m / 60, "#") + "h" : str.tostring(m, "#") + "m"
+    out
+
+// Hours → short label ("12h", "8d", "1.5d").
+f_hoursLabel(float h) =>
+    h < 48 ? str.tostring(h, "#.#") + "h" : str.tostring(h / 24.0, "#.#") + "d"
+
+// ── Side ──
+isShort = side == "Short (fade highs)"
+
+// ── Swing extreme: highest high (short) or lowest low (long) of the window,
+//    and how many bars ago it printed. The loop walks back from the current
+//    bar and stops at the most recent bar that equals the extreme.
+ext = isShort ? ta.highest(high, barsExt) : ta.lowest(low, barsExt)
+barsAgo = 0
+for i = 0 to barsExt - 1
+    float v = isShort ? high[i] : low[i]
+    if v == ext
+        barsAgo := i
+        break
+extAgeH = barsAgo * hoursPerBar
+// Distance from the extreme, in % — positive when price has moved away from it.
+offPct  = isShort ? 100.0 * (ext - close) / ext : 100.0 * (close - ext) / ext
+
+// ── Regime ADX(14), from the last COMPLETED regime-timeframe bar ──
+// Using an OFFSET expression ([1]) together with lookahead_on is the
+// non-repainting form recommended by PineCoders and permitted by the House
+// Rules (the rule forbids lookahead_on on NON-offset expressions). Historical
+// and live bars both see only fully closed higher-timeframe values, so there
+// is no lookahead bias.
+f_dmiConfirmed() =>
+    [p, m, a] = ta.dmi(14, 14)
+    [p[1], m[1], a[1]]
+[dip, dim, adxHtf] = request.security(syminfo.tickerid, adxTf, f_dmiConfirmed(), lookahead=barmerge.lookahead_on)
+unlocked = adxHtf >= adxMin
+
+// ── Reversal bar ──
+// Short side: a lower high that closes below the prior bar's low.
+// Long side:  a higher low that closes above the prior bar's high.
+reversal = isShort ? (high < high[1] and close < low[1]) : (low > low[1] and close > high[1])
+
+// ── Tri-state flags ──
+// Each overlay flag is an int: -1 = unknown (data missing), 0 = no, 1 = yes.
+// A Pine v6 bool can only be true or false; it cannot hold na. A bool would
+// turn "no data" into a silent "no", so an int carries the third state.
+
+// ── Overlay 1: CVD divergence proxy ──
+// Net lower-timeframe signed volume over the CVD window leading into the
+// extreme bar. Each intrabar's volume is signed by its candle direction.
+// TradingView only keeps limited intrabar history, so older bars return an
+// empty array; the flag then reads "?" for them.
+signedVols = request.security_lower_tf(syminfo.tickerid, cvdLtf, close >= open ? volume : -volume, ignore_invalid_timeframe=true)
+float deltaVol = 0.0
+int   ltfOk    = array.size(signedVols) > 0 ? 1 : 0
+if ltfOk == 1
+    for v in signedVols
+        deltaVol += v
+cvdSum = math.sum(deltaVol, barsCvd)
+// Divergence: short = net volume flat/negative into the high; long = flat/positive into the low.
+bool cvdDivNow = isShort ? cvdSum[barsAgo] <= 0 : cvdSum[barsAgo] >= 0
+int cvdDiv = ltfOk[barsAgo] == 0 ? -1 : (cvdDivNow ? 1 : 0)
+
+// ── Overlay 2: premium z proxy ──
+// (perp close - spot close) / spot close, z-scored against its trailing window.
+// Short flag = z went above +1.5 inside the CVD window (crowded long premium).
+// Long flag  = z went below −1.5 inside the CVD window (crowded short discount).
+f_spotFromChart() =>
+    string tk = syminfo.ticker
+    string base = str.endswith(tk, ".P") ? str.substring(tk, 0, str.length(tk) - 2) : tk
+    syminfo.prefix + ":" + base
+spotTicker = spotSym == "" ? f_spotFromChart() : spotSym
+spot   = request.security(spotTicker, timeframe.period, close, ignore_invalid_symbol=true)
+prem   = na(spot) or spot == 0 ? na : (close - spot) / spot
+premMu = ta.sma(prem, barsZ)
+premSd = ta.stdev(prem, barsZ)
+premZ  = na(prem) or na(premSd) or premSd == 0 ? na : (prem - premMu) / premSd
+zHi    = ta.highest(nz(premZ, -10), barsCvd)
+zLo    = ta.lowest(nz(premZ, 10), barsCvd)
+int premHot = na(premZ) ? -1 : ((isShort ? zHi > 1.5 : zLo < -1.5) ? 1 : 0)
+
+// ── Overlay 3: OI stall ──
+// Flag = open interest now is below open interest at the extreme bar
+// (participation fading on both sides of the setup).
+oiTicker = oiSym == "" ? syminfo.prefix + ":" + syminfo.ticker + "_OI" : oiSym
+oi      = request.security(oiTicker, timeframe.period, close, ignore_invalid_symbol=true)
+int oiStall = na(oi) or na(oi[barsAgo]) ? -1 : (oi < oi[barsAgo] ? 1 : 0)
+
+// ── Mode: a simple state machine; the first matching condition wins ──
+mode = not unlocked ? "CHOP" :
+       extAgeH <= impulseH and not reversal ? "IMPULSE LEG" :
+       extAgeH <= freshHs and offPct <= nearPct and not reversal ? "FADE ARMED" :
+       extAgeH <= freshHs and reversal and offPct <= 3.0 ? "FADE WINDOW" :
+       offPct > 2.5 ? "EXTENDED" : "COOLING"
+modeCol = mode == "IMPULSE LEG" ? color.new(color.yellow, 0) :
+          mode == "FADE ARMED" ? color.new(color.orange, 0) :
+          mode == "FADE WINDOW" ? color.new(color.red, 0) :
+          mode == "EXTENDED" ? color.new(color.blue, 0) : color.new(color.gray, 30)
+// Short, neutral description of each state (kept brief so the table stays narrow).
+hint = mode == "IMPULSE LEG" ? "momentum leg still extending" :
+       mode == "FADE ARMED" ? "fresh extreme, no reversal bar yet" :
+       mode == "FADE WINDOW" ? "reversal bar in fresh-extreme window" :
+       mode == "EXTENDED" ? "already moved away from the extreme" :
+       mode == "CHOP" ? "regime ADX below threshold" : "extreme aging, no active state"
+
+// ── Alerts: state transitions only ──
+armed   = mode == "FADE ARMED"
+window  = mode == "FADE WINDOW"
+active  = armed or window
+armedOn  = armed  and not armed[1]
+windowOn = window and not window[1]
+invalid  = active[1] and not active      // left ARMED/WINDOW into any other state
+
+// ── Combined alert(): one alert, message formatted here ──
+// Built on the bar where a transition happens and handed to alert() with
+// freq_once_per_bar_close, so it goes out once, on the closed candle.
+f_flagWord(int x) => x == -1 ? "?" : x == 1 ? "yes" : "no"
+
+f_alertMsg(string event) =>
+    string sideWord = isShort ? "SHORT-SIDE ▼" : "LONG-SIDE ▲"
+    string extWord  = isShort ? "swing high" : "swing low"
+    string msg = "Fade Overlays · " + syminfo.ticker + " " + timeframe.period + "\n"
+    msg += sideWord + " " + event + "\n"
+    msg += "close " + str.tostring(close, format.mintick) + " · " + extWord + " " + str.tostring(ext, format.mintick)
+    msg += " (" + f_hoursLabel(extAgeH) + " ago, " + str.tostring(offPct, "#.##") + "% away)\n"
+    msg += f_tfLabel(adxTf) + " ADX " + str.tostring(adxHtf, "#.0") + (unlocked ? " unlocked" : " locked") + "\n"
+    msg += "flags: CVD-div " + f_flagWord(cvdDiv) + " · prem-z " + f_flagWord(premHot) + " · OI-stall " + f_flagWord(oiStall) + "\n"
+    msg += "State change only. Educational, not advice. DYOR."
+    if alertNote != ""
+        msg += "\n" + alertNote
+    msg
+
+// JSON (webhook) format — single-alert schema:
+//   FADE WINDOW → {"action":"open","signal":"short"|"long", ...}
+//   INVALIDATED → {"action":"close_all","reason":"...", ...}
+//   FADE ARMED  → {"action":"info","state":"FADE ARMED", ...}   (optional)
+// "symbol" is the base asset + "-PERP" (BINANCE:SOLUSDT.P → SOL-PERP), matching
+// the author's other scripts so one receiver can serve all of them.
+f_perpSymbol() =>
+    string up = str.upper(syminfo.ticker)
+    string clean = str.replace_all(str.replace_all(str.replace_all(up, "USDT", ""), "USD", ""), ".P", "")
+    string[] parts = str.split(clean, ":")
+    string base = array.size(parts) > 1 ? array.get(parts, 1) : clean
+    base + "-PERP"
+
+f_jsonCommon() =>
+    string s = '"symbol":"' + f_perpSymbol() + '","tv_symbol":"' + syminfo.ticker + '","timeframe":"' + timeframe.period + '"'
+    s += ',"side":"' + (isShort ? "short" : "long") + '","mode":"' + mode + '","close":' + str.tostring(close, format.mintick)
+    s += ',"extreme":' + str.tostring(ext, format.mintick) + ',"extreme_age_h":' + str.tostring(extAgeH, "#.##") + ',"off_pct":' + str.tostring(offPct, "#.##")
+    s += ',"regime_tf":"' + adxTf + '","adx":' + str.tostring(adxHtf, "#.#")
+    s += ',"cvd_div":' + str.tostring(cvdDiv) + ',"prem_z":' + str.tostring(premHot) + ',"oi_stall":' + str.tostring(oiStall)
+    s += ',"source":"fade_overlays"'
+    s += jsonSecret != "" ? ',"secret":"' + jsonSecret + '"' : ""
+    s
+
+f_jsonOpen() =>
+    '{"action":"open","signal":"' + (isShort ? "short" : "long") + '","position_size_pct":' + str.tostring(jsonSizePct) + ',"leverage":' + str.tostring(jsonLeverage) + ',' + f_jsonCommon() + '}'
+
+f_jsonClose(string reason) =>
+    '{"action":"close_all","reason":"' + reason + '",' + f_jsonCommon() + '}'
+
+f_jsonInfo(string state) =>
+    '{"action":"info","state":"' + state + '",' + f_jsonCommon() + '}'
+
+useJson = msgFormat == "JSON (webhook)"
+invalidWhy = not unlocked ? "regime lost" : mode == "EXTENDED" ? "extended away" : "aged out"
+
+if useOneAlert
+    if armedOn
+        if useJson
+            if jsonArmed
+                alert(f_jsonInfo("FADE ARMED"), alert.freq_once_per_bar_close)
+        else
+            alert(f_alertMsg("FADE ARMED"), alert.freq_once_per_bar_close)
+    else if windowOn
+        alert(useJson ? f_jsonOpen() : f_alertMsg("FADE WINDOW opened"), alert.freq_once_per_bar_close)
+    else if invalid and alertInvalid
+        alert(useJson ? f_jsonClose(invalidWhy) : f_alertMsg("setup INVALIDATED — " + invalidWhy), alert.freq_once_per_bar_close)
+
+// ── Per-event alert conditions (Option B) ──
+// alertcondition() messages must be constant strings, so there is one set per
+// side; the Side input decides which set can actually fire.
+alertcondition(isShort and armedOn,  "Short · FADE ARMED",         "{{ticker}} {{interval}}: short-side FADE ARMED — fresh swing high, price still near it. State change only; DYOR.")
+alertcondition(isShort and windowOn, "Short · FADE WINDOW opened", "{{ticker}} {{interval}}: short-side FADE WINDOW — reversal-down bar inside the fresh-high window. State change only; DYOR.")
+alertcondition(isShort and invalid,  "Short · INVALIDATED",        "{{ticker}} {{interval}}: short-side fade setup ended (extended, aged out, or regime lost).")
+alertcondition(not isShort and armedOn,  "Long · FADE ARMED",         "{{ticker}} {{interval}}: long-side FADE ARMED — fresh swing low, price still near it. State change only; DYOR.")
+alertcondition(not isShort and windowOn, "Long · FADE WINDOW opened", "{{ticker}} {{interval}}: long-side FADE WINDOW — reversal-up bar inside the fresh-low window. State change only; DYOR.")
+alertcondition(not isShort and invalid,  "Long · INVALIDATED",        "{{ticker}} {{interval}}: long-side fade setup ended (extended, aged out, or regime lost).")
+
+// ── Helpers ──
+f_mark(int x) => x == -1 ? "?" : x == 1 ? "✓" : "·"
+
+getPos(p) => p == "Top Left" ? position.top_left : p == "Top Right" ? position.top_right : p == "Bottom Left" ? position.bottom_left : position.bottom_right
+
+f_size(string s) =>
+    switch s
+        "Tiny"  => size.tiny
+        "Small" => size.small
+        "Large" => size.large
+        "Huge"  => size.huge
+        => size.normal
+
+SZ_MODE  = f_size(szMode)
+SZ_LBL   = f_size(szLabel)
+SZ_VAL   = f_size(szValue)
+PAD      = cellPad ? " " : ""          // cheap horizontal padding via leading/trailing spaces
+
+C_LBL_BG = color.new(color.gray, 80)
+C_TXT    = color.white
+
+// One readable table row: left-aligned label, right-aligned value.
+f_row(table tb, int row, string lbl, string val, color valBg, string valSz) =>
+    table.cell(tb, 0, row, PAD + lbl + PAD, bgcolor=C_LBL_BG, text_color=C_TXT, text_size=SZ_LBL, text_halign=text.align_left)
+    table.cell(tb, 1, row, PAD + val + PAD, bgcolor=valBg, text_color=C_TXT, text_size=valSz, text_halign=text.align_right)
+
+// Overlay row labels (long vs compact).
+lblCvd  = compact ? "CVD"    : "CVD-div (proxy)"
+lblPrem = compact ? "prem-z" : "prem-z (proxy)"
+lblOi   = compact ? "OI"     : "OI-stall (proxy)"
+sideTag = isShort ? " ▼" : " ▲"
+extLbl  = isShort ? " hi " : " lo "
+
+// ── Chart drawings ──
+plot(ext, "Swing extreme watermark", color=color.new(isShort ? color.red : color.green, 40), style=plot.style_linebr, linewidth=1)
+plotshape(isShort and reversal and unlocked and extAgeH <= freshHs, style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small, title="Reversal-down bar in fresh-high window")
+plotshape(not isShort and reversal and unlocked and extAgeH <= freshHs, style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.small, title="Reversal-up bar in fresh-low window")
+
+// ── Status table (drawn on the last bar only) ──
+var table t = table.new(getPos(tblPos), 2, 7, border_width=1)
+if barstate.islast
+    table.cell(t, 0, 0, PAD + mode + sideTag + PAD, bgcolor=modeCol, text_color=color.new(color.black, 0), text_size=SZ_MODE)
+    table.cell(t, 1, 0, PAD + hint + PAD, bgcolor=C_LBL_BG, text_color=C_TXT, text_size=SZ_LBL)
+    f_row(t, 1, f_tfLabel(adxTf) + " ADX", str.tostring(adxHtf, "#.0") + (unlocked ? " ✅" : " locked"), color.new(unlocked ? color.green : color.gray, 70), SZ_VAL)
+    f_row(t, 2, f_hoursLabel(winExtH) + extLbl + str.tostring(ext, format.mintick), f_hoursLabel(extAgeH) + " ago · " + str.tostring(offPct, "#.##") + "% away", C_LBL_BG, SZ_VAL)
+    f_row(t, 3, lblCvd, f_mark(cvdDiv), color.new(cvdDiv == 1 ? color.green : color.gray, 60), SZ_MODE)
+    f_row(t, 4, lblPrem, f_mark(premHot), color.new(premHot == 1 ? color.green : color.gray, 60), SZ_MODE)
+    f_row(t, 5, lblOi, f_mark(oiStall), color.new(oiStall == 1 ? color.green : color.gray, 60), SZ_MODE)
+    if showCredit
+        table.cell(t, 0, 6, PAD + "© ZeroCoolAcidBurn" + PAD, text_color=color.new(color.gray, 20), text_size=size.tiny, text_halign=text.align_left)
+        table.cell(t, 1, 6, "", text_size=size.tiny)

@@ -1,0 +1,172 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+
+//@version=6
+indicator("Sequentially Filtered Moving Average MTF 3.2", "SFMA_MTF 3.2", timeframe="", overlay=true)
+
+//---- Input Settings ----
+length1 = input.int(9, title="Length 1")
+length2 = input.int(13, title="Length 2")
+length3 = input.int(22, title="Length 3")
+
+src1 = input.source(close, title="Source 1")
+src2 = input.source(close, title="Source 2")
+src3 = input.source(close, title="Source 3")
+
+timeframe1 = input.timeframe("1", "Timeframe 1")
+timeframe2 = input.timeframe("1", "Timeframe 2")
+timeframe3 = input.timeframe("1", "Timeframe 3")
+
+//---- Color Settings ----
+bullColor = input.color(#00ffbb, title="Bullish Color")
+bearColor = input.color(#e040fb, title="Bearish Color")
+neutralColor = input.color(#ffeb3b, title="Neutral Color")
+persistentNeutral = input.bool(false, title="Persistent Neutral (keep last direction color)")
+invertPersistentColor = input.bool(false, title="Invert Persistent Neutral Color")
+
+//---- Shading Controls ----
+showFill13 = input.bool(true, title="Show Fill 1-2")
+showFill22 = input.bool(true, title="Show Fill 2-3")
+showFillOuter = input.bool(false, title="Show Fill 1-3 (Outer)")
+onlyShadeWhenNeutral = input.bool(false, title="Only Shade When Both MAs Neutral")
+transpFill = input.int(80, title="Fill Transparency %", minval=0, maxval=100)
+
+//---- Outer Distance Lines (new) ----
+showOuterDistLines = input.bool(false, title="Show Outer Distance Lines (above L1 / below L2)")
+outerDistMultiplier = input.float(1.0, title="Outer Distance Multiplier", minval=0.1, step=0.05, tooltip="1.0 = same distance as L1-L2. Try 1.5, 2.0, 0.75, etc.")
+upperDistColor    = input.color(color.new(#00ffbb, 0), title="Upper Distance Line Color")
+lowerDistColor    = input.color(color.new(#e040fb, 0), title="Lower Distance Line Color")
+outerLineWidth    = input.int(1, title="Outer Lines Width", minval=1, maxval=5)
+outerLineStyle    = input.string("Line", title="Outer Lines Style", options=["Line", "Stepline", "Circles", "Cross", "Area", "Columns", "Histogram"])
+
+//---- Function Definition ----
+calculateSFMA(source, len) =>
+    ma = ta.sma(source, len)
+    a = ta.change(ma) > 0 ? 1 : ta.change(ma) < 0 ? -1 : 0
+    sum = 0.
+    for i = 0 to len - 1
+        sum := sum + a[i]
+    alpha = math.abs(sum) == len ? 1 : 0
+    var float filt = na
+    filt := alpha * ma + (1 - alpha) * nz(filt[1], ma)
+    filt
+
+//---- Calculate 3 Instances on Current Frame ----
+filt1_src = calculateSFMA(src1, length1)
+filt2_src = calculateSFMA(src2, length2)
+filt3_src = calculateSFMA(src3, length3)
+
+//---- MTF Extension Logic ----
+filt1_htf = request.security(syminfo.tickerid, timeframe1, filt1_src, lookahead=barmerge.lookahead_off)
+filt2_htf = request.security(syminfo.tickerid, timeframe2, filt2_src, lookahead=barmerge.lookahead_off)
+filt3_htf = request.security(syminfo.tickerid, timeframe3, filt3_src, lookahead=barmerge.lookahead_off)
+
+htf_time1 = request.security(syminfo.tickerid, timeframe1, time, lookahead=barmerge.lookahead_off)
+htf_time2 = request.security(syminfo.tickerid, timeframe2, time, lookahead=barmerge.lookahead_off)
+htf_time3 = request.security(syminfo.tickerid, timeframe3, time, lookahead=barmerge.lookahead_off)
+
+var float ext_filt1 = na
+var float ext_filt2 = na
+var float ext_filt3 = na
+
+var float prev_filt1 = na
+var float prev_filt2 = na
+var float prev_filt3 = na
+
+new_hft1 = ta.change(htf_time1) > 0
+new_hft2 = ta.change(htf_time2) > 0
+new_hft3 = ta.change(htf_time3) > 0
+
+ext_filt1 := new_hft1 and not na(filt1_htf) ? filt1_htf : nz(ext_filt1[1])
+ext_filt2 := new_hft2 and not na(filt2_htf) ? filt2_htf : nz(ext_filt2[1])
+ext_filt3 := new_hft3 and not na(filt3_htf) ? filt3_htf : nz(ext_filt3[1])
+
+//---- Track Previous HTF Values Only On New HTF Bar ----
+if new_hft1 and not na(filt1_htf)
+    prev_filt1 := filt1_htf[1]
+
+if new_hft2 and not na(filt2_htf)
+    prev_filt2 := filt2_htf[1]
+
+if new_hft3 and not na(filt3_htf)
+    prev_filt3 := filt3_htf[1]
+
+//---- Direction tracking for persistent neutral ----
+var int dir1 = 0
+var int dir2 = 0
+var int dir3 = 0
+
+rawDir1 = filt1_htf > prev_filt1 ? 1 : filt1_htf < prev_filt1 ? -1 : 0
+rawDir2 = filt2_htf > prev_filt2 ? 1 : filt2_htf < prev_filt2 ? -1 : 0
+rawDir3 = filt3_htf > prev_filt3 ? 1 : filt3_htf < prev_filt3 ? -1 : 0
+
+if persistentNeutral  
+    if rawDir1 != 0
+        dir1 := rawDir1    
+    if rawDir2 != 0
+        dir2 := rawDir2
+    if rawDir3 != 0
+        dir3 := rawDir3
+else
+    dir1 := rawDir1   
+    dir2 := rawDir2
+    dir3 := rawDir3
+
+//---- Determine Colors ----
+color1 = neutralColor
+color2 = neutralColor
+color3 = neutralColor
+
+if persistentNeutral and invertPersistentColor
+    color1 := rawDir1 == 1 ? bullColor : rawDir1 == -1 ? bearColor : (dir1 == 1 ? bearColor : dir1 == -1 ? bullColor : neutralColor)
+    color2 := rawDir2 == 1 ? bullColor : rawDir2 == -1 ? bearColor : (dir2 == 1 ? bearColor : dir2 == -1 ? bullColor : neutralColor)
+    color3 := rawDir3 == 1 ? bullColor : rawDir3 == -1 ? bearColor : (dir3 == 1 ? bearColor : dir3 == -1 ? bullColor : neutralColor)
+else if persistentNeutral
+    color1 := dir1 == 1 ? bullColor : dir1 == -1 ? bearColor : neutralColor
+    color2 := dir2 == 1 ? bullColor : dir2 == -1 ? bearColor : neutralColor
+    color3 := dir3 == 1 ? bullColor : dir3 == -1 ? bearColor : neutralColor
+else
+    color1 := rawDir1 == 1 ? bullColor : rawDir1 == -1 ? bearColor : neutralColor
+    color2 := rawDir2 == 1 ? bullColor : rawDir2 == -1 ? bearColor : neutralColor
+    color3 := rawDir3 == 1 ? bullColor : rawDir3 == -1 ? bearColor : neutralColor
+
+//---- Plot Extended Filters ----
+plot1 = plot(ext_filt1, "SFMA 1", color=color1, linewidth=1)
+plot2 = plot(ext_filt2, "SFMA 2", color=color2, linewidth=1)
+plot3 = plot(ext_filt3, "SFMA 3", color=color3, linewidth=1)
+
+//---- Outer Distance Lines ----
+dist = math.abs(ext_filt1 - ext_filt2)
+upperOuter = ext_filt1 + dist * outerDistMultiplier   // distance above Length 1 (multiplied)
+lowerOuter = ext_filt2 - dist * outerDistMultiplier   // distance below Length 2 (multiplied)
+
+styleMap = outerLineStyle == "Line"      ? plot.style_line :
+           outerLineStyle == "Stepline"  ? plot.style_stepline :
+           outerLineStyle == "Circles"   ? plot.style_circles :
+           outerLineStyle == "Cross"     ? plot.style_cross :
+           outerLineStyle == "Area"      ? plot.style_area :
+           outerLineStyle == "Columns"   ? plot.style_columns :
+                                           plot.style_histogram
+
+plot(showOuterDistLines ? upperOuter : na, "Upper Dist Line (above L1)", color=upperDistColor, linewidth=outerLineWidth, style=styleMap)
+plot(showOuterDistLines ? lowerOuter : na, "Lower Dist Line (below L2)", color=lowerDistColor, linewidth=outerLineWidth, style=styleMap)
+
+//---- Conditional Fills ----
+isNeutral1 = rawDir1 == 0
+isNeutral2 = rawDir2 == 0
+isNeutral3 = rawDir3 == 0
+
+fillColor12 = onlyShadeWhenNeutral ? 
+     (isNeutral1 and isNeutral2 ? color.new(color1, transpFill) : color.new(color1, 100)) : 
+     color.new(color1, transpFill)
+
+fillColor23 = onlyShadeWhenNeutral ? 
+     (isNeutral2 and isNeutral3 ? color.new(color2, transpFill) : color.new(color2, 100)) : 
+     color.new(color2, transpFill)
+
+fillColorOuter = onlyShadeWhenNeutral ? 
+     (isNeutral1 and isNeutral3 ? color.new(neutralColor, transpFill) : color.new(neutralColor, 100)) : 
+     color.new(neutralColor, transpFill)
+
+fill(plot1, plot2, color=fillColor12, title="Fill TF1-TF2", display=showFill13 ? display.all : display.none)
+fill(plot2, plot3, color=fillColor23, title="Fill TF2-TF3", display=showFill22 ? display.all : display.none)
+fill(plot1, plot3, color=fillColorOuter, title="Fill TF1-TF3 Outer", display=showFillOuter ? display.all : display.none)

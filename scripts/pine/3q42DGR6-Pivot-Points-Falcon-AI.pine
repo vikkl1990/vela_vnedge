@@ -1,0 +1,166 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © thefalconai
+
+//@version=6
+indicator("Pivot Points | Falcon AI", "Falcon Piv", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pivot Points | Falcon AI — Classic + Camarilla, daily or weekly.
+//
+// Educational demo. This script draws standard, publicly documented pivot
+// formulas from the previous period's high/low/close. It does NOT place trades,
+// does NOT backtest, and contains no entry, stop, or position-sizing logic.
+// Your entry, your risk.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Inputs ───────────────────────────────────────────────────────────────────
+grpCalc = "Calculation"
+pivotTF   = input.string("Daily",   "Pivot period",  options = ["Daily", "Weekly"],            group = grpCalc)
+method    = input.string("Both",    "Method",        options = ["Classic", "Camarilla", "Both"], group = grpCalc)
+useCurrent= input.bool(false, "Include current (unclosed) period", group = grpCalc,
+     tooltip = "Off = pivots come from the last CLOSED period and stay fixed all session. On = they recalculate as the current period develops, so levels move. Off is the conventional behaviour.")
+
+grpShow = "Levels"
+showP    = input.bool(true,  "Central pivot (P)",     group = grpShow)
+classicN = input.int(3, "Classic R/S pairs",   minval = 1, maxval = 3, group = grpShow)
+camN     = input.int(4, "Camarilla R/S pairs", minval = 1, maxval = 4, group = grpShow)
+
+grpStyle = "Style"
+extendR    = input.bool(true, "Extend right", group = grpStyle)
+showLabels = input.bool(true, "Show labels",  group = grpStyle)
+labelSide  = input.string("Right", "Label side", options = ["Left", "Right"], group = grpStyle)
+histBars   = input.int(5, "Periods of history", minval = 1, maxval = 30, group = grpStyle,
+     tooltip = "How many past periods to keep drawn as segments. Only the current period extends right and carries labels. With Classic + Camarilla that is 15 levels per period, so keep this low.")
+
+grpCol = "Colours"
+colP   = input.color(#c8a84b,                    "Pivot",     group = grpCol)
+colR   = input.color(color.new(#ff4a6b, 0),      "Resistance",group = grpCol)
+colS   = input.color(color.new(#2fdb6b, 0),      "Support",   group = grpCol)
+widthP = input.int(2, "Pivot width", minval = 1, maxval = 4, group = grpCol)
+widthL = input.int(1, "Level width", minval = 1, maxval = 4, group = grpCol)
+
+grpPanel = "Panel"
+showPanel = input.bool(true, "Show info panel", group = grpPanel)
+
+// ── Higher-timeframe source ──────────────────────────────────────────────────
+// Note the [1] offsets: without them the "closed period" values would repaint
+// as the current period develops. `useCurrent` deliberately opts into that.
+tfStr = pivotTF == "Weekly" ? "1W" : "1D"
+off   = useCurrent ? 0 : 1
+
+pH = request.security(syminfo.tickerid, tfStr, high[off],  lookahead = barmerge.lookahead_on)
+pL = request.security(syminfo.tickerid, tfStr, low[off],   lookahead = barmerge.lookahead_on)
+pC = request.security(syminfo.tickerid, tfStr, close[off], lookahead = barmerge.lookahead_on)
+
+newPeriod = ta.change(time(tfStr)) != 0
+rng = pH - pL
+
+// ── Classic ──────────────────────────────────────────────────────────────────
+P  = (pH + pL + pC) / 3.0
+cR1 = 2 * P - pL
+cS1 = 2 * P - pH
+cR2 = P + rng
+cS2 = P - rng
+cR3 = pH + 2 * (P - pL)
+cS3 = pL - 2 * (pH - P)
+
+// ── Camarilla ────────────────────────────────────────────────────────────────
+// The 1.1/n divisor series is the standard published definition.
+mR1 = pC + rng * 1.1 / 12.0
+mR2 = pC + rng * 1.1 / 6.0
+mR3 = pC + rng * 1.1 / 4.0
+mR4 = pC + rng * 1.1 / 2.0
+mS1 = pC - rng * 1.1 / 12.0
+mS2 = pC - rng * 1.1 / 6.0
+mS3 = pC - rng * 1.1 / 4.0
+mS4 = pC - rng * 1.1 / 2.0
+
+wantClassic = method == "Classic"   or method == "Both"
+wantCam     = method == "Camarilla" or method == "Both"
+
+// ── Drawing ──────────────────────────────────────────────────────────────────
+var array<line>  lines  = array.new<line>()
+var array<label> labels = array.new<label>()
+
+// Keep only `histBars` periods of drawings on the chart. Each period adds a
+// bounded number of objects, so trimming from the front keeps us well under
+// Pine's 500-object ceiling regardless of how long the chart runs.
+trim(int keepPerPeriod) =>
+    maxObj = keepPerPeriod * histBars
+    while array.size(lines) > maxObj
+        line.delete(array.shift(lines))
+    while array.size(labels) > maxObj
+        label.delete(array.shift(labels))
+
+drawLevel(float price, color c, int w, string txt, int x1, int x2) =>
+    if not na(price)
+        ln = line.new(x1, price, x2, price, xloc = xloc.bar_time, color = c, width = w,
+             extend = extendR ? extend.right : extend.none)
+        array.push(lines, ln)
+        if showLabels
+            lb = label.new(labelSide == "Right" ? x2 : x1, price, txt,
+                 xloc = xloc.bar_time, textcolor = c, color = color.new(color.black, 100),
+                 style = labelSide == "Right" ? label.style_label_left : label.style_label_right,
+                 size = size.tiny)
+            array.push(labels, lb)
+
+if newPeriod and barstate.isconfirmed
+    x1 = time
+    x2 = time + (pivotTF == "Weekly" ? 604800000 : 86400000)
+
+    // Only the CURRENT period's levels extend right and carry labels. Without
+    // this, every historical period keeps extending to the right edge and the
+    // chart fills with hundreds of overlapping lines.
+    if array.size(lines) > 0
+        for i = 0 to array.size(lines) - 1
+            line.set_extend(array.get(lines, i), extend.none)
+    while array.size(labels) > 0
+        label.delete(array.pop(labels))
+
+    if showP
+        drawLevel(P, colP, widthP, "P", x1, x2)
+
+    if wantClassic
+        if classicN >= 1
+            drawLevel(cR1, colR, widthL, "R1", x1, x2)
+            drawLevel(cS1, colS, widthL, "S1", x1, x2)
+        if classicN >= 2
+            drawLevel(cR2, colR, widthL, "R2", x1, x2)
+            drawLevel(cS2, colS, widthL, "S2", x1, x2)
+        if classicN >= 3
+            drawLevel(cR3, colR, widthL, "R3", x1, x2)
+            drawLevel(cS3, colS, widthL, "S3", x1, x2)
+
+    if wantCam
+        if camN >= 1
+            drawLevel(mR1, colR, widthL, "H1", x1, x2)
+            drawLevel(mS1, colS, widthL, "L1", x1, x2)
+        if camN >= 2
+            drawLevel(mR2, colR, widthL, "H2", x1, x2)
+            drawLevel(mS2, colS, widthL, "L2", x1, x2)
+        if camN >= 3
+            drawLevel(mR3, colR, widthL, "H3", x1, x2)
+            drawLevel(mS3, colS, widthL, "L3", x1, x2)
+        if camN >= 4
+            drawLevel(mR4, colR, widthL, "H4", x1, x2)
+            drawLevel(mS4, colS, widthL, "L4", x1, x2)
+
+    trim(15)
+
+// ── Alerts ───────────────────────────────────────────────────────────────────
+// Crosses of the central pivot only. Informational — no trade instruction.
+crossUpP   = ta.crossover(close, P)
+crossDownP = ta.crossunder(close, P)
+alertcondition(crossUpP,   "Close crossed above pivot", "Price closed above the central pivot")
+alertcondition(crossDownP, "Close crossed below pivot", "Price closed below the central pivot")
+
+// ── Info panel ───────────────────────────────────────────────────────────────
+// Educational labels only — name, framing, and what it draws.
+var table panel = table.new(position.top_right, 1, 3, border_width = 1)
+if showPanel and barstate.islast
+    table.cell(panel, 0, 0, "FALCON AI", text_color = #c8a84b, text_size = size.small,
+         bgcolor = color.new(#0b0e16, 10))
+    table.cell(panel, 0, 1, "Pivot Points · Educational demo", text_color = color.gray, text_size = size.tiny,
+         bgcolor = color.new(#0b0e16, 10))
+    table.cell(panel, 0, 2, (pivotTF == "Weekly" ? "Weekly" : "Daily") + " · " + method + " pivots",
+         text_color = color.silver, text_size = size.tiny, bgcolor = color.new(#0b0e16, 10))

@@ -1,0 +1,240 @@
+//@version=6
+indicator("Previous Day OHLC Levels", overlay = true, max_lines_count = 10, max_labels_count = 10)
+
+//=============================================================================
+// SETTINGS
+//=============================================================================
+
+showPDH = input.bool(true, "Previous Day High", group = "Levels")
+showPDO = input.bool(true, "Previous Day Open", group = "Levels")
+showPDC = input.bool(true, "Previous Day Close", group = "Levels")
+showPDL = input.bool(true, "Previous Day Low", group = "Levels")
+
+lineWidth = input.int(1, "Line Width", minval = 1, maxval = 4, group = "Style")
+
+lineStyleInput = input.string(
+     "Solid",
+     "Line Style",
+     options = ["Solid", "Dashed", "Dotted"],
+     group = "Style"
+     )
+
+showLabels = input.bool(true, "Show Labels", group = "Style")
+
+//=============================================================================
+// COLOURS
+//=============================================================================
+
+pdhColor = input.color(color.red, "PDH Colour", group = "Colours")
+pdoColor = input.color(color.purple, "PDO Colour", group = "Colours")
+pdcColor = input.color(color.aqua, "PDC Colour", group = "Colours")
+pdlColor = input.color(color.lime, "PDL Colour", group = "Colours")
+
+//=============================================================================
+// LINE STYLE
+//=============================================================================
+
+lineStyle = switch lineStyleInput
+    "Solid"  => line.style_solid
+    "Dashed" => line.style_dashed
+    "Dotted" => line.style_dotted
+
+//=============================================================================
+// PREVIOUS DAY OHLC
+//=============================================================================
+
+// [1] = completed previous daily candle
+previousDayHigh = request.security(
+     syminfo.tickerid,
+     "D",
+     high[1],
+     lookahead = barmerge.lookahead_on
+     )
+
+previousDayLow = request.security(
+     syminfo.tickerid,
+     "D",
+     low[1],
+     lookahead = barmerge.lookahead_on
+     )
+
+previousDayOpen = request.security(
+     syminfo.tickerid,
+     "D",
+     open[1],
+     lookahead = barmerge.lookahead_on
+     )
+
+previousDayClose = request.security(
+     syminfo.tickerid,
+     "D",
+     close[1],
+     lookahead = barmerge.lookahead_on
+     )
+
+//=============================================================================
+// DETECT NEW DAY
+//=============================================================================
+
+newDay = ta.change(time("D")) != 0
+
+//=============================================================================
+// CREATE ONLY 4 LINE OBJECTS
+//=============================================================================
+
+var line pdhLine = na
+var line pdoLine = na
+var line pdcLine = na
+var line pdlLine = na
+
+// Labels
+var label pdhLabel = na
+var label pdoLabel = na
+var label pdcLabel = na
+var label pdlLabel = na
+
+//=============================================================================
+// FUNCTION TO CREATE / UPDATE LEVEL
+//=============================================================================
+
+if newDay
+
+    //=====================================================================
+    // DELETE OLD LINES
+    //=====================================================================
+
+    if not na(pdhLine)
+        line.delete(pdhLine)
+
+    if not na(pdoLine)
+        line.delete(pdoLine)
+
+    if not na(pdcLine)
+        line.delete(pdcLine)
+
+    if not na(pdlLine)
+        line.delete(pdlLine)
+
+    //=====================================================================
+    // DELETE OLD LABELS
+    //=====================================================================
+
+    if not na(pdhLabel)
+        label.delete(pdhLabel)
+
+    if not na(pdoLabel)
+        label.delete(pdoLabel)
+
+    if not na(pdcLabel)
+        label.delete(pdcLabel)
+
+    if not na(pdlLabel)
+        label.delete(pdlLabel)
+
+    //=====================================================================
+    // PDH
+    //=====================================================================
+
+    if showPDH
+        pdhLine := line.new(
+             bar_index,
+             previousDayHigh,
+             bar_index + 1,
+             previousDayHigh,
+             color = pdhColor,
+             width = lineWidth,
+             style = lineStyle,
+             extend = extend.right
+             )
+
+        if showLabels
+            pdhLabel := label.new(
+                 bar_index,
+                 previousDayHigh,
+                 "PDH",
+                 style = label.style_label_left,
+                 color = pdhColor,
+                 textcolor = color.white,
+                 size = size.small
+                 )
+
+    //=====================================================================
+    // PDO
+    //=====================================================================
+
+    if showPDO
+        pdoLine := line.new(
+             bar_index,
+             previousDayOpen,
+             bar_index + 1,
+             previousDayOpen,
+             color = pdoColor,
+             width = lineWidth,
+             style = lineStyle,
+             extend = extend.right
+             )
+
+        if showLabels
+            pdoLabel := label.new(
+                 bar_index,
+                 previousDayOpen,
+                 "PDO",
+                 style = label.style_label_left,
+                 color = pdoColor,
+                 textcolor = color.white,
+                 size = size.small
+                 )
+
+    //=====================================================================
+    // PDC
+    //=====================================================================
+
+    if showPDC
+        pdcLine := line.new(
+             bar_index,
+             previousDayClose,
+             bar_index + 1,
+             previousDayClose,
+             color = pdcColor,
+             width = lineWidth,
+             style = lineStyle,
+             extend = extend.right
+             )
+
+        if showLabels
+            pdcLabel := label.new(
+                 bar_index,
+                 previousDayClose,
+                 "PDC",
+                 style = label.style_label_left,
+                 color = pdcColor,
+                 textcolor = color.white,
+                 size = size.small
+                 )
+
+    //=====================================================================
+    // PDL
+    //=====================================================================
+
+    if showPDL
+        pdlLine := line.new(
+             bar_index,
+             previousDayLow,
+             bar_index + 1,
+             previousDayLow,
+             color = pdlColor,
+             width = lineWidth,
+             style = lineStyle,
+             extend = extend.right
+             )
+
+        if showLabels
+            pdlLabel := label.new(
+                 bar_index,
+                 previousDayLow,
+                 "PDL",
+                 style = label.style_label_left,
+                 color = pdlColor,
+                 textcolor = color.white,
+                 size = size.small
+                 )

@@ -1,0 +1,201 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+//   🍑  A T T Y   A L G O   T R E N D   P R O   —   v1.6
+//   Dual-MA Trend Ribbon · Adaptive Neutral Zone · Session Trend Gate
+//   © 2026 Atty Labs. All rights reserved.
+//
+//   HOW IT WORKS
+//   Two moving averages ride with price. The ribbon between them is what you
+//   read — not the individual lines. Both lines share ONE color, and that
+//   color is set by how far apart they are:
+//
+//     GREEN   Fast MA is above the Slow MA by more than the neutral zone.
+//     RED     Fast MA is below the Slow MA by more than the neutral zone.
+//     YELLOW  The two are inside the neutral zone — indecision. This is the
+//             turn bar. Trend is not readable here; wait for it to resolve.
+//
+//   The colour is a continuum, not three buckets. A ribbon that has only just
+//   cleared the neutral zone renders close to yellow and saturates toward full
+//   green or red as the gap widens, so trend STRENGTH is visible at a glance.
+//
+//   The ribbon interior is filled solid — the two MAs are the edges of a
+//   coloured band, not two coloured lines. Pullbacks that reach the band and
+//   close back with the trend are continuation and get flagged.
+//
+//   The neutral zone is measured in ATR, not fixed points, so one setting
+//   behaves the same on GC, NQ, ES and a $5 stock.
+//
+//   Everything evaluates on CONFIRMED bar close. Signals, flags and alerts are
+//   gated on barstate.isconfirmed, and the higher-timeframe read is taken from the
+//   last closed HTF bar. Nothing you see scrolling back was unavailable live.
+// ═══════════════════════════════════════════════════════════════════════════
+indicator("Atty Algo Trend Pro", "ATTY TREND", overlay = true, max_labels_count = 500)
+
+// ─────────────────────────────── INPUTS ────────────────────────────────────
+grpEngine = "📈  Trend Engine"
+maType  = input.string("SMA", "Moving Average Type", options = ["SMA", "EMA", "WMA", "HMA", "RMA"], group = grpEngine, tooltip = "SMA is the reference build. EMA reacts faster and flips more often. HMA is the smoothest at the same length.")
+fastLen = input.int   (4,     "Fast Length",  minval = 1, group = grpEngine, tooltip = "Reference setting: 4.")
+slowLen = input.int   (9,     "Slow Length",  minval = 2, group = grpEngine, tooltip = "Reference setting: 9. Must be longer than the Fast Length.")
+src     = input.source(close, "Source",       group = grpEngine)
+
+grpZone = "🎚️  Neutral Zone"
+zoneMode = input.string("ATR (adaptive)", "Measure the gap in", options = ["ATR (adaptive)", "Price points (fixed)", "Percent of price"], group = grpZone, tooltip = "How far apart the two MAs must be before the ribbon commits to a direction. ATR is the default because it self-scales across symbols and timeframes.")
+atrLen   = input.int  (14,   "ATR Length",                  minval = 1, group = grpZone)
+atrFrac  = input.float(0.25, "Neutral Zone — ATR fraction", minval = 0.0, step = 0.01, group = grpZone, tooltip = "The gap must exceed this fraction of one ATR before the ribbon commits. Higher = fewer, cleaner flips. 0.10 is the literal source value but flips constantly on fast charts; 0.25 is the usable default.")
+zonePts  = input.float(1.0,  "Neutral Zone — points",       minval = 0.0, step = 0.1,  group = grpZone, tooltip = "Used only when the mode above is set to price points.")
+zonePct  = input.float(0.05, "Neutral Zone — % of price",   minval = 0.0, step = 0.01, group = grpZone, tooltip = "Used only when the mode above is set to percent of price.")
+confirmN = input.int  (2,    "Confirmation Bars",           minval = 1, maxval = 10, group = grpZone, tooltip = "The gap must stay clear of the neutral zone for this many consecutive closes before the ribbon commits. 1 = commit on the first qualifying close, which is the literal source behaviour but whipsaws.")
+
+grpGate = "🕙  Session Trend Gate"
+useGate   = input.bool   (true,               "Gate signals to the window", group = grpGate, tooltip = "The opening drive lies about direction. With this ON, no flip signals or alerts fire outside the window. The ribbon stays readable either way — see the style option below.")
+gateSess  = input.session("1000-1600",        "Trend-valid window",        group = grpGate, tooltip = "Reference window: 1000-1600. Trend is not treated as tradeable before 10:00.")
+gateTz    = input.string ("America/New_York", "Timezone",                  group = grpGate)
+gateStyle = input.string ("Dim the colors",   "Outside the window",        options = ["Dim the colors", "Grey out", "Full colors"], group = grpGate, tooltip = "How the ribbon looks outside the trend window. Dim keeps it readable but visibly not-live. Grey out hides direction entirely. Full colors looks identical inside and out — signals are still gated.")
+gateDim   = input.int    (50,                 "Dim amount",                minval = 0, maxval = 90, group = grpGate)
+
+grpHTF = "🔭  Higher-Timeframe Confirmation"
+useHTF = input.bool     (false, "Require HTF agreement for flip signals", group = grpHTF, tooltip = "When ON, a flip only fires if the same engine on the higher timeframe already points the same way.")
+htfRes = input.timeframe("30",  "Higher Timeframe",                       group = grpHTF, tooltip = "Must be equal to or higher than the chart timeframe.")
+
+grpPlace = "📐  Ribbon Placement"
+ribbonOff = input.float(0.75, "Ribbon Offset (ATR)", minval = 0.0, step = 0.05, group = grpPlace, tooltip = "Pushes the whole ribbon away from price, on the side price should not be trading — below in an uptrend, above in a downtrend. 0 = sit on price like a plain MA pair. 0.75 gives clear separation. This is cosmetic and for the pullback flags only; the trend engine always reads the un-offset MAs.")
+offSmooth = input.int  (3,    "Offset Smoothing",    minval = 1, maxval = 50, group = grpPlace, tooltip = "Smooths the jump when the ribbon crosses to the other side of price on a flip. Higher = a gentler sweep across.")
+
+grpLook = "🎨  Chart Style"
+bullColor  = input.color(#00E676, "Bull",    inline = "c1", group = grpLook)
+bearColor  = input.color(#FF3B30, "Bear",    inline = "c1", group = grpLook)
+neutColor  = input.color(#FFD54F, "Neutral", inline = "c1", group = grpLook)
+gateColor  = input.color(#78909C, "Gated",   inline = "c1", group = grpLook)
+fullSat    = input.float(0.60, "Full-saturation ribbon width (ATR)", minval = 0.05, step = 0.05, group = grpLook, tooltip = "Ribbon width at which the colour reaches full green or red. Below this it blends toward yellow, so a weak trend looks weak.")
+fillTransp = input.int (18,    "Ribbon Fill Transparency", minval = 0, maxval = 100, group = grpLook, tooltip = "The inside of the ribbon, between the two lines. Low = solid colour. This is the main read; the lines are just its edges.")
+colorBars  = input.bool(false, "Color the candles",        group = grpLook, tooltip = "OFF leaves candles their normal red/green. The trend colour lives in the ribbon.")
+markTurn   = input.bool(false, "Highlight the turn bar",   group = grpLook, tooltip = "Shades the bar where the ribbon drops into the neutral zone — the trend-change candle.")
+showFlips  = input.bool(true,  "Flip labels",              group = grpLook)
+showDash   = input.bool(true,  "Dashboard",                group = grpLook)
+
+if barstate.isfirst and fastLen >= slowLen
+    runtime.error("Atty Algo Trend Pro: Fast Length must be shorter than Slow Length.")
+
+// ─────────────────────────────── ENGINE ────────────────────────────────────
+f_ma(source, length, kind) =>
+    switch kind
+        "SMA" => ta.sma(source, length)
+        "EMA" => ta.ema(source, length)
+        "WMA" => ta.wma(source, length)
+        "HMA" => ta.hma(source, length)
+        "RMA" => ta.rma(source, length)
+        => ta.sma(source, length)
+
+f_zone() =>
+    switch zoneMode
+        "ATR (adaptive)"       => ta.atr(atrLen) * atrFrac
+        "Price points (fixed)" => zonePts
+        => close * zonePct / 100.0
+
+// Raw direction, written so it can also be evaluated on a higher timeframe.
+f_dir() =>
+    f = f_ma(close, fastLen, maType)
+    s = f_ma(close, slowLen, maType)
+    g = f - s
+    z = f_zone()
+    g > z ? 1 : g < -z ? -1 : 0
+
+atrNow = ta.atr(atrLen)
+
+fastMA = f_ma(src, fastLen, maType)
+slowMA = f_ma(src, slowLen, maType)
+gap    = fastMA - slowMA
+zone   = f_zone()
+
+rawBull = gap >  zone
+rawBear = gap < -zone
+
+// Commit only after N consecutive qualifying closes.
+bullOK = math.sum(rawBull ? 1 : 0, confirmN) == confirmN
+bearOK = math.sum(rawBear ? 1 : 0, confirmN) == confirmN
+
+inWindow = not na(time(timeframe.period, gateSess, gateTz))
+gateOK   = not useGate or inWindow
+
+// Trend state: 1 bull, -1 bear, 0 neutral. Always computed — the gate below
+// blocks SIGNALS, not the reading. A chart you cannot read at 08:30 is useless.
+trendState = bullOK ? 1 : bearOK ? -1 : 0
+
+var int barsInState = 0
+barsInState := trendState == trendState[1] ? barsInState + 1 : 1
+
+// Higher timeframe: requested at global scope, applied conditionally.
+// f_dir()[1] takes the last CONFIRMED higher-timeframe value. Without the [1] the
+// forming HTF bar updates intrabar, so a flip label can appear and then vanish
+// before that bar closes. The cost is one HTF bar of lag, which is the honest price.
+htfDir = request.security(syminfo.tickerid, htfRes, f_dir()[1], lookahead = barmerge.lookahead_off)
+htfOK  = not useHTF or htfDir == trendState
+
+// ───────────────────────── RIBBON PLACEMENT ────────────────────────────────
+// Cosmetic only. The engine above always reads the un-offset MAs.
+rawShift  = trendState == 1 ? -ribbonOff * atrNow : trendState == -1 ? ribbonOff * atrNow : 0.0
+shift     = ta.ema(rawShift, offSmooth)
+dispFast  = fastMA + shift
+dispSlow  = slowMA + shift
+bandTop   = math.max(dispFast, dispSlow)
+bandBot   = math.min(dispFast, dispSlow)
+
+// ─────────────────────────── SIGNALS & FLAGS ───────────────────────────────
+bullFlip = barstate.isconfirmed and trendState ==  1 and trendState[1] !=  1 and gateOK and htfOK
+bearFlip = barstate.isconfirmed and trendState == -1 and trendState[1] != -1 and gateOK and htfOK
+turnBar  = barstate.isconfirmed and trendState ==  0 and trendState[1] !=  0 and gateOK
+
+holdBull = barstate.isconfirmed and gateOK and trendState ==  1 and low  <= bandTop and close > bandTop and close > open
+holdBear = barstate.isconfirmed and gateOK and trendState == -1 and high >= bandBot and close < bandBot and close < open
+
+// ──────────────────────────── COLOR ENGINE ─────────────────────────────────
+// Colour is a continuum: near the neutral zone it blends toward yellow, and
+// saturates to full green / red as the ribbon widens.
+gapAtr   = atrNow > 0 ? math.abs(gap) / atrNow : 0.0
+bullTone = color.from_gradient(gapAtr, atrFrac, fullSat, neutColor, bullColor)
+bearTone = color.from_gradient(gapAtr, atrFrac, fullSat, neutColor, bearColor)
+liveTone   = trendState == 1 ? bullTone : trendState == -1 ? bearTone : neutColor
+baseTone   = not gateOK and gateStyle == "Grey out" ? gateColor : liveTone
+dimFrac    = gateOK or gateStyle != "Dim the colors" ? 0.0 : gateDim / 100.0
+// Fade the REMAINING opacity, never add. Adding drove solid fills straight to
+// 100 (invisible) instead of merely dimmer.
+f_shade(baseTransp) => color.new(baseTone, math.min(100.0, baseTransp + (100.0 - baseTransp) * dimFrac))
+trendColor = f_shade(0)
+
+// ─────────────────────────────── DISPLAY ───────────────────────────────────
+pFast = plot(dispFast, "Fast MA", color = trendColor, linewidth = 2)
+pSlow = plot(dispSlow, "Slow MA", color = trendColor, linewidth = 2)
+fill(pFast, pSlow, color = f_shade(fillTransp), title = "Ribbon")
+
+barcolor(colorBars ? trendColor : na, title = "Candle Color")
+bgcolor(markTurn and turnBar ? color.new(neutColor, 82) : na, title = "Turn Bar")
+
+plotshape(showFlips and bullFlip, "Bull Flip", shape.labelup,   location.belowbar, bullColor, text = "BULL", textcolor = color.white, size = size.tiny)
+plotshape(showFlips and bearFlip, "Bear Flip", shape.labeldown, location.abovebar, bearColor, text = "BEAR", textcolor = color.white, size = size.tiny)
+plotshape(holdBull, "Ribbon Hold (Bull)", shape.triangleup,   location.belowbar, bullColor, size = size.tiny)
+plotshape(holdBear, "Ribbon Hold (Bear)", shape.triangledown, location.abovebar, bearColor, size = size.tiny)
+
+// ────────────────────────────── DASHBOARD ──────────────────────────────────
+stateTxt = (trendState == 1 ? "BULL" : trendState == -1 ? "BEAR" : "NEUTRAL") + (gateOK ? "" : " ·")
+htfTxt   = htfDir == 1 ? "BULL" : htfDir == -1 ? "BEAR" : "NEUTRAL"
+htfCol   = htfDir == 1 ? bullColor : htfDir == -1 ? bearColor : neutColor
+
+var table dash = table.new(position.top_right, 2, 5, border_width = 1, frame_width = 1, frame_color = color.new(color.gray, 60))
+if showDash and barstate.islast
+    table.cell(dash, 0, 0, "ATTY TREND PRO", text_color = color.white, bgcolor = color.new(color.black, 20), text_size = size.small)
+    table.cell(dash, 1, 0, stateTxt, text_color = color.white, bgcolor = color.new(trendColor, 25), text_size = size.small)
+    table.cell(dash, 0, 1, "Bars in state", text_color = color.silver, text_size = size.tiny)
+    table.cell(dash, 1, 1, str.tostring(barsInState), text_color = color.white, text_size = size.tiny)
+    table.cell(dash, 0, 2, "Ribbon width", text_color = color.silver, text_size = size.tiny)
+    table.cell(dash, 1, 2, str.tostring(gapAtr, "#.00") + " ATR", text_color = color.white, text_size = size.tiny)
+    table.cell(dash, 0, 3, "HTF " + htfRes, text_color = color.silver, text_size = size.tiny)
+    table.cell(dash, 1, 3, htfTxt, text_color = htfCol, text_size = size.tiny)
+    table.cell(dash, 0, 4, "Trend window", text_color = color.silver, text_size = size.tiny)
+    table.cell(dash, 1, 4, useGate ? (inWindow ? "OPEN" : "CLOSED") : "OFF", text_color = useGate and not inWindow ? gateColor : color.white, text_size = size.tiny)
+
+// ─────────────────────────────── ALERTS ────────────────────────────────────
+alertcondition(bullFlip, "Trend Flip — Bullish", "Atty Algo Trend Pro: ribbon turned GREEN on {{ticker}} {{interval}}")
+alertcondition(bearFlip, "Trend Flip — Bearish", "Atty Algo Trend Pro: ribbon turned RED on {{ticker}} {{interval}}")
+alertcondition(turnBar,  "Reversal Warning",     "Atty Algo Trend Pro: ribbon pinched into the neutral zone on {{ticker}} {{interval}} — trend-change candle")
+alertcondition(holdBull, "Ribbon Hold — Bull",   "Atty Algo Trend Pro: bullish pullback held the ribbon on {{ticker}} {{interval}}")
+alertcondition(holdBear, "Ribbon Hold — Bear",   "Atty Algo Trend Pro: bearish pullback held the ribbon on {{ticker}} {{interval}}")

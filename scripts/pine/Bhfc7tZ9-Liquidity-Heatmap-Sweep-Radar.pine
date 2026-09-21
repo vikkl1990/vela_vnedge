@@ -1,0 +1,185 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © zebris_boris
+//
+// ──────────────────────────────────────────────────────────────
+//  Liquidity Heatmap & Sweep Radar  ·  v1.0  ·  Boris Tatchou
+// ──────────────────────────────────────────────────────────────
+//  See where the stops are — and when they get hunted.
+//  Maps resting-liquidity pools (clusters of swing highs & lows,
+//  i.e. equal highs / equal lows where stops pile up) as a
+//  colour-graded heatmap: the more touches and volume a level
+//  holds, the hotter and more opaque its band. When price wicks
+//  through a pool and closes back, the Sweep Radar marks the
+//  stop-hunt (×) and clears the drained liquidity.
+//  Sweeps are confirmed on close — non-repainting.
+//
+//  HONEST NOTE: TradingView has no aggregated exchange-liquidation
+//  feed, so this is a STRUCTURE + VOLUME proxy for resting
+//  liquidity — not real order-book/liquidation data.
+//  Free & open-source. Research/education only — not financial advice.
+// ──────────────────────────────────────────────────────────────
+//@version=6
+indicator("Liquidity Heatmap & Sweep Radar", "LiqMap", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+
+// ── Inputs ─────────────────────────────────────────────────
+gL = "① Liquidity pools"
+gS = "② Sweeps"
+gV = "③ Visuals"
+gD = "④ Dashboard"
+gC = "⑤ Colors"
+
+swingLen = input.int(8,  "Swing length", minval = 2, maxval = 50, group = gL, tooltip = "Pivot look-back that defines a liquidity level.")
+mergeTol = input.float(0.35, "Cluster tolerance (x ATR)", minval = 0.0, step = 0.05, group = gL, tooltip = "Swings within this distance merge into one stronger pool (that's how equal highs/lows stack liquidity).")
+maxPools = input.int(12, "Max pools per side", minval = 2, maxval = 40, group = gL)
+thickPct = input.float(0.12, "Band thickness (x ATR)", minval = 0.02, step = 0.02, group = gV)
+
+showSweep = input.bool(true, "Mark sweeps (×)", group = gS)
+clearBroke = input.bool(true, "Remove pools price closes through", group = gS, tooltip = "When price closes decisively beyond a pool (not a wick), the liquidity is consumed — remove the band.")
+
+showDash = input.bool(true, "Dashboard", group = gD)
+dashPos  = input.string("Top right", "Position", options = ["Top right", "Top left", "Middle right", "Bottom right", "Bottom left"], group = gD)
+dashSize = input.string("Small", "Text size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = gD)
+
+buyCol  = input.color(#ef5350, "Buy-side (above price)",  group = gC, tooltip = "Liquidity resting above price — buy stops. Price is often drawn up to grab it.")
+sellCol = input.color(#26a69a, "Sell-side (below price)", group = gC, tooltip = "Liquidity resting below price — sell stops.")
+cNeu    = color.rgb(158, 162, 174)
+
+atr    = ta.atr(14)
+ph     = ta.pivothigh(high, swingLen, swingLen)
+pl     = ta.pivotlow(low,  swingLen, swingLen)
+avgVol = ta.sma(volume, 20)
+
+// ── Liquidity pool model ───────────────────────────────────
+type Pool
+    box   bx
+    float price
+    int   born
+    bool  buy      // true = buy-side (above), formed at a swing high
+    int   touches
+    bool  hotVol
+var Pool[] pools = array.new<Pool>()
+
+_thick = thickPct * atr
+_col(_buy) => _buy ? buyCol : sellCol
+
+_addPool(_price, _buy, _hot) =>
+    _merged = false
+    if array.size(pools) > 0
+        for i = 0 to array.size(pools) - 1
+            _p = array.get(pools, i)
+            if _p.buy == _buy and math.abs(_p.price - _price) <= mergeTol * atr
+                _p.touches := _p.touches + 1
+                _p.price   := (_p.price + _price) / 2.0
+                _p.hotVol  := _p.hotVol or _hot
+                _merged := true
+                break
+    if not _merged
+        _bx = box.new(bar_index - swingLen, _price + _thick, bar_index, _price - _thick, xloc = xloc.bar_index, extend = extend.right, bgcolor = color.new(_col(_buy), 85), border_color = color.new(_col(_buy), 70), border_width = 1)
+        array.push(pools, Pool.new(_bx, _price, bar_index - swingLen, _buy, 1, _hot))
+        // cap per side: drop the oldest same-side pool
+        _cnt = 0
+        for i = array.size(pools) - 1 to 0
+            _p = array.get(pools, i)
+            if _p.buy == _buy
+                _cnt += 1
+                if _cnt > maxPools
+                    box.delete(_p.bx)
+                    array.remove(pools, i)
+
+// ── Sweep / break detection (before adding this bar's pools) ─
+var bool sweptBuy  = false
+var bool sweptSell = false
+sweptBuy  := false
+sweptSell := false
+if array.size(pools) > 0
+    for i = array.size(pools) - 1 to 0
+        _p = array.get(pools, i)
+        _sweep = _p.buy ? (high > _p.price and close < _p.price) : (low < _p.price and close > _p.price)
+        _broke = _p.buy ? close > _p.price : close < _p.price
+        if _sweep and barstate.isconfirmed
+            if showSweep
+                label.new(bar_index, _p.price, "×", xloc = xloc.bar_index, style = _p.buy ? label.style_label_down : label.style_label_up, color = color.new(_col(_p.buy), 0), textcolor = color.white, size = size.small)
+            if _p.buy
+                sweptBuy := true
+            else
+                sweptSell := true
+            box.delete(_p.bx)
+            array.remove(pools, i)
+        else if _broke and clearBroke and barstate.isconfirmed
+            box.delete(_p.bx)
+            array.remove(pools, i)
+
+// ── Add new pools from confirmed pivots ────────────────────
+if not na(ph)
+    _hot = not na(avgVol[swingLen]) and volume[swingLen] > avgVol[swingLen]
+    _addPool(ph, true, _hot)
+if not na(pl)
+    _hot = not na(avgVol[swingLen]) and volume[swingLen] > avgVol[swingLen]
+    _addPool(pl, false, _hot)
+
+// ── Heatmap intensity (recolour on the visible edge) ───────
+if barstate.islast and array.size(pools) > 0
+    for i = 0 to array.size(pools) - 1
+        _p = array.get(pools, i)
+        _strength = math.min(_p.touches, 5) + (_p.hotVol ? 1 : 0)      // 1–6
+        _alpha = math.max(50, 86 - _strength * 6)
+        box.set_bgcolor(_p.bx, color.new(_col(_p.buy), _alpha))
+        box.set_border_color(_p.bx, color.new(_col(_p.buy), math.max(30, _alpha - 20)))
+        box.set_top(_p.bx, _p.price + _thick)
+        box.set_bottom(_p.bx, _p.price - _thick)
+
+// ── Dashboard ──────────────────────────────────────────────
+_dpos = dashPos == "Top left" ? position.top_left : dashPos == "Middle right" ? position.middle_right : dashPos == "Bottom right" ? position.bottom_right : dashPos == "Bottom left" ? position.bottom_left : position.top_right
+_dSz  = dashSize == "Tiny" ? size.tiny : dashSize == "Normal" ? size.normal : dashSize == "Large" ? size.large : dashSize == "Huge" ? size.huge : size.small
+cDhBg  = color.rgb(16, 19, 26)
+cLbBg  = color.rgb(26, 30, 40)
+cLbTx  = color.rgb(198, 203, 212)
+cDhTx  = color.rgb(232, 234, 237)
+cHdrBg = color.rgb(19, 27, 48)
+cHdrTx = color.rgb(150, 180, 235)
+var table dash = table.new(_dpos, 2, 7, border_width = 1, frame_color = color.rgb(42, 46, 57), bgcolor = cDhBg)
+_fmt(_x) =>
+    math.abs(_x) >= 1000 ? str.tostring(_x, "#,##0.##") : str.tostring(_x, format.mintick)
+_row(r, l, v, vc) =>
+    table.cell(dash, 0, r, l, bgcolor = cLbBg, text_color = cLbTx, text_size = _dSz)
+    table.cell(dash, 1, r, v, bgcolor = cLbBg, text_color = vc, text_size = _dSz, text_halign = text.align_right)
+_heat(_s) =>
+    _f = math.max(0, math.min(6, _s))
+    str.repeat("█", _f) + str.repeat("░", 6 - _f)
+if showDash and barstate.islast
+    _nBuy  = 0
+    _nSell = 0
+    float _upNext  = na    // nearest buy-side pool above price
+    float _dnNext  = na    // nearest sell-side pool below price
+    float _strPrice = na   // strongest pool
+    int   _strScore = -1
+    bool  _strBuy   = true
+    if array.size(pools) > 0
+        for i = 0 to array.size(pools) - 1
+            _p = array.get(pools, i)
+            if _p.buy
+                _nBuy += 1
+            else
+                _nSell += 1
+            if _p.price > close and (na(_upNext) or _p.price < _upNext)
+                _upNext := _p.price
+            if _p.price < close and (na(_dnNext) or _p.price > _dnNext)
+                _dnNext := _p.price
+            _sc = math.min(_p.touches, 5) + (_p.hotVol ? 1 : 0)
+            if _sc > _strScore
+                _strScore := _sc
+                _strPrice := _p.price
+                _strBuy   := _p.buy
+    table.cell(dash, 0, 0, "🔥 Liquidity Heatmap", bgcolor = cHdrBg, text_color = cHdrTx, text_size = _dSz)
+    table.cell(dash, 1, 0, syminfo.ticker + " · " + timeframe.period, bgcolor = cHdrBg, text_color = cHdrTx, text_size = _dSz, text_halign = text.align_right)
+    _row(1, "Buy-side above",  na(_upNext) ? "—" : _fmt(_upNext), buyCol)
+    _row(2, "Sell-side below", na(_dnNext) ? "—" : _fmt(_dnNext), sellCol)
+    _row(3, "Strongest pool",  na(_strPrice) ? "—" : _fmt(_strPrice) + "  " + _heat(_strScore), _strBuy ? buyCol : sellCol)
+    _row(4, "Active pools",    str.tostring(_nBuy) + " ▲  /  " + str.tostring(_nSell) + " ▼", cDhTx)
+    _row(5, "Distance up",     na(_upNext) or close == 0 ? "—" : "+" + str.tostring((_upNext - close) / close * 100, "#.##") + "%", buyCol)
+    _row(6, "Distance down",   na(_dnNext) or close == 0 ? "—" : str.tostring((_dnNext - close) / close * 100, "#.##") + "%", sellCol)
+
+// ── Alerts ─────────────────────────────────────────────────
+alertcondition(sweptBuy,  "Buy-side sweep",  "LiqMap: buy-side liquidity swept (stop-hunt above) on {{ticker}} ({{interval}})")
+alertcondition(sweptSell, "Sell-side sweep", "LiqMap: sell-side liquidity swept (stop-hunt below) on {{ticker}} ({{interval}})")
+alertcondition(sweptBuy or sweptSell, "Any sweep", "LiqMap: liquidity swept on {{ticker}} ({{interval}})")

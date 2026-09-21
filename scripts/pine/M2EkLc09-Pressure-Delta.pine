@@ -1,0 +1,115 @@
+//@version=6
+indicator('Pressure Delta', overlay = true)
+bgcolor(color.new(#000000, 20), title='Dark Background')
+
+// ─────────────────────────────────────────────
+// INPUTS
+// ─────────────────────────────────────────────
+volLen = input.int(20, "Volume Avg Length", minval=1, maxval=200)
+
+// ─────────────────────────────────────────────
+// 1. VOLUME DELTA (Buy vs Sell volume estimate)
+// ─────────────────────────────────────────────
+candleRange  = high - low
+safeRange    = candleRange == 0 ? 0.0001 : candleRange
+closeRatio   = (close - low) / safeRange
+upperWick    = high - math.max(open, close)
+lowerWick    = math.min(open, close) - low
+wickBias     = (lowerWick - upperWick) / safeRange
+buyPressureRaw  = math.max(0, math.min(1, (closeRatio * 0.6) + ((wickBias + 1) / 2 * 0.4)))
+sellPressureRaw = 1.0 - buyPressureRaw
+buyVol  = buyPressureRaw * volume
+sellVol = sellPressureRaw * volume
+netDelta = buyVol - sellVol
+
+//============================================================================
+// VOLUME CALCULATIONS
+//============================================================================
+avgVol    = ta.sma(volume, volLen)
+rvol      = volume / avgVol
+rvolBuy   = buyVol / avgVol
+rvolSell  = sellVol / avgVol
+rvDelta   = rvolBuy - rvolSell
+rvPct     = (rvDelta / rvol) * 100
+
+// Spike: current delta vs its recent average magnitude
+avgAbsDelta = ta.sma(math.abs(rvDelta), 5)
+spike = avgAbsDelta != 0 ? rvDelta / avgAbsDelta : 0
+
+// ─────────────────────────────────────────────
+// 2. PRESSURE (0–100 buy dominance)
+// ─────────────────────────────────────────────
+pressureFinal = buyPressureRaw * 100
+
+//============================================================================
+// LABELS
+//============================================================================
+if barstate.islast
+    for i = 0 to 6
+        label.new(bar_index - i, high[i],
+             str.tostring(pressureFinal[i], '#.##'),
+             color     = color.new(color.black, 100),
+             textcolor = pressureFinal[i] > 60 ? color.lime : pressureFinal[i] >= 40 ? color.yellow : color.red,
+             size      = size.large,
+             force_overlay = true)
+
+//============================================================================
+// TABLE
+//============================================================================
+
+var table infoTable = table.new(position.middle_right, 2, 10, bgcolor = #000000, border_width = 1, border_color = color.white)
+
+
+table.cell(infoTable, 0, 1, "RVoL Δ", text_color = color.white, bgcolor = color.navy, text_size = size.large)
+table.cell(infoTable, 1, 1, str.tostring(rvDelta, "#.##") + "x",
+     text_color = color.white, bgcolor = rvDelta > 5 ?  color.teal : rvDelta > 0 ? color.blue : color.maroon, text_size = size.large)
+
+table.cell(infoTable, 0, 0, "Pressure", text_color = color.white, bgcolor = color.navy, text_size = size.large)
+table.cell(infoTable, 1, 0, str.tostring(pressureFinal, "#") + "%",
+     text_color = color.white, bgcolor = pressureFinal > 60 ? color.teal : pressureFinal > 40 ? color.blue : color.maroon, text_size = size.large)
+
+table.cell(infoTable, 0, 2, "RVoL %",  text_color = color.white,bgcolor = color.navy, text_size = size.large)
+table.cell(infoTable, 1, 2, str.tostring(rvPct, "#") + '%',
+    text_color = rvPct > 50 ? color.lime : rvPct >= 0 ? color.yellow : color.red, text_size = size.large)
+
+table.cell(infoTable, 0, 3, "Spike",  text_color = color.white, bgcolor = color.navy, text_size = size.large)
+table.cell(infoTable, 1, 3, str.tostring(spike, "#.#")  +'x',
+    text_color = spike > 2 ? color.lime : spike >= 0 ? color.yellow : color.red, text_size = size.large)
+
+table.cell(infoTable, 0, 5, "RVoL", text_color = color.white, bgcolor = color.navy, text_size = size.large)
+table.cell(infoTable, 1, 5, str.tostring(rvol, "#.##") + "x",
+     text_color = rvol > 2 ? color.lime : color.red, text_size = size.large)
+
+
+//------------------------------------------
+//   Alerts
+//------------------------------------------ 
+
+alertcondition(pressureFinal >= 80, "Buy - PRESS Above 80", "Buy Alert - Pressure is Above 80")
+alertcondition(pressureFinal < 80, "Sell - PRESS Below 80", "Sell Alert - Pressure is Below 80")
+alertcondition(pressureFinal >= 60, "Buy - PRESS Above 60", "Buy Alert - Pressure is Above 60")
+alertcondition(pressureFinal < 60, "Sell - PRESS Below 60", "Sell Alert - Pressure is Below 60")
+alertcondition(pressureFinal >= 70, "Buy - PRESS Above 70", "Buy Alert - Pressure is Above 70")
+alertcondition(pressureFinal < 70, "Sell - PRESS Below 70", "Sell Alert - Pressure is Below 70")
+alertcondition(pressureFinal >= 50, "Buy - PRESS Above 50", "Buy Alert - Pressure is Above 50")
+alertcondition(pressureFinal < 50, "Sell - PRESS Below 50", "Sell Alert - Pressure is Below 50")
+alertcondition(pressureFinal >= 20, "Buy - PRESS Above 20", "Buy Alert - Pressure is Above 20")
+alertcondition(pressureFinal < 20, "Sell - PRESS Below 20", "Sell Alert - Pressure is Below 20")
+alertcondition(pressureFinal >= 0, "Buy - PRESS Above 0", "Buy Alert - Pressure is Above 0")
+alertcondition(pressureFinal < 0, "Sell - PRESS Below 0", "Sell Alert - Pressure is Below 0")
+
+alertcondition(rvDelta >= 7, "Buy - RV_DEL > 7", "Buy Alert - RVoL Delta is Above 7")
+alertcondition(rvDelta < 7, "Sell - RV_DEL < 7", "Sell Alert - RVoL Delta is Below 7")
+alertcondition(rvDelta >= 6, "Buy - RV_DEL > 6", "Buy Alert - RVoL Delta is Above 6")
+alertcondition(rvDelta < 6, "Sell - RV_DEL < 6", "Sell Alert - RVoL Delta is Below 6")
+alertcondition(rvDelta >= 5, "Buy - RV_DEL > 5", "Buy Alert - RVoL Delta is Above 5")
+alertcondition(rvDelta < 5,  "Sell - RV_DEL < 5", "Sell Alert - RVoL Delta is Below 5")
+
+alertcondition(rvPct >= 50, "Buy - RV_PCT Above 50", "Buy Alert -  RVoL Percent is Above 50")
+alertcondition(rvPct < 50, "Sell - RV_PCT Below 50", "Sell Alert - RVoL Percent is Below 50")
+alertcondition(rvPct >= 40, "Buy - RV_PCT Above 40", "Buy Alert -  RVoL Percent is Above 40")
+alertcondition(rvPct < 40, "Sell - RV_PCT Below 40", "Sell Alert - RVoL Percent is Below 40")
+
+
+
+

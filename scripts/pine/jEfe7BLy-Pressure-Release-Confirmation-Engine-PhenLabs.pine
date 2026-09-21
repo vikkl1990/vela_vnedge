@@ -1,0 +1,297 @@
+//@version=6
+indicator(
+     title              = "Pressure Release Confirmation Engine [PhenLabs]",
+     shorttitle         = "PRCE",
+     overlay            = false,
+     max_labels_count   = 50,
+     max_lines_count    = 20,
+     max_bars_back      = 500)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pressure Release Confirmation Engine [PhenLabs]
+// Closed-bar extreme → hysteresis release → divergence quality gate.
+// Built-in range-position pressure, or any external plot via input.source.
+// All-plan. No request.*. No lookahead. Signals fire only on barstate.isconfirmed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum SrcMode
+    BuiltIn  = "Built-in Pressure"
+    External = "External Source"
+
+enum SigMode
+    DivOnly = "Divergent only"
+    AllRel  = "All releases"
+    Hidden  = "Hide shapes"
+
+enum TblSize
+    Tiny   = "Tiny"
+    Small  = "Small"
+    Normal = "Normal"
+    Large  = "Large"
+
+// ── Inputs ──────────────────────────────────────────────────────────────────
+grpSrc = "Source"
+grpPrs = "Pressure"
+grpSig = "Signals"
+grpVis = "Visuals"
+grpTbl = "Dashboard"
+
+SrcMode srcMode = input.enum(SrcMode.BuiltIn, "Pressure Source",
+     tooltip = "Built-in Range Position Pressure runs on this chart with no extra indicators. External Source applies the same extreme/release/divergence gate to any plotted series you already have on the chart (RSI, MACD, WaveTrend, etc.).",
+     group   = grpSrc)
+
+float extSrc = input.source(close, "External Plot",
+     tooltip = "Pick a plot from another indicator. Ignored unless Pressure Source = External Source.",
+     group   = grpSrc,
+     active  = srcMode == SrcMode.External)
+
+bool normalizeExt = input.bool(true, "Normalize External to 0–100",
+     tooltip = "Rescales the selected plot to 0–100 over a rolling window so the Overbought/Oversold levels still apply. Leave ON for unbounded sources (MACD, raw delta). Turn OFF for oscillators that are already 0–100.",
+     group   = grpSrc,
+     active  = srcMode == SrcMode.External)
+
+int normWin = input.int(100, "Normalize Window", minval = 20, maxval = 500,
+     tooltip = "Lookback used to min-max rescale an external source.",
+     group   = grpSrc,
+     active  = srcMode == SrcMode.External and normalizeExt)
+
+int prLen = input.int(14, "Pressure Length", minval = 3, maxval = 100,
+     tooltip = "Lookback of the built-in range-position pressure (close inside the N-bar high/low).",
+     group   = grpPrs)
+
+int prSmooth = input.int(3, "Pressure Smooth", minval = 1, maxval = 30,
+     tooltip = "EMA smoothing applied to range-position pressure. External sources are smoothed by this too.",
+     group   = grpPrs)
+
+int extLook = input.int(10, "Extreme Lookback", minval = 3, maxval = 50,
+     tooltip = "A bar is an extreme only when pressure is the highest/lowest of this many bars.",
+     group   = grpPrs)
+
+float obLevel = input.float(80.0, "Overbought", minval = 55.0, maxval = 99.0, step = 0.5,
+     group = grpPrs)
+float osLevel = input.float(20.0, "Oversold",   minval = 1.0,  maxval = 45.0, step = 0.5,
+     group = grpPrs)
+float hyst    = input.float(10.0, "Hysteresis", minval = 1.0,  maxval = 25.0, step = 0.5,
+     tooltip = "Release fires on a closed-bar cross of Oversold+Hysteresis (bull) or Overbought−Hysteresis (bear). Stops the engine from re-firing while pressure is still pinned at the extreme.",
+     group   = grpPrs)
+
+int timeout = input.int(25, "Arm Timeout (bars)", minval = 3, maxval = 100,
+     tooltip = "Armed extremes that never release are expired with no signal.",
+     group   = grpSig)
+
+SigMode sigMode = input.enum(SigMode.DivOnly, "Price Markers",
+     tooltip = "Divergent only: plot a price-chart marker when pressure releases AND price refused to confirm the extreme (higher-low / lower-high). All releases: also plot aligned capitulation/extension releases. Hide shapes: dashboard + alerts only.",
+     group   = grpSig)
+
+bool showArmMarks = input.bool(false, "Show Arm Markers",
+     tooltip = "Small pane dots when an extreme is armed. Off by default to keep the oscillator readable.",
+     group   = grpSig)
+
+bool showDash = input.bool(true, "Show Dashboard", group = grpTbl)
+TblSize tblEnum = input.enum(TblSize.Small, "Table Size", group = grpTbl)
+
+color bullCol = input.color(#00E5A0, "Bull", inline = "cols", group = grpVis)
+color bearCol = input.color(#FF3B6B, "Bear", inline = "cols", group = grpVis)
+color midCol  = input.color(#8B8FA3, "Mid / Levels", group = grpVis)
+bool  showFill = input.bool(true, "Armed Background", group = grpVis)
+
+// ── Pressure series ─────────────────────────────────────────────────────────
+float hh = ta.highest(high, prLen)
+float ll = ta.lowest(low, prLen)
+float rng = hh - ll
+float rawBuilt = rng <= 0 ? 50.0 : 100.0 * (close - ll) / rng
+
+float rawExt = extSrc
+if srcMode == SrcMode.External and normalizeExt
+    float eHi = ta.highest(extSrc, normWin)
+    float eLo = ta.lowest(extSrc, normWin)
+    float eRng = eHi - eLo
+    rawExt := eRng <= 0 or na(eRng) ? 50.0 : 100.0 * (extSrc - eLo) / eRng
+
+float rawPress = srcMode == SrcMode.External ? rawExt : rawBuilt
+float press    = ta.ema(rawPress, prSmooth)
+
+float obRel = obLevel - hyst
+float osRel = osLevel + hyst
+
+bool bullCross = ta.crossover(press, osRel)
+bool bearCross = ta.crossunder(press, obRel)
+bool isBullExt = ta.lowestbars(press, extLook) == 0
+bool isBearExt = ta.highestbars(press, extLook) == 0
+
+bool ready = bar_index > math.max(prLen, extLook, prSmooth) + 5 and not na(press)
+
+// ── Persistent arm state (global mutations only) ────────────────────────────
+var bool  bullArmed      = false
+var bool  bearArmed      = false
+var int   bullArmBar     = na
+var int   bearArmBar     = na
+var float bullArmPx      = na
+var float bearArmPx      = na
+var bool  bullMadeNewLow = false
+var bool  bearMadeNewHigh = false
+
+var bool  bullSig        = false
+var bool  bearSig        = false
+var bool  bullDivQ       = false
+var bool  bearDivQ       = false
+var int   lastSigDir     = 0
+var int   lastSigBar     = na
+var bool  lastSigDiv     = false
+
+bool justBullArm = false
+bool justBearArm = false
+bullSig := false
+bearSig := false
+
+if barstate.isconfirmed and ready
+    // 1. Track confirmation of the price extreme while armed (skip the arm bar).
+    if bullArmed and not justBullArm and low < bullArmPx
+        bullMadeNewLow := true
+    if bearArmed and not justBearArm and high > bearArmPx
+        bearMadeNewHigh := true
+
+    // 2. Release has priority over timeout so a last-bar cross still fires.
+    if bullArmed and not justBullArm and bullCross
+        bullSig        := true
+        bullDivQ       := not bullMadeNewLow
+        lastSigDir     := 1
+        lastSigBar     := bar_index
+        lastSigDiv     := bullDivQ
+        bullArmed      := false
+        bullArmBar     := na
+        bullArmPx      := na
+        bullMadeNewLow := false
+    else if bullArmed and not na(bullArmBar) and (bar_index - bullArmBar) >= timeout
+        bullArmed      := false
+        bullArmBar     := na
+        bullArmPx      := na
+        bullMadeNewLow := false
+
+    if bearArmed and not justBearArm and bearCross
+        bearSig         := true
+        bearDivQ        := not bearMadeNewHigh
+        lastSigDir      := -1
+        lastSigBar      := bar_index
+        lastSigDiv      := bearDivQ
+        bearArmed       := false
+        bearArmBar      := na
+        bearArmPx       := na
+        bearMadeNewHigh := false
+    else if bearArmed and not na(bearArmBar) and (bar_index - bearArmBar) >= timeout
+        bearArmed       := false
+        bearArmBar      := na
+        bearArmPx       := na
+        bearMadeNewHigh := false
+
+    // 3. Dual-signal guard: a bar may not arm both sides. Most recent extreme wins.
+    bool wantBullArm = not bullSig and isBullExt and press <= osLevel and press < nz(press[1], press)
+    bool wantBearArm = not bearSig and isBearExt and press >= obLevel and press > nz(press[1], press)
+
+    if wantBullArm and wantBearArm
+        if press <= osLevel and (50.0 - press) >= (press - 50.0)
+            wantBearArm := false
+        else
+            wantBullArm := false
+
+    if wantBullArm
+        bullArmed      := true
+        bullArmBar     := bar_index
+        bullArmPx      := low
+        bullMadeNewLow := false
+        justBullArm    := true
+        // Opposite side yields — one live arm only.
+        bearArmed       := false
+        bearArmBar      := na
+        bearArmPx       := na
+        bearMadeNewHigh := false
+
+    if wantBearArm
+        bearArmed       := true
+        bearArmBar      := bar_index
+        bearArmPx       := high
+        bearMadeNewHigh := false
+        justBearArm     := true
+        bullArmed       := false
+        bullArmBar      := na
+        bullArmPx       := na
+        bullMadeNewLow  := false
+
+// ── Visual gates ────────────────────────────────────────────────────────────
+bool showDiv  = sigMode != SigMode.Hidden
+bool showAln  = sigMode == SigMode.AllRel
+bool bullDivMk = bullSig and bullDivQ and showDiv
+bool bearDivMk = bearSig and bearDivQ and showDiv
+bool bullAlnMk = bullSig and not bullDivQ and showAln
+bool bearAlnMk = bearSig and not bearDivQ and showAln
+
+// Pane oscillator
+plot(press, "Pressure", color = bullArmed ? bullCol : bearArmed ? bearCol : midCol, linewidth = 2)
+plot(obLevel, "Overbought", color = color.new(bearCol, 40), linestyle = plot.linestyle_dashed)
+plot(osLevel, "Oversold",   color = color.new(bullCol, 40), linestyle = plot.linestyle_dashed)
+plot(50.0,    "Mid",        color = color.new(midCol,  50), linestyle = plot.linestyle_dotted)
+plot(obRel,   "Bear Release", color = color.new(bearCol, 70), linestyle = plot.linestyle_dotted)
+plot(osRel,   "Bull Release", color = color.new(bullCol, 70), linestyle = plot.linestyle_dotted)
+
+bandTop = press > 50 ? press : 50.0
+bandBot = press < 50 ? press : 50.0
+pFillHi = plot(showFill ? bandTop : na, display = display.none)
+pFillLo = plot(showFill ? bandBot : na, display = display.none)
+fill(pFillHi, pFillLo, color = press >= 50 ? color.new(bullCol, 88) : color.new(bearCol, 88), title = "Pressure Fill")
+
+bgcolor(showFill and bullArmed ? color.new(bullCol, 92) : showFill and bearArmed ? color.new(bearCol, 92) : na, title = "Armed Background")
+
+// Pane arm dots (secondary — off by default). location.absolute uses pressure as Y.
+plotshape(showArmMarks and justBullArm ? press : na, title = "Bull Arm", style = shape.circle, location = location.absolute, color = color.new(bullCol, 20), size = size.tiny)
+plotshape(showArmMarks and justBearArm ? press : na, title = "Bear Arm", style = shape.circle, location = location.absolute, color = color.new(bearCol, 20), size = size.tiny)
+
+// Price-chart markers (force_overlay so a pane script still marks the candle)
+plotshape(bullDivMk, title = "Bull Divergent Release", style = shape.triangleup,   location = location.belowbar, color = bullCol, size = size.small, force_overlay = true)
+plotshape(bearDivMk, title = "Bear Divergent Release", style = shape.triangledown, location = location.abovebar, color = bearCol, size = size.small, force_overlay = true)
+plotshape(bullAlnMk, title = "Bull Aligned Release",   style = shape.circle,       location = location.belowbar, color = color.new(bullCol, 30), size = size.tiny, force_overlay = true)
+plotshape(bearAlnMk, title = "Bear Aligned Release",   style = shape.circle,       location = location.abovebar, color = color.new(bearCol, 30), size = size.tiny, force_overlay = true)
+
+// Screener columns (last-bar numeric state)
+float sigCol = bullSig ? (bullDivQ ? 2.0 : 1.0) : bearSig ? (bearDivQ ? -2.0 : -1.0) : 0.0
+float stCol  = bullArmed ? 1.0 : bearArmed ? -1.0 : 0.0
+plot(sigCol, "PRCE Signal", display = display.data_window)
+plot(stCol,  "PRCE State",  display = display.data_window)
+
+// ── Alerts ──────────────────────────────────────────────────────────────────
+alertcondition(bullSig and bullDivQ,  title = "PRCE Bull Divergent Release", message = "PRCE: Bullish divergent pressure release [𓄀]")
+alertcondition(bearSig and bearDivQ,  title = "PRCE Bear Divergent Release", message = "PRCE: Bearish divergent pressure release [𓄀]")
+alertcondition(bullSig,               title = "PRCE Any Bull Release",       message = "PRCE: Bullish pressure release [𓄀]")
+alertcondition(bearSig,               title = "PRCE Any Bear Release",       message = "PRCE: Bearish pressure release [𓄀]")
+
+if barstate.isconfirmed and bullSig
+    alert("PRCE BULL " + (bullDivQ ? "DIVERGENT" : "ALIGNED") + " release @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if barstate.isconfirmed and bearSig
+    alert("PRCE BEAR " + (bearDivQ ? "DIVERGENT" : "ALIGNED") + " release @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+
+// ── Dashboard ───────────────────────────────────────────────────────────────
+string tblSz = tblEnum == TblSize.Tiny ? size.tiny : tblEnum == TblSize.Small ? size.small : tblEnum == TblSize.Normal ? size.normal : size.large
+
+var table dash = table.new(position.top_right, 2, 8, bgcolor = color.new(#131722, 8), frame_color = color.new(midCol, 40), frame_width = 1, border_width = 1)
+
+f_cell(int r, string a, string b, color vc, string tip) =>
+    table.cell(dash, 0, r, a, text_color = color.new(#D1D4DC, 20), text_size = tblSz, text_halign = text.align_left,  bgcolor = color.new(#131722, 8))
+    table.cell(dash, 1, r, b, text_color = vc,                     text_size = tblSz, text_halign = text.align_right, bgcolor = color.new(#131722, 8), text_formatting = text.format_bold, tooltip = tip)
+
+if showDash and barstate.islast
+    table.clear(dash, 0, 0, 1, 7)
+    string srcTxt = srcMode == SrcMode.External ? "EXTERNAL" : "BUILT-IN"
+    string phTxt  = bullArmed ? "ARMED BULL" : bearArmed ? "ARMED BEAR" : bullSig ? "BULL RELEASE" : bearSig ? "BEAR RELEASE" : "IDLE"
+    color  phCol  = bullArmed or bullSig ? bullCol : bearArmed or bearSig ? bearCol : midCol
+    string qTxt   = bullArmed ? (bullMadeNewLow ? "ALIGNED" : "DIVERGENT") : bearArmed ? (bearMadeNewHigh ? "ALIGNED" : "DIVERGENT") : lastSigDir != 0 ? (lastSigDiv ? "LAST: DIV" : "LAST: ALN") : "—"
+    int    held   = bullArmed and not na(bullArmBar) ? bar_index - bullArmBar : bearArmed and not na(bearArmBar) ? bar_index - bearArmBar : 0
+    string lastTxt = lastSigDir == 0 or na(lastSigBar) ? "—" : (lastSigDir > 0 ? "BULL " : "BEAR ") + (lastSigDiv ? "DIV" : "ALN") + " " + str.tostring(bar_index - lastSigBar) + "b"
+    f_cell(0, "PRCE",          "𓄀",  midCol,  "Pressure Release Confirmation Engine. Extreme of the selected pressure series is armed; a signal fires only when that pressure releases through the hysteresis band on a closed bar.")
+    f_cell(1, "Source",        srcTxt,      srcMode == SrcMode.External ? color.aqua : midCol, "BUILT-IN = range-position pressure from this chart. EXTERNAL = the plot chosen in settings. Full value on every plan — no footprint / LTF / tick gate.")
+    f_cell(2, "Pressure",      str.tostring(press, "#.0"), press >= obLevel ? bearCol : press <= osLevel ? bullCol : midCol, "0–100 pressure. Overbought " + str.tostring(obLevel, "#") + " / Oversold " + str.tostring(osLevel, "#") + ".")
+    f_cell(3, "Phase",         phTxt,       phCol,   "IDLE = nothing armed. ARMED = waiting for a closed-bar hysteresis cross. RELEASE = the discrete trigger that just printed.")
+    f_cell(4, "Quality",       qTxt,        qTxt == "DIVERGENT" or qTxt == "LAST: DIV" ? bullCol : qTxt == "ALIGNED" or qTxt == "LAST: ALN" ? bearCol : midCol, "DIVERGENT = price refused to confirm the pressure extreme (higher-low / lower-high) — default marker. ALIGNED = price confirmed the extreme.")
+    f_cell(5, "Bars Armed",    str.tostring(held), midCol, "Bars since the live extreme was armed. Expires at " + str.tostring(timeout) + " with no signal.")
+    f_cell(6, "Last Signal",   lastTxt,     lastSigDir > 0 ? bullCol : lastSigDir < 0 ? bearCol : midCol, "Most recent closed-bar release.")
+    f_cell(7, "Screener",      "Sig " + str.tostring(sigCol, "#") + " / St " + str.tostring(stCol, "#"), midCol, "Pine Screener columns: PRCE Signal (2 div-bull, 1 aln-bull, -1 aln-bear, -2 div-bear) and PRCE State (1 armed-bull, -1 armed-bear, 0 idle).")
+else if barstate.islast
+    table.clear(dash, 0, 0, 1, 7)

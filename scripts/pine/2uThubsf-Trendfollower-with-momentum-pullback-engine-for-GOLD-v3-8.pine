@@ -1,0 +1,162 @@
+//@version=6
+indicator("Trendfollower with momentum pullback engine for GOLD v3.8", overlay=true)
+
+// ================================================================================
+// INDICATOR DESCRIPTION AND FUNCTIONALITY
+// ================================================================================
+// This indicator is a trend-following system based on the core logic that moving 
+// averages act as dynamic support and resistance within an established trend.
+//
+// Key Features:
+// 1. Moving Average Engine: Calculates the selected MA type and source to establish trend.
+// 2. Slope Filter: A built-in slope threshold filters out sideways/ranging markets 
+//    by turning the trendline gray when momentum is insufficient.
+// 3. Retest & Clearance Logic: Ensures price moves far enough from the zone before 
+//    confirming valid pullback entries.
+// 4. Confirmation Signals: Triggers BUY/SELL signals after a retest candle closes 
+//    in the trend direction.
+// 5. RSI Exit Strategy: Uses RSI overbought/oversold levels to dynamic exit trades.
+// ================================================================================
+
+// --- GROUP SETTINGS ---
+G_MA     = "Moving Average Engine"
+G_LOGIC  = "Entry Logic & Zones"
+G_EXIT   = "Exit Strategy (RSI)"
+G_VIS    = "Visual Settings"
+
+// --- MOVING AVERAGE ENGINE ---
+ma_type     = input.string("EMA", "Type", options=["SMA", "EMA", "WMA", "RMA", "HMA", "ALMA", "VWMA"], group=G_MA, tooltip="Core algorithm determining the trend direction.")
+src_type    = input.source(hl2, "Source", group=G_MA, tooltip="Price data source used for calculation (e.g., hl2 for median price, close for close price).")
+ma_len      = input.int(34, "MA Period", options=[8, 13, 21, 27, 34, 50, 55, 89, 100, 144, 200, 233], group=G_MA, tooltip="Length of the moving average selected from the list.")
+
+// --- LOGIC ---
+slope_min   = input.float(0.008, "Impulse Threshold", step=0.001, group=G_LOGIC, tooltip="Moving average slope. Below this value, the trend is classified as 'ranging' (gray).")
+zone_per    = input.float(0.05, "Zone Width %", step=0.01, group=G_LOGIC, tooltip="Width of the band around the MA where pullbacks are tracked.")
+clear_ratio = input.float(3.7, "Clearance Strictness", step=0.1, group=G_LOGIC, tooltip="Determines how far price must move away from the zone before a valid pullback.")
+min_dist    = input.int(8, "Distance Between Signals", minval=1, group=G_LOGIC, tooltip="Minimum number of bars required between two entry signals.")
+
+// --- RSI EXITS ---
+rsi_len     = input.int(14, "RSI Period", minval=1, group=G_EXIT)
+rsi_ob      = input.int(70, "Overbought (Long Exit)", group=G_EXIT, tooltip="When RSI crosses back below this level, the Long position closes.")
+rsi_os      = input.int(30, "Oversold (Short Exit)", group=G_EXIT, tooltip="When RSI crosses back above this level, the Short position closes.")
+
+// --- VISUALS ---
+show_wick_lines = input.bool(false, "Show Wick Lines", group=G_VIS, tooltip="Connects the highest (high) and lowest (low) points of candles with a continuous line.")
+wick_col        = input.color(color.new(color.gray, 60), "Wick Line Color", group=G_VIS)
+show_link       = input.bool(true, "Show Connecting Line", group=G_VIS, tooltip="Connects the entry open price to the exit close price.")
+line_col        = input.color(color.new(color.gray, 30), "Line Color", group=G_VIS)
+line_width      = input.int(2, "Line Width", minval=1, maxval=10, group=G_VIS)
+line_style      = input.string("Solid", "Line Style", options=["Solid", "Dashed", "Dotted"], group=G_VIS)
+
+// Style conversion helper function
+get_style(s) =>
+    switch s
+        "Solid"     => line.style_solid
+        "Dashed"    => line.style_dashed
+        "Dotted"    => line.style_dotted
+        => line.style_solid
+
+// --- CALCULATIONS ---
+ma_line = switch ma_type
+    "SMA"  => ta.sma(src_type, ma_len)
+    "EMA"  => ta.ema(src_type, ma_len)
+    "WMA"  => ta.wma(src_type, ma_len)
+    "RMA"  => ta.rma(src_type, ma_len)
+    "HMA"  => ta.hma(src_type, ma_len)
+    "ALMA" => ta.alma(src_type, ma_len, 0.85, 6)
+    "VWMA" => ta.vwma(src_type, ma_len)
+    => ta.ema(src_type, ma_len)
+
+rsi_val = ta.rsi(close, rsi_len)
+
+// Global variables calculated unconditionally to prevent CW10002 warning
+rsi_cross_ob = ta.crossunder(rsi_val, rsi_ob)
+rsi_cross_os = ta.crossover(rsi_val, rsi_os)
+
+// --- TREND AND MOMENTUM LOGIC ---
+current_slope = (ma_line - ma_line[1]) / ma_line[1] * 100
+
+// Momentum filter (Yellow/Red vs Gray)
+is_momentum_bull = current_slope > slope_min
+is_momentum_bear = current_slope < -slope_min
+
+var bool trend_bull = false
+var bool trend_bear = false
+
+if is_momentum_bull
+    trend_bull := true
+    trend_bear := false
+if is_momentum_bear
+    trend_bear := true
+    trend_bull := false
+
+// Reset trend on crossover
+if ta.crossunder(close, ma_line)
+    trend_bull := false
+if ta.crossover(close, ma_line)
+    trend_bear := false
+
+// Define zones
+upper_limit = ma_line * (1 + zone_per / 100)
+lower_limit = ma_line * (1 - zone_per / 100)
+dynamic_clearance = (ma_line * (zone_per / 100)) * clear_ratio
+
+var bool zone_cleared = true
+if trend_bull and high > upper_limit + dynamic_clearance
+    zone_cleared := true
+if trend_bear and low < lower_limit - dynamic_clearance
+    zone_cleared := true
+
+var int last_signal_bar = 0
+can_signal = (bar_index - last_signal_bar) > min_dist
+
+// --- SETUP AND CONFIRMATION ---
+// 1. Setup candle (Retest)
+touch_long  = trend_bull and low <= upper_limit and close > ma_line and zone_cleared
+touch_short = trend_bear and high >= lower_limit and close < ma_line and zone_cleared
+
+// 2. Confirmation candle (Bounce candle + color verification)
+long_condition  = touch_long[1] and close > ma_line and is_momentum_bull and can_signal
+short_condition = touch_short[1] and close < ma_line and is_momentum_bear and can_signal
+
+// --- TRADING LOGIC ---
+var int   start_bar = 0
+var float start_price = 0.0
+var int   active_trade_dir = 0 
+
+if long_condition
+    start_bar := bar_index, start_price := close, active_trade_dir := 1, last_signal_bar := bar_index, zone_cleared := false
+if short_condition
+    start_bar := bar_index, start_price := close, active_trade_dir := -1, last_signal_bar := bar_index, zone_cleared := false
+
+exit_buy  = active_trade_dir == 1 and rsi_cross_ob
+exit_sell = active_trade_dir == -1 and rsi_cross_os
+
+if show_link and (exit_buy or exit_sell) and active_trade_dir != 0
+    line.new(x1=start_bar, y1=start_price, x2=bar_index, y2=close, 
+             color=line_col, width=line_width, style=get_style(line_style))
+    active_trade_dir := 0 
+
+// --- VISUALIZATION ---
+ma_color = is_momentum_bull ? color.yellow : is_momentum_bear ? color.red : color.gray
+plot(ma_line, "Trend Line", color=ma_color, linewidth=3)
+
+// Wick lines
+plot(show_wick_lines ? high : na, "High Wick Line", color=wick_col, style=plot.style_linebr)
+plot(show_wick_lines ? low : na, "Low Wick Line", color=wick_col, style=plot.style_linebr)
+
+p_ma  = plot(ma_line, "Base", display=display.none)
+p_up  = plot(upper_limit, "Upper Zone", color=color.new(ma_color, 85))
+p_low = plot(lower_limit, "Lower Zone", color=color.new(ma_color, 85))
+fill(p_up, p_ma, color=color.new(ma_color, 90), title="Bullish Zone")
+fill(p_low, p_ma, color=color.new(ma_color, 90), title="Bearish Zone")
+
+plotshape(long_condition, "BUY", shape.labelup, location.belowbar, color.green, textcolor=color.white, size=size.small, text="BUY", offset=1)
+plotshape(short_condition, "SELL", shape.labeldown, location.abovebar, color.red, textcolor=color.white, size=size.small, text="SELL", offset=1)
+plotshape(exit_buy, "EXIT LONG", shape.labeldown, location.abovebar, color.blue, textcolor=color.white, size=size.tiny, text="EXIT")
+plotshape(exit_sell, "EXIT SHORT", shape.labelup, location.belowbar, color.blue, textcolor=color.white, size=size.tiny, text="EXIT")
+
+// --- ALERTS ---
+alertcondition(long_condition,  "BUY Signal",  "Trend Navigator: BUY SIGNAL")
+alertcondition(short_condition, "SELL Signal", "Trend Navigator: SELL SIGNAL!")
+alertcondition(exit_buy or exit_sell, "EXIT Signal", "Trend Navigator: EXIT")

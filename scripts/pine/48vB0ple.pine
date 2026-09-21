@@ -1,0 +1,84 @@
+//@version=6
+// by makurypt
+// Companion indicator https://de.tradingview.com/script/R7YAnkjH/
+// Pine Screener: add this script to Favorites, then Products → Screeners → Pine.
+// Column "Hit" = 1 applies the distance filters below.
+indicator("52 Week High/Low Offset Screener", shorttitle="52W Offset Screen", overlay=false)
+
+grpCalc = "52-week setup"
+grpFilt = "Scan filters"
+
+basis = input.string("Highs/Lows", "Basis for 52-week values", options=["Highs/Lows", "Close"], group=grpCalc, tooltip="Highs/Lows: candle extremes. Close: highest/lowest closing price.")
+offsetWeeks = input.int(52, "Historical offset (weeks)", minval=1, group=grpCalc)
+
+filterSide = input.string("All", "Side", options=["All", "Only nearer to offset high", "Only nearer to offset low"], group=grpFilt, tooltip="Keep symbols whose price is nearer the offset high or the offset low.")
+
+enNearer = input.bool(false, "Constrain nearer distance", group=grpFilt)
+nearerMin = input.float(-50.0, "from %", step=0.5, inline="near", group=grpFilt)
+nearerMax = input.float(50.0, "to %", step=0.5, inline="near", group=grpFilt)
+
+enHigh = input.bool(false, "Constrain distance to offset high", group=grpFilt, tooltip="Positive = price above the offset high, negative = below.")
+highMin = input.float(-30.0, "from %", step=0.5, inline="hi", group=grpFilt)
+highMax = input.float(5.0, "to %", step=0.5, inline="hi", group=grpFilt)
+
+enLow = input.bool(false, "Constrain distance to offset low", group=grpFilt, tooltip="Positive = price above the offset low, negative = below. Typical DCA: e.g. −15 to +8.")
+lowMin = input.float(-20.0, "from %", step=0.5, inline="lo", group=grpFilt)
+lowMax = input.float(10.0, "to %", step=0.5, inline="lo", group=grpFilt)
+
+onlyBelowLow = input.bool(false, "Only below offset low", group=grpFilt)
+onlyAboveHigh = input.bool(false, "Only above offset high", group=grpFilt)
+
+srcH() => basis == "Highs/Lows" ? high : close
+srcL() => basis == "Highs/Lows" ? low : close
+
+pctFromClose(level) =>
+    not na(level) and close != 0 ? (close - level) / close * 100.0 : na
+
+inRange(v, en, lo, hi) =>
+    not en or (not na(v) and v >= lo and v <= hi)
+
+[wHigh52, wLow52, histHigh, histLow] = request.security(syminfo.tickerid, "W",
+     [ta.highest(srcH(), 52),
+      ta.lowest(srcL(), 52),
+      ta.highest(srcH(), 52)[offsetWeeks],
+      ta.lowest(srcL(), 52)[offsetWeeks]],
+     gaps=barmerge.gaps_off,
+     lookahead=barmerge.lookahead_off)
+
+var float weekHi = na
+var float weekLo = na
+if timeframe.change("W") or na(weekHi)
+    weekHi := srcH()
+    weekLo := srcL()
+else
+    weekHi := math.max(weekHi, srcH())
+    weekLo := math.min(weekLo, srcL())
+
+currHigh = math.max(nz(wHigh52), weekHi)
+currLow  = math.min(nz(wLow52, 1e10), weekLo)
+
+distHigh = pctFromClose(histHigh)
+distLow  = pctFromClose(histLow)
+nearerIsHigh = math.abs(close - histHigh) <= math.abs(close - histLow)
+nearerDist = nearerIsHigh ? distHigh : distLow
+
+sideOk = filterSide == "All" or (filterSide == "Only nearer to offset high" and nearerIsHigh) or (filterSide == "Only nearer to offset low" and not nearerIsHigh)
+belowLowOk = not onlyBelowLow or (not na(distLow) and distLow < 0)
+aboveHighOk = not onlyAboveHigh or (not na(distHigh) and distHigh > 0)
+
+hit = sideOk and inRange(nearerDist, enNearer, nearerMin, nearerMax) and inRange(distHigh, enHigh, highMin, highMax) and inRange(distLow, enLow, lowMin, lowMax) and belowLowOk and aboveHighOk
+
+// First plots become Pine Screener columns (first 10 are added automatically).
+plot(hit ? 1 : 0, title="Hit", color=hit ? color.green : color.gray, linewidth=2, style=plot.style_histogram)
+plot(nearerDist, title="Distance % nearer offset", color=color.blue)
+plot(nearerIsHigh ? 1 : -1, title="Nearer to (1=High, −1=Low)", color=color.orange)
+plot(distHigh, title="Distance % offset high", color=color.green)
+plot(distLow, title="Distance % offset low", color=color.red)
+plot(histHigh, title="Offset high", color=color.green)
+plot(histLow, title="Offset low", color=color.red)
+plot(currHigh, title="Current 52W high", color=color.new(color.green, 40))
+plot(currLow, title="Current 52W low", color=color.new(color.red, 40))
+plot(close, title="Close", color=color.white)
+
+alertcondition(hit, title="52W Offset Hit", message="{{ticker}} matches the distance filters")
+bgcolor(hit ? color.new(color.green, 85) : na)

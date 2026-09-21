@@ -1,0 +1,222 @@
+//@version=6
+indicator("Sector Breadth Balance [Pineify]", overlay = false, precision = 1, dynamic_requests = true)
+
+string GROUP_ENGINE = "Breadth Engine"
+string GROUP_UNIVERSE = "Sector or Asset Proxies"
+string GROUP_STATE = "State Model"
+string GROUP_DISPLAY = "Display"
+
+int trendLength = input.int(34, "Trend EMA length", minval = 5, maxval = 250, group = GROUP_ENGINE)
+int atrLength = input.int(14, "ATR normalization length", minval = 2, maxval = 100, group = GROUP_ENGINE)
+int returnLength = input.int(20, "Relative return horizon", minval = 2, maxval = 126, group = GROUP_ENGINE)
+float neutralAtr = input.float(0.18, "Neutral trend distance (ATR)", minval = 0.0, maxval = 2.0, step = 0.01, group = GROUP_ENGINE)
+float saturationAtr = input.float(1.25, "Trend saturation scale (ATR)", minval = 0.25, maxval = 5.0, step = 0.05, group = GROUP_ENGINE)
+float dispersionPenalty = input.float(0.35, "Cross-sectional dispersion penalty", minval = 0.0, maxval = 0.8, step = 0.05, group = GROUP_ENGINE)
+
+string symbol1 = input.symbol("AMEX:XLB", "Materials", group = GROUP_UNIVERSE)
+string symbol2 = input.symbol("AMEX:XLC", "Communication", group = GROUP_UNIVERSE)
+string symbol3 = input.symbol("AMEX:XLE", "Energy", group = GROUP_UNIVERSE)
+string symbol4 = input.symbol("AMEX:XLF", "Financials", group = GROUP_UNIVERSE)
+string symbol5 = input.symbol("AMEX:XLI", "Industrials", group = GROUP_UNIVERSE)
+string symbol6 = input.symbol("AMEX:XLK", "Technology", group = GROUP_UNIVERSE)
+string symbol7 = input.symbol("AMEX:XLP", "Consumer Staples", group = GROUP_UNIVERSE)
+string symbol8 = input.symbol("AMEX:XLRE", "Real Estate", group = GROUP_UNIVERSE)
+string symbol9 = input.symbol("AMEX:XLU", "Utilities", group = GROUP_UNIVERSE)
+string symbol10 = input.symbol("AMEX:XLV", "Health Care", group = GROUP_UNIVERSE)
+string symbol11 = input.symbol("AMEX:XLY", "Consumer Discretionary", group = GROUP_UNIVERSE)
+
+int minimumValid = input.int(7, "Minimum valid symbols", minval = 3, maxval = 11, group = GROUP_STATE)
+float broadThreshold = input.float(38.0, "Broad state entry score", minval = 10.0, maxval = 80.0, step = 1.0, group = GROUP_STATE)
+float releaseRatio = input.float(0.68, "Broad state release ratio", minval = 0.35, maxval = 0.95, step = 0.01, group = GROUP_STATE)
+float minimumParticipation = input.float(0.60, "Minimum directional participation", minval = 0.50, maxval = 1.0, step = 0.05, group = GROUP_STATE)
+float concentrationThreshold = input.float(0.58, "Narrow-move dispersion share", minval = 0.30, maxval = 0.90, step = 0.01, group = GROUP_STATE)
+float leaderBand = input.float(0.50, "Leader/lagger dispersion multiple", minval = 0.10, maxval = 2.0, step = 0.05, group = GROUP_STATE)
+int leaderAlertCount = input.int(3, "Leader count alert threshold", minval = 1, maxval = 11, group = GROUP_STATE)
+
+bool showHalo = input.bool(true, "Show reliability halo", group = GROUP_DISPLAY)
+bool showFill = input.bool(true, "Fill score to zero", group = GROUP_DISPLAY)
+bool showDispersion = input.bool(true, "Show signed dispersion columns", group = GROUP_DISPLAY)
+bool showBackground = input.bool(true, "Show confirmed state background", group = GROUP_DISPLAY)
+bool showDashboard = input.bool(true, "Show sector dashboard", group = GROUP_DISPLAY)
+
+f_clip(float value, float lower, float upper) =>
+    math.max(lower, math.min(upper, value))
+
+f_symbolBundle() =>
+    float basis = ta.ema(close, trendLength)
+    float atrValue = ta.atr(atrLength)
+    float trendDistance = not na(basis) and atrValue > 0.0 ? (close - basis) / atrValue : na
+    float horizonReturn = close > 0.0 and close[returnLength] > 0.0 ? math.log(close / close[returnLength]) : na
+    [trendDistance, horizonReturn]
+
+f_stateLabel(int stateCode) =>
+    stateCode == 2 ? "BROAD UPSIDE" :
+     stateCode == -2 ? "BROAD DOWNSIDE" :
+     stateCode == 1 ? "NARROW UPSIDE" :
+     stateCode == -1 ? "NARROW DOWNSIDE" :
+     stateCode == 0 ? "MIXED" : "INSUFFICIENT"
+
+f_stateColor(int stateCode) =>
+    stateCode == 2 ? color.rgb(0, 172, 193) :
+     stateCode == -2 ? color.rgb(255, 112, 67) :
+     math.abs(stateCode) == 1 ? color.rgb(255, 193, 7) :
+     stateCode == 0 ? color.rgb(126, 87, 194) : color.rgb(96, 125, 139)
+
+f_shortSymbol(string symbol) =>
+    string value = str.replace_all(symbol, "AMEX:", "")
+    value := str.replace_all(value, "NYSEARCA:", "")
+    value := str.replace_all(value, "NASDAQ:", "")
+    value := str.replace_all(value, "NYSE:", "")
+    value
+
+[trend1, return1] = request.security(symbol1, timeframe.period, f_symbolBundle(), gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+[trend2, return2] = request.security(symbol2, timeframe.period, f_symbolBundle(), gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+[trend3, return3] = request.security(symbol3, timeframe.period, f_symbolBundle(), gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+[trend4, return4] = request.security(symbol4, timeframe.period, f_symbolBundle(), gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+[trend5, return5] = request.security(symbol5, timeframe.period, f_symbolBundle(), gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+[trend6, return6] = request.security(symbol6, timeframe.period, f_symbolBundle(), gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+[trend7, return7] = request.security(symbol7, timeframe.period, f_symbolBundle(), gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+[trend8, return8] = request.security(symbol8, timeframe.period, f_symbolBundle(), gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+[trend9, return9] = request.security(symbol9, timeframe.period, f_symbolBundle(), gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+[trend10, return10] = request.security(symbol10, timeframe.period, f_symbolBundle(), gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+[trend11, return11] = request.security(symbol11, timeframe.period, f_symbolBundle(), gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+
+array<string> symbols = array.from(symbol1, symbol2, symbol3, symbol4, symbol5, symbol6, symbol7, symbol8, symbol9, symbol10, symbol11)
+array<float> trends = array.from(trend1, trend2, trend3, trend4, trend5, trend6, trend7, trend8, trend9, trend10, trend11)
+array<float> returns = array.from(return1, return2, return3, return4, return5, return6, return7, return8, return9, return10, return11)
+
+int universeSize = array.size(symbols)
+int validCount = 0
+int positiveCount = 0
+int negativeCount = 0
+float trendSum = 0.0
+float returnSum = 0.0
+
+for index = 0 to universeSize - 1
+    float trendValue = array.get(trends, index)
+    float returnValue = array.get(returns, index)
+    bool valid = not na(trendValue) and not na(returnValue)
+    if valid
+        validCount += 1
+        float boundedTrend = trendValue / (saturationAtr + math.abs(trendValue))
+        trendSum += f_clip(boundedTrend, -1.0, 1.0)
+        returnSum += returnValue
+        positiveCount += trendValue > neutralAtr ? 1 : 0
+        negativeCount += trendValue < -neutralAtr ? 1 : 0
+
+float meanTrend = validCount > 0 ? trendSum / validCount : na
+float meanReturn = validCount > 0 ? returnSum / validCount : na
+float varianceSum = 0.0
+if validCount > 0
+    for index = 0 to universeSize - 1
+        float trendValue = array.get(trends, index)
+        float returnValue = array.get(returns, index)
+        if not na(trendValue) and not na(returnValue)
+            float relativeReturn = returnValue - meanReturn
+            varianceSum += relativeReturn * relativeReturn
+
+float dispersion = validCount > 0 ? math.sqrt(varianceSum / validCount) : na
+float dispersionShare = validCount > 0 ? dispersion / (dispersion + math.abs(meanReturn) + 1e-10) : na
+float coverage = validCount / float(universeSize)
+float voteBalance = validCount > 0 ? (positiveCount - negativeCount) / float(validCount) : na
+float positiveShare = validCount > 0 ? positiveCount / float(validCount) : na
+float negativeShare = validCount > 0 ? negativeCount / float(validCount) : na
+bool ready = validCount >= minimumValid
+float breadthScore = ready ? 100.0 * (0.62 * meanTrend + 0.38 * voteBalance) * (1.0 - dispersionPenalty * dispersionShare) * math.sqrt(coverage) : na
+
+int leaderCount = 0
+int laggerCount = 0
+if ready
+    for index = 0 to universeSize - 1
+        float trendValue = array.get(trends, index)
+        float returnValue = array.get(returns, index)
+        if not na(trendValue) and not na(returnValue)
+            float relativeReturn = returnValue - meanReturn
+            leaderCount += dispersion > 0.0 and relativeReturn > dispersion * leaderBand ? 1 : 0
+            laggerCount += dispersion > 0.0 and relativeReturn < -dispersion * leaderBand ? 1 : 0
+
+int candidateState = -99
+if ready
+    if breadthScore >= broadThreshold and positiveShare >= minimumParticipation
+        candidateState := 2
+    else if breadthScore <= -broadThreshold and negativeShare >= minimumParticipation
+        candidateState := -2
+    else if dispersionShare >= concentrationThreshold and meanReturn > 0.0
+        candidateState := 1
+    else if dispersionShare >= concentrationThreshold and meanReturn < 0.0
+        candidateState := -1
+    else
+        candidateState := 0
+
+float releaseThreshold = broadThreshold * releaseRatio
+var int confirmedState = -99
+if barstate.isconfirmed
+    if not ready
+        confirmedState := -99
+    else if candidateState == 2 or candidateState == -2
+        confirmedState := candidateState
+    else if confirmedState == 2 and breadthScore >= releaseThreshold and positiveShare >= 0.50
+        confirmedState := 2
+    else if confirmedState == -2 and breadthScore <= -releaseThreshold and negativeShare >= 0.50
+        confirmedState := -2
+    else
+        confirmedState := candidateState
+
+color stateColor = f_stateColor(confirmedState)
+float reliability = ready ? coverage * (1.0 - 0.35 * dispersionShare) : 0.0
+int haloTransparency = 88 - int(f_clip(reliability, 0.0, 1.0) * 30.0)
+
+float signedDispersion = ready ? math.sign(breadthScore) * dispersionShare * 100.0 : na
+plot(showDispersion ? signedDispersion : na, "Signed cross-sectional dispersion", color = color.new(color.rgb(255, 193, 7), 68), style = plot.style_columns, histbase = 0)
+plot(showHalo ? breadthScore : na, "Reliability halo", color = color.new(stateColor, haloTransparency), linewidth = 10)
+scorePlot = plot(breadthScore, "Breadth balance", color = stateColor, linewidth = 3)
+zeroPlot = plot(0.0, "Balance zero", color = color.new(chart.fg_color, 72), linewidth = 1)
+fill(scorePlot, zeroPlot, color = showFill ? color.new(stateColor, 82) : na, title = "Breadth balance field")
+hline(broadThreshold, "Broad upside threshold", color = color.new(color.rgb(0, 172, 193), 55), linestyle = hline.style_dashed)
+hline(-broadThreshold, "Broad downside threshold", color = color.new(color.rgb(255, 112, 67), 55), linestyle = hline.style_dashed)
+bgcolor(showBackground and confirmedState != -99 ? color.new(stateColor, 93) : na, title = "Confirmed breadth state")
+
+var table dashboard = table.new(position.top_right, 5, 14, bgcolor = color.new(chart.bg_color, 3), frame_color = color.new(chart.fg_color, 58), frame_width = 1, border_color = color.new(chart.fg_color, 84), border_width = 1)
+if barstate.isfirst
+    table.merge_cells(dashboard, 0, 0, 4, 0)
+
+if barstate.islast
+    table.clear(dashboard, 0, 0, 4, 13)
+    if showDashboard
+        table.cell(dashboard, 0, 0, "SECTOR BREADTH · " + f_stateLabel(confirmedState), text_color = color.white, bgcolor = color.new(stateColor, 6), text_size = size.small)
+        table.cell(dashboard, 0, 1, "SYMBOL", text_color = chart.fg_color, bgcolor = color.new(chart.bg_color, 6), text_size = size.tiny)
+        table.cell(dashboard, 1, 1, "TREND", text_color = chart.fg_color, bgcolor = color.new(chart.bg_color, 6), text_size = size.tiny)
+        table.cell(dashboard, 2, 1, "REL %", text_color = chart.fg_color, bgcolor = color.new(chart.bg_color, 6), text_size = size.tiny)
+        table.cell(dashboard, 3, 1, "ROLE", text_color = chart.fg_color, bgcolor = color.new(chart.bg_color, 6), text_size = size.tiny)
+        table.cell(dashboard, 4, 1, "DATA", text_color = chart.fg_color, bgcolor = color.new(chart.bg_color, 6), text_size = size.tiny)
+        for index = 0 to universeSize - 1
+            int row = index + 2
+            float trendValue = array.get(trends, index)
+            float returnValue = array.get(returns, index)
+            bool valid = not na(trendValue) and not na(returnValue)
+            float relativeReturn = valid and not na(meanReturn) ? (returnValue - meanReturn) * 100.0 : na
+            string role = not valid ? "MISSING" : dispersion > 0.0 and returnValue - meanReturn > dispersion * leaderBand ? "LEAD" : dispersion > 0.0 and returnValue - meanReturn < -dispersion * leaderBand ? "LAG" : "CORE"
+            color roleColor = role == "LEAD" ? color.rgb(0, 172, 193) : role == "LAG" ? color.rgb(255, 112, 67) : role == "CORE" ? color.rgb(255, 193, 7) : color.rgb(96, 125, 139)
+            color rowBackground = color.new(chart.bg_color, index % 2 == 0 ? 8 : 2)
+            table.cell(dashboard, 0, row, f_shortSymbol(array.get(symbols, index)), text_color = chart.fg_color, bgcolor = rowBackground, text_size = size.tiny)
+            table.cell(dashboard, 1, row, valid ? str.tostring(trendValue, "#.00") : "—", text_color = valid and trendValue > neutralAtr ? color.rgb(0, 172, 193) : valid and trendValue < -neutralAtr ? color.rgb(255, 112, 67) : chart.fg_color, bgcolor = rowBackground, text_size = size.tiny)
+            table.cell(dashboard, 2, row, valid ? str.tostring(relativeReturn, "#.00") : "—", text_color = valid ? roleColor : color.new(chart.fg_color, 45), bgcolor = rowBackground, text_size = size.tiny)
+            table.cell(dashboard, 3, row, role, text_color = roleColor, bgcolor = rowBackground, text_size = size.tiny)
+            table.cell(dashboard, 4, row, valid ? "LIVE" : "NA", text_color = valid ? chart.fg_color : roleColor, bgcolor = rowBackground, text_size = size.tiny)
+        table.cell(dashboard, 0, 13, "VALID " + str.tostring(validCount) + "/11", text_color = chart.fg_color, bgcolor = color.new(chart.bg_color, 5), text_size = size.tiny)
+        table.cell(dashboard, 1, 13, "UP " + str.tostring(positiveCount), text_color = color.rgb(0, 172, 193), bgcolor = color.new(chart.bg_color, 5), text_size = size.tiny)
+        table.cell(dashboard, 2, 13, "DOWN " + str.tostring(negativeCount), text_color = color.rgb(255, 112, 67), bgcolor = color.new(chart.bg_color, 5), text_size = size.tiny)
+        table.cell(dashboard, 3, 13, "LEAD " + str.tostring(leaderCount), text_color = color.rgb(0, 172, 193), bgcolor = color.new(chart.bg_color, 5), text_size = size.tiny)
+        table.cell(dashboard, 4, 13, "LAG " + str.tostring(laggerCount), text_color = color.rgb(255, 112, 67), bgcolor = color.new(chart.bg_color, 5), text_size = size.tiny)
+
+bool breadthDiffused = barstate.isconfirmed and math.abs(confirmedState) == 2 and math.abs(confirmedState[1]) == 1 and math.sign(confirmedState) == math.sign(confirmedState[1])
+bool broadUpsideStarted = barstate.isconfirmed and confirmedState == 2 and confirmedState[1] != 2
+bool broadDownsideStarted = barstate.isconfirmed and confirmedState == -2 and confirmedState[1] != -2
+bool leaderCountCrossed = barstate.isconfirmed and ready and leaderCount >= leaderAlertCount and nz(leaderCount[1], 0) < leaderAlertCount
+bool coverageLost = barstate.isconfirmed and not ready and ready[1]
+
+alertcondition(breadthDiffused, "Confirmed breadth diffusion", "Sector Breadth Balance: a same-direction narrow move has broadened into confirmed participation.")
+alertcondition(broadUpsideStarted, "Confirmed broad upside", "Sector Breadth Balance: the basket entered a confirmed broad upside state.")
+alertcondition(broadDownsideStarted, "Confirmed broad downside", "Sector Breadth Balance: the basket entered a confirmed broad downside state.")
+alertcondition(leaderCountCrossed, "Leader count threshold crossed", "Sector Breadth Balance: the cross-sectional leader count crossed its configured threshold.")
+alertcondition(coverageLost, "Breadth coverage lost", "Sector Breadth Balance: valid symbol coverage fell below the configured minimum.")

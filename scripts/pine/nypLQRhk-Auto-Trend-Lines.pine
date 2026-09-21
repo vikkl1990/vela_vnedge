@@ -1,0 +1,210 @@
+//@version=6
+indicator("Auto Trend Lines 3.0", "ATL 3.0", overlay = true, max_bars_back = 2500, max_lines_count = 50, calc_bars_count = 2000)
+// Independent implementation from the supplied feature descriptions.
+// Not the original Trend Lines Pro source. See README_RU.md for formulas.
+
+period = input.int(4, "Pivot Period", minval = 1, maxval = 50, group = "Calculation")
+sourceMode = input.string("High/Low", "Source", options = ["High/Low", "Close"], group = "Calculation")
+threshold = input.float(4, "Threshold Rate", minval = 0.1, maxval = 30, step = 0.1, group = "Calculation", tooltip = "Full tolerance channel width = lookback price range × rate / 100.")
+minStrength = input.int(3, "Minimum Strength (pivot touches)", minval = 2, maxval = 40, group = "Calculation")
+lookback = input.int(350, "Maximum Lookback Length", minval = 20, maxval = 1500, group = "Calculation")
+pivotCap = input.int(40, "Maximum pivots per side", minval = 5, maxval = 40, group = "Calculation")
+maxPerSide = input.int(3, "Maximum lines per side", minval = 1, maxval = 5, group = "Calculation")
+// Internal normalization only for selecting distinct lines.
+minSeparation = 15.0
+angleWindow = 292
+angleAspect = 3.0
+weakEnabled = input.bool(true, "Enable Weak Trend Lines", group = "Calculation")
+validation = input.string("Close", "Reject historical violations using", options = ["Close", "High/Low"], group = "Calculation")
+
+extendLines = input.bool(true, "Extend", group = "Display")
+strongStyle = input.string("Solid", "Strong line style", options = ["Solid", "Dashed", "Dotted"], group = "Display")
+strongWidth = input.int(2, "Strong line width", minval = 1, maxval = 5, group = "Display")
+upColor = input.color(color.lime, "Strong up color", group = "Display")
+downColor = input.color(color.red, "Strong down color", group = "Display")
+weakStyle = input.string("Dotted", "Weak line style", options = ["Solid", "Dashed", "Dotted"], group = "Display")
+weakWidth = input.int(1, "Weak line width", minval = 1, maxval = 5, group = "Display")
+weakUp = input.color(color.lime, "Weak up color", group = "Display")
+weakDown = input.color(color.red, "Weak down color", group = "Display")
+
+// Geometry is stored independently from drawing objects.
+type Pivot
+    int x
+    float y
+
+type Trend
+    int x
+    float y
+    float slope
+    float half
+    int touches
+    float score
+    float span
+    bool up
+    int endPivot
+    int born
+    int brokenAt = na
+
+f_style(string s) =>
+    s == "Solid" ? line.style_solid : s == "Dashed" ? line.style_dashed : line.style_dotted
+
+f_value(Trend t, int x) =>
+    t.y + t.slope * (x - t.x)
+
+f_angle(float slope, float scale) =>
+    math.atan(slope / scale) * 180.0 / math.pi
+
+f_addPivot(array<Pivot> ps, float price) =>
+    if not na(price)
+        array.unshift(ps, Pivot.new(bar_index - period, price))
+    while array.size(ps) > 0
+        Pivot oldest = array.last(ps)
+        if array.size(ps) > pivotCap or bar_index - oldest.x > lookback
+            array.pop(ps)
+        else
+            break
+    array.size(ps)
+
+// Candidate ranking: pivot count, then a fractional precision bonus.
+// Top 64 pivot-valid candidates are checked against EVERY candle.
+var array<Trend> retired = array.new<Trend>()
+
+f_select(array<Pivot> ps, array<Trend> previous, bool up, float halfWidth, float scale) =>
+    array<Trend> pool = array.new<Trend>()
+    array<float> ranks = array.new<float>()
+    array<Trend> result = array.new<Trend>()
+    int n = array.size(ps)
+    if n >= 2
+        for i = 0 to n - 2
+            Pivot newer = array.get(ps, i)
+            for j = i + 1 to n - 1
+                Pivot older = array.get(ps, j)
+                float slope = (newer.y - older.y) / (newer.x - older.x)
+                if (up and slope > 0) or (not up and slope < 0)
+                    Trend t = Trend.new(older.x, older.y, slope, halfWidth, 0, 0, 0, up, newer.x, bar_index)
+                    bool retiredPair = false
+                    for dead in retired
+                        if dead.x == older.x and dead.endPivot == newer.x and dead.up == up
+                            retiredPair := true
+                            break
+                    for old in previous
+                        if old.x == older.x and old.endPivot == newer.x and old.up == up
+                            t.half := old.half
+                            t.span := old.span
+                            t.born := old.born
+                            break
+                    float now = f_value(t, bar_index)
+                    bool valid = not retiredPair and (up ? close >= now - t.half : close <= now + t.half)
+                    float precision = 0
+                    int touches = 0
+                    if valid
+                        for k = 0 to j
+                            Pivot q = array.get(ps, k)
+                            float residual = q.y - f_value(t, q.x)
+                            if up ? residual < -t.half : residual > t.half
+                                valid := false
+                                break
+                            if math.abs(residual) <= t.half
+                                touches += 1
+                                precision += 1 - math.abs(residual) / t.half
+                    if valid and touches >= 2
+                        t.touches := touches
+                        t.score := touches + 0.99 * precision / touches
+                        array.push(pool, t)
+                        array.push(ranks, t.score)
+    if array.size(pool) > 0
+        array<int> sortedIndices = array.sort_indices(ranks, order.descending)
+        Trend weak = na
+        int limit = math.min(array.size(sortedIndices), 64)
+        for z = 0 to limit - 1
+            Trend t = array.get(pool, array.get(sortedIndices, z))
+            bool distinct = true
+            for selected in result
+                if math.abs(f_angle(t.slope, scale) - f_angle(selected.slope, scale)) < minSeparation or (math.abs(f_value(t, bar_index) - f_value(selected, bar_index)) < halfWidth and math.abs(t.slope - selected.slope) * lookback < halfWidth * 2)
+                    distinct := false
+                    break
+            if distinct
+                bool valid = true
+                float span = 0
+                int age = bar_index - t.x
+                for offset = 0 to age
+                    float v = f_value(t, bar_index - offset)
+                    float check = validation == "Close" ? close[offset] : (up ? low[offset] : high[offset])
+                    if up ? check < v - t.half : check > v + t.half
+                        valid := false
+                        break
+                    float opposite = sourceMode == "Close" ? close[offset] : (up ? high[offset] : low[offset])
+                    span := math.max(span, up ? opposite - v : v - opposite)
+                if valid
+                    t.span := t.born < bar_index ? t.span : math.max(span, t.half * 2)
+                    if t.touches >= minStrength
+                        array.push(result, t)
+                    else if na(weak)
+                        weak := t
+            if array.size(result) >= maxPerSide
+                break
+        if array.size(result) == 0 and weakEnabled and not na(weak)
+            array.push(result, weak)
+    result
+
+float hiSrc = sourceMode == "Close" ? close : high
+float loSrc = sourceMode == "Close" ? close : low
+float ph = ta.pivothigh(hiSrc, period, period)
+float pl = ta.pivotlow(loSrc, period, period)
+float priceRange = ta.highest(hiSrc, lookback) - ta.lowest(loSrc, lookback)
+float halfWidth = math.max(priceRange * threshold / 200, syminfo.mintick)
+float closeRange = ta.highest(close, angleWindow) - ta.lowest(close, angleWindow)
+float angleScale = math.max(closeRange / math.max(math.min(bar_index + 1, angleWindow), 1) * angleAspect, syminfo.mintick)
+
+var array<Pivot> highs = array.new<Pivot>()
+var array<Pivot> lows = array.new<Pivot>()
+var array<Trend> active = array.new<Trend>()
+
+// No intrabar pivot insertion. Signal checks below use the previously known geometry.
+if barstate.isconfirmed
+    f_addPivot(highs, ph)
+    f_addPivot(lows, pl)
+bool rebuild = barstate.isconfirmed and (not na(ph) or not na(pl))
+int ai = array.size(active) - 1
+while ai >= 0
+    Trend t = array.get(active, ai)
+    float v = f_value(t, bar_index)
+    float prev = f_value(t, bar_index - 1)
+    bool broke = t.up ? close < v - t.half and close[1] >= prev - t.half : close > v + t.half and close[1] <= prev + t.half
+    if broke
+        if barstate.isconfirmed
+            array.push(retired, t.copy())
+            array.remove(active, ai)
+            rebuild := true
+    else if barstate.isconfirmed and bar_index - t.x > lookback
+        array.remove(active, ai)
+        rebuild := true
+    ai -= 1
+
+if barstate.isconfirmed
+    int ri = array.size(retired) - 1
+    while ri >= 0
+        if bar_index - array.get(retired, ri).x > lookback
+            array.remove(retired, ri)
+        ri -= 1
+
+if rebuild
+    array<Trend> freshUp = f_select(lows, active, true, halfWidth, angleScale)
+    array<Trend> freshDown = f_select(highs, active, false, halfWidth, angleScale)
+    array.concat(freshUp, freshDown)
+    active := freshUp
+
+var array<line> drawings = array.new<line>()
+
+if barstate.islast
+    for drawing in drawings
+        line.delete(drawing)
+    array.clear(drawings)
+    for t in active
+        bool alive = t.up ? close >= f_value(t, bar_index) - t.half : close <= f_value(t, bar_index) + t.half
+        if alive
+            bool strong = t.touches >= minStrength
+            color lineColor = strong ? (t.up ? upColor : downColor) : (t.up ? weakUp : weakDown)
+            string lineStyle = f_style(strong ? strongStyle : weakStyle)
+            int lineWidth = strong ? strongWidth : weakWidth
+            array.push(drawings, line.new(t.x, t.y, bar_index, f_value(t, bar_index), xloc = xloc.bar_index, extend = extendLines ? extend.right : extend.none, color = lineColor, style = lineStyle, width = lineWidth))

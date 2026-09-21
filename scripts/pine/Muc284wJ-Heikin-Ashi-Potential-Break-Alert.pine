@@ -1,0 +1,425 @@
+//@version=6
+indicator(
+     "Heikin Ashi Wick + Doji Range Break",
+     shorttitle="HAWD Break",
+     overlay=true,
+     behind_chart=false,
+     max_bars_back=50,
+     max_lines_count=500)
+
+//────────────────────────────────────────────
+// Pattern settings
+//────────────────────────────────────────────
+string patternGroup = "Pattern settings"
+
+float wickPercent = input.float(
+     30.0,
+     "Minimum wick size (%)",
+     minval=1.0,
+     maxval=100.0,
+     step=1.0,
+     group=patternGroup)
+
+float dojiPercent = input.float(
+     15.0,
+     "Maximum doji body (%)",
+     minval=1.0,
+     maxval=100.0,
+     step=1.0,
+     group=patternGroup)
+
+//────────────────────────────────────────────
+// Confirmation settings
+//────────────────────────────────────────────
+string confirmationGroup = "Confirmation candles"
+
+bool useConfirmation = input.bool(
+     true,
+     "Require confirmation candles",
+     group=confirmationGroup)
+
+int confirmationCount = input.int(
+     2,
+     "Number of confirmation candles",
+     minval=1,
+     maxval=20,
+     group=confirmationGroup)
+
+//────────────────────────────────────────────
+// Range-break settings
+//────────────────────────────────────────────
+string breakGroup = "Doji range break"
+
+string breakMode = input.string(
+     "High/low break",
+     "Break detection",
+     options=["High/low break", "Close beyond level"],
+     group=breakGroup)
+
+int maxWaitBars = input.int(
+     20,
+     "Maximum bars to wait (0 = unlimited)",
+     minval=0,
+     maxval=500,
+     group=breakGroup)
+
+bool showActiveLevels = input.bool(
+     false,
+     "Show active doji high and low",
+     group=breakGroup)
+
+bool showBreakLabels = input.bool(
+     true,
+     "Show HIGH BREAK / LOW BREAK",
+     group=breakGroup)
+
+//────────────────────────────────────────────
+// Display settings
+//────────────────────────────────────────────
+string displayGroup = "Display"
+
+bool highlightPairs = input.bool(
+     true,
+     "Highlight matched candles",
+     group=displayGroup)
+
+color highlightColor = input.color(
+     color.rgb(255, 193, 7),
+     "Highlight colour",
+     group=displayGroup)
+
+bool showSetupDots = input.bool(
+     false,
+     "Show setup dots",
+     group=displayGroup)
+
+//────────────────────────────────────────────
+// Heikin Ashi prices
+//────────────────────────────────────────────
+string baseTicker = ticker.new(
+     syminfo.prefix,
+     syminfo.ticker,
+     syminfo.session)
+
+string haTicker = ticker.heikinashi(baseTicker)
+
+[haOpen, haHigh, haLow, haClose] = request.security(
+     haTicker,
+     timeframe.period,
+     [open, high, low, close],
+     gaps=barmerge.gaps_on,
+     lookahead=barmerge.lookahead_off)
+
+//────────────────────────────────────────────
+// Candle measurements
+//────────────────────────────────────────────
+float haRange = haHigh - haLow
+float haBody = math.abs(haClose - haOpen)
+
+float upperWick = haHigh - math.max(haOpen, haClose)
+float lowerWick = math.min(haOpen, haClose) - haLow
+
+bool validCandle = not na(haRange) and haRange > 0
+
+bool isDoji =
+     validCandle and
+     haBody <= haRange * dojiPercent / 100.0
+
+bool lowerWickSetup =
+     validCandle and
+     lowerWick >= haRange * wickPercent / 100.0 and
+     lowerWick > upperWick
+
+bool upperWickSetup =
+     validCandle and
+     upperWick >= haRange * wickPercent / 100.0 and
+     upperWick > lowerWick
+
+bool bullishCandle = validCandle and haClose > haOpen
+bool bearishCandle = validCandle and haClose < haOpen
+
+// The wick candle must be immediately followed by a doji.
+bool highBreakPair =
+     barstate.isconfirmed and
+     lowerWickSetup[1] and
+     isDoji
+
+bool lowBreakPair =
+     barstate.isconfirmed and
+     upperWickSetup[1] and
+     isDoji
+
+bool matchedPair = highBreakPair or lowBreakPair
+
+//────────────────────────────────────────────
+// Colour the matched wick candle and doji
+//────────────────────────────────────────────
+color pairColor =
+     highlightPairs and matchedPair
+     ? highlightColor
+     : na
+
+barcolor(
+     pairColor,
+     offset=0,
+     title="Matched doji body")
+
+barcolor(
+     pairColor,
+     offset=-1,
+     title="Matched wick candle body")
+
+// Draw directly over the candle wicks.
+// These are lines only. No boxes are created.
+var array<line> wickLines = array.new<line>()
+
+addWickLine(
+     int candleTime,
+     float fromPrice,
+     float toPrice,
+     color tint) =>
+
+    if array.size(wickLines) >= 500
+        line.delete(array.shift(wickLines))
+
+    line wickLine = line.new(
+         x1=candleTime,
+         y1=fromPrice,
+         x2=candleTime,
+         y2=toPrice,
+         xloc=xloc.bar_time,
+         color=tint,
+         width=2,
+         force_overlay=true)
+
+    array.push(wickLines, wickLine)
+
+drawWicks(
+     int candleTime,
+     float candleOpen,
+     float candleHigh,
+     float candleLow,
+     float candleClose,
+     color tint) =>
+
+    float bodyTop = math.max(candleOpen, candleClose)
+    float bodyBottom = math.min(candleOpen, candleClose)
+
+    if candleHigh > bodyTop
+        addWickLine(
+             candleTime,
+             candleHigh,
+             bodyTop,
+             tint)
+
+    if bodyBottom > candleLow
+        addWickLine(
+             candleTime,
+             bodyBottom,
+             candleLow,
+             tint)
+
+var int lastWickLineBar = na
+
+if highlightPairs and matchedPair
+    // Avoid redrawing a candle already highlighted
+    // by a pattern on the preceding bar.
+    if na(lastWickLineBar) or lastWickLineBar < bar_index - 1
+        drawWicks(
+             time[1],
+             haOpen[1],
+             haHigh[1],
+             haLow[1],
+             haClose[1],
+             highlightColor)
+
+    drawWicks(
+         time,
+         haOpen,
+         haHigh,
+         haLow,
+         haClose,
+         highlightColor)
+
+    lastWickLineBar := bar_index
+
+//────────────────────────────────────────────
+// Remember the matched doji
+//────────────────────────────────────────────
+//  1 = watching for a break above the doji
+// -1 = watching for a break below the doji
+var int pendingDirection = 0
+var float pendingHigh = na
+var float pendingLow = na
+var int pendingBar = na
+var int confirmationsSeen = 0
+var bool breakArmed = false
+
+bool highBreakEvent = false
+bool lowBreakEvent = false
+
+// Process an existing setup.
+// Markers appear only after the current candle closes.
+if barstate.isconfirmed and pendingDirection != 0 and bar_index > pendingBar
+
+    bool setupExpired =
+         maxWaitBars > 0 and
+         bar_index - pendingBar > maxWaitBars
+
+    if setupExpired
+        pendingDirection := 0
+        pendingBar := na
+        confirmationsSeen := 0
+        breakArmed := false
+
+    else
+        // Confirmation candles must be consecutive.
+        if not breakArmed
+            bool correctConfirmation =
+                 pendingDirection == 1
+                 ? bullishCandle
+                 : bearishCandle
+
+            if correctConfirmation
+                confirmationsSeen += 1
+
+                if confirmationsSeen >= confirmationCount
+                    breakArmed := true
+            else
+                pendingDirection := 0
+                pendingBar := na
+                confirmationsSeen := 0
+                breakArmed := false
+
+        if pendingDirection != 0 and breakArmed
+            bool movedAbove =
+                 breakMode == "High/low break"
+                 ? haHigh > pendingHigh
+                 : haClose > pendingHigh
+
+            bool movedBelow =
+                 breakMode == "High/low break"
+                 ? haLow < pendingLow
+                 : haClose < pendingLow
+
+            if pendingDirection == 1 and movedAbove
+                highBreakEvent := true
+                pendingDirection := 0
+                pendingBar := na
+                confirmationsSeen := 0
+                breakArmed := false
+
+            else if pendingDirection == -1 and movedBelow
+                lowBreakEvent := true
+                pendingDirection := 0
+                pendingBar := na
+                confirmationsSeen := 0
+                breakArmed := false
+
+// Register the newest matched pair.
+// A new pair replaces an older unfinished setup.
+if matchedPair
+    pendingDirection := highBreakPair ? 1 : -1
+    pendingHigh := haHigh
+    pendingLow := haLow
+    pendingBar := bar_index
+    confirmationsSeen := 0
+    breakArmed := not useConfirmation
+
+//────────────────────────────────────────────
+// Levels and markers
+//────────────────────────────────────────────
+bool displayStoredLevels =
+     pendingDirection != 0 or
+     highBreakEvent or
+     lowBreakEvent
+
+plot(
+     showActiveLevels and displayStoredLevels
+     ? pendingHigh
+     : na,
+     title="Watched doji high",
+     color=color.new(highlightColor, 0),
+     linewidth=1,
+     style=plot.style_linebr,
+     force_overlay=true)
+
+plot(
+     showActiveLevels and displayStoredLevels
+     ? pendingLow
+     : na,
+     title="Watched doji low",
+     color=color.new(highlightColor, 0),
+     linewidth=1,
+     style=plot.style_linebr,
+     force_overlay=true)
+
+float markerGap = math.max(
+     haRange * 0.25,
+     syminfo.mintick * 10)
+
+plotshape(
+     showSetupDots and highBreakPair
+     ? haLow - markerGap
+     : na,
+     title="High-break setup",
+     style=shape.circle,
+     location=location.absolute,
+     color=highlightColor,
+     size=size.tiny,
+     force_overlay=true)
+
+plotshape(
+     showSetupDots and lowBreakPair
+     ? haHigh + markerGap
+     : na,
+     title="Low-break setup",
+     style=shape.circle,
+     location=location.absolute,
+     color=highlightColor,
+     size=size.tiny,
+     force_overlay=true)
+
+plotshape(
+     showBreakLabels and highBreakEvent
+     ? haLow - markerGap
+     : na,
+     title="Doji high break",
+     style=shape.labelup,
+     location=location.absolute,
+     color=color.rgb(34, 139, 34),
+     text="HIGH\nBREAK",
+     textcolor=color.white,
+     size=size.tiny,
+     force_overlay=true)
+
+plotshape(
+     showBreakLabels and lowBreakEvent
+     ? haHigh + markerGap
+     : na,
+     title="Doji low break",
+     style=shape.labeldown,
+     location=location.absolute,
+     color=color.rgb(200, 45, 45),
+     text="LOW\nBREAK",
+     textcolor=color.white,
+     size=size.tiny,
+     force_overlay=true)
+
+//────────────────────────────────────────────
+// Optional alerts
+//────────────────────────────────────────────
+alertcondition(
+     highBreakEvent,
+     title="HA Doji High Break",
+     message="Heikin Ashi price moved above the matched doji high.")
+
+alertcondition(
+     lowBreakEvent,
+     title="HA Doji Low Break",
+     message="Heikin Ashi price moved below the matched doji low.")
+
+alertcondition(
+     highBreakEvent or lowBreakEvent,
+     title="HA Any Doji Range Break",
+     message="A matched Heikin Ashi doji range was broken.")

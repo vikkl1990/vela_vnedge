@@ -1,0 +1,529 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+//   A T T Y   E X P E C T E D   M O V E   C O N E
+//   v1.3.1  —  © 2026 Atty Labs.
+//
+//   WHAT IT DOES
+//   A 0DTE option prices one thing: how far price can travel between now and
+//   this afternoon's settle. That number shrinks all day, because the time it
+//   is paying for is running out. This draws it.
+//
+//   The cone opens at the current price and reaches the session close. Its
+//   width there is the expected move still to come. As the session runs, the
+//   cone re-anchors to price and the whole thing contracts, arriving at the
+//   closing bell with nothing left - the same shape an option's time value
+//   traces, for the same reason.
+//
+//   THE CLOCK IT USES
+//   How much of a session's variance is still ahead is not the same as how much
+//   of the clock is still ahead, and it is not the same from one market to the
+//   next. Share of a session's variance, measured per contract on its own day
+//   session, against a flat 25% per quarter:
+//
+//                 first quarter   middle third   last quarter
+//       ES            28.0%          20.9%          16.0%
+//       NQ            33.8%          19.4%          12.5%
+//       CL            22.3%          27.5%          11.2%
+//       GC            24.3%          27.2%           8.1%
+//
+//   Equity index is front-loaded and NQ more so than ES. Crude and gold are not
+//   front-loaded at all - they are mid-loaded, and gold's last quarter is nearly
+//   dead. Running the ES shape on crude or gold is materially wrong, so four
+//   profiles ship and the right one is picked from the ticker.
+//
+//   Tested against what actually happened, the variance clock keeps the
+//   normalised move steadier across the day than clock time does in every one of
+//   the four, in the fitting period and in a later period held back from it:
+//
+//                 clock (fit)  variance (fit)  clock (held)  variance (held)
+//       ES           0.064         0.029          0.076          0.068
+//       NQ           0.063         0.031          0.090          0.053
+//       CL           0.100         0.045          0.063          0.035
+//       GC           0.143         0.033          0.206          0.107
+//
+//   Gold gains the most because the wall clock suits it worst. Gold is also the
+//   least stable of the four out of sample, so treat its profile with more
+//   suspicion than the others. Clock time is available as an input, and is the
+//   wrong answer everywhere.
+//
+//   THE DAY SESSION IS NOT THE SAME EITHER
+//   09:30-16:00 for equity index, 09:00-14:30 for crude, 08:20-13:30 for gold.
+//   Auto picks by symbol. Point the cone at the wrong window and it terminates
+//   in the wrong place, which matters more than any of the above.
+//
+//   WHERE THE LEVEL COMES FROM
+//   The shape is measured here. The level is not - it is whatever you feed it.
+//   A 1-day implied volatility index exists for equity index and nowhere else,
+//   so Auto uses VIX1D on ES and NQ and realised dispersion on crude and gold.
+//   GVZ and OVX are 30-day numbers; reading a one-session move off them assumes
+//   a flat term structure, which is a worse assumption than measuring what the
+//   contract has actually been doing:
+//
+//     1-day volatility index   VIX1D is 1-day implied volatility on the S&P and
+//                              is the right instrument for ES. Converted to a
+//                              one-session move as index / 100 / sqrt(252).
+//     Manual expected move     Type the 0DTE straddle, in points or percent,
+//                              from an options board. This is the purest form
+//                              of the question and needs one number a morning.
+//     Realised trailing        Dispersion of this symbol's own open-to-close
+//                              moves. No options needed, works on anything.
+//
+//   THE PREMIUM IS SHOWN, NOT HIDDEN
+//   Implied volatility is usually dearer than what turns up. The table reports
+//   the raw implied move, the calibrated one, and the ratio between realised and
+//   implied over a trailing window, so what you are paying for is visible rather
+//   than assumed.
+//
+//   On ES that ratio sits near 0.70 against VIX1D, and it is worth knowing what
+//   is inside it. Measured on 825 sessions against VIX1D history and a live 0DTE
+//   straddle, it is two things multiplied: about 0.74 because VIX1D prices a whole
+//   calendar day while this cone spans the regular session only, and about 0.88
+//   because realised comes in under implied - the volatility premium, which is
+//   real. Calibration is therefore ON by default; left off against a volatility
+//   index the cone is roughly 40% too wide for an RTH session. A 0DTE straddle
+//   typed in by hand carries no coverage mismatch - it expires at the settle, so
+//   it prices exactly this window - and there the ratio is the premium alone.
+//
+//   HOW LONG A LOOKBACK THAT RATIO NEEDS
+//   Longer than you would guess. The ratio is a ratio of dispersions, and twenty
+//   sessions is far too few to pin one down. Scored walk-forward on 825 sessions
+//   with a held-back period, against the default of 20:
+//
+//                    ratio sd   5th-95th spread   >2x too narrow   QLIKE vs N=20
+//        20 sessions   0.124         1.75x            13.0%            -
+//        60 sessions   0.078         1.41x            10.7%          better, p<.05
+//       120 sessions   0.051         1.29x             9.3%          better, p<.05
+//       250 sessions   0.033         1.15x             8.7%          better, p<.05
+//
+//   Every length from 40 up beats 20 on a proper scoring rule with the confidence
+//   interval clear of zero. 120 is the default because it is the only setting that
+//   came out unbiased in BOTH the fitting period and the held-back one (1.00 and
+//   0.99); longer scores slightly better and runs about 5% wide.
+//
+//   Twenty was not biased - averaged over 1,075 sessions it sized correctly. It
+//   was unstable, and the tail is the problem: on 2026-09-14 a three-week lull put
+//   the 20-session ratio at 0.40, lower than any reading in 825 sessions, and the
+//   cone opened at roughly half the width the options market was paying for.
+//
+//   NOTE ON SAMPLE DEPTH
+//   The lookback silently takes whatever sessions the chart actually has. A
+//   5-minute chart may only reach back 75 sessions where a 30-minute chart reaches
+//   437. Switch on Diagnostics to see the real number in use.
+//
+//   THE BANDS
+//   Drawn at measured containment rather than Gaussian multiples. The shape of
+//   the distribution, unlike the shape of the day, turns out to travel well:
+//
+//       ES 0.88 / 2.31    NQ 0.87 / 2.21    CL 0.89 / 2.18    GC 0.81 / 2.21
+//
+//   against the Gaussian 1.00 and 2.00 - sharply peaked with a long tail in all
+//   four. One pair of multipliers therefore ships for every market. Both are
+//   inputs; set them to 1.00 and 2.00 for plain Gaussian bands.
+//
+//   LEARNING FROM TODAY
+//   The profile above is a four year average. It does not know whether today has
+//   been violent or dead. So the variance the session has actually delivered is
+//   measured as it goes - from intrabar returns, which is what lets a 5-minute
+//   chart learn from 1-minute price action - and blended into the estimate:
+//
+//       total variance  =  w * (realised so far / fraction of profile elapsed)
+//                          +  (1 - w) * the ex-ante estimate
+//
+//   The bracket is what today implies about the whole session, read off the
+//   schedule. Early on that rests on few observations, so w starts near a half
+//   and rises through the day: 0.49 at the open to 0.89 at the close, fitted.
+//
+//   On a year held back from the fitting, this lifted the rank correlation
+//   between the width drawn and the move that followed from 0.255 to 0.465.
+//   Weighting realised alone scored 0.485 on that year and 0.443 on the fitting
+//   period - a tie with the blend - so the shrinkage is kept for safety in the
+//   first minutes rather than because it wins. Both weights are inputs; set them
+//   both to 1.00 for realised only, or both to 0.00 for the schedule alone.
+//
+//   Where TradingView will not serve intrabar data - it limits how far back that
+//   reaches - the script falls back to chart-resolution returns without comment.
+//   The table names which one is in use.
+//
+//   WHAT IS ASSUMED
+//   That the variance profile measured on ES 2021-2025 describes today, at least
+//   in shape. It is a four year average and a genuinely unusual session will not
+//   obey it. The profile is fixed in the code rather than learned live, so
+//   re-measure before trusting it on another contract. Nothing here forecasts
+//   direction: the cone is centred on the current price because that is the
+//   honest centre.
+//
+//   This measures and draws. There are no entries, stops, targets, or signals.
+// ═══════════════════════════════════════════════════════════════════════════
+
+indicator("Atty Expected Move Cone", "ATTY CONE", overlay = true, max_lines_count = 500, max_labels_count = 50)
+
+// ─────────────────────────────── Inputs ───────────────────────────────
+GS = "Session"
+GV = "Expected move"
+GC = "Cone"
+GD = "Display"
+
+presetIn   = input.string("Auto (by symbol)", "Session", options = ["Auto (by symbol)", "NY RTH (09:30-16:00 ET)", "Crude day (09:00-14:30 ET)", "Gold day (08:20-13:30 ET)", "NY morning (09:30-12:00 ET)", "NY afternoon (12:00-16:00 ET)", "Custom"], group = GS, tooltip = "The window the cone spans. It always terminates at that window's close, and the presets are New York time. Auto picks the day session the contract actually keeps: 09:30-16:00 for equity index, 09:00-14:30 for crude, 08:20-13:30 for gold. These are not the same window and using the wrong one puts the close in the wrong place.")
+customSess = input.session("0930-1600", "Custom session", group = GS)
+customTz   = input.string("America/New_York", "Custom session timezone", options = ["America/New_York", "America/Chicago", "Europe/London", "Asia/Tokyo", "UTC", "Exchange"], group = GS)
+
+emSrc  = input.string("Auto (index where one exists)", "Source", options = ["Auto (index where one exists)", "1-day volatility index", "Manual expected move", "Realised trailing"], group = GV, tooltip = "Where the size of the move comes from. The cone's shape is measured; its level is this. Auto uses VIX1D on equity index, because a 1-day implied volatility index exists there, and realised dispersion everywhere else, because it does not. GVZ and OVX are 30-day numbers - reading a one-session move off them assumes a flat term structure, which is a worse assumption than simply measuring what the contract has been doing. Point VIX1D at gold and the realised-to-implied ratio goes above 1.4, which is the calibration covering for a quantity that was never about gold.")
+ivSym  = input.symbol("CBOE:VIX1D", "Volatility index", group = GV, tooltip = "VIX1D is 1-day S&P implied volatility, the right instrument for ES and SPX. Falls back to the realised figure if the symbol returns nothing.")
+emMan  = input.float(40.0, "Manual expected move", minval = 0.0, step = 0.25, group = GV, inline = "V1", tooltip = "The 0DTE straddle for the whole session, taken from an options board before the open.")
+emUnit = input.string("points", "", options = ["points", "percent"], group = GV, inline = "V1")
+emLB   = input.int(120, "Realised lookback (sessions)", minval = 5, maxval = 500, group = GV, tooltip = "How many completed sessions the realised-to-implied ratio is measured over. Longer than instinct suggests: a ratio of dispersions needs a lot of sessions to pin down, and 20 - the old default - has a 1.75x spread between its 5th and 95th percentile against 1.29x here. Scored walk-forward on 825 sessions with a held-back period, every length from 40 up beats 20 with the confidence interval clear of zero; 120 is the only one that came out unbiased in both periods. Note the lookback quietly takes whatever the chart has - a 5-minute chart may only reach 75 sessions. Diagnostics shows the real count.")
+applyCal = input.bool(true, "Calibrate to realised", group = GV, tooltip = "Multiplies the cone by the trailing ratio of realised move to implied move. On ES that ratio sits near 0.70 against VIX1D and is two things multiplied: about 0.74 because VIX1D prices a whole calendar day while this cone spans the regular session only, and about 0.88 because realised comes in under implied. Leaving it off against a volatility index draws a cone roughly 40% too wide for an RTH session. For a 0DTE straddle typed in by hand the coverage already matches - a 0DTE expires at the settle - so the ratio there is closer to the premium alone. Both numbers are shown in the table.")
+
+GL = "Learn from today"
+learnOn = input.bool(true, "Learn from realised variance", group = GL, tooltip = "The cone is sized from an ex-ante estimate decayed on a four year average profile, which knows nothing about whether today has been violent or dead. With this on, the variance the session has ACTUALLY delivered so far is measured and blended into the estimate. On a year held back from the fitting, the rank correlation between the drawn width and the move that followed rose from 0.255 to 0.465.")
+ltfIn   = input.timeframe("1", "Intrabar timeframe", group = GL, tooltip = "Realised variance is measured from bars of this size inside each chart bar, so a 5-minute chart can learn from 1-minute price action. Must be lower than the chart timeframe or it is ignored. TradingView limits how far back intrabar data reaches; beyond that the script falls back to chart-resolution returns on its own.")
+learnW0 = input.float(0.49, "Weight on realised at the open", minval = 0.0, maxval = 1.0, step = 0.01, group = GL, tooltip = "Fitted at 0.49 rising to 0.89 by the close. Early in a session the realised figure rests on few observations, so it is shrunk toward the ex-ante estimate. Set both to 1.00 for realised only, which tied with the blend on the held-back year, or both to 0.00 for the schedule alone.")
+learnW1 = input.float(0.89, "Weight on realised at the close", minval = 0.0, maxval = 1.0, step = 0.01, group = GL)
+
+profIn = input.string("Auto (by symbol)", "Variance profile", options = ["Auto (by symbol)", "ES / SPX", "NQ / NDX", "CL crude", "GC gold"], group = GC, tooltip = "Which market's intraday variance shape the cone decays on. They are genuinely different: the first quarter of a session carries 33.8% of NQ's variance and 28.0% of ES's, but crude and gold are mid-loaded instead, 27.5% and 27.2% in the middle third. Gold's last quarter carries 8.1% against a flat 25%. Running the ES shape on crude or gold is materially wrong.")
+
+useVarClock = input.bool(true, "Variance clock", group = GC, tooltip = "On: the cone decays on the measured intraday variance profile, which is front and back loaded. Off: it decays on the wall clock, which over-widens the cone at midday and under-widens it into the close. Measured on ES, the variance clock is the better description.")
+b68    = input.float(0.88, "68% band (x sigma)", minval = 0.1, maxval = 3.0, step = 0.01, group = GC, tooltip = "Measured containment, not a Gaussian multiple. 0.88 and 2.31 over 18,563 fitting-period observations on ES, against the Gaussian 1.00 and 2.00. The held-back year returned 0.80 and 2.07. Set 1.00 and 2.00 for plain Gaussian bands.")
+b95    = input.float(2.31, "95% band (x sigma)", minval = 0.5, maxval = 6.0, step = 0.01, group = GC)
+steps  = input.int(12, "Cone smoothness", minval = 3, maxval = 40, group = GC, tooltip = "Number of segments drawn between now and the close.")
+
+col68  = input.color(#5B9BD5, "68%", group = GD, inline = "D1")
+col95  = input.color(#9AA0A6, "95%", group = GD, inline = "D1")
+shadeOn = input.bool(true, "Shade", group = GD, inline = "D1")
+showLbl = input.bool(true, "Label the close bands", group = GD)
+showUsed = input.bool(true, "Mark expected move used", group = GD, tooltip = "Dotted lines at one full session expected move either side of the open, with the fraction already travelled shown in the table.")
+showTbl = input.bool(true, "Info table", group = GD, inline = "D2")
+showDiag = input.bool(false, "Diagnostics", group = GD, tooltip = "Adds four rows showing the raw quantities the calibration is built from, so the realised-to-implied ratio can be audited instead of trusted: the trailing mean absolute realised move, the trailing mean absolute implied move, today's implied move on its own, and how many completed sessions are in the sample. All as a percent of price.")
+tblPos  = input.string("Bottom right", "", options = ["Top right", "Bottom right", "Top left", "Bottom left"], group = GD, inline = "D2")
+
+// Cumulative share of session variance by twenty-sixths of the session, measured
+// per market on its own day session. ES/NQ/CL on 2021-08 to 2025-08, GC on
+// 2010-06 to 2023-12, each with a later period held back and checked.
+var P_ES = array.from(0.0000, 0.0852, 0.1498, 0.2254, 0.2796, 0.3278, 0.3689, 0.4084, 0.4429, 0.4762, 0.5049, 0.5337, 0.5600, 0.5857, 0.6094, 0.6405, 0.6650, 0.6912, 0.7143, 0.7510, 0.7786, 0.8108, 0.8397, 0.8728, 0.9027, 0.9368, 1.0000)
+var P_NQ = array.from(0.0000, 0.1180, 0.1967, 0.2793, 0.3382, 0.3904, 0.4344, 0.4755, 0.5098, 0.5425, 0.5712, 0.5995, 0.6247, 0.6486, 0.6707, 0.6992, 0.7215, 0.7452, 0.7657, 0.7984, 0.8223, 0.8504, 0.8749, 0.9032, 0.9279, 0.9544, 1.0000)
+var P_CL = array.from(0.0000, 0.0739, 0.1162, 0.1726, 0.2231, 0.2755, 0.3269, 0.3665, 0.4286, 0.4765, 0.5182, 0.5636, 0.6150, 0.6513, 0.6836, 0.7151, 0.7429, 0.7681, 0.7936, 0.8186, 0.8418, 0.8656, 0.8879, 0.9066, 0.9308, 0.9587, 1.0000)
+var P_GC = array.from(0.0000, 0.0870, 0.1492, 0.1933, 0.2430, 0.2851, 0.3270, 0.3887, 0.4446, 0.5116, 0.5624, 0.6071, 0.6482, 0.6828, 0.7201, 0.7538, 0.7835, 0.8105, 0.8342, 0.8590, 0.8800, 0.8999, 0.9189, 0.9371, 0.9579, 0.9771, 1.0000)
+
+// Which market this chart is, read off the ticker id. The colon keeps a micro
+// contract from matching its full-size cousin by accident.
+// Written as one expression on purpose: a value assigned inside an if block is
+// inferred as a series, and the session functions below need a simple string.
+TID = str.upper(syminfo.tickerid)
+mktKey = str.contains(TID, ":NQ") or str.contains(TID, ":MNQ") or str.contains(TID, "NDX") or str.contains(TID, "QQQ") ? "NQ" : str.contains(TID, ":CL") or str.contains(TID, ":MCL") or str.contains(TID, ":QM") or str.contains(TID, "USOIL") or str.contains(TID, "WTI") ? "CL" : str.contains(TID, ":GC") or str.contains(TID, ":MGC") or str.contains(TID, "XAU") or str.contains(TID, "GOLD") ? "GC" : "ES"
+
+profKey = profIn == "Auto (by symbol)" ? mktKey : profIn == "NQ / NDX" ? "NQ" : profIn == "CL crude" ? "CL" : profIn == "GC gold" ? "GC" : "ES"
+VPROF = profKey == "NQ" ? P_NQ : profKey == "CL" ? P_CL : profKey == "GC" ? P_GC : P_ES
+
+// ────────────────────────── Session resolution ──────────────────────────
+sessStr = switch presetIn
+    "Auto (by symbol)"              => mktKey == "CL" ? "0900-1430" : mktKey == "GC" ? "0820-1330" : "0930-1600"
+    "NY RTH (09:30-16:00 ET)"       => "0930-1600"
+    "Crude day (09:00-14:30 ET)"    => "0900-1430"
+    "Gold day (08:20-13:30 ET)"     => "0820-1330"
+    "NY morning (09:30-12:00 ET)"   => "0930-1200"
+    "NY afternoon (12:00-16:00 ET)" => "1200-1600"
+    => customSess
+tzStr = presetIn == "Custom" ? (customTz == "Exchange" ? syminfo.timezone : customTz) : "America/New_York"
+
+ivRaw = request.security(ivSym, "D", close, ignore_invalid_symbol = true)
+
+// Intrabar closes for the realised-variance estimate. Guarded so a timeframe at
+// or above the chart's is never requested, which would raise an error.
+ltfOk  = timeframe.in_seconds(ltfIn) < timeframe.in_seconds(timeframe.period)
+ltfEff = ltfOk ? ltfIn : timeframe.period
+ltfCloses = request.security_lower_tf(syminfo.tickerid, ltfEff, close)
+
+
+// Fraction of the session's variance accrued by elapsed fraction f.
+f_var(f) =>
+    float out = f
+    if useVarClock
+        float x = math.max(0.0, math.min(1.0, f)) * 26.0
+        int i = math.min(25, int(math.floor(x)))
+        float w = x - i
+        out := array.get(VPROF, i) * (1.0 - w) + array.get(VPROF, i + 1) * w
+    math.max(0.0, math.min(1.0, out))
+
+// ──────────────────────────── Session state ────────────────────────────
+var closes = array.new<float>()      // log open-to-close move per session
+var impl   = array.new<float>()      // implied full-session move, same sessions
+var float sessOpenPx = na
+var int sessBar0 = na
+var float ivAtOpen = na
+var float rvSum = 0.0
+var float lastPx = na
+
+inSess = not na(time(timeframe.period, sessStr, tzStr))
+inI    = inSess ? 1 : 0
+prevIn = nz(inI[1], 0) == 1
+
+okLen    = str.length(sessStr) >= 9
+startHH  = okLen ? str.tonumber(str.substring(sessStr, 0, 2)) : na
+startMM  = okLen ? str.tonumber(str.substring(sessStr, 2, 4)) : na
+endHH    = okLen ? str.tonumber(str.substring(sessStr, 5, 7)) : na
+endMM    = okLen ? str.tonumber(str.substring(sessStr, 7, 9)) : na
+startMin = na(startHH) or na(startMM) ? -1 : int(startHH) * 60 + int(startMM)
+endMin   = na(endHH) or na(endMM) ? -1 : int(endHH) * 60 + int(endMM)
+sessLen  = startMin < 0 or endMin < 0 ? na : endMin > startMin ? endMin - startMin : 1440 - startMin + endMin
+modNow   = hour(time, tzStr) * 60 + minute(time, tzStr)
+modPrv   = nz(modNow[1], modNow)
+crossed  = startMin >= 0 and ((modPrv < startMin and modNow >= startMin) or (modPrv > modNow and (startMin > modPrv or startMin <= modNow)))
+
+sEnd   = (not inSess and prevIn) or (inSess and prevIn and crossed)
+sStart = inSess and (not prevIn or crossed)
+
+float prog = 0.0
+int elapsedMin = 0
+if inSess and not na(sessLen) and sessLen > 0
+    elapsedMin := (modNow - startMin + 1440) % 1440
+    prog := math.min(1.0, math.max(0.0, elapsedMin / sessLen))
+
+if sEnd and not na(sessOpenPx) and sessOpenPx > 0
+    array.push(closes, math.log(close[1] / sessOpenPx))
+    if not na(ivAtOpen)
+        array.push(impl, ivAtOpen)
+    else
+        array.push(impl, na)
+    if array.size(closes) > 500
+        array.shift(closes)
+        array.shift(impl)
+
+if sStart
+    sessOpenPx := open
+    sessBar0 := bar_index
+    ivAtOpen := na(ivRaw) ? na : ivRaw / 100.0 / math.sqrt(252.0)
+    rvSum := 0.0
+    lastPx := open
+
+// Realised variance of the session so far. Intrabar returns where they are
+// available, chart-bar returns where they are not.
+if inSess
+    int m = array.size(ltfCloses)
+    if ltfOk and m > 0
+        for i = 0 to m - 1
+            float p = array.get(ltfCloses, i)
+            if not na(p) and p > 0 and not na(lastPx) and lastPx > 0
+                float rr = math.log(p / lastPx)
+                rvSum += rr * rr
+                lastPx := p
+    else
+        if not na(lastPx) and lastPx > 0
+            float rr = math.log(close / lastPx)
+            rvSum += rr * rr
+        lastPx := close
+
+// ──────────────────────────── Functions ────────────────────────────
+f_sdTail(arr, n) =>
+    int sz = array.size(arr)
+    float out = na
+    if sz >= 2
+        int k = math.min(n, sz)
+        if k >= 2
+            float m = 0.0
+            int c = 0
+            for i = 0 to k - 1
+                float v = array.get(arr, sz - 1 - i)
+                if not na(v)
+                    m += v
+                    c += 1
+            if c >= 2
+                m := m / c
+                float ss = 0.0
+                for i = 0 to k - 1
+                    float v = array.get(arr, sz - 1 - i)
+                    if not na(v)
+                        ss += (v - m) * (v - m)
+                out := math.sqrt(ss / (c - 1))
+    out
+
+f_meanAbsTail(arr, n) =>
+    int sz = array.size(arr)
+    float out = na
+    if sz >= 1
+        int k = math.min(n, sz)
+        float s = 0.0
+        int c = 0
+        for i = 0 to k - 1
+            float v = array.get(arr, sz - 1 - i)
+            if not na(v)
+                s += math.abs(v)
+                c += 1
+        out := c > 0 ? s / c : na
+    out
+
+f_meanTail(arr, n) =>
+    int sz = array.size(arr)
+    float out = na
+    if sz >= 1
+        int k = math.min(n, sz)
+        float s = 0.0
+        int c = 0
+        for i = 0 to k - 1
+            float v = array.get(arr, sz - 1 - i)
+            if not na(v)
+                s += v
+                c += 1
+        out := c > 0 ? s / c : na
+    out
+
+// ──────────────────────────── Drawing ────────────────────────────
+var coneLines = array.new<line>()
+var coneFills = array.new<linefill>()
+var coneLbls  = array.new<label>()
+var line usedHi = na
+var line usedLo = na
+
+var float tSigDay = na
+var float tSigRaw = na
+var bool tRealSrc = false
+var float tRvRatio = na
+var float tWLearn = na
+var float tSigRem = na
+var float tRatio  = na
+var float tRealAbs = na
+var float tImplAbs = na
+var float tSigImpNow = na
+var int tNSamp = 0
+var float tUsed   = na
+var string tSrc   = "-"
+
+f_seg(x1, y1, x2, y2, col, w, st) =>
+    ln = line.new(x1, y1, x2, y2, xloc = xloc.bar_index, color = col, width = w, style = st)
+    array.push(coneLines, ln)
+    ln
+
+if barstate.islast
+    while array.size(coneFills) > 0
+        linefill.delete(array.pop(coneFills))
+    while array.size(coneLines) > 0
+        line.delete(array.pop(coneLines))
+    while array.size(coneLbls) > 0
+        label.delete(array.pop(coneLbls))
+    line.delete(usedHi)
+    line.delete(usedLo)
+
+    // ---- the level ----
+    float sigReal = f_sdTail(closes, emLB)
+    float sigImp  = na(ivRaw) ? na : ivRaw / 100.0 / math.sqrt(252.0)
+    float sigMan  = emUnit == "points" ? (close > 0 ? emMan / close : na) : emMan / 100.0
+    // A 1-day implied volatility index exists for equity index and nowhere else.
+    bool idxOk = mktKey == "ES" or mktKey == "NQ"
+    string srcEff = emSrc == "Auto (index where one exists)" ? (idxOk ? "1-day volatility index" : "Realised trailing") : emSrc
+    tRealSrc := srcEff == "Realised trailing"
+    float sigDay = switch srcEff
+        "1-day volatility index" => nz(sigImp, sigReal)
+        "Manual expected move"   => sigMan
+        => sigReal
+    tSrc := srcEff == "1-day volatility index" ? (na(sigImp) ? "index n/a, realised" : "VIX1D" + (emSrc != srcEff ? " auto" : "")) : srcEff == "Manual expected move" ? "manual" : "realised" + (emSrc != srcEff ? " auto" : "")
+
+    // Realised against implied, over the same trailing sessions. A straddle is
+    // priced off the expected absolute move, so the comparison is made there.
+    float realAbs = f_meanAbsTail(closes, emLB)
+    float implAbs = f_meanTail(impl, emLB)
+    if not na(implAbs) and implAbs > 0 and not na(realAbs)
+        tRatio := realAbs / (implAbs * 0.7979)      // half-normal E|x| = sigma sqrt(2/pi)
+    tRealAbs := realAbs
+    tImplAbs := implAbs
+    tSigImpNow := sigImp
+    tNSamp := array.size(closes)
+    tSigRaw := sigDay
+    if applyCal and not na(tRatio) and tRatio > 0 and srcEff != "Realised trailing"
+        sigDay := sigDay * tRatio
+    tSigDay := sigDay
+
+    if inSess and not na(sigDay) and sigDay > 0 and not na(sessLen) and sessLen > 0
+        // On a live bar the wall clock is ahead of the bar's own timestamp by up
+        // to one bar. Using it makes the cone contract smoothly instead of in
+        // whole-bar steps. Historical and replayed bars keep the bar's own time.
+        float progLive = prog
+        int elapsedLive = elapsedMin
+        if barstate.isrealtime
+            int nowMin = hour(timenow, tzStr) * 60 + minute(timenow, tzStr)
+            elapsedLive := math.min(int(sessLen), (nowMin - startMin + 1440) % 1440)
+            progLive := math.min(1.0, math.max(0.0, elapsedLive / sessLen))
+
+        float vNow = f_var(progLive)
+        // What the session has actually delivered, against what was expected of it.
+        float varSched = sigDay * sigDay
+        float varReal = learnOn and vNow > 0.01 and rvSum > 0 ? rvSum / vNow : na
+        float wLearn = math.min(1.0, math.max(0.0, learnW0 + (learnW1 - learnW0) * progLive))
+        float varTot = na(varReal) ? varSched : wLearn * varReal + (1.0 - wLearn) * varSched
+        float sigEff = math.sqrt(math.max(0.0, varTot))
+        tRvRatio := na(varReal) or varSched <= 0 ? na : math.sqrt(varReal / varSched)
+        tWLearn := na(varReal) ? na : wLearn
+
+        float sigRem = sigEff * math.sqrt(math.max(0.0, 1.0 - vNow))
+        tSigRem := sigRem * close
+        // the row says "in use", so it has to be the figure the cone is drawn
+        // with - after calibration AND after learning, not before
+        tSigDay := sigEff
+
+        // bars remaining to the close
+        float barMin = math.max(1.0, timeframe.in_seconds() / 60.0)
+        int remBars = math.max(1, int(math.ceil((sessLen - elapsedLive) / barMin)))
+        int nSeg = math.min(steps, math.max(3, remBars))
+
+        float pX = bar_index
+        float p68 = 0.0
+        float p95 = 0.0
+        for s = 1 to nSeg
+            float frac = s / nSeg
+            int x = math.min(bar_index + 495, bar_index + int(math.round(remBars * frac)))
+            float fu = math.min(1.0, progLive + (1.0 - progLive) * frac)
+            float dv = math.max(0.0, f_var(fu) - vNow)
+            float w = close * sigEff * math.sqrt(dv)
+            float w68 = w * b68
+            float w95 = w * b95
+            u95 = f_seg(int(pX), close + p95, x, close + w95, col95, 1, line.style_solid)
+            u68 = f_seg(int(pX), close + p68, x, close + w68, col68, 1, line.style_solid)
+            d68 = f_seg(int(pX), close - p68, x, close - w68, col68, 1, line.style_solid)
+            d95 = f_seg(int(pX), close - p95, x, close - w95, col95, 1, line.style_solid)
+            if shadeOn
+                array.push(coneFills, linefill.new(u95, u68, color.new(col95, 92)))
+                array.push(coneFills, linefill.new(u68, d68, color.new(col68, 90)))
+                array.push(coneFills, linefill.new(d68, d95, color.new(col95, 92)))
+            if s == nSeg and showLbl
+                array.push(coneLbls, label.new(x, close + w95, "95% " + str.tostring(close + w95, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = color.new(col95, 88), textcolor = col95, size = size.small))
+                array.push(coneLbls, label.new(x, close + w68, "68% " + str.tostring(close + w68, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = color.new(col68, 85), textcolor = col68, size = size.small))
+                array.push(coneLbls, label.new(x, close - w68, "68% " + str.tostring(close - w68, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = color.new(col68, 85), textcolor = col68, size = size.small))
+                array.push(coneLbls, label.new(x, close - w95, "95% " + str.tostring(close - w95, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = color.new(col95, 88), textcolor = col95, size = size.small))
+            pX := x
+            p68 := w68
+            p95 := w95
+
+        // one full session move either side of the open, and how much is spent
+        if showUsed and not na(sessOpenPx) and not na(sessBar0)
+            float full = sessOpenPx * sigDay
+            int x0 = math.max(sessBar0, bar_index - 4000)
+            usedHi := line.new(x0, sessOpenPx + full, bar_index, sessOpenPx + full, xloc = xloc.bar_index, color = color.new(col68, 55), style = line.style_dotted, width = 1)
+            usedLo := line.new(x0, sessOpenPx - full, bar_index, sessOpenPx - full, xloc = xloc.bar_index, color = color.new(col68, 55), style = line.style_dotted, width = 1)
+            tUsed := full > 0 ? math.abs(close - sessOpenPx) / full : na
+
+// ──────────────────────────── Info table ────────────────────────────
+tblAnchor = tblPos == "Top right" ? position.top_right : tblPos == "Bottom right" ? position.bottom_right : tblPos == "Top left" ? position.top_left : position.bottom_left
+var tb = table.new(tblAnchor, 2, 16, bgcolor = color.new(color.black, 82), border_color = color.new(color.gray, 60), border_width = 1)
+
+f_row(t, r, k, v, c) =>
+    table.cell(t, 0, r, k, text_color = color.new(color.gray, 10), text_size = size.small, text_halign = text.align_left)
+    table.cell(t, 1, r, v, text_color = c, text_size = size.small, text_halign = text.align_right)
+
+if barstate.islast
+    table.clear(tb, 0, 0, 1, 15)
+    if showTbl
+        f_row(tb, 0, "session", sessStr + (inSess ? "" : "  (closed)"), color.new(color.gray, 10))
+        f_row(tb, 1, "elapsed", inSess ? str.tostring(math.round(prog * 100)) + "%" : "-", color.new(color.gray, 10))
+        f_row(tb, 2, "variance spent", inSess ? str.tostring(math.round(f_var(prog) * 100)) + "%" : "-", useVarClock ? color.new(color.orange, 10) : color.new(color.gray, 10))
+        f_row(tb, 3, "move source", tSrc, color.new(color.gray, 10))
+        f_row(tb, 4, tRealSrc ? "realised base (1sd)" : "implied as quoted (1sd)", na(tSigRaw) ? "-" : str.tostring(tSigRaw * close, format.mintick), color.new(color.gray, 10))
+        f_row(tb, 5, "session move in use (1sd)", na(tSigDay) ? "-" : str.tostring(tSigDay * close, format.mintick), color.new(color.gray, 10))
+        f_row(tb, 6, "still to come (1sd)", na(tSigRem) ? "-" : str.tostring(tSigRem, format.mintick), col68)
+        f_row(tb, 7, "realised / implied", na(tRatio) ? "-" : str.tostring(tRatio, "#.00") + (applyCal and not tRealSrc ? "  applied" : "  not applied"), tRatio > 1 ? color.new(color.orange, 10) : color.new(color.teal, 10))
+        f_row(tb, 8, "expected move used", na(tUsed) ? "-" : str.tostring(math.round(tUsed * 100)) + "%", tUsed > 1 ? color.new(color.orange, 10) : color.new(color.gray, 10))
+        f_row(tb, 9, "today vs typical", na(tRvRatio) ? "-" : str.tostring(tRvRatio, "#.00") + "x " + (tRvRatio > 1.15 ? "hot" : tRvRatio < 0.87 ? "quiet" : "normal"), tRvRatio > 1.15 ? color.new(color.orange, 10) : tRvRatio < 0.87 ? color.new(color.teal, 10) : color.new(color.gray, 10))
+        f_row(tb, 10, "variance profile", (useVarClock ? profKey : "clock time") + (profIn == "Auto (by symbol)" and useVarClock ? "  auto" : ""), color.new(color.gray, 10))
+        f_row(tb, 11, "learning weight" + (ltfOk ? " (" + ltfIn + ")" : " (chart bars)"), na(tWLearn) ? "-" : str.tostring(math.round(tWLearn * 100)) + "%", color.new(color.gray, 10))
+        if showDiag
+            f_row(tb, 12, "diag  realised |move|", na(tRealAbs) ? "-" : str.tostring(tRealAbs * 100, "#.000") + "%", color.new(color.yellow, 10))
+            f_row(tb, 13, "diag  implied |move|", na(tImplAbs) ? "-" : str.tostring(tImplAbs * 0.7979 * 100, "#.000") + "%", color.new(color.yellow, 10))
+            f_row(tb, 14, "diag  implied today", na(tSigImpNow) ? "-" : str.tostring(tSigImpNow * 0.7979 * 100, "#.000") + "%", color.new(color.yellow, 10))
+            f_row(tb, 15, "diag  sessions in sample", str.tostring(tNSamp), color.new(color.yellow, 10))

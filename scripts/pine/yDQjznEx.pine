@@ -1,0 +1,379 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Choliszt
+
+//@version=6
+indicator("Liquidity Sweep Sequence", shorttitle="LiqSweep", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// ════════════════════════════════════════════════════════════
+//  DETECTION
+// ════════════════════════════════════════════════════════════
+gDet     = "Detection"
+pivLen   = input.int(8,    "Swing sensitivity (bars each side)", minval=2, group=gDet, tooltip="Higher = only more prominent swing highs/lows are tracked. 5-10 is typical.")
+wickRatio= input.float(55, "Minimum wick ratio (%)", minval=0, maxval=100, step=5, group=gDet, tooltip="The wick must be at least this share of the candle's full range. Higher = only long-wick rejections qualify.")
+maxAge   = input.int(300,  "Level lifespan (bars)", minval=10, group=gDet, tooltip="Levels older than this stop being tracked.")
+showBuy  = input.bool(true, "Show sell-side sweeps (bullish)", group=gDet)
+showSell = input.bool(true, "Show buy-side sweeps (bearish)", group=gDet)
+
+// ════════════════════════════════════════════════════════════
+//  SEQUENCE COUNT
+// ════════════════════════════════════════════════════════════
+gSeq         = "Sequence count"
+seqWindow    = input.int(50,   "Max gap between sweeps (bars)", minval=3, group=gSeq, tooltip="Two same-side sweeps further apart than this are treated as unrelated and the count restarts.")
+requireDeeper= input.bool(true, "Require deeper low / higher high", group=gSeq, tooltip="ON: the second sweep must take out a lower low (or higher high) than the first to continue the sequence. OFF: any same-side sweep increments the count.")
+resetOnOpp   = input.bool(true, "Reset count on opposite sweep", group=gSeq)
+onlyShowSeq2 = input.bool(false,"Show 2nd sweep and beyond only", group=gSeq, tooltip="Hides first-in-sequence sweeps so only continuation sweeps remain on the chart.")
+seq2Size     = input.string("normal","Label size for 2nd+", options=["small","normal","large"], group=gSeq)
+
+// ════════════════════════════════════════════════════════════
+//  SIGNIFICANCE
+// ════════════════════════════════════════════════════════════
+gTier     = "Significance"
+onlyMajor = input.bool(true, "Show major sweeps only", group=gTier, tooltip="Filters out minor sweeps that occur inside ranges.")
+majorLen  = input.int(60,    "Major sweep: extreme of last N bars", minval=20, group=gTier, tooltip="The sweeping wick must be the lowest low / highest high of the last N bars. Daily: 60-120. 15m: 40-60.")
+
+// ════════════════════════════════════════════════════════════
+//  STRUCTURE FILTERS
+// ════════════════════════════════════════════════════════════
+gStruct   = "Structure filters"
+useConsume= input.bool(true, "Invalidate levels once closed through", group=gStruct, tooltip="A close above a swing high (or below a swing low) means that liquidity has already been taken. The level is dropped and can no longer produce a sweep signal.")
+useExtreme= input.bool(true, "Sweep bar must be a local extreme", group=gStruct, tooltip="The wick must genuinely make a new local low/high, otherwise no stops were actually triggered.")
+extLen    = input.int(10,    "Local extreme lookback (bars)", minval=3, group=gStruct)
+
+// ════════════════════════════════════════════════════════════
+//  QUALITY FILTERS
+// ════════════════════════════════════════════════════════════
+gFil      = "Quality filters"
+useConfirm= input.bool(true,  "Next-bar confirmation", group=gFil, tooltip="Requires the following bar to close in the reversal direction. Costs one bar of delay but removes most failed signals.")
+useDepth  = input.bool(true,  "Minimum reclaim filter", group=gFil)
+depthATR  = input.float(0.15, "   Minimum reclaim (ATR multiple)", minval=0, step=0.05, group=gFil, tooltip="The close must reclaim the level by at least this much, not just barely.")
+cooldown  = input.int(10,     "Same-side cooldown (bars)", minval=0, group=gFil)
+useTrend  = input.bool(false, "Trend filter (with-trend only)", group=gFil, tooltip="Above the MA only bullish sweeps are shown, below it only bearish ones.")
+trendLen  = input.int(100,    "   Trend MA length", minval=10, group=gFil)
+
+// ════════════════════════════════════════════════════════════
+//  STYLE
+// ════════════════════════════════════════════════════════════
+gStyle   = "Style"
+labTxtB  = input.string("SWEEP", "Bullish label text", group=gStyle)
+labTxtS  = input.string("SWEEP", "Bearish label text", group=gStyle)
+majSize  = input.string("small", "Label size for 1st", options=["tiny","small","normal"], group=gStyle)
+showLine = input.bool(true, "Show swept level line", group=gStyle)
+lineExt  = input.int(12,    "   Extend right (bars)", minval=0, group=gStyle)
+showLive = input.bool(false,"Show untouched liquidity levels", group=gStyle, tooltip="Draws the swing levels currently being tracked, so you can verify the structure logic yourself.")
+showMA   = input.bool(false,"Show trend MA", group=gStyle)
+atrLen   = input.int(14,    "ATR length", minval=1, group=gStyle)
+offMult  = input.float(0.4, "Label offset (ATR multiple)", step=0.05, group=gStyle)
+
+// ════════════════════════════════════════════════════════════
+//  COLORS
+// ════════════════════════════════════════════════════════════
+gCol   = "Colors"
+cBuy   = input.color(#00E676, "Bullish sweep", group=gCol)
+cSell  = input.color(#FF1744, "Bearish sweep", group=gCol)
+lineTr = input.int(45, "Swept level transparency", minval=0, maxval=100, group=gCol)
+liveTr = input.int(72, "Untouched level transparency", minval=0, maxval=100, group=gCol)
+minTr  = input.int(45, "Minor sweep transparency", minval=0, maxval=100, group=gCol)
+
+// ════════════════════════════════════════════════════════════
+//  HELPERS
+// ════════════════════════════════════════════════════════════
+atrVal  = ta.atr(atrLen)
+trendMA = ta.ema(close, trendLen)
+plot(showMA ? trendMA : na, "Trend MA", color=color.new(color.gray, 40), linewidth=1)
+
+f_size(s) =>
+    switch s
+        "tiny"   => size.tiny
+        "small"  => size.small
+        "normal" => size.normal
+        "large"  => size.large
+        => size.small
+mkSize  = f_size(majSize)
+seqSize = f_size(seq2Size)
+
+// Superscript digits for the sequence number
+f_sup(n) =>
+    switch n
+        2 => "²"
+        3 => "³"
+        4 => "⁴"
+        5 => "⁵"
+        6 => "⁶"
+        7 => "⁷"
+        8 => "⁸"
+        9 => "⁹"
+        => str.tostring(n)
+
+// ════════════════════════════════════════════════════════════
+//  SWING LEVEL REGISTRY
+// ════════════════════════════════════════════════════════════
+ph = ta.pivothigh(high, pivLen, pivLen)
+pl = ta.pivotlow(low,  pivLen, pivLen)
+
+var float[] hiPrice = array.new<float>()
+var int[]   hiBar   = array.new<int>()
+var float[] loPrice = array.new<float>()
+var int[]   loBar   = array.new<int>()
+
+if not na(ph)
+    array.push(hiPrice, ph)
+    array.push(hiBar,   bar_index - pivLen)
+if not na(pl)
+    array.push(loPrice, pl)
+    array.push(loBar,   bar_index - pivLen)
+
+f_prune(_price, _bar) =>
+    if array.size(_bar) > 0
+        for i = array.size(_bar) - 1 to 0
+            if bar_index - array.get(_bar, i) > maxAge
+                array.remove(_price, i)
+                array.remove(_bar,   i)
+f_prune(hiPrice, hiBar)
+f_prune(loPrice, loBar)
+
+// ════════════════════════════════════════════════════════════
+//  CONDITIONS
+// ════════════════════════════════════════════════════════════
+rng      = high - low
+lowWick  = math.min(open, close) - low
+highWick = high - math.max(open, close)
+lowWickOK  = rng > 0 and (lowWick  / rng) * 100 >= wickRatio
+highWickOK = rng > 0 and (highWick / rng) * 100 >= wickRatio
+atLowExtreme  = not useExtreme or low  <= ta.lowest(low,   extLen)
+atHighExtreme = not useExtreme or high >= ta.highest(high, extLen)
+isMajorLow    = low  <= ta.lowest(low,   majorLen)
+isMajorHigh   = high >= ta.highest(high, majorLen)
+trendOkBuy    = not useTrend or close > trendMA
+trendOkSell   = not useTrend or close < trendMA
+
+f_checkLow() =>
+    float hit = na
+    if array.size(loPrice) > 0
+        for i = array.size(loPrice) - 1 to 0
+            lvl = array.get(loPrice, i)
+            depthOK = not useDepth or (close - lvl) >= atrVal * depthATR
+            if low < lvl and close > lvl and depthOK
+                hit := na(hit) ? lvl : math.max(hit, lvl)
+                array.remove(loPrice, i)
+                array.remove(loBar,   i)
+    hit
+
+f_checkHigh() =>
+    float hit = na
+    if array.size(hiPrice) > 0
+        for i = array.size(hiPrice) - 1 to 0
+            lvl = array.get(hiPrice, i)
+            depthOK = not useDepth or (lvl - close) >= atrVal * depthATR
+            if high > lvl and close < lvl and depthOK
+                hit := na(hit) ? lvl : math.min(hit, lvl)
+                array.remove(hiPrice, i)
+                array.remove(hiBar,   i)
+    hit
+
+// A level that price has closed through has already had its liquidity taken
+f_consume() =>
+    if array.size(hiPrice) > 0
+        for i = array.size(hiPrice) - 1 to 0
+            if close > array.get(hiPrice, i)
+                array.remove(hiPrice, i)
+                array.remove(hiBar,   i)
+    if array.size(loPrice) > 0
+        for i = array.size(loPrice) - 1 to 0
+            if close < array.get(loPrice, i)
+                array.remove(loPrice, i)
+                array.remove(loBar,   i)
+
+// ════════════════════════════════════════════════════════════
+//  DRAWING
+// ════════════════════════════════════════════════════════════
+f_drawBuy(_lvl, _back, _maj, _seq) =>
+    y    = low[_back] - atrVal[_back] * offMult
+    col  = _maj ? cBuy : color.new(cBuy, minTr)
+    isS2 = _seq >= 2
+    txt  = labTxtB + (isS2 ? f_sup(_seq) : "")
+    sz   = isS2 ? seqSize : mkSize
+    if _maj or isS2
+        label.new(bar_index - _back, y, txt, yloc=yloc.price, style=label.style_label_up, color=col, textcolor=color.black, size=sz)
+    else
+        label.new(bar_index - _back, y, "▲", yloc=yloc.price, style=label.style_none, textcolor=col, size=size.tiny)
+    if showLine and (_maj or isS2)
+        line.new(bar_index - _back - pivLen, _lvl, bar_index - _back + lineExt, _lvl, color=color.new(cBuy, lineTr), width=1, style=line.style_dotted)
+
+f_drawSell(_lvl, _back, _maj, _seq) =>
+    y    = high[_back] + atrVal[_back] * offMult
+    col  = _maj ? cSell : color.new(cSell, minTr)
+    isS2 = _seq >= 2
+    txt  = labTxtS + (isS2 ? f_sup(_seq) : "")
+    sz   = isS2 ? seqSize : mkSize
+    if _maj or isS2
+        label.new(bar_index - _back, y, txt, yloc=yloc.price, style=label.style_label_down, color=col, textcolor=color.white, size=sz)
+    else
+        label.new(bar_index - _back, y, "▼", yloc=yloc.price, style=label.style_none, textcolor=col, size=size.tiny)
+    if showLine and (_maj or isS2)
+        line.new(bar_index - _back - pivLen, _lvl, bar_index - _back + lineExt, _lvl, color=color.new(cSell, lineTr), width=1, style=line.style_dotted)
+
+// ════════════════════════════════════════════════════════════
+//  STATE
+// ════════════════════════════════════════════════════════════
+var bool  pBuyOn   = false
+var float pBuyLvl  = na
+var float pBuyRef  = na
+var float pBuyLow  = na
+var bool  pBuyMaj  = false
+var bool  pSellOn  = false
+var float pSellLvl = na
+var float pSellRef = na
+var float pSellHi  = na
+var bool  pSellMaj = false
+
+var int   lastBuyBar     = na
+var int   lastSellBar    = na
+var int   buySeq         = 0
+var int   sellSeq        = 0
+var float lastBuySeqPx   = na
+var int   lastBuySeqBar  = na
+var float lastSellSeqPx  = na
+var int   lastSellSeqBar = na
+
+bool firedBuySeq2  = false
+bool firedSellSeq2 = false
+bool firedBuyMaj   = false
+bool firedSellMaj  = false
+
+if barstate.isconfirmed
+
+    // ---- confirm pending bullish sweep ----
+    if pBuyOn
+        if close > pBuyRef
+            bool willShow = pBuyMaj or not onlyMajor
+            bool cdOK     = na(lastBuyBar) or bar_index - lastBuyBar >= cooldown
+            if willShow and cdOK
+                bool contd = not na(lastBuySeqBar) and (bar_index - lastBuySeqBar) <= seqWindow and (not requireDeeper or pBuyLow < lastBuySeqPx)
+                buySeq        := contd ? buySeq + 1 : 1
+                lastBuySeqPx  := pBuyLow
+                lastBuySeqBar := bar_index - 1
+                lastBuyBar    := bar_index - 1
+                if resetOnOpp
+                    sellSeq        := 0
+                    lastSellSeqPx  := na
+                    lastSellSeqBar := na
+                if not onlyShowSeq2 or buySeq >= 2
+                    f_drawBuy(pBuyLvl, 1, pBuyMaj, buySeq)
+                if buySeq >= 2
+                    firedBuySeq2 := true
+                if pBuyMaj
+                    firedBuyMaj := true
+        pBuyOn := false
+
+    // ---- confirm pending bearish sweep ----
+    if pSellOn
+        if close < pSellRef
+            bool willShow = pSellMaj or not onlyMajor
+            bool cdOK     = na(lastSellBar) or bar_index - lastSellBar >= cooldown
+            if willShow and cdOK
+                bool contd = not na(lastSellSeqBar) and (bar_index - lastSellSeqBar) <= seqWindow and (not requireDeeper or pSellHi > lastSellSeqPx)
+                sellSeq        := contd ? sellSeq + 1 : 1
+                lastSellSeqPx  := pSellHi
+                lastSellSeqBar := bar_index - 1
+                lastSellBar    := bar_index - 1
+                if resetOnOpp
+                    buySeq        := 0
+                    lastBuySeqPx  := na
+                    lastBuySeqBar := na
+                if not onlyShowSeq2 or sellSeq >= 2
+                    f_drawSell(pSellLvl, 1, pSellMaj, sellSeq)
+                if sellSeq >= 2
+                    firedSellSeq2 := true
+                if pSellMaj
+                    firedSellMaj := true
+        pSellOn := false
+
+    // ---- detect new sweeps ----
+    float newLow  = na
+    float newHigh = na
+    if showBuy  and lowWickOK  and atLowExtreme  and trendOkBuy
+        newLow  := f_checkLow()
+    if showSell and highWickOK and atHighExtreme and trendOkSell
+        newHigh := f_checkHigh()
+
+    if not na(newLow)
+        if useConfirm
+            pBuyOn  := true
+            pBuyLvl := newLow
+            pBuyRef := close
+            pBuyLow := low
+            pBuyMaj := isMajorLow
+        else
+            bool willShowN = isMajorLow or not onlyMajor
+            bool cdOKn     = na(lastBuyBar) or bar_index - lastBuyBar >= cooldown
+            if willShowN and cdOKn
+                bool contdN = not na(lastBuySeqBar) and (bar_index - lastBuySeqBar) <= seqWindow and (not requireDeeper or low < lastBuySeqPx)
+                buySeq        := contdN ? buySeq + 1 : 1
+                lastBuySeqPx  := low
+                lastBuySeqBar := bar_index
+                lastBuyBar    := bar_index
+                if resetOnOpp
+                    sellSeq        := 0
+                    lastSellSeqPx  := na
+                    lastSellSeqBar := na
+                if not onlyShowSeq2 or buySeq >= 2
+                    f_drawBuy(newLow, 0, isMajorLow, buySeq)
+                if buySeq >= 2
+                    firedBuySeq2 := true
+                if isMajorLow
+                    firedBuyMaj := true
+
+    if not na(newHigh)
+        if useConfirm
+            pSellOn  := true
+            pSellLvl := newHigh
+            pSellRef := close
+            pSellHi  := high
+            pSellMaj := isMajorHigh
+        else
+            bool willShowS = isMajorHigh or not onlyMajor
+            bool cdOKs     = na(lastSellBar) or bar_index - lastSellBar >= cooldown
+            if willShowS and cdOKs
+                bool contdS = not na(lastSellSeqBar) and (bar_index - lastSellSeqBar) <= seqWindow and (not requireDeeper or high > lastSellSeqPx)
+                sellSeq        := contdS ? sellSeq + 1 : 1
+                lastSellSeqPx  := high
+                lastSellSeqBar := bar_index
+                lastSellBar    := bar_index
+                if resetOnOpp
+                    buySeq        := 0
+                    lastBuySeqPx  := na
+                    lastBuySeqBar := na
+                if not onlyShowSeq2 or sellSeq >= 2
+                    f_drawSell(newHigh, 0, isMajorHigh, sellSeq)
+                if sellSeq >= 2
+                    firedSellSeq2 := true
+                if isMajorHigh
+                    firedSellMaj := true
+
+    // ---- invalidate levels price has closed through ----
+    if useConsume
+        f_consume()
+
+// ════════════════════════════════════════════════════════════
+//  UNTOUCHED LIQUIDITY LEVELS
+// ════════════════════════════════════════════════════════════
+var line[] liveLines = array.new<line>()
+if showLive and barstate.islast
+    if array.size(liveLines) > 0
+        for j = 0 to array.size(liveLines) - 1
+            line.delete(array.get(liveLines, j))
+        array.clear(liveLines)
+    if array.size(hiPrice) > 0
+        for i = 0 to array.size(hiPrice) - 1
+            array.push(liveLines, line.new(array.get(hiBar, i), array.get(hiPrice, i), bar_index + 5, array.get(hiPrice, i), color=color.new(cSell, liveTr), width=1, style=line.style_dashed))
+    if array.size(loPrice) > 0
+        for i = 0 to array.size(loPrice) - 1
+            array.push(liveLines, line.new(array.get(loBar, i), array.get(loPrice, i), bar_index + 5, array.get(loPrice, i), color=color.new(cBuy, liveTr), width=1, style=line.style_dashed))
+
+// ════════════════════════════════════════════════════════════
+//  ALERTS
+// ════════════════════════════════════════════════════════════
+alertcondition(firedBuySeq2,  title="2nd bullish sweep in sequence", message="Liquidity Sweep: second sell-side sweep confirmed - two-stage liquidity grab complete")
+alertcondition(firedSellSeq2, title="2nd bearish sweep in sequence", message="Liquidity Sweep: second buy-side sweep confirmed - two-stage liquidity grab complete")
+alertcondition(firedBuyMaj,   title="Major bullish sweep",           message="Liquidity Sweep: major sell-side liquidity swept and confirmed")
+alertcondition(firedSellMaj,  title="Major bearish sweep",           message="Liquidity Sweep: major buy-side liquidity swept and confirmed")

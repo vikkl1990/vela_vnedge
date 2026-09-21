@@ -1,0 +1,1750 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Yesid_Correa_Cano
+
+//@version=6
+indicator(
+     "ATR-Normalized Monte Carlo PRO",
+     shorttitle = "ATR MC PRO",
+     overlay = true,
+     max_lines_count = 500,
+     max_labels_count = 100
+)
+
+//=============================================================================
+// 01 • MONTE CARLO MODEL
+//=============================================================================
+
+groupModel = "01 • MONTE CARLO MODEL"
+
+atrLength = input.int(
+     14,
+     "ATR Length",
+     minval = 2,
+     maxval = 200,
+     group = groupModel
+)
+
+historicalLookback = input.int(
+     500,
+     "Historical Lookback",
+     minval = 100,
+     maxval = 5000,
+     group = groupModel
+)
+
+simulations = input.int(
+     300,
+     "Simulations",
+     minval = 50,
+     maxval = 1000,
+     step = 50,
+     group = groupModel
+)
+
+//=============================================================================
+// 02 • FORECAST HORIZON
+//=============================================================================
+
+groupHorizon = "02 • FORECAST HORIZON"
+
+horizonMode = input.string(
+     "Sessions",
+     "Horizon Mode",
+     options = ["Sessions", "Bars"],
+     group = groupHorizon
+)
+
+sessionsAhead = input.int(
+     3,
+     "Sessions Ahead",
+     minval = 1,
+     maxval = 20,
+     group = groupHorizon
+)
+
+manualBarsAhead = input.int(
+     20,
+     "Bars Ahead",
+     minval = 1,
+     maxval = 300,
+     group = groupHorizon
+)
+
+sessionSample = input.int(
+     20,
+     "Sessions Used for Bars/Session",
+     minval = 5,
+     maxval = 100,
+     group = groupHorizon
+)
+
+maxForecastBars = input.int(
+     300,
+     "Maximum Forecast Bars",
+     minval = 20,
+     maxval = 400,
+     group = groupHorizon
+)
+
+//=============================================================================
+// 03 • TARGET / STOP
+//=============================================================================
+
+groupRisk = "03 • TARGET / STOP"
+
+useRiskLevels = input.bool(
+     true,
+     "Enable Target / Stop",
+     group = groupRisk
+)
+
+riskUnitMode = input.string(
+     "Session ATR",
+     "Risk Unit Mode",
+     options = [
+         "Bar ATR",
+         "Session ATR",
+         "Horizon ATR",
+         "Manual Scale"
+     ],
+     group = groupRisk
+)
+
+manualRiskScale = input.float(
+     1.0,
+     "Manual ATR Scale",
+     minval = 0.1,
+     step = 0.1,
+     group = groupRisk
+)
+
+targetMultiple = input.float(
+     3.0,
+     "Target Multiple",
+     minval = 0.1,
+     step = 0.1,
+     group = groupRisk
+)
+
+stopMultiple = input.float(
+     1.0,
+     "Stop Multiple",
+     minval = 0.1,
+     step = 0.1,
+     group = groupRisk
+)
+
+showRiskLines = input.bool(
+     true,
+     "Show Target / Stop Lines",
+     group = groupRisk
+)
+
+targetColor = input.color(
+     color.rgb(0, 180, 120),
+     "Target Color",
+     group = groupRisk
+)
+
+stopColor = input.color(
+     color.rgb(220, 70, 70),
+     "Stop Color",
+     group = groupRisk
+)
+
+//=============================================================================
+// 04 • PROBABILITY BIAS
+//=============================================================================
+
+groupBias = "04 • PROBABILITY BIAS"
+
+bullishThreshold = input.float(
+     55.0,
+     "Bullish Threshold (%)",
+     minval = 50.0,
+     maxval = 80.0,
+     step = 0.5,
+     group = groupBias
+)
+
+strongBullishThreshold = input.float(
+     65.0,
+     "Strong Bullish Threshold (%)",
+     minval = 55.0,
+     maxval = 90.0,
+     step = 0.5,
+     group = groupBias
+)
+
+bearishThreshold = input.float(
+     45.0,
+     "Bearish Threshold (%)",
+     minval = 20.0,
+     maxval = 50.0,
+     step = 0.5,
+     group = groupBias
+)
+
+strongBearishThreshold = input.float(
+     35.0,
+     "Strong Bearish Threshold (%)",
+     minval = 10.0,
+     maxval = 45.0,
+     step = 0.5,
+     group = groupBias
+)
+
+//=============================================================================
+// 05 • PERCENTILES
+//=============================================================================
+
+groupPercentiles = "05 • PERCENTILES"
+
+showP05 = input.bool(true, "Show P05", group = groupPercentiles)
+showP25 = input.bool(true, "Show P25", group = groupPercentiles)
+showP50 = input.bool(true, "Show P50", group = groupPercentiles)
+showP75 = input.bool(true, "Show P75", group = groupPercentiles)
+showP95 = input.bool(true, "Show P95", group = groupPercentiles)
+
+p05Color = input.color(
+     color.rgb(255, 85, 85),
+     "P05 Color",
+     group = groupPercentiles
+)
+
+p25Color = input.color(
+     color.rgb(235, 150, 50),
+     "P25 Color",
+     group = groupPercentiles
+)
+
+p50Color = input.color(
+     color.rgb(0, 190, 210),
+     "P50 Color",
+     group = groupPercentiles
+)
+
+p75Color = input.color(
+     color.rgb(90, 180, 110),
+     "P75 Color",
+     group = groupPercentiles
+)
+
+p95Color = input.color(
+     color.rgb(30, 220, 145),
+     "P95 Color",
+     group = groupPercentiles
+)
+
+outerLineWidth = input.int(
+     1,
+     "P05 / P95 Width",
+     minval = 1,
+     maxval = 4,
+     group = groupPercentiles
+)
+
+innerLineWidth = input.int(
+     1,
+     "P25 / P75 Width",
+     minval = 1,
+     maxval = 4,
+     group = groupPercentiles
+)
+
+medianLineWidth = input.int(
+     3,
+     "P50 Width",
+     minval = 1,
+     maxval = 5,
+     group = groupPercentiles
+)
+
+//=============================================================================
+// 06 • LABELS
+//=============================================================================
+
+groupLabels = "06 • LABELS"
+
+showLabels = input.bool(
+     true,
+     "Show Terminal Labels",
+     group = groupLabels
+)
+
+showATRInLabels = input.bool(
+     true,
+     "Show ATR Distance",
+     group = groupLabels
+)
+
+labelSizeInput = input.string(
+     "Small",
+     "Label Size",
+     options = ["Tiny", "Small", "Normal", "Large"],
+     group = groupLabels
+)
+
+labelTextColor = input.color(
+     color.white,
+     "Label Text Color",
+     group = groupLabels
+)
+
+labelTransparency = input.int(
+     10,
+     "Label Background Transparency",
+     minval = 0,
+     maxval = 100,
+     group = groupLabels
+)
+
+//=============================================================================
+// 07 • TABLE
+//=============================================================================
+
+groupTable = "07 • TABLE"
+
+showTable = input.bool(
+     true,
+     "Show Table",
+     group = groupTable
+)
+
+tablePositionInput = input.string(
+     "Top Right",
+     "Position",
+     options = [
+         "Top Left",
+         "Top Center",
+         "Top Right",
+         "Middle Left",
+         "Middle Center",
+         "Middle Right",
+         "Bottom Left",
+         "Bottom Center",
+         "Bottom Right"
+     ],
+     group = groupTable
+)
+
+leftColumnAlignmentInput = input.string(
+     "Left",
+     "Left Column Alignment",
+     options = [
+         "Left",
+         "Center",
+         "Right"
+     ],
+     group = groupTable
+)
+
+rightColumnAlignmentInput = input.string(
+     "Right",
+     "Right Column Alignment",
+     options = [
+         "Left",
+         "Center",
+         "Right"
+     ],
+     group = groupTable
+)
+
+tableTextSizeInput = input.string(
+     "Small",
+     "Text Size",
+     options = ["Tiny", "Small", "Normal", "Large"],
+     group = groupTable
+)
+
+headerBg = input.color(
+     color.rgb(45, 50, 58),
+     "Header Background",
+     group = groupTable
+)
+
+headerText = input.color(
+     color.white,
+     "Header Text",
+     group = groupTable
+)
+
+bodyBg = input.color(
+     color.rgb(242, 238, 229),
+     "Body Background",
+     group = groupTable
+)
+
+bodyText = input.color(
+     color.rgb(45, 50, 58),
+     "Body Text",
+     group = groupTable
+)
+
+borderColor = input.color(
+     color.rgb(90, 95, 100),
+     "Border Color",
+     group = groupTable
+)
+
+borderWidth = input.int(
+     1,
+     "Border Width",
+     minval = 0,
+     maxval = 3,
+     group = groupTable
+)
+
+//=============================================================================
+// HELPER FUNCTIONS
+//=============================================================================
+
+getTextSize(string value) =>
+    value == "Tiny" ? size.tiny :
+     value == "Small" ? size.small :
+     value == "Normal" ? size.normal :
+     value == "Large" ? size.large :
+     size.small
+
+getTablePosition(string value) =>
+    value == "Top Left" ? position.top_left :
+     value == "Top Center" ? position.top_center :
+     value == "Top Right" ? position.top_right :
+     value == "Middle Left" ? position.middle_left :
+     value == "Middle Center" ? position.middle_center :
+     value == "Middle Right" ? position.middle_right :
+     value == "Bottom Left" ? position.bottom_left :
+     value == "Bottom Center" ? position.bottom_center :
+     value == "Bottom Right" ? position.bottom_right :
+     position.top_right
+
+getAlignment(string value) =>
+    value == "Left" ?
+     text.align_left :
+     value == "Center" ?
+     text.align_center :
+     text.align_right
+
+formatPrice(float value) =>
+    na(value) ? "—" : str.tostring(value, format.mintick)
+
+formatPercent(float value) =>
+    na(value) ? "—" : str.tostring(value * 100.0, "#.0") + "%"
+
+formatTimeframe() =>
+    timeframe.period == "1" ? "1m" :
+     timeframe.period == "3" ? "3m" :
+     timeframe.period == "5" ? "5m" :
+     timeframe.period == "15" ? "15m" :
+     timeframe.period == "30" ? "30m" :
+     timeframe.period == "45" ? "45m" :
+     timeframe.period == "60" ? "1H" :
+     timeframe.period == "120" ? "2H" :
+     timeframe.period == "180" ? "3H" :
+     timeframe.period == "240" ? "4H" :
+     timeframe.period == "D" ? "1D" :
+     timeframe.period == "W" ? "1W" :
+     timeframe.period == "M" ? "1M" :
+     timeframe.period
+
+string leftColumnAlignment =
+     getAlignment(
+         leftColumnAlignmentInput
+     )
+
+string rightColumnAlignment =
+     getAlignment(
+         rightColumnAlignmentInput
+     )
+
+//=============================================================================
+// ATR
+//=============================================================================
+
+float atrValue = ta.atr(atrLength)
+
+//=============================================================================
+// ATR-NORMALIZED HISTORICAL MOVES
+//=============================================================================
+
+float normalizedMove =
+     not na(atrValue[1]) and atrValue[1] > 0.0 ?
+     (close - close[1]) / atrValue[1] :
+     na
+
+var array<float> historicalMoves =
+     array.new_float()
+
+if not na(normalizedMove)
+
+    array.push(
+         historicalMoves,
+         normalizedMove
+    )
+
+    if array.size(historicalMoves) > historicalLookback
+        array.shift(historicalMoves)
+
+//=============================================================================
+// AUTOMATIC BARS PER SESSION
+//=============================================================================
+
+var int currentSessionBars = 0
+
+var array<float> completedSessionBars =
+     array.new_float()
+
+bool newTradingDay =
+     timeframe.change("D")
+
+if timeframe.isintraday
+
+    if newTradingDay
+
+        if currentSessionBars > 0
+
+            array.push(
+                 completedSessionBars,
+                 float(currentSessionBars)
+            )
+
+            if array.size(completedSessionBars) > sessionSample
+                array.shift(completedSessionBars)
+
+        currentSessionBars := 1
+
+    else
+
+        currentSessionBars += 1
+
+else
+
+    currentSessionBars := 1
+
+float averageBarsPerSession = 1.0
+
+if timeframe.isintraday and
+   array.size(completedSessionBars) > 0
+
+    float sessionSum = 0.0
+
+    for i = 0 to array.size(completedSessionBars) - 1
+
+        sessionSum +=
+             array.get(
+                 completedSessionBars,
+                 i
+             )
+
+    averageBarsPerSession :=
+         sessionSum /
+         float(array.size(completedSessionBars))
+
+else
+
+    averageBarsPerSession := 1.0
+
+//=============================================================================
+// FORECAST BAR COUNT
+//=============================================================================
+
+int sessionBasedBars =
+     int(
+         math.round(
+             averageBarsPerSession *
+             sessionsAhead
+         )
+     )
+
+int requestedForecastBars =
+     horizonMode == "Sessions" ?
+     sessionBasedBars :
+     manualBarsAhead
+
+int forecastBars =
+     math.max(
+         1,
+         math.min(
+             requestedForecastBars,
+             maxForecastBars
+         )
+     )
+
+//=============================================================================
+// ATR RISK UNITS
+//=============================================================================
+
+float sessionATR =
+     atrValue *
+     math.sqrt(
+         math.max(
+             averageBarsPerSession,
+             1.0
+         )
+     )
+
+float horizonATR =
+     atrValue *
+     math.sqrt(
+         float(forecastBars)
+     )
+
+float riskUnit =
+     riskUnitMode == "Bar ATR" ?
+     atrValue :
+     riskUnitMode == "Session ATR" ?
+     sessionATR :
+     riskUnitMode == "Horizon ATR" ?
+     horizonATR :
+     atrValue * manualRiskScale
+
+string riskUnitLabel =
+     riskUnitMode == "Bar ATR" ?
+     "Bar ATR" :
+     riskUnitMode == "Session ATR" ?
+     "Session ATR" :
+     riskUnitMode == "Horizon ATR" ?
+     "Horizon ATR" :
+     "Scaled ATR"
+
+//=============================================================================
+// DRAWING STRIDE
+//=============================================================================
+
+int maximumDisplayedSegments = 85
+
+int drawingStride =
+     math.max(
+         1,
+         int(
+             math.ceil(
+                 forecastBars /
+                 float(maximumDisplayedSegments)
+             )
+         )
+     )
+
+//=============================================================================
+// RANDOM HISTORICAL SAMPLE
+//=============================================================================
+
+sampleHistoricalMove() =>
+
+    int sampleCount =
+         array.size(historicalMoves)
+
+    float result = 0.0
+
+    if sampleCount > 0
+
+        float randomValue =
+             math.random(
+                 0.0,
+                 float(sampleCount)
+             )
+
+        int randomIndex =
+             int(
+                 math.floor(
+                     randomValue
+                 )
+             )
+
+        randomIndex :=
+             math.min(
+                 randomIndex,
+                 sampleCount - 1
+             )
+
+        result :=
+             array.get(
+                 historicalMoves,
+                 randomIndex
+             )
+
+    result
+
+//=============================================================================
+// RESULT ARRAYS
+//=============================================================================
+
+var array<float> p05Path = array.new_float()
+var array<float> p25Path = array.new_float()
+var array<float> p50Path = array.new_float()
+var array<float> p75Path = array.new_float()
+var array<float> p95Path = array.new_float()
+
+//=============================================================================
+// DRAWING OBJECTS
+//=============================================================================
+
+var array<line> projectionLines =
+     array.new_line()
+
+var array<label> projectionLabels =
+     array.new_label()
+
+deleteProjectionLines() =>
+
+    while array.size(projectionLines) > 0
+
+        line objectLine =
+             array.shift(projectionLines)
+
+        line.delete(objectLine)
+
+deleteProjectionLabels() =>
+
+    while array.size(projectionLabels) > 0
+
+        label objectLabel =
+             array.shift(projectionLabels)
+
+        label.delete(objectLabel)
+
+//=============================================================================
+// RESULT VARIABLES
+//=============================================================================
+
+var float finalP05 = na
+var float finalP25 = na
+var float finalP50 = na
+var float finalP75 = na
+var float finalP95 = na
+
+var float probabilityAboveCurrent = na
+var float probabilityTargetFirst = na
+var float probabilityStopFirst = na
+var float probabilityUnresolved = na
+
+var float targetPrice = na
+var float stopPrice = na
+
+//=============================================================================
+// MODEL READY
+//=============================================================================
+
+bool modelReady =
+     array.size(historicalMoves) >=
+     math.min(
+         historicalLookback,
+         100
+     )
+
+//=============================================================================
+// MONTE CARLO ENGINE
+//=============================================================================
+
+if barstate.islast and
+   modelReady and
+   not na(atrValue) and
+   atrValue > 0.0 and
+   not na(riskUnit) and
+   riskUnit > 0.0
+
+    //-------------------------------------------------------------------------
+    // RESET
+    //-------------------------------------------------------------------------
+
+    array.clear(p05Path)
+    array.clear(p25Path)
+    array.clear(p50Path)
+    array.clear(p75Path)
+    array.clear(p95Path)
+
+    deleteProjectionLines()
+    deleteProjectionLabels()
+
+    //-------------------------------------------------------------------------
+    // TARGET / STOP
+    //-------------------------------------------------------------------------
+
+    targetPrice :=
+         close +
+         targetMultiple *
+         riskUnit
+
+    stopPrice :=
+         close -
+         stopMultiple *
+         riskUnit
+
+    //-------------------------------------------------------------------------
+    // SIMULATION STATE
+    //-------------------------------------------------------------------------
+
+    array<float> simulatedPrices =
+         array.new_float(
+             simulations,
+             close
+         )
+
+    array<bool> targetHit =
+         array.new_bool(
+             simulations,
+             false
+         )
+
+    array<bool> stopHit =
+         array.new_bool(
+             simulations,
+             false
+         )
+
+    //-------------------------------------------------------------------------
+    // MONTE CARLO LOOP
+    //-------------------------------------------------------------------------
+
+    for step = 0 to forecastBars - 1
+
+        array<float> stepDistribution =
+             array.new_float()
+
+        for simulation = 0 to simulations - 1
+
+            float previousPrice =
+                 array.get(
+                     simulatedPrices,
+                     simulation
+                 )
+
+            float sampledATRMove =
+                 sampleHistoricalMove()
+
+            float simulatedPrice =
+                 previousPrice +
+                 sampledATRMove *
+                 atrValue
+
+            simulatedPrice :=
+                 math.max(
+                     syminfo.mintick,
+                     simulatedPrice
+                 )
+
+            array.set(
+                 simulatedPrices,
+                 simulation,
+                 simulatedPrice
+             )
+
+            //-----------------------------------------------------------------
+            // FIRST-HIT TARGET / STOP
+            //-----------------------------------------------------------------
+
+            if useRiskLevels
+
+                bool alreadyHitTarget =
+                     array.get(
+                         targetHit,
+                         simulation
+                     )
+
+                bool alreadyHitStop =
+                     array.get(
+                         stopHit,
+                         simulation
+                     )
+
+                if not alreadyHitTarget and
+                   not alreadyHitStop
+
+                    if simulatedPrice >= targetPrice
+
+                        array.set(
+                             targetHit,
+                             simulation,
+                             true
+                         )
+
+                    else if simulatedPrice <= stopPrice
+
+                        array.set(
+                             stopHit,
+                             simulation,
+                             true
+                         )
+
+            array.push(
+                 stepDistribution,
+                 simulatedPrice
+             )
+
+        //---------------------------------------------------------------------
+        // PERCENTILES
+        //---------------------------------------------------------------------
+
+        array.sort(
+             stepDistribution,
+             order.ascending
+         )
+
+        float stepP05 =
+             array.percentile_linear_interpolation(
+                 stepDistribution,
+                 5
+             )
+
+        float stepP25 =
+             array.percentile_linear_interpolation(
+                 stepDistribution,
+                 25
+             )
+
+        float stepP50 =
+             array.percentile_linear_interpolation(
+                 stepDistribution,
+                 50
+             )
+
+        float stepP75 =
+             array.percentile_linear_interpolation(
+                 stepDistribution,
+                 75
+             )
+
+        float stepP95 =
+             array.percentile_linear_interpolation(
+                 stepDistribution,
+                 95
+             )
+
+        array.push(p05Path, stepP05)
+        array.push(p25Path, stepP25)
+        array.push(p50Path, stepP50)
+        array.push(p75Path, stepP75)
+        array.push(p95Path, stepP95)
+
+    //=========================================================================
+    // TERMINAL RESULTS
+    //=========================================================================
+
+    int terminalIndex =
+         forecastBars - 1
+
+    finalP05 :=
+         array.get(
+             p05Path,
+             terminalIndex
+         )
+
+    finalP25 :=
+         array.get(
+             p25Path,
+             terminalIndex
+         )
+
+    finalP50 :=
+         array.get(
+             p50Path,
+             terminalIndex
+         )
+
+    finalP75 :=
+         array.get(
+             p75Path,
+             terminalIndex
+         )
+
+    finalP95 :=
+         array.get(
+             p95Path,
+             terminalIndex
+         )
+
+    //=========================================================================
+    // PROBABILITY COUNTS
+    //=========================================================================
+
+    int aboveCurrentCount = 0
+    int targetFirstCount = 0
+    int stopFirstCount = 0
+
+    for simulation = 0 to simulations - 1
+
+        float terminalPrice =
+             array.get(
+                 simulatedPrices,
+                 simulation
+             )
+
+        if terminalPrice > close
+            aboveCurrentCount += 1
+
+        if array.get(
+             targetHit,
+             simulation
+        )
+            targetFirstCount += 1
+
+        if array.get(
+             stopHit,
+             simulation
+        )
+            stopFirstCount += 1
+
+    probabilityAboveCurrent :=
+         aboveCurrentCount /
+         float(simulations)
+
+    probabilityTargetFirst :=
+         useRiskLevels ?
+         targetFirstCount /
+         float(simulations) :
+         na
+
+    probabilityStopFirst :=
+         useRiskLevels ?
+         stopFirstCount /
+         float(simulations) :
+         na
+
+    probabilityUnresolved :=
+         useRiskLevels ?
+         math.max(
+             0.0,
+             1.0 -
+             probabilityTargetFirst -
+             probabilityStopFirst
+         ) :
+         na
+
+    //=========================================================================
+    // DRAW PERCENTILES
+    //=========================================================================
+
+    int previousDrawIndex = -1
+
+    for i = 0 to forecastBars - 1
+
+        bool shouldDraw =
+             i == forecastBars - 1 or
+             i % drawingStride == 0
+
+        if shouldDraw
+
+            int currentX =
+                 bar_index +
+                 i +
+                 1
+
+            int previousX =
+                 previousDrawIndex < 0 ?
+                 bar_index :
+                 bar_index +
+                 previousDrawIndex +
+                 1
+
+            if showP05
+
+                float previousValue =
+                     previousDrawIndex < 0 ?
+                     close :
+                     array.get(
+                         p05Path,
+                         previousDrawIndex
+                     )
+
+                float currentValue =
+                     array.get(
+                         p05Path,
+                         i
+                     )
+
+                line objectLine =
+                     line.new(
+                         previousX,
+                         previousValue,
+                         currentX,
+                         currentValue,
+                         color = p05Color,
+                         width = outerLineWidth
+                     )
+
+                array.push(
+                     projectionLines,
+                     objectLine
+                 )
+
+            if showP25
+
+                float previousValue =
+                     previousDrawIndex < 0 ?
+                     close :
+                     array.get(
+                         p25Path,
+                         previousDrawIndex
+                     )
+
+                float currentValue =
+                     array.get(
+                         p25Path,
+                         i
+                     )
+
+                line objectLine =
+                     line.new(
+                         previousX,
+                         previousValue,
+                         currentX,
+                         currentValue,
+                         color = p25Color,
+                         width = innerLineWidth
+                     )
+
+                array.push(
+                     projectionLines,
+                     objectLine
+                 )
+
+            if showP50
+
+                float previousValue =
+                     previousDrawIndex < 0 ?
+                     close :
+                     array.get(
+                         p50Path,
+                         previousDrawIndex
+                     )
+
+                float currentValue =
+                     array.get(
+                         p50Path,
+                         i
+                     )
+
+                line objectLine =
+                     line.new(
+                         previousX,
+                         previousValue,
+                         currentX,
+                         currentValue,
+                         color = p50Color,
+                         width = medianLineWidth
+                     )
+
+                array.push(
+                     projectionLines,
+                     objectLine
+                 )
+
+            if showP75
+
+                float previousValue =
+                     previousDrawIndex < 0 ?
+                     close :
+                     array.get(
+                         p75Path,
+                         previousDrawIndex
+                     )
+
+                float currentValue =
+                     array.get(
+                         p75Path,
+                         i
+                     )
+
+                line objectLine =
+                     line.new(
+                         previousX,
+                         previousValue,
+                         currentX,
+                         currentValue,
+                         color = p75Color,
+                         width = innerLineWidth
+                     )
+
+                array.push(
+                     projectionLines,
+                     objectLine
+                 )
+
+            if showP95
+
+                float previousValue =
+                     previousDrawIndex < 0 ?
+                     close :
+                     array.get(
+                         p95Path,
+                         previousDrawIndex
+                     )
+
+                float currentValue =
+                     array.get(
+                         p95Path,
+                         i
+                     )
+
+                line objectLine =
+                     line.new(
+                         previousX,
+                         previousValue,
+                         currentX,
+                         currentValue,
+                         color = p95Color,
+                         width = outerLineWidth
+                     )
+
+                array.push(
+                     projectionLines,
+                     objectLine
+                 )
+
+            previousDrawIndex := i
+
+    //=========================================================================
+    // TARGET / STOP
+    //=========================================================================
+
+    if useRiskLevels and showRiskLines
+
+        line targetLine =
+             line.new(
+                 bar_index,
+                 targetPrice,
+                 bar_index + forecastBars,
+                 targetPrice,
+                 color = targetColor,
+                 style = line.style_dashed,
+                 width = 1
+             )
+
+        array.push(
+             projectionLines,
+             targetLine
+         )
+
+        line stopLine =
+             line.new(
+                 bar_index,
+                 stopPrice,
+                 bar_index + forecastBars,
+                 stopPrice,
+                 color = stopColor,
+                 style = line.style_dashed,
+                 width = 1
+             )
+
+        array.push(
+             projectionLines,
+             stopLine
+         )
+
+    //=========================================================================
+    // TERMINAL LABELS
+    //=========================================================================
+
+    if showLabels
+
+        int labelX =
+             bar_index +
+             forecastBars +
+             1
+
+        if showP05
+
+            string p05Text =
+                 "P05  " +
+                 formatPrice(finalP05)
+
+            if showATRInLabels
+
+                p05Text +=
+                     "  |  " +
+                     str.tostring(
+                         (finalP05 - close) /
+                         riskUnit,
+                         "#.00"
+                     ) +
+                     " " +
+                     riskUnitLabel
+
+            label p05Label =
+                 label.new(
+                     labelX,
+                     finalP05,
+                     p05Text,
+                     style = label.style_label_left,
+                     color = color.new(
+                         p05Color,
+                         labelTransparency
+                     ),
+                     textcolor = labelTextColor,
+                     size = getTextSize(labelSizeInput)
+                 )
+
+            array.push(
+                 projectionLabels,
+                 p05Label
+             )
+
+        if showP25
+
+            string p25Text =
+                 "P25  " +
+                 formatPrice(finalP25)
+
+            if showATRInLabels
+
+                p25Text +=
+                     "  |  " +
+                     str.tostring(
+                         (finalP25 - close) /
+                         riskUnit,
+                         "#.00"
+                     ) +
+                     " " +
+                     riskUnitLabel
+
+            label p25Label =
+                 label.new(
+                     labelX,
+                     finalP25,
+                     p25Text,
+                     style = label.style_label_left,
+                     color = color.new(
+                         p25Color,
+                         labelTransparency
+                     ),
+                     textcolor = labelTextColor,
+                     size = getTextSize(labelSizeInput)
+                 )
+
+            array.push(
+                 projectionLabels,
+                 p25Label
+             )
+
+        if showP50
+
+            string p50Text =
+                 "P50  " +
+                 formatPrice(finalP50)
+
+            if showATRInLabels
+
+                p50Text +=
+                     "  |  " +
+                     str.tostring(
+                         (finalP50 - close) /
+                         riskUnit,
+                         "#.00"
+                     ) +
+                     " " +
+                     riskUnitLabel
+
+            label p50Label =
+                 label.new(
+                     labelX,
+                     finalP50,
+                     p50Text,
+                     style = label.style_label_left,
+                     color = color.new(
+                         p50Color,
+                         labelTransparency
+                     ),
+                     textcolor = labelTextColor,
+                     size = getTextSize(labelSizeInput)
+                 )
+
+            array.push(
+                 projectionLabels,
+                 p50Label
+             )
+
+        if showP75
+
+            string p75Text =
+                 "P75  " +
+                 formatPrice(finalP75)
+
+            if showATRInLabels
+
+                p75Text +=
+                     "  |  +" +
+                     str.tostring(
+                         math.abs(
+                             (finalP75 - close) /
+                             riskUnit
+                         ),
+                         "#.00"
+                     ) +
+                     " " +
+                     riskUnitLabel
+
+            label p75Label =
+                 label.new(
+                     labelX,
+                     finalP75,
+                     p75Text,
+                     style = label.style_label_left,
+                     color = color.new(
+                         p75Color,
+                         labelTransparency
+                     ),
+                     textcolor = labelTextColor,
+                     size = getTextSize(labelSizeInput)
+                 )
+
+            array.push(
+                 projectionLabels,
+                 p75Label
+             )
+
+        if showP95
+
+            string p95Text =
+                 "P95  " +
+                 formatPrice(finalP95)
+
+            if showATRInLabels
+
+                p95Text +=
+                     "  |  +" +
+                     str.tostring(
+                         math.abs(
+                             (finalP95 - close) /
+                             riskUnit
+                         ),
+                         "#.00"
+                     ) +
+                     " " +
+                     riskUnitLabel
+
+            label p95Label =
+                 label.new(
+                     labelX,
+                     finalP95,
+                     p95Text,
+                     style = label.style_label_left,
+                     color = color.new(
+                         p95Color,
+                         labelTransparency
+                     ),
+                     textcolor = labelTextColor,
+                     size = getTextSize(labelSizeInput)
+                 )
+
+            array.push(
+                 projectionLabels,
+                 p95Label
+             )
+
+        if useRiskLevels and showRiskLines
+
+            label targetLabel =
+                 label.new(
+                     labelX,
+                     targetPrice,
+                     "TARGET  " +
+                     formatPrice(targetPrice) +
+                     "  |  +" +
+                     str.tostring(
+                         targetMultiple,
+                         "#.00"
+                     ) +
+                     " " +
+                     riskUnitLabel,
+                     style = label.style_label_left,
+                     color = color.new(
+                         targetColor,
+                         labelTransparency
+                     ),
+                     textcolor = labelTextColor,
+                     size = getTextSize(labelSizeInput)
+                 )
+
+            array.push(
+                 projectionLabels,
+                 targetLabel
+             )
+
+            label stopLabel =
+                 label.new(
+                     labelX,
+                     stopPrice,
+                     "STOP  " +
+                     formatPrice(stopPrice) +
+                     "  |  -" +
+                     str.tostring(
+                         stopMultiple,
+                         "#.00"
+                     ) +
+                     " " +
+                     riskUnitLabel,
+                     style = label.style_label_left,
+                     color = color.new(
+                         stopColor,
+                         labelTransparency
+                     ),
+                     textcolor = labelTextColor,
+                     size = getTextSize(labelSizeInput)
+                 )
+
+            array.push(
+                 projectionLabels,
+                 stopLabel
+             )
+
+//=============================================================================
+// DYNAMIC BIAS
+//=============================================================================
+
+float probabilityPercent =
+     probabilityAboveCurrent *
+     100.0
+
+string biasText =
+     na(probabilityAboveCurrent) ?
+     "WAITING" :
+     probabilityPercent >= strongBullishThreshold ?
+     "STRONG BULLISH" :
+     probabilityPercent >= bullishThreshold ?
+     "BULLISH" :
+     probabilityPercent <= strongBearishThreshold ?
+     "STRONG BEARISH" :
+     probabilityPercent <= bearishThreshold ?
+     "BEARISH" :
+     "NEUTRAL"
+
+color strongBullishBg =
+     color.rgb(145, 210, 165)
+
+color bullishBg =
+     color.rgb(199, 226, 201)
+
+color neutralBg =
+     color.rgb(238, 225, 184)
+
+color bearishBg =
+     color.rgb(242, 186, 186)
+
+color strongBearishBg =
+     color.rgb(225, 145, 145)
+
+color biasBg =
+     na(probabilityAboveCurrent) ?
+     bodyBg :
+     probabilityPercent >= strongBullishThreshold ?
+     strongBullishBg :
+     probabilityPercent >= bullishThreshold ?
+     bullishBg :
+     probabilityPercent <= strongBearishThreshold ?
+     strongBearishBg :
+     probabilityPercent <= bearishThreshold ?
+     bearishBg :
+     neutralBg
+
+//=============================================================================
+// ADDITIONAL METRICS
+//=============================================================================
+
+float atrPercent =
+     close != 0.0 ?
+     atrValue /
+     close *
+     100.0 :
+     na
+
+float sessionATRPercent =
+     close != 0.0 ?
+     sessionATR /
+     close *
+     100.0 :
+     na
+
+float horizonATRPercent =
+     close != 0.0 ?
+     horizonATR /
+     close *
+     100.0 :
+     na
+
+float riskReward =
+     stopMultiple > 0.0 ?
+     targetMultiple /
+     stopMultiple :
+     na
+
+//=============================================================================
+// TABLE
+//=============================================================================
+
+var table dashboard =
+     table.new(
+         getTablePosition(tablePositionInput),
+         2,
+         28,
+         bgcolor = bodyBg,
+         border_color = borderColor,
+         border_width = borderWidth
+     )
+
+if barstate.islast
+
+    if showTable
+
+        table.cell(
+             dashboard,
+             0,
+             0,
+             "ATR MONTE CARLO",
+             bgcolor = headerBg,
+             text_color = headerText,
+             text_size = getTextSize(tableTextSizeInput),
+             text_halign = leftColumnAlignment
+         )
+
+        table.cell(
+             dashboard,
+             1,
+             0,
+             syminfo.ticker,
+             bgcolor = headerBg,
+             text_color = headerText,
+             text_size = getTextSize(tableTextSizeInput),
+             text_halign = rightColumnAlignment
+         )
+
+        table.cell(dashboard, 0, 1, "Timeframe", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 1, formatTimeframe(), bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 2, "ATR(" + str.tostring(atrLength) + ")", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 2, formatPrice(atrValue), bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 3, "ATR %", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 3, str.tostring(atrPercent, "#.00") + "%", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 4, "Historical Samples", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 4, str.tostring(array.size(historicalMoves)), bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 5, "Simulations", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 5, str.tostring(simulations), bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 6, "Horizon Mode", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 6, horizonMode, bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 7, "Bars / Session", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 7, str.tostring(averageBarsPerSession, "#.0"), bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        string horizonText =
+             horizonMode == "Sessions" ?
+             str.tostring(sessionsAhead) + " Sessions" :
+             str.tostring(forecastBars) + " Bars"
+
+        table.cell(dashboard, 0, 8, "Forecast", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 8, horizonText, bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 9, "Forecast Bars", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 9, str.tostring(forecastBars), bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 10, "Base ATR", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 10, formatPrice(atrValue), bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 11, "Session ATR", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 11, formatPrice(sessionATR), bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 12, "Session ATR %", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 12, str.tostring(sessionATRPercent, "#.00") + "%", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 13, "Horizon ATR", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 13, formatPrice(horizonATR), bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 14, "Horizon ATR %", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 14, str.tostring(horizonATRPercent, "#.00") + "%", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 15, "Risk Unit Mode", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 15, riskUnitMode, bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 16, "P05", bgcolor = bodyBg, text_color = p05Color, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 16, formatPrice(finalP05), bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 17, "P25", bgcolor = bodyBg, text_color = p25Color, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 17, formatPrice(finalP25), bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 18, "P50", bgcolor = bodyBg, text_color = p50Color, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 18, formatPrice(finalP50), bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 19, "P75", bgcolor = bodyBg, text_color = p75Color, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 19, formatPrice(finalP75), bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 20, "P95", bgcolor = bodyBg, text_color = p95Color, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 20, formatPrice(finalP95), bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 21, "P(Close > Current)", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 21, formatPercent(probabilityAboveCurrent), bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 22, "P(Target First)", bgcolor = bodyBg, text_color = targetColor, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 22, useRiskLevels ? formatPercent(probabilityTargetFirst) : "OFF", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 23, "P(Stop First)", bgcolor = bodyBg, text_color = stopColor, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 23, useRiskLevels ? formatPercent(probabilityStopFirst) : "OFF", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 24, "P(Unresolved)", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+        table.cell(dashboard, 1, 24, useRiskLevels ? formatPercent(probabilityUnresolved) : "OFF", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = rightColumnAlignment)
+
+        table.cell(dashboard, 0, 25, "Target / Stop", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+
+        table.cell(
+             dashboard,
+             1,
+             25,
+             str.tostring(targetMultiple, "#.0") +
+             " / " +
+             str.tostring(stopMultiple, "#.0") +
+             " " +
+             riskUnitLabel,
+             bgcolor = bodyBg,
+             text_color = bodyText,
+             text_size = getTextSize(tableTextSizeInput),
+             text_halign = rightColumnAlignment
+         )
+
+        table.cell(dashboard, 0, 26, "Risk : Reward", bgcolor = bodyBg, text_color = bodyText, text_size = getTextSize(tableTextSizeInput), text_halign = leftColumnAlignment)
+
+        table.cell(
+             dashboard,
+             1,
+             26,
+             "1 : " +
+             str.tostring(
+                 riskReward,
+                 "#.00"
+             ),
+             bgcolor = bodyBg,
+             text_color = bodyText,
+             text_size = getTextSize(tableTextSizeInput),
+             text_halign = rightColumnAlignment
+         )
+
+        table.cell(
+             dashboard,
+             0,
+             27,
+             "Probability Bias",
+             bgcolor = biasBg,
+             text_color = color.rgb(35, 40, 45),
+             text_size = getTextSize(tableTextSizeInput),
+             text_halign = leftColumnAlignment
+         )
+
+        table.cell(
+             dashboard,
+             1,
+             27,
+             biasText,
+             bgcolor = biasBg,
+             text_color = color.rgb(35, 40, 45),
+             text_size = getTextSize(tableTextSizeInput),
+             text_halign = rightColumnAlignment
+         )
+
+    else
+
+        table.clear(
+             dashboard,
+             0,
+             0,
+             1,
+             27
+         )

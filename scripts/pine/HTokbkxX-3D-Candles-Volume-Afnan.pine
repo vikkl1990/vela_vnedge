@@ -1,0 +1,472 @@
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// https://mozilla.org/MPL/2.0/
+//@version=6
+// 3D Candles & Volume [Afnan] — a projected price and volume exhibit.
+indicator("3D Candles & Volume [Afnan]", "3D Candles & Volume [Afnan]",
+  overlay = false, max_polylines_count = 100,
+  max_lines_count = 16, max_labels_count = 32)
+
+const int DRAWING_LOOKBACK = 9999
+const int BARS_PER_CANDLE = 12
+
+// Settings
+const string GROUP_VIEW = "View"
+string viewMode = input.string(
+  "3D exhibit",
+  "View",
+  options = ["OHLC inspection", "3D exhibit"],
+  group = GROUP_VIEW,
+  tooltip = "Inspection uses a flat front price plane. In 3D the wick axis is at the cuboid centre; opaque bodies hide the occluded portion of the lower wick. Source OHLC is unchanged.")
+bool inspection = viewMode == "OHLC inspection"
+const string GROUP_MARKET = "Market data"
+string candleSource = input.string(
+  "Latest candles",
+  "Candle source",
+  options = ["Latest candles", "Visible window"],
+  group = GROUP_MARKET,
+  tooltip = "Latest candles keeps the selected bars independent of chart pan/zoom. Visible window follows the right edge of the visible chart. Neither mode follows mouse clicks. The scene still uses the visible window for placement.")
+bool followVisibleWindow = candleSource == "Visible window"
+int candleCount = input.int(10, "Candles in exhibit", minval = 8, maxval = 11, group = GROUP_MARKET)
+bool developing = input.bool(
+  true,
+  "Include developing candle",
+  group = GROUP_MARKET,
+  tooltip = "If enabled, the rightmost realtime candle can change until close. Otherwise only confirmed candles are admitted.")
+bool volumeDepth = input.bool(
+  true,
+  "Volume controls body depth",
+  group = GROUP_MARKET,
+  tooltip = "Relative volume controls body depth through a baseline plus square-root scaling. Readable Front applies a common spacing cap. Missing volume uses fixed depth. Depth is not order-book liquidity.")
+bool volumeShelf = input.bool(true, "Show volume shelf", group = GROUP_MARKET)
+bool dimensionalVolume = input.bool(
+  true,
+  "Sculpted volume prisms",
+  group = GROUP_MARKET,
+  tooltip = "Three shaded faces per volume prism. Height is linear relative volume. Fixed extrusion is decorative. The 11-candle cap keeps the full-detail scene within Pine drawing limits.")
+bool rimLighting = input.bool(true, "Illuminated plinth", group = GROUP_MARKET)
+bool priceCursor = input.bool(false, "Show latest-close plane", group = GROUP_MARKET)
+const string GROUP_MATERIAL = "Appearance"
+string palette = input.string("Obsidian", "Color world", options = ["Obsidian", "Ice", "Copper"], group = GROUP_MATERIAL)
+string material = input.string(
+  "Satin",
+  "Candle material",
+  options = ["Satin", "Crystal", "Anodized", "Glass", "Wireframe"],
+  group = GROUP_MATERIAL)
+bool labelsOn = input.bool(true, "Price and time labels", group = GROUP_MATERIAL)
+const string GROUP_CAMERA = "Camera"
+string cameraPreset = input.string(
+  "Front three-quarter",
+  "Camera preset",
+  options = ["Front three-quarter", "Opposite three-quarter", "Rear three-quarter", "Left side", "Right side", "Custom"],
+  group = GROUP_CAMERA)
+float orbitAngle = input.float(
+  -28,
+  "Custom orbit angle",
+  minval = -180,
+  maxval = 180,
+  step = 5,
+  group = GROUP_CAMERA,
+  tooltip = "Changing this angle switches automatically to Orbit when the preset is Front three-quarter or Custom. Other named presets use their own angle. Restore the default camera values to return to Readable Front.")
+float yawDeg = cameraPreset == "Front three-quarter" ? orbitAngle : cameraPreset == "Opposite three-quarter" ? 28 : cameraPreset == "Rear three-quarter" ? 152 : cameraPreset == "Left side" ? -90 : cameraPreset == "Right side" ? 90 : orbitAngle
+float pitchDeg = input.float(36, "Camera elevation", minval = 10, maxval = 75, step = 1, group = GROUP_CAMERA)
+float extrusion = input.float(1, "Extrusion amount", minval = 0.5, maxval = 1.25, step = 0.05, group = GROUP_CAMERA)
+const string GROUP_LAYOUT = "Layout"
+string exhibitPosition = input.string(
+  "Right",
+  "Exhibit alignment",
+  options = ["Right", "Centre"],
+  group = GROUP_LAYOUT,
+  tooltip = "Right shifts the complete exhibit towards the visible chart's right edge, leaving a small ruler margin. This changes placement only, not selected candle times. Centre restores the previous layout.")
+bool alignRight = exhibitPosition == "Right"
+int readoutSideMargin = input.int(6, "Readout side margin (%)", minval = 2, maxval = 15, group = GROUP_LAYOUT)
+int readoutEdgeMargin = input.int(4, "Readout top / bottom margin (%)", minval = 1, maxval = 10, group = GROUP_LAYOUT,
+  tooltip = "Insets the screen-fixed title and OHLC panel. Does not alter candle geometry. Use Auto scale to fit the scene; manually shifted scales cannot be reset by Pine.")
+float widthScale = input.float(0.78, "Horizontal scale", minval = 0.6, maxval = 1.05, step = 0.05, group = GROUP_LAYOUT)
+float priceHeight = input.float(
+  5.7,
+  "Price exhibit height",
+  minval = 3.8,
+  maxval = 8.0,
+  step = 0.1,
+  group = GROUP_LAYOUT,
+  tooltip = "Uniform vertical scale for all OHLC prices. A larger value gives candles more height relative to their depth and the platform; it does not inflate small bodies individually.")
+float heightScale = input.float(1, "Vertical scale", minval = 0.65, maxval = 1.05, step = 0.05, group = GROUP_LAYOUT)
+
+bool orbitLabels = input.bool(
+  true,
+  "World labels in orbit",
+  group = GROUP_CAMERA,
+  tooltip = "Off keeps the rotating sculpture clear. The screen-fixed OHLC readout remains visible. On rotates the price ruler/time labels with the model.")
+// Camera state is value-based. Reset the camera inputs to return to the front view.
+bool cameraChanged = cameraPreset != "Front three-quarter" or orbitAngle != -28 or pitchDeg != 36 or extrusion != 1
+bool orbit = cameraChanged and not inspection
+bool showSceneLabels = labelsOn and (not orbit or orbitLabels)
+
+// Cache camera coefficients before building the scene.
+float yawSin = math.sin(yawDeg * math.pi / 180)
+float yawCos = math.cos(yawDeg * math.pi / 180)
+float pitchSin = math.sin(pitchDeg * math.pi / 180)
+float pitchCos = math.cos(pitchDeg * math.pi / 180)
+
+color background = color.rgb(7, 12, 21)
+color platformColor = palette == "Copper" ? color.rgb(54, 38, 32) : color.rgb(18, 31, 49)
+color upColor = palette == "Copper" ? color.rgb(240, 175, 100) : palette == "Ice" ? color.rgb(108, 208, 255) : color.rgb(47, 235, 183)
+color downColor = palette == "Copper" ? color.rgb(99, 168, 173) : palette == "Ice" ? color.rgb(175, 139, 249) : color.rgb(245, 103, 132)
+color accent = palette == "Copper" ? color.rgb(248, 204, 143) : color.rgb(115, 180, 244)
+color pale = color.rgb(232, 244, 251)
+color muted = color.rgb(119, 144, 172)
+
+// World coordinates: x = candle order, y = extrusion, z = price height.
+type Vec3
+    float x
+    float y
+    float z
+
+type Candle
+    float openPrice
+    float highPrice
+    float lowPrice
+    float closePrice
+    float volumeValue
+    int openTime
+    int barIndex
+    bool confirmed
+
+type FacePacket
+    array<chart.point> points
+    float depth
+    color ink
+    color fill
+    int weight
+    bool closed
+
+f_clamp(float v, float lo, float hi) =>
+    math.max(lo, math.min(hi, v))
+f_dot(Vec3 a, Vec3 b) =>
+    a.x * b.x + a.y * b.y + a.z * b.z
+f_unit(Vec3 a) =>
+    float m = math.max(math.sqrt(f_dot(a, a)), 0.000001)
+    Vec3.new(a.x / m, a.y / m, a.z / m)
+// Both camera models keep price independent of screen x: vertical edges stay vertical.
+f_depth_x() =>
+    yawSin * 0.55
+f_depth_y() =>
+    -pitchSin * 0.85
+f_view_direction() =>
+    orbit ? Vec3.new(yawSin * pitchCos, yawCos * pitchCos, pitchSin) : f_unit(Vec3.new(-f_depth_x(), 1, -f_depth_y()))
+f_camera_space(Vec3 p) =>
+    float xx = p.x * yawCos - p.y * yawSin
+    float yy = p.x * yawSin + p.y * yawCos
+    orbit ? Vec3.new(xx, p.z * pitchCos - yy * pitchSin, f_dot(p, f_view_direction())) : Vec3.new(p.x + p.y * f_depth_x(), p.z + p.y * f_depth_y(), f_dot(p, f_view_direction()))
+// Input-dependent bounds are calculated once, not for every vertex.
+f_orbit_bounds() =>
+    float minX = 1000000.0
+    float maxX = -1000000.0
+    float minY = 1000000.0
+    float maxY = -1000000.0
+    for corner = 0 to 7
+        float xx = corner % 2 == 0 ? (showSceneLabels ? -5.8 : -5.12) : (showSceneLabels ? 7.0 : 5.12)
+        float yy = int(math.floor(corner / 2)) % 2 == 0 ? -1.10 : (showSceneLabels ? 2.60 : 2.27)
+        float zz = corner < 4 ? -0.95 : (showSceneLabels ? priceHeight + 1.40 : priceHeight + 0.85)
+        Vec3 bound = f_camera_space(Vec3.new(xx, yy, zz))
+        minX := math.min(minX, bound.x)
+        maxX := math.max(maxX, bound.x)
+        minY := math.min(minY, bound.y)
+        maxY := math.max(maxY, bound.y)
+    array.from(minX, maxX, minY, maxY)
+var array<float> orbitBounds = f_orbit_bounds()
+f_project(Vec3 p, int leftIdx, int rightIdx) =>
+    Vec3 cam = f_camera_space(p)
+    float span = math.max(rightIdx - leftIdx, 1)
+    float minX = orbit ? array.get(orbitBounds, 0) : -5.7 + math.min(2.5 * f_depth_x(), 0)
+    float maxX = orbit ? array.get(orbitBounds, 1) : 6.8
+    float minY = orbit ? array.get(orbitBounds, 2) : -0.95 + 2.5 * f_depth_y()
+    float maxY = orbit ? array.get(orbitBounds, 3) : priceHeight + 1.30 - 1.1 * f_depth_y()
+    float u = 0.07 + (cam.x - minX) / math.max(maxX - minX, 0.001) * 0.86
+    float v = 17 + (cam.y - minY) / math.max(maxY - minY, 0.001) * 70
+    float px = leftIdx + span * (0.5 + (u - 0.5) * widthScale)
+    float py = 52 + (v - 52) * heightScale
+    // One integer translation preserves candle widths and wick/volume alignment.
+    // The projected right bound is u = 0.93; reserve 3% for label overhang.
+    int shiftBars = alignRight ? int(math.round(span * (0.97 - (0.5 + 0.43 * widthScale)))) : 0
+    chart.point.from_index(int(math.round(px)) + shiftBars, py)
+f_price_height(float price, float lowPrice, float priceSpan) =>
+    0.85 + (price - lowPrice) / priceSpan * priceHeight
+f_time(int stamp) =>
+    timeframe.isintraday ? str.format_time(stamp, "dd MMM HH:mm", syminfo.timezone) : str.format_time(stamp, "dd MMM", syminfo.timezone)
+f_volume(float v) =>
+    v >= 1000000000 ? str.tostring(v / 1000000000, "#.##") + "B" : v >= 1000000 ? str.tostring(v / 1000000, "#.##") + "M" : v >= 1000 ? str.tostring(v / 1000, "#.##") + "K" : str.tostring(v, "#.##")
+
+f_tint(color base, float shade) =>
+    color.rgb(int(color.r(base) * shade), int(color.g(base) * shade), int(color.b(base) * shade))
+
+// Floor, grid and market faces have separate layers. Market faces share a depth sort.
+f_enqueue(array<FacePacket> scene, array<Vec3> vertices, int layer, color ink, color fill, int weight, bool closed, int leftIdx, int rightIdx) =>
+    array<chart.point> points = array.new<chart.point>()
+    float sumDepth = 0.0
+    for v in vertices
+        array.push(points, f_project(v, leftIdx, rightIdx))
+        sumDepth += f_camera_space(v).z
+    array.push(scene, FacePacket.new(points, (layer == 6 ? 4 : layer) * 100 + sumDepth / math.max(array.size(vertices), 1), ink, fill, weight, closed))
+
+// Cull back faces before shading. This is a painter renderer, not a depth buffer.
+f_add_face(array<FacePacket> scene, array<Vec3> vertices, Vec3 normal, color base, int alpha, int layer, int leftIdx, int rightIdx) =>
+    bool facing = f_dot(normal, f_view_direction()) > 0.00001
+    if facing
+        Vec3 light = f_unit(Vec3.new(-0.45, 0.65, 1))
+        float shade = 0.30 + 0.70 * math.max(f_dot(normal, light), 0)
+        bool polished = (material == "Satin" or material == "Crystal") and (layer == 4 or layer == 6)
+        color diffuseColor = f_tint(base, shade)
+        color faceColor = polished ? color.from_gradient(normal.z > 0 ? 0.32 : 0.015, 0, 1, diffuseColor, pale) : diffuseColor
+        color border = polished ? color.new(normal.z > 0 ? pale : base, normal.z > 0 ? 22 : 46) : color.new(base, material == "Wireframe" ? 10 : 48)
+        border := layer == 0 ? color.new(base, 60) : border
+        f_enqueue(scene, vertices, layer, border, color.new(faceColor, alpha), 1, true, leftIdx, rightIdx)
+
+f_add_cuboid(array<FacePacket> scene, float x0, float x1, float y0, float y1, float z0, float z1, color base, int alpha, int layer, int leftIdx, int rightIdx) =>
+    Vec3 a = Vec3.new(x0, y0, z0)
+    Vec3 b = Vec3.new(x1, y0, z0)
+    Vec3 c = Vec3.new(x1, y1, z0)
+    Vec3 d = Vec3.new(x0, y1, z0)
+    Vec3 e = Vec3.new(x0, y0, z1)
+    Vec3 f = Vec3.new(x1, y0, z1)
+    Vec3 g = Vec3.new(x1, y1, z1)
+    Vec3 h = Vec3.new(x0, y1, z1)
+    if z1 > z0
+        f_add_face(scene, array.from(a, b, f, e), Vec3.new(0, -1, 0), base, alpha, layer, leftIdx, rightIdx)
+        f_add_face(scene, array.from(d, c, g, h), Vec3.new(0, 1, 0), base, alpha, layer, leftIdx, rightIdx)
+        f_add_face(scene, array.from(a, d, h, e), Vec3.new(-1, 0, 0), base, alpha, layer, leftIdx, rightIdx)
+        f_add_face(scene, array.from(b, c, g, f), Vec3.new(1, 0, 0), base, alpha, layer, leftIdx, rightIdx)
+        f_add_face(scene, array.from(a, b, c, d), Vec3.new(0, 0, -1), base, alpha, layer, leftIdx, rightIdx)
+    f_add_face(scene, array.from(e, f, g, h), Vec3.new(0, 0, 1), base, alpha, layer, leftIdx, rightIdx)
+
+f_add_line(array<line> pool, Vec3 a, Vec3 b, color ink, int weight, int leftIdx, int rightIdx) =>
+    array.push(pool, line.new(f_project(a, leftIdx, rightIdx), f_project(b, leftIdx, rightIdx), color = ink, width = weight))
+f_add_label(array<label> pool, Vec3 p, string txt, color ink, string tip, int leftIdx, int rightIdx) =>
+    chart.point point = f_project(p, leftIdx, rightIdx)
+    array.push(pool, label.new(point.index, point.price, txt, style = label.style_none, textcolor = ink, size = size.small, tooltip = tip))
+
+// Visible-window inputs trigger a full recalculation when the chart is panned or zoomed.
+var array<Candle> candles = array.new<Candle>()
+var int visibleLeft = na
+var int visibleRight = na
+if time >= chart.left_visible_bar_time and time <= chart.right_visible_bar_time
+    if na(visibleLeft)
+        visibleLeft := bar_index
+    visibleRight := bar_index
+// Selection and placement are separate: moving the viewport must not change
+// latest-mode source candles. Pine's realtime rollback prevents duplicate ticks.
+bool eligibleWindow = not followVisibleWindow or (time >= chart.left_visible_bar_time and time <= chart.right_visible_bar_time)
+if eligibleWindow and (developing or barstate.isconfirmed) and not na(open) and not na(high) and not na(low) and not na(close)
+    array.push(candles, Candle.new(open, high, low, close, volume, time, bar_index, barstate.isconfirmed))
+    if array.size(candles) > candleCount
+        array.shift(candles)
+
+var array<polyline> surfaces = array.new<polyline>()
+var array<line> strokes = array.new<line>()
+var array<label> captions = array.new<label>()
+var table header = table.new(alignRight ? position.top_right : position.top_center, 3, 5)
+var table inspector = table.new(alignRight ? position.bottom_right : position.bottom_center, 6, 5, border_width = 0)
+var int drawnCount = 0
+var bool layoutReady = false
+var int exhibited = 0
+var int usableVolumes = 0
+var float displayedLow = na
+var float displayedHigh = na
+bgcolor(background, title = "Exhibit background")
+plot(0, "Layout minimum", color = color.new(background, 100), editable = false, display = display.pane)
+plot(100, "Layout maximum", color = color.new(background, 100), editable = false, display = display.pane)
+
+// Rebuild one scene on the last execution; explicitly delete the previous drawing set.
+if barstate.islast
+    // Blank outer cells provide real pane-relative padding, not text spaces.
+    // Paired side columns also keep Centre alignment balanced.
+    table.cell(header, 0, 0, "", width = readoutSideMargin, height = readoutEdgeMargin)
+    table.cell(header, 2, 0, "", width = readoutSideMargin)
+    table.cell(header, 0, 4, "", height = 1)
+    table.cell(inspector, 0, 0, "", width = readoutSideMargin, height = 1)
+    table.cell(inspector, 5, 0, "", width = readoutSideMargin)
+    table.cell(inspector, 0, 4, "", height = readoutEdgeMargin)
+    if array.size(surfaces) > 0
+        for shape in surfaces
+            polyline.delete(shape)
+        array.clear(surfaces)
+    if array.size(strokes) > 0
+        for stroke in strokes
+            line.delete(stroke)
+        array.clear(strokes)
+    if array.size(captions) > 0
+        for caption in captions
+            label.delete(caption)
+        array.clear(captions)
+    int rightIdx = na(visibleRight) ? bar_index : visibleRight
+    int leftIdx = na(visibleLeft) ? math.max(0, rightIdx - 300) : visibleLeft
+    bool historyAvailable = rightIdx >= bar_index - DRAWING_LOOKBACK
+    leftIdx := math.max(leftIdx, bar_index - DRAWING_LOOKBACK)
+    rightIdx := math.max(rightIdx, leftIdx + 1)
+    int n = array.size(candles)
+    exhibited := n
+    usableVolumes := 0
+    drawnCount := 0
+    displayedLow := na
+    displayedHigh := na
+    array<FacePacket> scene = array.new<FacePacket>()
+    layoutReady := n > 0 and historyAvailable and (rightIdx - leftIdx) * widthScale >= math.max(n * BARS_PER_CANDLE, 36)
+    if layoutReady
+        float lo = array.get(candles, 0).lowPrice
+        float hi = array.get(candles, 0).highPrice
+        float peakVol = 0.0
+        for bar in candles
+            lo := math.min(lo, bar.lowPrice)
+            hi := math.max(hi, bar.highPrice)
+            if not na(bar.volumeValue) and bar.volumeValue >= 0
+                peakVol := math.max(peakVol, bar.volumeValue)
+                usableVolumes += 1
+        displayedLow := lo
+        displayedHigh := hi
+        float priceSpan = math.max(hi - lo, syminfo.mintick * 10)
+        float paddedLow = hi > lo ? lo : lo - priceSpan * 0.5
+        float spacing = 9.0 / math.max(n - 1, 1)
+        float halfWidth = math.min(0.20, spacing * 0.26)
+        int alpha = material == "Glass" ? 30 : material == "Crystal" ? 12 : material == "Wireframe" ? 100 : 2
+        Candle latest = array.get(candles, n - 1)
+
+        f_add_cuboid(scene, -5.05, 5.05, -1.03, 2.23, -0.88, -0.62, platformColor, 2, 0, leftIdx, rightIdx)
+        array<Vec3> rows = array.new<Vec3>()
+        for k = 0 to 6
+            float yy = -1.0 + k * 0.53
+            array.push(rows, Vec3.new(k % 2 == 0 ? -5 : 5, yy, -0.615))
+            array.push(rows, Vec3.new(k % 2 == 0 ? 5 : -5, yy, -0.615))
+        f_enqueue(scene, rows, 1, color.new(accent, 85), na, 1, false, leftIdx, rightIdx)
+        array<Vec3> cols = array.new<Vec3>()
+        for k = 0 to 10
+            float xx = -5 + k
+            array.push(cols, Vec3.new(xx, k % 2 == 0 ? -1 : 2.18, -0.614))
+            array.push(cols, Vec3.new(xx, k % 2 == 0 ? 2.18 : -1, -0.614))
+        f_enqueue(scene, cols, 1, color.new(accent, 88), na, 1, false, leftIdx, rightIdx)
+        if rimLighting
+            array<Vec3> rim = array.from(Vec3.new(-5.04, -1.02, -0.608), Vec3.new(5.04, -1.02, -0.608), Vec3.new(5.04, 2.22, -0.608), Vec3.new(-5.04, 2.22, -0.608), Vec3.new(-5.04, -1.02, -0.608))
+            f_enqueue(scene, rim, 2, color.new(accent, 88), na, 5, false, leftIdx, rightIdx)
+            f_enqueue(scene, rim, 2, color.new(accent, 35), na, 1, false, leftIdx, rightIdx)
+
+        for j = 0 to n - 1
+            Candle bar = array.get(candles, j)
+            float xx = n == 1 ? 0 : -4.5 + j * spacing
+            float zo = f_price_height(bar.openPrice, paddedLow, priceSpan)
+            float zh = f_price_height(bar.highPrice, paddedLow, priceSpan)
+            float zl = f_price_height(bar.lowPrice, paddedLow, priceSpan)
+            float zc = f_price_height(bar.closePrice, paddedLow, priceSpan)
+            float bodyLow = math.min(zo, zc)
+            float bodyHigh = math.max(zo, zc)
+            bool validVolume = not na(bar.volumeValue) and bar.volumeValue >= 0 and peakVol > 0
+            float relativeVolume = validVolume ? f_clamp(bar.volumeValue / peakVol, 0, 1) : 0.0
+            float bodyDepth = volumeDepth and validVolume ? 0.28 + 0.57 * math.sqrt(relativeVolume) : 0.48
+            float depthLimit = spacing * 0.30 / math.max(math.abs(f_depth_x()), 0.001)
+            float depthFactor = orbit ? extrusion : math.min(extrusion, depthLimit / 0.85)
+            bodyDepth *= depthFactor
+            color directionColor = bar.closePrice >= bar.openPrice ? upColor : downColor
+            if inspection
+                if bodyHigh > bodyLow
+                    array<Vec3> front = array.from(Vec3.new(xx - halfWidth, 0, bodyLow), Vec3.new(xx + halfWidth, 0, bodyLow), Vec3.new(xx + halfWidth, 0, bodyHigh), Vec3.new(xx - halfWidth, 0, bodyHigh))
+                    f_enqueue(scene, front, 4, directionColor, color.new(directionColor, material == "Wireframe" ? 100 : 12), 1, true, leftIdx, rightIdx)
+                else
+                    f_enqueue(scene, array.from(Vec3.new(xx - halfWidth, 0, bodyLow), Vec3.new(xx + halfWidth, 0, bodyLow)), 4, directionColor, na, 2, false, leftIdx, rightIdx)
+            else
+                f_add_cuboid(scene, xx - halfWidth, xx + halfWidth, -bodyDepth, 0, bodyLow, bodyHigh, directionColor, alpha, 4, leftIdx, rightIdx)
+
+            // A single central rod axis; inspection has no extrusion.
+            float wickY = inspection ? 0.0 : -bodyDepth * 0.5
+            Vec3 upperStart = Vec3.new(xx, wickY, bodyHigh)
+            if zh > bodyHigh
+                f_enqueue(scene, array.from(upperStart, Vec3.new(xx, wickY, zh)), 7, directionColor, na, 1, false, leftIdx, rightIdx)
+            // Clip only the lower segment hidden by its own opaque body.
+            Vec3 sight = f_view_direction()
+            float visibleLowerStart = bodyLow
+            bool opaqueBody = material == "Satin" or material == "Anodized"
+            if not inspection and opaqueBody
+                float exitX = halfWidth / math.max(math.abs(sight.x), 0.000001)
+                float exitY = bodyDepth * 0.5 / math.max(math.abs(sight.y), 0.000001)
+                visibleLowerStart := bodyLow - math.min(exitX, exitY) * math.max(sight.z, 0)
+            if visibleLowerStart > zl
+                f_enqueue(scene, array.from(Vec3.new(xx, wickY, visibleLowerStart), Vec3.new(xx, wickY, zl)), 7, directionColor, na, 1, false, leftIdx, rightIdx)
+
+            if volumeShelf and validVolume
+                float height = 0.94 * relativeVolume
+                // Price and volume share a column, but keep independent vertical scales.
+                float volumeCenterY = inspection ? 0.0 : -bodyDepth * 0.5
+                float volumeDepthLimit = spacing * 0.30 / math.max(math.abs(f_depth_x()), 0.001)
+                float volumeThickness = dimensionalVolume and not inspection ? (orbit ? 0.33 * extrusion : math.min(0.33 * extrusion, volumeDepthLimit)) : 0.0
+                float vf = volumeCenterY + volumeThickness * 0.5
+                float vb = volumeCenterY - volumeThickness * 0.5
+                float vz = -0.595
+                float vt = vz + height
+                int volumeAlpha = material == "Wireframe" ? 100 : 5
+                if dimensionalVolume and not inspection
+                    f_add_cuboid(scene, xx - halfWidth, xx + halfWidth, vb, vf, vz, vt, directionColor, volumeAlpha, 6, leftIdx, rightIdx)
+                else
+                    f_add_face(scene, array.from(Vec3.new(xx - halfWidth, vf, vz), Vec3.new(xx + halfWidth, vf, vz), Vec3.new(xx + halfWidth, vf, vt), Vec3.new(xx - halfWidth, vf, vt)), Vec3.new(0, 1, 0), directionColor, volumeAlpha, 6, leftIdx, rightIdx)
+            if showSceneLabels and (j == 0 or j == int(math.floor((n - 1) / 2.0)) or j == n - 1)
+                f_add_label(captions, Vec3.new(xx, 2.48, -0.70), f_time(bar.openTime), j == n - 1 ? pale : muted, "Actual bar time in the symbol's exchange timezone. Exhibit candles are equally spaced.", leftIdx, rightIdx)
+
+        if inspection and labelsOn
+            if latest.highPrice - latest.lowPrice > priceSpan * 0.08
+                f_add_label(captions, Vec3.new(5.0, 0, f_price_height(latest.highPrice, paddedLow, priceSpan)), "H " + str.tostring(latest.highPrice, format.mintick), pale, "Actual high of latest exhibited candle.", leftIdx, rightIdx)
+                f_add_label(captions, Vec3.new(5.0, 0, f_price_height(latest.lowPrice, paddedLow, priceSpan)), "L " + str.tostring(latest.lowPrice, format.mintick), pale, "Actual low of latest exhibited candle.", leftIdx, rightIdx)
+            else
+                f_add_label(captions, Vec3.new(5.0, 0, f_price_height(latest.closePrice, paddedLow, priceSpan)), "H/L: SEE READOUT", pale, "High and low labels would overlap; use the bottom OHLC readout.", leftIdx, rightIdx)
+
+        if not orbit or orbitLabels
+            f_add_line(strokes, Vec3.new(6.00, 0, 0.85), Vec3.new(6.00, 0, priceHeight + 0.85), color.new(accent, 35), 1, leftIdx, rightIdx)
+            for k = 0 to 4
+                float price = paddedLow + priceSpan * k / 4
+                float zz = f_price_height(price, paddedLow, priceSpan)
+                f_add_line(strokes, Vec3.new(5.89, 0, zz), Vec3.new(6.07, 0, zz), color.new(accent, 20), 1, leftIdx, rightIdx)
+                if showSceneLabels
+                    f_add_label(captions, Vec3.new(6.50, 0, zz), str.tostring(price, format.mintick), muted, "Linear price scale. Front-plane prices align horizontally with this ruler. Extruded rear corners are decorative depth, not different OHLC.", leftIdx, rightIdx)
+        if priceCursor and not inspection
+            float zz = f_price_height(latest.closePrice, paddedLow, priceSpan)
+            array<Vec3> cursor = array.from(Vec3.new(-4.85, -0.73, zz), Vec3.new(5.30, -0.73, zz), Vec3.new(5.30, 0.58, zz), Vec3.new(-4.85, 0.58, zz))
+            f_enqueue(scene, cursor, 3, color.new(accent, 83), color.new(accent, 97), 1, true, leftIdx, rightIdx)
+        if showSceneLabels
+            f_add_label(captions, Vec3.new(6.05, 0, priceHeight + 1.22), "PRICE", accent, "Actual chart prices, not a forecast.", leftIdx, rightIdx)
+            string volText = volumeShelf ? peakVol > 0 ? "VOL / MAX " + f_volume(peakVol) : "VOLUME UNAVAILABLE / ZERO" : "TIME  >"
+            f_add_label(captions, Vec3.new(-5.8, 2.48, -0.92), volText, muted, "Shelf height is linear relative volume. Body depth uses square-root scaling. Missing volume uses fixed body depth.", leftIdx, rightIdx)
+
+        // Polylines have no setters; submit the depth-sorted scene in drawing order.
+        array<float> depthKeys = array.new_float()
+        for packet in scene
+            array.push(depthKeys, packet.depth)
+        array<int> drawOrder = array.sort_indices(depthKeys, order.ascending)
+        for idx in drawOrder
+            FacePacket packet = array.get(scene, idx)
+            array.push(surfaces, polyline.new(packet.points, curved = false, closed = packet.closed, xloc = xloc.bar_index, line_color = packet.ink, fill_color = packet.fill, line_width = packet.weight))
+        drawnCount := array.size(surfaces)
+
+        string stateText = latest.confirmed ? "CLOSED" : "DEVELOPING"
+        table.cell(header, 1, 1, inspection ? "3D Candles & Volume [Afnan] / Inspection" : "3D Candles & Volume [Afnan]", text_color = pale, text_size = size.normal, bgcolor = color.new(background, 100))
+        table.cell(header, 1, 2, syminfo.ticker + "  /  " + timeframe.period + "  /  " + str.tostring(n) + " CANDLES  /  " + stateText + "  /  " + str.upper(candleSource), text_color = accent, text_size = size.small, bgcolor = color.new(background, 100))
+        table.cell(header, 1, 3, (orbit ? cameraPreset + " / " + str.tostring(yawDeg, "#") + " DEG" : "Readable front") + "  |  " + str.upper(palette), text_color = muted, text_size = size.tiny, bgcolor = color.new(background, 100))
+        array<string> keys = array.from("OPEN", "HIGH", "LOW", "CLOSE")
+        array<float> vals = array.from(latest.openPrice, latest.highPrice, latest.lowPrice, latest.closePrice)
+        for k = 0 to 3
+            table.cell(inspector, k + 1, 1, array.get(keys, k), text_color = muted, text_size = size.tiny, bgcolor = color.new(background, 100), width = 12)
+            table.cell(inspector, k + 1, 2, str.tostring(array.get(vals, k), format.mintick), text_color = k == 3 ? latest.closePrice >= latest.openPrice ? upColor : downColor : pale, text_size = size.normal, bgcolor = color.new(background, 100))
+        string depthText = volumeDepth and peakVol > 0 ? "DEPTH: RELATIVE VOLUME" : "DEPTH: FIXED"
+        table.cell(inspector, 1, 3, depthText, text_color = muted, text_size = size.tiny, bgcolor = color.new(background, 100))
+        table.cell(inspector, 2, 3, str.tostring(usableVolumes) + "/" + str.tostring(n) + " VOLUME SAMPLES", text_color = muted, text_size = size.tiny, bgcolor = color.new(background, 100))
+        table.cell(inspector, 3, 3, "LATEST EXHIBITED BAR", text_color = muted, text_size = size.tiny, bgcolor = color.new(background, 100))
+        table.cell(inspector, 4, 3, rightIdx - leftIdx < 200 ? "Zoom out for detail" : "Price & volume study", text_color = accent, text_size = size.tiny, bgcolor = color.new(background, 100))
+    else
+        table.clear(inspector, 1, 1, 4, 3)
+        table.cell(header, 1, 1, "3D Candles & Volume [Afnan]", text_color = pale, text_size = size.normal)
+        table.cell(header, 1, 2, n == 0 ? "No eligible candles for the selected source." : not historyAvailable ? "This window is outside the drawing history limit." : "Zoom out for clean 3D geometry.", text_color = accent)
+        table.cell(header, 1, 3, not historyAvailable ? "Move the chart towards more recent bars." : n > 0 ? "Keep at least " + str.tostring(int(math.ceil(math.max(n * BARS_PER_CANDLE, 36) / widthScale))) + " visible bar intervals. The exhibit still uses only " + str.tostring(n) + " candles." : "Try zooming out or enabling developing candles.", text_color = muted)
+
+plot(exhibited, "Selected candles", display = display.data_window)
+plot(drawnCount, "Polylines drawn", display = display.data_window)
+plot(displayedLow, "Selected lowest low", display = display.data_window)
+plot(displayedHigh, "Selected highest high", display = display.data_window)
+
+// Budget at maximum detail: 11 × (3 body + 3 volume + 2 wick packets)
+// + 3 floor faces + 2 grid paths + 2 rim paths + 1 close plane = 96 polylines.
+// A maximum of six ruler lines and twelve labels are used by the current layout.
+ 

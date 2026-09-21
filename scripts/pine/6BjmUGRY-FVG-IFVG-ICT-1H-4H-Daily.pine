@@ -1,0 +1,3271 @@
+//@version=6
+indicator("Daily + 4H + 1H FVG / IFVG — Merged", overlay=true, max_boxes_count=500, max_lines_count=50, max_labels_count=50)
+
+// ==============================================================================
+// MERGED BUILD
+// Calculation logic is preserved independently for the original 4H, 1H, and
+// Daily engines. Identifier prefixes only prevent namespace collisions.
+// ==============================================================================
+
+// ==============================================================================
+// 00. QUICK MASTER SWITCHES
+// These are visibility / alert routing controls only. They do not alter FVG /
+// IFVG detection, lifecycle, anchoring, source-timeframe calculations, or zones.
+// ==============================================================================
+
+quickGroup = "00. QUICK MASTER SWITCHES"
+
+// Global directional masters across ALL three source timeframes.
+global_enableAllBullish = input.bool(true, "ALL TF Bullish", inline="quickGlobal", group=quickGroup)
+global_enableAllBearish = input.bool(true, "ALL TF Bearish", inline="quickGlobal", group=quickGroup)
+
+// Daily: timeframe master + direction filters.
+d_enableDailyMaster = input.bool(true, "Daily", inline="quickDaily", group=quickGroup)
+d_enableAllBullish = input.bool(true, "Bullish", inline="quickDaily", group=quickGroup)
+d_enableAllBearish = input.bool(true, "Bearish", inline="quickDaily", group=quickGroup)
+
+// 4H: timeframe master + direction filters.
+h4_enable4HMaster = input.bool(true, "4H", inline="quick4H", group=quickGroup)
+h4_enableAllBullish = input.bool(true, "Bullish", inline="quick4H", group=quickGroup)
+h4_enableAllBearish = input.bool(true, "Bearish", inline="quick4H", group=quickGroup)
+
+// 1H: timeframe master + direction filters.
+h1_enableHourlyMaster = input.bool(true, "1H", inline="quick1H", group=quickGroup)
+h1_enableAllBullish = input.bool(true, "Bullish", inline="quick1H", group=quickGroup)
+h1_enableAllBearish = input.bool(true, "Bearish", inline="quick1H", group=quickGroup)
+
+
+//==============================================================================
+
+// 4H FVG / IFVG INVENTORY — V1.0
+
+//------------------------------------------------------------------------------
+
+// 1. Source timeframe is 4H (240 minutes) only.
+
+// 2. Bullish FVG = third 4H candle LOW > first 4H candle HIGH.
+
+//    Zone = first candle HIGH -> third candle LOW.
+
+// 3. Bearish FVG = third 4H candle HIGH < first 4H candle LOW.
+
+//    Zone = third candle HIGH -> first candle LOW.
+
+// 4. Adjacent close/open gaps are ignored; only candle 1 vs candle 3 geometry matters.
+
+// 5. Every visible zone extends dynamically to the OPEN of the current chart candle.
+
+// 6. Formation lookback options: 5 / 10 / 15 / 30 / 90 / 180 / 365 calendar days.
+
+// 7. Consecutive FVG runs:
+
+//      - A single FVG is always eligible to display.
+
+//      - For a run of 2+ same-direction FVGs on consecutive 4H source candles,
+
+//        only the selected ordinal (1st..5th) is displayed.
+
+// 8. Consecutive IFVG runs:
+
+//      - A single IFVG is always eligible to display.
+
+//      - For a run of 2+ same-direction IFVG conversions on consecutive 4H closes,
+
+//        only the selected ordinal (1st..5th) is displayed.
+
+// 9. Confirmed lifecycle mode (default):
+
+//      - Two consecutive confirmed 4H closes beyond an FVG convert it to IFVG.
+
+//      - IFVG invalidation requires a user-selected 1..5 consecutive confirmed 4H
+
+//        closes back through the opposite boundary.
+
+// 10. Persistent mode (confirmed lifecycle OFF): original gaps remain in inventory
+
+//     inside lookback and are classified from current market price.
+
+//==============================================================================
+
+//------------------------------------------------------------------------------
+
+// 01. Master controls
+
+//------------------------------------------------------------------------------
+
+h4_groupMaster = "4H • 01. Master Controls"
+
+h4_enableIndicator = input.bool(true, "Enable indicator", group=h4_groupMaster)
+
+
+
+
+h4_showZoneText = input.bool(true, "Show timeframe and zone text", group=h4_groupMaster)
+
+h4_lookbackDays = input.int(
+
+     30,
+
+     "4H formation lookback, calendar days",
+
+     options=[5, 10, 15, 30, 90, 180, 365],
+
+     group=h4_groupMaster)
+
+h4_projectionAnchor = input.string(
+
+     "First FVG candle",
+
+     "Zone begins from",
+
+     options=["First FVG candle", "FVG end candle"],
+
+     group=h4_groupMaster)
+
+//------------------------------------------------------------------------------
+
+// 02. Consecutive-zone selectors
+
+//------------------------------------------------------------------------------
+
+h4_groupConsecutive = "4H • 02. Consecutive Zone Selection"
+
+h4_selectedFvgOrdinal = input.int(
+
+     1,
+
+     "Consecutive FVG — show only which one?",
+
+     options=[1, 2, 3, 4, 5],
+
+     tooltip="Singles always display. For every consecutive FVG run containing 2 or more same-direction FVGs, only this ordinal is plotted. Example: selecting 4 displays only the 4th FVG in every run that reaches at least four FVGs.",
+
+     group=h4_groupConsecutive)
+
+h4_selectedIfvgOrdinal = input.int(
+
+     1,
+
+     "Consecutive IFVG — show only which one?",
+
+     options=[1, 2, 3, 4, 5],
+
+     tooltip="Singles always display. For every consecutive same-direction IFVG conversion run containing 2 or more IFVGs, only this ordinal is plotted.",
+
+     group=h4_groupConsecutive)
+
+//------------------------------------------------------------------------------
+
+// 03. Classification / lifecycle
+
+//------------------------------------------------------------------------------
+
+h4_groupLifecycle = "4H • 03. Classification / Lifecycle"
+
+h4_useConfirmedLifecycle = input.bool(
+
+     true,
+
+     "Use confirmed 4H lifecycle / invalidation",
+
+     tooltip="ON: two consecutive confirmed 4H closes beyond an FVG convert it to IFVG. The IFVG is removed only after the selected number of consecutive confirmed 4H reverse closes.\n\nOFF: original 4H gaps are never permanently invalidated inside lookback; current price determines whether each original gap is displayed as FVG or IFVG.",
+
+     group=h4_groupLifecycle)
+
+h4_ifvgInvalidationCloses = input.int(
+
+     1,
+
+     "IFVG invalidation — consecutive 4H closes required",
+
+     options=[1, 2, 3, 4, 5],
+
+     tooltip="Bearish IFVG: count confirmed 4H closes ABOVE the zone. Bullish IFVG: count confirmed 4H closes BELOW the zone. The IFVG is removed only when this consecutive-close threshold is reached.",
+
+     group=h4_groupLifecycle)
+
+//------------------------------------------------------------------------------
+
+// 04. 4H inventory / minimum size
+
+//------------------------------------------------------------------------------
+
+h4_groupInventory = "4H • 04. 4H Inventory / Minimum Size"
+
+h4_minGap4H = input.float(
+
+     0.0,
+
+     "4H: minimum FVG size, points",
+
+     minval=0.0,
+
+     step=0.25,
+
+     group=h4_groupInventory)
+
+//------------------------------------------------------------------------------
+
+// 05. Individual 4H controls
+
+//------------------------------------------------------------------------------
+
+h4_group4H = "4H • 05. 4H Individual Controls"
+
+h4_enable4HBullFvg = input.bool(true, "4H Bullish FVG — plot + alerts", group=h4_group4H)
+
+h4_enable4HBearFvg = input.bool(true, "4H Bearish FVG — plot + alerts", group=h4_group4H)
+
+h4_enable4HBullIfvg = input.bool(true, "4H Bullish IFVG — plot + alerts", group=h4_group4H)
+
+h4_enable4HBearIfvg = input.bool(true, "4H Bearish IFVG — plot + alerts", group=h4_group4H)
+
+//------------------------------------------------------------------------------
+
+// 06. Visual customization — same palette as Daily/original indicator
+
+//------------------------------------------------------------------------------
+
+h4_groupVisual = "4H • 06. Visual Customization"
+
+h4_bullishBaseColor = input.color(color.rgb(0, 139, 170), "Bullish cyan-blue", group=h4_groupVisual)
+
+h4_bearishBaseColor = input.color(color.rgb(132, 78, 170), "Bearish purple", group=h4_groupVisual)
+
+h4_fvgFillTransparency = input.int(84, "FVG fill transparency", minval=0, maxval=100, group=h4_groupVisual)
+
+h4_ifvgFillTransparency = input.int(87, "IFVG fill transparency", minval=0, maxval=100, group=h4_groupVisual)
+
+h4_borderTransparency = input.int(18, "Border transparency", minval=0, maxval=100, group=h4_groupVisual)
+
+h4_boxBorderWidth = input.int(1, "Box border width", minval=0, maxval=4, group=h4_groupVisual)
+
+h4_zoneTextColor = input.color(color.new(color.white, 15), "Zone text color", group=h4_groupVisual)
+
+//------------------------------------------------------------------------------
+
+// Routing and effective controls
+
+//------------------------------------------------------------------------------
+
+int h4_FOUR_HOURS_SECONDS = 4 * 60 * 60
+
+bool h4_isFourHourChart = timeframe.isintraday and timeframe.in_seconds() == h4_FOUR_HOURS_SECONDS
+
+bool h4_isLowerThanFourHourChart = timeframe.isintraday and timeframe.in_seconds() < h4_FOUR_HOURS_SECONDS
+
+bool h4_supportedChart = h4_isFourHourChart or h4_isLowerThanFourHourChart
+
+bool h4_canRun = h4_enableIndicator and h4_supportedChart
+
+h4_bullFvgFill = color.new(h4_bullishBaseColor, h4_fvgFillTransparency)
+
+h4_bearFvgFill = color.new(h4_bearishBaseColor, h4_fvgFillTransparency)
+
+h4_bullIfvgFill = color.new(h4_bullishBaseColor, h4_ifvgFillTransparency)
+
+h4_bearIfvgFill = color.new(h4_bearishBaseColor, h4_ifvgFillTransparency)
+
+h4_bullBorder = color.new(h4_bullishBaseColor, h4_borderTransparency)
+
+h4_bearBorder = color.new(h4_bearishBaseColor, h4_borderTransparency)
+
+int h4_DAY_MS = 24 * 60 * 60 * 1000
+
+int h4_lookbackMs = h4_lookbackDays * h4_DAY_MS
+
+// Kind codes:
+
+//   +1 = Bullish FVG
+
+//   -1 = Bearish FVG
+
+//   +2 = Bullish IFVG
+
+//   -2 = Bearish IFVG
+
+//------------------------------------------------------------------------------
+
+// Zone object
+
+//------------------------------------------------------------------------------
+
+type h4_Zone
+
+    float lo
+
+    float hi
+
+    int leftTime
+
+    int originTime
+
+    int originDirection
+
+    int kind
+
+    int oppositeCloseCount
+
+    int reverseCloseCount
+
+    int fvgRunId
+
+    int fvgOrdinal
+
+    int fvgRunSize
+
+    int ifvgRunId
+
+    int ifvgOrdinal
+
+    int ifvgRunSize
+
+    box bx
+
+    bool touched
+
+    int armedAfterBar
+
+h4_f_zone_text(int kind) =>
+
+    string zoneLabel = kind == 1 ? "4H Bullish FVG" :
+
+         kind == -1 ? "4H Bearish FVG" :
+
+         kind == 2 ? "4H Bullish IFVG" : "4H Bearish IFVG"
+
+    h4_showZoneText ? zoneLabel : ""
+
+h4_f_kind_enabled(int kind) =>
+
+    bool master = h4_canRun and h4_enable4HMaster
+
+    kind == 1 ? master and (global_enableAllBullish and h4_enableAllBullish) and h4_enable4HBullFvg :
+
+     kind == -1 ? master and (global_enableAllBearish and h4_enableAllBearish) and h4_enable4HBearFvg :
+
+     kind == 2 ? master and (global_enableAllBullish and h4_enableAllBullish) and h4_enable4HBullIfvg :
+
+     master and (global_enableAllBearish and h4_enableAllBearish) and h4_enable4HBearIfvg
+
+h4_f_kind_fill(int kind) =>
+
+    kind == 1 ? h4_bullFvgFill :
+
+     kind == -1 ? h4_bearFvgFill :
+
+     kind == 2 ? h4_bullIfvgFill : h4_bearIfvgFill
+
+h4_f_kind_border(int kind) =>
+
+    kind > 0 ? h4_bullBorder : h4_bearBorder
+
+h4_f_kind_style(int kind) =>
+
+    math.abs(kind) == 1 ? line.style_solid : line.style_dashed
+
+h4_f_fixed_left(int firstCandleTime, int endCandleTime) =>
+
+    h4_projectionAnchor == "First FVG candle" ? firstCandleTime : endCandleTime
+
+h4_f_zone_passes_ordinal_filter(h4_Zone z) =>
+
+    bool pass = true
+
+    if math.abs(z.kind) == 1
+
+        pass := z.fvgRunSize <= 1 or z.fvgOrdinal == h4_selectedFvgOrdinal
+
+    else
+
+        pass := z.ifvgRunSize <= 1 or z.ifvgOrdinal == h4_selectedIfvgOrdinal
+
+    pass
+
+h4_f_zone_visible(h4_Zone z) =>
+
+    h4_f_kind_enabled(z.kind) and h4_f_zone_passes_ordinal_filter(z)
+
+h4_f_make_box(
+
+     int leftTime,
+
+     int rightTime,
+
+     float lo,
+
+     float hi,
+
+     int kind) =>
+
+    box.new(
+
+         left=leftTime,
+
+         top=hi,
+
+         right=rightTime,
+
+         bottom=lo,
+
+         xloc=xloc.bar_time,
+
+         extend=extend.none,
+
+         bgcolor=h4_f_kind_fill(kind),
+
+         border_color=h4_f_kind_border(kind),
+
+         border_width=h4_boxBorderWidth,
+
+         border_style=h4_f_kind_style(kind),
+
+         text=h4_f_zone_text(kind),
+
+         text_color=h4_zoneTextColor,
+
+         text_size=size.tiny,
+
+         text_halign=text.align_right,
+
+         text_valign=text.align_center)
+
+h4_f_delete_box(box boxId) =>
+
+    if not na(boxId)
+
+        box.delete(boxId)
+
+h4_f_add_zone(
+
+     array<h4_Zone> zones,
+
+     float lo,
+
+     float hi,
+
+     int firstCandleTime,
+
+     int endCandleTime,
+
+     int originTime,
+
+     int originDirection,
+
+     int armedAfterBar,
+
+     int fvgRunId,
+
+     int fvgOrdinal,
+
+     int fvgRunSize,
+
+     int currentRightTime) =>
+
+    int leftTime = h4_f_fixed_left(firstCandleTime, endCandleTime)
+
+    h4_Zone z = h4_Zone.new(
+
+         lo,
+
+         hi,
+
+         leftTime,
+
+         originTime,
+
+         originDirection,
+
+         originDirection,
+
+         0,
+
+         0,
+
+         fvgRunId,
+
+         fvgOrdinal,
+
+         fvgRunSize,
+
+         na,
+
+         0,
+
+         0,
+
+         na,
+
+         false,
+
+         armedAfterBar)
+
+    if h4_f_zone_visible(z)
+
+        z.bx := h4_f_make_box(leftTime, currentRightTime, lo, hi, z.kind)
+
+    array.push(zones, z)
+
+h4_f_update_fvg_run_size(array<h4_Zone> zones, int runId, int runSize) =>
+
+    int i = 0
+
+    while i < array.size(zones)
+
+        h4_Zone z = array.get(zones, i)
+
+        if z.fvgRunId == runId
+
+            z.fvgRunSize := runSize
+
+            array.set(zones, i, z)
+
+        i += 1
+
+h4_f_update_ifvg_run_size(array<h4_Zone> zones, int runId, int runSize) =>
+
+    int i = 0
+
+    while i < array.size(zones)
+
+        h4_Zone z = array.get(zones, i)
+
+        if z.ifvgRunId == runId
+
+            z.ifvgRunSize := runSize
+
+            array.set(zones, i, z)
+
+        i += 1
+
+h4_f_prune_lookback(array<h4_Zone> zones, int cutoffTime) =>
+
+    int i = array.size(zones) - 1
+
+    while i >= 0
+
+        h4_Zone z = array.get(zones, i)
+
+        if z.originTime < cutoffTime
+
+            h4_f_delete_box(z.bx)
+
+            array.remove(zones, i)
+
+        i -= 1
+
+// Dynamic right edge + ordinal filtering + current classification styling.
+
+h4_f_sync_zones(array<h4_Zone> zones, int currentRightTime) =>
+
+    int i = 0
+
+    while i < array.size(zones)
+
+        h4_Zone z = array.get(zones, i)
+
+        bool visible = h4_f_zone_visible(z)
+
+        if visible
+
+            if na(z.bx)
+
+                z.bx := h4_f_make_box(z.leftTime, currentRightTime, z.lo, z.hi, z.kind)
+
+            else
+
+                box.set_right(z.bx, currentRightTime)
+
+                box.set_bgcolor(z.bx, h4_f_kind_fill(z.kind))
+
+                box.set_border_color(z.bx, h4_f_kind_border(z.kind))
+
+                box.set_border_width(z.bx, h4_boxBorderWidth)
+
+                box.set_border_style(z.bx, h4_f_kind_style(z.kind))
+
+                box.set_text(z.bx, h4_f_zone_text(z.kind))
+
+                box.set_text_color(z.bx, h4_zoneTextColor)
+
+        else
+
+            h4_f_delete_box(z.bx)
+
+            z.bx := na
+
+        array.set(zones, i, z)
+
+        i += 1
+
+//------------------------------------------------------------------------------
+
+// Persistent current-price classification
+
+//------------------------------------------------------------------------------
+
+// In this optional mode, IFVG ordinal identity inherits the original FVG run identity.
+
+// This keeps the 1st..5th filter deterministic even when live price flips a zone state.
+
+h4_f_process_current_price_classification(
+
+     array<h4_Zone> zones,
+
+     float currentPrice,
+
+     int currentChartBar) =>
+
+    bool newBullIfvg = false
+
+    bool newBearIfvg = false
+
+    int i = 0
+
+    while i < array.size(zones)
+
+        h4_Zone z = array.get(zones, i)
+
+        int oldKind = z.kind
+
+        int resolvedKind = oldKind
+
+        if z.originDirection == -1
+
+            // Original bearish FVG: below = Bearish FVG; above = Bullish IFVG.
+
+            if currentPrice > z.hi
+
+                resolvedKind := 2
+
+            else if currentPrice < z.lo
+
+                resolvedKind := -1
+
+        else
+
+            // Original bullish FVG: above = Bullish FVG; below = Bearish IFVG.
+
+            if currentPrice < z.lo
+
+                resolvedKind := -2
+
+            else if currentPrice > z.hi
+
+                resolvedKind := 1
+
+        if resolvedKind != oldKind
+
+            z.kind := resolvedKind
+
+            z.oppositeCloseCount := 0
+
+            z.reverseCloseCount := 0
+
+            z.touched := false
+
+            z.armedAfterBar := currentChartBar
+
+            if math.abs(resolvedKind) == 2
+
+                z.ifvgRunId := z.fvgRunId
+
+                z.ifvgOrdinal := z.fvgOrdinal
+
+                z.ifvgRunSize := z.fvgRunSize
+
+                if resolvedKind == 2
+
+                    newBullIfvg := true
+
+                else
+
+                    newBearIfvg := true
+
+        array.set(zones, i, z)
+
+        i += 1
+
+    [newBullIfvg, newBearIfvg]
+
+// direction: +1 bullish state; -1 bearish state.
+
+h4_f_first_touch_kind(
+
+     array<h4_Zone> zones,
+
+     int targetKind,
+
+     int direction,
+
+     float chartHigh,
+
+     float chartLow,
+
+     int currentChartBar) =>
+
+    bool pulse = false
+
+    int i = 0
+
+    while i < array.size(zones)
+
+        h4_Zone z = array.get(zones, i)
+
+        if z.kind == targetKind and h4_f_zone_visible(z)
+
+            bool eligible = currentChartBar > z.armedAfterBar
+
+            bool reachedBoundary = direction == 1 ? chartLow <= z.hi : chartHigh >= z.lo
+
+            if eligible and not z.touched and reachedBoundary
+
+                z.touched := true
+
+                array.set(zones, i, z)
+
+                pulse := true
+
+        i += 1
+
+    pulse
+
+//------------------------------------------------------------------------------
+
+// 4H source data
+
+//------------------------------------------------------------------------------
+
+bool h4_hasEnough4HChartBars = bar_index >= 2
+
+// Lower-than-4H charts request the PREVIOUS fully closed 4H candle.
+
+// The one-bar security offset ensures unfinished 4H candles never count as confirmed.
+
+[h4_h4TimeClosed, h4_h4TimeCloseClosed, h4_h4FirstTimeClosed,
+
+ h4_h4HighClosed, h4_h4LowClosed, h4_h4CloseClosed,
+
+ h4_h4HighTwoBackClosed, h4_h4LowTwoBackClosed] = request.security(
+
+     syminfo.tickerid,
+
+     "240",
+
+     [time[1], time_close[1], time[3], high[1], low[1], close[1], high[3], low[3]],
+
+     gaps=barmerge.gaps_off,
+
+     lookahead=barmerge.lookahead_on)
+
+int h4_h4Time = h4_isFourHourChart ? time : h4_h4TimeClosed
+
+int h4_h4TimeClose = h4_isFourHourChart ? time_close : h4_h4TimeCloseClosed
+
+int h4_h4FirstTime = h4_isFourHourChart ? (h4_hasEnough4HChartBars ? time[2] : na) : h4_h4FirstTimeClosed
+
+float h4_h4High = h4_isFourHourChart ? high : h4_h4HighClosed
+
+float h4_h4Low = h4_isFourHourChart ? low : h4_h4LowClosed
+
+float h4_h4Close = h4_isFourHourChart ? close : h4_h4CloseClosed
+
+float h4_h4HighTwoBack = h4_isFourHourChart ? (h4_hasEnough4HChartBars ? high[2] : na) : h4_h4HighTwoBackClosed
+
+float h4_h4LowTwoBack = h4_isFourHourChart ? (h4_hasEnough4HChartBars ? low[2] : na) : h4_h4LowTwoBackClosed
+
+bool h4_sourceClosed4H = h4_canRun and (
+
+     (h4_isFourHourChart and h4_hasEnough4HChartBars and barstate.isconfirmed) or
+
+     (h4_isLowerThanFourHourChart and barstate.isnew and timeframe.change("240") and not na(h4_h4TimeClosed)))
+
+int h4_armedAfterBar4H = h4_isFourHourChart ? bar_index : bar_index - 1
+
+// Every visible zone ends at the opening timestamp of the current chart candle.
+
+int h4_currentZoneRightTime = time
+
+//------------------------------------------------------------------------------
+
+// Inventory and run state
+
+//------------------------------------------------------------------------------
+
+var array<h4_Zone> h4_zones4H = array.new<h4_Zone>()
+
+var int h4_nextFvgRunId = 0
+
+var int h4_currentBullFvgRunId = na
+
+var int h4_currentBearFvgRunId = na
+
+var int h4_currentBullFvgRunCount = 0
+
+var int h4_currentBearFvgRunCount = 0
+
+var bool h4_previous4HBullGap = false
+
+var bool h4_previous4HBearGap = false
+
+var int h4_nextIfvgRunId = 0
+
+var int h4_currentBullIfvgRunId = na
+
+var int h4_currentBearIfvgRunId = na
+
+var int h4_currentBullIfvgRunCount = 0
+
+var int h4_currentBearIfvgRunCount = 0
+
+var bool h4_previous4HBullIfvgConversion = false
+
+var bool h4_previous4HBearIfvgConversion = false
+
+//------------------------------------------------------------------------------
+
+// Lookback pruning — based on ORIGINAL 4H FVG formation time
+
+//------------------------------------------------------------------------------
+
+int h4_currentCutoffTime = time - h4_lookbackMs
+
+h4_f_prune_lookback(h4_zones4H, h4_currentCutoffTime)
+
+//------------------------------------------------------------------------------
+
+// Pulses
+
+//------------------------------------------------------------------------------
+
+bool h4_n4HBullFvgRaw = false
+
+bool h4_n4HBearFvgRaw = false
+
+bool h4_n4HBullIfvgRaw = false
+
+bool h4_n4HBearIfvgRaw = false
+
+//------------------------------------------------------------------------------
+
+// Process each confirmed 4H source close
+
+//------------------------------------------------------------------------------
+
+if h4_sourceClosed4H
+
+    int bullIfvgConversionsThisClose = 0
+
+    int bearIfvgConversionsThisClose = 0
+
+    // 1) Update lifecycle of zones that existed before this source close.
+
+    if h4_useConfirmedLifecycle
+
+        int i = 0
+
+        while i < array.size(h4_zones4H)
+
+            h4_Zone z = array.get(h4_zones4H, i)
+
+            bool removeZone = false
+
+            if z.kind == 1
+
+                // Bullish FVG -> Bearish IFVG after TWO consecutive closes below lo.
+
+                if h4_h4Close < z.lo
+
+                    z.oppositeCloseCount += 1
+
+                    if z.oppositeCloseCount >= 2
+
+                        z.kind := -2
+
+                        z.oppositeCloseCount := 0
+
+                        z.reverseCloseCount := 0
+
+                        z.touched := false
+
+                        z.armedAfterBar := h4_armedAfterBar4H
+
+                        // Assign this conversion to the current Bearish IFVG run.
+
+                        if bearIfvgConversionsThisClose == 0
+
+                            if not h4_previous4HBearIfvgConversion or na(h4_currentBearIfvgRunId)
+
+                                h4_nextIfvgRunId += 1
+
+                                h4_currentBearIfvgRunId := h4_nextIfvgRunId
+
+                                h4_currentBearIfvgRunCount := 0
+
+                        h4_currentBearIfvgRunCount += 1
+
+                        bearIfvgConversionsThisClose += 1
+
+                        z.ifvgRunId := h4_currentBearIfvgRunId
+
+                        z.ifvgOrdinal := h4_currentBearIfvgRunCount
+
+                        z.ifvgRunSize := h4_currentBearIfvgRunCount
+
+                        h4_n4HBearIfvgRaw := true
+
+                else
+
+                    z.oppositeCloseCount := 0
+
+            else if z.kind == -1
+
+                // Bearish FVG -> Bullish IFVG after TWO consecutive closes above hi.
+
+                if h4_h4Close > z.hi
+
+                    z.oppositeCloseCount += 1
+
+                    if z.oppositeCloseCount >= 2
+
+                        z.kind := 2
+
+                        z.oppositeCloseCount := 0
+
+                        z.reverseCloseCount := 0
+
+                        z.touched := false
+
+                        z.armedAfterBar := h4_armedAfterBar4H
+
+                        // Assign this conversion to the current Bullish IFVG run.
+
+                        if bullIfvgConversionsThisClose == 0
+
+                            if not h4_previous4HBullIfvgConversion or na(h4_currentBullIfvgRunId)
+
+                                h4_nextIfvgRunId += 1
+
+                                h4_currentBullIfvgRunId := h4_nextIfvgRunId
+
+                                h4_currentBullIfvgRunCount := 0
+
+                        h4_currentBullIfvgRunCount += 1
+
+                        bullIfvgConversionsThisClose += 1
+
+                        z.ifvgRunId := h4_currentBullIfvgRunId
+
+                        z.ifvgOrdinal := h4_currentBullIfvgRunCount
+
+                        z.ifvgRunSize := h4_currentBullIfvgRunCount
+
+                        h4_n4HBullIfvgRaw := true
+
+                else
+
+                    z.oppositeCloseCount := 0
+
+            else if z.kind == 2
+
+                // Bullish IFVG invalidation: consecutive confirmed closes BELOW lo.
+
+                if h4_h4Close < z.lo
+
+                    z.reverseCloseCount += 1
+
+                    if z.reverseCloseCount >= h4_ifvgInvalidationCloses
+
+                        removeZone := true
+
+                else
+
+                    z.reverseCloseCount := 0
+
+            else if z.kind == -2
+
+                // Bearish IFVG invalidation: consecutive confirmed closes ABOVE hi.
+
+                if h4_h4Close > z.hi
+
+                    z.reverseCloseCount += 1
+
+                    if z.reverseCloseCount >= h4_ifvgInvalidationCloses
+
+                        removeZone := true
+
+                else
+
+                    z.reverseCloseCount := 0
+
+            if removeZone
+
+                h4_f_delete_box(z.bx)
+
+                array.remove(h4_zones4H, i)
+
+            else
+
+                array.set(h4_zones4H, i, z)
+
+                i += 1
+
+        // Finalize IFVG run sizes after all conversions on this 4H close are known.
+
+        if bullIfvgConversionsThisClose > 0
+
+            h4_f_update_ifvg_run_size(h4_zones4H, h4_currentBullIfvgRunId, h4_currentBullIfvgRunCount)
+
+            h4_previous4HBullIfvgConversion := true
+
+        else
+
+            h4_previous4HBullIfvgConversion := false
+
+            h4_currentBullIfvgRunId := na
+
+            h4_currentBullIfvgRunCount := 0
+
+        if bearIfvgConversionsThisClose > 0
+
+            h4_f_update_ifvg_run_size(h4_zones4H, h4_currentBearIfvgRunId, h4_currentBearIfvgRunCount)
+
+            h4_previous4HBearIfvgConversion := true
+
+        else
+
+            h4_previous4HBearIfvgConversion := false
+
+            h4_currentBearIfvgRunId := na
+
+            h4_currentBearIfvgRunCount := 0
+
+    // 2) Detect new strict three-candle 4H FVG geometry.
+
+    bool bullishGap = not na(h4_h4HighTwoBack) and h4_h4Low > h4_h4HighTwoBack
+
+    bool bearishGap = not na(h4_h4LowTwoBack) and h4_h4High < h4_h4LowTwoBack
+
+    float bullishGapSize = bullishGap ? h4_h4Low - h4_h4HighTwoBack : 0.0
+
+    float bearishGapSize = bearishGap ? h4_h4LowTwoBack - h4_h4High : 0.0
+
+    if bullishGap and bullishGapSize >= h4_minGap4H
+
+        if h4_previous4HBullGap and not na(h4_currentBullFvgRunId)
+
+            h4_currentBullFvgRunCount += 1
+
+        else
+
+            h4_nextFvgRunId += 1
+
+            h4_currentBullFvgRunId := h4_nextFvgRunId
+
+            h4_currentBullFvgRunCount := 1
+
+        h4_f_add_zone(
+
+             h4_zones4H,
+
+             h4_h4HighTwoBack,
+
+             h4_h4Low,
+
+             h4_h4FirstTime,
+
+             h4_h4Time,
+
+             h4_h4Time,
+
+             1,
+
+             h4_armedAfterBar4H,
+
+             h4_currentBullFvgRunId,
+
+             h4_currentBullFvgRunCount,
+
+             h4_currentBullFvgRunCount,
+
+             h4_currentZoneRightTime)
+
+        h4_f_update_fvg_run_size(h4_zones4H, h4_currentBullFvgRunId, h4_currentBullFvgRunCount)
+
+        h4_n4HBullFvgRaw := true
+
+    else
+
+        h4_currentBullFvgRunId := na
+
+        h4_currentBullFvgRunCount := 0
+
+    if bearishGap and bearishGapSize >= h4_minGap4H
+
+        if h4_previous4HBearGap and not na(h4_currentBearFvgRunId)
+
+            h4_currentBearFvgRunCount += 1
+
+        else
+
+            h4_nextFvgRunId += 1
+
+            h4_currentBearFvgRunId := h4_nextFvgRunId
+
+            h4_currentBearFvgRunCount := 1
+
+        h4_f_add_zone(
+
+             h4_zones4H,
+
+             h4_h4High,
+
+             h4_h4LowTwoBack,
+
+             h4_h4FirstTime,
+
+             h4_h4Time,
+
+             h4_h4Time,
+
+             -1,
+
+             h4_armedAfterBar4H,
+
+             h4_currentBearFvgRunId,
+
+             h4_currentBearFvgRunCount,
+
+             h4_currentBearFvgRunCount,
+
+             h4_currentZoneRightTime)
+
+        h4_f_update_fvg_run_size(h4_zones4H, h4_currentBearFvgRunId, h4_currentBearFvgRunCount)
+
+        h4_n4HBearFvgRaw := true
+
+    else
+
+        h4_currentBearFvgRunId := na
+
+        h4_currentBearFvgRunCount := 0
+
+    h4_previous4HBullGap := bullishGap and bullishGapSize >= h4_minGap4H
+
+    h4_previous4HBearGap := bearishGap and bearishGapSize >= h4_minGap4H
+
+// Persistent mode follows CURRENT MARKET PRICE on every chart bar.
+
+if h4_canRun and not h4_useConfirmedLifecycle
+
+    [bullIfvgDynamicPulse, bearIfvgDynamicPulse] = h4_f_process_current_price_classification(
+
+         h4_zones4H,
+
+         close,
+
+         bar_index)
+
+    h4_n4HBullIfvgRaw := h4_n4HBullIfvgRaw or bullIfvgDynamicPulse
+
+    h4_n4HBearIfvgRaw := h4_n4HBearIfvgRaw or bearIfvgDynamicPulse
+
+// Re-prune after processing so formation lookback remains authoritative.
+
+h4_f_prune_lookback(h4_zones4H, h4_currentCutoffTime)
+
+//------------------------------------------------------------------------------
+
+// Dynamic right-edge + text/style + ordinal synchronization
+
+//------------------------------------------------------------------------------
+
+h4_f_sync_zones(h4_zones4H, h4_currentZoneRightTime)
+
+//------------------------------------------------------------------------------
+
+// First-retest pulses by CURRENT classification and CURRENT visibility filter
+
+//------------------------------------------------------------------------------
+
+h4_t4HBullFvgRaw = h4_canRun ? h4_f_first_touch_kind(h4_zones4H, 1, 1, high, low, bar_index) : false
+
+h4_t4HBearFvgRaw = h4_canRun ? h4_f_first_touch_kind(h4_zones4H, -1, -1, high, low, bar_index) : false
+
+h4_t4HBullIfvgRaw = h4_canRun ? h4_f_first_touch_kind(h4_zones4H, 2, 1, high, low, bar_index) : false
+
+h4_t4HBearIfvgRaw = h4_canRun ? h4_f_first_touch_kind(h4_zones4H, -2, -1, high, low, bar_index) : false
+
+//------------------------------------------------------------------------------
+
+// Effective alert pulses
+
+//------------------------------------------------------------------------------
+
+h4_n4HBullFvg = h4_canRun and h4_enable4HMaster and (global_enableAllBullish and h4_enableAllBullish) and h4_enable4HBullFvg and h4_n4HBullFvgRaw
+
+h4_n4HBearFvg = h4_canRun and h4_enable4HMaster and (global_enableAllBearish and h4_enableAllBearish) and h4_enable4HBearFvg and h4_n4HBearFvgRaw
+
+h4_n4HBullIfvg = h4_canRun and h4_enable4HMaster and (global_enableAllBullish and h4_enableAllBullish) and h4_enable4HBullIfvg and h4_n4HBullIfvgRaw
+
+h4_n4HBearIfvg = h4_canRun and h4_enable4HMaster and (global_enableAllBearish and h4_enableAllBearish) and h4_enable4HBearIfvg and h4_n4HBearIfvgRaw
+
+h4_t4HBullFvg = h4_canRun and h4_enable4HMaster and (global_enableAllBullish and h4_enableAllBullish) and h4_enable4HBullFvg and h4_t4HBullFvgRaw
+
+h4_t4HBearFvg = h4_canRun and h4_enable4HMaster and (global_enableAllBearish and h4_enableAllBearish) and h4_enable4HBearFvg and h4_t4HBearFvgRaw
+
+h4_t4HBullIfvg = h4_canRun and h4_enable4HMaster and (global_enableAllBullish and h4_enableAllBullish) and h4_enable4HBullIfvg and h4_t4HBullIfvgRaw
+
+h4_t4HBearIfvg = h4_canRun and h4_enable4HMaster and (global_enableAllBearish and h4_enableAllBearish) and h4_enable4HBearIfvg and h4_t4HBearIfvgRaw
+
+//==============================================================================
+
+// 4H FORMATION / CLASSIFICATION ALERTS
+
+//==============================================================================
+
+alertcondition(h4_n4HBullFvg, title="4H Bullish FVG Formed", message="{{ticker}}: 4H bullish FVG formed.")
+
+alertcondition(h4_n4HBearFvg, title="4H Bearish FVG Formed", message="{{ticker}}: 4H bearish FVG formed.")
+
+alertcondition(h4_n4HBullIfvg, title="4H Bullish IFVG Formed", message="{{ticker}}: 4H zone classified as bullish IFVG.")
+
+alertcondition(h4_n4HBearIfvg, title="4H Bearish IFVG Formed", message="{{ticker}}: 4H zone classified as bearish IFVG.")
+
+//==============================================================================
+
+// 4H FIRST-RETEST ALERTS
+
+//==============================================================================
+
+alertcondition(h4_t4HBullFvg, title="4H Bullish FVG First Retest", message="{{ticker}}: price reached a visible 4H bullish FVG.")
+
+alertcondition(h4_t4HBearFvg, title="4H Bearish FVG First Retest", message="{{ticker}}: price reached a visible 4H bearish FVG.")
+
+alertcondition(h4_t4HBullIfvg, title="4H Bullish IFVG First Retest", message="{{ticker}}: price reached a visible 4H bullish IFVG.")
+
+alertcondition(h4_t4HBearIfvg, title="4H Bearish IFVG First Retest", message="{{ticker}}: price reached a visible 4H bearish IFVG.")
+
+
+
+//==============================================================================
+
+// 1H FVG / IFVG INVENTORY — V2.0
+
+//------------------------------------------------------------------------------
+
+// 1. 1H source timeframe only. Works on intraday charts up to and including 1H.
+
+// 2. Bullish FVG = third 1H candle LOW > first 1H candle HIGH.
+
+//    Zone = first candle HIGH -> third candle LOW.
+
+// 3. Bearish FVG = third 1H candle HIGH < first 1H candle LOW.
+
+//    Zone = third candle HIGH -> first candle LOW.
+
+// 4. Adjacent close/open gaps are ignored. Only candle 1 vs candle 3 geometry matters.
+
+// 5. Every visible zone dynamically extends to the OPEN of the current chart candle.
+
+//    Box text is right-aligned and vertically centered, keeping the 1H tag at the
+
+//    current right edge on supported intraday charts up to and including 1H.
+
+// 6. DEFAULT lifecycle mode:
+
+//      - One 1H close beyond an FVG does NOT convert it.
+
+//      - Two CONSECUTIVE confirmed 1H closes beyond the far boundary convert it
+
+//        into the opposite-direction IFVG.
+
+//      - After conversion, the configured number of consecutive confirmed 1H closes back through the opposite
+
+//        boundary invalidates/removes that IFVG.
+
+// 7. PERSISTENT CURRENT-PRICE mode (default lifecycle switch OFF):
+
+//      - Original 1H gaps are never permanently invalidated inside lookback.
+
+//      - Current price on native side => original FVG.
+
+//      - Current price beyond opposite side => opposite-direction IFVG.
+
+//      - If current price is inside the zone, the most recently resolved state remains.
+
+// 8. Calendar-day lookback: 5 / 10 / 15 / 30 / 90 / 180 / 365.
+
+//==============================================================================
+
+//------------------------------------------------------------------------------
+
+// 01. Master controls
+
+//------------------------------------------------------------------------------
+
+h1_groupMaster = "1H • 01. Master Controls"
+
+h1_enableIndicator = input.bool(true, "Enable indicator", group=h1_groupMaster)
+
+
+
+
+h1_showZoneText = input.bool(true, "Show timeframe and zone text", group=h1_groupMaster)
+
+h1_lookbackDays = input.int(
+
+     30,
+
+     "1H FVG / IFVG lookback, calendar days",
+
+     options=[5, 10, 15, 30, 90, 180, 365],
+
+     group=h1_groupMaster)
+
+h1_projectionAnchor = input.string(
+
+     "First FVG candle",
+
+     "Zone begins from",
+
+     options=["First FVG candle", "FVG end candle"],
+
+     group=h1_groupMaster)
+
+//------------------------------------------------------------------------------
+
+// 02. Classification / lifecycle
+
+//------------------------------------------------------------------------------
+
+h1_groupLifecycle = "1H • 02. Classification / Lifecycle"
+
+h1_useConfirmedLifecycle = input.bool(
+
+     true,
+
+     "Require 2 confirmed 1H closes for FVG -> IFVG",
+
+     tooltip="ON (default): one opposite 1H close is ignored; two consecutive confirmed 1H closes beyond the FVG convert it to an IFVG. IFVG invalidation is controlled separately below.\n\nOFF: never permanently invalidate an original gap inside the selected lookback. Classify each zone from current market price: native side = FVG, opposite side = IFVG.",
+
+     group=h1_groupLifecycle)
+
+h1_invalidateIfvgs = input.bool(
+
+     true,
+
+     "Enable confirmed 1H IFVG invalidation",
+
+     tooltip="ON: confirmed 1H closes can invalidate IFVGs using the bullish/bearish close-count settings below. OFF: once a zone becomes an IFVG in confirmed lifecycle mode, it remains on the chart until it falls outside the lookback or you hide it with visibility controls.",
+
+     group=h1_groupLifecycle)
+
+h1_bullIfvgInvalidationCloses = input.int(
+
+     1,
+
+     "Bullish IFVG: 1H closes below zone to invalidate",
+
+     options=[1, 2, 3, 4, 5],
+
+     tooltip="Number of CONSECUTIVE confirmed 1H closes below the bullish IFVG lower boundary required to remove the bullish IFVG.",
+
+     group=h1_groupLifecycle)
+
+h1_bearIfvgInvalidationCloses = input.int(
+
+     1,
+
+     "Bearish IFVG: 1H closes above zone to invalidate",
+
+     options=[1, 2, 3, 4, 5],
+
+     tooltip="Number of CONSECUTIVE confirmed 1H closes above the bearish IFVG upper boundary required to remove the bearish IFVG.",
+
+     group=h1_groupLifecycle)
+
+//------------------------------------------------------------------------------
+
+// 03. 1H inventory / minimum size
+
+//------------------------------------------------------------------------------
+
+h1_groupInventory = "1H • 03. 1H Inventory / Minimum Size"
+
+h1_minGapH = input.float(
+
+     0.0,
+
+     "1H: minimum FVG size, points",
+
+     minval=0.0,
+
+     step=0.25,
+
+     group=h1_groupInventory)
+
+//------------------------------------------------------------------------------
+
+// 04. Individual 1H controls
+
+//------------------------------------------------------------------------------
+
+h1_groupHourly = "1H • 04. 1H Individual Controls"
+
+h1_enableHBullFvg = input.bool(true, "1H Bullish FVG — plot + alerts", group=h1_groupHourly)
+
+h1_enableHBearFvg = input.bool(true, "1H Bearish FVG — plot + alerts", group=h1_groupHourly)
+
+h1_enableHBullIfvg = input.bool(true, "1H Bullish IFVG — plot + alerts", group=h1_groupHourly)
+
+h1_enableHBearIfvg = input.bool(true, "1H Bearish IFVG — plot + alerts", group=h1_groupHourly)
+
+//------------------------------------------------------------------------------
+
+// 05. Visual customization — same colors as original indicator
+
+//------------------------------------------------------------------------------
+
+h1_groupVisual = "1H • 05. Visual Customization"
+
+h1_bullishBaseColor = input.color(color.rgb(0, 139, 170), "Bullish cyan-blue", group=h1_groupVisual)
+
+h1_bearishBaseColor = input.color(color.rgb(132, 78, 170), "Bearish purple", group=h1_groupVisual)
+
+h1_fvgFillTransparency = input.int(84, "FVG fill transparency", minval=0, maxval=100, group=h1_groupVisual)
+
+h1_ifvgFillTransparency = input.int(87, "IFVG fill transparency", minval=0, maxval=100, group=h1_groupVisual)
+
+h1_borderTransparency = input.int(18, "Border transparency", minval=0, maxval=100, group=h1_groupVisual)
+
+h1_boxBorderWidth = input.int(1, "Box border width", minval=0, maxval=4, group=h1_groupVisual)
+
+h1_zoneTextColor = input.color(color.new(color.white, 15), "Zone text color", group=h1_groupVisual)
+
+//------------------------------------------------------------------------------
+
+// Routing and effective controls
+
+//------------------------------------------------------------------------------
+
+int h1_chartTimeframeSeconds = timeframe.in_seconds()
+
+h1_isOneHourChart = timeframe.isintraday and h1_chartTimeframeSeconds == 60 * 60
+
+h1_isLowerIntradayChart = timeframe.isintraday and h1_chartTimeframeSeconds < 60 * 60
+
+h1_supportedChart = h1_isOneHourChart or h1_isLowerIntradayChart
+
+h1_canRun = h1_enableIndicator and h1_supportedChart
+
+h1_bullFvgFill = color.new(h1_bullishBaseColor, h1_fvgFillTransparency)
+
+h1_bearFvgFill = color.new(h1_bearishBaseColor, h1_fvgFillTransparency)
+
+h1_bullIfvgFill = color.new(h1_bullishBaseColor, h1_ifvgFillTransparency)
+
+h1_bearIfvgFill = color.new(h1_bearishBaseColor, h1_ifvgFillTransparency)
+
+h1_bullBorder = color.new(h1_bullishBaseColor, h1_borderTransparency)
+
+h1_bearBorder = color.new(h1_bearishBaseColor, h1_borderTransparency)
+
+int h1_DAY_MS = 24 * 60 * 60 * 1000
+
+int h1_lookbackMs = h1_lookbackDays * h1_DAY_MS
+
+// Kind codes:
+
+//   +1 = Bullish FVG
+
+//   -1 = Bearish FVG
+
+//   +2 = Bullish IFVG
+
+//   -2 = Bearish IFVG
+
+//------------------------------------------------------------------------------
+
+// Zone object
+
+//------------------------------------------------------------------------------
+
+type h1_Zone
+
+    float lo
+
+    float hi
+
+    int leftTime
+
+    int originTime
+
+    int originDirection
+
+    int kind
+
+    int oppositeCloseCount
+
+    box bx
+
+    bool touched
+
+    int armedAfterBar
+
+h1_f_zone_text(int kind) =>
+
+    string label = kind == 1 ? "1H Bullish FVG" :
+
+         kind == -1 ? "1H Bearish FVG" :
+
+         kind == 2 ? "1H Bullish IFVG" : "1H Bearish IFVG"
+
+    h1_showZoneText ? label : ""
+
+h1_f_kind_visible(int kind) =>
+
+    bool master = h1_canRun and h1_enableHourlyMaster
+
+    kind == 1 ? master and (global_enableAllBullish and h1_enableAllBullish) and h1_enableHBullFvg :
+
+     kind == -1 ? master and (global_enableAllBearish and h1_enableAllBearish) and h1_enableHBearFvg :
+
+     kind == 2 ? master and (global_enableAllBullish and h1_enableAllBullish) and h1_enableHBullIfvg :
+
+     master and (global_enableAllBearish and h1_enableAllBearish) and h1_enableHBearIfvg
+
+h1_f_kind_fill(int kind) =>
+
+    kind == 1 ? h1_bullFvgFill :
+
+     kind == -1 ? h1_bearFvgFill :
+
+     kind == 2 ? h1_bullIfvgFill : h1_bearIfvgFill
+
+h1_f_kind_border(int kind) =>
+
+    kind > 0 ? h1_bullBorder : h1_bearBorder
+
+h1_f_kind_style(int kind) =>
+
+    math.abs(kind) == 1 ? line.style_solid : line.style_dashed
+
+h1_f_fixed_left(int firstCandleTime, int endCandleTime) =>
+
+    h1_projectionAnchor == "First FVG candle" ? firstCandleTime : endCandleTime
+
+h1_f_make_box(
+
+     int leftTime,
+
+     int rightTime,
+
+     float lo,
+
+     float hi,
+
+     int kind) =>
+
+    box.new(
+
+         left=leftTime,
+
+         top=hi,
+
+         right=rightTime,
+
+         bottom=lo,
+
+         xloc=xloc.bar_time,
+
+         extend=extend.none,
+
+         bgcolor=h1_f_kind_fill(kind),
+
+         border_color=h1_f_kind_border(kind),
+
+         border_width=h1_boxBorderWidth,
+
+         border_style=h1_f_kind_style(kind),
+
+         text=h1_f_zone_text(kind),
+
+         text_color=h1_zoneTextColor,
+
+         text_size=size.tiny,
+
+         text_halign=text.align_right,
+
+         text_valign=text.align_center)
+
+h1_f_delete_box(box boxId) =>
+
+    if not na(boxId)
+
+        box.delete(boxId)
+
+h1_f_new_zone(
+
+     float lo,
+
+     float hi,
+
+     int firstCandleTime,
+
+     int endCandleTime,
+
+     int originTime,
+
+     int originDirection,
+
+     int armedAfterBar,
+
+     int currentRightTime) =>
+
+    int leftTime = h1_f_fixed_left(firstCandleTime, endCandleTime)
+
+    int initialKind = originDirection
+
+    box boxId = na
+
+    if h1_f_kind_visible(initialKind)
+
+        boxId := h1_f_make_box(leftTime, currentRightTime, lo, hi, initialKind)
+
+    h1_Zone.new(
+
+         lo,
+
+         hi,
+
+         leftTime,
+
+         originTime,
+
+         originDirection,
+
+         initialKind,
+
+         0,
+
+         boxId,
+
+         false,
+
+         armedAfterBar)
+
+h1_f_add_zone(
+
+     array<h1_Zone> zones,
+
+     float lo,
+
+     float hi,
+
+     int firstCandleTime,
+
+     int endCandleTime,
+
+     int originTime,
+
+     int originDirection,
+
+     int armedAfterBar,
+
+     int currentRightTime) =>
+
+    h1_Zone z = h1_f_new_zone(
+
+         lo,
+
+         hi,
+
+         firstCandleTime,
+
+         endCandleTime,
+
+         originTime,
+
+         originDirection,
+
+         armedAfterBar,
+
+         currentRightTime)
+
+    array.push(zones, z)
+
+h1_f_prune_lookback(array<h1_Zone> zones, int cutoffTime) =>
+
+    int i = array.size(zones) - 1
+
+    while i >= 0
+
+        h1_Zone z = array.get(zones, i)
+
+        if z.originTime < cutoffTime
+
+            h1_f_delete_box(z.bx)
+
+            array.remove(zones, i)
+
+        i -= 1
+
+// Apply visibility, style, text, and — critically — the dynamic right edge.
+
+h1_f_sync_zones(array<h1_Zone> zones, int currentRightTime) =>
+
+    int i = 0
+
+    while i < array.size(zones)
+
+        h1_Zone z = array.get(zones, i)
+
+        bool visible = h1_f_kind_visible(z.kind)
+
+        if visible
+
+            if na(z.bx)
+
+                z.bx := h1_f_make_box(z.leftTime, currentRightTime, z.lo, z.hi, z.kind)
+
+            else
+
+                box.set_right(z.bx, currentRightTime)
+
+                box.set_bgcolor(z.bx, h1_f_kind_fill(z.kind))
+
+                box.set_border_color(z.bx, h1_f_kind_border(z.kind))
+
+                box.set_border_width(z.bx, h1_boxBorderWidth)
+
+                box.set_border_style(z.bx, h1_f_kind_style(z.kind))
+
+                box.set_text(z.bx, h1_f_zone_text(z.kind))
+
+                box.set_text_color(z.bx, h1_zoneTextColor)
+
+        else
+
+            h1_f_delete_box(z.bx)
+
+            z.bx := na
+
+        array.set(zones, i, z)
+
+        i += 1
+
+//------------------------------------------------------------------------------
+
+// DEFAULT confirmed lifecycle
+
+//------------------------------------------------------------------------------
+
+// One opposite 1H close does not change an FVG.
+
+// Two consecutive opposite 1H closes convert FVG -> IFVG.
+
+// IFVG invalidation is independently configurable from 1 to 5 consecutive 1H closes.
+
+// When IFVG invalidation is OFF, converted IFVGs remain until lookback pruning or visibility hiding.
+
+h1_f_process_confirmed_lifecycle(
+
+     array<h1_Zone> zones,
+
+     float sourceClose,
+
+     int currentChartBar) =>
+
+    bool newBullIfvg = false
+
+    bool newBearIfvg = false
+
+    int i = array.size(zones) - 1
+
+    while i >= 0
+
+        h1_Zone z = array.get(zones, i)
+
+        bool removeZone = false
+
+        if z.kind == 1
+
+            // Bullish FVG -> Bearish IFVG after TWO consecutive confirmed 1H closes below lo.
+
+            if sourceClose < z.lo
+
+                z.oppositeCloseCount += 1
+
+                if z.oppositeCloseCount >= 2
+
+                    z.kind := -2
+
+                    z.oppositeCloseCount := 0
+
+                    z.touched := false
+
+                    z.armedAfterBar := currentChartBar
+
+                    newBearIfvg := true
+
+            else
+
+                z.oppositeCloseCount := 0
+
+        else if z.kind == -1
+
+            // Bearish FVG -> Bullish IFVG after TWO consecutive confirmed 1H closes above hi.
+
+            if sourceClose > z.hi
+
+                z.oppositeCloseCount += 1
+
+                if z.oppositeCloseCount >= 2
+
+                    z.kind := 2
+
+                    z.oppositeCloseCount := 0
+
+                    z.touched := false
+
+                    z.armedAfterBar := currentChartBar
+
+                    newBullIfvg := true
+
+            else
+
+                z.oppositeCloseCount := 0
+
+        else if z.kind == 2
+
+            // Bullish IFVG: optional invalidation after configured consecutive 1H closes below lo.
+
+            if h1_invalidateIfvgs
+
+                if sourceClose < z.lo
+
+                    z.oppositeCloseCount += 1
+
+                    if z.oppositeCloseCount >= h1_bullIfvgInvalidationCloses
+
+                        removeZone := true
+
+                else
+
+                    z.oppositeCloseCount := 0
+
+            else
+
+                z.oppositeCloseCount := 0
+
+        else if z.kind == -2
+
+            // Bearish IFVG: optional invalidation after configured consecutive 1H closes above hi.
+
+            if h1_invalidateIfvgs
+
+                if sourceClose > z.hi
+
+                    z.oppositeCloseCount += 1
+
+                    if z.oppositeCloseCount >= h1_bearIfvgInvalidationCloses
+
+                        removeZone := true
+
+                else
+
+                    z.oppositeCloseCount := 0
+
+            else
+
+                z.oppositeCloseCount := 0
+
+        if removeZone
+
+            h1_f_delete_box(z.bx)
+
+            array.remove(zones, i)
+
+        else
+
+            array.set(zones, i, z)
+
+        i -= 1
+
+    [newBullIfvg, newBearIfvg]
+
+//------------------------------------------------------------------------------
+
+// PERSISTENT current-price classification
+
+//------------------------------------------------------------------------------
+
+// This mode never permanently invalidates an original FVG inside lookback.
+
+// Classification is based on current market price relative to original geometry.
+
+h1_f_process_current_price_classification(
+
+     array<h1_Zone> zones,
+
+     float currentPrice,
+
+     int currentChartBar) =>
+
+    bool newBullIfvg = false
+
+    bool newBearIfvg = false
+
+    int i = 0
+
+    while i < array.size(zones)
+
+        h1_Zone z = array.get(zones, i)
+
+        int oldKind = z.kind
+
+        int resolvedKind = oldKind
+
+        if z.originDirection == -1
+
+            // Original bearish FVG:
+
+            // below zone = Bearish FVG; above zone = Bullish IFVG.
+
+            if currentPrice > z.hi
+
+                resolvedKind := 2
+
+            else if currentPrice < z.lo
+
+                resolvedKind := -1
+
+        else
+
+            // Original bullish FVG:
+
+            // above zone = Bullish FVG; below zone = Bearish IFVG.
+
+            if currentPrice < z.lo
+
+                resolvedKind := -2
+
+            else if currentPrice > z.hi
+
+                resolvedKind := 1
+
+        if resolvedKind != oldKind
+
+            z.kind := resolvedKind
+
+            z.oppositeCloseCount := 0
+
+            z.touched := false
+
+            z.armedAfterBar := currentChartBar
+
+            if resolvedKind == 2
+
+                newBullIfvg := true
+
+            else if resolvedKind == -2
+
+                newBearIfvg := true
+
+        array.set(zones, i, z)
+
+        i += 1
+
+    [newBullIfvg, newBearIfvg]
+
+// direction: +1 bullish state; -1 bearish state.
+
+h1_f_first_touch_kind(
+
+     array<h1_Zone> zones,
+
+     int targetKind,
+
+     int direction,
+
+     float chartHigh,
+
+     float chartLow,
+
+     int currentChartBar) =>
+
+    bool pulse = false
+
+    int i = 0
+
+    while i < array.size(zones)
+
+        h1_Zone z = array.get(zones, i)
+
+        if z.kind == targetKind
+
+            bool eligible = currentChartBar > z.armedAfterBar
+
+            bool reachedBoundary = direction == 1 ? chartLow <= z.hi : chartHigh >= z.lo
+
+            if eligible and not z.touched and reachedBoundary
+
+                z.touched := true
+
+                array.set(zones, i, z)
+
+                pulse := true
+
+        i += 1
+
+    pulse
+
+//------------------------------------------------------------------------------
+
+// 1H source data
+
+//------------------------------------------------------------------------------
+
+// On a 1H chart, process the current 1H candle only once it closes.
+
+bool h1_hasEnoughOneHourChartBars = bar_index >= 2
+
+// On lower intraday charts, request the PREVIOUS fully closed 1H candle with a one-bar offset.
+
+// This prevents an unfinished 1H candle from being treated as a confirmed close.
+
+[h1_hTimeClosed, h1_hTimeCloseClosed, h1_hFirstTimeClosed,
+
+ h1_hHighClosed, h1_hLowClosed, h1_hCloseClosed,
+
+ h1_hHighTwoBackClosed, h1_hLowTwoBackClosed] = request.security(
+
+     syminfo.tickerid,
+
+     "60",
+
+     [time[1], time_close[1], time[3], high[1], low[1], close[1], high[3], low[3]],
+
+     gaps=barmerge.gaps_off,
+
+     lookahead=barmerge.lookahead_on)
+
+int h1_hTime = h1_isOneHourChart ? time : h1_hTimeClosed
+
+int h1_hTimeClose = h1_isOneHourChart ? time_close : h1_hTimeCloseClosed
+
+int h1_hFirstTime = h1_isOneHourChart ? (h1_hasEnoughOneHourChartBars ? time[2] : na) : h1_hFirstTimeClosed
+
+float h1_hHigh = h1_isOneHourChart ? high : h1_hHighClosed
+
+float h1_hLow = h1_isOneHourChart ? low : h1_hLowClosed
+
+float h1_hClose = h1_isOneHourChart ? close : h1_hCloseClosed
+
+float h1_hHighTwoBack = h1_isOneHourChart ? (h1_hasEnoughOneHourChartBars ? high[2] : na) : h1_hHighTwoBackClosed
+
+float h1_hLowTwoBack = h1_isOneHourChart ? (h1_hasEnoughOneHourChartBars ? low[2] : na) : h1_hLowTwoBackClosed
+
+bool h1_sourceClosedH = h1_canRun and (
+
+     (h1_isOneHourChart and h1_hasEnoughOneHourChartBars and barstate.isconfirmed) or
+
+     (h1_isLowerIntradayChart and barstate.isnew and timeframe.change("60") and not na(h1_hTimeClosed)))
+
+// On lower intraday charts, the previous 1H candle was already confirmed before the
+
+// first chart bar of the new hour. That first bar can therefore interact with it.
+
+int h1_armedAfterBarH = h1_isOneHourChart ? bar_index : bar_index - 1
+
+// Right edge is ALWAYS the opening time of the current chart candle.
+
+int h1_currentZoneRightTime = time
+
+//------------------------------------------------------------------------------
+
+// Inventory
+
+//------------------------------------------------------------------------------
+
+var array<h1_Zone> h1_hourlyZones = array.new<h1_Zone>()
+
+//------------------------------------------------------------------------------
+
+// Lookback pruning
+
+//------------------------------------------------------------------------------
+
+int h1_currentCutoffTime = time - h1_lookbackMs
+
+h1_f_prune_lookback(h1_hourlyZones, h1_currentCutoffTime)
+
+//------------------------------------------------------------------------------
+
+// Process confirmed 1H closes and detect new 1H FVGs
+
+//------------------------------------------------------------------------------
+
+bool h1_nHBullFvgRaw = false
+
+bool h1_nHBearFvgRaw = false
+
+bool h1_nHBullIfvgRaw = false
+
+bool h1_nHBearIfvgRaw = false
+
+if h1_sourceClosedH
+
+    // First update the lifecycle of zones that already existed before this 1H close.
+
+    if h1_useConfirmedLifecycle
+
+        [bullIfvgPulse, bearIfvgPulse] = h1_f_process_confirmed_lifecycle(
+
+             h1_hourlyZones,
+
+             h1_hClose,
+
+             h1_armedAfterBarH)
+
+        h1_nHBullIfvgRaw := bullIfvgPulse
+
+        h1_nHBearIfvgRaw := bearIfvgPulse
+
+    // Strict three-candle FVG geometry. Adjacent close/open gaps are irrelevant.
+
+    bool bullishGap = not na(h1_hHighTwoBack) and h1_hLow > h1_hHighTwoBack
+
+    bool bearishGap = not na(h1_hLowTwoBack) and h1_hHigh < h1_hLowTwoBack
+
+    float bullishGapSize = bullishGap ? h1_hLow - h1_hHighTwoBack : 0.0
+
+    float bearishGapSize = bearishGap ? h1_hLowTwoBack - h1_hHigh : 0.0
+
+    if bullishGap and bullishGapSize >= h1_minGapH
+
+        h1_f_add_zone(
+
+             h1_hourlyZones,
+
+             h1_hHighTwoBack,
+
+             h1_hLow,
+
+             h1_hFirstTime,
+
+             h1_hTime,
+
+             h1_hTime,
+
+             1,
+
+             h1_armedAfterBarH,
+
+             h1_currentZoneRightTime)
+
+        h1_nHBullFvgRaw := true
+
+    if bearishGap and bearishGapSize >= h1_minGapH
+
+        h1_f_add_zone(
+
+             h1_hourlyZones,
+
+             h1_hHigh,
+
+             h1_hLowTwoBack,
+
+             h1_hFirstTime,
+
+             h1_hTime,
+
+             h1_hTime,
+
+             -1,
+
+             h1_armedAfterBarH,
+
+             h1_currentZoneRightTime)
+
+        h1_nHBearFvgRaw := true
+
+// In persistent mode, classification follows CURRENT MARKET PRICE on every chart bar,
+
+// including the live/open candle. This is deliberately independent of 1H closes.
+
+if h1_canRun and not h1_useConfirmedLifecycle
+
+    [bullIfvgDynamicPulse, bearIfvgDynamicPulse] = h1_f_process_current_price_classification(
+
+         h1_hourlyZones,
+
+         close,
+
+         bar_index)
+
+    h1_nHBullIfvgRaw := h1_nHBullIfvgRaw or bullIfvgDynamicPulse
+
+    h1_nHBearIfvgRaw := h1_nHBearIfvgRaw or bearIfvgDynamicPulse
+
+// Re-prune after formation so selected lookback remains authoritative.
+
+h1_f_prune_lookback(h1_hourlyZones, h1_currentCutoffTime)
+
+//------------------------------------------------------------------------------
+
+// Dynamic right-edge + text/style synchronization
+
+//------------------------------------------------------------------------------
+
+// Every box ends at the OPEN of whatever chart candle is currently active.
+
+// Because text_halign = text.align_right, the 1H FVG/IFVG tag remains visible
+
+// at the right edge while vertically centered inside the zone.
+
+h1_f_sync_zones(h1_hourlyZones, h1_currentZoneRightTime)
+
+//------------------------------------------------------------------------------
+
+// First-retest pulses by CURRENT classification
+
+//------------------------------------------------------------------------------
+
+h1_tHBullFvgRaw = h1_canRun ? h1_f_first_touch_kind(h1_hourlyZones, 1, 1, high, low, bar_index) : false
+
+h1_tHBearFvgRaw = h1_canRun ? h1_f_first_touch_kind(h1_hourlyZones, -1, -1, high, low, bar_index) : false
+
+h1_tHBullIfvgRaw = h1_canRun ? h1_f_first_touch_kind(h1_hourlyZones, 2, 1, high, low, bar_index) : false
+
+h1_tHBearIfvgRaw = h1_canRun ? h1_f_first_touch_kind(h1_hourlyZones, -2, -1, high, low, bar_index) : false
+
+//------------------------------------------------------------------------------
+
+// Effective alert pulses
+
+//------------------------------------------------------------------------------
+
+h1_nHBullFvg = h1_canRun and h1_enableHourlyMaster and (global_enableAllBullish and h1_enableAllBullish) and h1_enableHBullFvg and h1_nHBullFvgRaw
+
+h1_nHBearFvg = h1_canRun and h1_enableHourlyMaster and (global_enableAllBearish and h1_enableAllBearish) and h1_enableHBearFvg and h1_nHBearFvgRaw
+
+h1_nHBullIfvg = h1_canRun and h1_enableHourlyMaster and (global_enableAllBullish and h1_enableAllBullish) and h1_enableHBullIfvg and h1_nHBullIfvgRaw
+
+h1_nHBearIfvg = h1_canRun and h1_enableHourlyMaster and (global_enableAllBearish and h1_enableAllBearish) and h1_enableHBearIfvg and h1_nHBearIfvgRaw
+
+h1_tHBullFvg = h1_canRun and h1_enableHourlyMaster and (global_enableAllBullish and h1_enableAllBullish) and h1_enableHBullFvg and h1_tHBullFvgRaw
+
+h1_tHBearFvg = h1_canRun and h1_enableHourlyMaster and (global_enableAllBearish and h1_enableAllBearish) and h1_enableHBearFvg and h1_tHBearFvgRaw
+
+h1_tHBullIfvg = h1_canRun and h1_enableHourlyMaster and (global_enableAllBullish and h1_enableAllBullish) and h1_enableHBullIfvg and h1_tHBullIfvgRaw
+
+h1_tHBearIfvg = h1_canRun and h1_enableHourlyMaster and (global_enableAllBearish and h1_enableAllBearish) and h1_enableHBearIfvg and h1_tHBearIfvgRaw
+
+//==============================================================================
+
+// 1H FORMATION / CLASSIFICATION ALERTS
+
+//==============================================================================
+
+alertcondition(h1_nHBullFvg, title="1H Bullish FVG Formed", message="{{ticker}}: 1H bullish FVG formed.")
+
+alertcondition(h1_nHBearFvg, title="1H Bearish FVG Formed", message="{{ticker}}: 1H bearish FVG formed.")
+
+alertcondition(h1_nHBullIfvg, title="1H Bullish IFVG Formed", message="{{ticker}}: 1H zone classified as bullish IFVG.")
+
+alertcondition(h1_nHBearIfvg, title="1H Bearish IFVG Formed", message="{{ticker}}: 1H zone classified as bearish IFVG.")
+
+//==============================================================================
+
+// 1H FIRST-RETEST ALERTS
+
+//==============================================================================
+
+alertcondition(h1_tHBullFvg, title="1H Bullish FVG First Retest", message="{{ticker}}: price reached a 1H bullish FVG.")
+
+alertcondition(h1_tHBearFvg, title="1H Bearish FVG First Retest", message="{{ticker}}: price reached a 1H bearish FVG.")
+
+alertcondition(h1_tHBullIfvg, title="1H Bullish IFVG First Retest", message="{{ticker}}: price reached a 1H bullish IFVG.")
+
+alertcondition(h1_tHBearIfvg, title="1H Bearish IFVG First Retest", message="{{ticker}}: price reached a 1H bearish IFVG.")
+
+
+
+//==============================================================================
+
+// DAILY FVG / IFVG INVENTORY — V2.0
+
+//------------------------------------------------------------------------------
+
+// 1. Daily source timeframe only. Works on intraday and Daily charts.
+
+// 2. Bullish FVG = third Daily candle LOW > first Daily candle HIGH.
+
+//    Zone = first candle HIGH -> third candle LOW.
+
+// 3. Bearish FVG = third Daily candle HIGH < first Daily candle LOW.
+
+//    Zone = third candle HIGH -> first candle LOW.
+
+// 4. Adjacent close/open gaps are ignored. Only candle 1 vs candle 3 geometry matters.
+
+// 5. Every visible zone dynamically extends to the OPEN of the current chart candle.
+
+//    Box text is right-aligned and vertically centered, keeping the Daily tag at the
+
+//    current right edge on 1M, 2M, 5M, 15M, 30M, 1H, 4H, Daily, etc.
+
+// 6. DEFAULT lifecycle mode:
+
+//      - One Daily close beyond an FVG does NOT convert it.
+
+//      - Two CONSECUTIVE confirmed Daily closes beyond the far boundary convert it
+
+//        into the opposite-direction IFVG.
+
+//      - After conversion, one confirmed Daily close back through the opposite
+
+//        boundary invalidates/removes that IFVG.
+
+// 7. PERSISTENT CURRENT-PRICE mode (default lifecycle switch OFF):
+
+//      - Original Daily gaps are never permanently invalidated inside lookback.
+
+//      - Current price on native side => original FVG.
+
+//      - Current price beyond opposite side => opposite-direction IFVG.
+
+//      - If current price is inside the zone, the most recently resolved state remains.
+
+// 8. Calendar-day lookback: 5 / 10 / 15 / 30 / 90 / 180 / 365.
+
+//==============================================================================
+
+//------------------------------------------------------------------------------
+
+// 01. Master controls
+
+//------------------------------------------------------------------------------
+
+d_groupMaster = "Daily • 01. Master Controls"
+
+d_enableIndicator = input.bool(true, "Enable indicator", group=d_groupMaster)
+
+
+
+
+d_showZoneText = input.bool(true, "Show timeframe and zone text", group=d_groupMaster)
+
+d_lookbackDays = input.int(
+
+     30,
+
+     "Daily FVG / IFVG lookback, calendar days",
+
+     options=[5, 10, 15, 30, 90, 180, 365],
+
+     group=d_groupMaster)
+
+d_projectionAnchor = input.string(
+
+     "First FVG candle",
+
+     "Zone begins from",
+
+     options=["First FVG candle", "FVG end candle"],
+
+     group=d_groupMaster)
+
+//------------------------------------------------------------------------------
+
+// 02. Classification / lifecycle
+
+//------------------------------------------------------------------------------
+
+d_groupLifecycle = "Daily • 02. Classification / Lifecycle"
+
+d_useConfirmedLifecycle = input.bool(
+
+     true,
+
+     "Require 2 Daily closes for FVG -> IFVG + invalidate reverse IFVG",
+
+     tooltip="ON (default): one opposite Daily close is ignored; two consecutive confirmed Daily closes beyond the FVG convert it to an IFVG. A later confirmed Daily close back through the opposite boundary invalidates the IFVG.\n\nOFF: never permanently invalidate an original gap inside the selected lookback. Classify each zone from current market price: native side = FVG, opposite side = IFVG.",
+
+     group=d_groupLifecycle)
+
+//------------------------------------------------------------------------------
+
+// 03. Daily inventory / minimum size
+
+//------------------------------------------------------------------------------
+
+d_groupInventory = "Daily • 03. Daily Inventory / Minimum Size"
+
+d_minGapD = input.float(
+
+     0.0,
+
+     "Daily: minimum FVG size, points",
+
+     minval=0.0,
+
+     step=0.25,
+
+     group=d_groupInventory)
+
+//------------------------------------------------------------------------------
+
+// 04. Individual Daily controls
+
+//------------------------------------------------------------------------------
+
+d_groupDaily = "Daily • 04. Daily Individual Controls"
+
+d_enableDBullFvg = input.bool(true, "Daily Bullish FVG — plot + alerts", group=d_groupDaily)
+
+d_enableDBearFvg = input.bool(true, "Daily Bearish FVG — plot + alerts", group=d_groupDaily)
+
+d_enableDBullIfvg = input.bool(true, "Daily Bullish IFVG — plot + alerts", group=d_groupDaily)
+
+d_enableDBearIfvg = input.bool(true, "Daily Bearish IFVG — plot + alerts", group=d_groupDaily)
+
+//------------------------------------------------------------------------------
+
+// 05. Visual customization — same colors as original indicator
+
+//------------------------------------------------------------------------------
+
+d_groupVisual = "Daily • 05. Visual Customization"
+
+d_bullishBaseColor = input.color(color.rgb(0, 139, 170), "Bullish cyan-blue", group=d_groupVisual)
+
+d_bearishBaseColor = input.color(color.rgb(132, 78, 170), "Bearish purple", group=d_groupVisual)
+
+d_fvgFillTransparency = input.int(84, "FVG fill transparency", minval=0, maxval=100, group=d_groupVisual)
+
+d_ifvgFillTransparency = input.int(87, "IFVG fill transparency", minval=0, maxval=100, group=d_groupVisual)
+
+d_borderTransparency = input.int(18, "Border transparency", minval=0, maxval=100, group=d_groupVisual)
+
+d_boxBorderWidth = input.int(1, "Box border width", minval=0, maxval=4, group=d_groupVisual)
+
+d_zoneTextColor = input.color(color.new(color.white, 15), "Zone text color", group=d_groupVisual)
+
+//------------------------------------------------------------------------------
+
+// Routing and effective controls
+
+//------------------------------------------------------------------------------
+
+d_isDailyChart = timeframe.isdaily
+
+d_isIntradayChart = timeframe.isintraday
+
+d_supportedChart = d_isDailyChart or d_isIntradayChart
+
+d_canRun = d_enableIndicator and d_supportedChart
+
+d_bullFvgFill = color.new(d_bullishBaseColor, d_fvgFillTransparency)
+
+d_bearFvgFill = color.new(d_bearishBaseColor, d_fvgFillTransparency)
+
+d_bullIfvgFill = color.new(d_bullishBaseColor, d_ifvgFillTransparency)
+
+d_bearIfvgFill = color.new(d_bearishBaseColor, d_ifvgFillTransparency)
+
+d_bullBorder = color.new(d_bullishBaseColor, d_borderTransparency)
+
+d_bearBorder = color.new(d_bearishBaseColor, d_borderTransparency)
+
+int d_DAY_MS = 24 * 60 * 60 * 1000
+
+int d_lookbackMs = d_lookbackDays * d_DAY_MS
+
+// Kind codes:
+
+//   +1 = Bullish FVG
+
+//   -1 = Bearish FVG
+
+//   +2 = Bullish IFVG
+
+//   -2 = Bearish IFVG
+
+//------------------------------------------------------------------------------
+
+// Zone object
+
+//------------------------------------------------------------------------------
+
+type d_Zone
+
+    float lo
+
+    float hi
+
+    int leftTime
+
+    int originTime
+
+    int originDirection
+
+    int kind
+
+    int oppositeCloseCount
+
+    box bx
+
+    bool touched
+
+    int armedAfterBar
+
+d_f_zone_text(int kind) =>
+
+    string label = kind == 1 ? "D Bullish FVG" :
+
+         kind == -1 ? "D Bearish FVG" :
+
+         kind == 2 ? "D Bullish IFVG" : "D Bearish IFVG"
+
+    d_showZoneText ? label : ""
+
+d_f_kind_visible(int kind) =>
+
+    bool master = d_canRun and d_enableDailyMaster
+
+    kind == 1 ? master and (global_enableAllBullish and d_enableAllBullish) and d_enableDBullFvg :
+
+     kind == -1 ? master and (global_enableAllBearish and d_enableAllBearish) and d_enableDBearFvg :
+
+     kind == 2 ? master and (global_enableAllBullish and d_enableAllBullish) and d_enableDBullIfvg :
+
+     master and (global_enableAllBearish and d_enableAllBearish) and d_enableDBearIfvg
+
+d_f_kind_fill(int kind) =>
+
+    kind == 1 ? d_bullFvgFill :
+
+     kind == -1 ? d_bearFvgFill :
+
+     kind == 2 ? d_bullIfvgFill : d_bearIfvgFill
+
+d_f_kind_border(int kind) =>
+
+    kind > 0 ? d_bullBorder : d_bearBorder
+
+d_f_kind_style(int kind) =>
+
+    math.abs(kind) == 1 ? line.style_solid : line.style_dashed
+
+d_f_fixed_left(int firstCandleTime, int endCandleTime) =>
+
+    d_projectionAnchor == "First FVG candle" ? firstCandleTime : endCandleTime
+
+d_f_make_box(
+
+     int leftTime,
+
+     int rightTime,
+
+     float lo,
+
+     float hi,
+
+     int kind) =>
+
+    box.new(
+
+         left=leftTime,
+
+         top=hi,
+
+         right=rightTime,
+
+         bottom=lo,
+
+         xloc=xloc.bar_time,
+
+         extend=extend.none,
+
+         bgcolor=d_f_kind_fill(kind),
+
+         border_color=d_f_kind_border(kind),
+
+         border_width=d_boxBorderWidth,
+
+         border_style=d_f_kind_style(kind),
+
+         text=d_f_zone_text(kind),
+
+         text_color=d_zoneTextColor,
+
+         text_size=size.tiny,
+
+         text_halign=text.align_right,
+
+         text_valign=text.align_center)
+
+d_f_delete_box(box boxId) =>
+
+    if not na(boxId)
+
+        box.delete(boxId)
+
+d_f_new_zone(
+
+     float lo,
+
+     float hi,
+
+     int firstCandleTime,
+
+     int endCandleTime,
+
+     int originTime,
+
+     int originDirection,
+
+     int armedAfterBar,
+
+     int currentRightTime) =>
+
+    int leftTime = d_f_fixed_left(firstCandleTime, endCandleTime)
+
+    int initialKind = originDirection
+
+    box boxId = na
+
+    if d_f_kind_visible(initialKind)
+
+        boxId := d_f_make_box(leftTime, currentRightTime, lo, hi, initialKind)
+
+    d_Zone.new(
+
+         lo,
+
+         hi,
+
+         leftTime,
+
+         originTime,
+
+         originDirection,
+
+         initialKind,
+
+         0,
+
+         boxId,
+
+         false,
+
+         armedAfterBar)
+
+d_f_add_zone(
+
+     array<d_Zone> zones,
+
+     float lo,
+
+     float hi,
+
+     int firstCandleTime,
+
+     int endCandleTime,
+
+     int originTime,
+
+     int originDirection,
+
+     int armedAfterBar,
+
+     int currentRightTime) =>
+
+    d_Zone z = d_f_new_zone(
+
+         lo,
+
+         hi,
+
+         firstCandleTime,
+
+         endCandleTime,
+
+         originTime,
+
+         originDirection,
+
+         armedAfterBar,
+
+         currentRightTime)
+
+    array.push(zones, z)
+
+d_f_prune_lookback(array<d_Zone> zones, int cutoffTime) =>
+
+    int i = array.size(zones) - 1
+
+    while i >= 0
+
+        d_Zone z = array.get(zones, i)
+
+        if z.originTime < cutoffTime
+
+            d_f_delete_box(z.bx)
+
+            array.remove(zones, i)
+
+        i -= 1
+
+// Apply visibility, style, text, and — critically — the dynamic right edge.
+
+d_f_sync_zones(array<d_Zone> zones, int currentRightTime) =>
+
+    int i = 0
+
+    while i < array.size(zones)
+
+        d_Zone z = array.get(zones, i)
+
+        bool visible = d_f_kind_visible(z.kind)
+
+        if visible
+
+            if na(z.bx)
+
+                z.bx := d_f_make_box(z.leftTime, currentRightTime, z.lo, z.hi, z.kind)
+
+            else
+
+                box.set_right(z.bx, currentRightTime)
+
+                box.set_bgcolor(z.bx, d_f_kind_fill(z.kind))
+
+                box.set_border_color(z.bx, d_f_kind_border(z.kind))
+
+                box.set_border_width(z.bx, d_boxBorderWidth)
+
+                box.set_border_style(z.bx, d_f_kind_style(z.kind))
+
+                box.set_text(z.bx, d_f_zone_text(z.kind))
+
+                box.set_text_color(z.bx, d_zoneTextColor)
+
+        else
+
+            d_f_delete_box(z.bx)
+
+            z.bx := na
+
+        array.set(zones, i, z)
+
+        i += 1
+
+//------------------------------------------------------------------------------
+
+// DEFAULT confirmed lifecycle
+
+//------------------------------------------------------------------------------
+
+// One opposite Daily close does not change an FVG.
+
+// Two consecutive opposite Daily closes convert FVG -> IFVG.
+
+// One confirmed reverse Daily close invalidates the IFVG.
+
+d_f_process_confirmed_lifecycle(
+
+     array<d_Zone> zones,
+
+     float sourceClose,
+
+     int currentChartBar) =>
+
+    bool newBullIfvg = false
+
+    bool newBearIfvg = false
+
+    int i = array.size(zones) - 1
+
+    while i >= 0
+
+        d_Zone z = array.get(zones, i)
+
+        bool removeZone = false
+
+        if z.kind == 1
+
+            // Bullish FVG -> Bearish IFVG after TWO consecutive closes below lo.
+
+            if sourceClose < z.lo
+
+                z.oppositeCloseCount += 1
+
+                if z.oppositeCloseCount >= 2
+
+                    z.kind := -2
+
+                    z.oppositeCloseCount := 0
+
+                    z.touched := false
+
+                    z.armedAfterBar := currentChartBar
+
+                    newBearIfvg := true
+
+            else
+
+                z.oppositeCloseCount := 0
+
+        else if z.kind == -1
+
+            // Bearish FVG -> Bullish IFVG after TWO consecutive closes above hi.
+
+            if sourceClose > z.hi
+
+                z.oppositeCloseCount += 1
+
+                if z.oppositeCloseCount >= 2
+
+                    z.kind := 2
+
+                    z.oppositeCloseCount := 0
+
+                    z.touched := false
+
+                    z.armedAfterBar := currentChartBar
+
+                    newBullIfvg := true
+
+            else
+
+                z.oppositeCloseCount := 0
+
+        else if z.kind == 2
+
+            // Bullish IFVG invalidates on a confirmed Daily close back below lo.
+
+            if sourceClose < z.lo
+
+                removeZone := true
+
+        else if z.kind == -2
+
+            // Bearish IFVG invalidates on a confirmed Daily close back above hi.
+
+            if sourceClose > z.hi
+
+                removeZone := true
+
+        if removeZone
+
+            d_f_delete_box(z.bx)
+
+            array.remove(zones, i)
+
+        else
+
+            array.set(zones, i, z)
+
+        i -= 1
+
+    [newBullIfvg, newBearIfvg]
+
+//------------------------------------------------------------------------------
+
+// PERSISTENT current-price classification
+
+//------------------------------------------------------------------------------
+
+// This mode never permanently invalidates an original FVG inside lookback.
+
+// Classification is based on current market price relative to original geometry.
+
+d_f_process_current_price_classification(
+
+     array<d_Zone> zones,
+
+     float currentPrice,
+
+     int currentChartBar) =>
+
+    bool newBullIfvg = false
+
+    bool newBearIfvg = false
+
+    int i = 0
+
+    while i < array.size(zones)
+
+        d_Zone z = array.get(zones, i)
+
+        int oldKind = z.kind
+
+        int resolvedKind = oldKind
+
+        if z.originDirection == -1
+
+            // Original bearish FVG:
+
+            // below zone = Bearish FVG; above zone = Bullish IFVG.
+
+            if currentPrice > z.hi
+
+                resolvedKind := 2
+
+            else if currentPrice < z.lo
+
+                resolvedKind := -1
+
+        else
+
+            // Original bullish FVG:
+
+            // above zone = Bullish FVG; below zone = Bearish IFVG.
+
+            if currentPrice < z.lo
+
+                resolvedKind := -2
+
+            else if currentPrice > z.hi
+
+                resolvedKind := 1
+
+        if resolvedKind != oldKind
+
+            z.kind := resolvedKind
+
+            z.oppositeCloseCount := 0
+
+            z.touched := false
+
+            z.armedAfterBar := currentChartBar
+
+            if resolvedKind == 2
+
+                newBullIfvg := true
+
+            else if resolvedKind == -2
+
+                newBearIfvg := true
+
+        array.set(zones, i, z)
+
+        i += 1
+
+    [newBullIfvg, newBearIfvg]
+
+// direction: +1 bullish state; -1 bearish state.
+
+d_f_first_touch_kind(
+
+     array<d_Zone> zones,
+
+     int targetKind,
+
+     int direction,
+
+     float chartHigh,
+
+     float chartLow,
+
+     int currentChartBar) =>
+
+    bool pulse = false
+
+    int i = 0
+
+    while i < array.size(zones)
+
+        d_Zone z = array.get(zones, i)
+
+        if z.kind == targetKind
+
+            bool eligible = currentChartBar > z.armedAfterBar
+
+            bool reachedBoundary = direction == 1 ? chartLow <= z.hi : chartHigh >= z.lo
+
+            if eligible and not z.touched and reachedBoundary
+
+                z.touched := true
+
+                array.set(zones, i, z)
+
+                pulse := true
+
+        i += 1
+
+    pulse
+
+//------------------------------------------------------------------------------
+
+// Daily source data
+
+//------------------------------------------------------------------------------
+
+// Daily chart: process current Daily candle only once it closes.
+
+bool d_hasEnoughDailyChartBars = bar_index >= 2
+
+// Intraday charts: request PREVIOUS fully closed Daily candle with a one-bar offset.
+
+// This prevents an unfinished Daily candle from being treated as a confirmed close.
+
+[d_dTimeClosed, d_dTimeCloseClosed, d_dFirstTimeClosed,
+
+ d_dHighClosed, d_dLowClosed, d_dCloseClosed,
+
+ d_dHighTwoBackClosed, d_dLowTwoBackClosed] = request.security(
+
+     syminfo.tickerid,
+
+     "D",
+
+     [time[1], time_close[1], time[3], high[1], low[1], close[1], high[3], low[3]],
+
+     gaps=barmerge.gaps_off,
+
+     lookahead=barmerge.lookahead_on)
+
+int d_dTime = d_isDailyChart ? time : d_dTimeClosed
+
+int d_dTimeClose = d_isDailyChart ? time_close : d_dTimeCloseClosed
+
+int d_dFirstTime = d_isDailyChart ? (d_hasEnoughDailyChartBars ? time[2] : na) : d_dFirstTimeClosed
+
+float d_dHigh = d_isDailyChart ? high : d_dHighClosed
+
+float d_dLow = d_isDailyChart ? low : d_dLowClosed
+
+float d_dClose = d_isDailyChart ? close : d_dCloseClosed
+
+float d_dHighTwoBack = d_isDailyChart ? (d_hasEnoughDailyChartBars ? high[2] : na) : d_dHighTwoBackClosed
+
+float d_dLowTwoBack = d_isDailyChart ? (d_hasEnoughDailyChartBars ? low[2] : na) : d_dLowTwoBackClosed
+
+bool d_sourceClosedD = d_canRun and (
+
+     (d_isDailyChart and d_hasEnoughDailyChartBars and barstate.isconfirmed) or
+
+     (d_isIntradayChart and barstate.isnew and timeframe.change("D") and not na(d_dTimeClosed)))
+
+// On intraday charts, the previous Daily candle was already confirmed before the
+
+// first chart bar of the new day. That first bar can therefore interact with it.
+
+int d_armedAfterBarD = d_isDailyChart ? bar_index : bar_index - 1
+
+// Right edge is ALWAYS the opening time of the current chart candle.
+
+int d_currentZoneRightTime = time
+
+//------------------------------------------------------------------------------
+
+// Inventory
+
+//------------------------------------------------------------------------------
+
+var array<d_Zone> d_dailyZones = array.new<d_Zone>()
+
+//------------------------------------------------------------------------------
+
+// Lookback pruning
+
+//------------------------------------------------------------------------------
+
+int d_currentCutoffTime = time - d_lookbackMs
+
+d_f_prune_lookback(d_dailyZones, d_currentCutoffTime)
+
+//------------------------------------------------------------------------------
+
+// Process confirmed Daily closes and detect new Daily FVGs
+
+//------------------------------------------------------------------------------
+
+bool d_nDBullFvgRaw = false
+
+bool d_nDBearFvgRaw = false
+
+bool d_nDBullIfvgRaw = false
+
+bool d_nDBearIfvgRaw = false
+
+if d_sourceClosedD
+
+    // First update the lifecycle of zones that already existed before this Daily close.
+
+    if d_useConfirmedLifecycle
+
+        [bullIfvgPulse, bearIfvgPulse] = d_f_process_confirmed_lifecycle(
+
+             d_dailyZones,
+
+             d_dClose,
+
+             d_armedAfterBarD)
+
+        d_nDBullIfvgRaw := bullIfvgPulse
+
+        d_nDBearIfvgRaw := bearIfvgPulse
+
+    // Strict three-candle FVG geometry. Adjacent close/open gaps are irrelevant.
+
+    bool bullishGap = not na(d_dHighTwoBack) and d_dLow > d_dHighTwoBack
+
+    bool bearishGap = not na(d_dLowTwoBack) and d_dHigh < d_dLowTwoBack
+
+    float bullishGapSize = bullishGap ? d_dLow - d_dHighTwoBack : 0.0
+
+    float bearishGapSize = bearishGap ? d_dLowTwoBack - d_dHigh : 0.0
+
+    if bullishGap and bullishGapSize >= d_minGapD
+
+        d_f_add_zone(
+
+             d_dailyZones,
+
+             d_dHighTwoBack,
+
+             d_dLow,
+
+             d_dFirstTime,
+
+             d_dTime,
+
+             d_dTime,
+
+             1,
+
+             d_armedAfterBarD,
+
+             d_currentZoneRightTime)
+
+        d_nDBullFvgRaw := true
+
+    if bearishGap and bearishGapSize >= d_minGapD
+
+        d_f_add_zone(
+
+             d_dailyZones,
+
+             d_dHigh,
+
+             d_dLowTwoBack,
+
+             d_dFirstTime,
+
+             d_dTime,
+
+             d_dTime,
+
+             -1,
+
+             d_armedAfterBarD,
+
+             d_currentZoneRightTime)
+
+        d_nDBearFvgRaw := true
+
+// In persistent mode, classification follows CURRENT MARKET PRICE on every chart bar,
+
+// including the live/open candle. This is deliberately independent of Daily closes.
+
+if d_canRun and not d_useConfirmedLifecycle
+
+    [bullIfvgDynamicPulse, bearIfvgDynamicPulse] = d_f_process_current_price_classification(
+
+         d_dailyZones,
+
+         close,
+
+         bar_index)
+
+    d_nDBullIfvgRaw := d_nDBullIfvgRaw or bullIfvgDynamicPulse
+
+    d_nDBearIfvgRaw := d_nDBearIfvgRaw or bearIfvgDynamicPulse
+
+// Re-prune after formation so selected lookback remains authoritative.
+
+d_f_prune_lookback(d_dailyZones, d_currentCutoffTime)
+
+//------------------------------------------------------------------------------
+
+// Dynamic right-edge + text/style synchronization
+
+//------------------------------------------------------------------------------
+
+// Every box ends at the OPEN of whatever chart candle is currently active.
+
+// Because text_halign = text.align_right, the Daily FVG/IFVG tag remains visible
+
+// at the right edge while vertically centered inside the zone.
+
+d_f_sync_zones(d_dailyZones, d_currentZoneRightTime)
+
+//------------------------------------------------------------------------------
+
+// First-retest pulses by CURRENT classification
+
+//------------------------------------------------------------------------------
+
+d_tDBullFvgRaw = d_canRun ? d_f_first_touch_kind(d_dailyZones, 1, 1, high, low, bar_index) : false
+
+d_tDBearFvgRaw = d_canRun ? d_f_first_touch_kind(d_dailyZones, -1, -1, high, low, bar_index) : false
+
+d_tDBullIfvgRaw = d_canRun ? d_f_first_touch_kind(d_dailyZones, 2, 1, high, low, bar_index) : false
+
+d_tDBearIfvgRaw = d_canRun ? d_f_first_touch_kind(d_dailyZones, -2, -1, high, low, bar_index) : false
+
+//------------------------------------------------------------------------------
+
+// Effective alert pulses
+
+//------------------------------------------------------------------------------
+
+d_nDBullFvg = d_canRun and d_enableDailyMaster and (global_enableAllBullish and d_enableAllBullish) and d_enableDBullFvg and d_nDBullFvgRaw
+
+d_nDBearFvg = d_canRun and d_enableDailyMaster and (global_enableAllBearish and d_enableAllBearish) and d_enableDBearFvg and d_nDBearFvgRaw
+
+d_nDBullIfvg = d_canRun and d_enableDailyMaster and (global_enableAllBullish and d_enableAllBullish) and d_enableDBullIfvg and d_nDBullIfvgRaw
+
+d_nDBearIfvg = d_canRun and d_enableDailyMaster and (global_enableAllBearish and d_enableAllBearish) and d_enableDBearIfvg and d_nDBearIfvgRaw
+
+d_tDBullFvg = d_canRun and d_enableDailyMaster and (global_enableAllBullish and d_enableAllBullish) and d_enableDBullFvg and d_tDBullFvgRaw
+
+d_tDBearFvg = d_canRun and d_enableDailyMaster and (global_enableAllBearish and d_enableAllBearish) and d_enableDBearFvg and d_tDBearFvgRaw
+
+d_tDBullIfvg = d_canRun and d_enableDailyMaster and (global_enableAllBullish and d_enableAllBullish) and d_enableDBullIfvg and d_tDBullIfvgRaw
+
+d_tDBearIfvg = d_canRun and d_enableDailyMaster and (global_enableAllBearish and d_enableAllBearish) and d_enableDBearIfvg and d_tDBearIfvgRaw
+
+//==============================================================================
+
+// DAILY FORMATION / CLASSIFICATION ALERTS
+
+//==============================================================================
+
+alertcondition(d_nDBullFvg, title="Daily Bullish FVG Formed", message="{{ticker}}: Daily bullish FVG formed.")
+
+alertcondition(d_nDBearFvg, title="Daily Bearish FVG Formed", message="{{ticker}}: Daily bearish FVG formed.")
+
+alertcondition(d_nDBullIfvg, title="Daily Bullish IFVG Formed", message="{{ticker}}: Daily zone classified as bullish IFVG.")
+
+alertcondition(d_nDBearIfvg, title="Daily Bearish IFVG Formed", message="{{ticker}}: Daily zone classified as bearish IFVG.")
+
+//==============================================================================
+
+// DAILY FIRST-RETEST ALERTS
+
+//==============================================================================
+
+alertcondition(d_tDBullFvg, title="Daily Bullish FVG First Retest", message="{{ticker}}: price reached a Daily bullish FVG.")
+
+alertcondition(d_tDBearFvg, title="Daily Bearish FVG First Retest", message="{{ticker}}: price reached a Daily bearish FVG.")
+
+alertcondition(d_tDBullIfvg, title="Daily Bullish IFVG First Retest", message="{{ticker}}: price reached a Daily bullish IFVG.")
+
+alertcondition(d_tDBearIfvg, title="Daily Bearish IFVG First Retest", message="{{ticker}}: price reached a Daily bearish IFVG.")

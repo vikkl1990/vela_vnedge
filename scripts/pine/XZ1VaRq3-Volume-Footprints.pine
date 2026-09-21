@@ -1,0 +1,421 @@
+//@version=6
+indicator("Volume Footprints", shorttitle = "Footprints", overlay = true, max_labels_count = 10)
+
+// ===== Input groups =====
+string GRP_TF   = "Timeframes"
+string GRP_LVL  = "Price Levels"
+string GRP_DISP = "Display"
+string GRP_COL  = "Colors"
+
+// ===== Inputs =====
+fpTFsel   = input.string("1D", "Footprint bar timeframe", group = GRP_TF, options = ["Chart", "1m", "2m", "3m", "5m", "10m", "15m", "30m", "45m", "1h", "2h", "3h", "4h", "1D", "2D", "3D", "4D", "5D", "6D", "1W", "1M", "3M", "6M", "12M"], tooltip = "Which candle the info box analyzes. Should be AT or ABOVE your chart timeframe. Sub-bars are accumulated across chart bars until this bar closes, then binned into levels. 'Chart' uses the chart's own timeframe.")
+granTF    = input.timeframe("1", "Cell granularity", group = GRP_TF, tooltip = "The finer timeframe used to build price levels inside the footprint bar. MUST be BELOW your chart timeframe (e.g. 1 on a 5-min chart). If it isn't, no data returns and the box says so.")
+stableCells = input.bool(false, "Stable cells (closed sub-bars only)", group = GRP_TF, tooltip = "Affects the forming bar only. On: buy/sell cells count only granularity sub-bars that have CLOSED, so numbers accumulate and don't flip between Buy/Sell each tick. Updates once per granularity bar (slight lag at the live price level). Off: also counts the in-progress sub-bar — most responsive, but the current level's Buy/Sell can flicker tick to tick. Completed footprints (offset 1+) are unaffected.")
+
+binMode   = input.string("Fixed price step", "Row bucketing mode", group = GRP_LVL, options = ["Fixed price step", "Range slices"], tooltip = "Fixed price step: a continuous price ladder on an absolute grid — every level from the bar's low to high gets a permanent row (empties shown), so rows never flicker on the forming bar. Range slices: the high-low range is split into 'Price rows' equal parts, which rescales as the live bar grows.")
+stepTicks = input.int(25, "Price step (ticks)", group = GRP_LVL, minval = 1, tooltip = "Fixed-step mode only. Row height = this many ticks (tick = symbol's min price move). Smaller = finer, taller ladder. If the bar spans more than 40 steps, the top is truncated — raise this value.")
+rows      = input.int(10, "Price rows (Range slices mode)", group = GRP_LVL, minval = 2, maxval = 40, tooltip = "Range slices mode only: number of equal divisions of the bar's range. Ignored in Fixed price step mode, which auto-sizes the ladder.")
+
+offset    = input.int(0, "Footprint bar to inspect (0 = forming)", group = GRP_DISP, minval = 0, maxval = 49, tooltip = "Which footprint bar to show, counting back. 0 = the one currently forming (includes the live candle), 1 = last completed, and so on. The arrow marks its latest candle.")
+posSel    = input.string("Top Right", "Info box position", group = GRP_DISP, options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right", "Middle Left"], tooltip = "Where the info box is anchored. Move it if it covers price.")
+tSize     = input.string("Small", "Info box text size", group = GRP_DISP, options = ["Tiny", "Small", "Normal", "Large"], tooltip = "Font size inside the info box.")
+showCandle = input.bool(true, "Show candlestick column", group = GRP_DISP, tooltip = "Toggles the far-left candlestick column that mirrors the inspected bar's candle (green up / red down), aligned to the price ladder. Off removes the column entirely.")
+showMk    = input.bool(false, "Show chart marker", group = GRP_DISP, tooltip = "Toggles the on-chart arrow that points at the LATEST candle of the footprint bar being analyzed. Turn off to remove it entirely.")
+
+mkCol     = input.color(color.yellow, "Marker", group = GRP_COL, tooltip = "Color of the inspected-bar arrow.")
+buyCol    = input.color(color.teal, "Buy delta", group = GRP_COL, tooltip = "Color for net-buying deltas.")
+sellCol   = input.color(color.red,  "Sell delta", group = GRP_COL, tooltip = "Color for net-selling deltas.")
+candleUpCol = input.color(color.rgb(38, 166, 154), "Candle up", group = GRP_COL, tooltip = "Color of the candle column when the bar closed at or above its open. Defaults to the standard chart green.")
+candleDnCol = input.color(color.rgb(239, 83, 80),  "Candle down", group = GRP_COL, tooltip = "Color of the candle column when the bar closed below its open. Defaults to the standard chart red.")
+heatCol   = input.color(color.orange, "Heat (volume) tint", group = GRP_COL, tooltip = "Hue for the volume heatmap. Brighter cell = more volume. POC is brightest.")
+boxBg     = input.color(color.white, "Info box background", group = GRP_COL, tooltip = "Solid background color of the info box. The heatmap tint blends over this, so a light color keeps the tint readable.")
+txtCol    = input.color(color.purple, "Text", group = GRP_COL, tooltip = "Text color inside the info box.")
+ttlTxtCol = input.color(color.white, "Title text", group = GRP_COL, tooltip = "Text color of the title row.")
+ttlBgCol  = input.color(color.rgb(21, 43, 92), "Title background", group = GRP_COL, tooltip = "Background color of the title row.")
+pocDotCol = input.color(color.purple, "POC dot", group = GRP_COL, tooltip = "Color of the dot in the P column, marking the Point of Control (busiest price level).")
+curDotCol = input.color(color.black,  "Current price dot", group = GRP_COL, tooltip = "Color of the dot in the C column, marking the row the live price currently sits in. Hidden if price is outside the bar's range.")
+
+// ===== Footprint timeframe: friendly label -> Pine timeframe string =====
+fpTF = fpTFsel == "Chart" ? "" : fpTFsel == "1m" ? "1" : fpTFsel == "2m" ? "2" : fpTFsel == "3m" ? "3" : fpTFsel == "5m" ? "5" : fpTFsel == "10m" ? "10" : fpTFsel == "15m" ? "15" : fpTFsel == "30m" ? "30" : fpTFsel == "45m" ? "45" : fpTFsel == "1h" ? "60" : fpTFsel == "2h" ? "120" : fpTFsel == "3h" ? "180" : fpTFsel == "4h" ? "240" : fpTFsel == "1D" ? "1D" : fpTFsel == "2D" ? "2D" : fpTFsel == "3D" ? "3D" : fpTFsel == "4D" ? "4D" : fpTFsel == "5D" ? "5D" : fpTFsel == "6D" ? "6D" : fpTFsel == "1W" ? "1W" : fpTFsel == "1M" ? "1M" : fpTFsel == "3M" ? "3M" : fpTFsel == "6M" ? "6M" : "12M"
+
+// ===== Derived =====
+useStep   = binMode == "Fixed price step"
+priceStep = stepTicks * syminfo.mintick
+
+// ===== Constants =====
+const int MAXR    = 40
+var int   histCap = 50
+const string TITLE = "FOOTPRINTS"
+
+// ===== Lower-timeframe data (relative to chart) =====
+[gO, gC, gV] = request.security_lower_tf(syminfo.tickerid, granTF, [open, close, volume])
+granOK = timeframe.in_seconds(granTF) < timeframe.in_seconds(timeframe.period)
+
+// ===== Footprint period key + close time =====
+fpKey       = time(fpTF)
+fpCloseTime = time_close(fpTF)
+
+// ===== Helpers =====
+fmtD(float d) => (d > 0 ? "+" : d < 0 ? "-" : "") + str.tostring(math.abs(d), format.volume)
+
+fmtCountdown(int ms) =>
+    s   = math.max(0, int(ms / 1000))
+    d   = int(s / 86400)
+    h   = int((s % 86400) / 3600)
+    m   = int((s % 3600) / 60)
+    sec = s % 60
+    (d > 0 ? str.tostring(d) + "d " : "") + (h > 0 or d > 0 ? str.tostring(h) + "h " : "") + str.tostring(m) + "m " + str.tostring(sec) + "s"
+
+dimsFor(float lo_, float hi_, bool useStep_, float step_, int rangeRows_) =>
+    int baseB = 0
+    int nR    = rangeRows_
+    if useStep_ and not na(lo_) and not na(hi_) and step_ > 0
+        baseB := int(lo_ / step_)
+        int maxB = int(hi_ / step_)
+        nR := math.min(MAXR, math.max(1, maxB - baseB + 1))
+    [baseB, nR]
+
+binIB(array<float> oA_, array<float> cA_, array<float> vA_, float lo_, float hi_, int nR_, bool useStep_, float step_, int baseB_) =>
+    bR = array.new_float(MAXR, 0.0)
+    sR = array.new_float(MAXR, 0.0)
+    if array.size(cA_) > 0
+        okR = not na(hi_) and not na(lo_) and hi_ > lo_
+        rh  = okR ? (hi_ - lo_) / nR_ : na
+        for i = 0 to array.size(cA_) - 1
+            c = array.get(cA_, i)
+            o = array.get(oA_, i)
+            v = array.get(vA_, i)
+            if not na(c) and not na(v) and v > 0
+                int idx = na
+                if useStep_ and step_ > 0
+                    idx := int(c / step_) - baseB_
+                else if not na(rh)
+                    idx := int((c - lo_) / rh)
+                if not na(idx)
+                    idx := math.max(0, math.min(nR_ - 1, idx))
+                    if c >= o
+                        array.set(bR, idx, array.get(bR, idx) + v)
+                    else
+                        array.set(sR, idx, array.get(sR, idx) + v)
+    [bR, sR]
+
+tablePos = posSel == "Top Left" ? position.top_left : posSel == "Bottom Right" ? position.bottom_right : posSel == "Bottom Left" ? position.bottom_left : posSel == "Middle Right" ? position.middle_right : posSel == "Middle Left" ? position.middle_left : position.top_right
+tableSz  = tSize == "Tiny" ? size.tiny : tSize == "Small" ? size.small : tSize == "Large" ? size.large : size.normal
+
+// ===== Committed forming-period state =====
+var array<float> curO = array.new_float()
+var array<float> curC = array.new_float()
+var array<float> curV = array.new_float()
+var float curHi   = na
+var float curLo   = na
+var float curOpen = na
+var int   curLast = na
+var int   curKey  = na
+
+// ===== Completed-footprint history =====
+var array<float> hist  = array.new_float()
+var array<float> hHi   = array.new_float()
+var array<float> hLo   = array.new_float()
+var array<float> hOpen = array.new_float()
+var array<float> hClose = array.new_float()
+var array<int>   hEnd  = array.new_int()
+var array<int>   hBase = array.new_int()
+var array<int>   hN    = array.new_int()
+
+// ===== Commit confirmed bars =====
+if granOK and barstate.isconfirmed
+    if na(curKey)
+        curKey := fpKey
+        curOpen := open
+    if fpKey != curKey
+        if array.size(curC) > 0 and not na(curHi) and curHi > curLo
+            [bB, nR] = dimsFor(curLo, curHi, useStep, priceStep, rows)
+            [bR, sR] = binIB(curO, curC, curV, curLo, curHi, nR, useStep, priceStep, bB)
+            for r = 0 to MAXR - 1
+                array.push(hist, array.get(bR, r))
+            for r = 0 to MAXR - 1
+                array.push(hist, array.get(sR, r))
+            array.push(hHi, curHi)
+            array.push(hLo, curLo)
+            array.push(hOpen, na(curOpen) ? open[1] : curOpen)
+            array.push(hClose, close[1])
+            array.push(hEnd, curLast)
+            array.push(hBase, bB)
+            array.push(hN, nR)
+            while array.size(hHi) > histCap
+                for _z = 0 to MAXR * 2 - 1
+                    array.shift(hist)
+                array.shift(hHi)
+                array.shift(hLo)
+                array.shift(hOpen)
+                array.shift(hClose)
+                array.shift(hEnd)
+                array.shift(hBase)
+                array.shift(hN)
+        array.clear(curO)
+        array.clear(curC)
+        array.clear(curV)
+        curHi := na
+        curLo := na
+        curKey := fpKey
+        curOpen := open
+    if not na(gC) and array.size(gC) > 0
+        for i = 0 to array.size(gC) - 1
+            c = array.get(gC, i)
+            o = array.get(gO, i)
+            v = array.get(gV, i)
+            if not na(c) and not na(v)
+                array.push(curO, o)
+                array.push(curC, c)
+                array.push(curV, v)
+    curHi   := na(curHi) ? high : math.max(curHi, high)
+    curLo   := na(curLo) ? low  : math.min(curLo, low)
+    curLast := bar_index
+
+// ===== Render on the last bar =====
+var table ftBox   = na
+var label markLbl = na
+
+if barstate.islast
+    if not na(ftBox)
+        table.delete(ftBox)
+    if not na(markLbl)
+        label.delete(markLbl)
+        markLbl := na
+
+    // chart TF must be <= footprint TF, unless footprint is "Chart" (empty)
+    fpIsChart = str.length(fpTF) == 0
+    chartTooHigh = not fpIsChart and timeframe.in_seconds(timeframe.period) > timeframe.in_seconds(fpTF)
+
+    array<float> liveO = na
+    array<float> liveC = na
+    array<float> liveV = na
+    if not na(gC) and array.size(gC) > 0
+        liveO := array.copy(gO)
+        liveC := array.copy(gC)
+        liveV := array.copy(gV)
+        if stableCells and array.size(liveC) > 0
+            array.pop(liveO)
+            array.pop(liveC)
+            array.pop(liveV)
+    haveLive = not na(liveC) and array.size(liveC) > 0
+
+    caseB = not na(curKey) and fpKey != curKey and array.size(curC) > 0
+
+    cdSlot   = offset == 0 ? "⏳ " + fmtCountdown(fpCloseTime - timenow) : "closed"
+    tfLabel  = fpIsChart ? "Chart" : fpTFsel
+    titleTxt = chartTooHigh ? TITLE + "  /  Chart TF Must Be <= Footprint TF" : TITLE + "  /  FP " + str.tostring(offset) + "  /  " + tfLabel + " - " + granTF + "  /  " + cdSlot
+
+    float dispHi   = na
+    float dispLo   = na
+    float dispOpen = na
+    float dispClose = na
+    int   markIdx = na
+    int   dBase   = 0
+    int   dN      = rows
+    array<float> buyRow  = array.new_float(MAXR, 0.0)
+    array<float> sellRow = array.new_float(MAXR, 0.0)
+    bool valid = false
+
+    if chartTooHigh
+        valid := false
+    else if not granOK
+        valid := false
+    else if offset == 0
+        if caseB
+            if haveLive and high > low
+                [bB, nR] = dimsFor(low, high, useStep, priceStep, rows)
+                [bR, sR] = binIB(liveO, liveC, liveV, low, high, nR, useStep, priceStep, bB)
+                buyRow := bR
+                sellRow := sR
+                dispHi := high
+                dispLo := low
+                dispOpen := open
+                dispClose := close
+                dBase := bB
+                dN := nR
+                markIdx := bar_index
+                valid := true
+        else
+            tO = array.copy(curO)
+            tC = array.copy(curC)
+            tV = array.copy(curV)
+            if haveLive
+                for i = 0 to array.size(liveC) - 1
+                    c = array.get(liveC, i)
+                    o = array.get(liveO, i)
+                    v = array.get(liveV, i)
+                    if not na(c) and not na(v)
+                        array.push(tO, o)
+                        array.push(tC, c)
+                        array.push(tV, v)
+            hiC = na(curHi) ? high : math.max(curHi, high)
+            loC = na(curLo) ? low  : math.min(curLo, low)
+            if array.size(tC) > 0 and not na(hiC) and hiC > loC
+                [bB, nR] = dimsFor(loC, hiC, useStep, priceStep, rows)
+                [bR, sR] = binIB(tO, tC, tV, loC, hiC, nR, useStep, priceStep, bB)
+                buyRow := bR
+                sellRow := sR
+                dispHi := hiC
+                dispLo := loC
+                dispOpen := na(curOpen) ? open : curOpen
+                dispClose := close
+                dBase := bB
+                dN := nR
+                markIdx := bar_index
+                valid := true
+    else
+        completedCount = array.size(hHi)
+        effCount = completedCount + (caseB ? 1 : 0)
+        idx = effCount - offset
+        if idx >= 0 and idx < effCount
+            if caseB and idx == effCount - 1
+                if array.size(curC) > 0 and not na(curHi) and curHi > curLo
+                    [bB, nR] = dimsFor(curLo, curHi, useStep, priceStep, rows)
+                    [bR, sR] = binIB(curO, curC, curV, curLo, curHi, nR, useStep, priceStep, bB)
+                    buyRow := bR
+                    sellRow := sR
+                    dispHi := curHi
+                    dispLo := curLo
+                    dispOpen := na(curOpen) ? open : curOpen
+                    dispClose := close[1]
+                    dBase := bB
+                    dN := nR
+                    markIdx := curLast
+                    valid := true
+            else
+                base = idx * MAXR * 2
+                for r = 0 to MAXR - 1
+                    array.set(buyRow,  r, array.get(hist, base + r))
+                    array.set(sellRow, r, array.get(hist, base + MAXR + r))
+                dispHi := array.get(hHi, idx)
+                dispLo := array.get(hLo, idx)
+                dispOpen := array.get(hOpen, idx)
+                dispClose := array.get(hClose, idx)
+                markIdx := array.get(hEnd, idx)
+                dBase := array.get(hBase, idx)
+                dN := array.get(hN, idx)
+                valid := true
+
+    nCols = showCandle ? 7 : 6
+    c0    = showCandle ? 1 : 0
+
+    if not valid
+        msg = chartTooHigh ? "Lower the chart timeframe to at or below the footprint timeframe." : (not granOK ? "Cell granularity must be BELOW the chart timeframe" : "No data for this footprint bar")
+        ftBox := table.new(tablePos, 1, 2, bgcolor = boxBg, border_width = 1, border_color = color.new(color.gray, 60), frame_width = 1, frame_color = color.new(color.gray, 40))
+        table.cell(ftBox, 0, 0, titleTxt, bgcolor = ttlBgCol, text_color = ttlTxtCol, text_size = tableSz)
+        table.cell(ftBox, 0, 1, msg, bgcolor = boxBg, text_color = txtCol, text_size = tableSz)
+    else
+        rh = dispHi > dispLo ? (dispHi - dispLo) / dN : na
+        totBuy  = 0.0
+        totSell = 0.0
+        maxVol  = 0.0
+        pocIdx  = 0
+        pocVol  = -1.0
+        for r = 0 to dN - 1
+            b  = array.get(buyRow,  r)
+            s  = array.get(sellRow, r)
+            tv = b + s
+            totBuy  += b
+            totSell += s
+            if tv > maxVol
+                maxVol := tv
+            if tv > pocVol
+                pocVol := tv
+                pocIdx := r
+
+        int drawCount = 0
+        if useStep
+            drawCount := dN
+        else
+            for r = 0 to dN - 1
+                if array.get(buyRow, r) + array.get(sellRow, r) > 0
+                    drawCount += 1
+        if drawCount < 1
+            drawCount := 1
+
+        curPrice = close
+        int curIdx = na
+        if not na(curPrice) and curPrice >= dispLo and curPrice <= dispHi
+            ci = useStep ? (int(curPrice / priceStep) - dBase) : (not na(rh) ? int((curPrice - dispLo) / rh) : na)
+            if not na(ci) and ci >= 0 and ci < dN
+                curIdx := ci
+
+        hasCandle = showCandle and not na(dispOpen) and not na(dispClose)
+        bodyTop = hasCandle ? math.max(dispOpen, dispClose) : na
+        bodyBot = hasCandle ? math.min(dispOpen, dispClose) : na
+        candleUp = hasCandle and dispClose >= dispOpen
+        candleColor = candleUp ? candleUpCol : candleDnCol
+
+        if showMk and not na(markIdx)
+            markLbl := label.new(markIdx, 0, "FP " + str.tostring(offset), style = label.style_label_down, color = mkCol, textcolor = color.black, size = size.small, yloc = yloc.abovebar)
+
+        ftBox := table.new(tablePos, nCols, drawCount + 3, bgcolor = boxBg, border_width = 1, border_color = color.new(color.gray, 60), frame_width = 1, frame_color = color.new(color.gray, 40))
+
+        for cCol = 0 to nCols - 1
+            table.cell(ftBox, cCol, 0, cCol == 0 ? titleTxt : "", bgcolor = ttlBgCol, text_color = ttlTxtCol, text_size = tableSz)
+        table.merge_cells(ftBox, 0, 0, nCols - 1, 0)
+
+        hdrBg = color.new(color.gray, 15)
+        if showCandle
+            table.cell(ftBox, 0, 1, "", bgcolor = hdrBg, text_color = txtCol, text_size = tableSz)
+        table.cell(ftBox, c0 + 0, 1, "P",     bgcolor = hdrBg, text_color = pocDotCol, text_size = tableSz)
+        table.cell(ftBox, c0 + 1, 1, "C",     bgcolor = hdrBg, text_color = curDotCol, text_size = tableSz)
+        table.cell(ftBox, c0 + 2, 1, "Price", bgcolor = hdrBg, text_color = txtCol,    text_size = tableSz)
+        table.cell(ftBox, c0 + 3, 1, "Buy",   bgcolor = hdrBg, text_color = txtCol,    text_size = tableSz)
+        table.cell(ftBox, c0 + 4, 1, "Sell",  bgcolor = hdrBg, text_color = txtCol,    text_size = tableSz)
+        table.cell(ftBox, c0 + 5, 1, "Δ",     bgcolor = hdrBg, text_color = txtCol,    text_size = tableSz)
+
+        tRow = 2
+        for r = dN - 1 to 0
+            b  = array.get(buyRow,  r)
+            s  = array.get(sellRow, r)
+            tv = b + s
+            drawIt = useStep or tv > 0
+            if drawIt
+                price = useStep ? (dBase + r) * priceStep : dispLo + rh * (r + 0.5)
+                delta = b - s
+                heatT = maxVol > 0 ? color.from_gradient(tv, 0, maxVol, color.new(heatCol, 92), color.new(heatCol, 20)) : color.new(heatCol, 92)
+                rowBg = tv > 0 ? heatT : boxBg
+                dCol  = delta > 0 ? buyCol : delta < 0 ? sellCol : txtCol
+                pocTxt = r == pocIdx ? "●" : ""
+                curTxt = (not na(curIdx) and r == curIdx) ? "●" : ""
+                dTxt   = tv > 0 ? fmtD(delta) : ""
+                bTxt   = b > 0 ? str.tostring(b, format.volume) : ""
+                sTxt   = s > 0 ? str.tostring(s, format.volume) : ""
+
+                if showCandle
+                    rowLo_ = useStep ? (dBase + r) * priceStep : dispLo + rh * r
+                    rowHi_ = useStep ? (dBase + r + 1) * priceStep : dispLo + rh * (r + 1)
+                    string candleTxt = ""
+                    color  candleBg  = boxBg
+                    color  candleTx  = hasCandle ? candleColor : txtCol
+                    if hasCandle
+                        isBody = rowHi_ >= bodyBot and rowLo_ <= bodyTop
+                        if isBody
+                            candleBg := candleColor
+                            candleTxt := ""
+                        else
+                            candleBg := boxBg
+                            candleTxt := "┃"
+                    table.cell(ftBox, 0, tRow, candleTxt, bgcolor = candleBg, text_color = candleTx, text_size = tableSz)
+
+                table.cell(ftBox, c0 + 0, tRow, pocTxt,                              bgcolor = rowBg, text_color = pocDotCol, text_size = tableSz)
+                table.cell(ftBox, c0 + 1, tRow, curTxt,                              bgcolor = rowBg, text_color = curDotCol, text_size = tableSz)
+                table.cell(ftBox, c0 + 2, tRow, str.tostring(price, format.mintick), bgcolor = rowBg, text_color = txtCol,    text_size = tableSz)
+                table.cell(ftBox, c0 + 3, tRow, bTxt,                                bgcolor = rowBg, text_color = txtCol,    text_size = tableSz)
+                table.cell(ftBox, c0 + 4, tRow, sTxt,                                bgcolor = rowBg, text_color = txtCol,    text_size = tableSz)
+                table.cell(ftBox, c0 + 5, tRow, dTxt,                                bgcolor = rowBg, text_color = dCol,      text_size = tableSz)
+                tRow += 1
+
+        totDelta = totBuy - totSell
+        ftBg = color.new(color.gray, 30)
+        fRow = tRow
+        if showCandle
+            table.cell(ftBox, 0, fRow, "", bgcolor = ftBg, text_color = txtCol, text_size = tableSz)
+        table.cell(ftBox, c0 + 0, fRow, "",                                bgcolor = ftBg, text_color = txtCol, text_size = tableSz)
+        table.cell(ftBox, c0 + 1, fRow, "",                                bgcolor = ftBg, text_color = txtCol, text_size = tableSz)
+        table.cell(ftBox, c0 + 2, fRow, "TOTAL",                           bgcolor = ftBg, text_color = txtCol, text_size = tableSz)
+        table.cell(ftBox, c0 + 3, fRow, str.tostring(totBuy,  format.volume), bgcolor = ftBg, text_color = txtCol, text_size = tableSz)
+        table.cell(ftBox, c0 + 4, fRow, str.tostring(totSell, format.volume), bgcolor = ftBg, text_color = txtCol, text_size = tableSz)
+        table.cell(ftBox, c0 + 5, fRow, fmtD(totDelta), bgcolor = ftBg, text_color = totDelta >= 0 ? buyCol : sellCol, text_size = tableSz)

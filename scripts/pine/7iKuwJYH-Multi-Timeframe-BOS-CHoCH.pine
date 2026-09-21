@@ -1,0 +1,121 @@
+//@version=6
+indicator("Multi-Timeframe BOS / CHoCH", overlay=true)
+
+// ============================================================
+// INPUTS
+// ============================================================
+pivotLen = input.int(5, "Pivot Lookback (bars each side)", minval=2)
+tablePos = input.string("Top Right", "Table Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"])
+showLabelsOnChart = input.bool(true, "Show BOS/CHoCH labels on current chart timeframe")
+
+// ============================================================
+// STRUCTURE ENGINE
+// Returns: [label string, trend int, isNewEvent bool]
+// trend: 1 = bullish structure, -1 = bearish structure, 0 = undefined yet
+// ============================================================
+getStructure() =>
+    var float swingHigh = na
+    var float swingLow  = na
+    var int   trend     = 0
+    var string lastEvent = "—"
+
+    ph = ta.pivothigh(high, pivotLen, pivotLen)
+    pl = ta.pivotlow(low, pivotLen, pivotLen)
+
+    if not na(ph)
+        swingHigh := ph
+    if not na(pl)
+        swingLow := pl
+
+    newEvent = false
+
+    if not na(swingHigh) and close > swingHigh and close[1] <= swingHigh
+        if trend >= 0
+            lastEvent := "BOS ▲"
+        else
+            lastEvent := "CHoCH ▲"
+        trend := 1
+        swingHigh := na
+        newEvent := true
+
+    if not na(swingLow) and close < swingLow and close[1] >= swingLow
+        if trend <= 0
+            lastEvent := "BOS ▼"
+        else
+            lastEvent := "CHoCH ▼"
+        trend := -1
+        swingLow := na
+        newEvent := true
+
+    [lastEvent, trend, newEvent]
+
+// ============================================================
+// FETCH STRUCTURE FROM EACH TIMEFRAME
+// ============================================================
+[event5m, trend5m, new5m]   = request.security(syminfo.tickerid, "5",   getStructure(), lookahead=barmerge.lookahead_off)
+[event15m, trend15m, new15m] = request.security(syminfo.tickerid, "15",  getStructure(), lookahead=barmerge.lookahead_off)
+[event1h, trend1h, new1h]   = request.security(syminfo.tickerid, "60",  getStructure(), lookahead=barmerge.lookahead_off)
+[event4h, trend4h, new4h]   = request.security(syminfo.tickerid, "240", getStructure(), lookahead=barmerge.lookahead_off)
+[eventD, trendD, newD]      = request.security(syminfo.tickerid, "D",   getStructure(), lookahead=barmerge.lookahead_off)
+
+// ============================================================
+// HELPERS
+// ============================================================
+trendColor(t) => t == 1 ? color.new(color.green, 0) : t == -1 ? color.new(color.red, 0) : color.new(color.gray, 0)
+
+eventColor(e) => str.contains(e, "CHoCH") ? color.new(color.orange, 0) : str.contains(e, "BOS") ? trendColor(str.contains(e, "▲") ? 1 : -1) : color.new(color.gray, 0)
+
+// ============================================================
+// CONFLUENCE
+// ============================================================
+bullCount = (trend5m == 1 ? 1 : 0) + (trend15m == 1 ? 1 : 0) + (trend1h == 1 ? 1 : 0) + (trend4h == 1 ? 1 : 0) + (trendD == 1 ? 1 : 0)
+bearCount = (trend5m == -1 ? 1 : 0) + (trend15m == -1 ? 1 : 0) + (trend1h == -1 ? 1 : 0) + (trend4h == -1 ? 1 : 0) + (trendD == -1 ? 1 : 0)
+
+confluenceText  = bullCount >= 4 ? "STRONG BULLISH" : bearCount >= 4 ? "STRONG BEARISH" : bullCount > bearCount ? "LEAN BULLISH" : bearCount > bullCount ? "LEAN BEARISH" : "MIXED"
+confluenceColor = bullCount >= 4 ? color.new(color.green, 0) : bearCount >= 4 ? color.new(color.red, 0) : bullCount > bearCount ? color.new(color.lime, 40) : bearCount > bullCount ? color.new(color.orange, 40) : color.new(color.gray, 0)
+
+// ============================================================
+// TABLE
+// ============================================================
+tablePosition = tablePos == "Top Right" ? position.top_right : tablePos == "Top Left" ? position.top_left : tablePos == "Bottom Right" ? position.bottom_right : position.bottom_left
+
+var table structTable = table.new(tablePosition, 3, 7, border_width=1, border_color=color.gray, bgcolor=color.new(color.black, 10))
+
+if barstate.islast
+    table.cell(structTable, 0, 0, "TF", text_color=color.white, bgcolor=color.new(color.blue, 60))
+    table.cell(structTable, 1, 0, "Trend", text_color=color.white, bgcolor=color.new(color.blue, 60))
+    table.cell(structTable, 2, 0, "Last Event", text_color=color.white, bgcolor=color.new(color.blue, 60))
+
+    table.cell(structTable, 0, 1, "5 min", text_color=color.white)
+    table.cell(structTable, 1, 1, trend5m == 1 ? "BULL" : trend5m == -1 ? "BEAR" : "—", text_color=trendColor(trend5m))
+    table.cell(structTable, 2, 1, event5m, text_color=eventColor(event5m))
+
+    table.cell(structTable, 0, 2, "15 min", text_color=color.white)
+    table.cell(structTable, 1, 2, trend15m == 1 ? "BULL" : trend15m == -1 ? "BEAR" : "—", text_color=trendColor(trend15m))
+    table.cell(structTable, 2, 2, event15m, text_color=eventColor(event15m))
+
+    table.cell(structTable, 0, 3, "1 hour", text_color=color.white)
+    table.cell(structTable, 1, 3, trend1h == 1 ? "BULL" : trend1h == -1 ? "BEAR" : "—", text_color=trendColor(trend1h))
+    table.cell(structTable, 2, 3, event1h, text_color=eventColor(event1h))
+
+    table.cell(structTable, 0, 4, "4 hour", text_color=color.white)
+    table.cell(structTable, 1, 4, trend4h == 1 ? "BULL" : trend4h == -1 ? "BEAR" : "—", text_color=trendColor(trend4h))
+    table.cell(structTable, 2, 4, event4h, text_color=eventColor(event4h))
+
+    table.cell(structTable, 0, 5, "Daily", text_color=color.white)
+    table.cell(structTable, 1, 5, trendD == 1 ? "BULL" : trendD == -1 ? "BEAR" : "—", text_color=trendColor(trendD))
+    table.cell(structTable, 2, 5, eventD, text_color=eventColor(eventD))
+
+    table.cell(structTable, 0, 6, "Confluence", text_color=color.white, bgcolor=color.new(color.blue, 60))
+    table.cell(structTable, 1, 6, confluenceText, text_color=confluenceColor, bgcolor=color.new(color.blue, 60))
+    table.merge_cells(structTable, 1, 6, 2, 6)
+
+// ============================================================
+// ON-CHART LABELS (current chart timeframe structure, using live pivots)
+// ============================================================
+[curEvent, curTrend, curNew] = getStructure()
+
+if showLabelsOnChart and curNew
+    isBull = str.contains(curEvent, "▲")
+    lblColor = eventColor(curEvent)
+    label.new(bar_index, isBull ? low : high, curEvent, style=isBull ? label.style_label_up : label.style_label_down, color=lblColor, textcolor=color.white, size=size.small)

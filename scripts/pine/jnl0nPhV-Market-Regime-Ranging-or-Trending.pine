@@ -1,0 +1,77 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © maff
+
+//@version=6
+indicator("Market Regime - Ranging or Trending", shorttitle="Mkt Regime", overlay=false, timeframe="", timeframe_gaps=false)
+
+const string methodADX = "ADX"
+const string methodCI = "Choppiness Index (Fractal)"
+const string methodER = "Efficiency Ratio"
+
+string grp_main = "Regime Detection Settings"
+string method = input.string(methodER, title="Detection Method",
+     options=[methodADX, methodCI, methodER],
+     group=grp_main,
+     tooltip="Selects how to calculate the market conditions.\n\nAverage Directional Movement Index (ADX) is standard but lags.\n\nChoppiness measures fractal consolidation.\n\nER measures price efficiency/noise (Highly Recommended).")
+int length = input.int(10, title="Calculation Length", minval=1, group=grp_main, display=display.none)
+
+string grp_thresh = "Method Thresholds"
+float adxThreshold  = input.float(20.0, title="ADX Trending Threshold", active=method==methodADX, group=grp_thresh, display=display.none, tooltip="Typically 20 or 25. Above = Trending")
+float chopThreshold = input.float(50.0, title="CHOP Trending Threshold", active=method==methodCI, group=grp_thresh, display=display.none, tooltip="Typically 50. Above = Trending (choppier)")
+float erThreshold   = input.float(30.0, title="ER Trending Threshold", active=method==methodER, group=grp_thresh, display=display.none, tooltip="Typically 30 to 40. Above = Trending (more efficient)")
+
+bool priceBg = input.bool(true, "on price chart", group="Background colouring")
+bool oscillatorBg = input.bool(true, "on oscillator", group="Background colouring")
+
+color trendingMinCol = input.color(color.rgb(52,166,238,95), title="Trending a little -> a lot", group="Background colouring", inline="colours")
+color trendingMaxCol = input.color(color.rgb(52,166,238, 45), title="", group="Background colouring", inline="colours")
+
+
+// Oscillator Display
+hUpper = hline(80, title="Upper limit", color=color.new(color.rgb(241, 122, 239), 70),  linestyle=hline.style_solid, linewidth=2)
+hLower = hline(20, title="Lower limit", color=color.new(color.rgb(241, 122, 239), 70),  linestyle=hline.style_solid, linewidth=2)
+
+
+// METHOD 1: ADX (AVERAGE DIRECTIONAL INDEX)
+[_, _, adx] = ta.dmi(length, length)
+bool trendingADX = adx > adxThreshold
+
+
+// METHOD 2: CHOPPINESS INDEX (CHOP)
+// Formula: 100 * log10( sum(ATR(1), n) / (MaxHigh(n) - MinLow(n)) ) / log10(n)
+float sumAtr = math.sum(ta.atr(1), length)
+float highestHigh = ta.highest(high, length)
+float lowestLow = ta.lowest(low, length)
+float chop = 100.0 - (100.0 * (math.log10(sumAtr / (highestHigh - lowestLow)) / math.log10(length)))
+bool trendingCI = chop > chopThreshold
+
+// METHOD 3: KAUFMAN'S EFFICIENCY RATIO (ER)
+// Formula: Net Directional Movement / Sum of Volatility
+// Values closer to 1.0 indicate a perfectly smooth trend. Values near 0 indicate absolute noise/chop.
+float dirMovement = math.abs(close - close[length])
+float volatility = math.sum(math.abs(close - close[1]), length)
+
+float er = volatility == 0? 0.0 : (dirMovement / volatility) * 100.0
+bool trendingER = er > erThreshold
+
+type Result
+    bool trending
+    float value
+    float min
+    float max
+
+result = switch method
+    methodADX => Result.new(trending=trendingADX, value=adx, min=adxThreshold, max=50)
+    methodCI => Result.new(trending=trendingCI, value=chop, min=chopThreshold, max=80)
+    methodER => Result.new(trending=trendingER, value=er, min=erThreshold, max=80)
+
+color trendingCol = color.from_gradient(result.value, result.min, result.max, trendingMinCol, trendingMaxCol)
+bgcolor(priceBg and result.trending ? trendingCol : na, title="Market Regime Background", editable=false, force_overlay=true)
+
+strPlot = plot(result.value, "Trend strength 0-100", color=color.white, style=plot.style_line, linewidth=2)
+
+// Force vertical scale to 0-100
+zeroPlot = plot(0, "Scale Floor - always 0", color=color.new(color.black, 100), display=display.pane, editable=false)
+plot(100, "Scale Ceiling - always 100", color=color.new(color.black, 100), display=display.pane, editable=false)
+
+fill(zeroPlot, strPlot, oscillatorBg and result.trending ? trendingCol : na, "Trend strength oscillator bg")

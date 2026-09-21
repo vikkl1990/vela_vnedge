@@ -1,0 +1,521 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/ MPL-2.0
+//@version=6
+indicator("Structure Break Volume Profile", shorttitle="Structure Break Volume Profile", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500, calc_bars_count=50000)
+
+// --- Constants ---
+const color BULL_COLOR = #089981
+const color BEAR_COLOR = #f23645
+const color METRIC_COLOR = #5b9cf6
+const color HVN_COLOR = #b983ff
+const int MAX_BROKEN_OBJECTS = 450
+
+// --- Core Inputs ---
+string coreGroup = "Core"
+int fractalLengthInput = input.int(12, "Fractal Length (odd)", minval=3, maxval=51, group=coreGroup, tooltip="Pivot window length. Even values are automatically increased by one.")
+int barsToRightInput = input.int(5, "Bars to Right", minval=1, maxval=300, group=coreGroup, tooltip="Number of chart bars used to project POC, HVN, and LVN elements to the right.")
+bool requireBodyInput = input.bool(true, "Break = Close Beyond Level", group=coreGroup, tooltip="When enabled, a close beyond the pivot level confirms a break. Otherwise, a wick through the level is sufficient.")
+
+// --- Performance Inputs ---
+string performanceGroup = "Performance"
+int calcLastBarsInput = input.int(20000, "Calc Only Last N Bars (0 = all)", minval=0, maxval=50000, group=performanceGroup, tooltip="Limits structure calculations to the latest bars. Use zero to process all bars made available to the script.")
+int maxKeepInput = input.int(250, "Max Stored Broken", minval=100, maxval=MAX_BROKEN_OBJECTS, group=performanceGroup, tooltip="Maximum number of historical broken structure lines and labels retained on the chart.")
+int showLastNInput = input.int(0, "Show Last N Broken (0 = all)", minval=0, maxval=MAX_BROKEN_OBJECTS, group=performanceGroup, tooltip="Deletes older broken structures so only the latest N remain. Zero uses the Max Stored Broken setting.")
+int profileBarsInput = input.int(3000, "Profile Source Bars", minval=100, maxval=10000, group=performanceGroup, tooltip="Maximum number of recent chart bars retained for building the latest CHoCH volume profile.")
+
+// --- Broken Structure Inputs ---
+string brokenGroup = "Broken Structure"
+color brokenUpColorInput = input.color(BULL_COLOR, "Broken UP Color", group=brokenGroup, tooltip="Color of bullish broken structure levels.")
+color brokenDownColorInput = input.color(BEAR_COLOR, "Broken DN Color", group=brokenGroup, tooltip="Color of bearish broken structure levels.")
+int brokenWidthInput = input.int(1, "Broken Width", minval=1, maxval=5, group=brokenGroup, tooltip="Width of confirmed broken structure levels.")
+string brokenStyleInput = input.string("Solid", "Broken Style", options=["Solid", "Dashed", "Dotted"], group=brokenGroup, tooltip="Line style of confirmed broken structure levels.")
+
+// --- BOS/CHoCH Label Inputs ---
+string labelGroup = "BOS/CHoCH Labels"
+bool showBreakLabelsInput = input.bool(true, "Show BOS/CHoCH Labels", group=labelGroup, tooltip="Displays BOS and CHoCH labels together with their price levels.")
+string structureLabelSizeInput = input.string("normal", "Structure Label Size", options=["tiny", "small", "normal"], group=labelGroup, tooltip="Size of BOS and CHoCH labels.")
+color labelBackgroundInput = input.color(#00000000, "Label Background", group=labelGroup, tooltip="Background color of structure labels. The default is fully transparent.")
+color upLabelTextColorInput = input.color(BULL_COLOR, "UP Label Text Color", group=labelGroup, tooltip="Text color for bullish structure labels.")
+color downLabelTextColorInput = input.color(BEAR_COLOR, "DN Label Text Color", group=labelGroup, tooltip="Text color for bearish structure labels.")
+
+// --- Volume Profile Inputs ---
+string profileGroup = "Last CHoCH Volume Profile"
+bool showProfileInput = input.bool(true, "Show Volume Profile", group=profileGroup, tooltip="Draws volume at each price row across the completed structure preceding CHoCH.")
+string profileArchitectureInput = input.string("Ask/Bid", "Visual Architecture", options=["Ask/Bid", "Total Volume"], group=profileGroup, tooltip="Ask/Bid estimates buyer and seller pressure from candle location. Total Volume uses one unified histogram color.")
+int profileRowsInput = input.int(50, "Profile Rows", minval=8, maxval=100, group=profileGroup, tooltip="Number of price rows used by the CHoCH volume profile.")
+int profileWidthInput = input.int(88, "Profile Width (% of structure span)", minval=10, maxval=100, group=profileGroup, tooltip="Maximum histogram width inside the completed structure area.")
+string profilePositionInput = input.string("Left", "Volume Profile Position", options=["Right", "Left"], group=profileGroup, tooltip="Anchors profile columns to the right or left side of the completed structure area.")
+color totalProfileColorInput = input.color(color.new(METRIC_COLOR, 30), "Total Volume Color", group=profileGroup, tooltip="Column color used by the Total Volume architecture.")
+color askProfileColorInput = input.color(color.new(BULL_COLOR, 28), "Ask / Buyer Color", group=profileGroup, tooltip="Estimated buyer-volume color used by the Ask/Bid architecture.")
+color bidProfileColorInput = input.color(color.new(BEAR_COLOR, 28), "Bid / Seller Color", group=profileGroup, tooltip="Estimated seller-volume color used by the Ask/Bid architecture.")
+color profileAreaColorInput = input.color(color.new(METRIC_COLOR, 94), "Profile Area Fill", group=profileGroup, tooltip="Transparent background covering the completed structure profile area.")
+color profileBorderColorInput = input.color(color.new(METRIC_COLOR, 55), "Profile Area Border", group=profileGroup, tooltip="Border color of the completed structure profile area.")
+
+// --- POC Inputs ---
+string pocGroup = "POC"
+bool showPocInput = input.bool(true, "Show POC", group=pocGroup, tooltip="Displays the highest-volume row from the latest CHoCH profile and projects it for retest tracking.")
+color pocColorInput = input.color(METRIC_COLOR, "POC Color", group=pocGroup, tooltip="Color of the active POC line.")
+int pocWidthInput = input.int(2, "POC Width", minval=1, maxval=5, group=pocGroup, tooltip="Width of the active POC line.")
+string pocStyleInput = input.string("Dashed", "POC Style", options=["Solid", "Dashed", "Dotted"], group=pocGroup, tooltip="Line style of the active POC level.")
+bool showPocLabelInput = input.bool(true, "Show POC Label", group=pocGroup, tooltip="Displays the active POC direction and numerical price.")
+string pocLabelSizeInput = input.string("normal", "POC Label Size", options=["tiny", "small", "normal"], group=pocGroup, tooltip="Size of the POC label.")
+color pocLabelTextColorInput = input.color(METRIC_COLOR, "POC Label Text Color", group=pocGroup, tooltip="Text color of the POC label.")
+color pocLabelBackgroundInput = input.color(#00000000, "POC Label Background", group=pocGroup, tooltip="Background color of the POC label. The default is fully transparent.")
+
+// --- HVN Inputs ---
+string hvnGroup = "High Volume Nodes"
+bool showHvnInput = input.bool(true, "Show HVN Columns", group=hvnGroup, tooltip="Projects significant local volume peaks from their profile columns toward the latest bars.")
+int hvnCountInput = input.int(3, "Maximum HVN Count", minval=1, maxval=8, group=hvnGroup, tooltip="Maximum number of strongest High Volume Node columns displayed.")
+float hvnThresholdInput = input.float(55.0, "Minimum Volume (% of POC)", minval=10.0, maxval=95.0, step=5.0, group=hvnGroup, tooltip="A local volume peak must reach this percentage of POC row volume to qualify as an HVN.")
+int hvnSpacingInput = input.int(3, "Minimum Row Spacing", minval=1, maxval=10, group=hvnGroup, tooltip="Minimum number of rows separating HVNs from each other and from the POC.")
+color hvnColorInput = input.color(HVN_COLOR, "HVN Column Color", group=hvnGroup, tooltip="Color applied to High Volume Node projection columns and labels.")
+int hvnOpacityInput = input.int(78, "HVN Column Transparency", minval=0, maxval=95, group=hvnGroup, tooltip="Transparency of projected HVN columns.")
+bool showHvnLabelsInput = input.bool(true, "Show HVN Labels", group=hvnGroup, tooltip="Displays each HVN rank and numerical price.")
+string hvnLabelSizeInput = input.string("normal", "HVN Label Size", options=["tiny", "small", "normal"], group=hvnGroup, tooltip="Size of HVN labels.")
+int hvnLabelOffsetInput = input.int(3, "HVN Label Offset (bars)", minval=1, maxval=50, group=hvnGroup, tooltip="Places HVN labels this many chart bars beyond the projected columns.")
+
+// --- LVN Inputs ---
+string lvnGroup = "Low Volume Nodes"
+bool showLvnInput = input.bool(false, "Show LVN Columns", group=lvnGroup, tooltip="Projects significant local volume troughs as columns. Columns are green after bullish CHoCH and red after bearish CHoCH.")
+int lvnCountInput = input.int(3, "Maximum LVN Count", minval=1, maxval=8, group=lvnGroup, tooltip="Maximum number of strongest Low Volume Node columns displayed.")
+float lvnThresholdInput = input.float(45.0, "Maximum Volume (% of POC)", minval=5.0, maxval=90.0, step=5.0, group=lvnGroup, tooltip="A local volume trough must remain below this percentage of POC row volume to qualify as an LVN.")
+int lvnSpacingInput = input.int(3, "Minimum Row Spacing", minval=1, maxval=10, group=lvnGroup, tooltip="Minimum number of rows separating LVNs from each other and from the POC.")
+int lvnOpacityInput = input.int(88, "LVN Column Transparency", minval=0, maxval=95, group=lvnGroup, tooltip="Transparency of projected LVN columns.")
+bool showLvnLabelsInput = input.bool(true, "Show LVN Labels", group=lvnGroup, tooltip="Displays each LVN rank and numerical price.")
+string lvnLabelSizeInput = input.string("normal", "LVN Label Size", options=["tiny", "small", "normal"], group=lvnGroup, tooltip="Size of LVN labels.")
+int lvnLabelOffsetInput = input.int(3, "LVN Label Offset (bars)", minval=1, maxval=50, group=lvnGroup, tooltip="Places LVN labels this many chart bars beyond the projected columns.")
+
+// --- Display Inputs ---
+string displayGroup = "Display"
+bool showWatermarkInput = input.bool(true, "Show erdensedat Watermark", group=displayGroup, tooltip="Shows the erdensedat watermark at the bottom center of the chart.")
+
+// --- Debug Inputs ---
+string debugGroup = "Debug"
+bool showPivotMarksInput = input.bool(false, "Show Pivot Marks", group=debugGroup, tooltip="Marks confirmed pivot highs and lows for debugging.")
+
+// --- Helper Functions ---
+f_lineStyle(string styleText) =>
+    styleText == "Solid" ? line.style_solid : styleText == "Dashed" ? line.style_dashed : line.style_dotted
+
+f_labelSize(string sizeText) =>
+    sizeText == "tiny" ? size.tiny : sizeText == "small" ? size.small : size.normal
+
+f_clampFloat(float value, float minimum, float maximum) =>
+    math.min(math.max(value, minimum), maximum)
+
+f_clampInt(int value, int minimum, int maximum) =>
+    math.min(math.max(value, minimum), maximum)
+
+// --- Derived Values ---
+bool inCalc = calcLastBarsInput == 0 or bar_index >= last_bar_index - calcLastBarsInput
+int oddLength = fractalLengthInput % 2 == 0 ? fractalLengthInput + 1 : fractalLengthInput
+int pivotStrength = int(oddLength / 2)
+int timeframeMilliseconds = int(timeframe.in_seconds(timeframe.period) * 1000)
+int extensionMilliseconds = timeframeMilliseconds * barsToRightInput
+brokenLineStyle = f_lineStyle(brokenStyleInput)
+pocLineStyle = f_lineStyle(pocStyleInput)
+structureLabelSize = f_labelSize(structureLabelSizeInput)
+pocLabelSize = f_labelSize(pocLabelSizeInput)
+hvnLabelSize = f_labelSize(hvnLabelSizeInput)
+lvnLabelSize = f_labelSize(lvnLabelSizeInput)
+
+// --- Confirmed Pivots ---
+float pivotHighValue = ta.pivothigh(high, pivotStrength, pivotStrength)
+float pivotLowValue = ta.pivotlow(low, pivotStrength, pivotStrength)
+bool pivotHighHit = not na(pivotHighValue)
+bool pivotLowHit = not na(pivotLowValue)
+
+plotshape(showPivotMarksInput and pivotHighHit, title="Pivot High", style=shape.triangledown, location=location.abovebar, offset=-pivotStrength, color=BEAR_COLOR, textcolor=chart.fg_color, size=size.tiny, text="PH")
+plotshape(showPivotMarksInput and pivotLowHit, title="Pivot Low", style=shape.triangleup, location=location.belowbar, offset=-pivotStrength, color=BULL_COLOR, textcolor=chart.fg_color, size=size.tiny, text="PL")
+
+// --- Structure State ---
+var float upperLevel = na
+var int upperPivotTime = na
+var bool upperBroken = false
+var float lowerLevel = na
+var int lowerPivotTime = na
+var bool lowerBroken = false
+var int structureDirection = 0
+var float activeStructureHigh = na
+var int activeStructureHighTime = na
+var float activeStructureLow = na
+var int activeStructureLowTime = na
+
+// --- Broken Structure Storage ---
+var array<line> brokenLinesArray = array.new_line()
+var array<label> brokenLabelsArray = array.new_label()
+
+f_trimBroken() =>
+    if showLastNInput > 0
+        while array.size(brokenLinesArray) > showLastNInput
+            line oldLineId = array.shift(brokenLinesArray)
+            label oldLabelId = array.shift(brokenLabelsArray)
+            line.delete(oldLineId)
+            if not na(oldLabelId)
+                label.delete(oldLabelId)
+    while array.size(brokenLinesArray) > maxKeepInput
+        line oldLineId = array.shift(brokenLinesArray)
+        label oldLabelId = array.shift(brokenLabelsArray)
+        line.delete(oldLineId)
+        if not na(oldLabelId)
+            label.delete(oldLabelId)
+
+f_pushBroken(line lineId, label labelId) =>
+    array.push(brokenLinesArray, lineId)
+    array.push(brokenLabelsArray, labelId)
+    f_trimBroken()
+
+// --- Profile Source Storage ---
+var array<int> sourceTimeArray = array.new_int()
+var array<float> sourceOpenArray = array.new_float()
+var array<float> sourceHighArray = array.new_float()
+var array<float> sourceLowArray = array.new_float()
+var array<float> sourceCloseArray = array.new_float()
+var array<float> sourceVolumeArray = array.new_float()
+
+if inCalc
+    array.push(sourceTimeArray, time)
+    array.push(sourceOpenArray, open)
+    array.push(sourceHighArray, high)
+    array.push(sourceLowArray, low)
+    array.push(sourceCloseArray, close)
+    array.push(sourceVolumeArray, na(volume) or volume <= 0 ? 1.0 : volume)
+    while array.size(sourceTimeArray) > profileBarsInput
+        array.shift(sourceTimeArray)
+        array.shift(sourceOpenArray)
+        array.shift(sourceHighArray)
+        array.shift(sourceLowArray)
+        array.shift(sourceCloseArray)
+        array.shift(sourceVolumeArray)
+
+// --- Latest CHoCH Profile State ---
+var int profileStartTime = na
+var int profileEndTime = na
+var int latestChochTime = na
+var int latestChochDirection = 0
+var float profileLowPrice = na
+var float profileHighPrice = na
+var float latestPocPrice = na
+var line pocLineId = na
+var label pocLabelId = na
+var array<box> profileBoxesArray = array.new_box()
+var array<label> nodeLabelsArray = array.new_label()
+
+f_clearProfileBoxes() =>
+    if array.size(profileBoxesArray) > 0
+        for boxIndex = 0 to array.size(profileBoxesArray) - 1
+            box.delete(array.get(profileBoxesArray, boxIndex))
+        array.clear(profileBoxesArray)
+
+f_clearNodeLabels() =>
+    if array.size(nodeLabelsArray) > 0
+        for labelIndex = 0 to array.size(nodeLabelsArray) - 1
+            label.delete(array.get(nodeLabelsArray, labelIndex))
+        array.clear(nodeLabelsArray)
+
+f_buildProfile(int startTime, int endTime, float lowPrice, float highPrice) =>
+    array<float> totalVolumeArray = array.new_float(profileRowsInput, 0.0)
+    array<float> askVolumeArray = array.new_float(profileRowsInput, 0.0)
+    array<float> bidVolumeArray = array.new_float(profileRowsInput, 0.0)
+    float rowHeight = (highPrice - lowPrice) / profileRowsInput
+
+    if rowHeight > 0 and array.size(sourceTimeArray) > 0
+        for sourceIndex = 0 to array.size(sourceTimeArray) - 1
+            int sourceTime = array.get(sourceTimeArray, sourceIndex)
+            if sourceTime >= startTime and sourceTime <= endTime
+                float sourceOpen = array.get(sourceOpenArray, sourceIndex)
+                float sourceHigh = array.get(sourceHighArray, sourceIndex)
+                float sourceLow = array.get(sourceLowArray, sourceIndex)
+                float sourceClose = array.get(sourceCloseArray, sourceIndex)
+                float sourceVolume = array.get(sourceVolumeArray, sourceIndex)
+                float sourceRange = sourceHigh - sourceLow
+                float askShare = sourceRange > 0 ? f_clampFloat((sourceClose - sourceLow) / sourceRange, 0.0, 1.0) : sourceClose > sourceOpen ? 1.0 : sourceClose < sourceOpen ? 0.0 : 0.5
+                float sourceAskVolume = sourceVolume * askShare
+                float sourceBidVolume = sourceVolume - sourceAskVolume
+                float clippedLow = math.max(sourceLow, lowPrice)
+                float clippedHigh = math.min(sourceHigh, highPrice)
+
+                if clippedHigh > clippedLow
+                    int firstRow = f_clampInt(int(math.floor((clippedLow - lowPrice) / rowHeight)), 0, profileRowsInput - 1)
+                    int lastRow = f_clampInt(int(math.floor((clippedHigh - lowPrice) / rowHeight)), 0, profileRowsInput - 1)
+                    float clippedRange = clippedHigh - clippedLow
+                    for rowIndex = firstRow to lastRow
+                        float rowBottom = lowPrice + rowIndex * rowHeight
+                        float rowTop = rowBottom + rowHeight
+                        float overlap = math.max(math.min(clippedHigh, rowTop) - math.max(clippedLow, rowBottom), 0.0)
+                        float allocation = clippedRange > 0 ? overlap / clippedRange : 0.0
+                        array.set(totalVolumeArray, rowIndex, array.get(totalVolumeArray, rowIndex) + sourceVolume * allocation)
+                        array.set(askVolumeArray, rowIndex, array.get(askVolumeArray, rowIndex) + sourceAskVolume * allocation)
+                        array.set(bidVolumeArray, rowIndex, array.get(bidVolumeArray, rowIndex) + sourceBidVolume * allocation)
+                else if sourceClose >= lowPrice and sourceClose <= highPrice
+                    int rowIndex = f_clampInt(int(math.floor((sourceClose - lowPrice) / rowHeight)), 0, profileRowsInput - 1)
+                    array.set(totalVolumeArray, rowIndex, array.get(totalVolumeArray, rowIndex) + sourceVolume)
+                    array.set(askVolumeArray, rowIndex, array.get(askVolumeArray, rowIndex) + sourceAskVolume)
+                    array.set(bidVolumeArray, rowIndex, array.get(bidVolumeArray, rowIndex) + sourceBidVolume)
+
+    float maximumRowVolume = 0.0
+    int pocRowIndex = 0
+    for rowIndex = 0 to profileRowsInput - 1
+        float rowVolume = array.get(totalVolumeArray, rowIndex)
+        if rowVolume > maximumRowVolume
+            maximumRowVolume := rowVolume
+            pocRowIndex := rowIndex
+
+    float pocPrice = maximumRowVolume > 0 ? lowPrice + (pocRowIndex + 0.5) * rowHeight : na
+    int profileSpan = math.max(endTime - startTime, timeframeMilliseconds * 2)
+    int horizontalPadding = int(profileSpan * 0.04)
+    int profileLeftAnchor = startTime + horizontalPadding
+    int profileRightAnchor = endTime - horizontalPadding
+    int profileAvailableWidth = int((profileSpan - horizontalPadding * 2) * profileWidthInput / 100.0)
+    bool profileOnLeft = profilePositionInput == "Left"
+    bool usePressureArchitecture = profileArchitectureInput == "Ask/Bid"
+
+    if showProfileInput and maximumRowVolume > 0
+        box areaBoxId = box.new(left=startTime, top=highPrice, right=endTime, bottom=lowPrice, xloc=xloc.bar_time, border_color=profileBorderColorInput, border_width=1, border_style=line.style_dotted, bgcolor=profileAreaColorInput)
+        array.push(profileBoxesArray, areaBoxId)
+
+        float pocRowBottom = lowPrice + pocRowIndex * rowHeight
+        float pocRowTop = pocRowBottom + rowHeight
+        box pocGlowBoxId = box.new(left=startTime, top=pocRowTop, right=endTime, bottom=pocRowBottom, xloc=xloc.bar_time, border_color=#00000000, border_width=0, bgcolor=color.new(pocColorInput, 86))
+        array.push(profileBoxesArray, pocGlowBoxId)
+
+        for rowIndex = 0 to profileRowsInput - 1
+            float rowVolume = array.get(totalVolumeArray, rowIndex)
+            if rowVolume > 0
+                int rowWidth = math.max(int(profileAvailableWidth * rowVolume / maximumRowVolume), 1)
+                int rowLeft = profileOnLeft ? profileLeftAnchor : profileRightAnchor - rowWidth
+                int rowRight = rowLeft + rowWidth
+                float rowBottom = lowPrice + rowIndex * rowHeight + rowHeight * 0.08
+                float rowTop = lowPrice + (rowIndex + 1) * rowHeight - rowHeight * 0.08
+
+                if usePressureArchitecture
+                    float rowAskVolume = array.get(askVolumeArray, rowIndex)
+                    float rowBidVolume = array.get(bidVolumeArray, rowIndex)
+                    int bidWidth = int(rowWidth * rowBidVolume / rowVolume)
+                    int askWidth = rowWidth - bidWidth
+                    int splitPoint = rowLeft + bidWidth
+                    if bidWidth > 0
+                        box bidBoxId = box.new(left=rowLeft, top=rowTop, right=splitPoint, bottom=rowBottom, xloc=xloc.bar_time, border_color=color.new(bidProfileColorInput, 15), border_width=1, bgcolor=bidProfileColorInput)
+                        array.push(profileBoxesArray, bidBoxId)
+                    if askWidth > 0
+                        box askBoxId = box.new(left=splitPoint, top=rowTop, right=rowRight, bottom=rowBottom, xloc=xloc.bar_time, border_color=color.new(askProfileColorInput, 15), border_width=1, bgcolor=askProfileColorInput)
+                        array.push(profileBoxesArray, askBoxId)
+                else
+                    box profileBoxId = box.new(left=rowLeft, top=rowTop, right=rowRight, bottom=rowBottom, xloc=xloc.bar_time, border_color=color.new(totalProfileColorInput, 15), border_width=1, bgcolor=totalProfileColorInput)
+                    array.push(profileBoxesArray, profileBoxId)
+
+    if showHvnInput and maximumRowVolume > 0
+        array<int> selectedHvnRowsArray = array.new_int()
+        float minimumHvnVolume = maximumRowVolume * hvnThresholdInput / 100.0
+        int projectionRight = time + extensionMilliseconds
+        int labelsTime = projectionRight + timeframeMilliseconds * hvnLabelOffsetInput
+
+        for selectionIndex = 0 to hvnCountInput - 1
+            int bestRowIndex = -1
+            float bestRowVolume = 0.0
+            for rowIndex = 1 to profileRowsInput - 2
+                float nodeVolume = array.get(totalVolumeArray, rowIndex)
+                float previousVolume = array.get(totalVolumeArray, rowIndex - 1)
+                float nextVolume = array.get(totalVolumeArray, rowIndex + 1)
+                bool isLocalPeak = nodeVolume >= previousVolume and nodeVolume > nextVolume
+                bool isFarFromPoc = math.abs(rowIndex - pocRowIndex) >= hvnSpacingInput
+                bool isFarFromSelected = true
+                if array.size(selectedHvnRowsArray) > 0
+                    for selectedIndex = 0 to array.size(selectedHvnRowsArray) - 1
+                        if math.abs(rowIndex - array.get(selectedHvnRowsArray, selectedIndex)) < hvnSpacingInput
+                            isFarFromSelected := false
+                bool isQualifiedNode = isLocalPeak and isFarFromPoc and isFarFromSelected and nodeVolume >= minimumHvnVolume
+                if isQualifiedNode and nodeVolume > bestRowVolume
+                    bestRowVolume := nodeVolume
+                    bestRowIndex := rowIndex
+
+            if bestRowIndex >= 0
+                array.push(selectedHvnRowsArray, bestRowIndex)
+                float hvnPrice = lowPrice + (bestRowIndex + 0.5) * rowHeight
+                int sourceWidth = math.max(int(profileAvailableWidth * bestRowVolume / maximumRowVolume), 1)
+                int sourceEdge = profileOnLeft ? profileLeftAnchor + sourceWidth : profileRightAnchor
+                float nodeBottom = lowPrice + bestRowIndex * rowHeight + rowHeight * 0.08
+                float nodeTop = lowPrice + (bestRowIndex + 1) * rowHeight - rowHeight * 0.08
+                box hvnBoxId = box.new(left=sourceEdge, top=nodeTop, right=projectionRight, bottom=nodeBottom, xloc=xloc.bar_time, border_color=color.new(hvnColorInput, 20), border_width=1, bgcolor=color.new(hvnColorInput, hvnOpacityInput))
+                array.push(profileBoxesArray, hvnBoxId)
+                if showHvnLabelsInput
+                    string hvnText = "HVN " + str.tostring(selectionIndex + 1) + "  " + str.tostring(hvnPrice, format.mintick)
+                    label hvnLabelId = label.new(labelsTime, hvnPrice, hvnText, xloc=xloc.bar_time, style=label.style_label_left, textcolor=hvnColorInput, color=#00000000, size=hvnLabelSize)
+                    array.push(nodeLabelsArray, hvnLabelId)
+
+    if showLvnInput and maximumRowVolume > 0
+        array<int> selectedLvnRowsArray = array.new_int()
+        float maximumLvnVolume = maximumRowVolume * lvnThresholdInput / 100.0
+        color directionalLvnColor = latestChochDirection == 1 ? BULL_COLOR : BEAR_COLOR
+        int projectionRight = time + extensionMilliseconds
+        int labelsTime = projectionRight + timeframeMilliseconds * lvnLabelOffsetInput
+
+        for selectionIndex = 0 to lvnCountInput - 1
+            int bestRowIndex = -1
+            float lowestRowVolume = 1e20
+            for rowIndex = 1 to profileRowsInput - 2
+                float nodeVolume = array.get(totalVolumeArray, rowIndex)
+                float previousVolume = array.get(totalVolumeArray, rowIndex - 1)
+                float nextVolume = array.get(totalVolumeArray, rowIndex + 1)
+                bool isLocalTrough = nodeVolume <= previousVolume and nodeVolume < nextVolume
+                bool hasNeighborVolume = previousVolume > 0 or nextVolume > 0
+                bool isFarFromPoc = math.abs(rowIndex - pocRowIndex) >= lvnSpacingInput
+                bool isFarFromSelected = true
+                if array.size(selectedLvnRowsArray) > 0
+                    for selectedIndex = 0 to array.size(selectedLvnRowsArray) - 1
+                        if math.abs(rowIndex - array.get(selectedLvnRowsArray, selectedIndex)) < lvnSpacingInput
+                            isFarFromSelected := false
+                bool isQualifiedNode = isLocalTrough and hasNeighborVolume and isFarFromPoc and isFarFromSelected and nodeVolume <= maximumLvnVolume
+                if isQualifiedNode and nodeVolume < lowestRowVolume
+                    lowestRowVolume := nodeVolume
+                    bestRowIndex := rowIndex
+
+            if bestRowIndex >= 0
+                array.push(selectedLvnRowsArray, bestRowIndex)
+                float lvnPrice = lowPrice + (bestRowIndex + 0.5) * rowHeight
+                float selectedRowVolume = array.get(totalVolumeArray, bestRowIndex)
+                int sourceWidth = math.max(int(profileAvailableWidth * selectedRowVolume / maximumRowVolume), 1)
+                int sourceEdge = profileOnLeft ? profileLeftAnchor + sourceWidth : profileRightAnchor
+                float nodeBottom = lowPrice + bestRowIndex * rowHeight + rowHeight * 0.12
+                float nodeTop = lowPrice + (bestRowIndex + 1) * rowHeight - rowHeight * 0.12
+                box lvnBoxId = box.new(left=sourceEdge, top=nodeTop, right=projectionRight, bottom=nodeBottom, xloc=xloc.bar_time, border_color=directionalLvnColor, border_width=1, border_style=line.style_dotted, bgcolor=color.new(directionalLvnColor, lvnOpacityInput))
+                array.push(profileBoxesArray, lvnBoxId)
+                if showLvnLabelsInput
+                    string lvnText = "LVN " + str.tostring(selectionIndex + 1) + "  " + str.tostring(lvnPrice, format.mintick)
+                    label lvnLabelId = label.new(labelsTime, lvnPrice, lvnText, xloc=xloc.bar_time, style=label.style_label_left, textcolor=directionalLvnColor, color=#00000000, size=lvnLabelSize)
+                    array.push(nodeLabelsArray, lvnLabelId)
+
+    pocPrice
+
+// --- Update Pivot Levels and Active Structure Extremes ---
+if inCalc
+    if pivotHighHit
+        upperLevel := pivotHighValue
+        upperPivotTime := time[pivotStrength]
+        upperBroken := false
+        if structureDirection != 0 and (na(activeStructureHigh) or pivotHighValue > activeStructureHigh)
+            activeStructureHigh := pivotHighValue
+            activeStructureHighTime := upperPivotTime
+
+    if pivotLowHit
+        lowerLevel := pivotLowValue
+        lowerPivotTime := time[pivotStrength]
+        lowerBroken := false
+        if structureDirection != 0 and (na(activeStructureLow) or pivotLowValue < activeStructureLow)
+            activeStructureLow := pivotLowValue
+            activeStructureLowTime := lowerPivotTime
+
+// --- Break Conditions ---
+bool breakUp = inCalc and not na(upperLevel) and not upperBroken and (requireBodyInput ? close > upperLevel : high > upperLevel)
+bool breakDown = inCalc and not na(lowerLevel) and not lowerBroken and (requireBodyInput ? close < lowerLevel : low < lowerLevel)
+
+// --- Apply Bullish Break ---
+if breakUp
+    bool isChochBreak = structureDirection == -1
+    bool startsNewBullishStructure = structureDirection != 1
+    upperBroken := true
+
+    line breakLineId = line.new(upperPivotTime, upperLevel, time, upperLevel, xloc=xloc.bar_time, extend=extend.none, color=brokenUpColorInput, style=brokenLineStyle, width=brokenWidthInput)
+    label breakLabelId = na
+    if showBreakLabelsInput
+        string breakText = (isChochBreak ? "CHoCH" : "BOS") + "  " + str.tostring(upperLevel, format.mintick)
+        breakLabelId := label.new(int(math.avg(time, upperPivotTime)), upperLevel, breakText, xloc=xloc.bar_time, style=label.style_label_down, textcolor=upLabelTextColorInput, color=labelBackgroundInput, size=structureLabelSize)
+    f_pushBroken(breakLineId, breakLabelId)
+
+    if isChochBreak
+        latestChochTime := time
+        latestChochDirection := 1
+        bool hasPreviousStructureExtremes = not na(activeStructureHigh) and not na(activeStructureHighTime) and not na(activeStructureLow) and not na(activeStructureLowTime)
+        if hasPreviousStructureExtremes
+            profileStartTime := math.min(activeStructureHighTime, activeStructureLowTime)
+            profileEndTime := time[1]
+            profileLowPrice := activeStructureLow
+            profileHighPrice := activeStructureHigh
+        else
+            profileStartTime := na
+            profileEndTime := na
+            profileLowPrice := na
+            profileHighPrice := na
+            latestPocPrice := na
+
+    if startsNewBullishStructure
+        activeStructureHigh := upperLevel
+        activeStructureHighTime := upperPivotTime
+        activeStructureLow := lowerLevel
+        activeStructureLowTime := lowerPivotTime
+
+    structureDirection := 1
+
+// --- Apply Bearish Break ---
+if breakDown
+    bool isChochBreak = structureDirection == 1
+    bool startsNewBearishStructure = structureDirection != -1
+    lowerBroken := true
+
+    line breakLineId = line.new(lowerPivotTime, lowerLevel, time, lowerLevel, xloc=xloc.bar_time, extend=extend.none, color=brokenDownColorInput, style=brokenLineStyle, width=brokenWidthInput)
+    label breakLabelId = na
+    if showBreakLabelsInput
+        string breakText = (isChochBreak ? "CHoCH" : "BOS") + "  " + str.tostring(lowerLevel, format.mintick)
+        breakLabelId := label.new(int(math.avg(time, lowerPivotTime)), lowerLevel, breakText, xloc=xloc.bar_time, style=label.style_label_up, textcolor=downLabelTextColorInput, color=labelBackgroundInput, size=structureLabelSize)
+    f_pushBroken(breakLineId, breakLabelId)
+
+    if isChochBreak
+        latestChochTime := time
+        latestChochDirection := -1
+        bool hasPreviousStructureExtremes = not na(activeStructureHigh) and not na(activeStructureHighTime) and not na(activeStructureLow) and not na(activeStructureLowTime)
+        if hasPreviousStructureExtremes
+            profileStartTime := math.min(activeStructureHighTime, activeStructureLowTime)
+            profileEndTime := time[1]
+            profileLowPrice := activeStructureLow
+            profileHighPrice := activeStructureHigh
+        else
+            profileStartTime := na
+            profileEndTime := na
+            profileLowPrice := na
+            profileHighPrice := na
+            latestPocPrice := na
+
+    if startsNewBearishStructure
+        activeStructureHigh := upperLevel
+        activeStructureHighTime := upperPivotTime
+        activeStructureLow := lowerLevel
+        activeStructureLowTime := lowerPivotTime
+
+    structureDirection := -1
+
+// --- Build Latest CHoCH Profile ---
+if barstate.islast
+    f_clearProfileBoxes()
+    f_clearNodeLabels()
+
+    if not na(pocLineId)
+        line.delete(pocLineId)
+        pocLineId := na
+    if not na(pocLabelId)
+        label.delete(pocLabelId)
+        pocLabelId := na
+
+    bool validProfileRange = not na(profileStartTime) and not na(profileEndTime) and not na(profileLowPrice) and not na(profileHighPrice) and profileEndTime > profileStartTime and profileHighPrice > profileLowPrice
+    if validProfileRange
+        latestPocPrice := f_buildProfile(profileStartTime, profileEndTime, profileLowPrice, profileHighPrice)
+        if showPocInput and not na(latestPocPrice)
+            pocLineId := line.new(profileStartTime, latestPocPrice, time + extensionMilliseconds, latestPocPrice, xloc=xloc.bar_time, extend=extend.none, color=pocColorInput, style=pocLineStyle, width=pocWidthInput)
+            if showPocLabelInput
+                string directionText = latestChochDirection == 1 ? "↑" : "↓"
+                string pocText = "POC " + directionText + "  " + str.tostring(latestPocPrice, format.mintick)
+                pocLabelId := label.new(time + extensionMilliseconds + timeframeMilliseconds, latestPocPrice, pocText, xloc=xloc.bar_time, style=label.style_label_left, textcolor=pocLabelTextColorInput, color=pocLabelBackgroundInput, size=pocLabelSize)
+    else
+        latestPocPrice := na
+
+// --- Active POC Retest Alerts ---
+bool pocTouched = not na(latestPocPrice) and not na(latestChochTime) and time > latestChochTime and low <= latestPocPrice and high >= latestPocPrice
+bool firstPocTouch = pocTouched and not pocTouched[1]
+bool bullishPocRetest = firstPocTouch and latestChochDirection == 1
+bool bearishPocRetest = firstPocTouch and latestChochDirection == -1
+
+alertcondition(bullishPocRetest, title="Bullish CHoCH POC Retest", message="Price retested the active POC after a bullish CHoCH.")
+alertcondition(bearishPocRetest, title="Bearish CHoCH POC Retest", message="Price retested the active POC after a bearish CHoCH.")
+
+// --- Watermark ---
+var table watermarkTable = table.new(position.bottom_center, 1, 1)
+if barstate.islast
+    table.cell(watermarkTable, 0, 0, showWatermarkInput ? "erdensedat" : "", text_color=color.new(chart.fg_color, 55), text_size=size.normal, bgcolor=#00000000)

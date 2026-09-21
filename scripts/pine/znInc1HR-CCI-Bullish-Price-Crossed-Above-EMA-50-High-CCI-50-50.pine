@@ -1,0 +1,24 @@
+//@version=6
+indicator("EMA50 High + CCI50 Signal", overlay=true)
+
+// Inputs
+cciLength = input.int(50, title="CCI Length")
+
+// EMA(50) of High
+emaHigh50 = ta.ema(high, 50)
+
+// CCI(50) using the input variable
+cci50 = ta.cci(close, cciLength)
+
+// Conditions
+priceCrossAbove = ta.crossover(close, emaHigh50)
+cciCrossAbove50 = ta.crossover(cci50, 50)
+
+// Combined signal
+signal = priceCrossAbove and cciCrossAbove50
+
+// Plotting
+plot(emaHigh50, color=color.orange, title="EMA 50 High")
+plotshape(signal, style=shape.labelup, location=location.belowbar, color=color.green, text="BUY", textcolor=color.white, size=size.small)
+
+alertcondition(signal, title="BUY Signal", message="EMA50 High + CCI50 Buy Signal Triggered")

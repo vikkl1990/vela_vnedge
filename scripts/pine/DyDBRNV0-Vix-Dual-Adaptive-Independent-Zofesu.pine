@@ -1,0 +1,70 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Since 2020 Zofesu
+//
+// CREDITS:
+// Based on the Williams VIX Fix concept originally published by ChrisMoody
+// on TradingView (CM_Williams_Vix_Fix, 2014, open-source).
+// Original script: https://www.tradingview.com/v/og7JPrRA/
+// The underlying VIX Fix formula was created by Larry Williams and is public domain.
+//
+// ORIGINAL ADDITIONS by Zofesu:
+// — Dual independent engine architecture (Fear + Greed calculated separately)
+// — Inverse VIX engine for greed/euphoria detection (original concept)
+// — Independent lookback windows for each engine
+// — Independent percentile thresholds for each engine
+// — Dual threshold filtering (BB + Percentile) per engine
+// — Black histogram anchors for candle alignment
+
+//@version=6
+indicator("Vix Dual Adaptive (Independent) [Zofesu]", overlay=false, shorttitle="[Zofesu] Vix Dual Adaptive")
+
+// --- FEAR SETTINGS (Top) ---
+grp_fear = "FEAR SETTINGS (Lime)"
+lb_f = input.int(145, "Fear Lookback", minval=10, group=grp_fear, tooltip="Number of bars used for the Fear engine's VIX Fix and Bollinger Band calculation. Higher = smoother, fewer signals. Independent from the Greed lookback. Default 145.")
+ph_f = input.float(0.99, "Fear Percentile", step=0.01, group=grp_fear, tooltip="Statistical rank required for a Fear signal, applied to the highest VIX Fix value over twice the lookback period. 0.99 = only the top 1% of extremes qualify. Lower values produce more signals. Default 0.99.")
+
+// --- GREED SETTINGS (Below) ---
+grp_greed = "GREED SETTINGS (Purple)"
+lb_g = input.int(148, "Greed Lookback", minval=10, group=grp_greed, tooltip="Number of bars used for the Greed engine's inverse VIX Fix and Bollinger Band calculation. Independent from the Fear lookback — tune separately. Default 148.")
+ph_g = input.float(0.99, "Greed Percentile", step=0.01, group=grp_greed, tooltip="Statistical rank required for a Greed signal, applied to the lowest inverse VIX Fix value over twice the lookback period. Independent from the Fear percentile. Default 0.99.")
+
+// Visibility toggles
+show_bb = input.bool(false, "Show Bollinger Bands", tooltip="Displays the adaptive Bollinger Band boundary for both engines. Enable during calibration to see where the threshold sits relative to the histogram, then hide once settings are finalized.")
+show_ph = input.bool(false, "Show Percentile Lines", tooltip="Displays the percentile rank threshold line for both engines. Enable during calibration to judge signal density, then hide once settings are finalized.")
+
+// --- 1. FEAR CALCULATION (Vix Fix - Upward) ---
+wvf_fear = ((ta.highest(close, lb_f) - low) / ta.highest(close, lb_f)) * 100
+
+upper_f   = ta.sma(wvf_fear, lb_f) + (2.0 * ta.stdev(wvf_fear, lb_f))
+percent_f = ta.highest(wvf_fear, lb_f * 2) * ph_f
+
+is_panic = wvf_fear >= upper_f or wvf_fear >= percent_f
+col_fear = is_panic ? color.lime : color.rgb(0, 0, 0)
+
+// --- 2. GREED CALCULATION (Inverse Vix - Downward) ---
+// Original Zofesu extension: mirrors the VIX Fix logic inverted to detect euphoria
+wvf_greed = ((high - ta.lowest(low, lb_g)) / ta.lowest(low, lb_g)) * -100
+
+upper_g   = ta.sma(wvf_greed, lb_g) - (2.0 * ta.stdev(wvf_greed, lb_g))
+percent_g = ta.lowest(wvf_greed, lb_g * 2) * ph_g
+
+is_greed = wvf_greed <= upper_g or wvf_greed <= percent_g
+col_greed = is_greed ? color.rgb(184, 33, 243) : color.rgb(2, 2, 2)
+
+// --- VISUALIZATION ---
+hline(0, "Neutral", color=color.new(color.gray, 50))
+
+// Histograms
+plot(wvf_fear, title="Fear Histogram", style=plot.style_histogram, linewidth=4, color=col_fear)
+plot(wvf_greed, title="Greed Histogram", style=plot.style_histogram, linewidth=4, color=col_greed)
+
+// Borders Fear (Positive)
+plot(show_bb ? upper_f : na, title="Fear BB", color=color.aqua, linewidth=1)
+plot(show_ph ? percent_f : na, title="Fear Percentile", color=color.orange, linewidth=1)
+
+// Borders Greed (Negative)
+plot(show_bb ? upper_g : na, title="Greed BB", color=color.aqua, linewidth=1)
+plot(show_ph ? percent_g : na, title="Greed Percentile", color=color.orange, linewidth=1)
+
+// Background signals
+bgcolor(is_panic ? color.new(color.lime, 90) : is_greed ? color.new(#c200e4, 90) : na)

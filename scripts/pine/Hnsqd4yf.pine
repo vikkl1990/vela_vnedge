@@ -1,0 +1,136 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BotTradeLab
+//@version=6
+indicator("Volatility Shock Half-Life Monitor", shorttitle="Vol Shock Half-Life", overlay=false, precision=2)
+
+groupCalc = "Shock model"
+fastLen = input.int(10, "Fast volatility length", minval=2, group=groupCalc)
+baseLen = input.int(100, "Baseline volatility length", minval=10, group=groupCalc)
+shockMultiple = input.float(1.75, "Shock threshold (× baseline)", minval=1.05, step=0.05, group=groupCalc)
+decayFraction = input.float(0.50, "Target: excess volatility remaining", minval=0.05, maxval=0.95, step=0.05, group=groupCalc, tooltip="0.50 measures the first bar where excess volatility has fallen halfway from the latest peak toward the frozen pre-shock baseline.")
+reheatPercent = input.float(10.0, "Meaningful reheat above prior peak (%)", minval=0.0, step=1.0, group=groupCalc)
+maxEpisodeBars = input.int(40, "Maximum episode length (bars)", minval=2, group=groupCalc)
+useLogReturns = input.bool(true, "Use logarithmic returns", group=groupCalc)
+
+groupDisplay = "Display"
+showBackground = input.bool(true, "Shade active episodes", group=groupDisplay)
+showMarkers = input.bool(true, "Show event markers", group=groupDisplay)
+showTable = input.bool(false, "Show compact dashboard", group=groupDisplay)
+
+if barstate.isfirst and fastLen >= baseLen
+    runtime.error("Baseline volatility length must be greater than fast volatility length.")
+
+float ret = useLogReturns ? math.log(close / close[1]) : close / close[1] - 1.0
+float fastVol = ta.stdev(ret, fastLen)
+float baseVol = ta.stdev(ret, baseLen)
+bool valid = not na(fastVol) and not na(baseVol) and baseVol > 0
+float ratio = valid ? fastVol / baseVol : na
+bool freshShock = valid and not na(ratio[1]) and ratio >= shockMultiple and ratio[1] < shockMultiple
+
+var bool active = false
+var bool episodeReheated = false
+var float frozenBase = na
+var float peakVol = na
+var float targetVol = na
+var int shockBar = na
+var int peakBar = na
+var int lastHalfLife = na
+var int recoveredCount = 0
+var int timeoutCount = 0
+var string status = "WAITING FOR SHOCK"
+
+bool started = false
+bool reheated = false
+bool recovered = false
+bool timedOut = false
+bool invalidated = false
+
+if barstate.isconfirmed
+    bool wasActive = active
+    if wasActive
+        int episodeAge = bar_index - shockBar
+        if not valid
+            active := false
+            invalidated := true
+            status := "DATA GAP"
+        else
+            float previousPeak = peakVol
+            bool newPeak = fastVol > peakVol
+            if newPeak
+                peakVol := fastVol
+                peakBar := bar_index
+                targetVol := frozenBase + decayFraction * (peakVol - frozenBase)
+                reheated := fastVol >= previousPeak * (1.0 + reheatPercent / 100.0)
+                episodeReheated := episodeReheated or reheated
+                status := reheated ? "REHEATED" : "PEAK UPDATED"
+            else if bar_index > peakBar and fastVol <= targetVol
+                active := false
+                recovered := true
+                lastHalfLife := bar_index - peakBar
+                recoveredCount += 1
+                status := "HALF-LIFE REACHED"
+            else if episodeAge >= maxEpisodeBars
+                active := false
+                timedOut := true
+                timeoutCount += 1
+                status := "WINDOW ENDED"
+            else
+                status := episodeReheated ? "DECAYING AFTER REHEAT" : "DECAYING"
+    else if freshShock
+        active := true
+        started := true
+        episodeReheated := false
+        frozenBase := baseVol
+        peakVol := fastVol
+        targetVol := frozenBase + decayFraction * (peakVol - frozenBase)
+        shockBar := bar_index
+        peakBar := bar_index
+        status := "SHOCK DETECTED"
+
+float ratioPct = ratio * 100.0
+float targetRatioPct = active and frozenBase > 0 ? targetVol / frozenBase * 100.0 : na
+float excessRemainingPct = active and peakVol > frozenBase ? math.max(0.0, (fastVol - frozenBase) / (peakVol - frozenBase) * 100.0) : na
+
+plot(ratioPct, "Fast / baseline volatility", color=color.aqua, linewidth=2)
+plot(active ? targetRatioPct : na, "Active decay target", color=color.yellow, linewidth=2, style=plot.style_linebr)
+plot(100.0, "Baseline", color=color.new(color.gray, 55), linewidth=1)
+plot(shockMultiple * 100.0, "Shock threshold", color=color.new(color.red, 35), linewidth=1)
+
+bgcolor(showBackground and active ? color.new(color.orange, 91) : na, title="Active episode")
+plotshape(showMarkers and started, title="Shock", style=shape.triangleup, location=location.bottom, color=color.orange, size=size.tiny, text="S")
+plotshape(showMarkers and reheated, title="Reheat", style=shape.triangleup, location=location.top, color=color.fuchsia, size=size.tiny, text="R")
+plotshape(showMarkers and recovered, title="Half-life reached", style=shape.diamond, location=location.bottom, color=color.lime, size=size.tiny, text="½")
+plotshape(showMarkers and timedOut, title="Window ended", style=shape.square, location=location.bottom, color=color.gray, size=size.tiny, text="T")
+plotshape(showMarkers and invalidated, title="Data gap", style=shape.xcross, location=location.bottom, color=color.red, size=size.tiny, text="!")
+
+var table dashboard = table.new(position.top_right, 2, 6, bgcolor=color.new(color.rgb(17, 24, 39), 12), border_color=color.new(color.gray, 65), border_width=1)
+
+f_cell(int column, int row, string value, color textColor=color.white) =>
+    table.cell(dashboard, column, row, value, text_color=textColor, text_size=size.small, bgcolor=color.new(color.rgb(17, 24, 39), 12))
+
+if barstate.islast
+    if showTable
+        color statusColor = active ? color.orange : recovered ? color.lime : timedOut or invalidated ? color.silver : color.aqua
+        string barsText = active ? str.tostring(bar_index - peakBar) : "—"
+        string halfLifeText = na(lastHalfLife) ? "—" : str.tostring(lastHalfLife) + " bars"
+        string excessText = na(excessRemainingPct) ? "—" : str.tostring(excessRemainingPct, "#.0") + "%"
+        f_cell(0, 0, "VOL SHOCK HALF-LIFE", color.aqua)
+        f_cell(1, 0, status, statusColor)
+        f_cell(0, 1, "Current / baseline")
+        f_cell(1, 1, na(ratioPct) ? "—" : str.tostring(ratioPct, "#.0") + "%")
+        f_cell(0, 2, "Excess remaining")
+        f_cell(1, 2, excessText)
+        f_cell(0, 3, "Bars since peak")
+        f_cell(1, 3, barsText)
+        f_cell(0, 4, "Last half-life")
+        f_cell(1, 4, halfLifeText)
+        f_cell(0, 5, "Recovered / timed out")
+        f_cell(1, 5, str.tostring(recoveredCount) + " / " + str.tostring(timeoutCount))
+    else
+        table.clear(dashboard, 0, 0, 1, 5)
+
+alertcondition(started, "Volatility shock detected", "A fresh volatility shock crossed the configured threshold.")
+alertcondition(reheated, "Volatility shock reheated", "Volatility set a meaningfully higher peak; the half-life clock restarted.")
+alertcondition(recovered, "Volatility half-life reached", "Excess volatility fell to the configured decay target.")
+alertcondition(timedOut, "Volatility episode timed out", "The volatility episode did not reach its decay target within the configured window.")
+alertcondition(invalidated, "Volatility episode invalidated", "The active episode ended because volatility data became unavailable.")   

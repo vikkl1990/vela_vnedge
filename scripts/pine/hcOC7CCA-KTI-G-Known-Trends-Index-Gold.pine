@@ -1,0 +1,385 @@
+//@version=6
+indicator("Known Trends Index - Gold v2 (KTI-G)", shorttitle = "KTI-G", overlay = false, max_boxes_count = 500)
+
+// Gold seasonality index, second design. Differences from v1:
+//
+// 1. EMPIRICAL PROFILE replaces the stacked literature windows. The script
+//    accumulates the chart's own daily returns by trading day of year (TDY)
+//    with no lookahead: the score on any bar uses only returns from bars
+//    before it. Accumulation stops at "Training end" (default 2010-12-31,
+//    the Potrykus & Augustynowicz break date). Everything after that is a
+//    true out-of-sample test of gold seasonality on this symbol. Uncheck
+//    "Freeze at training end" for an expanding-window walk-forward instead.
+//    Score: +1 where the smoothed profile exceeds the unconditional mean by
+//    the threshold, -1 where it falls short by the threshold, else 0.
+//
+// 2. ONE DEMAND COMPONENT with lunar dates. Diwali (new moon nearest Nov 1,
+//    IST) and Chinese New Year (second new moon after the winter solstice,
+//    Beijing) are computed with the Meeus new-moon series; expect +/-1 day
+//    vs. the observed festival. Windows: Diwali -15d to +45d (Dhanteras
+//    run-up through peak wedding season), CNY -30d to -1d (restocking;
+//    demand fades after the holiday). Akshaya Tritiya (Apr/May) omitted.
+//
+// 3. TURN OF MONTH and SEPTEMBER kept as their own components. September
+//    defaults to 0 because its sign flipped after 2010.
+//
+// 4. KAEPPEL TDY WINDOWS kept as an optional comparison overlay (off by
+//    default) so the literature rule can be scored against the empirical
+//    profile on the same chart.
+//
+// 5. EVERY COMPONENT is a hidden plot (Data Window + CSV export) for
+//    drawdown diagnostics.
+//
+// Components sum to the index. Default range is -3 to +4. Zones (mine, not
+// published): >= 2 favorable, -1 or below unfavorable, else neutral.
+// Use on a DAILY chart of GC1!, GLD, or a miner proxy. Miner profiles
+// differ from bullion; the empirical component adapts automatically, the
+// fixed components do not.
+//
+// Approximations: NYSE holiday calendar for trading-day math (COMEX differs
+// by a day in some years); TDY slots above 252 fold into slot 252.
+
+const int MS_DAY = 86400000
+const string TZ = "GMT"
+const int NSLOT = 252
+
+showTable = input.bool(true, "Show active components")
+showProj = input.bool(true, "Project through Feb 28 of next year")
+
+grpE = "Empirical profile"
+useEm = input.bool(true, "Empirical TDY profile (+1 / -1)", group = grpE)
+trainEnd = input.time(timestamp("2010-12-31T12:00:00+0000"), "Training end", group = grpE)
+freezeAt = input.bool(true, "Freeze profile at training end", group = grpE, tooltip = "Off = expanding window walk-forward, profile keeps learning after training end.")
+smoothW = input.int(10, "Smoothing half-width (trading days)", minval = 0, maxval = 40, group = grpE)
+thrBps = input.float(3.0, "Threshold vs. mean (bps/day)", minval = 0, step = 0.5, group = grpE)
+minYrs = input.int(10, "Minimum years before scoring", minval = 1, group = grpE)
+
+grpF = "Fixed components"
+useDe = input.bool(true, "Physical demand, lunar Diwali + CNY (+1)", group = grpF)
+useTm = input.bool(true, "Turn of month (+1)", group = grpF)
+sepW = input.int(0, "September weight", minval = -1, maxval = 1, group = grpF)
+useKp = input.bool(false, "Kaeppel TDY windows overlay (+1 / -1)", group = grpF)
+
+// ---------------- date helpers (all timestamps are GMT noon) ----------------
+f_ts(int y, int m, int d) =>
+    timestamp(TZ, y, m, d, 12, 0)
+
+f_wd(int t) =>
+    dayofweek(t, TZ)
+
+f_leap(int y) =>
+    (y % 4 == 0 and y % 100 != 0) or y % 400 == 0
+
+f_dim(int y, int m) =>
+    m == 2 ? (f_leap(y) ? 29 : 28) : m == 4 or m == 6 or m == 9 or m == 11 ? 30 : 31
+
+f_nthWd(int y, int m, int nth, int wd) =>
+    off = (wd - f_wd(f_ts(y, m, 1)) + 7) % 7
+    f_ts(y, m, 1 + off + (nth - 1) * 7)
+
+f_lastWd(int y, int m, int wd) =>
+    dl = f_dim(y, m)
+    f_ts(y, m, dl - (f_wd(f_ts(y, m, dl)) - wd + 7) % 7)
+
+f_goodFriday(int y) =>
+    a = y % 19
+    b = y / 100
+    c = y % 100
+    d = b / 4
+    e = b % 4
+    f = (b + 8) / 25
+    g = (b - f + 1) / 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c / 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) / 451
+    emo = (h + l - 7 * m + 114) / 31
+    eda = (h + l - 7 * m + 114) % 31 + 1
+    f_ts(y, emo, eda) - 2 * MS_DAY
+
+f_observed(int y, int m, int d) =>
+    t = f_ts(y, m, d)
+    wd = f_wd(t)
+    wd == 7 ? t - MS_DAY : wd == 1 ? t + MS_DAY : t
+
+f_newYear(int y) =>
+    wd = f_wd(f_ts(y, 1, 1))
+    wd == 7 ? -1 : wd == 1 ? f_ts(y, 1, 2) : f_ts(y, 1, 1)
+
+f_mktHolidays(int y) =>
+    arr = array.new<int>()
+    ny = f_newYear(y)
+    if ny > 0
+        array.push(arr, ny)
+    if y >= 1998
+        array.push(arr, f_nthWd(y, 1, 3, 2))
+    array.push(arr, f_nthWd(y, 2, 3, 2))
+    array.push(arr, f_goodFriday(y))
+    array.push(arr, f_lastWd(y, 5, 2))
+    if y >= 2022
+        array.push(arr, f_observed(y, 6, 19))
+    array.push(arr, f_observed(y, 7, 4))
+    array.push(arr, f_nthWd(y, 9, 1, 2))
+    array.push(arr, f_nthWd(y, 11, 4, 5))
+    array.push(arr, f_observed(y, 12, 25))
+    arr
+
+// ---------------- lunar helpers (Meeus, Astronomical Algorithms ch. 49) ----------------
+// Julian Ephemeris Day of the k-th new moon since 2000 Jan 6
+f_newMoonJD(float k) =>
+    T = k / 1236.85
+    jde = 2451550.09766 + 29.530588861 * k + 0.00015437 * T * T
+    E = 1 - 0.002516 * T
+    M = math.toradians(2.5534 + 29.10535670 * k)
+    Mp = math.toradians(201.5643 + 385.81693528 * k)
+    F = math.toradians(160.7108 + 390.67050284 * k)
+    corr = -0.40720 * math.sin(Mp) + 0.17241 * E * math.sin(M) + 0.01608 * math.sin(2 * Mp) + 0.01039 * math.sin(2 * F) + 0.00739 * E * math.sin(Mp - M) - 0.00514 * E * math.sin(Mp + M) + 0.00208 * E * E * math.sin(2 * M) - 0.00111 * math.sin(Mp - 2 * F) - 0.00057 * math.sin(Mp + 2 * F) + 0.00056 * E * math.sin(2 * Mp + M) - 0.00042 * math.sin(3 * Mp) + 0.00042 * E * math.sin(M + 2 * F) + 0.00038 * E * math.sin(M - 2 * F) - 0.00024 * E * math.sin(2 * Mp - M)
+    jde + corr
+
+// unix ms of a JD
+f_jdToMs(float jd) =>
+    int((jd - 2440587.5) * MS_DAY)
+
+// GMT-noon timestamp of the calendar date holding unix ms t, shifted by tzHours
+f_dateOf(int t, float tzHours) =>
+    tl = t + int(tzHours * 3600000)
+    f_ts(year(tl, TZ), month(tl, TZ), dayofmonth(tl, TZ))
+
+// new moon nearest to timestamp t
+f_newMoonNear(int t) =>
+    yf = 2000 + (t - f_ts(2000, 1, 1)) / (365.25 * MS_DAY)
+    k = math.round((yf - 2000) * 12.3685)
+    best = f_jdToMs(f_newMoonJD(k))
+    for dk = -1 to 1
+        cand = f_jdToMs(f_newMoonJD(k + dk))
+        if math.abs(cand - t) < math.abs(best - t)
+            best := cand
+    best
+
+// Diwali (Kartik Amavasya): new moon nearest Nov 1, IST date
+f_diwali(int y) =>
+    f_dateOf(f_newMoonNear(f_ts(y, 11, 1)), 5.5)
+
+// Chinese New Year: second new moon after the winter solstice of y-1, Beijing date
+f_cny(int y) =>
+    sol = f_ts(y - 1, 12, 21)
+    nm = f_newMoonNear(sol)
+    yf = 2000 + (nm - f_ts(2000, 1, 1)) / (365.25 * MS_DAY)
+    k = math.round((yf - 2000) * 12.3685)
+    while f_jdToMs(f_newMoonJD(k)) <= sol
+        k += 1
+    while f_jdToMs(f_newMoonJD(k - 1)) > sol
+        k -= 1
+    f_dateOf(f_jdToMs(f_newMoonJD(k + 1)), 8)
+
+// ---------------- caches ----------------
+var array<int> holCal = array.new<int>()
+var int cachedYear = -1
+var int diwPrev = 0
+var int diwCur = 0
+var int cnyCur = 0
+var int cnyNext = 0
+
+f_isTd(int t) =>
+    wd = f_wd(t)
+    wd >= 2 and wd <= 6 and not array.includes(holCal, t)
+
+f_addTd(int t, int n) =>
+    tt = t
+    rem = math.abs(n)
+    stp = n >= 0 ? MS_DAY : -MS_DAY
+    while rem > 0
+        tt += stp
+        if f_isTd(tt)
+            rem -= 1
+    tt
+
+f_lastTd(int y, int m) =>
+    t = f_ts(y, m, f_dim(y, m))
+    while not f_isTd(t)
+        t -= MS_DAY
+    t
+
+f_countTd(int fromExcl, int toIncl) =>
+    n = 0
+    tt = fromExcl + MS_DAY
+    while tt <= toIncl
+        if f_isTd(tt)
+            n += 1
+        tt += MS_DAY
+    n
+
+if year != cachedYear
+    cachedYear := year
+    holCal := array.new<int>()
+    for yy = year - 1 to year + 1
+        a = f_mktHolidays(yy)
+        for i = 0 to array.size(a) - 1
+            array.push(holCal, array.get(a, i))
+    diwPrev := f_diwali(year - 1)
+    diwCur := f_diwali(year)
+    cnyCur := f_cny(year)
+    cnyNext := f_cny(year + 1)
+
+var int cachedMonth = -1
+var int lastTd = 0
+var int secondLastTd = 0
+if year * 100 + month != cachedMonth
+    cachedMonth := year * 100 + month
+    lastTd := f_lastTd(year, month)
+    secondLastTd := f_addTd(lastTd, -1)
+
+// ---------------- empirical profile ----------------
+var array<float> slotSum = array.new<float>(NSLOT + 1, 0.0)
+var array<int> slotCnt = array.new<int>(NSLOT + 1, 0)
+var float totSum = 0.0
+var int totCnt = 0
+
+f_slot(int tdy) =>
+    math.min(math.max(tdy, 1), NSLOT)
+
+// smoothed mean daily return (as a fraction) for a TDY, circular window
+f_profile(int tdy) =>
+    s = 0.0
+    n = 0
+    for i = -smoothW to smoothW
+        idx = ((f_slot(tdy) - 1 + i) % NSLOT + NSLOT) % NSLOT + 1
+        s += array.get(slotSum, idx)
+        n += array.get(slotCnt, idx)
+    n > 0 ? s / n : na
+
+f_empScore(int tdy) =>
+    if not useEm or totCnt < minYrs * 250
+        [0, float(na)]
+    else
+        p = f_profile(tdy)
+        mean = totSum / totCnt
+        thr = thrBps / 10000
+        sc = na(p) ? 0 : p > mean + thr ? 1 : p < mean - thr ? -1 : 0
+        [sc, (p - mean) * 10000]
+
+// ---------------- KTI-G for an arbitrary date ----------------
+f_ktigAt(int t, int td, int tdy, int lTd, int sTd) =>
+    mm = month(t, TZ)
+    [cEm, pBps] = f_empScore(tdy)
+    inDiw = (t >= diwPrev - 15 * MS_DAY and t <= diwPrev + 45 * MS_DAY) or (t >= diwCur - 15 * MS_DAY and t <= diwCur + 45 * MS_DAY)
+    inCny = (t >= cnyCur - 30 * MS_DAY and t < cnyCur) or (t >= cnyNext - 30 * MS_DAY and t < cnyNext)
+    cDe = useDe and (inDiw or inCny) ? 1 : 0
+    cTm = useTm and (td == 1 or t == lTd or t == sTd) ? 1 : 0
+    cSe = mm == 9 ? sepW : 0
+    cKp = not useKp ? 0 : tdy >= 250 or tdy <= 38 ? 1 : tdy <= 134 ? -1 : tdy <= 188 ? 1 : -1
+    [cEm, cDe, cTm, cSe, cKp, pBps]
+
+// ---------------- per-bar ----------------
+t0 = f_ts(year, month, dayofmonth)
+
+var int tdom = 0
+tdom := na(month[1]) or month != month[1] or year != year[1] ? 1 : tdom + 1
+
+var int tdy = 0
+var int prevT0 = -1
+if prevT0 < 0 or year(prevT0, TZ) != year
+    tdy := f_countTd(f_ts(year, 1, 1) - MS_DAY, t0)
+else
+    tdy := tdy + f_countTd(prevT0, t0)
+prevT0 := t0
+
+// score first (uses only prior returns), then accumulate this bar's return
+[cEm, cDe, cTm, cSe, cKp, pBps] = f_ktigAt(t0, tdom, tdy, lastTd, secondLastTd)
+ktig = cEm + cDe + cTm + cSe + cKp
+ktigPlot = timeframe.isdaily ? ktig : na
+
+ret = close / close[1] - 1
+if timeframe.isdaily and not na(ret) and (not freezeAt or time <= trainEnd)
+    sl = f_slot(tdy)
+    array.set(slotSum, sl, array.get(slotSum, sl) + ret)
+    array.set(slotCnt, sl, array.get(slotCnt, sl) + 1)
+    totSum += ret
+    totCnt += 1
+
+// ---------------- forward projection ----------------
+f_col(int k) =>
+    k <= -1 ? color.red : k <= 1 ? color.gray : color.teal
+
+var array<box> projBoxes = array.new<box>()
+var label projLabel = na
+var int lastProjDay = -1
+
+if barstate.islast and timeframe.isdaily and showProj and t0 != lastProjDay
+    lastProjDay := t0
+    for b in projBoxes
+        box.delete(b)
+    array.clear(projBoxes)
+    if not na(projLabel)
+        label.delete(projLabel)
+    endT = f_ts(year + 1, 2, 28)
+    tt = f_ts(year, 1, 1)
+    tdF = 0
+    tdyF = 0
+    curKey = -1
+    curYr = -1
+    lTdF = 0
+    sTdF = 0
+    firstProj = -1
+    while tt <= endT
+        yy = year(tt, TZ)
+        mm = month(tt, TZ)
+        if yy != curYr
+            curYr := yy
+            tdyF := 0
+        if yy * 100 + mm != curKey
+            curKey := yy * 100 + mm
+            tdF := 0
+            lTdF := f_lastTd(yy, mm)
+            sTdF := f_addTd(lTdF, -1)
+        if f_isTd(tt)
+            tdF += 1
+            tdyF += 1
+            if tt > t0
+                [p1, p2, p3, p4, p5, pb] = f_ktigAt(tt, tdF, tdyF, lTdF, sTdF)
+                k = p1 + p2 + p3 + p4 + p5
+                if k != 0
+                    c = f_col(k)
+                    array.push(projBoxes, box.new(left = tt - 6 * 3600000, top = math.max(k, 0), right = tt + 6 * 3600000, bottom = math.min(k, 0), xloc = xloc.bar_time, bgcolor = color.new(c, 60), border_color = color.new(c, 45)))
+                if firstProj < 0
+                    firstProj := tt
+        tt += MS_DAY
+    if firstProj > 0
+        projLabel := label.new(x = firstProj, y = 4, text = "projected ->", xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.gray, 80), textcolor = color.gray, size = size.small)
+
+// ---------------- output ----------------
+plot(ktigPlot, style = plot.style_columns, color = f_col(ktig), title = "KTI-G")
+hline(1.5, "Favorable threshold (>= 2)", color = color.teal, linestyle = hline.style_dotted)
+hline(-0.5, "Unfavorable threshold (<= -1)", color = color.red, linestyle = hline.style_dotted)
+hline(0, "Zero", color = color.silver)
+
+// hidden component series for Data Window and export
+plot(timeframe.isdaily ? cEm : na, "c_empirical", display = display.data_window)
+plot(timeframe.isdaily ? cDe : na, "c_demand", display = display.data_window)
+plot(timeframe.isdaily ? cTm : na, "c_turn_of_month", display = display.data_window)
+plot(timeframe.isdaily ? cSe : na, "c_september", display = display.data_window)
+plot(timeframe.isdaily ? cKp : na, "c_kaeppel", display = display.data_window)
+plot(timeframe.isdaily ? pBps : na, "profile_vs_mean_bps", display = display.data_window)
+plot(timeframe.isdaily ? tdy : na, "tdy", display = display.data_window)
+plot(timeframe.isdaily ? (time <= trainEnd ? 1 : 0) : na, "in_sample", display = display.data_window)
+
+var table tbl = table.new(position.top_right, 1, 2, border_width = 1)
+if barstate.islast
+    if not timeframe.isdaily
+        table.cell(tbl, 0, 0, "KTI-G requires a daily chart", text_color = color.white, bgcolor = color.red)
+    else if showTable
+        txt = ""
+        txt += cEm == 1 ? "+1 empirical profile (" + str.tostring(pBps, "#.0") + " bps vs mean)\n" : cEm == -1 ? "-1 empirical profile (" + str.tostring(pBps, "#.0") + " bps vs mean)\n" : useEm ? "0 empirical profile (" + str.tostring(pBps, "#.0") + " bps vs mean)\n" : ""
+        txt += cDe == 1 ? "+1 physical demand window\n" : ""
+        txt += cTm == 1 ? "+1 turn of month\n" : ""
+        txt += cSe == 1 ? "+1 September\n" : cSe == -1 ? "-1 September\n" : ""
+        txt += cKp == 1 ? "+1 Kaeppel favorable\n" : cKp == -1 ? "-1 Kaeppel unfavorable\n" : ""
+        txt += "TDY " + str.tostring(tdy) + ", " + (time <= trainEnd ? "in-sample" : "out-of-sample") + ", " + str.tostring(totCnt) + " training days\n"
+        txt += "Diwali " + str.format_time(diwCur, "yyyy-MM-dd", TZ) + ", CNY " + str.format_time(cnyNext, "yyyy-MM-dd", TZ)
+        table.cell(tbl, 0, 0, "KTI-G = " + str.tostring(ktig), text_color = color.white, bgcolor = f_col(ktig))
+        table.cell(tbl, 0, 1, txt, text_size = size.small, text_halign = text.align_left, text_color = color.gray)
+
+alertcondition(ta.crossover(ktigPlot, 1.5), "KTI-G enters favorable zone", "KTI-G >= 2: favorable zone")
+alertcondition(ta.crossunder(ktigPlot, 1.5), "KTI-G exits favorable zone", "KTI-G < 2")
+alertcondition(ta.crossunder(ktigPlot, -0.5), "KTI-G enters unfavorable zone", "KTI-G <= -1: unfavorable zone")

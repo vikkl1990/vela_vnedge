@@ -1,0 +1,304 @@
+//@version=6
+indicator("CUPANG - SMC/RTM Flag Limit [Balanced Smart Filter]", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ==========================================
+// 1. INPUT SETTINGS & FILTER PROBABILITAS
+// ==========================================
+grp_fl       = "📦 Deteksi Flag Limit (Jalan Tengah)"
+min_score    = input.int(60, "Batas Minimal Skor Probabilitas (%)", minval=40, maxval=90, step=5, group=grp_fl, tooltip="Hanya FL dengan skor kualitas di atas angka ini yang akan digambar")
+extend_len   = input.int(75, "Panjang Proyeksi Garis & Box (Bars)", minval=20, maxval=300, step=5, group=grp_fl)
+use_trend    = input.bool(true, "Gunakan Konfirmasi Trend EMA", group=grp_fl)
+ema_len      = input.int(50, "Periode EMA Trend Filter", group=grp_fl)
+
+grp_vp       = "📊 Right-Side Volume Profile Histogram"
+show_vp      = input.bool(true, "Tampilkan Volume Profile Kanan", group=grp_vp)
+vp_lookback  = input.int(100, "Lookback Bars Volume", minval=30, maxval=300, group=grp_vp)
+vp_rows      = input.int(15, "Jumlah Baris Bins", minval=8, maxval=30, group=grp_vp)
+vp_width     = input.int(25, "Maks Lebar Bar Histogram (Bars)", minval=10, maxval=60, group=grp_vp)
+vp_up_col    = input.color(color.new(#5d606b, 30), "Volume Bar Left Color", group=grp_vp)
+vp_dn_col    = input.color(color.new(#74242b, 20), "Volume Bar Right Color", group=grp_vp)
+poc_col      = input.color(color.white, "Garis POC Color", group=grp_vp)
+
+grp_tool     = "📊 Visual Tool Prediksi (Long/Short)"
+long_tp_col  = input.color(color.new(#089981, 80), "Long Target TP", group=grp_tool)
+long_sl_col  = input.color(color.new(#f23645, 80), "Long Stop Loss", group=grp_tool)
+short_tp_col = input.color(color.new(#089981, 80), "Short Target TP", group=grp_tool)
+short_sl_col = input.color(color.new(#f23645, 80), "Short Stop Loss", group=grp_tool)
+
+grp_ob       = "🧱 Visual Blok Base FL (Zona Parkir)"
+bull_ob_col  = input.color(color.teal, "Bullish Base FL", group=grp_ob)
+bear_ob_col  = input.color(color.maroon, "Bearish Base FL", group=grp_ob)
+ob_transp    = input.int(75, "Transparansi Base Blok (0-100)", group=grp_ob)
+
+grp_rr       = "🎯 Target & Manajemen Risiko"
+rr_ratio     = input.float(2.0, "Risk / Reward Ratio (R:R)", minval=1.0, step=0.5, group=grp_rr)
+atr_len      = input.int(14, "Periode ATR", group=grp_rr)
+atr_buf_mult = input.float(0.2, "ATR Buffer SL (Anti-Spike)", minval=0.0, maxval=1.0, step=0.1, group=grp_rr)
+
+// ==========================================
+// 2. DATA ATR & TREND EMA
+// ==========================================
+cur_atr   = ta.atr(atr_len)
+trend_ema = ta.ema(close, ema_len)
+is_uptrend   = not use_trend or (close > trend_ema)
+is_downtrend = not use_trend or (close < trend_ema)
+
+// ==========================================
+// 3. STORAGE SINGLE ACTIVE ZONE
+// ==========================================
+var box  ob_base_box = na
+var box  tp_zone_box = na
+var box  sl_zone_box = na
+var line entry_line  = na
+
+var float active_sl_lvl = na
+var float active_tp_lvl = na
+var int   active_dir    = 0
+var int   active_start  = 0
+
+f_clear_active_position() =>
+    if not na(ob_base_box)
+        box.delete(ob_base_box)
+    if not na(tp_zone_box)
+        box.delete(tp_zone_box)
+    if not na(sl_zone_box)
+        box.delete(sl_zone_box)
+    if not na(entry_line)
+        line.delete(entry_line)
+
+// ==========================================
+// 4. LOGIKA DETEKSI FL & SCORING PINTAR
+// ==========================================
+if bar_index >= 3
+    // C2: Candle Base (Kejepit / Pause)
+    c2_high  = high[1]
+    c2_low   = low[1]
+    c2_open  = open[1]
+    c2_close = close[1]
+    c2_range = math.max(c2_high - c2_low, syminfo.mintick)
+    c2_body  = math.abs(c2_close - c2_open)
+
+    // C3: Candle Impulsif / Ledakan
+    c3_high  = high[0]
+    c3_low   = low[0]
+    c3_open  = open[0]
+    c3_close = close[0]
+    c3_range = math.max(c3_high - c3_low, syminfo.mintick)
+    c3_body  = math.abs(c3_close - c3_open)
+    c3_disp  = c3_body / c3_range
+
+    // Syarat Geometri Dasar (Fleksibel):
+    // 1. C2 ukurannya wajar (bukan spike liar)
+    // 2. C3 memiliki arah badan yang jelas & break High/Low C2
+    bool base_ok = c2_range <= (cur_atr * 2.0)
+    bool raw_bull_fl = base_ok and (c3_close > c3_open) and (c3_close > c2_high) and (c3_disp >= 0.50)
+    bool raw_bear_fl = base_ok and (c3_close < c3_open) and (c3_close < c2_low) and (c3_disp >= 0.50)
+
+    // Filter Pembobotan Probabilitas Kualitas Tinggi:
+    int score_bull = 0
+    int score_bear = 0
+
+    if raw_bull_fl
+        score_bull += 30 // Bobot pola dasar
+        if c3_disp >= 0.70
+            score_bull += 25 // Body marubozu padat
+        if c3_range >= c2_range * 1.5
+            score_bull += 25 // Ledakan jauh lebih besar dari base
+        if is_uptrend
+            score_bull += 20 // Selaras trend mayor
+
+    if raw_bear_fl
+        score_bear += 30 // Bobot pola dasar
+        if c3_disp >= 0.70
+            score_bear += 25 // Body marubozu padat
+        if c3_range >= c2_range * 1.5
+            score_bear += 25 // Ledakan jauh lebih besar dari base
+        if is_downtrend
+            score_bear += 20 // Selaras trend mayor
+
+    valid_bull = raw_bull_fl and (score_bull >= min_score)
+    valid_bear = raw_bear_fl and (score_bear >= min_score)
+
+    x_start = bar_index - 1
+    x_end   = bar_index + extend_len
+
+    // ==========================================
+    // 5. PENERBITAN SINGLE ACTIVE ZONE
+    // ==========================================
+    if valid_bull
+        f_clear_active_position()
+
+        top_zone = c2_high
+        bot_zone = c2_low
+        entry_p  = top_zone 
+        sl_p     = bot_zone - (atr_buf_mult * cur_atr)
+        risk_p   = math.max(entry_p - sl_p, cur_atr * 0.3)
+        tp_p     = entry_p + (risk_p * rr_ratio)
+
+        // 1. Blok Base FL (Zona Parkir Ekor ke Ekor)
+        ob_base_box := box.new(left=x_start, top=top_zone, right=x_end, bottom=bot_zone, bgcolor=color.new(bull_ob_col, ob_transp), border_color=bull_ob_col, border_width=1)
+        box.set_text(ob_base_box, "★ FRESH BULLISH FL [" + str.tostring(score_bull) + "%]")
+        box.set_text_size(ob_base_box, size.tiny)
+        box.set_text_color(ob_base_box, color.white)
+        box.set_text_valign(ob_base_box, text.align_center)
+        box.set_text_halign(ob_base_box, text.align_left)
+
+        // 2. Kotak Target TP
+        tp_zone_box := box.new(left=x_start, top=tp_p, right=x_end, bottom=entry_p, bgcolor=long_tp_col, border_color=color.new(#089981, 30), border_width=1)
+        box.set_text(tp_zone_box, "Target TP: " + str.tostring(tp_p, "#.##") + "\nR:R 1:" + str.tostring(rr_ratio, "#.#"))
+        box.set_text_size(tp_zone_box, size.small)
+        box.set_text_color(tp_zone_box, color.white)
+        box.set_text_halign(tp_zone_box, text.align_right)
+        box.set_text_valign(tp_zone_box, text.align_top)
+
+        // 3. Kotak Stop Loss
+        sl_zone_box := box.new(left=x_start, top=entry_p, right=x_end, bottom=sl_p, bgcolor=long_sl_col, border_color=color.new(#f23645, 30), border_width=1)
+        box.set_text(sl_zone_box, "Stop Loss: " + str.tostring(sl_p, "#.##"))
+        box.set_text_size(sl_zone_box, size.small)
+        box.set_text_color(sl_zone_box, color.white)
+        box.set_text_halign(sl_zone_box, text.align_right)
+        box.set_text_valign(sl_zone_box, text.align_bottom)
+
+        // Garis Entri
+        entry_line := line.new(x1=x_start, y1=entry_p, x2=x_end, y2=entry_p, color=color.white, width=1, style=line.style_dashed)
+
+        active_sl_lvl := sl_p
+        active_tp_lvl := tp_p
+        active_dir    := 1
+        active_start  := bar_index
+
+    if valid_bear
+        f_clear_active_position()
+
+        top_zone = c2_high
+        bot_zone = c2_low
+        entry_p  = bot_zone 
+        sl_p     = top_zone + (atr_buf_mult * cur_atr)
+        risk_p   = math.max(sl_p - entry_p, cur_atr * 0.3)
+        tp_p     = entry_p - (risk_p * rr_ratio)
+
+        // 1. Blok Base FL (Zona Parkir Ekor ke Ekor)
+        ob_base_box := box.new(left=x_start, top=top_zone, right=x_end, bottom=bot_zone, bgcolor=color.new(bear_ob_col, ob_transp), border_color=bear_ob_col, border_width=1)
+        box.set_text(ob_base_box, "★ FRESH BEARISH FL [" + str.tostring(score_bear) + "%]")
+        box.set_text_size(ob_base_box, size.tiny)
+        box.set_text_color(ob_base_box, color.white)
+        box.set_text_valign(ob_base_box, text.align_center)
+        box.set_text_halign(ob_base_box, text.align_left)
+
+        // 2. Kotak Stop Loss
+        sl_zone_box := box.new(left=x_start, top=sl_p, right=x_end, bottom=entry_p, bgcolor=short_sl_col, border_color=color.new(#f23645, 30), border_width=1)
+        box.set_text(sl_zone_box, "Stop Loss: " + str.tostring(sl_p, "#.##"))
+        box.set_text_size(sl_zone_box, size.small)
+        box.set_text_color(sl_zone_box, color.white)
+        box.set_text_halign(sl_zone_box, text.align_right)
+        box.set_text_valign(sl_zone_box, text.align_top)
+
+        // 3. Kotak Target TP
+        tp_zone_box := box.new(left=x_start, top=entry_p, right=x_end, bottom=tp_p, bgcolor=short_tp_col, border_color=color.new(#089981, 30), border_width=1)
+        box.set_text(tp_zone_box, "Target TP: " + str.tostring(tp_p, "#.##") + "\nR:R 1:" + str.tostring(rr_ratio, "#.#"))
+        box.set_text_size(tp_zone_box, size.small)
+        box.set_text_color(tp_zone_box, color.white)
+        box.set_text_halign(tp_zone_box, text.align_right)
+        box.set_text_valign(tp_zone_box, text.align_bottom)
+
+        // Garis Entri
+        entry_line := line.new(x1=x_start, y1=entry_p, x2=x_end, y2=entry_p, color=color.white, width=1, style=line.style_dashed)
+
+        active_sl_lvl := sl_p
+        active_tp_lvl := tp_p
+        active_dir    := -1
+        active_start  := bar_index
+
+// ==========================================
+// 6. AUTO-CLEANUP SAAT HIT TP / SL
+// ==========================================
+if active_dir != 0 and bar_index > active_start + 1
+    bool is_finished = false
+    if active_dir == 1
+        if close < active_sl_lvl or high >= active_tp_lvl
+            is_finished := true
+    else if active_dir == -1
+        if close > active_sl_lvl or low <= active_tp_lvl
+            is_finished := true
+
+    if is_finished
+        f_clear_active_position()
+        active_dir := 0
+
+// ==========================================
+// 7. VOLUME PROFILE ENGINE
+// ==========================================
+var box[]  vp_boxes  = array.new_box()
+var line[] vp_lines  = array.new_line()
+
+if barstate.islast and show_vp
+    if array.size(vp_boxes) > 0
+        for i = 0 to array.size(vp_boxes) - 1
+            box.delete(array.get(vp_boxes, i))
+        array.clear(vp_boxes)
+    if array.size(vp_lines) > 0
+        for j = 0 to array.size(vp_lines) - 1
+            line.delete(array.get(vp_lines, j))
+        array.clear(vp_lines)
+
+    float vp_high = high[0]
+    float vp_low  = low[0]
+    for b = 0 to vp_lookback - 1
+        if high[b] > vp_high
+            vp_high := high[b]
+        if low[b] < vp_low
+            vp_low := low[b]
+
+    float vp_range = vp_high - vp_low
+
+    if vp_range > 0
+        float bin_size = vp_range / vp_rows
+        var float[] bin_vol_buy  = array.new_float(vp_rows, 0.0)
+        var float[] bin_vol_sell = array.new_float(vp_rows, 0.0)
+        array.fill(bin_vol_buy, 0.0)
+        array.fill(bin_vol_sell, 0.0)
+
+        for b = 0 to vp_lookback - 1
+            float candle_price = (high[b] + low[b] + close[b]) / 3.0
+            float bar_v = nz(volume[b], 1.0)
+            int bin_idx = math.min(vp_rows - 1, math.max(0, math.floor((candle_price - vp_low) / bin_size)))
+            
+            if close[b] >= open[b]
+                array.set(bin_vol_buy, bin_idx, array.get(bin_vol_buy, bin_idx) + bar_v)
+            else
+                array.set(bin_vol_sell, bin_idx, array.get(bin_vol_sell, bin_idx) + bar_v)
+
+        float max_bin_vol = 0.0
+        int   poc_bin_idx = 0
+        for r = 0 to vp_rows - 1
+            float total_row_v = array.get(bin_vol_buy, r) + array.get(bin_vol_sell, r)
+            if total_row_v > max_bin_vol
+                max_bin_vol := total_row_v
+                poc_bin_idx := r
+
+        int base_x = bar_index + 4
+
+        if max_bin_vol > 0
+            for r = 0 to vp_rows - 1
+                float b_top = vp_low + ((r + 1) * bin_size)
+                float b_bot = vp_low + (r * bin_size)
+                float v_buy = array.get(bin_vol_buy, r)
+                float v_sell = array.get(bin_vol_sell, r)
+                float v_total = v_buy + v_sell
+
+                int total_len_bars = math.round((v_total / max_bin_vol) * vp_width)
+                if total_len_bars > 0
+                    int buy_len_bars  = math.round((v_buy / v_total) * total_len_bars)
+                    int sell_len_bars = total_len_bars - buy_len_bars
+
+                    if buy_len_bars > 0
+                        box bx_buy = box.new(left=base_x, top=b_top, right=base_x + buy_len_bars, bottom=b_bot, bgcolor=vp_up_col, border_color=color.new(vp_up_col, 90), border_width=1)
+                        array.push(vp_boxes, bx_buy)
+                    
+                    if sell_len_bars > 0
+                        box bx_sell = box.new(left=base_x + buy_len_bars, top=b_top, right=base_x + total_len_bars, bottom=b_bot, bgcolor=vp_dn_col, border_color=color.new(vp_dn_col, 90), border_width=1)
+                        array.push(vp_boxes, bx_sell)
+
+            float poc_price = vp_low + (poc_bin_idx * bin_size) + (bin_size * 0.5)
+            line l_poc = line.new(x1=bar_index - 30, y1=poc_price, x2=base_x + vp_width + 10, y2=poc_price, color=poc_col, width=2, style=line.style_solid)
+            array.push(vp_lines, l_poc)

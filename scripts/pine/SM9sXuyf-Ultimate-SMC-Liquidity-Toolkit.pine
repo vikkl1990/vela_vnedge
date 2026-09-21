@@ -1,0 +1,202 @@
+//@version=6
+indicator("Ultimate SMC & Liquidity Toolkit", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+// ====================================================================================================
+// INPUT GROUPS & TOGGLES
+// ====================================================================================================
+grp_toggles = "Feature Toggles"
+show_fvg    = input.bool(true, "Show Extending FVGs", group=grp_toggles)
+show_sweep  = input.bool(true, "Show Liquidity Sweeps", group=grp_toggles)
+show_fib    = input.bool(true, "Show Auto Fib Extensions", group=grp_toggles)
+show_sess   = input.bool(true, "Show Session Highs/Lows", group=grp_toggles)
+show_htf    = input.bool(true, "Show HTF Highs/Lows (Day, Week, Month)", group=grp_toggles)
+show_do_pdc = input.bool(true, "Show Daily Open & Prev Day Close", group=grp_toggles)
+
+grp_colors  = "Colors (Work on Dark & Light Themes)"
+c_bull_fvg  = input.color(color.new(color.teal, 80), "Bullish FVG", group=grp_colors)
+c_bear_fvg  = input.color(color.new(color.red, 80), "Bearish FVG", group=grp_colors)
+c_sweep     = input.color(color.new(color.orange, 0), "Liquidity Sweep", group=grp_colors)
+c_asia      = input.color(color.new(color.blue, 40), "Asia Session", group=grp_colors)
+c_london    = input.color(color.new(color.purple, 40), "London Session", group=grp_colors)
+c_ny        = input.color(color.new(color.green, 40), "New York Session", group=grp_colors)
+c_htf       = input.color(color.new(color.gray, 20), "HTF Levels (PD/PW/PM)", group=grp_colors)
+c_do_pdc    = input.color(color.new(color.yellow, 0), "Daily Open / Prev Day Close", group=grp_colors)
+c_fib       = input.color(color.new(color.fuchsia, 40), "Fib Extensions", group=grp_colors)
+
+// ====================================================================================================
+// 1. HIGHER TIMEFRAME (HTF) HIGHS, LOWS, DO & PDC
+// ====================================================================================================
+[pdh, pdl, pd_close, d_open] = request.security(syminfo.tickerid, "1D", [high[1], low[1], close[1], open], lookahead=barmerge.lookahead_on)
+[pwh, pwl] = request.security(syminfo.tickerid, "1W", [high[1], low[1]], lookahead=barmerge.lookahead_on)
+[pmh, pml] = request.security(syminfo.tickerid, "1M", [high[1], low[1]], lookahead=barmerge.lookahead_on)
+
+var line l_pdh = na, var line l_pdl = na
+var line l_pwh = na, var line l_pwl = na
+var line l_pmh = na, var line l_pml = na
+var line l_do  = na, var line l_pdc = na
+
+var label lb_pdh = na, var label lb_pdl = na
+var label lb_pwh = na, var label lb_pwl = na
+var label lb_pmh = na, var label lb_pml = na
+var label lb_do  = na, var label lb_pdc = na
+
+if barstate.islast
+    // Day, Week, Month Highs and Lows
+    if show_htf
+        l_pdh := line.new(bar_index - 5, pdh, bar_index + 10, pdh, color=c_htf, style=line.style_dotted, width=1)
+        l_pdl := line.new(bar_index - 5, pdl, bar_index + 10, pdl, color=c_htf, style=line.style_dotted, width=1)
+        l_pwh := line.new(bar_index - 5, pwh, bar_index + 10, pwh, color=c_htf, style=line.style_dotted, width=2)
+        l_pwl := line.new(bar_index - 5, pwl, bar_index + 10, pwl, color=c_htf, style=line.style_dotted, width=2)
+        l_pmh := line.new(bar_index - 5, pmh, bar_index + 10, pmh, color=c_htf, style=line.style_dotted, width=3)
+        l_pml := line.new(bar_index - 5, pml, bar_index + 10, pml, color=c_htf, style=line.style_dotted, width=3)
+        
+        lb_pdh := label.new(bar_index + 10, pdh, "PDH", style=label.style_none, textcolor=c_htf, size=size.small)
+        lb_pdl := label.new(bar_index + 10, pdl, "PDL", style=label.style_none, textcolor=c_htf, size=size.small)
+        lb_pwh := label.new(bar_index + 10, pwh, "PWH", style=label.style_none, textcolor=c_htf, size=size.small)
+        lb_pwl := label.new(bar_index + 10, pwl, "PWL", style=label.style_none, textcolor=c_htf, size=size.small)
+        lb_pmh := label.new(bar_index + 10, pmh, "PMH", style=label.style_none, textcolor=c_htf, size=size.small)
+        lb_pml := label.new(bar_index + 10, pml, "PML", style=label.style_none, textcolor=c_htf, size=size.small)
+
+        line.delete(l_pdh[1]), line.delete(l_pdl[1])
+        line.delete(l_pwh[1]), line.delete(l_pwl[1])
+        line.delete(l_pmh[1]), line.delete(l_pml[1])
+        label.delete(lb_pdh[1]), label.delete(lb_pdl[1])
+        label.delete(lb_pwh[1]), label.delete(lb_pwl[1])
+        label.delete(lb_pmh[1]), label.delete(lb_pml[1])
+
+    // Daily Open and Prev Day Close
+    if show_do_pdc
+        l_do  := line.new(bar_index - 5, d_open, bar_index + 10, d_open, color=c_do_pdc, style=line.style_dotted, width=1)
+        l_pdc := line.new(bar_index - 5, pd_close, bar_index + 10, pd_close, color=c_do_pdc, style=line.style_dotted, width=1)
+        
+        lb_do  := label.new(bar_index + 10, d_open, "DO", style=label.style_none, textcolor=c_do_pdc, size=size.small)
+        lb_pdc := label.new(bar_index + 10, pd_close, "PDC", style=label.style_none, textcolor=c_do_pdc, size=size.small)
+
+        line.delete(l_do[1]), line.delete(l_pdc[1])
+        label.delete(lb_do[1]), label.delete(lb_pdc[1])
+
+// ====================================================================================================
+// 2. SESSION HIGHS & LOWS
+// ====================================================================================================
+time_asia   = time(timeframe.period, "1800-0200") 
+time_london = time(timeframe.period, "0200-0800")
+time_ny     = time(timeframe.period, "0800-1700")
+
+var float asia_h = na, var float asia_l = na
+var float lon_h  = na, var float lon_l  = na
+var float ny_h   = na, var float ny_l   = na
+
+if not na(time_asia)
+    if na(time_asia[1])
+        asia_h := high, asia_l := low
+    else
+        asia_h := math.max(asia_h, high), asia_l := math.min(asia_l, low)
+
+if not na(time_london)
+    if na(time_london[1])
+        lon_h := high, lon_l := low
+    else
+        lon_h := math.max(lon_h, high), lon_l := math.min(lon_l, low)
+
+if not na(time_ny)
+    if na(time_ny[1])
+        ny_h := high, ny_l := low
+    else
+        ny_h := math.max(ny_h, high), ny_l := math.min(ny_l, low)
+
+draw_session(session_h, session_l, c_color, txt) =>
+    var line h_line = na
+    var line l_line = na
+    var label h_lbl = na
+    var label l_lbl = na
+    if show_sess and barstate.islast and not na(session_h)
+        h_line := line.new(bar_index - 10, session_h, bar_index + 10, session_h, color=c_color, style=line.style_dotted)
+        l_line := line.new(bar_index - 10, session_l, bar_index + 10, session_l, color=c_color, style=line.style_dotted)
+        h_lbl := label.new(bar_index + 10, session_h, txt + " H", textcolor=c_color, style=label.style_none, size=size.small)
+        l_lbl := label.new(bar_index + 10, session_l, txt + " L", textcolor=c_color, style=label.style_none, size=size.small)
+        line.delete(h_line[1]), line.delete(l_line[1])
+        label.delete(h_lbl[1]), label.delete(l_lbl[1])
+
+draw_session(asia_h, asia_l, c_asia, "Asia")
+draw_session(lon_h, lon_l, c_london, "Lon")
+draw_session(ny_h, ny_l, c_ny, "NY")
+
+// ====================================================================================================
+// 3. EXTENDING FAIR VALUE GAPS (FVG)
+// ====================================================================================================
+var box[] bull_fvgs = array.new_box()
+var box[] bear_fvgs = array.new_box()
+
+bull_fvg = low > high[2] and close[1] > high[2]
+bear_fvg = high < low[2] and close[1] < low[2]
+
+if show_fvg
+    // Register new Bullish FVG
+    if bull_fvg
+        b = box.new(left=bar_index[2], top=low, bottom=high[2], right=bar_index, bgcolor=c_bull_fvg, border_color=na)
+        array.push(bull_fvgs, b)
+    
+    // Register new Bearish FVG
+    if bear_fvg
+        b = box.new(left=bar_index[2], top=low[2], bottom=high, right=bar_index, bgcolor=c_bear_fvg, border_color=na)
+        array.push(bear_fvgs, b)
+
+    // Extend Unmitigated Bullish FVGs (Remove if price trades entirely below it)
+    if array.size(bull_fvgs) > 0
+        for i = array.size(bull_fvgs) - 1 to 0
+            bx = array.get(bull_fvgs, i)
+            box.set_right(bx, bar_index) 
+            if low <= box.get_bottom(bx) 
+                array.remove(bull_fvgs, i) // Stop extending; leave on chart as historical
+
+    // Extend Unmitigated Bearish FVGs (Remove if price trades entirely above it)
+    if array.size(bear_fvgs) > 0
+        for i = array.size(bear_fvgs) - 1 to 0
+            bx = array.get(bear_fvgs, i)
+            box.set_right(bx, bar_index)
+            if high >= box.get_top(bx) 
+                array.remove(bear_fvgs, i) // Stop extending; leave on chart as historical
+
+// ====================================================================================================
+// 4. LIQUIDITY SWEEPS (Fractal Breakouts)
+// ====================================================================================================
+pivot_high = ta.pivothigh(high, 5, 5)
+pivot_low  = ta.pivotlow(low, 5, 5)
+
+var float last_ph = na
+var float last_pl = na
+
+if not na(pivot_high)
+    last_ph := pivot_high
+if not na(pivot_low)
+    last_pl := pivot_low
+
+sweep_high = high > last_ph and close < last_ph and show_sweep
+sweep_low = low < last_pl and close > last_pl and show_sweep
+
+if sweep_high
+    label.new(bar_index, high, "Sweep", color=color.new(color.white, 100), textcolor=c_sweep, style=label.style_label_down, size=size.small)
+if sweep_low
+    label.new(bar_index, low, "Sweep", color=color.new(color.white, 100), textcolor=c_sweep, style=label.style_label_up, size=size.small)
+
+// ====================================================================================================
+// 5. FIBONACCI EXTENSIONS (Based on last major swing)
+// ====================================================================================================
+var line fib_0 = na, var line fib_1 = na, var line fib_1618 = na
+var label lbl_0 = na, var label lbl_1 = na, var label lbl_1618 = na
+
+if show_fib and barstate.islast
+    float swing_range = last_ph - last_pl
+    if not na(swing_range) and swing_range > 0
+        float ext_1618 = last_ph + (swing_range * 0.618)
+        
+        fib_0 := line.new(bar_index - 20, last_pl, bar_index + 10, last_pl, color=c_fib, style=line.style_dotted)
+        fib_1 := line.new(bar_index - 20, last_ph, bar_index + 10, last_ph, color=c_fib, style=line.style_dotted)
+        fib_1618 := line.new(bar_index - 20, ext_1618, bar_index + 10, ext_1618, color=c_fib, style=line.style_dotted)
+        
+        lbl_0 := label.new(bar_index + 10, last_pl, "Fib 0", style=label.style_none, textcolor=c_fib, size=size.small)
+        lbl_1 := label.new(bar_index + 10, last_ph, "Fib 1", style=label.style_none, textcolor=c_fib, size=size.small)
+        lbl_1618 := label.new(bar_index + 10, ext_1618, "Fib 1.618 Ext", style=label.style_none, textcolor=c_fib, size=size.small)
+        
+        line.delete(fib_0[1]), line.delete(fib_1[1]), line.delete(fib_1618[1])
+        label.delete(lbl_0[1]), label.delete(lbl_1[1]), label.delete(lbl_1618[1])

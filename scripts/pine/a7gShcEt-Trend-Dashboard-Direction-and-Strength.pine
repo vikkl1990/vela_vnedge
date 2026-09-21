@@ -1,0 +1,1015 @@
+// =============================================================================
+// TREND DASHBOARD - DIRECTION AND STRENGTH
+// Reads 11 trend, momentum, volatility and volume-flow indicators on up to four
+// timeframes and condenses them into a directional score and a categorical
+// verdict per timeframe, presented in a single compact table.
+// Built for top-down trend followers who need confluence in one glance.
+// =============================================================================
+
+//@version=6
+indicator("Trend Dashboard - Direction and Strength", shorttitle="Trend Dashboard", overlay=true)
+
+// =============================================================================
+// GROUP 1 — TIMEFRAMES
+// Four independent higher/lower timeframe slots. The table renders them from
+// macro to micro (D, C, A, B) so the reading order matches top-down analysis.
+// =============================================================================
+tf_d = input.timeframe("D", "Timeframe D (macro)", group="Timeframes",
+     tooltip="Slowest slot, shown in the leftmost data column. Daily is the standard macro reference for swing and position trading. Weekly for longer horizons.")
+tf_c = input.timeframe("240", "Timeframe C (high)", group="Timeframes",
+     tooltip="Second slot. 240 (4H) bridges the daily bias and the intraday execution frame. Typical alternatives: 180, 360, 720.")
+tf_a = input.timeframe("60", "Timeframe A (base)", group="Timeframes",
+     tooltip="Primary working timeframe. 60 (1H) is the default execution frame for intraday swing entries. Set it to the timeframe you actually trade.")
+tf_b = input.timeframe("5", "Timeframe B (micro)", group="Timeframes",
+     tooltip="Fastest slot, used for entry timing only. 5 minutes is standard for scalping refinement. Signals here flip often and must not drive the bias.")
+
+show_d = input.bool(true, "Show timeframe D column", group="Timeframes",
+     tooltip="Hides the macro column when it is not needed. Hidden columns free horizontal space and the remaining columns shift left.")
+show_c = input.bool(true, "Show timeframe C column", group="Timeframes",
+     tooltip="Hides the high column. Keep it enabled when trading intraday against a daily bias.")
+show_a = input.bool(true, "Show timeframe A column", group="Timeframes",
+     tooltip="Hides the base column. Normally left enabled since this is the execution frame.")
+show_b = input.bool(true, "Show timeframe B column", group="Timeframes",
+     tooltip="Hides the micro column. Disable it on swing setups where 5-minute noise is irrelevant.")
+
+// =============================================================================
+// GROUP 2 — MARKET STRUCTURE
+// Pivot-based direction: the last broken swing level defines the structural
+// bias, and the number of continuation breaks defines the maturity of the leg.
+// =============================================================================
+ms_swing = input.int(10, "Pivot window (bars)", group="Market Structure", minval=2,
+     tooltip="Bars required on each side of a candle to confirm it as a swing high or low. Typical: 5-10 for intraday, 15-20 for swing. Larger values give cleaner structure at the cost of lag.")
+ms_bos_conf = input.string("Candle Close", "Break confirmation", options=["Candle Close", "Wicks"], group="Market Structure",
+     tooltip="What validates a swing break. Candle Close is stricter and filters stop-hunts. Wicks reacts one candle earlier and produces more breaks in choppy conditions.")
+
+// =============================================================================
+// GROUP 3 — MOVING AVERAGES
+// Three EMAs produce two independent votes: fast/mid for the medium-term
+// structure and mid/slow for the macro regime (golden or death cross).
+// =============================================================================
+ema_fast = input.int(20, "EMA fast", group="Moving Averages", minval=1,
+     tooltip="Short-term average. Also used for the Price vs EMA row. Typical: 9-21. Lower values track price closer and produce more flips.")
+ema_mid = input.int(50, "EMA mid", group="Moving Averages", minval=1,
+     tooltip="Medium-term average. 50 is the institutional standard for the intermediate trend. Compared against both the fast and the slow EMA.")
+ema_slow = input.int(200, "EMA slow", group="Moving Averages", minval=1,
+     tooltip="Long-term average and macro regime filter. 200 is the reference used by most trend-following desks. Raising it makes the regime vote slower and more stable.")
+
+// =============================================================================
+// GROUP 4 — RSI
+// Momentum strength, read directionally around the midline instead of the
+// classic overbought and oversold reversal logic.
+// =============================================================================
+rsi_len = input.int(14, "RSI length", group="RSI", minval=2,
+     tooltip="Lookback of the Relative Strength Index. 14 is the Wilder default. Shorter values react faster and cross the thresholds more often.")
+rsi_bull = input.int(55, "RSI bullish threshold", group="RSI",
+     tooltip="RSI at or above this level counts as a bullish vote. 55 leaves a buffer above the 50 midline so that flat markets stay neutral. Raise it to 60 for a stricter filter.")
+rsi_bear = input.int(45, "RSI bearish threshold", group="RSI",
+     tooltip="RSI at or below this level counts as a bearish vote. 45 mirrors the bullish threshold around the midline. Lower it to 40 for a stricter filter.")
+
+// =============================================================================
+// GROUP 5 — MACD
+// Momentum acceleration. Counted as bullish only when line and histogram agree.
+// =============================================================================
+macd_fast = input.int(12, "MACD fast length", group="MACD", minval=1,
+     tooltip="Fast EMA of the MACD line. 12 is the standard. Lower values make the signal earlier and noisier.")
+macd_slow = input.int(26, "MACD slow length", group="MACD", minval=2,
+     tooltip="Slow EMA of the MACD line. 26 is the standard. Must stay above the fast length.")
+macd_signal = input.int(9, "MACD signal length", group="MACD", minval=1,
+     tooltip="Smoothing of the MACD line into the signal line. 9 is the standard and defines roughly how many bars the crossover lags.")
+
+// =============================================================================
+// GROUP 6 — ADX / DMI
+// Trend strength gate. Read first: below the threshold every directional vote
+// in the table loses reliability.
+// =============================================================================
+adx_len = input.int(14, "ADX length", group="ADX / DMI", minval=2,
+     tooltip="Lookback used for both the DMI and the ADX smoothing. 14 is the Wilder default. Shorter values raise sensitivity and false trend readings.")
+adx_thr = input.int(20, "ADX trend threshold", group="ADX / DMI", minval=1,
+     tooltip="Minimum ADX value for the market to be treated as trending. Below it the row reads Weak and gives no direction. Typical: 20 for intraday, 25 for swing.")
+
+// =============================================================================
+// GROUP 7 — SUPERTREND
+// ATR trailing direction. Binary by design, useful as a mechanical stop.
+// =============================================================================
+st_atr = input.int(10, "SuperTrend ATR length", group="SuperTrend", minval=1,
+     tooltip="Volatility window used by the trailing band. 10 is the standard. Longer windows smooth volatility spikes and delay flips.")
+st_factor = input.float(3.0, "SuperTrend factor", group="SuperTrend", step=0.1, minval=0.1,
+     tooltip="ATR multiplier that sets the distance of the band from price. Typical: 2.0-4.0. Higher values reduce whipsaw flips but react later to genuine reversals.")
+
+// =============================================================================
+// GROUP 8 — VOLUME FLOW
+// CVD approximation and OBV divergence. Both are disabled automatically on
+// symbols that report no volume.
+// =============================================================================
+cvd_lb = input.int(10, "CVD lookback (bars)", group="Volume Flow", minval=3,
+     tooltip="Window used to measure the slope of the cumulative volume delta against the slope of price. 10 is the standard. Shorter windows react to intrabar flow, longer ones to positioning.")
+obv_lb = input.int(20, "OBV divergence window", group="Volume Flow", minval=5,
+     tooltip="Window in which price extremes are compared against OBV extremes. 20 balances sensitivity and noise. Typical: 14-30.")
+
+// =============================================================================
+// GROUP 9 — DIVERGENCE
+// Momentum divergence, kept separate from volume divergence because it also
+// works on symbols without volume data.
+// =============================================================================
+rsi_div_lb = input.int(14, "RSI divergence window", group="Divergence", minval=5,
+     tooltip="Window in which price extremes are compared against RSI extremes. 14 matches the default RSI length. Smaller values are more sensitive, larger ones stricter.")
+
+// =============================================================================
+// GROUP 10 — INFO TABLE
+// Placement and density of the dashboard on the chart.
+// =============================================================================
+tbl_pos = input.string("top_right", "Table position", options=["top_left", "top_right", "middle_right", "bottom_right", "bottom_left"], group="Info Table",
+     tooltip="Corner of the chart the table is anchored to. Move it away from the price action of the symbol you trade.")
+tbl_size = input.string("tiny", "Table text size", options=["tiny", "small", "normal", "large"], group="Info Table",
+     tooltip="Font size of every cell. Tiny fits four timeframe columns on a laptop screen. Increase it for large monitors or screenshots.")
+
+// =============================================================================
+// GROUP 11 — COLORS
+// Bull, bear and neutral encode direction. Table colors control the frame.
+// =============================================================================
+c_bull = input.color(color.new(#0b6e4f, 35), "Bullish cell", group="Colors",
+     tooltip="Background of every cell that reports a bullish signal. Kept semi-transparent so the chart stays readable behind the table.")
+c_bear = input.color(color.new(#7a1414, 35), "Bearish cell", group="Colors",
+     tooltip="Background of every cell that reports a bearish signal.")
+c_neut = input.color(color.new(#9e9e9e, 0), "Neutral cell", group="Colors",
+     tooltip="Background of every cell with no directional signal, including the ADX Weak state.")
+c_hdr = input.color(color.new(#1e222d, 0), "Header background", group="Colors",
+     tooltip="Background of the header row and of the verdict row label.")
+c_txt = input.color(color.new(#e6e6e6, 0), "Label text", group="Colors",
+     tooltip="Text color of headers and indicator labels. Signal cells always use white text for legibility over the colored background.")
+c_row1 = input.color(color.new(#262b36, 30), "Row background (even)", group="Colors",
+     tooltip="Zebra shading of even rows. Alternating backgrounds keep long rows readable across four columns.")
+c_row2 = input.color(color.new(#1a1d24, 30), "Row background (odd)", group="Colors",
+     tooltip="Zebra shading of odd rows.")
+
+// Context accents for the marker column. These never carry direction: they flag
+// how a row must be read, not where the market is going.
+// Orange  — mandatory context that is deliberately excluded from the score.
+// White   — the indicator runs on simplified parameters or an approximation.
+// Blue    — structural context of a different nature than the trend votes.
+COLOR_DOT_ATTENTION = color.new(#ffa726, 0)
+COLOR_DOT_NEUTRAL   = color.new(#ffffff, 0)
+COLOR_DOT_INFO      = color.new(#4a87f3, 0)
+
+// =============================================================================
+// SECTION — FORMATTING HELPERS
+// Pure presentation logic, kept out of the signal functions.
+// =============================================================================
+f_sig_col(s) => s == 1 ? c_bull : s == -1 ? c_bear : c_neut
+f_sig_txt(s) => s == 1 ? "▲ Bull" : s == -1 ? "▼ Bear" : "● Neutral"
+f_row_bg(i)  => i % 2 == 0 ? c_row1 : c_row2
+
+// Renders a timeframe input as a human-readable column header, so the header
+// stays correct when the user reassigns a slot to another period.
+f_tf_label(tf_str) =>
+    string out = tf_str
+    if tf_str == "D" or tf_str == "1D"
+        out := "1D"
+    else if tf_str == "W" or tf_str == "1W"
+        out := "1W"
+    else if tf_str == "M" or tf_str == "1M"
+        out := "1M"
+    else
+        mins = str.tonumber(tf_str)
+        if na(mins)
+            out := tf_str
+        else if mins >= 1440 and mins % 1440 == 0
+            out := str.tostring(mins / 1440, "#") + "D"
+        else if mins >= 60 and mins % 60 == 0
+            out := str.tostring(mins / 60, "#") + "H"
+        else
+            out := str.tostring(mins, "#") + "M"
+    out
+
+// =============================================================================
+// SECTION — SIGNAL FUNCTIONS
+// Every function returns 1 (bull), -1 (bear) or 0 (neutral) so that the score
+// is a plain sum and every indicator carries the same weight.
+// =============================================================================
+f_sig_ema(fast, slow)       => fast > slow ? 1 : fast < slow ? -1 : 0
+f_sig_price(p, ema)         => p > ema ? 1 : p < ema ? -1 : 0
+f_sig_macd(line, sig, hist) => (line > sig and hist > 0) ? 1 : (line < sig and hist < 0) ? -1 : 0
+f_sig_rsi(v)                => v >= rsi_bull ? 1 : v <= rsi_bear ? -1 : 0
+f_sig_adx(adx, di_p, di_m)  => adx < adx_thr ? 0 : di_p > di_m ? 1 : -1
+f_sig_st(dir)               => dir == -1 ? 1 : dir == 1 ? -1 : 0
+f_sig_ichi(p, top, bot)     => p > top ? 1 : p < bot ? -1 : 0
+
+// Volume delta is only counted when its slope agrees with the price slope.
+// Disagreement is reported as neutral because it signals hidden divergence
+// rather than direction.
+f_sig_cvd(cvd_now, cvd_past, px_now, px_past) =>
+    cd = cvd_now > cvd_past ? 1 : cvd_now < cvd_past ? -1 : 0
+    pd = px_now > px_past ? 1 : px_now < px_past ? -1 : 0
+    (cd == 1 and pd == 1) ? 1 : (cd == -1 and pd == -1) ? -1 : 0
+
+// Regular divergence: price prints the extreme of the window, the companion
+// series does not confirm it.
+f_sig_obv_div(close_now, hi_px, lo_px, obv_now, hi_obv, lo_obv) =>
+    bear_div = close_now >= hi_px and obv_now < hi_obv
+    bull_div = close_now <= lo_px and obv_now > lo_obv
+    bear_div ? -1 : bull_div ? 1 : 0
+
+f_sig_rsi_div(close_now, hi_px, lo_px, rsi_now, hi_rsi, lo_rsi) =>
+    bear_div = close_now >= hi_px and rsi_now < hi_rsi
+    bull_div = close_now <= lo_px and rsi_now > lo_rsi
+    bear_div ? -1 : bull_div ? 1 : 0
+
+// Verdict thresholds are absolute, not scaled by the maximum score. On symbols
+// without volume the maximum drops to 7, so a strong verdict requires a higher
+// share of agreement — an intentional tightening on the smaller sample.
+f_verdict(score) =>
+    string out = "MIXED"
+    if score >= 5
+        out := "STRONG BULL"
+    else if score >= 3
+        out := "BULL"
+    else if score <= -5
+        out := "STRONG BEAR"
+    else if score <= -3
+        out := "BEAR"
+    out
+
+f_verdict_col(score) => score >= 3 ? c_bull : score <= -3 ? c_bear : c_neut
+
+// =============================================================================
+// SECTION — PER-TIMEFRAME SNAPSHOT
+// Every indicator is computed once inside a single function so that one
+// request.security call per timeframe returns the complete state. Splitting it
+// into separate calls would multiply the script's data cost for no benefit.
+// =============================================================================
+f_snapshot() =>
+    ema_f_v = ta.ema(close, ema_fast)
+    ema_m_v = ta.ema(close, ema_mid)
+    ema_s_v = ta.ema(close, ema_slow)
+    [m_line, m_sig, m_hist] = ta.macd(close, macd_fast, macd_slow, macd_signal)
+    rsi_v = ta.rsi(close, rsi_len)
+    [di_p, di_m, adx_v] = ta.dmi(adx_len, adx_len)
+    [_st_line, st_dir_v] = ta.supertrend(st_factor, st_atr)
+    conv   = (ta.highest(high, 9) + ta.lowest(low, 9)) / 2
+    base   = (ta.highest(high, 26) + ta.lowest(low, 26)) / 2
+    span_a = (conv + base) / 2
+    span_b = (ta.highest(high, 52) + ta.lowest(low, 52)) / 2
+    kumo_t = math.max(span_a, span_b)
+    kumo_b = math.min(span_a, span_b)
+    // CVD approximation without lower-timeframe data: the bar's volume is split
+    // by the position of the close inside the high-low range. Close near the
+    // high implies buyer dominance, close near the low implies seller
+    // dominance. On symbols without volume the result collapses to zero.
+    hl       = high - low
+    buy_vol  = hl > 0 ? nz(volume) * (close - low) / hl : 0.0
+    sell_vol = hl > 0 ? nz(volume) * (high - close) / hl : 0.0
+    cvd_v    = ta.cum(buy_vol - sell_vol)
+    cvd_p    = cvd_v[cvd_lb]
+    px_p     = close[cvd_lb]
+    obv_v    = ta.cum(math.sign(close - close[1]) * nz(volume))
+    hi_px_o  = ta.highest(close, obv_lb)
+    lo_px_o  = ta.lowest(close, obv_lb)
+    hi_obv   = ta.highest(obv_v, obv_lb)
+    lo_obv   = ta.lowest(obv_v, obv_lb)
+    // The RSI divergence window is independent of the OBV window because
+    // momentum and volume flow diverge on different horizons.
+    hi_px_r  = ta.highest(close, rsi_div_lb)
+    lo_px_r  = ta.lowest(close, rsi_div_lb)
+    hi_rsi   = ta.highest(rsi_v, rsi_div_lb)
+    lo_rsi   = ta.lowest(rsi_v, rsi_div_lb)
+    has_vol  = nz(volume) > 0
+    [close, ema_f_v, ema_m_v, ema_s_v, m_line, m_sig, m_hist, rsi_v, di_p, di_m, adx_v, st_dir_v, kumo_t, kumo_b, cvd_v, cvd_p, px_p, obv_v, hi_px_o, lo_px_o, hi_obv, lo_obv, hi_px_r, lo_px_r, hi_rsi, lo_rsi, has_vol]
+
+[px_a, ema_f_a, ema_m_a, ema_s_a, ml_a, ms_a, mh_a, rsi_a, dip_a, dim_a, adx_a, std_a, kt_a, kb_a, cvd_a, cvdp_a, pxp_a, obv_a, hpo_a, lpo_a, hob_a, lob_a, hpr_a, lpr_a, hrs_a, lrs_a, hv_a] = request.security(syminfo.tickerid, tf_a, f_snapshot(), lookahead=barmerge.lookahead_off)
+[px_b, ema_f_b, ema_m_b, ema_s_b, ml_b, ms_b, mh_b, rsi_b, dip_b, dim_b, adx_b, std_b, kt_b, kb_b, cvd_b, cvdp_b, pxp_b, obv_b, hpo_b, lpo_b, hob_b, lob_b, hpr_b, lpr_b, hrs_b, lrs_b, hv_b] = request.security(syminfo.tickerid, tf_b, f_snapshot(), lookahead=barmerge.lookahead_off)
+[px_c, ema_f_c, ema_m_c, ema_s_c, ml_c, ms_c, mh_c, rsi_c, dip_c, dim_c, adx_c, std_c, kt_c, kb_c, cvd_c, cvdp_c, pxp_c, obv_c, hpo_c, lpo_c, hob_c, lob_c, hpr_c, lpr_c, hrs_c, lrs_c, hv_c] = request.security(syminfo.tickerid, tf_c, f_snapshot(), lookahead=barmerge.lookahead_off)
+[px_d, ema_f_d, ema_m_d, ema_s_d, ml_d, ms_d, mh_d, rsi_d, dip_d, dim_d, adx_d, std_d, kt_d, kb_d, cvd_d, cvdp_d, pxp_d, obv_d, hpo_d, lpo_d, hob_d, lob_d, hpr_d, lpr_d, hrs_d, lrs_d, hv_d] = request.security(syminfo.tickerid, tf_d, f_snapshot(), lookahead=barmerge.lookahead_off)
+
+// =============================================================================
+// SECTION — MARKET STRUCTURE SNAPSHOT
+// Returns [direction, bos_count]:
+//   direction  =  1 bullish, -1 bearish, 0 no break registered yet.
+//   bos_count  =  number of continuation breaks since the last change of
+//                 character, which measures how mature the current leg is.
+// A break in the opposite direction resets the counter because it opens a new
+// structural phase; a break in the same direction increments it.
+// =============================================================================
+f_structure_snapshot() =>
+    var float prev_high   = na
+    var float prev_low    = na
+    var bool  high_active = false
+    var bool  low_active  = false
+    var int   break_dir   = 0
+    var int   bos_count   = 0
+    piv_hi = ta.pivothigh(high, ms_swing, ms_swing)
+    piv_lo = ta.pivotlow(low, ms_swing, ms_swing)
+    if not na(piv_hi)
+        prev_high   := piv_hi
+        high_active := true
+    if not na(piv_lo)
+        prev_low   := piv_lo
+        low_active := true
+    high_src = ms_bos_conf == "Candle Close" ? close : high
+    low_src  = ms_bos_conf == "Candle Close" ? close : low
+    if high_active and not na(prev_high) and high_src > prev_high
+        high_active := false
+        if break_dir == 1
+            bos_count += 1
+        else
+            bos_count := 0
+        break_dir := 1
+    if low_active and not na(prev_low) and low_src < prev_low
+        low_active := false
+        if break_dir == -1
+            bos_count += 1
+        else
+            bos_count := 0
+        break_dir := -1
+    [break_dir, bos_count]
+
+[ms_dir_a, ms_bos_a] = request.security(syminfo.tickerid, tf_a, f_structure_snapshot(), lookahead=barmerge.lookahead_off)
+[ms_dir_b, ms_bos_b] = request.security(syminfo.tickerid, tf_b, f_structure_snapshot(), lookahead=barmerge.lookahead_off)
+[ms_dir_c, ms_bos_c] = request.security(syminfo.tickerid, tf_c, f_structure_snapshot(), lookahead=barmerge.lookahead_off)
+[ms_dir_d, ms_bos_d] = request.security(syminfo.tickerid, tf_d, f_structure_snapshot(), lookahead=barmerge.lookahead_off)
+
+// Structure cell text: direction plus the phase suffix, for example "▲ Bull (C+3)".
+f_structure_txt(dir, bos) =>
+    base = f_sig_txt(dir)
+    dir == 0 ? base : base + " (C" + (bos > 0 ? "+" + str.tostring(bos) : "") + ")"
+
+// =============================================================================
+// SECTION — VOLUME AVAILABILITY
+// On symbols that report no volume (many indices and FX feeds) CVD and OBV are
+// mathematically flat. That is missing data, not a neutral signal, so those
+// cells print a dash and CVD is dropped from the score.
+// =============================================================================
+var bool has_volume = false
+if nz(volume) > 0
+    has_volume := true
+
+// =============================================================================
+// SECTION — SIGNALS PER TIMEFRAME
+// =============================================================================
+s_price_a   = f_sig_price(px_a, ema_f_a)
+s_ema_fm_a  = f_sig_ema(ema_f_a, ema_m_a)
+s_ema_ms_a  = f_sig_ema(ema_m_a, ema_s_a)
+s_macd_a    = f_sig_macd(ml_a, ms_a, mh_a)
+s_rsi_a     = f_sig_rsi(rsi_a)
+s_adx_a     = f_sig_adx(adx_a, dip_a, dim_a)
+s_st_a      = f_sig_st(std_a)
+s_ichi_a    = f_sig_ichi(px_a, kt_a, kb_a)
+s_cvd_a     = f_sig_cvd(cvd_a, cvdp_a, px_a, pxp_a)
+s_obvdiv_a  = f_sig_obv_div(px_a, hpo_a, lpo_a, obv_a, hob_a, lob_a)
+s_rsidiv_a  = f_sig_rsi_div(px_a, hpr_a, lpr_a, rsi_a, hrs_a, lrs_a)
+
+s_price_b   = f_sig_price(px_b, ema_f_b)
+s_ema_fm_b  = f_sig_ema(ema_f_b, ema_m_b)
+s_ema_ms_b  = f_sig_ema(ema_m_b, ema_s_b)
+s_macd_b    = f_sig_macd(ml_b, ms_b, mh_b)
+s_rsi_b     = f_sig_rsi(rsi_b)
+s_adx_b     = f_sig_adx(adx_b, dip_b, dim_b)
+s_st_b      = f_sig_st(std_b)
+s_ichi_b    = f_sig_ichi(px_b, kt_b, kb_b)
+s_cvd_b     = f_sig_cvd(cvd_b, cvdp_b, px_b, pxp_b)
+s_obvdiv_b  = f_sig_obv_div(px_b, hpo_b, lpo_b, obv_b, hob_b, lob_b)
+s_rsidiv_b  = f_sig_rsi_div(px_b, hpr_b, lpr_b, rsi_b, hrs_b, lrs_b)
+
+s_price_c   = f_sig_price(px_c, ema_f_c)
+s_ema_fm_c  = f_sig_ema(ema_f_c, ema_m_c)
+s_ema_ms_c  = f_sig_ema(ema_m_c, ema_s_c)
+s_macd_c    = f_sig_macd(ml_c, ms_c, mh_c)
+s_rsi_c     = f_sig_rsi(rsi_c)
+s_adx_c     = f_sig_adx(adx_c, dip_c, dim_c)
+s_st_c      = f_sig_st(std_c)
+s_ichi_c    = f_sig_ichi(px_c, kt_c, kb_c)
+s_cvd_c     = f_sig_cvd(cvd_c, cvdp_c, px_c, pxp_c)
+s_obvdiv_c  = f_sig_obv_div(px_c, hpo_c, lpo_c, obv_c, hob_c, lob_c)
+s_rsidiv_c  = f_sig_rsi_div(px_c, hpr_c, lpr_c, rsi_c, hrs_c, lrs_c)
+
+s_price_d   = f_sig_price(px_d, ema_f_d)
+s_ema_fm_d  = f_sig_ema(ema_f_d, ema_m_d)
+s_ema_ms_d  = f_sig_ema(ema_m_d, ema_s_d)
+s_macd_d    = f_sig_macd(ml_d, ms_d, mh_d)
+s_rsi_d     = f_sig_rsi(rsi_d)
+s_adx_d     = f_sig_adx(adx_d, dip_d, dim_d)
+s_st_d      = f_sig_st(std_d)
+s_ichi_d    = f_sig_ichi(px_d, kt_d, kb_d)
+s_cvd_d     = f_sig_cvd(cvd_d, cvdp_d, px_d, pxp_d)
+s_obvdiv_d  = f_sig_obv_div(px_d, hpo_d, lpo_d, obv_d, hob_d, lob_d)
+s_rsidiv_d  = f_sig_rsi_div(px_d, hpr_d, lpr_d, rsi_d, hrs_d, lrs_d)
+
+// =============================================================================
+// SECTION — SCORE
+// The score sums directional votes only. ADX measures strength, and the two
+// divergence rows warn about exhaustion; mixing them into a directional sum
+// would distort it, so they stay outside and are marked with orange dots.
+// CVD is excluded on symbols without volume, which lowers the maximum to 7.
+// =============================================================================
+score_a = s_ema_fm_a + s_ema_ms_a + s_price_a + s_macd_a + s_rsi_a + s_st_a + s_ichi_a + (hv_a ? s_cvd_a : 0)
+score_b = s_ema_fm_b + s_ema_ms_b + s_price_b + s_macd_b + s_rsi_b + s_st_b + s_ichi_b + (hv_b ? s_cvd_b : 0)
+score_c = s_ema_fm_c + s_ema_ms_c + s_price_c + s_macd_c + s_rsi_c + s_st_c + s_ichi_c + (hv_c ? s_cvd_c : 0)
+score_d = s_ema_fm_d + s_ema_ms_d + s_price_d + s_macd_d + s_rsi_d + s_st_d + s_ichi_d + (hv_d ? s_cvd_d : 0)
+
+max_a = hv_a ? 8 : 7
+max_b = hv_b ? 8 : 7
+max_c = hv_c ? 8 : 7
+max_d = hv_d ? 8 : 7
+
+// =============================================================================
+// SECTION — ALERTS
+// Raw crossings are computed unconditionally in the global scope so that their
+// history stays consistent regardless of which columns are visible.
+// =============================================================================
+bull_cross_a = ta.crossover(score_a, 2.5)
+bear_cross_a = ta.crossunder(score_a, -2.5)
+bull_cross_b = ta.crossover(score_b, 2.5)
+bear_cross_b = ta.crossunder(score_b, -2.5)
+bull_cross_c = ta.crossover(score_c, 2.5)
+bear_cross_c = ta.crossunder(score_c, -2.5)
+bull_cross_d = ta.crossover(score_d, 2.5)
+bear_cross_d = ta.crossunder(score_d, -2.5)
+
+// Alignment counts only the timeframes the user left visible, so hiding a
+// column also removes it from the confluence requirement.
+align_bull = (not show_d or score_d >= 3) and (not show_c or score_c >= 3) and (not show_a or score_a >= 3) and (not show_b or score_b >= 3)
+align_bear = (not show_d or score_d <= -3) and (not show_c or score_c <= -3) and (not show_a or score_a <= -3) and (not show_b or score_b <= -3)
+align_bull_start = align_bull and not align_bull[1]
+align_bear_start = align_bear and not align_bear[1]
+
+alertcondition(bull_cross_a, title="Timeframe A bull verdict", message="Trend Dashboard: timeframe A score crossed above +3, verdict turned bullish")
+alertcondition(bear_cross_a, title="Timeframe A bear verdict", message="Trend Dashboard: timeframe A score crossed below -3, verdict turned bearish")
+alertcondition(bull_cross_b, title="Timeframe B bull verdict", message="Trend Dashboard: timeframe B score crossed above +3, verdict turned bullish")
+alertcondition(bear_cross_b, title="Timeframe B bear verdict", message="Trend Dashboard: timeframe B score crossed below -3, verdict turned bearish")
+alertcondition(bull_cross_c, title="Timeframe C bull verdict", message="Trend Dashboard: timeframe C score crossed above +3, verdict turned bullish")
+alertcondition(bear_cross_c, title="Timeframe C bear verdict", message="Trend Dashboard: timeframe C score crossed below -3, verdict turned bearish")
+alertcondition(bull_cross_d, title="Timeframe D bull verdict", message="Trend Dashboard: timeframe D score crossed above +3, verdict turned bullish")
+alertcondition(bear_cross_d, title="Timeframe D bear verdict", message="Trend Dashboard: timeframe D score crossed below -3, verdict turned bearish")
+alertcondition(align_bull_start, title="All timeframes bullish", message="Trend Dashboard: every visible timeframe reached a bullish verdict")
+alertcondition(align_bear_start, title="All timeframes bearish", message="Trend Dashboard: every visible timeframe reached a bearish verdict")
+
+// =============================================================================
+// SECTION — TABLE LAYOUT
+// Column 0 holds the marker dot, column 1 the indicator label, and the
+// remaining columns hold the visible timeframes ordered macro to micro.
+// Hiding a timeframe shifts the following columns left.
+// =============================================================================
+pos_lookup = switch tbl_pos
+    "top_left"     => position.top_left
+    "top_right"    => position.top_right
+    "middle_right" => position.middle_right
+    "bottom_left"  => position.bottom_left
+    =>                position.bottom_right
+
+size_lookup = switch tbl_size
+    "tiny"  => size.tiny
+    "small" => size.small
+    "large" => size.large
+    =>         size.normal
+
+col_d  = 2
+col_c  = 2 + (show_d ? 1 : 0)
+col_a  = 2 + (show_d ? 1 : 0) + (show_c ? 1 : 0)
+col_b  = 2 + (show_d ? 1 : 0) + (show_c ? 1 : 0) + (show_a ? 1 : 0)
+n_cols = 2 + (show_d ? 1 : 0) + (show_c ? 1 : 0) + (show_a ? 1 : 0) + (show_b ? 1 : 0)
+
+var table tbl = table.new(pos_lookup, n_cols, 15, border_width=1, border_color=color.new(#000000, 70))
+
+// =============================================================================
+// SECTION — CELL TOOLTIPS
+// Each label cell carries a tooltip that states what the indicator measures,
+// how to read the three states, its role inside the score and its known
+// failure modes. Composed once per bar and attached in the render block.
+// =============================================================================
+tt_hdr = "SUMMARY TABLE — 11 indicators across up to 4 timeframes.\n" +
+     "Columns run macro to micro from left to right. Each timeframe can be hidden in Settings, Timeframes.\n" +
+     "\n" +
+     "STRUCTURE:\n" +
+     "8 directional indicators are summed into the score (max ±8, or ±7 on symbols without volume where CVD is excluded).\n" +
+     "3 context indicators stay outside the score and act as filters.\n" +
+     "\n" +
+     "DIRECTIONAL (inside the score):\n" +
+     "1. Price vs EMA fast\n" +
+     "2. EMA fast/mid — medium-term structure\n" +
+     "3. EMA mid/slow — macro regime (golden or death cross)\n" +
+     "4. MACD — momentum\n" +
+     "5. RSI — strength, white dot: non-standard thresholds\n" +
+     "6. SuperTrend — ATR trailing direction\n" +
+     "7. Ichimoku Kumo — white dot: reduced to the cloud\n" +
+     "8. CVD — white dot: volume flow approximation\n" +
+     "\n" +
+     "CONTEXT (outside the score, orange dots):\n" +
+     "- ADX/DMI — trend strength filter\n" +
+     "- OBV Divergence — early reversal warning from volume\n" +
+     "- RSI Divergence — early reversal warning from momentum\n" +
+     "\n" +
+     "CELL STATES:\n" +
+     "▲ Bull — bullish reading\n" +
+     "▼ Bear — bearish reading\n" +
+     "● Neutral or Weak — no reading\n" +
+     "— dash — data unavailable on this symbol\n" +
+     "\n" +
+     "MARKER DOTS:\n" +
+     "Orange — mandatory context, read it first: ADX for strength, OBV and RSI divergence for exhaustion.\n" +
+     "White — the indicator runs on simplified parameters or an approximation. It still votes, with that limitation in mind.\n" +
+     "Blue — market structure, a separate class of context.\n" +
+     "\n" +
+     "READING ORDER (top-down):\n" +
+     "1) Orange rows first: is there a trend at all, and are there reversal warnings.\n" +
+     "2) Then score and verdict for direction.\n" +
+     "3) Compare verdicts across timeframes, macro to micro.\n" +
+     "4) A conflict between timeframes usually means the market is in a correction."
+
+tt_price = "PRICE vs EMA(" + str.tostring(ema_fast) + ") — the fastest signal of the EMA block.\n" +
+     "\n" +
+     "WHAT IT IS:\n" +
+     "An exponential moving average weights recent bars more heavily than old ones. EMA(" + str.tostring(ema_fast) + ") approximates the average accepted price over the last " + str.tostring(ema_fast) + " bars of this timeframe.\n" +
+     "\n" +
+     "HOW TO READ:\n" +
+     "- Price above the EMA: short-term buyers control the move (Bull).\n" +
+     "- Price below the EMA: sellers control it (Bear).\n" +
+     "\n" +
+     "ROLE IN THE SYSTEM:\n" +
+     "The most sensitive of the three EMA votes. It reacts first when momentum changes hands.\n" +
+     "\n" +
+     "FAILURE MODES:\n" +
+     "- In a range it produces frequent false flips. Filter it through the ADX row.\n" +
+     "- Price frequently rebounds from the fast EMA, which makes it a support and resistance level rather than a reversal trigger."
+
+tt_ema_fm = "EMA " + str.tostring(ema_fast) + "/" + str.tostring(ema_mid) + " — medium-term structure.\n" +
+     "\n" +
+     "WHAT IT IS:\n" +
+     "The relation between the fast EMA(" + str.tostring(ema_fast) + ") and the mid EMA(" + str.tostring(ema_mid) + "). It shows whether the trend is accelerating or decaying over the recent weeks of this timeframe.\n" +
+     "\n" +
+     "HOW TO READ:\n" +
+     "- EMA" + str.tostring(ema_fast) + " above EMA" + str.tostring(ema_mid) + ": rising structure (Bull).\n" +
+     "- EMA" + str.tostring(ema_fast) + " below EMA" + str.tostring(ema_mid) + ": falling structure (Bear).\n" +
+     "- A crossover marks a change of the medium-term trend.\n" +
+     "\n" +
+     "PHASES:\n" +
+     "- Strong bull: the fast EMA sits well above the mid EMA and both slope up.\n" +
+     "- Weak bull: the two averages are close and flat, which often precedes a reversal.\n" +
+     "\n" +
+     "ROLE: confirmation for entries taken in the direction of the primary trend."
+
+tt_ema_ms = "EMA " + str.tostring(ema_mid) + "/" + str.tostring(ema_slow) + " — macro regime filter (golden and death cross).\n" +
+     "\n" +
+     "WHAT IT IS:\n" +
+     "The primary long-term trend filter in technical analysis, used in the IBD and CANSLIM frameworks and by Weinstein and Minervini style trend followers.\n" +
+     "\n" +
+     "HOW TO READ:\n" +
+     "- EMA" + str.tostring(ema_mid) + " above EMA" + str.tostring(ema_slow) + ": golden cross, bullish regime.\n" +
+     "- EMA" + str.tostring(ema_mid) + " below EMA" + str.tostring(ema_slow) + ": death cross, bearish regime.\n" +
+     "\n" +
+     "STAGES (Weinstein):\n" +
+     "- Stage 1, base: both averages flat, price chops sideways.\n" +
+     "- Stage 2, advance: EMA" + str.tostring(ema_mid) + " above EMA" + str.tostring(ema_slow) + " and both slope up. The most favourable phase for long exposure.\n" +
+     "- Stage 3, top: EMA" + str.tostring(ema_mid) + " loses its slope while price chops above it.\n" +
+     "- Stage 4, decline: EMA" + str.tostring(ema_mid) + " below EMA" + str.tostring(ema_slow) + ". Short exposure or cash.\n" +
+     "\n" +
+     "FAILURE MODE:\n" +
+     "It lags heavily and confirms reversals late. Use it to answer whether the asset may be held at all, not to time an entry. The desk rule is to avoid trading against the slow EMA."
+
+tt_macd = "MACD(" + str.tostring(macd_fast) + ", " + str.tostring(macd_slow) + ", " + str.tostring(macd_signal) + ") — momentum.\n" +
+     "\n" +
+     "WHAT IT IS:\n" +
+     "Three components:\n" +
+     "- MACD line = EMA" + str.tostring(macd_fast) + " minus EMA" + str.tostring(macd_slow) + ", the speed of the move.\n" +
+     "- Signal line = EMA" + str.tostring(macd_signal) + " of the MACD line, its smoothed version.\n" +
+     "- Histogram = the difference between them, the acceleration.\n" +
+     "\n" +
+     "HOW THE CELL IS COMPUTED:\n" +
+     "- Line above signal and histogram above zero: Bull.\n" +
+     "- Line below signal and histogram below zero: Bear.\n" +
+     "- Any disagreement between the two: Neutral.\n" +
+     "\n" +
+     "SCALE: unbounded, centred on zero. The further from zero, the stronger the momentum.\n" +
+     "\n" +
+     "PHASES:\n" +
+     "- Histogram expanding away from zero: momentum accelerating.\n" +
+     "- Histogram contracting toward zero: momentum fading, an early warning.\n" +
+     "- Price making new extremes while MACD does not: hidden weakening of the trend.\n" +
+     "\n" +
+     "FAILURE MODE:\n" +
+     "It lags by roughly " + str.tostring(macd_signal) + " bars and produces false crossings in fast ranges."
+
+tt_rsi = "White dot. RSI(" + str.tostring(rsi_len) + ") — relative strength (Wilder, 1978), used directionally rather than as a reversal oscillator.\n" +
+     "\n" +
+     "WHAT IT IS:\n" +
+     "The ratio of average gains to average losses over " + str.tostring(rsi_len) + " bars, scaled 0 to 100 with 50 as the midline.\n" +
+     "\n" +
+     "CLASSIC USE vs THIS IMPLEMENTATION:\n" +
+     "- Classic: above 70 overbought, below 30 oversold. Those are reversal signals that work in ranges and lose money in trends, where RSI can hold above 70 for months.\n" +
+     "- Here: at or above " + str.tostring(rsi_bull) + " is Bull, at or below " + str.tostring(rsi_bear) + " is Bear, in between Neutral. The band around the midline filters noise and reports the direction of momentum.\n" +
+     "\n" +
+     "HOW TO READ:\n" +
+     "- ▲ Bull: momentum is bullish and the move carries the same pressure.\n" +
+     "- ▼ Bear: momentum is bearish.\n" +
+     "- ● Neutral: no pronounced momentum.\n" +
+     "\n" +
+     "ROLE IN THE SYSTEM:\n" +
+     "One of the eight votes in the score. It measures the strength of the move independently of the EMA and MACD rows rather than duplicating them.\n" +
+     "\n" +
+     "FAILURE MODES:\n" +
+     "- Overbought and oversold readings are normal inside a trend and must not be read as reversals.\n" +
+     "- The most valuable RSI signal is divergence, which is reported in its own row."
+
+tt_adx = "Orange dot. ADX(" + str.tostring(adx_len) + ") and DMI — trend strength filter (Wilder, 1978). It does not report direction on its own.\n" +
+     "\n" +
+     "WHAT IT IS:\n" +
+     "The Average Directional Index measures how strongly price is moving, not where. The DMI pair (+DI and -DI) supplies the direction. The scale runs 0 to 100 and rarely exceeds 50 in practice.\n" +
+     "\n" +
+     "ADX SCALE:\n" +
+     "- Below " + str.tostring(adx_thr) + ": ● Weak. Range conditions, directional signals are unreliable.\n" +
+     "- " + str.tostring(adx_thr) + " to 25: a trend is forming.\n" +
+     "- 25 to 40: healthy trend, the best regime for trend following.\n" +
+     "- 40 to 50: strong trend with rising exhaustion risk.\n" +
+     "- Above 50: extreme reading, frequently close to a reversal.\n" +
+     "\n" +
+     "DIRECTION (DMI), valid only when ADX is at or above " + str.tostring(adx_thr) + ":\n" +
+     "- +DI above -DI: buyers dominate, ▲ Bull.\n" +
+     "- -DI above +DI: sellers dominate, ▼ Bear.\n" +
+     "\n" +
+     "ROLE IN THE SYSTEM:\n" +
+     "Gatekeeper. In a range every trend-following input in this table misreads the market, and ADX is what detects that state. Read this row first: below the threshold the score and the verdict are not dependable.\n" +
+     "\n" +
+     "FAILURE MODES:\n" +
+     "- It lags and only rises after a trend has started, so waiting for a high reading delays entries.\n" +
+     "- A high ADX means the trend is strong in either direction, including a sell-off.\n" +
+     "- Kept outside the score so that strength is never confused with direction."
+
+tt_st = "SuperTrend (ATR " + str.tostring(st_atr) + ", factor " + str.tostring(st_factor, "#.#") + ") — ATR trailing direction.\n" +
+     "\n" +
+     "WHAT IT IS:\n" +
+     "A band derived from the Average True Range. It widens when volatility expands and tightens when it contracts, which keeps the distance from price adaptive.\n" +
+     "\n" +
+     "PARAMETERS:\n" +
+     "- ATR(" + str.tostring(st_atr) + "): the volatility window.\n" +
+     "- Factor (" + str.tostring(st_factor, "#.#") + "): the ATR multiplier. Larger values place the band further from price, cut false flips and slow down the reaction.\n" +
+     "\n" +
+     "HOW TO READ:\n" +
+     "- Price above the band: uptrend (Bull).\n" +
+     "- Price below the band: downtrend (Bear).\n" +
+     "- A flip of the band marks a change of trend.\n" +
+     "\n" +
+     "ROLE IN THE SYSTEM:\n" +
+     "A binary vote with no intermediate state, neutral only at the very beginning of the series. It suits mechanical entries, exits and trailing stops.\n" +
+     "\n" +
+     "FAILURE MODE:\n" +
+     "In low volatility it whipsaws. The band itself is frequently used as a stop level: once price closes through it, the trend leg is broken."
+
+tt_ichi = "White dot. Ichimoku Kumo (9, 26, 52) — reduced interpretation of the cloud.\n" +
+     "\n" +
+     "WHAT IT IS:\n" +
+     "Part of Ichimoku Kinko Hyo (Hosoda, 1969). The full system has five lines plus the cloud. This table uses the cloud only: the area between Span A = (Tenkan + Kijun) / 2 and Span B = the midpoint of the 52-bar range. It represents the equilibrium zone of the last 52 bars of the timeframe.\n" +
+     "\n" +
+     "HOW TO READ:\n" +
+     "- ▲ Bull: price above the cloud, long-term uptrend.\n" +
+     "- ▼ Bear: price below the cloud, downtrend.\n" +
+     "- ● Neutral: price inside the cloud, consolidation.\n" +
+     "\n" +
+     "PHASES:\n" +
+     "- Strong bull: price well above a thick, expanding cloud.\n" +
+     "- Weak bull: price above a thin cloud and close to breaking back into it.\n" +
+     "- Span A crossing Span B marks a change of the long-term regime.\n" +
+     "\n" +
+     "ROLE IN THE SYSTEM:\n" +
+     "An independent view of trend built on historical ranges rather than average prices, which is why it adds information the EMA rows do not.\n" +
+     "\n" +
+     "WHY THE WHITE DOT:\n" +
+     "The complete system also includes the Tenkan and Kijun cross, the Chikou span and the forward displacement of the cloud by 26 bars. This row reduces all of that to price against the cloud: a clean trend read, but not the full method."
+
+tt_cvd = "White dot. CVD (Cumulative Volume Delta) — order flow proxy, computed as an approximation.\n" +
+     "\n" +
+     "WHAT IT IS:\n" +
+     "The running difference between buying and selling volume. Without lower-timeframe data the split is estimated from the position of the close inside the bar range: a close near the high implies buying, a close near the low implies selling.\n" +
+     "\n" +
+     "HOW TO READ (window of " + str.tostring(cvd_lb) + " bars):\n" +
+     "- ▲ Bull: CVD rising while price rises, flow confirms the advance.\n" +
+     "- ▼ Bear: CVD falling while price falls, flow confirms the decline.\n" +
+     "- ● Neutral: the two slopes disagree (hidden divergence) or both are flat.\n" +
+     "\n" +
+     "WHY THE WHITE DOT:\n" +
+     "1) It is an approximation. True tick-level CVD is not available without lower-timeframe requests.\n" +
+     "2) On symbols with no volume feed the value collapses to zero, so the row prints a dash and the vote is dropped from the score.\n" +
+     "3) On crypto and equities the approximation tracks the real CVD closely.\n" +
+     "\n" +
+     "ROLE IN THE SYSTEM:\n" +
+     "It covers the blind spot of price-derived indicators. A divergence between flow and price is an early reversal cue that leads price-based signals."
+
+tt_rsi_div = "Orange dot. RSI divergence over " + str.tostring(rsi_div_lb) + " bars — disagreement between price and momentum.\n" +
+     "\n" +
+     "WHAT IT IS:\n" +
+     "Price prints a new extreme of the window and RSI does not follow. Momentum is fading while price still moves, which is one of the more dependable reversal precursors in technical analysis.\n" +
+     "\n" +
+     "HOW TO READ:\n" +
+     "- ▼ Bear: close at a new window high while RSI stays below its own peak, momentum is draining.\n" +
+     "- ▲ Bull: close at a new window low while RSI stays above its own trough, sellers are running out.\n" +
+     "- ● Neutral: no divergence.\n" +
+     "\n" +
+     "DIFFERENCE FROM OBV DIVERGENCE:\n" +
+     "- RSI divergence tracks momentum and normally fires earlier.\n" +
+     "- OBV divergence tracks volume flow and is more reliable on large moves.\n" +
+     "- RSI divergence works on every symbol, including those with no volume data, where OBV is unusable.\n" +
+     "\n" +
+     "ROLE IN THE SYSTEM:\n" +
+     "An exhaustion warning. While the EMA and MACD rows report that a trend exists, this row reports that it is weakening. Treat it as a reason to stop adding to a position, not as a reason to reverse immediately.\n" +
+     "\n" +
+     "FAILURE MODES:\n" +
+     "- Divergence can persist for a long time while the market keeps going.\n" +
+     "- It is strongest when RSI and OBV diverge on the same timeframe at once.\n" +
+     "- Kept outside the score because a reversal warning and a trend vote are different in nature."
+
+tt_structure = "Blue dot. Market structure over a " + str.tostring(ms_swing) + " bar pivot window — direction defined by swing breaks.\n" +
+     "\n" +
+     "WHAT IT IS:\n" +
+     "The Smart Money and ICT reading of trend: the market alternates swing highs and swing lows, and the side that gets broken defines the bias. It is the most basic language institutions use to describe a trend.\n" +
+     "\n" +
+     "PARAMETERS:\n" +
+     "- Pivot window (" + str.tostring(ms_swing) + "): bars required on each side of a candle to confirm a swing point. Larger values are stricter and lag more.\n" +
+     "- Break confirmation: " + (ms_bos_conf == "Candle Close" ? "candle close, the stricter option" : "wicks, the faster option") + ".\n" +
+     "\n" +
+     "HOW TO READ:\n" +
+     "- ▲ Bull: the last break was to the upside.\n" +
+     "- ▼ Bear: the last break was to the downside.\n" +
+     "- ● Neutral: no break registered yet on the available history.\n" +
+     "\n" +
+     "PHASE SUFFIX (C+N):\n" +
+     "- (C): a change of character only, no continuation yet. Fresh but fragile.\n" +
+     "- (C+1) to (C+2): continuation breaks have followed, the leg is developing.\n" +
+     "- (C+3) and above: a mature leg. The most dependable phase, with rising exhaustion risk.\n" +
+     "\n" +
+     "ROLE IN THE SYSTEM:\n" +
+     "The primary context for the whole table. The EMA rows describe where average price sits, MACD describes momentum, and structure describes where institutional flow is working. Agreement between structure, EMA and MACD is the cleanest configuration for an entry.\n" +
+     "\n" +
+     "FAILURE MODES:\n" +
+     "- Bullish EMA against bearish structure means a counter-trend correction, a poor place for longs.\n" +
+     "- On the micro timeframe structure flips often, which is noise. Give priority to the higher timeframes.\n" +
+     "- Kept outside the score because it is a different class of signal from the trend votes."
+
+tt_obv_div = "Orange dot. OBV divergence over " + str.tostring(obv_lb) + " bars — disagreement between price and cumulative volume.\n" +
+     "\n" +
+     "WHAT IT IS:\n" +
+     "On Balance Volume accumulates volume with the sign of the bar's change. This row detects regular divergence inside the selected window.\n" +
+     "\n" +
+     "HOW TO READ:\n" +
+     "- ▼ Bear: close at a new window high while OBV stays below its own peak, distribution.\n" +
+     "- ▲ Bull: close at a new window low while OBV stays above its own trough, accumulation.\n" +
+     "- ● Neutral: price and OBV agree, or the market is ranging.\n" +
+     "\n" +
+     "IN PRACTICE:\n" +
+     "OBV divergence is among the more reliable reversal precursors. It carries the most weight when it is confirmed by RSI divergence on the same timeframe, when it appears at a key support or resistance level, and when it follows an extended trend.\n" +
+     "\n" +
+     "COVERAGE:\n" +
+     "It requires a volume feed. On symbols without volume the row prints a dash instead of a neutral reading."
+
+tt_score = "SCORE (bull minus bear) — confluence of the 8 directional signals, maximum ±8.\n" +
+     "\n" +
+     "Every signal contributes +1, -1 or 0, which turns the table into a quantitative comparison across timeframes.\n" +
+     "\n" +
+     "INSIDE THE SCORE:\n" +
+     "Price vs EMA" + str.tostring(ema_fast) + ", EMA " + str.tostring(ema_fast) + "/" + str.tostring(ema_mid) + ", EMA " + str.tostring(ema_mid) + "/" + str.tostring(ema_slow) + ", MACD, RSI, SuperTrend, Ichimoku, CVD.\n" +
+     "\n" +
+     "OUTSIDE THE SCORE (blue and orange rows): market structure, ADX, OBV divergence, RSI divergence. They measure a different property, and summing them with directional votes would distort the result.\n" +
+     "\n" +
+     "SCALE:\n" +
+     "- +5 to +8: dominant bullish agreement.\n" +
+     "- +3 to +4: meaningful bullish tilt.\n" +
+     "- -2 to +2: mixed, mostly noise.\n" +
+     "- -3 to -4: meaningful bearish tilt.\n" +
+     "- -5 to -8: dominant bearish agreement.\n" +
+     "\n" +
+     "SYMBOLS WITHOUT VOLUME:\n" +
+     "CVD cannot be computed and is dropped, so the score sums 7 indicators with a maximum of ±7. Thresholds stay absolute, which means a strong verdict then requires 5 of 7 agreeing instead of 5 of 8. That is a deliberate tightening on the smaller sample.\n" +
+     "\n" +
+     "All votes carry equal weight, so a macro signal such as EMA" + str.tostring(ema_mid) + "/" + str.tostring(ema_slow) + " counts the same as the noisier Price vs EMA" + str.tostring(ema_fast) + " row. Treat the score as a reference, not a decision."
+
+tt_verdict = "VERDICT — the categorical reading of the score.\n" +
+     "\n" +
+     "It converts the numeric score into one of five states so that a single glance produces a single conclusion, hiding small fluctuations of the score. Context rows (structure, ADX, divergence) are not part of the verdict and must be read separately.\n" +
+     "\n" +
+     "SCALE (maximum ±8 with volume, ±7 without, where CVD is excluded):\n" +
+     "- +5 and above: STRONG BULL.\n" +
+     "- +3 to +4: BULL.\n" +
+     "- -2 to +2: MIXED, trend trades are unfavourable.\n" +
+     "- -3 to -4: BEAR.\n" +
+     "- -5 and below: STRONG BEAR.\n" +
+     "\n" +
+     "Thresholds are absolute and are not rescaled by the maximum score.\n" +
+     "\n" +
+     "HOW TO USE IT:\n" +
+     "1) If the orange ADX row reads Weak, discount the verdict, the market is ranging.\n" +
+     "2) Cross-check the blue structure row for the underlying context. Agreement confirms the verdict; a conflict means the move is a correction against the structural leg and a poor entry. Phase (C) is a fresh but fragile reversal, phase (C+3) and above is a mature leg.\n" +
+     "3) Compare the timeframes top-down, macro to micro.\n" +
+     "4) The cleanest configuration is every timeframe aligned, structure agreeing and ADX at or above " + str.tostring(adx_thr) + ".\n" +
+     "5) When timeframes conflict, the market is correcting and the higher timeframe defines the side.\n" +
+     "6) MIXED across the board favours range strategies.\n" +
+     "\n" +
+     "The final decision belongs to context: news, levels and traded volume."
+
+// =============================================================================
+// SECTION — RENDER
+// The table is rebuilt only on the last bar. Rows are ordered by decreasing
+// weight of the information they carry, so the eye travels from the macro
+// regime down to the local noise, then to the context filters and the verdict.
+//   1  Market structure  — institutional context (blue dot, outside the score)
+//   2  EMA mid/slow      — macro regime
+//   3  EMA fast/mid      — medium-term structure
+//   4  SuperTrend        — ATR trailing direction
+//   5  Ichimoku Kumo     — independent macro projection (white dot)
+//   6  MACD              — momentum
+//   7  RSI               — strength (white dot)
+//   8  CVD               — volume confirmation (white dot)
+//   9  Price vs EMA fast — local position, the noisiest vote
+//  10  ADX/DMI           — strength filter (orange dot, outside the score)
+//  11  OBV divergence    — reversal warning (orange dot, outside the score)
+//  12  RSI divergence    — reversal warning (orange dot, outside the score)
+//  13  Score             — sum of rows 2 to 9
+//  14  Verdict           — categorical reading of the score
+// =============================================================================
+if barstate.islast
+    // Cells are wiped first so that toggling a timeframe cannot leave stale
+    // values in a column that has shifted.
+    table.clear(tbl, 0, 0, n_cols - 1, 14)
+
+    table.cell(tbl, 0, 0, "", bgcolor=c_hdr, text_size=size_lookup)
+    table.cell(tbl, 1, 0, "Indicator", bgcolor=c_hdr, text_color=c_txt, text_size=size_lookup, tooltip=tt_hdr)
+    if show_d
+        table.cell(tbl, col_d, 0, f_tf_label(tf_d), bgcolor=c_hdr, text_color=c_txt, text_size=size_lookup)
+    if show_c
+        table.cell(tbl, col_c, 0, f_tf_label(tf_c), bgcolor=c_hdr, text_color=c_txt, text_size=size_lookup)
+    if show_a
+        table.cell(tbl, col_a, 0, f_tf_label(tf_a), bgcolor=c_hdr, text_color=c_txt, text_size=size_lookup)
+    if show_b
+        table.cell(tbl, col_b, 0, f_tf_label(tf_b), bgcolor=c_hdr, text_color=c_txt, text_size=size_lookup)
+
+    // Row 1 — market structure. Format: direction plus phase, for example
+    // "▲ Bull (C+2)", where C marks the last change of character and +N counts
+    // the continuation breaks that followed it.
+    table.cell(tbl, 0, 1, "●", bgcolor=f_row_bg(1), text_color=COLOR_DOT_INFO, text_size=size_lookup)
+    table.cell(tbl, 1, 1, "Market Structure ⓘ", bgcolor=f_row_bg(1), text_color=c_txt, text_size=size_lookup, tooltip=tt_structure)
+    if show_d
+        table.cell(tbl, col_d, 1, f_structure_txt(ms_dir_d, ms_bos_d), bgcolor=f_sig_col(ms_dir_d), text_color=color.white, text_size=size_lookup)
+    if show_c
+        table.cell(tbl, col_c, 1, f_structure_txt(ms_dir_c, ms_bos_c), bgcolor=f_sig_col(ms_dir_c), text_color=color.white, text_size=size_lookup)
+    if show_a
+        table.cell(tbl, col_a, 1, f_structure_txt(ms_dir_a, ms_bos_a), bgcolor=f_sig_col(ms_dir_a), text_color=color.white, text_size=size_lookup)
+    if show_b
+        table.cell(tbl, col_b, 1, f_structure_txt(ms_dir_b, ms_bos_b), bgcolor=f_sig_col(ms_dir_b), text_color=color.white, text_size=size_lookup)
+
+    // Row 2 — EMA mid/slow, the macro regime.
+    table.cell(tbl, 0, 2, "", bgcolor=f_row_bg(2), text_size=size_lookup)
+    table.cell(tbl, 1, 2, "EMA " + str.tostring(ema_mid) + "/" + str.tostring(ema_slow) + " ⓘ", bgcolor=f_row_bg(2), text_color=c_txt, text_size=size_lookup, tooltip=tt_ema_ms)
+    if show_d
+        table.cell(tbl, col_d, 2, f_sig_txt(s_ema_ms_d), bgcolor=f_sig_col(s_ema_ms_d), text_color=color.white, text_size=size_lookup)
+    if show_c
+        table.cell(tbl, col_c, 2, f_sig_txt(s_ema_ms_c), bgcolor=f_sig_col(s_ema_ms_c), text_color=color.white, text_size=size_lookup)
+    if show_a
+        table.cell(tbl, col_a, 2, f_sig_txt(s_ema_ms_a), bgcolor=f_sig_col(s_ema_ms_a), text_color=color.white, text_size=size_lookup)
+    if show_b
+        table.cell(tbl, col_b, 2, f_sig_txt(s_ema_ms_b), bgcolor=f_sig_col(s_ema_ms_b), text_color=color.white, text_size=size_lookup)
+
+    // Row 3 — EMA fast/mid, the medium-term structure.
+    table.cell(tbl, 0, 3, "", bgcolor=f_row_bg(3), text_size=size_lookup)
+    table.cell(tbl, 1, 3, "EMA " + str.tostring(ema_fast) + "/" + str.tostring(ema_mid) + " ⓘ", bgcolor=f_row_bg(3), text_color=c_txt, text_size=size_lookup, tooltip=tt_ema_fm)
+    if show_d
+        table.cell(tbl, col_d, 3, f_sig_txt(s_ema_fm_d), bgcolor=f_sig_col(s_ema_fm_d), text_color=color.white, text_size=size_lookup)
+    if show_c
+        table.cell(tbl, col_c, 3, f_sig_txt(s_ema_fm_c), bgcolor=f_sig_col(s_ema_fm_c), text_color=color.white, text_size=size_lookup)
+    if show_a
+        table.cell(tbl, col_a, 3, f_sig_txt(s_ema_fm_a), bgcolor=f_sig_col(s_ema_fm_a), text_color=color.white, text_size=size_lookup)
+    if show_b
+        table.cell(tbl, col_b, 3, f_sig_txt(s_ema_fm_b), bgcolor=f_sig_col(s_ema_fm_b), text_color=color.white, text_size=size_lookup)
+
+    // Row 4 — SuperTrend.
+    table.cell(tbl, 0, 4, "", bgcolor=f_row_bg(4), text_size=size_lookup)
+    table.cell(tbl, 1, 4, "SuperTrend ⓘ", bgcolor=f_row_bg(4), text_color=c_txt, text_size=size_lookup, tooltip=tt_st)
+    if show_d
+        table.cell(tbl, col_d, 4, f_sig_txt(s_st_d), bgcolor=f_sig_col(s_st_d), text_color=color.white, text_size=size_lookup)
+    if show_c
+        table.cell(tbl, col_c, 4, f_sig_txt(s_st_c), bgcolor=f_sig_col(s_st_c), text_color=color.white, text_size=size_lookup)
+    if show_a
+        table.cell(tbl, col_a, 4, f_sig_txt(s_st_a), bgcolor=f_sig_col(s_st_a), text_color=color.white, text_size=size_lookup)
+    if show_b
+        table.cell(tbl, col_b, 4, f_sig_txt(s_st_b), bgcolor=f_sig_col(s_st_b), text_color=color.white, text_size=size_lookup)
+
+    // Row 5 — Ichimoku cloud, reduced to price against the Kumo.
+    table.cell(tbl, 0, 5, "●", bgcolor=f_row_bg(5), text_color=COLOR_DOT_NEUTRAL, text_size=size_lookup)
+    table.cell(tbl, 1, 5, "Ichimoku Kumo ⓘ", bgcolor=f_row_bg(5), text_color=c_txt, text_size=size_lookup, tooltip=tt_ichi)
+    if show_d
+        table.cell(tbl, col_d, 5, f_sig_txt(s_ichi_d), bgcolor=f_sig_col(s_ichi_d), text_color=color.white, text_size=size_lookup)
+    if show_c
+        table.cell(tbl, col_c, 5, f_sig_txt(s_ichi_c), bgcolor=f_sig_col(s_ichi_c), text_color=color.white, text_size=size_lookup)
+    if show_a
+        table.cell(tbl, col_a, 5, f_sig_txt(s_ichi_a), bgcolor=f_sig_col(s_ichi_a), text_color=color.white, text_size=size_lookup)
+    if show_b
+        table.cell(tbl, col_b, 5, f_sig_txt(s_ichi_b), bgcolor=f_sig_col(s_ichi_b), text_color=color.white, text_size=size_lookup)
+
+    // Row 6 — MACD.
+    table.cell(tbl, 0, 6, "", bgcolor=f_row_bg(6), text_size=size_lookup)
+    table.cell(tbl, 1, 6, "MACD ⓘ", bgcolor=f_row_bg(6), text_color=c_txt, text_size=size_lookup, tooltip=tt_macd)
+    if show_d
+        table.cell(tbl, col_d, 6, f_sig_txt(s_macd_d), bgcolor=f_sig_col(s_macd_d), text_color=color.white, text_size=size_lookup)
+    if show_c
+        table.cell(tbl, col_c, 6, f_sig_txt(s_macd_c), bgcolor=f_sig_col(s_macd_c), text_color=color.white, text_size=size_lookup)
+    if show_a
+        table.cell(tbl, col_a, 6, f_sig_txt(s_macd_a), bgcolor=f_sig_col(s_macd_a), text_color=color.white, text_size=size_lookup)
+    if show_b
+        table.cell(tbl, col_b, 6, f_sig_txt(s_macd_b), bgcolor=f_sig_col(s_macd_b), text_color=color.white, text_size=size_lookup)
+
+    // Row 7 — RSI. The numeric value is appended so the distance to the
+    // thresholds stays visible.
+    table.cell(tbl, 0, 7, "●", bgcolor=f_row_bg(7), text_color=COLOR_DOT_NEUTRAL, text_size=size_lookup)
+    table.cell(tbl, 1, 7, "RSI " + str.tostring(rsi_len) + " ⓘ", bgcolor=f_row_bg(7), text_color=c_txt, text_size=size_lookup, tooltip=tt_rsi)
+    if show_d
+        table.cell(tbl, col_d, 7, f_sig_txt(s_rsi_d) + " (" + str.tostring(rsi_d, "#.0") + ")", bgcolor=f_sig_col(s_rsi_d), text_color=color.white, text_size=size_lookup)
+    if show_c
+        table.cell(tbl, col_c, 7, f_sig_txt(s_rsi_c) + " (" + str.tostring(rsi_c, "#.0") + ")", bgcolor=f_sig_col(s_rsi_c), text_color=color.white, text_size=size_lookup)
+    if show_a
+        table.cell(tbl, col_a, 7, f_sig_txt(s_rsi_a) + " (" + str.tostring(rsi_a, "#.0") + ")", bgcolor=f_sig_col(s_rsi_a), text_color=color.white, text_size=size_lookup)
+    if show_b
+        table.cell(tbl, col_b, 7, f_sig_txt(s_rsi_b) + " (" + str.tostring(rsi_b, "#.0") + ")", bgcolor=f_sig_col(s_rsi_b), text_color=color.white, text_size=size_lookup)
+
+    // Row 8 — CVD. Symbols without a volume feed print a dash instead of a
+    // neutral reading, because the absence of data is not a signal.
+    table.cell(tbl, 0, 8, "●", bgcolor=f_row_bg(8), text_color=COLOR_DOT_NEUTRAL, text_size=size_lookup)
+    table.cell(tbl, 1, 8, "CVD ⓘ", bgcolor=f_row_bg(8), text_color=c_txt, text_size=size_lookup, tooltip=tt_cvd)
+    if show_d
+        table.cell(tbl, col_d, 8, has_volume ? f_sig_txt(s_cvd_d) : "—", bgcolor=has_volume ? f_sig_col(s_cvd_d) : f_row_bg(8), text_color=has_volume ? color.white : c_txt, text_size=size_lookup)
+    if show_c
+        table.cell(tbl, col_c, 8, has_volume ? f_sig_txt(s_cvd_c) : "—", bgcolor=has_volume ? f_sig_col(s_cvd_c) : f_row_bg(8), text_color=has_volume ? color.white : c_txt, text_size=size_lookup)
+    if show_a
+        table.cell(tbl, col_a, 8, has_volume ? f_sig_txt(s_cvd_a) : "—", bgcolor=has_volume ? f_sig_col(s_cvd_a) : f_row_bg(8), text_color=has_volume ? color.white : c_txt, text_size=size_lookup)
+    if show_b
+        table.cell(tbl, col_b, 8, has_volume ? f_sig_txt(s_cvd_b) : "—", bgcolor=has_volume ? f_sig_col(s_cvd_b) : f_row_bg(8), text_color=has_volume ? color.white : c_txt, text_size=size_lookup)
+
+    // Row 9 — price against the fast EMA, the most local of the trend votes.
+    table.cell(tbl, 0, 9, "", bgcolor=f_row_bg(9), text_size=size_lookup)
+    table.cell(tbl, 1, 9, "Price vs EMA " + str.tostring(ema_fast) + " ⓘ", bgcolor=f_row_bg(9), text_color=c_txt, text_size=size_lookup, tooltip=tt_price)
+    if show_d
+        table.cell(tbl, col_d, 9, f_sig_txt(s_price_d), bgcolor=f_sig_col(s_price_d), text_color=color.white, text_size=size_lookup)
+    if show_c
+        table.cell(tbl, col_c, 9, f_sig_txt(s_price_c), bgcolor=f_sig_col(s_price_c), text_color=color.white, text_size=size_lookup)
+    if show_a
+        table.cell(tbl, col_a, 9, f_sig_txt(s_price_a), bgcolor=f_sig_col(s_price_a), text_color=color.white, text_size=size_lookup)
+    if show_b
+        table.cell(tbl, col_b, 9, f_sig_txt(s_price_b), bgcolor=f_sig_col(s_price_b), text_color=color.white, text_size=size_lookup)
+
+    // Row 10 — ADX and DMI. Read first: it decides whether the rows above can
+    // be trusted at all. The raw ADX value is appended.
+    adx_txt_a = (s_adx_a == 0 ? "● Weak" : s_adx_a == 1 ? "▲ Bull" : "▼ Bear") + " (" + str.tostring(adx_a, "#.0") + ")"
+    adx_txt_b = (s_adx_b == 0 ? "● Weak" : s_adx_b == 1 ? "▲ Bull" : "▼ Bear") + " (" + str.tostring(adx_b, "#.0") + ")"
+    adx_txt_c = (s_adx_c == 0 ? "● Weak" : s_adx_c == 1 ? "▲ Bull" : "▼ Bear") + " (" + str.tostring(adx_c, "#.0") + ")"
+    adx_txt_d = (s_adx_d == 0 ? "● Weak" : s_adx_d == 1 ? "▲ Bull" : "▼ Bear") + " (" + str.tostring(adx_d, "#.0") + ")"
+    table.cell(tbl, 0, 10, "●", bgcolor=f_row_bg(10), text_color=COLOR_DOT_ATTENTION, text_size=size_lookup)
+    table.cell(tbl, 1, 10, "ADX/DMI ⓘ", bgcolor=f_row_bg(10), text_color=c_txt, text_size=size_lookup, tooltip=tt_adx)
+    if show_d
+        table.cell(tbl, col_d, 10, adx_txt_d, bgcolor=f_sig_col(s_adx_d), text_color=color.white, text_size=size_lookup)
+    if show_c
+        table.cell(tbl, col_c, 10, adx_txt_c, bgcolor=f_sig_col(s_adx_c), text_color=color.white, text_size=size_lookup)
+    if show_a
+        table.cell(tbl, col_a, 10, adx_txt_a, bgcolor=f_sig_col(s_adx_a), text_color=color.white, text_size=size_lookup)
+    if show_b
+        table.cell(tbl, col_b, 10, adx_txt_b, bgcolor=f_sig_col(s_adx_b), text_color=color.white, text_size=size_lookup)
+
+    // Row 11 — OBV divergence. Requires a volume feed, otherwise a dash.
+    table.cell(tbl, 0, 11, "●", bgcolor=f_row_bg(11), text_color=COLOR_DOT_ATTENTION, text_size=size_lookup)
+    table.cell(tbl, 1, 11, "OBV Divergence ⓘ", bgcolor=f_row_bg(11), text_color=c_txt, text_size=size_lookup, tooltip=tt_obv_div)
+    if show_d
+        table.cell(tbl, col_d, 11, has_volume ? f_sig_txt(s_obvdiv_d) : "—", bgcolor=has_volume ? f_sig_col(s_obvdiv_d) : f_row_bg(11), text_color=has_volume ? color.white : c_txt, text_size=size_lookup)
+    if show_c
+        table.cell(tbl, col_c, 11, has_volume ? f_sig_txt(s_obvdiv_c) : "—", bgcolor=has_volume ? f_sig_col(s_obvdiv_c) : f_row_bg(11), text_color=has_volume ? color.white : c_txt, text_size=size_lookup)
+    if show_a
+        table.cell(tbl, col_a, 11, has_volume ? f_sig_txt(s_obvdiv_a) : "—", bgcolor=has_volume ? f_sig_col(s_obvdiv_a) : f_row_bg(11), text_color=has_volume ? color.white : c_txt, text_size=size_lookup)
+    if show_b
+        table.cell(tbl, col_b, 11, has_volume ? f_sig_txt(s_obvdiv_b) : "—", bgcolor=has_volume ? f_sig_col(s_obvdiv_b) : f_row_bg(11), text_color=has_volume ? color.white : c_txt, text_size=size_lookup)
+
+    // Row 12 — RSI divergence. Works on every symbol, volume or not.
+    table.cell(tbl, 0, 12, "●", bgcolor=f_row_bg(12), text_color=COLOR_DOT_ATTENTION, text_size=size_lookup)
+    table.cell(tbl, 1, 12, "RSI Divergence ⓘ", bgcolor=f_row_bg(12), text_color=c_txt, text_size=size_lookup, tooltip=tt_rsi_div)
+    if show_d
+        table.cell(tbl, col_d, 12, f_sig_txt(s_rsidiv_d), bgcolor=f_sig_col(s_rsidiv_d), text_color=color.white, text_size=size_lookup)
+    if show_c
+        table.cell(tbl, col_c, 12, f_sig_txt(s_rsidiv_c), bgcolor=f_sig_col(s_rsidiv_c), text_color=color.white, text_size=size_lookup)
+    if show_a
+        table.cell(tbl, col_a, 12, f_sig_txt(s_rsidiv_a), bgcolor=f_sig_col(s_rsidiv_a), text_color=color.white, text_size=size_lookup)
+    if show_b
+        table.cell(tbl, col_b, 12, f_sig_txt(s_rsidiv_b), bgcolor=f_sig_col(s_rsidiv_b), text_color=color.white, text_size=size_lookup)
+
+    // Row 13 — score, shown against the maximum available on this symbol.
+    table.cell(tbl, 0, 13, "", bgcolor=f_row_bg(13), text_size=size_lookup)
+    table.cell(tbl, 1, 13, "Score (bull-bear) ⓘ", bgcolor=f_row_bg(13), text_color=c_txt, text_size=size_lookup, tooltip=tt_score)
+    if show_d
+        table.cell(tbl, col_d, 13, str.tostring(score_d) + " / ±" + str.tostring(max_d), bgcolor=f_verdict_col(score_d), text_color=color.white, text_size=size_lookup)
+    if show_c
+        table.cell(tbl, col_c, 13, str.tostring(score_c) + " / ±" + str.tostring(max_c), bgcolor=f_verdict_col(score_c), text_color=color.white, text_size=size_lookup)
+    if show_a
+        table.cell(tbl, col_a, 13, str.tostring(score_a) + " / ±" + str.tostring(max_a), bgcolor=f_verdict_col(score_a), text_color=color.white, text_size=size_lookup)
+    if show_b
+        table.cell(tbl, col_b, 13, str.tostring(score_b) + " / ±" + str.tostring(max_b), bgcolor=f_verdict_col(score_b), text_color=color.white, text_size=size_lookup)
+
+    // Row 14 — verdict, rendered on the header background to close the table.
+    table.cell(tbl, 0, 14, "", bgcolor=c_hdr, text_size=size_lookup)
+    table.cell(tbl, 1, 14, "VERDICT ⓘ", bgcolor=c_hdr, text_color=c_txt, text_size=size_lookup, tooltip=tt_verdict)
+    if show_d
+        table.cell(tbl, col_d, 14, f_verdict(score_d), bgcolor=f_verdict_col(score_d), text_color=color.white, text_size=size_lookup)
+    if show_c
+        table.cell(tbl, col_c, 14, f_verdict(score_c), bgcolor=f_verdict_col(score_c), text_color=color.white, text_size=size_lookup)
+    if show_a
+        table.cell(tbl, col_a, 14, f_verdict(score_a), bgcolor=f_verdict_col(score_a), text_color=color.white, text_size=size_lookup)
+    if show_b
+        table.cell(tbl, col_b, 14, f_verdict(score_b), bgcolor=f_verdict_col(score_b), text_color=color.white, text_size=size_lookup)

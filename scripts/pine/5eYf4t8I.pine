@@ -1,0 +1,149 @@
+//@version=6
+indicator("Fisher Transform of Williams %R - Divergence", shorttitle="Fish %R Div", format=format.price, precision=2, overlay=false, max_lines_count=500, max_labels_count=500)
+
+// ================= INPUTS =================
+length       = input.int(14, title="Williams %R Length", minval=1, group="Core Settings")
+fisherLength = input.int(10, title="Fisher Transform Length", minval=1, group="Core Settings")
+src          = input(close, "Source", group="Core Settings")
+
+obLevel      = input.float(1.5, title="Overbought Level", group="Core Settings")
+osLevel      = input.float(-1.5, title="Oversold Level", group="Core Settings")
+
+// ================= DIVERGENCE PARAMETERS =================
+lbR            = input.int(5, title="Pivot Right Lookback", minval=1, group="Divergence Settings", tooltip="Number of bars to the right required to confirm a pivot point")
+lbL            = input.int(5, title="Pivot Left Lookback", minval=1, group="Divergence Settings", tooltip="Number of bars to the left required to detect a pivot point")
+rangeUpper     = input.int(60, title="Max Lookback Range", minval=1, group="Divergence Settings", tooltip="Maximum bar distance to search for divergence")
+rangeLower     = input.int(5, title="Min Lookback Range", minval=1, group="Divergence Settings", tooltip="Minimum bar distance to search for divergence")
+minBarsBetween = input.int(0, title="Min Bars Between Same-Type Signals", minval=0, group="Divergence Settings", tooltip="Minimum number of bars required between signals of the same type (0 = disabled)")
+
+showRegular  = input.bool(true, title="Show Regular Divergence", group="Divergence Toggle")
+showHidden   = input.bool(true, title="Show Hidden Divergence", group="Divergence Toggle")
+zoneFilter   = input.bool(false, title="Require OB/OS Zone for Divergence", group="Divergence Toggle", tooltip="When enabled, divergence signals are only generated while the Fisher line is in the overbought/oversold zone (reduces false signals)")
+
+// ================= CROSS SIGNAL SETTINGS =================
+showCross    = input.bool(true, title="Show Fisher/Trigger Cross Signals", group="Cross Signals", tooltip="Independent confirmation signals generated when the Fisher line crosses the trigger line")
+
+// Color Settings
+bullColor   = input.color(color.green, "Bullish Color", group="Divergence Colors")
+bearColor   = input.color(color.red, "Bearish Color", group="Divergence Colors")
+hiddenBull  = input.color(color.new(color.green, 40), "Hidden Bullish Color", group="Divergence Colors")
+hiddenBear  = input.color(color.new(color.red, 40), "Hidden Bearish Color", group="Divergence Colors")
+
+// ================= WILLIAMS %R =================
+_pr(len) =>
+    hh = ta.highest(high, len)
+    ll = ta.lowest(low, len)
+    hh != ll ? 100 * (src - hh) / (hh - ll) : 0.0
+
+percentR = _pr(length)
+
+// ================= FISHER TRANSFORM =================
+highestPR = ta.highest(percentR, fisherLength)
+lowestPR  = ta.lowest(percentR, fisherLength)
+
+rawVal  = highestPR != lowestPR ? (percentR - lowestPR) / (highestPR - lowestPR) : 0.0
+normVal = 2 * (rawVal - 0.5)
+
+var float val = 0.0
+val := 0.66 * normVal + 0.67 * nz(val[1])
+val := math.max(math.min(val, 0.999), -0.999)
+
+var float fisher = 0.0
+fisher := 0.5 * math.log((1 + val) / (1 - val)) + 0.5 * nz(fisher[1])
+trigger = fisher[1]
+
+// ================= PLOTS =================
+plot(fisher, title="Fisher %R", color=#2962FF, linewidth=2)
+plot(trigger, title="Trigger Line", color=#FF6D00, linewidth=1)
+
+h1 = hline(obLevel, title="Overbought", color=color.gray, linestyle=hline.style_dashed)
+h0 = hline(0, title="Zero Line", color=color.new(color.gray, 50), linestyle=hline.style_dotted)
+h2 = hline(osLevel, title="Oversold", color=color.gray, linestyle=hline.style_dashed)
+fill(h1, h2, color=color.new(color.purple, 92), title="Background Area")
+
+// ================= FISHER / TRIGGER CROSS SIGNALS =================
+crossUp   = ta.crossover(fisher, trigger)
+crossDown = ta.crossunder(fisher, trigger)
+
+plotshape(showCross and crossUp   ? trigger : na, title="Cross Up",   style=shape.triangleup,   location=location.absolute, color=bullColor, size=size.tiny)
+plotshape(showCross and crossDown ? trigger : na, title="Cross Down", style=shape.triangledown, location=location.absolute, color=bearColor, size=size.tiny)
+
+// ================= DIVERGENCE DETECTION ENGINE =================
+pl = ta.pivotlow(fisher, lbL, lbR)
+ph = ta.pivothigh(fisher, lbL, lbR)
+
+var int lastBullBar = na
+var int lastBearBar = na
+
+bool regBullSig = false
+bool hdnBullSig = false
+bool regBearSig = false
+bool hdnBearSig = false
+
+// --- Bullish Divergences ---
+if not na(pl) and barstate.isconfirmed
+    int prevPlIndex = na
+    for i = rangeLower to rangeUpper
+        if not na(pl[i])
+            prevPlIndex := i
+            break
+
+    if not na(prevPlIndex)
+        float currentFisherLow = fisher[lbR]
+        float prevFisherLow    = fisher[prevPlIndex + lbR]
+        float currentPriceLow  = low[lbR]
+        float prevPriceLow     = low[prevPlIndex + lbR]
+        bool  inZone     = not zoneFilter or currentFisherLow <= osLevel
+        bool  spacingOk  = na(lastBullBar) or (bar_index - lastBullBar) >= minBarsBetween
+
+        // Regular Bullish Divergence
+        if showRegular and inZone and spacingOk and currentPriceLow < prevPriceLow and currentFisherLow > prevFisherLow
+            line.new(bar_index[prevPlIndex + lbR], prevFisherLow, bar_index[lbR], currentFisherLow, color=bullColor, width=2)
+            label.new(bar_index[lbR], currentFisherLow, "Reg Bull", color=bullColor, style=label.style_label_up, textcolor=color.white, size=size.tiny)
+            lastBullBar := bar_index
+            regBullSig := true
+
+        // Hidden Bullish Divergence
+        if showHidden and inZone and spacingOk and currentPriceLow > prevPriceLow and currentFisherLow < prevFisherLow
+            line.new(bar_index[prevPlIndex + lbR], prevFisherLow, bar_index[lbR], currentFisherLow, color=hiddenBull, width=2, style=line.style_dashed)
+            label.new(bar_index[lbR], currentFisherLow, "Hdn Bull", color=hiddenBull, style=label.style_label_up, textcolor=color.white, size=size.tiny)
+            lastBullBar := bar_index
+            hdnBullSig := true
+
+// --- Bearish Divergences ---
+if not na(ph) and barstate.isconfirmed
+    int prevPhIndex = na
+    for i = rangeLower to rangeUpper
+        if not na(ph[i])
+            prevPhIndex := i
+            break
+
+    if not na(prevPhIndex)
+        float currentFisherHigh = fisher[lbR]
+        float prevFisherHigh    = fisher[prevPhIndex + lbR]
+        float currentPriceHigh  = high[lbR]
+        float prevPriceHigh     = high[prevPhIndex + lbR]
+        bool  inZone     = not zoneFilter or currentFisherHigh >= obLevel
+        bool  spacingOk  = na(lastBearBar) or (bar_index - lastBearBar) >= minBarsBetween
+
+        // Regular Bearish Divergence
+        if showRegular and inZone and spacingOk and currentPriceHigh > prevPriceHigh and currentFisherHigh < prevFisherHigh
+            line.new(bar_index[prevPhIndex + lbR], prevFisherHigh, bar_index[lbR], currentFisherHigh, color=bearColor, width=2)
+            label.new(bar_index[lbR], currentFisherHigh, "Reg Bear", color=bearColor, style=label.style_label_down, textcolor=color.white, size=size.tiny)
+            lastBearBar := bar_index
+            regBearSig := true
+
+        // Hidden Bearish Divergence
+        if showHidden and inZone and spacingOk and currentPriceHigh < prevPriceHigh and currentFisherHigh > prevFisherHigh
+            line.new(bar_index[prevPhIndex + lbR], prevFisherHigh, bar_index[lbR], currentFisherHigh, color=hiddenBear, width=2, style=line.style_dashed)
+            label.new(bar_index[lbR], currentFisherHigh, "Hdn Bear", color=hiddenBear, style=label.style_label_down, textcolor=color.white, size=size.tiny)
+            lastBearBar := bar_index
+            hdnBearSig := true
+
+// ================= ALERTS =================
+alertcondition(regBullSig,             title="Regular Bullish Divergence", message="Fish %R Div: Regular Bullish Divergence")
+alertcondition(hdnBullSig,             title="Hidden Bullish Divergence",  message="Fish %R Div: Hidden Bullish Divergence")
+alertcondition(regBearSig,             title="Regular Bearish Divergence", message="Fish %R Div: Regular Bearish Divergence")
+alertcondition(hdnBearSig,             title="Hidden Bearish Divergence",  message="Fish %R Div: Hidden Bearish Divergence")
+alertcondition(showCross and crossUp,   title="Fisher Cross Up",   message="Fish %R Div: Fisher crossed above Trigger")
+alertcondition(showCross and crossDown, title="Fisher Cross Down", message="Fish %R Div: Fisher crossed below Trigger")

@@ -1,0 +1,226 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Thiranat
+
+//@version=6
+// ESG-TH Indicator (STANDALONE TEST BUILD — generated, do not hand-edit)
+// Open source (MPL-2.0). Shows SET ESG Ratings grade, 3-year history, industry peers, index flags for Thai stocks.
+// Data via ESGDataTH library (generated from SET public announcements; Phase 1 = SET50).
+// v0.6 (2026-09-12) — year labels derived from the data (annual refresh is data-only).
+// v0.5 (2026-09-12) — title "ESG-TH SET50" (Phase 1 universe in the name); tooltips on every input.
+// v0.4 (2026-09-12) — English UI; years shown as CE (EN) or Buddhist Era (TH) following the language input.
+// v0.3 (2026-09-12) — + CG score (IOD CGR 2025), S&P Sustainability Yearbook 2026, SBTi climate target rows.
+// v0.2 (2026-09-11) — history/peers/index/validity rows, placeholder rows hidden while na.
+// v0.1 (2026-09-11) — grade table + tint.
+indicator("ESG-TH SET50 [Itto-Ryu]", overlay = true)
+
+// ---- inlined ESGDataTH (standalone test build) ----
+
+type ESGData
+    string ticker
+    string grade      // SET ESG Ratings 2025: AAA/AA/A/BBB/NR
+    string g2024      // grade of rating year - 1 (field name kept for compatibility; NR = not rated)
+    string g2023      // grade of rating year - 2
+    float  ftse
+    float  e
+    float  s
+    float  g
+    bool   inIndex    // SETESG index
+    bool   inSET50
+    bool   inSET100
+    bool   inTESG     // Thai ESG fund universe (= rated)
+    string industry   // SET industry group
+    int    indRated   // rated companies in this industry group
+    int    indSame    // ... of which share this grade
+    int    cgr        // Thai IOD CGR 2025: 5 = Excellent, 4 = Very Good, 3 = Good, 0 = not announced
+    bool   cgrFlag    // IOD "*": CG-related news lowered the published range
+    string yearbook   // S&P Global Sustainability Yearbook 2026: Top 1% / Top 5% / Top 10% / Member / ""
+    string sbti       // SBTi dashboard status text ("" = not on dashboard)
+    string summaryTH
+    string summaryEN
+    int    year
+
+// @function Announce date of the embedded SET ESG Ratings round (ISO date).
+announceDate() => "2025-12-12"
+// @function Month the embedded grades stay valid until.
+validUntil() => "Dec 2026"
+// @function What replaces SET ESG Ratings after validUntil().
+nextRound() => "FTSE Russell ESG Scores"
+
+// @function Look up ESG data for a SET ticker. Unknown ticker → grade "NR", year 0.
+// @param ticker syminfo.ticker (without exchange prefix)
+// @returns ESGData
+get(string ticker) =>
+    switch ticker
+        "ADVANC" => ESGData.new("ADVANC", "AAA", "AA", "AAA", float(na), float(na), float(na), float(na), true, true, true, true, "Technology", 19, 7, 5, false, "", "", "เครือข่ายมือถือ/บรอดแบนด์ใหญ่สุดในไทย (AIS)", "Largest mobile & broadband operator (AIS)", 2025)
+        "AOT" => ESGData.new("AOT", "AA", "A", "A", float(na), float(na), float(na), float(na), true, true, true, true, "Services", 52, 17, 5, false, "Top 1%", "", "บริหารท่าอากาศยานหลัก 6 แห่ง (สุวรรณภูมิ ฯลฯ)\nโฟกัส: Airport Carbon Accreditation, ชุมชน", "Operates 6 major airports incl. Suvarnabhumi\nFocus: Airport Carbon Accreditation, communities", 2025)
+        "AWC" => ESGData.new("AWC", "AAA", "AA", "A", float(na), float(na), float(na), float(na), true, true, true, true, "Property & Construction", 42, 20, 5, false, "Top 1%", "", "อสังหาฯ โรงแรม-ค้าปลีก-ออฟฟิศ ในเครือ TCC", "Hotels, retail & office property (TCC Group)", 2025)
+        "BANPU" => ESGData.new("BANPU", "AAA", "AAA", "AAA", float(na), float(na), float(na), float(na), true, true, true, true, "Resources", 27, 17, 5, false, "", "", "พลังงานครบวงจร ถ่านหิน ก๊าซ ไฟฟ้า พลังงานสะอาด", "Energy: coal, gas, power, renewables", 2025)
+        "BBL" => ESGData.new("BBL", "AAA", "AAA", "AA", float(na), float(na), float(na), float(na), true, true, true, true, "Financials", 33, 13, 5, false, "Member", "", "ธนาคารสินทรัพย์ใหญ่สุดของไทย เครือข่ายอาเซียน", "Thailand's largest bank by assets, ASEAN network", 2025)
+        "BCP" => ESGData.new("BCP", "NR", "NR", "NR", float(na), float(na), float(na), float(na), false, true, true, false, "", 0, 0, 4, false, "Top 10%", "", "โรงกลั่นและปั๊มบางจาก ต่อยอดพลังงานสะอาด SAF", "Bangchak refinery & fuel retail, SAF focus", 2025)
+        "BDMS" => ESGData.new("BDMS", "AAA", "A", "AA", float(na), float(na), float(na), float(na), true, true, true, true, "Services", 52, 20, 5, false, "Top 1%", "", "เครือโรงพยาบาลเอกชนใหญ่สุดในไทย", "Thailand's largest private hospital group", 2025)
+        "BEM" => ESGData.new("BEM", "AAA", "AAA", "AA", float(na), float(na), float(na), float(na), true, true, true, true, "Services", 52, 20, 5, false, "", "", "ทางด่วนและรถไฟฟ้า MRT สายสีน้ำเงิน/ม่วง", "Expressways & MRT Blue / Purple lines", 2025)
+        "BH" => ESGData.new("BH", "A", "NR", "NR", float(na), float(na), float(na), float(na), true, true, true, true, "Services", 52, 11, 5, false, "", "", "โรงพยาบาลบำรุงราษฎร์ ผู้ป่วยต่างชาติสัดส่วนสูง", "Bumrungrad Hospital, many international patients", 2025)
+        "BJC" => ESGData.new("BJC", "AAA", "AA", "AA", float(na), float(na), float(na), float(na), true, true, true, true, "Services", 52, 20, 5, false, "Top 1%", "", "ค้าปลีก Big C บรรจุภัณฑ์ และสินค้าอุปโภคบริโภค", "Big C retail, packaging & consumer goods", 2025)
+        "CCET" => ESGData.new("CCET", "NR", "NR", "NR", float(na), float(na), float(na), float(na), false, true, true, false, "", 0, 0, 0, false, "", "", "ผู้ผลิตอิเล็กทรอนิกส์รับจ้าง (EMS) กลุ่ม Kinpo", "Electronics manufacturing services (Kinpo Group)", 2025)
+        "COM7" => ESGData.new("COM7", "AA", "AA", "A", float(na), float(na), float(na), float(na), true, true, true, true, "Services", 52, 17, 5, false, "", "", "ค้าปลีกไอที/มือถือ ร้าน BaNANA, Studio7", "IT & mobile retail: BaNANA, Studio7", 2025)
+        "CPALL" => ESGData.new("CPALL", "AAA", "AAA", "AAA", float(na), float(na), float(na), float(na), true, true, true, true, "Services", 52, 20, 5, false, "Top 5%", "net-zero 2050 · 1.5°C 2030", "ค้าปลีก 7-Eleven + ค้าส่ง (CPAXT) ทั่วประเทศ\nโฟกัส: ลดขยะอาหาร/พลาสติก, พลังงานในร้าน", "7-Eleven retail + wholesale (CPAXT) nationwide\nFocus: food/plastic waste, store energy use", 2025)
+        "CPF" => ESGData.new("CPF", "AAA", "AAA", "AAA", float(na), float(na), float(na), float(na), true, true, true, true, "Agro & Food Industry", 35, 11, 5, false, "Top 10%", "net-zero 2050 · 1.5°C 2030", "เกษตร-อาหารครบวงจร ธุรกิจใน 17 ประเทศ", "Integrated agro-food, operations in 17 countries", 2025)
+        "CPN" => ESGData.new("CPN", "AAA", "AAA", "AA", float(na), float(na), float(na), float(na), true, true, true, true, "Property & Construction", 42, 20, 5, false, "Top 10%", "commitment removed", "ศูนย์การค้า Central ผู้พัฒนาค้าปลีกรายใหญ่สุด", "Central shopping malls, largest retail developer", 2025)
+        "CRC" => ESGData.new("CRC", "AAA", "AA", "AAA", float(na), float(na), float(na), float(na), true, true, true, true, "Services", 52, 20, 5, false, "Top 10%", "", "ค้าปลีกเซ็นทรัล ไทย เวียดนาม อิตาลี", "Central Retail: Thailand, Vietnam, Italy", 2025)
+        "DELTA" => ESGData.new("DELTA", "NR", "A", "NR", float(na), float(na), float(na), float(na), false, true, true, false, "", 0, 0, 5, false, "Member", "", "พาวเวอร์ซัพพลาย/อิเล็กทรอนิกส์ ดาต้าเซ็นเตอร์ EV", "Power supplies & electronics: data centers, EV", 2025)
+        "EGCO" => ESGData.new("EGCO", "AA", "AA", "AA", float(na), float(na), float(na), float(na), true, true, true, true, "Resources", 27, 6, 5, false, "", "commitment removed", "ผู้ผลิตไฟฟ้าเอกชน (IPP) ไทยและต่างประเทศ", "Independent power producer, Thailand & overseas", 2025)
+        "GPSC" => ESGData.new("GPSC", "AAA", "AAA", "AA", float(na), float(na), float(na), float(na), true, true, true, true, "Resources", 27, 17, 5, false, "", "", "ผู้ผลิตไฟฟ้าของกลุ่ม ปตท. ก๊าซ พลังงานหมุนเวียน", "PTT Group power flagship: gas & renewables", 2025)
+        "GULF" => ESGData.new("GULF", "AA", "AAA", "AA", float(na), float(na), float(na), float(na), true, true, true, true, "Resources", 27, 6, 5, false, "", "", "ผู้ผลิตไฟฟ้ารายใหญ่ ก๊าซ พลังงานหมุนเวียน", "Major power producer: gas, renewables, digital", 2025)
+        "HMPRO" => ESGData.new("HMPRO", "AAA", "AA", "AA", float(na), float(na), float(na), float(na), true, true, true, true, "Services", 52, 20, 5, false, "Top 5%", "commitment removed", "ค้าปลีกวัสดุ-ของแต่งบ้าน HomePro, Mega Home", "Home improvement retail: HomePro, Mega Home", 2025)
+        "IVL" => ESGData.new("IVL", "AAA", "AAA", "AA", float(na), float(na), float(na), float(na), true, true, true, true, "Industrials", 42, 10, 5, false, "Top 10%", "commitment removed", "ผู้ผลิต PET/ปิโตรเคมีระดับโลก รีไซเคิลพลาสติก", "Global PET & petrochemicals, plastics recycling", 2025)
+        "KBANK" => ESGData.new("KBANK", "AAA", "AAA", "AAA", float(na), float(na), float(na), float(na), true, true, true, true, "Financials", 33, 13, 5, false, "Top 10%", "", "ธนาคารพาณิชย์ขนาดใหญ่ + digital banking\nเป้า Net Zero ตัวเอง 2030, สินเชื่อสีเขียว", "Major commercial bank, strong digital banking\nNet Zero own ops 2030; green finance portfolio", 2025)
+        "KKP" => ESGData.new("KKP", "AAA", "AA", "BBB", float(na), float(na), float(na), float(na), true, true, true, true, "Financials", 33, 13, 5, false, "", "", "ธนาคาร+ตลาดทุน สินเชื่อรถ วาณิชธนกิจ", "Bank & capital markets: auto loans, IB", 2025)
+        "KTB" => ESGData.new("KTB", "AAA", "AAA", "AAA", float(na), float(na), float(na), float(na), true, true, true, true, "Financials", 33, 13, 5, false, "Member", "", "ธนาคารรัฐถือหุ้นใหญ่ แอปเป๋าตัง/ถุงเงิน", "State-backed bank, Paotang / Tung Ngern apps", 2025)
+        "KTC" => ESGData.new("KTC", "AAA", "AAA", "AAA", float(na), float(na), float(na), float(na), true, true, true, true, "Financials", 33, 13, 5, false, "Member", "", "บัตรเครดิตและสินเชื่อบุคคล ในเครือ KTB", "Credit cards & personal loans (KTB group)", 2025)
+        "LH" => ESGData.new("LH", "AAA", "AA", "A", float(na), float(na), float(na), float(na), true, true, true, true, "Property & Construction", 42, 20, 5, false, "", "", "พัฒนาบ้านจัดสรร คอนโด ถือหุ้น HMPRO, QH", "Housing developer; stakes in HMPRO, QH", 2025)
+        "MINT" => ESGData.new("MINT", "AA", "AA", "AA", float(na), float(na), float(na), float(na), true, true, true, true, "Services", 52, 17, 5, false, "Member", "net-zero 2050 · 1.5°C 2030", "โรงแรม Anantara, NH และร้านอาหาร The Pizza Co.", "Hotels (Anantara, NH) & restaurants", 2025)
+        "MRDIYT" => ESGData.new("MRDIYT", "NR", "NR", "NR", float(na), float(na), float(na), float(na), false, true, true, false, "", 0, 0, 0, false, "", "", "ค้าปลีกของใช้ในบ้าน MR. D.I.Y. สาขาทั่วไทย", "MR. D.I.Y. home & hardware retail, nationwide", 2025)
+        "MTC" => ESGData.new("MTC", "AA", "AAA", "A", float(na), float(na), float(na), float(na), true, true, true, true, "Financials", 33, 11, 5, false, "", "", "สินเชื่อทะเบียนรถ/ไมโครไฟแนนซ์ สาขาทั่วประเทศ", "Vehicle-title & micro loans, nationwide branches", 2025)
+        "OR" => ESGData.new("OR", "AAA", "AAA", "AAA", float(na), float(na), float(na), float(na), true, true, true, true, "Resources", 27, 17, 5, false, "Top 1%", "", "PTT Station, Café Amazon และธุรกิจ non-oil", "PTT Station fuel retail, Café Amazon, non-oil", 2025)
+        "OSP" => ESGData.new("OSP", "AAA", "AA", "AA", float(na), float(na), float(na), float(na), true, true, true, true, "Agro & Food Industry", 35, 11, 5, false, "Top 10%", "", "เครื่องดื่ม M-150, C-vitt และสินค้าอุปโภค", "Beverages (M-150, C-vitt) & personal care", 2025)
+        "PTT" => ESGData.new("PTT", "AAA", "AAA", "AAA", float(na), float(na), float(na), float(na), true, true, true, true, "Resources", 27, 17, 5, false, "Top 1%", "", "พลังงานครบวงจร ก๊าซ-น้ำมัน-ปิโตรเคมี-ไฟฟ้า\nเป้า Net Zero 2050, ลงทุนพลังงานสะอาด/EV", "Integrated energy: gas, oil, petrochem, power\nNet Zero 2050 target; clean energy & EV push", 2025)
+        "PTTEP" => ESGData.new("PTTEP", "AAA", "AA", "AAA", float(na), float(na), float(na), float(na), true, true, true, true, "Resources", 27, 17, 5, false, "", "", "สำรวจและผลิตปิโตรเลียม ไทยและต่างประเทศ", "Oil & gas exploration & production, TH & abroad", 2025)
+        "PTTGC" => ESGData.new("PTTGC", "AAA", "AAA", "AAA", float(na), float(na), float(na), float(na), true, true, true, true, "Industrials", 42, 10, 5, false, "Top 1%", "", "ปิโตรเคมีครบวงจรใหญ่สุดในไทย เคมีชีวภาพ", "Thailand's largest petrochemicals, bio-chemicals", 2025)
+        "RATCH" => ESGData.new("RATCH", "AAA", "AAA", "AA", float(na), float(na), float(na), float(na), true, true, true, true, "Resources", 27, 17, 5, false, "", "", "ผู้ผลิตไฟฟ้า กฟผ.ถือหุ้นใหญ่ ไทย ลาว ออสเตรเลีย", "Power producer (EGAT-backed): TH, LA, AU", 2025)
+        "SCB" => ESGData.new("SCB", "AAA", "AA", "AA", float(na), float(na), float(na), float(na), true, true, true, true, "Financials", 33, 13, 5, false, "Top 10%", "net-zero committed · 1.5°C 2028", "SCBX โฮลดิ้งธนาคาร + ฟินเทค/ดิจิทัล", "SCBX: bank holding + fintech / digital ventures", 2025)
+        "SCC" => ESGData.new("SCC", "AAA", "AAA", "AAA", float(na), float(na), float(na), float(na), true, true, true, true, "Property & Construction", 42, 20, 5, false, "Member", "Well-below 2°C 2031", "ปูนซิเมนต์ไทย วัสดุก่อสร้าง ปิโตรเคมี บรรจุภัณฑ์", "SCG: cement, materials, chemicals, packaging", 2025)
+        "SCGP" => ESGData.new("SCGP", "AAA", "AAA", "AAA", float(na), float(na), float(na), float(na), true, true, true, true, "Industrials", 42, 10, 5, false, "Top 1%", "commitment removed", "บรรจุภัณฑ์ครบวงจรของ SCG ในอาเซียน", "SCG's packaging arm across ASEAN", 2025)
+        "TCAP" => ESGData.new("TCAP", "AA", "AA", "A", float(na), float(na), float(na), float(na), true, true, true, true, "Financials", 33, 11, 5, false, "", "", "โฮลดิ้งการเงิน ถือ TTB สินเชื่อรถ ประกัน", "Financial holding: TTB stake, auto loans", 2025)
+        "TFG" => ESGData.new("TFG", "NR", "AA", "A", float(na), float(na), float(na), float(na), false, true, true, false, "", 0, 0, 5, true, "", "", "ไทยฟู้ดส์ ไก่ สุกร อาหารสัตว์ และค้าปลีกอาหาร", "Thaifoods: chicken, swine, feed, food retail", 2025)
+        "THAI" => ESGData.new("THAI", "NR", "NR", "NR", float(na), float(na), float(na), float(na), false, true, true, false, "", 0, 0, 0, false, "", "", "การบินไทย สายการบินแห่งชาติ กลับเข้าตลาด 2568", "Thai Airways, national carrier (relisted 2025)", 2025)
+        "TIDLOR" => ESGData.new("TIDLOR", "NR", "NR", "NR", float(na), float(na), float(na), float(na), false, true, true, false, "", 0, 0, 4, true, "", "", "สินเชื่อทะเบียนรถ เงินติดล้อ + นายหน้าประกัน", "Ngern Tid Lor: title loans & insurance broker", 2025)
+        "TISCO" => ESGData.new("TISCO", "AAA", "AAA", "AAA", float(na), float(na), float(na), float(na), true, true, true, true, "Financials", 33, 13, 5, false, "", "", "ธนาคารเน้นสินเชื่อรถ และบริหารความมั่งคั่ง", "Auto-loan focused bank & wealth management", 2025)
+        "TLI" => ESGData.new("TLI", "AA", "A", "NR", float(na), float(na), float(na), float(na), true, true, true, true, "Financials", 33, 11, 5, false, "", "", "ไทยประกันชีวิต บริษัทประกันชีวิตรายใหญ่", "Thai Life Insurance, major life insurer", 2025)
+        "TOP" => ESGData.new("TOP", "AAA", "AAA", "AAA", float(na), float(na), float(na), float(na), true, true, true, true, "Resources", 27, 17, 5, false, "Top 1%", "", "โรงกลั่นน้ำมันใหญ่สุดในไทย กลุ่ม ปตท.", "Thailand's largest oil refinery (PTT Group)", 2025)
+        "TRUE" => ESGData.new("TRUE", "NR", "NR", "NR", float(na), float(na), float(na), float(na), false, true, true, false, "", 0, 0, 5, false, "Top 1%", "net-zero 2050 · 1.5°C 2030", "ผู้ให้บริการมือถือ/บรอดแบนด์ (True-dtac ควบรวม)", "Mobile & broadband operator (True-dtac merger)", 2025)
+        "TTB" => ESGData.new("TTB", "AAA", "AAA", "AA", float(na), float(na), float(na), float(na), true, true, true, true, "Financials", 33, 13, 5, false, "Top 10%", "", "ธนาคารทหารไทยธนชาต สินเชื่อรถและรายย่อย", "TMBThanachart Bank: auto & retail lending", 2025)
+        "TU" => ESGData.new("TU", "AA", "A", "NR", float(na), float(na), float(na), float(na), true, true, true, true, "Agro & Food Industry", 35, 10, 5, false, "Top 1%", "net-zero 2050 · 1.5°C 2030", "ทูน่ากระป๋องและอาหารทะเลระดับโลก", "Global tuna & seafood producer", 2025)
+        "WHA" => ESGData.new("WHA", "AAA", "AAA", "AAA", float(na), float(na), float(na), float(na), true, true, true, true, "Property & Construction", 42, 20, 5, false, "Top 1%", "", "นิคมอุตสาหกรรม โลจิสติกส์ สาธารณูปโภค ไทย-VN", "Industrial estates, logistics, utilities TH-VN", 2025)
+        "BTS" => ESGData.new("BTS", "AA", "AA", "AA", float(na), float(na), float(na), float(na), true, false, true, true, "Services", 52, 17, 5, false, "Top 10%", "net-zero committed", "รถไฟฟ้า BTS สื่อโฆษณา (VGI) และธุรกิจบริการ", "BTS Skytrain, media (VGI) & services", 2025)
+        "CBG" => ESGData.new("CBG", "AA", "AA", "A", float(na), float(na), float(na), float(na), true, false, true, true, "Agro & Food Industry", 35, 10, 5, false, "", "", "เครื่องดื่มชูกำลังคาราบาว ส่งออกหลายประเทศ", "Carabao energy drinks, multi-country exports", 2025)
+        "CENTEL" => ESGData.new("CENTEL", "AAA", "AAA", "A", float(na), float(na), float(na), float(na), true, false, true, true, "Services", 52, 20, 5, false, "Member", "", "โรงแรม Centara และร้านอาหาร QSR (KFC ฯลฯ)", "Centara hotels & QSR restaurants (KFC etc.)", 2025)
+        "SAWAD" => ESGData.new("SAWAD", "AA", "AA", "BBB", float(na), float(na), float(na), float(na), true, false, true, true, "Financials", 33, 11, 5, false, "", "", "สินเชื่อทะเบียนรถและสินเชื่อบุคคล ศรีสวัสดิ์", "Srisawad: vehicle-title & personal loans", 2025)
+        => ESGData.new(ticker, "NR", "NR", "NR", float(na), float(na), float(na), float(na), false, false, false, false, "", 0, 0, 0, false, "", "", "", "", 0)
+// ---- end ESGDataTH ----
+
+g1 = "1) Display"
+showTable = input.bool(true, "Show table", group = g1, tooltip = "Draw the ESG table on the last bar. Turn off to keep only the background tint.")
+showTint  = input.bool(true, "Background tint by grade", group = g1, tooltip = "AAA green / AA teal / A blue / BBB amber / NR grey")
+lang      = input.string("EN", "Language", options = ["EN", "TH"], group = g1, tooltip = "EN: English summary, years in CE (2023→2024→2025)\nTH: Thai summary, years in Buddhist Era (2566→2567→2568)")
+pos       = input.string("top_right", "Table position", options = ["top_right", "top_left", "bottom_right", "bottom_left"], group = g1, tooltip = "Corner of the chart where the table is drawn.")
+txtSize   = input.string("small", "Text size", options = ["tiny", "small", "normal"], group = g1, tooltip = "Table font size. Use tiny on small screens or when the summary wraps.")
+
+// ---- data (looked up once) ------------------------------------------------
+isSET = str.startswith(syminfo.prefix, "SET")
+var ESGData d = get(syminfo.ticker)
+hasData = isSET and d.year > 0
+rated   = hasData and d.grade != "NR"
+
+gradeRank(string g) =>
+    switch g
+        "AAA" => 4
+        "AA"  => 3
+        "A"   => 2
+        "BBB" => 1
+        => 0
+
+gradeColor(string g) =>
+    switch g
+        "AAA" => color.new(#26a69a, 0)
+        "AA"  => color.new(#00bcd4, 0)
+        "A"   => color.new(#2962ff, 0)
+        "BBB" => color.new(#ffb300, 0)
+        => color.new(#787b86, 0)
+
+gradeText = not isSET ? "No data" : hasData ? d.grade : "NR"
+gc = gradeColor(hasData ? d.grade : "NR")
+
+bgcolor(showTint and isSET ? color.new(gc, 85) : na, title = "Grade tint")
+
+// ---- derived text ---------------------------------------------------------
+// History: 2023 → 2024 → 2025 (BE 2566 → 2567 → 2568) with trend vs last year
+isTH = lang == "TH"
+yr(int y) => str.tostring(isTH ? y + 543 : y)
+ry = hasData ? d.year : 2025
+histLabel = "History " + yr(ry - 2) + "→" + yr(ry - 1) + "→" + yr(ry)
+trendTag = gradeRank(d.grade) > gradeRank(d.g2024) ? " ▲ up" : gradeRank(d.grade) < gradeRank(d.g2024) ? " ▼ down" : " = same"
+histText = d.g2023 + " → " + d.g2024 + " → " + d.grade + trendTag
+
+// Industry peers: how many rated in this group share the grade
+peerText = d.indRated == 0 ? "—" : rated ? d.grade + " " + str.tostring(d.indSame) + " of " + str.tostring(d.indRated) + " rated" : str.tostring(d.indRated) + " rated in group"
+
+yn(bool b) => b ? "✓" : "✗"
+idxText = "SETESG " + yn(d.inIndex) + " · SET50 " + yn(d.inSET50) + " · SET100 " + yn(d.inSET100) + " · TESG " + yn(d.inTESG)
+
+// Next index review: SETESG semi-annual (announced mid-Jun / mid-Dec)
+nextReview = month(timenow) <= 6 ? "Jun " + str.tostring(year(timenow)) : "Dec " + str.tostring(year(timenow))
+validText  = validUntil() + " · next: " + nextRound()
+
+fmt(float v) => na(v) ? "—" : str.tostring(v, "#.#")
+
+// CG score: IOD stars + level, ⚠ when IOD flagged CG-related news
+cgrText = d.cgr == 5 ? "★★★★★ Excellent" : d.cgr == 4 ? "★★★★ Very Good" : d.cgr == 3 ? "★★★ Good" : "not announced"
+cgrText := cgrText + (d.cgrFlag ? " ⚠ CG news" : "")
+
+// ---- table ----------------------------------------------------------------
+tblPos() =>
+    switch pos
+        "top_left"     => position.top_left
+        "bottom_right" => position.bottom_right
+        "bottom_left"  => position.bottom_left
+        => position.top_right
+
+tSize() =>
+    switch txtSize
+        "tiny"   => size.tiny
+        "normal" => size.normal
+        => size.small
+
+var table t = table.new(tblPos(), 2, 13, bgcolor = color.new(#131722, 15), border_color = color.new(#2a2e39, 0), border_width = 1)
+sz  = tSize()
+txt = color.white
+dim = color.new(#b2b5be, 0)
+
+row(int r, string k, string v, color vc, string va) =>
+    table.cell(t, 0, r, k, text_color = dim, text_size = sz, text_halign = text.align_left, text_valign = text.align_top)
+    table.cell(t, 1, r, v, text_color = vc, text_size = sz, text_halign = va)
+
+if barstate.islast and showTable
+    hdr = color.new(gc, 60)
+    int r = 0
+    table.cell(t, 0, r, "ESG " + syminfo.ticker + (hasData ? " (" + yr(d.year) + ")" : ""), text_color = txt, bgcolor = hdr, text_size = sz, text_halign = text.align_left)
+    table.cell(t, 1, r, gradeText, text_color = txt, bgcolor = hdr, text_size = sz, text_halign = text.align_center)
+    r += 1
+    if hasData
+        row(r, histLabel, histText, txt, text.align_left)
+        r += 1
+        row(r, d.industry != "" ? "Peers · " + d.industry : "Peers", peerText, txt, text.align_left)
+        r += 1
+        row(r, "Index", idxText, txt, text.align_left)
+        r += 1
+        if not na(d.ftse)
+            row(r, "FTSE ESG", fmt(d.ftse), txt, text.align_center)
+            r += 1
+        if not na(d.e) or not na(d.s) or not na(d.g)
+            row(r, "E / S / G", fmt(d.e) + " / " + fmt(d.s) + " / " + fmt(d.g), txt, text.align_center)
+            r += 1
+        row(r, "CG score (IOD 2025)", cgrText, d.cgrFlag ? color.new(#ffb300, 0) : txt, text.align_left)
+        r += 1
+        row(r, "S&P Yearbook 2026", d.yearbook != "" ? d.yearbook : "not selected", txt, text.align_left)
+        r += 1
+        row(r, "SBTi climate target", d.sbti != "" ? d.sbti : "none on dashboard", txt, text.align_left)
+        r += 1
+        row(r, "Valid until", validText, txt, text.align_left)
+        r += 1
+        row(r, "Index review", nextReview + " (semi-annual)", txt, text.align_left)
+        r += 1
+        summ = isTH ? d.summaryTH : d.summaryEN
+        if summ != ""
+            row(r, "Summary", summ, txt, text.align_left)
+            r += 1
+    row(r, "Source", isSET ? "SET ESG Ratings " + yr(ry) + " · " + announceDate() : "non-SET symbol", dim, text.align_left)

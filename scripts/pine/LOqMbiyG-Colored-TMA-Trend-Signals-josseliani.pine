@@ -1,0 +1,145 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © josseliani
+
+//@version=6
+indicator("Colored TMA Trend Signals [josseliani]", overlay=true, max_labels_count=500)
+
+// ─────────────────────────────────────────────────────────────
+// INPUTS
+// ─────────────────────────────────────────────────────────────
+groupTma = "TMA"
+halfLength = input.int(12, "Half Length", minval=1, group=groupTma)
+priceMode = input.string("Weighted Price", "Price Source", options=["Close", "Open", "High", "Low", "Median Price", "Typical Price", "Weighted Price"], group=groupTma)
+bandsDeviation = input.float(2.0, "Band Deviation", minval=0.1, step=0.1, group=groupTma, tooltip="Standard-deviation multiplier for the bands around TMA.")
+useSmoothing = input.bool(false, "Use Source Smoothing", group=groupTma)
+smoothingPeriod = input.int(12, "Smoothing Period", minval=1, group=groupTma)
+
+groupVisual = "VISUAL"
+showBands = input.bool(true, "Show Bands", group=groupVisual)
+showTrendSignals = input.bool(true, "Show TMA Color-Change Signals", group=groupVisual)
+lineWidth = input.int(2, "TMA Line Width", minval=1, maxval=5, group=groupVisual)
+
+groupTrade = "TRADE SIGNALS"
+showTradeSignals = input.bool(true, "Show BUY/SELL Labels", group=groupTrade, tooltip="Visual option only. Trade alerts remain active when labels are hidden.")
+tradeLevel = input.string("TMA", "Break Level", options=["TMA", "Bands"], group=groupTrade)
+confirmBars = input.int(3, "Confirm Bars", minval=1, maxval=10, group=groupTrade, tooltip="Confirmation is checked exactly on the Nth consecutive close beyond the selected level. If blocked, the sequence must reset before another confirmation is checked.")
+tradeOnlyWithTrend = input.bool(true, "Only With TMA Trend", group=groupTrade, tooltip="BUY only while TMA is green, SELL only while red.")
+onePerColor = input.bool(true, "One Trade Per Color", group=groupTrade, tooltip="A bullish turn unlocks one BUY and blocks SELL. A bearish turn unlocks one SELL and blocks BUY. After a signal, that direction stays locked until a new matching color turn.")
+
+// ─────────────────────────────────────────────────────────────
+// PRICE SOURCE
+// ─────────────────────────────────────────────────────────────
+src = switch priceMode
+    "Open" => open
+    "High" => high
+    "Low" => low
+    "Median Price" => hl2
+    "Typical Price" => hlc3
+    "Weighted Price" => hlcc4
+    => close
+
+base = useSmoothing ? ta.ema(src, smoothingPeriod) : src
+
+// ─────────────────────────────────────────────────────────────
+// TMA AND STANDARD-DEVIATION BANDS
+// ─────────────────────────────────────────────────────────────
+// Two equal-length SMAs produce a trailing triangular MA.
+// Effective length: halfLength * 2 - 1. No future bars are used.
+tmaLen = halfLength * 2 - 1
+tma = ta.sma(ta.sma(base, halfLength), halfLength)
+deviation = ta.stdev(base, tmaLen)
+upperBand = tma + deviation * bandsDeviation
+lowerBand = tma - deviation * bandsDeviation
+atr = ta.atr(14)
+
+trendUp = tma > tma[1]
+trendDown = tma < tma[1]
+tmaColor = trendUp ? color.lime : trendDown ? color.red : color.gray
+
+// ─────────────────────────────────────────────────────────────
+// CONFIRMED COLOR CHANGES
+// ─────────────────────────────────────────────────────────────
+// Flat bars preserve the last directional trend for turn detection.
+var int lastSolidTrend = 0
+currTrend = trendUp ? 1 : trendDown ? -1 : 0
+bullishTurn = false
+bearishTurn = false
+
+if barstate.isconfirmed and currTrend != 0
+    bullishTurn := currTrend == 1 and lastSolidTrend == -1
+    bearishTurn := currTrend == -1 and lastSolidTrend == 1
+    lastSolidTrend := currTrend
+
+// ─────────────────────────────────────────────────────────────
+// TRADE CONFIRMATION
+// ─────────────────────────────────────────────────────────────
+bullBreakLevel = tradeLevel == "Bands" ? upperBand : tma
+bearBreakLevel = tradeLevel == "Bands" ? lowerBand : tma
+
+// These counters run independently of TMA color changes.
+var int barsAbove = 0
+var int barsBelow = 0
+barsAbove := close > bullBreakLevel ? barsAbove + 1 : 0
+barsBelow := close < bearBreakLevel ? barsBelow + 1 : 0
+
+var bool longUsedThisColor = false
+var bool shortUsedThisColor = false
+
+if bullishTurn
+    longUsedThisColor := false
+    shortUsedThisColor := true
+
+if bearishTurn
+    shortUsedThisColor := false
+    longUsedThisColor := true
+
+trendAllowsLong = not tradeOnlyWithTrend or trendUp
+trendAllowsShort = not tradeOnlyWithTrend or trendDown
+longSlotFree = not onePerColor or not longUsedThisColor
+shortSlotFree = not onePerColor or not shortUsedThisColor
+tradeBull = false
+tradeBear = false
+
+// Exact equality is intentional: blocked confirmations are not reused.
+// Signal calculation is independent of label visibility.
+if barstate.isconfirmed
+    if barsAbove == confirmBars and trendAllowsLong and longSlotFree
+        tradeBull := true
+        longUsedThisColor := true
+
+    if barsBelow == confirmBars and trendAllowsShort and shortSlotFree
+        tradeBear := true
+        shortUsedThisColor := true
+
+// ─────────────────────────────────────────────────────────────
+// PLOTS
+// ─────────────────────────────────────────────────────────────
+plot(tma, title="TMA", color=tmaColor, linewidth=lineWidth)
+plot(showBands ? upperBand : na, title="Upper Band", color=color.new(color.gray, 50))
+plot(showBands ? lowerBand : na, title="Lower Band", color=color.new(color.gray, 50))
+
+plotshape(showTrendSignals and bullishTurn ? tma : na, title="TMA Bullish Color Change", style=shape.triangleup, location=location.absolute, color=color.lime, size=size.tiny)
+plotshape(showTrendSignals and bearishTurn ? tma : na, title="TMA Bearish Color Change", style=shape.triangledown, location=location.absolute, color=color.red, size=size.tiny)
+
+// ─────────────────────────────────────────────────────────────
+// BUY / SELL LABELS
+// ─────────────────────────────────────────────────────────────
+// Vertical spacing only. Labels remain on the actual signal bar.
+labelGapAtr = 1.5
+gap = math.max(atr * labelGapAtr, high - low)
+
+if showTradeSignals and tradeBull
+    label.new(bar_index, low - gap, "BUY", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_up, color=color.new(color.lime, 70), textcolor=color.lime, size=size.small)
+
+if showTradeSignals and tradeBear
+    label.new(bar_index, high + gap, "SELL", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=color.new(color.red, 70), textcolor=color.red, size=size.small)
+
+// ─────────────────────────────────────────────────────────────
+// ALERTS
+// ─────────────────────────────────────────────────────────────
+alertcondition(bullishTurn, title="TMA Bullish Color Change", message="Colored TMA: bullish color change on {{ticker}} {{interval}}")
+alertcondition(bearishTurn, title="TMA Bearish Color Change", message="Colored TMA: bearish color change on {{ticker}} {{interval}}")
+alertcondition(bullishTurn or bearishTurn, title="Any TMA Color Change", message="Colored TMA: color changed on {{ticker}} {{interval}}")
+alertcondition(tradeBull, title="Trade Long", message="Colored TMA: trade long on {{ticker}} {{interval}}")
+alertcondition(tradeBear, title="Trade Short", message="Colored TMA: trade short on {{ticker}} {{interval}}")
+alertcondition(tradeBull or tradeBear, title="Any Trade Signal", message="Colored TMA: trade signal on {{ticker}} {{interval}}")

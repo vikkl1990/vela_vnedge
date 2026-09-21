@@ -1,0 +1,1306 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Gigi_Luigino
+
+// =============================================================================
+//  Sessions, Opening Levels and Day Separators
+//
+//  Four chart-context tools in one indicator: vertical day and week separators,
+//  shaded trading sessions, previous day/week/month highs and lows, and
+//  horizontal opening-price levels. Nothing here generates buy or sell signals.
+// =============================================================================
+
+//@version=6
+indicator("Sessions, Opening Levels and Day Separators", "Gigi's Toolkit", overlay = true, max_lines_count = 500,
+     max_labels_count = 500, max_boxes_count = 500, explicit_plot_zorder = true)
+
+// =============================================================================
+//  1. CONSTANTS
+// =============================================================================
+
+// ---- Group names (declaration order = settings-panel order) ----
+G_GEN = "General"
+G_SEP = "Day and Week Vertical Lines"
+G_KZ  = "Sessions"
+G_PHL = "Previous Highs & Lows"
+G_KL  = "Opening Levels"
+
+// Settings-panel column alignment. TradingView strips ordinary trailing spaces,
+// so these Unicode spaces are used to pad titles onto fixed widget columns.
+// PAD_W = U+2007 FIGURE SPACE (18px), PAD_M = U+2005 FOUR-PER-EM (8px),
+// PAD_N = U+200A HAIR SPACE (3px)
+const string PAD_W = " "
+const string PAD_M = " "
+const string PAD_N = " "
+
+// ---- Option lists ----
+// Pine's `options =` parameter takes a tuple of const strings and cannot read a
+// variable, so each list is written inline at every input that uses it. They are
+// documented here so there is still one place to read them from.
+//
+//   TF_OPTS       Any, 1 minute, 2 minutes, 3 minutes, 5 minutes, 10 minutes,
+//                 15 minutes, 30 minutes, 45 minutes, 1 hour, 2 hours, 3 hours,
+//                 4 hours, 6 hours, 8 hours, 12 hours, 1 day, 1 week, 1 month
+//   STYLE_OPTS    Solid, Dotted, Dashed
+//   SIZE_OPTS     Auto, Tiny, Small, Normal, Large, Huge
+//   TZ_OPTS       Chart / Exchange, New York, Chicago, Los Angeles, London,
+//                 Frankfurt, Dubai, Hong Kong, Singapore, Tokyo, Sydney, UTC
+//   DOW_OPTS      Sunday, Monday, Tuesday, Wednesday, Thursday, Friday, Saturday
+//   NAME_OPTS     Off, Short (Mon), Full (Monday)
+//   DRAW_OPTS     Lines, Background
+//   DAYSTART_OPTS Auto (exchange session), Market open only,
+//                 Midnight — exchange time, Midnight — New York, Custom time
+//   WEEKMODE_OPTS Follow Day Start, Exchange Week, Specific Day
+//
+// ---- Fixed sessions used by Opening Levels ----
+SESS_MIDNIGHT = "0000-0001:1234567"
+SESS_TEN      = "1000-1001:1234567"
+
+// ---- Day and week vertical line cap ----
+SEP_MAX = 250
+
+// The source's invisible plotshape marker — the day name is the visible part.
+SEP_DOT = color.new(color.silver, 100)
+
+// =============================================================================
+//  2. INPUTS — all 94, in panel order
+//
+//  Only the FIRST input of an inline row
+//  carries a title; every later input in that row is "". Padded titles land
+//  their widget on the section's anchor column:
+//      General                       273
+//      Day and Week Vertical Lines   273
+//      Sessions                      228
+//      Previous Highs & Lows         362  (its Apply Below sub-rows at 273)
+//      Opening Levels                362  (Line Length at 273)
+//  The nine non-inline titles that carry a widget each end in 2N. That is not
+//  decoration: TradingView sizes its shared label column to the widest such
+//  title in the whole panel, so those nine ARE the 273 column. Changing any one
+//  of them moves the column and un-aligns every inline row in the panel.
+// =============================================================================
+
+// ---------------------------- GENERAL ----------------------------------------
+
+i_g_tz = input.string("New York", "Timezone" + PAD_N + PAD_N,
+     options = ["Chart / Exchange", "New York", "Chicago", "Los Angeles", "London", "Frankfurt", "Dubai", "Hong Kong", "Singapore", "Tokyo", "Sydney", "UTC"],
+     group = G_GEN,
+     tooltip = "Used by session times and the New York levels. Handles daylight saving automatically. Day and week lines read their own timing from each market.")
+
+// A plain non-inline bool. TradingView draws the checkbox BEFORE the label and puts
+// no widget after it, so this title never touches the shared label column and the
+// inline rows below stay aligned. Do not give it an inline partner.
+i_g_warnOn = input.bool(true, "Show Warning Messages",
+     group = G_GEN,
+     tooltip = "The amber notes in the bottom-right corner explain why something you switched on is not being drawn — the wrong timeframe, a market that is closed at that hour, more levels than can fit. Turn this off once you know the indicator well. If the chart ever looks wrong afterwards, turn it back on first: the answer is usually already written there.")
+
+// ------------------- DAY AND WEEK VERTICAL LINES — anchor 273 ----------------
+
+i_sep_enable = input.bool(true, "Enable",
+     group = G_SEP,
+     tooltip = "Vertical lines marking where each trading day and each trading week begins. A trading day is not always midnight — futures roll over in the evening — so the start point is set separately below.")
+
+i_sep_tf = input.string("1 hour", "Apply Below" + PAD_N + PAD_N,
+     options = ["Any", "1 minute", "2 minutes", "3 minutes", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "45 minutes", "1 hour", "2 hours", "3 hours", "4 hours", "6 hours", "8 hours", "12 hours", "1 day", "1 week", "1 month"],
+     group = G_SEP, active = i_sep_enable,
+     tooltip = "Only shown when the chart timeframe is at or below the one selected.")
+
+i_sep_dayOn = input.bool(true, "Day Line" + PAD_W + PAD_N + PAD_N + PAD_N,
+     group = G_SEP, inline = "sepDay", active = i_sep_enable)
+
+i_sep_dayStyle = input.string("Dotted", "",
+     options = ["Solid", "Dotted", "Dashed"],
+     group = G_SEP, inline = "sepDay", active = i_sep_enable and i_sep_dayOn)
+
+i_sep_dayWidth = input.int(1, "", minval = 1, maxval = 20,
+     group = G_SEP, inline = "sepDay", active = i_sep_enable and i_sep_dayOn)
+
+i_sep_dayCol = input.color(color.new(color.black, 30), "",
+     group = G_SEP, inline = "sepDay", active = i_sep_enable and i_sep_dayOn,
+     tooltip = "Colour, line style, and thickness.")
+
+i_sep_weekOn = input.bool(true, "Week Line" + PAD_N,
+     group = G_SEP, inline = "sepWk", active = i_sep_enable)
+
+i_sep_weekStyle = input.string("Dashed", "",
+     options = ["Solid", "Dotted", "Dashed"],
+     group = G_SEP, inline = "sepWk", active = i_sep_enable and i_sep_weekOn)
+
+i_sep_weekWidth = input.int(4, "", minval = 1, maxval = 20,
+     group = G_SEP, inline = "sepWk", active = i_sep_enable and i_sep_weekOn)
+
+i_sep_weekCol = input.color(color.new(#F4D415, 50), "",
+     group = G_SEP, inline = "sepWk", active = i_sep_enable and i_sep_weekOn,
+     tooltip = "Colour, line style, and thickness of the week line. Where a week line is drawn, the day line for that same moment is left out so the two never overlap.")
+
+i_sep_dayStart = input.string("Auto (exchange session)", "Day Starts At" + PAD_N + PAD_N,
+     options = ["Auto (exchange session)", "Market open only", "Midnight — exchange time", "Midnight — New York", "Custom time"],
+     group = G_SEP, active = i_sep_enable,
+     tooltip = "Auto uses each market's own trading day — 5pm Chicago for futures, the opening bell for stocks, midnight UTC for crypto.\n\nMarket open only skips the pre-market and post-market and puts the line on the regular open. On a market with no separate pre/post session — all futures, forex and crypto, and any stock chart with Extended Hours switched off — there is nothing to skip, so it matches Auto and a note says so.\n\nThe Midnight and Custom modes ignore the market's schedule entirely and follow the clock.")
+
+i_sep_customHr = input.int(18, "Custom Time" + PAD_W + PAD_M + PAD_M, minval = 0, maxval = 23,
+     group = G_SEP, inline = "sepCus", active = i_sep_enable and i_sep_dayStart == "Custom time")
+
+i_sep_customMin = input.int(0, "", minval = 0, maxval = 59,
+     group = G_SEP, inline = "sepCus", active = i_sep_enable and i_sep_dayStart == "Custom time",
+     tooltip = "Hour and minute at which your trading day begins, on a 24-hour clock, read in the zone chosen just below. Only used when Day Starts At is set to Custom time.")
+
+i_sep_customTz = input.string("New York", "Custom Zone" + PAD_N + PAD_N,
+     options = ["Chart / Exchange", "New York", "Chicago", "Los Angeles", "London", "Frankfurt", "Dubai", "Hong Kong", "Singapore", "Tokyo", "Sydney", "UTC"],
+     group = G_SEP, active = i_sep_enable and i_sep_dayStart == "Custom time",
+     tooltip = 'Only used when "Day Starts At" is set to Custom time.')
+
+i_sep_weekMode = input.string("Follow Day Start", "Week Starts" + PAD_W + PAD_W + PAD_M + PAD_M,
+     options = ["Follow Day Start", "Exchange Week", "Specific Day"],
+     group = G_SEP, inline = "sepWkM", active = i_sep_enable and i_sep_weekOn)
+
+i_sep_weekDay = input.string("Sunday", "",
+     options = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
+     group = G_SEP, inline = "sepWkM", active = i_sep_enable and i_sep_weekOn and i_sep_weekMode == "Specific Day",
+     tooltip = "Follow Day Start puts the week line on whichever day boundary opens this market's week, so it lands on a day line rather than mid-day. Exchange Week uses the market's own weekly bar. Specific Day forces the weekday chosen to the right.")
+
+i_sep_names = input.string("Short (Mon)", "Day Names" + PAD_W + PAD_W + PAD_W + PAD_N + PAD_N,
+     options = ["Off", "Short (Mon)", "Full (Monday)"],
+     group = G_SEP, inline = "sepNm", active = i_sep_enable)
+
+i_sep_nameCol = input.color(color.new(color.black, 0), "",
+     group = G_SEP, inline = "sepNm", active = i_sep_enable)
+
+i_sep_nameOffset = input.int(0, "", minval = 0, maxval = 50,
+     group = G_SEP, inline = "sepNm", active = i_sep_enable,
+     tooltip = "Style, colour, and how far right of the line the name sits.")
+
+i_sep_drawAs = input.string("Lines", "Draw As" + PAD_N + PAD_N,
+     options = ["Lines", "Background"],
+     group = G_SEP, active = i_sep_enable,
+     tooltip = "Lines draws a vertical line. Background tints the whole bar instead.")
+
+// --------------------------- SESSIONS — anchor 228 ---------------------------
+
+i_kz_enable = input.bool(true, "Enable",
+     group = G_KZ,
+     tooltip = "Shades four trading sessions as boxes. Each box starts when its session opens and grows to hold every high and low reached until the session closes. Times are read in the Timezone set under General.")
+
+i_kz_tf = input.string("15 minutes", "Apply Below" + PAD_M + PAD_N,
+     options = ["Any", "1 minute", "2 minutes", "3 minutes", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "45 minutes", "1 hour", "2 hours", "3 hours", "4 hours", "6 hours", "8 hours", "12 hours", "1 day", "1 week", "1 month"],
+     group = G_KZ, inline = "kzTf", active = i_kz_enable,
+     tooltip = "Only shown when the chart timeframe is at or below the one selected.")
+
+i_kz_asiaOn = input.bool(true, "Asia" + PAD_W + PAD_W + PAD_M + PAD_N,
+     group = G_KZ, inline = "kzAs", active = i_kz_enable)
+
+i_kz_asiaTime = input.session("2000-0200", "",
+     group = G_KZ, inline = "kzAs", active = i_kz_enable and i_kz_asiaOn)
+
+i_kz_asiaCol = input.color(color.new(#808080, 80), "",
+     group = G_KZ, inline = "kzAs", active = i_kz_enable and i_kz_asiaOn)
+
+i_kz_asiaTxt = input.string("¥", "",
+     group = G_KZ, inline = "kzAs", active = i_kz_enable and i_kz_asiaOn)
+
+i_kz_lonOn = input.bool(true, "London" + PAD_N + PAD_N,
+     group = G_KZ, inline = "kzLo", active = i_kz_enable)
+
+i_kz_lonTime = input.session("0200-0830", "",
+     group = G_KZ, inline = "kzLo", active = i_kz_enable and i_kz_lonOn)
+
+i_kz_lonCol = input.color(color.new(#FF9801, 90), "",
+     group = G_KZ, inline = "kzLo", active = i_kz_enable and i_kz_lonOn)
+
+i_kz_lonTxt = input.string("£", "",
+     group = G_KZ, inline = "kzLo", active = i_kz_enable and i_kz_lonOn)
+
+i_kz_nyamOn = input.bool(true, "NY AM" + PAD_M + PAD_N + PAD_N,
+     group = G_KZ, inline = "kzNyAm", active = i_kz_enable)
+
+i_kz_nyamTime = input.session("0830-1130", "",
+     group = G_KZ, inline = "kzNyAm", active = i_kz_enable and i_kz_nyamOn)
+
+i_kz_nyamCol = input.color(color.new(#2962FF, 90), "",
+     group = G_KZ, inline = "kzNyAm", active = i_kz_enable and i_kz_nyamOn)
+
+i_kz_nyamTxt = input.string("$", "",
+     group = G_KZ, inline = "kzNyAm", active = i_kz_enable and i_kz_nyamOn)
+
+i_kz_nypmOn = input.bool(true, "NY PM" + PAD_M + PAD_N + PAD_N,
+     group = G_KZ, inline = "kzNyPm", active = i_kz_enable)
+
+i_kz_nypmTime = input.session("1330-1600", "",
+     group = G_KZ, inline = "kzNyPm", active = i_kz_enable and i_kz_nypmOn)
+
+i_kz_nypmCol = input.color(color.new(#808080, 80), "",
+     group = G_KZ, inline = "kzNyPm", active = i_kz_enable and i_kz_nypmOn)
+
+i_kz_nypmTxt = input.string("$", "",
+     group = G_KZ, inline = "kzNyPm", active = i_kz_enable and i_kz_nypmOn)
+
+i_kz_lblSize = input.string("Auto", "Label Size" + PAD_W + PAD_W + PAD_N,
+     options = ["Auto", "Tiny", "Small", "Normal", "Large", "Huge"],
+     group = G_KZ, inline = "kzSty", active = i_kz_enable)
+
+i_kz_lblOpacity = input.int(10, "", minval = 0, maxval = 100,
+     group = G_KZ, inline = "kzSty", active = i_kz_enable,
+     tooltip = "Size and opacity of all four session labels. Higher opacity is more visible.")
+
+// ------- PREVIOUS HIGHS & LOWS — anchor 362 / Apply Below sub-rows at 273 ----
+
+i_phl_enable = input.bool(true, "Enable",
+     group = G_PHL,
+     tooltip = "Horizontal lines at the highest and lowest price reached during previous completed days, weeks and months. A line appears only once its period has finished.")
+
+i_phl_extendOn = input.bool(true, "Extend Lines Right",
+     group = G_PHL, inline = "phlExt", active = i_phl_enable)
+
+i_phl_extendBars = input.int(1, "", minval = 1, maxval = 500,
+     group = G_PHL, inline = "phlExt", active = i_phl_enable and i_phl_extendOn,
+     tooltip = "Continues past highs and lows into the future by this many bars.")
+
+i_phl_dayOn = input.bool(true, "Previous Day" + PAD_W + PAD_W + PAD_W + PAD_W + PAD_N,
+     group = G_PHL, inline = "phlD1", active = i_phl_enable)
+
+i_phl_dayCol = input.color(color.blue, "",
+     group = G_PHL, inline = "phlD1", active = i_phl_enable and i_phl_dayOn)
+
+
+i_phl_dayCount = input.int(1, "", minval = 1, maxval = 50,
+     group = G_PHL, inline = "phlD1", active = i_phl_enable and i_phl_dayOn,
+     tooltip = "Colour, and how many previous days to show. Day, week and month levels share one pool of 500 drawings with the day and week lines, so very large counts drop the oldest.")
+
+i_phl_dayTf = input.string("12 hours", "Apply Below" + PAD_N + PAD_N,
+     options = ["Any", "1 minute", "2 minutes", "3 minutes", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "45 minutes", "1 hour", "2 hours", "3 hours", "4 hours", "6 hours", "8 hours", "12 hours", "1 day", "1 week", "1 month"],
+     group = G_PHL, active = i_phl_enable and i_phl_dayOn,
+     tooltip = "Only shown when the chart timeframe is at or below the one selected.")
+
+i_phl_weekOn = input.bool(true, "Previous Week" + PAD_W + PAD_W + PAD_M + PAD_N + PAD_N,
+     group = G_PHL, inline = "phlW1", active = i_phl_enable)
+
+i_phl_weekCol = input.color(color.orange, "",
+     group = G_PHL, inline = "phlW1", active = i_phl_enable and i_phl_weekOn)
+
+
+i_phl_weekCount = input.int(1, "", minval = 1, maxval = 50,
+     group = G_PHL, inline = "phlW1", active = i_phl_enable and i_phl_weekOn,
+     tooltip = "Colour, and how many previous weeks to show.")
+
+i_phl_weekTf = input.string("1 day", "Apply Below" + PAD_N + PAD_N,
+     options = ["Any", "1 minute", "2 minutes", "3 minutes", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "45 minutes", "1 hour", "2 hours", "3 hours", "4 hours", "6 hours", "8 hours", "12 hours", "1 day", "1 week", "1 month"],
+     group = G_PHL, active = i_phl_enable and i_phl_weekOn,
+     tooltip = "Only shown when the chart timeframe is at or below the one selected.")
+
+i_phl_monthOn = input.bool(false, "Previous Month" + PAD_W + PAD_W + PAD_N + PAD_N,
+     group = G_PHL, inline = "phlM1", active = i_phl_enable)
+
+i_phl_monthCol = input.color(color.red, "",
+     group = G_PHL, inline = "phlM1", active = i_phl_enable and i_phl_monthOn)
+
+
+i_phl_monthCount = input.int(1, "", minval = 1, maxval = 50,
+     group = G_PHL, inline = "phlM1", active = i_phl_enable and i_phl_monthOn,
+     tooltip = "Colour, and how many previous months to show. On a 1-minute chart a month reaches further back than TradingView lets a drawing anchor, so the oldest lines are trimmed and a note appears bottom-right.")
+
+i_phl_monthTf = input.string("1 week", "Apply Below" + PAD_N + PAD_N,
+     options = ["Any", "1 minute", "2 minutes", "3 minutes", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "45 minutes", "1 hour", "2 hours", "3 hours", "4 hours", "6 hours", "8 hours", "12 hours", "1 day", "1 week", "1 month"],
+     group = G_PHL, active = i_phl_enable and i_phl_monthOn,
+     tooltip = "Only shown when the chart timeframe is at or below the one selected.")
+
+// Deliberately NOT on this section's 362 inline column: the row is padded so
+// its dropdown lines up with the three Apply Below dropdowns directly above it,
+// which are non-inline and sit on the shared native column. Measured from the
+// panel, 5W + 2N left it 13 px right of them, so 4W + 1M + 1N = 83 — the pad
+// units land that one exactly. Do not "correct" this back to the inline column.
+i_phl_lineStyle = input.string("Solid", "Line Style" + PAD_W + PAD_W + PAD_W + PAD_W + PAD_M + PAD_N,
+     options = ["Solid", "Dotted", "Dashed"],
+     group = G_PHL, inline = "phlSty", active = i_phl_enable)
+
+i_phl_lineWidth = input.int(2, "", minval = 1, maxval = 10,
+     group = G_PHL, inline = "phlSty", active = i_phl_enable,
+     tooltip = "Style and thickness for every level in this section. Colours are set per level above.")
+
+i_phl_fade = input.bool(true, "Fade Older Lines",
+     group = G_PHL, active = i_phl_enable,
+     tooltip = "Older highs and lows fade out so the most recent ones stand out.")
+
+// ----------------------- OPENING LEVELS — anchor 362 -------------------------
+
+i_kl_enable = input.bool(true, "Enable",
+     group = G_KL,
+     tooltip = "Horizontal lines at reference opening prices and at the all-time high. Each row below sets that level's colour, the text written beside it, and the highest chart timeframe it appears on. Levels sitting at the same price merge their labels into one.")
+
+i_kl_midOn = input.bool(true, "00:00 AM" + PAD_W + PAD_W + PAD_W + PAD_W + PAD_W + PAD_W + PAD_N + PAD_N,
+     group = G_KL, inline = "klMid", active = i_kl_enable)
+
+i_kl_midCol = input.color(#2A62FF, "",
+     group = G_KL, inline = "klMid", active = i_kl_enable and i_kl_midOn)
+
+i_kl_midTxt = input.string("00:00", "",
+     group = G_KL, inline = "klMid", active = i_kl_enable and i_kl_midOn)
+
+i_kl_midTf = input.string("45 minutes", "",
+     options = ["Any", "1 minute", "2 minutes", "3 minutes", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "45 minutes", "1 hour", "2 hours", "3 hours", "4 hours", "6 hours", "8 hours", "12 hours", "1 day", "1 week", "1 month"],
+     group = G_KL, inline = "klMid", active = i_kl_enable and i_kl_midOn,
+     tooltip = "Only shown when the chart timeframe is at or below the one selected.\n\nThis level also needs a candle that OPENS at exactly midnight, in the Timezone set under General. A stock is shut at midnight, so on a stock chart it never appears no matter which timeframe you pick — a note bottom-right says so. It is built for markets that trade around the clock: futures, forex and crypto.")
+
+i_kl_tenOn = input.bool(false, "10:00 AM" + PAD_W + PAD_W + PAD_W + PAD_W + PAD_W + PAD_W + PAD_N + PAD_N,
+     group = G_KL, inline = "klTen", active = i_kl_enable)
+
+i_kl_tenCol = input.color(#2A62FF, "",
+     group = G_KL, inline = "klTen", active = i_kl_enable and i_kl_tenOn)
+
+i_kl_tenTxt = input.string("10AM", "",
+     group = G_KL, inline = "klTen", active = i_kl_enable and i_kl_tenOn)
+
+i_kl_tenTf = input.string("15 minutes", "",
+     options = ["Any", "1 minute", "2 minutes", "3 minutes", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "45 minutes", "1 hour", "2 hours", "3 hours", "4 hours", "6 hours", "8 hours", "12 hours", "1 day", "1 week", "1 month"],
+     group = G_KL, inline = "klTen", active = i_kl_enable and i_kl_tenOn,
+     tooltip = "Only shown when the chart timeframe is at or below the one selected.\n\nThis level also needs a candle that OPENS at exactly 10:00, in the Timezone set under General. On timeframes whose candles do not start on the hour — 45 minutes, 3 hours — it can be skipped, and a note bottom-right says so. Use 1, 5, 15 or 30 minutes.")
+
+i_kl_dayOn = input.bool(false, "Daily Open" + PAD_W + PAD_W + PAD_W + PAD_W + PAD_W + PAD_M + PAD_N,
+     group = G_KL, inline = "klDay", active = i_kl_enable)
+
+i_kl_dayCol = input.color(#636363, "",
+     group = G_KL, inline = "klDay", active = i_kl_enable and i_kl_dayOn)
+
+i_kl_dayTxt = input.string("𝐃.𝐎", "",
+     group = G_KL, inline = "klDay", active = i_kl_enable and i_kl_dayOn)
+
+i_kl_dayTf = input.string("1 hour", "",
+     options = ["Any", "1 minute", "2 minutes", "3 minutes", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "45 minutes", "1 hour", "2 hours", "3 hours", "4 hours", "6 hours", "8 hours", "12 hours", "1 day", "1 week", "1 month"],
+     group = G_KL, inline = "klDay", active = i_kl_enable and i_kl_dayOn,
+     tooltip = "Only shown when the chart timeframe is at or below the one selected.")
+
+i_kl_weekOn = input.bool(true, "Weekly Open" + PAD_W + PAD_W + PAD_W + PAD_M + PAD_N + PAD_N,
+     group = G_KL, inline = "klWk", active = i_kl_enable)
+
+i_kl_weekCol = input.color(#636363, "",
+     group = G_KL, inline = "klWk", active = i_kl_enable and i_kl_weekOn)
+
+i_kl_weekTxt = input.string("𝐖.𝐎", "",
+     group = G_KL, inline = "klWk", active = i_kl_enable and i_kl_weekOn)
+
+i_kl_weekTf = input.string("4 hours", "",
+     options = ["Any", "1 minute", "2 minutes", "3 minutes", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "45 minutes", "1 hour", "2 hours", "3 hours", "4 hours", "6 hours", "8 hours", "12 hours", "1 day", "1 week", "1 month"],
+     group = G_KL, inline = "klWk", active = i_kl_enable and i_kl_weekOn,
+     tooltip = "Only shown when the chart timeframe is at or below the one selected.")
+
+i_kl_monthOn = input.bool(false, "Monthly Open" + PAD_W + PAD_W + PAD_W + PAD_N,
+     group = G_KL, inline = "klMth", active = i_kl_enable)
+
+i_kl_monthCol = input.color(#636363, "",
+     group = G_KL, inline = "klMth", active = i_kl_enable and i_kl_monthOn)
+
+i_kl_monthTxt = input.string("𝐌.𝐎", "",
+     group = G_KL, inline = "klMth", active = i_kl_enable and i_kl_monthOn)
+
+i_kl_monthTf = input.string("1 day", "",
+     options = ["Any", "1 minute", "2 minutes", "3 minutes", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "45 minutes", "1 hour", "2 hours", "3 hours", "4 hours", "6 hours", "8 hours", "12 hours", "1 day", "1 week", "1 month"],
+     group = G_KL, inline = "klMth", active = i_kl_enable and i_kl_monthOn,
+     tooltip = "Only shown when the chart timeframe is at or below the one selected.")
+
+i_kl_yearOn = input.bool(false, "Yearly Open" + PAD_W + PAD_W + PAD_W + PAD_W + PAD_M + PAD_N + PAD_N,
+     group = G_KL, inline = "klYr", active = i_kl_enable)
+
+i_kl_yearCol = input.color(#636363, "",
+     group = G_KL, inline = "klYr", active = i_kl_enable and i_kl_yearOn)
+
+i_kl_yearTxt = input.string("𝐘.𝐎", "",
+     group = G_KL, inline = "klYr", active = i_kl_enable and i_kl_yearOn)
+
+i_kl_yearTf = input.string("Any", "",
+     options = ["Any", "1 minute", "2 minutes", "3 minutes", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "45 minutes", "1 hour", "2 hours", "3 hours", "4 hours", "6 hours", "8 hours", "12 hours", "1 day", "1 week", "1 month"],
+     group = G_KL, inline = "klYr", active = i_kl_enable and i_kl_yearOn,
+     tooltip = "Only shown when the chart timeframe is at or below the one selected.")
+
+i_kl_athOn = input.bool(true, "All-Time High" + PAD_W + PAD_W + PAD_W + PAD_M + PAD_N,
+     group = G_KL, inline = "klAth", active = i_kl_enable)
+
+i_kl_athCol = input.color(#636363, "",
+     group = G_KL, inline = "klAth", active = i_kl_enable and i_kl_athOn)
+
+i_kl_athTxt = input.string("𝐀.𝐓.𝐇", "",
+     group = G_KL, inline = "klAth", active = i_kl_enable and i_kl_athOn)
+
+i_kl_athTf = input.string("Any", "",
+     options = ["Any", "1 minute", "2 minutes", "3 minutes", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "45 minutes", "1 hour", "2 hours", "3 hours", "4 hours", "6 hours", "8 hours", "12 hours", "1 day", "1 week", "1 month"],
+     group = G_KL, inline = "klAth", active = i_kl_enable and i_kl_athOn,
+     tooltip = "Only shown when the chart timeframe is at or below the one selected.")
+
+i_kl_lineStyle = input.string("Dashed", "Line Style" + PAD_W + PAD_W + PAD_W + PAD_W + PAD_W + PAD_W + PAD_W + PAD_W + PAD_W + PAD_W + PAD_N + PAD_N,
+     options = ["Solid", "Dotted", "Dashed"],
+     group = G_KL, inline = "klSty", active = i_kl_enable)
+
+i_kl_lineWidth = input.int(1, "", minval = 1, maxval = 10,
+     group = G_KL, inline = "klSty", active = i_kl_enable,
+     tooltip = "Style and thickness for every level in this section. Colours are set per level above.")
+
+i_kl_textCol = input.color(#636363, "Text Colour" + PAD_W + PAD_W + PAD_W + PAD_W + PAD_W + PAD_W + PAD_W + PAD_W + PAD_W + PAD_N,
+     group = G_KL, inline = "klTxt", active = i_kl_enable)
+
+i_kl_lblSize = input.string("Normal", "",
+     options = ["Auto", "Tiny", "Small", "Normal", "Large", "Huge"],
+     group = G_KL, inline = "klTxt", active = i_kl_enable)
+
+i_kl_lineLen = input.int(1, "Line Length" + PAD_N + PAD_N, minval = 1, maxval = 500,
+     group = G_KL, active = i_kl_enable,
+     tooltip = "How far past the last bar the lines and their labels sit.")
+
+// =============================================================================
+//  3. HELPER FUNCTIONS
+// =============================================================================
+
+// "New York" -> "America/New_York"
+f_tz(string name) =>
+    switch name
+        "Chart / Exchange" => syminfo.timezone
+        "New York"         => "America/New_York"
+        "Chicago"          => "America/Chicago"
+        "Los Angeles"      => "America/Los_Angeles"
+        "London"           => "Europe/London"
+        "Frankfurt"        => "Europe/Berlin"
+        "Dubai"            => "Asia/Dubai"
+        "Hong Kong"        => "Asia/Hong_Kong"
+        "Singapore"        => "Asia/Singapore"
+        "Tokyo"            => "Asia/Tokyo"
+        "Sydney"           => "Australia/Sydney"
+        => "UTC"
+
+// "15 minutes" -> "15"
+f_tfString(string label) =>
+    switch label
+        "1 minute"   => "1"
+        "2 minutes"  => "2"
+        "3 minutes"  => "3"
+        "5 minutes"  => "5"
+        "10 minutes" => "10"
+        "15 minutes" => "15"
+        "30 minutes" => "30"
+        "45 minutes" => "45"
+        "1 hour"     => "60"
+        "2 hours"    => "120"
+        "3 hours"    => "180"
+        "4 hours"    => "240"
+        "6 hours"    => "360"
+        "8 hours"    => "480"
+        "12 hours"   => "720"
+        "1 day"      => "1D"
+        "1 week"     => "1W"
+        "1 month"    => "1M"
+        => "1M"
+
+// Chart timeframe in seconds — computed once, not per call.
+var int g_chartSeconds = timeframe.in_seconds(timeframe.period)
+
+// Is the chart timeframe at or below the one named?
+f_applyBelow(string label) =>
+    label == "Any" ? true : g_chartSeconds <= timeframe.in_seconds(f_tfString(label))
+
+// "Dashed" -> line.style_dashed
+f_lineStyle(string name) =>
+    switch name
+        "Solid"  => line.style_solid
+        "Dotted" => line.style_dotted
+        "Dashed" => line.style_dashed
+        => line.style_solid
+
+// "Normal" -> size.normal
+f_textSize(string name) =>
+    switch name
+        "Auto"   => size.auto
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        "Huge"   => size.huge
+        => size.auto
+
+// "Sunday" -> dayofweek.sunday
+f_dayOfWeek(string name) =>
+    switch name
+        "Sunday"    => dayofweek.sunday
+        "Monday"    => dayofweek.monday
+        "Tuesday"   => dayofweek.tuesday
+        "Wednesday" => dayofweek.wednesday
+        "Thursday"  => dayofweek.thursday
+        "Friday"    => dayofweek.friday
+        "Saturday"  => dayofweek.saturday
+        => dayofweek.sunday
+
+// The label-alignment fix: body sits to the RIGHT of the anchor, text vertically
+// centred, bubble and pointer fully transparent.
+f_rightLabel(int x, float y, string txt, color txtCol, string sz) =>
+    label.new(x, y, txt,
+         xloc      = xloc.bar_index,
+         yloc      = yloc.price,
+         style     = label.style_label_left,
+         color     = color.new(color.black, 100),
+         textcolor = txtCol,
+         size      = sz,
+         textalign = text.align_left)
+
+// Warning queue. Declared here rather than in the banner block below because
+// every module calls f_warn(), and Pine requires a function to be declared
+// before its first use.
+var array<string> g_warnings = array.new<string>()
+
+f_warn(string msg) =>
+    if not g_warnings.includes(msg)
+        g_warnings.push(msg)
+
+// =============================================================================
+//  4. VISIBILITY FLAGS
+//
+//  `var bool` — evaluated once on bar 0, from inputs and timeframe only, never
+//  from price or bar state. Changing an input or the chart timeframe re-runs the
+//  script from scratch, so nothing goes stale.
+// =============================================================================
+
+var bool sep_on     = i_sep_enable and f_applyBelow(i_sep_tf)
+var bool sep_dayOn  = sep_on and i_sep_dayOn
+var bool sep_weekOn = sep_on and i_sep_weekOn
+
+var bool kz_on     = i_kz_enable and f_applyBelow(i_kz_tf)
+var bool kz_asiaOn = kz_on and i_kz_asiaOn
+var bool kz_lonOn  = kz_on and i_kz_lonOn
+var bool kz_nyamOn = kz_on and i_kz_nyamOn
+var bool kz_nypmOn = kz_on and i_kz_nypmOn
+
+var bool phl_showDay   = i_phl_enable and i_phl_dayOn   and f_applyBelow(i_phl_dayTf)
+var bool phl_showWeek  = i_phl_enable and i_phl_weekOn  and f_applyBelow(i_phl_weekTf)
+var bool phl_showMonth = i_phl_enable and i_phl_monthOn and f_applyBelow(i_phl_monthTf)
+
+var bool kl_showMid   = i_kl_enable and i_kl_midOn   and f_applyBelow(i_kl_midTf)
+var bool kl_showTen   = i_kl_enable and i_kl_tenOn   and f_applyBelow(i_kl_tenTf)
+var bool kl_showDay   = i_kl_enable and i_kl_dayOn   and f_applyBelow(i_kl_dayTf)
+var bool kl_showWeek  = i_kl_enable and i_kl_weekOn  and f_applyBelow(i_kl_weekTf)
+var bool kl_showMonth = i_kl_enable and i_kl_monthOn and f_applyBelow(i_kl_monthTf)
+var bool kl_showYear  = i_kl_enable and i_kl_yearOn  and f_applyBelow(i_kl_yearTf)
+var bool kl_showAth   = i_kl_enable and i_kl_athOn   and f_applyBelow(i_kl_athTf)
+
+// =============================================================================
+//  5. MODULES
+// =============================================================================
+
+// ===== MODULE: DAY AND WEEK VERTICAL LINES ===================================
+//
+//  The day boundary is NOT worked out from the asset type. Guessing it from a
+//  ladder of asset classes (midnight for crypto, 17:00 for forex, 18:00 for
+//  everything else) is right for CME/NYMEX/COMEX and wrong for stocks, Euronext,
+//  CBOT grains, ICE, VIX and CFD indices. TradingView already knows each
+//  symbol's session, and timeframe.change("D") / timeframe.change("W") read it.
+//  Both are Time built-ins, not request.*() calls, so they cost nothing against
+//  the 40-call limit.
+
+// A vertical line anchored to real prices. extend.both makes the line full
+// height regardless of its endpoints, so the y values only need to be plausible
+// — the low and high of the bar it sits on.
+f_vline(int x, color col, string style, int width) =>
+    line.new(x, low, x, high, xloc.bar_index, extend.both, col, style, width)
+
+// Separator lines persist forever, one per day, and max_lines_count is 500
+// SHARED with Previous Highs & Lows and Opening Levels. On a 1-hour chart with
+// 20,000 bars that is ~830 lines demanding IDs, and TradingView silently trims
+// the OLDEST drawing — which may be a Previous Highs & Lows line rather than an
+// old separator. Cap at SEP_MAX, oldest first.
+var array<line> sep_lines = array.new<line>()
+
+f_pushSeparator(line ln) =>
+    sep_lines.push(ln)
+    if sep_lines.size() > SEP_MAX
+        line.delete(sep_lines.shift())
+
+// ---- Day boundary, five modes ----
+//
+// The timezone the active mode reasons in. Auto, Market open only and Midnight —
+// exchange time all live in the exchange's own clock; the other two are named.
+string sep_dayTz = i_sep_dayStart == "Midnight — New York" ? "America/New_York" :
+     i_sep_dayStart == "Custom time" ? f_tz(i_sep_customTz) : syminfo.timezone
+
+// Modes 3-5 are all "the clock passed HH:MM". Build that instant for the bar's
+// OWN calendar date and compare: timestamp() is timezone- and DST-aware, so the
+// boundary stays put on the two transition days each year. (Shifting the raw
+// millisecond timestamp instead would slide the boundary by an hour on those
+// days, because the shift knows nothing about the offset change.)
+int sep_clockHr  = i_sep_dayStart == "Custom time" ? i_sep_customHr  : 0
+int sep_clockMin = i_sep_dayStart == "Custom time" ? i_sep_customMin : 0
+
+int sep_todayStart = timestamp(sep_dayTz, year(time, sep_dayTz), month(time, sep_dayTz),
+     dayofmonth(time, sep_dayTz), sep_clockHr, sep_clockMin)
+
+// "Crossed the boundary" is necessary but NOT sufficient, and the difference is
+// the whole Sunday-evening problem. CME reopens Sun 18:00 New York; the previous
+// bar is Friday, so the weekend gap does technically straddle Sunday's midnight
+// and the reopen bar reported a new day — giving a 6pm line AND a midnight line
+// on the same night, and leaving the week line on whichever of the two happened
+// to qualify that week. Require the boundary to fall inside the bar that just
+// opened: exact on timeframes that have a bar at 00:00, still correct on ones
+// that do not (a 45m chart's 00:30 bar is 30 minutes past a 45-minute boundary),
+// and false for a reopen hours later. A gap that swallows the boundary entirely
+// produces no day line for that day.
+bool sep_clockInBar  = time - sep_todayStart < g_chartSeconds * 1000.0
+bool sep_newClockDay = time >= sep_todayStart and time[1] < sep_todayStart and sep_clockInBar
+
+// "Market open only" means: skip the pre-market and post-market, put the line on
+// the regular open. Detecting that as a false->true transition of session.ismarket
+// ALONE is wrong, and measurably so — on CME_MINI:NQ1! all 20,120 loaded bars are
+// market bars, and on BATS:AAPL with Extended Hours off all 20,125 are too. The
+// overnight break and the weekend contain no bars at all, so `[1]` — the previous
+// CHART bar — is always a market bar and the transition never happens. The mode
+// drew nothing on either symbol.
+//
+// It only transitions on a chart that actually carries non-market bars: the same
+// AAPL chart with Extended Hours ON has 7,018 pre-market and 5,083 post-market
+// bars, and the transition fires once per day at 09:30 exactly as intended.
+//
+// So: use the transition where one exists, and fall back to the daily-bar boundary
+// where none does. That fallback is not a fudge — on a regular-hours stock chart
+// the day's first bar IS the opening bell. On futures, forex and crypto there is
+// no pre/post session to skip and the mode legitimately equals Auto; the banner
+// says so rather than leaving it looking broken.
+// The two halves of that OR do NOT reliably land on the same bar. Measured on
+// BATS:AAPL with Extended Hours on: a line at 09:30 AND another at 09:45, every
+// single day. Which clause wins on which bar depends on how TradingView maps the
+// daily bar onto an extended-hours chart, and chasing that would make the mode
+// depend on a mapping detail that is not documented and could change.
+//
+// So it does not depend on it. Keep the FIRST qualifying bar of each calendar day
+// and discard any later one. The date is read in the same timezone the active
+// day-start mode reasons in, so it moves with the mode rather than against it.
+// This also does the right thing on markets with a lunch break, where the
+// afternoon reopen is a second market open but not a second trading day.
+int sep_calDay = year(time, sep_dayTz) * 10000 + month(time, sep_dayTz) * 100 + dayofmonth(time, sep_dayTz)
+
+var int  sep_marketDrawn = na
+bool sep_marketRaw  = session.ismarket and (not session.ismarket[1] or timeframe.change("D"))
+bool sep_marketOpen = sep_marketRaw and (na(sep_marketDrawn) or sep_marketDrawn != sep_calDay)
+
+if sep_marketOpen
+    sep_marketDrawn := sep_calDay
+
+bool sep_newDay = switch i_sep_dayStart
+    "Auto (exchange session)" => timeframe.change("D")
+    "Market open only"        => sep_marketOpen
+    => sep_newClockDay
+
+// Does this chart carry any bar outside regular hours? Answered by watching, not
+// by guessing from syminfo — see above. Only read on the last bar, by the banner.
+var bool sep_sawNonMarket = false
+if not session.ismarket
+    sep_sawNonMarket := true
+
+// ---- Week boundary, three modes ----
+//
+// All three key off the SESSION's calendar day, taken from the daily bar's
+// midpoint — the midpoint always falls inside the session, so a CME Wednesday
+// session that opens on Tuesday evening counts as Wednesday.
+int sep_dayOpen    = time("D")
+int sep_dayClose   = time_close("D")
+int sep_sessionMid = na(sep_dayOpen) or na(sep_dayClose) ? na : sep_dayOpen + (sep_dayClose - sep_dayOpen) / 2
+int sep_sessionDow = na(sep_sessionMid) ? 0 : dayofweek(sep_sessionMid, syminfo.timezone)
+
+// Follow Day Start learns WHICH weekday opens the exchange's week, then fires on
+// the day boundary that lands on it — so the week line inherits the day line's
+// clock instead of sitting at the exchange session open. With Day Starts At on
+// Auto the two are the same instant and nothing moves; with it on Midnight or
+// Custom, the week line moves onto a day line instead of landing mid-day.
+// The 0 guard keeps a bar with no daily-bar data from teaching it a bogus day.
+var int sep_autoWeekDow = na
+if timeframe.change("W") and sep_sessionDow != 0
+    sep_autoWeekDow := sep_sessionDow
+
+bool sep_weekHit = switch i_sep_weekMode
+    "Exchange Week" => timeframe.change("W")
+    "Specific Day"  => sep_newDay and sep_sessionDow == f_dayOfWeek(i_sep_weekDay)
+    // Follow Day Start. Before the first weekly change is seen there is nothing
+    // to follow, so fall back to the exchange week.
+    => na(sep_autoWeekDow) ? timeframe.change("W") : sep_newDay and sep_sessionDow == sep_autoWeekDow
+
+// At most one week line per exchange week, in every mode.
+//
+// The weekday test alone is not enough, because a day boundary is not a
+// daily-bar boundary once "Day Starts At" leaves Auto. On CME the daily bar runs
+// Sun 17:00 -> Mon 16:00 and carries the session weekday Monday; in the Midnight
+// modes BOTH the Sunday-evening reopen and the following midnight fall inside
+// that one daily bar, so both read Monday and both drew a week line a few hours
+// apart. Keying on time("W") — a Time built-in, no request cost — collapses them
+// to the week's first qualifying boundary.
+var int sep_weekDrawn = na
+int sep_weekStamp = time("W")
+
+bool sep_newWeek = sep_weekHit and (na(sep_weekDrawn) or sep_weekDrawn != sep_weekStamp)
+
+if sep_newWeek
+    sep_weekDrawn := sep_weekStamp
+
+// A day line is suppressed only where a week line is actually DRAWN, so the week
+// line never has a day line over it. Suppressing on the week-start bar
+// unconditionally would instead leave that day with no line at all whenever week
+// lines are switched off.
+bool sep_drawWeek = sep_weekOn and sep_newWeek
+bool sep_drawDay  = sep_dayOn and sep_newDay and not sep_drawWeek
+
+// ---- Draw mode: Lines ----
+if i_sep_drawAs == "Lines"
+    if sep_drawWeek
+        f_pushSeparator(f_vline(bar_index, i_sep_weekCol, f_lineStyle(i_sep_weekStyle), i_sep_weekWidth))
+    if sep_drawDay
+        f_pushSeparator(f_vline(bar_index, i_sep_dayCol, f_lineStyle(i_sep_dayStyle), i_sep_dayWidth))
+
+// ---- Draw mode: Background ----
+// Exactly two bgcolor calls. The swatch supplies the hue, but transparency is
+// forced to fixed values here — a swatch alpha tuned for a 1-4 px line renders
+// nearly opaque once it fills a whole bar, so reusing it directly would make
+// Background mode far darker than the colour picker suggests.
+color sep_weekBg = color.new(i_sep_weekCol, 60)
+color sep_dayBg  = color.new(i_sep_dayCol, 90)
+
+bgcolor(i_sep_drawAs == "Background" and sep_drawWeek ? sep_weekBg : na, title = "Week line background")
+bgcolor(i_sep_drawAs == "Background" and sep_drawDay ? sep_dayBg : na, title = "Day line background")
+
+// ---- Day names: seven weekdays x two name lengths ----
+//
+// The name sits MIDWAY between the separator that opens its day and the one that
+// closes it. The closing separator has not happened yet when the name has to be
+// plotted — plotshape draws on the bar it is evaluated on, and `offset` cannot
+// vary per bar — so the midpoint has to be predicted, and how it is predicted
+// depends on what the mode cuts the day at.
+//
+// Auto mode: the separators ARE the daily-bar edges, so the daily bar itself
+// hands over both ends of the day. time("D") and time_close("D") are derived from
+// the session schedule, carry no lookahead, and read the same on every bar inside
+// the day, so the name goes on the first bar to reach the session's own midpoint.
+// Nothing is measured from the day before, and that is what makes the unusual
+// days behave. A half day's session is short and its midpoint moves left. And
+// when TradingView folds a holiday into the neighbouring session and prints
+// Monday and Tuesday as ONE trading day, that session runs 47 hours instead of
+// 23 and its midpoint moves right by the same factor — so neither the long day
+// nor the day after it inherits a width that does not belong to it.
+//
+// The clock modes and Market open only cut the day somewhere that is not a
+// daily-bar edge, so there is no end to read and the day is measured instead:
+// the previous day's width in bars, which is what spacing on screen actually is.
+// That estimate keeps the old limitation — an unusually long or short day
+// mis-centres the day after it — but not the merged-session case above, because
+// a clock boundary still falls inside a merged session and still splits it into
+// two named days.
+//
+// Either way the ANCHOR moves rather than the offset; i_sep_nameOffset survives
+// as a manual nudge, defaulting to 0 because the anchor is already correct.
+var int sep_lastDayBar = na
+var int sep_barsPerDay = na
+
+if sep_newDay
+    if not na(sep_lastDayBar)
+        sep_barsPerDay := bar_index - sep_lastDayBar
+    sep_lastDayBar := bar_index
+
+// ---- Anchor 1: the session's own midpoint (Auto mode) ----
+//
+// "The bar that holds the midpoint" is written as one comparison rather than a
+// pair, so that a midpoint landing in a gap — a lunch break, or the five hours a
+// holiday session sits closed — is claimed by the first bar AFTER the gap instead
+// of by no bar at all. The test then stays true for the rest of the day, so the
+// first bar to pass it takes the name and a latch locks out the rest.
+var bool sep_nameTaken = false
+if sep_newDay
+    sep_nameTaken := false
+
+bool sep_useSessionMid  = i_sep_dayStart == "Auto (exchange session)" and not na(sep_sessionMid)
+bool sep_pastSessionMid = not na(sep_sessionMid) and time + g_chartSeconds * 1000 > sep_sessionMid
+
+// A name is never drawn on the bar that carries its own day's separator, which
+// is what the midpoint test alone would do on a day whose FIRST bar is already
+// past the session midpoint. That is not hypothetical: a suspended or very
+// illiquid symbol produces no bars while it is not trading, so a Euronext stock
+// that resumes at 16:00 has a two-bar day starting seven hours into its own
+// session — and the name landed on the day line, or on the week line over it.
+// Stepping to the next bar puts a two-bar day's name exactly in the middle of
+// the two separators; a day with a single bar has no room for a name and gets
+// none, which is the same thing the measured anchor does with a zero-width day.
+bool sep_clearOfLine = not na(sep_lastDayBar) and bar_index > sep_lastDayBar
+
+bool sep_atSessionMid = sep_pastSessionMid and sep_clearOfLine and not sep_nameTaken
+if sep_atSessionMid
+    sep_nameTaken := true
+
+// ---- Anchor 2: the previous day's width in bars (every other mode) ----
+//
+// math.floor, not a bare /2: an odd bar count (half day, holiday, gappy feed)
+// would otherwise land on x.5 and match no bar at all, silently dropping that
+// day's name.
+// math.max(1, ...) for the same reason as the clearance above: a day one bar
+// wide, or none, would otherwise put its name straight on its own separator.
+bool sep_atMeasuredMid = not na(sep_lastDayBar) and not na(sep_barsPerDay) and bar_index - sep_lastDayBar == math.max(1, math.floor(sep_barsPerDay / 2))
+
+// Both anchors only speak for a day whose OPENING separator was seen, so the
+// chart's first, partial day still gets no name.
+bool sep_atDayMid = sep_useSessionMid ? sep_atSessionMid : sep_atMeasuredMid
+
+// Weekday of the bar the label actually lands on, read in whichever timezone the
+// active day-start mode uses. At the midpoint the bar is always inside its own
+// session, so this agrees with the daily-bar midpoint in every mode.
+int sep_labelDow = dayofweek(time, sep_dayTz)
+
+// Fourteen plotshape calls is the floor, not laziness — plotshape's `text`
+// parameter must be a compile-time constant, so dynamic text is impossible, and
+// labels cannot pin to the top of the pane the way location.top does.
+bool sep_isCrypto  = syminfo.type == "crypto"
+bool sep_shortName = sep_on and i_sep_names == "Short (Mon)" and sep_atDayMid
+bool sep_fullName  = sep_on and i_sep_names == "Full (Monday)" and sep_atDayMid
+
+plotshape(sep_shortName and sep_labelDow == dayofweek.monday, title = "Mon", text = "Mon", style = shape.circle, location = location.top, color = SEP_DOT, textcolor = i_sep_nameCol, size = size.tiny, offset = i_sep_nameOffset, editable = false)
+plotshape(sep_shortName and sep_labelDow == dayofweek.tuesday, title = "Tues", text = "Tues", style = shape.circle, location = location.top, color = SEP_DOT, textcolor = i_sep_nameCol, size = size.tiny, offset = i_sep_nameOffset, editable = false)
+plotshape(sep_shortName and sep_labelDow == dayofweek.wednesday, title = "Wed", text = "Wed", style = shape.circle, location = location.top, color = SEP_DOT, textcolor = i_sep_nameCol, size = size.tiny, offset = i_sep_nameOffset, editable = false)
+plotshape(sep_shortName and sep_labelDow == dayofweek.thursday, title = "Thu", text = "Thu", style = shape.circle, location = location.top, color = SEP_DOT, textcolor = i_sep_nameCol, size = size.tiny, offset = i_sep_nameOffset, editable = false)
+plotshape(sep_shortName and sep_labelDow == dayofweek.friday, title = "Fri", text = "Fri", style = shape.circle, location = location.top, color = SEP_DOT, textcolor = i_sep_nameCol, size = size.tiny, offset = i_sep_nameOffset, editable = false)
+plotshape(sep_shortName and sep_isCrypto and sep_labelDow == dayofweek.saturday, title = "Sat", text = "Sat", style = shape.circle, location = location.top, color = SEP_DOT, textcolor = i_sep_nameCol, size = size.tiny, offset = i_sep_nameOffset, editable = false)
+plotshape(sep_shortName and sep_isCrypto and sep_labelDow == dayofweek.sunday, title = "Sun", text = "Sun", style = shape.circle, location = location.top, color = SEP_DOT, textcolor = i_sep_nameCol, size = size.tiny, offset = i_sep_nameOffset, editable = false)
+
+plotshape(sep_fullName and sep_labelDow == dayofweek.monday, title = "Monday", text = "Monday", style = shape.circle, location = location.top, color = SEP_DOT, textcolor = i_sep_nameCol, size = size.tiny, offset = i_sep_nameOffset, editable = false)
+plotshape(sep_fullName and sep_labelDow == dayofweek.tuesday, title = "Tuesday", text = "Tuesday", style = shape.circle, location = location.top, color = SEP_DOT, textcolor = i_sep_nameCol, size = size.tiny, offset = i_sep_nameOffset, editable = false)
+plotshape(sep_fullName and sep_labelDow == dayofweek.wednesday, title = "Wednesday", text = "Wednesday", style = shape.circle, location = location.top, color = SEP_DOT, textcolor = i_sep_nameCol, size = size.tiny, offset = i_sep_nameOffset, editable = false)
+plotshape(sep_fullName and sep_labelDow == dayofweek.thursday, title = "Thursday", text = "Thursday", style = shape.circle, location = location.top, color = SEP_DOT, textcolor = i_sep_nameCol, size = size.tiny, offset = i_sep_nameOffset, editable = false)
+plotshape(sep_fullName and sep_labelDow == dayofweek.friday, title = "Friday", text = "Friday", style = shape.circle, location = location.top, color = SEP_DOT, textcolor = i_sep_nameCol, size = size.tiny, offset = i_sep_nameOffset, editable = false)
+plotshape(sep_fullName and sep_isCrypto and sep_labelDow == dayofweek.saturday, title = "Saturday", text = "Saturday", style = shape.circle, location = location.top, color = SEP_DOT, textcolor = i_sep_nameCol, size = size.tiny, offset = i_sep_nameOffset, editable = false)
+plotshape(sep_fullName and sep_isCrypto and sep_labelDow == dayofweek.sunday, title = "Sunday", text = "Sunday", style = shape.circle, location = location.top, color = SEP_DOT, textcolor = i_sep_nameCol, size = size.tiny, offset = i_sep_nameOffset, editable = false)
+
+// ===== MODULE: SESSIONS ======================================================
+//
+//  One render function, four call sites: a `var` declared inside a Pine function
+//  creates one independent instance per call site, so four call sites give four
+//  independent boxes with no arrays.
+//
+//  Deliberately carries no hit-rate or success-rate statistics. A session box
+//  records where price went; it does not measure what price will do next.
+
+// Two separate `if` statements rather than if/else: the create arm ends in an
+// assignment, which types as `series box`, while the update arm ends in a void
+// setter call. Pine types both arms of an if/else even when the value is thrown
+// away, and rejects the mismatch (CE10235). Split, each arm stands alone.
+f_kzRender(bool inSession, bool isNew, color col, string txt, string szOpt, int opacity) =>
+    var box b = na
+    if inSession
+        if isNew
+            b := box.new(bar_index, high, bar_index, low, text = txt,
+                 text_color   = color.rgb(color.r(col), color.g(col), color.b(col), 100 - opacity),
+                 bgcolor      = col,
+                 border_color = col,
+                 text_size    = f_textSize(szOpt))
+        if not isNew and not na(b)
+            float top = box.get_top(b)
+            float bot = box.get_bottom(b)
+            if high > top
+                top := high
+            if low < bot
+                bot := low
+            box.set_rightbottom(b, bar_index, bot)
+            box.set_top(b, top)
+
+// Session detection uses the Timezone set in General, not a hardcoded zone, so
+// changing that one input moves all four sessions together.
+bool kz_asiaIn  = not na(time(timeframe.period, i_kz_asiaTime, f_tz(i_g_tz)))
+bool kz_asiaNew = kz_asiaIn and not kz_asiaIn[1]
+
+bool kz_lonIn  = not na(time(timeframe.period, i_kz_lonTime, f_tz(i_g_tz)))
+bool kz_lonNew = kz_lonIn and not kz_lonIn[1]
+
+bool kz_nyamIn  = not na(time(timeframe.period, i_kz_nyamTime, f_tz(i_g_tz)))
+bool kz_nyamNew = kz_nyamIn and not kz_nyamIn[1]
+
+bool kz_nypmIn  = not na(time(timeframe.period, i_kz_nypmTime, f_tz(i_g_tz)))
+bool kz_nypmNew = kz_nypmIn and not kz_nypmIn[1]
+
+// A gated-off session creates no box at all. The flags are `var bool`, so a call
+// site is either live for the whole run or never — which is what keeps each call
+// site's internal `var box` in step.
+if kz_asiaOn
+    f_kzRender(kz_asiaIn, kz_asiaNew, i_kz_asiaCol, i_kz_asiaTxt, i_kz_lblSize, i_kz_lblOpacity)
+
+if kz_lonOn
+    f_kzRender(kz_lonIn, kz_lonNew, i_kz_lonCol, i_kz_lonTxt, i_kz_lblSize, i_kz_lblOpacity)
+
+if kz_nyamOn
+    f_kzRender(kz_nyamIn, kz_nyamNew, i_kz_nyamCol, i_kz_nyamTxt, i_kz_lblSize, i_kz_lblOpacity)
+
+if kz_nypmOn
+    f_kzRender(kz_nypmIn, kz_nypmNew, i_kz_nypmCol, i_kz_nypmTxt, i_kz_lblSize, i_kz_lblOpacity)
+
+// ===== MODULE: PREVIOUS HIGHS & LOWS =========================================
+//
+//  One draw function, three call sites — month, then week, then day, because
+//  that order decides which lines end up on top. Each call site keeps its own `var` line history and fade
+//  gradient, which is exactly why the three flags above must be `var bool`: if a
+//  call site could switch on or off mid-run its internal arrays would desync and
+//  orphan lines.
+
+// Three requests. With the all-time-high request in Opening Levels that is four
+// in total, against a limit of 40.
+//
+// LOOKAHEAD, stated plainly. lookahead_on with a plain `high`/`low` returns the
+// CONTAINING period's finished value on historical bars, which is information
+// from that period's own future. Nothing here is ever DRAWN from it. A period's
+// two lines are created zero-length — and therefore invisible — on the period's
+// first bar, and only receive their length and their final price when the period
+// ends, from the settled [1] values below. `time` is safe under lookahead either
+// way: a period's start stamp is known the moment it starts.
+[phl_dayTime, phl_dayHigh, phl_dayLow] = request.security(syminfo.tickerid, "D", [time, high, low], lookahead = barmerge.lookahead_on)
+[phl_weekTime, phl_weekHigh, phl_weekLow] = request.security(syminfo.tickerid, "W", [time, high, low], lookahead = barmerge.lookahead_on)
+[phl_monthTime, phl_monthHigh, phl_monthLow] = request.security(syminfo.tickerid, "M", [time, high, low], lookahead = barmerge.lookahead_on)
+
+bool phl_dayChanged   = phl_dayTime != phl_dayTime[1]
+bool phl_weekChanged  = phl_weekTime != phl_weekTime[1]
+bool phl_monthChanged = phl_monthTime != phl_monthTime[1]
+
+// The just-finished period's settled high and low. Read at global scope, not
+// inside the `if` blocks further down: a [1] whose first appearance is inside a
+// conditional is what makes Pine throw "referenced historical values before...".
+float phl_dayHighDone   = phl_dayHigh[1]
+float phl_dayLowDone    = phl_dayLow[1]
+float phl_weekHighDone  = phl_weekHigh[1]
+float phl_weekLowDone   = phl_weekLow[1]
+float phl_monthHighDone = phl_monthHigh[1]
+float phl_monthLowDone  = phl_monthLow[1]
+
+f_phlEnd() =>
+    i_phl_extendOn ? bar_index + i_phl_extendBars : bar_index
+
+// Drawings anchored with xloc.bar_index reach at most 10,000 bars back, and a
+// month on a 1-minute chart is roughly 28,000. Clamp rather than let the set
+// throw — a runtime error removes the whole indicator.
+f_phlClampX1(line ln) =>
+    if not na(ln)
+        int x1 = line.get_x1(ln)
+        if x1 < bar_index - 9000
+            line.set_x1(ln, bar_index - 9000)
+            f_warn("Some older high and low lines were cut off. This timeframe cannot reach far enough back to draw them all — try a higher timeframe.")
+
+f_phlDraw(bool isNew, float h, float l, float hDone, float lDone, int lookback, color col, string style) =>
+    var line             phlHigh = na
+    var line             phlLow  = na
+    var array<line>      phlHighs = array.new_line()
+    var array<line>      phlLows  = array.new_line()
+    int phlEnd = f_phlEnd()
+
+    if isNew
+        // Finalise the period that has just ended: give its two lines their
+        // length AND their settled price. Rewriting the price here is what makes
+        // a chart left running across a period boundary agree with the same
+        // chart reloaded. In real time there is no future to read, so the value
+        // captured when the period opened was only that first bar's high; the
+        // settled value is not known until this moment.
+        if not na(phlHigh)
+            line.set_x2(phlHigh, phlEnd)
+            if not na(hDone)
+                line.set_y1(phlHigh, hDone)
+                line.set_y2(phlHigh, hDone)
+        if not na(phlLow)
+            line.set_x2(phlLow, phlEnd)
+            if not na(lDone)
+                line.set_y1(phlLow, lDone)
+                line.set_y2(phlLow, lDone)
+
+        if i_phl_fade
+            int phlSize = phlHighs.size()
+            if phlSize > 1
+                for i = 0 to phlSize - 1
+                    color phlFade = color.from_gradient(i, 0, phlSize - 1, color.new(col, 100), color.new(col, 0))
+                    line.set_color(phlHighs.get(i), phlFade)
+                    line.set_color(phlLows.get(i), phlFade)
+
+        phlHigh := line.new(bar_index, h, bar_index, h, color = col, style = style, width = i_phl_lineWidth)
+        phlLow  := line.new(bar_index, l, bar_index, l, color = col, style = style, width = i_phl_lineWidth)
+        phlHighs.push(phlHigh)
+        phlLows.push(phlLow)
+
+        if phlHighs.size() > lookback + 1
+            line.delete(phlHighs.shift())
+            line.delete(phlLows.shift())
+
+    // The size guard is not belt-and-braces: Pine's `for a to b` counts DOWNWARD
+    // when b < a, so `for i = 0 to size() - 1` on an empty array runs with i = 0
+    // and i = -1 and throws on the first get(). An enabled level whose requested
+    // data never arrives reaches the last bar with zero lines.
+    if barstate.islast and phlHighs.size() > 0
+        for i = 0 to phlHighs.size() - 1
+            f_phlClampX1(phlHighs.get(i))
+            f_phlClampX1(phlLows.get(i))
+        // Never touch the current period's own high and low — they are still
+        // being formed and their right edge tracks the last bar.
+        if i_phl_extendOn and phlHighs.size() > 1
+            for i = 0 to phlHighs.size() - 2
+                line.set_x2(phlHighs.get(i), phlEnd)
+                line.set_x2(phlLows.get(i), phlEnd)
+
+// Month first, then week, then day — later calls draw on top.
+if phl_showMonth
+    f_phlDraw(phl_monthChanged, phl_monthHigh, phl_monthLow, phl_monthHighDone, phl_monthLowDone, i_phl_monthCount, i_phl_monthCol, f_lineStyle(i_phl_lineStyle))
+
+if phl_showWeek
+    f_phlDraw(phl_weekChanged, phl_weekHigh, phl_weekLow, phl_weekHighDone, phl_weekLowDone, i_phl_weekCount, i_phl_weekCol, f_lineStyle(i_phl_lineStyle))
+
+if phl_showDay
+    f_phlDraw(phl_dayChanged, phl_dayHigh, phl_dayLow, phl_dayHighDone, phl_dayLowDone, i_phl_dayCount, i_phl_dayCol, f_lineStyle(i_phl_lineStyle))
+
+// ---- Warning: the requested higher-timeframe data never arrived ----
+// Same latching hazard as above: requested data can be absent on early bars and
+// arrive later. Only the last bar's answer is the real one.
+if barstate.islast
+    if (phl_showDay and na(phl_dayHigh)) or (phl_showWeek and na(phl_weekHigh)) or (phl_showMonth and na(phl_monthHigh))
+        f_warn("This symbol has no weekly or monthly data, so those high and low lines cannot be drawn.")
+
+// ---- Data Window values ----
+// Settled [1] values only. Reading the plain requested high here would put a
+// period's finished high into the Data Window from that period's FIRST bar,
+// which is future information inside a plotted series — the one place lookahead
+// genuinely misleads a reader scrubbing back through history.
+var array<float> phl_lastHighs = array.new_float(3)
+var array<float> phl_lastLows  = array.new_float(3)
+
+if phl_showDay and phl_dayChanged
+    phl_lastHighs.set(0, phl_dayHighDone)
+    phl_lastLows.set(0, phl_dayLowDone)
+
+if phl_showWeek and phl_weekChanged
+    phl_lastHighs.set(1, phl_weekHighDone)
+    phl_lastLows.set(1, phl_weekLowDone)
+
+if phl_showMonth and phl_monthChanged
+    phl_lastHighs.set(2, phl_monthHighDone)
+    phl_lastLows.set(2, phl_monthLowDone)
+
+plot(phl_lastHighs.get(0), "DH", color.new(i_phl_dayCol, 100), editable = false, display = display.data_window)
+plot(phl_lastLows.get(0), "DL", color.new(i_phl_dayCol, 100), editable = false, display = display.data_window)
+plot(phl_lastHighs.get(1), "WH", color.new(i_phl_weekCol, 100), editable = false, display = display.data_window)
+plot(phl_lastLows.get(1), "WL", color.new(i_phl_weekCol, 100), editable = false, display = display.data_window)
+plot(phl_lastHighs.get(2), "MH", color.new(i_phl_monthCol, 100), editable = false, display = display.data_window)
+plot(phl_lastLows.get(2), "ML", color.new(i_phl_monthCol, 100), editable = false, display = display.data_window)
+
+// ===== MODULE: OPENING LEVELS ================================================
+//
+//  One user-defined type, one array built once in panel order, three passes.
+//  The array earns its keep because the overlap merge needs every level to see
+//  every other one — as call sites that is 21 hand-written comparisons.
+//
+//  Each level owns exactly one line and one label for the life of the script and
+//  they are only ever moved, never deleted and recreated on each period change:
+//  same picture, no drawing churn, and one less claimant on the 500-line pool
+//  that the day and week lines already pressure.
+
+// `name` is never read at runtime. It is kept because it is the only thing that
+// makes the array below readable, and that array's ORDER is the merge priority.
+type KlLevel
+    string name
+    bool   show
+    color  col
+    string txt
+    float  price  = na
+    line   ln     = na
+    label  lb     = na
+    string shown  = ""
+
+var array<KlLevel> kl_all = array.from(
+     KlLevel.new("Midnight",          kl_showMid,   i_kl_midCol,   i_kl_midTxt),
+     KlLevel.new("10:00 AM",          kl_showTen,   i_kl_tenCol,   i_kl_tenTxt),
+     KlLevel.new("Today's open",      kl_showDay,   i_kl_dayCol,   i_kl_dayTxt),
+     KlLevel.new("This week's open",  kl_showWeek,  i_kl_weekCol,  i_kl_weekTxt),
+     KlLevel.new("This month's open", kl_showMonth, i_kl_monthCol, i_kl_monthTxt),
+     KlLevel.new("This year's open",  kl_showYear,  i_kl_yearCol,  i_kl_yearTxt),
+     KlLevel.new("All-time high",     kl_showAth,   i_kl_athCol,   i_kl_athTxt))
+
+// Record a level's new price and anchor, creating its two objects on first use.
+// math.max on x1 is insurance for the ATH case below, which is the only anchor
+// that can be older than the 10,000-bar reach of xloc.bar_index; for every other
+// level the anchor IS the current bar, so the clamp is a no-op.
+f_klFire(KlLevel lvl, float price, int anchorBar) =>
+    lvl.price := price
+    if lvl.show and not na(price)
+        int klX1 = math.max(anchorBar, bar_index - 9000)
+        if na(lvl.ln)
+            lvl.ln := line.new(klX1, price, klX1, price, xloc.bar_index, extend.none, lvl.col, f_lineStyle(i_kl_lineStyle), i_kl_lineWidth)
+            lvl.lb := f_rightLabel(klX1, price, lvl.txt, i_kl_textCol, f_textSize(i_kl_lblSize))
+        line.set_xy1(lvl.ln, klX1, price)
+
+// ---- PASS 1: detect ----
+int kl_midTime = time("1", SESS_MIDNIGHT, f_tz(i_g_tz))
+int kl_tenTime = time("1", SESS_TEN, f_tz(i_g_tz))
+
+bool kl_newMid   = not na(kl_midTime) and na(kl_midTime[1])
+bool kl_newTen   = not na(kl_tenTime) and na(kl_tenTime[1])
+
+// A fixed-clock level can go missing for two completely different reasons, and the
+// advice for each is the opposite of the other:
+//   the market is SHUT at that hour  -> no timeframe will ever help
+//   the market is open but this timeframe's grid steps over the exact minute
+//                                    -> a different timeframe fixes it immediately
+// Telling them apart only needs to know whether ANY bar falls inside that hour.
+var bool kl_sawMidHour = false
+var bool kl_sawTenHour = false
+int kl_tzHour = hour(time, f_tz(i_g_tz))
+
+if kl_tzHour == 0
+    kl_sawMidHour := true
+
+if kl_tzHour == 10
+    kl_sawTenHour := true
+bool kl_newDay   = timeframe.change("D")
+bool kl_newWeek  = timeframe.change("W")
+bool kl_newMonth = timeframe.change("M")
+bool kl_newYear  = timeframe.change("12M")
+
+// All-time high, tracked incrementally rather than by scanning backwards. A
+// backward scan would force a large max_bars_back and cost memory on every bar.
+// The request exists only to catch a peak from before the chart's loaded
+// history: if it beats the chart-native high the peak is off-screen to the left,
+// so the line simply starts as far left as xloc.bar_index allows.
+f_klRunningHigh() =>
+    var float klHigh = na
+    klHigh := na(klHigh) ? high : math.max(klHigh, high)
+    klHigh
+
+string kl_athTf  = timeframe.isintraday ? "D" : timeframe.period
+float  kl_reqAth = request.security(syminfo.tickerid, kl_athTf, f_klRunningHigh(), lookahead = barmerge.lookahead_off)
+
+var float kl_ath    = na
+var int   kl_athBar = na
+bool kl_newAth = false
+
+if na(kl_ath) or high > kl_ath
+    kl_ath    := high
+    kl_athBar := bar_index
+    kl_newAth := true
+
+if not na(kl_reqAth) and (na(kl_ath) or kl_reqAth > kl_ath)
+    kl_ath    := kl_reqAth
+    kl_athBar := 0
+    kl_newAth := true
+
+if kl_newMid
+    f_klFire(kl_all.get(0), open, bar_index)
+if kl_newTen
+    f_klFire(kl_all.get(1), open, bar_index)
+if kl_newDay
+    f_klFire(kl_all.get(2), open, bar_index)
+if kl_newWeek
+    f_klFire(kl_all.get(3), open, bar_index)
+if kl_newMonth
+    f_klFire(kl_all.get(4), open, bar_index)
+if kl_newYear
+    f_klFire(kl_all.get(5), open, bar_index)
+if kl_newAth
+    f_klFire(kl_all.get(6), kl_ath, kl_athBar)
+
+// ---- PASS 2 (merge) and PASS 3 (render), last bar only ----
+//
+// Everything below is right-edge work: on historical bars none of it is visible
+// and only the objects' final state matters. barstate.islast is true on the
+// realtime bar, so live updating is unaffected.
+if barstate.islast
+    int klN = kl_all.size()
+
+    // Pass 2 — merge. Priority is array order, which is why the array is
+    // declared in panel order. A level whose text has been absorbed into a
+    // higher-priority one renders an empty label; its line is at the identical
+    // price, so nothing is lost visually.
+    for i = 0 to klN - 1
+        KlLevel klReset = kl_all.get(i)
+        klReset.shown := klReset.txt
+
+    for i = 0 to klN - 2
+        KlLevel klA = kl_all.get(i)
+        if klA.show and not na(klA.price) and klA.shown != ""
+            for j = i + 1 to klN - 1
+                KlLevel klB = kl_all.get(j)
+                if klB.show and not na(klB.price) and klB.shown != "" and klB.price == klA.price
+                    klA.shown := klA.shown + " + " + klB.txt
+                    klB.shown := ""
+
+    // Pass 3 — render.
+    for i = 0 to klN - 1
+        KlLevel klR = kl_all.get(i)
+        if klR.show and not na(klR.ln)
+            line.set_x2(klR.ln, bar_index + i_kl_lineLen)
+            line.set_y2(klR.ln, klR.price)
+            label.set_xy(klR.lb, bar_index + i_kl_lineLen, klR.price)
+            label.set_text(klR.lb, klR.shown)
+
+// =============================================================================
+//  6. WARNING BANNER
+// =============================================================================
+
+// The banner has no on/off switch, so it must only ever mean "something is
+// wrong". The two standing caps — session boxes at 500, separators at 250 — are
+// therefore NOT wired to it: they describe intended behaviour on any long chart
+// and would sit here permanently with nothing to act on.
+//
+// runtime.error() is used nowhere in this script. It removes the indicator from
+// the chart entirely, which is a worse outcome than every condition it could
+// report here: none of the settings combinations below are BROKEN, they are
+// merely empty or unusual, and an empty chart plus a written explanation beats a
+// missing indicator plus a red exclamation mark.
+
+// ---- All four section enables off ----
+if not i_sep_enable and not i_kz_enable and not i_phl_enable and not i_kl_enable
+    f_warn("Everything is switched off. Open the settings and tick Enable in the section you want.")
+
+// ---- Non-time-based chart type ----
+if chart.is_renko or chart.is_range or chart.is_kagi or chart.is_pnf or chart.is_linebreak
+    f_warn("This chart type has no fixed bar length, so the Apply Below settings may not work here. Switch to candles or bars if something looks wrong.")
+
+// ---- Something is switched on, but every one of them is filtered out ----
+// This is the warning that earns the whole feature. With twelve independent
+// "Apply Below" filters, "why is my chart empty?" is the failure you actually
+// hit, and the answer is almost always that you are above all of them.
+bool g_anyEnabled = (i_sep_enable and (i_sep_dayOn or i_sep_weekOn)) or (i_kz_enable and (i_kz_asiaOn or i_kz_lonOn or i_kz_nyamOn or i_kz_nypmOn)) or (i_phl_enable and (i_phl_dayOn or i_phl_weekOn or i_phl_monthOn)) or (i_kl_enable and (i_kl_midOn or i_kl_tenOn or i_kl_dayOn or i_kl_weekOn or i_kl_monthOn or i_kl_yearOn or i_kl_athOn))
+
+bool g_anyVisible = sep_dayOn or sep_weekOn or kz_asiaOn or kz_lonOn or kz_nyamOn or kz_nypmOn or phl_showDay or phl_showWeek or phl_showMonth or kl_showMid or kl_showTen or kl_showDay or kl_showWeek or kl_showMonth or kl_showYear or kl_showAth
+
+if g_anyEnabled and not g_anyVisible
+    f_warn("Nothing is drawn here. Every section is set to appear only below a certain timeframe, and this chart is above all of them. Move to a lower timeframe, or raise the Apply Below settings.")
+
+// ---- "Market open only" has nothing to skip on this chart ----
+// barstate.islast, not every bar. g_warnings is append-only and never cleared,
+// so a condition that is true early and false later would LATCH on permanently.
+// sep_sawNonMarket is exactly that: false until the first non-market bar is seen.
+if barstate.islast and i_sep_enable and i_sep_dayStart == "Market open only" and not sep_sawNonMarket
+    f_warn("Market open only skips pre-market and after-hours trading. This market has neither, so the lines land in the same place as Auto. Nothing is wrong.")
+
+// ---- A fixed-clock level this timeframe cannot land on ----
+// The 00:00 and 10:00 levels need a bar that OPENS at exactly that time. On a
+// 45-minute or 3-hour chart the bar grid can step straight over it, and the
+// level then simply never fires. Silence would look like a bug.
+if barstate.islast
+    KlLevel g_lvlMid = kl_all.get(0)
+    KlLevel g_lvlTen = kl_all.get(1)
+    bool g_midMissing = kl_showMid and na(g_lvlMid.price)
+    bool g_tenMissing = kl_showTen and na(g_lvlTen.price)
+
+    // The market never trades at that hour. Changing timeframe cannot help, so the
+    // message must not suggest it — that is advice the reader will waste time on.
+    if (g_midMissing and not kl_sawMidHour) or (g_tenMissing and not kl_sawTenHour)
+        f_warn("The 00:00 or 10:00 line is not drawn because this market is closed at that time. Stocks are shut at midnight. Switch that level off, or use a market that trades around the clock.")
+
+    // The market does trade then; the bar grid simply steps over the minute.
+    if (g_midMissing and kl_sawMidHour) or (g_tenMissing and kl_sawTenHour)
+        f_warn("The 00:00 or 10:00 line cannot be drawn because no candle on this timeframe starts at exactly that time. Try 1, 5, 15 or 30 minutes.")
+
+// ---- More previous levels requested than the drawing pool can hold ----
+int g_phlLines = ((phl_showDay ? i_phl_dayCount : 0) + (phl_showWeek ? i_phl_weekCount : 0) + (phl_showMonth ? i_phl_monthCount : 0)) * 2
+
+if g_phlLines > 500 - SEP_MAX
+    f_warn("You have asked for more previous highs and lows than can be drawn at once, so the oldest are left out. Lower the numbers in Previous Highs & Lows.")
+
+// ---- Two further warnings are raised inside the Previous Highs & Lows module:
+//      missing higher-timeframe data, and levels trimmed at the 10,000-bar reach.
+
+// The table carries no background or border of its own, so when no cells are
+// populated nothing at all is drawn.
+var table g_warnTable = table.new(position.bottom_right, 1, 7, bgcolor = na, border_width = 0)
+
+if barstate.islast
+    table.clear(g_warnTable, 0, 0, 0, 6)
+    // The warnings are still collected when this is off, so switching it back on
+    // shows the current state immediately rather than after a chart reload.
+    if i_g_warnOn and g_warnings.size() > 0
+        int g_warnRows = math.min(g_warnings.size(), 7)
+        for i = 0 to g_warnRows - 1
+            table.cell(g_warnTable, 0, i, g_warnings.get(i),
+                 text_color  = #1A1A1A,
+                 text_size   = size.small,
+                 text_halign = text.align_left,
+                 bgcolor     = color.new(#FFB000, 15))

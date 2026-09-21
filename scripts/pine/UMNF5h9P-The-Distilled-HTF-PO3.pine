@@ -1,0 +1,789 @@
+//@version=6
+// The Distilled HTF PO3
+// A higher-timeframe candle takes the previous candle's extreme and gives it
+// back (C2). The delivery behind it is undone when price closes back through
+// the origin of the run that drove it (CISD), corroborated by the gap that run
+// left. Sweep line at the swept level, CISD and gap on the chart bars, the
+// chart candle that printed the extreme, the governing gaps and manipulation
+// zones on price, boundary dividers, and a panel of governing candles.
+// Governing candles are aggregated from chart bars — no request.security.
+indicator("The Distilled HTF PO3", "DSTL PO3", overlay = true,
+     max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500,
+     max_bars_back = 2000)
+
+max_bars_back(open,  2000)
+max_bars_back(high,  2000)
+max_bars_back(low,   2000)
+max_bars_back(close, 2000)
+
+grpG = "Governing timeframe"
+govMode   = input.string("Auto", "Pairing", options = ["Auto", "Manual"], group = grpG, tooltip = "Auto pairs the chart to the frame that ranges it — the Distilled pairing. A weekly chart is ranged by the quarter; the hour pairs to 7H rather than stepping over it to Daily.")
+govManual = input.timeframe("15", "  - manual", group = grpG)
+
+grpD = "Detection"
+useC2x  = input.bool(true, "Include C2X", group = grpD, tooltip = "C2   the candle takes the previous extreme and CLOSES BACK INSIDE it.\nC2X  it closes BEYOND, and the next governing candle closes back through both its opposite extreme and its open — the same reversal, confirmed one candle late.")
+cisdWin = input.int(2, "CISD confirms within (governing candles)", minval = 2, maxval = 6, group = grpD, tooltip = "The Pro rule: the CISD has to land inside the C2 or the C3 candle. The C2's own close is tested the moment it is detected, so 2 is that rule. Raising it waits longer, which is a different model.")
+invWick = input.bool(true, "Invalidate on a wick through the sweep extreme", group = grpD, tooltip = "The extreme IS the claim: the level was taken and given back. Price touching it again says it was not.\n\nOff waits for a close, which lets the mark sit 'confirmed' through the very move that refutes it.")
+keepN   = input.int(4, "Events kept on chart", minval = 1, maxval = 60, group = grpD)
+showPend = input.bool(true, "Draw them while still pending", group = grpD, tooltip = "Dashed and faded until the CISD lands. A C2 waiting for its CISD is most of the life of the thing, and hiding it until it confirms makes the chart look empty when it is not.")
+showDead = input.bool(false, "Keep the failed ones", group = grpD, tooltip = "The sweep extreme was taken back: the level was not given back after all and the break behind it was real. The setup was REFUTED.")
+showUnc  = input.bool(false, "Keep the unconfirmed ones", group = grpD, tooltip = "The extreme held, but no CISD landed inside the C2 or the C3 candle. Nothing refuted it — the reversal just never confirmed in time.")
+
+grpF = "The gap in the CISD leg"
+showCsFvg = input.bool(true, "Mark the gap the delivery left", group = grpF, tooltip = "The 3-candle gap inside the run that drove the sweep — between the CISD origin and the extreme. The NEWEST one is kept: it is the one price has to close back through first.")
+csFvgReq = input.bool(true, "  - and it must ALSO invert to confirm", group = grpF, tooltip = "The CISD is the statement, the gap is the corroboration — a gap inverting on its own is one imbalance filled inside a run that is still intact.\n\nOn: both have to land, and the setup stays PENDING under the same C2-or-C3 deadline until they do.\nOff: the CISD confirms alone and the gap is only drawn.\n\nA delivery that left no gap always confirms on the CISD.")
+cCsFvg  = input.color(#7e57c2, "  - colour / fill", inline = "cf", group = grpF)
+csFvgF  = input.int(88, "", minval = 40, maxval = 100, inline = "cf", group = grpF)
+
+grpL = "The C2 that made the extreme"
+showLtf = input.bool(true, "Mark it on the chart candles", group = grpL, tooltip = "The governing candle is an aggregate — SOME chart candle inside it actually printed the high or the low, and on a clean sweep that candle is itself a C2. This finds it and draws its own little sweep line, so you can see the fractal read the model rests on.")
+ltfSwing = input.bool(true, "  - only when it is a true swing", group = grpL, tooltip = "The C2 test alone fires on candles in the MIDDLE of a move — they take the previous candle's extreme and close back inside it without being the turn. What is being named here is the candle that PRINTED the high or the low, so it also has to be a genuine pivot: its extreme unbeaten for this many bars either side.\n\nOff marks any C2 inside the governing candle, which is where the false ones come from.")
+ltfSwN  = input.int(2, "  - unbeaten either side (bars)", minval = 1, maxval = 10, group = grpL)
+ltfPad  = input.int(0, "  - allow this many bars outside it", minval = 0, maxval = 20, group = grpL, tooltip = "The search is bounded to the governing candle ITSELF — the C2 inside the C2. This widens it by a few bars either end for the case where the candle that took the level sits just across the boundary. 0 keeps it strictly inside.")
+
+grpP = "HTF panel"
+showPan = input.bool(true, "Governing candle panel", group = grpP, tooltip = "The paired governing candles drawn to the right of price. NO SECOND DATA FEED: these are the same aggregated candles the engine reads, so the panel can never disagree with what it scored.\n\nThe newest slot is the candle still forming and updates tick by tick.")
+panN    = input.int(5, "  - candles shown", minval = 2, maxval = 14, group = grpP)
+panSize = input.string("Medium", "  - size / gap from price", options = ["Small", "Medium", "Large"], inline = "p1", group = grpP)
+panOff  = input.int(10, "", minval = 0, maxval = 100, inline = "p1", group = grpP)
+panBull = input.color(#4caf50, "  - body  bull / bear", inline = "p2", group = grpP)
+panBear = input.color(#000000, "", inline = "p2", group = grpP)
+panBdU  = input.color(#000000, "  - border  bull / bear", inline = "p3", group = grpP)
+panBdD  = input.color(#000000, "", inline = "p3", group = grpP)
+panWkU  = input.color(#000000, "  - wick  bull / bear", inline = "p4", group = grpP)
+panWkD  = input.color(#000000, "", inline = "p4", group = grpP)
+panWick = input.color(#787b86, "  - panel text", group = grpP)
+panFvg  = input.bool(true, "  - gap boxes", group = grpP, tooltip = "The 3-candle gap on the GOVERNING candles. Displacement is required on the bodies as well as the wicks, so a pair of long tails either side of a small body does not register as delivery.")
+cPanFv  = input.color(color.new(#00bcd4, 85), "  - gap colour / border", inline = "p5", group = grpP)
+cPanFvB = input.int(60, "", minval = 0, maxval = 100, inline = "p5", group = grpP)
+panC2   = input.bool(true, "  - C2 sweeps", group = grpP, tooltip = "The same rule the engine uses, drawn between the panel candles: the newer one takes the older one's extreme and closes back inside it. The line sits at the SWEPT level.")
+
+grpG2 = "Governing gaps on the chart"
+showGF = input.bool(true, "Draw the governing gaps on price", group = grpG2)
+gfKeep = input.int(4, "  - how many to keep", minval = 1, maxval = 20, group = grpG2)
+cGF    = input.color(#2962ff, "  - FVG / inverted", inline = "gf", group = grpG2, tooltip = "Blue while the gap is unfilled. Once price CLOSES through the edge it fails on it becomes an inverted gap and turns purple — the house colours, the same way every other script in the suite draws them.")
+cGFi   = input.color(#7e57c2, "", inline = "gf", group = grpG2)
+gfFill = input.int(85, "  - fill / edge width", minval = 40, maxval = 100, inline = "gf2", group = grpG2)
+gfW    = input.int(1, "", minval = 1, maxval = 5, inline = "gf2", group = grpG2)
+gfSty  = input.string("Solid", "  - edge style", options = ["Solid", "Dashed", "Dotted"], group = grpG2)
+gfLbl  = input.bool(true, "  - label them", group = grpG2)
+
+grpS2 = "Governing candle on the chart"
+showSep = input.bool(true, "Divider at each governing boundary", group = grpS2, tooltip = "A vertical at every governing candle roll, stamped with the time it opens. The chart stops being a stream of bars and starts reading as the governing candles it actually is.")
+cSep    = input.color(#787b86, "  - colour / style", inline = "sp", group = grpS2)
+sepSty  = input.string("Dotted", "", options = ["Solid", "Dashed", "Dotted"], inline = "sp", group = grpS2)
+sepLbl  = input.bool(true, "  - stamp the time", group = grpS2)
+sepN    = input.int(8, "  - dividers kept", minval = 1, maxval = 40, group = grpS2)
+showMb  = input.bool(true, "Manipulation boxes (open → wick)", group = grpS2, tooltip = "Each COMPLETED governing candle's manipulation zone across its own chart span: open to the adverse wick. A candle that closed as a C2 gets the TRUE zone instead — the swept level to the sweep extreme, which is what was actually manipulated.\n\n⚠ As a SIGNAL the open-to-wick reading is a tautology — measured at 97.9% of candles, and the live reclaim tested anti-predictive. This draws where the manipulation was, it does not claim it is tradeable.")
+mbKeep  = input.int(4, "  - boxes kept", minval = 1, maxval = 40, group = grpS2)
+cMbU    = input.color(#26a69a, "  - zone  bullish / bearish", inline = "mb", group = grpS2)
+cMbD    = input.color(#ef5350, "", inline = "mb", group = grpS2)
+mbFill  = input.int(90, "  - fill", minval = 40, maxval = 100, group = grpS2)
+
+grpA = "Appearance"
+cUp    = input.color(#ef5350, "Sweep  bull / bear", inline = "sw", group = grpA, tooltip = "Bull = a LOW was swept and given back. Bear = a HIGH was.")
+cDn    = input.color(#ef5350, "", inline = "sw", group = grpA)
+swW    = input.int(1, "  - width / style", minval = 1, maxval = 5, inline = "sww", group = grpA)
+swS    = input.string("Solid", "", options = ["Solid", "Dashed", "Dotted"], inline = "sww", group = grpA)
+cCisd  = input.color(#000000, "CISD  pending / confirmed", inline = "cs", group = grpA)
+cCisdOn = input.color(#000000, "", inline = "cs", group = grpA)
+csW    = input.int(1, "  - width", minval = 1, maxval = 5, inline = "csw", group = grpA)
+csS    = input.string("Dashed", "  - style  pending / confirmed", options = ["Solid", "Dashed", "Dotted"], inline = "css", group = grpA)
+csSc   = input.string("Solid", "", options = ["Solid", "Dashed", "Dotted"], inline = "css", group = grpA)
+cDead  = input.color(#0098ff, "Failed (the break was real)", group = grpA)
+cUnc   = input.color(#787b86, "Unconfirmed (no CISD by C3)", group = grpA)
+cLtf   = input.color(#4536f2, "The chart C2 inside", group = grpA)
+ltfBx  = input.bool(true, "  - colour that candle", group = grpA, tooltip = "Paints the chart candle that printed the governing extreme, so you can find it without reading the label.\n\n⚠ It is a filled box over the candle, not barcolor(). Pine decides a bar's colour AT that bar, and this candle is only identified once the governing candle closes — which is later. The fill is the only way to mark it after the fact.")
+ltfFill = input.int(25, "  - how solid", minval = 0, maxval = 95, group = grpA, tooltip = "0 hides the candle completely; higher lets its own body and wick show through the colour.")
+extB   = input.int(5, "Extend lines past the event (bars)", minval = 0, maxval = 50, group = grpA, tooltip = "The house draws both lines a few bars past what they mark, so the level stays readable after the candle that set it.")
+opac   = input.int(15, "Line transparency", minval = 0, maxval = 90, group = grpA)
+fade   = input.int(60, "  - while pending", minval = 0, maxval = 95, group = grpA)
+showLb = input.bool(true, "Label them", group = grpA)
+lblSz  = input.string("Small", "  - C2 tag  size / offset", options = ["Tiny", "Small", "Normal", "Large"], inline = "l1", group = grpA)
+lbOffX = input.int(3, "", minval = 0, maxval = 60, inline = "l1", group = grpA, tooltip = "The C2 tag sits at the RIGHT END of the sweep line, this many bars further right. The line already runs past the event by its own extension setting, so the tag clears the candles that made it.")
+szCs   = input.string("Small", "  - CISD tag  size / offset", options = ["Tiny", "Small", "Normal", "Large"], inline = "l2", group = grpA)
+csLbOff = input.int(3, "", minval = -60, maxval = 60, inline = "l2", group = grpA, tooltip = "Bars right of the CISD line's end. Negative puts it left of the line instead.")
+csLbSide = input.string("Right", "  - CISD tag side", options = ["Right", "Left"], group = grpA)
+szC2   = input.string("Tiny", "  - c2-in-c2 tag size", options = ["Tiny", "Small", "Normal", "Large"], group = grpA)
+showTb = input.bool(true, "Dashboard", group = grpA)
+
+f_style(string s) =>
+    s == "Dashed" ? line.style_dashed : s == "Dotted" ? line.style_dotted : line.style_solid
+
+f_lsz(string z) =>
+    z == "Large" ? size.large : z == "Normal" ? size.normal : z == "Small" ? size.small : size.tiny
+
+f_tfTag(string tf) =>
+    int sec = timeframe.in_seconds(tf)
+    sec < 60 ? str.tostring(sec) + "s" : sec < 3600 ? str.tostring(sec / 60) + "m" : sec < 86400 ? str.tostring(sec / 3600) + "h" : sec < 604800 ? str.tostring(sec / 86400) + "D" : sec < 2592000 ? str.tostring(sec / 604800) + "W" : str.tostring(sec / 2592000) + "M"
+
+f_ax(int b) => na(b) ? b : math.max(b, bar_index - 1800)
+
+f_c2k(bool up, float bE, float bC, float aE, bool wantX, float cC, float bOpp, float bO) =>
+    int k = 0
+    if not na(bE)
+        if not na(aE)
+            if not na(bC)
+                if up ? bE > aE : bE < aE
+                    if up ? bC <= aE : bC >= aE
+                        k := 1
+                    else if wantX
+                        if not na(cC)
+                            if not na(bOpp)
+                                if not na(bO)
+                                    if up ? (cC < bOpp and cC < bO) : (cC > bOpp and cC > bO)
+                                        k := 2
+    k
+
+f_c2At(int off, bool up) =>
+    int k = 0
+    if off >= 0
+        if off + 2 < bar_index
+            float pc = na
+            if off >= 1
+                pc := close[off - 1]
+            k := f_c2k(up, up ? high[off] : low[off], close[off], up ? high[off + 1] : low[off + 1], useC2x, pc, up ? low[off] : high[off], open[off])
+    k
+
+f_isPiv(int off, bool up, int nn) =>
+    bool ok = false
+    if off - nn >= 0
+        if off + nn < bar_index
+            ok := true
+            float x = up ? high[off] : low[off]
+            for q = off - nn to off + nn
+                if q != off
+                    if up ? high[q] > x : low[q] < x
+                        ok := false
+                        break
+    ok
+
+f_cisdOff(int extBar, bool downRun) =>
+    int last = na
+    if not na(extBar)
+        int o0 = bar_index - extBar
+        if o0 >= 0
+            if o0 < math.min(460, bar_index)
+                bool started = false
+                for j = o0 to math.min(o0 + 60, math.min(460, bar_index))
+                    bool inRun = downRun ? close[j] < open[j] : close[j] > open[j]
+                    if not started
+                        if inRun
+                            last := j
+                            started := true
+                        else if j > o0 + 3
+                            break
+                    else
+                        if inRun
+                            last := j
+                        else
+                            break
+    last
+
+_tfs = timeframe.in_seconds(timeframe.period)
+string govAuto = _tfs <= 60 ? "15" : _tfs <= 180 ? "30" : _tfs <= 300 ? "60" : _tfs <= 900 ? "240" : _tfs <= 3600 ? "420" : _tfs <= 14400 ? "D" : _tfs <= 86400 ? "W" : _tfs <= 604800 ? "3M" : "12M"
+string govTF  = govMode == "Manual" ? govManual : govAuto
+int    govSec = timeframe.in_seconds(govTF)
+bool   govOk  = govSec > _tfs
+string govTFq = govOk ? govTF : timeframe.period
+string govTag = f_tfTag(govTFq)
+int    gT     = time(govTFq)
+bool   newG   = not na(gT) and (na(gT[1]) or gT != gT[1])
+
+var float gOp  = na
+var int   gOpB = na
+var float gHi  = na
+var int   gHiB = na
+var float gLo  = na
+var int   gLoB = na
+var array<float> gO  = array.new_float()
+var array<float> gC  = array.new_float()
+var array<float> gH  = array.new_float()
+var array<float> gL  = array.new_float()
+var array<int>   gHB = array.new_int()
+var array<int>   gLB = array.new_int()
+var array<int>   gSB = array.new_int()
+var int gSeq = 0
+
+if govOk
+    if newG and barstate.isconfirmed and not na(gHi)
+        gSeq += 1
+        array.push(gH,  gHi)
+        array.push(gHB, gHiB)
+        array.push(gL,  gLo)
+        array.push(gLB, gLoB)
+        array.push(gO,  gOp)
+        array.push(gSB, gOpB)
+        array.push(gC,  close[1])
+        while array.size(gO) > 60
+            array.shift(gH)
+            array.shift(gHB)
+            array.shift(gL)
+            array.shift(gLB)
+            array.shift(gO)
+            array.shift(gSB)
+            array.shift(gC)
+    if newG or na(gHi)
+        gOp  := open
+        gOpB := bar_index
+        gHi  := high
+        gHiB := bar_index
+        gLo  := low
+        gLoB := bar_index
+    else
+        if high > gHi
+            gHi  := high
+            gHiB := bar_index
+        if low < gLo
+            gLo  := low
+            gLoB := bar_index
+
+var array<line>     gfA   = array.new<line>()
+var array<line>     gfB   = array.new<line>()
+var array<line>     gfK   = array.new<line>()
+var array<linefill> gfF   = array.new<linefill>()
+var array<label>    gfLb  = array.new<label>()
+var array<float>    gfEdge = array.new_float()
+var array<bool>     gfInv  = array.new_bool()
+var array<bool>     gfUp   = array.new_bool()
+
+f_gfCull() =>
+    while array.size(gfA) > gfKeep
+        linefill.delete(array.shift(gfF))
+        line.delete(array.shift(gfA))
+        line.delete(array.shift(gfB))
+        line.delete(array.shift(gfK))
+        label.delete(array.shift(gfLb))
+        array.shift(gfEdge)
+        array.shift(gfInv)
+        array.shift(gfUp)
+    0
+
+if showGF and govOk and newG and barstate.isconfirmed
+    int gn = array.size(gO)
+    if gn >= 3
+        float a1o = array.get(gO, gn - 1)
+        float a1c = array.get(gC, gn - 1)
+        float a1h = array.get(gH, gn - 1)
+        float a1l = array.get(gL, gn - 1)
+        float a3o = array.get(gO, gn - 3)
+        float a3c = array.get(gC, gn - 3)
+        float a3h = array.get(gH, gn - 3)
+        float a3l = array.get(gL, gn - 3)
+        int   x3  = array.get(gSB, gn - 3)
+        int   x1  = array.get(gSB, gn - 1)
+        bool bull = a1l > a3h and math.min(a1o, a1c) > math.max(a3o, a3c)
+        bool bear = a1h < a3l and math.max(a1o, a1c) < math.min(a3o, a3c)
+        if bull or bear
+            float eOld = bull ? a3h : a3l
+            float eNew = bull ? a1l : a1h
+            int rx = bar_index + extB
+            line lnA = line.new(f_ax(x3), eOld, rx, eOld, color = color.new(cGF, 0), width = gfW, style = f_style(gfSty))
+            line lnB = line.new(f_ax(x1), eNew, rx, eNew, color = color.new(cGF, 0), width = gfW, style = f_style(gfSty))
+            array.push(gfA, lnA)
+            array.push(gfB, lnB)
+            array.push(gfK, line.new(rx, eOld, rx, eNew, color = color.new(cGF, 40), width = 1, style = line.style_dotted))
+            array.push(gfF, linefill.new(lnA, lnB, color.new(cGF, gfFill)))
+            array.push(gfEdge, eOld)
+            array.push(gfInv, false)
+            array.push(gfUp, bull)
+            array.push(gfLb, gfLbl ? label.new(rx, eNew, govTag + " FVG", style = label.style_label_left, color = color.new(color.gray, 100), textcolor = color.new(cGF, 0), size = f_lsz(szC2)) : label(na))
+            f_gfCull()
+
+if showGF and array.size(gfA) > 0
+    for gi = 0 to array.size(gfA) - 1
+        int rx2 = bar_index + extB
+        line.set_x2(array.get(gfA, gi), rx2)
+        line.set_x2(array.get(gfB, gi), rx2)
+        line.set_xy1(array.get(gfK, gi), rx2, line.get_y1(array.get(gfA, gi)))
+        line.set_xy2(array.get(gfK, gi), rx2, line.get_y1(array.get(gfB, gi)))
+        if not na(array.get(gfLb, gi))
+            label.set_x(array.get(gfLb, gi), rx2)
+        if barstate.isconfirmed
+            if not array.get(gfInv, gi)
+                bool gu = array.get(gfUp, gi)
+                if gu ? close < array.get(gfEdge, gi) : close > array.get(gfEdge, gi)
+                    array.set(gfInv, gi, true)
+                    line.set_color(array.get(gfA, gi), color.new(cGFi, 0))
+                    line.set_color(array.get(gfB, gi), color.new(cGFi, 0))
+                    line.set_color(array.get(gfK, gi), color.new(cGFi, 40))
+                    linefill.set_color(array.get(gfF, gi), color.new(cGFi, gfFill))
+                    if not na(array.get(gfLb, gi))
+                        label.set_text(array.get(gfLb, gi), govTag + " iFVG")
+                        label.set_textcolor(array.get(gfLb, gi), color.new(cGFi, 0))
+
+type C2ev
+    float lv      = na
+    int   b1      = na
+    int   b2      = na
+    float ex      = na
+    float cs      = na
+    int   csb     = na
+    int   kind    = 0
+    bool  up      = false
+    int   seq     = na
+    int   st      = 0
+    line  swLn    = na
+    line  csLn    = na
+    label lb      = na
+    line  ltfLn   = na
+    label ltfLb   = na
+    box   ltfBx   = na
+    float fv      = na
+    int   fvB     = na
+    float fvHi    = na
+    float fvLo    = na
+    box   fvBx    = na
+    label csLb    = na
+    bool  csOn    = false
+    bool  fvOn    = false
+    float fvClose = na
+    int   fvOnBar = na
+    line  fvLn    = na
+    label fvLb    = na
+    int   path    = 0
+
+var array<C2ev> evs = array.new<C2ev>()
+var int nArm = 0
+var int nCnf = 0
+var int nDed = 0
+var int nUnc = 0
+var int nFvg = 0
+int  dT     = time("D")
+bool newDay = not na(dT) and (na(dT[1]) or dT != dT[1])
+var int dArm = 0
+var int dCnf = 0
+var int dDed = 0
+var int dUnc = 0
+var int dFvg = 0
+if newDay
+    dArm := 0
+    dCnf := 0
+    dDed := 0
+    dUnc := 0
+    dFvg := 0
+
+f_ink(C2ev e) =>
+    color c   = e.up ? cDn : cUp
+    bool  pnd = e.st == 1
+    color cc  = e.st == 3 ? cDead : e.st == 4 ? cUnc : c
+    int   op  = pnd ? (showPend ? fade : 100) : opac
+    if not na(e.swLn)
+        line.set_color(e.swLn, color.new(cc, op))
+        line.set_style(e.swLn, pnd ? line.style_dashed : e.st >= 3 ? line.style_dotted : f_style(swS))
+    if not na(e.csLn)
+        line.set_color(e.csLn, color.new(e.st == 2 ? cCisdOn : e.st == 3 ? cDead : e.st == 4 ? cUnc : cCisd, op))
+        line.set_style(e.csLn, e.st == 2 ? f_style(csSc) : f_style(csS))
+    if not na(e.lb)
+        label.set_textcolor(e.lb, color.new(cc, pnd ? (showPend ? 30 : 100) : 0))
+        string t = govTag + " C2" + (e.kind == 2 ? "X" : "")
+        label.set_text(e.lb, e.st == 1 ? t + "?" : e.st == 3 ? t + " failed" : e.st == 4 ? t + " unconfirmed" : t)
+    if not na(e.csLb)
+        string sgn = e.up ? "−" : "+"
+        label.set_text(e.csLb, e.csOn ? "CISD " + sgn : "CISD " + sgn + "?")
+        label.set_textcolor(e.csLb, color.new(e.st == 2 ? cCisdOn : e.st == 3 ? cDead : e.st == 4 ? cUnc : cCisd, pnd ? (showPend ? 30 : 100) : 0))
+    if not na(e.ltfLn)
+        line.set_color(e.ltfLn, color.new(cLtf, op))
+    if not na(e.fvLn)
+        line.set_color(e.fvLn, color.new(e.st == 3 ? cDead : e.st == 4 ? cUnc : cCsFvg, op))
+    if not na(e.fvLb)
+        label.set_textcolor(e.fvLb, color.new(e.st == 3 ? cDead : e.st == 4 ? cUnc : cCsFvg, pnd ? (showPend ? 30 : 100) : 0))
+    if not na(e.fvBx)
+        box.set_border_color(e.fvBx, color.new(e.st == 3 ? cDead : e.st == 4 ? cUnc : cCsFvg, op))
+        box.set_bgcolor(e.fvBx, color.new(e.st == 3 ? cDead : e.st == 4 ? cUnc : cCsFvg, e.st == 2 and e.path == 2 ? math.max(csFvgF - 20, 0) : csFvgF))
+    if not na(e.ltfBx)
+        box.set_border_color(e.ltfBx, color.new(cLtf, op))
+        box.set_bgcolor(e.ltfBx, color.new(cLtf, pnd ? math.min(ltfFill + 40, 100) : ltfFill))
+    0
+
+f_done(C2ev e) => e.csOn and (not csFvgReq or na(e.fv) or e.fvOn)
+
+f_cull() =>
+    while array.size(evs) > keepN
+        C2ev d = array.shift(evs)
+        line.delete(d.swLn)
+        line.delete(d.csLn)
+        line.delete(d.ltfLn)
+        label.delete(d.lb)
+        label.delete(d.ltfLb)
+        box.delete(d.ltfBx)
+        box.delete(d.fvBx)
+        label.delete(d.csLb)
+        line.delete(d.fvLn)
+        label.delete(d.fvLb)
+    0
+
+if govOk and newG and barstate.isconfirmed
+    int n = array.size(gO)
+    if n >= 3
+        for si = 0 to 1
+            bool up = si == 1
+            float bE = up ? array.get(gH, n - 1) : array.get(gL, n - 1)
+            float aE = up ? array.get(gH, n - 2) : array.get(gL, n - 2)
+            int   ix = n - 1
+            int   k  = f_c2k(up, bE, array.get(gC, n - 1), aE, false, na, na, na)
+            if k == 0
+                if useC2x
+                    float bE2 = up ? array.get(gH, n - 2) : array.get(gL, n - 2)
+                    float aE2 = up ? array.get(gH, n - 3) : array.get(gL, n - 3)
+                    float bO2 = up ? array.get(gL, n - 2) : array.get(gH, n - 2)
+                    int   k2  = f_c2k(up, bE2, array.get(gC, n - 2), aE2, true, array.get(gC, n - 1), bO2, array.get(gO, n - 2))
+                    if k2 == 2
+                        k  := 2
+                        bE := bE2
+                        aE := aE2
+                        ix := n - 2
+            if k > 0
+                C2ev e = C2ev.new()
+                e.lv   := aE
+                e.ex   := bE
+                e.kind := k
+                e.up   := up
+                e.seq  := gSeq
+                e.st   := 1
+                e.b1   := array.get(up ? gHB : gLB, ix - 1)
+                e.b2   := array.get(up ? gHB : gLB, ix)
+                int off = f_cisdOff(e.b2, not up)
+                if not na(off)
+                    e.cs  := open[off]
+                    e.csb := bar_index - off
+                    if showCsFvg
+                        int jLo = bar_index - e.b2
+                        if jLo >= 0
+                            if off - 2 >= jLo
+                                for j = jLo to math.min(off - 2, 200)
+                                    if j + 2 <= bar_index
+                                        bool okG = up ? low[j] > high[j + 2] : high[j] < low[j + 2]
+                                        if okG
+                                            e.fv  := up ? high[j + 2] : low[j + 2]
+                                            e.fvHi := up ? low[j] : low[j + 2]
+                                            e.fvLo := up ? high[j + 2] : high[j]
+                                            e.fvB := bar_index - j - 2
+                                            break
+                nArm += 1
+                dArm += 1
+                if not na(e.cs)
+                    float c2c = array.get(gC, ix)
+                    if up ? c2c < e.cs : c2c > e.cs
+                        e.csOn := true
+                    if not na(e.fv)
+                        if up ? c2c < e.fv : c2c > e.fv
+                            e.fvOn := true
+                            e.fvClose := c2c
+                            e.fvOnBar := bar_index
+                    if f_done(e)
+                        e.st := 2
+                        e.path := na(e.fv) ? 1 : 2
+                        nCnf += 1
+                        dCnf += 1
+                        if e.path == 2
+                            nFvg += 1
+                            dFvg += 1
+                if showLtf
+                    int bo   = bar_index - e.b2
+                    int oOld = bar_index - array.get(gSB, ix) + ltfPad
+                    int oNew = ix + 1 < n ? bar_index - array.get(gSB, ix + 1) + 1 - ltfPad : 1 - ltfPad
+                    int hit = -1
+                    int hk = 0
+                    for dd = 0 to oOld - oNew
+                        if hit < 0
+                            int j1 = bo - dd
+                            if j1 >= oNew
+                                if j1 <= oOld
+                                    int kk = f_c2At(j1, up)
+                                    if kk > 0
+                                        if not ltfSwing or f_isPiv(j1, up, ltfSwN)
+                                            hit := j1
+                                            hk  := kk
+                        if hit < 0
+                            if dd > 0
+                                int j2 = bo + dd
+                                if j2 >= oNew
+                                    if j2 <= oOld
+                                        int kk2 = f_c2At(j2, up)
+                                        if kk2 > 0
+                                            if not ltfSwing or f_isPiv(j2, up, ltfSwN)
+                                                hit := j2
+                                                hk  := kk2
+                    if hit >= 0
+                        float lv2 = up ? high[hit + 1] : low[hit + 1]
+                        e.ltfLn := line.new(f_ax(bar_index - hit - 1), lv2, bar_index - hit + extB, lv2, color = color.new(cLtf, opac), width = 1, style = line.style_solid)
+                        if ltfBx
+                            e.ltfBx := box.new(bar_index - hit, high[hit], bar_index - hit, low[hit], border_color = color.new(cLtf, opac), border_width = 3, bgcolor = color.new(cLtf, ltfFill))
+                        if showLb
+                            e.ltfLb := label.new(bar_index - hit, up ? high[hit] : low[hit], "c2" + (hk == 2 ? "x" : ""), style = up ? label.style_label_down : label.style_label_up, color = color.new(color.gray, 100), textcolor = color.new(cLtf, 0), size = f_lsz(szC2))
+                if showCsFvg
+                    if not na(e.fv)
+                        e.fvBx := box.new(f_ax(e.fvB), math.max(e.fvHi, e.fvLo), bar_index + extB, math.min(e.fvHi, e.fvLo), border_color = color.new(cCsFvg, opac), bgcolor = color.new(cCsFvg, csFvgF), border_width = 1)
+                e.swLn := line.new(f_ax(e.b1), e.lv, e.b2 + extB, e.lv, width = swW)
+                if not na(e.cs)
+                    e.csLn := line.new(f_ax(e.csb), e.cs, bar_index + extB, e.cs, width = csW)
+                if showLb
+                    e.lb := label.new(e.b2 + extB + lbOffX, e.lv, "", style = label.style_label_left, color = color.new(color.gray, 100), size = f_lsz(lblSz))
+                    if not na(e.cs)
+                        e.csLb := label.new(csLbSide == "Left" ? f_ax(e.csb) - csLbOff : bar_index + extB + csLbOff, e.cs, "", style = csLbSide == "Left" ? label.style_label_right : label.style_label_left, color = color.new(color.gray, 100), size = f_lsz(szCs))
+                f_ink(e)
+                array.push(evs, e)
+                f_cull()
+
+var array<line>  sepLn = array.new<line>()
+var array<label> sepLb = array.new<label>()
+var array<box>   mbBx  = array.new<box>()
+
+if govOk and newG and barstate.isconfirmed
+    if showSep
+        array.push(sepLn, line.new(bar_index, low, bar_index, high, extend = extend.both, color = color.new(cSep, 55), style = f_style(sepSty), width = 1))
+        array.push(sepLb, sepLbl ? label.new(bar_index, low, str.format_time(time, "HH:mm", syminfo.timezone), style = label.style_label_up, color = color.new(color.gray, 100), textcolor = color.new(cSep, 25), size = f_lsz(szC2)) : label(na))
+        while array.size(sepLn) > sepN
+            line.delete(array.shift(sepLn))
+            label.delete(array.shift(sepLb))
+    if showMb
+        int mn = array.size(gO)
+        if mn >= 1
+            float mo = array.get(gO, mn - 1)
+            float mh = array.get(gH, mn - 1)
+            float ml = array.get(gL, mn - 1)
+            float mc = array.get(gC, mn - 1)
+            int   mx = array.get(gSB, mn - 1)
+            bool  mbu = mc > mo
+            float mt = mbu ? mo : mh
+            float mb = mbu ? ml : mo
+            if array.size(evs) > 0
+                C2ev mlast = array.get(evs, array.size(evs) - 1)
+                if mlast.seq == gSeq
+                    mt := math.max(mlast.lv, mlast.ex)
+                    mb := math.min(mlast.lv, mlast.ex)
+                    mbu := not mlast.up
+            if mt > mb
+                array.push(mbBx, box.new(f_ax(mx), mt, bar_index - 1, mb, bgcolor = color.new(mbu ? cMbU : cMbD, mbFill), border_color = color.new(color.gray, 60), border_style = line.style_dotted))
+                while array.size(mbBx) > mbKeep
+                    box.delete(array.shift(mbBx))
+
+if barstate.isconfirmed
+    if array.size(evs) > 0
+        for i = 0 to array.size(evs) - 1
+            C2ev e = array.get(evs, i)
+            bool live = gSeq - e.seq < cisdWin - 1
+            if e.st == 1 or (e.st == 2 and live)
+                bool took = false
+                if not na(e.ex)
+                    took := invWick ? (e.up ? high > e.ex : low < e.ex) : (e.up ? close > e.ex : close < e.ex)
+                if took
+                    bool wasPend = e.st == 1
+                    e.st := 3
+                    if wasPend
+                        nDed += 1
+                        dDed += 1
+                    if not showDead
+                        line.delete(e.swLn)
+                        line.delete(e.csLn)
+                        line.delete(e.ltfLn)
+                        label.delete(e.lb)
+                        label.delete(e.ltfLb)
+                        box.delete(e.ltfBx)
+                        box.delete(e.fvBx)
+                        label.delete(e.csLb)
+                        line.delete(e.fvLn)
+                        label.delete(e.fvLb)
+                    else
+                        if not na(e.csLn)
+                            line.set_x2(e.csLn, bar_index + extB)
+                        if not na(e.csLb)
+                            if csLbSide != "Left"
+                                label.set_x(e.csLb, bar_index + extB + csLbOff)
+                        f_ink(e)
+                else
+                    if e.st == 1
+                        if not e.csOn
+                            if not na(e.cs)
+                                if e.up ? close < e.cs : close > e.cs
+                                    e.csOn := true
+                        if not e.fvOn
+                            if not na(e.fv)
+                                if e.up ? close < e.fv : close > e.fv
+                                    e.fvOn := true
+                                    e.fvClose := close
+                                    e.fvOnBar := bar_index
+                                    if showLb
+                                        e.fvLn := line.new(f_ax(bar_index), close, bar_index + extB, close, color = color.new(cCsFvg, opac), width = csW, style = f_style(csSc))
+                                        e.fvLb := label.new(bar_index + extB + csLbOff, close, "iFVG " + (e.up ? "−" : "+"), style = label.style_label_left, color = color.new(color.gray, 100), textcolor = color.new(cCsFvg, 0), size = f_lsz(szCs))
+                        if not na(e.csLn)
+                            line.set_x2(e.csLn, bar_index + extB)
+                        if not na(e.fvBx)
+                            box.set_right(e.fvBx, bar_index + extB)
+                        if not na(e.fvLn)
+                            line.set_x2(e.fvLn, bar_index + extB)
+                        if not na(e.fvLb)
+                            label.set_x(e.fvLb, bar_index + extB + csLbOff)
+                        if not na(e.csLb)
+                            if csLbSide != "Left"
+                                label.set_x(e.csLb, bar_index + extB + csLbOff)
+                        if f_done(e)
+                            e.st := 2
+                            e.path := na(e.fv) ? 1 : 2
+                            nCnf += 1
+                            dCnf += 1
+                            if e.path == 2
+                                nFvg += 1
+                                dFvg += 1
+                            f_ink(e)
+                        else
+                            if not live
+                                e.st := 4
+                                nUnc += 1
+                                dUnc += 1
+                                if not showUnc
+                                    line.delete(e.swLn)
+                                    line.delete(e.csLn)
+                                    line.delete(e.ltfLn)
+                                    label.delete(e.lb)
+                                    label.delete(e.ltfLb)
+                                    box.delete(e.ltfBx)
+                                    box.delete(e.fvBx)
+                                    label.delete(e.csLb)
+                                    line.delete(e.fvLn)
+                                    label.delete(e.fvLb)
+                                else
+                                    f_ink(e)
+
+var array<line>  pvLn = array.new<line>()
+var array<label> pvLb = array.new<label>()
+if barstate.islast
+    while array.size(pvLn) > 0
+        line.delete(array.pop(pvLn))
+    while array.size(pvLb) > 0
+        label.delete(array.pop(pvLb))
+    if govOk
+        int n = array.size(gO)
+        if n >= 1
+            if not na(gHi)
+                if not na(gLo)
+                    for si = 0 to 1
+                        bool up = si == 1
+                        float bE = up ? gHi : gLo
+                        float aE = up ? array.get(gH, n - 1) : array.get(gL, n - 1)
+                        if f_c2k(up, bE, close, aE, false, na, na, na) > 0
+                            color c  = up ? cDn : cUp
+                            int   b1 = array.get(up ? gHB : gLB, n - 1)
+                            int   b2 = up ? gHiB : gLoB
+                            array.push(pvLn, line.new(f_ax(b1), aE, bar_index + extB, aE, color = color.new(c, fade), width = swW, style = line.style_dashed))
+                            string tx = " forming"
+                            int off = f_cisdOff(b2, not up)
+                            if not na(off)
+                                float cs = open[off]
+                                array.push(pvLn, line.new(f_ax(bar_index - off), cs, bar_index + extB, cs, color = color.new(cCisd, fade), width = csW, style = line.style_dashed))
+                                tx := (up ? close < cs : close > cs) ? " CISD hit · on this close" : " CISD?"
+                            if showLb
+                                array.push(pvLb, label.new(b2, bE, govTag + " C2" + tx, style = up ? label.style_label_up : label.style_label_down, color = color.new(color.gray, 100), textcolor = color.new(c, 35), size = f_lsz(lblSz)))
+
+f_pct(int a, int b) => b == 0 ? "—" : str.tostring(a) + "  " + str.tostring(100.0 * a / b, "#") + "%"
+
+var array<box>   panBx = array.new<box>()
+var array<line>  panLn = array.new<line>()
+var array<label> panLb = array.new<label>()
+if barstate.islast
+    while array.size(panBx) > 0
+        box.delete(array.pop(panBx))
+    while array.size(panLn) > 0
+        line.delete(array.pop(panLn))
+    while array.size(panLb) > 0
+        label.delete(array.pop(panLb))
+    if showPan and govOk
+        int pnM = array.size(gO)
+        int pnN = math.min(panN, pnM + 1)
+        if pnN >= 2
+            if not na(gOp)
+                if not na(gHi)
+                    if not na(gLo)
+                        array<float> pO = array.new_float()
+                        array<float> pH = array.new_float()
+                        array<float> pL = array.new_float()
+                        array<float> pC = array.new_float()
+                        for pi = 0 to pnN - 1
+                            if pi == 0
+                                array.push(pO, gOp)
+                                array.push(pH, gHi)
+                                array.push(pL, gLo)
+                                array.push(pC, close)
+                            else
+                                int px = pnM - pi
+                                array.push(pO, array.get(gO,  px))
+                                array.push(pH, array.get(gH,  px))
+                                array.push(pL, array.get(gL,  px))
+                                array.push(pC, array.get(gC,  px))
+                        int pnW    = panSize == "Large" ? 5 : panSize == "Medium" ? 3 : 1
+                        int pnStep = pnW + 2
+                        int pnHalf = math.max(1, math.round(pnW / 2))
+                        int pnX0   = bar_index + panOff + 8
+                        for pi = 0 to pnN - 1
+                            float pa = array.get(pO, pi)
+                            float pb = array.get(pC, pi)
+                            float ph = array.get(pH, pi)
+                            float pl = array.get(pL, pi)
+                            if not (na(pa) or na(pb) or na(ph) or na(pl))
+                                int   pcx = pnX0 + (pnN - 1 - pi) * pnStep
+                                float pbt = math.max(pa, pb)
+                                float pbb = math.min(pa, pb)
+                                if pbt == pbb
+                                    pbt := pbb + syminfo.mintick
+                                bool pBull = pb >= pa
+                                array.push(panBx, box.new(pcx - pnHalf, pbt, pcx + pnHalf, pbb, bgcolor = pBull ? panBull : panBear, border_color = pBull ? panBdU : panBdD, border_width = 1))
+                                array.push(panLn, line.new(pcx, ph, pcx, pbt, color = pBull ? panWkU : panWkD, width = 1))
+                                array.push(panLn, line.new(pcx, pbb, pcx, pl, color = pBull ? panWkU : panWkD, width = 1))
+                                if pi < 2
+                                    array.push(panLb, label.new(pcx, pl, pi == 0 ? "C2" : "C1", style = label.style_label_up, color = color.new(color.gray, 100), textcolor = panWick, size = f_lsz(szC2)))
+                        array.push(panLb, label.new(pnX0 + math.round((pnN - 1) * pnStep / 2.0), array.max(pH), govTag, style = label.style_label_down, color = color.new(color.gray, 100), textcolor = panWick, size = f_lsz(szCs)))
+                        if panC2
+                            for pi = 0 to pnN - 2
+                                float pnc = pi >= 1 ? array.get(pC, pi - 1) : na
+                                int pxn = pnX0 + (pnN - 1 - pi) * pnStep
+                                int pxp = pnX0 + (pnN - 2 - pi) * pnStep
+                                int ku = f_c2k(false, array.get(pL, pi), array.get(pC, pi), array.get(pL, pi + 1), useC2x, pnc, array.get(pH, pi), array.get(pO, pi))
+                                int kd = f_c2k(true,  array.get(pH, pi), array.get(pC, pi), array.get(pH, pi + 1), useC2x, pnc, array.get(pL, pi), array.get(pO, pi))
+                                if ku > 0
+                                    array.push(panLn, line.new(pxp, array.get(pL, pi + 1), pxn, array.get(pL, pi + 1), color = color.new(cUp, opac), width = swW, style = ku == 2 ? line.style_dashed : line.style_solid))
+                                if kd > 0
+                                    array.push(panLn, line.new(pxp, array.get(pH, pi + 1), pxn, array.get(pH, pi + 1), color = color.new(cDn, opac), width = swW, style = kd == 2 ? line.style_dashed : line.style_solid))
+                        if panFvg
+                            if pnN >= 3
+                                for pj = 0 to pnN - 3
+                                    float g1o = array.get(pO, pj)
+                                    float g1c = array.get(pC, pj)
+                                    float g1h = array.get(pH, pj)
+                                    float g1l = array.get(pL, pj)
+                                    float g2o = array.get(pO, pj + 2)
+                                    float g2c = array.get(pC, pj + 2)
+                                    float g2h = array.get(pH, pj + 2)
+                                    float g2l = array.get(pL, pj + 2)
+                                    if not (na(g1o) or na(g1c) or na(g1h) or na(g1l) or na(g2o) or na(g2c) or na(g2h) or na(g2l))
+                                        int gxn = pnX0 + (pnN - 1 - pj) * pnStep
+                                        int gxp = pnX0 + (pnN - 3 - pj) * pnStep
+                                        if g1l > g2h and math.min(g1o, g1c) > math.max(g2o, g2c)
+                                            array.push(panBx, box.new(gxp, g1l, gxn, g2h, bgcolor = cPanFv, border_color = color.new(cPanFv, cPanFvB)))
+                                        if g1h < g2l and math.max(g1o, g1c) < math.min(g2o, g2c)
+                                            array.push(panBx, box.new(gxp, g2l, gxn, g1h, bgcolor = cPanFv, border_color = color.new(cPanFv, cPanFvB)))
+
+var table tb = table.new(position.top_right, 3, 7, border_width = 1)
+if showTb and barstate.islast
+    color hb = color.new(color.black, 20)
+    table.cell(tb, 0, 0, "HTF PO3  " + govTag + " / " + f_tfTag(timeframe.period), text_color = color.white, bgcolor = hb, text_size = size.small)
+    table.cell(tb, 1, 0, "today", text_color = color.white, bgcolor = hb, text_size = size.small)
+    table.cell(tb, 2, 0, "chart", text_color = color.silver, bgcolor = hb, text_size = size.small)
+    table.cell(tb, 0, 1, "Detected", text_color = color.silver, text_size = size.small)
+    table.cell(tb, 1, 1, str.tostring(dArm), text_color = color.white, text_size = size.small)
+    table.cell(tb, 2, 1, str.tostring(nArm), text_color = color.silver, text_size = size.small)
+    table.cell(tb, 0, 2, "CISD confirmed", text_color = color.silver, text_size = size.small)
+    table.cell(tb, 1, 2, f_pct(dCnf, dArm), text_color = dArm == 0 ? color.gray : cCisdOn, text_size = size.small)
+    table.cell(tb, 2, 2, f_pct(nCnf, nArm), text_color = nArm == 0 ? color.gray : color.new(cCisdOn, 40), text_size = size.small)
+    table.cell(tb, 0, 3, "Failed  extreme taken", text_color = color.silver, text_size = size.small)
+    table.cell(tb, 1, 3, f_pct(dDed, dArm), text_color = dArm == 0 ? color.gray : cDead, text_size = size.small)
+    table.cell(tb, 2, 3, f_pct(nDed, nArm), text_color = nArm == 0 ? color.gray : color.new(cDead, 40), text_size = size.small)
+    table.cell(tb, 0, 4, "Unconfirmed  no CISD", text_color = color.silver, text_size = size.small)
+    table.cell(tb, 1, 4, f_pct(dUnc, dArm), text_color = dArm == 0 ? color.gray : cUnc, text_size = size.small)
+    table.cell(tb, 2, 4, f_pct(nUnc, nArm), text_color = nArm == 0 ? color.gray : color.new(cUnc, 40), text_size = size.small)
+    table.cell(tb, 0, 5, "  of those, corroborated", text_color = color.silver, text_size = size.small)
+    table.cell(tb, 1, 5, f_pct(dFvg, dCnf), text_color = dCnf == 0 ? color.gray : cCsFvg, text_size = size.small)
+    table.cell(tb, 2, 5, f_pct(nFvg, nCnf), text_color = nCnf == 0 ? color.gray : color.new(cCsFvg, 40), text_size = size.small)
+    table.cell(tb, 0, 6, "Live now", text_color = color.silver, text_size = size.small)
+    table.cell(tb, 1, 6, str.tostring(array.size(evs)), text_color = color.silver, text_size = size.small)
+    table.cell(tb, 2, 6, "", text_size = size.small)

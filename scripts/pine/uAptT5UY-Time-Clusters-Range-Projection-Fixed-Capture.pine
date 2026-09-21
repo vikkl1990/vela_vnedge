@@ -1,0 +1,391 @@
+//@version=6
+indicator("Time Clusters - Range Projection (Fixed Capture)", overlay=true, max_lines_count=500, max_boxes_count=500)
+
+// ==================== TIME SLOT CONFIGURATION ====================
+numSlots = 28
+
+// Slot 0-23
+slot0_enable  = input.bool(true,  "Slot 00:00 - Enable")
+slot1_enable  = input.bool(true,  "Slot 01:00 - Enable")
+slot2_enable  = input.bool(true,  "Slot 02:00 - Enable")
+slot3_enable  = input.bool(true,  "Slot 03:00 - Enable")
+slot4_enable  = input.bool(true,  "Slot 04:00 - Enable")
+slot5_enable  = input.bool(true,  "Slot 05:00 - Enable")
+slot6_enable  = input.bool(false, "Slot 06:00 - Enable")
+slot7_enable  = input.bool(false, "Slot 07:00 - Enable")
+slot8_enable  = input.bool(true,  "Slot 08:00 - Enable")
+slot9_enable  = input.bool(true,  "Slot 09:00 - Enable")
+slot10_enable = input.bool(true,  "Slot 10:00 - Enable")
+slot11_enable = input.bool(true,  "Slot 11:00 - Enable")
+slot12_enable = input.bool(false, "Slot 12:00 - Enable")
+slot13_enable = input.bool(true,  "Slot 13:00 - Enable")
+slot14_enable = input.bool(true,  "Slot 14:00 - Enable")
+slot15_enable = input.bool(true,  "Slot 15:00 - Enable")
+slot16_enable = input.bool(false, "Slot 16:00 - Enable")
+slot17_enable = input.bool(false, "Slot 17:00 - Enable")
+slot18_enable = input.bool(false, "Slot 18:00 - Enable")
+slot19_enable = input.bool(false, "Slot 19:00 - Enable")
+slot20_enable = input.bool(false, "Slot 20:00 - Enable")
+slot21_enable = input.bool(false, "Slot 21:00 - Enable")
+slot22_enable = input.bool(false, "Slot 22:00 - Enable")
+slot23_enable = input.bool(false, "Slot 23:00 - Enable")
+
+// Custom slots
+custom24_enable  = input.bool(false, "Custom Slot 24 - Enable")
+custom24_startHr = input.int(9,  "Custom Slot 24 - Start Hour", minval=0, maxval=23)
+custom24_startMi = input.int(30, "Custom Slot 24 - Start Minute", minval=0, maxval=59)
+
+custom25_enable  = input.bool(false, "Custom Slot 25 - Enable")
+custom25_startHr = input.int(12, "Custom Slot 25 - Start Hour", minval=0, maxval=23)
+custom25_startMi = input.int(30, "Custom Slot 25 - Start Minute", minval=0, maxval=59)
+
+custom26_enable  = input.bool(false, "Custom Slot 26 - Enable")
+custom26_startHr = input.int(13, "Custom Slot 26 - Start Hour", minval=0, maxval=23)
+custom26_startMi = input.int(30, "Custom Slot 26 - Start Minute", minval=0, maxval=59)
+
+custom27_enable  = input.bool(false, "Custom Slot 27 - Enable")
+custom27_startHr = input.int(14, "Custom Slot 27 - Start Hour", minval=0, maxval=23)
+custom27_startMi = input.int(30, "Custom Slot 27 - Start Minute", minval=0, maxval=59)
+
+
+// ==================== CAPTURE TIMEFRAME ====================
+captureTF = input.timeframe("1", "Capture Bar Timeframe",
+     tooltip="The timeframe of the single bar whose High/Low will be captured at the start of each slot")
+
+// Colors & settings
+slotColorGroup1  = input.color(color.new(color.yellow, 84), "Morning Slots Fill")
+slotColorBorder1 = input.color(color.new(color.yellow, 50), "Morning Slots Border")
+slotColorGroup2  = input.color(color.new(color.yellow, 84), "Midday Slots Fill")
+slotColorBorder2 = input.color(color.new(color.yellow, 50), "Midday Slots Border")
+slotColorGroup3  = input.color(color.new(color.yellow, 84), "Afternoon Slots Fill")
+slotColorBorder3 = input.color(color.new(color.yellow, 50), "Afternoon Slots Border")
+
+projectLineStyle = input.string("Solid", "Line Style", options=["Solid", "Dashed", "Dotted"])
+dailyReset       = input.bool(true, "Reset Ranges Each New Day")
+lookbackBars     = input.int(5000, "Max Bars to Keep Boxes", minval=50, maxval=5000)
+showLabels       = input.bool(false, "Show Time Labels on Boxes")
+
+// ==================== DATA STORAGE ====================
+var float[] slotRangesHigh = array.new_float(numSlots, na)
+var float[] slotRangesLow  = array.new_float(numSlots, na)
+var int[]   slotStartBar   = array.new_int(numSlots, na)
+var int[]   slotBarCounts  = array.new_int(numSlots, 0)
+var box[]   slotBoxes      = array.new_box(numSlots, na)
+var label[] slotLabels     = array.new_label(numSlots, na)
+
+// Custom slot independent tracking
+var bool[] customSlotActive = array.new_bool(4, false)
+
+// ==================== HELPERS ====================
+isWithinTimeSlot(h, m, startHr, startMi) =>
+    h == startHr and m >= startMi and m < 60
+
+getSlotBorderColor(slotIdx) =>
+    slotIdx < 9 ? slotColorBorder1 : slotIdx < 16 ? slotColorBorder2 : slotColorBorder3
+
+getBoxLineStyle() =>
+    projectLineStyle == "Dashed" ? line.style_dashed :
+     projectLineStyle == "Dotted" ? line.style_dotted : line.style_solid
+
+getSlotLabel(slotIdx) =>
+    switch slotIdx
+        0  => "00:00"
+        1  => "01:00"
+        2  => "02:00"
+        3  => "03:00"
+        4  => "04:00"
+        5  => "05:00"
+        6  => "06:00"
+        7  => "07:00"
+        8  => "08:00"
+        9  => "09:00"
+        10 => "10:00"
+        11 => "11:00"
+        12 => "12:00"
+        13 => "13:00"
+        14 => "14:00"
+        15 => "15:00"
+        16 => "16:00"
+        17 => "17:00"
+        18 => "18:00"
+        19 => "19:00"
+        20 => "20:00"
+        21 => "21:00"
+        22 => "22:00"
+        23 => "23:00"
+        => "Custom"
+
+isSlotEnabled(slotIdx) =>
+    switch slotIdx
+        0  => slot0_enable
+        1  => slot1_enable
+        2  => slot2_enable
+        3  => slot3_enable
+        4  => slot4_enable
+        5  => slot5_enable
+        6  => slot6_enable
+        7  => slot7_enable
+        8  => slot8_enable
+        9  => slot9_enable
+        10 => slot10_enable
+        11 => slot11_enable
+        12 => slot12_enable
+        13 => slot13_enable
+        14 => slot14_enable
+        15 => slot15_enable
+        16 => slot16_enable
+        17 => slot17_enable
+        18 => slot18_enable
+        19 => slot19_enable
+        20 => slot20_enable
+        21 => slot21_enable
+        22 => slot22_enable
+        23 => slot23_enable
+        24 => custom24_enable
+        25 => custom25_enable
+        26 => custom26_enable
+        27 => custom27_enable
+        => false
+
+// ==================== HTF DATA ====================
+[htfHigh, htfLow, htfOpenTime] = request.security(syminfo.tickerid, captureTF, [high, low, time], barmerge.gaps_off, barmerge.lookahead_off)
+
+// True only on the first chart bar of a new HTF candle
+isNewHtfBar = ta.change(htfOpenTime) != 0
+
+// ==================== MAIN LOGIC ====================
+currentHour   = hour(time)
+currentMinute = minute(time)
+currentDay    = dayofmonth(time)
+
+// Active slot detection for standard slots 0-23
+activeSlot = -1
+if slot0_enable  and isWithinTimeSlot(currentHour, currentMinute, 0, 0)
+    activeSlot := 0
+else if slot1_enable  and isWithinTimeSlot(currentHour, currentMinute, 1, 0)
+    activeSlot := 1
+else if slot2_enable  and isWithinTimeSlot(currentHour, currentMinute, 2, 0)
+    activeSlot := 2
+else if slot3_enable  and isWithinTimeSlot(currentHour, currentMinute, 3, 0)
+    activeSlot := 3
+else if slot4_enable  and isWithinTimeSlot(currentHour, currentMinute, 4, 0)
+    activeSlot := 4
+else if slot5_enable  and isWithinTimeSlot(currentHour, currentMinute, 5, 0)
+    activeSlot := 5
+else if slot6_enable  and isWithinTimeSlot(currentHour, currentMinute, 6, 0)
+    activeSlot := 6
+else if slot7_enable  and isWithinTimeSlot(currentHour, currentMinute, 7, 0)
+    activeSlot := 7
+else if slot8_enable  and isWithinTimeSlot(currentHour, currentMinute, 8, 0)
+    activeSlot := 8
+else if slot9_enable  and isWithinTimeSlot(currentHour, currentMinute, 9, 0)
+    activeSlot := 9
+else if slot10_enable and isWithinTimeSlot(currentHour, currentMinute, 10, 0)
+    activeSlot := 10
+else if slot11_enable and isWithinTimeSlot(currentHour, currentMinute, 11, 0)
+    activeSlot := 11
+else if slot12_enable and isWithinTimeSlot(currentHour, currentMinute, 12, 0)
+    activeSlot := 12
+else if slot13_enable and isWithinTimeSlot(currentHour, currentMinute, 13, 0)
+    activeSlot := 13
+else if slot14_enable and isWithinTimeSlot(currentHour, currentMinute, 14, 0)
+    activeSlot := 14
+else if slot15_enable and isWithinTimeSlot(currentHour, currentMinute, 15, 0)
+    activeSlot := 15
+else if slot16_enable and isWithinTimeSlot(currentHour, currentMinute, 16, 0)
+    activeSlot := 16
+else if slot17_enable and isWithinTimeSlot(currentHour, currentMinute, 17, 0)
+    activeSlot := 17
+else if slot18_enable and isWithinTimeSlot(currentHour, currentMinute, 18, 0)
+    activeSlot := 18
+else if slot19_enable and isWithinTimeSlot(currentHour, currentMinute, 19, 0)
+    activeSlot := 19
+else if slot20_enable and isWithinTimeSlot(currentHour, currentMinute, 20, 0)
+    activeSlot := 20
+else if slot21_enable and isWithinTimeSlot(currentHour, currentMinute, 21, 0)
+    activeSlot := 21
+else if slot22_enable and isWithinTimeSlot(currentHour, currentMinute, 22, 0)
+    activeSlot := 22
+else if slot23_enable and isWithinTimeSlot(currentHour, currentMinute, 23, 0)
+    activeSlot := 23
+
+// ==================== CUSTOM SLOT INDEPENDENT TRACKING ====================
+// Custom slots track SEPARATELY from standard slots 0-23
+
+// Check each custom slot independently
+if custom24_enable and isWithinTimeSlot(currentHour, currentMinute, custom24_startHr, custom24_startMi)
+    array.set(customSlotActive, 0, true)
+else
+    array.set(customSlotActive, 0, false)
+
+if custom25_enable and isWithinTimeSlot(currentHour, currentMinute, custom25_startHr, custom25_startMi)
+    array.set(customSlotActive, 1, true)
+else
+    array.set(customSlotActive, 1, false)
+
+if custom26_enable and isWithinTimeSlot(currentHour, currentMinute, custom26_startHr, custom26_startMi)
+    array.set(customSlotActive, 2, true)
+else
+    array.set(customSlotActive, 2, false)
+
+if custom27_enable and isWithinTimeSlot(currentHour, currentMinute, custom27_startHr, custom27_startMi)
+    array.set(customSlotActive, 3, true)
+else
+    array.set(customSlotActive, 3, false)
+
+// Capture for custom slots 24-27 (independent of standard slots)
+for customIdx = 0 to 3
+    slotIdx = customIdx + 24
+    
+    if array.get(customSlotActive, customIdx)
+        alreadyCaptured = not na(array.get(slotRangesHigh, slotIdx))
+        
+        if not alreadyCaptured and isNewHtfBar
+            array.set(slotStartBar,   slotIdx, bar_index)
+            array.set(slotRangesHigh, slotIdx, htfHigh)
+            array.set(slotRangesLow,  slotIdx, htfLow)
+            array.set(slotBarCounts,  slotIdx, 1)
+
+// Reset custom slots when leaving their time window (allows re-capture next cycle)
+for customIdx = 0 to 3
+    slotIdx = customIdx + 24
+    
+    slotHr = switch customIdx
+        0 => custom24_startHr
+        1 => custom25_startHr
+        2 => custom26_startHr
+        3 => custom27_startHr
+        => 0
+    
+    slotMin = switch customIdx
+        0 => custom24_startMi
+        1 => custom25_startMi
+        2 => custom26_startMi
+        3 => custom27_startMi
+        => 0
+    
+    stillInWindow = switch customIdx
+        0 => isWithinTimeSlot(currentHour, currentMinute, custom24_startHr, custom24_startMi)
+        1 => isWithinTimeSlot(currentHour, currentMinute, custom25_startHr, custom25_startMi)
+        2 => isWithinTimeSlot(currentHour, currentMinute, custom26_startHr, custom26_startMi)
+        3 => isWithinTimeSlot(currentHour, currentMinute, custom27_startHr, custom27_startMi)
+        => false
+    
+    if not stillInWindow and not na(array.get(slotRangesHigh, slotIdx))
+        array.set(slotRangesHigh, slotIdx, na)
+        array.set(slotRangesLow,  slotIdx, na)
+        array.set(slotStartBar,   slotIdx, na)
+        array.set(slotBarCounts,  slotIdx, 0)
+
+// Daily reset
+var int lastDay = currentDay
+if dailyReset and currentDay != lastDay
+    for i = 0 to numSlots - 1
+        if not na(array.get(slotBoxes, i))
+            box.delete(array.get(slotBoxes, i))
+        if not na(array.get(slotLabels, i))
+            label.delete(array.get(slotLabels, i))
+        array.set(slotRangesHigh, i, na)
+        array.set(slotRangesLow,  i, na)
+        array.set(slotStartBar,   i, na)
+        array.set(slotBarCounts,  i, 0)
+        array.set(slotBoxes,      i, na)
+        array.set(slotLabels,     i, na)
+    lastDay := currentDay
+
+// ========== CAPTURE THE FIRST HTF BAR OF STANDARD SLOTS ==========
+if activeSlot != -1
+    alreadyCaptured = not na(array.get(slotRangesHigh, activeSlot))
+
+    if not alreadyCaptured and isNewHtfBar
+        array.set(slotStartBar,   activeSlot, bar_index)
+        array.set(slotRangesHigh, activeSlot, htfHigh)
+        array.set(slotRangesLow,  activeSlot, htfLow)
+        array.set(slotBarCounts,  activeSlot, 1)
+
+// ==================== DRAW BOXES ====================
+for slotIdx = 0 to numSlots - 1
+    if isSlotEnabled(slotIdx)
+        rangeHigh = array.get(slotRangesHigh, slotIdx)
+        rangeLow  = array.get(slotRangesLow,  slotIdx)
+        startBar  = array.get(slotStartBar,   slotIdx)
+        existing  = array.get(slotBoxes,      slotIdx)
+        existingL = array.get(slotLabels,     slotIdx)
+
+        if not na(rangeHigh) and not na(rangeLow) and not na(startBar)
+            if bar_index - startBar <= lookbackBars
+                fillColor   = slotIdx < 9 ? slotColorGroup1 : slotIdx < 16 ? slotColorGroup2 : slotColorGroup3
+                borderColor = getSlotBorderColor(slotIdx)
+
+                if na(existing)
+                    newBox = box.new(startBar, rangeHigh, bar_index, rangeLow,
+                         bgcolor = fillColor,
+                         border_color = borderColor,
+                         border_style = getBoxLineStyle(),
+                         border_width = 1,
+                         extend = extend.right)
+                    array.set(slotBoxes, slotIdx, newBox)
+
+                    if showLabels
+                        newLabel = label.new(startBar, rangeHigh, getSlotLabel(slotIdx),
+                             color = color.new(color.black, 100),
+                             textcolor = borderColor,
+                             style = label.style_label_down,
+                             size = size.small,
+                             textalign = text.align_left)
+                        array.set(slotLabels, slotIdx, newLabel)
+                else
+                    box.set_top(existing, rangeHigh)
+                    box.set_bottom(existing, rangeLow)
+                    box.set_right(existing, bar_index)
+                    if showLabels and not na(existingL)
+                        label.set_xy(existingL, startBar, rangeHigh)
+            else
+                if not na(existing)
+                    box.delete(existing)
+                    array.set(slotBoxes, slotIdx, na)
+                if not na(existingL)
+                    label.delete(existingL)
+                    array.set(slotLabels, slotIdx, na)
+
+// ==================== INFO PANEL ====================
+var table infoPanel = table.new(position.bottom_right, 4, 30, bgcolor=color.new(color.black, 90), border_width=1)
+
+if barstate.islast
+    table.cell(infoPanel, 0, 0, "Time", text_color=color.white, text_size=size.small)
+    table.cell(infoPanel, 1, 0, "High", text_color=color.white, text_size=size.small)
+    table.cell(infoPanel, 2, 0, "Low",  text_color=color.white, text_size=size.small)
+    table.cell(infoPanel, 3, 0, "Bars", text_color=color.white, text_size=size.small)
+
+    row = 1
+    for i = 0 to numSlots - 1
+        if isSlotEnabled(i)
+            h = array.get(slotRangesHigh, i)
+            l = array.get(slotRangesLow, i)
+            c = array.get(slotBarCounts, i)
+            col = getSlotBorderColor(i)
+
+            table.cell(infoPanel, 0, row, getSlotLabel(i), text_color=col, text_size=size.small)
+            table.cell(infoPanel, 1, row, str.tostring(h, "#.##"), text_color=na(h) ? color.gray : color.green, text_size=size.small)
+            table.cell(infoPanel, 2, row, str.tostring(l, "#.##"), text_color=na(l) ? color.gray : color.red, text_size=size.small)
+            table.cell(infoPanel, 3, row, str.tostring(c), text_color=c > 0 ? color.white : color.gray, text_size=size.small)
+            row += 1
+
+// ==================== ALERTS ====================
+breakAbove = false
+breakBelow = false
+
+for i = 0 to numSlots - 1
+    if isSlotEnabled(i)
+        h = array.get(slotRangesHigh, i)
+        l = array.get(slotRangesLow, i)
+        if not na(h) and not na(l)
+            if close > h and close[1] <= h
+                breakAbove := true
+            if close < l and close[1] >= l
+                breakBelow := true
+
+if breakAbove
+    alert("Time Cluster Breakout - Above range", alert.freq_once_per_bar_close)
+if breakBelow
+    alert("Time Cluster Breakout - Below range", alert.freq_once_per_bar_close)

@@ -1,0 +1,197 @@
+//@version=6
+indicator("Vertical Lines & Range High/Low (07:00-09:00)", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// ───────── Input ─────────
+tz = input.string("America/New_York", "Timezone", group = "General",
+     tooltip = "America/New_York = NY time. Change to Asia/Jakarta to use WIB time.")
+lineStyleStr = input.string("Dashed", "Line Style", options = ["Solid", "Dashed", "Dotted"], group = "General")
+lineWidth    = input.int(1, "Width", minval = 1, maxval = 5, group = "General")
+showLabel    = input.bool(true, "Show Time Label", group = "General")
+
+on1  = input.bool(true, "Active", group = "Line 1 (Range Start)")
+h1   = input.int(7, "Hour", minval = 0, maxval = 23, group = "Line 1 (Range Start)", inline = "t1")
+m1   = input.int(0, "Minute", minval = 0, maxval = 59, group = "Line 1 (Range Start)", inline = "t1")
+col1 = input.color(#9575CD, "Color", group = "Line 1 (Range Start)")
+
+on2  = input.bool(true, "Active", group = "Line 2 (Range End)")
+h2   = input.int(9, "Hour", minval = 0, maxval = 23, group = "Line 2 (Range End)", inline = "t2")
+m2   = input.int(0, "Minute", minval = 0, maxval = 59, group = "Line 2 (Range End)", inline = "t2")
+col2 = input.color(#7E57C2, "Color", group = "Line 2 (Range End)")
+
+showRangeHL    = input.bool(true, "Show Range High/Low", group = "Range High/Low")
+rangeHighCol   = input.color(color.lime, "High Color", group = "Range High/Low")
+rangeLowCol    = input.color(color.red, "Low Color", group = "Range High/Low")
+rangeLineWidth = input.int(1, "Line Width", minval = 1, maxval = 5, group = "Range High/Low")
+showRangeLabel = input.bool(true, "Show High/Low Labels", group = "Range High/Low")
+
+showFVG      = input.bool(true, "Show FVG", group = "Fair Value Gap",
+     tooltip = "Only detects Fair Value Gaps formed inside the 07:00-09:00 range. An unfilled FVG keeps extending right; once price fully fills it, the box stops extending and is relabeled IFVG.")
+fvgBullColor = input.color(color.new(color.teal, 70), "Bullish FVG Color", group = "Fair Value Gap")
+fvgBearColor = input.color(color.new(color.red, 70), "Bearish FVG Color", group = "Fair Value Gap")
+
+// ───────── Helper ─────────
+lineStyle = switch lineStyleStr
+    "Solid"  => line.style_solid
+    "Dotted" => line.style_dotted
+    => line.style_dashed
+
+drawVLineAt(int ts, int h, int m, color col) =>
+    line.new(ts, low, ts, high + syminfo.mintick, xloc = xloc.bar_time,
+             extend = extend.both, color = col, style = lineStyle, width = lineWidth)
+    if showLabel
+        label.new(ts, high, str.format("{0,number,00}:{1,number,00}", h, m),
+                  xloc = xloc.bar_time, yloc = yloc.abovebar, color = color.new(col, 0),
+                  textcolor = color.white, style = label.style_label_down, size = size.small)
+
+// ───────── Range High/Low tracking ─────────
+var float rangeHigh     = na
+var float rangeLow      = na
+var int   rangeHighTime = na
+var int   rangeLowTime  = na
+var bool  wasInRange    = false
+
+var line  buysideLine   = na
+var line  sellsideLine  = na
+var bool  buysideSwept  = true
+var bool  sellsideSwept = true
+var label buysideLabel  = na
+var label sellsideLabel = na
+
+ts1 = timestamp(tz, year(time, tz), month(time, tz), dayofmonth(time, tz), h1, m1)
+ts2 = timestamp(tz, year(time, tz), month(time, tz), dayofmonth(time, tz), h2, m2)
+
+inRange      = time >= ts1 and time < ts2
+isRangeStart = inRange and not wasInRange
+
+// draw both range-boundary vertical lines together as soon as the range starts,
+// instead of waiting for the bar that actually reaches the end time
+if timeframe.isintraday and isRangeStart
+    if on1
+        drawVLineAt(ts1, h1, m1, col1)
+    if on2
+        drawVLineAt(ts2, h2, m2, col2)
+
+if isRangeStart
+    // freeze last session's liquidity lines instead of letting them extend forever
+    if not na(buysideLine) and not buysideSwept
+        line.set_extend(buysideLine, extend.none)
+        line.set_x2(buysideLine, time)
+        buysideSwept := true
+    if not na(sellsideLine) and not sellsideSwept
+        line.set_extend(sellsideLine, extend.none)
+        line.set_x2(sellsideLine, time)
+        sellsideSwept := true
+    rangeHigh     := high
+    rangeLow      := low
+    rangeHighTime := time
+    rangeLowTime  := time
+    if showRangeHL
+        buysideSwept  := false
+        sellsideSwept := false
+        buysideLine  := line.new(time, high, time, high, xloc = xloc.bar_time,
+                     extend = extend.none, color = rangeHighCol, style = line.style_solid, width = rangeLineWidth)
+        sellsideLine := line.new(time, low, time, low, xloc = xloc.bar_time,
+                     extend = extend.none, color = rangeLowCol, style = line.style_solid, width = rangeLineWidth)
+        if showRangeLabel
+            buysideLabel  := label.new(time, high, "Buyside Liquidity",
+                      xloc = xloc.bar_time, yloc = yloc.price, color = color.new(rangeHighCol, 100),
+                      textcolor = rangeHighCol, style = label.style_label_left, size = size.small,
+                      textalign = text.align_left)
+            sellsideLabel := label.new(time, low, "Sellside Liquidity",
+                      xloc = xloc.bar_time, yloc = yloc.price, color = color.new(rangeLowCol, 100),
+                      textcolor = rangeLowCol, style = label.style_label_left, size = size.small,
+                      textalign = text.align_left)
+
+if inRange
+    if high > rangeHigh
+        rangeHigh     := high
+        rangeHighTime := time
+    if low < rangeLow
+        rangeLow     := low
+        rangeLowTime := time
+    // keep the range high/low lines and labels growing live while the range is still forming
+    if showRangeHL and not na(buysideLine)
+        line.set_xy1(buysideLine, rangeHighTime, rangeHigh)
+        line.set_xy2(buysideLine, time, rangeHigh)
+        line.set_xy1(sellsideLine, rangeLowTime, rangeLow)
+        line.set_xy2(sellsideLine, time, rangeLow)
+        if showRangeLabel and not na(buysideLabel)
+            rangeHeight = rangeHigh - rangeLow
+            labelOffset = rangeHeight * 0.05
+            label.set_xy(buysideLabel, rangeHighTime, rangeHigh + labelOffset)
+            label.set_xy(sellsideLabel, rangeLowTime, rangeLow - labelOffset)
+
+// ───────── Buyside / Sellside Liquidity (range high/low, grows bar by bar until swept) ─────────
+if wasInRange and not inRange and showRangeHL and not na(buysideLine)
+    line.set_xy2(buysideLine, ts2, rangeHigh)
+    line.set_xy2(sellsideLine, ts2, rangeLow)
+
+// after the range closes, keep the liquidity lines growing bar by bar with real
+// time/candles (instead of jumping straight to an infinite extend.right), and stop
+// exactly at the bar that sweeps through the level
+if not na(buysideLine) and not buysideSwept and not inRange
+    line.set_x2(buysideLine, time)
+    if high > rangeHigh
+        buysideSwept := true
+
+if not na(sellsideLine) and not sellsideSwept and not inRange
+    line.set_x2(sellsideLine, time)
+    if low < rangeLow
+        sellsideSwept := true
+
+// ───────── Fair Value Gap (FVG), only formed inside the 07:00-09:00 range ─────────
+// only the single most recent bullish FVG/IFVG and the single most recent bearish
+// FVG/IFVG are kept on the chart — a new one replaces the previous one of its side
+var box   latestBullBox    = na
+var float latestBullBot    = na
+var bool  latestBullFilled = true
+
+var box   latestBearBox    = na
+var float latestBearTop    = na
+var bool  latestBearFilled = true
+
+if isRangeStart
+    if not na(latestBullBox)
+        box.delete(latestBullBox)
+        latestBullBox    := na
+        latestBullFilled := true
+    if not na(latestBearBox)
+        box.delete(latestBearBox)
+        latestBearBox    := na
+        latestBearFilled := true
+
+if showFVG and inRange
+    if low > high[2]
+        if not na(latestBullBox)
+            box.delete(latestBullBox)
+        latestBullBot    := high[2]
+        latestBullFilled := false
+        latestBullBox    := box.new(left = time[2], top = low, right = time, bottom = high[2], xloc = xloc.bar_time,
+                     border_color = na, bgcolor = fvgBullColor, text = "FVG",
+                     text_color = color.white, text_size = size.small,
+                     text_halign = text.align_center, text_valign = text.align_center)
+    if high < low[2]
+        if not na(latestBearBox)
+            box.delete(latestBearBox)
+        latestBearTop    := low[2]
+        latestBearFilled := false
+        latestBearBox    := box.new(left = time[2], top = low[2], right = time, bottom = high, xloc = xloc.bar_time,
+                     border_color = na, bgcolor = fvgBearColor, text = "FVG",
+                     text_color = color.white, text_size = size.small,
+                     text_halign = text.align_center, text_valign = text.align_center)
+
+// keep the latest unfilled FVG extending to the current bar; once price fully fills
+// it, stop extending it and relabel it IFVG
+if not na(latestBullBox) and not latestBullFilled
+    box.set_right(latestBullBox, time)
+    if low <= latestBullBot
+        box.set_text(latestBullBox, "IFVG")
+        latestBullFilled := true
+
+if not na(latestBearBox) and not latestBearFilled
+    box.set_right(latestBearBox, time)
+    if high >= latestBearTop
+        box.set_text(latestBearBox, "IFVG")
+        latestBearFilled := true
+
+wasInRange := inRange

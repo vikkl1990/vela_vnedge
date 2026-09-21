@@ -1,0 +1,77 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © achirameegasthanne
+
+//@version=6
+indicator('TMA Volatility Bands', overlay = true, max_bars_back = 300)
+
+//inputs
+groupMain = "Main Settings"
+
+Period_TMA = input.int(title="TMA Period", defval=22, group=groupMain)
+BandsDeviations = input.float(title="Band Deviation", defval=1, group=groupMain)
+src = input.source(title="Price Source", defval=hlc3, group=groupMain)
+TrendThreshold = input.float(0.25, 'Trend Threshold', minval = 0.001, maxval = 50, display = display.none)
+
+groupArt = "Art"
+upCol = input(#0df1c6, "Bullish Color", group = groupArt)
+dnCol = input(#871ee9, "Bearish Color", group = groupArt)
+
+//internals
+period = Period_TMA
+FullLength = 2.0 * Period_TMA + 1.0
+
+ma = src
+
+//REAL TMA
+sma1 = ta.sma(ma, Period_TMA)
+TMA = ta.sma(sma1, Period_TMA)
+
+//WU / WD
+diff = ma - TMA
+
+var float Variance = na
+
+if na(Variance)
+    Variance := diff * diff
+else
+    Variance := (Variance * (FullLength - 1) + diff * diff) / FullLength
+
+Deviation = math.sqrt(Variance)
+
+//BANDS
+UpBand = TMA + BandsDeviations * Deviation
+UpMiddleBand = TMA + (BandsDeviations * Deviation) * 1.15
+UpTopBand = TMA + (BandsDeviations * Deviation) * 1.30
+
+DnBand = TMA - BandsDeviations * Deviation
+DnMiddleBand = TMA - (BandsDeviations * Deviation) * 1.15
+DnTopBand = TMA - (BandsDeviations * Deviation) * 1.30
+
+//================ TREND STRENGTH =================
+atrBase = ta.atr(Period_TMA)
+tilt = atrBase != 0 ? (TMA - TMA[1]) / (0.1 * atrBase) : 0
+
+gradientRange = math.max(TrendThreshold * 4, 1.0)
+
+TMAColor = tilt < 0 ? color.from_gradient(tilt, -gradientRange, 0, upCol, color.gray) : color.from_gradient(tilt, 0, gradientRange, color.gray, dnCol)
+
+// PLOTS
+plot(TMA, color = TMAColor, editable = false)
+
+T = plot(UpBand, color = dnCol, editable = false)
+plot(UpMiddleBand, color = color.new(dnCol, 30), editable = false)
+T1 = plot(UpTopBand, color = color.new(dnCol, 60), editable = false)
+
+D = plot(DnBand, color = upCol, editable = false)
+plot(DnMiddleBand, color = color.new(upCol, 30), editable = false)
+D1 = plot(DnTopBand, color = color.new(upCol, 60), editable = false)
+
+fill(T, T1, UpBand, UpMiddleBand, color.new(dnCol, 60), na, editable = false)
+fill(D1, D, DnMiddleBand, DnBand, na, color.new(upCol, 60), editable = false)
+
+// SIGNALS
+SELL = high[1] > UpBand[1] and close[1] > open[1] and close < open
+BUY = low[1] < DnBand[1] and close[1] < open[1] and close > open
+
+plotshape(SELL, style = shape.triangledown, location = location.abovebar, color = dnCol, size = size.tiny, editable = false)
+plotshape(BUY, style = shape.triangleup, location = location.belowbar, color = upCol, size = size.tiny, editable = false)

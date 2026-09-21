@@ -1,0 +1,34 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © phantomcipher
+
+//@version=6
+indicator("Volume Delta [PhantomCipher]", format = format.volume)
+
+import TradingView/ta/8
+
+// Style
+renderModeInput = input.string("Delta Highlight", "Render Mode", options = ["Delta Highlight", "Standard"], group = "Style", display = display.none)
+
+var lowerTimeframe = switch
+    timeframe.isseconds  => "1S"
+    timeframe.isintraday => "1"
+    timeframe.isdaily    => "5"
+    => "60"
+
+// [openVolume, maxVolume, minVolume, lastVolume] approximate up/down volume on the lower timeframe;
+// lastVolume is the net buy/sell delta for the bar, used only to pick the column color.
+[openVolume, maxVolume, minVolume, deltaVolume] = ta.requestVolumeDelta(lowerTimeframe)
+
+var cumVol = 0.
+cumVol += nz(volume)
+if barstate.islast and cumVol == 0
+    runtime.error("The data vendor doesn't provide volume data for this symbol.")
+
+volumeColor = close >= open ? color.new(#089981, 50) : color.new(#f23645, 50)
+deltaColor  = deltaVolume >= 0 ? #26a69a : #ef5350
+
+showDeltaCore  = renderModeInput == "Delta Highlight"
+deltaMagnitude = showDeltaCore ? math.min(math.abs(deltaVolume), volume) : na
+
+plot(volume, title = "Volume", style = plot.style_columns, color = volumeColor)
+plot(deltaMagnitude, title = "Delta", style = plot.style_columns, color = deltaColor)

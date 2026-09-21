@@ -1,0 +1,28 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © phantomcipher
+//
+// NOTE: This indicator might not work properly with gold (XAUUSD), silver (XAGUSD),
+// and some other commodity or forex tickers due to timezone and trading session differences.
+//
+// Best viewed on the daily chart, where each week's Monday is a single highlighted candle.
+
+//@version=6
+indicator(shorttitle="Monday Candles [PhantomCipher]", title="Monday Candles [PhantomCipher]", overlay=true)
+
+disMon = input.bool(true, title="Highlight Monday?")
+
+// Detect if instrument is a futures/derivatives contract
+// Futures tickers typically contain "!" or have continuous contract notation
+isFutures = str.contains(syminfo.ticker, "!") or str.contains(syminfo.ticker, "1!") or syminfo.type == "futures"
+
+// For futures, check for Sunday (which displays as Monday)
+// For spot, check for Monday normally
+isMon() => 
+    if isFutures
+        dayofweek(time, 'UTC') == dayofweek.sunday
+    else
+        dayofweek(time, 'UTC') == dayofweek.monday
+
+monColor = input.color(#ffeb3b, title="Highlight Color")
+
+barcolor(disMon and isMon() ? monColor : na)

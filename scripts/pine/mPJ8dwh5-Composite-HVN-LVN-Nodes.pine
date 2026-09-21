@@ -1,0 +1,509 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+
+//@version=6
+indicator("Composite HVN/LVN Nodes", shorttitle="Composite Nodes", overlay=true, max_bars_back=5000, max_boxes_count=500, max_labels_count=500)
+
+//──────────────────────────────────────────────────────────────────────────────
+// Inputs
+//──────────────────────────────────────────────────────────────────────────────
+grpS  = "Sessions"
+tz    = input.string("America/New_York", "Timezone", group=grpS)
+useS1 = input.bool(true, "Session 1", inline="s1", group=grpS)
+sess1 = input.session("1800-0930", "", inline="s1", group=grpS)
+useS2 = input.bool(true, "Session 2", inline="s2", group=grpS)
+sess2 = input.session("0930-1700", "", inline="s2", group=grpS)
+
+grpL = "Resolution"
+useLTF = input.bool(true, "Build profiles from lower timeframe", group=grpL, tooltip="Feeds the profile with intrabars instead of chart bars, so the node map is the same on 1m and 1h. Without it, coarse bars smear volume across rows they only passed through and the profile flattens as the timeframe rises.")
+ltfIn  = input.timeframe("1", "Resolution timeframe", group=grpL, tooltip="Must be at or below the chart timeframe. Falls back to chart bars if it is not, or once history runs past the intrabar limit.")
+
+grpD = "Node Detection"
+rows       = input.int(200, "Profile rows", minval=20, maxval=500, group=grpD, tooltip="Resolution of each session profile. High row counts locate nodes precisely; band expansion below is what turns them back into usable zones.")
+lookaround = input.int(6, "Local sensitivity", minval=1, maxval=20, group=grpD, tooltip="A row must beat this many neighbours on each side to seed a node.")
+detectHVN  = input.bool(true, "Detect HVN", inline="d1", group=grpD)
+hvnPct     = input.float(70, "min % of max vol", minval=1, maxval=100, inline="d1", group=grpD)
+detectLVN  = input.bool(true, "Detect LVN", inline="d2", group=grpD)
+lvnPct     = input.float(10, "max % of max vol", minval=0, maxval=100, inline="d2", group=grpD)
+
+grpB = "Node Width"
+maxBandPct = input.float(12.0, "Max node width (% of session range)", minval=0.5, maxval=50, step=0.5, group=grpB, tooltip="Ceiling on how far a node may expand. Stops a dead zone from swallowing half the range.")
+widthBoost = input.float(0.10, "Width weighting", minval=0.0, maxval=1.0, step=0.01, group=grpB, tooltip="Extra weight per additional row in the band. 0 = a thick shelf and a thin spike of the same intensity score the same. 0.10 = a 5-row shelf scores 1.4x a single row.")
+
+grpW = "Volume Weighting"
+weightMode = input.string("Profile % × session volume", "Weight source", options=["Profile %", "Profile % × session volume", "Band volume"], group=grpW, tooltip="Profile %: relative to the session's own max row only — a dead session scores like a busy one. × session volume: the same, scaled by how active the session was against its recent average. Band volume: score the node by the actual volume it holds.")
+volLookback = input.int(20, "Session volume lookback", minval=2, maxval=200, group=grpW, tooltip="Sessions averaged to decide what 'normal' volume is.")
+minVolFrac  = input.float(0.35, "Skip session below × average volume", minval=0.0, maxval=1.0, step=0.05, group=grpW, tooltip="Sessions this thin contribute nothing at all. 0 disables the filter. Decay still runs on skipped sessions.")
+volClamp    = input.float(3.0, "Volume factor cap", minval=1.0, maxval=10.0, step=0.5, group=grpW, tooltip="Caps the scaling both ways: a session cannot count more than this multiple, nor less than its reciprocal.")
+
+grpC = "Composite"
+halfLife    = input.float(50, "Decay half-life (sessions)", minval=0.5, maxval=200, step=0.5, group=grpC, tooltip="Every session close, all node weights are multiplied by 0.5^(1/halfLife).")
+mergePct    = input.float(2.0, "Merge gap tolerance (% of session range)", minval=0.0, maxval=25, step=0.5, group=grpC, tooltip="Measured as the GAP between two bands, not the distance between their centres. 0 = only bands that already touch or overlap will merge. Raise it to pull near-neighbours together.")
+minWeight   = input.float(1.0, "Drop below weight", minval=0.01, maxval=20, step=0.05, group=grpC)
+maxNodes    = input.int(100, "Max nodes kept", minval=4, maxval=200, group=grpC)
+useCrossPen = input.bool(true, "Penalise on full traverse", inline="cp", group=grpC, tooltip="When a single bar rips clean through a zone, its weight is cut by this factor.")
+crossPen    = input.float(0.25, "", minval=0.05, maxval=1.0, step=0.05, inline="cp", group=grpC)
+
+grpX = "Conflicts"
+conflictMode = input.string("Stronger wins", "HVN / LVN overlap", options=["Stronger wins", "HVN wins", "Weight decay", "Off"], group=grpX, tooltip="Stronger wins: whichever node carries more weight survives, the other is removed outright. HVN wins: an LVN overlapping any HVN is always removed. Weight decay: only scale the loser's weight by the factors below — it may survive if it was heavy. Off: allow overlaps.")
+hvnOverLvn = input.float(0.15, "HVN suppresses LVN by", minval=0.0, maxval=1.0, step=0.05, group=grpX, tooltip="Weight decay mode only. Multiplier applied to an overlapping LVN when an HVN forms there.")
+lvnOverHvn = input.float(0.75, "LVN suppresses HVN by", minval=0.0, maxval=1.0, step=0.05, group=grpX, tooltip="Weight decay mode only. Deliberately milder: a quiet session over an old shelf does not undo the volume that already traded there.")
+
+grpA = "Archive"
+keepDead   = input.bool(false, "Keep invalidated nodes (frozen)", group=grpA, tooltip="When a node's weight collapses or it is squeezed out by the node cap, freeze its box at that bar instead of deleting it. The zone stops extending, so you can see exactly when it was live and when it died. Useful for backtesting; adds clutter for live use.")
+maxRetired = input.int(200, "Max retired nodes kept", minval=10, maxval=350, group=grpA, tooltip="Oldest retired boxes are dropped past this. Active nodes and retired ones share the 500-box budget.")
+deadTr     = input.int(88, "Retired transparency", minval=0, maxval=100, group=grpA)
+
+grpV = "Display"
+extendBars = input.int(50, "Extend right (bars)", minval=0, maxval=500, group=grpV)
+hvnCol     = input.color(#5b9cf6, "HVN", inline="c1", group=grpV)
+lvnCol     = input.color(#ff2222, "LVN", inline="c1", group=grpV)
+trStrong   = input.int(30, "Transparency: strongest", minval=0, maxval=100, group=grpV)
+trWeak     = input.int(90, "Transparency: weakest", minval=0, maxval=100, group=grpV)
+showLabels = input.bool(false, "Show strength labels", group=grpV)
+
+//──────────────────────────────────────────────────────────────────────────────
+// Session buffers
+//──────────────────────────────────────────────────────────────────────────────
+type SessBuf
+    float[] aHi
+    float[] aLo
+    float[] aVol
+    float   hi
+    float   lo
+
+f_new_buf() =>
+    SessBuf.new(array.new_float(), array.new_float(), array.new_float(), na, na)
+
+var SessBuf b1 = f_new_buf()
+var SessBuf b2 = f_new_buf()
+
+in1    = not na(time(timeframe.period, sess1, tz))
+start1 = in1 and not in1[1]
+end1   = not in1 and in1[1]
+
+in2    = not na(time(timeframe.period, sess2, tz))
+start2 = in2 and not in2[1]
+end2   = not in2 and in2[1]
+
+//──────────────────────────────────────────────────────────────────────────────
+// Lower-timeframe intrabars. Requested at global scope, guarded so an invalid
+// resolution silently degrades to chart bars rather than erroring.
+//──────────────────────────────────────────────────────────────────────────────
+bool   ltfOk   = timeframe.in_seconds(ltfIn) > 0 and timeframe.in_seconds(ltfIn) <= timeframe.in_seconds(timeframe.period)
+string safeLtf = ltfOk ? ltfIn : timeframe.period
+
+[ltfH, ltfL, ltfV] = request.security_lower_tf(syminfo.tickerid, safeLtf, [high, low, volume])
+
+f_track(SessBuf s, bool enabled, bool isIn, bool isStart) =>
+    if enabled
+        if isStart
+            array.clear(s.aHi), array.clear(s.aLo), array.clear(s.aVol)
+            s.hi := high
+            s.lo := low
+        if isIn
+            // intrabars when available, otherwise the chart bar itself
+            if useLTF and ltfOk and array.size(ltfV) > 0
+                for k = 0 to array.size(ltfV) - 1
+                    array.push(s.aHi, array.get(ltfH, k))
+                    array.push(s.aLo, array.get(ltfL, k))
+                    array.push(s.aVol, nz(array.get(ltfV, k)))
+            else
+                array.push(s.aHi, high)
+                array.push(s.aLo, low)
+                array.push(s.aVol, nz(volume))
+
+            s.hi := math.max(nz(s.hi, high), high)
+            s.lo := math.min(nz(s.lo, low), low)
+
+f_track(b1, useS1, in1, start1)
+f_track(b2, useS2, in2, start2)
+
+//──────────────────────────────────────────────────────────────────────────────
+// Composite node store
+//──────────────────────────────────────────────────────────────────────────────
+type VNode
+    float center
+    float half
+    float weight
+    int   hits
+    int   firstBar
+    bool  hvn
+    box   bx
+    label lb
+
+var array<VNode> nodes = array.new<VNode>()
+
+//──────────────────────────────────────────────────────────────────────────────
+// Retire a node. With the archive on, the box is frozen at the current bar and
+// handed to a separate list — nothing updates it again, so it stays a record of
+// where the level was and how long it survived.
+//──────────────────────────────────────────────────────────────────────────────
+var array<box> retired = array.new<box>()
+
+f_retire(VNode nd) =>
+    label.delete(nd.lb)
+
+    if keepDead and not na(nd.bx)
+        color base = nd.hvn ? hvnCol : lvnCol
+        box.set_right(nd.bx, bar_index)
+        box.set_bgcolor(nd.bx, color.new(base, deadTr))
+        box.set_border_color(nd.bx, color.new(base, math.min(100, deadTr + 6)))
+        box.set_border_style(nd.bx, line.style_dashed)
+
+        array.push(retired, nd.bx)
+        while array.size(retired) > maxRetired
+            box.delete(array.shift(retired))
+    else
+        box.delete(nd.bx)
+
+//──────────────────────────────────────────────────────────────────────────────
+// Scan one profile for nodes of a single type.
+//
+// Runs of qualifying rows are found FIRST, then anchored on the run's actual
+// extremum. Seeding on the first local max encountered while scanning upward
+// biases every band toward the lowest peak in a multi-peak shelf.
+//──────────────────────────────────────────────────────────────────────────────
+f_scan(float[] bins, float maxV, float sLo, float step, bool isHvn, float[] cCen, float[] cHlf, float[] cStr, int[] cRows, float[] cVol, bool[] cHvn) =>
+    int loB = lookaround
+    int hiB = rows - 1 - lookaround
+    int maxRows = math.max(1, int(math.round(rows * maxBandPct / 100.0)))
+
+    if hiB > loB
+        int j = loB
+        while j <= hiB
+            float vj = array.get(bins, j)
+            float pj = vj / maxV * 100.0
+            bool  qj = isHvn ? pj >= hvnPct : (pj <= lvnPct and vj > 0)
+
+            if not qj
+                j += 1
+            else
+                // extent of this contiguous qualifying run
+                int a = j
+                int b = j
+                while b + 1 <= hiB
+                    float vn = array.get(bins, b + 1)
+                    float pn = vn / maxV * 100.0
+                    if isHvn ? pn >= hvnPct : (pn <= lvnPct and vn > 0)
+                        b += 1
+                    else
+                        break
+
+                // the run's own extremum, not the first row that qualified
+                int p = a
+                if b > a
+                    for r = a + 1 to b
+                        float vr = array.get(bins, r)
+                        float vp = array.get(bins, p)
+                        if isHvn ? vr > vp : vr < vp
+                            p := r
+
+                // quality gate: the anchor must dominate its neighbourhood
+                bool ok = true
+                float vpk = array.get(bins, p)
+                for k = 1 to lookaround
+                    float lv = array.get(bins, p - k)
+                    float rv = array.get(bins, p + k)
+                    ok := ok and (isHvn ? (vpk >= lv and vpk >= rv) : (vpk <= lv and vpk <= rv))
+
+                if ok
+                    // clip an over-wide run to a window centred on the anchor
+                    int aa = a
+                    int bb = b
+                    if (b - a + 1) > maxRows
+                        aa := math.max(a, p - int(maxRows / 2))
+                        bb := math.min(b, aa + maxRows - 1)
+                        aa := math.max(a, bb - maxRows + 1)
+
+                    float peakPct  = vpk / maxV * 100.0
+                    float strength = isHvn ? peakPct / 100.0 : 1.0 - peakPct / 100.0
+
+                    // absolute volume held by the band, for volume-based scoring
+                    float bandVol = 0.0
+                    for r = aa to bb
+                        bandVol += array.get(bins, r)
+
+                    array.push(cCen, (sLo + step * (bb + 1) + sLo + step * aa) * 0.5)
+                    array.push(cHlf, (step * (bb + 1 - aa)) * 0.5)
+                    array.push(cStr, strength)
+                    array.push(cRows, bb - aa + 1)
+                    array.push(cVol, bandVol)
+                    array.push(cHvn, isHvn)
+
+                j := b + 1
+
+//──────────────────────────────────────────────────────────────────────────────
+// Build one finished session's profile and pull its nodes out.
+// Candidate arrays are owned by the caller; this returns the session's range
+// and its total traded volume so weights can be scaled against other sessions.
+//──────────────────────────────────────────────────────────────────────────────
+f_detect(SessBuf s, float[] cCen, float[] cHlf, float[] cStr, int[] cRows, float[] cVol, bool[] cHvn) =>
+    float outRange = 0.0
+    float sessVol  = 0.0
+
+    int n = array.size(s.aHi)
+    float rng = nz(s.hi) - nz(s.lo)
+
+    if n > 5 and rng > 0
+        outRange := rng
+        sessVol  := array.sum(s.aVol)
+        float step = rng / rows
+        array<float> bins = array.new_float(rows, 0.0)
+
+        for i = 0 to n - 1
+            float h = array.get(s.aHi, i)
+            float l = array.get(s.aLo, i)
+            float v = array.get(s.aVol, i)
+            float barR = math.max(h - l, syminfo.mintick)
+
+            int r0 = math.max(0, math.min(rows - 1, int(math.floor((l - s.lo) / step))))
+            int r1 = math.max(0, math.min(rows - 1, int(math.floor((h - s.lo) / step))))
+
+            for r = r0 to r1
+                float bLo  = s.lo + step * r
+                float oR   = math.max(0.0, math.min(h, bLo + step) - math.max(l, bLo))
+                float addV = r1 == r0 ? v : v * (oR / barR)
+                array.set(bins, r, array.get(bins, r) + addV)
+
+        float maxV = array.max(bins)
+
+        if maxV > 0
+            if detectHVN
+                f_scan(bins, maxV, s.lo, step, true, cCen, cHlf, cStr, cRows, cVol, cHvn)
+            if detectLVN
+                f_scan(bins, maxV, s.lo, step, false, cCen, cHlf, cStr, cRows, cVol, cHvn)
+
+    [outRange, sessVol]
+
+//──────────────────────────────────────────────────────────────────────────────
+// Fold one candidate into the composite.
+//
+// Merging takes the UNION of the two bands, not the average of their centres.
+// Averaging puts the result in the valley between two shelves, covering
+// neither. Eligibility is the gap between bands, so two peaks with a real
+// trough between them stay separate instead of collapsing into a phantom.
+//──────────────────────────────────────────────────────────────────────────────
+f_absorb(float cen, float hlf, float wgt, bool isHvn, float gapTol, float maxHalf) =>
+    int   best  = -1
+    float bestG = 1e20
+
+    if array.size(nodes) > 0
+        for i = 0 to array.size(nodes) - 1
+            VNode nd = array.get(nodes, i)
+            if nd.hvn == isHvn
+                float gap = math.abs(nd.center - cen) - (nd.half + hlf)
+                if gap <= gapTol and gap < bestG
+                    bestG := gap
+                    best  := i
+
+    int outIdx = best
+
+    if best >= 0
+        VNode nd = array.get(nodes, best)
+        float top = math.max(nd.center + nd.half, cen + hlf)
+        float bot = math.min(nd.center - nd.half, cen - hlf)
+        float tw  = nd.weight + wgt
+
+        // where the mass sits, used to place the band if the union is clipped
+        float anchor = (nd.center * nd.weight + cen * wgt) / tw
+        float nHalf  = math.min(maxHalf, (top - bot) * 0.5)
+
+        nd.half   := nHalf
+        nd.center := math.max(bot + nHalf, math.min(top - nHalf, anchor))
+        nd.weight := tw
+        nd.hits   := nd.hits + 1
+        true
+    else
+        array.push(nodes, VNode.new(cen, hlf, wgt, 1, bar_index, isHvn, na, na))
+        outIdx := array.size(nodes) - 1
+        false
+
+    outIdx
+
+//──────────────────────────────────────────────────────────────────────────────
+// Cross-type resolution. A node that has just been reinforced cuts the weight
+// of any opposite-type node sharing its band. Nothing is deleted here — the
+// prune at the end of the session close sweeps whatever fell below minWeight.
+//──────────────────────────────────────────────────────────────────────────────
+f_suppress(int idx, float gapTol) =>
+    if idx >= 0 and idx < array.size(nodes)
+        VNode nd = array.get(nodes, idx)
+        float factor = nd.hvn ? hvnOverLvn : lvnOverHvn
+
+        for i = 0 to array.size(nodes) - 1
+            if i != idx
+                VNode ot = array.get(nodes, i)
+                if ot.hvn != nd.hvn
+                    float gap = math.abs(ot.center - nd.center) - (ot.half + nd.half)
+                    if gap <= gapTol
+                        ot.weight := ot.weight * factor
+
+//──────────────────────────────────────────────────────────────────────────────
+// Rolling record of session volume, so "busy" and "dead" mean something
+//──────────────────────────────────────────────────────────────────────────────
+var float[] sessVols = array.new_float()
+
+f_weight(float strength, int bandRows, float bandVol, float avgVol, float volFactor, bool isHvn) =>
+    float widthTerm = 1.0 + widthBoost * (bandRows - 1)
+    float w = strength * widthTerm
+
+    if weightMode == "Profile % × session volume"
+        w := strength * widthTerm * volFactor
+    else if weightMode == "Band volume"
+        // An LVN holds almost no volume by definition, so band volume cannot
+        // score it. It falls back to emptiness scaled by session activity.
+        w := (isHvn and avgVol > 0) ? bandVol / avgVol * 10.0 : strength * widthTerm * volFactor
+
+    w
+
+//──────────────────────────────────────────────────────────────────────────────
+// Hard overlap resolution.
+//
+// Every HVN is checked against every LVN, not just the pair touched by the
+// latest candidate — bands drift into each other through union merging and
+// later reinforcement, and those cases were never re-examined. A price cannot
+// be both a shelf and a gap, so one of the two is removed outright.
+//──────────────────────────────────────────────────────────────────────────────
+f_resolve() =>
+    if conflictMode == "Stronger wins" or conflictMode == "HVN wins"
+        if array.size(nodes) > 1
+            for i = array.size(nodes) - 1 to 0
+                if i < array.size(nodes)
+                    VNode a = array.get(nodes, i)
+                    bool killA = false
+
+                    for j = 0 to array.size(nodes) - 1
+                        if j != i and not killA
+                            VNode b = array.get(nodes, j)
+                            if b.hvn != a.hvn
+                                float gap = math.abs(b.center - a.center) - (b.half + a.half)
+                                if gap < 0
+                                    if conflictMode == "HVN wins"
+                                        killA := not a.hvn
+                                    else
+                                        // ties go to the HVN: volume that traded
+                                        // is harder evidence than volume that didn't
+                                        killA := a.weight < b.weight or (a.weight == b.weight and not a.hvn)
+
+                    if killA
+                        f_retire(a)
+                        array.remove(nodes, i)
+
+//──────────────────────────────────────────────────────────────────────────────
+// Session close: decay everything, then fold in this session's nodes
+//──────────────────────────────────────────────────────────────────────────────
+f_on_close(SessBuf s) =>
+    float decay = math.pow(0.5, 1.0 / halfLife)
+
+    if array.size(nodes) > 0
+        for i = 0 to array.size(nodes) - 1
+            VNode nd = array.get(nodes, i)
+            nd.weight := nd.weight * decay
+
+    array<float> cCen  = array.new_float()
+    array<float> cHlf  = array.new_float()
+    array<float> cStr  = array.new_float()
+    array<int>   cRows = array.new_int()
+    array<float> cVol  = array.new_float()
+    array<bool>  cHvn  = array.new_bool()
+
+    [rng, sessVol] = f_detect(s, cCen, cHlf, cStr, cRows, cVol, cHvn)
+
+    // what counts as a normal session, from history only
+    float avgVol = array.size(sessVols) > 0 ? array.avg(sessVols) : 0.0
+    float volFactor = (avgVol > 0 and sessVol > 0) ? sessVol / avgVol : 1.0
+    volFactor := math.max(1.0 / volClamp, math.min(volClamp, volFactor))
+
+    bool skip = avgVol > 0 and minVolFrac > 0 and sessVol < avgVol * minVolFrac
+
+    if sessVol > 0
+        array.push(sessVols, sessVol)
+        while array.size(sessVols) > volLookback
+            array.shift(sessVols)
+
+    if not skip and array.size(cCen) > 0
+        float gapTol  = rng * mergePct / 100.0
+        float maxHalf = rng * maxBandPct / 100.0 * 0.5
+        for i = 0 to array.size(cCen) - 1
+            float w = f_weight(array.get(cStr, i), array.get(cRows, i), array.get(cVol, i), avgVol, volFactor, array.get(cHvn, i))
+            int idx = f_absorb(array.get(cCen, i), array.get(cHlf, i), w, array.get(cHvn, i), gapTol, maxHalf)
+            if conflictMode == "Weight decay"
+                f_suppress(idx, gapTol)
+
+    // no price may be both a shelf and a gap
+    f_resolve()
+
+    // drop the faded
+    if array.size(nodes) > 0
+        for i = array.size(nodes) - 1 to 0
+            VNode nd = array.get(nodes, i)
+            if nd.weight < minWeight
+                f_retire(nd)
+                array.remove(nodes, i)
+
+    // cap the map, weakest first
+    while array.size(nodes) > maxNodes
+        int   wi = 0
+        float wv = array.get(nodes, 0).weight
+        for i = 1 to array.size(nodes) - 1
+            if array.get(nodes, i).weight < wv
+                wv := array.get(nodes, i).weight
+                wi := i
+        f_retire(array.get(nodes, wi))
+        array.remove(nodes, wi)
+
+if end1 and useS1
+    f_on_close(b1)
+if end2 and useS2
+    f_on_close(b2)
+
+//──────────────────────────────────────────────────────────────────────────────
+// Per-bar: penalise zones that get ripped straight through
+//──────────────────────────────────────────────────────────────────────────────
+if useCrossPen and array.size(nodes) > 0
+    for i = 0 to array.size(nodes) - 1
+        VNode nd = array.get(nodes, i)
+        if bar_index > nd.firstBar and high >= nd.center + nd.half and low <= nd.center - nd.half
+            nd.weight := nd.weight * crossPen
+
+//──────────────────────────────────────────────────────────────────────────────
+// Draw
+//──────────────────────────────────────────────────────────────────────────────
+if array.size(nodes) > 0
+    float maxW = 0.0
+    for i = 0 to array.size(nodes) - 1
+        maxW := math.max(maxW, array.get(nodes, i).weight)
+
+    for i = 0 to array.size(nodes) - 1
+        VNode nd = array.get(nodes, i)
+        float ratio = maxW > 0 ? math.min(1.0, nd.weight / maxW) : 0.0
+        int   tr    = int(math.round(trWeak - (trWeak - trStrong) * ratio))
+        color base  = nd.hvn ? hvnCol : lvnCol
+
+        float top = nd.center + nd.half
+        float bot = nd.center - nd.half
+        int   x2  = bar_index + extendBars
+
+        if na(nd.bx)
+            nd.bx := box.new(nd.firstBar, top, x2, bot, xloc=xloc.bar_index, bgcolor=color.new(base, tr), border_color=color.new(base, math.min(100, tr + 8)))
+        else
+            box.set_top(nd.bx, top)
+            box.set_bottom(nd.bx, bot)
+            box.set_right(nd.bx, x2)
+            box.set_bgcolor(nd.bx, color.new(base, tr))
+            box.set_border_color(nd.bx, color.new(base, math.min(100, tr + 8)))
+
+        if showLabels and barstate.islast
+            string txt = (nd.hvn ? "HVN " : "LVN ") + str.tostring(nd.weight, "#.##") + " ×" + str.tostring(nd.hits)
+            if na(nd.lb)
+                nd.lb := label.new(x2, nd.center, txt, xloc=xloc.bar_index, style=label.style_label_left, color=color.new(color.black, 100), textcolor=color.new(base, 0), size=size.tiny)
+            else
+                label.set_xy(nd.lb, x2, nd.center)
+                label.set_text(nd.lb, txt)
+                label.set_textcolor(nd.lb, color.new(base, 0))
+
+//──────────────────────────────────────────────────────────────────────────────
+// Diagnostic: intrabars folded in per chart bar. Reads 0 when the profile has
+// fallen back to chart bars — either past the intrabar limit or a bad ltf.
+//──────────────────────────────────────────────────────────────────────────────
+plot(useLTF and ltfOk ? array.size(ltfV) : 0, "Intrabars/bar", color=color.gray, display=display.status_line)

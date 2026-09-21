@@ -1,0 +1,397 @@
+//@version=6
+indicator("Edge Sweep | Ismael Borges", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500)
+
+// This indicator mirrors the fixed defaults of the Edge Sweep system.
+// The trade logic remains internal. The chart shows the configured session box,
+// entry/exit labels and one blue line for each trade that was actually executed.
+
+string VISUAL_GROUP = "SESSION BOX"
+string TZ = input.string("America/New_York", "Timezone", group=VISUAL_GROUP)
+string SESSION_NAME = input.string("LONDON", "Session Name", group=VISUAL_GROUP)
+string BOX_HOURS = input.session("0300-0800", "Session Time", group=VISUAL_GROUP)
+color BOX_COLOR = input.color(color.blue, "Box Color", group=VISUAL_GROUP)
+int BOX_TRANSPARENCY = input.int(99, "Box Transparency", minval=0, maxval=100, group=VISUAL_GROUP)
+string T1_HOURS = "0800-1630"
+string EXT_ENTRY_HOURS = "1800-0500"
+string EXT_MANAGE_HOURS = "1800-0750"
+string T2_TP_HOURS = "1800-1630"
+string T2_SL_HOURS = "1800-1630"
+string T3_HOURS = "1800-1630"
+
+int T1_DISTANCE = 130
+int T1_SL = 550
+int T1_TP = 550
+int T2_TP_OFFSET = -100
+int T2_TP_SL = 550
+int T2_TP_TARGET = 550
+int T2_SL_OFFSET = 100
+int T2_SL_STOP = 550
+int T2_SL_TARGET = 550
+int T3_OFFSET = -100
+int T3_SL = 550
+int T3_TP = 550
+
+float tick = syminfo.mintick
+
+f_allowedDay(int d) =>
+    d == dayofweek.monday or d == dayofweek.tuesday or d == dayofweek.wednesday or d == dayofweek.thursday or d == dayofweek.friday
+
+f_entryLabel(int side, float px) =>
+    label.new(bar_index, px, side == 1 ? "BUY" : "SELL", yloc=yloc.price,
+      style=side == 1 ? label.style_label_up : label.style_label_down,
+      color=side == 1 ? color.green : color.red, textcolor=color.white, size=size.normal)
+
+f_exitLabel(string result, float px) =>
+    if result == "TP"
+        label.new(bar_index, px, result, yloc=yloc.price, style=label.style_label_down,
+          color=color.yellow, textcolor=color.black, size=size.normal)
+    else
+        color tagColor = result == "SL" ? color.rgb(255, 80, 80) : color.orange
+        label.new(bar_index, px, result, yloc=yloc.price, style=label.style_label_down,
+          color=tagColor, textcolor=color.white, size=size.small)
+
+f_tradeLine(float px, int side) =>
+    line.new(x1=bar_index, y1=px, x2=bar_index, y2=px, xloc=xloc.bar_index,
+      extend=extend.none, color=side == 1 ? color.green : color.red,
+      style=line.style_solid, width=1)
+
+bool rawBox = not na(time(timeframe.period, BOX_HOURS, TZ))
+bool rawBoxStart = rawBox and not rawBox[1]
+bool rawBoxEnd = not rawBox and rawBox[1]
+var bool selectedDay = false
+if rawBoxStart
+    selectedDay := f_allowedDay(dayofweek(time, TZ))
+
+bool inBox = rawBox and selectedDay
+bool boxStart = rawBoxStart and selectedDay
+bool boxEnd = rawBoxEnd and selectedDay
+bool inT1 = selectedDay and not na(time(timeframe.period, T1_HOURS, TZ))
+bool inExtendedEntry = not na(time(timeframe.period, EXT_ENTRY_HOURS, TZ))
+bool inExtendedManage = not na(time(timeframe.period, EXT_MANAGE_HOURS, TZ))
+bool inT2TP = selectedDay and not na(time(timeframe.period, T2_TP_HOURS, TZ))
+bool inT2SL = selectedDay and not na(time(timeframe.period, T2_SL_HOURS, TZ))
+bool inT3 = selectedDay and not na(time(timeframe.period, T3_HOURS, TZ))
+
+bool endT1 = not inT1 and inT1[1]
+bool endExtendedEntry = not inExtendedEntry and inExtendedEntry[1]
+bool endExtendedManage = not inExtendedManage and inExtendedManage[1]
+bool endT2TP = not inT2TP and inT2TP[1]
+bool endT2SL = not inT2SL and inT2SL[1]
+bool endT3 = not inT3 and inT3[1]
+
+// Visual box. Its name is printed inside the same box, while the trading logic
+// continues to use the session high and low even if older drawings are removed.
+var box sessionBox = na
+var float visualBoxHigh = na
+var float visualBoxLow = na
+if boxStart
+    visualBoxHigh := high
+    visualBoxLow := low
+    sessionBox := box.new(left=bar_index, top=high, right=bar_index, bottom=low,
+      xloc=xloc.bar_index, border_color=BOX_COLOR, border_width=1,
+      bgcolor=color.new(BOX_COLOR, BOX_TRANSPARENCY), text=SESSION_NAME,
+      text_color=color.white, text_size=size.small,
+      text_halign=text.align_left, text_valign=text.align_top)
+else if inBox and not na(sessionBox)
+    visualBoxHigh := math.max(nz(visualBoxHigh, high), high)
+    visualBoxLow := math.min(nz(visualBoxLow, low), low)
+    box.set_right(sessionBox, bar_index)
+    box.set_top(sessionBox, visualBoxHigh)
+    box.set_bottom(sessionBox, visualBoxLow)
+
+// 0 building/waiting, 1 T1 pending, 2 active, 3 T2-after-TP pending,
+// 4 T2-after-SL pending, 5 T2 active, 6 T3 pending, 7 T3 active,
+// 8 complete, 9 one-trade extended T1 pending.
+var int phase = 0
+var float boxHigh = na
+var float boxLow = na
+var bool boxReady = false
+var float nextHigh = na
+var float nextLow = na
+var bool nextReady = false
+var bool queuedBox = false
+var int firstSide = 0
+var int secondSide = 0
+var int activeSide = 0
+var int activeMode = 0 // 1 T1, 2 T2 after TP, 3 T2 after SL, 4 T3
+var float entryPrice = na
+var int entryBar = na
+var bool activeExtended = false
+var bool pendingPromotion = false
+var line activeTradeLine = na
+
+// Per-bar events used by alertcondition().
+bool buyEvent = false
+bool sellEvent = false
+bool tpEvent = false
+bool slEvent = false
+bool fcEvent = false
+
+bool carryingExtended = phase == 9 or (phase == 2 and activeExtended)
+if boxStart
+    if carryingExtended
+        queuedBox := true
+        nextReady := false
+        nextHigh := high
+        nextLow := low
+    else
+        boxHigh := high
+        boxLow := low
+        boxReady := false
+        phase := 0
+        firstSide := 0
+        secondSide := 0
+        activeSide := 0
+        activeMode := 0
+        entryPrice := na
+        entryBar := na
+        activeExtended := false
+        queuedBox := false
+        nextReady := false
+        nextHigh := na
+        nextLow := na
+
+if inBox
+    if queuedBox
+        nextHigh := math.max(nz(nextHigh, high), high)
+        nextLow := math.min(nz(nextLow, low), low)
+    else
+        boxHigh := math.max(nz(boxHigh, high), high)
+        boxLow := math.min(nz(boxLow, low), low)
+
+if boxEnd
+    if queuedBox and not na(nextHigh) and not na(nextLow)
+        nextReady := true
+    else if not na(boxHigh) and not na(boxLow)
+        boxReady := true
+
+if boxReady and inT1 and phase == 0
+    phase := 1
+
+// Determine which side is reached first if both limits trade inside one bar.
+bool highFirst = math.abs(open - high) < math.abs(open - low)
+
+// T1: liquidity sweep of the current session box.
+if phase == 1 or phase == 9
+    bool allowed = phase == 1 ? inT1 : inExtendedEntry
+    if allowed and not na(boxHigh) and not na(boxLow)
+        float buyLevel = boxLow - T1_DISTANCE * tick
+        float sellLevel = boxHigh + T1_DISTANCE * tick
+        bool hitBuy = low <= buyLevel
+        bool hitSell = high >= sellLevel
+        int chosenSide = hitBuy and hitSell ? (highFirst ? -1 : 1) : hitBuy ? 1 : hitSell ? -1 : 0
+        if chosenSide != 0
+            activeExtended := phase == 9
+            activeSide := chosenSide
+            activeMode := 1
+            firstSide := chosenSide
+            entryPrice := chosenSide == 1 ? (open <= buyLevel ? open : buyLevel) : (open >= sellLevel ? open : sellLevel)
+            entryBar := bar_index
+            phase := 2
+            buyEvent := chosenSide == 1
+            sellEvent := chosenSide == -1
+            f_entryLabel(chosenSide, entryPrice)
+            activeTradeLine := f_tradeLine(entryPrice, chosenSide)
+
+// Trade 2 after a normal T1 take profit: opposite sweep, offset -100.
+if phase == 3 and inT2TP and not na(boxHigh) and not na(boxLow)
+    bool priorBuy = firstSide == 1
+    int side = priorBuy ? -1 : 1
+    float level = priorBuy ? boxHigh + T2_TP_OFFSET * tick : boxLow - T2_TP_OFFSET * tick
+    bool touched = side == 1 ? low <= level : high >= level
+    if touched
+        activeSide := side
+        activeMode := 2
+        secondSide := side
+        entryPrice := side == 1 ? (open <= level ? open : level) : (open >= level ? open : level)
+        entryBar := bar_index
+        phase := 5
+        buyEvent := side == 1
+        sellEvent := side == -1
+        f_entryLabel(side, entryPrice)
+        activeTradeLine := f_tradeLine(entryPrice, side)
+
+// Trade 2 after a normal T1 stop: retest, offset +100.
+if phase == 4 and inT2SL and not na(boxHigh) and not na(boxLow)
+    bool priorBuy = firstSide == 1
+    int side = priorBuy ? -1 : 1
+    float level = priorBuy ? boxLow - T2_SL_OFFSET * tick : boxHigh + T2_SL_OFFSET * tick
+    bool touched = side == 1 ? low <= level : high >= level
+    if touched
+        activeSide := side
+        activeMode := 3
+        secondSide := side
+        entryPrice := side == 1 ? (open <= level ? open : level) : (open >= level ? open : level)
+        entryBar := bar_index
+        phase := 5
+        buyEvent := side == 1
+        sellEvent := side == -1
+        f_entryLabel(side, entryPrice)
+        activeTradeLine := f_tradeLine(entryPrice, side)
+
+// Trade 3 after two successful Sweep trades.
+if phase == 6 and inT3 and not na(boxHigh) and not na(boxLow)
+    bool priorBuy = secondSide == 1
+    int side = priorBuy ? -1 : 1
+    float level = priorBuy ? boxHigh + T3_OFFSET * tick : boxLow - T3_OFFSET * tick
+    bool touched = side == 1 ? low <= level : high >= level
+    if touched
+        activeSide := side
+        activeMode := 4
+        entryPrice := side == 1 ? (open <= level ? open : level) : (open >= level ? open : level)
+        entryBar := bar_index
+        phase := 7
+        buyEvent := side == 1
+        sellEvent := side == -1
+        f_entryLabel(side, entryPrice)
+        activeTradeLine := f_tradeLine(entryPrice, side)
+
+bool active = phase == 2 or phase == 5 or phase == 7
+if active and activeSide != 0 and not na(entryPrice)
+    if not na(activeTradeLine)
+        line.set_xy2(activeTradeLine, bar_index, close)
+    int stopTicks = activeMode == 1 ? T1_SL : activeMode == 2 ? T2_TP_SL : activeMode == 3 ? T2_SL_STOP : T3_SL
+    int targetTicks = activeMode == 1 ? T1_TP : activeMode == 2 ? T2_TP_TARGET : activeMode == 3 ? T2_SL_TARGET : T3_TP
+    float stopPrice = activeSide == 1 ? entryPrice - stopTicks * tick : entryPrice + stopTicks * tick
+    float targetPrice = activeSide == 1 ? entryPrice + targetTicks * tick : entryPrice - targetTicks * tick
+    bool hitStop = activeSide == 1 ? low <= stopPrice : high >= stopPrice
+    bool hitTarget = activeSide == 1 ? high >= targetPrice : low <= targetPrice
+    string outcome = ""
+    float outcomePrice = na
+    if hitStop and hitTarget
+        bool targetFirst = activeSide == 1 ? highFirst : not highFirst
+        outcome := targetFirst ? "TP" : "SL"
+        outcomePrice := targetFirst ? targetPrice : stopPrice
+    else if hitStop
+        outcome := "SL"
+        outcomePrice := open < math.min(stopPrice, targetPrice) or open > math.max(stopPrice, targetPrice) ? open : stopPrice
+    else if hitTarget
+        outcome := "TP"
+        outcomePrice := open < math.min(stopPrice, targetPrice) or open > math.max(stopPrice, targetPrice) ? open : targetPrice
+
+    if outcome != ""
+        int finishedMode = activeMode
+        bool finishedExtended = activeMode == 1 and activeExtended
+        if not na(activeTradeLine)
+            line.set_xy2(activeTradeLine, bar_index, outcomePrice)
+        f_exitLabel(outcome, outcomePrice)
+        tpEvent := outcome == "TP"
+        slEvent := outcome == "SL"
+        activeSide := 0
+        activeMode := 0
+        entryPrice := na
+        entryBar := na
+        activeTradeLine := na
+        if finishedExtended
+            phase := 8
+            activeExtended := false
+            if queuedBox
+                pendingPromotion := true
+        else if finishedMode == 1
+            phase := outcome == "TP" ? 3 : 4
+        else if finishedMode == 2 and outcome == "TP"
+            phase := 6
+        else
+            phase := 8
+
+// Normal T1: no fill by 16:30 is the only condition that arms the extension.
+if endT1 and phase == 1
+    phase := 9
+
+// Force close a normal T1 at its session end.
+if endT1 and phase == 2 and activeMode == 1 and not activeExtended
+    if not na(activeTradeLine)
+        line.set_xy2(activeTradeLine, bar_index, close)
+    f_exitLabel("FC", close)
+    fcEvent := true
+    activeSide := 0
+    activeMode := 0
+    entryPrice := na
+    entryBar := na
+    activeTradeLine := na
+    phase := 8
+
+if endExtendedEntry and phase == 9
+    phase := 8
+    if queuedBox
+        pendingPromotion := true
+
+// The extended trade is one trade only and may remain managed until 07:50.
+if endExtendedManage and phase == 2 and activeMode == 1 and activeExtended
+    if not na(activeTradeLine)
+        line.set_xy2(activeTradeLine, bar_index, close)
+    f_exitLabel("FC", close)
+    fcEvent := true
+    activeSide := 0
+    activeMode := 0
+    entryPrice := na
+    entryBar := na
+    activeTradeLine := na
+    activeExtended := false
+    phase := 8
+    if queuedBox
+        pendingPromotion := true
+
+if endT2TP and (phase == 3 or (phase == 5 and activeMode == 2))
+    if phase == 5
+        if not na(activeTradeLine)
+            line.set_xy2(activeTradeLine, bar_index, close)
+        f_exitLabel("FC", close)
+        fcEvent := true
+        activeSide := 0
+        activeMode := 0
+        entryPrice := na
+        entryBar := na
+        activeTradeLine := na
+    phase := 8
+
+if endT2SL and (phase == 4 or (phase == 5 and activeMode == 3))
+    if phase == 5
+        if not na(activeTradeLine)
+            line.set_xy2(activeTradeLine, bar_index, close)
+        f_exitLabel("FC", close)
+        fcEvent := true
+        activeSide := 0
+        activeMode := 0
+        entryPrice := na
+        entryBar := na
+        activeTradeLine := na
+    phase := 8
+
+if endT3 and (phase == 6 or phase == 7)
+    if phase == 7
+        if not na(activeTradeLine)
+            line.set_xy2(activeTradeLine, bar_index, close)
+        f_exitLabel("FC", close)
+        fcEvent := true
+        activeSide := 0
+        activeMode := 0
+        entryPrice := na
+        entryBar := na
+        activeTradeLine := na
+    phase := 8
+
+if pendingPromotion
+    boxHigh := nextHigh
+    boxLow := nextLow
+    boxReady := nextReady
+    phase := nextReady and inT1 ? 1 : 0
+    firstSide := 0
+    secondSide := 0
+    activeSide := 0
+    activeMode := 0
+    entryPrice := na
+    entryBar := na
+    activeTradeLine := na
+    activeExtended := false
+    queuedBox := false
+    nextReady := false
+    nextHigh := na
+    nextLow := na
+    pendingPromotion := false
+
+alertcondition(buyEvent, "Edge Sweep BUY", "Edge Sweep BUY")
+alertcondition(sellEvent, "Edge Sweep SELL", "Edge Sweep SELL")
+alertcondition(tpEvent, "Edge Sweep TP", "Edge Sweep Take Profit")
+alertcondition(slEvent, "Edge Sweep SL", "Edge Sweep Stop Loss")
+alertcondition(fcEvent, "Edge Sweep FC", "Edge Sweep Force Close")

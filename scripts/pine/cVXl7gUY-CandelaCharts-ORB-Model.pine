@@ -1,0 +1,565 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © CandelaCharts
+
+//@version=6
+indicator("CandelaCharts - ORB Model", shorttitle = "CandelaCharts - ORB Model", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+
+if timeframe.isdaily or timeframe.isweekly or timeframe.ismonthly or (timeframe.isminutes and timeframe.multiplier > 30)
+    runtime.error("This indicator is designed for timeframes up to 30 minutes. Please switch to a lower timeframe.")
+
+
+
+
+
+
+ 
+
+
+// # ========================================================================= #
+// # |   Colors   |
+// # ========================================================================= #
+
+//#region
+
+colors_white                        = color.white
+colors_black                        = color.black
+colors_green                        = color.green
+colors_orange                       = color.orange
+colors_blue                         = color.blue
+colors_aqua                         = color.aqua
+colors_fuchsia                      = color.fuchsia
+colors_lime                         = color.lime
+colors_maroon                       = color.maroon
+colors_navy                         = color.navy
+colors_olive                        = color.olive
+colors_purple                       = color.purple
+colors_teal                         = color.teal
+colors_yellow                       = color.yellow
+colors_red                          = color.red
+colors_gray                         = color.gray
+colors_silver                       = color.silver
+colors_transparent                  = color.new(color.white, 100)
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   |
+// # ========================================================================= #
+
+
+
+
+ 
+
+
+
+ 
+
+
+// # ========================================================================= #
+// # |   Inputs   |
+// # ========================================================================= #
+
+//#region
+
+general_font                        = input.string("Monospace", "Text                   ", options = ["Default", "Monospace"], inline = "1.0", group = "General")
+general_text                        = input.string("Tiny", "", options = ["Tiny", "Small", "Normal", "Large", "Huge", "Auto"], inline = "1.0", group = "General", tooltip = "Customize global text size and style")
+general_brand_show                  = input.bool(false, "Hide Brand", group = "General")
+
+main_session                        = input.session('0930-1030', 'Session       ', group = "Settings")
+signal_mode                         = input.string("Hybrid", 'Signal Mode   ', options = ["Hybrid", "Rejections", "Breakouts"], group = "Settings", tooltip = "Hybrid: Requires a prior Liquidity Sweep and a Market Structure Shift (CHoCH).\n\nRejections: Fires purely when price wicks the ORB High/Low zones and closes in the opposite direction (No sweep or CHoCH required).\n\nBreakouts: Fires purely when price breaks and closes outside the ORB High/Low zones (No sweep or CHoCH required).")
+main_timezone                       = input.string('America/New_York', 'Timezone      ', options = ['America/New_York','GMT-12','GMT-11','GMT-10','GMT-9','GMT-8','GMT-7','GMT-6','GMT-5','GMT-4','GMT-3','GMT-2','GMT-1','GMT+0','GMT+1','GMT+2','GMT+3','GMT+4','GMT+5','GMT+6','GMT+7','GMT+8','GMT+9','GMT+10','GMT+11','GMT+12','GMT+13','GMT+14'], group = "Settings", tooltip = 'Timezone for the trading session. Session times are interpreted in this timezone.')
+label_pos                           = input.string('Left', 'Label Position', options = ['Left', 'Center', 'Right'], group = "Settings")
+extend_lines                        = input.bool(true, 'Extend Lines', inline = "1.0", group = "Settings")
+extend_lines_options                = input.string('NY Midnight', '', inline = "1.0", options = ['NY Midnight', 'Full Day'], group = "Settings")
+
+col_box                             = input.color(color.new(colors_navy, 75), 'Zone Fill     ', group = "Styles")
+col_l                               = input.color(colors_black, 'Lines & Labels', group = "Styles")
+col_green                           = input.color(colors_blue, 'Session Start ', group = 'Styles')
+col_red                             = input.color(colors_orange, 'Session End   ', group = 'Styles')
+col_arrow_up                        = input.color(colors_blue, 'Breakout Up   ', group = 'Styles')
+col_arrow_dn                        = input.color(colors_orange, 'Breakout Down ', group = 'Styles')
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   |
+// # ========================================================================= #
+
+
+
+
+ 
+
+
+
+ 
+
+
+// # ========================================================================= #
+// # |   UDT   |
+// # ========================================================================= #
+
+//#region
+
+type UDT_Store
+    array<line> zone_lines
+    array<float> lvls_arr
+    float s_high
+    float s_low
+    int start_bar
+    int start_time
+    bool broke_0_up
+    bool broke_0_dn
+    bool broke_1_up
+    bool broke_1_dn
+    bool broke_up
+    bool broke_dn
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   |
+// # ========================================================================= #
+
+
+
+
+ 
+
+
+
+ 
+
+
+// # ========================================================================= #
+// # |   Functions  |
+// # ========================================================================= #
+
+//#region
+
+method text_size(string size) =>
+    out = switch size
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        "Huge"   => size.huge
+        "Auto"   => size.auto
+    out
+
+method line_style(string line) =>
+    out = switch line
+        '⎯⎯⎯'  => line.style_solid
+        '----'   => line.style_dashed
+        '····'   => line.style_dotted
+
+method font_style(string font) =>
+    out = switch font
+        'Default'   => font.family_default
+        'Monospace' => font.family_monospace
+
+method set_opacity(color css, int opacity) =>
+    blue  = color.b(css)
+    red   = color.r(css)
+    green = color.g(css)
+
+    color.rgb(red, green, blue, opacity)
+
+method label_style(string label) =>
+    out = switch label
+        'None'      => label.style_none
+        'Circle'    => label.style_circle
+        'Square'    => label.style_square
+        'Diamond'   => label.style_diamond
+        'Cross'     => label.style_cross
+        'xCross'    => label.style_xcross
+        
+method table_position(string position) =>
+    out = switch position
+        "Bottom Center"     => position.bottom_center
+        "Bottom Left"       => position.bottom_left
+        "Bottom Right"      => position.bottom_right
+        "Middle Center"     => position.middle_center
+        "Middle Left"       => position.middle_left
+        "Middle Right"      => position.middle_right
+        "Top Center"        => position.top_center
+        "Top Left"          => position.top_left
+        "Top Right"         => position.top_right
+
+method text_align(string align) =>
+    out = switch align
+        'Center'    => text.align_center
+        'Top'       => text.align_top
+        'Bottom'    => text.align_bottom
+        'Left'      => text.align_left
+        'Right'     => text.align_right
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   |
+// # ========================================================================= #
+
+
+
+
+ 
+
+
+
+ 
+
+
+// # ========================================================================= #
+// # |   Store   |
+// # ========================================================================= #
+
+//#region
+
+var UDT_Store store = UDT_Store.new(
+     array.new<line>(),
+     array.new<float>(),
+     na, na, na, na,
+     false, false, false, false,
+     false, false
+ )
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   |
+// # ========================================================================= #
+
+
+
+
+ 
+
+
+
+ 
+
+
+// # ========================================================================= #
+// # |   Variables   |
+// # ========================================================================= #
+
+//#region
+
+in_window = not na(time(timeframe.period, main_session, main_timezone))
+
+arrow_start_h = math.round(str.tonumber(str.substring(main_session, 5, 7)))
+arrow_start_m = math.round(str.tonumber(str.substring(main_session, 7, 9)))
+arrow_end_h   = arrow_start_h + 1
+arrow_end_m   = arrow_start_m
+arrow_session = str.format('{0,number,00}{1,number,00}-{2,number,00}{3,number,00}', arrow_start_h, arrow_start_m, arrow_end_h, arrow_end_m)
+in_arrow = not na(time(timeframe.period, arrow_session, main_timezone))
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   |
+// # ========================================================================= #
+
+
+
+
+ 
+
+
+
+ 
+
+
+// # ========================================================================= #
+// # |   Context Layer   |
+// # ========================================================================= #
+
+//#region
+
+in_s1 = not na(time(timeframe.period, "0000-0600", main_timezone))
+in_s2 = not na(time(timeframe.period, "0600-1200", main_timezone))
+in_s3 = not na(time(timeframe.period, "1200-1800", main_timezone))
+in_s4 = not na(time(timeframe.period, "1800-0000", main_timezone))
+
+session_changed = (in_s1 and not in_s1[1]) or (in_s2 and not in_s2[1]) or (in_s3 and not in_s3[1]) or (in_s4 and not in_s4[1])
+in_any_session = in_s1 or in_s2 or in_s3 or in_s4
+
+var float curr_s_h = na
+var float curr_s_l = na
+var float curr_s_o = na
+var float curr_s_c = na
+
+var float prev_s_h = na
+var float prev_s_l = na
+
+var bool global_bull_sweep_context = false
+var bool global_bear_sweep_context = false
+
+if session_changed
+    if not na(curr_s_h) and not na(prev_s_h)
+        bool is_bull_sweep = curr_s_h > prev_s_h and math.max(curr_s_o, curr_s_c) < prev_s_h
+        bool is_bear_sweep = curr_s_l < prev_s_l and math.min(curr_s_o, curr_s_c) > prev_s_l
+        
+        if is_bull_sweep
+            global_bear_sweep_context := true
+            global_bull_sweep_context := false
+        if is_bear_sweep
+            global_bull_sweep_context := true
+            global_bear_sweep_context := false
+
+    prev_s_h := curr_s_h
+    prev_s_l := curr_s_l
+
+    curr_s_h := high
+    curr_s_l := low
+    curr_s_o := open
+    curr_s_c := close
+else if in_any_session
+    curr_s_h := math.max(nz(curr_s_h, high), high)
+    curr_s_l := math.min(nz(curr_s_l, low), low)
+    if na(curr_s_o)
+        curr_s_o := open
+    curr_s_c := close
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   |
+// # ========================================================================= #
+
+
+
+
+ 
+
+
+
+ 
+
+
+// # ========================================================================= #
+// # |   Core Logic   |
+// # ========================================================================= #
+
+//#region
+
+ph = ta.pivothigh(high, 5, 5)
+pl = ta.pivotlow(low, 5, 5)
+
+var float last_ph = na
+var float last_pl = na
+
+if not na(ph)
+    last_ph := ph
+if not na(pl)
+    last_pl := pl
+
+bull_choch = not na(last_ph) and ta.crossover(close, last_ph)
+bear_choch = not na(last_pl) and ta.crossunder(close, last_pl)
+
+method process_logic(UDT_Store s) =>
+    if in_window and not in_window[1]
+        s.s_high := high
+        s.s_low := low
+        s.start_bar := bar_index
+        s.start_time := time
+        s.broke_0_up := false
+        s.broke_0_dn := false
+        s.broke_1_up := false
+        s.broke_1_dn := false
+    
+    if in_window
+        s.s_high := math.max(s.s_high, high)
+        s.s_low := math.min(s.s_low, low)
+    
+    if not in_window and in_window[1] and not na(s.s_high)
+        array.clear(s.lvls_arr)
+        rng = s.s_high - s.s_low
+        lvls = array.from(s.s_low - rng, s.s_low - rng * 0.5, s.s_low, s.s_low + rng * 0.5, s.s_high, s.s_low + rng * 1.5, s.s_low + rng * 2.0)
+        
+        for i = 0 to 6 by 1
+            array.push(s.lvls_arr, array.get(lvls, i))
+            
+    s.broke_up := false
+    s.broke_dn := false
+    
+    if not in_window and array.size(s.lvls_arr) == 7
+        lvl0 = array.get(s.lvls_arr, 2)
+        lvl05 = array.get(s.lvls_arr, 3)
+        lvl1 = array.get(s.lvls_arr, 4)
+    
+        bool is_bull_breakout = close > lvl1 and close[1] <= lvl1 and bull_choch
+        bool is_bull_reject   = last_pl <= lvl0 and bull_choch
+        bool is_bull_mean     = close > lvl05 and bull_choch
+
+        bool is_bear_breakout = close < lvl0 and close[1] >= lvl0 and bear_choch
+        bool is_bear_reject   = last_ph >= lvl1 and bear_choch
+        bool is_bear_mean     = close < lvl05 and bear_choch
+        
+        bool hybrid_bull = (is_bull_breakout or is_bull_reject or is_bull_mean) and global_bull_sweep_context
+        bool hybrid_bear = (is_bear_breakout or is_bear_reject or is_bear_mean) and global_bear_sweep_context
+        
+        bool pure_bull_rejection = low <= lvl0 and close > lvl0 and close > open
+        bool pure_bear_rejection = high >= lvl1 and close < lvl1 and close < open
+        
+        bool pure_bull_breakout = close > lvl1 and close[1] <= lvl1
+        bool pure_bear_breakout = close < lvl0 and close[1] >= lvl0
+        
+        bool final_bull_signal = false
+        bool final_bear_signal = false
+        string final_bull_msg = ""
+        string final_bear_msg = ""
+        
+        if signal_mode == "Hybrid"
+            final_bull_signal := hybrid_bull
+            final_bear_signal := hybrid_bear
+            if hybrid_bull
+                final_bull_msg := is_bull_breakout ? "CandelaCharts ORB Model: Bullish Breakout Signal" : is_bull_reject ? "CandelaCharts ORB Model: Bullish Rejection Signal" : "CandelaCharts ORB Model: Bullish Mean Signal"
+            if hybrid_bear
+                final_bear_msg := is_bear_breakout ? "CandelaCharts ORB Model: Bearish Breakout Signal" : is_bear_reject ? "CandelaCharts ORB Model: Bearish Rejection Signal" : "CandelaCharts ORB Model: Bearish Mean Signal"
+                
+        else if signal_mode == "Rejections"
+            final_bull_signal := pure_bull_rejection
+            final_bear_signal := pure_bear_rejection
+            final_bull_msg := "CandelaCharts ORB Model: Bullish Rejection Signal"
+            final_bear_msg := "CandelaCharts ORB Model: Bearish Rejection Signal"
+            
+        else if signal_mode == "Breakouts"
+            final_bull_signal := pure_bull_breakout
+            final_bear_signal := pure_bear_breakout
+            final_bull_msg := "CandelaCharts ORB Model: Bullish Breakout Signal"
+            final_bear_msg := "CandelaCharts ORB Model: Bearish Breakout Signal"
+    
+        if not s.broke_1_up and final_bull_signal
+            s.broke_up := true
+            s.broke_1_up := true
+            alert(final_bull_msg, alert.freq_once_per_bar_close)
+            
+        if not s.broke_0_dn and final_bear_signal
+            s.broke_dn := true
+            s.broke_0_dn := true
+            alert(final_bear_msg, alert.freq_once_per_bar_close)
+
+process_logic(store)
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   |
+// # ========================================================================= #
+
+
+
+
+ 
+
+
+
+ 
+
+
+// # ========================================================================= #
+// # |   Plotting   |
+// # ========================================================================= #
+
+//#region
+
+method draw_orb(UDT_Store s) =>
+    if in_arrow and not in_arrow[1]
+        line.new(bar_index, low, bar_index, high, color = col_green, width = 1, style = line.style_dashed, extend = extend.both)
+        
+    if not in_arrow and in_arrow[1]
+        line.new(bar_index, low, bar_index, high, color = col_red, width = 1, style = line.style_dashed, extend = extend.both)
+        if not extend_lines
+            for l in s.zone_lines
+                line.set_x2(l, bar_index)
+
+    if not in_window and in_window[1] and not na(s.s_high)
+        array.clear(s.zone_lines)
+        rng = s.s_high - s.s_low
+        lvls = array.from(s.s_low - rng, s.s_low - rng * 0.5, s.s_low, s.s_low + rng * 0.5, s.s_high, s.s_low + rng * 1.5, s.s_low + rng * 2.0)
+        lbls = array.from('-2', '-1.5', '0', '0.5', '1', '1.5', '2')
+        stls = array.from(line.style_solid, line.style_dashed, line.style_solid, line.style_dashed, line.style_solid, line.style_dashed, line.style_solid)
+        stls_extend = array.from(line.style_dashed, line.style_dashed, line.style_solid, line.style_dotted, line.style_solid, line.style_dashed, line.style_dashed)
+        
+        b_end = bar_index
+        mid_bar = math.round((s.start_bar + b_end) / 2)
+        gap = math.round((b_end - s.start_bar) / 20)
+        far = b_end + 499
+
+        s_time = s.start_time
+        e_time = time
+        mid_time = math.round((s_time + e_time) / 2)
+        gap_time = math.round((e_time - s_time) / 20)
+        target_time = extend_lines_options == 'Full Day' ? s_time + 86400000 : timestamp(main_timezone, year(time, main_timezone), month(time, main_timezone), dayofmonth(time, main_timezone) + 1, 0, 0)
+        
+        xloc_val = extend_lines ? xloc.bar_time : xloc.bar_index
+        x1_val = extend_lines ? s_time : s.start_bar
+        mid_val = extend_lines ? mid_time : mid_bar
+        gap_val = extend_lines ? gap_time : gap
+        end_val = extend_lines ? e_time : b_end
+
+        box.new(s.start_bar, s.s_high, b_end, s.s_low, border_color = na, bgcolor = col_box)
+
+        for i = 0 to 6 by 1
+            v = array.get(lvls, i)
+            st = extend_lines ? array.get(stls_extend, i) : array.get(stls, i)
+            x2_val = extend_lines ? target_time : far
+            lb = array.get(lbls, i)
+
+            if label_pos == 'Left'
+                l = line.new(x1_val, v, x2_val, v, xloc=xloc_val, color = col_l, width = 1, style = st)
+                array.push(s.zone_lines, l)
+                label.new(x1_val, v, lb, xloc=xloc_val, style = label.style_label_right, color = na, textcolor = col_l, size = text_size(general_text))
+            else if label_pos == 'Center'
+                line.new(x1_val, v, mid_val - gap_val, v, xloc=xloc_val, color = col_l, width = 1, style = st)
+                l2 = line.new(mid_val + gap_val, v, x2_val, v, xloc=xloc_val, color = col_l, width = 1, style = st)
+                array.push(s.zone_lines, l2)
+                label.new(mid_val, v, lb, xloc=xloc_val, style = label.style_label_center, color = na, textcolor = col_l, size = text_size(general_text))
+            else
+                l = line.new(x1_val, v, x2_val, v, xloc=xloc_val, color = col_l, width = 1, style = st)
+                array.push(s.zone_lines, l)
+                label.new(end_val, v, lb, xloc=xloc_val, style = label.style_label_left, color = na, textcolor = col_l, size = text_size(general_text))
+
+
+draw_orb(store)
+
+plotshape(store.broke_up, location = location.belowbar, style = shape.triangleup, color = col_arrow_up, size = size.tiny, title = 'Breakout Up')
+plotshape(store.broke_dn, location = location.abovebar, style = shape.triangledown, color = col_arrow_dn, size = size.tiny, title = 'Breakout Down')
+
+alertcondition(store.broke_up, title = "Bullish ORB Signal", message = "CandelaCharts ORB Model: Bullish Signal Detected!")
+alertcondition(store.broke_dn, title = "Bearish ORB Signal", message = "CandelaCharts ORB Model: Bearish Signal Detected!")
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   |
+// # ========================================================================= #
+
+
+
+
+ 
+
+
+
+ 
+
+
+// # ========================================================================= #
+// # |   Brand   |
+// # ========================================================================= #
+
+//#region
+
+if barstate.isfirst and general_brand_show == false
+    var table brand = table.new(position.bottom_right, 1, 1, bgcolor = chart.bg_color)
+    table.cell(brand, 0, 0,  "© CandelaCharts", text_color = colors_gray, text_halign = text.align_center, text_size = text_size(general_text), text_font_family = font_style(general_font))
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   |
+// # ========================================================================= #

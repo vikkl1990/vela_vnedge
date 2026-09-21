@@ -1,0 +1,159 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+//  Coinbase Premium — Barometer
+//  Preisdifferenz Coinbase (Fiat-USD, US-Nachfrage) vs. Binance (USDT, offshore).
+//
+//  Lesart:  > 0 = US-Kaufdruck (Rückenwind)   < 0 = US-Verkaufsdruck (Gegenwind)
+//  Anzeige in absoluten USD (Voreinstellung) oder in Prozent.
+// ─────────────────────────────────────────────────────────────────────────────
+indicator("Coinbase Premium — Barometer", shorttitle = "CB Premium", overlay = false, precision = 2)
+
+// ═══ Symbole ═════════════════════════════════════════════════════════════════
+gS       = "Symbole"
+symCB    = input.symbol("COINBASE:BTCUSD",  "Coinbase (Fiat-USD)", group = gS)
+symREF   = input.symbol("BINANCE:BTCUSDT",  "Referenz (USDT)",     group = gS)
+useDepeg = input.bool(false, "USDT-Depeg herausrechnen", group = gS,
+     tooltip = "Rechnet den Referenzpreis über USDT/USD in echte Dollar um. Entfernt den Anteil der Differenz, der nur daher kommt, dass USDT selbst vom Dollar abweicht.")
+symUSDT  = input.symbol("COINBASE:USDTUSD", "USDT/USD",            group = gS)
+
+// ═══ Berechnung ══════════════════════════════════════════════════════════════
+gC        = "Berechnung"
+mode      = input.string("USD", "Anzeige", options = ["USD", "Prozent"], group = gC)
+smoothLen = input.int(0,  "Glättung des Premiums (EMA, 0 = aus)", minval = 0, maxval = 500, group = gC)
+maType    = input.string("EMA", "Signal-MA",        options = ["EMA", "SMA"], group = gC)
+maLen     = input.int(20, "Signal-MA Länge", minval = 1, group = gC)
+
+// ═══ Extreme ═════════════════════════════════════════════════════════════════
+gB       = "Extreme"
+extMode  = input.string("Std-Abw.-Bänder", "Methode", options = ["Std-Abw.-Bänder", "Feste Schwellen", "aus"], group = gB)
+bandLen  = input.int(100, "Bänder: Länge",           minval = 2,   group = gB)
+bandMult = input.float(2.0, "Bänder: Multiplikator", minval = 0.1, step = 0.1, group = gB)
+thrUp    = input.float( 100.0, "Feste Schwelle oben",  step = 1, group = gB)
+thrDn    = input.float(-100.0, "Feste Schwelle unten", step = 1, group = gB)
+
+// ═══ Trendlinien ═════════════════════════════════════════════════════════════
+gT     = "Auto-Trendlinien"
+showTL = input.bool(true, "Trendlinien auf dem Premium", group = gT,
+     tooltip = "Verbindet automatisch die letzten beiden Pivot-Hochs bzw. -Tiefs des Premiums und verlängert sie nach rechts. Zeigt, ob eine Premium-Phase ausläuft.")
+pivLen = input.int(5, "Pivot-Stärke", minval = 1, group = gT)
+
+// ═══ Darstellung ═════════════════════════════════════════════════════════════
+gV        = "Darstellung"
+style     = input.string("Fläche", "Stil", options = ["Fläche", "Histogramm", "Linie"], group = gV)
+colUp     = input.color(#26a69a, "Premium  (Coinbase teurer)",   group = gV)
+colDn     = input.color(#ef5350, "Discount (Coinbase billiger)", group = gV)
+colSig    = input.color(#ff9800, "Signal-MA",                    group = gV)
+showCross = input.bool(true, "Nulldurchgänge markieren", group = gV)
+showBg    = input.bool(true, "Hintergrund bei Extremen",  group = gV)
+showInfo  = input.bool(true, "Info-Box oben rechts",      group = gV)
+
+// ═══ Datenabruf ══════════════════════════════════════════════════════════════
+f_sec(sym) =>
+    request.security(sym, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+
+pCB     = f_sec(symCB)
+pREF    = f_sec(symREF)
+usdtRaw = f_sec(symUSDT)
+
+usdt   = useDepeg ? nz(usdtRaw, 1.0) : 1.0
+refAdj = pREF * usdt
+
+premAbs = pCB - refAdj
+premPct = refAdj != 0 ? (pCB - refAdj) / refAdj * 100 : na
+
+raw  = mode == "USD" ? premAbs : premPct
+rawS = ta.ema(raw, math.max(smoothLen, 1))
+prem = smoothLen > 0 ? rawS : raw
+
+sigE   = ta.ema(prem, maLen)
+sigS   = ta.sma(prem, maLen)
+signal = maType == "EMA" ? sigE : sigS
+
+basis = ta.sma(prem, bandLen)
+dev   = ta.stdev(prem, bandLen)
+upper = basis + bandMult * dev
+lower = basis - bandMult * dev
+zsc   = dev != 0 ? (prem - basis) / dev : 0.0
+
+useBands = extMode == "Std-Abw.-Bänder"
+useThr   = extMode == "Feste Schwellen"
+
+extUp = useBands ? prem > upper : useThr ? prem > thrUp : false
+extDn = useBands ? prem < lower : useThr ? prem < thrDn : false
+
+xUp = ta.crossover(prem, 0)
+xDn = ta.crossunder(prem, 0)
+
+// ═══ Plots ═══════════════════════════════════════════════════════════════════
+barCol = prem >= 0 ? colUp : colDn
+
+plot(style == "Fläche"     ? prem : na, "Premium", color = color.new(barCol, 55), style = plot.style_area)
+plot(style == "Histogramm" ? prem : na, "Premium", color = color.new(barCol, 25), style = plot.style_columns)
+plot(style == "Linie"      ? prem : na, "Premium", color = barCol, style = plot.style_line, linewidth = 2)
+
+hline(0, "Nulllinie", color = color.new(color.gray, 20), linestyle = hline.style_solid, linewidth = 1)
+
+plot(signal, "Signal-MA", color = colSig, linewidth = 2)
+
+pU = plot(useBands ? upper : useThr ? thrUp : na, "Obere Grenze",  color = color.new(color.gray, 60), linewidth = 1)
+pL = plot(useBands ? lower : useThr ? thrDn : na, "Untere Grenze", color = color.new(color.gray, 60), linewidth = 1)
+fill(pU, pL, color = color.new(color.gray, 95), title = "Neutralzone")
+
+bgcolor(showBg and extUp ? color.new(colUp, 88) : showBg and extDn ? color.new(colDn, 88) : na, title = "Extrem-Hintergrund")
+
+plotshape(showCross and xUp ? 0 : na, "Wechsel ins Positive", shape.triangleup,   location.absolute, colUp, size = size.tiny)
+plotshape(showCross and xDn ? 0 : na, "Wechsel ins Negative", shape.triangledown, location.absolute, colDn, size = size.tiny)
+
+// ═══ Auto-Trendlinien auf dem Premium ════════════════════════════════════════
+var float ph1 = na, var int phx1 = na, var float ph2 = na, var int phx2 = na
+var float pl1 = na, var int plx1 = na, var float pl2 = na, var int plx2 = na
+var line  tlH = na
+var line  tlL = na
+
+ph = ta.pivothigh(prem, pivLen, pivLen)
+pl = ta.pivotlow(prem,  pivLen, pivLen)
+
+if not na(ph)
+    ph2  := ph1
+    phx2 := phx1
+    ph1  := ph
+    phx1 := bar_index - pivLen
+    if showTL and not na(ph2)
+        line.delete(tlH)
+        tlH := line.new(phx2, ph2, phx1, ph1, extend = extend.right, color = color.new(colDn, 30), style = line.style_dashed, width = 1)
+
+if not na(pl)
+    pl2  := pl1
+    plx2 := plx1
+    pl1  := pl
+    plx1 := bar_index - pivLen
+    if showTL and not na(pl2)
+        line.delete(tlL)
+        tlL := line.new(plx2, pl2, plx1, pl1, extend = extend.right, color = color.new(colUp, 30), style = line.style_dashed, width = 1)
+
+if not showTL
+    line.delete(tlH)
+    line.delete(tlL)
+
+// ═══ Info-Box ════════════════════════════════════════════════════════════════
+var table info = table.new(position.top_right, 2, 4, border_width = 1)
+if showInfo and barstate.islast
+    unit = mode == "USD" ? " $" : " %"
+    fmt  = mode == "USD" ? "#.##" : "#.###"
+    txt  = prem >= 0 ? "PREMIUM" : "DISCOUNT"
+    table.cell(info, 0, 0, "Coinbase Premium", text_color = color.gray,  text_size = size.tiny, bgcolor = color.new(color.gray, 92))
+    table.cell(info, 1, 0, txt,                text_color = color.white, text_size = size.tiny, bgcolor = color.new(barCol, 20))
+    table.cell(info, 0, 1, "Aktuell",   text_color = color.gray, text_size = size.tiny)
+    table.cell(info, 1, 1, str.tostring(prem,   fmt) + unit, text_color = barCol,  text_size = size.tiny)
+    table.cell(info, 0, 2, "Signal-MA", text_color = color.gray, text_size = size.tiny)
+    table.cell(info, 1, 2, str.tostring(signal, fmt) + unit, text_color = colSig,  text_size = size.tiny)
+    table.cell(info, 0, 3, "Z-Score",   text_color = color.gray, text_size = size.tiny)
+    table.cell(info, 1, 3, str.tostring(zsc, "#.##"),        text_color = color.gray, text_size = size.tiny)
+
+// ═══ Alarme ══════════════════════════════════════════════════════════════════
+alertcondition(xUp,                         "Premium dreht positiv",   "Coinbase Premium hat die Nulllinie nach oben gekreuzt – US-Kaufdruck kehrt zurück.")
+alertcondition(xDn,                         "Premium dreht negativ",   "Coinbase Premium hat die Nulllinie nach unten gekreuzt – US-Verkaufsdruck.")
+alertcondition(ta.crossover(prem, signal),  "Premium über Signal-MA",  "Coinbase Premium kreuzt den Signal-MA nach oben.")
+alertcondition(ta.crossunder(prem, signal), "Premium unter Signal-MA", "Coinbase Premium kreuzt den Signal-MA nach unten.")
+alertcondition(extUp and not extUp[1],      "Extremes Premium",        "Coinbase Premium im oberen Extrembereich.")
+alertcondition(extDn and not extDn[1],      "Extremer Discount",       "Coinbase Premium im unteren Extrembereich.")

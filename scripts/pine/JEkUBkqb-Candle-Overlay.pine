@@ -1,0 +1,147 @@
+//@version=6
+indicator(title="Candle Overlay", overlay=true, max_boxes_count=500, max_lines_count=500)
+
+// Input options
+htf = input.timeframe("240", title="Higher timeframe candle",
+     tooltip="The higher timeframe each overlay candle represents, e.g. 240 = 4 hours. If chart's own timeframe becomes equal or larger, no overlay candles will appear.")
+ancHour     = input.int(0, title="Anchor hour (0-23)", minval=0, maxval=23,
+     tooltip="Time of day at which one candle boundary should fall. Candles are built on a grid of this time plus/minus whole multiples of the higher timeframe, e.g. anchor 5:00 with a 4H timeframe gives boundaries at 1:00, 5:00, 9:00, 13:00, 17:00, 21:00.")
+ancMinute   = input.int(0, title="Anchor minute (0-59)", minval=0, maxval=59,
+     tooltip="Minute component of the anchor time above.")
+ancTimezoneInput = input.string("", title="Anchor timezone (e.g. America/New_York, UTC; blank = exchange timezone)",
+     tooltip="IANA timezone the anchor hour/minute above is interpreted in, e.g. America/New_York or UTC. Leave blank to use the symbol's exchange timezone. Set this to match your chart's display timezone if you want the anchor to line up with the times you see on the chart.")
+ancTimezone = ancTimezoneInput == "" ? syminfo.timezone : ancTimezoneInput
+showCurrentCandle = input.bool(true, title="Show currently forming candle",
+     tooltip="When on, the candle that's still forming updates live. When off, nothing is drawn until that candle closes, then it appears all at once.")
+maxBoxes = input.int(500, title="Max HTF candles to keep", minval=1,
+     tooltip="Maximum number of past HTF candles to keep drawn. Older ones are deleted once this is exceeded, to keep the chart fast.")
+
+boxBorderSize = input.int(3, title="Box border size", minval=0,
+     tooltip="Border/wick line thickness in pixels.")
+
+upBoxColor      = input.color(color.new(color.green, 100), title="Up box colour",
+     tooltip="Fill color for an up HTF candle's body.")
+upBorderColor   = input.color(color.green, title="Up border colour",
+     tooltip="Border and wick color for an up HTF candle.")
+downBoxColor    = input.color(color.new(color.red, 100), title="Down box colour",
+     tooltip="Fill color for a down HTF candle's body.")
+downBorderColor = input.color(color.red, title="Down border colour",
+     tooltip="Border and wick color for a down HTF candle.")
+
+htfTooSmall = timeframe.in_seconds(htf) <= timeframe.in_seconds(timeframe.period)
+
+// Detect a new HTF bar on a user-anchored grid (anchor +/- N*htf) instead of
+// TradingView's default exchange/session-anchored grid.
+//
+// localMs re-labels this bar's ancTimezone wall-clock reading as if it were
+// UTC, giving a continuously increasing ms value with no reference resets -
+// unlike rebuilding "today's anchor" from the bar's own calendar date, which
+// jumps the reference by a full day (and therefore by a whole number of
+// blocks) at every midnight, misfiring a false boundary there.
+htfMs = timeframe.in_seconds(htf) * 1000
+anchorMsOfDay = (ancHour * 60 + ancMinute) * 60000
+
+localMs = timestamp("UTC",
+     year(time, ancTimezone), month(time, ancTimezone), dayofmonth(time, ancTimezone),
+     hour(time, ancTimezone), minute(time, ancTimezone), second(time, ancTimezone))
+
+blockIndex = math.floor((localMs - anchorMsOfDay) / htfMs)
+newTimeBlock = na(blockIndex[1]) or blockIndex != blockIndex[1]
+
+// Accumulate the HTF candle's open/high/low/close from the base-timeframe
+// bars that make it up.
+var float htfOpen  = na
+var float htfHigh  = na
+var float htfLow   = na
+htfClose = close
+if newTimeBlock
+    htfOpen := open
+    htfHigh := high
+    htfLow  := low
+else
+    htfHigh := math.max(htfHigh, high)
+    htfLow  := math.min(htfLow, low)
+
+// Create variables
+var box newBox = na
+var line topWick = na
+var line bottomWick = na
+var int blockStartIndex = na
+
+setBoxColor(b, isUp) =>
+    if isUp
+        box.set_bgcolor(b, upBoxColor)
+        box.set_border_color(b, upBorderColor)
+    else
+        box.set_bgcolor(b, downBoxColor)
+        box.set_border_color(b, downBorderColor)
+
+wickColor(isUp) => isUp ? upBorderColor : downBorderColor
+
+// When a new time block starts, finalize the block that just ended (drawing
+// its box+wicks now if showCurrentCandle skipped drawing them live) and
+// either start a new live box+wicks (showCurrentCandle) or wait until the
+// new block itself finishes to draw it.
+var boxes = array.new<box>()
+var lines = array.new<line>()
+if not htfTooSmall
+    if newTimeBlock
+        if not showCurrentCandle and not na(blockStartIndex)
+            finishedIsUp = close[1] > htfOpen[1]
+            finishedBox = box.new(left=blockStartIndex, top=htfOpen[1],
+                 right=bar_index, bottom=close[1], border_width=boxBorderSize)
+            setBoxColor(finishedBox, finishedIsUp)
+            boxes.push(finishedBox)
+            if boxes.size() > maxBoxes
+                box.delete(boxes.shift())
+
+            midX = int(math.round((blockStartIndex + bar_index) / 2.0))
+            bodyTop = math.max(htfOpen[1], close[1])
+            bodyBottom = math.min(htfOpen[1], close[1])
+            lines.push(line.new(midX, bodyTop, midX, htfHigh[1], color=wickColor(finishedIsUp), width=boxBorderSize))
+            lines.push(line.new(midX, bodyBottom, midX, htfLow[1], color=wickColor(finishedIsUp), width=boxBorderSize))
+            while lines.size() > maxBoxes * 2
+                line.delete(lines.shift())
+
+        blockStartIndex := bar_index
+
+        if showCurrentCandle
+            // The block that just ended was live-updated throughout its
+            // formation and is already in its final state - just register
+            // its wick lines for the history cap; nothing new to draw.
+            if not na(topWick)
+                lines.push(topWick)
+                lines.push(bottomWick)
+                while lines.size() > maxBoxes * 2
+                    line.delete(lines.shift())
+
+            newBox := box.new(left=bar_index, top=htfOpen,
+                 right=bar_index + 1, bottom=htfClose,
+                 border_width=boxBorderSize)
+            boxes.push(newBox)
+            if boxes.size() > maxBoxes
+                box.delete(boxes.shift())
+
+            isUp = htfClose > htfOpen
+            setBoxColor(newBox, isUp)
+
+            midX = bar_index + 1
+            topWick    := line.new(midX, htfOpen, midX, htfHigh, color=wickColor(isUp), width=boxBorderSize)
+            bottomWick := line.new(midX, htfOpen, midX, htfLow, color=wickColor(isUp), width=boxBorderSize)
+    else if showCurrentCandle
+        box.set_rightbottom(newBox, right=bar_index + 1, bottom=htfClose)
+
+        // If the current bar closed higher than the block's own open, make
+        // the box green (and paint it red otherwise)
+        isUp = htfClose > htfOpen
+        setBoxColor(newBox, isUp)
+
+        midX = int(math.round((blockStartIndex + bar_index + 1) / 2.0))
+        bodyTop = math.max(htfOpen, htfClose)
+        bodyBottom = math.min(htfOpen, htfClose)
+        line.set_xy1(topWick, midX, bodyTop)
+        line.set_xy2(topWick, midX, htfHigh)
+        line.set_color(topWick, wickColor(isUp))
+        line.set_xy1(bottomWick, midX, bodyBottom)
+        line.set_xy2(bottomWick, midX, htfLow)
+        line.set_color(bottomWick, wickColor(isUp))

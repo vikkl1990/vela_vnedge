@@ -1,0 +1,641 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Uncle_the_shooter
+
+//@version=6
+indicator("Pivot Consolidation Zone", overlay=true, max_boxes_count=500, max_labels_count=500, max_lines_count=500, max_bars_back=600)
+
+// ZONE SETTINGS 
+length      = input.int(10, "Pivot Length", minval=2, maxval=30, group="Zone Settings", tooltip="Number of bars required on both sides to confirm a local swing high/low (pivot).")
+maxPairBars = input.int(100, "Max Pivot Pair Distance (bars)", minval=20, group="Zone Settings", tooltip="Maximum distance in bars between a pivot pair (high and low) that can form a zone. Setting this too high may combine price extremes that are far apart in time.")
+maxLeftBack = input.int(250, "Max Box Left Edge (bars back)", minval=20, group="Zone Settings", tooltip="How far back (in bars) the left edge of the zone box can extend from the pivot, as long as the closing price stays inside the zone.")
+useAtrCap   = input.bool(true, "Cap Max Zone Height by ATR", group="Zone Settings", tooltip="Rejects pivot pairs whose price range exceeds a specified multiple of ATR, preventing very wide, low-value zones from being created.")
+atrLen      = input.int(100, "ATR Length", minval=1, group="Zone Settings", tooltip="ATR period used to cap the zone height and for the minimum breakout filter below.")
+maxMultBox  = input.float(5.0, "Max Zone Height (x ATR)", minval=0, group="Zone Settings", tooltip="Maximum allowed zone height as a multiple of ATR. Active only when 'Cap Max Zone Height by ATR' is enabled.")
+minBreakAtr = input.float(0.0, "Min Breakout Size (x ATR)", minval=0, step=0.1, group="Zone Settings", tooltip="0 disables this filter. Price must close beyond the pivot/zone by N x ATR to invalidate a level or end a zone, filtering out minor noise breakouts.")
+
+// VOLUME PROFILE 
+showProfile       = input.bool(true, "Show Zone Volume Profile", group="Volume Profile", tooltip="Draws a horizontal buy/sell volume histogram along the right edge of the zone, split into price bins.")
+profileBins       = input.int(30, "Number of Price Bins", minval=3, maxval=40, group="Volume Profile", tooltip="Number of horizontal price bins the zone height is divided into when computing the profile.")
+profileWidth      = input.int(30, "Max Profile Width (bars)", minval=5, maxval=100, group="Volume Profile", tooltip="Width, in bars, of the strongest bin in the profile. All other bins are scaled proportionally to it.")
+includeOuterWicks = input.bool(false, "Include Wick Volume Outside the Zone", group="Volume Profile", tooltip="Disabled (default): only volume occurring at prices inside the zone is counted; the portion of a candle's wick extending outside the zone is ignored. Enabled: the candle's full volume is counted, with the excess from an outside wick assigned to the nearest edge bin. This setting also affects the buy/sell bars, the buy/sell label, and the breakout signals.")
+const float PROFILE_BIN_GAP_PCT = 10.0
+
+// ZONE VOLUME SPLIT 
+showBoxVolBars    = input.bool(true, "Show Buy/Sell Bars Below Zone", group="Zone Volume Split", tooltip="Two horizontal bars below the zone showing the ratio of buy to sell volume across the entire zone.")
+showBoxVolLabel   = input.bool(true, "Show Buy/Sell % Label", group="Zone Volume Split", tooltip="Percentage label below the bars showing the exact buy/sell volume split within the zone.")
+volLabelSizeInput = input.string("Small", "Buy/Sell % Label Size", options=["Tiny", "Small", "Normal"], group="Zone Volume Split", tooltip="Size of the buy/sell percentage label, independent of the pivot/test marker size.")
+
+// BREAKOUT SIGNALS 
+showBreakoutSignals    = input.bool(true, "Show Breakout Signals", group="Breakout Signals", tooltip="Plots a triangle on the chart when the zone breaks out to the upside or downside.")
+requireVolConfirmation = input.bool(false, "Require Dominant Volume Confirmation", group="Breakout Signals", tooltip="Enabled: a signal (and the zone recolor) fires only when the breakout direction agrees with the dominant volume side within the zone. Disabled: the signal is determined solely by breakout direction, regardless of volume.")
+recolorBoxOnBreakout   = input.bool(true, "Recolor Zone on Breakout", group="Breakout Signals", tooltip="After a breakout, the zone box changes from neutral to bullish/bearish based on the breakout direction (and volume, if required above). If the signal is not confirmed, the box remains neutral.")
+signalSizeInput         = input.string("Small", "Breakout Signal Size", options=["Tiny", "Small", "Normal"], group="Breakout Signals", tooltip="Size of the breakout signal triangles on the chart.")
+
+// PIVOT & TEST MARKERS 
+showPivotMarkers = input.bool(false, "Show Pivot Markers (▼/▲)", group="Pivot & Test Markers", tooltip="Labels marking the pivots that formed the upper (▼) and lower (▲) boundary of the zone.")
+showTestMarkers  = input.bool(false, "Show Zone Boundary Test Markers", group="Pivot & Test Markers", tooltip="Numbered markers showing each successive test of the zone's upper and lower boundary by price.")
+markerSizeInput  = input.string("Small", "Pivot & Test Marker Size", options=["Tiny", "Small", "Normal"], group="Pivot & Test Markers", tooltip="Applies to both pivot markers and zone boundary test markers.")
+
+// COLORS 
+colBull          = input.color(color.rgb(6, 162, 47), "Bullish Color", group="Colors", tooltip="Used for: the lower zone boundary (support) and its tests, a confirmed upside breakout, and the buy side of the volume profile/bars.")
+colBear          = input.color(color.rgb(207, 23, 23), "Bearish Color", group="Colors", tooltip="Used for: the upper zone boundary (resistance) and its tests, a confirmed downside breakout, and the sell side of the volume profile/bars.")
+colNeutral       = input.color(color.gray, "Neutral Color", group="Colors", tooltip="Color of the zone box itself until a breakout occurs. After a breakout, the box switches to the bullish or bearish color (see 'Breakout Signals').")
+zoneBgTransp     = input.int(85, "Zone Background Transparency", minval=0, maxval=100, group="Colors", tooltip="Transparency of the zone box fill (0 = fully opaque, 100 = invisible). Applies to both the neutral color and the post-breakout color.")
+zoneBorderTransp = input.int(0, "Zone Border Transparency", minval=0, maxval=100, group="Colors", tooltip="Transparency of the zone box border (0 = fully opaque, 100 = invisible). Applies to both the neutral color and the post-breakout color.")
+profileTransp    = input.int(60, "Volume Profile Transparency", minval=0, maxval=100, group="Colors", tooltip="Transparency of the volume profile bins (0 = fully opaque, 100 = invisible).")
+
+// TP/SL 
+showTargets  = input.bool(true, "Show TP/SL Levels", group="TP/SL", tooltip="Plots Entry, Stop Loss, and Take Profit levels for every new breakout signal.")
+useAtrSL     = input.bool(true, "SL = ATR", group="TP/SL", tooltip="Enabled: the Stop Loss distance from the entry price is calculated from ATR (ATR multiplier for SL).\nDisabled: a fixed percentage value is used (SL % from Entry).")
+tpAtrPeriod  = input.int(14, "ATR Period (TP/SL)", minval=1, group="TP/SL", tooltip="ATR period used to determine the Stop Loss distance and Take Profit levels. Independent from the ATR used for zone filtering above.")
+slAtrMult    = input.float(1.5, "SL ATR Multiplier", step=0.1, group="TP/SL", tooltip="ATR multiplier that determines the Stop Loss distance from the entry price, active when 'SL = ATR' is enabled.")
+slPercent    = input.float(1.0, "SL % from Entry", step=0.1, group="TP/SL", tooltip="Percentage distance of the Stop Loss from the entry price, used when 'SL = ATR' is disabled.")
+rrTP1        = input.float(1.0, "TP1 Risk:Reward", step=0.1, group="TP/SL", tooltip="Risk:Reward ratio for Take Profit 1. A value of 1.0 means TP1 sits at a distance equal to the risk (SL) from the entry price.")
+rrTP2        = input.float(2.0, "TP2 Risk:Reward", step=0.1, group="TP/SL", tooltip="Risk:Reward ratio for Take Profit 2.")
+rrTP3        = input.float(3.0, "TP3 Risk:Reward", step=0.1, group="TP/SL", tooltip="Risk:Reward ratio for Take Profit 3.")
+
+showSlLevel  = input.bool(true, "Show SL Level", group="TP/SL Display", tooltip="Draws the line and label for the Stop Loss of the active signal.")
+showTp1Level = input.bool(true, "Show TP1 Level", group="TP/SL Display", tooltip="Draws the line and label for Take Profit 1 of the active signal.")
+showTp2Level = input.bool(true, "Show TP2 Level", group="TP/SL Display", tooltip="Draws the line and label for Take Profit 2 of the active signal.")
+showTp3Level = input.bool(true, "Show TP3 Level", group="TP/SL Display", tooltip="Draws the line and label for Take Profit 3 of the active signal.")
+
+markerSize = switch markerSizeInput
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    => size.small
+
+volLabelSize = switch volLabelSizeInput
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    => size.small
+
+
+
+atrVal = ta.atr(atrLen)
+atrTP  = ta.atr(tpAtrPeriod)
+brk    = minBreakAtr * atrVal
+
+var hP  = array.new_float()
+var hL  = array.new_float()
+var hI  = array.new_int()
+var hTi = array.new_int()
+var hT  = array.new_int()
+var hIn = array.new_bool()
+var hTB = array.new_string()
+
+var lP  = array.new_float()
+var lH  = array.new_float()
+var lI  = array.new_int()
+var lTi = array.new_int()
+var lT  = array.new_int()
+var lIn = array.new_bool()
+var lTB = array.new_string()
+
+var bool  zoneActive = false
+var float zoneTop    = na
+var float zoneBottom = na
+var box   zoneBox    = na
+var int   zoneLeftIdx = na
+
+// Volume profile arrays (buy/sell) for the current zone. Their totals also drive the
+// buy/sell bars and percentage label for the whole zone box below.
+var array<float> profBullVol = array.new_float(0)
+var array<float> profBearVol = array.new_float(0)
+var array<box>   profBullBox = array.new<box>(0)
+var array<box>   profBearBox = array.new<box>(0)
+
+var box   bullVolBox  = na
+var box   bearVolBox  = na
+var label volPctLabel = na
+
+// TP/SL state 
+var int      tpslDir        = 0
+var float    tpslSL         = na
+var float    tpslExtreme    = na
+var line     tpslEntryLn    = na
+var label    tpslEntryLb    = na
+var line     tpslSlLn       = na
+var label    tpslSlLb       = na
+var line     tpslTp1Ln      = na
+var label    tpslTp1Lb      = na
+var line     tpslTp2Ln      = na
+var label    tpslTp2Lb      = na
+var line     tpslTp3Ln      = na
+var label    tpslTp3Lb      = na
+var line     tpslExtLn      = na
+var linefill tpslRiskFill   = na
+var linefill tpslRewardFill = na
+var int      tpslEntryBar   = na
+
+ph = ta.pivothigh(length, length)
+pl = ta.pivotlow(length, length)
+
+appendTest(string s, int idx) =>
+    s == "" ? str.tostring(idx) : s + "," + str.tostring(idx)
+
+markTests(string s, float price, color c) =>
+    if s != ""
+        parts = str.split(s, ",")
+        for k = 0 to array.size(parts) - 1
+            idx = int(str.tonumber(array.get(parts, k)))
+            label.new(idx, price, str.tostring(k + 1), style=label.style_circle, color=color.new(c, 40), textcolor=color.white, size=markerSize)
+
+// Left edge of the zone box: starting at the earlier pivot, walk left as long as the close
+// stays inside the zone. The first close outside the range ends the prior swing and is
+// excluded from the box. Returns [bar_offset, time] so the offset can also be reused for the
+// volume profile backfill.
+leftEdgeTime(float top, float bot, int pivotOffset, float breakSize, int maxBack) =>
+    leftOff = pivotOffset
+    lim = math.min(maxBack, bar_index)
+    if pivotOffset < lim
+        for k = pivotOffset + 1 to lim
+            c = close[k]
+            if na(c)
+                break
+            if c > top + breakSize or c < bot - breakSize
+                break
+            leftOff := k
+    [leftOff, time[leftOff]]
+
+// Adds a single candle's volume into the profile bins, splitting it into a buy and a sell
+// portion based on where the close sits within the candle's range.
+// clip=true  -> only counts the part of the candle within [bot, top] (wicks outside the zone are ignored)
+// clip=false -> the candle's full volume is counted, with any excess from a wick outside the
+//               zone assigned to the nearest edge bin
+f_addBarToProfile(array<float> bullBins, array<float> bearBins, int nBins, float top, float bot, float bH, float bL, float bC, float bV, bool clip) =>
+    float binH = (top - bot) / nBins
+    if binH > 0 and bH > bL
+        float fullRange = bH - bL
+        float coreHigh = math.min(bH, top)
+        float coreLow  = math.max(bL, bot)
+        if coreHigh > coreLow
+            for b = 0 to nBins - 1
+                float binTop = top - b * binH
+                float binBot = binTop - binH
+                float ov_h = math.min(coreHigh, binTop)
+                float ov_l = math.max(coreLow, binBot)
+                if ov_h > ov_l
+                    float overlap  = ov_h - ov_l
+                    float addedVol = bV * overlap / fullRange
+                    float bullPart = addedVol * (bC - bL) / fullRange
+                    float bearPart = addedVol * (bH - bC) / fullRange
+                    array.set(bullBins, b, array.get(bullBins, b) + bullPart)
+                    array.set(bearBins, b, array.get(bearBins, b) + bearPart)
+        if not clip
+            if bH > top
+                float overlapAbove = bH - math.max(bL, top)
+                if overlapAbove > 0
+                    float addedVol2 = bV * overlapAbove / fullRange
+                    float bullPart2 = addedVol2 * (bC - bL) / fullRange
+                    float bearPart2 = addedVol2 * (bH - bC) / fullRange
+                    array.set(bullBins, 0, array.get(bullBins, 0) + bullPart2)
+                    array.set(bearBins, 0, array.get(bearBins, 0) + bearPart2)
+            if bL < bot
+                float overlapBelow = math.min(bH, bot) - bL
+                if overlapBelow > 0
+                    float addedVol3 = bV * overlapBelow / fullRange
+                    float bullPart3 = addedVol3 * (bC - bL) / fullRange
+                    float bearPart3 = addedVol3 * (bH - bC) / fullRange
+                    array.set(bullBins, nBins - 1, array.get(bullBins, nBins - 1) + bullPart3)
+                    array.set(bearBins, nBins - 1, array.get(bearBins, nBins - 1) + bearPart3)
+
+if not na(ph)
+    array.push(hP, ph)
+    array.push(hL, low[length])
+    array.push(hI, bar_index - length)
+    array.push(hTi, time[length])
+    array.push(hT, 0)
+    array.push(hIn, false)
+    array.push(hTB, "")
+    if array.size(hP) > 40
+        array.shift(hP)
+        array.shift(hL)
+        array.shift(hI)
+        array.shift(hTi)
+        array.shift(hT)
+        array.shift(hIn)
+        array.shift(hTB)
+
+if not na(pl)
+    array.push(lP, pl)
+    array.push(lH, high[length])
+    array.push(lI, bar_index - length)
+    array.push(lTi, time[length])
+    array.push(lT, 0)
+    array.push(lIn, false)
+    array.push(lTB, "")
+    if array.size(lP) > 40
+        array.shift(lP)
+        array.shift(lH)
+        array.shift(lI)
+        array.shift(lTi)
+        array.shift(lT)
+        array.shift(lIn)
+        array.shift(lTB)
+
+if array.size(hP) > 0
+    for i = array.size(hP) - 1 to 0
+        p   = array.get(hP, i)
+        plo = array.get(hL, i)
+        if close > p + brk
+            array.remove(hP, i)
+            array.remove(hL, i)
+            array.remove(hI, i)
+            array.remove(hTi, i)
+            array.remove(hT, i)
+            array.remove(hIn, i)
+            array.remove(hTB, i)
+        else if low <= p and high >= plo
+            if not array.get(hIn, i)
+                array.set(hT, i, array.get(hT, i) + 1)
+                array.set(hIn, i, true)
+                array.set(hTB, i, appendTest(array.get(hTB, i), bar_index))
+        else
+            array.set(hIn, i, false)
+
+if array.size(lP) > 0
+    for i = array.size(lP) - 1 to 0
+        p   = array.get(lP, i)
+        phi = array.get(lH, i)
+        if close < p - brk
+            array.remove(lP, i)
+            array.remove(lH, i)
+            array.remove(lI, i)
+            array.remove(lTi, i)
+            array.remove(lT, i)
+            array.remove(lIn, i)
+            array.remove(lTB, i)
+        else if high >= p and low <= phi
+            if not array.get(lIn, i)
+                array.set(lT, i, array.get(lT, i) + 1)
+                array.set(lIn, i, true)
+                array.set(lTB, i, appendTest(array.get(lTB, i), bar_index))
+        else
+            array.set(lIn, i, false)
+
+int   pairH = na
+int   pairL = na
+int   bestStart = na
+
+if array.size(hP) > 0 and array.size(lP) > 0
+    for i = 0 to array.size(hP) - 1
+        if array.get(hT, i) >= 1
+            hp  = array.get(hP, i)
+            hIx = array.get(hI, i)
+            for j = 0 to array.size(lP) - 1
+                if array.get(lT, j) >= 1
+                    lp  = array.get(lP, j)
+                    lIx = array.get(lI, j)
+                    if hp > lp
+                        startIdx = math.min(hIx, lIx)
+                        barsBack = bar_index - startIdx
+                        okRange = barsBack >= 0 and barsBack <= maxPairBars
+                        if okRange
+                            contained = true
+                            for k = 1 to barsBack
+                                if close[k] > hp + brk or close[k] < lp - brk
+                                    contained := false
+                            passesAtr = not useAtrCap or (hp - lp) <= maxMultBox * atrVal
+                            if contained and passesAtr
+                                if na(bestStart) or startIdx < bestStart
+                                    bestStart := startIdx
+                                    pairH := i
+                                    pairL := j
+
+if not zoneActive and not na(pairH) and not na(pairL)
+    zoneActive := true
+    zoneTop    := array.get(hP, pairH)
+    zoneBottom := array.get(lP, pairL)
+    pivotOff   = bar_index - math.min(array.get(hI, pairH), array.get(lI, pairL))
+    [leftOff, startTime] = leftEdgeTime(zoneTop, zoneBottom, pivotOff, brk, maxLeftBack)
+    zoneLeftIdx := bar_index - leftOff
+    zoneBox    := box.new(startTime, zoneTop, time, zoneBottom, border_color=color.new(colNeutral, zoneBorderTransp), bgcolor=color.new(colNeutral, zoneBgTransp), xloc=xloc.bar_time)
+    if showPivotMarkers
+        label.new(array.get(hI, pairH), zoneTop, "▼", style=label.style_label_down, color=colBear, textcolor=color.white, size=markerSize)
+        label.new(array.get(lI, pairL), zoneBottom, "▲", style=label.style_label_up, color=colBull, textcolor=color.white, size=markerSize)
+    if showTestMarkers
+        markTests(array.get(hTB, pairH), zoneTop, colBear)
+        markTests(array.get(lTB, pairL), zoneBottom, colBull)
+
+    // Reset the volume profile data for the new zone (delete the old bins so they don't
+    // clutter the chart).
+    if array.size(profBullBox) > 0
+        for i = 0 to array.size(profBullBox) - 1
+            bb = array.get(profBullBox, i)
+            if not na(bb)
+                box.delete(bb)
+            be = array.get(profBearBox, i)
+            if not na(be)
+                box.delete(be)
+    profBullVol := array.new_float(profileBins, 0.0)
+    profBearVol := array.new_float(profileBins, 0.0)
+    profBullBox := array.new<box>(profileBins, na)
+    profBearBox := array.new<box>(profileBins, na)
+    // Backfill the profile using the zone's historical bars (the current bar is added by the
+    // loop below, once per bar).
+    if leftOff > 0
+        for k = 1 to leftOff
+            f_addBarToProfile(profBullVol, profBearVol, profileBins, zoneTop, zoneBottom, high[k], low[k], close[k], volume[k], not includeOuterWicks)
+
+    // Buy/sell bars and % label below the zone (new objects; earlier ones remain as history).
+    if showBoxVolBars
+        bullVolBox := box.new(zoneLeftIdx, zoneBottom, zoneLeftIdx, zoneBottom, bgcolor=color.new(colBull, 15), border_color=color.new(colBull, 15), xloc=xloc.bar_index)
+        bearVolBox := box.new(zoneLeftIdx, zoneBottom, zoneLeftIdx, zoneBottom, bgcolor=color.new(colBear, 15), border_color=color.new(colBear, 15), xloc=xloc.bar_index)
+    if showBoxVolLabel
+        volPctLabel := label.new(zoneLeftIdx, zoneBottom, "", style=label.style_label_upper_left, color=colNeutral, textcolor=color.white, size=volLabelSize, xloc=xloc.bar_index)
+
+bool bullBreakoutSignal = false
+bool bearBreakoutSignal = false
+
+if zoneActive
+    box.set_right(zoneBox, time)
+
+    bool breakoutUp   = close > zoneTop + brk
+    bool breakoutDown = close < zoneBottom - brk
+    bool isBreakoutBar = breakoutUp or breakoutDown
+
+    // The current bar's volume is only added to the profile when this bar does NOT close the
+    // zone. This ensures that:
+    //  - the breakout bar itself cannot inflate the side it is meant to confirm
+    //    (requireVolConfirmation evaluates the volume split from before the breakout bar,
+    //    not including it),
+    //  - with includeOuterWicks enabled, the breakout impulse is not dumped into the edge bin —
+    //    the profile and bars freeze at their last state from inside the consolidation.
+    if not isBreakoutBar
+        f_addBarToProfile(profBullVol, profBearVol, profileBins, zoneTop, zoneBottom, high, low, close, volume, not includeOuterWicks)
+
+    if showProfile
+        maxBinTotal = 0.0
+        for b = 0 to profileBins - 1
+            tot = array.get(profBullVol, b) + array.get(profBearVol, b)
+            if tot > maxBinTotal
+                maxBinTotal := tot
+
+        // The zone height is first divided into `profileBins` equal nominal slots, which sets
+        // the gap size in price units. The actual bin height (binH) is then reduced so that
+        // every gap between bins is equal, and the outermost bins sit flush against the zone's
+        // upper and lower boundary.
+        nominalBinH   = (zoneTop - zoneBottom) / profileBins
+        binGapAmt     = nominalBinH * PROFILE_BIN_GAP_PCT / 100.0
+        totalGapSpace = binGapAmt * (profileBins - 1)
+        binH          = (zoneTop - zoneBottom - totalGapSpace) / profileBins
+        leftAnchor    = bar_index + 1
+
+        for b = 0 to profileBins - 1
+            bullV = array.get(profBullVol, b)
+            bearV = array.get(profBearVol, b)
+            tot   = bullV + bearV
+            width = maxBinTotal > 0 ? math.round(profileWidth * tot / maxBinTotal) : 0.0
+            bullW = tot > 0 ? math.round(width * bullV / tot) : 0.0
+            bearW = width - bullW
+
+            binTop = zoneTop - b * (binH + binGapAmt)
+            binBot = binTop - binH
+
+            bullLeft  = leftAnchor
+            bullRight = leftAnchor + int(bullW)
+            bearLeft  = bullRight
+            bearRight = bullRight + int(bearW)
+
+            existingBull = array.get(profBullBox, b)
+            if na(existingBull)
+                newBull = box.new(bullLeft, binTop, bullRight, binBot, border_color=color.new(colBull, profileTransp), border_width=1, bgcolor=color.new(colBull, profileTransp), xloc=xloc.bar_index)
+                array.set(profBullBox, b, newBull)
+            else
+                box.set_left(existingBull, bullLeft)
+                box.set_right(existingBull, bullRight)
+                box.set_top(existingBull, binTop)
+                box.set_bottom(existingBull, binBot)
+
+            existingBear = array.get(profBearBox, b)
+            if na(existingBear)
+                newBear = box.new(bearLeft, binTop, bearRight, binBot, border_color=color.new(colBear, profileTransp), border_width=1, bgcolor=color.new(colBear, profileTransp), xloc=xloc.bar_index)
+                array.set(profBearBox, b, newBear)
+            else
+                box.set_left(existingBear, bearLeft)
+                box.set_right(existingBear, bearRight)
+                box.set_top(existingBear, binTop)
+                box.set_bottom(existingBear, binBot)
+
+    // Sum of the bins = total buy/sell volume within the zone (respects includeOuterWicks).
+    totalBull = array.sum(profBullVol)
+    totalBear = array.sum(profBearVol)
+
+    if showBoxVolBars or showBoxVolLabel
+        float barH2    = atrVal * 0.18
+        float gapH2    = atrVal * 0.08
+        float bullTop2 = zoneBottom - gapH2
+        float bullBot2 = bullTop2 - barH2
+        float bearTop2 = bullBot2 - gapH2
+        float bearBot2 = bearTop2 - barH2
+
+        if showBoxVolBars
+            float totalVolBars = totalBull + totalBear
+            int   fullWidth2   = math.max((bar_index + 1) - zoneLeftIdx, 1)
+            int   bullRight2   = totalVolBars > 0 ? zoneLeftIdx + math.round(fullWidth2 * (totalBull / totalVolBars)) : zoneLeftIdx + math.round(fullWidth2 * 0.5)
+            int   bearRight2   = totalVolBars > 0 ? zoneLeftIdx + math.round(fullWidth2 * (totalBear / totalVolBars)) : zoneLeftIdx + math.round(fullWidth2 * 0.5)
+
+            box.set_lefttop(bullVolBox, zoneLeftIdx, bullTop2)
+            box.set_rightbottom(bullVolBox, bullRight2, bullBot2)
+            box.set_lefttop(bearVolBox, zoneLeftIdx, bearTop2)
+            box.set_rightbottom(bearVolBox, bearRight2, bearBot2)
+
+        if showBoxVolLabel
+            float totalVolL = totalBull + totalBear
+            float bullPctL  = totalVolL > 0 ? math.round((totalBull / totalVolL * 100.0) * 10) / 10 : 50.0
+            float sellPctL  = 100.0 - bullPctL
+            color bgColL = bullPctL > 50.0 ? colBull : bullPctL < 50.0 ? colBear : colNeutral
+            string txtL  = "Buy " + str.tostring(bullPctL, "#.#") + "%\nSell " + str.tostring(sellPctL, "#.#") + "%"
+            label.set_xy(volPctLabel, zoneLeftIdx, bearBot2 - gapH2 * 0.5)
+            label.set_text(volPctLabel, txtL)
+            label.set_color(volPctLabel, bgColL)
+
+    // Breakout detection and optional dominant-volume confirmation. breakoutUp/breakoutDown
+    // were computed above, before the current bar was potentially added to the profile.
+    if isBreakoutBar
+        bool bullDominant = totalBull >= totalBear
+        bool bearDominant = totalBear > totalBull
+        bool validUp   = breakoutUp   and (not requireVolConfirmation or bullDominant)
+        bool validDown = breakoutDown and (not requireVolConfirmation or bearDominant)
+
+        if showBreakoutSignals
+            bullBreakoutSignal := validUp
+            bearBreakoutSignal := validDown
+
+        if recolorBoxOnBreakout
+            if validUp
+                box.set_bgcolor(zoneBox, color.new(colBull, zoneBgTransp))
+                box.set_border_color(zoneBox, color.new(colBull, zoneBorderTransp))
+            else if validDown
+                box.set_bgcolor(zoneBox, color.new(colBear, zoneBgTransp))
+                box.set_border_color(zoneBox, color.new(colBear, zoneBorderTransp))
+
+        zoneActive := false
+
+// TP/SL - create levels on a new breakout signal 
+if showTargets and (bullBreakoutSignal or bearBreakoutSignal)
+    bool isBuyTrade = bullBreakoutSignal
+
+    line.delete(tpslEntryLn)
+    label.delete(tpslEntryLb)
+    line.delete(tpslSlLn)
+    label.delete(tpslSlLb)
+    line.delete(tpslTp1Ln)
+    label.delete(tpslTp1Lb)
+    line.delete(tpslTp2Ln)
+    label.delete(tpslTp2Lb)
+    line.delete(tpslTp3Ln)
+    label.delete(tpslTp3Lb)
+    line.delete(tpslExtLn)
+    linefill.delete(tpslRiskFill)
+    linefill.delete(tpslRewardFill)
+
+    tpslDir      := isBuyTrade ? 1 : -1
+    tpslEntryBar := bar_index
+
+    float entryP   = close
+    float riskDist = useAtrSL ? atrTP * slAtrMult : entryP * (slPercent / 100.0)
+
+    // Entry, SL, TP1-3 use 40 transparency; the risk/reward fills use 80 transparency.
+    color entryCol    = color.new(isBuyTrade ? colBull : colBear, 40)
+    color slCol       = color.new(isBuyTrade ? colBear : colBull, 40)
+    color tpCol       = color.new(isBuyTrade ? colBull : colBear, 40)
+    color riskFillC   = color.new(isBuyTrade ? colBear : colBull, 80)
+    color rewardFillC = color.new(isBuyTrade ? colBull : colBear, 80)
+
+    float slP  = isBuyTrade ? entryP - riskDist : entryP + riskDist
+    float tp1P = isBuyTrade ? entryP + riskDist * rrTP1 : entryP - riskDist * rrTP1
+    float tp2P = isBuyTrade ? entryP + riskDist * rrTP2 : entryP - riskDist * rrTP2
+    float tp3P = isBuyTrade ? entryP + riskDist * rrTP3 : entryP - riskDist * rrTP3
+
+    tpslSL      := slP
+    tpslExtreme := showTp3Level ? tp3P : showTp2Level ? tp2P : showTp1Level ? tp1P : na
+
+    tpslEntryLn := line.new(bar_index, entryP, bar_index + 1, entryP,
+         color = entryCol, width = 2, extend = extend.none)
+    tpslEntryLb := label.new(bar_index, entryP,
+         (isBuyTrade ? 'BUY ' : 'SELL ') + str.tostring(entryP, format.mintick),
+         style = label.style_label_left, color = entryCol,
+         textcolor = color.white, size = size.small)
+
+    if showSlLevel
+        tpslSlLn := line.new(bar_index, slP, bar_index + 1, slP,
+             color = slCol, width = 1, style = line.style_dashed, extend = extend.none)
+        tpslSlLb := label.new(bar_index, slP,
+             'SL ' + str.tostring(slP, format.mintick),
+             style = label.style_label_left, color = slCol,
+             textcolor = color.white, size = size.small)
+
+    if showTp1Level
+        tpslTp1Ln := line.new(bar_index, tp1P, bar_index + 1, tp1P,
+             color = tpCol, width = 1, extend = extend.none)
+        tpslTp1Lb := label.new(bar_index, tp1P,
+             'TP1 ' + str.tostring(tp1P, format.mintick),
+             style = label.style_label_left, color = tpCol,
+             textcolor = color.white, size = size.small)
+
+    if showTp2Level
+        tpslTp2Ln := line.new(bar_index, tp2P, bar_index + 1, tp2P,
+             color = tpCol, width = 1, extend = extend.none)
+        tpslTp2Lb := label.new(bar_index, tp2P,
+             'TP2 ' + str.tostring(tp2P, format.mintick),
+             style = label.style_label_left, color = tpCol,
+             textcolor = color.white, size = size.small)
+
+    if showTp3Level
+        tpslTp3Ln := line.new(bar_index, tp3P, bar_index + 1, tp3P,
+             color = tpCol, width = 1, style = line.style_dotted, extend = extend.none)
+        tpslTp3Lb := label.new(bar_index, tp3P,
+             'TP3 ' + str.tostring(tp3P, format.mintick),
+             style = label.style_label_left, color = tpCol,
+             textcolor = color.white, size = size.small)
+
+    if showSlLevel
+        tpslRiskFill := linefill.new(tpslEntryLn, tpslSlLn, riskFillC)
+
+    float fillExtreme = entryP
+    if isBuyTrade
+        if showTp1Level
+            fillExtreme := math.max(fillExtreme, tp1P)
+        if showTp2Level
+            fillExtreme := math.max(fillExtreme, tp2P)
+        if showTp3Level
+            fillExtreme := math.max(fillExtreme, tp3P)
+        if fillExtreme > entryP
+            tpslExtLn      := line.new(bar_index, fillExtreme, bar_index + 1, fillExtreme, color = na, extend = extend.none)
+            tpslRewardFill := linefill.new(tpslEntryLn, tpslExtLn, rewardFillC)
+    else
+        if showTp1Level
+            fillExtreme := math.min(fillExtreme, tp1P)
+        if showTp2Level
+            fillExtreme := math.min(fillExtreme, tp2P)
+        if showTp3Level
+            fillExtreme := math.min(fillExtreme, tp3P)
+        if fillExtreme < entryP
+            tpslExtLn      := line.new(bar_index, fillExtreme, bar_index + 1, fillExtreme, color = na, extend = extend.none)
+            tpslRewardFill := linefill.new(tpslEntryLn, tpslExtLn, rewardFillC)
+
+// TP/SL - update line/label positions and detect SL/TP hits 
+if tpslDir != 0
+    if not na(tpslEntryLb)
+        label.set_x(tpslEntryLb, bar_index)
+    if not na(tpslSlLb)
+        label.set_x(tpslSlLb, bar_index)
+    if not na(tpslTp1Lb)
+        label.set_x(tpslTp1Lb, bar_index)
+    if not na(tpslTp2Lb)
+        label.set_x(tpslTp2Lb, bar_index)
+    if not na(tpslTp3Lb)
+        label.set_x(tpslTp3Lb, bar_index)
+
+    if not na(tpslEntryLn)
+        line.set_x2(tpslEntryLn, bar_index + 1)
+    if not na(tpslSlLn)
+        line.set_x2(tpslSlLn, bar_index + 1)
+    if not na(tpslTp1Ln)
+        line.set_x2(tpslTp1Ln, bar_index + 1)
+    if not na(tpslTp2Ln)
+        line.set_x2(tpslTp2Ln, bar_index + 1)
+    if not na(tpslTp3Ln)
+        line.set_x2(tpslTp3Ln, bar_index + 1)
+    if not na(tpslExtLn)
+        line.set_x2(tpslExtLn, bar_index + 1)
+
+    bool slHit = tpslDir == 1 ? low <= tpslSL : high >= tpslSL
+    bool tpHit = not na(tpslExtreme) and
+         (tpslDir == 1 ? high >= tpslExtreme : low <= tpslExtreme)
+
+    if bar_index > tpslEntryBar and (slHit or tpHit)
+        if not na(tpslEntryLn)
+            line.set_x2(tpslEntryLn, bar_index)
+        if not na(tpslSlLn)
+            line.set_x2(tpslSlLn, bar_index)
+        if not na(tpslTp1Ln)
+            line.set_x2(tpslTp1Ln, bar_index)
+        if not na(tpslTp2Ln)
+            line.set_x2(tpslTp2Ln, bar_index)
+        if not na(tpslTp3Ln)
+            line.set_x2(tpslTp3Ln, bar_index)
+        if not na(tpslExtLn)
+            line.set_x2(tpslExtLn, bar_index)
+        tpslDir := 0
+
+// BACKTESTER OUTPUT PLOTS 
+plot(bullBreakoutSignal ? 1 : na, "backtest_buy",  display = display.none)
+plot(bearBreakoutSignal ? 1 : na, "backtest_sell", display = display.none)
+
+// plotshape requires size as a const string literal, so the size selection is split into a
+// separate call per option.
+plotshape(bullBreakoutSignal and signalSizeInput == "Tiny",   title="Breakout Up (Tiny)",   style=shape.triangleup, location=location.belowbar, color=colBull, size=size.tiny)
+plotshape(bullBreakoutSignal and signalSizeInput == "Small",  title="Breakout Up (Small)",  style=shape.triangleup, location=location.belowbar, color=colBull, size=size.small)
+plotshape(bullBreakoutSignal and signalSizeInput == "Normal", title="Breakout Up (Normal)", style=shape.triangleup, location=location.belowbar, color=colBull, size=size.normal)
+
+plotshape(bearBreakoutSignal and signalSizeInput == "Tiny",   title="Breakout Down (Tiny)",   style=shape.triangledown, location=location.abovebar, color=colBear, size=size.tiny)
+plotshape(bearBreakoutSignal and signalSizeInput == "Small",  title="Breakout Down (Small)",  style=shape.triangledown, location=location.abovebar, color=colBear, size=size.small)
+plotshape(bearBreakoutSignal and signalSizeInput == "Normal", title="Breakout Down (Normal)", style=shape.triangledown, location=location.abovebar, color=colBear, size=size.normal)
+
+alertcondition(bullBreakoutSignal, title="Zone Breakout Up", message="Consolidation zone breakout to the UPSIDE")
+alertcondition(bearBreakoutSignal, title="Zone Breakout Down", message="Consolidation zone breakout to the DOWNSIDE")
+

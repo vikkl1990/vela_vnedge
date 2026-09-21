@@ -1,0 +1,77 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © DerAndi72
+//
+// Script: Planting & Harvesting Seasons
+// Version: V1.1
+// Release: Maintenance Update
+//
+// Changelog:
+// V1.1 - Maintenance Update
+// - Kept the established script name: Planting & Harvesting Seasons.
+// - Improved terminology inside the script by using crop development and harvest phases.
+// - Improved month range handling for year-crossing seasons.
+// - Updated futures-relevant windows for ZC, CC, KC, SB and OJ.
+//
+// V1.0 - Initial Release
+// - Initial public release as Planting & Harvesting Seasons.
+// - Added basic crop planting and harvest background zones.
+
+
+//@version=6
+indicator("Planting & Harvesting Seasons V1.1", overlay = true)
+// Dynamic future recognition
+asset = syminfo.root
+
+// Initialize season values
+var int developmentStart = na
+var int developmentEnd   = na
+var int harvestStart     = na
+var int harvestEnd       = na
+
+// Helper function: supports normal and year-crossing month ranges
+isMonthInRange(startMonth, endMonth) =>
+    if na(startMonth) or na(endMonth)
+        false
+    else if startMonth > endMonth
+        month >= startMonth or month <= endMonth
+    else
+        month >= startMonth and month <= endMonth
+
+// Set futures-relevant crop development and harvest windows
+// 1 = January, 12 = December
+switch asset
+    "ZW" => developmentStart := 9,  developmentEnd := 10, harvestStart := 6,  harvestEnd := 7
+    "ZC" => developmentStart := 4,  developmentEnd := 5,  harvestStart := 9,  harvestEnd := 11
+    "ZS" => developmentStart := 4,  developmentEnd := 6,  harvestStart := 9,  harvestEnd := 11
+    "ZR" => developmentStart := 4,  developmentEnd := 6,  harvestStart := 8,  harvestEnd := 10
+    "CT" => developmentStart := 4,  developmentEnd := 6,  harvestStart := 9,  harvestEnd := 11
+    "ZO" => developmentStart := 4,  developmentEnd := 5,  harvestStart := 7,  harvestEnd := 8
+    "CC" => developmentStart := 4,  developmentEnd := 9,  harvestStart := 10, harvestEnd := 3
+    "KC" => developmentStart := 10, developmentEnd := 12, harvestStart := 5,  harvestEnd := 9
+    "SB" => developmentStart := 1,  developmentEnd := 3,  harvestStart := 4,  harvestEnd := 11
+    "OJ" => developmentStart := 3,  developmentEnd := 5,  harvestStart := 11, harvestEnd := 6
+
+// Check whether current month is inside one of the defined seasons
+developmentSeason = isMonthInRange(developmentStart, developmentEnd)
+harvestSeason     = isMonthInRange(harvestStart, harvestEnd)
+
+// Set background color
+seasonColor = developmentSeason ? color.new(color.green, 60) : harvestSeason ? color.new(color.red, 60) : na
+bgcolor(seasonColor)
+
+// Dynamic label positioning
+pos = ta.lowest(low, 10) - ta.atr(14) * 0.5
+
+// Show labels for development season start and end
+if developmentSeason and not developmentSeason[1]
+    label.new(bar_index, pos, "Start Development", color = color.green, textcolor = color.white, style = label.style_label_down)
+
+if not developmentSeason and developmentSeason[1]
+    label.new(bar_index, pos, "End Development", color = color.green, textcolor = color.white, style = label.style_label_up)
+
+// Show labels for harvest season start and end
+if harvestSeason and not harvestSeason[1]
+    label.new(bar_index, pos, "Start Harvest", color = color.red, textcolor = color.white, style = label.style_label_down)
+
+if not harvestSeason and harvestSeason[1]
+    label.new(bar_index, pos, "End Harvest", color = color.red, textcolor = color.white, style = label.style_label_up)

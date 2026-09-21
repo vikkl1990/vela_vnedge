@@ -1,0 +1,1015 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © immediatePerso44773
+
+//@version=6
+indicator("Adaptive Market Structure & Fair Value", shorttitle = "Adaptive Structure",
+ overlay = true, max_labels_count = 500, max_boxes_count = 100)
+
+max_bars_back(time, 5000)
+
+// INPUTS
+
+grp_Pivots      = "Adaptive Pivot Detection"
+
+showCandidates  = input.bool(true, "Show Pending Candidates", 
+ tooltip = "Shows potential pivot highs and lows before confirmation. The displayed number is the adaptive number of right-side bars that must complete without price exceeding the candidate before the pivot becomes confirmed. Pending candidates may disappear if invalidated; confirmed pivots are therefore delayed by design", group = grp_Pivots)
+leftBars        = input.int(2,  "Pivot Left", minval = 2,
+ tooltip = "Number of bars used to establish the left side of a potential pivot. Lower values detect smaller swings; higher values focus on larger structural swings.", group = grp_Pivots)
+pivotMin        = input.int(1,  "Minimum Right Bars", minval = 1, maxval = 6, 
+ tooltip = "Minimum number of right-side bars required to confirm a pivot when price movement is highly efficient. Lower values allow faster confirmation.", group = grp_Pivots)
+pivotMax        = input.int(2,  "Maximum Right Bars", minval = 2, 
+ tooltip = "Maximum number of right-side bars required to confirm a pivot during less efficient price movement. Higher values produce slower but more selective pivot confirmation.", group = grp_Pivots)
+erLen           = input.int(6,  "ER Length", minval = 6,
+ tooltip = "Lookback used to measure price Efficiency Ratio (ER). ER determines how quickly potential pivots are confirmed. Shorter lengths react faster; longer lengths are smoother.", group = grp_Pivots)
+erSmooth        = input.int(3,  "ER Smooth", minval = 3,
+ tooltip = "Smooths the Efficiency Ratio used by the adaptive pivot engine. Higher values reduce short-term changes in pivot confirmation speed.", group = grp_Pivots)
+zonePct         = input.float(25.0, "Pivot Zone (%)", minval = 5.0, maxval = 45.0, step = 5.0, 
+ tooltip = "Sets the thickness of the structural zones as a percentage of the distance between the selected pivot high and pivot low.", group = grp_Pivots) / 100.0
+maxActiveRanges = input.int(1, "Pivot Range Depth", minval = 1, maxval = 5,
+ tooltip = "Selects which unbroken pivot pair defines the displayed structural zones. 1 = newest pair, 2 = second newest pair, and higher values reference progressively larger/older structure.", group = grp_Pivots)
+colorHighZone   = input.color(color.new(color.maroon , 80), "High Pivot Zone", group = grp_Pivots)
+colorLowZone    = input.color(color.new(color.green, 80), "Low Pivot Zone", group = grp_Pivots)
+
+grp_KAMA        = "Adaptive KAMA Short Term Trend"
+
+useFilter       = input.bool(true, "KAMA Color Filter",
+ tooltip = "Requires price acceptance before confirming RANGE-to-direction changes and bullish/bearish reversals. This intentionally delays major KAMA color changes to reduce rapid state switching during noisy price action. Same-direction efficiency changes and deterioration back to RANGE remain immediate.", group = grp_KAMA)
+KAMAerLen       = input.int(15, "KAMA ER Length", options = [15, 24, 34],
+  tooltip = "Lookback used to measure the efficiency of price movement for the adaptive KAMA. Shorter lengths react faster; longer lengths emphasize broader trend behavior.", group = grp_KAMA)
+KAMAerSmooth    = input.int(3, "KAMA ER Smoothing Length", options = [3, 4, 5],
+ tooltip = "Smooths the Efficiency Ratio controlling KAMA responsiveness. Higher values produce more stable but slower changes.", group = grp_KAMA)
+maxLen          = input.int(21, "KAMA Slow Length", options = [21, 24, 55],
+ tooltip = "Controls the slowest response of the adaptive KAMA during inefficient or sideways price movement. Higher values make KAMA more resistant to market noise.", group = grp_KAMA)
+
+grp_vwap = "VWAP Session Fair Value"
+
+marketSession  = input.string("New York", "VWAP Session", options = ["London", "New York"],
+ tooltip = "Selects the session used to anchor VWAP. London begins at 08:00 London time; New York begins at 09:30 New York time.", group = grp_vwap)
+src            = input.source(hlc3, "Source", 
+ tooltip = "Price source used to calculate session VWAP. HLC3 is the default.", group=grp_vwap)
+vwap_len       = input.int(15, "VWAP ER Length",
+ tooltip = "Lookback used to measure how efficiently session VWAP is migrating. Higher ER indicates that fair value is moving consistently in one direction. VWAP ER is unavailable during the early-session warm-up until sufficient session bars have accumulated.", group = grp_vwap)
+vwap_ER_Smooth = input.int(3, "VWAP ER Smoothing Length",
+ tooltip = "Smooths VWAP Efficiency Ratio. Higher values reduce short-term changes in fair-value classification but add confirmation delay. This smoothing affects VWAP trend classification, not the underlying session VWAP price itself.", group = grp_vwap)
+
+//  TYPES
+type PivotCandidate
+    float price
+    int   bar
+    int   pivotTime
+    int   requiredRight
+    label marker
+
+type Pivot
+    float price
+    int   bar
+    int   pivotTime
+    bool  isHigh
+    bool  isBroken
+    label marker
+
+type PivotRange
+    Pivot highPivot
+    Pivot lowPivot
+    float Pivotrange
+    float zoneHeight
+    float highZoneTop
+    float highZoneBottom
+    float lowZoneTop
+    float lowZoneBottom
+    box   highBox
+    box   lowBox
+    bool  active
+
+var PivotCandidate[] pendingHighs   = array.new<PivotCandidate>()
+var PivotCandidate[] pendingLows    = array.new<PivotCandidate>()
+var Pivot[]          confirmedHighs = array.new<Pivot>()
+var Pivot[]          confirmedLows  = array.new<Pivot>()
+var PivotRange[]     pivotRanges    = array.new<PivotRange>()
+
+// FUNCTIONS
+f_er(float source, int len) =>
+
+    float netMove   = math.abs(source - source[len])
+    float totalMove = math.sum(math.abs(ta.change(source)), len)
+    totalMove > 0 ? netMove / totalMove : 0.0
+
+f_nthLastUnbrokenPivot(Pivot[] pivots, int depth) =>
+
+    Pivot result = na
+    int found = 0
+    int i = array.size(pivots) - 1
+
+    while i >= 0
+
+        Pivot p = array.get(pivots, i)
+
+        if not p.isBroken
+
+            found += 1
+
+            if found == depth
+
+                result := p
+                break
+
+        i -= 1
+
+    result
+
+f_rangeExists(Pivot highPivot, Pivot lowPivot) =>
+
+    bool exists = false
+
+    if array.size(pivotRanges) > 0
+
+        for i = 0 to array.size(pivotRanges) - 1
+
+            PivotRange r = array.get(pivotRanges, i)
+
+            if r.highPivot.bar == highPivot.bar and r.lowPivot.bar == lowPivot.bar
+
+                exists := true
+                break
+
+    exists
+
+f_createPivotRange(Pivot highPivot, Pivot lowPivot) =>
+
+    if not na(highPivot) and not na(lowPivot)
+
+        if not highPivot.isBroken and not lowPivot.isBroken
+
+            if not f_rangeExists(highPivot, lowPivot)
+
+                if not highPivot.isBroken and not lowPivot.isBroken
+
+                    if not f_rangeExists(highPivot, lowPivot)
+
+                        float structuralRange = math.abs(highPivot.price - lowPivot.price)
+
+                        if structuralRange > 0
+
+                            float zoneHeight = structuralRange * zonePct
+                            float highTop    = highPivot.price
+                            float highBottom = highPivot.price - zoneHeight
+                            float lowBottom  = lowPivot.price
+                            float lowTop     = lowPivot.price + zoneHeight
+
+                            PivotRange newRange = PivotRange.new(highPivot, lowPivot, structuralRange,
+                            zoneHeight, highTop, highBottom, lowTop, lowBottom, na, na, true)
+                            array.push(pivotRanges, newRange)
+
+f_tryCreateActiveRange() =>
+
+    Pivot selectedHigh = f_nthLastUnbrokenPivot(confirmedHighs, maxActiveRanges)
+    Pivot selectedLow  = f_nthLastUnbrokenPivot(confirmedLows, maxActiveRanges)
+
+    if not na(selectedHigh) and not na(selectedLow)
+
+        f_createPivotRange(selectedHigh, selectedLow)
+
+f_updateBrokenPivots(Pivot[] pivots, bool isHigh) =>
+
+    if array.size(pivots) > 0
+
+        for i = 0 to array.size(pivots) - 1
+
+            Pivot p = array.get(pivots, i)
+
+            if not p.isBroken
+
+                bool brokenNow = (isHigh ? 
+                high > p.price : 
+                low < p.price)
+
+                if brokenNow
+
+                    p.isBroken := true
+
+                    if not na(p.marker)
+                        label.delete(p.marker)
+
+f_updatePivotRanges() =>
+
+    // Determine the ONE structural pair
+    // selected by Pivot Range Depth
+    Pivot selectedHigh    = f_nthLastUnbrokenPivot( confirmedHighs,  maxActiveRanges)
+    Pivot selectedLow     = f_nthLastUnbrokenPivot( confirmedLows, maxActiveRanges)
+    bool haveSelectedPair = not na(selectedHigh) and not na(selectedLow)
+
+    // Examine all stored ranges
+    if array.size(pivotRanges) > 0
+
+        int i = array.size(pivotRanges) - 1
+
+        while i >= 0
+
+            PivotRange r = array.get(pivotRanges, i)
+
+            // Has either pivot been broken?
+            bool rangeBroken = r.highPivot.isBroken or r.lowPivot.isBroken
+
+            // Is THIS the selected depth pair?
+            bool selectedRange =
+                 haveSelectedPair and
+                 r.highPivot.bar == selectedHigh.bar and
+                 r.lowPivot.bar  == selectedLow.bar
+
+            // Only selected pair may be visible
+            if rangeBroken or not selectedRange
+
+                r.active := false
+
+                if not na(r.highBox)
+
+                    box.delete(r.highBox)
+                    r.highBox := na
+
+                if not na(r.lowBox)
+
+                    box.delete(r.lowBox)
+                    r.lowBox := na
+
+            else
+
+                r.active := true
+
+                // HIGH PIVOT ZONE
+                if na(r.highBox)
+
+                    r.highBox :=
+                         box.new(left = r.highPivot.pivotTime, top = r.highZoneTop, 
+                         right = time, bottom = r.highZoneBottom, 
+                         xloc = xloc.bar_time, 
+                         bgcolor = colorHighZone, border_color = colorHighZone)
+
+                else
+                    box.set_right( r.highBox, time)
+
+                // LOW PIVOT ZONE
+                if na(r.lowBox)
+
+                    r.lowBox := box.new(left = r.lowPivot.pivotTime, top = r.lowZoneTop,
+                         right = time, bottom = r.lowZoneBottom,
+                         xloc = xloc.bar_time, bgcolor = colorLowZone,
+                         border_color = colorLowZone)
+
+                else
+                    box.set_right( r.lowBox, time)
+
+            i -= 1
+
+f_kamaERColor(float erValue) =>
+
+    erValue >= 0.60
+     ? color.lime : erValue >= 0.40
+     ? color.green : erValue >= 0.25
+     ? color.yellow : color.gray
+
+f_kamaSlopeColor(float slopeValue) =>
+
+    slopeValue > 0
+     ? color.new(color.green, 30) : slopeValue < 0
+     ? color.new(color.red, 30) : color.gray
+
+f_kamaERTextColor(float erValue) =>
+    na(erValue)
+     ? color.white : erValue >= 0.60
+     ? color.black : erValue >= 0.40
+     ? color.white : erValue >= 0.25
+     ? color.black : color.white
+
+f_kamaStateTextColor(int state) =>
+
+    state == 3 or
+     state == 1 or
+     state == -1
+     ? color.black
+     : color.white
+
+f_kamaStateText(int state) =>
+    switch state
+        3  => "BULL HIGH EFF"
+        2  => "BULL DIRECTIONAL"
+        1  => "BULL TRANSITION"
+        0  => "RANGE"
+        -1 => "BEAR TRANSITION"
+        -2 => "BEAR DIRECTIONAL"
+        -3 => "BEAR HIGH EFF"
+        => "UNKNOWN"
+
+f_kamaStateColor(int state) =>
+    switch state
+        3  => color.lime
+        2  => color.green
+        1  => color.yellow
+        0  => color.gray
+        -1 => color.yellow
+        -2 => color.maroon
+        -3 => color.red 
+        => color.gray
+
+// MAIN CALCULATION PIPELINE
+
+// Adaptive Right-Side Requirement
+Close_ER          = f_er(close, erLen)
+float closeER     = bar_index >= erLen ? Close_ER : 0.0
+float er          = ta.ema(closeER, erSmooth)
+int adaptiveRight = int(math.round(pivotMin + (pivotMax - pivotMin) * (1.0 - nz(er, 0.0))))
+adaptiveRight     := math.max(pivotMin, math.min(adaptiveRight, pivotMax))
+
+// Pivot Candidate Detection
+Highest_Bar          = ta.highest(high[1], leftBars)
+bool isCandidateHigh = bar_index >= leftBars and high > Highest_Bar
+Lowest_Bar           = ta.lowest(low[1], leftBars)
+bool isCandidateLow  = bar_index >= leftBars and low < Lowest_Bar
+
+// Process Pending Highs
+if array.size(pendingHighs) > 0
+
+    int i = array.size(pendingHighs) - 1
+
+    while i >= 0
+
+        PivotCandidate candidate = array.get(pendingHighs, i)
+        int age          = bar_index - candidate.bar
+        bool invalidated = bar_index > candidate.bar and high > candidate.price
+
+        if invalidated
+
+            if not na(candidate.marker)
+
+                label.delete(candidate.marker)
+                
+            array.remove(pendingHighs, i)
+
+        else if age >= candidate.requiredRight
+
+            if not na(candidate.marker)
+
+                label.delete(candidate.marker)
+
+            label confirmedMarker = label.new(candidate.bar, candidate.price, str.tostring(candidate.requiredRight), 
+                 xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_down,
+                 textcolor = color.red, color = color.new(color.maroon , 100), size = size.large)
+            Pivot confirmed = Pivot.new(candidate.price, candidate.bar, candidate.pivotTime, true, false, confirmedMarker)
+            array.push(confirmedHighs, confirmed)
+            array.remove(pendingHighs, i)
+
+        i -= 1
+
+// Process Pending Lows
+if array.size(pendingLows) > 0
+    int i = array.size(pendingLows) - 1
+
+    while i >= 0
+
+        PivotCandidate candidate = array.get(pendingLows, i)
+        int age                  = bar_index - candidate.bar
+        bool invalidated         = bar_index > candidate.bar and low < candidate.price
+
+        if invalidated
+
+            if not na(candidate.marker)
+
+                label.delete(candidate.marker)
+
+            array.remove(pendingLows, i)
+
+        else if age >= candidate.requiredRight
+
+            if not na(candidate.marker)
+
+                label.delete(candidate.marker)
+
+            label confirmedMarker = label.new(candidate.bar, candidate.price, str.tostring(candidate.requiredRight),
+                 xloc = xloc.bar_index, yloc = yloc.price, 
+                 style = label.style_label_up,textcolor = color.green, 
+                 color = color.new(color.green, 100), size = size.large)
+            Pivot confirmed = Pivot.new(candidate.price, candidate.bar, candidate.pivotTime, false, false, confirmedMarker)
+            array.push(confirmedLows, confirmed)
+            array.remove(pendingLows, i)
+
+        i -= 1
+
+// Create Candidates
+if isCandidateHigh
+
+    label candidateMarker = (showCandidates ? 
+     label.new(bar_index, high, str.tostring(adaptiveRight), 
+     xloc = xloc.bar_index, yloc = yloc.price, 
+     style = label.style_label_down, textcolor = color.white, 
+     color = color.new(color.maroon , 80), size = size.small) : na)
+    array.push(pendingHighs, PivotCandidate.new(high, bar_index, time, adaptiveRight, candidateMarker))
+
+if isCandidateLow
+
+    label candidateMarker = (showCandidates ? 
+     label.new(bar_index, low, str.tostring(adaptiveRight), 
+     xloc = xloc.bar_index, yloc = yloc.price, 
+     style = label.style_label_up, textcolor = color.white, 
+     color = color.new(color.green, 80), size = size.small) : na)
+    array.push(pendingLows, PivotCandidate.new(low, bar_index, time, adaptiveRight, candidateMarker))
+
+// Structural Core Update
+f_updateBrokenPivots(confirmedHighs, true)
+f_updateBrokenPivots(confirmedLows, false)
+f_tryCreateActiveRange()
+f_updatePivotRanges()
+
+// Array Cleanups
+while array.size(confirmedHighs) > 100
+
+    Pivot oldPivot = array.shift(confirmedHighs)
+
+    if not na(oldPivot.marker)
+        label.delete(oldPivot.marker)
+
+while array.size(confirmedLows) > 100
+
+    Pivot oldPivot = array.shift(confirmedLows)
+
+    if not na(oldPivot.marker)
+        label.delete(oldPivot.marker)
+
+while array.size(pivotRanges) > 100
+
+    PivotRange oldRange = array.shift(pivotRanges)
+
+    if not na(oldRange.highBox)
+
+        box.delete(oldRange.highBox)
+
+    if not na(oldRange.lowBox)
+
+        box.delete(oldRange.lowBox)
+
+// Session, Session VWAP, and KAMA Calculations
+var int sessionBars = 0
+string sessionInput = marketSession == "London" ? "0800-2100" : "0930-1600"
+string sessionTimezone = marketSession == "London" ? "Europe/London" : "America/New_York"
+timeVariable = ta.change(time( "D", "", sessionTimezone))
+inSession = not na(time(timeframe.period, sessionInput,  sessionTimezone))
+firstMarketBar = inSession and (not inSession[1] or timeVariable != 0)
+
+atr_norm         = ta.rma(ta.tr(true), 5)
+dynamicNoiseGate = math.max(atr_norm * 0.15, syminfo.mintick * 2)
+tfSec            = timeframe.in_seconds()
+
+var cumVolume = ta.cum(volume)
+var float cumPV = 0.0
+var float cumV  = 0.0
+color Above     = color.gray
+
+bool hasVolume =
+ not na(volume) and
+ cumVolume > 0
+
+if firstMarketBar
+
+    sessionBars := 1
+    cumPV := hasVolume ? src * volume : 0.0
+    cumV  := hasVolume ? volume : 0.0
+
+else if inSession
+
+    sessionBars += 1
+
+else
+
+    sessionBars := 0
+    cumPV := 0.0
+    cumV  := 0.0
+
+if hasVolume
+
+    if firstMarketBar
+
+        cumPV := src * volume
+        cumV  := volume
+
+    else if inSession
+
+        cumPV += src * volume
+        cumV  += volume
+
+    else
+
+        cumPV := 0.0
+        cumV  := 0.0
+        
+else
+
+    cumPV := 0.0
+    cumV  := 0.0
+
+float vwapValue         = hasVolume and inSession and cumV > 0 ? cumPV / cumV : na
+float vwap_eff          = f_er(vwapValue, vwap_len)
+float vwapEfficiencyRaw = sessionBars > vwap_len ? vwap_eff : na
+float vwapEfficiency    = ta.ema(vwapEfficiencyRaw, vwap_ER_Smooth)
+
+bool usingER      = hasVolume and sessionBars >= vwap_len + vwap_ER_Smooth
+vwapER            = (usingER ? vwapEfficiency : na)
+int vwapLookback  = tfSec <= 60 ? 8 : tfSec <= 300 ? 5 : 3
+
+float lookbackNoise =
+ dynamicNoiseGate * math.sqrt(vwapLookback)
+
+float vwapDisplacementStrength =
+ sessionBars > vwapLookback and lookbackNoise > 0
+ ? (vwapValue - vwapValue[vwapLookback]) / lookbackNoise : na
+
+bool earlyBull =
+ hasVolume and inSession and
+ vwapDisplacementStrength > 0
+
+bool earlyBear =
+ hasVolume and inSession and vwapDisplacementStrength < 0
+
+int vwapStrengthLen = 20
+
+float vwapStrengthDev =
+ ta.stdev(vwapDisplacementStrength, vwapStrengthLen)
+
+bool vwapStrengthReady =
+ sessionBars > vwapLookback + vwapStrengthLen
+
+bool trendBull =
+ usingER and vwapStrengthReady and
+ not na(vwapStrengthDev) and vwapDisplacementStrength >
+ vwapStrengthDev * 0.5 and vwapER > 0.30
+
+bool trendBear =
+ usingER and vwapStrengthReady and
+ not na(vwapStrengthDev) and vwapDisplacementStrength <
+ -vwapStrengthDev * 0.5 and vwapER > 0.30
+
+bool bullState =
+ usingER and vwapStrengthReady
+ ? trendBull : earlyBull
+
+bool bearState =
+ usingER and vwapStrengthReady
+ ? trendBear : earlyBear
+
+if inSession
+
+    if bullState and close > vwapValue
+
+        Above := color.new(color.green, 20)
+
+    else if bearState and close < vwapValue
+
+        Above := color.new(color.maroon , 20)
+
+plot(inSession ? vwapValue : na, title = "Session VWAP", style = plot.style_linebr, color = Above, linestyle = plot.linestyle_dashed)
+
+// KAMA Execution + Efficiency + Trusted Progression
+var float adaptiveKAMA = na
+
+slowSC =
+ 2.0 / (maxLen + 1)
+
+ER_KAMAerLen =
+ ta.ema(f_er(close, KAMAerLen), KAMAerSmooth)
+
+adaptiveSC =
+ math.pow(ER_KAMAerLen * (0.667 - slowSC) + slowSC, 2)
+
+adaptiveKAMA := na(adaptiveKAMA[1])
+ ? close : adaptiveKAMA[1] + adaptiveSC * (close - adaptiveKAMA[1])
+
+// KAMA RAW PROGRESSION
+//
+// Linear regression slope of KAMA.
+// Positive = KAMA progressing higher.
+// Negative = KAMA progressing lower.
+
+kamaDelta =
+ ta.linreg(adaptiveKAMA, 5, 0) - ta.linreg(adaptiveKAMA, 5, 1)
+
+// Normalized KAMA Progression
+
+// Normalize KAMA slope against the existing
+// dynamic market noise gate.
+//
+// This prevents:
+// +0.10 ES point
+//
+// from having the same meaning in a quiet market
+// as it does in a highly volatile market.
+
+float kamaSlopeStrength = dynamicNoiseGate > 0
+ ? kamaDelta / dynamicNoiseGate : 0.0
+
+// TRUSTED KAMA PROGRESSION
+//
+// ER qualifies the KAMA progression.
+//
+// High slope + low ER = low trust.
+// High slope + high ER = high trust.
+//
+// Sign:
+//   positive = bullish progression
+//   negative = bearish progression
+//
+// Magnitude:
+//   larger absolute value = stronger trusted progress.
+
+float trustedKamaProgress =
+ kamaSlopeStrength * ER_KAMAerLen
+
+// KAMA DIRECTION
+//
+// Direction now comes from TRUSTED progression,
+// rather than raw KAMA slope alone.
+
+bool kamaRising =
+ trustedKamaProgress > 0
+
+bool kamaFalling =
+ trustedKamaProgress < 0
+
+// KAMA EFFICIENCY REGIME
+//
+// RANGE / CHOP
+//
+// KAMA may technically be rising or falling,
+// but ER says that movement is inefficient.
+// Direction is therefore intentionally ignored.
+
+bool kamaRange =
+ ER_KAMAerLen < 0.25
+
+// TRANSITION
+//
+// Some directional efficiency is developing,
+// but not enough yet to classify the move
+// as reliably directional.
+
+bool kamaTransitionBull =
+ ER_KAMAerLen >= 0.25 and
+ ER_KAMAerLen < 0.40 and
+ kamaRising
+
+bool kamaTransitionBear =
+ ER_KAMAerLen >= 0.25 and
+ ER_KAMAerLen < 0.40 and
+ kamaFalling
+
+// DIRECTIONAL
+//
+// ER confirms reasonable efficiency
+// and trusted KAMA progression confirms direction.
+
+bool kamaDirectionalBull =
+     ER_KAMAerLen >= 0.40 and
+     ER_KAMAerLen < 0.60 and
+     kamaRising
+
+bool kamaDirectionalBear =
+     ER_KAMAerLen >= 0.40 and
+     ER_KAMAerLen < 0.60 and
+     kamaFalling
+
+// Highly Efficent 
+
+bool kamaHighEfficiencyBull =
+     ER_KAMAerLen >= 0.60 and
+     kamaRising
+
+bool kamaHighEfficiencyBear =
+     ER_KAMAerLen >= 0.60 and
+     kamaFalling
+
+// KAMA STATE + BAR DURATION
+//--------------------------------------------------
+
+// State coding:
+//
+//  0 = RANGE / CHOP
+//
+// +1 = BULL TRANSITION
+// +2 = BULL DIRECTIONAL
+// +3 = BULL HIGH EFFICIENCY
+//
+// -1 = BEAR TRANSITION
+// -2 = BEAR DIRECTIONAL
+// -3 = BEAR HIGH EFFICIENCY
+
+// Raw KAEMA State
+
+int rawKamaState =
+     kamaRange
+     ? 0
+     : kamaTransitionBull
+     ? 1
+     : kamaDirectionalBull
+     ? 2
+     : kamaHighEfficiencyBull
+     ? 3
+     : kamaTransitionBear
+     ? -1
+     : kamaDirectionalBear
+     ? -2
+     : kamaHighEfficiencyBear
+     ? -3
+     : 0
+
+// Filtered State Storage
+//
+// MUST be persistent.
+// These cannot be declared inside `if useFilter`.
+
+var int confirmedKamaState = 0
+
+var float kamaStateHighClose = na
+var float kamaStateLowClose  = na
+
+// State Initilized
+
+if barstate.isfirst
+
+    confirmedKamaState := rawKamaState
+    kamaStateHighClose := close
+    kamaStateLowClose  := close
+
+// Apply Optioonal State Filter 
+
+if useFilter
+
+    // Prior State Confirmed Range
+
+    float priorHighClose =
+     kamaStateHighClose
+
+    float priorLowClose =
+     kamaStateLowClose
+
+    // Raw State Information
+
+    bool rawBull =
+     rawKamaState > 0
+
+    bool rawBear =
+     rawKamaState < 0
+
+    bool confirmedBull =
+     confirmedKamaState > 0
+
+    bool confirmedBear =
+     confirmedKamaState < 0
+
+    // Price Acceptance
+
+    bool bullBreakAccepted =
+     not na(priorHighClose) and close > priorHighClose
+
+    bool bearBreakAccepted =
+     not na(priorLowClose) and close < priorLowClose
+
+    // Determine Whether Raw State May Be Replaced
+    // Confirmed State
+
+    bool acceptNewState = false
+
+    // Range → Direction
+    //
+    // Require price acceptance.
+
+    if confirmedKamaState == 0
+
+        if rawBull
+            acceptNewState :=
+             bullBreakAccepted
+
+        else if rawBear
+            acceptNewState :=
+             bearBreakAccepted
+
+    // Bull → Bear Reversal
+    //
+    // Require downside acceptance.
+
+    else if confirmedBull and rawBear
+
+        acceptNewState := bearBreakAccepted
+
+    // Bear → Bull Reversal
+    //
+    // Require upside acceptance.
+
+    else if confirmedBear and rawBull
+
+        acceptNewState := bullBreakAccepted
+
+    // SAME DIRECTION EFFICIENCY CHANGE
+    //
+    // Do NOT delay:
+    //
+    // Yellow → Green
+    // Green  → Lime
+    // Lime   → Green
+    // Green  → Yellow
+
+    else if confirmedBull and rawBull
+
+        acceptNewState := true
+
+    else if confirmedBear and rawBear
+
+        acceptNewState := true
+
+    // Direction → Range
+    //
+    // Allow deterioration back to RANGE immediately.
+
+    else if rawKamaState == 0
+
+        acceptNewState := true
+
+    // Update Confirmed State
+
+    if acceptNewState and rawKamaState != confirmedKamaState
+
+        confirmedKamaState := rawKamaState
+
+        // Start a NEW accepted-state range.
+        kamaStateHighClose := close
+
+        kamaStateLowClose := close
+
+    else
+
+        // Continue building the range belonging
+        // to the CURRENT confirmed state.
+
+        kamaStateHighClose :=
+         math.max(nz(kamaStateHighClose, close), close)
+
+        kamaStateLowClose :=
+         math.min(nz(kamaStateLowClose, close), close)
+
+else
+
+    // Filter Disabled
+
+    // Follow raw KAMA immediately.
+
+    confirmedKamaState :=
+     rawKamaState
+
+    kamaStateHighClose :=
+     close
+
+    kamaStateLowClose :=
+     close
+
+// Final KAMA State
+
+int kamaState = useFilter
+ ? confirmedKamaState : rawKamaState
+
+// KAMA Metric State History
+
+// Metrics associated with the PREVIOUS completed state.
+var float previousKamaER = na
+var float previousKamaSlope = na
+
+// Detect Final State Change
+
+bool kamaStateChanged =
+ not na(kamaState[1]) and
+ kamaState != kamaState[1]
+
+// Capture States That Just Ended
+
+if kamaStateChanged
+
+    previousKamaER := ER_KAMAerLen[1]
+
+    previousKamaSlope := kamaSlopeStrength[1]
+
+// Current KAMA Bst Deration
+
+var int kamaStateBars = 1
+
+if kamaState == kamaState[1]
+
+    kamaStateBars += 1
+
+else
+    
+    kamaStateBars := 1
+
+// Previous State Storage
+
+// Store the state that just ended
+// and how many bars it lasted.
+
+var int previousKamaState = 0
+var int previousKamaStateBars = 0
+
+if kamaStateChanged
+    
+    previousKamaState := nz(kamaState[1], 0)
+    previousKamaStateBars := nz(kamaStateBars[1], 0)
+
+// KAMA Color From Final KAMA State
+
+color kamaLine_Color = color.gray
+
+if kamaState == 3
+    kamaLine_Color := color.lime
+
+else if kamaState == 2
+    kamaLine_Color := color.green
+
+else if kamaState == 1
+    kamaLine_Color := color.yellow
+
+else if kamaState == 0
+    kamaLine_Color := color.gray
+
+else if kamaState == -1
+    kamaLine_Color := color.yellow
+
+else if kamaState == -2
+    kamaLine_Color := color.maroon
+
+else if kamaState == -3
+    kamaLine_Color := color.red
+
+else
+    kamaLine_Color := color.gray
+
+// Plot KAMA
+
+plot(adaptiveKAMA, "KAMA", color = kamaLine_Color, linewidth = 2)
+
+// KAMA State Table
+
+var table kamaTable =  table.new(position.bottom_right,
+ 5, 3, border_width = 1)
+
+if barstate.islast
+
+    // Header
+    table.cell(kamaTable, 0, 0,
+     "KAMA", text_color = color.white)
+    table.cell(kamaTable, 1, 0,
+     "STATE", text_color = color.white)
+    table.cell(kamaTable, 2, 0,
+     "BARS", text_color = color.white)
+    table.cell(kamaTable, 3, 0,
+     "ER", text_color = color.white)
+    table.cell(kamaTable, 4, 0,
+     "SLOPE", text_color = color.white)
+
+    // Current state
+    table.cell(kamaTable, 0, 1, "Current", 
+     text_color = color.white)
+    table.cell(kamaTable, 1, 1, f_kamaStateText(kamaState),
+     bgcolor = f_kamaStateColor(kamaState), text_color = f_kamaStateTextColor(kamaState))
+    table.cell(kamaTable, 2, 1, str.tostring(kamaStateBars),
+     text_color = color.white)
+    table.cell(kamaTable, 3, 1, str.tostring(ER_KAMAerLen, "#.00"),
+     bgcolor = f_kamaERColor(ER_KAMAerLen), text_color = f_kamaERTextColor(ER_KAMAerLen))
+    table.cell(kamaTable, 4, 1, str.tostring(kamaSlopeStrength, "+#.00;-#.00"),
+     bgcolor = f_kamaSlopeColor(kamaSlopeStrength), text_color = color.white)
+
+    // Previous state
+    table.cell(kamaTable, 0, 2, "Previous",
+     text_color = color.white)
+    table.cell(kamaTable, 1, 2, f_kamaStateText(previousKamaState),
+     bgcolor = f_kamaStateColor(previousKamaState), text_color = f_kamaStateTextColor(previousKamaState))
+    table.cell(kamaTable, 2, 2, str.tostring(previousKamaStateBars),
+     text_color = color.white)
+    table.cell(kamaTable, 3, 2, str.tostring(previousKamaER, "#.00"), 
+     bgcolor = f_kamaERColor(previousKamaER), text_color = f_kamaERTextColor(previousKamaER))
+    table.cell(kamaTable, 4, 2,str.tostring(previousKamaSlope, "+#.00;-#.00"), 
+     bgcolor = f_kamaSlopeColor(previousKamaSlope), text_color = color.white)
+
+// Signals & Alerts
+
+bullCross = ta.crossover(adaptiveKAMA, vwapValue) and barstate.isconfirmed
+bearCross = ta.crossunder(adaptiveKAMA, vwapValue) and barstate.isconfirmed
+plotshape(bullCross, style = shape.triangleup, color = color.lime, location = location.belowbar, size = size.small)
+plotshape(bearCross, style = shape.triangledown, color = color.maroon , location = location.abovebar, size = size.small)
+
+alertcondition(bullCross, "Bull Cross", "KAMA crossed above VWAP")
+alertcondition(bearCross, "Bear Cross", "KAMA crossed below VWAP")
+var table volumeWarning = table.new(position.middle_center,
+ 1, 2, border_width = 1)
+
+if barstate.islast
+    if not hasVolume
+        table.cell(volumeWarning, 0, 0, "VWAP UNAVAILABLE",
+             text_color = color.white, bgcolor = color.maroon,  text_size = size.large)
+
+        table.cell(volumeWarning, 0, 1, "Volume data is not available\nfor this instrument.",
+             text_color = color.white, bgcolor = color.new(color.maroon, 20), text_size = size.normal)
+    else
+        table.clear(volumeWarning,
+             0, 0, 0, 1)

@@ -1,0 +1,405 @@
+//@version=6
+strategy("Oleg Algo", overlay=true, initial_capital=1000000, default_qty_type=strategy.fixed, default_qty_value=1, pyramiding=100)
+
+// ==========================================
+// --- Inputs & Strategy Mode Options -------
+// ==========================================
+group_mode      = "Strategy Mode"
+strat_mode      = input.string("Reversal", "Strategy Execution Mode", options=["Reversal", "Trending"], group=group_mode, tooltip="Choose how catch market. Reversal make us buy when price crash down hard below line. Trending make us ride wave with big bear/bull!")
+trade_dir       = input.string("Both", "Trade Direction", options=["Both", "Long Only", "Short Only"], group=group_mode, tooltip="What kind of hunt we do. Go both ways like bi person, or only buy or sell!")
+
+group_ma        = "Moving Average Settings"
+ma_type         = input.string("SMA", "Moving Average Type", options=["SMA", "EMA", "HMA", "VWAP"], group=group_ma, tooltip="Pick line flavor for math. SMA is simple like potato, EMA is fast like vodka, HMA is super smooth like Oleg at club with ladies, VWAP anchor to volume like iron anchor to ship.")
+ma_len          = input.int(1000, "Moving Average Length", minval=1, group=group_ma, tooltip="How far back Oleg look at chart.")
+calc_mode       = input.string("ATR", "Band Calculation Mode", options=["ATR", "Bollinger (StdDev)", "VWAP Standard Deviation"], group=group_ma, tooltip="How Oleg measure width of market trap. ATR use true range, Bollinger use standard deviation, VWAP SD use session-resetting volume-weighted standard deviation!")
+init_atr_gap    = input.float(30.0, "Initial Entry Gap (Mult)", step=0.5, group=group_ma, tooltip="How far price must run away from line before Oleg throw first punch.")
+bars_thresh_val = input.int(1, "Bars Beyond Threshold Count", minval=1, group=group_ma, tooltip="How many candles price stay in boner zone before Oleg trust signal and push button.")
+
+group_risk      = "Risk & Scale-In Settings"
+scale_atr_step  = input.float(5.0, "Scale-In Step (Mult)", step=0.5, group=group_risk, tooltip="If price go more against us, Oleg catch more falling knife make bleed hands more.")
+use_ha_scale    = input.bool(false, "Scale-In Only On HA Flip", group=group_risk, tooltip="When enabled, once the scale threshold distance is reached, Oleg waits for a Heikin Ashi flip in our direction before adding.")
+tp_atr_mult     = input.float(5.0, "Take Profit (Mult from Average)", step=0.1, group=group_risk, tooltip="When we collect enough profit from average entry price, take profit for party")
+sl_atr_mult     = input.float(1000.0, "Stop Loss (Mult from Initial)", step=0.5, group=group_risk, tooltip="Emergency parachute. Set big if you has big eggs, set small if not have big sac.")
+atr_len         = input.int(14, "ATR Length", minval=1, group=group_risk, tooltip="Lookback period for ATR volatility calculation. Fun play with.")
+
+use_be_trail    = input.bool(false, "Break Even Then Trail", group=group_risk, tooltip="When first profit target hit, move stop loss to entry price and trail behind price like Oleg's harem of 4's.")
+use_max_loss    = input.bool(true, "Enable Max Loss Stop ($)", group=group_risk, tooltip="Safety switch! If open trades lose too many dollars, eject.")
+max_loss_val    = input.float(500.0, "Max Dollar Loss ($)", minval=0.0, step=10.0, group=group_risk, tooltip="Maximum dollar amount we bleed before cutting all positions instantly.")
+
+group_visual    = "Visual Styling"
+atr_offset_mult = input.float(1.0, "Label Offset (Mult)", group=group_visual, tooltip="Space out text labels on chart so text no crash into price candles.")
+
+group_sizing    = "Position Sizing & Scale-In Martingale"
+base_qty        = input.float(1.0, "Base Order Quantity", minval=0.001, step=0.1, group=group_sizing, tooltip="Starting size for very first trade. Keep small like oleg privates.")
+use_scale_marti = input.bool(true, "Enable Scale-In Martingale (Add Growth)", group=group_sizing, tooltip="Make each scale-in bigger than last one. Double down until market surrender!")
+scale_method    = input.string("Multiplier", "Scale-In Sizing Method", options=["Multiplier", "Quantity Step"], group=group_sizing, tooltip="Choose if scale size multiply exponentially or add flat linear steps.")
+scale_mult      = input.float(1.5, "Scale-In Multiplier Factor", minval=1.0, step=0.1, group=group_sizing, tooltip="Multiplier for adding size on each deeper drop (e.g., 1.5x bigger each time).")
+scale_step_qty  = input.float(1.0, "Scale-In Quantity Step", minval=0.01, step=0.1, group=group_sizing, tooltip="Flat quantity added to each scale level if using linear mode.")
+max_scale_qty   = input.float(100.0, "Max Allowed Single Scale Qty", minval=0.01, group=group_sizing, tooltip="Ceiling limit so scale order never grow too fuk big.")
+
+group_streak    = "Win / Loss Outcome Sizing (Trade-to-Trade)"
+use_streak_size = input.bool(false, "Enable Win/Loss Initial Sizing", group=group_streak, tooltip="Change next trade starting size based on whether last trade was glorious victory or sad defeat.")
+streak_trigger  = input.string("After Loss", "Adjust Size On", options=["After Loss", "After Win"], group=group_streak, tooltip="Choose whether size adjustment triggers after loss or after win.")
+streak_method   = input.string("Add / Subtract", "Adjustment Method", options=["Add / Subtract", "Multiplier"], group=group_streak, tooltip="Method to change size: add/subtract units or multiply factor.")
+streak_step     = input.float(1.0, "Adjustment Value (+/- Units or Mult Factor)", minval=0.01, step=0.1, group=group_streak, tooltip="Numerical value used to adjust size up or down.")
+streak_reset    = input.string("Reset on Opposite", "Reset Quantity Rule", options=["Reset on Opposite", "Never Reset", "Reset After 1 Adjustment"], group=group_streak, tooltip="Rule for resetting size back to base quantity when outcome changes.")
+max_qty_cap     = input.float(100.0, "Max Allowed Initial Quantity", minval=0.01, group=group_streak, tooltip="Absolute maximum limit for initial trade quantity.")
+
+group_prop      = "Prop Firm Settings"
+use_prop_mode   = input.bool(false, "Enable Prop Mode", group=group_prop, tooltip="Maybe you Lock trading strictly inside capitalist working hours and flatten everything before bell rings.")
+prop_start_time = input.string("0930", "Allowed Window Start (EST HHMM)", group=group_prop, tooltip="Default Morning opening time in New York EST (24-hour HHMM).")
+prop_end_time   = input.string("1605", "Allowed Window End / Close Time (EST HHMM)", group=group_prop, tooltip="Default Evening closing time in New York EST. All positions liquidated here automatically.")
+
+// Flags
+allow_longs  = (trade_dir == "Both") or (trade_dir == "Long Only")
+allow_shorts = (trade_dir == "Both") or (trade_dir == "Short Only")
+is_reversal  = (strat_mode == "Reversal")
+
+// ==========================================
+// --- Prop Mode Time Synchronization -------
+// ==========================================
+tz = "America/New_York"
+current_hour   = hour(time, tz)
+current_minute = minute(time, tz)
+total_minutes  = current_hour * 60 + current_minute
+
+parse_time_to_minutes(string hhmm_str) =>
+    int val = math.round(str.tonumber(hhmm_str))
+    int h   = math.floor(val / 100)
+    int m   = val % 100
+    h * 60 + m
+
+start_minutes = parse_time_to_minutes(prop_start_time)
+end_minutes   = parse_time_to_minutes(prop_end_time)
+
+bool inside_window = start_minutes < end_minutes ? 
+                     (total_minutes >= start_minutes and total_minutes < end_minutes) : 
+                     (total_minutes >= start_minutes or total_minutes < end_minutes)
+
+bool is_prop_restricted = use_prop_mode and not inside_window
+
+// ==========================================
+// --- Dynamic Win/Loss Sizing Tracking -----
+// ==========================================
+var float next_init_qty = base_qty
+var int last_trade_count = 0
+
+if use_streak_size and (strategy.closedtrades > last_trade_count)
+    int completed_trades = strategy.closedtrades - last_trade_count
+    float total_profit = 0.0
+    
+    for i = 0 to completed_trades - 1
+        total_profit += strategy.closedtrades.profit(strategy.closedtrades - 1 - i)
+        
+    bool last_was_win  = total_profit > 0
+    bool last_was_loss = total_profit < 0
+    
+    bool target_hit    = (streak_trigger == "After Loss" and last_was_loss) or (streak_trigger == "After Win" and last_was_win)
+    bool opposite_hit  = (streak_trigger == "After Loss" and last_was_win) or (streak_trigger == "After Win" and last_was_loss)
+
+    if target_hit
+        if streak_method == "Add / Subtract"
+            next_init_qty := next_init_qty + streak_step
+        else
+            next_init_qty := next_init_qty * streak_step
+            
+        if streak_reset == "Reset After 1 Adjustment"
+            next_init_qty := base_qty
+    else if opposite_hit and (streak_reset == "Reset on Opposite")
+        next_init_qty := base_qty
+
+    next_init_qty := math.max(0.01, math.min(next_init_qty, max_qty_cap))
+    last_trade_count := strategy.closedtrades
+
+float current_entry_qty = use_streak_size ? next_init_qty : base_qty
+
+// ==========================================
+// --- Technical Engine & Indicators --------
+// ==========================================
+ma_val = switch ma_type
+    "SMA"  => ta.sma(close, ma_len)
+    "EMA"  => ta.ema(close, ma_len)
+    "HMA"  => ta.hma(close, ma_len)
+    "VWAP" => ta.vwap(hlc3)
+    => ta.sma(close, ma_len)
+
+atr_val   = ta.atr(atr_len)
+stdev_val = ta.stdev(close, ma_len)
+
+// True Session-Resetting VWAP Standard Deviation Calculation
+bool is_new_session = ta.change(time("D")) != 0
+float src = hlc3
+var float sum_src_vol = 0.0
+var float sum_vol = 0.0
+var float sum_src_sq_vol = 0.0
+
+sum_src_vol    := is_new_session ? (src * volume) : (sum_src_vol + (src * volume))
+sum_vol        := is_new_session ? volume : (sum_vol + volume)
+sum_src_sq_vol := is_new_session ? (volume * math.pow(src, 2)) : (sum_src_sq_vol + (volume * math.pow(src, 2)))
+
+float session_vwap = sum_vol > 0 ? (sum_src_vol / sum_vol) : src
+float vwap_variance = sum_vol > 0 ? (sum_src_sq_vol / sum_vol) - math.pow(session_vwap, 2) : 0.0
+float session_vwap_stdev = math.sqrt(math.max(0.0, vwap_variance))
+
+// If VWAP is chosen as baseline, override ma_val to use session VWAP automatically
+if ma_type == "VWAP"
+    ma_val := session_vwap
+
+// Entry unit selection based on calc_mode option
+entry_unit = switch calc_mode
+    "ATR"                     => atr_val
+    "Bollinger (StdDev)"      => stdev_val
+    "VWAP Standard Deviation" => session_vwap_stdev
+    => atr_val
+
+// Risk unit (TP, SL, Trailing, and Scale-Ins always use ATR)
+risk_unit  = atr_val
+
+long_threshold  = ma_val - (entry_unit * init_atr_gap)
+short_threshold = ma_val + (entry_unit * init_atr_gap)
+
+// Native Lightweight Heikin Ashi Calculation Engine
+ha_close = (open + high + low + close) / 4.0
+var float ha_open = na
+ha_open := na(ha_open[1]) ? (open + close) / 2.0 : (ha_open[1] + ha_close[1]) / 2.0
+bool ha_bull = ha_close > ha_open
+bool ha_bear = ha_close < ha_open
+
+// Flip in our trade direction
+bool ha_flip_to_bull = ha_bull and ha_bear[1]
+bool ha_flip_to_bear = ha_bear and ha_bull[1]
+
+// Bar Count Condition Tracking (for Initial Entries Only)
+bool long_cond_raw  = is_reversal ? (close <= long_threshold) : (close >= short_threshold)
+bool short_cond_raw = is_reversal ? (close >= short_threshold) : (close <= long_threshold)
+
+var int long_bars_count = 0
+long_bars_count := long_cond_raw ? long_bars_count + 1 : 0
+
+var int short_bars_count = 0
+short_bars_count := short_cond_raw ? short_bars_count + 1 : 0
+
+bool bars_long_pass  = long_bars_count >= bars_thresh_val
+bool bars_short_pass = short_bars_count >= bars_thresh_val
+
+// ==========================================
+// --- Persistent State Tracking -------------
+// ==========================================
+var float initial_entry_price = na
+var float last_entry_price    = na
+var float last_exit_price     = na
+var int   scale_count         = 0
+
+// Armed flags for HA flip scale-in mode
+var bool  long_scale_armed    = false
+var bool  short_scale_armed   = false
+
+// Break Even & Trail State Variables
+var bool  be_trail_active     = false
+var float trailing_stop_price = na
+
+// Reset trackers when flat
+if strategy.position_size == 0
+    initial_entry_price := na
+    last_entry_price    := na
+    scale_count         := 0
+    long_scale_armed    := false
+    short_scale_armed   := false
+    be_trail_active     := false
+    trailing_stop_price := na
+
+// Track exit prices to manage post-exit cooldowns
+if strategy.closedtrades > 0 and ta.change(strategy.closedtrades) > 0
+    last_exit_price := close
+
+// Reset exit tracker once price returns inside bands/thresholds
+if not na(last_exit_price)
+    bool exit_reset_long  = is_reversal ? (last_exit_price < ma_val and close > long_threshold) : (last_exit_price > ma_val and close < short_threshold)
+    bool exit_reset_short = is_reversal ? (last_exit_price > ma_val and close < short_threshold) : (last_exit_price < ma_val and close > long_threshold)
+    if exit_reset_long or exit_reset_short
+        last_exit_price := na
+
+// ==========================================
+// --- Scale-In Sizing Math -----------------
+// ==========================================
+float next_scale_qty = base_qty
+if use_scale_marti
+    if scale_method == "Multiplier"
+        next_scale_qty := base_qty * math.pow(scale_mult, scale_count + 1)
+    else
+        next_scale_qty := base_qty + ((scale_count + 1) * scale_step_qty)
+
+next_scale_qty := math.max(0.01, math.min(next_scale_qty, max_scale_qty))
+
+// ==========================================
+// --- Execution Conditions -----------------
+// ==========================================
+bool long_init_go   = is_reversal ? (close <= long_threshold) : (close >= short_threshold)
+bool short_init_go  = is_reversal ? (close >= short_threshold) : (close <= long_threshold)
+
+// Scale thresholds
+float long_add_threshold  = last_entry_price - (risk_unit * scale_atr_step)
+float short_add_threshold = last_entry_price + (risk_unit * scale_atr_step)
+
+bool long_dist_met  = (strategy.position_size > 0 and close <= long_add_threshold)
+bool short_dist_met = (strategy.position_size < 0 and close >= short_add_threshold)
+
+// Arm setup once threshold is reached
+if long_dist_met
+    long_scale_armed := true
+if short_dist_met
+    short_scale_armed := true
+
+// When HA scale mode is active, require distance + arming + confirming flip below/above threshold
+bool long_scale_go  = use_ha_scale ? (strategy.position_size > 0 and long_scale_armed and close <= long_add_threshold and ha_flip_to_bull) : long_dist_met
+bool short_scale_go = use_ha_scale ? (strategy.position_size < 0 and short_scale_armed and close >= short_add_threshold and ha_flip_to_bear) : short_dist_met
+
+// ==========================================
+// --- Execution Logic ----------------------
+// ==========================================
+
+// LONG TRIGGERS
+bool long_base_cond     = allow_longs and (strategy.position_size == 0) and long_init_go and bars_long_pass and barstate.isconfirmed and not is_prop_restricted
+bool last_exit_long_val = is_reversal ? (last_exit_price <= long_threshold) : (last_exit_price >= short_threshold)
+bool long_exit_wait     = not na(last_exit_price) and last_exit_long_val and (close > last_exit_price - (risk_unit * scale_atr_step))
+bool long_init_trigger  = long_base_cond and not long_exit_wait
+
+bool long_scale_trigger = (strategy.position_size > 0) and long_scale_go and barstate.isconfirmed and not is_prop_restricted
+
+if long_init_trigger
+    initial_entry_price := close
+    last_entry_price    := close
+    last_exit_price     := na
+    scale_count         := 0
+    long_scale_armed    := false
+    string init_long_json = '{"symbol":"' + syminfo.ticker + '", "action":"buy", "quantity":' + str.tostring(current_entry_qty) + ', "price":' + str.tostring(close) + '}'
+    strategy.entry("Initial Long", strategy.long, qty=current_entry_qty, alert_message=init_long_json)
+
+if long_scale_trigger
+    scale_count         += 1
+    last_entry_price    := close
+    long_scale_armed    := false
+    string scale_long_json = '{"symbol":"' + syminfo.ticker + '", "action":"buy", "quantity":' + str.tostring(next_scale_qty) + ', "price":' + str.tostring(close) + '}'
+    strategy.entry("Long Scale Add", strategy.long, qty=next_scale_qty, alert_message=scale_long_json)
+
+// SHORT TRIGGERS
+bool short_base_cond     = allow_shorts and (strategy.position_size == 0) and short_init_go and bars_short_pass and barstate.isconfirmed and not is_prop_restricted
+bool last_exit_short_val = is_reversal ? (last_exit_price >= short_threshold) : (last_exit_price <= long_threshold)
+bool short_exit_wait     = not na(last_exit_price) and last_exit_short_val and (close < last_exit_price + (risk_unit * scale_atr_step))
+bool short_init_trigger  = short_base_cond and not short_exit_wait
+
+bool short_scale_trigger = (strategy.position_size < 0) and short_scale_go and barstate.isconfirmed and not is_prop_restricted
+
+if short_init_trigger
+    initial_entry_price := close
+    last_entry_price    := close
+    last_exit_price     := na
+    scale_count         := 0
+    short_scale_armed   := false
+    string init_short_json = '{"symbol":"' + syminfo.ticker + '", "action":"sell", "quantity":' + str.tostring(current_entry_qty) + ', "price":' + str.tostring(close) + '}'
+    strategy.entry("Initial Short", strategy.short, qty=current_entry_qty, alert_message=init_short_json)
+
+if short_scale_trigger
+    scale_count          += 1
+    last_entry_price     := close
+    short_scale_armed    := false
+    string scale_short_json = '{"symbol":"' + syminfo.ticker + '", "action":"sell", "quantity":' + str.tostring(next_scale_qty) + ', "price":' + str.tostring(close) + '}'
+    strategy.entry("Short Scale Add", strategy.short, qty=next_scale_qty, alert_message=scale_short_json)
+
+// Prop Firm Intraday Liquidation Engine
+string json_flatten = '{"symbol":"' + syminfo.ticker + '", "action":"flatten", "price":' + str.tostring(close) + '}'
+if is_prop_restricted and strategy.position_size != 0
+    strategy.close_all(comment="Prop Mode Force Close", alert_message=json_flatten)
+
+// ==========================================
+// --- Market Exit Logic (TP / SL / Trail / Max Loss)
+// ==========================================
+// 1. Optional Max Dollar Loss Check
+if use_max_loss and strategy.position_size != 0 and strategy.openprofit <= -max_loss_val
+    strategy.close_all(comment="Max Dollar Loss Exit", alert_message=json_flatten)
+
+// 2. Long Exit Engine
+if strategy.position_size > 0
+    float long_tp = strategy.position_avg_price + (risk_unit * tp_atr_mult)
+    float base_long_sl = initial_entry_price - (risk_unit * sl_atr_mult)
+    
+    if use_be_trail
+        if high >= long_tp or be_trail_active
+            if not be_trail_active
+                be_trail_active := true
+                trailing_stop_price := math.max(strategy.position_avg_price, high - (risk_unit * tp_atr_mult))
+            else
+                trailing_stop_price := math.max(trailing_stop_price, high - (risk_unit * tp_atr_mult))
+
+        float active_long_stop = be_trail_active ? trailing_stop_price : base_long_sl
+        if low <= active_long_stop
+            string exit_comment = be_trail_active ? "Trailing Stop Exit" : "SL Loss"
+            strategy.close_all(comment=exit_comment, alert_message=json_flatten)
+    else
+        if high >= long_tp
+            strategy.close_all(comment="TP Win", alert_message=json_flatten)
+        else if low <= base_long_sl
+            strategy.close_all(comment="SL Loss", alert_message=json_flatten)
+
+// 3. Short Exit Engine
+if strategy.position_size < 0
+    float short_tp = strategy.position_avg_price - (risk_unit * tp_atr_mult)
+    float base_short_sl = initial_entry_price + (risk_unit * sl_atr_mult)
+    
+    if use_be_trail
+        if low <= short_tp or be_trail_active
+            if not be_trail_active
+                be_trail_active := true
+                trailing_stop_price := math.min(strategy.position_avg_price, low + (risk_unit * tp_atr_mult))
+            else
+                trailing_stop_price := math.min(trailing_stop_price, low + (risk_unit * tp_atr_mult))
+
+        float active_short_stop = be_trail_active ? trailing_stop_price : base_short_sl
+        if high >= active_short_stop
+            string exit_comment = be_trail_active ? "Trailing Stop Exit" : "SL Loss"
+            strategy.close_all(comment=exit_comment, alert_message=json_flatten)
+    else
+        if low <= short_tp
+            strategy.close_all(comment="TP Win", alert_message=json_flatten)
+        else if high >= base_short_sl
+            strategy.close_all(comment="SL Loss", alert_message=json_flatten)
+
+// ==========================================
+// --- Visual Overlays & Labels --------------
+// ==========================================
+plot(ma_val, "Baseline Line", color=color.white, linewidth=2)
+plot(long_threshold, "Lower Threshold Band", color=color.new(color.white, 50), linewidth=1)
+plot(short_threshold, "Upper Threshold Band", color=color.new(color.white, 50), linewidth=1)
+
+has_long  = strategy.position_size > 0
+has_short = strategy.position_size < 0
+
+float active_tp = has_long ? strategy.position_avg_price + (risk_unit * tp_atr_mult) : has_short ? strategy.position_avg_price - (risk_unit * tp_atr_mult) : na
+
+float active_sl = na
+if has_long
+    active_sl := (use_be_trail and be_trail_active) ? trailing_stop_price : (initial_entry_price - (risk_unit * sl_atr_mult))
+else if has_short
+    active_sl := (use_be_trail and be_trail_active) ? trailing_stop_price : (initial_entry_price + (risk_unit * sl_atr_mult))
+
+plot(strategy.position_size != 0 ? strategy.position_avg_price : na, "Average Entry Price", color=color.new(color.white, 30), style=plot.style_circles, linewidth=1)
+plot(use_be_trail and be_trail_active ? na : active_tp, "Take Profit Target", color=#46A086, style=plot.style_linebr, linewidth=2)
+plot(active_sl, "Stop Loss / Trailing Level", color=#E93365, style=plot.style_linebr, linewidth=2)
+
+// Shapes & Dynamic Size Labels
+plotshape(long_init_trigger, "Initial Long Arrow", style=shape.arrowup, location=location.belowbar, color=#46A086, size=size.small)
+plotshape(long_scale_trigger, "Long Scale Arrow", style=shape.arrowup, location=location.belowbar, color=#46A086, size=size.small)
+plotshape(short_init_trigger, "Initial Short Arrow", style=shape.arrowdown, location=location.abovebar, color=#E93365, size=size.small)
+plotshape(short_scale_trigger, "Short Scale Arrow", style=shape.arrowdown, location=location.abovebar, color=#E93365, size=size.small)
+
+if long_init_trigger
+    label.new(bar_index, low - (risk_unit * atr_offset_mult), text="Initial Long (" + str.tostring(current_entry_qty, "#.##") + ")", color=color.new(#46A086, 100), textcolor=#46A086, style=label.style_label_up)
+
+if long_scale_trigger
+    label.new(bar_index, low - (risk_unit * atr_offset_mult), text="+Long Scale #" + str.tostring(scale_count) + " (" + str.tostring(next_scale_qty, "#.##") + ")", color=color.new(#46A086, 100), textcolor=#46A086, style=label.style_label_up)
+
+if short_init_trigger
+    label.new(bar_index, high + (risk_unit * atr_offset_mult), text="Initial Short (" + str.tostring(current_entry_qty, "#.##") + ")", color=color.new(#E93365, 100), textcolor=#E93365, style=label.style_label_down)
+
+if short_scale_trigger
+    label.new(bar_index, high + (risk_unit * atr_offset_mult), text="+Short Scale #" + str.tostring(scale_count) + " (" + str.tostring(next_scale_qty, "#.##") + ")", color=color.new(#E93365, 100), textcolor=#E93365, style=label.style_label_down)

@@ -1,0 +1,3070 @@
+//@version=6
+indicator("STP Trade Idea Analysis", shorttitle="STP Trade Ideas Analysis", overlay=true, max_lines_count=500, max_boxes_count=300, max_labels_count=300, max_bars_back=5000)
+// conditional price-path projection engine
+//====================================================
+// 1. FIBONACCI SETTINGS
+//====================================================
+string grpFib = "Fibonacci Levels"
+bool showFib = input.bool(false, "Show Detailed 6 AM Fibonacci Levels", group=grpFib)
+bool showFibLabels = input.bool(false, "Show Detailed Fibonacci Labels", group=grpFib)
+bool showFibAnchor = input.bool(false, "Show 6 AM Anchor", group=grpFib)
+int fibLineWidth = input.int(1, "Fib Line Width", minval=1, maxval=4, group=grpFib)
+int fibExtendBars = input.int(10, "Fib Extension Bars", minval=2, maxval=100, group=grpFib)
+color fibResistanceColor = input.color(color.red, "Resistance Color", group=grpFib)
+color fibSupportColor = input.color(color.lime, "Support Color", group=grpFib)
+color fibAnchorColor = input.color(color.yellow, "6 AM Anchor Color", group=grpFib)
+
+//====================================================
+// 2. SUPPLY / DEMAND SETTINGS
+//====================================================
+string grpZones = "Supply / Demand"
+bool vrEnable = input.bool(true, "Show Visible Range Supply / Demand", group=grpZones)
+float vrThresholdPct = input.float(10.0, "Volume Threshold %", minval=1.0, maxval=50.0, step=0.5, group=grpZones)
+int vrResolution = input.int(60, "Resolution", minval=20, maxval=200, group=grpZones)
+int vrMaxBars = input.int(1500, "Maximum Visible Bars", minval=100, maxval=3000, group=grpZones)
+bool vrShowSupply = input.bool(true, "Show Supply Zone", group=grpZones)
+bool vrShowDemand = input.bool(true, "Show Demand Zone", group=grpZones)
+bool vrShowEquilibrium = input.bool(false, "Show Equilibrium", group=grpZones)
+bool vrShowAvg = input.bool(false, "Show Average Line", group=grpZones)
+bool vrShowWAvg = input.bool(false, "Show Weighted Average Line", group=grpZones)
+color vrSupplyColor = input.color(color.rgb(33, 87, 243), "Supply Color", group=grpZones)
+color vrDemandColor = input.color(color.rgb(255, 93, 0), "Demand Color", group=grpZones)
+color vrEquiColor = input.color(color.gray, "Equilibrium Color", group=grpZones)
+int vrZoneShadingPct = input.int(10, "Supply / Demand Shading %", minval=5, maxval=40, group=grpZones)
+int vrZoneTransparency = 100 - vrZoneShadingPct
+
+//====================================================
+// 3. FAIR VALUE GAP SETTINGS
+//====================================================
+string grpFVG = "Fair Value Gaps"
+bool showFVG = input.bool(true, "Show FVG Zones", group=grpFVG)
+float fvgMinATR = input.float(0.12, "Minimum FVG Size ATR", minval=0.0, maxval=2.0, step=0.01, group=grpFVG)
+int fvgAtrLength = input.int(14, "ATR Length", minval=2, maxval=100, group=grpFVG)
+int fvgExtendBars = input.int(100, "FVG Extension Bars", minval=10, maxval=500, group=grpFVG)
+int maxFVGs = input.int(4, "Maximum FVGs Per Side", minval=1, maxval=30, group=grpFVG)
+bool removeFilledFVG = input.bool(true, "Remove Fully Filled FVG", group=grpFVG)
+int fvgShadingPct = input.int(12, "FVG Shading %", minval=0, maxval=100, group=grpFVG)
+color bullFVGBaseColor = input.color(color.lime, "Bullish FVG Color", group=grpFVG)
+color bearFVGBaseColor = input.color(color.red, "Bearish FVG Color", group=grpFVG)
+int fvgTransparency = 100 - fvgShadingPct
+color bullFVGColor = color.new(bullFVGBaseColor, fvgTransparency)
+color bearFVGColor = color.new(bearFVGBaseColor, fvgTransparency)
+
+//====================================================
+// 4. ICT / PRICE ACTION CONFIRMATION SETTINGS
+//====================================================
+string grpICT = "ICT / Price Action"
+bool useICTConfluence = input.bool(true, "Use ICT / FVG Confluence", group=grpICT)
+bool showICTMarkers = input.bool(false, "Show Liquidity / MSS Markers", group=grpICT)
+int ictPivotLength = input.int(5, "Liquidity Pivot Length", minval=2, maxval=20, group=grpICT)
+int ictRangeLookback = input.int(20, "Premium / Discount Lookback", minval=10, maxval=100, group=grpICT)
+float ictSweepWickATR = input.float(0.10, "Liquidity Sweep Wick ATR", minval=0.0, maxval=1.0, step=0.05, group=grpICT)
+float ictDisplacementATR = input.float(0.60, "Displacement Body ATR", minval=0.20, maxval=2.0, step=0.05, group=grpICT)
+float ictNearFVGATR = input.float(0.20, "Near FVG Distance ATR", minval=0.05, maxval=1.0, step=0.05, group=grpICT)
+float ictNearZoneATR = input.float(0.25, "Near Supply / Demand ATR", minval=0.05, maxval=1.0, step=0.05, group=grpICT)
+int ictDirectionEdge = input.int(2, "Minimum Bull/Bear Score Edge", minval=1, maxval=10, group=grpICT)
+bool useTargetGravity = input.bool(true, "Align Elliott Targets with Key Levels", group=grpICT)
+float targetGravityATR = input.float(0.35, "Target Alignment Distance ATR", minval=0.05, maxval=1.0, step=0.05, group=grpICT)
+int ictFVGMaxAge1H = input.int(80, "1H FVG Evidence Max Age", minval=20, maxval=240, group=grpICT)
+int ictFVGMaxAgeDaily = input.int(60, "Daily FVG Evidence Max Age", minval=15, maxval=180, group=grpICT)
+float ictFixedZoneWidthATR = input.float(0.50, "Fixed S/D Evidence Width ATR", minval=0.10, maxval=2.0, step=0.05, group=grpICT)
+
+//====================================================
+// 5. ELLIOTT WAVE SETTINGS
+//====================================================
+string grpElliott = "Elliott Wave Projection"
+bool showElliott = input.bool(true, "Show Elliott Wave Projection", group=grpElliott)
+bool showABC = input.bool(true, "Show A-B-C Correction", group=grpElliott)
+bool showElliottPrices = input.bool(true, "Show Wave Prices", group=grpElliott)
+string elliottDirection = input.string("Auto", "Projection Direction", options=["Auto", "Bullish", "Bearish"], group=grpElliott)
+string elliottProjectionMode = input.string("Normal", "Projection Size", options=["Conservative", "Normal", "Aggressive"], group=grpElliott)
+bool useDailyDominantElliott = input.bool(true, "Use Daily Dominant Bias on 1H", group=grpElliott)
+bool useAutoMajorSwing = input.bool(true, "Auto Major Swing Sensitivity", group=grpElliott)
+int elliottPivot1H = input.int(6, "1H Major Swing Length", minval=3, maxval=30, group=grpElliott)
+int elliottPivotDaily = input.int(18, "Daily Major Swing Length", minval=8, maxval=40, group=grpElliott)
+int elliottPivotLength = input.int(6, "Manual Pivot Length", minval=2, maxval=30, group=grpElliott)
+int elliottLookback = input.int(35, "Structure Lookback Bars", minval=15, maxval=100, group=grpElliott)
+int elliottAnalysisWindow1H = input.int(120, "1H Fixed Analysis Window", minval=60, maxval=500, group=grpElliott)
+int elliottAnalysisWindowDaily = input.int(120, "Daily Fixed Analysis Window", minval=60, maxval=500, group=grpElliott)
+int elliottRecentPivotCount = input.int(8, "Recent Pivot Search", minval=3, maxval=20, group=grpElliott)
+int elliottMaxWave2Age1H = input.int(30, "Max Wave 2 Age - 1H Bars", minval=5, maxval=80, group=grpElliott)
+int elliottMaxWave2AgeDaily = input.int(10, "Max Wave 2 Age - Daily Bars", minval=3, maxval=30, group=grpElliott)
+int elliottMaxWave1Age1H = input.int(45, "Max Wave 1 Age - 1H Bars", minval=8, maxval=120, group=grpElliott)
+int elliottMaxWave1AgeDaily = input.int(15, "Max Wave 1 Age - Daily Bars", minval=5, maxval=45, group=grpElliott)
+int elliottDailyATRLength = input.int(10, "Daily ATR Length", minval=5, maxval=30, group=grpElliott)
+float minImpulseATR = input.float(1.00, "Minimum Historical Wave 1 ATR - Daily", minval=0.25, maxval=5.0, step=0.25, group=grpElliott)
+float minImpulseATR1H = input.float(0.35, "Minimum Historical Wave 1 ATR - 1H", minval=0.10, maxval=2.0, step=0.05, group=grpElliott)
+float maxImpulseATR = input.float(4.00, "Maximum Historical Wave 1 ATR", minval=1.0, maxval=10.0, step=0.25, group=grpElliott)
+float minWave2Retrace = input.float(0.236, "Minimum Wave 2 Retracement", minval=0.10, maxval=0.50, step=0.001, group=grpElliott)
+float maxWave2Retrace = input.float(0.786, "Maximum Wave 2 Retracement", minval=0.50, maxval=0.95, step=0.001, group=grpElliott)
+float wave3BreakATR = input.float(0.25, "Wave 3 Minimum Break ATR", minval=0.05, maxval=1.00, step=0.05, group=grpElliott)
+float wave3MaxATR = input.float(5.00, "Wave 3 Safety Maximum ATR Distance", minval=2.00, maxval=10.00, step=0.25, group=grpElliott)
+float wave4BufferATR = input.float(0.10, "Wave 4 Wave-1 Buffer ATR", minval=0.00, maxval=0.50, step=0.05, group=grpElliott)
+float wave5BreakATR = input.float(0.25, "Wave 5 Minimum Break ATR", minval=0.00, maxval=1.00, step=0.05, group=grpElliott)
+int elliottLineWidth = input.int(2, "Wave Line Width", minval=1, maxval=4, group=grpElliott)
+
+//----------------------------------------------------
+// Wave relationships
+//----------------------------------------------------
+float defaultWave2Retrace = input.float(0.500, "Projected Wave 2 Retracement", minval=0.236, maxval=0.786, step=0.001, group=grpElliott)
+float wave3Extension = input.float(1.618, "Wave 3 vs Wave 1 Extension", minval=1.000, maxval=2.618, step=0.001, group=grpElliott)
+float wave4Retrace = input.float(0.382, "Wave 4 Retracement of Wave 3", minval=0.236, maxval=0.618, step=0.001, group=grpElliott)
+float wave5Extension = input.float(1.000, "Wave 5 vs Wave 1 Extension", minval=0.500, maxval=1.618, step=0.001, group=grpElliott)
+float waveARetrace = input.float(0.382, "Wave A Retracement", minval=0.236, maxval=0.786, step=0.001, group=grpElliott)
+float waveBRetrace = input.float(0.500, "Wave B Retracement", minval=0.236, maxval=0.786, step=0.001, group=grpElliott)
+float waveCExtension = input.float(1.000, "Wave C vs Wave A", minval=0.618, maxval=1.618, step=0.001, group=grpElliott)
+
+//----------------------------------------------------
+// Horizontal spacing
+//----------------------------------------------------
+int wave2Bars = input.int(3, "Bars to Wave 2", minval=1, maxval=20, group=grpElliott)
+int wave3Bars = input.int(7, "Bars from Wave 2 to 3", minval=2, maxval=50, group=grpElliott)
+int wave4Bars = input.int(4, "Bars from Wave 3 to 4", minval=2, maxval=40, group=grpElliott)
+int wave5Bars = input.int(7, "Bars from Wave 4 to 5", minval=2, maxval=50, group=grpElliott)
+int waveABars = input.int(4, "Bars from Wave 5 to A", minval=2, maxval=40, group=grpElliott)
+int waveBBars = input.int(4, "Bars from A to B", minval=2, maxval=40, group=grpElliott)
+int waveCBars = input.int(6, "Bars from B to C", minval=2, maxval=50, group=grpElliott)
+color bullishElliottColor = input.color(color.yellow, "Primary 1-5 Color", group=grpElliott)
+color bearishElliottColor = input.color(color.yellow, "Reserved Primary Color", group=grpElliott)
+color correctionColor = input.color(color.aqua, "Primary A-B-C Color", group=grpElliott)
+bool showSecondaryElliott = input.bool(true, "Show Secondary Elliott Scenario", group=grpElliott)
+color secondaryElliottColor = input.color(color.white, "Secondary Elliott Color", group=grpElliott)
+int secondaryElliottTransparency = input.int(0, "Secondary Elliott Transparency %", minval=0, maxval=85, group=grpElliott)
+int secondaryElliottLineWidth = input.int(2, "Secondary Elliott Line Width", minval=1, maxval=4, group=grpElliott)
+color secondaryElliottDisplayColor = color.new(secondaryElliottColor, secondaryElliottTransparency)
+color secondaryElliottLabelBg = color.new(color.black, 20)
+float secondaryProjectionScale = input.float(0.75, "Secondary Projection Scale", minval=0.40, maxval=1.25, step=0.05, group=grpElliott)
+float projectionRealismMult = input.float(0.80, "Projection Realism Multiplier", minval=0.40, maxval=1.20, step=0.05, group=grpElliott)
+float projectionBarrierATR = input.float(1.50, "Respect Nearby Barrier Within ATR", minval=0.50, maxval=3.00, step=0.25, group=grpElliott)
+bool adaptiveProjection = input.bool(true, "Adaptive Elliott Projection", group=grpElliott)
+bool wave1DrivenProjection = input.bool(true, "Use Wave 1 Fibonacci Projection", group=grpElliott)
+float wave1ProjectionFloorATR = input.float(0.75, "Wave 1 Minimum Projection Floor ATR", minval=0.25, maxval=2.00, step=0.05, group=grpElliott)
+float wave1ProjectionCapATR = input.float(6.00, "Wave 1 Projection Safety Cap ATR", minval=2.00, maxval=12.00, step=0.25, group=grpElliott)
+
+//----------------------------------------------------
+// Time-aware Elliott target realism
+//----------------------------------------------------
+bool useTimeAwareElliott = input.bool(true, "Use Time-Aware Elliott Targets", group=grpElliott)
+float elliottATRPerDayMult = input.float(1.15, "ATR Travel Multiplier", minval=0.60, maxval=2.00, step=0.05, group=grpElliott)
+float elliottTrendExpansion = input.float(1.20, "Strong Trend Expansion", minval=1.00, maxval=1.75, step=0.05, group=grpElliott)
+float elliottMinTargetATR = input.float(0.40, "Minimum Forward Target ATR", minval=0.10, maxval=1.50, step=0.05, group=grpElliott)
+float elliottMaxTargetATR1H = input.float(2.25, "1H Maximum Total Projection ATR", minval=1.00, maxval=6.00, step=0.25, group=grpElliott)
+float elliottMaxTargetATRDaily = input.float(3.50, "Daily Maximum Total Projection ATR", minval=1.50, maxval=8.00, step=0.25, group=grpElliott)
+float elliottWave3MaxATR1H = input.float(1.25, "1H Maximum Wave 3 ATR", minval=0.50, maxval=3.00, step=0.25, group=grpElliott)
+float elliottWave3MaxATRDaily = input.float(1.50, "Daily Maximum Wave 3 ATR", minval=0.75, maxval=4.00, step=0.25, group=grpElliott)
+float elliottHoursPerTradingDay = input.float(6.50, "1H Bars Per Trading Day", minval=4.00, maxval=8.00, step=0.25, group=grpElliott)
+bool allowBarrierBreakthrough = input.bool(true, "Allow Projection Through Weak Barriers", group=grpElliott)
+int hardBarrierScore = input.int(5, "Hard Barrier Confluence Score", minval=3, maxval=6, group=grpElliott)
+float maxMomentumExpansion = input.float(1.35, "Maximum Momentum Expansion", minval=1.00, maxval=1.75, step=0.05, group=grpElliott)
+float barrierClusterToleranceATR = input.float(0.30, "Barrier Cluster Tolerance ATR", minval=0.10, maxval=0.75, step=0.05, group=grpElliott)
+int strongBarrierScore = input.int(4, "Strong Barrier Confluence Score", minval=2, maxval=6, group=grpElliott)
+float moderateBarrierBlend = input.float(0.30, "Moderate Barrier Influence", minval=0.10, maxval=0.80, step=0.05, group=grpElliott)
+bool autoPromoteSecondary = input.bool(true, "Auto-Switch Primary Scenario on Closed Candle", group=grpElliott)
+int scenarioSwitchEdge = input.int(1, "Scenario Switch Evidence Edge", minval=1, maxval=10, group=grpElliott)
+int scenarioSwitchConfirmBars = input.int(1, "Closed Candles Required to Switch", minval=1, maxval=5, group=grpElliott)
+int scenarioSwitchCooldownBars = input.int(0, "Bars Between Scenario Switches", minval=0, maxval=10, group=grpElliott)
+bool scenarioRequireDirectionalClose = input.bool(false, "Require Closed Candle to Confirm Direction", group=grpElliott)
+bool scenarioFastFlipOnMSS = input.bool(true, "Fast Switch on MSS / Displacement", group=grpElliott)
+bool scenarioUsePriceOverride = input.bool(true, "Use Closed-Candle Price Override", group=grpElliott)
+float scenarioPriceOverrideATR1H = input.float(0.20, "1H Price Override ATR", minval=0.05, maxval=1.00, step=0.05, group=grpElliott)
+float scenarioPriceOverrideATRDaily = input.float(0.30, "Daily Price Override ATR", minval=0.05, maxval=1.00, step=0.05, group=grpElliott)
+bool scenarioUseTwoBarFollowThrough = input.bool(true, "Use Two-Bar Follow-Through", group=grpElliott)
+bool useScenarioStructuralMemory = input.bool(true, "Use Persistent Structure Memory", group=grpElliott)
+int scenarioStructureMemory1H = input.int(12, "1H Structure Memory Bars", minval=3, maxval=40, group=grpElliott)
+int scenarioStructureMemoryDaily = input.int(5, "Daily Structure Memory Bars", minval=2, maxval=15, group=grpElliott)
+int scenarioStructureMemoryScore = input.int(4, "Structure Memory Score", minval=1, maxval=10, group=grpElliott)
+float scenarioStructureReclaimATR = input.float(0.15, "Structure Reclaim Buffer ATR", minval=0.00, maxval=0.75, step=0.05, group=grpElliott)
+bool invalidateWaveOnOriginBreach = input.bool(true, "Invalidate Elliott Structure on Wave 0 Breach", group=grpElliott)
+float waveOriginInvalidationATR = input.float(0.05, "Intraday Wave 0 Invalidation Buffer ATR", minval=0.00, maxval=0.50, step=0.05, group=grpElliott)
+bool invalidateWaveOriginOnDaily = input.bool(false, "Apply Wave 0 Invalidation on Daily", group=grpElliott)
+bool useScenarioRecencyBias = input.bool(true, "Prefer Recent Valid Elliott Structure", group=grpElliott)
+int scenarioRecencyWindow1H = input.int(30, "1H Structure Recency Window", minval=6, maxval=80, group=grpElliott)
+int scenarioRecencyWindowDaily = input.int(10, "Daily Structure Recency Window", minval=3, maxval=30, group=grpElliott)
+int scenarioRecencyMaxScore = input.int(4, "Maximum Structure Recency Score", minval=1, maxval=8, group=grpElliott)
+int scenarioFreshStructureLead1H = input.int(6, "1H Fresh Structure Lead Bars", minval=2, maxval=20, group=grpElliott)
+int scenarioFreshStructureLeadDaily = input.int(2, "Daily Fresh Structure Lead Bars", minval=1, maxval=10, group=grpElliott)
+
+//====================================================
+// 5. MARKET STRUCTURE SETTINGS
+//====================================================
+string grpStructure = "Market Structure"
+bool showHistoricalStructure = input.bool(false, "Show Historical Swing Lines", group=grpStructure)
+bool showStructureLabels = input.bool(false, "Show HH / HL / LH / LL", group=grpStructure)
+color bullStructureColor = input.color(color.lime, "Bullish Structure", group=grpStructure)
+color bearStructureColor = input.color(color.red, "Bearish Structure", group=grpStructure)
+
+//====================================================
+// 6. TREND SETTINGS
+//====================================================
+string grpTrend = "Trend"
+bool showEMAs = input.bool(true, "Show Trend EMAs", group=grpTrend)
+int fastEmaLength = input.int(21, "Fast EMA", minval=1, maxval=200, group=grpTrend)
+int slowEmaLength = input.int(50, "Slow EMA", minval=2, maxval=300, group=grpTrend)
+color fastEmaColor = input.color(color.yellow, "Fast EMA Color", group=grpTrend)
+color slowEmaColor = input.color(color.gray, "Slow EMA Color", group=grpTrend)
+
+//====================================================
+// 6A. KEY LEVEL / DECISION ZONE SETTINGS
+//====================================================
+string grpKeyLevels = "Key Levels / Decision Zones"
+bool showKeyLevels = input.bool(true, "Show Key Support / Resistance", group=grpKeyLevels)
+bool showKeyLevelLabels = input.bool(true, "Show Key Level Labels", group=grpKeyLevels)
+int keyLevelExtendBars = input.int(30, "Key Level Extension Bars", minval=10, maxval=150, group=grpKeyLevels)
+float keyClusterToleranceATR = input.float(0.35, "Cluster Tolerance ATR", minval=0.10, maxval=1.00, step=0.05, group=grpKeyLevels)
+float keyZonePaddingATR = input.float(0.06, "Zone Padding ATR", minval=0.01, maxval=0.30, step=0.01, group=grpKeyLevels)
+int keyMinConfluence = input.int(2, "Preferred Confluence Count", minval=1, maxval=5, group=grpKeyLevels)
+bool keyUseSwingLevels = input.bool(true, "Include Recent Swing High / Low", group=grpKeyLevels)
+bool keyUseEMAConfluence = input.bool(true, "Include EMA Confluence", group=grpKeyLevels)
+color keyResistanceColor = input.color(color.red, "Key Resistance Color", group=grpKeyLevels)
+color keySupportColor = input.color(color.lime, "Key Support Color", group=grpKeyLevels)
+int keyZoneShadingPct = input.int(10, "Key Zone Shading %", minval=5, maxval=50, group=grpKeyLevels)
+int keyLevelLineWidth = input.int(3, "Key Level Center Line Width", minval=2, maxval=5, group=grpKeyLevels)
+bool suppressFibInsideKeyZones = input.bool(true, "Suppress Fib Graphics Inside Key Zones", group=grpKeyLevels)
+bool compactKeyLevelLabels = input.bool(true, "Compact Key Level Labels", group=grpKeyLevels)
+
+//====================================================
+// 6B. CHART LEGEND SETTINGS
+//====================================================
+string grpLegend = "Chart Legend"
+bool showLegend = input.bool(true, "Show Chart Legend", group=grpLegend)
+string legendLocation = input.string("Top Right", "Legend Location", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=grpLegend)
+color legendBackgroundColor = input.color(color.new(color.black, 15), "Legend Background", group=grpLegend)
+color legendBorderColor = input.color(color.new(color.gray, 55), "Legend Border", group=grpLegend)
+color legendTextColor = input.color(color.white, "Legend Text", group=grpLegend)
+
+//====================================================
+// 7. 6 AM EASTERN FIB FUNCTION
+//====================================================
+f_get6amFibData() =>
+    string fibTZ = "America/New_York"
+    bool inRTH = not na(time(timeframe.period, "0930-1600", fibTZ))
+    bool afterSix = hour(time, fibTZ) >= 6
+    int thisYear = year(time, fibTZ)
+    int thisMonth = month(time, fibTZ)
+    int thisDay = dayofmonth(time, fibTZ)
+    int oldYear = year(time[1], fibTZ)
+    int oldMonth = month(time[1], fibTZ)
+    int oldDay = dayofmonth(time[1], fibTZ)
+    bool newDay = thisYear != oldYear or thisMonth != oldMonth or thisDay != oldDay
+    bool rthStart = inRTH and not inRTH[1]
+    bool rthEnd = not inRTH and inRTH[1]
+    var float currentRTHHigh = na
+    var float currentRTHLow = na
+    var float previousRTHHigh = na
+    var float previousRTHLow = na
+    var float lockedAnchor = na
+    var float lockedRange = na
+    var bool lockedToday = false
+    if newDay
+        lockedToday := false
+    if rthStart
+        currentRTHHigh := high
+        currentRTHLow := low
+    if inRTH
+        currentRTHHigh := na(currentRTHHigh) ? high : math.max(currentRTHHigh, high)
+        currentRTHLow := na(currentRTHLow) ? low : math.min(currentRTHLow, low)
+    if rthEnd
+        previousRTHHigh := currentRTHHigh
+        previousRTHLow := currentRTHLow
+    if afterSix and not lockedToday and not na(previousRTHHigh) and not na(previousRTHLow)
+        lockedAnchor := open
+        lockedRange := math.max(previousRTHHigh - previousRTHLow, syminfo.mintick)
+        lockedToday := true
+    [lockedAnchor, lockedRange]
+
+//====================================================
+// 8. TREND
+//====================================================
+float fastEMA = ta.ema(close, fastEmaLength)
+float slowEMA = ta.ema(close, slowEmaLength)
+plot(showEMAs ? fastEMA : na, title="Fast EMA", color=fastEmaColor, linewidth=2, display=display.all - display.status_line)
+plot(showEMAs ? slowEMA : na, title="Slow EMA", color=slowEmaColor, linewidth=2, display=display.all - display.status_line)
+//====================================================
+// 9. FIBONACCI CALCULATION
+//
+// PERFORMANCE:
+// The 6 AM / prior-RTH source now uses 15-minute extended-session
+// bars instead of 1-minute bars. 6:00, 9:30, and 16:00 align on
+// 15-minute boundaries, and each 15-minute bar preserves its true
+// high / low, so the locked Fib range remains structurally equivalent
+// while dramatically reducing lower-timeframe work.
+//====================================================
+string extendedTicker = ticker.new(syminfo.prefix, syminfo.ticker, session.extended)
+[fibAnchor6AM, fibRange6AM] = request.security(extendedTicker, "15", f_get6amFibData(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+float fibR1 = fibAnchor6AM + fibRange6AM * 0.382
+float fibR2 = fibAnchor6AM + fibRange6AM * 0.618
+float fibR3 = fibAnchor6AM + fibRange6AM
+float fibR4 = fibAnchor6AM + fibRange6AM * 1.618
+float fibS1 = fibAnchor6AM - fibRange6AM * 0.382
+float fibS2 = fibAnchor6AM - fibRange6AM * 0.618
+float fibS3 = fibAnchor6AM - fibRange6AM
+float fibS4 = fibAnchor6AM - fibRange6AM * 1.618
+
+//====================================================
+// 10. FIBONACCI OBJECTS
+//====================================================
+var line fibR1Line = na
+var line fibR2Line = na
+var line fibR3Line = na
+var line fibR4Line = na
+var line fibS1Line = na
+var line fibS2Line = na
+var line fibS3Line = na
+var line fibS4Line = na
+var line fibAnchorLine = na
+var label fibR1Label = na
+var label fibR2Label = na
+var label fibR3Label = na
+var label fibR4Label = na
+var label fibS1Label = na
+var label fibS2Label = na
+var label fibS3Label = na
+var label fibS4Label = na
+
+//====================================================
+// 11. DRAW FIBONACCI LEVELS
+//====================================================
+if barstate.islast
+    int fibX1 = bar_index
+    int fibX2 = bar_index + fibExtendBars
+    if showFib and not na(fibAnchor6AM) and not na(fibRange6AM)
+        if na(fibR1Line)
+            fibR1Line := line.new(fibX1, fibR1, fibX2, fibR1, xloc=xloc.bar_index, color=fibResistanceColor, style=line.style_dotted, width=fibLineWidth)
+        else
+            line.set_xy1(fibR1Line, fibX1, fibR1)
+            line.set_xy2(fibR1Line, fibX2, fibR1)
+        if na(fibR2Line)
+            fibR2Line := line.new(fibX1, fibR2, fibX2, fibR2, xloc=xloc.bar_index, color=fibResistanceColor, style=line.style_dotted, width=fibLineWidth)
+        else
+            line.set_xy1(fibR2Line, fibX1, fibR2)
+            line.set_xy2(fibR2Line, fibX2, fibR2)
+        if na(fibR3Line)
+            fibR3Line := line.new(fibX1, fibR3, fibX2, fibR3, xloc=xloc.bar_index, color=fibResistanceColor, style=line.style_dotted, width=fibLineWidth)
+        else
+            line.set_xy1(fibR3Line, fibX1, fibR3)
+            line.set_xy2(fibR3Line, fibX2, fibR3)
+        if na(fibR4Line)
+            fibR4Line := line.new(fibX1, fibR4, fibX2, fibR4, xloc=xloc.bar_index, color=fibResistanceColor, style=line.style_dotted, width=fibLineWidth)
+        else
+            line.set_xy1(fibR4Line, fibX1, fibR4)
+            line.set_xy2(fibR4Line, fibX2, fibR4)
+        if na(fibS1Line)
+            fibS1Line := line.new(fibX1, fibS1, fibX2, fibS1, xloc=xloc.bar_index, color=fibSupportColor, style=line.style_dotted, width=fibLineWidth)
+        else
+            line.set_xy1(fibS1Line, fibX1, fibS1)
+            line.set_xy2(fibS1Line, fibX2, fibS1)
+        if na(fibS2Line)
+            fibS2Line := line.new(fibX1, fibS2, fibX2, fibS2, xloc=xloc.bar_index, color=fibSupportColor, style=line.style_dotted, width=fibLineWidth)
+        else
+            line.set_xy1(fibS2Line, fibX1, fibS2)
+            line.set_xy2(fibS2Line, fibX2, fibS2)
+        if na(fibS3Line)
+            fibS3Line := line.new(fibX1, fibS3, fibX2, fibS3, xloc=xloc.bar_index, color=fibSupportColor, style=line.style_dotted, width=fibLineWidth)
+        else
+            line.set_xy1(fibS3Line, fibX1, fibS3)
+            line.set_xy2(fibS3Line, fibX2, fibS3)
+        if na(fibS4Line)
+            fibS4Line := line.new(fibX1, fibS4, fibX2, fibS4, xloc=xloc.bar_index, color=fibSupportColor, style=line.style_dotted, width=fibLineWidth)
+        else
+            line.set_xy1(fibS4Line, fibX1, fibS4)
+            line.set_xy2(fibS4Line, fibX2, fibS4)
+        if showFibAnchor
+            if na(fibAnchorLine)
+                fibAnchorLine := line.new(fibX1, fibAnchor6AM, fibX2, fibAnchor6AM, xloc=xloc.bar_index, color=fibAnchorColor, style=line.style_dotted)
+            else
+                line.set_xy1(fibAnchorLine, fibX1, fibAnchor6AM)
+                line.set_xy2(fibAnchorLine, fibX2, fibAnchor6AM)
+        else
+            if not na(fibAnchorLine)
+                line.delete(fibAnchorLine)
+                fibAnchorLine := na
+        if showFibLabels
+            string r1Text = "R1 $" + str.tostring(fibR1, "#.##")
+            string r2Text = "R2 $" + str.tostring(fibR2, "#.##")
+            string r3Text = "R3 $" + str.tostring(fibR3, "#.##")
+            string r4Text = "R4 $" + str.tostring(fibR4, "#.##")
+            string s1Text = "S1 $" + str.tostring(fibS1, "#.##")
+            string s2Text = "S2 $" + str.tostring(fibS2, "#.##")
+            string s3Text = "S3 $" + str.tostring(fibS3, "#.##")
+            string s4Text = "S4 $" + str.tostring(fibS4, "#.##")
+            if na(fibR1Label)
+                fibR1Label := label.new(fibX2, fibR1, r1Text, xloc=xloc.bar_index, style=label.style_none, textcolor=fibResistanceColor, size=size.normal)
+            else
+                label.set_xy(fibR1Label, fibX2, fibR1)
+                label.set_text(fibR1Label, r1Text)
+            if na(fibR2Label)
+                fibR2Label := label.new(fibX2, fibR2, r2Text, xloc=xloc.bar_index, style=label.style_none, textcolor=fibResistanceColor, size=size.normal)
+            else
+                label.set_xy(fibR2Label, fibX2, fibR2)
+                label.set_text(fibR2Label, r2Text)
+            if na(fibR3Label)
+                fibR3Label := label.new(fibX2, fibR3, r3Text, xloc=xloc.bar_index, style=label.style_none, textcolor=fibResistanceColor, size=size.normal)
+            else
+                label.set_xy(fibR3Label, fibX2, fibR3)
+                label.set_text(fibR3Label, r3Text)
+            if na(fibR4Label)
+                fibR4Label := label.new(fibX2, fibR4, r4Text, xloc=xloc.bar_index, style=label.style_none, textcolor=fibResistanceColor, size=size.normal)
+            else
+                label.set_xy(fibR4Label, fibX2, fibR4)
+                label.set_text(fibR4Label, r4Text)
+            if na(fibS1Label)
+                fibS1Label := label.new(fibX2, fibS1, s1Text, xloc=xloc.bar_index, style=label.style_none, textcolor=fibSupportColor, size=size.normal)
+            else
+                label.set_xy(fibS1Label, fibX2, fibS1)
+                label.set_text(fibS1Label, s1Text)
+            if na(fibS2Label)
+                fibS2Label := label.new(fibX2, fibS2, s2Text, xloc=xloc.bar_index, style=label.style_none, textcolor=fibSupportColor, size=size.normal)
+            else
+                label.set_xy(fibS2Label, fibX2, fibS2)
+                label.set_text(fibS2Label, s2Text)
+            if na(fibS3Label)
+                fibS3Label := label.new(fibX2, fibS3, s3Text, xloc=xloc.bar_index, style=label.style_none, textcolor=fibSupportColor, size=size.normal)
+            else
+                label.set_xy(fibS3Label, fibX2, fibS3)
+                label.set_text(fibS3Label, s3Text)
+            if na(fibS4Label)
+                fibS4Label := label.new(fibX2, fibS4, s4Text, xloc=xloc.bar_index, style=label.style_none, textcolor=fibSupportColor, size=size.normal)
+            else
+                label.set_xy(fibS4Label, fibX2, fibS4)
+                label.set_text(fibS4Label, s4Text)
+
+//====================================================
+// 12. VISIBLE RANGE SUPPLY / DEMAND
+//====================================================
+type vr_bin
+    float lvl
+    float prev
+    float sum
+    float csum
+    float avg
+    bool reached
+type vr_area
+    box bx
+    line avgLine
+    line wavgLine
+vr_get_hlv() =>
+    [high, low, volume]
+method vr_set_area(vr_area id, int x1, float top, float bottom, float avgPrice, float wavgPrice, bool showArea, bool showAvg, bool showWavg) =>
+    if showArea
+        box.set_lefttop(id.bx, x1, top)
+        box.set_rightbottom(id.bx, bar_index, bottom)
+    if showAvg
+        line.set_xy1(id.avgLine, x1, avgPrice)
+        line.set_xy2(id.avgLine, bar_index, avgPrice)
+    if showWavg
+        line.set_xy1(id.wavgLine, x1, wavgPrice)
+        line.set_xy2(id.wavgLine, bar_index, wavgPrice)
+int chartSeconds = timeframe.in_seconds(timeframe.period)
+string vrIntrabarTF = "1"
+if chartSeconds > 180 and chartSeconds <= 900
+    vrIntrabarTF := "5"
+if chartSeconds > 900 and chartSeconds <= 3600
+    vrIntrabarTF := "15"
+if chartSeconds > 3600
+    vrIntrabarTF := "60"
+[vrH, vrL, vrV] = request.security_lower_tf(syminfo.tickerid, vrIntrabarTF, vr_get_hlv())
+var float vrMax = 0.0
+var float vrMin = 0.0
+var float vrCsum = 0.0
+var int vrX1 = 0
+if time == chart.left_visible_bar_time
+    vrMax := high
+    vrMin := low
+    vrCsum := volume
+    vrX1 := bar_index
+else
+    vrMax := math.max(high, vrMax)
+    vrMin := vrMin == 0.0 ? low : math.min(low, vrMin)
+    vrCsum += volume
+var vr_area vrSupplyArea = vr_area.new(box.new(na, na, na, na, bgcolor=color.new(vrSupplyColor, vrZoneTransparency), border_color=color.new(vrSupplyColor, 100)), line.new(na, na, na, na, color=vrSupplyColor), line.new(na, na, na, na, color=vrSupplyColor, style=line.style_dashed))
+var vr_area vrDemandArea = vr_area.new(box.new(na, na, na, na, bgcolor=color.new(vrDemandColor, vrZoneTransparency), border_color=color.new(vrDemandColor, 100)), line.new(na, na, na, na, color=vrDemandColor), line.new(na, na, na, na, color=vrDemandColor, style=line.style_dashed))
+var line vrEquiLine = line.new(na, na, na, na, color=vrEquiColor)
+var line vrWEqiLine = line.new(na, na, na, na, color=vrEquiColor, style=line.style_dashed)
+var float vrSupplyTop = na
+var float vrSupplyBot = na
+var float vrDemandTop = na
+var float vrDemandBot = na
+var float vrSupplyAvg = na
+var float vrDemandAvg = na
+var float vrSupplyWAvg = na
+var float vrDemandWAvg = na
+var label vrSupplyLabel = na
+var label vrDemandLabel = na
+if time == chart.right_visible_bar_time and vrEnable
+    float vrStep = math.max((vrMax - vrMin) / math.max(vrResolution, 1), syminfo.mintick)
+    int vrBarsToScan = math.min(math.max(bar_index - vrX1, 1), vrMaxBars)
+    float vrTotalVol = math.max(vrCsum, 1.0)
+    vr_bin supply = vr_bin.new(vrMax, vrMax, 0.0, 0.0, 0.0, false)
+    vr_bin demand = vr_bin.new(vrMin, vrMin, 0.0, 0.0, 0.0, false)
+    vrSupplyTop := na
+    vrSupplyBot := na
+    vrDemandTop := na
+    vrDemandBot := na
+    vrSupplyAvg := na
+    vrDemandAvg := na
+    vrSupplyWAvg := na
+    vrDemandWAvg := na
+    for i = 0 to vrResolution - 1
+        supply.lvl -= vrStep
+        demand.lvl += vrStep
+        for j = 0 to vrBarsToScan - 1
+            int arrayCount = (vrV[j]).size()
+            if arrayCount > 0
+                for k = 0 to arrayCount - 1
+                    float hVal = (vrH[j]).get(k)
+                    float lVal = (vrL[j]).get(k)
+                    float vVal = (vrV[j]).get(k)
+                    if not supply.reached and hVal > supply.lvl and hVal < supply.prev
+                        supply.sum += vVal
+                        supply.avg += supply.lvl * vVal
+                        supply.csum += vVal
+                    if not demand.reached and lVal < demand.lvl and lVal > demand.prev
+                        demand.sum += vVal
+                        demand.avg += demand.lvl * vVal
+                        demand.csum += vVal
+        if not supply.reached and supply.sum / vrTotalVol * 100.0 > vrThresholdPct
+            vrSupplyTop := vrMax
+            vrSupplyBot := supply.lvl
+            vrSupplyAvg := math.avg(vrMax, supply.lvl)
+            vrSupplyWAvg := supply.csum > 0.0 ? supply.avg / supply.csum : vrSupplyAvg
+            if vrShowSupply
+                vr_set_area(vrSupplyArea, vrX1, vrSupplyTop, vrSupplyBot, vrSupplyAvg, vrSupplyWAvg, true, vrShowAvg, vrShowWAvg)
+                if not na(vrSupplyLabel)
+                    label.delete(vrSupplyLabel)
+                vrSupplyLabel := label.new(bar_index, vrSupplyTop, "Supply", xloc=xloc.bar_index, style=label.style_label_lower_right, color=color.new(color.black, 100), textcolor=vrSupplyColor, size=size.normal)
+            supply.reached := true
+        if not demand.reached and demand.sum / vrTotalVol * 100.0 > vrThresholdPct
+            vrDemandTop := demand.lvl
+            vrDemandBot := vrMin
+            vrDemandAvg := math.avg(vrMin, demand.lvl)
+            vrDemandWAvg := demand.csum > 0.0 ? demand.avg / demand.csum : vrDemandAvg
+            if vrShowDemand
+                vr_set_area(vrDemandArea, vrX1, vrDemandTop, vrDemandBot, vrDemandAvg, vrDemandWAvg, true, vrShowAvg, vrShowWAvg)
+                if not na(vrDemandLabel)
+                    label.delete(vrDemandLabel)
+                vrDemandLabel := label.new(bar_index, vrDemandBot, "Demand", xloc=xloc.bar_index, style=label.style_label_upper_right, color=color.new(color.black, 100), textcolor=vrDemandColor, size=size.normal)
+            demand.reached := true
+        if supply.reached and demand.reached
+            if vrShowEquilibrium
+                float equilibrium = math.avg(vrMax, vrMin)
+                line.set_xy1(vrEquiLine, vrX1, equilibrium)
+                line.set_xy2(vrEquiLine, bar_index, equilibrium)
+                if not na(vrSupplyWAvg) and not na(vrDemandWAvg)
+                    float weightedEquilibrium = math.avg(vrSupplyWAvg, vrDemandWAvg)
+                    line.set_xy1(vrWEqiLine, vrX1, weightedEquilibrium)
+                    line.set_xy2(vrWEqiLine, bar_index, weightedEquilibrium)
+            break
+        supply.prev := supply.lvl
+        demand.prev := demand.lvl
+
+//====================================================
+// 13. FAIR VALUE GAPS
+//====================================================
+float fvgATR = math.max(nz(ta.atr(fvgAtrLength), syminfo.mintick), syminfo.mintick)
+bool newBullFVG = showFVG and bar_index >= 2 and low > high[2] and low - high[2] >= fvgATR * fvgMinATR
+bool newBearFVG = showFVG and bar_index >= 2 and high < low[2] and low[2] - high >= fvgATR * fvgMinATR
+var array<box> bullFVGBoxes = array.new<box>()
+var array<box> bearFVGBoxes = array.new<box>()
+if newBullFVG
+    box bullBox = box.new(left=bar_index - 2, top=low, right=bar_index + fvgExtendBars, bottom=high[2], xloc=xloc.bar_index, bgcolor=bullFVGColor, border_color=color.new(bullFVGBaseColor, 100))
+    array.push(bullFVGBoxes, bullBox)
+    if array.size(bullFVGBoxes) > maxFVGs
+        box oldBull = array.shift(bullFVGBoxes)
+        box.delete(oldBull)
+if newBearFVG
+    box bearBox = box.new(left=bar_index - 2, top=low[2], right=bar_index + fvgExtendBars, bottom=high, xloc=xloc.bar_index, bgcolor=bearFVGColor, border_color=color.new(bearFVGBaseColor, 100))
+    array.push(bearFVGBoxes, bearBox)
+    if array.size(bearFVGBoxes) > maxFVGs
+        box oldBear = array.shift(bearFVGBoxes)
+        box.delete(oldBear)
+if array.size(bullFVGBoxes) > 0
+    int bullIndex = array.size(bullFVGBoxes) - 1
+    while bullIndex >= 0
+        box activeBull = array.get(bullFVGBoxes, bullIndex)
+        box.set_right(activeBull, bar_index + fvgExtendBars)
+        box.set_bgcolor(activeBull, bullFVGColor)
+        if removeFilledFVG and low <= box.get_bottom(activeBull)
+            box.delete(activeBull)
+            array.remove(bullFVGBoxes, bullIndex)
+        bullIndex -= 1
+if array.size(bearFVGBoxes) > 0
+    int bearIndex = array.size(bearFVGBoxes) - 1
+    while bearIndex >= 0
+        box activeBear = array.get(bearFVGBoxes, bearIndex)
+        box.set_right(activeBear, bar_index + fvgExtendBars)
+        box.set_bgcolor(activeBear, bearFVGColor)
+        if removeFilledFVG and high >= box.get_top(activeBear)
+            box.delete(activeBear)
+            array.remove(bearFVGBoxes, bearIndex)
+        bearIndex -= 1
+
+//====================================================
+// 14. FVG STATE + ICT PRICE ACTION STATE
+//====================================================
+float ictATR = math.max(nz(ta.atr(14), syminfo.mintick), syminfo.mintick)
+bool inBullFVGNow = false
+bool nearBullFVGNow = false
+bool inBearFVGNow = false
+bool nearBearFVGNow = false
+int ictFVGMaxAge = timeframe.isdaily ? ictFVGMaxAgeDaily : ictFVGMaxAge1H
+if array.size(bullFVGBoxes) > 0
+    for i = 0 to array.size(bullFVGBoxes) - 1
+        box b = array.get(bullFVGBoxes, i)
+        int bLeft = box.get_left(b)
+        bool bRecent = bar_index - bLeft <= ictFVGMaxAge
+        if bRecent
+            float bTop = box.get_top(b)
+            float bBot = box.get_bottom(b)
+            bool bInside = close <= bTop and close >= bBot
+            bool bNear = (close > bTop and close - bTop <= ictATR * ictNearFVGATR) or (close < bBot and bBot - close <= ictATR * ictNearFVGATR)
+            inBullFVGNow := inBullFVGNow or bInside
+            nearBullFVGNow := nearBullFVGNow or bNear
+if array.size(bearFVGBoxes) > 0
+    for i = 0 to array.size(bearFVGBoxes) - 1
+        box b = array.get(bearFVGBoxes, i)
+        int bLeft = box.get_left(b)
+        bool bRecent = bar_index - bLeft <= ictFVGMaxAge
+        if bRecent
+            float bTop = box.get_top(b)
+            float bBot = box.get_bottom(b)
+            bool bInside = close <= bTop and close >= bBot
+            bool bNear = (close > bTop and close - bTop <= ictATR * ictNearFVGATR) or (close < bBot and bBot - close <= ictATR * ictNearFVGATR)
+            inBearFVGNow := inBearFVGNow or bInside
+            nearBearFVGNow := nearBearFVGNow or bNear
+float nearestBearFVGAbove = na
+float nearestBullFVGBelow = na
+if array.size(bearFVGBoxes) > 0
+    for i = 0 to array.size(bearFVGBoxes) - 1
+        box fb = array.get(bearFVGBoxes, i)
+        float fbBottom = box.get_bottom(fb)
+        if fbBottom > close
+            nearestBearFVGAbove := na(nearestBearFVGAbove) ? fbBottom : math.min(nearestBearFVGAbove, fbBottom)
+if array.size(bullFVGBoxes) > 0
+    for i = 0 to array.size(bullFVGBoxes) - 1
+        box fb = array.get(bullFVGBoxes, i)
+        float fbTop = box.get_top(fb)
+        if fbTop < close
+            nearestBullFVGBelow := na(nearestBullFVGBelow) ? fbTop : math.max(nearestBullFVGBelow, fbTop)
+float ictPH = ta.pivothigh(high, ictPivotLength, ictPivotLength)
+float ictPL = ta.pivotlow(low, ictPivotLength, ictPivotLength)
+var float ictLastSwingHigh = na
+var float ictLastSwingLow = na
+if not na(ictPH)
+    ictLastSwingHigh := ictPH
+if not na(ictPL)
+    ictLastSwingLow := ictPL
+float upperWick = high - math.max(open, close)
+float lowerWick = math.min(open, close) - low
+bool bullLiquiditySweep = not na(ictLastSwingLow) and low < ictLastSwingLow and close > ictLastSwingLow and lowerWick >= ictATR * ictSweepWickATR
+bool bearLiquiditySweep = not na(ictLastSwingHigh) and high > ictLastSwingHigh and close < ictLastSwingHigh and upperWick >= ictATR * ictSweepWickATR
+bool bullMSS = not na(ictLastSwingHigh) and close > ictLastSwingHigh and close[1] <= ictLastSwingHigh
+bool bearMSS = not na(ictLastSwingLow) and close < ictLastSwingLow and close[1] >= ictLastSwingLow
+float candleBody = math.abs(close - open)
+bool bullDisplacement = close > open and candleBody >= ictATR * ictDisplacementATR
+bool bearDisplacement = close < open and candleBody >= ictATR * ictDisplacementATR
+float ictRangeHigh = ta.highest(high, ictRangeLookback)
+float ictRangeLow = ta.lowest(low, ictRangeLookback)
+float ictEquilibrium = math.avg(ictRangeHigh, ictRangeLow)
+bool inDiscount = close <= ictEquilibrium
+bool inPremium = close >= ictEquilibrium
+int elliottAnalysisWindow = timeframe.isdaily ? elliottAnalysisWindowDaily : elliottAnalysisWindow1H
+float fixedRangeHigh = ta.highest(high, elliottAnalysisWindow)
+float fixedRangeLow = ta.lowest(low, elliottAnalysisWindow)
+float fixedZoneWidth = ictATR * ictFixedZoneWidthATR
+float fixedSupplyTop = fixedRangeHigh
+float fixedSupplyBot = fixedRangeHigh - fixedZoneWidth
+float fixedDemandTop = fixedRangeLow + fixedZoneWidth
+float fixedDemandBot = fixedRangeLow
+float fixedSupplyAvg = math.avg(fixedSupplyTop, fixedSupplyBot)
+float fixedDemandAvg = math.avg(fixedDemandTop, fixedDemandBot)
+bool inDemandNow = close <= fixedDemandTop and close >= fixedDemandBot
+bool nearDemandNow = close > fixedDemandTop and close - fixedDemandTop <= ictATR * ictNearZoneATR
+bool inSupplyNow = close <= fixedSupplyTop and close >= fixedSupplyBot
+bool nearSupplyNow = close < fixedSupplyBot and fixedSupplyBot - close <= ictATR * ictNearZoneATR
+plotshape(showICTMarkers and bullLiquiditySweep, title="Bull Liquidity Sweep", text="LS", style=shape.labelup, location=location.belowbar, size=size.normal, color=color.new(color.lime, 70), textcolor=color.lime, display=display.none)
+plotshape(showICTMarkers and bearLiquiditySweep, title="Bear Liquidity Sweep", text="LS", style=shape.labeldown, location=location.abovebar, size=size.normal, color=color.new(color.red, 70), textcolor=color.red, display=display.none)
+plotshape(showICTMarkers and bullMSS, title="Bull MSS", text="MSS", style=shape.labelup, location=location.belowbar, size=size.normal, color=color.new(color.aqua, 70), textcolor=color.aqua, display=display.none)
+plotshape(showICTMarkers and bearMSS, title="Bear MSS", text="MSS", style=shape.labeldown, location=location.abovebar, size=size.normal, color=color.new(color.orange, 70), textcolor=color.orange, display=display.none)
+
+//====================================================
+// 14A. KEY SUPPORT / RESISTANCE DECISION ZONES
+//====================================================
+//
+// This section compresses the underlying STP evidence into the two levels
+// a trader needs first: the nearest actionable resistance and support.
+// Fibonacci, fixed Supply/Demand, active FVG boundaries, recent swing
+// structure and optional EMA confluence are clustered together.
+// Performance note: valid candidates are sorted once and evaluated with a
+// sliding window instead of using a nested seed x candidate loop on every bar.
+//
+// Detailed Fib levels remain available in Settings, but are hidden by
+// default so the chart opens in a cleaner "watch the reaction" layout.
+f_findDecisionZone(array<float> levels, float reference, bool resistance, float tolerance, int preferredConfluence, float padding) =>
+    float bestLow = na
+    float bestHigh = na
+    float bestCenter = na
+    int bestScore = 0
+    float bestDistance = 1.0e10
+    float fallbackLevel = na
+    float fallbackDistance = 1.0e10
+    array<float> validLevels = array.new_float()
+    int sourceCount = array.size(levels)
+    if sourceCount > 0
+        for i = 0 to sourceCount - 1
+            float levelValue = array.get(levels, i)
+            bool levelValid = not na(levelValue) and (resistance ? levelValue > reference : levelValue < reference)
+            if levelValid
+                array.push(validLevels, levelValue)
+                float levelDistance = math.abs(levelValue - reference)
+                if levelDistance < fallbackDistance
+                    fallbackDistance := levelDistance
+                    fallbackLevel := levelValue
+    int validCount = array.size(validLevels)
+    if validCount >= preferredConfluence
+        array.sort(validLevels, order.ascending)
+        int leftIndex = 0
+        float windowSum = 0.0
+        float maxClusterSpan = tolerance * 2.0
+        for rightIndex = 0 to validCount - 1
+            float rightValue = array.get(validLevels, rightIndex)
+            windowSum += rightValue
+            while leftIndex < rightIndex and rightValue - array.get(validLevels, leftIndex) > maxClusterSpan
+                windowSum -= array.get(validLevels, leftIndex)
+                leftIndex += 1
+            int clusterCount = rightIndex - leftIndex + 1
+            if clusterCount >= preferredConfluence
+                float clusterLow = array.get(validLevels, leftIndex)
+                float clusterHigh = rightValue
+                float clusterCenter = windowSum / clusterCount
+                float clusterDistance = math.abs(clusterCenter - reference)
+                if clusterDistance < bestDistance
+                    bestDistance := clusterDistance
+                    bestLow := clusterLow
+                    bestHigh := clusterHigh
+                    bestCenter := clusterCenter
+                    bestScore := clusterCount
+    if na(bestCenter) and not na(fallbackLevel)
+        bestLow := fallbackLevel
+        bestHigh := fallbackLevel
+        bestCenter := fallbackLevel
+        bestScore := 1
+    if not na(bestCenter)
+        bestLow -= padding
+        bestHigh += padding
+    [bestLow, bestHigh, bestCenter, bestScore]
+var float keyResistanceLow = na
+var float keyResistanceHigh = na
+var float keyResistanceCenter = na
+var int keyResistanceScore = 0
+var float keySupportLow = na
+var float keySupportHigh = na
+var float keySupportCenter = na
+var int keySupportScore = 0
+var box keyResistanceBox = na
+var box keySupportBox = na
+var line keyResistanceLine = na
+var line keySupportLine = na
+var label keyResistanceLabel = na
+var label keySupportLabel = na
+int keyTransparency = 100 - keyZoneShadingPct
+color keyResistanceFill = color.new(keyResistanceColor, keyTransparency)
+color keySupportFill = color.new(keySupportColor, keyTransparency)
+if barstate.islast
+    array<float> keyResistanceCandidates = array.new_float()
+    array<float> keySupportCandidates = array.new_float()
+    array.push(keyResistanceCandidates, fibR1)
+    array.push(keyResistanceCandidates, fibR2)
+    array.push(keyResistanceCandidates, fibR3)
+    array.push(keyResistanceCandidates, fibR4)
+    array.push(keyResistanceCandidates, fixedSupplyBot)
+    array.push(keyResistanceCandidates, fixedSupplyAvg)
+    array.push(keyResistanceCandidates, fixedSupplyTop)
+    array.push(keyResistanceCandidates, nearestBearFVGAbove)
+    array.push(keySupportCandidates, fibS1)
+    array.push(keySupportCandidates, fibS2)
+    array.push(keySupportCandidates, fibS3)
+    array.push(keySupportCandidates, fibS4)
+    array.push(keySupportCandidates, fixedDemandTop)
+    array.push(keySupportCandidates, fixedDemandAvg)
+    array.push(keySupportCandidates, fixedDemandBot)
+    array.push(keySupportCandidates, nearestBullFVGBelow)
+    if keyUseSwingLevels
+        array.push(keyResistanceCandidates, ictLastSwingHigh)
+        array.push(keySupportCandidates, ictLastSwingLow)
+    if keyUseEMAConfluence
+        if fastEMA > close
+            array.push(keyResistanceCandidates, fastEMA)
+        if slowEMA > close
+            array.push(keyResistanceCandidates, slowEMA)
+        if fastEMA < close
+            array.push(keySupportCandidates, fastEMA)
+        if slowEMA < close
+            array.push(keySupportCandidates, slowEMA)
+    float keyTolerance = ictATR * keyClusterToleranceATR
+    float keyPadding = math.max(ictATR * keyZonePaddingATR, syminfo.mintick * 2.0)
+    [calcResistanceLow, calcResistanceHigh, calcResistanceCenter, calcResistanceScore] = f_findDecisionZone(keyResistanceCandidates, close, true, keyTolerance, keyMinConfluence, keyPadding)
+    [calcSupportLow, calcSupportHigh, calcSupportCenter, calcSupportScore] = f_findDecisionZone(keySupportCandidates, close, false, keyTolerance, keyMinConfluence, keyPadding)
+    keyResistanceLow := calcResistanceLow
+    keyResistanceHigh := calcResistanceHigh
+    keyResistanceCenter := calcResistanceCenter
+    keyResistanceScore := calcResistanceScore
+    keySupportLow := calcSupportLow
+    keySupportHigh := calcSupportHigh
+    keySupportCenter := calcSupportCenter
+    keySupportScore := calcSupportScore
+    int keyX1 = bar_index
+    int keyX2 = bar_index + keyLevelExtendBars
+    if showKeyLevels and not na(keyResistanceCenter)
+        if na(keyResistanceBox)
+            keyResistanceBox := box.new(left=keyX1, top=keyResistanceHigh, right=keyX2, bottom=keyResistanceLow, xloc=xloc.bar_index, bgcolor=keyResistanceFill, border_color=color.new(keyResistanceColor, 35))
+        else
+            box.set_lefttop(keyResistanceBox, keyX1, keyResistanceHigh)
+            box.set_rightbottom(keyResistanceBox, keyX2, keyResistanceLow)
+            box.set_bgcolor(keyResistanceBox, keyResistanceFill)
+            box.set_border_color(keyResistanceBox, color.new(keyResistanceColor, 35))
+        if na(keyResistanceLine)
+            keyResistanceLine := line.new(keyX1, keyResistanceCenter, keyX2, keyResistanceCenter, xloc=xloc.bar_index, color=keyResistanceColor, width=keyLevelLineWidth)
+        else
+            line.set_xy1(keyResistanceLine, keyX1, keyResistanceCenter)
+            line.set_xy2(keyResistanceLine, keyX2, keyResistanceCenter)
+            line.set_color(keyResistanceLine, keyResistanceColor)
+            line.set_width(keyResistanceLine, keyLevelLineWidth)
+        if showKeyLevelLabels
+            string keyResistanceText = compactKeyLevelLabels ? "CONFLUENCE RESISTANCE  $" + str.tostring(keyResistanceLow, "#.##") + " - $" + str.tostring(keyResistanceHigh, "#.##") : "CONFLUENCE RESISTANCE  $" + str.tostring(keyResistanceLow, "#.##") + " - $" + str.tostring(keyResistanceHigh, "#.##")
+            if na(keyResistanceLabel)
+                keyResistanceLabel := label.new(keyX2, keyResistanceCenter, keyResistanceText, xloc=xloc.bar_index, style=label.style_label_left, color=color.new(keyResistanceColor, 88), textcolor=keyResistanceColor, size=size.normal)
+            else
+                label.set_xy(keyResistanceLabel, keyX2, keyResistanceCenter)
+                label.set_text(keyResistanceLabel, keyResistanceText)
+                label.set_color(keyResistanceLabel, color.new(keyResistanceColor, 88))
+                label.set_textcolor(keyResistanceLabel, keyResistanceColor)
+        else
+            if not na(keyResistanceLabel)
+                label.delete(keyResistanceLabel)
+                keyResistanceLabel := na
+    else
+        if not na(keyResistanceBox)
+            box.delete(keyResistanceBox)
+            keyResistanceBox := na
+        if not na(keyResistanceLine)
+            line.delete(keyResistanceLine)
+            keyResistanceLine := na
+        if not na(keyResistanceLabel)
+            label.delete(keyResistanceLabel)
+            keyResistanceLabel := na
+    if showKeyLevels and not na(keySupportCenter)
+        if na(keySupportBox)
+            keySupportBox := box.new(left=keyX1, top=keySupportHigh, right=keyX2, bottom=keySupportLow, xloc=xloc.bar_index, bgcolor=keySupportFill, border_color=color.new(keySupportColor, 35))
+        else
+            box.set_lefttop(keySupportBox, keyX1, keySupportHigh)
+            box.set_rightbottom(keySupportBox, keyX2, keySupportLow)
+            box.set_bgcolor(keySupportBox, keySupportFill)
+            box.set_border_color(keySupportBox, color.new(keySupportColor, 35))
+        if na(keySupportLine)
+            keySupportLine := line.new(keyX1, keySupportCenter, keyX2, keySupportCenter, xloc=xloc.bar_index, color=keySupportColor, width=keyLevelLineWidth)
+        else
+            line.set_xy1(keySupportLine, keyX1, keySupportCenter)
+            line.set_xy2(keySupportLine, keyX2, keySupportCenter)
+            line.set_color(keySupportLine, keySupportColor)
+            line.set_width(keySupportLine, keyLevelLineWidth)
+        if showKeyLevelLabels
+            string keySupportText = compactKeyLevelLabels ? "CONFLUENCE SUPPORT  $" + str.tostring(keySupportLow, "#.##") + " - $" + str.tostring(keySupportHigh, "#.##") : "CONFLUENCE SUPPORT  $" + str.tostring(keySupportLow, "#.##") + " - $" + str.tostring(keySupportHigh, "#.##")
+            if na(keySupportLabel)
+                keySupportLabel := label.new(keyX2, keySupportCenter, keySupportText, xloc=xloc.bar_index, style=label.style_label_left, color=color.new(keySupportColor, 88), textcolor=keySupportColor, size=size.normal)
+            else
+                label.set_xy(keySupportLabel, keyX2, keySupportCenter)
+                label.set_text(keySupportLabel, keySupportText)
+                label.set_color(keySupportLabel, color.new(keySupportColor, 88))
+                label.set_textcolor(keySupportLabel, keySupportColor)
+        else
+            if not na(keySupportLabel)
+                label.delete(keySupportLabel)
+                keySupportLabel := na
+    else
+        if not na(keySupportBox)
+            box.delete(keySupportBox)
+            keySupportBox := na
+        if not na(keySupportLine)
+            line.delete(keySupportLine)
+            keySupportLine := na
+        if not na(keySupportLabel)
+            label.delete(keySupportLabel)
+            keySupportLabel := na
+
+//----------------------------------------------------
+// REDUCE REDUNDANT FIB GRAPHICS INSIDE KEY DECISION ZONES
+//----------------------------------------------------
+if barstate.islast and suppressFibInsideKeyZones and showKeyLevels
+    bool r1InsideKeyResistance = not na(keyResistanceLow) and not na(keyResistanceHigh) and fibR1 >= keyResistanceLow and fibR1 <= keyResistanceHigh
+    bool r2InsideKeyResistance = not na(keyResistanceLow) and not na(keyResistanceHigh) and fibR2 >= keyResistanceLow and fibR2 <= keyResistanceHigh
+    bool r3InsideKeyResistance = not na(keyResistanceLow) and not na(keyResistanceHigh) and fibR3 >= keyResistanceLow and fibR3 <= keyResistanceHigh
+    bool r4InsideKeyResistance = not na(keyResistanceLow) and not na(keyResistanceHigh) and fibR4 >= keyResistanceLow and fibR4 <= keyResistanceHigh
+    bool s1InsideKeySupport = not na(keySupportLow) and not na(keySupportHigh) and fibS1 >= keySupportLow and fibS1 <= keySupportHigh
+    bool s2InsideKeySupport = not na(keySupportLow) and not na(keySupportHigh) and fibS2 >= keySupportLow and fibS2 <= keySupportHigh
+    bool s3InsideKeySupport = not na(keySupportLow) and not na(keySupportHigh) and fibS3 >= keySupportLow and fibS3 <= keySupportHigh
+    bool s4InsideKeySupport = not na(keySupportLow) and not na(keySupportHigh) and fibS4 >= keySupportLow and fibS4 <= keySupportHigh
+    if r1InsideKeyResistance
+        if not na(fibR1Line)
+            line.delete(fibR1Line)
+            fibR1Line := na
+        if not na(fibR1Label)
+            label.delete(fibR1Label)
+            fibR1Label := na
+    if r2InsideKeyResistance
+        if not na(fibR2Line)
+            line.delete(fibR2Line)
+            fibR2Line := na
+        if not na(fibR2Label)
+            label.delete(fibR2Label)
+            fibR2Label := na
+    if r3InsideKeyResistance
+        if not na(fibR3Line)
+            line.delete(fibR3Line)
+            fibR3Line := na
+        if not na(fibR3Label)
+            label.delete(fibR3Label)
+            fibR3Label := na
+    if r4InsideKeyResistance
+        if not na(fibR4Line)
+            line.delete(fibR4Line)
+            fibR4Line := na
+        if not na(fibR4Label)
+            label.delete(fibR4Label)
+            fibR4Label := na
+    if s1InsideKeySupport
+        if not na(fibS1Line)
+            line.delete(fibS1Line)
+            fibS1Line := na
+        if not na(fibS1Label)
+            label.delete(fibS1Label)
+            fibS1Label := na
+    if s2InsideKeySupport
+        if not na(fibS2Line)
+            line.delete(fibS2Line)
+            fibS2Line := na
+        if not na(fibS2Label)
+            label.delete(fibS2Label)
+            fibS2Label := na
+    if s3InsideKeySupport
+        if not na(fibS3Line)
+            line.delete(fibS3Line)
+            fibS3Line := na
+        if not na(fibS3Label)
+            label.delete(fibS3Label)
+            fibS3Label := na
+    if s4InsideKeySupport
+        if not na(fibS4Line)
+            line.delete(fibS4Line)
+            fibS4Line := na
+        if not na(fibS4Label)
+            label.delete(fibS4Label)
+            fibS4Label := na
+
+//====================================================
+// 15. MAJOR SWING PIVOT ENGINE
+//====================================================
+int elliottPivotLengthEff = useAutoMajorSwing ? (timeframe.isdaily ? elliottPivotDaily : elliottPivot1H) : elliottPivotLength
+
+//----------------------------------------------------
+// INTERNAL MULTI-SCALE SWING-DEGREE ENGINE
+//----------------------------------------------------
+// This engine is intentionally non-visual. It evaluates the same chart at
+// fast, medium and slow swing degrees and contributes only to Elliott
+// scenario ranking. Existing STP graphics remain unchanged.
+int elliottFastPivotLength = math.max(2, int(math.round(elliottPivotLengthEff * 0.50)))
+int elliottMediumPivotLength = elliottPivotLengthEff
+int elliottSlowPivotLength = math.max(elliottMediumPivotLength + 2, int(math.round(elliottPivotLengthEff * 1.75)))
+float elliottFastPH = ta.pivothigh(high, elliottFastPivotLength, elliottFastPivotLength)
+float elliottFastPL = ta.pivotlow(low, elliottFastPivotLength, elliottFastPivotLength)
+float elliottMediumPH = ta.pivothigh(high, elliottMediumPivotLength, elliottMediumPivotLength)
+float elliottMediumPL = ta.pivotlow(low, elliottMediumPivotLength, elliottMediumPivotLength)
+float elliottSlowPH = ta.pivothigh(high, elliottSlowPivotLength, elliottSlowPivotLength)
+float elliottSlowPL = ta.pivotlow(low, elliottSlowPivotLength, elliottSlowPivotLength)
+float elliottFastHigh0 = ta.valuewhen(not na(elliottFastPH), elliottFastPH, 0)
+float elliottFastHigh1 = ta.valuewhen(not na(elliottFastPH), elliottFastPH, 1)
+float elliottFastLow0 = ta.valuewhen(not na(elliottFastPL), elliottFastPL, 0)
+float elliottFastLow1 = ta.valuewhen(not na(elliottFastPL), elliottFastPL, 1)
+float elliottMediumHigh0 = ta.valuewhen(not na(elliottMediumPH), elliottMediumPH, 0)
+float elliottMediumHigh1 = ta.valuewhen(not na(elliottMediumPH), elliottMediumPH, 1)
+float elliottMediumLow0 = ta.valuewhen(not na(elliottMediumPL), elliottMediumPL, 0)
+float elliottMediumLow1 = ta.valuewhen(not na(elliottMediumPL), elliottMediumPL, 1)
+float elliottSlowHigh0 = ta.valuewhen(not na(elliottSlowPH), elliottSlowPH, 0)
+float elliottSlowHigh1 = ta.valuewhen(not na(elliottSlowPH), elliottSlowPH, 1)
+float elliottSlowLow0 = ta.valuewhen(not na(elliottSlowPL), elliottSlowPL, 0)
+float elliottSlowLow1 = ta.valuewhen(not na(elliottSlowPL), elliottSlowPL, 1)
+bool elliottFastBull = not na(elliottFastHigh0) and not na(elliottFastHigh1) and not na(elliottFastLow0) and not na(elliottFastLow1) and elliottFastHigh0 > elliottFastHigh1 and elliottFastLow0 > elliottFastLow1
+bool elliottFastBear = not na(elliottFastHigh0) and not na(elliottFastHigh1) and not na(elliottFastLow0) and not na(elliottFastLow1) and elliottFastHigh0 < elliottFastHigh1 and elliottFastLow0 < elliottFastLow1
+bool elliottMediumBull = not na(elliottMediumHigh0) and not na(elliottMediumHigh1) and not na(elliottMediumLow0) and not na(elliottMediumLow1) and elliottMediumHigh0 > elliottMediumHigh1 and elliottMediumLow0 > elliottMediumLow1
+bool elliottMediumBear = not na(elliottMediumHigh0) and not na(elliottMediumHigh1) and not na(elliottMediumLow0) and not na(elliottMediumLow1) and elliottMediumHigh0 < elliottMediumHigh1 and elliottMediumLow0 < elliottMediumLow1
+bool elliottSlowBull = not na(elliottSlowHigh0) and not na(elliottSlowHigh1) and not na(elliottSlowLow0) and not na(elliottSlowLow1) and elliottSlowHigh0 > elliottSlowHigh1 and elliottSlowLow0 > elliottSlowLow1
+bool elliottSlowBear = not na(elliottSlowHigh0) and not na(elliottSlowHigh1) and not na(elliottSlowLow0) and not na(elliottSlowLow1) and elliottSlowHigh0 < elliottSlowHigh1 and elliottSlowLow0 < elliottSlowLow1
+int elliottScaleBullVotes = (elliottFastBull ? 1 : 0) + (elliottMediumBull ? 1 : 0) + (elliottSlowBull ? 1 : 0)
+int elliottScaleBearVotes = (elliottFastBear ? 1 : 0) + (elliottMediumBear ? 1 : 0) + (elliottSlowBear ? 1 : 0)
+
+float pivotHigh = ta.pivothigh(high, elliottPivotLengthEff, elliottPivotLengthEff)
+float pivotLow = ta.pivotlow(low, elliottPivotLengthEff, elliottPivotLengthEff)
+var array<int> pivotBars = array.new<int>()
+var array<float> pivotPrices = array.new<float>()
+var array<int> pivotTypes = array.new<int>()
+var float previousHigh = na
+var float previousLow = na
+var array<line> historicalLines = array.new<line>()
+var array<label> historicalLabels = array.new<label>()
+if not na(pivotHigh)
+    int highBar = bar_index - elliottPivotLengthEff
+    float highPrice = pivotHigh
+    int pivotCountHigh = array.size(pivotTypes)
+    if pivotCountHigh == 0
+        array.push(pivotBars, highBar)
+        array.push(pivotPrices, highPrice)
+        array.push(pivotTypes, 1)
+    else
+        int lastHighType = array.get(pivotTypes, pivotCountHigh - 1)
+        if lastHighType == 1
+            float priorHighPrice = array.get(pivotPrices, pivotCountHigh - 1)
+            if highPrice > priorHighPrice
+                array.set(pivotBars, pivotCountHigh - 1, highBar)
+                array.set(pivotPrices, pivotCountHigh - 1, highPrice)
+        else
+            int previousBar = array.get(pivotBars, pivotCountHigh - 1)
+            float previousPrice = array.get(pivotPrices, pivotCountHigh - 1)
+            array.push(pivotBars, highBar)
+            array.push(pivotPrices, highPrice)
+            array.push(pivotTypes, 1)
+            if showHistoricalStructure
+                line historicalLine = line.new(previousBar, previousPrice, highBar, highPrice, xloc=xloc.bar_index, color=highPrice >= previousPrice ? bullStructureColor : bearStructureColor, width=1)
+                array.push(historicalLines, historicalLine)
+            if showStructureLabels
+                string highText = na(previousHigh) ? "H" : highPrice > previousHigh ? "HH" : "LH"
+                label highPivotLabel = label.new(highBar, highPrice, highText, xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.black, 100), textcolor=highText == "HH" ? bullStructureColor : bearStructureColor, size=size.normal)
+                array.push(historicalLabels, highPivotLabel)
+            previousHigh := highPrice
+if not na(pivotLow)
+    int lowBar = bar_index - elliottPivotLengthEff
+    float lowPrice = pivotLow
+    int pivotCountLow = array.size(pivotTypes)
+    if pivotCountLow == 0
+        array.push(pivotBars, lowBar)
+        array.push(pivotPrices, lowPrice)
+        array.push(pivotTypes, -1)
+    else
+        int lastLowType = array.get(pivotTypes, pivotCountLow - 1)
+        if lastLowType == -1
+            float priorLowPrice = array.get(pivotPrices, pivotCountLow - 1)
+            if lowPrice < priorLowPrice
+                array.set(pivotBars, pivotCountLow - 1, lowBar)
+                array.set(pivotPrices, pivotCountLow - 1, lowPrice)
+        else
+            int previousBar = array.get(pivotBars, pivotCountLow - 1)
+            float previousPrice = array.get(pivotPrices, pivotCountLow - 1)
+            array.push(pivotBars, lowBar)
+            array.push(pivotPrices, lowPrice)
+            array.push(pivotTypes, -1)
+            if showHistoricalStructure
+                line historicalLine = line.new(previousBar, previousPrice, lowBar, lowPrice, xloc=xloc.bar_index, color=lowPrice >= previousPrice ? bullStructureColor : bearStructureColor, width=1)
+                array.push(historicalLines, historicalLine)
+            if showStructureLabels
+                string lowText = na(previousLow) ? "L" : lowPrice > previousLow ? "HL" : "LL"
+                label lowPivotLabel = label.new(lowBar, lowPrice, lowText, xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.black, 100), textcolor=lowText == "HL" ? bullStructureColor : bearStructureColor, size=size.normal)
+                array.push(historicalLabels, lowPivotLabel)
+            previousLow := lowPrice
+while array.size(pivotBars) > 30
+    array.shift(pivotBars)
+    array.shift(pivotPrices)
+    array.shift(pivotTypes)
+while array.size(pivotBars) > 0 and bar_index - array.get(pivotBars, 0) > elliottAnalysisWindow
+    array.shift(pivotBars)
+    array.shift(pivotPrices)
+    array.shift(pivotTypes)
+while array.size(historicalLines) > 40
+    line oldHistoricalLine = array.shift(historicalLines)
+    line.delete(oldHistoricalLine)
+while array.size(historicalLabels) > 40
+    label oldHistoricalLabel = array.shift(historicalLabels)
+    label.delete(oldHistoricalLabel)
+
+//====================================================
+// 16. DUAL ELLIOTT SCENARIO ENGINE
+//====================================================
+//
+// This version builds BULLISH and BEARISH Elliott structures independently.
+// Neither path is created by simply mirroring the other.
+// After each closed candle, both scenarios are rescored using:
+// - Elliott structure quality
+// - ICT/FVG evidence
+// - Supply/Demand location
+// - EMA trend
+// - closed-candle price tracking
+//
+// The higher-scoring scenario becomes the colored primary path.
+// The lower-scoring scenario remains the gray secondary path.
+
+//----------------------------------------------------
+// 16A. DAILY / LOCAL TREND AND ICT SCORES
+//----------------------------------------------------
+float dailyFastEMA = request.security(syminfo.tickerid, "D", ta.ema(close, fastEmaLength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+float dailySlowEMA = request.security(syminfo.tickerid, "D", ta.ema(close, slowEmaLength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+float dailyCloseForElliott = request.security(syminfo.tickerid, "D", close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+float dailyATR10 = request.security(syminfo.tickerid, "D", ta.atr(elliottDailyATRLength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+bool localEmaBull = fastEMA >= slowEMA
+bool dailyEmaBull = dailyFastEMA >= dailySlowEMA
+int ictBullScore = 0
+int ictBearScore = 0
+ictBullScore += dailyEmaBull ? 2 : 0
+ictBearScore += dailyEmaBull ? 0 : 2
+ictBullScore += localEmaBull ? 1 : 0
+ictBearScore += localEmaBull ? 0 : 1
+ictBullScore += bullLiquiditySweep ? 2 : 0
+ictBearScore += bearLiquiditySweep ? 2 : 0
+ictBullScore += bullMSS ? 3 : 0
+ictBearScore += bearMSS ? 3 : 0
+ictBullScore += bullDisplacement ? 1 : 0
+ictBearScore += bearDisplacement ? 1 : 0
+ictBullScore += inBullFVGNow or nearBullFVGNow ? 2 : 0
+ictBearScore += inBearFVGNow or nearBearFVGNow ? 2 : 0
+ictBullScore += inDemandNow or nearDemandNow ? 2 : 0
+ictBearScore += inSupplyNow or nearSupplyNow ? 2 : 0
+ictBullScore += inDiscount ? 1 : 0
+ictBearScore += inPremium ? 1 : 0
+int ictScoreEdge = ictBullScore - ictBearScore
+float confluenceStrength = math.min(math.abs(ictScoreEdge) / 8.0, 1.0)
+
+//----------------------------------------------------
+// 16B. SHARED TIMEFRAME-AWARE PROJECTION SCALE
+//----------------------------------------------------
+float projectionModeMult = 1.00
+if elliottProjectionMode == "Conservative"
+    projectionModeMult := 0.75
+if elliottProjectionMode == "Normal"
+    projectionModeMult := 1.00
+if elliottProjectionMode == "Aggressive"
+    projectionModeMult := 1.50
+float confluenceProjectionMult = useICTConfluence ? 0.90 + confluenceStrength * 0.20 : 1.00
+// Daily uses Daily ATR directly.
+// 1H uses local ATR with Daily ATR acting as an upper ceiling.
+// The 1H ceiling is intentionally wider than the prior build so expansion
+// moves are not compressed into a narrow channel.
+float timeframeProjectionATR = timeframe.isdaily ? dailyATR10 : math.min(dailyATR10, ictATR * 6.0)
+float baseProjectionUnit = timeframeProjectionATR * projectionModeMult * projectionRealismMult
+float projectionMoveATR = ictATR > 0.0 ? math.abs(close - close[1]) / ictATR : 0.0
+float bullMomentumExpansion = 1.0
+float bearMomentumExpansion = 1.0
+if adaptiveProjection
+    bullMomentumExpansion += bullDisplacement ? 0.12 : 0.0
+    bullMomentumExpansion += bullMSS ? 0.10 : 0.0
+    bullMomentumExpansion += close > high[1] ? 0.08 : 0.0
+    bullMomentumExpansion += close > close[1] and projectionMoveATR >= 0.50 ? 0.10 : 0.0
+    bearMomentumExpansion += bearDisplacement ? 0.12 : 0.0
+    bearMomentumExpansion += bearMSS ? 0.10 : 0.0
+    bearMomentumExpansion += close < low[1] ? 0.08 : 0.0
+    bearMomentumExpansion += close < close[1] and projectionMoveATR >= 0.50 ? 0.10 : 0.0
+bullMomentumExpansion := math.min(bullMomentumExpansion, maxMomentumExpansion)
+bearMomentumExpansion := math.min(bearMomentumExpansion, maxMomentumExpansion)
+float bullEvidenceExpansion = useICTConfluence ? math.max(0.85, math.min(1.20, 1.0 + ictScoreEdge * 0.025)) : 1.0
+float bearEvidenceExpansion = useICTConfluence ? math.max(0.85, math.min(1.20, 1.0 - ictScoreEdge * 0.025)) : 1.0
+float bullProjectionUnit = baseProjectionUnit * bullMomentumExpansion * bullEvidenceExpansion
+float bearProjectionUnit = baseProjectionUnit * bearMomentumExpansion * bearEvidenceExpansion
+// Retain this shared value for secondary fallback and existing downstream logic.
+float elliottProjectionUnit = baseProjectionUnit * confluenceProjectionMult
+
+//----------------------------------------------------
+// 16C. RECENCY / VALIDATION PARAMETERS
+//----------------------------------------------------
+int elliottMaxWave2Age = timeframe.isdaily ? elliottMaxWave2AgeDaily : elliottMaxWave2Age1H
+int elliottMaxWave1Age = timeframe.isdaily ? elliottMaxWave1AgeDaily : elliottMaxWave1Age1H
+int elliottFallbackLookback = math.min(math.min(elliottLookback, elliottMaxWave1Age), elliottAnalysisWindow)
+float activeMinImpulseATR = timeframe.isdaily ? minImpulseATR : minImpulseATR1H
+float activeMaxImpulseATR = timeframe.isdaily ? 6.0 : maxImpulseATR
+int storedPivotCount = array.size(pivotTypes)
+
+//====================================================
+// 17-18. SHARED ELLIOTT STRUCTURE ENGINE
+//====================================================
+//
+// PERFORMANCE:
+// The prior build scanned the same recent pivot arrays once for the
+// bullish structure and again for the bearish structure. On larger
+// histories those duplicate reverse scans became one of the largest
+// profiler costs.
+//
+// This engine performs:
+// 1) one shared triple-pivot scan for both bull and bear,
+// 2) one shared impulse fallback scan for both directions,
+// 3) one shared price-history fallback loop.
+//
+// Output variable names are intentionally kept identical to the prior
+// build so all downstream Elliott projection / drawing code remains
+// compatible.
+//====================================================
+
+//----------------------------------------------------
+// Bullish outputs
+//----------------------------------------------------
+int bullWave0Bar = na
+int bullWave1Bar = na
+int bullWave2Bar = na
+float bullWave0Price = na
+float bullWave1Price = na
+float bullWave2Price = na
+bool bullWave2Actual = false
+bool bullFoundStructure = false
+
+//----------------------------------------------------
+// Bearish outputs
+//----------------------------------------------------
+int bearWave0Bar = na
+int bearWave1Bar = na
+int bearWave2Bar = na
+float bearWave0Price = na
+float bearWave1Price = na
+float bearWave2Price = na
+bool bearWave2Actual = false
+bool bearFoundStructure = false
+//----------------------------------------------------
+// A. SHARED CONFIRMED TRIPLE-PIVOT SCAN
+//
+// Bull: LOW -> HIGH -> HIGHER LOW
+// Bear: HIGH -> LOW -> LOWER HIGH
+//----------------------------------------------------
+if storedPivotCount >= 3
+    int sharedTripleIndex = storedPivotCount - 1
+    int sharedOldestTriple = math.max(2, storedPivotCount - elliottRecentPivotCount)
+    while sharedTripleIndex >= sharedOldestTriple and (not bullFoundStructure or not bearFoundStructure)
+        int sharedType0 = array.get(pivotTypes, sharedTripleIndex - 2)
+        int sharedType1 = array.get(pivotTypes, sharedTripleIndex - 1)
+        int sharedType2 = array.get(pivotTypes, sharedTripleIndex)
+        int sharedBar0 = array.get(pivotBars, sharedTripleIndex - 2)
+        int sharedBar1 = array.get(pivotBars, sharedTripleIndex - 1)
+        int sharedBar2 = array.get(pivotBars, sharedTripleIndex)
+        float sharedPrice0 = array.get(pivotPrices, sharedTripleIndex - 2)
+        float sharedPrice1 = array.get(pivotPrices, sharedTripleIndex - 1)
+        float sharedPrice2 = array.get(pivotPrices, sharedTripleIndex)
+        float sharedCandidateSize = math.abs(sharedPrice1 - sharedPrice0)
+        float sharedCandidateATR = dailyATR10 > 0.0 ? sharedCandidateSize / dailyATR10 : 0.0
+        bool sharedWave2Recent = bar_index - sharedBar2 <= elliottMaxWave2Age
+        bool sharedInsideWindow = bar_index - sharedBar0 <= elliottAnalysisWindow and bar_index - sharedBar1 <= elliottAnalysisWindow and bar_index - sharedBar2 <= elliottAnalysisWindow
+        bool sharedImpulseValid = sharedCandidateATR >= activeMinImpulseATR and sharedCandidateATR <= activeMaxImpulseATR
+        if not bullFoundStructure and sharedType0 == -1 and sharedType1 == 1 and sharedType2 == -1
+            float bullCandidateRetrace = sharedCandidateSize > 0.0 ? (sharedPrice1 - sharedPrice2) / sharedCandidateSize : 0.0
+            bool bullRetraceValid = sharedPrice2 > sharedPrice0 and bullCandidateRetrace >= minWave2Retrace and bullCandidateRetrace <= maxWave2Retrace
+            if sharedWave2Recent and sharedInsideWindow and sharedImpulseValid and bullRetraceValid
+                bullWave0Bar := sharedBar0
+                bullWave0Price := sharedPrice0
+                bullWave1Bar := sharedBar1
+                bullWave1Price := sharedPrice1
+                bullWave2Bar := sharedBar2
+                bullWave2Price := sharedPrice2
+                bullWave2Actual := true
+                bullFoundStructure := true
+        if not bearFoundStructure and sharedType0 == 1 and sharedType1 == -1 and sharedType2 == 1
+            float bearCandidateRetrace = sharedCandidateSize > 0.0 ? (sharedPrice2 - sharedPrice1) / sharedCandidateSize : 0.0
+            bool bearRetraceValid = sharedPrice2 < sharedPrice0 and bearCandidateRetrace >= minWave2Retrace and bearCandidateRetrace <= maxWave2Retrace
+            if sharedWave2Recent and sharedInsideWindow and sharedImpulseValid and bearRetraceValid
+                bearWave0Bar := sharedBar0
+                bearWave0Price := sharedPrice0
+                bearWave1Bar := sharedBar1
+                bearWave1Price := sharedPrice1
+                bearWave2Bar := sharedBar2
+                bearWave2Price := sharedPrice2
+                bearWave2Actual := true
+                bearFoundStructure := true
+        sharedTripleIndex -= 1
+
+//----------------------------------------------------
+// B. SHARED 0 -> 1 IMPULSE FALLBACK SCAN
+//----------------------------------------------------
+if storedPivotCount >= 2 and (not bullFoundStructure or not bearFoundStructure)
+    int sharedImpulseIndex = storedPivotCount - 1
+    int sharedOldestImpulse = math.max(1, storedPivotCount - elliottRecentPivotCount)
+    while sharedImpulseIndex >= sharedOldestImpulse and (not bullFoundStructure or not bearFoundStructure)
+        int sharedImpulseType0 = array.get(pivotTypes, sharedImpulseIndex - 1)
+        int sharedImpulseType1 = array.get(pivotTypes, sharedImpulseIndex)
+        int sharedImpulseBar0 = array.get(pivotBars, sharedImpulseIndex - 1)
+        int sharedImpulseBar1 = array.get(pivotBars, sharedImpulseIndex)
+        float sharedImpulsePrice0 = array.get(pivotPrices, sharedImpulseIndex - 1)
+        float sharedImpulsePrice1 = array.get(pivotPrices, sharedImpulseIndex)
+        float sharedImpulseSize = math.abs(sharedImpulsePrice1 - sharedImpulsePrice0)
+        float sharedImpulseATR = dailyATR10 > 0.0 ? sharedImpulseSize / dailyATR10 : 0.0
+        bool sharedImpulseValid = sharedImpulseATR >= activeMinImpulseATR and sharedImpulseATR <= activeMaxImpulseATR
+        bool sharedWave1Recent = bar_index - sharedImpulseBar1 <= elliottMaxWave1Age
+        bool sharedInsideWindow = bar_index - sharedImpulseBar0 <= elliottAnalysisWindow and bar_index - sharedImpulseBar1 <= elliottAnalysisWindow
+        if not bullFoundStructure and sharedImpulseType0 == -1 and sharedImpulseType1 == 1 and sharedImpulsePrice1 > sharedImpulsePrice0
+            if sharedImpulseValid and sharedWave1Recent and sharedInsideWindow
+                bullWave0Bar := sharedImpulseBar0
+                bullWave0Price := sharedImpulsePrice0
+                bullWave1Bar := sharedImpulseBar1
+                bullWave1Price := sharedImpulsePrice1
+                bullFoundStructure := true
+        if not bearFoundStructure and sharedImpulseType0 == 1 and sharedImpulseType1 == -1 and sharedImpulsePrice1 < sharedImpulsePrice0
+            if sharedImpulseValid and sharedWave1Recent and sharedInsideWindow
+                bearWave0Bar := sharedImpulseBar0
+                bearWave0Price := sharedImpulsePrice0
+                bearWave1Bar := sharedImpulseBar1
+                bearWave1Price := sharedImpulsePrice1
+                bearFoundStructure := true
+        sharedImpulseIndex -= 1
+
+//----------------------------------------------------
+// C. SHARED RECENT PRICE-HISTORY FALLBACK
+//----------------------------------------------------
+int dualFallbackLowestAgo = math.abs(ta.lowestbars(low, elliottFallbackLookback))
+int dualFallbackHighestAgo = math.abs(ta.highestbars(high, elliottFallbackLookback))
+if not bullFoundStructure or not bearFoundStructure
+    int bullFallbackLowBar = bar_index - dualFallbackLowestAgo
+    float bullFallbackLow = low[dualFallbackLowestAgo]
+    float bullFallbackHigh = bullFallbackLow
+    int bullFallbackHighBar = bullFallbackLowBar
+    int bearFallbackHighBar = bar_index - dualFallbackHighestAgo
+    float bearFallbackHigh = high[dualFallbackHighestAgo]
+    float bearFallbackLow = bearFallbackHigh
+    int bearFallbackLowBar = bearFallbackHighBar
+    for i = 0 to elliottFallbackLookback - 1
+        int sharedCandidateBar = bar_index - i
+        if not bullFoundStructure and sharedCandidateBar >= bullFallbackLowBar and high[i] > bullFallbackHigh
+            float bullFallbackSize = high[i] - bullFallbackLow
+            float bullFallbackATR = dailyATR10 > 0.0 ? bullFallbackSize / dailyATR10 : 0.0
+            if bullFallbackATR <= activeMaxImpulseATR
+                bullFallbackHigh := high[i]
+                bullFallbackHighBar := sharedCandidateBar
+        if not bearFoundStructure and sharedCandidateBar >= bearFallbackHighBar and low[i] < bearFallbackLow
+            float bearFallbackSize = bearFallbackHigh - low[i]
+            float bearFallbackATR = dailyATR10 > 0.0 ? bearFallbackSize / dailyATR10 : 0.0
+            if bearFallbackATR <= activeMaxImpulseATR
+                bearFallbackLow := low[i]
+                bearFallbackLowBar := sharedCandidateBar
+    if not bullFoundStructure
+        float bullFallbackMagnitude = bullFallbackHigh - bullFallbackLow
+        bool bullFallbackRecent = bar_index - bullFallbackHighBar <= elliottMaxWave1Age
+        if bullFallbackMagnitude >= dailyATR10 * activeMinImpulseATR and bullFallbackRecent
+            bullWave0Bar := bullFallbackLowBar
+            bullWave0Price := bullFallbackLow
+            bullWave1Bar := bullFallbackHighBar
+            bullWave1Price := bullFallbackHigh
+            bullFoundStructure := true
+    if not bearFoundStructure
+        float bearFallbackMagnitude = bearFallbackHigh - bearFallbackLow
+        bool bearFallbackRecent = bar_index - bearFallbackLowBar <= elliottMaxWave1Age
+        if bearFallbackMagnitude >= dailyATR10 * activeMinImpulseATR and bearFallbackRecent
+            bearWave0Bar := bearFallbackHighBar
+            bearWave0Price := bearFallbackHigh
+            bearWave1Bar := bearFallbackLowBar
+            bearWave1Price := bearFallbackLow
+            bearFoundStructure := true
+
+//----------------------------------------------------
+// D. BULLISH VALIDATION / WAVE 2
+//----------------------------------------------------
+float bullWave1Magnitude = bullFoundStructure and not na(bullWave0Price) and not na(bullWave1Price) ? math.abs(bullWave1Price - bullWave0Price) : na
+float bullWave1ATRMultiple = not na(bullWave1Magnitude) and dailyATR10 > 0.0 ? bullWave1Magnitude / dailyATR10 : 0.0
+bool bullValidWave1 = bullFoundStructure and bullWave1ATRMultiple >= activeMinImpulseATR and bullWave1ATRMultiple <= activeMaxImpulseATR
+if bullValidWave1 and not bullWave2Actual
+    float bullCurrentRetrace = bullWave1Magnitude > 0.0 ? (bullWave1Price - close) / bullWave1Magnitude : 0.0
+    if close > bullWave0Price and bullCurrentRetrace >= minWave2Retrace and bullCurrentRetrace <= maxWave2Retrace
+        bullWave2Bar := bar_index
+        bullWave2Price := close
+        bullWave2Actual := true
+if bullValidWave1 and not bullWave2Actual
+    bullWave2Bar := bar_index + wave2Bars
+    bullWave2Price := bullWave1Price - bullWave1Magnitude * defaultWave2Retrace
+
+//----------------------------------------------------
+// E. BEARISH VALIDATION / WAVE 2
+//----------------------------------------------------
+float bearWave1Magnitude = bearFoundStructure and not na(bearWave0Price) and not na(bearWave1Price) ? math.abs(bearWave1Price - bearWave0Price) : na
+float bearWave1ATRMultiple = not na(bearWave1Magnitude) and dailyATR10 > 0.0 ? bearWave1Magnitude / dailyATR10 : 0.0
+bool bearValidWave1 = bearFoundStructure and bearWave1ATRMultiple >= activeMinImpulseATR and bearWave1ATRMultiple <= activeMaxImpulseATR
+if bearValidWave1 and not bearWave2Actual
+    float bearCurrentRetrace = bearWave1Magnitude > 0.0 ? (close - bearWave1Price) / bearWave1Magnitude : 0.0
+    if close < bearWave0Price and bearCurrentRetrace >= minWave2Retrace and bearCurrentRetrace <= maxWave2Retrace
+        bearWave2Bar := bar_index
+        bearWave2Price := close
+        bearWave2Actual := true
+if bearValidWave1 and not bearWave2Actual
+    bearWave2Bar := bar_index + wave2Bars
+    bearWave2Price := bearWave1Price + bearWave1Magnitude * defaultWave2Retrace
+
+//----------------------------------------------------
+// F. WAVE-ORIGIN STRUCTURE INVALIDATION
+//----------------------------------------------------
+// The stale-count problem was isolated to intraday Elliott structures.
+// Keep the strict Wave 0 invalidation on intraday charts, but do not apply it
+// to Daily by default. Daily uses the original higher-timeframe structure logic
+// so a valid Primary path is not removed by normal multi-day price travel.
+bool useWaveOriginInvalidationHere = invalidateWaveOnOriginBreach and (not timeframe.isdaily or invalidateWaveOriginOnDaily)
+float waveOriginInvalidationBuffer = ictATR * waveOriginInvalidationATR
+bool bullWaveOriginBreached = useWaveOriginInvalidationHere and bullValidWave1 and not na(bullWave0Price) and close < bullWave0Price - waveOriginInvalidationBuffer
+bool bearWaveOriginBreached = useWaveOriginInvalidationHere and bearValidWave1 and not na(bearWave0Price) and close > bearWave0Price + waveOriginInvalidationBuffer
+if bullWaveOriginBreached
+    bullValidWave1 := false
+    bullWave2Actual := false
+if bearWaveOriginBreached
+    bearValidWave1 := false
+    bearWave2Actual := false
+
+//====================================================
+// 19. TARGET HELPERS
+//====================================================
+f_nearestAbove(float base, float a, float b, float c, float d, float e) =>
+    float result = na
+    if not na(a) and a > base
+        result := a
+    if not na(b) and b > base
+        result := na(result) ? b : math.min(result, b)
+    if not na(c) and c > base
+        result := na(result) ? c : math.min(result, c)
+    if not na(d) and d > base
+        result := na(result) ? d : math.min(result, d)
+    if not na(e) and e > base
+        result := na(result) ? e : math.min(result, e)
+    result
+f_nearestBelow(float base, float a, float b, float c, float d, float e) =>
+    float result = na
+    if not na(a) and a < base
+        result := a
+    if not na(b) and b < base
+        result := na(result) ? b : math.max(result, b)
+    if not na(c) and c < base
+        result := na(result) ? c : math.max(result, c)
+    if not na(d) and d < base
+        result := na(result) ? d : math.max(result, d)
+    if not na(e) and e < base
+        result := na(result) ? e : math.max(result, e)
+    result
+f_gravity(float rawTarget, float keyLevel, float maxDistance) =>
+    not na(keyLevel) and math.abs(rawTarget - keyLevel) <= maxDistance ? keyLevel : rawTarget
+f_capBullAtBarrier(float reference, float rawTarget, float barrier, float maxDistance) =>
+    not na(barrier) and barrier > reference and barrier < rawTarget and barrier - reference <= maxDistance ? barrier : rawTarget
+f_capBearAtBarrier(float reference, float rawTarget, float barrier, float maxDistance) =>
+    not na(barrier) and barrier < reference and barrier > rawTarget and reference - barrier <= maxDistance ? barrier : rawTarget
+f_bullBarrierScore(float barrier, float tolerance) =>
+    int score = 0
+    if not na(barrier)
+        score += not na(fibR1) and math.abs(fibR1 - barrier) <= tolerance ? 1 : 0
+        score += not na(fibR2) and math.abs(fibR2 - barrier) <= tolerance ? 1 : 0
+        score += not na(fibR3) and math.abs(fibR3 - barrier) <= tolerance ? 1 : 0
+        score += not na(fibR4) and math.abs(fibR4 - barrier) <= tolerance ? 1 : 0
+        score += not na(fixedSupplyBot) and math.abs(fixedSupplyBot - barrier) <= tolerance ? 1 : 0
+        score += not na(nearestBearFVGAbove) and math.abs(nearestBearFVGAbove - barrier) <= tolerance ? 1 : 0
+    score
+f_bearBarrierScore(float barrier, float tolerance) =>
+    int score = 0
+    if not na(barrier)
+        score += not na(fibS1) and math.abs(fibS1 - barrier) <= tolerance ? 1 : 0
+        score += not na(fibS2) and math.abs(fibS2 - barrier) <= tolerance ? 1 : 0
+        score += not na(fibS3) and math.abs(fibS3 - barrier) <= tolerance ? 1 : 0
+        score += not na(fibS4) and math.abs(fibS4 - barrier) <= tolerance ? 1 : 0
+        score += not na(fixedDemandTop) and math.abs(fixedDemandTop - barrier) <= tolerance ? 1 : 0
+        score += not na(nearestBullFVGBelow) and math.abs(nearestBullFVGBelow - barrier) <= tolerance ? 1 : 0
+    score
+f_adaptiveBullBarrier(float reference, float rawTarget, float barrier, float maxDistance, float tolerance) =>
+    float result = rawTarget
+    if not na(barrier) and barrier > reference and barrier < rawTarget and barrier - reference <= maxDistance
+        int barrierScore = f_bullBarrierScore(barrier, tolerance)
+        if barrierScore >= hardBarrierScore
+            result := barrier
+        else if barrierScore >= strongBarrierScore
+            result := rawTarget * (1.0 - moderateBarrierBlend) + barrier * moderateBarrierBlend
+        else if not allowBarrierBreakthrough and barrierScore >= 2
+            result := rawTarget * 0.80 + barrier * 0.20
+    result
+f_adaptiveBearBarrier(float reference, float rawTarget, float barrier, float maxDistance, float tolerance) =>
+    float result = rawTarget
+    if not na(barrier) and barrier < reference and barrier > rawTarget and reference - barrier <= maxDistance
+        int barrierScore = f_bearBarrierScore(barrier, tolerance)
+        if barrierScore >= hardBarrierScore
+            result := barrier
+        else if barrierScore >= strongBarrierScore
+            result := rawTarget * (1.0 - moderateBarrierBlend) + barrier * moderateBarrierBlend
+        else if not allowBarrierBreakthrough and barrierScore >= 2
+            result := rawTarget * 0.80 + barrier * 0.20
+    result
+//----------------------------------------------------
+// Key-level cluster helpers.
+// When multiple nearby levels agree, the projected wave is pulled
+// toward the cluster instead of extending to a raw ATR target.
+//----------------------------------------------------
+f_clusterBull(float reference, float rawTarget, float atrRange) =>
+    float sum = 0.0
+    int count = 0
+    float lo = rawTarget - atrRange
+    float hi = rawTarget + atrRange
+    if not na(fibR1) and fibR1 > reference and fibR1 >= lo and fibR1 <= hi
+        sum += fibR1
+        count += 1
+    if not na(fibR2) and fibR2 > reference and fibR2 >= lo and fibR2 <= hi
+        sum += fibR2
+        count += 1
+    if not na(fibR3) and fibR3 > reference and fibR3 >= lo and fibR3 <= hi
+        sum += fibR3
+        count += 1
+    if not na(fibR4) and fibR4 > reference and fibR4 >= lo and fibR4 <= hi
+        sum += fibR4
+        count += 1
+    if not na(fixedSupplyBot) and fixedSupplyBot > reference and fixedSupplyBot >= lo and fixedSupplyBot <= hi
+        sum += fixedSupplyBot
+        count += 1
+    if not na(nearestBearFVGAbove) and nearestBearFVGAbove > reference and nearestBearFVGAbove >= lo and nearestBearFVGAbove <= hi
+        sum += nearestBearFVGAbove
+        count += 1
+    count >= 2 ? sum / count : rawTarget
+f_clusterBear(float reference, float rawTarget, float atrRange) =>
+    float sum = 0.0
+    int count = 0
+    float lo = rawTarget - atrRange
+    float hi = rawTarget + atrRange
+    if not na(fibS1) and fibS1 < reference and fibS1 >= lo and fibS1 <= hi
+        sum += fibS1
+        count += 1
+    if not na(fibS2) and fibS2 < reference and fibS2 >= lo and fibS2 <= hi
+        sum += fibS2
+        count += 1
+    if not na(fibS3) and fibS3 < reference and fibS3 >= lo and fibS3 <= hi
+        sum += fibS3
+        count += 1
+    if not na(fibS4) and fibS4 < reference and fibS4 >= lo and fibS4 <= hi
+        sum += fibS4
+        count += 1
+    if not na(fixedDemandTop) and fixedDemandTop < reference and fixedDemandTop >= lo and fixedDemandTop <= hi
+        sum += fixedDemandTop
+        count += 1
+    if not na(nearestBullFVGBelow) and nearestBullFVGBelow < reference and nearestBullFVGBelow >= lo and nearestBullFVGBelow <= hi
+        sum += nearestBullFVGBelow
+        count += 1
+    count >= 2 ? sum / count : rawTarget
+
+//====================================================
+// 20. BULLISH PROJECTION
+//====================================================
+float bullWave3Price = na
+float bullWave4Price = na
+float bullWave5Price = na
+float bullWaveAPrice = na
+float bullWaveBPrice = na
+float bullWaveCPrice = na
+bool bullValidProjection = false
+float bullProjectionReference = bullWave2Price
+if bullValidWave1 and not na(bullWave2Price) and not na(bullProjectionReference)
+    float bullMeasuredWave1 = math.max(bullWave1Magnitude, timeframeProjectionATR * wave1ProjectionFloorATR)
+    float bullSafetyWave1 = math.min(bullMeasuredWave1, timeframeProjectionATR * wave1ProjectionCapATR)
+    float bullProjectionBasis =
+         wave1DrivenProjection ?
+         bullSafetyWave1 :
+         bullProjectionUnit
+    // Wave 3 is primarily measured from Wave 2 using Wave 1 Fibonacci extension.
+    float bullRaw3 =
+         bullProjectionReference +
+         bullProjectionBasis * wave3Extension
+    // ATR is now a floor / safety check rather than the main target limiter.
+    float bullMin3 =
+         bullProjectionReference +
+         timeframeProjectionATR * wave3BreakATR
+    float bullSafetyMax3 =
+         bullProjectionReference +
+         timeframeProjectionATR * wave3MaxATR
+    bullWave3Price := math.max(bullRaw3, bullMin3)
+    bullWave3Price := math.min(bullWave3Price, bullSafetyMax3)
+    float bullKey3 =
+         f_nearestAbove(
+             bullProjectionReference,
+             fibR1,
+             fibR2,
+             fibR3,
+             fibR4,
+             fixedSupplyAvg)
+    if useTargetGravity
+        bullWave3Price :=
+             f_gravity(
+                 bullWave3Price,
+                 bullKey3,
+                 bullProjectionBasis * targetGravityATR)
+    float bullBarrier3 =
+         f_nearestAbove(
+             bullProjectionReference,
+             fibR1,
+             fibR2,
+             fibR3,
+             fibR4,
+             fixedSupplyBot)
+    if not na(nearestBearFVGAbove)
+        bullBarrier3 :=
+             na(bullBarrier3) ?
+             nearestBearFVGAbove :
+             math.min(
+                 bullBarrier3,
+                 nearestBearFVGAbove)
+    bullWave3Price :=
+         f_adaptiveBullBarrier(
+             bullProjectionReference,
+             bullWave3Price,
+             bullBarrier3,
+             timeframeProjectionATR * projectionBarrierATR,
+             timeframeProjectionATR * barrierClusterToleranceATR)
+    // Wave 4 retraces the Wave 3 advance rather than a fixed ATR amount.
+    float bullWave3Advance =
+         math.max(
+             bullWave3Price - bullProjectionReference,
+             syminfo.mintick)
+    bullWave4Price :=
+         bullWave3Price -
+         bullWave3Advance * wave4Retrace
+    // Elliott rule protection: Wave 4 should generally stay above Wave 1.
+    float bullWave4Floor =
+         bullWave1Price +
+         timeframeProjectionATR * wave4BufferATR
+    bullWave4Price :=
+         math.max(
+             bullWave4Price,
+             bullWave4Floor)
+    // Wave 5 uses Wave 1 magnitude again, giving the path more room.
+    float bullRaw5 =
+         bullWave4Price +
+         bullProjectionBasis * wave5Extension
+    float bullMin5 =
+         bullWave3Price +
+         timeframeProjectionATR * wave5BreakATR
+    bullWave5Price :=
+         math.max(
+             bullRaw5,
+             bullMin5)
+    float bullBarrier5 =
+         f_nearestAbove(
+             bullWave4Price,
+             fibR1,
+             fibR2,
+             fibR3,
+             fibR4,
+             fixedSupplyTop)
+    if not na(nearestBearFVGAbove) and
+       nearestBearFVGAbove > bullWave4Price
+        bullBarrier5 :=
+             na(bullBarrier5) ?
+             nearestBearFVGAbove :
+             math.min(
+                 bullBarrier5,
+                 nearestBearFVGAbove)
+    bullWave5Price :=
+         f_adaptiveBullBarrier(
+             bullWave4Price,
+             bullWave5Price,
+             bullBarrier5,
+             timeframeProjectionATR * projectionBarrierATR,
+             timeframeProjectionATR * barrierClusterToleranceATR)
+    float bullProjectedImpulse =
+         math.max(
+             bullWave5Price -
+             bullProjectionReference,
+             syminfo.mintick)
+    bullWaveAPrice :=
+         bullWave5Price -
+         bullProjectedImpulse * waveARetrace
+    float bullWaveASize =
+         bullWave5Price -
+         bullWaveAPrice
+    bullWaveBPrice :=
+         bullWaveAPrice +
+         bullWaveASize * waveBRetrace
+    bullWaveCPrice :=
+         bullWaveBPrice -
+         bullWaveASize * waveCExtension
+    bullValidProjection := true
+
+//====================================================
+// 21. BEARISH PROJECTION
+//====================================================
+float bearWave3Price = na
+float bearWave4Price = na
+float bearWave5Price = na
+float bearWaveAPrice = na
+float bearWaveBPrice = na
+float bearWaveCPrice = na
+bool bearValidProjection = false
+float bearProjectionReference = bearWave2Price
+if bearValidWave1 and not na(bearWave2Price) and not na(bearProjectionReference)
+    float bearMeasuredWave1 = math.max(bearWave1Magnitude, timeframeProjectionATR * wave1ProjectionFloorATR)
+    float bearSafetyWave1 = math.min(bearMeasuredWave1, timeframeProjectionATR * wave1ProjectionCapATR)
+    float bearProjectionBasis =
+         wave1DrivenProjection ?
+         bearSafetyWave1 :
+         bearProjectionUnit
+    // Wave 3 is primarily measured from Wave 2 using Wave 1 Fibonacci extension.
+    float bearRaw3 =
+         bearProjectionReference -
+         bearProjectionBasis * wave3Extension
+    float bearMax3 =
+         bearProjectionReference -
+         timeframeProjectionATR * wave3BreakATR
+    float bearSafetyMin3 =
+         bearProjectionReference -
+         timeframeProjectionATR * wave3MaxATR
+    bearWave3Price := math.min(bearRaw3, bearMax3)
+    bearWave3Price := math.max(bearWave3Price, bearSafetyMin3)
+    float bearKey3 =
+         f_nearestBelow(
+             bearProjectionReference,
+             fibS1,
+             fibS2,
+             fibS3,
+             fibS4,
+             fixedDemandAvg)
+    if useTargetGravity
+        bearWave3Price :=
+             f_gravity(
+                 bearWave3Price,
+                 bearKey3,
+                 bearProjectionBasis * targetGravityATR)
+    float bearBarrier3 =
+         f_nearestBelow(
+             bearProjectionReference,
+             fibS1,
+             fibS2,
+             fibS3,
+             fibS4,
+             fixedDemandTop)
+    if not na(nearestBullFVGBelow)
+        bearBarrier3 :=
+             na(bearBarrier3) ?
+             nearestBullFVGBelow :
+             math.max(
+                 bearBarrier3,
+                 nearestBullFVGBelow)
+    bearWave3Price :=
+         f_adaptiveBearBarrier(
+             bearProjectionReference,
+             bearWave3Price,
+             bearBarrier3,
+             timeframeProjectionATR * projectionBarrierATR,
+             timeframeProjectionATR * barrierClusterToleranceATR)
+    float bearWave3Advance =
+         math.max(
+             bearProjectionReference -
+             bearWave3Price,
+             syminfo.mintick)
+    bearWave4Price :=
+         bearWave3Price +
+         bearWave3Advance * wave4Retrace
+    float bearWave4Ceiling =
+         bearWave1Price -
+         timeframeProjectionATR * wave4BufferATR
+    bearWave4Price :=
+         math.min(
+             bearWave4Price,
+             bearWave4Ceiling)
+    float bearRaw5 =
+         bearWave4Price -
+         bearProjectionBasis * wave5Extension
+    float bearMax5 =
+         bearWave3Price -
+         timeframeProjectionATR * wave5BreakATR
+    bearWave5Price :=
+         math.min(
+             bearRaw5,
+             bearMax5)
+    float bearBarrier5 =
+         f_nearestBelow(
+             bearWave4Price,
+             fibS1,
+             fibS2,
+             fibS3,
+             fibS4,
+             fixedDemandBot)
+    if not na(nearestBullFVGBelow) and
+       nearestBullFVGBelow < bearWave4Price
+        bearBarrier5 :=
+             na(bearBarrier5) ?
+             nearestBullFVGBelow :
+             math.max(
+                 bearBarrier5,
+                 nearestBullFVGBelow)
+    bearWave5Price :=
+         f_adaptiveBearBarrier(
+             bearWave4Price,
+             bearWave5Price,
+             bearBarrier5,
+             timeframeProjectionATR * projectionBarrierATR,
+             timeframeProjectionATR * barrierClusterToleranceATR)
+    float bearProjectedImpulse =
+         math.max(
+             bearProjectionReference -
+             bearWave5Price,
+             syminfo.mintick)
+    bearWaveAPrice :=
+         bearWave5Price +
+         bearProjectedImpulse * waveARetrace
+    float bearWaveASize =
+         bearWaveAPrice -
+         bearWave5Price
+    bearWaveBPrice :=
+         bearWaveAPrice -
+         bearWaveASize * waveBRetrace
+    bearWaveCPrice :=
+         bearWaveBPrice +
+         bearWaveASize * waveCExtension
+    bearValidProjection := true
+
+//====================================================
+// 21A. TIME-AWARE ELLIOTT TARGET REALISM
+//====================================================
+// Applies a time-and-ATR travel envelope AFTER the normal Elliott, FVG,
+// Supply/Demand, Fib and ICT calculations. Wave 3 also receives a dedicated
+// Daily ATR-10 hard cap so the next projected move stays realistic relative
+// to the stock's recent average daily range.
+f_projectionDays(int forwardBars) =>
+    float d = timeframe.isdaily ? math.max(float(forwardBars), 1.0) : math.max(float(forwardBars) / elliottHoursPerTradingDay, 0.25)
+    d
+f_timeBudget(int forwardBars, float expansion) =>
+    float d = f_projectionDays(forwardBars)
+    float raw = dailyATR10 * math.sqrt(d) * elliottATRPerDayMult * expansion
+    float minBudget = dailyATR10 * elliottMinTargetATR
+    float maxAtr = timeframe.isdaily ? elliottMaxTargetATRDaily : elliottMaxTargetATR1H
+    float maxBudget = dailyATR10 * maxAtr
+    math.max(minBudget, math.min(raw, maxBudget))
+float bullTravelExpansion = 1.0
+float bearTravelExpansion = 1.0
+bool bullContinuationStrong = bullMSS or bullDisplacement or (localEmaBull and dailyEmaBull and close > high[1])
+bool bearContinuationStrong = bearMSS or bearDisplacement or (not localEmaBull and not dailyEmaBull and close < low[1])
+if bullContinuationStrong or (useICTConfluence and ictScoreEdge >= 3)
+    bullTravelExpansion := elliottTrendExpansion
+if bearContinuationStrong or (useICTConfluence and ictScoreEdge <= -3)
+    bearTravelExpansion := elliottTrendExpansion
+int wave3TravelBars = wave3Bars
+int wave5TravelBars = wave3Bars + wave4Bars + wave5Bars
+int waveATravelBars = wave5TravelBars + waveABars
+int waveBTravelBars = waveATravelBars + waveBBars
+int waveCTravelBars = waveBTravelBars + waveCBars
+if useTimeAwareElliott and bullValidProjection and not na(bullProjectionReference)
+    float bullWave3ATRCap = dailyATR10 * (timeframe.isdaily ? elliottWave3MaxATRDaily : elliottWave3MaxATR1H)
+    float bullBudget3 = math.min(f_timeBudget(wave3TravelBars, bullTravelExpansion), bullWave3ATRCap)
+    float bullBudget5 = f_timeBudget(wave5TravelBars, bullTravelExpansion)
+    float bullBudgetA = f_timeBudget(waveATravelBars, bullTravelExpansion)
+    float bullBudgetB = f_timeBudget(waveBTravelBars, bullTravelExpansion)
+    float bullBudgetC = f_timeBudget(waveCTravelBars, bullTravelExpansion)
+    bullWave3Price := math.min(bullWave3Price, bullProjectionReference + bullBudget3)
+    bullWave5Price := math.min(bullWave5Price, bullProjectionReference + bullBudget5)
+    float bullAdvance = math.max(bullWave3Price - bullProjectionReference, syminfo.mintick)
+    bullWave4Price := bullWave3Price - bullAdvance * wave4Retrace
+    float bullWave4Floor2 = bullWave1Price + timeframeProjectionATR * wave4BufferATR
+    bullWave4Price := math.max(bullWave4Price, bullWave4Floor2)
+    float bullImpulse2 = math.max(bullWave5Price - bullProjectionReference, syminfo.mintick)
+    bullWaveAPrice := bullWave5Price - bullImpulse2 * waveARetrace
+    float bullASize2 = math.max(bullWave5Price - bullWaveAPrice, syminfo.mintick)
+    bullWaveBPrice := bullWaveAPrice + bullASize2 * waveBRetrace
+    bullWaveCPrice := bullWaveBPrice - bullASize2 * waveCExtension
+    bullWaveAPrice := math.max(bullWaveAPrice, bullProjectionReference - bullBudgetA)
+    bullWaveBPrice := math.min(bullWaveBPrice, bullProjectionReference + bullBudgetB)
+    bullWaveCPrice := math.max(bullWaveCPrice, bullProjectionReference - bullBudgetC)
+if useTimeAwareElliott and bearValidProjection and not na(bearProjectionReference)
+    float bearWave3ATRCap = dailyATR10 * (timeframe.isdaily ? elliottWave3MaxATRDaily : elliottWave3MaxATR1H)
+    float bearBudget3 = math.min(f_timeBudget(wave3TravelBars, bearTravelExpansion), bearWave3ATRCap)
+    float bearBudget5 = f_timeBudget(wave5TravelBars, bearTravelExpansion)
+    float bearBudgetA = f_timeBudget(waveATravelBars, bearTravelExpansion)
+    float bearBudgetB = f_timeBudget(waveBTravelBars, bearTravelExpansion)
+    float bearBudgetC = f_timeBudget(waveCTravelBars, bearTravelExpansion)
+    bearWave3Price := math.max(bearWave3Price, bearProjectionReference - bearBudget3)
+    bearWave5Price := math.max(bearWave5Price, bearProjectionReference - bearBudget5)
+    float bearAdvance = math.max(bearProjectionReference - bearWave3Price, syminfo.mintick)
+    bearWave4Price := bearWave3Price + bearAdvance * wave4Retrace
+    float bearWave4Ceiling2 = bearWave1Price - timeframeProjectionATR * wave4BufferATR
+    bearWave4Price := math.min(bearWave4Price, bearWave4Ceiling2)
+    float bearImpulse2 = math.max(bearProjectionReference - bearWave5Price, syminfo.mintick)
+    bearWaveAPrice := bearWave5Price + bearImpulse2 * waveARetrace
+    float bearASize2 = math.max(bearWaveAPrice - bearWave5Price, syminfo.mintick)
+    bearWaveBPrice := bearWaveAPrice - bearASize2 * waveBRetrace
+    bearWaveCPrice := bearWaveBPrice + bearASize2 * waveCExtension
+    bearWaveAPrice := math.min(bearWaveAPrice, bearProjectionReference + bearBudgetA)
+    bearWaveBPrice := math.max(bearWaveBPrice, bearProjectionReference - bearBudgetB)
+    bearWaveCPrice := math.min(bearWaveCPrice, bearProjectionReference + bearBudgetC)
+
+//====================================================
+// 21B. FINAL WAVE 3 GEOMETRY GUARD
+//====================================================
+// The visible STP Elliott projection only requires the next two future
+// points: Wave 3 and Wave 4. Wave 5 / A-B-C remain internally calculated
+// when feasible, but a distant Wave 5 limitation must not invalidate an
+// otherwise valid near-term Wave 3 / Wave 4 scenario.
+
+if bullValidProjection and not na(bullWave1Price) and not na(bullProjectionReference)
+    float bullRequiredWave3 = bullWave1Price + timeframeProjectionATR * wave3BreakATR
+    float bullWave3Budget = useTimeAwareElliott ? math.min(f_timeBudget(wave3TravelBars, bullTravelExpansion), dailyATR10 * (timeframe.isdaily ? elliottWave3MaxATRDaily : elliottWave3MaxATR1H)) : timeframeProjectionATR * wave3MaxATR
+    float bullWave3GeometryMax = bullProjectionReference + bullWave3Budget
+
+    if bullRequiredWave3 <= bullWave3GeometryMax
+        bullWave3Price := math.min(math.max(bullWave3Price, bullRequiredWave3), bullWave3GeometryMax)
+
+        float bullGuardAdvance = math.max(bullWave3Price - bullProjectionReference, syminfo.mintick)
+        bullWave4Price := bullWave3Price - bullGuardAdvance * wave4Retrace
+        bullWave4Price := math.max(bullWave4Price, bullWave1Price + timeframeProjectionATR * wave4BufferATR)
+
+        float bullWave5Budget = useTimeAwareElliott ? f_timeBudget(wave5TravelBars, bullTravelExpansion) : timeframeProjectionATR * wave1ProjectionCapATR
+        float bullWave5GeometryMax = bullProjectionReference + bullWave5Budget
+        float bullRequiredWave5 = bullWave3Price + timeframeProjectionATR * wave5BreakATR
+
+        if bullRequiredWave5 <= bullWave5GeometryMax
+            bullWave5Price := math.min(math.max(bullWave5Price, bullRequiredWave5), bullWave5GeometryMax)
+
+            float bullGuardImpulse = math.max(bullWave5Price - bullProjectionReference, syminfo.mintick)
+            bullWaveAPrice := bullWave5Price - bullGuardImpulse * waveARetrace
+
+            float bullGuardASize = math.max(bullWave5Price - bullWaveAPrice, syminfo.mintick)
+            bullWaveBPrice := bullWaveAPrice + bullGuardASize * waveBRetrace
+            bullWaveCPrice := bullWaveBPrice - bullGuardASize * waveCExtension
+        else
+            // Keep the near-term Wave 3 / Wave 4 scenario valid.
+            // Suppress the distant Wave 5 / A-B-C continuation internally.
+            bullWave5Price := na
+            bullWaveAPrice := na
+            bullWaveBPrice := na
+            bullWaveCPrice := na
+    else
+        bullValidProjection := false
+
+if bearValidProjection and not na(bearWave1Price) and not na(bearProjectionReference)
+    float bearRequiredWave3 = bearWave1Price - timeframeProjectionATR * wave3BreakATR
+    float bearWave3Budget = useTimeAwareElliott ? math.min(f_timeBudget(wave3TravelBars, bearTravelExpansion), dailyATR10 * (timeframe.isdaily ? elliottWave3MaxATRDaily : elliottWave3MaxATR1H)) : timeframeProjectionATR * wave3MaxATR
+    float bearWave3GeometryMin = bearProjectionReference - bearWave3Budget
+
+    if bearRequiredWave3 >= bearWave3GeometryMin
+        bearWave3Price := math.max(math.min(bearWave3Price, bearRequiredWave3), bearWave3GeometryMin)
+
+        float bearGuardAdvance = math.max(bearProjectionReference - bearWave3Price, syminfo.mintick)
+        bearWave4Price := bearWave3Price + bearGuardAdvance * wave4Retrace
+        bearWave4Price := math.min(bearWave4Price, bearWave1Price - timeframeProjectionATR * wave4BufferATR)
+
+        float bearWave5Budget = useTimeAwareElliott ? f_timeBudget(wave5TravelBars, bearTravelExpansion) : timeframeProjectionATR * wave1ProjectionCapATR
+        float bearWave5GeometryMin = bearProjectionReference - bearWave5Budget
+        float bearRequiredWave5 = bearWave3Price - timeframeProjectionATR * wave5BreakATR
+
+        if bearRequiredWave5 >= bearWave5GeometryMin
+            bearWave5Price := math.max(math.min(bearWave5Price, bearRequiredWave5), bearWave5GeometryMin)
+
+            float bearGuardImpulse = math.max(bearProjectionReference - bearWave5Price, syminfo.mintick)
+            bearWaveAPrice := bearWave5Price + bearGuardImpulse * waveARetrace
+
+            float bearGuardASize = math.max(bearWaveAPrice - bearWave5Price, syminfo.mintick)
+            bearWaveBPrice := bearWaveAPrice - bearGuardASize * waveBRetrace
+            bearWaveCPrice := bearWaveBPrice + bearGuardASize * waveCExtension
+        else
+            // Keep the near-term Wave 3 / Wave 4 scenario valid.
+            // Suppress the distant Wave 5 / A-B-C continuation internally.
+            bearWave5Price := na
+            bearWaveAPrice := na
+            bearWaveBPrice := na
+            bearWaveCPrice := na
+    else
+        bearValidProjection := false
+
+//====================================================
+// 21C. ELLIOTT STRUCTURE QUALITY VALIDATION
+//====================================================
+
+// Elliott convention: Wave 3 should not be the shortest motive wave.
+// Wave 5 may be intentionally unavailable when the longer-range target
+// exceeds the ATR/time budget. In that case, evaluate Wave 3 against
+// Wave 1 only and keep the near-term Wave 3 / Wave 4 scenario valid.
+
+float bullProjectedWave3Length = bullValidProjection and not na(bullProjectionReference) and not na(bullWave3Price) ? math.abs(bullWave3Price - bullProjectionReference) : na
+float bullProjectedWave5Length = bullValidProjection and not na(bullWave4Price) and not na(bullWave5Price) ? math.abs(bullWave5Price - bullWave4Price) : na
+
+float bearProjectedWave3Length = bearValidProjection and not na(bearProjectionReference) and not na(bearWave3Price) ? math.abs(bearProjectionReference - bearWave3Price) : na
+float bearProjectedWave5Length = bearValidProjection and not na(bearWave4Price) and not na(bearWave5Price) ? math.abs(bearWave4Price - bearWave5Price) : na
+
+bool bullWave3NotShortest = false
+bool bearWave3NotShortest = false
+
+if bullValidProjection and not na(bullWave1Magnitude) and not na(bullProjectedWave3Length)
+    bullWave3NotShortest := na(bullProjectedWave5Length) ? bullProjectedWave3Length + syminfo.mintick >= bullWave1Magnitude : bullProjectedWave3Length + syminfo.mintick >= math.min(bullWave1Magnitude, bullProjectedWave5Length)
+
+if bearValidProjection and not na(bearWave1Magnitude) and not na(bearProjectedWave3Length)
+    bearWave3NotShortest := na(bearProjectedWave5Length) ? bearProjectedWave3Length + syminfo.mintick >= bearWave1Magnitude : bearProjectedWave3Length + syminfo.mintick >= math.min(bearWave1Magnitude, bearProjectedWave5Length)
+
+//====================================================
+// 22. CLOSED-CANDLE PROBABILITY SCORE
+//====================================================
+//
+// Scenario ranking gives more weight to recent structural evidence.
+// The Daily trend acts as a directional bias on the 1H chart, but the
+// 1H scenario can still flip when price produces strong contrary evidence.
+int bullScenarioScore = ictBullScore
+int bearScenarioScore = ictBearScore
+bullScenarioScore += bullValidProjection ? 4 : 0
+bearScenarioScore += bearValidProjection ? 4 : 0
+bullScenarioScore += bullWave2Actual ? 2 : 0
+bearScenarioScore += bearWave2Actual ? 2 : 0
+
+//----------------------------------------------------
+// MULTI-SCALE SWING-DEGREE CONFIRMATION
+//----------------------------------------------------
+// Two aligned swing degrees add modest confirmation. All three aligned
+// degrees add stronger confirmation. This influences Primary/Secondary
+// ranking only and does not create or change any chart objects.
+if elliottScaleBullVotes >= 2
+    bullScenarioScore += elliottScaleBullVotes == 3 ? 3 : 2
+if elliottScaleBearVotes >= 2
+    bearScenarioScore += elliottScaleBearVotes == 3 ? 3 : 2
+
+//----------------------------------------------------
+// PROJECTED MOTIVE-WAVE QUALITY
+//----------------------------------------------------
+if bullWave3NotShortest
+    bullScenarioScore += 2
+else if bullValidProjection
+    bearScenarioScore += 1
+if bearWave3NotShortest
+    bearScenarioScore += 2
+else if bearValidProjection
+    bullScenarioScore += 1
+
+//----------------------------------------------------
+// RECENCY-AWARE STRUCTURE RANKING
+//----------------------------------------------------
+// When two Elliott structures are both valid, prefer the structure whose
+// confirmed anchor is closer to current price action. Recency is a weighting
+// factor only; it does not change any wave target or chart object.
+int bullRecencyAnchorBar = bullWave2Actual and not na(bullWave2Bar) and bullWave2Bar <= bar_index ? bullWave2Bar : bullWave1Bar
+int bearRecencyAnchorBar = bearWave2Actual and not na(bearWave2Bar) and bearWave2Bar <= bar_index ? bearWave2Bar : bearWave1Bar
+int bullStructureAge = not na(bullRecencyAnchorBar) ? math.max(bar_index - bullRecencyAnchorBar, 0) : 100000
+int bearStructureAge = not na(bearRecencyAnchorBar) ? math.max(bar_index - bearRecencyAnchorBar, 0) : 100000
+bool isOneHourElliott = timeframe.isintraday and timeframe.in_seconds(timeframe.period) == 3600
+int activeRecencyWindow = timeframe.isdaily ? scenarioRecencyWindowDaily : isOneHourElliott ? scenarioRecencyWindow1H : scenarioRecencyWindow1H
+int activeFreshStructureLead = timeframe.isdaily ? scenarioFreshStructureLeadDaily : isOneHourElliott ? scenarioFreshStructureLead1H : scenarioFreshStructureLead1H
+float bullRecencyFraction = bullValidProjection and bullStructureAge <= activeRecencyWindow ? 1.0 - float(bullStructureAge) / float(activeRecencyWindow) : 0.0
+float bearRecencyFraction = bearValidProjection and bearStructureAge <= activeRecencyWindow ? 1.0 - float(bearStructureAge) / float(activeRecencyWindow) : 0.0
+int bullRecencyScore = useScenarioRecencyBias ? int(math.round(bullRecencyFraction * scenarioRecencyMaxScore)) : 0
+int bearRecencyScore = useScenarioRecencyBias ? int(math.round(bearRecencyFraction * scenarioRecencyMaxScore)) : 0
+bullScenarioScore += bullRecencyScore
+bearScenarioScore += bearRecencyScore
+bool bullStructureMateriallyNewer = useScenarioRecencyBias and bullValidProjection and bearValidProjection and bullStructureAge + activeFreshStructureLead <= bearStructureAge
+bool bearStructureMateriallyNewer = useScenarioRecencyBias and bullValidProjection and bearValidProjection and bearStructureAge + activeFreshStructureLead <= bullStructureAge
+
+if isOneHourElliott and useDailyDominantElliott
+    bullScenarioScore += dailyEmaBull ? 3 : 0
+    bearScenarioScore += dailyEmaBull ? 0 : 3
+bool bullAboveTrend = close > fastEMA and close > slowEMA
+bool bearBelowTrend = close < fastEMA and close < slowEMA
+bullScenarioScore += bullAboveTrend ? 2 : 0
+bearScenarioScore += bearBelowTrend ? 2 : 0
+float trackingStep = math.max(timeframeProjectionATR * 0.25, syminfo.mintick)
+float bullExpectedClose = close[1] + trackingStep
+float bearExpectedClose = close[1] - trackingStep
+float bullTrackingError = timeframeProjectionATR > 0.0 ? math.abs(close - bullExpectedClose) / timeframeProjectionATR : 0.0
+float bearTrackingError = timeframeProjectionATR > 0.0 ? math.abs(close - bearExpectedClose) / timeframeProjectionATR : 0.0
+if bullTrackingError + 0.05 < bearTrackingError
+    bullScenarioScore += 3
+if bearTrackingError + 0.05 < bullTrackingError
+    bearScenarioScore += 3
+float closedMoveATR = ictATR > 0.0 ? math.abs(close - close[1]) / ictATR : 0.0
+if close > close[1]
+    bullScenarioScore += 1
+if close < close[1]
+    bearScenarioScore += 1
+if close > high[1]
+    bullScenarioScore += 2
+if close < low[1]
+    bearScenarioScore += 2
+if bullDisplacement
+    bullScenarioScore += 3
+if bearDisplacement
+    bearScenarioScore += 3
+if bullMSS
+    bullScenarioScore += 5
+if bearMSS
+    bearScenarioScore += 5
+float priorThreeHigh = ta.highest(high[1], 3)
+float priorThreeLow = ta.lowest(low[1], 3)
+bool bullStructureBreak = close > priorThreeHigh
+bool bearStructureBreak = close < priorThreeLow
+if bullStructureBreak
+    bullScenarioScore += 3
+if bearStructureBreak
+    bearScenarioScore += 3
+//----------------------------------------------------
+// FRESH-STRUCTURE CONFIRMATION
+//----------------------------------------------------
+// A materially newer Elliott structure receives extra confirmation only when
+// current price action also supports its direction. This prevents an older
+// but still mathematically valid count from remaining Primary after a fresh
+// breakout / breakdown has established a more relevant structure.
+bool bullFreshStructureConfirm = bullStructureMateriallyNewer and (bullMSS or bullStructureBreak or bullDisplacement)
+bool bearFreshStructureConfirm = bearStructureMateriallyNewer and (bearMSS or bearStructureBreak or bearDisplacement)
+if bullFreshStructureConfirm
+    bullScenarioScore += 3
+if bearFreshStructureConfirm
+    bearScenarioScore += 3
+bool bullTwoBarFollowThrough = close > close[1] and close[1] > close[2]
+bool bearTwoBarFollowThrough = close < close[1] and close[1] < close[2]
+if scenarioUseTwoBarFollowThrough and bullTwoBarFollowThrough
+    bullScenarioScore += 2
+if scenarioUseTwoBarFollowThrough and bearTwoBarFollowThrough
+    bearScenarioScore += 2
+float activePriceOverrideATR = timeframe.isdaily ? scenarioPriceOverrideATRDaily : scenarioPriceOverrideATR1H
+bool bullPriceOverride = scenarioUsePriceOverride and closedMoveATR >= activePriceOverrideATR and close > high[1]
+bool bearPriceOverride = scenarioUsePriceOverride and closedMoveATR >= activePriceOverrideATR and close < low[1]
+if bullPriceOverride
+    bullScenarioScore += 3
+if bearPriceOverride
+    bearScenarioScore += 3
+//----------------------------------------------------
+// PERSISTENT STRUCTURE MEMORY
+//----------------------------------------------------
+// MSS and structure-break signals are event-based. Without memory their
+// score advantage can disappear on the next candle even when the broken
+// structure remains intact. This state keeps a directional bonus active
+// for several bars, or until price decisively reclaims the broken level.
+var int scenarioStructureBias = 0
+var int scenarioStructureStartBar = na
+var float scenarioStructureLevel = na
+int activeStructureMemoryBars = timeframe.isdaily ? scenarioStructureMemoryDaily : scenarioStructureMemory1H
+float structureReclaimBuffer = ictATR * scenarioStructureReclaimATR
+bool bullStructureMemoryEvent = bullMSS or bullStructureBreak or (bullDisplacement and bullStructureBreak)
+bool bearStructureMemoryEvent = bearMSS or bearStructureBreak or (bearDisplacement and bearStructureBreak)
+if barstate.isconfirmed and useScenarioStructuralMemory
+    if bullStructureMemoryEvent and not bearStructureMemoryEvent
+        scenarioStructureBias := 1
+        scenarioStructureStartBar := bar_index
+        scenarioStructureLevel := bullStructureBreak ? priorThreeHigh : ictLastSwingHigh
+    else if bearStructureMemoryEvent and not bullStructureMemoryEvent
+        scenarioStructureBias := -1
+        scenarioStructureStartBar := bar_index
+        scenarioStructureLevel := bearStructureBreak ? priorThreeLow : ictLastSwingLow
+    else if bullStructureMemoryEvent and bearStructureMemoryEvent
+        scenarioStructureBias := close >= open ? 1 : -1
+        scenarioStructureStartBar := bar_index
+        scenarioStructureLevel := scenarioStructureBias == 1 ? priorThreeHigh : priorThreeLow
+    else if scenarioStructureBias != 0 and not na(scenarioStructureStartBar)
+        bool structureMemoryExpired = bar_index - scenarioStructureStartBar > activeStructureMemoryBars
+        bool bullStructureLost = scenarioStructureBias == 1 and not na(scenarioStructureLevel) and close < scenarioStructureLevel - structureReclaimBuffer
+        bool bearStructureReclaimed = scenarioStructureBias == -1 and not na(scenarioStructureLevel) and close > scenarioStructureLevel + structureReclaimBuffer
+        if structureMemoryExpired or bullStructureLost or bearStructureReclaimed
+            scenarioStructureBias := 0
+            scenarioStructureStartBar := na
+            scenarioStructureLevel := na
+if not useScenarioStructuralMemory
+    scenarioStructureBias := 0
+    scenarioStructureStartBar := na
+    scenarioStructureLevel := na
+if scenarioStructureBias == 1
+    bullScenarioScore += scenarioStructureMemoryScore
+if scenarioStructureBias == -1
+    bearScenarioScore += scenarioStructureMemoryScore
+//----------------------------------------------------
+// Primary / secondary role assignment.
+// Strong MSS/displacement or a qualifying price override can switch the
+// primary path immediately. Otherwise the score edge must persist for the
+// configured number of closed candles. Cooldown prevents rapid flip-flops.
+//----------------------------------------------------
+var bool scenarioPrimaryBull = true
+var bool scenarioInitialized = false
+var int scenarioBullConfirmCount = 0
+var int scenarioBearConfirmCount = 0
+var int scenarioLastSwitchBar = na
+int activeScenarioSwitchEdge = math.max(scenarioSwitchEdge, 2)
+bool bullDirectionalOk = not scenarioRequireDirectionalClose or close > open
+bool bearDirectionalOk = not scenarioRequireDirectionalClose or close < open
+bool bullScoreWins = bullValidProjection and bullScenarioScore >= bearScenarioScore + activeScenarioSwitchEdge and bullDirectionalOk
+bool bearScoreWins = bearValidProjection and bearScenarioScore >= bullScenarioScore + activeScenarioSwitchEdge and bearDirectionalOk
+bool strongBullFlip = scenarioFastFlipOnMSS and bullValidProjection and bullDirectionalOk and (bullMSS or (bullDisplacement and bullStructureBreak) or bullFreshStructureConfirm)
+bool strongBearFlip = scenarioFastFlipOnMSS and bearValidProjection and bearDirectionalOk and (bearMSS or (bearDisplacement and bearStructureBreak) or bearFreshStructureConfirm)
+bool bullImmediateOverride = bullValidProjection and bullDirectionalOk and (bullPriceOverride or bullFreshStructureConfirm)
+bool bearImmediateOverride = bearValidProjection and bearDirectionalOk and (bearPriceOverride or bearFreshStructureConfirm)
+bool scenarioCooldownReady = na(scenarioLastSwitchBar) or bar_index - scenarioLastSwitchBar >= scenarioSwitchCooldownBars
+if barstate.isconfirmed
+    if elliottDirection == "Bullish"
+        scenarioPrimaryBull := true
+        scenarioInitialized := true
+        scenarioBullConfirmCount := 0
+        scenarioBearConfirmCount := 0
+    else if elliottDirection == "Bearish"
+        scenarioPrimaryBull := false
+        scenarioInitialized := true
+        scenarioBullConfirmCount := 0
+        scenarioBearConfirmCount := 0
+    else
+        if not scenarioInitialized
+            if bullValidProjection and not bearValidProjection
+                scenarioPrimaryBull := true
+            else if bearValidProjection and not bullValidProjection
+                scenarioPrimaryBull := false
+            else
+                scenarioPrimaryBull := bullScenarioScore >= bearScenarioScore
+            scenarioInitialized := true
+            scenarioLastSwitchBar := bar_index
+        else if bullValidProjection and not bearValidProjection
+            if not scenarioPrimaryBull
+                scenarioPrimaryBull := true
+                scenarioLastSwitchBar := bar_index
+            scenarioBullConfirmCount := 0
+            scenarioBearConfirmCount := 0
+        else if bearValidProjection and not bullValidProjection
+            if scenarioPrimaryBull
+                scenarioPrimaryBull := false
+                scenarioLastSwitchBar := bar_index
+            scenarioBullConfirmCount := 0
+            scenarioBearConfirmCount := 0
+        else if bullValidProjection and bearValidProjection and autoPromoteSecondary
+            if bullScoreWins
+                scenarioBullConfirmCount += 1
+                scenarioBearConfirmCount := 0
+            else if bearScoreWins
+                scenarioBearConfirmCount += 1
+                scenarioBullConfirmCount := 0
+            else
+                scenarioBullConfirmCount := 0
+                scenarioBearConfirmCount := 0
+            if scenarioCooldownReady
+                if not scenarioPrimaryBull and (strongBullFlip or bullImmediateOverride or scenarioBullConfirmCount >= scenarioSwitchConfirmBars)
+                    scenarioPrimaryBull := true
+                    scenarioLastSwitchBar := bar_index
+                    scenarioBullConfirmCount := 0
+                    scenarioBearConfirmCount := 0
+                else if scenarioPrimaryBull and (strongBearFlip or bearImmediateOverride or scenarioBearConfirmCount >= scenarioSwitchConfirmBars)
+                    scenarioPrimaryBull := false
+                    scenarioLastSwitchBar := bar_index
+                    scenarioBullConfirmCount := 0
+                    scenarioBearConfirmCount := 0
+bool elliottBull = scenarioPrimaryBull
+
+//====================================================
+// 23. MAP PRIMARY SCENARIO TO STANDARD DRAWING VARIABLES
+//====================================================
+int wave0Bar = elliottBull ? bullWave0Bar : bearWave0Bar
+int wave1Bar = elliottBull ? bullWave1Bar : bearWave1Bar
+int wave2Bar = elliottBull ? bullWave2Bar : bearWave2Bar
+float wave0Price = elliottBull ? bullWave0Price : bearWave0Price
+float wave1Price = elliottBull ? bullWave1Price : bearWave1Price
+float wave2Price = elliottBull ? bullWave2Price : bearWave2Price
+bool wave2Actual = elliottBull ? bullWave2Actual : bearWave2Actual
+bool validWave1 = elliottBull ? bullValidWave1 : bearValidWave1
+float wave3Price = elliottBull ? bullWave3Price : bearWave3Price
+float wave4Price = elliottBull ? bullWave4Price : bearWave4Price
+float wave5Price = elliottBull ? bullWave5Price : bearWave5Price
+float waveAPrice = elliottBull ? bullWaveAPrice : bearWaveAPrice
+float waveBPrice = elliottBull ? bullWaveBPrice : bearWaveBPrice
+float waveCPrice = elliottBull ? bullWaveCPrice : bearWaveCPrice
+bool validProjectedStructure = elliottBull ? bullValidProjection : bearValidProjection
+//----------------------------------------------------
+// Primary projected bar positions.
+//
+// Historical Wave 3 progress is drawn from Wave 2 to the latest closed
+// candle. The future dashed projection then begins from that candle.
+// Future target timing still starts after the latest chart bar.
+//----------------------------------------------------
+int projectionStartBar = math.max(bar_index + 1, wave2Bar)
+int wave3StartBar = wave2Bar
+int wave3Bar = na
+int wave4Bar = na
+int wave5Bar = na
+int waveABar = na
+int waveBBar = na
+int waveCBar = na
+if validProjectedStructure
+    wave3Bar := projectionStartBar + wave3Bars
+    wave4Bar := wave3Bar + wave4Bars
+    wave5Bar := wave4Bar + wave5Bars
+    waveABar := wave5Bar + waveABars
+    waveBBar := waveABar + waveBBars
+    waveCBar := waveBBar + waveCBars
+
+//====================================================
+// 24. ELLIOTT OBJECTS
+//====================================================
+var line wave1Line = na
+var line wave2Line = na
+var line wave3Line = na
+var line wave3ActiveLine = na
+var line wave4Line = na
+var line wave5Line = na
+var line waveALine = na
+var line waveBLine = na
+var line waveCLine = na
+var label wave1Label = na
+var label wave2Label = na
+var label wave3Label = na
+var label wave4Label = na
+var label wave5Label = na
+var label waveALabel = na
+var label waveBLabel = na
+var label waveCLabel = na
+
+//====================================================
+// 25. DRAW ELLIOTT PATH
+//====================================================
+if barstate.islast
+    bool validElliott = showElliott and validWave1 and validProjectedStructure and not na(wave2Price) and not na(wave3Price) and not na(wave4Price) and not na(wave5Price)
+    color impulseColor = bullishElliottColor
+    if validElliott
+        //------------------------------------------------
+        // WAVE 1
+        //------------------------------------------------
+        if na(wave1Line)
+            wave1Line := line.new(wave0Bar, wave0Price, wave1Bar, wave1Price, xloc=xloc.bar_index, color=impulseColor, width=elliottLineWidth, style=line.style_solid)
+        else
+            line.set_xy1(wave1Line, wave0Bar, wave0Price)
+            line.set_xy2(wave1Line, wave1Bar, wave1Price)
+            line.set_color(wave1Line, impulseColor)
+            line.set_width(wave1Line, elliottLineWidth)
+            line.set_style(wave1Line, line.style_solid)
+        //------------------------------------------------
+        // WAVE 2
+        //------------------------------------------------
+        if na(wave2Line)
+            if wave2Bar <= bar_index
+                wave2Line := line.new(wave1Bar, wave1Price, wave2Bar, wave2Price, xloc=xloc.bar_index, color=impulseColor, width=elliottLineWidth, style=line.style_solid)
+            else
+                wave2Line := line.new(wave1Bar, wave1Price, wave2Bar, wave2Price, xloc=xloc.bar_index, color=impulseColor, width=elliottLineWidth, style=line.style_dashed)
+        else
+            line.set_xy1(wave2Line, wave1Bar, wave1Price)
+            line.set_xy2(wave2Line, wave2Bar, wave2Price)
+            line.set_color(wave2Line, impulseColor)
+            line.set_width(wave2Line, elliottLineWidth)
+            if wave2Bar <= bar_index
+                line.set_style(wave2Line, line.style_solid)
+            else
+                line.set_style(wave2Line, line.style_dashed)
+        //------------------------------------------------
+        // WAVE 3
+        //
+        // If Wave 2 is already confirmed on historical candles, draw the
+        // completed / active portion from Wave 2 to the latest closed candle
+        // as a SOLID line. Then continue from the latest closed candle to the
+        // projected Wave 3 target as a DASHED line.
+        //
+        // This keeps the Elliott path visually connected to actual price
+        // action on both the 1H and Daily charts.
+        //------------------------------------------------
+        bool wave3HasHistoricalProgress = wave2Bar <= bar_index and wave2Bar < bar_index
+        int wave3LiveBar = bar_index
+        float wave3LivePrice = close
+        if wave3HasHistoricalProgress
+            if na(wave3ActiveLine)
+                wave3ActiveLine := line.new(wave2Bar, wave2Price, wave3LiveBar, wave3LivePrice, xloc=xloc.bar_index, color=impulseColor, width=elliottLineWidth, style=line.style_solid)
+            else
+                line.set_xy1(wave3ActiveLine, wave2Bar, wave2Price)
+                line.set_xy2(wave3ActiveLine, wave3LiveBar, wave3LivePrice)
+                line.set_color(wave3ActiveLine, impulseColor)
+                line.set_width(wave3ActiveLine, elliottLineWidth)
+                line.set_style(wave3ActiveLine, line.style_solid)
+            if na(wave3Line)
+                wave3Line := line.new(wave3LiveBar, wave3LivePrice, wave3Bar, wave3Price, xloc=xloc.bar_index, color=impulseColor, width=elliottLineWidth, style=line.style_dashed)
+            else
+                line.set_xy1(wave3Line, wave3LiveBar, wave3LivePrice)
+                line.set_xy2(wave3Line, wave3Bar, wave3Price)
+                line.set_color(wave3Line, impulseColor)
+                line.set_width(wave3Line, elliottLineWidth)
+                line.set_style(wave3Line, line.style_dashed)
+        else
+            if not na(wave3ActiveLine)
+                line.delete(wave3ActiveLine)
+                wave3ActiveLine := na
+            if na(wave3Line)
+                wave3Line := line.new(wave2Bar, wave2Price, wave3Bar, wave3Price, xloc=xloc.bar_index, color=impulseColor, width=elliottLineWidth, style=line.style_dashed)
+            else
+                line.set_xy1(wave3Line, wave2Bar, wave2Price)
+                line.set_xy2(wave3Line, wave3Bar, wave3Price)
+                line.set_color(wave3Line, impulseColor)
+                line.set_width(wave3Line, elliottLineWidth)
+                line.set_style(wave3Line, line.style_dashed)
+        //------------------------------------------------
+        // WAVE 4
+        //------------------------------------------------
+        if na(wave4Line)
+            wave4Line := line.new(wave3Bar, wave3Price, wave4Bar, wave4Price, xloc=xloc.bar_index, color=impulseColor, width=elliottLineWidth, style=line.style_dashed)
+        else
+            line.set_xy1(wave4Line, wave3Bar, wave3Price)
+            line.set_xy2(wave4Line, wave4Bar, wave4Price)
+            line.set_color(wave4Line, impulseColor)
+            line.set_width(wave4Line, elliottLineWidth)
+            line.set_style(wave4Line, line.style_dashed)
+        //------------------------------------------------
+        // WAVE 5
+        //------------------------------------------------
+        if na(wave5Line)
+            wave5Line := line.new(wave4Bar, wave4Price, wave5Bar, wave5Price, xloc=xloc.bar_index, color=impulseColor, width=elliottLineWidth, style=line.style_dashed)
+        else
+            line.set_xy1(wave5Line, wave4Bar, wave4Price)
+            line.set_xy2(wave5Line, wave5Bar, wave5Price)
+            line.set_color(wave5Line, impulseColor)
+            line.set_width(wave5Line, elliottLineWidth)
+            line.set_style(wave5Line, line.style_dashed)
+        //------------------------------------------------
+        // WAVE LABEL TEXT
+        //------------------------------------------------
+        string w1Text = "1"
+        string w2Text = "2"
+        string w3Text = "3"
+        string w4Text = "4"
+        string w5Text = "5"
+        if showElliottPrices
+            w1Text := "1  $" + str.tostring(wave1Price, "#.##")
+            w2Text := "2  $" + str.tostring(wave2Price, "#.##")
+            w3Text := "3  $" + str.tostring(wave3Price, "#.##")
+            w4Text := "4  $" + str.tostring(wave4Price, "#.##")
+            w5Text := "5  $" + str.tostring(wave5Price, "#.##")
+        //------------------------------------------------
+        // WAVE 1 LABEL
+        //------------------------------------------------
+        if na(wave1Label)
+            wave1Label := label.new(wave1Bar, wave1Price, w1Text, xloc=xloc.bar_index, style=elliottBull ? label.style_label_down : label.style_label_up, color=color.new(impulseColor, 80), textcolor=impulseColor, size=size.normal)
+        else
+            label.set_xy(wave1Label, wave1Bar, wave1Price)
+            label.set_text(wave1Label, w1Text)
+            label.set_textcolor(wave1Label, impulseColor)
+        //------------------------------------------------
+        // WAVE 2 LABEL
+        //------------------------------------------------
+        if na(wave2Label)
+            wave2Label := label.new(wave2Bar, wave2Price, w2Text, xloc=xloc.bar_index, style=elliottBull ? label.style_label_up : label.style_label_down, color=color.new(impulseColor, 80), textcolor=impulseColor, size=size.normal)
+        else
+            label.set_xy(wave2Label, wave2Bar, wave2Price)
+            label.set_text(wave2Label, w2Text)
+            label.set_textcolor(wave2Label, impulseColor)
+        //------------------------------------------------
+        // WAVE 3 LABEL
+        //------------------------------------------------
+        if na(wave3Label)
+            wave3Label := label.new(wave3Bar, wave3Price, w3Text, xloc=xloc.bar_index, style=elliottBull ? label.style_label_down : label.style_label_up, color=color.new(impulseColor, 80), textcolor=impulseColor, size=size.normal)
+        else
+            label.set_xy(wave3Label, wave3Bar, wave3Price)
+            label.set_text(wave3Label, w3Text)
+            label.set_textcolor(wave3Label, impulseColor)
+        //------------------------------------------------
+        // WAVE 4 LABEL
+        //------------------------------------------------
+        if na(wave4Label)
+            wave4Label := label.new(wave4Bar, wave4Price, w4Text, xloc=xloc.bar_index, style=elliottBull ? label.style_label_up : label.style_label_down, color=color.new(impulseColor, 80), textcolor=impulseColor, size=size.normal)
+        else
+            label.set_xy(wave4Label, wave4Bar, wave4Price)
+            label.set_text(wave4Label, w4Text)
+            label.set_textcolor(wave4Label, impulseColor)
+        //------------------------------------------------
+        // WAVE 5 LABEL
+        //------------------------------------------------
+        if na(wave5Label)
+            wave5Label := label.new(wave5Bar, wave5Price, w5Text, xloc=xloc.bar_index, style=elliottBull ? label.style_label_down : label.style_label_up, color=color.new(impulseColor, 80), textcolor=impulseColor, size=size.normal)
+        else
+            label.set_xy(wave5Label, wave5Bar, wave5Price)
+            label.set_text(wave5Label, w5Text)
+            label.set_textcolor(wave5Label, impulseColor)
+        //------------------------------------------------
+        // A-B-C
+        //------------------------------------------------
+        if showABC
+            if na(waveALine)
+                waveALine := line.new(wave5Bar, wave5Price, waveABar, waveAPrice, xloc=xloc.bar_index, color=correctionColor, width=elliottLineWidth, style=line.style_dashed)
+            else
+                line.set_xy1(waveALine, wave5Bar, wave5Price)
+                line.set_xy2(waveALine, waveABar, waveAPrice)
+                line.set_color(waveALine, correctionColor)
+                line.set_style(waveALine, line.style_dashed)
+            if na(waveBLine)
+                waveBLine := line.new(waveABar, waveAPrice, waveBBar, waveBPrice, xloc=xloc.bar_index, color=correctionColor, width=elliottLineWidth, style=line.style_dashed)
+            else
+                line.set_xy1(waveBLine, waveABar, waveAPrice)
+                line.set_xy2(waveBLine, waveBBar, waveBPrice)
+                line.set_color(waveBLine, correctionColor)
+                line.set_style(waveBLine, line.style_dashed)
+            if na(waveCLine)
+                waveCLine := line.new(waveBBar, waveBPrice, waveCBar, waveCPrice, xloc=xloc.bar_index, color=correctionColor, width=elliottLineWidth, style=line.style_dashed)
+            else
+                line.set_xy1(waveCLine, waveBBar, waveBPrice)
+                line.set_xy2(waveCLine, waveCBar, waveCPrice)
+                line.set_color(waveCLine, correctionColor)
+                line.set_style(waveCLine, line.style_dashed)
+            string aText = "A"
+            string bText = "B"
+            string cText = "C"
+            if showElliottPrices
+                aText := "A  $" + str.tostring(waveAPrice, "#.##")
+                bText := "B  $" + str.tostring(waveBPrice, "#.##")
+                cText := "C  $" + str.tostring(waveCPrice, "#.##")
+            if na(waveALabel)
+                waveALabel := label.new(waveABar, waveAPrice, aText, xloc=xloc.bar_index, style=elliottBull ? label.style_label_up : label.style_label_down, color=color.new(correctionColor, 90), textcolor=correctionColor, size=size.normal)
+            else
+                label.set_xy(waveALabel, waveABar, waveAPrice)
+                label.set_text(waveALabel, aText)
+                label.set_textcolor(waveALabel, correctionColor)
+            if na(waveBLabel)
+                waveBLabel := label.new(waveBBar, waveBPrice, bText, xloc=xloc.bar_index, style=elliottBull ? label.style_label_down : label.style_label_up, color=color.new(correctionColor, 90), textcolor=correctionColor, size=size.normal)
+            else
+                label.set_xy(waveBLabel, waveBBar, waveBPrice)
+                label.set_text(waveBLabel, bText)
+                label.set_textcolor(waveBLabel, correctionColor)
+            if na(waveCLabel)
+                waveCLabel := label.new(waveCBar, waveCPrice, cText, xloc=xloc.bar_index, style=elliottBull ? label.style_label_up : label.style_label_down, color=color.new(correctionColor, 90), textcolor=correctionColor, size=size.normal)
+            else
+                label.set_xy(waveCLabel, waveCBar, waveCPrice)
+                label.set_text(waveCLabel, cText)
+                label.set_textcolor(waveCLabel, correctionColor)
+        else
+            if not na(waveALine)
+                line.delete(waveALine)
+                waveALine := na
+            if not na(waveBLine)
+                line.delete(waveBLine)
+                waveBLine := na
+            if not na(waveCLine)
+                line.delete(waveCLine)
+                waveCLine := na
+            if not na(waveALabel)
+                label.delete(waveALabel)
+                waveALabel := na
+            if not na(waveBLabel)
+                label.delete(waveBLabel)
+                waveBLabel := na
+            if not na(waveCLabel)
+                label.delete(waveCLabel)
+                waveCLabel := na
+    else
+        if not na(wave1Line)
+            line.delete(wave1Line)
+            wave1Line := na
+        if not na(wave2Line)
+            line.delete(wave2Line)
+            wave2Line := na
+        if not na(wave3Line)
+            line.delete(wave3Line)
+            wave3Line := na
+        if not na(wave3ActiveLine)
+            line.delete(wave3ActiveLine)
+            wave3ActiveLine := na
+        if not na(wave4Line)
+            line.delete(wave4Line)
+            wave4Line := na
+        if not na(wave5Line)
+            line.delete(wave5Line)
+            wave5Line := na
+        if not na(waveALine)
+            line.delete(waveALine)
+            waveALine := na
+        if not na(waveBLine)
+            line.delete(waveBLine)
+            waveBLine := na
+        if not na(waveCLine)
+            line.delete(waveCLine)
+            waveCLine := na
+        if not na(wave1Label)
+            label.delete(wave1Label)
+            wave1Label := na
+        if not na(wave2Label)
+            label.delete(wave2Label)
+            wave2Label := na
+        if not na(wave3Label)
+            label.delete(wave3Label)
+            wave3Label := na
+        if not na(wave4Label)
+            label.delete(wave4Label)
+            wave4Label := na
+        if not na(wave5Label)
+            label.delete(wave5Label)
+            wave5Label := na
+        if not na(waveALabel)
+            label.delete(waveALabel)
+            waveALabel := na
+        if not na(waveBLabel)
+            label.delete(waveBLabel)
+            waveBLabel := na
+        if not na(waveCLabel)
+            label.delete(waveCLabel)
+            waveCLabel := na
+
+//====================================================
+// 25A. LIMIT PRIMARY ELLIOTT TO NEXT TWO FUTURE POINTS
+//====================================================
+// The full 1-5 / A-B-C path is still calculated internally.
+// Only the next two future Elliott points are displayed on the chart.
+// If Wave 2 is still projected, display Wave 2 and Wave 3.
+// If Wave 2 is confirmed, display Wave 3 and Wave 4.
+if barstate.islast
+    bool primaryWave2IsFuture = not na(wave2Bar) and wave2Bar > bar_index
+    if primaryWave2IsFuture
+        if not na(wave4Line)
+            line.delete(wave4Line)
+            wave4Line := na
+        if not na(wave4Label)
+            label.delete(wave4Label)
+            wave4Label := na
+    if not na(wave5Line)
+        line.delete(wave5Line)
+        wave5Line := na
+    if not na(wave5Label)
+        label.delete(wave5Label)
+        wave5Label := na
+    if not na(waveALine)
+        line.delete(waveALine)
+        waveALine := na
+    if not na(waveBLine)
+        line.delete(waveBLine)
+        waveBLine := na
+    if not na(waveCLine)
+        line.delete(waveCLine)
+        waveCLine := na
+    if not na(waveALabel)
+        label.delete(waveALabel)
+        waveALabel := na
+    if not na(waveBLabel)
+        label.delete(waveBLabel)
+        waveBLabel := na
+    if not na(waveCLabel)
+        label.delete(waveCLabel)
+        waveCLabel := na
+
+//====================================================
+// 26. SECONDARY ELLIOTT SCENARIO
+//====================================================
+//
+// 1. Prefer an independently validated opposite Elliott structure.
+// 2. If none exists yet, create a conservative conditional gray path
+//    from the latest closed candle.
+// 3. The fallback remains secondary until closed-candle scoring promotes it.
+bool secondaryBull = not elliottBull
+bool secondaryIndependentValid =
+     secondaryBull ?
+     bullValidWave1 and bullValidProjection :
+     bearValidWave1 and bearValidProjection
+float secondaryFallbackUnit =
+     (secondaryBull ? bullProjectionUnit : bearProjectionUnit) * secondaryProjectionScale
+int secondaryStartBar = na
+int secondaryWave1Bar = na
+int secondaryWave2Bar = na
+int secondaryWave3Bar = na
+int secondaryWave4Bar = na
+int secondaryWave5Bar = na
+int secondaryWaveABar = na
+int secondaryWaveBBar = na
+int secondaryWaveCBar = na
+float secondaryReference = na
+float secondaryWave1Price = na
+float secondaryWave2Price = na
+float secondaryWave3Price = na
+float secondaryWave4Price = na
+float secondaryWave5Price = na
+float secondaryWaveAPrice = na
+float secondaryWaveBPrice = na
+float secondaryWaveCPrice = na
+if secondaryIndependentValid
+    secondaryStartBar := secondaryBull ? bullWave0Bar : bearWave0Bar
+    secondaryReference := secondaryBull ? bullWave0Price : bearWave0Price
+    secondaryWave1Bar := secondaryBull ? bullWave1Bar : bearWave1Bar
+    secondaryWave2Bar := secondaryBull ? bullWave2Bar : bearWave2Bar
+    secondaryWave1Price := secondaryBull ? bullWave1Price : bearWave1Price
+    secondaryWave2Price := secondaryBull ? bullWave2Price : bearWave2Price
+    secondaryWave3Price := secondaryBull ? bullWave3Price : bearWave3Price
+    secondaryWave4Price := secondaryBull ? bullWave4Price : bearWave4Price
+    secondaryWave5Price := secondaryBull ? bullWave5Price : bearWave5Price
+    secondaryWaveAPrice := secondaryBull ? bullWaveAPrice : bearWaveAPrice
+    secondaryWaveBPrice := secondaryBull ? bullWaveBPrice : bearWaveBPrice
+    secondaryWaveCPrice := secondaryBull ? bullWaveCPrice : bearWaveCPrice
+    int secondaryProjectionStartBar = math.max(bar_index + 1, secondaryWave2Bar)
+    secondaryWave3Bar := secondaryProjectionStartBar + wave3Bars
+    secondaryWave4Bar := secondaryWave3Bar + wave4Bars
+    secondaryWave5Bar := secondaryWave4Bar + wave5Bars
+    secondaryWaveABar := secondaryWave5Bar + waveABars
+    secondaryWaveBBar := secondaryWaveABar + waveBBars
+    secondaryWaveCBar := secondaryWaveBBar + waveCBars
+else
+    secondaryStartBar := bar_index
+    secondaryReference := close
+    secondaryWave1Bar := bar_index + 2
+    secondaryWave2Bar := secondaryWave1Bar + wave2Bars
+    secondaryWave3Bar := secondaryWave2Bar + wave3Bars
+    secondaryWave4Bar := secondaryWave3Bar + wave4Bars
+    secondaryWave5Bar := secondaryWave4Bar + wave5Bars
+    secondaryWaveABar := secondaryWave5Bar + waveABars
+    secondaryWaveBBar := secondaryWaveABar + waveBBars
+    secondaryWaveCBar := secondaryWaveBBar + waveCBars
+    if secondaryBull
+        secondaryWave1Price := close + secondaryFallbackUnit * 0.40
+        secondaryWave2Price := secondaryWave1Price - secondaryFallbackUnit * 0.300
+        secondaryWave3Price := secondaryWave2Price + secondaryFallbackUnit * 1.272
+        float fallbackBullBarrier3 =
+             f_nearestAbove(
+                 secondaryWave2Price,
+                 fibR1,
+                 fibR2,
+                 fibR3,
+                 fibR4,
+                 fixedSupplyBot)
+        if not na(nearestBearFVGAbove) and nearestBearFVGAbove > secondaryWave2Price
+            fallbackBullBarrier3 :=
+                 na(fallbackBullBarrier3) ?
+                 nearestBearFVGAbove :
+                 math.min(fallbackBullBarrier3, nearestBearFVGAbove)
+        secondaryWave3Price :=
+             f_adaptiveBullBarrier(
+                 secondaryWave2Price,
+                 secondaryWave3Price,
+                 fallbackBullBarrier3,
+                 timeframeProjectionATR * projectionBarrierATR,
+                 timeframeProjectionATR * barrierClusterToleranceATR)
+        secondaryWave4Price := secondaryWave3Price - secondaryFallbackUnit * 0.300
+        secondaryWave5Price := secondaryWave4Price + secondaryFallbackUnit * 0.786
+        float fallbackBullImpulse =
+             math.max(secondaryWave5Price - close, syminfo.mintick)
+        secondaryWaveAPrice :=
+             secondaryWave5Price -
+             fallbackBullImpulse * waveARetrace
+        float fallbackBullASize =
+             secondaryWave5Price -
+             secondaryWaveAPrice
+        secondaryWaveBPrice :=
+             secondaryWaveAPrice +
+             fallbackBullASize * waveBRetrace
+        secondaryWaveCPrice :=
+             secondaryWaveBPrice -
+             fallbackBullASize * waveCExtension
+    else
+        secondaryWave1Price := close - secondaryFallbackUnit * 0.40
+        secondaryWave2Price := secondaryWave1Price + secondaryFallbackUnit * 0.300
+        secondaryWave3Price := secondaryWave2Price - secondaryFallbackUnit * 1.272
+        float fallbackBearBarrier3 =
+             f_nearestBelow(
+                 secondaryWave2Price,
+                 fibS1,
+                 fibS2,
+                 fibS3,
+                 fibS4,
+                 fixedDemandTop)
+        if not na(nearestBullFVGBelow) and nearestBullFVGBelow < secondaryWave2Price
+            fallbackBearBarrier3 :=
+                 na(fallbackBearBarrier3) ?
+                 nearestBullFVGBelow :
+                 math.max(fallbackBearBarrier3, nearestBullFVGBelow)
+        secondaryWave3Price :=
+             f_adaptiveBearBarrier(
+                 secondaryWave2Price,
+                 secondaryWave3Price,
+                 fallbackBearBarrier3,
+                 timeframeProjectionATR * projectionBarrierATR,
+                 timeframeProjectionATR * barrierClusterToleranceATR)
+        secondaryWave4Price := secondaryWave3Price + secondaryFallbackUnit * 0.300
+        secondaryWave5Price := secondaryWave4Price - secondaryFallbackUnit * 0.786
+        float fallbackBearImpulse =
+             math.max(close - secondaryWave5Price, syminfo.mintick)
+        secondaryWaveAPrice :=
+             secondaryWave5Price +
+             fallbackBearImpulse * waveARetrace
+        float fallbackBearASize =
+             secondaryWaveAPrice -
+             secondaryWave5Price
+        secondaryWaveBPrice :=
+             secondaryWaveAPrice -
+             fallbackBearASize * waveBRetrace
+        secondaryWaveCPrice :=
+             secondaryWaveBPrice +
+             fallbackBearASize * waveCExtension
+bool validSecondaryElliott =
+     showSecondaryElliott and
+     showElliott and
+     not na(secondaryWave1Price) and
+     not na(secondaryWave2Price) and
+     not na(secondaryWave3Price) and
+     not na(secondaryWave5Price)
+
+//====================================================
+// 27. SECONDARY ELLIOTT OBJECTS
+//====================================================
+var line secondaryWave1Line = na
+var line secondaryWave2Line = na
+var line secondaryWave3Line = na
+var line secondaryWave4Line = na
+var line secondaryWave5Line = na
+var line secondaryWaveALine = na
+var line secondaryWaveBLine = na
+var line secondaryWaveCLine = na
+var label secondaryWave1Label = na
+var label secondaryWave2Label = na
+var label secondaryWave3Label = na
+var label secondaryWave4Label = na
+var label secondaryWave5Label = na
+var label secondaryWaveALabel = na
+var label secondaryWaveBLabel = na
+var label secondaryWaveCLabel = na
+
+//====================================================
+// 28. DRAW SECONDARY ELLIOTT PATH
+//====================================================
+if barstate.islast
+    if validSecondaryElliott
+        if na(secondaryWave1Line)
+            secondaryWave1Line := line.new(secondaryStartBar, secondaryReference, secondaryWave1Bar, secondaryWave1Price, xloc=xloc.bar_index, color=secondaryElliottDisplayColor, width=secondaryElliottLineWidth, style=line.style_dashed)
+        else
+            line.set_xy1(secondaryWave1Line, secondaryStartBar, secondaryReference)
+            line.set_xy2(secondaryWave1Line, secondaryWave1Bar, secondaryWave1Price)
+            line.set_color(secondaryWave1Line, secondaryElliottDisplayColor)
+            line.set_width(secondaryWave1Line, secondaryElliottLineWidth)
+            line.set_style(secondaryWave1Line, line.style_dashed)
+        if na(secondaryWave2Line)
+            secondaryWave2Line := line.new(secondaryWave1Bar, secondaryWave1Price, secondaryWave2Bar, secondaryWave2Price, xloc=xloc.bar_index, color=secondaryElliottDisplayColor, width=secondaryElliottLineWidth, style=line.style_dashed)
+        else
+            line.set_xy1(secondaryWave2Line, secondaryWave1Bar, secondaryWave1Price)
+            line.set_xy2(secondaryWave2Line, secondaryWave2Bar, secondaryWave2Price)
+            line.set_color(secondaryWave2Line, secondaryElliottDisplayColor)
+            line.set_width(secondaryWave2Line, secondaryElliottLineWidth)
+            line.set_style(secondaryWave2Line, line.style_dashed)
+        if na(secondaryWave3Line)
+            secondaryWave3Line := line.new(secondaryWave2Bar, secondaryWave2Price, secondaryWave3Bar, secondaryWave3Price, xloc=xloc.bar_index, color=secondaryElliottDisplayColor, width=secondaryElliottLineWidth, style=line.style_dashed)
+        else
+            line.set_xy1(secondaryWave3Line, secondaryWave2Bar, secondaryWave2Price)
+            line.set_xy2(secondaryWave3Line, secondaryWave3Bar, secondaryWave3Price)
+            line.set_color(secondaryWave3Line, secondaryElliottDisplayColor)
+            line.set_width(secondaryWave3Line, secondaryElliottLineWidth)
+            line.set_style(secondaryWave3Line, line.style_dashed)
+        if na(secondaryWave4Line)
+            secondaryWave4Line := line.new(secondaryWave3Bar, secondaryWave3Price, secondaryWave4Bar, secondaryWave4Price, xloc=xloc.bar_index, color=secondaryElliottDisplayColor, width=secondaryElliottLineWidth, style=line.style_dashed)
+        else
+            line.set_xy1(secondaryWave4Line, secondaryWave3Bar, secondaryWave3Price)
+            line.set_xy2(secondaryWave4Line, secondaryWave4Bar, secondaryWave4Price)
+            line.set_color(secondaryWave4Line, secondaryElliottDisplayColor)
+            line.set_width(secondaryWave4Line, secondaryElliottLineWidth)
+            line.set_style(secondaryWave4Line, line.style_dashed)
+        if na(secondaryWave5Line)
+            secondaryWave5Line := line.new(secondaryWave4Bar, secondaryWave4Price, secondaryWave5Bar, secondaryWave5Price, xloc=xloc.bar_index, color=secondaryElliottDisplayColor, width=secondaryElliottLineWidth, style=line.style_dashed)
+        else
+            line.set_xy1(secondaryWave5Line, secondaryWave4Bar, secondaryWave4Price)
+            line.set_xy2(secondaryWave5Line, secondaryWave5Bar, secondaryWave5Price)
+            line.set_color(secondaryWave5Line, secondaryElliottDisplayColor)
+            line.set_width(secondaryWave5Line, secondaryElliottLineWidth)
+            line.set_style(secondaryWave5Line, line.style_dashed)
+        if na(secondaryWaveALine)
+            secondaryWaveALine := line.new(secondaryWave5Bar, secondaryWave5Price, secondaryWaveABar, secondaryWaveAPrice, xloc=xloc.bar_index, color=secondaryElliottDisplayColor, width=secondaryElliottLineWidth, style=line.style_dashed)
+        else
+            line.set_xy1(secondaryWaveALine, secondaryWave5Bar, secondaryWave5Price)
+            line.set_xy2(secondaryWaveALine, secondaryWaveABar, secondaryWaveAPrice)
+            line.set_color(secondaryWaveALine, secondaryElliottDisplayColor)
+            line.set_width(secondaryWaveALine, secondaryElliottLineWidth)
+            line.set_style(secondaryWaveALine, line.style_dashed)
+        if na(secondaryWaveBLine)
+            secondaryWaveBLine := line.new(secondaryWaveABar, secondaryWaveAPrice, secondaryWaveBBar, secondaryWaveBPrice, xloc=xloc.bar_index, color=secondaryElliottDisplayColor, width=secondaryElliottLineWidth, style=line.style_dashed)
+        else
+            line.set_xy1(secondaryWaveBLine, secondaryWaveABar, secondaryWaveAPrice)
+            line.set_xy2(secondaryWaveBLine, secondaryWaveBBar, secondaryWaveBPrice)
+            line.set_color(secondaryWaveBLine, secondaryElliottDisplayColor)
+            line.set_width(secondaryWaveBLine, secondaryElliottLineWidth)
+            line.set_style(secondaryWaveBLine, line.style_dashed)
+        if na(secondaryWaveCLine)
+            secondaryWaveCLine := line.new(secondaryWaveBBar, secondaryWaveBPrice, secondaryWaveCBar, secondaryWaveCPrice, xloc=xloc.bar_index, color=secondaryElliottDisplayColor, width=secondaryElliottLineWidth, style=line.style_dashed)
+        else
+            line.set_xy1(secondaryWaveCLine, secondaryWaveBBar, secondaryWaveBPrice)
+            line.set_xy2(secondaryWaveCLine, secondaryWaveCBar, secondaryWaveCPrice)
+            line.set_color(secondaryWaveCLine, secondaryElliottDisplayColor)
+            line.set_width(secondaryWaveCLine, secondaryElliottLineWidth)
+            line.set_style(secondaryWaveCLine, line.style_dashed)
+        string secondaryW1Text = showElliottPrices ? "1  $" + str.tostring(secondaryWave1Price, "#.##") : "1"
+        string secondaryW2Text = showElliottPrices ? "2  $" + str.tostring(secondaryWave2Price, "#.##") : "2"
+        string secondaryW3Text = showElliottPrices ? "3  $" + str.tostring(secondaryWave3Price, "#.##") : "3"
+        string secondaryW4Text = showElliottPrices ? "4  $" + str.tostring(secondaryWave4Price, "#.##") : "4"
+        string secondaryW5Text = showElliottPrices ? "5  $" + str.tostring(secondaryWave5Price, "#.##") : "5"
+        string secondaryAText = showElliottPrices ? "A  $" + str.tostring(secondaryWaveAPrice, "#.##") : "A"
+        string secondaryBText = showElliottPrices ? "B  $" + str.tostring(secondaryWaveBPrice, "#.##") : "B"
+        string secondaryCText = showElliottPrices ? "C  $" + str.tostring(secondaryWaveCPrice, "#.##") : "C"
+        if na(secondaryWave1Label)
+            secondaryWave1Label := label.new(secondaryWave1Bar, secondaryWave1Price, secondaryW1Text, xloc=xloc.bar_index, style=secondaryBull ? label.style_label_down : label.style_label_up, color=secondaryElliottLabelBg, textcolor=secondaryElliottDisplayColor, size=size.normal)
+        else
+            label.set_xy(secondaryWave1Label, secondaryWave1Bar, secondaryWave1Price)
+            label.set_text(secondaryWave1Label, secondaryW1Text)
+            label.set_textcolor(secondaryWave1Label, secondaryElliottDisplayColor)
+            label.set_color(secondaryWave1Label, secondaryElliottLabelBg)
+        if na(secondaryWave2Label)
+            secondaryWave2Label := label.new(secondaryWave2Bar, secondaryWave2Price, secondaryW2Text, xloc=xloc.bar_index, style=secondaryBull ? label.style_label_up : label.style_label_down, color=secondaryElliottLabelBg, textcolor=secondaryElliottDisplayColor, size=size.normal)
+        else
+            label.set_xy(secondaryWave2Label, secondaryWave2Bar, secondaryWave2Price)
+            label.set_text(secondaryWave2Label, secondaryW2Text)
+            label.set_textcolor(secondaryWave2Label, secondaryElliottDisplayColor)
+            label.set_color(secondaryWave2Label, secondaryElliottLabelBg)
+        if na(secondaryWave3Label)
+            secondaryWave3Label := label.new(secondaryWave3Bar, secondaryWave3Price, secondaryW3Text, xloc=xloc.bar_index, style=secondaryBull ? label.style_label_down : label.style_label_up, color=secondaryElliottLabelBg, textcolor=secondaryElliottDisplayColor, size=size.normal)
+        else
+            label.set_xy(secondaryWave3Label, secondaryWave3Bar, secondaryWave3Price)
+            label.set_text(secondaryWave3Label, secondaryW3Text)
+            label.set_textcolor(secondaryWave3Label, secondaryElliottDisplayColor)
+            label.set_color(secondaryWave3Label, secondaryElliottLabelBg)
+        if na(secondaryWave4Label)
+            secondaryWave4Label := label.new(secondaryWave4Bar, secondaryWave4Price, secondaryW4Text, xloc=xloc.bar_index, style=secondaryBull ? label.style_label_up : label.style_label_down, color=secondaryElliottLabelBg, textcolor=secondaryElliottDisplayColor, size=size.normal)
+        else
+            label.set_xy(secondaryWave4Label, secondaryWave4Bar, secondaryWave4Price)
+            label.set_text(secondaryWave4Label, secondaryW4Text)
+            label.set_textcolor(secondaryWave4Label, secondaryElliottDisplayColor)
+            label.set_color(secondaryWave4Label, secondaryElliottLabelBg)
+        if na(secondaryWave5Label)
+            secondaryWave5Label := label.new(secondaryWave5Bar, secondaryWave5Price, secondaryW5Text, xloc=xloc.bar_index, style=secondaryBull ? label.style_label_down : label.style_label_up, color=secondaryElliottLabelBg, textcolor=secondaryElliottDisplayColor, size=size.normal)
+        else
+            label.set_xy(secondaryWave5Label, secondaryWave5Bar, secondaryWave5Price)
+            label.set_text(secondaryWave5Label, secondaryW5Text)
+            label.set_textcolor(secondaryWave5Label, secondaryElliottDisplayColor)
+            label.set_color(secondaryWave5Label, secondaryElliottLabelBg)
+        if showABC
+            if na(secondaryWaveALabel)
+                secondaryWaveALabel := label.new(secondaryWaveABar, secondaryWaveAPrice, secondaryAText, xloc=xloc.bar_index, style=secondaryBull ? label.style_label_up : label.style_label_down, color=secondaryElliottLabelBg, textcolor=secondaryElliottDisplayColor, size=size.normal)
+            else
+                label.set_xy(secondaryWaveALabel, secondaryWaveABar, secondaryWaveAPrice)
+                label.set_text(secondaryWaveALabel, secondaryAText)
+                label.set_textcolor(secondaryWaveALabel, secondaryElliottDisplayColor)
+            label.set_color(secondaryWaveALabel, secondaryElliottLabelBg)
+            if na(secondaryWaveBLabel)
+                secondaryWaveBLabel := label.new(secondaryWaveBBar, secondaryWaveBPrice, secondaryBText, xloc=xloc.bar_index, style=secondaryBull ? label.style_label_down : label.style_label_up, color=secondaryElliottLabelBg, textcolor=secondaryElliottDisplayColor, size=size.normal)
+            else
+                label.set_xy(secondaryWaveBLabel, secondaryWaveBBar, secondaryWaveBPrice)
+                label.set_text(secondaryWaveBLabel, secondaryBText)
+                label.set_textcolor(secondaryWaveBLabel, secondaryElliottDisplayColor)
+            label.set_color(secondaryWaveBLabel, secondaryElliottLabelBg)
+            if na(secondaryWaveCLabel)
+                secondaryWaveCLabel := label.new(secondaryWaveCBar, secondaryWaveCPrice, secondaryCText, xloc=xloc.bar_index, style=secondaryBull ? label.style_label_up : label.style_label_down, color=secondaryElliottLabelBg, textcolor=secondaryElliottDisplayColor, size=size.normal)
+            else
+                label.set_xy(secondaryWaveCLabel, secondaryWaveCBar, secondaryWaveCPrice)
+                label.set_text(secondaryWaveCLabel, secondaryCText)
+                label.set_textcolor(secondaryWaveCLabel, secondaryElliottDisplayColor)
+            label.set_color(secondaryWaveCLabel, secondaryElliottLabelBg)
+        else
+            if not na(secondaryWaveALabel)
+                label.delete(secondaryWaveALabel)
+                secondaryWaveALabel := na
+            if not na(secondaryWaveBLabel)
+                label.delete(secondaryWaveBLabel)
+                secondaryWaveBLabel := na
+            if not na(secondaryWaveCLabel)
+                label.delete(secondaryWaveCLabel)
+                secondaryWaveCLabel := na
+    else
+        if not na(secondaryWave1Line)
+            line.delete(secondaryWave1Line)
+            secondaryWave1Line := na
+        if not na(secondaryWave2Line)
+            line.delete(secondaryWave2Line)
+            secondaryWave2Line := na
+        if not na(secondaryWave3Line)
+            line.delete(secondaryWave3Line)
+            secondaryWave3Line := na
+        if not na(secondaryWave4Line)
+            line.delete(secondaryWave4Line)
+            secondaryWave4Line := na
+        if not na(secondaryWave5Line)
+            line.delete(secondaryWave5Line)
+            secondaryWave5Line := na
+        if not na(secondaryWaveALine)
+            line.delete(secondaryWaveALine)
+            secondaryWaveALine := na
+        if not na(secondaryWaveBLine)
+            line.delete(secondaryWaveBLine)
+            secondaryWaveBLine := na
+        if not na(secondaryWaveCLine)
+            line.delete(secondaryWaveCLine)
+            secondaryWaveCLine := na
+        if not na(secondaryWave1Label)
+            label.delete(secondaryWave1Label)
+            secondaryWave1Label := na
+        if not na(secondaryWave2Label)
+            label.delete(secondaryWave2Label)
+            secondaryWave2Label := na
+        if not na(secondaryWave3Label)
+            label.delete(secondaryWave3Label)
+            secondaryWave3Label := na
+        if not na(secondaryWave4Label)
+            label.delete(secondaryWave4Label)
+            secondaryWave4Label := na
+        if not na(secondaryWave5Label)
+            label.delete(secondaryWave5Label)
+            secondaryWave5Label := na
+        if not na(secondaryWaveALabel)
+            label.delete(secondaryWaveALabel)
+            secondaryWaveALabel := na
+        if not na(secondaryWaveBLabel)
+            label.delete(secondaryWaveBLabel)
+            secondaryWaveBLabel := na
+        if not na(secondaryWaveCLabel)
+            label.delete(secondaryWaveCLabel)
+            secondaryWaveCLabel := na
+
+//====================================================
+// 28A. LIMIT SECONDARY ELLIOTT TO NEXT TWO FUTURE POINTS
+//====================================================
+// The full alternate path remains available internally for scoring.
+// Only the next two future secondary points are displayed.
+if barstate.islast
+    bool secondaryWave2IsFuture = not na(secondaryWave2Bar) and secondaryWave2Bar > bar_index
+    if secondaryWave2IsFuture
+        if not na(secondaryWave4Line)
+            line.delete(secondaryWave4Line)
+            secondaryWave4Line := na
+        if not na(secondaryWave4Label)
+            label.delete(secondaryWave4Label)
+            secondaryWave4Label := na
+    if not na(secondaryWave5Line)
+        line.delete(secondaryWave5Line)
+        secondaryWave5Line := na
+    if not na(secondaryWave5Label)
+        label.delete(secondaryWave5Label)
+        secondaryWave5Label := na
+    if not na(secondaryWaveALine)
+        line.delete(secondaryWaveALine)
+        secondaryWaveALine := na
+    if not na(secondaryWaveBLine)
+        line.delete(secondaryWaveBLine)
+        secondaryWaveBLine := na
+    if not na(secondaryWaveCLine)
+        line.delete(secondaryWaveCLine)
+        secondaryWaveCLine := na
+    if not na(secondaryWaveALabel)
+        label.delete(secondaryWaveALabel)
+        secondaryWaveALabel := na
+    if not na(secondaryWaveBLabel)
+        label.delete(secondaryWaveBLabel)
+        secondaryWaveBLabel := na
+    if not na(secondaryWaveCLabel)
+        label.delete(secondaryWaveCLabel)
+        secondaryWaveCLabel := na
+
+//====================================================
+// 29. CHART LEGEND / INFO BLOCK
+//====================================================
+//
+// The legend explains the primary chart graphics without changing
+// any Fibonacci, FVG, Elliott, or support/resistance calculations.
+//
+// CONFLUENCE SUPPORT / RESISTANCE:
+// A broader decision zone created when multiple independent technical
+// levels cluster within the configured ATR tolerance.
+//====================================================
+legendPosition = legendLocation == "Top Left" ? position.top_left : legendLocation == "Bottom Right" ? position.bottom_right : legendLocation == "Bottom Left" ? position.bottom_left : position.top_right
+color legendHeaderColor = color.rgb(33, 87, 243)
+var table chartLegend = table.new(legendPosition, 2, 7, bgcolor=legendBackgroundColor, frame_color=legendBorderColor, frame_width=1, border_color=legendBorderColor, border_width=1)
+if barstate.islast
+    if showLegend
+        table.set_position(chartLegend, legendPosition)
+        table.set_bgcolor(chartLegend, legendBackgroundColor)
+        table.set_frame_color(chartLegend, legendBorderColor)
+        table.set_border_color(chartLegend, legendBorderColor)
+        //------------------------------------------------
+        // HEADER
+        //------------------------------------------------
+        table.cell(chartLegend, 0, 0, "CHART LEGEND", text_color=color.white, bgcolor=legendHeaderColor, text_size=size.normal, text_halign=text.align_left)
+        table.cell(chartLegend, 1, 0, "DESCRIPTION", text_color=color.white, bgcolor=legendHeaderColor, text_size=size.normal, text_halign=text.align_left)
+        //------------------------------------------------
+        // FIBONACCI LEVELS
+        //------------------------------------------------
+        table.cell(chartLegend, 0, 1, "FIBONACCI LEVELS", text_color=color.white, bgcolor=legendBackgroundColor, text_size=size.normal, text_halign=text.align_left)
+        table.cell(chartLegend, 1, 1, "R1-R4 / S1-S4 from the 6 AM ET anchor and prior regular-session range.", text_color=color.white, bgcolor=legendBackgroundColor, text_size=size.normal, text_halign=text.align_left)
+        //------------------------------------------------
+        // BULLISH FVG
+        //------------------------------------------------
+        table.cell(chartLegend, 0, 2, "BULLISH FVG", text_color=color.white, bgcolor=legendBackgroundColor, text_size=size.normal, text_halign=text.align_left)
+        table.cell(chartLegend, 1, 2, "Green shaded zone = bullish imbalance. Watch for support, reaction, or fill.", text_color=bullFVGBaseColor, bgcolor=legendBackgroundColor, text_size=size.normal, text_halign=text.align_left)
+        //------------------------------------------------
+        // BEARISH FVG
+        //------------------------------------------------
+        table.cell(chartLegend, 0, 3, "BEARISH FVG", text_color=color.white, bgcolor=legendBackgroundColor, text_size=size.normal, text_halign=text.align_left)
+        table.cell(chartLegend, 1, 3, "Red shaded zone = bearish imbalance. Watch for resistance, reaction, or fill.", text_color=bearFVGBaseColor, bgcolor=legendBackgroundColor, text_size=size.normal, text_halign=text.align_left)
+        //------------------------------------------------
+        // PRIMARY ELLIOTT
+        //------------------------------------------------
+        table.cell(chartLegend, 0, 4, "PRIMARY ELLIOTT", text_color=color.white, bgcolor=legendBackgroundColor, text_size=size.normal, text_halign=text.align_left)
+        table.cell(chartLegend, 1, 4, "Yellow path = favored scenario with the next two projected Elliott points.", text_color=bullishElliottColor, bgcolor=legendBackgroundColor, text_size=size.normal, text_halign=text.align_left)
+        //------------------------------------------------
+        // SECONDARY ELLIOTT
+        //------------------------------------------------
+        table.cell(chartLegend, 0, 5, "SECONDARY ELLIOTT", text_color=color.white, bgcolor=legendBackgroundColor, text_size=size.normal, text_halign=text.align_left)
+        table.cell(chartLegend, 1, 5, "White dashed path = alternate scenario with the next two projected Elliott points.", text_color=secondaryElliottDisplayColor, bgcolor=legendBackgroundColor, text_size=size.normal, text_halign=text.align_left)
+        //------------------------------------------------
+        // CONFLUENCE SUPPORT / RESISTANCE
+        //------------------------------------------------
+        table.cell(chartLegend, 0, 6, "CONFLUENCE S/R", text_color=color.white, bgcolor=legendBackgroundColor, text_size=size.normal, text_halign=text.align_left)
+        table.cell(chartLegend, 1, 6, "Broader support/resistance zone where multiple technical levels cluster.", text_color=color.aqua, bgcolor=legendBackgroundColor, text_size=size.normal, text_halign=text.align_left)
+    else
+        table.clear(chartLegend, 0, 0, 1, 6)

@@ -1,0 +1,194 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LukaStrakl
+
+//@version=6
+// =============================================================================
+// TRU NQ Macro Dossier  ·  v1  ·  2026-07-21
+// =============================================================================
+// For the Trader Round Up community. Built on the macro study by Petar and a
+// 16-year NQ statistical extension (June 2010 - June 2026, 1-minute data).
+// Shared by LS (@ludv44). Statistics of the past, not financial advice.
+//
+// THE IDEA (per the study): the hourly move tends to START inside the ICT macro
+// window xx:50-xx:10 (origin forms there in ~73-78% of hours for most macros),
+// and the distance it travels from the macro OPEN into the next hour's close is
+// remarkably stable across 16 years when measured in %ADR(20) or % of price.
+// This indicator plots, for ALL 14 macros of the trading day, the two
+// statistical target envelopes around the macro open:
+//   ADR TP   = median run %ADR(20)  x  live ADR(20)    (both sides of open)
+//   price%TP = median run %price    x  macro open      (both sides of open)
+//
+// DEFAULT VISUALS: vertical ADR-target outline at xx:50 + macro OPEN price line
+// + the ADR & price% target envelope, drawn xx:50 -> xx+1:10. Everything else
+// (macro High/Low/EQ lines, stats block, large-macro zone, names) is built in
+// but OFF by default - all configurable.
+//
+// PER-MACRO CALIBRATION (16Y medians; origin% = hourly move's origin formed
+// inside the macro; whip% = both macro extremes broken after xx:10; launch% =
+// clean directional delivery):
+//   ET start  GMT+2  origin whip launch  run%ADR20 run%px  Large>=%ADR20
+//   01:50     07:50    77    21    77      8.3      0.13     7.8
+//   02:50     08:50    74    26    74     12.0      0.19    11.0
+//   03:50     09:50    78    19    78     11.0      0.17    10.7
+//   04:50     10:50    74    23    74      9.2      0.14     8.7
+//   05:50     11:50    73    24    73      9.0      0.14     8.4
+//   06:50     12:50    75    23    75     10.1      0.16     8.8
+//   07:50     13:50    64    36    64     12.8      0.20     9.4   (8:30 news)
+//   08:50     14:50    39    65    39     25.5      0.40    11.1   (! TRAP: 9:30 open)
+//   09:50     15:50    78    18    78     28.0      0.44    28.6
+//   10:50     16:50    75    21    75     21.3      0.33    21.0
+//   11:50     17:50    75    21    76     17.0      0.27    16.7
+//   12:50     18:50    70    26    70     16.6      0.26    15.3
+//   13:50     19:50    72    26    72     17.0      0.26    16.1
+//   14:50     20:50    65    34    65     19.1      0.29    16.7
+//
+// NOTES: constants are NQ-derived; ADR(20) and price are read live, so it also
+// runs on MNQ (identical) and approximately on ES. Intraday charts (M1-M5 best).
+// ET-anchored (America/New_York), DST-safe. The 14:50 GMT+2 macro is the one
+// exception to the origin rule - the 9:30 ET cash open right after it takes
+// over; treat its stats as a warning, not an invitation.
+// =============================================================================
+indicator("TRU NQ Macro Dossier", overlay = true,
+     max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+
+gGen = "General"
+adrLen       = input.int(20, "ADR length (days)", minval = 1, group = gGen)
+lookbackDays = input.int(10, "Only draw the last N days", minval = 1, maxval = 30, group = gGen)
+extendMin    = input.int(20, "Line length from xx:50 (minutes)", minval = 10, group = gGen,
+     tooltip = "20 = lines run xx:50 -> xx+1:10 (the macro window).")
+
+gShow = "Show"
+showTP      = input.bool(true,  "ADR & price% target envelope", group = gShow)
+showADRVert = input.bool(true,  "Vertical ADR-target outline at xx:50", group = gShow)
+showOpen    = input.bool(true,  "Macro open price line", group = gShow)
+showMHigh   = input.bool(false, "Macro High line (at xx:10)", group = gShow)
+showMEQ     = input.bool(false, "Macro EQ line (at xx:10)", group = gShow)
+showMLow    = input.bool(false, "Macro Low line (at xx:10)", group = gShow)
+showStats   = input.bool(false, "Stats block (origin / whip / launch)", group = gShow)
+showZone    = input.bool(false, "Large-macro shading (immediate)", group = gShow,
+     tooltip = "Box appears the moment the developing macro range reaches its statistical 'Large' size (p67 %ADR20).")
+showTitle   = input.bool(false, "Macro name header", group = gShow)
+
+gStyle = "Style"
+openCol = input.color(color.new(color.blue, 0), "Macro open line", group = gStyle)
+redCol  = input.color(color.new(color.red, 0),  "Target lines / text", group = gStyle)
+blueCol = input.color(color.new(color.teal, 0), "Macro H/L/EQ", group = gStyle)
+statCol = input.color(color.new(color.gray, 0), "Stats text", group = gStyle)
+zoneCol = input.color(color.new(color.red, 85), "Large-zone fill", group = gStyle)
+txtSize = input.string(size.small, "Text size", options = [size.tiny, size.small, size.normal, size.large], group = gStyle)
+
+gMac = "Macros (ET start / GMT+2)"
+m01 = input.bool(true, "01:50  (07:50)", group = gMac)
+m02 = input.bool(true, "02:50  (08:50)", group = gMac)
+m03 = input.bool(true, "03:50  (09:50)", group = gMac)
+m04 = input.bool(true, "04:50  (10:50)", group = gMac)
+m05 = input.bool(true, "05:50  (11:50)", group = gMac)
+m06 = input.bool(true, "06:50  (12:50)", group = gMac)
+m07 = input.bool(true, "07:50  (13:50)", group = gMac)
+m08 = input.bool(true, "08:50  (14:50)  ! trap", group = gMac)
+m09 = input.bool(true, "09:50  (15:50)", group = gMac)
+m10 = input.bool(true, "10:50  (16:50)", group = gMac)
+m11 = input.bool(true, "11:50  (17:50)", group = gMac)
+m12 = input.bool(true, "12:50  (18:50)", group = gMac)
+m13 = input.bool(true, "13:50  (19:50)", group = gMac)
+m14 = input.bool(true, "14:50  (20:50)", group = gMac)
+
+ZONE_MIN = 20
+adr = request.security(syminfo.tickerid, "D", ta.sma(high - low, adrLen)[1], lookahead = barmerge.lookahead_off)
+etH = hour(time, "America/New_York")
+etM = minute(time, "America/New_York")
+
+f_lbl(int x, float y, string s, color c) =>
+    label.new(x, y, s, xloc = xloc.bar_time, style = label.style_label_right,
+         color = color.new(c, 100), textcolor = c, size = txtSize, textalign = text.align_left)
+f_line(int x1, int x2, float y, color c, string st) =>
+    line.new(x1, y, x2, y, xloc = xloc.bar_time, color = c, style = st, width = 1)
+
+// ----------------------------------------------------------------------------- per-macro engine
+processMacro(bool enabled, int sH, string nameTxt, string statsTxt, float runAdrPct, float runPxPct, float largeThr) =>
+    inWin = (etH == sH and etM >= 50) or (etH == sH + 1 and etM < 10)
+    var float mOpen  = na
+    var float mHigh  = na
+    var float mLow   = na
+    var int   mStart = na
+    var bool  wasLarge = false
+    var box   zBox = na
+    started = inWin and not inWin[1]
+    if started
+        mOpen := open
+        mHigh := high
+        mLow := low
+        mStart := time
+        wasLarge := false
+        zBox := na
+    else if inWin
+        mHigh := math.max(mHigh, high)
+        mLow := math.min(mLow, low)
+    drawOK = enabled and timeframe.isintraday and not na(adr) and not na(mOpen)
+    withinLkb = (timenow - mStart) <= lookbackDays * 86400000
+    // live 'large' gate
+    if inWin and not na(mHigh) and adr > 0 and not wasLarge and (mHigh - mLow) / adr * 100.0 >= largeThr
+        wasLarge := true
+        if drawOK and withinLkb and showZone
+            zBox := box.new(mStart, mHigh, mStart + ZONE_MIN * 60000, mLow, xloc = xloc.bar_time,
+                 bgcolor = zoneCol, border_color = color.new(color.red, 60), border_width = 1)
+    if inWin and wasLarge and not na(zBox)
+        box.set_top(zBox, mHigh)
+        box.set_bottom(zBox, mLow)
+    // xx:50 - open line, targets, outline, stats
+    if started and drawOK and withinLkb
+        adrDist = runAdrPct / 100.0 * adr
+        pxDist  = runPxPct  / 100.0 * mOpen
+        x1 = mStart
+        x2 = mStart + extendMin * 60000
+        if showOpen
+            f_line(x1, x2, mOpen, openCol, line.style_solid)
+            f_lbl(x1, mOpen, "open", openCol)
+        if showTP
+            f_line(x1, x2, mOpen + adrDist, redCol, line.style_solid)
+            f_line(x1, x2, mOpen - adrDist, redCol, line.style_solid)
+            f_line(x1, x2, mOpen + pxDist,  redCol, line.style_solid)
+            f_line(x1, x2, mOpen - pxDist,  redCol, line.style_solid)
+            f_lbl(x1, mOpen + adrDist, "ADR TP (" + str.tostring(adrDist, "0.0") + ")", redCol)
+            f_lbl(x1, mOpen - adrDist, "ADR TP (" + str.tostring(adrDist, "0.0") + ")", redCol)
+            f_lbl(x1, mOpen + pxDist,  "% TP (" + str.tostring(pxDist, "0.0") + ")",  redCol)
+            f_lbl(x1, mOpen - pxDist,  "% TP (" + str.tostring(pxDist, "0.0") + ")",  redCol)
+        if showADRVert
+            line.new(x1, mOpen - adrDist, x1, mOpen + adrDist, xloc = xloc.bar_time,
+                 color = redCol, style = line.style_dotted, width = 1)
+        pad = adr * 0.05
+        if showStats
+            f_lbl(x1, mOpen + adrDist + pad, statsTxt, statCol)
+        if showTitle
+            f_lbl(x1, mOpen + adrDist + pad * 2.4, nameTxt, statCol)
+    // xx:10 - macro structure lines
+    ended = not inWin and inWin[1]
+    if ended and drawOK and withinLkb
+        eq = (mHigh + mLow) / 2.0
+        x1 = mStart
+        x2 = mStart + extendMin * 60000
+        if showMHigh
+            f_line(x1, x2, mHigh, blueCol, line.style_dotted)
+            f_lbl(x1, mHigh, "M High", blueCol)
+        if showMEQ
+            f_line(x1, x2, eq, blueCol, line.style_dotted)
+            f_lbl(x1, eq, "M EQ", blueCol)
+        if showMLow
+            f_line(x1, x2, mLow, blueCol, line.style_dotted)
+            f_lbl(x1, mLow, "M Low", blueCol)
+
+// ----------------------------------------------------------------------------- the 14 macros (16Y calibration)
+processMacro(m01, 1,  "01:50 macro", "origin 77%\nwhip 21%\nLaunch 77%",  8.33, 0.13,  7.8)
+processMacro(m02, 2,  "02:50 macro", "origin 74%\nwhip 26%\nLaunch 74%", 12.03, 0.19, 11.0)
+processMacro(m03, 3,  "03:50 macro", "origin 78%\nwhip 19%\nLaunch 78%", 10.96, 0.17, 10.7)
+processMacro(m04, 4,  "04:50 macro", "origin 74%\nwhip 23%\nLaunch 74%",  9.20, 0.14,  8.7)
+processMacro(m05, 5,  "05:50 macro", "origin 73%\nwhip 24%\nLaunch 73%",  8.99, 0.14,  8.4)
+processMacro(m06, 6,  "06:50 macro", "origin 75%\nwhip 23%\nLaunch 75%", 10.05, 0.16,  8.8)
+processMacro(m07, 7,  "07:50 macro", "origin 64%\nwhip 36%\nLaunch 64%\n(8:30 news!)", 12.82, 0.20,  9.4)
+processMacro(m08, 8,  "08:50 macro", "! TRAP\norigin 39%\nwhip 65%\n(9:30 open)", 25.45, 0.40, 11.1)
+processMacro(m09, 9,  "09:50 macro", "origin 78%\nwhip 18%\nLaunch 78%", 28.00, 0.44, 28.6)
+processMacro(m10, 10, "10:50 macro", "origin 75%\nwhip 21%\nLaunch 75%", 21.34, 0.33, 21.0)
+processMacro(m11, 11, "11:50 macro", "origin 75%\nwhip 21%\nLaunch 76%", 16.96, 0.27, 16.7)
+processMacro(m12, 12, "12:50 macro", "origin 70%\nwhip 26%\nLaunch 70%", 16.55, 0.26, 15.3)
+processMacro(m13, 13, "13:50 macro", "origin 72%\nwhip 26%\nLaunch 72%", 16.99, 0.26, 16.1)
+processMacro(m14, 14, "14:50 macro", "origin 65%\nwhip 34%\nLaunch 65%", 19.05, 0.29, 16.7)

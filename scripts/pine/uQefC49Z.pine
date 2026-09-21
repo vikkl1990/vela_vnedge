@@ -1,0 +1,171 @@
+/// This Pine Script code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//@version=6
+indicator("ATK / DEF — Multi-Session Transition Heatmap (Asia/Europe/America)", shorttitle="ATK / DEF — Multi-Session Transition Heatmap", overlay=false, max_boxes_count=200, max_labels_count=200)
+
+// ═══════════════════════════ Input Parameters ═══════════════════════════
+grpSess = "Killzone Session Settings"
+tzInput    = input.string("UTC", "Timezone", options=["UTC","America/New_York","Europe/London","Asia/Tokyo","exchange"], group=grpSess)
+asiaSess   = input.session("0000-0900", "Asia Killzone", group=grpSess)
+euroSess   = input.session("0700-1600", "Europe Killzone", group=grpSess)
+usSess     = input.session("1200-2100", "America Killzone", group=grpSess)
+
+grpModel = "Indicator Calculation"
+lookbackBars = input.int(500, "Normalization Lookback Bars", minval=50, group=grpModel)
+
+grpVisual = "Tower Appearance"
+minWidthBars = input.int(6,  "Minimum Tier Width (Bars)", minval=2, group=grpVisual)
+maxWidthBars = input.int(32, "Maximum Tier Width (Bars)", minval=4, group=grpVisual)
+coldColor    = input.color(color.rgb(30, 70, 200), "Cold Color (Low Value)", group=grpVisual)
+hotColor     = input.color(color.rgb(230, 40, 40), "Hot Color (High Value)", group=grpVisual)
+
+// ═══════════════════════════ Utility Functions ═══════════════════════════
+f_clamp(v, mn, mx) => math.max(mn, math.min(mx, v))
+
+f_heat(float v) =>
+    float t = f_clamp(v, 0, 100) / 100.0
+    color.from_gradient(t, 0, 1, coldColor, hotColor)
+
+// Single Killzone session raw data accumulation (each call location holds independent var state)
+f_sessionRaw(string sess) =>
+    var float sHigh   = na
+    var float sLow    = na
+    var float sOpen   = na
+    var float sVolSum = 0.0
+    var float sWickSum = 0.0
+    var int   sCount  = 0
+    var float lastRange = na
+    var float lastPush  = na
+    var float lastVol   = na
+    var float lastWick  = na
+
+    t = time(timeframe.period, sess, tzInput)
+    bool inSession     = not na(t)
+    bool prevInSession = not na(t[1])
+    float wickPct = (high - low) != 0 ? (math.abs(high - math.max(open, close)) + math.abs(math.min(open, close) - low)) / (high - low) : 0.0
+
+    if inSession and not prevInSession
+        sHigh    := high
+        sLow     := low
+        sOpen    := open
+        sVolSum  := volume
+        sWickSum := wickPct
+        sCount   := 1
+    else if inSession and prevInSession
+        sHigh    := math.max(sHigh, high)
+        sLow     := math.min(sLow, low)
+        sVolSum  := sVolSum + volume
+        sWickSum := sWickSum + wickPct
+        sCount   := sCount + 1
+    else if (not inSession) and prevInSession
+        lastRange := sHigh - sLow
+        lastPush  := close[1] - sOpen
+        lastVol   := sVolSum
+        lastWick  := sCount > 0 ? sWickSum / sCount * 100 : 0.0
+
+    [lastRange, lastPush, lastVol, lastWick]
+
+// ═══════════════════════════ Three Session Raw Data ═══════════════════════════
+[asiaRange, asiaPush, asiaVol, asiaWick] = f_sessionRaw(asiaSess)
+[euroRange, euroPush, euroVol, euroWick] = f_sessionRaw(euroSess)
+[usRange,   usPush,   usVol,   usWick]   = f_sessionRaw(usSess)
+
+// ═══════════════════════════ Normalize to 0-100 ═══════════════════════════
+f_normPos(float raw) =>
+    float r = nz(raw)
+    float hi = nz(ta.highest(r, lookbackBars), 1)
+    hi != 0 ? f_clamp(100 * r / hi, 0, 100) : 50.0
+
+f_normCentered(float raw) =>
+    float r = nz(raw)
+    float hi = nz(ta.highest(math.abs(r), lookbackBars), 1)
+    hi != 0 ? f_clamp(50 + 50 * (r / hi), 0, 100) : 50.0
+
+// Strength (range volatility) / Push (directional net change, 50=neutral) / Risk (wick percentage) / Liquidity (volume)
+asiaStrength = f_normPos(asiaRange)
+asiaPushN    = f_normCentered(asiaPush)
+asiaRisk     = f_clamp(nz(asiaWick), 0, 100)
+asiaLiq      = f_normPos(asiaVol)
+
+euroStrength = f_normPos(euroRange)
+euroPushN    = f_normCentered(euroPush)
+euroRisk     = f_clamp(nz(euroWick), 0, 100)
+euroLiq      = f_normPos(euroVol)
+
+usStrength   = f_normPos(usRange)
+usPushN      = f_normCentered(usPush)
+usRisk       = f_clamp(nz(usWick), 0, 100)
+usLiq        = f_normPos(usVol)
+
+// ═══════════════════════════ Fixed 0-100 Axis (Hidden) ═══════════════════════════
+plot(0, "range_min", color=color.new(color.white, 100))
+plot(100, "range_max", color=color.new(color.white, 100))
+
+// ═══════════════════════════ Draw Three-Tier Tower (Latest Bar Only) ═══════════════════════════
+var array<box> allBoxes     = array.new<box>()
+var array<label> allLabels  = array.new<label>()
+
+if barstate.islast
+    if array.size(allBoxes) > 0
+        for b in allBoxes
+            box.delete(b)
+        array.clear(allBoxes)
+    if array.size(allLabels) > 0
+        for lb in allLabels
+            label.delete(lb)
+        array.clear(allLabels)
+
+    int cx = bar_index
+
+    tierNames  = array.from("Asia Killzone", "Europe Killzone", "America Killzone")
+    metricNames = array.from("Strength", "Push", "Risk", "Liquidity")
+
+    // Each tier has 4 metric values — Pine doesn't support nested arrays (array<array<float>>), using matrix<float>(3 rows x 4 cols)
+    m = matrix.new<float>(3, 4, 0.0)
+    matrix.set(m, 0, 0, asiaStrength)
+    matrix.set(m, 0, 1, asiaPushN)
+    matrix.set(m, 0, 2, asiaRisk)
+    matrix.set(m, 0, 3, asiaLiq)
+    matrix.set(m, 1, 0, euroStrength)
+    matrix.set(m, 1, 1, euroPushN)
+    matrix.set(m, 1, 2, euroRisk)
+    matrix.set(m, 1, 3, euroLiq)
+    matrix.set(m, 2, 0, usStrength)
+    matrix.set(m, 2, 1, usPushN)
+    matrix.set(m, 2, 2, usRisk)
+    matrix.set(m, 2, 3, usLiq)
+
+    yTops = array.from(97.0, 64.0, 31.0)
+    yBots = array.from(69.0, 36.0, 3.0)
+
+    for i = 0 to 2
+        arr = matrix.row(m, i)
+        // Tier width: visual "tower" representation of overall activity (average of strength + risk + liquidity + push deviation)
+        float pushDeviation = math.abs(array.get(arr, 1) - 50) * 2
+        float composite = (array.get(arr, 0) + array.get(arr, 2) + array.get(arr, 3) + pushDeviation) / 4
+        float tierWidth = minWidthBars + (maxWidthBars - minWidthBars) * (composite / 100)
+
+        float yTop = array.get(yTops, i)
+        float yBot = array.get(yBots, i)
+        float startX = cx - tierWidth / 2
+        float cellW  = tierWidth / 4
+
+        // Tier title (left side)
+        lblTitle = label.new(int(math.round(startX)) , (yTop + yBot) / 2,
+             array.get(tierNames, i) + "\nComposite " + str.tostring(composite, "#.#"),
+             style=label.style_label_right, size=size.large,
+             color=color.new(color.black, 100), textcolor=color.white)
+        array.push(allLabels, lblTitle)
+
+        for j = 0 to 3
+            float x1 = startX + j * cellW
+            float x2 = x1 + cellW
+            float v  = array.get(arr, j)
+            bx = box.new(int(math.round(x1)), yTop, int(math.round(x2)), yBot,
+                 border_color=color.new(color.black, 70), bgcolor=f_heat(v))
+            array.push(allBoxes, bx)
+
+            lbl = label.new(int(math.round((x1 + x2) / 2)), (yTop + yBot) / 2,
+                 array.get(metricNames, j) + "\n" + str.tostring(v, "#.#"),
+                 style=label.style_label_center, size=size.large,
+                 color=color.new(color.black, 100), textcolor=color.white)
+            array.push(allLabels, lbl)

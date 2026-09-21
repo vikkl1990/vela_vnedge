@@ -1,0 +1,770 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════
+// © AxeAlgo  —  McGINLEY REGIME RIBBON
+// ═══════════════════════════════════════════════════════════════════════
+//  WHAT THIS INDICATOR DOES
+//  ------------------------
+//  It is a FILTER, not a signal generator. Its one job is to tell you which
+//  market regime you are in — TRENDING, RANGING, or VOLATILE / NO-TRADE —
+//  so you know which of your other tools to trust right now:
+//
+//    • TRENDING  → trust trend/breakout tools, distrust mean-reversion.
+//    • RANGING   → trust fades, support/resistance, VWAP reversion.
+//    • VOLATILE  → trust nothing; stand aside. Wide, structureless moves.
+//
+//  THE RIBBON — five McGinley Dynamic lines, not a plain EMA ribbon
+//  ------------------------------------------------------------------
+//  A plain EMA moves at a FIXED speed set only by its length — the same
+//  speed in a dead-calm range as in a screaming trend. That fixed speed is
+//  exactly what makes an EMA ribbon whipsaw: in chop, price crosses back and
+//  forth through a band that can't get out of the way fast enough to avoid
+//  being re-crossed, and the "stacked / not stacked" alignment reading this
+//  whole classifier is built on flickers right along with it.
+//
+//  The McGinley Dynamic (John R. McGinley, CMT — Journal of the Market
+//  Technicians Association; built into TC2000, StockCharts, ProRealTime and
+//  MetaTrader as a native study) fixes this at the formula level instead of
+//  papering over it with more smoothing. Each band updates itself every bar
+//  as:
+//      MD := MD[1] + (price − MD[1]) / (k · N · (price / MD[1])⁴)
+//  The (price / MD[1])⁴ term is the whole idea: when price pulls away from
+//  its own average that ratio grows fast — fourth power — the denominator
+//  shrinks, and the line SPEEDS UP to close the gap, automatically, with no
+//  separate trend/chop switch bolted on. When price is sitting right on the
+//  average (ratio ≈ 1) the line settles back to roughly an EMA's usual pace.
+//  The line moves fast exactly when it needs to and sits calm exactly when
+//  it needs to — the textbook definition of a whipsaw-resistant moving
+//  average, and it comes from the formula itself, not a second filter on
+//  top of a first one.
+//  `k` (default 0.6) is the commonly published tuning constant that brings
+//  the raw formula's baseline speed back in line with an EMA of the same
+//  length N — lower = snappier baseline, higher = steadier; the adaptive
+//  speed-up/slow-down happens on top of that either way.
+//
+//  SHARED speed factor, not five independent ones. The textbook formula lets
+//  each band compute its own price/MD ratio off its OWN lag — but a slower
+//  band always lags price more than a faster one, so it sees a bigger
+//  deviation and speeds up by a different amount on an ordinary bar. That
+//  breaks the one thing a ribbon actually needs: stable relative order
+//  between bands. Here the mid band (Band 3) is the only one that computes
+//  its own ratio; every other band reuses THAT SAME factor. Relative
+//  responsiveness between any two bands is then a fixed length ratio, just
+//  like an EMA ribbon, while the ribbon as a whole still speeds up in trends
+//  and calms down in chop as a group.
+//
+//  A FLIP-RATE CHOP FILTER sits on top for the same reason Pro uses one:
+//  count how many times the OFFICIAL regime has changed in the last
+//  `chopWindow` bars. At or above `chopFlipThresh` flips, the market is
+//  whipsawing by definition — a FRESH trend entry is suppressed until it
+//  settles, regardless of what any single bar's ADX/alignment/spread says.
+//  An already-established trend is exempt, so this never fights a real
+//  trend through a pullback, only screens a possibly-premature new call.
+//
+//  Five bands (8/13/21/34/55 by default — same Fibonacci spacing as before)
+//  feed the same three-part regime test as always, now with the chop filter
+//  above layered on top of it:
+//
+//    1. RIBBON alignment. All 5 bands stacked in order (fast > … > slow, or
+//       the reverse) = directional structure. Partial stacks = no structure.
+//       A whipsaw-resistant ribbon means this specific reading flickers less
+//       on its own, before any hysteresis or debounce is even applied.
+//    2. ADX (from DMI). Above the "trending" threshold = a real directional
+//       push; below the "chop" threshold = no push. ADX cannot tell trend
+//       from chop on its own, which is why it is only one of three reads.
+//    3. NORMALISED-ATR PERCENTILE. ATR / price, ranked against its own
+//       recent history (0–100). A high percentile means volatility is
+//       unusually elevated *for this symbol* — the tell for "chaos".
+//
+//    isVolatile = natr%ile ≥ high  AND  ribbon NOT fully stacked   (disorderly)
+//    isTrending = not volatile  AND  ADX ≥ trending  AND  ribbon fully stacked
+//                                AND  ribbon spread ≥ min (measured in ATR)
+//    isRanging  = everything else  (the calm, structureless default)
+//  A fully stacked ribbon is a trend however fast it moves — high volatility
+//  alone never forces VOLATILE.
+//
+//  WHAT IT DRAWS  (a dense, woven multi-shade ribbon — many thin strands,
+//  one colour family, no discrete fill)
+//  -------------
+//    • TWENTY-ONE strands, interpolated across the same 5 McGinley bands the
+//      classifier already uses (no extra moving averages — pure geometry
+//      between them), each its own SHADE of the current regime's hue: dark
+//      on the slow edge, light on the fast edge. A soft, wide, faint GLOW
+//      sits underneath the weave so the strands read as gently lit rather
+//      than flat — together that density, glow and gradient IS the ribbon,
+//      no solid area fill behind it, so it never reads as a blob; it reads
+//      as an aurora, the way the best-received community ribbons do it.
+//      (Kept off the price scale and status line — display = display.pane —
+//      since each plot's default label/legend entry is taxed separately
+//      against TradingView's plot-output budget.)
+//      Each regime keeps its own hue family (amber/gold = TREND UP, ruby =
+//      TREND DOWN, royal blue = RANGING, deeper indigo-blue = VOLATILE —
+//      still a blue, per request, just the darker/cooler one so it reads
+//      as "stand aside" next to ranging's calmer blue; never white, so it
+//      still shows on a light chart background) chosen so the four read as
+//      complementary pairs against each other rather than a muddy blend.
+//    • Shade is driven by regime CONFIDENCE, not just opacity: a confident
+//      reading gets the rich, saturated version of its hue; a borderline
+//      one is pulled toward a washed-out/greyed version of that SAME hue
+//      (never a different colour, never invisible) — so the ribbon's own
+//      colour tells you how much to trust it, at a glance.
+//    • On a regime change, every strand CROSS-FADES — dark shade to dark
+//      shade, light shade to light shade — from the old hue to the new one
+//      over a few bars, so the whole ribbon melts between colours instead
+//      of snapping.
+//    • A DIAMOND when the regime officially flips into a DIRECTIONAL call,
+//      colour-matched to the ribbon and following the buy / sell-arrow
+//      convention — a golden diamond BELOW the bar for TREND UP, a ruby
+//      diamond ABOVE the bar for TREND DOWN. Flips into RANGING or VOLATILE
+//      are not drawn on the chart; the info panel carries those.
+//    • A compact corner panel: regime, trend-quality and regime-confidence
+//      scores, ADX, nATR-percentile, and how long the regime has run vs its
+//      own historical norm (percentile + median).
+//    • (Advanced, optional) if you wire an external ±1/0 signal series into
+//      it, it measures each entry's N-bar forward return in ATR (R) units
+//      and shows the average expectancy bucketed by the regime at entry —
+//      i.e. it grades your signals by regime.
+//
+//  STABILITY: the raw classification uses hysteresis (the threshold to LEAVE
+//  a regime is looser than the one to ENTER it) plus an optional min-hold
+//  debounce (a new regime must persist N bars before it becomes official),
+//  so the regime, the marker and the alerts do not whipsaw on a boundary —
+//  now backed by a ribbon that is itself less prone to whipsawing in the
+//  first place. Entering VOLATILE is exempt from the delay by default;
+//  standing aside shouldn't wait. The bars spent waiting for confirmation
+//  show as a "Flip →" row on the info panel, so the delay never hides an
+//  imminent change. A regime-CONFIDENCE score (0–100)
+//  says how far past its defining threshold the current regime sits; a
+//  regime-MATURITY score (0–100) says how long it has run versus its own
+//  past runs on this symbol ("this range is already longer than 85% of past
+//  ranges — a break is overdue").
+//
+//  HIGHER-TIMEFRAME CONFIRMATION: the same classifier is re-run on a higher
+//  timeframe (confirmed bars only) and folded into an "HTF agrees" flag and
+//  the published trade-filter gates.
+//
+//  STRATEGY GATING — series published to the Data Window for input.source():
+//    "Regime Code"      0 Volatile · 1 Ranging · 2 Trending
+//    "Regime Signed"   -2 · 0 · 1 · +2  (trend down / volatile / ranging / trend up)
+//    "Trend Direction" -1 / 0 / +1
+//    "Trend Quality"    0–100
+//    "Trend OK (gate)" +1 long-ok · -1 short-ok · 0 no   (trend + quality + HTF)
+//    "Range OK (gate)"  1 / 0   (ranging + HTF not volatile) — for mean-reversion tools
+//    "HTF Agrees"       1 / 0
+//  A trend tool gates on Trend OK; a fade tool gates on Range OK — no compound
+//  expression needed. ADX, nATR %ile, ribbon spread, chop-flip count, HTF
+//  regime, regime-confidence, regime-maturity and the pending-flip direction
+//  are shown on the info panel and fired as alerts, but are no longer
+//  published to the Data Window (plot-output budget spent on the ribbon).
+//
+//  NON-REPAINTING: chart-timeframe logic uses only the running bar's own data;
+//  HTF reads take the last confirmed HTF bar (expr[1], lookahead off). The
+//  regime-change marker and the alert() call are gated to confirmed bars.
+//  The ribbon's COLOUR (not its path) can still settle on the open, forming
+//  bar until it closes — the live bar's regime is not final until then. This
+//  is by design; only the markers and alerts wait for the bar close.
+// ═══════════════════════════════════════════════════════════════════════
+
+indicator("McGinley Regime Ribbon [AxeAlgo]", overlay = true)
+
+// ───────────────────────── Inputs ─────────────────────────
+// Everyday knobs up top. The fiddly detection numbers are bundled behind ONE
+// "Trend Criteria" preset; the rarely-touched dials live in "Advanced" at
+// the bottom and can be ignored.
+
+ribGroup = "Ribbon"
+ribbonSrc = input.source(close, "Price Source", group = ribGroup,
+     tooltip = "The price the ribbon is built from. Leave on Close unless you have a reason not to.")
+ribLen = input.int(21, "Ribbon Length", minval = 5, maxval = 200, group = ribGroup,
+     tooltip = "Overall speed of the ribbon. Lower = faster and twitchier, higher = slower and smoother. The five internal McGinley lines keep their 8·13·21·34·55 Fibonacci spacing, scaled around this number.")
+mcgK = input.float(0.6, "Ribbon Smoothness", minval = 0.2, maxval = 1.5, step = 0.05, group = ribGroup,
+     tooltip = "Lower = the ribbon reacts faster to price. Higher = steadier. It still auto-speeds-up in trends and calms down in chop either way.")
+ribbonSpan = input.float(0.35, "Ribbon Width", minval = 0.15, maxval = 1.0, step = 0.05, group = ribGroup,
+     tooltip = "How tall the ribbon is DRAWN, as a fraction of the true gap between its fastest and slowest line. Lower = thinner / more compact. Regime detection is NOT affected by this.")
+
+// Fibonacci lengths, scaled off the single Ribbon Length knob (21 → 8/13/21/34/55)
+len1 = math.max(2, math.round(ribLen * 8.0  / 21.0))
+len2 = math.max(2, math.round(ribLen * 13.0 / 21.0))
+len3 = math.max(2, math.round(ribLen * 21.0 / 21.0))
+len4 = math.max(2, math.round(ribLen * 34.0 / 21.0))
+len5 = math.max(2, math.round(ribLen * 55.0 / 21.0))
+
+regGroup = "Regime"
+critPreset = input.string("Normal", "Trend Criteria", options = ["Strict", "Normal", "Lenient"], group = regGroup,
+     tooltip = "How hard it is to call a TREND.\nStrict — only strong, clean, well-separated trends. Fewer calls, much less noise, later entries.\nNormal — balanced default.\nLenient — flags trends early and loosely. More calls, more false starts.\nThis one preset sets the trend-strength bar, the minimum ribbon width, the volatility cut-off, the confirmation delay and the signal-quality floor together.")
+
+adxHi     = critPreset == "Strict" ? 28.0 : critPreset == "Lenient" ? 21.0 : 25.0
+minSpread = critPreset == "Strict" ? 1.6  : critPreset == "Lenient" ? 0.9  : 1.2
+volHiPct  = critPreset == "Strict" ? 75.0 : critPreset == "Lenient" ? 85.0 : 80.0
+holdBars  = critPreset == "Strict" ? 3    : critPreset == "Lenient" ? 1    : 2
+minQ      = critPreset == "Strict" ? 55   : critPreset == "Lenient" ? 35   : 45
+
+htGroup = "Higher Timeframe Check"
+htfOn = input.bool(true, "Confirm On A Higher Timeframe", group = htGroup,
+     tooltip = "Re-runs the same regime check on a higher timeframe so signals can be required to agree with it.")
+htf1  = input.timeframe("60", "Higher Timeframe", group = htGroup)
+
+visGroup = "Display"
+showRibbon = input.bool(true, "Show Ribbon",         group = visGroup)
+showChange = input.bool(false, "Show Trend Markers",  group = visGroup)
+showDash   = input.bool(true, "Show Info Panel",     group = visGroup)
+dashPos    = input.string("Top Right", "Panel Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right"], group = visGroup)
+upColor    = input.color(color.new(#C9971F, 0), "Trending Up",   group = visGroup, inline = "c1",
+     tooltip = "One colour per regime — the ribbon draws a graduated range of shades of it automatically, richer when the call is more confident.")
+downColor  = input.color(color.new(#A9313E, 0), "Trending Down", group = visGroup, inline = "c1")
+rangeColor = input.color(color.new(#3E6FB5, 0), "Ranging",       group = visGroup, inline = "c2")
+volColor   = input.color(color.new(#33368F, 0), "Volatile",      group = visGroup, inline = "c2")
+
+evGroup = "Grade A Signal By Regime"
+evOn = input.bool(false, "Enable", group = evGroup,
+     tooltip = "Wire in a ±1/0 signal from another indicator to see its average result broken down by the regime it fired in. Leave off unless you have a real signal to feed it.")
+evSig = input.source(close, "Signal Source (>0 long, <0 short, 0 flat)", group = evGroup,
+     tooltip = "Point at a real +1 / -1 / 0 series. Left on Close it never registers an entry, so the panel section stays blank — that is expected.")
+evHorizon = input.int(10, "Bars To Measure After Each Signal", minval = 1, maxval = 200, group = evGroup)
+
+advGroup = "Advanced"
+requireHTF = input.bool(true, "Require Higher-Timeframe Agreement For Gates", group = advGroup,
+     tooltip = "When on, the published Trend OK / Range OK gates only read 1 while the higher timeframe agrees.")
+htfStrict  = input.bool(false, "Higher Timeframe Must Match Trend Direction", group = advGroup,
+     tooltip = "Off: the higher timeframe just has to not be fighting you. On: it must be trending the same way.")
+adxLen  = input.int(14, "Trend Strength (ADX) Length", minval = 2, maxval = 100, group = advGroup)
+atrLen  = input.int(14, "Volatility (ATR) Length", minval = 2, maxval = 100, group = advGroup)
+natrLB  = input.int(100, "Volatility Lookback (Bars)", minval = 20, maxval = 500, group = advGroup,
+     tooltip = "Current volatility is ranked against its own history over this many bars, so thresholds adapt to the symbol automatically.")
+fadeBars = input.int(4, "Colour Fade On Regime Change (Bars)", minval = 0, maxval = 30, group = advGroup)
+alertConfirmed = input.bool(true, "Wait For Bar Close Before Markers / Alerts", group = advGroup,
+     tooltip = "A live bar's regime can still change until it closes; leave on to only mark/alert confirmed flips.")
+
+// ── internal constants ──
+adxLo          = adxHi - 5.0
+volExtPct      = math.min(volHiPct + 15.0, 99.0)
+adxHyst        = 3.0
+volHyst        = 8.0
+holdVolatile   = false
+chopWindow     = 30
+chopFlipThresh = 3
+slopeLen       = 3
+wAdx           = 0.35
+wAlign         = 0.25
+wSpread        = 0.20
+wSlope         = 0.20
+spreadRef      = 3.0
+slopeRef       = 0.15
+evEdge         = true
+
+// ───────────────────────── Helpers ─────────────────────────
+// AxeAlgo — Royal palette: dashboard chrome stays gold/grey; the ribbon's own
+// four regime colours (gold = trend up, ruby = trend down, royal blue =
+// ranging, indigo-blue = volatile) come from the four Display inputs above.
+C_GOLD   = #D4AF37   // gold — panel header, "good" cue, "pay attention" tier
+C_GOLD2  = #8A8A8A   // grey — secondary / data-window feeds
+C_MUTE   = #8A8A8A   // mid grey — panel labels, unknown / low states
+C_IVORY  = #E0E0E0   // light grey — panel values
+C_WARN   = #D4AF37   // gold — panel "pay attention" tier (elevated vol / stretched)
+C_PANEL  = #1A1A1A   // near-black — panel background
+C_BORDER = color.new(#D4AF37, 78)   // gold hairline
+
+f_clamp(x, lo, hi) => math.min(math.max(x, lo), hi)
+
+// f_mix blends two colours (RGB + transparency) by t (0 = c1, 1 = c2) —
+// used for the ribbon's dark→light band gradient, its confidence-driven
+// saturation, and its regime-change cross-fade, all with the same tool.
+f_mix(c1, c2, t) =>
+    tt = f_clamp(t, 0.0, 1.0)
+    color.rgb(
+         int(math.round(color.r(c1) + (color.r(c2) - color.r(c1)) * tt)),
+         int(math.round(color.g(c1) + (color.g(c2) - color.g(c1)) * tt)),
+         int(math.round(color.b(c1) + (color.b(c2) - color.b(c1)) * tt)),
+         int(math.round(color.t(c1) + (color.t(c2) - color.t(c1)) * tt)))
+
+// f_desat pulls a colour toward its own grey (average-channel) value —
+// a LOW-confidence reading looks washed out rather than merely fainter; a
+// HIGH-confidence one stays fully saturated. Same hue either way.
+f_desat(c, amt) =>
+    aa  = f_clamp(amt, 0.0, 1.0)
+    avg = (color.r(c) + color.g(c) + color.b(c)) / 3.0
+    color.rgb(
+         int(math.round(color.r(c) + (avg - color.r(c)) * aa)),
+         int(math.round(color.g(c) + (avg - color.g(c)) * aa)),
+         int(math.round(color.b(c) + (avg - color.b(c)) * aa)),
+         color.t(c))
+
+// dark/light anchors of a regime's base hue — the two ends of the ribbon's
+// band gradient.
+f_regDark(base)  => f_mix(base, color.black, 0.50)
+f_regLight(base) => f_mix(base, color.white, 0.28)
+
+f_tablePos(p) =>
+    switch p
+        "Top Right"     => position.top_right
+        "Top Left"      => position.top_left
+        "Bottom Right"  => position.bottom_right
+        "Bottom Left"   => position.bottom_left
+        "Middle Right"  => position.middle_right
+        => position.top_right
+
+// map a signed regime code (-2 / 0 / 1 / 2, or na) to a label + colour
+f_regName(s) => na(s) ? "—" : s == 0 ? "volatile" : s == 2 ? "trend up" : s == -2 ? "trend down" : "ranging"
+f_regCol(s)  => na(s) ? C_MUTE : s == 0 ? volColor : s == 2 ? upColor : s == -2 ? downColor : rangeColor
+
+// ───────────────────────── Core calculations ─────────────────────────
+// McGinley Dynamic — an adaptive moving average that speeds up when price
+// pulls away from it and slows back down once price is riding it, instead of
+// moving at an EMA's one fixed speed regardless of conditions.
+//
+// Each band reacting to its OWN independent price/MD ratio (the textbook
+// single-line formula) turned out to be the wrong way to build a RIBBON out
+// of five of them: a slower band always lags price more than a faster one,
+// so it sees a bigger deviation ratio and speeds up by a different amount on
+// an ordinary bar — the bands' relative order stops being stable, which is
+// whipsaw in the exact "stacked / not stacked" alignment reading this whole
+// classifier is built on. A plain EMA ribbon never has this problem because
+// every band's relative speed is a fixed ratio; the fix here is the same one
+// the Pro version already uses for its own filter bank: ONE shared speed
+// factor drives every band, so they all accelerate and decelerate TOGETHER.
+// The mid band (Band 3) is the driver — it computes the textbook ratio off
+// its own lag — and every other band is a "follower" that uses that same
+// factor instead of computing its own. Relative responsiveness between any
+// two bands is then just len_j/len_i, a constant, exactly like an EMA
+// ribbon — while the ribbon AS A WHOLE still speeds up in trends and calms
+// down in chop the way a McGinley should.
+var float md3 = na
+driverRatio = na(md3) ? 1.0 : ribbonSrc / math.max(md3, 1e-9)
+// bounded so one extreme bar can't collapse every band's denominator at once
+speedFactor = f_clamp(math.pow(driverRatio, 4), 0.35, 3.0)
+md3 := na(md3) ? ribbonSrc : md3 + (ribbonSrc - md3) / math.max(mcgK * len3 * speedFactor, 1e-9)
+
+f_mcgFollower(src, len, k, sf) =>
+    var float md = na
+    md := na(md) ? src : md + (src - md) / math.max(k * len * sf, 1e-9)
+    md
+
+md1 = f_mcgFollower(ribbonSrc, len1, mcgK, speedFactor)
+md2 = f_mcgFollower(ribbonSrc, len2, mcgK, speedFactor)
+md4 = f_mcgFollower(ribbonSrc, len4, mcgK, speedFactor)
+md5 = f_mcgFollower(ribbonSrc, len5, mcgK, speedFactor)
+
+atr  = ta.atr(atrLen)
+// normalise ATR against the SAME price series the ribbon is built from, so
+// spread-in-ATR, the volatility percentile and the bands all stay on one
+// scale even when ribbonSrc is hl2 / ohlc4 / an external series.
+natr = atr / math.max(math.abs(ribbonSrc), 1e-9)
+// rank the running nATR against its own recent history: 0 = calmest in the
+// window, 100 = most volatile. This self-normalises across symbols and
+// timeframes, so the thresholds above never need re-tuning per market.
+natrPct = ta.percentrank(natr, natrLB)
+
+[diPlus, diMinus, adx] = ta.dmi(adxLen, adxLen)
+
+// ribbon spread, in ATR units — the width of the ribbon envelope
+mdMax = math.max(md1, math.max(md2, math.max(md3, math.max(md4, md5))))
+mdMin = math.min(md1, math.min(md2, math.min(md3, math.min(md4, md5))))
+spreadATR = (mdMax - mdMin) / math.max(atr, 1e-9)
+
+// ribbon alignment: how many of the 4 adjacent pairs are stacked in order
+upSteps = (md1 > md2 ? 1 : 0) + (md2 > md3 ? 1 : 0) + (md3 > md4 ? 1 : 0) + (md4 > md5 ? 1 : 0)
+dnSteps = (md1 < md2 ? 1 : 0) + (md2 < md3 ? 1 : 0) + (md3 < md4 ? 1 : 0) + (md4 < md5 ? 1 : 0)
+alignSteps = math.max(upSteps, dnSteps)
+bullAlign  = upSteps == 4
+bearAlign  = dnSteps == 4
+
+// mid-band slope, ATR-normalised per bar — direction tiebreak + quality input
+slopeATR = (md3 - md3[slopeLen]) / math.max(atr * slopeLen, 1e-9)
+dirRaw   = bullAlign ? 1 : bearAlign ? -1 : slopeATR > 0 ? 1 : slopeATR < 0 ? -1 : 0
+
+// warm-up: the ribbon, ADX and the percentile window all need history first
+ready = bar_index > math.max(len5, math.max(natrLB, adxLen * 2)) and not na(natrPct) and not na(adx)
+
+// ───────────────────────── Regime classification ─────────────────────────
+// 1) RAW state with hysteresis — the bar you must cross to LEAVE a regime is
+//    looser than the one to ENTER it, so a reading parked on a threshold
+//    does not flip the regime every bar.
+var int rawSigned    = 1                                     // -2 / 0 / 1 / 2  (pre-debounce)
+var int regimeSigned = 1                                     // declared here so the flip-count below can read its own history
+inTrendRaw = math.abs(rawSigned) == 2
+inVolRaw   = rawSigned == 0
+
+adxTrendOK    = adx >= (inTrendRaw ? adxHi - adxHyst : adxHi)
+alignTrendOK  = alignSteps >= (inTrendRaw ? 3 : 4)
+spreadTrendOK = spreadATR >= minSpread * (inTrendRaw ? 0.7 : 1.0)
+volOn         = natrPct >= (inVolRaw ? volHiPct - volHyst : volHiPct)
+
+// flip-RATE over a window, measured on the OFFICIAL regime's own past
+// changes (already fully known — no lookahead). A market that keeps
+// re-flipping the official call is whipsawing by definition; this only
+// blocks a FRESH trend entry (inTrendRaw exempts an already-established
+// trend, same as the hysteresis above), so it never fights a real trend
+// through a pullback, only screens a possibly-premature new one.
+priorFlipSum    = math.sum(not na(regimeSigned[1]) and regimeSigned != regimeSigned[1] ? 1 : 0, chopWindow)
+isChoppyByFlips = priorFlipSum >= chopFlipThresh
+
+// VOLATILE = genuinely disorderly: elevated volatility AND the ribbon has
+// come apart (uses the same relaxed stack test as the trend hysteresis, so a
+// trend that merely loosens to 3-of-4 stays a trend). A stacked ribbon is a
+// trend no matter how fast it moves — high ATR alone never forces VOLATILE.
+// (volExtPct now only feeds the confidence / quality scores.)
+notStacked   = not alignTrendOK          // same relaxed-stack test as the trend hysteresis
+rawVolatile  = ready and notStacked and volOn
+rawTrending  = ready and not rawVolatile and adxTrendOK and alignTrendOK and spreadTrendOK and (inTrendRaw or not isChoppyByFlips)
+rawSignedNew = rawVolatile ? 0 : rawTrending ? (dirRaw >= 0 ? 2 : -2) : 1
+if ready
+    rawSigned := rawSignedNew
+
+// 2) MIN-HOLD debounce — a changed raw regime becomes official only after it
+//    has held `holdBars` consecutive bars. Entering VOLATILE is exempt unless
+//    the user opts in: standing aside should be immediate.
+// (regimeSigned itself is declared up above, so the flip-count feeding
+// isChoppyByFlips can read its own history before this block updates it.)
+var int candAge      = 0
+if ready
+    if rawSignedNew == regimeSigned
+        candAge := 0
+    else
+        candAge := (rawSignedNew == rawSigned[1]) ? candAge + 1 : 1
+        promote = (rawSignedNew == 0 and not holdVolatile) or candAge >= holdBars
+        if promote
+            regimeSigned := rawSignedNew
+            candAge      := 0
+
+regimeCode = regimeSigned == 0 ? 0 : math.abs(regimeSigned) == 2 ? 2 : 1
+isVolatile = ready and regimeSigned == 0
+isTrending = ready and math.abs(regimeSigned) == 2
+isRanging  = ready and regimeSigned == 1
+trendDir   = isTrending ? (regimeSigned > 0 ? 1 : -1) : dirRaw
+
+regimeName = not ready ? "CALIBRATING" : isVolatile ? "VOLATILE / NO-TRADE" : isTrending ? (regimeSigned > 0 ? "TREND UP" : "TREND DOWN") : "RANGING"
+regimeCol  = not ready ? C_MUTE : isVolatile ? volColor : isTrending ? (regimeSigned > 0 ? upColor : downColor) : rangeColor
+guidance   = not ready ? "…" : isVolatile ? "stand aside" : isTrending ? "trend / breakout tools" : "fades / mean-reversion"
+
+// regime-agnostic CONFIDENCE (0–100): how deep past the threshold that
+// defines the CURRENT regime the reading sits. 0 = right on the line.
+confVol   = f_clamp((natrPct - (volHiPct - volHyst)) / math.max(volExtPct - (volHiPct - volHyst), 1.0), 0.0, 1.0)
+confTrend = f_clamp(math.min((adx - (adxHi - adxHyst)) / math.max(adxHi * 0.6, 1.0), spreadATR / math.max(spreadRef, 0.1)), 0.0, 1.0)
+confRange = f_clamp(math.min((adxHi - adx) / math.max(adxHi * 0.6, 1.0), (volHiPct - natrPct) / 25.0), 0.0, 1.0)
+regimeConfidence = ready ? math.round(100 * (isVolatile ? confVol : isTrending ? confTrend : confRange)) : 0
+
+// pending-flip early warning: the raw classifier has turned but the debounce
+// has not promoted it yet
+flipPending = ready and rawSignedNew != regimeSigned
+
+// ───────────────────────── Trend-quality score (0–100) ─────────────────────────
+adxComp    = f_clamp((adx - adxLo) / math.max(adxHi * 1.6 - adxLo, 1.0), 0.0, 1.0)
+alignComp  = alignSteps / 4.0
+spreadComp = f_clamp(spreadATR / math.max(spreadRef, 0.1), 0.0, 1.0)
+slopeComp  = f_clamp(math.abs(slopeATR) / math.max(slopeRef, 0.001), 0.0, 1.0)
+// elevated volatility bleeds quality out toward 0 between the "high" and
+// "extreme" percentile marks
+volComp    = natrPct >= volHiPct ? f_clamp((volExtPct - natrPct) / math.max(volExtPct - volHiPct, 1.0), 0.0, 1.0) : 1.0
+wSum       = math.max(wAdx + wAlign + wSpread + wSlope, 1e-9)
+qRaw       = (wAdx * adxComp + wAlign * alignComp + wSpread * spreadComp + wSlope * slopeComp) / wSum
+trendQuality = ready ? math.round(100 * f_clamp(qRaw, 0.0, 1.0) * volComp) : 0
+
+// ───────────────────────── Regime state tracking + maturity ─────────────────────────
+// only starts counting once the classifier is live, so the panel's "In
+// regime" figure never includes warm-up bars.
+var int barsInRegime = 0
+// keyed on the SIGNED regime, so a TREND UP → TREND DOWN reversal restarts
+// the counter (both share regimeCode 2) and the panel's "In regime" figure
+// stays truthful through a direction flip.
+barsInRegime := not ready ? 0 : (ready[1] and regimeSigned == nz(regimeSigned[1], regimeSigned)) ? barsInRegime + 1 : 1
+
+regimeChanged = ready and not na(regimeSigned[1]) and regimeSigned != regimeSigned[1]
+
+// per-type history of how many bars each regime has lasted on this symbol, so
+// the current run can be read against its own norm rather than a raw count.
+var array<int> durVol   = array.new_int()
+var array<int> durTrend = array.new_int()
+var array<int> durRange = array.new_int()
+
+f_pushCap(arr, v) =>
+    array.push(arr, v)
+    if array.size(arr) > 200
+        array.shift(arr)
+
+// a run ends on any SIGNED change; its length is filed under the ENDED
+// regime's code (trend up and trend down both feed the trend bucket).
+if regimeChanged
+    endedCode = nz(regimeCode[1], 1)
+    endedLen  = nz(barsInRegime[1], 0)
+    if endedLen > 0
+        if endedCode == 0
+            f_pushCap(durVol, endedLen)
+        else if endedCode == 2
+            f_pushCap(durTrend, endedLen)
+        else
+            f_pushCap(durRange, endedLen)
+
+// percentile of a value within an array (need >=5 samples to mean anything)
+f_pctRank(arr, v) =>
+    n = array.size(arr)
+    out = 0.0
+    if n < 5
+        out := na
+    else
+        c = 0
+        for i = 0 to n - 1
+            c := c + (array.get(arr, i) <= v ? 1 : 0)
+        out := 100.0 * c / n
+    out
+f_med(arr) => array.size(arr) >= 3 ? array.median(arr) : na
+
+// f_pctRank scans up to 200 samples and f_med sorts — both are read only by
+// the info panel on the last bar, so skip them on every historical bar.
+panelBar       = barstate.islast
+regimeMaturity = not ready or not panelBar ? na : regimeCode == 0 ? f_pctRank(durVol, barsInRegime) : regimeCode == 2 ? f_pctRank(durTrend, barsInRegime) : f_pctRank(durRange, barsInRegime)
+medDur         = not panelBar ? na : regimeCode == 0 ? f_med(durVol) : regimeCode == 2 ? f_med(durTrend) : f_med(durRange)
+
+// ───────────────────────── Higher-timeframe confirmation ─────────────────────────
+// The same debounced classifier, re-evaluated on a higher timeframe. The
+// [1] offset + lookahead_off make the read strictly non-repainting: on a
+// still-forming HTF bar we use the last CLOSED one.
+htfSigRaw1 = request.security(syminfo.tickerid, htf1, regimeSigned[1], lookahead = barmerge.lookahead_off)
+htfS1 = htfOn ? htfSigRaw1 : na
+
+// "agree" = the HTF is not fighting the chart's current regime. An absent /
+// disabled HTF returns na and never blocks.
+f_agreeUp(hs)    => na(hs) ? true : htfStrict ? hs == 2  : (hs == 2 or hs == 1)
+f_agreeDn(hs)    => na(hs) ? true : htfStrict ? hs == -2 : (hs == -2 or hs == 1)
+f_agreeRange(hs) => na(hs) ? true : hs != 0
+
+htfUpOK    = f_agreeUp(htfS1)
+htfDnOK    = f_agreeDn(htfS1)
+htfRangeOK = f_agreeRange(htfS1)
+htfAgree   = not ready ? false : isVolatile ? false : isTrending ? (regimeSigned > 0 ? htfUpOK : htfDnOK) : htfRangeOK
+
+// published trade-filter gates
+trendGate    = isTrending and trendQuality >= minQ and (not requireHTF or (regimeSigned > 0 ? htfUpOK : htfDnOK))
+rangeGate    = isRanging  and (not requireHTF or htfRangeOK)
+trendGateOut = trendGate ? (regimeSigned > 0 ? 1 : -1) : 0
+
+// ───────────────────────── Signal EV by regime (advanced) ─────────────────────────
+// A tiny FIFO of pending entries. Each bar, any entry that has aged
+// `evHorizon` bars is realised: R = dir · (close − entryPx) / entryATR, and
+// added to the running mean for the regime it was opened in. Uses only
+// past/present data — non-repainting; on the last (still-forming) bars the
+// most recent entries simply have not matured yet.
+var array<int>   pBar = array.new_int()
+var array<float> pPx  = array.new_float()
+var array<int>   pDir = array.new_int()
+var array<int>   pReg = array.new_int()          // 0 Vol / 1 Range / 2 Trend at entry
+var array<float> pAtr = array.new_float()
+var array<float> evSum = array.new_float(3, 0.0)
+var array<int>   evCnt = array.new_int(3, 0)
+
+sigNow  = math.sign(nz(evSig))
+sigPrev = math.sign(nz(evSig[1]))
+newEntry = evOn and ready and (evEdge ? (sigNow != 0 and sigNow != sigPrev) : (sigNow != 0))
+
+if evOn and ready
+    if newEntry
+        array.push(pBar, bar_index)
+        array.push(pPx, close)
+        array.push(pDir, int(sigNow))
+        array.push(pReg, regimeCode)
+        array.push(pAtr, atr)
+        if array.size(pBar) > 500
+            array.shift(pBar)
+            array.shift(pPx)
+            array.shift(pDir)
+            array.shift(pReg)
+            array.shift(pAtr)
+    while array.size(pBar) > 0 and bar_index - array.get(pBar, 0) >= evHorizon
+        eb = array.shift(pBar)
+        ep = array.shift(pPx)
+        ed = array.shift(pDir)
+        er = array.shift(pReg)
+        ea = array.shift(pAtr)
+        r  = ea > 0 ? ed * (close - ep) / ea : 0.0
+        array.set(evSum, er, array.get(evSum, er) + r)
+        array.set(evCnt, er, array.get(evCnt, er) + 1)
+
+f_evAvg(idx) => array.get(evCnt, idx) > 0 ? array.get(evSum, idx) / array.get(evCnt, idx) : na
+
+// dashboard table + its row helpers (declared at global scope — Pine does
+// not allow function definitions inside an if block)
+var table dash = na
+f_row(r, k, v, col) =>
+    table.cell(dash, 0, r, k, text_color = C_MUTE, text_size = size.tiny, text_halign = text.align_left)
+    table.cell(dash, 1, r, v, text_color = col,    text_size = size.tiny, text_halign = text.align_right)
+f_evCell(r, name, idx) =>
+    a = f_evAvg(idx)
+    n = array.get(evCnt, idx)
+    txt = na(a) ? "—" : (a >= 0 ? "+" : "") + str.tostring(a, "0.00") + "R  (" + str.tostring(n) + ")"
+    col = na(a) ? C_MUTE : a > 0.02 ? C_GOLD : a < -0.02 ? C_MUTE : C_IVORY
+    f_row(r, name, txt, col)
+
+// ───────────────────────── Plot the ribbon ─────────────────────────
+// MULTI-SHADE RIBBON — every band gets its own shade of the SAME regime
+// hue: darkest on the slow edge, lightest on the fast edge. That gradient
+// IS the visual, the way a well-liked community ribbon builds depth out of
+// one colour instead of drawing five competing ones.
+darkCol  = f_regDark(regimeCol)
+lightCol = f_regLight(regimeCol)
+
+// CONFIDENCE controls saturation, not just opacity: a confident regime
+// gets the full rich shade set; a borderline one is pulled toward a
+// washed-out/grey version of that same hue. It never changes colour and
+// never fades to nothing — a shaky reading still clearly shows which
+// regime it shakily is.
+confT    = f_clamp(regimeConfidence / 100.0, 0.0, 1.0)
+deSat    = (1.0 - confT) * 0.65
+darkNow  = f_desat(darkCol,  deSat)
+lightNow = f_desat(lightCol, deSat)
+
+// CROSS-FADE — on a regime change, the dark shade fades to the new dark
+// shade and the light shade fades to the new light shade together, so
+// every band melts from the old hue to the new one instead of snapping.
+var color fadeDark  = na
+var color fadeLight = na
+var int   fadeAge   = 999
+newColour = ready and not na(regimeCol[1]) and regimeCol != regimeCol[1]
+if newColour
+    fadeDark  := darkNow[1]
+    fadeLight := lightNow[1]
+    fadeAge   := 0
+else
+    fadeAge  := math.min(fadeAge + 1, fadeBars < 1 ? 1 : fadeBars)
+prog   = fadeBars <= 0 ? 1.0 : math.min(fadeAge / fadeBars, 1.0)
+fadeOn = ready and not na(fadeDark) and prog < 1.0
+
+// band colour at position p (0 = slowest/darkest … 1 = fastest/lightest)
+f_band(p) =>
+    cNow = f_mix(darkNow, lightNow, p)
+    // only pay for the cross-fade blend on the few bars a fade is actually live
+    ready ? (fadeOn ? f_mix(f_mix(fadeDark, fadeLight, p), cNow, prog) : cNow) : color.new(C_MUTE, 60)
+
+// price at ribbon position t (0 = slowest/darkest edge … 1 = fastest/
+// lightest edge), piecewise-linear across the 5 McGinley bands — lets a
+// DENSE set of woven strands be drawn (like the reference ribbons) without
+// adding any new moving averages: these are pure interpolations of the
+// same 5 bands the classifier already uses.
+f_priceAt(t) =>
+    tt    = f_clamp(t, 0.0, 1.0) * 4.0
+    lower = math.min(math.floor(tt), 3)
+    frac  = tt - lower
+    aLow  = lower <= 0 ? md5 : lower <= 1 ? md4 : lower <= 2 ? md3 : md2
+    aHigh = lower <= 0 ? md4 : lower <= 1 ? md3 : lower <= 2 ? md2 : md1
+    raw   = aLow + (aHigh - aLow) * frac
+    md3 + (raw - md3) * ribbonSpan          // squeeze the envelope toward its centre line
+
+// SOFT GLOW UNDERLAY — one wide, faint duplicate at the ribbon's centre,
+// drawn BEFORE the thin strands so it sits underneath as a soft halo.
+// `display = display.pane` strips its price-scale label and status-line
+// entry — each plot's default label/legend output appears to be taxed
+// separately from the line itself against TradingView's plot-output
+// budget (RE10140 reported 77 actual outputs for 42 source plot() calls),
+// which is also what was cluttering the price axis with a stack of boxes.
+plot(showRibbon ? f_priceAt(0.5) : na, "Ribbon glow", color = color.new(f_band(0.5), 80), linewidth = 2, display = display.pane)
+
+// TWENTY-ONE thin strands — no discrete area fill. Density + the glow
+// underlay + the dark→light gradient form the ribbon; at linewidth 1 and
+// this count, squeezed to ribbonSpan, they sit edge-to-edge with no visible
+// gap between the McGinley bands while still reading as a woven aurora.
+// PLOT BUDGET: TradingView caps a script at 64 plot outputs (RE10140), and
+// each source plot()/plotshape() here costs ≈2.3 of them. 21 strands + 1
+// glow + 2 regime-change markers = 24 source ≈ 55 outputs — the practical
+// ceiling for this script. Adding strands past this re-triggers RE10140.
+plot(showRibbon ? f_priceAt(0  / 20.0) : na, "Ribbon strand 1",  color = f_band(0  / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(1  / 20.0) : na, "Ribbon strand 2",  color = f_band(1  / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(2  / 20.0) : na, "Ribbon strand 3",  color = f_band(2  / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(3  / 20.0) : na, "Ribbon strand 4",  color = f_band(3  / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(4  / 20.0) : na, "Ribbon strand 5",  color = f_band(4  / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(5  / 20.0) : na, "Ribbon strand 6",  color = f_band(5  / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(6  / 20.0) : na, "Ribbon strand 7",  color = f_band(6  / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(7  / 20.0) : na, "Ribbon strand 8",  color = f_band(7  / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(8  / 20.0) : na, "Ribbon strand 9",  color = f_band(8  / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(9  / 20.0) : na, "Ribbon strand 10", color = f_band(9  / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(10 / 20.0) : na, "Ribbon strand 11", color = f_band(10 / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(11 / 20.0) : na, "Ribbon strand 12", color = f_band(11 / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(12 / 20.0) : na, "Ribbon strand 13", color = f_band(12 / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(13 / 20.0) : na, "Ribbon strand 14", color = f_band(13 / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(14 / 20.0) : na, "Ribbon strand 15", color = f_band(14 / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(15 / 20.0) : na, "Ribbon strand 16", color = f_band(15 / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(16 / 20.0) : na, "Ribbon strand 17", color = f_band(16 / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(17 / 20.0) : na, "Ribbon strand 18", color = f_band(17 / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(18 / 20.0) : na, "Ribbon strand 19", color = f_band(18 / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(19 / 20.0) : na, "Ribbon strand 20", color = f_band(19 / 20.0), linewidth = 1, display = display.pane)
+plot(showRibbon ? f_priceAt(20 / 20.0) : na, "Ribbon strand 21", color = f_band(20 / 20.0), linewidth = 1, display = display.pane)
+
+// ───────────────────────── Regime-change markers ─────────────────────────
+// ONLY the two directional calls, confirmed: a golden diamond BELOW the bar
+// when the regime officially flips to TREND UP (buy-arrow convention), a ruby
+// diamond ABOVE the bar for TREND DOWN (sell-arrow convention). Entering
+// RANGING or VOLATILE, the pending-flip wind-up and the live pulse are no
+// longer drawn — the info panel already carries all of that.
+confirmedChange  = showChange and regimeChanged and (not alertConfirmed or barstate.isconfirmed)
+enteredTrendUp   = confirmedChange and regimeSigned == 2
+enteredTrendDown = confirmedChange and regimeSigned == -2
+
+plotshape(enteredTrendUp, title = "Regime change → Trend up",
+     style = shape.diamond, location = location.belowbar,
+     color = color.new(upColor, 8), size = size.tiny)
+plotshape(enteredTrendDown, title = "Regime change → Trend down",
+     style = shape.diamond, location = location.abovebar,
+     color = color.new(downColor, 8), size = size.tiny)
+
+// ───────────────────────── Dashboard ─────────────────────────
+if showDash and barstate.islast
+    if na(dash)
+        dash := table.new(f_tablePos(dashPos), 2, 22, bgcolor = color.new(C_PANEL, 6),
+             border_color = C_BORDER, border_width = 1)
+        table.merge_cells(dash, 0, 0, 1, 0)
+
+    qCol    = trendQuality >= 70 ? C_GOLD : trendQuality >= 40 ? C_IVORY : C_MUTE
+    confCol = regimeConfidence >= 70 ? C_GOLD : regimeConfidence >= 40 ? C_IVORY : C_MUTE
+    matTxt  = na(regimeMaturity) ? "" : "  (p" + str.tostring(regimeMaturity, "0") + ")"
+    matCol  = not na(regimeMaturity) and regimeMaturity >= 80 ? C_WARN : C_IVORY
+    typeTxt = regimeCode == 0 ? "vol" : regimeCode == 2 ? "trend" : "range"
+
+    table.cell(dash, 0, 0, "MD REGIME RIBBON", text_color = C_GOLD, text_size = size.tiny, text_halign = text.align_center)
+    f_row(1, "Regime",     not ready ? "calibrating" : regimeName, ready ? regimeCol : C_MUTE)
+    f_row(2, "Favour",     guidance, ready ? regimeCol : C_MUTE)
+    f_row(3, "Quality",    str.tostring(trendQuality, "0") + " / 100", qCol)
+    f_row(4, "Confidence", str.tostring(regimeConfidence, "0") + " / 100", confCol)
+    f_row(5, "ADX",        str.tostring(adx, "0.0"), C_IVORY)
+    f_row(6, "nATR %ile",  str.tostring(natrPct, "0"), natrPct >= volHiPct ? C_WARN : C_IVORY)
+    chopTxt = str.tostring(priorFlipSum, "0") + " / " + str.tostring(chopWindow, "0") + " bars" + (isChoppyByFlips ? "  ⚡" : "")
+    f_row(7, "Chop flips", chopTxt, isChoppyByFlips ? C_WARN : C_IVORY)
+    f_row(8, "In regime",  str.tostring(barsInRegime) + " bars" + matTxt, matCol)
+    f_row(9, "Median " + typeTxt, na(medDur) ? "—" : str.tostring(medDur, "0") + " bars", C_IVORY)
+
+    int rr = 9
+    if flipPending
+        rr += 1
+        cntTxt = holdBars > 0 ? "  " + str.tostring(math.min(candAge, holdBars)) + "/" + str.tostring(holdBars) : ""
+        f_row(rr, "⚠ Flip →", f_regName(rawSignedNew) + cntTxt, f_regCol(rawSignedNew))
+    if htfOn
+        rr += 1
+        f_row(rr, "HTF " + htf1, f_regName(htfS1), f_regCol(htfS1))
+        rr += 1
+        almTxt = isVolatile ? "n/a — stand aside" : htfAgree ? "confirmed" : "conflict"
+        almCol = isVolatile ? C_MUTE : htfAgree ? C_GOLD : C_MUTE
+        f_row(rr, "Alignment", almTxt, almCol)
+
+    if evOn
+        rr += 1
+        table.merge_cells(dash, 0, rr, 1, rr)
+        table.cell(dash, 0, rr, "SIGNAL EV / R  (" + str.tostring(evHorizon) + " bar)",
+             text_color = C_MUTE, text_size = size.tiny, text_halign = text.align_center)
+        rr += 1
+        f_evCell(rr, "Trending", 2)
+        rr += 1
+        f_evCell(rr, "Ranging", 1)
+        rr += 1
+        f_evCell(rr, "Volatile", 0)
+
+// ───────────────────────── Alerts ─────────────────────────
+// Three, one per actionable regime, each firing on the confirmed flip into it.
+alertcondition(ready and regimeSigned == 2 and regimeSigned[1] != 2, "Uptrend confirmed",
+     message = "McGinley Regime Ribbon: TREND UP confirmed on {{ticker}} {{interval}}")
+alertcondition(ready and regimeSigned == -2 and regimeSigned[1] != -2, "Downtrend confirmed",
+     message = "McGinley Regime Ribbon: TREND DOWN confirmed on {{ticker}} {{interval}}")
+alertcondition(ready and regimeSigned == 0 and regimeSigned[1] != 0, "Volatile / no-trade",
+     message = "McGinley Regime Ribbon: VOLATILE / no-trade on {{ticker}} {{interval}}. Stand aside.")
+
+
+// ───────────────────────── Watermark (Royal gold & cream) ─────────────────────────
+if barstate.islast
+    wm = table.new(position.bottom_center, 2, 1, frame_color = color.new(#C9A227, 60), frame_width = 1, border_width = 0)
+    table.cell(wm, 0, 0, " ◆ ", bgcolor = color.new(#14110B, 0), text_color = color.new(#D4AF37, 15), text_size = size.small, text_halign = text.align_center, text_valign = text.align_center)
+    table.cell(wm, 1, 0, " A X E A L G O ", bgcolor = color.new(#14110B, 0), text_color = color.new(#C9B37E, 0), text_size = size.small, text_halign = text.align_left, text_valign = text.align_center)
+

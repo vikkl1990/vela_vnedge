@@ -1,0 +1,158 @@
+//@version=6
+indicator('Virgin CPR Zones — D / W / M / Y', overlay = true, max_boxes_count = 500, max_labels_count = 500)
+
+// ============================================================
+//  INPUTS
+// ============================================================
+GEN = 'General'
+showTags = input.bool(true, 'Label zones (D / W / M / Y)', group = GEN)
+
+GD = 'Daily'
+dLines = input.bool(true, 'Show Daily CPR lines', group = GD)
+dZones = input.bool(true, 'Show Daily Virgin CPR', group = GD)
+dMax   = input.int(20, 'Max Daily zones', minval = 1, maxval = 100, group = GD)
+dCol   = input.color(color.orange, 'Daily colour', group = GD)
+
+GW = 'Weekly'
+wLines = input.bool(true, 'Show Weekly CPR lines', group = GW)
+wZones = input.bool(true, 'Show Weekly Virgin CPR', group = GW)
+wMax   = input.int(15, 'Max Weekly zones', minval = 1, maxval = 100, group = GW)
+wCol   = input.color(color.blue, 'Weekly colour', group = GW)
+
+GM = 'Monthly'
+mLines = input.bool(false, 'Show Monthly CPR lines', group = GM)
+mZones = input.bool(true, 'Show Monthly Virgin CPR', group = GM)
+mMax   = input.int(12, 'Max Monthly zones', minval = 1, maxval = 100, group = GM)
+mCol   = input.color(color.purple, 'Monthly colour', group = GM)
+
+GY = 'Yearly'
+yLines = input.bool(false, 'Show Yearly CPR lines', group = GY)
+yZones = input.bool(true, 'Show Yearly Virgin CPR', group = GY)
+yMax   = input.int(10, 'Max Yearly zones', minval = 1, maxval = 100, group = GY)
+yCol   = input.color(color.red, 'Yearly colour', group = GY)
+
+
+// ============================================================
+//  ENGINE
+//  One self-contained virgin-CPR state machine per timeframe.
+//  Every `var` below is private to each call site, so the four
+//  calls never share arrays, latches or touch flags.
+// ============================================================
+f_virginCPR(string tf, bool drawLines, bool drawZones, int maxZones, color col, string tag) =>
+
+    // --- Guard: the CPR timeframe must be >= the chart timeframe.
+    bool tfOk = timeframe.in_seconds() <= timeframe.in_seconds(tf)
+
+    // --- Developing HTF OHLC (no lookahead).
+    [hh, ll, cc] = request.security(syminfo.tickerid, tf, [high, low, close], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+
+    float p     = (hh + ll + cc) / 3.0
+    float bc    = (hh + ll) / 2.0
+    float tc    = 2.0 * p - bc
+    float hiRaw = math.max(tc, bc)
+    float loRaw = math.min(tc, bc)
+
+    bool isNew = ta.change(time(tf)) != 0
+
+    // --- Latch the CPR once per period so it never moves.
+    //     On the first bar of a new period, [1] is the last bar of the
+    //     previous period, i.e. that period's completed HLC.
+    var float curHi = na
+    var float curLo = na
+    var float curP  = na
+
+    if isNew
+        curHi := hiRaw[1]
+        curLo := loRaw[1]
+        curP  := p[1]
+
+    // --- Snapshot of the period that just ended (read BEFORE any reset).
+    var bool touched = false
+    float hiPrev  = curHi[1]
+    float loPrev  = curLo[1]
+    bool  tchPrev = touched[1]
+
+    // --- Zone storage.
+    var array<box>   zBox = array.new_box()
+    var array<label> zLab = array.new_label()
+    var array<float> zTop = array.new_float()
+    var array<float> zBot = array.new_float()
+    var array<bool>  zAct = array.new_bool()
+
+    // --- A CPR is virgin only once its own period closed untouched.
+    if isNew and tfOk and drawZones
+        bool wasVirgin = not na(hiPrev) and not tchPrev
+
+        if wasVirgin
+            if array.size(zBox) >= maxZones
+                box.delete(array.shift(zBox))
+                label.delete(array.shift(zLab))
+                array.shift(zTop)
+                array.shift(zBot)
+                array.shift(zAct)
+
+            box nb = box.new(left = bar_index, top = hiPrev, right = bar_index + 1, bottom = loPrev, border_color = color.new(col, 20), bgcolor = color.new(col, 88), border_width = 1)
+
+            label nl = label.new(x = bar_index, y = hiPrev, text = showTags ? tag : '', style = label.style_none, textcolor = col, size = size.tiny)
+
+            array.push(zBox, nb)
+            array.push(zLab, nl)
+            array.push(zTop, hiPrev)
+            array.push(zBot, loPrev)
+            array.push(zAct, true)
+
+    // --- Reset the flag BEFORE testing this bar, so the very first
+    //     candle of the new period can count as a touch.
+    if isNew
+        touched := false
+
+    // --- `not na(curHi)` keeps the flag from ever becoming na and sticking.
+    touched := touched or (not na(curHi) and high >= curLo and low <= curHi)
+
+    // --- Extend live zones; freeze them the moment price trades in.
+    int n = array.size(zBox)
+    if n > 0
+        for i = 0 to n - 1
+            if array.get(zAct, i)
+                box   b  = array.get(zBox, i)
+                label lb = array.get(zLab, i)
+                float t  = array.get(zTop, i)
+                float bt = array.get(zBot, i)
+
+                box.set_right(b, bar_index)
+                label.set_x(lb, bar_index)
+                label.set_y(lb, t)
+
+                if high >= bt and low <= t
+                    array.set(zAct, i, false)
+
+    [tfOk and drawLines ? curHi : na, tfOk and drawLines ? curP : na, tfOk and drawLines ? curLo : na]
+
+
+// ============================================================
+//  CALLS — always unconditional; toggles gate the drawing only.
+// ============================================================
+[dHi, dP, dLo] = f_virginCPR('D',   dLines, dZones, dMax, dCol, 'D')
+[wHi, wP, wLo] = f_virginCPR('W',   wLines, wZones, wMax, wCol, 'W')
+[mHi, mP, mLo] = f_virginCPR('M',   mLines, mZones, mMax, mCol, 'M')
+[yHi, yP, yLo] = f_virginCPR('12M', yLines, yZones, yMax, yCol, 'Y')
+
+
+// ============================================================
+//  CPR LINES
+// ============================================================
+plot(dHi, 'Daily CPR High',   dCol, 1)
+plot(dP,  'Daily CPR Pivot',  color.new(dCol, 40), style = plot.style_circles)
+plot(dLo, 'Daily CPR Low',    dCol, 1)
+
+plot(wHi, 'Weekly CPR High',  wCol, 2)
+plot(wP,  'Weekly CPR Pivot', color.new(wCol, 40), style = plot.style_circles)
+plot(wLo, 'Weekly CPR Low',   wCol, 2)
+
+plot(mHi, 'Monthly CPR High', mCol, 2)
+plot(mP,  'Monthly CPR Pivot', color.new(mCol, 40), style = plot.style_circles)
+plot(mLo, 'Monthly CPR Low',  mCol, 2)
+
+plot(yHi, 'Yearly CPR High',  yCol, 3)
+plot(yP,  'Yearly CPR Pivot', color.new(yCol, 40), style = plot.style_circles)
+plot(yLo, 'Yearly CPR Low',   yCol, 3)

@@ -1,0 +1,276 @@
+//@version=6
+indicator("VOLT — Volatility-Linked Trend", shorttitle="VOLT", overlay=true)
+
+// ============================================================
+// VOLT PRODUCTION TIMEFRAME
+// ============================================================
+
+string voltTF = "240"
+
+// ============================================================
+// CORE PARAMETERS — FROZEN VOLT VALUES
+// ============================================================
+
+emaLen  = input.int(20, "EMA Length", group="Core Parameters")
+rsiLen  = input.int(14, "RSI Length", group="Core Parameters")
+volLen  = input.int(20, "Volume SMA Length", group="Core Parameters")
+atrLen  = input.int(12, "ATR Length", group="Core Parameters")
+
+stopATR  = input.float(1.5, "Initial Stop ATR", step=0.1, group="Core Parameters")
+trailATR = input.float(3.0, "Chandelier ATR", step=0.1, group="Core Parameters")
+
+// ============================================================
+// DISPLAY
+// ============================================================
+
+labelOffsetATR = input.float(0.50, "Distance From Wick (ATR)", minval=0.0, step=0.05, group="Display")
+
+showLong       = input.bool(true, "Show LONG", group="Display")
+showExit       = input.bool(false, "Show EXIT", group="Display")
+showEarlyLong  = input.bool(true, "Show EARLY LONG", group="Display")
+showResearchShort = input.bool(false, "Show Research SHORT", group="Display")
+
+// ============================================================
+// COLORS
+// ============================================================
+
+longTextColor  = input.color(color.lime, "LONG Text", group="Colors")
+longBoxColor   = input.color(color.new(color.lime, 85), "LONG Box", group="Colors")
+
+earlyLongTextColor = input.color(color.lime, "EARLY LONG Text", group="Colors")
+earlyLongBoxColor  = input.color(color.new(color.lime, 90), "EARLY LONG Box", group="Colors")
+
+exitTextColor = input.color(color.white, "EXIT Text", group="Colors")
+exitBoxColor  = input.color(color.new(color.gray, 80), "EXIT Box", group="Colors")
+
+shortTextColor = input.color(color.red, "SHORT Text", group="Colors")
+shortBoxColor  = input.color(color.new(color.red, 85), "SHORT Box", group="Colors")
+
+// ============================================================
+// CONFIRMED 4H DATA
+//
+// We request the PREVIOUS completed 4H candle.
+// [1] + lookahead_on = confirmed HTF data without repainting.
+// ============================================================
+
+close4H = request.security(syminfo.tickerid, voltTF, close[1], lookahead=barmerge.lookahead_on)
+high4H  = request.security(syminfo.tickerid, voltTF, high[1], lookahead=barmerge.lookahead_on)
+low4H   = request.security(syminfo.tickerid, voltTF, low[1], lookahead=barmerge.lookahead_on)
+
+ema4H = request.security(syminfo.tickerid, voltTF, ta.ema(close, emaLen)[1], lookahead=barmerge.lookahead_on)
+rsi4H = request.security(syminfo.tickerid, voltTF, ta.rsi(close, rsiLen)[1], lookahead=barmerge.lookahead_on)
+vol4H = request.security(syminfo.tickerid, voltTF, volume[1], lookahead=barmerge.lookahead_on)
+volMA4H = request.security(syminfo.tickerid, voltTF, ta.sma(volume, volLen)[1], lookahead=barmerge.lookahead_on)
+atr4H = request.security(syminfo.tickerid, voltTF, ta.atr(atrLen)[1], lookahead=barmerge.lookahead_on)
+
+time4H = request.security(syminfo.tickerid, voltTF, time, lookahead=barmerge.lookahead_off)
+
+// New chart bar belonging to a new 4H period.
+// This is when the PREVIOUS 4H candle has just become confirmed.
+new4H = ta.change(time4H) != 0
+
+// ============================================================
+// CONFIRMED LONG QUALIFICATION
+// ============================================================
+
+longQual4H = close4H > ema4H and rsi4H >= 50 and rsi4H <= 70 and vol4H > volMA4H
+
+// Research-only mirrored short qualification.
+shortQual4H = close4H < ema4H and rsi4H >= 30 and rsi4H <= 50 and vol4H > volMA4H
+
+// ============================================================
+// VOLT POSITION STATE MACHINE
+//
+// 0 = FLAT
+// 1 = LONG ACTIVE
+// ============================================================
+
+var int state = 0
+
+var float entryPrice = na
+var float initialStop = na
+var float activeStop = na
+var float oneRPrice = na
+var float highestHigh = na
+
+var bool trailActivated = false
+
+// Event pulses
+bool longEntryEvent = false
+bool longExitEvent = false
+
+// Reset event pulses every chart bar
+longEntryEvent := false
+longExitEvent := false
+
+// ============================================================
+// PROCESS ONLY WHEN A NEW 4H CANDLE HAS COMPLETED
+// ============================================================
+
+if new4H
+
+    // --------------------------------------------------------
+    // FLAT -> ENTRY
+    // --------------------------------------------------------
+
+    if state == 0 and longQual4H
+
+        state := 1
+
+        entryPrice := close4H
+
+        float riskDistance = stopATR * atr4H
+
+        initialStop := entryPrice - riskDistance
+        activeStop := initialStop
+        oneRPrice := entryPrice + riskDistance
+
+        highestHigh := high4H
+        trailActivated := false
+
+        longEntryEvent := true
+
+    // --------------------------------------------------------
+    // ACTIVE LONG MANAGEMENT
+    // --------------------------------------------------------
+
+    else if state == 1
+
+        // Update highest high using completed 4H candle.
+        highestHigh := math.max(highestHigh, high4H)
+
+        // IMPORTANT:
+        // Existing active stop applies before end-of-candle updates.
+        //
+        // With OHLC-only Pine we cannot know exact intrabar order,
+        // so this uses the conservative assumption that a stop touch
+        // on the completed bar exits before management improves.
+
+        bool stopHit = low4H <= activeStop
+
+        if stopHit
+
+            state := 0
+
+            longExitEvent := true
+
+            entryPrice := na
+            initialStop := na
+            activeStop := na
+            oneRPrice := na
+            highestHigh := na
+            trailActivated := false
+
+        else
+
+            // +1R activates ONLY on completed 4H CLOSE.
+            if not trailActivated and close4H >= oneRPrice
+                trailActivated := true
+
+            // After activation:
+            // Stop = max(previous stop, breakeven, chandelier)
+            if trailActivated
+
+                float chandelier = highestHigh - (trailATR * atr4H)
+
+                float newStop = math.max(entryPrice, chandelier)
+
+                activeStop := math.max(activeStop, newStop)
+
+// ============================================================
+// CONFIRMED MARKER PRICE
+// ============================================================
+
+longMarkerY = low4H - (atr4H * labelOffsetATR)
+
+exitMarkerY = high4H + (atr4H * labelOffsetATR)
+
+// ============================================================
+// DISPLAY CONFIRMED LONG
+// ============================================================
+
+plotshape(
+     series=showLong and longEntryEvent ? longMarkerY : na,
+     title="LONG",
+     style=shape.labelup,
+     location=location.absolute,
+     color=longBoxColor,
+     text="LONG",
+     textcolor=longTextColor,
+     size=size.tiny
+)
+
+// ============================================================
+// OPTIONAL EXIT MARKER
+// ============================================================
+
+plotshape(
+     series=showExit and longExitEvent ? exitMarkerY : na,
+     title="EXIT",
+     style=shape.labeldown,
+     location=location.absolute,
+     color=exitBoxColor,
+     text="EXIT",
+     textcolor=exitTextColor,
+     size=size.tiny
+)
+
+// ============================================================
+// CURRENT DEVELOPING 4H DATA — EARLY SIGNALS
+//
+// These intentionally use the OPEN 4H candle.
+// They can appear/disappear intrabar.
+// ============================================================
+
+liveClose4H = request.security(syminfo.tickerid, voltTF, close, lookahead=barmerge.lookahead_off)
+liveLow4H   = request.security(syminfo.tickerid, voltTF, low, lookahead=barmerge.lookahead_off)
+liveHigh4H  = request.security(syminfo.tickerid, voltTF, high, lookahead=barmerge.lookahead_off)
+
+liveEma4H = request.security(syminfo.tickerid, voltTF, ta.ema(close, emaLen), lookahead=barmerge.lookahead_off)
+liveRsi4H = request.security(syminfo.tickerid, voltTF, ta.rsi(close, rsiLen), lookahead=barmerge.lookahead_off)
+liveVol4H = request.security(syminfo.tickerid, voltTF, volume, lookahead=barmerge.lookahead_off)
+liveVolMA4H = request.security(syminfo.tickerid, voltTF, ta.sma(volume, volLen), lookahead=barmerge.lookahead_off)
+liveAtr4H = request.security(syminfo.tickerid, voltTF, ta.atr(atrLen), lookahead=barmerge.lookahead_off)
+
+// Only show EARLY entry if system is currently flat.
+earlyLong = barstate.islast and state == 0 and liveClose4H > liveEma4H and liveRsi4H >= 50 and liveRsi4H <= 70 and liveVol4H > liveVolMA4H
+
+earlyLongY = liveLow4H - (liveAtr4H * labelOffsetATR)
+
+plotshape(
+     series=showEarlyLong and earlyLong ? earlyLongY : na,
+     title="EARLY LONG",
+     style=shape.labelup,
+     location=location.absolute,
+     color=earlyLongBoxColor,
+     text="EARLY LONG ⚡",
+     textcolor=earlyLongTextColor,
+     size=size.tiny
+)
+
+// ============================================================
+// RESEARCH-ONLY SHORT DISPLAY
+//
+// This does NOT run a short trade state machine.
+// It only marks confirmed mirrored short qualifications.
+// ============================================================
+
+plotshape(
+     series=showResearchShort and new4H and shortQual4H ? high4H + (atr4H * labelOffsetATR) : na,
+     title="RESEARCH SHORT",
+     style=shape.labeldown,
+     location=location.absolute,
+     color=shortBoxColor,
+     text="SHORT",
+     textcolor=shortTextColor,
+     size=size.tiny
+)
+
+// ============================================================
+// ALERTS
+// ============================================================
+
+alertcondition(longEntryEvent, title="VOLT LONG", message="VOLT 4H LONG — {{ticker}}")
+alertcondition(longExitEvent, title="VOLT EXIT", message="VOLT 4H EXIT — {{ticker}}")
+
+alertcondition(earlyLong, title="VOLT EARLY LONG", message="VOLT EARLY 4H LONG (PROVISIONAL) — {{ticker}}")

@@ -1,0 +1,622 @@
+// ─────────────────────────────────────────────────────────────────────────────
+//  FVG · IFVG · SMT  —  v2
+//
+//  Built to the SMT_IFVG_EA v39 + SMT_All_Types v7 rulebooks, not to the
+//  generic TradingView versions:
+//    §9  FVG geometry is the three-candle c1/c3 pattern; the zone is
+//        [c3.high, c1.low] bearish / [c1.high, c3.low] bullish, and the
+//        BOUNDARY is c1.low / c1.high respectively.
+//    §9  Inversion (IFVG) is confirmed by a CLOSE beyond the boundary. Never a
+//        wick. The rulebook's sole structural filter.
+//    §2  Reference levels advance on CLOSED bars only (the Sacred Rule) — and,
+//        critically, a bar is tested against the level as it stood BEFORE that
+//        bar ran. v1 rolled the level forward FIRST and compared second, which
+//        makes `high > level` unsatisfiable on every closed bar. That is why
+//        session SMT never printed on history and only flickered live. Fixed.
+//    §12 Two-candle filter. If the sweep bar is the bar immediately after the
+//        bar that set the level, the divergence is PENDING, not confirmed: a
+//        later bar has to trade back to the sweep bar's extreme or the setup
+//        dies. A 3+ candle gap confirms on the spot.
+//    §8  Both-swept neutralisation. If the partner takes out its own level too,
+//        inside the watch window, the divergence was never real — marker gone.
+//
+//  SMT is a SWEEP engine, not a pivot-comparison engine. Every public SMT
+//  script compares `ta.pivothigh()` on both symbols and requires both pivots to
+//  confirm on the SAME bar; when they land one bar apart it silently prints
+//  nothing. This compares LEVELS instead — "did each symbol take out its own
+//  reference high" — so the two symbols never have to agree on bar timing.
+//  Four reference levels, all of which can run at once:
+//        prev  — the previous candle's high/low          (the micro case)
+//        rec   — the highest high / lowest low of N closed bars
+//        piv   — the last confirmed swing pivot          (the structural one)
+//        sess  — the official session high/low           (rulebook §6)
+//
+//  Counting rule: bullish and bearish live in SEPARATE buckets, for gaps and
+//  for SMT alike. "Last 10 bearish" means the last 10 bearish — never the last
+//  10 of whatever printed most recently.
+//
+//  Ticker Trading — c:\Trading Content Workspace\pine-indicators
+// ─────────────────────────────────────────────────────────────────────────────
+//@version=6
+indicator("FVG · IFVG · SMT", "FVG/SMT", overlay = true,
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+// ═════════════════════════════ TYPES ═════════════════════════════════════════
+
+// dir is the ORIGINAL direction and never changes: 1 = bullish gap, -1 = bearish.
+// Inversion is carried by `inv`, so a gap stays in the bucket it was born in
+// even after it flips polarity on screen.
+// state: 0 = active · 1 = mitigated · 2 = inverted (IFVG) · 3 = dead
+type Fvg
+    int   dir   = 0
+    bool  inv   = false
+    float top   = na
+    float bot   = na
+    float bound = na
+    box   bx    = na
+    line  ce    = na
+    label lb    = na
+    int   state = 0
+    int   born  = na   // bar_index at creation — freezes the zone once fvgMaxAge is exceeded
+
+// One SMT divergence.
+//   side  :  1 = high side (bearish) · -1 = low side (bullish)
+//   lvl   :  the reference level that was swept
+//   cLvl  :  the partner's matching level, kept for §8 neutralisation
+//   ext   :  the sweep bar's extreme — what §12 confirmation must trade back to
+//   conf  :  false = pending the two-candle confirmation
+//   mine  :  true = the chart symbol was the sweeper
+type Sig
+    int    side = 0
+    string src  = ""
+    float  lvl  = na
+    float  cLvl = na
+    float  ext  = na
+    int    b0   = na      // bar_index of the bar that SET the level
+    int    b1   = na      // bar_index of the sweep bar
+    bool   conf = false
+    bool   mine = true
+    line   ln   = na
+    label  lb   = na
+
+// ═════════════════════════════ INPUTS ════════════════════════════════════════
+
+// ── Fair Value Gaps ──────────────────────────────────────────────────────────
+var string GF = "Fair Value Gaps"
+
+fvgOn    = input.bool(true, "Show FVGs", group = GF)
+fvgTF    = input.timeframe("", "Timeframe", group = GF,
+     tooltip = "Blank = chart timeframe. Set higher (15, 60, 240) to plot HTF gaps on a lower-timeframe chart. Mitigation is always judged on chart closes.")
+fvgDir   = input.string("Both", "Direction", options = ["Both", "Bullish only", "Bearish only"], group = GF)
+fvgKeepB = input.int(10, "Keep last   bullish", minval = 1, maxval = 100, group = GF, inline = "fk")
+fvgKeepS = input.int(10, "bearish", minval = 1, maxval = 100, group = GF, inline = "fk",
+     tooltip = "Two independent buckets. 10 and 10 keeps the last 10 bullish gaps AND the last 10 bearish gaps, whatever order they printed in.\n\nA gap that inverts stays in the bucket it was born in — a bearish gap that flips to support is still counted as bearish.")
+fvgBull  = input.color(#A8C0AE, "Bullish", group = GF, inline = "fc")
+fvgBear  = input.color(#C2AFAE, "Bearish", group = GF, inline = "fc")
+fvgTrans = input.int(84, "Fill transparency", minval = 0, maxval = 100, group = GF)
+fvgBord  = input.bool(false, "Border", group = GF, inline = "fb")
+fvgCEon  = input.bool(true,  "Midline (CE)", group = GF, inline = "fb")
+fvgMit   = input.string("Close through", "Mitigated when", group = GF,
+     options = ["Wick touch", "Midline (CE)", "Close through"],
+     tooltip = "Wick touch = price trades into the gap at all.\nMidline = price reaches consequent encroachment.\nClose through = a bar closes past the far boundary (the rulebook's inversion event).")
+fvgAct   = input.string("Fade", "Then", options = ["Delete", "Fade", "Keep"], group = GF,
+     tooltip = "With IFVGs switched on, leave this on Fade or Keep — a gap set to Delete on a wick touch never survives long enough to invert.")
+fvgMinM  = input.string("Off", "Min size", options = ["Off", "Ticks", "ATR x", "% of price"], group = GF, inline = "fm")
+fvgMinV  = input.float(0.0, "", minval = 0.0, group = GF, inline = "fm")
+fvgLbl   = input.bool(false, "Labels", group = GF)
+fvgMaxAge = input.int(300, "Freeze unfilled zones after (bars)", minval = 20, maxval = 5000, group = GF,
+     tooltip = "Stops an unmitigated FVG/IFVG from stretching forward forever. Past this age its box, midline and label stop tracking price and just sit where they last were.")
+
+// ── Inverted FVG ─────────────────────────────────────────────────────────────
+var string GI = "Inverted FVG (IFVG)"
+
+ifvgOn    = input.bool(true, "Show IFVGs", group = GI,
+     tooltip = "A gap whose boundary is closed through flips polarity: a bearish gap becomes support, a bullish gap becomes resistance. Rulebook §9 — confirmed by a CLOSE beyond the boundary, never a wick.\n\nThis is why a chart in a strong rally goes green: every bearish gap gets closed through and recolours to support. Switch this off to see the raw gaps in their original colours.")
+ifvgBull  = input.color(#6F9C82, "Support", group = GI, inline = "ic")
+ifvgBear  = input.color(#A87F7A, "Resistance", group = GI, inline = "ic")
+ifvgTrans = input.int(76, "Fill transparency", minval = 0, maxval = 100, group = GI)
+ifvgDead  = input.string("Close back through", "Invalidated when",
+     options = ["Close back through", "Wick back through"], group = GI)
+ifvgAct   = input.string("Delete", "Then", options = ["Delete", "Fade", "Keep"], group = GI)
+ifvgLbl   = input.bool(true, "Label", group = GI)
+
+// ── SMT · engine ─────────────────────────────────────────────────────────────
+var string GS = "SMT · engine"
+
+smtOn   = input.bool(true, "Show SMT", group = GS)
+smtSym  = input.symbol("CME_MINI:MES1!", "Compare with", group = GS,
+     tooltip = "The divergence partner — must NOT be the chart symbol. MNQ chart → MES, MES chart → MNQ. The rulebook pair is USTECr vs US500r.\n\nUse a real-time feed, not a _DL delayed one. A delayed partner is stale on the newest bars and every divergence there is fictional.")
+smtWhen = input.string("Bar close", "Detect on", options = ["Bar close", "Live (intrabar)"], group = GS,
+     tooltip = "Bar close = a sweep is only registered once the bar is finished. Nothing repaints, and history is what you would actually have seen live. This is the rulebook behaviour — an M5 bar close sweeps the official level.\n\nLive = the marker appears the moment the wick takes the level. Faster, but markers appear and vanish as bars reverse.")
+smtMine = input.bool(true, "Only when THIS symbol is the sweeper", group = GS,
+     tooltip = "On (rulebook): a divergence is only marked when the chart symbol takes out its level and the partner does not — the EA trades the sweeper.\n\nOff: also marks the mirror case, where the partner sweeps and the chart symbol fails to. Same directional meaning, roughly twice the signals. Those are tagged with a × in the label.")
+smtDir   = input.string("Both", "Direction", options = ["Both", "Bullish only", "Bearish only"], group = GS)
+smtKeepB = input.int(6, "Keep last   bullish", minval = 1, maxval = 60, group = GS, inline = "sk")
+smtKeepS = input.int(6, "bearish", minval = 1, maxval = 60, group = GS, inline = "sk",
+     tooltip = "Independent buckets. Bullish SMT = divergence at the lows, bearish SMT = divergence at the highs.")
+smtStale = input.bool(true, "Ignore bars where the partner has no bar", group = GS,
+     tooltip = "request.security carries the last known value forward when the partner has no bar at this timestamp. A carried-forward high can never exceed its own level, so the partner reads as 'did not sweep' and a divergence gets invented out of a data hole.\n\nThis compares the partner's own bar time against the chart bar's and skips the bar when they disagree. Every public SMT script runs on the default forward-fill and has this bug. Leave it on.")
+
+// ── SMT · reference levels ───────────────────────────────────────────────────
+var string GL = "SMT · which levels count as a sweep"
+
+srcPrev = input.bool(true,  "Previous candle high / low", group = GL,
+     tooltip = "The micro case: this bar takes the previous bar's high while the partner's bar does not. Highest-frequency source by far — and the two-candle filter always applies to it, because the gap is always exactly one bar. If the chart gets busy, this is the one to turn off first.")
+srcRec  = input.bool(true,  "Recent extreme —  last", group = GL, inline = "rec")
+recN    = input.int(20, "bars", minval = 2, maxval = 500, group = GL, inline = "rec",
+     tooltip = "The highest high / lowest low of the last N CLOSED bars. This is the 'recent highs and lows' read.")
+srcPiv  = input.bool(false, "Swing pivot —  left", group = GL, inline = "piv")
+pivL    = input.int(8, "", minval = 1, group = GL, inline = "piv")
+pivR    = input.int(8, "right", minval = 1, group = GL, inline = "piv",
+     tooltip = "The big structural version: sweeps of the last CONFIRMED swing pivot. A pivot only confirms `right` bars after it prints, so this source is inherently that many bars behind — that lag is what makes it structural rather than noise.")
+srcSess = input.bool(true,  "Session high / low", group = GL)
+smtSess = input.session("0930-1600", "Session", group = GL)
+smtTzP  = input.string("America/New_York", "Clock", group = GL,
+     options = ["America/New_York", "America/Chicago", "Europe/London", "Europe/Madrid",
+                "Asia/Tokyo", "Australia/Sydney", "UTC", "EST (UTC-5)", "EDT (UTC-4)", "Exchange"])
+
+// ── SMT · quality filters ────────────────────────────────────────────────────
+var string GQ = "SMT · quality filters"
+
+minPen  = input.float(1.0, "Sweeper must clear its level by (ticks)", minval = 0.0, step = 0.5, group = GQ,
+     tooltip = "A one-tick poke through the level is usually noise. Raise this on M1.")
+minMiss = input.float(1.0, "Non-sweeper must fall short by (ticks)", minval = 0.0, step = 0.5, group = GQ,
+     tooltip = "The filter that actually kills bad SMTs. If the partner missed its own level by half a tick, the two instruments did the same thing, and calling that a divergence is a lie. Every public script tests the partner with a bare inequality and marks that as a divergence.")
+twoCand = input.bool(true, "Two-candle filter (rulebook §12)", group = GQ,
+     tooltip = "When the sweep bar is the bar IMMEDIATELY after the bar that set the level, the divergence is pending, not confirmed — one candle of disagreement is not a narrative. A later bar has to trade back to the sweep bar's extreme to confirm it. A 3+ candle gap confirms on the spot.")
+confWin = input.int(1, "Confirmation window (bars)", minval = 1, maxval = 20, group = GQ,
+     tooltip = "How many bars after the sweep bar get a chance to confirm. 1 = the rulebook's bar 3 only: it confirms, or the setup is dead.")
+confAll = input.bool(false, "Require confirmation on EVERY sweep", group = GQ,
+     tooltip = "Off (rulebook): only the one-candle-gap case needs confirming. On: even a 3+ candle sweep must trade back to the sweep bar's extreme before the marker goes solid. Strictest possible setting.")
+smtNeut = input.bool(true, "Neutralise when both sweep (§8)", group = GQ)
+neutWin = input.int(20, "Neutralisation window (bars)", minval = 1, maxval = 200, group = GQ,
+     tooltip = "How long after the signal the partner is still watched. If it takes out its own level inside this window, the divergence was never real and the marker is deleted.")
+
+// ── SMT · look ───────────────────────────────────────────────────────────────
+var string GV = "SMT · look"
+
+smtBull  = input.color(#3E7F63, "Bullish", group = GV, inline = "sc")
+smtBear  = input.color(#9A5450, "Bearish", group = GV, inline = "sc")
+smtW     = input.int(1, "Line width", minval = 1, maxval = 4, group = GV)
+smtLbl   = input.bool(true, "Labels", group = GV, inline = "sl")
+smtTag   = input.bool(true, "tag the source", group = GV, inline = "sl",
+     tooltip = "Labels read SMT · prev / rec / piv / sess so you can see which reference level produced each signal — and switch off the one that is too noisy for your timeframe.")
+pendShow = input.bool(true, "Show pending (unconfirmed) divergences", group = GV,
+     tooltip = "On: a pending §12 divergence is drawn dotted and faded, and goes solid the moment it confirms — you watch the setup build. Off: nothing is drawn until it confirms.")
+pendT    = input.int(55, "Pending transparency", minval = 0, maxval = 100, group = GV)
+
+// ═════════════════════════════ HELPERS ═══════════════════════════════════════
+
+var color TRANSP = color.new(color.white, 100)
+
+rawTz(string pick) =>
+    switch pick
+        "Exchange"    => syminfo.timezone
+        "EST (UTC-5)" => "GMT-5"
+        "EDT (UTC-4)" => "GMT-4"
+        => pick
+
+float atrV = ta.atr(14)
+float tick = syminfo.mintick
+
+passSize(float gap) =>
+    switch fvgMinM
+        "Ticks"      => gap >= fvgMinV * tick
+        "ATR x"      => gap >= fvgMinV * atrV
+        "% of price" => gap >= close * fvgMinV / 100.0
+        => true
+
+// colour follows the CURRENT face of the gap; bucket follows the original dir
+gapCol(int dir, bool inv) =>
+    inv ? (dir == 1 ? ifvgBear : ifvgBull) : (dir == 1 ? fvgBull : fvgBear)
+
+// ═════════════════════════════ FVG / IFVG ════════════════════════════════════
+
+string fTF = fvgTF == "" ? timeframe.period : fvgTF
+
+// c1 = oldest of the trio, c3 = newest — rulebook §9 naming.
+// At the open of a new HTF bar, [1] is the just-closed bar (c3) and [3] is c1.
+[c3h, c3l, c1h, c1l, c1t] = request.security(syminfo.tickerid, fTF,
+     [high[1], low[1], high[3], low[3], time[3]], lookahead = barmerge.lookahead_off)
+
+bool newTF = ta.change(time(fTF)) != 0
+
+var array<Fvg> gapsB = array.new<Fvg>()   // bullish-born
+var array<Fvg> gapsS = array.new<Fvg>()   // bearish-born
+
+bool sigBullFvg = false
+bool sigBearFvg = false
+bool sigIfvg    = false
+
+addGap(int dir, float top, float bot, float bound, int t0, array<Fvg> store, int cap) =>
+    color c = gapCol(dir, false)
+    Fvg   g = Fvg.new(dir = dir, top = top, bot = bot, bound = bound, state = 0, born = bar_index)
+    g.bx := box.new(t0, top, time, bot, xloc = xloc.bar_time,
+         bgcolor = color.new(c, fvgTrans),
+         border_color = fvgBord ? color.new(c, 40) : color.new(c, 100),
+         border_width = 1)
+    if fvgCEon
+        g.ce := line.new(t0, (top + bot) / 2, time, (top + bot) / 2, xloc = xloc.bar_time,
+             color = color.new(c, 45), style = line.style_dotted, width = 1)
+    if fvgLbl
+        g.lb := label.new(time, dir == 1 ? bot : top, " FVG", xloc = xloc.bar_time,
+             style = label.style_label_left, color = TRANSP, textcolor = color.new(c, 20), size = size.tiny)
+    array.push(store, g)
+    while array.size(store) > cap
+        Fvg old = array.shift(store)
+        box.delete(old.bx)
+        line.delete(old.ce)
+        label.delete(old.lb)
+
+if fvgOn and newTF and not na(c1t) and not na(c1h) and not na(c3h)
+    // bullish gap — c3.low > c1.high  → zone [c1.high, c3.low], boundary = c1.high
+    if c3l > c1h and fvgDir != "Bearish only" and passSize(c3l - c1h)
+        addGap(1, c3l, c1h, c1h, c1t, gapsB, fvgKeepB)
+        sigBullFvg := true
+    // bearish gap — c1.low > c3.high  → zone [c3.high, c1.low], boundary = c1.low
+    if c1l > c3h and fvgDir != "Bullish only" and passSize(c1l - c3h)
+        addGap(-1, c1l, c3h, c1l, c1t, gapsS, fvgKeepS)
+        sigBearFvg := true
+
+updateGaps(array<Fvg> store) =>
+    bool fired = false
+    if array.size(store) > 0
+        for i = 0 to array.size(store) - 1
+            Fvg g = array.get(store, i)
+
+            if g.state != 3 and not na(g.bx)
+                float mid = (g.top + g.bot) / 2
+
+                // all three measured against the ORIGINAL direction
+                bool through = g.dir == 1 ? close < g.bound : close > g.bound
+                bool backC   = g.dir == 1 ? close > g.bound : close < g.bound
+                bool backW   = g.dir == 1 ? high  > g.bound : low   < g.bound
+
+                if g.state == 2
+                    bool dead = ifvgDead == "Close back through" ? backC : backW
+                    if dead
+                        g.state := 3
+                        if ifvgAct == "Delete"
+                            box.delete(g.bx)
+                            line.delete(g.ce)
+                            label.delete(g.lb)
+                            g.bx := na
+                            g.ce := na
+                            g.lb := na
+                        else if ifvgAct == "Fade"
+                            box.set_bgcolor(g.bx, color.new(gapCol(g.dir, true), 94))
+                            box.set_border_color(g.bx, TRANSP)
+
+                else if ifvgOn and through
+                    // flips polarity on screen; bucket membership does not change
+                    g.inv   := true
+                    g.state := 2
+                    color ic = gapCol(g.dir, true)
+                    box.set_bgcolor(g.bx, color.new(ic, ifvgTrans))
+                    box.set_border_color(g.bx, color.new(ic, 30))
+                    line.delete(g.ce)
+                    g.ce := na
+                    if ifvgLbl
+                        if na(g.lb)
+                            g.lb := label.new(time, g.dir == 1 ? g.top : g.bot, " iFVG", xloc = xloc.bar_time,
+                                 style = label.style_label_left, color = TRANSP, textcolor = color.new(ic, 10), size = size.tiny)
+                        else
+                            label.set_text(g.lb, " iFVG")
+                            label.set_textcolor(g.lb, color.new(ic, 10))
+                    fired := true
+
+                else if g.state == 0
+                    bool mit = switch fvgMit
+                        "Wick touch"   => g.dir == 1 ? low <= g.top : high >= g.bot
+                        "Midline (CE)" => g.dir == 1 ? low <= mid   : high >= mid
+                        => through
+                    if mit
+                        g.state := 1
+                        if fvgAct == "Delete"
+                            box.delete(g.bx)
+                            line.delete(g.ce)
+                            label.delete(g.lb)
+                            g.bx := na
+                            g.ce := na
+                            g.lb := na
+                        else if fvgAct == "Fade"
+                            box.set_bgcolor(g.bx, color.new(gapCol(g.dir, false), 94))
+                            box.set_border_color(g.bx, TRANSP)
+                            line.delete(g.ce)
+                            g.ce := na
+
+                // live zones keep running with price; finished ones stop where they died.
+                // Past fvgMaxAge an unfilled zone freezes in place instead of stretching
+                // forever — otherwise a gap that never fills keeps its box/label chasing
+                // the current bar every bar, which reads as "it follows me" on pan.
+                if not na(g.bx) and (g.state == 0 or g.state == 2) and bar_index - g.born <= fvgMaxAge
+                    box.set_right(g.bx, time)
+                    if not na(g.ce)
+                        line.set_x2(g.ce, time)
+                    if not na(g.lb)
+                        label.set_x(g.lb, time)
+                        label.set_y(g.lb, g.state == 2 ? (g.dir == 1 ? g.top : g.bot) : (g.dir == 1 ? g.bot : g.top))
+    fired
+
+bool firedB = updateGaps(gapsB)
+bool firedS = updateGaps(gapsS)
+sigIfvg := firedB or firedS
+
+// ═════════════════════════════ SMT ═══════════════════════════════════════════
+//
+//  Order of operations every bar, and the order is the whole point:
+//    1. Read each source's reference level as it stood BEFORE this bar.
+//    2. Test this bar against those levels — who swept, who did not.
+//    3. Maintain live signals: §12 confirmation, §8 neutralisation.
+//    4. ONLY THEN roll the levels forward with this bar's data.
+//  v1 did 4 before 2, which is why the sweep test could never be true.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── partner data ─────────────────────────────────────────────────────────────
+// gaps_off is deliberate: the forward-filled series keeps ta.highest() usable
+// for the partner's own reference levels. The forward-fill is only dangerous on
+// the COMPARISON bar, and that is what the `cmpFresh` timestamp gate kills.
+[cmpH, cmpL, cmpT] = request.security(smtSym, timeframe.period, [high, low, time],
+     lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+
+bool cmpFresh = not na(cmpT) and cmpT == time
+bool cmpOk    = not na(cmpH) and not na(cmpL) and (not smtStale or cmpFresh)
+bool selfCmp  = smtSym == ticker.standard(syminfo.tickerid)
+bool smtLive  = smtOn and not selfCmp and cmpOk
+bool evalBar  = smtWhen == "Bar close" ? barstate.isconfirmed : true
+
+bool wantBull = smtDir != "Bearish only"
+bool wantBear = smtDir != "Bullish only"
+
+float penTol  = minPen  * tick
+float missTol = minMiss * tick
+
+// ── every ta.* call lives here, at global scope, evaluated on every bar ──────
+// (a ta.* call inside a conditional block silently keeps the wrong state)
+float recHi  = ta.highest(high[1],  recN)
+float recLo  = ta.lowest(low[1],    recN)
+float cRecHi = ta.highest(cmpH[1],  recN)
+float cRecLo = ta.lowest(cmpL[1],   recN)
+int   recHiB = bar_index - 1 + ta.highestbars(high[1], recN)
+int   recLoB = bar_index - 1 + ta.lowestbars(low[1],   recN)
+
+float phv  = ta.pivothigh(high, pivL, pivR)
+float plv  = ta.pivotlow(low,   pivL, pivR)
+float cphv = ta.pivothigh(cmpH, pivL, pivR)
+float cplv = ta.pivotlow(cmpL,  pivL, pivR)
+
+bool inSess  = not na(time(timeframe.period, smtSess, rawTz(smtTzP)))
+bool sessNew = inSess and not inSess[1]
+
+// ── carried level state ──────────────────────────────────────────────────────
+var float pvHi  = na
+var float pvLo  = na
+var int   pvHiB = na
+var int   pvLoB = na
+var float cpvHi = na
+var float cpvLo = na
+
+var float ssHi  = na
+var float ssLo  = na
+var int   ssHiB = na
+var int   ssLoB = na
+var float csHi  = na
+var float csLo  = na
+
+// ── 1 · SNAPSHOT — the levels as they stood before this bar ──────────────────
+// index 0 = prev · 1 = recent · 2 = pivot · 3 = session
+var array<float> rHi = array.new_float(4, na)
+var array<float> rLo = array.new_float(4, na)
+var array<float> kHi = array.new_float(4, na)
+var array<float> kLo = array.new_float(4, na)
+var array<int>   bHi = array.new_int(4, na)
+var array<int>   bLo = array.new_int(4, na)
+
+bool sessArmed = inSess and not sessNew and not na(ssHi)
+
+array.set(rHi, 0, srcPrev ? high[1] : na)
+array.set(rLo, 0, srcPrev ? low[1]  : na)
+array.set(kHi, 0, srcPrev ? cmpH[1] : na)
+array.set(kLo, 0, srcPrev ? cmpL[1] : na)
+array.set(bHi, 0, bar_index - 1)
+array.set(bLo, 0, bar_index - 1)
+
+array.set(rHi, 1, srcRec ? recHi  : na)
+array.set(rLo, 1, srcRec ? recLo  : na)
+array.set(kHi, 1, srcRec ? cRecHi : na)
+array.set(kLo, 1, srcRec ? cRecLo : na)
+array.set(bHi, 1, recHiB)
+array.set(bLo, 1, recLoB)
+
+array.set(rHi, 2, srcPiv ? pvHi  : na)
+array.set(rLo, 2, srcPiv ? pvLo  : na)
+array.set(kHi, 2, srcPiv ? cpvHi : na)
+array.set(kLo, 2, srcPiv ? cpvLo : na)
+array.set(bHi, 2, pvHiB)
+array.set(bLo, 2, pvLoB)
+
+array.set(rHi, 3, srcSess and sessArmed ? ssHi : na)
+array.set(rLo, 3, srcSess and sessArmed ? ssLo : na)
+array.set(kHi, 3, srcSess and sessArmed ? csHi : na)
+array.set(kLo, 3, srcSess and sessArmed ? csLo : na)
+array.set(bHi, 3, ssHiB)
+array.set(bLo, 3, ssLoB)
+
+// ── 2 · SIGNAL STORE ─────────────────────────────────────────────────────────
+var array<Sig> sigsB = array.new<Sig>()   // bullish — divergence at the lows
+var array<Sig> sigsS = array.new<Sig>()   // bearish — divergence at the highs
+
+bool sigSmtBull = false
+bool sigSmtBear = false
+
+srcName(int i) => i == 0 ? "prev" : i == 1 ? "rec" : i == 2 ? "piv" : "sess"
+
+// Draws the signal, or restyles it if it already exists. Called on birth and
+// again on confirmation, so a signal born hidden still appears when it confirms.
+paint(Sig s) =>
+    color c = s.side == 1 ? smtBear : smtBull
+    int   t = s.conf ? 0 : pendT
+    string txt = (s.conf ? "SMT" : "SMT?") + (smtTag ? " · " + s.src : "") + (s.mine ? "" : " ×")
+    if na(s.ln)
+        s.ln := line.new(s.b0, s.lvl, s.b1, s.ext, xloc = xloc.bar_index,
+             color = color.new(c, t), width = s.conf ? smtW : 1,
+             style = s.conf ? line.style_dashed : line.style_dotted)
+    else
+        line.set_color(s.ln, color.new(c, t))
+        line.set_style(s.ln, s.conf ? line.style_dashed : line.style_dotted)
+        line.set_width(s.ln, s.conf ? smtW : 1)
+    if smtLbl
+        if na(s.lb)
+            s.lb := label.new(s.b1, s.ext, txt, xloc = xloc.bar_index,
+                 style = s.side == 1 ? label.style_label_down : label.style_label_up,
+                 color = TRANSP, textcolor = color.new(c, t), size = size.tiny)
+            label.set_textcolor(s.lb, color.new(c, t))
+        else
+            label.set_text(s.lb, txt)
+            label.set_textcolor(s.lb, color.new(c, t))
+
+killSig(Sig s) =>
+    line.delete(s.ln)
+    label.delete(s.lb)
+
+emit(int side, int isrc, float lvl, float kLvl, float ext, int b0, bool mine) =>
+    // clamp: recent-extreme and pivot setters can index before bar 0 on a short
+    // history, and a negative bar_index is a drawing runtime error
+    int anchor = math.max(0, na(b0) ? bar_index - 1 : b0)
+    Sig s = Sig.new(side = side, src = srcName(isrc), lvl = lvl, cLvl = kLvl,
+         ext = ext, b0 = anchor, b1 = bar_index, mine = mine)
+    // §12 — a one-bar gap between the level and the sweep is not a narrative yet
+    int gap = s.b1 - s.b0
+    s.conf := confAll ? false : not (twoCand and gap <= 1)
+    if s.conf or pendShow
+        paint(s)
+    if side == 1
+        array.push(sigsS, s)
+        while array.size(sigsS) > smtKeepS
+            killSig(array.shift(sigsS))
+    else
+        array.push(sigsB, s)
+        while array.size(sigsB) > smtKeepB
+            killSig(array.shift(sigsB))
+
+// ── 3 · DETECT ───────────────────────────────────────────────────────────────
+if smtLive and evalBar
+    for i = 0 to 3
+        float lh = array.get(rHi, i)
+        float ll = array.get(rLo, i)
+        float ch = array.get(kHi, i)
+        float cl = array.get(kLo, i)
+
+        // high side → bearish
+        if wantBear and not na(lh) and not na(ch)
+            bool hMe   = high > lh + penTol
+            bool hCp   = cmpH > ch + penTol
+            bool hMeNo = high < lh - missTol
+            bool hCpNo = cmpH < ch - missTol
+            if hMe and hCpNo
+                emit(1, i, lh, ch, high, array.get(bHi, i), true)
+                sigSmtBear := true
+            else if hCp and hMeNo and not smtMine
+                emit(1, i, lh, ch, high, array.get(bHi, i), false)
+                sigSmtBear := true
+
+        // low side → bullish
+        if wantBull and not na(ll) and not na(cl)
+            bool lMe   = low  < ll - penTol
+            bool lCp   = cmpL < cl - penTol
+            bool lMeNo = low  > ll + missTol
+            bool lCpNo = cmpL > cl + missTol
+            if lMe and lCpNo
+                emit(-1, i, ll, cl, low, array.get(bLo, i), true)
+                sigSmtBull := true
+            else if lCp and lMeNo and not smtMine
+                emit(-1, i, ll, cl, low, array.get(bLo, i), false)
+                sigSmtBull := true
+
+// ── 4 · MAINTAIN — §12 confirmation, §8 neutralisation ───────────────────────
+maintain(array<Sig> store) =>
+    if array.size(store) > 0
+        for k = array.size(store) - 1 to 0
+            Sig s   = array.get(store, k)
+            int age = bar_index - s.b1
+            bool gone = false
+
+            if age > 0
+                if not s.conf
+                    // a later bar must trade back to the sweep bar's extreme
+                    bool reached = s.side == 1 ? high >= s.ext : low <= s.ext
+                    if reached
+                        s.conf := true
+                        paint(s)
+                        if not na(s.ln)
+                            line.set_x2(s.ln, bar_index)
+                    else if age >= confWin
+                        killSig(s)
+                        array.remove(store, k)
+                        gone := true
+
+                // §8 — the partner takes out its own level too: never real
+                if not gone and smtNeut and age <= neutWin and cmpOk and not na(s.cLvl)
+                    bool both = s.side == 1 ? cmpH > s.cLvl + penTol : cmpL < s.cLvl - penTol
+                    if both
+                        killSig(s)
+                        array.remove(store, k)
+
+if smtLive and evalBar
+    maintain(sigsS)
+    maintain(sigsB)
+
+// ── 5 · ROLL THE LEVELS FORWARD (closed bars only — the Sacred Rule §2) ──────
+if barstate.isconfirmed
+    if not na(phv)
+        pvHi  := phv
+        pvHiB := bar_index - pivR
+    if not na(plv)
+        pvLo  := plv
+        pvLoB := bar_index - pivR
+    if not na(cphv)
+        cpvHi := cphv
+    if not na(cplv)
+        cpvLo := cplv
+
+    if sessNew
+        ssHi  := high
+        ssLo  := low
+        ssHiB := bar_index
+        ssLoB := bar_index
+        csHi  := cmpOk ? cmpH : na
+        csLo  := cmpOk ? cmpL : na
+    else if inSess and not na(ssHi)
+        if high > ssHi
+            ssHi  := high
+            ssHiB := bar_index
+        if low < ssLo
+            ssLo  := low
+            ssLoB := bar_index
+        if cmpOk
+            csHi := na(csHi) ? cmpH : math.max(csHi, cmpH)
+            csLo := na(csLo) ? cmpL : math.min(csLo, cmpL)
+
+// ── diagnostics — never leave "no signals" ambiguous ─────────────────────────
+var label warnLb = na
+if barstate.islast
+    label.delete(warnLb)
+    warnLb := na
+    string msg = ""
+    if smtOn and selfCmp
+        msg := "SMT off — compare symbol is the chart symbol"
+    else if smtOn and na(cmpH)
+        msg := "SMT off — no data for " + smtSym
+    else if smtOn and not srcPrev and not srcRec and not srcPiv and not srcSess
+        msg := "SMT off — every reference level is unticked"
+    if msg != ""
+        warnLb := label.new(bar_index, high, msg, style = label.style_label_down,
+             color = color.new(smtBear, 15), textcolor = color.white, size = size.small)
+
+// ═════════════════════════════ ALERTS ════════════════════════════════════════
+
+alertcondition(sigBullFvg, "Bullish FVG", "Bullish FVG formed on {{ticker}}")
+alertcondition(sigBearFvg, "Bearish FVG", "Bearish FVG formed on {{ticker}}")
+alertcondition(sigIfvg,    "IFVG",        "FVG inverted (IFVG) on {{ticker}}")
+alertcondition(sigSmtBull, "Bullish SMT", "Bullish SMT divergence on {{ticker}}")
+alertcondition(sigSmtBear, "Bearish SMT", "Bearish SMT divergence on {{ticker}}")

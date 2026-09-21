@@ -1,0 +1,39 @@
+//@version=6
+indicator("Inverse Fisher Transform on ADX DI (Directional Acceptance)", overlay=false)
+
+// ───── Inputs ─────
+diLen       = input.int(14, "DI Length", minval=1)
+adxSmooth   = input.int(14, "ADX Smoothing", minval=1)
+normLen     = input.int(50, "Normalization Length", minval=5)
+smoothLen   = input.int(5, "IFT RMA Smoothing", minval=1)
+
+// ───── Directional Movement Index ─────
+[plusDI, minusDI, _] = ta.dmi(diLen, adxSmooth)
+
+// ───── Directional Dominance (Spread) ─────
+diSpread = plusDI - minusDI
+
+// ───── Normalize Spread ─────
+lowS  = ta.lowest(diSpread, normLen)
+highS = ta.highest(diSpread, normLen)
+
+norm = highS != lowS ? (diSpread - lowS) / (highS - lowS) : 0.5
+
+// Map to centered range [-1, +1]
+x = 2 * norm - 1
+
+// Clamp for numerical stability
+x := math.max(math.min(x, 0.999), -0.999)
+
+// ───── Inverse Fisher Transform ─────
+iftRaw = (math.exp(2 * x) - 1) / (math.exp(2 * x) + 1)
+
+// ───── Wilder smoothing (authority) ─────
+iftDI = ta.rma(iftRaw, smoothLen)
+
+// ───── Plot ─────
+plot(iftDI, "IFT ADX Directional Acceptance", color=color.fuchsia, linewidth=2)
+
+hline(0,    "Neutral", color=color.new(#f5eeee, 70))
+hline(0.5,  "+0.5 Accepted Upward Dominance", color=color.new(color.green, 80))
+hline(-0.5, "-0.5 Accepted Downward Dominance", color=color.new(color.red, 80))

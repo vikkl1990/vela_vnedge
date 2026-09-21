@@ -1,0 +1,501 @@
+//@version=6
+indicator("Volume Delta Footprint Zones Heatmap", shorttitle="ΔFP", overlay=true)
+
+// ──────────────────────────────────────────────────────────────
+// SETTINGS
+// ──────────────────────────────────────────────────────────────
+ticksPerRow         = input.int(1, "Ticks per Row", minval=1, step=1, group="Footprint Settings", tooltip="Vertical size of each footprint row, in ticks. 20 ticks = 5.00 points on NQ (0.25 tick), which reproduces the previous 5-point default.")
+priceIncrement      = ticksPerRow * syminfo.mintick
+
+minDeltaInput       = input.float(5.0, "Min Delta Divergence (absolute)", minval=0.0, step=0.1, group="Footprint Settings", tooltip="Minimum absolute cumulative delta required to display a zone.")
+filterByPosition    = input.bool(true, "Show +Δ only above price / -Δ only below price", group="Footprint Settings", tooltip="Positive delta zones appear only above current price; negative only below.")
+
+ratioLookback       = input.int(200, "Ratio Average Lookback Bars", minval=5, group="Imbalance Delta Settings", tooltip="Number of previous bars used to calculate the average delta-to-price-move ratio.")
+
+fpTimeframe         = input.timeframe("1S", "Volume Delta Footprint Timeframe", group="Footprint Settings", tooltip="Timeframe used for footprint data. Lower TF = higher precision.")
+
+decayRatePct        = input.float(0.1, "Decay Rate per Bar (%)", minval=0.0, maxval=100.0, step=0.1, group="Delta Decay Settings", tooltip="How quickly cumulative delta fades each bar (percentage decay). This is what makes recent bars weigh more than old ones: a contribution keeps (1 - rate)^N of its weight after N DECAYED bars. At 5% that is about 60% after 10, 36% after 20, 8% after 50. Note N counts confirmed bars on which the footprint request actually returned data — on a 1S footprint timeframe, where TradingView's sub-minute history is shallow, older levels stop ageing rather than decaying.")
+
+banClearTicks       = input.int(4, "Ban Clear Distance (ticks)", minval=1, step=1, group="Zone Settings", tooltip="How far price must move away from a zone that was traded through before that level is allowed to form a zone again, in ticks. 4 ticks = 1.00 point on NQ, which reproduces the previous 1.0 default.")
+banClearDistance    = banClearTicks * syminfo.mintick
+
+// ──────────────────────────────────────────────────────────────
+// FOOTPRINT DATA
+// ──────────────────────────────────────────────────────────────
+footprint fp = request.security(syminfo.tickerid, fpTimeframe, request.footprint(ticksPerRow, 70))
+
+// ──────────────────────────────────────────────────────────────
+// ZONE CONTAINERS
+// ──────────────────────────────────────────────────────────────
+maxPerSide = 30
+
+var float[] positivePrices = array.new<float>(maxPerSide, na)
+var int[]   positiveX1     = array.new<int>(maxPerSide, -1)
+
+var float[] negativePrices = array.new<float>(maxPerSide, na)
+var int[]   negativeX1     = array.new<int>(maxPerSide, -1)
+
+var float[] pendingPositive = array.new<float>()
+var float[] pendingNegative = array.new<float>()
+
+var float[] bannedPositive = array.new<float>()
+var float[] bannedNegative = array.new<float>()
+
+var float[] crossedBannedPositive = array.new<float>()
+var float[] crossedBannedNegative = array.new<float>()
+
+var float[] ratioHistory = array.new<float>()
+
+var map<float, float> cumDelta = map.new<float, float>()
+
+// ──────────────────────────────────────────────────────────────
+// RIGHT-SIDE LABELS
+// ──────────────────────────────────────────────────────────────
+var label[] posLabels = array.new<label>()
+var label[] negLabels = array.new<label>()
+
+if array.size(posLabels) == 0
+    for i = 0 to maxPerSide - 1
+        array.push(posLabels, label.new(na, na, "", xloc=xloc.bar_index, style=label.style_label_left, color=color.new(color.green, 80), textcolor=color.white, size=size.small))
+        array.push(negLabels, label.new(na, na, "", xloc=xloc.bar_index, style=label.style_label_left, color=color.new(color.red, 80), textcolor=color.white, size=size.small))
+
+// ──────────────────────────────────────────────────────────────
+// HELPER
+// ──────────────────────────────────────────────────────────────
+priceInArray(float p, float[] arr) =>
+    not na(p) and array.includes(arr, p)
+
+// ──────────────────────────────────────────────────────────────
+// MAIN LOGIC
+// ──────────────────────────────────────────────────────────────
+if not na(fp)
+    // Clean crossed zones
+    for i = 0 to maxPerSide - 1
+        float p  = array.get(positivePrices, i)
+        int   x1 = array.get(positiveX1, i)
+        if not na(p) and x1 != -1 and x1 < bar_index and high >= p and low <= p
+            array.set(positivePrices, i, na)
+            array.set(positiveX1,     i, -1)
+            if not priceInArray(p, crossedBannedPositive)
+                array.push(crossedBannedPositive, p)
+
+    for i = 0 to maxPerSide - 1
+        float p  = array.get(negativePrices, i)
+        int   x1 = array.get(negativeX1, i)
+        if not na(p) and x1 != -1 and x1 < bar_index and high >= p and low <= p
+            array.set(negativePrices, i, na)
+            array.set(negativeX1,     i, -1)
+            if not priceInArray(p, crossedBannedNegative)
+                array.push(crossedBannedNegative, p)
+
+    // Remove current-bar zones
+    for i = 0 to maxPerSide - 1
+        if array.get(positiveX1, i) == bar_index
+            array.set(positivePrices, i, na)
+            array.set(positiveX1,     i, -1)
+
+    for i = 0 to maxPerSide - 1
+        if array.get(negativeX1, i) == bar_index
+            array.set(negativePrices, i, na)
+            array.set(negativeX1,     i, -1)
+
+    if barstate.isconfirmed
+        array<float> decayKeys = map.keys(cumDelta)
+        if array.size(decayKeys) > 0
+            for i = 0 to array.size(decayKeys) - 1
+                float p = array.get(decayKeys, i)
+                map.put(cumDelta, p, map.get(cumDelta, p) * (1 - decayRatePct / 100.0))
+
+        // Compute imbalance delta
+        array<volume_row> rows = footprint.rows(fp)
+
+        float barNetDelta = 0.0
+        for i = 0 to array.size(rows) - 1
+            volume_row row = array.get(rows, i)
+            float rowDelta = volume_row.delta(row)
+            if na(rowDelta) or rowDelta == 0
+                continue
+            barNetDelta += rowDelta
+
+        float barPriceChange = close - nz(close[1], close)
+
+        float currentAvgRatio = 0.0
+        int histSize = array.size(ratioHistory)
+        if histSize > 0
+            float sumR = 0.0
+            for j = 0 to histSize - 1
+                sumR += array.get(ratioHistory, j)
+            currentAvgRatio := sumR / histSize
+
+        float expectedDelta = currentAvgRatio * barPriceChange
+        float discrepancy   = barNetDelta - expectedDelta
+
+        // Add scaled delta to each price level (at full weight — see decay above)
+        for i = 0 to array.size(rows) - 1
+            volume_row row = array.get(rows, i)
+
+            float rowDelta = volume_row.delta(row)
+            float rowHigh  = volume_row.up_price(row)
+            float rowLow   = volume_row.down_price(row)
+
+            if na(rowDelta) or rowDelta == 0
+                continue
+
+            float midPrice = (rowHigh + rowLow) / 2
+            float gridPrice = math.round(midPrice / priceIncrement) * priceIncrement
+            if gridPrice < 0
+                gridPrice := 0.0
+
+            float addDelta = barNetDelta != 0 and math.abs(barPriceChange) > syminfo.mintick * 0.1 ?
+                             discrepancy * (rowDelta / barNetDelta) : rowDelta
+
+            float currentCum = na(map.get(cumDelta, gridPrice)) ? 0.0 : map.get(cumDelta, gridPrice)
+            map.put(cumDelta, gridPrice, currentCum + addDelta)
+
+        // Prune levels that have faded below the display threshold
+        array<float> pruneKeys = map.keys(cumDelta)
+        if array.size(pruneKeys) > 0
+            for i = 0 to array.size(pruneKeys) - 1
+                float p = array.get(pruneKeys, i)
+                if math.abs(map.get(cumDelta, p)) < minDeltaInput
+                    map.remove(cumDelta, p)
+
+        // Update ratio history
+        if bar_index > 0 and math.abs(barPriceChange) > syminfo.mintick * 0.1
+            float thisRatio = barNetDelta / barPriceChange
+            array.push(ratioHistory, thisRatio)
+            if array.size(ratioHistory) > ratioLookback
+                array.shift(ratioHistory)
+
+        // Apply pending zones
+        int pendingSizePos = array.size(pendingPositive)
+        for _i = 0 to pendingSizePos - 1
+            if array.size(pendingPositive) == 0
+                break
+            float gridPrice = array.shift(pendingPositive)
+            if priceInArray(gridPrice, positivePrices)
+                continue
+            bool added = false
+            for slot = 20 to 29
+                if na(array.get(positivePrices, slot))
+                    array.set(positivePrices, slot, gridPrice)
+                    array.set(positiveX1,     slot, bar_index)
+                    added := true
+                    break
+            if not added
+                for slot = 0 to 19
+                    if na(array.get(positivePrices, slot))
+                        array.set(positivePrices, slot, gridPrice)
+                        array.set(positiveX1,     slot, bar_index)
+                        added := true
+                        break
+            if not added
+                int evictIdx = -1
+                float maxPrice = -1e10
+                for slot = 0 to 19
+                    float pr = array.get(positivePrices, slot)
+                    if not na(pr) and pr > maxPrice
+                        maxPrice := pr
+                        evictIdx := slot
+                if evictIdx >= 0
+                    array.set(positivePrices, evictIdx, na)
+                    array.set(positiveX1,     evictIdx, -1)
+                    array.push(bannedPositive, array.get(positivePrices, evictIdx))
+            if not added
+                array.unshift(pendingPositive, gridPrice)
+
+        int pendingSizeNeg = array.size(pendingNegative)
+        for _i = 0 to pendingSizeNeg - 1
+            if array.size(pendingNegative) == 0
+                break
+            float gridPrice = array.shift(pendingNegative)
+            if priceInArray(gridPrice, negativePrices)
+                continue
+            bool added = false
+            for slot = 20 to 29
+                if na(array.get(negativePrices, slot))
+                    array.set(negativePrices, slot, gridPrice)
+                    array.set(negativeX1,     slot, bar_index)
+                    added := true
+                    break
+            if not added
+                for slot = 0 to 19
+                    if na(array.get(negativePrices, slot))
+                        array.set(negativePrices, slot, gridPrice)
+                        array.set(negativeX1,     slot, bar_index)
+                        added := true
+                        break
+            if not added
+                int evictIdx = -1
+                float minPrice = 1e10
+                for slot = 0 to 19
+                    float pr = array.get(negativePrices, slot)
+                    if not na(pr) and pr < minPrice
+                        minPrice := pr
+                        evictIdx := slot
+                if evictIdx >= 0
+                    array.set(negativePrices, evictIdx, na)
+                    array.set(negativeX1,     evictIdx, -1)
+                    array.push(bannedNegative, array.get(negativePrices, evictIdx))
+            if not added
+                array.unshift(pendingNegative, gridPrice)
+
+        // Queue new/updated zones
+        array<float> activeKeys = map.keys(cumDelta)
+        if array.size(activeKeys) > 0
+            for i = 0 to array.size(activeKeys) - 1
+                float gridPrice = array.get(activeKeys, i)
+                float netDelta  = map.get(cumDelta, gridPrice)
+
+                if math.abs(netDelta) < minDeltaInput
+                    continue
+
+                bool isPositiveDelta = netDelta > 0
+
+                // Clear opposite side if present
+                if isPositiveDelta
+                    for k = 0 to maxPerSide - 1
+                        if array.get(negativePrices, k) == gridPrice
+                            array.set(negativePrices, k, na)
+                            array.set(negativeX1, k, -1)
+                            break
+                else
+                    for k = 0 to maxPerSide - 1
+                        if array.get(positivePrices, k) == gridPrice
+                            array.set(positivePrices, k, na)
+                            array.set(positiveX1, k, -1)
+                            break
+
+                bool alreadyExists = false
+                if isPositiveDelta
+                    for k = 0 to maxPerSide - 1
+                        if array.get(positivePrices, k) == gridPrice
+                            alreadyExists := true
+                            break
+                else
+                    for k = 0 to maxPerSide - 1
+                        if array.get(negativePrices, k) == gridPrice
+                            alreadyExists := true
+                            break
+
+                if not alreadyExists
+                    bool isBanned = isPositiveDelta ? array.indexof(bannedPositive, gridPrice) != -1 : array.indexof(bannedNegative, gridPrice) != -1
+                    bool isCrossedBanned = isPositiveDelta ? priceInArray(gridPrice, crossedBannedPositive) : priceInArray(gridPrice, crossedBannedNegative)
+
+                    if not isBanned and not isCrossedBanned
+                        bool alreadyInPending = isPositiveDelta ? priceInArray(gridPrice, pendingPositive) : priceInArray(gridPrice, pendingNegative)
+                        if not alreadyInPending
+                            if isPositiveDelta
+                                array.push(pendingPositive, gridPrice)
+                            else
+                                array.push(pendingNegative, gridPrice)
+
+        // Cleanup weak zones
+        for i = 0 to maxPerSide - 1
+            float p = array.get(positivePrices, i)
+            if not na(p)
+                float d = na(map.get(cumDelta, p)) ? 0.0 : map.get(cumDelta, p)
+                if math.abs(d) < minDeltaInput
+                    array.set(positivePrices, i, na)
+                    array.set(positiveX1, i, -1)
+
+        for i = 0 to maxPerSide - 1
+            float n = array.get(negativePrices, i)
+            if not na(n)
+                float d = na(map.get(cumDelta, n)) ? 0.0 : map.get(cumDelta, n)
+                if math.abs(d) < minDeltaInput
+                    array.set(negativePrices, i, na)
+                    array.set(negativeX1, i, -1)
+
+        // Clear bans when few zones remain
+        int posCount = 0
+        for i = 0 to maxPerSide - 1
+            if not na(array.get(positivePrices, i))
+                posCount += 1
+        if posCount <= 10
+            array.clear(bannedPositive)
+
+        int negCount = 0
+        for i = 0 to maxPerSide - 1
+            if not na(array.get(negativePrices, i))
+                negCount += 1
+        if negCount <= 10
+            array.clear(bannedNegative)
+
+        // Clear crossed-bans when price moves away
+        if array.size(crossedBannedPositive) > 0
+            for i = array.size(crossedBannedPositive) - 1 to 0
+                float p = array.get(crossedBannedPositive, i)
+                if p - close >= banClearDistance
+                    array.remove(crossedBannedPositive, i)
+
+        if array.size(crossedBannedNegative) > 0
+            for i = array.size(crossedBannedNegative) - 1 to 0
+                float p = array.get(crossedBannedNegative, i)
+                if close - p >= banClearDistance
+                    array.remove(crossedBannedNegative, i)
+
+    // Update right-side labels
+    for i = 0 to maxPerSide - 1
+        float p = array.get(positivePrices, i)
+        if not na(p)
+            bool show = not filterByPosition or p > close
+            if show
+                float d = na(map.get(cumDelta, p)) ? 0.0 : map.get(cumDelta, p)
+                label l = array.get(posLabels, i)
+                label.set_x(l, bar_index)
+                label.set_y(l, p)
+                label.set_text(l, "Δ " + str.tostring(math.round(d)))
+            else
+                label.set_text(array.get(posLabels, i), "")
+        else
+            label.set_text(array.get(posLabels, i), "")
+
+        float n = array.get(negativePrices, i)
+        if not na(n)
+            bool show = not filterByPosition or n < close
+            if show
+                float d = na(map.get(cumDelta, n)) ? 0.0 : map.get(cumDelta, n)
+                label l = array.get(negLabels, i)
+                label.set_x(l, bar_index)
+                label.set_y(l, n)
+                label.set_text(l, "Δ " + str.tostring(math.round(-d)))
+            else
+                label.set_text(array.get(negLabels, i), "")
+        else
+            label.set_text(array.get(negLabels, i), "")
+
+// ──────────────────────────────────────────────────────────────
+// PLOT HELPER
+// ──────────────────────────────────────────────────────────────
+f_seg(float p, bool posSide) =>
+    float v    = filterByPosition ? (posSide ? (p > close ? p : na) : (p < close ? p : na)) : p
+    bool  jump = not na(v) and not na(v[1]) and v != v[1]
+    jump ? na : v
+
+// ──────────────────────────────────────────────────────────────
+// PLOTS
+// ──────────────────────────────────────────────────────────────
+float positive_p0  = array.get(positivePrices, 0)
+float positive_p1  = array.get(positivePrices, 1)
+float positive_p2  = array.get(positivePrices, 2)
+float positive_p3  = array.get(positivePrices, 3)
+float positive_p4  = array.get(positivePrices, 4)
+float positive_p5  = array.get(positivePrices, 5)
+float positive_p6  = array.get(positivePrices, 6)
+float positive_p7  = array.get(positivePrices, 7)
+float positive_p8  = array.get(positivePrices, 8)
+float positive_p9  = array.get(positivePrices, 9)
+float positive_p10 = array.get(positivePrices, 10)
+float positive_p11 = array.get(positivePrices, 11)
+float positive_p12 = array.get(positivePrices, 12)
+float positive_p13 = array.get(positivePrices, 13)
+float positive_p14 = array.get(positivePrices, 14)
+float positive_p15 = array.get(positivePrices, 15)
+float positive_p16 = array.get(positivePrices, 16)
+float positive_p17 = array.get(positivePrices, 17)
+float positive_p18 = array.get(positivePrices, 18)
+float positive_p19 = array.get(positivePrices, 19)
+float positive_p20 = array.get(positivePrices, 20)
+float positive_p21 = array.get(positivePrices, 21)
+float positive_p22 = array.get(positivePrices, 22)
+float positive_p23 = array.get(positivePrices, 23)
+float positive_p24 = array.get(positivePrices, 24)
+float positive_p25 = array.get(positivePrices, 25)
+float positive_p26 = array.get(positivePrices, 26)
+float positive_p27 = array.get(positivePrices, 27)
+float positive_p28 = array.get(positivePrices, 28)
+float positive_p29 = array.get(positivePrices, 29)
+
+plot(f_seg(positive_p0, true), title="Pos Δ 1", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p1, true), title="Pos Δ 2", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p2, true), title="Pos Δ 3", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p3, true), title="Pos Δ 4", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p4, true), title="Pos Δ 5", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p5, true), title="Pos Δ 6", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p6, true), title="Pos Δ 7", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p7, true), title="Pos Δ 8", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p8, true), title="Pos Δ 9", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p9, true), title="Pos Δ 10", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p10, true), title="Pos Δ 11", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p11, true), title="Pos Δ 12", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p12, true), title="Pos Δ 13", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p13, true), title="Pos Δ 14", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p14, true), title="Pos Δ 15", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p15, true), title="Pos Δ 16", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p16, true), title="Pos Δ 17", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p17, true), title="Pos Δ 18", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p18, true), title="Pos Δ 19", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p19, true), title="Pos Δ 20", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p20, true), title="Pos Δ 21", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p21, true), title="Pos Δ 22", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p22, true), title="Pos Δ 23", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p23, true), title="Pos Δ 24", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p24, true), title="Pos Δ 25", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p25, true), title="Pos Δ 26", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p26, true), title="Pos Δ 27", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p27, true), title="Pos Δ 28", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p28, true), title="Pos Δ 29", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(positive_p29, true), title="Pos Δ 30", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+
+float negative_p0  = array.get(negativePrices, 0)
+float negative_p1  = array.get(negativePrices, 1)
+float negative_p2  = array.get(negativePrices, 2)
+float negative_p3  = array.get(negativePrices, 3)
+float negative_p4  = array.get(negativePrices, 4)
+float negative_p5  = array.get(negativePrices, 5)
+float negative_p6  = array.get(negativePrices, 6)
+float negative_p7  = array.get(negativePrices, 7)
+float negative_p8  = array.get(negativePrices, 8)
+float negative_p9  = array.get(negativePrices, 9)
+float negative_p10 = array.get(negativePrices, 10)
+float negative_p11 = array.get(negativePrices, 11)
+float negative_p12 = array.get(negativePrices, 12)
+float negative_p13 = array.get(negativePrices, 13)
+float negative_p14 = array.get(negativePrices, 14)
+float negative_p15 = array.get(negativePrices, 15)
+float negative_p16 = array.get(negativePrices, 16)
+float negative_p17 = array.get(negativePrices, 17)
+float negative_p18 = array.get(negativePrices, 18)
+float negative_p19 = array.get(negativePrices, 19)
+float negative_p20 = array.get(negativePrices, 20)
+float negative_p21 = array.get(negativePrices, 21)
+float negative_p22 = array.get(negativePrices, 22)
+float negative_p23 = array.get(negativePrices, 23)
+float negative_p24 = array.get(negativePrices, 24)
+float negative_p25 = array.get(negativePrices, 25)
+float negative_p26 = array.get(negativePrices, 26)
+float negative_p27 = array.get(negativePrices, 27)
+float negative_p28 = array.get(negativePrices, 28)
+float negative_p29 = array.get(negativePrices, 29)
+
+plot(f_seg(negative_p0, false), title="Neg Δ 1", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p1, false), title="Neg Δ 2", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p2, false), title="Neg Δ 3", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p3, false), title="Neg Δ 4", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p4, false), title="Neg Δ 5", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p5, false), title="Neg Δ 6", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p6, false), title="Neg Δ 7", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p7, false), title="Neg Δ 8", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p8, false), title="Neg Δ 9", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p9, false), title="Neg Δ 10", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p10, false), title="Neg Δ 11", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p11, false), title="Neg Δ 12", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p12, false), title="Neg Δ 13", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p13, false), title="Neg Δ 14", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p14, false), title="Neg Δ 15", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p15, false), title="Neg Δ 16", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p16, false), title="Neg Δ 17", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p17, false), title="Neg Δ 18", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p18, false), title="Neg Δ 19", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p19, false), title="Neg Δ 20", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p20, false), title="Neg Δ 21", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p21, false), title="Neg Δ 22", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p22, false), title="Neg Δ 23", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p23, false), title="Neg Δ 24", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p24, false), title="Neg Δ 25", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p25, false), title="Neg Δ 26", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p26, false), title="Neg Δ 27", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p27, false), title="Neg Δ 28", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p28, false), title="Neg Δ 29", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(f_seg(negative_p29, false), title="Neg Δ 30", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)

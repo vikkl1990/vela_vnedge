@@ -1,0 +1,66 @@
+//@version=6
+indicator("Mizan Thrust Oscillator (P-RMA vs P-VWMA)", overlay=false)
+
+// ─────────────────────────────────────────────
+// © Developed by Mizan Lab
+// ─────────────────────────────────────────────
+// This indicator calculates the dynamic thrust between 
+// Volume-Weighted (P-VWMA) and Adaptive (P-RMA) moving averages 
+// based on momentum (PSI) scaling.
+// ─────────────────────────────────────────────
+
+// ─────────────────────────────────────────────
+// 🔱 SETTINGS
+// ─────────────────────────────────────────────
+grp = "🔱 Oscillator Settings"
+ma_len   = input.int(21, "Moving Average Period", minval=1, group=grp)
+peak_occ = 310000.0
+center   = 155000.0
+
+// ─────────────────────────────────────────────
+// 🔱 CALCULATIONS (PSI, P-VWMA, P-RMA)
+// ─────────────────────────────────────────────
+// 1. Base PSI (Scaled Momentum)
+_rsi = ta.rsi(close, 14)
+_psi = ta.ema(_rsi, 3) * (peak_occ / 100)
+
+// 2. P-VWMA (PSI + Volume Weighted Moving Average)
+_num = math.sum(close * volume * _psi, ma_len)
+_den = math.sum(volume * _psi, ma_len)
+p_vwma = _den != 0 ? _num / _den : close
+
+// 3. P-RMA (PSI Adaptive RMA)
+_deviation = math.abs(_psi - center) / center
+_dynamic_len = math.max(3, math.min(50, ma_len / (1 + (_deviation * 10))))
+_alpha = 1 / _dynamic_len
+
+var float p_rma = na
+p_rma := na(p_rma[1]) ? close : (_alpha * close) + ((1 - _alpha) * nz(p_rma[1]))
+
+// ─────────────────────────────────────────────
+// 🔱 OSCILLATOR & MOMENTUM MATH
+// ─────────────────────────────────────────────
+// Oscillator is the difference between dynamic P-RMA and volume-backed P-VWMA.
+mizan_osc = p_rma - p_vwma
+
+// Measuring histogram thrust (compared to previous bar)
+is_growing_bull = mizan_osc >= 0 and mizan_osc > mizan_osc[1] // Growing Bull
+is_fading_bull  = mizan_osc >= 0 and mizan_osc < mizan_osc[1] // Fading Bull
+is_growing_bear = mizan_osc < 0  and mizan_osc < mizan_osc[1] // Growing Bear
+is_fading_bear  = mizan_osc < 0  and mizan_osc > mizan_osc[1] // Fading Bear
+
+// Color assignments
+osc_color = is_growing_bull ? color.new(#023047, 20) : is_fading_bull ? color.new(#219ebc, 40) : is_growing_bear ? color.new(#d62828, 20) : is_fading_bear ? color.new(#fb8500, 40) : color.gray
+
+// ─────────────────────────────────────────────
+// 🔱 PLOTS
+// ─────────────────────────────────────────────
+// Zero (Equilibrium) Line
+hline(0, "Mizan Equilibrium Line", color=color.new(color.gray, 50), linestyle=hline.style_dashed)
+
+// Histogram Plot
+plot(mizan_osc, title="Mizan Thrust / Momentum Histogram", style=plot.style_columns, color=osc_color)
+
+// Signal Line (Smoothing for trend strength)
+osc_signal = ta.wma(mizan_osc, 5)
+plot(osc_signal, title="Oscillator Signal Line", color=color.new(color.yellow, 30), linewidth=1)

@@ -1,0 +1,146 @@
+//@version=6
+indicator('Liquidation Map Pro: Adaptive Neon Edition', shorttitle = 'LiqMap Pro', overlay = true, max_lines_count = 500)
+
+type LiqLine
+    line ln
+    bool active    // not touched yet; set to false once touched: the line stops extending and stays on the chart, its color and style no longer change
+    int born    // born = time of the confirmation bar (the bar where the line appears), the same bar strength reads OI from; the line itself starts at the pivot bar (bar_index - pivot_sens)
+    bool dashed = false    // already switched to dashed because of age; set only once so set_style is not called every bar
+
+// ---------- Settings ----------
+group_core = 'Core Logic'
+int lookback_bars = input.int(1000, 'Lookback Candles', minval = 100, maxval = 3000, tooltip = 'New lines are only drawn within this many of the most recent bars.', group = group_core)
+int ma_len = input.int(14, 'Rank Length (×10 bars)', tooltip = 'Bars used to percent-rank the open interest change = this value × 10. Default 14 → 140 bars.', group = group_core)
+int pivot_sens = input.int(2, 'Pivot Sensitivity', tooltip = 'Bars required on each side to confirm a pivot high or low. The line is drawn from the pivot bar but only appears on the confirmation bar (N bars after the pivot). Higher = fewer pivots, and lines appear later.', group = group_core)
+float p_large = input.float(90.0, 'OI Change Percentile Threshold', tooltip = 'Open interest change rank ≥ this value = strength 3, ≥ this value × 0.83 = strength 2, ≥ this value × 0.55 = strength 1; below that, no line is drawn. This is a percentile cutoff, not a measure of trader size.', group = group_core) / 100.0
+float mmr = input.float(0.5, 'Maintenance Margin (%)', minval = 0.0, maxval = 2.0, step = 0.1, tooltip = 'Liquidation distance = 1/leverage − maintenance margin. Default 0.5 → 100x 0.5%, 50x 1.5%; 0 = the old 1% / 2%.', group = group_core) / 100.0
+
+// ---------- Leverage Levels ----------
+group_lev = 'Leverage Levels  [On / Color / Weight / Min Strength]'
+bool use_100 = input.bool(true, '100x', inline = 'L100', group = group_lev)
+color col_100 = input.color(#ff0044, '', inline = 'L100', group = group_lev)
+float w_100 = input.float(1.0, '', minval = 0.1, maxval = 1.0, step = 0.05, inline = 'L100', group = group_lev)
+int m_100 = input.int(1, '', minval = 1, maxval = 3, inline = 'L100', group = group_lev)
+
+bool use_50 = input.bool(true, ' 50x', inline = 'L50', group = group_lev)
+color col_50 = input.color(#00f2ff, '', inline = 'L50', group = group_lev)
+float w_50 = input.float(0.8, '', minval = 0.1, maxval = 1.0, step = 0.05, inline = 'L50', group = group_lev)
+int m_50 = input.int(1, '', minval = 1, maxval = 3, tooltip = 'Column 3 = Weight: affects brightness only and never hides a line. Column 4 = Min Strength (1–3): with the threshold at 90, 1 = rank ≥ 49.5, 2 = ≥ 74.7, 3 = ≥ 90. Setting 2 skips this leverage on pivots whose strength is below 2, which saves line quota.', inline = 'L50', group = group_lev)
+
+group_vis = 'Line Style'
+int base_width = input.int(1, 'Line Width', minval = 1, maxval = 5, group = group_vis)
+bool scale_width = input.bool(false, 'Scale Width by Strength', tooltip = 'Off: every line uses Line Width. On: lines with a higher strength × weight at formation are slightly thicker.', group = group_vis)
+int base_transp = input.int(40, 'Base Opacity (0–100)', minval = 0, maxval = 100, tooltip = 'Higher = more solid. Each line opacity = this value + strength at formation (1–3) × tier weight × 10. It is never updated after the line is drawn, so a bright old line says nothing about current open interest.', group = group_vis)
+int max_lines = input.int(480, 'Max Lines', minval = 50, maxval = 495, tooltip = 'TradingView caps an indicator at 500 lines. Each pivot draws up to 2 lines (4 when one bar confirms both a high and a low). Above the limit the oldest line is deleted, whether or not it was touched.', group = group_vis)
+
+// ---------- Old Line Dashing ----------
+group_dash = 'Old Line Dashing'
+int dash_h = input.int(24, 'Dash Lines Older Than (hours)', minval = 0, maxval = 8760, tooltip = 'An untouched line older than this many hours since it appeared turns dashed; adjustable, 0 = off. Age counts from the bar where the line appears (the confirmation bar), so a new line always starts solid. The condition is strictly greater than the threshold, in calendar time (market closures included); with the default 24 on a 24-hour market (the appearing bar is bar 0): daily turns dashed on bar 2, 12H on bar 3, 4H on bar 7, 1H on bar 25. A touched line stops extending and keeps its style at that moment. Dashing marks age only; brightness is still the OI snapshot at formation.', group = group_dash)
+
+// ---------- Level Arrays ----------
+var array<float> lev_arr = array.from(100.0, 50.0)
+var array<color> col_arr = array.from(col_100, col_50)
+var array<float> wgt_arr = array.from(w_100, w_50)
+var array<bool> on_arr = array.from(use_100, use_50)
+var array<int> min_arr = array.from(m_100, m_50)
+
+lev_dist(_lev) =>
+    math.max(0.001, 1.0 / _lev - mmr)
+
+// ---------- Tri-Exchange ----------
+pair = syminfo.basecurrency + syminfo.currency
+t_bnc = 'BINANCE:' + pair + '.P_OI'
+t_byb = 'BYBIT:' + pair + '.P_OI'
+t_okx = 'OKX:' + pair + '.P_OI'
+
+oi_bnc = request.security(t_bnc, timeframe.period, close, ignore_invalid_symbol = true)
+oi_byb = request.security(t_byb, timeframe.period, close, ignore_invalid_symbol = true)
+oi_okx = request.security(t_okx, timeframe.period, close, ignore_invalid_symbol = true)
+
+ok_bnc = not na(oi_bnc)
+ok_byb = not na(oi_byb)
+ok_okx = not na(oi_okx)
+
+d_bnc = math.abs(ta.change(oi_bnc))
+d_byb = math.abs(ta.change(oi_byb))
+d_okx = math.abs(ta.change(oi_okx))
+
+r_bnc = ok_bnc ? ta.percentrank(d_bnc, ma_len * 10) : float(na)
+r_byb = ok_byb ? ta.percentrank(d_byb, ma_len * 10) : float(na)
+r_okx = ok_okx ? ta.percentrank(d_okx, ma_len * 10) : float(na)
+
+n_valid = (na(r_bnc) ? 0 : 1) + (na(r_byb) ? 0 : 1) + (na(r_okx) ? 0 : 1)
+agg_rank_oi = n_valid == 0 ? float(na) : (nz(r_bnc) + nz(r_byb) + nz(r_okx)) / n_valid
+
+proxy_raw = (high - low) * volume
+proxy_rank = ta.percentrank(proxy_raw, ma_len * 10)
+
+oi_rank = not na(agg_rank_oi) ? agg_rank_oi : proxy_rank
+
+bool is_active = bar_index >= last_bar_index - lookback_bars
+
+// ---------- Logic & Management ----------
+var all_lines = array.new<LiqLine>()
+
+manageLines() =>
+    if array.size(all_lines) > 0
+        for i = 0 to array.size(all_lines) - 1 by 1
+            LiqLine item = array.get(all_lines, i)
+            if item.active
+                // 1) switch to dashed once when age passes the threshold
+                if dash_h > 0 and not item.dashed and time - item.born > dash_h * 3600000
+                    line.set_style(item.ln, line.style_dashed)
+                    item.dashed := true
+                float yVal = line.get_y1(item.ln)
+                // 2) swept: bar high above and bar low below the line price (strict inequality) marks it stopped; the line stays on the chart and its color and style no longer change
+                if low < yVal and high > yVal
+                    item.active := false
+                // 3) extend to the current bar: untouched lines reach the latest bar; a swept line keeps x2 on this bar and is not updated again
+                line.set_x2(item.ln, bar_index)
+
+drawLiq(_price, _levColor, _strength) =>
+    if _strength > 0
+        int transp = math.round(math.min(100, math.max(0, 100 - base_transp - _strength * 10)))
+        int final_w = scale_width ? math.max(1, math.round(base_width + _strength - 1)) : base_width
+        // born = time of the confirmation bar (where the line appears), the same bar strength reads OI from; the line itself starts at the pivot bar (bar_index - pivot_sens).
+        line l = line.new(x1 = bar_index - pivot_sens, y1 = _price, x2 = bar_index, y2 = _price, color = color.new(_levColor, transp), width = final_w, extend = extend.none)
+        array.push(all_lines, LiqLine.new(l, true, time))
+        if array.size(all_lines) > max_lines
+            LiqLine old = array.shift(all_lines)
+            line.delete(old.ln)
+
+// _dirUp = true  -> short liquidations, drawn above the pivot high
+// _dirUp = false -> long liquidations, drawn below the pivot low
+drawSet(_pivot, _dirUp, _s) =>
+    for i = 0 to array.size(lev_arr) - 1 by 1
+        if array.get(on_arr, i) and _s >= array.get(min_arr, i)
+            float d = lev_dist(array.get(lev_arr, i))
+            float px = _dirUp ? _pivot * (1.0 + d) : _pivot * (1.0 - d)
+            drawLiq(px, array.get(col_arr, i), _s * array.get(wgt_arr, i))
+
+get_strength() =>
+    float s = 0.0
+    if not na(oi_rank)
+        if oi_rank >= p_large * 100
+            s := 3.0
+            s
+        else if oi_rank >= p_large * 100 * 0.83
+            s := 2.0
+            s
+        else if oi_rank >= p_large * 100 * 0.55
+            s := 1.0
+            s
+    s
+
+// ---------- Execution ----------
+ph = ta.pivothigh(high, pivot_sens, pivot_sens)
+pl = ta.pivotlow(low, pivot_sens, pivot_sens)
+s = get_strength()
+
+if is_active and s > 0
+    if not na(pl)
+        drawSet(pl, false, s)
+    if not na(ph)
+        drawSet(ph, true, s)
+
+manageLines()

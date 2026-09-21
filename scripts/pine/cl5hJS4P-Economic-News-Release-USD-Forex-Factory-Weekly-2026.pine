@@ -1,0 +1,413 @@
+//@version=6
+indicator("Economic News Release - USD Forex Factory Weekly V4.1", overlay = true)
+
+// USD weekly economic calendar table.
+// Replay-safe: week selection is anchored to the last chart/replay bar (`time`), never `timenow`.
+//
+// Impact model:
+// 4 = RED / High
+// 3 = ORANGE / Medium
+// 2 = GRAY / Low
+// 1 = SILVER / Holiday
+//
+// IMPORTANT:
+// Pine Script cannot make arbitrary HTTP requests to Forex Factory.
+// Calendar rows therefore have to be embedded. September 2026 was rebuilt from
+// Forex Factory calendar data available on Sep 13, 2026. Later scheduled dates
+// remain a snapshot and can change at the source.
+
+string TZ = "America/New_York"
+int DAY_MS = 24 * 60 * 60 * 1000
+
+string GROUP_FILTERS = "1. USD News Filters"
+bool showHigh    = input.bool(true, "Show RED / High impact", group = GROUP_FILTERS)
+bool showMedium  = input.bool(true, "Show ORANGE / Medium impact", group = GROUP_FILTERS)
+bool showLow     = input.bool(true, "Show GRAY / Low impact", group = GROUP_FILTERS)
+bool showHoliday = input.bool(true, "Show SILVER / Holidays", group = GROUP_FILTERS)
+
+string GROUP_TABLE = "2. Weekly News Table"
+string weekChoice = input.string(
+     "This Week",
+     "Display Week",
+     options = ["This Week", "Next Week"],
+     tooltip = "Replay-safe. This Week follows the week containing the replay cursor's last available bar; Next Week advances one calendar week.",
+     group = GROUP_TABLE
+)
+
+string tableLocation = input.string(
+     "Bottom Center",
+     "Table Location",
+     options = ["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"],
+     group = GROUP_TABLE
+)
+
+int tableTransparency = input.int(25, "Event Row Transparency", minval = 0, maxval = 100, group = GROUP_TABLE)
+
+string tableTextSize = input.string(
+     "Tiny",
+     "Table Text Size",
+     options = ["Tiny", "Small", "Normal", "Large", "Huge"],
+     tooltip = "Controls the table text. The title automatically remains one size larger where possible.",
+     group = GROUP_TABLE
+)
+
+var array<int> evTs = array.new_int()
+var array<string> evName = array.new_string()
+var array<int> evImpact = array.new_int()
+var array<int> evWeek = array.new_int()
+var array<string> evFixedTime = array.new_string()
+var array<int> weekStarts = array.new_int()
+
+f_addEvent(int ts, string eventName, int impact, int weekStart, string fixedTime) =>
+    array.push(evTs, ts)
+    array.push(evName, eventName)
+    array.push(evImpact, impact)
+    array.push(evWeek, weekStart)
+    array.push(evFixedTime, fixedTime)
+
+f_tablePosition(string location) =>
+    switch location
+        "Top Left" => position.top_left
+        "Top Center" => position.top_center
+        "Top Right" => position.top_right
+        "Middle Left" => position.middle_left
+        "Middle Center" => position.middle_center
+        "Middle Right" => position.middle_right
+        "Bottom Left" => position.bottom_left
+        "Bottom Right" => position.bottom_right
+        => position.bottom_center
+
+f_textSize(string choice) =>
+    switch choice
+        "Small" => size.small
+        "Normal" => size.normal
+        "Large" => size.large
+        "Huge" => size.huge
+        => size.tiny
+
+f_titleTextSize(string choice) =>
+    switch choice
+        "Tiny" => size.small
+        "Small" => size.normal
+        "Normal" => size.large
+        "Large" => size.huge
+        => size.huge
+
+f_impactEnabled(int impact) =>
+    impact == 4 ? showHigh :
+     impact == 3 ? showMedium :
+     impact == 2 ? showLow :
+     showHoliday
+
+f_impactText(int impact) =>
+    impact == 4 ? "RED / High" :
+     impact == 3 ? "ORANGE / Medium" :
+     impact == 2 ? "GRAY / Low" :
+     "SILVER / Holiday"
+
+f_impactBg(int impact) =>
+    impact == 4 ? color.new(color.red, tableTransparency) :
+     impact == 3 ? color.new(color.orange, tableTransparency) :
+     impact == 2 ? color.new(color.gray, tableTransparency) :
+     color.new(color.silver, math.min(tableTransparency + 4, 100))
+
+if barstate.isfirst
+    array.push(weekStarts, timestamp(TZ, 2025, 12, 29, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 1, 5, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 1, 12, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 1, 19, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 1, 26, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 2, 2, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 2, 9, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 2, 16, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 2, 23, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 3, 2, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 3, 9, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 3, 16, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 3, 23, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 3, 30, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 4, 6, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 4, 13, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 4, 20, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 4, 27, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 5, 4, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 5, 11, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 5, 18, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 5, 25, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 6, 1, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 6, 8, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 6, 15, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 6, 22, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 6, 29, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 7, 6, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 7, 13, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 7, 20, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 7, 27, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 8, 3, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 8, 10, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 8, 17, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 8, 24, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 8, 31, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 9, 7, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 9, 14, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 9, 21, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 9, 28, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 10, 5, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 10, 12, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 10, 19, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 10, 26, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 11, 2, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 11, 9, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 11, 16, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 11, 23, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 11, 30, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 12, 7, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 12, 14, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 12, 21, 0, 0))
+    array.push(weekStarts, timestamp(TZ, 2026, 12, 28, 0, 0))
+
+    // Embedded USD 2026 calendar snapshot.
+    f_addEvent(timestamp(TZ, 2026, 1, 1, 0, 0), "Bank Holiday", 1, timestamp(TZ, 2025, 12, 29, 0, 0), "All Day")
+    f_addEvent(timestamp(TZ, 2026, 1, 19, 0, 0), "Bank Holiday - Martin Luther King Jr. Day", 1, timestamp(TZ, 2026, 1, 19, 0, 0), "All Day")
+    f_addEvent(timestamp(TZ, 2026, 2, 16, 0, 0), "Bank Holiday - Presidents Day", 1, timestamp(TZ, 2026, 2, 16, 0, 0), "All Day")
+    f_addEvent(timestamp(TZ, 2026, 5, 25, 0, 0), "Bank Holiday - Memorial Day", 1, timestamp(TZ, 2026, 5, 25, 0, 0), "All Day")
+    f_addEvent(timestamp(TZ, 2026, 6, 19, 0, 0), "Bank Holiday - Juneteenth", 1, timestamp(TZ, 2026, 6, 15, 0, 0), "All Day")
+    f_addEvent(timestamp(TZ, 2026, 7, 3, 0, 0), "Bank Holiday - Independence Day Observed", 1, timestamp(TZ, 2026, 6, 29, 0, 0), "All Day")
+    f_addEvent(timestamp(TZ, 2026, 8, 19, 14, 0), "FOMC Meeting Minutes", 4, timestamp(TZ, 2026, 8, 17, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 8, 20, 8, 30), "Philly Fed Manufacturing Index + Unemployment Claims", 3, timestamp(TZ, 2026, 8, 17, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 8, 25, 10, 0), "CB Consumer Confidence", 4, timestamp(TZ, 2026, 8, 24, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 8, 26, 8, 30), "Core PCE Price Index m/m + GDP q/q (Second Estimate) + Personal Income m/m + Personal Spending m/m", 4, timestamp(TZ, 2026, 8, 24, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 8, 27, 8, 30), "Unemployment Claims", 4, timestamp(TZ, 2026, 8, 24, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 1, 10, 0), "ISM Manufacturing PMI", 4, timestamp(TZ, 2026, 8, 31, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 1, 10, 0), "ISM Manufacturing Prices", 3, timestamp(TZ, 2026, 8, 31, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 1, 10, 0), "JOLTS Job Openings", 3, timestamp(TZ, 2026, 8, 31, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 2, 8, 15), "ADP Non-Farm Employment Change", 3, timestamp(TZ, 2026, 8, 31, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 3, 8, 30), "Unemployment Claims", 3, timestamp(TZ, 2026, 8, 31, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 3, 10, 0), "ISM Services PMI", 3, timestamp(TZ, 2026, 8, 31, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 4, 8, 30), "Average Hourly Earnings m/m", 4, timestamp(TZ, 2026, 8, 31, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 4, 8, 30), "Non-Farm Employment Change", 4, timestamp(TZ, 2026, 8, 31, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 4, 8, 30), "Unemployment Rate", 4, timestamp(TZ, 2026, 8, 31, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 7, 0, 0), "Bank Holiday - Labor Day", 1, timestamp(TZ, 2026, 9, 7, 0, 0), "All Day")
+    f_addEvent(timestamp(TZ, 2026, 9, 9, 21, 15), "President Trump Speaks", 3, timestamp(TZ, 2026, 9, 7, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 10, 8, 30), "Core PPI m/m", 4, timestamp(TZ, 2026, 9, 7, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 10, 8, 30), "PPI m/m", 4, timestamp(TZ, 2026, 9, 7, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 10, 8, 30), "Unemployment Claims", 3, timestamp(TZ, 2026, 9, 7, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 11, 8, 30), "CPI m/m", 4, timestamp(TZ, 2026, 9, 7, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 11, 8, 30), "CPI y/y", 4, timestamp(TZ, 2026, 9, 7, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 11, 8, 30), "Core CPI m/m", 4, timestamp(TZ, 2026, 9, 7, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 11, 8, 30), "Core CPI y/y", 4, timestamp(TZ, 2026, 9, 7, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 11, 10, 0), "Prelim UoM Consumer Sentiment", 3, timestamp(TZ, 2026, 9, 7, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 11, 10, 0), "Prelim UoM Inflation Expectations", 3, timestamp(TZ, 2026, 9, 7, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 15, 8, 15), "ADP Weekly Employment Change", 2, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 15, 8, 30), "Empire State Manufacturing Index", 2, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 15, 16, 30), "API Weekly Statistical Bulletin", 2, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 16, 8, 30), "Core Retail Sales m/m", 3, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 16, 8, 30), "Import Prices m/m", 2, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 16, 8, 30), "Retail Sales m/m", 3, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 16, 10, 0), "Business Inventories m/m", 2, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 16, 10, 0), "NAHB Housing Market Index", 2, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 16, 10, 30), "Crude Oil Inventories", 2, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 16, 14, 0), "FOMC Economic Projections", 4, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 16, 14, 0), "FOMC Statement", 4, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 16, 14, 0), "Federal Funds Rate", 4, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 16, 14, 30), "FOMC Press Conference", 4, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 16, 16, 0), "TIC Long-Term Purchases", 2, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 17, 8, 30), "Building Permits", 2, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 17, 8, 30), "Housing Starts", 2, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 17, 8, 30), "Philly Fed Manufacturing Index", 3, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 17, 8, 30), "Unemployment Claims", 3, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 17, 10, 0), "Pending Home Sales m/m", 2, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 17, 10, 30), "Natural Gas Storage", 2, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 18, 9, 15), "Capacity Utilization Rate", 2, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 18, 9, 15), "Industrial Production m/m", 2, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 18, 9, 30), "FOMC Member Bowman Speaks", 2, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 18, 10, 0), "CB Leading Index m/m", 2, timestamp(TZ, 2026, 9, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 22, 8, 15), "ADP Weekly Employment Change", 2, timestamp(TZ, 2026, 9, 21, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 22, 10, 0), "Richmond Manufacturing Index", 2, timestamp(TZ, 2026, 9, 21, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 22, 16, 30), "API Weekly Statistical Bulletin", 2, timestamp(TZ, 2026, 9, 21, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 23, 9, 45), "Flash Manufacturing PMI", 3, timestamp(TZ, 2026, 9, 21, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 23, 9, 45), "Flash Services PMI", 3, timestamp(TZ, 2026, 9, 21, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 23, 10, 30), "Crude Oil Inventories", 2, timestamp(TZ, 2026, 9, 21, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 24, 8, 30), "Current Account", 2, timestamp(TZ, 2026, 9, 21, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 24, 8, 30), "Unemployment Claims", 3, timestamp(TZ, 2026, 9, 21, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 24, 10, 0), "New Home Sales", 2, timestamp(TZ, 2026, 9, 21, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 24, 10, 30), "Natural Gas Storage", 2, timestamp(TZ, 2026, 9, 21, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 25, 8, 30), "Core Durable Goods Orders m/m", 4, timestamp(TZ, 2026, 9, 21, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 25, 8, 30), "Durable Goods Orders m/m", 4, timestamp(TZ, 2026, 9, 21, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 25, 10, 0), "Revised UoM Consumer Sentiment", 3, timestamp(TZ, 2026, 9, 21, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 25, 10, 0), "Revised UoM Inflation Expectations", 3, timestamp(TZ, 2026, 9, 21, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 29, 9, 0), "HPI m/m", 2, timestamp(TZ, 2026, 9, 28, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 29, 9, 0), "S&P/CS Composite-20 HPI y/y", 2, timestamp(TZ, 2026, 9, 28, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 29, 10, 0), "CB Consumer Confidence", 3, timestamp(TZ, 2026, 9, 28, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 29, 10, 0), "JOLTS Job Openings", 3, timestamp(TZ, 2026, 9, 28, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 29, 16, 30), "API Weekly Statistical Bulletin", 2, timestamp(TZ, 2026, 9, 28, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 30, 8, 15), "ADP Non-Farm Employment Change", 3, timestamp(TZ, 2026, 9, 28, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 30, 8, 30), "Core PCE Price Index m/m", 4, timestamp(TZ, 2026, 9, 28, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 30, 8, 30), "Final GDP Price Index q/q", 3, timestamp(TZ, 2026, 9, 28, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 30, 8, 30), "Final GDP q/q", 4, timestamp(TZ, 2026, 9, 28, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 30, 8, 30), "Goods Trade Balance", 2, timestamp(TZ, 2026, 9, 28, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 30, 8, 30), "Personal Income m/m", 3, timestamp(TZ, 2026, 9, 28, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 30, 8, 30), "Personal Spending m/m", 3, timestamp(TZ, 2026, 9, 28, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 30, 8, 30), "Prelim Wholesale Inventories m/m", 2, timestamp(TZ, 2026, 9, 28, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 30, 9, 45), "Chicago PMI", 2, timestamp(TZ, 2026, 9, 28, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 9, 30, 10, 30), "Crude Oil Inventories", 2, timestamp(TZ, 2026, 9, 28, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 10, 1, 8, 30), "Unemployment Claims", 4, timestamp(TZ, 2026, 9, 28, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 10, 1, 10, 0), "ISM Manufacturing PMI", 4, timestamp(TZ, 2026, 9, 28, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 10, 2, 8, 30), "Average Hourly Earnings m/m + Non-Farm Employment Change + Unemployment Rate", 4, timestamp(TZ, 2026, 9, 28, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 10, 5, 10, 0), "ISM Services PMI", 4, timestamp(TZ, 2026, 10, 5, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 10, 6, 8, 30), "Trade Balance", 3, timestamp(TZ, 2026, 10, 5, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 10, 7, 14, 0), "FOMC Meeting Minutes", 4, timestamp(TZ, 2026, 10, 5, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 10, 8, 8, 30), "Unemployment Claims", 4, timestamp(TZ, 2026, 10, 5, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 10, 14, 8, 30), "CPI m/m + Core CPI m/m", 4, timestamp(TZ, 2026, 10, 12, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 10, 15, 8, 30), "Core PPI m/m + PPI m/m + Philly Fed Manufacturing Index + Unemployment Claims", 4, timestamp(TZ, 2026, 10, 12, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 10, 16, 8, 30), "Import Prices m/m", 3, timestamp(TZ, 2026, 10, 12, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 10, 22, 8, 30), "Unemployment Claims", 4, timestamp(TZ, 2026, 10, 19, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 10, 27, 10, 0), "CB Consumer Confidence", 4, timestamp(TZ, 2026, 10, 26, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 10, 28, 14, 0), "FOMC Statement + Federal Funds Rate", 4, timestamp(TZ, 2026, 10, 26, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 10, 28, 14, 30), "FOMC Press Conference", 4, timestamp(TZ, 2026, 10, 26, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 10, 29, 8, 30), "Core PCE Price Index m/m + GDP q/q (Advance Estimate) + Personal Income m/m + Personal Spending m/m + Unemployment Claims", 4, timestamp(TZ, 2026, 10, 26, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 10, 30, 8, 30), "Employment Cost Index q/q", 4, timestamp(TZ, 2026, 10, 26, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 11, 2, 10, 0), "ISM Manufacturing PMI", 4, timestamp(TZ, 2026, 11, 2, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 11, 3, 10, 0), "JOLTS Job Openings", 4, timestamp(TZ, 2026, 11, 2, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 11, 4, 8, 30), "Trade Balance", 3, timestamp(TZ, 2026, 11, 2, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 11, 4, 10, 0), "ISM Services PMI", 4, timestamp(TZ, 2026, 11, 2, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 11, 5, 8, 30), "Nonfarm Productivity q/q (Preliminary) + Unemployment Claims + Unit Labor Costs q/q (Preliminary)", 4, timestamp(TZ, 2026, 11, 2, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 11, 6, 8, 30), "Average Hourly Earnings m/m + Non-Farm Employment Change + Unemployment Rate", 4, timestamp(TZ, 2026, 11, 2, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 11, 10, 8, 30), "CPI m/m + Core CPI m/m", 4, timestamp(TZ, 2026, 11, 9, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 11, 12, 8, 30), "Unemployment Claims", 4, timestamp(TZ, 2026, 11, 9, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 11, 13, 8, 30), "Core PPI m/m + PPI m/m", 4, timestamp(TZ, 2026, 11, 9, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 11, 17, 8, 30), "Import Prices m/m", 3, timestamp(TZ, 2026, 11, 16, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 11, 18, 14, 0), "FOMC Meeting Minutes", 4, timestamp(TZ, 2026, 11, 16, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 11, 19, 8, 30), "Philly Fed Manufacturing Index + Unemployment Claims", 3, timestamp(TZ, 2026, 11, 16, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 11, 24, 10, 0), "CB Consumer Confidence", 4, timestamp(TZ, 2026, 11, 23, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 11, 25, 8, 30), "Core PCE Price Index m/m + GDP q/q (Second Estimate) + Personal Income m/m + Personal Spending m/m + Unemployment Claims", 4, timestamp(TZ, 2026, 11, 23, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 11, 26, 0, 0), "Bank Holiday - Thanksgiving Day", 1, timestamp(TZ, 2026, 11, 23, 0, 0), "All Day")
+    f_addEvent(timestamp(TZ, 2026, 12, 1, 10, 0), "ISM Manufacturing PMI + JOLTS Job Openings", 4, timestamp(TZ, 2026, 11, 30, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 12, 3, 8, 30), "Unemployment Claims", 4, timestamp(TZ, 2026, 11, 30, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 12, 3, 10, 0), "ISM Services PMI", 4, timestamp(TZ, 2026, 11, 30, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 12, 4, 8, 30), "Average Hourly Earnings m/m + Non-Farm Employment Change + Unemployment Rate", 4, timestamp(TZ, 2026, 11, 30, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 12, 8, 8, 30), "Nonfarm Productivity q/q (Revised) + Trade Balance + Unit Labor Costs q/q (Revised)", 3, timestamp(TZ, 2026, 12, 7, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 12, 9, 14, 0), "FOMC Statement + Federal Funds Rate", 4, timestamp(TZ, 2026, 12, 7, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 12, 9, 14, 30), "FOMC Press Conference", 4, timestamp(TZ, 2026, 12, 7, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 12, 10, 8, 30), "CPI m/m + Core CPI m/m + Unemployment Claims", 4, timestamp(TZ, 2026, 12, 7, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 12, 15, 8, 30), "Core PPI m/m + PPI m/m", 4, timestamp(TZ, 2026, 12, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 12, 17, 8, 30), "Import Prices m/m + Philly Fed Manufacturing Index + Unemployment Claims", 3, timestamp(TZ, 2026, 12, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 12, 18, 8, 30), "Current Account", 3, timestamp(TZ, 2026, 12, 14, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 12, 23, 8, 30), "Core PCE Price Index m/m + GDP q/q (Third Estimate) + Personal Income m/m + Personal Spending m/m + Unemployment Claims", 4, timestamp(TZ, 2026, 12, 21, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 12, 25, 0, 0), "Bank Holiday - Christmas Day", 1, timestamp(TZ, 2026, 12, 21, 0, 0), "All Day")
+    f_addEvent(timestamp(TZ, 2026, 12, 29, 10, 0), "CB Consumer Confidence", 4, timestamp(TZ, 2026, 12, 28, 0, 0), "")
+    f_addEvent(timestamp(TZ, 2026, 12, 31, 8, 30), "Unemployment Claims", 4, timestamp(TZ, 2026, 12, 28, 0, 0), "")
+
+f_weekIndexAt(int anchorTs) =>
+    int selectedIndex = -1
+    int count = array.size(weekStarts)
+    if count > 0
+        for i = 0 to count - 1
+            int mondayStart = array.get(weekStarts, i)
+            int sundayActivation = mondayStart - DAY_MS
+            if anchorTs >= sundayActivation
+                selectedIndex := i
+    selectedIndex
+
+f_countVisibleEvents(int selectedWeek) =>
+    int matched = 0
+    int count = array.size(evTs)
+    if count > 0
+        for i = 0 to count - 1
+            int impact = array.get(evImpact, i)
+            if array.get(evWeek, i) == selectedWeek and f_impactEnabled(impact)
+                matched += 1
+    matched
+
+f_renderWeek(table target, int selectedWeek, string titleText) =>
+    color titleBg = color.new(color.rgb(30, 45, 65), 18)
+    color headerBg = color.new(color.rgb(36, 91, 132), 18)
+    color headerText = color.white
+    string bodySize = f_textSize(tableTextSize)
+    string titleSize = f_titleTextSize(tableTextSize)
+
+    table.cell(target, 0, 0, titleText, bgcolor = titleBg, text_color = headerText, text_size = titleSize)
+    table.cell(target, 1, 0, str.format_time(selectedWeek, "MMM dd", TZ) + " - " + str.format_time(selectedWeek + 4 * DAY_MS, "MMM dd", TZ), bgcolor = titleBg, text_color = headerText, text_size = bodySize)
+    table.cell(target, 2, 0, "USD", bgcolor = titleBg, text_color = headerText, text_size = bodySize)
+    table.cell(target, 3, 0, "America/New_York", bgcolor = titleBg, text_color = headerText, text_size = bodySize)
+    table.cell(target, 4, 0, str.format_time(selectedWeek, "yyyy", TZ), bgcolor = titleBg, text_color = headerText, text_size = bodySize)
+
+    table.cell(target, 0, 1, "Day / Date", bgcolor = headerBg, text_color = headerText, text_size = bodySize)
+    table.cell(target, 1, 1, "Time ET", bgcolor = headerBg, text_color = headerText, text_size = bodySize)
+    table.cell(target, 2, 1, "USD Release", bgcolor = headerBg, text_color = headerText, text_size = bodySize)
+    table.cell(target, 3, 1, "Impact Folder", bgcolor = headerBg, text_color = headerText, text_size = bodySize)
+    table.cell(target, 4, 1, "Status", bgcolor = headerBg, text_color = headerText, text_size = bodySize)
+
+    int row = 2
+    int matched = 0
+    int count = array.size(evTs)
+
+    if count > 0
+        for i = 0 to count - 1
+            int impact = array.get(evImpact, i)
+            if array.get(evWeek, i) == selectedWeek and f_impactEnabled(impact)
+                int ts = array.get(evTs, i)
+                string fixedTime = array.get(evFixedTime, i)
+                string timeText = str.length(fixedTime) > 0 ? fixedTime : str.format_time(ts, "hh:mm a", TZ)
+                color rowBg = f_impactBg(impact)
+                color textColor = impact == 1 ? color.new(color.black, 0) : color.new(color.white, 0)
+
+                table.cell(target, 0, row, str.format_time(ts, "EEE MMM dd", TZ), bgcolor = rowBg, text_color = textColor, text_size = bodySize)
+                table.cell(target, 1, row, timeText, bgcolor = rowBg, text_color = textColor, text_size = bodySize)
+                table.cell(target, 2, row, array.get(evName, i), bgcolor = rowBg, text_color = textColor, text_size = bodySize)
+                table.cell(target, 3, row, f_impactText(impact), bgcolor = rowBg, text_color = textColor, text_size = bodySize)
+                table.cell(target, 4, row, impact == 1 ? "Market holiday" : "Economic calendar", bgcolor = rowBg, text_color = textColor, text_size = bodySize)
+
+                row += 1
+                matched += 1
+
+    if matched == 0
+        table.cell(target, 0, 2, "No selected USD calendar records embedded for this week.", bgcolor = color.new(color.gray, 88), text_color = color.white, text_size = bodySize)
+        table.cell(target, 1, 2, "", bgcolor = color.new(color.gray, 88))
+        table.cell(target, 2, 2, "", bgcolor = color.new(color.gray, 88))
+        table.cell(target, 3, 2, "", bgcolor = color.new(color.gray, 88))
+        table.cell(target, 4, 2, "", bgcolor = color.new(color.gray, 88))
+
+var table newsTable = na
+
+if barstate.islast
+    // In Bar Replay, `time` is the last available replay bar's timestamp.
+    int replayAnchor = time
+    int thisWeekIndex = f_weekIndexAt(replayAnchor)
+    int selectedIndex = weekChoice == "Next Week" ? thisWeekIndex + 1 : thisWeekIndex
+    int lastIndex = array.size(weekStarts) - 1
+    string tableTitle = weekChoice == "Next Week" ? "Next Week USD News" : "This Week USD News"
+
+    // Pine table dimensions are set when the table is created.
+    // Recreate it at the exact required height so there are no unused blank rows.
+    if not na(newsTable)
+        table.delete(newsTable)
+
+    if selectedIndex >= 0 and selectedIndex <= lastIndex
+        int selectedWeek = array.get(weekStarts, selectedIndex)
+        int visibleEvents = f_countVisibleEvents(selectedWeek)
+        int requiredRows = visibleEvents > 0 ? visibleEvents + 2 : 3
+
+        newsTable := table.new(
+             f_tablePosition(tableLocation),
+             5,
+             requiredRows,
+             frame_color = color.new(color.silver, 70),
+             frame_width = 1,
+             border_color = color.new(color.silver, 85),
+             border_width = 1
+        )
+
+        f_renderWeek(newsTable, selectedWeek, tableTitle)
+    else
+        newsTable := table.new(
+             f_tablePosition(tableLocation),
+             5,
+             1,
+             frame_color = color.new(color.silver, 70),
+             frame_width = 1,
+             border_color = color.new(color.silver, 85),
+             border_width = 1
+        )
+        table.cell(newsTable, 0, 0, "No calendar week available", bgcolor = color.new(color.gray, 80), text_color = color.white, text_size = f_textSize(tableTextSize))
+

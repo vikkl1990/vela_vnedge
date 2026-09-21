@@ -1,0 +1,342 @@
+// @description NY stock session levels and integrated volume. See INSTALL.md.
+//@version=6
+indicator("All in One", overlay = true, scale = scale.none, max_lines_count = 500, max_labels_count = 500)
+
+opShow = input.bool(true, "Show", group = "Daily open")
+opColor = input.color(color.new(#FFEB3B, 35), "Color", group = "Daily open")
+opWidth = input.int(1, "Width", minval = 1, maxval = 4, group = "Daily open")
+opStyle = input.string("Solid", "Line style", options = ["Solid", "Dashed", "Dotted"], group = "Daily open")
+opLabels = input.bool(false, "Labels", group = "Daily open")
+opSize = input.string("Small", "Label size", options = ["Tiny", "Small", "Normal", "Large"], group = "Daily open")
+
+phShow = input.bool(true, "Show", group = "Premarket high")
+phColor = input.color(#FF9800, "Color", group = "Premarket high")
+phWidth = input.int(1, "Width", minval = 1, maxval = 4, group = "Premarket high")
+phStyle = input.string("Dashed", "Line style", options = ["Solid", "Dashed", "Dotted"], group = "Premarket high")
+phLabels = input.bool(false, "Labels", group = "Premarket high")
+phSize = input.string("Small", "Label size", options = ["Tiny", "Small", "Normal", "Large"], group = "Premarket high")
+
+plShow = input.bool(true, "Show", group = "Premarket low")
+plColor = input.color(#FF9800, "Color", group = "Premarket low")
+plWidth = input.int(1, "Width", minval = 1, maxval = 4, group = "Premarket low")
+plStyle = input.string("Dashed", "Line style", options = ["Solid", "Dashed", "Dotted"], group = "Premarket low")
+plLabels = input.bool(false, "Labels", group = "Premarket low")
+plSize = input.string("Small", "Label size", options = ["Tiny", "Small", "Normal", "Large"], group = "Premarket low")
+
+dhShow = input.bool(true, "Show", group = "Prior regular-session high")
+dhColor = input.color(#38C8EF, "Color", group = "Prior regular-session high")
+dhWidth = input.int(1, "Width", minval = 1, maxval = 4, group = "Prior regular-session high")
+dhStyle = input.string("Solid", "Line style", options = ["Solid", "Dashed", "Dotted"], group = "Prior regular-session high")
+dhLabels = input.bool(true, "Labels", group = "Prior regular-session high")
+dhSize = input.string("Small", "Label size", options = ["Tiny", "Small", "Normal", "Large"], group = "Prior regular-session high")
+
+dlShow = input.bool(true, "Show", group = "Prior regular-session low")
+dlColor = input.color(#38C8EF, "Color", group = "Prior regular-session low")
+dlWidth = input.int(1, "Width", minval = 1, maxval = 4, group = "Prior regular-session low")
+dlStyle = input.string("Solid", "Line style", options = ["Solid", "Dashed", "Dotted"], group = "Prior regular-session low")
+dlLabels = input.bool(true, "Labels", group = "Prior regular-session low")
+dlSize = input.string("Small", "Label size", options = ["Tiny", "Small", "Normal", "Large"], group = "Prior regular-session low")
+
+maShow = input.bool(true, "Show", group = "Chart 200 SMA")
+maColor = input.color(#F57F17, "Color", group = "Chart 200 SMA")
+maWidth = input.int(2, "Width", minval = 1, maxval = 4, group = "Chart 200 SMA")
+maStyle = input.string("Circles", "Line style", options = ["Solid", "Dashed", "Dotted", "Circles"], group = "Chart 200 SMA")
+maLabels = input.bool(false, "Labels", group = "Chart 200 SMA")
+maSize = input.string("Small", "Label size", options = ["Tiny", "Small", "Normal", "Large"], group = "Chart 200 SMA")
+
+e8Show = input.bool(true, "Show", group = "Chart 8 EMA")
+e8Color = input.color(#35C979, "Color", group = "Chart 8 EMA")
+e8Width = input.int(1, "Width", minval = 1, maxval = 4, group = "Chart 8 EMA")
+e8Style = input.string("Solid", "Line style", options = ["Solid", "Dashed", "Dotted"], group = "Chart 8 EMA")
+e8Labels = input.bool(false, "Labels", group = "Chart 8 EMA")
+e8Size = input.string("Small", "Label size", options = ["Tiny", "Small", "Normal", "Large"], group = "Chart 8 EMA")
+
+e21Show = input.bool(true, "Show", group = "Chart 21 EMA")
+e21Color = input.color(#F16C93, "Color", group = "Chart 21 EMA")
+e21Width = input.int(1, "Width", minval = 1, maxval = 4, group = "Chart 21 EMA")
+e21Style = input.string("Solid", "Line style", options = ["Solid", "Dashed", "Dotted"], group = "Chart 21 EMA")
+e21Labels = input.bool(false, "Labels", group = "Chart 21 EMA")
+e21Size = input.string("Small", "Label size", options = ["Tiny", "Small", "Normal", "Large"], group = "Chart 21 EMA")
+
+hmShow = input.bool(true, "Show", group = "1h 200 SMA")
+hmColor = input.color(#B388FF, "Color", group = "1h 200 SMA")
+hmWidth = input.int(2, "Width", minval = 1, maxval = 4, group = "1h 200 SMA")
+hmStyle = input.string("Dotted", "Line style", options = ["Solid", "Dashed", "Dotted"], group = "1h 200 SMA")
+hmLabels = input.bool(true, "Labels", group = "1h 200 SMA")
+hmSize = input.string("Small", "Label size", options = ["Tiny", "Small", "Normal", "Large"], group = "1h 200 SMA")
+
+
+daysKeep = input.int(40, "Daily segments to retain", minval = 1, maxval = 80, group = "History and status")
+showStatus = input.bool(false, "Show data status", group = "History and status")
+
+separateLabels = input.bool(true, "Separate nearby labels with leaders", group = "Label layout")
+labelGapPct = input.float(4, "Minimum label spacing (% of visible price range)", minval = 0.1, maxval = 10, step = 0.1, group = "Label layout")
+labelInsetPct = input.float(0, "Label inset from right edge (% of visible bars)", minval = 0, maxval = 30, step = 1, group = "Label layout")
+string TZ = "America/New_York"
+f_size(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.small : s == "Large" ? size.large : size.normal
+f_lineStyle(string s) =>
+    s == "Dashed" ? line.style_dashed : s == "Dotted" ? line.style_dotted : line.style_solid
+f_plotStyle(string s) =>
+    s == "Dashed" ? plot.linestyle_dashed : s == "Dotted" ? plot.linestyle_dotted : plot.linestyle_solid
+f_date() =>
+    year(time, TZ) * 10000 + month(time, TZ) * 100 + dayofmonth(time, TZ)
+
+if barstate.isfirst and (not timeframe.isintraday or timeframe.in_seconds() < 60 or timeframe.in_seconds() > 3600 or not chart.is_standard)
+    runtime.error("Use standard time-based candles/bars from 1 minute through 60 minutes. This indicator is designed for US stocks with a 09:30 New York regular open.")
+
+// State is evaluated on EVERY requested minute, not just the chart's sampled minute.
+// The first source date is intentionally suppressed because history may start mid-session.
+f_pm() =>
+    int d = f_date()
+    var int lastDate = na
+    var bool warmed = false
+    var float hi = na
+    var float lo = na
+    if na(lastDate) or d != lastDate
+        warmed := not na(lastDate)
+        lastDate := d
+        hi := na
+        lo := na
+    if not na(time("1", "0400-0930:23456", TZ))
+        hi := na(hi) ? high : math.max(hi, high)
+        lo := na(lo) ? low : math.min(lo, low)
+    [d, warmed ? hi : na, warmed ? lo : na]
+
+f_regular() =>
+    int d = f_date()
+    var int lastDate = na
+    var float hi = na
+    var float lo = na
+    var float opening = na
+    var float prevHi = na
+    var float prevLo = na
+    var bool validDay = false
+    if not na(time("1", "0930-1600:23456", TZ))
+        if na(lastDate) or d != lastDate
+            prevHi := validDay ? hi : na
+            prevLo := validDay ? lo : na
+            validDay := not na(lastDate) and hour(time, TZ) == 9 and minute(time, TZ) == 30
+            opening := hour(time, TZ) == 9 and minute(time, TZ) == 30 ? open : na
+            hi := high
+            lo := low
+            lastDate := d
+        else
+            hi := math.max(hi, high)
+            lo := math.min(lo, low)
+    [lastDate, opening, prevHi, prevLo, validDay ? hi : na, validDay ? lo : na]
+
+string extTicker = ticker.new(syminfo.prefix, syminfo.ticker, session.extended, adjustment.splits)
+string regTicker = ticker.new(syminfo.prefix, syminfo.ticker, session.regular, adjustment.splits)
+[pmDate, pmHi, pmLo] = request.security(extTicker, "1", f_pm(), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+[regDate, regOpen, prevHigh, prevLow, lastRegularHigh, lastRegularLow] = request.security(regTicker, "1", f_regular(), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+
+
+// Consolidated session VWAP and 15-minute opening range.
+vwShow = input.bool(true, "Show", group = "Session VWAP")
+vwSource = input.source(hlc3, "Source", group = "Session VWAP")
+vwColor = input.color(#FFFFFF, "Color", group = "Session VWAP")
+vwWidth = input.int(3, "Width", minval = 1, maxval = 4, group = "Session VWAP")
+vwCircles = input.bool(false, "Circles", group = "Session VWAP")
+float sessionVwap = ta.vwap(vwSource, timeframe.change("1D"))
+plot(vwShow and timeframe.in_seconds() < 3600 ? sessionVwap : na, "Session VWAP", color = vwColor, linewidth = vwWidth, style = vwCircles ? plot.style_circles : plot.style_line, display = display.all - display.price_scale, force_overlay = true)
+
+// ORB behavior matched to the user's original chart-based indicator.
+orbShow = input.bool(true, "Show", group = "15-minute ORB")
+orbHighColor = input.color(#388E3C, "High color", group = "15-minute ORB")
+orbLowColor = input.color(#FF0000, "Low color", group = "15-minute ORB")
+orbWidth = input.int(2, "Width", minval = 1, maxval = 4, group = "15-minute ORB")
+orbMinutes = input.int(15, "Maximum chart interval (minutes)", minval = 1, maxval = 60, group = "15-minute ORB")
+orbSession = input.session("0930-0945", "Session Time", group = "15-minute ORB")
+bool orbInside = not na(time(timeframe.period, orbSession + ":1234567"))
+bool orbFirst = orbInside and not orbInside[1]
+var float orbHi = na
+var float orbLo = na
+if orbFirst
+    orbHi := high
+    orbLo := low
+else if orbInside
+    orbHi := math.max(orbHi, high)
+    orbLo := math.min(orbLo, low)
+bool orbRegular = not na(time(timeframe.period, "0930-1600:23456", TZ)) and session.ismarket
+bool orbAvailable = orbShow and orbRegular and timeframe.isintraday and timeframe.multiplier <= orbMinutes
+plot(orbAvailable ? orbHi : na, "ORB High", color = orbHi != orbHi[1] ? na : orbHighColor, linewidth = orbWidth, style = plot.style_linebr, display = display.all - display.price_scale, force_overlay = true)
+plot(orbAvailable ? orbLo : na, "ORB Low", color = orbLo != orbLo[1] ? na : orbLowColor, linewidth = orbWidth, style = plot.style_linebr, display = display.all - display.price_scale, force_overlay = true)
+
+
+float hourSma = request.security(syminfo.tickerid, "60", ta.sma(close, 200), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+float dailyOpen = request.security(syminfo.tickerid, "1D", open, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+plot(opShow and timeframe.in_seconds() <= 900 ? dailyOpen : na, "Daily Open", color = opColor, linewidth = opWidth, linestyle = opStyle == "Dashed" ? plot.linestyle_dashed : opStyle == "Dotted" ? plot.linestyle_dotted : plot.linestyle_solid, display = display.all - display.price_scale, force_overlay = true)
+float chartSma = ta.sma(close, 200)
+float ema8 = ta.ema(close, 8)
+float ema21 = ta.ema(close, 21)
+plot(maShow ? chartSma : na, "Chart 200 SMA", color = maColor, linewidth = maWidth, style = maStyle == "Circles" ? plot.style_circles : plot.style_line, linestyle = maStyle == "Dashed" ? plot.linestyle_dashed : maStyle == "Dotted" ? plot.linestyle_dotted : plot.linestyle_solid, display = display.all - display.price_scale, force_overlay = true)
+plot(e8Show ? ema8 : na, "Chart 8 EMA", color = e8Color, linewidth = e8Width, linestyle = e8Style == "Dashed" ? plot.linestyle_dashed : e8Style == "Dotted" ? plot.linestyle_dotted : plot.linestyle_solid, display = display.all - display.price_scale, force_overlay = true)
+plot(e21Show ? ema21 : na, "Chart 21 EMA", color = e21Color, linewidth = e21Width, linestyle = e21Style == "Dashed" ? plot.linestyle_dashed : e21Style == "Dotted" ? plot.linestyle_dotted : plot.linestyle_solid, display = display.all - display.price_scale, force_overlay = true)
+plot(hmShow ? hourSma : na, "1h 200 SMA", color = hmColor, linewidth = hmWidth, linestyle = hmStyle == "Dashed" ? plot.linestyle_dashed : hmStyle == "Dotted" ? plot.linestyle_dotted : plot.linestyle_solid, force_overlay = true)
+
+// Drawings update on every available bar, independent of chart scrolling.
+bool inViewHistory = true
+bool atViewEnd = barstate.islast
+int labelTime = time
+float visibleHi = ta.highest(high, 100)
+float visibleLo = ta.lowest(low, 100)
+
+var array<line> dayLines = array.new<line>(5, na)
+var array<label> dayLabels = array.new<label>(5, na)
+var array<line> oldLines = array.new<line>()
+var array<int> retainedDates = array.new<int>()
+var int drawnDate = na
+int chartDate = f_date()
+int sessionStart = timestamp(TZ, year(time, TZ), month(time, TZ), dayofmonth(time, TZ), 9, 30)
+int sessionEnd = timestamp(TZ, year(time, TZ), month(time, TZ), dayofmonth(time, TZ), 16, 0)
+int premarketStart = timestamp(TZ, year(time, TZ), month(time, TZ), dayofmonth(time, TZ), 4, 0)
+bool available = inViewHistory and pmDate == chartDate and time_close > premarketStart
+bool freshDay = available and (na(drawnDate) or drawnDate != chartDate)
+if freshDay
+    drawnDate := chartDate
+    for i = 0 to 4
+        array.set(dayLines, i, na)
+    array.push(retainedDates, premarketStart)
+    if array.size(retainedDates) > daysKeep
+        int cutoff = array.shift(retainedDates)
+        while array.size(oldLines) > 0
+            line oldest = array.get(oldLines, 0)
+            if line.get_x1(oldest) <= cutoff
+                line.delete(array.shift(oldLines))
+            else
+                break
+
+array<float> prices = array.from(dailyOpen, pmDate == chartDate ? pmHi : na, pmDate == chartDate ? pmLo : na, regDate == chartDate ? prevHigh : lastRegularHigh, regDate == chartDate ? prevLow : lastRegularLow)
+array<bool> enabled = array.from(false, phShow, plShow, dhShow, dlShow)
+array<bool> labeled = array.from(opLabels, phLabels, plLabels, dhLabels, dlLabels)
+array<color> colors = array.from(opColor, phColor, plColor, dhColor, dlColor)
+array<int> widths = array.from(opWidth, phWidth, plWidth, dhWidth, dlWidth)
+array<string> styles = array.from(opStyle, phStyle, plStyle, dhStyle, dlStyle)
+array<string> sizes = array.from(opSize, phSize, plSize, dhSize, dlSize)
+array<string> names = array.from("Open Price", "PM High", "PM Low", "Yesterday's High", "Yesterday's Low")
+if available
+    int endpoint = math.min(time_close, sessionEnd)
+    for i = 0 to 4
+        float price = array.get(prices, i)
+        if array.get(enabled, i) and not na(price)
+            line ln = array.get(dayLines, i)
+            if na(ln)
+                ln := line.new(premarketStart, price, endpoint, price, xloc = xloc.bar_time, color = array.get(colors, i), width = array.get(widths, i), style = f_lineStyle(array.get(styles, i)), force_overlay = true)
+                array.set(dayLines, i, ln)
+                array.push(oldLines, ln)
+            line.set_y1(ln, price)
+            line.set_y2(ln, price)
+            line.set_x2(ln, endpoint)
+            if atViewEnd
+                // Extend only this viewed date through its after-hours endpoint.
+                line.set_x2(ln, time_close)
+                if array.get(labeled, i)
+                    label.delete(array.get(dayLabels, i))
+                    label lb = label.new(labelTime, price, array.get(names, i) + "  " + str.tostring(price, format.mintick), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(chart.bg_color, 10), textcolor = array.get(colors, i), size = f_size(array.get(sizes, i)), force_overlay = true)
+                    array.set(dayLabels, i, lb)
+
+
+f_maLabel(label previous, bool show, float price, string name, color ink, string sz) =>
+    label lb = previous
+    if atViewEnd
+        label.delete(lb)
+        lb := show and not na(price) ? label.new(labelTime, price, name + "  " + str.tostring(price, format.mintick), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(chart.bg_color, 10), textcolor = ink, size = f_size(sz), force_overlay = true) : na
+    lb
+var label opLabel = na
+var label maLabel = na
+var label e8Label = na
+var label e21Label = na
+var label hmLabel = na
+opLabel := f_maLabel(opLabel, opShow and opLabels and timeframe.in_seconds() <= 900, dailyOpen, "Open Price", opColor, opSize)
+maLabel := f_maLabel(maLabel, maShow and maLabels, chartSma, "200 SMA", maColor, maSize)
+e8Label := f_maLabel(e8Label, e8Show and e8Labels, ema8, "8 EMA", e8Color, e8Size)
+e21Label := f_maLabel(e21Label, e21Show and e21Labels, ema21, "21 EMA", e21Color, e21Size)
+hmLabel := f_maLabel(hmLabel, hmShow and hmLabels, hourSma, "1h 200 SMA", hmColor, hmSize)
+
+// Keep actual line prices unchanged. Close captions can move with thin leaders.
+// Pine exposes visible bar times, not the pane's pixel height: spacing is adjustable.
+var array<line> labelLeaders = array.new<line>()
+if atViewEnd
+    while array.size(labelLeaders) > 0
+        line.delete(array.pop(labelLeaders))
+    array<label> captions = array.new<label>()
+    array<float> captionPrices = array.new<float>()
+    array<color> captionColors = array.new<color>()
+    for i = 0 to 4
+        label lb = array.get(dayLabels, i)
+        if not na(lb)
+            array.push(captions, lb)
+            array.push(captionPrices, label.get_y(lb))
+            array.push(captionColors, array.get(colors, i))
+    array<label> maCaptions = array.from(maLabel, e8Label, e21Label, hmLabel, opLabel)
+    array<color> maInks = array.from(maColor, e8Color, e21Color, hmColor, opColor)
+    for i = 0 to 4
+        label lb = array.get(maCaptions, i)
+        if not na(lb)
+            array.push(captions, lb)
+            array.push(captionPrices, label.get_y(lb))
+            array.push(captionColors, array.get(maInks, i))
+    int count = array.size(captions)
+    if separateLabels and count > 1
+        float bottom = math.min(visibleLo, array.min(captionPrices))
+        float top = math.max(visibleHi, array.max(captionPrices))
+        float gap = math.max(syminfo.mintick * 2, (top - bottom) * labelGapPct / 100)
+        array<int> sortedIndices = array.sort_indices(captionPrices, order.ascending)
+        float previousY = na
+        for rank = 0 to count - 1
+            int i = array.get(sortedIndices, rank)
+            float truePrice = array.get(captionPrices, i)
+            float captionY = na(previousY) ? truePrice : math.max(truePrice, previousY + gap)
+            previousY := captionY
+            label lb = array.get(captions, i)
+            label.set_y(lb, captionY)
+            if captionY > truePrice + syminfo.mintick / 2
+                line leader = line.new(time_close, truePrice, labelTime, captionY, xloc = xloc.bar_time, color = array.get(captionColors, i), width = 1, style = line.style_dotted, force_overlay = true)
+                array.push(labelLeaders, leader)
+
+
+var table status = table.new(position.bottom_left, 1, 1)
+if atViewEnd
+    string note = "NY sessions • viewed date " + str.format_time(time, "yyyy-MM-dd", TZ) + " • " + str.tostring(daysKeep) + " dates retained"
+    if pmDate != chartDate or na(pmHi)
+        note += "\nPM unavailable / source warming up; no substitute used"
+    else
+        note += "\nPM uses available extended-feed trades; completeness cannot be verified"
+    if regDate != chartDate or na(regOpen)
+        note += "\nToday's 09:30 open unavailable or not yet reached"
+    if na(prevHigh)
+        note += "\nPrior RTH unavailable / source warming up"
+    if na(hourSma)
+        note += "\nHourly SMA needs 200 chart-session hourly bars"
+    table.cell(status, 0, 0, showStatus ? note : "", text_color = chart.fg_color, bgcolor = showStatus ? color.new(chart.bg_color, 15) : color.new(chart.bg_color, 100), text_size = size.small)
+
+// Volume has its own scale. All price plots remain on the main symbol scale.
+volShow = input.bool(true, "Show volume", group = "Volume")
+volLength = input.int(20, "MA Length", minval = 1, group = "Volume")
+volPrevClose = input.bool(false, "Color based on previous close", group = "Volume")
+volUp = input.color(color.new(#26A69A, 50), "Growing", group = "Volume")
+volDown = input.color(color.new(#EF5350, 50), "Falling", group = "Volume")
+volMaShow = input.bool(false, "Show Volume MA", group = "Volume")
+volMaColor = input.color(#2196F3, "MA color", group = "Volume")
+volHeight = input.int(30, "Bar height (%)", minval = 10, maxval = 50, group = "Volume")
+float volAverage = ta.sma(volume, volLength)
+color volInk = close >= (volPrevClose ? close[1] : open) ? volUp : volDown
+// A ceiling on every bar keeps autoscaling stable when the chart is panned.
+float volScaleTop = math.max(nz(volume), volMaShow ? nz(volAverage) : 0.0) * 100.0 / volHeight
+plot(volShow ? volume : na, "Volume", color = volInk, style = plot.style_columns, format = format.volume)
+plot(volShow and volMaShow ? volAverage : na, "Volume MA", color = volMaColor, format = format.volume)
+plot(volShow ? volScaleTop : na, "Volume scale ceiling", color = color.new(color.white, 100), editable = false, display = display.pane)
+
+
+// Chart-timeframe 400-period simple moving average.
+sma400Show = input.bool(true, "Show", group = "Chart 400 SMA")
+sma400Color = input.color(#FF0000, "Color", group = "Chart 400 SMA")
+sma400Width = input.int(2, "Dot size", minval = 1, maxval = 4, group = "Chart 400 SMA")
+float chartSma400 = ta.sma(close, 400)
+plot(sma400Show ? chartSma400 : na, "Chart 400 SMA", color = sma400Color, linewidth = sma400Width, style = plot.style_circles, display = display.all - display.price_scale, force_overlay = true)
+
+sma400Labels = input.bool(true, "Labels", group = "Chart 400 SMA")
+sma400Size = input.string("Small", "Label size", options = ["Tiny", "Small", "Normal", "Large"], group = "Chart 400 SMA")
+var label sma400Label = na
+sma400Label := f_maLabel(sma400Label, sma400Show and sma400Labels, chartSma400, "400 SMA", sma400Color, sma400Size)

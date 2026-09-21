@@ -1,0 +1,155 @@
+//@version=6
+indicator("Outperformance Alpha", shorttitle="Outperf α", overlay=false, max_labels_count=500, max_lines_count=500)
+
+// ═══════════════════════════════════════════════════════════════
+// INPUTS
+// ═══════════════════════════════════════════════════════════════
+grpRef     = "References"
+benchSym   = input.symbol("NSE:CNX500", "Base Index (Benchmark)", group=grpRef)
+
+grpCalc    = "Calculation Factors"
+perfLen    = input.int(21, "Performance Period (Days)", minval=5, maxval=252, group=grpCalc)
+alphaMode  = input.string("Risk-Adjusted", "Alpha Mode", options=["Risk-Adjusted", "Simple Excess Return"], group=grpCalc)
+rfAnnual   = input.float(6.5, "Risk-Free Rate (annual %)", minval=0.0, step=0.1, group=grpCalc)
+betaLen    = input.int(252, "Beta Lookback (Days)", minval=30, maxval=756, group=grpCalc)
+
+grpHigh    = "Highlight"
+shortPeak  = input.string("21", "Short Term Peak Performance (Days)", options=["9", "21", "50"], group=grpHigh)
+showLead   = input.bool(true, "Alpha Breakout Before Price (cyan diamonds)", group=grpHigh)
+
+grpStyle   = "Style"
+lineColPos = input.color(color.new(#18e029, 0), "Positive Alpha Color", group=grpStyle)
+lineColNeg = input.color(color.new(color.red, 0), "Negative Alpha Color", group=grpStyle)
+showBg     = input.bool(true, "Show Background Tint", group=grpStyle)
+showTable  = input.bool(true, "Show Stats Table", group=grpStyle)
+
+// ═══════════════════════════════════════════════════════════════
+// HELPER FUNCTIONS
+// ═══════════════════════════════════════════════════════════════
+f_pct(src, len) =>
+    src[len] != 0 ? (src / src[len] - 1.0) * 100.0 : na
+
+// Manual covariance (Pine Script has no ta.covariance)
+f_covariance(x, y, len) =>
+    ta.correlation(x, y, len) * ta.stdev(x, len) * ta.stdev(y, len)
+
+f_beta(stockRet, benchRet, len) =>
+    cov   = f_covariance(stockRet, benchRet, len)
+    var_b = ta.variance(benchRet, len)
+    var_b != 0 ? cov / var_b : na
+
+// ═══════════════════════════════════════════════════════════════
+// DATA
+// ═══════════════════════════════════════════════════════════════
+benchClose = request.security(benchSym, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+
+// Daily simple returns (for beta)
+stockRet1 = close[1] != 0 ? (close / close[1] - 1.0) : na
+benchRet1 = benchClose[1] != 0 ? (benchClose / benchClose[1] - 1.0) : na
+
+// Period returns (%)
+stockRetPct = f_pct(close, perfLen)
+benchRetPct = f_pct(benchClose, perfLen)
+
+// Periodized risk-free rate
+rfPeriod = rfAnnual / 100.0 * (perfLen / 252.0) * 100.0
+
+// Rolling beta
+beta = f_beta(stockRet1, benchRet1, betaLen)
+
+// ═══════════════════════════════════════════════════════════════
+// ALPHA CALCULATION
+// ═══════════════════════════════════════════════════════════════
+var float alpha = na
+
+if alphaMode == "Simple Excess Return"
+    alpha := stockRetPct - benchRetPct
+else
+    // Jensen's Alpha
+    expected = rfPeriod + nz(beta) * (benchRetPct - rfPeriod)
+    alpha := stockRetPct - expected
+
+// ═══════════════════════════════════════════════════════════════
+// PEAK DETECTION (ta.highest called unconditionally)
+// ═══════════════════════════════════════════════════════════════
+shortLen = shortPeak == "9" ? 9 : shortPeak == "21" ? 21 : 50
+
+alphaShortHigh = ta.highest(alpha, shortLen)
+alpha52High    = ta.highest(alpha, 252)
+price52High    = ta.highest(high, 252)
+
+isShortPeak     = not na(alpha) and alpha == alphaShortHigh
+is52wHigh       = not na(alpha) and alpha == alpha52High
+isPriceAt52High = high >= price52High
+
+alphaLeads = is52wHigh and not isPriceAt52High
+
+// ═══════════════════════════════════════════════════════════════
+// PLOTTING
+// ═══════════════════════════════════════════════════════════════
+alphaColor = alpha >= 0 ? lineColPos : lineColNeg
+
+plot(alpha, "Alpha", color=alphaColor, linewidth=2)
+hline(0, "Zero", color=color.gray, linestyle=hline.style_dashed)
+
+//fill(plot(alpha), plot(0), color = alpha >= 0 ? color.new(lineColPos, 75) : color.new(lineColNeg, 75), title="Alpha Fill")
+
+//bgcolor(showBg ? (alpha >= 0 ? color.new(color.teal, 92) : color.new(color.red, 92)) : na)
+
+// Markers (correctly placed on the alpha line)
+plotshape(isShortPeak and not is52wHigh ? alpha : na, 
+     title="Short-term Peak", 
+     style=shape.circle, 
+     location=location.absolute, 
+     color=color.new(#dd9b1f, 0), 
+     size=size.tiny)
+
+plotshape(is52wHigh ? alpha : na, 
+     title="52-week Alpha High", 
+     style=shape.circle, 
+     location=location.absolute, 
+     color=color.new(color.yellow, 0), 
+     size=size.tiny)
+
+plotshape(showLead and alphaLeads ? alpha : na, 
+     title="Alpha Leads Price", 
+     style=shape.diamond, 
+     location=location.absolute, 
+     color=color.new(color.aqua, 0), 
+     size=size.tiny)
+
+// ═══════════════════════════════════════════════════════════════
+// STATS TABLE
+// ═══════════════════════════════════════════════════════════════
+var table stats = table.new(position.top_right, 2, 7, border_width=1)
+
+if showTable and barstate.islast
+    table.cell(stats, 0, 0, "Metric",               text_color=color.white, bgcolor=color.gray)
+    table.cell(stats, 1, 0, "Value",                text_color=color.white, bgcolor=color.gray)
+    
+    table.cell(stats, 0, 1, "Alpha (α)",            text_color=color.white)
+    table.cell(stats, 1, 1, str.tostring(alpha, "#.##") + " %", text_color = alpha >= 0 ? color.teal : color.red)
+    
+    table.cell(stats, 0, 2, "Stock Return",         text_color=color.white)
+    table.cell(stats, 1, 2, str.tostring(stockRetPct, "#.##") + " %")
+    
+    table.cell(stats, 0, 3, "Index Return",         text_color=color.white)
+    table.cell(stats, 1, 3, str.tostring(benchRetPct, "#.##") + " %")
+    
+    table.cell(stats, 0, 4, "Beta (β)",             text_color=color.white)
+    table.cell(stats, 1, 4, str.tostring(beta, "#.###"))
+    
+    table.cell(stats, 0, 5, "Risk-Free (period)",   text_color=color.white)
+    table.cell(stats, 1, 5, str.tostring(rfPeriod, "#.##") + " %")
+    
+    table.cell(stats, 0, 6, "Chart TF",             text_color=color.white)
+    table.cell(stats, 1, 6, timeframe.period + (not timeframe.isdaily ? " ⚠️" : ""), 
+         text_color = timeframe.isdaily ? color.green : color.orange)
+
+// ═══════════════════════════════════════════════════════════════
+// ALERTS
+// ═══════════════════════════════════════════════════════════════
+alertcondition(ta.crossover(alpha, 0),  "Alpha crossed above zero",  "Outperformance Alpha crossed above zero")
+alertcondition(ta.crossunder(alpha, 0), "Alpha crossed below zero",  "Outperformance Alpha crossed below zero")
+alertcondition(is52wHigh,               "Fresh 52-week alpha high",  "Alpha printed a new 52-week high")
+alertcondition(alphaLeads,              "Alpha leads price",         "Alpha leads price – relative strength breakout")

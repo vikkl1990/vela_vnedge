@@ -1,0 +1,362 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Mikey2timez
+
+//@version=6
+// MTF RANGE FLIP - HTF MARKET STRUCTURE BIAS   (c) Mikey2timez
+// Paste-safe: no if-blocks, no indented lines.
+// Set Properties -> Bar detalization -> High (~40 ticks per bar).
+strategy("MTF Range Flip HTF Market Structure Bias", "MTF RFLIP", overlay=true, initial_capital=100000, currency=currency.USD, margin_long=1, margin_short=1, default_qty_type=strategy.fixed, default_qty_value=1, pyramiding=0, calc_on_every_tick=false, process_orders_on_close=false, commission_type=strategy.commission.cash_per_contract, commission_value=2.25, slippage=1, max_boxes_count=500, max_lines_count=500)
+
+gT = "1 - Bias"
+algTF = input.timeframe("60", "HTF timeframe", group=gT)
+useBias = input.bool(true, "Require structure", group=gT)
+msMode = input.string("BOS", "Structure rule", options=["BOS", "HH-HL sequence", "Both"], group=gT)
+msLen = input.int(3, "HTF swing pivot bars", minval=1, maxval=20, group=gT)
+locMode = input.string("Pullback", "Midline rule", options=["Off", "Pullback", "Breakout"], group=gT)
+
+gRG = "1b - Regime switch"
+regTFsel = input.string("Off", "Regime timeframe", options=["Off", "Daily", "Weekly"], group=gRG)
+regRule = input.string("BOS", "Regime rule", options=["BOS", "HH-HL sequence", "Both"], group=gRG)
+
+gVL = "1c - Volatility"
+useVol = input.bool(false, "Only trade elevated vol", group=gVL)
+volTF = input.timeframe("D", "Measured on", group=gVL)
+volMode = input.string("ATR pct", "Metric", options=["ATR pct", "ATR ratio"], group=gVL)
+vLen = input.int(14, "ATR length", minval=2, group=gVL)
+vRLen = input.int(100, "Ranked vs last N bars", minval=20, group=gVL)
+vMinP = input.float(30, "Min percentile", minval=0, maxval=99, step=5, group=gVL)
+vMinR = input.float(0.90, "Min ratio to average", minval=0.1, step=0.05, group=gVL)
+
+gSZ = "1d - Vol sizing"
+useScale = input.bool(false, "Scale size with regime", group=gSZ)
+scSrc = input.string("ATR", "Scale by", options=["ATR", "Volume"], group=gSZ)
+scMin = input.float(0.5, "Mult at low end", minval=0.1, step=0.1, group=gSZ)
+scMax = input.float(2.0, "Mult at high end", minval=0.1, step=0.1, group=gSZ)
+
+gVW = "1e - VWAP filter"
+vwMode = input.string("Off", "VWAP rule", options=["Off", "Long above", "Long below", "Distance only"], group=gVW)
+vwAnc2 = input.string("Session", "Anchored to", options=["Session", "Week"], group=gVW)
+vwMaxAtr = input.float(3.0, "Max dist from VWAP (ATR)", minval=0.25, step=0.25, group=gVW)
+
+gLC = "1f - Depth"
+useLoc = input.bool(true, "Scale size by depth", group=gLC)
+dThr = input.float(0.0, "Deep = depth below", step=0.05, group=gLC)
+dMult = input.float(2.0, "Mult when deep", minval=0.1, step=0.25, group=gLC)
+locSide = input.string("Both", "Sizing applies to", options=["Both", "Longs only", "Shorts only"], group=gLC)
+dGate = input.string("Off", "Depth GATE", options=["Off", "Only below 0", "Only below threshold"], group=gLC)
+gateSide = input.string("Shorts only", "Gate applies to", options=["Both", "Longs only", "Shorts only"], group=gLC)
+sMult = input.float(1.0, "Mult when shallow", minval=0.1, step=0.25, group=gLC)
+
+gE = "2 - Entries"
+dirM = input.string("Both", "Direction", options=["Both", "Longs only", "Shorts only"], group=gE)
+tzIn = input.string("America/New_York", "Timezone", group=gE)
+winIn = input.session("0930-1530", "Entry window", group=gE)
+shortWin = input.session("1000-1530", "SHORT entry window", group=gE)
+
+gX = "3 - Stop and target"
+stopRef = input.string("Swing pivot", "Stop reference", options=["Swing pivot", "Flip candle range", "Previous range"], group=gX)
+pvLen = input.int(3, "Swing pivot bars", minval=1, maxval=20, group=gX)
+buf = input.float(1, "Stop buffer (ticks)", minval=0, step=1, group=gX)
+minSt = input.float(0, "Min stop (ticks, 0 = off)", minval=0, step=1, group=gX)
+maxSt = input.float(0, "Max stop (ticks, 0 = off)", minval=0, step=1, group=gX)
+rrLong = input.float(1.5, "Reward : Risk - LONGS", minval=0.05, step=0.05, group=gX)
+useBE = input.bool(false, "Move stop to breakeven", group=gX)
+beAt = input.float(1.0, "  arm it at N x R", minval=0.1, step=0.1, group=gX)
+beSide = input.string("Longs only", "  apply to", options=["Longs only", "Shorts only", "Both"], group=gX)
+beOff = input.float(0, "  park it N ticks beyond entry", minval=0, step=1, group=gX)
+rrShort = input.float(0.5, "Reward : Risk - SHORTS", minval=0.05, step=0.05, group=gX)
+qtyN = input.int(2, "Contracts", minval=1, group=gX)
+
+gG = "4 - Visuals"
+shBox = input.bool(true, "Boxes (recent bars only)", group=gG)
+shLine = input.bool(true, "Stepped lines (full history)", group=gG)
+shMid = input.bool(true, "Midlines", group=gG)
+shHTF = input.bool(true, "HTF range and swings", group=gG)
+shTr = input.bool(true, "Stop and target", group=gG)
+opac = input.int(90, "Shade transparency", minval=50, maxval=99, group=gG)
+
+gV = "5 - Backtest range"
+uDt = input.bool(false, "Date range", group=gV)
+dFrom = input.time(timestamp("01 Jan 2026 00:00 -0500"), "From", group=gV)
+dTo = input.time(timestamp("01 Jan 2027 00:00 -0500"), "To", group=gV)
+
+tick = syminfo.mintick
+cBull = #26a69a
+cBear = #ef5350
+inDate = not uDt or (time >= dFrom and time <= dTo)
+inWin = not na(time(timeframe.period, winIn, tzIn))
+inShortWin = not na(time(timeframe.period, shortWin, tzIn))
+
+[aH, aL, aC, aT] = request.security(syminfo.tickerid, algTF, [high[1], low[1], close[1], time[1]], lookahead=barmerge.lookahead_on)
+newA = aT != aT[1]
+
+var float eHi = na
+var float eLo = na
+var int eDir = 0
+initE = na(eHi)
+prevE = eDir
+eDn = not initE and close < eLo
+eUp = not initE and close > eHi
+eSet = initE or eDn or eUp
+oldHi = eHi
+oldLo = eLo
+eDir := eUp ? 1 : eDn ? -1 : eDir
+eHi := eSet ? high : eHi
+eLo := eSet ? low : eLo
+var float pvHi = na
+var float pvLo = na
+pvHi := eSet ? oldHi : pvHi
+pvLo := eSet ? oldLo : pvLo
+flipU = eUp and prevE != 1
+flipD = eDn and prevE != -1
+
+var float aHi = na
+var float aLo = na
+var int aDir = 0
+initA = na(aHi)
+aDn = newA and not initA and aC < aLo
+aUp = newA and not initA and aC > aHi
+aSet = newA and (initA or aDn or aUp)
+aDir := aUp ? 1 : aDn ? -1 : aDir
+aHi := aSet ? aH : aHi
+aLo := aSet ? aL : aLo
+aMid = (aHi + aLo) / 2
+
+phRaw = request.security(syminfo.tickerid, algTF, ta.pivothigh(msLen, msLen), lookahead=barmerge.lookahead_off)
+plRaw = request.security(syminfo.tickerid, algTF, ta.pivotlow(msLen, msLen), lookahead=barmerge.lookahead_off)
+newPH = not na(phRaw) and (na(phRaw[1]) or phRaw != phRaw[1])
+newPL = not na(plRaw) and (na(plRaw[1]) or plRaw != plRaw[1])
+ph0 = ta.valuewhen(newPH, phRaw, 0)
+ph1 = ta.valuewhen(newPH, phRaw, 1)
+pl0 = ta.valuewhen(newPL, plRaw, 0)
+pl1 = ta.valuewhen(newPL, plRaw, 1)
+var int bosDir = 0
+bosDir := not na(ph0) and aC > ph0 ? 1 : not na(pl0) and aC < pl0 ? -1 : bosDir
+hh = not na(ph1) and ph0 > ph1
+hl = not na(pl1) and pl0 > pl1
+lh = not na(ph1) and ph0 < ph1
+ll = not na(pl1) and pl0 < pl1
+seqDir = hh and hl ? 1 : lh and ll ? -1 : 0
+biasDir = msMode == "BOS" ? bosDir : msMode == "HH-HL sequence" ? seqDir : (bosDir == seqDir ? bosDir : 0)
+
+regOff = regTFsel == "Off"
+regTF = regTFsel == "Weekly" ? "W" : "D"
+[rH, rL, rC, rT] = request.security(syminfo.tickerid, regTF, [high[1], low[1], close[1], time[1]], lookahead=barmerge.lookahead_on)
+rPH = request.security(syminfo.tickerid, regTF, ta.pivothigh(msLen, msLen), lookahead=barmerge.lookahead_off)
+rPL = request.security(syminfo.tickerid, regTF, ta.pivotlow(msLen, msLen), lookahead=barmerge.lookahead_off)
+nrPH = not na(rPH) and (na(rPH[1]) or rPH != rPH[1])
+nrPL = not na(rPL) and (na(rPL[1]) or rPL != rPL[1])
+rph0 = ta.valuewhen(nrPH, rPH, 0)
+rph1 = ta.valuewhen(nrPH, rPH, 1)
+rpl0 = ta.valuewhen(nrPL, rPL, 0)
+rpl1 = ta.valuewhen(nrPL, rPL, 1)
+var int rBos = 0
+rBos := not na(rph0) and rC > rph0 ? 1 : not na(rpl0) and rC < rpl0 ? -1 : rBos
+rhh = not na(rph1) and rph0 > rph1
+rhl = not na(rpl1) and rpl0 > rpl1
+rlh = not na(rph1) and rph0 < rph1
+rll = not na(rpl1) and rpl0 < rpl1
+rSeq = rhh and rhl ? 1 : rlh and rll ? -1 : 0
+rRaw = regRule == "BOS" ? rBos : regRule == "HH-HL sequence" ? rSeq : (rBos == rSeq ? rBos : 0)
+regDir = regOff ? 0 : rRaw
+regOkL = regOff or regDir >= 0
+regOkS = regOff or regDir <= 0
+
+vRank = request.security(syminfo.tickerid, volTF, ta.percentrank(ta.atr(vLen), vRLen)[1], lookahead=barmerge.lookahead_on)
+vRatio = request.security(syminfo.tickerid, volTF, (ta.atr(vLen) / ta.sma(ta.atr(vLen), vRLen))[1], lookahead=barmerge.lookahead_on)
+volPct = volMode == "ATR pct"
+volNow = volPct ? vRank : vRatio
+volMin = volPct ? vMinP : vMinR
+vRdy = not na(volNow)
+volOk = not useVol or (vRdy and volNow >= volMin)
+
+locOff = locMode == "Off"
+locPull = locMode == "Pullback"
+locOkL = locOff or na(aMid) ? true : locPull ? close < aMid : close > aMid
+locOkS = locOff or na(aMid) ? true : locPull ? close > aMid : close < aMid
+biasOkL = not useBias or biasDir == 1
+biasOkS = not useBias or biasDir == -1
+
+plv = ta.pivotlow(pvLen, pvLen)
+phv = ta.pivothigh(pvLen, pvLen)
+var float lastPL = na
+var float lastPH = na
+lastPL := not na(plv) ? plv : lastPL
+lastPH := not na(phv) ? phv : lastPH
+candL = stopRef == "Swing pivot" ? lastPL : stopRef == "Previous range" ? pvLo : eLo
+candS = stopRef == "Swing pivot" ? lastPH : stopRef == "Previous range" ? pvHi : eHi
+baseL = not na(candL) and candL < close ? math.min(candL, eLo) : eLo
+baseS = not na(candS) and candS > close ? math.max(candS, eHi) : eHi
+rawStopL = baseL - buf * tick
+rawStopS = baseS + buf * tick
+riskL = close - rawStopL
+riskS = rawStopS - close
+okL = riskL > 0 and (minSt <= 0 or riskL / tick >= minSt) and (maxSt <= 0 or riskL / tick <= maxSt)
+okS = riskS > 0 and (minSt <= 0 or riskS / tick >= minSt) and (maxSt <= 0 or riskS / tick <= maxSt)
+
+vwAnc = vwAnc2 == "Week" ? timeframe.change("W") : timeframe.change("D")
+vwV = ta.vwap(hlc3, vwAnc)
+cAtr = ta.atr(14)
+vwD = cAtr > 0 ? math.abs(close - vwV) / cAtr : 0.0
+vwOff = vwMode == "Off"
+vwAbove = vwMode == "Long above"
+vwBelow = vwMode == "Long below"
+vwDOk = vwD <= vwMaxAtr
+vwOkL = vwOff ? true : vwMode == "Distance only" ? vwDOk : vwAbove ? (close > vwV and vwDOk) : (close < vwV and vwDOk)
+vwOkS = vwOff ? true : vwMode == "Distance only" ? vwDOk : vwAbove ? (close < vwV and vwDOk) : (close > vwV and vwDOk)
+
+vVRank = request.security(syminfo.tickerid, "D", ta.percentrank(volume, vRLen)[1], lookahead=barmerge.lookahead_on)
+scRank = scSrc == "Volume" ? vVRank : vRank
+scRdy = not na(scRank)
+vScl = (not useScale or not scRdy) ? 1.0 : scMin + (scMax - scMin) * (scRank / 100)
+
+aRngW = na(aHi) or na(aLo) ? na : aHi - aLo
+depthL = na(aRngW) or aRngW <= 0 ? na : (close - aLo) / aRngW
+depthS = na(aRngW) or aRngW <= 0 ? na : (aHi - close) / aRngW
+eDep = flipU ? depthL : depthS
+gateOn = dGate != "Off"
+gateCut = dGate == "Only below 0" ? 0.0 : dThr
+gAppL = gateOn and gateSide != "Shorts only"
+gAppS = gateOn and gateSide != "Longs only"
+dOkL = not gAppL or (not na(depthL) and depthL < gateCut)
+dOkS = not gAppS or (not na(depthS) and depthS < gateCut)
+szApp = useLoc and (flipU ? locSide != "Shorts only" : locSide != "Longs only")
+dNow = not na(eDep) and eDep < dThr
+lScl = not szApp ? 1.0 : dNow ? dMult : sMult
+
+ps = strategy.position_size
+flat = ps == 0
+inLong = ps > 0
+inShort = ps < 0
+jFill = ps != 0 and ps[1] == 0
+jFlat = flat and ps[1] != 0
+goLong = flipU and dOkL and vwOkL and volOk and regOkL and biasOkL and locOkL and okL and inWin and inDate and flat and dirM != "Shorts only"
+goShort = flipD and dOkS and vwOkS and volOk and regOkS and biasOkS and locOkS and okS and inWin and inShortWin and inDate and flat and dirM != "Longs only"
+
+avg = strategy.position_avg_price
+var float stop0 = na
+var float risk0 = na
+stop0 := goLong ? rawStopL : goShort ? rawStopS : jFlat ? na : stop0
+risk0 := jFill ? math.abs(avg - stop0) : jFlat ? na : risk0
+tpPx = flat or na(risk0) ? na : inLong ? avg + risk0 * rrLong : avg - risk0 * rrShort
+
+beSideOk = beSide == "Both" or (beSide == "Longs only" and inLong) or (beSide == "Shorts only" and inShort)
+hitBE = not na(risk0) and (inLong and high >= avg + risk0 * beAt or inShort and low <= avg - risk0 * beAt)
+var bool beOn = false
+beOn := jFlat ? false : jFill ? (useBE and beSideOk and hitBE) : (useBE and beSideOk and hitBE ? true : beOn)
+bePx = inLong ? avg + beOff * tick : avg - beOff * tick
+eStop = flat ? na : beOn ? bePx : stop0
+
+limL = goLong ? high * 10 : tick
+limS = goShort ? tick : high * 10
+qtyUse = math.max(1, int(math.round(qtyN * vScl * lScl)))
+strategy.entry("Long", strategy.long, qty=qtyUse, limit=limL, comment="LE")
+strategy.entry("Short", strategy.short, qty=qtyUse, limit=limS, comment="SE")
+strategy.exit("LX", "Long", stop=eStop, limit=inLong ? tpPx : na, comment_loss="STOP", comment_profit="TP")
+strategy.exit("SX", "Short", stop=eStop, limit=inShort ? tpPx : na, comment_loss="STOP", comment_profit="TP")
+
+var bool wLong = false
+var float sumR = 0.0
+var int nCl = 0
+var bool pDeep = false
+var bool wDeep = false
+pDeep := (goLong or goShort) ? dNow : pDeep
+wDeep := jFill ? pDeep : wDeep
+wLong := jFill ? inLong : wLong
+lastWin = strategy.closedtrades > 0 and strategy.closedtrades.profit(strategy.closedtrades - 1) > 0
+tR = lastWin ? (wLong ? rrLong : rrShort) : -1.0
+sumR := jFlat ? sumR + tR : sumR
+nCl := jFlat ? nCl + 1 : nCl
+var float sumRD = 0.0
+var int nD = 0
+var float sumRS = 0.0
+var int nS = 0
+sumRD := jFlat and wDeep ? sumRD + tR : sumRD
+nD := jFlat and wDeep ? nD + 1 : nD
+sumRS := jFlat and not wDeep ? sumRS + tR : sumRS
+nS := jFlat and not wDeep ? nS + 1 : nS
+avgRD = nD > 0 ? sumRD / nD : na
+avgRS = nS > 0 ? sumRS / nS : na
+var float sumRL = 0.0
+var int nL = 0
+var float sumRSh = 0.0
+var int nSh = 0
+sumRL := jFlat and wLong ? sumRL + tR : sumRL
+nL := jFlat and wLong ? nL + 1 : nL
+sumRSh := jFlat and not wLong ? sumRSh + tR : sumRSh
+nSh := jFlat and not wLong ? nSh + 1 : nSh
+avgRL = nL > 0 ? sumRL / nL : na
+avgRSh = nSh > 0 ? sumRSh / nSh : na
+avgR = nCl > 0 ? sumR / nCl : na
+
+var int nSig = 0
+var int nBias = 0
+var int nLoc = 0
+var int nReg = 0
+var int nSW = 0
+var int nVol = 0
+var int nDep = 0
+var int nFill = 0
+rawSig = (flipU and dirM != "Shorts only" or flipD and dirM != "Longs only") and inWin and flat
+nSig := rawSig ? nSig + 1 : nSig
+nBias := rawSig and not (flipU ? biasOkL : biasOkS) ? nBias + 1 : nBias
+nLoc := rawSig and not (flipU ? locOkL : locOkS) ? nLoc + 1 : nLoc
+nReg := rawSig and not (flipU ? regOkL : regOkS) ? nReg + 1 : nReg
+nSW := rawSig and flipD and not inShortWin ? nSW + 1 : nSW
+nVol := rawSig and not volOk ? nVol + 1 : nVol
+nDep := rawSig and not (flipU ? dOkL : dOkS) ? nDep + 1 : nDep
+nFill := jFill ? nFill + 1 : nFill
+
+eCol = eDir == 1 ? cBull : eDir == -1 ? cBear : color.gray
+bCol = biasDir == 1 ? cBull : biasDir == -1 ? cBear : color.gray
+pEH = plot(shLine ? eHi : na, "Range high", color=eCol, linewidth=2)
+pEL = plot(shLine ? eLo : na, "Range low", color=eCol, linewidth=2)
+fill(pEH, pEL, color=shLine ? color.new(eCol, opac) : na, title="Range")
+plot(shHTF ? aHi : na, "HTF high", color=color.new(bCol, 40), linewidth=3)
+plot(shHTF ? aLo : na, "HTF low", color=color.new(bCol, 40), linewidth=3)
+plot(shMid ? aMid : na, "HTF midline", color=color.new(bCol, 10), linewidth=2)
+plot(shHTF and not na(ph0) ? ph0 : na, "HTF swing high", color=color.new(color.gray, 30), linewidth=1, style=plot.style_linebr)
+plot(shHTF and not na(pl0) ? pl0 : na, "HTF swing low", color=color.new(color.gray, 30), linewidth=1, style=plot.style_linebr)
+plot(shTr and not flat ? eStop : na, "STOP", color.new(color.red, 0), 2, plot.style_linebr)
+plot(shTr and not flat ? tpPx : na, "TARGET", color.new(color.green, 0), 2, plot.style_linebr)
+plotshape(goLong, "Long", shape.triangleup, location.belowbar, cBull, size=size.small)
+plotshape(goShort, "Short", shape.triangledown, location.abovebar, cBear, size=size.small)
+
+var box eBox = box.new(bar_index, high, bar_index, low, border_color=na, bgcolor=na)
+var line eMidLn = line.new(bar_index, close, bar_index, close, color=na)
+mkE = shBox and eSet and not na(eHi)
+eBox := mkE ? box.new(bar_index, eHi, bar_index, eLo, border_color=eCol, border_width=2, bgcolor=color.new(eCol, opac)) : eBox
+eMidLn := mkE and shMid ? line.new(bar_index, (eHi + eLo) / 2, bar_index, (eHi + eLo) / 2, color=color.new(eCol, 20), style=line.style_dashed) : eMidLn
+box.set_right(eBox, bar_index)
+line.set_x2(eMidLn, bar_index)
+
+var table t = table.new(position.top_right, 2, 14, border_width=1)
+posTxt = inLong ? "LONG" : inShort ? "SHORT" : "flat"
+table.cell(t, 0, 0, "BIAS " + algTF, text_color=color.white, bgcolor=color.new(color.black, 20))
+table.cell(t, 1, 0, biasDir == 1 ? "BULL" : biasDir == -1 ? "BEAR" : "NEUTRAL", text_color=color.white, bgcolor=color.new(bCol, 20))
+table.cell(t, 0, 1, "BOS / HH-HL")
+table.cell(t, 1, 1, (bosDir == 1 ? "up" : bosDir == -1 ? "dn" : "-") + " / " + (seqDir == 1 ? "up" : seqDir == -1 ? "dn" : "-"))
+table.cell(t, 0, 2, "Price vs midline")
+table.cell(t, 1, 2, na(aMid) ? "-" : (close > aMid ? "above " : "below ") + str.tostring(aMid, format.mintick))
+table.cell(t, 0, 3, "Range / dir")
+table.cell(t, 1, 3, na(eLo) ? "-" : str.tostring(eLo, format.mintick) + "-" + str.tostring(eHi, format.mintick), text_color=eCol)
+table.cell(t, 0, 4, "Position")
+table.cell(t, 1, 4, posTxt + (flat ? "" : "  " + str.tostring(eStop, format.mintick) + (beOn ? " BE" : "") + " / " + str.tostring(tpPx, format.mintick)))
+table.cell(t, 0, 5, "Stop width now")
+table.cell(t, 1, 5, str.tostring(riskL / tick, "#") + "t long  " + str.tostring(riskS / tick, "#") + "t short")
+table.cell(t, 0, 6, "REGIME " + regTFsel)
+table.cell(t, 1, 6, regOff ? "off-both" : regDir == 1 ? "LONGS ONLY" : regDir == -1 ? "SHORTS ONLY" : "neutral - both", text_color=color.white, bgcolor=color.new(regDir == 1 ? cBull : regDir == -1 ? cBear : color.gray, 25))
+table.cell(t, 0, 7, "R:R  L / S")
+table.cell(t, 1, 7, str.tostring(rrLong, "#.##") + " / " + str.tostring(rrShort, "#.##") + (inShortWin ? "" : "   shorts blocked"))
+table.cell(t, 0, 8, "VOL " + volTF)
+table.cell(t, 1, 8, not useVol ? "off" : (not vRdy ? "NO DATA-INERT" : str.tostring(volNow, "#.##") + (volNow >= volMin ? "  OK" : "  TOO QUIET")), text_color=color.white, bgcolor=color.new(not useVol ? color.gray : not vRdy ? color.orange : volOk ? cBull : cBear, 25))
+table.cell(t, 0, 9, "AVG R", text_color=color.white, bgcolor=color.new(color.black, 20))
+table.cell(t, 1, 9, na(avgR) ? "-" : str.tostring(avgR, "#.###") + "R over " + str.tostring(nCl), text_color=color.white, bgcolor=color.new(na(avgR) or avgR <= 0 ? cBear : cBull, 25))
+table.cell(t, 0, 10, "Size / VWAP")
+table.cell(t, 1, 10, str.tostring(qtyUse) + "x" + (na(eDep) ? "" : " d" + str.tostring(eDep, "#.##")) + (useScale and not scRdy ? " (INERT)" : useScale ? " @" + str.tostring(vScl, "#.##") : "") + (vwOff ? "" : "  vwap " + str.tostring(vwV, format.mintick)))
+table.cell(t, 0, 11, "R deep/shal", text_color=color.white, bgcolor=color.new(color.black, 20))
+table.cell(t, 1, 11, (na(avgRD) ? "-" : str.tostring(avgRD, "#.###") + "R/" + str.tostring(nD)) + " vs " + (na(avgRS) ? "-" : str.tostring(avgRS, "#.###") + "R/" + str.tostring(nS)), text_color=color.white, bgcolor=color.new(not na(avgRD) and not na(avgRS) and avgRD > avgRS ? cBull : color.gray, 25))
+table.cell(t, 0, 12, "R long/short", text_color=color.white, bgcolor=color.new(color.black, 20))
+table.cell(t, 1, 12, (na(avgRL) ? "-" : str.tostring(avgRL, "#.###") + "R/" + str.tostring(nL)) + " vs " + (na(avgRSh) ? "-" : str.tostring(avgRSh, "#.###") + "R/" + str.tostring(nSh)), text_color=color.white)
+table.cell(t, 0, 13, "Flips/fills")
+table.cell(t, 1, 13, str.tostring(nSig) + " -> " + str.tostring(nFill) + "  (reg " + str.tostring(nReg) + ", bias " + str.tostring(nBias) + ", mid " + str.tostring(nLoc) + ", eShort " + str.tostring(nSW) + ", vol " + str.tostring(nVol) + ", depth " + str.tostring(nDep) + ")")

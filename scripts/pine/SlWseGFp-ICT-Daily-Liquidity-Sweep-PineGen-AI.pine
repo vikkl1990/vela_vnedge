@@ -1,0 +1,177 @@
+//@version=6
+strategy("ICT Daily Liquidity Sweep [PineGen AI]",
+     overlay=true,
+     process_orders_on_close=false,
+     calc_on_every_tick=false,
+     initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=10,
+     commission_type=strategy.commission.percent,
+     commission_value=0.01,
+     slippage=2,
+     max_bars_back=500,
+     pyramiding=0)
+
+// Inputs
+float slBuffer        = input.float(3.0,  "SL Buffer (pips)", step=0.5, group="Risk")
+float riskPct         = input.float(1.0,  "Risk %",           step=0.1, group="Risk")
+float tp1RR           = input.float(1.5,  "TP1 R:R",          step=0.1, group="Risk")
+float tp2RR           = input.float(3.0,  "TP2 R:R",          step=0.1, group="Risk")
+float tp1Pct          = input.float(50.0, "TP1 Close %",                group="Risk")
+int   startHour       = input.int(0,   "Window Start (UTC)", minval=0, maxval=22, group="Sessions")
+int   endHour         = input.int(23,  "Window End (UTC)",   minval=1, maxval=23, group="Sessions")
+bool  useLondonSweeps = input.bool(true, "Include London Range Sweeps", group="Sweep Filters")
+bool  useSwingSweeps  = input.bool(true, "Include Swing High/Low Sweeps", group="Sweep Filters")
+int   swingLength     = input.int(10,  "Swing Lookback Length", minval=2, group="Sweep Filters")
+bool  showLbls        = input.bool(true, "Labels",   group="Visuals")
+bool  showBg          = input.bool(true, "Sessions", group="Visuals")
+
+// Pip size
+float pip = syminfo.mintick * (syminfo.type == "forex" ? 10.0 : 1.0)
+
+// Time
+bool isNewDay = ta.change(time("D")) != 0
+bool inWindow = hour(time, "UTC") >= startHour and hour(time, "UTC") < endHour
+bool inAsian  = not na(time(timeframe.period, "0000-0800:1234567", "UTC"))
+bool inLondon = not na(time(timeframe.period, "0800-1200:1234567", "UTC"))
+bool inNY     = not na(time(timeframe.period, "1300-1700:1234567", "UTC"))
+
+// Asian range
+var float aHigh   = na
+var float aLow    = na
+var bool  aLocked = false
+var int   aBar    = na
+
+if isNewDay
+    aHigh   := na
+    aLow    := na
+    aLocked := false
+    aBar    := na
+
+if inAsian
+    aHigh := na(aHigh) ? high : math.max(aHigh, high)
+    aLow  := na(aLow)  ? low  : math.min(aLow, low)
+else if not aLocked and not na(aHigh)
+    aLocked := true
+    aBar    := bar_index
+
+// London range
+var float lHigh   = na
+var float lLow    = na
+var bool  lLocked = false
+
+if isNewDay
+    lHigh   := na
+    lLow    := na
+    lLocked := false
+
+if inLondon
+    lHigh := na(lHigh) ? high : math.max(lHigh, high)
+    lLow  := na(lLow)  ? low  : math.min(lLow, low)
+else if not lLocked and not na(lHigh)
+    lLocked := true
+
+// Swing levels
+float swHigh = ta.highest(high, swingLength)[1]
+float swLow  = ta.lowest(low, swingLength)[1]
+
+// Previous day levels
+float pdHigh = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_off)
+float pdLow  = request.security(syminfo.tickerid, "D", low[1],  lookahead=barmerge.lookahead_off)
+
+// Sweep conditions
+bool asianSSL  = aLocked and inWindow and low  < aLow  and close > aLow
+bool asianBSL  = aLocked and inWindow and high > aHigh and close < aHigh
+bool pdSSL     = inWindow and not na(pdLow)  and low  < pdLow  and close > pdLow
+bool pdBSL     = inWindow and not na(pdHigh) and high > pdHigh and close < pdHigh
+bool londonSSL = useLondonSweeps and lLocked and inWindow and low  < lLow  and close > lLow
+bool londonBSL = useLondonSweeps and lLocked and inWindow and high > lHigh and close < lHigh
+bool swingSSL  = useSwingSweeps and inWindow and low  < swLow  and close > swLow
+bool swingBSL  = useSwingSweeps and inWindow and high > swHigh and close < swHigh
+
+bool goLong  = asianSSL or pdSSL or londonSSL or swingSSL
+bool goShort = asianBSL or pdBSL or londonBSL or swingBSL
+
+// Trade state
+var float slL         = na
+var float tp1L        = na
+var float tp2L        = na
+var float slS         = na
+var float tp1S        = na
+var float tp2S        = na
+var bool  justEntered = false
+
+// Long entry
+if goLong and strategy.position_size == 0
+    justEntered := true
+    slL         := low - slBuffer * pip
+    float r      = math.abs(close - slL)
+    tp1L        := close + r * tp1RR
+    tp2L        := close + r * tp2RR
+    float qty    = r > 0 ? (strategy.equity * riskPct / 100.0) / r : na
+    if not na(qty) and qty > 0
+        strategy.entry("Long", strategy.long, qty=qty)
+        if showLbls
+            string labelText = asianSSL ? "▲ LONG\nAsian Low Swept" : pdSSL ? "▲ LONG\nPDL Swept" : londonSSL ? "▲ LONG\nLondon Low Swept" : "▲ LONG\nSwing Low Swept"
+            label.new(bar_index, low, labelText, color=color.green, textcolor=color.white, style=label.style_label_up, size=size.small)
+        alert("LONG | " + syminfo.ticker + " @ " + str.tostring(close), alert.freq_once_per_bar_close)
+
+// Short entry
+if goShort and strategy.position_size == 0
+    justEntered := true
+    slS         := high + slBuffer * pip
+    float r      = math.abs(slS - close)
+    tp1S        := close - r * tp1RR
+    tp2S        := close - r * tp2RR
+    float qty    = r > 0 ? (strategy.equity * riskPct / 100.0) / r : na
+    if not na(qty) and qty > 0
+        strategy.entry("Short", strategy.short, qty=qty)
+        if showLbls
+            string labelText = asianBSL ? "▼ SHORT\nAsian High Swept" : pdBSL ? "▼ SHORT\nPDH Swept" : londonBSL ? "▼ SHORT\nLondon High Swept" : "▼ SHORT\nSwing High Swept"
+            label.new(bar_index, high, labelText, color=color.red, textcolor=color.white, style=label.style_label_down, size=size.small)
+        alert("SHORT | " + syminfo.ticker + " @ " + str.tostring(close), alert.freq_once_per_bar_close)
+
+// Exits
+if strategy.position_size > 0 and not na(slL)
+    strategy.exit("TP1 L", "Long",  qty_percent=tp1Pct, limit=tp1L, stop=slL)
+    strategy.exit("TP2 L", "Long",  qty_percent=100,    limit=tp2L, stop=slL)
+
+if strategy.position_size < 0 and not na(slS)
+    strategy.exit("TP1 S", "Short", qty_percent=tp1Pct, limit=tp1S, stop=slS)
+    strategy.exit("TP2 S", "Short", qty_percent=100,    limit=tp2S, stop=slS)
+
+// Reset SL/TP when flat
+if strategy.position_size == 0 and not justEntered
+    slL  := na
+    tp1L := na
+    tp2L := na
+    slS  := na
+    tp1S := na
+    tp2S := na
+
+justEntered := false
+
+// Hard exit
+if hour(time, "UTC") == endHour and minute == 0 and strategy.opentrades > 0
+    strategy.close_all(comment="Hard Exit")
+
+// Visuals — Asian range box and lines
+var line hLine = na
+var line lLine = na
+var box  rBox  = na
+
+if aLocked and barstate.islast
+    if na(rBox)
+        rBox  := box.new(aBar, aHigh, bar_index, aLow, border_color=color.new(color.blue, 40), bgcolor=color.new(color.blue, 88))
+        hLine := line.new(aBar, aHigh, bar_index, aHigh, color=color.blue,   style=line.style_dashed, width=1)
+        lLine := line.new(aBar, aLow,  bar_index, aLow,  color=color.orange, style=line.style_dashed, width=1)
+    else
+        box.set_right(rBox, bar_index)
+        line.set_xy1(hLine, aBar, aHigh)
+        line.set_xy2(hLine, bar_index, aHigh)
+        line.set_xy1(lLine, aBar, aLow)
+        line.set_xy2(lLine, bar_index, aLow)
+
+// Session backgrounds
+bgcolor(showBg and inLondon ? color.new(color.blue,  95) : na, title="London")
+bgcolor(showBg and inNY     ? color.new(color.green, 95) : na, title="NY")

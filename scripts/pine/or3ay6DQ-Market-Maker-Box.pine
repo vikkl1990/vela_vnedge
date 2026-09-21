@@ -1,0 +1,410 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+
+//@version=6
+indicator("Market Maker 4H Box", shorttitle="MM 4H Box", overlay=true, max_lines_count=500, max_boxes_count=100, max_labels_count=100)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Mirrors dashboard/marketmaker.py 1:1 so a chart read and the Prediction
+// Markets → MARKET MAKER desk never disagree. Same box, same fib ladder, same
+// premium/discount zoning, same volatility regime, same structural score.
+//
+// WHAT THIS IS: the prior completed 4H candle's high/low, drawn on whatever
+// timeframe you are scalping (built for 5m/15m). A directional read then
+// predicts whether the CURRENT (forming) 4H candle is / will close bullish or
+// bearish, tints the box to match, and shades the destination half of the
+// range — premium if price is predicted up, discount if predicted down.
+//
+// WHAT THIS IS NOT: a signal generator. Mechanically fading both box edges to
+// equilibrium backtested at 72% win rate but only 0.35R per win — break-even
+// BEFORE fees, losing after them (490 trades, BTC 15m, ~75 days). No context
+// filter tested lifted it past PF 1.1. Use the box as a MAP of where price sits
+// in the prior range, and require your own confluence for the entry.
+//
+// Because avg win is 0.35R, taker fees (~0.1% round trip) eat roughly half the
+// gross target on a typical 0.8%-wide box. Work limit orders or skip narrow
+// boxes entirely — the "min box width" filter below exists for exactly this.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ========== INPUTS ==========
+grp1 = "Box Source"
+boxTF        = input.timeframe("240", "Box timeframe", group=grp1, tooltip="The candle whose high/low forms the box. 240 = 4H.")
+useLiveBox   = input.bool(false, "Use forming candle (not prior)", group=grp1, tooltip="Off = prior COMPLETED candle (the playbook). On = the candle currently forming.")
+show4HBox    = input.bool(true, "Show previous 4H box", group=grp1)
+showDailyBox = input.bool(false, "Show previous daily box", group=grp1)
+show9DayBox  = input.bool(false, "Show previous 9-day box", group=grp1)
+
+grp2 = "Range Levels"
+showLadder   = input.bool(true, "Show fib ladder inside box", group=grp2)
+show236      = input.bool(false, "0.236 / 0.786", group=grp2)
+show382      = input.bool(false, "0.382 / 0.618", group=grp2)
+showEQ       = input.bool(true, "Median (0.5)", group=grp2)
+
+grp3 = "Tradeability Filters"
+minBoxPct    = input.float(0.60, "Min box width (% of price)", minval=0.0, step=0.05, group=grp3, tooltip="Below this the target does not clear fees. Default 0.60% assumes ~0.1% round-trip taker cost against a target of ~25% of range.")
+atrLen       = input.int(20, "ATR length (box TF)", minval=5, group=grp3)
+fastAtrLen   = input.int(5,  "Fast ATR length (box TF)", minval=2, group=grp3)
+compressLo   = input.float(0.75, "Compressed below ATR ratio", minval=0.3, step=0.05, group=grp3)
+expandHi     = input.float(1.35, "Expanding above ATR ratio", minval=1.0, step=0.05, group=grp3)
+
+grp4 = "4H Candle Prediction"
+showDestZone = input.bool(true, "Highlight predicted destination zone", group=grp4, tooltip="Shades the half of the box price is predicted to travel toward on this 4H: premium on a bullish 4H, discount on a bearish 4H.")
+predThresh   = input.float(16.0, "Conviction to color the box", minval=4.0, step=1.0, group=grp4, tooltip="Below this the current 4H is treated as chop — burnt orange, no destination shade. Trend lock still blocks an opposite-color box.")
+colBull      = input.color(#39ff14, "Bullish 4H — neon green", group=grp4)
+colBear      = input.color(#bf00ff, "Bearish 4H — neon purple", group=grp4)
+showBias     = input.bool(false, "Show bias in the table", group=grp4)
+emaFastLen   = input.int(21, "EMA fast", minval=3, group=grp4)
+emaSlowLen   = input.int(50, "EMA slow", minval=10, group=grp4)
+rsiLen       = input.int(14, "RSI length", minval=2, group=grp4)
+
+grp5 = "Alerts"
+alertEdges   = input.bool(false, "Alert on box-edge taps", group=grp5)
+alertBreak   = input.bool(false, "Alert on box-TF close outside the box", group=grp5)
+alertPred    = input.bool(false, "Alert on 4H direction call", group=grp5)
+
+grp6 = "Visuals"
+colBox       = input.color(color.new(#cc5500, 95), "Chop 4H box fill", group=grp6)
+colEdge      = input.color(#cc5500, "Chop box edge", group=grp6)
+colEQ        = input.color(#ff8c42, "Chop median", group=grp6)
+colDaily     = input.color(#66e6ff, "Daily box — neon blue", group=grp6)
+col9Day      = input.color(#f5ff3b, "9-day box — neon yellow", group=grp6)
+colPrem      = input.color(color.new(#f43f5e, 90), "Premium zone", group=grp6)
+colDisc      = input.color(color.new(#22c55e, 90), "Discount zone", group=grp6)
+showZones    = input.bool(false, "Shade both premium / discount quarters", group=grp6)
+showLabels   = input.bool(false, "Price labels on levels", group=grp6)
+showTable    = input.bool(false, "Show information table", group=grp6)
+tablePos     = input.string("bottom_right", "Table position", options=["top_right","top_left","bottom_right","bottom_left","middle_right"], group=grp6)
+
+// ========== BOX SOURCE ==========
+// Offset 1 = the prior COMPLETED candle. lookahead_off keeps it non-repainting:
+// the box only changes when the higher-TF candle actually closes.
+idx     = useLiveBox ? 0 : 1
+boxHigh = request.security(syminfo.tickerid, boxTF, high[idx],  lookahead=barmerge.lookahead_off)
+boxLow  = request.security(syminfo.tickerid, boxTF, low[idx],   lookahead=barmerge.lookahead_off)
+boxOpen = request.security(syminfo.tickerid, boxTF, open[idx],  lookahead=barmerge.lookahead_off)
+boxClose= request.security(syminfo.tickerid, boxTF, close[idx], lookahead=barmerge.lookahead_off)
+
+// Higher-TF series for the structural read, all pulled on the box timeframe.
+htfClose = request.security(syminfo.tickerid, boxTF, close, lookahead=barmerge.lookahead_off)
+htfEmaF  = request.security(syminfo.tickerid, boxTF, ta.ema(close, emaFastLen), lookahead=barmerge.lookahead_off)
+htfEmaS  = request.security(syminfo.tickerid, boxTF, ta.ema(close, emaSlowLen), lookahead=barmerge.lookahead_off)
+htfRsi   = request.security(syminfo.tickerid, boxTF, ta.rsi(close, rsiLen), lookahead=barmerge.lookahead_off)
+htfAtr   = request.security(syminfo.tickerid, boxTF, ta.atr(atrLen), lookahead=barmerge.lookahead_off)
+htfAtrF  = request.security(syminfo.tickerid, boxTF, ta.atr(fastAtrLen), lookahead=barmerge.lookahead_off)
+htfVol   = request.security(syminfo.tickerid, boxTF, volume[idx], lookahead=barmerge.lookahead_off)
+htfVolAvg= request.security(syminfo.tickerid, boxTF, ta.sma(volume, 20), lookahead=barmerge.lookahead_off)
+liveOpen = request.security(syminfo.tickerid, boxTF, open, lookahead=barmerge.lookahead_off)
+liveHigh = request.security(syminfo.tickerid, boxTF, high, lookahead=barmerge.lookahead_off)
+liveLow  = request.security(syminfo.tickerid, boxTF, low,  lookahead=barmerge.lookahead_off)
+prev2High= request.security(syminfo.tickerid, boxTF, high[2], lookahead=barmerge.lookahead_off)
+prev2Low = request.security(syminfo.tickerid, boxTF, low[2],  lookahead=barmerge.lookahead_off)
+sixOpen   = request.security(syminfo.tickerid, "360", open[1],  lookahead=barmerge.lookahead_off)
+sixClose  = request.security(syminfo.tickerid, "360", close[1], lookahead=barmerge.lookahead_off)
+sixOpen2  = request.security(syminfo.tickerid, "360", open[2],  lookahead=barmerge.lookahead_off)
+sixClose2 = request.security(syminfo.tickerid, "360", close[2], lookahead=barmerge.lookahead_off)
+dailyOpen = request.security(syminfo.tickerid, "D", open[1],  lookahead=barmerge.lookahead_off)
+dailyC    = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_off)
+
+boxRange = boxHigh - boxLow
+validBox = not na(boxHigh) and not na(boxLow) and boxRange > 0
+
+// Optional higher-timeframe maps. Offset 1 always means the completed candle,
+// so daily and 9-day ranges also remain fixed until their next boundary.
+dailyHigh = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_off)
+dailyLow  = request.security(syminfo.tickerid, "D", low[1],  lookahead=barmerge.lookahead_off)
+day9High  = request.security(syminfo.tickerid, "9D", high[1], lookahead=barmerge.lookahead_off)
+day9Low   = request.security(syminfo.tickerid, "9D", low[1],  lookahead=barmerge.lookahead_off)
+validDaily = not na(dailyHigh) and not na(dailyLow) and dailyHigh > dailyLow
+valid9Day  = not na(day9High) and not na(day9Low) and day9High > day9Low
+
+// ========== LEVELS ==========
+lvl(f) => boxLow + boxRange * f
+eqLvl   = lvl(0.5)
+l236    = lvl(0.236)
+l382    = lvl(0.382)
+l618    = lvl(0.618)
+l786    = lvl(0.786)
+
+// Live distance from current price to each range level.
+distanceTxt(price) =>
+    pct = close != 0 ? math.abs(price - close) / close * 100.0 : 0.0
+    direction = price > close ? " ↑" : price < close ? " ↓" : ""
+    str.tostring(pct, "#.##") + "%" + direction
+
+posPct   = validBox ? (close - boxLow) / boxRange * 100.0 : na
+inside   = validBox and close <= boxHigh and close >= boxLow
+zone     = not inside ? "OUT OF RANGE" : posPct >= 75 ? "PREMIUM" : posPct <= 25 ? "DISCOUNT" : "EQUILIBRIUM"
+
+// ========== REGIME ==========
+atrRatio = (not na(htfAtr) and htfAtr > 0) ? htfAtrF / htfAtr : 1.0
+volState = atrRatio < compressLo ? "COMPRESSED" : atrRatio > expandHi ? "EXPANDING" : "NORMAL"
+
+boxPct     = validBox ? boxRange / close * 100.0 : 0.0
+wideEnough = boxPct >= minBoxPct
+
+// ========== STRUCTURAL BIAS (same weights as structural_bias() in Python) ==========
+clip(v, lo, hi) => math.max(lo, math.min(hi, v))
+atrSafe = (not na(htfAtr) and htfAtr > 0) ? htfAtr : (boxRange > 0 ? boxRange : 1.0)
+
+stack     = htfEmaF - htfEmaS
+sTrend    = clip(stack / atrSafe * 18.0, -22, 22)
+emaSlope  = (htfEmaF - htfEmaF[5]) / atrSafe
+sSlope    = clip(emaSlope * 20.0, -20, 20)
+stretch   = (htfClose - htfEmaS) / atrSafe
+sStretch  = math.abs(stretch) > 2.5 ? clip(-stretch * 4.0, -14, 14) : 0.0
+sRsi      = htfRsi >= 70 ? -8.0 : htfRsi <= 30 ? 8.0 : clip((htfRsi - 50) / 20.0 * 10.0, -10, 10)
+bodyFrac  = boxRange > 0 ? (boxClose - boxOpen) / boxRange : 0.0
+sBody     = clip(bodyFrac * 14.0, -14, 14)
+volRatio  = (not na(htfVolAvg) and htfVolAvg > 0) ? htfVol / htfVolAvg : 1.0
+sVol      = volRatio > 1.4 ? clip(bodyFrac * 8.0, -8, 8) : volRatio < 0.6 ? clip(-bodyFrac * 4.0, -4, 4) : 0.0
+
+biasScore = clip(sTrend + sSlope + sStretch + sRsi + sBody + sVol, -100, 100)
+biasTxt   = biasScore > 15 ? "LONG" : biasScore < -15 ? "SHORT" : "NEUTRAL"
+biasCol   = biasScore > 15 ? color.new(#22c55e, 0) : biasScore < -15 ? color.new(#f43f5e, 0) : color.new(#94a3b8, 0)
+
+// ========== CURRENT 4H PREDICTION ==========
+// Trend first. A morning pullback inside a bull 4H must not paint the box red.
+// RSI fade / EMA stretch are ignored here — those are mean-reversion and they
+// were the source of opposite-trend boxes. A live 4H body can confirm the
+// trend immediately, but it cannot reverse the color until late in the window
+// AND a prior-bar sweep actually printed.
+winLen   = time_close(boxTF) - time(boxTF)
+elapsed  = winLen > 0 ? clip((time - time(boxTF)) / winLen, 0.0, 1.0) : 0.0
+closePos = boxRange > 0 ? (boxClose - boxLow) / boxRange : 0.5
+sCont    = clip(bodyFrac * 8.0, -8, 8)
+sCloseLoc= clip((closePos - 0.5) * 10.0, -6, 6)
+sSweep   = 0.0
+if not na(prev2High) and boxHigh > prev2High and boxClose < prev2High and closePos < 0.5
+    sSweep := -22.0
+if not na(prev2Low) and boxLow < prev2Low and boxClose > prev2Low and closePos > 0.5
+    sSweep := 22.0
+liveSpan = liveHigh - liveLow
+liveRng  = math.max(na(liveSpan) ? 0.0 : liveSpan, atrSafe * 0.15)
+sLive    = clip((htfClose - liveOpen) / liveRng * 18.0, -18, 18)
+sSix     = (na(sixOpen) or na(sixClose)) ? 0.0 : clip((sixClose - sixOpen) / atrSafe * 12.0, -16, 16)
+six1     = (na(sixOpen) or na(sixClose)) ? 0.0 : sixClose - sixOpen
+six2     = (na(sixOpen2) or na(sixClose2)) ? 0.0 : sixClose2 - sixOpen2
+sSixSeq  = six1 * six2 > 0 ? clip(six1 / atrSafe * 6.0, -10, 10) : 0.0
+sDaily   = (na(dailyOpen) or na(dailyC)) ? 0.0 : clip((dailyC - dailyOpen) / atrSafe * 6.0, -14, 14)
+sLocTrend= clip((boxClose - htfEmaS) / atrSafe * 6.0, -12, 12)
+
+trendScore  = sTrend + sSlope + sSix + sSixSeq + sDaily + sLocTrend
+trendDir    = trendScore >= 18 ? 1 : trendScore <= -18 ? -1 : 0
+strongTrend = math.abs(trendScore) >= 30
+liveAgrees  = trendDir == 0 or sLive * trendDir >= 0
+liveW       = liveAgrees ? elapsed * 0.35 : math.max(0.0, elapsed - 0.60) * 2.0
+reversalOk  = sSweep != 0 and elapsed >= 0.30 and (trendDir == 0 or sSweep * trendDir < 0) and (sLive * sSweep > 0)
+
+rawScore = trendScore + sCont + sCloseLoc + sSweep + sLive * liveW
+locked   = rawScore
+if trendDir != 0 and not reversalOk
+    if strongTrend
+        locked := trendDir > 0 ? math.max(rawScore, predThresh) : math.min(rawScore, -predThresh)
+    else if (trendDir > 0 and rawScore < 0) or (trendDir < 0 and rawScore > 0)
+        locked := 0.0
+predScore = clip(locked, -100, 100)
+predDir   = predScore >= predThresh ? "BULL" : predScore <= -predThresh ? "BEAR" : "CHOP"
+predCol   = predDir == "BULL" ? colBull : predDir == "BEAR" ? colBear : colEdge
+predFill  = predDir == "BULL" ? color.new(colBull, 94) : predDir == "BEAR" ? color.new(colBear, 94) : colBox
+predMed   = predDir == "BULL" ? colBull : predDir == "BEAR" ? colBear : colEQ
+destFill  = predDir == "BULL" ? color.new(colBull, 84) : color.new(colBear, 84)
+destTop   = predDir == "BULL" ? boxHigh : eqLvl
+destBot   = predDir == "BULL" ? eqLvl : boxLow
+
+// ========== VERDICT ==========
+verdict = not validBox ? "NO BOX" :
+   not wideEnough ? "TOO NARROW — FEES EAT IT" :
+   predDir == "BULL" and inside ? "SCALP TOWARD HIGH" :
+   predDir == "BEAR" and inside ? "SCALP TOWARD LOW" :
+   predDir != "CHOP" and not inside ? "RIDE THE BREAK" :
+   volState == "EXPANDING" ? "WAIT — RANGE EXPANDING" : "WAIT FOR THE CANDLE"
+
+verdictCol = predDir == "BULL" ? colBull : predDir == "BEAR" ? colBear : color.new(#94a3b8, 0)
+
+// Reused for every ladder line: mutate in place so we never hit the object cap.
+// Must live at global scope — Pine v6 rejects function declarations inside `if`.
+mkLine(ln, price, col, styl, width, show, leftTime, rightTime) =>
+    line out = ln
+    if show
+        if na(out)
+            out := line.new(leftTime, price, rightTime, price, xloc=xloc.bar_time, color=col, style=styl, width=width)
+        else
+            line.set_xy1(out, leftTime, price)
+            line.set_xy2(out, rightTime, price)
+            line.set_color(out, col)
+            line.set_width(out, width)
+    else if not na(out)
+        line.set_xy1(out, leftTime, price)
+        line.set_xy2(out, leftTime, price)
+    out
+
+mkLbl(lb, x, price, txt, col, show) =>
+    label out = lb
+    if show
+        if na(out)
+            out := label.new(x, price, txt, xloc=xloc.bar_time, style=label.style_label_left, color=color.new(col, 100), textcolor=col, size=size.tiny)
+        else
+            label.set_xy(out, x, price)
+            label.set_text(out, txt)
+            label.set_textcolor(out, col)
+    else if not na(out)
+        label.set_text(out, "")
+    out
+
+// ========== DRAWING ==========
+// The prior completed 4H candle's high/low is projected across the CURRENT 4H
+// window. time(boxTF)/time_close(boxTF) keeps the geometry exact on every small
+// timeframe. At each new 4H boundary the source advances automatically to the
+// newly completed candle, without repainting the range intrabar.
+var box   theBox = na
+var line  lnEQ   = na
+var line  ln236  = na
+var line  ln382  = na
+var line  ln618  = na
+var line  ln786  = na
+var box   zDest  = na
+var box   zPrem  = na
+var box   zDisc  = na
+var label lbHigh = na
+var label lbLow  = na
+var label lbEQ   = na
+var box   dailyBox = na
+var line  dailyMedian = na
+var box   day9Box = na
+var line  day9Median = na
+
+if barstate.islast and validBox
+    leftTime  = time(boxTF)
+    rightTime = time_close(boxTF)
+    lblX      = rightTime
+    edgeVisible = show4HBox ? predCol : color.new(predCol, 100)
+    fillVisible = show4HBox ? predFill : color.new(predFill, 100)
+
+    if na(theBox)
+        theBox := box.new(leftTime, boxHigh, rightTime, boxLow, xloc=xloc.bar_time, border_color=edgeVisible, border_width=1, bgcolor=fillVisible)
+    else
+        box.set_lefttop(theBox, leftTime, boxHigh)
+        box.set_rightbottom(theBox, rightTime, boxLow)
+        box.set_bgcolor(theBox, fillVisible)
+        box.set_border_color(theBox, edgeVisible)
+        box.set_border_width(theBox, 1)
+
+    paintDest = show4HBox and showDestZone and predDir != "CHOP"
+    if paintDest
+        if na(zDest)
+            zDest := box.new(leftTime, destTop, rightTime, destBot, xloc=xloc.bar_time, border_color=color.new(color.black, 100), bgcolor=destFill)
+        else
+            box.set_lefttop(zDest, leftTime, destTop)
+            box.set_rightbottom(zDest, rightTime, destBot)
+            box.set_bgcolor(zDest, destFill)
+    else if not na(zDest)
+        box.set_lefttop(zDest, leftTime, destTop)
+        box.set_rightbottom(zDest, leftTime, destBot)
+        box.set_bgcolor(zDest, color.new(colBull, 100))
+
+    paintQuarters = showZones and show4HBox and not paintDest
+    if paintQuarters
+        if na(zPrem)
+            zPrem := box.new(leftTime, boxHigh, rightTime, lvl(0.75), xloc=xloc.bar_time, border_color=color.new(color.black, 100), bgcolor=colPrem)
+            zDisc := box.new(leftTime, lvl(0.25), rightTime, boxLow, xloc=xloc.bar_time, border_color=color.new(color.black, 100), bgcolor=colDisc)
+        else
+            box.set_lefttop(zPrem, leftTime, boxHigh)
+            box.set_rightbottom(zPrem, rightTime, lvl(0.75))
+            box.set_lefttop(zDisc, leftTime, lvl(0.25))
+            box.set_rightbottom(zDisc, rightTime, boxLow)
+    else
+        if not na(zPrem)
+            box.set_bgcolor(zPrem, color.new(colPrem, 100))
+        if not na(zDisc)
+            box.set_bgcolor(zDisc, color.new(colDisc, 100))
+
+    lnEQ  := mkLine(lnEQ,  eqLvl, predMed,               line.style_dotted, 1, show4HBox and showLadder and showEQ,  leftTime, rightTime)
+    ln236 := mkLine(ln236, l236,  color.new(#94a3b8, 55), line.style_dotted, 1, show4HBox and showLadder and show236, leftTime, rightTime)
+    ln786 := mkLine(ln786, l786,  color.new(#94a3b8, 55), line.style_dotted, 1, show4HBox and showLadder and show236, leftTime, rightTime)
+    ln382 := mkLine(ln382, l382,  color.new(colBull, 60), line.style_dotted, 1, show4HBox and showLadder and show382, leftTime, rightTime)
+    ln618 := mkLine(ln618, l618,  color.new(colBear, 60), line.style_dotted, 1, show4HBox and showLadder and show382, leftTime, rightTime)
+
+    predTag = predDir == "CHOP" ? "CHOP" : predDir + " 4H  " + str.tostring(predScore, "#")
+    lbHigh := mkLbl(lbHigh, lblX, boxHigh, "H  " + str.tostring(boxHigh, format.mintick) + "  ·  " + distanceTxt(boxHigh), predCol, show4HBox and showLabels)
+    lbLow  := mkLbl(lbLow,  lblX, boxLow,  "L  " + str.tostring(boxLow, format.mintick) + "  ·  " + distanceTxt(boxLow),  predCol, show4HBox and showLabels)
+    lbEQ   := mkLbl(lbEQ,   lblX, eqLvl,   predTag + "  ·  EQ  " + str.tostring(eqLvl, format.mintick) + "  ·  " + distanceTxt(eqLvl), predMed, show4HBox and showLabels and showLadder and showEQ)
+
+// Previous daily range, projected over the current daily window.
+if barstate.islast and validDaily
+    dailyLeft = time("D")
+    dailyRight = time_close("D")
+    dailyMid = (dailyHigh + dailyLow) * 0.5
+    dailyVisible = showDailyBox ? colDaily : color.new(colDaily, 100)
+    dailyFill = showDailyBox ? color.new(colDaily, 97) : color.new(colDaily, 100)
+    if na(dailyBox)
+        dailyBox := box.new(dailyLeft, dailyHigh, dailyRight, dailyLow, xloc=xloc.bar_time, border_color=dailyVisible, border_width=1, bgcolor=dailyFill)
+    else
+        box.set_lefttop(dailyBox, dailyLeft, dailyHigh)
+        box.set_rightbottom(dailyBox, dailyRight, dailyLow)
+        box.set_border_color(dailyBox, dailyVisible)
+        box.set_border_width(dailyBox, 1)
+        box.set_bgcolor(dailyBox, dailyFill)
+    dailyMedian := mkLine(dailyMedian, dailyMid, colDaily, line.style_dotted, 1, showDailyBox, dailyLeft, dailyRight)
+
+// Previous 9-day range, projected over the current 9-day window.
+if barstate.islast and valid9Day
+    day9Left = time("9D")
+    day9Right = time_close("9D")
+    day9Mid = (day9High + day9Low) * 0.5
+    day9Visible = show9DayBox ? col9Day : color.new(col9Day, 100)
+    day9Fill = show9DayBox ? color.new(col9Day, 97) : color.new(col9Day, 100)
+    if na(day9Box)
+        day9Box := box.new(day9Left, day9High, day9Right, day9Low, xloc=xloc.bar_time, border_color=day9Visible, border_width=1, bgcolor=day9Fill)
+    else
+        box.set_lefttop(day9Box, day9Left, day9High)
+        box.set_rightbottom(day9Box, day9Right, day9Low)
+        box.set_border_color(day9Box, day9Visible)
+        box.set_border_width(day9Box, 1)
+        box.set_bgcolor(day9Box, day9Fill)
+    day9Median := mkLine(day9Median, day9Mid, col9Day, line.style_dotted, 1, show9DayBox, day9Left, day9Right)
+
+// ========== TABLE ==========
+tPos = tablePos == "top_left" ? position.top_left : tablePos == "bottom_right" ? position.bottom_right : tablePos == "bottom_left" ? position.bottom_left : tablePos == "middle_right" ? position.middle_right : position.top_right
+
+tblBg = color.new(#0b0b0d, 12)
+row(tbl, r, k, v, vc) =>
+    table.cell(tbl, 0, r, k, text_size=size.tiny, text_color=color.new(color.white, 45), bgcolor=tblBg, text_halign=text.align_left)
+    table.cell(tbl, 1, r, v, text_size=size.tiny, text_color=vc, bgcolor=tblBg, text_halign=text.align_right)
+
+var table info = table.new(tPos, 2, 9, border_width=1, frame_color=color.new(#f59e0b, 60), frame_width=1)
+if barstate.islast and validBox and showTable
+    destTxt = predDir == "BULL" ? "PREMIUM" : predDir == "BEAR" ? "DISCOUNT" : "NONE"
+    row(info, 0, "THIS 4H", predDir + "  " + str.tostring(predScore, "#"), predCol)
+    row(info, 1, "going to", destTxt, predCol)
+    row(info, 2, "zone now", zone, zone == "PREMIUM" ? color.new(#f43f5e, 0) : zone == "DISCOUNT" ? color.new(#22c55e, 0) : color.new(#f59e0b, 0))
+    row(info, 3, "position", str.tostring(posPct, "#.#") + "%", color.new(color.white, 20))
+    row(info, 4, "box high", str.tostring(boxHigh, format.mintick), predCol)
+    row(info, 5, "equilibrium", str.tostring(eqLvl, format.mintick), predMed)
+    row(info, 6, "box low", str.tostring(boxLow, format.mintick), predCol)
+    row(info, 7, "verdict", verdict, verdictCol)
+    if showBias
+        row(info, 8, "bias", biasTxt + "  " + str.tostring(biasScore, "#") , biasCol)
+else if barstate.islast
+    table.clear(info, 0, 0, 1, 8)
+
+// ========== ALERTS ==========
+tapHigh = validBox and high >= boxHigh and high[1] < boxHigh
+tapLow  = validBox and low  <= boxLow  and low[1]  > boxLow
+// Break is judged on a CLOSE of the box timeframe, not an intrabar poke.
+htfBarClose = ta.change(time(boxTF)) != 0
+brokeUp = validBox and htfBarClose and boxClose > boxHigh[1]
+brokeDn = validBox and htfBarClose and boxClose < boxLow[1]
+
+predBullFlip = predDir == "BULL" and predDir[1] != "BULL"
+predBearFlip = predDir == "BEAR" and predDir[1] != "BEAR"
+
+alertcondition(tapHigh, "MM: tapped box high", "Price tapped the prior 4H high — premium zone, short side of the range")
+alertcondition(tapLow,  "MM: tapped box low",  "Price tapped the prior 4H low — discount zone, long side of the range")
+alertcondition(brokeUp, "MM: broke above box", "4H closed above the prior range — box void, continuation regime")
+alertcondition(brokeDn, "MM: broke below box", "4H closed below the prior range — box void, continuation regime")
+alertcondition(alertPred and predBullFlip, "MM: current 4H predicted BULL", "Current 4H predicted bullish — destination is the premium half of the box")
+alertcondition(alertPred and predBearFlip, "MM: current 4H predicted BEAR", "Current 4H predicted bearish — destination is the discount half of the box")
+
+plotshape(alertEdges and tapHigh, title="Box high tap", style=shape.triangledown, location=location.abovebar, color=color.new(colBear, 20), size=size.tiny)
+plotshape(alertEdges and tapLow,  title="Box low tap",  style=shape.triangleup,   location=location.belowbar, color=color.new(colBull, 20), size=size.tiny)
+plotshape(alertBreak and brokeUp, title="Break up",   style=shape.labelup,   location=location.belowbar, color=color.new(#38bdf8, 20), text="BREAK", textcolor=color.white, size=size.tiny)
+plotshape(alertBreak and brokeDn, title="Break down", style=shape.labeldown, location=location.abovebar, color=color.new(#38bdf8, 20), text="BREAK", textcolor=color.white, size=size.tiny)

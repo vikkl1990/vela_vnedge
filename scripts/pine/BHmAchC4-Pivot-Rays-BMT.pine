@@ -1,0 +1,431 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © matt_spinola
+
+// version v0.5.1, 2026-09-14
+// Pivot rays: every confirmed pivot high and low on the chart timeframe and on up to three
+// higher timeframes (4H / D / W by default), each drawn as a horizontal ray from the pivot
+// bar to the right edge, and shown only while the level sits inside the price range of the
+// bars on screen (or within N ATRs of the close, by input), so the rays never stretch the
+// auto-scale. A pivot is dropped once price closes (or trades, by input) through it; the most
+// recent break stays on as a dashed, fainter ray so the level just lost or reclaimed is
+// still in view. The set is rebuilt on every tick of the last bar, so rays appear and
+// disappear as price moves. Pivots at the same price on several timeframes merge into one ray carrying
+// every timeframe's tag (a daily pivot is nearly always a 4H and a chart pivot too). The
+// all-time high is its own dotted, heavier ray tagged ATH, taken from the symbol's full
+// monthly history rather than only the bars loaded on the chart.
+//
+// Higher-timeframe pivots come through request.security on the previous HTF bar with
+// lookahead on, the standard non-repainting form: a pivot is stored once the HTF bar that
+// confirms it has closed, and the ray starts at that HTF bar's open time.
+
+//@version=6
+indicator("Pivot Rays [BMT]", "Pivot Rays [BMT]", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// --------------------- Theme { ----------------------------- \\
+// The chart's own background picks the ray colour: the same relative-luminance test the
+// other [BMT] scripts use. Both canvases get TradingView's muted text grey for their theme,
+// plus a default transparency, so a ray sits behind the candles rather than over them.
+color noColor = color.new(color.black, 100)
+
+var g_theme = "Theme"
+themeInput = input.string("Auto (chart)", group=g_theme, title="Theme", options=["Auto (chart)", "Dark", "Light", "Custom"],
+     tooltip="Auto reads the chart background and picks a light grey on dark canvases, a dark grey on light ones. Custom uses the two colours below.")
+customRayInput = input.color(#787B86, group=g_theme, title="Custom ray colour", active=themeInput == "Custom")
+customAthInput = input.color(#787B86, group=g_theme, title="Custom ATH colour", active=themeInput == "Custom")
+customLabelInput = input.color(#B2B5BE, group=g_theme, title="Custom label colour", active=themeInput == "Custom")
+transpInput    = input.int(30, group=g_theme, title="Ray transparency", minval=0, maxval=90, inline="tr")
+brokenDimInput = input.int(25, group=g_theme, title="extra for broken", minval=0, maxval=60, inline="tr",
+     tooltip="Transparency of live rays, and how much more transparent the dashed broken ray is.")
+
+chartLuma = 0.2126 * color.r(chart.bg_color) + 0.7152 * color.g(chart.bg_color) + 0.0722 * color.b(chart.bg_color)
+bool isCustom = themeInput == "Custom"
+bool isDark   = themeInput == "Dark" or (themeInput == "Auto (chart)" and chartLuma <= 128)
+
+color darkRayColor    = #787B86   // TradingView dark theme muted text
+color lightRayColor   = #9598A1   // TradingView light theme muted text
+color darkLabelColor  = #D1D4DC   // dark theme primary text: the tag has to read, the ray only has to be there
+color lightLabelColor = #131722   // light theme primary text
+
+color rayColor    = color.new(isCustom ? customRayInput : isDark ? darkRayColor : lightRayColor, transpInput)
+color brokenColor = color.new(isCustom ? customRayInput : isDark ? darkRayColor : lightRayColor, math.min(95, transpInput + brokenDimInput))
+color athColor    = color.new(isCustom ? customAthInput : isDark ? darkRayColor : lightRayColor, transpInput)
+color labelColor       = isCustom ? customLabelInput : isDark ? darkLabelColor : lightLabelColor
+color brokenLabelColor = color.new(labelColor, brokenDimInput)
+//}
+
+// --------------------- Inputs { ----------------------------- \\
+var g_filter = "Which pivots to draw"
+filterModeInput = input.string("Visible price range", group=g_filter, title="Show pivots", options=["Visible price range", "Within N ATR", "Both"],
+     tooltip="Visible price range: only levels between the lowest low and highest high of the bars on screen, so the rays never push the auto-scale out; the set follows every scroll and zoom. Within N ATR: levels near the current close, whether on screen or not. Both: inside the visible range AND near price.")
+atrLenInput  = input.int(14, group=g_filter, title="ATR length", minval=1, inline="atr", active=filterModeInput != "Visible price range")
+atrMultInput = input.float(5.0, group=g_filter, title="x ATR", minval=0.1, step=0.5, inline="atr", active=filterModeInput != "Visible price range",
+     tooltip="Within this many chart-timeframe ATRs of the current close. Higher-timeframe pivots are measured against the same chart ATR.")
+maxRaysInput = input.int(60, group=g_filter, title="Max rays drawn", minval=1, maxval=400,
+     tooltip="When more pivots than this pass the filter, the nearest to price are kept.")
+
+var g_pivot = "Pivots"
+leftInput  = input.int(5, group=g_pivot, title="Bars left", minval=1, maxval=50, inline="lr")
+rightInput = input.int(5, group=g_pivot, title="right", minval=1, maxval=50, inline="lr",
+     tooltip="Pivot strength on every timeframe: a high is a pivot when no bar this many to the left or right exceeds it. Same rule for lows.")
+showHighsInput = input.bool(true, group=g_pivot, title="Pivot highs", inline="hl")
+showLowsInput  = input.bool(true, group=g_pivot, title="Pivot lows", inline="hl")
+keepInput      = input.int(500, group=g_pivot, title="Pivots kept per timeframe", minval=50, maxval=2000,
+     tooltip="Oldest pivots are dropped past this count. Only the ones that pass the filter are ever drawn.")
+mergeTicksInput = input.int(0, group=g_pivot, title="Merge pivots within (ticks)", minval=0, maxval=100,
+     tooltip="Pivots from different timeframes at the same price (within this many ticks) become one ray carrying every timeframe's tag.")
+
+var g_break = "Broken pivots"
+breakOnInput    = input.string("Wick", group=g_break, title="A pivot is broken on", options=["Close", "Wick"], inline="br",
+     tooltip="Close: a bar closes beyond the pivot (checked on bar close only, so a live bar does not flicker). Wick: any trade beyond it, including on the live bar. Broken pivots are removed.")
+brokenKeepInput = input.int(1, group=g_break, title="keep the last", minval=0, maxval=10, inline="br")
+brokenOnInput   = input.bool(true, group=g_break, title="Most recent break stays on as a dashed ray", inline="br2",
+     tooltip="The number to the right counts break events, not pivots: every pivot broken on the same bar stays together. 0 keeps none. This toggle is the same as setting it to 0.")
+brokenExpireInput   = input.bool(true, group=g_break, title="and is dropped at the close of", inline="br3")
+brokenExpireTfInput = input.timeframe("D", group=g_break, title="", inline="br3",
+     tooltip="The dashed ray lives only for the rest of the period in which the break happened: broken during Tuesday's session, gone at Tuesday's daily close. On a chart at or above this timeframe it lasts for the break bar only. Off keeps it until a newer break pushes it out.")
+
+var g_tf = "Timeframes"
+chartOnInput    = input.bool(true, group=g_tf, title="Chart timeframe", inline="tf0")
+chartTagInput   = input.string("", group=g_tf, title="tag", inline="tf0",
+     tooltip="Label text shown at the right edge for chart-timeframe pivots. Blank means no label. When the chart timeframe equals one of the rows below, that row's tag is used.")
+chartWidthInput = input.int(1, group=g_tf, title="width", minval=1, maxval=5, inline="tf0")
+
+htf1OnInput    = input.bool(true, group=g_tf, title="", inline="tf1")
+htf1TfInput    = input.timeframe("240", group=g_tf, title="", inline="tf1")
+htf1TagInput   = input.string("4H", group=g_tf, title="tag", inline="tf1")
+htf1WidthInput = input.int(1, group=g_tf, title="width", minval=1, maxval=5, inline="tf1")
+
+htf2OnInput    = input.bool(true, group=g_tf, title="", inline="tf2")
+htf2TfInput    = input.timeframe("D", group=g_tf, title="", inline="tf2")
+htf2TagInput   = input.string("D", group=g_tf, title="tag", inline="tf2")
+htf2WidthInput = input.int(1, group=g_tf, title="width", minval=1, maxval=5, inline="tf2")
+
+htf3OnInput    = input.bool(true, group=g_tf, title="", inline="tf3")
+htf3TfInput    = input.timeframe("W", group=g_tf, title="", inline="tf3")
+htf3TagInput   = input.string("W", group=g_tf, title="tag", inline="tf3")
+htf3WidthInput = input.int(1, group=g_tf, title="width", minval=1, maxval=5, inline="tf3",
+     tooltip="Each row is a higher timeframe, its right-edge tag, and its ray width. A row is ignored when its timeframe is not above the chart's.")
+
+var g_ath = "All-time high"
+athOnInput     = input.bool(true, group=g_ath, title="Show ATH ray", inline="ath")
+athAlwaysInput = input.bool(false, group=g_ath, title="ignore the filter", inline="ath",
+     tooltip="Drawn dotted and heavier. A pivot high at the ATH price is left to this ray rather than drawn twice.")
+athSourceInput = input.string("Full history", group=g_ath, title="Source", options=["Full history", "Loaded bars"],
+     tooltip="Full history reads the symbol's monthly series, which TradingView serves back to the first bar it has for the symbol whatever the chart timeframe, so the ATH is the real one even on a 5-minute chart. Loaded bars uses only what the chart has loaded. Either way the current bar's high is included.")
+athTagInput    = input.string("ATH", group=g_ath, title="tag", inline="ath2")
+athWidthInput  = input.int(3, group=g_ath, title="width", minval=1, maxval=6, inline="ath2")
+
+var g_label = "Labels"
+labelPosInput    = input.string("Pivot", group=g_label, title="Position", options=["Pivot", "Right edge"],
+     tooltip="Pivot: the tag sits at the bar that made the pivot, above a high or below a low, so it lands in the same place at any zoom. Right edge: the tag hangs left from the anchor below.")
+labelOffsetInput = input.int(60, group=g_label, title="Right edge (bars past the last bar)", minval=1, maxval=500, active=labelPosInput == "Right edge",
+     tooltip="Pine cannot see the chart's right margin, which is a pixel width and so a different number of bars at every zoom: set this to match. Too small and the tags float short of the edge; too large and they are clipped.")
+labelSizeInput   = input.string("small", group=g_label, title="Size", options=["tiny", "small", "normal", "large", "huge"])
+showPriceInput   = input.bool(false, group=g_label, title="Append the price to the tag")
+//}
+
+// --------------------- Types and storage { ----------------------------- \\
+type Pivot
+    float price
+    int   t        // open time of the bar that made the pivot
+    bool  isHigh
+    int   level    // 0 chart, 1..3 the higher-timeframe rows
+    int   brokenT  // open time of the bar that broke it, na while live
+    int   brokenP  // open time of the expiry period (daily by default) that bar sits in
+
+var array<Pivot> piv0 = array.new<Pivot>()
+var array<Pivot> piv1 = array.new<Pivot>()
+var array<Pivot> piv2 = array.new<Pivot>()
+var array<Pivot> piv3 = array.new<Pivot>()
+var array<Pivot> broken = array.new<Pivot>()   // the last N break events, oldest first
+
+var array<line>  rays = array.new<line>()
+var array<label> tags = array.new<label>()
+
+var int firstBarTime = time
+//}
+
+// --------------------- Timeframe resolution { ----------------------------- \\
+// A row only counts as "higher" when it is strictly above the chart. A row equal to the
+// chart timeframe lends its tag and width to the chart-timeframe pivots instead, so a
+// daily chart still prints D on its own pivots.
+int chartSec = timeframe.in_seconds()
+int htf1Sec  = timeframe.in_seconds(htf1TfInput)
+int htf2Sec  = timeframe.in_seconds(htf2TfInput)
+int htf3Sec  = timeframe.in_seconds(htf3TfInput)
+
+bool htf1Active = htf1OnInput and htf1Sec > chartSec
+bool htf2Active = htf2OnInput and htf2Sec > chartSec
+bool htf3Active = htf3OnInput and htf3Sec > chartSec
+
+string chartTag   = htf3OnInput and htf3Sec == chartSec ? htf3TagInput   : htf2OnInput and htf2Sec == chartSec ? htf2TagInput   : htf1OnInput and htf1Sec == chartSec ? htf1TagInput   : chartTagInput
+int    chartWidth = htf3OnInput and htf3Sec == chartSec ? htf3WidthInput : htf2OnInput and htf2Sec == chartSec ? htf2WidthInput : htf1OnInput and htf1Sec == chartSec ? htf1WidthInput : chartWidthInput
+
+var array<string> levelTags   = array.from(chartTag, htf1TagInput, htf2TagInput, htf3TagInput)
+var array<int>    levelWidths = array.from(chartWidth, htf1WidthInput, htf2WidthInput, htf3WidthInput)
+//}
+
+// --------------------- Detection { ----------------------------- \\
+float atrValue = ta.atr(atrLenInput)
+float band     = atrMultInput * atrValue
+
+// The price range of the bars on screen. The chart.*_visible_bar_time values change with
+// every scroll and zoom and the script recalculates from the first bar when they do, so
+// these two running values are always the current view's. They come from the bars alone,
+// never from the drawings, so there is no feedback between what is drawn and the range.
+var float visHigh = na
+var float visLow  = na
+if time >= chart.left_visible_bar_time and time <= chart.right_visible_bar_time
+    visHigh := math.max(nz(visHigh, high), high)
+    visLow  := math.min(nz(visLow, low), low)
+
+f_inRange(float price) =>
+    bool inAtr = math.abs(price - close) <= band
+    bool inVis = na(visHigh) or (price >= visLow and price <= visHigh)
+    filterModeInput == "Visible price range" ? inVis : filterModeInput == "Within N ATR" ? inAtr : inVis and inAtr
+
+// Chart timeframe: the pivot is at bar [right] once confirmed on this bar.
+float chartPh = ta.pivothigh(leftInput, rightInput)
+float chartPl = ta.pivotlow(leftInput, rightInput)
+int   chartPt = time[rightInput]
+
+// Higher timeframes: the previous HTF bar's confirmed pivot, fetched with lookahead on, so
+// the value is fixed from the moment the confirming HTF bar closes and never repaints.
+f_htfPivots(simple string tf) =>
+    request.security(syminfo.tickerid, tf, [ta.pivothigh(leftInput, rightInput)[1], ta.pivotlow(leftInput, rightInput)[1], time[rightInput + 1]], lookahead=barmerge.lookahead_on)
+
+[htf1Ph, htf1Pl, htf1Pt] = f_htfPivots(htf1TfInput)
+[htf2Ph, htf2Pl, htf2Pt] = f_htfPivots(htf2TfInput)
+[htf3Ph, htf3Pl, htf3Pt] = f_htfPivots(htf3TfInput)
+
+// One call site per timeframe, so the var dedupe state is per timeframe. The HTF values
+// repeat on every chart bar inside the next HTF bar; the stored time catches the repeats.
+f_collect(array<Pivot> arr, int level, float ph, float pl, int t, bool enabled) =>
+    var int lastHighT = -1
+    var int lastLowT  = -1
+    if enabled
+        if not na(ph) and t != lastHighT
+            array.push(arr, Pivot.new(price=ph, t=t, isHigh=true, level=level))
+            lastHighT := t
+        if not na(pl) and t != lastLowT
+            array.push(arr, Pivot.new(price=pl, t=t, isHigh=false, level=level))
+            lastLowT := t
+        while array.size(arr) > keepInput
+            array.shift(arr)
+
+f_collect(piv0, 0, chartPh, chartPl, chartPt, chartOnInput)
+f_collect(piv1, 1, htf1Ph, htf1Pl, htf1Pt, htf1Active)
+f_collect(piv2, 2, htf2Ph, htf2Pl, htf2Pt, htf2Active)
+f_collect(piv3, 3, htf3Ph, htf3Pl, htf3Pt, htf3Active)
+
+// Breaks. A live pivot leaves its timeframe's array the bar price goes through it and
+// joins the broken list stamped with that bar. Because every break removes a pivot, the
+// live arrays hold only the levels price has never taken out: the staircase of highs
+// above and lows below, which stays small however long the chart is.
+bool  breakOnClose = breakOnInput == "Close"
+float upProbe      = breakOnClose ? close : high
+float downProbe    = breakOnClose ? close : low
+bool  checkBreaks  = not breakOnClose or barstate.isconfirmed
+
+// The expiry period the current bar belongs to. A period at or below the chart timeframe
+// means every bar is its own period, so a dashed ray lasts for the break bar only.
+int expireSec = timeframe.in_seconds(brokenExpireTfInput)
+int expireT   = time(brokenExpireTfInput)
+int periodT   = expireSec <= chartSec or na(expireT) ? time : expireT
+
+f_checkBreaks(array<Pivot> arr) =>
+    int n = array.size(arr)
+    if checkBreaks and n > 0
+        for i = n - 1 to 0
+            Pivot p = array.get(arr, i)
+            bool hit = p.isHigh ? upProbe > p.price : downProbe < p.price
+            if hit
+                p.brokenT := time
+                p.brokenP := periodT
+                array.push(broken, p)
+                array.remove(arr, i)
+
+f_checkBreaks(piv0)
+f_checkBreaks(piv1)
+f_checkBreaks(piv2)
+f_checkBreaks(piv3)
+
+// Expire: breaks from an earlier period leave at that period's close. Pushes arrive in
+// time order, so anything stale is at the front.
+if brokenExpireInput
+    while array.size(broken) > 0 and array.get(broken, 0).brokenP != periodT
+        array.shift(broken)
+
+// Keep the last N break EVENTS: pivots broken on the same bar share a stamp and stay or go
+// together. Pushes arrive in time order, so the oldest stamp is always at the front.
+int keepEvents = brokenOnInput ? brokenKeepInput : 0
+if array.size(broken) > 0
+    int events = 1
+    for i = 1 to math.max(1, array.size(broken) - 1)
+        if i < array.size(broken) and array.get(broken, i).brokenT != array.get(broken, i - 1).brokenT
+            events += 1
+    while events > keepEvents and array.size(broken) > 0
+        int oldest = array.get(broken, 0).brokenT
+        while array.size(broken) > 0 and array.get(broken, 0).brokenT == oldest
+            array.shift(broken)
+        events -= 1
+
+// All-time high. The chart's own running max (first occurrence; Pine rolls var state back
+// on each realtime tick, so a developing high never sticks early) covers the loaded bars
+// and the open month. The monthly request covers everything before the chart's first bar:
+// TradingView computes the monthly series over the symbol's whole history and hands back
+// the running max as of the last closed month. The higher of the two is the ATH, and the
+// chart's finer bar time is used whenever the chart has the record bar itself.
+var float loadedAth  = na
+var int   loadedAthT = na
+if na(loadedAth) or high > loadedAth
+    loadedAth  := high
+    loadedAthT := time
+
+[monthlyAth, monthlyAthT] = request.security(syminfo.tickerid, "M", [ta.max(high), ta.valuewhen(high == ta.max(high), time, 0)])
+
+bool  useHistory = athSourceInput == "Full history" and not na(monthlyAth)
+float ath  = useHistory ? math.max(monthlyAth, loadedAth) : loadedAth
+int   athT = useHistory and monthlyAth > loadedAth ? monthlyAthT : loadedAthT
+//}
+
+// --------------------- Drawing { ----------------------------- \\
+f_hasLevel(int mask, int level) =>
+    int(math.floor(mask / math.pow(2, level))) % 2 == 1
+
+f_labelSize() =>
+    labelSizeInput == "tiny" ? size.tiny : labelSizeInput == "small" ? size.small : labelSizeInput == "large" ? size.large : labelSizeInput == "huge" ? size.huge : size.normal
+
+// Tag text runs from the highest timeframe down, e.g. "W D 4H".
+f_tagText(int mask) =>
+    string txt = ""
+    for lv = 3 to 0
+        if f_hasLevel(mask, lv)
+            string tag = array.get(levelTags, lv)
+            if tag != ""
+                txt := txt == "" ? tag : txt + " " + tag
+    txt
+
+f_gather(array<Pivot> src, array<float> cPrice, array<int> cT, array<int> cLevel, array<bool> cHigh) =>
+    for p in src
+        bool sideOn  = p.isHigh ? showHighsInput : showLowsInput
+        bool isAth   = athOnInput and p.isHigh and p.price == ath
+        if sideOn and not isAth and f_inRange(p.price)
+            array.push(cPrice, p.price)
+            array.push(cT, p.t)
+            array.push(cLevel, p.level)
+            array.push(cHigh, p.isHigh)
+
+// Merge by price: walk the candidates in price order and fold same-price neighbours into
+// one ray. The ray takes its start bar, width and side from the LOWEST timeframe in the
+// group (chart first), because a higher-timeframe pivot is only known to the resolution
+// of its bar: a daily pivot on a 5-minute chart is stamped with the day's open, hours
+// before the candle that actually made the high. The tag still lists every timeframe.
+// Two pivots of the same timeframe at one price (a double top) start at the earlier one.
+f_merge(array<float> cPrice, array<int> cT, array<int> cLevel, array<bool> cHigh) =>
+    array<float> mPrice = array.new<float>()
+    array<int>   mT     = array.new<int>()
+    array<int>   mMask  = array.new<int>()
+    array<int>   mLevel = array.new<int>()
+    array<bool>  mHigh  = array.new<bool>()
+    if array.size(cPrice) > 0
+        float tol = (mergeTicksInput + 0.5) * syminfo.mintick
+        array<int> order = array.sort_indices(cPrice)
+        for idx in order
+            float pr = array.get(cPrice, idx)
+            int   tt = array.get(cT, idx)
+            int   lv = array.get(cLevel, idx)
+            bool  hi = array.get(cHigh, idx)
+            int   n  = array.size(mPrice)
+            if n > 0 and math.abs(pr - array.get(mPrice, n - 1)) <= tol
+                if not f_hasLevel(array.get(mMask, n - 1), lv)
+                    array.set(mMask, n - 1, array.get(mMask, n - 1) + int(math.pow(2, lv)))
+                int curLevel = array.get(mLevel, n - 1)
+                if lv < curLevel
+                    array.set(mLevel, n - 1, lv)
+                    array.set(mT, n - 1, tt)
+                    array.set(mPrice, n - 1, pr)
+                    array.set(mHigh, n - 1, hi)
+                else if lv == curLevel
+                    array.set(mT, n - 1, math.min(array.get(mT, n - 1), tt))
+            else
+                array.push(mPrice, pr)
+                array.push(mT, tt)
+                array.push(mMask, int(math.pow(2, lv)))
+                array.push(mLevel, lv)
+                array.push(mHigh, hi)
+    [mPrice, mT, mMask, mLevel, mHigh]
+
+// At the pivot, the tag sits on the empty side of the level (above a high, below a low)
+// at the bar that made it. At the right edge it hangs left from the anchor bar.
+f_draw(int t0, float price, bool isHigh, color col, color txtCol, int width, string lineStyle, string txt, string tip) =>
+    int x1 = math.max(t0, firstBarTime)
+    line ln = line.new(x1=x1, y1=price, x2=time + 1, y2=price, xloc=xloc.bar_time, extend=extend.right, color=col, width=width, style=lineStyle)
+    array.push(rays, ln)
+    if txt != ""
+        string full = showPriceInput ? txt + " " + str.tostring(price, format.mintick) : txt
+        if labelPosInput == "Pivot"
+            array.push(tags, label.new(x1, price, full, xloc=xloc.bar_time, yloc=yloc.price, color=noColor, style=isHigh ? label.style_label_down : label.style_label_up, textcolor=txtCol, size=f_labelSize(), tooltip=tip))
+        else
+            array.push(tags, label.new(bar_index + labelOffsetInput, price, full, xloc=xloc.bar_index, yloc=yloc.price, color=noColor, style=label.style_label_right, textcolor=txtCol, size=f_labelSize(), tooltip=tip))
+
+if barstate.islast
+    for ln in rays
+        line.delete(ln)
+    array.clear(rays)
+    for lb in tags
+        label.delete(lb)
+    array.clear(tags)
+
+    string dateFmt = chartSec >= 86400 ? "yyyy-MM-dd" : "yyyy-MM-dd HH:mm"
+
+    // Live candidates inside the filter, from every timeframe.
+    array<float> cPrice = array.new<float>()
+    array<int>   cT     = array.new<int>()
+    array<int>   cLevel = array.new<int>()
+    array<bool>  cHigh  = array.new<bool>()
+    f_gather(piv0, cPrice, cT, cLevel, cHigh)
+    f_gather(piv1, cPrice, cT, cLevel, cHigh)
+    f_gather(piv2, cPrice, cT, cLevel, cHigh)
+    f_gather(piv3, cPrice, cT, cLevel, cHigh)
+    [mPrice, mT, mMask, mLevel, mHigh] = f_merge(cPrice, cT, cLevel, cHigh)
+
+    // Nearest first when the filter passes more than the cap.
+    array<int> drawOrder = array.new<int>()
+    if array.size(mPrice) > maxRaysInput
+        array<float> dist = array.new<float>()
+        for pr in mPrice
+            array.push(dist, math.abs(pr - close))
+        array<int> nearest = array.sort_indices(dist)
+        for i = 0 to maxRaysInput - 1
+            array.push(drawOrder, array.get(nearest, i))
+    else
+        for [i, pr] in mPrice
+            array.push(drawOrder, i)
+
+    for i in drawOrder
+        float pr   = array.get(mPrice, i)
+        int   t0   = array.get(mT, i)
+        int   lv   = array.get(mLevel, i)
+        int   mask = array.get(mMask, i)
+        string txt = f_tagText(mask)
+        string tip = (txt == "" ? "pivot" : txt + " pivot") + "  " + str.format_time(t0, dateFmt, syminfo.timezone)
+        f_draw(t0, pr, array.get(mHigh, i), rayColor, labelColor, array.get(levelWidths, lv), line.style_solid, txt, tip)
+
+    // The last break events, dashed and fainter, merged the same way.
+    array<float> bPrice = array.new<float>()
+    array<int>   bT     = array.new<int>()
+    array<int>   bLevel = array.new<int>()
+    array<bool>  bHigh  = array.new<bool>()
+    f_gather(broken, bPrice, bT, bLevel, bHigh)
+    [xPrice, xT, xMask, xLevel, xHigh] = f_merge(bPrice, bT, bLevel, bHigh)
+    for [i, pr] in xPrice
+        int   t0   = array.get(xT, i)
+        int   lv   = array.get(xLevel, i)
+        string txt = f_tagText(array.get(xMask, i))
+        string tip = (txt == "" ? "broken pivot" : "broken " + txt + " pivot") + "  " + str.format_time(t0, dateFmt, syminfo.timezone)
+        f_draw(t0, pr, array.get(xHigh, i), brokenColor, brokenLabelColor, array.get(levelWidths, lv), line.style_dashed, txt, tip)
+
+    if athOnInput and not na(ath) and (athAlwaysInput or f_inRange(ath))
+        f_draw(athT, ath, true, athColor, labelColor, athWidthInput, line.style_dotted, athTagInput, (useHistory ? "all-time high  " : "all-time high of the loaded bars  ") + str.format_time(athT, dateFmt, syminfo.timezone))
+//}

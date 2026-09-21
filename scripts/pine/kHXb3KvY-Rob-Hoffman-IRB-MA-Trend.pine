@@ -1,0 +1,210 @@
+//@version=6
+indicator("Rob Hoffman IRB + MA Trend", shorttitle = "Hoffman IRB", overlay = true, max_labels_count = 500, max_lines_count = 200)
+// IRB pattern and the MA ribbon / No-Trend Zone are Rob Hoffman's method,
+// referenced against UCSgears' published Pine implementation of the overlay set.
+
+// ---------------------------------------------------------------------------
+// Inputs
+// ---------------------------------------------------------------------------
+grpIRB = "Inventory Retracement Bar"
+irbPct        = input.float(45, "IRB retracement %", minval = 5, maxval = 95, step = 1, group = grpIRB) / 100
+irbWindow     = input.int(20, "Entry trigger window (bars)", minval = 1, group = grpIRB)
+irbAtrLen     = input.int(10, "ATR length (IRB range filter)", minval = 2, group = grpIRB)
+irbAtrMult    = input.float(2.0, "Reject IRB if range > ATR x mult", minval = 0.5, step = 0.1, group = grpIRB)
+triggerStyle  = input.string("Extreme high/low break", "Entry trigger style", options = ["Extreme high/low break", "Close past retracement level"], group = grpIRB)
+showIRB       = input.bool(true, "Show IRB bars", group = grpIRB)
+showEntries   = input.bool(true, "Show entry triggers", group = grpIRB)
+gateIRB       = input.bool(true, "Gate IRB by trend filter (off = raw bar-shape only, matches UCSgears' ungated IRB)", group = grpIRB)
+
+grpMA = "Moving Average Stack"
+showStack     = input.bool(true, "Show full MA ribbon (50/89/144/200 + 18ema)", group = grpMA)
+smaLenA       = input.int(3,  "SMA A", group = grpMA)
+smaLenB       = input.int(5,  "SMA B", group = grpMA)
+smaLenC       = input.int(50, "SMA C", group = grpMA)
+smaLenD       = input.int(89, "SMA D", group = grpMA)
+smaLenE       = input.int(200,"SMA E", group = grpMA)
+emaLenA       = input.int(18, "EMA A", group = grpMA)
+emaLenB       = input.int(20, "EMA B (primary trend line)", group = grpMA)
+emaLenC       = input.int(34, "EMA C (No-Trend Zone basis)", group = grpMA)
+emaLenD       = input.int(144,"EMA D", group = grpMA)
+ntzAtrLen     = input.int(34, "No-Trend Zone ATR length", minval = 1, group = grpMA)
+ntzMult       = input.float(0.45, "No-Trend Zone Keltner multiplier", minval = 0.1, maxval = 2.0, step = 0.05, group = grpMA)
+ntzBandType   = input.string("EMA (Keltner-style)", "No-Trend Zone band smoothing", options = ["EMA (Keltner-style)", "RMA (ATR/Wilder)"], group = grpMA)
+
+// ---------------------------------------------------------------------------
+// Moving average stack
+// ---------------------------------------------------------------------------
+smaA = ta.sma(close, smaLenA)
+smaB = ta.sma(close, smaLenB)
+smaC = ta.sma(close, smaLenC)
+smaD = ta.sma(close, smaLenD)
+smaE = ta.sma(close, smaLenE)
+emaA = ta.ema(close, emaLenA)
+emaB = ta.ema(close, emaLenB)
+emaC = ta.ema(close, emaLenC)
+emaD = ta.ema(close, emaLenD)
+
+ntzWidth = (ntzBandType == "EMA (Keltner-style)" ? ta.ema(ta.tr(true), ntzAtrLen) : ta.rma(ta.tr(true), ntzAtrLen)) * ntzMult
+ntzUpper = emaC + ntzWidth
+ntzLower = emaC - ntzWidth
+
+// full Hoffman ribbon (SMA 3/5/50/89/200, EMA 18/144) — context only,
+// not load-bearing for the gate
+plot(showStack ? smaA : na, "SMA A", color = color.new(color.aqua, 60), linewidth = 1)
+plot(showStack ? smaB : na, "SMA B", color = color.new(color.aqua, 30), linewidth = 1)
+plot(showStack ? smaC : na, "SMA C", color = color.new(color.orange, 20), linewidth = 2)
+plot(showStack ? smaD : na, "SMA D", color = color.new(color.orange, 50), linewidth = 1)
+plot(showStack ? smaE : na, "SMA E", color = color.new(color.red, 10), linewidth = 2)
+plot(showStack ? emaA : na, "EMA A", color = color.new(color.lime, 60), linewidth = 1)
+plot(showStack ? emaD : na, "EMA D", color = color.new(color.purple, 30), linewidth = 1)
+
+// core lines: always visible — 20ema, No-Trend Zone channel
+// blood-red No-Trend Zone cloud, rendered as a 12-step gradient:
+// dense at the midline, fading out toward the band edges
+bloodRed = #8B0000
+
+ntzMidPlot = plot(emaC, "NTZ midline", color = color.new(bloodRed, 30), linewidth = 1)
+
+ntzU1 = plot(emaC + ntzWidth * 0.1667, "ntz u1", color = na, display = display.none)
+ntzU2 = plot(emaC + ntzWidth * 0.3333, "ntz u2", color = na, display = display.none)
+ntzU3 = plot(emaC + ntzWidth * 0.5000, "ntz u3", color = na, display = display.none)
+ntzU4 = plot(emaC + ntzWidth * 0.6667, "ntz u4", color = na, display = display.none)
+ntzU5 = plot(emaC + ntzWidth * 0.8333, "ntz u5", color = na, display = display.none)
+ntzL1 = plot(emaC - ntzWidth * 0.1667, "ntz l1", color = na, display = display.none)
+ntzL2 = plot(emaC - ntzWidth * 0.3333, "ntz l2", color = na, display = display.none)
+ntzL3 = plot(emaC - ntzWidth * 0.5000, "ntz l3", color = na, display = display.none)
+ntzL4 = plot(emaC - ntzWidth * 0.6667, "ntz l4", color = na, display = display.none)
+ntzL5 = plot(emaC - ntzWidth * 0.8333, "ntz l5", color = na, display = display.none)
+
+ntzUpperPlot = plot(ntzUpper, "No-Trend Zone Upper", color = color.new(bloodRed, 10), linewidth = 2)
+ntzLowerPlot = plot(ntzLower, "No-Trend Zone Lower", color = color.new(bloodRed, 10), linewidth = 2)
+
+fill(ntzMidPlot,   ntzU1,        color = color.new(bloodRed, 42))
+fill(ntzU1,        ntzU2,        color = color.new(bloodRed, 50))
+fill(ntzU2,        ntzU3,        color = color.new(bloodRed, 58))
+fill(ntzU3,        ntzU4,        color = color.new(bloodRed, 66))
+fill(ntzU4,        ntzU5,        color = color.new(bloodRed, 74))
+fill(ntzU5,        ntzUpperPlot, color = color.new(bloodRed, 82))
+fill(ntzMidPlot,   ntzL1,        color = color.new(bloodRed, 42))
+fill(ntzL1,        ntzL2,        color = color.new(bloodRed, 50))
+fill(ntzL2,        ntzL3,        color = color.new(bloodRed, 58))
+fill(ntzL3,        ntzL4,        color = color.new(bloodRed, 66))
+fill(ntzL4,        ntzL5,        color = color.new(bloodRed, 74))
+fill(ntzL5,        ntzLowerPlot, color = color.new(bloodRed, 82))
+
+plot(emaB, "EMA B (20)", color = color.new(#FFD700, 0), linewidth = 2)
+
+// simple trend anchor: a slower EMA so a deep pullback through the 20ema
+// doesn't kill the trend flag as long as price still holds above/below it.
+grpSimple = "Simple Trend Gate"
+useSlowAnchor = input.bool(true, "Also count trend via anchor EMA (catches deep pullbacks)", group = grpSimple)
+blockVsAnchor = input.bool(true, "Block IRB signals against the anchor EMA", group = grpSimple)
+slowAnchorLen = input.int(89, "Anchor EMA length", minval = 1, group = grpSimple)
+emaSlowAnchor = ta.ema(close, slowAnchorLen)
+anchorUp   = close > emaSlowAnchor
+anchorDown = close < emaSlowAnchor
+plot(emaSlowAnchor, "Anchor EMA", color = color.new(#00E5FF, 0), linewidth = 2)
+
+// Trend angle (the ~45 degree 20 EMA) is intentionally not measured — Pine has
+// no access to the chart's pixel geometry, so any "degrees" figure is either
+// zoom-dependent or unrelated to what's on screen. Judge the slope by eye.
+
+// ---------------------------------------------------------------------------
+// Trend gate
+// ---------------------------------------------------------------------------
+outsideNtzUp   = close > ntzUpper
+outsideNtzDown = close < ntzLower
+
+// trend = clear of the No-Trend Zone AND respecting the 20 EMA (or the anchor
+// EMA on a deep pullback). The full MA ribbon is context only.
+respectEma20Up   = close > emaB
+respectEma20Down = close < emaB
+
+trendUp   = outsideNtzUp   and (respectEma20Up   or (useSlowAnchor and anchorUp))
+trendDown = outsideNtzDown and (respectEma20Down or (useSlowAnchor and anchorDown))
+
+// ---------------------------------------------------------------------------
+// Inventory Retracement Bar detection
+// ---------------------------------------------------------------------------
+rangeBar  = high - low
+upperLvl  = high - irbPct * rangeBar
+lowerLvl  = low  + irbPct * rangeBar
+irbAtr    = ta.atr(irbAtrLen)
+
+rangeOK = rangeBar <= irbAtr * irbAtrMult
+
+// anchor veto: never flag a long below the anchor EMA, or a short above it
+anchorOkLong  = not blockVsAnchor or anchorUp
+anchorOkShort = not blockVsAnchor or anchorDown
+
+irbLong  = rangeOK and (not gateIRB or trendUp)   and anchorOkLong  and close < upperLvl and open < upperLvl and rangeBar > 0
+irbShort = rangeOK and (not gateIRB or trendDown) and anchorOkShort and close > lowerLvl and open > lowerLvl and rangeBar > 0
+
+var float irbLongHigh     = na
+var float irbLongLow      = na
+var float irbLongUpperLvl = na
+var int   irbLongBar      = na
+var float irbShortHigh     = na
+var float irbShortLow      = na
+var float irbShortLowerLvl = na
+var int   irbShortBar      = na
+
+if irbLong
+    irbLongHigh     := high
+    irbLongLow      := low
+    irbLongUpperLvl := upperLvl
+    irbLongBar      := bar_index
+
+if irbShort
+    irbShortHigh     := high
+    irbShortLow      := low
+    irbShortLowerLvl := lowerLvl
+    irbShortBar      := bar_index
+
+plotshape(showIRB and irbLong,  "IRB long bar",  style = shape.triangleup,   location = location.belowbar, color = color.new(#00E676, 20), size = size.tiny)
+plotshape(showIRB and irbShort, "IRB short bar", style = shape.triangledown, location = location.abovebar, color = color.new(#FF1744, 20), size = size.tiny)
+
+// ---------------------------------------------------------------------------
+// Entry trigger: break of IRB high/low within window, invalidated on opposite re-break
+// ---------------------------------------------------------------------------
+longActive  = not na(irbLongBar)  and (bar_index - irbLongBar)  <= irbWindow
+shortActive = not na(irbShortBar) and (bar_index - irbShortBar) <= irbWindow
+
+tick = syminfo.mintick
+
+longTrigger  = longActive  and not irbLong  and (triggerStyle == "Extreme high/low break" ? high >= irbLongHigh  + tick : close >= irbLongUpperLvl)
+shortTrigger = shortActive and not irbShort and (triggerStyle == "Extreme high/low break" ? low  <= irbShortLow  - tick : close <= irbShortLowerLvl)
+
+longInvalid  = longActive  and low  <= irbLongLow  - tick
+shortInvalid = shortActive and high >= irbShortHigh + tick
+
+if longTrigger or longInvalid
+    irbLongBar := na
+if shortTrigger or shortInvalid
+    irbShortBar := na
+
+plotshape(showEntries and longTrigger,  "Long entry",  style = shape.labelup,   location = location.belowbar, color = color.new(#00C853, 0), text = "IRB L", textcolor = #FFFFFF, size = size.small)
+plotshape(showEntries and shortTrigger, "Short entry", style = shape.labeldown, location = location.abovebar, color = color.new(#D50000, 0), text = "IRB S", textcolor = #FFFFFF, size = size.small)
+
+alertcondition(longTrigger,  "Hoffman IRB Long Entry",  "IRB long trigger on {{ticker}} {{interval}}")
+alertcondition(shortTrigger, "Hoffman IRB Short Entry", "IRB short trigger on {{ticker}} {{interval}}")
+
+// ---------------------------------------------------------------------------
+// ATR trailing stop reference (informational, not auto-managed)
+// ---------------------------------------------------------------------------
+showStop = input.bool(true, "Show ATR trailing stop line", group = grpIRB)
+stopAtrMult = input.float(1.5, "Stop ATR multiple", minval = 0.5, step = 0.1, group = grpIRB)
+
+var float trailStop = na
+if longTrigger
+    trailStop := irbLongLow
+else if shortTrigger
+    trailStop := irbShortHigh
+else if trendUp and not na(trailStop) and low > trailStop
+    trailStop := math.max(trailStop, close - irbAtr * stopAtrMult)
+else if trendDown and not na(trailStop) and high < trailStop
+    trailStop := math.min(trailStop, close + irbAtr * stopAtrMult)
+else if (trendUp and low <= trailStop) or (trendDown and high >= trailStop) or (not trendUp and not trendDown)
+    trailStop := na
+
+plot(showStop ? trailStop : na, "Trailing stop", color = color.new(color.yellow, 0), style = plot.style_circles, linewidth = 1)

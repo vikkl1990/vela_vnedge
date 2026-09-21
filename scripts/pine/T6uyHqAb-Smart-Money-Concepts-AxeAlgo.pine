@@ -1,0 +1,644 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AxeAlgo
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+//  SMC [AxeAlgo]
+// ─────────────────────────────────────────────────────────────────────────────
+//  Clean, non-repainting market structure visualization for Smart Money Concepts
+//
+//  This edition provides:
+//  • Swing & Internal market structure (CHoCH/BOS)
+//  • Order Blocks & Fair Value Gaps
+//  • Liquidity pools (equal highs/lows)
+//  • Premium/Discount context zones
+//  • Optional lightweight dashboard
+//
+//  NON-REPAINTING: pivots confirm `pvRight` bars after the swing and never move;
+//  breaks fire on the closing bar; zones only ever shrink or change state colour.
+// ─────────────────────────────────────────────────────────────────────────────
+
+indicator("SMC [AxeAlgo]", overlay = true, max_lines_count = 150, max_boxes_count = 60, max_labels_count = 260, max_bars_back = 150)
+
+// ═════════════════════════ Inputs ═════════════════════════
+
+// ───────── 1. QUICK START ─────────
+g00 = "1. QUICK START"
+simpleMode = input.bool(false, "📱 Simple Mode", group = g00, tooltip = "Swing structure only (no internal noise), cleaner look.")
+autoTune   = input.bool(true, "🎯 Auto-Tune To Timeframe", group = g00, tooltip = "Detect your chart's timeframe and auto-scale all sensitivity parameters.")
+
+// ───────── 2. WHAT TO SHOW ─────────
+g01 = "2. WHAT TO SHOW"
+showSwing  = input.bool(true, "Show Structure (CHoCH/BOS)", group = g01)
+showOB     = input.bool(true, "Show Order Blocks", group = g01)
+showFVG    = input.bool(true, "Show Fair Value Gaps", group = g01)
+showLiq    = input.bool(true, "Show Liquidity Pools", group = g01)
+showPD     = input.bool(true, "Show Premium/Discount", group = g01)
+showDash   = input.bool(true, "Show Dashboard", group = g01)
+
+// ───────── 3. ZONE SIZING ─────────
+g02 = "3. ZONE SIZING"
+obMinAtr   = input.float(0.1, "Min Zone Height (× ATR)", minval = 0.01, maxval = 1.0, step = 0.01, group = g02, tooltip = "Zones thinner than this are skipped.")
+obMaxAtr   = input.float(2.5, "Max Zone Height (× ATR)", minval = 0.5, maxval = 10.0, step = 0.5, group = g02, tooltip = "Zones taller than this are capped.")
+
+// ───────── 4. STRUCTURE DETECTION ─────────
+g03 = "4. STRUCTURE DETECTION"
+pvRight    = input.int(2,  "Confirmation Bars", minval = 1, maxval = 6, group = g03)
+dispMin    = input.float(1.0, "Min Displacement (× ATR)", minval = 0.2, maxval = 5.0, step = 0.1, group = g03)
+structExt  = input.int(3, "Structure Ray Length (bars)", minval = 0, maxval = 30, group = g03)
+
+// ───────── 5. PREMIUM / DISCOUNT ─────────
+g05 = "5. PREMIUM / DISCOUNT"
+pdSpan     = input.int(60, "P/D Lookback (bars)", minval = 10, maxval = 300, group = g05, tooltip = "How far back to find the two pivots that define premium/discount zones.")
+pdBand     = input.float(0.05, "Equilibrium Band (± % of range)", minval = 0.0, maxval = 0.25, step = 0.01, group = g05, tooltip = "Middle band width around 50%.")
+ctxExt     = input.int(6, "Zone Extension (bars)", minval = 0, maxval = 40, group = g05, tooltip = "How far premium/discount boxes extend forward.")
+
+// ───────── 6. ORDER BLOCK TUNING ─────────
+g06 = "6. ORDER BLOCK TUNING"
+obReqFVG   = input.bool(true, "Require Imbalance", group = g06)
+keepMit    = input.int(20, "Keep Used Blocks (bars)", minval = 0, maxval = 200, group = g06)
+
+// ───────── 7. FAIR VALUE GAP TUNING ─────────
+g07 = "7. FAIR VALUE GAP TUNING"
+fvgMinAtr  = input.float(0.25, "Min Gap Size (× ATR)", minval = 0.02, maxval = 3.0, step = 0.02, group = g07, tooltip = "Gaps smaller than this are not drawn.")
+showCE     = input.bool(true, "Show 50% (Consequent Encroachment) Line", group = g07, tooltip = "The midline of each FVG — common reaction level as the gap fills.")
+
+// ───────── 8. LIQUIDITY POOL TUNING ─────────
+g08 = "8. LIQUIDITY POOL TUNING"
+eqTol      = input.float(0.15, "Cluster Tolerance (× ATR)", minval = 0.02, maxval = 1.0, step = 0.01, group = g08)
+liqExt     = input.int(12, "Pool Ray Length (bars)", minval = 0, maxval = 60, group = g08)
+
+// ───────── 9. DRAWING ─────────
+g11 = "9. DRAWING"
+zoneExt    = input.int(13, "Zone Box Extension (bars)", minval = 0, maxval = 60, group = g11, tooltip = "How far order-block and FVG boxes extend forward.")
+atrLen     = input.int(14, "ATR Length (calculation)", minval = 2, maxval = 100, group = g11, tooltip = "Period for ATR calculation.")
+
+// ───────── 10. DASHBOARD ─────────
+g12 = "10. DASHBOARD"
+tblPosTxt  = input.string("Top Right", "Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = g12, tooltip = "Where the dashboard sits on your chart.")
+tblSizeTxt = input.string("Small", "Text Size", options = ["Tiny", "Small", "Normal"], group = g12, tooltip = "Font size for dashboard.")
+
+// ───────── 11. COLORS ─────────
+g14 = "11. COLORS"
+bullCol    = input.color(#D4AF37, "Bullish", inline = "c1", group = g14)
+bearCol    = input.color(#C77B5A, "Bearish", inline = "c1", group = g14)
+fvgColBull = input.color(#5B8BA8, "FVG Bullish", inline = "c2", group = g14)
+fvgColBear = input.color(#A8697E, "FVG Bearish", inline = "c2", group = g14)
+
+// ───────── 12. WATERMARK ─────────
+wmGrp      = " A X E A L G O "
+wmTheme    = input.string("Dark", "Watermark Theme", options = ["Auto", "Dark", "Light"], group = wmGrp, tooltip = "Auto = detect chart background.")
+showWm     = input.bool(true, "Show Watermark", group = wmGrp)
+
+// ═════════════════════════ Defaults (simplified free version) ═════════════════════════
+intLenIn    = 5
+swLenIn     = 15
+bosThrottle = 6
+structCap   = 40
+lblOffAtr   = 0.12
+obScan      = 15
+obOppSlack  = 2
+obPick      = "Auto"
+obMitUse    = "Fill"
+maxZones    = 5
+zoneFarAtr  = 12.0
+eqPivIn     = 5
+liqMaxAge   = 30
+maxPools    = 6
+liqFarAtr   = 18.0
+liqAnchorCap = 250
+maxSweepMarks = 20
+chochCol   = #FFD400
+bosCol     = #C9B37E
+liqColU    = #C9A227
+eqCol      = #C9B37E
+
+// ═════════════════════════ Helpers ═════════════════════════
+
+f_tablePos(t) =>
+    switch t
+        "Top Right"    => position.top_right
+        "Top Left"     => position.top_left
+        "Bottom Right" => position.bottom_right
+        "Bottom Left"  => position.bottom_left
+        => position.top_right
+
+f_size(t) =>
+    switch t
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        => size.small
+
+f_capLines(a, c) =>
+    while array.size(a) > c
+        line.delete(array.shift(a))
+f_capLabels(a, c) =>
+    while array.size(a) > c
+        label.delete(array.shift(a))
+
+f_autoLens() =>
+    s = timeframe.in_seconds(timeframe.period)
+    switch
+        s <= 60    => [4, 12]
+        s <= 300   => [5, 15]
+        s <= 3600  => [5, 18]
+        s <= 14400 => [6, 22]
+        => [8, 26]
+
+f_struct(phPx, plPx, phBar, plBar) =>
+    var float u  = na
+    var int   ub = na
+    var float d  = na
+    var int   db = na
+    var int   t  = 0
+    if not na(phPx)
+        u  := phPx
+        ub := phBar
+    if not na(plPx)
+        d  := plPx
+        db := plBar
+    bool  up  = false
+    bool  dn  = false
+    bool  ch  = false
+    float brP = na
+    int   brB = na
+    if not na(u) and close > u
+        up  := true
+        ch  := t < 0
+        t   := 1
+        brP := u
+        brB := ub
+        u   := na
+    else if not na(d) and close < d
+        dn  := true
+        ch  := t > 0
+        t   := -1
+        brP := d
+        brB := db
+        d   := na
+    [t, up, dn, ch, brP, brB]
+
+// ═════════════════════════ Core series ═════════════════════════
+atrVal = ta.atr(atrLen)
+
+rng      = high - low
+barDelta = rng > 0 ? nz(volume) * ((close - low) - (high - close)) / rng : 0.0
+
+f_legDelta(n) =>
+    ds = 0.0
+    vs = 0.0
+    for k = 0 to math.max(n, 0)
+        ds += nz(barDelta[k])
+        vs += nz(volume[k])
+    [ds, vs]
+
+[aInt, aSw] = f_autoLens()
+intLen   = autoTune ? aInt : intLenIn
+swLen    = autoTune ? aSw  : swLenIn
+eqPivLen = autoTune ? aInt : eqPivIn
+
+phI = ta.pivothigh(high, intLen, pvRight)
+plI = ta.pivotlow(low,  intLen, pvRight)
+phS = ta.pivothigh(high, swLen,  pvRight)
+plS = ta.pivotlow(low,  swLen,  pvRight)
+
+pxHi   = high[pvRight]
+pxLo   = low[pvRight]
+pvBar  = bar_index - pvRight
+
+[intTr, intUp, intDn, intCh, intBrP, intBrB] = f_struct(phI, plI, pvBar, pvBar)
+[swTr,  swUp,  swDn,  swCh,  swBrP,  swBrB ] = f_struct(phS, plS, pvBar, pvBar)
+
+var float actHi  = na
+var int   actHiB = na
+var float actLo  = na
+var int   actLoB = na
+if not na(phS)
+    actHi  := pxHi
+    actHiB := pvBar
+if not na(plS)
+    actLo  := pxLo
+    actLoB := pvBar
+rngOK    = not na(actHi) and not na(actLo) and actHi > actLo
+eqLevel  = rngOK ? (actHi + actLo) / 2 : na
+rangePos = rngOK ? math.max(0.0, math.min(1.0, (close - actLo) / (actHi - actLo))) : na
+
+rHiWin = ta.highest(high, 20)
+rLoWin = ta.lowest(low, 20)
+
+// ═════════════════════════ Types ═════════════════════════
+type Zone
+    box   bx
+    line  ce
+    label lb
+    float top
+    float bot
+    int   dir
+    int   born
+    string kind
+    bool  mit
+    int   mitAt
+    float top0
+    float bot0
+
+type Pool
+    line  ln
+    label lb
+    float lvl
+    int   dir
+    int   touch
+
+var array<Zone>  zones  = array.new<Zone>()
+var array<Pool>  pools  = array.new<Pool>()
+var array<float> phBuf  = array.new<float>()
+var array<int>   phBufB = array.new<int>()
+var array<float> plBuf  = array.new<float>()
+var array<int>   plBufB = array.new<int>()
+var array<label> swpLbl = array.new<label>()
+
+// ═════════════════════════ Premium / Discount ═════════════════════════
+var box    pBox = na
+var box    dBox = na
+var line   eqLn = na
+var label  pLbl = na
+var label  dLbl = na
+if barstate.isconfirmed
+    if showPD and not na(eqLevel)
+        l = bar_index + 50
+        r = bar_index + 70
+        midX = (l + r) / 2
+        if na(pBox)
+            pBox := box.new(l, actHi, r, eqLevel, border_color = color.new(bearCol, 80), bgcolor = color.new(bearCol, 94))
+            dBox := box.new(l, eqLevel, r, actLo, border_color = color.new(bullCol, 80), bgcolor = color.new(bullCol, 94))
+            eqLn := line.new(l, eqLevel, r, eqLevel, color = color.new(eqCol, 40), style = line.style_dotted)
+            pLbl := label.new(midX, (actHi + eqLevel) / 2, "Premium", xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, textcolor = color.new(bearCol, 30), size = size.small)
+            dLbl := label.new(midX, (eqLevel + actLo) / 2, "Discount", xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, textcolor = color.new(bullCol, 30), size = size.small)
+        else
+            box.set_lefttop(pBox, l, actHi)
+            box.set_rightbottom(pBox, r, eqLevel)
+            box.set_lefttop(dBox, l, eqLevel)
+            box.set_rightbottom(dBox, r, actLo)
+            line.set_xy1(eqLn, l, eqLevel)
+            line.set_xy2(eqLn, r, eqLevel)
+            label.set_xy(pLbl, midX, (actHi + eqLevel) / 2)
+            label.set_xy(dLbl, midX, (eqLevel + actLo) / 2)
+    else if not na(pBox)
+        box.delete(pBox)
+        box.delete(dBox)
+        line.delete(eqLn)
+        label.delete(pLbl)
+        label.delete(dLbl)
+        pBox := na
+        dBox := na
+        eqLn := na
+        pLbl := na
+        dLbl := na
+
+// ═════════════════════════ Structure — draw ═════════════════════════
+f_drawStruct(up, dn, ch, brP, brB, degCol, dominant, tag) =>
+    var int  lastBar  = na
+    var bool lastUp   = false
+    var array<line>  myLines = array.new<line>()
+    var array<label> myLbls  = array.new<label>()
+    grade = 0
+    if up or dn
+        legOff    = math.min(math.max(bar_index - brB, 1), 100)
+        legMove   = math.abs(close - close[legOff])
+        pen       = math.abs(close - brP)
+        disp      = na(atrVal) or atrVal <= 0 ? 0.0 : math.max(legMove, pen) / atrVal
+        displaced = disp >= dispMin
+        base   = ch ? "CHoCH" : "BOS"
+        txt    = base + (up ? " ▲" : " ▼")
+        col    = ch ? chochCol : degCol
+        aa     = dominant ? 0 : 45
+        tooSoon = not ch and not na(lastBar) and (bar_index - lastBar) < bosThrottle and lastUp == up
+        if not tooSoon and barstate.isconfirmed
+            ln = line.new(brB, brP, bar_index + structExt, brP, color = color.new(col, math.min(aa + 20, 90)), style = dominant ? line.style_solid : line.style_dotted, width = dominant and ch ? 2 : 1)
+            array.push(myLines, ln)
+            f_capLines(myLines, structCap)
+            lineOff = na(atrVal) or atrVal <= 0 ? 0.0 : atrVal * lblOffAtr
+            labelY  = up ? brP + lineOff : brP - lineOff * 2
+            labelX  = (brB + bar_index + structExt) / 2
+            lb = label.new(labelX, labelY, txt + (tag != "" ? " " + tag : ""), xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, textcolor = color.new(up ? bullCol : bearCol, dominant ? 0 : 25), size = (dominant and ch) ? size.small : size.tiny)
+            array.push(myLbls, lb)
+            f_capLabels(myLbls, structCap)
+            lastBar := bar_index
+            lastUp  := up
+    grade
+
+if showSwing
+    f_drawStruct(swUp, swDn, swCh, swBrP, swBrB, bosCol, true, "")
+
+// ═════════════════════════ Order Blocks ═════════════════════════
+f_legExt(n, up) =>
+    e = up ? high : low
+    if n > 0
+        for k = 1 to n
+            e := up ? math.max(e, high[k]) : math.min(e, low[k])
+    e
+
+f_locScore(mid, wantLong) =>
+    out = 0.5
+    if not na(eqLevel)
+        depth = (eqLevel - mid) / (actHi - actLo)
+        raw   = wantLong ? 0.5 + depth * 2.0 : 0.5 - depth * 2.0
+        out  := math.max(0.1, math.min(1.0, raw))
+    out
+
+swLegOff  = na(swBrB) ? 1 : math.min(math.max(bar_index - swBrB, 1), 100)
+swDisp    = na(atrVal) or atrVal <= 0 or na(swBrB) ? 0.0 : math.max(math.abs(close - close[swLegOff]), math.abs(close - swBrP)) / atrVal
+if showOB and (swUp or swDn) and swDisp >= dispMin and barstate.isconfirmed and not na(atrVal) and atrVal > 0
+    dir = swUp ? 1 : -1
+    effScan = autoTune ? math.max(obScan, swLen + pvRight) : obScan
+    extI = 1
+    extV = dir == 1 ? low[1] : high[1]
+    for i = 2 to effScan
+        v = dir == 1 ? low[i] : high[i]
+        if dir == 1 ? v < extV : v > extV
+            extV := v
+            extI := i
+    lastOpp  = 0
+    scanFrom = math.min(extI + obOppSlack, effScan)
+    for i = scanFrom to 1
+        if dir == 1 ? (close[i] < open[i]) : (close[i] > open[i])
+            lastOpp := i
+            break
+    idx = (obPick == "Leg Extreme" or lastOpp == 0) ? extI : lastOpp
+    imb = not obReqFVG
+    if obReqFVG and not imb and idx >= 2
+        for k = 0 to idx - 2
+            if (dir == 1 ? low[k] - high[k + 2] : low[k + 2] - high[k]) > 0
+                imb := true
+                break
+    if imb
+        rawTop   = high[idx]
+        rawBot   = low[idx]
+        stretch  = obPick == "Auto"
+        extTop   = stretch and dir == -1 ? math.max(rawTop, extV) : rawTop
+        extBot   = stretch and dir ==  1 ? math.min(rawBot, extV) : rawBot
+        hMax     = obMaxAtr * atrVal
+        tall     = extTop - extBot > hMax
+        oTop     = tall and dir ==  1 ? extBot + hMax : extTop
+        oBot     = tall and dir == -1 ? extTop - hMax : extBot
+        midPx    = (oTop + oBot) / 2
+        leftOff  = stretch ? math.max(idx, extI) : idx
+        thick    = oTop - oBot >= obMinAtr * atrVal
+        if thick
+            dup = false
+            if array.size(zones) > 0
+                for zz in zones
+                    if not zz.mit and zz.kind == "OB" and midPx <= zz.top and midPx >= zz.bot
+                        dup := true
+            if not dup
+                zc = dir == 1 ? bullCol : bearCol
+                bx = box.new(math.max(0, bar_index - leftOff), oTop, bar_index + 25, oBot, border_color = color.new(zc, 60), bgcolor = color.new(zc, 90), border_width = 1)
+                lb = label.new(bar_index + 25, dir == 1 ? oBot : oTop, "OB", xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, textcolor = color.new(zc, 10), size = size.tiny)
+                array.push(zones, Zone.new(bx, na, lb, oTop, oBot, dir, bar_index, "OB", false, na, oTop, oBot))
+
+// ═════════════════════════ Fair Value Gaps ═════════════════════════
+if showFVG and barstate.isconfirmed and not na(atrVal) and atrVal > 0
+    bull = low > high[2]
+    bear = high < low[2]
+    gap  = bull ? low - high[2] : bear ? low[2] - high : 0.0
+    if gap >= fvgMinAtr * atrVal
+        dir      = bull ? 1 : -1
+        t_       = bull ? low     : low[2]
+        b_       = bull ? high[2] : high
+        midG     = (t_ + b_) / 2
+        fdup = false
+        if array.size(zones) > 0
+            for zz in zones
+                if not zz.mit and zz.kind == "FVG" and midG <= zz.top and midG >= zz.bot
+                    fdup := true
+        if not fdup
+            fvgCol = bull ? fvgColBull : fvgColBear
+            bx = box.new(bar_index - 2, t_, bar_index + zoneExt, b_, border_color = color.new(fvgCol, 70), bgcolor = color.new(fvgCol, 75))
+            ce = showCE ? line.new(bar_index - 2, midG, bar_index + zoneExt, midG, color = color.new(fvgCol, 40), style = line.style_dotted) : na
+            lb = label.new(bar_index + 2, midG, "FVG", xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, textcolor = color.new(fvgCol, 5), size = size.tiny)
+            array.push(zones, Zone.new(bx, ce, lb, t_, b_, dir, bar_index, "FVG", false, na, t_, b_))
+
+if barstate.isconfirmed
+    while array.size(zones) > maxZones
+        z0 = array.shift(zones)
+        box.delete(z0.bx)
+        if not na(z0.ce)
+            line.delete(z0.ce)
+        if not na(z0.lb)
+            label.delete(z0.lb)
+
+// ═════════════════════════ Zone lifecycle ═════════════════════════
+if array.size(zones) > 0
+    for i = array.size(zones) - 1 to 0
+        z = array.get(zones, i)
+        if not z.mit
+            extRight = z.kind == "OB" ? bar_index + 25 : bar_index + zoneExt
+            box.set_right(z.bx, extRight)
+            if not na(z.ce)
+                line.set_x2(z.ce, bar_index + zoneExt)
+            if not na(z.lb)
+                labelX = z.kind == "FVG" ? (bar_index - 2 + bar_index + zoneExt) / 2 : bar_index + 25
+                label.set_x(z.lb, labelX)
+                label.set_y(z.lb, z.kind == "FVG" ? (z.top + z.bot) / 2 : (z.dir == 1 ? z.bot : z.top))
+        if barstate.isconfirmed
+            if not z.mit and z.born != bar_index
+                midZ = (z.top + z.bot) / 2
+                far  = not na(atrVal) and atrVal > 0 and math.abs(close - midZ) > zoneFarAtr * atrVal
+                if far
+                    box.delete(z.bx)
+                    if not na(z.ce)
+                        line.delete(z.ce)
+                    if not na(z.lb)
+                        label.delete(z.lb)
+                    array.remove(zones, i)
+                else
+                    if z.kind == "FVG"
+                        if z.dir == 1 and low < z.top
+                            nt = math.max(low, z.bot)
+                            z.top := nt
+                            box.set_top(z.bx, nt)
+                        if z.dir == -1 and high > z.bot
+                            nb = math.min(high, z.top)
+                            z.bot := nb
+                            box.set_bottom(z.bx, nb)
+                    through = z.dir == 1 ? close < z.bot : close > z.top
+                    isOB    = z.kind == "OB"
+                    mode    = isOB ? obMitUse : "Fill"
+                    filled  = mode == "Touch" ? (z.dir == 1 ? low <= z.top : high >= z.bot) : mode == "Close" ? (z.dir == 1 ? close <= z.top : close >= z.bot) : (z.dir == 1 ? low <= z.bot : high >= z.top)
+                    if filled or through
+                        z.mit   := true
+                        z.mitAt := bar_index
+                        box.set_bgcolor(z.bx, color.new(color.gray, 92))
+                        box.set_border_color(z.bx, color.new(color.gray, 80))
+                        if not na(z.ce)
+                            line.set_color(z.ce, color.new(color.gray, 80))
+                        if not na(z.lb)
+                            label.set_textcolor(z.lb, color.new(color.gray, 25))
+            else if z.mit
+                if bar_index - z.mitAt > keepMit
+                    box.delete(z.bx)
+                    if not na(z.ce)
+                        line.delete(z.ce)
+                    if not na(z.lb)
+                        label.delete(z.lb)
+                    array.remove(zones, i)
+
+// ═════════════════════════ Liquidity pools ═════════════════════════
+phLq = ta.pivothigh(high, eqPivLen, pvRight)
+plLq = ta.pivotlow(low,  eqPivLen, pvRight)
+
+f_addPool(dir, lvl, x0) =>
+    tag = dir == 1 ? "BSL" : "SSL"
+    ln  = line.new(math.max(x0, bar_index - liqAnchorCap), lvl, bar_index + liqExt, lvl, color = color.new(liqColU, 25), style = line.style_dashed)
+    lb  = label.new(bar_index + liqExt, lvl, tag, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, textcolor = color.new(liqColU, 10), size = size.tiny)
+    array.push(pools, Pool.new(ln, lb, lvl, dir, 1))
+
+f_pruneBuf(buf, bufB) =>
+    if array.size(buf) > 0
+        for k = array.size(buf) - 1 to 0
+            if bar_index - array.get(bufB, k) > liqMaxAge
+                array.remove(buf, k)
+                array.remove(bufB, k)
+
+if showLiq and barstate.isconfirmed and not na(atrVal) and atrVal > 0 and not na(phLq)
+    ph = high[pvRight]
+    merged = false
+    for p in pools
+        if p.dir == 1 and math.abs(p.lvl - ph) <= eqTol * atrVal
+            p.lvl   := math.max(p.lvl, ph)
+            p.touch := p.touch + 1
+            line.set_xy1(p.ln, line.get_x1(p.ln), p.lvl)
+            line.set_xy2(p.ln, bar_index + liqExt, p.lvl)
+            label.set_xy(p.lb, bar_index + liqExt, p.lvl)
+            label.set_text(p.lb, "BSL ×" + str.tostring(p.touch))
+            merged := true
+            break
+    if not merged
+        f_pruneBuf(phBuf, phBufB)
+        pairIdx = -1
+        if array.size(phBuf) > 0
+            for k = 0 to array.size(phBuf) - 1
+                if math.abs(array.get(phBuf, k) - ph) <= eqTol * atrVal
+                    pairIdx := k
+                    break
+        if pairIdx >= 0
+            f_addPool(1, math.max(array.get(phBuf, pairIdx), ph), array.get(phBufB, pairIdx))
+            array.remove(phBuf, pairIdx)
+            array.remove(phBufB, pairIdx)
+        else
+            array.push(phBuf, ph)
+            array.push(phBufB, bar_index - pvRight)
+            if array.size(phBuf) > maxPools
+                array.shift(phBuf)
+                array.shift(phBufB)
+
+if showLiq and barstate.isconfirmed and not na(atrVal) and atrVal > 0 and not na(plLq)
+    pl = low[pvRight]
+    merged = false
+    for p in pools
+        if p.dir == -1 and math.abs(p.lvl - pl) <= eqTol * atrVal
+            p.lvl   := math.min(p.lvl, pl)
+            p.touch := p.touch + 1
+            line.set_xy1(p.ln, line.get_x1(p.ln), p.lvl)
+            line.set_xy2(p.ln, bar_index + liqExt, p.lvl)
+            label.set_xy(p.lb, bar_index + liqExt, p.lvl)
+            label.set_text(p.lb, "SSL ×" + str.tostring(p.touch))
+            merged := true
+            break
+    if not merged
+        f_pruneBuf(plBuf, plBufB)
+        pairIdx = -1
+        if array.size(plBuf) > 0
+            for k = 0 to array.size(plBuf) - 1
+                if math.abs(array.get(plBuf, k) - pl) <= eqTol * atrVal
+                    pairIdx := k
+                    break
+        if pairIdx >= 0
+            f_addPool(-1, math.min(array.get(plBuf, pairIdx), pl), array.get(plBufB, pairIdx))
+            array.remove(plBuf, pairIdx)
+            array.remove(plBufB, pairIdx)
+        else
+            array.push(plBuf, pl)
+            array.push(plBufB, bar_index - pvRight)
+            if array.size(plBuf) > maxPools
+                array.shift(plBuf)
+                array.shift(plBufB)
+
+if array.size(pools) > 0
+    for j = array.size(pools) - 1 to 0
+        p = array.get(pools, j)
+        line.set_x2(p.ln, bar_index + liqExt)
+        label.set_x(p.lb, bar_index + liqExt)
+        if barstate.isconfirmed
+            sweep = p.dir == 1 ? (high > p.lvl and close <= p.lvl) : (low < p.lvl and close >= p.lvl)
+            brk   = p.dir == 1 ? close > p.lvl : close < p.lvl
+            far   = not na(atrVal) and atrVal > 0 and math.abs(p.lvl - close) > liqFarAtr * atrVal
+            if sweep
+                m = label.new(bar_index, p.lvl, "⚡", xloc = xloc.bar_index, yloc = p.dir == 1 ? yloc.abovebar : yloc.belowbar, style = label.style_none, textcolor = color.new(chochCol, 0), size = size.small)
+                array.push(swpLbl, m)
+                f_capLabels(swpLbl, maxSweepMarks)
+                line.delete(p.ln)
+                label.delete(p.lb)
+                array.remove(pools, j)
+            else if brk or far
+                line.delete(p.ln)
+                label.delete(p.lb)
+                array.remove(pools, j)
+
+if barstate.isconfirmed
+    while array.size(pools) > maxPools
+        p0 = array.shift(pools)
+        line.delete(p0.ln)
+        label.delete(p0.lb)
+
+// ═════════════════════════ Dashboard ═════════════════════════
+f_bias(t) => t > 0 ? "Bull ▲" : t < 0 ? "Bear ▼" : "—"
+f_biasC(t) => t > 0 ? bullCol : t < 0 ? bearCol : eqCol
+
+var table dash = table.new(f_tablePos(tblPosTxt), 2, 4, bgcolor = color.new(#14110B, 8), border_color = color.new(#D4AF37, 64), border_width = 1, frame_color = color.new(#D4AF37, 52), frame_width = 1)
+if showDash and barstate.islast
+    lblC = #C9B37E
+    valC = #F5F5F5
+    ttlC = #FFD400
+    ts   = f_size(tblSizeTxt)
+
+    loDisc = 0.5 - pdBand
+    hiPrem = 0.5 + pdBand
+    rpTxt  = na(rangePos) ? "—" : (rangePos < loDisc ? "Discount " : rangePos > hiPrem ? "Premium " : "Equilib ") + str.tostring(rangePos * 100, "#") + "%"
+
+    table.cell(dash, 0, 0, "◆ SMC", text_color = ttlC, text_size = ts, tooltip = "Clean, non-repainting market structure.")
+    table.cell(dash, 1, 0, "", text_color = valC, text_size = ts)
+
+    table.cell(dash, 0, 1, "Swing bias", text_color = lblC, text_size = ts)
+    table.cell(dash, 1, 1, f_bias(swTr), text_color = f_biasC(swTr), text_size = ts)
+
+    table.cell(dash, 0, 2, "Internal bias", text_color = lblC, text_size = ts)
+    table.cell(dash, 1, 2, f_bias(intTr), text_color = f_biasC(intTr), text_size = ts)
+
+    table.cell(dash, 0, 3, "Range position", text_color = lblC, text_size = ts)
+    table.cell(dash, 1, 3, rpTxt, text_color = valC, text_size = ts)
+
+// ═════════════════════════ Watermark ═════════════════════════
+wmDark = wmTheme == "Dark" or (wmTheme == "Auto" and (color.r(chart.bg_color) * 299 + color.g(chart.bg_color) * 587 + color.b(chart.bg_color) * 114) / 1000 < 128)
+if barstate.islast and showWm
+    dark        = wmTheme == 'Dark'
+    wm_bg       = dark ? color.new(#14110B, 0) : color.new(#F2EAD3, 0)
+    wm_dot_col  = dark ? color.new(#D4AF37, 15) : color.new(#B8860B, 10)
+    wm_txt_col  = dark ? color.new(#C9B37E, 0)  : color.new(#7A6423, 0)
+    wm_frm_col  = dark ? color.new(#C9A227, 60) : color.new(#B8860B, 60)
+
+    wm = table.new(position.bottom_center, 2, 1,
+                   frame_color = wm_frm_col,
+                   frame_width = 1,
+                   border_width = 0)
+    table.cell(wm, 0, 0, ' ◆ ',
+               bgcolor = wm_bg,
+               text_color = wm_dot_col,
+               text_size = size.small,
+               text_halign = text.align_center,
+               text_valign = text.align_center)
+    table.cell(wm, 1, 0, ' A X E A L G O ',
+               bgcolor = wm_bg,
+               text_color = wm_txt_col,
+               text_size = size.small,
+               text_halign = text.align_left,
+               text_valign = text.align_center)

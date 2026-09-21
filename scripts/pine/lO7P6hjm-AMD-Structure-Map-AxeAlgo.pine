@@ -1,0 +1,695 @@
+//@version=6
+// ═════════════════════════════════════════════════════════════════════════════════
+//  © AxeAlgo  —  AMD STRUCTURE MAP
+//  Automatically detects the Accumulation → Manipulation → Distribution cycle
+//  on any chart, drawing each phase as its own labeled zone box — royal blue for
+//  Accumulation, amber for Manipulation, teal for Distribution — and calls the
+//  expected Distribution direction the moment Manipulation confirms, straight
+//  from the pattern's own logic (a swept low expects Distribution up; a swept
+//  high expects it down).
+//
+//  CONCEPT
+//   AMD reads price action as three acts: a range forms while the market
+//   accumulates orders (Accumulation), a sharp move beyond that range hunts
+//   the stops sitting just outside it before reversing back inside
+//   (Manipulation), and the real move then expands in the opposite direction
+//   of that sweep (Distribution). This script watches for all three,
+//   automatically, on every range it finds.
+//
+//  HOW IT WORKS
+//   1. ACCUMULATION — watches for volatility contraction (fast ATR well
+//      below its own slow-ATR baseline, averaged over a short recent
+//      window rather than read off a single bar, so one quiet tick right
+//      after a volatile stretch can't pass for genuine compression — while
+//      not demanding the whole, much longer seed window average down,
+//      which is too rare a conjunction on a trending instrument). Once
+//      contracted, a zone locks onto the highest-high / lowest-low of the
+//      seed window and stays FIXED. That same seed window also freezes
+//      this cycle's own volume baseline — see point 2.
+//   2. MANIPULATION — a pierce beyond the zone, on volume above THIS
+//      CYCLE'S OWN frozen baseline (fixed at Accumulation start, not a
+//      rolling average — a rolling window would get skewed by the sweep's
+//      own volume spike right when the later breakout needs to be judged
+//      against it), that closes back inside within a handful of bars — the
+//      liquidity-sweep signature. It doesn't have to reverse on the very
+//      same bar; it gets a short window to do so. The instant it confirms,
+//      the AMD model's own logic calls an Expected Direction for
+//      Distribution: opposite the side that was swept — shown right on the
+//      zone itself. If the OPPOSITE side later gets swept too, before this
+//      range resolves, that ONE
+//      re-arm REPLACES the zone and flips the call — a real second
+//      liquidity grab matters more than a first one that never led
+//      anywhere, and only one Manipulation box is ever on the chart per
+//      Accumulation at a time, so a re-arm never looks like two competing
+//      patterns. A range choppy enough to sweep a THIRD time isn't a clean
+//      setup any more, so re-arming is capped at once; further pierces are
+//      simply ignored. Only the current call is judged when the range
+//      finally resolves.
+//   3. DISTRIBUTION — a confirmed break (distance + volume, judged against
+//      that same frozen baseline) in that expected direction. That's a
+//      complete AMD cycle, and its own zone starts sized to the
+//      Accumulation range's own width, then keeps growing to track the
+//      actual move for a bounded window (in both time AND height) before
+//      it freezes in place — tall enough to show the real excursion,
+//      without ever ballooning across the rest of the chart the way an
+//      unbounded version would. A break in the SAME direction as the sweep
+//      instead is logged honestly as "Manipulation Failed" — the expected
+//      direction didn't play out, and the script says so rather than
+//      hiding it.
+//
+//  WHAT YOU SEE ON THE CHART
+//   • Accumulation zone .................. royal blue box + "Accumulation" label
+//   • Manipulation zone ................... amber box + "Manipulation ·
+//                                           Expect ▲/▼" label
+//   • Distribution zone ................... teal box + "Distribution ▲/▼"
+//                                           label — ONLY drawn once the break
+//                                           actually confirms in the expected
+//                                           direction, then grows to track
+//                                           the real move for a bounded
+//                                           window before freezing — tall
+//                                           enough to show the actual
+//                                           excursion, but never swallowing
+//                                           the rest of the chart. A
+//                                           non-completion (the
+//                                           expected direction failed to
+//                                           confirm, or no Manipulation ever
+//                                           happened) gets a single small
+//                                           flag instead — never a full zone
+//                                           box, since nothing happened there
+//                                           worth drawing a pattern around. A
+//                                           small triangle also marks the
+//                                           exact first candle Distribution
+//                                           begins on — a plain event marker,
+//                                           shown even with zone boxes off
+//   • Optional session highlight .......... a subtle background tint over a
+//                                           session window you choose, so
+//                                           AMD cycles forming inside your
+//                                           preferred session stand out
+//   • Corner dashboard .................... current phase and expected
+//                                           direction at a glance, plus an
+//                                           ever-running Follow-Through Rate
+//                                           — of every range this chart has
+//                                           found that got a Manipulation
+//                                           call, how often that call (the
+//                                           final one, if it re-armed)
+//                                           actually confirmed into
+//                                           Distribution
+//
+//  COMPLIANCE NOTE
+//   The "Expected Direction" called at Manipulation is a direct restatement
+//   of the AMD model's own definition — Distribution, by definition, is a
+//   move opposite the swept side — not a price forecast, not a probability
+//   estimate, and not a buy/sell instruction. It is exactly as reliable as
+//   the Manipulation call itself and is confirmed or denied by the very
+//   same break logic that always required actual price confirmation before
+//   logging Distribution. The Follow-Through Rate is a historical tally of
+//   how often that call was actually confirmed by this chart's own past
+//   price action — not a win rate, not a back-tested strategy result, and
+//   not a claim about the cycle currently in progress. Nothing here is
+//   financial advice.
+//
+//  REPAINT NOTES
+//   All detection runs only on confirmed (closed) bars — nothing here is
+//   decided from an intrabar wick, and a sweep candidate's own return
+//   window is judged bar-by-bar as it happens, never peeking ahead. A
+//   confirmed Manipulation call CAN be superseded later in the same range
+//   (see the re-arm behavior above), but only by an equally real, fully
+//   confirmed opposite-side sweep — never speculatively, and never by
+//   revising anything that already resolved. Once a range resolves, or a
+//   zone's phase is finished, its boundaries are never redrawn.
+// ═════════════════════════════════════════════════════════════════════════════════
+indicator("AMD Structure Map [AxeAlgo]", overlay = true, max_boxes_count = 150, max_lines_count = 150, max_labels_count = 150)
+
+// ─────────────────────────────────────────────────────────────────────────────────
+//  INPUTS  (kept deliberately minimal — display/style only)
+// ─────────────────────────────────────────────────────────────────────────────────
+g_sens = "Detection Sensitivity"
+g_disp = "Display"
+g_dir  = "Expected Direction (Pattern Logic — Not a Forecast)"
+g_htf  = "Higher-Timeframe Bias (Context Only)"
+g_sess = "Session Highlight (Optional)"
+g_sty  = "Style"
+g_ux   = "Dashboard & Watermark"
+
+sensitivityIn = input.string("Strict", "Accumulation & Manipulation sensitivity", options = ["Loose", "Normal", "Strict"], group = g_sens, tooltip = "Loose finds more cycles — a shorter seed window, a shallower required contraction, and an easier sweep/breakout bar to qualify. Fine for quieter symbols/timeframes or if Normal feels too quiet. Strict finds fewer, higher-conviction cycles only. Normal is AxeAlgo's tuned default.")
+
+showZones  = input.bool(true, "Draw phase zone boxes + dashed midline", group = g_disp)
+showLabels = input.bool(true, "Show phase name label above each zone", group = g_disp)
+showCompletedOnly = input.bool(false, "Show completed cycles only (A → M → D)", group = g_disp, tooltip = "Off: every cycle draws live as it forms — Accumulation and Manipulation zones appear immediately, even for cycles that never complete Distribution. On: nothing is drawn while a cycle is still forming — the Accumulation and Manipulation zones only appear, retroactively and together with the Distribution zone, if and when the full sequence actually confirms. A cycle that never sweeps, sweeps but fails to distribute, or expires is never drawn at all.")
+showLegend = input.bool(true, "Show zone-color legend on chart", group = g_disp)
+showDistSignal = input.bool(true, "Mark Distribution's first candle with a signal", group = g_disp, tooltip = "A small triangle on the exact bar Distribution begins — event marker only, not a buy/sell instruction. Shown even if zone boxes are turned off.")
+
+showDirCall  = input.bool(true, "Show Expected Direction on the Manipulation zone", group = g_dir, tooltip = "The instant a Manipulation sweep confirms, labels the zone with the direction AMD's own logic expects Distribution to move — opposite the swept side. This is a restatement of the pattern's definition, not a prediction of future price.")
+showFollowThrough = input.bool(true, "Show Follow-Through Rate in dashboard", group = g_dir, tooltip = "Of every range this chart has found that got a Manipulation call (since it loaded, uncapped), how many actually confirmed into Distribution in the expected direction vs. failed/expired. If a call re-armed to the opposite side before resolving, only the final call is judged — a historical tally only.")
+
+showHTFBias = input.bool(true, "Show higher-timeframe bias in dashboard", group = g_htf, tooltip = "A simple EMA-slope read on a higher timeframe you choose — shown purely as context alongside the detected cycle, not used to filter or alter detection in any way, and not a forecast.")
+htfTFIn     = input.timeframe("60", "Higher timeframe", group = g_htf)
+htfEmaLenIn = input.int(50, "Higher-timeframe EMA length", minval = 5, maxval = 200, group = g_htf)
+
+showSession   = input.bool(false, "Highlight a session window", group = g_sess)
+sessionStrIn  = input.session("0700-1600", "Session (exchange time)", group = g_sess)
+sessionColor  = input.color(#D4AF37, "Session tint", group = g_sess)
+
+colorAccumZone   = input.color(#4169E1, "Accumulation zone", group = g_sty)
+colorManipZone   = input.color(#F0AC4B, "Manipulation zone", group = g_sty)
+colorDistZone    = input.color(#5FD9A0, "Distribution zone", group = g_sty)
+colorNeutralZone = input.color(#9AA0A6, "Non-AMD resolution flag (Manipulation Failed)", group = g_sty)
+colorDirUp       = input.color(#5FD9A0, "Expected direction — bullish", group = g_sty)
+colorDirDown     = input.color(#E2685F, "Expected direction — bearish", group = g_sty)
+
+dashPosIn   = input.string("Top Right", "Dashboard position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = g_ux)
+showWatermark = true
+
+// ─────────────────────────────────────────────────────────────────────────────────
+//  DETECTION THRESHOLDS — every one of these is driven by the Loose /
+//  Normal / Strict preset above; Normal is AxeAlgo's tuned default (the
+//  values this script always used before the preset existed). See AMD
+//  Cycle Detector [AxeAlgo · Gold] for full per-parameter manual control
+//  and asset-class presets on top of this.
+// ─────────────────────────────────────────────────────────────────────────────────
+f_sens(_loose, _normal, _strict) =>
+    switch sensitivityIn
+        "Loose"  => _loose
+        "Strict" => _strict
+        => _normal
+
+// Strict stacks eight independent conditions at once (seed length, width,
+// cooldown, contraction, breakout distance, breakout volume, sweep depth,
+// sweep volume) — each only modestly tighter than Normal, since they
+// compound multiplicatively. Making every one of them aggressively tight
+// at the same time is what causes near-zero detections; Strict is meant to
+// mean "meaningfully higher conviction," not "almost never fires."
+seedLen              = f_sens(14, 18, 20)     // shorter window = ranges qualify faster (Loose); longer = more proven (Strict)
+atrFastLen           = 14
+atrSlowLen           = 100
+// Contraction is judged over a SHORT recent window, not the full seed
+// window — requiring 18-20 bars to ALL average below threshold is a rare
+// conjunction on a trending instrument and was producing near-zero
+// detections. A short recent dip still rules out pure single-bar noise
+// while staying achievable on real charts.
+contractionLen       = f_sens(4, 6, 8)
+minWidthATR          = f_sens(0.7, 1.0, 1.3)  // how wide a range must be (× ATR) to not be dismissed as noise
+cooldownBars         = f_sens(6, 10, 12)      // bars to wait after a cycle resolves before a new range can start
+maxRangeBars         = 250
+contractionThresh    = f_sens(0.95, 0.85, 0.72)  // lower = deeper volatility contraction required to call it Accumulation
+breakATRmult         = f_sens(0.9, 1.2, 1.4)     // how far beyond the range (× ATR) a breakout close must travel
+volBreakMult         = f_sens(1.2, 1.4, 1.5)     // breakout volume vs. this cycle's own baseline
+manipulationATRmult  = f_sens(0.22, 0.35, 0.42)  // how deep a wick must pierce (× ATR) to count as a sweep
+manipulationVolMult  = f_sens(1.1, 1.3, 1.4)     // sweep volume vs. this cycle's own baseline
+volLen               = 20
+distMaxBars          = 40   // how long the Distribution zone keeps extending sideways in time before it freezes in place
+maxReturnBars        = f_sens(9, 6, 5)   // a sweep gets this many bars to close back inside the range before the excursion is written off as a real breakout instead
+
+// ─────────────────────────────────────────────────────────────────────────────────
+//  HELPERS
+// ─────────────────────────────────────────────────────────────────────────────────
+f_posMap(_s) =>
+    switch _s
+        "Top Left"     => position.top_left
+        "Bottom Right" => position.bottom_right
+        "Bottom Left"  => position.bottom_left
+        => position.top_right
+
+dashPos = f_posMap(dashPosIn)
+
+// Creates one phase zone: a box, a dashed midline, and a centered label
+// above it.
+f_zoneNew(_left, _top, _bottom, _text, _col) =>
+    b = box.new(left = _left, top = _top, right = bar_index, bottom = _bottom, border_color = color.new(_col, 25), border_width = 2, bgcolor = color.new(_col, 85))
+    _mid = (_top + _bottom) / 2.0
+    ln = line.new(x1 = _left, y1 = _mid, x2 = bar_index, y2 = _mid, color = color.new(_col, 25), style = line.style_dashed, width = 1)
+    // A dark backing chip behind the label text keeps it readable regardless
+    // of the chart's background theme, while the text itself is tinted the
+    // same color as its own zone — royal blue text on the Accumulation label,
+    // amber on Manipulation, teal on Distribution — so the label and the
+    // box it belongs to always read as one thing.
+    lbl = showLabels ? label.new(x = _left, y = _top, text = _text, style = label.style_label_down, color = color.new(#0B0E11, 15), textcolor = color.new(_col, 0), size = size.small) : na
+    [b, ln, lbl]
+
+// Extends a zone's right edge to the current bar and re-centers its label,
+// optionally growing top/bottom to enclose a wider price range.
+f_zoneUpdate(_b, _ln, _lbl, _left, _top, _bottom) =>
+    box.set_top(_b, _top)
+    box.set_bottom(_b, _bottom)
+    box.set_right(_b, bar_index)
+    _mid = (_top + _bottom) / 2.0
+    line.set_xy1(_ln, _left, _mid)
+    line.set_xy2(_ln, bar_index, _mid)
+    if not na(_lbl)
+        label.set_x(_lbl, int(math.round(_left + (bar_index - _left) / 2.0)))
+        label.set_y(_lbl, _top)
+
+f_gauge(_pct) =>
+    _filled = int(math.round(_pct / 20))
+    _out = ""
+    for i = 0 to 4
+        _out := _out + (i < _filled ? "▰" : "▱")
+    _out
+
+// ─────────────────────────────────────────────────────────────────────────────────
+//  UNCONDITIONAL SERIES  (built-ins must run every bar, never inside an `if`)
+// ─────────────────────────────────────────────────────────────────────────────────
+atrFast = ta.atr(atrFastLen)
+atrSlow = ta.atr(atrSlowLen)
+atrFastSafe = atrFast == 0 or na(atrFast) ? syminfo.mintick : atrFast
+atrRatio = atrFast / nz(atrSlow, atrFast)
+// Averaged over a short recent window rather than read on a single bar —
+// rules out a lone quiet tick passing for real compression, without
+// demanding the whole (much longer) seed window average below threshold,
+// which was too rare a conjunction to fire on a trending instrument.
+atrRatioAvg = ta.sma(atrRatio, contractionLen)
+
+seedHigh = ta.highest(high, seedLen)
+seedLow  = ta.lowest(low, seedLen)
+// The volume baseline for BOTH the Manipulation sweep and the eventual
+// breakout is frozen from the seed window at the moment each Accumulation
+// starts (below), rather than read off a rolling average — a rolling
+// window would get contaminated by the sweep's own volume spike right
+// when the breakout needs to be judged against it, making genuine
+// breakouts artificially harder to confirm just after a sweep.
+seedAvgVolCandidate = ta.sma(volume, seedLen)
+
+inSession = not na(time(timeframe.period, sessionStrIn))
+
+// Higher-timeframe bias — context only, never used to gate detection.
+// lookahead is explicitly off; this reads the last CLOSED higher-timeframe
+// bar, same as any standard non-repainting HTF reference.
+htfClose = request.security(syminfo.tickerid, htfTFIn, close, lookahead = barmerge.lookahead_off)
+htfEma   = request.security(syminfo.tickerid, htfTFIn, ta.ema(close, htfEmaLenIn), lookahead = barmerge.lookahead_off)
+htfBiasUp = htfClose > htfEma
+
+// ─────────────────────────────────────────────────────────────────────────────────
+//  STATE  —  cycle detection / zones
+// ─────────────────────────────────────────────────────────────────────────────────
+var bool  inRange        = false
+var bool  hasRange       = false
+var float boxHigh        = na
+var float boxLow         = na
+var int   boxStartBar    = na
+var int   lastResolveBar = na
+var string cyclePhase    = "No Cycle"
+var string rangeStatus   = "No Range Detected"
+var string expectedDir   = "" // "Bullish" / "Bearish" once Manipulation calls it
+var float  accAvgVol     = na // frozen volume baseline for this cycle, set the moment it starts
+
+var bool   manipulationDetected = false
+var string manipulationSide     = ""
+var float  manipulationLevel    = na
+var int    manipulationBar      = na
+var float  manipTop = na
+var float  manipBottom = na
+// Caps re-arming at ONE flip (first sweep + at most one opposite-side
+// supersede) — a genuine double-sweep, not an unbounded ping-pong. A range
+// choppy enough to sweep a third time isn't a clean setup any more; further
+// pierces are simply ignored rather than drawing yet another zone.
+var int    manipEventCount = 0
+
+// A sweep candidate: price has pierced the range on volume, but hasn't
+// closed back inside yet. It gets up to maxReturnBars to do so before the
+// excursion is written off (and treated as an ordinary breakout instead,
+// by the resolution logic below, if it goes that far).
+var bool   pierceActive   = false
+var string pierceSide     = ""
+var int    pierceStartBar = na
+var float  pierceExtreme  = na
+
+var box   accBox = na
+var line  accLine = na
+var label accLabel = na
+var box   manipBox = na
+var line  manipLine = na
+var label manipLabel = na
+var box   distBox = na
+var line  distLine = na
+var label distLabel = na
+
+var bool  distributionActive = false
+var float distTop = na
+var float distBottom = na
+var int   distStartBar = na
+
+// Ever-running Follow-Through tally — every Manipulation sweep this chart
+// has ever found, uncapped, since the chart loaded.
+var int totalSweeps      = 0
+var int totalFollowed    = 0   // confirmed Distribution in the expected direction
+var int totalFailed      = 0   // broke the same direction as the sweep instead
+var int totalExpiredPost = 0   // sweep happened, range expired with no break
+
+bool rangeJustStarted   = false
+bool evManipulation     = false
+bool evDistributionUp   = false
+bool evDistributionDown = false
+bool evManipFailed      = false
+bool rangeExpiredFlag   = false
+
+bool dirCallUp   = false
+bool dirCallDown = false
+
+// ─────────────────────────────────────────────────────────────────────────────────
+//  ENGINE  (confirmed bars only — see REPAINT NOTES)
+// ─────────────────────────────────────────────────────────────────────────────────
+if barstate.isconfirmed
+    if not inRange
+        canStart = not na(atrSlow) and atrSlow > 0 and atrRatioAvg < contractionThresh and
+                   (seedHigh - seedLow) >= minWidthATR * atrFastSafe and
+                   (na(lastResolveBar) or (bar_index - lastResolveBar) >= cooldownBars) and
+                   bar_index >= seedLen + atrSlowLen
+        if canStart
+            // A new Accumulation starting seals off any still-growing
+            // Distribution zone from the previous cycle at its last value.
+            distributionActive := false
+
+            boxHigh     := seedHigh
+            boxLow      := seedLow
+            boxStartBar := bar_index - seedLen + 1
+            inRange     := true
+            hasRange    := true
+            cyclePhase  := "Accumulation"
+            expectedDir := ""
+            accAvgVol   := seedAvgVolCandidate
+
+            manipulationDetected := false
+            manipulationSide     := ""
+            manipulationLevel    := na
+            manipulationBar      := na
+            manipTop := na
+            manipBottom := na
+            manipEventCount := 0
+            pierceActive   := false
+            pierceSide     := ""
+            pierceStartBar := na
+            pierceExtreme  := na
+
+            // In "Show completed cycles only" mode nothing is drawn while
+            // the cycle is still forming — see the replay block below.
+            if showZones and not showCompletedOnly
+                [b, ln, lbl] = f_zoneNew(boxStartBar, boxHigh, boxLow, "Accumulation", colorAccumZone)
+                accBox := b
+                accLine := ln
+                accLabel := lbl
+
+            rangeJustStarted := true
+
+    if inRange
+        rangeDuration = bar_index - boxStartBar + 1
+
+        pierceHigh = high > boxHigh
+        pierceLow  = low < boxLow
+
+        if showZones and not showCompletedOnly
+            if cyclePhase == "Accumulation"
+                f_zoneUpdate(accBox, accLine, accLabel, boxStartBar, boxHigh, boxLow)
+            else if cyclePhase == "Manipulation"
+                // The sweep itself fixed manipTop/manipBottom the instant it
+                // was detected below — this only extends the box sideways in
+                // time while price runs toward the eventual breakout. It
+                // must NOT keep growing the box's height with every new bar,
+                // or a multi-bar rally toward the breakout level would keep
+                // inflating what's supposed to be a single sweep event.
+                box.set_right(manipBox, bar_index)
+                line.set_x2(manipLine, bar_index)
+                if not na(manipLabel)
+                    label.set_x(manipLabel, int(math.round(manipulationBar + (bar_index - manipulationBar) / 2.0)))
+
+        // ---- Manipulation: a liquidity sweep beyond the range on volume,
+        // that then closes back inside — not necessarily on the very same
+        // bar. A pierce opens a candidate that has up to maxReturnBars to
+        // close back inside before it's written off as a real breakout
+        // instead (handled independently by the resolution logic below).
+        //
+        // A confirmed sweep can also RE-ARM the call: once one side has
+        // already been swept, a later sweep of the OPPOSITE side (before
+        // this range resolves) supersedes it and flips the Expected
+        // Direction — a real second liquidity grab matters more than a
+        // first one that never led anywhere. A previously confirmed zone
+        // is never erased, just left as the historical record it is; only
+        // the CURRENT (most recent) call is judged at resolution.
+        accAvgVolSafe = accAvgVol > 0 and not na(accAvgVol) ? accAvgVol : volume
+        canReArm = manipEventCount < 2
+        if not pierceActive
+            startLow  = pierceLow  and (boxLow - low)  >= manipulationATRmult * atrFastSafe and volume > accAvgVolSafe * manipulationVolMult and canReArm and (not manipulationDetected or manipulationSide == "High")
+            startHigh = pierceHigh and (high - boxHigh) >= manipulationATRmult * atrFastSafe and volume > accAvgVolSafe * manipulationVolMult and canReArm and (not manipulationDetected or manipulationSide == "Low")
+            if startLow or startHigh
+                pierceActive   := true
+                pierceSide     := startLow ? "Low" : "High"
+                pierceStartBar := bar_index
+                pierceExtreme  := startLow ? low : high
+
+        if pierceActive
+            pierceExtreme := pierceSide == "Low" ? math.min(pierceExtreme, low) : math.max(pierceExtreme, high)
+            closedBackInside = close > boxLow and close < boxHigh
+            barsSincePierce  = bar_index - pierceStartBar
+
+            if closedBackInside
+                isFirstSweep = not manipulationDetected
+                sweepLow = pierceSide == "Low"
+
+                manipulationDetected := true
+                manipulationSide     := pierceSide
+                manipulationLevel    := pierceExtreme
+                manipulationBar      := pierceStartBar
+                manipTop             := sweepLow ? boxHigh : math.max(boxHigh, pierceExtreme)
+                manipBottom          := sweepLow ? math.min(boxLow, pierceExtreme) : boxLow
+                cyclePhase           := "Manipulation"
+                expectedDir          := sweepLow ? "Bullish" : "Bearish"
+                evManipulation       := true
+                dirCallUp            := sweepLow
+                dirCallDown          := not sweepLow
+                manipEventCount      += 1
+                // Only the range's first confirmed sweep counts toward the
+                // Follow-Through tally below — a re-arm supersedes which
+                // call gets judged at resolution, but doesn't create a
+                // second independent outcome to tally.
+                if isFirstSweep
+                    totalSweeps += 1
+
+                if showZones and not showCompletedOnly
+                    // Snap the Accumulation zone's right edge to touch
+                    // whichever Manipulation zone is CURRENTLY being shown
+                    // — on every confirmed sweep, first or re-armed. A
+                    // re-arm moves the visible Manipulation zone to the new
+                    // sweep's location, so the Accumulation zone must move
+                    // with it or a gap opens up between the two (the whole
+                    // stretch through the superseded first attempt is still
+                    // fairly described as part of the same consolidation).
+                    if not na(accBox)
+                        box.set_right(accBox, manipulationBar)
+                        line.set_x2(accLine, manipulationBar)
+                        if not na(accLabel)
+                            label.set_x(accLabel, int(math.round(boxStartBar + (manipulationBar - boxStartBar) / 2.0)))
+
+                    // A re-arm replaces the zone rather than adding a second
+                    // one alongside it — only ONE Manipulation box is ever
+                    // on the chart per Accumulation at a time, so a re-arm
+                    // never looks like two competing patterns.
+                    if not isFirstSweep
+                        box.delete(manipBox)
+                        line.delete(manipLine)
+                        if not na(manipLabel)
+                            label.delete(manipLabel)
+                    zoneText = showDirCall ? "Manipulation  ·  Expect " + (sweepLow ? "▲" : "▼") : "Manipulation"
+                    [b2, ln2, lbl2] = f_zoneNew(manipulationBar, manipTop, manipBottom, zoneText, colorManipZone)
+                    manipBox := b2
+                    manipLine := ln2
+                    manipLabel := lbl2
+
+                pierceActive := false
+            else if barsSincePierce >= maxReturnBars
+                // Never closed back inside in time — not a genuine sweep.
+                // Left to the resolution logic below to judge on its own
+                // merits (it may well turn into a plain confirmed breakout).
+                pierceActive := false
+
+        // ---- Resolution: Distribution confirmation, Manipulation-Failed,
+        // or a plain no-manipulation break -----------------------------
+        breakUpLevel   = boxHigh + breakATRmult * atrFastSafe
+        breakDownLevel = boxLow  - breakATRmult * atrFastSafe
+        isBreakUp    = close > breakUpLevel and volume > accAvgVolSafe * volBreakMult
+        isBreakDown  = close < breakDownLevel and volume > accAvgVolSafe * volBreakMult
+        isExpiredNow = maxRangeBars > 0 and rangeDuration > maxRangeBars
+
+        if isBreakUp or isBreakDown
+            isDistUp   = isBreakUp   and manipulationDetected and manipulationSide == "Low"
+            isDistDown = isBreakDown and manipulationDetected and manipulationSide == "High"
+            isFailed   = manipulationDetected and not (isDistUp or isDistDown)
+            isComplete = isDistUp or isDistDown
+
+            outcomeLabel = isDistUp ? "AMD Complete — Bullish (as expected)" : isDistDown ? "AMD Complete — Bearish (as expected)" : isFailed ? "Manipulation Failed — Continued " + (isBreakUp ? "Up" : "Down") + " (expected direction did not confirm)" : "Resolved " + (isBreakUp ? "Up" : "Down") + " (No Manipulation)"
+            cyclePhase  := isComplete ? "Distribution" : isFailed ? "Manipulation Failed" : "No Manipulation"
+            rangeStatus := outcomeLabel
+
+            evDistributionUp   := isDistUp
+            evDistributionDown := isDistDown
+            evManipFailed       := isFailed
+            lastResolveBar      := bar_index
+
+            if manipulationDetected
+                if isComplete
+                    totalFollowed += 1
+                else if isFailed
+                    totalFailed += 1
+
+            // "Show completed cycles only" mode never drew the Accumulation
+            // or Manipulation zones while this cycle was forming — replay
+            // them now, retroactively, but only if it actually completed
+            // the full A → M → D sequence.
+            if showZones and showCompletedOnly and isComplete
+                [ab, aln, albl] = f_zoneNew(boxStartBar, boxHigh, boxLow, "Accumulation", colorAccumZone)
+                box.set_right(ab, manipulationBar)
+                line.set_x2(aln, manipulationBar)
+                if not na(albl)
+                    label.set_x(albl, int(math.round(boxStartBar + (manipulationBar - boxStartBar) / 2.0)))
+                manipZoneText = showDirCall ? "Manipulation  ·  Expect " + (isDistUp ? "▲" : "▼") : "Manipulation"
+                [mb, mln, mlbl] = f_zoneNew(manipulationBar, manipTop, manipBottom, manipZoneText, colorManipZone)
+                box.set_right(mb, bar_index)
+                line.set_x2(mln, bar_index)
+                if not na(mlbl)
+                    label.set_x(mlbl, int(math.round(manipulationBar + (bar_index - manipulationBar) / 2.0)))
+
+            // A genuine AMD completion earns a full Distribution zone — sized
+            // to the Accumulation range's own width rather than to whatever
+            // the breakout bar's wick happened to do, so it always reads as
+            // a proportionate rectangle instead of a volatility-dependent
+            // spike. It only ever extends sideways (in time) afterward,
+            // never grows taller.
+            //
+            // A non-completion (Manipulation Failed, or a break with no
+            // Manipulation at all) is NOT a pattern — drawing a whole zone
+            // box for it would visually claim something happened there when
+            // nothing did. It gets a single small flag instead, no box.
+            if showZones and isComplete
+                distBottom := isBreakUp ? boxHigh : boxLow - math.max(boxHigh - boxLow, atrFastSafe)
+                distTop    := isBreakUp ? boxHigh + math.max(boxHigh - boxLow, atrFastSafe) : boxLow
+                [db, dln, dlbl] = f_zoneNew(bar_index, distTop, distBottom, "Distribution " + (isDistUp ? "▲" : "▼"), colorDistZone)
+                distBox := db
+                distLine := dln
+                distLabel := dlbl
+                distributionActive := true
+                distStartBar := bar_index
+            else if showZones and not showCompletedOnly
+                flagText = isFailed ? "✗ Manipulation Failed" : "Breakout (no Manipulation)"
+                label.new(bar_index, isBreakUp ? high : low, flagText, style = isBreakUp ? label.style_label_down : label.style_label_up, color = color.new(#0B0E11, 15), textcolor = color.new(colorNeutralZone, 0), size = size.tiny)
+
+            // A small, independent signal right on Distribution's own first
+            // candle — shown even with zone boxes turned off, and
+            // independent of the box-drawing branch above. Purely an event
+            // marker (Distribution has begun, per the definition above) —
+            // not a buy/sell instruction.
+            if showDistSignal and isComplete
+                label.new(bar_index, isBreakUp ? low : high, "", style = isBreakUp ? label.style_diamond : label.style_diamond, color = color.new(colorDistZone, 0), size = size.tiny,yloc= isBreakUp? yloc.belowbar:yloc.abovebar)
+
+            inRange := false
+        else if isExpiredNow
+            outcomeLabel = manipulationDetected ? "Expired After Manipulation (No Distribution)" : "Expired / Inconclusive"
+            cyclePhase  := outcomeLabel
+            rangeStatus := outcomeLabel
+            rangeExpiredFlag := true
+            lastResolveBar := bar_index
+
+            if manipulationDetected
+                totalExpiredPost += 1
+
+            inRange := false
+        else
+            rangeStatus := cyclePhase + (expectedDir != "" ? " (Expect " + expectedDir + ")" : "") + " — " + str.tostring(rangeDuration) + " bars"
+
+    if distributionActive
+        // Grows to actually track the move for a BOUNDED window (distMaxBars)
+        // after the breakout — tall enough to cover the real excursion
+        // instead of an arbitrary fixed size, but the time cap is what
+        // stops it from ever ballooning across the rest of the chart the
+        // way an uncapped version once did.
+        if bar_index - distStartBar <= distMaxBars
+            distTop := math.max(distTop, high)
+            distBottom := math.min(distBottom, low)
+            if showZones and not na(distBox)
+                f_zoneUpdate(distBox, distLine, distLabel, box.get_left(distBox), distTop, distBottom)
+        else
+            distributionActive := false
+
+// ─────────────────────────────────────────────────────────────────────────────────
+//  SESSION HIGHLIGHT (optional, purely visual)
+// ─────────────────────────────────────────────────────────────────────────────────
+bgcolor(showSession and inSession ? color.new(sessionColor, 92) : na, title = "Session Highlight")
+
+// ─────────────────────────────────────────────────────────────────────────────────
+//  DASHBOARD
+// ─────────────────────────────────────────────────────────────────────────────────
+if barstate.islast
+    htfRows = showHTFBias ? 1 : 0
+    ftRows  = showFollowThrough ? 3 : 0
+    totalRows = 4 + htfRows + ftRows
+
+    bgRow  = color.new(#12181D, 0)
+    bgHead = color.new(#D9B34F, 0)
+    txtHead = color.new(#14110B, 0)
+    txtKey  = color.new(#C9B37E, 0)
+    txtVal  = color.new(#F5EFE0, 0)
+
+    tbl = table.new(position = dashPos, columns = 2, rows = totalRows, bgcolor = color.new(#0A0D10, 0), border_width = 1, border_color = color.new(#B8860B, 65), frame_width = 2, frame_color = color.new(#D9B34F, 0))
+
+    table.cell(tbl, 0, 0, "AMD STRUCTURE MAP · [AXEALGO] ", text_color = txtHead, bgcolor = bgHead, text_size = size.normal, text_halign = text.align_center)
+    table.merge_cells(tbl, 0, 0, 1, 0)
+
+    table.cell(tbl, 0, 1, "Status", text_color = txtKey, bgcolor = bgRow, text_size = size.small, text_halign = text.align_left)
+    table.cell(tbl, 1, 1, hasRange ? rangeStatus : "No Range Detected", text_color = txtVal, bgcolor = bgRow, text_size = size.small, text_halign = text.align_right)
+
+    dirColor = expectedDir == "Bullish" ? color.new(colorDirUp, 0) : expectedDir == "Bearish" ? color.new(colorDirDown, 0) : txtVal
+    table.cell(tbl, 0, 2, "Expected Direction", text_color = txtKey, bgcolor = bgRow, text_size = size.small, text_halign = text.align_left)
+    table.cell(tbl, 1, 2, expectedDir == "" ? "—" : expectedDir + (expectedDir == "Bullish" ? " ▲" : " ▼"), text_color = dirColor, bgcolor = bgRow, text_size = size.small, text_halign = text.align_right)
+
+    if showHTFBias
+        htfColor = htfBiasUp ? color.new(colorDirUp, 0) : color.new(colorDirDown, 0)
+        table.cell(tbl, 0, 3, "HTF Bias (" + htfTFIn + ")", text_color = txtKey, bgcolor = bgRow, text_size = size.small, text_halign = text.align_left)
+        table.cell(tbl, 1, 3, htfBiasUp ? "Bullish ▲" : "Bearish ▼", text_color = htfColor, bgcolor = bgRow, text_size = size.small, text_halign = text.align_right)
+
+    ftHeadRow = 3 + htfRows
+    if showFollowThrough
+        table.cell(tbl, 0, ftHeadRow, "FOLLOW-THROUGH  ·  ALL-TIME", text_color = txtHead, bgcolor = color.new(#D9B34F, 25), text_size = size.tiny, text_halign = text.align_left)
+        table.merge_cells(tbl, 0, ftHeadRow, 1, ftHeadRow)
+
+        hasSample = totalSweeps >= 8
+        ftPct = totalSweeps > 0 ? 100.0 * totalFollowed / totalSweeps : 0.0
+        table.cell(tbl, 0, ftHeadRow + 1, "  Sweeps → Confirmed / Failed / Exp.", text_color = txtKey, bgcolor = bgRow, text_size = size.tiny, text_halign = text.align_left)
+        table.cell(tbl, 1, ftHeadRow + 1, str.tostring(totalSweeps) + " → " + str.tostring(totalFollowed) + " / " + str.tostring(totalFailed) + " / " + str.tostring(totalExpiredPost), text_color = txtVal, bgcolor = bgRow, text_size = size.tiny, text_halign = text.align_right)
+
+        table.cell(tbl, 0, ftHeadRow + 2, "  Follow-Through Rate", text_color = txtKey, bgcolor = bgRow, text_size = size.tiny, text_halign = text.align_left)
+        table.cell(tbl, 1, ftHeadRow + 2, hasSample ? str.tostring(math.round(ftPct)) + "%  " + f_gauge(ftPct) : "need " + str.tostring(8 - totalSweeps) + " more", text_color = hasSample ? color.new(colorDirUp, 0) : txtVal, bgcolor = bgRow, text_size = size.tiny, text_halign = text.align_right)
+
+    lastRow = 3 + htfRows + ftRows
+    table.cell(tbl, 0, lastRow, "Expected Direction restates AMD's own definition, not a forecast.", text_color = color.new(#C9B37E, 35), bgcolor = color.new(#0A0D10, 0), text_size = size.tiny, text_halign = text.align_left)
+    table.merge_cells(tbl, 0, lastRow, 1, lastRow)
+
+// ───────────────────────── Zone-color legend (optional) ─────────────────────────
+if showLegend and barstate.islast
+    lg = table.new(position.bottom_left, 2, 4, bgcolor = color.new(#0A0D10, 10), border_width = 1, border_color = color.new(#B8860B, 65), frame_width = 1, frame_color = color.new(#D9B34F, 20))
+    table.cell(lg, 0, 0, "", bgcolor = color.new(colorAccumZone, 0), text_size = size.tiny)
+    table.cell(lg, 1, 0, "Accumulation", text_color = color.new(#F5EFE0, 0), bgcolor = color.new(#0A0D10, 0), text_size = size.tiny, text_halign = text.align_left)
+    table.cell(lg, 0, 1, "", bgcolor = color.new(colorManipZone, 0), text_size = size.tiny)
+    table.cell(lg, 1, 1, "Manipulation", text_color = color.new(#F5EFE0, 0), bgcolor = color.new(#0A0D10, 0), text_size = size.tiny, text_halign = text.align_left)
+    table.cell(lg, 0, 2, "", bgcolor = color.new(colorDistZone, 0), text_size = size.tiny)
+    table.cell(lg, 1, 2, "Distribution", text_color = color.new(#F5EFE0, 0), bgcolor = color.new(#0A0D10, 0), text_size = size.tiny, text_halign = text.align_left)
+    table.cell(lg, 0, 3, "", bgcolor = color.new(colorNeutralZone, 0), text_size = size.tiny)
+    table.cell(lg, 1, 3, "Manip. Failed", text_color = color.new(#F5EFE0, 0), bgcolor = color.new(#0A0D10, 0), text_size = size.tiny, text_halign = text.align_left)
+
+// ───────────────────────── Watermark (Royal gold & cream) ─────────────────────────
+if showWatermark and barstate.islast
+    wm = table.new(position.bottom_center, 2, 1, frame_color = color.new(#C9A227, 60), frame_width = 1, border_width = 0)
+    table.cell(wm, 0, 0, " ◆ ", bgcolor = color.new(#14110B, 0), text_color = color.new(#D4AF37, 15), text_size = size.small, text_halign = text.align_center, text_valign = text.align_center)
+    table.cell(wm, 1, 0, " A X E A L G O ", bgcolor = color.new(#14110B, 0), text_color = color.new(#C9B37E, 0), text_size = size.small, text_halign = text.align_left, text_valign = text.align_center)
+
+// ─────────────────────────────────────────────────────────────────────────────────
+//  ALERTS — structure/context framing only, never a buy/sell call
+// ─────────────────────────────────────────────────────────────────────────────────
+alertcondition(rangeJustStarted, title = "Accumulation Range Detected", message = "{{ticker}} {{interval}}: New Accumulation range detected — structure context, not a trade signal.")
+alertcondition(dirCallUp, title = "Expected Direction Called — Bullish", message = "{{ticker}} {{interval}}: Manipulation of the range low confirmed — AMD's own logic expects Distribution up. Not a forecast, not a trade signal.")
+alertcondition(dirCallDown, title = "Expected Direction Called — Bearish", message = "{{ticker}} {{interval}}: Manipulation of the range high confirmed — AMD's own logic expects Distribution down. Not a forecast, not a trade signal.")
+alertcondition(evDistributionUp, title = "AMD Complete — Bullish Distribution", message = "{{ticker}} {{interval}}: Distribution confirmed upward, as expected after the earlier Manipulation of the low — AMD cycle complete. Structure context only, not a trade signal.")
+alertcondition(evDistributionDown, title = "AMD Complete — Bearish Distribution", message = "{{ticker}} {{interval}}: Distribution confirmed downward, as expected after the earlier Manipulation of the high — AMD cycle complete. Structure context only, not a trade signal.")
+alertcondition(evManipFailed, title = "Manipulation Failed (Expected Direction Did Not Confirm)", message = "{{ticker}} {{interval}}: Range broke in the same direction as the earlier Manipulation sweep — the expected direction did not confirm; not a completed AMD cycle.")
+alertcondition(rangeExpiredFlag, title = "Range Expired / Inconclusive", message = "{{ticker}} {{interval}}: Range expired without a confirmed Distribution break.")
+
+if barstate.isconfirmed and (rangeJustStarted or evManipulation or evDistributionUp or evDistributionDown)
+    evt = rangeJustStarted ? "New Accumulation range detected" : evManipulation ? "Manipulation sweep detected — AMD logic expects " + expectedDir : evDistributionUp ? "AMD complete — Bullish Distribution confirmed as expected" : "AMD complete — Bearish Distribution confirmed as expected"
+    msg = syminfo.ticker + " " + timeframe.period + ": " + evt + ". Structure context only, not a trade signal."
+    alert(msg, alert.freq_once_per_bar_close)

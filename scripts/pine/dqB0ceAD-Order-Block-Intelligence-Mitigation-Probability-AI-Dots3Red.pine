@@ -1,0 +1,371 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0
+// © Dots3Red
+// TradingView: https://www.tradingview.com/u/Dots3Red/
+
+//@version=6
+indicator("Order Block Intelligence - Mitigation Probability AI [Dots3Red]",
+          shorttitle = "Order Block AI [D3R]",
+          overlay    = true,
+          max_lines_count  = 500,
+          max_boxes_count  = 500,
+          max_labels_count = 500)
+
+// COLORS
+C_BULL    = color.new(#00f0ff, 0)
+C_BEAR    = color.new(#ff00aa, 0)
+C_GREEN   = color.new(#00c896, 0)
+C_RED     = color.new(#ff4466, 0)
+C_AMBER   = color.new(#ffb700, 0)
+C_NEUTRAL = color.new(#64748b, 0)
+C_BG      = color.new(#131722, 5)
+C_TXT     = color.new(#f8fafc, 0)
+C_DIM     = color.new(#94a3b8, 0)
+C_BORD    = color.new(#334155, 0)
+
+
+// INPUTS
+GRP_OB  = "🧱 Order Block Detection"
+GRP_KNN = "📊 KNN Engine"
+GRP_ST  = "🎯 Mitigation Grading"
+GRP_VIS = "🎨 Visualization"
+GRP_HUD = "🖥️ Dashboard"
+
+disp_mult    = input.float(1.2, "Displacement Strength (×ATR)", minval=0.3, maxval=5.0, step=0.1, group=GRP_OB,
+               tooltip="The impulse candle's body must exceed this multiple of ATR to qualify as a genuine displacement.")
+require_break = input.bool(true, "Require Structure Break", group=GRP_OB,
+               tooltip="The displacement candle must also close beyond the base candle's high/low, confirming a real imbalance rather than just a large candle.")
+max_tracked  = input.int(20, "Max Order Blocks Shown", minval=5, maxval=60, group=GRP_OB)
+box_extend   = input.int(20, "Zone Extension (bars)", minval=5, maxval=100, group=GRP_OB)
+
+atr_base_len = input.int(50, "ATR Baseline Period", minval=10, group=GRP_KNN)
+ma_len       = input.int(50, "Trend MA Length", minval=10, group=GRP_KNN)
+knn_k        = input.int(15,  "K Neighbors", minval=3, maxval=50, group=GRP_KNN)
+knn_max_train = input.int(300,"Max Training Samples", minval=30, maxval=1000, group=GRP_KNN)
+knn_min_train = input.int(12, "Min Samples Before Display", minval=5, maxval=100, group=GRP_KNN)
+
+reject_atr   = input.float(1.0, "Respect Distance (×ATR)", minval=0.3, maxval=5.0, step=0.1, group=GRP_ST,
+               tooltip="After the first test, price must move away this far to grade the zone as respected.")
+outcome_bars = input.int(20, "Outcome Window (bars)", minval=5, maxval=100, group=GRP_ST)
+
+show_labels = input.bool(true, "KNN Labels on Zones", group=GRP_VIS)
+show_filled = input.bool(false, "Keep Tested Zones Visible", group=GRP_VIS,
+              tooltip="ON: tested zones stay as faint outlines. OFF: removed once tested, keeping the chart clean.")
+
+col_bull_line = input.color(#00f0ff, "Bullish Zone Line", inline="bull", group=GRP_VIS)
+col_bull_fill = input.color(#00f0ff, "Bullish Zone Fill", inline="bull", group=GRP_VIS)
+col_bear_line = input.color(#ff00aa, "Bearish Zone Line", inline="bear", group=GRP_VIS)
+col_bear_fill = input.color(#ff00aa, "Bearish Zone Fill", inline="bear", group=GRP_VIS)
+col_tested    = input.color(#eab308, "Tested Zone Color", group=GRP_VIS,
+              tooltip="Color for zones that stay visible after being tested (only used when 'Keep Tested Zones Visible' is on).")
+
+near_edge_width_in = input.int(1, "Near Edge Line Width", minval=1, maxval=4, group=GRP_VIS,
+              tooltip="The edge price actually returns to first when testing the zone.")
+far_edge_width_in  = input.int(2, "Base Edge Line Width", minval=1, maxval=4, group=GRP_VIS,
+              tooltip="The zone's origin edge — the base candle's far boundary. Thicker by default to visually anchor the zone.")
+
+show_disp_highlight = input.bool(true, "Highlight Displacement Candle", group=GRP_VIS)
+col_disp_bull = input.color(#22c55e, "Bullish Displacement Candle", inline="disp", group=GRP_VIS,
+              tooltip="Fully opaque by default so it visually pops against normal candle colors.")
+col_disp_bear = input.color(#ef4444, "Bearish Displacement Candle", inline="disp", group=GRP_VIS)
+use_plain_bars = input.bool(false, "Use Plain Bar Color (non-displacement bars)", group=GRP_VIS,
+              tooltip="Colors all other bars a flat neutral gray, so the displacement highlight stands out even more. Never overrides the displacement highlight itself.")
+col_plain_bars = input.color(#b2b5be, "Plain Bar Color", group=GRP_VIS)
+
+show_hud = input.bool(true, "Show Dashboard", group=GRP_HUD)
+hud_pos  = input.string("Top Right", "Position",
+           options=["Top Right","Top Left","Bottom Right","Bottom Left"], group=GRP_HUD)
+
+
+// CONTEXT
+atr_raw     = ta.atr(14)
+atr_base_ma = ta.sma(atr_raw, atr_base_len)
+atr_ratio   = atr_raw / math.max(atr_base_ma, 1e-9)
+vol_ma      = ta.sma(volume, 20)
+vol_ratio   = vol_ma > 0 ? volume / vol_ma : 1.0
+trend_ma    = ta.sma(close, ma_len)
+price_vs_ma = (close - trend_ma) / math.max(atr_raw, 1e-9)
+
+
+// KNN STORAGE - 5 features per resolved order block
+// [ob_size_norm, displacement_norm, vol_ratio_norm, atr_ratio_norm, trend_pos_norm]
+int KNN_STRIDE = 5
+var float[] kf         = array.new<float>()
+var float[] ko_respect = array.new<float>()   // 1 = respected, 0 = violated
+
+f_feat(float ob_size, float disp, float vr, float ar, float tp) =>
+    float f1 = math.min(1.0, ob_size / 3.0)
+    float f2 = math.min(1.0, disp / 5.0)
+    float f3 = math.min(1.0, vr / 3.0)
+    float f4 = math.min(1.0, ar / 3.0)
+    float f5 = math.max(-1.0, math.min(1.0, tp / 3.0))
+    [f1, f2, f3, f4, f5]
+
+f_knn_push(float f1, float f2, float f3, float f4, float f5, float o_resp) =>
+    array.push(kf, f1)
+    array.push(kf, f2)
+    array.push(kf, f3)
+    array.push(kf, f4)
+    array.push(kf, f5)
+    array.push(ko_respect, o_resp)
+    if array.size(ko_respect) > knn_max_train
+        for _i = 0 to KNN_STRIDE - 1
+            array.shift(kf)
+        array.shift(ko_respect)
+
+f_knn_query(float f1, float f2, float f3, float f4, float f5) =>
+    int   n = array.size(ko_respect)
+    int   ku = math.min(knn_k, n)
+    float resp_pct = 50.0
+    if n >= knn_min_train
+        float[] ds = array.new<float>(n, 0.0)
+        for i = 0 to n - 1
+            int b = i * KNN_STRIDE
+            float d = 0.0
+            d += math.pow(array.get(kf, b)     - f1, 2.0)
+            d += math.pow(array.get(kf, b + 1) - f2, 2.0)
+            d += math.pow(array.get(kf, b + 2) - f3, 2.0)
+            d += math.pow(array.get(kf, b + 3) - f4, 2.0)
+            d += math.pow(array.get(kf, b + 4) - f5, 2.0)
+            array.set(ds, i, math.sqrt(d))
+        float[] dc = array.copy(ds)
+        int[]   ix = array.new<int>(n, 0)
+        for i = 0 to n - 1
+            array.set(ix, i, i)
+        float s_resp = 0.0
+        for k = 0 to ku - 1
+            int mp = k
+            float mv = array.get(dc, k)
+            if k + 1 <= n - 1
+                for j = k + 1 to n - 1
+                    v = array.get(dc, j)
+                    if v < mv
+                        mv := v
+                        mp := j
+            float td = array.get(dc, k)
+            array.set(dc, k, array.get(dc, mp))
+            array.set(dc, mp, td)
+            int ti = array.get(ix, k)
+            array.set(ix, k, array.get(ix, mp))
+            array.set(ix, mp, ti)
+            ni = array.get(ix, k)
+            s_resp += array.get(ko_respect, ni)
+        resp_pct := (s_resp / float(ku)) * 100.0
+    [resp_pct, n]
+
+
+// ORDER BLOCK TYPE
+// state: 0 = untested, 1 = tested-respected, 2 = tested-violated
+type OB
+    bool  is_bull
+    int   born_bar
+    float top
+    float bottom
+    int   state
+    float f1
+    float f2
+    float f3
+    float f4
+    float f5
+    line  ln_top
+    line  ln_bot
+    label lbl
+    box   bx
+
+var OB[] blocks = array.new<OB>()
+var int g_total   = 0
+var int g_respect = 0
+
+f_ob_label(OB o, float resp_pct, int n) =>
+    if not na(o.lbl)
+        label.delete(o.lbl)
+    string s = na
+    if n >= knn_min_train
+        s := "Respect " + str.tostring(math.round(resp_pct)) + "% | N=" + str.tostring(n)
+    else
+        s := "Training… (" + str.tostring(n) + "/" + str.tostring(knn_min_train) + ")"
+    float y = (o.top + o.bottom) / 2.0
+    o.lbl := label.new(bar_index + box_extend + 1, y, s,
+                       style=label.style_label_left,
+                       color=color.new(#000000, 100),
+                       textcolor=o.is_bull ? col_bull_line : col_bear_line,
+                       size=size.small)
+    o
+
+
+bool new_bull_ob = false
+bool new_bear_ob = false
+
+bool base_bear_s = close[1] < open[1]
+bool base_bull_s = close[1] > open[1]
+float disp_body_s = math.abs(close - open)
+bool  disp_up_s   = close > open and disp_body_s >= disp_mult * atr_raw
+bool  disp_dn_s   = close < open and disp_body_s >= disp_mult * atr_raw
+bool  breaks_up_s = not require_break or close > high[1]
+bool  breaks_dn_s = not require_break or close < low[1]
+bool  is_disp_bull_bar = base_bear_s and disp_up_s and breaks_up_s
+bool  is_disp_bear_bar = base_bull_s and disp_dn_s and breaks_dn_s
+
+
+barcolor(show_disp_highlight and is_disp_bull_bar ? col_disp_bull :
+         show_disp_highlight and is_disp_bear_bar ? col_disp_bear :
+         use_plain_bars ? col_plain_bars : na)
+
+// bgcolor(show_disp_highlight and is_disp_bull_bar ? color.new(col_disp_bull, 75) :
+//         show_disp_highlight and is_disp_bear_bar ? color.new(col_disp_bear, 75) : na)
+
+if barstate.isconfirmed
+    if is_disp_bull_bar
+        float ob_size = (high[1] - low[1]) / math.max(atr_raw, 1e-9)
+        float disp_n  = disp_body_s / math.max(atr_raw, 1e-9)
+        [f1, f2, f3, f4, f5] = f_feat(ob_size, disp_n, vol_ratio, atr_ratio, price_vs_ma)
+        OB o = OB.new(true, bar_index - 1, high[1], low[1], 0, f1, f2, f3, f4, f5, na, na, na, na)
+        o.bx := box.new(bar_index - 1, o.top, bar_index + box_extend, o.bottom,
+                        border_color=color.new(col_bull_line, 60),
+                        bgcolor=color.new(col_bull_fill, 88))
+        o.ln_top := line.new(bar_index - 1, o.top, bar_index + box_extend, o.top,
+                             color=color.new(col_bull_line, 35), width=near_edge_width_in)
+        o.ln_bot := line.new(bar_index - 1, o.bottom, bar_index + box_extend, o.bottom,
+                             color=color.new(col_bull_line, 60), width=far_edge_width_in, style=line.style_dashed)
+        if show_labels
+            [rp, n] = f_knn_query(f1, f2, f3, f4, f5)
+            o := f_ob_label(o, rp, n)
+        array.push(blocks, o)
+        new_bull_ob := true
+
+    if is_disp_bear_bar
+        float ob_size2 = (high[1] - low[1]) / math.max(atr_raw, 1e-9)
+        float disp_n2  = disp_body_s / math.max(atr_raw, 1e-9)
+        [f1b, f2b, f3b, f4b, f5b] = f_feat(ob_size2, disp_n2, vol_ratio, atr_ratio, price_vs_ma)
+        OB o2 = OB.new(false, bar_index - 1, high[1], low[1], 0, f1b, f2b, f3b, f4b, f5b, na, na, na, na)
+        o2.bx := box.new(bar_index - 1, o2.top, bar_index + box_extend, o2.bottom,
+                         border_color=color.new(col_bear_line, 60),
+                         bgcolor=color.new(col_bear_fill, 88))
+        o2.ln_bot := line.new(bar_index - 1, o2.bottom, bar_index + box_extend, o2.bottom,
+                              color=color.new(col_bear_line, 35), width=near_edge_width_in)
+        o2.ln_top := line.new(bar_index - 1, o2.top, bar_index + box_extend, o2.top,
+                              color=color.new(col_bear_line, 60), width=far_edge_width_in, style=line.style_dashed)
+        if show_labels
+            [rp2, n2] = f_knn_query(f1b, f2b, f3b, f4b, f5b)
+            o2 := f_ob_label(o2, rp2, n2)
+        array.push(blocks, o2)
+        new_bear_ob := true
+
+    if array.size(blocks) > 0
+        for i = 0 to array.size(blocks) - 1
+            OB o = array.get(blocks, i)
+            if o.state == 0
+                int age = bar_index - o.born_bar
+                bool touched = o.is_bull ? low <= o.top : high >= o.bottom
+
+                if touched
+                    bool respected = o.is_bull
+                         ? (close - o.top) >= reject_atr * atr_raw or low > o.top
+                         : (o.bottom - close) >= reject_atr * atr_raw or high < o.bottom
+                    bool violated = o.is_bull ? close < o.bottom : close > o.top
+                    if respected or violated or age >= outcome_bars
+                        o.state := respected ? 1 : 2
+                        g_total  += 1
+                        if respected
+                            g_respect += 1
+                        f_knn_push(o.f1, o.f2, o.f3, o.f4, o.f5, respected ? 1.0 : 0.0)
+                        if not na(o.lbl)
+                            label.delete(o.lbl)
+                            o.lbl := na
+                        if show_filled
+                            if not na(o.ln_top)
+                                line.set_color(o.ln_top, color.new(col_tested, 40))
+                                line.set_x2(o.ln_top, bar_index)
+                            if not na(o.ln_bot)
+                                line.set_color(o.ln_bot, color.new(col_tested, 40))
+                                line.set_x2(o.ln_bot, bar_index)
+                            if not na(o.bx)
+                                box.set_border_color(o.bx, color.new(col_tested, 40))
+                                box.set_bgcolor(o.bx, color.new(col_tested, 88))
+                                box.set_right(o.bx, bar_index)
+                        else
+                            if not na(o.ln_top)
+                                line.delete(o.ln_top)
+                                o.ln_top := na
+                            if not na(o.ln_bot)
+                                line.delete(o.ln_bot)
+                                o.ln_bot := na
+                            if not na(o.bx)
+                                box.delete(o.bx)
+                                o.bx := na
+                else
+                    if not na(o.ln_top)
+                        line.set_x2(o.ln_top, bar_index + box_extend)
+                    if not na(o.ln_bot)
+                        line.set_x2(o.ln_bot, bar_index + box_extend)
+                    if not na(o.bx)
+                        box.set_right(o.bx, bar_index + box_extend)
+                    if not na(o.lbl)
+                        label.set_x(o.lbl, bar_index + box_extend + 1)
+                array.set(blocks, i, o)
+
+    while array.size(blocks) > max_tracked
+        OB old = array.shift(blocks)
+        if not na(old.ln_top)
+            line.delete(old.ln_top)
+        if not na(old.ln_bot)
+            line.delete(old.ln_bot)
+        if not na(old.lbl)
+            label.delete(old.lbl)
+        if not na(old.bx)
+            box.delete(old.bx)
+
+
+// DASHBOARD
+f_hud_pos(string s) =>
+    switch s
+        "Top Right"    => position.top_right
+        "Top Left"     => position.top_left
+        "Bottom Right" => position.bottom_right
+        =>                position.bottom_left
+
+var table hud = table.new(f_hud_pos(hud_pos), 2, 6,
+                           bgcolor=C_BG, border_color=C_BORD,
+                           border_width=1, frame_color=C_BORD, frame_width=2)
+
+if show_hud and barstate.islast
+    table.cell(hud, 0, 0, "ORDER BLOCK AI [D3R]", text_color=C_TXT,
+               bgcolor=color.new(#1e293b, 0), text_size=11, text_halign=text.align_center)
+    table.merge_cells(hud, 0, 0, 1, 0)
+
+    int n_open = 0
+    int n_bull = 0
+    int n_bear = 0
+    if array.size(blocks) > 0
+        for _i = 0 to array.size(blocks) - 1
+            OB _o = array.get(blocks, _i)
+            if _o.state == 0
+                n_open += 1
+                if _o.is_bull
+                    n_bull += 1
+                else
+                    n_bear += 1
+
+    table.cell(hud, 0, 1, "Untested Zones", text_color=C_DIM, bgcolor=color.new(#1e293b, 40), text_size=11)
+    table.cell(hud, 1, 1, str.tostring(n_open) + "  (▲" + str.tostring(n_bull) + " ▼" + str.tostring(n_bear) + ")",
+               text_color=C_TXT, bgcolor=color.new(#1e293b, 40), text_size=11, text_halign=text.align_center)
+
+    float g_rate = g_total > 0 ? float(g_respect) / float(g_total) * 100.0 : na
+    table.cell(hud, 0, 2, "Respect Rate", text_color=C_DIM, bgcolor=color.new(#0f172a, 40), text_size=11)
+    table.cell(hud, 1, 2, na(g_rate) ? "—" : str.tostring(math.round(g_rate)) + "%  (n=" + str.tostring(g_total) + ")",
+               text_color=na(g_rate) ? C_DIM : g_rate >= 50 ? C_GREEN : C_AMBER,
+               bgcolor=color.new(#0f172a, 40), text_size=11, text_halign=text.align_center)
+
+    int n_train = array.size(ko_respect)
+    table.cell(hud, 0, 3, "KNN Samples", text_color=C_DIM, bgcolor=color.new(#1e293b, 40), text_size=11)
+    table.cell(hud, 1, 3, str.tostring(n_train) + " / " + str.tostring(knn_max_train),
+               text_color=n_train >= knn_min_train ? C_GREEN : C_AMBER,
+               bgcolor=color.new(#1e293b, 40), text_size=11, text_halign=text.align_center)
+
+    table.cell(hud, 0, 4, "Outcome Window", text_color=C_DIM, bgcolor=color.new(#0f172a, 40), text_size=11)
+    table.cell(hud, 1, 4, str.tostring(outcome_bars) + " bars",
+               text_color=C_DIM, bgcolor=color.new(#0f172a, 40), text_size=11, text_halign=text.align_center)
+
+
+// ALERTS
+alertcondition(new_bull_ob, "New Bullish Order Block", "D3R OB AI: new bullish order block formed — check respect probability label")
+alertcondition(new_bear_ob, "New Bearish Order Block", "D3R OB AI: new bearish order block formed — check respect probability label")

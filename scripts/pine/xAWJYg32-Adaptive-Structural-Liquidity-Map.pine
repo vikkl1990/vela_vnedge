@@ -1,0 +1,450 @@
+//@version=6
+indicator("Adaptive Structural Liquidity Map", "Structural Liquidity Map", overlay=true, max_lines_count=300, max_labels_count=120, max_boxes_count=120)
+
+// Market Intelligence Lab — v1.0 FINAL LOCK
+// Original architecture: confirmed multi-horizon structural pools + ATR clustering
+// + evidence accumulation + sweep/clearance lifecycle + right-edge distribution profile.
+// "Liquidity" is an estimated structural proxy. It does not represent actual resting orders.
+
+g1 = "01 — Structural Pool Engine"
+fastLen = input.int(4, "Fast Pivot", minval=2, maxval=20, group=g1)
+midLen  = input.int(8, "Medium Pivot", minval=3, maxval=30, group=g1)
+slowLen = input.int(14, "Slow Pivot", minval=5, maxval=50, group=g1)
+atrLen  = input.int(14, "ATR Length", minval=5, group=g1)
+mergeATR = input.float(0.22, "Pool Merge Distance (ATR)", minval=0.05, maxval=1.0, step=0.01, group=g1)
+maxAge = input.int(180, "Maximum Pool Age", minval=30, maxval=1000, group=g1)
+maxPools = input.int(24, "Maximum Active Pools", minval=6, maxval=50, group=g1)
+
+g2 = "02 — Evidence"
+evidenceDecay = input.float(0.997, "Evidence Decay", minval=0.95, maxval=1.0, step=0.001, group=g2)
+nearATR = input.float(3.2, "Evidence Radius (ATR)", minval=0.5, maxval=8.0, step=0.1, group=g2)
+wickATR = input.float(0.08, "Sweep Penetration (ATR)", minval=0.01, maxval=0.5, step=0.01, group=g2)
+clearATR = input.float(0.10, "Clearance Buffer (ATR)", minval=0.01, maxval=0.5, step=0.01, group=g2)
+
+g3 = "03 — Visuals"
+nearestEachSide = input.int(4, "Visible Pools Per Side", minval=1, maxval=8, group=g3)
+profileRows = input.int(18, "Distribution Rows", minval=6, maxval=28, group=g3)
+profileWidth = input.int(28, "Profile Max Width", minval=8, maxval=50, group=g3)
+profileOffset = input.int(12, "Profile Offset", minval=2, maxval=20, group=g3)
+showProfile = input.bool(true, "Liquidity Distribution Profile", group=g3)
+showCard = input.bool(true, "Liquidity Map Card", group=g3)
+showSweeps = input.bool(true, "Sweep Markers", group=g3)
+showExtremes = input.bool(true, "ATH / ATL", group=g3)
+showNearestTags = input.bool(true, "Nearest Red/Green Tags", group=g3)
+showStructure = input.bool(true, "BOS / CHOCH", group=g3)
+structureKeep = input.int(12, "Structure Labels Kept", minval=4, maxval=30, group=g3)
+
+clamp01(float x) => math.max(0.0, math.min(1.0, x))
+
+atr = ta.atr(atrLen)
+atrSafe = math.max(atr, syminfo.mintick)
+volBase = ta.sma(volume, 34)
+volRel = na(volume) or na(volBase) or volBase == 0.0 ? 1.0 : math.min(volume / volBase, 3.0)
+
+// Arrays: price, side (+1 upper / -1 lower), evidence, touches, born bar
+var prices = array.new_float()
+var sides = array.new_int()
+var evid = array.new_float()
+var touches = array.new_int()
+var born = array.new_int()
+
+addPool(float px, int side, float seed) =>
+    if not na(px)
+        mergeDist = atrSafe * mergeATR
+        found = -1
+        best = 1e10
+        if array.size(prices) > 0
+            for i = 0 to array.size(prices) - 1
+                if array.get(sides, i) == side
+                    d = math.abs(array.get(prices, i) - px)
+                    if d <= mergeDist and d < best
+                        best := d
+                        found := i
+        if found >= 0
+            oldE = array.get(evid, found)
+            newE = oldE + seed
+            oldP = array.get(prices, found)
+            array.set(prices, found, (oldP * oldE + px * seed) / math.max(newE, 0.0001))
+            array.set(evid, found, newE)
+            array.set(touches, found, array.get(touches, found) + 1)
+        else
+            array.push(prices, px)
+            array.push(sides, side)
+            array.push(evid, seed)
+            array.push(touches, 1)
+            array.push(born, bar_index)
+
+removePool(int i) =>
+    array.remove(prices, i)
+    array.remove(sides, i)
+    array.remove(evid, i)
+    array.remove(touches, i)
+    array.remove(born, i)
+
+// Confirmed multi-horizon structure. Seeds differ by horizon, but levels merge adaptively.
+phF = ta.pivothigh(high, fastLen, fastLen)
+plF = ta.pivotlow(low, fastLen, fastLen)
+phM = ta.pivothigh(high, midLen, midLen)
+plM = ta.pivotlow(low, midLen, midLen)
+phS = ta.pivothigh(high, slowLen, slowLen)
+plS = ta.pivotlow(low, slowLen, slowLen)
+
+if barstate.isconfirmed
+    if not na(phF)
+        addPool(phF, 1, 0.75)
+    if not na(plF)
+        addPool(plF, -1, 0.75)
+    if not na(phM)
+        addPool(phM, 1, 1.15)
+    if not na(plM)
+        addPool(plM, -1, 1.15)
+    if not na(phS)
+        addPool(phS, 1, 1.65)
+    if not na(plS)
+        addPool(plS, -1, 1.65)
+
+// Accumulate evidence near active pools. This is a behavioral proxy, not order-book data.
+if array.size(prices) > 0
+    for i = array.size(prices) - 1 to 0
+        px = array.get(prices, i)
+        side = array.get(sides, i)
+        age = bar_index - array.get(born, i)
+        ev = array.get(evid, i) * evidenceDecay
+        dist = math.abs(close - px) / atrSafe
+        proximity = clamp01(1.0 - dist / nearATR)
+        wickBias = side == 1 ? math.max(high - math.max(open, close), 0.0) / atrSafe : math.max(math.min(open, close) - low, 0.0) / atrSafe
+        approach = side == 1 ? math.max(close - close[1], 0.0) / atrSafe : math.max(close[1] - close, 0.0) / atrSafe
+        addEv = proximity * (0.42 + 0.28 * math.min(volRel, 2.0) + 0.18 * math.min(wickBias, 1.5) + 0.12 * math.min(approach, 1.5))
+        ev += addEv * 0.12
+        array.set(evid, i, ev)
+
+        cleared = side == 1 ? close > px + atrSafe * clearATR : close < px - atrSafe * clearATR
+        expired = age > maxAge
+        if cleared or expired
+            removePool(i)
+
+// Capacity control: remove oldest pools first.
+while array.size(prices) > maxPools
+    oldestIdx = 0
+    oldestBorn = array.get(born, 0)
+    for i = 1 to array.size(born) - 1
+        if array.get(born, i) < oldestBorn
+            oldestBorn := array.get(born, i)
+            oldestIdx := i
+    removePool(oldestIdx)
+
+// Sweep detection before close-through clearance: wick beyond, close back inside.
+bool upperSweep = false
+bool lowerSweep = false
+float sweepPx = na
+if array.size(prices) > 0
+    for i = 0 to array.size(prices) - 1
+        px = array.get(prices, i)
+        side = array.get(sides, i)
+        if side == 1 and high > px + atrSafe * wickATR and close < px
+            upperSweep := true
+            sweepPx := px
+        if side == -1 and low < px - atrSafe * wickATR and close > px
+            lowerSweep := true
+            sweepPx := px
+
+plotshape(showSweeps and upperSweep and volRel >= 1.20, title="Upper Structural Sweep", style=shape.triangledown, location=location.abovebar, size=size.tiny, color=color.rgb(211,82,76))
+plotshape(showSweeps and lowerSweep and volRel >= 1.20, title="Lower Structural Sweep", style=shape.triangleup, location=location.belowbar, size=size.tiny, color=color.rgb(48,174,145))
+
+
+// Confirmed market-structure context using the existing medium confirmed pivots.
+// BOS = break in incumbent structural direction.
+// CHOCH = first confirmed break against incumbent structural direction.
+var float structHigh = na
+var float structLow = na
+var int structHighTime = na
+var int structLowTime = na
+var bool highArmed = false
+var bool lowArmed = false
+var int structureBias = 0
+
+var array<label> structureLabels = array.new<label>()
+var array<line> structureLines = array.new<line>()
+
+if barstate.isconfirmed
+    if not na(phM)
+        structHigh := phM
+        structHighTime := time[midLen]
+        highArmed := true
+    if not na(plM)
+        structLow := plM
+        structLowTime := time[midLen]
+        lowArmed := true
+
+bullStructureBreak = barstate.isconfirmed and highArmed and not na(structHigh) and close > structHigh
+bearStructureBreak = barstate.isconfirmed and lowArmed and not na(structLow) and close < structLow
+
+if bullStructureBreak
+    if showStructure
+        structureText = structureBias == -1 ? "CHOCH" : "BOS"
+        structureColor = color.rgb(48,174,145)
+        structStartTime = time[math.min(midLen, bar_index)]
+        ln = line.new(structStartTime, structHigh, time, structHigh,
+             xloc=xloc.bar_time, color=color.new(structureColor, 28),
+             width=1, style=line.style_dashed)
+        lb = label.new(time, structHigh, structureText,
+             xloc=xloc.bar_time, style=label.style_label_up, size=size.tiny,
+             color=color.new(structureColor, 24), textcolor=color.white)
+        array.push(structureLines, ln)
+        array.push(structureLabels, lb)
+    structureBias := 1
+    highArmed := false
+
+if bearStructureBreak
+    if showStructure
+        structureText = structureBias == 1 ? "CHOCH" : "BOS"
+        structureColor = color.rgb(211,82,76)
+        structStartTime = time[math.min(midLen, bar_index)]
+        ln = line.new(structStartTime, structLow, time, structLow,
+             xloc=xloc.bar_time, color=color.new(structureColor, 28),
+             width=1, style=line.style_dashed)
+        lb = label.new(time, structLow, structureText,
+             xloc=xloc.bar_time, style=label.style_label_down, size=size.tiny,
+             color=color.new(structureColor, 24), textcolor=color.white)
+        array.push(structureLines, ln)
+        array.push(structureLabels, lb)
+    structureBias := -1
+    lowArmed := false
+
+while array.size(structureLabels) > structureKeep
+    label.delete(array.shift(structureLabels))
+while array.size(structureLines) > structureKeep
+    line.delete(array.shift(structureLines))
+
+// Rebuild transient visual objects only on the last bar.
+var poolLines = array.new<line>()
+var poolLabels = array.new<label>()
+var profileBoxes = array.new<box>()
+
+clearVisuals() =>
+    if array.size(poolLines) > 0
+        for i = 0 to array.size(poolLines) - 1
+            line.delete(array.get(poolLines, i))
+        array.clear(poolLines)
+    if array.size(poolLabels) > 0
+        for i = 0 to array.size(poolLabels) - 1
+            label.delete(array.get(poolLabels, i))
+        array.clear(poolLabels)
+    if array.size(profileBoxes) > 0
+        for i = 0 to array.size(profileBoxes) - 1
+            box.delete(array.get(profileBoxes, i))
+        array.clear(profileBoxes)
+
+var table card = table.new(position.top_right, 2, 5, border_width=1)
+
+if barstate.islast
+    clearVisuals()
+
+    // Rank nearest pools separately above and below.
+    upIdx = array.new_int()
+    dnIdx = array.new_int()
+    if array.size(prices) > 0
+        for i = 0 to array.size(prices) - 1
+            px = array.get(prices, i)
+            if px > close
+                array.push(upIdx, i)
+            else if px < close
+                array.push(dnIdx, i)
+
+    // Simple distance sort; small bounded arrays keep this lightweight.
+    if array.size(upIdx) > 1
+        for a = 0 to array.size(upIdx) - 2
+            for b = a + 1 to array.size(upIdx) - 1
+                ia = array.get(upIdx, a)
+                ib = array.get(upIdx, b)
+                if array.get(prices, ib) < array.get(prices, ia)
+                    array.set(upIdx, a, ib)
+                    array.set(upIdx, b, ia)
+    if array.size(dnIdx) > 1
+        for a = 0 to array.size(dnIdx) - 2
+            for b = a + 1 to array.size(dnIdx) - 1
+                ia = array.get(dnIdx, a)
+                ib = array.get(dnIdx, b)
+                if array.get(prices, ib) > array.get(prices, ia)
+                    array.set(dnIdx, a, ib)
+                    array.set(dnIdx, b, ia)
+
+    maxEv = 0.0001
+    totalUp = 0.0
+    totalDn = 0.0
+    if array.size(evid) > 0
+        for i = 0 to array.size(evid) - 1
+            ev = array.get(evid, i)
+            maxEv := math.max(maxEv, ev)
+            if array.get(prices, i) > close
+                totalUp += ev
+            else
+                totalDn += ev
+
+    if array.size(upIdx) > 0
+        lim = math.min(nearestEachSide, array.size(upIdx))
+        for n = 0 to lim - 1
+            idx = array.get(upIdx, n)
+            px = array.get(prices, idx)
+            ev = array.get(evid, idx)
+            rel = clamp01(ev / maxEv)
+            col = color.rgb(211,82,76)
+            alpha = int(86 - rel * 72)
+            ln = line.new(bar_index - 18, px, bar_index + profileOffset - 4, px, color=color.new(col, alpha), width=rel > 0.72 ? 3 : rel > 0.42 ? 2 : 1, style=line.style_dashed)
+            array.push(poolLines, ln)
+            grade = rel >= 0.72 ? "HIGH" : rel >= 0.42 ? "MED" : "LOW"
+            txt = str.tostring(px, format.mintick) + " | " + grade + " LIQ"
+            lb = label.new(bar_index + profileOffset - 3, px, txt, style=label.style_label_left, size=size.small, color=color.new(col, 76), textcolor=color.white)
+            array.push(poolLabels, lb)
+
+    if array.size(dnIdx) > 0
+        lim = math.min(nearestEachSide, array.size(dnIdx))
+        for n = 0 to lim - 1
+            idx = array.get(dnIdx, n)
+            px = array.get(prices, idx)
+            ev = array.get(evid, idx)
+            rel = clamp01(ev / maxEv)
+            col = color.rgb(48,174,145)
+            alpha = int(86 - rel * 72)
+            ln = line.new(bar_index - 18, px, bar_index + profileOffset - 4, px, color=color.new(col, alpha), width=rel > 0.72 ? 3 : rel > 0.42 ? 2 : 1, style=line.style_dashed)
+            array.push(poolLines, ln)
+            grade = rel >= 0.72 ? "HIGH" : rel >= 0.42 ? "MED" : "LOW"
+            txt = str.tostring(px, format.mintick) + " | " + grade + " LIQ"
+            lb = label.new(bar_index + profileOffset - 3, px, txt, style=label.style_label_left, size=size.small, color=color.new(col, 76), textcolor=color.white)
+            array.push(poolLabels, lb)
+
+    // Professional liquidity depth renderer.
+    // Each active structural pool contributes a compact band and a right-edge
+    // evidence bar. Width represents relative accumulated structural evidence.
+    // This remains a structural-liquidity proxy, not an order-book histogram.
+    if showProfile and array.size(prices) > 0
+        visibleLo = close - atrSafe * nearATR * 2.35
+        visibleHi = close + atrSafe * nearATR * 2.35
+
+        for i = 0 to array.size(prices) - 1
+            px = array.get(prices, i)
+            ev = array.get(evid, i)
+            if px >= visibleLo and px <= visibleHi
+                rel = clamp01(ev / maxEv)
+                // Suppress weak/distant visual noise while retaining pools internally.
+                distATR = math.abs(px - close) / atrSafe
+                visualScore = rel * clamp01(1.18 - distATR / (nearATR * 2.8))
+                if visualScore >= 0.055
+                    side = array.get(sides, i)
+                    col = side == 1 ? color.rgb(184,72,72) : color.rgb(34,155,143)
+
+                    // Compact horizontal liquidity band centered on the true pool price.
+                    halfBand = atrSafe * (0.035 + 0.055 * rel)
+                    bandLeft = bar_index - 10
+                    bandRight = bar_index + profileOffset - 2
+                    band = box.new(bandLeft, px + halfBand, bandRight, px - halfBand,
+                         border_color=color.new(col, int(74 - rel * 34)),
+                         bgcolor=color.new(col, int(94 - rel * 24)))
+                    array.push(profileBoxes, band)
+
+                    // Depth bar grows leftward from a fixed right-edge spine.
+                    depthRight = bar_index + profileOffset + profileWidth
+                    depthW = math.max(2, int(math.round(profileWidth * rel)))
+                    depthLeft = depthRight - depthW
+                    depthHalf = atrSafe * (0.026 + 0.040 * rel)
+                    depth = box.new(depthLeft, px + depthHalf, depthRight, px - depthHalf,
+                         border_color=color.new(col, int(56 - rel * 30)),
+                         bgcolor=color.new(col, int(82 - rel * 28)))
+                    array.push(profileBoxes, depth)
+
+    if showCard
+        sum = totalUp + totalDn
+        upShare = sum > 0 ? totalUp / sum : 0.5
+        dnShare = sum > 0 ? totalDn / sum : 0.5
+        balanceTxt = upShare > 0.57 ? "UPPER-HEAVY" : dnShare > 0.57 ? "LOWER-HEAVY" : "BALANCED"
+        nearestUp = array.size(upIdx) > 0 ? array.get(prices, array.get(upIdx, 0)) : na
+        nearestDn = array.size(dnIdx) > 0 ? array.get(prices, array.get(dnIdx, 0)) : na
+
+        table.cell(card,0,0,"LIQUIDITY MAP",text_color=color.white,bgcolor=color.rgb(31,38,42),text_size=size.small)
+        table.cell(card,1,0,"v1.0",text_color=color.rgb(48,174,145),bgcolor=color.rgb(31,38,42),text_size=size.small)
+        table.cell(card,0,1,"ACTIVE POOLS",text_color=color.silver)
+        table.cell(card,1,1,str.tostring(array.size(prices)),text_color=color.white)
+        table.cell(card,0,2,"BIAS",text_color=color.silver)
+        table.cell(card,1,2,balanceTxt,text_color=upShare>0.57?color.rgb(211,82,76):dnShare>0.57?color.rgb(48,174,145):color.white)
+        table.cell(card,0,3,"NEAREST ↑",text_color=color.silver)
+        table.cell(card,1,3,na(nearestUp)?"—":str.tostring(nearestUp,format.mintick),text_color=color.rgb(211,82,76))
+        table.cell(card,0,4,"NEAREST ↓",text_color=color.silver)
+        table.cell(card,1,4,na(nearestDn)?"—":str.tostring(nearestDn,format.mintick),text_color=color.rgb(48,174,145))
+    else
+        table.clear(card,0,0,1,4)
+
+// Descriptive context overlays. Kept deliberately lightweight for renderer stability.
+var float ath = na
+var float atl = na
+var int athTime = na
+var int atlTime = na
+
+if na(ath) or high > ath
+    ath := high
+    athTime := time
+if na(atl) or low < atl
+    atl := low
+    atlTime := time
+
+var label athLb = na
+var label atlLb = na
+var line athGuide = na
+var line atlGuide = na
+var label nearUpTag = na
+var label nearDnTag = na
+
+if barstate.islast
+    if not na(athLb)
+        label.delete(athLb)
+    if not na(atlLb)
+        label.delete(atlLb)
+    if not na(athGuide)
+        line.delete(athGuide)
+    if not na(atlGuide)
+        line.delete(atlGuide)
+    if not na(nearUpTag)
+        label.delete(nearUpTag)
+    if not na(nearDnTag)
+        label.delete(nearDnTag)
+
+    if showExtremes
+        // Keep the true ATH/ATL visible at the right edge even when the original
+        // extreme occurred outside the currently visible chart window.
+        athGuide := line.new(athTime, ath, time, ath,
+             xloc=xloc.bar_time, color=color.new(color.rgb(211,82,76),42),
+             width=1, style=line.style_dashed)
+        atlGuide := line.new(atlTime, atl, time, atl,
+             xloc=xloc.bar_time, color=color.new(color.rgb(48,174,145),42),
+             width=1, style=line.style_dashed)
+
+        athLb := label.new(time, ath, "ATH  " + str.tostring(ath, format.mintick),
+             xloc=xloc.bar_time, style=label.style_label_left, size=size.small,
+             color=color.new(color.rgb(211,82,76),8), textcolor=color.white)
+        atlLb := label.new(time, atl, "ATL  " + str.tostring(atl, format.mintick),
+             xloc=xloc.bar_time, style=label.style_label_left, size=size.small,
+             color=color.new(color.rgb(48,174,145),8), textcolor=color.white)
+
+    if showNearestTags
+        float tagUp = na
+        float tagDn = na
+        if array.size(prices) > 0
+            for j = 0 to array.size(prices)-1
+                p = array.get(prices,j)
+                if p > close and (na(tagUp) or p < tagUp)
+                    tagUp := p
+                if p < close and (na(tagDn) or p > tagDn)
+                    tagDn := p
+
+        tagX = bar_index + profileOffset + profileWidth + 3
+        if not na(tagUp)
+            nearUpTag := label.new(tagX, tagUp, str.tostring(tagUp,format.mintick),
+                 style=label.style_label_left, size=size.small,
+                 color=color.new(color.rgb(211,82,76),26), textcolor=color.white)
+        if not na(tagDn)
+            nearDnTag := label.new(tagX, tagDn, str.tostring(tagDn,format.mintick),
+                 style=label.style_label_left, size=size.small,
+                 color=color.new(color.rgb(48,174,145),26), textcolor=color.white)
+
+
+alertcondition(upperSweep, "Upper Structural Sweep", "Price wicked through an estimated upper structural liquidity pool and closed back below it.")
+alertcondition(lowerSweep, "Lower Structural Sweep", "Price wicked through an estimated lower structural liquidity pool and closed back above it.")

@@ -1,0 +1,463 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © SpokoStocks
+
+//@version=6
+indicator("Signal Expectancy Analyzer [SpokoStocks]", shorttitle = "Signal Expectancy Analyzer [SpokoStocks]", overlay = true,
+     max_labels_count = 200, max_polylines_count = 10)
+
+// ═══════════════════════════════════ Inputs ═══════════════════════════════════
+gSig = "1 · Signal to study"
+sigMode = input.string("RSI(14) oversold", "Signal", group = gSig, options = [
+     "RSI(14) oversold", "RSI(14) overbought",
+     "Stochastic(14,3) cross up below 20", "Stochastic(14,3) cross down above 80",
+     "CCI(20) cross above -100", "CCI(20) cross below +100",
+     "ADX(14) +DI cross above -DI", "ADX(14) -DI cross above +DI",
+     "Awesome Oscillator cross above 0", "Awesome Oscillator cross below 0",
+     "Momentum(10) cross above 0", "Momentum(10) cross below 0",
+     "MACD(12,26,9) bullish cross", "MACD(12,26,9) bearish cross",
+     "Stoch RSI cross up below 20", "Stoch RSI cross down above 80",
+     "Williams %R(14) cross above -80", "Williams %R(14) cross below -20",
+     "Bull Bear Power(13) cross above 0", "Bull Bear Power(13) cross below 0",
+     "Ultimate Oscillator cross above 30", "Ultimate Oscillator cross below 70",
+     "Close cross above EMA(20)", "Close cross below EMA(20)",
+     "Close cross above SMA(50)", "Close cross below SMA(50)",
+     "Close cross above SMA(200)", "Close cross below SMA(200)",
+     "Golden cross SMA(50) > SMA(200)", "Death cross SMA(50) < SMA(200)",
+     "Close cross above Ichimoku cloud", "Close cross below Ichimoku cloud",
+     "HMA(9) turns up", "HMA(9) turns down",
+     "Close cross above VWMA(20)", "Close cross below VWMA(20)",
+     "Close below lower Bollinger(20,2)", "Close above upper Bollinger(20,2)",
+     "N-bar low close", "N-bar high close",
+     "Gap up", "Gap down",
+     "External source > 0"])
+dirMode  = input.string("Auto", "Direction", options = ["Auto", "Bullish", "Bearish"], group = gSig,
+     tooltip = "Auto uses each signal's natural direction: a bearish signal counts a falling market as a win. Override if you read a signal the other way.")
+cooldown = input.int(5, "Minimum bars between signals", minval = 0, group = gSig,
+     tooltip = "Ignores repeat signals inside this many bars so clustered signals do not count several times. Applies to every signal, including the leaderboard.")
+nLen     = input.int(20, "N-bar low / high lookback", minval = 2, group = gSig)
+gapPct   = input.float(2.0, "Gap size (%)", minval = 0.1, step = 0.1, group = gSig)
+extSrc   = input.source(close, "External source", group = gSig,
+     tooltip = "Pick a plot from any indicator on the chart. The bar where it first moves above 0 is a signal.")
+
+gHor = "2 · Horizons (bars ahead)"
+h1 = input.int(5,  "Horizon 1", minval = 1, maxval = 250, group = gHor)
+h2 = input.int(10, "Horizon 2", minval = 1, maxval = 250, group = gHor)
+h3 = input.int(20, "Horizon 3", minval = 1, maxval = 250, group = gHor)
+h4 = input.int(40, "Horizon 4", minval = 1, maxval = 250, group = gHor)
+hP = input.int(20, "Primary horizon (markers, cone, distribution, leaderboard)", minval = 1, maxval = 250, group = gHor)
+
+gDisp = "3 · Display"
+showCone    = input.bool(true, "Project the average path and ±1σ cone from the latest signal", group = gDisp)
+showMarkers = input.bool(true, "Mark signal bars by their outcome at the primary horizon", group = gDisp)
+showTable   = input.bool(true, "Show statistics table", group = gDisp)
+showDist    = input.bool(true, "Show return distribution row", group = gDisp)
+tblPos      = input.string("Top right", "Statistics table position", options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = gDisp)
+showBoard   = input.bool(true, "Show leaderboard of all signals", group = gDisp)
+boardRows   = input.int(10, "Leaderboard rows", minval = 3, maxval = 43, group = gDisp)
+boardMinN   = input.int(30, "Leaderboard: minimum signals to rank", minval = 5, group = gDisp)
+boardPos    = input.string("Bottom right", "Leaderboard position", options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = gDisp)
+
+gCol = "4 · Colours"
+cWin  = input.color(#2dd4bf, "Winning outcome", group = gCol)
+cLoss = input.color(#ff3b5c, "Losing outcome", group = gCol)
+cWait = input.color(#8b95a7, "Outcome not yet known", group = gCol)
+cCone = input.color(#a78bfa, "Cone", group = gCol)
+cPath = input.color(#fbbf24, "Average path", group = gCol)
+
+// ═══════════════════════════ Indicator calculations ═══════════════════════════
+rsi14   = ta.rsi(close, 14)
+stK     = ta.stoch(close, high, low, 14)
+stD     = ta.sma(stK, 3)
+cci20   = ta.cci(close, 20)
+[diP, diM, adx] = ta.dmi(14, 14)
+ao      = ta.sma(hl2, 5) - ta.sma(hl2, 34)
+mom10   = ta.mom(close, 10)
+[macdL, macdS, macdH] = ta.macd(close, 12, 26, 9)
+srK     = ta.sma(ta.stoch(rsi14, rsi14, rsi14, 14), 3)
+srD     = ta.sma(srK, 3)
+wpr14   = ta.wpr(14)
+ema13   = ta.ema(close, 13)
+bbp     = (high - ema13) + (low - ema13)
+uoBP    = close - math.min(low, close[1])
+uoTR    = math.max(high, close[1]) - math.min(low, close[1])
+uo7     = math.sum(uoBP, 7)  / math.sum(uoTR, 7)
+uo14    = math.sum(uoBP, 14) / math.sum(uoTR, 14)
+uo28    = math.sum(uoBP, 28) / math.sum(uoTR, 28)
+uo      = 100 * (4 * uo7 + 2 * uo14 + uo28) / 7
+ema20   = ta.ema(close, 20)
+sma50   = ta.sma(close, 50)
+sma200  = ta.sma(close, 200)
+convL   = (ta.highest(high, 9)  + ta.lowest(low, 9))  / 2
+baseL   = (ta.highest(high, 26) + ta.lowest(low, 26)) / 2
+spanA   = (convL + baseL) / 2
+spanB   = (ta.highest(high, 52) + ta.lowest(low, 52)) / 2
+cloudT  = math.max(spanA[26], spanB[26])
+cloudB  = math.min(spanA[26], spanB[26])
+hma9    = ta.hma(close, 9)
+vwma20  = ta.vwma(close, 20)
+[bbM, bbU, bbL] = ta.bb(close, 20, 2.0)
+lowN    = ta.lowest(close, nLen)
+highN   = ta.highest(close, nLen)
+
+// ═══════════════════════════════ Signal events ════════════════════════════════
+// Every entry is an event (first bar a condition becomes true), never a state.
+rawFlags = array.from(
+     rsi14 < 30 and not (rsi14[1] < 30),                       rsi14 > 70 and not (rsi14[1] > 70),
+     ta.crossover(stK, stD) and stK < 20,                      ta.crossunder(stK, stD) and stK > 80,
+     ta.crossover(cci20, -100),                                ta.crossunder(cci20, 100),
+     ta.crossover(diP, diM),                                   ta.crossover(diM, diP),
+     ta.crossover(ao, 0),                                      ta.crossunder(ao, 0),
+     ta.crossover(mom10, 0),                                   ta.crossunder(mom10, 0),
+     ta.crossover(macdL, macdS),                               ta.crossunder(macdL, macdS),
+     ta.crossover(srK, srD) and srK < 20,                      ta.crossunder(srK, srD) and srK > 80,
+     ta.crossover(wpr14, -80),                                 ta.crossunder(wpr14, -20),
+     ta.crossover(bbp, 0),                                     ta.crossunder(bbp, 0),
+     ta.crossover(uo, 30),                                     ta.crossunder(uo, 70),
+     ta.crossover(close, ema20),                               ta.crossunder(close, ema20),
+     ta.crossover(close, sma50),                               ta.crossunder(close, sma50),
+     ta.crossover(close, sma200),                              ta.crossunder(close, sma200),
+     ta.crossover(sma50, sma200),                              ta.crossunder(sma50, sma200),
+     ta.crossover(close, cloudT),                              ta.crossunder(close, cloudB),
+     hma9 > hma9[1] and hma9[1] <= hma9[2],                    hma9 < hma9[1] and hma9[1] >= hma9[2],
+     ta.crossover(close, vwma20),                              ta.crossunder(close, vwma20),
+     close < bbL and not (close[1] < bbL[1]),                  close > bbU and not (close[1] > bbU[1]),
+     close <= lowN and not (close[1] <= lowN[1]),              close >= highN and not (close[1] >= highN[1]),
+     open / close[1] - 1 >= gapPct / 100,                      1 - open / close[1] >= gapPct / 100,
+     extSrc > 0 and not (extSrc[1] > 0))
+
+var names = array.from(
+     "RSI(14) oversold", "RSI(14) overbought",
+     "Stochastic(14,3) cross up below 20", "Stochastic(14,3) cross down above 80",
+     "CCI(20) cross above -100", "CCI(20) cross below +100",
+     "ADX(14) +DI cross above -DI", "ADX(14) -DI cross above +DI",
+     "Awesome Oscillator cross above 0", "Awesome Oscillator cross below 0",
+     "Momentum(10) cross above 0", "Momentum(10) cross below 0",
+     "MACD(12,26,9) bullish cross", "MACD(12,26,9) bearish cross",
+     "Stoch RSI cross up below 20", "Stoch RSI cross down above 80",
+     "Williams %R(14) cross above -80", "Williams %R(14) cross below -20",
+     "Bull Bear Power(13) cross above 0", "Bull Bear Power(13) cross below 0",
+     "Ultimate Oscillator cross above 30", "Ultimate Oscillator cross below 70",
+     "Close cross above EMA(20)", "Close cross below EMA(20)",
+     "Close cross above SMA(50)", "Close cross below SMA(50)",
+     "Close cross above SMA(200)", "Close cross below SMA(200)",
+     "Golden cross SMA(50) > SMA(200)", "Death cross SMA(50) < SMA(200)",
+     "Close cross above Ichimoku cloud", "Close cross below Ichimoku cloud",
+     "HMA(9) turns up", "HMA(9) turns down",
+     "Close cross above VWMA(20)", "Close cross below VWMA(20)",
+     "Close below lower Bollinger(20,2)", "Close above upper Bollinger(20,2)",
+     "N-bar low close", "N-bar high close",
+     "Gap up", "Gap down",
+     "External source > 0")
+
+// Natural direction of each signal: +1 bullish, -1 bearish (alternating pairs, external is bullish)
+var dirs = array.from(1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1,
+                      1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1)
+
+S = array.size(names)
+
+// Cooldown per signal
+var lastFire = array.new_int(S, -1000000)
+flags = array.new_bool(S, false)
+for i = 0 to S - 1
+    if array.get(rawFlags, i) and bar_index - array.get(lastFire, i) > cooldown
+        array.set(flags, i, true)
+        array.set(lastFire, i, bar_index)
+
+// Ring buffer of signal flags so we can ask "did signal i fire h bars ago?"
+hMax = math.max(math.max(math.max(h1, h2), math.max(h3, h4)), hP)
+R    = hMax + 1
+var hist = matrix.new<bool>(R, S, false)
+for i = 0 to S - 1
+    matrix.set(hist, bar_index % R, i, array.get(flags, i))
+firedAgo(int i, int h) => bar_index >= h and matrix.get(hist, (bar_index - h + R) % R, i)
+
+// Selected signal
+sel    = array.indexof(names, sigMode)
+sig    = array.get(flags, sel)
+dirSel = dirMode == "Auto" ? array.get(dirs, sel) : dirMode == "Bullish" ? 1 : -1
+sgn    = float(dirSel)
+isBear = dirSel < 0
+
+var int   lastSig      = na
+var float lastSigClose = na
+if sig
+    lastSig      := bar_index
+    lastSigClose := close
+
+// ═══════════════════════ Selected signal: forward returns ═════════════════════
+collect(int h, float[] rA, float[] fA, float[] aA) =>
+    up = (ta.highest(high, h) / close[h] - 1) * 100
+    dn = (ta.lowest(low, h)   / close[h] - 1) * 100
+    r  = (close / close[h] - 1) * 100
+    if firedAgo(sel, h)
+        array.push(rA, sgn * r)
+        array.push(fA, isBear ? -dn : up)
+        array.push(aA, isBear ? -up : dn)
+    sgn * r
+
+var r1 = array.new_float()
+var f1 = array.new_float()
+var a1 = array.new_float()
+var r2 = array.new_float()
+var f2 = array.new_float()
+var a2 = array.new_float()
+var r3 = array.new_float()
+var f3 = array.new_float()
+var a3 = array.new_float()
+var r4 = array.new_float()
+var f4 = array.new_float()
+var a4 = array.new_float()
+var rP = array.new_float()
+var fP = array.new_float()
+var aP = array.new_float()
+
+u1 = collect(h1, r1, f1, a1)
+u2 = collect(h2, r2, f2, a2)
+u3 = collect(h3, r3, f3, a3)
+u4 = collect(h4, r4, f4, a4)
+uP = collect(hP, rP, fP, aP)
+
+var float b1 = 0.0
+var int   n1 = 0
+var float b2 = 0.0
+var int   n2 = 0
+var float b3 = 0.0
+var int   n3 = 0
+var float b4 = 0.0
+var int   n4 = 0
+if not na(u1)
+    b1 += u1
+    n1 += 1
+if not na(u2)
+    b2 += u2
+    n2 += 1
+if not na(u3)
+    b3 += u3
+    n3 += 1
+if not na(u4)
+    b4 += u4
+    n4 += 1
+
+// Average path bar by bar out to the longest horizon
+var pathSum = array.new_float(0)
+var pathSq  = array.new_float(0)
+var pathCnt = array.new_int(0)
+if barstate.isfirst
+    for k = 0 to hMax
+        array.push(pathSum, 0.0)
+        array.push(pathSq, 0.0)
+        array.push(pathCnt, 0)
+for k = 1 to hMax
+    if firedAgo(sel, k)
+        rk = sgn * (close / close[k] - 1) * 100
+        array.set(pathSum, k, array.get(pathSum, k) + rk)
+        array.set(pathSq,  k, array.get(pathSq,  k) + rk * rk)
+        array.set(pathCnt, k, array.get(pathCnt, k) + 1)
+
+// ═══════════════════════ Leaderboard: every signal at hP ══════════════════════
+var lbN   = array.new_int(S, 0)
+var lbW   = array.new_int(S, 0)
+var lbSum = array.new_float(S, 0.0)
+var lbSq  = array.new_float(S, 0.0)
+var float uSum = 0.0
+var int   uN   = 0
+uRaw = (close / close[hP] - 1) * 100
+if bar_index >= hP and not na(uRaw)
+    uSum += uRaw
+    uN   += 1
+    for i = 0 to S - 1
+        if firedAgo(i, hP)
+            r = array.get(dirs, i) * uRaw
+            array.set(lbN,   i, array.get(lbN, i) + 1)
+            array.set(lbW,   i, array.get(lbW, i) + (r > 0 ? 1 : 0))
+            array.set(lbSum, i, array.get(lbSum, i) + r)
+            array.set(lbSq,  i, array.get(lbSq, i) + r * r)
+
+// ═══════════════════════════════════ Markers ══════════════════════════════════
+firedP = firedAgo(sel, hP)
+outP   = sgn * uRaw
+plotshape(showMarkers and firedP and outP > 0,  "Signal, won at primary horizon",  shape.circle, location.belowbar, cWin,  size = size.tiny, offset = -hP)
+plotshape(showMarkers and firedP and outP <= 0, "Signal, lost at primary horizon", shape.circle, location.belowbar, cLoss, size = size.tiny, offset = -hP)
+plotshape(showMarkers and sig and bar_index > last_bar_index - hP, "Signal, outcome pending", shape.circle, location.belowbar, cWait, size = size.tiny)
+
+// ═══════════════════════════════════ Cone ═════════════════════════════════════
+var polyline coneLine = na
+var polyline pathLine = na
+if barstate.islast and showCone and not na(lastSig) and last_bar_index - lastSig <= hMax * 3
+    if not na(coneLine)
+        polyline.delete(coneLine)
+    if not na(pathLine)
+        polyline.delete(pathLine)
+    upPts  = array.new<chart.point>()
+    dnPts  = array.new<chart.point>()
+    midPts = array.new<chart.point>()
+    for k = 0 to hMax
+        cnt  = array.get(pathCnt, k)
+        mean = k == 0 or cnt == 0 ? 0.0 : array.get(pathSum, k) / cnt
+        varc = k == 0 or cnt == 0 ? 0.0 : math.max(array.get(pathSq, k) / cnt - mean * mean, 0.0)
+        sd   = math.sqrt(varc)
+        mS   = isBear ? -mean : mean
+        array.push(midPts, chart.point.from_index(lastSig + k, lastSigClose * (1 + mS / 100)))
+        array.push(upPts,  chart.point.from_index(lastSig + k, lastSigClose * (1 + (mS + sd) / 100)))
+        array.push(dnPts,  chart.point.from_index(lastSig + k, lastSigClose * (1 + (mS - sd) / 100)))
+    conePts = array.copy(upPts)
+    for k = hMax to 0
+        array.push(conePts, array.get(dnPts, k))
+    coneLine := polyline.new(conePts, false, true, xloc.bar_index, color.new(cCone, 40), color.new(cCone, 85), line_width = 1)
+    pathLine := polyline.new(midPts, false, false, xloc.bar_index, cPath, line_width = 2)
+
+// ═══════════════════════════════════ Tables ═══════════════════════════════════
+toPos(string p) =>
+    switch p
+        "Top left"     => position.top_left
+        "Bottom right" => position.bottom_right
+        "Bottom left"  => position.bottom_left
+        => position.top_right
+
+cTblBg = color.new(#0b1220, 8)
+cText  = #e5e9f0
+cDim   = #8b95a7
+var table tb = table.new(toPos(tblPos),   10, 8,             bgcolor = cTblBg, border_width = 1, border_color = cTblBg, frame_color = color.new(#3b4b66, 40), frame_width = 1)
+var table lb = table.new(toPos(boardPos),  6, boardRows + 2, bgcolor = cTblBg, border_width = 1, border_color = cTblBg, frame_color = color.new(#3b4b66, 40), frame_width = 1)
+
+winRate(float[] a) =>
+    n = array.size(a)
+    w = 0
+    if n > 0
+        for i = 0 to n - 1
+            w += array.get(a, i) > 0 ? 1 : 0
+    n > 0 ? w / n * 100 : float(na)
+
+tStat(float[] a) =>
+    n = array.size(a)
+    n > 1 ? array.avg(a) / (array.stdev(a) / math.sqrt(n)) : float(na)
+
+f1s(float x) => na(x) ? "–" : str.tostring(x, "#.#")
+f2s(float x) => na(x) ? "–" : str.tostring(x, "#.##")
+
+cellH(table t, int c, string s) =>
+    table.cell(t, c, 0, s, text_color = #ffffff, text_size = size.small, bgcolor = color.new(cCone, 55), text_halign = c == 0 ? text.align_left : text.align_right)
+cellV(table t, int c, int r, string s, color col, color bg) =>
+    table.cell(t, c, r, s, text_color = col, text_size = size.small, bgcolor = bg, text_halign = c == 0 ? text.align_left : text.align_right)
+
+statRow(int r, int h, float[] rA, float[] fA, float[] aA, float bSum, int bN) =>
+    n    = array.size(rA)
+    avg  = n > 0 ? array.avg(rA) : float(na)
+    med  = n > 0 ? array.median(rA) : float(na)
+    win  = winRate(rA)
+    base = bN > 0 ? bSum / bN : float(na)
+    edge = avg - base
+    t    = tStat(rA)
+    mfe  = n > 0 ? array.avg(fA) : float(na)
+    mae  = n > 0 ? array.avg(aA) : float(na)
+    cE   = na(edge) ? cDim : edge > 0 ? cWin : cLoss
+    cT   = na(t) ? cDim : math.abs(t) >= 2 ? cWin : cDim
+    cellV(tb, 0, r, str.tostring(h) + " bars", cText, cTblBg)
+    cellV(tb, 1, r, str.tostring(n), n < 30 ? cLoss : cText, cTblBg)
+    cellV(tb, 2, r, f1s(win) + "%", na(win) ? cDim : win >= 50 ? cWin : cLoss, cTblBg)
+    cellV(tb, 3, r, f2s(avg) + "%", na(avg) ? cDim : avg > 0 ? cWin : cLoss, cTblBg)
+    cellV(tb, 4, r, f2s(med) + "%", cText, cTblBg)
+    cellV(tb, 5, r, f2s(base) + "%", cDim, cTblBg)
+    cellV(tb, 6, r, f2s(edge) + "%", cE, cTblBg)
+    cellV(tb, 7, r, f2s(t), cT, cTblBg)
+    cellV(tb, 8, r, f2s(mfe) + "%", cWin, cTblBg)
+    cellV(tb, 9, r, f2s(mae) + "%", cLoss, cTblBg)
+
+distText(float[] a) =>
+    n = array.size(a)
+    if n < 10
+        "need ≥10 signals"
+    else
+        sd    = array.stdev(a)
+        mean  = array.avg(a)
+        edges = array.from(-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0)
+        bins  = array.new_int(8, 0)
+        for i = 0 to n - 1
+            z = sd > 0 ? (array.get(a, i) - mean) / sd : 0.0
+            b = 0
+            for e = 0 to 6
+                if z >= array.get(edges, e)
+                    b := e + 1
+            array.set(bins, b, array.get(bins, b) + 1)
+        mx = array.max(bins)
+        blocks = array.from("▁", "▂", "▃", "▄", "▅", "▆", "▇", "█")
+        s = "−2σ "
+        for b = 0 to 7
+            lvl = mx > 0 ? math.round(array.get(bins, b) / mx * 7) : 0
+            s += array.get(blocks, lvl)
+        s + " +2σ   (" + str.tostring(n) + " signals, σ " + f2s(sd) + "%)"
+
+var bool merged = false
+if barstate.islast and showTable
+    if not merged
+        table.merge_cells(tb, 1, 5, 9, 5)
+        table.merge_cells(tb, 1, 6, 9, 6)
+        merged := true
+    cellH(tb, 0, "SIGNAL EXPECTANCY · " + sigMode + (isBear ? " (bearish)" : " (bullish)"))
+    cellH(tb, 1, "N")
+    cellH(tb, 2, "Win %")
+    cellH(tb, 3, "Avg")
+    cellH(tb, 4, "Median")
+    cellH(tb, 5, "Baseline")
+    cellH(tb, 6, "Edge")
+    cellH(tb, 7, "t-stat")
+    cellH(tb, 8, "Avg MFE")
+    cellH(tb, 9, "Avg MAE")
+    statRow(1, h1, r1, f1, a1, b1, n1)
+    statRow(2, h2, r2, f2, a2, b2, n2)
+    statRow(3, h3, r3, f3, a3, b3, n3)
+    statRow(4, h4, r4, f4, a4, b4, n4)
+    if showDist
+        cellV(tb, 0, 5, "Distribution at " + str.tostring(hP) + " bars", cDim, cTblBg)
+        cellV(tb, 1, 5, distText(rP), cText, cTblBg)
+    cellV(tb, 0, 6, na(lastSig) ? "No signal yet" : "Latest signal " + str.tostring(last_bar_index - lastSig) + " bars ago", cDim, cTblBg)
+    cellV(tb, 1, 6, "Edge = average return after the signal minus the average return of any bar over the same horizon. |t| ≥ 2 shown in green.", cDim, cTblBg)
+
+// Leaderboard: rank every signal by edge at the primary horizon
+if barstate.islast and showBoard
+    uMean = uN > 0 ? uSum / uN : 0.0
+    edges = array.new_float(S, na)
+    for i = 0 to S - 1
+        n = array.get(lbN, i)
+        if n >= boardMinN
+            array.set(edges, i, array.get(lbSum, i) / n - array.get(dirs, i) * uMean)
+    used = array.new_bool(S, false)
+    cellH(lb, 0, "LEADERBOARD · " + str.tostring(hP) + " bars ahead · min " + str.tostring(boardMinN) + " signals")
+    cellH(lb, 1, "N")
+    cellH(lb, 2, "Win %")
+    cellH(lb, 3, "Avg")
+    cellH(lb, 4, "Edge")
+    cellH(lb, 5, "t-stat")
+    for r = 1 to boardRows
+        best = -1
+        bestE = -1e9
+        for i = 0 to S - 1
+            e = array.get(edges, i)
+            if not na(e) and not array.get(used, i) and e > bestE
+                bestE := e
+                best  := i
+        if best >= 0
+            array.set(used, best, true)
+            n    = array.get(lbN, best)
+            mean = array.get(lbSum, best) / n
+            sd   = math.sqrt(math.max(array.get(lbSq, best) / n - mean * mean, 0.0))
+            t    = sd > 0 ? mean / (sd / math.sqrt(n)) : float(na)
+            win  = array.get(lbW, best) / n * 100
+            bg   = best == sel ? color.new(cPath, 80) : cTblBg
+            cellV(lb, 0, r, str.tostring(r) + ". " + array.get(names, best) + (array.get(dirs, best) < 0 ? " ▼" : " ▲"), cText, bg)
+            cellV(lb, 1, r, str.tostring(n), cText, bg)
+            cellV(lb, 2, r, f1s(win) + "%", win >= 50 ? cWin : cLoss, bg)
+            cellV(lb, 3, r, f2s(mean) + "%", mean > 0 ? cWin : cLoss, bg)
+            cellV(lb, 4, r, f2s(bestE) + "%", bestE > 0 ? cWin : cLoss, bg)
+            cellV(lb, 5, r, f2s(t), na(t) ? cDim : math.abs(t) >= 2 ? cWin : cDim, bg)
+        else
+            cellV(lb, 0, r, "", cDim, cTblBg)
+    cellV(lb, 0, boardRows + 1, "Ranked by edge over baseline. ▲ bullish signal, ▼ bearish signal (wins measured in its own direction). Highlighted row is the selected signal.", cDim, cTblBg)
+
+var bool mergedLb = false
+if barstate.islast and showBoard and not mergedLb
+    table.merge_cells(lb, 0, boardRows + 1, 5, boardRows + 1)
+    mergedLb := true
+
+// ═══════════════════════════════════ Alert ════════════════════════════════════
+alertcondition(sig, "New signal", "{{ticker}}: new signal for the Signal Expectancy Analyzer")

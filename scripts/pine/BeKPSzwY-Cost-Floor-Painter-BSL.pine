@@ -1,0 +1,218 @@
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// © BarState Labs
+//@version=6
+indicator("Cost Floor Painter [BSL]", shorttitle = "BSL Cost Floor", overlay = true, max_bars_back = 600)
+
+// Cost Floor Painter answers one question: is this bar even big enough to pay
+// for its own round trip? The cost is entered in ticks, converted to price with
+// syminfo.mintick and compared against the bar's TRUE range. It makes no claim
+// about direction, entry or outcome. What a cost does across a sequence of
+// trades is BSL-003 Execution-Aware Trend, where the same assumption becomes an
+// executed cost with next-bar fills and an out-of-sample split.
+//
+// The predicate is shared with B-vis3-02 Cost-to-Range Gauge, which aggregates
+// the same test as a count of bars under cost. The two are defined to match:
+// both use ta.tr(true), and both name the definition on their own panel, so a
+// user who owns both can see that they agree rather than having to trust it.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inputs
+// ─────────────────────────────────────────────────────────────────────────────
+string GROUP_COST = "01 · Round-trip cost"
+string GROUP_DISPLAY = "02 · Display"
+
+float costTicks = input.float(4.0, "Round-trip cost, ticks", minval = 0.1, maxval = 10000.0, step = 0.1, group = GROUP_COST,
+     tooltip = "Spread plus commission plus a slippage allowance, entered in ticks so the number survives a change of instrument. It is converted to price with syminfo.mintick and compared against each closed bar's true range, which counts an overnight gap as range the instrument actually travelled. B-vis3-02 Cost-to-Range Gauge counts the same test over a window and uses the same definition.")
+int coverage = input.int(50, "Coverage window, closed bars", minval = 2, maxval = 5000, group = GROUP_COST,
+     tooltip = "How many closed bars the cleared share is measured over. The panel always prints this count beside the share, so a share measured over 30 bars cannot pass for one measured over 3,000.")
+
+bool showPaint = input.bool(true, "Colour the bars", group = GROUP_DISPLAY)
+bool showForming = input.bool(true, "Outline the forming bar", group = GROUP_DISPLAY,
+     tooltip = "The bar still forming is redrawn with its body at 90 percent transparency and its border and wick opaque. Pine has no hollow candle style, so the outline comes from body transparency against an opaque bordercolor, not from a style flag. That bar is never classified, counted or exported.")
+string panelPositionInput = input.string("Bottom center", "Panel position", options = ["Auto", "Top right", "Bottom right", "Top left", "Bottom left", "Top center", "Bottom center"],
+     group = GROUP_DISPLAY, tooltip = "Auto keeps the panel opposite the latest price within the visible chart range. Pick a corner by hand when another script already occupies this one.")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Palette
+//
+// One hue carries the verdict. Below cost is the same hue at raised
+// transparency rather than a second colour, so it reads as LESS, not as OTHER.
+// ─────────────────────────────────────────────────────────────────────────────
+color COLOR_BG = color.rgb(11, 14, 13)
+color COLOR_TEXT = color.rgb(242, 239, 232)
+color COLOR_MUTED = color.rgb(156, 161, 154)
+color COLOR_GREEN = color.rgb(82, 211, 151)
+color COLOR_RED = color.rgb(239, 107, 107)
+color COLOR_AMBER = color.rgb(235, 184, 87)
+color COLOR_BLUE = color.rgb(104, 167, 255)
+color COLOR_HUE = color.rgb(104, 167, 255)
+
+int WASHED_TRANSPARENCY = 62
+int FORMING_BODY_TRANSPARENCY = 90
+
+f_chart_type() =>
+    chart.is_heikinashi ? "HEIKIN ASHI" :
+     chart.is_renko ? "RENKO" :
+     chart.is_kagi ? "KAGI" :
+     chart.is_pnf ? "POINT & FIGURE" :
+     chart.is_range ? "RANGE" : "NON-STANDARD"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The classification
+//
+// A closed bar's range is final the moment the bar closes, so the verdict sits
+// on the bar that produced it with no delay and can never revise. The forming
+// bar is deliberately excluded: its range is still growing, and a verdict that
+// could be withdrawn is worse than no verdict at all.
+//
+// ta.tr(true) rather than high minus low. True range is gap-aware: a bar that
+// gapped and then traded a narrow intrabar range carries a real move a holder
+// captured, and high minus low would call that bar too small to trade when it
+// was not. For a beginner tool a false "this bar is not worth it" costs the
+// reader opportunity silently, which is the worse of the two errors. The `true`
+// argument makes the first bar of the loaded history fall back to high minus
+// low instead of returning na, so the series has no hole at its left end.
+// ─────────────────────────────────────────────────────────────────────────────
+bool configValid = costTicks > 0.0 and coverage >= 2 and coverage <= 5000
+bool standardChart = chart.is_standard
+bool drawable = configValid and standardChart
+
+float costPrice = costTicks * syminfo.mintick
+float barRange = ta.tr(true)
+bool clearedRaw = barRange >= costPrice
+
+bool resolved = drawable and barstate.isconfirmed
+bool forming = drawable and not barstate.isconfirmed
+bool cleared = resolved and clearedRaw
+
+var int clearedCount = 0
+var int observedBars = 0
+
+if resolved
+    observedBars += 1
+    clearedCount += cleared ? 1 : 0
+
+// The share is an average of the raw classification over the coverage window.
+// ta.sma runs in global scope on every bar so it carries one history, and the
+// published copy is refreshed only at a bar's close. That is what stops the
+// right-hand number moving while the newest bar is still being built: because
+// only the newest bar of a chart can be open, the window behind a published
+// share contains closed bars only.
+float clearedValue = clearedRaw ? 1.0 : 0.0
+float rollingShare = ta.sma(clearedValue, coverage)
+var float publishedShare = na
+if resolved
+    publishedShare := rollingShare
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Paint
+//
+// barcolor carries the verdict on confirmed bars and is passed na on the bar
+// still forming, which is then redrawn by plotcandle. barcolor and plotcandle
+// have no hollow style, so the outline effect is body transparency against an
+// opaque bordercolor and wickcolor, both of which are real plotcandle
+// parameters. Nothing here is described as hollow, dashed or outlined by style.
+// ─────────────────────────────────────────────────────────────────────────────
+color paintHue = clearedRaw ? COLOR_HUE : color.new(COLOR_HUE, WASHED_TRANSPARENCY)
+barcolor(showPaint and resolved ? paintHue : na, title = "Cost floor paint")
+
+plotcandle(showForming and forming ? open : na, showForming and forming ? high : na,
+     showForming and forming ? low : na, showForming and forming ? close : na,
+     title = "Forming bar · not classified", color = color.new(COLOR_HUE, FORMING_BODY_TRANSPARENCY),
+     bordercolor = COLOR_HUE, wickcolor = COLOR_HUE)
+
+// The single background tint marks the bars this product has no opinion about:
+// the open bar, and every bar of a chart or configuration it refuses. On a
+// refused chart the wash covers the whole history, because a three-cell panel
+// is easy to miss and a silent blank chart is not a refusal a reader can see.
+bgcolor(not drawable ? color.new(COLOR_AMBER, 90) : forming ? color.new(COLOR_MUTED, 92) : na,
+     title = "No opinion")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Exported stream
+//
+// BarState Labs producer stream contract 1.1.0, declared in
+// docs/products/data-trust-painter-spec.md §5.1. Mask profile: 1 where the
+// closed bar's TRUE range covered the declared round-trip cost, 0 where it did not,
+// na where the product has no opinion — the open bar, an invalid configuration,
+// a non-standard chart type. A consumer must not read na as 0 or carry it
+// forward with nz(). The mask is an eligibility filter about bar size and says
+// nothing about direction.
+// ─────────────────────────────────────────────────────────────────────────────
+plot(resolved ? (clearedRaw ? 1.0 : 0.0) : na, "Cost floor cleared", display = display.data_window)
+
+alertcondition(cleared, "Bar cleared the round-trip cost",
+     "Cost Floor Painter classified a closed bar's true range as large enough to cover the declared round-trip cost.")
+alertcondition(resolved and not cleared, "Bar did not clear the round-trip cost",
+     "Cost Floor Painter classified a closed bar's true range as too small to cover the declared round-trip cost.")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Evidence panel
+//
+// Three cells in one row, which is the declared budget. Every disclosure the
+// product owes a reader fits inside them: the cost assumption with its price
+// conversion, the share with its own denominator, and the status with the
+// standing reminder that this is a statement about bar size and not a trade.
+// ─────────────────────────────────────────────────────────────────────────────
+bool inVisibleWindow = time >= chart.left_visible_bar_time and time <= chart.right_visible_bar_time
+var float visibleWindowHigh = na
+var float visibleWindowLow = na
+var float visibleWindowRightClose = na
+if inVisibleWindow
+    visibleWindowHigh := na(visibleWindowHigh) ? high : math.max(visibleWindowHigh, high)
+    visibleWindowLow := na(visibleWindowLow) ? low : math.min(visibleWindowLow, low)
+    visibleWindowRightClose := close
+
+float visibleWindowMid = not na(visibleWindowHigh) and not na(visibleWindowLow) ?
+     (visibleWindowHigh + visibleWindowLow) / 2.0 : na
+string automaticPanelPosition = not na(visibleWindowMid) and visibleWindowRightClose > visibleWindowMid ?
+     position.bottom_right : position.top_right
+string resolvedPanelPosition = panelPositionInput == "Top right" ? position.top_right :
+     panelPositionInput == "Bottom right" ? position.bottom_right :
+     panelPositionInput == "Top left" ? position.top_left :
+     panelPositionInput == "Bottom left" ? position.bottom_left :
+     panelPositionInput == "Top center" ? position.top_center :
+     panelPositionInput == "Bottom center" ? position.bottom_center : automaticPanelPosition
+
+var table panel = table.new(position.top_right, 3, 1, bgcolor = color.new(COLOR_BG, 3),
+     border_color = color.new(COLOR_MUTED, 65), border_width = 1)
+
+if barstate.islast
+    table.set_position(panel, resolvedPanelPosition)
+    if not standardChart
+        // A range measured on a synthetic bar is not the range a trade would
+        // have paid for, so the product refuses rather than paints.
+        table.cell(panel, 0, 0, "BSL / COST FLOOR · FROZEN", text_color = COLOR_AMBER,
+             bgcolor = color.new(COLOR_AMBER, 78), text_size = size.small, text_halign = text.align_left)
+        table.cell(panel, 1, 0, f_chart_type() + " BARS ARE SYNTHETIC", text_color = COLOR_TEXT,
+             bgcolor = color.new(COLOR_AMBER, 78), text_size = size.small, text_halign = text.align_left)
+        table.cell(panel, 2, 0, "NO PAINT, NO SHARE, NO MASK", text_color = COLOR_TEXT,
+             bgcolor = color.new(COLOR_AMBER, 78), text_size = size.small, text_halign = text.align_left)
+    else
+        string status = not configValid ? "CONFIG ERROR" :
+             observedBars == 0 ? "WARM-UP · NO CLOSED BARS" :
+             barstate.isconfirmed ? "CONFIRMED" : "OPEN BAR · HELD"
+        color statusColor = not configValid ? COLOR_RED :
+             observedBars == 0 ? COLOR_AMBER :
+             barstate.isconfirmed ? COLOR_GREEN : COLOR_AMBER
+        string shareText = not configValid ? "NO SHARE" :
+             na(publishedShare) ? "FEWER THAN " + str.tostring(coverage) + " CLOSED BARS · NO SHARE" :
+             str.tostring(int(math.round(publishedShare * 100.0))) + "% OF " + str.tostring(coverage) +
+             " CLOSED BARS CLEARED"
+        // The share is printed in one neutral colour whatever its value. A
+        // green-above / red-below split would need a threshold nobody declared,
+        // and would read as a verdict on a number that is only a description of
+        // bar size.
+        color shareColor = na(publishedShare) ? COLOR_AMBER : COLOR_TEXT
+
+        // The range definition is named on the panel, not only in the
+        // description. B-vis3-02 Cost-to-Range Gauge counts the same predicate
+        // over a window, and two products that agree by construction should be
+        // visibly seen to agree rather than taken on trust.
+        table.cell(panel, 0, 0, "BSL / COST FLOOR · TRUE RANGE ≥ " + str.tostring(costTicks, "#.##") +
+             " TICKS = " + str.tostring(costPrice, format.mintick), text_color = COLOR_TEXT,
+             bgcolor = color.new(COLOR_BLUE, 70), text_size = size.small, text_halign = text.align_left)
+        table.cell(panel, 1, 0, shareText, text_color = shareColor, text_size = size.small,
+             text_halign = text.align_left)
+        table.cell(panel, 2, 0, status + " · BAR SIZE ONLY · NOT A TRADE SIGNAL", text_color = statusColor,
+             text_size = size.small, text_halign = text.align_left)

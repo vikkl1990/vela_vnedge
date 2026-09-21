@@ -1,0 +1,348 @@
+//@version=6
+indicator("Fib Grid Bias & Breakout", overlay=true, max_labels_count=500)
+
+//#region Inputs
+emaGroup = "EMA Cloud"
+biasGroup = "Bias"
+fibGroup = "Fib Grid"
+
+anchorMode = input.string("Auto", "Anchor Mode", options=["Auto", "Manual"], group=fibGroup)
+minSpan = input.float(50.0, "Min Span (points)", minval=0.0, group=fibGroup)
+extendLeft = input.bool(false, "Extend Lines Left (history)", group=fibGroup)
+extendLeftDays = input.int(30, "Left Lookback (days)", minval=1, maxval=365, group=fibGroup)
+alertGroup = "Alerts"
+displayGroup = "Display"
+
+fastLen = input.int(20, "Fast EMA Length", minval=1, group=emaGroup)
+slowLen = input.int(50, "Slow EMA Length", minval=1, group=emaGroup)
+htfTF = input.string("15", "HTF Confirmation TF", options=["15", "30", "60", "240"], group=emaGroup)
+
+neutralBandPct = input.float(0.02, "Neutral Band %", minval=0.0, step=0.01, group=biasGroup)
+showBg = input.bool(false, "Directional Background", group=displayGroup)
+showTable = input.bool(true, "Show Readout Table", group=displayGroup)
+tableSize = input.string("Small", "Table Text Size", options=["Tiny", "Small", "Normal", "Large", "Huge"], group=displayGroup)
+tablePos = input.string("Top Right", "Table Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right", "Middle Left", "Top Center", "Bottom Center", "Middle Center"], group=displayGroup)
+tableBg = input.color(color.new(color.black, 20), "Table Background", group=displayGroup)
+
+swingHigh = input.float(7489.14, "Swing High", group=fibGroup)
+swingLow = input.float(7433.15, "Swing Low", group=fibGroup)
+
+lvlM175On = input.bool(true, "Level -1.75", group=fibGroup)
+lvlM125On = input.bool(true, "Level -1.25", group=fibGroup)
+lvlM075On = input.bool(true, "Level -0.75", group=fibGroup)
+lvlM025On = input.bool(true, "Level -0.25", group=fibGroup)
+lvl0On = input.bool(true, "Level 0.0", group=fibGroup)
+lvl025On = input.bool(true, "Level 0.25", group=fibGroup)
+lvl05On = input.bool(true, "Level 0.5", group=fibGroup)
+lvl075On = input.bool(true, "Level 0.75", group=fibGroup)
+lvl125On = input.bool(true, "Level 1.25", group=fibGroup)
+lvl175On = input.bool(true, "Level 1.75", group=fibGroup)
+
+cooldownBars = input.int(3, "Alert Cooldown Bars", minval=0, group=alertGroup)
+//#endregion
+
+//#region EMA Cloud and HTF Confirmation
+src = close
+fastEma = ta.ema(src, fastLen)
+slowEma = ta.ema(src, slowLen)
+
+[htfFast, htfSlow] = request.security(syminfo.tickerid, htfTF, [ta.ema(src, fastLen), ta.ema(src, slowLen)], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+emaBull = fastEma > slowEma
+emaBear = fastEma < slowEma
+
+fastPlot = plot(fastEma, "Fast EMA", color=color.aqua, linewidth=2)
+slowPlot = plot(slowEma, "Slow EMA", color=color.orange, linewidth=2)
+fillColor = emaBull ? color.new(color.green, 85) : color.new(color.red, 85)
+fill(fastPlot, slowPlot, color=fillColor)
+//#endregion
+
+//#region Bias State
+band = close * neutralBandPct / 100.0
+slopeUp = fastEma > fastEma[1]
+slopeDown = fastEma < fastEma[1]
+
+bullBiasCondition = (fastEma > slowEma and (fastEma - slowEma) > band and slopeUp and not na(htfFast) and not na(htfSlow) and htfFast > htfSlow)
+bearBiasCondition = (fastEma < slowEma and (slowEma - fastEma) > band and slopeDown and not na(htfFast) and not na(htfSlow) and htfFast < htfSlow)
+
+var int bias = 0
+var int biasChangedBar = na
+
+newBias = bullBiasCondition ? 1 : bearBiasCondition ? -1 : 0
+if newBias != bias
+    bias := newBias
+    biasChangedBar := bar_index
+
+barsInBias = na(biasChangedBar) ? na : bar_index - biasChangedBar
+//#endregion
+
+//#region Fib Grid Levels
+// Overnight anchor: 18:00 ET to 00:00 ET
+nyHour = hour(time, "America/New_York")
+nyDay = dayofweek(time, "America/New_York")
+inAnchorSession = not na(time(timeframe.period, "1800-0000", "America/New_York"))
+
+isWeekendBlank = (nyDay == dayofweek.friday and nyHour >= 0) or nyDay == dayofweek.saturday or (nyDay == dayofweek.sunday and nyHour < 18)
+
+var float buildingHigh = na
+var float buildingLow = na
+var float frozenHigh = na
+var float frozenLow = na
+var bool wasPadded = false
+var bool anchorInitialized = false
+
+anchorBuilding = inAnchorSession and nyHour >= 18
+prevInSession = inAnchorSession[1]
+anchorFreeze = prevInSession and not inAnchorSession and not na(buildingHigh)
+anchorHold = not anchorBuilding and not anchorFreeze and not isWeekendBlank
+
+highSeries = high
+lowSeries = low
+max_bars_back(highSeries, 5000)
+max_bars_back(lowSeries, 5000)
+
+if anchorBuilding
+    buildingHigh := na(buildingHigh) ? high : math.max(buildingHigh, high)
+    buildingLow := na(buildingLow) ? low : math.min(buildingLow, low)
+
+if anchorFreeze
+    frozenHigh := buildingHigh
+    frozenLow := buildingLow
+    buildingHigh := na
+    buildingLow := na
+
+if not anchorInitialized and na(frozenHigh)
+    int startBar = math.max(bar_index - 4999, 0)
+    int maxI = math.min(math.max(bar_index - startBar, 0), math.min(bar_index, 4999))
+    bool foundRun = false
+    float scanHigh = na
+    float scanLow = na
+    for i = 0 to maxI
+        scanHour = hour(time[i], "America/New_York")
+        inRun = scanHour >= 18 or (scanHour == 0 and not na(time[i]))
+        if inRun
+            scanHigh := na(scanHigh) ? highSeries[i] : math.max(scanHigh, highSeries[i])
+            scanLow := na(scanLow) ? lowSeries[i] : math.min(scanLow, lowSeries[i])
+            foundRun := true
+        else if foundRun
+            break
+    if foundRun and not na(scanHigh) and not na(scanLow)
+        frozenHigh := scanHigh
+        frozenLow := scanLow
+    anchorInitialized := true
+
+var float anchorHigh = na
+var float anchorLow = na
+
+if anchorMode == "Manual"
+    anchorHigh := swingHigh
+    anchorLow := swingLow
+    wasPadded := false
+else if isWeekendBlank
+    anchorHigh := na
+    anchorLow := na
+    wasPadded := false
+else if anchorBuilding
+    anchorHigh := buildingHigh
+    anchorLow := buildingLow
+    wasPadded := false
+else if anchorHold
+    completedHigh = frozenHigh
+    completedLow = frozenLow
+    if not na(completedHigh) and not na(completedLow)
+        winSpan = completedHigh - completedLow
+        if winSpan < minSpan
+            mid = (completedHigh + completedLow) / 2.0
+            half = minSpan / 2.0
+            anchorHigh := mid + half
+            anchorLow := mid - half
+            wasPadded := true
+        else
+            anchorHigh := completedHigh
+            anchorLow := completedLow
+            wasPadded := false
+    else
+        anchorHigh := swingHigh
+        anchorLow := swingLow
+        wasPadded := false
+else
+    anchorHigh := na
+    anchorLow := na
+    wasPadded := false
+
+
+anchorHigh := anchorMode == "Manual" ? swingHigh : anchorHigh
+anchorLow := anchorMode == "Manual" ? swingLow : anchorLow
+
+fibPrice(level) => anchorHigh - level * (anchorHigh - anchorLow)
+
+fibM175 = fibPrice(-1.75)
+fibM125 = fibPrice(-1.25)
+fibM075 = fibPrice(-0.75)
+fibM025 = fibPrice(-0.25)
+fib0 = fibPrice(0.0)
+fib025 = fibPrice(0.25)
+fib05 = fibPrice(0.5)
+fib075 = fibPrice(0.75)
+fib125 = fibPrice(1.25)
+fib175 = fibPrice(1.75)
+
+var array<float> fibLevels = array.new<float>()
+array.clear(fibLevels)
+if lvlM175On
+    fibLevels.push(fibM175)
+if lvlM125On
+    fibLevels.push(fibM125)
+if lvlM075On
+    fibLevels.push(fibM075)
+if lvlM025On
+    fibLevels.push(fibM025)
+if lvl0On
+    fibLevels.push(fib0)
+if lvl025On
+    fibLevels.push(fib025)
+if lvl05On
+    fibLevels.push(fib05)
+if lvl075On
+    fibLevels.push(fib075)
+if lvl125On
+    fibLevels.push(fib125)
+if lvl175On
+    fibLevels.push(fib175)
+
+fibLevels.sort(order.ascending)
+//#endregion
+
+//#region Band Detection
+getBandIndex(price, levels) =>
+    int idx = na
+    int count = levels.size()
+    if count >= 2
+        if price <= levels.get(0)
+            idx := 0
+        else if price >= levels.get(count - 1)
+            idx := count - 2
+        else
+            for i = 0 to count - 2
+                lowLvl = levels.get(i)
+                highLvl = levels.get(i + 1)
+                if price >= lowLvl and price < highLvl
+                    idx := i
+                    break
+    idx
+
+currentBand = getBandIndex(close, fibLevels)
+prevBand = getBandIndex(close[1], fibLevels)
+//#endregion
+
+//#region Breakout Logic
+var int lastAlertBar = na
+canAlert = na(lastAlertBar) or (bar_index - lastAlertBar >= cooldownBars)
+
+var float buyLevelCrossed = na
+var float sellLevelCrossed = na
+buyBreakout = false
+sellBreakout = false
+buyAlertText = ""
+sellAlertText = ""
+
+if bias == 1 and canAlert and not na(close[1])
+    for i = 0 to fibLevels.size() - 1
+        lvl = fibLevels.get(i)
+        crossedUp = close[1] < lvl and close > lvl
+        if crossedUp
+            buyBreakout := true
+            buyLevelCrossed := lvl
+            buyAlertText := "BUY breakout | Level crossed: " + str.tostring(lvl, format.mintick) + " | Bias: BULLISH | Price: " + str.tostring(close, format.mintick)
+            lastAlertBar := bar_index
+            break
+
+if bias == -1 and canAlert and not na(close[1])
+    for i = 0 to fibLevels.size() - 1
+        lvl = fibLevels.get(i)
+        crossedDown = close[1] > lvl and close < lvl
+        if crossedDown
+            sellBreakout := true
+            sellLevelCrossed := lvl
+            sellAlertText := "SELL breakout | Level crossed: " + str.tostring(lvl, format.mintick) + " | Bias: BEARISH | Price: " + str.tostring(close, format.mintick)
+            lastAlertBar := bar_index
+            break
+
+alertcondition(buyBreakout, "Bullish Fib Breakout", "Bullish fib breakout detected")
+alertcondition(sellBreakout, "Bearish Fib Breakout", "Bearish fib breakout detected")
+
+if buyBreakout
+    alert(buyAlertText, alert.freq_once_per_bar_close)
+if sellBreakout
+    alert(sellAlertText, alert.freq_once_per_bar_close)
+//#endregion
+
+//#region Display
+bgcolor(showBg ? (bias == 1 ? color.new(color.green, 92) : bias == -1 ? color.new(color.red, 92) : na) : na)
+
+biasText = bias == 1 ? "BULLISH" : bias == -1 ? "BEARISH" : "NEUTRAL"
+biasColor = bias == 1 ? color.lime : bias == -1 ? color.red : color.gray
+
+bandText = na(currentBand) or fibLevels.size() < 2 ? "n/a" : str.tostring(fibLevels.get(currentBand), format.mintick) + " to " + str.tostring(fibLevels.get(currentBand + 1), format.mintick)
+
+// table position / size / bg are applied per-cell below since table.set_* only accepts const/input values
+tableSizeConst = tableSize == "Tiny" ? size.tiny : tableSize == "Small" ? size.small : tableSize == "Normal" ? size.normal : tableSize == "Large" ? size.large : size.huge
+tablePosConst = tablePos == "Top Right" ? position.top_right : tablePos == "Top Left" ? position.top_left : tablePos == "Bottom Right" ? position.bottom_right : tablePos == "Bottom Left" ? position.bottom_left : tablePos == "Middle Right" ? position.middle_right : tablePos == "Middle Left" ? position.middle_left : tablePos == "Top Center" ? position.top_center : tablePos == "Bottom Center" ? position.bottom_center : position.middle_center
+var table readoutTable = table.new(tablePosConst, 2, 9, border_width=1, bgcolor=tableBg)
+if barstate.islast and showTable
+    readoutTable.cell(0, 0, "Bias", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=tableSizeConst)
+    readoutTable.cell(1, 0, biasText + (na(barsInBias) ? "" : " (" + str.tostring(barsInBias) + " bars)"), text_color=color.white, bgcolor=biasColor, text_size=tableSizeConst)
+
+    readoutTable.cell(0, 1, "Chart EMA20/50", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=tableSizeConst)
+    readoutTable.cell(1, 1, str.tostring(fastEma, format.mintick) + " / " + str.tostring(slowEma, format.mintick), text_color=color.white, bgcolor=color.new(color.black, 80), text_size=tableSizeConst)
+
+    readoutTable.cell(0, 2, "HTF EMA20/50", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=tableSizeConst)
+    htfText = na(htfFast) or na(htfSlow) ? "n/a" : str.tostring(htfFast, format.mintick) + " / " + str.tostring(htfSlow, format.mintick)
+    readoutTable.cell(1, 2, htfText, text_color=color.white, bgcolor=color.new(color.black, 80), text_size=tableSizeConst)
+
+    readoutTable.cell(0, 3, "Current Band", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=tableSizeConst)
+    readoutTable.cell(1, 3, bandText, text_color=color.white, bgcolor=color.new(color.black, 80), text_size=tableSizeConst)
+
+    readoutTable.cell(0, 4, "Fib High", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=tableSizeConst)
+    readoutTable.cell(1, 4, str.tostring(anchorHigh, format.mintick), text_color=color.white, bgcolor=color.new(color.black, 80), text_size=tableSizeConst)
+
+    readoutTable.cell(0, 5, "Fib Low", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=tableSizeConst)
+    readoutTable.cell(1, 5, str.tostring(anchorLow, format.mintick), text_color=color.white, bgcolor=color.new(color.black, 80), text_size=tableSizeConst)
+
+    readoutTable.cell(0, 6, "Anchor", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=tableSizeConst)
+    anchorState = isWeekendBlank ? "blank (weekend)" : anchorBuilding ? "Building" : na(anchorHigh) ? "blank" : "Frozen | 18:00-00:00"
+    anchorText = anchorMode + " | " + anchorState + " | " + (na(anchorHigh - anchorLow) ? "span --" : "span " + str.tostring(anchorHigh - anchorLow, format.mintick))
+    readoutTable.cell(1, 6, anchorText, text_color=color.white, bgcolor=color.new(color.black, 80), text_size=tableSizeConst)
+
+    readoutTable.cell(0, 7, "Session", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=tableSizeConst)
+    sessionText = isWeekendBlank ? "blank (weekend)" : (anchorBuilding ? "building" : "frozen")
+    readoutTable.cell(1, 7, sessionText, text_color=color.white, bgcolor=color.new(color.black, 80), text_size=tableSizeConst)
+//#endregion
+
+//#region Fib Grid Rendering
+var array<line> gridLines = array.new<line>()
+var array<label> gridLabels = array.new<label>()
+
+if barstate.islast
+    // clear previous
+    if gridLines.size() > 0
+        for i = 0 to gridLines.size() - 1
+            line.delete(gridLines.get(i))
+    if gridLabels.size() > 0
+        for i = 0 to gridLabels.size() - 1
+            label.delete(gridLabels.get(i))
+    array.clear(gridLines)
+    array.clear(gridLabels)
+
+    if not na(anchorHigh) and not na(anchorLow) and fibLevels.size() > 0
+        // Left anchor for historical extension, expressed in bars.
+        barsPerDay = timeframe.isintraday ? math.max(1, math.round(1440 / timeframe.multiplier)) : 1
+        leftBars = extendLeft ? math.min(extendLeftDays * barsPerDay, math.min(bar_index, 4999)) : 0
+        leftX = extendLeft ? bar_index - leftBars : bar_index - 1
+        for i = 0 to fibLevels.size() - 1
+            lvl = fibLevels.get(i)
+            ln = line.new(leftX, lvl, bar_index + 1, lvl, xloc.bar_index, extend.right, color=color.new(color.blue, 40), width=1)
+            gridLines.push(ln)
+            lbl = label.new(bar_index + 11, lvl, str.tostring(lvl, format.mintick), xloc.bar_index, yloc.price, color=color.new(color.blue, 80), textcolor=color.black, style=label.style_label_left, size=size.small)
+            gridLabels.push(lbl)
+//#endregion

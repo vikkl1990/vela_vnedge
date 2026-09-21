@@ -1,0 +1,401 @@
+//@version=6
+// ===========================================================================
+//  Volatility Cone Calibration: IV vs RV                              v3.0
+//
+//  One volatility engine, three views:
+//    1. Rolling cones across history, anchored one horizon back and
+//       re-anchored every week, for implied and realized side by side.
+//    2. A breach layer that shades every bar closing outside a cone, with
+//       the OBSERVED breach rate measured against the rate the cone's own
+//       maths predicts. That comparison is the point of the indicator.
+//    3. A forward cone from the current bar, drawn nested so the gap between
+//       implied and realized is legible.
+//
+//  Merged from two earlier scripts and corrected. The name points at what is new:
+//  the cone reports its own calibration. Notes on what changed and
+//  why are at the bottom of this file.
+// ===========================================================================
+
+indicator("Volatility Cone Calibration: IV vs RV", "Vol Cones", overlay = true,
+     max_lines_count = 100, max_boxes_count = 20, max_labels_count = 50)
+
+// --------------------------- Calculation ---------------------------
+gC = "Calculation"
+horizonW   = input.int(4, "Horizon (weeks)", minval = 1, maxval = 26, group = gC,
+     tooltip = "Both legs are scaled to this horizon. 4 weeks is roughly one option cycle.")
+lookback   = input.int(12, "RV lookback (weekly bars)", minval = 4, maxval = 104, group = gC)
+rvMethod   = input.string("Yang-Zhang", "RV estimator",
+     options = ["Yang-Zhang", "Std Dev", "ATR%"], group = gC,
+     tooltip = "Yang-Zhang uses the whole weekly bar including the weekend gap and is the most efficient of the three.")
+atrLen     = input.int(14, "ATR length (weekly bars)", minval = 2, maxval = 52, group = gC)
+atrToSigma = input.float(1.00, "ATR to sigma factor", step = 0.05, minval = 0.5, maxval = 1.5, group = gC)
+sigmaMult  = input.float(1.0, "Sigma multiple", step = 0.25, minval = 0.25, maxval = 3.0, group = gC)
+bandGeom   = input.string("Lognormal", "Band geometry", options = ["Lognormal", "Arithmetic"], group = gC,
+     tooltip = "Applied identically to both legs. Lognormal is the default because the expected breach rate is then exact under a zero-drift random walk.")
+vixSym     = input.symbol("NSE:INDIAVIX", "Implied vol source", group = gC,
+     tooltip = "Must be an ANNUALISED volatility index quoted in percentage points. India VIX is 30-day annualised implied vol on NIFTY 50. Pair it only with the index it measures.")
+
+// --------------------------- Cones ---------------------------
+gA = "Cones"
+showHist   = input.bool(true, "Historical cones", group = gA)
+shadeMode  = input.string("Nested", "Shading", options = ["Nested", "Core only", "None"], group = gA,
+     tooltip = "Nested shades the range both measures agree on, then shades the gap between them in the colour of whichever cone is outside.")
+coreOpac   = input.int(90, "Core opacity", minval = 60, maxval = 100, group = gA)
+ringOpac   = input.int(78, "Gap opacity", minval = 40, maxval = 100, group = gA)
+showFwd    = input.bool(true, "Forward cone from current bar", group = gA)
+fwdOpac    = input.int(88, "Forward core opacity", minval = 60, maxval = 100, group = gA)
+showFwdLbl = input.bool(false, "Forward cone price labels", group = gA,
+     tooltip = "Off by default. The readout already lists both cone ranges.")
+
+// --------------------------- Breach layer ---------------------------
+gB = "Breach layer"
+breachSrc  = input.string("RV cone", "Shade closes outside", options = ["Off", "IV cone", "RV cone", "Both"], group = gB,
+     tooltip = "A one-sigma cone is breached about a third of the time by construction. Read the shading against the expected rate in the readout, not on its own.")
+colUp      = input.color(#3FA96B, "Breach above", group = gB)
+colDn      = input.color(#C4453B, "Breach below", group = gB)
+breachOpac = input.int(88, "Breach opacity", minval = 60, maxval = 100, group = gB)
+
+// --------------------------- Style ---------------------------
+gS = "Style"
+colIV    = input.color(#F0B429, "IV colour", group = gS)
+colRV    = input.color(#22B8CF, "RV colour", group = gS)
+colCore  = input.color(#5A6B8C, "Cone core", group = gS)
+colAnch  = input.color(#7D8799, "Anchor colour", group = gS)
+lw       = input.int(2, "Band line width", minval = 1, maxval = 4, group = gS)
+showAnch = input.bool(false, "Show anchor line", group = gS)
+
+// --------------------------- Readout ---------------------------
+gH = "Readout"
+showHUD   = input.bool(true, "Show readout", group = gH)
+showStats = input.bool(true, "Include breach statistics", group = gH)
+hudPos    = input.string("Top Right", "Position",
+     options = ["Top Right", "Top Left", "Middle Right", "Bottom Right", "Bottom Left"], group = gH)
+hudSize   = input.string("Small", "Text size", options = ["Tiny", "Small", "Normal"], group = gH)
+hudOpac   = input.int(12, "Background opacity", minval = 0, maxval = 90, group = gH)
+dec       = input.int(2, "Decimals", minval = 0, maxval = 4, group = gH)
+richTh    = input.float(1.15, "IV/RV rich above", step = 0.05, minval = 1.0, maxval = 3.0, group = gH)
+cheapTh   = input.float(0.85, "IV/RV cheap below", step = 0.05, minval = 0.1, maxval = 1.0, group = gH)
+
+// ======================= Shared =======================
+tooHigh = timeframe.in_seconds(timeframe.period) > timeframe.in_seconds("W")
+
+txtDim  = #8B94A7
+txtMain = #E6EAF2
+fmtP    = dec == 0 ? "#" : dec == 1 ? "#.#" : dec == 2 ? "#.##" : dec == 3 ? "#.###" : "#.####"
+
+// Standard normal CDF, Abramowitz and Stegun 26.2.17, error below 7.5e-8.
+// Used only to state the breach rate the cone's own maths predicts.
+f_ncdf(x) =>
+    l  = math.abs(x)
+    kk = 1.0 / (1.0 + 0.2316419 * l)
+    w  = 1.0 - 0.39894228 * math.exp(-l * l / 2.0) *
+         (kk * (0.31938153 + kk * (-0.356563782 + kk * (1.781477937 + kk * (-1.821255978 + kk * 1.330274429)))))
+    x < 0 ? 1.0 - w : w
+
+expBreachPct = 2.0 * (1.0 - f_ncdf(sigmaMult)) * 100.0
+
+// ======================= Weekly engine =======================
+// Everything inside f_weekly() runs on WEEKLY bars, so every [n] offset and
+// every averaging window counts weekly bars no matter what the chart
+// timeframe is. Getting this wrong is the defect that motivated the rewrite.
+f_weekly() =>
+    lr   = math.log(close / close[1])
+    tr   = math.max(high - low, math.max(math.abs(high - close[1]), math.abs(low - close[1])))
+    atrw = ta.rma(tr, atrLen)
+    atrF = atrw / close * atrToSigma
+
+    ro = math.log(open  / close[1])          // weekend gap
+    rc = math.log(close / open)              // open to close
+    u  = math.log(high  / open)
+    d  = math.log(low   / open)
+    rs = u * (u - rc) + d * (d - rc)         // Rogers-Satchell
+
+    sd  = ta.stdev(lr, lookback, false)      // sample, n-1
+    vo  = math.pow(ta.stdev(ro, lookback, false), 2)
+    vc  = math.pow(ta.stdev(rc, lookback, false), 2)
+    mrs = ta.sma(rs, lookback)
+    k   = 0.34 / (1.34 + (lookback + 1.0) / (lookback - 1.0))
+    yzv = vo + k * vc + (1.0 - k) * mrs
+    yz  = yzv > 0 ? math.sqrt(yzv) : na
+
+    s1w = rvMethod == "Std Dev" ? sd : rvMethod == "ATR%" ? atrF : yz
+
+    [close[horizonW], s1w[horizonW], s1w[1]]
+
+f_vix() =>
+    va = close[horizonW]
+    vl = close[1]
+    [va, vl]
+
+[basePx, sigA, sigL] = request.security(syminfo.tickerid, "W", f_weekly())
+[vixA, vixL]         = request.security(vixSym, "W", f_vix(), ignore_invalid_symbol = true)
+
+// ======================= Scaling =======================
+annToH = math.sqrt(horizonW / 52.0)          // annualised -> horizon
+wkToH  = math.sqrt(horizonW)                 // weekly     -> horizon
+
+ivFracA = na(vixA) ? na : vixA / 100.0 * annToH
+ivFracL = na(vixL) ? na : vixL / 100.0 * annToH
+rvFracA = na(sigA) ? na : sigA * wkToH
+rvFracL = na(sigL) ? na : sigL * wkToH
+
+f_up(p, f) => bandGeom == "Lognormal" ? p * math.exp( sigmaMult * f) : p * (1.0 + sigmaMult * f)
+f_dn(p, f) => bandGeom == "Lognormal" ? p * math.exp(-sigmaMult * f) : p * (1.0 - sigmaMult * f)
+
+okA   = not tooHigh and not na(basePx)
+okIVA = okA and not na(ivFracA)
+okRVA = okA and not na(rvFracA)
+
+ivU = okIVA ? f_up(basePx, ivFracA) : na
+ivL = okIVA ? f_dn(basePx, ivFracA) : na
+rvU = okRVA ? f_up(basePx, rvFracA) : na
+rvL = okRVA ? f_dn(basePx, rvFracA) : na
+
+// ======================= Historical cones =======================
+// Nested shading, same idea as the forward cone: one fill for the range both
+// measures agree on, one fill per side for the gap between them, coloured by
+// whichever cone is outside. Two overlapping full-width fills turn to mud.
+ringColH = na(ivU) or na(rvU) ? colCore : ivU >= rvU ? colIV : colRV
+
+pIvU = plot(showHist ? ivU : na, "IV upper", color = color.new(colIV, 15), linewidth = lw)
+pIvL = plot(showHist ? ivL : na, "IV lower", color = color.new(colIV, 15), linewidth = lw)
+pRvU = plot(showHist ? rvU : na, "RV upper", color = color.new(colRV, 15), linewidth = lw)
+pRvL = plot(showHist ? rvL : na, "RV lower", color = color.new(colRV, 15), linewidth = lw)
+plot(showHist and showAnch ? basePx : na, "Anchor", color = color.new(colAnch, 40), linewidth = 1)
+
+shadeCore = showHist and (shadeMode == "Nested" or shadeMode == "Core only")
+shadeRing = showHist and shadeMode == "Nested"
+
+fill(pRvU, pRvL, color = shadeCore ? color.new(colCore, coreOpac) : na, title = "Cone core")
+fill(pIvU, pRvU, color = shadeRing ? color.new(ringColH, ringOpac) : na, title = "Upper gap")
+fill(pRvL, pIvL, color = shadeRing ? color.new(ringColH, ringOpac) : na, title = "Lower gap")
+
+// ======================= Breach layer =======================
+breachIvUp = okIVA and close > ivU
+breachIvDn = okIVA and close < ivL
+breachRvUp = okRVA and close > rvU
+breachRvDn = okRVA and close < rvL
+
+useIV = breachSrc == "IV cone" or breachSrc == "Both"
+useRV = breachSrc == "RV cone" or breachSrc == "Both"
+
+shadeUp = breachSrc != "Off" and ((useIV and breachIvUp) or (useRV and breachRvUp))
+shadeDn = breachSrc != "Off" and ((useIV and breachIvDn) or (useRV and breachRvDn))
+
+bgcolor(shadeUp ? color.new(colUp, breachOpac) : na, title = "Closed above cone")
+bgcolor(shadeDn ? color.new(colDn, breachOpac) : na, title = "Closed below cone")
+
+// Observed breach rate. Counted once per COMPLETED WEEK so the sample is the
+// same on every chart timeframe. Windows still overlap week to week, so treat
+// n as weeks observed, not as independent trials.
+var int nIV = 0
+var int kIV = 0
+var int nRV = 0
+var int kRV = 0
+
+if timeframe.change("W") and bar_index > 0 and barstate.isconfirmed
+    pc = close[1]
+    if not na(ivU[1]) and not na(ivL[1])
+        nIV += 1
+        kIV += (pc > ivU[1] or pc < ivL[1]) ? 1 : 0
+    if not na(rvU[1]) and not na(rvL[1])
+        nRV += 1
+        kRV += (pc > rvU[1] or pc < rvL[1]) ? 1 : 0
+
+obsIvPct = nIV > 0 ? kIV * 100.0 / nIV : na
+obsRvPct = nRV > 0 ? kRV * 100.0 / nRV : na
+
+// ======================= Forward cone =======================
+livePx = close
+okIVL  = not tooHigh and not na(ivFracL)
+okRVL  = not tooHigh and not na(rvFracL)
+bothL  = okIVL and okRVL
+
+fIvU = okIVL ? f_up(livePx, ivFracL) : na
+fIvL = okIVL ? f_dn(livePx, ivFracL) : na
+fRvU = okRVL ? f_up(livePx, rvFracL) : na
+fRvL = okRVL ? f_dn(livePx, rvFracL) : na
+
+upOut   = bothL ? math.max(fIvU, fRvU) : okIVL ? fIvU : fRvU
+upIn    = bothL ? math.min(fIvU, fRvU) : upOut
+dnOut   = bothL ? math.min(fIvL, fRvL) : okIVL ? fIvL : fRvL
+dnIn    = bothL ? math.max(fIvL, fRvL) : dnOut
+ringColF = not bothL ? colCore : fIvU >= fRvU ? colIV : colRV
+
+var box   bCore  = na
+var box   bRingU = na
+var box   bRingD = na
+var line  lIvU = na
+var line  lIvL = na
+var line  lRvU = na
+var line  lRvL = na
+var line  lMid = na
+var label gTop = na
+var label gBot = na
+
+if barstate.islast
+    if showFwd and not tooHigh and (okIVL or okRVL)
+        t0    = time
+        t1    = time + horizonW * 604800000
+        lblBg = color.new(#0B0E14, 20)
+        clear = color.new(color.black, 100)
+
+        if na(bCore)
+            bCore  := box.new(t0, livePx, t1, livePx, xloc = xloc.bar_time, border_color = clear)
+            bRingU := box.new(t0, livePx, t1, livePx, xloc = xloc.bar_time, border_color = clear)
+            bRingD := box.new(t0, livePx, t1, livePx, xloc = xloc.bar_time, border_color = clear)
+            lIvU   := line.new(t0, livePx, t1, livePx, xloc = xloc.bar_time, style = line.style_solid,  width = 1)
+            lIvL   := line.new(t0, livePx, t1, livePx, xloc = xloc.bar_time, style = line.style_solid,  width = 1)
+            lRvU   := line.new(t0, livePx, t1, livePx, xloc = xloc.bar_time, style = line.style_dashed, width = 1)
+            lRvL   := line.new(t0, livePx, t1, livePx, xloc = xloc.bar_time, style = line.style_dashed, width = 1)
+            lMid   := line.new(t0, livePx, t1, livePx, xloc = xloc.bar_time, style = line.style_dotted, width = 1)
+            gTop   := label.new(t1, livePx, "", xloc = xloc.bar_time, style = label.style_label_left,
+                 textcolor = txtMain, size = size.tiny, textalign = text.align_left)
+            gBot   := label.new(t1, livePx, "", xloc = xloc.bar_time, style = label.style_label_left,
+                 textcolor = txtMain, size = size.tiny, textalign = text.align_left)
+
+        box.set_lefttop(bCore, t0, upIn)
+        box.set_rightbottom(bCore, t1, dnIn)
+        box.set_bgcolor(bCore, color.new(colCore, fwdOpac))
+
+        box.set_lefttop(bRingU, t0, upOut)
+        box.set_rightbottom(bRingU, t1, upIn)
+        box.set_bgcolor(bRingU, bothL ? color.new(ringColF, math.max(fwdOpac - 14, 55)) : clear)
+
+        box.set_lefttop(bRingD, t0, dnIn)
+        box.set_rightbottom(bRingD, t1, dnOut)
+        box.set_bgcolor(bRingD, bothL ? color.new(ringColF, math.max(fwdOpac - 14, 55)) : clear)
+
+        line.set_xy1(lIvU, t0, nz(fIvU, livePx))
+        line.set_xy2(lIvU, t1, nz(fIvU, livePx))
+        line.set_xy1(lIvL, t0, nz(fIvL, livePx))
+        line.set_xy2(lIvL, t1, nz(fIvL, livePx))
+        line.set_xy1(lRvU, t0, nz(fRvU, livePx))
+        line.set_xy2(lRvU, t1, nz(fRvU, livePx))
+        line.set_xy1(lRvL, t0, nz(fRvL, livePx))
+        line.set_xy2(lRvL, t1, nz(fRvL, livePx))
+        line.set_xy1(lMid, t0, livePx)
+        line.set_xy2(lMid, t1, livePx)
+        line.set_color(lIvU, okIVL ? colIV : clear)
+        line.set_color(lIvL, okIVL ? colIV : clear)
+        line.set_color(lRvU, okRVL ? colRV : clear)
+        line.set_color(lRvL, okRVL ? colRV : clear)
+        line.set_color(lMid, color.new(colAnch, 40))
+
+        // One label per side, both numbers stacked, so they can never collide.
+        topTxt = not showFwdLbl ? "" :
+                 bothL ? "IV " + str.tostring(fIvU, fmtP) + "\nRV " + str.tostring(fRvU, fmtP) :
+                 okIVL ? "IV " + str.tostring(fIvU, fmtP) :
+                 okRVL ? "RV " + str.tostring(fRvU, fmtP) : ""
+        botTxt = not showFwdLbl ? "" :
+                 bothL ? "IV " + str.tostring(fIvL, fmtP) + "\nRV " + str.tostring(fRvL, fmtP) :
+                 okIVL ? "IV " + str.tostring(fIvL, fmtP) :
+                 okRVL ? "RV " + str.tostring(fRvL, fmtP) : ""
+        label.set_xy(gTop, t1, upOut)
+        label.set_text(gTop, topTxt)
+        label.set_xy(gBot, t1, dnOut)
+        label.set_text(gBot, botTxt)
+        label.set_color(gTop, showFwdLbl ? lblBg : clear)
+        label.set_color(gBot, showFwdLbl ? lblBg : clear)
+    else
+        box.delete(bCore)
+        bCore := na
+        box.delete(bRingU)
+        bRingU := na
+        box.delete(bRingD)
+        bRingD := na
+        line.delete(lIvU)
+        lIvU := na
+        line.delete(lIvL)
+        lIvL := na
+        line.delete(lRvU)
+        lRvU := na
+        line.delete(lRvL)
+        lRvL := na
+        line.delete(lMid)
+        lMid := na
+        label.delete(gTop)
+        gTop := na
+        label.delete(gBot)
+        gBot := na
+
+// ======================= Readout =======================
+pos = hudPos == "Top Right"    ? position.top_right    :
+      hudPos == "Top Left"     ? position.top_left     :
+      hudPos == "Middle Right" ? position.middle_right :
+      hudPos == "Bottom Right" ? position.bottom_right : position.bottom_left
+
+tsz = hudSize == "Tiny" ? size.tiny : hudSize == "Normal" ? size.normal : size.small
+
+ratio = bothL and rvFracL > 0 ? ivFracL / rvFracL : na
+
+bgPanel = color.new(#0B0E14, hudOpac)
+bgHead  = color.new(#161B26, hudOpac)
+
+verdictTxt = na(ratio) ? "NO IV SOURCE" :
+             ratio > richTh  ? "IV RICH"  :
+             ratio < cheapTh ? "IV CHEAP" : "IV FAIR"
+verdictCol = na(ratio) ? #6B7280 : ratio > richTh ? #2F9E68 : ratio < cheapTh ? #C4453B : #6B7280
+
+hudRows = showStats ? 11 : 8
+
+var table hud = na
+if barstate.islast and showHUD and not tooHigh
+    if na(hud)
+        hud := table.new(pos, 2, hudRows, bgcolor = bgPanel, border_width = 1,
+             border_color = color.new(#2A3040, 40), frame_color = color.new(#2A3040, 20), frame_width = 1)
+
+    table.cell(hud, 0, 0, "Volatility cones", text_color = txtMain, bgcolor = bgHead, text_size = tsz, text_halign = text.align_left)
+    table.cell(hud, 1, 0, str.tostring(horizonW) + "W  " + rvMethod, text_color = txtDim, bgcolor = bgHead, text_size = tsz, text_halign = text.align_right)
+
+    table.cell(hud, 0, 1, verdictTxt, text_color = color.white, bgcolor = color.new(verdictCol, 15), text_size = tsz, text_halign = text.align_left)
+    table.cell(hud, 1, 1, na(ratio) ? "-" : str.tostring(ratio, "#.##") + "x", text_color = color.white, bgcolor = color.new(verdictCol, 15), text_size = tsz, text_halign = text.align_right)
+
+    table.cell(hud, 0, 2, "IV 1 sigma", text_color = colIV, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_left)
+    table.cell(hud, 1, 2, okIVL ? str.tostring(ivFracL * 100, fmtP) + "%" : "-", text_color = colIV, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_right)
+
+    table.cell(hud, 0, 3, "RV 1 sigma", text_color = colRV, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_left)
+    table.cell(hud, 1, 3, okRVL ? str.tostring(rvFracL * 100, fmtP) + "%" : "-", text_color = colRV, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_right)
+
+    table.cell(hud, 0, 4, "IV cone", text_color = txtDim, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_left)
+    table.cell(hud, 1, 4, okIVL ? str.tostring(fIvL, fmtP) + " - " + str.tostring(fIvU, fmtP) : "-", text_color = colIV, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_right)
+
+    table.cell(hud, 0, 5, "RV cone", text_color = txtDim, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_left)
+    table.cell(hud, 1, 5, okRVL ? str.tostring(fRvL, fmtP) + " - " + str.tostring(fRvU, fmtP) : "-", text_color = colRV, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_right)
+
+    table.cell(hud, 0, 6, "Anchor", text_color = txtDim, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_left)
+    table.cell(hud, 1, 6, okA ? str.tostring(basePx, fmtP) : "-", text_color = txtDim, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_right)
+
+    table.cell(hud, 0, 7, "Lookback", text_color = txtDim, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_left)
+    table.cell(hud, 1, 7, str.tostring(lookback) + "w", text_color = txtDim, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_right)
+
+    if showStats
+        table.cell(hud, 0, 8, "Expected breach", text_color = txtMain, bgcolor = bgHead, text_size = tsz, text_halign = text.align_left)
+        table.cell(hud, 1, 8, str.tostring(expBreachPct, "#.#") + "%", text_color = txtMain, bgcolor = bgHead, text_size = tsz, text_halign = text.align_right)
+
+        table.cell(hud, 0, 9, "IV observed", text_color = colIV, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_left)
+        table.cell(hud, 1, 9, na(obsIvPct) ? "-" : str.tostring(obsIvPct, "#.#") + "%  n=" + str.tostring(nIV), text_color = colIV, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_right)
+
+        table.cell(hud, 0, 10, "RV observed", text_color = colRV, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_left)
+        table.cell(hud, 1, 10, na(obsRvPct) ? "-" : str.tostring(obsRvPct, "#.#") + "%  n=" + str.tostring(nRV), text_color = colRV, bgcolor = bgPanel, text_size = tsz, text_halign = text.align_right)
+
+// ======================= Timeframe warning =======================
+var label warn = na
+if barstate.islast
+    if tooHigh
+        if na(warn)
+            warn := label.new(bar_index, close, "", style = label.style_label_left,
+                 color = color.new(#C4453B, 15), textcolor = color.white, size = size.small)
+        label.set_xy(warn, bar_index, close)
+        label.set_text(warn, "Vol Cones needs a chart timeframe of Weekly or lower")
+    else
+        label.delete(warn)
+        warn := na
+
+// ======================= Alerts =======================
+alertcondition(ta.crossover(ratio, richTh),   "IV turned rich vs RV",  "IV/RV crossed above the rich threshold")
+alertcondition(ta.crossunder(ratio, cheapTh), "IV turned cheap vs RV", "IV/RV crossed below the cheap threshold")
+alertcondition(ta.crossover(close, rvU),      "Close above RV cone",   "Price closed above the realized-volatility cone")
+alertcondition(ta.crossunder(close, rvL),     "Close below RV cone",   "Price closed below the realized-volatility cone")
+alertcondition(ta.crossover(close, ivU),      "Close above IV cone",   "Price closed above the implied-volatility cone")
+alertcondition(ta.crossunder(close, ivL),     "Close below IV cone",   "Price closed below the implied-volatility cone")

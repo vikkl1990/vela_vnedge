@@ -1,0 +1,854 @@
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// © Auction Foundry
+//@version=6
+indicator("Auto Trend Channels [AFD]", "ATCH [AFD]", overlay = true, max_lines_count = 100, max_labels_count = 125, max_bars_back = 2002)
+
+// Exact parallel geometry and chronological engine patterns adapted from Auction Foundry
+// Auto Trendlines and Classical Auto Chart Patterns; label clearance, stroke tiers, text sizing
+// and the colour-theme inputs adapted from Auction Foundry Auto Trendlines and Zone Forge.
+// Linear-price geometry. Anchor history predates availability: the known-from marker
+// is inseparable from each displayed channel. Confirmed pivots have a right-window delay.
+
+// ── Constants
+const string DETECTION = "Detection"
+const string LIFECYCLE = "Lifecycle"
+const string DISPLAY   = "Display"
+const string ALERTS    = "Alerts"
+const int PENDING      = 0
+const int ACTIVE       = 1
+const int WATCH        = 2
+const int RETURNED     = 3
+const int ENDED        = 4
+const int AGED         = 5
+const int FORMED       = 1
+const int ABOVE        = 2
+const int BELOW        = 3
+const int RETURN       = 4
+const int RETEST       = 5
+const int HORIZON_MAX  = 2000
+const int RING_SIZE    = HORIZON_MAX + 1
+const int PENDING_CAP  = 32
+
+const int PENDING_WAIT = 20
+const string PANEL_FULL      = "Full"
+const string PANEL_NOTICE    = "Disclosure only"
+const string PANEL_OFF       = "Off"
+const string THEME_SIGNATURE = "Signature"
+const string THEME_CONTRAST  = "High contrast"
+const string THEME_PAPER     = "Paper (light chart)"
+const string THEME_MUTED     = "Muted"
+const string THEME_CBSAFE    = "Colourblind safe"
+const string THEME_MONO      = "Monochrome"
+const string THEME_WARM      = "Warm"
+const string THEME_COOL      = "Cool"
+const string THEME_CUSTOM    = "Custom"
+const string LABEL_ON_LINE   = "On line"
+const string LABEL_RIGHT     = "Right of line"
+const string SIZE_TINY       = "Tiny"
+const string SIZE_SMALL      = "Small"
+const string SIZE_NORMAL     = "Normal"
+const int LABEL_LEAD_BARS    = 6
+const float LABEL_CLEARANCE  = 0.35
+const int PANEL_ROWS         = 13
+const color SIG_RISING   = #26A69A
+const color SIG_FALLING  = #EF5350
+const color SIG_HISTORY  = #9AA0A6
+const color HC_RISING    = #00E676
+const color HC_FALLING   = #FF1744
+const color HC_HISTORY   = #FFFFFF
+const color PAP_RISING   = #00695C
+const color PAP_FALLING  = #B71C1C
+const color PAP_HISTORY  = #546E7A
+const color MUT_RISING   = #4C9A8F
+const color MUT_FALLING  = #B0645F
+const color MUT_HISTORY  = #78808A
+const color CB_RISING    = #0072B2
+const color CB_FALLING   = #D55E00
+const color CB_HISTORY   = #999999
+const color MON_RISING   = #FFFFFF
+const color MON_FALLING  = #9E9E9E
+const color MON_HISTORY  = #5F6A6A
+const color WRM_RISING   = #F9A825
+const color WRM_FALLING  = #C62828
+const color WRM_HISTORY  = #8D6E63
+const color COL_RISING   = #26C6DA
+const color COL_FALLING  = #5C6BC0
+const color COL_HISTORY  = #78909C
+
+// ── Inputs
+int swingInput           = input.int(8, "Swing length", minval = 2, maxval = 30, group = DETECTION, tooltip = "Bars required either side of a pivot.\n• A pivot confirms this many bars after it prints\n• Equal extrema never anchor, nor does a bar that is both a pivot high and a pivot low\n• Raise 8 to 16: pivots confirm 8 bars later, fewer and larger channels. Lower to 4: more, smaller ones, sooner", display = display.none)
+bool longerInput         = input.bool(false, "Longer swing channel", group = DETECTION, tooltip = "Adds a second, larger channel over the swing layer.\n• Same timeframe; a longer swing length set by the multiple below\n• Draws thicker and fainter to stay distinguishable\n• On: roughly doubles the work per bar and adds one live slot to the drawn ceiling, unless the horizon is under 3 × its swing length, when the layer stays off and the panel says so")
+int multipleInput        = input.int(3, "Longer swing multiple", minval = 2, maxval = 4, group = DETECTION, active = longerInput, tooltip = "Scale of the second layer.\n• Multiplies the swing length above; chart timeframe throughout, no higher-timeframe request\n• At swing length 8, multiple 3 gives a 24-bar pivot; 4 gives 32, so its channels confirm later and span more", display = display.none)
+int poolInput            = input.int(10, "Pivots searched", minval = 3, maxval = 12, group = DETECTION, tooltip = "Recent pivots considered per construction.\n• Limited to pivots inside the horizon below\n• Raise 10 to 12: reaches further back, finds more geometry, costs more per bar. Lower to 5: only the latest pivots pair", display = display.none)
+int horizonInput         = input.int(600, "Search and age horizon", minval = 100, maxval = HORIZON_MAX, group = DETECTION, tooltip = "Maximum reach and age of a channel, in bars.\n• Measured from the first anchor; older channels are retired\n• The longer swing layer needs at least 3 × its own swing length\n• Raise 600 to 1200: channels may reach and live twice as far back. Lower to 200: a channel retires 200 bars after its first anchor", display = display.none)
+int volatilityInput      = input.int(14, "Volatility window", minval = 5, maxval = 100, group = DETECTION, tooltip = "Average range that sizes every allowance below.\n• Simple average true range, not Wilder smoothing; frozen at construction, so geometry never shifts\n• A gap in the window prevents construction\n• Raise 14 to 50: allowances follow a slower average and react less to one volatile week", display = display.none)
+float containmentInput   = input.float(0.10, "Containment allowance", minval = 0.0, maxval = 0.50, step = 0.05, group = DETECTION, tooltip = "Tolerance for price outside the boundaries.\n• A multiple of the frozen average range; the full span between anchors must fit\n• 0 requires an exact fit\n• Raise 0.10 to 0.30: a wick poking 0.3 ranges past a boundary no longer rejects the channel, so more channels pass", display = display.none)
+float minWidthInput      = input.float(0.50, "Minimum width", minval = 0.10, maxval = 5.0, step = 0.10, group = DETECTION, tooltip = "Rejects channels narrower than this.\n• A multiple of the frozen average range\n• Raise 0.5 to 1.5: a channel narrower than 1.5 average ranges is rejected, so tight consolidation is excluded", display = display.none)
+float maxWidthInput      = input.float(8.0, "Maximum width", minval = 1.0, maxval = 20.0, step = 0.50, group = DETECTION, tooltip = "Rejects channels wider than this.\n• A multiple of the frozen average range\n• Lower 8 to 4: a channel wider than 4 average ranges is rejected, so a drawing spanning unrelated ranges is excluded", display = display.none)
+float closeInput         = input.float(0.0, "Close allowance", minval = 0.0, maxval = 1.0, step = 0.05, group = LIFECYCLE, tooltip = "Distance a close must clear a boundary to break it.\n• A multiple of the frozen average range; 0 accepts any close beyond\n• A close on the boundary counts as inside\n• Raise 0 to 0.25: a close 0.1 ranges past the boundary is still inside, so marginal closes no longer start a watch", display = display.none)
+int watchInput           = input.int(20, "Return watch", minval = 1, maxval = 50, group = LIFECYCLE, tooltip = "Bars a channel is watched after a close outside.\n• Counted in closed bars from that first close; a return on the final watched bar counts\n• The channel is finished afterwards and does not restart\n• Raise 20 to 40: a close back inside up to 40 bars later still ends as Returned inside. Lower to 5: after 5 bars it reads Watch ended", display = display.none)
+int retainedInput        = input.int(3, "Retained channels", minval = 0, maxval = 10, group = DISPLAY, tooltip = "Finished channels kept on the chart, across both layers.\n• Ceiling is this figure plus one live slot per enabled layer; the panel Drawn row reports the total\n• A hidden channel still runs its watch and still alerts\n• 0: live channels only. Raise 3 to 6: the six most recently finished channels stay drawn", display = display.none)
+bool midpointInput       = input.bool(true, "Midpoint", group = DISPLAY, tooltip = "Halfway line between the boundaries.\n• Dotted, fainter than the boundaries; no additional drawing budget\n• Off: the two boundaries and the fill alone")
+bool quartersInput       = input.bool(false, "Quarter lines", group = DISPLAY, tooltip = "Quarter and three-quarter lines inside the channel.\n• With the midpoint, divides the channel into four bands\n• On: two extra lines per channel, so with the midpoint each channel draws five lines")
+bool labelsInput         = input.bool(true, "Channel labels", group = DISPLAY, tooltip = "Draws every label the script produces.\n• Off removes the Known marker, endpoint, event, anchor and forming labels\n• The dotted acceptance line and the stroke styles still draw\n• Off: a channel carries no text saying which bar it became usable at or whether it is active")
+bool anchorsInput        = input.bool(false, "Anchor markers", group = DISPLAY, active = labelsInput, tooltip = "Marks the three source pivots as A, B and C.\n• Shows where the geometry came from, not when it became usable\n• Drawn only while Channel labels is on\n• On: three extra labels per channel, at the pivot high and low prices")
+bool formingInput        = input.bool(false, "Forming channel", group = DISPLAY, tooltip = "Draws the candidate a layer is currently building.\n• Dotted, faint and labelled: not an accepted channel\n• A channel becomes usable only once a bar closes inside it; the candidate can change or be replaced before then\n• On: while a layer has no active channel, its best pending candidate shows for up to 20 bars")
+bool tableInput          = input.bool(true, "Corner table", group = DISPLAY, tooltip = "Draws the corner table that carries the panel and the disclosure.\n• Off removes the table, including the linear-price and confirmed-pivot notice\n• An unsupported-chart or invalid-settings warning still shows in the corner\n• Off: Status panel and Panel position have no effect")
+string panelInput        = input.string(PANEL_OFF, "Status panel", options = [PANEL_FULL, PANEL_NOTICE, PANEL_OFF], group = DISPLAY, active = tableInput, tooltip = "Extent of the corner panel.\n• Full: the title, per-layer rows, drawn count and disclosure\n• Disclosure only: the title above the disclosure\n• Off: the disclosure alone, pinned in the chosen corner\n• Corner table off removes all three; a blocking warning is never hidden", display = display.none)
+string positionInput     = input.string("Top right", "Panel position", options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = DISPLAY, active = tableInput, tooltip = "Corner the panel occupies.\n• Applied as soon as the setting is confirmed\n• Top left sits under the chart's own symbol and indicator legends, which the script cannot move; the other three corners are clear of them\n• Bottom left: the table moves under the price action on the left, clear of the price axis", display = display.none)
+int boundaryInput        = input.int(2, "Boundary width", minval = 1, maxval = 4, group = DISPLAY, tooltip = "Stroke weight of the two boundaries.\n• The longer swing layer draws one step heavier\n• Raise 2 to 3: swing boundaries draw at 3 and longer swing at 4. At 4 both draw at 4 and the difference is lost", display = display.none)
+bool fillInput           = input.bool(true, "Channel fill", group = DISPLAY, tooltip = "Shades the inside of the active channel.\n• Off draws the boundaries and inner lines alone, in their usual colours\n• Finished channels are never shaded either way\n• Off: the fill transparency below has no effect")
+int transparencyInput    = input.int(80, "Fill transparency", minval = 0, maxval = 100, group = DISPLAY, active = fillInput, tooltip = "Shading between the boundaries.\n• 0 is solid, 100 is invisible; added to the direction colour\n• Live channels only; finished channels are unshaded\n• Lower 80 to 60: the active channel's shading darkens. 100: boundaries only", display = display.none)
+string themeInput        = input.string(THEME_SIGNATURE, "Colour theme", options = [THEME_SIGNATURE, THEME_CONTRAST, THEME_PAPER, THEME_MUTED, THEME_CBSAFE, THEME_MONO, THEME_WARM, THEME_COOL, THEME_CUSTOM], group = DISPLAY, tooltip = "Sets the rising, falling and history colours together.\n• Paper is built for a light background; the others for dark\n• Colourblind safe uses the published Okabe-Ito blue and vermilion\n• History is the neutral for any channel that is not the active one, under watch or finished\n• Custom: the three pickers below take over", display = display.none)
+color risingInput        = input.color(#26A69A, "Rising", group = DISPLAY, active = themeInput == THEME_CUSTOM, tooltip = "Colour for a live channel sloping up.\n• Applies only when the theme is Custom\n• Also tints that channel's labels and shading")
+color fallingInput       = input.color(#EF5350, "Falling", group = DISPLAY, active = themeInput == THEME_CUSTOM, tooltip = "Colour for a live channel sloping down.\n• Applies only when the theme is Custom\n• Also tints that channel's labels and shading")
+color historyInput       = input.color(#9AA0A6, "History", group = DISPLAY, active = themeInput == THEME_CUSTOM, tooltip = "Colour for a finished channel, either direction.\n• Applies only when the theme is Custom\n• Keep it muted: it marks what is no longer live\n• A channel under watch or finished takes this colour whatever its direction")
+string labelPosInput     = input.string(LABEL_ON_LINE, "Label position", options = [LABEL_ON_LINE, LABEL_RIGHT], group = DISPLAY, active = labelsInput, tooltip = "Placement of the channel's state label.\n• On line: at the right edge of the drawing\n• Right of line: six bars past the edge, in open space, so the label clears the stroke\n• Event labels stay at their bars, clear of the candles, in either position", display = display.none)
+string labelSizeInput    = input.string(SIZE_TINY, "Label size", options = [SIZE_TINY, SIZE_SMALL, SIZE_NORMAL], group = DISPLAY, active = labelsInput, tooltip = "Text size for every label the script draws.\n• Tiny keeps a busy chart readable\n• Normal: each label roughly doubles in height and covers more candles when several channels are retained", display = display.none)
+bool formationAlertInput = input.bool(true, "Formation", group = ALERTS, tooltip = "Fires when a channel is accepted and begins drawing.\n• At the confirmed close of the bar it became usable, not at the pivot\n• The combined alert message carries the channel identity and geometry; the named condition is a fixed message\n• Off: no formation entry in either alert; the Data Window flag still reads 1")
+bool outsideAlertInput   = input.bool(true, "Close outside", group = ALERTS, tooltip = "Fires on the first confirmed close beyond a boundary.\n• Subject to the Close allowance above\n• Starts the return watch; describes the close only\n• Off: the watch still runs and Return inside still fires; only this message is silent")
+bool retestAlertInput    = input.bool(true, "Boundary retouch", group = ALERTS, tooltip = "Fires when price returns to the boundary it closed beyond.\n• The high or low reaches the boundary while the close stays outside\n• Recorded once per channel; never counted, rated or compared\n• Several watched channels retouching on one bar fire this condition once; the combined alert lists each")
+bool returnAlertInput    = input.bool(true, "Return inside", group = ALERTS, tooltip = "Fires when a watched channel closes back inside.\n• Ends the watch; the channel is finished and does not restart\n• Hidden channels still alert\n• Several watched channels returning on one bar fire this condition once; the combined alert lists each")
+
+// ── Types
+type BarData
+    int index
+    int stamp
+    float hi
+    float lo
+    float last
+    bool valid
+
+type Pivot
+    int index
+    int stamp
+    float price
+
+type Channel
+    Pivot a
+    Pivot b
+    Pivot c
+    int direction
+    int layer
+    float slope
+    float width
+    float volatility
+    float containment
+    float allowance
+    int constructed
+    string key
+    int available = -1
+    int availableTime = -1
+    int state = 0
+    int breakBar = -1
+    int breakTime = -1
+    int breakSide = 0
+    int returnBar = -1
+    int returnTime = -1
+    int retestBar = -1
+    int retestTime = -1
+    int endBar = -1
+    int retired = -1
+
+type Layer
+    array<Pivot> highsArray
+    array<Pivot> lowsArray
+    array<Channel> pendingArray
+
+type AcceptedKey
+    string key
+    int anchor
+
+type Drawing
+    Channel channel
+    array<line> linesArray
+    array<label> labelsArray
+    linefill fill
+
+// ── Geometry helpers
+getBar(array<BarData> ringArray, int index) =>
+    BarData result = na
+    if index >= 0
+        BarData slot = array.get(ringArray, index % RING_SIZE)
+        if not na(slot) and slot.index == index
+            result := slot
+    result
+
+lowerAt(Channel ch, int index) =>
+    float baseline = ch.a.price + ch.slope * (index - ch.a.index)
+    ch.direction == 1 ? baseline : baseline - ch.width
+
+upperAt(Channel ch, int index) =>
+    float baseline = ch.a.price + ch.slope * (index - ch.a.index)
+    ch.direction == 1 ? baseline + ch.width : baseline
+
+isInside(Channel ch, BarData bar, float buffer) =>
+    bar.last >= lowerAt(ch, bar.index) - buffer and bar.last <= upperAt(ch, bar.index) + buffer
+
+channelKey(int direction, Pivot a, Pivot b, Pivot c) =>
+    str.tostring(direction) + ":" + str.tostring(a.stamp) + ":" + str.tostring(b.stamp) + ":" + str.tostring(c.stamp)
+
+// ── Pivots and construction
+strictPivot(array<BarData> ringArray, int now, int strength) =>
+    Pivot hi = na
+    Pivot lo = na
+    int centerIndex = now - strength
+    if centerIndex - strength >= 0
+        BarData center = getBar(ringArray, centerIndex)
+        bool highPivot = not na(center) and center.valid
+        bool lowPivot = highPivot
+        if highPivot
+            for index = centerIndex - strength to now
+                BarData neighbor = getBar(ringArray, index)
+                if na(neighbor) or not neighbor.valid
+                    highPivot := false
+                    lowPivot := false
+                    break
+                if index != centerIndex
+                    highPivot := highPivot and center.hi > neighbor.hi
+                    lowPivot := lowPivot and center.lo < neighbor.lo
+        if highPivot != lowPivot
+            if highPivot
+                hi := Pivot.new(centerIndex, center.stamp, center.hi)
+            else
+                lo := Pivot.new(centerIndex, center.stamp, center.lo)
+    [hi, lo]
+
+trimPivots(array<Pivot> poolArray, int now) =>
+    while array.size(poolArray) > 0
+        Pivot first = array.get(poolArray, 0)
+        if now - first.index > horizonInput or array.size(poolArray) > poolInput
+            array.shift(poolArray)
+        else
+            break
+    0
+
+constructChannel(array<BarData> ringArray, Pivot a, Pivot c, array<Pivot> oppositesArray, int direction, int layer, int strength, int now, float volatility) =>
+    Channel result = na
+    bool valid = not na(volatility) and volatility > 0 and c.index - a.index >= 2 * strength and now - a.index <= horizonInput and direction * (c.price - a.price) > 0
+    if valid
+        float slope = (c.price - a.price) / (c.index - a.index)
+        Pivot b = na
+        float width = 0.0
+        if array.size(oppositesArray) > 0
+            for p in oppositesArray
+                if p.index > a.index and p.index < c.index
+                    float residual = direction * (p.price - (a.price + slope * (p.index - a.index)))
+                    if residual > width
+                        width := residual
+                        b := p
+        if not na(b) and width >= minWidthInput * volatility and width <= maxWidthInput * volatility
+            Channel candidate = Channel.new(a, b, c, direction, layer, slope, width, volatility, containmentInput * volatility, closeInput * volatility, now, channelKey(direction, a, b, c))
+            for index = a.index to c.index
+                BarData bar = getBar(ringArray, index)
+                if na(bar) or not bar.valid
+                    valid := false
+                    break
+                if bar.hi > upperAt(candidate, index) + candidate.containment or bar.lo < lowerAt(candidate, index) - candidate.containment
+                    valid := false
+                    break
+            if valid
+                result := candidate
+    result
+
+updatePending(array<Channel> pendingArray, BarData bar) =>
+    int index = array.size(pendingArray) - 1
+    while index >= 0
+        Channel ch = array.get(pendingArray, index)
+        if bar.index - ch.a.index > horizonInput or not bar.valid or bar.index - ch.constructed > PENDING_WAIT
+            array.remove(pendingArray, index)
+        index -= 1
+    0
+
+// ── Lifecycle and events
+layerName(int layer) =>
+    layer == 0 ? "Swing" : "Longer swing"
+
+recordEvent(int kind, Channel ch, BarData bar, array<int> flagsArray, array<string> messagesArray) =>
+    array.set(flagsArray, ch.layer * 5 + kind - 1, 1)
+    bool enabled = kind == FORMED ? formationAlertInput : kind == RETURN ? returnAlertInput : kind == RETEST ? retestAlertInput : outsideAlertInput
+    if enabled
+        string eventName = kind == FORMED ? "Formed" : kind == ABOVE ? "Close above" : kind == BELOW ? "Close below" : kind == RETEST ? "Boundary retouch" : "Returned inside"
+        string message = layerName(ch.layer) + " | " + ch.key + " | " + eventName + " | confirmed close of bar opened " + str.format_time(bar.stamp, "yyyy-MM-dd HH:mm:ss", syminfo.timezone) + " " + syminfo.timezone + " | lower " + str.tostring(lowerAt(ch, bar.index), format.mintick) + " | upper " + str.tostring(upperAt(ch, bar.index), format.mintick)
+        array.push(messagesArray, message)
+    0
+
+advanceChannel(Channel ch, BarData bar, array<int> flagsArray, array<string> messagesArray) =>
+    if bar.index - ch.a.index > horizonInput
+        ch.state := AGED
+        ch.endBar := bar.index
+        if ch.retired < 0
+            ch.retired := bar.index
+    else if ch.state == ACTIVE and bar.index > ch.available and bar.valid
+        int side = bar.last > upperAt(ch, bar.index) + ch.allowance ? 1 : bar.last < lowerAt(ch, bar.index) - ch.allowance ? -1 : 0
+        if side != 0
+            ch.state := WATCH
+            ch.breakBar := bar.index
+            ch.breakTime := bar.stamp
+            ch.breakSide := side
+            ch.retired := bar.index
+            recordEvent(side == 1 ? ABOVE : BELOW, ch, bar, flagsArray, messagesArray)
+    else if ch.state == WATCH and bar.index > ch.breakBar
+        if bar.index <= ch.breakBar + watchInput and bar.valid and isInside(ch, bar, 0.0)
+            ch.state := RETURNED
+            ch.returnBar := bar.index
+            ch.returnTime := bar.stamp
+            ch.endBar := bar.index
+            recordEvent(RETURN, ch, bar, flagsArray, messagesArray)
+        else
+            if ch.retestBar < 0 and bar.valid
+                bool reached = ch.breakSide == 1 ? bar.lo <= upperAt(ch, bar.index) : bar.hi >= lowerAt(ch, bar.index)
+                if reached
+                    ch.retestBar := bar.index
+                    ch.retestTime := bar.stamp
+                    recordEvent(RETEST, ch, bar, flagsArray, messagesArray)
+            if bar.index >= ch.breakBar + watchInput
+                ch.state := ENDED
+                ch.endBar := bar.index
+    0
+
+// ── Selection and retention
+wasUsed(array<AcceptedKey> usedArray, string key) =>
+    bool found = false
+    if array.size(usedArray) > 0
+        for entry in usedArray
+            if entry.key == key
+                found := true
+                break
+    found
+
+activeChannel(array<Channel> recordsArray, int layer) =>
+    Channel result = na
+    if array.size(recordsArray) > 0
+        for ch in recordsArray
+            if ch.layer == layer and ch.state == ACTIVE
+                result := ch
+                break
+    result
+
+betterCandidate(Channel candidate, Channel incumbent, BarData bar) =>
+    float distance = math.abs(bar.last - (lowerAt(candidate, bar.index) + candidate.width * 0.5)) / candidate.width
+    float incumbentDistance = math.abs(bar.last - (lowerAt(incumbent, bar.index) + incumbent.width * 0.5)) / incumbent.width
+    bool better = candidate.c.index > incumbent.c.index
+    if candidate.c.index == incumbent.c.index
+        better := distance < incumbentDistance
+        if distance == incumbentDistance
+            int span = candidate.c.index - candidate.a.index
+            int incumbentSpan = incumbent.c.index - incumbent.a.index
+            better := span > incumbentSpan
+            if span == incumbentSpan
+                better := candidate.b.index < incumbent.b.index or (candidate.b.index == incumbent.b.index and candidate.direction > incumbent.direction)
+    better
+
+ingestLayer(Layer layerData, int layer, int strength, array<BarData> ringArray, BarData bar, float volatility, array<Channel> recordsArray, array<AcceptedKey> usedArray, array<int> flagsArray, array<string> messagesArray) =>
+    [hi, lo] = strictPivot(ringArray, bar.index, strength)
+    if not na(hi)
+        array.push(layerData.highsArray, hi)
+    if not na(lo)
+        array.push(layerData.lowsArray, lo)
+    trimPivots(layerData.highsArray, bar.index)
+    trimPivots(layerData.lowsArray, bar.index)
+    for side = 0 to 1
+        Pivot pivot = side == 0 ? hi : lo
+        array<Pivot> sameArray = side == 0 ? layerData.highsArray : layerData.lowsArray
+        array<Pivot> oppositeArray = side == 0 ? layerData.lowsArray : layerData.highsArray
+        if not na(pivot) and array.size(sameArray) > 1
+            for index = 0 to array.size(sameArray) - 2
+                Channel candidate = constructChannel(ringArray, array.get(sameArray, index), pivot, oppositeArray, side == 0 ? -1 : 1, layer, strength, bar.index, volatility)
+                if not na(candidate)
+                    array.push(layerData.pendingArray, candidate)
+    while array.size(layerData.pendingArray) > PENDING_CAP
+        array.shift(layerData.pendingArray)
+    if na(activeChannel(recordsArray, layer)) and bar.valid
+        int bestIndex = -1
+        Channel best = na
+        if array.size(layerData.pendingArray) > 0
+            for index = 0 to array.size(layerData.pendingArray) - 1
+                Channel candidate = array.get(layerData.pendingArray, index)
+                if not wasUsed(usedArray, candidate.key) and isInside(candidate, bar, 0.0)
+                    if na(best)
+                        best := candidate
+                        bestIndex := index
+                    else if betterCandidate(candidate, best, bar)
+                        best := candidate
+                        bestIndex := index
+        if bestIndex >= 0
+            array.remove(layerData.pendingArray, bestIndex)
+            best.state := ACTIVE
+            best.available := bar.index
+            best.availableTime := bar.stamp
+            array.push(recordsArray, best)
+            array.push(usedArray, AcceptedKey.new(best.key, best.a.index))
+            recordEvent(FORMED, best, bar, flagsArray, messagesArray)
+    0
+
+newerRetirement(Channel left, Channel right) =>
+    left.retired > right.retired or (left.retired == right.retired and (left.available > right.available or (left.available == right.available and left.layer > right.layer)))
+
+trimTerminal(array<Channel> recordsArray) =>
+    int count = 0
+    if array.size(recordsArray) > 0
+        for ch in recordsArray
+            if ch.state == RETURNED or ch.state == ENDED
+                count += 1
+    while count > 10
+        int oldestIndex = -1
+        Channel oldest = na
+        for index = 0 to array.size(recordsArray) - 1
+            Channel ch = array.get(recordsArray, index)
+            if ch.state == RETURNED or ch.state == ENDED
+                if na(oldest)
+                    oldest := ch
+                    oldestIndex := index
+                else if newerRetirement(oldest, ch)
+                    oldest := ch
+                    oldestIndex := index
+        array.remove(recordsArray, oldestIndex)
+        count -= 1
+    0
+
+watchCount(array<Channel> recordsArray, int layer) =>
+    int count = 0
+    if array.size(recordsArray) > 0
+        for ch in recordsArray
+            if ch.layer == layer and ch.state == WATCH
+                count += 1
+    count
+
+hasMember(array<Channel> membersArray, string key) =>
+    bool found = false
+    if array.size(membersArray) > 0
+        for ch in membersArray
+            if ch.key == key
+                found := true
+                break
+    found
+
+displayedChannels(array<Channel> recordsArray) =>
+    array<Channel> result = array.new<Channel>()
+    if array.size(recordsArray) > 0
+        for ch in recordsArray
+            if ch.state == ACTIVE
+                array.push(result, ch)
+        if retainedInput > 0
+            for slot = 1 to retainedInput
+                Channel newest = na
+                for ch in recordsArray
+                    if ch.state != ACTIVE and not hasMember(result, ch.key)
+                        if na(newest)
+                            newest := ch
+                        else if newerRetirement(ch, newest)
+                            newest := ch
+                if na(newest)
+                    break
+                array.push(result, newest)
+    result
+
+// ── Colours and sizing
+// Aged records leave the record set before rendering, so no label names that state.
+stateName(Channel ch) =>
+    ch.state == ACTIVE ? "Active" : ch.state == WATCH ? (ch.breakSide == 1 ? "Watching above" : "Watching below") : ch.state == RETURNED ? "Returned inside" : "Watch ended"
+
+addTransparency(color selected, float extra) =>
+    color.new(selected, math.min(100.0, math.max(0.0, color.t(selected) + extra)))
+
+risingColor() =>
+    switch themeInput
+        THEME_CONTRAST => HC_RISING
+        THEME_PAPER    => PAP_RISING
+        THEME_MUTED    => MUT_RISING
+        THEME_CBSAFE   => CB_RISING
+        THEME_MONO     => MON_RISING
+        THEME_WARM     => WRM_RISING
+        THEME_COOL     => COL_RISING
+        THEME_CUSTOM   => risingInput
+        => SIG_RISING
+
+fallingColor() =>
+    switch themeInput
+        THEME_CONTRAST => HC_FALLING
+        THEME_PAPER    => PAP_FALLING
+        THEME_MUTED    => MUT_FALLING
+        THEME_CBSAFE   => CB_FALLING
+        THEME_MONO     => MON_FALLING
+        THEME_WARM     => WRM_FALLING
+        THEME_COOL     => COL_FALLING
+        THEME_CUSTOM   => fallingInput
+        => SIG_FALLING
+
+historyColor() =>
+    switch themeInput
+        THEME_CONTRAST => HC_HISTORY
+        THEME_PAPER    => PAP_HISTORY
+        THEME_MUTED    => MUT_HISTORY
+        THEME_CBSAFE   => CB_HISTORY
+        THEME_MONO     => MON_HISTORY
+        THEME_WARM     => WRM_HISTORY
+        THEME_COOL     => COL_HISTORY
+        THEME_CUSTOM   => historyInput
+        => SIG_HISTORY
+
+textSizeOf(string name) =>
+    switch name
+        SIZE_NORMAL => size.normal
+        SIZE_SMALL  => size.small
+        => size.tiny
+
+// ── Drawing
+deleteDrawing(Drawing drawing) =>
+    if not na(drawing.fill)
+        linefill.delete(drawing.fill)
+        drawing.fill := na
+    for id in drawing.linesArray
+        if not na(id)
+            line.delete(id)
+    for id in drawing.labelsArray
+        if not na(id)
+            label.delete(id)
+    0
+
+updateLine(Drawing drawing, int slot, int left, float leftPrice, int right, float rightPrice, color tint, string style, int width) =>
+    line id = array.get(drawing.linesArray, slot)
+    if na(id)
+        id := line.new(left, leftPrice, right, rightPrice, xloc = xloc.bar_index, extend = extend.none, color = tint, style = style, width = width)
+        array.set(drawing.linesArray, slot, id)
+    else
+        line.set_xy1(id, left, leftPrice)
+        line.set_xy2(id, right, rightPrice)
+        line.set_color(id, tint)
+        line.set_style(id, style)
+        line.set_width(id, width)
+    0
+
+updateLabel(Drawing drawing, int slot, int index, float price, string labelText, color tint, string style) =>
+    label id = array.get(drawing.labelsArray, slot)
+    if na(id)
+        id := label.new(index, price, labelText, xloc = xloc.bar_index, yloc = yloc.price, color = addTransparency(chart.bg_color, 15), style = style, textcolor = tint, size = textSizeOf(labelSizeInput))
+        array.set(drawing.labelsArray, slot, id)
+    else
+        label.set_xy(id, index, price)
+        label.set_text(id, labelText)
+        label.set_color(id, addTransparency(chart.bg_color, 15))
+        label.set_textcolor(id, tint)
+        label.set_size(id, textSizeOf(labelSizeInput))
+    0
+
+labelAnchor(array<BarData> ringArray, Channel ch, int index, int side, float clearance) =>
+    float edge = side == 1 ? upperAt(ch, index) : lowerAt(ch, index)
+    BarData bar = getBar(ringArray, index)
+    if not na(bar) and bar.valid
+        edge := side == 1 ? math.max(edge, bar.hi) : math.min(edge, bar.lo)
+    edge + side * clearance
+
+drawChannel(Drawing drawing, array<BarData> ringArray, int now) =>
+    Channel ch = drawing.channel
+    bool live = ch.state == ACTIVE
+    bool running = live or ch.state == WATCH
+    int right = running ? now : ch.endBar
+    color tint = live ? (ch.direction == 1 ? risingColor() : fallingColor()) : historyColor()
+    if ch.layer == 1
+        tint := addTransparency(tint, 15)
+    int weight = ch.layer == 0 ? boundaryInput : boundaryInput < 4 ? boundaryInput + 1 : 4
+    string style = ch.state == ACTIVE ? line.style_solid : line.style_dashed
+    updateLine(drawing, 0, ch.a.index, lowerAt(ch, ch.a.index), right, lowerAt(ch, right), tint, style, weight)
+    updateLine(drawing, 1, ch.a.index, upperAt(ch, ch.a.index), right, upperAt(ch, right), tint, style, weight)
+    if midpointInput
+        updateLine(drawing, 2, ch.a.index, lowerAt(ch, ch.a.index) + ch.width * 0.5, right, lowerAt(ch, right) + ch.width * 0.5, addTransparency(tint, 20), line.style_dotted, 1)
+    if quartersInput
+        updateLine(drawing, 3, ch.a.index, lowerAt(ch, ch.a.index) + ch.width * 0.25, right, lowerAt(ch, right) + ch.width * 0.25, addTransparency(tint, 35), line.style_dotted, 1)
+        updateLine(drawing, 4, ch.a.index, lowerAt(ch, ch.a.index) + ch.width * 0.75, right, lowerAt(ch, right) + ch.width * 0.75, addTransparency(tint, 35), line.style_dotted, 1)
+    updateLine(drawing, 5, ch.available, lowerAt(ch, ch.available), ch.available, upperAt(ch, ch.available), tint, line.style_dotted, 1)
+    if live and fillInput
+        if na(drawing.fill)
+            drawing.fill := linefill.new(array.get(drawing.linesArray, 0), array.get(drawing.linesArray, 1), addTransparency(tint, transparencyInput))
+        else
+            linefill.set_color(drawing.fill, addTransparency(tint, transparencyInput))
+    else if not na(drawing.fill)
+        linefill.delete(drawing.fill)
+        drawing.fill := na
+    if labelsInput
+        float clearance = ch.volatility * LABEL_CLEARANCE
+        updateLabel(drawing, 0, ch.available, labelAnchor(ringArray, ch, ch.available, 1, clearance), "Known", tint, label.style_label_down)
+        string direction = ch.direction == 1 ? "Rising" : "Falling"
+        string endpoint = (ch.layer == 0 ? "" : layerName(ch.layer) + " · ") + direction + "\n" + stateName(ch)
+        bool labelRight = labelPosInput == LABEL_RIGHT
+        int labelBar = labelRight ? right + LABEL_LEAD_BARS : right
+        float labelPrice = lowerAt(ch, labelBar) + ch.width * 0.5 + (labelRight ? 0.0 : clearance)
+        updateLabel(drawing, 1, labelBar, labelPrice, endpoint, tint, labelRight ? label.style_label_center : label.style_label_left)
+        if anchorsInput
+            updateLabel(drawing, 2, ch.a.index, ch.a.price, "A", tint, label.style_label_up)
+            updateLabel(drawing, 3, ch.b.index, ch.b.price, "B", tint, label.style_label_down)
+            updateLabel(drawing, 4, ch.c.index, ch.c.price, "C", tint, label.style_label_up)
+        if ch.breakBar >= 0
+            string eventName = ch.breakSide == 1 ? "Close above" : "Close below"
+            float eventPrice = labelAnchor(ringArray, ch, ch.breakBar, ch.breakSide, clearance)
+            updateLabel(drawing, 5, ch.breakBar, eventPrice, eventName, tint, ch.breakSide == 1 ? label.style_label_down : label.style_label_up)
+        if ch.retestBar >= 0
+            float retestPrice = labelAnchor(ringArray, ch, ch.retestBar, ch.breakSide, clearance)
+            updateLabel(drawing, 7, ch.retestBar, retestPrice, "Boundary retouch", tint, ch.breakSide == 1 ? label.style_label_down : label.style_label_up)
+        if ch.returnBar >= 0
+            float returnPrice = labelAnchor(ringArray, ch, ch.returnBar, ch.breakSide, clearance)
+            updateLabel(drawing, 6, ch.returnBar, returnPrice, "Returned inside", tint, ch.breakSide == 1 ? label.style_label_down : label.style_label_up)
+    0
+
+renderChannels(array<Drawing> drawingsArray, array<Channel> membersArray, array<BarData> ringArray, int now) =>
+    int index = array.size(drawingsArray) - 1
+    while index >= 0
+        Drawing drawing = array.get(drawingsArray, index)
+        if not hasMember(membersArray, drawing.channel.key)
+            deleteDrawing(drawing)
+            array.remove(drawingsArray, index)
+        index -= 1
+    if array.size(membersArray) > 0
+        for ch in membersArray
+            Drawing selected = na
+            if array.size(drawingsArray) > 0
+                for drawing in drawingsArray
+                    if drawing.channel.key == ch.key
+                        selected := drawing
+                        break
+            if na(selected)
+                selected := Drawing.new(ch, array.new<line>(6), array.new<label>(8), na)
+                array.push(drawingsArray, selected)
+            drawChannel(selected, ringArray, now)
+    0
+
+formingPick(Layer layerData, array<AcceptedKey> usedArray, array<Channel> recordsArray, int layer, BarData bar) =>
+    Channel best = na
+    if na(activeChannel(recordsArray, layer)) and not na(bar) and bar.valid and array.size(layerData.pendingArray) > 0
+        for candidate in layerData.pendingArray
+            if not wasUsed(usedArray, candidate.key)
+                if na(best) or betterCandidate(candidate, best, bar)
+                    best := candidate
+    best
+
+renderForming(array<line> formingLinesArray, array<label> formingLabelsArray, int layer, Channel ch, int now, color tint) =>
+    int upperSlot = layer * 2
+    int lowerSlot = upperSlot + 1
+    line upperLine = array.get(formingLinesArray, upperSlot)
+    line lowerLine = array.get(formingLinesArray, lowerSlot)
+    label mark = array.get(formingLabelsArray, layer)
+    if na(ch)
+        if not na(upperLine)
+            line.delete(upperLine)
+            array.set(formingLinesArray, upperSlot, na)
+        if not na(lowerLine)
+            line.delete(lowerLine)
+            array.set(formingLinesArray, lowerSlot, na)
+        if not na(mark)
+            label.delete(mark)
+            array.set(formingLabelsArray, layer, na)
+    else
+        int left = ch.a.index
+        float upperLeft = upperAt(ch, left)
+        float upperRight = upperAt(ch, now)
+        float lowerLeft = lowerAt(ch, left)
+        float lowerRight = lowerAt(ch, now)
+        if na(upperLine)
+            array.set(formingLinesArray, upperSlot, line.new(left, upperLeft, now, upperRight, xloc = xloc.bar_index, style = line.style_dotted, color = tint, width = 1))
+        else
+            line.set_xy1(upperLine, left, upperLeft)
+            line.set_xy2(upperLine, now, upperRight)
+            line.set_color(upperLine, tint)
+            line.set_style(upperLine, line.style_dotted)
+            line.set_width(upperLine, 1)
+        if na(lowerLine)
+            array.set(formingLinesArray, lowerSlot, line.new(left, lowerLeft, now, lowerRight, xloc = xloc.bar_index, style = line.style_dotted, color = tint, width = 1))
+        else
+            line.set_xy1(lowerLine, left, lowerLeft)
+            line.set_xy2(lowerLine, now, lowerRight)
+            line.set_color(lowerLine, tint)
+            line.set_style(lowerLine, line.style_dotted)
+            line.set_width(lowerLine, 1)
+        float markPrice = math.max(upperRight, high) + ch.volatility * LABEL_CLEARANCE
+        if not labelsInput
+            if not na(mark)
+                label.delete(mark)
+                array.set(formingLabelsArray, layer, na)
+        else if na(mark)
+            array.set(formingLabelsArray, layer, label.new(now, markPrice, "Forming · not accepted", xloc = xloc.bar_index, style = label.style_label_down, color = addTransparency(chart.bg_color, 25), textcolor = tint, size = textSizeOf(labelSizeInput)))
+        else
+            label.set_xy(mark, now, markPrice)
+            label.set_textcolor(mark, tint)
+            label.set_color(mark, addTransparency(chart.bg_color, 25))
+            label.set_size(mark, textSizeOf(labelSizeInput))
+    0
+
+// ── Status panel
+layerState(Channel active, string idle) =>
+    na(active) ? idle : (active.direction == 1 ? "Rising · Active" : "Falling · Active")
+
+panelRow(table target, int row, string name, string value, color tone, color back) =>
+    table.cell(target, 0, row, name, text_color = tone, bgcolor = back, text_size = size.small, text_halign = text.align_left)
+    table.cell(target, 1, row, value, text_color = tone, bgcolor = back, text_size = size.small, text_halign = text.align_right)
+
+panelBanner(table target, int row, string body, color tone, color back) =>
+    table.cell(target, 0, row, body, text_color = tone, bgcolor = back, text_size = size.small, text_halign = text.align_left)
+
+// ── Persistent state
+var array<BarData> ringArray = array.new<BarData>(RING_SIZE)
+var array<float> trueRangesArray = array.new<float>()
+var BarData previous = na
+var array<Layer> layersArray = array.new<Layer>()
+var array<Channel> recordsArray = array.new<Channel>()
+var array<AcceptedKey> usedArray = array.new<AcceptedKey>()
+var array<Drawing> drawingsArray = array.new<Drawing>()
+var float volatility = na
+var table panelTable = table.new(positionInput == "Top right" ? position.top_right : positionInput == "Top left" ? position.top_left : positionInput == "Bottom right" ? position.bottom_right : position.bottom_left, 2, PANEL_ROWS)
+var array<line> formingLinesArray = array.new<line>(4)
+var array<label> formingLabelsArray = array.new<label>(2)
+
+if array.size(layersArray) == 0
+    array.push(layersArray, Layer.new(array.new<Pivot>(), array.new<Pivot>(), array.new<Channel>()))
+    array.push(layersArray, Layer.new(array.new<Pivot>(), array.new<Pivot>(), array.new<Channel>()))
+
+array<int> flagsArray = array.new<int>(10, 0)
+array<string> messagesArray = array.new<string>()
+bool supported          = chart.is_standard and not timeframe.isticks
+bool configurationValid = minWidthInput <= maxWidthInput
+bool longerEnabled      = longerInput and horizonInput >= 3 * swingInput * multipleInput
+bool pricesValid        = not na(high) and not na(low) and not na(close) and low <= close and close <= high
+
+// ── Execution
+if barstate.isconfirmed
+    BarData bar = BarData.new(bar_index, time, high, low, close, pricesValid)
+    array.set(ringArray, bar_index % RING_SIZE, bar)
+    float tr = na
+    if bar.valid
+        if na(previous)
+            tr := bar.hi - bar.lo
+        else if previous.valid
+            tr := math.max(bar.hi - bar.lo, math.abs(bar.hi - previous.last), math.abs(bar.lo - previous.last))
+    previous := bar
+    array.push(trueRangesArray, tr)
+    if array.size(trueRangesArray) > volatilityInput
+        array.shift(trueRangesArray)
+    float total = 0.0
+    for value in trueRangesArray
+        total += value
+    volatility := array.size(trueRangesArray) == volatilityInput ? total / volatilityInput : na
+    if supported and configurationValid
+        int keyIndex = array.size(usedArray) - 1
+        while keyIndex >= 0
+            AcceptedKey entry = array.get(usedArray, keyIndex)
+            if bar_index - entry.anchor > horizonInput
+                array.remove(usedArray, keyIndex)
+            keyIndex -= 1
+        for layerData in layersArray
+            updatePending(layerData.pendingArray, bar)
+        if array.size(recordsArray) > 0
+            for ch in recordsArray
+                advanceChannel(ch, bar, flagsArray, messagesArray)
+        int recordIndex = array.size(recordsArray) - 1
+        while recordIndex >= 0
+            Channel ch = array.get(recordsArray, recordIndex)
+            if ch.state == AGED
+                array.remove(recordsArray, recordIndex)
+            recordIndex -= 1
+        ingestLayer(array.get(layersArray, 0), 0, swingInput, ringArray, bar, volatility, recordsArray, usedArray, flagsArray, messagesArray)
+        if longerEnabled
+            ingestLayer(array.get(layersArray, 1), 1, swingInput * multipleInput, ringArray, bar, volatility, recordsArray, usedArray, flagsArray, messagesArray)
+        trimTerminal(recordsArray)
+
+Channel swingChannel = activeChannel(recordsArray, 0)
+Channel longer = activeChannel(recordsArray, 1)
+int swingWatches = watchCount(recordsArray, 0)
+int longerWatches  = watchCount(recordsArray, 1)
+
+if barstate.islast
+    array<Channel> membersArray = displayedChannels(recordsArray)
+    renderChannels(drawingsArray, membersArray, ringArray, bar_index)
+    color formingTint = addTransparency(historyColor(), 40)
+    Channel formingSwing = formingInput and supported and configurationValid ? formingPick(array.get(layersArray, 0), usedArray, recordsArray, 0, previous) : na
+    Channel formingLonger  = formingInput and longerEnabled and supported and configurationValid ? formingPick(array.get(layersArray, 1), usedArray, recordsArray, 1, previous) : na
+    renderForming(formingLinesArray, formingLabelsArray, 0, formingSwing, bar_index, formingTint)
+    renderForming(formingLinesArray, formingLabelsArray, 1, formingLonger, bar_index, formingTint)
+    string blocking = not supported ? "Unsupported chart: standard time-based charts only." : not configurationValid ? "Invalid settings: minimum width exceeds maximum width." : ""
+    string notice = "Linear-price geometry · confirmed-pivot delay\nAnchor history, not a forecast"
+    if blocking != ""
+        notice += "\n" + blocking
+    else
+        if longerInput and not longerEnabled
+            notice += "\nLonger swing disabled: horizon must be at least 3 × its swing length."
+        if not pricesValid
+            notice += "\nMissing price data: no price events or new construction."
+        else if na(volatility) or volatility <= 0
+            notice += "\nVolatility unavailable: no new construction."
+        if na(swingChannel) and na(longer)
+            Layer swingLayer = array.get(layersArray, 0)
+            bool fewPivots = array.size(swingLayer.highsArray) < 2 and array.size(swingLayer.lowsArray) < 2
+            notice += fewPivots ? "\nInsufficient confirmed pivots." : "\nNo active valid channel."
+    int drawnCeiling = retainedInput + 1 + (longerEnabled ? 1 : 0)
+    string drawnText = str.tostring(array.size(membersArray)) + " of " + str.tostring(drawnCeiling) + " sets"
+
+    color panelTone   = chart.fg_color
+    color panelDim    = addTransparency(chart.fg_color, 35)
+    color panelBack   = chart.bg_color
+    color panelBanded = addTransparency(chart.fg_color, 92)
+    bool panelDetail  = tableInput and panelInput == PANEL_FULL
+    bool panelShown   = tableInput and panelInput != PANEL_OFF
+    bool noticeShown  = tableInput or blocking != ""
+
+    if panelShown
+        panelBanner(panelTable, 0, "AUTO TREND CHANNELS", panelTone, panelBanded)
+        if panelDetail
+            panelRow(panelTable, 1, "Swing", layerState(swingChannel, "No active channel"), panelTone, panelBack)
+            panelRow(panelTable, 2, "Upper", na(swingChannel) ? "" : str.tostring(upperAt(swingChannel, bar_index), format.mintick), panelTone, panelBack)
+            panelRow(panelTable, 3, "Mid",   na(swingChannel) ? "" : str.tostring(lowerAt(swingChannel, bar_index) + swingChannel.width * 0.5, format.mintick), panelTone, panelBack)
+            panelRow(panelTable, 4, "Lower", na(swingChannel) ? "" : str.tostring(lowerAt(swingChannel, bar_index), format.mintick), panelTone, panelBack)
+            panelRow(panelTable, 5, "Watches", str.tostring(swingWatches), panelDim, panelBack)
+            panelRow(panelTable, 6, "Longer swing", layerState(longer, longerEnabled ? "No active channel" : "Off · Longer swing channel"), panelTone, panelBanded)
+            panelRow(panelTable, 7, "Upper", na(longer) ? "" : str.tostring(upperAt(longer, bar_index), format.mintick), panelTone, panelBack)
+            panelRow(panelTable, 8, "Mid",   na(longer) ? "" : str.tostring(lowerAt(longer, bar_index) + longer.width * 0.5, format.mintick), panelTone, panelBack)
+            panelRow(panelTable, 9, "Lower", na(longer) ? "" : str.tostring(lowerAt(longer, bar_index), format.mintick), panelTone, panelBack)
+            panelRow(panelTable, 10, "Watches", str.tostring(longerWatches), panelDim, panelBack)
+            panelRow(panelTable, 11, "Drawn", drawnText, panelTone, panelBanded)
+        else
+            table.clear(panelTable, 0, 1, 1, 11)
+    else
+        table.clear(panelTable, 0, 0, 1, 11)
+    if noticeShown
+        panelBanner(panelTable, 12, tableInput ? notice : blocking, panelDim, panelBack)
+    else
+        table.clear(panelTable, 0, 12, 1, 12)
+
+// ── Data Window outputs
+plot(not na(swingChannel) ? upperAt(swingChannel, bar_index) : na, "Swing upper", color = #26A69A, display = display.data_window)
+plot(not na(swingChannel) ? lowerAt(swingChannel, bar_index) + swingChannel.width * 0.5 : na, "Swing midpoint", color = #26A69A, display = display.data_window)
+plot(not na(swingChannel) ? lowerAt(swingChannel, bar_index) : na, "Swing lower", color = #26A69A, display = display.data_window)
+plot(not na(swingChannel) ? swingChannel.available : na, "Swing available bar", color = #26A69A, display = display.data_window)
+plot(array.get(flagsArray, 0), "Swing formed", color = #26A69A, display = display.data_window)
+plot(array.get(flagsArray, 1), "Swing close above", color = #26A69A, display = display.data_window)
+plot(array.get(flagsArray, 2), "Swing close below", color = #26A69A, display = display.data_window)
+plot(array.get(flagsArray, 3), "Swing returned inside", color = #26A69A, display = display.data_window)
+plot(array.get(flagsArray, 4), "Swing boundary retouch", color = #26A69A, display = display.data_window)
+plot(swingWatches, "Swing return watches", color = #26A69A, display = display.data_window)
+plot(not na(longer) ? upperAt(longer, bar_index) : na, "Longer swing upper", color = #EF5350, display = display.data_window)
+plot(not na(longer) ? lowerAt(longer, bar_index) + longer.width * 0.5 : na, "Longer swing midpoint", color = #EF5350, display = display.data_window)
+plot(not na(longer) ? lowerAt(longer, bar_index) : na, "Longer swing lower", color = #EF5350, display = display.data_window)
+plot(not na(longer) ? longer.available : na, "Longer swing available bar", color = #EF5350, display = display.data_window)
+plot(array.get(flagsArray, 5), "Longer swing formed", color = #EF5350, display = display.data_window)
+plot(array.get(flagsArray, 6), "Longer swing close above", color = #EF5350, display = display.data_window)
+plot(array.get(flagsArray, 7), "Longer swing close below", color = #EF5350, display = display.data_window)
+plot(array.get(flagsArray, 8), "Longer swing returned inside", color = #EF5350, display = display.data_window)
+plot(array.get(flagsArray, 9), "Longer swing boundary retouch", color = #EF5350, display = display.data_window)
+plot(longerWatches, "Longer swing return watches", color = #EF5350, display = display.data_window)
+
+// ── Alert conditions
+alertcondition(array.get(flagsArray, 0) == 1 and formationAlertInput, "Swing formed", "Auto Trend Channels [AFD]: swing channel formed.")
+alertcondition(array.get(flagsArray, 1) == 1 and outsideAlertInput, "Swing close above", "Auto Trend Channels [AFD]: swing channel closed above its upper boundary.")
+alertcondition(array.get(flagsArray, 2) == 1 and outsideAlertInput, "Swing close below", "Auto Trend Channels [AFD]: swing channel closed below its lower boundary.")
+alertcondition(array.get(flagsArray, 3) == 1 and returnAlertInput, "Swing returned inside", "Auto Trend Channels [AFD]: swing channel returned inside.")
+alertcondition(array.get(flagsArray, 4) == 1 and retestAlertInput, "Swing boundary retouch", "Auto Trend Channels [AFD]: a bar reached the broken boundary of a swing channel.")
+alertcondition(array.get(flagsArray, 5) == 1 and formationAlertInput, "Longer swing formed", "Auto Trend Channels [AFD]: longer swing channel formed.")
+alertcondition(array.get(flagsArray, 6) == 1 and outsideAlertInput, "Longer swing close above", "Auto Trend Channels [AFD]: longer swing channel closed above its upper boundary.")
+alertcondition(array.get(flagsArray, 7) == 1 and outsideAlertInput, "Longer swing close below", "Auto Trend Channels [AFD]: longer swing channel closed below its lower boundary.")
+alertcondition(array.get(flagsArray, 8) == 1 and returnAlertInput, "Longer swing returned inside", "Auto Trend Channels [AFD]: longer swing channel returned inside.")
+alertcondition(array.get(flagsArray, 9) == 1 and retestAlertInput, "Longer swing boundary retouch", "Auto Trend Channels [AFD]: a bar reached the broken boundary of a longer swing channel.")
+
+if barstate.isconfirmed and array.size(messagesArray) > 0
+    string batch = "Auto Trend Channels [AFD] | " + syminfo.tickerid
+    for message in messagesArray
+        batch += "\n" + message
+    alert(batch, alert.freq_once_per_bar_close)

@@ -1,0 +1,85 @@
+//@version=6
+indicator("DMP Buy Point % Levels", overlay=true, max_lines_count=20, max_labels_count=20)
+
+// ─── Buy point ───────────────────────────────────────────────
+// Per-symbol lookup: type "SYMBOL:PRICE" pairs separated by commas, e.g.
+//   FLNC:19.86, TSLA:245, AAPL:227.5
+// The script matches the current chart's ticker (case-insensitive) and uses
+// that price automatically. Any symbol NOT in the list defaults to the last
+// close, UNLESS "Manual Override" is checked. When checked, if the Buy Price
+// field/line hasn't been dragged or typed into yet (still 0), it also starts
+// at the last close — drag or type a value to override it from there.
+positionsInput = input.text_area(title="Positions (SYMBOL:PRICE, comma separated) — optional", defval="", group="Buy Point")
+manualOverride = input.bool(false, "Manual Override (use Buy Price field / dragged line below)", group="Buy Point")
+buyPriceInput  = input.price(defval=0.0, title="Buy Price (drag the line on the chart, or type here)", confirm=true, group="Buy Point")
+extBars        = input.int(10, "Extend Lines Right (bars)", group="Buy Point")
+
+f_lookupBuyPrice(txt) =>
+    float found = na
+    if str.length(txt) > 0
+        pairs = str.split(txt, ",")
+        for p in pairs
+            kv = str.split(str.trim(p), ":")
+            if array.size(kv) == 2
+                sym = str.trim(array.get(kv, 0))
+                if str.upper(sym) == str.upper(syminfo.ticker)
+                    found := str.tonumber(str.trim(array.get(kv, 1)))
+    found
+
+autoBuyPrice = f_lookupBuyPrice(positionsInput)
+buyPrice = not na(autoBuyPrice) ? autoBuyPrice : (manualOverride ? (buyPriceInput != 0.0 ? buyPriceInput : close) : close)
+
+// ─── Levels (edit % and toggle on/off in Settings) ──────────
+showStop = input.bool(true,  "Stop Loss",  group="Levels", inline="s")
+stopPct  = input.float(-8.0, "%",          group="Levels", inline="s")
+
+showT1 = input.bool(true,  "T1", group="Levels", inline="t1")
+t1Pct  = input.float(15.0, "%",        group="Levels", inline="t1")
+
+showT2 = input.bool(true,  "T2", group="Levels", inline="t2")
+t2Pct  = input.float(20.0, "%",        group="Levels", inline="t2")
+
+showT3 = input.bool(true,  "T3", group="Levels", inline="t3")
+t3Pct  = input.float(23.6, "%",        group="Levels", inline="t3")
+
+showT4 = input.bool(false, "T4", group="Levels", inline="t4")
+t4Pct  = input.float(38.2, "%",        group="Levels", inline="t4")
+
+showT5 = input.bool(false, "T5", group="Levels", inline="t5")
+t5Pct  = input.float(50.0, "%",       group="Levels", inline="t5")
+
+showT6 = input.bool(false, "T6", group="Levels", inline="t6")
+t6Pct  = input.float(62.1, "%",       group="Levels", inline="t6")
+
+showT7 = input.bool(false, "T7", group="Levels", inline="t7")
+t7Pct  = input.float(78.6, "%",       group="Levels", inline="t7")
+
+showT8 = input.bool(false, "T8", group="Levels", inline="t8")
+t8Pct  = input.float(100.0, "%",       group="Levels", inline="t8")
+
+
+// ─── Drawing helper ──────────────────────────────────────────
+drawLevel(showIt, pct, col) =>
+    if showIt and barstate.islast
+        lvl = buyPrice * (1 + pct / 100)
+        x2  = bar_index + extBars
+        line.new(bar_index, lvl, x2, lvl, color=col, width=1, style=line.style_dashed)
+        label.new(x2, lvl, (pct >= 0 ? "+" : "") + str.tostring(pct, "#.##") + "%  (" + str.tostring(lvl, format.mintick) + ")",
+             style=label.style_label_left, color=color.new(col, 80), textcolor=col, size=size.small)
+
+// Buy point line
+if barstate.islast
+    x2 = bar_index + extBars
+    line.new(bar_index, buyPrice, x2, buyPrice, color=color.blue, width=2)
+    label.new(x2, buyPrice, "Buy: " + str.tostring(buyPrice, format.mintick),
+         style=label.style_label_left, color=color.new(color.blue, 80), textcolor=color.blue, size=size.small)
+
+drawLevel(showStop, stopPct, color.red)
+drawLevel(showT1, t1Pct, color.green)
+drawLevel(showT2, t2Pct, color.green)
+drawLevel(showT3, t3Pct, color.green)
+drawLevel(showT4, t4Pct, color.green)
+drawLevel(showT5, t5Pct, color.green)
+drawLevel(showT6, t6Pct, color.green)
+drawLevel(showT7, t7Pct, color.green)
+drawLevel(showT8, t8Pct, color.green)

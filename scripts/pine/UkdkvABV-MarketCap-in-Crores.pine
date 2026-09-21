@@ -1,0 +1,27 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © yehonatan.bus
+
+//@version=6
+indicator("MarketCap (in Crores)", format=format.inherit, overlay=true, scale=scale.none)
+
+// 1 Crore = 10,000,000 (10 Million)
+croreDivider = 10000000
+
+// Fetch total shares outstanding
+Outstanding = request.financial(syminfo.tickerid, "TOTAL_SHARES_OUTSTANDING", "FQ")
+
+// Calculate raw Market Cap (Price * Shares)
+MarketCapRaw = Outstanding * close
+
+// Convert raw Market Cap to Crores
+MarketCapCrore = MarketCapRaw / croreDivider
+
+// --- Inputs ---
+trackprice = input.bool(title="Track Last Value Price", defval=false)
+
+// Use input.color to trigger the native color and opacity menu
+lineColor = input.color(color.new(color.orange, 70), title="Line Color & Opacity")
+
+// --- Plotting ---
+// Pass the chosen color and opacity directly to the plot
+plot(MarketCapCrore, title='MarketCap (Cr)', style=plot.style_line, trackprice=trackprice, color=lineColor)

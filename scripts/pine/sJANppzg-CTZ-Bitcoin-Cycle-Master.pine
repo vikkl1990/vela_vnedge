@@ -1,0 +1,708 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0
+// © CTZ / HumanPay — CTZ BITCOIN CYCLE MASTER v2.8
+// Bitcoin-only, four-tier cycle tool (DCL / WCL / YCL / 4YCL).
+// Fast tiers (DCL/WCL) confirm on 9 EMA reclaim + StochRSI cross from oversold
+// (highs: EMA loss + StochRSI cross from overbought + bearish divergence).
+// v2.8 — YEARLY tier rebuilt as INDEPENDENT calendar-length windows:
+//   • Each ~1-year window from the anchor gets ONE star, on its TRUE deepest low.
+//   • Higher or lower than the previous year, every year prints — no even-spacing
+//     assumption, no "must be a lower low" gate. Real lows drift; this follows them.
+//   • Decoupled from the 4-year metronome ON PURPOSE: a 4y span may hold 3, 4 or 5
+//     yearly lows depending on what the market actually did. Honesty over symmetry.
+//   • 4YCL tier UNCHANGED — still anchored + snapped to the true deep low (2018→2022
+//     validated). The 4YCL is also surfaced on the yearly tier so it never double-draws.
+// v2.0 base — 4-year anchored/nested engine (kept intact for the 4YCL tier).
+// Home = BTC Daily; also runs on Weekly (daily tier drops out).
+
+//@version=6
+indicator("CTZ Bitcoin Cycle Master", "CTZ BTC Cycle", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=100, max_bars_back=1000)
+
+// ── SCOPE ──────────────────────────────────────────────────────
+bool is_wk = timeframe.isweekly or timeframe.ismonthly
+int  dpw   = 7
+int  dpy   = 365
+
+// ── TIER TOGGLES ───────────────────────────────────────────────
+grpG = "🎛 Tiers"
+show_dcl  = input.bool(true,  "Daily Cycle (DCL)",     group=grpG)
+show_wcl  = input.bool(true,  "Weekly Cycle (WCL)",    group=grpG)
+show_ycl  = input.bool(true,  "Yearly Cycle (YCL)",    group=grpG)
+show_4ycl = input.bool(true,  "4-Year Cycle (4YCL)",   group=grpG)
+show_high = input.bool(true,  "Confirm Cycle HIGHS too", group=grpG)
+show_bg   = input.bool(true,  "Shade by price vs 9 EMA (green above / red below)", group=grpG)
+show_dash = input.bool(true,  "Show Dashboard",        group=grpG)
+
+// ── CONFIRMATION ENGINE ────────────────────────────────────────
+grpC = "✅ Confirmation"
+ema_len  = input.int(9,  "Confirm EMA (fast tiers)", minval=2, group=grpC, tooltip="Low confirms when price closes back above this EMA (highs: closes below). 9 is the BTC daily-cycle standard.")
+show_ema = input.bool(false, "Draw Confirm EMA on chart", group=grpC, tooltip="Plots the exact EMA the DCL/WCL confirmations use, so you can see the line price is reclaiming.")
+sr_rsi   = input.int(14, "StochRSI: RSI Length",   minval=2, group=grpC)
+sr_stoch = input.int(14, "StochRSI: Stoch Length", minval=2, group=grpC)
+sr_k     = input.int(3,  "StochRSI: %K Smooth",    minval=1, group=grpC)
+sr_d     = input.int(3,  "StochRSI: %D Smooth",    minval=1, group=grpC)
+sr_os    = input.int(20, "StochRSI Oversold",      minval=1, maxval=49, group=grpC)
+sr_ob    = input.int(80, "StochRSI Overbought",    minval=51, maxval=99, group=grpC)
+sr_look  = input.int(8,  "OS/OB Look-back (bars)", minval=1, group=grpC, tooltip="StochRSI must have been in oversold (lows) / overbought (highs) within this many bars for its cross to count.")
+
+// ── EXHAUSTION (adaptive, relative to recent window) ───────────
+grpE = "💥 Exhaustion (adaptive)"
+use_exh   = input.bool(true, "Use Exhaustion in grading", group=grpE)
+atr_len   = input.int(14, "ATR Length",            minval=2, group=grpE)
+wick_mult = input.float(1.2, "Capitulation Wick × ATR", step=0.1, minval=0.3, group=grpE, tooltip="Lower wick (lows) / upper wick (highs) must exceed this × ATR to count as an exhaustion flush.")
+vol_len   = input.int(50, "Volume Average",        minval=5, group=grpE)
+vol_mult  = input.float(1.8, "Volume Climax × avg", step=0.1, minval=1.0, group=grpE)
+
+// ── DIVERGENCE ─────────────────────────────────────────────────
+grpD = "🔀 Divergence"
+use_div = input.bool(true, "Use RSI Divergence in grading", group=grpD)
+div_lb  = input.int(5, "Divergence Pivot Lookback", minval=2, group=grpD)
+
+// ── COLOURS ────────────────────────────────────────────────────
+grpK = "🎨 Colours"
+dcl_col  = input.color(color.new(#22c55e, 0), "DCL",  inline="a", group=grpK)
+wcl_col  = input.color(color.new(#3b82f6, 0), "WCL",  inline="a", group=grpK)
+ycl_col  = input.color(color.new(#f59e0b, 0), "YCL",  inline="b", group=grpK)
+ycl4_col = input.color(color.new(#c084fc, 0), "4YCL", inline="b", group=grpK)
+hi_col   = input.color(color.new(#ef4444, 0), "Highs", group=grpK)
+
+// ── ANCHORED CYCLES (yearly / 4-year) ─────────────────────────
+grpAnc = "⚓ Anchor (yearly / 4-year)"
+anc_y  = input.int(2022, "Anchor Year (a KNOWN 4-year low)",  minval=2011, group=grpAnc, tooltip="Fixed anchor = a real, known 4-year cycle low. Default = 7 Nov 2022. The tool treats this date AS the 4YCL and counts the yearly + 4-year cycles forward from it — no searching, no ambiguity.")
+anc_m  = input.int(11,   "Anchor Month", minval=1, maxval=12, group=grpAnc)
+anc_d  = input.int(7,    "Anchor Day",   minval=1, maxval=31, group=grpAnc)
+seed_y = input.int(365,  "Yearly Window (days)",  minval=180, group=grpAnc, tooltip="Length of each independent yearly window. Each window from the anchor gets exactly one YCL star, on its true deepest low.")
+seed_4 = input.int(1435, "4-Year Target seed (days)",  minval=800, group=grpAnc, tooltip="Starting 4-year cycle length (3 Dec 2018 → 7 Nov 2022 = 1435d); becomes the running average of confirmed 4-year lows since the anchor.")
+settle = input.int(30,   "Confirm Settle (days past target)", minval=0, group=grpAnc, tooltip="How far past the target the tool waits before locking a low, so the pick can't still change. Higher = later but surer.")
+snap4d = input.int(120,  "4YCL Snap-to-Deepest (± days)", minval=0, group=grpAnc, tooltip="After the 4-year low is picked by timing, snap it to the DEEPEST weekly low within this many days either side — so it lands on the true bottom, not just the nearest-by-date low. 0 = no snap.")
+ycl_minsep = input.int(120, "YCL Min Spacing (days)", minval=0, group=grpAnc, tooltip="Stops two yearly lows printing too close together when one cycle low straddles the New Year (e.g. Nov 2022 + Jan 2023). If a new year's low is within this many days of the last YCL, only the DEEPER of the two is kept. 120 ≈ 4 months.")
+
+// ── TIER CYCLE LENGTHS (days; BTC nominal, elastic) ────────────
+int dcl_lb  = 5
+int wcl_lb  = 21
+int ycl_lb  = 60
+int y4_lb   = 100
+int dcl_gap = math.round(54 * 0.6)
+int wcl_gap = math.round(24 * dpw * 0.6)
+
+// Weekly cycle length — shared by the dashboard translation read and the
+// high-projection module below (declared once here so both can use it).
+string grpH = "🔺 Cycle High Projection"
+int wk_cyc_len = input.int(22, "Weekly cycle length (weeks)", minval=6, group=grpH, tooltip="Nominal WCL-to-WCL length. Drives the weekly-high band and the LEFT/RIGHT translation read.")
+
+// ══════════════════════════════════════════════════════════════
+//  CORE SERIES
+// ══════════════════════════════════════════════════════════════
+float emaC = ta.ema(close, ema_len)
+plot(show_ema ? emaC : na, "Confirm EMA", color=color.new(#eab308, 0), linewidth=1)
+float atr  = ta.atr(atr_len)
+float volA = ta.sma(volume, vol_len)
+
+float rsiV = ta.rsi(close, sr_rsi)
+float stV  = ta.stoch(rsiV, rsiV, rsiV, sr_stoch)
+float kV   = ta.sma(stV, sr_k)
+float dV   = ta.sma(kV, sr_d)
+
+bool srsi_bull = ta.crossover(kV, dV)  and ta.lowest(kV, sr_look)  < sr_os
+bool srsi_bear = ta.crossunder(kV, dV) and ta.highest(kV, sr_look) > sr_ob
+
+float upWick = high - math.max(open, close)
+float dnWick = math.min(open, close) - low
+bool  capit_lo = use_exh and (dnWick > atr * wick_mult or volume > volA * vol_mult)
+bool  capit_hi = use_exh and (upWick > atr * wick_mult or volume > volA * vol_mult)
+
+// RSI divergence (bullish at lows / bearish at highs)
+float ph = ta.pivothigh(high, div_lb, div_lb)
+float pl = ta.pivotlow(low,  div_lb, div_lb)
+var float lastPH    = na
+var float lastPHrsi = na
+var float lastPL    = na
+var float lastPLrsi = na
+bool bear_div = false
+bool bull_div = false
+if not na(ph)
+    float rAtPH = rsiV[div_lb]
+    if not na(lastPH) and high[div_lb] > lastPH and rAtPH < lastPHrsi
+        bear_div := true
+    lastPH    := high[div_lb]
+    lastPHrsi := rAtPH
+if not na(pl)
+    float rAtPL = rsiV[div_lb]
+    if not na(lastPL) and low[div_lb] < lastPL and rAtPL > lastPLrsi
+        bull_div := true
+    lastPL    := low[div_lb]
+    lastPLrsi := rAtPL
+
+// ══════════════════════════════════════════════════════════════
+//  CONFIRM-GRADE HELPER (validated logic)
+// ══════════════════════════════════════════════════════════════
+f_conf_grade(bool ema_ok, bool srsi_ok, bool exh_ok, bool div_ok) =>
+    int g = 0
+    g := g + (ema_ok  ? 1 : 0)
+    g := g + (srsi_ok ? 1 : 0)
+    g := g + ((exh_ok or div_ok) ? 1 : 0)
+    g
+
+f_star(int g) => g >= 3 ? "⭐" : g == 2 ? "•" : ""
+
+// ══════════════════════════════════════════════════════════════
+//  DCL LOW STATE MACHINE
+// ══════════════════════════════════════════════════════════════
+var int   dcl_state = 0
+var float dcl_px    = na
+var int   dcl_bar   = na
+var int   dcl_conf  = na
+var int   dcl_prev  = na
+var bool  dcl_ema   = false
+var bool  dcl_srsi  = false
+var bool  dcl_exh   = false
+float dcl_piv = ta.pivotlow(low, dcl_lb, dcl_lb)
+bool  dcl_conf_now = false
+int   dcl_grade = 0
+if show_dcl and not na(dcl_piv)
+    int pb = bar_index - dcl_lb
+    if na(dcl_bar) or pb - dcl_bar >= dcl_gap or low[dcl_lb] < dcl_px
+        dcl_state := 1
+        dcl_px    := low[dcl_lb]
+        dcl_bar   := pb
+        dcl_ema   := false
+        dcl_srsi  := false
+        dcl_exh   := capit_lo
+if dcl_state == 1
+    if close > emaC
+        dcl_ema := true
+    if srsi_bull
+        dcl_srsi := true
+    if capit_lo
+        dcl_exh := true
+    if dcl_ema and dcl_srsi
+        dcl_state     := 2
+        dcl_conf_now  := true
+        dcl_prev      := dcl_conf
+        dcl_conf      := dcl_bar
+        dcl_grade     := f_conf_grade(true, true, dcl_exh, bull_div)
+
+// ══════════════════════════════════════════════════════════════
+//  WCL LOW STATE MACHINE
+// ══════════════════════════════════════════════════════════════
+var int   wcl_state = 0
+var float wcl_px    = na
+var int   wcl_bar   = na
+var int   wcl_time  = na
+var int   wcl_conf  = na
+var int   wcl_prev  = na
+var bool  wcl_ema   = false
+var bool  wcl_srsi  = false
+var bool  wcl_exh   = false
+float wcl_piv = ta.pivotlow(low, wcl_lb, wcl_lb)
+bool  wcl_conf_now = false
+int   wcl_grade = 0
+if show_wcl and not na(wcl_piv)
+    int pb = bar_index - wcl_lb
+    if na(wcl_bar) or pb - wcl_bar >= wcl_gap or low[wcl_lb] < wcl_px
+        wcl_state := 1
+        wcl_px    := low[wcl_lb]
+        wcl_bar   := pb
+        wcl_time  := time[wcl_lb]
+        wcl_ema   := false
+        wcl_srsi  := false
+        wcl_exh   := capit_lo
+if wcl_state == 1
+    if close > emaC
+        wcl_ema := true
+    if srsi_bull
+        wcl_srsi := true
+    if capit_lo
+        wcl_exh := true
+    if wcl_ema and wcl_srsi
+        wcl_state    := 2
+        wcl_conf_now := true
+        wcl_prev     := wcl_conf
+        wcl_conf     := wcl_bar
+        wcl_grade    := f_conf_grade(true, true, wcl_exh, bull_div)
+
+// ── WEEKLY TRANSLATION tracker: running high since the last confirmed WCL.
+//    Resets each new WCL; position of this high vs the cycle length tells us
+//    LEFT (early top / bearish) vs RIGHT (late top / bullish). Read below.
+var float wcyc_hi_px  = na
+var int   wcyc_hi_bar = na
+if wcl_conf_now
+    wcyc_hi_px  := high
+    wcyc_hi_bar := bar_index
+if not na(wcl_conf) and (na(wcyc_hi_px) or high > wcyc_hi_px)
+    wcyc_hi_px  := high
+    wcyc_hi_bar := bar_index
+
+// ══════════════════════════════════════════════════════════════
+//  ANCHORED WCL HISTORY  (feed for the nested 4-year tier)
+// ══════════════════════════════════════════════════════════════
+int anc_time = timestamp(anc_y, anc_m, anc_d, 0, 0)
+
+var array<int>   wcl_hist_bar  = array.new<int>()
+var array<int>   wcl_hist_time = array.new<int>()
+var array<float> wcl_hist_px   = array.new<float>()
+if wcl_conf_now and wcl_time >= anc_time
+    array.push(wcl_hist_bar,  wcl_bar)
+    array.push(wcl_hist_time, wcl_time)
+    array.push(wcl_hist_px,   wcl_px)
+
+f_nearest_wcl(int target_t, int after_t) =>
+    int   best_i = -1
+    int   best_d = 9223372036854775807
+    if array.size(wcl_hist_time) > 0
+        for i = 0 to array.size(wcl_hist_time) - 1
+            int tt = array.get(wcl_hist_time, i)
+            if tt <= time and (na(after_t) or tt > after_t)
+                int dd = math.abs(tt - target_t)
+                if dd < best_d
+                    best_d := dd
+                    best_i := i
+    best_i
+
+f_deepest_wcl(int center_t, int win_ms) =>
+    int   best_i  = -1
+    float best_px = 1e20
+    if array.size(wcl_hist_time) > 0
+        for i = 0 to array.size(wcl_hist_time) - 1
+            int tt = array.get(wcl_hist_time, i)
+            if tt <= time and math.abs(tt - center_t) <= win_ms
+                float pp = array.get(wcl_hist_px, i)
+                if pp < best_px
+                    best_px := pp
+                    best_i  := i
+    best_i
+int DAYMS = 86400000
+
+// ══════════════════════════════════════════════════════════════
+//  4YCL — MASTER low (UNCHANGED from v2.7). Weekly low nearest the running
+//  4-year target from the anchor, snapped to the true deep low.
+// ══════════════════════════════════════════════════════════════
+var int   y4_conf      = na
+var float y4_px        = na
+var int   y4_last_time = na
+var int   y4_tgt_days  = na
+var int   y4_sum_len   = 0
+var int   y4_n_len     = 0
+var int   y4_win_end   = na
+var int   y4_prev_time = na
+bool y4_conf_now = false
+bool y4_new = false
+int  y4_grade = 0
+var bool y4_anchored = false
+if na(y4_tgt_days)
+    y4_tgt_days := seed_4
+if show_4ycl and barstate.isconfirmed and not y4_anchored and time >= anc_time + settle * DAYMS
+    int ai = f_nearest_wcl(anc_time, na)
+    if ai >= 0
+        int aj = snap4d > 0 ? f_deepest_wcl(anc_time, snap4d * DAYMS) : ai
+        if aj >= 0
+            ai := aj
+        y4_conf       := array.get(wcl_hist_bar,  ai)
+        y4_px         := array.get(wcl_hist_px,   ai)
+        y4_last_time  := array.get(wcl_hist_time, ai)
+        y4_conf_now   := true
+        y4_new        := true
+        y4_grade      := 3
+        y4_anchored   := true
+if show_4ycl and barstate.isconfirmed and y4_anchored
+    int base_t = na(y4_last_time) ? anc_time : y4_last_time
+    int tgt_t  = base_t + y4_tgt_days * DAYMS
+    if na(y4_win_end) and time >= tgt_t + settle * DAYMS
+        int i = f_nearest_wcl(tgt_t, y4_last_time)
+        if i >= 0
+            int pick_t = array.get(wcl_hist_time, i)
+            int j = snap4d > 0 ? f_deepest_wcl(pick_t, snap4d * DAYMS) : i
+            if j >= 0 and array.get(wcl_hist_time, j) > (na(y4_last_time) ? -1 : y4_last_time)
+                i := j
+            y4_prev_time := y4_last_time
+            y4_conf       := array.get(wcl_hist_bar,  i)
+            y4_px         := array.get(wcl_hist_px,   i)
+            y4_last_time  := array.get(wcl_hist_time, i)
+            y4_conf_now   := true
+            y4_new        := true
+            y4_win_end    := tgt_t + snap4d * DAYMS
+            if not na(y4_prev_time)
+                y4_sum_len  := y4_sum_len + math.round((y4_last_time - y4_prev_time) / float(DAYMS))
+                y4_n_len    := y4_n_len + 1
+                y4_tgt_days := math.round(y4_sum_len / float(y4_n_len))
+            y4_grade      := 3
+    else if not na(y4_win_end) and time <= y4_win_end
+        int k = f_deepest_wcl(tgt_t, snap4d * DAYMS)
+        if k >= 0
+            float kpx = array.get(wcl_hist_px, k)
+            int   ktime = array.get(wcl_hist_time, k)
+            if kpx < y4_px and ktime != y4_last_time
+                y4_conf      := array.get(wcl_hist_bar, k)
+                y4_px        := kpx
+                y4_conf_now  := true
+                if not na(y4_prev_time)
+                    y4_sum_len   := y4_sum_len - math.round((y4_last_time - y4_prev_time) / float(DAYMS)) + math.round((ktime - y4_prev_time) / float(DAYMS))
+                    y4_tgt_days  := math.round(y4_sum_len / float(y4_n_len))
+                y4_last_time := ktime
+
+// ══════════════════════════════════════════════════════════════
+//  PROVISIONAL 4YCL (v3.2) — a LIVE faded ◆ 4YCL? that tracks the developing
+//  4-year low while price is inside the window, BEFORE the confirmed ◆ locks.
+//  Window = from (target - snap4d) up to (target + settle). The provisional
+//  follows the running deepest low in that zone. The solid confirmed ◆ (above)
+//  supersedes it once the snap-confirmation fires. Purely additive — reads the
+//  confirmed engine's state, never writes to it.
+// ══════════════════════════════════════════════════════════════
+var float y4p_low   = na     // running deepest low inside the current 4y window
+var int   y4p_bar   = na     // bar of that low
+var bool  y4p_open  = false  // are we currently inside the approach window?
+var label y4p_label = na     // the faded provisional label
+
+if show_4ycl and barstate.isconfirmed and y4_anchored and na(y4_win_end)
+    int base_t = na(y4_last_time) ? anc_time : y4_last_time
+    int tgt_t  = base_t + y4_tgt_days * DAYMS
+    int win_open_t  = tgt_t - snap4d * DAYMS          // window opens approaching target
+    int win_close_t = tgt_t + settle * DAYMS          // ...until the confirmed lock point
+    bool inWin = time >= win_open_t and time <= win_close_t
+    if inWin
+        // entering the window fresh → seed the running low
+        if not y4p_open
+            y4p_open := true
+            y4p_low  := low
+            y4p_bar  := bar_index
+            label.delete(y4p_label)
+            y4p_label := label.new(bar_index, low, "◆ 4YCL?", style=label.style_label_up,
+                 color=color.new(ycl4_col, 55), textcolor=color.new(color.white, 25), size=size.huge)
+        // track the running deepest low, keep the faded marker pinned to it
+        else if low < y4p_low
+            y4p_low := low
+            y4p_bar := bar_index
+            label.delete(y4p_label)
+            y4p_label := label.new(y4p_bar, y4p_low, "◆ 4YCL?", style=label.style_label_up,
+                 color=color.new(ycl4_col, 55), textcolor=color.new(color.white, 25), size=size.huge)
+
+// once the confirmed ◆ locks this cycle, remove the provisional (solid supersedes it)
+if y4_new and not na(y4p_label)
+    label.delete(y4p_label)
+    y4p_label := na
+    y4p_open  := false
+
+
+// ══════════════════════════════════════════════════════════════
+//  YCL — CALENDAR-YEAR lows (v2.9). One star per calendar year, on that
+//  year's TRUE deepest low. The CURRENT (in-progress) year shows a LIVE
+//  provisional star that tracks the running low; it finalises when the year
+//  rolls into January. Confirmed lows (EMA reclaim + StochRSI) upgrade to ⭐.
+//  Calendar boundaries = "the 2025 low" means the lowest print in 2025.
+//  Yearly tier is decoupled from the 4-year tier by design (honest count).
+// ══════════════════════════════════════════════════════════════
+var int   ycl_conf       = na    // bar of the last FINALISED YCL
+var float ycl_px         = na    // price of the last finalised YCL
+var int   ycl_conf_time  = na    // time of the last finalised YCL (for spacing guard)
+var label ycl_last_lab   = na    // handle on the last finalised star (so it can be moved/deleted)
+var int   ycl_yr         = na    // calendar year currently being tracked
+var float ycl_yr_low     = na    // deepest low seen so far this year
+var int   ycl_yr_bar     = na    // bar of that deepest low
+var int   ycl_yr_time    = na    // time of that deepest low
+var bool  ycl_yr_conf    = false // has this year's low met EMA/StochRSI confirmation?
+var label ycl_prov_lab   = na    // live provisional star for the in-progress year
+bool ycl_conf_now = false        // fires when a year FINALISES (rolls over)
+int  ycl_minsep_ms = ycl_minsep * 86400000
+
+if show_ycl and barstate.isconfirmed
+    int curYr = year(time)
+    if na(ycl_yr)
+        // begin tracking the first visible year
+        ycl_yr      := curYr
+        ycl_yr_low  := low
+        ycl_yr_bar  := bar_index
+        ycl_yr_time := time
+        ycl_yr_conf := false
+        ycl_prov_lab := label.new(bar_index, low, "★ YCL?", style=label.style_label_up,
+             color=color.new(ycl_col, 45), textcolor=color.new(color.black, 25), size=size.large)
+    else if curYr > ycl_yr
+        // year rolled over → FINALISE the finished year's deepest low,
+        // UNLESS it sits within ycl_minsep of the last YCL (same cycle low
+        // straddling the New Year) — then keep only the DEEPER of the two.
+        if not na(ycl_yr_bar)
+            bool tooClose = not na(ycl_conf_time) and (ycl_yr_time - ycl_conf_time) <= ycl_minsep_ms
+            if tooClose
+                // same cycle low — keep whichever is deeper, draw only one star
+                if ycl_yr_low < ycl_px
+                    // this year's low is deeper → move the star down to it
+                    label.delete(ycl_last_lab)
+                    ycl_conf      := ycl_yr_bar
+                    ycl_px        := ycl_yr_low
+                    ycl_conf_time := ycl_yr_time
+                    label.delete(ycl_prov_lab)
+                    ycl_prov_lab := na
+                    ycl_last_lab := label.new(ycl_yr_bar, ycl_yr_low, (ycl_yr_conf ? "⭐★ YCL" : "★ YCL"),
+                         style=label.style_label_up, color=color.new(ycl_col, 5),
+                         textcolor=color.black, size=size.large)
+                else
+                    // previous YCL was deeper → suppress this one entirely
+                    label.delete(ycl_prov_lab)
+                    ycl_prov_lab := na
+            else
+                // genuine new yearly low → finalise it as its own star
+                ycl_conf      := ycl_yr_bar
+                ycl_px        := ycl_yr_low
+                ycl_conf_time := ycl_yr_time
+                ycl_conf_now  := true
+                label.delete(ycl_prov_lab)
+                ycl_prov_lab := na
+                ycl_last_lab := label.new(ycl_yr_bar, ycl_yr_low, (ycl_yr_conf ? "⭐★ YCL" : "★ YCL"),
+                     style=label.style_label_up, color=color.new(ycl_col, 5),
+                     textcolor=color.black, size=size.large)
+        // start the new year
+        ycl_yr      := curYr
+        ycl_yr_low  := low
+        ycl_yr_bar  := bar_index
+        ycl_yr_time := time
+        ycl_yr_conf := false
+        ycl_prov_lab := label.new(bar_index, low, "★ YCL?", style=label.style_label_up,
+             color=color.new(ycl_col, 45), textcolor=color.new(color.black, 25), size=size.large)
+    else
+        // same year → track the running deepest low, keep the provisional star
+        // pinned to that low. Only redraw when the low actually moves.
+        if low < ycl_yr_low
+            ycl_yr_low  := low
+            ycl_yr_bar  := bar_index
+            ycl_yr_time := time
+            label.delete(ycl_prov_lab)
+            ycl_prov_lab := label.new(ycl_yr_bar, ycl_yr_low, ycl_yr_conf ? "⭐★ YCL?" : "★ YCL?",
+                 style=label.style_label_up, color=color.new(ycl_col, 45),
+                 textcolor=color.new(color.black, 25), size=size.large)
+    // confirmation LATCH: once this year's low has been followed by a 9EMA reclaim
+    // + StochRSI cross, mark it confirmed ONCE and refresh the star in place.
+    // (Guarded by not ycl_yr_conf so it fires a single time, not every bar.)
+    if not ycl_yr_conf and close > emaC and srsi_bull and bar_index > ycl_yr_bar and not na(ycl_yr_bar)
+        ycl_yr_conf := true
+        label.delete(ycl_prov_lab)
+        ycl_prov_lab := label.new(ycl_yr_bar, ycl_yr_low, "⭐★ YCL?",
+             style=label.style_label_up, color=color.new(ycl_col, 45),
+             textcolor=color.new(color.black, 25), size=size.large)
+
+int ycl_grade = 3
+
+
+
+// ══════════════════════════════════════════════════════════════
+//  CYCLE HIGH STATE MACHINE (DCL scale: EMA loss + srsi bear + divergence)
+// ══════════════════════════════════════════════════════════════
+var int   dch_state = 0
+var float dch_px    = na
+var int   dch_bar   = na
+var int   dch_conf  = na
+var bool  dch_ema   = false
+var bool  dch_srsi  = false
+var bool  dch_div   = false
+float dch_piv = ta.pivothigh(high, dcl_lb, dcl_lb)
+bool  dch_conf_now = false
+int   dch_grade = 0
+if show_high and show_dcl and not na(dch_piv)
+    int pb = bar_index - dcl_lb
+    if na(dch_bar) or pb - dch_bar >= dcl_gap or high[dcl_lb] > dch_px
+        dch_state := 1
+        dch_px    := high[dcl_lb]
+        dch_bar   := pb
+        dch_ema   := false
+        dch_srsi  := false
+        dch_div   := bear_div
+if dch_state == 1
+    if close < emaC
+        dch_ema := true
+    if srsi_bear
+        dch_srsi := true
+    if bear_div
+        dch_div := true
+    if dch_ema and dch_srsi
+        dch_state    := 2
+        dch_conf_now := true
+        dch_conf     := dch_bar
+        dch_grade    := f_conf_grade(true, true, capit_hi, dch_div)
+
+// ══════════════════════════════════════════════════════════════
+//  LABELS
+// ══════════════════════════════════════════════════════════════
+if dcl_conf_now
+    int len_d = na(dcl_prev) ? na : dcl_bar - dcl_prev
+    label.new(dcl_bar, dcl_px, f_star(dcl_grade) + "✅ DCL" + (na(len_d) ? "" : " " + str.tostring(len_d) + "D"), style=label.style_label_up, color=color.new(dcl_col, 10), textcolor=color.white, size=size.small)
+if wcl_conf_now
+    int len_w = na(wcl_prev) ? na : math.round((wcl_bar - wcl_prev) / float(dpw))
+    label.new(wcl_bar, wcl_px, f_star(wcl_grade) + "🚀 WCL" + (na(len_w) ? "" : " " + str.tostring(len_w) + "W"), style=label.style_label_up, color=color.new(wcl_col, 10), textcolor=color.white, size=size.normal)
+// (YCL stars are drawn inline in the calendar-year block above — provisional while
+//  the year is open, finalised when it rolls over — so no draw is needed here.)
+var label y4_label = na
+if y4_conf_now
+    label.delete(y4_label)
+    y4_label := label.new(y4_conf, y4_px, "◆ 4YCL", style=label.style_label_up, color=color.new(ycl4_col, 0), textcolor=color.white, size=size.huge)
+if dch_conf_now
+    label.new(dch_bar, dch_px, f_star(dch_grade) + "🔻 HIGH", style=label.style_label_down, color=color.new(hi_col, 10), textcolor=color.white, size=size.small)
+
+bgcolor(show_bg ? (close > emaC ? color.new(dcl_col, 92) : color.new(hi_col, 92)) : na)
+
+// ══════════════════════════════════════════════════════════════
+//  DASHBOARD
+// ══════════════════════════════════════════════════════════════
+var table t = na
+if show_dash and barstate.islast
+    if na(t)
+        t := table.new(position.bottom_right, 2, 12, bgcolor=color.new(#0a0f1e, 10), border_color=color.new(color.white, 75), border_width=1)
+    string tf = is_wk ? "Weekly" : "Daily"
+    table.cell(t, 0, 0, "CTZ BTC CYCLE", bgcolor=color.new(#14532d, 0), text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(t, 1, 0, syminfo.ticker + " · " + tf, bgcolor=color.new(#14532d, 0), text_color=color.white, text_size=size.small)
+    int d_since = na(dcl_conf) ? na : bar_index - dcl_conf
+    int w_since = na(wcl_conf) ? na : math.round((bar_index - wcl_conf) / float(dpw))
+    int y_since = na(ycl_conf) ? na : math.round((bar_index - ycl_conf) / float(dpw))
+    int f_since = na(y4_conf)  ? na : math.round((bar_index - y4_conf) / float(dpw))
+    table.cell(t, 0, 1, "Days since DCL",   text_color=color.new(color.white, 30), text_size=size.small, text_halign=text.align_left)
+    table.cell(t, 1, 1, na(d_since) ? "–" : str.tostring(d_since), text_color=color.white, text_size=size.small)
+    table.cell(t, 0, 2, "Weeks since WCL",  text_color=color.new(color.white, 30), text_size=size.small, text_halign=text.align_left)
+    table.cell(t, 1, 2, na(w_since) ? "–" : str.tostring(w_since), text_color=color.white, text_size=size.small)
+    table.cell(t, 0, 3, "Weeks since YCL",  text_color=color.new(color.white, 30), text_size=size.small, text_halign=text.align_left)
+    table.cell(t, 1, 3, na(y_since) ? "–" : str.tostring(y_since), text_color=color.white, text_size=size.small)
+    table.cell(t, 0, 4, "Weeks since 4YCL", text_color=color.new(color.white, 30), text_size=size.small, text_halign=text.align_left)
+    table.cell(t, 1, 4, na(f_since) ? "–" : str.tostring(f_since), text_color=color.white, text_size=size.small)
+    table.cell(t, 0, 5, "Yearly / 4Y target", text_color=color.new(color.white, 30), text_size=size.small, text_halign=text.align_left)
+    table.cell(t, 1, 5, "calendar / " + str.tostring(y4_tgt_days) + "d", text_color=color.new(#c084fc, 0), text_size=size.small)
+    table.cell(t, 0, 6, "StochRSI %K", text_color=color.new(color.white, 30), text_size=size.small, text_halign=text.align_left)
+    table.cell(t, 1, 6, str.tostring(kV, "#") + (kV < sr_os ? " ▼OS" : kV > sr_ob ? " ▲OB" : ""), text_color=kV < sr_os ? dcl_col : kV > sr_ob ? hi_col : color.white, text_size=size.small)
+    table.cell(t, 0, 7, "Price vs 9EMA", text_color=color.new(color.white, 30), text_size=size.small, text_halign=text.align_left)
+    table.cell(t, 1, 7, close > emaC ? "above ▲" : "below ▼", text_color=close > emaC ? dcl_col : hi_col, text_size=size.small)
+    table.cell(t, 0, 8, "DCL state", text_color=color.new(color.white, 30), text_size=size.small, text_halign=text.align_left)
+    table.cell(t, 1, 8, dcl_state == 2 ? "confirmed" : dcl_state == 1 ? "pending 🕓" : "–", text_color=dcl_state == 2 ? dcl_col : color.new(color.white, 30), text_size=size.small)
+    table.cell(t, 0, 9, "Exhaustion now", text_color=color.new(color.white, 30), text_size=size.small, text_halign=text.align_left)
+    table.cell(t, 1, 9, capit_lo ? "flush ▼" : capit_hi ? "blowoff ▲" : "—", text_color=color.new(color.white, 60), text_size=size.small)
+    // — Weekly cycle translation (LEFT early/bear vs RIGHT late/bull) —
+    int   expLenBars = wk_cyc_len * dpw
+    int   wtAge   = na(wcl_conf) ? na : bar_index - wcl_conf
+    int   wtHiPos = (na(wcyc_hi_bar) or na(wcl_conf)) ? na : wcyc_hi_bar - wcl_conf
+    float wtRatio = (na(wtHiPos) or expLenBars == 0) ? na : wtHiPos / float(expLenBars)
+    string wtTxt = "–"
+    color  wtCol = color.new(color.white, 30)
+    if not na(wtAge) and not na(wtRatio)
+        if wtAge < expLenBars * 0.4
+            wtTxt := "forming…"
+            wtCol := color.new(color.white, 30)
+        else if wtRatio >= 0.6
+            wtTxt := "RIGHT ▲ late/bull"
+            wtCol := dcl_col
+        else if wtRatio <= 0.4
+            wtTxt := "LEFT ▼ early/bear"
+            wtCol := hi_col
+        else
+            wtTxt := "MID —"
+            wtCol := color.new(color.white, 15)
+    table.cell(t, 0, 10, "Weekly translation", text_color=color.new(color.white, 30), text_size=size.small, text_halign=text.align_left)
+    table.cell(t, 1, 10, wtTxt, text_color=wtCol, text_size=size.small)
+    table.cell(t, 0, 11, "WCH high so far", text_color=color.new(color.white, 30), text_size=size.small, text_halign=text.align_left)
+    table.cell(t, 1, 11, na(wtHiPos) ? "–" : str.tostring(math.round(wtHiPos / float(dpw))) + "w in (" + (na(wtRatio) ? "–" : str.tostring(math.round(wtRatio * 100)) + "%") + ")", text_color=color.white, text_size=size.small)
+
+// ══════════════════════════════════════════════════════════════
+//  ALERTS
+// ══════════════════════════════════════════════════════════════
+alertcondition(dcl_conf_now, "DCL Confirmed",  "CTZ BTC DCL confirmed — {{ticker}} @ {{close}}")
+alertcondition(wcl_conf_now, "WCL Confirmed",  "CTZ BTC WCL confirmed — {{ticker}} @ {{close}}")
+alertcondition(ycl_conf_now, "YCL Confirmed",  "CTZ BTC YCL confirmed — {{ticker}}")
+alertcondition(y4_conf_now,  "4YCL Confirmed", "CTZ BTC 4YCL confirmed — {{ticker}}")
+alertcondition(dch_conf_now, "Cycle HIGH Confirmed", "CTZ BTC cycle high confirmed — {{ticker}} @ {{close}}")
+
+if dcl_conf_now
+    alert("CTZ BTC DCL confirmed — " + syminfo.ticker + " @ " + str.tostring(close), alert.freq_once_per_bar_close)
+if wcl_conf_now
+    alert("CTZ BTC WCL confirmed — " + syminfo.ticker + " @ " + str.tostring(close), alert.freq_once_per_bar_close)
+if dch_conf_now
+    alert("CTZ BTC cycle high confirmed — " + syminfo.ticker + " @ " + str.tostring(close), alert.freq_once_per_bar_close)
+
+// ══════════════════════════════════════════════════════════════
+//  CTZ CYCLE HIGH PROJECTION  (v2.8 add-on)
+//  Tops can't be foretold to the day; they only CONFIRM in-structure
+//  after price breaks down. This projects the WINDOW each tier's high
+//  is statistically due, anchored to the confirmed WCL / YCL / 4YCL,
+//  using the cycle-translation rule (right-translated = tops late in
+//  the band; a top BEFORE the band = left-translated / weak tell).
+//  Weekly highs are also CONFIRMED in-structure (mirror of the DCL-high
+//  engine). Reads the low-tier state above; writes nothing back to it.
+// ══════════════════════════════════════════════════════════════
+show_hproj = input.bool(true, "Project high windows (WCH / YCH / 4YCH)", group=grpH)
+show_wch   = input.bool(true, "Confirm Weekly Cycle Highs", group=grpH)
+wch_lo = input.float(0.55, "WCH window start (% of weekly cycle)", minval=0.1, maxval=1.0, step=0.05, group=grpH)
+wch_hi = input.float(0.85, "WCH window end (% of weekly cycle)",   minval=0.1, maxval=1.2, step=0.05, group=grpH)
+ych_lo = input.float(0.55, "YCH window start (% of year after YCL)", minval=0.1, maxval=1.0, step=0.05, group=grpH)
+ych_hi = input.float(0.95, "YCH window end (% of year after YCL)",   minval=0.1, maxval=1.2, step=0.05, group=grpH)
+y4h_lo = input.float(0.58, "4YCH window start (% of 4Y cycle)", minval=0.2, maxval=1.0, step=0.02, group=grpH, tooltip="BTC's 4-year high has historically landed ~58–78% through the 4-year cycle (the year-3 blow-off). With a ~1435d cycle that's roughly 830–1120 days after the 4YCL.")
+y4h_hi = input.float(0.78, "4YCH window end (% of 4Y cycle)",   minval=0.2, maxval=1.0, step=0.02, group=grpH)
+
+// ── Forward projection bands (drawn on the last bar, time-anchored so
+//    they can sit years ahead of the loaded data) ─────────────────
+var box   wchBox = na
+var box   ychBox = na
+var box   y4hBox = na
+var label wchLbl = na
+var label ychLbl = na
+var label y4hLbl = na
+
+f_band(box bx, label lb, int t1, int t2, float exLo, float exHi, color c, string txt) =>
+    box.delete(bx)
+    label.delete(lb)
+    box   nb = box.new(t1, exHi, t2, exLo, xloc=xloc.bar_time, border_color=color.new(c, 55), bgcolor=color.new(c, 90))
+    label nl = label.new(t2, exHi, txt, xloc=xloc.bar_time, style=label.style_label_left, color=color.new(c, 25), textcolor=color.white, size=size.small)
+    [nb, nl]
+
+if show_hproj and barstate.islast
+    float exLo = ta.lowest(low, 300)
+    float exHi = ta.highest(high, 300)
+
+    // Weekly-cycle high window — anchored to the last confirmed WCL
+    if not na(wcl_time)
+        int wms = int(wk_cyc_len * dpw) * DAYMS
+        int t1  = wcl_time + int(wch_lo * wms)
+        int t2  = wcl_time + int(wch_hi * wms)
+        [b, l] = f_band(wchBox, wchLbl, t1, t2, exLo, exHi, wcl_col, "🔺 WCH window")
+        wchBox := b
+        wchLbl := l
+
+    // Yearly high window — anchored to this year's low (fallback: Jan 1)
+    int yAnchor = na(ycl_yr_time) ? timestamp(year(time), 1, 1, 0, 0) : ycl_yr_time
+    int yms = dpy * DAYMS
+    int yt1 = yAnchor + int(ych_lo * yms)
+    int yt2 = yAnchor + int(ych_hi * yms)
+    [yb, yl] = f_band(ychBox, ychLbl, yt1, yt2, exLo, exHi, ycl_col, "🔺 YCH window")
+    ychBox := yb
+    ychLbl := yl
+
+    // 4-year high window — anchored to the confirmed 4YCL, sized by the running 4Y target
+    if not na(y4_last_time) and not na(y4_tgt_days)
+        int fms = y4_tgt_days * DAYMS
+        int ft1 = y4_last_time + int(y4h_lo * fms)
+        int ft2 = y4_last_time + int(y4h_hi * fms)
+        [fb, fl] = f_band(y4hBox, y4hLbl, ft1, ft2, exLo, exHi, ycl4_col, "◆ 4YCH window")
+        y4hBox := fb
+        y4hLbl := fl
+
+// ── Weekly Cycle High confirmation (mirror of the DCL-high engine,
+//    at the weekly-swing scale: EMA loss + StochRSI bear cross) ─────
+var int   wch_state = 0
+var float wch_px    = na
+var int   wch_bar   = na
+var bool  wch_ema   = false
+var bool  wch_srsi  = false
+float wch_piv = ta.pivothigh(high, wcl_lb, wcl_lb)
+bool  wch_conf_now = false
+if show_wch and not na(wch_piv)
+    int pb = bar_index - wcl_lb
+    if na(wch_bar) or pb - wch_bar >= wcl_gap or high[wcl_lb] > wch_px
+        wch_state := 1
+        wch_px    := high[wcl_lb]
+        wch_bar   := pb
+        wch_ema   := false
+        wch_srsi  := false
+if wch_state == 1
+    if close < emaC
+        wch_ema := true
+    if srsi_bear
+        wch_srsi := true
+    if wch_ema and wch_srsi
+        wch_state    := 2
+        wch_conf_now := true
+if wch_conf_now
+    label.new(wch_bar, wch_px, f_star(f_conf_grade(true, true, capit_hi, bear_div)) + "🔻 WCH", style=label.style_label_down, color=color.new(hi_col, 10), textcolor=color.white, size=size.normal)
+
+alertcondition(wch_conf_now, "WCH Confirmed", "CTZ BTC Weekly Cycle High confirmed — {{ticker}} @ {{close}}")
+if wch_conf_now
+    alert("CTZ BTC Weekly Cycle High confirmed — " + syminfo.ticker + " @ " + str.tostring(close), alert.freq_once_per_bar_close)

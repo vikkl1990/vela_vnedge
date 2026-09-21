@@ -1,0 +1,156 @@
+//@version=6
+indicator("Cycle Days — Weekdays & Month Dates", overlay = true, max_labels_count = 500, max_lines_count = 500)
+
+// ── Mode ───────────────────────────────────────────────────────────────────
+string mode = input.string("Both", "Mode", options = ["Weekdays", "Month dates", "Both"], group = "Mode")
+string tzIn = input.string("Exchange", "Timezone",
+     options = ["Exchange", "UTC", "Europe/Moscow", "Europe/Kiev", "Europe/London", "America/New_York", "Asia/Shanghai"],
+     group = "Mode",
+     tooltip = "Exchange = instrument exchange time. For forex/crypto London or New York is often clearer.")
+
+string useTz = tzIn == "Exchange" ? syminfo.timezone : tzIn
+
+// ── Weekdays ───────────────────────────────────────────────────────────────
+string gW = "Weekdays"
+bool  enMon = input.bool(true,  "Monday",    group = gW, inline = "w1")
+bool  enTue = input.bool(false, "Tuesday",   group = gW, inline = "w1")
+bool  enWed = input.bool(false, "Wednesday", group = gW, inline = "w2")
+bool  enThu = input.bool(false, "Thursday",  group = gW, inline = "w2")
+bool  enFri = input.bool(false, "Friday",    group = gW, inline = "w3")
+bool  enSat = input.bool(false, "Saturday",  group = gW, inline = "w3")
+bool  enSun = input.bool(false, "Sunday",    group = gW)
+
+color colMon = input.color(color.new(#2962FF, 85), "", group = gW, inline = "w1")
+color colTue = input.color(color.new(#00BCD4, 85), "", group = gW, inline = "w1")
+color colWed = input.color(color.new(#4CAF50, 85), "", group = gW, inline = "w2")
+color colThu = input.color(color.new(#FF9800, 85), "", group = gW, inline = "w2")
+color colFri = input.color(color.new(#E91E63, 85), "", group = gW, inline = "w3")
+color colSat = input.color(color.new(#9C27B0, 85), "", group = gW, inline = "w3")
+color colSun = input.color(color.new(#607D8B, 85), "", group = gW)
+
+// ── Month dates ────────────────────────────────────────────────────────────
+string gD = "Month dates"
+string domStr    = input.string("15", "Days of month (comma-separated)", group = gD, tooltip = "Example: 15   or   1,15,31")
+bool   enLastDom = input.bool(false, "Last day of month", group = gD)
+bool   shiftWknd = input.bool(false, "If date falls on weekend, use nearest weekday", group = gD,
+     tooltip = "Marks the nearest Mon–Fri bar around the selected date. Usually off for 24/7 crypto.")
+color  colDom    = input.color(color.new(#FFD54F, 82), "Month-date color", group = gD)
+color  colLast   = input.color(color.new(#FF7043, 82), "Last-day color", group = gD)
+
+// ── Display ────────────────────────────────────────────────────────────────
+string gV = "Display"
+bool   showBg    = input.bool(true,  "Background fill", group = gV)
+bool   showLine  = input.bool(true,  "Vertical line (first bar of the day)", group = gV)
+bool   showLabel = input.bool(true,  "Label", group = gV)
+int    lineW     = input.int(1, "Line width", minval = 1, maxval = 4, group = gV)
+string lblSizeIn = input.string("small", "Label size", options = ["tiny", "small", "normal"], group = gV)
+
+string lblSize = lblSizeIn == "tiny" ? size.tiny : lblSizeIn == "small" ? size.small : size.normal
+
+// ── Bar calendar ───────────────────────────────────────────────────────────
+int dow = dayofweek(time, useTz)      // 1 = Sun … 7 = Sat
+int dom = dayofmonth(time, useTz)
+int mo  = month(time, useTz)
+int yr  = year(time, useTz)
+
+bool isNewCalDay = ta.change(time("D", useTz)) != 0
+
+int  nextDayTs  = time + 24 * 60 * 60 * 1000
+bool isLastOfMo = month(nextDayTs, useTz) != mo
+
+// ── Parse "1,15,31" ────────────────────────────────────────────────────────
+f_parseDom(string _s) =>
+    array<int> a = array.new<int>()
+    array<string> parts = str.split(_s, ",")
+    if not na(parts)
+        int nParts = parts.size()
+        if nParts > 0
+            for i = 0 to nParts - 1
+                string t = str.trim(parts.get(i))
+                if str.length(t) > 0
+                    float raw = str.tonumber(t)
+                    if not na(raw)
+                        int n = int(raw)
+                        if n >= 1 and n <= 31
+                            a.push(n)
+    a
+
+var array<int> targetDoms = array.new<int>()
+if barstate.isfirst
+    targetDoms := f_parseDom(domStr)
+
+f_inList(int _n, array<int> _arr) =>
+    bool found = false
+    int sz = _arr.size()
+    if sz > 0
+        for i = 0 to sz - 1
+            if _arr.get(i) == _n
+                found := true
+    found
+
+bool isExactDom = f_inList(dom, targetDoms)
+
+// Nearest weekday to a target calendar date (optional)
+bool isNearDom = false
+if shiftWknd and targetDoms.size() > 0 and dow >= dayofweek.monday and dow <= dayofweek.friday
+    int dim = mo == 2 ? (yr % 4 == 0 ? 29 : 28) : (mo == 4 or mo == 6 or mo == 9 or mo == 11 ? 30 : 31)
+    int nTargets = targetDoms.size()
+    for i = 0 to nTargets - 1
+        int td  = targetDoms.get(i)
+        int raw = math.min(td, dim)
+        int diff = math.abs(dom - raw)
+        bool nearby = diff <= 2 and (
+             raw == dom or
+             (dow == dayofweek.friday and (raw == math.min(dom + 1, dim) or raw == math.min(dom + 2, dim))) or
+             (dow == dayofweek.monday and (raw == math.max(dom - 1, 1) or raw == math.max(dom - 2, 1)))
+         )
+        if nearby
+            isNearDom := true
+
+bool hitDom  = isExactDom or (shiftWknd and isNearDom)
+bool hitLast = enLastDom and isLastOfMo
+
+bool useWeek = mode == "Weekdays" or mode == "Both"
+bool useDom  = mode == "Month dates" or mode == "Both"
+
+bool hitMon  = useWeek and enMon and dow == dayofweek.monday
+bool hitTue  = useWeek and enTue and dow == dayofweek.tuesday
+bool hitWed  = useWeek and enWed and dow == dayofweek.wednesday
+bool hitThu  = useWeek and enThu and dow == dayofweek.thursday
+bool hitFri  = useWeek and enFri and dow == dayofweek.friday
+bool hitSat  = useWeek and enSat and dow == dayofweek.saturday
+bool hitSun  = useWeek and enSun and dow == dayofweek.sunday
+bool hitAnyW = hitMon or hitTue or hitWed or hitThu or hitFri or hitSat or hitSun
+bool hitAnyD = useDom and (hitDom or hitLast)
+
+color bgCol = hitLast ? colLast :
+     hitDom  ? colDom  :
+     hitMon  ? colMon  :
+     hitTue  ? colTue  :
+     hitWed  ? colWed  :
+     hitThu  ? colThu  :
+     hitFri  ? colFri  :
+     hitSat  ? colSat  :
+     hitSun  ? colSun  : na
+
+bgcolor(showBg ? bgCol : na, title = "Cycle day")
+
+f_dowName() =>
+    dow == dayofweek.monday    ? "MON" :
+     dow == dayofweek.tuesday   ? "TUE" :
+     dow == dayofweek.wednesday ? "WED" :
+     dow == dayofweek.thursday  ? "THU" :
+     dow == dayofweek.friday    ? "FRI" :
+     dow == dayofweek.saturday  ? "SAT" : "SUN"
+
+string lblTxt = hitLast ? str.tostring(dom) + " (month end)" :
+     hitDom  ? str.tostring(dom) :
+     hitAnyW ? f_dowName() : ""
+
+color lineCol = hitLast ? color.new(colLast, 0) : hitDom ? color.new(colDom, 0) : color.new(nz(bgCol, color.gray), 0)
+
+if isNewCalDay and (hitAnyW or hitAnyD)
+    if showLine
+        line.new(bar_index, low, bar_index, high, extend = extend.both, color = lineCol, width = lineW, style = line.style_dotted)
+    if showLabel and lblTxt != ""
+        label.new(bar_index, high, lblTxt, style = label.style_label_down, color = color.new(lineCol, 20), textcolor = color.white, size = lblSize)

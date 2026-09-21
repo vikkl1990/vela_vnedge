@@ -1,0 +1,58 @@
+//@version=6
+indicator("Eaglizer RSI Cloud", shorttitle="RSI Cloud", overlay=false)
+
+// INPUTS
+
+grpRSI   = "RSI"
+grpCloud = "Cloud"
+grpViz   = "Display"
+
+rsiLen = input.int(14, "RSI Length", minval=1, group=grpRSI, tooltip="Length of the underlying RSI. Default 14.")
+rsiSrc = input.source(close, "Source", group=grpRSI)
+
+fastLen = input.int(9,  "Fast RSI MA", minval=1, group=grpCloud, tooltip="Short moving average of the RSI. This is momentum right now.")
+slowLen = input.int(50, "Slow RSI MA", minval=1, group=grpCloud, tooltip="Long moving average of the RSI. This is the momentum regime.")
+maType  = input.string("SMA", "MA Type", options=["SMA", "EMA"], group=grpCloud)
+
+showRaw = input.bool(false, "Show raw RSI line", group=grpViz)
+colBull = input.color(color.new(color.green, 75), "Bullish cloud", group=grpViz)
+colBear = input.color(color.new(color.red,   75), "Bearish cloud", group=grpViz)
+
+// CALCULATIONS
+
+rsiVal = ta.rsi(rsiSrc, rsiLen)
+
+// Both averages are computed every bar and then selected, rather than calling
+// one inside a ternary. Pine evaluates ta functions on every bar regardless,
+// so this avoids inconsistent series behavior.
+pickMA(src, length) =>
+    e = ta.ema(src, length)
+    s = ta.sma(src, length)
+    maType == "EMA" ? e : s
+
+fastMA = pickMA(rsiVal, fastLen)
+slowMA = pickMA(rsiVal, slowLen)
+
+bullish  = fastMA > slowMA
+flipUp   = ta.crossover(fastMA, slowMA)
+flipDown = ta.crossunder(fastMA, slowMA)
+
+// PLOTS
+
+pFast = plot(fastMA, title="Fast RSI MA", color=color.new(color.aqua,   0), linewidth=2)
+pSlow = plot(slowMA, title="Slow RSI MA", color=color.new(color.orange, 0), linewidth=2)
+fill(pFast, pSlow, color=bullish ? colBull : colBear, title="RSI Cloud")
+
+plot(showRaw ? rsiVal : na, title="RSI", color=color.new(color.gray, 40), linewidth=1)
+
+hline(70, "Overbought", color=color.new(color.gray, 60), linestyle=hline.style_dashed)
+hline(50, "Midline",    color=color.new(color.gray, 40), linestyle=hline.style_dotted)
+hline(30, "Oversold",   color=color.new(color.gray, 60), linestyle=hline.style_dashed)
+
+plotshape(flipUp,   title="Cloud flips up",   location=location.bottom, color=color.green, style=shape.triangleup,   size=size.tiny)
+plotshape(flipDown, title="Cloud flips down", location=location.top,    color=color.red,   style=shape.triangledown, size=size.tiny)
+
+// ALERTS
+
+alertcondition(flipUp,   title="Cloud flips bullish", message="Eaglizer RSI Cloud: momentum flipped bullish on {{ticker}} at {{close}}")
+alertcondition(flipDown, title="Cloud flips bearish", message="Eaglizer RSI Cloud: momentum flipped bearish on {{ticker}} at {{close}}")

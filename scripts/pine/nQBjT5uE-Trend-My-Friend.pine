@@ -1,0 +1,70 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// @Trend_MyFrend
+//@version=6
+indicator('Trend My Friend','TMF', overlay = true,max_labels_count = 500)
+// ─────────────────────────────────────────────
+// Inputs
+// ─────────────────────────────────────────────
+looBack = input.int(25, 'Range Sensitivity Set')
+signalCandle = input.int(3, 'Signal Confirmation')
+slColor = input.color(color.gray,"SL Line Color")
+// ─────────────────────────────────────────────
+// Range Calculation
+// ─────────────────────────────────────────────
+upperRange = ta.highest(high, looBack)
+lowerRange = ta.lowest(low, looBack)
+midrange = lowerRange + (upperRange - lowerRange) / 2
+// ─────────────────────────────────────────────
+// Logic last n Number of candles below or above midrange 
+// ─────────────────────────────────────────────
+bool allAbove = true
+bool allBelow = true
+for i = 0 to signalCandle - 1
+    if close[i] <= midrange
+        allAbove := false
+    if close[i] >= midrange
+        allBelow := false
+
+var bool trend_Up = false
+var bool trend_Down = false
+
+if allAbove
+    trend_Up := true
+    trend_Down := false
+    trend_Down
+else if allBelow
+    trend_Down := true
+    trend_Up := false
+    trend_Up
+
+var color upColor = na
+var color downColor = na
+midColor = trend_Up ? color.green : trend_Down ? color.red : color.gray
+// SL Line Color assignment based on active trend/signals
+if trend_Up
+    upColor := na
+    downColor := slColor
+    downColor
+else if trend_Down
+    upColor := slColor
+    downColor := na
+    downColor
+else
+    upColor := slColor
+    downColor := slColor
+    downColor
+//  Plot 
+plot(upperRange, color = upColor, linewidth = 1, title = 'Upper Range')
+plot(lowerRange, color = downColor, linewidth = 1, title = 'Lower Range')
+plot(midrange, color = midColor, linewidth = 2, title = 'Midrange')
+
+// Signal Generation when the condition is newly met
+long = trend_Up and not trend_Up[1]
+short = trend_Down and not trend_Down[1]
+
+if long
+    label.new(bar_index, low, 'Buy', color = color.green, style = label.style_label_up, textcolor = color.white)
+if short
+    label.new(bar_index, high, 'Sell', color = color.red, style = label.style_label_down, textcolor = color.white)
+alertcondition(long,   title = 'TMF  Long',   message = 'Trend My Frend:  BULLISH')
+alertcondition(short, title = 'TMF  short', message = 'Trend My Frend: BEARISH')

@@ -1,0 +1,140 @@
+// This Source Code Form is subject to the terms of the Mozilla Public License 2.0
+// at https://mozilla.org/MPL/2.0/
+// Original Williams Fractals template: Mit Nayi.
+// Modified for Capital Trade: body-only fractals, adaptive spacing and alerts.
+
+//@version=6
+indicator("Capital Trade | Body Fractals", shorttitle="CT Body Fractals", overlay=true)
+
+// ── Fractals ──
+
+fractalBars = input.string("5", "Fractal length", options=["3", "5"], group="Fractals")
+
+equalMode = input.string(
+     "Last bar", "Equal body levels",
+     options=["Last bar", "Strict"],
+     group="Fractals",
+     tooltip="Last bar: equal levels are allowed on the left, but not on the right. Strict: equality on either side invalidates the fractal."
+ )
+
+// ── Appearance ──
+
+markerType = input.string("Dots", "Marker shape", options=["Dots", "Crosses", "Triangles"], group="Appearance")
+markerColor = input.color(color.rgb(160, 160, 160), "Marker color", group="Appearance")
+transparency = input.int(60, "Transparency", minval=0, maxval=100, group="Appearance")
+pointSize = input.int(1, "Dot / cross size", minval=1, maxval=5, group="Appearance")
+
+triangleSize = input.string(
+     "Classic", "Triangle size",
+     options=["Classic", "Tiny", "Small", "Normal"],
+     group="Appearance",
+     tooltip="Classic uses the automatic size from the original Williams Fractals template."
+ )
+
+showUpper = input.bool(true, "Show upper fractals", group="Appearance", tooltip="Display only. Does not affect alerts.")
+showLower = input.bool(true, "Show lower fractals", group="Appearance", tooltip="Display only. Does not affect alerts.")
+
+// ── Spacing ──
+
+anchor = input.string(
+     "Wick", "Marker anchor",
+     options=["Wick", "Body"],
+     group="Spacing",
+     tooltip="Visual anchor only. Fractal detection always uses candle bodies."
+ )
+
+upperGapPct = input.float(10.0, "Upper spacing (% ATR)", minval=0.0, step=1.0, group="Spacing")
+lowerGapPct = input.float(10.0, "Lower spacing (% ATR)", minval=0.0, step=1.0, group="Spacing")
+
+// ── Core calculation ──
+
+bodyHigh = math.max(open, close)
+bodyLow = math.min(open, close)
+
+int rightBars = fractalBars == "5" ? 2 : 1
+bool allowEqualLeft = equalMode == "Last bar"
+
+// The candidate is rightBars candles behind the current confirmation bar.
+// Detection uses open/close only. Wicks have no effect on the fractal logic.
+bool upperFractal = bar_index >= 2 * rightBars and barstate.isconfirmed
+bool lowerFractal = bar_index >= 2 * rightBars and barstate.isconfirmed
+
+for i = 1 to rightBars
+    bool upperLeft = allowEqualLeft ? bodyHigh[rightBars] >= bodyHigh[rightBars + i] : bodyHigh[rightBars] > bodyHigh[rightBars + i]
+    bool lowerLeft = allowEqualLeft ? bodyLow[rightBars] <= bodyLow[rightBars + i] : bodyLow[rightBars] < bodyLow[rightBars + i]
+
+    upperFractal := upperFractal and upperLeft and bodyHigh[rightBars] > bodyHigh[rightBars - i]
+    lowerFractal := lowerFractal and lowerLeft and bodyLow[rightBars] < bodyLow[rightBars - i]
+
+// ── Alert engine ──
+
+f_timeframeLabel() =>
+    string result = timeframe.period
+
+    if timeframe.isseconds
+        result := str.tostring(timeframe.multiplier) + "S"
+    else if timeframe.isminutes
+        result := timeframe.multiplier % 60 == 0 ? str.tostring(timeframe.multiplier / 60, "#") + "H" : str.tostring(timeframe.multiplier) + "m"
+    else if timeframe.isdaily
+        result := str.tostring(timeframe.multiplier) + "D"
+    else if timeframe.isweekly
+        result := str.tostring(timeframe.multiplier) + "W"
+    else if timeframe.ismonthly
+        result := str.tostring(timeframe.multiplier) + "M"
+
+    result
+
+string tfLabel = f_timeframeLabel()
+string alertMessage = ""
+
+if lowerFractal
+    alertMessage := "▲ LONG · FRACTAL CONFIRM · " + syminfo.ticker + " · " + tfLabel
+
+if upperFractal
+    alertMessage := alertMessage + (str.length(alertMessage) > 0 ? "\n" : "") + "▼ SHORT · FRACTAL CONFIRM · " + syminfo.ticker + " · " + tfLabel
+
+if str.length(alertMessage) > 0
+    alert(alertMessage, alert.freq_once_per_bar_close)
+
+// ── Adaptive marker spacing ──
+
+atrValue = ta.atr(14)
+trValue = ta.tr(true)
+
+float spacingRange = nz(atrValue[rightBars], trValue[rightBars])
+float upperDistance = spacingRange * upperGapPct / 100.0
+float lowerDistance = spacingRange * lowerGapPct / 100.0
+
+// High/low can be used as visual anchors, but never affect detection.
+float upperBase = anchor == "Wick" ? high[rightBars] : bodyHigh[rightBars]
+float lowerBase = anchor == "Wick" ? low[rightBars] : bodyLow[rightBars]
+
+float upperY = showUpper and upperFractal ? upperBase + upperDistance : na
+float lowerY = showLower and lowerFractal ? lowerBase - lowerDistance : na
+
+// ── Display ──
+
+drawColor = color.new(markerColor, transparency)
+
+bool usePoints = markerType != "Triangles"
+pointStyle = markerType == "Crosses" ? plot.style_cross : plot.style_circles
+
+bool triAuto = markerType == "Triangles" and triangleSize == "Classic"
+bool triTiny = markerType == "Triangles" and triangleSize == "Tiny"
+bool triSmall = markerType == "Triangles" and triangleSize == "Small"
+bool triNormal = markerType == "Triangles" and triangleSize == "Normal"
+
+plot(usePoints ? upperY : na, title="Upper dots / crosses", color=drawColor, linewidth=pointSize, style=pointStyle, offset=-rightBars, join=false, editable=true, display=display.pane)
+plot(usePoints ? lowerY : na, title="Lower dots / crosses", color=drawColor, linewidth=pointSize, style=pointStyle, offset=-rightBars, join=false, editable=true, display=display.pane)
+
+plotshape(triAuto ? upperY : na, title="Upper triangles - Classic", style=shape.triangledown, location=location.absolute, color=drawColor, offset=-rightBars, size=size.auto, editable=true, display=display.pane)
+plotshape(triAuto ? lowerY : na, title="Lower triangles - Classic", style=shape.triangleup, location=location.absolute, color=drawColor, offset=-rightBars, size=size.auto, editable=true, display=display.pane)
+
+plotshape(triTiny ? upperY : na, title="Upper triangles - Tiny", style=shape.triangledown, location=location.absolute, color=drawColor, offset=-rightBars, size=size.tiny, editable=true, display=display.pane)
+plotshape(triTiny ? lowerY : na, title="Lower triangles - Tiny", style=shape.triangleup, location=location.absolute, color=drawColor, offset=-rightBars, size=size.tiny, editable=true, display=display.pane)
+
+plotshape(triSmall ? upperY : na, title="Upper triangles - Small", style=shape.triangledown, location=location.absolute, color=drawColor, offset=-rightBars, size=size.small, editable=true, display=display.pane)
+plotshape(triSmall ? lowerY : na, title="Lower triangles - Small", style=shape.triangleup, location=location.absolute, color=drawColor, offset=-rightBars, size=size.small, editable=true, display=display.pane)
+
+plotshape(triNormal ? upperY : na, title="Upper triangles - Normal", style=shape.triangledown, location=location.absolute, color=drawColor, offset=-rightBars, size=size.normal, editable=true, display=display.pane)
+plotshape(triNormal ? lowerY : na, title="Lower triangles - Normal", style=shape.triangleup, location=location.absolute, color=drawColor, offset=-rightBars, size=size.normal, editable=true, display=display.pane)

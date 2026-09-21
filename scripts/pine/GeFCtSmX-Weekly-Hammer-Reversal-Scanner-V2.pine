@@ -1,0 +1,280 @@
+//@version=6
+indicator("Weekly Hammer Reversal Scanner V2", overlay=true)
+
+// =====================================================
+// INPUTS
+// =====================================================
+
+// Hammer structure
+minLowerWickRatio = input.float(2.0, "Min Lower Wick / Body", step=0.25)
+maxUpperWickRatio = input.float(0.5, "Max Upper Wick / Body", step=0.1)
+maxBodyPct        = input.float(0.35, "Max Body % of Range", step=0.05)
+
+// Trend
+useDowntrend      = input.bool(true, "Require Prior Downtrend")
+downtrendLength   = input.int(3, "Downtrend Lookback", minval=1)
+
+// Moving averages
+useMAFilter       = input.bool(true, "Require Near 20W or 50W MA")
+maTolerance       = input.float(3.0, "MA Distance %", step=0.5)
+
+// Volume
+useVolumeFilter   = input.bool(true, "Require Above Avg Volume")
+volumeLength      = input.int(20, "Volume Average Length")
+volumeMultiplier = input.float(1.0, "Volume Multiplier", step=0.1)
+
+// RSI
+useRSI            = input.bool(true, "Use RSI Filter")
+rsiLength         = input.int(14, "RSI Length")
+maxRSI            = input.float(60, "Maximum RSI")
+
+// Candle close strength
+minClosePosition  = input.float(0.65, "Min Close Position in Range", step=0.05)
+
+// =====================================================
+// WEEKLY DATA
+// =====================================================
+
+wOpen = request.security(
+     syminfo.tickerid,
+     "W",
+     open,
+     lookahead=barmerge.lookahead_off)
+
+wHigh = request.security(
+     syminfo.tickerid,
+     "W",
+     high,
+     lookahead=barmerge.lookahead_off)
+
+wLow = request.security(
+     syminfo.tickerid,
+     "W",
+     low,
+     lookahead=barmerge.lookahead_off)
+
+wClose = request.security(
+     syminfo.tickerid,
+     "W",
+     close,
+     lookahead=barmerge.lookahead_off)
+
+wVolume = request.security(
+     syminfo.tickerid,
+     "W",
+     volume,
+     lookahead=barmerge.lookahead_off)
+
+// =====================================================
+// WEEKLY INDICATORS
+// =====================================================
+
+ma20 = request.security(
+     syminfo.tickerid,
+     "W",
+     ta.sma(close, 20))
+
+ma50 = request.security(
+     syminfo.tickerid,
+     "W",
+     ta.sma(close, 50))
+
+avgVolume = request.security(
+     syminfo.tickerid,
+     "W",
+     ta.sma(volume, volumeLength))
+
+weeklyRSI = request.security(
+     syminfo.tickerid,
+     "W",
+     ta.rsi(close, rsiLength))
+
+previousClose = request.security(
+     syminfo.tickerid,
+     "W",
+     close[1])
+
+pastClose = request.security(
+     syminfo.tickerid,
+     "W",
+     close[downtrendLength])
+
+// =====================================================
+// HAMMER CALCULATIONS
+// =====================================================
+
+body = math.abs(wClose - wOpen)
+
+candleRange = wHigh - wLow
+
+safeBody = math.max(body, syminfo.mintick)
+
+lowerWick =
+     math.min(wOpen, wClose) - wLow
+
+upperWick =
+     wHigh - math.max(wOpen, wClose)
+
+// =====================================================
+// HAMMER STRUCTURE
+// =====================================================
+
+longLowerWick =
+     lowerWick >= safeBody * minLowerWickRatio
+
+smallUpperWick =
+     upperWick <= safeBody * maxUpperWickRatio
+
+smallBody =
+     candleRange > 0 and
+     body / candleRange <= maxBodyPct
+
+// Close position from bottom of candle
+closePosition =
+     candleRange > 0 ?
+     (wClose - wLow) / candleRange :
+     0
+
+strongClose =
+     closePosition >= minClosePosition
+
+hammer =
+     longLowerWick and
+     smallUpperWick and
+     smallBody and
+     strongClose
+
+// =====================================================
+// DOWNTREND
+// =====================================================
+
+downtrend =
+     previousClose < pastClose
+
+trendPass =
+     not useDowntrend or downtrend
+
+// =====================================================
+// MOVING AVERAGE SUPPORT
+// =====================================================
+
+distance20 =
+     math.abs(wLow - ma20) / ma20 * 100
+
+distance50 =
+     math.abs(wLow - ma50) / ma50 * 100
+
+nearMA20 =
+     distance20 <= maTolerance
+
+nearMA50 =
+     distance50 <= maTolerance
+
+nearSupport =
+     nearMA20 or nearMA50
+
+maPass =
+     not useMAFilter or nearSupport
+
+// =====================================================
+// VOLUME
+// =====================================================
+
+volumePass =
+     not useVolumeFilter or
+     wVolume >= avgVolume * volumeMultiplier
+
+// =====================================================
+// RSI
+// =====================================================
+
+rsiPass =
+     not useRSI or
+     weeklyRSI <= maxRSI
+
+// =====================================================
+// FINAL SETUP
+// =====================================================
+
+weeklyHammerSetup =
+     hammer and
+     trendPass and
+     maPass and
+     volumePass and
+     rsiPass
+
+// =====================================================
+// QUALITY SCORE
+// =====================================================
+
+int score = 0
+
+score += hammer ? 3 : 0
+score += downtrend ? 1 : 0
+score += nearSupport ? 2 : 0
+score += wVolume > avgVolume ? 1 : 0
+score += weeklyRSI < 50 ? 1 : 0
+score += closePosition >= 0.75 ? 2 : 0
+
+// Maximum score = 10
+
+highQualitySetup =
+     weeklyHammerSetup and score >= 7
+
+// =====================================================
+// CHART
+// =====================================================
+
+plot(
+     ma20,
+     title="20 Week MA",
+     linewidth=2)
+
+plot(
+     ma50,
+     title="50 Week MA",
+     linewidth=2)
+
+plotshape(
+     weeklyHammerSetup,
+     title="Weekly Hammer",
+     style=shape.labelup,
+     location=location.belowbar,
+     text="HAMMER",
+     size=size.small)
+
+plotshape(
+     highQualitySetup,
+     title="High Quality Hammer",
+     style=shape.labelup,
+     location=location.belowbar,
+     text="HQ",
+     size=size.normal)
+
+// =====================================================
+// SCANNER OUTPUTS
+// =====================================================
+
+plot(
+     weeklyHammerSetup ? 1 : 0,
+     title="Hammer Scan",
+     display=display.data_window)
+
+plot(
+     score,
+     title="Setup Score",
+     display=display.data_window)
+
+// =====================================================
+// ALERTS
+// =====================================================
+
+alertcondition(
+     weeklyHammerSetup,
+     title="Weekly Hammer Setup",
+     message="Weekly hammer reversal setup detected on {{ticker}}")
+
+alertcondition(
+     highQualitySetup,
+     title="High Quality Weekly Hammer",
+     message="HIGH QUALITY weekly hammer detected on {{ticker}}")

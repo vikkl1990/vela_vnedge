@@ -1,0 +1,234 @@
+//@version=6
+indicator("CU Sessions & Levels", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// ============================================================================
+//  CU SESSIONS & LEVELS
+//  Asian Session High/Low, London Session High/Low, Initial Balance (IB),
+//  Daily Open, Previous Day High/Low, Week Open
+// ============================================================================
+
+// ------------------------------- INPUTS ------------------------------------
+sessTZ = input.string("America/New_York", "Session Timezone", group = "General")
+lineWidth = input.int(1, "Line Width", minval = 1, maxval = 4, group = "General")
+labelSize = input.string(size.small, "Label Text Size", options = [size.tiny, size.small, size.normal, size.large], group = "General")
+extendBars = input.int(20, "Extend Labels Right (bars)", minval = 0, group = "General")
+
+grpAsia = "Asian Session"
+showAsia  = input.bool(true, "Show Asian Session High/Low", group = grpAsia)
+asiaSess  = input.session("1900-0400", "Asian Session Time", group = grpAsia)
+asiaColor = input.color(color.new(color.orange, 0), "Asian Color", group = grpAsia)
+
+grpLon = "London Session"
+showLondon = input.bool(true, "Show London Session High/Low", group = grpLon)
+lonSess    = input.session("0300-0900", "London Session Time", group = grpLon)
+lonColor   = input.color(color.new(#2962ff, 0), "London Color", group = grpLon)
+
+grpIB = "Initial Balance (IB)"
+showIB  = input.bool(true, "Show Initial Balance High/Low", group = grpIB)
+ibSess  = input.session("0930-1030", "IB Session Window", group = grpIB)
+ibColor = input.color(color.new(color.aqua, 0), "IB Color", group = grpIB)
+
+grpDaily = "Daily / Weekly Levels"
+showDailyOpen  = input.bool(true, "Show Daily Open", group = grpDaily)
+dailyOpenColor = input.color(color.new(color.white, 0), "Daily Open Color", group = grpDaily)
+
+showPrevDay  = input.bool(true, "Show Previous Day High/Low", group = grpDaily)
+prevDayColor = input.color(color.new(color.fuchsia, 0), "Prev Day H/L Color", group = grpDaily)
+
+showWeekOpen  = input.bool(true, "Show Week Open", group = grpDaily)
+weekOpenColor = input.color(color.new(color.yellow, 0), "Week Open Color", group = grpDaily)
+
+// ------------------------------ HELPERS -------------------------------------
+f_fmt(_p) => str.tostring(_p, format.mintick)
+
+// ==============================================================================
+//  ASIAN SESSION HIGH / LOW
+// ==============================================================================
+var line  asiaHighLine  = na
+var line  asiaLowLine   = na
+var label asiaHighLabel = na
+var label asiaLowLabel  = na
+var float asiaHigh = na
+var float asiaLow  = na
+
+inAsia    = not na(time(timeframe.period, asiaSess, sessTZ))
+newAsia   = inAsia and not inAsia[1]
+
+if showAsia
+    if newAsia
+        line.delete(asiaHighLine)
+        line.delete(asiaLowLine)
+        label.delete(asiaHighLabel)
+        label.delete(asiaLowLabel)
+
+        asiaHigh := high
+        asiaLow  := low
+        asiaHighLine  := line.new(bar_index, asiaHigh, bar_index, asiaHigh, color = asiaColor, width = lineWidth, style = line.style_solid)
+        asiaLowLine   := line.new(bar_index, asiaLow,  bar_index, asiaLow,  color = asiaColor, width = lineWidth, style = line.style_solid)
+        asiaHighLabel := label.new(bar_index, asiaHigh, "", style = label.style_label_left, textcolor = asiaColor, color = color.new(color.black, 100), size = labelSize)
+        asiaLowLabel  := label.new(bar_index, asiaLow,  "", style = label.style_label_left, textcolor = asiaColor, color = color.new(color.black, 100), size = labelSize)
+    else if inAsia
+        asiaHigh := math.max(asiaHigh, high)
+        asiaLow  := math.min(asiaLow, low)
+
+    if not na(asiaHighLine)
+        line.set_xy2(asiaHighLine, bar_index + extendBars, asiaHigh)
+        line.set_y1(asiaHighLine, asiaHigh)
+        line.set_xy2(asiaLowLine, bar_index + extendBars, asiaLow)
+        line.set_y1(asiaLowLine, asiaLow)
+        label.set_xy(asiaHighLabel, bar_index + extendBars, asiaHigh)
+        label.set_text(asiaHighLabel, "Asia High  " + f_fmt(asiaHigh))
+        label.set_xy(asiaLowLabel, bar_index + extendBars, asiaLow)
+        label.set_text(asiaLowLabel, "Asia Low  " + f_fmt(asiaLow))
+
+// ==============================================================================
+//  LONDON SESSION HIGH / LOW
+// ==============================================================================
+var line  lonHighLine  = na
+var line  lonLowLine   = na
+var label lonHighLabel = na
+var label lonLowLabel  = na
+var float lonHigh = na
+var float lonLow  = na
+
+inLondon  = not na(time(timeframe.period, lonSess, sessTZ))
+newLondon = inLondon and not inLondon[1]
+
+if showLondon
+    if newLondon
+        line.delete(lonHighLine)
+        line.delete(lonLowLine)
+        label.delete(lonHighLabel)
+        label.delete(lonLowLabel)
+
+        lonHigh := high
+        lonLow  := low
+        lonHighLine  := line.new(bar_index, lonHigh, bar_index, lonHigh, color = lonColor, width = lineWidth, style = line.style_solid)
+        lonLowLine   := line.new(bar_index, lonLow,  bar_index, lonLow,  color = lonColor, width = lineWidth, style = line.style_solid)
+        lonHighLabel := label.new(bar_index, lonHigh, "", style = label.style_label_left, textcolor = lonColor, color = color.new(color.black, 100), size = labelSize)
+        lonLowLabel  := label.new(bar_index, lonLow,  "", style = label.style_label_left, textcolor = lonColor, color = color.new(color.black, 100), size = labelSize)
+    else if inLondon
+        lonHigh := math.max(lonHigh, high)
+        lonLow  := math.min(lonLow, low)
+
+    if not na(lonHighLine)
+        line.set_xy2(lonHighLine, bar_index + extendBars, lonHigh)
+        line.set_y1(lonHighLine, lonHigh)
+        line.set_xy2(lonLowLine, bar_index + extendBars, lonLow)
+        line.set_y1(lonLowLine, lonLow)
+        label.set_xy(lonHighLabel, bar_index + extendBars, lonHigh)
+        label.set_text(lonHighLabel, "London High  " + f_fmt(lonHigh))
+        label.set_xy(lonLowLabel, bar_index + extendBars, lonLow)
+        label.set_text(lonLowLabel, "London Low  " + f_fmt(lonLow))
+
+// ==============================================================================
+//  INITIAL BALANCE (IB) HIGH / LOW
+// ==============================================================================
+var line  ibHighLine  = na
+var line  ibLowLine   = na
+var label ibHighLabel = na
+var label ibLowLabel  = na
+var float ibHigh = na
+var float ibLow  = na
+
+inIB  = not na(time(timeframe.period, ibSess, sessTZ))
+newIB = inIB and not inIB[1]
+
+if showIB
+    if newIB
+        line.delete(ibHighLine)
+        line.delete(ibLowLine)
+        label.delete(ibHighLabel)
+        label.delete(ibLowLabel)
+
+        ibHigh := high
+        ibLow  := low
+        ibHighLine  := line.new(bar_index, ibHigh, bar_index, ibHigh, color = ibColor, width = lineWidth, style = line.style_solid)
+        ibLowLine   := line.new(bar_index, ibLow,  bar_index, ibLow,  color = ibColor, width = lineWidth, style = line.style_solid)
+        ibHighLabel := label.new(bar_index, ibHigh, "", style = label.style_label_left, textcolor = ibColor, color = color.new(color.black, 100), size = labelSize)
+        ibLowLabel  := label.new(bar_index, ibLow,  "", style = label.style_label_left, textcolor = ibColor, color = color.new(color.black, 100), size = labelSize)
+    else if inIB
+        ibHigh := math.max(ibHigh, high)
+        ibLow  := math.min(ibLow, low)
+
+    if not na(ibHighLine)
+        line.set_xy2(ibHighLine, bar_index + extendBars, ibHigh)
+        line.set_y1(ibHighLine, ibHigh)
+        line.set_xy2(ibLowLine, bar_index + extendBars, ibLow)
+        line.set_y1(ibLowLine, ibLow)
+        label.set_xy(ibHighLabel, bar_index + extendBars, ibHigh)
+        label.set_text(ibHighLabel, "IB High  " + f_fmt(ibHigh))
+        label.set_xy(ibLowLabel, bar_index + extendBars, ibLow)
+        label.set_text(ibLowLabel, "IB Low  " + f_fmt(ibLow))
+
+// ==============================================================================
+//  DAILY OPEN  (only the current day's open is shown)
+// ==============================================================================
+var line  dayOpenLine  = na
+var label dayOpenLabel = na
+var float dayOpen = na
+
+newDay = ta.change(time("D", sessTZ)) != 0
+
+if showDailyOpen
+    if newDay or na(dayOpen)
+        line.delete(dayOpenLine)
+        label.delete(dayOpenLabel)
+
+        dayOpen := open
+        dayOpenLine  := line.new(bar_index, dayOpen, bar_index, dayOpen, color = dailyOpenColor, width = lineWidth, style = line.style_dashed)
+        dayOpenLabel := label.new(bar_index, dayOpen, "", style = label.style_label_left, textcolor = dailyOpenColor, color = color.new(color.black, 100), size = labelSize)
+
+    if not na(dayOpenLine)
+        line.set_xy2(dayOpenLine, bar_index + extendBars, dayOpen)
+        label.set_xy(dayOpenLabel, bar_index + extendBars, dayOpen)
+        label.set_text(dayOpenLabel, "Day Open  " + f_fmt(dayOpen))
+
+// ==============================================================================
+//  PREVIOUS DAY HIGH / LOW  &  WEEK OPEN
+// ==============================================================================
+[pDayHigh, pDayLow] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead = barmerge.lookahead_off)
+curWeekOpen          = request.security(syminfo.tickerid, "W", open, lookahead = barmerge.lookahead_off)
+
+var line  pdHighLine  = na
+var line  pdLowLine   = na
+var label pdHighLabel = na
+var label pdLowLabel  = na
+
+var line  weekOpenLine  = na
+var label weekOpenLabel = na
+
+newWeek = ta.change(time("W", sessTZ)) != 0
+
+if showPrevDay
+    if newDay or na(pdHighLine)
+        line.delete(pdHighLine)
+        line.delete(pdLowLine)
+        label.delete(pdHighLabel)
+        label.delete(pdLowLabel)
+
+        pdHighLine  := line.new(bar_index, pDayHigh, bar_index, pDayHigh, color = prevDayColor, width = lineWidth, style = line.style_solid)
+        pdLowLine   := line.new(bar_index, pDayLow,  bar_index, pDayLow,  color = prevDayColor, width = lineWidth, style = line.style_solid)
+        pdHighLabel := label.new(bar_index, pDayHigh, "", style = label.style_label_left, textcolor = prevDayColor, color = color.new(color.black, 100), size = labelSize)
+        pdLowLabel  := label.new(bar_index, pDayLow,  "", style = label.style_label_left, textcolor = prevDayColor, color = color.new(color.black, 100), size = labelSize)
+
+    if not na(pdHighLine)
+        line.set_xy2(pdHighLine, bar_index + extendBars, pDayHigh)
+        line.set_y1(pdHighLine, pDayHigh)
+        line.set_xy2(pdLowLine, bar_index + extendBars, pDayLow)
+        line.set_y1(pdLowLine, pDayLow)
+        label.set_xy(pdHighLabel, bar_index + extendBars, pDayHigh)
+        label.set_text(pdHighLabel, "PD High  " + f_fmt(pDayHigh))
+        label.set_xy(pdLowLabel, bar_index + extendBars, pDayLow)
+        label.set_text(pdLowLabel, "PD Low  " + f_fmt(pDayLow))
+
+if showWeekOpen
+    if newWeek or na(weekOpenLine)
+        weekOpenLine  := line.new(bar_index, curWeekOpen, bar_index, curWeekOpen, color = weekOpenColor, width = lineWidth, style = line.style_dashed)
+        weekOpenLabel := label.new(bar_index, curWeekOpen, "", style = label.style_label_left, textcolor = weekOpenColor, color = color.new(color.black, 100), size = labelSize)
+
+    if not na(weekOpenLine)
+        line.set_xy2(weekOpenLine, bar_index + extendBars, curWeekOpen)
+        line.set_y1(weekOpenLine, curWeekOpen)
+        label.set_xy(weekOpenLabel, bar_index + extendBars, curWeekOpen)
+        label.set_text(weekOpenLabel, "Week Open  " + f_fmt(curWeekOpen))

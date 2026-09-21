@@ -1,0 +1,416 @@
+//@version=6
+indicator("Gamma Dealer (GEX) Flow", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ============================================================================
+// TAB 1: SMA GEX LEVELS
+// ============================================================================
+gexGroup = "━━━━━━━━━━ SMA GEX ━━━━━━━━━━"
+levelsInput = input.text_area("C:29600:MASSIVE,C:29525:HEAVY,C:29450:MOD,F:29400:,M:29350:,P:29300:HEAVY,P:29250:MASSIVE", title="Paste Levels", group=gexGroup, tooltip="Paste your formatted level-data string.\n\nFormat: TYPE:PRICE:STRENGTH, comma-separated.\nExample: P:23905:MASSIVE,C:24528:HEAVY,F:24300:,M:24100:\n\nTYPE — P = Put Wall, C = Call Wall, F = Flip Zone, M = Magnet\nSTRENGTH — MASSIVE, HEAVY, MOD, LIGHT (optional; blank for Flip/Magnet)\n\nThe default values shown are illustrative sample levels — replace them with your own.")
+tableSorting = input.string("Level High→Low", title="Table Sort", options=["Level High→Low", "Level Low→High", "By Type", "By Strength"], group=gexGroup, display=display.none)
+showTable = input.bool(true, title="Show Info Table", group=gexGroup, display=display.none)
+tablePosition = input.string("Top Right", title="Table Position", options=["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group=gexGroup, display=display.none)
+tableSize = input.string("Normal", title="Table Size", options=["Small", "Normal", "Large"], group=gexGroup, display=display.none)
+showLabels = input.bool(true, title="Show Level Labels", group=gexGroup, display=display.none)
+primaryLabelDist = input.int(30, title="Primary Label Distance", minval=5, maxval=100, group=gexGroup, tooltip="Distance in bars for primary labels", display=display.none)
+secondaryLabelDist = input.int(90, title="Secondary Label Distance", minval=10, maxval=150, group=gexGroup, tooltip="Distance for stacked labels at same price. Must be greater than Primary Label Distance", display=display.none)
+extendLines = input.bool(true, title="Extend Lines", group=gexGroup, display=display.none)
+
+// ============================================================================
+// CUSTOM LEVELS
+// ============================================================================
+customHeader = "━━━━━━━━ Custom Levels ━━━━━━━━"
+customShowLabels = input.bool(true, title="Show Custom Labels", group=customHeader, tooltip="Toggle visibility of custom level labels", display=display.none)
+
+// Level 1
+c1Group = "Custom Level 1"
+c1_enable = input.bool(false, title="Enable", group=c1Group, display=display.none)
+c1_price = input.float(0, title="Price", group=c1Group, display=display.none)
+c1_label = input.string("Custom 1", title="Label", group=c1Group, display=display.none)
+c1_color = input.color(color.white, title="Color", group=c1Group, display=display.none)
+c1_style = input.string("Solid", title="Style", options=["Solid", "Dashed", "Dotted"], group=c1Group, display=display.none)
+c1_width = input.int(2, title="Width", minval=1, maxval=4, group=c1Group, display=display.none)
+c1_labelDist = input.int(30, title="Label Distance", minval=5, maxval=100, group=c1Group, display=display.none)
+
+// Level 2
+c2Group = "Custom Level 2"
+c2_enable = input.bool(false, title="Enable", group=c2Group, display=display.none)
+c2_price = input.float(0, title="Price", group=c2Group, display=display.none)
+c2_label = input.string("Custom 2", title="Label", group=c2Group, display=display.none)
+c2_color = input.color(color.white, title="Color", group=c2Group, display=display.none)
+c2_style = input.string("Solid", title="Style", options=["Solid", "Dashed", "Dotted"], group=c2Group, display=display.none)
+c2_width = input.int(2, title="Width", minval=1, maxval=4, group=c2Group, display=display.none)
+c2_labelDist = input.int(30, title="Label Distance", minval=5, maxval=100, group=c2Group, display=display.none)
+
+// Level 3
+c3Group = "Custom Level 3"
+c3_enable = input.bool(false, title="Enable", group=c3Group, display=display.none)
+c3_price = input.float(0, title="Price", group=c3Group, display=display.none)
+c3_label = input.string("Custom 3", title="Label", group=c3Group, display=display.none)
+c3_color = input.color(color.white, title="Color", group=c3Group, display=display.none)
+c3_style = input.string("Solid", title="Style", options=["Solid", "Dashed", "Dotted"], group=c3Group, display=display.none)
+c3_width = input.int(2, title="Width", minval=1, maxval=4, group=c3Group, display=display.none)
+c3_labelDist = input.int(30, title="Label Distance", minval=5, maxval=100, group=c3Group, display=display.none)
+
+// Level 4
+c4Group = "Custom Level 4"
+c4_enable = input.bool(false, title="Enable", group=c4Group, display=display.none)
+c4_price = input.float(0, title="Price", group=c4Group, display=display.none)
+c4_label = input.string("Custom 4", title="Label", group=c4Group, display=display.none)
+c4_color = input.color(color.white, title="Color", group=c4Group, display=display.none)
+c4_style = input.string("Solid", title="Style", options=["Solid", "Dashed", "Dotted"], group=c4Group, display=display.none)
+c4_width = input.int(2, title="Width", minval=1, maxval=4, group=c4Group, display=display.none)
+c4_labelDist = input.int(30, title="Label Distance", minval=5, maxval=100, group=c4Group, display=display.none)
+
+// Level 5
+c5Group = "Custom Level 5"
+c5_enable = input.bool(false, title="Enable", group=c5Group, display=display.none)
+c5_price = input.float(0, title="Price", group=c5Group, display=display.none)
+c5_label = input.string("Custom 5", title="Label", group=c5Group, display=display.none)
+c5_color = input.color(color.white, title="Color", group=c5Group, display=display.none)
+c5_style = input.string("Solid", title="Style", options=["Solid", "Dashed", "Dotted"], group=c5Group, display=display.none)
+c5_width = input.int(2, title="Width", minval=1, maxval=4, group=c5Group, display=display.none)
+c5_labelDist = input.int(30, title="Label Distance", minval=5, maxval=100, group=c5Group, display=display.none)
+
+// Level 6
+c6Group = "Custom Level 6"
+c6_enable = input.bool(false, title="Enable", group=c6Group, display=display.none)
+c6_price = input.float(0, title="Price", group=c6Group, display=display.none)
+c6_label = input.string("Custom 6", title="Label", group=c6Group, display=display.none)
+c6_color = input.color(color.white, title="Color", group=c6Group, display=display.none)
+c6_style = input.string("Solid", title="Style", options=["Solid", "Dashed", "Dotted"], group=c6Group, display=display.none)
+c6_width = input.int(2, title="Width", minval=1, maxval=4, group=c6Group, display=display.none)
+c6_labelDist = input.int(30, title="Label Distance", minval=5, maxval=100, group=c6Group, display=display.none)
+
+// Level 7
+c7Group = "Custom Level 7"
+c7_enable = input.bool(false, title="Enable", group=c7Group, display=display.none)
+c7_price = input.float(0, title="Price", group=c7Group, display=display.none)
+c7_label = input.string("Custom 7", title="Label", group=c7Group, display=display.none)
+c7_color = input.color(color.white, title="Color", group=c7Group, display=display.none)
+c7_style = input.string("Solid", title="Style", options=["Solid", "Dashed", "Dotted"], group=c7Group, display=display.none)
+c7_width = input.int(2, title="Width", minval=1, maxval=4, group=c7Group, display=display.none)
+c7_labelDist = input.int(30, title="Label Distance", minval=5, maxval=100, group=c7Group, display=display.none)
+
+// Level 8
+c8Group = "Custom Level 8"
+c8_enable = input.bool(false, title="Enable", group=c8Group, display=display.none)
+c8_price = input.float(0, title="Price", group=c8Group, display=display.none)
+c8_label = input.string("Custom 8", title="Label", group=c8Group, display=display.none)
+c8_color = input.color(color.white, title="Color", group=c8Group, display=display.none)
+c8_style = input.string("Solid", title="Style", options=["Solid", "Dashed", "Dotted"], group=c8Group, display=display.none)
+c8_width = input.int(2, title="Width", minval=1, maxval=4, group=c8Group, display=display.none)
+c8_labelDist = input.int(30, title="Label Distance", minval=5, maxval=100, group=c8Group, display=display.none)
+
+// Level 9
+c9Group = "Custom Level 9"
+c9_enable = input.bool(false, title="Enable", group=c9Group, display=display.none)
+c9_price = input.float(0, title="Price", group=c9Group, display=display.none)
+c9_label = input.string("Custom 9", title="Label", group=c9Group, display=display.none)
+c9_color = input.color(color.white, title="Color", group=c9Group, display=display.none)
+c9_style = input.string("Solid", title="Style", options=["Solid", "Dashed", "Dotted"], group=c9Group, display=display.none)
+c9_width = input.int(2, title="Width", minval=1, maxval=4, group=c9Group, display=display.none)
+c9_labelDist = input.int(30, title="Label Distance", minval=5, maxval=100, group=c9Group, display=display.none)
+
+// Level 10
+c10Group = "Custom Level 10"
+c10_enable = input.bool(false, title="Enable", group=c10Group, display=display.none)
+c10_price = input.float(0, title="Price", group=c10Group, display=display.none)
+c10_label = input.string("Custom 10", title="Label", group=c10Group, display=display.none)
+c10_color = input.color(color.white, title="Color", group=c10Group, display=display.none)
+c10_style = input.string("Solid", title="Style", options=["Solid", "Dashed", "Dotted"], group=c10Group, display=display.none)
+c10_width = input.int(2, title="Width", minval=1, maxval=4, group=c10Group, display=display.none)
+c10_labelDist = input.int(30, title="Label Distance", minval=5, maxval=100, group=c10Group, display=display.none)
+
+// ============================================================================
+// COLORS
+// ============================================================================
+var color putColor = #00C853
+var color callColor = #FF1744
+var color flipColor = #FFD600
+var color magnetColor = #AA00FF
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+getLineStyle(string styleStr) =>
+    styleStr == "Dashed" ? line.style_dashed : styleStr == "Dotted" ? line.style_dotted : line.style_solid
+
+getWidthFromStrength(string strength) =>
+    strength == "MASSIVE" ? 4 : strength == "HEAVY" ? 3 : strength == "MOD" ? 2 : 1
+
+getStrengthValue(string strength) =>
+    strength == "MASSIVE" ? 4 : strength == "HEAVY" ? 3 : strength == "MOD" ? 2 : strength == "LIGHT" ? 1 : 0
+
+getTypeValue(string levelType) =>
+    levelType == "P" ? 1 : levelType == "C" ? 2 : levelType == "F" ? 3 : levelType == "M" ? 4 : 5
+
+getColorForType(string levelType) =>
+    levelType == "P" ? putColor : levelType == "C" ? callColor : levelType == "F" ? flipColor : levelType == "M" ? magnetColor : color.gray
+
+getLabelForType(string levelType, string strength) =>
+    levelType == "P" ? "PUT " + strength : levelType == "C" ? "CALL " + strength : levelType == "F" ? "FLIP" : levelType == "M" ? "MAGNET" : ""
+
+getTypeText(string levelType) =>
+    levelType == "P" ? "PUT WALL" : levelType == "C" ? "CALL WALL" : levelType == "F" ? "FLIP ZONE" : levelType == "M" ? "MAGNET" : ""
+
+getStrengthBar(string strength) =>
+    strength == "MASSIVE" ? "████" : strength == "HEAVY" ? "███" : strength == "MOD" ? "██" : strength == "LIGHT" ? "█" : "●"
+
+// ============================================================================
+// PERSISTENT ARRAYS FOR PARSED DATA
+// ============================================================================
+var array<float> parsedPrices = array.new_float(0)
+var array<string> parsedTypes = array.new_string(0)
+var array<string> parsedStrengths = array.new_string(0)
+var array<color> parsedColors = array.new_color(0)
+var array<int> parsedWidths = array.new_int(0)
+var array<string> parsedLineStyles = array.new_string(0)
+var array<string> parsedLabels = array.new_string(0)
+var bool dataParsed = false
+
+// ============================================================================
+// PARSE GEX LEVELS (only once on first bar if input exists)
+// ============================================================================
+if barstate.isfirst and str.length(levelsInput) > 0 and not dataParsed
+    array.clear(parsedPrices)
+    array.clear(parsedTypes)
+    array.clear(parsedStrengths)
+    array.clear(parsedColors)
+    array.clear(parsedWidths)
+    array.clear(parsedLineStyles)
+    array.clear(parsedLabels)
+
+    items = str.split(levelsInput, ",")
+    itemCount = array.size(items)
+
+    if itemCount > 0
+        for i = 0 to itemCount - 1
+            item = array.get(items, i)
+            parts = str.split(item, ":")
+            partsSize = array.size(parts)
+
+            if partsSize >= 2
+                levelType = array.get(parts, 0)
+                levelPrice = str.tonumber(array.get(parts, 1))
+                levelStrength = partsSize >= 3 ? array.get(parts, 2) : ""
+
+                if not na(levelPrice) and levelPrice > 0
+                    labelText = getLabelForType(levelType, levelStrength)
+                    lineColor = getColorForType(levelType)
+                    lineWidth = getWidthFromStrength(levelStrength)
+                    lineStyleStr = levelType == "F" ? "Dashed" : levelType == "M" ? "Dotted" : "Solid"
+
+                    array.push(parsedPrices, levelPrice)
+                    array.push(parsedTypes, levelType)
+                    array.push(parsedStrengths, levelStrength)
+                    array.push(parsedColors, lineColor)
+                    array.push(parsedWidths, lineWidth)
+                    array.push(parsedLineStyles, lineStyleStr)
+                    array.push(parsedLabels, labelText)
+
+    dataParsed := true
+
+// ============================================================================
+// DRAW GEX LEVELS WITH STACKED LABELS (on last bar only)
+// ============================================================================
+if barstate.islast
+    priceCount = array.size(parsedPrices)
+
+    if priceCount > 0
+        lineExtendVal = extendLines ? extend.both : extend.none
+
+        // Track which prices have been drawn (for line deduplication)
+        var array<float> drawnPrices = array.new_float(0)
+        array.clear(drawnPrices)
+
+        // First pass: draw lines (deduplicated by price)
+        for i = 0 to priceCount - 1
+            priceVal = array.get(parsedPrices, i)
+            lineColorVal = array.get(parsedColors, i)
+            lineWidthVal = array.get(parsedWidths, i)
+            styleStrVal = array.get(parsedLineStyles, i)
+            lineStyleVal = getLineStyle(styleStrVal)
+
+            // Check if we already drew a line at this price
+            priceAlreadyDrawn = false
+            drawnCount = array.size(drawnPrices)
+            if drawnCount > 0
+                for j = 0 to drawnCount - 1
+                    if math.abs(array.get(drawnPrices, j) - priceVal) < 0.5
+                        priceAlreadyDrawn := true
+                        break
+
+            if not priceAlreadyDrawn
+                line.new(bar_index - 100, priceVal, bar_index + primaryLabelDist, priceVal,
+                         color=lineColorVal, width=lineWidthVal, style=lineStyleVal, extend=lineExtendVal)
+                array.push(drawnPrices, priceVal)
+
+        // Second pass: draw stacked labels
+        if showLabels
+            // For each unique price, collect all labels and stack them
+            var array<float> labeledPrices = array.new_float(0)
+            array.clear(labeledPrices)
+
+            for i = 0 to priceCount - 1
+                priceVal = array.get(parsedPrices, i)
+
+                // Check if we already processed labels for this price
+                priceLabeled = false
+                labeledCount = array.size(labeledPrices)
+                if labeledCount > 0
+                    for j = 0 to labeledCount - 1
+                        if math.abs(array.get(labeledPrices, j) - priceVal) < 0.5
+                            priceLabeled := true
+                            break
+
+                if not priceLabeled
+                    array.push(labeledPrices, priceVal)
+
+                    // Collect all labels at this price
+                    var array<string> labelsAtPrice = array.new_string(0)
+                    var array<color> colorsAtPrice = array.new_color(0)
+                    array.clear(labelsAtPrice)
+                    array.clear(colorsAtPrice)
+
+                    for k = 0 to priceCount - 1
+                        checkPrice = array.get(parsedPrices, k)
+                        if math.abs(checkPrice - priceVal) < 0.5
+                            array.push(labelsAtPrice, array.get(parsedLabels, k))
+                            array.push(colorsAtPrice, array.get(parsedColors, k))
+
+                    // Draw stacked labels
+                    labelCount = array.size(labelsAtPrice)
+                    for m = 0 to labelCount - 1
+                        labelText = array.get(labelsAtPrice, m)
+                        labelColor = array.get(colorsAtPrice, m)
+                        textColorVal = labelColor == flipColor ? color.black : color.white
+
+                        // Primary label at primary distance, secondary at secondary distance
+                        labelDist = m == 0 ? primaryLabelDist : secondaryLabelDist + (m - 1) * 15
+
+                        label.new(bar_index + labelDist, priceVal, labelText,
+                                 color=labelColor, textcolor=textColorVal,
+                                 style=label.style_label_center, size=size.small)
+
+// ============================================================================
+// INFO TABLE WITH SORTING (on last bar only)
+// ============================================================================
+var table infoTable = na
+
+if barstate.islast and showTable and str.length(levelsInput) > 0
+    tablePos = tablePosition == "Top Left" ? position.top_left : tablePosition == "Bottom Left" ? position.bottom_left : tablePosition == "Bottom Right" ? position.bottom_right : position.top_right
+    tblSize = tableSize == "Small" ? size.small : tableSize == "Large" ? size.large : size.normal
+
+    itemCount = array.size(parsedPrices)
+
+    if itemCount > 0
+        // Create sorting index array
+        var array<int> sortIdx = array.new_int(0)
+        array.clear(sortIdx)
+        for i = 0 to itemCount - 1
+            array.push(sortIdx, i)
+
+        // Bubble sort based on selected criteria
+        for i = 0 to itemCount - 2
+            for j = 0 to itemCount - 2 - i
+                idxA = array.get(sortIdx, j)
+                idxB = array.get(sortIdx, j + 1)
+                shouldSwap = false
+
+                if tableSorting == "Level High→Low"
+                    shouldSwap := array.get(parsedPrices, idxA) < array.get(parsedPrices, idxB)
+                else if tableSorting == "Level Low→High"
+                    shouldSwap := array.get(parsedPrices, idxA) > array.get(parsedPrices, idxB)
+                else if tableSorting == "By Type"
+                    shouldSwap := getTypeValue(array.get(parsedTypes, idxA)) > getTypeValue(array.get(parsedTypes, idxB))
+                else if tableSorting == "By Strength"
+                    shouldSwap := getStrengthValue(array.get(parsedStrengths, idxA)) < getStrengthValue(array.get(parsedStrengths, idxB))
+
+                if shouldSwap
+                    array.set(sortIdx, j, idxB)
+                    array.set(sortIdx, j + 1, idxA)
+
+        // Create table with header + data rows
+        infoTable := table.new(tablePos, 4, itemCount + 1,
+                               bgcolor=color.new(#1a1a2e, 10),
+                               border_color=color.new(#30363d, 0),
+                               border_width=1)
+
+        // Header row
+        table.cell(infoTable, 0, 0, "LEVEL", text_color=color.gray, text_size=tblSize, text_halign=text.align_left)
+        table.cell(infoTable, 1, 0, "TYPE", text_color=color.gray, text_size=tblSize, text_halign=text.align_center)
+        table.cell(infoTable, 2, 0, "STRENGTH", text_color=color.gray, text_size=tblSize, text_halign=text.align_center)
+        table.cell(infoTable, 3, 0, "", text_color=color.gray, text_size=tblSize, text_halign=text.align_center)
+
+        // Data rows (sorted)
+        for row = 0 to itemCount - 1
+            idx = array.get(sortIdx, row)
+            levelPrice = array.get(parsedPrices, idx)
+            levelType = array.get(parsedTypes, idx)
+            strength = array.get(parsedStrengths, idx)
+            rowColor = array.get(parsedColors, idx)
+            typeText = getTypeText(levelType)
+            strengthBar = getStrengthBar(strength)
+
+            table.cell(infoTable, 0, row + 1, str.tostring(levelPrice, "#,###"),
+                      text_color=color.white, text_size=tblSize, text_halign=text.align_left)
+            table.cell(infoTable, 1, row + 1, typeText,
+                      text_color=rowColor, text_size=tblSize, text_halign=text.align_center)
+            table.cell(infoTable, 2, row + 1, strength,
+                      text_color=color.white, text_size=tblSize, text_halign=text.align_center)
+            table.cell(infoTable, 3, row + 1, strengthBar,
+                      text_color=rowColor, text_size=tblSize, text_halign=text.align_center)
+
+// ============================================================================
+// DRAW CUSTOM LEVELS (on last bar only)
+// ============================================================================
+if barstate.islast
+    if c1_enable and c1_price > 0
+        line.new(bar_index - 100, c1_price, bar_index + c1_labelDist, c1_price, color=c1_color, width=c1_width, style=getLineStyle(c1_style), extend=extend.both)
+        if customShowLabels
+            label.new(bar_index + c1_labelDist, c1_price, c1_label, color=c1_color, textcolor=color.white, style=label.style_label_center, size=size.small)
+
+    if c2_enable and c2_price > 0
+        line.new(bar_index - 100, c2_price, bar_index + c2_labelDist, c2_price, color=c2_color, width=c2_width, style=getLineStyle(c2_style), extend=extend.both)
+        if customShowLabels
+            label.new(bar_index + c2_labelDist, c2_price, c2_label, color=c2_color, textcolor=color.white, style=label.style_label_center, size=size.small)
+
+    if c3_enable and c3_price > 0
+        line.new(bar_index - 100, c3_price, bar_index + c3_labelDist, c3_price, color=c3_color, width=c3_width, style=getLineStyle(c3_style), extend=extend.both)
+        if customShowLabels
+            label.new(bar_index + c3_labelDist, c3_price, c3_label, color=c3_color, textcolor=color.white, style=label.style_label_center, size=size.small)
+
+    if c4_enable and c4_price > 0
+        line.new(bar_index - 100, c4_price, bar_index + c4_labelDist, c4_price, color=c4_color, width=c4_width, style=getLineStyle(c4_style), extend=extend.both)
+        if customShowLabels
+            label.new(bar_index + c4_labelDist, c4_price, c4_label, color=c4_color, textcolor=color.white, style=label.style_label_center, size=size.small)
+
+    if c5_enable and c5_price > 0
+        line.new(bar_index - 100, c5_price, bar_index + c5_labelDist, c5_price, color=c5_color, width=c5_width, style=getLineStyle(c5_style), extend=extend.both)
+        if customShowLabels
+            label.new(bar_index + c5_labelDist, c5_price, c5_label, color=c5_color, textcolor=color.white, style=label.style_label_center, size=size.small)
+
+    if c6_enable and c6_price > 0
+        line.new(bar_index - 100, c6_price, bar_index + c6_labelDist, c6_price, color=c6_color, width=c6_width, style=getLineStyle(c6_style), extend=extend.both)
+        if customShowLabels
+            label.new(bar_index + c6_labelDist, c6_price, c6_label, color=c6_color, textcolor=color.white, style=label.style_label_center, size=size.small)
+
+    if c7_enable and c7_price > 0
+        line.new(bar_index - 100, c7_price, bar_index + c7_labelDist, c7_price, color=c7_color, width=c7_width, style=getLineStyle(c7_style), extend=extend.both)
+        if customShowLabels
+            label.new(bar_index + c7_labelDist, c7_price, c7_label, color=c7_color, textcolor=color.white, style=label.style_label_center, size=size.small)
+
+    if c8_enable and c8_price > 0
+        line.new(bar_index - 100, c8_price, bar_index + c8_labelDist, c8_price, color=c8_color, width=c8_width, style=getLineStyle(c8_style), extend=extend.both)
+        if customShowLabels
+            label.new(bar_index + c8_labelDist, c8_price, c8_label, color=c8_color, textcolor=color.white, style=label.style_label_center, size=size.small)
+
+    if c9_enable and c9_price > 0
+        line.new(bar_index - 100, c9_price, bar_index + c9_labelDist, c9_price, color=c9_color, width=c9_width, style=getLineStyle(c9_style), extend=extend.both)
+        if customShowLabels
+            label.new(bar_index + c9_labelDist, c9_price, c9_label, color=c9_color, textcolor=color.white, style=label.style_label_center, size=size.small)
+
+    if c10_enable and c10_price > 0
+        line.new(bar_index - 100, c10_price, bar_index + c10_labelDist, c10_price, color=c10_color, width=c10_width, style=getLineStyle(c10_style), extend=extend.both)
+        if customShowLabels
+            label.new(bar_index + c10_labelDist, c10_price, c10_label, color=c10_color, textcolor=color.white, style=label.style_label_center, size=size.small)

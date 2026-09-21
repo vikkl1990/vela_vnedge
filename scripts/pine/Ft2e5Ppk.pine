@@ -1,0 +1,414 @@
+//@version=6
+indicator("ATK / DEF — Temporal Session Position & Market State Engine", overlay=true, precision=0, max_labels_count=500, max_lines_count=500, max_boxes_count=200)
+
+// ============================================
+// ===== Inputs（全部集中在顶部）=====
+// ============================================
+leftBars      = input.int(5, "Left Bars",  minval=1, group="=== Swing ===")
+rightBars     = input.int(5, "Right Bars", minval=1, group="=== Swing ===")
+showLabels    = input.bool(true, "Show Pivot Labels",       group="=== Swing ===")
+showTimeZones = input.bool(true, "Show Session Background", group="=== Session ===")
+alertLiqLow   = input.bool(true, "Alert: Liquidity Low",    group="=== Alerts ===")
+alertVolLow   = input.bool(true, "Alert: Volume Low",       group="=== Alerts ===")
+atrLen        = input.int(14, "ATR Length",     minval=1, group="=== Volatility ===")
+atrAvgLen     = input.int(50, "ATR Avg Length", minval=1, group="=== Volatility ===")
+
+// ============================================
+// 多周期数据
+// ============================================
+[hHigh, hLow, hOpen, hClose, hVol] = request.security(syminfo.tickerid, "M",  [high[1], low[1], open[1], close[1], volume[1]], lookahead=barmerge.lookahead_off)
+[wHigh, wLow, wOpen, wClose, wVol] = request.security(syminfo.tickerid, "W",  [high[1], low[1], open[1], close[1], volume[1]], lookahead=barmerge.lookahead_off)
+[dHigh, dLow, dOpen, dClose, dVol] = request.security(syminfo.tickerid, "D",  [high[1], low[1], open[1], close[1], volume[1]], lookahead=barmerge.lookahead_off)
+[f4High, f4Low, f4Open, f4Close, f4Vol] = request.security(syminfo.tickerid, "240", [high[1], low[1], open[1], close[1], volume[1]], lookahead=barmerge.lookahead_off)
+[f1High, f1Low, f1Open, f1Close, f1Vol] = request.security(syminfo.tickerid, "60",  [high[1], low[1], open[1], close[1], volume[1]], lookahead=barmerge.lookahead_off)
+
+hVolAvg  = request.security(syminfo.tickerid, "M",   ta.sma(volume, 20), lookahead=barmerge.lookahead_off)
+wVolAvg  = request.security(syminfo.tickerid, "W",   ta.sma(volume, 20), lookahead=barmerge.lookahead_off)
+dVolAvg  = request.security(syminfo.tickerid, "D",   ta.sma(volume, 20), lookahead=barmerge.lookahead_off)
+f4VolAvg = request.security(syminfo.tickerid, "240", ta.sma(volume, 20), lookahead=barmerge.lookahead_off)
+f1VolAvg = request.security(syminfo.tickerid, "60",  ta.sma(volume, 20), lookahead=barmerge.lookahead_off)
+
+// ============================================
+// Session 检测（自动跟随交易所时区）
+// ============================================
+exTz = syminfo.timezone
+
+isAsian   = not na(time(timeframe.period, "0000-0900:1234567", exTz))
+isLondon  = not na(time(timeframe.period, "0700-1600:1234567", exTz))
+isNewyork = not na(time(timeframe.period, "1200-2100:1234567", exTz))
+
+bgcolor(showTimeZones and isAsian   ? color.rgb(255,200,100,15) : na, title="Asian BG")
+bgcolor(showTimeZones and isLondon  ? color.rgb(100,200,255,15) : na, title="London BG")
+bgcolor(showTimeZones and isNewyork ? color.rgb(200,200,255,15) : na, title="Newyork BG")
+
+// ============================================
+// Session State
+// ============================================
+var float asianHigh  = na
+var float asianLow   = na
+var float asianOpen  = na
+var float asianClose = na
+var float asianVol   = 0.0
+var int   asianBars  = 0
+
+var float lonHigh  = na
+var float lonLow   = na
+var float lonOpen  = na
+var float lonClose = na
+var float lonVol   = 0.0
+var int   lonBars  = 0
+
+var float nyHigh  = na
+var float nyLow   = na
+var float nyOpen  = na
+var float nyClose = na
+var float nyVol   = 0.0
+var int   nyBars  = 0
+
+// 每日重置
+if ta.change(time("D")) != 0
+    asianHigh  := na
+    asianLow   := na
+    asianOpen  := na
+    asianClose := na
+    asianVol   := 0.0
+    asianBars  := 0
+    lonHigh    := na
+    lonLow     := na
+    lonOpen    := na
+    lonClose   := na
+    lonVol     := 0.0
+    lonBars    := 0
+    nyHigh     := na
+    nyLow      := na
+    nyOpen     := na
+    nyClose    := na
+    nyVol      := 0.0
+    nyBars     := 0
+
+// 累积
+if isAsian
+    asianHigh  := na(asianHigh) ? high : math.max(asianHigh, high)
+    asianLow   := na(asianLow)  ? low  : math.min(asianLow, low)
+    asianOpen  := na(asianOpen) ? open : asianOpen
+    asianClose := close
+    asianVol   := asianVol + volume
+    asianBars  := asianBars + 1
+
+if isLondon
+    lonHigh  := na(lonHigh) ? high : math.max(lonHigh, high)
+    lonLow   := na(lonLow)  ? low  : math.min(lonLow, low)
+    lonOpen  := na(lonOpen) ? open : lonOpen
+    lonClose := close
+    lonVol   := lonVol + volume
+    lonBars  := lonBars + 1
+
+if isNewyork
+    nyHigh  := na(nyHigh) ? high : math.max(nyHigh, high)
+    nyLow   := na(nyLow)  ? low  : math.min(nyLow, low)
+    nyOpen  := na(nyOpen) ? open : nyOpen
+    nyClose := close
+    nyVol   := nyVol + volume
+    nyBars  := nyBars + 1
+
+// ============================================
+// 格式化函数
+// ============================================
+fmt(f) => na(f) ? "➖" : str.tostring(f, "#.##")
+fmtV(f) => na(f) ? "➖" : str.tostring(f, "#,###")
+fmtR(f) => na(f) ? "➖" : str.tostring(f, "#.##")
+
+// ============================================
+// Layer 1 表格：LAYER | PERIOD | OPEN | CLOSE | HIGH | LOW | VOLUME | LIQUIDITY
+// ============================================
+var table p1 = table.new(position.top_right, 8, 6, bgcolor=color.rgb(0,0,0,85), border_color=color.rgb(80,80,80,80), border_width=1)
+
+liqR(v, a) => na(a) or a == 0 ? na : v / a
+liqC(r) => na(r) ? color.rgb(150,150,150) : r > 1.2 ? color.rgb(255,100,100) : r > 0.8 ? color.rgb(255,200,100) : color.rgb(100,200,255)
+
+row1(t, r, lay, per, col, bg, o, c, hi, lo, v, lr) =>
+    table.cell(t, 0, r, lay, text_color=col, text_size=size.small, bgcolor=bg)
+    table.cell(t, 1, r, per, text_color=col, text_size=size.small, bgcolor=bg)
+    table.cell(t, 2, r, fmt(o),  text_color=color.rgb(200,200,255), text_size=size.small)
+    table.cell(t, 3, r, fmt(c),  text_color=color.rgb(255,255,255), text_size=size.small)
+    table.cell(t, 4, r, fmt(hi), text_color=color.rgb(255,100,100), text_size=size.small)
+    table.cell(t, 5, r, fmt(lo), text_color=color.rgb(100,255,100), text_size=size.small)
+    table.cell(t, 6, r, fmtV(v), text_color=color.rgb(200,200,200), text_size=size.small)
+    table.cell(t, 7, r, fmtR(lr), text_color=liqC(lr), text_size=size.small)
+
+if barstate.islast
+    string[] hd1 = array.from("LAYER","PERIOD","OPEN","CLOSE","HIGH","LOW","VOLUME","LIQUIDITY")
+    for i = 0 to 7
+        table.cell(p1, i, 0, array.get(hd1, i), text_color=color.white, text_size=size.small, bgcolor=color.rgb(40,40,40))
+
+    color hc = color.rgb(255,200,100)
+    color hb = color.rgb(60,30,0)
+    color mc = color.rgb(100,200,255)
+    color mb = color.rgb(0,40,60)
+    color lc = color.rgb(200,200,255)
+    color lb = color.rgb(30,30,60)
+
+    row1(p1, 1, "HTF","Monthly", hc, hb, hOpen, hClose, hHigh, hLow, hVol, liqR(hVol, hVolAvg))
+    row1(p1, 2, "HTF","Weekly",  hc, hb, wOpen, wClose, wHigh, wLow, wVol, liqR(wVol, wVolAvg))
+    row1(p1, 3, "MTF","Daily",   mc, mb, dOpen, dClose, dHigh, dLow, dVol, liqR(dVol, dVolAvg))
+    row1(p1, 4, "LTF","4-Hour",  lc, lb, f4Open, f4Close, f4High, f4Low, f4Vol, liqR(f4Vol, f4VolAvg))
+    row1(p1, 5, "LTF","1-Hour",  lc, lb, f1Open, f1Close, f1High, f1Low, f1Vol, liqR(f1Vol, f1VolAvg))
+
+// ============================================
+// Layer 2 表格：Session | Time | Drive | Burst | Decay | Reversal
+// Time 列自动带交易所时区
+// ============================================
+var table p2 = table.new(position.bottom_right, 6, 4, bgcolor=color.rgb(0,0,0,85), border_color=color.rgb(80,80,80,80), border_width=1)
+
+drv(c, o, b) => b == 0 or na(c) or na(o) ? "➖ Wait" : c > o * 1.01 ? "🔥 Bull Drive" : c < o * 0.99 ? "🔥 Bear Drive" : c > o ? "⏳ Bull Weak" : c < o ? "⏳ Bear Weak" : "➖ Wait"
+brst(v, b, a) => b == 0 or na(a) or a == 0 ? "➖ None" : v / b > a * 1.2 ? "💥 Burst" : v / b > a * 0.8 ? "📊 Normal" : "💧 Quiet"
+dcy(c, hi, lo, b) => b == 0 or na(c) or na(hi) or na(lo) or hi == lo ? "➖ None" : c >= hi - (hi - lo) * 0.25 ? "🔝 Strong" : c >= hi - (hi - lo) * 0.60 ? "🟡 Mild" : "🔻 Decayed"
+rev(c, hi, lo, b) => b == 0 or na(c) or na(hi) or na(lo) or hi == lo ? "➖ None" : c > (hi + lo) / 2 ? "🔁 Bull Flip" : c < (hi + lo) / 2 ? "🔁 Bear Flip" : "➖ None"
+
+cdrv(s) => s == "🔥 Bull Drive" ? color.rgb(0,255,0) : s == "🔥 Bear Drive" ? color.rgb(255,0,0) : s == "⏳ Bull Weak" ? color.rgb(150,255,150) : s == "⏳ Bear Weak" ? color.rgb(255,150,150) : color.rgb(180,180,180)
+cbrst(s) => s == "💥 Burst" ? color.rgb(255,120,0) : s == "📊 Normal" ? color.rgb(255,200,100) : color.rgb(100,200,255)
+cdcy(s) => s == "🔝 Strong" ? color.rgb(0,255,100) : s == "🟡 Mild" ? color.rgb(255,200,100) : color.rgb(255,100,100)
+crev(s) => s == "🔁 Bull Flip" ? color.rgb(0,255,0) : s == "🔁 Bear Flip" ? color.rgb(255,0,0) : color.rgb(150,150,150)
+
+row2(t, r, nm, tm, col, bg, d, b, dc, rv) =>
+    table.cell(t, 0, r, nm, text_color=col, text_size=size.small, bgcolor=bg)
+    table.cell(t, 1, r, tm, text_color=color.rgb(200,200,200), text_size=size.small)
+    table.cell(t, 2, r, d,  text_color=cdrv(d),  text_size=size.small)
+    table.cell(t, 3, r, b,  text_color=cbrst(b), text_size=size.small)
+    table.cell(t, 4, r, dc, text_color=cdcy(dc), text_size=size.small)
+    table.cell(t, 5, r, rv, text_color=crev(rv), text_size=size.small)
+
+if barstate.islast
+    string[] hd2 = array.from("Session","Time (TZ)","Drive","Burst","Decay","Reversal")
+    for i = 0 to 5
+        table.cell(p2, i, 0, array.get(hd2, i), text_color=color.white, text_size=size.small, bgcolor=color.rgb(40,40,40))
+
+    avg = ta.sma(volume, 20)
+
+    row2(p2, 1, "🌏 Asian",   "00-09 " + exTz, color.rgb(255,200,100), color.rgb(60,30,0),
+         drv(asianClose, asianOpen, asianBars), brst(asianVol, asianBars, avg),
+         dcy(asianClose, asianHigh, asianLow, asianBars), rev(asianClose, asianHigh, asianLow, asianBars))
+
+    row2(p2, 2, "🌍 London",  "07-16 " + exTz, color.rgb(100,200,255), color.rgb(0,40,60),
+         drv(lonClose, lonOpen, lonBars), brst(lonVol, lonBars, avg),
+         dcy(lonClose, lonHigh, lonLow, lonBars), rev(lonClose, lonHigh, lonLow, lonBars))
+
+    row2(p2, 3, "🌎 Newyork", "12-21 " + exTz, color.rgb(200,200,255), color.rgb(30,30,60),
+         drv(nyClose, nyOpen, nyBars), brst(nyVol, nyBars, avg),
+         dcy(nyClose, nyHigh, nyLow, nyBars), rev(nyClose, nyHigh, nyLow, nyBars))
+
+// ============================================
+// Layer 3: 当前波动 + 望远镜观察市场行为
+// ============================================
+
+// ---------- 1) 当前波动 ----------
+atr      = ta.atr(atrLen)
+atrAvg   = ta.sma(atr, atrAvgLen)
+atrRatio = na(atrAvg) or atrAvg == 0 ? na : atr / atrAvg
+atrDir   = na(atr[1]) ? "➖ Flat" : atr > atr[1] ? "📈 Expanding" : atr < atr[1] ? "📉 Contracting" : "➖ Flat"
+
+volLvl(ratio) =>
+    na(ratio) ? "➖ Unknown" :
+     ratio < 0.7 ? "❄️ Very Low" :
+     ratio < 1.3 ? "🌤️ Normal"   :
+     ratio < 2.0 ? "🔥 High"     : "🌋 Extreme"
+
+curVolLvl = volLvl(atrRatio)
+
+// ---------- 2) 望远镜：多周期位置百分位 ----------
+posPct(c, hi, lo) => na(hi) or na(lo) or hi == lo ? na : (c - lo) / (hi - lo)
+
+posH  = posPct(close, hHigh,  hLow)
+posW  = posPct(close, wHigh,  wLow)
+posD  = posPct(close, dHigh,  dLow)
+posF4 = posPct(close, f4High, f4Low)
+posF1 = posPct(close, f1High, f1Low)
+
+posVals  = array.from(posH, posW, posD, posF4, posF1)
+posClean = array.new_float()
+for i = 0 to array.size(posVals) - 1
+    v = array.get(posVals, i)
+    if not na(v)
+        array.push(posClean, v)
+
+posAvg = array.size(posClean) > 0 ? array.avg(posClean) : na
+posStd = array.size(posClean) > 1 ? array.stdev(posClean) : na
+
+posLbl(p) =>
+    na(p) ? "➖ Unknown" :
+     p < 0.20 ? "🟢 Deep Low"  :
+     p < 0.35 ? "🟩 Low"       :
+     p < 0.65 ? "🟨 Mid"       :
+     p < 0.80 ? "🟧 High"      : "🔴 Deep High"
+
+divLbl(s) =>
+    na(s) ? "➖ Unknown" :
+     s < 0.10 ? "✅ Aligned"  :
+     s < 0.25 ? "🟡 Mild"     : "⚠️ Divergent"
+
+// ---------- 3) 市场行为 ----------
+volRatioNow = na(atrAvg) or atrAvg == 0 ? na : volume / ta.sma(volume, 20)
+
+behavior(p, vr, vq) =>
+    na(p) or na(vr) ? "➖ Wait" :
+     p < 0.35 and vr > 1.3 and vq == "🔥 High"    ? "🚀 Accumulation" :
+     p > 0.65 and vr > 1.3 and vq == "🔥 High"    ? "💎 Distribution" :
+     p > 0.35 and p < 0.65 and vr > 2.0           ? "🌀 Shakeout"     :
+     p > 0.65 and vr < 1.3                        ? "📈 Markup"       :
+     p < 0.35 and vr < 1.3                        ? "📉 Markdown"     :
+     p > 0.35 and p < 0.65 and vr < 0.7           ? "➖ Range"        : "⏳ Wait"
+
+volQ        = brst(volume, 1, ta.sma(volume, 20))
+curBehavior = behavior(posAvg, volRatioNow, volQ)
+
+// ---------- 颜色 ----------
+cVol(ratio) =>
+    na(ratio)   ? color.rgb(150,150,150) :
+     ratio < 0.7 ? color.rgb(100,200,255) :
+     ratio < 1.3 ? color.rgb(200,200,200) :
+     ratio < 2.0 ? color.rgb(255,200,100) : color.rgb(255,100,100)
+
+cAtrDir(s) =>
+    s == "📈 Expanding"   ? color.rgb(255,120,0) :
+     s == "📉 Contracting" ? color.rgb(100,200,255) : color.rgb(180,180,180)
+
+cPos(p) =>
+    na(p)    ? color.rgb(150,150,150) :
+     p < 0.35 ? color.rgb(0,255,100) :
+     p > 0.65 ? color.rgb(255,100,100) : color.rgb(255,200,100)
+
+cDiv(s) =>
+    s == "✅ Aligned"  ? color.rgb(0,255,100) :
+     s == "🟡 Mild"     ? color.rgb(255,200,100) : color.rgb(255,100,100)
+
+cBeh(s) =>
+    s == "🚀 Accumulation" ? color.rgb(0,255,100) :
+     s == "💎 Distribution" ? color.rgb(255,100,100) :
+     s == "🌀 Shakeout"     ? color.rgb(255,200,100) :
+     s == "📈 Markup"       ? color.rgb(0,255,0)     :
+     s == "📉 Markdown"     ? color.rgb(255,0,0)     :
+     s == "➖ Range"         ? color.rgb(150,150,150) : color.rgb(180,180,180)
+
+// ---------- 4) 望远镜表格（左下） ----------
+var table p3 = table.new(position.bottom_left, 7, 6,
+     bgcolor=color.rgb(0,0,0,85), border_color=color.rgb(80,80,80,80), border_width=1)
+
+// 函数定义在全局
+row3(t, r, per, p, layerCol, layerBg) =>
+    table.cell(t, 0, r, "TELESCOPE", text_color=layerCol, text_size=size.small, bgcolor=layerBg)
+    table.cell(t, 1, r, per,         text_color=layerCol, text_size=size.small, bgcolor=layerBg)
+    table.cell(t, 2, r, na(p) ? "➖" : str.tostring(p * 100, "#.#") + "%",
+         text_color=cPos(p), text_size=size.small)
+    table.cell(t, 3, r, posLbl(p),   text_color=cPos(p), text_size=size.small)
+    table.cell(t, 4, r, na(atrRatio) ? "➖" : str.tostring(atrRatio, "#.##"),
+         text_color=cVol(atrRatio), text_size=size.small)
+    table.cell(t, 5, r, curVolLvl,   text_color=cVol(atrRatio), text_size=size.small)
+    table.cell(t, 6, r, atrDir,      text_color=cAtrDir(atrDir), text_size=size.small)
+
+if barstate.islast
+    string[] hd3 = array.from("SCOPE", "Period", "Position", "Level", "ATR Ratio", "Volatility", "ATR Dir")
+    for i = 0 to 6
+        table.cell(p3, i, 0, array.get(hd3, i),
+             text_color=color.white, text_size=size.small, bgcolor=color.rgb(40,40,40))
+
+    row3(p3, 1, "Monthly", posH,  color.rgb(255,200,100), color.rgb(60,30,0))
+    row3(p3, 2, "Weekly",  posW,  color.rgb(255,200,100), color.rgb(60,30,0))
+    row3(p3, 3, "Daily",   posD,  color.rgb(100,200,255), color.rgb(0,40,60))
+    row3(p3, 4, "4-Hour",  posF4, color.rgb(200,200,255), color.rgb(30,30,60))
+    row3(p3, 5, "1-Hour",  posF1, color.rgb(200,200,255), color.rgb(30,30,60))
+
+// ---------- 5) 摘要面板（左中） ----------
+var table p4 = table.new(position.middle_left, 2, 5,
+     bgcolor=color.rgb(0,0,0,85), border_color=color.rgb(80,80,80,80), border_width=1)
+
+if barstate.islast
+    table.cell(p4, 0, 0, "POS AVG",    text_color=color.white, text_size=size.small, bgcolor=color.rgb(40,40,40))
+    table.cell(p4, 1, 0, na(posAvg) ? "➖" : str.tostring(posAvg * 100, "#.#") + "%",
+         text_color=cPos(posAvg), text_size=size.small)
+
+    table.cell(p4, 0, 1, "DIVERGENCE", text_color=color.white, text_size=size.small, bgcolor=color.rgb(40,40,40))
+    table.cell(p4, 1, 1, divLbl(posStd), text_color=cDiv(divLbl(posStd)), text_size=size.small)
+
+    table.cell(p4, 0, 2, "VOLATILITY", text_color=color.white, text_size=size.small, bgcolor=color.rgb(40,40,40))
+    table.cell(p4, 1, 2, curVolLvl,   text_color=cVol(atrRatio), text_size=size.small)
+
+    table.cell(p4, 0, 3, "BEHAVIOR",   text_color=color.white, text_size=size.small, bgcolor=color.rgb(40,40,40))
+    table.cell(p4, 1, 3, curBehavior,  text_color=cBeh(curBehavior), text_size=size.small)
+
+    table.cell(p4, 0, 4, "ATR",        text_color=color.white, text_size=size.small, bgcolor=color.rgb(40,40,40))
+    table.cell(p4, 1, 4, na(atr) ? "➖" : str.tostring(atr, "#.##") + " (" + str.tostring(atrRatio, "#.##") + "x)",
+         text_color=cVol(atrRatio), text_size=size.small)
+
+// ============================================
+// Swing High/Low
+// ============================================
+sh = ta.pivothigh(leftBars, rightBars)
+sl = ta.pivotlow(leftBars, rightBars)
+
+var label lh = na
+var label ll = na
+
+if showLabels and not na(sh)
+    label.delete(lh)
+    lh := label.new(bar_index[rightBars], sh, text="🔴 R\n" + str.tostring(sh, "#.##"),
+         color=color.rgb(200,0,0,85), textcolor=color.white, style=label.style_label_down, size=size.small)
+
+if showLabels and not na(sl)
+    label.delete(ll)
+    ll := label.new(bar_index[rightBars], sl, text="🟢 S\n" + str.tostring(sl, "#.##"),
+         color=color.rgb(0,150,0,85), textcolor=color.white, style=label.style_label_up, size=size.small)
+
+// ============================================
+// 警报 1/2：流动性低 + 成交量低
+// ============================================
+hLiqR  = liqR(hVol,  hVolAvg)
+wLiqR  = liqR(wVol,  wVolAvg)
+dLiqR  = liqR(dVol,  dVolAvg)
+f4LiqR = liqR(f4Vol, f4VolAvg)
+f1LiqR = liqR(f1Vol, f1VolAvg)
+
+liqLowHTF = (not na(hLiqR)  and hLiqR  < 0.8) or (not na(wLiqR)  and wLiqR  < 0.8)
+liqLowMTF = (not na(dLiqR)  and dLiqR  < 0.8)
+liqLowLTF = (not na(f4LiqR) and f4LiqR < 0.8) or (not na(f1LiqR) and f1LiqR < 0.8)
+
+alertcondition(alertLiqLow and liqLowHTF and barstate.isconfirmed,
+     title="Liquidity Low — HTF",
+     message="⚠️ Liquidity LOW on HTF (M/W) | sym={{ticker}} | price={{close}}")
+
+alertcondition(alertLiqLow and liqLowMTF and barstate.isconfirmed,
+     title="Liquidity Low — MTF",
+     message="⚠️ Liquidity LOW on MTF (D) | sym={{ticker}} | price={{close}}")
+
+alertcondition(alertLiqLow and liqLowLTF and barstate.isconfirmed,
+     title="Liquidity Low — LTF",
+     message="⚠️ Liquidity LOW on LTF (4H/1H) | sym={{ticker}} | price={{close}}")
+
+curAvg   = ta.sma(volume, 20)
+volIsLow = not na(curAvg) and curAvg > 0 and volume < curAvg * 0.8
+
+alertcondition(alertVolLow and volIsLow and barstate.isconfirmed,
+     title="Volume Low — Current TF",
+     message="💧 Volume LOW on current TF | sym={{ticker}} | price={{close}} | vol={{volume}}")
+
+// ============================================
+// 警报 2/2：行为 + 波动
+// ============================================
+alertcondition(curBehavior == "🚀 Accumulation" and barstate.isconfirmed,
+     title="Behavior — Accumulation",
+     message="🚀 Accumulation detected | {{ticker}} @ {{close}}")
+
+alertcondition(curBehavior == "💎 Distribution" and barstate.isconfirmed,
+     title="Behavior — Distribution",
+     message="💎 Distribution detected | {{ticker}} @ {{close}}")
+
+alertcondition(curBehavior == "🌀 Shakeout" and barstate.isconfirmed,
+     title="Behavior — Shakeout",
+     message="🌀 Shakeout detected | {{ticker}} @ {{close}}")
+
+alertcondition(atrRatio > 2.0 and barstate.isconfirmed,
+     title="Volatility — Extreme",
+     message="🌋 Volatility EXTREME ({{close}}) | ATR ratio > 2.0")
+
+alertcondition(atrRatio < 0.7 and barstate.isconfirmed,
+     title="Volatility — Very Low",
+     message="❄️ Volatility VERY LOW ({{close}}) | ATR ratio < 0.7")

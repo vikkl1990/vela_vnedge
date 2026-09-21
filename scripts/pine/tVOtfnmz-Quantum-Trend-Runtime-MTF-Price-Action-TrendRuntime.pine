@@ -1,0 +1,1885 @@
+//@version=6
+indicator(
+    "Quantum Trend Runtime - MTF Price Action [TrendRuntime]",
+    "QTR",
+    overlay = true,
+    max_labels_count = 200,
+    max_lines_count = 100
+)
+
+//------------------------------------------------------------------------------
+// QUANTUM TREND RUNTIME
+// TrendRuntime
+//
+// Multi-timeframe percentage impulse, rejection, activity and projection engine.
+//
+// Recommended chart timeframe: 2H
+// Default runtime timeframes: 2H / 3H / 4H
+//
+// IMPORTANT:
+// - Higher-timeframe classifications use completed candles.
+// - QTR Projection is a forward market scenario, NOT an entry price.
+// - Trade-planning levels are references, NOT automatic execution signals.
+//------------------------------------------------------------------------------
+
+//------------------------------------------------------------------------------
+// Input Groups
+//------------------------------------------------------------------------------
+string G_CORE       = "Core Engine"
+string G_SIGNAL     = "Opportunity Engine"
+string G_PROJECTION = "QTR Projection"
+string G_PLAN       = "Trade Planning"
+string G_LEVELS     = "Percent Levels"
+string G_VISUALS    = "Visuals"
+
+//------------------------------------------------------------------------------
+// Core Engine
+//------------------------------------------------------------------------------
+string tfFast = input.timeframe(
+    "120",
+    "Fast timeframe",
+    group = G_CORE
+)
+
+string tfMid = input.timeframe(
+    "180",
+    "Core timeframe",
+    group = G_CORE
+)
+
+string tfSlow = input.timeframe(
+    "240",
+    "Slow timeframe",
+    group = G_CORE
+)
+
+int lookback = input.int(
+    40,
+    "Adaptive lookback",
+    minval = 15,
+    maxval = 200,
+    group = G_CORE,
+    tooltip = "Measures normal candle-body movement and its dispersion."
+)
+
+int runBars = input.int(
+    6,
+    "Prior move lookback",
+    minval = 2,
+    maxval = 30,
+    group = G_CORE,
+    tooltip = "Number of candles used to measure the directional move before the latest confirmed candle."
+)
+
+int trendBars = input.int(
+    4,
+    "Trend lookback",
+    minval = 2,
+    maxval = 20,
+    group = G_CORE,
+    tooltip = "Confirmed candles used to measure broader directional movement."
+)
+
+//------------------------------------------------------------------------------
+// Opportunity Engine
+//------------------------------------------------------------------------------
+float minAvgBodyPct = input.float(
+    0.65,
+    "Minimum active average body %",
+    minval = 0.05,
+    step = 0.05,
+    group = G_SIGNAL
+)
+
+float minRangePct = input.float(
+    1.00,
+    "Minimum candle range %",
+    minval = 0.05,
+    step = 0.05,
+    group = G_SIGNAL
+)
+
+float minImpulsePct = input.float(
+    1.50,
+    "Minimum impulse body %",
+    minval = 0.10,
+    step = 0.10,
+    group = G_SIGNAL
+)
+
+float impulseSigma = input.float(
+    0.60,
+    "Adaptive impulse multiplier",
+    minval = 0.0,
+    step = 0.05,
+    group = G_SIGNAL,
+    tooltip = "Adaptive impulse threshold = average absolute body + multiplier x standard deviation."
+)
+
+float stretchTriggerPct = input.float(
+    4.0,
+    "Prior move trigger %",
+    minval = 0.5,
+    step = 0.5,
+    group = G_SIGNAL
+)
+
+float reversalImpulseFactor = input.float(
+    0.80,
+    "Rejection impulse factor",
+    minval = 0.25,
+    maxval = 1.50,
+    step = 0.05,
+    group = G_SIGNAL
+)
+
+float minBodyEfficiency = input.float(
+    0.55,
+    "Minimum body efficiency",
+    minval = 0.10,
+    maxval = 0.95,
+    step = 0.05,
+    group = G_SIGNAL
+)
+
+float closeEdge = input.float(
+    0.72,
+    "Impulse close strength",
+    minval = 0.55,
+    maxval = 0.95,
+    step = 0.01,
+    group = G_SIGNAL
+)
+
+float wickReject = input.float(
+    0.30,
+    "Minimum rejection wick",
+    minval = 0.10,
+    maxval = 0.80,
+    step = 0.05,
+    group = G_SIGNAL
+)
+
+int consensusNeeded = input.int(
+    2,
+    "Timeframes required",
+    minval = 1,
+    maxval = 3,
+    group = G_SIGNAL
+)
+
+bool singleRejectionOverride = input.bool(
+    true,
+    "Allow strong single rejection",
+    group = G_SIGNAL
+)
+
+//------------------------------------------------------------------------------
+// QTR Projection
+//------------------------------------------------------------------------------
+bool showProjection = input.bool(
+    true,
+    "Show QTR projection",
+    group = G_PROJECTION
+)
+
+bool showProjectionCorridor = input.bool(
+    true,
+    "Show projection corridor",
+    group = G_PROJECTION
+)
+
+float projectionMultiplier = input.float(
+    1.00,
+    "Projection strength",
+    minval = 0.25,
+    maxval = 2.00,
+    step = 0.05,
+    group = G_PROJECTION
+)
+
+float projectionDecay = input.float(
+    0.65,
+    "Momentum persistence",
+    minval = 0.20,
+    maxval = 0.95,
+    step = 0.05,
+    group = G_PROJECTION
+)
+
+float projectionCorridorWidth = input.float(
+    0.85,
+    "Projection corridor width",
+    minval = 0.25,
+    maxval = 2.00,
+    step = 0.05,
+    group = G_PROJECTION
+)
+
+float maxTotalProjectionPct = input.float(
+    25.0,
+    "Maximum projected move %",
+    minval = 2.0,
+    maxval = 100.0,
+    step = 1.0,
+    group = G_PROJECTION
+)
+
+//------------------------------------------------------------------------------
+// Trade Planning
+//------------------------------------------------------------------------------
+bool showPlanningLevels = input.bool(
+    true,
+    "Show planning levels",
+    group = G_PLAN
+)
+
+float minimumRR = input.float(
+    1.25,
+    "Reference reward / risk",
+    minval = 1.00,
+    maxval = 10.0,
+    step = 0.05,
+    group = G_PLAN
+)
+
+float invalidationBufferPct = input.float(
+    0.10,
+    "Invalidation buffer %",
+    minval = 0.0,
+    maxval = 5.0,
+    step = 0.05,
+    group = G_PLAN,
+    tooltip = "Adds a small buffer outside the confirmed core-timeframe candle."
+)
+
+//------------------------------------------------------------------------------
+// Percent Levels
+//------------------------------------------------------------------------------
+bool showLadder = input.bool(
+    true,
+    "Show percent levels",
+    group = G_LEVELS
+)
+
+string anchorTf = input.timeframe(
+    "180",
+    "Anchor timeframe",
+    group = G_LEVELS
+)
+
+int anchorBarsBack = input.int(
+    1,
+    "Anchor bars back",
+    minval = 1,
+    maxval = 20,
+    group = G_LEVELS
+)
+
+float ladder1 = input.float(
+    4.0,
+    "Level A %",
+    minval = 0.1,
+    step = 0.5,
+    group = G_LEVELS
+)
+
+float ladder2 = input.float(
+    7.0,
+    "Level B %",
+    minval = 0.1,
+    step = 0.5,
+    group = G_LEVELS
+)
+
+float ladder3 = input.float(
+    15.0,
+    "Level C %",
+    minval = 0.1,
+    step = 0.5,
+    group = G_LEVELS
+)
+
+float ladder4 = input.float(
+    25.0,
+    "Level D %",
+    minval = 0.1,
+    step = 0.5,
+    group = G_LEVELS
+)
+
+//------------------------------------------------------------------------------
+// Visuals
+//------------------------------------------------------------------------------
+bool showDashboard = input.bool(
+    true,
+    "Show QTR dashboard",
+    group = G_VISUALS
+)
+
+bool showSignals = input.bool(
+    true,
+    "Show opportunity markers",
+    group = G_VISUALS
+)
+
+bool shadeQuietMarket = input.bool(
+    false,
+    "Shade quiet markets",
+    group = G_VISUALS
+)
+
+//------------------------------------------------------------------------------
+// TrendRuntime Brand Palette
+//------------------------------------------------------------------------------
+color C_CYAN        = #00E5FF
+color C_VIOLET      = #7C4DFF
+color C_LONG        = #00C853
+color C_SHORT       = #FF3D57
+color C_NEUTRAL     = #9AA4B2
+color C_QUIET       = #5B6270
+color C_PANEL       = color.new(#111827, 6)
+color C_TRANSPARENT = color.new(#000000, 100)
+
+//------------------------------------------------------------------------------
+// Helpers
+//------------------------------------------------------------------------------
+f_clamp(float value, float minimum, float maximum) =>
+    math.max(minimum, math.min(maximum, value))
+
+f_pct_text(float value) =>
+    na(value) ? "n/a" : str.tostring(value, "#.##") + "%"
+
+f_price_text(float value) =>
+    na(value) ? "n/a" : str.tostring(value, format.mintick)
+
+f_number_text(float value) =>
+    na(value) ? "n/a" : str.tostring(value, "#")
+
+f_multiple_text(float value) =>
+    na(value) ? "n/a" : str.tostring(value, "#.##") + "x"
+
+f_event_text(int event) =>
+    event == 3 ? "BULL REJECTION" : event == -3 ? "BEAR REJECTION" : event == 2 ? "BULL IMPULSE" : event == -2 ? "BEAR IMPULSE" : event == 9 ? "QUIET" : "NEUTRAL"
+
+f_event_color(int event) =>
+    event > 0 and event != 9 ? C_LONG : event < 0 ? C_SHORT : event == 9 ? C_QUIET : C_NEUTRAL
+
+f_quality_grade(float value) =>
+    value >= 80.0 ? "A+" : value >= 70.0 ? "A" : value >= 60.0 ? "B" : value >= 50.0 ? "C" : "LOW"
+
+f_activity_text(float value, bool quietMarket) =>
+    quietMarket ? "QUIET" : value >= 80.0 ? "EXTREME" : value >= 60.0 ? "HIGH" : value >= 40.0 ? "ACTIVE" : "MODERATE"
+
+//------------------------------------------------------------------------------
+// Confirmed Timeframe Engine
+//
+// Candidate signal candle = previous completed candle [1].
+// Adaptive baseline ends before that candle.
+//------------------------------------------------------------------------------
+f_confirmed_metrics() =>
+    float bodySeries = 100.0 * (close - open) / open
+    float absBodySeries = math.abs(bodySeries)
+
+    float bodyPct = bodySeries[1]
+    float absBodyPct = math.abs(bodyPct)
+    float rangePct = 100.0 * (high[1] - low[1]) / open[1]
+    float candleSpan = high[1] - low[1]
+
+    float bodyEfficiency = candleSpan > 0.0 ? math.abs(close[1] - open[1]) / candleSpan : 0.0
+    float closeLocation = candleSpan > 0.0 ? (close[1] - low[1]) / candleSpan : 0.5
+    float upperWickShare = candleSpan > 0.0 ? (high[1] - math.max(open[1], close[1])) / candleSpan : 0.0
+    float lowerWickShare = candleSpan > 0.0 ? (math.min(open[1], close[1]) - low[1]) / candleSpan : 0.0
+
+    float avgAbsBody = ta.sma(absBodySeries, lookback)[2]
+    float sdAbsBody = ta.stdev(absBodySeries, lookback)[2]
+
+    float adaptiveImpulse = math.max(
+        minImpulsePct,
+        nz(avgAbsBody, minImpulsePct) + impulseSigma * nz(sdAbsBody, 0.0)
+    )
+
+    float priorLow = ta.lowest(low[2], runBars)
+    float priorHigh = ta.highest(high[2], runBars)
+
+    float priorUpMove = na(priorLow) or priorLow == 0.0 ? na : 100.0 * (close[2] / priorLow - 1.0)
+    float priorDownMove = na(priorHigh) or priorHigh == 0.0 ? na : 100.0 * (close[2] / priorHigh - 1.0)
+    float priorMove = na(priorUpMove) and na(priorDownMove) ? na : nz(priorUpMove, 0.0) >= math.abs(nz(priorDownMove, 0.0)) ? priorUpMove : priorDownMove
+
+    float trendBase = close[1 + trendBars]
+    float trendPct = na(trendBase) or trendBase == 0.0 ? na : 100.0 * (close[1] / trendBase - 1.0)
+
+    bool activeMarket = rangePct >= minRangePct and (nz(avgAbsBody, 0.0) >= minAvgBodyPct or absBodyPct >= adaptiveImpulse)
+    bool impulseCandle = activeMarket and absBodyPct >= adaptiveImpulse
+
+    bool bullishImpulse = impulseCandle and bodyPct > 0.0 and bodyEfficiency >= minBodyEfficiency and closeLocation >= closeEdge
+    bool bearishImpulse = impulseCandle and bodyPct < 0.0 and bodyEfficiency >= minBodyEfficiency and closeLocation <= 1.0 - closeEdge
+
+    bool priorBullMove = nz(priorUpMove, 0.0) >= stretchTriggerPct
+    bool priorBearMove = nz(priorDownMove, 0.0) <= -stretchTriggerPct
+
+    bool bearishReaction = bodyPct < 0.0 and ((absBodyPct >= adaptiveImpulse * reversalImpulseFactor and bodyEfficiency >= minBodyEfficiency * 0.80) or (upperWickShare >= wickReject and closeLocation < 0.50))
+    bool bullishReaction = bodyPct > 0.0 and ((absBodyPct >= adaptiveImpulse * reversalImpulseFactor and bodyEfficiency >= minBodyEfficiency * 0.80) or (lowerWickShare >= wickReject and closeLocation > 0.50))
+
+    bool bullRejection = activeMarket and priorBearMove and bullishReaction
+    bool bearRejection = activeMarket and priorBullMove and bearishReaction
+
+    float impulseRatio = adaptiveImpulse > 0.0 ? absBodyPct / adaptiveImpulse : 0.0
+    float closeStrength = math.abs(closeLocation - 0.5) * 2.0
+    float candleQuality = 0.60 * bodyEfficiency + 0.40 * closeStrength
+
+    float rawScore = activeMarket ? math.sign(bodyPct) * math.min(100.0, 70.0 * impulseRatio * candleQuality) : 0.0
+    float directionalScore = bullRejection ? 100.0 : bearRejection ? -100.0 : rawScore
+
+    int event = not activeMarket ? 9 : bullRejection ? 3 : bearRejection ? -3 : bullishImpulse ? 2 : bearishImpulse ? -2 : 0
+
+    [bodyPct, rangePct, avgAbsBody, adaptiveImpulse, priorMove, trendPct, impulseRatio, directionalScore, event, high[1], low[1]]
+
+//------------------------------------------------------------------------------
+// Confirmed Multi-Timeframe Data
+//
+// IMPORTANT:
+// Tuple assignments intentionally remain on ONE physical line.
+//------------------------------------------------------------------------------
+[bodyFast, rangeFast, avgFast, impulseFast, runFast, trendFast, ratioFast, scoreFast, eventFast, highFast, lowFast] = request.security(
+    syminfo.tickerid,
+    tfFast,
+    f_confirmed_metrics(),
+    gaps = barmerge.gaps_off,
+    lookahead = barmerge.lookahead_on
+)
+
+[bodyMid, rangeMid, avgMid, impulseMid, runMid, trendMid, ratioMid, scoreMid, eventMid, highMid, lowMid] = request.security(
+    syminfo.tickerid,
+    tfMid,
+    f_confirmed_metrics(),
+    gaps = barmerge.gaps_off,
+    lookahead = barmerge.lookahead_on
+)
+
+[bodySlow, rangeSlow, avgSlow, impulseSlow, runSlow, trendSlow, ratioSlow, scoreSlow, eventSlow, highSlow, lowSlow] = request.security(
+    syminfo.tickerid,
+    tfSlow,
+    f_confirmed_metrics(),
+    gaps = barmerge.gaps_off,
+    lookahead = barmerge.lookahead_on
+)
+
+//------------------------------------------------------------------------------
+// Chart Timeframe Guard
+//------------------------------------------------------------------------------
+float chartSeconds = timeframe.in_seconds()
+
+float minimumRequestedSeconds = math.min(
+    timeframe.in_seconds(tfFast),
+    math.min(
+        timeframe.in_seconds(tfMid),
+        timeframe.in_seconds(tfSlow)
+    )
+)
+
+bool chartTimeframeSupported = chartSeconds <= minimumRequestedSeconds
+
+//------------------------------------------------------------------------------
+// Multi-Timeframe Runtime
+//------------------------------------------------------------------------------
+int activeCount = (
+    (eventFast != 9 ? 1 : 0) +
+    (eventMid != 9 ? 1 : 0) +
+    (eventSlow != 9 ? 1 : 0)
+)
+
+int bullishEvents = (
+    (eventFast > 0 and eventFast != 9 ? 1 : 0) +
+    (eventMid > 0 and eventMid != 9 ? 1 : 0) +
+    (eventSlow > 0 and eventSlow != 9 ? 1 : 0)
+)
+
+int bearishEvents = (
+    (eventFast < 0 ? 1 : 0) +
+    (eventMid < 0 ? 1 : 0) +
+    (eventSlow < 0 ? 1 : 0)
+)
+
+bool hasBullRejection = eventFast == 3 or eventMid == 3 or eventSlow == 3
+bool hasBearRejection = eventFast == -3 or eventMid == -3 or eventSlow == -3
+
+//------------------------------------------------------------------------------
+// QTR Directional Score
+//
+// Core 3H timeframe receives the strongest weight.
+//------------------------------------------------------------------------------
+float qtrScore = (
+    0.25 * nz(scoreFast, 0.0) +
+    0.50 * nz(scoreMid, 0.0) +
+    0.25 * nz(scoreSlow, 0.0)
+)
+
+bool quietMarket = activeCount == 0
+bool bullishConsensus = bullishEvents >= consensusNeeded
+bool bearishConsensus = bearishEvents >= consensusNeeded
+
+bool bullishOverride = (
+    singleRejectionOverride and
+    hasBullRejection and
+    qtrScore >= 15.0 and
+    bearishEvents == 0
+)
+
+bool bearishOverride = (
+    singleRejectionOverride and
+    hasBearRejection and
+    qtrScore <= -15.0 and
+    bullishEvents == 0
+)
+
+bool longOpportunity = (
+    chartTimeframeSupported and
+    not quietMarket and
+    (bullishConsensus or bullishOverride) and
+    not bearishConsensus
+)
+
+bool shortOpportunity = (
+    chartTimeframeSupported and
+    not quietMarket and
+    (bearishConsensus or bearishOverride) and
+    not bullishConsensus
+)
+
+bool mixedSignals = bullishEvents > 0 and bearishEvents > 0
+
+bool newLongOpportunity = longOpportunity and not longOpportunity[1]
+bool newShortOpportunity = shortOpportunity and not shortOpportunity[1]
+
+//------------------------------------------------------------------------------
+// Setup Quality
+//
+// Model agreement score.
+// NOT a claimed win probability.
+//------------------------------------------------------------------------------
+int signFast = scoreFast > 10.0 ? 1 : scoreFast < -10.0 ? -1 : 0
+int signMid = scoreMid > 10.0 ? 1 : scoreMid < -10.0 ? -1 : 0
+int signSlow = scoreSlow > 10.0 ? 1 : scoreSlow < -10.0 ? -1 : 0
+
+int signTotal = signFast + signMid + signSlow
+
+float alignmentRatio = math.abs(signTotal) / 3.0
+float activeRatio = activeCount / 3.0
+float scoreStrength = math.abs(qtrScore) / 100.0
+
+float setupQuality = math.min(
+    100.0,
+    45.0 * scoreStrength +
+    35.0 * alignmentRatio +
+    20.0 * activeRatio
+)
+
+//------------------------------------------------------------------------------
+// Market Activity
+//------------------------------------------------------------------------------
+float weightedRange = (
+    0.25 * nz(rangeFast, 0.0) +
+    0.50 * nz(rangeMid, 0.0) +
+    0.25 * nz(rangeSlow, 0.0)
+)
+
+float weightedImpulseThreshold = (
+    0.25 * nz(impulseFast, minImpulsePct) +
+    0.50 * nz(impulseMid, minImpulsePct) +
+    0.25 * nz(impulseSlow, minImpulsePct)
+)
+
+float weightedAbsoluteBody = (
+    0.25 * math.abs(nz(bodyFast, 0.0)) +
+    0.50 * math.abs(nz(bodyMid, 0.0)) +
+    0.25 * math.abs(nz(bodySlow, 0.0))
+)
+
+float weightedImpulseRatio = (
+    0.25 * nz(ratioFast, 0.0) +
+    0.50 * nz(ratioMid, 0.0) +
+    0.25 * nz(ratioSlow, 0.0)
+)
+
+float rangeActivityRatio = minRangePct > 0.0 ? weightedRange / minRangePct : 0.0
+
+float activityScore = (
+    25.0 * f_clamp(weightedImpulseRatio, 0.0, 2.0) +
+    25.0 * f_clamp(rangeActivityRatio, 0.0, 2.0)
+)
+
+//------------------------------------------------------------------------------
+// QTR Projection Engine
+//
+// This projection is a directional market scenario.
+// It is NOT an entry signal or guaranteed target.
+//------------------------------------------------------------------------------
+float trendComposite = (
+    0.25 * nz(trendFast, 0.0) +
+    0.50 * nz(trendMid, 0.0) +
+    0.25 * nz(trendSlow, 0.0)
+)
+
+float normalizedScore = f_clamp(
+    qtrScore / 100.0,
+    -1.0,
+    1.0
+)
+
+float normalizedTrend = f_clamp(
+    trendComposite / math.max(stretchTriggerPct, 0.10),
+    -1.0,
+    1.0
+)
+
+int opportunityDirection = longOpportunity ? 1 : shortOpportunity ? -1 : 0
+
+bool opportunityIsRejection = (
+    (opportunityDirection == 1 and hasBullRejection) or
+    (opportunityDirection == -1 and hasBearRejection)
+)
+
+float projectionBias = opportunityIsRejection ? normalizedScore : 0.75 * normalizedScore + 0.25 * normalizedTrend
+
+int projectionDirection = opportunityDirection != 0 ? opportunityDirection : mixedSignals ? 0 : projectionBias >= 0.10 ? 1 : projectionBias <= -0.10 ? -1 : 0
+
+float projectionStrength = opportunityDirection != 0 ? math.max(math.abs(projectionBias), 0.50) : math.abs(projectionBias)
+
+bool projectionAvailable = (
+    chartTimeframeSupported and
+    not quietMarket and
+    not mixedSignals and
+    projectionDirection != 0
+)
+
+//------------------------------------------------------------------------------
+// Projected Movement
+//------------------------------------------------------------------------------
+float baseProjectedMove = (
+    0.55 * weightedImpulseThreshold +
+    0.45 * weightedAbsoluteBody
+)
+
+float opportunityBoost = opportunityDirection != 0 ? 1.10 : 0.85
+
+float firstStepMove = (
+    baseProjectedMove *
+    projectionMultiplier *
+    opportunityBoost *
+    (0.35 + 0.65 * projectionStrength)
+)
+
+float projectedMove1 = math.min(
+    maxTotalProjectionPct,
+    firstStepMove
+)
+
+float projectedMove2 = math.min(
+    maxTotalProjectionPct,
+    firstStepMove * (1.0 + projectionDecay)
+)
+
+float projectedMove3 = math.min(
+    maxTotalProjectionPct,
+    firstStepMove * (1.0 + projectionDecay + projectionDecay * projectionDecay)
+)
+
+float signedMove1 = projectionDirection * projectedMove1
+float signedMove2 = projectionDirection * projectedMove2
+float signedMove3 = projectionDirection * projectedMove3
+
+float projectedPrice1 = projectionAvailable ? close * (1.0 + signedMove1 / 100.0) : na
+float projectedPrice2 = projectionAvailable ? close * (1.0 + signedMove2 / 100.0) : na
+float projectedPrice3 = projectionAvailable ? close * (1.0 + signedMove3 / 100.0) : na
+
+//------------------------------------------------------------------------------
+// Projection Corridor
+//------------------------------------------------------------------------------
+float projectionUncertainty = (
+    baseProjectedMove *
+    projectionCorridorWidth *
+    (1.0 - 0.40 * f_clamp(projectionStrength, 0.0, 1.0))
+)
+
+float projectionUncertainty3 = projectionUncertainty * math.sqrt(3.0)
+
+float projectedUpper3 = projectionAvailable ? close * (1.0 + (signedMove3 + projectionUncertainty3) / 100.0) : na
+float projectedLower3 = projectionAvailable ? close * (1.0 + (signedMove3 - projectionUncertainty3) / 100.0) : na
+
+//------------------------------------------------------------------------------
+// Runtime Language
+//------------------------------------------------------------------------------
+string runtimeState = not chartTimeframeSupported ? "TIMEFRAME WARNING" : quietMarket ? "QUIET MARKET" : longOpportunity ? "LONG OPPORTUNITY" : shortOpportunity ? "SHORT OPPORTUNITY" : mixedSignals ? "MIXED SIGNALS" : bullishEvents > 0 ? "BULLISH WATCH" : bearishEvents > 0 ? "BEARISH WATCH" : qtrScore >= 20.0 ? "BULLISH BIAS" : qtrScore <= -20.0 ? "BEARISH BIAS" : "NEUTRAL"
+
+color runtimeColor = not chartTimeframeSupported ? C_VIOLET : quietMarket ? C_QUIET : longOpportunity ? C_LONG : shortOpportunity ? C_SHORT : mixedSignals ? C_VIOLET : bullishEvents > 0 ? C_LONG : bearishEvents > 0 ? C_SHORT : qtrScore > 0.0 ? C_CYAN : qtrScore < 0.0 ? C_SHORT : C_NEUTRAL
+
+string actionText = not chartTimeframeSupported ? "USE 2H OR LOWER CHART" : quietMarket ? "LOW ACTIVITY - SCAN ANOTHER MARKET" : mixedSignals ? "NO CLEAR DIRECTION" : longOpportunity ? "LONG SETUP IDENTIFIED" : shortOpportunity ? "SHORT SETUP IDENTIFIED" : bullishEvents > 0 ? "MONITOR FOR LONG" : bearishEvents > 0 ? "MONITOR FOR SHORT" : "NO ACTIVE SETUP"
+
+//------------------------------------------------------------------------------
+// Trade Planning
+//
+// Reference price is NOT called "entry" because QTR does not yet have
+// a dedicated entry-trigger state machine.
+//------------------------------------------------------------------------------
+float referencePrice = close
+
+float longInvalidation = nz(lowMid, close) * (1.0 - invalidationBufferPct / 100.0)
+float shortInvalidation = nz(highMid, close) * (1.0 + invalidationBufferPct / 100.0)
+
+float referenceInvalidation = longOpportunity ? longInvalidation : shortOpportunity ? shortInvalidation : na
+
+bool planningValid = (longOpportunity and referenceInvalidation < referencePrice) or (shortOpportunity and referenceInvalidation > referencePrice)
+
+float referenceRisk = planningValid ? math.abs(referencePrice - referenceInvalidation) : na
+float referenceRiskPct = planningValid and referencePrice != 0.0 ? 100.0 * referenceRisk / referencePrice : na
+
+float referenceTarget = planningValid ? longOpportunity ? referencePrice + referenceRisk * minimumRR : referencePrice - referenceRisk * minimumRR : na
+
+string setupType = longOpportunity ? hasBullRejection ? "REJECTION" : "IMPULSE" : shortOpportunity ? hasBearRejection ? "REJECTION" : "IMPULSE" : "NONE"
+
+//------------------------------------------------------------------------------
+// Percent Level Anchor
+//------------------------------------------------------------------------------
+float anchorPrice = request.security(
+    syminfo.tickerid,
+    anchorTf,
+    close[anchorBarsBack],
+    gaps = barmerge.gaps_off,
+    lookahead = barmerge.lookahead_on
+)
+
+//------------------------------------------------------------------------------
+// Percent Levels
+//------------------------------------------------------------------------------
+plot(
+    showLadder ? anchorPrice : na,
+    "QTR Anchor",
+    color = color.new(C_NEUTRAL, 35),
+    linewidth = 1,
+    style = plot.style_stepline
+)
+
+plot(
+    showLadder ? anchorPrice * (1.0 + ladder1 / 100.0) : na,
+    "QTR +A",
+    color = color.new(C_CYAN, 45),
+    linewidth = 1,
+    style = plot.style_stepline
+)
+
+plot(
+    showLadder ? anchorPrice * (1.0 - ladder1 / 100.0) : na,
+    "QTR -A",
+    color = color.new(C_CYAN, 45),
+    linewidth = 1,
+    style = plot.style_stepline
+)
+
+plot(
+    showLadder ? anchorPrice * (1.0 + ladder2 / 100.0) : na,
+    "QTR +B",
+    color = color.new(C_VIOLET, 45),
+    linewidth = 1,
+    style = plot.style_stepline
+)
+
+plot(
+    showLadder ? anchorPrice * (1.0 - ladder2 / 100.0) : na,
+    "QTR -B",
+    color = color.new(C_VIOLET, 45),
+    linewidth = 1,
+    style = plot.style_stepline
+)
+
+plot(
+    showLadder ? anchorPrice * (1.0 + ladder3 / 100.0) : na,
+    "QTR +C",
+    color = color.new(C_CYAN, 65),
+    linewidth = 1,
+    style = plot.style_stepline
+)
+
+plot(
+    showLadder ? anchorPrice * (1.0 - ladder3 / 100.0) : na,
+    "QTR -C",
+    color = color.new(C_CYAN, 65),
+    linewidth = 1,
+    style = plot.style_stepline
+)
+
+plot(
+    showLadder ? anchorPrice * (1.0 + ladder4 / 100.0) : na,
+    "QTR +D",
+    color = color.new(C_VIOLET, 70),
+    linewidth = 1,
+    style = plot.style_stepline
+)
+
+plot(
+    showLadder ? anchorPrice * (1.0 - ladder4 / 100.0) : na,
+    "QTR -D",
+    color = color.new(C_VIOLET, 70),
+    linewidth = 1,
+    style = plot.style_stepline
+)
+
+//------------------------------------------------------------------------------
+// Opportunity Markers
+//------------------------------------------------------------------------------
+plotshape(
+    showSignals and newLongOpportunity,
+    title = "QTR Long Opportunity",
+    style = shape.labelup,
+    location = location.belowbar,
+    text = "QTR\nLONG",
+    color = C_LONG,
+    textcolor = color.white,
+    size = size.tiny
+)
+
+plotshape(
+    showSignals and newShortOpportunity,
+    title = "QTR Short Opportunity",
+    style = shape.labeldown,
+    location = location.abovebar,
+    text = "QTR\nSHORT",
+    color = C_SHORT,
+    textcolor = color.white,
+    size = size.tiny
+)
+
+//------------------------------------------------------------------------------
+// Quiet Market Shading
+//------------------------------------------------------------------------------
+bgcolor(
+    shadeQuietMarket and quietMarket ? color.new(C_QUIET, 92) : na,
+    title = "Quiet market shading"
+)
+
+//------------------------------------------------------------------------------
+// Drawing Objects
+//------------------------------------------------------------------------------
+var line projectionLine1 = line.new(
+    na,
+    na,
+    na,
+    na,
+    xloc = xloc.bar_time,
+    color = C_TRANSPARENT,
+    width = 3
+)
+
+var line projectionLine2 = line.new(
+    na,
+    na,
+    na,
+    na,
+    xloc = xloc.bar_time,
+    color = C_TRANSPARENT,
+    width = 2
+)
+
+var line projectionLine3 = line.new(
+    na,
+    na,
+    na,
+    na,
+    xloc = xloc.bar_time,
+    color = C_TRANSPARENT,
+    width = 2
+)
+
+var line projectionUpperLine = line.new(
+    na,
+    na,
+    na,
+    na,
+    xloc = xloc.bar_time,
+    color = C_TRANSPARENT,
+    width = 1,
+    style = line.style_dashed
+)
+
+var line projectionLowerLine = line.new(
+    na,
+    na,
+    na,
+    na,
+    xloc = xloc.bar_time,
+    color = C_TRANSPARENT,
+    width = 1,
+    style = line.style_dashed
+)
+
+var line referencePriceLine = line.new(
+    na,
+    na,
+    na,
+    na,
+    xloc = xloc.bar_time,
+    color = C_TRANSPARENT,
+    width = 1,
+    style = line.style_dotted
+)
+
+var line invalidationLine = line.new(
+    na,
+    na,
+    na,
+    na,
+    xloc = xloc.bar_time,
+    color = C_TRANSPARENT,
+    width = 2,
+    style = line.style_dashed
+)
+
+var line referenceTargetLine = line.new(
+    na,
+    na,
+    na,
+    na,
+    xloc = xloc.bar_time,
+    color = C_TRANSPARENT,
+    width = 2,
+    style = line.style_dashed
+)
+
+var label projectionLabel = label.new(
+    na,
+    na,
+    "",
+    xloc = xloc.bar_time,
+    style = label.style_label_left,
+    color = C_TRANSPARENT,
+    textcolor = color.white,
+    size = size.tiny
+)
+
+//------------------------------------------------------------------------------
+// Update Projection / Planning Drawings
+//------------------------------------------------------------------------------
+if barstate.islast
+    int coreMilliseconds = int(timeframe.in_seconds(tfMid) * 1000.0)
+
+    int projectionStartTime = na(time_close) ? time : time_close
+    int projectionTime1 = projectionStartTime + coreMilliseconds
+    int projectionTime2 = projectionStartTime + coreMilliseconds * 2
+    int projectionTime3 = projectionStartTime + coreMilliseconds * 3
+
+    color projectionColor = projectionDirection > 0 ? C_LONG : projectionDirection < 0 ? C_SHORT : C_NEUTRAL
+    color corridorColor = color.new(C_VIOLET, 55)
+
+    if showProjection and projectionAvailable
+        line.set_xy1(
+            projectionLine1,
+            projectionStartTime,
+            close
+        )
+
+        line.set_xy2(
+            projectionLine1,
+            projectionTime1,
+            projectedPrice1
+        )
+
+        line.set_color(
+            projectionLine1,
+            projectionColor
+        )
+
+        line.set_xy1(
+            projectionLine2,
+            projectionTime1,
+            projectedPrice1
+        )
+
+        line.set_xy2(
+            projectionLine2,
+            projectionTime2,
+            projectedPrice2
+        )
+
+        line.set_color(
+            projectionLine2,
+            projectionColor
+        )
+
+        line.set_xy1(
+            projectionLine3,
+            projectionTime2,
+            projectedPrice2
+        )
+
+        line.set_xy2(
+            projectionLine3,
+            projectionTime3,
+            projectedPrice3
+        )
+
+        line.set_color(
+            projectionLine3,
+            projectionColor
+        )
+
+        label.set_xy(
+            projectionLabel,
+            projectionTime3,
+            projectedPrice3
+        )
+
+        label.set_text(
+            projectionLabel,
+            "QTR PROJECTION\n" +
+            f_pct_text(signedMove3) +
+            "\n" +
+            f_price_text(projectedPrice3)
+        )
+
+        label.set_color(
+            projectionLabel,
+            projectionColor
+        )
+
+        label.set_textcolor(
+            projectionLabel,
+            color.white
+        )
+
+        if showProjectionCorridor
+            line.set_xy1(
+                projectionUpperLine,
+                projectionStartTime,
+                close
+            )
+
+            line.set_xy2(
+                projectionUpperLine,
+                projectionTime3,
+                projectedUpper3
+            )
+
+            line.set_color(
+                projectionUpperLine,
+                corridorColor
+            )
+
+            line.set_xy1(
+                projectionLowerLine,
+                projectionStartTime,
+                close
+            )
+
+            line.set_xy2(
+                projectionLowerLine,
+                projectionTime3,
+                projectedLower3
+            )
+
+            line.set_color(
+                projectionLowerLine,
+                corridorColor
+            )
+        else
+            line.set_color(
+                projectionUpperLine,
+                C_TRANSPARENT
+            )
+
+            line.set_color(
+                projectionLowerLine,
+                C_TRANSPARENT
+            )
+    else
+        line.set_color(
+            projectionLine1,
+            C_TRANSPARENT
+        )
+
+        line.set_color(
+            projectionLine2,
+            C_TRANSPARENT
+        )
+
+        line.set_color(
+            projectionLine3,
+            C_TRANSPARENT
+        )
+
+        line.set_color(
+            projectionUpperLine,
+            C_TRANSPARENT
+        )
+
+        line.set_color(
+            projectionLowerLine,
+            C_TRANSPARENT
+        )
+
+        label.set_text(
+            projectionLabel,
+            ""
+        )
+
+        label.set_color(
+            projectionLabel,
+            C_TRANSPARENT
+        )
+
+    if showPlanningLevels and planningValid
+        line.set_xy1(
+            referencePriceLine,
+            projectionStartTime,
+            referencePrice
+        )
+
+        line.set_xy2(
+            referencePriceLine,
+            projectionTime3,
+            referencePrice
+        )
+
+        line.set_color(
+            referencePriceLine,
+            color.new(C_CYAN, 40)
+        )
+
+        line.set_xy1(
+            invalidationLine,
+            projectionStartTime,
+            referenceInvalidation
+        )
+
+        line.set_xy2(
+            invalidationLine,
+            projectionTime3,
+            referenceInvalidation
+        )
+
+        line.set_color(
+            invalidationLine,
+            C_SHORT
+        )
+
+        line.set_xy1(
+            referenceTargetLine,
+            projectionStartTime,
+            referenceTarget
+        )
+
+        line.set_xy2(
+            referenceTargetLine,
+            projectionTime3,
+            referenceTarget
+        )
+
+        line.set_color(
+            referenceTargetLine,
+            C_LONG
+        )
+    else
+        line.set_color(
+            referencePriceLine,
+            C_TRANSPARENT
+        )
+
+        line.set_color(
+            invalidationLine,
+            C_TRANSPARENT
+        )
+
+        line.set_color(
+            referenceTargetLine,
+            C_TRANSPARENT
+        )
+
+//------------------------------------------------------------------------------
+// QTR Dashboard
+//------------------------------------------------------------------------------
+var table dashboard = table.new(
+    position.top_right,
+    6,
+    10,
+    bgcolor = C_PANEL,
+    frame_color = color.new(C_NEUTRAL, 65),
+    frame_width = 1
+)
+
+//------------------------------------------------------------------------------
+// Dashboard Update
+//------------------------------------------------------------------------------
+if barstate.islast and showDashboard
+    //--------------------------------------------------------------------------
+    // Main Runtime
+    //--------------------------------------------------------------------------
+    table.cell(
+        dashboard,
+        0,
+        0,
+        "QTR",
+        text_color = color.white,
+        bgcolor = C_PANEL,
+        text_size = size.small
+    )
+
+    table.cell(
+        dashboard,
+        1,
+        0,
+        runtimeState,
+        text_color = color.white,
+        bgcolor = runtimeColor,
+        text_size = size.small
+    )
+
+    table.cell(
+        dashboard,
+        2,
+        0,
+        "SCORE",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        3,
+        0,
+        f_number_text(qtrScore),
+        text_color = runtimeColor,
+        bgcolor = C_PANEL,
+        text_size = size.small
+    )
+
+    table.cell(
+        dashboard,
+        4,
+        0,
+        "QUALITY",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        5,
+        0,
+        f_quality_grade(setupQuality) + " " + f_number_text(setupQuality),
+        text_color = runtimeColor,
+        bgcolor = C_PANEL,
+        text_size = size.small
+    )
+
+    //--------------------------------------------------------------------------
+    // Timeframe Headers
+    //--------------------------------------------------------------------------
+    table.cell(
+        dashboard,
+        0,
+        1,
+        "TF",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        1,
+        1,
+        "STATE",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        2,
+        1,
+        "CH%",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        3,
+        1,
+        "PRIOR%",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        4,
+        1,
+        "TREND%",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        5,
+        1,
+        "IMPULSE",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    //--------------------------------------------------------------------------
+    // Fast Timeframe
+    //--------------------------------------------------------------------------
+    table.cell(
+        dashboard,
+        0,
+        2,
+        tfFast,
+        text_color = C_CYAN,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        1,
+        2,
+        f_event_text(eventFast),
+        text_color = f_event_color(eventFast),
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        2,
+        2,
+        f_pct_text(bodyFast),
+        text_color = bodyFast >= 0.0 ? C_LONG : C_SHORT,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        3,
+        2,
+        f_pct_text(runFast),
+        text_color = runFast >= 0.0 ? C_LONG : C_SHORT,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        4,
+        2,
+        f_pct_text(trendFast),
+        text_color = trendFast >= 0.0 ? C_LONG : C_SHORT,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        5,
+        2,
+        f_multiple_text(ratioFast),
+        text_color = ratioFast >= 1.0 ? C_VIOLET : C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    //--------------------------------------------------------------------------
+    // Core Timeframe
+    //--------------------------------------------------------------------------
+    table.cell(
+        dashboard,
+        0,
+        3,
+        tfMid,
+        text_color = C_VIOLET,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        1,
+        3,
+        f_event_text(eventMid),
+        text_color = f_event_color(eventMid),
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        2,
+        3,
+        f_pct_text(bodyMid),
+        text_color = bodyMid >= 0.0 ? C_LONG : C_SHORT,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        3,
+        3,
+        f_pct_text(runMid),
+        text_color = runMid >= 0.0 ? C_LONG : C_SHORT,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        4,
+        3,
+        f_pct_text(trendMid),
+        text_color = trendMid >= 0.0 ? C_LONG : C_SHORT,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        5,
+        3,
+        f_multiple_text(ratioMid),
+        text_color = ratioMid >= 1.0 ? C_VIOLET : C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    //--------------------------------------------------------------------------
+    // Slow Timeframe
+    //--------------------------------------------------------------------------
+    table.cell(
+        dashboard,
+        0,
+        4,
+        tfSlow,
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        1,
+        4,
+        f_event_text(eventSlow),
+        text_color = f_event_color(eventSlow),
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        2,
+        4,
+        f_pct_text(bodySlow),
+        text_color = bodySlow >= 0.0 ? C_LONG : C_SHORT,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        3,
+        4,
+        f_pct_text(runSlow),
+        text_color = runSlow >= 0.0 ? C_LONG : C_SHORT,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        4,
+        4,
+        f_pct_text(trendSlow),
+        text_color = trendSlow >= 0.0 ? C_LONG : C_SHORT,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        5,
+        4,
+        f_multiple_text(ratioSlow),
+        text_color = ratioSlow >= 1.0 ? C_VIOLET : C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    //--------------------------------------------------------------------------
+    // Projection Headers
+    //--------------------------------------------------------------------------
+    table.cell(
+        dashboard,
+        0,
+        5,
+        "PROJECTION",
+        text_color = C_CYAN,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        1,
+        5,
+        "T+1",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        2,
+        5,
+        "T+2",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        3,
+        5,
+        "T+3",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        4,
+        5,
+        "MOVE",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        5,
+        5,
+        "ACTIVITY",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    //--------------------------------------------------------------------------
+    // Projection Values
+    //--------------------------------------------------------------------------
+    table.cell(
+        dashboard,
+        0,
+        6,
+        projectionAvailable ? (projectionDirection > 0 ? "UP" : "DOWN") : "NONE",
+        text_color = projectionAvailable ? runtimeColor : C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        1,
+        6,
+        f_price_text(projectedPrice1),
+        text_color = projectionAvailable ? runtimeColor : C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        2,
+        6,
+        f_price_text(projectedPrice2),
+        text_color = projectionAvailable ? runtimeColor : C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        3,
+        6,
+        f_price_text(projectedPrice3),
+        text_color = projectionAvailable ? runtimeColor : C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        4,
+        6,
+        projectionAvailable ? f_pct_text(signedMove3) : "n/a",
+        text_color = projectionAvailable ? runtimeColor : C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        5,
+        6,
+        f_activity_text(activityScore, quietMarket),
+        text_color = quietMarket ? C_QUIET : activityScore >= 60.0 ? C_VIOLET : C_CYAN,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    //--------------------------------------------------------------------------
+    // Planning Headers
+    //--------------------------------------------------------------------------
+    table.cell(
+        dashboard,
+        0,
+        7,
+        "PLAN",
+        text_color = C_CYAN,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        1,
+        7,
+        "REF PRICE",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        2,
+        7,
+        "INVALID",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        3,
+        7,
+        str.tostring(minimumRR, "#.##") + "R",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        4,
+        7,
+        "RISK%",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        5,
+        7,
+        "TYPE",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    //--------------------------------------------------------------------------
+    // Planning Values
+    //--------------------------------------------------------------------------
+    table.cell(
+        dashboard,
+        0,
+        8,
+        planningValid ? (longOpportunity ? "LONG" : "SHORT") : "NONE",
+        text_color = planningValid ? runtimeColor : C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        1,
+        8,
+        planningValid ? f_price_text(referencePrice) : "n/a",
+        text_color = C_CYAN,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        2,
+        8,
+        planningValid ? f_price_text(referenceInvalidation) : "n/a",
+        text_color = C_SHORT,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        3,
+        8,
+        planningValid ? f_price_text(referenceTarget) : "n/a",
+        text_color = C_LONG,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        4,
+        8,
+        planningValid ? f_pct_text(referenceRiskPct) : "n/a",
+        text_color = C_VIOLET,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        5,
+        8,
+        setupType,
+        text_color = planningValid ? runtimeColor : C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    //--------------------------------------------------------------------------
+    // Current Action
+    //--------------------------------------------------------------------------
+    table.cell(
+        dashboard,
+        0,
+        9,
+        "NOW",
+        text_color = C_CYAN,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        1,
+        9,
+        actionText,
+        text_color = runtimeColor,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        2,
+        9,
+        "",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        3,
+        9,
+        str.tostring(activeCount) + "/3 ACTIVE",
+        text_color = quietMarket ? C_QUIET : C_CYAN,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        4,
+        9,
+        "MTF",
+        text_color = C_NEUTRAL,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+    table.cell(
+        dashboard,
+        5,
+        9,
+        chartTimeframeSupported ? "CONFIRMED" : "WARNING",
+        text_color = chartTimeframeSupported ? C_CYAN : C_VIOLET,
+        bgcolor = C_PANEL,
+        text_size = size.tiny
+    )
+
+//------------------------------------------------------------------------------
+// Hide Dashboard
+//------------------------------------------------------------------------------
+if barstate.islast and not showDashboard
+    table.clear(
+        dashboard,
+        0,
+        0,
+        5,
+        9
+    )
+
+//------------------------------------------------------------------------------
+// Alerts
+//------------------------------------------------------------------------------
+alertcondition(
+    newLongOpportunity,
+    "QTR Long Opportunity",
+    "QTR LONG OPPORTUNITY | {{ticker}} | price={{close}}"
+)
+
+alertcondition(
+    newShortOpportunity,
+    "QTR Short Opportunity",
+    "QTR SHORT OPPORTUNITY | {{ticker}} | price={{close}}"
+)
+
+alertcondition(
+    newLongOpportunity and setupQuality >= 70.0,
+    "QTR High-Quality Long",
+    "QTR HIGH-QUALITY LONG OPPORTUNITY | {{ticker}} | price={{close}}"
+)
+
+alertcondition(
+    newShortOpportunity and setupQuality >= 70.0,
+    "QTR High-Quality Short",
+    "QTR HIGH-QUALITY SHORT OPPORTUNITY | {{ticker}} | price={{close}}"
+)
+
+alertcondition(
+    quietMarket and not quietMarket[1],
+    "QTR Quiet Market",
+    "QTR QUIET MARKET | {{ticker}} | Consider scanning another market."
+)

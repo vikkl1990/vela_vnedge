@@ -1,0 +1,96 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © gregorfun
+
+//@version=6
+indicator("Stock vs. Sector Relative Strength", "Stock/Sector RS", overlay = false, dynamic_requests = true)
+plot(close)
+// ── Inputs ────────────────────────────────────────────────────────────────────
+lookback    = input.int(20, "Relative-return lookback (bars)", minval = 2)
+zWindow     = input.int(60, "Z-score window (bars)", minval = 10)
+zBand       = input.float(1.0, "Z-score band", minval = 0.1, step = 0.1)
+benchMode   = input.string("Auto (sector ETF)", "Benchmark", options = ["Auto (sector ETF)", "Manual"])
+benchManual = input.symbol("AMEX:SPY", "Manual benchmark")
+benchFallback = input.symbol("AMEX:SPY", "Fallback when sector is unknown")
+display     = input.string("Z-score", "Display", options = ["Z-score", "Relative return %"])
+showTable   = input.bool(true, "Show info table")
+
+// ── Sector → SPDR ETF ─────────────────────────────────────────────────────────
+// TradingView's sector taxonomy (20 sectors) folded into the 11 SPDR sector ETFs.
+// Approximate by design: TradingView does not use GICS. Override via "Manual" if the
+// mapping is wrong for a specific name (e.g. food retailers land in XLY, not XLP).
+sectorEtf(string sector, string industry) =>
+    string etf = switch sector
+        "Technology Services"    => "AMEX:XLK"
+        "Electronic Technology"  => "AMEX:XLK"
+        "Finance"                => "AMEX:XLF"
+        "Health Technology"      => "AMEX:XLV"
+        "Health Services"        => "AMEX:XLV"
+        "Consumer Non-Durables"  => "AMEX:XLP"
+        "Consumer Durables"      => "AMEX:XLY"
+        "Consumer Services"      => "AMEX:XLY"
+        "Retail Trade"           => "AMEX:XLY"
+        "Producer Manufacturing" => "AMEX:XLI"
+        "Industrial Services"    => "AMEX:XLI"
+        "Transportation"         => "AMEX:XLI"
+        "Commercial Services"    => "AMEX:XLI"
+        "Distribution Services"  => "AMEX:XLI"
+        "Communications"         => "AMEX:XLC"
+        "Energy Minerals"        => "AMEX:XLE"
+        "Non-Energy Minerals"    => "AMEX:XLB"
+        "Process Industries"     => "AMEX:XLB"
+        "Utilities"              => "AMEX:XLU"
+        => ""
+    // REITs sit under "Finance" in TradingView's taxonomy.
+    if sector == "Finance" and str.contains(industry, "Real Estate")
+        etf := "AMEX:XLRE"
+    etf
+
+string autoEtf  = sectorEtf(syminfo.sector, syminfo.industry)
+bool   autoOk   = benchMode == "Auto (sector ETF)" and str.length(autoEtf) > 0
+string benchSym = benchMode == "Manual" ? benchManual : autoOk ? autoEtf : benchFallback
+
+// Same timeframe as the chart, no lookahead: the benchmark bar is the one that closed
+// together with the chart bar.
+float benchClose = request.security(benchSym, timeframe.period, close, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+
+// ── Relative strength ─────────────────────────────────────────────────────────
+float stockRet = close / close[lookback] - 1
+float benchRet = benchClose / benchClose[lookback] - 1
+float rel      = stockRet - benchRet                       // relative return over the lookback
+float relMean  = ta.sma(rel, zWindow)
+float relSd    = ta.stdev(rel, zWindow)
+float z        = relSd > 0 ? (rel - relMean) / relSd : na  // how unusual today's relative return is
+int   state    = na(z) ? 0 : z > zBand ? 1 : z < -zBand ? -1 : 0
+
+// ── Plots ─────────────────────────────────────────────────────────────────────
+bool  showZ    = display == "Z-score"
+color upCol    = color.new(color.teal, 0)
+color downCol  = color.new(color.red, 0)
+
+plot(showZ ? z : na, "Z-score", color = z >= 0 ? upCol : downCol, linewidth = 2)
+plot(showZ ? na : rel * 100, "Relative return %", style = plot.style_columns, color = rel >= 0 ? upCol : downCol)
+plot(showZ ? zBand : na, "Upper band", color = color.new(color.gray, 50), style = plot.style_line)
+plot(showZ ? -zBand : na, "Lower band", color = color.new(color.gray, 50), style = plot.style_line)
+hline(0, "Zero", color = color.gray)
+bgcolor(state == 1 ? color.new(color.teal, 88) : state == -1 ? color.new(color.red, 88) : na)
+
+// ── Info table ────────────────────────────────────────────────────────────────
+var table info = table.new(position.top_right, 2, 5, border_width = 1)
+if showTable and barstate.islast
+    color bg = color.new(color.gray, 70)
+    table.cell(info, 0, 0, "Sector",    text_color = color.white, bgcolor = bg)
+    table.cell(info, 1, 0, str.length(syminfo.sector) > 0 ? syminfo.sector : "n/a", text_color = color.white, bgcolor = bg)
+    table.cell(info, 0, 1, "Benchmark", text_color = color.white, bgcolor = bg)
+    table.cell(info, 1, 1, benchSym + (benchMode == "Auto (sector ETF)" and not autoOk ? " (fallback)" : ""), text_color = color.white, bgcolor = bg)
+    table.cell(info, 0, 2, "Rel. return " + str.tostring(lookback) + " bars", text_color = color.white, bgcolor = bg)
+    table.cell(info, 1, 2, str.tostring(rel * 100, "#.##") + " %", text_color = rel >= 0 ? color.teal : color.red, bgcolor = bg)
+    table.cell(info, 0, 3, "Z-score",   text_color = color.white, bgcolor = bg)
+    table.cell(info, 1, 3, str.tostring(z, "#.##"), text_color = color.white, bgcolor = bg)
+    table.cell(info, 0, 4, "State",     text_color = color.white, bgcolor = bg)
+    table.cell(info, 1, 4, state == 1 ? "outperforming" : state == -1 ? "underperforming" : "in line", text_color = state == 1 ? color.teal : state == -1 ? color.red : color.white, bgcolor = bg)
+
+// ── Alerts (state changes, not trade signals) ─────────────────────────────────
+alertcondition(ta.crossover(rel, 0),     "Relative return turns positive", "{{ticker}}: relative return vs. benchmark turned positive")
+alertcondition(ta.crossunder(rel, 0),    "Relative return turns negative", "{{ticker}}: relative return vs. benchmark turned negative")
+alertcondition(ta.crossover(z, zBand),   "Z-score enters upper band",      "{{ticker}}: relative strength z-score above upper band")
+alertcondition(ta.crossunder(z, -zBand), "Z-score enters lower band",      "{{ticker}}: relative strength z-score below lower band")

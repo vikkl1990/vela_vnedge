@@ -1,0 +1,548 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © ForexCracked
+
+//@version=6
+indicator("Market Structure BOS/CHoCH + Break Follow-Through [ForexCracked]", shorttitle = "BOSFT[FXC]", overlay = true, max_lines_count = 200, max_labels_count = 300, max_boxes_count = 100, max_bars_back = 500)
+
+// =====================================================================
+// Market Structure BOS/CHoCH + Break Follow-Through
+// ---------------------------------------------------------------------
+// Structure is read from confirmed swings, and every break of a swing is
+// then MEASURED on this chart's own history.
+//
+// SWINGS. A leg machine tracks the running extreme of the current leg
+// and the opposite extreme since it. A swing high is confirmed the first
+// time a bar CLOSES swingK x ATR below the running high (mirror for
+// lows), and a close through the previous swing confirms the swing in
+// between. No pivot lookback, no bar-count symmetry.
+//
+// BREAKS. A close through the live swing high/low is a BOS (with the
+// current structure) or a CHoCH (against it; flips it). A bar that trades
+// through the level but closes back inside is a WICK-ONLY break: measured
+// in its own class, never drawn.
+//
+// THE RACE. From the bar after the break, two finish lines the same
+// distance from the level (raceK x ATR frozen at the break bar): one
+// beyond the level in the break direction, one back through it. First
+// touched wins: reached / snapped back; neither inside winN bars = neither.
+//
+// STORAGE. Per class (BOS/CHoCH x close/wick) a rolling ring of the last
+// statN outcomes, the furthest run of every filed break, and the bars it
+// took the reached ones to get there. n is printed on everything; below
+// nMin a percentage is not printed at all.
+//
+// PIXELS. The structure line and dealing-range fill are plot() series of
+// var state (drawn on every historical bar, zero objects). The live
+// levels are blocks whose height is the class median run. The run box
+// after a break has the median run as height and median bars as width,
+// and restyles with its own outcome. Break labels are frozen at creation.
+//
+// Zero request.security, zero time(): symbol- and timeframe-agnostic.
+// All statistics mutate only on confirmed bars.
+// =====================================================================
+
+// ---------------- INPUTS ----------------
+gS = "Structure"
+swingK   = input.float(1.5, "Swing confirmation (x ATR)", minval = 0.3, maxval = 6.0, step = 0.1, group = gS, tooltip = "A swing high is confirmed the first time a bar CLOSES this far below the running high (mirror for lows). A price distance, not a bar count, so it reads the same on every symbol. Lower to 1.0 for internal structure, raise on choppy symbols.")
+atrLen   = input.int(14, "ATR length", minval = 5, maxval = 50, group = gS, tooltip = "The ruler for everything here: swing confirmation, the finish lines, the block heights and the distances printed on labels.")
+showTags = input.bool(true, "HH / HL / LH / LL tags", group = gS)
+keepTags = input.int(40, "Swing tags to keep", minval = 10, maxval = 120, group = gS, tooltip = "Tags are placed on the swing bar when the swing confirms, so they appear a few bars late. Confirmation lag, not repainting. Oldest removed first.")
+
+gM = "Measurement"
+raceK  = input.float(1.0, "Follow-through distance (x ATR)", minval = 0.5, maxval = 3.0, step = 0.25, group = gM, tooltip = "After a break the script watches for the first of two touches: this far BEYOND the level (reached) or this far BACK THROUGH it (snapped back). Same distance both ways, so it is a fair race. ATR is frozen at the break bar.")
+winN   = input.int(30, "Outcome window (bars)", minval = 10, maxval = 100, group = gM, tooltip = "Bars after the break in which the race must resolve. Neither finish line touched = filed as neither.")
+statN  = input.int(200, "Breaks kept per class", minval = 30, maxval = 500, group = gM, tooltip = "Rolling window: the last N filed breaks of each class. Older breaks fall out, so the numbers describe recent behaviour on this chart. Every label prints its real n.")
+nMin   = input.int(20, "Minimum n before a percentage prints", minval = 10, maxval = 100, group = gM, tooltip = "Below this a label prints only the sample size, so a number built on six breaks never dresses up as one built on two hundred.")
+
+gC = "Chart"
+keepBreaks = input.int(20, "Break lines to keep", minval = 4, maxval = 80, group = gC, tooltip = "Oldest resolved breaks are removed first. A break still being measured is never removed.")
+keepRun    = input.int(4, "Run boxes to keep", minval = 1, maxval = 8, group = gC, tooltip = "The measured-run box after each break. The ones that stay show which recent breaks reached (filled) and which snapped back (hollow).")
+minBoxAtr  = input.float(0.75, "Minimum block height (x ATR)", minval = 0.25, maxval = 2.0, step = 0.05, group = gC, tooltip = "A floor so a block or run box never becomes too thin to see on a small chart. Raise it on small screens.")
+extN       = input.int(20, "Project blocks right (bars)", minval = 5, maxval = 50, group = gC)
+showRange  = input.bool(true, "Shade the dealing range", group = gC)
+showBox    = input.bool(true, "Run box after each break", group = gC)
+showTbl    = input.bool(true, "Dashboard", group = gC)
+tblPosIn   = input.string("Top Right", "Dashboard position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = gC)
+tblPos     = tblPosIn == "Top Left" ? position.top_left : tblPosIn == "Bottom Right" ? position.bottom_right : tblPosIn == "Bottom Left" ? position.bottom_left : position.top_right
+
+gV = "Style"
+colUp  = input.color(#2dd4bf, "Bullish structure / up-breaks", group = gV)
+colDn  = input.color(#e84e89, "Bearish structure / down-breaks", group = gV)
+colNav = input.color(#1a2c4c, "Label ground", group = gV)
+
+// ---------------- GLOBAL SERIES ----------------
+atr = ta.atr(atrLen)
+ok  = not na(atr) and atr > 0
+mut = barstate.isconfirmed and ok
+
+// pips on 5-digit and 3-digit forex feeds; price units everywhere else
+isFx    = syminfo.type == "forex" and (syminfo.mintick == 0.00001 or syminfo.mintick == 0.001)
+pipSize = syminfo.mintick * (isFx ? 10 : 1)
+distTxt(float d) => isFx ? str.tostring(math.round(math.abs(d) / pipSize, 1)) + "p" : str.tostring(math.abs(d), format.mintick)
+pxTxt(float p)   => str.tostring(p, format.mintick)
+
+// ---------------- STATE ----------------
+// leg machine
+var int   legDir    = 0
+var float legExt    = na
+var int   legExtBar = 0
+var float oppExt    = na
+var int   oppExtBar = 0
+// confirmed swings (live levels) + flags
+var float shPx = na
+var int   shBar = 0
+var float slPx = na
+var int   slBar = 0
+var bool  shBroken = false
+var bool  slBroken = false
+var bool  shWicked = false
+var bool  slWicked = false
+// structure
+var int    dir = 0          // 0 unset, +1 bullish, -1 bearish
+var int    evSeq = 0
+var int    lastBrkBar = 0
+var int    lastBrkKind = 0  // 0 none, 1 BOS, 2 CHoCH
+var int    lastBrkDir = 0
+var int    lastBrkId = 0
+var string lastBrkOut = "pending"
+var int    filedTotal = 0
+
+// open events (measurement records; wick events have no drawing)
+var eId    = array.new<int>()
+var eBar   = array.new<int>()
+var eLvl   = array.new<float>()
+var eAtr   = array.new<float>()
+var eCell  = array.new<int>()     // -1 = first break of the chart, drawn but not counted
+var eBull  = array.new<bool>()
+var eRun   = array.new<float>()
+var eOut   = array.new<int>()      // 0 pending, 1 neither, 2 snapped, 3 reached (decided; the run is still measured to the window end)
+
+// outcome rings per class: cell = kind*2 + wick  (kind 0 BOS, 1 CHoCH; wick 0 close, 1 wick)
+// value 2 = reached, 1 = snapped back, 0 = neither
+var r0 = array.new<int>(), var r1 = array.new<int>(), var r2 = array.new<int>(), var r3 = array.new<int>()
+var u0 = array.new<float>(), var u1 = array.new<float>(), var u2 = array.new<float>(), var u3 = array.new<float>()   // furthest run (ATR) of every filed break
+var b0 = array.new<int>(), var b1 = array.new<int>(), var b2 = array.new<int>(), var b3 = array.new<int>()           // bars to reach, reached only
+
+// drawn close-breaks (parallel arrays)
+var dId    = array.new<int>()
+var dLine  = array.new<line>()
+var dLbl   = array.new<label>()
+var dBox   = array.new<box>()
+var dBoxL  = array.new<label>()
+var dSnap  = array.new<line>()
+var dOpen  = array.new<bool>()
+var dHue   = array.new<color>()
+
+var tagLbls = array.new<label>()
+
+// last-bar objects
+var box   zHi  = na
+var label zHiL = na
+var box   zLo  = na
+var label zLoL = na
+var box   rngB = na
+
+// ---------------- SMALL HELPERS ----------------
+ringOf(int c) => c == 0 ? r0 : c == 1 ? r1 : c == 2 ? r2 : r3
+runsOf(int c) => c == 0 ? u0 : c == 1 ? u1 : c == 2 ? u2 : u3
+barsOf(int c) => c == 0 ? b0 : c == 1 ? b1 : c == 2 ? b2 : b3
+
+pushI(array<int> a, int v, int cap) =>
+    array.push(a, v)
+    if array.size(a) > cap
+        array.shift(a)
+pushF(array<float> a, float v, int cap) =>
+    array.push(a, v)
+    if array.size(a) > cap
+        array.shift(a)
+
+countVal(array<int> a, int v) =>
+    c = 0
+    if array.size(a) > 0
+        for i = 0 to array.size(a) - 1
+            if array.get(a, i) == v
+                c += 1
+    c
+
+nOf(int c) => array.size(ringOf(c))
+pctOf(int c, int v) =>
+    n = nOf(c)
+    n > 0 ? 100.0 * countVal(ringOf(c), v) / n : na
+medRun(int c) =>
+    a = runsOf(c)
+    array.size(a) >= 8 ? array.median(a) : na
+medBars(int c) =>
+    a = barsOf(c)
+    array.size(a) >= 8 ? array.median(a) : na
+
+// the printed statistic: "1.0 ATR reached 116/200 (58%)"  or  "n=12 (<20)"
+statTxt(int c) =>
+    n = nOf(c)
+    n >= nMin ? str.tostring(raceK, "0.0#") + " ATR reached " + str.tostring(countVal(ringOf(c), 2)) + "/" + str.tostring(n) + " (" + str.tostring(math.round(pctOf(c, 2))) + "%)" : "n=" + str.tostring(n) + " (<" + str.tostring(nMin) + ")"
+
+kindTxt(int c) => c >= 2 ? "CHoCH" : "BOS"
+
+// tag drawing (array mutation only; scalar state is assigned at global scope)
+drawTag(int b, float p, string txt, bool isHigh) =>
+    if showTags
+        hue = txt == "HH" or txt == "HL" ? colUp : txt == "LH" or txt == "LL" ? colDn : #9fb0c4
+        l = label.new(b, p, txt, style = isHigh ? label.style_label_down : label.style_label_up, color = na, textcolor = hue, size = size.tiny)
+        array.push(tagLbls, l)
+        while array.size(tagLbls) > keepTags
+            label.delete(array.shift(tagLbls))
+
+// find the highest high / lowest low from bar b to now (inclusive), bounded
+scanHigh(int b) =>
+    best = high
+    bestBar = bar_index
+    span = math.min(bar_index - b, 499)
+    if span > 0
+        for i = 0 to span
+            if high[i] > best
+                best := high[i]
+                bestBar := bar_index - i
+    [best, bestBar]
+scanLow(int b) =>
+    best = low
+    bestBar = bar_index
+    span = math.min(bar_index - b, 499)
+    if span > 0
+        for i = 0 to span
+            if low[i] < best
+                best := low[i]
+                bestBar := bar_index - i
+    [best, bestBar]
+
+// ---------------- PER-BAR FLAGS ----------------
+bullBOS   = false
+bearBOS   = false
+bullCHoCH = false
+bearCHoCH = false
+wickNow   = false
+reachNow  = false
+snapNow   = false
+flipped   = false   // belt-and-braces: Step A already guarantees the flip bar cannot break the new level
+
+// ---------------- STEP C (runs first): RESOLVE OPEN EVENTS ----------------
+// The outcome is decided at the first touch of a finish line (or at the end of
+// the window). The furthest run keeps being measured over the WHOLE window, so
+// the median run is a real excursion, not a number pinned at the finish line.
+if mut and array.size(eId) > 0
+    i = array.size(eId) - 1
+    while i >= 0
+        age = bar_index - array.get(eBar, i)
+        if age >= 1
+            L    = array.get(eLvl, i)
+            a0   = array.get(eAtr, i)
+            bull = array.get(eBull, i)
+            c    = array.get(eCell, i)
+            run  = bull ? (high - L) / a0 : (L - low) / a0
+            furthest = math.max(array.get(eRun, i), run)
+            array.set(eRun, i, furthest)
+            if array.get(eOut, i) == 0
+                snapped = bull ? low <= L - raceK * a0 : high >= L + raceK * a0
+                reached = run >= raceK
+                // a bar that touches both lines is filed as snapped back (the conservative reading)
+                outcome = snapped ? 1 : reached ? 2 : age >= winN ? 0 : -1
+                if outcome >= 0
+                    array.set(eOut, i, outcome + 1)
+                    if c >= 0
+                        pushI(ringOf(c), outcome, statN)
+                        if outcome == 2
+                            pushI(barsOf(c), age, statN)
+                        filedTotal += 1
+                    if outcome == 2
+                        reachNow := true
+                    if outcome == 1
+                        snapNow := true
+                    // stamp the drawn objects of this event, if it has any
+                    id = array.get(eId, i)
+                    k = -1
+                    if array.size(dId) > 0
+                        for j = 0 to array.size(dId) - 1
+                            if array.get(dId, j) == id
+                                k := j
+                    if k >= 0
+                        suffix = outcome == 2 ? " -> reached in " + str.tostring(age) + "b" : outcome == 1 ? " -> snapped back in " + str.tostring(age) + "b" : " -> neither in " + str.tostring(age) + "b"
+                        lb = array.get(dLbl, k)
+                        label.set_text(lb, label.get_text(lb) + suffix)
+                        bx = array.get(dBox, k)
+                        if not na(bx)
+                            if outcome == 2
+                                box.set_border_width(bx, 2)
+                            else if outcome == 1
+                                box.set_bgcolor(bx, color.new(color.white, 100))
+                                box.set_border_style(bx, line.style_dashed)
+                            else
+                                box.set_bgcolor(bx, color.new(bull ? colUp : colDn, 88))
+                                box.set_border_style(bx, line.style_dotted)
+                        array.set(dOpen, k, false)
+                        if id == lastBrkId
+                            lastBrkOut := outcome == 2 ? "reached in " + str.tostring(age) + "b" : outcome == 1 ? "snapped back in " + str.tostring(age) + "b" : "neither in " + str.tostring(age) + "b"
+            if age >= winN
+                if c >= 0
+                    pushF(runsOf(c), math.max(furthest, 0.0), statN)
+                array.remove(eId, i), array.remove(eBar, i), array.remove(eLvl, i), array.remove(eAtr, i)
+                array.remove(eCell, i), array.remove(eBull, i), array.remove(eRun, i), array.remove(eOut, i)
+        i -= 1
+
+// ---------------- STEP A: LEG MACHINE ----------------
+if mut
+    if legDir == 0
+        legDir := 1
+        legExt := high
+        legExtBar := bar_index
+        oppExt := low
+        oppExtBar := bar_index
+    else if legDir == 1
+        if high > legExt
+            legExt := high
+            legExtBar := bar_index
+            oppExt := low
+            oppExtBar := bar_index
+        else if low < oppExt
+            oppExt := low
+            oppExtBar := bar_index
+        if bar_index > legExtBar and close <= legExt - swingK * atr
+            // confirm swing high, flip to a down leg
+            tag = na(shPx) ? "H" : legExt > shPx ? "HH" : "LH"
+            drawTag(legExtBar, legExt, tag, true)
+            shPx := legExt
+            shBar := legExtBar
+            shBroken := false
+            shWicked := false
+            legDir := -1
+            legExt := oppExt
+            legExtBar := oppExtBar
+            [hh, hb] = scanHigh(legExtBar)
+            oppExt := hh
+            oppExtBar := hb
+            flipped := true
+    else
+        if low < legExt
+            legExt := low
+            legExtBar := bar_index
+            oppExt := high
+            oppExtBar := bar_index
+        else if high > oppExt
+            oppExt := high
+            oppExtBar := bar_index
+        if bar_index > legExtBar and close >= legExt + swingK * atr
+            tag = na(slPx) ? "L" : legExt > slPx ? "HL" : "LL"
+            drawTag(legExtBar, legExt, tag, false)
+            slPx := legExt
+            slBar := legExtBar
+            slBroken := false
+            slWicked := false
+            legDir := 1
+            legExt := oppExt
+            legExtBar := oppExtBar
+            [ll, lb] = scanLow(legExtBar)
+            oppExt := ll
+            oppExtBar := lb
+            flipped := true
+
+// ---------------- STEP B: BREAK TESTS ----------------
+// register a close break: measurement record + drawings. Returns nothing; all scalar state is set by the caller.
+registerBreak(bool bull, float L, int swingBar, int cell) =>
+    id = evSeq
+    array.push(eId, id), array.push(eBar, bar_index), array.push(eLvl, L), array.push(eAtr, atr)
+    array.push(eCell, cell), array.push(eBull, bull), array.push(eRun, 0.0), array.push(eOut, 0)
+    hue = bull ? colUp : colDn
+    // demote older break lines
+    if array.size(dLine) > 0
+        for j = 0 to array.size(dLine) - 1
+            if j < array.size(dLine) - 3
+                line.set_width(array.get(dLine, j), 1)
+                line.set_color(array.get(dLine, j), color.new(array.get(dHue, j), 40))
+            lo = array.get(dLbl, j)
+            label.set_size(lo, size.tiny)
+    ln = line.new(swingBar, L, bar_index, L, color = hue, width = 2)
+    txt = cell < 0 ? "BOS · first break, not counted" : kindTxt(cell) + " · " + statTxt(cell)
+    lb = label.new(bar_index, L, txt, style = label.style_label_left, color = color.new(colNav, 15), textcolor = hue, size = size.small)
+    // run box: height = median run of the class, width = median bars to reach
+    box bx = na
+    label bl = na
+    line sl = na
+    if showBox
+        mr = cell >= 0 ? medRun(cell) : na
+        mb = cell >= 0 ? medBars(cell) : na
+        h  = math.max(na(mr) ? raceK : mr, minBoxAtr) * atr
+        w  = int(math.max(na(mb) ? math.round(winN / 2.0) : math.round(mb), 6))
+        top = bull ? L + h : L
+        bot = bull ? L : L - h
+        far = bull ? L + h : L - h
+        bx := box.new(bar_index + 1, top, bar_index + w, bot, bgcolor = color.new(hue, 70), border_color = color.new(hue, 15), border_width = 1)
+        cap = (cell < 0 ? "first break" : kindTxt(cell) + " · " + statTxt(cell)) + ((na(mr) ? raceK : mr) < minBoxAtr ? " · run floor at " : na(mr) ? " · finish line at " : " · typical run to ") + pxTxt(far) + " (" + (bull ? "+" : "-") + distTxt(far - L) + ")" + (na(mb) ? "" : " in " + str.tostring(math.round(mb)) + "b")
+        bl := label.new(bar_index + w, far, cap, style = bull ? label.style_label_lower_right : label.style_label_upper_right, color = color.new(colNav, 20), textcolor = hue, size = size.tiny)
+        // the snap-back finish line, as a price
+        sy = bull ? L - raceK * atr : L + raceK * atr
+        sl := line.new(bar_index, sy, bar_index + winN, sy, color = color.new(#9fb0c4, 35), width = 1, style = line.style_dashed)
+    array.push(dId, id), array.push(dLine, ln), array.push(dLbl, lb), array.push(dBox, bx), array.push(dBoxL, bl), array.push(dSnap, sl), array.push(dOpen, true), array.push(dHue, hue)
+    // keep only the newest keepRun run boxes
+    nb = 0
+    if array.size(dBox) > 0
+        for j = 0 to array.size(dBox) - 1
+            if not na(array.get(dBox, j))
+                nb += 1
+    jj = 0
+    while nb > keepRun and jj < array.size(dBox)
+        if not na(array.get(dBox, jj))
+            box.delete(array.get(dBox, jj)), label.delete(array.get(dBoxL, jj)), line.delete(array.get(dSnap, jj))
+            array.set(dBox, jj, na), array.set(dBoxL, jj, na), array.set(dSnap, jj, na)
+            nb -= 1
+        jj += 1
+    // evict oldest RESOLVED drawn breaks beyond the cap
+    while array.size(dId) > keepBreaks and not array.get(dOpen, 0)
+        line.delete(array.get(dLine, 0)), label.delete(array.get(dLbl, 0))
+        box.delete(array.get(dBox, 0)), label.delete(array.get(dBoxL, 0)), line.delete(array.get(dSnap, 0))
+        array.remove(dId, 0), array.remove(dLine, 0), array.remove(dLbl, 0), array.remove(dBox, 0)
+        array.remove(dBoxL, 0), array.remove(dSnap, 0), array.remove(dOpen, 0), array.remove(dHue, 0)
+
+if mut
+    // ---- up side ----
+    if not na(shPx) and not shBroken
+        if close > shPx
+            // break-confirms-swing: a close through the swing high confirms the leg low in between
+            if legDir == -1 and not flipped and bar_index > legExtBar
+                tag = na(slPx) ? "L" : legExt > slPx ? "HL" : "LL"
+                drawTag(legExtBar, legExt, tag, false)
+                slPx := legExt
+                slBar := legExtBar
+                slBroken := false
+                slWicked := false
+                legDir := 1
+                legExt := oppExt
+                legExtBar := oppExtBar
+                [ll, lb] = scanLow(legExtBar)
+                oppExt := ll
+                oppExtBar := lb
+                flipped := true
+            kind = dir == 0 ? -1 : dir == 1 ? 0 : 1
+            cell = kind < 0 ? -1 : kind * 2
+            evSeq += 1
+            registerBreak(true, shPx, shBar, cell)
+            lastBrkId := evSeq
+            if kind == 0
+                bullBOS := true
+            if kind == 1
+                bullCHoCH := true
+            dir := 1
+            shBroken := true
+            lastBrkBar := bar_index
+            lastBrkKind := kind < 0 ? 1 : kind + 1
+            lastBrkDir := 1
+            lastBrkOut := "pending"
+        else if high > shPx and not shWicked
+            shWicked := true
+            if dir != 0
+                evSeq += 1
+                array.push(eId, evSeq), array.push(eBar, bar_index), array.push(eLvl, shPx), array.push(eAtr, atr)
+                array.push(eCell, (dir == 1 ? 0 : 1) * 2 + 1), array.push(eBull, true), array.push(eRun, 0.0), array.push(eOut, 0)
+                wickNow := true
+    // ---- down side ----
+    if not na(slPx) and not slBroken
+        if close < slPx
+            if legDir == 1 and not flipped and bar_index > legExtBar
+                tag = na(shPx) ? "H" : legExt > shPx ? "HH" : "LH"
+                drawTag(legExtBar, legExt, tag, true)
+                shPx := legExt
+                shBar := legExtBar
+                shBroken := false
+                shWicked := false
+                legDir := -1
+                legExt := oppExt
+                legExtBar := oppExtBar
+                [hh, hb] = scanHigh(legExtBar)
+                oppExt := hh
+                oppExtBar := hb
+                flipped := true
+            kind = dir == 0 ? -1 : dir == -1 ? 0 : 1
+            cell = kind < 0 ? -1 : kind * 2
+            evSeq += 1
+            registerBreak(false, slPx, slBar, cell)
+            lastBrkId := evSeq
+            if kind == 0
+                bearBOS := true
+            if kind == 1
+                bearCHoCH := true
+            dir := -1
+            slBroken := true
+            lastBrkBar := bar_index
+            lastBrkKind := kind < 0 ? 1 : kind + 1
+            lastBrkDir := -1
+            lastBrkOut := "pending"
+        else if low < slPx and not slWicked
+            slWicked := true
+            if dir != 0
+                evSeq += 1
+                array.push(eId, evSeq), array.push(eBar, bar_index), array.push(eLvl, slPx), array.push(eAtr, atr)
+                array.push(eCell, (dir == -1 ? 0 : 1) * 2 + 1), array.push(eBull, false), array.push(eRun, 0.0), array.push(eOut, 0)
+                wickNow := true
+
+// ---------------- STEP D: PLOTS (structure line + dealing range, every bar) ----------------
+liveHi = not na(shPx) and not shBroken ? shPx : na
+liveLo = not na(slPx) and not slBroken ? slPx : na
+chochLvl = dir == 1 ? liveLo : dir == -1 ? liveHi : na
+bosLvl   = dir == 1 ? liveHi : dir == -1 ? liveLo : na
+sHue = dir == 1 ? colUp : dir == -1 ? colDn : #9fb0c4
+pS = plot(chochLvl, "Structure line", color = sHue, linewidth = 2, style = plot.style_linebr)
+pB = plot(bosLvl, "Break level", color = color.new(sHue, 45), linewidth = 1, style = plot.style_linebr)
+fill(pS, pB, color = showRange ? color.new(sHue, 93) : na, title = "Dealing range")
+
+// ---------------- STEP E: LAST-BAR BLOCKS + DASHBOARD ----------------
+nearNow = ok and ((not na(liveHi) and math.abs(liveHi - close) <= 0.25 * atr) or (not na(liveLo) and math.abs(liveLo - close) <= 0.25 * atr))
+
+if barstate.islast and ok
+    box.delete(zHi), label.delete(zHiL), box.delete(zLo), label.delete(zLoL), box.delete(rngB)
+    // upper live level: the break it WOULD be is an up-break -> BOS if bullish, CHoCH if bearish
+    if not na(liveHi)
+        c  = (dir == -1 ? 1 : 0) * 2
+        mr = medRun(c)
+        h  = math.max(na(mr) ? raceK : mr, minBoxAtr) * atr
+        zHi := box.new(bar_index - 3, liveHi + h, bar_index + extN, liveHi, bgcolor = color.new(colUp, 65), border_color = color.new(colUp, 10), border_width = 1, border_style = shWicked ? line.style_dashed : line.style_solid)
+        cap = (dir == 0 ? "First break" : kindTxt(c)) + " above " + pxTxt(liveHi) + " · " + distTxt(liveHi - close) + " · " + statTxt(c) + ((na(mr) ? raceK : mr) < minBoxAtr ? " · run floor at " : na(mr) ? " · finish line at " : " · typical run to ") + pxTxt(liveHi + h) + " · wick-only " + statTxt(c + 1)
+        zHiL := label.new(bar_index + extN, liveHi + h, cap, style = label.style_label_lower_right, color = color.new(colNav, 20), textcolor = colUp, size = size.tiny)
+    if not na(liveLo)
+        c  = (dir == 1 ? 1 : 0) * 2
+        mr = medRun(c)
+        h  = math.max(na(mr) ? raceK : mr, minBoxAtr) * atr
+        zLo := box.new(bar_index - 3, liveLo, bar_index + extN, liveLo - h, bgcolor = color.new(colDn, 65), border_color = color.new(colDn, 10), border_width = 1, border_style = slWicked ? line.style_dashed : line.style_solid)
+        cap = (dir == 0 ? "First break" : kindTxt(c)) + " below " + pxTxt(liveLo) + " · " + distTxt(close - liveLo) + " · " + statTxt(c) + ((na(mr) ? raceK : mr) < minBoxAtr ? " · run floor at " : na(mr) ? " · finish line at " : " · typical run to ") + pxTxt(liveLo - h) + " · wick-only " + statTxt(c + 1)
+        zLoL := label.new(bar_index + extN, liveLo - h, cap, style = label.style_label_upper_right, color = color.new(colNav, 20), textcolor = colDn, size = size.tiny)
+    if showRange and not na(liveHi) and not na(liveLo)
+        rngB := box.new(bar_index - 3, liveHi, bar_index + extN, liveLo, bgcolor = color.new(sHue, 93), border_color = color.new(sHue, 100))
+
+    if showTbl
+        var table t = table.new(tblPos, 2, 7, bgcolor = colNav, frame_color = color.new(color.gray, 55), frame_width = 1, border_color = color.new(#2a3d63, 25), border_width = 1)
+        lblc = #9fb0c4
+        table.cell(t, 0, 0, " STRUCTURE + FOLLOW-THROUGH ", text_color = color.white, bgcolor = #1f3a63, text_size = size.small)
+        table.cell(t, 1, 0, dir == 1 ? "bullish" : dir == -1 ? "bearish" : "warming up", text_color = dir == 1 ? colUp : dir == -1 ? colDn : lblc, bgcolor = #1f3a63, text_size = size.small)
+        table.cell(t, 0, 1, "Break above", text_color = lblc, text_size = size.tiny)
+        table.cell(t, 1, 1, na(liveHi) ? "no ceiling yet" : pxTxt(liveHi) + " · " + distTxt(liveHi - close) + " · " + kindTxt((dir == -1 ? 1 : 0) * 2), text_color = colUp, text_size = size.tiny)
+        table.cell(t, 0, 2, "Break below", text_color = lblc, text_size = size.tiny)
+        table.cell(t, 1, 2, na(liveLo) ? "no floor yet" : pxTxt(liveLo) + " · " + distTxt(close - liveLo) + " · " + kindTxt((dir == 1 ? 1 : 0) * 2), text_color = colDn, text_size = size.tiny)
+        table.cell(t, 0, 3, "Close breaks", text_color = lblc, text_size = size.tiny)
+        table.cell(t, 1, 3, "BOS " + statTxt(0) + " · snapped " + (nOf(0) >= nMin ? str.tostring(countVal(ringOf(0), 1)) + "/" + str.tostring(nOf(0)) : "-") + "  |  CHoCH " + statTxt(2) + " · snapped " + (nOf(2) >= nMin ? str.tostring(countVal(ringOf(2), 1)) + "/" + str.tostring(nOf(2)) : "-"), text_color = color.white, text_size = size.tiny)
+        table.cell(t, 0, 4, "Wick-only breaks", text_color = lblc, text_size = size.tiny)
+        table.cell(t, 1, 4, "BOS " + statTxt(1) + "  |  CHoCH " + statTxt(3), text_color = color.white, text_size = size.tiny)
+        table.cell(t, 0, 5, "Last break", text_color = lblc, text_size = size.tiny)
+        table.cell(t, 1, 5, lastBrkKind == 0 ? "none yet" : (lastBrkKind == 2 ? "CHoCH " : "BOS ") + (lastBrkDir == 1 ? "up" : "down") + " · " + str.tostring(bar_index - lastBrkBar) + " bars ago · " + lastBrkOut, text_color = lastBrkDir == 1 ? colUp : colDn, text_size = size.tiny)
+        pendingN = 0
+        if array.size(eOut) > 0
+            for q = 0 to array.size(eOut) - 1
+                if array.get(eOut, q) == 0
+                    pendingN += 1
+        table.cell(t, 0, 6, "Sample", text_color = lblc, text_size = size.tiny)
+        table.cell(t, 1, 6, str.tostring(filedTotal) + " breaks filed · last " + str.tostring(statN) + " per class · " + str.tostring(pendingN) + " pending", text_color = lblc, text_size = size.tiny)
+
+// ---------------- ALERTS ----------------
+alertcondition(bullBOS,   "Bullish BOS",   "Bullish BOS on {{ticker}} {{interval}}: a bar closed above the last swing high with structure already bullish")
+alertcondition(bearBOS,   "Bearish BOS",   "Bearish BOS on {{ticker}} {{interval}}: a bar closed below the last swing low with structure already bearish")
+alertcondition(bullCHoCH, "Bullish CHoCH", "Bullish CHoCH on {{ticker}} {{interval}}: a bar closed above the last swing high against bearish structure")
+alertcondition(bearCHoCH, "Bearish CHoCH", "Bearish CHoCH on {{ticker}} {{interval}}: a bar closed below the last swing low against bullish structure")
+alertcondition(wickNow,   "Wick through a structure level", "Price traded through a structure level and closed back inside on {{ticker}} {{interval}}")
+alertcondition(reachNow,  "Break reached its distance", "A recent structure break reached its follow-through distance on {{ticker}} {{interval}}")
+alertcondition(snapNow,   "Break snapped back", "A recent structure break reached its snap-back distance first on {{ticker}} {{interval}}")
+alertcondition(nearNow,   "Approaching a structure level", "Price is within 0.25 ATR of a live structure level on {{ticker}} {{interval}}")

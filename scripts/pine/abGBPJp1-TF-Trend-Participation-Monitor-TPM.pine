@@ -1,0 +1,177 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © realanthonyc https://www.tradingview.com/u/realanthonyc
+
+//@version=6
+// --------------------------------------------------------------------
+//  TradingFlow: Trend Participation Monitor
+// --------------------------------------------------------------------
+indicator("TradingFlow: Trend Participation Monitor (TPM) v1.0.8", "TF: TPM", overlay = false, precision = 1, max_bars_back = 1000)
+
+// Threshold events confirm pressure already observed; no directional markers.
+// Intended first for daily stocks. Intraday RVOL below is rolling-bar RVOL,
+// NOT same-time-of-day RVOL. No pivots, future data, or backdated markers.
+groupModel = "Model"
+activityLength = input.int(20, "Activity Baseline", minval = 5, maxval = 200, group = groupModel)
+pressureLength = input.int(5, "Pressure Window", minval = 2, maxval = 50, group = groupModel)
+smoothLength = input.int(3, "Pressure Smoothing", minval = 1, maxval = 20, group = groupModel)
+referenceLength = input.int(13, "Recent Pressure Reference", minval = 3, maxval = 100, group = groupModel)
+atrLength = input.int(14, "ATR Length", minval = 2, maxval = 100, group = groupModel)
+volumeCap = input.float(3.0, "Maximum Relative Volume Weight", minval = 1, maxval = 10, step = 0.25, group = groupModel, tooltip = "Caps each bar's influence so one volume spike cannot dominate the pressure window.")
+
+groupContext = "Activity Context"
+floatMillions = input.float(0, "Manual Free Float (Million Shares)", minval = 0, group = groupContext, tooltip = "Optional stock-only turnover estimate: bar volume / manually supplied free float. Zero disables it. A fixed current float is not historically accurate after share-count changes. Never used in the score.")
+
+groupSignals = "Signals"
+changeThreshold = input.float(5, "Minimum Change Score", minval = 0.5, maxval = 50, step = 0.5, group = groupSignals)
+confirmBars = input.int(2, "Consecutive Confirmation Bars", minval = 1, maxval = 10, group = groupSignals)
+closedBarsOnly = input.bool(true, "Display Closed Bars Only", group = groupSignals, tooltip = "Holds plots and dashboard at the last completed bar. When disabled, live values are provisional; alerts still require a closed bar.")
+
+groupVisual = "Visuals"
+showDashboard = input.bool(true, "Show Dashboard", group = groupVisual)
+dashboardDetails = input.bool(false, "Detailed Dashboard", group = groupVisual, tooltip = "Default: three compact rows. Enable for activity diagnostics. All diagnostic plots remain available in the Data Window.")
+dashboardCorner = input.string("Top Right", "Dashboard Position", options = ["Top Right", "Bottom Right", "Top Left", "Bottom Left"], group = groupVisual)
+dashboardFont = input.string("Tiny", "Dashboard Text Size", options = ["Tiny", "Small", "Normal"], group = groupVisual)
+bullColor = input.color(color.rgb(151, 113, 214), "Improving: Growing", group = groupVisual)
+bullFadeColor = input.color(color.rgb(179, 157, 219), "Improving: Shrinking / Flat", group = groupVisual)
+bearColor = input.color(color.rgb(232, 164, 55), "Deteriorating: Growing", group = groupVisual)
+bearFadeColor = input.color(color.rgb(239, 193, 112), "Deteriorating: Shrinking / Flat", group = groupVisual)
+
+clamp(float value, float lowBound, float highBound) =>
+    math.max(lowBound, math.min(highBound, value))
+
+numberText(float value, string pattern) =>
+    na(value) ? "N/A" : str.tostring(value, pattern)
+
+// Use prior baselines: the current spike cannot inflate its own denominator.
+volumeValid = not na(volume) and volume >= 0
+barVolume = volumeValid ? volume : 0.0
+volumeBaseline = ta.sma(barVolume, activityLength)[1]
+baselineMissing = math.sum(volumeValid ? 0.0 : 1.0, activityLength)[1]
+baselineReady = not na(baselineMissing) and baselineMissing == 0 and volumeBaseline > 0
+relativeVolume = volumeValid and baselineReady ? barVolume / volumeBaseline : na
+atrBaseline = ta.atr(atrLength)[1]
+atrSafe = not na(atrBaseline) ? math.max(atrBaseline, syminfo.mintick > 0 ? syminfo.mintick : 1e-10) : na
+priceChange = ta.change(close)
+
+// Close-to-close movement includes gaps. Close location contributes only 30% of bar bias:
+// a gap down closing near its high is not automatically bullish.
+barRange = high - low
+closeLocation = barRange > 0 ? (2 * close - high - low) / barRange : 0.0
+normalizedMove = not na(atrSafe) and atrSafe > 0 ? clamp(priceChange / atrSafe, -1, 1) : 0.0
+barBias = 0.7 * normalizedMove + 0.3 * closeLocation
+activityWeight = not na(relativeVolume) ? math.min(relativeVolume, volumeCap) : 0.0
+weightSum = math.sum(activityWeight, pressureLength)
+// One isolated print must not make an otherwise inactive window signal.
+contributingBars = math.sum(activityWeight > 0 ? 1.0 : 0.0, pressureLength)
+weightedBiasSum = math.sum(activityWeight * barBias, pressureLength)
+flowPressure = weightSum > 0 ? weightedBiasSum / weightSum : 0.0
+
+// Price efficiency is directional progress / total close-to-close travel.
+// It captures smaller declines and improving structure without requiring a high-volume bar.
+// Volume is used once, in flowPressure, rather than repeated votes from volume, traded value, turnover and RVOL.
+totalTravel = math.sum(math.abs(priceChange), pressureLength)
+netTravel = math.sum(priceChange, pressureLength)
+priceEfficiency = totalTravel > 0 ? netTravel / totalTravel : 0.0
+rawPressure = 100 * (0.5 * priceEfficiency + 0.5 * flowPressure)
+pressure = ta.ema(rawPressure, smoothLength)
+pressureReference = ta.ema(pressure, referenceLength)
+// Both pressure inputs are bounded +/-100, so half their difference is too.
+changeScore = (pressure - pressureReference) / 2
+
+
+// Missing volume must not silently become a neutral/bullish signal.
+// A fully populated recovery window is required after missing data.
+// Zero-volume bars are valid observations, but the current bar must trade and the pressure
+// window must contain at least two bars with usable positive volume weights.
+recoveryLength = activityLength + pressureLength + smoothLength + referenceLength
+missingCount = math.sum(volumeValid ? 0.0 : 1.0, recoveryLength)
+warmupLength = recoveryLength + atrLength
+ready = bar_index >= warmupLength and missingCount == 0 and baselineReady and barVolume > 0 and contributingBars >= 2 and weightSum > 0 and not na(changeScore)
+improving = ready and changeScore >= changeThreshold
+deteriorating = ready and changeScore <= -changeThreshold
+var int improvingCount = 0
+var int deterioratingCount = 0
+improvingCount := improving ? improvingCount + 1 : 0
+deterioratingCount := deteriorating ? deterioratingCount + 1 : 0
+// State describes the current confirmed condition, not a permanent latch.
+state = improvingCount >= confirmBars ? 1 : deterioratingCount >= confirmBars ? -1 : 0
+improvementStart = barstate.isconfirmed and ready and ready[1] and state == 1 and state[1] != 1
+deteriorationStart = barstate.isconfirmed and ready and ready[1] and state == -1 and state[1] != -1
+
+// Stock diagnostics only: these proxies must not be called actual money flow.
+stockVolume = syminfo.type == "stock" and volumeValid
+estimatedValue = stockVolume ? hlc3 * barVolume : na
+valueBaseline = ta.sma(estimatedValue, activityLength)[1]
+relativeValue = stockVolume and baselineReady and valueBaseline > 0 ? estimatedValue / valueBaseline : na
+turnover = stockVolume and floatMillions > 0 ? 100 * barVolume / (floatMillions * 1000000) : na
+
+holdLive = closedBarsOnly and not barstate.isconfirmed
+displayReady = holdLive ? ready[1] : ready
+displayPressure = displayReady ? (holdLive ? pressure[1] : pressure) : na
+displayReference = displayReady ? (holdLive ? pressureReference[1] : pressureReference) : na
+displayChange = displayReady ? (holdLive ? changeScore[1] : changeScore) : na
+displayState = holdLive ? state[1] : state
+displayRvol = holdLive ? relativeVolume[1] : relativeVolume
+displayValue = holdLive ? estimatedValue[1] : estimatedValue
+displayRelativeValue = holdLive ? relativeValue[1] : relativeValue
+displayTurnover = holdLive ? turnover[1] : turnover
+displayVolume = holdLive ? volume[1] : volume
+displayMissing = holdLive ? missingCount[1] : missingCount
+displayBaselineReady = holdLive ? baselineReady[1] : baselineReady
+displayContributingBars = holdLive ? contributingBars[1] : contributingBars
+
+neutralColor = color.rgb(145, 155, 170)
+// Separate table text tones preserve contrast on the light dashboard.
+tableStatusColor = displayState == 1 ? color.rgb(103, 65, 157) : displayState == -1 ? color.rgb(132, 83, 10) : color.rgb(80, 89, 105)
+// Compare the same completed bar represented by displayChange with its predecessor.
+// displayChange[1] would compare a held live value with itself.
+previousChange = holdLive ? changeScore[2] : changeScore[1]
+improvementGrowing = not na(previousChange) and displayChange > previousChange
+deteriorationGrowing = not na(previousChange) and displayChange < previousChange
+histogramColor = displayState == 1 ? (improvementGrowing ? bullColor : bullFadeColor) : displayState == -1 ? (deteriorationGrowing ? bearColor : bearFadeColor) : color.new(neutralColor, 45)
+hline(0, "Neutral", color = color.new(neutralColor, 50), display=display.none)
+hline(changeThreshold, "Improvement Threshold", color = color.new(bullColor, 65), linestyle = hline.style_dotted)
+hline(-changeThreshold, "Deterioration Threshold", color = color.new(bearColor, 65), linestyle = hline.style_dotted)
+plot(displayChange, "Recent Change", style = plot.style_columns, color = histogramColor)
+plot(displayPressure, "Pressure", color = color.rgb(90, 175, 245), linewidth = 2, style = plot.style_linebr)
+plot(displayReference, "Pressure Reference", color = color.new(neutralColor, 25), style = plot.style_linebr)
+plot(displayReady ? displayState : na, "Change: +1 Improving / 0 Unconfirmed / -1 Deteriorating", display = display.data_window)
+plot(displayRvol, "Rolling Relative Volume", display = display.data_window)
+plot(displayValue, "Estimated Stock Traded Value (Quote Currency)", display = display.data_window)
+plot(displayRelativeValue, "Relative Estimated Traded Value", display = display.data_window)
+plot(displayTurnover, "Estimated Free-Float Turnover (%)", display = display.data_window)
+
+tablePosition = switch dashboardCorner
+    "Bottom Right" => position.bottom_right
+    "Top Left" => position.top_left
+    "Bottom Left" => position.bottom_left
+    => position.top_right
+tableFont = dashboardFont == "Tiny" ? size.tiny : dashboardFont == "Small" ? size.small : size.normal
+var table dashboard = table.new(tablePosition, 2, dashboardDetails ? 7 : 3, bgcolor = color.rgb(247, 248, 251), border_width = 1, border_color = color.rgb(216, 221, 230))
+if barstate.islast and showDashboard
+    unavailableText = na(displayVolume) or displayVolume < 0 ? "No volume data" : displayVolume == 0 ? "No trading" : displayMissing > 0 ? "Recovering" : not displayBaselineReady or displayContributingBars < 2 ? "Thin history" : "Warming up"
+    statusText = not displayReady ? unavailableText : displayState == 1 ? "Improving" : displayState == -1 ? "Deteriorating" : "No signal"
+    modeText = holdLive ? "Prev. close" : barstate.isconfirmed ? "Closed" : "LIVE"
+    dataText = not displayReady ? unavailableText : timeframe.isintraday ? "RVOL: intraday*" : "RVOL: rolling"
+    array<string> labels = array.from("TPM", "Change", "Press / chg")
+    array<string> values = array.from(modeText, statusText, numberText(displayPressure, "#.0") + " / " + numberText(displayChange, "#.0"))
+    array<string> tips = array.from("TPM v1.0.7. Prev. close holds the last completed bar; LIVE values are provisional. " + dataText + ". Intraday RVOL is rolling-bar volume, not adjusted for time of day.", "Improving/deteriorating requires the change threshold for the confirmation period. No signal means the threshold or persistence requirement is not met, not that price is stable.", "Pressure / recent change. Change = (pressure - reference) / 2. Positive pressure can coexist with deterioration.")
+    if dashboardDetails
+        array.push(labels, "Vol / RVOL")
+        array.push(values, (na(displayVolume) ? "N/A" : str.tostring(displayVolume, format.volume)) + " / " + numberText(displayRvol, "#.00") + "x")
+        array.push(tips, "Bar volume / rolling relative volume. Intraday comparisons have time-of-day bias.")
+        array.push(labels, "Value / rel")
+        array.push(values, (na(displayValue) ? "N/A" : str.tostring(displayValue, format.volume)) + " / " + numberText(displayRelativeValue, "#.00") + "x")
+        array.push(tips, "Estimated stock traded value in " + syminfo.currency + " / its relative baseline. This is not actual money flow.")
+        array.push(labels, "Turnover")
+        array.push(values, numberText(displayTurnover, "#.00") + "%")
+        array.push(tips, "Estimated bar volume / manual free float. Requires a stock and a supplied float.")
+        array.push(labels, "Data")
+        array.push(values, dataText)
+        array.push(tips, "Missing volume or insufficient active history suppresses signals. * Intraday RVOL is not adjusted for time of day.")
+    for row = 0 to array.size(labels) - 1
+        table.cell(dashboard, 0, row, array.get(labels, row), bgcolor = color.rgb(237, 240, 245), text_color = color.rgb(80, 89, 105), text_size = tableFont, text_halign = text.align_left, tooltip = array.get(tips, row))
+        table.cell(dashboard, 1, row, array.get(values, row), bgcolor = color.rgb(247, 248, 251), text_color = row == 1 and displayReady ? tableStatusColor : color.rgb(42, 49, 62), text_size = tableFont, text_halign = text.align_left, tooltip = array.get(tips, row))
+
+alertcondition(improvementStart, "TPM: Improving Pressure Confirmed", "TPM: recent pressure improvement confirmed on {{ticker}} ({{interval}}). Lagging observation, not an entry or reversal signal.")
+alertcondition(deteriorationStart, "TPM: Deteriorating Pressure Confirmed", "TPM: recent pressure deterioration confirmed on {{ticker}} ({{interval}}). Lagging observation, not an entry or reversal signal.")

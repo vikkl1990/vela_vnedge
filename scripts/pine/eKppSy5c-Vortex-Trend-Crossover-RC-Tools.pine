@@ -1,0 +1,188 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © RAC97
+
+//@version=6
+indicator("Vortex Trend Crossover [RC Tools]", shorttitle="RCT Vortex", overlay=false)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ABOUT
+// ─────────────────────────────────────────────────────────────────────────────
+// Vortex Indicator — Etienne Botes & Douglas Siepman, 2010 ("The Vortex
+// Indicator," Technical Analysis of Stocks & Commodities magazine). A public,
+// well-documented technique. Independent implementation, built from the
+// public formula.
+//
+// Distinct from DMI (directional-movement deltas) and Aroon (recency of
+// extremes): Vortex measures how far price "reaches" away from where it just
+// was, using the OPPOSITE extreme of the prior bar — today's high vs.
+// yesterday's low for upward reach, today's low vs. yesterday's high for
+// downward reach — normalised by true range and summed over a window into two
+// oscillating lines, VI+ and VI-. Which one is currently dominant is read as
+// the prevailing directional pressure.
+//
+// Classification updates ONLY on confirmed bar close, so nothing here repaints.
+// ─────────────────────────────────────────────────────────────────────────────
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INPUTS
+// ─────────────────────────────────────────────────────────────────────────────
+length     = input.int(14, "VI Length", minval=5, maxval=100, step=1, group="Vortex",
+     tooltip="Summation window for VI+ and VI-. Whole-bar steps only.")
+smoothLen  = input.int(5, "Smoothing Length", minval=1, maxval=50, step=1, group="Vortex",
+     tooltip="MA period applied to VI+/VI- before the crossover check. 1 = no smoothing. The raw VI+/VI- sums are noisy bar-to-bar.")
+smoothType = input.string("EMA", "Smoothing Type", options=["SMA", "EMA", "WMA", "RMA", "HMA"], group="Vortex",
+     tooltip="Moving-average family used to smooth VI+/VI- prior to the crossover check.")
+
+bool   showLiveTable = input.bool(true, "Show Live/Confirmed Table", group="Tables")
+string livePos       = input.string("Top Middle", "Live/Confirmed Table Position", options=["Top Right","Top Middle","Top Left","Bottom Right","Bottom Middle","Bottom Left"], group="Tables")
+
+color colBull        = input.color(color.new(color.lime, 60), "Bullish (VI+ > VI-)", group="Colours")
+color colBear        = input.color(color.new(color.red,  60), "Bearish (VI+ < VI-)", group="Colours")
+bool  paintPaneChart = input.bool(true, "Paint Pane Background", group="Colours",
+     tooltip="Colours the background of this indicator's own pane (the one it opens on below the chart).")
+bool  paintMainChart = input.bool(false, "Paint Main Chart Background", group="Colours",
+     tooltip="Uses force_overlay so the background also shows on the main price chart, even though this script lives in its own pane.")
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VORTEX INDICATOR
+// ─────────────────────────────────────────────────────────────────────────────
+// VM+ = |high - low[1]|   (today's high vs yesterday's low — upward reach)
+// VM- = |low  - high[1]|  (today's low  vs yesterday's high — downward reach)
+// TR  = true range
+// VI+ = Σ(VM+, length) / Σ(TR, length)
+// VI- = Σ(VM-, length) / Σ(TR, length)
+// Both oscillate around 1.0.
+f_ma(float srcMa, int len, string kind) =>
+    switch kind
+        "SMA" => ta.sma(srcMa, len)
+        "EMA" => ta.ema(srcMa, len)
+        "WMA" => ta.wma(srcMa, len)
+        "RMA" => ta.rma(srcMa, len)
+        "HMA" => ta.hma(srcMa, len)
+        => ta.ema(srcMa, len)
+
+vmPlus  = math.abs(high - low[1])
+vmMinus = math.abs(low - high[1])
+tr      = math.max(high - low, math.max(math.abs(high - close[1]), math.abs(low - close[1])))
+
+sumVmPlus  = math.sum(vmPlus,  length)
+sumVmMinus = math.sum(vmMinus, length)
+sumTr      = math.sum(tr,      length)
+
+viPlus  = sumTr != 0.0 ? sumVmPlus  / sumTr : 0.0
+viMinus = sumTr != 0.0 ? sumVmMinus / sumTr : 0.0
+
+viPlusS  = smoothLen > 1 ? f_ma(viPlus,  smoothLen, smoothType) : viPlus
+viMinusS = smoothLen > 1 ? f_ma(viMinus, smoothLen, smoothType) : viMinus
+
+ready = bar_index >= length
+
+// Live vote: smoothed VI+ crosses above smoothed VI- => bullish, crosses below
+// => bearish, otherwise holds the previous vote (persistence).
+var int liveSig = 0
+if ta.crossover(viPlusS, viMinusS)
+    liveSig := 1
+if ta.crossunder(viPlusS, viMinusS)
+    liveSig := 0
+
+// ── Confirmed (non-repainting) snapshot — latched once per bar at close ──────
+// State codes: 0 = Bearish, 1 = Bullish
+var float dispViPlus   = na
+var float dispViMinus  = na
+var int   currentState = na
+if barstate.isconfirmed
+    dispViPlus   := viPlusS
+    dispViMinus  := viMinusS
+    currentState := liveSig
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LABELS & COLOURS
+// ─────────────────────────────────────────────────────────────────────────────
+stateName(s) => s == 1 ? "Bullish" : s == 0 ? "Bearish" : "Warming up…"
+stateColor(s) => s == 1 ? colBull : s == 0 ? colBear : na
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STATE STREAK
+// ─────────────────────────────────────────────────────────────────────────────
+var int lastState = na
+var int streak     = 0
+if barstate.isconfirmed
+    if currentState == lastState
+        streak := streak + 1
+    else
+        streak := 1
+        lastState := currentState
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLOTS
+// ─────────────────────────────────────────────────────────────────────────────
+plot(viPlusS,  "VI+ (smoothed)", color=color.new(colBull, 0), linewidth=2)
+plot(viMinusS, "VI- (smoothed)", color=color.new(colBear, 0), linewidth=2)
+plot(viPlus,   "VI+ (raw)", color=color.new(colBull, 75), linewidth=1)
+plot(viMinus,  "VI- (raw)", color=color.new(colBear, 75), linewidth=1)
+hline(1.0, "Baseline", color=color.new(color.gray, 60))
+
+bgcolor(paintPaneChart and ready ? stateColor(currentState) : na, title="Vortex Background (pane)")
+bgcolor(paintMainChart and ready ? stateColor(currentState) : na, force_overlay=true, title="Vortex Background (main chart)")
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TABLES
+// ─────────────────────────────────────────────────────────────────────────────
+getPosition(p) =>
+    p == "Top Left"      ? position.top_left :
+     p == "Top Middle"    ? position.top_center :
+     p == "Bottom Right"  ? position.bottom_right :
+     p == "Bottom Middle" ? position.bottom_center :
+     p == "Bottom Left"   ? position.bottom_left : position.top_right
+
+liveLabel = ready ? (liveSig == 1 ? "BULL" : "BEAR") : "—"
+liveColor = ready ? (liveSig == 1 ? colBull : colBear) : color.gray
+confLabel = ready ? (currentState == 1 ? "BULL" : "BEAR") : "—"
+confColor = ready ? (currentState == 1 ? colBull : colBear) : color.gray
+
+// ── Table 1: Live (intrabar) vs Confirmed (non-repainting) vote ──────────────
+// The live value can still change until the bar closes; only Confirmed is
+// safe to trade off.
+if showLiveTable and barstate.islast
+    var table lt = table.new(getPosition(livePos), 2, 5,
+         bgcolor=color.new(color.black, 15), border_width=1, border_color=color.gray,
+         frame_color=color.gray, frame_width=1)
+
+    table.cell(lt, 0, 0, "Vortex Trend Crossover", text_color=color.white, text_size=size.small, bgcolor=color.new(color.black, 0))
+    table.cell(lt, 1, 0, "", bgcolor=color.new(color.black, 0))
+
+    table.cell(lt, 0, 1, "Live (intrabar)", text_color=color.gray, text_size=size.small)
+    table.cell(lt, 1, 1, liveLabel, text_color=color.white, bgcolor=color.new(liveColor, 45), text_halign=text.align_center, text_size=size.small)
+
+    table.cell(lt, 0, 2, "Confirmed", text_color=color.white, text_size=size.small)
+    table.cell(lt, 1, 2, confLabel, text_color=color.white, bgcolor=color.new(confColor, 25), text_halign=text.align_center, text_size=size.small)
+
+    table.cell(lt, 0, 3, "Streak", text_color=color.gray, text_size=size.small)
+    table.cell(lt, 1, 3, ready ? str.tostring(streak) + " bars" : "—", text_color=color.gray, text_halign=text.align_center, text_size=size.small)
+
+    table.cell(lt, 0, 4, "⚠ Live can change until close — trade off Confirmed only", text_color=color.white, bgcolor=color.new(color.orange, 65), text_halign=text.align_left, text_size=size.small)
+    table.merge_cells(lt, 0, 4, 1, 4)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LIMITATIONS (see published description for the full-length version)
+// ─────────────────────────────────────────────────────────────────────────────
+// - Vortex is a DIRECTIONAL-PRESSURE oscillator, not a magnitude or
+//   overbought/oversold measure. Any use of it as a precision reversal
+//   forecast is a misuse.
+// - Like any crossover-based system, it can whipsaw when VI+ and VI- sit
+//   close together in choppy, range-bound conditions.
+// - The summation window resets its frame of reference every `length` bars;
+//   a short length reacts fast but is noisier, a long length is smoother but
+//   slower to reflect a genuine change.
+// - Smoothing trades responsiveness for fewer false crossovers — there is no
+//   setting that eliminates whipsaw entirely.
+// - This script does NOT repaint. All classification updates on confirmed bar
+//   close only.
+// ─────────────────────────────────────────────────────────────────────────────

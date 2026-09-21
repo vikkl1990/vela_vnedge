@@ -1,0 +1,258 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0
+// © Dots3Red
+// TradingView: https://www.tradingview.com/u/Dots3Red/
+
+//@version=6
+indicator("Divergence Smart Scanner - Multi-Oscillator Confirmation Stats [Dots3Red]",
+          shorttitle = "Divergence Scanner[D3R]",
+          overlay    = true,
+          max_labels_count = 500,
+          max_lines_count  = 500)
+
+
+// INPUTS
+GRP_PIV = "📐 Swing Detection"
+GRP_OSC = "📊 Oscillators"
+GRP_ST  = "🎯 Outcome Grading"
+GRP_VIS = "🎨 Visualization"
+GRP_COL = "🎨 Colors"
+GRP_HUD = "🖥️ Dashboard"
+GRP_BAR = "Bars"
+
+pivot_leg = input.int(5, "Pivot Leg (bars each side)", minval=2, maxval=20, group=GRP_PIV)
+
+rsi_len  = input.int(14, "RSI Length", group=GRP_OSC)
+macd_f   = input.int(12, "MACD Fast", group=GRP_OSC)
+macd_s   = input.int(26, "MACD Slow", group=GRP_OSC)
+macd_sig = input.int(9,  "MACD Signal", group=GRP_OSC)
+wr_len   = input.int(14, "Williams %R Length", group=GRP_OSC)
+
+outcome_atr  = input.float(1.5, "Reversal Confirmation (×ATR)", minval=0.3, maxval=5.0, step=0.1, group=GRP_ST,
+               tooltip="After a divergence, price must move this far in the reversal direction to grade as 'reversed'.")
+outcome_bars = input.int(20, "Outcome Window (bars)", minval=5, maxval=100, group=GRP_ST)
+
+show_lines  = input.bool(true, "Divergence Lines", group=GRP_VIS)
+show_labels = input.bool(true, "Confirmation Count Labels", group=GRP_VIS)
+line_width_in = input.int(2, "Divergence Line Width", minval=1, maxval=4, group=GRP_VIS)
+line_style_in = input.string("Dashed", "Divergence Line Style", options=["Solid","Dashed","Dotted"], group=GRP_VIS)
+label_size_in = input.string("Small", "Confirmation Label Size", options=["Tiny","Small","Normal","Large"], group=GRP_VIS)
+label_style_in = input.string("Below/Above", "Label Position Style", options=["Below/Above","Left"], group=GRP_VIS,
+                 tooltip="Below/Above places the label off the pivot point in the natural direction. Left places it to the right of the pivot, pointing left.")
+
+col_bull_line  = input.color(#00c896, "Bullish Line", inline="bull", group=GRP_COL)
+col_bull_label = input.color(#00c896, "Bullish Label Text", inline="bull", group=GRP_COL)
+col_bear_line  = input.color(#ff4466, "Bearish Line", inline="bear", group=GRP_COL)
+col_bear_label = input.color(#ff4466, "Bearish Label Text", inline="bear", group=GRP_COL)
+col_label_bg   = input.color(color.new(#000000, 100), "Label Background", group=GRP_COL)
+
+col_good = input.color(#00c896, "Dashboard: Good Outcome", inline="dg", group=GRP_COL)
+col_bad  = input.color(#ff4466, "Dashboard: Bad Outcome", inline="dg", group=GRP_COL)
+col_dash_bg          = input.color(color.new(#131722, 5), "Dashboard Background", group=GRP_COL)
+col_dash_border      = input.color(color.new(#334155, 0), "Dashboard Border", group=GRP_COL)
+col_dash_header_bg   = input.color(color.new(#1e293b, 0), "Dashboard Header Background", inline="dh", group=GRP_COL)
+col_dash_header_text = input.color(#f8fafc, "Dashboard Header Text", inline="dh", group=GRP_COL)
+col_dash_label_text  = input.color(color.new(#94a3b8, 0), "Dashboard Row Label Text", group=GRP_COL)
+col_dash_row_bg      = input.color(color.new(#1e293b, 40), "Dashboard Row Background", group=GRP_COL)
+use_bars             = input.bool(false, "Use Bars", group=GRP_BAR)
+col_bar              = input.color(color.new(#b2b5be, 0), "Bar Color (if Bars)", group=GRP_BAR)
+
+
+
+show_hud = input.bool(true, "Show Dashboard", group=GRP_HUD)
+hud_pos  = input.string("Top Right", "Position",
+           options=["Top Right","Top Left","Bottom Right","Bottom Left"], group=GRP_HUD)
+
+
+f_line_style(string s) =>
+    switch s
+        "Solid"  => line.style_solid
+        "Dotted" => line.style_dotted
+        => line.style_dashed
+
+f_label_size(string s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Normal" => size.normal
+        "Large"  => size.large
+        => size.small
+
+f_hud_pos(string s) =>
+    switch s
+        "Top Right"    => position.top_right
+        "Top Left"     => position.top_left
+        "Bottom Right" => position.bottom_right
+        => position.bottom_left
+
+resolved_line_style = f_line_style(line_style_in)
+resolved_label_size = f_label_size(label_size_in)
+resolved_hud_pos    = f_hud_pos(hud_pos)
+
+
+// CONTEXT
+atr_raw = ta.atr(14)
+rsi_v = ta.rsi(close, rsi_len)
+[_, _, macd_h] = ta.macd(close, macd_f, macd_s, macd_sig)
+wr_v = ta.wpr(wr_len)
+
+ph = ta.pivothigh(high, pivot_leg, pivot_leg)
+pl = ta.pivotlow(low,  pivot_leg, pivot_leg)
+
+
+// Pivot memory
+var float ph1_px = na, var float ph2_px = na
+var float ph1_rsi = na, var float ph2_rsi = na
+var float ph1_macd = na, var float ph2_macd = na
+var float ph1_wr = na, var float ph2_wr = na
+var int   ph1_bar = na
+
+var float pl1_px = na, var float pl2_px = na
+var float pl1_rsi = na, var float pl2_rsi = na
+var float pl1_macd = na, var float pl2_macd = na
+var float pl1_wr = na, var float pl2_wr = na
+var int   pl1_bar = na
+
+
+// PENDING DIVERGENCE GRADING
+var int   pend_bear_bar   = na
+var float pend_bear_price = na
+var int   pend_bear_conf  = na   // confirmation count 1-3
+
+var int   pend_bull_bar   = na
+var float pend_bull_price = na
+var int   pend_bull_conf  = na
+
+// TIER STATS: index 0 = 1 confirm, 1 = 2 confirm, 2 = 3 confirm
+var int[] tier_total   = array.new<int>(3, 0)
+var int[] tier_reversed = array.new<int>(3, 0)
+
+bool new_bear_div = false
+bool new_bull_div = false
+
+if barstate.isconfirmed
+
+    //  SHIFT PIVOT MEMORY 
+    if not na(ph)
+        ph2_px   := ph1_px
+        ph2_rsi  := ph1_rsi
+        ph2_macd := ph1_macd
+        ph2_wr   := ph1_wr
+        ph1_px   := ph
+        ph1_rsi  := rsi_v[pivot_leg]
+        ph1_macd := macd_h[pivot_leg]
+        ph1_wr   := wr_v[pivot_leg]
+        ph1_bar  := bar_index - pivot_leg
+
+        // Bearish divergence: price higher high, oscillator lower high
+        if not na(ph2_px) and ph1_px > ph2_px
+            int conf = 0
+            if ph1_rsi < ph2_rsi
+                conf += 1
+            if ph1_macd < ph2_macd
+                conf += 1
+            if ph1_wr < ph2_wr
+                conf += 1
+            if conf >= 1
+                new_bear_div := true
+                pend_bear_bar   := bar_index
+                pend_bear_price := close
+                pend_bear_conf  := conf
+                if show_lines
+                    line.new(ph1_bar, ph1_px, bar_index, ph1_px,
+                             color=col_bear_line, width=line_width_in, style=resolved_line_style)
+                if show_labels
+                    label.new(bar_index,
+                              label_style_in == "Left" ? ph1_px : ph1_px + atr_raw * 0.5,
+                              "▼ " + str.tostring(conf) + "/3 confirm",
+                              style=label_style_in == "Left" ? label.style_label_left : label.style_label_down,
+                              color=col_label_bg, textcolor=col_bear_label, size=resolved_label_size)
+
+    if not na(pl)
+        pl2_px   := pl1_px
+        pl2_rsi  := pl1_rsi
+        pl2_macd := pl1_macd
+        pl2_wr   := pl1_wr
+        pl1_px   := pl
+        pl1_rsi  := rsi_v[pivot_leg]
+        pl1_macd := macd_h[pivot_leg]
+        pl1_wr   := wr_v[pivot_leg]
+        pl1_bar  := bar_index - pivot_leg
+
+        // Bullish divergence: price lower low, oscillator higher low
+        if not na(pl2_px) and pl1_px < pl2_px
+            int conf_b = 0
+            if pl1_rsi > pl2_rsi
+                conf_b += 1
+            if pl1_macd > pl2_macd
+                conf_b += 1
+            if pl1_wr > pl2_wr
+                conf_b += 1
+            if conf_b >= 1
+                new_bull_div := true
+                pend_bull_bar   := bar_index
+                pend_bull_price := close
+                pend_bull_conf  := conf_b
+                if show_lines
+                    line.new(pl1_bar, pl1_px, bar_index, pl1_px,
+                             color=col_bull_line, width=line_width_in, style=resolved_line_style)
+                if show_labels
+                    label.new(bar_index,
+                              label_style_in == "Left" ? pl1_px : pl1_px - atr_raw * 0.5,
+                              "▲ " + str.tostring(conf_b) + "/3 confirm",
+                              style=label_style_in == "Left" ? label.style_label_left : label.style_label_up,
+                              color=col_label_bg, textcolor=col_bull_label, size=resolved_label_size)
+
+    // GRADE PENDING BEARISH DIVERGENCE 
+    if not na(pend_bear_bar)
+        bool reversed_dn = (pend_bear_price - close) >= outcome_atr * atr_raw
+        bool timed = (bar_index - pend_bear_bar) >= outcome_bars
+        if reversed_dn or timed
+            int ti = math.min(pend_bear_conf, 3) - 1
+            array.set(tier_total, ti, array.get(tier_total, ti) + 1)
+            if reversed_dn
+                array.set(tier_reversed, ti, array.get(tier_reversed, ti) + 1)
+            pend_bear_bar := na
+
+    // GRADE PENDING BULLISH DIVERGENCE (expects price to rise)
+    if not na(pend_bull_bar)
+        bool reversed_up = (close - pend_bull_price) >= outcome_atr * atr_raw
+        bool timed2 = (bar_index - pend_bull_bar) >= outcome_bars
+        if reversed_up or timed2
+            int ti2 = math.min(pend_bull_conf, 3) - 1
+            array.set(tier_total, ti2, array.get(tier_total, ti2) + 1)
+            if reversed_up
+                array.set(tier_reversed, ti2, array.get(tier_reversed, ti2) + 1)
+            pend_bull_bar := na
+
+
+// DASHBOARD
+var table hud = table.new(resolved_hud_pos, 2, 6,
+                           bgcolor=col_dash_bg, border_color=col_dash_border,
+                           border_width=1, frame_color=col_dash_border, frame_width=2)
+
+if show_hud and barstate.islast
+    table.cell(hud, 0, 0, "DIVERGENCE SCAN [D3R]", text_color=col_dash_header_text,
+               bgcolor=col_dash_header_bg, text_size=11, text_halign=text.align_center)
+    table.merge_cells(hud, 0, 0, 1, 0)
+
+    table.cell(hud, 0, 1, "Confirm Tier", text_color=col_dash_label_text, bgcolor=color.new(#0f172a, 0), text_size=11, text_halign=text.align_center)
+    table.cell(hud, 1, 1, "Reversed", text_color=col_dash_label_text, bgcolor=color.new(#0f172a, 0), text_size=11, text_halign=text.align_center)
+
+    for i = 0 to 2
+        int t = array.get(tier_total, i)
+        int r = array.get(tier_reversed, i)
+        string rowval = t > 0 ? str.tostring(math.round(float(r) / float(t) * 100.0)) + "%  (n=" + str.tostring(t) + ")" : "—"
+        color rc = t == 0 ? col_dash_label_text : float(r) / float(t) >= 0.5 ? col_good : col_bad
+        table.cell(hud, 0, 2 + i, str.tostring(i + 1) + " oscillator" + (i > 0 ? "s" : ""),
+                   text_color=col_dash_label_text, bgcolor=col_dash_row_bg, text_size=11)
+        table.cell(hud, 1, 2 + i, rowval, text_color=rc,
+                   bgcolor=col_dash_row_bg, text_size=11, text_halign=text.align_center)
+
+    table.cell(hud, 0, 5, "Total Signals", text_color=col_dash_label_text, bgcolor=col_dash_row_bg, text_size=11)
+    int gt = array.get(tier_total,0) + array.get(tier_total,1) + array.get(tier_total,2)
+    table.cell(hud, 1, 5, str.tostring(gt), text_color=col_dash_header_text, bgcolor=col_dash_row_bg, text_size=11, text_halign=text.align_center)
+
+barcolor(use_bars ? col_bar : na)
+
+// ALERTS
+alertcondition(new_bear_div, "Bearish Divergence", "D3R Divergence AI: bearish divergence detected — check confirmation tier and its measured reversal rate")
+alertcondition(new_bull_div, "Bullish Divergence", "D3R Divergence AI: bullish divergence detected — check confirmation tier and its measured reversal rate")

@@ -1,0 +1,252 @@
+//@version=6
+indicator("SQVIGU Squeeze+ TSI Ghost", shorttitle="SQVIGU Squeeze+ TSI", overlay=false)
+
+// --- BASE SQUEEZE SETTINGS ---
+length  = input.int(20,   "Squeeze Length")
+bb_mult = input.float(2.0, "Bollinger Band Multiplier")
+kc_mult = input.float(1.5, "Keltner Channel Multiplier")
+
+// --- HIGH-PROBABILITY FILTER SETTINGS ---
+ema_length    = input.int(50, "Trend EMA Filter Length")
+adx_threshold = input.int(20, "ADX Trend Strength Threshold")
+
+// --- SUPERTREND SETTINGS (SuperTrend Oscillator) ---
+grp_st      = "SuperTrend"
+stLen       = input.int(10,    "SuperTrend Length", minval=1, group=grp_st)
+stMult      = input.float(2.0, "SuperTrend Multiplier", minval=0.1, step=0.1, group=grp_st)
+showST      = input.bool(true, "Show SuperTrend Line & Cloud on Chart", group=grp_st)
+showSTX     = input.bool(true, "Show Check / X Marks on Chart", group=grp_st)
+showZig     = input.bool(true, "Show ZigZag Lines in Pane", group=grp_st)
+showLiveLeg = input.bool(true, "Extend Live ZigZag Leg (real-time)", group=grp_st)
+showZigX    = input.bool(true, "Show Check / X Marks in Pane", group=grp_st)
+zigLook     = input.int(100,   "ZigZag Level Lookback", minval=20, maxval=500, group=grp_st)
+
+// --- GHOST PROJECTION ---
+grp_ghost = "Ghost Projection"
+showGhost = input.bool(true, "Project Next Histogram Bars (Ghost)", group=grp_ghost)
+ghostBars = input.int(3,  "Bars Ahead (1-3)", minval=1, maxval=3, group=grp_ghost)
+projLen   = input.int(10, "Projection Regression Length", minval=3, maxval=50, group=grp_ghost)
+minConf   = input.int(25, "Min Confidence % to Display", minval=0, maxval=100, group=grp_ghost)
+
+// --- TSI CLOUD RIBBON SETTINGS ---
+grp_tsi       = "TSI Cloud Ribbon"
+showTsiRibbon = input.bool(true,  "Show TSI Cloud Ribbon", group=grp_tsi)
+tsiScalePane  = input.bool(true,  "Auto-Scale Ribbon to Squeeze Pane", group=grp_tsi)
+tsiLong       = input.int(25,     "TSI Long Length", group=grp_tsi)
+tsiShort      = input.int(5,      "TSI Short Length", group=grp_tsi)
+tsiSignal     = input.int(14,     "TSI Signal Length", group=grp_tsi)
+ribbonTransp  = input.int(45,     "Ribbon Cloud Transparency %", minval=0, maxval=100, group=grp_tsi)
+tsiBullCol    = input.color(color.rgb(2, 172, 30), "TSI Ribbon: Bull (Light Blue)", group=grp_tsi)
+tsiBearCol    = input.color(#ff1500, "TSI Ribbon: Bear (Dark Blue)", group=grp_tsi)
+
+// --- APPEARANCE ---
+grp_app   = "Appearance"
+histStyle = input.string("Classic Histogram", "Histogram Style", options=["Classic Histogram", "Thick Columns", "Glow Columns"], group=grp_app)
+histWidth = input.int(2, "Histogram Width", minval=1, maxval=4, group=grp_app)
+showSpine = input.bool(false, "Show Momentum Spine Line", group=grp_app)
+showFireBG= input.bool(true,  "Flash Background on Squeeze Fire", group=grp_app)
+showZero  = input.bool(true,  "Show Zero Line", group=grp_app)
+
+// --- COLOR CUSTOMIZATION ---
+grp_col        = "Color Customization"
+histUpStrong   = input.color(color.rgb(0, 0, 141),    "Hist: Bull Rising",   group=grp_col)
+histUpWeak     = input.color(color.rgb(116, 252, 255),      "Hist: Bull Fading",   group=grp_col)
+histDnStrong   = input.color(color.rgb(248, 131, 209),   "Hist: Bear Falling",  group=grp_col)
+histDnWeak     = input.color(color.rgb(252, 233, 14),     "Hist: Bear Fading",   group=grp_col)
+spineCol       = input.color(#FFFFFF,       "Momentum Spine",      group=grp_col)
+dotOnColor     = input.color(color.rgb(157, 58, 250),  "Dot: Squeeze ON",     group=grp_col)
+dotFireColor   = input.color(color.rgb(232, 230, 230),       "Dot: Firing",         group=grp_col)
+dotOffColor    = input.color(color.rgb(208, 118, 1),   "Dot: Squeeze OFF",    group=grp_col)
+hpLongColor    = input.color(color.yellow,  "HP Long Signal",      group=grp_col)
+hpShortColor   = input.color(color.fuchsia, "HP Short Signal",     group=grp_col)
+zigRisingCol   = input.color(color.rgb(0, 230, 118),       "ZigZag: Rising Leg",  group=grp_col)
+zigFallingCol  = input.color(color.rgb(249, 56, 43),       "ZigZag: Falling Leg", group=grp_col)
+stUpColor      = input.color(color.rgb(0, 230, 118),       "Supertrend: Up",      group=grp_col)
+stDnColor      = input.color(#FF1744,       "Supertrend: Down",    group=grp_col)
+zeroCol        = input.color(#888888,       "Zero Line",           group=grp_col)
+fireFlashCol   = input.color(#FFFFFF,       "Fire Flash",          group=grp_col)
+
+// --- SQUEEZE CALCULATION ---
+bb_basis = ta.sma(close, length)
+bb_dev   = bb_mult * ta.stdev(close, length)
+upperBB  = bb_basis + bb_dev
+lowerBB  = bb_basis - bb_dev
+
+kc_basis = ta.sma(close, length)
+kc_range = ta.ema(ta.tr, length)
+upperKC  = kc_basis + kc_range * kc_mult
+lowerKC  = kc_basis - kc_range * kc_mult
+
+sqzOn  = (lowerBB > lowerKC) and (upperBB < upperKC)
+sqzOff = (lowerBB < lowerKC) or (upperBB > upperKC)
+
+highest  = ta.highest(high, length)
+lowest   = ta.lowest(low, length)
+avg_hl   = (highest + lowest) / 2
+momentum = ta.linreg(close - ((avg_hl + kc_basis) / 2), length, 0)
+
+// --- FILTERS ---
+ema_trend    = ta.ema(close, ema_length)
+bull_trend   = close > ema_trend
+bear_trend   = close < ema_trend
+
+[diplus, diminus, adx] = ta.dmi(14, 14)
+strong_trend = adx > adx_threshold
+
+squeeze_fired = sqzOn[1] and sqzOff
+long_fire     = squeeze_fired and momentum > 0
+short_fire    = squeeze_fired and momentum < 0
+
+hp_long  = long_fire  and bull_trend and strong_trend
+hp_short = short_fire and bear_trend and strong_trend
+
+// --- SUPERTREND ENGINE ---
+srcST = close
+atrST = ta.atr(stLen) * stMult
+upRaw = hl2 + atrST
+dnRaw = hl2 - atrST
+var float upperST = na
+var float lowerST = na
+var int   stTrend = 0
+upperST := srcST[1] < nz(upperST[1], upRaw) ? math.min(upRaw, nz(upperST[1], upRaw)) : upRaw
+lowerST := srcST[1] > nz(lowerST[1], dnRaw) ? math.max(dnRaw, nz(lowerST[1], dnRaw)) : dnRaw
+stTrend := srcST > nz(upperST[1], upRaw) ? 1 : srcST < nz(lowerST[1], dnRaw) ? 0 : nz(stTrend[1], 0)
+Spt = stTrend == 1 ? lowerST : upperST
+
+bullCross = ta.crossover(srcST, Spt)
+bearCross = ta.crossunder(srcST, Spt)
+
+false_buy  = ta.valuewhen(bearCross, srcST, 0) < ta.valuewhen(bullCross, srcST, 0)
+false_sell = ta.valuewhen(bullCross, srcST, 0) > ta.valuewhen(bearCross, srcST, 0)
+
+// --- TSI ENGINE & SMOOTH CLOUD RIBBON ---
+float tsiRaw = ta.tsi(close, tsiShort, tsiLong) * 100
+float tsiSig = ta.ema(tsiRaw, tsiSignal)
+bool  tsiIsBull = tsiRaw >= tsiSig
+
+// Adaptive auto-scaling to match the momentum range visually
+float sqzPeak = ta.highest(math.abs(momentum), zigLook)
+float tsiPeak = ta.highest(math.max(math.abs(tsiRaw), math.abs(tsiSig)), zigLook)
+float tsiMultiplier = (tsiScalePane and tsiPeak > 0) ? (sqzPeak * 0.85 / tsiPeak) : 1.0
+
+float tsiLinePlot = showTsiRibbon ? (tsiRaw * tsiMultiplier) : na
+float tsiSigPlot  = showTsiRibbon ? (tsiSig * tsiMultiplier) : na
+
+color ribbonEdgeCol = tsiIsBull ? tsiBullCol : tsiBearCol
+color ribbonFillCol = tsiIsBull ? color.new(tsiBullCol, ribbonTransp) : color.new(tsiBearCol, ribbonTransp)
+
+p_tsi = plot(tsiLinePlot, "TSI Line",   color=color.new(ribbonEdgeCol, 15), linewidth=2)
+p_sig = plot(tsiSigPlot,  "TSI Signal", color=color.new(ribbonEdgeCol, 30), linewidth=1)
+fill(p_tsi, p_sig, color=ribbonFillCol, title="TSI Cloud Fill")
+
+// Plot prominent TSI cross dot
+bool tsiCross = ta.crossover(tsiRaw, tsiSig) or ta.crossunder(tsiRaw, tsiSig)
+plot(showTsiRibbon and tsiCross ? tsiLinePlot : na, "TSI Switch Dot", color=color.white, style=plot.style_circles, linewidth=5)
+
+// --- GHOST PROJECTION ---
+g1 = ta.linreg(momentum, projLen, -1)
+g2 = ta.linreg(momentum, projLen, -2)
+g3 = ta.linreg(momentum, projLen, -3)
+ghostR    = ta.correlation(momentum, bar_index, projLen)
+ghostProb = math.round(math.pow(ghostR, 2) * 100)
+ghostOK   = showGhost and ghostProb >= minConf
+
+f_ghostCol(val, prevVal, transp) =>
+    val > 0 ? (val > prevVal ? color.new(histUpStrong, transp) : color.new(histUpWeak, transp)) : (val < prevVal ? color.new(histDnStrong, transp) : color.new(histDnWeak, transp))
+
+plot(ghostOK and barstate.islast and ghostBars >= 1 ? g1 : na, "Ghost +1", color=f_ghostCol(g1, momentum, 55), style=plot.style_columns, linewidth=3, offset=1)
+plot(ghostOK and barstate.islast and ghostBars >= 2 ? g2 : na, "Ghost +2", color=f_ghostCol(g2, g1, 68),       style=plot.style_columns, linewidth=3, offset=2)
+plot(ghostOK and barstate.islast and ghostBars >= 3 ? g3 : na, "Ghost +3", color=f_ghostCol(g3, g2, 80),       style=plot.style_columns, linewidth=3, offset=3)
+
+if showGhost and barstate.islast
+    var table gt = table.new(position.top_right, 1, 1, border_width=1, border_color=color.new(zeroCol, 60), bgcolor=color.new(#000000, 30))
+    dirTxt = g1 > momentum ? "UP" : g1 < momentum ? "DOWN" : "FLAT"
+    dirCol = g1 > momentum ? zigRisingCol : g1 < momentum ? zigFallingCol : zeroCol
+    table.cell(gt, 0, 0, "Ghost: " + dirTxt + " " + str.tostring(ghostProb) + "%", text_color=dirCol, text_size=size.small)
+
+// --- PLOTTING: HISTOGRAM ---
+hist_color = momentum > 0 ? (momentum > momentum[1] ? histUpStrong : histUpWeak) : (momentum < momentum[1] ? histDnStrong : histDnWeak)
+isClassic  = histStyle == "Classic Histogram"
+isThick    = histStyle == "Thick Columns"
+isGlow     = histStyle == "Glow Columns"
+
+plot(isGlow ? momentum : na, "Momentum Glow", color=color.new(hist_color, 78), style=plot.style_columns, linewidth=4)
+plot(isClassic ? momentum : na, "Momentum", color=hist_color, style=plot.style_histogram, linewidth=histWidth)
+plot(isThick or isGlow ? momentum : na, "Momentum Core", color=hist_color, style=plot.style_columns, linewidth=histWidth)
+plot(showSpine ? momentum : na, "Momentum Spine", color=color.new(spineCol, 35), style=plot.style_line, linewidth=1)
+
+plot(showZero ? 0 : na, title="Zero Line", color=color.new(zeroCol, 60), style=plot.style_line, linewidth=1)
+
+dot_color = sqzOn ? dotOnColor : squeeze_fired ? dotFireColor : dotOffColor
+plot(0, title="Squeeze Status", color=dot_color, style=plot.style_circles, linewidth=1) // REDUCED DOT SIZE
+bgcolor(showFireBG and squeeze_fired ? color.new(fireFlashCol, 88) : na)
+
+plotshape(hp_long,  title="High Prob Long",  style=shape.triangleup,   location=location.bottom, color=hpLongColor,  size=size.tiny) // REDUCED TRIANGLE SIZE
+plotshape(hp_short, title="High Prob Short", style=shape.triangledown, location=location.top,    color=hpShortColor, size=size.tiny) // REDUCED TRIANGLE SIZE
+
+// --- ZIGZAG LINES ---
+zigLevel = ta.highest(math.abs(momentum), zigLook)
+zigVal   = bullCross ? -zigLevel : bearCross ? zigLevel : na
+zigCol   = stTrend == 1 ? zigFallingCol : zigRisingCol
+plot(showZig ? zigVal : na, "ST ZigZag", color=zigCol, linewidth=1, join=true)
+
+var array<label> zigMarks = array.new_label()
+f_zigMark(isTop, isFalse) =>
+    txt  = isFalse ? "❌" : "✔"
+    yPos = isTop ? zigLevel : -zigLevel
+    col  = isTop ? zigRisingCol : zigFallingCol
+    lbl  = label.new(bar_index, yPos, txt, xloc=xloc.bar_index, style=isTop ? label.style_label_down : label.style_label_up,
+         color=color.new(col, 100), textcolor=col, size=size.tiny)
+    array.push(zigMarks, lbl)
+    if array.size(zigMarks) > 40
+        label.delete(array.shift(zigMarks))
+
+if showZig and showZigX and bearCross and not na(zigLevel)
+    f_zigMark(true, false_buy)
+if showZig and showZigX and bullCross and not na(zigLevel)
+    f_zigMark(false, false_sell)
+
+var int   zigX2 = na
+var float zigY2 = na
+if bullCross
+    zigX2 := bar_index
+    zigY2 := -zigLevel
+if bearCross
+    zigX2 := bar_index
+    zigY2 := zigLevel
+
+stOscRaw = atrST > 0 ? (close - Spt) / atrST : 0.0
+liveY    = math.max(-zigLevel, math.min(zigLevel, stOscRaw * zigLevel * 0.5))
+
+var line liveZig = na
+if showZig and showLiveLeg and barstate.islast and not na(zigX2)
+    if na(liveZig)
+        liveZig := line.new(x1=zigX2, y1=zigY2, x2=bar_index, y2=liveY, color=stTrend == 1 ? zigRisingCol : zigFallingCol, width=2)
+    else
+        line.set_xy1(liveZig, zigX2, zigY2)
+        line.set_xy2(liveZig, bar_index, liveY)
+        line.set_color(liveZig, stTrend == 1 ? zigRisingCol : zigFallingCol)
+
+// --- SUPERTREND CLOUD ON PRICE CHART ---
+stLineCol = stTrend == 1 ? stUpColor : stDnColor
+p_st = plot(showST ? Spt : na, "SuperTrend Line", color=stLineCol, linewidth=2, force_overlay=true)
+p_src = plot(showST ? hl2 : na, "SuperTrend HL2 (Hidden)", display=display.none, force_overlay=true)
+fill(p_st, p_src, color=color.new(stLineCol, 85), title="SuperTrend Cloud")
+
+plotshape(showSTX and bullCross and not false_sell, title="ST Buy Check", style=shape.labelup, location=location.belowbar,
+     color=color.new(stUpColor, 100), text="✔", textcolor=stUpColor, size=size.small, force_overlay=true)
+plotshape(showSTX and bullCross and false_sell, title="ST Buy X", style=shape.labelup, location=location.belowbar,
+     color=color.new(stUpColor, 100), text="❌", textcolor=stUpColor, size=size.small, force_overlay=true)
+plotshape(showSTX and bearCross and not false_buy, title="ST Sell Check", style=shape.labeldown, location=location.abovebar,
+     color=color.new(stDnColor, 100), text="✔", textcolor=stDnColor, size=size.small, force_overlay=true)
+plotshape(showSTX and bearCross and false_buy, title="ST Sell X", style=shape.labeldown, location=location.abovebar,
+     color=color.new(stDnColor, 100), text="❌", textcolor=stDnColor, size=size.small, force_overlay=true)
+
+// --- ALERTS ---
+alertcondition(squeeze_fired, "Squeeze Fired",         "Squeeze fired")
+alertcondition(hp_long,       "HP Long",               "High-probability LONG squeeze")
+alertcondition(hp_short,      "HP Short",              "High-probability SHORT squeeze")
+alertcondition(bullCross,     "SuperTrend Bull Cross", "Price crossed ABOVE supertrend")
+alertcondition(bearCross,     "SuperTrend Bear Cross", "Price crossed BELOW supertrend")
+alertcondition(ta.crossover(tsiRaw, tsiSig),  "TSI Bullish Cross", "TSI crossed above Signal line")
+alertcondition(ta.crossunder(tsiRaw, tsiSig), "TSI Bearish Cross", "TSI crossed below Signal line")

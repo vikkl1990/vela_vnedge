@@ -1,0 +1,1145 @@
+// This Pine Script(R) code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © newbnet
+// COD - Discount - Reclaim (v4.4) — Structure + 3-Bar FVG + CHoCH + Fib (log reverse) + Blue VA box
+// Fib: log + reverse (0=HH, 1=HL). Blue box = VA on the fib leg; both start at HH bar.
+//@version=6
+indicator("COD - Discount - Reclaim", "COD Rec", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+
+//------------------------------------------------------------------------------
+// Inputs (slim — advanced values are fixed defaults)
+//------------------------------------------------------------------------------
+g0 = "COD · Chart"
+gStruct = "COD · Structure"
+gFVG = "COD · FVG (3 Bars)"
+gFib = "COD · Fib Discount"
+gVa = "COD · Blue Box (VA)"
+
+showTable = input.bool(true, "Status table", group = g0, inline = "tbl")
+tablePos = input.string("bottom_right", "", options = ["bottom_right", "bottom_left", "top_right", "top_left"], group = g0, inline = "tbl")
+parentPick = input.string("Auto from chart", "Parent TF", options = ["Auto from chart", "15m", "1H", "4H", "D", "W", "M", "1Y"], group = g0)
+
+showSwings = input.bool(true, "Swings", group = gStruct, inline = "mk")
+showBos = input.bool(true, "BOS", group = gStruct, inline = "mk")
+showChochLabel = input.bool(true, "CHoCH", group = gStruct, inline = "mk")
+showTrendline = input.bool(true, "Trendline", group = gStruct, inline = "mk")
+
+showFvg = input.bool(true, "Show FVG", group = gFVG, inline = "fvg")
+keepN = input.int(4, "Keep last", minval = 1, maxval = 20, group = gFVG, inline = "fvg")
+minGapTicks = input.int(5, "Min gap ticks", minval = 1, group = gFVG)
+
+showFib = input.bool(true, "Fib + discount fill", group = gFib, inline = "fib")
+showGold = input.bool(true, "Golden pocket", group = gFib, inline = "fib")
+
+showVa = input.bool(true, "Blue VA box + VAH/VAL/POC", group = gVa)
+
+// Fixed defaults
+string tableSize = "Small"
+string tableLayout = "2 Columns (Simple Text)"
+int boxRightOffset = 3
+bool chochUseWick = true
+bool useDisplacement = true
+float dBodyAtr = 0.20
+bool showBullFvg = true
+bool showBearFvg = true
+bool hideBoxOnFill = true
+bool showHtfFvg = true
+float kFvgAtr = 0.05
+bool showFibFill = true
+bool showVaFill = true
+bool showLineTxt = true
+float vaPct = 70.0
+int chopChochThreshold = 3
+int chopLookbackBars = 150
+float fibG1 = 0.578
+float fibG2 = 0.618
+float fibA = 0.705
+float fibB = 0.788
+float fibC = 0.886
+int swLAuto = timeframe.ismonthly ? 2 : timeframe.isweekly ? 3 : timeframe.isdaily ? 4 : 5
+int swL = swLAuto
+
+// Timeframe mapping
+is1m = timeframe.period == "1"
+is5m = timeframe.period == "5"
+is15m = timeframe.period == "15"
+is4h = timeframe.period == "240"
+
+string parentTf = "60"
+if parentPick == "15m"
+    parentTf := "15"
+else if parentPick == "1H"
+    parentTf := "60"
+else if parentPick == "4H"
+    parentTf := "240"
+else if parentPick == "D"
+    parentTf := "D"
+else if parentPick == "W"
+    parentTf := "W"
+else if parentPick == "M"
+    parentTf := "M"
+else if parentPick == "1Y"
+    parentTf := "12M"
+else if parentPick == "Auto from chart"
+    if is1m
+        parentTf := "15"
+    else if is5m
+        parentTf := "60"
+    else if is15m
+        parentTf := "60"
+    else if is4h
+        parentTf := "D"
+    else if timeframe.isdaily
+        parentTf := "W"
+    else if timeframe.isweekly
+        parentTf := "M"
+    else if timeframe.ismonthly
+        parentTf := "12M"
+    else
+        parentTf := "60"
+
+parentName = parentTf == "15" ? "15m" : parentTf == "60" ? "1H" : parentTf == "240" ? "4H" : parentTf == "12M" ? "1Y" : parentTf
+execName = is1m ? "1m" : is5m ? "5m" : is15m ? "15m" : is4h ? "4H" : timeframe.isdaily ? "1D" : timeframe.isweekly ? "1W" : timeframe.ismonthly ? "1M" : timeframe.period
+
+//------------------------------------------------------------------------------
+// G-STRUCT: Market Structure (Part B — Swings, Trendline, BOS & CHoCH Engine)
+//------------------------------------------------------------------------------
+atrVal = ta.atr(14)
+bodySize = math.abs(close - open)
+candleRange = high - low
+isDisplaced = not useDisplacement or (bodySize >= dBodyAtr * atrVal) or (candleRange >= dBodyAtr * atrVal)
+
+sh = ta.pivothigh(high, swL, swL)
+sl = ta.pivotlow(low, swL, swL)
+
+var float lastSH = na
+var float prevSH = na
+var int lastSHBar = na
+var int prevSHBar = na
+
+var float lastSL = na
+var float prevSL = na
+var int lastSLBar = na
+var int prevSLBar = na
+
+var int trendState = 0 // +1 = Bullish (HH/HL), -1 = Bearish (LH/LL), 0 = Neutral
+var int macroTrend = 0 // +1 = Macro Bullish, -1 = Macro Bearish
+var int subCycleTrend = 0 // +1 = Impulse Expansion, -1 = Retrace Sub-Cycle
+var bool bullExpansionActive = false
+var bool bearExpansionActive = false
+
+// Structural swing extremes (Higher High in uptrend, Lower Low in downtrend)
+var float lastHH = na
+var int lastHHBar = na
+var float lastLL = na
+var int lastLLBar = na
+var float lastHL = na
+var int lastHLBar = na
+var float lastLH = na
+var int lastLHBar = na
+// First LL after the peak HH — bearish CHoCH dump base (e.g. Feb-2026 ~60k after ATH)
+var float postPeakLL = na
+var int postPeakLLBar = na
+// Most recent swing HH / LL (last CHoCH leg — used on Weekly)
+var float recentHH = na
+var int recentHHBar = na
+var float recentLL = na
+var int recentLLBar = na
+
+// Retrace ceiling / floor anchor
+var float structCeiling = na
+var int structCeilingBar = na
+
+// Major structural impulse wave anchors (base HL to peak HH)
+var float originHL = na
+var float peakHH = na
+var int originHLBar = na
+var int peakHHBar = na
+
+// Range & CHoCH Cycle Swings (Lowest HL/LL to HH based on last CHoCH)
+var int[] chochBarHistory = array.new_int()
+var int[] chochDirHistory = array.new_int()
+var int lastChochBar = na
+var int lastChochDir = 0
+var float lastChochPrice = na
+
+var float cycleLow = na
+var int cycleLowBar = na
+var bool cycleLowConfirmed = false
+var string cycleLowType = "—"
+
+var float cycleHigh = na
+var int cycleHighBar = na
+var bool cycleHighConfirmed = false
+var string cycleHighType = "—"
+
+// Latching to ensure each level breaks only once
+var float lastBrokenBosH = na
+var float lastBrokenBosL = na
+var float lastBrokenSL = na
+var float lastBrokenSH = na
+
+var float lastBullFvgBot = na // set by 3-bar FVG module; cleared on CHoCH
+var float lastBearFvgTop = na
+
+// Fib anchors: last BOS↑ / CHoCH↑ → HL + HH; levels = log reverse (0=HH, 1=HL); draw from HH bar
+var float fibHL = na
+var int fibHLBar = na
+var float fibHH = na
+var int fibHHBar = na
+var int lastBullEventBar = na
+var string lastBullEvent = "—"
+
+string qualityBadge = "—"
+color signalCol = color.teal
+
+if not na(sh)
+    prevSH := lastSH
+    prevSHBar := lastSHBar
+    lastSH := sh
+    lastSHBar := bar_index - swL
+    isHH = not na(prevSH) and lastSH > prevSH
+    isLH = not na(prevSH) and lastSH < prevSH
+    if isHH
+        recentHH := lastSH
+        recentHHBar := lastSHBar
+        // New swing ATH — reset dump-base LL so Fib re-anchor after this peak
+        if na(peakHH) or lastSH >= peakHH
+            peakHH := lastSH
+            peakHHBar := lastSHBar
+            postPeakLL := na
+            postPeakLLBar := na
+        // Fib point2 HH + snap point1 to latest HL before this HH (never keep a stale LL)
+        if not na(lastBullEventBar) and lastSHBar > (not na(lastBullEventBar) ? lastBullEventBar - swL * 10 : lastSHBar)
+            if not na(lastHL) and lastHLBar < lastSHBar and lastHL < lastSH
+                fibHL := lastHL
+                fibHLBar := lastHLBar
+                fibHH := lastSH
+                fibHHBar := lastSHBar
+            else if not na(fibHL) and lastSHBar > fibHLBar and lastSH > fibHL
+                fibHH := lastSH
+                fibHHBar := lastSHBar
+    if isLH
+        lastLH := lastSH
+        lastLHBar := lastSHBar
+    if showSwings
+        label.new(lastSHBar, lastSH, isHH ? "HH" : isLH ? "LH" : "SH", style = label.style_label_down, color = isHH ? color.new(color.teal, 20) : color.new(color.maroon, 20), textcolor = color.white, size = size.tiny)
+    // Structural HH tracks the highest confirmed swing high
+    if na(lastHH) or lastSH > lastHH
+        lastHH := lastSH
+        lastHHBar := lastSHBar
+    // Track cycleHigh for the active CHoCH impulse leg
+    if na(cycleHigh) or not cycleHighConfirmed or lastSH >= cycleHigh or (not na(lastChochBar) and lastSHBar >= lastChochBar - swL)
+        cycleHigh := lastSH
+        cycleHighBar := lastSHBar
+        cycleHighConfirmed := true
+        cycleHighType := isHH ? "HH" : isLH ? "LH" : "SH"
+    if not na(cycleHigh) and (na(peakHH) or cycleHigh > peakHH)
+        peakHH := cycleHigh
+        peakHHBar := cycleHighBar
+        // New ATH / peak — clear prior dump LL so the next post-peak LL can lock
+        postPeakLL := na
+        postPeakLLBar := na
+
+if not na(sl)
+    prevSL := lastSL
+    prevSLBar := lastSLBar
+    lastSL := sl
+    lastSLBar := bar_index - swL
+    isHL = not na(prevSL) and lastSL > prevSL
+    isLL = not na(prevSL) and lastSL < prevSL
+    if isHL
+        lastHL := lastSL
+        lastHLBar := lastSLBar
+        // Fib point1: HL in the active bull leg (between last BOS/CHoCH and HH)
+        if not na(lastBullEventBar)
+            if na(fibHHBar) or lastSLBar < fibHHBar
+                fibHL := lastSL
+                fibHLBar := lastSLBar
+            else if lastSLBar > fibHHBar
+                // New HL after prior HH → start next impulse wait
+                fibHL := lastSL
+                fibHLBar := lastSLBar
+                fibHH := na
+                fibHHBar := na
+    if isLL
+        recentLL := lastSL
+        recentLLBar := lastSLBar
+        // Lock the first Lower Low after the peak HH (bear CHoCH range base)
+        if not na(peakHHBar) and lastSLBar > peakHHBar and na(postPeakLL)
+            postPeakLL := lastSL
+            postPeakLLBar := lastSLBar
+    // Invalid if an old LL was locked before the current peak (stale dump base)
+    if not na(postPeakLLBar) and not na(peakHHBar) and postPeakLLBar <= peakHHBar
+        postPeakLL := na
+        postPeakLLBar := na
+    if showSwings
+        label.new(lastSLBar, lastSL, isHL ? "HL" : isLL ? "LL" : "SL", style = label.style_label_up, color = isHL ? color.new(color.teal, 20) : color.new(color.maroon, 20), textcolor = color.white, size = size.tiny)
+    // Structural LL tracks the lowest confirmed swing low
+    if na(lastLL) or lastSL < lastLL
+        lastLL := lastSL
+        lastLLBar := lastSLBar
+    // Track cycleLow (Lowest HL or LL) for the active CHoCH impulse leg
+    if na(cycleLow) or not cycleLowConfirmed or lastSL <= cycleLow or (not na(lastChochBar) and lastSLBar >= lastChochBar - swL)
+        cycleLow := lastSL
+        cycleLowBar := lastSLBar
+        cycleLowConfirmed := true
+        cycleLowType := isLL ? "LL" : isHL ? "HL" : "SL"
+    if not na(cycleLow) and (na(originHL) or cycleLow < originHL)
+        originHL := cycleLow
+        originHLBar := cycleLowBar
+
+// Initialize trendState on initial bars
+if trendState == 0
+    if not na(lastSH) and (close > lastSH or (chochUseWick and high > lastSH))
+        trendState := 1
+        macroTrend := 1
+        bullExpansionActive := true
+        lastHH := lastSH
+        lastHHBar := lastSHBar
+    else if not na(lastSL) and (close < lastSL or (chochUseWick and low < lastSL))
+        trendState := -1
+        macroTrend := -1
+        bearExpansionActive := true
+        lastLL := lastSL
+        lastLLBar := lastSLBar
+
+// Track peakHH for impulse wave anchoring
+if trendState == 1
+    if na(peakHH) or high > peakHH
+        peakHH := high
+        peakHHBar := bar_index
+        bullExpansionActive := true
+        postPeakLL := na
+        postPeakLLBar := na
+    if not na(lastSH) and lastSH > peakHH
+        peakHH := lastSH
+        peakHHBar := lastSHBar
+        postPeakLL := na
+        postPeakLLBar := na
+
+// Dynamic Trendline through last two confirmed lows (uptrend) or highs (downtrend)
+var line trendLn = na
+if showTrendline and barstate.islast
+    if trendState == 1 and not na(prevSLBar) and not na(lastSLBar) and lastSLBar > prevSLBar
+        if na(trendLn)
+            trendLn := line.new(prevSLBar, prevSL, lastSLBar, lastSL, extend = extend.right, color = color.new(color.teal, 40), width = 2)
+        else
+            line.set_xy1(trendLn, prevSLBar, prevSL)
+            line.set_xy2(trendLn, lastSLBar, lastSL)
+    else if trendState == -1 and not na(prevSHBar) and not na(lastSHBar) and lastSHBar > prevSHBar
+        if na(trendLn)
+            trendLn := line.new(prevSHBar, prevSH, lastSHBar, lastSH, extend = extend.right, color = color.new(color.maroon, 40), width = 2)
+        else
+            line.set_xy1(trendLn, prevSHBar, prevSH)
+            line.set_xy2(trendLn, lastSHBar, lastSH)
+
+//------------------------------------------------------------------------------
+// Unified CHoCH & BOS Market Structure Engine
+// CHoCH (Change of Character) = Trend Reversal / Shift (first break against trend)
+// BOS (Break of Structure) = Trend Continuation (subsequent breaks in trend direction)
+//------------------------------------------------------------------------------
+bool chochBear = false
+bool chochBull = false
+bool bosBull = false
+bool bosBear = false
+
+// --- UPTREND (trendState == 1) ---
+if trendState == 1
+    // Break below structural swing low floor = CHoCH ↓ (Reversal to corrective retrace / bear)
+    // Only swing lows formed during this uptrend (at or after originHLBar) can trigger a new CHoCH
+    targetFloor = (not na(lastSL) and (na(originHLBar) or lastSLBar >= originHLBar)) ? lastSL : originHL
+    targetFloorBar = (not na(lastSL) and (na(originHLBar) or lastSLBar >= originHLBar)) ? lastSLBar : originHLBar
+    canChochBear = not na(targetFloor) and (na(lastBrokenSL) or targetFloor != lastBrokenSL) and (na(lastBrokenBosL) or targetFloor != lastBrokenBosL)
+    chochBear := canChochBear and (close < targetFloor or (chochUseWick and low < targetFloor)) and isDisplaced
+
+    if chochBear
+        trendState := -1
+        subCycleTrend := -1
+        bullExpansionActive := false
+        bearExpansionActive := true
+        lastBrokenSL := targetFloor
+        lastLL := targetFloor
+        lastLLBar := targetFloorBar
+        lastBrokenBosL := targetFloor // Latch to prevent duplicate BOS on the same floor
+        lastBrokenBosH := na
+        structCeiling := not na(lastSH) ? lastSH : peakHH
+        structCeilingBar := not na(lastSHBar) ? lastSHBar : peakHHBar
+        lastBullFvgBot := na
+        lastBearFvgTop := na
+        qualityBadge := "CHoCH ↓ (BEARISH)"
+        signalCol := color.maroon
+        // Bull-only fib — clear on bearish CHoCH
+        fibHL := na
+        fibHLBar := na
+        fibHH := na
+        fibHHBar := na
+        lastBullEventBar := na
+        lastBullEvent := "—"
+
+        // Record CHoCH history for Range / Chop detection
+        array.push(chochBarHistory, bar_index)
+        array.push(chochDirHistory, -1)
+        if array.size(chochBarHistory) > 30
+            array.shift(chochBarHistory)
+            array.shift(chochDirHistory)
+        lastChochBar := bar_index
+        lastChochDir := -1
+        lastChochPrice := targetFloor
+
+        // Reset cycle swings for the new CHoCH move: require confirmed swings
+        if not na(lastSH) and lastSHBar >= (bar_index - swL * 3) and (na(high) or lastSH >= high)
+            cycleHigh := lastSH
+            cycleHighBar := lastSHBar
+            cycleHighConfirmed := true
+            cycleHighType := not na(prevSH) and cycleHigh > prevSH ? "HH" : "LH"
+            structCeiling := cycleHigh
+            structCeilingBar := cycleHighBar
+        else
+            cycleHigh := high
+            cycleHighBar := bar_index
+            cycleHighConfirmed := false
+            cycleHighType := "—"
+            structCeiling := high
+            structCeilingBar := bar_index
+        cycleLow := na
+        cycleLowBar := na
+        cycleLowConfirmed := false
+        cycleLowType := "—"
+
+        if showChochLabel
+            midBarChochL = int(math.round((targetFloorBar + bar_index) / 2))
+            line.new(targetFloorBar, targetFloor, bar_index, targetFloor, color = color.red, width = 1, style = line.style_dashed)
+            label.new(midBarChochL, targetFloor, "CHoCH", style = label.style_label_up, color = color.new(color.red, 100), textcolor = color.red, size = size.small)
+    else
+        // Break above structural HH = BOS ↑ (Uptrend continuation — symmetrical to BOS ↓ on LL)
+        canBosBull = not na(lastHH) and (na(lastBrokenBosH) or lastHH != lastBrokenBosH)
+        bosBull := canBosBull and (close > lastHH or (chochUseWick and high > lastHH))
+        if bosBull
+            lastBrokenBosH := lastHH
+            lastBrokenSH := lastHH // Latch so this HH cannot trigger CHoCH
+            bullExpansionActive := true
+            // Update structural floor to the higher low established before this continuation
+            if not na(lastSL) and (na(originHL) or lastSL > originHL)
+                originHL := lastSL
+                originHLBar := lastSLBar
+            // Latch fib HL→HH — point1 must be HL (not LL / origin dump)
+            lastBullEventBar := bar_index
+            lastBullEvent := "BOS↑"
+            float bosHh = lastHH
+            int bosHhBar = lastHHBar
+            float bosHl = lastHL
+            int bosHlBar = lastHLBar
+            if not na(bosHl) and not na(bosHh) and not na(bosHlBar) and not na(bosHhBar) and bosHhBar > bosHlBar and bosHh > bosHl
+                fibHL := bosHl
+                fibHLBar := bosHlBar
+                fibHH := bosHh
+                fibHHBar := bosHhBar
+            else
+                fibHL := na
+                fibHLBar := na
+                fibHH := na
+                fibHHBar := na
+            if showBos
+                midBarH = int(math.round((lastHHBar + bar_index) / 2))
+                line.new(lastHHBar, lastHH, bar_index, lastHH, color = color.teal, width = 1, style = line.style_dashed)
+                label.new(midBarH, lastHH, "BOS", style = label.style_label_down, color = color.new(color.teal, 100), textcolor = color.teal, size = size.small)
+
+// --- DOWNTREND / CORRECTIVE RETRACE (trendState == -1) ---
+else if trendState == -1
+    // Break above latest confirmed Lower High = CHoCH ↑ (Reversal back to bull trend)
+    // Only swing highs formed during this downtrend (at or after structCeilingBar) can trigger a new CHoCH
+    targetCeiling = (not na(lastSH) and (na(structCeilingBar) or lastSHBar >= structCeilingBar)) ? lastSH : structCeiling
+    targetCeilingBar = (not na(lastSH) and (na(structCeilingBar) or lastSHBar >= structCeilingBar)) ? lastSHBar : structCeilingBar
+    canChochBull = not na(targetCeiling) and (na(lastBrokenSH) or targetCeiling != lastBrokenSH) and (na(lastBrokenBosH) or targetCeiling != lastBrokenBosH)
+    chochBull := canChochBull and (close > targetCeiling or (chochUseWick and high > targetCeiling)) and isDisplaced
+
+    if chochBull
+        macroTrend := 1
+        subCycleTrend := 1
+        trendState := 1
+        bullExpansionActive := true
+        bearExpansionActive := false
+        lastBrokenSH := targetCeiling
+        lastHH := targetCeiling
+        lastHHBar := targetCeilingBar
+        lastBrokenBosH := targetCeiling // Latch to prevent duplicate BOS on the same ceiling
+        lastBrokenBosL := na
+        lastBullFvgBot := na
+        lastBearFvgTop := na
+        qualityBadge := "CHoCH ↑ (WAIT RETRACE)"
+        signalCol := color.orange
+        // Arm bull fib — wait for true HL (do not seed LL as point1)
+        lastBullEventBar := bar_index
+        lastBullEvent := "CHoCH↑"
+        fibHH := na
+        fibHHBar := na
+        if not na(lastHL) and (na(lastHHBar) or lastHLBar < lastHHBar or lastHLBar >= lastBullEventBar - swL)
+            fibHL := lastHL
+            fibHLBar := lastHLBar
+        else
+            fibHL := na
+            fibHLBar := na
+
+        // Record CHoCH history for Range / Chop detection
+        array.push(chochBarHistory, bar_index)
+        array.push(chochDirHistory, 1)
+        if array.size(chochBarHistory) > 30
+            array.shift(chochBarHistory)
+            array.shift(chochDirHistory)
+        lastChochBar := bar_index
+        lastChochDir := 1
+        lastChochPrice := targetCeiling
+
+        // Reset cycle swings for the new CHoCH move:
+        if not na(lastSL) and lastSLBar >= (bar_index - swL * 3) and (na(low) or lastSL <= low)
+            cycleLow := lastSL
+            cycleLowBar := lastSLBar
+            cycleLowConfirmed := true
+            cycleLowType := not na(prevSL) and cycleLow < prevSL ? "LL" : "HL"
+            originHL := cycleLow
+            originHLBar := cycleLowBar
+        else
+            cycleLow := low
+            cycleLowBar := bar_index
+            cycleLowConfirmed := false
+            cycleLowType := "—"
+            originHL := low
+            originHLBar := bar_index
+
+        if not na(lastSH) and lastSHBar >= (bar_index - swL * 3) and lastSH >= high
+            cycleHigh := lastSH
+            cycleHighBar := lastSHBar
+            cycleHighConfirmed := true
+            cycleHighType := not na(prevSH) and cycleHigh > prevSH ? "HH" : "LH"
+            peakHH := cycleHigh
+            peakHHBar := cycleHighBar
+            postPeakLL := na
+            postPeakLLBar := na
+        else
+            cycleHigh := high
+            cycleHighBar := bar_index
+            cycleHighConfirmed := false
+            cycleHighType := "—"
+            peakHH := high
+            peakHHBar := bar_index
+            postPeakLL := na
+            postPeakLLBar := na
+
+        if showChochLabel
+            midBarChochH = int(math.round((targetCeilingBar + bar_index) / 2))
+            line.new(targetCeilingBar, targetCeiling, bar_index, targetCeiling, color = color.teal, width = 1, style = line.style_dashed)
+            label.new(midBarChochH, targetCeiling, "CHoCH", style = label.style_label_down, color = color.new(color.teal, 100), textcolor = color.teal, size = size.small)
+    else
+        // Break below structural LL = BOS ↓ (Downtrend continuation into discount)
+        canBosBear = not na(lastLL) and (na(lastBrokenBosL) or lastLL != lastBrokenBosL)
+        bosBear := canBosBear and (close < lastLL or (chochUseWick and low < lastLL))
+        if bosBear
+            lastBrokenBosL := lastLL
+            lastBrokenSL := lastLL // Mark this swing low as broken so it can never trigger CHoCH
+            bearExpansionActive := true
+            // Update structural ceiling to the lower high established before this continuation
+            if not na(lastSH) and (na(structCeiling) or lastSH < structCeiling)
+                structCeiling := lastSH
+                structCeilingBar := lastSHBar
+            if showBos
+                midBarL = int(math.round((lastLLBar + bar_index) / 2))
+                line.new(lastLLBar, lastLL, bar_index, lastLL, color = color.red, width = 1, style = line.style_dashed)
+                label.new(midBarL, lastLL, "BOS", style = label.style_label_up, color = color.new(color.red, 100), textcolor = color.red, size = size.small)
+
+//------------------------------------------------------------------------------
+// G-FVG: COD · 3 Bars
+// Same-color stack + gap + middle owns gap + bar3 breaks beyond bar2
+//------------------------------------------------------------------------------
+minGap = syminfo.mintick * minGapTicks
+
+// bar1=[2], bar2=[1] middle, bar3=[0]
+bar1Green = close[2] > open[2]
+bar2Green = close[1] > open[1]
+bar3Green = close[0] > open[0]
+bar1Red = close[2] < open[2]
+bar2Red = close[1] < open[1]
+bar3Red = close[0] < open[0]
+
+bullGap = low[0] > high[2] and (low[0] - high[2]) >= minGap
+bearGap = high[0] < low[2] and (low[2] - high[0]) >= minGap
+bullMidOwns = high[1] > high[2] and low[1] < low[0]
+bearMidOwns = low[1] < low[2] and high[1] > high[0]
+bullBar3Breaks = high[0] > high[1]
+bearBar3Breaks = low[0] < low[1]
+bullBodyInsideBar2 = math.max(open[0], close[0]) <= high[1] and math.min(open[0], close[0]) >= low[1]
+bearBodyInsideBar2 = math.max(open[0], close[0]) <= high[1] and math.min(open[0], close[0]) >= low[1]
+
+bullStack = barstate.isconfirmed and showFvg and showBullFvg and bar1Green and bar2Green and bar3Green and bullGap and bullMidOwns and bullBar3Breaks and not bullBodyInsideBar2
+bearStack = barstate.isconfirmed and showFvg and showBearFvg and bar1Red and bar2Red and bar3Red and bearGap and bearMidOwns and bearBar3Breaks and not bearBodyInsideBar2
+
+var box[] fvgBoxes = array.new_box()
+var line[] fvgLines = array.new_line()
+var float[] fvgTops = array.new_float()
+var float[] fvgBots = array.new_float()
+var int[] fvgDirs = array.new_int()
+var bool[] fvgGone = array.new_bool()
+var bool[] fvgReclaimed = array.new_bool()
+
+fvgClearOldest() =>
+    array.shift(fvgDirs)
+    array.shift(fvgTops)
+    array.shift(fvgBots)
+    box bOld = array.shift(fvgBoxes)
+    if not na(bOld)
+        box.delete(bOld)
+    line lOld = array.shift(fvgLines)
+    if not na(lOld)
+        line.delete(lOld)
+    array.shift(fvgGone)
+    array.shift(fvgReclaimed)
+
+if bullStack or bearStack
+    float topG = bullStack ? low[0] : low[2]
+    float botG = bullStack ? high[2] : high[0]
+    if topG > botG
+        float midG = (topG + botG) / 2.0
+        int left = bar_index - 1
+        int dir = bullStack ? 1 : -1
+        while array.size(fvgBoxes) >= keepN
+            fvgClearOldest()
+        color borderC = dir == 1 ? color.new(color.teal, 40) : color.new(color.red, 40)
+        color bgC = dir == 1 ? color.new(color.teal, 82) : color.new(color.red, 82)
+        color lineC = dir == 1 ? color.new(color.teal, 30) : color.new(color.red, 30)
+        string tag = "FVG"
+        array.push(fvgBoxes, box.new(left, topG, bar_index + 2, botG, border_color = borderC, bgcolor = bgC, border_width = 1, text = tag, text_size = size.small, text_color = color.white, text_halign = text.align_center, text_valign = text.align_center))
+        array.push(fvgLines, line.new(left, midG, bar_index + 2, midG, color = lineC, style = line.style_dotted, width = 1))
+        array.push(fvgDirs, dir)
+        array.push(fvgTops, topG)
+        array.push(fvgBots, botG)
+        array.push(fvgGone, false)
+        array.push(fvgReclaimed, false)
+        if dir == 1
+            lastBullFvgBot := botG
+        else
+            lastBearFvgTop := topG
+
+bool insideExecFvg = false
+float activeFvgMid = na
+int activeFvgIdx = -1
+if array.size(fvgBoxes) > 0
+    for i = 0 to array.size(fvgBoxes) - 1
+        if not array.get(fvgGone, i)
+            float t = array.get(fvgTops, i)
+            float b = array.get(fvgBots, i)
+            int d = array.get(fvgDirs, i)
+            box bx = array.get(fvgBoxes, i)
+            line ln = array.get(fvgLines, i)
+            if close >= b and close <= t
+                insideExecFvg := true
+                activeFvgMid := (t + b) / 2.0
+                activeFvgIdx := i
+            bool filled = d == 1 ? low <= b : high >= t
+            if filled and hideBoxOnFill
+                if not na(bx)
+                    box.delete(bx)
+                    array.set(fvgBoxes, i, na)
+                if not na(ln)
+                    line.delete(ln)
+                    array.set(fvgLines, i, na)
+                array.set(fvgGone, i, true)
+                if d == 1
+                    bullExpansionActive := false
+                    lastBullFvgBot := na
+                else
+                    bearExpansionActive := false
+                    lastBearFvgTop := na
+            else if not na(bx)
+                box.set_right(bx, bar_index + 2)
+                if not na(ln)
+                    line.set_x2(ln, bar_index + 2)
+
+// Higher Timeframe (Parent) 3-bar FVG via request.security (zero-repaint)
+htfHigh2 = request.security(syminfo.tickerid, parentTf, high[2], lookahead = barmerge.lookahead_off)
+htfLow0 = request.security(syminfo.tickerid, parentTf, low[0], lookahead = barmerge.lookahead_off)
+htfLow2 = request.security(syminfo.tickerid, parentTf, low[2], lookahead = barmerge.lookahead_off)
+htfHigh0 = request.security(syminfo.tickerid, parentTf, high[0], lookahead = barmerge.lookahead_off)
+htfHigh1 = request.security(syminfo.tickerid, parentTf, high[1], lookahead = barmerge.lookahead_off)
+htfLow1 = request.security(syminfo.tickerid, parentTf, low[1], lookahead = barmerge.lookahead_off)
+htfOpen0 = request.security(syminfo.tickerid, parentTf, open[0], lookahead = barmerge.lookahead_off)
+htfClose0 = request.security(syminfo.tickerid, parentTf, close[0], lookahead = barmerge.lookahead_off)
+htfAtr = request.security(syminfo.tickerid, parentTf, ta.atr(14), lookahead = barmerge.lookahead_off)
+htfBullGreen3 = request.security(syminfo.tickerid, parentTf, close > open and close[1] > open[1] and close[2] > open[2], lookahead = barmerge.lookahead_off)
+htfBearRed3 = request.security(syminfo.tickerid, parentTf, close < open and close[1] < open[1] and close[2] < open[2], lookahead = barmerge.lookahead_off)
+htfBullMidOwns = request.security(syminfo.tickerid, parentTf, high[1] > high[2] and low[1] < low[0], lookahead = barmerge.lookahead_off)
+htfBearMidOwns = request.security(syminfo.tickerid, parentTf, low[1] < low[2] and high[1] > high[0], lookahead = barmerge.lookahead_off)
+htfBullBreaks = not na(htfHigh0) and not na(htfHigh1) and htfHigh0 > htfHigh1
+htfBearBreaks = not na(htfLow0) and not na(htfLow1) and htfLow0 < htfLow1
+htfBullBodyInside = not na(htfOpen0) and not na(htfClose0) and not na(htfHigh1) and not na(htfLow1) and math.max(htfOpen0, htfClose0) <= htfHigh1 and math.min(htfOpen0, htfClose0) >= htfLow1
+htfBearBodyInside = htfBullBodyInside
+
+htfBullFvg = showHtfFvg and htfBullGreen3 and htfBullMidOwns and htfBullBreaks and not htfBullBodyInside and not na(htfLow0) and not na(htfHigh2) and htfLow0 > htfHigh2 and (htfLow0 - htfHigh2) >= (kFvgAtr * htfAtr)
+htfBearFvg = showHtfFvg and htfBearRed3 and htfBearMidOwns and htfBearBreaks and not htfBearBodyInside and not na(htfLow2) and not na(htfHigh0) and htfHigh0 < htfLow2 and (htfLow2 - htfHigh0) >= (kFvgAtr * htfAtr)
+
+float htfFvgTop = htfBullFvg ? htfLow0 : htfBearFvg ? htfLow2 : na
+float htfFvgBot = htfBullFvg ? htfHigh2 : htfBearFvg ? htfHigh0 : na
+bool insideHtfFvg = not na(htfFvgTop) and not na(htfFvgBot) and close <= htfFvgTop and close >= htfFvgBot
+
+//------------------------------------------------------------------------------
+// G-CHOCH: Market Structure Setup Quality (Part D)
+//------------------------------------------------------------------------------
+// Structural breaks (CHoCH reversals and BOS continuations) are unified in Part B.
+
+//------------------------------------------------------------------------------
+// G-FIB: last BOS↑ / CHoCH↑ anchors HL + HH; TV fib = log + reverse (0=HH, 1=HL)
+// Discount box + fib lines start at HH bar
+//------------------------------------------------------------------------------
+int chochCountInLookback = 0
+if array.size(chochBarHistory) > 0
+    for k = 0 to array.size(chochBarHistory) - 1
+        if (bar_index - array.get(chochBarHistory, k)) <= chopLookbackBars
+            chochCountInLookback += 1
+bool isRangePrice = chochCountInLookback >= chopChochThreshold
+
+legLow = fibHL
+legHigh = fibHH
+legOk = not na(fibHL) and not na(fibHH) and not na(fibHLBar) and not na(fibHHBar) and fibHHBar > fibHLBar and fibHH > fibHL
+
+// TradingView log fib with Reverse ON: 0 at HH, 1 at HL  →  price = HH * (HL/HH)^c
+fibAt(float p0, float p1, float c) =>
+    float out = na
+    if not na(p0) and not na(p1) and p0 > 0 and p1 > 0
+        out := p0 * math.pow(p1 / p0, c)
+    out
+
+float fibP0 = legOk ? fibHH : na
+float fibP1 = legOk ? fibHL : na
+
+f558 = legOk ? fibAt(fibP0, fibP1, fibG1) : na
+f618 = legOk ? fibAt(fibP0, fibP1, fibG2) : na
+f705 = legOk ? fibAt(fibP0, fibP1, fibA) : na
+f788 = legOk ? fibAt(fibP0, fibP1, fibB) : na
+f886 = legOk ? fibAt(fibP0, fibP1, fibC) : na
+structTxt = isRangePrice ? "RANGE/CHOP" : trendState == 1 ? "VALUE-UP" : trendState == -1 ? "VALUE-DOWN" : "SIDEWAYS"
+
+// Zone between 0.705 and 0.886 (HH→HL log reverse — near HL)
+zoneUpper = not na(f705) and not na(f886) ? math.max(f705, f886) : f705
+zoneLower = not na(f705) and not na(f886) ? math.min(f705, f886) : f886
+inFibZone = not na(zoneUpper) and not na(zoneLower) and close <= zoneUpper and close >= zoneLower
+aboveGold = not na(f558) and close > f558
+belowInv = not na(f886) and close < f886
+ideaDead = legOk and close < fibHL
+if ideaDead
+    macroTrend := -1
+
+//------------------------------------------------------------------------------
+// Blue Box (VA): Steidlmayer 70% on the fib leg only (HL bar → now)
+// Same left edge as Fib = HH bar
+//------------------------------------------------------------------------------
+autoRow =
+     close <= 20.0 ? math.max(syminfo.mintick * 10.0, 0.01) :
+     close <= 500.0 ? 1.0 :
+     timeframe.ismonthly ? 250.0 :
+     timeframe.isweekly ? 100.0 :
+     is4h ? 50.0 :
+     25.0
+rowSize = autoRow
+
+steidlFromBins(float[] bins, float totV, float sLo, float row, int nBin) =>
+    float[] out = array.new_float(3, na)
+    if nBin > 1 and totV > 0
+        pocIdx = 0
+        pocV = array.get(bins, 0)
+        for i = 1 to nBin - 1
+            bv = array.get(bins, i)
+            if bv > pocV
+                pocV := bv
+                pocIdx := i
+        need = totV * vaPct / 100.0
+        cum = pocV
+        lo = pocIdx
+        hi = pocIdx
+        for k = 0 to nBin - 1
+            if cum >= need
+                break
+            upV = hi + 1 < nBin ? array.get(bins, hi + 1) : -1.0
+            dnV = lo - 1 >= 0 ? array.get(bins, lo - 1) : -1.0
+            if upV >= dnV and upV >= 0
+                hi += 1
+                cum += upV
+            else if dnV >= 0
+                lo -= 1
+                cum += dnV
+            else
+                break
+        array.set(out, 0, sLo + (pocIdx + 0.5) * row)
+        array.set(out, 1, sLo + lo * row)
+        array.set(out, 2, sLo + (hi + 1) * row)
+    out
+
+float poc = na
+float val = na
+float vah = na
+if legOk and showVa
+    int vaLook = math.max(3, bar_index - fibHLBar + 1)
+    vaLook := math.min(vaLook, 500)
+    float sHi = high
+    float sLo = low
+    for i = 0 to vaLook - 1
+        sHi := math.max(sHi, high[i])
+        sLo := math.min(sLo, low[i])
+    if not na(sHi) and not na(sLo) and sHi > sLo and rowSize > 0
+        nBin = int(math.ceil((sHi - sLo) / rowSize)) + 1
+        nBin := math.min(nBin, 200)
+        float[] bins = array.new_float(nBin, 0.0)
+        totV = 0.0
+        for i = 0 to vaLook - 1
+            barV = volume[i]
+            barHi = high[i]
+            barLo = low[i]
+            if barV > 0 and not na(barHi) and not na(barLo) and barHi >= barLo
+                totV += barV
+                i0 = int(math.floor((barLo - sLo) / rowSize))
+                i1 = int(math.floor((barHi - sLo) / rowSize))
+                i0 := math.max(0, math.min(nBin - 1, i0))
+                i1 := math.max(0, math.min(nBin - 1, i1))
+                span = i1 - i0 + 1
+                add = barV / span
+                for j = i0 to i1
+                    array.set(bins, j, array.get(bins, j) + add)
+        pack = steidlFromBins(bins, totV, sLo, rowSize, nBin)
+        poc := array.get(pack, 0)
+        val := array.get(pack, 1)
+        vah := array.get(pack, 2)
+
+float curStopDist = not na(lastSL) ? math.abs(close - lastSL) : 0.0
+float curStopPct = close > 0 ? (curStopDist / close * 100.0) : 0.0
+
+f705Safe = not na(f705) ? f705 : 1000000000.0
+crossF705 = ta.crossover(close, f705Safe)
+
+// Reclaim: fib discount / FVG + reversal candle (no VA)
+bool inDiscountArea = (inFibZone or (not na(f618) and close <= f618 and close >= f886) or insideHtfFvg or insideExecFvg) and not ideaDead
+bool isReversalCandle = close > open and (close > high[1] or crossF705)
+bool reclaimBull = (trendState == 1 or macroTrend == 1) and inDiscountArea and isReversalCandle
+bool isAplus = inDiscountArea and (insideHtfFvg or insideExecFvg) and inFibZone
+
+if reclaimBull
+    subCycleTrend := 1
+    qualityBadge := isAplus ? "★★★ A+ RECLAIM" : "★★ RECLAIM"
+    signalCol := isAplus ? color.teal : color.orange
+
+    int matchIdx = activeFvgIdx
+    if matchIdx < 0 and array.size(fvgBoxes) > 0
+        for j = array.size(fvgBoxes) - 1 to 0
+            d = array.get(fvgDirs, j)
+            t = array.get(fvgTops, j)
+            b = array.get(fvgBots, j)
+            isGone = array.get(fvgGone, j)
+            if not isGone and d == 1 and low <= t and high >= b
+                matchIdx := j
+                break
+    if matchIdx >= 0 and matchIdx < array.size(fvgBoxes)
+        targetBx = array.get(fvgBoxes, matchIdx)
+        targetLn = array.get(fvgLines, matchIdx)
+        isAlreadyGone = array.get(fvgGone, matchIdx)
+        if not isAlreadyGone and not na(targetBx)
+            array.set(fvgReclaimed, matchIdx, true)
+            reclaimNote = isAplus ? "★★★ A+ RECLAIM" : "★★ RECLAIM"
+            box.set_text(targetBx, reclaimNote)
+            box.set_text_color(targetBx, color.white)
+            box.set_text_size(targetBx, size.small)
+            box.set_text_halign(targetBx, text.align_center)
+            box.set_text_valign(targetBx, text.align_center)
+            box.set_border_width(targetBx, 2)
+            box.set_border_color(targetBx, isAplus ? color.teal : color.orange)
+            box.set_bgcolor(targetBx, isAplus ? color.new(color.teal, 75) : color.new(color.orange, 75))
+            box.set_right(targetBx, bar_index + 2)
+            if not na(targetLn)
+                line.set_x2(targetLn, bar_index + 2)
+
+//------------------------------------------------------------------------------
+// Visual Rendering (Blue VA box + Fib)
+//------------------------------------------------------------------------------
+colVah = #4DD0E1
+colPoc = #FFD54F
+colVal = #4DD0E1
+col558 = #FFB300
+col618 = #FF8F00
+col705 = #00E676
+col788 = #00C853
+col886 = #FF5252
+
+updateHLine(line id, bool show, float y, color col, int w, int startX = na) =>
+    line out = id
+    int x1 = not na(startX) ? startX : bar_index
+    int x2 = bar_index + boxRightOffset
+    if show and not na(y)
+        if na(out)
+            out := line.new(x1, y, x2, y, color = col, width = w)
+        else
+            line.set_xy1(out, x1, y)
+            line.set_xy2(out, x2, y)
+            line.set_color(out, col)
+            line.set_width(out, w)
+    else if not na(out)
+        line.delete(out)
+        out := na
+    out
+
+updateTip(label id, bool show, float y, string txt, color col) =>
+    label out = id
+    if show and not na(y)
+        bx = bar_index + boxRightOffset
+        if na(out)
+            out := label.new(bx, y, txt, xloc = xloc.bar_index, style = label.style_label_left, color = color.new(col, 100), textcolor = col, size = size.small)
+        else
+            label.set_xy(out, bx, y)
+            label.set_text(out, txt)
+            label.set_textcolor(out, col)
+    else if not na(out)
+        label.delete(out)
+        out := na
+    out
+
+var box vaBox = na
+var box fibBox = na
+var line lnVah = na
+var line lnPoc = na
+var line lnVal = na
+var line ln558 = na
+var line ln618 = na
+var line ln705 = na
+var line ln788 = na
+var line ln886 = na
+var label lbVah = na
+var label lbPoc = na
+var label lbVal = na
+var label lb558 = na
+var label lb618 = na
+var label lb705 = na
+var label lb788 = na
+var label lb886 = na
+var label lbF1 = na
+var label lbF2 = na
+
+if barstate.islast
+    // Left edge = HH bar — same for blue VA box and Fib
+    int fibLeft = legOk ? fibHHBar : bar_index
+    int boxRight = bar_index + boxRightOffset
+
+    if showVaFill and showVa and legOk and not na(vah) and not na(val) and vah > val
+        if na(vaBox)
+            vaBox := box.new(fibLeft, vah, boxRight, val, border_color = color.new(colVah, 40), bgcolor = color.new(#80D8FF, 88), border_width = 1)
+        else
+            box.set_lefttop(vaBox, fibLeft, vah)
+            box.set_rightbottom(vaBox, boxRight, val)
+    else if not na(vaBox)
+        box.delete(vaBox)
+        vaBox := na
+
+    if showFibFill and showFib and legOk and not na(f705) and not na(f886)
+        float boxTop = math.max(f705, f886)
+        float boxBot = math.min(f705, f886)
+        if na(fibBox)
+            fibBox := box.new(fibLeft, boxTop, boxRight, boxBot, border_color = color.new(col705, 50), bgcolor = color.new(#00E676, 88), border_width = 1)
+        else
+            box.set_lefttop(fibBox, fibLeft, boxTop)
+            box.set_rightbottom(fibBox, boxRight, boxBot)
+    else if not na(fibBox)
+        box.delete(fibBox)
+        fibBox := na
+
+    lnVah := updateHLine(lnVah, showVa and legOk, vah, color.new(colVah, 0), 3, fibLeft)
+    lnPoc := updateHLine(lnPoc, showVa and legOk, poc, color.new(colPoc, 0), 2, fibLeft)
+    lnVal := updateHLine(lnVal, showVa and legOk, val, color.new(colVal, 0), 3, fibLeft)
+    ln558 := updateHLine(ln558, showFib and showGold and legOk, f558, color.new(col558, 0), 2, fibLeft)
+    ln618 := updateHLine(ln618, showFib and showGold and legOk, f618, color.new(col618, 0), 2, fibLeft)
+    ln705 := updateHLine(ln705, showFib and legOk, f705, color.new(col705, 20), 1, fibLeft)
+    ln788 := updateHLine(ln788, showFib and legOk, f788, color.new(col788, 10), 1, fibLeft)
+    ln886 := updateHLine(ln886, showFib and legOk, f886, color.new(col886, 0), 2, fibLeft)
+
+    lbVah := updateTip(lbVah, showLineTxt and showVa and legOk, vah, "VAH  " + str.tostring(vah, format.mintick), colVah)
+    lbPoc := updateTip(lbPoc, showLineTxt and showVa and legOk, poc, "POC  " + str.tostring(poc, format.mintick), colPoc)
+    lbVal := updateTip(lbVal, showLineTxt and showVa and legOk, val, "VAL  " + str.tostring(val, format.mintick), colVal)
+    lb558 := updateTip(lb558, showLineTxt and showFib and showGold and legOk, f558, "Fib 0.578  " + str.tostring(f558, format.mintick), col558)
+    lb618 := updateTip(lb618, showLineTxt and showFib and showGold and legOk, f618, "Fib 0.618  " + str.tostring(f618, format.mintick), col618)
+    lb705 := updateTip(lb705, showLineTxt and showFib and legOk, f705, "Fib 0.705  " + str.tostring(f705, format.mintick), col705)
+    lb788 := updateTip(lb788, showLineTxt and showFib and legOk, f788, "Fib 0.788  " + str.tostring(f788, format.mintick), col788)
+    lb886 := updateTip(lb886, showLineTxt and showFib and legOk, f886, "Fib 0.886  " + str.tostring(f886, format.mintick), col886)
+
+    if showFib and legOk
+        if na(lbF1)
+            lbF1 := label.new(fibHLBar, fibHL, "F1 HL", style = label.style_label_up, color = color.new(color.teal, 30), textcolor = color.white, size = size.tiny)
+        else
+            label.set_xy(lbF1, fibHLBar, fibHL)
+            label.set_text(lbF1, "F1 HL " + str.tostring(fibHL, format.mintick))
+        if na(lbF2)
+            lbF2 := label.new(fibHHBar, fibHH, "F2 HH", style = label.style_label_down, color = color.new(color.teal, 30), textcolor = color.white, size = size.tiny)
+        else
+            label.set_xy(lbF2, fibHHBar, fibHH)
+            label.set_text(lbF2, "F2 HH " + str.tostring(fibHH, format.mintick))
+    else
+        if not na(lbF1)
+            label.delete(lbF1)
+            lbF1 := na
+        if not na(lbF2)
+            label.delete(lbF2)
+            lbF2 := na
+
+//------------------------------------------------------------------------------
+// Status Table & HUD
+//------------------------------------------------------------------------------
+tblPos =
+     tablePos == "top_left" ? position.top_left :
+     tablePos == "top_center" ? position.top_center :
+     tablePos == "top_right" ? position.top_right :
+     tablePos == "middle_left" ? position.middle_left :
+     tablePos == "middle_center" ? position.middle_center :
+     tablePos == "middle_right" ? position.middle_right :
+     tablePos == "bottom_left" ? position.bottom_left :
+     tablePos == "bottom_center" ? position.bottom_center :
+     position.bottom_right
+
+tblTxtSize =
+     tableSize == "Tiny" ? size.tiny :
+     tableSize == "Small" ? size.small :
+     tableSize == "Normal" ? size.normal :
+     size.large
+
+var table tbl = na
+var string tblPosUsed = na
+var string tblLayoutUsed = na
+var string tblSizeUsed = na
+
+bool is3Col = tableLayout == "3 Columns (Friendly Guide)"
+
+if showTable and barstate.islast
+    if not na(tbl) and (tblPosUsed != tablePos or tblLayoutUsed != tableLayout or tblSizeUsed != tableSize)
+        table.delete(tbl)
+        tbl := na
+    tblPosUsed := tablePos
+    tblLayoutUsed := tableLayout
+    tblSizeUsed := tableSize
+    if na(tbl)
+        int numCols = is3Col ? 3 : 2
+        tbl := table.new(tblPos, numCols, 10, bgcolor = color.new(#0D1117, 10), border_color = color.new(#30363D, 20), border_width = 1)
+    
+    // Header
+    table.cell(tbl, 0, 0, "COD Reclaim v4.4", text_color = color.white, bgcolor = color.new(#161B22, 0), text_size = tblTxtSize)
+    table.cell(tbl, 1, 0, execName + " · " + parentName, text_color = color.teal, bgcolor = color.new(#161B22, 0), text_size = tblTxtSize)
+    if is3Col
+        table.cell(tbl, 2, 0, "BEGINNER GUIDE", text_color = color.gray, bgcolor = color.new(#161B22, 0), text_size = tblTxtSize)
+    
+    // Row 1: Trend
+    string trendTitle = "Market Trend"
+    string trendVal = trendState == 1 ? "UPTREND (Bullish)" : trendState == -1 ? (macroTrend == 1 ? "PULLBACK" : "DOWNTREND (Bearish)") : "NEUTRAL"
+    if isRangePrice
+        trendVal := "SIDEWAYS (Chop)"
+    color trendCol = isRangePrice ? color.orange : trendState == 1 ? color.lime : trendState == -1 ? (macroTrend == 1 ? color.orange : color.red) : color.silver
+    string trendHelp = isRangePrice ? "Sideways; wait for edges" : trendState == 1 ? "Higher lows forming" : "Lower highs forming"
+    
+    table.cell(tbl, 0, 1, trendTitle, text_color = color.silver, text_size = tblTxtSize)
+    table.cell(tbl, 1, 1, trendVal, text_color = trendCol, text_size = tblTxtSize)
+    if is3Col
+        table.cell(tbl, 2, 1, trendHelp, text_color = color.silver, text_size = tblTxtSize)
+    
+    // Row 2: Active Move anchors + fib direction (HH→HL log reverse)
+    string legTitle = "Active Move"
+    string legVal = "WAITING HL/HH"
+    string legHelp = not na(lastBullEvent) ? lastBullEvent : "Need BOS↑ or CHoCH↑"
+    if legOk
+        legVal := str.tostring(fibHH, format.mintick) + " → " + str.tostring(fibHL, format.mintick)
+        legHelp := lastBullEvent + " · HH→HL log reverse"
+    else if not na(fibHL) and na(fibHH)
+        legVal := "HL SET · WAIT HH"
+        legHelp := "Point HL locked"
+    
+    table.cell(tbl, 0, 2, legTitle, text_color = color.silver, text_size = tblTxtSize)
+    table.cell(tbl, 1, 2, legVal, text_color = legOk ? color.teal : color.silver, text_size = tblTxtSize)
+    if is3Col
+        table.cell(tbl, 2, 2, legHelp, text_color = color.silver, text_size = tblTxtSize)
+    
+    // Row 3: Current Price vs Fib
+    string locTitle = "Current Price"
+    string locVal = not legOk ? "WAITING FIB" : inFibZone ? "IN BUY ZONE" : belowInv ? "BELOW 0.886" : aboveGold ? "ABOVE GOLD" : "BETWEEN LEVELS"
+    color locCol = not legOk ? color.silver : inFibZone ? color.lime : belowInv ? color.red : aboveGold ? color.orange : color.white
+    string locHelp = legOk ? ("HH→HL log reverse · " + lastBullEvent) : "Need HL and HH"
+    
+    table.cell(tbl, 0, 3, locTitle, text_color = color.silver, text_size = tblTxtSize)
+    table.cell(tbl, 1, 3, locVal, text_color = locCol, text_size = tblTxtSize)
+    if is3Col
+        table.cell(tbl, 2, 3, locHelp, text_color = color.silver, text_size = tblTxtSize)
+    
+    // Row 4: Bargain Zone
+    string fibTitle = "Bargain Zone"
+    string fibVal = inFibZone ? "IN BUY ZONE" : legOk ? "OUTSIDE 0.705–0.886" : "WAITING"
+    color fibCol = inFibZone ? color.lime : legOk ? color.orange : color.silver
+    string fibHelp = legOk ? ("Green Box: $" + str.tostring(zoneLower, "#") + "–$" + str.tostring(zoneUpper, "#")) : "Waiting for anchors"
+    
+    table.cell(tbl, 0, 4, fibTitle, text_color = color.silver, text_size = tblTxtSize)
+    table.cell(tbl, 1, 4, fibVal, text_color = fibCol, text_size = tblTxtSize)
+    if is3Col
+        table.cell(tbl, 2, 4, fibHelp, text_color = color.silver, text_size = tblTxtSize)
+    
+    // Row 5: Price Gap
+    string fvgTitle = "Chart Gap"
+    string fvgVal = insideHtfFvg ? ("IN " + parentName + " GAP") : insideExecFvg ? ("IN " + execName + " GAP") : "NONE OPEN"
+    color fvgCol = (insideHtfFvg or insideExecFvg) ? color.lime : color.silver
+    string fvgHelp = (insideHtfFvg or insideExecFvg) ? "Buyer support area" : "No open gaps"
+    
+    table.cell(tbl, 0, 5, fvgTitle, text_color = color.silver, text_size = tblTxtSize)
+    table.cell(tbl, 1, 5, fvgVal, text_color = fvgCol, text_size = tblTxtSize)
+    if is3Col
+        table.cell(tbl, 2, 5, fvgHelp, text_color = color.silver, text_size = tblTxtSize)
+    
+    // Row 6: Setup Rating
+    string setpTitle = "Setup Rating"
+    string setpVal = qualityBadge
+    color setpCol = signalCol
+    string setpHelp = qualityBadge == "★★★ A+ RECLAIM" ? "Bargain zone + Gap aligned" : qualityBadge == "★★ RECLAIM" ? "Testing floor for bounce" : "Wait for discount dip"
+    
+    table.cell(tbl, 0, 6, setpTitle, text_color = color.silver, text_size = tblTxtSize)
+    table.cell(tbl, 1, 6, setpVal, text_color = setpCol, text_size = tblTxtSize)
+    if is3Col
+        table.cell(tbl, 2, 6, setpHelp, text_color = color.silver, text_size = tblTxtSize)
+    
+    // Row 7: Risk to Stop
+    string stopTitle = "Risk to Stop"
+    string stopVal = curStopPct > 0 ? (str.tostring(curStopPct, "#.##") + "%") : "—"
+    string stopHelp = not na(lastSL) ? ("Safety floor: $" + str.tostring(lastSL, format.mintick)) : "No swing low set"
+    
+    table.cell(tbl, 0, 7, stopTitle, text_color = color.silver, text_size = tblTxtSize)
+    table.cell(tbl, 1, 7, stopVal, text_color = color.white, text_size = tblTxtSize)
+    if is3Col
+        table.cell(tbl, 2, 7, stopHelp, text_color = color.silver, text_size = tblTxtSize)
+    
+    // Row 8: Trade Health
+    string hltTitle = "Trade Health"
+    string hltVal = ideaDead ? "INVALID (HL Broke)" : "ACTIVE (HL Safe)"
+    color hltCol = ideaDead ? color.red : color.lime
+    string hltHelp = legOk ? ("Safe above HL $" + str.tostring(fibHL, "#")) : "Floor active"
+    
+    table.cell(tbl, 0, 8, hltTitle, text_color = color.silver, text_size = tblTxtSize)
+    table.cell(tbl, 1, 8, hltVal, text_color = hltCol, text_size = tblTxtSize)
+    if is3Col
+        table.cell(tbl, 2, 8, hltHelp, text_color = color.silver, text_size = tblTxtSize)
+
+    // Row 9: Blue VA box range
+    string vaTitle = "Blue Box (VA)"
+    string vaVal = (na(val) ? "—" : ("$" + str.tostring(val, "#"))) + " – " + (na(vah) ? "—" : ("$" + str.tostring(vah, "#")))
+    string vaHelp = "70% volume on fib leg"
+    
+    table.cell(tbl, 0, 9, vaTitle, text_color = color.silver, text_size = tblTxtSize)
+    table.cell(tbl, 1, 9, vaVal, text_color = color.new(colVah, 0), text_size = tblTxtSize)
+    if is3Col
+        table.cell(tbl, 2, 9, vaHelp, text_color = color.silver, text_size = tblTxtSize)
+
+if not showTable and not na(tbl)
+    table.delete(tbl)
+    tbl := na
+
+//------------------------------------------------------------------------------
+// Alerts
+//------------------------------------------------------------------------------
+alertcondition(chochBull, "COD Bullish CHoCH", "COD Reclaim: Bullish CHoCH triggered.")
+alertcondition(reclaimBull and isAplus, "COD A+ Discount Reclaim Entry", "COD Reclaim: ★★★ A+ Bullish Reclaim Entry in Discount Zone & FVG.")
+alertcondition(reclaimBull, "COD Reclaim Entry Trigger", "COD Reclaim: Bullish Reclaim Entry in Discount Zone / FVG.")
+alertcondition(chochBear, "COD Bearish CHoCH", "COD Reclaim: Bearish CHoCH triggered.")
+alertcondition(bosBull, "COD Bullish BOS", "COD Reclaim: Bullish Break of Structure (Continuation).")
+alertcondition(bosBear, "COD Bearish BOS", "COD Reclaim: Bearish Break of Structure (Continuation).")
+alertcondition(ideaDead, "COD HL Invalidation", "COD Reclaim: Price closed below Fib HL — idea dead.")

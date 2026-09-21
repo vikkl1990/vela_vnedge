@@ -1,0 +1,299 @@
+//@version=6
+// ==========================================================================
+// EMA Ribbon [prof] + RSI on Chart (plan z) + Liquidity Levels + Golden Zone
+// --------------------------------------------------------------------------
+// دمج 4 مؤشرات في سكربت واحد يعملان فوق نفس الرسم البياني (overlay):
+//  1) EMA Ribbon: شريط من 8 متوسطات EMA متدرجة يوضح اتجاه وقوة الترند،
+//     مع إشارات شراء/بيع وتلوين للشموع.
+//  2) RSI on Chart (plan z): خط EMA تقريبي يمثّل "منطقة RSI = 50" مسقطة
+//     على مقياس السعر مباشرة، بدل عرضه في نافذة منفصلة أسفل الشارت.
+//  3) Liquidity Levels: يحدد شموع السيولة العالية (أعلى فوليوم) ويلوّنها
+//     أصفر، ويرسم خط عند منتصفها يتلون أخضر/أحمر حسب موقع السعر منه.
+//  4) Golden Zone: نسخة مبسّطة ومستقلة (مو مأخوذة حرفياً من أي مؤشر هيكلة
+//     سوق جاهز) — تكتشف آخر قمة/قاع (Pivot) تلقائياً، ترسم فيبوناتشي بينهم،
+//     وتلوّن منطقة الارتداد 0.5-0.618 كـ"منطقة ذهبية".
+// كل مؤشر له مجموعة إعدادات منفصلة (Group) في نافذة الإعدادات لسهولة التمييز.
+// ملاحظة: تمت إضافة max_lines_count=500 فقط داخل indicator() لأن أجزاء
+// السيولة والمنطقة الذهبية ترسم خطوط (line.new) وتحتاجها لتعمل بشكل صحيح.
+// ==========================================================================
+indicator(title="EMA Ribbon + RSI + Liquidity + Golden Zone [prof]", shorttitle="EMA Ribbon + RSI + Liq + GZ", overlay=true, max_lines_count=500)
+
+// دالة مساعدة تُستخدم مع "Drop first N candles" في مؤشر الشريط
+dropn(src, n) =>
+    na(src[n]) ? na : src
+
+// ==========================================================================
+// ============================  1) EMA Ribbon  ============================
+// ==========================================================================
+grpRibbon = "EMA Ribbon"
+
+length1 = input.int(24, title="MA-1 period", minval=1, group=grpRibbon)
+length2 = input.int(22, title="MA-2 period", minval=1, group=grpRibbon)
+length3 = input.int(20, title="MA-3 period", minval=1, group=grpRibbon)
+length4 = input.int(18, title="MA-4 period", minval=1, group=grpRibbon)
+length5 = input.int(16, title="MA-5 period", minval=1, group=grpRibbon)
+length6 = input.int(14, title="MA-6 period", minval=1, group=grpRibbon)
+length7 = input.int(12, title="MA-7 period", minval=1, group=grpRibbon)
+length8 = input.int(8, title="MA-8 period", minval=1, group=grpRibbon)
+src = input.source(high, title="Source", group=grpRibbon)
+dropCandles = input.int(0, minval=0, title="Drop first N candles", group=grpRibbon)
+
+// إزاحة الشريط (Offset)
+offsetInput = input.int(8, title="Offset (Shift Ribbon)", minval=-500, maxval=500, group=grpRibbon)
+
+// إشارات الشراء والبيع
+showSignals = input.bool(true, title="Show Buy/Sell Signals", group=grpRibbon)
+
+// تلوين الشموع حسب موقعها من الشريط
+colorCandles = input.bool(true, title="Color Candles Above/Below Ribbon", group=grpRibbon)
+
+price = dropn(src, dropCandles)
+
+ma1 = ta.ema(price, length1)
+ma2 = ta.ema(price, length2)
+ma3 = ta.ema(price, length3)
+ma4 = ta.ema(price, length4)
+ma5 = ta.ema(price, length5)
+ma6 = ta.ema(price, length6)
+ma7 = ta.ema(price, length7)
+ma8 = ta.ema(price, length8)
+
+plot(ma1, title="MA-1", color=#1f3a93, linewidth=2, offset=offsetInput)
+plot(ma2, title="MA-2", color=#2e5fb5, linewidth=2, offset=offsetInput)
+plot(ma3, title="MA-3", color=#3d82e0, linewidth=2, offset=offsetInput)
+plot(ma4, title="MA-4", color=#6babf0, linewidth=2, offset=offsetInput)
+plot(ma5, title="MA-5", color=#a8d4f5, linewidth=2, offset=offsetInput)
+plot(ma6, title="MA-6", color=#4dd0c4, linewidth=2, offset=offsetInput)
+plot(ma7, title="MA-7", color=#26a69a, linewidth=2, offset=offsetInput)
+plot(ma8, title="MA-8", color=#1a8a7a, linewidth=2, offset=offsetInput)
+
+// الحد العلوي والسفلي لكامل الشريط (لأجل إشارات الاختراق)
+topBand = math.max(math.max(math.max(ma1, ma2), math.max(ma3, ma4)), math.max(math.max(ma5, ma6), math.max(ma7, ma8)))
+bottomBand = math.min(math.min(math.min(ma1, ma2), math.min(ma3, ma4)), math.min(math.min(ma5, ma6), math.min(ma7, ma8)))
+
+// ====== [تعديل] مطابقة الإشارات للإزاحة (الاختراق البصري) ======
+// الشريط مرسوم بإزاحة offsetInput، فالقيمة التي تظهر بصرياً عند الشمعة الحالية
+// هي القيمة المحسوبة قبل offset شمعة. لذلك نقارن السعر الحالي مع الحد
+// المُزاح topBand[offBars] / bottomBand[offBars] حتى تنطبق الإشارة على مكان
+// الشريط كما تراه العين تماماً.
+// نستخدم math.max(offsetInput, 0) لأن الإزاحة السالبة تعني قيمة مستقبلية لا
+// يمكن حسابها الآن (فهرسة سالبة = خطأ)، فنرجع في تلك الحالة لبدون إزاحة.
+offBars       = math.max(offsetInput, 0)
+topBandVis    = topBand[offBars]
+bottomBandVis = bottomBand[offBars]
+
+buySignal = showSignals and ta.crossover(price, topBandVis)
+sellSignal = showSignals and ta.crossunder(price, bottomBandVis)
+
+plotshape(buySignal, title="Buy Signal", style=shape.circle, location=location.belowbar,
+     color=color.lime, size=size.tiny)
+plotshape(sellSignal, title="Sell Signal", style=shape.circle, location=location.abovebar,
+     color=color.red, size=size.tiny)
+
+// ====== تنبيه (Alert): اختراق السعر لكل مستويات شريط الـ EMA ======
+// الآن التنبيه يطابق الاختراق البصري لأن الإشارة محسوبة على الشريط المُزاح.
+// فعّلها من قائمة Create Alert واختر شرط "🟢EMA Ribbon Breakout Up (Buy)"
+// أو "🔴EMA Ribbon Breakout Down (Sell)" من هذا المؤشر.
+alertcondition(buySignal, title="🟢EMA Ribbon Breakout Up🟢 (Buy)",
+     message="{{ticker}} ({{interval}}): 🟢السعر اخترق كل مستويات شريط 🟢EMA صعوداً")
+alertcondition(sellSignal, title="🔴EMA Ribbon Breakout Down🔴 (Sell)",
+     message="{{ticker}} ({{interval}}):🔴 السعر كسر كل مستويات شريط 🔴EMA هبوطاً")
+
+// تلوين الشموع حسب موقعها من متوسط الشريط
+midBand = (ma1 + ma2 + ma3 + ma4 + ma5 + ma6 + ma7 + ma8) / 8
+candleColor = price > midBand ? color.lime : price < midBand ? color.red : na
+
+barcolor(colorCandles ? candleColor : na, title="Candle Trend Color")
+
+// ==========================================================================
+// ========================  2) RSI on Chart (plan z)  =====================
+// ==========================================================================
+grpRsi = "RSI on Chart (plan z)"
+
+rsiperiod = input.int(250, minval=2, title="RSI Period", inline="RSI", group=grpRsi)
+labels    = input.bool(true, title="RSI Labels", inline="RSI", group=grpRsi)
+ema_col   = input.color(color.rgb(0, 255, 170), title="EMA", inline="c", group=grpRsi)
+
+// تقريب EMA لفترة الـ RSI
+exponential_period    = 2 * rsiperiod - 1
+smoothing_coefficient = 2 / (exponential_period + 1)
+
+// حساب مستوى السعر المكافئ لقيمة RSI معينة (هنا level=50) وإسقاطه على السعر
+emaresult(level) =>
+    averageUp   = 0.0
+    averageDown = 0.0
+    averageUp   := close > close[1] ? smoothing_coefficient * (close - close[1]) + (1 - smoothing_coefficient) * nz(averageUp[1], 1) : (1 - smoothing_coefficient) * nz(averageUp[1], 1)
+    averageDown := close > close[1] ? (1 - smoothing_coefficient) * nz(averageDown[1], 1) : smoothing_coefficient * (close[1] - close) + (1 - smoothing_coefficient) * nz(averageDown[1], 1)
+    netValue    = (rsiperiod - 1) * (averageDown * level / (100 - level) - averageUp)
+    result      = netValue >= 0 ? close + netValue : close + netValue * (100 - level) / level
+    result
+
+ema_result = emaresult(50)
+
+// لون الخط: أخضر إذا كان السعر فوق خط RSI-50، أحمر إذا كان تحته
+ema_color = close > ema_result ? color.rgb(130, 229, 133) : color.red
+
+plot(ema_result, color=ema_color, title="RSI 50 on Chart (Optimal EMA)")
+
+// اختراق السعر لخط RSI-50 صعوداً/هبوطاً
+rsiCrossUp   = ta.crossover(close, ema_result)
+rsiCrossDown = ta.crossunder(close, ema_result)
+
+// إشارات بصرية اختيارية على الشارت عند اختراق خط RSI-50
+plotshape(rsiCrossUp, title="RSI 50 Cross Up", style=shape.triangleup, location=location.belowbar,
+     color=color.aqua, size=size.tiny)
+plotshape(rsiCrossDown, title="RSI 50 Cross Down", style=shape.triangledown, location=location.abovebar,
+     color=color.orange, size=size.tiny)
+
+// ====== تنبيه (Alert): اختراق السعر لخط RSI-50 على الشارت ======
+// فعّلها من قائمة Create Alert واختر شرط "RSI 50 Cross Up" أو "RSI 50 Cross Down".
+alertcondition(rsiCrossUp, title="RSI 50 Cross🟢 Up",
+     message="{{ticker}} ({{interval}}): 🟢السعر اخترق خط RSI 50 صعوداً")
+alertcondition(rsiCrossDown, title="RSI 50 Cross🔴 Down",
+     message="{{ticker}} ({{interval}}): 🔴السعر كسر خط RSI 50 هبوطاً")
+
+// تسمية توضيحية بجانب الخط
+labelfunc(bool_, n, line_, text_, label_col, text_col, size_) =>
+    label l = bool_ ? label.new(bar_index + n, line_, text=text_, color=label_col,
+      style=label.style_label_left, textcolor=text_col, size=size_,
+      textalign=text.align_left) : na
+    label.delete(l[1])
+
+labelfunc(labels, 5, ema_result, "RSI 50", color.blue, color.white, size.small)
+
+// ==========================================================================
+// ==========================  3) Liquidity Levels  =========================
+// ==========================================================================
+grpLiq = "Liquidity Levels"
+
+lookback   = input.int(15, "عدد الشموع للمقارنة (Lookback)", minval=1, group=grpLiq, tooltip="الشمعة تعتبر (سيولة عالية) إذا كان فيها أعلى فوليوم خلال آخر عدد شموع محدد هنا")
+extendBars = input.int(5, "امتداد الخط (Extend Bars)", minval=1, group=grpLiq)
+lineWidth  = input.int(2, "سماكة الخط", minval=1, maxval=5, group=grpLiq)
+
+useRange     = input.bool(true, "تحديد عدد شموع معيّن فقط (بدل الشارة كاملة)", group=grpLiq)
+barsToCheck  = input.int(200, "عدد آخر الشموع للفحص", minval=1, group=grpLiq, tooltip="يفحص فقط آخر عدد شموع من هذا الرقم بدءًا من آخر شمعة بالشارة")
+
+inRange = not useRange or (bar_index >= last_bar_index - barsToCheck)
+
+liquidity            = volume
+high_liquidity_candle = liquidity == ta.highest(liquidity, lookback) and inRange
+
+midpoint = (high + low) / 2
+
+var float stored_midpoint = na
+if high_liquidity_candle
+    stored_midpoint := midpoint
+
+// تلوين الشمعة صفراء عند السيولة العالية
+barcolor(high_liquidity_candle ? color.yellow : na, title="Liquidity Candle Color")
+
+// رسم الخط وتلوينه حسب موقع السعر منه
+if not na(stored_midpoint)
+    line_color = close > stored_midpoint ? color.green : color.red
+    line.new(x1=bar_index, y1=stored_midpoint, x2=bar_index + extendBars, y2=stored_midpoint, width=lineWidth, color=line_color)
+
+// ====== [إضافة] تنبيه: فتح أي شمعة فوق/تحت خط منتصف السيولة المرسوم ======
+// الخط المرجعي هنا هو stored_midpoint (خط منتصف آخر شمعة سيولة، ويثبت حتى
+// تجي شمعة سيولة جديدة). التنبيه يضرب لأي شمعة يعبر فتحها (open) هذا الخط:
+//  - liqOpenAbove: شمعة فتحها انتقل من تحت الخط إلى فوقه (فتحت فوق الخط).
+//  - liqOpenBelow: شمعة فتحها انتقل من فوق الخط إلى تحته (فتحت تحت الخط).
+// نستخدم crossover/crossunder على open حتى ما يضرب كل شمعة، بل فقط لحظة
+// انقلاب الفتح من جهة لجهة (أوضح وأقل إزعاجاً).
+liqOpenAbove = not na(stored_midpoint) and ta.crossover(open, stored_midpoint)
+liqOpenBelow = not na(stored_midpoint) and ta.crossunder(open, stored_midpoint)
+
+// علامات بصرية لتأكيد مكان التنبيه
+plotshape(liqOpenAbove, title="Open Above Liquidity Mid", style=shape.triangleup,
+     location=location.belowbar, color=color.green, size=size.tiny)
+plotshape(liqOpenBelow, title="Open Below Liquidity Mid", style=shape.triangledown,
+     location=location.abovebar, color=color.red, size=size.tiny)
+
+alertcondition(liqOpenAbove, title="Liquidity Mid - Candle Open 🟢Above",
+     message="{{ticker}} ({{interval}}): 🟢شمعة فتحت فوق خط منتصف السيولة")
+alertcondition(liqOpenBelow, title="Liquidity Mid - Candle Open 🔴Below",
+     message="{{ticker}} ({{interval}}): 🔴شمعة فتحت تحت خط منتصف السيولة")
+
+// ==========================================================================
+// ===== [إضافة] تنبيه مركّب: اختراق EMA + موقع فتح الشمعة من خط السيولة =====
+// ==========================================================================
+// شرطان لازم يكتملان معاً في نفس الشمعة (منطق AND):
+//   شراء = اختراق شريط EMA صعوداً + فتح الشمعة فوق خط منتصف السيولة.
+//   بيع  = كسر شريط EMA هبوطاً   + فتح الشمعة تحت خط منتصف السيولة.
+// لو تحقق شرط واحد فقط بدون الثاني → لا يُطلق أي تنبيه.
+// نستخدم topBandVis/bottomBandVis (الشريط المُزاح بصرياً) نفس اختيارك للشراء/البيع،
+// وهذا التنبيه مستقل عن مفتاح "Show Buy/Sell Signals" فيشتغل حتى لو خفّيت الدوائر.
+buyCombo  = ta.crossover(price, topBandVis)     and not na(stored_midpoint) and open > stored_midpoint
+sellCombo = ta.crossunder(price, bottomBandVis) and not na(stored_midpoint) and open < stored_midpoint
+
+plotshape(buyCombo, title="🟢Combo Buy🟢 (EMA + Liq)", style=shape.labelup,
+     location=location.belowbar, color=color.new(color.lime, 0), textcolor=color.black,
+     text="BUY", size=size.small)
+plotshape(sellCombo, title="Combo Sell (EMA + Liq)", style=shape.labeldown,
+     location=location.abovebar, color=color.new(color.red, 0), textcolor=color.white,
+     text="SELL", size=size.small)
+
+alertcondition(buyCombo, title="🟢Combo BUY (EMA Breakout Up + Open Above Liq)",
+     message="{{ticker}} ({{interval}}): شراء — اختراق EMA صعوداً🟢 مع فتح الشمعة فوق خط السيولة")
+alertcondition(sellCombo, title="🔴Combo SELL🔴 (EMA Breakout Down + Open Below Liq🔴)",
+     message="{{ticker}} ({{interval}}): 🔴بيع — كسر EMA هبوطاً🔴 مع فتح الشمعة تحت خط السيولة")
+
+// ==========================================================================
+// ============================  4) Golden Zone  ============================
+// ==========================================================================
+// نسخة مبسّطة ومستقلة لفكرة "المنطقة الذهبية": نكتشف آخر قمة وقاع (Pivot)
+// تلقائياً حسب عدد شموع محدد من كل جهة، نحسب الفيبوناتشي بينهم، ونلوّن
+// منطقة الارتداد بين مستويي 0.5 و0.618 كمنطقة ذهبية. الخط يتحدّث ويمتد
+// تلقائياً لليمين بدون تكرار رسم أو تكدّس كائنات على الشارت.
+grpGZ = "Golden Zone (Fib 0.5-0.618)"
+
+showGoldenZone = input.bool(true, "Show Golden Zone", group=grpGZ)
+gzLookback     = input.int(10, "Swing Lookback (bars)", minval=2, group=grpGZ,
+     tooltip="عدد الشموع على كل جهة لتأكيد القمة/القاع (Pivot High/Low)")
+gzColor        = input.color(color.new(color.yellow, 80), "Golden Zone Fill Color", group=grpGZ)
+showGZLines    = input.bool(true, "Show 0.5 / 0.618 Lines", group=grpGZ)
+gzLineColor    = input.color(color.new(color.yellow, 20), "Lines Color", group=grpGZ)
+
+// تحديد آخر قمة وقاع مؤكّدين
+var float gzSwingHigh = na
+var float gzSwingLow  = na
+var int   gzHighIdx   = na
+var int   gzLowIdx    = na
+
+gzPvtHi = ta.pivothigh(high, gzLookback, gzLookback)
+gzPvtLo = ta.pivotlow(low, gzLookback, gzLookback)
+
+if not na(gzPvtHi)
+    gzSwingHigh := gzPvtHi
+    gzHighIdx   := bar_index - gzLookback
+if not na(gzPvtLo)
+    gzSwingLow := gzPvtLo
+    gzLowIdx   := bar_index - gzLookback
+
+// حساب مستوى فيبوناتشي معين v بين آخر قمة وقاع، مع مراعاة اتجاه الحركة:
+// لو القاع أقدم من القمة (حركة صاعدة) يُقاس الارتداد من القمة نزولاً،
+// ولو القمة أقدم من القاع (حركة هابطة) يُقاس الارتداد من القاع صعوداً.
+gzFib(v) =>
+    float result = na
+    if not na(gzSwingHigh) and not na(gzSwingLow)
+        result := gzLowIdx < gzHighIdx ? gzSwingHigh - (gzSwingHigh - gzSwingLow) * v : gzSwingLow + (gzSwingHigh - gzSwingLow) * v
+    result
+
+gzLevel50  = gzFib(0.5)
+gzLevel618 = gzFib(0.618)
+
+var line     gzLine50  = na
+var line     gzLine618 = na
+var linefill gzFill    = na
+
+if showGoldenZone and not na(gzLevel50) and not na(gzLevel618)
+    gzStartIdx = math.min(gzHighIdx, gzLowIdx)
+    if na(gzLine50)
+        gzLine50  := line.new(gzStartIdx, gzLevel50, bar_index, gzLevel50, color=gzLineColor, width=1)
+        gzLine618 := line.new(gzStartIdx, gzLevel618, bar_index, gzLevel618, color=gzLineColor, width=1)
+        gzFill    := linefill.new(gzLine50, gzLine618, gzColor)
+    line.set_xy1(gzLine50, gzStartIdx, gzLevel50)
+    line.set_xy2(gzLine50, bar_index, gzLevel50)
+    line.set_xy1(gzLine618, gzStartIdx, gzLevel618)
+    line.set_xy2(gzLine618, bar_index, gzLevel618)
+    line.set_color(gzLine50, showGZLines ? gzLineColor : color.new(color.white, 100))
+    line.set_color(gzLine618, showGZLines ? gzLineColor : color.new(color.white, 100))

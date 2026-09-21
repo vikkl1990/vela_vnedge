@@ -1,0 +1,207 @@
+//@version=6
+// IMPORTANT:
+// 1. You MUST remove the old indicator and add this one again. TradingView does not switch overlay/pane on a live instance.
+// 2. First check: Level should be about 25-27T and vs-peak about -15% to -20%. 0.03T or 2600T means units are wrong.
+// 3. This is a 5-bank net-liquidity proxy: Fed + ECB + BoJ + PBoC + BoE - TGA - RRP.
+// 4. Visual-fit is cosmetic. Use the panel Level, regime, BTC, and ALTS rows for decisions, not mapped line height.
+indicator("Global Net Liquidity", shorttitle="GNL", overlay=false, precision=2, scale=scale.right)
+
+// ======================================================
+// INPUTS
+// ======================================================
+grpSources = "Sources"
+showFed = input.bool(true, "Fed net (WALCL - TGA - RRP)", group=grpSources)
+showEcb = input.bool(true, "ECB", group=grpSources)
+showBoj = input.bool(true, "BoJ", group=grpSources)
+showPboc = input.bool(true, "PBoC", group=grpSources)
+showBoe = input.bool(true, "BoE", group=grpSources)
+sourceTf = input.timeframe("1W", "Economic data timeframe", group=grpSources)
+
+grpOverrides = "Unit overrides (0 = auto)"
+walclDivisor = input.float(0.0, "WALCL divisor", minval=0.0, group=grpOverrides)
+tgaDivisor = input.float(0.0, "TGA divisor", minval=0.0, group=grpOverrides)
+rrpDivisor = input.float(0.0, "RRP divisor", minval=0.0, group=grpOverrides)
+ecbDivisor = input.float(0.0, "ECB divisor", minval=0.0, group=grpOverrides)
+bojDivisor = input.float(0.0, "BoJ divisor", minval=0.0, group=grpOverrides)
+pbocDivisor = input.float(0.0, "PBoC divisor", minval=0.0, group=grpOverrides)
+boeDivisor = input.float(0.0, "BoE divisor", minval=0.0, group=grpOverrides)
+
+grpDisplay = "Display"
+showSma = input.bool(true, "Show SMA", group=grpDisplay)
+smaLength = input.int(13, "SMA length", minval=1, group=grpDisplay)
+showPanel = input.bool(true, "Show macro panel", group=grpDisplay)
+slopeBars = input.int(13, "Slope lookback", minval=1, group=grpDisplay)
+
+// ======================================================
+// DATA REQUESTS
+// ======================================================
+f_req(symbol) =>
+    request.security(symbol, sourceTf, close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+walclRaw = f_req("FRED:WALCL")
+tgaRaw = f_req("FRED:WTREGEN")
+rrpRaw = f_req("FRED:RRPONTSYD")
+ecbRaw = f_req("FRED:ECBASSETSW")
+bojRaw = f_req("FRED:JPNASSETS")
+pbocRaw = f_req("ECONOMICS:CNCBBS")
+boeRaw = f_req("ECONOMICS:GBCBBS")
+
+eurusd = nz(f_req("FX_IDC:EURUSD"), 1.0)
+jpyusd = nz(f_req("FX_IDC:JPYUSD"), 0.0068)
+cnyusd = nz(f_req("FX_IDC:CNYUSD"), 0.14)
+gbpusd = nz(f_req("FX_IDC:GBPUSD"), 1.25)
+
+// ======================================================
+// UNIT CONVERSION TO USD BILLIONS
+// ======================================================
+f_usdBn(raw, divisor) =>
+    v = nz(raw)
+    if divisor > 0
+        v / divisor
+    else if v >= 1e11
+        v / 1e9
+    else if v >= 100000
+        v / 1000.0
+    else
+        v
+
+f_rrpBn(raw, divisor) =>
+    v = nz(raw)
+    if divisor > 0
+        v / divisor
+    else if v >= 1e8
+        v / 1e9
+    else if v >= 10000
+        v / 1000.0
+    else
+        v
+
+f_ecbBn(raw, divisor, fx) =>
+    v = nz(raw)
+    if divisor > 0
+        v / divisor * fx
+    else if v >= 1e11
+        v / 1e9 * fx
+    else if v >= 100000
+        v / 1000.0 * fx
+    else
+        v * fx
+
+f_bojBn(raw, divisor, fx) =>
+    v = nz(raw)
+    if divisor > 0
+        v / divisor * fx
+    else if v >= 1e12
+        v * fx / 1e9
+    else if v >= 100000
+        v * fx / 10.0
+    else
+        v * fx
+
+f_economicsBn(raw, divisor, fx) =>
+    v = nz(raw)
+    if divisor > 0
+        v / divisor * fx
+    else if v >= 1e11
+        v * fx / 1e9
+    else if v >= 1e6
+        v * fx / 1e3
+    else if v >= 200
+        v * fx
+    else
+        v * fx * 1000.0
+
+walclBn = f_usdBn(walclRaw, walclDivisor)
+tgaBn = f_usdBn(tgaRaw, tgaDivisor)
+rrpBn = f_rrpBn(rrpRaw, rrpDivisor)
+ecbBn = f_ecbBn(ecbRaw, ecbDivisor, eurusd)
+bojBn = f_bojBn(bojRaw, bojDivisor, jpyusd)
+pbocBn = f_economicsBn(pbocRaw, pbocDivisor, cnyusd)
+boeBn = f_economicsBn(boeRaw, boeDivisor, gbpusd)
+
+walclClampedBn = math.max(500.0, math.min(walclBn, 15000.0))
+tgaClampedBn = math.max(0.0, math.min(tgaBn, 2500.0))
+rrpClampedBn = math.max(0.0, math.min(rrpBn, 4000.0))
+ecbClampedBn = math.max(1000.0, math.min(ecbBn, 15000.0))
+bojClampedBn = math.max(500.0, math.min(bojBn, 8000.0))
+pbocClampedBn = math.max(1000.0, math.min(pbocBn, 15000.0))
+boeClampedBn = math.max(200.0, math.min(boeBn, 3000.0))
+
+fedNetBn = showFed ? walclClampedBn - tgaClampedBn - rrpClampedBn : 0.0
+ecbStackBn = showEcb ? ecbClampedBn : 0.0
+bojStackBn = showBoj ? bojClampedBn : 0.0
+pbocStackBn = showPboc ? pbocClampedBn : 0.0
+boeStackBn = showBoe ? boeClampedBn : 0.0
+totalRawBn = fedNetBn + ecbStackBn + bojStackBn + pbocStackBn + boeStackBn
+totalBn = math.max(8000.0, math.min(totalRawBn, 40000.0))
+
+totalT = totalBn / 1000.0
+fedNetT = fedNetBn / 1000.0
+ecbT = ecbStackBn / 1000.0
+bojT = bojStackBn / 1000.0
+pbocT = pbocStackBn / 1000.0
+boeT = boeStackBn / 1000.0
+smaBn = ta.sma(totalBn, smaLength)
+
+// ======================================================
+// REGIME AND SCALE CHECK
+// ======================================================
+allSourcesOn = showFed and showEcb and showBoj and showPboc and showBoe
+scaleInsane = allSourcesOn and (na(totalBn) or totalBn < 8000 or totalBn > 50000)
+peakBars = (timeframe.isweekly or timeframe.ismonthly) ? 800 : 4000
+peakBn = ta.highest(totalBn, peakBars)
+gapPct = na(peakBn) or peakBn == 0 ? na : 100.0 * (totalBn - peakBn) / peakBn
+deltaBn = totalBn - totalBn[slopeBars]
+expanding = not scaleInsane and deltaBn > 0 and gapPct > -8
+contracting = not scaleInsane and deltaBn < 0 and totalBn < smaBn
+regime = scaleInsane ? "SCALE?" : expanding ? "EXPANDING" : contracting ? "CONTRACTING" : "FLAT"
+regimeColor = scaleInsane ? color.red : expanding ? color.green : contracting ? color.red : #E8C547
+
+plotT = fixnan(totalT)
+plotSmaT = fixnan(smaBn / 1000.0)
+
+plot(plotT, "Global Net Liquidity", color=#C9A227, linewidth=2)
+plot(showSma ? plotSmaT : na, "GNL SMA", color=color.silver, linewidth=1)
+hline(20.0, "20T", color=color.new(color.gray, 80))
+hline(25.0, "25T", color=color.new(color.gray, 80))
+hline(30.0, "30T", color=color.new(color.gray, 80))
+
+// ======================================================
+// TRUE-VALUE LAST-BAR LABEL
+// ======================================================
+var label valueLabel = na
+if barstate.islast
+    label.delete(valueLabel)
+    labelY = totalT
+    levelText = str.tostring(totalT, "#.00") + "T"
+    valueLabel := label.new(bar_index, labelY, (scaleInsane ? "SCALE? " : "") + levelText + " | " + regime, style=label.style_label_left, color=color.new(#1B1E23, 15), textcolor=color.white, size=size.small)
+
+// ======================================================
+// BTC / ALTS MACRO PANEL
+// ======================================================
+var table macroPanel = table.new(position.bottom_right, 2, 6, border_width=1)
+
+panelBg = color.new(color.black, 10)
+levelText = na(totalT) ? "n/a" : str.tostring(totalT, "#.00") + "T"
+gapText = na(gapPct) ? "n/a" : str.tostring(gapPct, "#.0") + "%"
+tgaState = na(tgaBn) ? "TGA n/a" : tgaBn >= 700 ? "TGA high" : tgaBn <= 400 ? "TGA low" : "TGA mid"
+rrpState = na(rrpBn) ? "RRP n/a" : rrpBn < 200 ? "RRP empty" : "RRP parking"
+stackText = "ECB " + str.tostring(ecbT, "#.0") + "  BoJ " + str.tostring(bojT, "#.0") + "  PBoC " + str.tostring(pbocT, "#.0") + "  BoE " + str.tostring(boeT, "#.0")
+btcText = expanding ? "Tailwind" : contracting ? "Headwind" : not na(gapPct) and gapPct < -10 ? "Grind / below peak" : "Neutral"
+altsText = expanding ? "Beta OK" : contracting ? "Hostile" : "Lag risk"
+
+f_panelRow(row, name, value) =>
+    table.cell(macroPanel, 0, row, name, text_color=color.white, bgcolor=panelBg, text_size=size.tiny)
+    table.cell(macroPanel, 1, row, value, text_color=color.white, bgcolor=panelBg, text_size=size.tiny)
+
+if barstate.islast
+    if showPanel
+        table.cell(macroPanel, 0, 0, "GNL", text_color=color.white, bgcolor=regimeColor, text_size=size.tiny)
+        table.cell(macroPanel, 1, 0, regime, text_color=color.white, bgcolor=regimeColor, text_size=size.tiny)
+        f_panelRow(1, "Level", levelText + "  " + gapText)
+        f_panelRow(2, "US", "Fed " + str.tostring(fedNetT, "#.0") + "T | " + tgaState + " | " + rrpState)
+        f_panelRow(3, "Stack", stackText)
+        f_panelRow(4, "BTC", btcText)
+        f_panelRow(5, "ALTS", altsText)
+    else
+        table.clear(macroPanel, 0, 0, 1, 5)

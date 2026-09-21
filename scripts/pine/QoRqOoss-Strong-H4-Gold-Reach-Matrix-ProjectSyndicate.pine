@@ -1,0 +1,776 @@
+//@version=6
+
+// ============================================================================
+indicator("Strong H4 Gold Reach Matrix", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 2000)
+
+// ─────────────────────────────── Engine ───────────────────────────────
+gE       = "═══ Reach Engine ═══"
+lookback = input.int(400, "History Window (bars)", minval = 60, maxval = 1500, group = gE, tooltip = "Bars used to estimate the excursion distribution and empirical survival. 300-500 is a good H4 range.")
+thetaLen = input.int(250, "Volatility-Scale Length (θ)", minval = 30, maxval = 1000, group = gE, tooltip = "Rolling window for the per-bar reach scale θ (mean ATR-excursion). Longer = smoother, slower to adapt.")
+atrLen   = input.int(14,  "ATR Length", minval = 2, maxval = 200, group = gE)
+empWeight= input.float(0.55, "Empirical vs Model Blend", minval = 0.0, maxval = 1.0, step = 0.05, group = gE, tooltip = "1.0 = pure empirical survival from THIS chart. 0.0 = pure smooth exponential model. 0.55 blends chart-truth with a smooth tail.")
+anchorIn = input.string("Last close (locked)", "Anchor Projection To", options = ["Last close (locked)", "Live price (intrabar)"], group = gE, tooltip = "Locked = levels freeze at each H4 close (non-repaint). Live = recompute from current price every tick.")
+tfGuard  = input.bool(true, "Warn If Not On H4", group = gE)
+
+// ─────────────────────────────── Level Ladder ───────────────────────────────
+gL  = "═══ Probability Ladder (4×4) ═══"
+p1  = input.float(0.60, "Band 1 · nearest  (target %)", minval = 0.30, maxval = 0.97, step = 0.01, group = gL, tooltip = "Target touch probability that sets the DISTANCE of the nearest level. Lower = further out. Shown % is the calibrated actual after blend, tilt, snap and spacing. (A very high target sits almost on the anchor, so it is kept modest to keep levels apart.)")
+p2  = input.float(0.40, "Band 2            (target %)", minval = 0.20, maxval = 0.95, step = 0.01, group = gL)
+p3  = input.float(0.24, "Band 3            (target %)", minval = 0.12, maxval = 0.90, step = 0.01, group = gL)
+p4  = input.float(0.13, "Band 4 · farthest (target %)", minval = 0.05, maxval = 0.85, step = 0.01, group = gL)
+minLevGap = input.float(0.22, "Minimum Level Spacing (× ATR)", minval = 0.0, maxval = 2.0, step = 0.02, group = gL, tooltip = "Hard floor on the gap between consecutive levels (and from the anchor). Stops levels gluing together near the anchor or after snapping. Probabilities recompute from the final spaced distances.")
+probFloor = input.float(2.0, "Clamp Prob Min (%)", minval = 0.0, maxval = 20.0, step = 0.5, group = gL)
+probCeil  = input.float(97.0,"Clamp Prob Max (%)", minval = 60.0, maxval = 99.5, step = 0.5, group = gL)
+
+// ─────────────────────────────── Directional Tilt ───────────────────────────────
+gT     = "═══ Directional Tilt (secondary) ═══"
+useTilt= input.bool(true, "Apply Directional Tilt", group = gT, tooltip = "Mild continuation tilt from trend + momentum + velocity. Shifts up vs down odds. OFF = pure symmetric reach model.")
+gamma  = input.float(0.7, "Tilt Strength (γ)", minval = 0.0, maxval = 2.0, step = 0.05, group = gT, tooltip = "Logit shift at full bias. 0 = none. ~0.7 keeps the tilt honest and small; higher leans harder on momentum.")
+wTrend = input.float(0.40, "Weight · Trend (EMA20/50)", minval = 0.0, maxval = 1.0, step = 0.05, group = gT)
+wMom   = input.float(0.40, "Weight · Momentum (RSI)", minval = 0.0, maxval = 1.0, step = 0.05, group = gT)
+wVel   = input.float(0.20, "Weight · Velocity", minval = 0.0, maxval = 1.0, step = 0.05, group = gT)
+velLen = input.int(3, "Velocity Lookback (bars)", minval = 1, maxval = 20, group = gT)
+emaFast= input.int(20, "Trend EMA Fast", minval = 2, maxval = 200, group = gT)
+emaSlow= input.int(50, "Trend EMA Slow", minval = 5, maxval = 400, group = gT)
+rsiLen = input.int(14, "RSI Length", minval = 2, maxval = 100, group = gT)
+
+// ─────────────────────────────── Structural Snap ───────────────────────────────
+gSn    = "═══ Structural Snap ═══"
+useSnap= input.bool(true, "Snap Levels To Liquidity / Round", group = gSn, tooltip = "Seat each level on the nearest recent swing high/low or round number if it lies within the tolerance. Levels sit ON liquidity; probabilities recompute from the snapped distance.")
+snapTol= input.float(0.18, "Snap Tolerance (× ATR)", minval = 0.02, maxval = 1.5, step = 0.02, group = gSn)
+pivL   = input.int(8, "Swing Pivot Left", minval = 1, maxval = 50, group = gSn)
+pivR   = input.int(4, "Swing Pivot Right", minval = 1, maxval = 50, group = gSn)
+roundStep = input.float(5.0, "Round-Number Step (price)", minval = 0.0, step = 0.5, group = gSn, tooltip = "e.g. 5 or 10 for gold, 0 to disable round-number snapping.")
+
+// ─────────────────────────────── Projection Visuals ───────────────────────────────
+gV      = "═══ Projection Visuals ═══"
+projBars= input.int(10, "Projection Length (bars)", minval = 2, maxval = 120, group = gV)
+gapBars = input.int(2,  "Gap From Last Bar", minval = 0, maxval = 30, group = gV)
+glowN   = input.int(3,  "Beam Glow Layers", minval = 1, maxval = 6, group = gV)
+beamAtr = input.float(0.10, "Beam Thickness (× ATR)", minval = 0.02, maxval = 1.0, step = 0.01, group = gV)
+showBox = input.bool(false, "Shade Expected-Range Box", group = gV)
+showSkel= input.bool(true, "Draw Projected Candle Skeleton", group = gV)
+showMeanL = input.bool(true, "Show Expected High/Low Lines", group = gV)
+showRef = input.bool(true, "Show Anchor Reference Line", group = gV)
+showLbl = input.bool(true, "Show Probability Labels", group = gV)
+labSizeIn = input.string("Normal", "Label Size", options = ["Tiny","Small","Normal","Large"], group = gV)
+
+// ─────────────────────────────── Dashboard ───────────────────────────────
+gD      = "═══ Dashboard ═══"
+showDash= input.bool(true, "Show Dashboard", group = gD)
+dashPos = input.string("Top Right", "Position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right"], group = gD)
+dashSz  = input.string("Normal", "Text Size", options = ["Tiny","Small","Normal","Large"], group = gD)
+
+// ─────────────────────────────── Style ───────────────────────────────
+gC      = "═══ Style (black-gold) ═══"
+upLo    = input.color(#155e50, "Up · low prob",  group = gC, inline = "u")
+upHi    = input.color(#5CFFB0, "Up · high prob", group = gC, inline = "u")
+dnLo    = input.color(#6a1440, "Dn · low prob",  group = gC, inline = "d")
+dnHi    = input.color(#ff3b6b, "Dn · high prob", group = gC, inline = "d")
+goldCol = input.color(#FFD24A, "Accent / Gold", group = gC)
+dashBg  = input.color(#0A0E17, "Dashboard BG", group = gC)
+dashTx  = input.color(#EAF2FF, "Dashboard Text", group = gC)
+
+// ─────────────────────────────── Neural Network ───────────────────────────────
+gN       = "═══ Neural Network (10·14·12·6·3) ═══"
+useNN    = input.bool(true,  "Use Network To Drive Projection", group = gN, tooltip = "A real MLP trained on XAUUSD H4 predicts next-bar RANGE, up/down split and direction. Its range output sharpens the projection scale θ; the split/direction feed the tilt. Turn OFF for the pure statistical model.")
+wNN      = input.float(0.50, "Network Weight On θ (range)", minval = 0.0, maxval = 1.0, step = 0.05, group = gN, tooltip = "Blend of the network's range forecast vs the rolling statistical θ. 0.5 = half each. The network's honest edge is volatility/range (corr ≈ 0.45 out-of-sample, regime-dependent), so a balanced blend is safest.")
+wNNdir   = input.float(0.25, "Network Weight In Tilt (direction)", minval = 0.0, maxval = 1.0, step = 0.05, group = gN, tooltip = "How much the network's direction output feeds the (secondary) tilt. Kept small — next-bar direction is ≈ a coin flip.")
+showNet  = input.bool(true,  "Show Neural Network Map", group = gN)
+netTheme = input.string("Neon", "Network Theme", options = ["Neon","Solar","Ice"], group = gN)
+netSide  = input.string("Left", "Map Placement", options = ["Left","Right"], group = gN, tooltip = "Left = over history, positioned by 'Bars Back' below. Right = out past the projection.")
+netBack  = input.int(52, "Bars Back (Left placement)", minval = 8, maxval = 500, group = gN, tooltip = "How many bars left of the current bar the network's LEFT edge sits. Slide this to drop the whole module inside your box. Only used when Placement = Left.")
+netOff   = input.int(6,  "Right Offset (bars)", minval = 0, maxval = 200, group = gN, tooltip = "Gap past the projection when Placement = Right.")
+netGap   = input.int(9,  "Column Spacing (bars)", minval = 2, maxval = 40, group = gN)
+netH     = input.float(2.4, "Map Height (% of price)", minval = 0.5, maxval = 20.0, step = 0.1, group = gN, tooltip = "Keep small so the whole net fits on screen. ~2-3% suits a normal H4 zoom.")
+netWire  = input.string("Full", "Connectors", options = ["Full","Strong only"], group = gN, tooltip = "Full = every node wired to every node in the next layer (thin, brightness by live weight×activation). Strong only = just the top N per layer.")
+netEdges = input.int(7, "Strong: Connectors Per Layer", minval = 1, maxval = 40, group = gN, tooltip = "Used only when Connectors = Strong only.")
+netEdgeK = input.float(3.2, "Connection Brightness ×", minval = 1.0, maxval = 25.0, step = 0.2, group = gN)
+netPanel = input.bool(false, "Background Panel", group = gN)
+netNodeV = input.bool(false, "Show Node Activations", group = gN)
+netFeat  = input.bool(false, "Show Feature Tags", group = gN)
+netGlow  = input.bool(true, "Node Glow Halo", group = gN)
+
+// ─────────────────────────────── Alerts ───────────────────────────────
+gA      = "═══ Alerts ═══"
+alProx  = input.float(0.08, "Level Proximity (% of price)", minval = 0.0, step = 0.01, group = gA)
+alHiOnly= input.bool(true, "Only Alert High-Prob (Band 1/2)", group = gA)
+
+// ═══════════════════════════════ Helpers ═══════════════════════════════
+clamp01(x) => math.min(math.max(x, 0.0), 1.0)
+f_lsz(s)   => s == "Tiny" ? size.tiny : s == "Small" ? size.small : s == "Large" ? size.large : size.normal
+f_stars(p) => p >= 0.70 ? "★★★★★" : p >= 0.55 ? "★★★★" : p >= 0.40 ? "★★★" : p >= 0.25 ? "★★" : "★"
+f_tier(p)  => p >= 0.70 ? "PRIME" : p >= 0.55 ? "LIKELY" : p >= 0.40 ? "COIN" : p >= 0.25 ? "REACH" : "TAIL"
+
+f_logit(p)    => math.log(math.max(p, 1e-6) / math.max(1.0 - p, 1e-6))
+f_invlogit(x) => 1.0 / (1.0 + math.exp(-x))
+
+f_upheat(float p) => color.from_gradient(clamp01(p), 0.0, 1.0, upLo, upHi)
+f_dnheat(float p) => color.from_gradient(clamp01(p), 0.0, 1.0, dnLo, dnHi)
+f_op(float p)     => int(math.round(70 - clamp01(p) * 48))   // transparency: high prob ~22, low prob ~70
+
+f_dpos(s) => s == "Top Left" ? position.top_left : s == "Bottom Right" ? position.bottom_right : s == "Bottom Left" ? position.bottom_left : s == "Middle Right" ? position.middle_right : position.top_right
+
+// ═══════════════════════════════ Neural Network (trained on XAUUSD H4) ═══════════════════════════════
+// draw buffers declared here so the network helpers can push into them
+var array<line>  vLines = array.new<line>()
+var array<label> vLabs  = array.new<label>()
+var array<box>   vBoxes = array.new<box>()
+
+// MLP 10·14·12·6·3, tanh hidden / linear out. Outputs: [next-bar RANGE fraction,
+// UP-share, direction]. Weights row-major (i*nout+j). Trained offline; forward pass
+// runs live below. Honest edge: RANGE/volatility (corr ≈ 0.45 OOS, regime-dependent);
+// UP-share ≈ symmetric and direction ≈ coin-flip (kept as small secondary tilt).
+var NNW0 = array.from(-0.040361,0.408486,0.406711,-0.191413,-0.155031,-0.174119,0.160903,-0.050955,0.321951,-0.570402,0.451452,0.033652,0.182333,0.010295,-0.129292,0.071507,0.270552,-0.018730,-0.048636,0.154896,-0.250398,-0.510211,0.182635,-0.224493,-0.566656,-0.271485,-0.119222,-0.332601,-0.471744,-0.024688,0.276146,-0.062059,-0.234768,0.110261,0.256207,-0.112366,0.179885,0.300532,-0.058056,-0.217140,0.112807,0.085892,0.432362,-0.436490,-0.234996,-0.224311,-0.486897,0.049487,0.180725,-0.212350,0.382586,0.247338,0.254681,0.076515,0.387986,-0.406278,0.141666,0.169898,-0.537906,0.078753,-0.141565,0.237297,-0.159558,-0.040205,0.194332,-0.262518,0.144738,0.032953,0.123437,-0.110539,0.300123,0.166891,-0.016449,0.280190,0.455351,0.519810,-0.437614,0.287175,0.182328,-0.011714,-0.232192,0.340513,-0.371806,0.218083,0.496247,-0.551669,-0.124081,-0.361246,0.142974,0.483609,0.633590,-0.538947,-0.183326,0.250569,0.581288,0.080841,-0.143181,0.154530,0.051119,-0.068761,-0.268784,0.129776,0.151909,-0.002128,-0.067264,-0.410073,-0.214246,0.372725,-0.016137,-0.484582,0.500104,0.169708,0.659820,-0.020253,-0.148430,-0.441472,0.415293,0.795312,-0.232023,-0.227898,0.212594,-0.288316,-0.076765,-0.072586,0.064318,0.365118,0.054994,0.338199,-0.159574,0.077627,-0.649070,-0.428437,0.263401,-0.134885,0.117475,0.125620,0.392028,0.283533,0.272288,-0.104202)
+var NNB0 = array.from(-0.048689,0.034902,-0.013915,-0.021137,-0.040533,0.015709,-0.015889,-0.043925,0.015743,0.020682,-0.042978,-0.003837,-0.018367,-0.012354)
+var NNW1 = array.from(-0.146524,-0.262348,-0.076418,-0.358400,-0.128213,0.020394,0.010183,-0.019375,-0.503806,-0.094513,0.026051,0.374403,0.158049,-0.093626,-0.209357,0.624445,0.230968,0.424971,0.614995,-0.202457,0.176846,0.179239,0.227399,0.115665,0.072338,0.132759,-0.380566,0.033759,-0.158927,-0.037527,-0.101060,0.176522,0.263748,0.112143,0.140897,0.021910,-0.136229,0.006336,-0.176473,0.147296,-0.007131,0.121506,-0.316225,0.192054,-0.222592,-0.138947,0.034426,-0.210199,0.108659,-0.103228,-0.233725,-0.191506,0.412407,-0.030370,-0.318717,0.043872,-0.374511,0.465099,-0.347693,0.156892,0.180224,-0.424505,0.113031,0.223723,0.139494,0.100898,0.187454,0.084835,0.154157,-0.113538,0.187945,-0.207847,0.150041,-0.211642,-0.282130,0.031705,0.424198,0.312831,-0.118514,0.157120,-0.172162,0.006468,-0.046421,-0.623127,0.034196,-0.217034,-0.227521,-0.342866,-0.403348,-0.294110,0.255226,0.451390,0.014542,0.354662,0.008877,-0.572102,0.046470,0.127840,-0.110659,0.099717,0.164387,-0.243116,-0.405210,-0.044897,0.019218,-0.118625,0.268276,0.455507,-0.158763,0.106360,0.221720,0.104874,0.231619,-0.031770,0.217140,0.485370,0.139528,-0.168583,0.089476,0.319289,0.033180,-0.190561,0.390038,-0.335144,0.108500,0.010549,-0.272531,0.298877,0.048899,-0.226938,0.096849,-0.147182,-0.468512,-0.183639,0.039705,0.158895,0.015416,0.024213,0.132491,-0.079223,0.258369,0.052851,0.139002,0.129812,-0.324914,-0.227207,0.390977,0.070594,-0.099212,0.113197,-0.119549,0.020904,-0.208408,0.090288,-0.493567,0.280464,-0.179576,-0.379958,-0.109554,-0.039769,0.027483,-0.337500,0.148044,0.932028,-0.351240,0.124798,-0.048029,-0.029322)
+var NNB1 = array.from(0.001044,-0.013806,0.000500,-0.005557,0.015781,0.005660,-0.008410,0.021940,0.009748,0.030334,0.007142,0.014488)
+var NNW2 = array.from(-0.566417,-0.285800,0.103287,-0.054712,0.482949,-0.155497,0.122029,0.769524,-0.213273,-0.226078,-0.016300,-0.065307,0.320399,-0.026805,-0.203484,0.115959,0.750837,0.303019,-0.791076,-0.045568,-0.230714,0.170164,-0.011929,0.543702,0.355683,0.188904,0.082821,0.039915,0.158093,0.331342,0.162848,-0.124777,0.363919,0.012984,0.020061,-0.202141,-0.192216,-0.172626,-0.731582,0.239228,0.230086,-0.065029,0.277909,0.166161,0.079133,-0.626839,-0.149542,0.129987,0.429143,0.610281,0.396328,-0.269655,-0.724061,0.124544,-0.069933,0.342606,-0.051341,0.012517,-0.433878,0.192239,-0.099333,0.082277,0.146358,-0.071869,0.119759,-0.018162,0.274028,0.091148,-0.126387,-0.201742,0.577837,-0.045667)
+var NNB2 = array.from(-0.011206,-0.031768,0.014304,-0.017667,0.005662,0.008671)
+var NNW3 = array.from(0.454159,0.240246,-0.265818,-0.273292,0.096529,0.043148,0.200507,-0.428963,-0.251111,-0.005638,0.574564,-0.898639,0.247367,-0.183841,0.196592,-0.144125,0.179702,0.548129)
+var NNB3 = array.from(0.061757,0.011854,0.013593)
+var NN_TMEAN = array.from(0.010846,0.489205,-0.000001)
+var NN_TSTD = array.from(0.008356,0.314590,0.007929)
+var NN_FMEAN = array.from(-0.000146,0.518774,49.252684,0.011350,-0.000185,0.000003,0.011437,0.986621,-0.070579,0.000956)
+var NN_FSTD = array.from(0.003856,0.281285,12.934474,0.007058,0.003728,0.004281,0.005308,0.196293,1.427001,0.318877)
+
+f_tanh(float z) =>
+    float zz = math.max(-20.0, math.min(20.0, z))
+    float e  = math.exp(2.0 * zz)
+    (e - 1.0) / (e + 1.0)
+
+f_layer(array<float> a, array<float> W, array<float> B, int nin, int nout, bool act) =>
+    array<float> o = array.new<float>(nout, 0.0)
+    for j = 0 to nout - 1
+        float z = array.get(B, j)
+        for i = 0 to nin - 1
+            z += array.get(a, i) * array.get(W, i * nout + j)
+        array.set(o, j, act ? f_tanh(z) : z)
+    o
+
+f_ncolY(int k, int cnt, float cy, float sp) => cnt <= 1 ? cy : cy + sp / 2.0 - sp * k / (cnt - 1)
+
+// draw layer connections: full web (every node→every node) or only the strongest N
+f_nnEdges(int x0, array<float> src, int nin, int x1, array<float> W, int nout, float cy, float sp, color cpos, color cneg, float kk, int topk, bool full) =>
+    // pass 1: intensities + layer max (for per-layer gradient normalisation)
+    array<float> ints = array.new<float>()
+    float mx = 0.0
+    for i = 0 to nin - 1
+        float ai = array.get(src, i)
+        for j = 0 to nout - 1
+            float v = math.abs(array.get(W, i * nout + j) * ai)
+            array.push(ints, v)
+            mx := math.max(mx, v)
+    float thr = 0.0
+    if not full
+        array<float> srt = array.copy(ints)
+        array.sort(srt, order.descending)
+        int ki = math.min(math.max(topk - 1, 0), array.size(srt) - 1)
+        thr := array.size(srt) > 0 ? array.get(srt, ki) : 0.0
+    float denom = mx > 0 ? mx : 1.0
+    for i = 0 to nin - 1
+        float yi = f_ncolY(i, nin, cy, sp)
+        float ai = array.get(src, i)
+        for j = 0 to nout - 1
+            float w  = array.get(W, i * nout + j)
+            float it = math.abs(w * ai)
+            if full or (it >= thr and it > 0.0)
+                float inten = math.min(1.0, (it / denom) * (kk * 0.5))
+                int   tp = full ? int(math.round(84 - inten * 60)) : int(math.round(64 - inten * 50))
+                int   lw = inten > 0.78 ? 2 : 1
+                color col = w >= 0 ? color.new(cpos, tp) : color.new(cneg, tp)
+                line ln = line.new(x0, yi, x1, f_ncolY(j, nout, cy, sp), xloc = xloc.bar_index, color = col, width = lw)
+                array.push(vLines, ln)
+
+f_nnNode(int x, float y, color col, color halo, string val, bool glow, bool showv, color tcol) =>
+    if glow
+        array.push(vLabs, label.new(x, y, "", xloc = xloc.bar_index, style = label.style_circle, color = color.new(halo, 62), size = size.normal))
+    array.push(vLabs, label.new(x, y, "", xloc = xloc.bar_index, style = label.style_circle, color = col, size = size.tiny))
+    if showv and val != ""
+        array.push(vLabs, label.new(x, y, val, xloc = xloc.bar_index, style = label.style_none, textcolor = tcol, size = size.tiny))
+
+// ═══════════════════════════════ Core series ═══════════════════════════════
+atr    = math.max(nz(ta.atr(atrLen), ta.tr), syminfo.mintick)
+emaF   = ta.ema(close, emaFast)
+emaS   = ta.ema(close, emaSlow)
+rsiV   = ta.rsi(close, rsiLen)
+zBasis = ta.sma(close, 50)
+zStd   = ta.stdev(close, 50)
+zScore = zStd > 0 ? (close - zBasis) / zStd : 0.0
+atrPct = ta.percentrank(atr, lookback)
+
+// per-bar realized reach from the PRIOR close, in ATR known at decision time (causal)
+upExc = na(close[1]) or na(atr[1]) or atr[1] <= 0 ? na : (high - close[1]) / atr[1]
+dnExc = na(close[1]) or na(atr[1]) or atr[1] <= 0 ? na : (close[1] - low) / atr[1]
+upExcP = na(upExc) ? na : math.max(upExc, 0.0)
+dnExcP = na(dnExc) ? na : math.max(dnExc, 0.0)
+
+// rolling reach scale θ (≈ mean positive excursion) — statistical baseline
+thUpR = math.max(nz(ta.sma(upExcP, thetaLen), 0.5), 0.05)
+thDnR = math.max(nz(ta.sma(dnExcP, thetaLen), 0.5), 0.05)
+
+// ── Neural network features (fixed 14/50/20/14 windows to match training; [1]-lagged = non-repaint) ──
+nnAtr   = ta.atr(14)
+nnAtr50 = ta.atr(50)
+nnEma20 = ta.ema(close, 20)
+nnRet   = close / close[1] - 1.0
+nnMom5  = ta.sma(nnRet, 5)
+nnLo14  = ta.lowest(low, 14)
+nnHi14  = ta.highest(high, 14)
+nnStoch = nnHi14 > nnLo14 ? (close - nnLo14) / (nnHi14 - nnLo14) : 0.5
+nnRsi   = ta.rsi(close, 14)
+nnRng5  = ta.sma((high - low) / close, 5)
+nnBody5 = ta.sma((close - open) / open, 5)
+nnAccel = ta.sma(nnRet, 2) - nnMom5
+nnAtrPc = nnAtr / close
+nnAtrRt = nnAtr50 > 0 ? nnAtr / nnAtr50 : 1.0
+nnStr   = nnAtr > 0 ? (close - nnEma20) / nnAtr : 0.0
+nnVolR  = ta.sma(volume, 20) > 0 ? volume / ta.sma(volume, 20) - 1.0 : 0.0
+
+// assemble the 10 raw features at the last CLOSED bar, standardize with baked mean/std
+f_nnz(float raw, int i) => (raw - array.get(NN_FMEAN, i)) / array.get(NN_FSTD, i)
+var array<float> nnX  = array.new<float>(10, 0.0)
+var array<float> nnA1 = array.new<float>(14, 0.0)
+var array<float> nnA2 = array.new<float>(12, 0.0)
+var array<float> nnA3 = array.new<float>(6, 0.0)
+var array<float> nnO  = array.new<float>(3, 0.0)
+bool nnReady = not na(nnMom5[1]) and not na(nnRsi[1]) and not na(nnAtrRt[1]) and not na(nnStr[1]) and not na(nnAtr[1]) and nnAtr[1] > 0
+float nnRangeP = na
+float nnUpShP  = 0.5
+float nnDirP   = 0.0
+float thUpNN   = na
+float thDnNN   = na
+if nnReady
+    array.set(nnX, 0, f_nnz(nnMom5[1],  0))
+    array.set(nnX, 1, f_nnz(nnStoch[1], 1))
+    array.set(nnX, 2, f_nnz(nnRsi[1],   2))
+    array.set(nnX, 3, f_nnz(nnRng5[1],  3))
+    array.set(nnX, 4, f_nnz(nnBody5[1], 4))
+    array.set(nnX, 5, f_nnz(nnAccel[1], 5))
+    array.set(nnX, 6, f_nnz(nnAtrPc[1], 6))
+    array.set(nnX, 7, f_nnz(nnAtrRt[1], 7))
+    array.set(nnX, 8, f_nnz(nnStr[1],   8))
+    array.set(nnX, 9, f_nnz(nnVolR[1],  9))
+    nnA1 := f_layer(nnX,  NNW0, NNB0, 10, 14, true)
+    nnA2 := f_layer(nnA1, NNW1, NNB1, 14, 12, true)
+    nnA3 := f_layer(nnA2, NNW2, NNB2, 12, 6,  true)
+    nnO  := f_layer(nnA3, NNW3, NNB3, 6,  3,  false)
+    nnRangeP := math.max(array.get(nnO, 0) * array.get(NN_TSTD, 0) + array.get(NN_TMEAN, 0), 0.0005)
+    nnUpShP  := math.min(0.95, math.max(0.05, array.get(nnO, 1) * array.get(NN_TSTD, 1) + array.get(NN_TMEAN, 1)))
+    nnDirP   := array.get(nnO, 2) * array.get(NN_TSTD, 2) + array.get(NN_TMEAN, 2)
+    // convert the range forecast to θ (ATR units): excursion_price / ATR
+    thUpNN := math.max(nnRangeP * nnUpShP        * close[1] / nnAtr[1], 0.05)
+    thDnNN := math.max(nnRangeP * (1.0 - nnUpShP) * close[1] / nnAtr[1], 0.05)
+
+// blend NN range forecast into the projection scale θ
+bool nnOn = useNN and nnReady and not na(thUpNN)
+thUp = nnOn ? (1.0 - wNN) * thUpR + wNN * thUpNN : thUpR
+thDn = nnOn ? (1.0 - wNN) * thDnR + wNN * thDnNN : thDnR
+
+// swing pivots for structural snap (value carried on the confirming bar)
+phV = ta.pivothigh(high, pivL, pivR)
+plV = ta.pivotlow(low,  pivL, pivR)
+
+// directional bias composite (continuation-tilted, mild) + small NN direction term
+tScore = clamp01((emaF - emaS) / atr * 0.5 + 0.5) * 2.0 - 1.0
+mScore = math.max(-1.0, math.min(1.0, (rsiV - 50.0) / 50.0))
+vScore = math.max(-1.0, math.min(1.0, (close - close[velLen]) / (velLen * atr)))
+nnDirSc= nnOn ? math.max(-1.0, math.min(1.0, nnDirP * close[1] / nnAtr[1])) : 0.0
+float wNNb = nnOn ? wNNdir : 0.0
+wSumT  = math.max(wTrend + wMom + wVel + wNNb, 1e-6)
+biasRaw= (wTrend * tScore + wMom * mScore + wVel * vScore + wNNb * nnDirSc) / wSumT
+bias   = useTilt ? math.max(-1.0, math.min(1.0, biasRaw)) : 0.0
+
+// ═══════════════════════════════ Drawing state ═══════════════════════════════
+var table dash = na
+var float alUp = na
+var float alDn = na
+var bool  alUpHi = false
+var bool  alDnHi = false
+
+// dashboard cell writer (global scope — Pine forbids defining functions inside blocks)
+f_cell(int col, int row, string t, color bg, color tc, string al) =>
+    table.cell(dash, col, row, t, bgcolor = bg, text_color = tc, text_size = f_lsz(dashSz), text_halign = al == "L" ? text.align_left : al == "R" ? text.align_right : text.align_center)
+
+if barstate.islast
+    for ln in vLines
+        line.delete(ln)
+    for lb in vLabs
+        label.delete(lb)
+    for bx in vBoxes
+        box.delete(bx)
+    array.clear(vLines)
+    array.clear(vLabs)
+    array.clear(vBoxes)
+
+    bool  locked = anchorIn == "Last close (locked)"
+    float aClose = locked ? close[1] : close
+    float aAtr   = locked ? atr[1]   : atr
+    aClose := na(aClose) ? close : aClose
+    aAtr   := na(aAtr) or aAtr <= 0 ? atr : aAtr
+
+    int   Ln = math.min(lookback, bar_index - 2)
+    int   n  = bar_index
+
+    // ── target ladder → base distances via exponential inverse: k = −θ·ln(p) ──
+    array<float> tp = array.from(clamp01(p1), clamp01(p2), clamp01(p3), clamp01(p4))
+    array<float> kU = array.new<float>(4, 0.0)
+    array<float> kD = array.new<float>(4, 0.0)
+    array<float> pxU= array.new<float>(4, 0.0)
+    array<float> pxD= array.new<float>(4, 0.0)
+    for j = 0 to 3
+        float pj = array.get(tp, j)
+        float kUj = -thUp * math.log(pj)
+        float kDj = -thDn * math.log(pj)
+        array.set(kU, j, kUj)
+        array.set(kD, j, kDj)
+        array.set(pxU, j, aClose + kUj * aAtr)
+        array.set(pxD, j, aClose - kDj * aAtr)
+
+    // ── structural snap: collect recent pivots, snap each level if within tolerance ──
+    if useSnap
+        array<float> pHi = array.new<float>()
+        array<float> pLo = array.new<float>()
+        for i = 0 to Ln
+            float pv = phV[i]
+            if not na(pv)
+                array.push(pHi, pv)
+            float qv = plV[i]
+            if not na(qv)
+                array.push(pLo, qv)
+        float tol = snapTol * aAtr
+        for j = 0 to 3
+            // up level → nearest swing HIGH above anchor, or round number
+            float lvl = array.get(pxU, j)
+            float best = lvl
+            float bestD = tol
+            if array.size(pHi) > 0
+                for m = 0 to array.size(pHi) - 1
+                    float cand = array.get(pHi, m)
+                    float d = math.abs(cand - lvl)
+                    if cand > aClose and d < bestD
+                        bestD := d
+                        best  := cand
+            if roundStep > 0
+                float rc = math.round(lvl / roundStep) * roundStep
+                float d = math.abs(rc - lvl)
+                if rc > aClose and d < bestD
+                    bestD := d
+                    best  := rc
+            array.set(pxU, j, best)
+            array.set(kU, j, math.max((best - aClose) / aAtr, 0.001))
+
+            // down level → nearest swing LOW below anchor, or round number
+            float lvd = array.get(pxD, j)
+            float bestd = lvd
+            float bestDd = tol
+            if array.size(pLo) > 0
+                for m = 0 to array.size(pLo) - 1
+                    float cand = array.get(pLo, m)
+                    float d = math.abs(cand - lvd)
+                    if cand < aClose and d < bestDd
+                        bestDd := d
+                        bestd  := cand
+            if roundStep > 0
+                float rc = math.round(lvd / roundStep) * roundStep
+                float d = math.abs(rc - lvd)
+                if rc < aClose and d < bestDd
+                    bestDd := d
+                    bestd  := rc
+            array.set(pxD, j, bestd)
+            array.set(kD, j, math.max((aClose - bestd) / aAtr, 0.001))
+
+    // ── minimum-spacing floor: never let levels glue together (runs snap on/off) ──
+    float gapPx = minLevGap * aAtr
+    if gapPx > 0
+        float prevU = aClose
+        for j = 0 to 3
+            float lvl = math.max(array.get(pxU, j), prevU + gapPx)
+            array.set(pxU, j, lvl)
+            array.set(kU, j, math.max((lvl - aClose) / aAtr, 0.001))
+            prevU := lvl
+        float prevD = aClose
+        for j = 0 to 3
+            float lvl = math.min(array.get(pxD, j), prevD - gapPx)
+            array.set(pxD, j, lvl)
+            array.set(kD, j, math.max((aClose - lvl) / aAtr, 0.001))
+            prevD := lvl
+
+    // ── one-pass empirical survival at the 8 final thresholds ──
+    array<int> cU = array.new<int>(4, 0)
+    array<int> cD = array.new<int>(4, 0)
+    int totU = 0
+    int totD = 0
+    for i = 1 to Ln
+        float eu = upExc[i]
+        float ed = dnExc[i]
+        if not na(eu)
+            totU += 1
+            for j = 0 to 3
+                if eu >= array.get(kU, j)
+                    array.set(cU, j, array.get(cU, j) + 1)
+        if not na(ed)
+            totD += 1
+            for j = 0 to 3
+                if ed >= array.get(kD, j)
+                    array.set(cD, j, array.get(cD, j) + 1)
+
+    // ── blend empirical + exponential model, apply mild directional tilt ──
+    float tiltU =  gamma * bias
+    float tiltD = -gamma * bias
+    array<float> probU = array.new<float>(4, 0.0)
+    array<float> probD = array.new<float>(4, 0.0)
+    for j = 0 to 3
+        float empU = totU > 0 ? array.get(cU, j) / float(totU) : math.exp(-array.get(kU, j) / thUp)
+        float empD = totD > 0 ? array.get(cD, j) / float(totD) : math.exp(-array.get(kD, j) / thDn)
+        float modU = math.exp(-array.get(kU, j) / thUp)
+        float modD = math.exp(-array.get(kD, j) / thDn)
+        float bU = clamp01(empWeight * empU + (1.0 - empWeight) * modU)
+        float bD = clamp01(empWeight * empD + (1.0 - empWeight) * modD)
+        float fU = f_invlogit(f_logit(bU) + tiltU)
+        float fD = f_invlogit(f_logit(bD) + tiltD)
+        fU := math.max(probFloor / 100.0, math.min(probCeil / 100.0, fU))
+        fD := math.max(probFloor / 100.0, math.min(probCeil / 100.0, fD))
+        array.set(probU, j, fU)
+        array.set(probD, j, fD)
+
+    // ── expected range / projected candle ──
+    float projHi = aClose + thUp * aAtr
+    float projLo = aClose - thDn * aAtr
+    float expRng = (thUp + thDn) * aAtr
+
+    int xL   = n + gapBars
+    int xR   = n + gapBars + projBars
+    int xMid = int(math.avg(xL, xR))
+    float h2 = aAtr * beamAtr / 2.0
+
+    // ── expected-range box ──
+    if showBox
+        box eb = box.new(xL, projHi, xR, projLo, border_color = color.new(goldCol, 55), border_width = 1, bgcolor = color.new(goldCol, 92))
+        array.push(vBoxes, eb)
+
+    // ── anchor reference line ──
+    if showRef
+        line rl = line.new(n - Ln, aClose, xR, aClose, color = color.new(color.gray, 45), width = 1, style = line.style_dotted)
+        array.push(vLines, rl)
+
+    // ── expected high/low mean lines ──
+    if showMeanL
+        line hu = line.new(xL, projHi, xR, projHi, color = color.new(upHi, 30), width = 1, style = line.style_dashed)
+        line hd = line.new(xL, projLo, xR, projLo, color = color.new(dnHi, 30), width = 1, style = line.style_dashed)
+        array.push(vLines, hu)
+        array.push(vLines, hd)
+
+    // ── projected candle skeleton ──
+    if showSkel
+        line wick = line.new(xMid, projHi, xMid, projLo, color = color.new(goldCol, 25), width = 2)
+        line capH = line.new(xMid - 1, projHi, xMid + 1, projHi, color = color.new(upHi, 10), width = 2)
+        line capL = line.new(xMid - 1, projLo, xMid + 1, projLo, color = color.new(dnHi, 10), width = 2)
+        array.push(vLines, wick)
+        array.push(vLines, capH)
+        array.push(vLines, capL)
+
+    // ── draw 8 beams + probability labels ──
+    alUp := na
+    alDn := na
+    alUpHi := false
+    alDnHi := false
+    float nearU = 1e18
+    float nearD = 1e18
+    for j = 0 to 3
+        float puj = array.get(probU, j)
+        float pdj = array.get(probD, j)
+        float yUp = array.get(pxU, j)
+        float yDn = array.get(pxD, j)
+        color cUp = f_upheat(puj)
+        color cDn = f_dnheat(pdj)
+
+        // glow beams
+        for g = glowN - 1 to 0
+            float frac = glowN > 1 ? g / float(glowN - 1) : 0.0
+            float hh   = h2 * (0.4 + 0.6 * frac)
+            int   tr   = math.min(94, f_op(puj) + int(frac * 26))
+            box bu = box.new(xL, yUp + hh, xR, yUp - hh, border_color = na, bgcolor = color.new(cUp, tr))
+            array.push(vBoxes, bu)
+            int   trd  = math.min(94, f_op(pdj) + int(frac * 26))
+            box bd = box.new(xL, yDn + hh, xR, yDn - hh, border_color = na, bgcolor = color.new(cDn, trd))
+            array.push(vBoxes, bd)
+
+        // labels with % inside
+        if showLbl
+            float dU = (yUp - aClose) / aClose * 100.0
+            float dD = (aClose - yDn) / aClose * 100.0
+            string luTxt = "▲ U" + str.tostring(j + 1) + "  " + str.tostring(yUp, format.mintick) + "   " + str.tostring(math.round(puj * 100), "#") + "%  " + f_stars(puj) + "  +" + str.tostring(dU, "#.##") + "%"
+            string ldTxt = "▼ D" + str.tostring(j + 1) + "  " + str.tostring(yDn, format.mintick) + "   " + str.tostring(math.round(pdj * 100), "#") + "%  " + f_stars(pdj) + "  -" + str.tostring(dD, "#.##") + "%"
+            color tcUp = puj >= 0.45 ? color.new(#04120c, 0) : color.new(#EAF2FF, 0)
+            color tcDn = pdj >= 0.45 ? color.new(#12040a, 0) : color.new(#EAF2FF, 0)
+            label lu = label.new(xR, yUp, luTxt, xloc = xloc.bar_index, style = label.style_label_left, color = color.new(cUp, 12), textcolor = tcUp, size = f_lsz(labSizeIn))
+            label ld = label.new(xR, yDn, ldTxt, xloc = xloc.bar_index, style = label.style_label_left, color = color.new(cDn, 12), textcolor = tcDn, size = f_lsz(labSizeIn))
+            array.push(vLabs, lu)
+            array.push(vLabs, ld)
+
+        // nearest-level alert bookkeeping
+        bool okBand = not alHiOnly or j <= 1
+        if okBand
+            if yUp - close > 0 and (yUp - close) < nearU
+                nearU := yUp - close
+                alUp  := yUp
+                alUpHi := puj >= 0.5
+            if close - yDn > 0 and (close - yDn) < nearD
+                nearD := close - yDn
+                alDn  := yDn
+                alDnHi := pdj >= 0.5
+
+    // ════════════════════════════ Neural Network Map ════════════════════════════
+    if showNet and nnOn
+        color cIn  = netTheme == "Solar" ? #FFB020 : netTheme == "Ice" ? #5CC8FF : #00E5FF
+        color cHid = netTheme == "Solar" ? #FF6A3D : netTheme == "Ice" ? #7FA8FF : #B14CFF
+        color cPos = netTheme == "Solar" ? #FFC24B : netTheme == "Ice" ? #8AD0FF : #22D3EE
+        color cNeg = netTheme == "Solar" ? #FF5E5E : netTheme == "Ice" ? #C86BFF : #FF4D9D
+        color cHalo= netTheme == "Solar" ? #FF8A00 : netTheme == "Ice" ? #66B8FF : #7A00FF
+        color cUpN = netTheme == "Solar" ? #FFD24A : #5CFFB0
+
+        // placement by bar_index (deterministic — always renders where set)
+        int nb = bar_index
+        int x0 = netSide == "Left" ? math.max(nb - netBack, 2) : xR + netOff
+        int x1 = x0 + netGap
+        int x2 = x0 + netGap * 2
+        int x3 = x0 + netGap * 3
+        int x4 = x0 + netGap * 4
+
+        float cy = close
+        float sp = close * netH / 100.0
+
+        // containing panel (drawn first, behind everything)
+        if netPanel
+            int padL = netFeat ? 6 : 2
+            int padR = 3
+            box pnl = box.new(x0 - padL, cy + sp / 2.0 + sp * 0.34, x4 + padR, cy - sp / 2.0 - sp * 0.14, xloc = xloc.bar_index, border_color = color.new(goldCol, 68), border_width = 1, bgcolor = color.new(#05070C, 20))
+            array.push(vBoxes, pnl)
+
+        // layer connections (full web by default, or strongest-N)
+        bool wireFull = netWire == "Full"
+        f_nnEdges(x0, nnX,  10, x1, NNW0, 14, cy, sp, cPos, cNeg, netEdgeK, netEdges, wireFull)
+        f_nnEdges(x1, nnA1, 14, x2, NNW1, 12, cy, sp, cPos, cNeg, netEdgeK, netEdges, wireFull)
+        f_nnEdges(x2, nnA2, 12, x3, NNW2, 6,  cy, sp, cPos, cNeg, netEdgeK, netEdges, wireFull)
+        f_nnEdges(x3, nnA3, 6,  x4, NNW3, 3,  cy, sp, cPos, cNeg, netEdgeK, netEdges, wireFull)
+
+        // input nodes (+ optional feature tags)
+        array<string> fnm = array.from("MOM5","STOCH","RSI","RNG5","BODY5","ACCEL","ATR%","ATR↕","STRTCH","VOL")
+        for i = 0 to 9
+            float yy  = f_ncolY(i, 10, cy, sp)
+            float mag = math.min(1.0, math.abs(array.get(nnX, i)) / 3.0)
+            f_nnNode(x0, yy, color.from_gradient(mag, 0.0, 1.0, color.new(cIn, 62), cIn), cHalo, "", netGlow, false, #0A0E17)
+            if netFeat
+                array.push(vLabs, label.new(x0, yy, array.get(fnm, i) + " ", xloc = xloc.bar_index, style = label.style_label_right, textcolor = color.new(cIn, 10), color = color.new(#000000, 100), size = size.tiny))
+
+        // hidden nodes (brightness = activation magnitude)
+        for i = 0 to 13
+            float m1 = math.min(1.0, math.abs(array.get(nnA1, i)))
+            f_nnNode(x1, f_ncolY(i, 14, cy, sp), color.from_gradient(m1, 0.0, 1.0, color.new(cHid, 64), cHid), cHalo, "", netGlow, false, #0A0E17)
+        for i = 0 to 11
+            float m2 = math.min(1.0, math.abs(array.get(nnA2, i)))
+            f_nnNode(x2, f_ncolY(i, 12, cy, sp), color.from_gradient(m2, 0.0, 1.0, color.new(cHid, 64), cHid), cHalo, "", netGlow, false, #0A0E17)
+        for i = 0 to 5
+            float m3 = math.min(1.0, math.abs(array.get(nnA3, i)))
+            f_nnNode(x3, f_ncolY(i, 6, cy, sp), color.from_gradient(m3, 0.0, 1.0, color.new(cHid, 64), cHid), cHalo, "", netGlow, false, #0A0E17)
+
+        // output nodes: RANGE / SHARE / DIR with live predictions
+        array<string> onm = array.from("RANGE","SHARE","DIR")
+        for i = 0 to 2
+            float yy = f_ncolY(i, 3, cy, sp)
+            color oc = i == 0 ? goldCol : i == 1 ? cUpN : (nnDirP >= 0 ? #5CFFB0 : #ff3b6b)
+            string ov = i == 0 ? str.tostring(nnRangeP * 100.0, "#.##") + "%" : i == 1 ? str.tostring(nnUpShP * 100.0, "#") + "%" : (nnDirP >= 0 ? "+" : "") + str.tostring(nnDirSc, "#.##")
+            f_nnNode(x4, yy, oc, cHalo, "", netGlow, false, #0A0E17)
+            array.push(vLabs, label.new(x4, yy, " " + array.get(onm, i) + " " + ov, xloc = xloc.bar_index, style = label.style_label_left, textcolor = oc, color = color.new(#000000, 100), size = size.tiny))
+
+        // header + column tags
+        float topY = cy + sp / 2.0 + sp * 0.20
+        array.push(vLabs, label.new(x0, topY, "NEURAL FORECAST · 10·14·12·6·3", xloc = xloc.bar_index, style = label.style_none, textcolor = goldCol, size = size.small, textalign = text.align_left))
+        float botY = cy - sp / 2.0 - sp * 0.06
+        array.push(vLabs, label.new(x0, botY, "IN",  xloc = xloc.bar_index, style = label.style_none, textcolor = color.new(cIn, 25),  size = size.tiny))
+        array.push(vLabs, label.new(x2, botY, "HIDDEN ×3", xloc = xloc.bar_index, style = label.style_none, textcolor = color.new(cHid, 30), size = size.tiny))
+        array.push(vLabs, label.new(x4, botY, "OUT", xloc = xloc.bar_index, style = label.style_none, textcolor = color.new(goldCol, 10), size = size.tiny))
+
+    // ════════════════════════════ Dashboard ════════════════════════════
+    if showDash
+        if not na(dash)
+            table.delete(dash)
+        dash := table.new(f_dpos(dashPos), 6, 30, border_width = 1, border_color = color.new(#000000, 40), frame_width = 1, frame_color = color.new(goldCol, 40))
+        color hdrBg  = color.new(goldCol, 8)
+        color secBg  = color.new(#182234, 0)
+        color rowU   = color.new(#0f2a24, 0)
+        color rowD   = color.new(#2a0f1e, 0)
+        color txt    = dashTx
+        color sub    = color.new(#9fb2c9, 0)
+        string szc   = f_lsz(dashSz)
+
+        // countdown to next H4
+        int msLeft = na(time_close) ? na : time_close - timenow
+        int hL = na(msLeft) ? 0 : int(math.max(0, msLeft) / 3600000)
+        int mL = na(msLeft) ? 0 : int((math.max(0, msLeft) % 3600000) / 60000)
+        string cd = na(msLeft) ? "—" : str.tostring(hL) + "h " + str.tostring(mL) + "m"
+
+        // title
+        table.cell(dash, 0, 0, "◆ STRONG H4 REACH MATRIX", bgcolor = hdrBg, text_color = color.new(#000000, 0), text_size = szc, text_halign = text.align_left)
+        table.merge_cells(dash, 0, 0, 5, 0)
+
+        bool wrongTf = tfGuard and timeframe.multiplier != 240 and timeframe.period != "240"
+        string tfw = wrongTf ? "  ⚠ not H4" : ""
+        table.cell(dash, 0, 1, syminfo.ticker + " · " + timeframe.period + (anchorIn == "Last close (locked)" ? " · LOCKED" : " · LIVE") + tfw, bgcolor = dashBg, text_color = sub, text_size = szc, text_halign = text.align_left)
+        table.merge_cells(dash, 0, 1, 3, 1)
+        table.cell(dash, 4, 1, "next H4 in " + cd, bgcolor = dashBg, text_color = goldCol, text_size = szc, text_halign = text.align_right)
+        table.merge_cells(dash, 4, 1, 5, 1)
+
+        // ── ladder header ──
+        f_cell(0, 2, "LEVEL", secBg, goldCol, "L")
+        f_cell(1, 2, "PRICE", secBg, goldCol, "R")
+        f_cell(2, 2, "DIST%", secBg, goldCol, "R")
+        f_cell(3, 2, "ATR", secBg, goldCol, "R")
+        f_cell(4, 2, "TOUCH", secBg, goldCol, "R")
+        f_cell(5, 2, "RANK", secBg, goldCol, "C")
+
+        // up rows U4..U1 (top-down)
+        int r = 3
+        for jj = 3 to 0
+            float puj = array.get(probU, jj)
+            float yUp = array.get(pxU, jj)
+            float dU  = (yUp - aClose) / aClose * 100.0
+            color pcol = f_upheat(puj)
+            f_cell(0, r, "▲ U" + str.tostring(jj + 1), rowU, color.new(upHi, 0), "L")
+            f_cell(1, r, str.tostring(yUp, format.mintick), rowU, txt, "R")
+            f_cell(2, r, "+" + str.tostring(dU, "#.##"), rowU, sub, "R")
+            f_cell(3, r, str.tostring(array.get(kU, jj), "#.##"), rowU, sub, "R")
+            f_cell(4, r, str.tostring(math.round(puj * 100), "#") + "%", color.new(pcol, 20), puj >= 0.45 ? color.new(#04120c, 0) : color.new(#EAF2FF, 0), "R")
+            f_cell(5, r, f_tier(puj), rowU, color.new(upHi, 0), "C")
+            r += 1
+
+        // anchor row
+        f_cell(0, r, "► PRICE", color.new(goldCol, 20), color.new(#000000, 0), "L")
+        f_cell(1, r, str.tostring(aClose, format.mintick), color.new(goldCol, 20), color.new(#000000, 0), "R")
+        f_cell(2, r, "anchor", color.new(goldCol, 20), color.new(#000000, 0), "R")
+        f_cell(3, r, "θu " + str.tostring(thUp, "#.##"), color.new(goldCol, 20), color.new(#000000, 0), "R")
+        f_cell(4, r, "θd " + str.tostring(thDn, "#.##"), color.new(goldCol, 20), color.new(#000000, 0), "R")
+        f_cell(5, r, anchorIn == "Last close (locked)" ? "LOCK" : "LIVE", color.new(goldCol, 20), color.new(#000000, 0), "C")
+        r += 1
+
+        // down rows D1..D4
+        for jj = 0 to 3
+            float pdj = array.get(probD, jj)
+            float yDn = array.get(pxD, jj)
+            float dD  = (aClose - yDn) / aClose * 100.0
+            color pcol = f_dnheat(pdj)
+            f_cell(0, r, "▼ D" + str.tostring(jj + 1), rowD, color.new(dnHi, 0), "L")
+            f_cell(1, r, str.tostring(yDn, format.mintick), rowD, txt, "R")
+            f_cell(2, r, "-" + str.tostring(dD, "#.##"), rowD, sub, "R")
+            f_cell(3, r, str.tostring(array.get(kD, jj), "#.##"), rowD, sub, "R")
+            f_cell(4, r, str.tostring(math.round(pdj * 100), "#") + "%", color.new(pcol, 20), pdj >= 0.45 ? color.new(#12040a, 0) : color.new(#EAF2FF, 0), "R")
+            f_cell(5, r, f_tier(pdj), rowD, color.new(dnHi, 0), "C")
+            r += 1
+
+        // ── projection section ──
+        f_cell(0, r, "NEXT-H4 PROJECTION", secBg, goldCol, "L")
+        table.merge_cells(dash, 0, r, 5, r)
+        r += 1
+        float expPts = expRng
+        float expPct = expRng / aClose * 100.0
+        f_cell(0, r, "Proj High", dashBg, sub, "L")
+        f_cell(1, r, str.tostring(projHi, format.mintick), dashBg, color.new(upHi, 0), "R")
+        f_cell(2, r, "", dashBg, sub, "R")
+        f_cell(3, r, "Proj Low", dashBg, sub, "R")
+        f_cell(4, r, str.tostring(projLo, format.mintick), dashBg, color.new(dnHi, 0), "R")
+        f_cell(5, r, "", dashBg, sub, "C")
+        r += 1
+        f_cell(0, r, "Exp Range", dashBg, sub, "L")
+        f_cell(1, r, str.tostring(expPts, "#.#") + " pt", dashBg, txt, "R")
+        f_cell(2, r, "", dashBg, sub, "R")
+        f_cell(3, r, "Exp Range%", dashBg, sub, "R")
+        f_cell(4, r, str.tostring(expPct, "#.##") + "%", dashBg, txt, "R")
+        f_cell(5, r, "", dashBg, sub, "C")
+        r += 1
+
+        // ── regime section ──
+        f_cell(0, r, "REGIME & INDICATORS", secBg, goldCol, "L")
+        table.merge_cells(dash, 0, r, 5, r)
+        r += 1
+        string trTxt = emaF > emaS ? "▲ UP" : "▼ DOWN"
+        color  trCol = emaF > emaS ? color.new(upHi, 0) : color.new(dnHi, 0)
+        string moTxt = rsiV >= 65 ? "OB " + str.tostring(rsiV, "#") : rsiV <= 35 ? "OS " + str.tostring(rsiV, "#") : "mid " + str.tostring(rsiV, "#")
+        f_cell(0, r, "Trend", dashBg, sub, "L")
+        f_cell(1, r, trTxt, dashBg, trCol, "R")
+        f_cell(2, r, "", dashBg, sub, "R")
+        f_cell(3, r, "Momentum", dashBg, sub, "R")
+        f_cell(4, r, moTxt, dashBg, txt, "R")
+        f_cell(5, r, "", dashBg, sub, "C")
+        r += 1
+        string volTxt = atrPct >= 70 ? "EXPANDING" : atrPct <= 30 ? "COMPRESSED" : "NORMAL"
+        color  volCol = atrPct >= 70 ? color.new(#ffb000, 0) : atrPct <= 30 ? color.new(#2f6de0, 0) : txt
+        f_cell(0, r, "Volatility", dashBg, sub, "L")
+        f_cell(1, r, volTxt, dashBg, volCol, "R")
+        f_cell(2, r, "", dashBg, sub, "R")
+        f_cell(3, r, "ATR", dashBg, sub, "R")
+        f_cell(4, r, str.tostring(aAtr, "#.#"), dashBg, txt, "R")
+        f_cell(5, r, "", dashBg, sub, "C")
+        r += 1
+        string zTxt = zScore >= 2 ? "STRETCH+ " + str.tostring(zScore, "#.#") : zScore <= -2 ? "STRETCH- " + str.tostring(zScore, "#.#") : str.tostring(zScore, "#.#") + "σ"
+        f_cell(0, r, "Stretch (z)", dashBg, sub, "L")
+        f_cell(1, r, zTxt, dashBg, txt, "R")
+        f_cell(2, r, "", dashBg, sub, "R")
+        f_cell(3, r, "ATR pct", dashBg, sub, "R")
+        f_cell(4, r, str.tostring(atrPct, "#") + "%", dashBg, txt, "R")
+        f_cell(5, r, "", dashBg, sub, "C")
+        r += 1
+        string biasTxt = not useTilt ? "OFF" : bias > 0.15 ? "▲ +" + str.tostring(bias, "#.##") : bias < -0.15 ? "▼ " + str.tostring(bias, "#.##") : "flat " + str.tostring(bias, "#.##")
+        color  biasCol = not useTilt ? sub : bias > 0.15 ? color.new(upHi, 0) : bias < -0.15 ? color.new(dnHi, 0) : txt
+        f_cell(0, r, "Dir. Tilt", dashBg, sub, "L")
+        f_cell(1, r, biasTxt, dashBg, biasCol, "R")
+        f_cell(2, r, "", dashBg, sub, "R")
+        f_cell(3, r, "Skew U-D", dashBg, sub, "R")
+        float skewUD = (array.get(probU, 2) - array.get(probD, 2)) * 100
+        f_cell(4, r, (skewUD >= 0 ? "+" : "") + str.tostring(math.round(skewUD)) + "%", dashBg, txt, "R")
+        f_cell(5, r, "", dashBg, sub, "C")
+        r += 1
+
+        // ── neural forecast section ──
+        f_cell(0, r, "NEURAL FORECAST", secBg, goldCol, "L")
+        table.merge_cells(dash, 0, r, 5, r)
+        r += 1
+        string nnState = not useNN ? "OFF" : not nnReady ? "warming" : "LIVE"
+        color  nnStCol = not useNN ? sub : not nnReady ? color.new(#ffb000,0) : color.new(#5CFFB0, 0)
+        f_cell(0, r, "NN Range", dashBg, sub, "L")
+        f_cell(1, r, nnOn ? str.tostring(nnRangeP * 100.0, "#.##") + "%" : "—", dashBg, txt, "R")
+        f_cell(2, r, "", dashBg, sub, "R")
+        f_cell(3, r, "θu/θd (NN)", dashBg, sub, "R")
+        f_cell(4, r, nnOn ? str.tostring(thUpNN, "#.##") + "/" + str.tostring(thDnNN, "#.##") : "—", dashBg, txt, "R")
+        f_cell(5, r, nnState, dashBg, nnStCol, "C")
+        r += 1
+        string nnDirTx = not nnOn ? "—" : nnDirP > 0 ? "▲ +" + str.tostring(nnDirSc, "#.##") : nnDirP < 0 ? "▼ " + str.tostring(nnDirSc, "#.##") : "flat"
+        color  nnDirCl = not nnOn ? sub : nnDirP > 0 ? color.new(upHi, 0) : nnDirP < 0 ? color.new(dnHi, 0) : txt
+        f_cell(0, r, "NN Dir", dashBg, sub, "L")
+        f_cell(1, r, nnDirTx, dashBg, nnDirCl, "R")
+        f_cell(2, r, "", dashBg, sub, "R")
+        f_cell(3, r, "θ blend", dashBg, sub, "R")
+        f_cell(4, r, useNN ? str.tostring(int(wNN * 100)) + "% net" : "0%", dashBg, txt, "R")
+        f_cell(5, r, "", dashBg, sub, "C")
+        r += 1
+
+        // ── model/data section ──
+        f_cell(0, r, "MODEL & DATA", secBg, goldCol, "L")
+        table.merge_cells(dash, 0, r, 5, r)
+        r += 1
+        f_cell(0, r, "Bars", dashBg, sub, "L")
+        f_cell(1, r, str.tostring(totU), dashBg, txt, "R")
+        f_cell(2, r, "", dashBg, sub, "R")
+        f_cell(3, r, "Blend E/M", dashBg, sub, "R")
+        f_cell(4, r, str.tostring(int(empWeight * 100)) + "/" + str.tostring(int((1 - empWeight) * 100)), dashBg, txt, "R")
+        f_cell(5, r, "", dashBg, sub, "C")
+        r += 1
+        f_cell(0, r, "Edge: NN range/vol (corr≈0.45 OOS, regime-dep) + reach-prob · direction≈50%", dashBg, sub, "L")
+        table.merge_cells(dash, 0, r, 5, r)
+
+// ═══════════════════════════════ Alerts ═══════════════════════════════
+float prox = close * alProx / 100.0
+alertcondition(not na(alUp) and math.abs(close - alUp) <= prox, "Approaching Up Level", "Price approaching a projected upside reach level for the next H4.")
+alertcondition(not na(alDn) and math.abs(close - alDn) <= prox, "Approaching Down Level", "Price approaching a projected downside reach level for the next H4.")
+alertcondition(not na(alUp) and ta.crossover(close, alUp),  "Up Level Reached",  "Price traded through a projected upside reach level.")
+alertcondition(not na(alDn) and ta.crossunder(close, alDn), "Down Level Reached", "Price traded through a projected downside reach level.")

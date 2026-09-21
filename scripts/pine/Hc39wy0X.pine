@@ -1,0 +1,71 @@
+//@version=6
+// Original research indicator, prepared for BotTradeLab. No external data or API keys.
+indicator("Crypto Breakout Compass", "Crypto Compass", overlay = true)
+
+int channelLen = input.int(20, "Breakout lookback", minval = 2, maxval = 500)
+int fastLen = input.int(50, "Fast EMA", minval = 2, maxval = 500)
+int slowLen = input.int(200, "Slow EMA", minval = 3, maxval = 1000)
+int slopeLen = input.int(5, "Slow EMA slope lookback", minval = 1, maxval = 100)
+int atrLen = input.int(14, "ATR length", minval = 2, maxval = 100)
+float maxAtrPct = input.float(12.0, "Maximum ATR / close (%)", minval = 0.1, step = 0.5)
+float maxExtension = input.float(1.0, "Maximum breakout extension (ATR)", minval = 0.1, step = 0.1)
+float minLocation = input.float(0.70, "Minimum directional close location", minval = 0.5, maxval = 1.0, step = 0.05)
+int cooldown = input.int(10, "Minimum bars between alerts (both directions)", minval = 1, maxval = 500)
+bool showBg = input.bool(true, "Show confirmed trend background")
+
+if barstate.isfirst and fastLen >= slowLen
+    runtime.error("Fast EMA must be shorter than slow EMA.")
+
+float upper = ta.highest(high, channelLen)[1]
+float lower = ta.lowest(low, channelLen)[1]
+float fast = ta.ema(close, fastLen)
+float slow = ta.ema(close, slowLen)
+float atr = ta.atr(atrLen)
+float atrPct = close > 0 ? 100 * atr / close : na
+float location = high > low ? (close - low) / (high - low) : 0.5
+int warmup = math.max(math.max(slowLen + slopeLen, channelLen + 1), atrLen)
+bool ready = bar_index >= warmup and not na(atr) and atr > 0 and close > 0
+bool bull = ready and close > fast and fast > slow and slow > slow[slopeLen]
+bool bear = ready and close < fast and fast < slow and slow < slow[slopeLen]
+bool rawUp = close > upper and close[1] <= upper[1]
+bool rawDown = close < lower and close[1] >= lower[1]
+bool volOk = ready and atrPct <= maxAtrPct
+bool upOk = rawUp and bull and volOk and (close - upper) / atr <= maxExtension and location >= minLocation
+bool downOk = rawDown and bear and volOk and (lower - close) / atr <= maxExtension and location <= 1 - minLocation
+var int lastSignal = na
+bool cooled = na(lastSignal) or bar_index - lastSignal >= cooldown
+bool longSignal = barstate.isconfirmed and cooled and upOk
+bool shortSignal = barstate.isconfirmed and cooled and downOk
+if longSignal or shortSignal
+    lastSignal := bar_index
+
+// Levels and EMAs may move on the open bar; markers and saved status commit only at close.
+plot(upper, "Previous-bar upper channel", color.new(color.teal, 35), style = plot.style_stepline)
+plot(lower, "Previous-bar lower channel", color.new(color.red, 35), style = plot.style_stepline)
+plot(fast, "Fast EMA", color.orange)
+plot(slow, "Slow EMA", color.blue, 2)
+plotshape(longSignal, "Confirmed bullish breakout", shape.triangleup, location.belowbar, color.teal, size = size.small, text = "B+")
+plotshape(shortSignal, "Confirmed bearish breakout", shape.triangledown, location.abovebar, color.red, size = size.small, text = "B-")
+var int regime = 0
+var string status = "Warming up"
+var float closedAtrPct = na
+if barstate.isconfirmed
+    regime := bull ? 1 : bear ? -1 : 0
+    closedAtrPct := atrPct
+    status := not ready ? "Warming up" : not volOk ? "Volatility blocked" : not cooled ? "Cooldown" : longSignal ? "Bull breakout" : shortSignal ? "Bear breakout" : "Waiting for breakout"
+bgcolor(showBg ? regime == 1 ? color.new(color.teal, 93) : regime == -1 ? color.new(color.red, 93) : na : na)
+var table panel = table.new(position.top_right, 2, 4, border_width = 1)
+if barstate.islast
+    color panelBg = color.new(color.black, 15)
+    table.cell(panel, 0, 0, "Crypto Compass", text_color = color.white, bgcolor = panelBg)
+    table.cell(panel, 1, 0, "Closed-bar status", text_color = color.silver, bgcolor = panelBg)
+    table.cell(panel, 0, 1, "Trend", text_color = color.white, bgcolor = panelBg)
+    table.cell(panel, 1, 1, regime == 1 ? "Bull" : regime == -1 ? "Bear" : "Neutral", text_color = regime == 1 ? color.teal : regime == -1 ? color.red : color.silver, bgcolor = panelBg)
+    table.cell(panel, 0, 2, "ATR / close", text_color = color.white, bgcolor = panelBg)
+    table.cell(panel, 1, 2, str.tostring(closedAtrPct, "#.##") + "%", text_color = color.white, bgcolor = panelBg)
+    table.cell(panel, 0, 3, timeframe.isdaily and timeframe.multiplier == 1 ? "1D research scope" : "Unvalidated timeframe", text_color = color.silver, bgcolor = panelBg)
+    table.cell(panel, 1, 3, status, text_color = color.white, bgcolor = panelBg)
+
+alertcondition(longSignal, "Bullish breakout confirmed", "{{ticker}} {{interval}}: Crypto Compass bullish breakout confirmed at {{close}}.")
+alertcondition(shortSignal, "Bearish breakout confirmed", "{{ticker}} {{interval}}: Crypto Compass bearish breakout confirmed at {{close}}.")
+ 

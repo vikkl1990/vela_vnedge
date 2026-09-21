@@ -1,0 +1,522 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BackQuant
+//@version=6
+
+indicator("Fed Funds Pricing [BackQuant]", shorttitle = "Fed Pricing [BackQuant]", overlay = false, max_lines_count = 200, max_labels_count = 100, dynamic_requests = true)
+
+// inputs
+const string GROUP_DISPLAY = "Display"
+const string GROUP_TABLE   = "Tables"
+const string GROUP_MARKERS = "FOMC Markers"
+const string GROUP_RATES   = "Rates Matrix"
+
+bool showTargetBand   = input.bool(true, "Show target range history", group = GROUP_DISPLAY)
+bool showEFFR         = input.bool(true, "Show EFFR history", group = GROUP_DISPLAY)
+bool showExpectedPath = input.bool(true, "Show expected future path", group = GROUP_DISPLAY)
+bool showModePath     = input.bool(true, "Show most-likely future path", group = GROUP_DISPLAY)
+color expectedColor   = input.color(#2962FF, "Expected path", group = GROUP_DISPLAY)
+color modeColor       = input.color(#00C853, "Most-likely path", group = GROUP_DISPLAY)
+color effrColor       = input.color(#FF9800, "EFFR", group = GROUP_DISPLAY)
+color bandColor       = input.color(#787B86, "Target band", group = GROUP_DISPLAY)
+
+int selectedMeeting = input.int(1, "Detailed meeting #", minval = 1, maxval = 11, group = GROUP_TABLE, tooltip = "1 = nearest upcoming FOMC meeting, 2 = the next one, etc.")
+
+bool showMeetingMarkers = input.bool(true, "Show FOMC markers on main chart", group = GROUP_MARKERS)
+bool showMeetingLabels  = input.bool(true, "Show FOMC labels", group = GROUP_MARKERS)
+color meetingColor      = input.color(#787B86, "Marker color", group = GROUP_MARKERS)
+
+bool showRatesMatrix = input.bool(true, "Show rates matrix", group = GROUP_RATES)
+
+// constants
+const int BASE_SERIAL      = 2026 * 12 + 8
+const int LAST_SERIAL      = 2027 * 12 + 10
+const int CONTRACT_COUNT   = LAST_SERIAL - BASE_SERIAL + 1
+const int LAST_MEETING_SER = 2027 * 12 + 9
+
+const int MARKER_START_SERIAL = 2026 * 12
+const int MARKER_END_SERIAL   = 2027 * 12 + 11
+
+const float STEP = 0.25
+const int DIST_CENTER = 32
+const int DIST_SIZE   = DIST_CENTER * 2 + 1
+
+// helpers
+f_year(int serial) =>
+    int(math.floor(serial / 12.0))
+
+f_month(int serial) =>
+    serial % 12 + 1
+
+f_monthCode(int m) =>
+    switch m
+        1  => "F"
+        2  => "G"
+        3  => "H"
+        4  => "J"
+        5  => "K"
+        6  => "M"
+        7  => "N"
+        8  => "Q"
+        9  => "U"
+        10 => "V"
+        11 => "X"
+        12 => "Z"
+        => ""
+
+f_monthName(int m) =>
+    switch m
+        1  => "Jan"
+        2  => "Feb"
+        3  => "Mar"
+        4  => "Apr"
+        5  => "May"
+        6  => "Jun"
+        7  => "Jul"
+        8  => "Aug"
+        9  => "Sep"
+        10 => "Oct"
+        11 => "Nov"
+        12 => "Dec"
+        => "?"
+
+f_daysInMonth(int y, int m) =>
+    bool leap = y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)
+    m == 2 ? (leap ? 29 : 28) : (m == 4 or m == 6 or m == 9 or m == 11 ? 30 : 31)
+
+// fomc calendar
+f_meetingDay(int y, int m) =>
+    int d = 0
+    if y == 2026
+        d := switch m
+            1  => 28
+            3  => 18
+            4  => 29
+            6  => 17
+            7  => 29
+            9  => 16
+            10 => 28
+            12 => 9
+            => 0
+    else if y == 2027
+        d := switch m
+            1  => 27
+            3  => 17
+            4  => 28
+            6  => 9
+            7  => 28
+            9  => 15
+            10 => 27
+            12 => 8
+            => 0
+    d
+
+f_meetingLabel(int y, int m, int d) =>
+    f_monthName(m) + " " + str.tostring(d) + ", " + str.tostring(y)
+
+f_rate(float x) =>
+    na(x) ? "n/a" : str.tostring(x, "#.00") + "%"
+
+f_prob(float p) =>
+    na(p) ? "n/a" : str.tostring(p * 100.0, "#.0") + "%"
+
+f_range(float lo, float hi) =>
+    na(lo) or na(hi) ? "n/a" : str.tostring(lo, "#.00") + "-" + str.tostring(hi, "#.00") + "%"
+
+f_signedBp(float bp) =>
+    na(bp) ? "n/a" : (bp > 0 ? "+" : "") + str.tostring(bp, "#.0") + " bp"
+
+f_spreadBp(float bp) =>
+    na(bp) ? "n/a" : (bp > 0 ? "+" : "") + str.tostring(bp, "#.0") + " bp"
+
+f_pricingBias(float bp) =>
+    na(bp) ? "n/a" : bp > 0.05 ? "HAWKISH" : bp < -0.05 ? "DOVISH" : "UNCHANGED"
+
+f_movesPriced(float steps) =>
+    if na(steps)
+        "n/a"
+    else if steps < -0.005
+        str.tostring(math.abs(steps), "#.0") + " cuts"
+    else if steps > 0.005
+        str.tostring(steps, "#.0") + " hikes"
+    else
+        "0.0 moves"
+
+f_changeBg(float bp) =>
+    na(bp) ? color.new(color.gray, 94) : bp > 0.05 ? color.new(color.red, 86) : bp < -0.05 ? color.new(color.green, 86) : color.new(color.gray, 92)
+
+f_meetingRates(int targetSerial, array<float> avgs) =>
+    float startRate = na
+    float endRate = na
+    int anchor = targetSerial + 1
+    bool foundAnchor = false
+
+    for k = 0 to 5
+        int ay = f_year(anchor)
+        int am = f_month(anchor)
+        if f_meetingDay(ay, am) == 0
+            foundAnchor := true
+            break
+        anchor += 1
+
+    if foundAnchor
+        int anchorIdx = anchor - BASE_SERIAL
+        if anchorIdx >= 0 and anchorIdx < CONTRACT_COUNT
+            float runningEnd = array.get(avgs, anchorIdx)
+            if not na(runningEnd)
+                for back = 1 to 6
+                    int cur = anchor - back
+                    if cur < targetSerial
+                        break
+
+                    int cy = f_year(cur)
+                    int cm = f_month(cur)
+                    int cd = f_meetingDay(cy, cm)
+                    int idx = cur - BASE_SERIAL
+
+                    if cd == 0 or idx < 0 or idx >= CONTRACT_COUNT
+                        break
+
+                    float avgRate = array.get(avgs, idx)
+                    if na(avgRate)
+                        break
+
+                    int days = f_daysInMonth(cy, cm)
+                    int nPre = cd
+                    int nPost = days - cd
+                    float e = runningEnd
+                    float s = (avgRate * days - nPost * e) / nPre
+
+                    if cur == targetSerial
+                        startRate := s
+                        endRate := e
+                        break
+
+                    runningEnd := s
+
+    [startRate, endRate]
+
+// data
+float ffLower = request.security("FRED:DFEDTARL", "D", close, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+float ffUpper = request.security("FRED:DFEDTARU", "D", close, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+float effr    = request.security("FRED:EFFR", "D", close, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+float ffMid   = (ffLower + ffUpper) / 2.0
+
+[y3m, y3mPrev]   = request.security("FRED:DGS3MO", "D", [close, close[1]], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+[y6m, y6mPrev]   = request.security("FRED:DGS6MO", "D", [close, close[1]], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+[y1y, y1yPrev]   = request.security("FRED:DGS1", "D", [close, close[1]], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+[y2y, y2yPrev]   = request.security("FRED:DGS2", "D", [close, close[1]], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+[y5y, y5yPrev]   = request.security("FRED:DGS5", "D", [close, close[1]], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+[y10y, y10yPrev] = request.security("FRED:DGS10", "D", [close, close[1]], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+[y30y, y30yPrev] = request.security("FRED:DGS30", "D", [close, close[1]], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+
+// zq strip
+var array<float> avgRates = array.new_float(CONTRACT_COUNT, na)
+var array<float> avgRatesPrev = array.new_float(CONTRACT_COUNT, na)
+
+for i = 0 to CONTRACT_COUNT - 1
+    int serial = BASE_SERIAL + i
+    int y = f_year(serial)
+    int m = f_month(serial)
+    string zqSymbol = "CBOT:ZQ" + f_monthCode(m) + str.tostring(y)
+    [zq, zqPrev] = request.security(zqSymbol, "D", [close, close[1]], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true, calc_bars_count = 3)
+    array.set(avgRates, i, na(zq) ? na : 100.0 - zq)
+    array.set(avgRatesPrev, i, na(zqPrev) ? na : 100.0 - zqPrev)
+
+// plots
+pLower = plot(showTargetBand ? ffLower : na, "Target lower", color = color.new(bandColor, 35), linewidth = 1)
+pUpper = plot(showTargetBand ? ffUpper : na, "Target upper", color = color.new(bandColor, 35), linewidth = 1)
+fill(pLower, pUpper, color = showTargetBand ? color.new(bandColor, 90) : na, title = "Target range")
+plot(showEFFR ? effr : na, "EFFR", color = effrColor, linewidth = 2)
+
+// tables
+var table summary = table.new(position.top_right, 7, 13, border_width = 1, frame_width = 1)
+var table detail = table.new(position.bottom_right, 2, 16, border_width = 1, frame_width = 1)
+var table rates = table.new(position.top_left, 4, 15, border_width = 1, frame_width = 1)
+
+var array<line> projectionLines = array.new_line()
+var array<line> markerLines = array.new_line()
+var array<label> markerLabels = array.new_label()
+var array<float> dist = array.new_float(DIST_SIZE, 0.0)
+var array<float> selectedDist = array.new_float(DIST_SIZE, 0.0)
+
+// render
+if barstate.islast
+    if array.size(projectionLines) > 0
+        for i = 0 to array.size(projectionLines) - 1
+            line.delete(array.get(projectionLines, i))
+        array.clear(projectionLines)
+
+    if array.size(markerLines) > 0
+        for i = 0 to array.size(markerLines) - 1
+            line.delete(array.get(markerLines, i))
+        array.clear(markerLines)
+
+    if array.size(markerLabels) > 0
+        for i = 0 to array.size(markerLabels) - 1
+            label.delete(array.get(markerLabels, i))
+        array.clear(markerLabels)
+
+    table.clear(summary, 0, 0, 6, 12)
+    table.clear(detail, 0, 0, 1, 15)
+    table.clear(rates, 0, 0, 3, 14)
+
+    array.fill(dist, 0.0)
+    array.set(dist, DIST_CENTER, 1.0)
+    array.fill(selectedDist, 0.0)
+
+    color headerBg = color.new(expectedColor, 72)
+    color mutedBg = color.new(color.gray, 92)
+
+    if showMeetingMarkers
+        for serial = MARKER_START_SERIAL to MARKER_END_SERIAL
+            int my = f_year(serial)
+            int mm = f_month(serial)
+            int md = f_meetingDay(my, mm)
+
+            if md > 0
+                int markerTs = timestamp("America/New_York", my, mm, md, 14, 0)
+                array.push(markerLines, line.new(x1 = markerTs, y1 = 0.0, x2 = markerTs, y2 = 1.0, xloc = xloc.bar_time, extend = extend.both, color = color.new(meetingColor, 35), style = line.style_dotted, width = 1, force_overlay = true))
+
+                if showMeetingLabels
+                    array.push(markerLabels, label.new(x = markerTs, y = high, text = f_monthName(mm) + " FOMC", xloc = xloc.bar_time, yloc = yloc.price, color = color.new(meetingColor, 78), style = label.style_label_down, textcolor = color.white, size = size.small, force_overlay = true))
+
+    table.cell(summary, 0, 0, "Meeting", text_color = color.white, bgcolor = headerBg, text_size = size.normal)
+    table.cell(summary, 1, 0, "Most likely", text_color = color.white, bgcolor = headerBg, text_size = size.normal)
+    table.cell(summary, 2, 0, "Prob", text_color = color.white, bgcolor = headerBg, text_size = size.normal)
+    table.cell(summary, 3, 0, "Cut", text_color = color.white, bgcolor = headerBg, text_size = size.normal)
+    table.cell(summary, 4, 0, "Hold", text_color = color.white, bgcolor = headerBg, text_size = size.normal)
+    table.cell(summary, 5, 0, "Hike", text_color = color.white, bgcolor = headerBg, text_size = size.normal)
+    table.cell(summary, 6, 0, "Expected", text_color = color.white, bgcolor = headerBg, text_size = size.normal)
+
+    string selectedName = ""
+    bool selectedValid = false
+    int upcomingCount = 0
+
+    int prevX = timenow
+    float prevExpected = ffMid
+    float prevMode = ffMid
+    int lastPathX = timenow
+
+    int repricingCount = 0
+    float next3CurrentSteps = 0.0
+    float next3PrevSteps = 0.0
+    float repricingBp = na
+
+    bool pricedMovesFound = false
+    float pricedMovesSteps = na
+    string pricedMovesMeeting = ""
+
+    for serial = BASE_SERIAL to LAST_MEETING_SER
+        int y = f_year(serial)
+        int m = f_month(serial)
+        int d = f_meetingDay(y, m)
+
+        if d > 0
+            int meetingTs = timestamp("America/New_York", y, m, d, 14, 0)
+
+            if meetingTs >= timenow
+                [startRate, endRate] = f_meetingRates(serial, avgRates)
+                [prevStartRate, prevEndRate] = f_meetingRates(serial, avgRatesPrev)
+
+                if not na(startRate) and not na(endRate)
+                    upcomingCount += 1
+
+                    float expectedLocalSteps = (endRate - startRate) / STEP
+                    float nearestInteger = math.round(expectedLocalSteps)
+                    bool exactInteger = math.abs(expectedLocalSteps - nearestInteger) < 0.000001
+
+                    int loStep = exactInteger ? int(nearestInteger) : int(math.floor(expectedLocalSteps))
+                    int hiStep = exactInteger ? int(nearestInteger) : int(math.ceil(expectedLocalSteps))
+                    float pLo = exactInteger ? 1.0 : math.max(0.0, math.min(1.0, hiStep - expectedLocalSteps))
+                    float pHi = exactInteger ? 0.0 : math.max(0.0, math.min(1.0, expectedLocalSteps - loStep))
+
+                    array<float> nextDist = array.new_float(DIST_SIZE, 0.0)
+
+                    for j = 0 to DIST_SIZE - 1
+                        float p = array.get(dist, j)
+
+                        if p > 0.0
+                            int idxLo = j + loStep
+                            int idxHi = j + hiStep
+
+                            if idxLo >= 0 and idxLo < DIST_SIZE
+                                array.set(nextDist, idxLo, array.get(nextDist, idxLo) + p * pLo)
+
+                            if pHi > 0.0 and idxHi >= 0 and idxHi < DIST_SIZE
+                                array.set(nextDist, idxHi, array.get(nextDist, idxHi) + p * pHi)
+
+                    for j = 0 to DIST_SIZE - 1
+                        array.set(dist, j, array.get(nextDist, j))
+
+                    float cutP = 0.0
+                    float holdP = 0.0
+                    float hikeP = 0.0
+                    float maxP = -1.0
+                    float expectedCumSteps = 0.0
+                    int modeStep = 0
+
+                    for j = 0 to DIST_SIZE - 1
+                        float p = array.get(dist, j)
+                        int stepFromNow = j - DIST_CENTER
+
+                        expectedCumSteps += stepFromNow * p
+
+                        if stepFromNow < 0
+                            cutP += p
+                        else if stepFromNow == 0
+                            holdP += p
+                        else
+                            hikeP += p
+
+                        if p > maxP
+                            maxP := p
+                            modeStep := stepFromNow
+
+                    float modeLower = ffLower + modeStep * STEP
+                    float modeUpper = ffUpper + modeStep * STEP
+                    float expectedMid = ffMid + expectedCumSteps * STEP
+                    float modeMid = ffMid + modeStep * STEP
+
+                    if repricingCount < 3 and not na(prevStartRate) and not na(prevEndRate)
+                        next3CurrentSteps += expectedLocalSteps
+                        next3PrevSteps += (prevEndRate - prevStartRate) / STEP
+                        repricingCount += 1
+
+                        if repricingCount == 3
+                            repricingBp := (next3CurrentSteps - next3PrevSteps) * 25.0
+
+                    if not pricedMovesFound and m == 12
+                        pricedMovesFound := true
+                        pricedMovesSteps := expectedCumSteps
+                        pricedMovesMeeting := f_monthName(m) + " " + str.tostring(y)
+
+                    int row = upcomingCount
+                    bool isSelected = upcomingCount == selectedMeeting
+                    color rowBg = isSelected ? color.new(expectedColor, 82) : mutedBg
+
+                    table.cell(summary, 0, row, f_meetingLabel(y, m, d), text_color = color.white, bgcolor = rowBg, text_size = size.normal)
+                    table.cell(summary, 1, row, f_range(modeLower, modeUpper), text_color = color.white, bgcolor = rowBg, text_size = size.normal)
+                    table.cell(summary, 2, row, f_prob(maxP), text_color = color.white, bgcolor = rowBg, text_size = size.normal)
+                    table.cell(summary, 3, row, f_prob(cutP), text_color = color.white, bgcolor = rowBg, text_size = size.normal)
+                    table.cell(summary, 4, row, f_prob(holdP), text_color = color.white, bgcolor = rowBg, text_size = size.normal)
+                    table.cell(summary, 5, row, f_prob(hikeP), text_color = color.white, bgcolor = rowBg, text_size = size.normal)
+                    table.cell(summary, 6, row, f_rate(expectedMid), text_color = color.white, bgcolor = rowBg, text_size = size.normal)
+
+                    if isSelected
+                        selectedName := f_meetingLabel(y, m, d)
+                        selectedValid := true
+
+                        for j = 0 to DIST_SIZE - 1
+                            array.set(selectedDist, j, array.get(dist, j))
+
+                    if showExpectedPath and not na(prevExpected)
+                        array.push(projectionLines, line.new(x1 = prevX, y1 = prevExpected, x2 = meetingTs, y2 = prevExpected, xloc = xloc.bar_time, color = expectedColor, width = 2))
+                        array.push(projectionLines, line.new(x1 = meetingTs, y1 = prevExpected, x2 = meetingTs, y2 = expectedMid, xloc = xloc.bar_time, color = expectedColor, width = 2))
+
+                    if showModePath and not na(prevMode)
+                        array.push(projectionLines, line.new(x1 = prevX, y1 = prevMode, x2 = meetingTs, y2 = prevMode, xloc = xloc.bar_time, color = modeColor, width = 1, style = line.style_dashed))
+                        array.push(projectionLines, line.new(x1 = meetingTs, y1 = prevMode, x2 = meetingTs, y2 = modeMid, xloc = xloc.bar_time, color = modeColor, width = 1, style = line.style_dashed))
+
+                    prevX := meetingTs
+                    lastPathX := meetingTs
+                    prevExpected := expectedMid
+                    prevMode := modeMid
+
+    if na(repricingBp) and repricingCount > 0
+        repricingBp := (next3CurrentSteps - next3PrevSteps) * 25.0
+
+    int extensionMs = 30 * 24 * 60 * 60 * 1000
+
+    if lastPathX > timenow
+        if showExpectedPath and not na(prevExpected)
+            array.push(projectionLines, line.new(x1 = lastPathX, y1 = prevExpected, x2 = lastPathX + extensionMs, y2 = prevExpected, xloc = xloc.bar_time, color = expectedColor, width = 2))
+
+        if showModePath and not na(prevMode)
+            array.push(projectionLines, line.new(x1 = lastPathX, y1 = prevMode, x2 = lastPathX + extensionMs, y2 = prevMode, xloc = xloc.bar_time, color = modeColor, width = 1, style = line.style_dashed))
+
+    table.cell(detail, 0, 0, selectedValid ? selectedName : "No meeting", text_color = color.white, bgcolor = headerBg, text_size = size.normal)
+    table.cell(detail, 1, 0, "Distribution", text_color = color.white, bgcolor = headerBg, text_size = size.normal)
+    table.cell(detail, 0, 1, "Target range", text_color = color.white, bgcolor = color.new(expectedColor, 82), text_size = size.normal)
+    table.cell(detail, 1, 1, "Probability", text_color = color.white, bgcolor = color.new(expectedColor, 82), text_size = size.normal)
+
+    if selectedValid
+        int detailRow = 2
+
+        for j = 0 to DIST_SIZE - 1
+            float p = array.get(selectedDist, j)
+
+            if p >= 0.0005 and detailRow < 16
+                int stepFromNow = j - DIST_CENTER
+                float lo = ffLower + stepFromNow * STEP
+                float hi = ffUpper + stepFromNow * STEP
+                int transparency = int(math.round(95.0 - math.min(1.0, p) * 65.0))
+                color probBg = color.new(expectedColor, transparency)
+
+                table.cell(detail, 0, detailRow, f_range(lo, hi), text_color = color.white, bgcolor = probBg, text_size = size.normal)
+                table.cell(detail, 1, detailRow, f_prob(p), text_color = color.white, bgcolor = probBg, text_size = size.normal)
+                detailRow += 1
+
+    if showRatesMatrix
+        color repricingBg = f_changeBg(repricingBp)
+
+        table.cell(rates, 0, 0, "FED PRICING", text_color = color.white, bgcolor = headerBg, text_size = size.normal)
+        table.cell(rates, 1, 0, "", text_color = color.white, bgcolor = headerBg, text_size = size.normal)
+        table.cell(rates, 2, 0, "", text_color = color.white, bgcolor = headerBg, text_size = size.normal)
+        table.cell(rates, 3, 0, "", text_color = color.white, bgcolor = headerBg, text_size = size.normal)
+
+        table.cell(rates, 0, 1, "Next 3 meetings", text_color = color.white, bgcolor = mutedBg, text_size = size.normal)
+        table.cell(rates, 1, 1, f_signedBp(repricingBp), text_color = color.white, bgcolor = repricingBg, text_size = size.normal)
+        table.cell(rates, 2, 1, f_pricingBias(repricingBp), text_color = color.white, bgcolor = repricingBg, text_size = size.normal)
+        table.cell(rates, 3, 1, "vs yesterday", text_color = color.silver, bgcolor = mutedBg, text_size = size.normal)
+
+        table.cell(rates, 0, 2, pricedMovesFound ? pricedMovesMeeting : "Dec meeting", text_color = color.white, bgcolor = mutedBg, text_size = size.normal)
+        table.cell(rates, 1, 2, f_movesPriced(pricedMovesSteps), text_color = color.white, bgcolor = mutedBg, text_size = size.normal)
+        table.cell(rates, 2, 2, "priced", text_color = color.silver, bgcolor = mutedBg, text_size = size.normal)
+        table.cell(rates, 3, 2, pricedMovesFound ? f_signedBp(pricedMovesSteps * 25.0) : "n/a", text_color = color.white, bgcolor = mutedBg, text_size = size.normal)
+
+        table.cell(rates, 0, 3, "UST YIELD CURVE", text_color = color.white, bgcolor = headerBg, text_size = size.normal)
+        table.cell(rates, 1, 3, "", text_color = color.white, bgcolor = headerBg, text_size = size.normal)
+        table.cell(rates, 2, 3, "", text_color = color.white, bgcolor = headerBg, text_size = size.normal)
+        table.cell(rates, 3, 3, "", text_color = color.white, bgcolor = headerBg, text_size = size.normal)
+
+        table.cell(rates, 0, 4, "Tenor", text_color = color.white, bgcolor = color.new(expectedColor, 82), text_size = size.normal)
+        table.cell(rates, 1, 4, "Yield", text_color = color.white, bgcolor = color.new(expectedColor, 82), text_size = size.normal)
+        table.cell(rates, 2, 4, "1D", text_color = color.white, bgcolor = color.new(expectedColor, 82), text_size = size.normal)
+        table.cell(rates, 3, 4, "vs EFFR", text_color = color.white, bgcolor = color.new(expectedColor, 82), text_size = size.normal)
+
+        array<string> tenorNames = array.from("3M", "6M", "1Y", "2Y", "5Y", "10Y", "30Y")
+        array<float> tenorNow = array.from(y3m, y6m, y1y, y2y, y5y, y10y, y30y)
+        array<float> tenorPrev = array.from(y3mPrev, y6mPrev, y1yPrev, y2yPrev, y5yPrev, y10yPrev, y30yPrev)
+
+        for r = 0 to 6
+            float yNow = array.get(tenorNow, r)
+            float yPrev = array.get(tenorPrev, r)
+            float d1Bp = (yNow - yPrev) * 100.0
+            float vsEffrBp = (yNow - effr) * 100.0
+            int rr = 5 + r
+            color changeBg = f_changeBg(d1Bp)
+
+            table.cell(rates, 0, rr, array.get(tenorNames, r), text_color = color.white, bgcolor = mutedBg, text_size = size.normal)
+            table.cell(rates, 1, rr, f_rate(yNow), text_color = color.white, bgcolor = mutedBg, text_size = size.normal)
+            table.cell(rates, 2, rr, f_signedBp(d1Bp), text_color = color.white, bgcolor = changeBg, text_size = size.normal)
+            table.cell(rates, 3, rr, f_spreadBp(vsEffrBp), text_color = color.white, bgcolor = mutedBg, text_size = size.normal)
+
+        float s2s10s = (y10y - y2y) * 100.0
+        float s5s30s = (y30y - y5y) * 100.0
+        float s2s10sPrev = (y10yPrev - y2yPrev) * 100.0
+        float s5s30sPrev = (y30yPrev - y5yPrev) * 100.0
+
+        table.cell(rates, 0, 12, "2s10s", text_color = color.white, bgcolor = mutedBg, text_size = size.normal)
+        table.cell(rates, 1, 12, f_spreadBp(s2s10s), text_color = color.white, bgcolor = mutedBg, text_size = size.normal)
+        table.cell(rates, 2, 12, f_signedBp(s2s10s - s2s10sPrev), text_color = color.white, bgcolor = f_changeBg(s2s10s - s2s10sPrev), text_size = size.normal)
+        table.cell(rates, 3, 12, "curve", text_color = color.silver, bgcolor = mutedBg, text_size = size.normal)
+
+        table.cell(rates, 0, 13, "5s30s", text_color = color.white, bgcolor = mutedBg, text_size = size.normal)
+        table.cell(rates, 1, 13, f_spreadBp(s5s30s), text_color = color.white, bgcolor = mutedBg, text_size = size.normal)
+        table.cell(rates, 2, 13, f_signedBp(s5s30s - s5s30sPrev), text_color = color.white, bgcolor = f_changeBg(s5s30s - s5s30sPrev), text_size = size.normal)
+        table.cell(rates, 3, 13, "curve", text_color = color.silver, bgcolor = mutedBg, text_size = size.normal)
+
+        table.cell(rates, 0, 14, "EFFR", text_color = color.white, bgcolor = color.new(effrColor, 82), text_size = size.normal)
+        table.cell(rates, 1, 14, f_rate(effr), text_color = color.white, bgcolor = color.new(effrColor, 82), text_size = size.normal)
+        table.cell(rates, 2, 14, "", text_color = color.white, bgcolor = color.new(effrColor, 82), text_size = size.normal)
+        table.cell(rates, 3, 14, "anchor", text_color = color.white, bgcolor = color.new(effrColor, 82), text_size = size.normal)

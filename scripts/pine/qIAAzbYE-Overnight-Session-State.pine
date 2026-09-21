@@ -1,0 +1,241 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0
+// International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © AlgoNorth
+//@version=6
+indicator("Overnight Session State", "OVN State", overlay=true, max_boxes_count=500, max_lines_count=500,
+  max_labels_count=500)
+
+//-----------------------------------------------------------------------------}
+// Settings
+//-----------------------------------------------------------------------------{
+GRP_EMA     = "EMA Stack"
+GRP_SESSION = "Session"
+GRP_STYLE   = "Style"
+GRP_PANEL   = "Panel"
+
+emaLen1 = input.int(20,  "EMA 1", minval=1, group=GRP_EMA, tooltip="Length of the fastest EMA in the stack.")
+emaLen2 = input.int(50,  "EMA 2", minval=1, group=GRP_EMA, tooltip="Length of the middle EMA in the stack.")
+emaLen3 = input.int(100, "EMA 3", minval=1, group=GRP_EMA, tooltip="Length of the slowest EMA in the stack.")
+showEma = input.bool(true, "Show EMA stack", group=GRP_EMA, tooltip="Plot the three EMAs on the chart.")
+emaAuto = input.bool(true, "EMA colours follow chart theme", group=GRP_EMA,
+  tooltip="Draw the EMAs in the chart foreground colour at 20, 45 and 65 transparency; off uses the colours below.")
+colEma1 = input.color(#b2b5be, "EMA 1 colour", group=GRP_EMA,
+  tooltip="Colour of the fastest EMA line when the theme option is off.")
+colEma2 = input.color(#787b86, "EMA 2 colour", group=GRP_EMA,
+  tooltip="Colour of the middle EMA line when the theme option is off.")
+colEma3 = input.color(#50535e, "EMA 3 colour", group=GRP_EMA,
+  tooltip="Colour of the slowest EMA line when the theme option is off.")
+
+sessionTz  = input.string("America/New_York", "Session timezone", group=GRP_SESSION,
+  tooltip="Time zone in which the entry and exit hours are read.")
+entryHour  = input.int(16, "Entry hour Mon–Thu", minval=0, maxval=23, group=GRP_SESSION,
+  tooltip="Hour of the bar that opens the overnight segment from Monday to Thursday.")
+sundayHour = input.int(18, "Entry hour Sunday", minval=0, maxval=23, group=GRP_SESSION,
+  tooltip="Hour of the bar that opens the overnight segment on Sunday.")
+exitHour   = input.int(7, "Exit bar hour", minval=0, maxval=23, group=GRP_SESSION,
+  tooltip="Hour of the first bar whose close ends the segment.")
+maxHours   = input.int(16, "Drop segment if no exit within (h)", minval=1, group=GRP_SESSION,
+  tooltip="Segments that reach no exit bar within this many hours are discarded.")
+
+colPaid   = input.color(#089981, "Night paid", group=GRP_STYLE,
+  tooltip="Colour of a segment whose running close is above the entry open.")
+colLost   = input.color(#f23645, "Night lost", group=GRP_STYLE,
+  tooltip="Colour of a segment whose running close is at or below the entry open.")
+boxTransp = input.int(80, "Box transparency", minval=0, maxval=100, group=GRP_STYLE,
+  tooltip="Transparency of the range box fill, from 0 (opaque) to 100 (invisible).")
+showGlyph = input.bool(true, "Show state glyph", group=GRP_STYLE,
+  tooltip="Draw ▲, ▼ or • on the top edge of each box for the state at entry.")
+
+showPanel = input.bool(true, "Show panel", group=GRP_PANEL, tooltip="Show the statistics panel.")
+panelPos  = input.string("Top Right", "Corner", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"],
+  group=GRP_PANEL, tooltip="Corner of the chart where the panel is drawn.")
+
+MAX_NIGHTS  = 240
+GLYPH_ABOVE = "▲"
+GLYPH_BELOW = "▼"
+GLYPH_MIXED = "•"
+
+COL_PANEL_BG  = #0b0f14
+COL_HEADER_BG = #161c25
+COL_FRAME     = #787b86
+COL_BORDER    = #2a2e39
+COL_TEXT      = #d1d4dc
+COL_MUTED     = #787b86
+
+colText = chart.fg_color
+
+//-----------------------------------------------------------------------------}
+// Calculations
+//-----------------------------------------------------------------------------{
+if timeframe.in_seconds() > 3600
+    runtime.error("Use a chart timeframe of 1 hour or lower.")
+
+ema1 = ta.ema(close, emaLen1)
+ema2 = ta.ema(close, emaLen2)
+ema3 = ta.ema(close, emaLen3)
+
+emaCol1 = emaAuto ? color.new(chart.fg_color, 20) : colEma1
+emaCol2 = emaAuto ? color.new(chart.fg_color, 45) : colEma2
+emaCol3 = emaAuto ? color.new(chart.fg_color, 65) : colEma3
+
+plot(showEma ? ema1 : na, "EMA 1", emaCol1, 1)
+plot(showEma ? ema2 : na, "EMA 2", emaCol2, 1)
+plot(showEma ? ema3 : na, "EMA 3", emaCol3, 1)
+
+liveAbove = close > ema1 and close > ema2 and close > ema3
+liveBelow = close < ema1 and close < ema2 and close < ema3
+
+barHour     = hour(time, sessionTz)
+barDay      = dayofweek(time, sessionTz)
+isMonToThu  = barDay >= dayofweek.monday and barDay <= dayofweek.thursday
+entryHourOk = (isMonToThu and barHour == entryHour) or (barDay == dayofweek.sunday and barHour == sundayHour)
+sameHour    = barHour == barHour[1] and barDay == barDay[1]
+emaReady    = not na(ema1[1]) and not na(ema2[1]) and not na(ema3[1])
+isEntry     = entryHourOk and not sameHour and emaReady
+
+entryAbove = open > ema1[1] and open > ema2[1] and open > ema3[1]
+entryBelow = open < ema1[1] and open < ema2[1] and open < ema3[1]
+stateIdx   = entryAbove ? 0 : entryBelow ? 1 : 2
+
+//-----------------------------------------------------------------------------}
+// Overnight segments
+//-----------------------------------------------------------------------------{
+var box   segBox    = na
+var line  entryLine = na
+var line  exitLine  = na
+var label stateLbl  = na
+var float segHigh   = na
+var float segLow    = na
+var float entryPx   = na
+var int   entryTime = na
+var int   entryBar  = na
+var int   segState  = -1
+
+var segBoxes    = array.new<box>()
+var entryLines  = array.new<line>()
+var exitLines   = array.new<line>()
+var stateLabels = array.new<label>()
+
+var nights   = array.new_int(3, 0)
+var driftSum = array.new_float(3, 0.0)
+var rangeSum = array.new_float(3, 0.0)
+var winCount = array.new_int(3, 0)
+
+if isEntry
+    if not na(segBox)
+        box.delete(segBox)
+        line.delete(entryLine)
+        line.delete(exitLine)
+        if not na(stateLbl)
+            label.delete(stateLbl)
+    segState  := stateIdx
+    segHigh   := high
+    segLow    := low
+    entryPx   := open
+    entryTime := time
+    entryBar  := bar_index
+    entryCol   = close > entryPx ? colPaid : colLost
+    glyph      = stateIdx == 0 ? GLYPH_ABOVE : stateIdx == 1 ? GLYPH_BELOW : GLYPH_MIXED
+    segBox    := box.new(bar_index, segHigh, bar_index, segLow, xloc=xloc.bar_index, border_color=na,
+      bgcolor=color.new(entryCol, boxTransp))
+    entryLine := line.new(bar_index, entryPx, bar_index, entryPx, xloc=xloc.bar_index, color=entryCol,
+      style=line.style_solid, width=1)
+    exitLine  := line.new(bar_index, close, bar_index, close, xloc=xloc.bar_index, color=entryCol,
+      style=line.style_dashed, width=1)
+    stateLbl  := showGlyph ? label.new(bar_index, segHigh, glyph, xloc=xloc.bar_index, yloc=yloc.price,
+      style=label.style_none, textcolor=colText, size=size.small) : na
+else if not na(segBox)
+    if time - entryTime > maxHours * 3600000
+        box.delete(segBox)
+        line.delete(entryLine)
+        line.delete(exitLine)
+        if not na(stateLbl)
+            label.delete(stateLbl)
+        segBox   := na
+        segState := -1
+    else
+        segHigh := math.max(segHigh, high)
+        segLow  := math.min(segLow, low)
+        segCol   = close > entryPx ? colPaid : colLost
+        box.set_top(segBox, segHigh)
+        box.set_bottom(segBox, segLow)
+        box.set_right(segBox, bar_index)
+        box.set_bgcolor(segBox, color.new(segCol, boxTransp))
+        line.set_x2(entryLine, bar_index)
+        line.set_color(entryLine, segCol)
+        line.set_x2(exitLine, bar_index)
+        line.set_y1(exitLine, close)
+        line.set_y2(exitLine, close)
+        line.set_color(exitLine, segCol)
+        if not na(stateLbl)
+            label.set_y(stateLbl, segHigh)
+            label.set_x(stateLbl, math.round((entryBar + bar_index) / 2.0))
+        if barHour == exitHour
+            if entryPx > 0
+                driftBp = (close - entryPx) / entryPx * 10000
+                rangeBp = (segHigh - segLow) / entryPx * 10000
+                array.set(nights, segState, array.get(nights, segState) + 1)
+                array.set(driftSum, segState, array.get(driftSum, segState) + driftBp)
+                array.set(rangeSum, segState, array.get(rangeSum, segState) + rangeBp)
+                if driftBp > 0
+                    array.set(winCount, segState, array.get(winCount, segState) + 1)
+            array.push(segBoxes, segBox)
+            array.push(entryLines, entryLine)
+            array.push(exitLines, exitLine)
+            if not na(stateLbl)
+                array.push(stateLabels, stateLbl)
+            if array.size(segBoxes) > MAX_NIGHTS
+                box.delete(array.shift(segBoxes))
+                line.delete(array.shift(entryLines))
+                line.delete(array.shift(exitLines))
+            if array.size(stateLabels) > MAX_NIGHTS
+                label.delete(array.shift(stateLabels))
+            segBox   := na
+            segState := -1
+
+//-----------------------------------------------------------------------------}
+// Panel
+//-----------------------------------------------------------------------------{
+panelCorner = panelPos == "Top Right" ? position.top_right : panelPos == "Top Left" ? position.top_left
+  : panelPos == "Bottom Right" ? position.bottom_right : position.bottom_left
+var panel = table.new(panelCorner, 5, 7, bgcolor=COL_PANEL_BG, frame_color=COL_FRAME, frame_width=1,
+  border_color=COL_BORDER, border_width=0)
+
+panelRow(row, name, idx) =>
+    n         = array.get(nights, idx)
+    meanDrift = n > 0 ? array.get(driftSum, idx) / n : na
+    meanRange = n > 0 ? array.get(rangeSum, idx) / n : na
+    winRate   = n > 0 ? array.get(winCount, idx) / n * 100 : na
+    driftTxt  = na(meanDrift) ? "-" : (meanDrift >= 0 ? "+" : "") + str.tostring(meanDrift, "#.0")
+    driftCol  = na(meanDrift) ? COL_MUTED : meanDrift > 0 ? colPaid : colLost
+    winTxt    = na(winRate) ? "-" : str.tostring(winRate, "#") + "%"
+    rangeTxt  = na(meanRange) ? "-" : str.tostring(meanRange, "#")
+    table.cell(panel, 0, row, name, text_color=COL_TEXT, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(panel, 1, row, str.tostring(n), text_color=COL_TEXT, text_size=size.tiny)
+    table.cell(panel, 2, row, driftTxt, text_color=driftCol, text_size=size.tiny)
+    table.cell(panel, 3, row, winTxt, text_color=COL_TEXT, text_size=size.tiny)
+    table.cell(panel, 4, row, rangeTxt, text_color=COL_TEXT, text_size=size.tiny)
+
+if showPanel and barstate.islast
+    header = "OVN STATE · EMA " + str.tostring(emaLen1) + "/" + str.tostring(emaLen2) + "/" + str.tostring(emaLen3)
+      + " · " + str.tostring(entryHour) + ":00→" + str.tostring(exitHour) + ":00 " + sessionTz
+    nowTxt = liveAbove ? GLYPH_ABOVE + " ABOVE" : liveBelow ? GLYPH_BELOW + " BELOW" : GLYPH_MIXED + " MIXED"
+    footer = "Loaded history · last bar " + str.format_time(time, "dd MMM HH:mm", sessionTz) + " " + sessionTz
+    table.cell(panel, 0, 0, header, text_color=COL_TEXT, text_size=size.small, text_halign=text.align_left,
+      bgcolor=COL_HEADER_BG)
+    table.merge_cells(panel, 0, 0, 4, 0)
+    table.cell(panel, 0, 1, "Now", text_color=COL_MUTED, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(panel, 1, 1, nowTxt, text_color=COL_TEXT, text_size=size.tiny, text_halign=text.align_left)
+    table.merge_cells(panel, 1, 1, 4, 1)
+    table.cell(panel, 0, 2, "State", text_color=COL_MUTED, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(panel, 1, 2, "Nights", text_color=COL_MUTED, text_size=size.tiny)
+    table.cell(panel, 2, 2, "Drift bp", text_color=COL_MUTED, text_size=size.tiny)
+    table.cell(panel, 3, 2, "Win", text_color=COL_MUTED, text_size=size.tiny)
+    table.cell(panel, 4, 2, "Range bp", text_color=COL_MUTED, text_size=size.tiny)
+    panelRow(3, GLYPH_ABOVE + " ABOVE", 0)
+    panelRow(4, GLYPH_BELOW + " BELOW", 1)
+    panelRow(5, GLYPH_MIXED + " MIXED", 2)
+    table.cell(panel, 0, 6, footer, text_color=COL_MUTED, text_size=size.tiny, text_halign=text.align_left)
+    table.merge_cells(panel, 0, 6, 4, 6)
+
+//-----------------------------------------------------------------------------}

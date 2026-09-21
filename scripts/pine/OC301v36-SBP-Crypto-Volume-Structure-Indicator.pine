@@ -1,0 +1,220 @@
+//@version=6
+indicator("SBP Crypto Volume Structure Indicator", overlay=true, max_bars_back=600)
+string G_PROFILE = "1. Inputs — Crypto Profile"
+string G_VISIBILITY = "2. Inputs — Visibility"
+string G_COLOURS = "3. Inputs — Colours"
+string cryptoProfile = input.string("Automatic", "Crypto Profile", options=["Automatic", "Bitcoin", "Ethereum", "Solana", "XRP", "BNB", "Dogecoin", "Cardano", "Avalanche", "Chainlink", "Sui", "Hyperliquid", "Zcash", "NEAR", "Uniswap", "Bitcoin Cash", "TRON", "Litecoin", "PEPE", "Gold-Backed", "Altcoin"], group=G_PROFILE)
+int structureLength = input.int(180, "Rolling Structure Bars", minval=60, maxval=360, group=G_PROFILE)
+bool showSignals = input.bool(true, "Show Buy / Sale", group=G_VISIBILITY)
+bool showRibbon = input.bool(true, "Show Bull / Bear Cloud", group=G_VISIBILITY)
+bool showValueChannel = input.bool(true, "Show No Trade Zone Cloud", group=G_VISIBILITY)
+color bullRibbonColor = input.color(color.new(color.blue, 55), "Bull Cloud", group=G_COLOURS)
+color bearRibbonColor = input.color(color.new(color.red, 55), "Bear Cloud", group=G_COLOURS)
+color bullValueColor = input.color(color.new(color.green, 84), "No Trade Zone Bull Colour", group=G_COLOURS)
+color bearValueColor = input.color(color.new(color.orange, 84), "No Trade Zone Bear Colour", group=G_COLOURS)
+f_clamp(float value, float lower, float upper) =>
+    math.max(lower, math.min(upper, value))
+f_ratio(float numerator, float denominator) =>
+    math.abs(denominator) > 0.0000001 ? numerator / denominator : 0.0
+f_profile_scale(string selected) =>
+    string tickerText = str.upper(syminfo.ticker)
+    bool isBtc = str.contains(tickerText, "BTC") and not str.contains(tickerText, "BCH")
+    bool isEth = str.contains(tickerText, "ETH")
+    bool isSol = str.contains(tickerText, "SOL")
+    bool isXrp = str.contains(tickerText, "XRP")
+    bool isBnb = str.contains(tickerText, "BNB")
+    bool isDoge = str.contains(tickerText, "DOGE")
+    bool isAda = str.contains(tickerText, "ADA")
+    bool isAvax = str.contains(tickerText, "AVAX")
+    bool isLink = str.contains(tickerText, "LINK")
+    bool isSui = str.contains(tickerText, "SUI")
+    bool isHype = str.contains(tickerText, "HYPE")
+    bool isZec = str.contains(tickerText, "ZEC")
+    bool isNear = str.contains(tickerText, "NEAR")
+    bool isUni = str.contains(tickerText, "UNI")
+    bool isBch = str.contains(tickerText, "BCH")
+    bool isTrx = str.contains(tickerText, "TRX")
+    bool isLtc = str.contains(tickerText, "LTC")
+    bool isPepe = str.contains(tickerText, "PEPE")
+    bool isGold = str.contains(tickerText, "PAXG") or str.contains(tickerText, "XAUT")
+    float automatic = isBtc ? 1.00 : isEth ? 1.04 : isSol ? 1.14 : isXrp ? 1.12 : isBnb ? 1.06 : isDoge ? 1.20 : isAda ? 1.16 : isAvax ? 1.18 : isLink ? 1.12 : isSui ? 1.22 : isHype ? 1.24 : isZec ? 1.25 : isNear ? 1.19 : isUni ? 1.17 : isBch ? 1.13 : isTrx ? 1.07 : isLtc ? 1.10 : isPepe ? 1.28 : isGold ? 0.82 : 1.20
+    selected == "Bitcoin" ? 1.00 : selected == "Ethereum" ? 1.04 : selected == "Solana" ? 1.14 : selected == "XRP" ? 1.12 : selected == "BNB" ? 1.06 : selected == "Dogecoin" ? 1.20 : selected == "Cardano" ? 1.16 : selected == "Avalanche" ? 1.18 : selected == "Chainlink" ? 1.12 : selected == "Sui" ? 1.22 : selected == "Hyperliquid" ? 1.24 : selected == "Zcash" ? 1.25 : selected == "NEAR" ? 1.19 : selected == "Uniswap" ? 1.17 : selected == "Bitcoin Cash" ? 1.13 : selected == "TRON" ? 1.07 : selected == "Litecoin" ? 1.10 : selected == "PEPE" ? 1.28 : selected == "Gold-Backed" ? 0.82 : selected == "Altcoin" ? 1.20 : automatic
+bool confirmed = barstate.isconfirmed
+float profileScale = f_profile_scale(cryptoProfile)
+float atr = math.max(ta.atr(14), syminfo.mintick)
+float priceRange = math.max(high - low, syminfo.mintick)
+float body = math.abs(close - open)
+float bodyRatio = body / priceRange
+float closeLocation = f_clamp((close - low) / priceRange, 0.0, 1.0)
+float upperWick = high - math.max(open, close)
+float lowerWick = math.min(open, close) - low
+float effectiveVolume = na(volume) or volume <= 0.0 ? 1.0 : volume
+float volumeAverage = ta.sma(effectiveVolume, 20)
+float relativeVolume = volumeAverage > 0.0 ? effectiveVolume / volumeAverage : 1.0
+float volumeCenterRaw = ta.vwma(hlc3, structureLength)
+float volumeCenter = nz(volumeCenterRaw, ta.ema(hlc3, structureLength))
+float deviationRaw = ta.stdev(hlc3, structureLength)
+float deviation = math.max(nz(deviationRaw, atr), atr * 0.55)
+float signedVolume = effectiveVolume * ((closeLocation - 0.50) * 2.0)
+float participationBase = ta.ema(effectiveVolume, 14)
+float participation = f_clamp(f_ratio(ta.ema(signedVolume, 14), participationBase), -1.0, 1.0)
+float centerSlope = f_clamp(f_ratio(volumeCenter - volumeCenter[1], atr), -1.0, 1.0)
+float displacement = f_clamp(f_ratio(close - volumeCenter, deviation), -1.0, 1.0)
+float direction = participation * 0.45 + centerSlope * 0.30 + displacement * 0.25
+float control = volumeCenter + deviation * participation * 0.32
+float controlHalf = math.max(deviation * 0.20, atr * 0.18 * profileScale)
+float controlUpper = control + controlHalf
+float controlLower = control - controlHalf
+float outerUpper = volumeCenter + deviation * 1.80 * profileScale
+float outerLower = volumeCenter - deviation * 1.80 * profileScale
+float valueHalf = math.max(deviation * 0.55, atr * 0.48 * profileScale)
+float valueUpper = volumeCenter + valueHalf
+float valueLower = volumeCenter - valueHalf
+bool newDay = timeframe.change("D")
+var float sessionControl = na
+var float sessionControlUpper = na
+var float sessionControlLower = na
+var float sessionOuterUpper = na
+var float sessionOuterLower = na
+if confirmed and (newDay or na(sessionControl))
+    sessionControl := control
+    sessionControlUpper := controlUpper
+    sessionControlLower := controlLower
+    sessionOuterUpper := outerUpper
+    sessionOuterLower := outerLower
+float ribbonBasis = ta.ema(hlc3, 7)
+float ribbonSlope = f_ratio(ribbonBasis - ribbonBasis[1], atr)
+bool ribbonBullRaw = direction >= 0.12 and ribbonSlope >= -0.01 and close >= volumeCenter
+bool ribbonBearRaw = direction <= -0.12 and ribbonSlope <= 0.01 and close <= volumeCenter
+bool ribbonBull = confirmed and ribbonBullRaw and ribbonBullRaw[1]
+bool ribbonBear = confirmed and ribbonBearRaw and ribbonBearRaw[1]
+float ribbonWidthRaw = math.max(atr * 0.72, math.abs(close - ribbonBasis) * 0.92)
+float ribbonWidth = math.min(ribbonWidthRaw, atr * 1.55)
+float ribbonUpper = ribbonBull ? ribbonBasis + ribbonWidth : ribbonBear ? ribbonBasis : na
+float ribbonLower = ribbonBull ? ribbonBasis : ribbonBear ? ribbonBasis - ribbonWidth : na
+float trendRaw = ta.ema((close * 7.0 + close[1] * 6.0 + close[2] * 5.0 + close[3] * 4.0 + close[4] * 3.0 + close[5] * 2.0 + close[6]) / 28.0, 3)
+float trendLine = ta.ema(trendRaw, 3)
+float trendSlope = f_ratio(trendLine - trendLine[1], atr)
+bool trendBullEvidence = close > trendLine + atr * 0.03 and trendSlope >= 0.012
+bool trendBearEvidence = close < trendLine - atr * 0.03 and trendSlope <= -0.012
+var int trendState = 1
+var int trendCandidate = 0
+var int trendBars = 0
+if confirmed
+    int requestedTrend = trendBullEvidence ? 1 : trendBearEvidence ? -1 : 0
+    if requestedTrend == 0 or requestedTrend == trendState
+        trendCandidate := 0
+        trendBars := 0
+    else
+        if requestedTrend == trendCandidate
+            trendBars += 1
+        else
+            trendCandidate := requestedTrend
+            trendBars := 1
+        if trendBars >= 2
+            trendState := trendCandidate
+            trendCandidate := 0
+            trendBars := 0
+float fastRibbon = ta.ema(ta.ema(hlc3, 13), 2)
+float slowRibbon = ta.ema(ta.ema(hlc3, 34), 2)
+float momentum = ta.ema(close, 5) - ta.ema(close, 21)
+float priorLow = ta.lowest(low[1], 5)
+float priorHigh = ta.highest(high[1], 5)
+float breakHigh = ta.highest(high[1], 2)
+float breakLow = ta.lowest(low[1], 2)
+float turnHigh = ta.highest(high, 10)
+float turnLow = ta.lowest(low, 10)
+int highAge = math.abs(ta.highestbars(high, 10))
+int lowAge = math.abs(ta.lowestbars(low, 10))
+bool bullSweep = confirmed and low < priorLow and close > priorLow
+bool bearSweep = confirmed and high > priorHigh and close < priorHigh
+bool bullBreak = confirmed and close > breakHigh and close > open
+bool bearBreak = confirmed and close < breakLow and close < open
+bool participationPass = relativeVolume >= (profileScale >= 1.20 ? 0.92 : 0.98)
+bool compressed = valueHalf < atr * 0.42
+bool bullAcceptance = confirmed and close > valueUpper and close > sessionControlUpper and direction >= 0.14 and bodyRatio >= 0.34 and closeLocation >= 0.62
+bool bearAcceptance = confirmed and close < valueLower and close < sessionControlLower and direction <= -0.14 and bodyRatio >= 0.34 and closeLocation <= 0.38
+bool bullReclaim = confirmed and low <= sessionControlLower and close > sessionControlUpper and direction >= 0.16 and lowerWick > upperWick and bodyRatio >= 0.28
+bool bearReclaim = confirmed and high >= sessionControlUpper and close < sessionControlLower and direction <= -0.16 and upperWick > lowerWick and bodyRatio >= 0.28
+bool bullLiquidity = bullSweep and bullBreak and participationPass and direction >= 0.12 and close > sessionControl
+bool bearLiquidity = bearSweep and bearBreak and participationPass and direction <= -0.12 and close < sessionControl
+bool rejectBuy = high >= sessionOuterUpper and close < sessionOuterUpper
+bool rejectSale = low <= sessionOuterLower and close > sessionOuterLower
+int bullVotes = 0
+int bearVotes = 0
+bullVotes += close > open ? 1 : 0
+bullVotes += close > close[1] ? 1 : 0
+bullVotes += momentum > momentum[1] ? 1 : 0
+bullVotes += fastRibbon > slowRibbon ? 1 : 0
+bullVotes += ribbonBull ? 1 : 0
+bullVotes += trendState == 1 ? 1 : 0
+bullVotes += lowerWick > body ? 1 : 0
+bullVotes += direction > 0.0 ? 1 : 0
+bearVotes += close < open ? 1 : 0
+bearVotes += close < close[1] ? 1 : 0
+bearVotes += momentum < momentum[1] ? 1 : 0
+bearVotes += fastRibbon < slowRibbon ? 1 : 0
+bearVotes += ribbonBear ? 1 : 0
+bearVotes += trendState == -1 ? 1 : 0
+bearVotes += upperWick > body ? 1 : 0
+bearVotes += direction < 0.0 ? 1 : 0
+bool structureBuy = (bullAcceptance or bullReclaim or bullLiquidity) and not rejectBuy and bullVotes >= 6
+bool structureSale = (bearAcceptance or bearReclaim or bearLiquidity) and not rejectSale and bearVotes >= 6
+float turnRangeAtr = f_ratio(turnHigh - turnLow, atr)
+float riseAtr = f_ratio(close - turnLow, atr)
+float dropAtr = f_ratio(turnHigh - close, atr)
+bool rawTurnBuy = confirmed and turnRangeAtr >= 1.10 and lowAge >= 1 and lowAge <= 7 and riseAtr >= 0.24 and bullVotes >= 5 and (bullBreak or bullSweep) and not compressed
+bool rawTurnSale = confirmed and turnRangeAtr >= 1.10 and highAge >= 1 and highAge <= 7 and dropAtr >= 0.24 and bearVotes >= 5 and (bearBreak or bearSweep) and not compressed
+var int turnBuyBars = 0
+var int turnSaleBars = 0
+if confirmed
+    turnBuyBars := rawTurnBuy and not rawTurnSale ? turnBuyBars + 1 : 0
+    turnSaleBars := rawTurnSale and not rawTurnBuy ? turnSaleBars + 1 : 0
+bool turnBuy = turnBuyBars == 2
+bool turnSale = turnSaleBars == 2
+bool ribbonBuy = ribbonBull and not ribbonBull[1] and trendState == 1 and direction >= 0.11 and close > volumeCenter
+bool ribbonSale = ribbonBear and not ribbonBear[1] and trendState == -1 and direction <= -0.11 and close < volumeCenter
+bool trendBuy = trendState == 1 and trendState[1] == -1 and ribbonBull and direction >= 0.10
+bool trendSale = trendState == -1 and trendState[1] == 1 and ribbonBear and direction <= -0.10
+bool integratedBuy = confirmed and close > open and close > trendLine and close > volumeCenter and fastRibbon > slowRibbon and momentum > momentum[1] and bullVotes >= 6 and not compressed
+bool integratedSale = confirmed and close < open and close < trendLine and close < volumeCenter and fastRibbon < slowRibbon and momentum < momentum[1] and bearVotes >= 6 and not compressed
+bool buyRequest = confirmed and close > open and (structureBuy or turnBuy or ribbonBuy or trendBuy or integratedBuy)
+bool saleRequest = confirmed and close < open and (structureSale or turnSale or ribbonSale or trendSale or integratedSale)
+if buyRequest and saleRequest
+    if bullVotes > bearVotes
+        saleRequest := false
+    else if bearVotes > bullVotes
+        buyRequest := false
+    else
+        buyRequest := false
+        saleRequest := false
+var int signalDirection = 0
+bool finalBuy = false
+bool finalSale = false
+if confirmed
+    if signalDirection == 0
+        if buyRequest and not saleRequest
+            finalBuy := true
+            signalDirection := 1
+        else if saleRequest and not buyRequest
+            finalSale := true
+            signalDirection := -1
+    else if signalDirection == 1 and saleRequest
+        finalSale := true
+        signalDirection := -1
+    else if signalDirection == -1 and buyRequest
+        finalBuy := true
+        signalDirection := 1
+color valueColor = close >= volumeCenter ? bullValueColor : bearValueColor
+valueUpperPlot = plot(showValueChannel ? valueUpper : na, "No Trade Zone Upper", color=color.new(color.gray, 100), editable=false)
+valueLowerPlot = plot(showValueChannel ? valueLower : na, "No Trade Zone Lower", color=color.new(color.gray, 100), editable=false)
+fill(valueUpperPlot, valueLowerPlot, color=showValueChannel ? valueColor : na, title="No Trade Zone Cloud", editable=false)
+ribbonUpperPlot = plot(showRibbon ? ribbonUpper : na, "Cloud Upper", color=color.new(color.gray, 100), editable=false)
+ribbonLowerPlot = plot(showRibbon ? ribbonLower : na, "Cloud Lower", color=color.new(color.gray, 100), editable=false)
+fill(ribbonUpperPlot, ribbonLowerPlot, color=showRibbon and ribbonBull ? bullRibbonColor : na, title="Bull Cloud", editable=false)
+fill(ribbonUpperPlot, ribbonLowerPlot, color=showRibbon and ribbonBear ? bearRibbonColor : na, title="Bear Cloud", editable=false)
+plotshape(showSignals and finalBuy, title="Buy", text="Buy", style=shape.labelup, location=location.belowbar, color=color.green, textcolor=color.white, size=size.small, editable=false)
+plotshape(showSignals and finalSale, title="Sale", text="Sale", style=shape.labeldown, location=location.abovebar, color=color.red, textcolor=color.white, size=size.small, editable=false)
+alertcondition(finalBuy, "Buy", "SBP Crypto Volume Structure Indicator: Buy")
+alertcondition(finalSale, "Sale", "SBP Crypto Volume Structure Indicator: Sale")
+alertcondition(finalBuy or finalSale, "Buy or Sale", "SBP Crypto Volume Structure Indicator: New signal")

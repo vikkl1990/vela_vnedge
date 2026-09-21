@@ -1,0 +1,945 @@
+//@version=6
+indicator("One Minute Algo Run — Enhanced v6", shorttitle="OMAR v6", overlay=true, max_labels_count=100, max_boxes_count=50, max_lines_count=100)
+
+// ============================================================
+// OPENING RANGE
+// ============================================================
+grp_range = "Opening Range"
+opening_session = input.session("0930-1005", "Opening Range Window", group=grp_range)
+range_method = input.string("First 1-Minute Bar", "Range Calculation", options=["First 1-Minute Bar", "Full Opening Window"], group=grp_range, tooltip="The original OMAR behavior uses only the first one-minute candle. Full Opening Window is available as an alternative.")
+trade_session = input.session("0931-1600", "Breakout Trading Window", group=grp_range)
+range_timezone = input.string("America/New_York", "Timezone", group=grp_range)
+minimum_range = input.float(10.0, "Minimum Range (Points)", minval=0.0, step=0.25, group=grp_range)
+show_range_lines = input.bool(true, "Show High / Low / Midpoint", group=grp_range)
+
+// ============================================================
+// TARGETS
+// ============================================================
+grp_targets = "Targets"
+show_long_targets = input.bool(true, "Show Long Targets", group=grp_targets)
+long_t1_mult = input.float(1.0, "Long T1 Range Multiplier", minval=0.1, step=0.25, group=grp_targets)
+long_t2_mult = input.float(2.0, "Long T2 Range Multiplier", minval=0.1, step=0.25, group=grp_targets)
+show_short_targets = input.bool(true, "Show Short Targets", group=grp_targets)
+short_t1_mult = input.float(1.0, "Short T1 Range Multiplier", minval=0.1, step=0.25, group=grp_targets)
+short_t2_mult = input.float(2.0, "Short T2 Range Multiplier", minval=0.1, step=0.25, group=grp_targets)
+
+// ============================================================
+// STYLE AND LABELS
+// ============================================================
+grp_style = "Lines & Price Labels"
+show_price_labels = input.bool(true, "Show Price Labels", group=grp_style)
+show_historical_days = input.bool(false, "Show Previous Days", group=grp_style, tooltip="Off keeps the chart clean by displaying horizontal levels and breakout labels for the latest trading day only.")
+show_position_visual = input.bool(true, "Show Long / Short Position Visual", group=grp_style)
+position_visual_bars = input.int(25, "Position Visual Width (Bars)", minval=5, maxval=100, group=grp_style)
+position_zone_transparency = input.int(82, "Position Zone Transparency", minval=50, maxval=95, group=grp_style)
+label_offset = input.int(2, "Trade / Target Label Offset", minval=0, maxval=50, group=grp_style)
+label_size_input = input.string("Small", "Trade / Target Label Size", options=["Tiny", "Small", "Normal", "Large"], group=grp_style)
+key_label_offset = input.int(18, "Key-Level Label Offset", minval=0, maxval=50, group=grp_style)
+key_label_size_input = input.string("Tiny", "Key-Level Label Size", options=["Tiny", "Small", "Normal", "Large"], group=grp_style)
+label_font_input = input.string("Default", "Label Font", options=["Default", "Monospace"], group=grp_style)
+label_transparency = input.int(15, "Label Transparency", minval=0, maxval=95, group=grp_style)
+label_text_color = input.color(color.black, "Label Text Color", group=grp_style)
+line_width = input.int(2, "Horizontal Line Width", minval=1, maxval=4, group=grp_style)
+range_high_color = input.color(#ffcc80, "Opening Range High", group=grp_style)
+range_low_color = input.color(#ffcc80, "Opening Range Low", group=grp_style)
+range_mid_color = input.color(#ffe0b2, "Opening Range Midpoint", group=grp_style)
+long_t1_color = input.color(#90caf9, "Long T1", group=grp_style)
+long_t2_color = input.color(#64b5f6, "Long T2", group=grp_style)
+short_t1_color = input.color(#ce93d8, "Short T1", group=grp_style)
+short_t2_color = input.color(#ba68c8, "Short T2", group=grp_style)
+
+// ============================================================
+// BOUNCE / REVERSAL LEVELS
+// ============================================================
+grp_levels = "Bounce & Reversal Levels"
+show_previous_day_levels = input.bool(true, "Show PDH / PDL / Previous Close", group=grp_levels)
+show_key_level_labels = input.bool(true, "Show Key-Level Price Labels", group=grp_levels)
+show_rth_levels = input.bool(true, "Show Current RTH High / Low", group=grp_levels)
+show_asia_levels = input.bool(true, "Show Asia High / Low", group=grp_levels)
+show_london_levels = input.bool(true, "Show London High / Low", group=grp_levels)
+show_initial_balance = input.bool(true, "Show Initial Balance & Expansions", group=grp_levels)
+show_1h_pivots = input.bool(true, "Show Confirmed 1H Pivots", group=grp_levels)
+show_4h_pivots = input.bool(true, "Show Confirmed 4H Pivots", group=grp_levels)
+rth_session_levels = input.session("0930-1600", "RTH Session", group=grp_levels)
+asia_session_levels = input.session("1800-0000", "Asia Session", group=grp_levels)
+london_session_levels = input.session("0200-0500", "London Session", group=grp_levels)
+initial_balance_session = input.session("0930-1030", "Initial Balance Session", group=grp_levels)
+pivot_strength = input.int(3, "Pivot Strength", minval=1, maxval=10, group=grp_levels, tooltip="A value of 3 confirms a pivot after three bars on each side. Higher values create fewer, stronger levels.")
+key_line_width = input.int(1, "Key Level Line Width", minval=1, maxval=4, group=grp_levels)
+key_line_transparency = input.int(30, "Key Level Transparency", minval=0, maxval=90, group=grp_levels)
+previous_day_color = input.color(#f48fb1, "PDH / PDL Color", group=grp_levels)
+previous_close_color = input.color(#b0bec5, "Previous Close Color", group=grp_levels)
+rth_level_color = input.color(#ffd54f, "RTH High / Low Color", group=grp_levels)
+asia_level_color = input.color(#b39ddb, "Asia High / Low Color", group=grp_levels)
+london_level_color = input.color(#80cbc4, "London High / Low Color", group=grp_levels)
+pivot_1h_color = input.color(#4dd0e1, "1H Pivot Color", group=grp_levels)
+pivot_4h_color = input.color(#ff8a65, "4H Pivot Color", group=grp_levels)
+initial_balance_color = input.color(#ffb74d, "Initial Balance Color", group=grp_levels)
+ib_expansion_color = input.color(#fff176, "IB Expansion Color", group=grp_levels)
+
+grp_profile = "Daily & Weekly Volume Profile Levels"
+show_daily_profile = input.bool(true, "Show RTH POC / VAH / VAL", group=grp_profile)
+show_weekly_profile = input.bool(true, "Show Developing Weekly POC / VAH / VAL", group=grp_profile)
+show_weekly_naked = input.bool(true, "Show Previous Weekly Naked Levels", group=grp_profile)
+show_profile_labels = input.bool(true, "Show Profile Price Labels", group=grp_profile)
+profile_rows = input.int(128, "Profile Price Rows", minval=12, maxval=128, group=grp_profile, tooltip="Use the same row count and sessions in both indicators when comparing POC/VAH/VAL. The supplied FRVP defaults to 128 rows.")
+profile_va_percent = input.float(70.0, "Value Area %", minval=50.0, maxval=95.0, step=1.0, group=grp_profile)
+profile_lower_tf = input.timeframe("1", "Lower Timeframe Precision", group=grp_profile)
+daily_profile_update_bars = input.int(5, "Historical Daily Recalculation (Bars)", minval=1, maxval=30, group=grp_profile)
+weekly_profile_update_bars = input.int(120, "Historical Weekly Recalculation (Bars)", minval=10, maxval=240, group=grp_profile)
+weekly_naked_keep = input.int(8, "Previous Weeks To Track", minval=1, maxval=12, group=grp_profile)
+weekly_naked_label_offset = input.int(25, "Naked-Level Label Offset", minval=0, maxval=50, group=grp_profile)
+weekly_naked_label_size_input = input.string("Small", "Naked-Level Label Size", options=["Tiny", "Small", "Normal", "Large"], group=grp_profile)
+profile_poc_color = input.color(#ff9800, "POC Color", group=grp_profile)
+profile_va_color = input.color(#fff59d, "VAH / VAL Color", group=grp_profile)
+weekly_profile_color = input.color(#64b5f6, "Weekly Profile Color", group=grp_profile)
+weekly_naked_color = input.color(#ef5350, "Weekly Naked Color", group=grp_profile)
+block_near_daily_poc = input.bool(true, "No Trade Near Daily POC", group=grp_profile)
+poc_balance_atr = input.float(0.25, "POC No-Trade Radius (ATR)", minval=0.0, maxval=1.0, step=0.05, group=grp_profile)
+
+// ============================================================
+// SIGNALS AND JOURNAL
+// ============================================================
+grp_signals = "Breakout Signals"
+show_breakout_labels = input.bool(true, "Show Breakout Entry Labels", group=grp_signals)
+signal_frequency = input.string("First Each Direction", "Breakout Frequency", options=["First Each Direction", "Allow Re-entry"], group=grp_signals, tooltip="First Each Direction prevents repeated LONG or SHORT labels during the same trading day.")
+enable_alerts = input.bool(true, "Enable Breakout Alert Calls", group=grp_signals)
+show_journal = input.bool(false, "Show Compact Journal", group=grp_signals)
+
+// ============================================================
+// OPEN BIAS AND RANGE EXPANSION
+// ============================================================
+grp_bias = "Open Bias & Range Expansion"
+bias_fast_tf = input.timeframe("15", "Fast Trend Timeframe", group=grp_bias)
+bias_slow_tf = input.timeframe("60", "Slow Trend Timeframe", group=grp_bias)
+bias_fast_len = input.int(9, "Fast EMA Length", minval=1, group=grp_bias)
+bias_slow_len = input.int(21, "Slow EMA Length", minval=2, group=grp_bias)
+use_open_vwap = input.bool(true, "Confirm Bias With Opening VWAP", group=grp_bias)
+require_open_bias = input.bool(true, "Require Bias For Entry Signals", group=grp_bias, tooltip="When enabled, LONG alerts require a LONG opening bias and SHORT alerts require a SHORT opening bias. Targets remain visible and are tracked on both sides.")
+use_chop_filter = input.bool(true, "Block Trades During Choppy Conditions", group=grp_bias)
+adx_length = input.int(14, "ADX Length", minval=2, group=grp_bias)
+adx_smoothing = input.int(14, "ADX Smoothing", minval=2, group=grp_bias)
+minimum_adx = input.float(18.0, "Minimum ADX For Trade", minval=1.0, step=0.5, group=grp_bias)
+minimum_breakout_body = input.float(0.35, "Minimum Breakout Body %", minval=0.05, maxval=1.0, step=0.05, group=grp_bias, tooltip="The breakout candle body must occupy at least this fraction of its full high-low range. This helps reject weak pokes outside the range.")
+adaptive_nq_mode = input.bool(true, "Adaptive NQ Quality Filter", group=grp_bias, tooltip="Uses only completed prior trades. When recent T1 results weaken, the indicator raises its ADX and breakout-body requirements. It never loosens below your baseline settings.")
+adaptive_sample_size = input.int(30, "Adaptive Trade Sample", minval=10, maxval=100, group=grp_bias)
+show_8m_journal = input.bool(false, "Show 8-Month Journal", group=grp_bias)
+
+var array<float> recent_trade_results = array.new_float()
+var array<int> monthly_trades = array.new_int(8, 0)
+var array<int> monthly_t1 = array.new_int(8, 0)
+var array<int> monthly_t2 = array.new_int(8, 0)
+var array<int> monthly_stops = array.new_int(8, 0)
+var array<int> monthly_be = array.new_int(8, 0)
+
+_record_adaptive_result(bool won_t1) =>
+    array.push(recent_trade_results, won_t1 ? 1.0 : 0.0)
+    if array.size(recent_trade_results) > adaptive_sample_size
+        array.shift(recent_trade_results)
+
+_month_key(int event_time) =>
+    year(event_time, range_timezone) * 12 + month(event_time, range_timezone) - 1
+
+_month_slot(int event_time) =>
+    current_key = year(last_bar_time, range_timezone) * 12 + month(last_bar_time, range_timezone) - 1
+    current_key - _month_key(event_time)
+
+_increment_month(array<int> values, int event_time) =>
+    slot = _month_slot(event_time)
+    if slot >= 0 and slot < 8
+        array.set(values, slot, array.get(values, slot) + 1)
+
+_month_name(int month_number) =>
+    month_number == 1 ? "Jan" : month_number == 2 ? "Feb" : month_number == 3 ? "Mar" : month_number == 4 ? "Apr" : month_number == 5 ? "May" : month_number == 6 ? "Jun" : month_number == 7 ? "Jul" : month_number == 8 ? "Aug" : month_number == 9 ? "Sep" : month_number == 10 ? "Oct" : month_number == 11 ? "Nov" : "Dec"
+
+label_size = label_size_input == "Tiny" ? size.tiny : label_size_input == "Small" ? size.small : label_size_input == "Normal" ? size.normal : size.large
+key_label_size = key_label_size_input == "Tiny" ? size.tiny : key_label_size_input == "Small" ? size.small : key_label_size_input == "Normal" ? size.normal : size.large
+weekly_naked_label_size = weekly_naked_label_size_input == "Tiny" ? size.tiny : weekly_naked_label_size_input == "Small" ? size.small : weekly_naked_label_size_input == "Normal" ? size.normal : size.large
+label_font = label_font_input == "Monospace" ? font.family_monospace : font.family_default
+
+// Calculate the complete range inside a one-minute execution context so the
+// result remains precise when this indicator is displayed on a 5-minute chart.
+_one_minute_range() =>
+    in_window = not na(time(timeframe.period, opening_session, range_timezone))
+    new_window = in_window and not in_window[1]
+    window_ended = not in_window and in_window[1]
+    new_day = ta.change(dayofmonth(time, range_timezone)) != 0
+    in_rth = not na(time(timeframe.period, "0930-1600", range_timezone))
+    rth_started = in_rth and not in_rth[1]
+    running_vwap = ta.vwap(hlc3, rth_started)
+    var float range_high = na
+    var float range_low = na
+    var bool range_locked = false
+    var float lock_price = na
+    var float lock_vwap = na
+    if new_day
+        range_high := na
+        range_low := na
+        range_locked := false
+        lock_price := na
+        lock_vwap := na
+    if new_window
+        range_high := high
+        range_low := low
+        range_locked := false
+        lock_price := na
+        lock_vwap := na
+    else if in_window
+        if range_method == "Full Opening Window"
+            range_high := na(range_high) ? high : math.max(range_high, high)
+            range_low := na(range_low) ? low : math.min(range_low, low)
+        else if not na(range_high) and not range_locked
+            // On the 09:31 bar, freeze the 09:30 one-minute candle.
+            range_locked := true
+            lock_price := close[1]
+            lock_vwap := running_vwap[1]
+    if window_ended and not na(range_high) and not na(range_low)
+        range_locked := true
+        lock_price := close[1]
+        lock_vwap := running_vwap[1]
+    [range_high, range_low, range_locked, in_window, lock_price, lock_vwap, running_vwap]
+
+// Build the three intraday session ranges in a one-minute context. Values
+// accumulate during each session and remain fixed after that session ends.
+_one_minute_session_levels() =>
+    in_rth_levels = not na(time(timeframe.period, rth_session_levels, range_timezone))
+    in_asia_levels = not na(time(timeframe.period, asia_session_levels, range_timezone))
+    in_london_levels = not na(time(timeframe.period, london_session_levels, range_timezone))
+    in_ib_levels = not na(time(timeframe.period, initial_balance_session, range_timezone))
+    new_rth_levels = in_rth_levels and not in_rth_levels[1]
+    new_asia_levels = in_asia_levels and not in_asia_levels[1]
+    new_london_levels = in_london_levels and not in_london_levels[1]
+    new_ib_levels = in_ib_levels and not in_ib_levels[1]
+    var float current_rth_high = na
+    var float current_rth_low = na
+    var float current_asia_high = na
+    var float current_asia_low = na
+    var float current_london_high = na
+    var float current_london_low = na
+    var float current_ib_high = na
+    var float current_ib_low = na
+    if new_rth_levels
+        current_rth_high := high
+        current_rth_low := low
+    else if in_rth_levels
+        current_rth_high := math.max(nz(current_rth_high, high), high)
+        current_rth_low := math.min(nz(current_rth_low, low), low)
+    if new_asia_levels
+        current_asia_high := high
+        current_asia_low := low
+    else if in_asia_levels
+        current_asia_high := math.max(nz(current_asia_high, high), high)
+        current_asia_low := math.min(nz(current_asia_low, low), low)
+    if new_london_levels
+        current_london_high := high
+        current_london_low := low
+    else if in_london_levels
+        current_london_high := math.max(nz(current_london_high, high), high)
+        current_london_low := math.min(nz(current_london_low, low), low)
+    if new_ib_levels
+        current_ib_high := high
+        current_ib_low := low
+    else if in_ib_levels
+        current_ib_high := math.max(nz(current_ib_high, high), high)
+        current_ib_low := math.min(nz(current_ib_low, low), low)
+    [current_rth_high, current_rth_low, current_asia_high, current_asia_low, current_london_high, current_london_low, current_ib_high, current_ib_low]
+
+_confirmed_pivot_high(int strength) =>
+    pivot_value = ta.pivothigh(high, strength, strength)
+    ta.valuewhen(not na(pivot_value), pivot_value, 0)
+
+_confirmed_pivot_low(int strength) =>
+    pivot_value = ta.pivotlow(low, strength, strength)
+    ta.valuewhen(not na(pivot_value), pivot_value, 0)
+
+// Proportionally distribute every bar's volume through the price rows it
+// overlaps, then expand the value area outward from the highest-volume row.
+_profile_levels(array<float> highs, array<float> lows, array<float> vols, float range_low, float range_high, int rows, float va_pct) =>
+    float poc = na
+    float vah = na
+    float val = na
+    bins = array.new_float(rows, 0.0)
+    int count = array.size(vols)
+    if count > 0 and range_high > range_low
+        row_size = (range_high - range_low) / rows
+        total_vol = 0.0
+        for i = 0 to count - 1
+            vol = nz(array.get(vols, i))
+            bar_high = array.get(highs, i)
+            bar_low = array.get(lows, i)
+            bar_range = bar_high - bar_low
+            if vol > 0
+                if bar_range <= 0
+                    idx = int(math.floor((bar_high - range_low) / row_size))
+                    idx := math.max(0, math.min(rows - 1, idx))
+                    array.set(bins, idx, array.get(bins, idx) + vol)
+                else
+                    first_row = int(math.max(0, math.floor((bar_low - range_low) / row_size)))
+                    last_row = int(math.min(rows - 1, math.floor((bar_high - range_low) / row_size)))
+                    if last_row >= first_row
+                        for row = first_row to last_row
+                            row_low = range_low + row * row_size
+                            row_high = row_low + row_size
+                            overlap = math.min(bar_high, row_high) - math.max(bar_low, row_low)
+                            if overlap > 0
+                                array.set(bins, row, array.get(bins, row) + vol * overlap / bar_range)
+            total_vol += vol
+        poc_idx = array.indexof(bins, array.max(bins))
+        low_idx = poc_idx
+        high_idx = poc_idx
+        included_vol = array.get(bins, poc_idx)
+        target_vol = total_vol * va_pct / 100.0
+        while included_vol < target_vol and (low_idx > 0 or high_idx < rows - 1)
+            up_vol = high_idx < rows - 1 ? array.get(bins, high_idx + 1) : -1.0
+            down_vol = low_idx > 0 ? array.get(bins, low_idx - 1) : -1.0
+            if up_vol >= down_vol and high_idx < rows - 1
+                high_idx += 1
+                included_vol += up_vol
+            else if low_idx > 0
+                low_idx -= 1
+                included_vol += down_vol
+        poc := range_low + (poc_idx + 0.5) * row_size
+        vah := range_low + (high_idx + 1.0) * row_size
+        val := range_low + low_idx * row_size
+    [poc, vah, val]
+
+[omar_high, omar_low, range_locked, in_opening_window, range_lock_price, opening_vwap, current_session_vwap] = request.security(syminfo.tickerid, "1", _one_minute_range(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+[current_rth_high, current_rth_low, current_asia_high, current_asia_low, current_london_high, current_london_low, current_ib_high, current_ib_low] = request.security(syminfo.tickerid, "1", _one_minute_session_levels(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+previous_day_high = request.security(syminfo.tickerid, "D", high[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+previous_day_low = request.security(syminfo.tickerid, "D", low[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+previous_day_close = request.security(syminfo.tickerid, "D", close[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+pivot_1h_resistance = request.security(syminfo.tickerid, "60", _confirmed_pivot_high(pivot_strength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+pivot_1h_support = request.security(syminfo.tickerid, "60", _confirmed_pivot_low(pivot_strength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+pivot_4h_resistance = request.security(syminfo.tickerid, "240", _confirmed_pivot_high(pivot_strength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+pivot_4h_support = request.security(syminfo.tickerid, "240", _confirmed_pivot_low(pivot_strength), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+in_trade_window = not na(time(timeframe.period, trade_session, range_timezone))
+new_day_chart = ta.change(dayofmonth(time, range_timezone)) != 0
+
+// Daily RTH and weekly volume-profile maps. Lower-timeframe arrays preserve
+// price-row precision when this script is viewed above the one-minute chart.
+profile_chart_seconds = timeframe.in_seconds(timeframe.period)
+profile_lower_seconds = timeframe.in_seconds(profile_lower_tf)
+profile_use_lower = profile_lower_seconds < profile_chart_seconds
+[profile_ltf_highs, profile_ltf_lows, profile_ltf_volumes] = request.security_lower_tf(syminfo.tickerid, profile_lower_tf, [high, low, volume])
+
+var array<float> daily_profile_highs = array.new_float()
+var array<float> daily_profile_lows = array.new_float()
+var array<float> daily_profile_volumes = array.new_float()
+var float daily_profile_range_high = na
+var float daily_profile_range_low = na
+var float daily_poc = na
+var float daily_vah = na
+var float daily_val = na
+
+in_daily_profile = not na(time(timeframe.period, rth_session_levels, range_timezone))
+daily_profile_started = in_daily_profile and not in_daily_profile[1]
+if daily_profile_started
+    array.clear(daily_profile_highs)
+    array.clear(daily_profile_lows)
+    array.clear(daily_profile_volumes)
+    daily_profile_range_high := na
+    daily_profile_range_low := na
+    daily_poc := na
+    daily_vah := na
+    daily_val := na
+if in_daily_profile
+    ltf_daily_count = array.size(profile_ltf_volumes)
+    if profile_use_lower and ltf_daily_count > 0
+        for i = 0 to ltf_daily_count - 1
+            array.push(daily_profile_highs, array.get(profile_ltf_highs, i))
+            array.push(daily_profile_lows, array.get(profile_ltf_lows, i))
+            array.push(daily_profile_volumes, nz(array.get(profile_ltf_volumes, i)))
+    else
+        array.push(daily_profile_highs, high)
+        array.push(daily_profile_lows, low)
+        array.push(daily_profile_volumes, nz(volume))
+    daily_profile_range_high := na(daily_profile_range_high) ? high : math.max(daily_profile_range_high, high)
+    daily_profile_range_low := na(daily_profile_range_low) ? low : math.min(daily_profile_range_low, low)
+    if bar_index % daily_profile_update_bars == 0 or barstate.islast
+        [calculated_daily_poc, calculated_daily_vah, calculated_daily_val] = _profile_levels(daily_profile_highs, daily_profile_lows, daily_profile_volumes, daily_profile_range_low, daily_profile_range_high, profile_rows, profile_va_percent)
+        if not na(calculated_daily_poc)
+            daily_poc := calculated_daily_poc
+            daily_vah := calculated_daily_vah
+            daily_val := calculated_daily_val
+
+var array<float> weekly_profile_highs = array.new_float()
+var array<float> weekly_profile_lows = array.new_float()
+var array<float> weekly_profile_volumes = array.new_float()
+var float weekly_profile_range_high = na
+var float weekly_profile_range_low = na
+var float weekly_poc = na
+var float weekly_vah = na
+var float weekly_val = na
+var array<float> naked_weekly_prices = array.new_float()
+var array<bool> naked_weekly_active = array.new_bool()
+var array<string> naked_weekly_kinds = array.new_string()
+var array<line> naked_weekly_lines = array.new_line()
+var array<label> naked_weekly_labels = array.new_label()
+
+new_profile_week = ta.change(time("W")) != 0
+if new_profile_week and array.size(weekly_profile_volumes) > 0
+    [completed_week_poc, completed_week_vah, completed_week_val] = _profile_levels(weekly_profile_highs, weekly_profile_lows, weekly_profile_volumes, weekly_profile_range_low, weekly_profile_range_high, profile_rows, profile_va_percent)
+    completed_week_levels = array.from(completed_week_poc, completed_week_vah, completed_week_val)
+    completed_week_kinds = array.from("W-POC", "W-VAH", "W-VAL")
+    for i = 0 to 2
+        completed_price = array.get(completed_week_levels, i)
+        completed_kind = array.get(completed_week_kinds, i)
+        if not na(completed_price)
+            completed_color = color.new(weekly_naked_color, completed_kind == "W-POC" ? 15 : 30)
+            completed_line = line.new(bar_index - 1, completed_price, bar_index, completed_price, extend=extend.right, color=show_weekly_naked ? completed_color : color.new(completed_color, 100), style=line.style_dashed, width=completed_kind == "W-POC" ? 2 : 1)
+            array.push(naked_weekly_prices, completed_price)
+            array.push(naked_weekly_active, true)
+            array.push(naked_weekly_kinds, completed_kind)
+            array.push(naked_weekly_lines, completed_line)
+            array.push(naked_weekly_labels, na)
+    while array.size(naked_weekly_prices) > weekly_naked_keep * 3
+        line.delete(array.shift(naked_weekly_lines))
+        old_naked_label = array.shift(naked_weekly_labels)
+        if not na(old_naked_label)
+            label.delete(old_naked_label)
+        array.shift(naked_weekly_prices)
+        array.shift(naked_weekly_active)
+        array.shift(naked_weekly_kinds)
+    array.clear(weekly_profile_highs)
+    array.clear(weekly_profile_lows)
+    array.clear(weekly_profile_volumes)
+    weekly_profile_range_high := na
+    weekly_profile_range_low := na
+
+ltf_weekly_count = array.size(profile_ltf_volumes)
+if profile_use_lower and ltf_weekly_count > 0
+    for i = 0 to ltf_weekly_count - 1
+        array.push(weekly_profile_highs, array.get(profile_ltf_highs, i))
+        array.push(weekly_profile_lows, array.get(profile_ltf_lows, i))
+        array.push(weekly_profile_volumes, nz(array.get(profile_ltf_volumes, i)))
+else
+    array.push(weekly_profile_highs, high)
+    array.push(weekly_profile_lows, low)
+    array.push(weekly_profile_volumes, nz(volume))
+weekly_profile_range_high := na(weekly_profile_range_high) ? high : math.max(weekly_profile_range_high, high)
+weekly_profile_range_low := na(weekly_profile_range_low) ? low : math.min(weekly_profile_range_low, low)
+if bar_index % weekly_profile_update_bars == 0 or barstate.islast
+    [calculated_weekly_poc, calculated_weekly_vah, calculated_weekly_val] = _profile_levels(weekly_profile_highs, weekly_profile_lows, weekly_profile_volumes, weekly_profile_range_low, weekly_profile_range_high, profile_rows, profile_va_percent)
+    if not na(calculated_weekly_poc)
+        weekly_poc := calculated_weekly_poc
+        weekly_vah := calculated_weekly_vah
+        weekly_val := calculated_weekly_val
+
+float weekly_naked_above = na
+float weekly_naked_below = na
+string weekly_naked_above_kind = ""
+string weekly_naked_below_kind = ""
+if array.size(naked_weekly_prices) > 0
+    for i = array.size(naked_weekly_prices) - 1 to 0
+        naked_price = array.get(naked_weekly_prices, i)
+        naked_active = array.get(naked_weekly_active, i)
+        naked_kind = array.get(naked_weekly_kinds, i)
+        if naked_active and high >= naked_price and low <= naked_price
+            array.set(naked_weekly_active, i, false)
+            naked_line = array.get(naked_weekly_lines, i)
+            line.set_extend(naked_line, extend.none)
+            line.set_x2(naked_line, bar_index)
+            line.set_color(naked_line, color.new(color.gray, 100))
+            touched_label = array.get(naked_weekly_labels, i)
+            if not na(touched_label)
+                label.delete(touched_label)
+                array.set(naked_weekly_labels, i, na)
+            naked_active := false
+        live_naked_color = color.new(weekly_naked_color, naked_kind == "W-POC" ? 15 : 30)
+        line.set_color(array.get(naked_weekly_lines, i), show_weekly_naked and naked_active ? live_naked_color : color.new(live_naked_color, 100))
+        if barstate.islast
+            active_label = array.get(naked_weekly_labels, i)
+            if show_weekly_naked and naked_active
+                naked_label_text = "NAKED " + naked_kind + "  " + str.tostring(naked_price, format.mintick)
+                if na(active_label)
+                    active_label := label.new(bar_index + weekly_naked_label_offset, naked_price, naked_label_text, xloc=xloc.bar_index, style=label.style_label_left, color=color.new(weekly_naked_color, label_transparency), textcolor=label_text_color, size=weekly_naked_label_size, text_font_family=label_font)
+                    array.set(naked_weekly_labels, i, active_label)
+                else
+                    label.set_xy(active_label, bar_index + weekly_naked_label_offset, naked_price)
+                    label.set_text(active_label, naked_label_text)
+                    label.set_color(active_label, color.new(weekly_naked_color, label_transparency))
+                    label.set_textcolor(active_label, label_text_color)
+                    label.set_size(active_label, weekly_naked_label_size)
+                    label.set_text_font_family(active_label, label_font)
+            else if not na(active_label)
+                label.delete(active_label)
+                array.set(naked_weekly_labels, i, na)
+        if naked_active and naked_price > close and (na(weekly_naked_above) or naked_price < weekly_naked_above)
+            weekly_naked_above := naked_price
+            weekly_naked_above_kind := naked_kind
+        if naked_active and naked_price < close and (na(weekly_naked_below) or naked_price > weekly_naked_below)
+            weekly_naked_below := naked_price
+            weekly_naked_below_kind := naked_kind
+
+// Use the last fully closed higher-timeframe bars. This makes the opening bias
+// stable and prevents the historical chart from learning the rest of the bar.
+fast_ema_fast_tf = request.security(syminfo.tickerid, bias_fast_tf, ta.ema(close, bias_fast_len)[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+slow_ema_fast_tf = request.security(syminfo.tickerid, bias_fast_tf, ta.ema(close, bias_slow_len)[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+fast_ema_slow_tf = request.security(syminfo.tickerid, bias_slow_tf, ta.ema(close, bias_fast_len)[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+slow_ema_slow_tf = request.security(syminfo.tickerid, bias_slow_tf, ta.ema(close, bias_slow_len)[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+fast_tf_bias = fast_ema_fast_tf > slow_ema_fast_tf ? 1 : fast_ema_fast_tf < slow_ema_fast_tf ? -1 : 0
+slow_tf_bias = fast_ema_slow_tf > slow_ema_slow_tf ? 1 : fast_ema_slow_tf < slow_ema_slow_tf ? -1 : 0
+vwap_long_ok = not use_open_vwap or range_lock_price >= opening_vwap
+vwap_short_ok = not use_open_vwap or range_lock_price <= opening_vwap
+open_bias_candidate = fast_tf_bias == 1 and slow_tf_bias == 1 and vwap_long_ok ? 1 : fast_tf_bias == -1 and slow_tf_bias == -1 and vwap_short_ok ? -1 : 0
+var int open_bias = 0
+if new_day_chart
+    open_bias := 0
+if range_locked and not range_locked[1]
+    open_bias := open_bias_candidate
+open_bias_text = open_bias == 1 ? "LONG" : open_bias == -1 ? "SHORT" : "WAIT"
+open_bias_color = open_bias == 1 ? color.green : open_bias == -1 ? color.red : color.orange
+
+omar_range = omar_high - omar_low
+omar_mid = math.avg(omar_high, omar_low)
+long_t1 = omar_high + omar_range * long_t1_mult
+long_t2 = omar_high + omar_range * long_t2_mult
+short_t1 = omar_low - omar_range * short_t1_mult
+short_t2 = omar_low - omar_range * short_t2_mult
+initial_balance_range = current_ib_high - current_ib_low
+ib_up_half = current_ib_high + initial_balance_range * 0.5
+ib_up_one = current_ib_high + initial_balance_range
+ib_down_half = current_ib_low - initial_balance_range * 0.5
+ib_down_one = current_ib_low - initial_balance_range
+[plus_di, minus_di, adx_value] = ta.dmi(adx_length, adx_smoothing)
+atr_value = ta.atr(14)
+candle_span = math.max(high - low, syminfo.mintick)
+breakout_body_ratio = math.abs(close - open) / candle_span
+adaptive_samples = array.size(recent_trade_results)
+adaptive_win_rate = adaptive_samples > 0 ? array.avg(recent_trade_results) * 100.0 : na
+adaptive_penalty = adaptive_nq_mode and adaptive_samples >= 10 ? adaptive_win_rate < 45.0 ? 3.0 : adaptive_win_rate < 55.0 ? 1.5 : 0.0 : 0.0
+effective_minimum_adx = minimum_adx + adaptive_penalty
+effective_minimum_body = math.min(0.80, minimum_breakout_body + adaptive_penalty / 30.0)
+low_trend_strength = use_chop_filter and adx_value < effective_minimum_adx
+weak_breakout_push = use_chop_filter and breakout_body_ratio < effective_minimum_body
+poc_balance = block_near_daily_poc and not na(daily_poc) and math.abs(close - daily_poc) <= atr_value * poc_balance_atr
+is_choppy = range_locked and (omar_range < minimum_range or low_trend_strength or poc_balance)
+no_trade_text = poc_balance ? "POC BALANCE — NO TRADE" : "CHOPPY — NO TRADE"
+is_latest_trading_day = year(time, range_timezone) == year(last_bar_time, range_timezone) and month(time, range_timezone) == month(last_bar_time, range_timezone) and dayofmonth(time, range_timezone) == dayofmonth(last_bar_time, range_timezone)
+display_day = show_historical_days or is_latest_trading_day
+
+// A close outside the range confirms expansion; a wick alone does not.
+var bool expanded_up = false
+var bool expanded_down = false
+if new_day_chart
+    expanded_up := false
+    expanded_down := false
+if range_locked and barstate.isconfirmed
+    expanded_up := expanded_up or close > omar_high
+    expanded_down := expanded_down or close < omar_low
+range_state = not range_locked ? "BUILDING" : expanded_up and expanded_down ? "BOTH SIDES" : close > omar_high ? "EXPANDING UP" : close < omar_low ? "EXPANDING DOWN" : expanded_up ? "BACK INSIDE ↑" : expanded_down ? "BACK INSIDE ↓" : "INSIDE RANGE"
+range_state_color = not range_locked ? color.gray : expanded_up and expanded_down ? color.purple : close > omar_high ? color.green : close < omar_low ? color.red : color.orange
+
+// Live directional outlook. This is an alignment score, not a guarantee or an
+// entry by itself. The opening bias above remains frozen; this outlook can adapt.
+vwap_direction = na(current_session_vwap) ? 0 : close > current_session_vwap ? 1 : close < current_session_vwap ? -1 : 0
+range_position_direction = not range_locked ? 0 : close > omar_mid ? 1 : close < omar_mid ? -1 : 0
+di_direction = plus_di > minus_di ? 1 : plus_di < minus_di ? -1 : 0
+expansion_direction = close > omar_high ? 1 : close < omar_low ? -1 : 0
+outlook_score = fast_tf_bias + slow_tf_bias + vwap_direction + range_position_direction + di_direction + expansion_direction
+outlook_direction = outlook_score >= 3 ? 1 : outlook_score <= -3 ? -1 : 0
+outlook_strength = int(math.round(math.abs(outlook_score) / 6.0 * 100.0))
+outlook_text = is_choppy ? no_trade_text : outlook_direction == 1 ? "LONG " + str.tostring(outlook_strength) + "%" : outlook_direction == -1 ? "SHORT " + str.tostring(outlook_strength) + "%" : "NEUTRAL"
+outlook_color = is_choppy ? color.red : outlook_direction == 1 ? color.green : outlook_direction == -1 ? color.red : color.orange
+
+base_visible = show_range_lines and not na(omar_high) and display_day
+target_visible = range_locked and not na(omar_range) and display_day
+
+plot(base_visible ? omar_high : na, "OMAR High", color=range_high_color, linewidth=line_width, style=plot.style_linebr)
+plot(base_visible ? omar_low : na, "OMAR Low", color=range_low_color, linewidth=line_width, style=plot.style_linebr)
+plot(base_visible ? omar_mid : na, "OMAR Mid", color=range_mid_color, linewidth=1, style=plot.style_linebr)
+plot(target_visible and show_long_targets ? long_t1 : na, "Long T1", color=long_t1_color, linewidth=line_width, style=plot.style_linebr)
+plot(target_visible and show_long_targets ? long_t2 : na, "Long T2", color=long_t2_color, linewidth=line_width, style=plot.style_linebr)
+plot(target_visible and show_short_targets ? short_t1 : na, "Short T1", color=short_t1_color, linewidth=line_width, style=plot.style_linebr)
+plot(target_visible and show_short_targets ? short_t2 : na, "Short T2", color=short_t2_color, linewidth=line_width, style=plot.style_linebr)
+
+key_levels_visible = display_day
+
+_update_price_label(label label_id, bool visible, float price, string name, color bg_color) =>
+    label result = label_id
+    if visible and not na(price)
+        label_text = name + "  " + str.tostring(price, format.mintick)
+        if na(result)
+            result := label.new(bar_index + label_offset, price, label_text, xloc=xloc.bar_index,
+                 style=label.style_label_right, color=color.new(bg_color, label_transparency),
+                 textcolor=label_text_color, size=label_size, text_font_family=label_font)
+        else
+            label.set_xy(result, bar_index + label_offset, price)
+            label.set_text(result, label_text)
+            label.set_color(result, color.new(bg_color, label_transparency))
+            label.set_textcolor(result, label_text_color)
+            label.set_size(result, label_size)
+            label.set_text_font_family(result, label_font)
+    else if not na(result)
+        label.delete(result)
+        result := na
+    result
+
+_update_key_price_label(label label_id, bool visible, float price, string name, color bg_color) =>
+    label result = label_id
+    if visible and not na(price)
+        label_text = name + "  " + str.tostring(price, format.mintick)
+        if na(result)
+            result := label.new(bar_index + key_label_offset, price, label_text, xloc=xloc.bar_index,
+                 style=label.style_label_right, color=color.new(bg_color, label_transparency),
+                 textcolor=label_text_color, size=key_label_size, text_font_family=label_font)
+        else
+            label.set_xy(result, bar_index + key_label_offset, price)
+            label.set_text(result, label_text)
+            label.set_color(result, color.new(bg_color, label_transparency))
+            label.set_textcolor(result, label_text_color)
+            label.set_size(result, key_label_size)
+            label.set_text_font_family(result, label_font)
+    else if not na(result)
+        label.delete(result)
+        result := na
+    result
+
+_update_horizontal_line(line line_id, bool visible, float price, color level_color, int width, bool dashed) =>
+    line result = line_id
+    if visible and not na(price)
+        left_bar = math.max(0, bar_index - 500)
+        right_bar = bar_index + key_label_offset
+        selected_style = dashed ? line.style_dashed : line.style_solid
+        if na(result)
+            result := line.new(left_bar, price, right_bar, price, xloc=xloc.bar_index, extend=extend.none, color=color.new(level_color, key_line_transparency), width=width, style=selected_style)
+        else
+            line.set_xy1(result, left_bar, price)
+            line.set_xy2(result, right_bar, price)
+            line.set_color(result, color.new(level_color, key_line_transparency))
+            line.set_width(result, width)
+            line.set_style(result, selected_style)
+    else if not na(result)
+        line.delete(result)
+        result := na
+    result
+
+var line line_pdh = na
+var line line_pdl = na
+var line line_pdc = na
+var line line_rth_high = na
+var line line_rth_low = na
+var line line_asia_high = na
+var line line_asia_low = na
+var line line_london_high = na
+var line line_london_low = na
+var line line_pivot_1h_res = na
+var line line_pivot_1h_sup = na
+var line line_pivot_4h_res = na
+var line line_pivot_4h_sup = na
+var line line_ib_high = na
+var line line_ib_low = na
+var line line_ib_up_half = na
+var line line_ib_up_one = na
+var line line_ib_down_half = na
+var line line_ib_down_one = na
+var line line_daily_poc = na
+var line line_daily_vah = na
+var line line_daily_val = na
+var line line_weekly_poc = na
+var line line_weekly_vah = na
+var line line_weekly_val = na
+
+var label lbl_high = na
+var label lbl_low = na
+var label lbl_mid = na
+var label lbl_long_t1 = na
+var label lbl_long_t2 = na
+var label lbl_short_t1 = na
+var label lbl_short_t2 = na
+var label lbl_choppy = na
+var label lbl_pdh = na
+var label lbl_pdl = na
+var label lbl_pdc = na
+var label lbl_rth_high = na
+var label lbl_rth_low = na
+var label lbl_asia_high = na
+var label lbl_asia_low = na
+var label lbl_london_high = na
+var label lbl_london_low = na
+var label lbl_pivot_1h_res = na
+var label lbl_pivot_1h_sup = na
+var label lbl_pivot_4h_res = na
+var label lbl_pivot_4h_sup = na
+var label lbl_ib_high = na
+var label lbl_ib_low = na
+var label lbl_ib_up_half = na
+var label lbl_ib_up_one = na
+var label lbl_ib_down_half = na
+var label lbl_ib_down_one = na
+var label lbl_daily_poc = na
+var label lbl_daily_vah = na
+var label lbl_daily_val = na
+var label lbl_weekly_poc = na
+var label lbl_weekly_vah = na
+var label lbl_weekly_val = na
+
+if barstate.islast
+    line_pdh := _update_horizontal_line(line_pdh, key_levels_visible and show_previous_day_levels, previous_day_high, previous_day_color, key_line_width, true)
+    line_pdl := _update_horizontal_line(line_pdl, key_levels_visible and show_previous_day_levels, previous_day_low, previous_day_color, key_line_width, true)
+    line_pdc := _update_horizontal_line(line_pdc, key_levels_visible and show_previous_day_levels, previous_day_close, previous_close_color, key_line_width, true)
+    line_rth_high := _update_horizontal_line(line_rth_high, key_levels_visible and show_rth_levels, current_rth_high, rth_level_color, key_line_width, false)
+    line_rth_low := _update_horizontal_line(line_rth_low, key_levels_visible and show_rth_levels, current_rth_low, rth_level_color, key_line_width, false)
+    line_asia_high := _update_horizontal_line(line_asia_high, key_levels_visible and show_asia_levels, current_asia_high, asia_level_color, key_line_width, true)
+    line_asia_low := _update_horizontal_line(line_asia_low, key_levels_visible and show_asia_levels, current_asia_low, asia_level_color, key_line_width, true)
+    line_london_high := _update_horizontal_line(line_london_high, key_levels_visible and show_london_levels, current_london_high, london_level_color, key_line_width, true)
+    line_london_low := _update_horizontal_line(line_london_low, key_levels_visible and show_london_levels, current_london_low, london_level_color, key_line_width, true)
+    line_pivot_1h_res := _update_horizontal_line(line_pivot_1h_res, key_levels_visible and show_1h_pivots, pivot_1h_resistance, pivot_1h_color, key_line_width, true)
+    line_pivot_1h_sup := _update_horizontal_line(line_pivot_1h_sup, key_levels_visible and show_1h_pivots, pivot_1h_support, pivot_1h_color, key_line_width, true)
+    line_pivot_4h_res := _update_horizontal_line(line_pivot_4h_res, key_levels_visible and show_4h_pivots, pivot_4h_resistance, pivot_4h_color, key_line_width + 1, false)
+    line_pivot_4h_sup := _update_horizontal_line(line_pivot_4h_sup, key_levels_visible and show_4h_pivots, pivot_4h_support, pivot_4h_color, key_line_width + 1, false)
+    line_ib_high := _update_horizontal_line(line_ib_high, key_levels_visible and show_initial_balance, current_ib_high, initial_balance_color, key_line_width + 1, false)
+    line_ib_low := _update_horizontal_line(line_ib_low, key_levels_visible and show_initial_balance, current_ib_low, initial_balance_color, key_line_width + 1, false)
+    line_ib_up_half := _update_horizontal_line(line_ib_up_half, key_levels_visible and show_initial_balance, ib_up_half, ib_expansion_color, key_line_width, true)
+    line_ib_up_one := _update_horizontal_line(line_ib_up_one, key_levels_visible and show_initial_balance, ib_up_one, ib_expansion_color, key_line_width + 1, true)
+    line_ib_down_half := _update_horizontal_line(line_ib_down_half, key_levels_visible and show_initial_balance, ib_down_half, ib_expansion_color, key_line_width, true)
+    line_ib_down_one := _update_horizontal_line(line_ib_down_one, key_levels_visible and show_initial_balance, ib_down_one, ib_expansion_color, key_line_width + 1, true)
+    line_daily_poc := _update_horizontal_line(line_daily_poc, key_levels_visible and show_daily_profile, daily_poc, profile_poc_color, 2, false)
+    line_daily_vah := _update_horizontal_line(line_daily_vah, key_levels_visible and show_daily_profile, daily_vah, profile_va_color, 1, true)
+    line_daily_val := _update_horizontal_line(line_daily_val, key_levels_visible and show_daily_profile, daily_val, profile_va_color, 1, true)
+    line_weekly_poc := _update_horizontal_line(line_weekly_poc, key_levels_visible and show_weekly_profile, weekly_poc, weekly_profile_color, 2, false)
+    line_weekly_vah := _update_horizontal_line(line_weekly_vah, key_levels_visible and show_weekly_profile, weekly_vah, weekly_profile_color, 1, true)
+    line_weekly_val := _update_horizontal_line(line_weekly_val, key_levels_visible and show_weekly_profile, weekly_val, weekly_profile_color, 1, true)
+    lbl_high := _update_price_label(lbl_high, show_price_labels and base_visible, omar_high, "OR HIGH", range_high_color)
+    lbl_low := _update_price_label(lbl_low, show_price_labels and base_visible, omar_low, "OR LOW", range_low_color)
+    lbl_mid := _update_price_label(lbl_mid, show_price_labels and base_visible and not is_choppy, omar_mid, "OR MID | BIAS " + open_bias_text + " | NOW " + outlook_text, range_mid_color)
+    lbl_long_t1 := _update_price_label(lbl_long_t1, show_price_labels and target_visible and show_long_targets, long_t1, "LONG T1", long_t1_color)
+    lbl_long_t2 := _update_price_label(lbl_long_t2, show_price_labels and target_visible and show_long_targets, long_t2, "LONG T2", long_t2_color)
+    lbl_short_t1 := _update_price_label(lbl_short_t1, show_price_labels and target_visible and show_short_targets, short_t1, "SHORT T1", short_t1_color)
+    lbl_short_t2 := _update_price_label(lbl_short_t2, show_price_labels and target_visible and show_short_targets, short_t2, "SHORT T2", short_t2_color)
+    lbl_choppy := _update_price_label(lbl_choppy, show_price_labels and is_choppy, omar_mid, no_trade_text + " | ADX " + str.tostring(adx_value, "#.0"), color.red)
+    lbl_pdh := _update_key_price_label(lbl_pdh, show_key_level_labels and key_levels_visible and show_previous_day_levels, previous_day_high, "PDH", previous_day_color)
+    lbl_pdl := _update_key_price_label(lbl_pdl, show_key_level_labels and key_levels_visible and show_previous_day_levels, previous_day_low, "PDL", previous_day_color)
+    lbl_pdc := _update_key_price_label(lbl_pdc, show_key_level_labels and key_levels_visible and show_previous_day_levels, previous_day_close, "PREV CLOSE", previous_close_color)
+    lbl_rth_high := _update_key_price_label(lbl_rth_high, show_key_level_labels and key_levels_visible and show_rth_levels, current_rth_high, "RTH HIGH", rth_level_color)
+    lbl_rth_low := _update_key_price_label(lbl_rth_low, show_key_level_labels and key_levels_visible and show_rth_levels, current_rth_low, "RTH LOW", rth_level_color)
+    lbl_asia_high := _update_key_price_label(lbl_asia_high, show_key_level_labels and key_levels_visible and show_asia_levels, current_asia_high, "ASIA HIGH", asia_level_color)
+    lbl_asia_low := _update_key_price_label(lbl_asia_low, show_key_level_labels and key_levels_visible and show_asia_levels, current_asia_low, "ASIA LOW", asia_level_color)
+    lbl_london_high := _update_key_price_label(lbl_london_high, show_key_level_labels and key_levels_visible and show_london_levels, current_london_high, "LONDON HIGH", london_level_color)
+    lbl_london_low := _update_key_price_label(lbl_london_low, show_key_level_labels and key_levels_visible and show_london_levels, current_london_low, "LONDON LOW", london_level_color)
+    lbl_pivot_1h_res := _update_key_price_label(lbl_pivot_1h_res, show_key_level_labels and key_levels_visible and show_1h_pivots, pivot_1h_resistance, "1H PIVOT R", pivot_1h_color)
+    lbl_pivot_1h_sup := _update_key_price_label(lbl_pivot_1h_sup, show_key_level_labels and key_levels_visible and show_1h_pivots, pivot_1h_support, "1H PIVOT S", pivot_1h_color)
+    lbl_pivot_4h_res := _update_key_price_label(lbl_pivot_4h_res, show_key_level_labels and key_levels_visible and show_4h_pivots, pivot_4h_resistance, "4H PIVOT R", pivot_4h_color)
+    lbl_pivot_4h_sup := _update_key_price_label(lbl_pivot_4h_sup, show_key_level_labels and key_levels_visible and show_4h_pivots, pivot_4h_support, "4H PIVOT S", pivot_4h_color)
+    lbl_ib_high := _update_key_price_label(lbl_ib_high, show_key_level_labels and key_levels_visible and show_initial_balance, current_ib_high, "IB HIGH", initial_balance_color)
+    lbl_ib_low := _update_key_price_label(lbl_ib_low, show_key_level_labels and key_levels_visible and show_initial_balance, current_ib_low, "IB LOW", initial_balance_color)
+    lbl_ib_up_half := _update_key_price_label(lbl_ib_up_half, show_key_level_labels and key_levels_visible and show_initial_balance, ib_up_half, "IB +0.5", ib_expansion_color)
+    lbl_ib_up_one := _update_key_price_label(lbl_ib_up_one, show_key_level_labels and key_levels_visible and show_initial_balance, ib_up_one, "IB +1.0", ib_expansion_color)
+    lbl_ib_down_half := _update_key_price_label(lbl_ib_down_half, show_key_level_labels and key_levels_visible and show_initial_balance, ib_down_half, "IB -0.5", ib_expansion_color)
+    lbl_ib_down_one := _update_key_price_label(lbl_ib_down_one, show_key_level_labels and key_levels_visible and show_initial_balance, ib_down_one, "IB -1.0", ib_expansion_color)
+    lbl_daily_poc := _update_key_price_label(lbl_daily_poc, show_profile_labels and key_levels_visible and show_daily_profile, daily_poc, "RTH POC", profile_poc_color)
+    lbl_daily_vah := _update_key_price_label(lbl_daily_vah, show_profile_labels and key_levels_visible and show_daily_profile, daily_vah, "RTH VAH", profile_va_color)
+    lbl_daily_val := _update_key_price_label(lbl_daily_val, show_profile_labels and key_levels_visible and show_daily_profile, daily_val, "RTH VAL", profile_va_color)
+    lbl_weekly_poc := _update_key_price_label(lbl_weekly_poc, show_profile_labels and key_levels_visible and show_weekly_profile, weekly_poc, "WEEK POC", weekly_profile_color)
+    lbl_weekly_vah := _update_key_price_label(lbl_weekly_vah, show_profile_labels and key_levels_visible and show_weekly_profile, weekly_vah, "WEEK VAH", weekly_profile_color)
+    lbl_weekly_val := _update_key_price_label(lbl_weekly_val, show_profile_labels and key_levels_visible and show_weekly_profile, weekly_val, "WEEK VAL", weekly_profile_color)
+
+var bool long_signal_used = false
+var bool short_signal_used = false
+if new_day_chart
+    long_signal_used := false
+    short_signal_used := false
+
+long_bias_ok = not require_open_bias or open_bias == 1
+short_bias_ok = not require_open_bias or open_bias == -1
+long_breakout_raw = range_locked and in_trade_window and not is_choppy and not weak_breakout_push and long_bias_ok and ta.crossover(close, omar_high)
+short_breakout_raw = range_locked and in_trade_window and not is_choppy and not weak_breakout_push and short_bias_ok and ta.crossunder(close, omar_low)
+long_breakout = long_breakout_raw and (signal_frequency == "Allow Re-entry" or not long_signal_used)
+short_breakout = short_breakout_raw and (signal_frequency == "Allow Re-entry" or not short_signal_used)
+if long_breakout
+    long_signal_used := true
+if short_breakout
+    short_signal_used := true
+
+plotshape(long_breakout and display_day, "Long Breakout", shape.triangleup, location.belowbar, color=color.green, size=size.small)
+plotshape(short_breakout and display_day, "Short Breakout", shape.triangledown, location.abovebar, color=color.red, size=size.small)
+
+if long_breakout and show_breakout_labels and display_day
+    label.new(bar_index, low, "LONG ENTRY " + str.tostring(close, format.mintick) + "\nSL " + str.tostring(omar_mid, format.mintick) + " | T1 " + str.tostring(long_t1, format.mintick) + " | T2 " + str.tostring(long_t2, format.mintick), style=label.style_label_up,
+         color=color.new(long_t1_color, label_transparency), textcolor=label_text_color, size=label_size, text_font_family=label_font)
+if short_breakout and show_breakout_labels and display_day
+    label.new(bar_index, high, "SHORT ENTRY " + str.tostring(close, format.mintick) + "\nSL " + str.tostring(omar_mid, format.mintick) + " | T1 " + str.tostring(short_t1, format.mintick) + " | T2 " + str.tostring(short_t2, format.mintick), style=label.style_label_down,
+         color=color.new(short_t1_color, label_transparency), textcolor=label_text_color, size=label_size, text_font_family=label_font)
+
+// TradingView-style position plan: reward zone, stop zone, and entry line.
+// Only the latest plan is retained to keep a one-minute chart readable.
+var box position_reward_box = na
+var box position_risk_box = na
+var line position_entry_line = na
+var label position_plan_label = na
+if (long_breakout or short_breakout) and show_position_visual and display_day
+    if not na(position_reward_box)
+        box.delete(position_reward_box)
+    if not na(position_risk_box)
+        box.delete(position_risk_box)
+    if not na(position_entry_line)
+        line.delete(position_entry_line)
+    if not na(position_plan_label)
+        label.delete(position_plan_label)
+    plan_right = bar_index + position_visual_bars
+    if long_breakout
+        position_reward_box := box.new(bar_index, long_t2, plan_right, close, border_color=color.new(color.green, 20), bgcolor=color.new(color.green, position_zone_transparency))
+        position_risk_box := box.new(bar_index, close, plan_right, omar_mid, border_color=color.new(color.red, 20), bgcolor=color.new(color.red, position_zone_transparency))
+        position_entry_line := line.new(bar_index, close, plan_right, close, color=color.new(color.blue, 10), width=2, style=line.style_dashed)
+        position_plan_label := label.new(plan_right, close, "LONG PLAN\nE " + str.tostring(close, format.mintick) + "\nSL " + str.tostring(omar_mid, format.mintick) + "\nT1 " + str.tostring(long_t1, format.mintick) + "\nT2 " + str.tostring(long_t2, format.mintick), style=label.style_label_left, color=color.new(color.green, label_transparency), textcolor=label_text_color, size=label_size, text_font_family=label_font)
+    else
+        position_reward_box := box.new(bar_index, close, plan_right, short_t2, border_color=color.new(color.green, 20), bgcolor=color.new(color.green, position_zone_transparency))
+        position_risk_box := box.new(bar_index, omar_mid, plan_right, close, border_color=color.new(color.red, 20), bgcolor=color.new(color.red, position_zone_transparency))
+        position_entry_line := line.new(bar_index, close, plan_right, close, color=color.new(color.purple, 10), width=2, style=line.style_dashed)
+        position_plan_label := label.new(plan_right, close, "SHORT PLAN\nE " + str.tostring(close, format.mintick) + "\nSL " + str.tostring(omar_mid, format.mintick) + "\nT1 " + str.tostring(short_t1, format.mintick) + "\nT2 " + str.tostring(short_t2, format.mintick), style=label.style_label_left, color=color.new(color.red, label_transparency), textcolor=label_text_color, size=label_size, text_font_family=label_font)
+
+// One trade at a time. After T1, protect the remaining position at breakeven.
+var int active_direction = 0
+var float active_entry = na
+var bool active_t1_hit = false
+var int active_entry_bar = na
+var int total_trades = 0
+var int t1_wins = 0
+var int t2_wins = 0
+var int stops = 0
+var int breakevens = 0
+var bool long_t1_touched = false
+var bool long_t2_touched = false
+var bool short_t1_touched = false
+var bool short_t2_touched = false
+
+if new_day_chart
+    active_direction := 0
+    active_entry := na
+    active_t1_hit := false
+    active_entry_bar := na
+    long_t1_touched := false
+    long_t2_touched := false
+    short_t1_touched := false
+    short_t2_touched := false
+
+// Track both target ladders independently. A strong opening run can complete
+// the long ladder and a later reversal can complete the short ladder.
+if range_locked
+    long_t1_touched := long_t1_touched or high >= long_t1
+    long_t2_touched := long_t2_touched or high >= long_t2
+    short_t1_touched := short_t1_touched or low <= short_t1
+    short_t2_touched := short_t2_touched or low <= short_t2
+
+if active_direction == 0 and long_breakout
+    active_direction := 1
+    active_entry := close
+    active_t1_hit := false
+    active_entry_bar := bar_index
+    total_trades += 1
+    _increment_month(monthly_trades, time)
+else if active_direction == 0 and short_breakout
+    active_direction := -1
+    active_entry := close
+    active_t1_hit := false
+    active_entry_bar := bar_index
+    total_trades += 1
+    _increment_month(monthly_trades, time)
+
+if active_direction == 1 and bar_index > active_entry_bar
+    if not active_t1_hit and high >= long_t1
+        active_t1_hit := true
+        t1_wins += 1
+        _increment_month(monthly_t1, time)
+    if high >= long_t2
+        t2_wins += 1
+        _increment_month(monthly_t2, time)
+        _record_adaptive_result(true)
+        active_direction := 0
+        active_entry_bar := na
+    else if active_t1_hit and low <= active_entry
+        breakevens += 1
+        _increment_month(monthly_be, time)
+        _record_adaptive_result(true)
+        active_direction := 0
+        active_entry_bar := na
+    else if not active_t1_hit and low <= omar_mid
+        stops += 1
+        _increment_month(monthly_stops, time)
+        _record_adaptive_result(false)
+        active_direction := 0
+        active_entry_bar := na
+
+if active_direction == -1 and bar_index > active_entry_bar
+    if not active_t1_hit and low <= short_t1
+        active_t1_hit := true
+        t1_wins += 1
+        _increment_month(monthly_t1, time)
+    if low <= short_t2
+        t2_wins += 1
+        _increment_month(monthly_t2, time)
+        _record_adaptive_result(true)
+        active_direction := 0
+        active_entry_bar := na
+    else if active_t1_hit and high >= active_entry
+        breakevens += 1
+        _increment_month(monthly_be, time)
+        _record_adaptive_result(true)
+        active_direction := 0
+        active_entry_bar := na
+    else if not active_t1_hit and high >= omar_mid
+        stops += 1
+        _increment_month(monthly_stops, time)
+        _record_adaptive_result(false)
+        active_direction := 0
+        active_entry_bar := na
+
+var table journal = table.new(position.bottom_left, 2, 11, border_width=1, border_color=color.new(color.gray, 40))
+if show_journal and barstate.islast
+    table.cell(journal, 0, 0, "OMAR v6", bgcolor=color.new(color.blue, 15), text_color=color.white, text_size=size.tiny)
+    table.cell(journal, 1, 0, range_locked ? (is_choppy ? "NO TRADE" : open_bias == 0 and require_open_bias ? "WAIT BIAS" : "READY") : "BUILDING", bgcolor=is_choppy ? color.new(color.red, 15) : open_bias == 0 and require_open_bias ? color.new(color.orange, 15) : color.new(color.green, 15), text_color=color.white, text_size=size.tiny)
+    table.cell(journal, 0, 1, "Range", bgcolor=color.new(color.silver, 20), text_color=color.black, text_size=size.tiny)
+    table.cell(journal, 1, 1, na(omar_range) ? "—" : str.tostring(omar_range, "#.##") + " pts", bgcolor=color.new(color.silver, 20), text_color=color.black, text_size=size.tiny)
+    table.cell(journal, 0, 2, "Trades", bgcolor=color.new(color.silver, 20), text_color=color.black, text_size=size.tiny)
+    table.cell(journal, 1, 2, str.tostring(total_trades), bgcolor=color.new(color.silver, 20), text_color=color.black, text_size=size.tiny)
+    table.cell(journal, 0, 3, "T1 / T2", bgcolor=color.new(color.silver, 20), text_color=color.black, text_size=size.tiny)
+    table.cell(journal, 1, 3, str.tostring(t1_wins) + " / " + str.tostring(t2_wins), bgcolor=color.new(color.green, 25), text_color=color.black, text_size=size.tiny)
+    table.cell(journal, 0, 4, "Stops / BE", bgcolor=color.new(color.silver, 20), text_color=color.black, text_size=size.tiny)
+    table.cell(journal, 1, 4, str.tostring(stops) + " / " + str.tostring(breakevens), bgcolor=color.new(color.red, 35), text_color=color.black, text_size=size.tiny)
+    table.cell(journal, 0, 5, "Active", bgcolor=color.new(color.silver, 20), text_color=color.black, text_size=size.tiny)
+    table.cell(journal, 1, 5, active_direction == 1 ? "LONG" : active_direction == -1 ? "SHORT" : "NONE", bgcolor=color.new(color.orange, 25), text_color=color.black, text_size=size.tiny)
+    table.cell(journal, 0, 6, "Long T1 / T2", bgcolor=color.new(long_t1_color, 25), text_color=color.black, text_size=size.tiny)
+    table.cell(journal, 1, 6, (long_t1_touched ? "HIT" : "WAIT") + " / " + (long_t2_touched ? "HIT" : "WAIT"), bgcolor=color.new(long_t1_color, 25), text_color=color.black, text_size=size.tiny)
+    table.cell(journal, 0, 7, "Short T1 / T2", bgcolor=color.new(short_t1_color, 25), text_color=color.black, text_size=size.tiny)
+    table.cell(journal, 1, 7, (short_t1_touched ? "HIT" : "WAIT") + " / " + (short_t2_touched ? "HIT" : "WAIT"), bgcolor=color.new(short_t1_color, 25), text_color=color.black, text_size=size.tiny)
+    table.cell(journal, 0, 8, "Open Bias", bgcolor=color.new(color.silver, 20), text_color=color.black, text_size=size.tiny)
+    table.cell(journal, 1, 8, open_bias_text, bgcolor=color.new(open_bias_color, 25), text_color=color.black, text_size=size.tiny)
+    table.cell(journal, 0, 9, "Range State", bgcolor=color.new(color.silver, 20), text_color=color.black, text_size=size.tiny)
+    table.cell(journal, 1, 9, range_state, bgcolor=color.new(range_state_color, 25), text_color=color.black, text_size=size.tiny)
+    table.cell(journal, 0, 10, "Live Outlook", bgcolor=color.new(color.silver, 20), text_color=color.black, text_size=size.tiny)
+    table.cell(journal, 1, 10, outlook_text, bgcolor=color.new(outlook_color, 25), text_color=color.black, text_size=size.tiny)
+
+var table history_journal = table.new(position.bottom_right, 6, 10, border_width=1, border_color=color.new(color.gray, 55))
+if show_8m_journal and barstate.islast
+    table.cell(history_journal, 0, 0, "Month", bgcolor=color.new(color.blue, 20), text_color=color.white, text_size=size.tiny)
+    table.cell(history_journal, 1, 0, "Trades", bgcolor=color.new(color.blue, 20), text_color=color.white, text_size=size.tiny)
+    table.cell(history_journal, 2, 0, "T1", bgcolor=color.new(color.blue, 20), text_color=color.white, text_size=size.tiny)
+    table.cell(history_journal, 3, 0, "T2", bgcolor=color.new(color.blue, 20), text_color=color.white, text_size=size.tiny)
+    table.cell(history_journal, 4, 0, "Stop", bgcolor=color.new(color.blue, 20), text_color=color.white, text_size=size.tiny)
+    table.cell(history_journal, 5, 0, "BE", bgcolor=color.new(color.blue, 20), text_color=color.white, text_size=size.tiny)
+    current_month_key = year(last_bar_time, range_timezone) * 12 + month(last_bar_time, range_timezone) - 1
+    for months_ago = 0 to 7
+        target_key = current_month_key - months_ago
+        target_month = target_key % 12 + 1
+        target_year = int(math.floor(target_key / 12))
+        row = months_ago + 1
+        row_bg = color.new(color.silver, 28)
+        table.cell(history_journal, 0, row, _month_name(target_month) + " " + str.tostring(target_year), bgcolor=row_bg, text_color=color.black, text_size=size.tiny)
+        table.cell(history_journal, 1, row, str.tostring(array.get(monthly_trades, months_ago)), bgcolor=row_bg, text_color=color.black, text_size=size.tiny)
+        table.cell(history_journal, 2, row, str.tostring(array.get(monthly_t1, months_ago)), bgcolor=color.new(color.green, 35), text_color=color.black, text_size=size.tiny)
+        table.cell(history_journal, 3, row, str.tostring(array.get(monthly_t2, months_ago)), bgcolor=color.new(color.aqua, 35), text_color=color.black, text_size=size.tiny)
+        table.cell(history_journal, 4, row, str.tostring(array.get(monthly_stops, months_ago)), bgcolor=color.new(color.red, 40), text_color=color.black, text_size=size.tiny)
+        table.cell(history_journal, 5, row, str.tostring(array.get(monthly_be, months_ago)), bgcolor=color.new(color.orange, 38), text_color=color.black, text_size=size.tiny)
+    learning_text = adaptive_samples < 10 ? "Learning " + str.tostring(adaptive_samples) + "/10" : "Adaptive WR " + str.tostring(adaptive_win_rate, "#.0") + "% | ADX ≥ " + str.tostring(effective_minimum_adx, "#.0")
+    table.cell(history_journal, 0, 9, "NQ Filter", bgcolor=color.new(color.navy, 15), text_color=color.white, text_size=size.tiny)
+    table.cell(history_journal, 1, 9, learning_text, bgcolor=color.new(color.yellow, 25), text_color=color.black, text_size=size.tiny)
+    table.merge_cells(history_journal, 1, 9, 5, 9)
+
+alertcondition(long_breakout, "OMAR Long Breakout", "OMAR: confirmed long breakout on {{ticker}} at {{close}}")
+alertcondition(short_breakout, "OMAR Short Breakout", "OMAR: confirmed short breakout on {{ticker}} at {{close}}")
+alertcondition(range_locked and not is_choppy and outlook_direction == 1 and outlook_direction[1] != 1, "OMAR Outlook Turned Long", "OMAR live outlook turned LONG on {{ticker}} at {{close}}. Wait for a confirmed entry signal.")
+alertcondition(range_locked and not is_choppy and outlook_direction == -1 and outlook_direction[1] != -1, "OMAR Outlook Turned Short", "OMAR live outlook turned SHORT on {{ticker}} at {{close}}. Wait for a confirmed entry signal.")
+if enable_alerts and long_breakout
+    alert("OMAR LONG ENTRY | " + syminfo.ticker + " | Entry " + str.tostring(close, format.mintick) + " | Stop Loss " + str.tostring(omar_mid, format.mintick) + " | Take Profit 1 " + str.tostring(long_t1, format.mintick) + " | Take Profit 2 " + str.tostring(long_t2, format.mintick) + " | Open Bias " + open_bias_text + " | " + range_state, alert.freq_once_per_bar_close)
+if enable_alerts and short_breakout
+    alert("OMAR SHORT ENTRY | " + syminfo.ticker + " | Entry " + str.tostring(close, format.mintick) + " | Stop Loss " + str.tostring(omar_mid, format.mintick) + " | Take Profit 1 " + str.tostring(short_t1, format.mintick) + " | Take Profit 2 " + str.tostring(short_t2, format.mintick) + " | Open Bias " + open_bias_text + " | " + range_state, alert.freq_once_per_bar_close)

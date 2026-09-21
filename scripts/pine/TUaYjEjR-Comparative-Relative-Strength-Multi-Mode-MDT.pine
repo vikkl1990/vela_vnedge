@@ -1,0 +1,141 @@
+//@version=6
+// =====================================================================
+//  COMPARATIVE RELATIVE STRENGTH (CRS)  —  Market Discipline Telugu
+// ---------------------------------------------------------------------
+//  Compares the chart symbol against a benchmark (default NSE:NIFTY).
+//
+//    Line RISING   = chart symbol is OUTPERFORMING the benchmark
+//    Line FALLING  = chart symbol is UNDERPERFORMING the benchmark
+//    Line FLAT     = moving in line with the benchmark
+//
+//  NOTE: this is NOT Wilder's RSI. RSI compares a stock to its own
+//  past. CRS compares a stock to another instrument. The absolute
+//  value of the line is meaningless - only its DIRECTION matters.
+// =====================================================================
+
+indicator("Comparative Relative Strength Multi-Mode [MDT]", shorttitle="CRS [MDT]", overlay=false)
+
+// ----------------------------- INPUTS --------------------------------
+gD = "Data"
+compSym = input.symbol("NSE:NIFTY", "Benchmark symbol", group=gD,
+     tooltip="Stock vs NSE:NIFTY, or stock vs its own sector index, or NSE:BANKNIFTY vs NSE:NIFTY.")
+srcType = input.string("close", "Price source", options=["close","open","high","low","hl2","hlc3","ohlc4"], group=gD)
+
+gC = "Calculation"
+mode = input.string("Ratio x100", "Display mode",
+     options=["Ratio","Ratio x100","% Out/Under-performance","Mansfield RS"], group=gC,
+     tooltip="Ratio = raw price relative. % Out/Under-performance = symbol's % move minus benchmark's % move over the lookback. Mansfield RS = Stan Weinstein's normalised version with a zero line.")
+maType  = input.string("EMA", "RS moving average type", options=["SMA","EMA","WMA"], group=gC)
+maLen   = input.int(21, "RS moving average length", minval=1, group=gC)
+mansLen = input.int(52, "Mansfield base length", minval=2, group=gC,
+     tooltip="Weinstein used 52 on weekly charts. Use 200 or so on daily charts.")
+perfLen = input.int(20, "% performance lookback (bars)", minval=1, group=gC)
+hiLoLen = input.int(60, "New RS high / low lookback (bars)", minval=2, group=gC)
+
+gV = "Visuals"
+colByMA   = input.bool(true,  "Colour RS line by position vs its MA", group=gV)
+showMA    = input.bool(true,  "Show RS moving average", group=gV)
+showFill  = input.bool(true,  "Shade between RS and its MA", group=gV)
+showNewHL = input.bool(true,  "Mark new RS highs / lows", group=gV)
+showTable = input.bool(true,  "Show reading table", group=gV)
+upCol     = input.color(#089981, "Outperforming",   inline="c", group=gV)
+dnCol     = input.color(#f23645, "Underperforming", inline="c", group=gV)
+
+// ---------------------------- HELPERS --------------------------------
+// Source selector. No ta.* calls inside, so a switch is safe here.
+f_src(t) =>
+    switch t
+        "open"  => open
+        "high"  => high
+        "low"   => low
+        "hl2"   => hl2
+        "hlc3"  => hlc3
+        "ohlc4" => ohlc4
+        => close
+
+// MA selector. All three are computed on EVERY bar and only then
+// selected, so the moving averages never develop a broken history.
+f_ma(s, len, t) =>
+    smaV = ta.sma(s, len)
+    emaV = ta.ema(s, len)
+    wmaV = ta.wma(s, len)
+    t == "EMA" ? emaV : t == "WMA" ? wmaV : smaV
+
+// ------------------------ CORE CALCULATION ---------------------------
+base = f_src(srcType)
+comp = request.security(compSym, timeframe.period, f_src(srcType),
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+// 1. Raw price relative
+ratio = comp != 0 ? base / comp : na
+
+// 2. Percentage out/under-performance over the lookback
+basePerf = nz(base[perfLen]) != 0 ? (base / base[perfLen] - 1) * 100 : na
+compPerf = nz(comp[perfLen]) != 0 ? (comp / comp[perfLen] - 1) * 100 : na
+spread   = basePerf - compPerf
+
+// 3. Mansfield RS  =  ((ratio / SMA(ratio, n)) - 1) * 100
+ratioSma  = ta.sma(ratio, mansLen)
+mansfield = nz(ratioSma) != 0 ? (ratio / ratioSma - 1) * 100 : na
+
+rs = switch mode
+    "Ratio"                   => ratio
+    "Ratio x100"              => ratio * 100
+    "% Out/Under-performance" => spread
+    => mansfield
+
+rsMa = f_ma(rs, maLen, maType)
+
+// ---------------------------- STATE ----------------------------------
+zeroMode = mode == "% Out/Under-performance" or mode == "Mansfield RS"
+
+isUp = colByMA
+     ? (not na(rs) and not na(rsMa) ? rs > rsMa : false)
+     : (not na(rs) and not na(rs[1]) ? rs > rs[1] : false)
+
+rsCol = isUp ? upCol : dnCol
+
+hiV = ta.highest(rs, hiLoLen)
+loV = ta.lowest(rs, hiLoLen)
+newHi = showNewHL and not na(rs) and not na(hiV) ? rs >= hiV : false
+newLo = showNewHL and not na(rs) and not na(loV) ? rs <= loV : false
+
+// ----------------------------- PLOTS ---------------------------------
+pRs = plot(rs, "CRS", color=rsCol, linewidth=2)
+pMa = plot(showMA ? rsMa : na, "CRS MA", color=color.new(color.gray, 20), linewidth=1)
+fill(pRs, pMa, color=showFill ? color.new(rsCol, 88) : na, title="RS vs MA")
+
+plot(zeroMode ? 0 : na, "Zero line", color=color.new(color.gray, 40), style=plot.style_line)
+
+plotshape(newHi, "New RS high", shape.triangleup,   location.bottom, upCol, size=size.tiny)
+plotshape(newLo, "New RS low",  shape.triangledown, location.top,    dnCol, size=size.tiny)
+
+// ----------------------------- TABLE ---------------------------------
+var table tbl = table.new(position.top_right, 2, 4,
+     bgcolor=color.new(color.black, 82), border_width=1, border_color=color.new(color.gray, 60))
+
+f_txt(v, fmt) => na(v) ? "n/a" : str.tostring(v, fmt)
+
+if showTable and barstate.islast
+    table.cell(tbl, 0, 0, "Benchmark", text_color=color.gray,  text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 0, compSym,     text_color=color.white, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(tbl, 0, 1, "CRS",            text_color=color.gray,  text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 1, f_txt(rs, "#.###"), text_color=color.white, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(tbl, 0, 2, "Trend",  text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 2, isUp ? "Outperforming" : "Underperforming",
+         text_color=rsCol, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(tbl, 0, 3, str.tostring(perfLen) + "-bar edge", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 3, f_txt(spread, "#.##") + "%",
+         text_color=nz(spread) >= 0 ? upCol : dnCol, text_size=size.small, text_halign=text.align_right)
+
+// ----------------------------- ALERTS --------------------------------
+alertcondition(ta.crossover(rs, rsMa),  "CRS crossed above its MA",
+     "Relative strength turning up - symbol starting to outperform the benchmark")
+alertcondition(ta.crossunder(rs, rsMa), "CRS crossed below its MA",
+     "Relative strength turning down - symbol starting to underperform the benchmark")
+alertcondition(newHi, "CRS new high", "Relative strength has made a new high for the lookback period")
+alertcondition(newLo, "CRS new low",  "Relative strength has made a new low for the lookback period")
+

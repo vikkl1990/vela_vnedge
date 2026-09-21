@@ -1,0 +1,325 @@
+//@version=6
+indicator("Modern Squeeze Momentum [GBB]", "MSqueeze", overlay = false, precision = 8, max_labels_count = 1, max_bars_back = 2000)
+
+
+// ---------- Inputs ----------
+grpG = "General"
+classicMode = input.bool(false, "Classic mode (LazyBear; forces Layers 1-4 off)", group = grpG)
+
+grpA = "Adaptive length (Layer 1)"
+inAdaptive = input.bool(true, "Adaptive length", group = grpA)
+lenMin     = input.int(12, "Min length", minval = 1, group = grpA)
+lenMax     = input.int(40, "Max length", minval = 1, group = grpA)
+fixedLen   = input.int(20, "Fixed length (Layer 1 off / Classic)", minval = 1, group = grpA)
+
+grpB = "Bands"
+bbMult = input.float(2.0, "BB multiplier", minval = 0.0, step = 0.1, group = grpB)
+kcMult = input.float(1.5, "KC multiplier", minval = 0.0, step = 0.1, group = grpB)
+
+grpC = "Compression (Layer 2)"
+inPercentile = input.bool(true, "Percentile ranking", group = grpC)
+rankWindow   = input.int(150, "Rank window", minval = 1, group = grpC)
+lightPct     = input.int(30, "Light pct", minval = 0, maxval = 100, group = grpC)
+mediumPct    = input.int(15, "Medium pct", minval = 0, maxval = 100, group = grpC)
+tightPct     = input.int(5, "Tight pct", minval = 0, maxval = 100, group = grpC)
+minSqzBars   = input.int(3, "Min squeeze bars", minval = 1, group = grpC)
+
+grpM = "Momentum (Layer 3)"
+inNormalise = input.bool(true, "Normalised momentum (momentum / Keltner range)", group = grpM)
+momThr      = input.float(0.5, "Momentum threshold", minval = 0.0, step = 0.1, group = grpM,
+     tooltip = "Keltner-range units while Layer 3 is on; price units when it is off.")
+
+grpR = "Release (Layer 4)"
+inQualified   = input.bool(true, "Qualified release filter", group = grpR)
+reqRangeBreak = input.bool(true, "Require range break", group = grpR)
+showRaw       = input.bool(true, "Show unqualified releases", group = grpR)
+
+grpK = "Context (Layer 5)"
+inHtf     = input.bool(true, "HTF wash", group = grpK)
+htfSel    = input.timeframe("", "HTF (blank = auto, 4x chart)", group = grpK)
+showTable = input.bool(true, "Stats table", group = grpK)
+statsH    = input.int(10, "Stats horizon (bars)", minval = 1, maxval = 500, group = grpK)
+
+grpV = "Visual"
+paletteSel = input.string("GBB", "Palette", options = ["GBB", "LazyBear", "Mono"], group = grpV)
+
+// Classic mode forces the four modern layers off (design doc §8).
+useL1 = not classicMode and inAdaptive
+useL2 = not classicMode and inPercentile
+useL3 = not classicMode and inNormalise
+useL4 = not classicMode and inQualified
+
+// ---------- Layer 1: Ehlers Homodyne Discriminator (design doc §3) ----------
+// Every historical reference is nz()-wrapped so the recursion is zero-seeded exactly
+// like the oracle (squeeze/adaptive.py). Local series keep their own history per call
+// site, which is what lets f_state() run both on the chart and inside request.security.
+f_hilbert(float x, float f) =>
+    (0.0962 * x + 0.5769 * nz(x[2]) - 0.5769 * nz(x[4]) - 0.0962 * nz(x[6])) * f
+
+f_homodyne() =>
+    float src = (high + low) / 2
+    float period = 0.0
+    float prevP = nz(period[1])
+    float f = 0.075 * prevP + 0.54
+    float smooth = (4 * src + 3 * nz(src[1]) + 2 * nz(src[2]) + nz(src[3])) / 10
+    float det = f_hilbert(smooth, f)
+    float q1 = f_hilbert(det, f)
+    float i1 = nz(det[3])
+    float jI = f_hilbert(i1, f)
+    float jQ = f_hilbert(q1, f)
+    float i2 = 0.0
+    float q2 = 0.0
+    i2 := 0.2 * (i1 - jQ) + 0.8 * nz(i2[1])
+    q2 := 0.2 * (q1 + jI) + 0.8 * nz(q2[1])
+    float re = 0.0
+    float im = 0.0
+    re := 0.2 * (i2 * nz(i2[1]) + q2 * nz(q2[1])) + 0.8 * nz(re[1])
+    im := 0.2 * (i2 * nz(q2[1]) - q2 * nz(i2[1])) + 0.8 * nz(im[1])
+    float p = prevP
+    if im != 0 and re != 0
+        p := 2 * math.pi / math.atan(im / re)
+    if p > 1.5 * prevP
+        p := 1.5 * prevP
+    if p < 0.67 * prevP
+        p := 0.67 * prevP
+    if p < 6
+        p := 6
+    if p > 50
+        p := 50
+    period := 0.2 * p + 0.8 * prevP
+    period
+
+// EMA(4) jitter smoothing, clamp to [lenMin, lenMax], half-away-from-zero rounding
+// (Pine math.round == oracle round_half_away for these positive values).
+f_length(float period) =>
+    // Explicit EMA(4) (alpha = 2/5): seeded with the first value, exactly as the oracle's
+    // windows.ema. The built-in ta.ema is SMA-seeded and na for its first bars, so it is
+    // NOT used here (ruling, Task 3 review).
+    float periodS = na
+    periodS := na(periodS[1]) ? period : 0.4 * period + 0.6 * periodS[1]
+    float cyc = math.min(math.max(periodS, lenMin), lenMax)
+    int lenAd = na(periodS) ? lenMin : math.round(cyc)
+    [periodS, lenAd]
+
+// ---------- Layer 0: LazyBear bands and momentum with a series length (design doc §2) ----------
+f_bands(int n) =>
+    float src = close
+    float basis = ta.sma(src, n)
+    float dev = bbMult * ta.stdev(src, n)
+    float bbU = basis + dev
+    float bbL = basis - dev
+    float kcRange = ta.sma(ta.tr(true), n)
+    float kcU = basis + kcMult * kcRange
+    float kcL = basis - kcMult * kcRange
+    bool sqzOnC = bbL > kcL and bbU < kcU
+    float mid = ((ta.highest(high, n) + ta.lowest(low, n)) / 2 + ta.sma(close, n)) / 2
+    float momRaw = ta.linreg(src - mid, n, 0)
+    [basis, bbU, bbL, kcRange, kcU, kcL, sqzOnC, mid, momRaw]
+
+// ---------- Layer 2: percentile compression, grade, duration (design doc §4) ----------
+f_compression(float bbU, float bbL, float kcU, float kcL, bool sqzOnC) =>
+    float den = kcU - kcL
+    float ratio = den == 0 ? na : (bbU - bbL) / den
+    float pctAll = ta.percentrank(ratio, rankWindow)
+    float pct = useL2 ? pctAll : na
+    int gradePct = na(pct) ? 0 : pct <= tightPct ? 3 : pct <= mediumPct ? 2 : pct <= lightPct ? 1 : 0
+    int grade = useL2 ? gradePct : (sqzOnC ? 1 : 0)
+    bool sqzOn = grade >= 1
+    int sqzBars = 0
+    sqzBars := sqzOn ? nz(sqzBars[1]) + 1 : 0
+    [ratio, pct, grade, sqzOn, sqzBars]
+
+// ---------- Layer 3: normalised momentum, candidate (a) (design doc §5) ----------
+f_momentum(float momRaw, float kcRange) =>
+    float momA = kcRange == 0 ? na : momRaw / kcRange
+    useL3 ? momA : momRaw
+
+// ---------- Layer 4: raw and qualified releases (design doc §6) ----------
+f_release(bool sqzOn, int sqzBars, float momentum) =>
+    int onI = sqzOn ? 1 : 0
+    bool fireRaw = nz(onI[1]) == 1 and not sqzOn
+    int dir = na(momentum) ? 0 : int(math.sign(momentum))
+    int barDir = int(math.sign(close - open))
+    int dur = nz(sqzBars[1])
+    bool agree = dir != 0 and dir == barDir
+    bool strong = not na(momentum) and math.abs(momentum) >= momThr
+    bool longEnough = dur >= minSqzBars
+    // Range that formed during the squeeze: `dur` bars ending on the previous bar.
+    // ta.highest rejects length 0, so the window is clamped to 1; its value is only
+    // used when fireRaw is true, and then dur >= 1. NOT ta.highest(high, dur)[1].
+    int durW = math.max(dur, 1)
+    float hiPrev = ta.highest(high[1], durW)
+    float loPrev = ta.lowest(low[1], durW)
+    bool broke = not reqRangeBreak or (dir > 0 and close > hiPrev) or (dir < 0 and close < loPrev)
+    bool fireQ = useL4 ? (fireRaw and agree and strong and longEnough and broke) : fireRaw
+    int fireQDir = fireQ ? dir : 0
+    [fireRaw, fireQ, fireQDir, dir]
+
+// ---------- Layer stack (one function, used on the chart and inside request.security) ----------
+f_state() =>
+    float periodRaw = f_homodyne()
+    [periodS, lenAd] = f_length(periodRaw)
+    int length = useL1 ? lenAd : fixedLen
+    [basis, bbU, bbL, kcRange, kcU, kcL, sqzOnC, mid, momRaw] = f_bands(length)
+    [ratio, pct, grade, sqzOn, sqzBars] = f_compression(bbU, bbL, kcU, kcL, sqzOnC)
+    float momentum = f_momentum(momRaw, kcRange)
+    [fireRaw, fireQ, fireQDir, dir] = f_release(sqzOn, sqzBars, momentum)
+    float period = useL1 ? periodRaw : na
+    [period, length, basis, bbU, bbL, kcRange, kcU, kcL, mid, momRaw, ratio, pct, grade, sqzBars,
+         momentum, fireRaw, fireQ, fireQDir, sqzOn, periodS, dir]
+
+[period, length, basis, bbU, bbL, kcRange, kcU, kcL, mid, momRaw, ratio, pct, grade, sqzBars,
+     momentum, fireRaw, fireQ, fireQDir, sqzOn, periodS, dir] = f_state()
+
+int onI = sqzOn ? 1 : 0
+bool prevOn = nz(onI[1]) == 1
+bool sqzStart = sqzOn and not prevOn
+
+// ---------- Visuals ----------
+// Palette: [positive rising, positive falling, negative falling, negative rising] keep the
+// LazyBear 4-state histogram semantics; dots by grade; markers by direction.
+color cPosUp = paletteSel == "LazyBear" ? color.lime   : paletteSel == "Mono" ? #e0e0e0 : #26c6da
+color cPosDn = paletteSel == "LazyBear" ? color.green  : paletteSel == "Mono" ? #9e9e9e : #00838f
+color cNegDn = paletteSel == "LazyBear" ? color.red    : paletteSel == "Mono" ? #616161 : #ff5252
+color cNegUp = paletteSel == "LazyBear" ? color.maroon : paletteSel == "Mono" ? #424242 : #b71c1c
+color cDot0  = paletteSel == "LazyBear" ? color.blue   : paletteSel == "Mono" ? #757575 : #546e7a
+color cDot1  = paletteSel == "LazyBear" ? color.black  : paletteSel == "Mono" ? #bdbdbd : #ffd54f
+color cDot2  = paletteSel == "LazyBear" ? color.black  : paletteSel == "Mono" ? #e0e0e0 : #ff9800
+color cDot3  = paletteSel == "LazyBear" ? color.black  : paletteSel == "Mono" ? #ffffff : #f44336
+color cLong  = paletteSel == "Mono" ? #ffffff : #00e676
+color cShort = paletteSel == "Mono" ? #bdbdbd : #ff1744
+color cRaw   = color.new(#9e9e9e, 40)
+color cWash  = paletteSel == "Mono" ? #9e9e9e : #ffb300
+
+// Histogram: LazyBear 4 states (positive & rising, positive & falling, negative & falling, negative & rising).
+bool momUp = momentum > nz(momentum[1])
+color histCol = na(momentum) ? na : momentum > 0 ? (momUp ? cPosUp : cPosDn) : (momUp ? cNegUp : cNegDn)
+plot(momentum, "Momentum", color = histCol, style = plot.style_columns)
+
+// Zero-line dot: size and colour by squeeze grade (plot linewidth must be constant, so one plot per grade).
+plot(0, "Squeeze none",   color = grade == 0 ? cDot0 : na, linewidth = 1, style = plot.style_circles, display = display.pane)
+plot(0, "Squeeze light",  color = grade == 1 ? cDot1 : na, linewidth = 2, style = plot.style_circles, display = display.pane)
+plot(0, "Squeeze medium", color = grade == 2 ? cDot2 : na, linewidth = 3, style = plot.style_circles, display = display.pane)
+plot(0, "Squeeze tight",  color = grade == 3 ? cDot3 : na, linewidth = 4, style = plot.style_circles, display = display.pane)
+
+// Release markers: qualified solid by direction, unqualified faded (design doc §8).
+plotshape(fireQ and fireQDir > 0, "Qualified release long", style = shape.triangleup, location = location.bottom,
+     color = cLong, size = size.small)
+plotshape(fireQ and fireQDir < 0, "Qualified release short", style = shape.triangledown, location = location.top,
+     color = cShort, size = size.small)
+plotshape(showRaw and fireRaw and not fireQ, "Unqualified release", style = shape.circle, location = location.bottom,
+     color = cRaw, size = size.tiny)
+
+// Reference lines at +-0.5 and +-1.0 (only meaningful in Keltner-range units, i.e. Layer 3 on).
+plot(useL3 ? 0.5 : na, "Ref +0.5", color = color.new(color.gray, 60), style = plot.style_linebr, display = display.pane)
+plot(useL3 ? -0.5 : na, "Ref -0.5", color = color.new(color.gray, 60), style = plot.style_linebr, display = display.pane)
+plot(useL3 ? 1.0 : na, "Ref +1.0", color = color.new(color.gray, 75), style = plot.style_linebr, display = display.pane)
+plot(useL3 ? -1.0 : na, "Ref -1.0", color = color.new(color.gray, 75), style = plot.style_linebr, display = display.pane)
+
+// Hidden plots referenced by alert message placeholders (Task 6).
+plot(grade, "Grade", display = display.none)
+plot(fireQDir, "Release direction", display = display.none)
+
+// ---------- Context (Layer 5) ----------
+// HTF wash: the same layer stack evaluated on the higher timeframe; only CLOSED HTF
+// bars contribute ([1] inside the security call), lookahead off (design doc §7).
+f_htf() =>
+    [hPeriod, hLength, hBasis, hBbU, hBbL, hKcRange, hKcU, hKcL, hMid, hMomRaw, hRatio, hPct, hGrade,
+         hSqzBars, hMomentum, hFireRaw, hFireQ, hFireQDir, hSqzOn, hPeriodS, hDir] = f_state()
+    int hOnI = hSqzOn ? 1 : 0
+    [nz(hOnI[1]), nz(hGrade[1])]
+
+string htfTf = htfSel == "" ? timeframe.from_seconds(4 * timeframe.in_seconds()) : htfSel
+bool htfActive = inHtf and timeframe.in_seconds(htfTf) > timeframe.in_seconds()
+[htfOnI, htfGrade] = request.security(syminfo.tickerid, htfTf, f_htf(), lookahead = barmerge.lookahead_off)
+bool htfOn = htfActive and htfOnI == 1
+color htfWash = htfOn ? color.new(cWash, htfGrade >= 3 ? 75 : htfGrade == 2 ? 82 : 90) : na
+bgcolor(htfWash, title = "HTF wash")
+
+// One info label when the HTF is not strictly above the chart timeframe (same pattern as Fib Gravity Stage B).
+var label htfNote = na
+if inHtf and not htfActive and barstate.islast
+    if na(htfNote)
+        htfNote := label.new(bar_index, 0, "HTF wash off: HTF " + htfTf + " is not above the chart timeframe",
+             style = label.style_label_left, color = color.new(color.gray, 70), textcolor = color.white,
+             size = size.small)
+    else
+        label.set_x(htfNote, bar_index)
+
+// Stats table: running counts on loaded bars, each event scored exactly once, H bars
+// after it, from closed bars (design doc §7 table).
+var int nSqz = 0
+var int nRaw = 0
+var int nQ = 0
+var int nScored = 0
+var int nHit = 0
+var float sumFwdAll = 0.0
+var int nFwdAll = 0
+var float sumFwdEv = 0.0
+var int nFwdEv = 0
+int qI = fireQ ? 1 : 0
+float atr14 = ta.atr(14)
+float atrH = atr14[statsH]
+float hiH = ta.highest(high, statsH)
+float loH = ta.lowest(low, statsH)
+float fwdRange = na(atrH) or atrH == 0 ? na : (hiH - loH) / atrH
+if barstate.isconfirmed
+    if sqzStart
+        nSqz += 1
+    if fireRaw
+        nRaw += 1
+    if fireQ
+        nQ += 1
+    if bar_index >= statsH
+        bool evH = nz(qI[statsH]) == 1
+        int dirH = nz(fireQDir[statsH])
+        if evH
+            nScored += 1
+            if math.sign(close - close[statsH]) == dirH
+                nHit += 1
+        if not na(fwdRange)
+            sumFwdAll += fwdRange
+            nFwdAll += 1
+            if evH
+                sumFwdEv += fwdRange
+                nFwdEv += 1
+
+var table stats = na
+var bool footerMerged = false
+if showTable and barstate.islast
+    if na(stats)
+        stats := table.new(position.top_right, 2, 6, bgcolor = color.new(color.black, 70),
+             border_width = 1, border_color = color.new(color.gray, 60))
+    float hitRate = nScored > 0 ? 100.0 * nHit / nScored : na
+    float rangeMult = nFwdEv > 0 and nFwdAll > 0 and sumFwdAll > 0 ? (sumFwdEv / nFwdEv) / (sumFwdAll / nFwdAll) : na
+    string hStr = str.tostring(statsH)
+    table.cell(stats, 0, 0, "Squeezes", text_color = color.white, text_size = size.small, text_halign = text.align_left)
+    table.cell(stats, 1, 0, str.tostring(nSqz), text_color = color.white, text_size = size.small)
+    table.cell(stats, 0, 1, "Releases raw / qualified", text_color = color.white, text_size = size.small, text_halign = text.align_left)
+    table.cell(stats, 1, 1, str.tostring(nRaw) + " / " + str.tostring(nQ), text_color = color.white, text_size = size.small)
+    table.cell(stats, 0, 2, "Hit rate @" + hStr, text_color = color.white, text_size = size.small, text_halign = text.align_left)
+    table.cell(stats, 1, 2, na(hitRate) ? "-" : str.tostring(hitRate, "0.0") + "% (" + str.tostring(nScored) + ")",
+         text_color = color.white, text_size = size.small)
+    table.cell(stats, 0, 3, "Range multiple @" + hStr, text_color = color.white, text_size = size.small, text_halign = text.align_left)
+    table.cell(stats, 1, 3, na(rangeMult) ? "-" : str.tostring(rangeMult, "0.00") + "x", text_color = color.white, text_size = size.small)
+    table.cell(stats, 0, 4, "HTF " + htfTf, text_color = color.white, text_size = size.small, text_halign = text.align_left)
+    table.cell(stats, 1, 4, not htfActive ? "off" : htfOn ? "squeeze " + str.tostring(htfGrade) : "no squeeze",
+         text_color = color.white, text_size = size.small)
+    table.cell(stats, 0, 5, "Running counts on loaded bars, not a backtest. Reset on settings change and reload. No costs.",
+         text_color = color.new(color.white, 30), text_size = size.tiny, text_halign = text.align_left)
+    if not footerMerged
+        footerMerged := true
+        table.merge_cells(stats, 0, 5, 1, 5)
+
+// Alerts (product spec §4): confirmed bars only; messages carry grade / direction / timeframe.
+bool alSqzStart = barstate.isconfirmed and sqzStart
+bool alRaw = barstate.isconfirmed and fireRaw
+bool alQLong = barstate.isconfirmed and fireQ and fireQDir > 0
+bool alQShort = barstate.isconfirmed and fireQ and fireQDir < 0
+bool alHtf = barstate.isconfirmed and htfActive and htfOnI != nz(htfOnI[1])
+alertcondition(alSqzStart, "Squeeze started", 'MSqueeze {{ticker}} {{interval}}: squeeze started, grade {{plot("Grade")}}')
+alertcondition(alRaw, "Squeeze released (raw)", 'MSqueeze {{ticker}} {{interval}}: squeeze released (raw)')
+alertcondition(alQLong, "Qualified release - long", 'MSqueeze {{ticker}} {{interval}}: qualified release LONG')
+alertcondition(alQShort, "Qualified release - short", 'MSqueeze {{ticker}} {{interval}}: qualified release SHORT')
+alertcondition(alHtf, "HTF squeeze started / released", 'MSqueeze {{ticker}} {{interval}}: HTF squeeze state changed')
+

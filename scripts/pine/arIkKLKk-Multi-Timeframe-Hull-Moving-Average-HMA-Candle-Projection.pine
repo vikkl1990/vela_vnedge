@@ -1,0 +1,58 @@
+//@version=6
+indicator("Multi-Timeframe Hull Moving Average (HMA) Candle Projection", overlay=true, max_boxes_count=100, max_lines_count=100)
+
+// --- INPUTS ---
+string htf_input   = input.timeframe("15", "Higher Timeframe (e.g., 15, 60, W)")
+int hma_length     = input.int(9, "Hull MA Length")
+int shift_bars     = input.int(5, "Bars to Shift Right")
+
+// --- FETCH HTF OHLC DATA ---
+float htf_o = request.security(syminfo.tickerid, htf_input, open, barmerge.gaps_off, barmerge.lookahead_off)
+float htf_h = request.security(syminfo.tickerid, htf_input, high, barmerge.gaps_off, barmerge.lookahead_off)
+float htf_l = request.security(syminfo.tickerid, htf_input, low, barmerge.gaps_off, barmerge.lookahead_off)
+float htf_c = request.security(syminfo.tickerid, htf_input, close, barmerge.gaps_off, barmerge.lookahead_off)
+
+// --- CALCULATE HULL MA FOR OHLC POINTS ---
+float hull_o = ta.hma(htf_o, hma_length)
+float hull_h = ta.hma(htf_h, hma_length)
+float hull_l = ta.hma(htf_l, hma_length)
+float hull_c = ta.hma(htf_c, hma_length)
+
+// --- TREND & COLOR LOGIC ---
+bool is_bullish    = hull_c >= hull_o
+color candle_color = is_bullish ? color.green : color.red
+color wick_color   = is_bullish ? color.green : color.red
+
+// --- LIVE PROJECTION ENGINE ---
+var box live_candle_body = na
+var line live_candle_wick = na
+
+if barstate.islast
+    // Clear the previous real-time drawing to prevent screen clutter
+    box.delete(live_candle_body)
+    line.delete(live_candle_wick)
+    
+    // X-Coordinate Calculations for the right margin space
+    int target_x1 = bar_index + shift_bars
+    int target_x2 = bar_index + shift_bars + 2 
+    int wick_x    = bar_index + shift_bars + 1 
+    
+    // Draw the Live Projected Hull Candle Body
+    live_candle_body := box.new(
+         left=target_x1, 
+         top=math.max(hull_o, hull_c), 
+         right=target_x2, 
+         bottom=math.min(hull_o, hull_c), 
+         bgcolor=color.new(candle_color, 30), 
+         border_color=candle_color
+         )
+         
+    // Draw the Live Projected Hull Candle Wick
+    live_candle_wick := line.new(
+         x1=wick_x, 
+         y1=hull_h, 
+         x2=wick_x, 
+         y2=hull_l, 
+         color=wick_color, 
+         width=2
+         )

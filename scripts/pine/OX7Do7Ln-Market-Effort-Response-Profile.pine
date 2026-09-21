@@ -1,0 +1,459 @@
+//@version=6
+// FINAL LOCK
+// Cross-market visual QA: XAUUSD 1D, BTCUSD 1D, EURUSD 1D.
+// Core effort-response engine, adaptive occupied-price profile geometry,
+// semantic colors, dominant-row logic, and visual defaults are frozen.
+// Reopen only for a genuine functional/compile bug.
+//
+indicator("Market Effort Response Profile", shorttitle="EFFORT PROFILE", overlay=true, max_boxes_count=300, max_lines_count=150, max_labels_count=100)
+
+// Market Intelligence Lab #5
+// Market Effort Response Profile v1.0 — FINAL LOCK
+// Production lock after visual QA on XAUUSD 1D.
+// Engine, scoring, adaptive occupied-price geometry, compact profile renderer,
+// exact-line Support/Resistance labels, and final visual hierarchy are frozen.
+// Reopen only for a genuine compile or functional defect.
+//
+//
+// Visual product language: right-side horizontal price profile + active structural
+// references + highlighted dominant zone.
+// Original methodology: rows measure effort-versus-achieved-response behavior.
+// This script does NOT calculate pivot reversal density or reversal probability.
+
+//------------------------------------------------------------------------------
+// Inputs
+//------------------------------------------------------------------------------
+G1 = "Engine"
+measureLen  = input.int(14, "Measurement Window", minval=5, maxval=60, group=G1)
+baseLen     = input.int(55, "Behavior Baseline", minval=20, maxval=200, group=G1)
+atrLen      = input.int(14, "ATR Length", minval=5, maxval=60, group=G1)
+smoothLen   = input.int(5, "Smoothing", minval=1, maxval=20, group=G1)
+
+G2 = "Profile"
+lookback    = input.int(120, "Calculation Lookback", minval=40, maxval=350, group=G2)
+rows        = input.int(22, "Profile Rows", minval=10, maxval=32, group=G2)
+widthBars   = input.int(36, "Profile Width", minval=16, maxval=70, group=G2)
+rightOffset = input.int(7, "Right Offset", minval=3, maxval=25, group=G2)
+smoothRad   = input.int(1, "Row Smoothing Radius", minval=0, maxval=3, group=G2)
+
+G3 = "Structural References"
+pivotLen    = input.int(5, "Pivot Confirmation", minval=2, maxval=15, group=G3)
+maxLevels   = input.int(7, "Active Levels", minval=3, maxval=12, group=G3)
+minSepATR   = input.float(0.55, "Minimum Level Separation (ATR)", minval=0.15, maxval=2.0, step=0.05, group=G3)
+
+G4 = "Visuals"
+showProfile = input.bool(true, "Behavior Profile", group=G4)
+showLevels  = input.bool(true, "Structural Levels", group=G4)
+showZone    = input.bool(true, "Dominant Response Zone", group=G4)
+showCard    = input.bool(true, "Profile Card", group=G4)
+
+//------------------------------------------------------------------------------
+// Helpers
+//------------------------------------------------------------------------------
+clamp01(x) =>
+    math.max(0.0, math.min(1.0, x))
+
+//------------------------------------------------------------------------------
+// Original effort-response engine
+//------------------------------------------------------------------------------
+atr = ta.atr(atrLen)
+atrSafe = math.max(atr, syminfo.mintick)
+
+pathNow  = math.sum(math.abs(close - close[1]), measureLen)
+rangeNow = math.sum(high - low, measureLen)
+volNow   = math.sum(atr, measureLen)
+
+pathBase  = ta.sma(pathNow, baseLen)
+rangeBase = ta.sma(rangeNow, baseLen)
+volBase   = ta.sma(volNow, baseLen)
+
+pathEff  = clamp01((pathNow / math.max(pathBase, syminfo.mintick) - 0.55) / 1.15)
+rangeEff = clamp01((rangeNow / math.max(rangeBase, syminfo.mintick) - 0.55) / 1.15)
+volEff   = clamp01((volNow / math.max(volBase, syminfo.mintick) - 0.55) / 1.15)
+
+effort = clamp01(ta.ema(0.42 * pathEff + 0.36 * rangeEff + 0.22 * volEff, smoothLen))
+
+netATR = math.abs(close - close[measureLen]) / math.max(atrSafe * math.sqrt(measureLen), syminfo.mintick)
+netProgress = clamp01(netATR / 2.20)
+
+upShare = ta.sma(close > close[1] ? 1.0 : 0.0, measureLen)
+dnShare = ta.sma(close < close[1] ? 1.0 : 0.0, measureLen)
+persistence = clamp01((math.max(upShare, dnShare) - 0.45) / 0.40)
+
+span = (ta.highest(high, measureLen) - ta.lowest(low, measureLen)) / math.max(atrSafe * math.sqrt(measureLen), syminfo.mintick)
+spanProgress = clamp01(span / 2.80)
+
+response = clamp01(ta.ema(0.50 * netProgress + 0.30 * persistence + 0.20 * spanProgress, smoothLen))
+balance = response - effort
+efficiency = clamp01(response / math.max(effort, 0.08))
+
+//------------------------------------------------------------------------------
+// Confirmed structural references
+//------------------------------------------------------------------------------
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+
+var float[] levelPrice = array.new_float()
+var int[] levelSide = array.new_int()     // +1 resistance / -1 support
+var int[] levelBorn = array.new_int()
+
+addLevel(float px, int side) =>
+    bool farEnough = true
+    if array.size(levelPrice) > 0
+        for i = 0 to array.size(levelPrice) - 1
+            if math.abs(px - array.get(levelPrice, i)) < atrSafe * minSepATR
+                farEnough := false
+    if farEnough
+        array.unshift(levelPrice, px)
+        array.unshift(levelSide, side)
+        array.unshift(levelBorn, bar_index - pivotLen)
+        if array.size(levelPrice) > maxLevels
+            array.pop(levelPrice)
+            array.pop(levelSide)
+            array.pop(levelBorn)
+
+if barstate.isconfirmed
+    if not na(ph)
+        addLevel(ph, 1)
+    if not na(pl)
+        addLevel(pl, -1)
+
+//------------------------------------------------------------------------------
+// Profile drawing — adaptive occupied-domain geometry
+//------------------------------------------------------------------------------
+// The profile uses the original effort-response engine, but the vertical layout
+// is no longer tied directly to a raw high/low ladder. Instead, observations are
+// sorted into adaptive occupied-price quantile rows. This prevents the profile
+// from collapsing into a narrow cluster when the lookback contains large ranges
+// but most observations are concentrated in a smaller current-price region.
+
+var box[] profBoxes = array.new_box()
+var line[] profLines = array.new_line()
+var label[] profLabels = array.new_label()
+var box dominantBox = na
+
+clearObjects() =>
+    if array.size(profBoxes) > 0
+        for i = 0 to array.size(profBoxes) - 1
+            box.delete(array.get(profBoxes, i))
+    array.clear(profBoxes)
+
+    if array.size(profLines) > 0
+        for i = 0 to array.size(profLines) - 1
+            line.delete(array.get(profLines, i))
+    array.clear(profLines)
+
+    if array.size(profLabels) > 0
+        for i = 0 to array.size(profLabels) - 1
+            label.delete(array.get(profLabels, i))
+    array.clear(profLabels)
+
+var float dominantPrice = na
+var float dominantStrength = na
+var float dominantBalance = na
+
+if barstate.islast
+    clearObjects()
+
+    if not na(dominantBox)
+        box.delete(dominantBox)
+        dominantBox := na
+
+    // Collect valid observations.
+    float[] obsPx = array.new_float()
+    float[] obsEff = array.new_float()
+    float[] obsResp = array.new_float()
+
+    for j = 0 to lookback - 1
+        px = hlc3[j]
+        e = effort[j]
+        r = response[j]
+        if not na(px) and not na(e) and not na(r)
+            array.push(obsPx, px)
+            array.push(obsEff, e)
+            array.push(obsResp, r)
+
+    nObs = array.size(obsPx)
+
+    // Build quantile boundaries from occupied prices.
+    float[] sortedPx = array.copy(obsPx)
+    array.sort(sortedPx, order.ascending)
+
+    float[] qLo = array.new_float(rows, na)
+    float[] qHi = array.new_float(rows, na)
+
+    if nObs > 0
+        for i = 0 to rows - 1
+            loFrac = float(i) / float(rows)
+            hiFrac = float(i + 1) / float(rows)
+            loIdx = math.max(0, math.min(nObs - 1, int(math.floor(loFrac * (nObs - 1)))))
+            hiIdx = math.max(0, math.min(nObs - 1, int(math.ceil(hiFrac * (nObs - 1)))))
+            loPx = array.get(sortedPx, loIdx)
+            hiPx = array.get(sortedPx, hiIdx)
+
+            // Guarantee visible row height in flat/duplicated areas.
+            minRow = atrSafe * 0.10
+            if hiPx - loPx < minRow
+                midPx = (hiPx + loPx) * 0.5
+                loPx := midPx - minRow * 0.5
+                hiPx := midPx + minRow * 0.5
+
+            array.set(qLo, i, loPx)
+            array.set(qHi, i, hiPx)
+
+    float[] rowActivity = array.new_float(rows, 0.0)
+    float[] rowBalance = array.new_float(rows, 0.0)
+    int[] rowCount = array.new_int(rows, 0)
+
+    // Allocate each observation to the row whose adaptive price interval contains it.
+    if nObs > 0
+        for j = 0 to nObs - 1
+            px = array.get(obsPx, j)
+            e = array.get(obsEff, j)
+            r = array.get(obsResp, j)
+
+            int idx = rows - 1
+            for i = 0 to rows - 1
+                loPx = array.get(qLo, i)
+                hiPx = array.get(qHi, i)
+                if px >= loPx and px <= hiPx
+                    idx := i
+                    break
+
+            act = (e + r) * 0.5
+            bal = r - e
+            array.set(rowActivity, idx, array.get(rowActivity, idx) + act)
+            array.set(rowBalance, idx, array.get(rowBalance, idx) + bal)
+            array.set(rowCount, idx, array.get(rowCount, idx) + 1)
+
+    // Smooth only across occupied neighboring rows.
+    float[] smoothActivity = array.new_float(rows, 0.0)
+    float maxActivity = 0.0
+    int domIdx = 0
+
+    for i = 0 to rows - 1
+        float sm = 0.0
+        float wt = 0.0
+
+        for k = -smoothRad to smoothRad
+            ni = i + k
+            if ni >= 0 and ni < rows and array.get(rowCount, ni) > 0
+                w = float(smoothRad + 1 - math.abs(k))
+                sm += array.get(rowActivity, ni) * w
+                wt += w
+
+        sm := wt > 0 ? sm / wt : array.get(rowActivity, i)
+        array.set(smoothActivity, i, sm)
+
+        if sm > maxActivity
+            maxActivity := sm
+            domIdx := i
+
+    domCnt = array.get(rowCount, domIdx)
+    domBal = domCnt > 0 ? array.get(rowBalance, domIdx) / domCnt : 0.0
+    domLo = nObs > 0 ? array.get(qLo, domIdx) : close
+    domHi = nObs > 0 ? array.get(qHi, domIdx) : close
+    dominantPrice := (domLo + domHi) * 0.5
+    dominantStrength := maxActivity
+    dominantBalance := domBal
+
+    profileRight = bar_index - 2
+
+    if showProfile and nObs > 0
+        for i = 0 to rows - 1
+            cnt = array.get(rowCount, i)
+
+            // Empty rows are intentionally skipped so the profile tells the
+            // occupied behavioral story rather than drawing dead space.
+            if cnt > 0
+                a = array.get(smoothActivity, i)
+                norm = maxActivity > 0 ? a / maxActivity : 0.0
+                wBars = math.max(3, int(math.round((0.15 + norm * 0.85) * widthBars)))
+
+                avgBal = array.get(rowBalance, i) / cnt
+                rowCol = avgBal > 0.08 ? color.rgb(38,151,143) :
+                         avgBal < -0.12 ? color.rgb(158,70,67) :
+                         color.rgb(104,112,116)
+
+                rawBot = array.get(qLo, i)
+                rawTop = array.get(qHi, i)
+                rowMid = (rawBot + rawTop) * 0.5
+
+                // Compact-strip renderer: preserve the adaptive row location and
+                // activity width, but do not fill the entire quantile interval.
+                // This keeps the profile readable and removes stacked-box clutter.
+                rawHalf = math.abs(rawTop - rawBot) * 0.5
+                stripHalf = math.min(rawHalf * 0.42, atrSafe * 0.085)
+                stripHalf := math.max(stripHalf, syminfo.mintick * 2.0)
+                yBot = rowMid - stripHalf
+                yTop = rowMid + stripHalf
+                isDom = i == domIdx
+
+                bx = box.new(
+                     profileRight - wBars, yTop,
+                     profileRight, yBot,
+                     xloc=xloc.bar_index,
+                     border_color=color.new(rowCol, isDom ? 12 : 66),
+                     bgcolor=color.new(rowCol, isDom ? 54 : 76)
+                )
+                array.push(profBoxes, bx)
+
+                edge = line.new(
+                     profileRight, yBot,
+                     profileRight, yTop,
+                     xloc=xloc.bar_index,
+                     color=color.new(rowCol, isDom ? 0 : 50),
+                     width=isDom ? 2 : 1
+                )
+                array.push(profLines, edge)
+
+    // Dominant row is highlighted inside its own adaptive price interval only.
+    if showZone and nObs > 0 and domCnt > 0
+        domNorm = maxActivity > 0 ? array.get(smoothActivity, domIdx) / maxActivity : 0.0
+        domWidth = math.max(4, int(math.round((0.15 + domNorm * 0.85) * widthBars)))
+
+        domRawHalf = math.abs(domHi - domLo) * 0.5
+        domStripHalf = math.min(domRawHalf * 0.42, atrSafe * 0.095)
+        domStripHalf := math.max(domStripHalf, syminfo.mintick * 2.0)
+
+        dominantBox := box.new(
+             profileRight - domWidth - 2, dominantPrice + domStripHalf,
+             profileRight + 1, dominantPrice - domStripHalf,
+             xloc=xloc.bar_index,
+             border_color=color.new(color.rgb(224,174,45), 10),
+             border_width=1,
+             bgcolor=color.new(color.rgb(224,174,45), 93)
+        )
+
+        // Peak label uses the same compact right-edge language as S/R.
+        // Its vertical position is adjusted later if it would collide with S/R.
+
+    // Keep only nearest structural reference above and below current price.
+    // Labels use price + relative profile activity, similar in hierarchy to the
+    // reference presentation, while preserving this script's own methodology.
+    if showLevels and array.size(levelPrice) > 0
+        float nearestR = na
+        float nearestS = na
+        int nearestRBorn = na
+        int nearestSBorn = na
+
+        for i = 0 to array.size(levelPrice) - 1
+            lp = array.get(levelPrice, i)
+            side = array.get(levelSide, i)
+            born = array.get(levelBorn, i)
+
+            if side == 1 and lp > close
+                if na(nearestR) or lp < nearestR
+                    nearestR := lp
+                    nearestRBorn := born
+
+            if side == -1 and lp < close
+                if na(nearestS) or lp > nearestS
+                    nearestS := lp
+                    nearestSBorn := born
+
+        // Collision-aware peak label placement. Keep the actual profile peak
+        // geometry unchanged; only move its text vertically when nearby labels
+        // would otherwise overlap.
+        minLabelGap = atrSafe * 0.62
+        peakLabelY = dominantPrice
+        supportLabelY = nearestS
+        resistanceLabelY = nearestR
+
+        // Structural labels stay exactly aligned with their true level lines.
+        // Only the descriptive Peak label is allowed to move for readability.
+        if not na(nearestS) and math.abs(dominantPrice - nearestS) < minLabelGap
+            peakLabelY := dominantPrice + minLabelGap * 0.62
+
+        if not na(nearestR) and math.abs(peakLabelY - nearestR) < minLabelGap
+            peakLabelY := dominantPrice - minLabelGap * 0.62
+
+        peakCol = color.rgb(224,174,45)
+        peakLabel = label.new(
+             profileRight + 1, peakLabelY,
+             "Peak " + str.tostring(dominantPrice, format.mintick),
+             xloc=xloc.bar_index, style=label.style_label_left,
+             color=color.new(peakCol, 82), textcolor=peakCol, size=size.small)
+        array.push(profLabels, peakLabel)
+
+        if not na(nearestR)
+            colR = color.rgb(211,82,76)
+            startR = math.max(nearestRBorn, bar_index - lookback + 1)
+            lnR = line.new(startR, nearestR, profileRight, nearestR,
+                 xloc=xloc.bar_index, color=color.new(colR, 38), width=1, style=line.style_dashed)
+            array.push(profLines, lnR)
+
+            idxRawR = 0
+            bestDistR = 10e10
+            for i = 0 to rows - 1
+                midR = (array.get(qLo, i) + array.get(qHi, i)) * 0.5
+                distR = math.abs(nearestR - midR)
+                if distR < bestDistR
+                    bestDistR := distR
+                    idxRawR := i
+
+            relR = maxActivity > 0 ? array.get(smoothActivity, idxRawR) / maxActivity : 0.0
+            txtR = "Resistance " + str.tostring(nearestR, format.mintick) + " | " + str.tostring(relR, "#.00")
+            lbR = label.new(profileRight + 1, resistanceLabelY, txtR,
+                 xloc=xloc.bar_index, style=label.style_label_left,
+                 color=color.new(colR, 76), textcolor=colR, size=size.small)
+            array.push(profLabels, lbR)
+
+        if not na(nearestS)
+            colS = color.rgb(48,174,145)
+            startS = math.max(nearestSBorn, bar_index - lookback + 1)
+            lnS = line.new(startS, nearestS, profileRight, nearestS,
+                 xloc=xloc.bar_index, color=color.new(colS, 38), width=1, style=line.style_dashed)
+            array.push(profLines, lnS)
+
+            idxRawS = 0
+            bestDistS = 10e10
+            for i = 0 to rows - 1
+                midS = (array.get(qLo, i) + array.get(qHi, i)) * 0.5
+                distS = math.abs(nearestS - midS)
+                if distS < bestDistS
+                    bestDistS := distS
+                    idxRawS := i
+
+            relS = maxActivity > 0 ? array.get(smoothActivity, idxRawS) / maxActivity : 0.0
+            txtS = "Support " + str.tostring(nearestS, format.mintick) + " | " + str.tostring(relS, "#.00")
+            lbS = label.new(profileRight + 1, supportLabelY, txtS,
+                 xloc=xloc.bar_index, style=label.style_label_left,
+                 color=color.new(colS, 76), textcolor=colS, size=size.small)
+            array.push(profLabels, lbS)
+
+//------------------------------------------------------------------------------
+// Visual interpretation
+//------------------------------------------------------------------------------
+// Profile width represents relative behavioral activity in each adaptive
+// occupied-price row. Rows use restrained teal, muted red, and soft-neutral
+// behavioral tinting. The outlined profile-peak row is the highest-activity
+// row in the current sample; it is not a target, probability, support/resistance
+// guarantee, or expected future reaction.
+
+//------------------------------------------------------------------------------
+// Compact profile card
+//------------------------------------------------------------------------------
+var table card = table.new(position.top_right, 2, 6, bgcolor=color.rgb(29,34,40), frame_color=color.rgb(54,60,68), frame_width=1)
+
+if barstate.islast and showCard
+    confirmedEffort = barstate.isconfirmed ? effort : effort[1]
+    confirmedResponse = barstate.isconfirmed ? response : response[1]
+    confirmedEfficiency = barstate.isconfirmed ? efficiency : efficiency[1]
+    confirmedBalance = confirmedResponse - confirmedEffort
+
+    table.cell(card, 0, 0, "EFFORT PROFILE", text_color=color.white, bgcolor=color.rgb(22,27,32), text_size=size.small)
+    table.cell(card, 1, 0, "v1.0", text_color=color.rgb(180,185,192), bgcolor=color.rgb(22,27,32), text_size=size.small)
+    table.cell(card, 0, 1, "EFFORT", text_color=color.rgb(190,195,202), bgcolor=color.rgb(35,41,48), text_size=size.small)
+    table.cell(card, 1, 1, str.tostring(confirmedEffort, "#.00"), text_color=color.white, bgcolor=color.rgb(40,46,54), text_size=size.small)
+    table.cell(card, 0, 2, "RESPONSE", text_color=color.rgb(190,195,202), bgcolor=color.rgb(35,41,48), text_size=size.small)
+    table.cell(card, 1, 2, str.tostring(confirmedResponse, "#.00"), text_color=color.white, bgcolor=color.rgb(40,46,54), text_size=size.small)
+    table.cell(card, 0, 3, "EFFICIENCY", text_color=color.rgb(190,195,202), bgcolor=color.rgb(35,41,48), text_size=size.small)
+    table.cell(card, 1, 3, str.tostring(confirmedEfficiency, "#.00"), text_color=color.white, bgcolor=color.rgb(40,46,54), text_size=size.small)
+    table.cell(card, 0, 4, "BALANCE", text_color=color.rgb(190,195,202), bgcolor=color.rgb(35,41,48), text_size=size.small)
+    table.cell(card, 1, 4, confirmedBalance > 0.08 ? "RESPONSE-LED" : confirmedBalance < -0.12 ? "EFFORT-LED" : "BALANCED",
+         text_color=confirmedBalance > 0.08 ? color.rgb(52,171,151) : confirmedBalance < -0.12 ? color.rgb(205,82,70) : color.rgb(218,158,57),
+         bgcolor=color.rgb(40,46,54), text_size=size.small)
+    table.cell(card, 0, 5, "PROFILE PEAK", text_color=color.rgb(190,195,202), bgcolor=color.rgb(35,41,48), text_size=size.small)
+    table.cell(card, 1, 5, na(dominantPrice) ? "—" : str.tostring(dominantPrice, format.mintick),
+         text_color=color.rgb(230,171,61), bgcolor=color.rgb(40,46,54), text_size=size.small)

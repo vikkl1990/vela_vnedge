@@ -1,0 +1,171 @@
+//@version=6
+indicator("Geometry | Manifold Learning", shorttitle="GML", overlay=false, max_bars_back=500)
+
+int vecLen = input.int(20, "Embedding Dimension (N)", minval=5, maxval=50)
+int kNeighbors = input.int(5, "k-Nearest Neighbors", minval=2, maxval=15)
+int smoothLen = input.int(5, "Smoothing Length", minval=1, maxval=20)
+float curvThresh = input.float(0.5, "Curvature Threshold", minval=0.1, maxval=2.0, step=0.1)
+string srcType = input.string("HLC3", "Price Source", options=["Close", "Open", "HL2", "HLC3", "OHLC4"])
+
+bool showGeo = input.bool(true, "Show Geodesic Distance")
+bool showCurv = input.bool(true, "Show Local Curvature")
+bool showTan = input.bool(true, "Show Tangent Projection")
+bool showDim = input.bool(true, "Show Intrinsic Dimensionality")
+bool showMean = input.bool(true, "Show Geodesic Mean on Price Chart")
+bool showSig = input.bool(true, "Show Signals")
+
+float src = switch srcType
+    "Close" => close
+    "Open" => open
+    "HL2" => hl2
+    "OHLC4" => ohlc4
+    => hlc3
+
+float tempMin1 = 1e10
+float tempMin2 = 1e10
+float tempMin3 = 1e10
+float tempMin4 = 1e10
+float tempMin5 = 1e10
+
+for i = 1 to vecLen - 1
+    float dist = math.abs(src - src[i])
+    if dist < tempMin1
+        tempMin5 := tempMin4
+        tempMin4 := tempMin3
+        tempMin3 := tempMin2
+        tempMin2 := tempMin1
+        tempMin1 := dist
+    else if dist < tempMin2
+        tempMin5 := tempMin4
+        tempMin4 := tempMin3
+        tempMin3 := tempMin2
+        tempMin2 := dist
+    else if dist < tempMin3
+        tempMin5 := tempMin4
+        tempMin4 := tempMin3
+        tempMin3 := dist
+    else if dist < tempMin4
+        tempMin5 := tempMin4
+        tempMin4 := dist
+    else if dist < tempMin5
+        tempMin5 := dist
+
+float knnAvg = (tempMin1 + tempMin2 + tempMin3 + tempMin4 + tempMin5) / 5.0
+
+float euclidean = math.abs(src - src[vecLen - 1])
+float geodesic = 0.0
+
+for i = 0 to vecLen - 2
+    geodesic += math.abs(src[i] - src[i + 1])
+
+float geoRatio = euclidean > 0.0 ? geodesic / euclidean : 1.0
+float geoMean = ta.sma(geoRatio, vecLen * 2)
+float geoStd = ta.stdev(geoRatio, vecLen * 2)
+float geoZ = geoStd > 0.0 ? (geoRatio - geoMean) / geoStd : 0.0
+float priceGeoMean = ta.sma(src, vecLen)
+
+float dp = src - src[1]
+float ddp = src - 2.0 * src[1] + src[2]
+float curvDenom = math.pow(1.0 + dp * dp, 1.5)
+float curvature = curvDenom > 0.0 ? math.abs(ddp) / curvDenom : 0.0
+float curvMean = ta.sma(curvature, vecLen)
+float curvStd = ta.stdev(curvature, vecLen)
+float curvZ = curvStd > 0.0 ? (curvature - curvMean) / curvStd : 0.0
+
+float tanMu = ta.sma(src, smoothLen)
+float tanDev = src - tanMu
+float tanNorm = ta.stdev(src, smoothLen)
+float tanProj = tanNorm > 0.0 ? tanDev / tanNorm : 0.0
+
+float radius = knnAvg
+float radius2 = 2.0 * radius
+int countR = 0
+int countR2 = 0
+int totalPairs = 0
+
+for i = 1 to vecLen - 1
+    float d = math.abs(src - src[i])
+    totalPairs += 1
+    if d <= radius
+        countR += 1
+    if d <= radius2
+        countR2 += 1
+
+float cr = totalPairs > 0 ? float(countR) / float(totalPairs) : 0.0001
+float cr2 = totalPairs > 0 ? float(countR2) / float(totalPairs) : 0.0001
+float intrDim = cr > 0.0 and cr2 > 0.0 ? math.log(cr2 / cr) / math.log(2.0) : 1.0
+
+intrDim := math.max(math.min(intrDim, float(kNeighbors)), 0.0)
+
+float intrDimNorm = (intrDim / float(kNeighbors)) * 2.0 - 1.0
+
+float signedPath = 0.0
+
+for i = 0 to vecLen - 2
+    signedPath += src[i] - src[i + 1]
+
+float embedCoord = geodesic > 0.0 ? signedPath / geodesic : 0.0
+embedCoord := math.max(math.min(embedCoord, 1.0), -1.0)
+
+float embedSmooth = ta.sma(embedCoord, smoothLen)
+float knnMean = ta.sma(knnAvg, vecLen * 2)
+float knnStdDev = ta.stdev(knnAvg, vecLen * 2)
+float knnZ = knnStdDev > 0.0 ? (knnAvg - knnMean) / knnStdDev : 0.0
+
+bool highCurv = curvZ > curvThresh
+bool knnTight = knnZ < 0.0
+bool knnLoose = knnZ > 0.5
+bool embedTrough = ta.crossover(embedSmooth, -0.5)
+bool embedPeak = ta.crossunder(embedSmooth, 0.5)
+bool tanRecovery = tanProj > tanProj[1] and tanProj < 0.0
+bool linearPath = geoZ < -0.5
+
+bool gmlBuy = highCurv and embedTrough and knnTight and tanRecovery
+bool gmlSell = linearPath and embedPeak and knnLoose
+
+color colGeo = geoZ >= 0.0 ? color.new(color.orange, 20) : color.new(color.teal, 20)
+color colCurv = curvZ > curvThresh ? color.new(color.red, 15) : color.new(color.lime, 35)
+color colTan = tanProj >= 0.0 ? color.new(color.aqua, 20) : color.new(color.fuchsia, 20)
+color colDim = color.new(color.yellow, 20)
+color colEmbed = embedSmooth >= 0.0 ? color.new(color.lime, 30) : color.new(color.red, 30)
+color colKnn = knnZ > 0.0 ? color.new(color.orange, 40) : color.new(color.teal, 40)
+
+hline(0.0, "Zero", color.new(color.white, 65), hline.style_dashed)
+hline(1.0, "Upper", color.new(color.white, 82), hline.style_dotted)
+hline(-1.0, "Lower", color.new(color.white, 82), hline.style_dotted)
+hline(0.5, "+0.5", color.new(color.gray, 80), hline.style_dotted)
+hline(-0.5, "-0.5", color.new(color.gray, 80), hline.style_dotted)
+
+plot(showGeo ? geoZ : na, title="Geodesic Ratio (z)", color=colGeo, linewidth=2)
+plot(showCurv ? curvZ : na, title="Local Curvature (z)", color=colCurv, linewidth=1, style=plot.style_histogram)
+plot(showTan ? tanProj : na, title="Tangent Projection", color=colTan, linewidth=2)
+plot(embedSmooth, title="Embedding Coordinate", color=colEmbed, linewidth=2, style=plot.style_area)
+plot(showDim ? intrDimNorm : na, title="Intrinsic Dimensionality (norm)", color=colDim, linewidth=1, style=plot.style_stepline)
+plot(knnZ * 0.5, title="kNN Tightness (z, scaled)", color=colKnn, linewidth=1)
+plot(showMean ? priceGeoMean : na, title="Geodesic Mean (Price)", color=color.new(color.yellow, 20), linewidth=2, force_overlay=true)
+
+plotshape(showSig and gmlBuy ? embedSmooth : na, title="Manifold Reversal Buy", style=shape.triangleup, location=location.absolute, color=color.lime, size=size.normal, text="R")
+plotshape(showSig and gmlSell ? embedSmooth : na, title="Manifold Continuation Sell", style=shape.triangledown, location=location.absolute, color=color.red, size=size.normal, text="C")
+
+alertcondition(gmlBuy, "GML Manifold Reversal", "Manifold Learning: Reversal detected on price manifold")
+alertcondition(gmlSell, "GML Manifold Continuation", "Manifold Learning: Linear continuation detected")
+
+var table infoTable = table.new(position.top_right, 2, 8, bgcolor=color.new(color.black, 65), border_width=1, border_color=color.new(color.gray, 50))
+
+if barstate.islast
+    table.cell(infoTable, 0, 0, "GML Metric", text_color=color.silver, text_size=size.small)
+    table.cell(infoTable, 1, 0, "Value", text_color=color.silver, text_size=size.small)
+    table.cell(infoTable, 0, 1, "Geo Ratio", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 1, str.tostring(geoRatio, "#.0000"), text_color=color.orange, text_size=size.small)
+    table.cell(infoTable, 0, 2, "Curvature (z)", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 2, str.tostring(curvZ, "#.0000"), text_color=curvZ > curvThresh ? color.red : color.lime, text_size=size.small)
+    table.cell(infoTable, 0, 3, "Tangent Proj", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 3, str.tostring(tanProj, "#.0000"), text_color=tanProj >= 0.0 ? color.aqua : color.fuchsia, text_size=size.small)
+    table.cell(infoTable, 0, 4, "Intr. Dim", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 4, str.tostring(intrDim, "#.00"), text_color=color.yellow, text_size=size.small)
+    table.cell(infoTable, 0, 5, "Embed Coord", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 5, str.tostring(embedSmooth, "#.0000"), text_color=embedSmooth >= 0.0 ? color.lime : color.red, text_size=size.small)
+    table.cell(infoTable, 0, 6, "kNN Avg Dist", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 6, str.tostring(knnAvg, "#.00"), text_color=color.teal, text_size=size.small)
+    table.cell(infoTable, 0, 7, "Geo Mean", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 7, str.tostring(priceGeoMean, "#.00"), text_color=color.yellow, text_size=size.small)

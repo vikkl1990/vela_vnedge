@@ -1,0 +1,58 @@
+//@version=6
+indicator(title = 'Bollinger Bands 1σ / 2σ / 3σ', shorttitle = 'BB 3STD', overlay = true)
+
+// ── Inputs
+length = input.int(20, 'Length', minval = 1, group = 'Bands')
+src = input.source(close, 'Source', group = 'Bands')
+maType = input.string('SMA', 'Basis MA', options = ['SMA', 'EMA', 'RMA', 'WMA'], group = 'Bands')
+mult1 = input.float(1.0, 'StdDev 1', minval = 0.1, step = 0.1, group = 'Bands')
+mult2 = input.float(2.0, 'StdDev 2', minval = 0.1, step = 0.1, group = 'Bands')
+mult3 = input.float(3.0, 'StdDev 3', minval = 0.1, step = 0.1, group = 'Bands')
+
+col2bg = input.color(color.new(color.green, 97), '2σ corridor (1σ→2σ)', group = 'Bands')
+col3bg = input.color(color.new(color.red, 97), '3σ corridor (2σ→3σ)', group = 'Bands')
+
+showMarks = input.bool(true, 'Show 2σ close-outside markers', group = '2σ Alerts')
+
+// White @ 50% opacity
+bandColor = color.new(color.white, 90)
+
+// ── Basis (math only) + stdev
+basis = switch maType
+    'EMA' => ta.ema(src, length)
+    'RMA' => ta.rma(src, length)
+    'WMA' => ta.wma(src, length)
+    => ta.sma(src, length)
+
+dev = ta.stdev(src, length)
+
+u1 = basis + mult1 * dev
+l1 = basis - mult1 * dev
+u2 = basis + mult2 * dev
+l2 = basis - mult2 * dev
+u3 = basis + mult3 * dev
+l3 = basis - mult3 * dev
+
+// ── All σ lines white (same weight) + corridor fills for 2σ / 3σ
+pU1 = plot(u1, 'Upper 1σ', color = bandColor, linewidth = 1)
+pL1 = plot(l1, 'Lower 1σ', color = bandColor, linewidth = 1)
+pU2 = plot(u2, 'Upper 2σ', color = bandColor, linewidth = 1)
+pL2 = plot(l2, 'Lower 2σ', color = bandColor, linewidth = 1)
+pU3 = plot(u3, 'Upper 3σ', color = bandColor, linewidth = 1)
+pL3 = plot(l3, 'Lower 3σ', color = bandColor, linewidth = 1)
+
+fill(pU1, pU2, color = col2bg, title = 'Upper 2σ corridor')
+fill(pL1, pL2, color = col2bg, title = 'Lower 2σ corridor')
+fill(pU2, pU3, color = col3bg, title = 'Upper 3σ corridor')
+fill(pL2, pL3, color = col3bg, title = 'Lower 3σ corridor')
+
+// ── 2σ close outside only
+closeAbove = close > u2
+closeBelow = close < l2
+
+plotshape(showMarks and closeAbove, title = 'Close above 2σ', style = shape.triangledown, location = location.abovebar, color = color.new(color.red, 0), size = size.tiny)
+plotshape(showMarks and closeBelow, title = 'Close below 2σ', style = shape.triangleup, location = location.belowbar, color = color.new(color.red, 0), size = size.tiny)
+
+alertcondition(closeAbove, title = 'Close above 2σ', message = '{{ticker}} closed above upper 2σ band')
+alertcondition(closeBelow, title = 'Close below 2σ', message = '{{ticker}} closed below lower 2σ band')
+alertcondition(closeAbove or closeBelow, title = 'Any 2σ close outside', message = '{{ticker}} closed outside 2σ bands')

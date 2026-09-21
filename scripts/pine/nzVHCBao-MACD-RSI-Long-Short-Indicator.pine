@@ -1,0 +1,133 @@
+//@version=6
+indicator("MACD & RSI Long/Short Indicator", overlay=true)
+
+// =============================================================================
+// INPUTS
+// =============================================================================
+
+// --- Signal Source ---
+grp_source    = "STRATEGY SIGNAL SOURCE"
+use_rsi       = input.bool(true, title="Use RSI Signals", group=grp_source)
+use_macd      = input.bool(true, title="Use MACD Signals", group=grp_source)
+cooldown_bars = input.int(50, title="Signal Cooldown (Bars)", minval=0, tooltip="Minimum bars to wait before generating a new signal", group=grp_source)
+
+// --- Direction Filters ---
+grp_sltp_long  = "SIGNAL DISPLAY"
+enable_long    = input.bool(true, title="Enable LE Signals", group=grp_sltp_long)
+enable_short   = input.bool(true, title="Enable SE Signals", group=grp_sltp_long)
+
+// --- Date Range Settings ---
+grp_date    = "DATE RANGE"
+start_date  = input.int(1, title="Start Date", minval=1, maxval=31, group=grp_date)
+start_month = input.int(1, title="Start Month", minval=1, maxval=12, group=grp_date)
+start_year  = input.int(2020, title="Start Year", group=grp_date)
+
+end_date    = input.int(1, title="End Date", minval=1, maxval=31, group=grp_date)
+end_month   = input.int(1, title="End Month", minval=1, maxval=12, group=grp_date)
+end_year    = input.int(2077, title="End Year", group=grp_date)
+
+// --- RSI Settings ---
+grp_rsi         = "RSI"
+rsi_oversold    = input.float(30.0, title="Over Sold Level", group=grp_rsi)
+rsi_overbought  = input.float(70.0, title="Over Bought Level", group=grp_rsi)
+rsi_length      = input.int(15, title="RSI Length", minval=1, group=grp_rsi)
+
+// --- MACD Settings ---
+grp_macd        = "MACD"
+macd_fast       = input.int(12, title="FastMA Length", minval=1, group=grp_macd)
+macd_slow       = input.int(26, title="SlowMA Length", minval=1, group=grp_macd)
+macd_signal_len = input.int(9, title="Signal Length", minval=1, group=grp_macd)
+
+// --- EMA Plotting (Visualization Only) ---
+grp_ema       = "EMA"
+enable_ema9   = input.bool(false, title="Enable EMA Length - 9", group=grp_ema)
+enable_ema21  = input.bool(false, title="Enable EMA Length - 21", group=grp_ema)
+enable_ema50  = input.bool(false, title="Enable EMA Length - 50", group=grp_ema)
+enable_ema100 = input.bool(true,  title="Enable EMA Length - 100", group=grp_ema)
+enable_ema200 = input.bool(true,  title="Enable EMA Length - 200", group=grp_ema)
+
+// =============================================================================
+// INDICATOR CALCULATIONS
+// =============================================================================
+
+// RSI
+rsi_val = ta.rsi(close, rsi_length)
+
+// MACD
+[macd_line, signal_line, _] = ta.macd(close, macd_fast, macd_slow, macd_signal_len)
+
+// EMAs
+ema9   = ta.ema(close, 9)
+ema21  = ta.ema(close, 21)
+ema50  = ta.ema(close, 50)
+ema100 = ta.ema(close, 100)
+ema200 = ta.ema(close, 200)
+
+plot(enable_ema9   ? ema9   : na, color=color.yellow,  title="EMA 9",   linewidth=1)
+plot(enable_ema21  ? ema21  : na, color=color.orange,  title="EMA 21",  linewidth=1)
+plot(enable_ema50  ? ema50  : na, color=color.purple,  title="EMA 50",  linewidth=1)
+plot(enable_ema100 ? ema100 : na, color=color.blue,    title="EMA 100", linewidth=2)
+plot(enable_ema200 ? ema200 : na, color=color.white,   title="EMA 200", linewidth=2)
+
+// =============================================================================
+// SIGNAL LOGIC & STATE MACHINE
+// =============================================================================
+
+// Base Conditions
+rsi_buy   = ta.crossover(rsi_val, rsi_oversold)
+rsi_sell  = ta.crossunder(rsi_val, rsi_overbought)
+
+macd_buy  = ta.crossover(macd_line, signal_line)
+macd_sell = ta.crossunder(macd_line, signal_line)
+
+// Route Signals based on Checkboxes
+bool raw_buy_signal  = false
+bool raw_sell_signal = false
+
+if use_rsi and use_macd
+    raw_buy_signal  := rsi_buy or macd_buy
+    raw_sell_signal := rsi_sell or macd_sell
+else if use_rsi
+    raw_buy_signal  := rsi_buy
+    raw_sell_signal := rsi_sell
+else if use_macd
+    raw_buy_signal  := macd_buy
+    raw_sell_signal := macd_sell
+
+// State Machine & Cooldown Logic
+var int current_trend = 0 // 1 = Long, -1 = Short
+var int last_signal_bar = 0
+bool cooldown_met = (bar_index - last_signal_bar) >= cooldown_bars
+
+bool final_buy_signal  = false
+bool final_sell_signal = false
+
+if raw_buy_signal and current_trend != 1 and cooldown_met
+    final_buy_signal := true
+    current_trend := 1
+    last_signal_bar := bar_index
+
+if raw_sell_signal and current_trend != -1 and cooldown_met
+    final_sell_signal := true
+    current_trend := -1
+    last_signal_bar := bar_index
+
+// Date Filter
+after_start   = (year > start_year) or (year == start_year and month > start_month) or (year == start_year and month == start_month and dayofmonth >= start_date)
+before_end    = (year < end_year) or (year == end_year and month < end_month) or (year == end_year and month == end_month and dayofmonth <= end_date)
+in_date_range = after_start and before_end
+
+// Filtered Trigger Conditions
+plot_long  = final_buy_signal and enable_long and in_date_range
+plot_short = final_sell_signal and enable_short and in_date_range
+
+// =============================================================================
+// VISUAL SIGNALS & ALERTS
+// =============================================================================
+
+plotshape(plot_long,  title="LE",  style=shape.labelup,   location=location.belowbar, color=color.rgb(33, 150, 243), text="LE",  textcolor=color.white, size=size.small)
+plotshape(plot_short, title="SE", style=shape.labeldown, location=location.abovebar, color=color.rgb(255, 82, 82),  text="SE", textcolor=color.white, size=size.small)
+
+// Alert triggers for Pine Script v6
+alertcondition(plot_long,  title="LE Alert",  message="MACD/RSI Long Entry Signal on {{ticker}}")
+alertcondition(plot_short, title="SE Alert", message="MACD/RSI Short Entry Signal on {{ticker}}")

@@ -1,0 +1,357 @@
+//@version=6
+indicator('VWAP A BE BOP', overlay = true, max_bars_back = 5000)
+
+// ───────────────────────────── Settings ─────────────────────────────
+g_set = 'Settings'
+zone = input.string('GMT', title = 'Timezone', options = ['GMT-11', 'GMT-10', 'GMT-9', 'GMT-8', 'GMT-7', 'GMT-6', 'GMT-5', 'GMT-4', 'GMT-3', 'GMT-2', 'GMT-1', 'GMT', 'GMT+1', 'GMT+2', 'GMT+3', 'GMT+330', 'GMT+4', 'GMT+430', 'GMT+5', 'GMT+530', 'GMT+6', 'GMT+7', 'GMT+8', 'GMT+9', 'GMT+10', 'GMT+11', 'GMT+12'], group = g_set)
+vwap_source = input.source(hlc3, 'VWAP Source', group = g_set)
+show_hist = input.bool(false, 'Show Historical Periods?', group = g_set, tooltip = 'Ticked shows all historical anchor resets. Unticked shows only the most recent period.')
+
+lineWidth = 1
+
+// ───────────────────────────── Labels (Global) ─────────────────────────────
+g_lbl = 'Labels'
+show_labels = input.bool(true, 'Show Line Labels', group = g_lbl)
+label_size_str = input.string('Small', 'Label Size', options = ['Tiny', 'Small', 'Normal', 'Large'], group = g_lbl)
+label_offset = input.int(5, 'Label Offset (bars)', minval = 0, group = g_lbl)
+lbl_transparency = input.int(85, 'Label Background Transparency', minval = 0, maxval = 100, group = g_lbl, tooltip = 'Higher = more see-through. Set to 100% to hide the background completely (text only).')
+show_dotted_lines = input.bool(true, 'Show Dotted Connector Lines', group = g_lbl)
+show_label_price = input.bool(false, 'Show Price in Label', group = g_lbl)
+show_label_pct = input.bool(false, 'Show % from Price in Label', group = g_lbl)
+show_price_scale_labels = input.bool(true, 'Labels on Price Scale', group = g_lbl, tooltip = 'Same setting as the checkbox at the bottom of the Style tab, exposed here for convenience.')
+
+
+f_labelSize(s) =>
+    s == 'Tiny' ? size.tiny : s == 'Small' ? size.small : s == 'Normal' ? size.normal : size.large
+
+dispFlag = show_price_scale_labels ? display.all : display.pane + display.status_line + display.data_window
+
+f_buildText(baseTxt, val) =>
+    txt = baseTxt
+    if show_label_price
+        txt := txt + ' ' + str.tostring(val, format.mintick)
+    if show_label_pct and val != 0
+        pctVal = (close - val) / val * 100
+        sign = pctVal >= 0 ? '+' : ''
+        txt := txt + ' (' + sign + str.tostring(pctVal, '#.##') + '%)'
+    txt
+
+var label[] allLabels = array.new<label>(19, na)
+var line[] allLines = array.new<line>(19, na)
+
+f_updateLabelLine(idx, show, val, col, txt, lblX, lblSz) =>
+    if show and not na(val)
+        fullTxt = f_buildText(txt, val)
+        txtCol = col
+        bgCol = color.new(col, lbl_transparency)
+        existingLbl = array.get(allLabels, idx)
+        if na(existingLbl)
+            newLbl = label.new(lblX, val, fullTxt, xloc.bar_index, yloc.price, color = bgCol, style = label.style_label_left, textcolor = txtCol, size = lblSz)
+            array.set(allLabels, idx, newLbl)
+        else
+            label.set_xy(existingLbl, lblX, val)
+            label.set_text(existingLbl, fullTxt)
+            label.set_color(existingLbl, bgCol)
+            label.set_textcolor(existingLbl, txtCol)
+            label.set_size(existingLbl, lblSz)
+
+        existingLine = array.get(allLines, idx)
+        if show_dotted_lines
+            if na(existingLine)
+                newLine = line.new(bar_index, val, lblX, val, xloc = xloc.bar_index, color = col, width = 1, style = line.style_dotted, extend = extend.none)
+                array.set(allLines, idx, newLine)
+            else
+                line.set_xy1(existingLine, bar_index, val)
+                line.set_xy2(existingLine, lblX, val)
+                line.set_color(existingLine, col)
+        else if not na(existingLine)
+            line.delete(existingLine)
+            array.set(allLines, idx, na)
+    else
+        existingLbl2 = array.get(allLabels, idx)
+        if not na(existingLbl2)
+            label.delete(existingLbl2)
+            array.set(allLabels, idx, na)
+        existingLine2 = array.get(allLines, idx)
+        if not na(existingLine2)
+            line.delete(existingLine2)
+            array.set(allLines, idx, na)
+
+// ───────────────────────────── Daily ─────────────────────────────
+g_d = 'Daily VWAP'
+show_daily = input.bool(true, 'Show Daily VWAP', group = g_d)
+col_daily = input.color(#00ffdd, 'Daily VWAP Color', group = g_d)
+lbl_daily = input.string('Daily', 'Label Text', group = g_d)
+show_d1 = input.bool(true, 'Deviation 1', inline = 'd1', group = g_d)
+dev_d1 = input.float(1.0, '', inline = 'd1', group = g_d)
+col_d1 = input.color(color.new(#4a4a4a, 40), 'Dev 1 Color', group = g_d)
+show_d2 = input.bool(true, 'Deviation 2', inline = 'd2', group = g_d)
+dev_d2 = input.float(2.0, '', inline = 'd2', group = g_d)
+col_d2 = input.color(color.new(#4a4a4a, 40), 'Dev 2 Color', group = g_d)
+show_d3 = input.bool(true, 'Deviation 3', inline = 'd3', group = g_d)
+dev_d3 = input.float(2.5, '', inline = 'd3', group = g_d)
+col_d3 = input.color(color.new(#4a4a4a, 40), 'Dev 3 Color', group = g_d)
+
+// ───────────────────────────── Weekly ─────────────────────────────
+g_w = 'Weekly VWAP'
+show_weekly = input.bool(true, 'Show Weekly VWAP', group = g_w)
+col_weekly = input.color(#dbdbdb, 'Weekly VWAP Color', group = g_w)
+lbl_weekly = input.string('Weekly', 'Label Text', group = g_w)
+
+// ───────────────────────────── Monthly ─────────────────────────────
+g_m = 'Monthly VWAP'
+show_monthly = input.bool(true, 'Show Monthly VWAP', group = g_m)
+col_monthly = input.color(#ae4ce6, 'Monthly VWAP Color', group = g_m)
+lbl_monthly = input.string('Monthly', 'Label Text', group = g_m)
+
+// ───────────────────────────── Q2 / Q3 / Q4 ─────────────────────────────
+g_q2 = 'Q2 VWAP'
+show_q2 = input.bool(true, 'Show Q2 VWAP', group = g_q2)
+col_q2 = input.color(#08993c, 'Q2 VWAP Color', group = g_q2)
+lbl_q2 = input.string('Q2', 'Label Text', group = g_q2)
+
+g_q3 = 'Q3 VWAP'
+show_q3 = input.bool(false, 'Show Q3 VWAP', group = g_q3)
+col_q3 = input.color(#08993c, 'Q3 VWAP Color', group = g_q3)
+lbl_q3 = input.string('Q3', 'Label Text', group = g_q3)
+
+g_q4 = 'Q4 VWAP'
+show_q4 = input.bool(false, 'Show Q4 VWAP', group = g_q4)
+col_q4 = input.color(#08993c, 'Q4 VWAP Color', group = g_q4)
+lbl_q4 = input.string('Q4', 'Label Text', group = g_q4)
+
+// ───────────────────────────── Yearly ─────────────────────────────
+g_y = 'Yearly VWAP'
+show_yearly = input.bool(true, 'Show Yearly VWAP', group = g_y)
+col_yearly = input.color(#fbc02d, 'Yearly VWAP Color', group = g_y)
+lbl_yearly = input.string('Yearly', 'Label Text', group = g_y)
+
+// ───────────────────────────── Previous Week / Month ─────────────────────────────
+g_pw = 'Previous Week VWAP'
+show_prevweek = input.bool(false, 'Show Previous Week VWAP', group = g_pw)
+col_prevweek = input.color(#ffffff, 'Prev Week VWAP Color', group = g_pw)
+lbl_prevweek = input.string('Prev Week', 'Label Text', group = g_pw)
+
+g_pm = 'Previous Month VWAP'
+show_prevmonth = input.bool(false, 'Show Previous Month VWAP', group = g_pm)
+col_prevmonth = input.color(#ae4ce6, 'Prev Month VWAP Color', group = g_pm)
+lbl_prevmonth = input.string('Prev Month', 'Label Text', group = g_pm)
+
+// ───────────────────────────── Previous Day & Rolling Day ─────────────────────────────
+g_rd = 'Previous Day / Rolling Day VWAPs'
+
+show_prevday = input.bool(true, 'Previous Day (1 Day Ago)', group = g_rd)
+col_prevday = input.color(#90bff9, 'Prev Day VWAP Color', group = g_rd)
+lbl_prevday = input.string('Prev Day', 'Label Text', group = g_rd)
+show_p1 = input.bool(false, 'Prev Day Deviation 1', inline = 'p1', group = g_rd)
+dev_p1 = input.float(1.0, '', inline = 'p1', group = g_rd)
+col_p1 = input.color(color.new(#4a4a4a, 40), 'Prev Day Dev 1 Color', group = g_rd)
+show_p2 = input.bool(false, 'Prev Day Deviation 2', inline = 'p2', group = g_rd)
+dev_p2 = input.float(2.0, '', inline = 'p2', group = g_rd)
+col_p2 = input.color(color.new(#4a4a4a, 40), 'Prev Day Dev 2 Color', group = g_rd)
+show_p3 = input.bool(false, 'Prev Day Deviation 3', inline = 'p3', group = g_rd)
+dev_p3 = input.float(2.5, '', inline = 'p3', group = g_rd)
+col_p3 = input.color(color.new(#4a4a4a, 40), 'Prev Day Dev 3 Color', group = g_rd)
+
+show_day2 = input.bool(false, '2 Days Ago', inline = 'rd2', group = g_rd)
+col_day2 = input.color(#90bff9, '', inline = 'rd2', group = g_rd)
+show_lbl_day2 = input.bool(false, 'Label', inline = 'rd2', group = g_rd)
+lbl_day2 = input.string('2D Ago', '', inline = 'rd2', group = g_rd)
+
+// ───────────────────────────── Rolling VWAPs (7D / 30D) ─────────────────────────────
+g_rv = 'Rolling VWAPs (True Sliding Window)'
+show_rvwap7 = input.bool(true, 'Show 7D Rolling VWAP', group = g_rv)
+col_rvwap7 = input.color(#ff9800, '7D Rolling Color', group = g_rv)
+lbl_rvwap7 = input.string('7d rVWAP', 'Label Text (7D)', group = g_rv)
+
+show_rvwap30 = input.bool(true, 'Show 30D Rolling VWAP', group = g_rv)
+col_rvwap30 = input.color(#e91e63, '30D Rolling Color', group = g_rv)
+lbl_rvwap30 = input.string('30d rVWAP', 'Label Text (30D)', group = g_rv)
+
+// ───────────────────────────── Custom VWAPs ─────────────────────────────
+g_custom = 'Custom VWAPs'
+show_custom1 = input.bool(true, 'Custom VWAP 1 (ATH)', group = g_custom)
+custom1_date = input.time(timestamp('2025-10-06T14:00:00-04:00'), 'Anchor Date/Time #1', group = g_custom)
+col_custom1 = input.color(#ff0000, 'Custom 1 Color', group = g_custom)
+lbl_custom1 = input.string('ATH', 'Label Text #1', group = g_custom)
+
+show_custom2 = input.bool(true, 'Custom VWAP 2 (ATL)', group = g_custom)
+custom2_date = input.time(timestamp('2026-06-30T21:00:00-04:00'), 'Anchor Date/Time #2', group = g_custom)
+col_custom2 = input.color(#ff0000, 'Custom 2 Color', group = g_custom)
+lbl_custom2 = input.string('ATL', 'Label Text #2', group = g_custom)
+
+// ───────────────────────────── EMAs ─────────────────────────────
+g_ema = 'EMAs (Daily Timeframe)'
+show_ema50 = input.bool(true, 'Show 50 EMA', group = g_ema)
+col_ema50 = input.color(#3fff00, '50 EMA Color', group = g_ema)
+lbl_ema50 = input.string('50d EMA', 'Label Text (50 EMA)', group = g_ema)
+
+show_ema200 = input.bool(true, 'Show 200 EMA', group = g_ema)
+col_ema200 = input.color(#2962ff, '200 EMA Color', group = g_ema)
+lbl_ema200 = input.string('200d EMA', 'Label Text (200 EMA)', group = g_ema)
+
+// ───────────────────────────── Weekly EMAs ─────────────────────────────
+g_wema = 'EMAs (Weekly Timeframe)'
+show_ema50w = input.bool(true, 'Show 50w EMA', group = g_wema)
+col_ema50w = input.color(#3fff00, '50w EMA Color', group = g_wema)
+lbl_ema50w = input.string('50w EMA', 'Label Text (50w EMA)', group = g_wema)
+
+show_ema200w = input.bool(true, 'Show 200w EMA', group = g_wema)
+col_ema200w = input.color(#2962ff, '200w EMA Color', group = g_wema)
+lbl_ema200w = input.string('200w EMA', 'Label Text (200w EMA)', group = g_wema)
+
+// ───────────────────────────── Anchor Change Detection ─────────────────────────────
+year_change = show_hist ? year(time, zone) != year(time[1], zone) : year(time, zone) != year(time[1], zone) and time > timenow - 86400000 * 366
+
+q2_raw = month(time, zone) == 4 and month(time[1], zone) == 3
+q3_raw = month(time, zone) == 7 and month(time[1], zone) == 6
+q4_raw = month(time, zone) == 10 and month(time[1], zone) == 9
+q2_change = show_hist ? q2_raw : q2_raw and time > timenow - 86400000 * 366
+q3_change = show_hist ? q3_raw : q3_raw and time > timenow - 86400000 * 366
+q4_change = show_hist ? q4_raw : q4_raw and time > timenow - 86400000 * 366
+
+month_change = show_hist ? month(time, zone) != month(time[1], zone) : month(time, zone) != month(time[1], zone) and time > timenow - 86400000 * 32
+
+week_change = show_hist ? dayofweek(time, zone) == 2 and dayofweek(time[1], zone) == 1 : dayofweek(time, zone) == 2 and dayofweek(time[1], zone) == 1 and time > timenow - 86400000 * 8
+
+day_change = show_hist ? dayofweek(time, zone) != dayofweek(time[1], zone) : dayofweek(time, zone) != dayofweek(time[1], zone) and time > timenow - 86460000
+
+// ───────────────────────────── Rolling Day Anchors (locked to 00:00) ─────────────────────────────
+sessionHourFinal = 0
+sessionMinuteFinal = 0
+
+msPerDay = 86400000
+todayY = year(timenow, zone)
+todayM = month(timenow, zone)
+todayD = dayofmonth(timenow, zone)
+startOfToday = timestamp(zone, todayY, todayM, todayD, sessionHourFinal, sessionMinuteFinal, 0)
+
+autoDate1 = startOfToday - 1 * msPerDay
+autoDate2 = startOfToday - 2 * msPerDay
+
+prevDayStart = time >= autoDate1 and time[1] < autoDate1
+day2Start = time >= autoDate2 and time[1] < autoDate2
+
+// ───────────────────────────── Previous Week / Month Anchors ─────────────────────────────
+nowDow = dayofweek(timenow, zone)
+daysSinceMonday = (nowDow - 2 + 7) % 7
+thisWeekMonday = startOfToday - daysSinceMonday * msPerDay
+prevWeekStart = thisWeekMonday - 7 * msPerDay
+
+prevMonthY = todayM == 1 ? todayY - 1 : todayY
+prevMonthM = todayM == 1 ? 12 : todayM - 1
+prevMonthStart = timestamp(zone, prevMonthY, prevMonthM, 1, 0, 0, 0)
+
+prevWeekAnchor = time >= prevWeekStart and time[1] < prevWeekStart
+prevMonthAnchor = time >= prevMonthStart and time[1] < prevMonthStart
+
+custom1Start = time >= custom1_date and time[1] < custom1_date
+custom2Start = time >= custom2_date and time[1] < custom2_date
+
+// ───────────────────────────── VWAP Calculations ─────────────────────────────
+[daily_vwap, daily_up1, daily_lo1] = ta.vwap(show_daily ? vwap_source : na, day_change, dev_d1)
+[_, daily_up2, daily_lo2] = ta.vwap(show_daily ? vwap_source : na, day_change, dev_d2)
+[_, daily_up3, daily_lo3] = ta.vwap(show_daily ? vwap_source : na, day_change, dev_d3)
+
+[weekly_vwap, _, _] = ta.vwap(show_weekly ? vwap_source : na, week_change, 1)
+[monthly_vwap, _, _] = ta.vwap(show_monthly ? vwap_source : na, month_change, 1)
+[q2_vwap, _, _] = ta.vwap(show_q2 ? vwap_source : na, q2_change, 1)
+[q3_vwap, _, _] = ta.vwap(show_q3 ? vwap_source : na, q3_change, 1)
+[q4_vwap, _, _] = ta.vwap(show_q4 ? vwap_source : na, q4_change, 1)
+[yearly_vwap, _, _] = ta.vwap(show_yearly ? vwap_source : na, year_change, 1)
+
+[prevday_vwap, prevday_up1, prevday_lo1] = ta.vwap(show_prevday ? vwap_source : na, prevDayStart, dev_p1)
+[_, prevday_up2, prevday_lo2] = ta.vwap(show_prevday ? vwap_source : na, prevDayStart, dev_p2)
+[_, prevday_up3, prevday_lo3] = ta.vwap(show_prevday ? vwap_source : na, prevDayStart, dev_p3)
+
+[prevweek_vwap, _, _] = ta.vwap(show_prevweek ? vwap_source : na, prevWeekAnchor, 1)
+[prevmonth_vwap, _, _] = ta.vwap(show_prevmonth ? vwap_source : na, prevMonthAnchor, 1)
+
+[day2_vwap, _, _] = ta.vwap(show_day2 ? vwap_source : na, day2Start, 1)
+
+[custom1_vwap, _, _] = ta.vwap(show_custom1 ? vwap_source : na, custom1Start, 1)
+[custom2_vwap, _, _] = ta.vwap(show_custom2 ? vwap_source : na, custom2Start, 1)
+
+// ───────────────────────────── EMA Calculations (live, continuously-updating) ─────────────────────────────
+ema50_daily = request.security(syminfo.tickerid, '1D', ta.ema(close, 50))
+ema200_daily = request.security(syminfo.tickerid, '1D', ta.ema(close, 200))
+ema50w = request.security(syminfo.tickerid, 'W', ta.ema(close, 50))
+ema200w = request.security(syminfo.tickerid, 'W', ta.ema(close, 200))
+
+// ───────────────────────────── Rolling VWAP Calculations (true sliding time window) ─────────────────────────────
+f_rollingVWAP(days) =>
+    tfSec = timeframe.in_seconds()
+    barsPerDay = tfSec > 0 ? 86400.0 / tfSec : 1440.0
+    lenBars = int(math.round(days * barsPerDay))
+    lenBars := math.max(1, math.min(5000, lenBars))
+    sumPV = math.sum(vwap_source * volume, lenBars)
+    sumV = math.sum(volume, lenBars)
+    sumV != 0 ? sumPV / sumV : na
+
+rvwap7d = show_rvwap7 ? f_rollingVWAP(7) : na
+rvwap30d = show_rvwap30 ? f_rollingVWAP(30) : na
+
+// ───────────────────────────── Plots ─────────────────────────────
+plot(show_daily and show_d1 ? daily_up1 : na, 'Daily Dev 1 Upper', col_d1, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_daily and show_d1 ? daily_lo1 : na, 'Daily Dev 1 Lower', col_d1, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_daily and show_d2 ? daily_up2 : na, 'Daily Dev 2 Upper', col_d2, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_daily and show_d2 ? daily_lo2 : na, 'Daily Dev 2 Lower', col_d2, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_daily and show_d3 ? daily_up3 : na, 'Daily Dev 3 Upper', col_d3, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_daily and show_d3 ? daily_lo3 : na, 'Daily Dev 3 Lower', col_d3, lineWidth, style = plot.style_line, display = dispFlag)
+
+plot(show_prevday and show_p1 ? prevday_up1 : na, 'Prev Day Dev 1 Upper', col_p1, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_prevday and show_p1 ? prevday_lo1 : na, 'Prev Day Dev 1 Lower', col_p1, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_prevday and show_p2 ? prevday_up2 : na, 'Prev Day Dev 2 Upper', col_p2, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_prevday and show_p2 ? prevday_lo2 : na, 'Prev Day Dev 2 Lower', col_p2, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_prevday and show_p3 ? prevday_up3 : na, 'Prev Day Dev 3 Upper', col_p3, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_prevday and show_p3 ? prevday_lo3 : na, 'Prev Day Dev 3 Lower', col_p3, lineWidth, style = plot.style_line, display = dispFlag)
+
+plot(show_daily ? daily_vwap : na, 'Daily VWAP', col_daily, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_weekly ? weekly_vwap : na, 'Weekly VWAP', col_weekly, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_monthly ? monthly_vwap : na, 'Monthly VWAP', col_monthly, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_q2 ? q2_vwap : na, 'Q2 VWAP', col_q2, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_q3 ? q3_vwap : na, 'Q3 VWAP', col_q3, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_q4 ? q4_vwap : na, 'Q4 VWAP', col_q4, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_yearly ? yearly_vwap : na, 'Yearly VWAP', col_yearly, lineWidth, style = plot.style_line, display = dispFlag)
+
+plot(show_prevday ? prevday_vwap : na, 'Previous Day VWAP', col_prevday, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_prevweek ? prevweek_vwap : na, 'Prev Week VWAP', col_prevweek, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_prevmonth ? prevmonth_vwap : na, 'Prev Month VWAP', col_prevmonth, lineWidth, style = plot.style_line, display = dispFlag)
+
+plot(show_day2 ? day2_vwap : na, '2 Days Ago VWAP', col_day2, lineWidth, style = plot.style_line, display = dispFlag)
+
+plot(show_rvwap7 ? rvwap7d : na, '7D Rolling VWAP', col_rvwap7, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_rvwap30 ? rvwap30d : na, '30D Rolling VWAP', col_rvwap30, lineWidth, style = plot.style_line, display = dispFlag)
+
+plot(show_custom1 ? custom1_vwap : na, 'Custom VWAP 1 (ATH)', col_custom1, lineWidth, style = plot.style_line, display = dispFlag)
+plot(show_custom2 ? custom2_vwap : na, 'Custom VWAP 2 (ATL)', col_custom2, lineWidth, style = plot.style_line, display = dispFlag)
+
+plot(show_ema50 ? ema50_daily : na, '50 EMA', col_ema50, 1, style = plot.style_line, display = dispFlag)
+plot(show_ema200 ? ema200_daily : na, '200 EMA', col_ema200, 1, style = plot.style_line, display = dispFlag)
+plot(show_ema50w ? ema50w : na, '50w EMA', col_ema50w, 1, style = plot.style_line, display = dispFlag)
+plot(show_ema200w ? ema200w : na, '200w EMA', col_ema200w, 1, style = plot.style_line, display = dispFlag)
+
+// ───────────────────────────── Line Labels + Dotted Connectors ─────────────────────────────
+if barstate.islast
+    lblX = bar_index + label_offset
+    lblSz = f_labelSize(label_size_str)
+
+    f_updateLabelLine(0, show_labels and show_daily, daily_vwap, col_daily, lbl_daily, lblX, lblSz)
+    f_updateLabelLine(1, show_labels and show_weekly, weekly_vwap, col_weekly, lbl_weekly, lblX, lblSz)
+    f_updateLabelLine(2, show_labels and show_monthly, monthly_vwap, col_monthly, lbl_monthly, lblX, lblSz)
+    f_updateLabelLine(3, show_labels and show_q2, q2_vwap, col_q2, lbl_q2, lblX, lblSz)
+    f_updateLabelLine(4, show_labels and show_q3, q3_vwap, col_q3, lbl_q3, lblX, lblSz)
+    f_updateLabelLine(5, show_labels and show_q4, q4_vwap, col_q4, lbl_q4, lblX, lblSz)
+    f_updateLabelLine(6, show_labels and show_yearly, yearly_vwap, col_yearly, lbl_yearly, lblX, lblSz)
+    f_updateLabelLine(7, show_labels and show_prevday, prevday_vwap, col_prevday, lbl_prevday, lblX, lblSz)
+    f_updateLabelLine(8, show_labels and show_prevweek, prevweek_vwap, col_prevweek, lbl_prevweek, lblX, lblSz)
+    f_updateLabelLine(9, show_labels and show_prevmonth, prevmonth_vwap, col_prevmonth, lbl_prevmonth, lblX, lblSz)
+    f_updateLabelLine(10, show_labels and show_custom1, custom1_vwap, col_custom1, lbl_custom1, lblX, lblSz)
+    f_updateLabelLine(11, show_labels and show_custom2, custom2_vwap, col_custom2, lbl_custom2, lblX, lblSz)
+    f_updateLabelLine(12, show_labels and show_ema50, ema50_daily, col_ema50, lbl_ema50, lblX, lblSz)
+    f_updateLabelLine(13, show_labels and show_ema200, ema200_daily, col_ema200, lbl_ema200, lblX, lblSz)
+    f_updateLabelLine(14, show_labels and show_ema50w, ema50w, col_ema50w, lbl_ema50w, lblX, lblSz)
+    f_updateLabelLine(15, show_labels and show_ema200w, ema200w, col_ema200w, lbl_ema200w, lblX, lblSz)
+    f_updateLabelLine(16, show_labels and show_day2 and show_lbl_day2, day2_vwap, col_day2, lbl_day2, lblX, lblSz)
+    f_updateLabelLine(17, show_labels and show_rvwap7, rvwap7d, col_rvwap7, lbl_rvwap7, lblX, lblSz)
+    f_updateLabelLine(18, show_labels and show_rvwap30, rvwap30d, col_rvwap30, lbl_rvwap30, lblX, lblSz)

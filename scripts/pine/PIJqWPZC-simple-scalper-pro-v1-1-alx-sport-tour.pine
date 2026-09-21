@@ -1,0 +1,347 @@
+//@version=6
+indicator("Simple Scalper PRO (Alx_Sport_Tour)", overlay=true)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// EMA SETTINGS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ema9Length   = input.int(9, "EMA 9 Period", minval=1)
+ema20Length  = input.int(20, "EMA 20 Period", minval=1)
+ema50Length  = input.int(50, "EMA 50 Period", minval=1)
+ema100Length = input.int(100, "EMA 100 Period", minval=1)
+ema200Length = input.int(200, "EMA 200 Period", minval=1)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ATR SETTINGS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+atrTimeframe = input.timeframe("1", "ATR Timeframe")
+atrPeriod    = input.int(30, "ATR Impulse Period", minval=30)
+slATRMult    = input.float(1.5, "Stop Loss × ATR", minval=0.1, step=0.1)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// EMA CALCULATION
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ema9   = ta.ema(close, ema9Length)
+ema20  = ta.ema(close, ema20Length)
+ema50  = ta.ema(close, ema50Length)
+ema100 = ta.ema(close, ema100Length)
+ema200 = ta.ema(close, ema200Length)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ATR CALCULATION
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+impulseATR = request.security(
+     syminfo.tickerid,
+     atrTimeframe,
+     ta.atr(atrPeriod),
+     lookahead=barmerge.lookahead_off
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ENTRY SIGNALS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+longSignal  = ta.crossover(ema9, ema50)
+shortSignal = ta.crossunder(ema9, ema50)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// POSITION STATE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var float entry     = na
+var float sl        = na
+var float tradeATR  = na
+var float exitPrice = na
+var int direction   = 0
+
+//  1 = LONG
+// -1 = SHORT
+//  0 = FLAT
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// EXIT CONDITIONS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// LONG EXIT:
+// EMA 9 crosses EMA 20 downward
+longExitSignal = direction == 1 and ta.crossunder(ema9, ema20)
+
+// SHORT EXIT:
+// EMA 9 crosses EMA 20 upward
+shortExitSignal = direction == -1 and ta.crossover(ema9, ema20)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SAVE EXIT PRICE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if longExitSignal or shortExitSignal
+    exitPrice := close
+    direction := 0
+    entry := na
+    sl := na
+    tradeATR := na
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// LONG ENTRY
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if longSignal and direction == 0
+    entry := close
+    tradeATR := impulseATR
+    sl := entry - tradeATR * slATRMult
+    direction := 1
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SHORT ENTRY
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if shortSignal and direction == 0
+    entry := close
+    tradeATR := impulseATR
+    sl := entry + tradeATR * slATRMult
+    direction := -1
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TREND
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+bullish = ema9 > ema50
+bearish = ema9 < ema50
+
+trendText =
+     bullish ? "BULLISH" :
+     bearish ? "BEARISH" :
+     "NEUTRAL"
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// EMA PLOTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+plot(ema9, title="EMA 9", color=color.aqua, linewidth=1)
+plot(ema20, title="EMA 20", color=color.blue, linewidth=1)
+plot(ema50, title="EMA 50", color=color.yellow, linewidth=1)
+plot(ema100, title="EMA 100", color=color.orange, linewidth=1)
+plot(ema200, title="EMA 200", color=color.red, linewidth=1)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// EMA 9 / 50 FILL
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+p9  = plot(ema9, display=display.none)
+p50 = plot(ema50, display=display.none)
+
+fill(
+     p9,
+     p50,
+     color = bullish ? color.new(color.green, 94) :
+             bearish ? color.new(color.red, 94) :
+             color.new(color.gray, 97)
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// LONG MARKER
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+plotshape(
+     longSignal,
+     title="LONG",
+     style=shape.labelup,
+     location=location.belowbar,
+     color=color.green,
+     textcolor=color.white,
+     text="L",
+     size=size.tiny
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SHORT MARKER
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+plotshape(
+     shortSignal,
+     title="SHORT",
+     style=shape.labeldown,
+     location=location.abovebar,
+     color=color.red,
+     textcolor=color.white,
+     text="S",
+     size=size.tiny
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// EXIT MARKER — BRIGHT BLUE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+plotshape(
+     longExitSignal,
+     title="LONG EXIT",
+     style=shape.labeldown,
+     location=location.abovebar,
+     color=color.blue,
+     textcolor=color.white,
+     text="EXIT",
+     size=size.small
+)
+
+plotshape(
+     shortExitSignal,
+     title="SHORT EXIT",
+     style=shape.labelup,
+     location=location.belowbar,
+     color=color.blue,
+     textcolor=color.white,
+     text="EXIT",
+     size=size.small
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ENTRY LINE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+plot(
+     direction != 0 ? entry : na,
+     title="ENTRY",
+     color=color.yellow,
+     linewidth=1,
+     style=plot.style_linebr
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// STOP LOSS LINE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+plot(
+     direction != 0 ? sl : na,
+     title="STOP LOSS",
+     color=color.red,
+     linewidth=1,
+     style=plot.style_linebr
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// DASHBOARD
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var table dashboard = table.new(
+     position.top_right,
+     2,
+     7,
+     border_width=1
+)
+
+positionText =
+     direction == 1 ? "LONG" :
+     direction == -1 ? "SHORT" :
+     "FLAT"
+
+if barstate.islast
+
+    // POSITION
+    table.cell(
+         dashboard,
+         0,
+         0,
+         "Position"
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         0,
+         positionText
+    )
+
+    // ENTRY PRICE
+    table.cell(
+         dashboard,
+         0,
+         1,
+         "Entry"
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         1,
+         not na(entry) ?
+         str.tostring(entry, format.mintick) :
+         "-"
+    )
+
+    // ATR
+    table.cell(
+         dashboard,
+         0,
+         2,
+         "ATR"
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         2,
+         not na(tradeATR) ?
+         str.tostring(tradeATR, format.mintick) :
+         "-"
+    )
+
+    // ATR TIMEFRAME
+    table.cell(
+         dashboard,
+         0,
+         3,
+         "ATR Timeframe"
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         3,
+         atrTimeframe
+    )
+
+    // ATR PERIOD
+    table.cell(
+         dashboard,
+         0,
+         4,
+         "ATR Period"
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         4,
+         str.tostring(atrPeriod)
+    )
+
+    // EXIT PRICE
+    table.cell(
+         dashboard,
+         0,
+         5,
+         "Exit"
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         5,
+         not na(exitPrice) ?
+         str.tostring(exitPrice, format.mintick) :
+         "-"
+    )
+
+    // TREND
+    table.cell(
+         dashboard,
+         0,
+         6,
+         "Trend"
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         6,
+         trendText
+    )
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ALERTS — ONLY ENTRY SIGNALS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+alertcondition(
+     longSignal,
+     title="LONG — EMA 9/50",
+     message="LONG | {{ticker}} | EMA 9 crossed EMA 50 UP | Price: {{close}}"
+)
+
+alertcondition(
+     shortSignal,
+     title="SHORT — EMA 9/50",
+     message="SHORT | {{ticker}} | EMA 9 crossed EMA 50 DOWN | Price: {{close}}"
+)

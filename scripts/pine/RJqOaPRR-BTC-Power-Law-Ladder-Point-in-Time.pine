@@ -1,0 +1,336 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © RWCS_LTD
+
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// BTC Power-Law Ladder (Point-in-Time) — daily
+//
+// Price divided by a power-law trend line fitted to the 1% lower quantile of BTC
+// history. The line is refit every January using only the data that existed at
+// the time, and the coefficients below ARE those fits — so the plot is what you
+// could have seen on the day, not a curve fitted with hindsight.
+//
+//   line(d) = 10^a * d^b        d = days since the genesis block, 2009-01-03
+//
+// WHAT FOLLOWED EACH RUNG, 2014-01-01 → 2026-09-16 (4,642 daily closes).
+// Medians. Read the day counts as overlapping windows, not independent trials —
+// the signal's 1-day autocorrelation is 0.997.
+//
+//   rung          days   2-yr median   positive   next-yr drawdown   P(dd < -50%)
+//   below 1.0      445       9.77x       100%          -30%               0%
+//   1.0 - 1.6    1,544       4.31x       100%          -30%              14%
+//   1.6 - 2.5    1,162       2.05x        89%          -49%              46%
+//   2.5 - 4.0      764       1.60x        76%          -62%              90%
+//   above 4.0      727       0.74x        28%          -72%              97%
+//
+// THE DE-RISK RULE (cut to 0.35x above 2.5x, restore below 1.6x), same window,
+// costs included, exposure lagged one day:
+//   buy and hold   Sharpe 0.88   max drawdown -83.6%   101x
+//   the rule       Sharpe 1.16   max drawdown -55.9%   260x     6 round trips
+//
+// IS THAT REAL, OR JUST BEING OUT OF THE MARKET 47% OF THE TIME?
+// Tested against 5,000 random vetoes using the same six block lengths at random
+// dates: p = 0.0022 (Sharpe), 0.0006 (drawdown), 0.0142 (terminal multiple).
+// All 24 cells of the 6x4 threshold grid beat their own null on both Sharpe and
+// drawdown at p<0.05, against a chance expectation of about 1.2 cells.
+//
+// ⚠ WHAT THIS IS NOT. Six completed round trips is BELOW the 30-event evidence
+// floor this was scored against, so the formal verdict is "insufficient evidence
+// — tracked, not rejected", NOT a validated edge. One criterion fails outright:
+// the 2017 episode alone is 57.9% of the rule's entire gross profit (it gave up
+// a 67.6% rally between the cut at $2,258 and the restore at $3,783), against a
+// 50% ceiling. A record resting on one event is a record you do not yet know.
+// This is a risk instrument, not an entry signal, and not advice.
+//
+// ⚠ THE 24-CELL GRID IS NOT 24 INDEPENDENT CONFIRMATIONS. Adjacent thresholds
+// fire within days of each other on a signal with 0.997 autocorrelation — a cut
+// at 2.4 and a cut at 2.6 trade the same six episodes. The effective number of
+// independent cells is nearer 2-4 than 24. The grid shows the result is not
+// balanced on a knife edge; it does not multiply the evidence.
+//
+// ⚠ THE VINTAGE REFITS REMOVE COEFFICIENT HINDSIGHT, NOT SPECIFICATION
+// HINDSIGHT. The 2014 coefficients use only pre-2014 data, but the decision to
+// fit a power law to the 1% lower quantile of log-log BTC history was made by
+// people who had already seen that history. That choice was not available in
+// 2014. It is another reason to read this as risk framing rather than a tested
+// rule.
+//
+// Use on a LOG price scale, daily chart only — the line is defined on days.
+// ─────────────────────────────────────────────────────────────────────────────
+indicator("BTC Power-Law Ladder (Point-in-Time)", shorttitle="PIT Ladder", overlay=true)
+
+// ── inputs ───────────────────────────────────────────────────────────────────
+grpL = "Trend line"
+mode      = input.string("Real-time (refit each January)", "Line",
+     options=["Real-time (refit each January)", "Published constants", "Custom"], group=grpL,
+     tooltip="Real-time uses only data available before each January — no hindsight, and it " +
+             "therefore starts in 2014. Published uses the widely-quoted constants, which were " +
+             "fitted over the whole history including the future of every episode they judge.")
+blendBars = input.int(21, "January blend length (bars)", minval=1, maxval=90, group=grpL,
+     tooltip="Each January the coefficients change, and a hard switch moves the line — and " +
+             "therefore the ratio — overnight with no price action behind it. The 2016 vintage " +
+             "drops the line 43% against the 2015 vintage, which jumps the ratio 77%. That is " +
+             "large enough to trip a de-risk or restore on its own. Over this many bars the " +
+             "line walks from the old fit to the new one. Both fits are known on Jan 1, so " +
+             "nothing here uses future data. Set to 1 for the old hard switch.")
+aCustom   = input.float(-17.516, "Custom a (log10 intercept)", step=0.001, group=grpL)
+bCustom   = input.float(5.880,   "Custom b (exponent)",        step=0.001, group=grpL)
+
+grpB = "Rungs"
+showBands = input.bool(true, "Show rung boundaries", group=grpB)
+tintBg    = input.bool(true, "Tint background by rung", group=grpB)
+cutLvl    = input.float(2.5, "De-risk above", step=0.1, minval=1.1, group=grpB,
+     tooltip="The studied rule cuts at 2.5 and restores at 1.6. Moving these moves the rule " +
+             "off the tested configuration; the rung boundaries and the statistics in the " +
+             "header stay fixed at 1.0 / 1.6 / 2.5 / 4.0 regardless.")
+addLvl    = input.float(1.6, "Restore below", step=0.1, minval=0.5, group=grpB)
+
+grpM = "Markers"
+showLows  = input.bool(true, "Mark trailing 1-year lows", group=grpM)
+showState = input.bool(true, "Mark de-risk / restore transitions", group=grpM)
+showHalv  = input.bool(true, "Mark halvings", group=grpM)
+showTable = input.bool(true, "Show readout table", group=grpM)
+dashLoc     = input.string("Bottom Right", "Table Position",
+              options = ["Top Right","Top Left","Bottom Right","Bottom Left"],
+              group = grpM)
+size = input.string(defval='Normal', options=['Tiny','Small','Normal','Large'], title='Table Size', group = grpM)
+table_size = size == 'Tiny' ? size.tiny : size == 'Small' ? size.small : size == 'Normal' ? size.normal : size.large
+
+// A restore level at or above the de-risk level makes the state machine flip
+// every bar: cut because ratio > cutLvl, restore because ratio < addLvl, forever.
+if barstate.isfirst and addLvl >= cutLvl
+    runtime.error("BTC Valuation Ladder: 'Restore below' (" + str.tostring(addLvl) +
+         ") must be strictly less than 'De-risk above' (" + str.tostring(cutLvl) +
+         "). The hysteresis band needs room; equal or inverted levels oscillate every bar.")
+
+// ── the line ─────────────────────────────────────────────────────────────────
+genesis = timestamp("UTC", 2009, 1, 3, 0, 0)
+d       = math.max((time - genesis) / 86400000.0, 1.0)
+
+// Each pair was fitted ONLY on data before that January.
+// 2027+ falls back to the newest fit available (all data through 2026-09-16);
+// it is provisional and should be replaced when a full 2027 vintage exists.
+// The readout table flags the fallback so it is visible on the chart, not just here.
+vintA(y) =>
+    y <= 2014 ? -19.47054 : y == 2015 ? -19.54300 : y == 2016 ? -18.26417 :
+     y == 2017 ? -18.26677 : y == 2018 ? -18.27401 : y == 2019 ? -18.30361 :
+     y == 2020 ? -18.38307 : y == 2021 ? -18.33596 : y == 2022 ? -18.43418 :
+     y == 2023 ? -17.93238 : y == 2024 ? -17.90772 : y == 2025 ? -17.92171 :
+     y == 2026 ? -17.94868 : -17.83679
+vintB(y) =>
+    y <= 2014 ? 6.50948 : y == 2015 ? 6.53441 : y == 2016 ? 6.08666 :
+     y == 2017 ? 6.08759 : y == 2018 ? 6.09017 : y == 2019 ? 6.09942 :
+     y == 2020 ? 6.12364 : y == 2021 ? 6.10965 : y == 2022 ? 6.13960 :
+     y == 2023 ? 5.97947 : y == 2024 ? 5.97076 : y == 2025 ? 5.97565 :
+     y == 2026 ? 5.98410 : 5.94800
+
+isRealtime = mode == "Real-time (refit each January)"
+yr = year(time)
+
+// ── January blend ────────────────────────────────────────────────────────────
+// On Jan 1 BOTH coefficient pairs are known — last year's, which we have been
+// using, and this year's, which was just fitted on data through Dec 31. Walking
+// from one to the other over the first weeks of the year uses nothing that was
+// not available on the day, and it keeps every rung transition attributable to
+// price rather than to a coefficient change.
+//
+// Blending a and b linearly interpolates log10(line) between the two fits:
+//   a + b·log10(d) = (1-p)·[aOld + bOld·log10(d)] + p·[aNew + bNew·log10(d)]
+// i.e. a geometric walk from the old line to the new one, straight on a log chart.
+var int barsIntoYear = 100000          // large ⇒ fully blended on the first bar
+if na(yr[1])
+    barsIntoYear := 100000             // first bar: no previous year to blend from
+else if yr != yr[1]
+    barsIntoYear := 0
+else
+    barsIntoYear := barsIntoYear + 1
+
+prog     = math.min(1.0, barsIntoYear * 1.0 / blendBars)
+blending = isRealtime and prog < 1.0
+
+aNew = vintA(yr)
+bNew = vintB(yr)
+aOld = vintA(yr - 1)
+bOld = vintB(yr - 1)
+
+aRT = aOld + (aNew - aOld) * prog
+bRT = bOld + (bNew - bOld) * prog
+
+a = isRealtime ? aRT : mode == "Published constants" ? -17.516 : aCustom
+b = isRealtime ? bRT : mode == "Published constants" ?   5.880 : bCustom
+
+line_ = math.pow(10, a) * math.pow(d, b)
+ratio = close / line_
+
+// A real-time line cannot exist before its first honest fit. The 2014 vintage is
+// trained on data through 2013-12-31, so drawing it over 2010-2013 would be the
+// exact hindsight this mode exists to avoid. The published line has no such
+// warm-up and runs from the first day a market existed.
+startRT   = timestamp("UTC", 2014, 1,  1, 0, 0)
+startPub  = timestamp("UTC", 2010, 7, 17, 0, 0)
+valid     = timeframe.isdaily and time >= (isRealtime ? startRT : startPub)
+
+// ── rung ─────────────────────────────────────────────────────────────────────
+// Boundaries are FIXED at the values the header table was measured at. The
+// de-risk / restore inputs move the rule; they do not move the rungs, because
+// moving the rungs would silently relabel the chart with statistics that were
+// never computed for those boundaries.
+RUNG_LINE  = 1.0
+RUNG_CHEAP = 1.6
+RUNG_MID   = 2.5
+RUNG_RICH  = 4.0
+offStudy = cutLvl != RUNG_MID or addLvl != RUNG_CHEAP
+
+rung = ratio < RUNG_LINE ? 0 : ratio < RUNG_CHEAP ? 1 : ratio < RUNG_MID ? 2 :
+       ratio < RUNG_RICH ? 3 : 4
+rungName = rung == 0 ? "below the line" : rung == 1 ? "cheap" : rung == 2 ? "mid" :
+           rung == 3 ? "rich" : "very rich"
+
+cBelow = color.new(#1B7A3D, 0)
+cLow   = color.new(#1baf7a, 0)
+cMid   = color.new(#6B7280, 0)
+cHigh  = color.new(#E08A1E, 0)
+cTop   = color.new(#e34948, 0)
+rungCol = rung == 0 ? cBelow : rung == 1 ? cLow : rung == 2 ? cMid : rung == 3 ? cHigh : cTop
+
+// ── plots ────────────────────────────────────────────────────────────────────
+plot(valid ? line_ : na, "Trend line", color=color.new(#6B7280, 0), linewidth=2)
+
+// Fixed rung boundaries.
+plot(valid and showBands ? line_ * RUNG_CHEAP : na, "Rung 1.6x",
+     color=color.new(#1baf7a, 55), linewidth=1)
+plot(valid and showBands ? line_ * RUNG_MID : na, "Rung 2.5x",
+     color=color.new(#E08A1E, 55), linewidth=1)
+plot(valid and showBands ? line_ * RUNG_RICH : na, "Rung 4x",
+     color=color.new(#e34948, 62), linewidth=1)
+
+// Operative levels. These coincide with the 1.6 / 2.5 boundaries by default and
+// separate from them only when the rule has been moved off the studied settings.
+p16 = plot(valid ? line_ * addLvl : na, "Restore level",
+           color=color.new(#1baf7a, 25), linewidth=1)
+p25 = plot(valid ? line_ * cutLvl : na, "De-risk level",
+           color=color.new(#e34948, 25), linewidth=1)
+fill(p16, p25, color=color.new(#6B7280, 93), title="Between restore and de-risk")
+
+bgcolor(tintBg and valid ? color.new(rungCol, 92) : na, title="Rung tint")
+
+// ── de-risk state machine (hysteresis: cut above cutLvl, restore below addLvl) ─
+// Confirmed bars only. On a forming bar the close moves, so an unguarded machine
+// can flip, paint a marker and un-flip before the day is over — which is not what
+// the backtest measured. The state you see is the state as of the last close.
+//
+// The opening state is read from the first confirmed bar rather than assumed
+// flat, so a chart whose history begins above the de-risk level does not print a
+// phantom cut at the left edge.
+var bool derisked  = false
+var bool stateInit = false
+if valid and barstate.isconfirmed
+    if not stateInit
+        derisked  := ratio > cutLvl
+        stateInit := true
+    else if not derisked and ratio > cutLvl
+        derisked := true
+    else if derisked and ratio < addLvl
+        derisked := false
+
+cutNow     = valid and stateInit and stateInit[1] and derisked and not derisked[1]
+restoreNow = valid and stateInit and stateInit[1] and not derisked and derisked[1]
+plotshape(showState and cutNow, "De-risk triggered", shape.triangledown, location.abovebar,
+          color=color.new(#e34948, 0), size=size.small, text="cut")
+plotshape(showState and restoreNow, "Restore triggered", shape.triangleup, location.belowbar,
+          color=color.new(#1B7A3D, 0), size=size.small, text="restore")
+
+// ── trailing one-year low ────────────────────────────────────────────────────
+// 365 BARS, not 365 calendar days. Identical on BTC, which trades every day;
+// on any symbol with a trading calendar this is closer to 17 months.
+low1y   = ta.lowest(close, 365)
+isLow1y = valid and close <= low1y * 1.001
+plotshape(showLows and isLow1y, "Trailing 1-year low", shape.circle, location.belowbar,
+          color=color.new(#2a78d6, 0), size=size.tiny)
+
+// ── halving clock ────────────────────────────────────────────────────────────
+// 2012-2024 are the actual dates. 2028 and 2032 are projections from block
+// height at the current hash rate and will drift; the table marks them as such.
+h2012 = timestamp("UTC", 2012, 11, 28, 0, 0)
+h2016 = timestamp("UTC", 2016,  7,  9, 0, 0)
+h2020 = timestamp("UTC", 2020,  5, 11, 0, 0)
+h2024 = timestamp("UTC", 2024,  4, 19, 0, 0)
+h2028 = timestamp("UTC", 2028,  3, 26, 0, 0)   // projected
+h2032 = timestamp("UTC", 2032,  3, 10, 0, 0)   // projected
+nextHalving = time < h2012 ? h2012 : time < h2016 ? h2016 : time < h2020 ? h2020 :
+              time < h2024 ? h2024 : time < h2028 ? h2028 : time < h2032 ? h2032 : na
+halvEstimated = time >= h2024
+daysToHalving = na(nextHalving) ? na : int(math.round((nextHalving - time) / 86400000.0))
+isHalvingBar  = showHalv and valid and (time >= h2016 and time[1] < h2016
+              or time >= h2020 and time[1] < h2020 or time >= h2024 and time[1] < h2024
+              or time >= h2028 and time[1] < h2028 or time >= h2032 and time[1] < h2032)
+bgcolor(isHalvingBar ? color.new(#6B7280, 45) : na, title="Halving")
+
+// ── readout ──────────────────────────────────────────────────────────────────
+f(x) => str.tostring(x, format.mintick)
+
+// Kept on single lines. A continuation indented by a multiple of four spaces is
+// read as a new block, not a continuation, which is what broke this before.
+vintOther = mode == "Published constants" ? "published (full-history fit)" : "custom"
+vintBlend = str.tostring(yr - 1) + " to " + str.tostring(yr) + "  (" + str.tostring(barsIntoYear) + "/" + str.tostring(blendBars) + ")"
+vintFixed = yr >= 2027 ? str.tostring(yr) + "  provisional" : str.tostring(yr)
+vintLabel = not isRealtime ? vintOther : blending ? vintBlend : vintFixed
+vintCol = isRealtime and (blending or yr >= 2027) ? color.new(#E08A1E, 0) : color.gray
+
+if showTable and barstate.islast and valid
+    tPos = dashLoc == "Top Right"    ? position.top_right    :
+           dashLoc == "Top Left"     ? position.top_left     :
+           dashLoc == "Bottom Right" ? position.bottom_right :
+                                       position.bottom_left
+    var table t = table.new(tPos, 2, 10, border_width=1)
+    table.cell(t, 0, 0, "BTC Valuation Ladder", text_color=color.gray, text_size=table_size)
+    table.cell(t, 1, 0, rungName, text_color=rungCol, text_size=table_size)
+    table.cell(t, 0, 1, "price / line", text_color=color.gray, text_size=table_size)
+    table.cell(t, 1, 1, str.tostring(ratio, "#.###") + "x", text_color=rungCol, text_size=table_size)
+    table.cell(t, 0, 2, "trend line", text_color=color.gray, text_size=table_size)
+    table.cell(t, 1, 2, f(line_), text_color=color.gray, text_size=table_size)
+    table.cell(t, 0, 3, "line vintage", text_color=color.gray, text_size=table_size)
+    table.cell(t, 1, 3, vintLabel, text_color=vintCol, text_size=table_size)
+    table.cell(t, 0, 4, "de-risk at", text_color=color.gray, text_size=table_size)
+    table.cell(t, 1, 4, f(line_ * cutLvl), text_color=color.new(#e34948, 0), text_size=table_size)
+    table.cell(t, 0, 5, "restore at", text_color=color.gray, text_size=table_size)
+    table.cell(t, 1, 5, f(line_ * addLvl), text_color=color.new(#1baf7a, 0), text_size=table_size)
+    table.cell(t, 0, 6, "state", text_color=color.gray, text_size=table_size)
+    table.cell(t, 1, 6, derisked ? "DE-RISKED" : "full exposure",
+               text_color=derisked ? color.new(#e34948, 0) : color.new(#1B7A3D, 0), text_size=table_size)
+    table.cell(t, 0, 7, "days to halving", text_color=color.gray, text_size=table_size)
+    table.cell(t, 1, 7, na(daysToHalving) ? "—" :
+               str.tostring(daysToHalving) + (halvEstimated ? "  (est.)" : ""),
+               text_color=color.gray, text_size=table_size)
+    table.cell(t, 0, 8, "1-yr low today", text_color=color.gray, text_size=table_size)
+    table.cell(t, 1, 8, isLow1y ? "yes" : "no",
+               text_color=isLow1y ? color.new(#2a78d6, 0) : color.gray, text_size=table_size)
+    table.cell(t, 0, 9, offStudy ? "⚠ thresholds" : "", text_color=color.new(#E08A1E, 0), text_size=table_size)
+    table.cell(t, 1, 9, offStudy ? "off tested 2.5 / 1.6" : "",
+               text_color=color.new(#E08A1E, 0), text_size=table_size)
+
+// Blanking the plots on an intraday or weekly chart looks like a broken script.
+// Say why instead.
+if not timeframe.isdaily and barstate.islast
+    var table w = table.new(position.middle_center, 1, 1, border_width=1)
+    table.cell(w, 0, 0, "BTC Valuation Ladder — daily chart only.\n" +
+         "The trend line is defined on days since the genesis block\n" +
+         "and is not meaningful on " + timeframe.period + " bars.",
+         text_color=color.new(#e34948, 0), bgcolor=color.new(#6B7280, 85), text_size=size.normal)
+
+// ── alerts ───────────────────────────────────────────────────────────────────
+// Messages state the level in words, not {{plot_0}} — that placeholder resolves to
+// the FIRST plot (the trend line), so it printed the line's value where a reader
+// would read the trigger level.
+alertcondition(ta.crossover(ratio, cutLvl),  "Crossed above the de-risk level",
+     "BTC closed above the de-risk multiple of its power-law trend line — top rungs")
+alertcondition(ta.crossunder(ratio, addLvl), "Crossed below the restore level",
+     "BTC closed below the restore multiple of its power-law trend line — full exposure rung")
+alertcondition(ta.crossunder(ratio, RUNG_LINE), "Fell below the trend line",
+     "BTC closed below its power-law trend line — bottom rung")
+alertcondition(ta.crossover(ratio, RUNG_LINE),  "Reclaimed the trend line",
+     "BTC closed back above its power-law trend line")
+alertcondition(isLow1y and not isLow1y[1],   "New trailing 1-year low",
+     "BTC printed a new trailing 1-year low")
+
+plot(ratio, "price / line", display=display.data_window)

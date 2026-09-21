@@ -1,0 +1,389 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © evawpd141
+
+//@version=6
+indicator("YURI Fixing Window Engine", "YURI FWE", overlay = true)
+
+// Two things happen on an FX chart at a fixed hour of the local clock, and both
+// are calendar facts rather than readings taken off price: a benchmark rate is
+// struck, and on certain dates a settlement convention concentrates who has to
+// be done by then. This marks where those windows sit, says whether today is one
+// of the dates, and keeps a record of what price did across the window on the
+// days that have already finished.
+//
+// Two windows are offered and one is drawn at a time:
+//
+//   Tokyo      the 09:55 Asia/Tokyo mid rate, the reference at which Japanese
+//              banks quote the day's customer rate for JPY.
+//   London     the 16:00 Europe/London benchmark fix.
+//
+// The dates are the Japanese settlement convention usually called gotobi: the
+// 5th, 10th, 15th, 20th, 25th and the last day of the month. This script holds
+// no holiday table. It carries the weekend part of the rule only, moving a
+// settlement date that lands on a Saturday or a Sunday back to the Friday
+// before it, and a date that lands on a Japanese bank holiday is flagged on the
+// holiday itself rather than on the business day the convention would move it
+// to. Every such date is named in the table so a reader can see which rule
+// produced today's flag.
+//
+// The reference before the window and the close of the bar carrying the fix are
+// read off close, so on the bar that is forming they move as it forms and settle
+// when it closes, and a bar that has closed is not rewritten afterwards. The
+// record itself is gated on the bar being confirmed, so a day joins it on the
+// close of its far-side bar rather than while that bar is still forming. Without
+// that gate the day would join on the far-side bar's first tick, because a
+// forming bar already reports its scheduled close time.
+//
+// The record is the part worth having. For each finished day the script stores
+// two numbers in basis points: the move from the last close before the window
+// opened up to the close of the bar that carries the fix, and the move from
+// that bar to the close of the bar a chosen interval later. On the Tokyo window
+// it holds those for the flagged dates and for every other date separately; on
+// the London window every date goes into one record, because a Japanese
+// settlement date is not a claim about who trades a London benchmark. For each
+// record it prints the median of both numbers, the share of days the first was
+// positive, the share of days the second went the other way, and the number of
+// days behind each figure.
+//
+// That last row is the point. The folk version of this calendar says the pre
+// fix move on a settlement date runs one way and hands part of itself back
+// afterwards. The two shares above are that claim's own quantities, printed on
+// whatever history the chart has loaded, with the sample size beside them. A
+// settlement calendar produces six or seven dates a month, so a year of history
+// is on the order of eighty days: at eighty days a share has a standard error
+// of 5.6 points, and a share that sits ten points from a coin toss is under two
+// of those. The table prints the count so the reader does that division rather
+// than reading the share alone.
+//
+// Nothing here is an entry, an exit, a direction or a filter. The script takes
+// no view on which way a settlement date goes and offers no threshold that
+// would turn one of these numbers into a condition.
+
+// Window ---------------------------------------------------------------------
+winSel = input.string("Tokyo mid rate, 09:55", "Fixing window", options = ["Tokyo mid rate, 09:55", "London benchmark fix, 16:00"], group = "Window", tooltip = "Each is read on its own city's clock and its own calendar date, so daylight saving is handled by the timezone rather than by an offset. Tokyo does not observe daylight saving; London does, twice a year.")
+preMin = input.int(45, "Minutes before the fix", minval = 5, maxval = 240, group = "Window", tooltip = "The reference close is the last bar closing at or before this many minutes ahead of the fix. On a chart whose bars do not land on that minute the realised interval is longer, and the table prints both the interval asked for and the one measured.")
+postMin = input.int(90, "Minutes after the fix", minval = 5, maxval = 240, group = "Window", tooltip = "Same rule on the other side: the first bar closing at or after this many minutes past the fix. Capped at 240 so that neither edge of the widest window can cross local midnight on either clock, which would put the two ends on different calendar dates.")
+
+// Calendar -------------------------------------------------------------------
+rollWeekend = input.bool(true, "Move a weekend settlement date back to the Friday", group = "Calendar", tooltip = "On, a settlement date falling on a Saturday or a Sunday flags the Friday before it. Off, the calendar is read literally and those dates simply produce no flag, since there is no trading on them. Turning it off is the way to see how much of the flagged set is the roll rule rather than the raw dates.")
+splitOnCal = input.bool(true, "Keep the record split by settlement date", group = "Calendar", tooltip = "The split is applied on the Tokyo window only. The calendar is a Japanese settlement convention, and holding a London benchmark's days apart by it would assert something about who trades that benchmark which this script does not measure. With the London window the flag is still printed for the date and every date goes into one pooled record.")
+
+// Record ---------------------------------------------------------------------
+maxDays = input.int(500, "Days kept in the record, both groups together", minval = 40, maxval = 2000, group = "Record", tooltip = "The oldest day drops out when this fills, whichever group it was in, so the two groups cover the same stretch of the chart. Capping each group on its own instead would let the larger one fill first and start reporting a shorter span than the other, and the two medians would then be describing different years. Five hundred weekdays is about two years, which a settlement calendar fills with around a hundred and fifty flagged dates.")
+
+// Display --------------------------------------------------------------------
+showBands = input.bool(true, "Shade the window", group = "Display")
+showTable = input.bool(true, "Show readout", group = "Display")
+
+// What the chart has to be, and the chart type test comes first because it is
+// the one every other gate lets through. On a Heikin Ashi, Renko, Kagi, Line
+// break, Point and figure or Range chart the price series is built by the chart
+// rather than dealt in the market, so the timeframe, the symbol type and the
+// currency all still look right while every basis point below would be measured
+// off a price nobody traded. Renko and Range charts also carry no clock close on
+// their forming bars, and the same gate covers that.
+//
+// The rest: the method is a clock time measured against bar closes, so a chart
+// whose bars are longer than an hour cannot place the fix within an hour of
+// itself, and a chart measured in seconds or in ticks has no stable minute to
+// test. Both halves of the intraday test are needed, because
+// timeframe.isintraday is true for a seconds chart as well.
+bool stdOk = chart.is_standard
+bool tfOk  = timeframe.isintraday and not timeframe.isseconds and not timeframe.isticks and timeframe.in_seconds() <= 3600
+bool fxOk  = syminfo.type == "forex"
+bool tokyo = winSel == "Tokyo mid rate, 09:55"
+bool jpyOk = not tokyo or syminfo.currency == "JPY" or syminfo.basecurrency == "JPY"
+bool engineOk = stdOk and tfOk and fxOk and jpyOk
+
+string tz       = tokyo ? "Asia/Tokyo" : "Europe/London"
+int    fixCm    = tokyo ? 595 : 960
+string fixLabel = tokyo ? "09:55 Asia/Tokyo" : "16:00 Europe/London"
+
+// One bar length in whole minutes, used as the tolerance on both edges. A bar
+// closing more than one bar length away from the minute asked for is a gap
+// rather than an alignment, and the day is counted out instead of pooled.
+int tolMin = int(math.max(1.0, math.round(timeframe.in_seconds() / 60.0)))
+
+// Local clock and local calendar date, both read off the bar's close in the
+// window's own timezone. Bar opens are the wrong end here: a bar that opens on
+// one calendar date can close on the next, and the fix is an instant inside the
+// bar rather than at its start.
+int tRef = time_close
+int cm   = hour(tRef, tz) * 60 + minute(tRef, tz)
+int d0   = dayofmonth(tRef, tz)
+int dow  = dayofweek(tRef, tz)
+
+// Day arithmetic anchored near local noon rather than on the bar itself. Adding
+// twenty four hours to a timestamp lands on the next calendar date at every
+// hour except the one or two near midnight on a clock change day, where the
+// hour that is added or removed can leave the date where it was. Noon has
+// twelve hours of margin on both sides, so the three dates below are the next
+// three calendar dates on any clock. Tokyo does not need this and gets it
+// anyway, so there is one code path.
+int dayMs  = 86400000
+int noonMs = tRef - cm * 60000 + 43200000
+int n1 = dayofmonth(noonMs + dayMs, tz)
+int n2 = dayofmonth(noonMs + 2 * dayMs, tz)
+int n3 = dayofmonth(noonMs + 3 * dayMs, tz)
+
+// A date is the last of its month when the next date is smaller, which is the
+// one test that needs no month length table and no leap year rule.
+bool me0 = n1 < d0
+bool me1 = n2 < n1
+bool me2 = n3 < n2
+
+bool nom0 = d0 % 5 == 0 or me0
+bool nom1 = n1 % 5 == 0 or me1
+bool nom2 = n2 % 5 == 0 or me2
+
+bool isWeekday = dow != dayofweek.saturday and dow != dayofweek.sunday
+bool isFriday  = dow == dayofweek.friday
+
+// A Friday absorbs a Saturday date, a Sunday date, or both at once, which
+// happens when the 30th is a Saturday and the 31st is the last of the month.
+bool rolled  = rollWeekend and isFriday and (nom1 or nom2) and not nom0
+bool calFlag = isWeekday and (nom0 or (rollWeekend and isFriday and (nom1 or nom2)))
+
+bool newLocalDay = na(d0[1]) or d0 != d0[1]
+
+// Per day state. Everything resets on the first bar of a new local date, so a
+// day that produces no fix bar leaves nothing behind for the next one.
+var float preRef  = na
+var int   preCm   = na
+var float fixRef  = na
+var int   fixCm2  = na
+var bool  fixCal  = false
+var float postRef = na
+var int   postCm  = na
+var bool  skipMarked = false
+var int   skipDays   = 0
+
+if newLocalDay
+    preRef  := na
+    preCm   := na
+    fixRef  := na
+    fixCm2  := na
+    fixCal  := false
+    postRef := na
+    postCm  := na
+    skipMarked := false
+
+// The reference before the window. Every bar closing at or before the cutoff
+// overwrites it, so what survives is the last one, which is the closest to the
+// minute asked for that the chart can offer.
+if engineOk and na(fixRef) and cm <= fixCm - preMin
+    preRef := close
+    preCm  := cm
+
+// The fix bar: the first bar of the day closing at or after the fix minute and
+// within one bar length of it. The second half of that test is what stops a
+// Sunday evening bar, which opens the local week well past the fix minute, from
+// being read as that day's fix.
+bool fixBarNow = false
+if engineOk and na(fixRef) and cm >= fixCm and cm < fixCm + tolMin
+    fixRef := close
+    fixCm2 := cm
+    fixCal := calFlag
+    fixBarNow := true
+
+// A day whose bars ran past the fix without one landing inside the tolerance is
+// counted out by name rather than pooled. Requiring a pre window reference is
+// what keeps the weekend edges out of the count: a Saturday in Tokyo has bars
+// before the fix minute and none after it, and it is not a missing fix.
+if engineOk and barstate.isconfirmed and not skipMarked and na(fixRef) and not na(preRef) and cm >= fixCm + tolMin
+    skipDays += 1
+    skipMarked := true
+
+// The record, oldest first. Two groups: dates the calendar flagged, and every
+// other date. The four arrays are written in one place and only when a day has
+// both ends of its window.
+// ordA holds which group each day went to, in the order they arrived, and it is
+// what makes the cap a shared one: when the record is full the oldest day is
+// dropped from whichever group held it, so the two groups cover the same
+// stretch of chart. A cap applied to each group separately would let the
+// larger group fill first and begin reporting a shorter span than the smaller
+// one, and the two medians printed side by side would then be measurements of
+// different years.
+var array<float> upCal = array.new_float()
+var array<float> gbCal = array.new_float()
+var array<float> upOth = array.new_float()
+var array<float> gbOth = array.new_float()
+var array<int>   ordA  = array.new_int()
+
+// The split is a Tokyo window feature, so the second group carries every date
+// when it is off and the table renames both rows to say so.
+bool splitActive = splitOnCal and tokyo
+
+float dayUp   = na
+float dayGb   = na
+float dayPre  = na
+float dayPost = na
+
+if engineOk and barstate.isconfirmed and not na(fixRef) and na(postRef) and cm >= fixCm + postMin and cm < fixCm + postMin + tolMin
+    postRef := close
+    postCm  := cm
+    int rPre  = fixCm2 - preCm
+    int rPost = postCm - fixCm2
+    bool spanOk = not na(preRef) and preRef > 0.0 and fixRef > 0.0 and rPre <= preMin + tolMin and rPost <= postMin + tolMin
+    if spanOk
+        dayUp   := (fixRef - preRef) / preRef * 10000.0
+        dayGb   := (postRef - fixRef) / fixRef * 10000.0
+        dayPre  := rPre * 1.0
+        dayPost := rPost * 1.0
+        bool toCal = splitActive and fixCal
+        if toCal
+            array.push(upCal, dayUp)
+            array.push(gbCal, dayGb)
+        else
+            array.push(upOth, dayUp)
+            array.push(gbOth, dayGb)
+        array.push(ordA, toCal ? 0 : 1)
+        if array.size(ordA) > maxDays
+            int dropped = array.shift(ordA)
+            if dropped == 0
+                array.shift(upCal)
+                array.shift(gbCal)
+            else
+                array.shift(upOth)
+                array.shift(gbOth)
+    else
+        if not skipMarked
+            skipDays += 1
+            skipMarked := true
+
+// Summaries. None of these touches price history, so they are read once on the
+// last bar rather than on every bar. An empty group is guarded with an if block
+// rather than a ternary, because array.median on an empty array is an error and
+// a ternary evaluates both of its branches.
+f_med(array<float> a) =>
+    float m = na
+    if array.size(a) > 0
+        m := array.median(a)
+    m
+
+f_sharePos(array<float> a) =>
+    float s = na
+    int n = array.size(a)
+    if n > 0
+        float c = 0.0
+        for i = 0 to n - 1
+            c += array.get(a, i) > 0.0 ? 1.0 : 0.0
+        s := c / n
+    s
+
+// Two days disagree when one move is up and the other is down. An exact zero on
+// either side is neither an agreement nor a disagreement and is counted as
+// neither, which is why this share and the share of positive run ups are not
+// two views of the same count.
+f_shareOpp(array<float> u, array<float> g) =>
+    float s = na
+    int n = math.min(array.size(u), array.size(g))
+    if n > 0
+        float c = 0.0
+        for i = 0 to n - 1
+            float a = array.get(u, i)
+            float b = array.get(g, i)
+            c += ((a > 0.0 and b < 0.0) or (a < 0.0 and b > 0.0)) ? 1.0 : 0.0
+        s := c / n
+    s
+
+f_se(float p, int n) => na(p) or n < 1 ? na : math.sqrt(p * (1.0 - p) / n)
+
+f_pct(float p, int n) => na(p) ? "-" : str.tostring(p * 100.0, "0") + "% +/- " + str.tostring(f_se(p, n) * 100.0, "0") + " on " + str.tostring(n)
+
+f_bp(float v) => na(v) ? "-" : str.tostring(v, "0.0") + " bp"
+
+int nCal = array.size(upCal)
+int nOth = array.size(upOth)
+
+// Warmup is a count of finished days rather than a count of bars, since a day
+// contributes at most one. The refusals sit ahead of it: a chart or a symbol
+// that will produce no reading at all should say so on the first bar rather than
+// after a hundred days of waiting.
+bool haveAny = nCal + nOth > 0
+string statusText = not stdOk ? "needs a standard chart, this one is built from synthetic prices" : not timeframe.isintraday ? "needs an intraday chart" : timeframe.isseconds or timeframe.isticks ? "needs a chart of one minute or more" : timeframe.in_seconds() > 3600 ? "needs a chart of sixty minutes or less" : not fxOk ? "needs a forex symbol" : not jpyOk ? "the Tokyo mid rate is quoted for JPY, this symbol has no JPY leg" : not haveAny ? "no finished window yet on this chart" : "ok"
+
+// Display bands. Both outer edges are the requested window widened by one bar
+// length, which is what makes the shading contain the bars that were actually
+// measured on any chart. The reference close is the last one at or before
+// fixCm - preMin, so its minute lies in (fixCm - preMin - tolMin, fixCm - preMin]
+// and the widened near edge reaches it on any chart; the far-side close is the
+// first at or after fixCm + postMin and within tolMin of it, so the far edge
+// reaches that too. Written off the clock rather than off the latches,
+// because a band has to be decidable on the bar it is drawn on: preCm keeps
+// moving forward through the morning, so a band anchored on it would shade every
+// bar it had ever pointed at.
+//
+// Without the widening the pre band is empty on an hourly chart, where no bar
+// closes strictly inside a 45 minute interval, and the post band stops one bar
+// short of the bar the far end was read from.
+bool inPre  = engineOk and cm > fixCm - preMin - tolMin and cm < fixCm
+bool inPost = engineOk and not na(fixRef) and not fixBarNow and cm > fixCm2 and cm <= fixCm + postMin + tolMin
+
+color calCol = color.orange
+color othCol = color.blue
+
+color bandCol = not engineOk or not showBands ? na : fixBarNow ? color.new(calFlag ? calCol : othCol, 60) : inPre ? color.new(calFlag ? calCol : othCol, 88) : inPost ? color.new(calFlag ? calCol : othCol, 94) : na
+bgcolor(bandCol, title = "Fixing window")
+
+// Data window rows. Each carries its own refusal, because none of them passes
+// through the arrays: they are arithmetic on the day's own three closes and on
+// the clock, and a refused chart must print nothing anywhere.
+plot(engineOk ? dayUp : na, "Run up into the fix, bp", display = display.data_window)
+plot(engineOk ? dayGb : na, "Move after the fix, bp", display = display.data_window)
+plot(engineOk ? dayPre : na, "Measured minutes before", display = display.data_window)
+plot(engineOk ? dayPost : na, "Measured minutes after", display = display.data_window)
+plot(engineOk ? (calFlag ? 1.0 : 0.0) : na, "Settlement date flag", display = display.data_window)
+plot(engineOk ? nCal * 1.0 : na, "Days in the flagged record", display = display.data_window)
+plot(engineOk ? nOth * 1.0 : na, "Days in the other record", display = display.data_window)
+plot(engineOk ? skipDays * 1.0 : na, "Days counted out", display = display.data_window)
+
+if showTable and barstate.islast
+    float mUpCal = f_med(upCal)
+    float mGbCal = f_med(gbCal)
+    float mUpOth = f_med(upOth)
+    float mGbOth = f_med(gbOth)
+    float pUpCal = f_sharePos(upCal)
+    float pUpOth = f_sharePos(upOth)
+    float pOpCal = f_shareOpp(upCal, gbCal)
+    float pOpOth = f_shareOpp(upOth, gbOth)
+
+    string dateTxt = engineOk ? str.format_time(tRef, "yyyy-MM-dd", tz) : "-"
+    string flagTxt = not engineOk ? "-" : calFlag and rolled ? "settlement date, moved back from the weekend" : calFlag ? "settlement date" : isWeekday ? "not a settlement date" : "no trading date"
+    string alignTxt = not engineOk or na(fixCm2) ? "-" : "fix at " + fixLabel + ", bar closes " + str.tostring(math.floor(fixCm2 / 60.0), "00") + ":" + str.tostring(fixCm2 % 60, "00") + ", " + str.tostring(fixCm2 - fixCm) + " min later"
+    string spanTxt = not engineOk ? "-" : na(dayPre) ? "asked for " + str.tostring(preMin) + " and " + str.tostring(postMin) + " min, none measured yet today" : "asked for " + str.tostring(preMin) + " and " + str.tostring(postMin) + " min, measured " + str.tostring(dayPre, "0") + " and " + str.tostring(dayPost, "0")
+    string todayTxt = not engineOk ? "-" : na(fixRef) ? "window has not opened" : na(preRef) ? "no close before the window on this date" : na(postRef) ? "run up " + f_bp((fixRef - preRef) / preRef * 10000.0) + ", the far side is still open" : "run up " + f_bp((fixRef - preRef) / preRef * 10000.0) + ", after " + f_bp((postRef - fixRef) / fixRef * 10000.0)
+    string calUpTxt = not engineOk or nCal < 1 ? "-" : "median " + f_bp(mUpCal) + ", up on " + f_pct(pUpCal, nCal) + " days"
+    string calGbTxt = not engineOk or nCal < 1 ? "-" : "median " + f_bp(mGbCal) + ", opposed the run up on " + f_pct(pOpCal, nCal)
+    string othUpTxt = not engineOk or nOth < 1 ? "-" : "median " + f_bp(mUpOth) + ", up on " + f_pct(pUpOth, nOth) + " days"
+    string othGbTxt = not engineOk or nOth < 1 ? "-" : "median " + f_bp(mGbOth) + ", opposed the run up on " + f_pct(pOpOth, nOth)
+    string skipTxt = engineOk ? str.tostring(skipDays) : "-"
+    string splitTxt = not engineOk ? "-" : splitActive ? "on, settlement dates kept apart" : tokyo ? "off, every date pooled below" : "not applied on this window, every date pooled below"
+    string lblCal = splitActive ? "Settlement dates" : "Settlement dates, not split"
+    string lblOth = splitActive ? "Other dates" : "All dates"
+
+    var table t = table.new(position.top_right, 2, 12, border_width = 1)
+    table.cell(t, 0, 0, "Window", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 0, engineOk ? fixLabel : "-", text_color = color.white, text_size = size.small)
+    table.cell(t, 0, 1, "Date on that clock", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 1, dateTxt, text_color = color.white, text_size = size.small)
+    table.cell(t, 0, 2, "Settlement calendar", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 2, flagTxt, text_color = color.white, bgcolor = color.new(engineOk and calFlag ? calCol : color.gray, 80), text_size = size.small)
+    table.cell(t, 0, 3, "Fix alignment", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 3, alignTxt, text_color = color.white, text_size = size.small)
+    table.cell(t, 0, 4, "Measured window", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 4, spanTxt, text_color = color.white, text_size = size.small)
+    table.cell(t, 0, 5, "Today", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 5, todayTxt, text_color = color.white, text_size = size.small)
+    table.cell(t, 0, 6, lblCal + ", into the fix", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 6, calUpTxt, text_color = color.white, bgcolor = color.new(calCol, 85), text_size = size.small)
+    table.cell(t, 0, 7, lblCal + ", after it", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 7, calGbTxt, text_color = color.white, bgcolor = color.new(calCol, 85), text_size = size.small)
+    table.cell(t, 0, 8, lblOth + ", into the fix", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 8, othUpTxt, text_color = color.white, bgcolor = color.new(othCol, 85), text_size = size.small)
+    table.cell(t, 0, 9, lblOth + ", after it", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 9, othGbTxt, text_color = color.white, bgcolor = color.new(othCol, 85), text_size = size.small)
+    table.cell(t, 0, 10, "Split and days counted out", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 10, engineOk ? splitTxt + ", " + skipTxt + " counted out" : "-", text_color = color.gray, text_size = size.small)
+    table.cell(t, 0, 11, "Status", text_color = color.gray, text_size = size.small)
+    table.cell(t, 1, 11, statusText, text_color = statusText == "ok" ? color.gray : color.orange, text_size = size.small)

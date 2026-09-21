@@ -1,0 +1,346 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © graefe
+//@version=6
+indicator(title = "Percent Line/Box Toolkit", overlay = true, max_lines_count = 10, max_labels_count = 20, max_boxes_count = 10)
+
+const int con_lineCount = 6
+const int con_boxCount  = 4
+
+// These strings are logic as well as labels: they appear in the option lists
+// below AND in the comparisons inside f_lineStyleFromText and
+// f_labelSizeFromText. Changing one place without the other silently falls
+// through to the default branch.
+const string con_styleSolid  = "Solid"
+const string con_styleDotted = "Dotted"
+const string con_styleDashed = "Dashed"
+
+const string con_sizeTiny   = "Tiny"
+const string con_sizeSmall  = "Small"
+const string con_sizeNormal = "Normal"
+const string con_sizeLarge  = "Large"
+const string con_sizeHuge   = "Huge"
+
+const string con_verticalTooltip  = "Vertical offset from the current close, in percent."
+const string con_offsetTooltip    = "Horizontal offset. Positive values move the drawing to the left, negative values into the empty space on the right."
+const string con_lengthTooltip    = "Width of the drawing, measured in bars."
+const string con_timeframeTooltip = "Offset and length are measured in bars of this timeframe, so the drawing keeps its size when you switch chart timeframes."
+const string con_labelTooltip     = "Text shown at the right edge of the drawing, and the size it is drawn in. Leave the text field empty to hide the label."
+const string con_boxUpperTooltip  = "Upper edge of the box, as a percentage of the current close."
+const string con_boxLowerTooltip  = "Lower edge of the box, as a percentage of the current close. The order does not matter: the higher of the two values is always drawn as the top edge."
+
+
+// Converts a percentage into a price, relative to the given base price.
+f_priceFromPercent(float basePrice, float percentValue) =>
+    basePrice + basePrice * (percentValue / 100.0)
+
+// Returns the duration of one bar of the reference timeframe in seconds; with no timeframe selected, the chart's own is used.
+f_barSeconds(string referenceTimeframe) =>
+    int referenceSeconds = timeframe.in_seconds(referenceTimeframe)
+    int chartSeconds     = timeframe.in_seconds(timeframe.period)
+    nz(na(referenceSeconds) ? chartSeconds : referenceSeconds, 60)
+
+// Derives the left and right time coordinate of a drawing from offset and length, measured in bars of the reference timeframe.
+f_segmentCoordinates(int offsetBars, int lengthBars, string referenceTimeframe) =>
+    float secondsPerBar = math.max(1, f_barSeconds(referenceTimeframe))
+    float offsetMs      = offsetBars * secondsPerBar * 1000.0
+    float lengthMs      = (lengthBars - 1) * secondsPerBar * 1000.0
+    float rightTime     = time - offsetMs
+    float leftTime      = rightTime - lengthMs
+    [leftTime, rightTime]
+
+// Translates the selected option string into the matching line style constant.
+f_lineStyleFromText(string styleText) =>
+    styleText == con_styleDotted ? line.style_dotted : styleText == con_styleDashed ? line.style_dashed : line.style_solid
+
+// Translates the selected option string into the matching size constant.
+f_labelSizeFromText(string sizeText) =>
+    sizeText == con_sizeSmall ? size.small : sizeText == con_sizeNormal ? size.normal : sizeText == con_sizeLarge ? size.large : sizeText == con_sizeHuge ? size.huge : size.tiny
+
+// Creates the label once and only updates it afterwards; an empty text deletes it again.
+f_updateLabel(label labelId, bool showLabel, string labelText, string labelSizeText, int xPosition, float yPosition, color textColor) =>
+    label resultId = labelId
+
+    if showLabel and str.length(labelText) > 0
+        string labelSize = f_labelSizeFromText(labelSizeText)
+
+        if na(labelId)
+            resultId := label.new(xPosition, yPosition, labelText,
+                 xloc      = xloc.bar_time,
+                 style     = label.style_label_down,
+                 color     = na,
+                 textcolor = textColor,
+                 size      = labelSize)
+        else
+            label.set_xy(labelId, xPosition, yPosition)
+            label.set_text(labelId, labelText)
+            label.set_textcolor(labelId, textColor)
+            label.set_size(labelId, labelSize)
+            resultId := labelId
+    else
+        if not na(labelId)
+            label.delete(labelId)
+        resultId := na
+
+    resultId
+
+// Draws one line together with its label, repositions both on every call, and deletes them once the line is switched off.
+f_percentLine(line lineId, label labelId, bool showLine, float percentValue, string referenceTimeframe, int offsetBars, int lengthBars, color lineColor, int lineWidth, string lineStyleText, bool showLabel, string labelText, string labelSizeText, float basePrice) =>
+    line  resultLine  = lineId
+    label resultLabel = labelId
+
+    if showLine
+        float priceLevel = f_priceFromPercent(basePrice, percentValue)
+        [leftTime, rightTime] = f_segmentCoordinates(offsetBars, lengthBars, referenceTimeframe)
+        string lineStyle = f_lineStyleFromText(lineStyleText)
+
+        if na(lineId)
+            resultLine := line.new(int(leftTime), priceLevel, int(rightTime), priceLevel,
+                 xloc   = xloc.bar_time,
+                 extend = extend.none,
+                 color  = lineColor, width = lineWidth, style = lineStyle)
+        else
+            line.set_xy1(lineId, int(leftTime), priceLevel)
+            line.set_xy2(lineId, int(rightTime), priceLevel)
+            line.set_color(lineId, lineColor)
+            line.set_style(lineId, lineStyle)
+            line.set_width(lineId, lineWidth)
+            resultLine := lineId
+
+        resultLabel := f_updateLabel(labelId, showLabel, labelText, labelSizeText, int(rightTime), priceLevel, lineColor)
+    else
+        if not na(lineId)
+            line.delete(lineId)
+        if not na(labelId)
+            label.delete(labelId)
+        resultLine  := na
+        resultLabel := na
+
+    [resultLine, resultLabel]
+
+// Same as f_percentLine for a box; the two percentage values are sorted first so the higher one always forms the top edge.
+f_percentBox(box boxId, label labelId, bool showBox, float topPercent, float bottomPercent, string referenceTimeframe, int offsetBars, int lengthBars, color borderColor, int borderWidth, color fillColor, bool showLabel, string labelText, string labelSizeText, float basePrice) =>
+    box   resultBox   = boxId
+    label resultLabel = labelId
+
+    if showBox
+        float firstLevel  = f_priceFromPercent(basePrice, topPercent)
+        float secondLevel = f_priceFromPercent(basePrice, bottomPercent)
+        float topLevel    = math.max(firstLevel, secondLevel)
+        float bottomLevel = math.min(firstLevel, secondLevel)
+
+        [leftTime, rightTime] = f_segmentCoordinates(offsetBars, lengthBars, referenceTimeframe)
+
+        if na(boxId)
+            resultBox := box.new(int(leftTime), topLevel, int(rightTime), bottomLevel,
+                 xloc         = xloc.bar_time,
+                 border_color = borderColor,
+                 border_width = borderWidth,
+                 bgcolor      = fillColor)
+        else
+            box.set_lefttop(boxId, int(leftTime), topLevel)
+            box.set_rightbottom(boxId, int(rightTime), bottomLevel)
+            box.set_border_color(boxId, borderColor)
+            box.set_border_width(boxId, borderWidth)
+            box.set_bgcolor(boxId, fillColor)
+            resultBox := boxId
+
+        resultLabel := f_updateLabel(labelId, showLabel, labelText, labelSizeText, int(rightTime), topLevel, borderColor)
+    else
+        if not na(boxId)
+            box.delete(boxId)
+        if not na(labelId)
+            label.delete(labelId)
+        resultBox   := na
+        resultLabel := na
+
+    [resultBox, resultLabel]
+
+// Settings per line, six identically structured blocks (Line 1 to Line 6).
+bool   inp_showLine1      = input.bool(defval = true, title = "", inline = "line01_", group = "Line 1")
+string inp_lineLabel1     = input.string(defval = "+6%", title = "", inline = "line01_", group = "Line 1", active = inp_showLine1)
+string inp_lineLabelSize1 = input.string(defval = con_sizeSmall, title = "", options = [con_sizeTiny, con_sizeSmall, con_sizeNormal, con_sizeLarge, con_sizeHuge], inline = "line01_", group = "Line 1", tooltip = con_labelTooltip, active = inp_showLine1)
+float  inp_lineVertical1  = input.float(defval = 6.0, title = "Level (%)", minval = -100, maxval = 1000, step = 0.1, tooltip = con_verticalTooltip, group = "Line 1", active = inp_showLine1)
+int    inp_lineOffset1    = input.int(defval = 50, title = "Offset (Bars)", minval = -500, maxval = 5000, step = 1, tooltip = con_offsetTooltip, group = "Line 1", active = inp_showLine1)
+int    inp_lineLength1    = input.int(defval = 50, title = "Length (Bars)", minval = 2, maxval = 5000, step = 1, tooltip = con_lengthTooltip, group = "Line 1", active = inp_showLine1)
+string inp_lineTimeframe1 = input.timeframe(defval = "", title = "Reference Timeframe", tooltip = con_timeframeTooltip, group = "Line 1", active = inp_showLine1)
+string inp_lineStyle1     = input.string(defval = con_styleSolid, title = "", options = [con_styleSolid, con_styleDotted, con_styleDashed], inline = "line01", group = "Line 1", active = inp_showLine1)
+int    inp_lineWidth1     = input.int(defval = 1, title = "", minval = 1, maxval = 10, step = 1, inline = "line01", group = "Line 1", active = inp_showLine1)
+color  inp_lineColor1     = input.color(defval = color.new(color.gray, 0), title = "", inline = "line01", group = "Line 1", active = inp_showLine1)
+
+bool   inp_showLine2      = input.bool(defval = true, title = "", inline = "line02_", group = "Line 2")
+string inp_lineLabel2     = input.string(defval = "-6%", title = "", inline = "line02_", group = "Line 2", active = inp_showLine2)
+string inp_lineLabelSize2 = input.string(defval = con_sizeSmall, title = "", options = [con_sizeTiny, con_sizeSmall, con_sizeNormal, con_sizeLarge, con_sizeHuge], inline = "line02_", group = "Line 2", tooltip = con_labelTooltip, active = inp_showLine2)
+float  inp_lineVertical2  = input.float(defval = -6.0, title = "Level (%)", minval = -100, maxval = 1000, step = 0.1, tooltip = con_verticalTooltip, group = "Line 2", active = inp_showLine2)
+int    inp_lineOffset2    = input.int(defval = 50, title = "Offset (Bars)", minval = -500, maxval = 5000, step = 1, tooltip = con_offsetTooltip, group = "Line 2", active = inp_showLine2)
+int    inp_lineLength2    = input.int(defval = 50, title = "Length (Bars)", minval = 2, maxval = 5000, step = 1, tooltip = con_lengthTooltip, group = "Line 2", active = inp_showLine2)
+string inp_lineTimeframe2 = input.timeframe(defval = "", title = "Reference Timeframe", tooltip = con_timeframeTooltip, group = "Line 2", active = inp_showLine2)
+string inp_lineStyle2     = input.string(defval = con_styleSolid, title = "", options = [con_styleSolid, con_styleDotted, con_styleDashed], inline = "line02", group = "Line 2", active = inp_showLine2)
+int    inp_lineWidth2     = input.int(defval = 1, title = "", minval = 1, maxval = 10, step = 1, inline = "line02", group = "Line 2", active = inp_showLine2)
+color  inp_lineColor2     = input.color(defval = color.new(color.gray, 0), title = "", inline = "line02", group = "Line 2", active = inp_showLine2)
+
+bool   inp_showLine3      = input.bool(defval = true, title = "", inline = "line03_", group = "Line 3")
+string inp_lineLabel3     = input.string(defval = "+3%", title = "", inline = "line03_", group = "Line 3", active = inp_showLine3)
+string inp_lineLabelSize3 = input.string(defval = con_sizeSmall, title = "", options = [con_sizeTiny, con_sizeSmall, con_sizeNormal, con_sizeLarge, con_sizeHuge], inline = "line03_", group = "Line 3", tooltip = con_labelTooltip, active = inp_showLine3)
+float  inp_lineVertical3  = input.float(defval = 3.0, title = "Level (%)", minval = -100, maxval = 1000, step = 0.1, tooltip = con_verticalTooltip, group = "Line 3", active = inp_showLine3)
+int    inp_lineOffset3    = input.int(defval = 50, title = "Offset (Bars)", minval = -500, maxval = 5000, step = 1, tooltip = con_offsetTooltip, group = "Line 3", active = inp_showLine3)
+int    inp_lineLength3    = input.int(defval = 50, title = "Length (Bars)", minval = 2, maxval = 5000, step = 1, tooltip = con_lengthTooltip, group = "Line 3", active = inp_showLine3)
+string inp_lineTimeframe3 = input.timeframe(defval = "", title = "Reference Timeframe", tooltip = con_timeframeTooltip, group = "Line 3", active = inp_showLine3)
+string inp_lineStyle3     = input.string(defval = con_styleSolid, title = "", options = [con_styleSolid, con_styleDotted, con_styleDashed], inline = "line03", group = "Line 3", active = inp_showLine3)
+int    inp_lineWidth3     = input.int(defval = 1, title = "", minval = 1, maxval = 10, step = 1, inline = "line03", group = "Line 3", active = inp_showLine3)
+color  inp_lineColor3     = input.color(defval = color.new(color.gray, 0), title = "", inline = "line03", group = "Line 3", active = inp_showLine3)
+
+bool   inp_showLine4      = input.bool(defval = true, title = "", inline = "line04_", group = "Line 4")
+string inp_lineLabel4     = input.string(defval = "-3%", title = "", inline = "line04_", group = "Line 4", active = inp_showLine4)
+string inp_lineLabelSize4 = input.string(defval = con_sizeSmall, title = "", options = [con_sizeTiny, con_sizeSmall, con_sizeNormal, con_sizeLarge, con_sizeHuge], inline = "line04_", group = "Line 4", tooltip = con_labelTooltip, active = inp_showLine4)
+float  inp_lineVertical4  = input.float(defval = -3.0, title = "Level (%)", minval = -100, maxval = 1000, step = 0.1, tooltip = con_verticalTooltip, group = "Line 4", active = inp_showLine4)
+int    inp_lineOffset4    = input.int(defval = 50, title = "Offset (Bars)", minval = -500, maxval = 5000, step = 1, tooltip = con_offsetTooltip, group = "Line 4", active = inp_showLine4)
+int    inp_lineLength4    = input.int(defval = 50, title = "Length (Bars)", minval = 2, maxval = 5000, step = 1, tooltip = con_lengthTooltip, group = "Line 4", active = inp_showLine4)
+string inp_lineTimeframe4 = input.timeframe(defval = "", title = "Reference Timeframe", tooltip = con_timeframeTooltip, group = "Line 4", active = inp_showLine4)
+string inp_lineStyle4     = input.string(defval = con_styleSolid, title = "", options = [con_styleSolid, con_styleDotted, con_styleDashed], inline = "line04", group = "Line 4", active = inp_showLine4)
+int    inp_lineWidth4     = input.int(defval = 1, title = "", minval = 1, maxval = 10, step = 1, inline = "line04", group = "Line 4", active = inp_showLine4)
+color  inp_lineColor4     = input.color(defval = color.new(color.gray, 0), title = "", inline = "line04", group = "Line 4", active = inp_showLine4)
+
+bool   inp_showLine5      = input.bool(defval = false, title = "", inline = "line05_", group = "Line 5")
+string inp_lineLabel5     = input.string(defval = "+1%", title = "", inline = "line05_", group = "Line 5", active = inp_showLine5)
+string inp_lineLabelSize5 = input.string(defval = con_sizeSmall, title = "", options = [con_sizeTiny, con_sizeSmall, con_sizeNormal, con_sizeLarge, con_sizeHuge], inline = "line05_", group = "Line 5", tooltip = con_labelTooltip, active = inp_showLine5)
+float  inp_lineVertical5  = input.float(defval = 1.0, title = "Level (%)", minval = -100, maxval = 1000, step = 0.1, tooltip = con_verticalTooltip, group = "Line 5", active = inp_showLine5)
+int    inp_lineOffset5    = input.int(defval = 20, title = "Offset (Bars)", minval = -500, maxval = 5000, step = 1, tooltip = con_offsetTooltip, group = "Line 5", active = inp_showLine5)
+int    inp_lineLength5    = input.int(defval = 20, title = "Length (Bars)", minval = 2, maxval = 5000, step = 1, tooltip = con_lengthTooltip, group = "Line 5", active = inp_showLine5)
+string inp_lineTimeframe5 = input.timeframe(defval = "", title = "Reference Timeframe", tooltip = con_timeframeTooltip, group = "Line 5", active = inp_showLine5)
+string inp_lineStyle5     = input.string(defval = con_styleSolid, title = "", options = [con_styleSolid, con_styleDotted, con_styleDashed], inline = "line05", group = "Line 5", active = inp_showLine5)
+int    inp_lineWidth5     = input.int(defval = 1, title = "", minval = 1, maxval = 10, step = 1, inline = "line05", group = "Line 5", active = inp_showLine5)
+color  inp_lineColor5     = input.color(defval = color.new(color.gray, 0), title = "", inline = "line05", group = "Line 5", active = inp_showLine5)
+
+bool   inp_showLine6      = input.bool(defval = false, title = "", inline = "line06_", group = "Line 6")
+string inp_lineLabel6     = input.string(defval = "-1%", title = "", inline = "line06_", group = "Line 6", active = inp_showLine6)
+string inp_lineLabelSize6 = input.string(defval = con_sizeSmall, title = "", options = [con_sizeTiny, con_sizeSmall, con_sizeNormal, con_sizeLarge, con_sizeHuge], inline = "line06_", group = "Line 6", tooltip = con_labelTooltip, active = inp_showLine6)
+float  inp_lineVertical6  = input.float(defval = -1.0, title = "Level (%)", minval = -100, maxval = 1000, step = 0.1, tooltip = con_verticalTooltip, group = "Line 6", active = inp_showLine6)
+int    inp_lineOffset6    = input.int(defval = 20, title = "Offset (Bars)", minval = -500, maxval = 5000, step = 1, tooltip = con_offsetTooltip, group = "Line 6", active = inp_showLine6)
+int    inp_lineLength6    = input.int(defval = 20, title = "Length (Bars)", minval = 2, maxval = 5000, step = 1, tooltip = con_lengthTooltip, group = "Line 6", active = inp_showLine6)
+string inp_lineTimeframe6 = input.timeframe(defval = "", title = "Reference Timeframe", tooltip = con_timeframeTooltip, group = "Line 6", active = inp_showLine6)
+string inp_lineStyle6     = input.string(defval = con_styleSolid, title = "", options = [con_styleSolid, con_styleDotted, con_styleDashed], inline = "line06", group = "Line 6", active = inp_showLine6)
+int    inp_lineWidth6     = input.int(defval = 1, title = "", minval = 1, maxval = 10, step = 1, inline = "line06", group = "Line 6", active = inp_showLine6)
+color  inp_lineColor6     = input.color(defval = color.new(color.gray, 0), title = "", inline = "line06", group = "Line 6", active = inp_showLine6)
+
+// Settings per box, four identically structured blocks (Box 1 to Box 4).
+bool   inp_showBox1        = input.bool(defval = true, title = "", inline = "box01_", group = "Box 1")
+string inp_boxLabel1       = input.string(defval = "", title = "", inline = "box01_", group = "Box 1", active = inp_showBox1)
+string inp_boxLabelSize1   = input.string(defval = con_sizeNormal, title = "", options = [con_sizeTiny, con_sizeSmall, con_sizeNormal, con_sizeLarge, con_sizeHuge], inline = "box01_", group = "Box 1", tooltip = con_labelTooltip, active = inp_showBox1)
+float  inp_boxTop1         = input.float(defval = 8.0, title = "Upper (%)", minval = -100, maxval = 1000, step = 0.1, tooltip = con_boxUpperTooltip, group = "Box 1", active = inp_showBox1)
+float  inp_boxBottom1      = input.float(defval = -8.0, title = "Lower (%)", minval = -100, maxval = 1000, step = 0.1, tooltip = con_boxLowerTooltip, group = "Box 1", active = inp_showBox1)
+int    inp_boxOffset1      = input.int(defval = 20, title = "Offset (Bars)", minval = -500, maxval = 5000, step = 1, tooltip = con_offsetTooltip, group = "Box 1", active = inp_showBox1)
+int    inp_boxLength1      = input.int(defval = 500, title = "Length (Bars)", minval = 2, maxval = 5000, step = 1, tooltip = con_lengthTooltip, group = "Box 1", active = inp_showBox1)
+string inp_boxTimeframe1   = input.timeframe(defval = "", title = "Reference Timeframe", tooltip = con_timeframeTooltip, group = "Box 1", active = inp_showBox1)
+int    inp_boxWidth1       = input.int(defval = 1, title = "", minval = 0, maxval = 10, step = 1, inline = "box01", group = "Box 1", active = inp_showBox1)
+color  inp_boxBorderColor1 = input.color(defval = color.new(#c79c2f, 50), title = "", inline = "box01", group = "Box 1", active = inp_showBox1)
+color  inp_boxFillColor1   = input.color(defval = color.new(#c79c2f, 90), title = "", inline = "box01", group = "Box 1", active = inp_showBox1)
+
+bool   inp_showBox2        = input.bool(defval = false, title = "", inline = "box02_", group = "Box 2")
+string inp_boxLabel2       = input.string(defval = "", title = "", inline = "box02_", group = "Box 2", active = inp_showBox2)
+string inp_boxLabelSize2   = input.string(defval = con_sizeNormal, title = "", options = [con_sizeTiny, con_sizeSmall, con_sizeNormal, con_sizeLarge, con_sizeHuge], inline = "box02_", group = "Box 2", tooltip = con_labelTooltip, active = inp_showBox2)
+float  inp_boxTop2         = input.float(defval = 3.0, title = "Upper (%)", minval = -100, maxval = 1000, step = 0.1, tooltip = con_boxUpperTooltip, group = "Box 2", active = inp_showBox2)
+float  inp_boxBottom2      = input.float(defval = -3.0, title = "Lower (%)", minval = -100, maxval = 1000, step = 0.1, tooltip = con_boxLowerTooltip, group = "Box 2", active = inp_showBox2)
+int    inp_boxOffset2      = input.int(defval = 20, title = "Offset (Bars)", minval = -500, maxval = 5000, step = 1, tooltip = con_offsetTooltip, group = "Box 2", active = inp_showBox2)
+int    inp_boxLength2      = input.int(defval = 80, title = "Length (Bars)", minval = 2, maxval = 5000, step = 1, tooltip = con_lengthTooltip, group = "Box 2", active = inp_showBox2)
+string inp_boxTimeframe2   = input.timeframe(defval = "", title = "Reference Timeframe", tooltip = con_timeframeTooltip, group = "Box 2", active = inp_showBox2)
+int    inp_boxWidth2       = input.int(defval = 1, title = "", minval = 0, maxval = 10, step = 1, inline = "box02", group = "Box 2", active = inp_showBox2)
+color  inp_boxBorderColor2 = input.color(defval = color.new(#818181, 50), title = "", inline = "box02", group = "Box 2", active = inp_showBox2)
+color  inp_boxFillColor2   = input.color(defval = color.new(#818181, 90), title = "", inline = "box02", group = "Box 2", active = inp_showBox2)
+
+bool   inp_showBox3        = input.bool(defval = false, title = "", inline = "box03_", group = "Box 3")
+string inp_boxLabel3       = input.string(defval = "", title = "", inline = "box03_", group = "Box 3", active = inp_showBox3)
+string inp_boxLabelSize3   = input.string(defval = con_sizeNormal, title = "", options = [con_sizeTiny, con_sizeSmall, con_sizeNormal, con_sizeLarge, con_sizeHuge], inline = "box03_", group = "Box 3", tooltip = con_labelTooltip, active = inp_showBox3)
+float  inp_boxTop3         = input.float(defval = 2.0, title = "Upper (%)", minval = -100, maxval = 1000, step = 0.1, tooltip = con_boxUpperTooltip, group = "Box 3", active = inp_showBox3)
+float  inp_boxBottom3      = input.float(defval = -2.0, title = "Lower (%)", minval = -100, maxval = 1000, step = 0.1, tooltip = con_boxLowerTooltip, group = "Box 3", active = inp_showBox3)
+int    inp_boxOffset3      = input.int(defval = 20, title = "Offset (Bars)", minval = -500, maxval = 5000, step = 1, tooltip = con_offsetTooltip, group = "Box 3", active = inp_showBox3)
+int    inp_boxLength3      = input.int(defval = 80, title = "Length (Bars)", minval = 2, maxval = 5000, step = 1, tooltip = con_lengthTooltip, group = "Box 3", active = inp_showBox3)
+string inp_boxTimeframe3   = input.timeframe(defval = "", title = "Reference Timeframe", tooltip = con_timeframeTooltip, group = "Box 3", active = inp_showBox3)
+int    inp_boxWidth3       = input.int(defval = 1, title = "", minval = 0, maxval = 10, step = 1, inline = "box03", group = "Box 3", active = inp_showBox3)
+color  inp_boxBorderColor3 = input.color(defval = color.new(#818181, 50), title = "", inline = "box03", group = "Box 3", active = inp_showBox3)
+color  inp_boxFillColor3   = input.color(defval = color.new(#818181, 90), title = "", inline = "box03", group = "Box 3", active = inp_showBox3)
+
+bool   inp_showBox4        = input.bool(defval = false, title = "", inline = "box04_", group = "Box 4")
+string inp_boxLabel4       = input.string(defval = "", title = "", inline = "box04_", group = "Box 4", active = inp_showBox4)
+string inp_boxLabelSize4   = input.string(defval = con_sizeNormal, title = "", options = [con_sizeTiny, con_sizeSmall, con_sizeNormal, con_sizeLarge, con_sizeHuge], inline = "box04_", group = "Box 4", tooltip = con_labelTooltip, active = inp_showBox4)
+float  inp_boxTop4         = input.float(defval = 1.0, title = "Upper (%)", minval = -100, maxval = 1000, step = 0.1, tooltip = con_boxUpperTooltip, group = "Box 4", active = inp_showBox4)
+float  inp_boxBottom4      = input.float(defval = -1.0, title = "Lower (%)", minval = -100, maxval = 1000, step = 0.1, tooltip = con_boxLowerTooltip, group = "Box 4", active = inp_showBox4)
+int    inp_boxOffset4      = input.int(defval = 20, title = "Offset (Bars)", minval = -500, maxval = 5000, step = 1, tooltip = con_offsetTooltip, group = "Box 4", active = inp_showBox4)
+int    inp_boxLength4      = input.int(defval = 80, title = "Length (Bars)", minval = 2, maxval = 5000, step = 1, tooltip = con_lengthTooltip, group = "Box 4", active = inp_showBox4)
+string inp_boxTimeframe4   = input.timeframe(defval = "", title = "Reference Timeframe", tooltip = con_timeframeTooltip, group = "Box 4", active = inp_showBox4)
+int    inp_boxWidth4       = input.int(defval = 1, title = "", minval = 0, maxval = 10, step = 1, inline = "box04", group = "Box 4", active = inp_showBox4)
+color  inp_boxBorderColor4 = input.color(defval = color.new(#818181, 50), title = "", inline = "box04", group = "Box 4", active = inp_showBox4)
+color  inp_boxFillColor4   = input.color(defval = color.new(#818181, 90), title = "", inline = "box04", group = "Box 4", active = inp_showBox4)
+
+// The individual inputs are mirrored into arrays so the drawing loop can address them by index.
+var bool[]   cal_lineShow      = array.from(inp_showLine1,      inp_showLine2,      inp_showLine3,      inp_showLine4,      inp_showLine5,      inp_showLine6)
+var float[]  cal_lineVertical  = array.from(inp_lineVertical1,  inp_lineVertical2,  inp_lineVertical3,  inp_lineVertical4,  inp_lineVertical5,  inp_lineVertical6)
+var string[] cal_lineTimeframe = array.from(inp_lineTimeframe1, inp_lineTimeframe2, inp_lineTimeframe3, inp_lineTimeframe4, inp_lineTimeframe5, inp_lineTimeframe6)
+var int[]    cal_lineOffset    = array.from(inp_lineOffset1,    inp_lineOffset2,    inp_lineOffset3,    inp_lineOffset4,    inp_lineOffset5,    inp_lineOffset6)
+var int[]    cal_lineLength    = array.from(inp_lineLength1,    inp_lineLength2,    inp_lineLength3,    inp_lineLength4,    inp_lineLength5,    inp_lineLength6)
+var color[]  cal_lineColor     = array.from(inp_lineColor1,     inp_lineColor2,     inp_lineColor3,     inp_lineColor4,     inp_lineColor5,     inp_lineColor6)
+var int[]    cal_lineWidth     = array.from(inp_lineWidth1,     inp_lineWidth2,     inp_lineWidth3,     inp_lineWidth4,     inp_lineWidth5,     inp_lineWidth6)
+var string[] cal_lineStyle     = array.from(inp_lineStyle1,     inp_lineStyle2,     inp_lineStyle3,     inp_lineStyle4,     inp_lineStyle5,     inp_lineStyle6)
+var string[] cal_lineLabel     = array.from(inp_lineLabel1,     inp_lineLabel2,     inp_lineLabel3,     inp_lineLabel4,     inp_lineLabel5,     inp_lineLabel6)
+var string[] cal_lineLabelSize = array.from(inp_lineLabelSize1, inp_lineLabelSize2, inp_lineLabelSize3, inp_lineLabelSize4, inp_lineLabelSize5, inp_lineLabelSize6)
+
+var bool[]   cal_boxShow        = array.from(inp_showBox1,        inp_showBox2,        inp_showBox3,        inp_showBox4)
+var float[]  cal_boxTop         = array.from(inp_boxTop1,         inp_boxTop2,         inp_boxTop3,         inp_boxTop4)
+var float[]  cal_boxBottom      = array.from(inp_boxBottom1,      inp_boxBottom2,      inp_boxBottom3,      inp_boxBottom4)
+var int[]    cal_boxOffset      = array.from(inp_boxOffset1,      inp_boxOffset2,      inp_boxOffset3,      inp_boxOffset4)
+var int[]    cal_boxLength      = array.from(inp_boxLength1,      inp_boxLength2,      inp_boxLength3,      inp_boxLength4)
+var string[] cal_boxTimeframe   = array.from(inp_boxTimeframe1,   inp_boxTimeframe2,   inp_boxTimeframe3,   inp_boxTimeframe4)
+var int[]    cal_boxBorderWidth = array.from(inp_boxWidth1,       inp_boxWidth2,       inp_boxWidth3,       inp_boxWidth4)
+var color[]  cal_boxBorderColor = array.from(inp_boxBorderColor1, inp_boxBorderColor2, inp_boxBorderColor3, inp_boxBorderColor4)
+var color[]  cal_boxFillColor   = array.from(inp_boxFillColor1,   inp_boxFillColor2,   inp_boxFillColor3,   inp_boxFillColor4)
+var string[] cal_boxLabel       = array.from(inp_boxLabel1,       inp_boxLabel2,       inp_boxLabel3,       inp_boxLabel4)
+var string[] cal_boxLabelSize   = array.from(inp_boxLabelSize1,   inp_boxLabelSize2,   inp_boxLabelSize3,   inp_boxLabelSize4)
+
+// The drawing objects live in var arrays: created once, then repositioned rather than recreated.
+var line[]  outp_lines      = array.new_line(con_lineCount, na)
+var label[] outp_lineLabels = array.new_label(con_lineCount, na)
+
+var box[]   outp_boxes      = array.new_box(con_boxCount, na)
+var label[] outp_boxLabels  = array.new_label(con_boxCount, na)
+
+// Everything is drawn on the last bar only, since all drawings are anchored to the current close.
+if barstate.islast
+    for i = 0 to con_lineCount - 1
+        [outp_lineId, outp_labelId] = f_percentLine(
+             array.get(outp_lines,        i),
+             array.get(outp_lineLabels,   i),
+             array.get(cal_lineShow,      i),
+             array.get(cal_lineVertical,  i),
+             array.get(cal_lineTimeframe, i),
+             array.get(cal_lineOffset,    i),
+             array.get(cal_lineLength,    i),
+             array.get(cal_lineColor,     i),
+             array.get(cal_lineWidth,     i),
+             array.get(cal_lineStyle,     i),
+             true,
+             array.get(cal_lineLabel,     i),
+             array.get(cal_lineLabelSize, i),
+             close)
+
+        array.set(outp_lines,      i, outp_lineId)
+        array.set(outp_lineLabels, i, outp_labelId)
+
+    for j = 0 to con_boxCount - 1
+        [outp_boxId, outp_boxLabelId] = f_percentBox(
+             array.get(outp_boxes,         j),
+             array.get(outp_boxLabels,     j),
+             array.get(cal_boxShow,        j),
+             array.get(cal_boxTop,         j),
+             array.get(cal_boxBottom,      j),
+             array.get(cal_boxTimeframe,   j),
+             array.get(cal_boxOffset,      j),
+             array.get(cal_boxLength,      j),
+             array.get(cal_boxBorderColor, j),
+             array.get(cal_boxBorderWidth, j),
+             array.get(cal_boxFillColor,   j),
+             true,
+             array.get(cal_boxLabel,       j),
+             array.get(cal_boxLabelSize,   j),
+             close)
+
+        array.set(outp_boxes,     j, outp_boxId)
+        array.set(outp_boxLabels, j, outp_boxLabelId)

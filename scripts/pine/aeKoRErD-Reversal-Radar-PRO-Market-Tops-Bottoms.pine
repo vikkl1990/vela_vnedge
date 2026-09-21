@@ -1,0 +1,712 @@
+//@version=6
+// ============================================================================
+//  REVERSAL RADAR PRO — Tops & Bottoms · Axiom Suite
+//  3-LAYER REBUILD:  ① Early-Warning  ② Confirmed  ③ Follow-Through/Invalidation
+//  + weighted 0–100 confidence · regime engine · liquidity sweeps ·
+//    divergence-quality scoring · clustered S/R zones · chase + target mapping
+//
+//  REPAINT / HONESTY NOTES (read them):
+//   • EARLY-WARNING evaluates the LIVE/forming bar -> it CAN repaint BY DESIGN.
+//     It is a heads-up gauge, NOT a confirmed entry.
+//   • CONFIRMED fires `rightBars` after the swing (pivot-confirmed) -> does NOT
+//     repaint. HTF reads use the confirmed-bar technique.
+//   • FOLLOW-THROUGH status updates intrabar and finalizes on bar close.
+//   • A session-anchored mean reference is folded silently into the "Extension"
+//     factor (no separate row — that layer is surfaced by another suite tool).
+// ============================================================================
+indicator("Reversal Radar PRO — Tops & Bottoms", "RevRadar PRO", overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500)
+
+// ============================================================================
+//  ① CORE / PIVOTS
+// ============================================================================
+gCore     = "① Core / Pivots"
+leftBars  = input.int(8, "Left bars (lookback)", minval = 1, group = gCore, tooltip = "Bars LEFT of a swing. Higher = rarer, stronger pivots.")
+rightBars = input.int(5, "Right bars (confirm)", minval = 1, group = gCore, tooltip = "Bars RIGHT before a swing confirms. This is ALSO the confirmed-signal delay.")
+minConf   = input.int(55, "Min confidence to flag (0–100)", minval = 0, maxval = 100, group = gCore, tooltip = "Weighted confidence gate for the CONFIRMED layer.")
+minVotes  = input.int(2,  "Min raw factors (safety)", minval = 1, maxval = 10, group = gCore, tooltip = "At least this many enabled factors must vote, regardless of weight.")
+cooldown  = input.int(5,  "Cooldown (bars)", minval = 0, group = gCore)
+atrLen    = input.int(14, "ATR length", minval = 1, group = gCore)
+
+// ============================================================================
+//  ② CONFLUENCE FACTORS (who gets to vote)
+// ============================================================================
+gF       = "② Confluence Factors"
+useRSI   = input.bool(true,  "RSI extreme",            group = gF)
+useDiv   = input.bool(true,  "RSI divergence",         group = gF)
+useVol   = input.bool(true,  "Volume climax",          group = gF)
+useBB    = input.bool(true,  "Bollinger pierce",       group = gF)
+useExt   = input.bool(true,  "Over-extension (mean)",  group = gF, tooltip = "Distance from EMA mean AND session mean, in ATR (mean read folded in silently).")
+useStoch = input.bool(true,  "Stoch-RSI extreme",      group = gF)
+useWick  = input.bool(true,  "Wick rejection",         group = gF)
+useEng   = input.bool(false, "Engulfing candle",       group = gF)
+useHtf   = input.bool(true,  "Higher-TF RSI confirm",  group = gF)
+useSweep = input.bool(true,  "Liquidity sweep",        group = gF)
+
+// ============================================================================
+//  ③ FACTOR PARAMETERS
+// ============================================================================
+gP       = "③ Factor Parameters"
+rsiLen   = input.int(14, "RSI length", minval = 2, group = gP)
+rsiOB    = input.int(70, "RSI overbought", minval = 50, maxval = 100, group = gP)
+rsiOS    = input.int(30, "RSI oversold",  minval = 0,  maxval = 50,  group = gP)
+volLen   = input.int(20, "Volume MA length", minval = 1, group = gP)
+volMult  = input.float(1.6, "Volume spike x MA", minval = 0.1, step = 0.1, group = gP)
+bbLen    = input.int(20, "Bollinger length", minval = 2, group = gP)
+bbMult   = input.float(2.0, "Bollinger StDev mult", minval = 0.1, step = 0.1, group = gP)
+extLen   = input.int(50, "Mean EMA length", minval = 2, group = gP)
+extMult  = input.float(2.0, "Extension = ATRs from mean", minval = 0.1, step = 0.1, group = gP)
+stochLen = input.int(14, "Stoch-RSI length", minval = 2, group = gP)
+stochSm  = input.int(3,  "Stoch-RSI smooth", minval = 1, group = gP)
+stochOB  = input.int(80, "Stoch-RSI overbought", minval = 50, maxval = 100, group = gP)
+stochOS  = input.int(20, "Stoch-RSI oversold",  minval = 0,  maxval = 50,  group = gP)
+wickMult = input.float(1.5, "Wick >= body x", minval = 0.1, step = 0.1, group = gP)
+htfTf    = input.timeframe("15", "Confirmation timeframe", group = gP)
+sweepLen = input.int(20, "Liquidity-sweep lookback", minval = 2, group = gP, tooltip = "Prior highs/lows window a sweep must take out.")
+emaFastLen = input.int(21, "Regime fast EMA", minval = 2, group = gP)
+emaSlowLen = input.int(55, "Regime slow EMA", minval = 2, group = gP)
+slopeLen   = input.int(20, "EMA slope lookback", minval = 2, group = gP)
+erLen      = input.int(20, "Efficiency-ratio length", minval = 2, group = gP, tooltip = "Kaufman efficiency ratio = trend strength / choppiness proxy.")
+erStrong   = input.float(0.45, "Strong-trend ER threshold", minval = 0.05, maxval = 1.0, step = 0.05, group = gP)
+bwLen      = input.int(50, "Volatility avg length", minval = 2, group = gP, tooltip = "Baseline for BB-bandwidth & ATR expansion/compression.")
+mergeATR   = input.float(0.6, "S/R merge distance (ATR)", minval = 0.05, step = 0.05, group = gP)
+
+// ============================================================================
+//  ④ LAYERS & INVALIDATION
+// ============================================================================
+gL        = "④ Layers / Invalidation"
+useEarly  = input.bool(true,  "Early-warning layer (live bar, repaints)", group = gL)
+ewThresh  = input.int(40, "Early-warning min confidence", minval = 0, maxval = 100, group = gL)
+useFollow = input.bool(true,  "Follow-through / invalidation tracking", group = gL)
+softMult  = input.float(0.30, "Soft invalidation (ATR from pivot)", minval = 0.0, step = 0.05, group = gL, tooltip = "Tactical caution: price reclaims the zone edge.")
+hardMult  = input.float(1.00, "Hard invalidation (ATR from pivot)", minval = 0.1, step = 0.05, group = gL, tooltip = "Structural kill: close beyond pivot + buffer.")
+chaseLate = input.float(0.60, "Chase 'late' threshold (frac to target)", minval = 0.1, maxval = 1.0, step = 0.05, group = gL)
+
+// ============================================================================
+//  ⑤ FACTOR WEIGHTS (not all votes are equal)
+// ============================================================================
+gW      = "⑤ Weights"
+wRsi    = input.float(0.7, "RSI extreme",      minval = 0, step = 0.1, group = gW)
+wDiv    = input.float(1.5, "RSI divergence",   minval = 0, step = 0.1, group = gW)
+wVol    = input.float(1.2, "Volume climax",    minval = 0, step = 0.1, group = gW)
+wBB     = input.float(0.9, "Bollinger pierce", minval = 0, step = 0.1, group = gW)
+wExt    = input.float(1.0, "Over-extension",   minval = 0, step = 0.1, group = gW)
+wStoch  = input.float(0.9, "Stoch-RSI",        minval = 0, step = 0.1, group = gW)
+wWick   = input.float(1.3, "Wick rejection",   minval = 0, step = 0.1, group = gW)
+wEng    = input.float(1.0, "Engulfing",        minval = 0, step = 0.1, group = gW)
+wHtf    = input.float(1.1, "HTF RSI confirm",  minval = 0, step = 0.1, group = gW)
+wSweep  = input.float(1.6, "Liquidity sweep",  minval = 0, step = 0.1, group = gW)
+wTrend  = input.float(0.8, "Regime boost/penalty", minval = 0, step = 0.1, group = gW, tooltip = "Added when regime agrees, subtracted when it fights the reversal.")
+wHidden = input.float(0.6, "Hidden-divergence penalty", minval = 0, step = 0.1, group = gW, tooltip = "Hidden div = continuation; trims reversal confidence.")
+
+// ============================================================================
+//  ⑥ VISUALS
+// ============================================================================
+gV         = "⑥ Visuals"
+showLabels = input.bool(true, "Confidence labels (off = arrows)", group = gV)
+showZones  = input.bool(true, "Reversal zone boxes", group = gV)
+zoneMult   = input.float(0.8, "Zone half-height (ATR x)", minval = 0.0, step = 0.1, group = gV)
+zoneWidth  = input.int(3,     "Zone half-width (bars)", minval = 1, group = gV)
+showSR     = input.bool(true, "Clustered S/R zones", group = gV)
+maxSR      = input.int(6,     "Max S/R zones", minval = 1, maxval = 50, group = gV)
+showDash   = input.bool(true, "Show dashboard", group = gV)
+dashSize   = input.string(size.small, "Dashboard text size", options = [size.tiny, size.small, size.normal, size.large], group = gV)
+topCol     = input.color(color.red,  "Top color",    group = gV)
+botCol     = input.color(color.lime, "Bottom color", group = gV)
+
+// ============================================================================
+//  CORE CALCULATIONS
+// ============================================================================
+rsi     = ta.rsi(close, rsiLen)
+atr     = ta.atr(atrLen)
+volMA   = ta.sma(volume, volLen)
+emaM    = ta.ema(close, extLen)
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+
+bbBasis = ta.sma(close, bbLen)
+bbSdev  = ta.stdev(close, bbLen)
+bbDev   = bbMult * bbSdev
+bbUp    = bbBasis + bbDev
+bbLo    = bbBasis - bbDev
+
+stochK  = ta.sma(ta.stoch(rsi, rsi, rsi, stochLen), stochSm)
+
+// session mean — used SILENTLY, never displayed or plotted as VWAP
+vwapVal = nz(ta.vwap, close)
+
+// HTF reads (confirmed-bar, non-repainting technique)
+iHTF    = barstate.isrealtime ? 1 : 0
+iCUR    = barstate.isrealtime ? 0 : 1
+htfRsi  = request.security(syminfo.tickerid, htfTf, ta.rsi(close, rsiLen)[iHTF])[iCUR]
+htfDir  = request.security(syminfo.tickerid, htfTf, (ta.ema(close, emaFastLen) > ta.ema(close, emaSlowLen) ? 1 : -1)[iHTF])[iCUR]
+htfBull = htfDir > 0
+
+// candle anatomy
+body    = math.abs(close - open)
+upWick  = high - math.max(open, close)
+dnWick  = math.min(open, close) - low
+topWickRej = upWick >= body * wickMult and upWick >= dnWick
+botWickRej = dnWick >= body * wickMult and dnWick >= upWick
+bearEngulf = close < open and close[1] >= open[1] and close <= open[1] and open >= close[1]
+bullEngulf = close > open and close[1] <= open[1] and close >= open[1] and open <= close[1]
+
+// over-extension: EMA-mean distance AND session-mean distance, averaged (ATR units)
+extUp = atr > 0 ? (((close - emaM) / atr) + ((close - vwapVal) / atr)) / 2.0 : 0.0
+extDn = atr > 0 ? (((emaM - close) / atr) + ((vwapVal - close) / atr)) / 2.0 : 0.0
+
+// ============================================================================
+//  HELPERS
+// ============================================================================
+f_sz(_t)            => _t == 2 ? size.large : _t == 1 ? size.normal : size.small
+f_state(_v, _o, _s) => _v >= _o ? "OB" : _v <= _s ? "OS" : "—"
+f_scol(_v, _o, _s)  => _v >= _o ? color.new(topCol, 0) : _v <= _s ? color.new(botCol, 0) : color.new(color.gray, 30)
+f_grade(_c)         => _c >= 85 ? "A+" : _c >= 75 ? "A" : _c >= 65 ? "B" : _c >= 55 ? "C" : "–"                                  // [NEW]
+f_qual(_f)          => _f < 0.33 ? "Good" : _f < 0.60 ? "Fair" : _f < 0.85 ? "Late" : "Poor"                                     // [NEW]
+f_stat(_s)          => _s == 1 ? "ACTIVE" : _s == 2 ? "LATE" : _s == 3 ? "SOFT INVAL" : _s == 4 ? "HARD INVAL" : _s == 5 ? "TARGET HIT" : "—" // [NEW]
+f_statCol(_s)       => _s == 1 ? color.new(color.teal, 10) : _s == 2 ? color.new(color.orange, 5) : _s == 3 ? color.new(color.orange, 0) : _s == 4 ? color.new(topCol, 0) : _s == 5 ? color.new(botCol, 0) : color.new(color.gray, 40) // [NEW]
+
+// ============================================================================
+//  REGIME ENGINE  [NEW]  (EMA slope + Kaufman efficiency + volatility state)
+// ============================================================================
+erChange = math.abs(close - close[erLen])
+erVol    = math.sum(math.abs(ta.change(close)), erLen)
+er       = erVol != 0 ? erChange / erVol : 0.0          // 0..1 ; high = clean trend
+
+trendUp     = emaFast > emaSlow and emaM > emaM[slopeLen]
+trendDn     = emaFast < emaSlow and emaM < emaM[slopeLen]
+trendStrong = er >= erStrong
+
+bbBW     = bbBasis != 0 ? (bbUp - bbLo) / bbBasis : 0.0
+bbBWavg  = ta.sma(bbBW, bwLen)
+atrAvg   = ta.sma(atr, bwLen)
+volExpand   = bbBW > bbBWavg * 1.15 or atr > atrAvg * 1.15
+volCompress = bbBW < bbBWavg * 0.85 and atr < atrAvg * 0.95
+
+string regime = "Range"
+if trendUp and trendStrong and htfBull
+    regime := "Strong Uptrend"
+else if trendUp
+    regime := "Uptrend"
+else if trendDn and trendStrong and not htfBull
+    regime := "Strong Downtrend"
+else if trendDn
+    regime := "Downtrend"
+else if volCompress
+    regime := "Compression"
+else if volExpand
+    regime := "Expansion / Chop"
+else
+    regime := "Range"
+
+string bestType = trendUp ? "Bottoms / pullback longs" : trendDn ? "Tops / pullback shorts" : "Both sides OK"
+
+// regime modifiers (in weight-units)
+modMag        = trendStrong ? wTrend : wTrend * 0.5
+topModBoost   = trendDn ? modMag : 0.0
+topModPenalty = trendUp ? modMag : 0.0
+botModBoost   = trendUp ? modMag : 0.0
+botModPenalty = trendDn ? modMag : 0.0
+
+// ============================================================================
+//  LIVE-BAR PRIMITIVES (feed the EARLY-WARNING layer; repaint by design)
+// ============================================================================
+rsiTopNow = rsi >= rsiOB
+rsiBotNow = rsi <= rsiOS
+volNow    = volume > volMA * volMult
+bbTopNow  = high >= bbUp
+bbBotNow  = low  <= bbLo
+extTopNow = extUp >= extMult
+extBotNow = extDn >= extMult
+stoTopNow = stochK >= stochOB
+stoBotNow = stochK <= stochOS
+wkTopNow  = topWickRej
+wkBotNow  = botWickRej
+htTopNow  = htfRsi >= rsiOB
+htBotNow  = htfRsi <= rsiOS
+swTopNow  = (high > ta.highest(high, sweepLen)[1]) and (close < high)
+swBotNow  = (low  < ta.lowest(low,  sweepLen)[1])  and (close > low)
+
+// ============================================================================
+//  PIVOTS
+// ============================================================================
+ph        = ta.pivothigh(high, leftBars, rightBars)
+pl        = ta.pivotlow(low,  leftBars, rightBars)
+isPivHigh = not na(ph)
+isPivLow  = not na(pl)
+
+// ============================================================================
+//  DIVERGENCE — regular + hidden + 0–100 quality  [MODIFIED]
+// ============================================================================
+var float lastPHp = na
+var float lastPHr = na
+var int   lastPHb = na
+var float lastPLp = na
+var float lastPLr = na
+var int   lastPLb = na
+var float lastBearDivStr = 0.0
+var float lastBullDivStr = 0.0
+
+rsiAtPiv = rsi[rightBars]
+pivBar   = bar_index - rightBars
+
+bool  bearDiv    = false
+bool  bullDiv    = false
+bool  hidBear    = false
+bool  hidBull    = false
+float bearDivStr = 0.0
+float bullDivStr = 0.0
+
+if isPivHigh
+    if not na(lastPHp)
+        if ph > lastPHp and rsiAtPiv < lastPHr
+            bearDiv := true
+        if ph < lastPHp and rsiAtPiv > lastPHr
+            hidBear := true
+        float pD = lastPHp != 0 ? math.abs(ph - lastPHp) / lastPHp : 0.0
+        float rD = math.abs(lastPHr - rsiAtPiv)
+        if bearDiv
+            bearDivStr := math.round(50.0 * math.min(rD / 20.0, 1.0) + 50.0 * math.min(pD / 0.02, 1.0))
+            lastBearDivStr := bearDivStr
+    lastPHp := ph
+    lastPHr := rsiAtPiv
+    lastPHb := pivBar
+
+if isPivLow
+    if not na(lastPLp)
+        if pl < lastPLp and rsiAtPiv > lastPLr
+            bullDiv := true
+        if pl > lastPLp and rsiAtPiv < lastPLr
+            hidBull := true
+        float pD = lastPLp != 0 ? math.abs(pl - lastPLp) / lastPLp : 0.0
+        float rD = math.abs(rsiAtPiv - lastPLr)
+        if bullDiv
+            bullDivStr := math.round(50.0 * math.min(rD / 20.0, 1.0) + 50.0 * math.min(pD / 0.02, 1.0))
+            lastBullDivStr := bullDivStr
+    lastPLp := pl
+    lastPLr := rsiAtPiv
+    lastPLb := pivBar
+
+// ============================================================================
+//  SAMPLED FACTORS AT THE PIVOT BAR (CONFIRMED layer — non-repainting)
+// ============================================================================
+sRsiT = rsi[rightBars]      >= rsiOB
+sRsiB = rsi[rightBars]      <= rsiOS
+sVolP = volume[rightBars]   >  volMA[rightBars] * volMult
+sBBt  = high[rightBars]     >= bbUp[rightBars]
+sBBb  = low[rightBars]      <= bbLo[rightBars]
+sExtT = extUp[rightBars]    >= extMult
+sExtB = extDn[rightBars]    >= extMult
+sStoT = stochK[rightBars]   >= stochOB
+sStoB = stochK[rightBars]   <= stochOS
+sWkT  = topWickRej[rightBars]
+sWkB  = botWickRej[rightBars]
+sEnT  = bearEngulf[rightBars]
+sEnB  = bullEngulf[rightBars]
+sHtT  = htfRsi[rightBars]   >= rsiOB
+sHtB  = htfRsi[rightBars]   <= rsiOS
+sSwT  = (high[rightBars] > ta.highest(high, sweepLen)[rightBars + 1]) and (close[rightBars] < high[rightBars])
+sSwB  = (low[rightBars]  < ta.lowest(low,  sweepLen)[rightBars + 1])  and (close[rightBars] > low[rightBars])
+
+// ============================================================================
+//  WEIGHTED CONFLUENCE -> 0–100 CONFIDENCE  [NEW]
+// ============================================================================
+votesTop = (useRSI and sRsiT ? 1 : 0) + (useDiv and bearDiv ? 1 : 0) + (useVol and sVolP ? 1 : 0) + (useBB and sBBt ? 1 : 0) + (useExt and sExtT ? 1 : 0) + (useStoch and sStoT ? 1 : 0) + (useWick and sWkT ? 1 : 0) + (useEng and sEnT ? 1 : 0) + (useHtf and sHtT ? 1 : 0) + (useSweep and sSwT ? 1 : 0)
+votesBot = (useRSI and sRsiB ? 1 : 0) + (useDiv and bullDiv ? 1 : 0) + (useVol and sVolP ? 1 : 0) + (useBB and sBBb ? 1 : 0) + (useExt and sExtB ? 1 : 0) + (useStoch and sStoB ? 1 : 0) + (useWick and sWkB ? 1 : 0) + (useEng and sEnB ? 1 : 0) + (useHtf and sHtB ? 1 : 0) + (useSweep and sSwB ? 1 : 0)
+
+topW = (useRSI and sRsiT ? wRsi : 0.0) + (useDiv and bearDiv ? wDiv : 0.0) + (useVol and sVolP ? wVol : 0.0) + (useBB and sBBt ? wBB : 0.0) + (useExt and sExtT ? wExt : 0.0) + (useStoch and sStoT ? wStoch : 0.0) + (useWick and sWkT ? wWick : 0.0) + (useEng and sEnT ? wEng : 0.0) + (useHtf and sHtT ? wHtf : 0.0) + (useSweep and sSwT ? wSweep : 0.0)
+botW = (useRSI and sRsiB ? wRsi : 0.0) + (useDiv and bullDiv ? wDiv : 0.0) + (useVol and sVolP ? wVol : 0.0) + (useBB and sBBb ? wBB : 0.0) + (useExt and sExtB ? wExt : 0.0) + (useStoch and sStoB ? wStoch : 0.0) + (useWick and sWkB ? wWick : 0.0) + (useEng and sEnB ? wEng : 0.0) + (useHtf and sHtB ? wHtf : 0.0) + (useSweep and sSwB ? wSweep : 0.0)
+
+sumW = (useRSI ? wRsi : 0.0) + (useDiv ? wDiv : 0.0) + (useVol ? wVol : 0.0) + (useBB ? wBB : 0.0) + (useExt ? wExt : 0.0) + (useStoch ? wStoch : 0.0) + (useWick ? wWick : 0.0) + (useEng ? wEng : 0.0) + (useHtf ? wHtf : 0.0) + (useSweep ? wSweep : 0.0)
+
+rawTopScore = topW + topModBoost - topModPenalty - (hidBear ? wHidden : 0.0)
+rawBotScore = botW + botModBoost - botModPenalty - (hidBull ? wHidden : 0.0)
+maxScore    = sumW + wTrend
+topConf = maxScore > 0 ? math.max(0.0, math.min(100.0, rawTopScore / maxScore * 100.0)) : 0.0
+botConf = maxScore > 0 ? math.max(0.0, math.min(100.0, rawBotScore / maxScore * 100.0)) : 0.0
+
+// ============================================================================
+//  ① EARLY-WARNING CONFIDENCE (live bar)  [NEW]
+// ============================================================================
+ewTopW = (useRSI and rsiTopNow ? wRsi : 0.0) + (useVol and volNow ? wVol : 0.0) + (useBB and bbTopNow ? wBB : 0.0) + (useExt and extTopNow ? wExt : 0.0) + (useStoch and stoTopNow ? wStoch : 0.0) + (useWick and wkTopNow ? wWick : 0.0) + (useHtf and htTopNow ? wHtf : 0.0) + (useSweep and swTopNow ? wSweep : 0.0)
+ewBotW = (useRSI and rsiBotNow ? wRsi : 0.0) + (useVol and volNow ? wVol : 0.0) + (useBB and bbBotNow ? wBB : 0.0) + (useExt and extBotNow ? wExt : 0.0) + (useStoch and stoBotNow ? wStoch : 0.0) + (useWick and wkBotNow ? wWick : 0.0) + (useHtf and htBotNow ? wHtf : 0.0) + (useSweep and swBotNow ? wSweep : 0.0)
+ewMax  = (useRSI ? wRsi : 0.0) + (useVol ? wVol : 0.0) + (useBB ? wBB : 0.0) + (useExt ? wExt : 0.0) + (useStoch ? wStoch : 0.0) + (useWick ? wWick : 0.0) + (useHtf ? wHtf : 0.0) + (useSweep ? wSweep : 0.0)
+ewTopConf = ewMax > 0 ? math.min(100.0, ewTopW / ewMax * 100.0) : 0.0
+ewBotConf = ewMax > 0 ? math.min(100.0, ewBotW / ewMax * 100.0) : 0.0
+ewTop = useEarly and ewTopConf >= ewThresh and ewTopConf[1] < ewThresh
+ewBot = useEarly and ewBotConf >= ewThresh and ewBotConf[1] < ewThresh
+
+// ============================================================================
+//  ② CONFIRMED SIGNALS (confidence gate + vote floor + cooldown + tier)
+// ============================================================================
+var int lastTopBar = na
+var int lastBotBar = na
+
+topConfirmRaw = isPivHigh and topConf >= minConf and votesTop >= minVotes
+botConfirmRaw = isPivLow  and botConf >= minConf and votesBot >= minVotes
+topOk = topConfirmRaw and (na(lastTopBar) or (bar_index - lastTopBar) >= cooldown)
+botOk = botConfirmRaw and (na(lastBotBar) or (bar_index - lastBotBar) >= cooldown)
+
+if topOk
+    lastTopBar := bar_index
+if botOk
+    lastBotBar := bar_index
+
+tierTop = topConf >= 85 ? 2 : topConf >= 70 ? 1 : 0
+tierBot = botConf >= 85 ? 2 : botConf >= 70 ? 1 : 0
+
+// ============================================================================
+//  ③ FOLLOW-THROUGH / INVALIDATION STATE MACHINE  [NEW]
+// ============================================================================
+var int   sgDir   = 0          // 1 top, -1 bottom, 0 none
+var float sgPiv   = na
+var float sgEntry = na
+var int   sgBar   = na
+var float sgSoft  = na
+var float sgHard  = na
+var float sgTgt   = na
+var float sgRR    = na
+var float sgMFE   = na
+var float sgConf  = na
+var int   sgStat  = 0          // 0 none 1 active 2 late 3 soft 4 hard 5 target
+
+makeTop = topOk and (not botOk or topConf >= botConf)
+makeBot = botOk and (not topOk or botConf >  topConf)
+
+if useFollow and makeTop
+    sgDir   := 1
+    sgPiv   := high[rightBars]
+    sgEntry := close
+    sgBar   := bar_index
+    sgConf  := topConf
+    sgHard  := sgPiv + hardMult * atr
+    sgSoft  := sgPiv + softMult * atr
+    sgMFE   := close
+    float t = na
+    if emaM < sgEntry
+        t := na(t) ? emaM : math.max(t, emaM)
+    if vwapVal < sgEntry
+        t := na(t) ? vwapVal : math.max(t, vwapVal)
+    if not na(lastPLp) and lastPLp < sgEntry
+        t := na(t) ? lastPLp : math.max(t, lastPLp)
+    float risk = sgHard - sgEntry
+    sgTgt := na(t) ? sgEntry - 2.0 * risk : t
+    sgRR  := risk > 0 ? (sgEntry - sgTgt) / risk : na
+    sgStat := 1
+
+if useFollow and makeBot
+    sgDir   := -1
+    sgPiv   := low[rightBars]
+    sgEntry := close
+    sgBar   := bar_index
+    sgConf  := botConf
+    sgHard  := sgPiv - hardMult * atr
+    sgSoft  := sgPiv - softMult * atr
+    sgMFE   := close
+    float t = na
+    if emaM > sgEntry
+        t := na(t) ? emaM : math.min(t, emaM)
+    if vwapVal > sgEntry
+        t := na(t) ? vwapVal : math.min(t, vwapVal)
+    if not na(lastPHp) and lastPHp > sgEntry
+        t := na(t) ? lastPHp : math.min(t, lastPHp)
+    float risk = sgEntry - sgHard
+    sgTgt := na(t) ? sgEntry + 2.0 * risk : t
+    sgRR  := risk > 0 ? (sgTgt - sgEntry) / risk : na
+    sgStat := 1
+
+// per-bar status / chase / distances
+float sgSoftDist = na
+float sgHardDist = na
+float sgTgtDist  = na
+float sgProg     = na
+string sgChase   = "—"
+
+if useFollow and sgDir != 0
+    if sgDir == 1
+        sgMFE := math.min(sgMFE, low)
+        float toTgt = sgEntry - sgTgt
+        sgProg := toTgt > 0 ? math.max(0.0, (sgEntry - sgMFE) / toTgt) : 0.0
+        int prov = sgStat
+        if close > sgHard
+            prov := 4
+        else if sgMFE <= sgTgt
+            prov := 5
+        else if close > sgSoft
+            prov := 3
+        else if sgProg >= chaseLate
+            prov := 2
+        else
+            prov := 1
+        if sgStat != 4 and sgStat != 5
+            sgStat := prov
+    else
+        sgMFE := math.max(sgMFE, high)
+        float toTgt = sgTgt - sgEntry
+        sgProg := toTgt > 0 ? math.max(0.0, (sgMFE - sgEntry) / toTgt) : 0.0
+        int prov = sgStat
+        if close < sgHard
+            prov := 4
+        else if sgMFE >= sgTgt
+            prov := 5
+        else if close < sgSoft
+            prov := 3
+        else if sgProg >= chaseLate
+            prov := 2
+        else
+            prov := 1
+        if sgStat != 4 and sgStat != 5
+            sgStat := prov
+    sgSoftDist := close != 0 ? math.abs(sgSoft - close) / close * 100.0 : na
+    sgHardDist := close != 0 ? math.abs(sgHard - close) / close * 100.0 : na
+    sgTgtDist  := close != 0 ? math.abs(sgTgt  - close) / close * 100.0 : na
+    sgChase    := f_qual(nz(sgProg, 0.0))
+
+// ============================================================================
+//  MARKERS
+// ============================================================================
+plotshape(topOk and not showLabels, "Top arrow",    shape.triangledown, location.abovebar, topCol, offset = -rightBars, size = size.small)
+plotshape(botOk and not showLabels, "Bottom arrow", shape.triangleup,   location.belowbar, botCol, offset = -rightBars, size = size.small)
+plotshape(ewTop, "Early-warning top",    shape.diamond, location.abovebar, color.new(topCol, 35), offset = 0, size = size.tiny)
+plotshape(ewBot, "Early-warning bottom", shape.diamond, location.belowbar, color.new(botCol, 35), offset = 0, size = size.tiny)
+
+if showLabels and topOk
+    label.new(bar_index - rightBars, high[rightBars], "▼ " + str.tostring(topConf, "#") + " " + f_grade(topConf), yloc = yloc.abovebar, style = label.style_label_down, color = color.new(topCol, tierTop == 2 ? 0 : tierTop == 1 ? 18 : 40), textcolor = color.white, size = f_sz(tierTop))
+if showLabels and botOk
+    label.new(bar_index - rightBars, low[rightBars], "▲ " + str.tostring(botConf, "#") + " " + f_grade(botConf), yloc = yloc.belowbar, style = label.style_label_up, color = color.new(botCol, tierBot == 2 ? 0 : tierBot == 1 ? 18 : 40), textcolor = color.white, size = f_sz(tierBot))
+
+// reversal zone boxes (ATR-scaled, at the confirmed pivot)
+if showZones and topOk
+    float half = zoneMult * atr[rightBars]
+    box.new(bar_index - rightBars - zoneWidth, high[rightBars] + half, bar_index - rightBars + zoneWidth, high[rightBars] - half, border_color = color.new(topCol, 25), bgcolor = color.new(topCol, 88), border_width = 1)
+if showZones and botOk
+    float half = zoneMult * atr[rightBars]
+    box.new(bar_index - rightBars - zoneWidth, low[rightBars] + half, bar_index - rightBars + zoneWidth, low[rightBars] - half, border_color = color.new(botCol, 25), bgcolor = color.new(botCol, 88), border_width = 1)
+
+// ============================================================================
+//  CLUSTERED S/R ZONES  [NEW]  (ATR-merge · touches · age · break/flip)
+// ============================================================================
+var array<float> zPx    = array.new<float>()
+var array<int>   zTouch = array.new<int>()
+var array<int>   zBorn  = array.new<int>()
+var array<bool>  zRes   = array.new<bool>()
+var array<bool>  zBroke = array.new<bool>()
+var array<line>  zLine  = array.new<line>()
+
+// --- new RESISTANCE pivot: merge into nearest zone or spawn one ---
+if showSR and isPivHigh
+    float p      = high[rightBars]
+    bool  merged = false
+    int   i      = 0
+    while i < array.size(zPx)
+        if not merged and math.abs(array.get(zPx, i) - p) <= mergeATR * atr
+            int tc = array.get(zTouch, i) + 1
+            array.set(zPx, i, (array.get(zPx, i) * (tc - 1) + p) / tc)
+            array.set(zTouch, i, tc)
+            array.set(zRes, i, true)
+            array.set(zBroke, i, false)
+            line.set_y1(array.get(zLine, i), array.get(zPx, i))
+            line.set_y2(array.get(zLine, i), array.get(zPx, i))
+            merged := true
+        i += 1
+    if not merged
+        line ln = line.new(bar_index - rightBars, p, bar_index, p, extend = extend.right, color = color.new(topCol, 45), style = line.style_dashed, width = 1)
+        array.push(zPx, p)
+        array.push(zTouch, 1)
+        array.push(zBorn, bar_index - rightBars)
+        array.push(zRes, true)
+        array.push(zBroke, false)
+        array.push(zLine, ln)
+        if array.size(zPx) > maxSR
+            line.delete(array.shift(zLine))
+            array.shift(zPx)
+            array.shift(zTouch)
+            array.shift(zBorn)
+            array.shift(zRes)
+            array.shift(zBroke)
+
+// --- new SUPPORT pivot: merge into nearest zone or spawn one ---
+if showSR and isPivLow
+    float p      = low[rightBars]
+    bool  merged = false
+    int   i      = 0
+    while i < array.size(zPx)
+        if not merged and math.abs(array.get(zPx, i) - p) <= mergeATR * atr
+            int tc = array.get(zTouch, i) + 1
+            array.set(zPx, i, (array.get(zPx, i) * (tc - 1) + p) / tc)
+            array.set(zTouch, i, tc)
+            array.set(zRes, i, false)
+            array.set(zBroke, i, false)
+            line.set_y1(array.get(zLine, i), array.get(zPx, i))
+            line.set_y2(array.get(zLine, i), array.get(zPx, i))
+            merged := true
+        i += 1
+    if not merged
+        line ln = line.new(bar_index - rightBars, p, bar_index, p, extend = extend.right, color = color.new(botCol, 45), style = line.style_dashed, width = 1)
+        array.push(zPx, p)
+        array.push(zTouch, 1)
+        array.push(zBorn, bar_index - rightBars)
+        array.push(zRes, false)
+        array.push(zBroke, false)
+        array.push(zLine, ln)
+        if array.size(zPx) > maxSR
+            line.delete(array.shift(zLine))
+            array.shift(zPx)
+            array.shift(zTouch)
+            array.shift(zBorn)
+            array.shift(zRes)
+            array.shift(zBroke)
+
+// --- break / flip handling (R->S and S->R) ---
+if showSR
+    int k = 0
+    while k < array.size(zPx)
+        float zp  = array.get(zPx, k)
+        bool  isR = array.get(zRes, k)
+        bool  brk = array.get(zBroke, k)
+        if isR and close > zp + atr * 0.10 and not brk
+            array.set(zBroke, k, true)
+            array.set(zRes, k, false)          // resistance broke -> flips to support
+            line ll = array.get(zLine, k)
+            line.set_color(ll, color.new(botCol, 55))
+            line.set_style(ll, line.style_dotted)
+        else if (not isR) and close < zp - atr * 0.10 and not brk
+            array.set(zBroke, k, true)
+            array.set(zRes, k, true)           // support broke -> flips to resistance
+            line ll = array.get(zLine, k)
+            line.set_color(ll, color.new(topCol, 55))
+            line.set_style(ll, line.style_dotted)
+        k += 1
+
+// ============================================================================
+//  DASHBOARD  (top-right · VWAP intentionally NOT shown — owned elsewhere)
+// ============================================================================
+var table dash = table.new(position.top_right, 2, 21, frame_color = color.new(color.gray, 50), frame_width = 1, border_color = color.new(color.gray, 70), border_width = 1)
+
+if showDash and barstate.islast
+    // nearest S/R zone scan
+    float nzPx    = na
+    int   nzTouch = 0
+    bool  nzRes   = true
+    bool  nzBrk   = false
+    float nzDist  = na
+    if array.size(zPx) > 0
+        float best = 1e20
+        int   bi   = -1
+        int   m    = 0
+        while m < array.size(zPx)
+            float d = math.abs(array.get(zPx, m) - close)
+            if d < best
+                best := d
+                bi   := m
+            m += 1
+        if bi >= 0
+            nzPx    := array.get(zPx, bi)
+            nzTouch := array.get(zTouch, bi)
+            nzRes   := array.get(zRes, bi)
+            nzBrk   := array.get(zBroke, bi)
+            nzDist  := close != 0 ? best / close * 100.0 : na
+
+    c0 = color.new(color.black, 0)
+    cw = color.white
+    cg = color.new(color.gray, 30)
+
+    table.cell(dash, 0, 0, "REVERSAL RADAR", bgcolor = c0, text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 0, "PRO", bgcolor = c0, text_color = cw, text_size = dashSize)
+
+    regCol = trendUp ? color.new(botCol, 20) : trendDn ? color.new(topCol, 20) : cg
+    table.cell(dash, 0, 1, "Regime", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 1, regime, bgcolor = regCol, text_color = cw, text_size = dashSize)
+
+    table.cell(dash, 0, 2, "Best play", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 2, bestType, bgcolor = cg, text_color = cw, text_size = dashSize)
+
+    table.cell(dash, 0, 3, "Trend", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 3, str.tostring(er * 100, "#") + "% ER  " + (trendUp ? "↑" : trendDn ? "↓" : "→") + (trendStrong ? "  strong" : ""), bgcolor = regCol, text_color = cw, text_size = dashSize)
+
+    volTxt = volExpand ? "EXPANDING" : volCompress ? "COMPRESSED" : "normal"
+    volClr = volExpand ? color.new(color.orange, 10) : volCompress ? color.new(color.blue, 20) : cg
+    table.cell(dash, 0, 4, "Volatility", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 4, volTxt, bgcolor = volClr, text_color = cw, text_size = dashSize)
+
+    table.cell(dash, 0, 5, "RSI", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 5, str.tostring(rsi, "#") + "  " + f_state(rsi, rsiOB, rsiOS), bgcolor = f_scol(rsi, rsiOB, rsiOS), text_color = cw, text_size = dashSize)
+
+    table.cell(dash, 0, 6, "HTF RSI", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 6, str.tostring(htfRsi, "#") + "  " + f_state(htfRsi, rsiOB, rsiOS), bgcolor = f_scol(htfRsi, rsiOB, rsiOS), text_color = cw, text_size = dashSize)
+
+    table.cell(dash, 0, 7, "Stoch-RSI", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 7, str.tostring(stochK, "#") + "  " + f_state(stochK, stochOB, stochOS), bgcolor = f_scol(stochK, stochOB, stochOS), text_color = cw, text_size = dashSize)
+
+    bbPos  = high >= bbUp ? "ABOVE" : low <= bbLo ? "BELOW" : "INSIDE"
+    bbClr  = high >= bbUp ? color.new(topCol, 0) : low <= bbLo ? color.new(botCol, 0) : cg
+    table.cell(dash, 0, 8, "Bollinger", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 8, bbPos, bgcolor = bbClr, text_color = cw, text_size = dashSize)
+
+    extTxt = extUp >= extMult ? "STRETCHED ↑" : extDn >= extMult ? "STRETCHED ↓" : "—"
+    extClr = extUp >= extMult ? color.new(topCol, 0) : extDn >= extMult ? color.new(botCol, 0) : cg
+    table.cell(dash, 0, 9, "Extension", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 9, extTxt, bgcolor = extClr, text_color = cw, text_size = dashSize)
+
+    vRatio = volMA > 0 ? volume / volMA : 0.0
+    table.cell(dash, 0, 10, "Vol x MA", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 10, str.tostring(vRatio, "0.0") + (volNow ? "  ⚡" : ""), bgcolor = volNow ? color.new(color.orange, 10) : cg, text_color = cw, text_size = dashSize)
+
+    table.cell(dash, 0, 11, "Divergence", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 11, "B " + str.tostring(lastBearDivStr, "#") + " / b " + str.tostring(lastBullDivStr, "#") + ((hidBear or hidBull) ? "  (hid)" : ""), bgcolor = cg, text_color = cw, text_size = dashSize)
+
+    ewTxt = ewTopConf >= ewThresh ? "TOP " + str.tostring(ewTopConf, "#") : ewBotConf >= ewThresh ? "BOTTOM " + str.tostring(ewBotConf, "#") : "—"
+    ewClr = ewTopConf >= ewThresh ? color.new(topCol, 20) : ewBotConf >= ewThresh ? color.new(botCol, 20) : cg
+    table.cell(dash, 0, 12, "Early warn", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 12, ewTxt, bgcolor = ewClr, text_color = cw, text_size = dashSize)
+
+    sigTxt = sgDir == 1 ? "TOP " + str.tostring(sgConf, "#") + " " + f_grade(sgConf) : sgDir == -1 ? "BOTTOM " + str.tostring(sgConf, "#") + " " + f_grade(sgConf) : "—"
+    sigClr = sgDir == 1 ? color.new(topCol, 10) : sgDir == -1 ? color.new(botCol, 10) : cg
+    table.cell(dash, 0, 13, "Signal", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 13, sigTxt, bgcolor = sigClr, text_color = cw, text_size = dashSize)
+
+    table.cell(dash, 0, 14, "Status", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 14, f_stat(sgStat), bgcolor = f_statCol(sgStat), text_color = cw, text_size = dashSize)
+
+    table.cell(dash, 0, 15, "Soft inval", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 15, sgDir == 0 ? "—" : str.tostring(sgSoftDist, "0.00") + "%", bgcolor = cg, text_color = cw, text_size = dashSize)
+
+    table.cell(dash, 0, 16, "Hard inval", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 16, sgDir == 0 ? "—" : str.tostring(sgHardDist, "0.00") + "%", bgcolor = cg, text_color = cw, text_size = dashSize)
+
+    chaseClr = sgChase == "Good" ? color.new(botCol, 10) : sgChase == "Fair" ? color.new(color.orange, 30) : sgChase == "Late" ? color.new(color.orange, 0) : sgChase == "Poor" ? color.new(topCol, 0) : cg
+    table.cell(dash, 0, 17, "Chase", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 17, sgDir == 0 ? "—" : sgChase + "  (" + str.tostring(nz(sgProg, 0) * 100, "#") + "%)", bgcolor = chaseClr, text_color = cw, text_size = dashSize)
+
+    table.cell(dash, 0, 18, "Target · R:R", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 18, sgDir == 0 ? "—" : str.tostring(sgTgt, format.mintick) + " · " + str.tostring(sgRR, "0.0") + "R", bgcolor = cg, text_color = cw, text_size = dashSize)
+
+    zStat = na(nzPx) ? "—" : (nzBrk ? "FLIPPED " : "") + (nzRes ? "Res" : "Sup")
+    zClr  = na(nzPx) ? cg : nzRes ? color.new(topCol, 35) : color.new(botCol, 35)
+    table.cell(dash, 0, 19, "Nearest S/R", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 19, na(nzPx) ? "—" : str.tostring(nzPx, format.mintick) + "  x" + str.tostring(nzTouch) + "  " + zStat + "  " + str.tostring(nzDist, "0.00") + "%", bgcolor = zClr, text_color = cw, text_size = dashSize)
+
+    lastDir = na(lastTopBar) and na(lastBotBar) ? "—" : (nz(lastTopBar, -1) > nz(lastBotBar, -1) ? "TOP" : "BOTTOM")
+    lastAgo = lastDir == "TOP" ? bar_index - lastTopBar : lastDir == "BOTTOM" ? bar_index - lastBotBar : na
+    lastTxt = lastDir == "—" ? "none yet" : lastDir + "  " + str.tostring(lastAgo) + " bars ago"
+    lastClr = lastDir == "TOP" ? color.new(topCol, 10) : lastDir == "BOTTOM" ? color.new(botCol, 10) : cg
+    table.cell(dash, 0, 20, "Last signal", text_color = cw, text_size = dashSize)
+    table.cell(dash, 1, 20, lastTxt, bgcolor = lastClr, text_color = cw, text_size = dashSize)
+
+// ============================================================================
+//  ALERTS
+// ============================================================================
+alertcondition(ewTop, "Early Warning Top",    "RevRadar: early TOP danger forming")
+alertcondition(ewBot, "Early Warning Bottom", "RevRadar: early BOTTOM danger forming")
+alertcondition(topOk, "Reversal Top",         "RevRadar: confirmed TOP")
+alertcondition(botOk, "Reversal Bottom",      "RevRadar: confirmed BOTTOM")
+alertcondition(topOk and tierTop == 2, "Strong Top",    "RevRadar: STRONG top (high confidence)")
+alertcondition(botOk and tierBot == 2, "Strong Bottom", "RevRadar: STRONG bottom (high confidence)")
+alertcondition(bearDiv, "Bearish Divergence", "RevRadar: bearish RSI divergence")
+alertcondition(bullDiv, "Bullish Divergence", "RevRadar: bullish RSI divergence")
+alertcondition(sgStat == 4 and sgStat[1] != 4, "Signal Invalidated", "RevRadar: active signal HARD-invalidated")
+alertcondition(sgStat == 5 and sgStat[1] != 5, "Target Reached",      "RevRadar: active signal hit target")
+
+if topOk
+    alert("RevRadar TOP — conf " + str.tostring(topConf, "#") + " (" + f_grade(topConf) + ") @ " + str.tostring(close), alert.freq_once_per_bar)
+if botOk
+    alert("RevRadar BOTTOM — conf " + str.tostring(botConf, "#") + " (" + f_grade(botConf) + ") @ " + str.tostring(close), alert.freq_once_per_bar)

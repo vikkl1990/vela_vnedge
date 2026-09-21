@@ -1,0 +1,576 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © mayb1dayy
+// ═══════════════════════════════════════════════════════════════════════════
+//  Balanced Price Range (M1D)
+//  ─────────────────────────────────────────────────────────────────────────
+//  A BPR is the band of UNTRADED air left where two opposing fair value gaps
+//  overlap, when price displaced straight back through the first gap WITHOUT
+//  EVER TESTING IT. It is a speed artefact, and the no-test clause is the
+//  whole concept:
+//
+//    INVERSION — the gap is TESTED. A candle reaches its consequent
+//    encroachment and closes on the respecting side, holding. A later candle
+//    then fails it. Tested, held, failed.  ->  an inversion, not a BPR
+//
+//    BPR       — the gap is displaced through with NO test. The first candle
+//    to reach the CE is the same candle that closes its body clean past the
+//    far edge. Nothing ever held inside it.       ->  a BPR
+//
+//  The two are mutually exclusive by construction. A detector built on the
+//  geometric overlap alone fires on inversions and calls them BPRs, which is
+//  a tool disagreeing with itself.
+//
+//  A shallow wick that never reaches the CE is a PROBE, not a test. It leaves
+//  the BPR candidacy open and instead TRIMS the band:
+//  the drawn zone is only the part with no wick lying in it, and the wick's
+//  extreme becomes the BPR's edge. The box still anchors to its origin candle
+//  so it never floats mid-chart, and runs to the live candle like a breaker.
+//
+//  Formation is a tight pivot swing — an upside-down V or U for a bearish
+//  BPR, a V or U for a bullish one. No loose bar-count window is used: the
+//  pivot IS the window, and the speed is already carried by the two gaps,
+//  because a fair value gap is by definition a leg that moved faster than
+//  two-sided trade could occur. That is why no separate shape filter exists
+//  here and why BPRs are rare up high and common as you drop down.
+// ═══════════════════════════════════════════════════════════════════════════
+//@version=6
+indicator("Balanced Price Range (M1D)", shorttitle = "BPR (M1D)", overlay = true,
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+const string BUILD = "b3"
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PALETTE
+// ═══════════════════════════════════════════════════════════════════════════
+const color C_BULL = #26C6DA            // BPR+ cyan
+const color C_BEAR = #EC407A            // BPR- pink
+const color C_INK  = #000000            // actually black
+const color C_MID  = #787B86            // consequent encroachment midline
+
+// Pine takes TRANSPARENCY, TradingView's picker shows OPACITY, and they run opposite ways:
+// transparency = 100 - opacity. The zone was specified in opacity, so both numbers are
+// written here with the conversion shown, because reading one as the other is silent — the
+// zone just comes out wrong-looking and nothing errors.
+const int TR_FILL   = 75                // 25% opacity — the zone body
+const int TR_BORDER = 45                // 55% opacity — solid border, firmer than the fill
+const int OPAC_FADE = 88                // spent, when kept
+
+// The border is deliberately heavier than the fill rather than matching it: a trimmed BPR
+// is a narrow band, and its edges are the prices you deal from.
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  INPUTS
+// ═══════════════════════════════════════════════════════════════════════════
+string G_DET = "Detection"
+string G_ZON = "Zone"
+string G_STY = "Style"
+
+int pivotLen = input.int(1, "Pivot length  (1 = 3-candle V · 2 = 5-candle U)",
+     minval = 1, maxval = 3, group = G_DET,
+     tooltip = "The swing the whole formation sits on. 1 gives the 3-candle pivot — a sharp V or " +
+     "inverted V. 2 gives the 5-candle pivot — a rounded U. The displacement back through the " +
+     "candidate gap begins as the pivot completes, so this is the window; there is no separate " +
+     "bar-count setting.")
+
+int minGapTicks = input.int(5, "Minimum parent gap (ticks)", minval = 0, group = G_DET,
+     tooltip = "Applied to BOTH parent fair value gaps. Same shape and default as the rest of the " +
+     "stack, so a gap that is too small to matter here is too small to matter there.")
+
+int minBprTicks = input.int(3, "Minimum BPR after the wick trim (ticks)", minval = 0, group = G_DET,
+     tooltip = "The trim can eat most of a candidate band. Without a floor, an overlap trimmed to " +
+     "almost nothing still paints as a zone.")
+
+int pivotToBreak = input.int(3, "Max bars from the pivot to the close-through",
+     minval = 1, maxval = 10, group = G_DET,
+     tooltip = "THIS is the window, and it is what keeps the formation a tight swing rather than " +
+     "two gaps that happen to overlap. The framing: on a 3-candle pivot the 4th and 5th " +
+     "candles displace back, on a 5-candle pivot the 6th and 7th — the displacement begins as the " +
+     "pivot completes. The default of 3 is those two bars plus one of slack. Raising it a long way " +
+     "stops this being a BPR and starts it being any old overlap.")
+
+int breakWindow = input.int(5, "Max bars from the clean break to the opposing gap",
+     minval = 1, maxval = 20, group = G_DET,
+     tooltip = "The opposing gap completes one bar after the candle that closed through, so this is " +
+     "normally 2. It is exposed only as a guard against pairing a break with a gap from much later.")
+
+int maxLive = input.int(4, "Max live BPRs per side", minval = 1, maxval = 20, group = G_DET)
+
+string mitAction = input.string("Remove", "On invalidation", options = ["Remove", "Fade & keep"],
+     group = G_ZON,
+     tooltip = "What happens when a body closes clean beyond the far edge against the BPR's " +
+     "direction. Remove — the house default for spent inventory, the same rule as a raided " +
+     "liquidity pool. Fade & keep — holds the record of where delivery already happened.")
+
+bool showCe = input.bool(true, "Consequent encroachment midline", group = G_ZON,
+     tooltip = "The midpoint of the DRAWN band, not of the raw overlap. Note the wording: a range " +
+     "has an equilibrium, a PD array has a consequent encroachment.")
+
+bool showParents = input.bool(false, "Show the two parent gaps behind the BPR", group = G_ZON,
+     tooltip = "Off by default. The trimmed band is the point of the tool; painting both parents " +
+     "puts back the clutter it exists to remove.")
+
+int extendBars = input.int(2, "Extend right (bars past the live candle)",
+     minval = 0, maxval = 50, group = G_STY)
+
+bool showConsole = input.bool(true, "Console", group = G_STY)
+
+string labelSize = input.string("small", "Label text size",
+     options = ["tiny", "small", "normal", "large"], group = G_STY)
+
+//@function Resolves the label-size input to a Pine size constant.
+//@param s (string) The raw input value.
+//@returns (string) The matching size.* constant.
+f_lblSize(string s) =>
+    switch s
+        "tiny"  => size.tiny
+        "small" => size.small
+        "large" => size.large
+        =>         size.normal
+
+string LBL_SZ = f_lblSize(labelSize)
+
+float tick     = syminfo.mintick
+int   msPerBar = timeframe.in_seconds(timeframe.period) * 1000
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  TYPES
+// ═══════════════════════════════════════════════════════════════════════════
+
+//@type A candidate fair value gap being watched for the no-test displacement.
+//@field bull true = BISI (bullish gap, support). false = SIBI (bearish gap, resistance).
+//@field top Upper edge of the gap.
+//@field bot Lower edge of the gap.
+//@field startTime Bar time of the gap's ORIGIN candle — where its box anchors.
+//@field formedBar bar_index of the third candle, the bar the gap completed on.
+//@field tested Permanent once set. A tested gap can only ever become an IFVG, never a BPR.
+//@field broken A body closed clean past the far edge in one candle.
+//@field brokenBar bar_index of that candle.
+type Gap
+    bool  bull      = false
+    float top       = na
+    float bot       = na
+    int   startTime = 0
+    int   formedBar = 0
+    bool  tested    = false
+    bool  broken    = false
+    int   brokenBar = 0
+
+//@type A confirmed Balanced Price Range — the drawn, wick-trimmed band.
+//@field bull true = support (a V or U trough). false = resistance (an inverted V or U).
+//@field top Upper edge AFTER the wick trim.
+//@field bot Lower edge AFTER the wick trim.
+//@field startTime Bar time of the originating candle, so the box never floats mid-chart.
+//@field spent Invalidated — a body closed clean beyond it against its direction.
+//@field touched First retest has happened.
+type Bpr
+    bool  bull      = false
+    float top       = na
+    float bot       = na
+    int   startTime = 0
+    bool  spent     = false
+    bool  touched   = false
+    box   zone      = na
+    label cap       = na
+    line  ce        = na
+    box   pA        = na
+    box   pB        = na
+
+var array<Gap> cands = array.new<Gap>(0)
+var array<Bpr> live  = array.new<Bpr>(0)
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PIVOTS — the formation has to sit on one swing, not two unrelated gaps
+// ═══════════════════════════════════════════════════════════════════════════
+float ph = ta.pivothigh(high, pivotLen, pivotLen)
+float pl = ta.pivotlow(low,  pivotLen, pivotLen)
+
+var int lastPhBar = na
+var int lastPlBar = na
+
+if not na(ph)
+    lastPhBar := bar_index - pivotLen
+if not na(pl)
+    lastPlBar := bar_index - pivotLen
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  FVG DETECTION — the same three-candle wick definition as the rest of the stack
+// ═══════════════════════════════════════════════════════════════════════════
+bool isBullFvg = barstate.isconfirmed and low > high[2] and (low - high[2]) >= minGapTicks * tick
+bool isBearFvg = barstate.isconfirmed and high < low[2] and (low[2] - high) >= minGapTicks * tick
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+//@function The right-hand edge every drawing on this script stops at.
+//@returns (int) A bar time, extendBars past the live candle.
+f_right() =>
+    time + extendBars * msPerBar
+
+//@function A transparent monospace callout, the house label for anything naming a price.
+//@param x (int) Bar time to anchor at.
+//@param y (float) Price to anchor at.
+//@param txt (string) The text.
+//@param col (color) Text colour.
+//@returns (label) The created label.
+f_callout(int x, float y, string txt, color col) =>
+    lb = label.new(x, y, txt,
+         xloc      = xloc.bar_time,
+         style     = label.style_label_left,
+         color     = color.new(#FFFFFF, 100),
+         textcolor = col,
+         size      = LBL_SZ,
+         textalign = text.align_left)
+    label.set_text_font_family(lb, font.family_monospace)
+    lb
+
+//@function Deletes every drawing owned by a BPR.
+//@param b (Bpr) The range to erase.
+//@returns (void)
+f_erase(Bpr b) =>
+    box.delete(b.zone)
+    label.delete(b.cap)
+    line.delete(b.ce)
+    box.delete(b.pA)
+    box.delete(b.pB)
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  CANDIDATE LIFECYCLE — where the test / probe / clean-break call is made
+// ═══════════════════════════════════════════════════════════════════════════
+// Read this table before changing anything below. It is the concept.
+//
+//   candle reaches CE, closes on the respecting side ....... TESTED  (dead to BPR)
+//   candle reaches CE, closes INSIDE the band ............... TESTED  (dead to BPR)
+//   candle reaches CE, body closes clean past the far edge .. CLEAN BREAK -> BPR path
+//   candle enters but never reaches CE, closes back out ..... PROBE   (candidacy stands,
+//                                                                      and it trims the band)
+//
+// The probe row is the ruling of 2026-09-08 and it is why the test threshold is the
+// CONSEQUENT ENCROACHMENT rather than the zone boundary. It also composes with the wick
+// trim: a shallow wick narrows the band instead of disqualifying it, which the alternative
+// reading could not do without contradicting itself.
+if barstate.isconfirmed and cands.size() > 0
+    for i = cands.size() - 1 to 0
+        Gap g = cands.get(i)
+        float ce = math.avg(g.top, g.bot)
+
+        if not g.broken and not g.tested
+            if g.bull
+                bool reachedCe = low <= ce
+                bool cleanThru = close < g.bot
+                if reachedCe and cleanThru
+                    g.broken    := true
+                    g.brokenBar := bar_index
+                else if reachedCe
+                    g.tested := true
+            else
+                bool reachedCe = high >= ce
+                bool cleanThru = close > g.top
+                if reachedCe and cleanThru
+                    g.broken    := true
+                    g.brokenBar := bar_index
+                else if reachedCe
+                    g.tested := true
+
+        // A candidate that was never resolved goes stale rather than waiting forever.
+        if g.tested or (bar_index - g.formedBar) > (breakWindow + pivotLen * 2 + 3)
+            cands.remove(i)
+        else if g.broken and (bar_index - g.brokenBar) > breakWindow
+            cands.remove(i)
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  BPR CONFIRMATION
+// ═══════════════════════════════════════════════════════════════════════════
+// An opposing gap has just completed. Look for a candidate it overlaps that was broken
+// CLEAN and never tested, with a pivot of the right side sitting between the two.
+bool bullBprNow = false
+bool bearBprNow = false
+
+if barstate.isconfirmed and (isBullFvg or isBearFvg) and cands.size() > 0
+    // The gap that just formed.
+    bool  nBull = isBullFvg
+    float nTop  = nBull ? low     : low[2]
+    float nBot  = nBull ? high[2] : high
+
+    for i = cands.size() - 1 to 0
+        Gap g = cands.get(i)
+
+        // Opposing polarity, broken clean, never tested.
+        if g.bull != nBull and g.broken and not g.tested
+            float rawTop = math.min(g.top, nTop)
+            float rawBot = math.max(g.bot, nBot)
+
+            if rawTop > rawBot
+                // The pivot has to sit between the candidate forming and it being broken —
+                // that is what makes these two legs opposite sides of ONE swing — AND the break
+                // has to follow it closely. Presence alone is not enough: a gap that runs on for
+                // twenty bars before reversing has a pivot in it somewhere too, and that is not
+                // this formation. The proximity test is what makes "the pivot IS the window" true
+                // in the code rather than only in the write-up.
+                int  pivBar   = g.bull ? lastPhBar : lastPlBar
+                bool pivHere  = not na(pivBar) and pivBar >= g.formedBar and pivBar <= g.brokenBar
+                bool pivClose = pivHere and (g.brokenBar - pivBar) <= pivotToBreak
+                bool pivotOk  = pivHere and pivClose
+
+                if pivotOk
+                    // ─── THE WICK TRIM ───────────────────────────────────────────────
+                    // Only bars BETWEEN the candidate completing and the break candle count.
+                    // The break candle itself transits the whole band by definition, and the
+                    // opposing gap's own bars are the displacement — including either would
+                    // trim every BPR to nothing.
+                    int oFrom = bar_index - g.brokenBar + 1
+                    int oTo   = bar_index - g.formedBar - 1
+
+                    float trimTop = rawTop
+                    float trimBot = rawBot
+                    bool  wholeBandTraded = false
+
+                    if oFrom <= oTo and oTo >= 0
+                        if g.bull
+                            // Bullish candidate broken DOWN -> bearish BPR. Wicks intrude from
+                            // ABOVE, so the lowest low in the window becomes the new top.
+                            float minLow = na
+                            for o = math.max(oFrom, 0) to oTo
+                                minLow := na(minLow) ? low[o] : math.min(minLow, low[o])
+                            if not na(minLow)
+                                if minLow <= rawBot
+                                    wholeBandTraded := true
+                                else
+                                    trimTop := math.min(rawTop, minLow)
+                        else
+                            // Bearish candidate broken UP -> bullish BPR. Wicks intrude from
+                            // BELOW, so the highest high in the window becomes the new bottom.
+                            float maxHigh = na
+                            for o = math.max(oFrom, 0) to oTo
+                                maxHigh := na(maxHigh) ? high[o] : math.max(maxHigh, high[o])
+                            if not na(maxHigh)
+                                if maxHigh >= rawTop
+                                    wholeBandTraded := true
+                                else
+                                    trimBot := math.max(rawBot, maxHigh)
+
+                    bool bigEnough = (trimTop - trimBot) >= minBprTicks * tick
+
+                    if not wholeBandTraded and bigEnough
+                        // Polarity follows the NEWEST gap: the most recent displacement is the
+                        // one saying which way the desk is currently delivering.
+                        Bpr b = Bpr.new()
+                        b.bull      := nBull
+                        b.top       := trimTop
+                        b.bot       := trimBot
+                        b.startTime := g.startTime
+
+                        color base = nBull ? C_BULL : C_BEAR
+                        color fill = color.new(base, TR_FILL)
+                        color edge = color.new(base, TR_BORDER)
+
+                        if showParents
+                            color faint = color.new(base, 92)
+                            b.pA := box.new(g.startTime, g.top, f_right(), g.bot,
+                                 xloc = xloc.bar_time, border_color = faint,
+                                 border_width = 1, border_style = line.style_solid,
+                                 bgcolor = faint)
+                            b.pB := box.new(time[2], nTop, f_right(), nBot,
+                                 xloc = xloc.bar_time, border_color = faint,
+                                 border_width = 1, border_style = line.style_solid,
+                                 bgcolor = faint)
+
+                        // Fill at 25% opacity, solid border at 55% — see TR_FILL / TR_BORDER.
+                        b.zone := box.new(b.startTime, b.top, f_right(), b.bot,
+                             xloc         = xloc.bar_time,
+                             border_color = edge,
+                             border_width = 1,
+                             border_style = line.style_solid,
+                             bgcolor      = fill)
+
+                        b.cap := f_callout(f_right(), math.avg(b.top, b.bot),
+                             nBull ? "BPR+" : "BPR-", C_INK)
+
+                        if showCe
+                            b.ce := line.new(b.startTime, math.avg(b.top, b.bot),
+                                 f_right(), math.avg(b.top, b.bot),
+                                 xloc  = xloc.bar_time,
+                                 color = C_MID,
+                                 width = 1,
+                                 style = line.style_dotted)
+
+                        live.push(b)
+
+                        if nBull
+                            bullBprNow := true
+                        else
+                            bearBprNow := true
+
+                    cands.remove(i)
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  REGISTER NEW CANDIDATES
+// ═══════════════════════════════════════════════════════════════════════════
+if isBullFvg
+    Gap g = Gap.new()
+    g.bull      := true
+    g.top       := low
+    g.bot       := high[2]
+    g.startTime := time[2]
+    g.formedBar := bar_index
+    cands.push(g)
+
+if isBearFvg
+    Gap g = Gap.new()
+    g.bull      := false
+    g.top       := low[2]
+    g.bot       := high
+    g.startTime := time[2]
+    g.formedBar := bar_index
+    cands.push(g)
+
+// Rolling cap — never let the store reach the object limit.
+while cands.size() > 40
+    cands.shift()
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  LIVE BPRs — extend, retest, invalidate, prune
+// ═══════════════════════════════════════════════════════════════════════════
+bool bullTouchNow = false
+bool bearTouchNow = false
+
+if live.size() > 0
+    for i = live.size() - 1 to 0
+        Bpr b = live.get(i)
+
+        if not b.spent
+            box.set_right(b.zone, f_right())
+            label.set_x(b.cap, f_right())
+            if not na(b.ce)
+                line.set_x2(b.ce, f_right())
+            if not na(b.pA)
+                box.set_right(b.pA, f_right())
+            if not na(b.pB)
+                box.set_right(b.pB, f_right())
+
+            if barstate.isconfirmed
+                // First retest.
+                if not b.touched and low <= b.top and high >= b.bot
+                    b.touched := true
+                    if b.bull
+                        bullTouchNow := true
+                    else
+                        bearTouchNow := true
+
+                // Invalidation: a body clean beyond the far edge, against direction.
+                bool gone = b.bull ? close < b.bot : close > b.top
+                if gone
+                    b.spent := true
+                    if mitAction == "Remove"
+                        f_erase(b)
+                        live.remove(i)
+                    else
+                        color faded = color.new(b.bull ? C_BULL : C_BEAR, OPAC_FADE)
+                        box.set_bgcolor(b.zone, faded)
+                        box.set_border_color(b.zone, faded)
+                        label.set_text(b.cap, (b.bull ? "BPR+" : "BPR-") + " ✗")
+
+// Cap live ranges per side, OLDEST out first. Walking backwards means the newest are met
+// first and counted as kept; anything past the cap is therefore older, and removing while
+// iterating backwards cannot drift the index.
+if live.size() > 0
+    int keptBull = 0
+    int keptBear = 0
+    for i = live.size() - 1 to 0
+        Bpr b = live.get(i)
+        if b.bull
+            keptBull += 1
+            if keptBull > maxLive
+                f_erase(b)
+                live.remove(i)
+        else
+            keptBear += 1
+            if keptBear > maxLive
+                f_erase(b)
+                live.remove(i)
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  CONSOLE — verdict first, silent rows dropped
+// ═══════════════════════════════════════════════════════════════════════════
+// frame_* is the OUTER trim, border_* the lines between cells. The black trim is the frame;
+// cell borders stay off so the console reads as one plate rather than a grid.
+var table console = table.new(position.top_right, 2, 5,
+     bgcolor = #FFFFFF, border_width = 0,
+     frame_color = #000000, frame_width = 1)
+
+if showConsole and barstate.islast
+    int nBullLive = 0
+    int nBearLive = 0
+    int nRespected = 0
+    if live.size() > 0
+        for i = 0 to live.size() - 1
+            Bpr b = live.get(i)
+            if not b.spent
+                if b.bull
+                    nBullLive += 1
+                else
+                    nBearLive += 1
+                // RESPECTED: price came back into it and it has not been closed through.
+                // touched without spent is the whole definition — a zone that was returned
+                // to and held. It is counted only across what is SHOWING, so the number
+                // always describes the boxes on the chart and never a hidden history.
+                if b.touched
+                    nRespected += 1
+
+    int nLive = nBullLive + nBearLive
+
+    string verdict = nLive == 0 ? "no live BPR"
+         : nBullLive > 0 and nBearLive > 0 ? "BPR both sides"
+         : nBullLive > 0 ? "BPR support" : "BPR resistance"
+
+    table.clear(console, 0, 0, 1, 4)
+    table.cell(console, 0, 0, "M1D BPRS", text_color = C_INK, text_size = LBL_SZ,
+         text_font_family = font.family_monospace, text_formatting = text.format_bold)
+    table.cell(console, 1, 0, verdict, text_color = C_INK, text_size = LBL_SZ,
+         text_font_family = font.family_monospace, text_formatting = text.format_bold,
+         tooltip = "A BPR is the untraded air where two opposing gaps overlap after a " +
+         "displacement that never tested the first one. A tested gap is an inversion, not a BPR.")
+
+    int row = 1
+    if nBullLive > 0
+        table.cell(console, 0, row, "support", text_color = C_INK, text_size = LBL_SZ,
+             text_font_family = font.family_monospace)
+        table.cell(console, 1, row, str.tostring(nBullLive), text_color = C_BULL,
+             text_size = LBL_SZ, text_font_family = font.family_monospace)
+        row += 1
+    if nBearLive > 0
+        table.cell(console, 0, row, "resistance", text_color = C_INK, text_size = LBL_SZ,
+             text_font_family = font.family_monospace)
+        table.cell(console, 1, row, str.tostring(nBearLive), text_color = C_BEAR,
+             text_size = LBL_SZ, text_font_family = font.family_monospace)
+        row += 1
+    if nLive > 0
+        table.cell(console, 0, row, "respected", text_color = C_INK, text_size = LBL_SZ,
+             text_font_family = font.family_monospace)
+        table.cell(console, 1, row, str.tostring(nRespected) + "/" + str.tostring(nLive),
+             text_color = C_INK, text_size = LBL_SZ,
+             text_font_family = font.family_monospace,
+             tooltip = "Of the BPRs currently drawn, how many price has returned into and " +
+             "NOT closed through. A zone that is closed beyond against its direction is " +
+             "invalidated and leaves this count with the box. Counted across what is " +
+             "showing, so it always describes the chart in front of you.")
+        row += 1
+    if cands.size() > 0
+        table.cell(console, 0, row, "watching", text_color = C_INK, text_size = LBL_SZ,
+             text_font_family = font.family_monospace)
+        table.cell(console, 1, row, str.tostring(cands.size()), text_color = C_MID,
+             text_size = LBL_SZ, text_font_family = font.family_monospace,
+             tooltip = "Untested gaps still able to become a BPR. A gap drops out of this " +
+             "count the moment a candle reaches its consequent encroachment and holds.")
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ALERTS — script scope, never inside a conditional
+// ═══════════════════════════════════════════════════════════════════════════
+alertcondition(bullBprNow,   "Bullish BPR formed",
+     "Bullish BPR formed on {{ticker}} — untested gap displaced through")
+alertcondition(bearBprNow,   "Bearish BPR formed",
+     "Bearish BPR formed on {{ticker}} — untested gap displaced through")
+alertcondition(bullTouchNow, "Bullish BPR first touch",
+     "Price returned to a bullish BPR on {{ticker}}")
+alertcondition(bearTouchNow, "Bearish BPR first touch",
+     "Price returned to a bearish BPR on {{ticker}}")

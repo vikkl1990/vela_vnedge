@@ -1,0 +1,1775 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Base imbalance engine (Volume Imbalance, GAP, FVG, Implied FVG, Inverse FVG) © Vulnerable_human_x.
+// The Order Block engine, Breaker Blocks, the multi-timeframe module, the Area fill rule and the
+// zone-state system below are additions and are not part of the original author's work.
+
+//@version=6
+indicator('ICT & FVG [UgurTash]', shorttitle = 'ICT & FVG [UgurTash]', overlay = true,
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 100, max_bars_back = 500,
+     behind_chart = true)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 0 · SHARED HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════════════
+
+// Area fill rule.
+// The colour picker keeps its own value (50 by default) and the slider stays live, but what is
+// drawn is 0.4x that opacity. At the 50 default this lands on the same on-screen density as the
+// reference "Area" fills, and moving the slider still changes the chart.
+//   picker 50 -> drawn 80    picker 75 -> drawn 90    picker 25 -> drawn 70    picker 100 -> drawn 60
+f_area(color col) =>
+    color.new(col, 100.0 - (100.0 - color.t(col)) * 0.4)
+
+// Maps a border-style name to a Pine line style. 'None' is expressed through the width, not here.
+f_borderStyle(string s) =>
+    switch s
+        'Solid'  => line.style_solid
+        'Dashed' => line.style_dashed
+        'Dotted' => line.style_dotted
+        => line.style_solid
+
+// Adds transparency without losing the hue, clamped so the result can never leave 0..100.
+f_fade(color col, int extra) =>
+    color.new(col, math.min(100.0, color.t(col) + extra))
+
+// The opposite: removes transparency, used by the Highlight Box state. Both work in picker
+// space, so the result still has to go through f_area() before it is drawn.
+f_boost(color col, int amount) =>
+    color.new(col, math.max(0.0, color.t(col) - amount))
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 1 · CURRENT TIMEFRAME ZONES (master switches)
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// These control ONLY what is drawn from the chart's own bars. The higher-timeframe zones have
+// their own master switch in the MTF group, so the two are fully independent of each other.
+const string G_CUR = '1 · Current Timeframe Zones'
+
+bool showCurFVG = input.bool(true, 'Show Current TF Fair Value Gaps', group = G_CUR, tooltip = 'Master switch for every chart-timeframe FVG drawing: normal FVG, Liquidity Void, Implied FVG and Inverse FVG. Turning it off clears them from the chart immediately and leaves the higher-timeframe zones untouched.')
+bool showCurOB  = input.bool(true, 'Show Current TF Order Blocks', group = G_CUR, tooltip = 'Master switch for chart-timeframe Order Blocks and Breaker Blocks. Independent of the MTF panel.')
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 2 · ORDER BLOCKS (CURRENT TIMEFRAME)
+// ═══════════════════════════════════════════════════════════════════════════════════════
+const string G_OB = '2 · Order Blocks (Current TF)'
+
+int   obSwingLen  = input.int(10, 'Swing Lookback', minval = 3, maxval = 50, group = G_OB, tooltip = 'Bars used to confirm a swing high or low. A block is only created when price closes beyond a confirmed swing, so this is the main sensitivity control. Lower = more, earlier, noisier blocks.')
+bool  obUseBody   = input.bool(false, 'Use Candle Body', group = G_OB, tooltip = 'Measure the block from the candle body instead of the full high-low range.')
+int   obScanMax   = input.int(50, 'Max Scan Bars', minval = 10, maxval = 100, group = G_OB, tooltip = 'How far back from the breakout bar the search for the block candle may run. Kept bounded so the history buffer stays inside Pine limits.')
+float obBreakFib  = input.float(0.0, 'Break Confirmation (x swing range)', minval = 0.0, maxval = 1.0, step = 0.05, group = G_OB, tooltip = 'Requires the breakout close to clear the swing point by this fraction of the last swing-high to swing-low range before a block is created. 0 disables the filter, so any close beyond the swing counts, which is the standard behaviour.')
+int   obMaxBoxes  = input.int(5, 'Max Blocks per Direction', minval = 1, maxval = 20, group = G_OB)
+color obBullColor = input.color(color.new(#2157f3, 50), 'Bullish OB', inline = 'ob1', group = G_OB)
+color obBearColor = input.color(color.new(#ff5d00, 50), 'Bearish OB', inline = 'ob1', group = G_OB)
+
+bool  obShowBreak    = input.bool(false, 'Show Breaker Blocks', group = G_OB, tooltip = 'A block price closes through does not die: it flips polarity and keeps working from the other side, the same idea the Inverse FVG applies to gaps. The block is only discarded once price closes back through its far edge. With this off, a broken block follows the Mitigated Order Block Action setting instead.')
+color obBullBreakCol = input.color(color.new(#ff1100, 50), 'Bullish Break', inline = 'ob2', group = G_OB)
+color obBearBreakCol = input.color(color.new(#0cb51a, 50), 'Bearish Break', inline = 'ob2', group = G_OB)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 3 · FAIR VALUE GAP
+// ═══════════════════════════════════════════════════════════════════════════════════════
+const string G_FVG = '3 · FVG'
+
+bool plotFVG           = false
+bool liquidityvoidmode = false
+
+string fvgtype       = input.string('Normal', 'FVG Type', options = ['None', 'Normal', 'Liquidity Void'], inline = 'f18', group = G_FVG, tooltip = 'Consecutively formed FVGs are collectively referred to as a Liquidity Void.')
+bool   showifvgInput = input.bool(false, 'IMPLIED FVG', inline = 'f19', group = G_FVG)
+bool   invfvgInput   = input.bool(false, 'INVERSE FVG', group = G_FVG, inline = 'f19', tooltip = 'FVG Mitigation type should be set to \'ENGULF\' for Inverse FVG to work')
+
+if fvgtype == 'Normal'
+    plotFVG           := true
+    liquidityvoidmode := false
+    liquidityvoidmode
+else if fvgtype == 'Liquidity Void'
+    plotFVG           := false
+    liquidityvoidmode := true
+    liquidityvoidmode
+else if fvgtype == 'None'
+    plotFVG           := false
+    liquidityvoidmode := false
+    liquidityvoidmode
+
+// The current-timeframe master switch folds into the FVG-family flags here, so one checkbox
+// silences the whole family without touching the MTF module.
+if not showCurFVG
+    plotFVG           := false
+    liquidityvoidmode := false
+    liquidityvoidmode
+
+bool showifvg       = showifvgInput and showCurFVG
+bool Inversefvgmode = invfvgInput and showCurFVG
+
+color fvgBullColor  = input.color(color.new(color.green, 50), 'Bullish FVG', inline = 'f1', group = G_FVG)
+color fvgBearColor  = input.color(color.new(color.red, 50), 'Bearish FVG', inline = 'f1', group = G_FVG)
+
+color ifvgBullColor = input.color(color.new(color.green, 50), 'Bullish IMP.FVG', inline = 'f3', group = G_FVG)
+color ifvgBearColor = input.color(color.new(color.red, 50), 'Bearish IMP.FVG', inline = 'f3', group = G_FVG)
+
+color buinvfvgcolor = input.color(color.new(#fbc02d, 50), 'Bullish INV.FVG', inline = 'f4', group = G_FVG)
+color beinvfvgcolor = input.color(color.new(#fbc02d, 50), 'Bearish INV.FVG', inline = 'f4', group = G_FVG)
+
+int    fvgMaxBoxSet       = input.int(15, 'FVG/IMP.FVG Box Limit', minval = 1, maxval = 100, group = G_FVG, tooltip = 'Minimum = 1, Maximum = 100')
+int    invfvgMaxBoxSet    = input.int(4, 'Inverse FVG Box Limit', minval = 1, maxval = 100, group = G_FVG, tooltip = 'Minimum = 1, Maximum = 100')
+string fvgmitigationtype  = input.string('Engulf', 'FVG/LV Mitigation', options = ['Engulf', 'Mitigate', 'Rebalance'], group = G_FVG, tooltip = 'ENGULF: Body close below Bullish FVG and above Bearish FVG required for Engulf Mitigation Type')
+string ifvgmitigationtype = input.string('Engulf', 'IMPLIED FVG Mitigation', options = ['Engulf', 'Mitigate'], group = G_FVG, tooltip = 'ENGULF: Body close below Bullish FVG and above Bearish FVG required for Engulf Mitigation Type')
+bool   cefvg              = input.bool(true, 'FVG Consequent Encroachment (C.E.)', group = G_FVG)
+string celinetype         = input.string(line.style_dashed, 'C.E. Line Style', options = [line.style_dashed, line.style_dotted, line.style_solid], group = G_FVG)
+int    cetransparency     = input.int(50, 'C.E. Transparency', minval = 0, maxval = 100, group = G_FVG)
+bool   extendfvgbox       = input.bool(true, 'Extend All Unmitigated Boxes', group = G_FVG, tooltip = 'Also gates the mitigation logic: with this off, boxes neither extend nor change state.')
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 4 · VOLUME IMBALANCE
+// ═══════════════════════════════════════════════════════════════════════════════════════
+const string G_VI = '4 · Volume Imbalance'
+
+bool classicvi  = false
+bool advancedvi = false
+string vitype = input.string('Classic', 'Volume Imbalance Type', options = ['None', 'Classic', 'Advanced'], group = G_VI, tooltip = 'Classic mode includes only a single type of body gap, while advanced mode covers all body gap variants.')
+
+if vitype == 'Classic'
+    classicvi  := true
+    advancedvi := false
+    advancedvi
+else if vitype == 'Advanced'
+    classicvi  := false
+    advancedvi := true
+    advancedvi
+else if vitype == 'None'
+    classicvi  := false
+    advancedvi := false
+    advancedvi
+
+color  bullimbalance    = input.color(color.new(#00e640, 50), 'Bullish VI Color', group = G_VI, inline = 'vi1')
+color  bearimbalance    = input.color(color.new(#e30000, 50), 'Bearish VI Color', group = G_VI, inline = 'vi1')
+int    viMaxBoxSet      = input.int(8, 'Maximum Box Displayed', minval = 1, maxval = 100, group = G_VI, tooltip = 'Minimum = 1, Maximum = 100')
+string vimitigationtype = input.string('Engulf', 'VI Mitigation Type', options = ['Engulf', 'Mitigate'], group = G_VI, tooltip = 'Body close below Bullish VI and above Bearish VI required for Engulf Mitigation Type')
+bool   extendvibox      = input.bool(true, 'Extend Unmitigated VI Boxes', group = G_VI)
+bool   extendallvis     = input.bool(false, 'Extend all VI Boxes', group = G_VI, tooltip = 'Keeps every VI box, mitigated ones included, stretched to the current bar. Overrides the freeze that normally happens when a box is mitigated.')
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 5 · GAP
+// ═══════════════════════════════════════════════════════════════════════════════════════
+const string G_GAP = '5 · GAP'
+
+string gaptype = input.string('True GAP', 'GAPs Type', options = ['None', 'True GAP', 'GAP + Inefficiency'], group = G_GAP, tooltip = 'True GAPs are price zones with no buyside or sellside delivery at all. GAP + Inefficiency, however, cover both regions where there\'s an absence of buyside and sellside activity, and areas with one-sided price action (the gap between the close of the previous candle and the open of the current one).')
+
+bool truegap    = false
+bool gapwithimb = false
+
+if gaptype == 'True GAP'
+    truegap    := true
+    gapwithimb := false
+    gapwithimb
+else if gaptype == 'GAP + Inefficiency'
+    truegap    := false
+    gapwithimb := true
+    gapwithimb
+else if gaptype == 'None'
+    truegap    := false
+    gapwithimb := false
+    gapwithimb
+
+color  gapcolor          = input.color(color.new(#4ec1f7, 50), 'GAP Color', group = G_GAP)
+int    gapsMaxBoxSet     = input.int(7, 'Maximum Box Displayed', minval = 1, maxval = 100, group = G_GAP, tooltip = 'Minimum = 1, Maximum = 100')
+bool   cegap             = input.bool(true, 'GAP Consequent Encroachment (C.E.)', group = G_GAP)
+string cegaplinetype     = input.string(line.style_dashed, 'C.E. Line Style', options = [line.style_dashed, line.style_dotted, line.style_solid], group = G_GAP)
+string gapmitigationtype = input.string('Engulf', 'GAP Mitigation Type', options = ['Engulf', 'Rebalance'], group = G_GAP, tooltip = 'Body close or open above/below a GAP is required for Engulf Mitigation Type. Rebalance : Price ranges where buyside or sellside delivery is offered are erased as the candle forms.')
+bool   extendgapbox      = input.bool(true, 'Extend Unmitigated GAP Boxes', group = G_GAP)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 6 · MTF HIGHER TIMEFRAME ZONES
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// Enable MTF Panel controls the higher-timeframe zones and nothing else. Switching it off
+// deletes those boxes and leaves everything the chart timeframe draws exactly as it was.
+const string G_MTF = '6 · MTF Higher Timeframe Zones'
+
+bool enableMTF   = input.bool(true, 'Enable MTF Panel', group = G_MTF, tooltip = 'Master switch for the higher-timeframe zones only. Chart-timeframe FVGs and Order Blocks have their own switches in the Current Timeframe Zones group and are not affected by this one.')
+bool showMTF_FVG = input.bool(true, 'Show MTF FVG', group = G_MTF, inline = 'mtftype')
+bool showMTF_OB  = input.bool(true, 'Show MTF Order Blocks', group = G_MTF, inline = 'mtftype')
+
+bool   tf1Enable    = input.bool(true, 'TF 1', group = G_MTF, inline = 'tf1')
+string tf1          = input.timeframe('M', '', group = G_MTF, inline = 'tf1')
+color  tf1BullColor = input.color(color.new(#1B5E20, 50), '', group = G_MTF, inline = 'tf1')
+color  tf1BearColor = input.color(color.new(#7B241C, 50), '', group = G_MTF, inline = 'tf1')
+
+bool   tf2Enable    = input.bool(true, 'TF 2', group = G_MTF, inline = 'tf2')
+string tf2          = input.timeframe('W', '', group = G_MTF, inline = 'tf2')
+color  tf2BullColor = input.color(color.new(#089981, 50), '', group = G_MTF, inline = 'tf2')
+color  tf2BearColor = input.color(color.new(#F23645, 50), '', group = G_MTF, inline = 'tf2')
+
+bool   tf3Enable    = input.bool(true, 'TF 3', group = G_MTF, inline = 'tf3')
+string tf3          = input.timeframe('D', '', group = G_MTF, inline = 'tf3')
+color  tf3BullColor = input.color(color.new(#4CAF50, 50), '', group = G_MTF, inline = 'tf3')
+color  tf3BearColor = input.color(color.new(#FF5252, 50), '', group = G_MTF, inline = 'tf3')
+
+bool   tf4Enable    = input.bool(true, 'TF 4', group = G_MTF, inline = 'tf4')
+string tf4          = input.timeframe('240', '', group = G_MTF, inline = 'tf4')
+color  tf4BullColor = input.color(color.new(#26A69A, 50), '', group = G_MTF, inline = 'tf4')
+color  tf4BearColor = input.color(color.new(#EF5350, 50), '', group = G_MTF, inline = 'tf4')
+
+bool   tf5Enable    = input.bool(true, 'TF 5', group = G_MTF, inline = 'tf5')
+string tf5          = input.timeframe('60', '', group = G_MTF, inline = 'tf5')
+color  tf5BullColor = input.color(color.new(#80CBC4, 50), '', group = G_MTF, inline = 'tf5')
+color  tf5BearColor = input.color(color.new(#EF9A9A, 50), '', group = G_MTF, inline = 'tf5')
+
+int    mtfObSwingLen = input.int(5, 'MTF OB Swing Lookback', minval = 3, maxval = 30, group = G_MTF, tooltip = 'The swing confirmation length used inside each higher timeframe. Kept separate from the chart-timeframe setting because higher-timeframe bars are scarce, so a smaller number is usually right here. Use Candle Body, Max Scan Bars and Break Confirmation are shared with the Order Blocks group.')
+int    mtfMaxBoxes   = input.int(5, 'Max Boxes per Timeframe / Type', minval = 1, maxval = 20, group = G_MTF, tooltip = 'Counted separately for bullish FVG, bearish FVG, bullish OB and bearish OB on every enabled timeframe. Five enabled timeframes at 5 boxes is up to 100 boxes on top of everything the chart timeframe draws, against a platform limit of 500.')
+bool   mtfConfirmTF  = input.bool(true, 'Confirm MTF Order Blocks On HTF Close', group = G_MTF, tooltip = 'On: a higher-timeframe block is only published once its own bar has closed, so it never moves or disappears after the fact. Off: blocks appear as soon as the condition is met inside the forming higher-timeframe bar, which is earlier but can repaint.')
+color  mtfLabelColor = input.color(color.rgb(200, 203, 211), 'MTF Label Color', group = G_MTF, tooltip = 'Kept separate from the fill colour so the timeframe tag stays readable when a zone fades.')
+string mtfLabelSize  = input.string(size.tiny, 'MTF Label Size', options = [size.tiny, size.small, size.normal], group = G_MTF)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 7 · BOX STYLE
+// ═══════════════════════════════════════════════════════════════════════════════════════
+const string G_BOX = '7 · Box Style'
+
+string BoxBorder          = input.string(line.style_solid, 'Box Border Style', options = [line.style_dashed, line.style_dotted, line.style_solid], group = G_BOX, tooltip = 'Only has an effect while Box Border Width is 1 or more.')
+int    BoxBorderWidth     = input.int(0, 'Box Border Width', minval = 0, maxval = 4, group = G_BOX, tooltip = 'Default 0, which draws no border and leaves the fill to carry the zone, matching the Area fill style. Raise it to 1 or more to bring Box Border Style, Border Box Transparency and the Highlight Box border back. Tested and mitigated zones can still draw their own border whatever this is set to.')
+int    BorderTransparency = input.int(85, 'Border Box Transparency', minval = 0, maxval = 100, group = G_BOX)
+
+bool HighlightBox    = input.bool(true, 'Highlight Box', group = G_BOX, tooltip = 'Brightens a chart-timeframe FVG, VI or GAP box while price is trading inside it, and lets it fall back to its normal fill once price leaves. In the original the brightening was one-way and never reverted.')
+int  highlightBoost  = input.int(25, 'Highlight Opacity Boost', minval = 0, maxval = 100, group = G_BOX, tooltip = 'How much opacity a box gains while price is inside it, relative to its own colour rather than a fixed value. The two absolute transparency inputs this replaces could not work once fills started going through the Area rule: a fixed 80 was brighter than the old 90 default but identical to the new one, so the highlight would have been invisible.')
+
+bool   plotBoxLabel  = input.bool(true, 'Plot Label', group = G_BOX)
+string BoxLabelSize  = input.string(size.tiny, 'Label Size', options = [size.huge, size.large, size.small, size.tiny, size.auto, size.normal], group = G_BOX)
+color  BoxLabelColor = input.color(color.rgb(161, 163, 171), 'Label Color', group = G_BOX, tooltip = 'Kept separate from the fill colour on purpose, so text stays readable when a zone fades.')
+string labelhalign   = input.string(text.align_center, 'Label Horizontal Align', options = [text.align_center, text.align_right, text.align_left], group = G_BOX)
+string labelvalign   = input.string(text.align_center, 'Label Vertical Align', options = [text.align_top, text.align_center, text.align_bottom], group = G_BOX)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 8 · ZONE STATES (tested / mitigated)
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// Two distinct states, each fully configurable:
+//   TESTED    price has wicked into the zone but has not closed through it
+//   MITIGATED price has closed through the zone
+const string G_STATE = '8 · Zone States (Tested / Mitigated)'
+
+bool   markTested    = input.bool(true, 'Mark Tested Zones', group = G_STATE, tooltip = 'Applies to Order Blocks, Breaker Blocks and the higher-timeframe zones. Chart-timeframe FVG, VI and GAP boxes use the Highlight Box setting in Box Style instead.')
+bool   testedFadeOn  = input.bool(true, 'Fade Fill When Tested', inline = 'ts1', group = G_STATE)
+int    testedFadeAmt = input.int(30, 'Amount', minval = 0, maxval = 100, inline = 'ts1', group = G_STATE, tooltip = 'Extra transparency added to the fill once a zone has been tested. 0 leaves the fill alone.')
+string testedBorder  = input.string('Dashed', 'Tested Border Style', options = ['None', 'Solid', 'Dashed', 'Dotted'], group = G_STATE)
+
+string mitActionFVG     = input.string('Gray Out', 'Mitigated FVG Action', options = ['Gray Out', 'Delete', 'Keep'], group = G_STATE, tooltip = 'What happens to a gap once it is completely filled. Gray Out recolours and freezes it, Delete removes it from the chart, Keep leaves it in its original colour. Applies to chart-timeframe FVG, Implied FVG, Volume Imbalance, GAP and the higher-timeframe FVGs.')
+string mitActionOB      = input.string('Gray Out', 'Mitigated Order Block Action', options = ['Gray Out', 'Delete', 'Keep'], group = G_STATE, tooltip = 'The same three choices for Order Blocks, chart timeframe and higher timeframe alike. Ignored for a block that turns into a Breaker Block while Show Breaker Blocks is on.')
+color  mitBOXColor      = input.color(color.new(color.gray, 70), 'Mitigated Fill', inline = 'mt1', group = G_STATE)
+color  MitBoxLabelColor = input.color(color.rgb(161, 163, 171, 60), 'Mitigated Label', inline = 'mt1', group = G_STATE)
+string mitBorder        = input.string('None', 'Mitigated Border Style', options = ['None', 'Solid', 'Dashed', 'Dotted'], group = G_STATE)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 9 · STATE HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// Declared after the inputs because they read them.
+
+// Applies the configured mitigated styling to a box. Returns true when the caller must also
+// drop the box from its array, which is the case only for the Delete action.
+f_mitBox(box bx, string action) =>
+    bool drop = false
+    if action == 'Delete'
+        box.delete(bx)
+        drop := true
+    else if action == 'Gray Out'
+        box.set_bgcolor(bx, f_area(mitBOXColor))
+        box.set_text_color(bx, MitBoxLabelColor)
+        if mitBorder == 'None'
+            box.set_border_width(bx, 0)
+        else
+            box.set_border_width(bx, int(math.max(BoxBorderWidth, 1)))
+            box.set_border_style(bx, f_borderStyle(mitBorder))
+            box.set_border_color(bx, mitBOXColor)
+    drop
+
+// Same treatment for a box's Consequent Encroachment line. Safe to call with an na line id.
+f_mitLine(line ln, string action) =>
+    if not na(ln)
+        if action == 'Delete'
+            line.delete(ln)
+        else if action == 'Gray Out'
+            line.set_color(ln, mitBOXColor)
+    true
+
+// Applies the configured tested styling. baseCol is the zone's own picker colour, so the fade
+// is relative to whatever the user has chosen rather than a hard-coded value.
+f_testedBox(box bx, color baseCol) =>
+    if testedFadeOn
+        box.set_bgcolor(bx, f_area(f_fade(baseCol, testedFadeAmt)))
+    if testedBorder == 'None'
+        box.set_border_width(bx, BoxBorderWidth)
+    else
+        box.set_border_width(bx, int(math.max(BoxBorderWidth, 1)))
+        box.set_border_style(bx, f_borderStyle(testedBorder))
+        box.set_border_color(bx, baseCol)
+    true
+
+// Deletes every box in an array and empties it. Used for the "off" state of a feature, so that
+// unchecking a switch clears the chart instead of freezing whatever was already drawn.
+f_clearBoxes(array<box> a) =>
+    if array.size(a) > 0
+        for i = array.size(a) - 1 to 0
+            box bx = array.get(a, i)
+            if not na(bx)
+                box.delete(bx)
+        array.clear(a)
+    true
+
+f_clearLines(array<line> a) =>
+    if array.size(a) > 0
+        for i = array.size(a) - 1 to 0
+            line ln = array.get(a, i)
+            if not na(ln)
+                line.delete(ln)
+        array.clear(a)
+    true
+
+// Removes index i from a box array, deleting the drawing if it is still alive.
+f_removeBoxAt(array<box> a, int i, bool alreadyDeleted) =>
+    if i < array.size(a)
+        box bx = array.remove(a, i)
+        if not alreadyDeleted and not na(bx)
+            box.delete(bx)
+    true
+
+f_removeLineAt(array<line> a, int i, bool alreadyDeleted) =>
+    if i < array.size(a)
+        line ln = array.remove(a, i)
+        if not alreadyDeleted and not na(ln)
+            line.delete(ln)
+    true
+
+// Trims the oldest element off a box array plus its parallel line array, keeping them in lockstep.
+f_trimBoxLine(array<box> b, array<line> l, int limit) =>
+    if array.size(b) > limit
+        box bx = array.shift(b)
+        if not na(bx)
+            box.delete(bx)
+        if array.size(l) > 0
+            line ln = array.shift(l)
+            if not na(ln)
+                line.delete(ln)
+    true
+
+f_trimBoxes(array<box> b, int limit) =>
+    if array.size(b) > limit
+        box bx = array.shift(b)
+        if not na(bx)
+            box.delete(bx)
+    true
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 10 · STATE
+// ═══════════════════════════════════════════════════════════════════════════════════════
+
+var bool buimpfvgtouch = false
+var bool beimpfvgtouch = false
+var bool bufvgtouch    = false
+var bool befvgtouch    = false
+var bool buvitouch     = false
+var bool bevitouch     = false
+var bool bugaptouch    = false
+var bool begaptouch    = false
+var bool buinvfvgtouch = false
+var bool beinvfvgtouch = false
+
+bool isbuinversefvg = false
+bool isbeinversefvg = false
+
+var array<box>  _bearBoxesFVG = array.new_box()
+var array<box>  _bullBoxesFVG = array.new_box()
+var array<box>  _gapsboxesbu  = array.new_box()
+var array<box>  _gapsboxesbe  = array.new_box()
+var array<box>  _bullishvi    = array.new_box()
+var array<box>  _bearishvi    = array.new_box()
+var array<box>  _bullishifvg  = array.new_box()
+var array<box>  _bearishifvg  = array.new_box()
+var array<line> _bufvgce      = array.new_line()
+var array<line> _befvgce      = array.new_line()
+var array<box>  bearInvFVG    = array.new_box()
+var array<box>  bullInvFVG    = array.new_box()
+var array<line> buinvfvgce    = array.new_line()
+var array<line> beinvfvgce    = array.new_line()
+var array<line> bugapce       = array.new_line()
+var array<line> begapce       = array.new_line()
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 11 · VOLUME IMBALANCE ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════════════
+
+// Every VI variant builds the same shaped box, so the drawing lives in one place.
+f_newVIBox(float t, float b, color col, string txt) =>
+    box.new(left = bar_index - 1, top = t, right = bar_index + 1, bottom = b,
+         bgcolor = f_area(col), border_style = BoxBorder, border_width = BoxBorderWidth,
+         border_color = color.new(col, BorderTransparency),
+         text = plotBoxLabel ? txt : na, text_halign = labelhalign, text_valign = labelvalign,
+         text_size = BoxLabelSize, text_color = BoxLabelColor)
+
+isBuVItype1(index) =>
+    open[index] > close[index + 1] and low[index] <= high[index + 1] and close[index] > open[index] and close[index + 1] > open[index + 1]
+
+isBeVItype1(index) =>
+    open[index] < close[index + 1] and high[index] >= low[index + 1] and close[index] < open[index] and close[index + 1] < open[index + 1]
+
+isBuVItype2(index) =>
+    open[index] < close[index + 1] and close[index] > open[index] and close[index + 1] > open[index + 1] and high[index] >= low[index + 1]
+
+isBeVItype2(index) =>
+    open[index] > close[index + 1] and close[index] < open[index] and close[index + 1] < open[index + 1] and low[index] <= high[index + 1]
+
+isBuVItype3(index) =>
+    (open[index] > close[index + 1] or open[index] < close[index + 1]) and close[index] > open[index] and close[index + 1] < open[index + 1] and high[index] >= low[index + 1] and low[index] <= high[index + 1]
+
+isBeVItype3(index) =>
+    (open[index] < close[index + 1] or open[index] > close[index + 1]) and close[index] < open[index] and close[index + 1] > open[index + 1] and low[index] <= high[index + 1] and high[index] >= low[index + 1]
+
+// Bullish Volume Imbalance, type 1
+if isBuVItype1(0) and (classicvi or advancedvi)
+    array.push(_bullishvi, f_newVIBox(open, close[1], bullimbalance, 'VI+'))
+    f_trimBoxes(_bullishvi, viMaxBoxSet)
+
+// Bearish Volume Imbalance, type 1
+if isBeVItype1(0) and (classicvi or advancedvi)
+    array.push(_bearishvi, f_newVIBox(close[1], open, bearimbalance, 'VI-'))
+    f_trimBoxes(_bearishvi, viMaxBoxSet)
+
+// Bullish Volume Imbalance, type 2
+if isBuVItype2(0) and advancedvi
+    array.push(_bullishvi, f_newVIBox(close[1], open, bullimbalance, 'VI+'))
+    f_trimBoxes(_bullishvi, viMaxBoxSet)
+
+// Bearish Volume Imbalance, type 2
+if isBeVItype2(0) and advancedvi
+    array.push(_bearishvi, f_newVIBox(open, close[1], bearimbalance, 'VI-'))
+    f_trimBoxes(_bearishvi, viMaxBoxSet)
+
+// Bullish Volume Imbalance, type 3
+if isBuVItype3(0) and advancedvi
+    array.push(_bullishvi, f_newVIBox(math.max(open, close[1]), math.min(open, close[1]), bullimbalance, 'VI+'))
+    f_trimBoxes(_bullishvi, viMaxBoxSet)
+
+// Bearish Volume Imbalance, type 3
+if isBeVItype3(0) and advancedvi
+    array.push(_bearishvi, f_newVIBox(math.min(open, close[1]), math.max(open, close[1]), bearimbalance, 'VI-'))
+    f_trimBoxes(_bearishvi, viMaxBoxSet)
+
+// Reliable "off" state: with the type set to None, clear whatever is still on the chart.
+if not classicvi and not advancedvi
+    f_clearBoxes(_bullishvi)
+    f_clearBoxes(_bearishvi)
+
+// Extend every VI box, mitigated ones included, when the user asks for it.
+if extendallvis and array.size(_bullishvi) > 0
+    for i = array.size(_bullishvi) - 1 to 0
+        box.set_right(array.get(_bullishvi, i), bar_index + 1)
+if extendallvis and array.size(_bearishvi) > 0
+    for i = array.size(_bearishvi) - 1 to 0
+        box.set_right(array.get(_bearishvi, i), bar_index + 1)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 12 · GAP ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// Fix versus the original: a bullish gap used to push a real box into the bullish array AND an
+// na placeholder into the bearish one (and the reverse for a bearish gap). Those placeholders
+// counted against "Maximum Box Displayed", so the real limit was roughly half of what the input
+// said. Each gap now only touches the array that belongs to it.
+
+f_newGapBox(float t, float b, string txt) =>
+    box.new(left = bar_index - 1, top = t, right = bar_index + 1, bottom = b,
+         bgcolor = f_area(gapcolor), border_color = color.new(gapcolor, BorderTransparency),
+         border_style = BoxBorder, border_width = BoxBorderWidth,
+         text = plotBoxLabel ? txt : na, text_halign = labelhalign, text_valign = labelvalign,
+         text_size = BoxLabelSize, text_color = BoxLabelColor)
+
+f_newGapLine(float y) =>
+    // if/else rather than a ternary on purpose: a Pine ternary evaluates both branches, so the
+    // ternary form would build a line object even with C.E. switched off and burn line slots.
+    line l = na
+    if cegap
+        l := line.new(bar_index - 1, y, bar_index, y, style = cegaplinetype, color = color.new(gapcolor, cetransparency))
+    l
+
+if (high[1] < low or low[1] > high) and (truegap or gapwithimb)
+    if high[1] < low
+        float gTop = truegap ? low : open
+        float gBot = truegap ? high[1] : close[1]
+        array.push(_gapsboxesbu, f_newGapBox(gTop, gBot, 'GAP+'))
+        array.push(bugapce, f_newGapLine(math.avg(gTop, gBot)))
+        f_trimBoxLine(_gapsboxesbu, bugapce, gapsMaxBoxSet)
+    else if low[1] > high
+        float gTop = truegap ? low[1] : close[1]
+        float gBot = truegap ? high : open
+        array.push(_gapsboxesbe, f_newGapBox(gTop, gBot, 'GAP-'))
+        array.push(begapce, f_newGapLine(math.avg(gTop, gBot)))
+        f_trimBoxLine(_gapsboxesbe, begapce, gapsMaxBoxSet)
+
+// Reliable "off" state for GAP boxes.
+if not truegap and not gapwithimb
+    f_clearBoxes(_gapsboxesbu)
+    f_clearBoxes(_gapsboxesbe)
+    f_clearLines(bugapce)
+    f_clearLines(begapce)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 13 · FAIR VALUE GAP ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════════════
+
+isFvgUp(index) =>
+    low[index] > high[index + 2] and low[index + 1] <= high[index + 2] and high[index + 1] >= low[index]
+
+isFvgDown(index) =>
+    high[index] < low[index + 2] and high[index] >= low[index + 1] and high[index + 1] >= low[index + 2]
+
+f_newFvgBox(int left, float t, float b, color col, string txt) =>
+    box.new(left = left, top = t, right = bar_index, bottom = b,
+         bgcolor = f_area(col), border_color = color.new(col, BorderTransparency),
+         border_style = BoxBorder, border_width = BoxBorderWidth,
+         text = plotBoxLabel ? txt : na, text_halign = labelhalign, text_valign = labelvalign,
+         text_size = BoxLabelSize, text_color = BoxLabelColor)
+
+f_newFvgLine(int left, float y, color col) =>
+    line l = na
+    if cefvg
+        l := line.new(left, y, bar_index, y, style = celinetype, color = color.new(col, cetransparency))
+    l
+
+// Bullish FVG.
+// Fix versus the original: the box and its line were pushed even when nothing had been drawn,
+// so the arrays filled with na placeholders whenever the feature was off.
+if isFvgUp(0) and not liquidityvoidmode and (plotFVG or Inversefvgmode)
+    array.push(_bullBoxesFVG, f_newFvgBox(bar_index - 2, low[0], high[2], fvgBullColor, 'FVG+'))
+    array.push(_bufvgce, f_newFvgLine(bar_index - 2, math.avg(low, high[2]), fvgBullColor))
+    f_trimBoxLine(_bullBoxesFVG, _bufvgce, fvgMaxBoxSet)
+
+// Bearish FVG
+if isFvgDown(0) and not liquidityvoidmode and (plotFVG or Inversefvgmode)
+    array.push(_bearBoxesFVG, f_newFvgBox(bar_index - 2, low[2], high[0], fvgBearColor, 'FVG-'))
+    array.push(_befvgce, f_newFvgLine(bar_index - 2, math.avg(low[2], high), fvgBearColor))
+    f_trimBoxLine(_bearBoxesFVG, _befvgce, fvgMaxBoxSet)
+
+// Reliable "off" state for base FVG boxes.
+// Selecting FVG Type = None, or clearing the Current Timeframe master switch, used to stop new
+// boxes from appearing while leaving every earlier one on the chart forever.
+if not plotFVG and not liquidityvoidmode and not Inversefvgmode
+    f_clearBoxes(_bullBoxesFVG)
+    f_clearBoxes(_bearBoxesFVG)
+    f_clearLines(_bufvgce)
+    f_clearLines(_befvgce)
+
+// ── Liquidity Void mode ───────────────────────────────────────────────────────────────
+// Fix versus the original: this ran under (liquidityvoidmode or Inversefvgmode). In Inverse-only
+// mode the block above had already drawn the gap, so the second branch here drew a duplicate of
+// every standalone FVG. Two boxes, two array slots, and two inverse boxes later on. The merge
+// logic only ever belonged to Liquidity Void mode, so that is what gates it now.
+bool bulv = false
+bool belv = false
+
+if liquidityvoidmode
+    if isFvgUp(0) and isFvgUp(1) and array.size(_bullBoxesFVG) > 0
+        bulv := true
+        box  _lastBox = array.get(_bullBoxesFVG, array.size(_bullBoxesFVG) - 1)
+        float tempboxlow  = box.get_bottom(_lastBox)
+        int   tempboxleft = box.get_left(_lastBox)
+        f_removeBoxAt(_bullBoxesFVG, array.size(_bullBoxesFVG) - 1, false)
+        f_removeLineAt(_bufvgce, array.size(_bufvgce) - 1, false)
+        array.push(_bullBoxesFVG, f_newFvgBox(tempboxleft, low[0], tempboxlow, fvgBullColor, 'LV+'))
+        array.push(_bufvgce, f_newFvgLine(tempboxleft, math.avg(low, tempboxlow), fvgBullColor))
+        f_trimBoxLine(_bullBoxesFVG, _bufvgce, fvgMaxBoxSet)
+    else if isFvgUp(0)
+        array.push(_bullBoxesFVG, f_newFvgBox(bar_index - 2, low[0], high[2], fvgBullColor, 'FVG+'))
+        array.push(_bufvgce, f_newFvgLine(bar_index - 2, math.avg(low, high[2]), fvgBullColor))
+        f_trimBoxLine(_bullBoxesFVG, _bufvgce, fvgMaxBoxSet)
+
+    if isFvgDown(0) and isFvgDown(1) and array.size(_bearBoxesFVG) > 0
+        belv := true
+        box  _lastBox2 = array.get(_bearBoxesFVG, array.size(_bearBoxesFVG) - 1)
+        float tempboxhigh = box.get_top(_lastBox2)
+        int   tempboxleft2 = box.get_left(_lastBox2)
+        f_removeBoxAt(_bearBoxesFVG, array.size(_bearBoxesFVG) - 1, false)
+        f_removeLineAt(_befvgce, array.size(_befvgce) - 1, false)
+        array.push(_bearBoxesFVG, f_newFvgBox(tempboxleft2, tempboxhigh, high[0], fvgBearColor, 'LV-'))
+        array.push(_befvgce, f_newFvgLine(tempboxleft2, math.avg(tempboxhigh, high), fvgBearColor))
+        f_trimBoxLine(_bearBoxesFVG, _befvgce, fvgMaxBoxSet)
+    else if isFvgDown(0)
+        array.push(_bearBoxesFVG, f_newFvgBox(bar_index - 2, low[2], high[0], fvgBearColor, 'FVG-'))
+        array.push(_befvgce, f_newFvgLine(bar_index - 2, math.avg(low[2], high), fvgBearColor))
+        f_trimBoxLine(_bearBoxesFVG, _befvgce, fvgMaxBoxSet)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 14 · IMPLIED FAIR VALUE GAP
+// ═══════════════════════════════════════════════════════════════════════════════════════
+
+isBuIFvg(index) =>
+    high[index] > high[index + 2] and low[index + 2] < low[index] and low[index] <= high[index + 2] and high[index + 2] - math.max(open[index + 2], close[index + 2]) > (math.max(open[index + 2], close[index + 2]) - math.min(open[index + 2], close[index + 2])) / 2 and math.min(open[index], close[index]) - low[index] > (math.max(open[index], close[index]) - math.min(open[index], close[index])) / 2 and low[index] > low[index + 1] and (high[index + 2] + math.max(open[index + 2], close[index + 2])) / 2 < (math.min(open[index], close[index]) + low[index]) / 2 and high[index] > high[index + 1] and close[index + 1] > open[index + 1]
+
+isBeIFvg(index) =>
+    low[index] < low[index + 2] and high[index + 2] > high[index] and high[index] >= low[index + 2] and math.min(open[index + 2], close[index + 2]) - low[index + 2] > (math.max(open[index + 2], close[index + 2]) - math.min(open[index + 2], close[index + 2])) / 2 and high[index] - math.max(open[index], close[index]) > (math.max(open[index], close[index]) - math.min(open[index], close[index])) / 2 and high[index] < high[index + 1] and (math.min(open[index + 2], close[index + 2]) + low[index + 2]) / 2 > (high[index] + math.max(open[index], close[index])) / 2 and low[index] < low[index + 1] and close[index + 1] < open[index + 1]
+
+if isBuIFvg(0) and showifvg
+    array.push(_bullishifvg, box.new(left = bar_index - 2, top = (math.min(open, close) + low) / 2,
+         right = bar_index + 1, bottom = (high[2] + math.max(open[2], close[2])) / 2,
+         bgcolor = f_area(ifvgBullColor), border_style = BoxBorder, border_width = BoxBorderWidth,
+         border_color = color.new(ifvgBullColor, BorderTransparency),
+         text = plotBoxLabel ? 'Imp.FVG+' : na, text_halign = labelhalign, text_valign = labelvalign,
+         text_size = BoxLabelSize, text_color = BoxLabelColor))
+    f_trimBoxes(_bullishifvg, fvgMaxBoxSet)
+
+if isBeIFvg(0) and showifvg
+    array.push(_bearishifvg, box.new(left = bar_index - 2, top = (math.min(open[2], close[2]) + low[2]) / 2,
+         right = bar_index + 1, bottom = (math.max(open, close) + high) / 2,
+         bgcolor = f_area(ifvgBearColor), border_style = BoxBorder, border_width = BoxBorderWidth,
+         border_color = color.new(ifvgBearColor, BorderTransparency),
+         text = plotBoxLabel ? 'Imp.FVG-' : na, text_halign = labelhalign, text_valign = labelvalign,
+         text_size = BoxLabelSize, text_color = BoxLabelColor))
+    f_trimBoxes(_bearishifvg, fvgMaxBoxSet)
+
+// Reliable "off" state for Implied FVG boxes.
+if not showifvg
+    f_clearBoxes(_bullishifvg)
+    f_clearBoxes(_bearishifvg)
+
+// Reliable "off" state for Inverse FVG boxes.
+if not Inversefvgmode
+    f_clearBoxes(bullInvFVG)
+    f_clearBoxes(bearInvFVG)
+    f_clearLines(buinvfvgce)
+    f_clearLines(beinvfvgce)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 15 · HIGHLIGHT HELPER
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// Two-way, unlike the original: a box brightens while price is inside it and falls back to
+// its normal fill the moment price leaves. Only ever called on boxes that are still live,
+// so it cannot overwrite a mitigated box's frozen colours.
+f_highlightBox(box bx, color baseCol, bool inside) =>
+    if inside
+        box.set_bgcolor(bx, f_area(f_boost(baseCol, highlightBoost)))
+        if BoxBorderWidth > 0
+            box.set_border_color(bx, f_boost(baseCol, highlightBoost))
+    else
+        box.set_bgcolor(bx, f_area(baseCol))
+        if BoxBorderWidth > 0
+            box.set_border_color(bx, color.new(baseCol, BorderTransparency))
+    true
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 16 · IMPLIED FVG, EXTEND AND MITIGATE
+// ═══════════════════════════════════════════════════════════════════════════════════════
+
+// Engulf, bullish
+if array.size(_bullishifvg) > 0 and extendfvgbox and barstate.isconfirmed and ifvgmitigationtype == 'Engulf'
+    for i = array.size(_bullishifvg) - 1 to 0
+        box   _box      = array.get(_bullishifvg, i)
+        float _boxLow   = box.get_bottom(_box)
+        int   _boxRight = box.get_right(_box)
+        if close >= _boxLow and open >= _boxLow and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+        else if (close < _boxLow or open < _boxLow) and bar_index == _boxRight
+            if f_mitBox(_box, mitActionFVG)
+                array.remove(_bullishifvg, i)
+
+// Engulf, bearish
+if array.size(_bearishifvg) > 0 and extendfvgbox and barstate.isconfirmed and ifvgmitigationtype == 'Engulf'
+    for i = array.size(_bearishifvg) - 1 to 0
+        box   _box      = array.get(_bearishifvg, i)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if close <= _boxHigh and open <= _boxHigh and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+        else if (close > _boxHigh or open > _boxHigh) and bar_index == _boxRight
+            if f_mitBox(_box, mitActionFVG)
+                array.remove(_bearishifvg, i)
+
+// Mitigate, bullish
+if array.size(_bullishifvg) > 0 and extendfvgbox and barstate.isconfirmed and ifvgmitigationtype == 'Mitigate'
+    for i = array.size(_bullishifvg) - 1 to 0
+        box   _box      = array.get(_bullishifvg, i)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if low >= _boxHigh and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+        else if low < _boxHigh and bar_index == _boxRight
+            if f_mitBox(_box, mitActionFVG)
+                array.remove(_bullishifvg, i)
+
+// Mitigate, bearish
+if array.size(_bearishifvg) > 0 and extendfvgbox and barstate.isconfirmed and ifvgmitigationtype == 'Mitigate'
+    for i = array.size(_bearishifvg) - 1 to 0
+        box   _box      = array.get(_bearishifvg, i)
+        float _boxLow   = box.get_bottom(_box)
+        int   _boxRight = box.get_right(_box)
+        if high <= _boxLow and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+        else if high > _boxLow and bar_index == _boxRight
+            if f_mitBox(_box, mitActionFVG)
+                array.remove(_bearishifvg, i)
+
+// Highlight, bullish
+if array.size(_bullishifvg) > 0 and extendfvgbox and ifvgmitigationtype == 'Engulf' and HighlightBox
+    for i = array.size(_bullishifvg) - 1 to 0
+        box   _box      = array.get(_bullishifvg, i)
+        float _boxLow   = box.get_bottom(_box)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if bar_index == _boxRight
+            bool inside = close >= _boxLow and low < _boxHigh
+            f_highlightBox(_box, ifvgBullColor, inside)
+            if inside
+                buimpfvgtouch := true
+                buimpfvgtouch
+
+// Highlight, bearish
+if array.size(_bearishifvg) > 0 and extendfvgbox and ifvgmitigationtype == 'Engulf' and HighlightBox
+    for i = array.size(_bearishifvg) - 1 to 0
+        box   _box      = array.get(_bearishifvg, i)
+        float _boxLow   = box.get_bottom(_box)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if bar_index == _boxRight
+            bool inside = close <= _boxHigh and high > _boxLow
+            f_highlightBox(_box, ifvgBearColor, inside)
+            if inside
+                beimpfvgtouch := true
+                beimpfvgtouch
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 17 · FVG, EXTEND AND MITIGATE (Engulf)
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// Fix versus the original: when a gap flipped into an Inverse FVG the box was deleted but its
+// slot was left in the array, so the "FVG Box Limit" was counting dead drawings and showing
+// fewer live gaps than the setting asked for. The slot is now removed together with the box.
+
+if array.size(_bullBoxesFVG) > 0 and array.size(_bufvgce) > 0 and extendfvgbox and barstate.isconfirmed and fvgmitigationtype == 'Engulf'
+    for i = array.size(_bullBoxesFVG) - 1 to 0
+        box   _box      = array.get(_bullBoxesFVG, i)
+        line  _line     = array.get(_bufvgce, i)
+        float _boxLow   = box.get_bottom(_box)
+        int   _boxRight = box.get_right(_box)
+        if close >= _boxLow and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+            if not na(_line)
+                line.set_x2(_line, bar_index + 1)
+        else if close < _boxLow and bar_index == _boxRight
+            if Inversefvgmode
+                line _cp = na
+                if not na(_line)
+                    _cp := line.copy(_line)
+                array.push(bearInvFVG, box.copy(_box))
+                array.push(beinvfvgce, _cp)
+                box.delete(_box)
+                if not na(_line)
+                    line.delete(_line)
+                array.remove(_bullBoxesFVG, i)
+                array.remove(_bufvgce, i)
+                isbeinversefvg := true
+                isbeinversefvg
+            else
+                f_mitLine(_line, mitActionFVG)
+                if f_mitBox(_box, mitActionFVG)
+                    array.remove(_bullBoxesFVG, i)
+                    array.remove(_bufvgce, i)
+
+if array.size(_bearBoxesFVG) > 0 and array.size(_befvgce) > 0 and extendfvgbox and barstate.isconfirmed and fvgmitigationtype == 'Engulf'
+    for i = array.size(_bearBoxesFVG) - 1 to 0
+        box   _box      = array.get(_bearBoxesFVG, i)
+        line  _line     = array.get(_befvgce, i)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if close <= _boxHigh and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+            if not na(_line)
+                line.set_x2(_line, bar_index + 1)
+        else if close > _boxHigh and bar_index == _boxRight
+            if Inversefvgmode
+                line _cp2 = na
+                if not na(_line)
+                    _cp2 := line.copy(_line)
+                array.push(bullInvFVG, box.copy(_box))
+                array.push(buinvfvgce, _cp2)
+                box.delete(_box)
+                if not na(_line)
+                    line.delete(_line)
+                array.remove(_bearBoxesFVG, i)
+                array.remove(_befvgce, i)
+                isbuinversefvg := true
+                isbuinversefvg
+            else
+                f_mitLine(_line, mitActionFVG)
+                if f_mitBox(_box, mitActionFVG)
+                    array.remove(_bearBoxesFVG, i)
+                    array.remove(_befvgce, i)
+
+// Highlight, FVG+
+if array.size(_bullBoxesFVG) > 0 and extendfvgbox and fvgmitigationtype == 'Engulf' and HighlightBox
+    for i = array.size(_bullBoxesFVG) - 1 to 0
+        box   _box      = array.get(_bullBoxesFVG, i)
+        float _boxLow   = box.get_bottom(_box)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if bar_index == _boxRight
+            bool inside = close >= _boxLow and low < _boxHigh
+            f_highlightBox(_box, fvgBullColor, inside)
+            if inside
+                bufvgtouch := true
+                bufvgtouch
+
+// Highlight, FVG-
+if array.size(_bearBoxesFVG) > 0 and extendfvgbox and fvgmitigationtype == 'Engulf' and HighlightBox
+    for i = array.size(_bearBoxesFVG) - 1 to 0
+        box   _box      = array.get(_bearBoxesFVG, i)
+        float _boxLow   = box.get_bottom(_box)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if bar_index == _boxRight
+            bool inside = close <= _boxHigh and high > _boxLow
+            f_highlightBox(_box, fvgBearColor, inside)
+            if inside
+                befvgtouch := true
+                befvgtouch
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 18 · INVERSE FVG
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// Fix versus the original: a spent inverse gap was deleted without being removed from its
+// array, so the "Inverse FVG Box Limit" filled up with dead drawings.
+
+if array.size(bullInvFVG) > 0 and barstate.isconfirmed and fvgmitigationtype == 'Engulf' and Inversefvgmode
+    for i = array.size(bullInvFVG) - 1 to 0
+        box   _box      = array.get(bullInvFVG, i)
+        line  _line     = na
+        if i < array.size(buinvfvgce)
+            _line := array.get(buinvfvgce, i)
+        float _boxLow   = box.get_bottom(_box)
+        int   _boxRight = box.get_right(_box)
+        box.set_bgcolor(_box, f_area(buinvfvgcolor))
+        if plotBoxLabel
+            box.set_text(_box, 'I.FVG+')
+            box.set_text_halign(_box, labelhalign)
+            box.set_text_valign(_box, labelvalign)
+            box.set_text_size(_box, BoxLabelSize)
+            box.set_text_color(_box, BoxLabelColor)
+        box.set_border_width(_box, BoxBorderWidth)
+        box.set_border_color(_box, color.new(buinvfvgcolor, BorderTransparency))
+        if not na(_line)
+            line.set_color(_line, color.new(buinvfvgcolor, cetransparency))
+            line.set_style(_line, celinetype)
+        if close >= _boxLow and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+            if not na(_line)
+                line.set_x2(_line, bar_index + 1)
+        else if close < _boxLow
+            box.delete(_box)
+            array.remove(bullInvFVG, i)
+            if not na(_line)
+                line.delete(_line)
+            if i < array.size(buinvfvgce)
+                array.remove(buinvfvgce, i)
+
+if array.size(bearInvFVG) > 0 and barstate.isconfirmed and fvgmitigationtype == 'Engulf' and Inversefvgmode
+    for i = array.size(bearInvFVG) - 1 to 0
+        box   _box      = array.get(bearInvFVG, i)
+        line  _line     = na
+        if i < array.size(beinvfvgce)
+            _line := array.get(beinvfvgce, i)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        box.set_bgcolor(_box, f_area(beinvfvgcolor))
+        if plotBoxLabel
+            box.set_text(_box, 'I.FVG-')
+            box.set_text_halign(_box, labelhalign)
+            box.set_text_valign(_box, labelvalign)
+            box.set_text_size(_box, BoxLabelSize)
+            box.set_text_color(_box, BoxLabelColor)
+        box.set_border_width(_box, BoxBorderWidth)
+        box.set_border_color(_box, color.new(beinvfvgcolor, BorderTransparency))
+        if not na(_line)
+            line.set_color(_line, color.new(beinvfvgcolor, cetransparency))
+            line.set_style(_line, celinetype)
+        if close <= _boxHigh and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+            if not na(_line)
+                line.set_x2(_line, bar_index + 1)
+        else if close > _boxHigh
+            box.delete(_box)
+            array.remove(bearInvFVG, i)
+            if not na(_line)
+                line.delete(_line)
+            if i < array.size(beinvfvgce)
+                array.remove(beinvfvgce, i)
+
+// Highlight, Inverse FVG+
+if array.size(bullInvFVG) > 0 and extendfvgbox and fvgmitigationtype == 'Engulf' and Inversefvgmode and HighlightBox
+    for i = array.size(bullInvFVG) - 1 to 0
+        box   _box      = array.get(bullInvFVG, i)
+        float _boxLow   = box.get_bottom(_box)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if bar_index == _boxRight
+            bool inside = close >= _boxLow and low < _boxHigh
+            f_highlightBox(_box, buinvfvgcolor, inside)
+            if inside
+                buinvfvgtouch := true
+                buinvfvgtouch
+
+// Highlight, Inverse FVG-
+if array.size(bearInvFVG) > 0 and extendfvgbox and fvgmitigationtype == 'Engulf' and Inversefvgmode and HighlightBox
+    for i = array.size(bearInvFVG) - 1 to 0
+        box   _box      = array.get(bearInvFVG, i)
+        float _boxLow   = box.get_bottom(_box)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if bar_index == _boxRight
+            bool inside = close <= _boxHigh and high > _boxLow
+            f_highlightBox(_box, beinvfvgcolor, inside)
+            if inside
+                beinvfvgtouch := true
+                beinvfvgtouch
+
+// Inverse-only mode hides the base gaps until they flip. Runs after the highlight blocks so it
+// always wins, exactly as in the original.
+if array.size(_bearBoxesFVG) > 0 and not plotFVG and not liquidityvoidmode and Inversefvgmode
+    for i = array.size(_bearBoxesFVG) - 1 to 0
+        box _box = array.get(_bearBoxesFVG, i)
+        box.set_bgcolor(_box, color.new(fvgBearColor, 100))
+        box.set_text_color(_box, color.new(BoxLabelColor, 100))
+        box.set_border_color(_box, color.new(fvgBearColor, 100))
+        if i < array.size(_befvgce)
+            line _line = array.get(_befvgce, i)
+            if not na(_line)
+                line.set_color(_line, color.new(fvgBearColor, 100))
+
+if array.size(_bullBoxesFVG) > 0 and not plotFVG and not liquidityvoidmode and Inversefvgmode
+    for i = array.size(_bullBoxesFVG) - 1 to 0
+        box _box = array.get(_bullBoxesFVG, i)
+        box.set_bgcolor(_box, color.new(fvgBullColor, 100))
+        box.set_text_color(_box, color.new(BoxLabelColor, 100))
+        box.set_border_color(_box, color.new(fvgBullColor, 100))
+        if i < array.size(_bufvgce)
+            line _line = array.get(_bufvgce, i)
+            if not na(_line)
+                line.set_color(_line, color.new(fvgBullColor, 100))
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 19 · FVG, EXTEND AND MITIGATE (Mitigate and Rebalance)
+// ═══════════════════════════════════════════════════════════════════════════════════════
+
+if array.size(_bullBoxesFVG) > 0 and array.size(_bufvgce) > 0 and extendfvgbox and barstate.isconfirmed and fvgmitigationtype == 'Mitigate'
+    for i = array.size(_bullBoxesFVG) - 1 to 0
+        box   _box      = array.get(_bullBoxesFVG, i)
+        line  _line     = array.get(_bufvgce, i)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if low >= _boxHigh and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+            if not na(_line)
+                line.set_x2(_line, bar_index + 1)
+        else if low < _boxHigh and bar_index == _boxRight
+            f_mitLine(_line, mitActionFVG)
+            if f_mitBox(_box, mitActionFVG)
+                array.remove(_bullBoxesFVG, i)
+                array.remove(_bufvgce, i)
+
+if array.size(_bearBoxesFVG) > 0 and array.size(_befvgce) > 0 and extendfvgbox and barstate.isconfirmed and fvgmitigationtype == 'Mitigate'
+    for i = array.size(_bearBoxesFVG) - 1 to 0
+        box   _box      = array.get(_bearBoxesFVG, i)
+        line  _line     = array.get(_befvgce, i)
+        float _boxLow   = box.get_bottom(_box)
+        int   _boxRight = box.get_right(_box)
+        if high <= _boxLow and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+            if not na(_line)
+                line.set_x2(_line, bar_index + 1)
+        else if high > _boxLow and bar_index == _boxRight
+            f_mitLine(_line, mitActionFVG)
+            if f_mitBox(_box, mitActionFVG)
+                array.remove(_bearBoxesFVG, i)
+                array.remove(_befvgce, i)
+
+// Rebalance, bullish. The zone shrinks as price eats into it and is only spent once the far
+// edge is reached.
+if array.size(_bullBoxesFVG) > 0 and array.size(_bufvgce) > 0 and extendfvgbox and barstate.isconfirmed and fvgmitigationtype == 'Rebalance'
+    for i = array.size(_bullBoxesFVG) - 1 to 0
+        box   _box      = array.get(_bullBoxesFVG, i)
+        line  _line     = array.get(_bufvgce, i)
+        float _boxLow   = box.get_bottom(_box)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if low >= _boxHigh and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+            if not na(_line)
+                line.set_x2(_line, bar_index + 1)
+        else if low < _boxHigh and low > _boxLow and bar_index == _boxRight
+            box.set_top(_box, low)
+            box.set_right(_box, bar_index + 1)
+            if not na(_line)
+                line.set_y1(_line, (low + _boxLow) / 2)
+                line.set_y2(_line, (low + _boxLow) / 2)
+                line.set_x2(_line, bar_index + 1)
+        else if low <= _boxLow and bar_index == _boxRight
+            f_mitLine(_line, mitActionFVG)
+            if f_mitBox(_box, mitActionFVG)
+                array.remove(_bullBoxesFVG, i)
+                array.remove(_bufvgce, i)
+
+// Rebalance, bearish.
+// Fix versus the original: the spent test read "high >= _boxLow", the bottom edge, where the
+// bullish side correctly reads its own far edge. The else-if chain hid most of the damage but
+// the expression was wrong. It now reads the top edge, which is the far side of a bearish gap.
+if array.size(_bearBoxesFVG) > 0 and array.size(_befvgce) > 0 and extendfvgbox and barstate.isconfirmed and fvgmitigationtype == 'Rebalance'
+    for i = array.size(_bearBoxesFVG) - 1 to 0
+        box   _box      = array.get(_bearBoxesFVG, i)
+        line  _line     = array.get(_befvgce, i)
+        float _boxLow   = box.get_bottom(_box)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if high <= _boxLow and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+            if not na(_line)
+                line.set_x2(_line, bar_index + 1)
+        else if high > _boxLow and high < _boxHigh and bar_index == _boxRight
+            box.set_bottom(_box, high)
+            box.set_right(_box, bar_index + 1)
+            if not na(_line)
+                line.set_y1(_line, (high + _boxHigh) / 2)
+                line.set_y2(_line, (high + _boxHigh) / 2)
+                line.set_x2(_line, bar_index + 1)
+        else if high >= _boxHigh and bar_index == _boxRight
+            f_mitLine(_line, mitActionFVG)
+            if f_mitBox(_box, mitActionFVG)
+                array.remove(_bearBoxesFVG, i)
+                array.remove(_befvgce, i)
+
+// Highlight for Rebalance mode
+// Guarded against Inverse-only mode: there the base gaps are deliberately hidden, and without
+// this the highlight pass would paint them back in.
+if array.size(_bullBoxesFVG) > 0 and extendfvgbox and fvgmitigationtype == 'Rebalance' and HighlightBox and not Inversefvgmode
+    for i = array.size(_bullBoxesFVG) - 1 to 0
+        box   _box      = array.get(_bullBoxesFVG, i)
+        float _boxLow   = box.get_bottom(_box)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if bar_index == _boxRight
+            bool inside = low < _boxHigh and low > _boxLow
+            f_highlightBox(_box, fvgBullColor, inside)
+            if inside
+                bufvgtouch := true
+                bufvgtouch
+
+if array.size(_bearBoxesFVG) > 0 and extendfvgbox and fvgmitigationtype == 'Rebalance' and HighlightBox and not Inversefvgmode
+    for i = array.size(_bearBoxesFVG) - 1 to 0
+        box   _box      = array.get(_bearBoxesFVG, i)
+        float _boxLow   = box.get_bottom(_box)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if bar_index == _boxRight
+            bool inside = high > _boxLow and high < _boxHigh
+            f_highlightBox(_box, fvgBearColor, inside)
+            if inside
+                befvgtouch := true
+                befvgtouch
+
+// Inverse FVG box limits, kept in lockstep with their C.E. lines.
+f_trimBoxLine(bullInvFVG, buinvfvgce, invfvgMaxBoxSet)
+f_trimBoxLine(bearInvFVG, beinvfvgce, invfvgMaxBoxSet)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 20 · VOLUME IMBALANCE, EXTEND AND MITIGATE
+// ═══════════════════════════════════════════════════════════════════════════════════════
+
+if array.size(_bullishvi) > 0 and extendvibox and barstate.isconfirmed and vimitigationtype == 'Engulf'
+    for i = array.size(_bullishvi) - 1 to 0
+        box   _box      = array.get(_bullishvi, i)
+        float _boxLow   = box.get_bottom(_box)
+        int   _boxRight = box.get_right(_box)
+        if close >= _boxLow and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+        else if close < _boxLow and bar_index == _boxRight
+            if f_mitBox(_box, mitActionFVG)
+                array.remove(_bullishvi, i)
+
+if array.size(_bearishvi) > 0 and extendvibox and barstate.isconfirmed and vimitigationtype == 'Engulf'
+    for i = array.size(_bearishvi) - 1 to 0
+        box   _box      = array.get(_bearishvi, i)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if close <= _boxHigh and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+        else if close > _boxHigh and bar_index == _boxRight
+            if f_mitBox(_box, mitActionFVG)
+                array.remove(_bearishvi, i)
+
+if array.size(_bullishvi) > 0 and extendvibox and vimitigationtype == 'Engulf' and HighlightBox
+    for i = array.size(_bullishvi) - 1 to 0
+        box   _box      = array.get(_bullishvi, i)
+        float _boxLow   = box.get_bottom(_box)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if bar_index == _boxRight
+            bool inside = close >= _boxLow and low < _boxHigh
+            f_highlightBox(_box, bullimbalance, inside)
+            if inside
+                buvitouch := true
+                buvitouch
+
+if array.size(_bearishvi) > 0 and extendvibox and vimitigationtype == 'Engulf' and HighlightBox
+    for i = array.size(_bearishvi) - 1 to 0
+        box   _box      = array.get(_bearishvi, i)
+        float _boxLow   = box.get_bottom(_box)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if bar_index == _boxRight
+            bool inside = close <= _boxHigh and high > _boxLow
+            f_highlightBox(_box, bearimbalance, inside)
+            if inside
+                bevitouch := true
+                bevitouch
+
+if array.size(_bullishvi) > 0 and extendvibox and barstate.isconfirmed and vimitigationtype == 'Mitigate'
+    for i = array.size(_bullishvi) - 1 to 0
+        box   _box      = array.get(_bullishvi, i)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if low > _boxHigh and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+        else if low <= _boxHigh and bar_index == _boxRight
+            buvitouch := true
+            if f_mitBox(_box, mitActionFVG)
+                array.remove(_bullishvi, i)
+
+if array.size(_bearishvi) > 0 and extendvibox and barstate.isconfirmed and vimitigationtype == 'Mitigate'
+    for i = array.size(_bearishvi) - 1 to 0
+        box   _box      = array.get(_bearishvi, i)
+        float _boxLow   = box.get_bottom(_box)
+        int   _boxRight = box.get_right(_box)
+        if high < _boxLow and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+        else if high >= _boxLow and bar_index == _boxRight
+            bevitouch := true
+            if f_mitBox(_box, mitActionFVG)
+                array.remove(_bearishvi, i)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 21 · GAP, EXTEND AND MITIGATE
+// ═══════════════════════════════════════════════════════════════════════════════════════
+
+if array.size(_gapsboxesbu) > 0 and extendgapbox and barstate.isconfirmed and gapmitigationtype == 'Engulf'
+    for i = array.size(_gapsboxesbu) - 1 to 0
+        box   _box      = array.get(_gapsboxesbu, i)
+        line  _line     = na
+        if i < array.size(bugapce)
+            _line := array.get(bugapce, i)
+        float _boxLow   = box.get_bottom(_box)
+        int   _boxRight = box.get_right(_box)
+        if close >= _boxLow and open >= _boxLow and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+            if not na(_line)
+                line.set_x2(_line, bar_index + 1)
+        else if (close < _boxLow or open < _boxLow) and bar_index == _boxRight
+            f_mitLine(_line, mitActionFVG)
+            if f_mitBox(_box, mitActionFVG)
+                array.remove(_gapsboxesbu, i)
+                if i < array.size(bugapce)
+                    array.remove(bugapce, i)
+
+if array.size(_gapsboxesbe) > 0 and extendgapbox and barstate.isconfirmed and gapmitigationtype == 'Engulf'
+    for i = array.size(_gapsboxesbe) - 1 to 0
+        box   _box      = array.get(_gapsboxesbe, i)
+        line  _line     = na
+        if i < array.size(begapce)
+            _line := array.get(begapce, i)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if close <= _boxHigh and open <= _boxHigh and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+            if not na(_line)
+                line.set_x2(_line, bar_index + 1)
+        else if (close > _boxHigh or open > _boxHigh) and bar_index == _boxRight
+            f_mitLine(_line, mitActionFVG)
+            if f_mitBox(_box, mitActionFVG)
+                array.remove(_gapsboxesbe, i)
+                if i < array.size(begapce)
+                    array.remove(begapce, i)
+
+if array.size(_gapsboxesbu) > 0 and extendgapbox and gapmitigationtype == 'Engulf' and HighlightBox
+    for i = array.size(_gapsboxesbu) - 1 to 0
+        box   _box      = array.get(_gapsboxesbu, i)
+        float _boxLow   = box.get_bottom(_box)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if bar_index == _boxRight
+            bool inside = close >= _boxLow and open >= _boxLow and low < _boxHigh
+            f_highlightBox(_box, gapcolor, inside)
+            if inside
+                bugaptouch := true
+                bugaptouch
+
+if array.size(_gapsboxesbe) > 0 and extendgapbox and gapmitigationtype == 'Engulf' and HighlightBox
+    for i = array.size(_gapsboxesbe) - 1 to 0
+        box   _box      = array.get(_gapsboxesbe, i)
+        float _boxLow   = box.get_bottom(_box)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if bar_index == _boxRight
+            bool inside = close <= _boxHigh and open <= _boxHigh and high > _boxLow
+            f_highlightBox(_box, gapcolor, inside)
+            if inside
+                begaptouch := true
+                begaptouch
+
+if array.size(_gapsboxesbu) > 0 and extendgapbox and barstate.isconfirmed and gapmitigationtype == 'Rebalance'
+    for i = array.size(_gapsboxesbu) - 1 to 0
+        box   _box      = array.get(_gapsboxesbu, i)
+        line  _line     = na
+        if i < array.size(bugapce)
+            _line := array.get(bugapce, i)
+        float _boxLow   = box.get_bottom(_box)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if low >= _boxHigh and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+            if not na(_line)
+                line.set_x2(_line, bar_index + 1)
+        else if low < _boxHigh and low > _boxLow and bar_index == _boxRight
+            box.set_top(_box, low)
+            box.set_right(_box, bar_index + 1)
+            if not na(_line)
+                line.set_x2(_line, bar_index + 1)
+                line.set_y1(_line, (low + _boxLow) / 2)
+                line.set_y2(_line, (low + _boxLow) / 2)
+        else if low <= _boxLow and bar_index == _boxRight
+            f_mitLine(_line, mitActionFVG)
+            if f_mitBox(_box, mitActionFVG)
+                array.remove(_gapsboxesbu, i)
+                if i < array.size(bugapce)
+                    array.remove(bugapce, i)
+
+if array.size(_gapsboxesbe) > 0 and extendgapbox and barstate.isconfirmed and gapmitigationtype == 'Rebalance'
+    for i = array.size(_gapsboxesbe) - 1 to 0
+        box   _box      = array.get(_gapsboxesbe, i)
+        line  _line     = na
+        if i < array.size(begapce)
+            _line := array.get(begapce, i)
+        float _boxLow   = box.get_bottom(_box)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if high <= _boxLow and bar_index == _boxRight
+            box.set_right(_box, bar_index + 1)
+            if not na(_line)
+                line.set_x2(_line, bar_index + 1)
+        else if high > _boxLow and high < _boxHigh and bar_index == _boxRight
+            box.set_bottom(_box, high)
+            box.set_right(_box, bar_index + 1)
+            if not na(_line)
+                line.set_y1(_line, (high + _boxHigh) / 2)
+                line.set_y2(_line, (high + _boxHigh) / 2)
+                line.set_x2(_line, bar_index + 1)
+        else if high >= _boxHigh and bar_index == _boxRight
+            f_mitLine(_line, mitActionFVG)
+            if f_mitBox(_box, mitActionFVG)
+                array.remove(_gapsboxesbe, i)
+                if i < array.size(begapce)
+                    array.remove(begapce, i)
+
+if array.size(_gapsboxesbu) > 0 and extendgapbox and gapmitigationtype == 'Rebalance' and HighlightBox
+    for i = array.size(_gapsboxesbu) - 1 to 0
+        box   _box      = array.get(_gapsboxesbu, i)
+        float _boxLow   = box.get_bottom(_box)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if bar_index == _boxRight
+            bool inside = low > _boxLow and low < _boxHigh
+            f_highlightBox(_box, gapcolor, inside)
+            if inside
+                bugaptouch := true
+                bugaptouch
+
+if array.size(_gapsboxesbe) > 0 and extendgapbox and gapmitigationtype == 'Rebalance' and HighlightBox
+    for i = array.size(_gapsboxesbe) - 1 to 0
+        box   _box      = array.get(_gapsboxesbe, i)
+        float _boxLow   = box.get_bottom(_box)
+        float _boxHigh  = box.get_top(_box)
+        int   _boxRight = box.get_right(_box)
+        if bar_index == _boxRight
+            bool inside = high < _boxHigh and high > _boxLow
+            f_highlightBox(_box, gapcolor, inside)
+            if inside
+                begaptouch := true
+                begaptouch
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 22 · ORDER BLOCK TYPES AND SHARED ZONE MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// One zone type serves both the chart timeframe and the higher timeframes. Keeping the box
+// handle inside the record is what lets a zone carry state (tested, breaker, spent) instead of
+// the parallel bool arrays the previous MTF module used, which had to be kept in lockstep by
+// hand on every push, shift and remove.
+type obZone
+    float top     = na
+    float btm     = na
+    bool  breaker = false
+    bool  tested  = false
+    bool  dead    = false
+    box   bx      = na
+
+f_clearZones(array<obZone> zs) =>
+    if array.size(zs) > 0
+        for i = array.size(zs) - 1 to 0
+            obZone z = array.get(zs, i)
+            if not na(z.bx)
+                box.delete(z.bx)
+        array.clear(zs)
+    true
+
+f_trimZones(array<obZone> zs, int limit) =>
+    if array.size(zs) > limit
+        obZone z = array.shift(zs)
+        if not na(z.bx)
+            box.delete(z.bx)
+    true
+
+// Order Block lifecycle.
+//   live      -> extends, and marks itself tested the first time a wick enters it
+//   broken    -> with Show Breaker Blocks on it flips polarity and keeps going under the
+//                breaker colour and label, otherwise it follows the mitigated action
+//   spent     -> a breaker that price closes back through the far side of is removed
+// rightX is a bar index for chart-timeframe zones and a timestamp for higher-timeframe ones,
+// matching whichever xloc the box was created with.
+f_manageZones(array<obZone> zs, bool isBull, color baseCol, color breakCol, string breakLabel, int rightX, string action) =>
+    if array.size(zs) > 0
+        for i = array.size(zs) - 1 to 0
+            obZone z = array.get(zs, i)
+            if not z.dead
+                if not z.breaker
+                    bool broken = isBull ? math.min(close, open) < z.btm : math.max(close, open) > z.top
+                    if broken
+                        if obShowBreak
+                            z.breaker := true
+                            z.tested  := false
+                            box.set_bgcolor(z.bx, f_area(breakCol))
+                            box.set_border_width(z.bx, BoxBorderWidth)
+                            box.set_border_style(z.bx, BoxBorder)
+                            box.set_border_color(z.bx, color.new(breakCol, BorderTransparency))
+                            if plotBoxLabel
+                                box.set_text(z.bx, breakLabel)
+                            box.set_right(z.bx, rightX)
+                        else
+                            z.dead := true
+                            if f_mitBox(z.bx, action)
+                                array.remove(zs, i)
+                    else
+                        box.set_right(z.bx, rightX)
+                        if markTested and not z.tested and low <= z.top and high >= z.btm
+                            z.tested := true
+                            f_testedBox(z.bx, baseCol)
+                else
+                    bool spent = isBull ? close > z.top : close < z.btm
+                    if spent
+                        box.delete(z.bx)
+                        array.remove(zs, i)
+                    else
+                        box.set_right(z.bx, rightX)
+                        if markTested and not z.tested and low <= z.top and high >= z.btm
+                            z.tested := true
+                            f_testedBox(z.bx, breakCol)
+    true
+
+// Higher-timeframe gaps have no breaker state: filled is filled.
+f_manageFvgZones(array<obZone> zs, bool isBull, color col, int rightX, string action) =>
+    if array.size(zs) > 0
+        for i = array.size(zs) - 1 to 0
+            obZone z = array.get(zs, i)
+            if not z.dead
+                bool mitigated = isBull ? close < z.btm : close > z.top
+                if mitigated
+                    z.dead := true
+                    if f_mitBox(z.bx, action)
+                        array.remove(zs, i)
+                else
+                    box.set_right(z.bx, rightX)
+                    if markTested and not z.tested and low <= z.top and high >= z.btm
+                        z.tested := true
+                        f_testedBox(z.bx, col)
+    true
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 23 · CURRENT TIMEFRAME ORDER BLOCK ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// Swing structure first, block second. A confirmed swing high or low is only counted once, and
+// the block is the extreme candle of the leg that broke it, not simply the nearest opposite
+// coloured candle. In a strong leg the nearest opposite candle is often a small pause bar well
+// away from the actual origin of the move, which is why the leg extreme is the better anchor.
+
+var array<obZone> obBullZones = array.new<obZone>()
+var array<obZone> obBearZones = array.new<obZone>()
+
+// Unconditional: ta.* must run on every bar to keep its internal state correct, so the swing
+// scan is never placed inside an if.
+float obUpper = ta.highest(obSwingLen)
+float obLower = ta.lowest(obSwingLen)
+
+var int   obOs      = 0
+var float obTopY    = na
+var int   obTopX    = na
+var bool  obTopUsed = true
+var float obBtmY    = na
+var int   obBtmX    = na
+var bool  obBtmUsed = true
+
+// Snapshot before the update: a var still holds the previous bar's committed value at this
+// point, which is what the flip test needs, and it avoids history-referencing a var.
+int obOsPrev = obOs
+obOs := high[obSwingLen] > obUpper ? 0 : low[obSwingLen] < obLower ? 1 : obOs
+
+if obOs == 0 and obOsPrev != 0
+    obTopY    := high[obSwingLen]
+    obTopX    := bar_index - obSwingLen
+    obTopUsed := false
+    obTopUsed
+if obOs == 1 and obOsPrev != 1
+    obBtmY    := low[obSwingLen]
+    obBtmX    := bar_index - obSwingLen
+    obBtmUsed := false
+    obBtmUsed
+
+float obSwingRange = not na(obTopY) and not na(obBtmY) ? math.abs(obTopY - obBtmY) : 0.0
+
+bool obNewBull = false
+bool obNewBear = false
+
+// Bullish block: price closes above the last unbroken swing high.
+if showCurOB and not na(obTopY) and not obTopUsed and close > obTopY + obSwingRange * obBreakFib
+    obTopUsed := true
+    int   span   = math.max(1, math.min(bar_index - obTopX - 1, obScanMax))
+    float minima = obUseBody ? math.min(open[1], close[1]) : low[1]
+    float maxima = obUseBody ? math.max(open[1], close[1]) : high[1]
+    int   locOff = 1
+    if span >= 2
+        for k = 2 to span
+            float vLo = obUseBody ? math.min(open[k], close[k]) : low[k]
+            if vLo < minima
+                minima := vLo
+                maxima := obUseBody ? math.max(open[k], close[k]) : high[k]
+                locOff := k
+    box nb = box.new(left = bar_index - locOff, top = maxima, right = bar_index + 1, bottom = minima,
+         bgcolor = f_area(obBullColor), border_color = color.new(obBullColor, BorderTransparency),
+         border_style = BoxBorder, border_width = BoxBorderWidth,
+         text = plotBoxLabel ? 'OB+' : na, text_halign = labelhalign, text_valign = labelvalign,
+         text_size = BoxLabelSize, text_color = BoxLabelColor)
+    array.push(obBullZones, obZone.new(top = maxima, btm = minima, bx = nb))
+    f_trimZones(obBullZones, obMaxBoxes)
+    obNewBull := true
+    obNewBull
+
+// Bearish block: price closes below the last unbroken swing low.
+if showCurOB and not na(obBtmY) and not obBtmUsed and close < obBtmY - obSwingRange * obBreakFib
+    obBtmUsed := true
+    int   span2   = math.max(1, math.min(bar_index - obBtmX - 1, obScanMax))
+    float maxima2 = obUseBody ? math.max(open[1], close[1]) : high[1]
+    float minima2 = obUseBody ? math.min(open[1], close[1]) : low[1]
+    int   locOff2 = 1
+    if span2 >= 2
+        for k = 2 to span2
+            float vHi = obUseBody ? math.max(open[k], close[k]) : high[k]
+            if vHi > maxima2
+                maxima2 := vHi
+                minima2 := obUseBody ? math.min(open[k], close[k]) : low[k]
+                locOff2 := k
+    box nb2 = box.new(left = bar_index - locOff2, top = maxima2, right = bar_index + 1, bottom = minima2,
+         bgcolor = f_area(obBearColor), border_color = color.new(obBearColor, BorderTransparency),
+         border_style = BoxBorder, border_width = BoxBorderWidth,
+         text = plotBoxLabel ? 'OB-' : na, text_halign = labelhalign, text_valign = labelvalign,
+         text_size = BoxLabelSize, text_color = BoxLabelColor)
+    array.push(obBearZones, obZone.new(top = maxima2, btm = minima2, bx = nb2))
+    f_trimZones(obBearZones, obMaxBoxes)
+    obNewBear := true
+    obNewBear
+
+if showCurOB
+    f_manageZones(obBullZones, true, obBullColor, obBullBreakCol, 'BB-', bar_index + 1, mitActionOB)
+    f_manageZones(obBearZones, false, obBearColor, obBearBreakCol, 'BB+', bar_index + 1, mitActionOB)
+else
+    f_clearZones(obBullZones)
+    f_clearZones(obBearZones)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 24 · HIGHER TIMEFRAME ORDER BLOCK DETECTOR
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// Runs inside request.security, in the higher timeframe's own bar space, using the same swing
+// and leg-extreme rule as the chart engine above so a 1H block and a 1D block are built by the
+// same definition.
+//
+// Why it publishes a counter rather than a flag. The previous version returned a one-bar "new
+// block" pulse and the chart side only read it at the exact moment a new higher-timeframe bar
+// opened. By then the pulse had been reset, so the two were never true on the same bar and no
+// higher-timeframe block was ever drawn. The block now lives in var storage and what is
+// published is a counter that only goes up, which the chart side detects by change instead of
+// by catching a pulse. With confirmClose on, every field is published one higher-timeframe bar
+// late, so nothing moves or disappears after the fact.
+f_htfOB(simple int len, simple bool useBody, simple bool confirmClose, simple float breakFib, simple int scanMax) =>
+    var int   os      = 0
+    var float topY    = na
+    var int   topX    = na
+    var bool  topUsed = true
+    var float btmY    = na
+    var int   btmX    = na
+    var bool  btmUsed = true
+
+    var int   bullId   = 0
+    var float bullTop  = na
+    var float bullBtm  = na
+    var int   bullLeft = na
+
+    var int   bearId   = 0
+    var float bearTop  = na
+    var float bearBtm  = na
+    var int   bearLeft = na
+
+    // Snapshot of what the previous higher-timeframe bar committed. Taken before anything below
+    // can change it, so it is the same thing a [1] would give, without history-referencing a
+    // variable that lives inside a function.
+    int   prevOs       = os
+    int   prevBullId   = bullId
+    float prevBullTop  = bullTop
+    float prevBullBtm  = bullBtm
+    int   prevBullLeft = bullLeft
+    int   prevBearId   = bearId
+    float prevBearTop  = bearTop
+    float prevBearBtm  = bearBtm
+    int   prevBearLeft = bearLeft
+
+    float upper = ta.highest(len)
+    float lower = ta.lowest(len)
+    os := high[len] > upper ? 0 : low[len] < lower ? 1 : os
+
+    if os == 0 and prevOs != 0
+        topY    := high[len]
+        topX    := bar_index - len
+        topUsed := false
+        topUsed
+    if os == 1 and prevOs != 1
+        btmY    := low[len]
+        btmX    := bar_index - len
+        btmUsed := false
+        btmUsed
+
+    float swingRange = not na(topY) and not na(btmY) ? math.abs(topY - btmY) : 0.0
+
+    if not na(topY) and not topUsed and close > topY + swingRange * breakFib
+        topUsed := true
+        int   span   = math.max(1, math.min(bar_index - topX - 1, scanMax))
+        float minima = useBody ? math.min(open[1], close[1]) : low[1]
+        float maxima = useBody ? math.max(open[1], close[1]) : high[1]
+        int   locOff = 1
+        if span >= 2
+            for k = 2 to span
+                float vLo = useBody ? math.min(open[k], close[k]) : low[k]
+                if vLo < minima
+                    minima := vLo
+                    maxima := useBody ? math.max(open[k], close[k]) : high[k]
+                    locOff := k
+        bullTop  := maxima
+        bullBtm  := minima
+        bullLeft := time[locOff]
+        bullId   := bullId + 1
+        bullId
+
+    if not na(btmY) and not btmUsed and close < btmY - swingRange * breakFib
+        btmUsed := true
+        int   span2   = math.max(1, math.min(bar_index - btmX - 1, scanMax))
+        float maxima2 = useBody ? math.max(open[1], close[1]) : high[1]
+        float minima2 = useBody ? math.min(open[1], close[1]) : low[1]
+        int   locOff2 = 1
+        if span2 >= 2
+            for k = 2 to span2
+                float vHi = useBody ? math.max(open[k], close[k]) : high[k]
+                if vHi > maxima2
+                    maxima2 := vHi
+                    minima2 := useBody ? math.min(open[k], close[k]) : low[k]
+                    locOff2 := k
+        bearTop  := maxima2
+        bearBtm  := minima2
+        bearLeft := time[locOff2]
+        bearId   := bearId + 1
+        bearId
+
+    int   pubBullId   = confirmClose ? prevBullId   : bullId
+    float pubBullTop  = confirmClose ? prevBullTop  : bullTop
+    float pubBullBtm  = confirmClose ? prevBullBtm  : bullBtm
+    int   pubBullLeft = confirmClose ? prevBullLeft : bullLeft
+    int   pubBearId   = confirmClose ? prevBearId   : bearId
+    float pubBearTop  = confirmClose ? prevBearTop  : bearTop
+    float pubBearBtm  = confirmClose ? prevBearBtm  : bearBtm
+    int   pubBearLeft = confirmClose ? prevBearLeft : bearLeft
+
+    [pubBullId, pubBullTop, pubBullBtm, pubBullLeft, pubBearId, pubBearTop, pubBearBtm, pubBearLeft]
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 25 · MTF MODULE
+// ═══════════════════════════════════════════════════════════════════════════════════════
+
+var array<obZone> mtfBullFVG1 = array.new<obZone>()
+var array<obZone> mtfBearFVG1 = array.new<obZone>()
+var array<obZone> mtfBullOB1  = array.new<obZone>()
+var array<obZone> mtfBearOB1  = array.new<obZone>()
+
+var array<obZone> mtfBullFVG2 = array.new<obZone>()
+var array<obZone> mtfBearFVG2 = array.new<obZone>()
+var array<obZone> mtfBullOB2  = array.new<obZone>()
+var array<obZone> mtfBearOB2  = array.new<obZone>()
+
+var array<obZone> mtfBullFVG3 = array.new<obZone>()
+var array<obZone> mtfBearFVG3 = array.new<obZone>()
+var array<obZone> mtfBullOB3  = array.new<obZone>()
+var array<obZone> mtfBearOB3  = array.new<obZone>()
+
+var array<obZone> mtfBullFVG4 = array.new<obZone>()
+var array<obZone> mtfBearFVG4 = array.new<obZone>()
+var array<obZone> mtfBullOB4  = array.new<obZone>()
+var array<obZone> mtfBearOB4  = array.new<obZone>()
+
+var array<obZone> mtfBullFVG5 = array.new<obZone>()
+var array<obZone> mtfBearFVG5 = array.new<obZone>()
+var array<obZone> mtfBullOB5  = array.new<obZone>()
+var array<obZone> mtfBearOB5  = array.new<obZone>()
+
+// A higher-timeframe slot is only valid if it really is higher than the chart.
+bool tf1Valid = timeframe.in_seconds(tf1) > timeframe.in_seconds(timeframe.period)
+bool tf2Valid = timeframe.in_seconds(tf2) > timeframe.in_seconds(timeframe.period)
+bool tf3Valid = timeframe.in_seconds(tf3) > timeframe.in_seconds(timeframe.period)
+bool tf4Valid = timeframe.in_seconds(tf4) > timeframe.in_seconds(timeframe.period)
+bool tf5Valid = timeframe.in_seconds(tf5) > timeframe.in_seconds(timeframe.period)
+
+// Data fetch. Unconditional top-level calls, the only safe shape for request.security with a
+// simple-string timeframe argument. Only the eight series the gap geometry needs are pulled.
+[tf1_t0, tf1_t3, tf1_h1, tf1_l1, tf1_h2, tf1_l2, tf1_h3, tf1_l3] = request.security(syminfo.tickerid, tf1, [time, time[3], high[1], low[1], high[2], low[2], high[3], low[3]], lookahead = barmerge.lookahead_off)
+[tf2_t0, tf2_t3, tf2_h1, tf2_l1, tf2_h2, tf2_l2, tf2_h3, tf2_l3] = request.security(syminfo.tickerid, tf2, [time, time[3], high[1], low[1], high[2], low[2], high[3], low[3]], lookahead = barmerge.lookahead_off)
+[tf3_t0, tf3_t3, tf3_h1, tf3_l1, tf3_h2, tf3_l2, tf3_h3, tf3_l3] = request.security(syminfo.tickerid, tf3, [time, time[3], high[1], low[1], high[2], low[2], high[3], low[3]], lookahead = barmerge.lookahead_off)
+[tf4_t0, tf4_t3, tf4_h1, tf4_l1, tf4_h2, tf4_l2, tf4_h3, tf4_l3] = request.security(syminfo.tickerid, tf4, [time, time[3], high[1], low[1], high[2], low[2], high[3], low[3]], lookahead = barmerge.lookahead_off)
+[tf5_t0, tf5_t3, tf5_h1, tf5_l1, tf5_h2, tf5_l2, tf5_h3, tf5_l3] = request.security(syminfo.tickerid, tf5, [time, time[3], high[1], low[1], high[2], low[2], high[3], low[3]], lookahead = barmerge.lookahead_off)
+
+[tf1_buId, tf1_buTop, tf1_buBtm, tf1_buLeft, tf1_beId, tf1_beTop, tf1_beBtm, tf1_beLeft] = request.security(syminfo.tickerid, tf1, f_htfOB(mtfObSwingLen, obUseBody, mtfConfirmTF, obBreakFib, obScanMax), lookahead = barmerge.lookahead_off)
+[tf2_buId, tf2_buTop, tf2_buBtm, tf2_buLeft, tf2_beId, tf2_beTop, tf2_beBtm, tf2_beLeft] = request.security(syminfo.tickerid, tf2, f_htfOB(mtfObSwingLen, obUseBody, mtfConfirmTF, obBreakFib, obScanMax), lookahead = barmerge.lookahead_off)
+[tf3_buId, tf3_buTop, tf3_buBtm, tf3_buLeft, tf3_beId, tf3_beTop, tf3_beBtm, tf3_beLeft] = request.security(syminfo.tickerid, tf3, f_htfOB(mtfObSwingLen, obUseBody, mtfConfirmTF, obBreakFib, obScanMax), lookahead = barmerge.lookahead_off)
+[tf4_buId, tf4_buTop, tf4_buBtm, tf4_buLeft, tf4_beId, tf4_beTop, tf4_beBtm, tf4_beLeft] = request.security(syminfo.tickerid, tf4, f_htfOB(mtfObSwingLen, obUseBody, mtfConfirmTF, obBreakFib, obScanMax), lookahead = barmerge.lookahead_off)
+[tf5_buId, tf5_buTop, tf5_buBtm, tf5_buLeft, tf5_beId, tf5_beTop, tf5_beBtm, tf5_beLeft] = request.security(syminfo.tickerid, tf5, f_htfOB(mtfObSwingLen, obUseBody, mtfConfirmTF, obBreakFib, obScanMax), lookahead = barmerge.lookahead_off)
+
+// New-bar and new-block detection at global scope. ta.change and history access both need to
+// run on every bar, so neither goes inside the processing function.
+bool tf1_newBar = ta.change(tf1_t0) != 0
+bool tf2_newBar = ta.change(tf2_t0) != 0
+bool tf3_newBar = ta.change(tf3_t0) != 0
+bool tf4_newBar = ta.change(tf4_t0) != 0
+bool tf5_newBar = ta.change(tf5_t0) != 0
+
+bool tf1_buNew = not na(tf1_buId) and tf1_buId != nz(tf1_buId[1], tf1_buId)
+bool tf1_beNew = not na(tf1_beId) and tf1_beId != nz(tf1_beId[1], tf1_beId)
+bool tf2_buNew = not na(tf2_buId) and tf2_buId != nz(tf2_buId[1], tf2_buId)
+bool tf2_beNew = not na(tf2_beId) and tf2_beId != nz(tf2_beId[1], tf2_beId)
+bool tf3_buNew = not na(tf3_buId) and tf3_buId != nz(tf3_buId[1], tf3_buId)
+bool tf3_beNew = not na(tf3_beId) and tf3_beId != nz(tf3_beId[1], tf3_beId)
+bool tf4_buNew = not na(tf4_buId) and tf4_buId != nz(tf4_buId[1], tf4_buId)
+bool tf4_beNew = not na(tf4_beId) and tf4_beId != nz(tf4_beId[1], tf4_beId)
+bool tf5_buNew = not na(tf5_buId) and tf5_buId != nz(tf5_buId[1], tf5_buId)
+bool tf5_beNew = not na(tf5_beId) and tf5_beId != nz(tf5_beId[1], tf5_beId)
+
+// Gap geometry, computed from closed higher-timeframe bars only.
+bool tf1_fvgUp   = tf1_l1 > tf1_h3 and tf1_l2 <= tf1_h3 and tf1_h2 >= tf1_l1
+bool tf1_fvgDown = tf1_h1 < tf1_l3 and tf1_h1 >= tf1_l2 and tf1_h2 >= tf1_l3
+bool tf2_fvgUp   = tf2_l1 > tf2_h3 and tf2_l2 <= tf2_h3 and tf2_h2 >= tf2_l1
+bool tf2_fvgDown = tf2_h1 < tf2_l3 and tf2_h1 >= tf2_l2 and tf2_h2 >= tf2_l3
+bool tf3_fvgUp   = tf3_l1 > tf3_h3 and tf3_l2 <= tf3_h3 and tf3_h2 >= tf3_l1
+bool tf3_fvgDown = tf3_h1 < tf3_l3 and tf3_h1 >= tf3_l2 and tf3_h2 >= tf3_l3
+bool tf4_fvgUp   = tf4_l1 > tf4_h3 and tf4_l2 <= tf4_h3 and tf4_h2 >= tf4_l1
+bool tf4_fvgDown = tf4_h1 < tf4_l3 and tf4_h1 >= tf4_l2 and tf4_h2 >= tf4_l3
+bool tf5_fvgUp   = tf5_l1 > tf5_h3 and tf5_l2 <= tf5_h3 and tf5_h2 >= tf5_l1
+bool tf5_fvgDown = tf5_h1 < tf5_l3 and tf5_h1 >= tf5_l2 and tf5_h2 >= tf5_l3
+
+f_newMtfBox(int leftTime, float top, float btm, color col, string txt) =>
+    box.new(left = leftTime, top = top, right = time, bottom = btm, xloc = xloc.bar_time,
+         bgcolor = f_area(col), border_color = color.new(col, BorderTransparency),
+         border_style = BoxBorder, border_width = BoxBorderWidth,
+         text = plotBoxLabel ? txt : na, text_size = mtfLabelSize, text_color = mtfLabelColor,
+         text_halign = text.align_right, text_valign = text.align_center)
+
+// One slot's worth of work. Contains no ta.* call and no history access, so it is safe to run
+// it conditionally.
+f_processMTF(string _tfLabel, bool _tfEnabled, bool _tfValid, color _bullColor, color _bearColor, bool _newBar, int _t3, bool _buNew, float _buTop, float _buBtm, int _buLeft, bool _beNew, float _beTop, float _beBtm, int _beLeft, bool _fvgUp, bool _fvgDown, float _l1, float _h3, float _l3, float _h1, array<obZone> _bullFVG, array<obZone> _bearFVG, array<obZone> _bullOB, array<obZone> _bearOB) =>
+    bool active = enableMTF and _tfEnabled and _tfValid
+    if not active
+        // Proper off state. Switching the panel or a slot off now clears its boxes instead of
+        // leaving them frozen on the chart, which is what the original did.
+        f_clearZones(_bullFVG)
+        f_clearZones(_bearFVG)
+        f_clearZones(_bullOB)
+        f_clearZones(_bearOB)
+    else
+        if not showMTF_FVG
+            f_clearZones(_bullFVG)
+            f_clearZones(_bearFVG)
+        if not showMTF_OB
+            f_clearZones(_bullOB)
+            f_clearZones(_bearOB)
+
+        if showMTF_FVG and _newBar and not na(_t3)
+            if _fvgUp
+                box b1 = f_newMtfBox(_t3, _l1, _h3, _bullColor, 'FVG+ [' + _tfLabel + ']')
+                array.push(_bullFVG, obZone.new(top = _l1, btm = _h3, bx = b1))
+                f_trimZones(_bullFVG, mtfMaxBoxes)
+            if _fvgDown
+                box b2 = f_newMtfBox(_t3, _l3, _h1, _bearColor, 'FVG- [' + _tfLabel + ']')
+                array.push(_bearFVG, obZone.new(top = _l3, btm = _h1, bx = b2))
+                f_trimZones(_bearFVG, mtfMaxBoxes)
+
+        if showMTF_OB and _buNew and not na(_buTop) and not na(_buLeft)
+            box b3 = f_newMtfBox(_buLeft, _buTop, _buBtm, _bullColor, 'OB+ [' + _tfLabel + ']')
+            array.push(_bullOB, obZone.new(top = _buTop, btm = _buBtm, bx = b3))
+            f_trimZones(_bullOB, mtfMaxBoxes)
+
+        if showMTF_OB and _beNew and not na(_beTop) and not na(_beLeft)
+            box b4 = f_newMtfBox(_beLeft, _beTop, _beBtm, _bearColor, 'OB- [' + _tfLabel + ']')
+            array.push(_bearOB, obZone.new(top = _beTop, btm = _beBtm, bx = b4))
+            f_trimZones(_bearOB, mtfMaxBoxes)
+
+        if showMTF_FVG
+            f_manageFvgZones(_bullFVG, true, _bullColor, time, mitActionFVG)
+            f_manageFvgZones(_bearFVG, false, _bearColor, time, mitActionFVG)
+        if showMTF_OB
+            f_manageZones(_bullOB, true, _bullColor, obBullBreakCol, 'BB- [' + _tfLabel + ']', time, mitActionOB)
+            f_manageZones(_bearOB, false, _bearColor, obBearBreakCol, 'BB+ [' + _tfLabel + ']', time, mitActionOB)
+    true
+
+f_processMTF(tf1, tf1Enable, tf1Valid, tf1BullColor, tf1BearColor, tf1_newBar, tf1_t3, tf1_buNew, tf1_buTop, tf1_buBtm, tf1_buLeft, tf1_beNew, tf1_beTop, tf1_beBtm, tf1_beLeft, tf1_fvgUp, tf1_fvgDown, tf1_l1, tf1_h3, tf1_l3, tf1_h1, mtfBullFVG1, mtfBearFVG1, mtfBullOB1, mtfBearOB1)
+f_processMTF(tf2, tf2Enable, tf2Valid, tf2BullColor, tf2BearColor, tf2_newBar, tf2_t3, tf2_buNew, tf2_buTop, tf2_buBtm, tf2_buLeft, tf2_beNew, tf2_beTop, tf2_beBtm, tf2_beLeft, tf2_fvgUp, tf2_fvgDown, tf2_l1, tf2_h3, tf2_l3, tf2_h1, mtfBullFVG2, mtfBearFVG2, mtfBullOB2, mtfBearOB2)
+f_processMTF(tf3, tf3Enable, tf3Valid, tf3BullColor, tf3BearColor, tf3_newBar, tf3_t3, tf3_buNew, tf3_buTop, tf3_buBtm, tf3_buLeft, tf3_beNew, tf3_beTop, tf3_beBtm, tf3_beLeft, tf3_fvgUp, tf3_fvgDown, tf3_l1, tf3_h3, tf3_l3, tf3_h1, mtfBullFVG3, mtfBearFVG3, mtfBullOB3, mtfBearOB3)
+f_processMTF(tf4, tf4Enable, tf4Valid, tf4BullColor, tf4BearColor, tf4_newBar, tf4_t3, tf4_buNew, tf4_buTop, tf4_buBtm, tf4_buLeft, tf4_beNew, tf4_beTop, tf4_beBtm, tf4_beLeft, tf4_fvgUp, tf4_fvgDown, tf4_l1, tf4_h3, tf4_l3, tf4_h1, mtfBullFVG4, mtfBearFVG4, mtfBullOB4, mtfBearOB4)
+f_processMTF(tf5, tf5Enable, tf5Valid, tf5BullColor, tf5BearColor, tf5_newBar, tf5_t3, tf5_buNew, tf5_buTop, tf5_buBtm, tf5_buLeft, tf5_beNew, tf5_beTop, tf5_beBtm, tf5_beLeft, tf5_fvgUp, tf5_fvgDown, tf5_l1, tf5_h3, tf5_l3, tf5_h1, mtfBullFVG5, mtfBearFVG5, mtfBullOB5, mtfBearOB5)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// 26 · ALERTS
+// ═══════════════════════════════════════════════════════════════════════════════════════
+
+alertcondition(barstate.isconfirmed and isFvgUp(0), title = 'FVG+', message = 'FVG+ : {{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(barstate.isconfirmed and isFvgDown(0), title = 'FVG-', message = 'FVG- : {{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(barstate.isconfirmed and isBuIFvg(0), title = 'Implied.FVG+', message = 'I.FVG+ : {{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(barstate.isconfirmed and isBeIFvg(0), title = 'Implied.FVG-', message = 'I.FVG- : {{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(barstate.isconfirmed and ((isBuVItype1(0) or isBuVItype2(0) or isBuVItype3(0)) and advancedvi or isBuVItype1(0) and classicvi), title = 'VI+', message = 'VI+ : {{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+// Fix versus the original: the last term of this condition read isBuVItype1, so in Classic mode
+// the bearish alert fired on bullish volume imbalances.
+alertcondition(barstate.isconfirmed and ((isBeVItype1(0) or isBeVItype2(0) or isBeVItype3(0)) and advancedvi or isBeVItype1(0) and classicvi), title = 'VI-', message = 'VI- : {{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(barstate.isconfirmed and high[1] < low, title = 'GAP+', message = 'GAP+ : {{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(barstate.isconfirmed and low[1] > high, title = 'GAP-', message = 'GAP- : {{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(barstate.isconfirmed and isbuinversefvg, title = 'Inverse.FVG+', message = 'Inverse.FVG+ : {{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(barstate.isconfirmed and isbeinversefvg, title = 'Inverse.FVG-', message = 'Inverse.FVG- : {{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(barstate.isconfirmed and bulv, title = 'LV+', message = 'Bullish Liquidity Void : {{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(barstate.isconfirmed and belv, title = 'LV-', message = 'Bearish Liquidity Void : {{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+
+alertcondition(bugaptouch, title = 'GAP(+) Mitigation', message = 'GAP(+) Mitigated :{{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(begaptouch, title = 'GAP(-) Mitigation', message = 'GAP(-) Mitigated :{{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(buimpfvgtouch, title = 'Implied.FVG(+) Mitigation', message = 'Implied.FVG(+) Mitigated :{{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(beimpfvgtouch, title = 'Implied.FVG(-) Mitigation', message = 'Implied.FVG(-) Mitigated :{{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(bufvgtouch, title = 'FVG(+) Mitigation', message = 'FVG(+) Mitigated :{{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(befvgtouch, title = 'FVG(-) Mitigation', message = 'FVG(-) Mitigated :{{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(buvitouch, title = 'VI(+) Mitigation', message = 'VI(+) Mitigated :{{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(bevitouch, title = 'VI(-) Mitigation', message = 'VI(-) Mitigated :{{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(buinvfvgtouch, title = 'Inverse.FVG(+) Mitigation', message = 'Inverse.FVG(+) Mitigated :{{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(beinvfvgtouch, title = 'Inverse.FVG(-) Mitigation', message = 'Inverse.FVG(-) Mitigated :{{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+
+alertcondition(barstate.isconfirmed and obNewBull, title = 'OB+', message = 'Bullish Order Block : {{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+alertcondition(barstate.isconfirmed and obNewBear, title = 'OB-', message = 'Bearish Order Block : {{exchange}}:{{ticker}} TIMEFRAME:{{interval}}')
+// end of script

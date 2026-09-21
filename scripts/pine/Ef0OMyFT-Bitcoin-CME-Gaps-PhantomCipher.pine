@@ -1,0 +1,38 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © phantomcipher
+
+//@version=6
+indicator("Bitcoin CME Gaps [PhantomCipher]", shorttitle="Bitcoin CME Gaps [PhantomCipher]", overlay=true, format=format.price, precision=0)
+
+showReal  = input.bool(true,  "[On]Chart Price | [Off] CME Price")
+showClean = input.bool(true,  "Only Show Weekend Gaps (Cleaner But Misses Holidays/Etc.)")
+hi_chews  = input.bool(false, "Show +/-1% From Close")
+
+not_in_sess = na(request.security("CME:BTC1!", timeframe.period, close, gaps=barmerge.gaps_on))
+in_sess     = request.security("CME:BTC1!", timeframe.period, close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+
+only_wkend = (syminfo.timezone == "Etc/UTC" or syminfo.type == "crypto" or syminfo.type == "index") and
+             ((hour >= 21 and dayofweek == dayofweek.friday) or dayofweek == dayofweek.saturday or (hour < 22 and dayofweek == dayofweek.sunday))
+
+derty = showClean ? only_wkend : not_in_sess
+
+// Capture price exactly once at the start of each gap window - prevents
+// CME artifact candles from resetting the reference line mid-gap
+gap_start  = derty and not derty[1]
+cmePrice   = ta.valuewhen(gap_start, in_sess, 0)
+chartPrice = ta.valuewhen(gap_start, close, 0)
+price      = showReal ? chartPrice : cmePrice
+
+blue  = #077EFB
+pink  = #F8BBD0
+green = #4CAF50
+peach = #FFD831
+
+a = plot(derty ? price : na, "CME Gap", blue, 2, plot.style_linebr)
+b = plot(derty ? hlc3 : na, " ", color.new(blue, 100), 1, plot.style_linebr, display=display.none, editable=false)
+
+plot(derty and hi_chews ? price * 1.01 : na, "+1%", peach, 2, plot.style_linebr)
+plot(derty and hi_chews ? price * 0.99 : na, "-1%", peach, 2, plot.style_linebr)
+
+// v4's fill() took transparency as its own argument; v6 carries it in the colour
+fill(a, b, close > price ? color.new(green, 70) : color.new(pink, 70))

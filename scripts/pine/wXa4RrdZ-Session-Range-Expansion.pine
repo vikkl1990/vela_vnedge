@@ -1,0 +1,290 @@
+//@version=6
+indicator(
+     "Vertex Session Range & Expansion",
+     shorttitle = "V Session",
+     overlay = false
+)
+
+// ─────────────────────────────────────────────
+// Inputs
+// ─────────────────────────────────────────────
+
+sessionInput = input.session(
+     "0800-1700",
+     "Session"
+)
+
+timezoneInput = input.string(
+     "Exchange",
+     "Timezone",
+     options = ["Exchange", "UTC", "UTC-4", "UTC-5", "UTC+0", "UTC+1", "UTC+2", "UTC+3", "UTC+4", "UTC+5", "UTC+6", "UTC+7", "UTC+8", "UTC+9", "UTC+10", "UTC+11", "UTC+12"]
+)
+
+baselineSessions = input.int(
+     20,
+     "Baseline Sessions",
+     minval = 5
+)
+
+compressionThreshold = input.float(
+     0.75,
+     "Compression Threshold",
+     minval = 0.25,
+     step = 0.05
+)
+
+expansionThreshold = input.float(
+     1.25,
+     "Expansion Threshold",
+     minval = 1.00,
+     step = 0.05
+)
+
+extremeThreshold = input.float(
+     2.00,
+     "Extreme Expansion Threshold",
+     minval = 1.25,
+     step = 0.05
+)
+
+showSessionLevels = input.bool(
+     true,
+     "Show Session High / Low"
+)
+
+showDashboard = input.bool(
+     true,
+     "Show Dashboard"
+)
+
+// ─────────────────────────────────────────────
+// Session Detection
+// ─────────────────────────────────────────────
+
+timezone =
+     timezoneInput == "Exchange" ? syminfo.timezone : timezoneInput
+
+inSession = not na(
+     time(
+         timeframe.period,
+         sessionInput,
+         timezone
+     )
+)
+
+newSession = inSession and not inSession[1]
+
+sessionEnded = not inSession and inSession[1]
+
+// ─────────────────────────────────────────────
+// Current Session Range
+// ─────────────────────────────────────────────
+
+var float sessionHigh = na
+var float sessionLow = na
+
+if newSession
+    sessionHigh := high
+    sessionLow := low
+else if inSession
+    sessionHigh := math.max(sessionHigh, high)
+    sessionLow := math.min(sessionLow, low)
+
+currentRange = inSession and not na(sessionHigh) and not na(sessionLow) ?
+     sessionHigh - sessionLow :
+     na
+
+// ─────────────────────────────────────────────
+// Historical Session Range Baseline
+// ─────────────────────────────────────────────
+
+var array<float> sessionRanges = array.new_float()
+
+if sessionEnded and not na(sessionHigh) and not na(sessionLow)
+    completedRange = sessionHigh - sessionLow
+
+    array.push(
+         sessionRanges,
+         completedRange
+    )
+
+    if array.size(sessionRanges) > baselineSessions
+        array.shift(sessionRanges)
+
+// Calculate average completed session range
+float averageRange = na
+
+if array.size(sessionRanges) > 0
+    float rangeSum = 0.0
+
+    for i = 0 to array.size(sessionRanges) - 1
+        rangeSum += array.get(sessionRanges, i)
+
+    averageRange := rangeSum / array.size(sessionRanges)
+
+// ─────────────────────────────────────────────
+// Relative Expansion
+// ─────────────────────────────────────────────
+
+rangeRatio =
+     not na(currentRange) and averageRange > 0 ?
+     currentRange / averageRange :
+     na
+
+// ─────────────────────────────────────────────
+// Regime Classification
+// ─────────────────────────────────────────────
+
+string regime =
+     rangeRatio >= extremeThreshold ? "Extreme Expansion" :
+     rangeRatio >= expansionThreshold ? "Expanding" :
+     rangeRatio <= compressionThreshold ? "Compressed" :
+     "Normal"
+
+// ─────────────────────────────────────────────
+// Regime Visual
+// ─────────────────────────────────────────────
+
+color regimeColor =
+     rangeRatio >= extremeThreshold ? color.red :
+     rangeRatio >= expansionThreshold ? color.orange :
+     rangeRatio <= compressionThreshold ? color.blue :
+     color.green
+
+// ─────────────────────────────────────────────
+// Relative Range Plot
+// ─────────────────────────────────────────────
+
+plot(
+     rangeRatio,
+     title = "Session Range Ratio",
+     color = regimeColor,
+     linewidth = 2
+)
+
+hline(
+     1.0,
+     "Average Session Range",
+     color = color.gray
+)
+
+hline(
+     compressionThreshold,
+     "Compression Threshold",
+     color = color.new(color.blue, 70)
+)
+
+hline(
+     expansionThreshold,
+     "Expansion Threshold",
+     color = color.new(color.orange, 70)
+)
+
+hline(
+     extremeThreshold,
+     "Extreme Expansion Threshold",
+     color = color.new(color.red, 70)
+)
+
+// ─────────────────────────────────────────────
+// Session High / Low on Main Chart
+// ─────────────────────────────────────────────
+
+plot(
+     showSessionLevels and inSession ? sessionHigh : na,
+     title = "Session High",
+     color = color.new(color.red, 20),
+     linewidth = 1,
+     style = plot.style_linebr,
+     force_overlay = true
+)
+
+plot(
+     showSessionLevels and inSession ? sessionLow : na,
+     title = "Session Low",
+     color = color.new(color.green, 20),
+     linewidth = 1,
+     style = plot.style_linebr,
+     force_overlay = true
+)
+
+// ─────────────────────────────────────────────
+// Dashboard
+// ─────────────────────────────────────────────
+
+var table dashboard = table.new(
+     position.top_right,
+     2,
+     4,
+     border_width = 1
+)
+
+if barstate.islast and showDashboard
+
+    table.cell(
+         dashboard,
+         0,
+         0,
+         "Metric",
+         text_color = color.white
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         0,
+         "Value",
+         text_color = color.white
+    )
+
+    table.cell(
+         dashboard,
+         0,
+         1,
+         "Session Range",
+         text_color = color.white
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         1,
+         not na(currentRange) ?
+             str.tostring(currentRange, format.mintick) :
+             "—",
+         text_color = regimeColor
+    )
+
+    table.cell(
+         dashboard,
+         0,
+         2,
+         "Relative Range",
+         text_color = color.white
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         2,
+         not na(rangeRatio) ?
+             str.tostring(rangeRatio, "#.##") + "x" :
+             "—",
+         text_color = regimeColor
+    )
+
+    table.cell(
+         dashboard,
+         0,
+         3,
+         "Regime",
+         text_color = color.white
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         3,
+         regime,
+         text_color = regimeColor
+    )

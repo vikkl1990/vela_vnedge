@@ -1,0 +1,605 @@
+//@version=6
+// ════════════════════════════════════════════════════════════════════
+//  HTF MANIPULATION MODEL — v1.9
+//
+//  Chart toont per setup twee lichte vlakken: entry→TP (groen) en entry→SL
+//  (rood). Ze groeien mee zolang de trade loopt en stoppen waar hij geraakt
+//  wordt. Paneel toont alleen H4 en H1.
+//
+//  Funnel:  ADR-conditie → POORT (H1 + H4 ribbon) → H4 manipulation
+//           → distributiecandle → H1/15m entry
+//
+//  DE POORT: H1 en H4 moeten allebei dezelfde kant op wijzen volgens de
+//  EMA Ribbon (12/25/32/35/40/45/100/200 op close), en de setup moet die
+//  kant op gaan. Wijst er één naar consolidation of wijzen ze tegengesteld,
+//  dan komt er niets door.
+//
+//  Ribbon-richting: bullish zolang hooguit N EMA's aan de verkeerde kant
+//  liggen — een paar mogen achterlopen (de 100/200 aan het begin van een
+//  trend, of de 12/25 tijdens een pullback). Meer dan N aan beide kanten
+//  = consolidation.
+//
+//  A3  Asia/London telt mee als gradatie, niet als poort: in NY zonder
+//      dat London de Asia range nam kost het een punt.
+//
+//  De H4 manipulation candle moet de low/high van de vorige candle(s)
+//  sweepen én boven de vorige CLOSE sluiten — niet alleen bullish sluiten.
+//  Wicks wegen minder dan closes.
+//
+//  A9  Overextension via ADR%
+//
+//  De alert vuurt op de H4 CLOSURE, zodra de poort open staat. Hij wacht
+//  NIET op een OB of FVG — die zijn gradatie, geen voorwaarde. Duiken ze
+//  later op, dan komt de zone er als licht stippelkader bij.
+//
+//  De grading is geen filter maar een hulpmiddel: elke setup die door de
+//  poort komt geeft een alert, met de grade erbij.
+//
+//  Alles op afgesloten candles → repaint niet.
+//  Ophangen op de 15m chart.
+// ════════════════════════════════════════════════════════════════════
+indicator("HTF Manipulation Model v1.9", "HTF Model", overlay = true,
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500,
+     max_bars_back = 500)
+
+// ─────────────────────────────── INPUTS ───────────────────────────────
+G0 = "STAP -1 — Trading conditions"
+G1 = "DE POORT — H1 + H4 ribbon"
+G2 = "FASE 2 — Trigger & Entry"
+G3 = "Grading"
+G4 = "Sessies (New York tijd)"
+G5 = "Weergave"
+
+// A9 — condities
+i_useADR       = input.bool(true,  "A9 — ADR-filter aan",                group = G0)
+i_adrLen       = input.int(20,     "ADR — aantal dagen",                 minval = 5, maxval = 60, group = G0)
+i_adrMax       = input.int(100,    "A9 — blokkeer boven dit ADR%",       minval = 50, maxval = 200, group = G0,
+     tooltip = "Dagrange als % van de gemiddelde dagrange. 100% = de dag heeft zijn normale range al gelopen.")
+
+// De poort
+i_alignStrict  = input.bool(true,  "H1 en H4 ribbon moeten beide dezelfde kant op", group = G1,
+     tooltip = "Aan: geen signaal tenzij H1 en H4 allebei bullish of allebei bearish zijn, en de setup die kant op gaat.")
+
+// EMA Ribbon — bepaalt de trendrichting op zowel H1 als H4.
+// Niet "boven alles": een paar EMA's mogen achterlopen en het blijft bullish.
+GR = "EMA Ribbon (H1 én H4)"
+i_lag  = input.int(2, "Hoeveel EMA's mogen achterlopen", minval = 0, maxval = 4, group = GR,
+     tooltip = "0 = prijs moet boven/onder ALLE aangevinkte EMA's staan. 2 = twee mogen aan de verkeerde kant liggen (bijv. de 100 en 200 aan het begin van een trend) en het telt nog als trend.")
+i_e1on = input.bool(true,  "", inline = "r1", group = GR)
+i_e1   = input.int(12,  "EMA 1", inline = "r1", group = GR)
+i_e2on = input.bool(true,  "", inline = "r2", group = GR)
+i_e2   = input.int(25,  "EMA 2", inline = "r2", group = GR)
+i_e3on = input.bool(true,  "", inline = "r3", group = GR)
+i_e3   = input.int(32,  "EMA 3", inline = "r3", group = GR)
+i_e4on = input.bool(true,  "", inline = "r4", group = GR)
+i_e4   = input.int(35,  "EMA 4", inline = "r4", group = GR)
+i_e5on = input.bool(true,  "", inline = "r5", group = GR)
+i_e5   = input.int(40,  "EMA 5", inline = "r5", group = GR)
+i_e6on = input.bool(true,  "", inline = "r6", group = GR)
+i_e6   = input.int(45,  "EMA 6", inline = "r6", group = GR)
+i_e7on = input.bool(true,  "", inline = "r7", group = GR)
+i_e7   = input.int(100, "EMA 7", inline = "r7", group = GR)
+i_e8on = input.bool(true,  "", inline = "r8", group = GR)
+i_e8   = input.int(200, "EMA 8", inline = "r8", group = GR)
+
+// Fase 2
+i_h4SweepDepth = input.int(1,      "H4 — sweep-diepte (candles)",        minval = 1, maxval = 5, group = G2)
+i_h4BodyClose  = input.bool(true,  "H4 — body moet boven de vorige close sluiten", group = G2,
+     tooltip = "Aan: close > close[1] — de candle sweept de low en sluit boven de vorige close. Uit: alleen close > open (losser, meer signalen).")
+i_validityHrs  = input.float(2.5,  "Setup geldig N uur na de H4 close",  minval = 0.25, maxval = 4.0, step = 0.25, group = G2,
+     tooltip = "Je entert omdat je verwacht dat de VOLGENDE H4 candle de expansion is. Meestal in het eerste uur, maar een entry kan ook in het tweede uur nog komen — daarna vervalt de setup en verschijnen er geen OB/FVG-zones meer.")
+i_entryH1OB    = input.bool(true,  "Entry — H1 Order Block",             group = G2)
+i_obMaxBars    = input.int(4,      "OB — max candles samenvoegen",       minval = 1, maxval = 6, group = G2,
+     tooltip = "Zijn de bodies vlak voor de impuls klein, dan worden ze samengevoegd tot één zone. Alleen de bodies tellen, niet de wicks.")
+i_entryH1FVG   = input.bool(true,  "Entry — H1 FVG",                     group = G2)
+i_entry15FVG   = input.bool(true,  "Entry — 15m FVG",                    group = G2)
+i_wickInFvg    = input.bool(true,  "Manipulation-wick in een FVG telt mee", group = G2,
+     tooltip = "De wick die de sweep maakt moet landen in een al bestaande FVG (H4 of H1). Gradatie, geen voorwaarde.")
+i_useAsiaRule  = input.bool(true,  "A3 — Asia/London telt mee in de score", group = G2,
+     tooltip = "Zit je in NY en heeft London de Asia range NIET genomen, dan moet de manipulatie nog komen: dat kost een punt. Blokkeert niets.")
+
+// Grading
+i_scoreAplus   = input.int(3,      "Score voor A+",                      minval = 1, maxval = 4, group = G3)
+i_scoreA       = input.int(2,      "Score voor A",                       minval = 1, maxval = 4, group = G3)
+i_alertFrom    = input.string("B", "Alert vanaf grade", options = ["A+", "A", "B"], group = G3,
+     tooltip = "B = alles wat door de poort komt geeft een alert; de grade is dan puur informatie. Zet hoger als je minder meldingen wilt.")
+
+// Sessies — in NY-tijd, zoals in Fabians notities
+i_sessAsia     = input.session("1900-0000", "Asia (voor de range)",      group = G4)
+i_sessLDN      = input.session("0200-0500", "London KZ",                 group = G4)
+i_sessNY       = input.session("0700-1000", "New York KZ",               group = G4)
+i_sessLC       = input.session("1000-1200", "London Close KZ",           group = G4)
+
+// Targets
+GT = "Entry / SL / TP"
+i_tpMode       = input.string("H4 liquiditeit, anders R", "TP-methode",
+     options = ["Vaste R", "H4 liquiditeit", "H4 liquiditeit, anders R"], group = GT)
+i_rMult        = input.float(1.5, "R-multiple voor TP", minval = 0.5, maxval = 5.0, step = 0.1, group = GT)
+i_liqLook      = input.int(20,  "H4 candles terug voor liquiditeit", minval = 5, maxval = 60, group = GT)
+i_lineLen      = input.int(24, "Zone hoelang doortrekken (bars)", minval = 5, maxval = 100, group = GT)
+
+// Weergave
+i_showPanel    = input.bool(true,  "Paneel tonen (H1 + H4)",  group = G5)
+i_bullCol      = input.color(#26A69A, "Bullish", inline = "c", group = G5)
+i_bearCol      = input.color(#EF5350, "Bearish", inline = "c", group = G5)
+i_fillTr       = input.int(88, "Vulling — hoe licht", minval = 60, maxval = 97, group = G5,
+     tooltip = "Hoger = lichter. 88 is een zachte tint die de candles niet overstemt.")
+i_showLbl      = input.bool(true, "Labels bij de trade tonen", group = G5)
+
+// ────────────────────── KERNPATROON (fractaal) ──────────────────────
+f_manip(int _depth, bool _bodyClose) =>
+    float c1 = close[1]
+    float o1 = open[1]
+    float c2 = close[2]
+    float l1 = low[1]
+    float h1 = high[1]
+    float prevLow  = ta.lowest(low[2],  _depth)
+    float prevHigh = ta.highest(high[2], _depth)
+    bool bullSweep = l1 < prevLow
+    bool bearSweep = h1 > prevHigh
+    bool bullClose = _bodyClose ? c1 > c2 : c1 > o1
+    bool bearClose = _bodyClose ? c1 < c2 : c1 < o1
+    int bDepth = 0
+    int sDepth = 0
+    for i = 2 to 6
+        if l1 < low[i]
+            bDepth := bDepth + 1
+        if h1 > high[i]
+            sDepth := sDepth + 1
+    [bullSweep and bullClose ? 1 : 0, bearSweep and bearClose ? 1 : 0, bDepth, sDepth]
+
+f_fvg() =>
+    bool bull = low[1] > high[3]
+    bool bear = high[1] < low[3]
+    [bull ? 1 : 0, bear ? 1 : 0,
+     bull ? high[3] : na, bull ? low[1] : na,
+     bear ? high[1] : na, bear ? low[3] : na]
+
+// Order Block — de candle(s) vlak vóór de impulsieve move.
+//
+//  · alleen de BODIES tellen (open→close), niet de wicks
+//  · het mogen er meerdere zijn: zijn de bodies klein, dan worden ze
+//    samengevoegd tot één zone (tot i_obMaxBars stuks)
+//  · de verzameling stopt zodra er een grote body in de impulsrichting komt,
+//    want dan zit je al in de vorige beweging
+//
+// Geldig is hij pas ná de manipulatie — dat regelt de funnel, want er wordt
+// alleen naar OB's gezocht zolang er een setup loopt.
+f_obZone(int _maxBars) =>
+    float avgBody = ta.sma(math.abs(close - open), 20)[1]
+    float impBody = math.abs(close[1] - open[1])
+    bool impUp = close[1] > open[1] and impBody > avgBody
+    bool impDn = close[1] < open[1] and impBody > avgBody
+    float zLo = na
+    float zHi = na
+    int used = 0
+    if impUp or impDn
+        for i = 2 to _maxBars + 1
+            float bTop  = math.max(open[i], close[i])
+            float bBot  = math.min(open[i], close[i])
+            float bSize = bTop - bBot
+            bool sameDir = impUp ? close[i] > open[i] : close[i] < open[i]
+            // grote candle die dezelfde kant op wijst: vorige move, stoppen
+            if sameDir and bSize > avgBody and used > 0
+                break
+            zLo := na(zLo) ? bBot : math.min(zLo, bBot)
+            zHi := na(zHi) ? bTop : math.max(zHi, bTop)
+            used := used + 1
+            // deze body is op zichzelf groot genoeg: de OB is compleet
+            if bSize > avgBody
+                break
+    [impUp and used > 0 ? 1 : 0, impDn and used > 0 ? 1 : 0, zLo, zHi]
+
+// A1 — trendrichting uit de EMA Ribbon
+//   hooguit i_lag EMA's aan de verkeerde kant →  1 (bullish) of -1 (bearish)
+//   meer dan i_lag aan beide kanten           →  0 (consolidation)
+// Alle EMA's worden altijd berekend — ta.* mag niet conditioneel draaien.
+// Het vinkje bepaalt alleen of een EMA meetelt in de telling.
+f_ribbonTrend() =>
+    float c  = close[1]
+    float e1 = ta.ema(close, i_e1)[1]
+    float e2 = ta.ema(close, i_e2)[1]
+    float e3 = ta.ema(close, i_e3)[1]
+    float e4 = ta.ema(close, i_e4)[1]
+    float e5 = ta.ema(close, i_e5)[1]
+    float e6 = ta.ema(close, i_e6)[1]
+    float e7 = ta.ema(close, i_e7)[1]
+    float e8 = ta.ema(close, i_e8)[1]
+    // tel aan welke kant van elke aangevinkte EMA de close staat
+    int above = 0
+    int below = 0
+    if i_e1on
+        above := above + (c > e1 ? 1 : 0)
+        below := below + (c < e1 ? 1 : 0)
+    if i_e2on
+        above := above + (c > e2 ? 1 : 0)
+        below := below + (c < e2 ? 1 : 0)
+    if i_e3on
+        above := above + (c > e3 ? 1 : 0)
+        below := below + (c < e3 ? 1 : 0)
+    if i_e4on
+        above := above + (c > e4 ? 1 : 0)
+        below := below + (c < e4 ? 1 : 0)
+    if i_e5on
+        above := above + (c > e5 ? 1 : 0)
+        below := below + (c < e5 ? 1 : 0)
+    if i_e6on
+        above := above + (c > e6 ? 1 : 0)
+        below := below + (c < e6 ? 1 : 0)
+    if i_e7on
+        above := above + (c > e7 ? 1 : 0)
+        below := below + (c < e7 ? 1 : 0)
+    if i_e8on
+        above := above + (c > e8 ? 1 : 0)
+        below := below + (c < e8 ? 1 : 0)
+    // bullish zolang er hooguit i_lag EMA's aan de verkeerde kant liggen
+    int dir = 0
+    if above > 0 and below <= i_lag
+        dir := 1
+    else if below > 0 and above <= i_lag
+        dir := -1
+    dir
+
+// ──────────────────── HTF DATA (non-repainting) ────────────────────
+[h4Bull, h4Bear, h4bd, h4sd] = request.security(syminfo.tickerid, "240",
+     f_manip(i_h4SweepDepth, i_h4BodyClose), lookahead = barmerge.lookahead_off)
+
+[h4fB, h4fS, h4fbLo, h4fbHi, h4fsLo, h4fsHi] = request.security(syminfo.tickerid, "240",
+     f_fvg(), lookahead = barmerge.lookahead_off)
+
+[h1fB, h1fS, h1fbLo, h1fbHi, h1fsLo, h1fsHi] = request.security(syminfo.tickerid, "60",
+     f_fvg(), lookahead = barmerge.lookahead_off)
+
+[h1oB, h1oS, h1obLo, h1obHi] = request.security(syminfo.tickerid, "60",
+     f_obZone(i_obMaxBars), lookahead = barmerge.lookahead_off)
+
+[m15fB, m15fS, m15bLo, m15bHi, m15sLo, m15sHi] = request.security(syminfo.tickerid, "15",
+     f_fvg(), lookahead = barmerge.lookahead_off)
+
+h4PrevLow  = request.security(syminfo.tickerid, "240", low[1],  lookahead = barmerge.lookahead_off)
+h4PrevHigh = request.security(syminfo.tickerid, "240", high[1], lookahead = barmerge.lookahead_off)
+h4PrevCls  = request.security(syminfo.tickerid, "240", close[1], lookahead = barmerge.lookahead_off)
+
+// H4 liquiditeit — hoogste high / laagste low van de laatste N afgesloten H4 candles
+h4LiqHi = request.security(syminfo.tickerid, "240", ta.highest(high[1], i_liqLook), lookahead = barmerge.lookahead_off)
+h4LiqLo = request.security(syminfo.tickerid, "240", ta.lowest(low[1],  i_liqLook), lookahead = barmerge.lookahead_off)
+
+// A1 — H1 trend
+h1Trend = request.security(syminfo.tickerid, "60",  f_ribbonTrend(), lookahead = barmerge.lookahead_off)
+h4Trend = request.security(syminfo.tickerid, "240", f_ribbonTrend(), lookahead = barmerge.lookahead_off)
+
+// A9 — ADR
+adr = request.security(syminfo.tickerid, "D", ta.sma(high - low, i_adrLen)[1], lookahead = barmerge.lookahead_off)
+dayHi = request.security(syminfo.tickerid, "D", high, lookahead = barmerge.lookahead_off)
+dayLo = request.security(syminfo.tickerid, "D", low,  lookahead = barmerge.lookahead_off)
+adrPct = adr > 0 ? (dayHi - dayLo) / adr * 100 : 0.0
+adrBlocks = i_useADR and adrPct > i_adrMax
+
+// ─────────────────────────── SESSIES ───────────────────────────
+inAsia = not na(time(timeframe.period, i_sessAsia, "America/New_York"))
+inLDN  = not na(time(timeframe.period, i_sessLDN,  "America/New_York"))
+inNY   = not na(time(timeframe.period, i_sessNY,   "America/New_York"))
+inLC   = not na(time(timeframe.period, i_sessLC,   "America/New_York"))
+primeSession = inLDN or inNY
+sessionName = inLDN ? "London KZ" : inNY ? "NY KZ" : inLC ? "London Close" : inAsia ? "Asia" : "buiten sessie"
+
+// ── A3 — Asia range en wat London ermee deed ──
+var float asiaHi = na
+var float asiaLo = na
+var bool  loTookHigh = false
+var bool  loTookLow  = false
+
+if inAsia and not inAsia[1]
+    asiaHi := high
+    asiaLo := low
+    loTookHigh := false
+    loTookLow  := false
+else if inAsia
+    asiaHi := math.max(nz(asiaHi, high), high)
+    asiaLo := math.min(nz(asiaLo, low),  low)
+
+if inLDN and not na(asiaHi)
+    if high > asiaHi
+        loTookHigh := true
+    if low < asiaLo
+        loTookLow := true
+
+loTookRange = loTookHigh or loTookLow
+
+// ──────────────────── FASE 1 — BIAS & TREND ────────────────────
+
+conditionsOk = not adrBlocks
+
+// ──────────────────── FASE 2 — TRIGGER & ENTRY ────────────────────
+h4Closed = ta.change(time("240")) != 0
+
+// ── Landt de manipulation-wick in een bestaande FVG? ──
+// De zones worden onthouden zodra ze gevormd worden. De check kijkt naar de
+// stand van de VORIGE bar, zodat een FVG die de manipulation candle zelf
+// maakt niet meetelt — die lag er immers nog niet.
+var float bullFvgLo4 = na
+var float bullFvgHi4 = na
+var float bearFvgLo4 = na
+var float bearFvgHi4 = na
+var float bullFvgLo1 = na
+var float bullFvgHi1 = na
+var float bearFvgLo1 = na
+var float bearFvgHi1 = na
+
+// De wick hoeft niet IN de zone te eindigen — er dwars doorheen sweepen en
+// erboven sluiten is juist de sterkste variant. Voorwaarde is dus: de wick
+// raakt de zone, en de close ligt er weer boven (bij een bearish setup: onder).
+f_wickTaps(bool _isBull, float _wick, float _cls, float _lo, float _hi) =>
+    bool geldig = not na(_lo) and not na(_hi)
+    bool raakt  = _isBull ? _wick <= _hi : _wick >= _lo
+    bool terug  = _isBull ? _cls  >  _lo : _cls  <  _hi
+    geldig and raakt and terug
+
+wickBullInFvg = f_wickTaps(true,  h4PrevLow,  h4PrevCls, bullFvgLo4[1], bullFvgHi4[1]) or f_wickTaps(true,  h4PrevLow,  h4PrevCls, bullFvgLo1[1], bullFvgHi1[1])
+wickBearInFvg = f_wickTaps(false, h4PrevHigh, h4PrevCls, bearFvgLo4[1], bearFvgHi4[1]) or f_wickTaps(false, h4PrevHigh, h4PrevCls, bearFvgLo1[1], bearFvgHi1[1])
+
+if h4fB == 1
+    bullFvgLo4 := h4fbLo
+    bullFvgHi4 := h4fbHi
+if h4fS == 1
+    bearFvgLo4 := h4fsLo
+    bearFvgHi4 := h4fsHi
+if h1fB == 1
+    bullFvgLo1 := h1fbLo
+    bullFvgHi1 := h1fbHi
+if h1fS == 1
+    bearFvgLo1 := h1fsLo
+    bearFvgHi1 := h1fsHi
+
+f_score(bool _isBull, int _depth) =>
+    int s = 0
+    if _depth >= 2
+        s := s + 1
+    if primeSession
+        s := s + 1
+    if i_wickInFvg and ((_isBull and wickBullInFvg) or (not _isBull and wickBearInFvg))
+        s := s + 1
+    // OB of FVG op H1 die er nu al ligt — gradatie, geen voorwaarde
+    if (_isBull and (h1oB == 1 or h1fB == 1)) or (not _isBull and (h1oS == 1 or h1fS == 1))
+        s := s + 1
+    // A3 — in NY terwijl London de Asia range nog niet nam: manipulatie moet
+    // nog komen, dus een punt eraf. Blokkeert niet.
+    if i_useAsiaRule and inNY and not loTookRange
+        s := s - 1
+    math.max(0, s)
+
+f_grade(int _s) =>
+    _s >= i_scoreAplus ? "A+" : _s >= i_scoreA ? "A" : "B"
+
+f_rank(string _g) =>
+    _g == "A+" ? 3 : _g == "A" ? 2 : 1
+
+var bool   setupOn    = false
+var int    setupDir   = 0
+var int    setupAge   = 0
+var int    setupScore = 0
+var float  setupStop  = na
+var string setupGrd   = ""
+var bool   entryFired = false
+
+// True op precies de bar waar een nieuwe setup ontstaat — stuurt alert en tekenwerk
+newSetup = false
+
+// De setup verloopt in UREN, niet in H4 candles. De redenering: de volgende
+// H4 candle hoort de expansion te zijn, dus je wilt vroeg in die candle zitten
+// om de wick mee te pakken. Is er na een uur niets gebeurd, dan komt het niet
+// meer — dan wachten op een terugtest heeft geen zin.
+barsValid = math.max(1, math.round(i_validityHrs * 3600 / timeframe.in_seconds()))
+
+if setupOn
+    setupAge := setupAge + 1
+    if setupAge > barsValid
+        setupOn  := false
+        setupDir := 0
+
+if h4Closed
+    // ── DE POORT ──
+    // H1 en H4 ribbon moeten allebei dezelfde kant op wijzen, en de setup
+    // moet die kant op gaan. Wijst er één naar consolidation, of wijzen ze
+    // tegengesteld, dan komt er niets door.
+    bool alignedBull = h1Trend ==  1 and h4Trend ==  1
+    bool alignedBear = h1Trend == -1 and h4Trend == -1
+    bool gateBull = not i_alignStrict or alignedBull
+    bool gateBear = not i_alignStrict or alignedBear
+    bool newBull = h4Bull == 1 and conditionsOk and gateBull
+    bool newBear = h4Bear == 1 and conditionsOk and gateBear
+    if newBull or newBear
+        setupOn    := true
+        newSetup   := true
+        setupDir   := newBull ? 1 : -1
+        setupAge   := 0
+        entryFired := false
+        setupScore := f_score(newBull, newBull ? h4bd : h4sd)
+        setupGrd   := f_grade(setupScore)
+        setupStop  := newBull ? h4PrevLow : h4PrevHigh
+
+// ── Entry-zones (OB / FVG) ──
+// Deze bepalen NIET of je een alert krijgt — de alert komt bij de H4 closure.
+// Ze worden alleen bijgetekend als ze tijdens de lopende setup opduiken,
+// zodat je een scherpere prijs hebt dan de kale H4-close.
+zoneBull = setupOn and setupDir == 1 and not entryFired and
+     ((i_entryH1OB and h1oB == 1) or (i_entryH1FVG and h1fB == 1) or (i_entry15FVG and m15fB == 1))
+zoneBear = setupOn and setupDir == -1 and not entryFired and
+     ((i_entryH1OB and h1oS == 1) or (i_entryH1FVG and h1fS == 1) or (i_entry15FVG and m15fS == 1))
+
+float zoneLo = na
+float zoneHi = na
+string zoneTxt = ""
+
+if zoneBull
+    if i_entryH1OB and h1oB == 1
+        zoneLo := h1obLo
+        zoneHi := h1obHi
+        zoneTxt := "H1 OB"
+    else if i_entryH1FVG and h1fB == 1
+        zoneLo := h1fbLo
+        zoneHi := h1fbHi
+        zoneTxt := "H1 FVG"
+    else
+        zoneLo := m15bLo
+        zoneHi := m15bHi
+        zoneTxt := "15m FVG"
+
+if zoneBear
+    if i_entryH1OB and h1oS == 1
+        zoneLo := h1obLo
+        zoneHi := h1obHi
+        zoneTxt := "H1 OB"
+    else if i_entryH1FVG and h1fS == 1
+        zoneLo := h1fsLo
+        zoneHi := h1fsHi
+        zoneTxt := "H1 FVG"
+    else
+        zoneLo := m15sLo
+        zoneHi := m15sHi
+        zoneTxt := "15m FVG"
+
+if zoneBull or zoneBear
+    entryFired := true
+
+// ─────────────────── ENTRY / SL / TP BEREKENEN ───────────────────
+// TP: R-multiple, H4 liquiditeit, of liquiditeit met R als terugval.
+f_target(bool _isBull, float _entry, float _sl) =>
+    float risk = math.abs(_entry - _sl)
+    float tpR  = _isBull ? _entry + risk * i_rMult : _entry - risk * i_rMult
+    float tpL  = _isBull ? h4LiqHi : h4LiqLo
+    bool liqOk = _isBull ? (tpL > _entry + risk) : (tpL < _entry - risk)
+    float out = tpR
+    if i_tpMode != "Vaste R"
+        out := liqOk ? tpL : tpR
+    out
+
+// ───────────────────────── VISUALISATIE ─────────────────────────
+// Eén setup = twee lichte vlakken die vanaf de entry naar rechts meegroeien:
+//   · entry → TP in groen
+//   · entry → SL in rood
+// Zolang de trade loopt schuiven ze mee met de prijs. Raakt hij TP of SL,
+// dan stopt het vlak precies daar en vervaagt de andere kant. Het label
+// erachter zegt wat de trade gedaan heeft.
+var box    tpBox     = na
+var box    slBox     = na
+var label  tradeLbl  = na
+var bool   tradeLive = false
+var int    tradeDir  = 0
+var float  tEntry    = na
+var float  tSL       = na
+var float  tTP       = na
+var string tGrd      = ""
+
+f_side(bool _isBull) =>
+    _isBull ? "LONG" : "SHORT"
+
+if newSetup and not na(setupStop)
+    bool  isBull = setupDir == 1
+    float ePx = h4PrevCls
+    float sPx = setupStop
+    float tPx = f_target(isBull, ePx, sPx)
+
+    tradeLive := true
+    tradeDir  := setupDir
+    tEntry    := ePx
+    tSL       := sPx
+    tTP       := tPx
+    tGrd      := setupGrd
+
+    tpBox := box.new(bar_index, math.max(ePx, tPx), bar_index + 1, math.min(ePx, tPx),
+         border_color = color.new(i_bullCol, 65), border_width = 1,
+         bgcolor = color.new(i_bullCol, i_fillTr))
+    slBox := box.new(bar_index, math.max(ePx, sPx), bar_index + 1, math.min(ePx, sPx),
+         border_color = color.new(i_bearCol, 65), border_width = 1,
+         bgcolor = color.new(i_bearCol, i_fillTr))
+
+    if i_showLbl
+        tradeLbl := label.new(bar_index + 1, ePx, tGrd + "  " + f_side(isBull) + "  loopt",
+             style = label.style_label_left, color = color.new(color.black, 100),
+             textcolor = color.new(color.silver, 15), size = size.small)
+
+else if tradeLive
+    box.set_right(tpBox, bar_index + 1)
+    box.set_right(slBox, bar_index + 1)
+    if i_showLbl and not na(tradeLbl)
+        label.set_x(tradeLbl, bar_index + 1)
+        label.set_y(tradeLbl, tEntry)
+
+    bool hitSl = tradeDir == 1 ? low  <= tSL : high >= tSL
+    bool hitTp = tradeDir == 1 ? high >= tTP : low  <= tTP
+
+    // Raakt hij in dezelfde bar allebei, dan tellen we het als SL — dat is de
+    // eerlijke aanname, je weet niet wat er binnen de bar eerst was.
+    if hitSl
+        tradeLive := false
+        box.set_bgcolor(tpBox, color.new(i_bullCol, 97))
+        box.set_border_color(tpBox, color.new(i_bullCol, 93))
+        if i_showLbl and not na(tradeLbl)
+            label.set_text(tradeLbl, tGrd + "  " + f_side(tradeDir == 1) + "  SL  -1R")
+            label.set_textcolor(tradeLbl, color.new(i_bearCol, 10))
+    else if hitTp
+        tradeLive := false
+        box.set_bgcolor(slBox, color.new(i_bearCol, 97))
+        box.set_border_color(slBox, color.new(i_bearCol, 93))
+        float rr = math.abs(tTP - tEntry) / math.max(math.abs(tEntry - tSL), syminfo.mintick)
+        if i_showLbl and not na(tradeLbl)
+            label.set_text(tradeLbl, tGrd + "  " + f_side(tradeDir == 1) + "  TP  +" + str.tostring(rr, "#.0") + "R")
+            label.set_textcolor(tradeLbl, color.new(i_bullCol, 10))
+
+// Duikt er later een OB of FVG op binnen de lopende setup, dan die zone
+// erbij tekenen als lichte stippelkader. Geen aparte alert.
+if (zoneBull or zoneBear) and not na(zoneLo)
+    box.new(bar_index, zoneHi, bar_index + i_lineLen, zoneLo,
+         border_color = color.new(color.gray, 55), border_width = 1,
+         border_style = line.style_dotted,
+         bgcolor = color.new(color.gray, math.min(96, i_fillTr + 5)))
+    if i_showLbl
+        label.new(bar_index + i_lineLen, (zoneHi + zoneLo) / 2, zoneTxt,
+             style = label.style_label_left, color = color.new(color.black, 100),
+             textcolor = color.new(color.gray, 25), size = size.tiny)
+
+// ───────────────────────────── PANEEL ─────────────────────────────
+// Alleen H1 en H4, als pijl. Groen omhoog = bullish, rood omlaag = bearish,
+// grijs streepje = consolidation (H1 zit middenin de ribbon).
+var table pnl = table.new(position.top_right, 2, 2, border_width = 0)
+
+f_arrow(int _t) =>
+    _t == 1 ? "▲" : _t == -1 ? "▼" : "—"
+
+f_arrowCol(int _t) =>
+    _t == 1 ? i_bullCol : _t == -1 ? i_bearCol : color.gray
+
+f_tfRow(table _tb, int _r, string _tf, int _trend) =>
+    table.cell(_tb, 0, _r, _tf, text_size = size.normal, text_color = color.gray,
+         text_halign = text.align_left, bgcolor = color.new(color.black, 80))
+    table.cell(_tb, 1, _r, f_arrow(_trend), text_size = size.large,
+         text_color = f_arrowCol(_trend),
+         text_halign = text.align_center, bgcolor = color.new(color.black, 80))
+
+if i_showPanel and barstate.islast
+    f_tfRow(pnl, 0, "H4", h4Trend)
+    f_tfRow(pnl, 1, "H1", h1Trend)
+
+// ─────────────────────────── ALERTS ───────────────────────────
+// Vuurt op de H4 closure, zodra de poort open staat en er een manipulation
+// candle ligt. Niet afhankelijk van een OB of FVG — die zijn gradatie.
+passesGrade = f_rank(setupGrd) >= f_rank(i_alertFrom)
+
+if newSetup and setupDir == 1 and passesGrade
+    alert(syminfo.ticker + "  LONG  " + setupGrd +
+         "\nEntry (H4 close): " + str.tostring(h4PrevCls, format.mintick) +
+         "\nStop onder: " + str.tostring(setupStop, format.mintick) +
+         "\nSessie: " + sessionName +
+         "\nSweep: " + str.tostring(h4bd) + " candles" +
+         "\nADR: " + str.tostring(math.round(adrPct)) + "%" +
+         "\nScore: " + str.tostring(setupScore) + "/4", alert.freq_once_per_bar_close)
+
+if newSetup and setupDir == -1 and passesGrade
+    alert(syminfo.ticker + "  SHORT  " + setupGrd +
+         "\nEntry (H4 close): " + str.tostring(h4PrevCls, format.mintick) +
+         "\nStop boven: " + str.tostring(setupStop, format.mintick) +
+         "\nSessie: " + sessionName +
+         "\nSweep: " + str.tostring(h4sd) + " candles" +
+         "\nADR: " + str.tostring(math.round(adrPct)) + "%" +
+         "\nScore: " + str.tostring(setupScore) + "/4", alert.freq_once_per_bar_close)

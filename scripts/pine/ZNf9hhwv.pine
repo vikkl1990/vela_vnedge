@@ -1,0 +1,240 @@
+//@version=6
+indicator("ATK/DEF  The Session Volume For Fair Value Gap  ", overlay=true, max_boxes_count=1000, max_labels_count=500)
+
+// ── Inputs ────────────────────────────────
+asiaColor   = input.color(color.new(color.blue, 40),  "Asia")
+europeColor = input.color(color.new(color.green, 40), "Europe")
+usColor     = input.color(color.new(color.red, 40),   "US")
+barLenMax   = input.int(30, "Max Bar Length (bars)", minval=5, maxval=200)
+maxQueue    = input.int(300, "FIFO Max Length", minval=50, maxval=5000)
+rightOffset = input.int(10, "Right Offset", minval=1, maxval=100)
+
+// ── FVG Inputs ────────────────────────────
+showFVG      = input.bool(true,  "Show Session FVG")
+fvgExtend    = input.int(10, "FVG Extend Bars (0 = history only)", minval=0, maxval=200)
+fvgMinGap    = input.float(0.0, "FVG Min Gap (price)", minval=0.0, step=0.0001)
+showFVGText  = input.bool(true, "Show FVG Volume Text")
+deleteFilled = input.bool(true, "Delete Filled FVG")
+
+// ── Session Definitions (IANA timezones auto-handle DST) ──
+asiaSess   = input.session("0800-1700", "Asia Kuala Lumpur 08-17")
+europeSess = input.session("0800-1700", "Europe London 08-17")
+usSess     = input.session("0900-1700", "US New York 09-17")
+
+inAsia   = not na(time(timeframe.period, asiaSess,   "Asia/Kuala_Lumpur"))
+inEurope = not na(time(timeframe.period, europeSess, "Europe/London"))
+inUS     = not na(time(timeframe.period, usSess,     "America/New_York"))
+
+// ── FIFO: independent per-bar management ──
+var array<int>   qBar   = array.new_int()
+var array<float> qHigh  = array.new_float()
+var array<float> qLow   = array.new_float()
+var array<float> qClose = array.new_float()
+var array<float> qVol   = array.new_float()
+var array<int>   qSess  = array.new_int()
+
+if barstate.isconfirmed
+    int sessType = inAsia ? 0 : inEurope ? 1 : inUS ? 2 : -1
+    array.push(qBar,   bar_index)
+    array.push(qHigh,  high)
+    array.push(qLow,   low)
+    array.push(qClose, close)
+    array.push(qVol,   volume)
+    array.push(qSess,  sessType)
+
+    while array.size(qBar) > maxQueue
+        array.shift(qBar)
+        array.shift(qHigh)
+        array.shift(qLow)
+        array.shift(qClose)
+        array.shift(qVol)
+        array.shift(qSess)
+
+// ── Daily reset at 08:00 Kuala Lumpur ─────
+isReset = hour(time, "Asia/Kuala_Lumpur") == 8 and minute(time, "Asia/Kuala_Lumpur") == 0
+
+var float volAsia   = 0.0
+var float volEurope = 0.0
+var float volUS     = 0.0
+
+var float openAsia   = na
+var float openEurope = na
+var float openUS     = na
+
+var float closeAsia   = na
+var float closeEurope = na
+var float closeUS     = na
+
+var bool asiaDone   = false
+var bool europeDone = false
+var bool usDone     = false
+
+if isReset
+    volAsia := 0.0, volEurope := 0.0, volUS := 0.0
+    openAsia := na, openEurope := na, openUS := na
+    closeAsia := na, closeEurope := na, closeUS := na
+    asiaDone := false, europeDone := false, usDone := false
+
+// ── Session accumulation ──────────────────
+if inAsia
+    volAsia += volume
+    openAsia := na(openAsia) ? open : openAsia
+    closeAsia := close
+
+if inEurope
+    volEurope += volume
+    openEurope := na(openEurope) ? open : openEurope
+    closeEurope := close
+
+if inUS
+    volUS += volume
+    openUS := na(openUS) ? open : openUS
+    closeUS := close
+
+// ── Session end detection ─────────────────
+isAsiaEnd   = not inAsia   and inAsia[1]   and not asiaDone
+isEuropeEnd = not inEurope and inEurope[1] and not europeDone
+isUSEnd     = not inUS     and inUS[1]     and not usDone
+
+// ── Daily max session volume ──────────────
+var float maxSessionVol = 0.0
+if isAsiaEnd
+    maxSessionVol := math.max(maxSessionVol, volAsia)
+if isEuropeEnd
+    maxSessionVol := math.max(maxSessionVol, volEurope)
+if isUSEnd
+    maxSessionVol := math.max(maxSessionVol, volUS)
+
+// ── Drawing: right-side progress bar at each session end ──
+if isAsiaEnd and volAsia > 0
+    int rightBar = bar_index + rightOffset
+    float yPos = low
+    float step = (high - low) * 0.2
+    if step == 0
+        step := syminfo.mintick * 10
+    int len = maxSessionVol > 0 ? int((volAsia / maxSessionVol) * barLenMax) : barLenMax
+    color c = closeAsia >= openAsia ? asiaColor : color.new(asiaColor, 20)
+    box.new(rightBar, yPos, rightBar + len, yPos - step,
+             bgcolor=c, border_color=color.new(c, 100))
+    label.new(rightBar + len + 1, yPos - step / 2,
+              "Asia " + str.tostring(volAsia / 1000, "#.#") + "K",
+              style=label.style_label_left,
+              color=color.new(asiaColor, 20),
+              textcolor=color.white, size=size.small)
+    asiaDone := true
+
+if isEuropeEnd and volEurope > 0
+    int rightBar = bar_index + rightOffset
+    float yPos = (high + low) / 2
+    float step = (high - low) * 0.2
+    if step == 0
+        step := syminfo.mintick * 10
+    int len = maxSessionVol > 0 ? int((volEurope / maxSessionVol) * barLenMax) : barLenMax
+    color c = closeEurope >= openEurope ? europeColor : color.new(europeColor, 20)
+    box.new(rightBar, yPos, rightBar + len, yPos - step,
+             bgcolor=c, border_color=color.new(c, 100))
+    label.new(rightBar + len + 1, yPos - step / 2,
+              "Europe " + str.tostring(volEurope / 1000, "#.#") + "K",
+              style=label.style_label_left,
+              color=color.new(europeColor, 20),
+              textcolor=color.white, size=size.small)
+    europeDone := true
+
+if isUSEnd and volUS > 0
+    int rightBar = bar_index + rightOffset
+    float yPos = high
+    float step = (high - low) * 0.2
+    if step == 0
+        step := syminfo.mintick * 10
+    int len = maxSessionVol > 0 ? int((volUS / maxSessionVol) * barLenMax) : barLenMax
+    color c = closeUS >= openUS ? usColor : color.new(usColor, 20)
+    box.new(rightBar, yPos, rightBar + len, yPos - step,
+             bgcolor=c, border_color=color.new(c, 100))
+    label.new(rightBar + len + 1, yPos - step / 2,
+              "US " + str.tostring(volUS / 1000, "#.#") + "K",
+              style=label.style_label_left,
+              color=color.new(usColor, 20),
+              textcolor=color.white, size=size.small)
+    usDone := true
+
+// ── Clear maxSessionVol on daily reset ────
+if isReset
+    maxSessionVol := 0.0
+
+// ══════════════════════════════════════════
+// ── Session FVG Engine ─────────────────────
+// ══════════════════════════════════════════
+
+// FVG 数组（并行数组管理）
+var array<box>   fvgBoxes   = array.new_box()
+var array<float> fvgTop     = array.new_float()
+var array<float> fvgBot     = array.new_float()
+var array<bool>  fvgIsBull  = array.new_bool()
+
+// 三根 bar 判定 FVG（当前 bar 为确认后的第三根）
+bullFVG = low > high[2]
+bearFVG = high < low[2]
+
+// 缺口大小过滤
+bullGap = low - high[2]
+bearGap = low[2] - high
+
+// FVG 归属时段：用中间 bar（[1]）判断，更准确
+sessOfMid = inAsia[1] ? 0 : inEurope[1] ? 1 : inUS[1] ? 2 : -1
+
+// 形成 FVG 的三根 bar 成交量之和（代表该缺口留下的订单量）
+fvgVolume = volume + volume[1] + volume[2]
+
+// 时段颜色
+fvgColorOf(int s) =>
+    s == 0 ? asiaColor : s == 1 ? europeColor : usColor
+
+// ── 新建 FVG ──────────────────────────────
+if showFVG and barstate.isconfirmed and sessOfMid >= 0
+    if bullFVG and bullGap >= fvgMinGap
+        color c = fvgColorOf(sessOfMid)
+        string txt = showFVGText ? "Bull FVG " + str.tostring(fvgVolume / 1000, "#.#") + "K" : ""
+        box b = box.new(bar_index - 2, low, bar_index + fvgExtend, high[2],
+                         bgcolor=color.new(c, 85),
+                         border_color=color.new(c, 40),
+                         text=txt,
+                         text_color=color.white,
+                         text_size=size.tiny,
+                         text_halign=text.align_left,
+                         text_valign=text.align_center)
+        array.push(fvgBoxes, b)
+        array.push(fvgTop, low)       // 上沿
+        array.push(fvgBot, high[2])   // 下沿
+        array.push(fvgIsBull, true)
+
+    if bearFVG and bearGap >= fvgMinGap
+        color c = fvgColorOf(sessOfMid)
+        string txt = showFVGText ? "Bear FVG " + str.tostring(fvgVolume / 1000, "#.#") + "K" : ""
+        box b = box.new(bar_index - 2, low[2], bar_index + fvgExtend, high,
+                         bgcolor=color.new(c, 85),
+                         border_color=color.new(c, 40),
+                         text=txt,
+                         text_color=color.white,
+                         text_size=size.tiny,
+                         text_halign=text.align_left,
+                         text_valign=text.align_center)
+        array.push(fvgBoxes, b)
+        array.push(fvgTop, low[2])    // 上沿
+        array.push(fvgBot, high)      // 下沿
+        array.push(fvgIsBull, false)
+
+// ── 检查 FVG 是否被回填 ───────────────────
+if deleteFilled and barstate.isconfirmed and array.size(fvgBoxes) > 0
+    for i = array.size(fvgBoxes) - 1 to 0
+        float top = array.get(fvgTop, i)
+        float bot = array.get(fvgBot, i)
+        bool isBull = array.get(fvgIsBull, i)
+        // 看涨 FVG：价格跌回缺口下沿即回填
+        // 看跌 FVG：价格涨回缺口上沿即回填
+        bool filled = isBull ? low <= bot : high >= top
+        if filled
+            box.delete(array.get(fvgBoxes, i))
+            array.remove(fvgBoxes, i)
+            array.remove(fvgTop, i)
+            array.remove(fvgBot, i)
+            array.remove(fvgIsBull, i)

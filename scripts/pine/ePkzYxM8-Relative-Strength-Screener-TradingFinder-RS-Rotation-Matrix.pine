@@ -1,0 +1,490 @@
+//@version=6
+indicator("Relative Strength Screener [TradingFinder] RS Rotation Matrix", "RS Rotation", overlay = false, max_bars_back = 5000, dynamic_requests = true)
+
+
+
+symbolLimitInput = input.int(10, "Number of Symbols", options = [2, 3, 4, 5, 6, 7, 8, 9, 10], group = "Symbols")
+symbol01 = input.symbol("AMEX:XLK", "Symbol 1", group = "Symbols")
+symbol02 = input.symbol("AMEX:XLF", "Symbol 2", group = "Symbols")
+symbol03 = input.symbol("AMEX:XLE", "Symbol 3", group = "Symbols")
+symbol04 = input.symbol("AMEX:XLV", "Symbol 4", group = "Symbols")
+symbol05 = input.symbol("AMEX:XLY", "Symbol 5", group = "Symbols")
+symbol06 = input.symbol("AMEX:XLP", "Symbol 6", group = "Symbols")
+symbol07 = input.symbol("AMEX:XLI", "Symbol 7", group = "Symbols")
+symbol08 = input.symbol("AMEX:XLB", "Symbol 8", group = "Symbols")
+symbol09 = input.symbol("AMEX:XLU", "Symbol 9", group = "Symbols")
+symbol10 = input.symbol("AMEX:XLRE", "Symbol 10", group = "Symbols")
+
+benchmarkInput = input.symbol("AMEX:SPY", "Benchmark", group = "Calculation Settings")
+scanTfInput = input.timeframe("D", "Scan Timeframe", tooltip = "Can be above, equal to, or below the chart timeframe. Lower settings use intrabar data.", group = "Calculation Settings")
+rsLookbackInput = input.int(63, "Performance Length", minval = 5, maxval = 500, tooltip = "Number of Scan Timeframe bars used to compare each symbol with the benchmark.", group = "Calculation Settings")
+momentumLookbackInput = input.int(21, "Momentum Length", minval = 1, maxval = 250, tooltip = "Measures how benchmark-relative performance changed over this many Scan Timeframe bars.", group = "Calculation Settings")
+momentumWeightPctInput = input.float(35.0, "Momentum Weight %", minval = 0.0, maxval = 100.0, step = 5.0, tooltip = "The remaining weight is assigned to relative strength.", group = "Calculation Settings")
+persistenceThresholdInput = input.int(3, "Leadership Confirmation", minval = 1, maxval = 50, tooltip = "Number of consecutive top-group checks required for Sustained Leadership.", group = "Calculation Settings")
+
+focusSymbolInput = input.symbol("AMEX:XLK", "Symbol", tooltip = "Choose one of the active screener symbols. Otherwise, Symbol 1 is used.", group = "Oscillator Settings")
+oscLookbackInput = input.int(63, "Performance Length", minval = 5, maxval = 500, tooltip = "Oscillator length in chart bars.", group = "Oscillator Settings")
+oscSmoothInput = input.int(5, "Smoothing", minval = 1, maxval = 50, group = "Oscillator Settings")
+oscSignalInput = input.int(13, "Signal Length", minval = 2, maxval = 100, group = "Oscillator Settings")
+oscShowSignalInput = input.bool(true, "Show Signal", group = "Oscillator Settings")
+oscShowLabelInput = input.bool(true, "Show Last Value", group = "Oscillator Settings")
+
+sendAlertsInput = input.bool(true, "Send Alerts", group = "Alert Settings")
+alertRankLevelInput = input.int(3, "Leader Rank", minval = 1, maxval = 10, tooltip = "Alerts when a symbol enters or leaves this leader group.", group = "Alert Settings")
+
+showDashboardInput = input.bool(true, "Show Ranking Table", group = "Table Settings")
+dashboardSizeInput = input.string(size.small, "Ranking Table Size", options = [size.tiny, size.small, size.normal, size.large], group = "Table Settings")
+dashboardPositionInput = input.string(position.top_right, "Ranking Table Position", options = [position.top_left, position.top_center, position.top_right, position.middle_left, position.middle_center, position.middle_right, position.bottom_left, position.bottom_center, position.bottom_right], tooltip = "Choose a different position from the Rotation Matrix to prevent overlap.", group = "Table Settings")
+showMatrixInput = input.bool(true, "Show Rotation Matrix", group = "Table Settings")
+matrixSizeInput = input.string(size.small, "Matrix Table Size", options = [size.tiny, size.small, size.normal, size.large], group = "Table Settings")
+matrixPositionInput = input.string(position.bottom_right, "Matrix Table Position", options = [position.top_left, position.top_center, position.top_right, position.middle_left, position.middle_center, position.middle_right, position.bottom_left, position.bottom_center, position.bottom_right], tooltip = "Choose a different position from the Ranking Table to prevent overlap.", group = "Table Settings")
+
+
+
+
+
+f_shortSymbol(string tickerId) =>
+    parts = str.split(tickerId, ":")
+    array.size(parts) > 1 ? array.get(parts, array.size(parts) - 1) : tickerId
+
+f_timeframeLabel(timeframeValue) =>
+    label = timeframeValue
+    if str.contains(timeframeValue, "S")
+        amountS = str.replace_all(timeframeValue, "S", "")
+        label := (amountS == "" ? "1" : amountS) + "s"
+    else if str.contains(timeframeValue, "D")
+        amountD = str.replace_all(timeframeValue, "D", "")
+        label := (amountD == "" ? "1" : amountD) + "D"
+    else if str.contains(timeframeValue, "W")
+        amountW = str.replace_all(timeframeValue, "W", "")
+        label := (amountW == "" ? "1" : amountW) + "W"
+    else if str.contains(timeframeValue, "M")
+        amountM = str.replace_all(timeframeValue, "M", "")
+        label := (amountM == "" ? "1" : amountM) + "M"
+    else
+        float totalSeconds = timeframe.in_seconds(timeframeValue)
+        if not na(totalSeconds)
+            int totalMinutes = int(totalSeconds / 60)
+            label := totalMinutes >= 1440 and totalMinutes % 1440 == 0 ? str.tostring(int(totalMinutes / 1440)) + "D" :
+                     totalMinutes >= 60 and totalMinutes % 60 == 0 ? str.tostring(int(totalMinutes / 60)) + "h" :
+                     str.tostring(totalMinutes) + "m"
+    label
+
+f_percentile(array<float> values, int index) =>
+    float target = array.get(values, index)
+    int valid = 0
+    int below = 0
+    int tiedOthers = 0
+    if not na(target)
+        for j = 0 to array.size(values) - 1
+            float candidate = array.get(values, j)
+            if not na(candidate)
+                valid += 1
+                if candidate < target
+                    below += 1
+                else if j != index and candidate == target
+                    tiedOthers += 1
+    valid <= 1 or na(target) ? (na(target) ? na : 50.0) : 100.0 * (below + 0.5 * tiedOthers) / (valid - 1)
+
+f_ordinalRank(array<float> values, int index) =>
+    float target = array.get(values, index)
+    int rank = na
+    if not na(target)
+        rank := 1
+        for j = 0 to array.size(values) - 1
+            float candidate = array.get(values, j)
+            if not na(candidate) and candidate > target
+                rank += 1
+    rank
+
+f_state(float strengthPct, float momentumPct, float strengthCut, float momentumCut) =>
+    string state = "N/A"
+    if not na(strengthPct) and not na(momentumPct)
+        state := strengthPct >= strengthCut and momentumPct >= momentumCut ? "Leading" :
+                 strengthPct < strengthCut and momentumPct >= momentumCut ? "Improving" :
+                 strengthPct >= strengthCut and momentumPct < momentumCut ? "Weakening" : "Lagging"
+    state
+
+f_stateColor(string state) =>
+    state == "Leading" ? color.rgb(0, 145, 110) :
+     state == "Improving" ? color.rgb(20, 105, 190) :
+     state == "Weakening" ? color.rgb(224, 145, 0) :
+     state == "Lagging" ? color.rgb(185, 50, 65) : color.rgb(90, 95, 105)
+
+f_lastFloat(array<float> values) =>
+    array.size(values) > 0 ? array.last(values) : na
+
+f_lastInt(array<int> values) =>
+    array.size(values) > 0 ? array.last(values) : na
+
+f_heatColor(float value) =>
+    na(value) ? color.new(color.gray, 80) :
+     value >= 75 ? color.new(color.rgb(0, 145, 110), 15) :
+     value >= 50 ? color.new(color.rgb(85, 150, 95), 30) :
+     value >= 25 ? color.new(color.rgb(210, 145, 30), 30) : color.new(color.rgb(185, 50, 65), 15)
+
+f_appendEvent(string message, string eventText) =>
+    message == "" ? eventText : message + "\n" + eventText
+
+
+
+
+var array<string> symbols = array.new_string()
+if barstate.isfirst
+    array.push(symbols, symbol01)
+    array.push(symbols, symbol02)
+    if symbolLimitInput >= 3
+        array.push(symbols, symbol03)
+    if symbolLimitInput >= 4
+        array.push(symbols, symbol04)
+    if symbolLimitInput >= 5
+        array.push(symbols, symbol05)
+    if symbolLimitInput >= 6
+        array.push(symbols, symbol06)
+    if symbolLimitInput >= 7
+        array.push(symbols, symbol07)
+    if symbolLimitInput >= 8
+        array.push(symbols, symbol08)
+    if symbolLimitInput >= 9
+        array.push(symbols, symbol09)
+    if symbolLimitInput >= 10
+        array.push(symbols, symbol10)
+
+symbolCount = array.size(symbols)
+scanIsLower = timeframe.in_seconds(scanTfInput) < timeframe.in_seconds(timeframe.period)
+leaderCount = math.min(alertRankLevelInput, symbolCount)
+topQuartile = math.max(1, int(math.ceil(symbolCount * 0.25)))
+momentumWeight = momentumWeightPctInput / 100.0
+strengthWeight = 1.0 - momentumWeight
+strengthCut = 50.0
+momentumCut = 50.0
+
+
+
+float benchNow = na
+float benchPast = na
+float benchMom = na
+float benchMomPast = na
+int scanStamp = na
+
+if scanIsLower
+    [benchNowBars, benchPastBars, benchMomBars, benchMomPastBars, benchTimeBars] = request.security_lower_tf(
+         benchmarkInput,
+         scanTfInput,
+         [close, close[rsLookbackInput], close[momentumLookbackInput], close[rsLookbackInput + momentumLookbackInput], time],
+         ignore_invalid_symbol = true,
+         ignore_invalid_timeframe = true,
+         calc_bars_count = 5000)
+    benchNow := f_lastFloat(benchNowBars)
+    benchPast := f_lastFloat(benchPastBars)
+    benchMom := f_lastFloat(benchMomBars)
+    benchMomPast := f_lastFloat(benchMomPastBars)
+    scanStamp := f_lastInt(benchTimeBars)
+else
+    [benchNowHtf, benchPastHtf, benchMomHtf, benchMomPastHtf, benchTimeHtf] = request.security(
+         benchmarkInput,
+         scanTfInput,
+         [close[1], close[rsLookbackInput + 1], close[momentumLookbackInput + 1], close[rsLookbackInput + momentumLookbackInput + 1], time[1]],
+         gaps = barmerge.gaps_off,
+         lookahead = barmerge.lookahead_on,
+         ignore_invalid_symbol = true,
+         calc_bars_count = 5000)
+    benchNow := benchNowHtf
+    benchPast := benchPastHtf
+    benchMom := benchMomHtf
+    benchMomPast := benchMomPastHtf
+    scanStamp := benchTimeHtf
+
+bool newScan = not na(scanStamp) and (not scanIsLower or barstate.isconfirmed) and (na(scanStamp[1]) or scanStamp != scanStamp[1])
+
+
+relativeReturns = array.new_float(symbolCount, na)
+relativeMomentum = array.new_float(symbolCount, na)
+
+for i = 0 to symbolCount - 1
+    string symbolId = array.get(symbols, i)
+    float symbolNow = na
+    float symbolPast = na
+    float symbolMom = na
+    float symbolMomPast = na
+    int symbolStamp = na
+    if scanIsLower
+        [symbolNowBars, symbolPastBars, symbolMomBars, symbolMomPastBars, symbolTimeBars] = request.security_lower_tf(
+             symbolId,
+             scanTfInput,
+             [close, close[rsLookbackInput], close[momentumLookbackInput], close[rsLookbackInput + momentumLookbackInput], time],
+             ignore_invalid_symbol = true,
+             ignore_invalid_timeframe = true,
+             calc_bars_count = 5000)
+        symbolNow := f_lastFloat(symbolNowBars)
+        symbolPast := f_lastFloat(symbolPastBars)
+        symbolMom := f_lastFloat(symbolMomBars)
+        symbolMomPast := f_lastFloat(symbolMomPastBars)
+        symbolStamp := f_lastInt(symbolTimeBars)
+    else
+        [symbolNowHtf, symbolPastHtf, symbolMomHtf, symbolMomPastHtf, symbolTimeHtf] = request.security(
+             symbolId,
+             scanTfInput,
+             [close[1], close[rsLookbackInput + 1], close[momentumLookbackInput + 1], close[rsLookbackInput + momentumLookbackInput + 1], time[1]],
+             gaps = barmerge.gaps_off,
+             lookahead = barmerge.lookahead_on,
+             ignore_invalid_symbol = true,
+             calc_bars_count = 5000)
+        symbolNow := symbolNowHtf
+        symbolPast := symbolPastHtf
+        symbolMom := symbolMomHtf
+        symbolMomPast := symbolMomPastHtf
+        symbolStamp := symbolTimeHtf
+
+    timestampsMatch = not na(scanStamp) and symbolStamp == scanStamp
+    validNow = timestampsMatch and not na(symbolNow) and not na(symbolPast) and not na(benchNow) and not na(benchPast) and symbolPast != 0 and benchPast != 0 and benchNow != 0
+    validPrevious = timestampsMatch and not na(symbolMom) and not na(symbolMomPast) and not na(benchMom) and not na(benchMomPast) and symbolMomPast != 0 and benchMomPast != 0 and benchMom != 0
+    currentRelativeReturn = validNow ? 100.0 * ((symbolNow / symbolPast) / (benchNow / benchPast) - 1.0) : na
+    previousRelativeReturn = validPrevious ? 100.0 * ((symbolMom / symbolMomPast) / (benchMom / benchMomPast) - 1.0) : na
+    momentum = not na(currentRelativeReturn) and not na(previousRelativeReturn) ? currentRelativeReturn - previousRelativeReturn : na
+    array.set(relativeReturns, i, currentRelativeReturn)
+    array.set(relativeMomentum, i, momentum)
+
+
+strengthPercentiles = array.new_float(symbolCount, na)
+momentumPercentiles = array.new_float(symbolCount, na)
+compositeScores = array.new_float(symbolCount, na)
+
+for i = 0 to symbolCount - 1
+    strengthPct = f_percentile(relativeReturns, i)
+    momentumPct = f_percentile(relativeMomentum, i)
+    score = not na(strengthPct) and not na(momentumPct) ? strengthPct * strengthWeight + momentumPct * momentumWeight : na
+    array.set(strengthPercentiles, i, strengthPct)
+    array.set(momentumPercentiles, i, momentumPct)
+    array.set(compositeScores, i, score)
+
+currentRanks = array.new_int(symbolCount, na)
+currentStates = array.new_string(symbolCount, "N/A")
+
+for i = 0 to symbolCount - 1
+    array.set(currentRanks, i, f_ordinalRank(compositeScores, i))
+    array.set(currentStates, i, f_state(array.get(strengthPercentiles, i), array.get(momentumPercentiles, i), strengthCut, momentumCut))
+
+
+var  previousRanks = array.new_int()
+var  previousStates = array.new_string()
+var  persistenceCounts = array.new_int()
+var  latestRankChanges = array.new_int()
+
+if barstate.isfirst
+    for i = 0 to symbolCount - 1
+        array.push(previousRanks, na)
+        array.push(previousStates, "N/A")
+        array.push(persistenceCounts, 0)
+        array.push(latestRankChanges, na)
+
+bool anyLeaderEntry = false
+bool anyQuadrantTransition = false
+bool anyLeadershipLoss = false
+bool anyPersistenceHit = false
+string eventMessage = ""
+
+if newScan
+    for i = 0 to symbolCount - 1
+        string symbolName = f_shortSymbol(array.get(symbols, i))
+        int rankNow = array.get(currentRanks, i)
+        int rankBefore = array.get(previousRanks, i)
+        string stateNow = array.get(currentStates, i)
+        string stateBefore = array.get(previousStates, i)
+        int persistenceBefore = array.get(persistenceCounts, i)
+        int persistenceNow = not na(rankNow) and rankNow <= topQuartile ? persistenceBefore + 1 : 0
+        array.set(persistenceCounts, i, persistenceNow)
+        array.set(latestRankChanges, i, not na(rankNow) and not na(rankBefore) ? rankBefore - rankNow : na)
+
+        bool leaderEntry = sendAlertsInput and not na(rankBefore) and not na(rankNow) and rankBefore > leaderCount and rankNow <= leaderCount
+        bool quadrantTransition = sendAlertsInput and stateBefore != "N/A" and stateNow != "N/A" and stateBefore != stateNow
+        bool leadershipLoss = sendAlertsInput and not na(rankBefore) and not na(rankNow) and rankBefore <= leaderCount and rankNow > leaderCount
+        bool persistenceHit = sendAlertsInput and persistenceBefore < persistenceThresholdInput and persistenceNow >= persistenceThresholdInput
+
+        if leaderEntry
+            anyLeaderEntry := true
+            eventMessage := f_appendEvent(eventMessage, symbolName + " entered Top " + str.tostring(leaderCount))
+        if quadrantTransition
+            anyQuadrantTransition := true
+            eventMessage := f_appendEvent(eventMessage, symbolName + ": " + stateBefore + " → " + stateNow)
+        if leadershipLoss
+            anyLeadershipLoss := true
+            eventMessage := f_appendEvent(eventMessage, symbolName + " left Top " + str.tostring(leaderCount))
+        if persistenceHit
+            anyPersistenceHit := true
+            eventMessage := f_appendEvent(eventMessage, symbolName + " reached " + str.tostring(persistenceThresholdInput) + " top-quartile scans")
+
+        array.set(previousRanks, i, rankNow)
+        array.set(previousStates, i, stateNow)
+
+    if eventMessage != ""
+        alert("TF Relative Strength Screener | " + str.format_time(scanStamp, "yyyy-MM-dd HH:mm") + "\n" + eventMessage, alert.freq_once_per_bar)
+
+bool anyEvent = anyLeaderEntry or anyQuadrantTransition or anyLeadershipLoss or anyPersistenceHit
+alertcondition(anyLeaderEntry, "RS leader entry", "A symbol entered the selected leader group. Use an 'Any alert() function call' alert for symbol details.")
+alertcondition(anyQuadrantTransition, "RS rotation change", "A symbol changed rotation state. Use an 'Any alert() function call' alert for symbol details.")
+alertcondition(anyLeadershipLoss, "RS leadership loss", "A symbol left the Top-N group. Use an 'Any alert() function call' alert for symbol details.")
+alertcondition(anyPersistenceHit, "RS leadership confirmed", "A symbol reached the selected leadership-confirmation count. Use an 'Any alert() function call' alert for symbol details.")
+alertcondition(anyEvent, "Any RS screener event", "The Relative Strength Screener generated an event. Use an 'Any alert() function call' alert for symbol details.")
+
+
+
+
+int requestedFocusIndex = array.indexof(symbols, focusSymbolInput)
+int focusIndex = requestedFocusIndex >= 0 ? requestedFocusIndex : 0
+string oscSymbol = array.get(symbols, focusIndex)
+[oscClose, oscTime] = request.security(oscSymbol, timeframe.period, [close[1], time[1]], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+[oscBenchmark, oscBenchTime] = request.security(benchmarkInput, timeframe.period, [close[1], time[1]], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+
+bool oscAligned = not na(oscClose) and not na(oscBenchmark) and oscBenchmark > 0 and oscTime == oscBenchTime
+float oscRatio = oscAligned ? oscClose / oscBenchmark : na
+float oscRaw = not na(oscRatio[oscLookbackInput]) and oscRatio[oscLookbackInput] > 0 ? 100.0 * (oscRatio / oscRatio[oscLookbackInput] - 1.0) : na
+float oscSmoothed = ta.ema(oscRaw, oscSmoothInput)
+float oscSignalBase = ta.ema(oscSmoothed, oscSignalInput)
+float oscValue = not na(oscRaw) ? oscSmoothed : na
+float oscSignal = not na(oscRaw) ? oscSignalBase : na
+color oscColor = oscValue >= 0 ? #26d6ad : #f16b82
+color ribbonColor = oscValue >= oscSignal ? color.new(#26d6ad, 88) : color.new(#f16b82, 88)
+hline(0, "Benchmark parity • 0%", color = color.new(#b0bec5, 45), linestyle = hline.style_dashed)
+oscPlot = plot(oscValue, "Relative performance % (smoothed)", color = oscColor, linewidth = 3, style = plot.style_linebr)
+signalPlot = plot(oscShowSignalInput ? oscSignal : na, "Relative performance signal", color = color.new(#c8d0df, 35), linewidth = 1, style = plot.style_linebr, display = display.pane)
+fill(oscPlot, signalPlot, color = oscShowSignalInput ? ribbonColor : na, title = "Relative acceleration ribbon", fillgaps = false)
+plot(oscRaw, "Unsmoothed benchmark-relative return %", display = display.data_window)
+var label oscEndLabel = na
+if barstate.islast
+    label.delete(oscEndLabel)
+    if oscShowLabelInput
+        string oscName = f_shortSymbol(oscSymbol) + " / " + f_shortSymbol(benchmarkInput)
+        string oscText = oscName + (na(oscValue) ? " • No aligned data" : "  " + str.tostring(oscValue, "+#.##;-#.##") + "%")
+        oscEndLabel := label.new(bar_index + 2, nz(oscValue, 0), oscText, style = label.style_label_left, color = color.new(#0d1a3f, 100), textcolor = na(oscValue) ? color.gray : oscColor, size = size.small, tooltip = "Smoothed relative return over " + str.tostring(oscLookbackInput) + " chart bars. Above zero: outperforming the benchmark. Below zero: underperforming. Ribbon: line versus EMA signal, not a buy/sell recommendation. Confirmed data: one chart bar late.")
+
+
+var table dashboard = table.new(dashboardPositionInput, 7, 14, bgcolor = #0d1a3f, border_width = 1, frame_width = 1, frame_color = #1c306d, border_color = #1c306d, force_overlay = true)
+var table matrix = table.new(matrixPositionInput, 2, 5, bgcolor = #0d1a3f, border_width = 1, frame_width = 1, frame_color = #1c306d, border_color = #1c306d, force_overlay = true)
+
+if barstate.islast
+    table.clear(dashboard, 0, 0, 6, 13)
+    table.clear(matrix, 0, 0, 1, 4)
+
+    if showDashboardInput
+        color headerBg = #1c306d
+        color headerFg = color.white
+        int rankedCount = 0
+        for i = 0 to symbolCount - 1
+            if not na(array.get(compositeScores, i))
+                rankedCount += 1
+        bool completeUniverse = rankedCount == symbolCount
+        bool lowerTfNoData = scanIsLower and rankedCount == 0
+        bool lowerTfLimited = scanIsLower and rankedCount > 0 and not completeUniverse
+        string scanLabel = f_timeframeLabel(scanTfInput)
+        string chartLabel = f_timeframeLabel(timeframe.period)
+        table.cell(dashboard, 0, 0, "♦ TradingFinder ♦", text_color = #56cfe0, text_size = dashboardSizeInput, bgcolor = #0d1a3f)
+        table.merge_cells(dashboard, 0, 0, 6, 0)
+        string checkUnit = scanIsLower ? "chart checks" : "scans"
+        string scanMode = scanIsLower ? "Intrabar snapshot" : "Confirmed bars"
+        string contextText = str.tostring(symbolCount) + " symbols vs " + f_shortSymbol(benchmarkInput) + " | Scan " + scanLabel + " | " + scanMode
+        if scanIsLower
+            contextText := "Scan " + scanLabel + " < Chart " + chartLabel + " | " + scanMode
+        if lowerTfNoData
+            contextText := "NO DATA — Scan " + scanLabel + " is below Chart " + chartLabel
+        else if lowerTfLimited
+            contextText := "LIMITED DATA — Scan " + scanLabel + " is below Chart " + chartLabel + " | " + str.tostring(rankedCount) + "/" + str.tostring(symbolCount) + " symbols"
+        else if not completeUniverse
+            contextText += " | Data: " + str.tostring(rankedCount) + "/" + str.tostring(symbolCount)
+        string contextTip = scanIsLower ? "The table uses the latest available lower-timeframe intrabar. Historical rank changes and streaks advance once per completed chart bar." : "The table uses the previous confirmed Scan Timeframe bar."
+        if lowerTfNoData or lowerTfLimited
+            contextTip := "The Scan Timeframe is lower than the Chart Timeframe. TradingView may have limited lower-timeframe intrabar history, so the request did not return usable data for every selected symbol. Use a lower chart timeframe for fuller history."
+        table.cell(dashboard, 0, 1, contextText, text_color = completeUniverse ? #c6d4eb : #ffbf69, text_size = dashboardSizeInput, bgcolor = lowerTfNoData ? color.new(#b93241, 35) : lowerTfLimited ? color.new(#e09100, 50) : #111d3a, tooltip = contextTip + " Latest data: " + (na(scanStamp) ? "Waiting" : str.format_time(scanStamp, "yyyy-MM-dd HH:mm")))
+        table.merge_cells(dashboard, 0, 1, 6, 1)
+        array<string> headers = array.from("Rank", "Symbol", "Takeaway / Evidence", "vs Benchmark", "Score / 100", "Top-group streak", "Rank change")
+        array<string> tips = array.from("Position among symbols with valid scores. Ties share a rank.", "Selected watchlist symbol.", "Descriptive screening conclusion, not an entry or exit signal. Momentum below is the change in benchmark-relative return over the configured Momentum Length, in percentage points.", "Relative wealth-factor return. Positive = ahead of benchmark; negative = behind.", "Weighted strength and momentum percentiles. A comparison score, NOT a probability of profit.", "Consecutive " + checkUnit + " ranked in the top " + str.tostring(topQuartile) + " of " + str.tostring(symbolCount) + " selected symbols. This does not count benchmark outperformance.", "Change since the previous " + (scanIsLower ? "completed chart check" : "confirmed scan") + ". Up means a better rank.")
+        for col = 0 to 6
+            table.cell(dashboard, col, 2, array.get(headers, col), text_color = headerFg, text_size = dashboardSizeInput, bgcolor = headerBg, tooltip = array.get(tips, col))
+        array<float> sortableScores = array.copy(compositeScores)
+        for i = 0 to symbolCount - 1
+            if na(array.get(sortableScores, i))
+                array.set(sortableScores, i, -1e10)
+        array<int> sortedIndices = array.sort_indices(sortableScores, order.descending)
+        for row = 0 to symbolCount - 1
+            int i = array.get(sortedIndices, row)
+            int rankNow = array.get(currentRanks, i)
+            float rel = array.get(relativeReturns, i)
+            float mom = array.get(relativeMomentum, i)
+            float score = array.get(compositeScores, i)
+            int persistence = array.get(persistenceCounts, i)
+            int deltaRank = array.get(latestRankChanges, i)
+            bool valid = not na(rankNow) and not na(rel) and not na(mom)
+            // Priority matters: a deteriorating leader must not be called durable.
+            bool fading = valid and rel > 0 and mom < 0
+            bool durable = valid and rel > 0 and mom >= 0 and rankNow <= topQuartile and persistence >= persistenceThresholdInput
+            bool improving = valid and mom > 0 and not na(deltaRank) and deltaRank > 0
+            bool behind = valid and rel < 0 and mom <= 0 and (na(deltaRank) or deltaRank <= 0)
+            string takeaway = "Mixed evidence"
+            color conclusionColor = #b5c3d8
+            if not valid
+                takeaway := "Insufficient data"
+            else if not completeUniverse
+                takeaway := "Incomplete comparison"
+                conclusionColor := #ffbf69
+            else if fading
+                takeaway := "Outperforming, fading"
+                conclusionColor := #ffbf69
+            else if durable
+                takeaway := "Sustained leadership"
+                conclusionColor := #26d6ad
+            else if improving
+                takeaway := rel < 0 ? "Recovering, still behind" : "Climbing the ranks"
+                conclusionColor := #56cfe0
+            else if behind
+                takeaway := "Behind, no recovery"
+                conclusionColor := #f16b82
+            string evidence = not valid ? "More history required" : "Relative change " + str.tostring(mom, "+#.##;-#.##") + " pp"
+            string explanation = "Classification priority: incomplete data; outperforming with negative relative momentum; positive relative return + nonnegative momentum + top-group rank for at least " + str.tostring(persistenceThresholdInput) + " " + checkUnit + "; positive momentum + rising rank; negative relative return without improvement; otherwise mixed. These summaries differ from the matrix's cross-sectional quadrants."
+            string relativeText = na(rel) ? "No data" : str.tostring(math.abs(rel), "#.##") + (rel > 0 ? "% ahead" : rel < 0 ? "% behind" : "% · On par")
+            string deltaText = na(deltaRank) ? "No prior check" : deltaRank > 0 ? "↑ " + str.tostring(deltaRank) + " places" : deltaRank < 0 ? "↓ " + str.tostring(math.abs(deltaRank)) + " places" : "Unchanged"
+            color rowBg = row % 2 == 0 ? #111d3a : #0d1732
+            color deltaColor = na(deltaRank) or deltaRank == 0 ? #b5c3d8 : deltaRank > 0 ? #26d6ad : #f16b82
+            int tableRow = row + 3
+            table.cell(dashboard, 0, tableRow, na(rankNow) ? "—" : str.tostring(rankNow) + " of " + str.tostring(rankedCount), text_color = headerFg, text_size = dashboardSizeInput, bgcolor = rowBg)
+            table.cell(dashboard, 1, tableRow, f_shortSymbol(array.get(symbols, i)), text_color = headerFg, text_size = dashboardSizeInput, bgcolor = rowBg)
+            table.cell(dashboard, 2, tableRow, takeaway + "\n" + evidence, text_color = conclusionColor, text_size = dashboardSizeInput, bgcolor = color.new(conclusionColor, 90), text_halign = text.align_left, tooltip = explanation)
+            table.cell(dashboard, 3, tableRow, relativeText, text_color = na(rel) or rel == 0 ? #b5c3d8 : rel > 0 ? #26d6ad : #f16b82, text_size = dashboardSizeInput, bgcolor = rowBg)
+            table.cell(dashboard, 4, tableRow, na(score) ? "—" : str.tostring(score, "#.0") + " / 100", text_color = headerFg, text_size = dashboardSizeInput, bgcolor = f_heatColor(score), tooltip = "Comparison score only. Not win rate or confidence.")
+            table.cell(dashboard, 5, tableRow, not valid ? "—" : str.tostring(persistence) + " " + checkUnit, text_color = valid and persistence >= persistenceThresholdInput ? #26d6ad : #b5c3d8, text_size = dashboardSizeInput, bgcolor = rowBg)
+            table.cell(dashboard, 6, tableRow, deltaText, text_color = deltaColor, text_size = dashboardSizeInput, bgcolor = rowBg)
+        int footerRow = symbolCount + 3
+        table.cell(dashboard, 0, footerRow, "Compare → Shortlist → Check price setup | Score ≠ win probability", text_color = #b5c3d8, text_size = dashboardSizeInput, bgcolor = #0d1a3f)
+        table.merge_cells(dashboard, 0, footerRow, 6, footerRow)
+
+    if showMatrixInput
+        string improvingList = ""
+        string leadingList = ""
+        string laggingList = ""
+        string weakeningList = ""
+        array<float> matrixSortableScores = array.copy(compositeScores)
+        for i = 0 to symbolCount - 1
+            if na(array.get(matrixSortableScores, i))
+                array.set(matrixSortableScores, i, -1e10)
+        array<int> matrixOrder = array.sort_indices(matrixSortableScores, order.descending)
+        for row = 0 to symbolCount - 1
+            int i = array.get(matrixOrder, row)
+            string name = f_shortSymbol(array.get(symbols, i))
+            string state = array.get(currentStates, i)
+            if state == "Improving"
+                improvingList += (improvingList == "" ? "" : "\n") + name
+            else if state == "Leading"
+                leadingList += (leadingList == "" ? "" : "\n") + name
+            else if state == "Lagging"
+                laggingList += (laggingList == "" ? "" : "\n") + name
+            else if state == "Weakening"
+                weakeningList += (weakeningList == "" ? "" : "\n") + name
+        table.cell(matrix, 0, 0, "ROTATION MATRIX", text_color = #56cfe0, text_size = matrixSizeInput, bgcolor = #0d1a3f)
+        table.merge_cells(matrix, 0, 0, 1, 0)
+        table.cell(matrix, 0, 1, "IMPROVING  ↑", text_color = f_stateColor("Improving"), text_size = matrixSizeInput, bgcolor = #0d1732)
+        table.cell(matrix, 1, 1, "LEADING  ◆", text_color = f_stateColor("Leading"), text_size = matrixSizeInput, bgcolor = #0d1732)
+        table.cell(matrix, 0, 2, improvingList == "" ? "—" : improvingList, text_color = color.white, text_size = matrixSizeInput, bgcolor = color.new(f_stateColor("Improving"), 58), text_halign = text.align_left)
+        table.cell(matrix, 1, 2, leadingList == "" ? "—" : leadingList, text_color = color.white, text_size = matrixSizeInput, bgcolor = color.new(f_stateColor("Leading"), 58), text_halign = text.align_left)
+        table.cell(matrix, 0, 3, "LAGGING  ↓", text_color = f_stateColor("Lagging"), text_size = matrixSizeInput, bgcolor = #0d1732)
+        table.cell(matrix, 1, 3, "WEAKENING  ◇", text_color = f_stateColor("Weakening"), text_size = matrixSizeInput, bgcolor = #0d1732)
+        table.cell(matrix, 0, 4, laggingList == "" ? "—" : laggingList, text_color = color.white, text_size = matrixSizeInput, bgcolor = color.new(f_stateColor("Lagging"), 58), text_halign = text.align_left)
+        table.cell(matrix, 1, 4, weakeningList == "" ? "—" : weakeningList, text_color = color.white, text_size = matrixSizeInput, bgcolor = color.new(f_stateColor("Weakening"), 58), text_halign = text.align_left)

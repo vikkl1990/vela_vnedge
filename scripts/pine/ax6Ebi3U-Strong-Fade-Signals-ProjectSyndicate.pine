@@ -1,0 +1,713 @@
+//@version=6
+
+
+indicator("Strong Fade Signals", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+// ── 01 · Burst engine ───────────────────────────────────────────────────────
+gB = "01 · Burst Engine (signal source)"
+srcIn      = input.source(close, "Basis source", group = gB)
+basisType  = input.string("EMA", "Basis type", options = ["EMA", "SMA", "HMA", "WMA", "VWMA", "RMA"], group = gB)
+basisLen   = input.int(20, "Basis length", minval = 2, maxval = 400, group = gB)
+atrLen     = input.int(14, "ATR length", minval = 2, maxval = 200, group = gB)
+bandMult   = input.float(2.0, "Band width (ATR beyond basis = burst starts)", minval = 0.2, maxval = 10.0, step = 0.1, group = gB, tooltip = "A bar bursts when its high pokes above basis + this·ATR (or its low below basis − this·ATR).")
+stepATR    = input.float(0.5, "ATR per stack step", minval = 0.1, maxval = 3.0, step = 0.05, group = gB, tooltip = "Each extra step of ATR beyond the band adds one notch of stack height and heat.")
+maxLevels  = input.int(6, "Max stack height", minval = 1, maxval = 6, group = gB)
+heatSat    = input.float(3.0, "Heat saturates at (ATR beyond band)", minval = 0.5, maxval = 12.0, step = 0.5, group = gB)
+needClose  = input.bool(false, "Require closing burst (close beyond band)", group = gB, tooltip = "ON: only count a burst when the CLOSE also finishes beyond the band. OFF: any wick beyond the band counts.")
+confirmBar = input.bool(true, "Confirm on bar close (non-repaint)", group = gB, tooltip = "ON: burst peaks are only detected on closed bars, so nothing repaints.")
+
+// ── 02 · Fade filter ────────────────────────────────────────────────────────
+gF = "02 · Fade Filter"
+fadeMin    = input.int(3, "Min stack height to fade", minval = 1, maxval = 6, group = gF, tooltip = "How over-extended a burst must be before its exhaustion peak is tradable.")
+minMag     = input.float(0.0, "Min burst magnitude (ATR beyond band)", minval = 0, maxval = 12, step = 0.1, group = gF)
+needRej    = input.bool(false, "Require rejection wick on the peak bar", group = gF)
+rejMin     = input.float(0.30, "Min rejection wick (share of peak-bar range)", minval = 0, maxval = 0.95, step = 0.05, group = gF)
+useRsiGate = input.bool(false, "Require RSI exhaustion", group = gF)
+rsiLen     = input.int(14, "RSI length", minval = 2, maxval = 100, group = gF, tooltip = "Always feeds the Exhaustion score component, gate or not.")
+rsiOB      = input.float(65, "RSI overbought (fade SHORT above)", minval = 51, maxval = 99, group = gF)
+rsiOS      = input.float(35, "RSI oversold (fade LONG below)", minval = 1, maxval = 49, group = gF)
+allowShort = input.bool(true, "Allow fade SHORTS (up bursts)", group = gF)
+allowLong  = input.bool(true, "Allow fade LONGS (down bursts)", group = gF)
+cooldown   = input.int(20, "Minimum spacing between signals (bars)", minval = 0, maxval = 500, group = gF, tooltip = "A new signal is ignored unless at least this many candles have passed since the last one. Stops tickets stacking on top of each other.")
+
+// ── 03 · Trade levels & universal zones ─────────────────────────────────────
+gT = "03 · Trade Levels & Universal Zones"
+stopMode   = input.string("Burst Extreme", "Stop basis", options = ["Burst Extreme", "ATR Multiple", "Swing Extreme"], group = gT, tooltip = "Burst Extreme = beyond the peak bar's wick. The natural fade stop.")
+swingLook  = input.int(10, "Swing lookback (bars)", minval = 2, maxval = 200, group = gT)
+stopAtr    = input.float(1.2, "Stop distance (ATR)", minval = 0.1, maxval = 10, step = 0.1, group = gT)
+slBuf      = input.float(0.30, "Stop buffer beyond extreme (ATR)", minval = 0.0, maxval = 3, step = 0.05, group = gT)
+maxRisk    = input.float(3.0, "Max risk (ATR) — stop cap", minval = 0.3, maxval = 10, step = 0.1, group = gT)
+minRisk    = input.float(0.5, "Min risk (ATR) — stop floor", minval = 0.1, maxval = 5, step = 0.1, group = gT)
+targetMode = input.string("R Multiples", "Target ladder", options = ["R Multiples", "Mean Reversion (band → basis)"], group = gT, tooltip = "Mean Reversion places TP1 halfway back to the basis, TP2 at the basis, TP3 half a band beyond it. R values are then measured from the real distances.")
+tp1R       = input.float(1.0, "TP1 (R)", minval = 0.25, maxval = 50, step = 0.25, group = gT)
+tp2R       = input.float(2.0, "TP2 (R)", minval = 0.25, maxval = 50, step = 0.25, group = gT)
+tp3R       = input.float(3.0, "TP3 (R)", minval = 0.25, maxval = 50, step = 0.25, group = gT)
+maxHunt    = input.int(200, "Max bars in trade (time stop)", minval = 5, maxval = 5000, group = gT)
+zoneW      = input.int(18, "UNIVERSAL zone width (bars)", minval = 3, maxval = 150, group = gT, tooltip = "Every SL zone, TP zone, level line and price tag is exactly this many bars wide — identical on every signal, every symbol and every timeframe. Lower it for a tighter chart.")
+showBoxes  = input.bool(true, "Show SL / TP zones", group = gT)
+showLines  = input.bool(true, "Show SL / TP lines", group = gT)
+showLevelLbl = input.bool(true, "Label level prices", group = gT)
+showExitLbl  = input.bool(true, "Show trade result labels", group = gT)
+showBasisMark= input.bool(true, "Show basis marker on entry", group = gT)
+maxHist    = input.int(20, "Max historical tickets drawn", minval = 1, maxval = 40, group = gT, tooltip = "Visual cap only. Statistics stay cumulative over every closed trade.")
+
+// ── 04 · Strength ranking ───────────────────────────────────────────────────
+gS = "04 · Strength Ranking"
+minStars   = input.int(0, "Minimum stars to take", minval = 0, maxval = 4, group = gS, tooltip = "0 = take every qualifying fade. Raise to trade only higher-graded exhaustion.")
+alertStars = input.int(0, "Alert minimum stars", minval = 0, maxval = 4, group = gS)
+wExt   = input.float(0.22, "Weight · Burst Extension",     minval = 0, maxval = 1, step = 0.01, group = gS)
+wStack = input.float(0.18, "Weight · Stack Height",        minval = 0, maxval = 1, step = 0.01, group = gS)
+wExh   = input.float(0.18, "Weight · Momentum Exhaustion", minval = 0, maxval = 1, step = 0.01, group = gS)
+wRej   = input.float(0.14, "Weight · Rejection Wick",      minval = 0, maxval = 1, step = 0.01, group = gS)
+wTrend = input.float(0.12, "Weight · Trend Fit",           minval = 0, maxval = 1, step = 0.01, group = gS)
+wCalm  = input.float(0.08, "Weight · Volatility Regime",   minval = 0, maxval = 1, step = 0.01, group = gS)
+wRoom  = input.float(0.08, "Weight · Reversion Room",      minval = 0, maxval = 1, step = 0.01, group = gS)
+
+// ── 05 · Dashboard ──────────────────────────────────────────────────────────
+gD = "05 · Dashboard"
+showDash    = input.bool(true, "Show dashboard", group = gD)
+dashPosOpt  = input.string("Top Right", "Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right"], group = gD)
+dashSizeOpt = input.string("Small", "Text size", options = ["Tiny", "Small", "Normal"], group = gD)
+gaugeLen    = input.int(10, "Gauge width (blocks)", minval = 4, maxval = 20, group = gD, tooltip = "Length of the live ███░░░ strength sliders.")
+showGauges  = input.bool(true, "Show live quality sliders", group = gD)
+showHeatRow = input.bool(true, "Show TP1/2/3 · SL breakdown", group = gD)
+showTiers   = input.bool(true, "Show win rate by strength", group = gD)
+showRecent  = input.bool(true, "Show last trades", group = gD)
+showMtf     = input.bool(true, "Show MTF burst strip", group = gD)
+mtfTf2      = input.timeframe("15", "MTF · TF 2", group = gD)
+mtfTf3      = input.timeframe("60", "MTF · TF 3", group = gD)
+
+// ── 06 · Visuals ────────────────────────────────────────────────────────────
+gV = "06 · Visuals & Theme"
+theme      = input.string("Aurora", "Color theme", options = ["Aurora", "Gold Noir", "Bloomberg Amber", "Ice Blue", "Aqua Violet", "Neon Magenta", "Institutional"], group = gV, tooltip = "All themes are tuned for a black chart background.")
+showSignal = input.bool(true, "Show signal labels", group = gV)
+showStars  = input.bool(true, "Show ★ ranking on labels", group = gV)
+lblSizeOpt = input.string("Small", "Signal label size", options = ["Tiny", "Small", "Normal", "Large"], group = gV)
+showBg     = input.bool(false, "Tint background on extreme bursts", group = gV)
+cCold      = input.color(#26c6da, "Mild",    group = gV, inline = "heat")
+cWarm      = input.color(#ffd54a, "Warm",    group = gV, inline = "heat")
+cHot       = input.color(#ff7a1a, "Hot",     group = gV, inline = "heat")
+cExtreme   = input.color(#ff2b4e, "Extreme", group = gV, inline = "heat")
+
+// ── Palette ─────────────────────────────────────────────────────────────────
+longCol  = theme == "Gold Noir" ? color.rgb(230, 184, 75) : theme == "Bloomberg Amber" ? color.rgb(255, 176, 46) : theme == "Ice Blue" ? color.rgb(38, 198, 255) : theme == "Aqua Violet" ? color.rgb(0, 225, 200) : theme == "Neon Magenta" ? color.rgb(0, 230, 200) : theme == "Institutional" ? color.rgb(31, 176, 118) : color.rgb(20, 214, 122)
+shortCol = theme == "Gold Noir" ? color.rgb(203, 68, 56) : theme == "Bloomberg Amber" ? color.rgb(233, 84, 72) : theme == "Ice Blue" ? color.rgb(255, 112, 92) : theme == "Aqua Violet" ? color.rgb(184, 122, 255) : theme == "Neon Magenta" ? color.rgb(255, 62, 190) : theme == "Institutional" ? color.rgb(176, 62, 74) : color.rgb(243, 62, 110)
+tpFill   = theme == "Gold Noir" ? color.rgb(120, 92, 20) : theme == "Bloomberg Amber" ? color.rgb(126, 86, 14) : theme == "Ice Blue" ? color.rgb(0, 92, 132) : theme == "Aqua Violet" ? color.rgb(0, 96, 88) : theme == "Neon Magenta" ? color.rgb(0, 98, 86) : theme == "Institutional" ? color.rgb(18, 96, 66) : color.rgb(12, 104, 64)
+slFill   = theme == "Gold Noir" ? color.rgb(120, 40, 30) : theme == "Bloomberg Amber" ? color.rgb(122, 44, 34) : theme == "Ice Blue" ? color.rgb(140, 44, 66) : theme == "Aqua Violet" ? color.rgb(96, 40, 120) : theme == "Neon Magenta" ? color.rgb(128, 26, 90) : theme == "Institutional" ? color.rgb(110, 34, 42) : color.rgb(140, 30, 62)
+bandCol  = theme == "Gold Noir" ? color.rgb(166, 140, 74) : theme == "Bloomberg Amber" ? color.rgb(186, 138, 48) : theme == "Institutional" ? color.rgb(110, 122, 140) : color.rgb(120, 132, 156)
+
+color panelBg     = #0a0c12
+color panelBgAlt  = #0f131c
+color panelHdr    = #161b27
+color panelBorder = #2c3342
+color txtHi       = #ebeef5
+color txtLo       = #8791a2
+color neutralCol  = #69748a
+color goodCol     = #21c87a
+color badCol      = #e6435a
+color warnCol     = color.rgb(214, 176, 74)
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+f_clamp(float v) => math.min(math.max(v, 0.0), 1.0)
+
+f_size(string s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        => size.small
+
+f_pos(string p) =>
+    switch p
+        "Top Left"     => position.top_left
+        "Top Right"    => position.top_right
+        "Bottom Left"  => position.bottom_left
+        "Bottom Right" => position.bottom_right
+        "Middle Right" => position.middle_right
+        => position.top_right
+
+f_stars(float sc) => sc >= 7.5 ? "★★★★" : sc >= 6.5 ? "★★★" : sc >= 5.5 ? "★★" : sc >= 4.5 ? "★" : "·"
+f_tier(float sc)  => sc >= 7.5 ? 4 : sc >= 6.5 ? 3 : sc >= 5.5 ? 2 : sc >= 4.5 ? 1 : 0
+f_tname(float sc) => sc >= 7.5 ? "ELITE" : sc >= 6.5 ? "STRONG" : sc >= 5.5 ? "MODERATE" : sc >= 4.5 ? "WEAK" : "MINIMAL"
+f_signedR(float v) => (v >= 0 ? "+" : "") + str.tostring(v, "#.##") + "R"
+
+f_gauge(float v01, int n) =>
+    int filled = math.max(0, math.min(n, int(math.round(f_clamp(v01) * n))))
+    string s = ""
+    for i = 1 to n
+        s := s + (i <= filled ? "█" : "░")
+    s
+
+f_gcol(float v01) =>
+    float t = f_clamp(v01)
+    t < 0.5 ? color.from_gradient(t, 0.0, 0.5, badCol, warnCol) : color.from_gradient(t, 0.5, 1.0, warnCol, goodCol)
+
+f_heat(float t) =>
+    float tt = f_clamp(t)
+    tt < 0.40 ? color.from_gradient(tt, 0.0, 0.40, cCold, cWarm) : tt < 0.75 ? color.from_gradient(tt, 0.40, 0.75, cWarm, cHot) : color.from_gradient(tt, 0.75, 1.0, cHot, cExtreme)
+
+// ── Core series ─────────────────────────────────────────────────────────────
+basis = switch basisType
+    "SMA"  => ta.sma(srcIn, basisLen)
+    "HMA"  => ta.hma(srcIn, basisLen)
+    "WMA"  => ta.wma(srcIn, basisLen)
+    "VWMA" => ta.vwma(srcIn, basisLen)
+    "RMA"  => ta.rma(srcIn, basisLen)
+    => ta.ema(srcIn, basisLen)
+
+atr        = ta.atr(atrLen)
+rsi        = ta.rsi(close, rsiLen)
+atrPct     = ta.percentrank(atr, 100)
+basisSlope = ta.change(basis, 3)
+swingLo    = ta.lowest(low, swingLook)
+swingHi    = ta.highest(high, swingLook)
+
+float aSafe = nz(atr) > 0 ? atr : syminfo.mintick
+float bSafe = nz(basis, close)
+float upper = basis + bandMult * atr
+float lower = basis - bandMult * atr
+
+float upExtP = high - upper
+float dnExtP = lower - low
+float upMag  = na(upExtP) ? 0.0 : upExtP / aSafe
+float dnMag  = na(dnExtP) ? 0.0 : dnExtP / aSafe
+
+bool upSpike = not na(upper) and upExtP > 0 and (not needClose or close > upper)
+bool dnSpike = not na(lower) and dnExtP > 0 and (not needClose or close < lower)
+bool okBar   = confirmBar ? barstate.isconfirmed : true
+
+float upM0 = upSpike ? math.max(0.0, upMag) : 0.0
+float dnM0 = dnSpike ? math.max(0.0, dnMag) : 0.0
+
+bool upPeak = okBar and nz(upM0[1]) > 0 and nz(upM0[1]) >= nz(upM0[2]) and nz(upM0[1]) > upM0
+bool dnPeak = okBar and nz(dnM0[1]) > 0 and nz(dnM0[1]) >= nz(dnM0[2]) and nz(dnM0[1]) > dnM0
+
+float upPk = nz(upM0[1])
+float dnPk = nz(dnM0[1])
+int   upLvlPk = math.min(maxLevels, 1 + int(upPk / stepATR))
+int   dnLvlPk = math.min(maxLevels, 1 + int(dnPk / stepATR))
+
+// Peak-bar geometry (the burst bar sits one bar back)
+float aPk     = nz(atr[1], aSafe)
+float pkHi    = nz(high[1], high)
+float pkLo    = nz(low[1], low)
+float pkOpen  = nz(open[1], open)
+float pkClose = nz(close[1], close)
+float pkRange = math.max(pkHi - pkLo, syminfo.mintick)
+float upRej   = (pkHi - math.max(pkOpen, pkClose)) / pkRange
+float dnRej   = (math.min(pkOpen, pkClose) - pkLo) / pkRange
+float rsiPk   = nz(rsi[1], 50.0)
+
+// Live read (drives the dashboard sliders even with no signal on the bar)
+int   liveDir = upSpike ? -1 : dnSpike ? 1 : (close > bSafe ? -1 : 1)
+float liveMag = upSpike ? upMag : dnSpike ? dnMag : 0.0
+int   liveLvl = upSpike or dnSpike ? math.min(maxLevels, 1 + int(math.max(0.0, liveMag) / stepATR)) : 0
+float barRng  = math.max(high - low, syminfo.mintick)
+float liveRej = liveDir == -1 ? (high - math.max(open, close)) / barRng : (math.min(open, close) - low) / barRng
+
+// ── Confluence score (0-10) ─────────────────────────────────────────────────
+f_score(int dir, float mag, int lvl, float rsiVal, float rejRaw, float entry) =>
+    float extN   = f_clamp(mag / math.max(heatSat, 0.1))
+    float stackN = f_clamp(lvl * 1.0 / math.max(maxLevels, 1))
+    float exhN   = dir == 1 ? f_clamp((50.0 - rsiVal) / 30.0) : f_clamp((rsiVal - 50.0) / 30.0)
+    float rejN   = f_clamp(rejRaw / 0.6)
+    float slopeN = nz(basisSlope) / aSafe
+    float trendN = f_clamp((dir * slopeN + 1.0) / 2.0)
+    float calmN  = f_clamp(1.0 - nz(atrPct, 50.0) / 100.0)
+    float roomN  = f_clamp(math.abs(entry - bSafe) / (math.max(bandMult, 0.1) * aSafe * 1.5))
+    float wsum   = wExt + wStack + wExh + wRej + wTrend + wCalm + wRoom
+    float raw    = wsum > 0 ? (extN * wExt + stackN * wStack + exhN * wExh + rejN * wRej + trendN * wTrend + calmN * wCalm + roomN * wRoom) / wsum : 0.0
+    [extN, stackN, exhN, rejN, trendN, calmN, roomN, math.min(math.max(raw * 10.0, 0.0), 10.0)]
+
+// ── Qualification ───────────────────────────────────────────────────────────
+bool upQual = upPeak and allowShort and upLvlPk >= fadeMin and upPk >= minMag and (not needRej or upRej >= rejMin) and (not useRsiGate or rsiPk >= rsiOB)
+bool dnQual = dnPeak and allowLong and dnLvlPk >= fadeMin and dnPk >= minMag and (not needRej or dnRej >= rejMin) and (not useRsiGate or rsiPk <= rsiOS)
+
+int   fireDir = upQual and dnQual ? (upPk >= dnPk ? -1 : 1) : upQual ? -1 : dnQual ? 1 : 0
+float sigMag  = fireDir == -1 ? upPk : fireDir == 1 ? dnPk : 0.0
+int   sigLvl  = fireDir == -1 ? upLvlPk : fireDir == 1 ? dnLvlPk : 0
+float sigRej  = fireDir == -1 ? upRej : fireDir == 1 ? dnRej : 0.0
+int   scDir   = fireDir != 0 ? fireDir : liveDir
+
+[lvExt, lvStk, lvExh, lvRej, lvTrd, lvCal, lvRoom, lvScore] = f_score(liveDir, liveMag, liveLvl, rsi, liveRej, close)
+[sgExt, sgStk, sgExh, sgRej, sgTrd, sgCal, sgRoom, sgScore] = f_score(scDir, sigMag, sigLvl, rsiPk, sigRej, close)
+
+f_tooltip(int dir, float sc, float mag, int lvl) =>
+    string tt = "Setup quality: " + str.tostring(math.round(sc * 10) / 10) + "/10  " + f_stars(sc) + "  " + f_tname(sc)
+    tt += "\nDirection: " + (dir == 1 ? "FADE LONG (down burst)" : "FADE SHORT (up burst)")
+    tt += "\nBurst magnitude: " + str.tostring(mag, "#.##") + " ATR beyond band"
+    tt += "\nStack height: " + str.tostring(lvl) + "/" + str.tostring(maxLevels)
+    tt += "\nExhaustion (RSI): " + str.tostring(rsiPk, "#.#")
+    tt += "\nRejection wick: " + str.tostring((dir == 1 ? dnRej : upRej) * 100, "#") + "% of peak bar"
+    tt += "\nVolatility pctile: " + str.tostring(nz(atrPct), "#") + "  (calmer = better)"
+    tt += "\nNote: a confluence read, not a win-rate guarantee."
+    tt
+
+// ── Trade state ─────────────────────────────────────────────────────────────
+var int lastSigBar  = na
+var int lastSigSide = 0
+cooldownOk = na(lastSigBar) or (bar_index - lastSigBar >= cooldown)
+
+var bool  tradeActive = false
+var int   tradeSide   = 0
+var int   tradeBar    = na
+var float tEntry      = na
+var float tStop       = na
+var float tTp1        = na
+var float tTp2        = na
+var float tTp3        = na
+var float tR1         = na
+var float tR2         = na
+var float tR3         = na
+var int   bestStage   = 0
+var float tradeScore  = na
+var int   tradeTier   = 0
+
+var line  aEntry = na
+var line  aSl    = na
+var line  aT1    = na
+var line  aT2    = na
+var line  aT3    = na
+var line  aBm    = na
+var box   aB1    = na
+var box   aB2    = na
+var box   aB3    = na
+var box   aSlBox = na
+var label aSig   = na
+var label aLEntry= na
+var label aLSl   = na
+var label aLT1   = na
+var label aLT2   = na
+var label aLT3   = na
+var label aExit  = na
+
+type tradeViz
+    line  e  = na
+    line  s  = na
+    line  t1 = na
+    line  t2 = na
+    line  t3 = na
+    line  bm = na
+    box   b1 = na
+    box   b2 = na
+    box   b3 = na
+    box   sb = na
+    label sg = na
+    label le = na
+    label ls = na
+    label l1 = na
+    label l2 = na
+    label l3 = na
+    label ex = na
+
+var array<tradeViz> history = array.new<tradeViz>()
+
+var int   sClosed   = 0
+var int   sTp1      = 0
+var int   sTp2      = 0
+var int   sTp3      = 0
+var int   sSl       = 0
+var int   sExp      = 0
+var int   sWins     = 0
+var float sR        = 0.0
+var float sGrossWin = 0.0
+var float sGrossLos = 0.0
+var int   sMaxWin   = 0
+var int   sMaxLos   = 0
+var int   sCurWin   = 0
+var int   sCurLos   = 0
+var int   sStreak   = 0
+var int   sLong     = 0
+var int   sLongWin  = 0
+var int   sShort    = 0
+var int   sShortWin = 0
+var array<int>    tierWin  = array.new_int(5, 0)
+var array<int>    tierLoss = array.new_int(5, 0)
+var array<string> recentOut = array.new<string>()
+var array<float>  recentR   = array.new<float>()
+
+f_logRecent(string s, float r) =>
+    array.unshift(recentOut, s)
+    array.unshift(recentR, r)
+    if array.size(recentOut) > 10
+        array.pop(recentOut)
+    if array.size(recentR) > 10
+        array.pop(recentR)
+
+closedTp3 = false
+closedSl  = false
+closedTp  = false
+closedExp = false
+
+// ── Trade management ────────────────────────────────────────────────────────
+if tradeActive
+    bool tp1Hit = tradeSide == 1 ? high >= tTp1 : low <= tTp1
+    bool tp2Hit = tradeSide == 1 ? high >= tTp2 : low <= tTp2
+    bool tp3Hit = tradeSide == 1 ? high >= tTp3 : low <= tTp3
+    bool slHit  = tradeSide == 1 ? low <= tStop : high >= tStop
+
+    int  stage     = tp3Hit ? 3 : tp2Hit ? 2 : tp1Hit ? 1 : 0
+    bool sameBarSl = slHit and stage > 0
+    if stage > bestStage and not sameBarSl
+        bestStage := stage
+
+    int  barsIn    = not na(tradeBar) ? bar_index - tradeBar : 0
+    bool finalTp3  = not sameBarSl and bestStage == 3
+    bool finalSl   = slHit and (bestStage == 0 or sameBarSl)
+    bool finalTp   = slHit and not sameBarSl and bestStage > 0 and bestStage < 3
+    bool expireNow = not finalTp3 and not finalSl and not finalTp and barsIn >= maxHunt
+
+    if finalTp3 or finalSl or finalTp or expireNow
+        float mtmR = math.abs(tEntry - tStop) > 0 ? (tradeSide == 1 ? (close - tEntry) : (tEntry - close)) / math.abs(tEntry - tStop) : 0.0
+        float resR = finalTp3 ? tR3 : finalTp and bestStage == 2 ? tR2 : finalTp and bestStage == 1 ? tR1 : expireNow ? mtmR : -1.0
+
+        closedTp3 := finalTp3
+        closedSl  := finalSl
+        closedTp  := finalTp
+        closedExp := expireNow
+
+        bool isWin = resR > 0
+        sClosed += 1
+        sR      += resR
+        if isWin
+            sWins     += 1
+            sGrossWin += resR
+            sCurWin   += 1
+            sCurLos   := 0
+            sMaxWin   := math.max(sMaxWin, sCurWin)
+            sStreak   := sCurWin
+            array.set(tierWin, tradeTier, array.get(tierWin, tradeTier) + 1)
+        else
+            sGrossLos += math.abs(resR)
+            sCurLos   += 1
+            sCurWin   := 0
+            sMaxLos   := math.max(sMaxLos, sCurLos)
+            sStreak   := -sCurLos
+            array.set(tierLoss, tradeTier, array.get(tierLoss, tradeTier) + 1)
+        if tradeSide == 1
+            sLong    += 1
+            sLongWin += isWin ? 1 : 0
+        else
+            sShort    += 1
+            sShortWin += isWin ? 1 : 0
+        if finalTp3
+            sTp3 += 1
+            f_logRecent("TP3", resR)
+        else if finalTp and bestStage == 2
+            sTp2 += 1
+            f_logRecent("TP2", resR)
+        else if finalTp and bestStage == 1
+            sTp1 += 1
+            f_logRecent("TP1", resR)
+        else if expireNow
+            sExp += 1
+            f_logRecent("TIME", resR)
+        else
+            sSl += 1
+            f_logRecent("SL", resR)
+
+        float resPrice = finalTp3 ? tTp3 : finalTp and bestStage == 2 ? tTp2 : finalTp and bestStage == 1 ? tTp1 : expireNow ? close : tStop
+        string resTxt  = finalTp3 ? "TP3 ✔ " + f_signedR(resR) : finalTp ? "TP" + str.tostring(bestStage) + " ✔ " + f_signedR(resR) : expireNow ? (isWin ? "TIME ✔ " : "TIME ✘ ") + f_signedR(resR) : "SL ✘ " + f_signedR(resR)
+        color resCol   = resR >= 0 ? longCol : shortCol
+        string resStyle = tradeSide == 1 ? (resR >= 0 ? label.style_label_down : label.style_label_up) : (resR >= 0 ? label.style_label_up : label.style_label_down)
+
+        if showExitLbl
+            aExit := label.new(bar_index, resPrice, resTxt, style = resStyle, color = color.new(resCol, 0), textcolor = color.white, size = size.small)
+
+        tradeViz tv = tradeViz.new(aEntry, aSl, aT1, aT2, aT3, aBm, aB1, aB2, aB3, aSlBox, aSig, aLEntry, aLSl, aLT1, aLT2, aLT3, aExit)
+        array.push(history, tv)
+        while array.size(history) > maxHist
+            tradeViz old = array.shift(history)
+            line.delete(old.e)
+            line.delete(old.s)
+            line.delete(old.t1)
+            line.delete(old.t2)
+            line.delete(old.t3)
+            line.delete(old.bm)
+            box.delete(old.b1)
+            box.delete(old.b2)
+            box.delete(old.b3)
+            box.delete(old.sb)
+            label.delete(old.sg)
+            label.delete(old.le)
+            label.delete(old.ls)
+            label.delete(old.l1)
+            label.delete(old.l2)
+            label.delete(old.l3)
+            label.delete(old.ex)
+
+        aEntry  := na
+        aSl     := na
+        aT1     := na
+        aT2     := na
+        aT3     := na
+        aBm     := na
+        aB1     := na
+        aB2     := na
+        aB3     := na
+        aSlBox  := na
+        aSig    := na
+        aLEntry := na
+        aLSl    := na
+        aLT1    := na
+        aLT2    := na
+        aLT3    := na
+        aExit   := na
+
+        tradeActive := false
+        tradeSide   := 0
+        tradeBar    := na
+        tEntry      := na
+        tStop       := na
+        tTp1        := na
+        tTp2        := na
+        tTp3        := na
+        bestStage   := 0
+
+// ── Entry ───────────────────────────────────────────────────────────────────
+canOpen = not tradeActive and not closedTp3 and not closedSl and not closedTp and not closedExp and not na(atr) and cooldownOk
+rawSig  = fireDir != 0 and canOpen
+takeSig = rawSig and f_tier(sgScore) >= minStars
+
+strongLong  = takeSig and fireDir == 1
+strongShort = takeSig and fireDir == -1
+
+if takeSig
+    lastSigBar  := bar_index
+    lastSigSide := fireDir
+
+if takeSig
+    bool  isLong  = fireDir == 1
+    float entv    = close
+    float burstHi = math.max(high, pkHi)
+    float burstLo = math.min(low, pkLo)
+    float rawStop = stopMode == "ATR Multiple" ? (isLong ? entv - atr * stopAtr : entv + atr * stopAtr) : stopMode == "Swing Extreme" ? (isLong ? swingLo - atr * slBuf : swingHi + atr * slBuf) : (isLong ? burstLo - atr * slBuf : burstHi + atr * slBuf)
+    float risk0   = math.abs(entv - rawStop)
+    float risk    = math.min(math.max(risk0, atr * minRisk), atr * maxRisk)
+    float stopv   = isLong ? entv - risk : entv + risk
+
+    bool revOk = targetMode == "Mean Reversion (band → basis)" and (isLong ? bSafe > entv : bSafe < entv)
+    float half = math.abs(bSafe - entv) * 0.5
+    float band = math.max(bandMult, 0.1) * aSafe * 0.5
+    float t1 = revOk ? (isLong ? entv + half : entv - half) : (isLong ? entv + risk * tp1R : entv - risk * tp1R)
+    float t2 = revOk ? bSafe : (isLong ? entv + risk * tp2R : entv - risk * tp2R)
+    float t3 = revOk ? (isLong ? bSafe + band : bSafe - band) : (isLong ? entv + risk * tp3R : entv - risk * tp3R)
+
+    tradeActive := true
+    tradeSide   := isLong ? 1 : -1
+    tradeBar    := bar_index
+    tEntry      := entv
+    tStop       := stopv
+    tTp1        := t1
+    tTp2        := t2
+    tTp3        := t3
+    tR1         := risk > 0 ? math.abs(t1 - entv) / risk : 0.0
+    tR2         := risk > 0 ? math.abs(t2 - entv) / risk : 0.0
+    tR3         := risk > 0 ? math.abs(t3 - entv) / risk : 0.0
+    bestStage   := 0
+    tradeScore  := sgScore
+    tradeTier   := f_tier(sgScore)
+
+    color c  = isLong ? longCol : shortCol
+    int   xr = bar_index + zoneW
+
+    if showSignal
+        string head = isLong ? "FADE LONG" : "FADE SHORT"
+        string txt  = showStars ? head + "  " + str.tostring(sigLvl) + "/" + str.tostring(maxLevels) + "\n" + f_stars(sgScore) + "  " + str.tostring(math.round(sgScore * 10) / 10) + "/10  " + f_tname(sgScore) : head
+        aSig := label.new(bar_index, isLong ? low : high, txt, style = isLong ? label.style_label_up : label.style_label_down, color = color.new(c, 6), textcolor = color.white, size = f_size(lblSizeOpt), tooltip = f_tooltip(tradeSide, sgScore, sigMag, sigLvl))
+
+    if showBasisMark
+        aBm := line.new(bar_index, bSafe, xr, bSafe, xloc = xloc.bar_index, color = color.new(neutralCol, 25), width = 1, style = line.style_dotted)
+
+    if showBoxes
+        aSlBox := box.new(bar_index, isLong ? entv : stopv, xr, isLong ? stopv : entv, xloc = xloc.bar_index, bgcolor = color.new(slFill, 80), border_color = color.new(shortCol, 45), border_width = 1)
+        aB1    := box.new(bar_index, isLong ? t1 : entv, xr, isLong ? entv : t1, xloc = xloc.bar_index, bgcolor = color.new(tpFill, 78), border_color = color.new(c, 40), border_width = 1)
+        aB2    := box.new(bar_index, isLong ? t2 : t1, xr, isLong ? t1 : t2, xloc = xloc.bar_index, bgcolor = color.new(tpFill, 85), border_color = color.new(c, 55), border_width = 1)
+        aB3    := box.new(bar_index, isLong ? t3 : t2, xr, isLong ? t2 : t3, xloc = xloc.bar_index, bgcolor = color.new(tpFill, 91), border_color = color.new(c, 70), border_width = 1)
+
+    if showLines
+        aEntry := line.new(bar_index, entv, xr, entv, xloc = xloc.bar_index, color = color.new(c, 0), width = 2, style = line.style_solid)
+        aSl    := line.new(bar_index, stopv, xr, stopv, xloc = xloc.bar_index, color = color.new(shortCol, 10), width = 1, style = line.style_dashed)
+        aT1    := line.new(bar_index, t1, xr, t1, xloc = xloc.bar_index, color = color.new(c, 12), width = 1, style = line.style_solid)
+        aT2    := line.new(bar_index, t2, xr, t2, xloc = xloc.bar_index, color = color.new(c, 30), width = 1, style = line.style_solid)
+        aT3    := line.new(bar_index, t3, xr, t3, xloc = xloc.bar_index, color = color.new(c, 48), width = 1, style = line.style_solid)
+        if showLevelLbl
+            string dw = isLong ? "LONG" : "SHORT"
+            aLEntry := label.new(xr, entv, dw + " @ " + str.tostring(entv, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = color.new(c, 0), textcolor = color.white, size = f_size(lblSizeOpt))
+            aLSl    := label.new(xr, stopv, "SL @ " + str.tostring(stopv, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = color.new(shortCol, 10), textcolor = color.white, size = f_size(lblSizeOpt))
+            aLT1    := label.new(xr, t1, "TP1 " + str.tostring(tR1, "#.#") + "R @ " + str.tostring(t1, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = color.new(c, 10), textcolor = color.white, size = f_size(lblSizeOpt))
+            aLT2    := label.new(xr, t2, "TP2 " + str.tostring(tR2, "#.#") + "R @ " + str.tostring(t2, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = color.new(c, 26), textcolor = color.white, size = f_size(lblSizeOpt))
+            aLT3    := label.new(xr, t3, "TP3 " + str.tostring(tR3, "#.#") + "R @ " + str.tostring(t3, format.mintick), xloc = xloc.bar_index, style = label.style_label_left, color = color.new(c, 42), textcolor = color.white, size = f_size(lblSizeOpt))
+
+// ── Burst visuals ───────────────────────────────────────────────────────────
+upColPk = f_heat(upPk / math.max(heatSat, 0.1))
+dnColPk = f_heat(dnPk / math.max(heatSat, 0.1))
+
+bgCol = showBg and upPeak and upLvlPk >= maxLevels ? color.new(upColPk, 84) : showBg and dnPeak and dnLvlPk >= maxLevels ? color.new(dnColPk, 84) : na
+bgcolor(bgCol, offset = -1, title = "Extreme-burst tint")
+
+// ── MTF burst strip (non-repaint: [1] + lookahead_on) ───────────────────────
+int mtfBias = upSpike ? -1 : dnSpike ? 1 : 0
+int mtfLvl  = upSpike or dnSpike ? math.min(maxLevels, 1 + int(math.max(0.0, upSpike ? upMag : dnMag) / stepATR)) : 0
+
+[b2, l2v] = request.security(syminfo.tickerid, mtfTf2, [mtfBias[1], mtfLvl[1]], lookahead = barmerge.lookahead_on)
+[b3, l3v] = request.security(syminfo.tickerid, mtfTf3, [mtfBias[1], mtfLvl[1]], lookahead = barmerge.lookahead_on)
+
+// ── Statistics ──────────────────────────────────────────────────────────────
+winRate = sClosed > 0 ? sWins / sClosed * 100.0 : 0.0
+avgR    = sClosed > 0 ? sR / sClosed : 0.0
+pf      = sGrossLos > 0 ? sGrossWin / sGrossLos : sGrossWin > 0 ? 999.0 : 0.0
+longWR  = sLong > 0 ? sLongWin / sLong * 100.0 : 0.0
+shortWR = sShort > 0 ? sShortWin / sShort * 100.0 : 0.0
+tp1Rate = sClosed > 0 ? sTp1 / sClosed * 100.0 : 0.0
+tp2Rate = sClosed > 0 ? sTp2 / sClosed * 100.0 : 0.0
+tp3Rate = sClosed > 0 ? sTp3 / sClosed * 100.0 : 0.0
+slRate  = sClosed > 0 ? sSl / sClosed * 100.0 : 0.0
+
+bestDir   = sLong == 0 and sShort == 0 ? "—" : sLong > 0 and sShort == 0 ? "LONG" : sShort > 0 and sLong == 0 ? "SHORT" : longWR > shortWR ? "LONG" : shortWR > longWR ? "SHORT" : "EVEN"
+streakTxt = sStreak > 0 ? "W" + str.tostring(sStreak) : sStreak < 0 ? "L" + str.tostring(math.abs(sStreak)) : "—"
+pfTxt     = pf >= 999.0 ? "INF" : str.tostring(pf, "#.##")
+
+statusTxt = tradeActive ? "IN TRADE" : (upSpike or dnSpike) and liveLvl >= fadeMin ? "ARMED" : upSpike or dnSpike ? "BURSTING" : "SCANNING"
+color statusC = tradeActive ? longCol : (upSpike or dnSpike) and liveLvl >= fadeMin ? warnCol : upSpike or dnSpike ? cWarm : neutralCol
+activeTxt = tradeActive ? (tradeSide == 1 ? "LONG" : "SHORT") : "—"
+lastTxt   = lastSigSide == 1 ? "LONG" : lastSigSide == -1 ? "SHORT" : "—"
+lastScoreTxt = na(tradeScore) ? "—" : f_stars(tradeScore) + " " + str.tostring(math.round(tradeScore * 10) / 10)
+burstTxt  = upSpike ? "UP " + str.tostring(liveLvl) + "/" + str.tostring(maxLevels) : dnSpike ? "DN " + str.tostring(liveLvl) + "/" + str.tostring(maxLevels) : "INSIDE"
+biasTxt   = upSpike ? "FADE SHORT" : dnSpike ? "FADE LONG" : "—"
+color pfC = pf >= 1.5 ? goodCol : pf >= 1.0 ? warnCol : badCol
+
+f_biasTxt(int d) => d == 1 ? "▲ LONG" : d == -1 ? "▼ SHORT" : "—"
+f_biasCol(int d) => d == 1 ? longCol : d == -1 ? shortCol : neutralCol
+
+f_tierWR(int k) =>
+    int w  = array.get(tierWin, k)
+    int l  = array.get(tierLoss, k)
+    int nn = w + l
+    [nn > 0 ? w * 100.0 / nn : 0.0, nn]
+
+// ── Dashboard ───────────────────────────────────────────────────────────────
+ps = f_size(dashSizeOpt)
+var int dashRows = 40
+var table dash = table.new(f_pos(dashPosOpt), 3, dashRows, frame_color = color.new(panelBorder, 0), frame_width = 1, border_width = 1, border_color = color.new(panelBorder, 30))
+
+f_hdr(table t, int row, string a, string b, string c) =>
+    table.cell(t, 0, row, a, text_color = txtHi, text_size = ps, text_halign = text.align_left, bgcolor = panelHdr)
+    table.cell(t, 1, row, b, text_color = txtLo, text_size = ps, text_halign = text.align_center, bgcolor = panelHdr)
+    table.cell(t, 2, row, c, text_color = txtLo, text_size = ps, text_halign = text.align_right, bgcolor = panelHdr)
+
+f_row(table t, int row, string a, string b, color bc, string c, color cc, bool alt) =>
+    color bg = alt ? panelBgAlt : panelBg
+    table.cell(t, 0, row, a, text_color = txtLo, text_size = ps, text_halign = text.align_left, bgcolor = bg)
+    table.cell(t, 1, row, b, text_color = bc, text_size = ps, text_halign = text.align_center, bgcolor = bg)
+    table.cell(t, 2, row, c, text_color = cc, text_size = ps, text_halign = text.align_right, bgcolor = bg)
+
+f_gRow(table t, int row, string a, float v01, string val, bool alt) =>
+    color bg = alt ? panelBgAlt : panelBg
+    table.cell(t, 0, row, a, text_color = txtLo, text_size = ps, text_halign = text.align_left, bgcolor = bg)
+    table.cell(t, 1, row, f_gauge(v01, gaugeLen), text_color = f_gcol(v01), text_size = ps, text_halign = text.align_center, bgcolor = bg)
+    table.cell(t, 2, row, val, text_color = txtHi, text_size = ps, text_halign = text.align_right, bgcolor = bg)
+
+if barstate.islast and showDash
+    table.clear(dash, 0, 0, 2, dashRows - 1)
+    int r = 0
+
+    f_hdr(dash, r, "STRONG FADE", syminfo.ticker, timeframe.period)
+    r += 1
+    f_row(dash, r, "Status", statusTxt, statusC, activeTxt, tradeSide == 1 ? longCol : tradeSide == -1 ? shortCol : neutralCol, false)
+    r += 1
+    f_row(dash, r, "Burst State", burstTxt, upSpike ? shortCol : dnSpike ? longCol : neutralCol, biasTxt, upSpike ? shortCol : dnSpike ? longCol : neutralCol, true)
+    r += 1
+    f_row(dash, r, "Last Signal", lastTxt, lastSigSide == 1 ? longCol : lastSigSide == -1 ? shortCol : neutralCol, lastScoreTxt, txtHi, false)
+    r += 1
+
+    if showGauges
+        f_hdr(dash, r, "LIVE SETUP QUALITY", f_biasTxt(liveDir), "VALUE")
+        r += 1
+        f_gRow(dash, r, "Extension", lvExt, str.tostring(liveMag, "#.##") + " ATR", false)
+        r += 1
+        f_gRow(dash, r, "Stack", lvStk, str.tostring(liveLvl) + "/" + str.tostring(maxLevels), true)
+        r += 1
+        f_gRow(dash, r, "Exhaustion", lvExh, str.tostring(rsi, "#.#") + " RSI", false)
+        r += 1
+        f_gRow(dash, r, "Rejection", lvRej, str.tostring(liveRej * 100, "#") + "%", true)
+        r += 1
+        f_gRow(dash, r, "Trend Fit", lvTrd, str.tostring(nz(basisSlope) / aSafe, "#.##"), false)
+        r += 1
+        f_gRow(dash, r, "Calm Regime", lvCal, str.tostring(nz(atrPct), "#") + " pct", true)
+        r += 1
+        f_gRow(dash, r, "Rev Room", lvRoom, str.tostring(math.abs(close - bSafe) / aSafe, "#.#") + " ATR", false)
+        r += 1
+        table.cell(dash, 0, r, "SCORE", text_color = txtHi, text_size = ps, text_halign = text.align_left, bgcolor = panelHdr)
+        table.cell(dash, 1, r, f_gauge(lvScore / 10.0, gaugeLen), text_color = f_gcol(lvScore / 10.0), text_size = ps, text_halign = text.align_center, bgcolor = panelHdr)
+        table.cell(dash, 2, r, str.tostring(math.round(lvScore * 10) / 10) + "  " + f_stars(lvScore), text_color = txtHi, text_size = ps, text_halign = text.align_right, bgcolor = panelHdr)
+        r += 1
+
+    f_hdr(dash, r, "PERFORMANCE", "VALUE", "DETAIL")
+    r += 1
+    f_row(dash, r, "Win Rate", str.tostring(winRate, "#.#") + "%", txtHi, str.tostring(sClosed) + " trd", txtHi, false)
+    r += 1
+    f_row(dash, r, "Profit Factor", pfTxt, pfC, f_signedR(avgR) + "/t", avgR >= 0 ? goodCol : badCol, true)
+    r += 1
+    f_row(dash, r, "Total R", f_signedR(sR), sR >= 0 ? goodCol : badCol, bestDir, bestDir == "LONG" ? longCol : bestDir == "SHORT" ? shortCol : neutralCol, false)
+    r += 1
+    f_row(dash, r, "Long / Short WR", str.tostring(longWR, "#") + "% / " + str.tostring(shortWR, "#") + "%", txtHi, str.tostring(sLong) + "L " + str.tostring(sShort) + "S", txtLo, true)
+    r += 1
+    f_row(dash, r, "Streak", streakTxt, sStreak >= 0 ? goodCol : badCol, "W" + str.tostring(sMaxWin) + "/L" + str.tostring(sMaxLos), txtHi, false)
+    r += 1
+
+    if showHeatRow
+        f_row(dash, r, "TP1/2/3 · SL", str.tostring(tp1Rate, "#") + "/" + str.tostring(tp2Rate, "#") + "/" + str.tostring(tp3Rate, "#"), txtHi, str.tostring(slRate, "#") + "%", badCol, true)
+        r += 1
+
+    if showMtf
+        f_hdr(dash, r, "MTF BURST BIAS", timeframe.period, mtfTf2 + " · " + mtfTf3)
+        r += 1
+        f_row(dash, r, "Fade bias", f_biasTxt(mtfBias), f_biasCol(mtfBias), f_biasTxt(b2) + " " + f_biasTxt(b3), b2 + b3 > 0 ? longCol : b2 + b3 < 0 ? shortCol : neutralCol, false)
+        r += 1
+
+    if showTiers
+        f_hdr(dash, r, "WIN RATE BY STRENGTH", "WR", "n")
+        r += 1
+        for k = 4 to 1
+            [twr, tn] = f_tierWR(k)
+            string star = k == 4 ? "★★★★" : k == 3 ? "★★★" : k == 2 ? "★★" : "★"
+            color tc = tn == 0 ? txtLo : twr >= 45 ? goodCol : twr >= 33 ? warnCol : badCol
+            bool alt = k % 2 == 0
+            color bg = alt ? panelBg : panelBgAlt
+            table.cell(dash, 0, r, star, text_color = warnCol, text_size = ps, text_halign = text.align_left, bgcolor = bg)
+            table.cell(dash, 1, r, tn > 0 ? str.tostring(twr, "#.#") + "%" : "—", text_color = tc, text_size = ps, text_halign = text.align_center, bgcolor = bg)
+            table.cell(dash, 2, r, str.tostring(tn), text_color = txtHi, text_size = ps, text_halign = text.align_right, bgcolor = bg)
+            r += 1
+
+    if showRecent
+        f_hdr(dash, r, "LAST TRADES", "EXIT", "R")
+        r += 1
+        int hn = array.size(recentOut)
+        if hn > 0
+            int shown = math.min(hn, 6)
+            for i = 0 to shown - 1
+                string o  = array.get(recentOut, i)
+                float rv  = array.size(recentR) > i ? array.get(recentR, i) : 0.0
+                color oc  = rv > 0 ? goodCol : badCol
+                bool alt2 = i % 2 == 1
+                color bg2 = alt2 ? panelBgAlt : panelBg
+                table.cell(dash, 0, r, "#" + str.tostring(i + 1), text_color = txtLo, text_size = ps, text_halign = text.align_left, bgcolor = bg2)
+                table.cell(dash, 1, r, o, text_color = oc, text_size = ps, text_halign = text.align_center, bgcolor = bg2)
+                table.cell(dash, 2, r, f_signedR(rv), text_color = oc, text_size = ps, text_halign = text.align_right, bgcolor = bg2)
+                r += 1
+
+// ── Alerts ──────────────────────────────────────────────────────────────────
+alertOk  = f_tier(sgScore) >= alertStars
+upXtreme = upPeak and upLvlPk >= maxLevels
+dnXtreme = dnPeak and dnLvlPk >= maxLevels
+
+alertcondition(strongLong and alertOk,  "Fade Long",  "Strong Fade Signals: FADE LONG (down-burst exhaustion) on {{ticker}} {{interval}} @ {{close}}.")
+alertcondition(strongShort and alertOk, "Fade Short", "Strong Fade Signals: FADE SHORT (up-burst exhaustion) on {{ticker}} {{interval}} @ {{close}}.")
+alertcondition(takeSig, "Any Fade Signal", "Strong Fade Signals: new fade entry on {{ticker}} {{interval}} @ {{close}}.")
+alertcondition(closedTp3, "TP3 Hit", "Strong Fade Signals: TP3 hit on {{ticker}} {{interval}}.")
+alertcondition(closedTp,  "Partial TP Exit", "Strong Fade Signals: protected TP exit on {{ticker}} {{interval}}.")
+alertcondition(closedSl,  "SL Hit", "Strong Fade Signals: SL hit on {{ticker}} {{interval}}.")
+alertcondition(upXtreme,  "Extreme Up Burst", "Strong Fade Signals: extreme up burst — maximum over-extension on {{ticker}} {{interval}}.")
+alertcondition(dnXtreme,  "Extreme Down Burst", "Strong Fade Signals: extreme down burst — maximum over-extension on {{ticker}} {{interval}}.")

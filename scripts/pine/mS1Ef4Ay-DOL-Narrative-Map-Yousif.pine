@@ -1,0 +1,936 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © yousifelimam6
+//@version=6
+indicator(
+     "DOL Narrative Map [Yousif]",
+     shorttitle = "DOL Map",
+     overlay = true,
+     max_lines_count = 50,
+     max_labels_count = 50,
+     max_boxes_count = 20
+)
+
+//====================================================================
+// INPUTS
+//====================================================================
+
+groupHTF = "Higher Time Frame"
+
+htfTf = input.timeframe("60", "HTF", group = groupHTF)
+htfLookback = input.int(20, "HTF Liquidity Lookback", minval = 5, group = groupHTF)
+
+
+groupLTF = "Lower Time Frame"
+
+pivotLen = input.int(3, "Protected Point Strength", minval = 1, maxval = 10, group = groupLTF)
+rangeLookback = input.int(10, "Range Failure Lookback", minval = 3, group = groupLTF)
+dispMult = input.float(1.3, "Displacement ATR Multiplier", minval = 0.5, step = 0.1, group = groupLTF)
+
+
+groupAbs = "Absorption Confirmation"
+
+absVolLen = input.int(20, "Volume Average Length", minval = 5, group = groupAbs)
+absVolMult = input.float(1.20, "Relative Volume Minimum", minval = 1.0, step = 0.05, group = groupAbs)
+
+absMaxPenATR = input.float(
+     0.35,
+     "Maximum Sweep Penetration ATR",
+     minval = 0.05,
+     step = 0.05,
+     group = groupAbs
+)
+
+absMinWickPct = input.float(
+     0.35,
+     "Minimum Rejection Wick %",
+     minval = 0.10,
+     maxval = 0.90,
+     step = 0.05,
+     group = groupAbs
+)
+
+absDispATR = input.float(
+     0.65,
+     "Confirmation Displacement ATR",
+     minval = 0.20,
+     step = 0.05,
+     group = groupAbs
+)
+
+absStructureLen = input.int(
+     3,
+     "Absorption Structure Lookback",
+     minval = 1,
+     maxval = 10,
+     group = groupAbs
+)
+
+absConfirmWindow = input.int(
+     5,
+     "Bars Allowed For Confirmation",
+     minval = 1,
+     maxval = 10,
+     group = groupAbs
+)
+
+
+groupVisual = "Visuals"
+
+showHTFLiquidity = input.bool(true, "Show HTF Liquidity", group = groupVisual)
+showFVG = input.bool(true, "Show Latest HTF FVGs", group = groupVisual)
+showProtected = input.bool(true, "Show Protected Point", group = groupVisual)
+showLTFDOL = input.bool(true, "Show Current DOL", group = groupVisual)
+
+showAbsorption = input.bool(
+     true,
+     "Show Confirmed Absorption",
+     group = groupVisual
+)
+
+
+//====================================================================
+// COLORS
+//====================================================================
+
+bullColor = color.new(color.teal, 0)
+bearColor = color.new(color.maroon, 0)
+
+neutralColor = color.new(color.gray, 20)
+
+bullSoft = color.new(color.teal, 88)
+bearSoft = color.new(color.maroon, 88)
+
+textColor = color.white
+
+
+//====================================================================
+// CONFIRMED HIGHER-TIME-FRAME DATA
+//
+// [1] + lookahead_on means:
+// use the latest completed HTF candle.
+//====================================================================
+
+htfHigh = request.security(
+     syminfo.tickerid,
+     htfTf,
+     ta.highest(high, htfLookback)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+htfLow = request.security(
+     syminfo.tickerid,
+     htfTf,
+     ta.lowest(low, htfLookback)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+htfClose = request.security(
+     syminfo.tickerid,
+     htfTf,
+     close[1],
+     lookahead = barmerge.lookahead_on
+)
+
+htfPreviousHigh = request.security(
+     syminfo.tickerid,
+     htfTf,
+     high[2],
+     lookahead = barmerge.lookahead_on
+)
+
+htfPreviousLow = request.security(
+     syminfo.tickerid,
+     htfTf,
+     low[2],
+     lookahead = barmerge.lookahead_on
+)
+
+htfMidpoint = (htfHigh + htfLow) / 2.0
+
+
+//====================================================================
+// HTF NARRATIVE
+//
+// +1 = bullish delivery
+// -1 = bearish delivery
+//====================================================================
+
+var int narrative = 0
+
+bullHTFBreak = htfClose > htfPreviousHigh
+bearHTFBreak = htfClose < htfPreviousLow
+
+if bullHTFBreak
+    narrative := 1
+
+else if bearHTFBreak
+    narrative := -1
+
+if narrative == 0
+    narrative := close >= htfMidpoint ? 1 : -1
+
+
+//====================================================================
+// LOWER-TIME-FRAME LIQUIDITY / PROTECTED POINTS
+//====================================================================
+
+pivotHigh = ta.pivothigh(high, pivotLen, pivotLen)
+pivotLow = ta.pivotlow(low, pivotLen, pivotLen)
+
+var float lastSwingHigh = na
+var float lastSwingLow = na
+
+if not na(pivotHigh)
+    lastSwingHigh := pivotHigh
+
+if not na(pivotLow)
+    lastSwingLow := pivotLow
+
+
+float protectedPoint = narrative == 1 ? lastSwingLow : lastSwingHigh
+
+
+//====================================================================
+// BASE DISPLACEMENT + RANGE FAILURE
+//====================================================================
+
+atr = ta.atr(14)
+
+bodySize = math.abs(close - open)
+
+previousRangeHigh = ta.highest(high[1], rangeLookback)
+previousRangeLow = ta.lowest(low[1], rangeLookback)
+
+bullDisplacement =
+     close > open and
+     bodySize >= atr * dispMult and
+     close > previousRangeHigh
+
+bearDisplacement =
+     close < open and
+     bodySize >= atr * dispMult and
+     close < previousRangeLow
+
+
+//====================================================================
+// ABSORPTION BASE DATA
+//====================================================================
+
+absVolAvg = ta.sma(volume, absVolLen)
+
+absRelVol =
+     absVolAvg > 0
+     ? volume / absVolAvg
+     : 0.0
+
+absRange = math.max(high - low, syminfo.mintick)
+
+absLowerWick = math.min(open, close) - low
+absUpperWick = high - math.max(open, close)
+
+absLowerWickPct = absLowerWick / absRange
+absUpperWickPct = absUpperWick / absRange
+
+
+//====================================================================
+// MAPPED LIQUIDITY SWEEPS
+//
+// Bullish absorption:
+// sell-side liquidity is attacked and reclaimed.
+//
+// Bearish absorption:
+// buy-side liquidity is attacked and reclaimed.
+//====================================================================
+
+bullSweepLTF =
+     not na(lastSwingLow) and
+     low < lastSwingLow and
+     close > lastSwingLow
+
+bullSweepHTF =
+     not na(htfLow) and
+     low < htfLow and
+     close > htfLow
+
+
+bearSweepLTF =
+     not na(lastSwingHigh) and
+     high > lastSwingHigh and
+     close < lastSwingHigh
+
+bearSweepHTF =
+     not na(htfHigh) and
+     high > htfHigh and
+     close < htfHigh
+
+
+float bullSweepLevel =
+     bullSweepHTF
+     ? htfLow
+     : bullSweepLTF
+     ? lastSwingLow
+     : na
+
+float bearSweepLevel =
+     bearSweepHTF
+     ? htfHigh
+     : bearSweepLTF
+     ? lastSwingHigh
+     : na
+
+
+//====================================================================
+// EFFORT VS. RESULT
+//
+// We want elevated effort but limited successful penetration
+// through mapped liquidity.
+//====================================================================
+
+bullPenetrationATR =
+     not na(bullSweepLevel) and atr > 0
+     ? (bullSweepLevel - low) / atr
+     : na
+
+bearPenetrationATR =
+     not na(bearSweepLevel) and atr > 0
+     ? (high - bearSweepLevel) / atr
+     : na
+
+
+//====================================================================
+// POTENTIAL FAILED SELLING / FAILED BUYING
+//
+// IMPORTANT:
+// This is only a candidate.
+//
+// A wick alone is NOT confirmed absorption.
+//====================================================================
+
+bullPotentialRaw =
+     barstate.isconfirmed and
+     not na(bullSweepLevel) and
+     not na(bullPenetrationATR) and
+     absRelVol >= absVolMult and
+     bullPenetrationATR <= absMaxPenATR and
+     absLowerWickPct >= absMinWickPct
+
+bearPotentialRaw =
+     barstate.isconfirmed and
+     not na(bearSweepLevel) and
+     not na(bearPenetrationATR) and
+     absRelVol >= absVolMult and
+     bearPenetrationATR <= absMaxPenATR and
+     absUpperWickPct >= absMinWickPct
+
+
+// If one candle qualifies both ways, don't pretend we know
+// which auction actually failed.
+
+ambiguousAbsorption =
+     bullPotentialRaw and
+     bearPotentialRaw
+
+bullPotential =
+     bullPotentialRaw and
+     not ambiguousAbsorption
+
+bearPotential =
+     bearPotentialRaw and
+     not ambiguousAbsorption
+
+
+//====================================================================
+// REMEMBER THE MOST RECENT VALID CANDIDATE
+//====================================================================
+
+bullCandidateAge = ta.barssince(bullPotential)
+bearCandidateAge = ta.barssince(bearPotential)
+
+bullCandidateLevel =
+     ta.valuewhen(
+          bullPotential,
+          bullSweepLevel,
+          0
+     )
+
+bullCandidateHigh =
+     ta.valuewhen(
+          bullPotential,
+          high,
+          0
+     )
+
+bullCandidateLow =
+     ta.valuewhen(
+          bullPotential,
+          low,
+          0
+     )
+
+
+bearCandidateLevel =
+     ta.valuewhen(
+          bearPotential,
+          bearSweepLevel,
+          0
+     )
+
+bearCandidateHigh =
+     ta.valuewhen(
+          bearPotential,
+          high,
+          0
+     )
+
+bearCandidateLow =
+     ta.valuewhen(
+          bearPotential,
+          low,
+          0
+     )
+
+
+bullCandidateReady =
+     not na(bullCandidateAge) and
+     bullCandidateAge >= 1 and
+     bullCandidateAge <= absConfirmWindow
+
+bearCandidateReady =
+     not na(bearCandidateAge) and
+     bearCandidateAge >= 1 and
+     bearCandidateAge <= absConfirmWindow
+
+
+//====================================================================
+// ABSORPTION STRUCTURE CONFIRMATION
+//
+// After the sweep/reclaim:
+//
+// price must actually displace away and break short-term structure.
+//====================================================================
+
+absBullStructure =
+     ta.highest(
+          high[1],
+          absStructureLen
+     )
+
+absBearStructure =
+     ta.lowest(
+          low[1],
+          absStructureLen
+     )
+
+
+bullAbsDisplacement =
+     barstate.isconfirmed and
+     bullCandidateReady and
+     close > open and
+     bodySize >= atr * absDispATR and
+     close > bullCandidateHigh and
+     close > absBullStructure
+
+bearAbsDisplacement =
+     barstate.isconfirmed and
+     bearCandidateReady and
+     close < open and
+     bodySize >= atr * absDispATR and
+     close < bearCandidateLow and
+     close < absBearStructure
+
+
+//====================================================================
+// HOLD CONFIRMATION
+//
+// The displacement itself still isn't enough.
+//
+// The next completed candle must hold:
+// - the reclaimed liquidity level
+// - at least half of the displacement candle
+//
+// This filters displacement that immediately fails.
+//====================================================================
+
+bullDispAge =
+     ta.barssince(
+          bullAbsDisplacement
+     )
+
+bearDispAge =
+     ta.barssince(
+          bearAbsDisplacement
+     )
+
+
+bullHeldLevel =
+     ta.valuewhen(
+          bullAbsDisplacement,
+          bullCandidateLevel,
+          0
+     )
+
+bearHeldLevel =
+     ta.valuewhen(
+          bearAbsDisplacement,
+          bearCandidateLevel,
+          0
+     )
+
+
+bullDispMid =
+     ta.valuewhen(
+          bullAbsDisplacement,
+          (open + close) / 2.0,
+          0
+     )
+
+bearDispMid =
+     ta.valuewhen(
+          bearAbsDisplacement,
+          (open + close) / 2.0,
+          0
+     )
+
+
+bullAbsConfirmed =
+     barstate.isconfirmed and
+     bullDispAge == 1 and
+     not na(bullHeldLevel) and
+     close > bullHeldLevel and
+     close >= bullDispMid
+
+bearAbsConfirmed =
+     barstate.isconfirmed and
+     bearDispAge == 1 and
+     not na(bearHeldLevel) and
+     close < bearHeldLevel and
+     close <= bearDispMid
+
+
+//====================================================================
+// DOL INVALIDATION / SWITCH
+//
+// Original map logic stays intact.
+//
+// Absorption is an ADDITIONAL confirmation path.
+//====================================================================
+
+bullProtectedBroken =
+     narrative == 1 and
+     not na(lastSwingLow) and
+     close < lastSwingLow
+
+bearProtectedBroken =
+     narrative == -1 and
+     not na(lastSwingHigh) and
+     close > lastSwingHigh
+
+
+bullRangeFailure =
+     narrative == -1 and
+     bullDisplacement
+
+bearRangeFailure =
+     narrative == 1 and
+     bearDisplacement
+
+
+bullAbsShift =
+     narrative == -1 and
+     bullAbsConfirmed
+
+bearAbsShift =
+     narrative == 1 and
+     bearAbsConfirmed
+
+
+switchBull =
+     bearProtectedBroken or
+     bullRangeFailure or
+     bullAbsShift
+
+switchBear =
+     bullProtectedBroken or
+     bearRangeFailure or
+     bearAbsShift
+
+
+if switchBull
+    narrative := 1
+
+if switchBear
+    narrative := -1
+
+
+// Recalculate after narrative changes.
+
+protectedPoint := narrative == 1 ? lastSwingLow : lastSwingHigh
+
+
+//====================================================================
+// CURRENT DRAW ON LIQUIDITY
+//====================================================================
+
+float currentDOL = na
+
+bool dolIsHTF = false
+
+
+if narrative == 1
+
+    if not na(lastSwingHigh) and lastSwingHigh > close
+        currentDOL := lastSwingHigh
+        dolIsHTF := false
+
+    else
+        currentDOL := htfHigh
+        dolIsHTF := true
+
+
+else
+
+    if not na(lastSwingLow) and lastSwingLow < close
+        currentDOL := lastSwingLow
+        dolIsHTF := false
+
+    else
+        currentDOL := htfLow
+        dolIsHTF := true
+
+
+//====================================================================
+// LIQUIDITY RESISTANCE CLASSIFICATION
+//====================================================================
+
+float lowResistanceLiquidity =
+     narrative == 1
+     ? htfHigh
+     : htfLow
+
+float highResistanceLiquidity =
+     narrative == 1
+     ? htfLow
+     : htfHigh
+
+
+//====================================================================
+// HTF FAIR VALUE GAPS
+//====================================================================
+
+newHTFBar =
+     ta.change(time(htfTf)) != 0
+
+
+bullFVGPresent = request.security(
+     syminfo.tickerid,
+     htfTf,
+     low[1] > high[3],
+     lookahead = barmerge.lookahead_on
+)
+
+bullFVGTop = request.security(
+     syminfo.tickerid,
+     htfTf,
+     low[1],
+     lookahead = barmerge.lookahead_on
+)
+
+bullFVGBottom = request.security(
+     syminfo.tickerid,
+     htfTf,
+     high[3],
+     lookahead = barmerge.lookahead_on
+)
+
+
+bearFVGPresent = request.security(
+     syminfo.tickerid,
+     htfTf,
+     high[1] < low[3],
+     lookahead = barmerge.lookahead_on
+)
+
+bearFVGTop = request.security(
+     syminfo.tickerid,
+     htfTf,
+     low[3],
+     lookahead = barmerge.lookahead_on
+)
+
+bearFVGBottom = request.security(
+     syminfo.tickerid,
+     htfTf,
+     high[1],
+     lookahead = barmerge.lookahead_on
+)
+
+
+//====================================================================
+// FVG BOXES
+//====================================================================
+
+var box bullFVGBox = na
+var box bearFVGBox = na
+
+
+if showFVG and newHTFBar and bullFVGPresent
+
+    if not na(bullFVGBox)
+        box.delete(bullFVGBox)
+
+    bullFVGBox := box.new(
+         left = bar_index,
+         top = bullFVGTop,
+         right = bar_index + 1,
+         bottom = bullFVGBottom,
+         border_color = color.new(bullColor, 35),
+         border_width = 1,
+         bgcolor = bullSoft,
+         text = "HTF BULL GAP",
+         text_color = color.new(textColor, 15),
+         text_size = size.tiny,
+         text_halign = text.align_right,
+         extend = extend.right
+    )
+
+
+if showFVG and newHTFBar and bearFVGPresent
+
+    if not na(bearFVGBox)
+        box.delete(bearFVGBox)
+
+    bearFVGBox := box.new(
+         left = bar_index,
+         top = bearFVGTop,
+         right = bar_index + 1,
+         bottom = bearFVGBottom,
+         border_color = color.new(bearColor, 35),
+         border_width = 1,
+         bgcolor = bearSoft,
+         text = "HTF BEAR GAP",
+         text_color = color.new(textColor, 15),
+         text_size = size.tiny,
+         text_halign = text.align_right,
+         extend = extend.right
+    )
+
+
+//====================================================================
+// ABSORPTION LABELS
+//====================================================================
+
+if showAbsorption and bullAbsConfirmed
+
+    label.new(
+         bar_index,
+         low,
+         narrative == 1
+         ? "FAILED SELLING ✓\nABSORPTION CONFIRMED\nDOL CONFIRM ↑"
+         : "FAILED SELLING ✓\nABSORPTION CONFIRMED",
+         style = label.style_label_up,
+         color = color.new(bullColor, 70),
+         textcolor = textColor,
+         size = size.tiny
+    )
+
+
+if showAbsorption and bearAbsConfirmed
+
+    label.new(
+         bar_index,
+         high,
+         narrative == -1
+         ? "FAILED BUYING ✓\nABSORPTION CONFIRMED\nDOL CONFIRM ↓"
+         : "FAILED BUYING ✓\nABSORPTION CONFIRMED",
+         style = label.style_label_down,
+         color = color.new(bearColor, 70),
+         textcolor = textColor,
+         size = size.tiny
+    )
+
+
+//====================================================================
+// OBJECTS
+//====================================================================
+
+var line dolLine = na
+var label dolLabel = na
+
+var line protectedLine = na
+var label protectedLabel = na
+
+var line lrlrLine = na
+var label lrlrLabel = na
+
+var line hrlrLine = na
+var label hrlrLabel = na
+
+
+//====================================================================
+// CURRENT DOL
+//====================================================================
+
+if barstate.islast
+
+    if not na(dolLine)
+        line.delete(dolLine)
+
+    if not na(dolLabel)
+        label.delete(dolLabel)
+
+
+    if showLTFDOL and not na(currentDOL)
+
+        dolLine := line.new(
+             bar_index - 20,
+             currentDOL,
+             bar_index + 10,
+             currentDOL,
+             extend = extend.right,
+             color = narrative == 1 ? bullColor : bearColor,
+             width = 2
+        )
+
+
+        string dolText =
+             dolIsHTF
+             ? narrative == 1
+             ? "HTF DOL ↑"
+             : "HTF DOL ↓"
+             : narrative == 1
+             ? "LTF DOL ↑"
+             : "LTF DOL ↓"
+
+
+        dolLabel := label.new(
+             bar_index + 3,
+             currentDOL,
+             dolText,
+             style = label.style_none,
+             textcolor = narrative == 1 ? bullColor : bearColor,
+             size = size.small
+        )
+
+
+//====================================================================
+// PROTECTED POINT
+//====================================================================
+
+if barstate.islast
+
+    if not na(protectedLine)
+        line.delete(protectedLine)
+
+    if not na(protectedLabel)
+        label.delete(protectedLabel)
+
+
+    if showProtected and not na(protectedPoint)
+
+        protectedLine := line.new(
+             bar_index - 15,
+             protectedPoint,
+             bar_index + 10,
+             protectedPoint,
+             extend = extend.right,
+             color = neutralColor,
+             width = 1,
+             style = line.style_dashed
+        )
+
+
+        protectedLabel := label.new(
+             bar_index + 3,
+             protectedPoint,
+             narrative == 1
+             ? "PROTECTED LOW"
+             : "PROTECTED HIGH",
+             style = label.style_none,
+             textcolor = neutralColor,
+             size = size.tiny
+        )
+
+
+//====================================================================
+// HTF LIQUIDITY CLASSIFICATION
+//====================================================================
+
+if barstate.islast
+
+    if not na(lrlrLine)
+        line.delete(lrlrLine)
+
+    if not na(lrlrLabel)
+        label.delete(lrlrLabel)
+
+    if not na(hrlrLine)
+        line.delete(hrlrLine)
+
+    if not na(hrlrLabel)
+        label.delete(hrlrLabel)
+
+
+    if showHTFLiquidity
+
+        lrlrLine := line.new(
+             bar_index - 30,
+             lowResistanceLiquidity,
+             bar_index + 10,
+             lowResistanceLiquidity,
+             extend = extend.right,
+             color = color.new(neutralColor, 25),
+             width = 1
+        )
+
+
+        lrlrLabel := label.new(
+             bar_index + 3,
+             lowResistanceLiquidity,
+             narrative == 1
+             ? "LRLR • BSL"
+             : "LRLR • SSL",
+             style = label.style_none,
+             textcolor = neutralColor,
+             size = size.tiny
+        )
+
+
+        hrlrLine := line.new(
+             bar_index - 30,
+             highResistanceLiquidity,
+             bar_index + 10,
+             highResistanceLiquidity,
+             extend = extend.right,
+             color = color.new(neutralColor, 55),
+             width = 1,
+             style = line.style_dotted
+        )
+
+
+        hrlrLabel := label.new(
+             bar_index + 3,
+             highResistanceLiquidity,
+             narrative == 1
+             ? "HRLR • SSL"
+             : "HRLR • BSL",
+             style = label.style_none,
+             textcolor = color.new(neutralColor, 30),
+             size = size.tiny
+        )
+
+
+//====================================================================
+// ALERTS
+//====================================================================
+
+alertcondition(
+     bullAbsConfirmed,
+     "Confirmed Failed Selling",
+     "DOL Map detected confirmed failed selling / bullish absorption."
+)
+
+alertcondition(
+     bearAbsConfirmed,
+     "Confirmed Failed Buying",
+     "DOL Map detected confirmed failed buying / bearish absorption."
+)

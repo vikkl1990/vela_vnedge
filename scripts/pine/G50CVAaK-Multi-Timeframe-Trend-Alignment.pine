@@ -1,0 +1,370 @@
+//@version=6
+indicator(title="Multi-Timeframe Trend & Alignment", shorttitle="EMA/SMA", precision=8, overlay=true)
+
+// =====================================================================
+// 1. GLOBAL SETTINGS
+// =====================================================================
+src = input(close, title="Source")
+showTable = input.bool(true, title="Show Alignment Table")
+showPerf = input.bool(true, title="Show Performance %")
+showLabels = input.bool(true, title="Show Price Scale Labels")
+showHtf = input.bool(true, title="Show HTF Trend Metrics")
+
+htfTimeframe = input.string("D", title="HTF Trend Timeframe")
+
+tablePos = input.string("Top Right", "Table Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"])
+tableBgColor = input.color(color.new(color.black, 15), title="Default Table Background")
+tableFontSize = input.string("Small", "Table Font Size", options=["Tiny", "Small", "Normal", "Large"])
+tableTextColor = input.color(color.white, title="Table Text Color")
+
+get_pos(pos) =>
+    pos == "Top Right" ? position.top_right : pos == "Top Left" ? position.top_left : pos == "Bottom Right" ? position.bottom_right : position.bottom_left
+
+get_font_size(size_str) =>
+    size_str == "Tiny" ? size.tiny : size_str == "Small" ? size.small : size_str == "Normal" ? size.normal : size.large
+
+// =====================================================================
+// 2. EMA INPUTS (Grouped neatly with inline toggles)
+// Settings Layout: Show | Length | Width | Color
+// =====================================================================
+grpE = "EMA Settings: Show | Length | Width | Color"
+sE1 = input.bool(true,  "", group=grpE, inline="e1"), lE1 = input.int(21,  "EMA 1 ", group=grpE, inline="e1"), wE1 = input.int(2, "", options=[1,2,3,4], group=grpE, inline="e1"), cE1 = input.color(#0098FF, "", group=grpE, inline="e1")
+sE2 = input.bool(true,  "", group=grpE, inline="e2"), lE2 = input.int(50,  "EMA 2 ", group=grpE, inline="e2"), wE2 = input.int(2, "", options=[1,2,3,4], group=grpE, inline="e2"), cE2 = input.color(#00FFFF, "", group=grpE, inline="e2")
+sE3 = input.bool(true,  "", group=grpE, inline="e3"), lE3 = input.int(89,  "EMA 3 ", group=grpE, inline="e3"), wE3 = input.int(2, "", options=[1,2,3,4], group=grpE, inline="e3"), cE3 = input.color(#FF00FF, "", group=grpE, inline="e3")
+sE4 = input.bool(true,  "", group=grpE, inline="e4"), lE4 = input.int(200, "EMA 4 ", group=grpE, inline="e4"), wE4 = input.int(2, "", options=[1,2,3,4], group=grpE, inline="e4"), cE4 = input.color(#00FF00, "", group=grpE, inline="e4")
+sE5 = input.bool(true,  "", group=grpE, inline="e5"), lE5 = input.int(377, "EMA 5 ", group=grpE, inline="e5"), wE5 = input.int(2, "", options=[1,2,3,4], group=grpE, inline="e5"), cE5 = input.color(#E3B674, "", group=grpE, inline="e5")
+sE6 = input.bool(true,  "", group=grpE, inline="e6"), lE6 = input.int(10,  "EMA 6 ", group=grpE, inline="e6"), wE6 = input.int(2, "", options=[1,2,3,4], group=grpE, inline="e6"), cE6 = input.color(#f57c00, "", group=grpE, inline="e6")
+sE7 = input.bool(true,  "", group=grpE, inline="e7"), lE7 = input.int(124, "EMA 7 ", group=grpE, inline="e7"), wE7 = input.int(2, "", options=[1,2,3,4], group=grpE, inline="e7"), cE7 = input.color(#e1bee7, "", group=grpE, inline="e7")
+sE8 = input.bool(false, "", group=grpE, inline="e8"), lE8 = input.int(0,   "EMA 8 ", group=grpE, inline="e8"), wE8 = input.int(2, "", options=[1,2,3,4], group=grpE, inline="e8"), cE8 = input.color(#ffeb3b, "", group=grpE, inline="e8")
+sE9 = input.bool(false, "", group=grpE, inline="e9"), lE9 = input.int(0,   "EMA 9 ", group=grpE, inline="e9"), wE9 = input.int(2, "", options=[1,2,3,4], group=grpE, inline="e9"), cE9 = input.color(#ff5252, "", group=grpE, inline="e9")
+sE10= input.bool(false, "", group=grpE, inline="e10"),lE10= input.int(0,   "EMA 10", group=grpE, inline="e10"),wE10= input.int(2, "", options=[1,2,3,4], group=grpE, inline="e10"),cE10= input.color(#ffffff, "", group=grpE, inline="e10")
+
+// =====================================================================
+// 3. SMA INPUTS (Grouped neatly with inline toggles)
+// Settings Layout: Show | Length | Width | Color
+// =====================================================================
+grpS = "SMA Settings: Show | Length | Width | Color"
+sS1 = input.bool(true,  "", group=grpS, inline="s1"), lS1 = input.int(10,  "SMA 1 ", group=grpS, inline="s1"), wS1 = input.int(2, "", options=[1,2,3,4], group=grpS, inline="s1"), cS1 = input.color(#B71C1C, "", group=grpS, inline="s1")
+sS2 = input.bool(true,  "", group=grpS, inline="s2"), lS2 = input.int(30,  "SMA 2 ", group=grpS, inline="s2"), wS2 = input.int(2, "", options=[1,2,3,4], group=grpS, inline="s2"), cS2 = input.color(#FFFF00, "", group=grpS, inline="s2")
+sS3 = input.bool(true,  "", group=grpS, inline="s3"), lS3 = input.int(100, "SMA 3 ", group=grpS, inline="s3"), wS3 = input.int(2, "", options=[1,2,3,4], group=grpS, inline="s3"), cS3 = input.color(#5b34ff, "", group=grpS, inline="s3")
+sS4 = input.bool(true,  "", group=grpS, inline="s4"), lS4 = input.int(200, "SMA 4 ", group=grpS, inline="s4"), wS4 = input.int(2, "", options=[1,2,3,4], group=grpS, inline="s4"), cS4 = input.color(#d7d7d7, "", group=grpS, inline="s4")
+sS5 = input.bool(false, "", group=grpS, inline="s5"), lS5 = input.int(0,   "SMA 5 ", group=grpS, inline="s5"), wS5 = input.int(2, "", options=[1,2,3,4], group=grpS, inline="s5"), cS5 = input.color(#813047, "", group=grpS, inline="s5")
+sS6 = input.bool(false, "", group=grpS, inline="s6"), lS6 = input.int(0,   "SMA 6 ", group=grpS, inline="s6"), wS6 = input.int(2, "", options=[1,2,3,4], group=grpS, inline="s6"), cS6 = input.color(#80AE51, "", group=grpS, inline="s6")
+sS7 = input.bool(false, "", group=grpS, inline="s7"), lS7 = input.int(0,   "SMA 7 ", group=grpS, inline="s7"), wS7 = input.int(2, "", options=[1,2,3,4], group=grpS, inline="s7"), cS7 = input.color(#00bcd4, "", group=grpS, inline="s7")
+sS8 = input.bool(false, "", group=grpS, inline="s8"), lS8 = input.int(0,   "SMA 8 ", group=grpS, inline="s8"), wS8 = input.int(2, "", options=[1,2,3,4], group=grpS, inline="s8"), cS8 = input.color(#8bc34a, "", group=grpS, inline="s8")
+sS9 = input.bool(false, "", group=grpS, inline="s9"), lS9 = input.int(0,   "SMA 9 ", group=grpS, inline="s9"), wS9 = input.int(2, "", options=[1,2,3,4], group=grpS, inline="s9"), cS9 = input.color(#ff9800, "", group=grpS, inline="s9")
+sS10= input.bool(false, "", group=grpS, inline="s10"),lS10= input.int(0,   "SMA 10", group=grpS, inline="s10"),wS10= input.int(2, "", options=[1,2,3,4], group=grpS, inline="s10"),cS10= input.color(#9c27b0, "", group=grpS, inline="s10")
+
+// =====================================================================
+// 4. CALCULATIONS
+// =====================================================================
+vE1 = sE1 and lE1 > 0 ? ta.ema(src, lE1) : na, vE2 = sE2 and lE2 > 0 ? ta.ema(src, lE2) : na
+vE3 = sE3 and lE3 > 0 ? ta.ema(src, lE3) : na, vE4 = sE4 and lE4 > 0 ? ta.ema(src, lE4) : na
+vE5 = sE5 and lE5 > 0 ? ta.ema(src, lE5) : na, vE6 = sE6 and lE6 > 0 ? ta.ema(src, lE6) : na
+vE7 = sE7 and lE7 > 0 ? ta.ema(src, lE7) : na, vE8 = sE8 and lE8 > 0 ? ta.ema(src, lE8) : na
+vE9 = sE9 and lE9 > 0 ? ta.ema(src, lE9) : na, vE10= sE10 and lE10 > 0 ? ta.ema(src, lE10) : na
+
+vS1 = sS1 and lS1 > 0 ? ta.sma(src, lS1) : na, vS2 = sS2 and lS2 > 0 ? ta.sma(src, lS2) : na
+vS3 = sS3 and lS3 > 0 ? ta.sma(src, lS3) : na, vS4 = sS4 and lS4 > 0 ? ta.sma(src, lS4) : na
+vS5 = sS5 and lS5 > 0 ? ta.sma(src, lS5) : na, vS6 = sS6 and lS6 > 0 ? ta.sma(src, lS6) : na
+vS7 = sS7 and lS7 > 0 ? ta.sma(src, lS7) : na, vS8 = sS8 and lS8 > 0 ? ta.sma(src, lS8) : na
+vS9 = sS9 and lS9 > 0 ? ta.sma(src, lS9) : na, vS10= sS10 and lS10 > 0 ? ta.sma(src, lS10) : na
+
+// Performance Calcs
+d_prev   = request.security(syminfo.tickerid, "1D", close[1])
+w_prev   = request.security(syminfo.tickerid, "1W", close[1])
+m_prev   = request.security(syminfo.tickerid, "1M", close[1])
+ytd_prev = request.security(syminfo.tickerid, "12M", close[1])
+yr1_prev = request.security(syminfo.tickerid, "1D", close[252])
+
+dtd_pct = d_prev != 0 ? ((close - d_prev) / d_prev) * 100 : na
+wtd_pct = w_prev != 0 ? ((close - w_prev) / w_prev) * 100 : na
+mtd_pct = m_prev != 0 ? ((close - m_prev) / m_prev) * 100 : na
+ytd_pct = ytd_prev != 0 ? ((close - ytd_prev) / ytd_prev) * 100 : na
+yr1_pct = yr1_prev != 0 ? ((close - yr1_prev) / yr1_prev) * 100 : na
+
+// HTF Calculations via request.security
+f_htf_calc() =>
+    // 1. MTF EMA Stack (Daily & Weekly standard check)
+    e20  = ta.ema(close, 20)
+    e50  = ta.ema(close, 50)
+    e100 = ta.ema(close, 100)
+    e200 = ta.ema(close, 200)
+    bool mtf_stack = (e20 > e50) and (e50 > e100) and (e100 > e200)
+    bool mtf_bear  = (e20 < e50) and (e50 < e100) and (e100 < e200)
+    string mtf_txt = mtf_stack ? "Bullish Stack" : mtf_bear ? "Bearish Stack" : "Mixed"
+
+    // 2. MACD State
+    [macdLine, signalLine, histLine] = ta.macd(close, 12, 26, 9)
+    string macd_txt = macdLine > signalLine ? "Bullish Crossover" : "Bearish Crossover"
+
+    // 3. ADX Trend Strength
+    // Simplified ADX/DMI calculation
+    tr = ta.tr(true)
+    plusDM = high - high[1] > low[1] - low ? math.max(high - high[1], 0) : 0
+    minusDM = low[1] - low > high - high[1] ? math.max(low[1] - low, 0) : 0
+    smoothTR = ta.rma(tr, 14)
+    smoothPlusDM = ta.rma(plusDM, 14)
+    smoothMinusDM = ta.rma(minusDM, 14)
+    plusDI = smoothTR != 0 ? (smoothPlusDM / smoothTR) * 100 : 0
+    minusDI = smoothTR != 0 ? (smoothMinusDM / smoothTR) * 100 : 0
+    dx = (plusDI + minusDI) != 0 ? (math.abs(plusDI - minusDI) / (plusDI + minusDI)) * 100 : 0
+    adx = ta.rma(dx, 14)
+    string adx_txt = str.tostring(adx, "#.#") + (adx > 25 ? " (Trending)" : " (Ranging)")
+
+    // 4. SuperTrend State
+    [st_val, st_dir] = ta.supertrend(3, 10)
+    string st_txt = st_dir < 0 ? "Bullish" : "Bearish"
+
+    // 5. RSI Value & Trend
+    rsi_val = ta.rsi(close, 14)
+    string rsi_txt = str.tostring(rsi_val, "#.##") + (rsi_val > 50 ? " (Bullish)" : " (Bearish)")
+
+    [mtf_txt, macd_txt, adx_txt, st_txt, rsi_txt]
+
+[htf_stack, htf_macd, htf_adx, htf_st, htf_rsi] = request.security(syminfo.tickerid, htfTimeframe, f_htf_calc())
+
+// =====================================================================
+// 5. PLOTTING (Native price scale labels suppressed)
+// =====================================================================
+plot(vE1, color=cE1, title="EMA 1", linewidth=wE1, display=display.pane + display.data_window)
+plot(vE2, color=cE2, title="EMA 2", linewidth=wE2, display=display.pane + display.data_window)
+plot(vE3, color=cE3, title="EMA 3", linewidth=wE3, display=display.pane + display.data_window)
+plot(vE4, color=cE4, title="EMA 4", linewidth=wE4, display=display.pane + display.data_window)
+plot(vE5, color=cE5, title="EMA 5", linewidth=wE5, display=display.pane + display.data_window)
+plot(vE6, color=cE6, title="EMA 6", linewidth=wE6, display=display.pane + display.data_window)
+plot(vE7, color=cE7, title="EMA 7", linewidth=wE7, display=display.pane + display.data_window)
+plot(vE8, color=cE8, title="EMA 8", linewidth=wE8, display=display.pane + display.data_window)
+plot(vE9, color=cE9, title="EMA 9", linewidth=wE9, display=display.pane + display.data_window)
+plot(vE10, color=cE10, title="EMA 10", linewidth=wE10, display=display.pane + display.data_window)
+
+plot(vS1, color=cS1, title="SMA 1", linewidth=wS1, display=display.pane + display.data_window)
+plot(vS2, color=cS2, title="SMA 2", linewidth=wS2, display=display.pane + display.data_window)
+plot(vS3, color=cS3, title="SMA 3", linewidth=wS3, display=display.pane + display.data_window)
+plot(vS4, color=cS4, title="SMA 4", linewidth=wS4, display=display.pane + display.data_window)
+plot(vS5, color=cS5, title="SMA 5", linewidth=wS5, display=display.pane + display.data_window)
+plot(vS6, color=cS6, title="SMA 6", linewidth=wS6, display=display.pane + display.data_window)
+plot(vS7, color=cS7, title="SMA 7", linewidth=wS7, display=display.pane + display.data_window)
+plot(vS8, color=cS8, title="SMA 8", linewidth=wS8, display=display.pane + display.data_window)
+plot(vS9, color=cS9, title="SMA 9", linewidth=wS9, display=display.pane + display.data_window)
+plot(vS10, color=cS10, title="SMA 10", linewidth=wS10, display=display.pane + display.data_window)
+
+// =====================================================================
+// 6. DYNAMIC LABELS & ALIGNMENT TABLE
+// =====================================================================
+
+// Define a custom type to hold indicator data for sorting
+type MA_Data
+    string name
+    int len
+    float val
+    color col
+
+var table tbl = table.new(get_pos(tablePos), 3, 40, border_width=1, border_color=color.new(color.gray, 50))
+var maArray = array.new<MA_Data>()
+
+if barstate.islast
+    // -- Price Scale Labels --
+    if showLabels
+        if not na(vE1)
+            label.new(bar_index + 1, vE1, "EMA " + str.tostring(lE1), color=color.new(cE1, 85), textcolor=cE1, style=label.style_label_left, size=size.small)
+        if not na(vE2)
+            label.new(bar_index + 1, vE2, "EMA " + str.tostring(lE2), color=color.new(cE2, 85), textcolor=cE2, style=label.style_label_left, size=size.small)
+        if not na(vE3)
+            label.new(bar_index + 1, vE3, "EMA " + str.tostring(lE3), color=color.new(cE3, 85), textcolor=cE3, style=label.style_label_left, size=size.small)
+        if not na(vE4)
+            label.new(bar_index + 1, vE4, "EMA " + str.tostring(lE4), color=color.new(cE4, 85), textcolor=cE4, style=label.style_label_left, size=size.small)
+        if not na(vE5)
+            label.new(bar_index + 1, vE5, "EMA " + str.tostring(lE5), color=color.new(cE5, 85), textcolor=cE5, style=label.style_label_left, size=size.small)
+        if not na(vE6)
+            label.new(bar_index + 1, vE6, "EMA " + str.tostring(lE6), color=color.new(cE6, 85), textcolor=cE6, style=label.style_label_left, size=size.small)
+        if not na(vE7)
+            label.new(bar_index + 1, vE7, "EMA " + str.tostring(lE7), color=color.new(cE7, 85), textcolor=cE7, style=label.style_label_left, size=size.small)
+        if not na(vE8)
+            label.new(bar_index + 1, vE8, "EMA " + str.tostring(lE8), color=color.new(cE8, 85), textcolor=cE8, style=label.style_label_left, size=size.small)
+        if not na(vE9)
+            label.new(bar_index + 1, vE9, "EMA " + str.tostring(lE9), color=color.new(cE9, 85), textcolor=cE9, style=label.style_label_left, size=size.small)
+        if not na(vE10)
+            label.new(bar_index + 1, vE10, "EMA " + str.tostring(lE10), color=color.new(cE10, 85), textcolor=cE10, style=label.style_label_left, size=size.small)
+            
+        if not na(vS1)
+            label.new(bar_index + 1, vS1, "SMA " + str.tostring(lS1), color=color.new(cS1, 85), textcolor=cS1, style=label.style_label_left, size=size.small)
+        if not na(vS2)
+            label.new(bar_index + 1, vS2, "SMA " + str.tostring(lS2), color=color.new(cS2, 85), textcolor=cS2, style=label.style_label_left, size=size.small)
+        if not na(vS3)
+            label.new(bar_index + 1, vS3, "SMA " + str.tostring(lS3), color=color.new(cS3, 85), textcolor=cS3, style=label.style_label_left, size=size.small)
+        if not na(vS4)
+            label.new(bar_index + 1, vS4, "SMA " + str.tostring(lS4), color=color.new(cS4, 85), textcolor=cS4, style=label.style_label_left, size=size.small)
+        if not na(vS5)
+            label.new(bar_index + 1, vS5, "SMA " + str.tostring(lS5), color=color.new(cS5, 85), textcolor=cS5, style=label.style_label_left, size=size.small)
+        if not na(vS6)
+            label.new(bar_index + 1, vS6, "SMA " + str.tostring(lS6), color=color.new(cS6, 85), textcolor=cS6, style=label.style_label_left, size=size.small)
+        if not na(vS7)
+            label.new(bar_index + 1, vS7, "SMA " + str.tostring(lS7), color=color.new(cS7, 85), textcolor=cS7, style=label.style_label_left, size=size.small)
+        if not na(vS8)
+            label.new(bar_index + 1, vS8, "SMA " + str.tostring(lS8), color=color.new(cS8, 85), textcolor=cS8, style=label.style_label_left, size=size.small)
+        if not na(vS9)
+            label.new(bar_index + 1, vS9, "SMA " + str.tostring(lS9), color=color.new(cS9, 85), textcolor=cS9, style=label.style_label_left, size=size.small)
+        if not na(vS10)
+            label.new(bar_index + 1, vS10, "SMA " + str.tostring(lS10), color=color.new(cS10, 85), textcolor=cS10, style=label.style_label_left, size=size.small)
+
+    // -- Table Generation --
+    if showTable
+        array.clear(maArray)
+        
+        // Push active indicators into array
+        if not na(vE1)
+            array.push(maArray, MA_Data.new("EMA " + str.tostring(lE1), lE1, vE1, cE1))
+        if not na(vE2)
+            array.push(maArray, MA_Data.new("EMA " + str.tostring(lE2), lE2, vE2, cE2))
+        if not na(vE3)
+            array.push(maArray, MA_Data.new("EMA " + str.tostring(lE3), lE3, vE3, cE3))
+        if not na(vE4)
+            array.push(maArray, MA_Data.new("EMA " + str.tostring(lE4), lE4, vE4, cE4))
+        if not na(vE5)
+            array.push(maArray, MA_Data.new("EMA " + str.tostring(lE5), lE5, vE5, cE5))
+        if not na(vE6)
+            array.push(maArray, MA_Data.new("EMA " + str.tostring(lE6), lE6, vE6, cE6))
+        if not na(vE7)
+            array.push(maArray, MA_Data.new("EMA " + str.tostring(lE7), lE7, vE7, cE7))
+        if not na(vE8)
+            array.push(maArray, MA_Data.new("EMA " + str.tostring(lE8), lE8, vE8, cE8))
+        if not na(vE9)
+            array.push(maArray, MA_Data.new("EMA " + str.tostring(lE9), lE9, vE9, cE9))
+        if not na(vE10)
+            array.push(maArray, MA_Data.new("EMA " + str.tostring(lE10), lE10, vE10, cE10))
+
+        if not na(vS1)
+            array.push(maArray, MA_Data.new("SMA " + str.tostring(lS1), lS1, vS1, cS1))
+        if not na(vS2)
+            array.push(maArray, MA_Data.new("SMA " + str.tostring(lS2), lS2, vS2, cS2))
+        if not na(vS3)
+            array.push(maArray, MA_Data.new("SMA " + str.tostring(lS3), lS3, vS3, cS3))
+        if not na(vS4)
+            array.push(maArray, MA_Data.new("SMA " + str.tostring(lS4), lS4, vS4, cS4))
+        if not na(vS5)
+            array.push(maArray, MA_Data.new("SMA " + str.tostring(lS5), lS5, vS5, cS5))
+        if not na(vS6)
+            array.push(maArray, MA_Data.new("SMA " + str.tostring(lS6), lS6, vS6, cS6))
+        if not na(vS7)
+            array.push(maArray, MA_Data.new("SMA " + str.tostring(lS7), lS7, vS7, cS7))
+        if not na(vS8)
+            array.push(maArray, MA_Data.new("SMA " + str.tostring(lS8), lS8, vS8, cS8))
+        if not na(vS9)
+            array.push(maArray, MA_Data.new("SMA " + str.tostring(lS9), lS9, vS9, cS9))
+        if not na(vS10)
+            array.push(maArray, MA_Data.new("SMA " + str.tostring(lS10), lS10, vS10, cS10))
+            
+        // Sort Array based on Value (Descending / highest price at the top)
+        int n = array.size(maArray)
+        if n > 1
+            for i = 0 to n - 2
+                for j = 0 to n - i - 2
+                    MA_Data itemA = array.get(maArray, j)
+                    MA_Data itemB = array.get(maArray, j + 1)
+                    if itemA.val < itemB.val
+                        array.set(maArray, j, itemB)
+                        array.set(maArray, j + 1, itemA)
+        
+        // Determine Alignment logic (Green for Bullish perfectly stacked, Red for Bearish)
+        bool isBullish = n >= 2 ? true : false
+        bool isBearish = n >= 2 ? true : false
+        
+        if n >= 2
+            for i = 1 to n - 1
+                MA_Data prev = array.get(maArray, i - 1)
+                MA_Data curr = array.get(maArray, i)
+                if curr.len < prev.len
+                    isBullish := false
+                if curr.len > prev.len
+                    isBearish := false
+                    
+        color finalBg = isBullish ? color.new(color.green, 70) : isBearish ? color.new(color.red, 70) : tableBgColor
+        
+        // Clear old cells to prevent artifacts when toggling off MAs/Stats (3 columns)
+        table.clear(tbl, 0, 0, 2, 39)
+
+        // Draw Headers
+        table.cell(tbl, 0, 0, "Length", text_color=tableTextColor, text_size=get_font_size(tableFontSize), text_halign=text.align_left, bgcolor=finalBg)
+        table.cell(tbl, 1, 0, "Value", text_color=tableTextColor, text_size=get_font_size(tableFontSize), text_halign=text.align_right, bgcolor=finalBg)
+        table.cell(tbl, 2, 0, "Dist (Pts / %)", text_color=tableTextColor, text_size=get_font_size(tableFontSize), text_halign=text.align_right, bgcolor=finalBg)
+        
+        // Draw dynamically sorted rows with distance value & %
+        if n > 0
+            for i = 0 to n - 1
+                MA_Data item = array.get(maArray, i)
+                float dist_val = close - item.val
+                float dist_pct = (dist_val / item.val) * 100
+                string dist_str = (dist_val >= 0 ? "+" : "") + str.tostring(dist_val, format.mintick) + " (" + (dist_pct >= 0 ? "+" : "") + str.tostring(dist_pct, "#.##") + "%)"
+                
+                table.cell(tbl, 0, i + 1, item.name, text_color=item.col, text_size=get_font_size(tableFontSize), text_halign=text.align_left, bgcolor=finalBg)
+                table.cell(tbl, 1, i + 1, str.tostring(item.val, format.mintick), text_color=item.col, text_size=get_font_size(tableFontSize), text_halign=text.align_right, bgcolor=finalBg)
+                table.cell(tbl, 2, i + 1, dist_str, text_color=item.col, text_size=get_font_size(tableFontSize), text_halign=text.align_right, bgcolor=finalBg)
+                
+        int currentRowIndex = n + 1
+
+        // Draw Performance Metrics
+        if showPerf
+            // Visual Spacer spanning all 3 columns
+            table.merge_cells(tbl, 0, currentRowIndex, 2, currentRowIndex)
+            table.cell(tbl, 0, currentRowIndex, "───────────────", text_color=color.new(tableTextColor, 50), text_size=get_font_size(tableFontSize), text_halign=text.align_center, bgcolor=finalBg)
+            currentRowIndex += 1
+            
+            table.cell(tbl, 0, currentRowIndex, "DTD %", text_color=tableTextColor, text_size=get_font_size(tableFontSize), text_halign=text.align_left, bgcolor=finalBg)
+            table.merge_cells(tbl, 1, currentRowIndex, 2, currentRowIndex)
+            table.cell(tbl, 1, currentRowIndex, (dtd_pct >= 0 ? "+" : "") + str.tostring(dtd_pct, "#.##") + "%", text_color=dtd_pct >= 0 ? color.green : color.red, text_size=get_font_size(tableFontSize), text_halign=text.align_right, bgcolor=finalBg)
+            currentRowIndex += 1
+            
+            table.cell(tbl, 0, currentRowIndex, "WTD %", text_color=tableTextColor, text_size=get_font_size(tableFontSize), text_halign=text.align_left, bgcolor=finalBg)
+            table.merge_cells(tbl, 1, currentRowIndex, 2, currentRowIndex)
+            table.cell(tbl, 1, currentRowIndex, (wtd_pct >= 0 ? "+" : "") + str.tostring(wtd_pct, "#.##") + "%", text_color=wtd_pct >= 0 ? color.green : color.red, text_size=get_font_size(tableFontSize), text_halign=text.align_right, bgcolor=finalBg)
+            currentRowIndex += 1
+            
+            table.cell(tbl, 0, currentRowIndex, "MTD %", text_color=tableTextColor, text_size=get_font_size(tableFontSize), text_halign=text.align_left, bgcolor=finalBg)
+            table.merge_cells(tbl, 1, currentRowIndex, 2, currentRowIndex)
+            table.cell(tbl, 1, currentRowIndex, (mtd_pct >= 0 ? "+" : "") + str.tostring(mtd_pct, "#.##") + "%", text_color=mtd_pct >= 0 ? color.green : color.red, text_size=get_font_size(tableFontSize), text_halign=text.align_right, bgcolor=finalBg)
+            currentRowIndex += 1
+            
+            table.cell(tbl, 0, currentRowIndex, "YTD %", text_color=tableTextColor, text_size=get_font_size(tableFontSize), text_halign=text.align_left, bgcolor=finalBg)
+            table.merge_cells(tbl, 1, currentRowIndex, 2, currentRowIndex)
+            table.cell(tbl, 1, currentRowIndex, (ytd_pct >= 0 ? "+" : "") + str.tostring(ytd_pct, "#.##") + "%", text_color=ytd_pct >= 0 ? color.green : color.red, text_size=get_font_size(tableFontSize), text_halign=text.align_right, bgcolor=finalBg)
+            currentRowIndex += 1
+            
+            table.cell(tbl, 0, currentRowIndex, "1 Yr %", text_color=tableTextColor, text_size=get_font_size(tableFontSize), text_halign=text.align_left, bgcolor=finalBg)
+            table.merge_cells(tbl, 1, currentRowIndex, 2, currentRowIndex)
+            table.cell(tbl, 1, currentRowIndex, (yr1_pct >= 0 ? "+" : "") + str.tostring(yr1_pct, "#.##") + "%", text_color=yr1_pct >= 0 ? color.green : color.red, text_size=get_font_size(tableFontSize), text_halign=text.align_right, bgcolor=finalBg)
+            currentRowIndex += 1
+
+        // Draw HTF Metrics
+        if showHtf
+            table.merge_cells(tbl, 0, currentRowIndex, 2, currentRowIndex)
+            table.cell(tbl, 0, currentRowIndex, "────── HTF (" + htfTimeframe + ") ──────", text_color=color.new(tableTextColor, 50), text_size=get_font_size(tableFontSize), text_halign=text.align_center, bgcolor=finalBg)
+            currentRowIndex += 1
+            
+            table.cell(tbl, 0, currentRowIndex, "HTF EMA Stack", text_color=tableTextColor, text_size=get_font_size(tableFontSize), text_halign=text.align_left, bgcolor=finalBg)
+            table.merge_cells(tbl, 1, currentRowIndex, 2, currentRowIndex)
+            table.cell(tbl, 1, currentRowIndex, htf_stack, text_color=htf_stack == "Bullish Stack" ? color.green : htf_stack == "Bearish Stack" ? color.red : tableTextColor, text_size=get_font_size(tableFontSize), text_halign=text.align_right, bgcolor=finalBg)
+            currentRowIndex += 1
+
+            table.cell(tbl, 0, currentRowIndex, "HTF MACD", text_color=tableTextColor, text_size=get_font_size(tableFontSize), text_halign=text.align_left, bgcolor=finalBg)
+            table.merge_cells(tbl, 1, currentRowIndex, 2, currentRowIndex)
+            table.cell(tbl, 1, currentRowIndex, htf_macd, text_color=htf_macd == "Bullish Crossover" ? color.green : color.red, text_size=get_font_size(tableFontSize), text_halign=text.align_right, bgcolor=finalBg)
+            currentRowIndex += 1
+
+            table.cell(tbl, 0, currentRowIndex, "HTF ADX", text_color=tableTextColor, text_size=get_font_size(tableFontSize), text_halign=text.align_left, bgcolor=finalBg)
+            table.merge_cells(tbl, 1, currentRowIndex, 2, currentRowIndex)
+            table.cell(tbl, 1, currentRowIndex, htf_adx, text_color=tableTextColor, text_size=get_font_size(tableFontSize), text_halign=text.align_right, bgcolor=finalBg)
+            currentRowIndex += 1
+
+            table.cell(tbl, 0, currentRowIndex, "HTF SuperTrend", text_color=tableTextColor, text_size=get_font_size(tableFontSize), text_halign=text.align_left, bgcolor=finalBg)
+            table.merge_cells(tbl, 1, currentRowIndex, 2, currentRowIndex)
+            table.cell(tbl, 1, currentRowIndex, htf_st, text_color=htf_st == "Bullish" ? color.green : color.red, text_size=get_font_size(tableFontSize), text_halign=text.align_right, bgcolor=finalBg)
+            currentRowIndex += 1
+
+            table.cell(tbl, 0, currentRowIndex, "HTF RSI", text_color=tableTextColor, text_size=get_font_size(tableFontSize), text_halign=text.align_left, bgcolor=finalBg)
+            table.merge_cells(tbl, 1, currentRowIndex, 2, currentRowIndex)
+            table.cell(tbl, 1, currentRowIndex, htf_rsi, text_color=tableTextColor, text_size=get_font_size(tableFontSize), text_halign=text.align_right, bgcolor=finalBg)
+            currentRowIndex += 1
+
+    else
+        table.clear(tbl, 0, 0, 2, 39)

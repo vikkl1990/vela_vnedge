@@ -1,0 +1,663 @@
+//@version=6
+indicator(title="GEX Levels v3 [Barrett]", shorttitle="GEXv3", overlay=true, max_lines_count=60, max_labels_count=60)
+
+// ============================================================
+//  GEX Levels v3 — Multi-Timeframe (0DTE | WEEKLY | MONTHLY | ALL)
+//  Author: Sean Barrett + Claude
+//  Date: April 14, 2026 (PS1/PS2 Support Floor update)
+//  Updated: September 16, 2026 - staggered labels + static right-edge readout table
+//
+//  ONE paste string. Pipe-delimited: 0DTE(16)|WEEKLY(10)|MONTHLY(10)
+//  Checkbox enables string input (like Precision Levels 4).
+//  Dropdown toggles which timeframe draws on chart.
+//
+//  0DTE index map (16 values):
+//    0=P1  1=P2  2=PS1  3=PS2  4=N1  5=N2  6=AG1  7=AG2
+//    8=Flip  9=MP  10=EM+  11=EM-  12=CW  13=PW  14=HVL  15=FC
+// ============================================================
+
+// --- INPUT ---
+grp_in = "Input Method"
+use_string = input.bool(true, "Use String Input for Levels", group=grp_in)
+raw_all = input.string("0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0,0,0|0,0,0,0,0,0,0,0,0,0", "All Levels (String)", group=grp_in, tooltip="Paste level string: 0DTE(16)|WEEKLY(10)|MONTHLY(10)\n0DTE: P1,P2,PS1,PS2,N1,N2,AG1,AG2,Flip,MP,EM+,EM-,CW,PW,HVL,FC")
+
+grp_tf = "Display"
+view = input.string("ALL", "Active View", options=["0DTE", "WEEKLY", "MONTHLY", "ALL"], group=grp_tf)
+
+// --- PARSE ---
+sections = str.split(raw_all, "|")
+sec_0d = array.size(sections)>=1 ? array.get(sections,0) : "0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0"
+sec_wk = array.size(sections)>=2 ? array.get(sections,1) : "0,0,0,0,0,0,0,0,0,0"
+sec_mo = array.size(sections)>=3 ? array.get(sections,2) : "0,0,0,0,0,0,0,0,0,0"
+
+// 0DTE — 16 values: P1,P2,PS1,PS2,N1,N2,AG1,AG2,Flip,MP,EM+,EM-,CW,PW,HVL,FC
+v0=str.split(sec_0d,",")
+p1_0d  = use_string and array.size(v0)>0  ? nz(str.tonumber(array.get(v0,0)),0.0)  : 0.0
+p2_0d  = use_string and array.size(v0)>1  ? nz(str.tonumber(array.get(v0,1)),0.0)  : 0.0
+ps1_0d = use_string and array.size(v0)>2  ? nz(str.tonumber(array.get(v0,2)),0.0)  : 0.0
+ps2_0d = use_string and array.size(v0)>3  ? nz(str.tonumber(array.get(v0,3)),0.0)  : 0.0
+n1_0d  = use_string and array.size(v0)>4  ? nz(str.tonumber(array.get(v0,4)),0.0)  : 0.0
+n2_0d  = use_string and array.size(v0)>5  ? nz(str.tonumber(array.get(v0,5)),0.0)  : 0.0
+ag1_0d = use_string and array.size(v0)>6  ? nz(str.tonumber(array.get(v0,6)),0.0)  : 0.0
+ag2_0d = use_string and array.size(v0)>7  ? nz(str.tonumber(array.get(v0,7)),0.0)  : 0.0
+gf_0d  = use_string and array.size(v0)>8  ? nz(str.tonumber(array.get(v0,8)),0.0)  : 0.0
+mp_0d  = use_string and array.size(v0)>9  ? nz(str.tonumber(array.get(v0,9)),0.0)  : 0.0
+eu_0d  = use_string and array.size(v0)>10 ? nz(str.tonumber(array.get(v0,10)),0.0) : 0.0
+ed_0d  = use_string and array.size(v0)>11 ? nz(str.tonumber(array.get(v0,11)),0.0) : 0.0
+cw_fc  = use_string and array.size(v0)>12 ? nz(str.tonumber(array.get(v0,12)),0.0) : 0.0
+pw_fc  = use_string and array.size(v0)>13 ? nz(str.tonumber(array.get(v0,13)),0.0) : 0.0
+hv_fc  = use_string and array.size(v0)>14 ? nz(str.tonumber(array.get(v0,14)),0.0) : 0.0
+fc_fc  = use_string and array.size(v0)>15 ? nz(str.tonumber(array.get(v0,15)),0.0) : 0.0
+
+// WEEKLY — 10 values
+vw=str.split(sec_wk,",")
+p1_wk  = use_string and array.size(vw)>0 ? nz(str.tonumber(array.get(vw,0)),0.0) : 0.0
+p2_wk  = use_string and array.size(vw)>1 ? nz(str.tonumber(array.get(vw,1)),0.0) : 0.0
+n1_wk  = use_string and array.size(vw)>2 ? nz(str.tonumber(array.get(vw,2)),0.0) : 0.0
+n2_wk  = use_string and array.size(vw)>3 ? nz(str.tonumber(array.get(vw,3)),0.0) : 0.0
+ag1_wk = use_string and array.size(vw)>4 ? nz(str.tonumber(array.get(vw,4)),0.0) : 0.0
+ag2_wk = use_string and array.size(vw)>5 ? nz(str.tonumber(array.get(vw,5)),0.0) : 0.0
+gf_wk  = use_string and array.size(vw)>6 ? nz(str.tonumber(array.get(vw,6)),0.0) : 0.0
+mp_wk  = use_string and array.size(vw)>7 ? nz(str.tonumber(array.get(vw,7)),0.0) : 0.0
+eu_wk  = use_string and array.size(vw)>8 ? nz(str.tonumber(array.get(vw,8)),0.0) : 0.0
+ed_wk  = use_string and array.size(vw)>9 ? nz(str.tonumber(array.get(vw,9)),0.0) : 0.0
+
+// MONTHLY — 10 values
+vm=str.split(sec_mo,",")
+p1_mo  = use_string and array.size(vm)>0 ? nz(str.tonumber(array.get(vm,0)),0.0) : 0.0
+p2_mo  = use_string and array.size(vm)>1 ? nz(str.tonumber(array.get(vm,1)),0.0) : 0.0
+n1_mo  = use_string and array.size(vm)>2 ? nz(str.tonumber(array.get(vm,2)),0.0) : 0.0
+n2_mo  = use_string and array.size(vm)>3 ? nz(str.tonumber(array.get(vm,3)),0.0) : 0.0
+ag1_mo = use_string and array.size(vm)>4 ? nz(str.tonumber(array.get(vm,4)),0.0) : 0.0
+ag2_mo = use_string and array.size(vm)>5 ? nz(str.tonumber(array.get(vm,5)),0.0) : 0.0
+gf_mo  = use_string and array.size(vm)>6 ? nz(str.tonumber(array.get(vm,6)),0.0) : 0.0
+mp_mo  = use_string and array.size(vm)>7 ? nz(str.tonumber(array.get(vm,7)),0.0) : 0.0
+eu_mo  = use_string and array.size(vm)>8 ? nz(str.tonumber(array.get(vm,8)),0.0) : 0.0
+ed_mo  = use_string and array.size(vm)>9 ? nz(str.tonumber(array.get(vm,9)),0.0) : 0.0
+
+// --- SETTINGS ---
+grp_l="Label Settings"
+lsz=input.string("small","Label Size",options=["tiny","small","normal","large"],group=grp_l)
+show_lbl=input.bool(true,"Show Labels",group=grp_l)
+lbl_off=input.int(20,"Label Offset",minval=-500,maxval=500,group=grp_l)
+sz=lsz=="tiny"?size.tiny:lsz=="small"?size.small:lsz=="normal"?size.normal:size.large
+
+grp_0d="0DTE Colors"
+c0p =input.color(color.red,   "P1/P2 Resistance",  group=grp_0d)
+c0ps=input.color(#00E676,     "PS1/PS2 Sup Floor", group=grp_0d)
+c0n =input.color(color.green, "N1/N2 Neg Gamma",   group=grp_0d)
+c0a =input.color(color.orange,"Sticky (AG)",        group=grp_0d)
+c0f =input.color(color.white, "Flip",               group=grp_0d)
+c0m =input.color(color.yellow,"MaxPain",            group=grp_0d)
+c0e =input.color(color.blue,  "ExpMove",            group=grp_0d)
+
+grp_wk="Weekly Colors"
+cwp=input.color(#FF6B6B,"Resistance",group=grp_wk), cwn=input.color(#51CF66,"Support",group=grp_wk)
+cwa=input.color(#FFA94D,"Sticky",group=grp_wk), cwf=input.color(#DEE2E6,"Flip",group=grp_wk)
+cwm=input.color(#FFE066,"MaxPain",group=grp_wk), cwe=input.color(#74C0FC,"ExpMove",group=grp_wk)
+
+grp_mo="Monthly Colors"
+cmp=input.color(#E03131,"Resistance",group=grp_mo), cmn=input.color(#2F9E44,"Support",group=grp_mo)
+cma=input.color(#E8590C,"Sticky",group=grp_mo), cmf=input.color(#ADB5BD,"Flip",group=grp_mo)
+cmm=input.color(#FAB005,"MaxPain",group=grp_mo), cme=input.color(#4263EB,"ExpMove",group=grp_mo)
+
+grp_fc="Full-Chain Colors"
+ccw=input.color(color.fuchsia,"CallWall",group=grp_fc), cpw=input.color(color.fuchsia,"PutWall",group=grp_fc)
+chv=input.color(#9C27B0,"HVL",group=grp_fc), cff=input.color(#7C4DFF,"FC Flip",group=grp_fc)
+
+grp_w="Widths"
+w1=input.int(2,"Primary",minval=1,maxval=4,group=grp_w)
+w2=input.int(1,"Secondary",minval=1,maxval=4,group=grp_w)
+wr=input.int(1,"Reference",minval=1,maxval=4,group=grp_w)
+wf=input.int(3,"Walls",minval=1,maxval=4,group=grp_w)
+
+// --- VISIBILITY ---
+s0=(view=="0DTE" or view=="ALL"), sw=(view=="WEEKLY" or view=="ALL")
+sm=(view=="MONTHLY" or view=="ALL"), sf=(view=="0DTE" or view=="ALL")
+bg=color.new(color.black,20)
+
+// --- LINE STYLES per view mode ---
+wks=view=="WEEKLY" ? line.style_solid : line.style_dashed
+mos_s=view=="MONTHLY" ? line.style_solid : line.style_dotted
+
+// ============================================================
+//  0DTE LEVELS
+// ============================================================
+
+// --- P1: Primary Resistance (positive gamma above spot) ---
+var line l0p1=na, var label b0p1=na
+if s0 and p1_0d!=0
+    if na(l0p1)
+        l0p1:=line.new(bar_index[500],p1_0d,bar_index,p1_0d,color=c0p,width=w1,style=line.style_solid,extend=extend.both)
+        if show_lbl
+            b0p1:=label.new(bar_index+lbl_off,p1_0d,"0D:P1-"+str.tostring(p1_0d,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(l0p1,bar_index[500],p1_0d), line.set_xy2(l0p1,bar_index,p1_0d)
+        if show_lbl and not na(b0p1)
+            label.set_xy(b0p1,bar_index+lbl_off,p1_0d), label.set_text(b0p1,"0D:P1-"+str.tostring(p1_0d,"#.##"))
+if not s0 or p1_0d==0
+    if not na(l0p1)
+        line.set_xy1(l0p1,bar_index,0), line.set_xy2(l0p1,bar_index,0)
+    if not na(b0p1)
+        label.set_xy(b0p1,bar_index,0), label.set_text(b0p1,"")
+
+// --- P2: Secondary Resistance (positive gamma above spot) ---
+var line l0p2=na, var label b0p2=na
+if s0 and p2_0d!=0
+    if na(l0p2)
+        l0p2:=line.new(bar_index[500],p2_0d,bar_index,p2_0d,color=c0p,width=w2,style=line.style_dashed,extend=extend.both)
+        if show_lbl
+            b0p2:=label.new(bar_index+lbl_off+7,p2_0d,"0D:P2-"+str.tostring(p2_0d,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(l0p2,bar_index[500],p2_0d), line.set_xy2(l0p2,bar_index,p2_0d)
+        if show_lbl and not na(b0p2)
+            label.set_xy(b0p2,bar_index+lbl_off+7,p2_0d), label.set_text(b0p2,"0D:P2-"+str.tostring(p2_0d,"#.##"))
+if not s0 or p2_0d==0
+    if not na(l0p2)
+        line.set_xy1(l0p2,bar_index,0), line.set_xy2(l0p2,bar_index,0)
+    if not na(b0p2)
+        label.set_xy(b0p2,bar_index,0), label.set_text(b0p2,"")
+
+// --- PS1: Primary Support Floor (positive gamma BELOW spot) ---
+var line l0ps1=na, var label b0ps1=na
+if s0 and ps1_0d!=0
+    if na(l0ps1)
+        l0ps1:=line.new(bar_index[500],ps1_0d,bar_index,ps1_0d,color=c0ps,width=w1,style=line.style_solid,extend=extend.both)
+        if show_lbl
+            b0ps1:=label.new(bar_index+lbl_off+14,ps1_0d,"0D:PS1-"+str.tostring(ps1_0d,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(l0ps1,bar_index[500],ps1_0d), line.set_xy2(l0ps1,bar_index,ps1_0d)
+        if show_lbl and not na(b0ps1)
+            label.set_xy(b0ps1,bar_index+lbl_off+14,ps1_0d), label.set_text(b0ps1,"0D:PS1-"+str.tostring(ps1_0d,"#.##"))
+if not s0 or ps1_0d==0
+    if not na(l0ps1)
+        line.set_xy1(l0ps1,bar_index,0), line.set_xy2(l0ps1,bar_index,0)
+    if not na(b0ps1)
+        label.set_xy(b0ps1,bar_index,0), label.set_text(b0ps1,"")
+
+// --- PS2: Secondary Support Floor (positive gamma BELOW spot) ---
+var line l0ps2=na, var label b0ps2=na
+if s0 and ps2_0d!=0
+    if na(l0ps2)
+        l0ps2:=line.new(bar_index[500],ps2_0d,bar_index,ps2_0d,color=c0ps,width=w2,style=line.style_dashed,extend=extend.both)
+        if show_lbl
+            b0ps2:=label.new(bar_index+lbl_off+21,ps2_0d,"0D:PS2-"+str.tostring(ps2_0d,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(l0ps2,bar_index[500],ps2_0d), line.set_xy2(l0ps2,bar_index,ps2_0d)
+        if show_lbl and not na(b0ps2)
+            label.set_xy(b0ps2,bar_index+lbl_off+21,ps2_0d), label.set_text(b0ps2,"0D:PS2-"+str.tostring(ps2_0d,"#.##"))
+if not s0 or ps2_0d==0
+    if not na(l0ps2)
+        line.set_xy1(l0ps2,bar_index,0), line.set_xy2(l0ps2,bar_index,0)
+    if not na(b0ps2)
+        label.set_xy(b0ps2,bar_index,0), label.set_text(b0ps2,"")
+
+// --- N1: Primary Negative Gamma (danger zone) ---
+var line l0n1=na, var label b0n1=na
+if s0 and n1_0d!=0
+    if na(l0n1)
+        l0n1:=line.new(bar_index[500],n1_0d,bar_index,n1_0d,color=c0n,width=w1,style=line.style_solid,extend=extend.both)
+        if show_lbl
+            b0n1:=label.new(bar_index+lbl_off+28,n1_0d,"0D:N1-"+str.tostring(n1_0d,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(l0n1,bar_index[500],n1_0d), line.set_xy2(l0n1,bar_index,n1_0d)
+        if show_lbl and not na(b0n1)
+            label.set_xy(b0n1,bar_index+lbl_off+28,n1_0d), label.set_text(b0n1,"0D:N1-"+str.tostring(n1_0d,"#.##"))
+if not s0 or n1_0d==0
+    if not na(l0n1)
+        line.set_xy1(l0n1,bar_index,0), line.set_xy2(l0n1,bar_index,0)
+    if not na(b0n1)
+        label.set_xy(b0n1,bar_index,0), label.set_text(b0n1,"")
+
+// --- N2: Secondary Negative Gamma ---
+var line l0n2=na, var label b0n2=na
+if s0 and n2_0d!=0
+    if na(l0n2)
+        l0n2:=line.new(bar_index[500],n2_0d,bar_index,n2_0d,color=c0n,width=w2,style=line.style_dashed,extend=extend.both)
+        if show_lbl
+            b0n2:=label.new(bar_index+lbl_off+35,n2_0d,"0D:N2-"+str.tostring(n2_0d,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(l0n2,bar_index[500],n2_0d), line.set_xy2(l0n2,bar_index,n2_0d)
+        if show_lbl and not na(b0n2)
+            label.set_xy(b0n2,bar_index+lbl_off+35,n2_0d), label.set_text(b0n2,"0D:N2-"+str.tostring(n2_0d,"#.##"))
+if not s0 or n2_0d==0
+    if not na(l0n2)
+        line.set_xy1(l0n2,bar_index,0), line.set_xy2(l0n2,bar_index,0)
+    if not na(b0n2)
+        label.set_xy(b0n2,bar_index,0), label.set_text(b0n2,"")
+
+// --- AG1: Absolute Gamma Magnet (sticky strike) ---
+var line l0a1=na, var label b0a1=na
+if s0 and ag1_0d!=0
+    if na(l0a1)
+        l0a1:=line.new(bar_index[500],ag1_0d,bar_index,ag1_0d,color=c0a,width=w1,style=line.style_solid,extend=extend.both)
+        if show_lbl
+            b0a1:=label.new(bar_index+lbl_off,ag1_0d,"0D:AG1-"+str.tostring(ag1_0d,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(l0a1,bar_index[500],ag1_0d), line.set_xy2(l0a1,bar_index,ag1_0d)
+        if show_lbl and not na(b0a1)
+            label.set_xy(b0a1,bar_index+lbl_off,ag1_0d), label.set_text(b0a1,"0D:AG1-"+str.tostring(ag1_0d,"#.##"))
+if not s0 or ag1_0d==0
+    if not na(l0a1)
+        line.set_xy1(l0a1,bar_index,0), line.set_xy2(l0a1,bar_index,0)
+    if not na(b0a1)
+        label.set_xy(b0a1,bar_index,0), label.set_text(b0a1,"")
+
+// --- GEX Flip Point ---
+var line l0gf=na, var label b0gf=na
+if s0 and gf_0d!=0
+    if na(l0gf)
+        l0gf:=line.new(bar_index[500],gf_0d,bar_index,gf_0d,color=c0f,width=wr,style=line.style_dotted,extend=extend.both)
+        if show_lbl
+            b0gf:=label.new(bar_index+lbl_off+7,gf_0d,"0D:Flip-"+str.tostring(gf_0d,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(l0gf,bar_index[500],gf_0d), line.set_xy2(l0gf,bar_index,gf_0d)
+        if show_lbl and not na(b0gf)
+            label.set_xy(b0gf,bar_index+lbl_off+7,gf_0d), label.set_text(b0gf,"0D:Flip-"+str.tostring(gf_0d,"#.##"))
+if not s0 or gf_0d==0
+    if not na(l0gf)
+        line.set_xy1(l0gf,bar_index,0), line.set_xy2(l0gf,bar_index,0)
+    if not na(b0gf)
+        label.set_xy(b0gf,bar_index,0), label.set_text(b0gf,"")
+
+// --- Max Pain ---
+var line l0mp=na, var label b0mp=na
+if s0 and mp_0d!=0
+    if na(l0mp)
+        l0mp:=line.new(bar_index[500],mp_0d,bar_index,mp_0d,color=c0m,width=wr,style=line.style_dashed,extend=extend.both)
+        if show_lbl
+            b0mp:=label.new(bar_index+lbl_off+14,mp_0d,"0D:MP-"+str.tostring(mp_0d,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(l0mp,bar_index[500],mp_0d), line.set_xy2(l0mp,bar_index,mp_0d)
+        if show_lbl and not na(b0mp)
+            label.set_xy(b0mp,bar_index+lbl_off+14,mp_0d), label.set_text(b0mp,"0D:MP-"+str.tostring(mp_0d,"#.##"))
+if not s0 or mp_0d==0
+    if not na(l0mp)
+        line.set_xy1(l0mp,bar_index,0), line.set_xy2(l0mp,bar_index,0)
+    if not na(b0mp)
+        label.set_xy(b0mp,bar_index,0), label.set_text(b0mp,"")
+
+// --- Expected Move Upper ---
+var line l0eu=na, var label b0eu=na
+if s0 and eu_0d!=0
+    if na(l0eu)
+        l0eu:=line.new(bar_index[500],eu_0d,bar_index,eu_0d,color=c0e,width=wr,style=line.style_solid,extend=extend.both)
+        if show_lbl
+            b0eu:=label.new(bar_index+lbl_off+21,eu_0d,"0D:EM+"+str.tostring(eu_0d,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(l0eu,bar_index[500],eu_0d), line.set_xy2(l0eu,bar_index,eu_0d)
+        if show_lbl and not na(b0eu)
+            label.set_xy(b0eu,bar_index+lbl_off+21,eu_0d), label.set_text(b0eu,"0D:EM+"+str.tostring(eu_0d,"#.##"))
+if not s0 or eu_0d==0
+    if not na(l0eu)
+        line.set_xy1(l0eu,bar_index,0), line.set_xy2(l0eu,bar_index,0)
+    if not na(b0eu)
+        label.set_xy(b0eu,bar_index,0), label.set_text(b0eu,"")
+
+// --- Expected Move Lower ---
+var line l0ed=na, var label b0ed=na
+if s0 and ed_0d!=0
+    if na(l0ed)
+        l0ed:=line.new(bar_index[500],ed_0d,bar_index,ed_0d,color=c0e,width=wr,style=line.style_solid,extend=extend.both)
+        if show_lbl
+            b0ed:=label.new(bar_index+lbl_off+28,ed_0d,"0D:EM-"+str.tostring(ed_0d,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(l0ed,bar_index[500],ed_0d), line.set_xy2(l0ed,bar_index,ed_0d)
+        if show_lbl and not na(b0ed)
+            label.set_xy(b0ed,bar_index+lbl_off+28,ed_0d), label.set_text(b0ed,"0D:EM-"+str.tostring(ed_0d,"#.##"))
+if not s0 or ed_0d==0
+    if not na(l0ed)
+        line.set_xy1(l0ed,bar_index,0), line.set_xy2(l0ed,bar_index,0)
+    if not na(b0ed)
+        label.set_xy(b0ed,bar_index,0), label.set_text(b0ed,"")
+
+// ============================================================
+//  WEEKLY LEVELS
+// ============================================================
+var line lwp1=na, var label bwp1=na
+if sw and p1_wk!=0
+    if na(lwp1)
+        lwp1:=line.new(bar_index[500],p1_wk,bar_index,p1_wk,color=cwp,width=w1,style=wks,extend=extend.both)
+        if show_lbl
+            bwp1:=label.new(bar_index+lbl_off+35,p1_wk,"WK:P1-"+str.tostring(p1_wk,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(lwp1,bar_index[500],p1_wk), line.set_xy2(lwp1,bar_index,p1_wk), line.set_style(lwp1,wks)
+        if show_lbl and not na(bwp1)
+            label.set_xy(bwp1,bar_index+lbl_off+35,p1_wk), label.set_text(bwp1,"WK:P1-"+str.tostring(p1_wk,"#.##"))
+if not sw or p1_wk==0
+    if not na(lwp1)
+        line.set_xy1(lwp1,bar_index,0), line.set_xy2(lwp1,bar_index,0)
+    if not na(bwp1)
+        label.set_xy(bwp1,bar_index,0), label.set_text(bwp1,"")
+
+var line lwn1=na, var label bwn1=na
+if sw and n1_wk!=0
+    if na(lwn1)
+        lwn1:=line.new(bar_index[500],n1_wk,bar_index,n1_wk,color=cwn,width=w1,style=wks,extend=extend.both)
+        if show_lbl
+            bwn1:=label.new(bar_index+lbl_off,n1_wk,"WK:N1-"+str.tostring(n1_wk,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(lwn1,bar_index[500],n1_wk), line.set_xy2(lwn1,bar_index,n1_wk), line.set_style(lwn1,wks)
+        if show_lbl and not na(bwn1)
+            label.set_xy(bwn1,bar_index+lbl_off,n1_wk), label.set_text(bwn1,"WK:N1-"+str.tostring(n1_wk,"#.##"))
+if not sw or n1_wk==0
+    if not na(lwn1)
+        line.set_xy1(lwn1,bar_index,0), line.set_xy2(lwn1,bar_index,0)
+    if not na(bwn1)
+        label.set_xy(bwn1,bar_index,0), label.set_text(bwn1,"")
+
+var line lwa1=na, var label bwa1=na
+if sw and ag1_wk!=0
+    if na(lwa1)
+        lwa1:=line.new(bar_index[500],ag1_wk,bar_index,ag1_wk,color=cwa,width=w1,style=wks,extend=extend.both)
+        if show_lbl
+            bwa1:=label.new(bar_index+lbl_off+7,ag1_wk,"WK:AG1-"+str.tostring(ag1_wk,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(lwa1,bar_index[500],ag1_wk), line.set_xy2(lwa1,bar_index,ag1_wk), line.set_style(lwa1,wks)
+        if show_lbl and not na(bwa1)
+            label.set_xy(bwa1,bar_index+lbl_off+7,ag1_wk), label.set_text(bwa1,"WK:AG1-"+str.tostring(ag1_wk,"#.##"))
+if not sw or ag1_wk==0
+    if not na(lwa1)
+        line.set_xy1(lwa1,bar_index,0), line.set_xy2(lwa1,bar_index,0)
+    if not na(bwa1)
+        label.set_xy(bwa1,bar_index,0), label.set_text(bwa1,"")
+
+var line lwgf=na, var label bwgf=na
+if sw and gf_wk!=0
+    if na(lwgf)
+        lwgf:=line.new(bar_index[500],gf_wk,bar_index,gf_wk,color=cwf,width=wr,style=line.style_dotted,extend=extend.both)
+        if show_lbl
+            bwgf:=label.new(bar_index+lbl_off+14,gf_wk,"WK:Flip-"+str.tostring(gf_wk,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(lwgf,bar_index[500],gf_wk), line.set_xy2(lwgf,bar_index,gf_wk)
+        if show_lbl and not na(bwgf)
+            label.set_xy(bwgf,bar_index+lbl_off+14,gf_wk), label.set_text(bwgf,"WK:Flip-"+str.tostring(gf_wk,"#.##"))
+if not sw or gf_wk==0
+    if not na(lwgf)
+        line.set_xy1(lwgf,bar_index,0), line.set_xy2(lwgf,bar_index,0)
+    if not na(bwgf)
+        label.set_xy(bwgf,bar_index,0), label.set_text(bwgf,"")
+
+var line lweu=na, var label bweu=na
+if sw and eu_wk!=0
+    if na(lweu)
+        lweu:=line.new(bar_index[500],eu_wk,bar_index,eu_wk,color=cwe,width=wr,style=line.style_dashed,extend=extend.both)
+        if show_lbl
+            bweu:=label.new(bar_index+lbl_off+21,eu_wk,"WK:EM+"+str.tostring(eu_wk,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(lweu,bar_index[500],eu_wk), line.set_xy2(lweu,bar_index,eu_wk)
+        if show_lbl and not na(bweu)
+            label.set_xy(bweu,bar_index+lbl_off+21,eu_wk), label.set_text(bweu,"WK:EM+"+str.tostring(eu_wk,"#.##"))
+if not sw or eu_wk==0
+    if not na(lweu)
+        line.set_xy1(lweu,bar_index,0), line.set_xy2(lweu,bar_index,0)
+    if not na(bweu)
+        label.set_xy(bweu,bar_index,0), label.set_text(bweu,"")
+
+var line lwed=na, var label bwed=na
+if sw and ed_wk!=0
+    if na(lwed)
+        lwed:=line.new(bar_index[500],ed_wk,bar_index,ed_wk,color=cwe,width=wr,style=line.style_dashed,extend=extend.both)
+        if show_lbl
+            bwed:=label.new(bar_index+lbl_off+28,ed_wk,"WK:EM-"+str.tostring(ed_wk,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(lwed,bar_index[500],ed_wk), line.set_xy2(lwed,bar_index,ed_wk)
+        if show_lbl and not na(bwed)
+            label.set_xy(bwed,bar_index+lbl_off+28,ed_wk), label.set_text(bwed,"WK:EM-"+str.tostring(ed_wk,"#.##"))
+if not sw or ed_wk==0
+    if not na(lwed)
+        line.set_xy1(lwed,bar_index,0), line.set_xy2(lwed,bar_index,0)
+    if not na(bwed)
+        label.set_xy(bwed,bar_index,0), label.set_text(bwed,"")
+
+// ============================================================
+//  MONTHLY LEVELS
+// ============================================================
+var line lmp1=na, var label bmp1=na
+if sm and p1_mo!=0
+    if na(lmp1)
+        lmp1:=line.new(bar_index[500],p1_mo,bar_index,p1_mo,color=cmp,width=w1,style=mos_s,extend=extend.both)
+        if show_lbl
+            bmp1:=label.new(bar_index+lbl_off+35,p1_mo,"MO:P1-"+str.tostring(p1_mo,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(lmp1,bar_index[500],p1_mo), line.set_xy2(lmp1,bar_index,p1_mo), line.set_style(lmp1,mos_s)
+        if show_lbl and not na(bmp1)
+            label.set_xy(bmp1,bar_index+lbl_off+35,p1_mo), label.set_text(bmp1,"MO:P1-"+str.tostring(p1_mo,"#.##"))
+if not sm or p1_mo==0
+    if not na(lmp1)
+        line.set_xy1(lmp1,bar_index,0), line.set_xy2(lmp1,bar_index,0)
+    if not na(bmp1)
+        label.set_xy(bmp1,bar_index,0), label.set_text(bmp1,"")
+
+var line lmn1=na, var label bmn1=na
+if sm and n1_mo!=0
+    if na(lmn1)
+        lmn1:=line.new(bar_index[500],n1_mo,bar_index,n1_mo,color=cmn,width=w1,style=mos_s,extend=extend.both)
+        if show_lbl
+            bmn1:=label.new(bar_index+lbl_off,n1_mo,"MO:N1-"+str.tostring(n1_mo,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(lmn1,bar_index[500],n1_mo), line.set_xy2(lmn1,bar_index,n1_mo), line.set_style(lmn1,mos_s)
+        if show_lbl and not na(bmn1)
+            label.set_xy(bmn1,bar_index+lbl_off,n1_mo), label.set_text(bmn1,"MO:N1-"+str.tostring(n1_mo,"#.##"))
+if not sm or n1_mo==0
+    if not na(lmn1)
+        line.set_xy1(lmn1,bar_index,0), line.set_xy2(lmn1,bar_index,0)
+    if not na(bmn1)
+        label.set_xy(bmn1,bar_index,0), label.set_text(bmn1,"")
+
+var line lma1=na, var label bma1=na
+if sm and ag1_mo!=0
+    if na(lma1)
+        lma1:=line.new(bar_index[500],ag1_mo,bar_index,ag1_mo,color=cma,width=w1,style=mos_s,extend=extend.both)
+        if show_lbl
+            bma1:=label.new(bar_index+lbl_off+7,ag1_mo,"MO:AG1-"+str.tostring(ag1_mo,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(lma1,bar_index[500],ag1_mo), line.set_xy2(lma1,bar_index,ag1_mo), line.set_style(lma1,mos_s)
+        if show_lbl and not na(bma1)
+            label.set_xy(bma1,bar_index+lbl_off+7,ag1_mo), label.set_text(bma1,"MO:AG1-"+str.tostring(ag1_mo,"#.##"))
+if not sm or ag1_mo==0
+    if not na(lma1)
+        line.set_xy1(lma1,bar_index,0), line.set_xy2(lma1,bar_index,0)
+    if not na(bma1)
+        label.set_xy(bma1,bar_index,0), label.set_text(bma1,"")
+
+var line lmgf=na, var label bmgf=na
+if sm and gf_mo!=0
+    if na(lmgf)
+        lmgf:=line.new(bar_index[500],gf_mo,bar_index,gf_mo,color=cmf,width=wr,style=line.style_dotted,extend=extend.both)
+        if show_lbl
+            bmgf:=label.new(bar_index+lbl_off+14,gf_mo,"MO:Flip-"+str.tostring(gf_mo,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(lmgf,bar_index[500],gf_mo), line.set_xy2(lmgf,bar_index,gf_mo)
+        if show_lbl and not na(bmgf)
+            label.set_xy(bmgf,bar_index+lbl_off+14,gf_mo), label.set_text(bmgf,"MO:Flip-"+str.tostring(gf_mo,"#.##"))
+if not sm or gf_mo==0
+    if not na(lmgf)
+        line.set_xy1(lmgf,bar_index,0), line.set_xy2(lmgf,bar_index,0)
+    if not na(bmgf)
+        label.set_xy(bmgf,bar_index,0), label.set_text(bmgf,"")
+
+var line lmeu=na, var label bmeu=na
+if sm and eu_mo!=0
+    if na(lmeu)
+        lmeu:=line.new(bar_index[500],eu_mo,bar_index,eu_mo,color=cme,width=wr,style=line.style_dotted,extend=extend.both)
+        if show_lbl
+            bmeu:=label.new(bar_index+lbl_off+21,eu_mo,"MO:EM+"+str.tostring(eu_mo,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(lmeu,bar_index[500],eu_mo), line.set_xy2(lmeu,bar_index,eu_mo)
+        if show_lbl and not na(bmeu)
+            label.set_xy(bmeu,bar_index+lbl_off+21,eu_mo), label.set_text(bmeu,"MO:EM+"+str.tostring(eu_mo,"#.##"))
+if not sm or eu_mo==0
+    if not na(lmeu)
+        line.set_xy1(lmeu,bar_index,0), line.set_xy2(lmeu,bar_index,0)
+    if not na(bmeu)
+        label.set_xy(bmeu,bar_index,0), label.set_text(bmeu,"")
+
+var line lmed=na, var label bmed=na
+if sm and ed_mo!=0
+    if na(lmed)
+        lmed:=line.new(bar_index[500],ed_mo,bar_index,ed_mo,color=cme,width=wr,style=line.style_dotted,extend=extend.both)
+        if show_lbl
+            bmed:=label.new(bar_index+lbl_off+28,ed_mo,"MO:EM-"+str.tostring(ed_mo,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(lmed,bar_index[500],ed_mo), line.set_xy2(lmed,bar_index,ed_mo)
+        if show_lbl and not na(bmed)
+            label.set_xy(bmed,bar_index+lbl_off+28,ed_mo), label.set_text(bmed,"MO:EM-"+str.tostring(ed_mo,"#.##"))
+if not sm or ed_mo==0
+    if not na(lmed)
+        line.set_xy1(lmed,bar_index,0), line.set_xy2(lmed,bar_index,0)
+    if not na(bmed)
+        label.set_xy(bmed,bar_index,0), label.set_text(bmed,"")
+
+// ============================================================
+//  FULL-CHAIN (CW, PW, HVL, FC)
+// ============================================================
+var line lcw=na, var label bcw=na
+if sf and cw_fc!=0
+    if na(lcw)
+        lcw:=line.new(bar_index[500],cw_fc,bar_index,cw_fc,color=ccw,width=wf,style=line.style_solid,extend=extend.both)
+        if show_lbl
+            bcw:=label.new(bar_index+lbl_off+35,cw_fc,"CW-"+str.tostring(cw_fc,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(lcw,bar_index[500],cw_fc), line.set_xy2(lcw,bar_index,cw_fc)
+        if show_lbl and not na(bcw)
+            label.set_xy(bcw,bar_index+lbl_off+35,cw_fc), label.set_text(bcw,"CW-"+str.tostring(cw_fc,"#.##"))
+if not sf or cw_fc==0
+    if not na(lcw)
+        line.set_xy1(lcw,bar_index,0), line.set_xy2(lcw,bar_index,0)
+    if not na(bcw)
+        label.set_xy(bcw,bar_index,0), label.set_text(bcw,"")
+
+var line lpw=na, var label bpw=na
+if sf and pw_fc!=0
+    if na(lpw)
+        lpw:=line.new(bar_index[500],pw_fc,bar_index,pw_fc,color=cpw,width=wf,style=line.style_solid,extend=extend.both)
+        if show_lbl
+            bpw:=label.new(bar_index+lbl_off,pw_fc,"PW-"+str.tostring(pw_fc,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(lpw,bar_index[500],pw_fc), line.set_xy2(lpw,bar_index,pw_fc)
+        if show_lbl and not na(bpw)
+            label.set_xy(bpw,bar_index+lbl_off,pw_fc), label.set_text(bpw,"PW-"+str.tostring(pw_fc,"#.##"))
+if not sf or pw_fc==0
+    if not na(lpw)
+        line.set_xy1(lpw,bar_index,0), line.set_xy2(lpw,bar_index,0)
+    if not na(bpw)
+        label.set_xy(bpw,bar_index,0), label.set_text(bpw,"")
+
+var line lhv=na, var label bhv=na
+if sf and hv_fc!=0
+    if na(lhv)
+        lhv:=line.new(bar_index[500],hv_fc,bar_index,hv_fc,color=chv,width=w1,style=line.style_solid,extend=extend.both)
+        if show_lbl
+            bhv:=label.new(bar_index+lbl_off+7,hv_fc,"HVL-"+str.tostring(hv_fc,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(lhv,bar_index[500],hv_fc), line.set_xy2(lhv,bar_index,hv_fc)
+        if show_lbl and not na(bhv)
+            label.set_xy(bhv,bar_index+lbl_off+7,hv_fc), label.set_text(bhv,"HVL-"+str.tostring(hv_fc,"#.##"))
+if not sf or hv_fc==0
+    if not na(lhv)
+        line.set_xy1(lhv,bar_index,0), line.set_xy2(lhv,bar_index,0)
+    if not na(bhv)
+        label.set_xy(bhv,bar_index,0), label.set_text(bhv,"")
+
+var line lff=na, var label bff=na
+if sf and fc_fc!=0
+    if na(lff)
+        lff:=line.new(bar_index[500],fc_fc,bar_index,fc_fc,color=cff,width=wr,style=line.style_dotted,extend=extend.both)
+        if show_lbl
+            bff:=label.new(bar_index+lbl_off+14,fc_fc,"FC-"+str.tostring(fc_fc,"#.##"),color=bg,style=label.style_label_left,textcolor=color.white,size=sz)
+    else
+        line.set_xy1(lff,bar_index[500],fc_fc), line.set_xy2(lff,bar_index,fc_fc)
+        if show_lbl and not na(bff)
+            label.set_xy(bff,bar_index+lbl_off+14,fc_fc), label.set_text(bff,"FC-"+str.tostring(fc_fc,"#.##"))
+if not sf or fc_fc==0
+    if not na(lff)
+        line.set_xy1(lff,bar_index,0), line.set_xy2(lff,bar_index,0)
+    if not na(bff)
+        label.set_xy(bff,bar_index,0), label.set_text(bff,"")
+
+// ============================================================
+//  ALERTS
+// ============================================================
+alertcondition(p1_0d>0 and close>=p1_0d,   "0D:P1",   "GEX 0DTE P1 Resistance hit")
+alertcondition(p2_0d>0 and close>=p2_0d,   "0D:P2",   "GEX 0DTE P2 Resistance hit")
+alertcondition(ps1_0d>0 and close<=ps1_0d, "0D:PS1",  "GEX 0DTE PS1 Support Floor breached")
+alertcondition(ps2_0d>0 and close<=ps2_0d, "0D:PS2",  "GEX 0DTE PS2 Support Floor breached")
+alertcondition(n1_0d>0 and close<=n1_0d,   "0D:N1",   "GEX 0DTE N1 Danger Zone")
+alertcondition(gf_0d>0 and ta.cross(close,gf_0d), "0D:Flip", "GEX 0DTE Flip crossed")
+alertcondition(p1_wk>0 and close>=p1_wk,   "WK:P1",   "GEX Weekly P1 Resistance hit")
+alertcondition(n1_wk>0 and close<=n1_wk,   "WK:N1",   "GEX Weekly N1 Support")
+alertcondition(p1_mo>0 and close>=p1_mo,   "MO:P1",   "GEX Monthly P1 Resistance hit")
+alertcondition(n1_mo>0 and close<=n1_mo,   "MO:N1",   "GEX Monthly N1 Support")
+alertcondition(cw_fc>0 and close>=cw_fc,   "CW",      "GEX Call Wall reached")
+alertcondition(pw_fc>0 and close<=pw_fc,   "PW",      "GEX Put Wall reached")
+
+// ============================================================
+//  STATIC RIGHT-EDGE READOUT  (rebuilt 2026-09-16 11:45 AM ET)
+//
+//  WHY THIS IS A TABLE AND NOT plot(display=display.price_scale):
+//  the 2026-09-16 v2.0 build used 27 price-scale plots. That pushed the
+//  script to 66 outputs against Pine's hard cap of 64 and TradingView
+//  killed the whole script with RE10140 -- "The script creates too many
+//  plots (66). The limit is 64." NOTHING drew: no lines, no labels, no
+//  levels. Measured live on SPY 1h, not inferred.
+//
+//  A table costs ZERO plots. It is also anchored to the PANE, not to the
+//  bars, so it holds its position when you scroll and when you change
+//  timeframe -- which is what the price-scale tags were reaching for.
+//  Same 27 readouts, sorted high to low like a price ladder.
+// ============================================================
+addlv(arrP, arrT, arrC, p, t, c) =>
+    if p != 0
+        array.push(arrP, p)
+        array.push(arrT, t + " " + str.tostring(p, "#.##"))
+        array.push(arrC, c)
+
+var table tbl = table.new(position.middle_right, 1, 28, border_width=0)
+
+if barstate.islast
+    lv_p = array.new_float(0)
+    lv_t = array.new_string(0)
+    lv_c = array.new_color(0)
+
+    if show_lbl
+        if s0
+            addlv(lv_p, lv_t, lv_c, p1_0d,  "0D:P1",   c0p)
+            addlv(lv_p, lv_t, lv_c, p2_0d,  "0D:P2",   c0p)
+            addlv(lv_p, lv_t, lv_c, ps1_0d, "0D:PS1",  c0ps)
+            addlv(lv_p, lv_t, lv_c, ps2_0d, "0D:PS2",  c0ps)
+            addlv(lv_p, lv_t, lv_c, n1_0d,  "0D:N1",   c0n)
+            addlv(lv_p, lv_t, lv_c, n2_0d,  "0D:N2",   c0n)
+            addlv(lv_p, lv_t, lv_c, ag1_0d, "0D:AG1",  c0a)
+            addlv(lv_p, lv_t, lv_c, gf_0d,  "0D:Flip", c0f)
+            addlv(lv_p, lv_t, lv_c, mp_0d,  "0D:MP",   c0m)
+            addlv(lv_p, lv_t, lv_c, eu_0d,  "0D:EM+",  c0e)
+            addlv(lv_p, lv_t, lv_c, ed_0d,  "0D:EM-",  c0e)
+        if sw
+            addlv(lv_p, lv_t, lv_c, p1_wk,  "WK:P1",   cwp)
+            addlv(lv_p, lv_t, lv_c, n1_wk,  "WK:N1",   cwn)
+            addlv(lv_p, lv_t, lv_c, ag1_wk, "WK:AG1",  cwa)
+            addlv(lv_p, lv_t, lv_c, gf_wk,  "WK:Flip", cwf)
+            addlv(lv_p, lv_t, lv_c, eu_wk,  "WK:EM+",  cwe)
+            addlv(lv_p, lv_t, lv_c, ed_wk,  "WK:EM-",  cwe)
+        if sm
+            addlv(lv_p, lv_t, lv_c, p1_mo,  "MO:P1",   cmp)
+            addlv(lv_p, lv_t, lv_c, n1_mo,  "MO:N1",   cmn)
+            addlv(lv_p, lv_t, lv_c, ag1_mo, "MO:AG1",  cma)
+            addlv(lv_p, lv_t, lv_c, gf_mo,  "MO:Flip", cmf)
+            addlv(lv_p, lv_t, lv_c, eu_mo,  "MO:EM+",  cme)
+            addlv(lv_p, lv_t, lv_c, ed_mo,  "MO:EM-",  cme)
+        if sf
+            addlv(lv_p, lv_t, lv_c, cw_fc,  "CW",      ccw)
+            addlv(lv_p, lv_t, lv_c, pw_fc,  "PW",      cpw)
+            addlv(lv_p, lv_t, lv_c, hv_fc,  "HVL",     chv)
+            addlv(lv_p, lv_t, lv_c, fc_fc,  "FC",      cff)
+
+    n = array.size(lv_p)
+    idx = n > 0 ? array.sort_indices(lv_p, order.descending) : array.new_int(0)
+    for r = 0 to 27
+        if r < n
+            i = array.get(idx, r)
+            table.cell(tbl, 0, r, array.get(lv_t, i), text_color=array.get(lv_c, i), text_size=sz, bgcolor=bg, text_halign=text.align_left)
+        else
+            table.cell(tbl, 0, r, "", bgcolor=color.new(color.black, 100))

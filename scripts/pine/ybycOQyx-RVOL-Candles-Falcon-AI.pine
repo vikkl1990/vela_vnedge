@@ -1,0 +1,130 @@
+//@version=6
+// ============================================================================
+//  RVOL Candles | Falcon AI  ·  v1.0
+//  ----------------------------------------------------------------------------
+//  Tints each candle by its RELATIVE VOLUME — how the current bar's volume
+//  compares to the AVERAGE volume for that SAME TIME OF DAY over a rolling
+//  window of prior sessions.
+//
+//  Why time-of-day? Intraday volume is seasonal: heavy at the open and the
+//  close, thin around lunch. Comparing a 10:00 bar to a flat all-day average
+//  makes every open look "high volume." Comparing it only to previous 10:00
+//  bars is a like-for-like read — so a genuine volume spike actually stands out.
+//
+//  Reading the colors (calm -> hot): below-elevated, Elevated, High, Extreme.
+//  A candle turning hot means unusually heavy participation for that moment of
+//  the session versus its own recent history.
+//
+//  Scope & honesty:
+//   - Indicator only. It does NOT place trades, does NOT backtest, and has no
+//     entry, stop, target, or position logic. Your entry, your risk.
+//   - Purely a volume study — no price-pattern, trend, or session-window logic.
+//   - Works on any symbol. Intraday timeframes use the time-of-day method;
+//     daily and higher fall back to a simple rolling volume average.
+//   - Volume quality depends on your data feed; symbols without volume show no
+//     tint. Nothing here is financial advice.
+//
+//  (c) The Marko Family Group LLC — educational use.
+// ============================================================================
+
+indicator("RVOL Candles | Falcon AI", "FalconRVOL", overlay = true, max_labels_count = 500)
+
+// User-defined type: one rolling window of volumes per time-of-day slot.
+type Bucket
+    array<float> vols
+
+// ---- Inputs ----------------------------------------------------------------
+gCalc = "Calculation"
+lookback = input.int(20, "Lookback (sessions)", minval = 1, maxval = 500, group = gCalc,
+     tooltip = "How many prior same-time-of-day bars to average. 20 is roughly one trading month of intraday sessions.")
+
+gTiers = "RVOL tiers (multiple of average)"
+elevatedMult = input.float(1.5, "Elevated at or above", minval = 0.1, step = 0.1, group = gTiers)
+highMult     = input.float(2.0, "High at or above",     minval = 0.1, step = 0.1, group = gTiers)
+extremeMult  = input.float(3.0, "Extreme at or above",  minval = 0.1, step = 0.1, group = gTiers)
+
+gColor = "Appearance"
+onlyHighlight = input.bool(false, "Only recolor elevated+ bars", group = gColor,
+     tooltip = "On: normal bars keep the chart's default candle colors and only elevated / high / extreme volume is tinted.")
+cLow      = input.color(color.new(#3179f5, 35), "Below elevated", group = gColor)
+cElevated = input.color(color.new(#f5c518, 0),  "Elevated",       group = gColor)
+cHigh     = input.color(color.new(#ff8c00, 0),  "High",           group = gColor)
+cExtreme  = input.color(color.new(#e03131, 0),  "Extreme",        group = gColor)
+
+gMark = "Markers & label"
+showMarker = input.bool(true,  "Mark extreme-volume bars",       group = gMark)
+showLabels = input.bool(false, "Show RVOL value on extreme bars", group = gMark)
+
+gWm = "Watermark"
+showWatermark = input.bool(true, "Show Falcon watermark", group = gWm)
+wmPos = input.string("Bottom right", "Position",
+     options = ["Bottom right", "Bottom left", "Top right", "Top left"], group = gWm)
+
+// ---- Relative volume -------------------------------------------------------
+// Time-of-day key at seconds resolution, so it behaves on any intraday chart.
+todKey = hour * 3600 + minute * 60 + second
+
+// One rolling window per time-of-day slot, persisted across bars.
+var map<int, Bucket> buckets = map.new<int, Bucket>()
+
+// Simple rolling average for daily+ charts (prior bars only, excludes current).
+smaVol = ta.sma(volume, lookback)
+
+float avgVol = na
+if timeframe.isintraday
+    Bucket b = buckets.get(todKey)
+    if na(b)
+        b := Bucket.new(array.new<float>())
+        buckets.put(todKey, b)
+    // Average of PRIOR sessions at this time of day, read before adding this bar.
+    if b.vols.size() > 0
+        avgVol := b.vols.avg()
+    // Record this bar's volume only once it has closed, so the still-forming
+    // bar never disturbs the historical average or gets counted twice.
+    if barstate.isconfirmed
+        b.vols.push(volume)
+        if b.vols.size() > lookback
+            b.vols.shift()
+else
+    avgVol := smaVol[1]
+
+rvol = na(avgVol) or avgVol == 0 ? na : volume / avgVol
+
+// ---- Tier + candle color ---------------------------------------------------
+tier = na(rvol) ? 0 :
+     rvol >= extremeMult  ? 3 :
+     rvol >= highMult     ? 2 :
+     rvol >= elevatedMult ? 1 : 0
+
+color barCol = switch tier
+    3 => cExtreme
+    2 => cHigh
+    1 => cElevated
+    => onlyHighlight ? na : cLow
+
+barcolor(na(rvol) ? na : barCol)
+
+// ---- Extreme markers & optional value label --------------------------------
+isExtreme = not na(rvol) and rvol >= extremeMult
+
+plotshape(showMarker and isExtreme, title = "Extreme volume", style = shape.triangleup,
+     location = location.belowbar, color = cExtreme, size = size.tiny)
+
+if showLabels and isExtreme and barstate.isconfirmed
+    label.new(bar_index, high, str.tostring(rvol, "0.0") + "x", yloc = yloc.abovebar,
+         style = label.style_label_down, color = color.new(cExtreme, 15),
+         textcolor = color.white, size = size.tiny)
+
+// ---- Watermark (subtle, toggleable, no links) ------------------------------
+wmPosition = wmPos == "Bottom left" ? position.bottom_left :
+     wmPos == "Top right" ? position.top_right :
+     wmPos == "Top left"  ? position.top_left : position.bottom_right
+
+var table wm = table.new(wmPosition, 1, 3, bgcolor = color.new(color.black, 72),
+     frame_color = color.new(#c8a84b, 45), frame_width = 1, border_width = 0)
+
+if showWatermark and barstate.islast
+    table.cell(wm, 0, 0, "RVOL Candles | Falcon AI", text_color = #c8a84b, text_size = size.small)
+    table.cell(wm, 0, 1, "Educational volume demo", text_color = color.new(color.gray, 0), text_size = size.tiny)
+    rvolTxt = na(rvol) ? "RVOL  —" : "RVOL  " + str.tostring(rvol, "0.00") + "x"
+    table.cell(wm, 0, 2, rvolTxt, text_color = color.new(color.white, 0), text_size = size.tiny)

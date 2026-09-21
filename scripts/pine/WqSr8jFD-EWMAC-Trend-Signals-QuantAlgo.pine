@@ -1,0 +1,331 @@
+// This script is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © QuantAlgo
+
+//@version=6
+indicator("EWMAC Trend Signals [QuantAlgo]", overlay = true)
+
+//              ╔════════════════════════════════╗              //
+//              ║      USER-DEFINED SETTINGS     ║              //
+//              ╚════════════════════════════════╝              //
+
+var string ewmac_settings      = "════════ EWMAC Settings ════════"
+var string volatility_settings = "════════ Volatility Settings ════════"
+var string score_settings      = "════════ Score Settings ════════"
+var string signal_settings     = "════════ Signal Settings ════════"
+var string visual_settings     = "════════ Visualization Settings ════════"
+
+tooltip_preset        = "Select a predefined configuration for different trading styles and timeframes. Fast Response and Smooth Trend set the active rules, Volatility Length, Long-Run Weight, Long-Run Length, Adaptive Scaling Length, Entry Threshold, and Exit Fraction, overriding those inputs below. Rule spans, rule weights, and all other inputs keep their manual values."
+tooltip_preset_det    = "Default: Uses the manual settings below, with every rule, volatility, score, and signal parameter adjustable directly. Suited to swing trading on 4H and daily charts.\n\nFast Response (Rules 1-4, Entry 2.5): Activates the four fastest EWMAC pairs with a shorter volatility window and a lower entry threshold, so signals react to shorter-duration moves. Suited to intraday trading on 5min to 1H charts.\n\nSmooth Trend (Rules 4-6, Entry 6.0): Activates the three slowest EWMAC pairs with a longer volatility window and a higher entry threshold, so signals change less often and stay with longer trends. Suited to position trading on daily and weekly charts."
+tooltip_src           = "Price data used for the EWMAC rules, the volatility estimate, and the trend line. Close uses the final price of each bar, while hl2, hlc3, and ohlc4 average more of each bar's range. Averaged sources lower the volatility estimate relative to close, which produces larger scores when Scaling Method is set to Fixed. In Adaptive mode, the scaling recalibrates to the selected source automatically. Built for price series that stay above zero, such as stocks, crypto, forex, commodities, and indices. Spreads and other series that can reach zero or turn negative are outside its scope."
+tooltip_rule1         = "Fastest EWMAC pair. Enable the rule, set the fast EMA span, and set its weight relative to the other active rules. The slow EMA span is always four times the fast span. This speed responds to the shortest price swings and is the first to turn when direction changes. Active in the Fast Response preset. A weight of 0 removes the rule from both the trend score and the trend line."
+tooltip_rule2         = "Short-term EWMAC pair. Enable the rule, set the fast EMA span, and set its weight relative to the other active rules. The slow EMA span is always four times the fast span. This speed tracks short-term swings and reacts early to new trends. Active in the Fast Response preset. A weight of 0 removes the rule from both the trend score and the trend line."
+tooltip_rule3         = "Short to medium-term EWMAC pair. Enable the rule, set the fast EMA span, and set its weight relative to the other active rules. The slow EMA span is always four times the fast span. This speed follows developing trends while still reacting to shorter swings. Active in the Fast Response preset. A weight of 0 removes the rule from both the trend score and the trend line."
+tooltip_rule4         = "Medium-term EWMAC pair. Enable the rule, set the fast EMA span, and set its weight relative to the other active rules. The slow EMA span is always four times the fast span. This speed follows established trends. Active in both the Fast Response and Smooth Trend presets. A weight of 0 removes the rule from both the trend score and the trend line."
+tooltip_rule5         = "Medium to long-term EWMAC pair. Enable the rule, set the fast EMA span, and set its weight relative to the other active rules. The slow EMA span is always four times the fast span. This speed follows sustained trends and filters out shorter swings. Active in the Smooth Trend preset. A weight of 0 removes the rule from both the trend score and the trend line."
+tooltip_rule6         = "Slowest EWMAC pair. Enable the rule, set the fast EMA span, and set its weight relative to the other active rules. The slow EMA span is always four times the fast span. This speed follows long-term trends, turns last when direction changes, and holds its direction the longest. Active in the Smooth Trend preset. A weight of 0 removes the rule from both the trend score and the trend line."
+tooltip_vol_len       = "Lookback for the realized volatility estimate that converts every EWMAC pair into risk units, making scores comparable across instruments and volatility regimes. Shorter windows (16-24) track volatility changes quickly, so scores adjust faster when conditions shift but vary more from bar to bar. Longer windows (48-64) produce a steadier risk unit and smoother scores that adapt more gradually to new volatility conditions."
+tooltip_blend_weight  = "Share of the volatility estimate drawn from its long-run average rather than the short window. A volatility spike raises the short-window estimate and compresses scores, while a quiet stretch lowers it and enlarges them, and blending in the long-run average moderates both effects. At 0, the risk unit uses the short-window estimate alone and responds fully to current conditions. Lower values (0.10-0.20) keep the risk unit close to current volatility, so scores adapt quickly to regime changes. Higher values (0.40-0.60) anchor the risk unit to the long-run average, keeping scores more comparable across long histories while adjusting more gradually when volatility shifts."
+tooltip_blend_len     = "Window used to calculate the long-run volatility average. Longer windows (750-1000) span more volatility regimes and produce a steadier anchor. Shorter windows (250-400) let the anchor follow more recent conditions. Until enough bars are available to fill this window, the short-window estimate is used on its own. Has no effect when Long-Run Weight is set to 0."
+tooltip_scaling_mode  = "Method used to rescale each rule so its average absolute score is 10, placing every speed on the same scale before blending. Adaptive estimates each rule's scaling from its own recent history on the charted instrument, so the scaling adjusts to each instrument automatically. Fixed derives each rule's scaling from its fast EMA span alone, so the scaling stays identical across the full chart history and across instruments."
+tooltip_scaling_len   = "Window used to estimate each rule's scaling in Adaptive mode. Shorter windows (100-150) recalibrate quickly, so scores measure trend strength against more recent conditions. Longer windows (400-750) keep the scaling steadier, so scores stay comparable across a longer stretch of history. Until enough bars are available to fill this window, each rule uses Fixed scaling. Only active when Scaling Method is set to Adaptive."
+tooltip_multiplier    = "Restores the scale lost when several partially correlated rules are averaged into the trend score. At 0, the multiplier is selected automatically from the number of active rules, ranging from 1.00 for one rule to 1.36 for six, so the Entry Threshold keeps a similar meaning as rules are enabled or disabled. Values above 0 set the multiplier manually, and 1.00 leaves the trend score as the plain weighted average of the active rules. Lower values (1.00-1.10) suit closely spaced rules whose scores move together. Higher values (1.30-1.50) suit widely spaced rules that diversify more, and enlarge the trend score so it crosses the Entry Threshold sooner and falls back through the exit level later."
+tooltip_score_cap     = "Maximum absolute value allowed for each rule score and for the trend score. Lower caps (10-15) limit how far any single rule can pull the blend during sharp moves, keeping the trend score balanced across speeds. Higher caps (30-50) let strong rules contribute more of their full score. Keep the cap above the Entry Threshold so signals can confirm."
+tooltip_entry         = "Trend score level required to confirm a bullish or bearish signal. Scores are scaled so that 10 is the average absolute value, which makes the threshold directly interpretable: a threshold of 5 requires 50% of typical trend strength before a signal is confirmed. Lower values (2.0-3.0) confirm trends earlier with more frequent signals. Higher values (6.0-8.0) wait for stronger trends, producing fewer and later signals."
+tooltip_neutral_state = "Enable/disable the neutral state. When enabled, a bullish or bearish signal releases to neutral once the trend score falls back through the exit level set by Exit Fraction, and the trend line switches to the neutral color. This separates fading trends from confirmed reversals. When disabled, each signal holds until the opposite Entry Threshold is crossed, so every bar is classified as bullish or bearish once the first signal is confirmed."
+tooltip_exit_frac     = "Exit level as a fraction of the Entry Threshold, forming a hysteresis band around confirmed signals. With an Entry Threshold of 6.0 and an Exit Fraction of 0.50, a bullish signal releases to neutral when the trend score falls below 3.0, and a bearish signal releases when it rises above -3.0. Lower values (0.25-0.35) keep signals active through deeper fades in trend strength. Higher values (0.70-0.90) release signals sooner as trend strength fades. Only active when Use Neutral State is enabled."
+tooltip_color_preset  = "Pre-configured color schemes for different chart themes and visual preferences. Classic uses traditional green and red. Aqua provides ocean-inspired blue and orange. Cosmic offers futuristic cyan and purple. Cyber features cool cyan and warm orange contrast. Neon delivers high-contrast yellow and magenta for maximum visibility. Custom uses the Bullish, Bearish, and Neutral colors set below, while all other presets use gray for the neutral state."
+tooltip_bullish       = "Color applied to the trend line, glow effect, signal readout, price bars, and background while the signal is bullish, which is confirmed when the trend score rises above the Entry Threshold. Use a vibrant color to highlight uptrend phases and potential long opportunities. Only used when Color Preset is set to Custom."
+tooltip_bearish       = "Color applied to the trend line, glow effect, signal readout, price bars, and background while the signal is bearish, which is confirmed when the trend score falls below the negative Entry Threshold. Use a warning color to highlight downtrend phases and potential short opportunities or exits. Only used when Color Preset is set to Custom."
+tooltip_neutral_color = "Color applied to the trend line, glow effect, signal readout, price bars, and background while the signal is neutral, including the warm-up period before the first signal is confirmed. Gray is recommended as a neutral cue that clearly separates undecided phases from directional trends. Only used when Color Preset is set to Custom."
+tooltip_line_width    = "Thickness of the main trend line. The trend line is built from the same EWMAC pairs and rule weights as the trend score, and its color reflects the current signal. Lower values (1-2) keep the line clean alongside price action. Higher values (4-6) make the line and its signal color changes easier to follow on busy charts. The glow effect uses its own fixed widths."
+tooltip_glow          = "Enable/disable the neon glow effect around the trend line. When enabled, creates a layered visual effect with overlapping plots at increasing transparency, making the trend line and its signal color changes more prominent and easier to track. Disable for a cleaner, minimalist appearance or when running many indicators where visual clarity is paramount."
+tooltip_readout       = "Enable/disable the signal readout attached to the end of the trend line. The readout names the current signal as Bullish, Bearish, or Neutral on a label filled with the matching signal color, and its text switches automatically between black and white based on how light that color is, so it stays readable with any color choice on light or dark charts. All signals and alerts continue to work with the readout hidden."
+tooltip_readout_size  = "Text size for the signal readout. Tiny and Small suit crowded charts or lower timeframes where signals change often. Normal and Large suit presentation, screen recording, and higher timeframes."
+tooltip_barcolor      = "Enable/disable bar coloring based on the current signal. When enabled, price bars are tinted with the bullish, bearish, or neutral color, providing instant visual confirmation of the signal without reading the trend line directly. Disable if you prefer default bar colors or use another bar coloring indicator."
+tooltip_bartrans      = "Transparency of the bar coloring overlay. Lower values (0-30) produce vivid, fully saturated bars that make the signal immediately obvious. Higher values (70-90) apply a subtle tint that shows the signal without overwhelming price action. Only applies when Enable Bar Coloring is turned on."
+tooltip_bgcolor       = "Enable/disable background coloring based on the current signal. When enabled, the chart background is shaded with the bullish, bearish, or neutral color, highlighting each trend phase across the full height of the chart. Disable if you prefer a clean chart background or use another background coloring indicator."
+tooltip_bgtrans       = "Transparency of the background coloring. Lower values (50-70) produce strong shading that makes each trend phase stand out immediately. Higher values (85-95) apply a subtle tint that keeps price action and other chart elements easy to read. Only applies when Enable Background Coloring is turned on."
+
+presetMode    = input.string("Default", "Preset Configuration", group = ewmac_settings, options = ["Default", "Fast Response", "Smooth Trend"], tooltip = tooltip_preset + "\n\n" + tooltip_preset_det)
+srcInput      = input.source(close, "Price Source", group = ewmac_settings, tooltip = tooltip_src)
+r1On          = input.bool(false, "Rule 1", group = ewmac_settings, inline = "R1")
+r1Len         = input.int(2, "", group = ewmac_settings, inline = "R1", minval = 1, maxval = 500)
+r1W           = input.float(1.0, "", group = ewmac_settings, inline = "R1", minval = 0.0, maxval = 10.0, step = 0.1, tooltip = tooltip_rule1)
+r2On          = input.bool(true, "Rule 2", group = ewmac_settings, inline = "R2")
+r2Len         = input.int(4, "", group = ewmac_settings, inline = "R2", minval = 1, maxval = 500)
+r2W           = input.float(1.0, "", group = ewmac_settings, inline = "R2", minval = 0.0, maxval = 10.0, step = 0.1, tooltip = tooltip_rule2)
+r3On          = input.bool(true, "Rule 3", group = ewmac_settings, inline = "R3")
+r3Len         = input.int(8, "", group = ewmac_settings, inline = "R3", minval = 1, maxval = 500)
+r3W           = input.float(1.0, "", group = ewmac_settings, inline = "R3", minval = 0.0, maxval = 10.0, step = 0.1, tooltip = tooltip_rule3)
+r4On          = input.bool(true, "Rule 4", group = ewmac_settings, inline = "R4")
+r4Len         = input.int(16, "", group = ewmac_settings, inline = "R4", minval = 1, maxval = 500)
+r4W           = input.float(1.0, "", group = ewmac_settings, inline = "R4", minval = 0.0, maxval = 10.0, step = 0.1, tooltip = tooltip_rule4)
+r5On          = input.bool(true, "Rule 5", group = ewmac_settings, inline = "R5")
+r5Len         = input.int(32, "", group = ewmac_settings, inline = "R5", minval = 1, maxval = 500)
+r5W           = input.float(1.0, "", group = ewmac_settings, inline = "R5", minval = 0.0, maxval = 10.0, step = 0.1, tooltip = tooltip_rule5)
+r6On          = input.bool(false, "Rule 6", group = ewmac_settings, inline = "R6")
+r6Len         = input.int(64, "", group = ewmac_settings, inline = "R6", minval = 1, maxval = 500)
+r6W           = input.float(1.0, "", group = ewmac_settings, inline = "R6", minval = 0.0, maxval = 10.0, step = 0.1, tooltip = tooltip_rule6)
+
+volLenIn      = input.int(32, "Volatility Length", group = volatility_settings, minval = 5, maxval = 500, tooltip = tooltip_vol_len)
+blendWeightIn = input.float(0.30, "Long-Run Weight", group = volatility_settings, minval = 0.0, maxval = 1.0, step = 0.05, tooltip = tooltip_blend_weight)
+blendLenIn    = input.int(500, "Long-Run Length", group = volatility_settings, minval = 50, maxval = 5000, tooltip = tooltip_blend_len)
+
+scalingMode   = input.string("Adaptive", "Scaling Method", group = score_settings, options = ["Adaptive", "Fixed"], tooltip = tooltip_scaling_mode)
+scalingLenIn  = input.int(250, "Adaptive Scaling Length", group = score_settings, minval = 20, maxval = 2000, tooltip = tooltip_scaling_len)
+multiplierIn  = input.float(0.0, "Diversification Multiplier (0 = Auto)", group = score_settings, minval = 0.0, maxval = 3.0, step = 0.01, tooltip = tooltip_multiplier)
+scoreCap      = input.float(20.0, "Score Cap", group = score_settings, minval = 5.0, maxval = 100.0, step = 1.0, tooltip = tooltip_score_cap)
+
+entryThIn     = input.float(4.0, "Entry Threshold", group = signal_settings, minval = 0.5, maxval = 20.0, step = 0.5, tooltip = tooltip_entry)
+useNeutral    = input.bool(true, "Use Neutral State", group = signal_settings, tooltip = tooltip_neutral_state)
+exitFracIn    = input.float(0.50, "Exit Fraction", group = signal_settings, minval = 0.0, maxval = 1.0, step = 0.05, tooltip = tooltip_exit_frac)
+
+colorPreset   = input.string("Custom", "Color Preset", group = visual_settings, options = ["Custom", "Classic", "Aqua", "Cosmic", "Cyber", "Neon"], tooltip = tooltip_color_preset)
+bullCustom    = input.color(#00ffaa, "Bullish Color", group = visual_settings, tooltip = tooltip_bullish)
+bearCustom    = input.color(#ff0000, "Bearish Color", group = visual_settings, tooltip = tooltip_bearish)
+neutCustom    = input.color(#808080, "Neutral Color", group = visual_settings, tooltip = tooltip_neutral_color)
+lineWidth     = input.int(3, "Line Width", group = visual_settings, minval = 1, maxval = 8, tooltip = tooltip_line_width)
+showGlow      = input.bool(true, "Enable Neon Glow Effect", group = visual_settings, tooltip = tooltip_glow)
+showReadout   = input.bool(true, "Enable Signal Readout", group = visual_settings, tooltip = tooltip_readout)
+readoutSize   = input.string("Normal", "Readout Text Size", group = visual_settings, options = ["Tiny", "Small", "Normal", "Large"], tooltip = tooltip_readout_size)
+colorBars     = input.bool(true, "Enable Bar Coloring", group = visual_settings, tooltip = tooltip_barcolor)
+barTrans      = input.int(0, "Bar Color Transparency", group = visual_settings, minval = 0, maxval = 100, tooltip = tooltip_bartrans)
+colorBg       = input.bool(false, "Enable Background Coloring", group = visual_settings, tooltip = tooltip_bgcolor)
+bgTrans       = input.int(90, "Background Color Transparency", group = visual_settings, minval = 0, maxval = 100, tooltip = tooltip_bgtrans)
+
+//              ╔════════════════════════════════╗              //
+//              ║      PRESET CONFIGURATION      ║              //
+//              ╚════════════════════════════════╝              //
+
+bool p1 = switch presetMode
+    "Fast Response" => true
+    "Smooth Trend" => false
+    => r1On
+
+bool p2 = switch presetMode
+    "Fast Response" => true
+    "Smooth Trend" => false
+    => r2On
+
+bool p3 = switch presetMode
+    "Fast Response" => true
+    "Smooth Trend" => false
+    => r3On
+
+bool p4 = switch presetMode
+    "Fast Response" => true
+    "Smooth Trend" => true
+    => r4On
+
+bool p5 = switch presetMode
+    "Fast Response" => false
+    "Smooth Trend" => true
+    => r5On
+
+bool p6 = switch presetMode
+    "Fast Response" => false
+    "Smooth Trend" => true
+    => r6On
+
+int volLen = switch presetMode
+    "Fast Response" => 16
+    "Smooth Trend" => 64
+    => volLenIn
+
+float blendWeight = switch presetMode
+    "Fast Response" => 0.15
+    "Smooth Trend" => 0.40
+    => blendWeightIn
+
+int blendLen = switch presetMode
+    "Fast Response" => 250
+    "Smooth Trend" => 750
+    => blendLenIn
+
+int scalingLen = switch presetMode
+    "Fast Response" => 150
+    "Smooth Trend" => 400
+    => scalingLenIn
+
+float entryTh = switch presetMode
+    "Fast Response" => 2.5
+    "Smooth Trend" => 6.0
+    => entryThIn
+
+float exitFrac = switch presetMode
+    "Fast Response" => 0.70
+    "Smooth Trend" => 0.35
+    => exitFracIn
+
+//              ╔════════════════════════════════╗              //
+//              ║         VOLATILITY UNIT        ║              //
+//              ╚════════════════════════════════╝              //
+
+float srcSafe = math.max(srcInput, 0.0000000001)
+float ret = math.log(srcSafe / math.max(nz(srcSafe[1], srcSafe), 0.0000000001))
+
+float volShort = ta.stdev(ret, volLen)
+float volLong = ta.sma(volShort, blendLen)
+float volPct = not na(volLong) ? volShort * (1.0 - blendWeight) + volLong * blendWeight : volShort
+volPct := math.max(volPct, 0.0000000001)
+
+float volPrice = volPct * srcSafe
+
+//              ╔════════════════════════════════╗              //
+//              ║          EWMAC ENGINE          ║              //
+//              ╚════════════════════════════════╝              //
+
+ewmacRule(float src, simple int fastLen, float riskUnit, simple int scaleLen, bool adaptive, float cap) =>
+    float fastMa = ta.ema(src, fastLen)
+    float slowMa = ta.ema(src, fastLen * 4)
+    float raw = (fastMa - slowMa) / math.max(riskUnit, 0.0000000001)
+    float avgAbs = ta.sma(math.abs(raw), scaleLen)
+    float fixedScale = 15.0 / math.sqrt(fastLen)
+    float scaleFactor = adaptive and not na(avgAbs) ? 10.0 / math.max(avgAbs, 0.0000000001) : fixedScale
+    float score = math.max(math.min(raw * scaleFactor, cap), -cap)
+    float midpoint = (fastMa + slowMa) / 2.0
+    [score, midpoint]
+
+bool adaptiveScaling = scalingMode == "Adaptive"
+
+[score1, mid1] = ewmacRule(srcSafe, r1Len, volPrice, scalingLen, adaptiveScaling, scoreCap)
+[score2, mid2] = ewmacRule(srcSafe, r2Len, volPrice, scalingLen, adaptiveScaling, scoreCap)
+[score3, mid3] = ewmacRule(srcSafe, r3Len, volPrice, scalingLen, adaptiveScaling, scoreCap)
+[score4, mid4] = ewmacRule(srcSafe, r4Len, volPrice, scalingLen, adaptiveScaling, scoreCap)
+[score5, mid5] = ewmacRule(srcSafe, r5Len, volPrice, scalingLen, adaptiveScaling, scoreCap)
+[score6, mid6] = ewmacRule(srcSafe, r6Len, volPrice, scalingLen, adaptiveScaling, scoreCap)
+
+float weightSum = 0.0
+float scoreSum = 0.0
+float lineSum = 0.0
+int activeCount = 0
+
+if p1 and r1W > 0.0
+    weightSum += r1W
+    scoreSum += score1 * r1W
+    lineSum += mid1 * r1W
+    activeCount += 1
+if p2 and r2W > 0.0
+    weightSum += r2W
+    scoreSum += score2 * r2W
+    lineSum += mid2 * r2W
+    activeCount += 1
+if p3 and r3W > 0.0
+    weightSum += r3W
+    scoreSum += score3 * r3W
+    lineSum += mid3 * r3W
+    activeCount += 1
+if p4 and r4W > 0.0
+    weightSum += r4W
+    scoreSum += score4 * r4W
+    lineSum += mid4 * r4W
+    activeCount += 1
+if p5 and r5W > 0.0
+    weightSum += r5W
+    scoreSum += score5 * r5W
+    lineSum += mid5 * r5W
+    activeCount += 1
+if p6 and r6W > 0.0
+    weightSum += r6W
+    scoreSum += score6 * r6W
+    lineSum += mid6 * r6W
+    activeCount += 1
+
+float multiplierTable = switch activeCount
+    0 => 1.00
+    1 => 1.00
+    2 => 1.10
+    3 => 1.20
+    4 => 1.27
+    5 => 1.32
+    => 1.36
+
+float divMultiplier = multiplierIn > 0.0 ? multiplierIn : multiplierTable
+float trendScoreRaw = weightSum > 0.0 ? scoreSum / weightSum * divMultiplier : 0.0
+float trendScore = math.max(math.min(trendScoreRaw, scoreCap), -scoreCap)
+float trendLine = weightSum > 0.0 ? lineSum / weightSum : srcSafe
+
+//              ╔════════════════════════════════╗              //
+//              ║          SIGNAL ENGINE         ║              //
+//              ╚════════════════════════════════╝              //
+
+float exitTh = entryTh * exitFrac
+
+var int signalState = 0
+
+if barstate.isconfirmed
+    if trendScore > entryTh and signalState != 1
+        signalState := 1
+    else if trendScore < -entryTh and signalState != -1
+        signalState := -1
+    else if useNeutral and signalState == 1 and trendScore < exitTh
+        signalState := 0
+    else if useNeutral and signalState == -1 and trendScore > -exitTh
+        signalState := 0
+
+bool turnedBull = signalState == 1 and signalState[1] != 1
+bool turnedBear = signalState == -1 and signalState[1] != -1
+bool turnedNeut = signalState == 0 and signalState[1] != 0
+bool signalChanged = turnedBull or turnedBear or turnedNeut
+
+//              ╔════════════════════════════════╗              //
+//              ║          VISUALIZATION         ║              //
+//              ╚════════════════════════════════╝              //
+
+[bullCol, bearCol, neutCol] = switch colorPreset
+    "Classic" => [#00ff00, #ff0000, #808080]
+    "Aqua" => [#00d4ff, #ff8c00, #808080]
+    "Cosmic" => [#49ffce, #9932cc, #808080]
+    "Cyber" => [#00cccc, #ff6600, #808080]
+    "Neon" => [#ffff00, #ff00ff, #808080]
+    => [bullCustom, bearCustom, neutCustom]
+
+color signalColor = signalState == 1 ? bullCol : signalState == -1 ? bearCol : neutCol
+
+float displayLine = barstate.isconfirmed ? trendLine : trendLine[1]
+
+plot(showGlow ? displayLine : na, "Trend Line Glow Outer", color.new(signalColor, 88), 20)
+plot(showGlow ? displayLine : na, "Trend Line Glow Inner", color.new(signalColor, 75), 10)
+plot(displayLine, "Trend Line", color.new(signalColor, 0), lineWidth)
+
+barcolor(colorBars ? color.new(signalColor, barTrans) : na, title = "Trend Bar Color")
+bgcolor(colorBg ? color.new(signalColor, bgTrans) : na, title = "Trend Background Color")
+
+string readoutTextSize = switch readoutSize
+    "Tiny" => size.tiny
+    "Small" => size.small
+    "Large" => size.large
+    => size.normal
+
+readoutTextColor(color fillColor) =>
+    float brightness = (color.r(fillColor) * 299.0 + color.g(fillColor) * 587.0 + color.b(fillColor) * 114.0) / 1000.0
+    brightness >= 128.0 ? color.black : color.white
+
+var label signalReadout = na
+
+if showReadout and barstate.islast
+    label.delete(signalReadout)
+    string readoutText = signalState == 1 ? "  Bullish  " : signalState == -1 ? "  Bearish  " : "  Neutral  "
+    color readoutFill = color.new(signalColor, 0)
+    signalReadout := label.new(bar_index, displayLine, readoutText, xloc = xloc.bar_index, style = label.style_label_left, color = readoutFill, textcolor = readoutTextColor(readoutFill), size = readoutTextSize)
+
+//              ╔════════════════════════════════╗              //
+//              ║             ALERTS             ║              //
+//              ╚════════════════════════════════╝              //
+
+alertcondition(turnedBull, title = "Bullish Trend Signal", message = "EWMAC Trend Signals: BULLISH trend confirmed on {{exchange}}:{{ticker}} - {{interval}}")
+alertcondition(turnedBear, title = "Bearish Trend Signal", message = "EWMAC Trend Signals: BEARISH trend confirmed on {{exchange}}:{{ticker}} - {{interval}}")
+alertcondition(turnedNeut, title = "Neutral Trend Signal", message = "EWMAC Trend Signals: Trend released to NEUTRAL on {{exchange}}:{{ticker}} - {{interval}}")
+alertcondition(signalChanged, title = "Trend Signal Changed", message = "EWMAC Trend Signals: Trend signal changed on {{exchange}}:{{ticker}} - {{interval}}")
+
+//              ╔════════════════════════════════╗              //
+//              ║           CREATED BY           ║              //
+//              ╚════════════════════════════════╝              //
+
+// ██████╗ ██╗   ██╗ █████╗ ███╗   ██╗████████╗     █████╗ ██╗      ██████╗  ██████╗ 
+//██╔═══██╗██║   ██║██╔══██╗████╗  ██║╚══██╔══╝    ██╔══██╗██║     ██╔════╝ ██╔═══██╗
+//██║   ██║██║   ██║███████║██╔██╗ ██║   ██║       ███████║██║     ██║  ███╗██║   ██║
+//██║▄▄ ██║██║   ██║██╔══██║██║╚██╗██║   ██║       ██╔══██║██║     ██║   ██║██║   ██║
+//╚██████╔╝╚██████╔╝██║  ██║██║ ╚████║   ██║       ██║  ██║███████╗╚██████╔╝╚██████╔╝
+// ╚══▀▀═╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝       ╚═╝  ╚═╝╚══════╝ ╚═════╝  ╚═════╝

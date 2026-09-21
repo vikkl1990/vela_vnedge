@@ -1,0 +1,189 @@
+// ─────────────────────────────────────────────────────────────────
+// ███████╗██████╗  ██████╗ ██╗      █████╗ ██████╗
+// ██╔════╝██╔══██╗██╔═══██╗██║     ██╔══██╗██╔══██╗
+// █████╗  ██║  ██║██║   ██║██║     ███████║██████╔╝
+// ██╔══╝  ██║  ██║██║   ██║██║     ██╔══██║██╔══██╗
+// ███████╗██████╔╝╚██████╔╝███████╗██║  ██║██████╔╝
+// ╚══════╝╚═════╝  ╚═════╝ ╚══════╝╚═╝  ╚═╝╚═════╝
+// ─────────────────────────────────────────────────────────────────
+// ███╗   ███╗ █████╗ ██████╗ ██╗  ██╗███████╗████████╗███████╗
+// ████╗ ████║██╔══██╗██╔══██╗██║ ██╔╝██╔════╝╚══██╔══╝██╔════╝
+// ██╔████╔██║███████║██████╔╝█████╔╝ █████╗     ██║   ███████╗
+// ██║╚██╔╝██║██╔══██║██╔══██╗██╔═██╗ ██╔══╝     ██║   ╚════██║
+// ██║ ╚═╝ ██║██║  ██║██║  ██║██║  ██╗███████╗   ██║   ███████║
+// ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝   ╚═╝   ╚══════╝
+// ─────────────────────────────────────────────────────────────────
+// © Edolab Markets
+
+//@version=6
+indicator("Edo Swing State", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// ================== SETTINGS — STRUCTURE ==================
+
+profile    = input.string("Swing", "Swing Profile", options = ["Scalper", "Swing", "Long Term"], group = "Structure", tooltip = "Scalper: fast swings (intraday)\nSwing: balanced (4H / D)\nLong Term: major swings only (W)")
+showLabels = input.bool(true,  "Show HH / HL / LH / LL labels", group = "Structure")
+showZig    = input.bool(true,  "Show structure line (zigzag)",  group = "Structure")
+
+swingLen   = profile == "Scalper" ? 5 : profile == "Long Term" ? 21 : 10
+
+// ================== SETTINGS — STYLE ==================
+
+bullCol   = input.color(#26a69a, "Bullish", inline = "c1", group = "Style")
+bearCol   = input.color(#ef5350, "Bearish", inline = "c1", group = "Style")
+zigCol    = input.color(#787b86, "Structure line", group = "Style")
+zigWidth  = input.int(1, "Line width", minval = 1, maxval = 3, group = "Style")
+labelSize = input.string("Small", "Label Size", options = ["Tiny", "Small", "Normal"], group = "Style")
+themeMode = input.string("Dark",  "Theme Mode", options = ["Dark", "Light"], group = "Style", tooltip = "Match your TradingView background theme.")
+
+// ================== SETTINGS — PANEL ==================
+
+showPanel = input.bool(true, "Show Panel", group = "Panel")
+panelPos  = input.string("Top Right", "Panel Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = "Panel")
+panelSize = input.string("Small", "Panel Size", options = ["Tiny", "Small", "Normal"], group = "Panel")
+
+// ================== THEME ==================
+
+isDark   = themeMode == "Dark"
+textCol  = isDark ? #ffffff : #131722
+headerBg = isDark ? #2a2e39 : #d1d4dc
+subBg    = isDark ? #363a45 : #e0e3eb
+cellBg   = isDark ? #1e222d : #f0f3fa
+cellTxt  = isDark ? #d1d4dc : #363a45
+
+lblSizeTxt = labelSize == "Tiny" ? size.tiny : labelSize == "Normal" ? size.normal : size.small
+panSizeTxt = panelSize == "Tiny" ? size.tiny : panelSize == "Normal" ? size.normal : size.small
+
+// ================== SWING DETECTION ==================
+
+ph = ta.pivothigh(high, swingLen, swingLen)
+pl = ta.pivotlow(low,  swingLen, swingLen)
+
+var float prevHigh = na   // last confirmed swing high value
+var float prevLow  = na   // last confirmed swing low value
+
+// ================== STRUCTURE STATE — HH / HL / LH / LL ==================
+
+var string lastHighType = "—"   // "HH" or "LH"
+var string lastLowType  = "—"   // "HL" or "LL"
+var string lastSwing    = "—"   // most recent swing tag
+
+newHH = false
+newLH = false
+newHL = false
+newLL = false
+
+// zigzag bookkeeping (updated inline — Pine forbids mutating globals inside functions)
+var int   zzDir   = 0    // 1 = last anchored point is a high, -1 = a low
+var float zzPrice = na
+var int   zzBar   = na
+var line  zzLine  = na
+
+if not na(ph)
+    bx = bar_index - swingLen
+    isHH = na(prevHigh) or ph > prevHigh
+    lastHighType := isHH ? "HH" : "LH"
+    lastSwing    := lastHighType
+    newHH := isHH
+    newLH := not isHH
+    if showLabels
+        label.new(bx, ph, lastHighType, style = label.style_label_down, color = color.new(bullCol, 80), textcolor = bullCol, size = lblSizeTxt)
+    // zigzag update for a high
+    if zzDir == 0
+        zzDir   := 1
+        zzPrice := ph
+        zzBar   := bx
+    else if zzDir == 1
+        if ph > zzPrice
+            zzPrice := ph
+            zzBar   := bx
+            if showZig and not na(zzLine)
+                line.set_xy2(zzLine, bx, ph)
+    else
+        if showZig
+            zzLine := line.new(zzBar, zzPrice, bx, ph, color = color.new(zigCol, 0), width = zigWidth, style = line.style_solid)
+        zzDir   := 1
+        zzPrice := ph
+        zzBar   := bx
+    prevHigh := ph
+
+if not na(pl)
+    bx = bar_index - swingLen
+    isLL = na(prevLow) or pl < prevLow
+    lastLowType := isLL ? "LL" : "HL"
+    lastSwing   := lastLowType
+    newLL := isLL
+    newHL := not isLL
+    if showLabels
+        label.new(bx, pl, lastLowType, style = label.style_label_up, color = color.new(bearCol, 80), textcolor = bearCol, size = lblSizeTxt)
+    // zigzag update for a low
+    if zzDir == 0
+        zzDir   := -1
+        zzPrice := pl
+        zzBar   := bx
+    else if zzDir == -1
+        if pl < zzPrice
+            zzPrice := pl
+            zzBar   := bx
+            if showZig and not na(zzLine)
+                line.set_xy2(zzLine, bx, pl)
+    else
+        if showZig
+            zzLine := line.new(zzBar, zzPrice, bx, pl, color = color.new(zigCol, 0), width = zigWidth, style = line.style_solid)
+        zzDir   := -1
+        zzPrice := pl
+        zzBar   := bx
+    prevLow := pl
+
+// ================== MARKET STRUCTURE CLASSIFICATION ==================
+// Bullish = higher highs AND higher lows. Bearish = lower highs AND lower lows.
+// Anything else (mixed) is treated as Ranging / in transition.
+
+structure = lastHighType == "HH" and lastLowType == "HL" ? 1 : lastHighType == "LH" and lastLowType == "LL" ? -1 : 0
+
+var int prevStructure = 0
+turnedBull = structure == 1 and prevStructure != 1
+turnedBear = structure == -1 and prevStructure != -1
+if barstate.isconfirmed
+    prevStructure := structure
+
+// ================== PANEL ==================
+
+if showPanel and barstate.islast
+    panelPosTV = switch panelPos
+        "Top Right"    => position.top_right
+        "Top Left"     => position.top_left
+        "Bottom Right" => position.bottom_right
+        "Bottom Left"  => position.bottom_left
+        => position.top_right
+
+    var table panel = table.new(panelPosTV, 2, 5, frame_color = isDark ? #363a45 : #b2b5be, frame_width = 1, border_color = isDark ? #434651 : #c8cbda, border_width = 1)
+
+    structTxt = structure > 0 ? "▲ BULLISH" : structure < 0 ? "▼ BEARISH" : "• RANGING"
+    structCol = structure > 0 ? bullCol : structure < 0 ? bearCol : cellTxt
+    highCol   = lastHighType == "HH" ? bullCol : lastHighType == "LH" ? bearCol : cellTxt
+    lowCol    = lastLowType == "HL"  ? bullCol : lastLowType == "LL"  ? bearCol : cellTxt
+    swingCol  = lastSwing == "HH" or lastSwing == "HL" ? bullCol : lastSwing == "LH" or lastSwing == "LL" ? bearCol : cellTxt
+
+    table.cell(panel, 0, 0, "EDO SWING STATE", text_color = textCol, bgcolor = headerBg, text_size = panSizeTxt)
+    table.merge_cells(panel, 0, 0, 1, 0)
+
+    table.cell(panel, 0, 1, "Structure",  text_color = cellTxt,   bgcolor = cellBg, text_size = panSizeTxt)
+    table.cell(panel, 1, 1, structTxt,    text_color = structCol, bgcolor = cellBg, text_size = panSizeTxt)
+
+    table.cell(panel, 0, 2, "Last Swing", text_color = cellTxt,  bgcolor = subBg, text_size = panSizeTxt)
+    table.cell(panel, 1, 2, lastSwing,    text_color = swingCol, bgcolor = subBg, text_size = panSizeTxt)
+
+    table.cell(panel, 0, 3, "Last High",  text_color = cellTxt, bgcolor = cellBg, text_size = panSizeTxt)
+    table.cell(panel, 1, 3, lastHighType, text_color = highCol, bgcolor = cellBg, text_size = panSizeTxt)
+
+    table.cell(panel, 0, 4, "Last Low",   text_color = cellTxt, bgcolor = subBg, text_size = panSizeTxt)
+    table.cell(panel, 1, 4, lastLowType,  text_color = lowCol,  bgcolor = subBg, text_size = panSizeTxt)
+
+// ================== ALERTS ==================
+
+alertcondition(newHH,      "New Higher High",   "Edo Swing State — New Higher High (HH) on {{ticker}}")
+alertcondition(newHL,      "New Higher Low",    "Edo Swing State — New Higher Low (HL) on {{ticker}}")
+alertcondition(newLH,      "New Lower High",    "Edo Swing State — New Lower High (LH) on {{ticker}}")
+alertcondition(newLL,      "New Lower Low",     "Edo Swing State — New Lower Low (LL) on {{ticker}}")
+alertcondition(turnedBull, "Structure Bullish", "Edo Swing State — Structure turned BULLISH on {{ticker}}")
+alertcondition(turnedBear, "Structure Bearish", "Edo Swing State — Structure turned BEARISH on {{ticker}}")

@@ -1,0 +1,39 @@
+// © Cypher_Brothers
+
+//@version=6
+indicator("Universal Daily Leverage Simulator (Candles)", overlay=false)
+
+// ==========================================
+// ADJUST YOUR LEVERAGE FACTOR HERE (e.g., 2.0 = 2x, 3.0 = 3x, etc.)
+float leverageFactor = 2
+// ==========================================
+
+// 1. Calculate daily percentage returns based on the underlying asset's previous close
+prevClose = nz(close[1], close)
+
+returnOpen  = (open - prevClose) / prevClose
+returnHigh  = (high - prevClose) / prevClose
+returnLow   = (low - prevClose) / prevClose
+returnClose = (close - prevClose) / prevClose
+
+// 2. Compute compounded equity for the close price
+var float compoundedEquity = 100
+if bar_index > 0
+    compoundedEquity := nz(compoundedEquity[1], 100) * (1 + leverageFactor * returnClose)
+
+previousEquityClose = nz(compoundedEquity[1], 100)
+
+// 3. Apply leverage to open, high, and low levels
+syntheticOpen  = previousEquityClose * (1 + leverageFactor * returnOpen)
+syntheticClose = compoundedEquity
+
+rawHigh        = previousEquityClose * (1 + leverageFactor * returnHigh)
+rawLow         = previousEquityClose * (1 + leverageFactor * returnLow)
+
+// Safety checks to ensure High is the highest and Low is the lowest point
+syntheticHigh  = math.max(syntheticOpen, syntheticClose, rawHigh, rawLow)
+syntheticLow   = math.min(syntheticOpen, syntheticClose, rawHigh, rawLow)
+
+// 4. Plot the simulated leveraged candlesticks (Green for up, Red for down)
+candleColor = syntheticClose >= syntheticOpen ? color.green : color.red
+plotcandle(syntheticOpen, syntheticHigh, syntheticLow, syntheticClose, title="Simulated Leveraged Candles", color=candleColor, wickcolor=candleColor, bordercolor=candleColor)

@@ -1,0 +1,173 @@
+//@version=6
+indicator("The Fluid Trader sessions", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// --- Settings ---
+keepPerSess  = input.int(50, "Max active sets per session type", minval=1, maxval=500)
+colorCandles = input.bool(true, "Color candles per session") // THIS IS BACK
+filterWknd   = input.bool(true, "Hide weekend (Sat/Sun)")
+
+// Colors
+colAsia   = input.color(color.purple, "Asia Color")
+colLondon = input.color(color.blue,   "UK Color")
+colUS     = input.color(color.orange, "US Color")
+colNews   = input.color(color.red,    "US News Color (14:30-15:30)") // BACK FOR THE CANDLES
+
+// --- Time Logic Helpers ---
+isWeekend = filterWknd and (dayofweek == dayofweek.saturday or dayofweek == dayofweek.sunday)
+
+asiaTime   = time(timeframe.period, "0900-1600", "Asia/Tokyo")
+londonTime = time(timeframe.period, "0800-1330", "Europe/London")
+usNewsTime = time(timeframe.period, "0830-0930", "America/New_York")
+usCashTime = time(timeframe.period, "0930-1600", "America/New_York")
+
+asiaSess   = not na(asiaTime) and not isWeekend
+londonSess = not na(londonTime) and not isWeekend
+usNews     = not na(usNewsTime) and not isWeekend
+usCash     = not na(usCashTime) and not isWeekend
+usTotal    = usNews or usCash
+
+// --- Candle Coloring (RESTORED) ---
+// Determine the base color for this moment
+baseColor = usNews ? colNews : usCash ? colUS : londonSess ? colLondon : asiaSess ? colAsia : na
+
+// Color the candles, but NO background (bgcolor omitted)
+barcolor(colorCandles ? baseColor : na)
+
+// --- Storage for lines/labels (SPLIT H/L FOR SWEEP CHECK) ---
+var line[] asiaLinesH = array.new_line(), var label[] asiaLabelsH = array.new_label()
+var line[] asiaLinesL = array.new_line(), var label[] asiaLabelsL = array.new_label()
+
+var line[] londLinesH = array.new_line(), var label[] londLabelsH = array.new_label()
+var line[] londLinesL = array.new_line(), var label[] londLabelsL = array.new_label()
+
+var line[] usLinesH   = array.new_line(), var label[] usLabelsH   = array.new_label()
+var line[] usLinesL   = array.new_line(), var label[] usLabelsL   = array.new_label()
+
+// Variables for active sessions
+var float curAsiaH = na, var float curAsiaL = na, var int asiaStartIdx = na
+var float curLondH = na, var float curLondL = na, var int londStartIdx = na
+var float curUsH   = na, var float curUsL   = na, var int usStartIdx   = na
+
+// Temporary "Live" objects
+var line liveAsiaH = na, var line liveAsiaL = na, var label lbAsiaH = na, var label lbAsiaL = na
+var line liveLondH = na, var line liveLondL = na, var label lbLondH = na, var label lbLondL = na
+var line liveUsH   = na, var line liveUsL   = na, var label lbUsH   = na, var label lbUsL   = na
+
+// --- Functions ---
+
+prunePerType(linesArr, labelsArr, keepSets) =>
+    while array.size(linesArr) > keepSets
+        line.delete(array.shift(linesArr))
+    while array.size(labelsArr) > keepSets
+        label.delete(array.shift(labelsArr))
+
+checkSweeps(linesArr, labelsArr, isHigh) =>
+    if array.size(linesArr) > 0
+        for i = array.size(linesArr) - 1 to 0
+            l = array.get(linesArr, i)
+            lbl = array.get(labelsArr, i)
+            lvl = line.get_y1(l)
+            isSwept = isHigh ? high > lvl : low < lvl
+            if isSwept
+                line.delete(l)
+                label.delete(lbl)
+                array.remove(linesArr, i)
+                array.remove(labelsArr, i)
+
+// Draw Final (Short lines, no extend)
+drawFinalSet(startIdx, endIdx, yH, yL, col, tag, lArrH, lbArrH, lArrL, lbArrL) =>
+    midIdx = math.floor((startIdx + endIdx) / 2)
+    lH = line.new(startIdx, yH, endIdx, yH, xloc=xloc.bar_index, color=col, width=2, style=line.style_solid, extend=extend.none)
+    lbH = label.new(midIdx, yH, tag + " H", xloc=xloc.bar_index, style=label.style_label_up, textcolor=col, color=color.new(color.black, 100), size=size.small)
+    array.push(lArrH, lH), array.push(lbArrH, lbH)
+    
+    lL = line.new(startIdx, yL, endIdx, yL, xloc=xloc.bar_index, color=col, width=2, style=line.style_solid, extend=extend.none)
+    lbL = label.new(midIdx, yL, tag + " L", xloc=xloc.bar_index, style=label.style_label_down, textcolor=col, color=color.new(color.black, 100), size=size.small)
+    array.push(lArrL, lL), array.push(lbArrL, lbL)
+
+updateLiveSet(startIdx, yH, yL, col, tag, lH, lL, lbH, lbL) =>
+    midIdx = math.floor((startIdx + bar_index) / 2)
+    line.delete(lH), line.delete(lL)
+    label.delete(lbH), label.delete(lbL)
+    newL_H = line.new(startIdx, yH, bar_index, yH, color=col, width=2, style=line.style_dotted)
+    newL_L = line.new(startIdx, yL, bar_index, yL, color=col, width=2, style=line.style_dotted)
+    newLbH = label.new(midIdx, yH, tag + " H (Live)", style=label.style_label_up, textcolor=col, color=color.new(color.black, 100), size=size.small)
+    newLbL = label.new(midIdx, yL, tag + " L (Live)", style=label.style_label_down, textcolor=col, color=color.new(color.black, 100), size=size.small)
+    [newL_H, newL_L, newLbH, newLbL]
+
+// --- Logic per session ---
+
+// 1. Asia
+if (asiaSess and not asiaSess[1])
+    curAsiaH := high, curAsiaL := low, asiaStartIdx := bar_index
+else if asiaSess
+    curAsiaH := math.max(curAsiaH, high)
+    curAsiaL := math.min(curAsiaL, low)
+    [nlH, nlL, nlbH, nlbL] = updateLiveSet(asiaStartIdx, curAsiaH, curAsiaL, colAsia, "ASIA", liveAsiaH, liveAsiaL, lbAsiaH, lbAsiaL)
+    liveAsiaH := nlH, liveAsiaL := nlL, lbAsiaH := nlbH, lbAsiaL := nlbL
+
+if not asiaSess and asiaSess[1]
+    drawFinalSet(asiaStartIdx, bar_index[1], curAsiaH, curAsiaL, colAsia, "ASIA", asiaLinesH, asiaLabelsH, asiaLinesL, asiaLabelsL)
+    line.delete(liveAsiaH), line.delete(liveAsiaL), label.delete(lbAsiaH), label.delete(lbAsiaL)
+    prunePerType(asiaLinesH, asiaLabelsH, keepPerSess)
+    prunePerType(asiaLinesL, asiaLabelsL, keepPerSess)
+    curAsiaH := na, curAsiaL := na, asiaStartIdx := na
+
+// 2. UK
+if (londonSess and not londonSess[1])
+    curLondH := high, curLondL := low, londStartIdx := bar_index
+else if londonSess
+    curLondH := math.max(curLondH, high)
+    curLondL := math.min(curLondL, low)
+    [nlH, nlL, nlbH, nlbL] = updateLiveSet(londStartIdx, curLondH, curLondL, colLondon, "UK", liveLondH, liveLondL, lbLondH, lbLondL)
+    liveLondH := nlH, liveLondL := nlL, lbLondH := nlbH, lbLondL := nlbL
+
+if not londonSess and londonSess[1]
+    drawFinalSet(londStartIdx, bar_index[1], curLondH, curLondL, colLondon, "UK", londLinesH, londLabelsH, londLinesL, londLabelsL)
+    line.delete(liveLondH), line.delete(liveLondL), label.delete(lbLondH), label.delete(lbLondL)
+    prunePerType(londLinesH, londLabelsH, keepPerSess)
+    prunePerType(londLinesL, londLabelsL, keepPerSess)
+    curLondH := na, curLondL := na, londStartIdx := na
+
+// 3. US
+if (usTotal and not usTotal[1])
+    curUsH := high, curUsL := low, usStartIdx := bar_index
+else if usTotal
+    curUsH := math.max(curUsH, high)
+    curUsL := math.min(curUsL, low)
+    [nlH, nlL, nlbH, nlbL] = updateLiveSet(usStartIdx, curUsH, curUsL, colUS, "US", liveUsH, liveUsL, lbUsH, lbUsL)
+    liveUsH := nlH, liveUsL := nlL, lbUsH := nlbH, lbUsL := nlbL
+
+if not usTotal and usTotal[1]
+    drawFinalSet(usStartIdx, bar_index[1], curUsH, curUsL, colUS, "US", usLinesH, usLabelsH, usLinesL, usLabelsL)
+    line.delete(liveUsH), line.delete(liveUsL), label.delete(lbUsH), label.delete(lbUsL)
+    prunePerType(usLinesH, usLabelsH, keepPerSess)
+    prunePerType(usLinesL, usLabelsL, keepPerSess)
+    curUsH := na, curUsL := na, usStartIdx := na
+
+// --- SWEEP CHECK ---
+checkSweeps(asiaLinesH, asiaLabelsH, true)
+checkSweeps(asiaLinesL, asiaLabelsL, false)
+
+checkSweeps(londLinesH, londLabelsH, true)
+checkSweeps(londLinesL, londLabelsL, false)
+
+checkSweeps(usLinesH, usLabelsH, true)
+checkSweeps(usLinesL, usLabelsL, false)
+
+// Logo badge linksonder (3 kolommen voor letters, 2 rijen waarvan 1 als onzichtbare spacer)
+// Let op: Geen algemene bgcolor hier, want we willen de spacer transparant houden
+var logo_tb = table.new(position.bottom_left, 3, 2)
+
+if barstate.islast
+    // -- Logo logica --
+    bg_logo = color.new(#000000, 30) // Achtergrondkleur alleen voor de letters
+    
+    // Rij 0: De letters
+    table.cell(logo_tb, 0, 0, "T", text_color=#00BFFF, text_size=size.large, text_font_family=font.family_monospace, bgcolor=bg_logo)
+    table.cell(logo_tb, 1, 0, "F", text_color=color.white, text_size=size.large, text_font_family=font.family_monospace, bgcolor=bg_logo)
+    table.cell(logo_tb, 2, 0, "T", text_color=#00BFFF, text_size=size.large, text_font_family=font.family_monospace, bgcolor=bg_logo)
+
+    // Rij 1: De onzichtbare spacer die het geheel boven het TradingView logo tilt. 
+    // Wil je hem nog hoger? Verander "\n\n" dan in "\n\n\n".
+    table.cell(logo_tb, 1, 1, "\n\n", bgcolor=na)

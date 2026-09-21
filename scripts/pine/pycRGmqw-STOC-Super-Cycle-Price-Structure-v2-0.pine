@@ -1,0 +1,159 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BoobeshDasarath93
+
+//@version=6
+indicator("STOC - Super Cycle Price Structure v2.0", overlay=true, max_labels_count=500)
+
+// All signal events and signal-state updates occur on confirmed chart bars.
+// Moving averages, levels and regime shading still update on the live bar.
+string groupTrend = "01. Trend Structure"
+bool showFastMA = input.bool(true, "Show Fast EMA", group=groupTrend)
+int fastLength = input.int(21, "Fast EMA", minval=2, group=groupTrend)
+color fastColor = input.color(color.gray, "Fast EMA Colour", group=groupTrend)
+bool showBaseMA = input.bool(true, "Show Base EMA", group=groupTrend)
+int baseLength = input.int(50, "Base EMA", minval=5, group=groupTrend)
+bool showLongMA = input.bool(true, "Show 150/200 SMA", group=groupTrend)
+int ma150Length = input.int(150, "Long SMA 1", minval=20, group=groupTrend)
+int ma200Length = input.int(200, "Long SMA 2", minval=20, group=groupTrend)
+bool showCloud = input.bool(true, "Show Trend Cloud", group=groupTrend)
+
+string groupSetup = "02. Breakout Structure"
+int resistanceLength = input.int(20, "Resistance Lookback", minval=5, group=groupSetup)
+int supportLength = input.int(10, "Support Lookback", minval=3, group=groupSetup)
+int baseLookback = input.int(60, "Base Lookback", minval=20, group=groupSetup)
+float maxBaseDepth = input.float(25.0, "Maximum Base Depth %", minval=5.0, maxval=60.0, step=0.5, group=groupSetup)
+int contractionLength = input.int(20, "VCP Contraction Length", minval=5, group=groupSetup)
+float contractionRatio = input.float(0.72, "VCP ATR Contraction Ratio", minval=0.20, maxval=1.00, step=0.01, group=groupSetup)
+bool requireContraction = input.bool(false, "Require Recent Contraction For Breakout", group=groupSetup, tooltip="Optional ATR/base-depth screen. This does not validate a complete multi-swing VCP pattern. Disabled by default to preserve the original breakout filter.")
+int contractionWindow = input.int(10, "Prior Contraction Valid For (Bars)", minval=1, group=groupSetup, tooltip="When enabled, a qualifying contraction must exist within this many completed bars BEFORE the breakout candle.")
+float breakoutVolume = input.float(1.20, "Breakout Relative Volume", minval=0.50, step=0.05, group=groupSetup)
+bool requireVolume = input.bool(false, "Require Volume For Breakout", group=groupSetup, tooltip="When enabled, unavailable or zero volume blocks breakout signals.")
+
+string groupSignals = "03. Signal Controls"
+int pullbackSpacing = input.int(5, "Minimum Bars Between Pullbacks", minval=1, group=groupSignals)
+bool linkedExits = input.bool(true, "Exit Only After A BO/PB Signal", group=groupSignals, tooltip="Tracks an indicator signal cycle, not a broker position. One exit closes the cycle. Disable to show every confirmed cross below the Base EMA.")
+
+string groupDisplay = "04. Display"
+bool showLevels = input.bool(true, "Show R1/S1", group=groupDisplay)
+bool showCircuit = input.bool(false, "Show Previous-Day Reference Bands", group=groupDisplay, tooltip="Illustrative percentage bands around the previous completed daily close. Not official exchange circuit limits. Shown only on intraday and 1D charts.")
+float circuitPercent = input.float(20.0, "Reference Band %", minval=2.0, maxval=50.0, step=1.0, group=groupDisplay)
+bool showSignals = input.bool(true, "Show Breakout/Pullback/Exit Labels", group=groupDisplay)
+bool showContraction = input.bool(true, "Show Contraction Labels", group=groupDisplay)
+bool colorBackground = input.bool(true, "Colour Market Regime", group=groupDisplay)
+string labelSizeInput = input.string("Normal", "Label Size", options=["Small", "Normal", "Large"], group=groupDisplay)
+float labelOffset = input.float(0.5, "Label Distance (ATR)", minval=0.1, step=0.1, group=groupDisplay)
+int labelsToKeep = input.int(300, "Historical Labels To Keep", minval=20, maxval=500, group=groupDisplay)
+string labelSize = switch labelSizeInput
+    "Small" => size.small
+    "Large" => size.large
+    => size.normal
+
+float emaFast = ta.ema(close, fastLength)
+float emaBase = ta.ema(close, baseLength)
+float sma150 = ta.sma(close, ma150Length)
+float sma200 = ta.sma(close, ma200Length)
+float resistance = ta.highest(high, resistanceLength)[1]
+float support = ta.lowest(low, supportLength)[1]
+float baseHigh = ta.highest(high, baseLookback)
+float baseLow = ta.lowest(low, baseLookback)
+float baseDepth = baseHigh > 0 ? (baseHigh - baseLow) / baseHigh * 100.0 : na
+float atr14 = ta.atr(14)
+float atrPct = close > 0 ? atr14 / close * 100.0 : na
+float atrPctSlow = ta.sma(atrPct, contractionLength)
+float avgVolume = ta.sma(volume, 50)
+bool volumeAvailable = not na(volume) and volume > 0 and not na(avgVolume) and avgVolume > 0
+float relVolume = volumeAvailable ? volume / avgVolume : na
+
+bool trendReady = not na(sma150) and not na(sma200[20])
+bool longTrend = trendReady and close > emaBase and emaBase > sma150 and sma150 > sma200 and sma200 > sma200[20]
+bool transitionTrend = trendReady and close > sma200 and emaBase > sma200 and not longTrend
+bool baseReady = bar_index >= baseLookback - 1 and not na(atrPctSlow) and not na(sma200)
+// Simplified contraction screen, retaining the original definition.
+bool vcp = baseReady and baseDepth <= maxBaseDepth and atrPct < atrPctSlow * contractionRatio and close > sma200
+int barsSincePriorContraction = ta.barssince(vcp[1])
+bool recentContraction = not na(barsSincePriorContraction) and barsSincePriorContraction < contractionWindow
+bool contractionPass = not requireContraction or recentContraction
+bool volumePass = not requireVolume or (volumeAvailable and relVolume >= breakoutVolume)
+
+// Compare both closes with the SAME resistance level. A falling rolling
+// resistance alone must not generate a breakout without an upward price move.
+bool priceBreakout = bar_index >= resistanceLength and not na(resistance) and close > resistance and close[1] <= resistance
+bool breakoutCandidate = priceBreakout and longTrend and volumePass and contractionPass
+bool pullbackCandidate = longTrend and low <= emaFast and close > emaFast and close > open
+bool baseCrossDown = ta.crossunder(close, emaBase)
+
+var bool cycleActive = false
+var bool pullbackArmed = false
+var int lastPullbackBar = na
+bool breakout = false
+bool pullback = false
+bool exitCondition = false
+bool contractionBegins = false
+
+if barstate.isconfirmed
+    contractionBegins := vcp and not vcp[1]
+    exitCondition := baseCrossDown and (not linkedExits or cycleActive)
+    if exitCondition
+        cycleActive := false
+        pullbackArmed := false
+    else
+        breakout := breakoutCandidate
+        bool spacingPass = na(lastPullbackBar) or bar_index - lastPullbackBar >= pullbackSpacing
+        pullback := pullbackCandidate and pullbackArmed and spacingPass and not breakout
+        if breakout or pullback
+            cycleActive := true
+        if breakout
+            pullbackArmed := false
+        if pullback
+            lastPullbackBar := bar_index
+            pullbackArmed := false
+        // A fully separated candle arms a FUTURE touch of the Fast EMA.
+        // Consecutive candles touching the EMA cannot repeatedly trigger PB.
+        if not longTrend
+            pullbackArmed := false
+        else if low > emaFast
+            pullbackArmed := true
+
+// Offset daily data with lookahead_on: only a completed daily close is used.
+// Do not map daily reference bands onto weekly/monthly candles.
+bool referenceTimeframeOK = timeframe.isintraday or (timeframe.isdaily and timeframe.multiplier == 1)
+float previousDayClose = na
+if referenceTimeframeOK
+    previousDayClose := request.security(syminfo.tickerid, "1D", close[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+float upperCircuit = previousDayClose * (1.0 + circuitPercent / 100.0)
+float lowerCircuit = previousDayClose * (1.0 - circuitPercent / 100.0)
+
+plot(showFastMA ? emaFast : na, "Fast EMA", color=fastColor, linewidth=2)
+pBase = plot(showBaseMA ? emaBase : na, "Base EMA", color=color.green, linewidth=2)
+p150 = plot(showLongMA ? sma150 : na, "Long SMA 1", color=color.purple, linewidth=2)
+plot(showLongMA ? sma200 : na, "Long SMA 2", color=color.new(color.fuchsia, 10), linewidth=2)
+color cloudColor = longTrend ? color.new(color.green, 84) : transitionTrend ? color.new(color.yellow, 88) : na
+fill(pBase, p150, color=showCloud ? cloudColor : na, title="Trend Cloud")
+plot(showLevels ? resistance : na, "R1 Resistance", color=color.new(color.red, 20), linewidth=1, style=plot.style_stepline)
+plot(showLevels ? support : na, "S1 Support", color=color.new(color.teal, 20), linewidth=1, style=plot.style_stepline)
+plot(showCircuit ? upperCircuit : na, "Upper Previous-Day Reference", color=color.new(color.teal, 55), linewidth=1, style=plot.style_stepline)
+plot(showCircuit ? lowerCircuit : na, "Lower Previous-Day Reference", color=color.new(color.red, 55), linewidth=1, style=plot.style_stepline)
+color regimeColor = not trendReady ? na : longTrend ? color.new(color.green, 92) : transitionTrend ? color.new(color.yellow, 92) : color.new(color.red, 94)
+bgcolor(colorBackground ? regimeColor : na, title="Market Regime")
+
+// Actual label text size changes with the input. Retain a bounded history.
+var array<label> signalLabels = array.new<label>()
+float labelPadding = math.max(nz(atr14, syminfo.mintick) * labelOffset, syminfo.mintick * 5)
+if showSignals and breakout
+    array.push(signalLabels, label.new(bar_index, high + labelPadding, "BO", yloc=yloc.price, style=label.style_label_down, color=color.blue, textcolor=color.white, size=labelSize, tooltip="Confirmed breakout above prior-bar resistance.\nClose: " + str.tostring(close, format.mintick)))
+if showSignals and pullback
+    array.push(signalLabels, label.new(bar_index, low - labelPadding, "PB", yloc=yloc.price, style=label.style_label_up, color=color.lime, textcolor=color.black, size=labelSize, tooltip="Confirmed bullish Fast EMA pullback after price moved clear of the EMA."))
+if showSignals and exitCondition
+    array.push(signalLabels, label.new(bar_index, high + labelPadding, "X", yloc=yloc.price, style=label.style_label_down, color=color.red, textcolor=color.white, size=labelSize, tooltip="Confirmed close crossing below the Base EMA."))
+if showContraction and contractionBegins
+    float contractionY = low - labelPadding * (showSignals and pullback ? 3.0 : 1.0)
+    array.push(signalLabels, label.new(bar_index, contractionY, "VC", yloc=yloc.price, style=label.style_label_up, color=color.orange, textcolor=color.black, size=labelSize, tooltip="ATR contraction within the permitted base depth, above the long SMA. A screen, not full VCP pattern recognition."))
+while array.size(signalLabels) > labelsToKeep
+    label.delete(array.shift(signalLabels))
+
+// Display toggles never disable signal state or alerts.
+alertcondition(breakout, "STOC Super Cycle Breakout", "{{ticker}} confirmed a Super Cycle breakout at {{close}}")
+alertcondition(pullback, "STOC Super Cycle Pullback", "{{ticker}} confirmed a Super Cycle pullback at {{close}}")
+alertcondition(exitCondition, "STOC Super Cycle Trend Exit", "{{ticker}} closed below the base EMA at {{close}}")
+alertcondition(contractionBegins, "STOC Super Cycle Contraction", "{{ticker}} confirmed volatility contraction at {{close}}")
+

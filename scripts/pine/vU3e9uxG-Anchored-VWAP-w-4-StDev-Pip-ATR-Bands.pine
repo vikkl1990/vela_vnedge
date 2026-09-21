@@ -1,0 +1,130 @@
+//@version=6
+indicator("VWAP w/ Daily Anchor, 0-4 Bands, % Deviation", overlay=true, max_lines_count=500)
+
+// ───────────────────────────── Inputs ─────────────────────────────
+grpAnchor = "Anchor"
+anchorMode = input.string("Fixed", "Anchor Mode", options=["Fixed", "Daily"], group=grpAnchor,
+     tooltip="Fixed: VWAP starts once at the chosen date/time and never resets.\nDaily: VWAP resets every day at the chosen time (date part of the input is ignored).")
+anchorTime = input.time(timestamp("2025-01-01 09:00"), "Start Time", group=grpAnchor,
+     tooltip="Fixed mode uses the full date+time. Daily mode uses only the hour:minute.")
+src = input.source(hlc3, "Source", group=grpAnchor)
+
+grpLine = "Vertical Anchor Line"
+showVLine = input.bool(true, "Show Vertical Line", group=grpLine)
+vlineColor = input.color(color.new(color.gray, 40), "Line Color", group=grpLine)
+vlineWidth = input.int(2, "Line Width", minval=1, maxval=4, group=grpLine)
+vlineStyle = input.string("Solid", "Line Style", options=["Solid", "Dashed", "Dotted"], group=grpLine)
+
+grpBand = "Bands"
+numBands = input.int(4, "Number of Bands", minval=0, maxval=4, group=grpBand)
+bandType = input.string("Stdev", "Band Type", options=["Stdev", "Pip", "ATR", "Percent"], group=grpBand)
+mult1 = input.float(1.0, "Band 1 Multiplier", step=0.1, group=grpBand)
+mult2 = input.float(2.0, "Band 2 Multiplier", step=0.1, group=grpBand)
+mult3 = input.float(3.0, "Band 3 Multiplier", step=0.1, group=grpBand)
+mult4 = input.float(4.0, "Band 4 Multiplier", step=0.1, group=grpBand)
+
+grpParams = "Band Type Parameters"
+pipSize = input.float(0.0001, "Pip Size (Pip mode)", step=0.00001, group=grpParams)
+atrLen = input.int(14, "ATR Length (ATR mode)", minval=1, group=grpParams)
+pctUnit = input.float(0.1, "Percent per Band Unit (%)", step=0.05, group=grpParams,
+     tooltip="Percent mode: Band N sits at VWAP ± (this % × Band N Multiplier) of the VWAP value. E.g. 0.1% with multiplier 2 = 0.2% away from VWAP.")
+
+grpStyle = "Style"
+vwapColor = input.color(color.new(color.red, 0), "VWAP Line", group=grpStyle)
+band1Color = input.color(color.new(color.teal, 0), "Band 1", group=grpStyle)
+band2Color = input.color(color.new(color.blue, 0), "Band 2", group=grpStyle)
+band3Color = input.color(color.new(color.purple, 0), "Band 3", group=grpStyle)
+band4Color = input.color(color.new(color.maroon, 0), "Band 4", group=grpStyle)
+fillBands = input.bool(true, "Fill Between Bands", group=grpStyle)
+
+// ───────────────────────────── Anchor logic ─────────────────────────────
+targetHour = hour(anchorTime)
+targetMinute = minute(anchorTime)
+dailyAnchorTime = timestamp(year, month, dayofmonth, targetHour, targetMinute)
+
+isDailyAnchorBar = (time >= dailyAnchorTime) and (na(time[1]) or time[1] < dailyAnchorTime)
+isFixedAnchorBar = (time >= anchorTime) and (na(time[1]) or time[1] < anchorTime)
+
+var bool startedEver = false
+isFirstBar = anchorMode == "Daily" ? isDailyAnchorBar : isFixedAnchorBar
+if isFirstBar
+    startedEver := true
+
+started = anchorMode == "Daily" ? startedEver : (time >= anchorTime)
+
+var float sumPV = na
+var float sumV = na
+var float sumPPV = na
+
+if isFirstBar and started
+    sumPV := src * volume
+    sumV := volume
+    sumPPV := src * src * volume
+else if started
+    sumPV := sumPV + src * volume
+    sumV := sumV + volume
+    sumPPV := sumPPV + src * src * volume
+
+vwapRaw = started ? sumPV / sumV : na
+
+// Volume-weighted variance -> stdev
+variance = started ? math.max(sumPPV / sumV - vwapRaw * vwapRaw, 0) : na
+stdevVal = started ? math.sqrt(variance) : na
+
+atrVal = ta.atr(atrLen)
+
+bandUnit = bandType == "Stdev" ? stdevVal : bandType == "Pip" ? pipSize : bandType == "ATR" ? atrVal : (started ? vwapRaw * pctUnit / 100 : na)
+
+vwapVal = vwapRaw
+
+upper1 = started and numBands >= 1 ? vwapVal + bandUnit * mult1 : na
+lower1 = started and numBands >= 1 ? vwapVal - bandUnit * mult1 : na
+upper2 = started and numBands >= 2 ? vwapVal + bandUnit * mult2 : na
+lower2 = started and numBands >= 2 ? vwapVal - bandUnit * mult2 : na
+upper3 = started and numBands >= 3 ? vwapVal + bandUnit * mult3 : na
+lower3 = started and numBands >= 3 ? vwapVal - bandUnit * mult3 : na
+upper4 = started and numBands >= 4 ? vwapVal + bandUnit * mult4 : na
+lower4 = started and numBands >= 4 ? vwapVal - bandUnit * mult4 : na
+
+// ───────────────────────────── Plots ─────────────────────────────
+plot(vwapVal, "VWAP", color=vwapColor, linewidth=2)
+
+pU1 = plot(upper1, "Upper 1", color=band1Color)
+pL1 = plot(lower1, "Lower 1", color=band1Color)
+pU2 = plot(upper2, "Upper 2", color=band2Color)
+pL2 = plot(lower2, "Lower 2", color=band2Color)
+pU3 = plot(upper3, "Upper 3", color=band3Color)
+pL3 = plot(lower3, "Lower 3", color=band3Color)
+pU4 = plot(upper4, "Upper 4", color=band4Color)
+pL4 = plot(lower4, "Lower 4", color=band4Color)
+
+fill(pU1, pU2, color=fillBands and numBands >= 2 ? color.new(band1Color, 90) : na)
+fill(pL1, pL2, color=fillBands and numBands >= 2 ? color.new(band1Color, 90) : na)
+fill(pU2, pU3, color=fillBands and numBands >= 3 ? color.new(band2Color, 91) : na)
+fill(pL2, pL3, color=fillBands and numBands >= 3 ? color.new(band2Color, 91) : na)
+fill(pU3, pU4, color=fillBands and numBands >= 4 ? color.new(band3Color, 92) : na)
+fill(pL3, pL4, color=fillBands and numBands >= 4 ? color.new(band3Color, 92) : na)
+
+// ───────────────────────────── Vertical anchor line ─────────────────────────────
+vlineStyleVal = vlineStyle == "Solid" ? line.style_solid : vlineStyle == "Dashed" ? line.style_dashed : line.style_dotted
+
+// Track the running high/low of the whole series so the line height comfortably
+// exceeds the visible price range at any zoom level, regardless of future bars.
+var float rangeHi = na
+var float rangeLo = na
+rangeHi := na(rangeHi) ? high : math.max(rangeHi, high)
+rangeLo := na(rangeLo) ? low : math.min(rangeLo, low)
+
+var line[] vLines = array.new_line()
+
+if showVLine and isFirstBar and started
+    midY = (rangeHi + rangeLo) / 2
+    span = math.max((rangeHi - rangeLo), rangeHi * 0.01) * 50
+    // extend=extend.none on purpose: a strictly vertical line (x1 == x2) with
+    // extend.both is known to misrender as a horizontal line in Pine, so a very
+    // tall fixed segment is used instead of relying on "extend".
+    newLine = line.new(bar_index, midY + span, bar_index, midY - span, extend=extend.none, color=vlineColor, width=vlineWidth, style=vlineStyleVal)
+    array.push(vLines, newLine)
+    // keep chart tidy - cap stored lines
+    if array.size(vLines) > 200
+        line.delete(array.shift(vLines))

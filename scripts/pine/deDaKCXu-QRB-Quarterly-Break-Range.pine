@@ -1,0 +1,112 @@
+//@version=6
+indicator("QRB - Quarterly Range Breakout", shorttitle="QRB", overlay=true, max_lines_count=500)
+
+// ─────────────────────────────────────────────────────────────
+// USER SETTINGS
+// ─────────────────────────────────────────────────────────────
+
+// Previous Quarter High
+groupHigh = "Previous Quarter High"
+highColor = input.color(color.lime, "Color", group=groupHigh)
+highWidth = input.int(2, "Line Thickness", minval=1, maxval=5, group=groupHigh)
+highStyleInput = input.string("Dashed", "Line Style", options=["Solid", "Dashed", "Dotted"], group=groupHigh)
+highStyle = highStyleInput == "Solid" ? line.style_solid : highStyleInput == "Dashed" ? line.style_dashed : line.style_dotted
+
+// Previous Quarter Midpoint
+groupMid = "Previous Quarter Midpoint"
+midColor = input.color(color.white, "Color", group=groupMid)
+midWidth = input.int(2, "Line Thickness", minval=1, maxval=5, group=groupMid)
+midStyleInput = input.string("Dashed", "Line Style", options=["Solid", "Dashed", "Dotted"], group=groupMid)
+midStyle = midStyleInput == "Solid" ? line.style_solid : midStyleInput == "Dashed" ? line.style_dashed : line.style_dotted
+
+// Previous Quarter Low
+groupLow = "Previous Quarter Low"
+lowColor = input.color(color.fuchsia, "Color", group=groupLow)
+lowWidth = input.int(2, "Line Thickness", minval=1, maxval=5, group=groupLow)
+lowStyleInput = input.string("Dashed", "Line Style", options=["Solid", "Dashed", "Dotted"], group=groupLow)
+lowStyle = lowStyleInput == "Solid" ? line.style_solid : lowStyleInput == "Dashed" ? line.style_dashed : line.style_dotted
+
+// Quarter Divider Lines
+groupQuarter = "Quarter Divider Lines"
+showQuarterLines = input.bool(true, "Show Quarter Divider Lines", group=groupQuarter)
+quarterLineColor = input.color(color.gray, "Color", group=groupQuarter)
+quarterLineWidth = input.int(1, "Line Thickness", minval=1, maxval=5, group=groupQuarter)
+quarterLineStyleInput = input.string("Dotted", "Line Style", options=["Solid", "Dashed", "Dotted"], group=groupQuarter)
+quarterLineStyle = quarterLineStyleInput == "Solid" ? line.style_solid : quarterLineStyleInput == "Dashed" ? line.style_dashed : line.style_dotted
+
+// ─────────────────────────────────────────────────────────────
+// PREVIOUS QUARTER DATA
+// ─────────────────────────────────────────────────────────────
+prevQuarterHigh = request.security(
+     syminfo.tickerid,
+     "3M",
+     high[1],
+     gaps=barmerge.gaps_off,
+     lookahead=barmerge.lookahead_on)
+
+prevQuarterLow = request.security(
+     syminfo.tickerid,
+     "3M",
+     low[1],
+     gaps=barmerge.gaps_off,
+     lookahead=barmerge.lookahead_on)
+
+prevQuarterMid = (prevQuarterHigh + prevQuarterLow) / 2.0
+
+// Current calendar quarter timestamps.
+currentQuarterStart = time("3M")
+currentQuarterEnd = time_close("3M")
+isNewQuarter = timeframe.change("3M")
+drawQuarter = isNewQuarter or barstate.isfirst
+
+// ─────────────────────────────────────────────────────────────
+// DRAW QUARTER DIVIDER
+// ─────────────────────────────────────────────────────────────
+if drawQuarter and showQuarterLines
+    line.new(
+         x1=currentQuarterStart,
+         y1=low,
+         x2=currentQuarterStart,
+         y2=high,
+         xloc=xloc.bar_time,
+         extend=extend.both,
+         color=quarterLineColor,
+         width=quarterLineWidth,
+         style=quarterLineStyle)
+
+// ─────────────────────────────────────────────────────────────
+// DRAW PREVIOUS QUARTER HIGH / MID / LOW
+// ─────────────────────────────────────────────────────────────
+if drawQuarter and not na(prevQuarterHigh) and not na(prevQuarterLow)
+    line.new(
+         x1=currentQuarterStart,
+         y1=prevQuarterHigh,
+         x2=currentQuarterEnd,
+         y2=prevQuarterHigh,
+         xloc=xloc.bar_time,
+         extend=extend.none,
+         color=highColor,
+         width=highWidth,
+         style=highStyle)
+
+    line.new(
+         x1=currentQuarterStart,
+         y1=prevQuarterMid,
+         x2=currentQuarterEnd,
+         y2=prevQuarterMid,
+         xloc=xloc.bar_time,
+         extend=extend.none,
+         color=midColor,
+         width=midWidth,
+         style=midStyle)
+
+    line.new(
+         x1=currentQuarterStart,
+         y1=prevQuarterLow,
+         x2=currentQuarterEnd,
+         y2=prevQuarterLow,
+         xloc=xloc.bar_time,
+         extend=extend.none,
+         color=lowColor,
+         width=lowWidth,
+         style=lowStyle)

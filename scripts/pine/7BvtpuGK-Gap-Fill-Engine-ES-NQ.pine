@@ -1,0 +1,268 @@
+//@version=6
+indicator("Gap Fill Engine [ES/NQ]", shorttitle = "GAPFILL", overlay = true,
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+// ─────────────────────────────────────────────────────────────
+// The RTH opening gap is the highest win-rate intraday setup with
+// publicly documented statistics on index futures. Fill rate is
+// almost entirely a function of gap SIZE relative to daily ATR:
+//   Tiny   (< 0.30x ATR) ~ 78% fill      Medium (0.70-1.20x) ~ 26%
+//   Small  (0.30-0.70x)  ~ 42% fill      Large  (> 1.20x)    ~  8%
+// Opening INSIDE the prior day's RTH range ~ 70% vs 43-47% outside.
+// (tradingstats.net, 2,791 NQ sessions, 2015-2025)
+//
+// This script does NOT trust those numbers. It recomputes every one
+// of them from the history on your own chart and shows both.
+//
+// Read the R:R on each signal before taking it. A ~78% win rate with
+// a target smaller than the stop is not automatically an edge.
+// ─────────────────────────────────────────────────────────────
+
+// ── Session
+grpS    = "Session (New York time)"
+rthSess = input.session("0930-1600", "RTH session", group = grpS)
+winSess = input.session("0930-1100", "Trade window (entry + forced exit)", group = grpS)
+TZ      = "America/New_York"
+
+// ── Gap classification
+grpG    = "Gap classification"
+atrLen  = input.int(14, "Daily ATR length", minval = 2, group = grpG)
+tTiny   = input.float(0.30, "Tiny   < x ATR", step = 0.05, group = grpG)
+tSmall  = input.float(0.70, "Small  < x ATR", step = 0.05, group = grpG)
+tMed    = input.float(1.20, "Medium < x ATR", step = 0.05, group = grpG)
+minGapT = input.int(8, "Ignore gaps under (ticks)", minval = 0, group = grpG)
+
+// ── Signal filter
+grpF      = "Signal filter"
+useTiny   = input.bool(true,  "Tiny",   inline = "t", group = grpF)
+useSmall  = input.bool(false, "Small",  inline = "t", group = grpF)
+useMed    = input.bool(false, "Medium", inline = "t", group = grpF)
+useLarge  = input.bool(false, "Large",  inline = "t", group = grpF)
+reqInside = input.bool(true, "Only when open is inside prior day's RTH range", group = grpF)
+
+// ── Risk
+grpR     = "Risk"
+stopMode = input.string("ATR multiple", "Stop type", options = ["ATR multiple", "Fixed points"], group = grpR)
+stopATR  = input.float(0.50, "Stop = x daily ATR", step = 0.05, minval = 0.05, group = grpR)
+stopPts  = input.float(100, "Stop = points", step = 5, minval = 1, group = grpR)
+minRR    = input.float(0.0, "Skip signals under this R:R", step = 0.05, minval = 0, group = grpR)
+
+// ── Display
+grpV     = "Display"
+showZone = input.bool(true, "Gap zone box", group = grpV)
+showLvls = input.bool(true, "Entry / SL / TP lines", group = grpV)
+showLbl  = input.bool(true, "Labels", group = grpV)
+showTbl  = input.bool(true, "Stats table", group = grpV)
+
+if timeframe.isdwm
+    runtime.error("Use an intraday chart. The published gap statistics are measured on 5m.")
+
+// ── Data
+dATR  = request.security(syminfo.tickerid, "D", ta.atr(atrLen)[1])
+inRTH = not na(time(timeframe.period, rthSess, TZ))
+inWin = not na(time(timeframe.period, winSess, TZ))
+rthStart = inRTH and not inRTH[1]
+rthEnd   = not inRTH and inRTH[1]
+
+tierName(t) => t == 0 ? "Tiny" : t == 1 ? "Small" : t == 2 ? "Medium" : "Large"
+tierCol(t)  => t == 0 ? color.teal : t == 1 ? color.yellow : t == 2 ? color.orange : color.red
+pctTxt(n, d) => d > 0 ? str.tostring(n / d * 100, "#.#") + "%" : "-"
+
+// ── Prior / current RTH structure
+var float runClose = na
+var float curHi    = na
+var float curLo    = na
+var float pClose   = na
+var float pHi      = na
+var float pLo      = na
+
+// ── Gap state (every gap, tracked for statistics)
+var int   gTier   = -1
+var int   gDir    = 0
+var float gTarget = na
+var bool  gFill   = false
+var bool  gInside = false
+var box   gBox    = na
+var line  gLine   = na
+
+var cntT = array.new_int(4, 0)
+var filT = array.new_int(4, 0)
+var int cntIn  = 0
+var int filIn  = 0
+var int cntOut = 0
+var int filOut = 0
+
+// ── Trade state (only the gaps that pass your filter)
+var int   tDir = 0
+var float tEnt = na
+var float tStp = na
+var float tTgt = na
+var float tRR  = na
+var int   tBar = na
+var line  lE   = na
+var line  lS   = na
+var line  lT   = na
+var int   nTP  = 0
+var int   nSL  = 0
+var int   nEX  = 0
+var float sumR = 0.0
+
+// ── 1. Close out the session
+if rthEnd
+    if gTier >= 0
+        array.set(cntT, gTier, array.get(cntT, gTier) + 1)
+        if gFill
+            array.set(filT, gTier, array.get(filT, gTier) + 1)
+        if gInside
+            cntIn += 1
+            filIn += gFill ? 1 : 0
+        else
+            cntOut += 1
+            filOut += gFill ? 1 : 0
+        gTier := -1
+    pClose := runClose
+    pHi    := curHi
+    pLo    := curLo
+
+// ── 2. New session: classify the gap, maybe signal
+if rthStart
+    curHi    := high
+    curLo    := low
+    runClose := close
+    if not na(pClose) and not na(dATR) and dATR > 0
+        gp = open - pClose
+        if math.abs(gp) >= minGapT * syminfo.mintick
+            ratio    = math.abs(gp) / dATR
+            gTier   := ratio < tTiny ? 0 : ratio < tSmall ? 1 : ratio < tMed ? 2 : 3
+            gDir    := gp > 0 ? 1 : -1
+            gTarget := pClose
+            gFill   := false
+            gInside := open <= pHi and open >= pLo
+            cCol     = tierCol(gTier)
+            if showZone
+                gBox := box.new(bar_index, math.max(pClose, open), bar_index, math.min(pClose, open),
+                     border_color = color.new(cCol, 45), bgcolor = color.new(cCol, 88))
+            gLine := line.new(bar_index, gTarget, bar_index, gTarget, color = color.new(color.gray, 20), style = line.style_dashed, width = 1)
+            hn = array.get(filT, gTier)
+            hd = array.get(cntT, gTier)
+            if showLbl
+                label.new(bar_index, gDir == 1 ? high : low,
+                     tierName(gTier) + " gap  " + str.tostring(math.abs(gp), "#.#") + " pts (" + str.tostring(ratio, "#.##") + "x ATR)" +
+                     "\n" + (gInside ? "inside prior range" : "OUTSIDE prior range") +
+                     "\nyour fill rate " + tierName(gTier) + ": " + pctTxt(hn, hd) + "  (n=" + str.tostring(hd) + ")",
+                     style = gDir == 1 ? label.style_label_down : label.style_label_up,
+                     color = color.new(cCol, 20), textcolor = color.white, size = size.small)
+            allowed = (gTier == 0 and useTiny) or (gTier == 1 and useSmall) or (gTier == 2 and useMed) or (gTier == 3 and useLarge)
+            if allowed and (gInside or not reqInside) and tDir == 0
+                sDist = stopMode == "ATR multiple" ? stopATR * dATR : stopPts
+                ent   = close
+                dirT  = gDir == 1 ? -1 : 1
+                stp   = dirT == 1 ? ent - sDist : ent + sDist
+                rr    = sDist > 0 ? math.abs(gTarget - ent) / sDist : 0.0
+                if rr >= minRR
+                    tDir := dirT
+                    tEnt := ent
+                    tStp := stp
+                    tTgt := gTarget
+                    tRR  := rr
+                    tBar := bar_index
+                    if showLvls
+                        lE := line.new(bar_index, tEnt, bar_index, tEnt, color = color.new(color.blue, 10), style = line.style_dotted)
+                        lS := line.new(bar_index, tStp, bar_index, tStp, color = color.red,  width = 2)
+                        lT := line.new(bar_index, tTgt, bar_index, tTgt, color = color.teal, width = 2)
+                    if showLbl
+                        label.new(bar_index, dirT == 1 ? low : high,
+                             (dirT == 1 ? "FADE LONG " : "FADE SHORT ") + str.tostring(tEnt, format.mintick) +
+                             "\nSL " + str.tostring(tStp, format.mintick) +
+                             "\nTP " + str.tostring(tTgt, format.mintick) +
+                             "\n" + str.tostring(tRR, "#.##") + "R",
+                             style = dirT == 1 ? label.style_label_up : label.style_label_down,
+                             color = color.new(dirT == 1 ? color.teal : color.red, 10), textcolor = color.white, size = size.normal)
+                    alert("GAP FADE " + (dirT == 1 ? "LONG " : "SHORT ") + syminfo.ticker +
+                          " | " + tierName(gTier) + " gap | entry ~" + str.tostring(tEnt, format.mintick) +
+                          " | SL " + str.tostring(tStp, format.mintick) +
+                          " | TP " + str.tostring(tTgt, format.mintick) +
+                          " | " + str.tostring(tRR, "#.##") + "R", alert.freq_once_per_bar_close)
+
+// ── 3. Intrasession updates
+if inRTH and not rthStart
+    curHi    := math.max(curHi, high)
+    curLo    := math.min(curLo, low)
+    runClose := close
+
+if gTier >= 0 and inRTH
+    if not na(gBox)
+        box.set_right(gBox, bar_index)
+    if not na(gLine)
+        line.set_x2(gLine, bar_index)
+    if not gFill and ((gDir == 1 and low <= gTarget) or (gDir == -1 and high >= gTarget))
+        gFill := true
+        if showLbl
+            label.new(bar_index, gTarget, "fill", style = label.style_label_left,
+                 color = color.new(color.gray, 35), textcolor = color.white, size = size.tiny)
+
+// ── 4. Manage the open signal
+if tDir != 0
+    if showLvls and not na(lE)
+        line.set_x2(lE, bar_index)
+        line.set_x2(lS, bar_index)
+        line.set_x2(lT, bar_index)
+    if bar_index > tBar
+        hitS = tDir == 1 ? low  <= tStp : high >= tStp
+        hitT = tDir == 1 ? high >= tTgt : low  <= tTgt
+        outW = not inWin
+        if hitS or hitT or outW
+            if hitS
+                nSL  += 1
+                sumR += -1.0
+            else if hitT
+                nTP  += 1
+                sumR += tRR
+            else
+                nEX += 1
+            if showLbl
+                label.new(bar_index, hitS ? tStp : hitT ? tTgt : close, hitS ? "SL" : hitT ? "TP" : "EXP",
+                     style = label.style_label_left,
+                     color = hitS ? color.new(color.red, 15) : hitT ? color.new(color.teal, 15) : color.new(color.gray, 35),
+                     textcolor = color.white, size = size.tiny)
+            alert("GAP FADE " + (hitS ? "STOPPED " : hitT ? "FILLED - TARGET HIT " : "TIMED OUT ") + syminfo.ticker, alert.freq_once_per_bar_close)
+            tDir := 0
+
+// ── 5. Stats table — computed from this chart, not from the article
+var table tb = na
+if showTbl and barstate.islast
+    if na(tb)
+        tb := table.new(position.top_right, 4, 9, bgcolor = color.new(color.black, 20), border_width = 1, border_color = color.new(color.gray, 70))
+    table.cell(tb, 0, 0, "GAP FILL", text_color = color.white, text_size = size.small)
+    table.cell(tb, 1, 0, "n",    text_color = color.gray, text_size = size.tiny)
+    table.cell(tb, 2, 0, "yours",text_color = color.gray, text_size = size.tiny)
+    table.cell(tb, 3, 0, "pub.", text_color = color.gray, text_size = size.tiny)
+    pub = array.from("78%", "42%", "26%", "8%")
+    for i = 0 to 3
+        table.cell(tb, 0, i + 1, tierName(i), text_color = tierCol(i), text_size = size.tiny)
+        table.cell(tb, 1, i + 1, str.tostring(array.get(cntT, i)), text_color = color.white, text_size = size.tiny)
+        table.cell(tb, 2, i + 1, pctTxt(array.get(filT, i), array.get(cntT, i)), text_color = color.white, text_size = size.tiny)
+        table.cell(tb, 3, i + 1, array.get(pub, i), text_color = color.new(color.gray, 30), text_size = size.tiny)
+    table.cell(tb, 0, 5, "Inside rng", text_color = color.gray, text_size = size.tiny)
+    table.cell(tb, 1, 5, str.tostring(cntIn), text_color = color.white, text_size = size.tiny)
+    table.cell(tb, 2, 5, pctTxt(filIn, cntIn), text_color = color.white, text_size = size.tiny)
+    table.cell(tb, 3, 5, "70%", text_color = color.new(color.gray, 30), text_size = size.tiny)
+    table.cell(tb, 0, 6, "Outside", text_color = color.gray, text_size = size.tiny)
+    table.cell(tb, 1, 6, str.tostring(cntOut), text_color = color.white, text_size = size.tiny)
+    table.cell(tb, 2, 6, pctTxt(filOut, cntOut), text_color = color.white, text_size = size.tiny)
+    table.cell(tb, 3, 6, "45%", text_color = color.new(color.gray, 30), text_size = size.tiny)
+    tot = nTP + nSL
+    table.cell(tb, 0, 7, "SIGNALS", text_color = color.white, text_size = size.small)
+    table.cell(tb, 1, 7, str.tostring(tot + nEX), text_color = color.white, text_size = size.tiny)
+    table.cell(tb, 2, 7, pctTxt(nTP, tot), text_color = color.white, text_size = size.tiny)
+    table.cell(tb, 3, 7, str.tostring(nTP) + "/" + str.tostring(nSL), text_color = color.new(color.gray, 30), text_size = size.tiny)
+    avgR = tot > 0 ? sumR / tot : 0.0
+    table.cell(tb, 0, 8, "Avg R", text_color = color.gray, text_size = size.tiny)
+    table.cell(tb, 1, 8, "", text_size = size.tiny)
+    table.cell(tb, 2, 8, str.tostring(avgR, "#.##"), text_color = avgR >= 0 ? color.teal : color.red, text_size = size.tiny)
+    table.cell(tb, 3, 8, tDir != 0 ? "open" : "flat", text_color = color.new(color.gray, 30), text_size = size.tiny)
+
+// ── Visuals
+plot(showZone ? pClose : na, "Prior RTH close", color.new(color.gray, 50), 1, plot.style_stepline)
+alertcondition(rthStart and gTier == 0, "Tiny gap at open",  "Tiny gap on {{ticker}} - highest fill probability")
+alertcondition(rthStart and gTier >= 0, "Any gap at open",   "Opening gap on {{ticker}}")

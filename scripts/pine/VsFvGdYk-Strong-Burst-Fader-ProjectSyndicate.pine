@@ -1,0 +1,115 @@
+//@version=6
+indicator("Strong Burst Fader", overlay = true)
+
+gM        = "Burst Measurement"
+srcIn     = input.source(close, "Basis source",                                   group = gM)
+basisType = input.string("EMA", "Basis type", options = ["EMA", "SMA", "HMA", "WMA", "VWMA", "RMA"], group = gM)
+basisLen  = input.int(20, "Basis length", minval = 2, maxval = 400,               group = gM)
+atrLen    = input.int(14, "ATR length",   minval = 2, maxval = 200,               group = gM)
+bandMult  = input.float(2.0, "Band width (ATR beyond basis = burst starts)", minval = 0.2, maxval = 10.0, step = 0.1, group = gM, tooltip = "A bar counts as a burst when its high pokes above basis + this·ATR (or its low below basis − this·ATR).")
+stepATR   = input.float(0.5, "ATR per stack step", minval = 0.1, maxval = 3.0, step = 0.05, group = gM, tooltip = "Each extra step of ATR beyond the band adds one diamond to the stack and one notch of heat.")
+maxLevels = input.int(6, "Max stack height (diamonds)", minval = 1, maxval = 6,    group = gM, tooltip = "Hard cap on the stack. 6 is the physical maximum this script draws.")
+heatSat   = input.float(3.0, "Heat saturates at (ATR beyond band)", minval = 0.5, maxval = 12.0, step = 0.5, group = gM, tooltip = "Burst magnitude (in ATR beyond the band) at which the colour reaches the hottest stop.")
+needClose = input.bool(false, "Require closing burst (close beyond band)",        group = gM, tooltip = "ON: only count a burst when the CLOSE also finishes beyond the band, filtering pure-wick pokes. OFF: any wick beyond the band counts.")
+confirmBar= input.bool(true, "Confirm on bar close (non-repaint)",                group = gM, tooltip = "ON: burst peaks are detected only on closed bars, so nothing repaints. OFF: the newest peak may update on the live bar.")
+
+gV        = "Appearance"
+baseGap   = input.float(0.6, "First diamond offset (× ATR from wick)", minval = 0.0, maxval = 4.0, step = 0.1, group = gV)
+rowGap    = input.float(0.45, "Stack spacing (× ATR)", minval = 0.05, maxval = 2.0, step = 0.05, group = gV)
+showBg    = input.bool(false, "Tint background on extreme bursts",                group = gV, tooltip = "Shades the peak bar's column with the heat colour once a burst reaches the max stack height.")
+
+gC        = "Heatmap colours (cool → hot)"
+cCold     = input.color(#26c6da, "Mild",    group = gC, inline = "h")
+cWarm     = input.color(#ffd54a, "Warm",    group = gC, inline = "h")
+cHot      = input.color(#ff7a1a, "Hot",     group = gC, inline = "h")
+cExtreme  = input.color(#ff2b4e, "Extreme", group = gC, inline = "h")
+
+gF        = "Fade cues"
+showFade  = input.bool(true, "Show fade arrows on oversized bursts",              group = gF, tooltip = "▽ above an up-burst = fade short.  △ below a down-burst = fade long.")
+fadeMin   = input.int(3, "Min stack height to flag a fade", minval = 1, maxval = 6, group = gF)
+
+basis = switch basisType
+    "SMA"  => ta.sma(srcIn, basisLen)
+    "HMA"  => ta.hma(srcIn, basisLen)
+    "WMA"  => ta.wma(srcIn, basisLen)
+    "VWMA" => ta.vwma(srcIn, basisLen)
+    "RMA"  => ta.rma(srcIn, basisLen)
+    => ta.ema(srcIn, basisLen)
+
+atr   = ta.atr(atrLen)
+upper = basis + bandMult * atr
+lower = basis - bandMult * atr
+
+upExtP = high - upper
+dnExtP = lower - low
+upMag  = atr > 0 ? upExtP / atr : 0.0
+dnMag  = atr > 0 ? dnExtP / atr : 0.0
+
+upSpike = upExtP > 0 and (not needClose or close > upper)
+dnSpike = dnExtP > 0 and (not needClose or close < lower)
+
+okBar = confirmBar ? barstate.isconfirmed : true
+
+heatCol(float t) =>
+    tt = math.max(0.0, math.min(1.0, t))
+    tt < 0.40 ? color.from_gradient(tt, 0.0, 0.40, cCold, cWarm) : tt < 0.75 ? color.from_gradient(tt, 0.40, 0.75, cWarm, cHot) : color.from_gradient(tt, 0.75, 1.0, cHot, cExtreme)
+
+upM0 = upSpike ? math.max(0.0, upMag) : 0.0
+dnM0 = dnSpike ? math.max(0.0, dnMag) : 0.0
+
+upPeak = okBar and upM0[1] > 0 and upM0[1] >= upM0[2] and upM0[1] > upM0
+dnPeak = okBar and dnM0[1] > 0 and dnM0[1] >= dnM0[2] and dnM0[1] > dnM0
+
+upPk    = upM0[1]
+dnPk    = dnM0[1]
+upLvlPk = math.min(maxLevels, 1 + int(upPk / stepATR))
+dnLvlPk = math.min(maxLevels, 1 + int(dnPk / stepATR))
+upColPk = heatCol(upPk / heatSat)
+dnColPk = heatCol(dnPk / heatSat)
+
+aPk    = atr[1]
+baseUp = high[1]
+baseDn = low[1]
+yU(int k) => baseUp + (baseGap + (k - 1) * rowGap) * aPk
+yD(int k) => baseDn - (baseGap + (k - 1) * rowGap) * aPk
+
+u1 = upPeak and upLvlPk >= 1 ? yU(1) : na
+u2 = upPeak and upLvlPk >= 2 ? yU(2) : na
+u3 = upPeak and upLvlPk >= 3 ? yU(3) : na
+u4 = upPeak and upLvlPk >= 4 ? yU(4) : na
+u5 = upPeak and upLvlPk >= 5 ? yU(5) : na
+u6 = upPeak and upLvlPk >= 6 ? yU(6) : na
+d1 = dnPeak and dnLvlPk >= 1 ? yD(1) : na
+d2 = dnPeak and dnLvlPk >= 2 ? yD(2) : na
+d3 = dnPeak and dnLvlPk >= 3 ? yD(3) : na
+d4 = dnPeak and dnLvlPk >= 4 ? yD(4) : na
+d5 = dnPeak and dnLvlPk >= 5 ? yD(5) : na
+d6 = dnPeak and dnLvlPk >= 6 ? yD(6) : na
+
+plotshape(u1, "Up 1", shape.diamond, location.absolute, upColPk, offset = -1, size = size.small)
+plotshape(u2, "Up 2", shape.diamond, location.absolute, upColPk, offset = -1, size = size.small)
+plotshape(u3, "Up 3", shape.diamond, location.absolute, upColPk, offset = -1, size = size.small)
+plotshape(u4, "Up 4", shape.diamond, location.absolute, upColPk, offset = -1, size = size.small)
+plotshape(u5, "Up 5", shape.diamond, location.absolute, upColPk, offset = -1, size = size.small)
+plotshape(u6, "Up 6", shape.diamond, location.absolute, upColPk, offset = -1, size = size.small)
+plotshape(d1, "Dn 1", shape.diamond, location.absolute, dnColPk, offset = -1, size = size.small)
+plotshape(d2, "Dn 2", shape.diamond, location.absolute, dnColPk, offset = -1, size = size.small)
+plotshape(d3, "Dn 3", shape.diamond, location.absolute, dnColPk, offset = -1, size = size.small)
+plotshape(d4, "Dn 4", shape.diamond, location.absolute, dnColPk, offset = -1, size = size.small)
+plotshape(d5, "Dn 5", shape.diamond, location.absolute, dnColPk, offset = -1, size = size.small)
+plotshape(d6, "Dn 6", shape.diamond, location.absolute, dnColPk, offset = -1, size = size.small)
+
+fadeUpY = showFade and upPeak and upLvlPk >= fadeMin ? baseUp + (baseGap + upLvlPk * rowGap) * aPk : na
+fadeDnY = showFade and dnPeak and dnLvlPk >= fadeMin ? baseDn - (baseGap + dnLvlPk * rowGap) * aPk : na
+plotshape(fadeUpY, "Fade short", shape.triangledown, location.absolute, color.new(cExtreme, 0), offset = -1, size = size.tiny)
+plotshape(fadeDnY, "Fade long",  shape.triangleup,   location.absolute, color.new(#2b7bff, 0),  offset = -1, size = size.tiny)
+
+bgCol = showBg and upPeak and upLvlPk >= maxLevels ? color.new(upColPk, 82) : showBg and dnPeak and dnLvlPk >= maxLevels ? color.new(dnColPk, 82) : na
+bgcolor(bgCol, offset = -1, title = "Extreme-burst tint")
+
+upXtreme = upPeak and upLvlPk >= maxLevels
+dnXtreme = dnPeak and dnLvlPk >= maxLevels
+alertcondition(upPeak,   "Burst Fader — Up burst (fade short)",  "Up burst peaked above the band — fade-short candidate.")
+alertcondition(dnPeak,   "Burst Fader — Down burst (fade long)", "Down burst peaked below the band — fade-long candidate.")
+alertcondition(upXtreme, "Burst Fader — Extreme up",   "Up burst peaked at max stack — heavily over-extended.")
+alertcondition(dnXtreme, "Burst Fader — Extreme down", "Down burst peaked at max stack — heavily over-extended.")

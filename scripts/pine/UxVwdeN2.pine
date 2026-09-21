@@ -1,0 +1,1323 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// AMD Po3 WITH LIVE EDGE STATS [WillyAlgoTrader] — OrGa
+// ══════════════════════════════════════════════════════════
+// Original author: Willy | WillyAlgoTrader
+// OrGa adaptation: NY-session defaults + HTF bias + external liquidity confluence
+// Base version: 2.2.0 | OrGa version: 1.2.0
+
+indicator(
+     title            = "AMD Po3 with Live Edge Stats [WillyAlgoTrader] — OrGa",
+     shorttitle       = "AMD Po3 Stats OrGa",
+     overlay          = true,
+     max_boxes_count  = 500,
+     max_lines_count  = 500,
+     max_labels_count = 500)
+
+// ══════════════════════════════════════
+// 2. CONSTANTS
+// ══════════════════════════════════════
+GRP_RANGE  = "⚙️ Range (Accumulation)"
+GRP_SWEEP  = "🌀 Manipulation (Sweep)"
+GRP_DIST   = "🚀 Distribution"
+GRP_MODEL  = "🎯 Reference Model & Stats"
+GRP_FILTER = "🔍 Filters"
+GRP_ORGA   = "🧭 OrGa Confluence"
+GRP_VISUAL = "🎨 Visual"
+GRP_DASH   = "📊 Dashboard"
+GRP_ALERT  = "🔔 Alerts"
+GRP_COLORS = "🎨 Colors"
+
+INDICATOR_VERSION = "v2.2.0 · OrGa 1.2.0"
+
+LINE_FORWARD_BARS = 20         // forward projection of level lines at creation
+LINE_UPDATE_BARS  = 5          // forward offset while the cycle is live
+LABEL_OFFSET_BARS = 1          // label offset past the line end
+FORM_LEN          = 10         // form strip length (last N cycles)
+MS_DAY            = 86400000   // milliseconds in 24 hours
+STATS_PRUNE_DAYS  = 31         // rolling buffer horizon for timestamped stats
+COOLDOWN_BARS     = 10         // debounce between a cycle end and the next range
+RANGE_WIN         = 20         // Donchian window for compression & range anchoring
+PIVOT_LR          = 3          // pivot left/right strength (confirmation lag = PIVOT_LR bars)
+PIVOT_CAP         = 60         // max stored confirmed pivots per side
+EQ_LOOKBACK       = 96         // EQH/EQL search depth, bars
+
+// ══════════════════════════════════════
+// 3. INPUTS
+// ══════════════════════════════════════
+// ── Range ───────────────────────────────────────
+minRangeBarsInput   = input.int(12, "Min range maturity, bars", minval = 8, maxval = 40, group = GRP_RANGE,
+     tooltip = "Before this maturity a boundary breach = reset, not a sweep.\n• Lower = more cycles, more noise\n• Higher = more reliable, fewer cycles")
+maxRangeBarsInput   = input.int(96, "Max range age, bars", minval = 48, maxval = 192, group = GRP_RANGE,
+     tooltip = "Time budget for the sweep. Ranges older than this expire.\nRe-arm gets a fresh budget from the re-arm bar")
+compressionPctInput = input.int(25, "Compression threshold, percentile", minval = 10, maxval = 50, group = GRP_RANGE,
+     tooltip = "Donchian(20) width must sit in the bottom N% of its\ndistribution over the stats window.\n• Lower = only strong compression, fewer cycles\n• Higher = looser criterion")
+statWindowInput     = input.int(200, "Distribution window, bars", minval = 100, maxval = 500, group = GRP_RANGE,
+     tooltip = "Window for width and True Range percentiles.\nLarger = more stable thresholds, longer warm-up")
+rangeToleranceInput = input.float(0.10, "Boundary expansion tolerance", minval = 0.0, maxval = 0.30, step = 0.01, group = GRP_RANGE,
+     tooltip = "Fraction of range width the boundaries may 'breathe'\nwithout a reset. A breach beyond the tolerance is a\nsweep candidate")
+minRangeWidthPInput = input.float(0.15, "Min range width, % of price", minval = 0.05, maxval = 1.0, step = 0.05, group = GRP_RANGE,
+     tooltip = "Filters out microscopic ranges where stop and target\nare indistinguishable from the spread. In % of price")
+boundaryModeInput   = input.string("pivot", "Boundary method", options = ["pivot", "absolute"], group = GRP_RANGE,
+     tooltip = "• pivot: boundaries from confirmed pivots (cleaner)\n• absolute: raw window high/low (more aggressive)")
+trimTailPctInput    = input.int(15, "Impulse-tail trim, % of width", minval = 0, maxval = 40, group = GRP_RANGE,
+     tooltip = "When anchoring the range, the oldest window bars are dropped if removing them shrinks the width by more than N% — so the tail of the preceding impulse leg does not contaminate the boundaries.\n0 = off (v1.1.1 behavior)")
+
+// ── Manipulation ────────────────────────────────
+sweepReturnBarsInput  = input.int(8, "Max bars until return", minval = 2, maxval = 16, group = GRP_SWEEP,
+     tooltip = "Close must return inside the range within this many bars,\notherwise the move is a BREAKOUT.\nThe key manipulation criterion is the RETURN")
+requireLiquidityInput = input.bool(false, "Require liquidity beyond boundary (EQH/EQL)", group = GRP_SWEEP,
+     tooltip = "Sweep counts only if equal highs/lows sat beyond the\nboundary (min 2 pivots within 0.1×width over 96 bars)")
+sweepDepthPctInput    = input.int(100, "Soft depth cap, percentile (100 = off)", minval = 80, maxval = 100, group = GRP_SWEEP,
+     tooltip = "Excursion beyond the boundary no deeper than the N-th\nTrue Range percentile. Filters genuine breakouts\ndisguised as sweeps")
+allowRearmInput       = input.bool(true, "Allow re-arm (double sweep)", group = GRP_SWEEP,
+     tooltip = "If the HTF-bias filter rejects the projected direction at\nmanipulation confirmation, the range gets a second chance:\nwaiting for a sweep of the opposite side.\nInert while the HTF-bias filter is off (v2.0.0)")
+
+// ── Distribution ────────────────────────────────
+distTimeoutBarsInput   = input.int(64, "Distribution timeout, bars", minval = 24, maxval = 128, group = GRP_DIST,
+     tooltip = "If neither the target nor the stop is reached within\nN bars from the open (the M/D bar), the cycle closes as\nTIMEOUT with the actual R from the close")
+
+// ── Reference model & stats ─────────────────────
+stopBufAtrInput = input.float(0.4, "Stop buffer past sweep, × ATR anchor", minval = 0.0, maxval = 1.5, step = 0.05, group = GRP_MODEL,
+     tooltip = "The reference stop sits BEYOND the swept liquidity, not at its tip — a retest of the wick does not knock the model out.\nRisk and R are honestly computed from the buffered stop.\n0 = stop exactly at the extreme (v1.0 behavior)")
+fibExtInput     = input.float(1.618, "Fib extension target", minval = 1.0, maxval = 3.0, step = 0.001, group = GRP_MODEL,
+     tooltip = "Fibonacci extension of the manipulation leg.\nGrid anchors: 0 = manipulation extreme (sweep tip),\n1 = the OPPOSITE accumulation boundary.\nTarget = this level. OrGa default 1.618; common alternatives: 1.272 / 1.5 / 2.0. Higher targets improve R:R but usually reduce hit-rate.\nNOT a take-profit — the expected distribution reach.\nWalk-forward stats anchor to this level and the stop")
+showLevelsInput = input.bool(true, "Show Entry / Stop / Target lines", group = GRP_MODEL,
+     tooltip = "Reference entry, stop and distribution-target lines\non the active distribution")
+showLevelLabelsInput = input.bool(true, "Show level price labels", group = GRP_MODEL,
+     tooltip = "Price labels to the right of the lines — the exact levels\nare visible at a glance")
+showPctOnLabelsInput = input.bool(true, "Show % Distance on Labels", group = GRP_MODEL,
+     tooltip = "Append % distance from the reference entry to the Stop and\nTarget labels, e.g. 'Target 1.2300 (+0.86%)'")
+entryLineStyleInput = input.string("Dotted", "Entry Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_MODEL,
+     tooltip = "Entry is a reference, not an action level — keep it subtle")
+stopLineStyleInput  = input.string("Solid", "Stop Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_MODEL,
+     tooltip = "The stop is an action level — solid and prominent by default")
+tgtLineStyleInput   = input.string("Dashed", "Target Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_MODEL,
+     tooltip = "Style for the distribution target. On hit the line turns\nsolid teal")
+
+// ── Filters ─────────────────────────────────────
+useKillzonesInput = input.bool(false, "Hard killzone filter (reduces AMD signals)", group = GRP_FILTER,
+     tooltip = "OrGa 1.2 default: OFF, so the core AMD signal frequency stays comparable to the original script. Turn ON only if you want sweeps outside the enabled London/NY windows to be rejected. The NY window can still be highlighted and used as context while this hard filter is OFF.")
+useLdnKzInput     = input.bool(false, "Enable London sweep window", group = GRP_FILTER,
+     tooltip = "Optional. Disabled by default for the OrGa NY-session workflow.")
+kzLdnInput        = input.session("0800-1100", "London sweep window", group = GRP_FILTER,
+     tooltip = "Editable London window.")
+kzLdnTzInput      = input.string("Europe/London", "London timezone", group = GRP_FILTER,
+     tooltip = "IANA timezone: daylight-saving changes are handled automatically.")
+useNyKzInput      = input.bool(true, "Enable New York sweep window", group = GRP_FILTER,
+     tooltip = "OrGa default: ON.")
+kzNyInput         = input.session("0930-1200", "New York sweep window", group = GRP_FILTER,
+     tooltip = "OrGa default: 09:30–12:00 New York time. On a Europe/Zurich chart this normally appears as 15:30–18:00; DST transition weeks can differ by one hour.")
+kzNyTzInput       = input.string("America/New_York", "New York timezone", group = GRP_FILTER,
+     tooltip = "Keep America/New_York for a true US cash-session anchor. TradingView converts it automatically to your chart timezone.")
+useHtfBiasInput   = input.bool(true, "HTF bias context (EMA50)", group = GRP_FILTER,
+     tooltip = "OrGa default: ON. Shows/evaluates the last CLOSED higher-timeframe close vs EMA50 without automatically suppressing core AMD signals.")
+enforceHtfBiasInput = input.bool(false, "Enforce HTF bias as hard entry filter", group = GRP_FILTER,
+     tooltip = "Default OFF in OrGa 1.2. Turn ON only if D/entry signals against the 4H EMA50 bias should be rejected. This is the main reason OrGa 1.1 produced far fewer signals than the original.")
+htfTfInput        = input.timeframe("240", "HTF bias timeframe", group = GRP_FILTER,
+     tooltip = "OrGa default: 4H. Data is fetched repaint-free ([1] + lookahead_on).")
+
+// ── OrGa confluence layer ───────────────────────
+showPdhPdlInput = input.bool(true, "Previous Day High / Low", group = GRP_ORGA,
+     tooltip = "Plots previous daily high/low and scores a confluence when the AMD sweep takes the relevant level near the accumulation boundary.")
+showLondonHLInput = input.bool(true, "London High / Low", group = GRP_ORGA,
+     tooltip = "Plots the last completed London reference-session high/low and scores a confluence when it is swept near the accumulation boundary.")
+ldnRefInput = input.session("0800-1100", "London reference session", group = GRP_ORGA,
+     tooltip = "Window used to build London High / Low. Editable.")
+ldnRefTzInput = input.string("Europe/London", "London reference timezone", group = GRP_ORGA)
+showDailyOpenInput = input.bool(true, "Daily Open", group = GRP_ORGA,
+     tooltip = "Plots the current daily open. Confluence is directional: Long D close above Daily Open, Short D close below it.")
+showNyVwapInput = input.bool(true, "NY Session VWAP", group = GRP_ORGA,
+     tooltip = "Volume-weighted average price anchored to the NY regular session. Confluence is directional: Long above VWAP, Short below VWAP. If the symbol has no usable volume, this component stays unavailable.")
+nyVwapInput = input.session("0930-1600", "NY VWAP session", group = GRP_ORGA,
+     tooltip = "Default = US regular cash session 09:30–16:00 New York time.")
+nyVwapTzInput = input.string("America/New_York", "NY VWAP timezone", group = GRP_ORGA)
+confluenceTolAtrInput = input.float(0.25, "Liquidity level tolerance, × ATR", minval = 0.05, maxval = 1.0, step = 0.05, group = GRP_ORGA,
+     tooltip = "Maximum distance between the accumulation boundary and PDH/PDL or London H/L for that external level to count as the liquidity being swept.")
+useConfluenceFilterInput = input.bool(false, "Require minimum confluence score", group = GRP_ORGA,
+     tooltip = "Default OFF: confluence is information, not a forced filter. Turn ON only after the stats show an improvement for your market.")
+minConfluenceInput = input.int(2, "Minimum confluence score", minval = 1, maxval = 4, group = GRP_ORGA,
+     tooltip = "Used only when the confluence filter is enabled. Components: external PDH/PDL, London H/L, Daily Open alignment, NY VWAP alignment.")
+
+// ── Visual ──────────────────────────────────────
+themeInput = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_VISUAL,
+     tooltip = "Chart color theme.\n• Auto: detects from chart background\n• Dark: optimized for dark backgrounds\n• Light: optimized for light/white backgrounds")
+showBoxesInput      = input.bool(true, "Show cycle boxes", group = GRP_VISUAL,
+     tooltip = "Accumulation, sweep and distribution boxes")
+showLabelsInput     = input.bool(true, "Show event labels", group = GRP_VISUAL,
+     tooltip = "M / D / outcome / EXPIRED / BREAKOUT labels")
+showEntryMarkerInput = input.bool(true, "Show separate entry marker", group = GRP_VISUAL,
+     tooltip = "Draws a separate, clearly visible LONG/SHORT entry badge on every confirmed D signal. This marker is independent of the normal M/D event-label toggle.")
+entryEmojiInput     = input.string("🐊", "Entry signal marker", options = ["🐊", "🎯", "⚡", "🚀", "💎"], group = GRP_VISUAL,
+     tooltip = "Marker used in the separate entry badge and TradingView alerts. OrGa default = 🐊.")
+signalFontSizeInput = input.string("Small", "Event Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GRP_VISUAL,
+     tooltip = "Font size for M / D / outcome / EXPIRED / BREAKOUT labels")
+labelFontSizeInput  = input.string("Small", "Level Label Font Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GRP_VISUAL,
+     tooltip = "Font size for Entry / Stop / Target price labels")
+showLastCyclesInput = input.int(3, "Show last N cycles", minval = 1, maxval = 10, group = GRP_VISUAL,
+     tooltip = "Older cycles are dimmed or removed\n(see 'Older cycles')")
+minSampleNInput     = input.int(10, "Min sample for % and Avg R", minval = 1, maxval = 50, group = GRP_VISUAL,
+     tooltip = "Until N closed cycles are collected the dashboard shows raw counters without percentages or average R — percentages on 2-3 cycles create a false impression")
+historyStyleInput   = input.string("outline", "Older cycles", options = ["hide", "outline"], group = GRP_VISUAL,
+     tooltip = "• outline: fade the fill, keep the outline\n• hide: delete entirely")
+showSessionsInput   = input.bool(true, "Highlight killzones", group = GRP_VISUAL,
+     tooltip = "Background highlight for bars inside the killzones")
+showWatermarkInput  = input.bool(true, "Show Watermark", group = GRP_VISUAL,
+     tooltip = "Display 'WillyAlgoTrader' watermark on chart")
+
+// ── Dashboard ───────────────────────────────────
+showDashInput   = input.bool(true, "Show Dashboard", group = GRP_DASH,
+     tooltip = "FSM phase, walk-forward statistics and active reference\nmodel levels")
+dashPosStrInput = input.string("Top Right", "Dashboard Position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right", "Middle Right"], group = GRP_DASH,
+     tooltip = "Dashboard placement on the chart")
+dashFontSizeInput = input.string("Small", "Dashboard Font Size", options = ["Small", "Normal", "Large", "Huge"], group = GRP_DASH,
+     tooltip = "Font size for the dashboard table. Section dividers and the\nversion footer render one step smaller to preserve hierarchy")
+showMarketSecInput = input.bool(true, "  ├ Market section", group = GRP_DASH,
+     tooltip = "Phase / Compression / Range / HTF bias / TF")
+showCycleSecInput  = input.bool(true, "  ├ Cycle section", group = GRP_DASH,
+     tooltip = "Entry / Stop / Target / R:R / Risk % / Age.\nCollapses to one action row when no cycle is live")
+showStatsSecInput  = input.bool(true, "  └ Stats section", group = GRP_DASH,
+     tooltip = "Walk-forward statistics: cycles, target, stop, timeout,\ntarget rate, avg R, form, failed/breakout")
+statsPeriodInput   = input.string("All-Time", "Stats Period", options = ["24 Hours", "30 Days", "All-Time"], group = GRP_DASH,
+     tooltip = "Time window for the Stats section:\n• 24 Hours: cycles closed in the last 24h (vs latest bar)\n• 30 Days: cycles closed in the last 30 days\n• All-Time: all cycles on the loaded chart history\nForm strip always shows the last cycles regardless of period.\nPeriod stats live in a rolling 31-day buffer")
+
+// ── Alerts ──────────────────────────────────────
+alertsOnInput = input.bool(true, "Enable Alerts", group = GRP_ALERT,
+     tooltip = "Master switch for all alert() events:\nsweep, manipulation, distribution, cycle outcome")
+webhookInput  = input.bool(false, "Webhook JSON Format", group = GRP_ALERT,
+     tooltip = "Send alerts in JSON format for webhook integrations\ninstead of the text format")
+
+// ── Colors ──────────────────────────────────────
+colAccInput  = input.color(color.new(#5b7fa6, 80), "Accumulation", group = GRP_COLORS,
+     tooltip = "Accumulation box fill")
+colManInput  = input.color(color.new(#e2963a, 55), "Manipulation", group = GRP_COLORS,
+     tooltip = "Sweep box and the M label")
+colStopInput = input.color(#c94f4f, "Stop", group = GRP_COLORS,
+     tooltip = "Reference stop line and negative outcomes")
+colTgtInput  = input.color(#3aa66b, "Target", group = GRP_COLORS,
+     tooltip = "Distribution-target line and positive outcomes")
+colDstInput  = input.color(color.new(#3aa66b, 82), "Distribution box", group = GRP_COLORS,
+     tooltip = "Distribution box fill")
+
+// ══════════════════════════════════════
+// 3b. INPUT VALIDATION (v2.1.0)
+// ══════════════════════════════════════
+if useHtfBiasInput and htfTfInput != "" and timeframe.in_seconds(htfTfInput) < timeframe.in_seconds(timeframe.period)
+    runtime.error("HTF bias timeframe must be greater than or equal to the chart timeframe")
+
+// ══════════════════════════════════════
+// 4. THEME DETECTION & COLORS
+// ══════════════════════════════════════
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    =>         color.r(chart.bg_color) < 128   // Auto
+
+TEXT_COLOR   = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED   = isDark ? #9E9E9E : #757575
+TABLE_BG     = isDark ? color.new(#131722, 5) : color.new(#FFFFFF, 5)
+TABLE_BORDER = isDark ? #2A2E39 : #D0D0D0
+TABLE_ROW_ALT = isDark ? color.new(#1C2030, 0) : color.new(#F0F4F8, 0)
+HEADER_BG    = isDark ? #0D47A1 : #1565C0
+HEADER_BG_BULL = color.new(#0F6E56, 0)
+HEADER_BG_BEAR = color.new(#A32D2D, 0)
+HEADER_TEXT  = #FFFFFF
+
+// Premium theme-aware level palette (v2.1.0)
+ENTRY_COLOR   = isDark ? color.new(#5C8AAE, 0) : color.new(#34495E, 0)
+TGT_HIT_COLOR = isDark ? color.new(#4DB6AC, 0) : color.new(#00695C, 0)
+WM_COLOR     = isDark ? color.new(#FFFFFF, 80) : color.new(#000000, 80)
+PD_COLOR     = isDark ? color.new(#B39DDB, 18) : color.new(#5E35B1, 18)
+LDN_COLOR    = isDark ? color.new(#FFCC80, 18) : color.new(#EF6C00, 18)
+DOPEN_COLOR  = isDark ? color.new(#90CAF9, 20) : color.new(#1565C0, 20)
+VWAP_COLOR   = isDark ? color.new(#80CBC4, 0)  : color.new(#00796B, 0)
+
+BULL_TEXT    = isDark ? #00E676 : #00A152
+BEAR_TEXT    = isDark ? #FF5252 : #D32F2F
+NEUTRAL_TEXT = isDark ? #FFEB3B : #F57F17
+
+// ══════════════════════════════════════
+// 5. FUNCTIONS
+// ══════════════════════════════════════
+// Luminance-aware label text color: dark text on light backgrounds,
+// white on dark ones (WCAG contrast with custom palettes)
+f_textOn(color bg) =>
+    lum = 0.299 * color.r(bg) + 0.587 * color.g(bg) + 0.114 * color.b(bg)
+    lum > 145 ? color.rgb(17, 24, 39) : color.white
+
+fmtPrice(float v) =>
+    na(v) ? "—" : str.tostring(v, format.mintick)
+
+formatPctFromEntry(float level, float entry) =>
+    string res = ""
+    if showPctOnLabelsInput and not na(level) and not na(entry) and entry != 0
+        float pct   = (level - entry) / entry * 100.0
+        string sign = pct >= 0 ? "+" : ""
+        res := " (" + sign + str.tostring(pct, "#.##") + "%)"
+    res
+
+buildGauge(float value, float maxVal, int width) =>
+    string result = ""
+    int filled = maxVal <= 0 ? 0 : math.round(math.min(width, math.max(0.0, value / maxVal * width)))
+    for i = 0 to width - 1
+        result += i < filled ? "▰" : "▱"
+    result
+
+// Cycles within a time window: [target, stop, timeout, sumR]
+periodStats(array<int> tms, array<int> outc, array<float> rs, int cutoff) =>
+    int t  = 0
+    int st = 0
+    int tOut = 0
+    float sm = 0.0
+    int n = array.size(tms)
+    if n > 0
+        for i = 0 to n - 1
+            if array.get(tms, i) >= cutoff
+                int oc = array.get(outc, i)
+                if oc == 1
+                    t += 1
+                else if oc == 0
+                    st += 1
+                else
+                    tOut += 1
+                sm += array.get(rs, i)
+    [t, st, tOut, sm]
+
+lineStyleFromString(string sv) =>
+    sv == "Dashed" ? line.style_dashed : sv == "Dotted" ? line.style_dotted : line.style_solid
+
+sizeFromString(string sv) =>
+    sv == "Tiny" ? size.tiny : sv == "Small" ? size.small : sv == "Normal" ? size.normal : sv == "Large" ? size.large : sv == "Huge" ? size.huge : size.small
+
+sizeDownFromString(string sv) =>
+    sv == "Tiny" ? size.tiny : sv == "Small" ? size.tiny : sv == "Normal" ? size.small : sv == "Large" ? size.normal : sv == "Huge" ? size.large : size.tiny
+
+// Resolved styles & sizes
+entryLineStyle  = lineStyleFromString(entryLineStyleInput)
+stopLineStyle   = lineStyleFromString(stopLineStyleInput)
+tgtLineStyle    = lineStyleFromString(tgtLineStyleInput)
+signalSize      = sizeFromString(signalFontSizeInput)
+slTpLabelSize   = sizeFromString(labelFontSizeInput)
+dashFontSize    = sizeFromString(dashFontSizeInput)
+dashFontSizeSub = sizeDownFromString(dashFontSizeInput)
+
+// ══════════════════════════════════════
+// 6. CALCULATIONS (base series — every bar, for ta.* consistency)
+// ══════════════════════════════════════
+atr14   = math.max(nz(ta.atr(14), ta.tr(true)), syminfo.mintick)    // hardened: na/0 impossible
+hi20    = ta.highest(high, RANGE_WIN)                                          // GLOBAL: ta.* must not be called in conditional branches
+lo20    = ta.lowest(low, RANGE_WIN)
+chW     = hi20 - lo20
+pctRank = ta.percentrank(chW, statWindowInput)                          // current width position in the distribution, 0..100
+trThr   = ta.percentile_nearest_rank(ta.tr, statWindowInput, sweepDepthPctInput) // sweep depth threshold
+ph      = ta.pivothigh(high, PIVOT_LR, PIVOT_LR)
+pl      = ta.pivotlow(low, PIVOT_LR, PIVOT_LR)
+warmedUp = bar_index > statWindowInput
+
+bool inLdnKZ = useLdnKzInput and not na(time(timeframe.period, kzLdnInput + ":1234567", kzLdnTzInput))
+bool inNyKZ  = useNyKzInput  and not na(time(timeframe.period, kzNyInput + ":1234567", kzNyTzInput))
+bool inKZ    = inLdnKZ or inNyKZ
+
+// HTF bias: classic non-repainting idiom [1] + lookahead_on
+[htfC, htfE] = request.security(syminfo.tickerid, htfTfInput,
+     [close[1], ta.ema(close, 50)[1]],
+     lookahead = barmerge.lookahead_on)
+
+// ── OrGa external reference levels ─────────────────────────
+// PDH/PDL use the symbol's previous completed Daily bar. [1] + lookahead_on = repaint-free.
+[pdh, pdl] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+// Current Daily Open is known from the first bar of the day and does not require future data.
+dailyOpen = request.security(syminfo.tickerid, "D", open, lookahead = barmerge.lookahead_on)
+
+// Last COMPLETED London reference-session High / Low.
+bool inLdnRef = not na(time(timeframe.period, ldnRefInput + ":1234567", ldnRefTzInput))
+bool ldnRefStart = inLdnRef and not inLdnRef[1]
+bool ldnRefEnd   = not inLdnRef and inLdnRef[1]
+var float ldnRunHigh = na
+var float ldnRunLow  = na
+var float londonHigh = na
+var float londonLow  = na
+if ldnRefStart
+    ldnRunHigh := high
+    ldnRunLow  := low
+else if inLdnRef
+    ldnRunHigh := na(ldnRunHigh) ? high : math.max(ldnRunHigh, high)
+    ldnRunLow  := na(ldnRunLow) ? low : math.min(ldnRunLow, low)
+if ldnRefEnd
+    londonHigh := ldnRunHigh
+    londonLow  := ldnRunLow
+
+// NY regular-session VWAP, reset at 09:30 New York by default.
+bool inNyVwap = not na(time(timeframe.period, nyVwapInput + ":1234567", nyVwapTzInput))
+bool nyVwapStart = inNyVwap and not inNyVwap[1]
+var float nyCumPV = na
+var float nyCumV  = na
+float barVol = nz(volume, 0.0)
+if nyVwapStart
+    nyCumPV := hlc3 * barVol
+    nyCumV  := barVol
+else if inNyVwap
+    nyCumPV := nz(nyCumPV) + hlc3 * barVol
+    nyCumV  := nz(nyCumV) + barVol
+float nySessionVwap = inNyVwap and nz(nyCumV) > 0 ? nyCumPV / nyCumV : na
+
+// Registry of confirmed pivots (pivot-mode boundaries and EQH/EQL)
+var pivHiV = array.new_float()
+var pivHiB = array.new_int()
+var pivLoV = array.new_float()
+var pivLoB = array.new_int()
+if not na(ph)
+    array.push(pivHiV, ph)
+    array.push(pivHiB, bar_index - PIVOT_LR)
+    if array.size(pivHiV) > PIVOT_CAP
+        array.shift(pivHiV)
+        array.shift(pivHiB)
+if not na(pl)
+    array.push(pivLoV, pl)
+    array.push(pivLoB, bar_index - PIVOT_LR)
+    if array.size(pivLoV) > PIVOT_CAP
+        array.shift(pivLoV)
+        array.shift(pivLoB)
+
+// ══════════════════════════════════════
+// 7. SIGNAL LOGIC — FSM STATE
+// ══════════════════════════════════════
+enum Phase
+    idle
+    accum
+    sweepPending
+    manip          // transient: always resolved on the same bar (v2.0.0)
+    dist
+
+var Phase state      = Phase.idle
+var int   cycleId    = 0
+var int   lastEndBar = -100       // re-detection debounce (10-bar cooldown)
+
+var float rangeHigh     = na
+var float rangeLow      = na
+var float rangeMid      = na
+var float rangeWidth    = na
+var int   rangeStartBar = na
+var int   expiryAnchor  = na      // expiry budget anchor: refreshed on re-arm (fix B1)
+var int   rangeAge      = 0
+var float atrAnchor     = na      // ATR(14) on the bar BEFORE the range start — anchors the stop buffer
+
+var int   sweepSide      = 0      // 1 = HIGH, -1 = LOW
+var int   firstSweepSide = 0      // blocks a repeat same-side sweep on re-arm
+var float sweepExtreme   = na
+var int   sweepBar       = na
+var bool  rearmUsed      = false
+
+var int   distDir      = 0        // 1 = UP, -1 = DOWN
+var float entryPrice   = na       // reference entry = D-bar close (v1.5.0) — statistics only
+var float stopPrice    = na       // reference stop — statistics only
+var float tgtPrice     = na       // DISTRIBUTION TARGET (fib extension of the manipulation leg) — stats anchor
+var float riskR        = na
+var int   distStartBar = na
+var float distHi       = na       // distribution excursion (for the box)
+var float distLo       = na
+
+// OrGa confluence snapshot captured on the D bar.
+var int    distConfScore = 0
+var int    distConfMax   = 0
+var string distConfText  = "—"
+var string distConfGrade = "—"
+
+// Statistics (walk-forward only: cycles lived through in chronological order)
+var int   tgtN     = 0            // TARGET reached
+var int   stopN    = 0            // includes AMBIGUOUS (conservative)
+var int   timeoutN = 0
+var int   ambigN   = 0
+var int   failN    = 0            // FAILED_MANIP
+var int   brkN     = 0            // BREAKOUT (sweep without return)
+var float sumR     = 0.0
+var int   dsN      = 0            // closed double-sweep cycles
+var float dsSumR   = 0.0
+
+// Timestamped closures for period-based stats (rolling 31-day buffer, v2.1.0)
+var array<int>   cycTimes = array.new<int>()
+var array<int>   cycOutc  = array.new<int>()    // 0 = stop/amb · 1 = target · 2 = timeout
+var array<float> cycR     = array.new<float>()
+var string       formStr  = ""
+
+// Alert de-duplication flags (reset on T1)
+var bool aSweepH = false
+var bool aSweepL = false
+var bool aDist   = false
+var bool aOut    = false
+
+// Dedicated one-bar pulses for selectable TradingView entry alerts.
+// Reset every calculation; set TRUE only on the confirmed M/D entry bar.
+var bool longEntrySignal  = false
+var bool shortEntrySignal = false
+longEntrySignal  := false
+shortEntrySignal := false
+
+// ══════════════════════════════════════
+// 8. GRAPHICS OBJECT REGISTRY (limit management)
+// ══════════════════════════════════════
+var regBoxes  = array.new<box>()
+var regBoxCyc = array.new_int()
+var regLines  = array.new<line>()
+var regLinCyc = array.new_int()
+var regLabs   = array.new<label>()
+var regLabCyc = array.new_int()
+
+f_regBox(box b) =>
+    array.push(regBoxes, b)
+    array.push(regBoxCyc, cycleId)
+
+f_regLine(line l) =>
+    array.push(regLines, l)
+    array.push(regLinCyc, cycleId)
+
+f_regLab(label l) =>
+    array.push(regLabs, l)
+    array.push(regLabCyc, cycleId)
+
+// History trim: older than showLastCycles — restyle (outline) or delete (hide),
+// older than 3×showLastCycles — always delete (box/line/label limit protection)
+f_trim() =>
+    cutoff  = cycleId - showLastCyclesInput
+    hardCut = cycleId - showLastCyclesInput * 3
+    i = 0
+    while i < array.size(regBoxes)
+        c = array.get(regBoxCyc, i)
+        if c < hardCut or (c < cutoff and historyStyleInput == "hide")
+            box.delete(array.get(regBoxes, i))
+            array.remove(regBoxes, i)
+            array.remove(regBoxCyc, i)
+        else
+            if c < cutoff
+                box.set_bgcolor(array.get(regBoxes, i), na)
+            i += 1
+    i := 0
+    while i < array.size(regLines)
+        c = array.get(regLinCyc, i)
+        if c < hardCut or (c < cutoff and historyStyleInput == "hide")
+            line.delete(array.get(regLines, i))
+            array.remove(regLines, i)
+            array.remove(regLinCyc, i)
+        else
+            i += 1
+    i := 0
+    while i < array.size(regLabs)
+        c = array.get(regLabCyc, i)
+        if c < hardCut or (c < cutoff and historyStyleInput == "hide")
+            label.delete(array.get(regLabs, i))
+            array.remove(regLabs, i)
+            array.remove(regLabCyc, i)
+        else
+            i += 1
+
+// EQH/EQL: at least 2 pivots within 0.1×width of the boundary over the last 96 bars
+f_liquidityBeyond(int side) =>
+    cnt = 0
+    tol = 0.10 * rangeWidth
+    if side == 1 and array.size(pivHiV) > 0
+        for j = 0 to array.size(pivHiV) - 1
+            if array.get(pivHiB, j) >= bar_index - EQ_LOOKBACK and math.abs(array.get(pivHiV, j) - rangeHigh) <= tol
+                cnt += 1
+    if side == -1 and array.size(pivLoV) > 0
+        for j = 0 to array.size(pivLoV) - 1
+            if array.get(pivLoB, j) >= bar_index - EQ_LOOKBACK and math.abs(array.get(pivLoV, j) - rangeLow) <= tol
+                cnt += 1
+    cnt >= 2
+
+// ══════════════════════════════════════
+// 9. ACTIVE GRAPHICS OBJECTS OF THE CURRENT CYCLE
+// ══════════════════════════════════════
+var box   accBox = na
+var box   swBox  = na
+var label manLab = na
+var box   dstBox = na
+var line  stopLn = na
+var line  tgtLn  = na
+var line  entLn  = na
+var label entLab = na
+var label stopLab = na
+var label tgtLab = na
+var label dLab   = na          // projected D — created at manipulation confirmation (v1.4.0)
+
+// ══════════════════════════════════════
+// 10. FSM — CONFIRMED BARS ONLY
+// ══════════════════════════════════════
+tolBand    = nz(rangeToleranceInput * rangeWidth)
+insideRng  = not na(rangeHigh) and close <= rangeHigh and close >= rangeLow
+breachHigh = not na(rangeHigh) and high > rangeHigh + tolBand
+breachLow  = not na(rangeLow)  and low  < rangeLow  - tolBand
+
+if barstate.isconfirmed
+
+    // ══════ T1: IDLE → ACCUMULATION ══════
+    if state == Phase.idle
+        if warmedUp and pctRank <= compressionPctInput and chW >= minRangeWidthPInput / 100 * close and bar_index - lastEndBar >= COOLDOWN_BARS
+            // B8: impulse-tail trim — the oldest window bars are dropped while each of them
+            // dominates the width (removal shrinks the range by > trimTailPct%). History refs only, no ta.*
+            // v1.2.0 fix: guard winLast > minRangeBars — the final window cannot end up younger than the minimum
+            int   winLast = RANGE_WIN - 1
+            float tHi = hi20                    // fix B6: hi20/lo20 are global series
+            float tLo = lo20
+            if trimTailPctInput > 0
+                bool keepTrim = true
+                while keepTrim and winLast > minRangeBarsInput
+                    float hi2 = high
+                    float lo2 = low
+                    for i = 0 to winLast - 1
+                        hi2 := math.max(hi2, high[i])
+                        lo2 := math.min(lo2, low[i])
+                    if (tHi - tLo) - (hi2 - lo2) > trimTailPctInput / 100.0 * (tHi - tLo)
+                        winLast -= 1
+                        tHi := hi2
+                        tLo := lo2
+                    else
+                        keepTrim := false
+            candStart = bar_index - winLast
+            candHigh  = tHi
+            candLow   = tLo
+            if boundaryModeInput == "pivot"
+                bestHi = float(na)
+                bestLo = float(na)
+                if array.size(pivHiV) > 0
+                    for j = 0 to array.size(pivHiV) - 1
+                        if array.get(pivHiB, j) >= candStart
+                            v = array.get(pivHiV, j)
+                            bestHi := na(bestHi) ? v : math.max(bestHi, v)
+                if array.size(pivLoV) > 0
+                    for j = 0 to array.size(pivLoV) - 1
+                        if array.get(pivLoB, j) >= candStart
+                            v = array.get(pivLoV, j)
+                            bestLo := na(bestLo) ? v : math.min(bestLo, v)
+                // fallback to absolute when no pivots exist inside the window
+                candHigh := na(bestHi) ? candHigh : bestHi
+                candLow  := na(bestLo) ? candLow  : bestLo
+            candW = candHigh - candLow
+            if candW >= minRangeWidthPInput / 100 * close
+                rangeStartBar := candStart
+                expiryAnchor  := candStart
+                rangeHigh     := candHigh
+                rangeLow      := candLow
+                rangeWidth    := candW
+                rangeMid      := (candHigh + candLow) / 2
+                rangeAge      := winLast
+                atrAnchor     := atr14[winLast + 1]  // anchor BEFORE the (trimmed) window
+                rearmUsed     := false
+                firstSweepSide := 0
+                cycleId       += 1
+                aSweepH := false
+                aSweepL := false
+                aDist   := false
+                aOut    := false
+                accBox := na
+                if showBoxesInput
+                    accBox := box.new(rangeStartBar, rangeHigh, bar_index, rangeLow,
+                         border_color = color.new(colAccInput, 0), border_style = line.style_dashed,
+                         border_width = 1, bgcolor = colAccInput)
+                    f_regBox(accBox)
+                state := Phase.accum
+
+    // ══════ T2 / T3: ACCUMULATION ══════
+    else if state == Phase.accum
+        rangeAge := bar_index - rangeStartBar
+
+        // T2-expire (by expiryAnchor: re-arm gets a fresh budget — fix B1)
+        if bar_index - expiryAnchor > maxRangeBarsInput
+            if not na(accBox)
+                box.set_border_color(accBox, color.new(color.gray, 40))
+            if showLabelsInput
+                lb = label.new(bar_index, rangeMid, "EXPIRED", style = label.style_label_left,
+                     color = color.new(color.gray, 70), textcolor = TEXT_MUTED, size = signalSize)
+                f_regLab(lb)
+            state := Phase.idle
+            lastEndBar := bar_index
+            f_trim()
+
+        // S8: a news bar breaching both boundaries — reset
+        else if breachHigh and breachLow
+            if showLabelsInput
+                lb = label.new(bar_index, close, "NEWS BAR", style = label.style_label_left,
+                     color = color.new(color.gray, 70), textcolor = TEXT_MUTED, size = signalSize)
+                f_regLab(lb)
+            state := Phase.idle
+            lastEndBar := bar_index
+            f_trim()
+
+        else if breachHigh or breachLow
+            side = breachHigh ? 1 : -1
+            // Immature range: a breach = early break, not a sweep
+            if rangeAge < minRangeBarsInput
+                state := Phase.idle
+                lastEndBar := bar_index
+                f_trim()
+            else
+                // Sweep filters
+                sameSideBlock = rearmUsed and side == firstSweepSide          // S4: re-arm debounce
+                kzOK   = not useKillzonesInput or inKZ                        // S13
+                excurs = side == 1 ? high - rangeHigh : rangeLow - low
+                dpOK   = sweepDepthPctInput >= 100 or excurs <= trThr
+                liqOK  = not requireLiquidityInput or f_liquidityBeyond(side)
+                if kzOK and dpOK and liqOK and not sameSideBlock
+                    // ══════ T3: → SWEEP_PENDING ══════
+                    sweepSide    := side
+                    sweepBar     := bar_index
+                    sweepExtreme := side == 1 ? high : low
+                    if firstSweepSide == 0
+                        firstSweepSide := side
+                    swBox := na
+                    if showBoxesInput
+                        swBox := box.new(sweepBar, side == 1 ? sweepExtreme : rangeLow,
+                             bar_index, side == 1 ? rangeHigh : sweepExtreme,
+                             border_color = color.new(colManInput, 20), border_style = line.style_dashed,
+                             border_width = 1, bgcolor = color.new(colManInput, 75))
+                        f_regBox(swBox)
+                    if alertsOnInput and ((side == 1 and not aSweepH) or (side == -1 and not aSweepL))
+                        string swSideStr = side == 1 ? "HIGH" : "LOW"
+                        string swPxStr   = str.tostring(close, format.mintick)
+                        string swTimeStr = str.format_time(time, "yyyy-MM-dd HH:mm", syminfo.timezone)
+                        string swJson    = '{"event":"sweep","side":"' + swSideStr + '","ticker":"' + syminfo.tickerid + '","tf":"' + timeframe.period + '","price":' + swPxStr + ',"cycle":' + str.tostring(cycleId) + '}'
+                        string swText    = "🌀 SWEEP " + swSideStr + " | " + syminfo.tickerid + " | TF: " + timeframe.period + " | Price: " + swPxStr + " | Time: " + swTimeStr + " | cycle " + str.tostring(cycleId)
+                        alert(webhookInput ? swJson : swText, alert.freq_once_per_bar_close)
+                        if side == 1
+                            aSweepH := true
+                        else
+                            aSweepL := true
+                    state := Phase.sweepPending
+                    // Same-bar return (wick sweep): straight to T4a
+                    if insideRng
+                        state := Phase.manip
+                        if not na(swBox)
+                            box.set_border_style(swBox, line.style_solid)
+                            box.set_bgcolor(swBox, color.new(colManInput, 55))
+                        manLab := na
+                        if showLabelsInput
+                            manLab := label.new(sweepBar, sweepExtreme, "M",
+                                 style = sweepSide == 1 ? label.style_label_down : label.style_label_up,
+                                 color = color.new(colManInput, 20), textcolor = f_textOn(colManInput), size = signalSize)
+                            f_regLab(manLab)
+                        // v2.0.0: Phase.manip is transient — the resolver block below
+                        // opens the reference trade (D / Entry / Stop / Target) on
+                        // this very bar or re-arms/fails it under the HTF filter
+                // Filtered breach: close outside → the range is dead, close inside → it lives on (S13)
+                else if not insideRng
+                    state := Phase.idle
+                    lastEndBar := bar_index
+                    f_trim()
+
+        // T2-stay: boundary expansion within tolerance in absolute mode
+        else
+            if boundaryModeInput == "absolute"
+                newHi = math.min(math.max(rangeHigh, high), rangeHigh + tolBand)
+                newLo = math.max(math.min(rangeLow, low), rangeLow - tolBand)
+                if newHi != rangeHigh or newLo != rangeLow
+                    rangeHigh  := newHi
+                    rangeLow   := newLo
+                    rangeWidth := rangeHigh - rangeLow
+                    rangeMid   := (rangeHigh + rangeLow) / 2
+                    if not na(accBox)
+                        box.set_top(accBox, rangeHigh)
+                        box.set_bottom(accBox, rangeLow)
+            else
+                // pivot mode: recompute only on a new confirmed pivot inside the tolerance
+                if not na(ph) and bar_index - PIVOT_LR >= rangeStartBar and ph > rangeHigh and ph <= rangeHigh + tolBand
+                    rangeHigh  := ph
+                    rangeWidth := rangeHigh - rangeLow
+                    rangeMid   := (rangeHigh + rangeLow) / 2
+                    if not na(accBox)
+                        box.set_top(accBox, rangeHigh)
+                if not na(pl) and bar_index - PIVOT_LR >= rangeStartBar and pl < rangeLow and pl >= rangeLow - tolBand
+                    rangeLow   := pl
+                    rangeWidth := rangeHigh - rangeLow
+                    rangeMid   := (rangeHigh + rangeLow) / 2
+                    if not na(accBox)
+                        box.set_bottom(accBox, rangeLow)
+
+    // ══════ T4: SWEEP_PENDING ══════
+    else if state == Phase.sweepPending
+        // T4b: the sweep deepens — the reference stop tracks the maximum excursion point
+        sweepExtreme := sweepSide == 1 ? math.max(sweepExtreme, high) : math.min(sweepExtreme, low)
+        if not na(swBox)
+            if sweepSide == 1
+                box.set_top(swBox, sweepExtreme)
+            else
+                box.set_bottom(swBox, sweepExtreme)
+
+        // T4c: deadline expired — BREAKOUT regardless of close (hard deadline, fix B2)
+        if bar_index - sweepBar > sweepReturnBarsInput
+            brkN += 1
+            if showLabelsInput
+                lb = label.new(bar_index, sweepExtreme, "BREAKOUT",
+                     style = sweepSide == 1 ? label.style_label_down : label.style_label_up,
+                     color = color.new(color.gray, 30), textcolor = f_textOn(color.gray), size = signalSize)
+                f_regLab(lb)
+            state := Phase.idle
+            lastEndBar := bar_index
+            f_trim()
+
+        // T4a: return inside within the deadline = manipulation confirmed
+        else if insideRng
+            state := Phase.manip
+            if not na(swBox)
+                box.set_border_style(swBox, line.style_solid)
+                box.set_bgcolor(swBox, color.new(colManInput, 55))
+            manLab := na
+            if showLabelsInput
+                manLab := label.new(sweepBar, sweepExtreme, "M",
+                     style = sweepSide == 1 ? label.style_label_down : label.style_label_up,
+                     color = color.new(colManInput, 20), textcolor = f_textOn(colManInput), size = signalSize)
+                f_regLab(manLab)
+            // v2.0.0: Phase.manip is transient — the resolver block below opens the
+            // reference trade (D / Entry / Stop / Target) on this very bar or
+            // re-arms/fails it under the HTF filter
+
+    // ══════ T7: DISTRIBUTION → outcomes ══════
+    else if state == Phase.dist
+        // Outcomes are evaluated from the NEXT bar after confirmation
+        if bar_index - distStartBar >= 1
+            hitT = distDir == 1 ? high >= tgtPrice : low <= tgtPrice
+            hitS = distDir == 1 ? low <= stopPrice : high >= stopPrice
+            timedOut = bar_index - distStartBar > distTimeoutBarsInput
+
+            if hitT or hitS or timedOut
+                outcome = ""
+                rr = 0.0
+                if hitT and hitS
+                    // S7: a spike touched both sides — conservatively STOP + counter
+                    ambigN += 1
+                    stopN  += 1
+                    rr := -1.0
+                    outcome := "AMB ✗"
+                else if hitT
+                    tgtN += 1
+                    rr := math.abs(tgtPrice - entryPrice) / riskR
+                    outcome := "✓ +" + str.tostring(rr, "#.##") + "R"
+                else if hitS
+                    stopN += 1
+                    rr := -1.0
+                    outcome := "✗ -1R"
+                else
+                    timeoutN += 1
+                    rr := distDir == 1 ? (close - entryPrice) / riskR : (entryPrice - close) / riskR
+                    outcome := "◌ " + str.tostring(rr, "#.##") + "R"
+                sumR += rr
+                if rearmUsed
+                    dsN    += 1
+                    dsSumR += rr
+                // Timestamped buffer + form strip (v2.1.0)
+                int outcCode = hitT and hitS ? 0 : hitT ? 1 : hitS ? 0 : 2
+                array.push(cycTimes, time)
+                array.push(cycOutc, outcCode)
+                array.push(cycR, rr)
+                while array.size(cycTimes) > 0 and array.get(cycTimes, 0) < time - MS_DAY * STATS_PRUNE_DAYS
+                    array.shift(cycTimes)
+                    array.shift(cycOutc)
+                    array.shift(cycR)
+                formStr := formStr + (outcCode == 1 ? "▰" : outcCode == 0 ? "▱" : "◌")
+                if str.length(formStr) > FORM_LEN
+                    formStr := str.substring(formStr, str.length(formStr) - FORM_LEN)
+                // Level recolor on outcome (v2.1.0): achieved target turns teal-solid,
+                // timeout dims the target, stop hit annotates the stop label
+                if hitT and not hitS
+                    if not na(tgtLn)
+                        line.set_color(tgtLn, TGT_HIT_COLOR)
+                        line.set_style(tgtLn, line.style_solid)
+                    if not na(tgtLab)
+                        label.set_text(tgtLab, "Target ✓ " + fmtPrice(tgtPrice))
+                        label.set_color(tgtLab, TGT_HIT_COLOR)
+                        label.set_textcolor(tgtLab, f_textOn(TGT_HIT_COLOR))
+                else if hitS
+                    if not na(stopLab)
+                        label.set_text(stopLab, "Stop ✗ " + fmtPrice(stopPrice))
+                else
+                    if not na(tgtLn)
+                        line.set_color(tgtLn, color.new(color.gray, 60))
+                    if not na(tgtLab)
+                        label.set_color(tgtLab, color.new(color.gray, 70))
+                if showLabelsInput
+                    oBase = hitT and not hitS ? colTgtInput : timedOut and not hitS and not hitT ? color.gray : colStopInput
+                    ol = label.new(bar_index, distDir == 1 ? high : low, outcome,
+                         style = distDir == 1 ? label.style_label_down : label.style_label_up,
+                         color = color.new(oBase, 20), textcolor = f_textOn(oBase), size = signalSize)
+                    f_regLab(ol)
+                if alertsOnInput and not aOut
+                    string outTag  = hitT and hitS ? "🛑 STOP (AMBIGUOUS)" : hitT ? "🎯 TARGET REACHED" : hitS ? "🛑 STOP HIT" : "⏱ TIMEOUT"
+                    string outRes  = hitT and hitS ? "ambiguous" : hitT ? "target" : hitS ? "stop" : "timeout"
+                    string outJson = '{"event":"outcome","result":"' + outRes + '","ticker":"' + syminfo.tickerid + '","tf":"' + timeframe.period + '","r":' + str.tostring(rr, "#.##") + ',"cycle":' + str.tostring(cycleId) + '}'
+                    string outText = outTag + " | " + syminfo.tickerid + " | TF: " + timeframe.period + " | " + outcome + " | Ref entry: " + fmtPrice(entryPrice) + " | cycle " + str.tostring(cycleId)
+                    alert(webhookInput ? outJson : outText, alert.freq_once_per_bar_close)
+                    aOut := true
+                state := Phase.idle
+                lastEndBar := bar_index
+                f_trim()
+
+if barstate.isconfirmed
+    // ══════ T5: MANIPULATION CONFIRMED → DISTRIBUTION OPENS (v2.0.0) ══════
+    // Transient resolver OUTSIDE the else-chain: runs on the very bar where the
+    // manipulation confirmed (incl. the same-bar wick-sweep path, fix B4).
+    // The reference trade opens HERE — on the bar where M / D / Entry appear:
+    // entry = this bar's close, stop = beyond the full sweep excursion (which
+    // already includes this bar's wick via T4b/T3) + ATR buffer, target = fib
+    // extension of the manipulation leg. Phase.manip never survives past this bar.
+    if state == Phase.manip
+        dir = sweepSide == -1 ? 1 : -1
+        htfOK = not useHtfBiasInput or (not na(htfC) and not na(htfE) and (dir == 1 ? htfC > htfE : htfC < htfE))
+
+        // OrGa confluence: external liquidity + directional reclaim/location.
+        float confTol = confluenceTolAtrInput * nz(atrAnchor, atr14)
+        bool pdConf = showPdhPdlInput and not na(pdh) and not na(pdl) and (dir == 1 ? (sweepExtreme < pdl and math.abs(rangeLow - pdl) <= confTol) : (sweepExtreme > pdh and math.abs(rangeHigh - pdh) <= confTol))
+        bool ldnConf = showLondonHLInput and not na(londonHigh) and not na(londonLow) and (dir == 1 ? (sweepExtreme < londonLow and math.abs(rangeLow - londonLow) <= confTol) : (sweepExtreme > londonHigh and math.abs(rangeHigh - londonHigh) <= confTol))
+        bool doConf = showDailyOpenInput and not na(dailyOpen) and (dir == 1 ? close > dailyOpen : close < dailyOpen)
+        bool vwConf = showNyVwapInput and not na(nySessionVwap) and (dir == 1 ? close > nySessionVwap : close < nySessionVwap)
+        int confScore = (pdConf ? 1 : 0) + (ldnConf ? 1 : 0) + (doConf ? 1 : 0) + (vwConf ? 1 : 0)
+        int confMax = (showPdhPdlInput ? 1 : 0) + (showLondonHLInput ? 1 : 0) + (showDailyOpenInput ? 1 : 0) + (showNyVwapInput and not na(nySessionVwap) ? 1 : 0)
+        string confText = (pdConf ? (dir == 1 ? "PDL " : "PDH ") : "") + (ldnConf ? (dir == 1 ? "LDN-L " : "LDN-H ") : "") + (doConf ? "D-Open " : "") + (vwConf ? "VWAP " : "")
+        confText := str.length(confText) == 0 ? "none" : confText
+        string confGrade = confScore >= 4 ? "A+" : confScore == 3 ? "Strong" : confScore == 2 ? "Solid" : confScore == 1 ? "Weak" : "None"
+        bool confOK = not useConfluenceFilterInput or confScore >= minConfluenceInput
+        bool hardHtfOK = not enforceHtfBiasInput or htfOK
+        bool setupOK = hardHtfOK and confOK
+
+        if setupOK
+            // One-bar confirmed entry pulse for dedicated alertcondition() alerts.
+            longEntrySignal  := dir == 1
+            shortEntrySignal := dir == -1
+            distDir        := dir
+            distConfScore  := confScore
+            distConfMax    := confMax
+            distConfText   := confText
+            distConfGrade  := confGrade
+
+            // Separate OrGa entry badge. Kept independent from showLabelsInput so the
+            // entry marker remains visible even when normal M/D event labels are hidden.
+            if showEntryMarkerInput
+                float markerY = dir == 1 ? low - atr14 * 0.35 : high + atr14 * 0.35
+                color markerBg = dir == 1 ? colTgtInput : colStopInput
+                string markerTxt = entryEmojiInput + (dir == 1 ? " LONG" : " SHORT")
+                label entryBadge = label.new(bar_index, markerY, markerTxt,
+                     yloc = yloc.price,
+                     style = dir == 1 ? label.style_label_up : label.style_label_down,
+                     color = color.new(markerBg, 5), textcolor = f_textOn(markerBg), size = size.normal,
+                     tooltip = "Confirmed AMD D entry · candle close\nHTF: " + (htfOK ? "aligned" : "counter-bias") + "\nNY window: " + (inNyKZ ? "yes" : "no") + "\nConfluence: " + str.tostring(confScore) + "/" + str.tostring(confMax))
+                f_regLab(entryBadge)
+
+            entryPrice     := close                       // reference entry = D-bar close
+            // Fib-extension target (v2.2.0): grid 0 = sweepExtreme (full
+            // manipulation excursion) → 1 = the opposite accumulation boundary.
+            // fibLeg > 0 by construction: the extreme lies beyond the range
+            float fibLeg = dir == 1 ? rangeHigh - sweepExtreme : sweepExtreme - rangeLow
+            tgtPrice     := dir == 1 ? rangeHigh + (fibExtInput - 1.0) * fibLeg : rangeLow - (fibExtInput - 1.0) * fibLeg
+            stopPrice    := dir == 1 ? sweepExtreme - stopBufAtrInput * atrAnchor : sweepExtreme + stopBufAtrInput * atrAnchor
+            // v1.2.0 fix: riskR can never be zero (stopBuf=0 + close exactly at the extreme)
+            riskR        := math.max(math.abs(entryPrice - stopPrice), syminfo.mintick)
+            distStartBar := bar_index
+            distHi := high
+            distLo := low
+            dstBox := na
+            if showBoxesInput
+                dstBox := box.new(bar_index, distHi, bar_index, distLo,
+                     border_color = color.new(colTgtInput, 30), border_width = 1, bgcolor = colDstInput)
+                f_regBox(dstBox)
+            // ── Reference model visualization: D / Entry / Stop / Target ──
+            string entPxStr = str.tostring(entryPrice, format.mintick)
+            string stpPxStr = str.tostring(stopPrice, format.mintick)
+            string tgtPxStr = str.tostring(tgtPrice, format.mintick)
+            dLab := na
+            entLn := na
+            stopLn := na
+            tgtLn := na
+            entLab := na
+            stopLab := na
+            tgtLab := na
+            string dRrStr = str.tostring(math.abs(tgtPrice - entryPrice) / riskR, "#.#")
+            if showLabelsInput
+                string dTip = (dir == 1 ? "Distribution UP" : "Distribution DOWN") + "\nSweep: " + (sweepSide == 1 ? "HIGH" : "LOW") + (rearmUsed ? " (double sweep)" : "") + "\nEntry: " + entPxStr + " | Stop: " + stpPxStr + "\nTarget: " + tgtPxStr + " | R:R: " + dRrStr + "\nConfluence: " + str.tostring(confScore) + "/" + str.tostring(confMax) + " · " + confGrade + "\n" + confText + "\nWorkflow: 4H bias → 15M AMD → optional 5M execution confirmation"
+                string dLabelTxt = (dir == 1 ? "D ▲ " : "D ▼ ") + str.tostring(confScore) + "/" + str.tostring(confMax)
+                dLab := label.new(bar_index, dir == 1 ? low : high, dLabelTxt,
+                     style = dir == 1 ? label.style_label_up : label.style_label_down,
+                     color = color.new(colTgtInput, 20), textcolor = f_textOn(colTgtInput), size = signalSize,
+                     tooltip = dTip)
+                f_regLab(dLab)
+            if showLevelsInput
+                entLn  := line.new(bar_index, entryPrice, bar_index + LINE_FORWARD_BARS, entryPrice, color = ENTRY_COLOR, style = entryLineStyle, width = 1)
+                stopLn := line.new(bar_index, stopPrice, bar_index + LINE_FORWARD_BARS, stopPrice, color = colStopInput, style = stopLineStyle, width = 2)
+                tgtLn  := line.new(bar_index, tgtPrice, bar_index + LINE_FORWARD_BARS, tgtPrice, color = colTgtInput, style = tgtLineStyle, width = 2)
+                f_regLine(entLn)
+                f_regLine(stopLn)
+                f_regLine(tgtLn)
+                if showLevelLabelsInput
+                    int lx = bar_index + LINE_FORWARD_BARS + LABEL_OFFSET_BARS
+                    entLab  := label.new(lx, entryPrice, "Entry " + entPxStr, color = ENTRY_COLOR, textcolor = f_textOn(ENTRY_COLOR), style = label.style_label_left, size = slTpLabelSize)
+                    stopLab := label.new(lx, stopPrice, "Stop " + stpPxStr + formatPctFromEntry(stopPrice, entryPrice), color = colStopInput, textcolor = f_textOn(colStopInput), style = label.style_label_left, size = slTpLabelSize)
+                    tgtLab  := label.new(lx, tgtPrice, "Target " + tgtPxStr + formatPctFromEntry(tgtPrice, entryPrice), color = colTgtInput, textcolor = f_textOn(colTgtInput), style = label.style_label_left, size = slTpLabelSize)
+                    f_regLab(entLab)
+                    f_regLab(stopLab)
+                    f_regLab(tgtLab)
+            // Single DIST event at the M/D bar (v2.0.0: replaces the separate
+            // MANIP CONFIRMED alert — they are the same moment now)
+            if alertsOnInput and not aDist
+                string dSideStr = sweepSide == 1 ? "HIGH" : "LOW"
+                string dTimeStr = str.format_time(time, "yyyy-MM-dd HH:mm", syminfo.timezone)
+                string dJson = '{"event":"dist_confirmed","dir":"' + (dir == 1 ? "up" : "down") + '","side":"' + dSideStr + '","ticker":"' + syminfo.tickerid + '","tf":"' + timeframe.period + '","entry":' + entPxStr + ',"stop":' + stpPxStr + ',"target":' + tgtPxStr + ',"rr":' + dRrStr + ',"cycle":' + str.tostring(cycleId) + ',"doubleSweep":' + (rearmUsed ? "true" : "false") + ',"confluence":' + str.tostring(confScore) + ',"confluenceMax":' + str.tostring(confMax) + '}'
+                string dText = entryEmojiInput + (dir == 1 ? " LONG ENTRY ▲" : " SHORT ENTRY ▼") + " (manip " + dSideStr + ") | " + syminfo.tickerid + " | TF: " + timeframe.period + " | Entry: " + entPxStr + " | Stop: " + stpPxStr + " | Target: " + tgtPxStr + " | R:R: " + dRrStr + " | Conf: " + str.tostring(confScore) + "/" + str.tostring(confMax) + " " + confGrade + " | Time: " + dTimeStr
+                alert(webhookInput ? dJson : dText, alert.freq_once_per_bar_close)
+                aDist := true
+            state := Phase.dist
+
+        // Optional HARD HTF bias or optional OrGa confluence filter rejects the projected direction → re-arm or FAILED_MANIP.
+        // Nothing was projected/drawn yet, so there is nothing to clean up
+        else
+            if allowRearmInput and not rearmUsed
+                rearmUsed := true
+                expiryAnchor := bar_index      // fresh time budget for the second sweep (fix B1)
+                if not na(manLab)
+                    label.set_text(manLab, "M ↻")
+                if not na(swBox)
+                    box.set_bgcolor(swBox, color.new(color.gray, 80))
+                state := Phase.accum        // same range, waiting for the opposite-side sweep
+            else
+                failN += 1
+                if not na(manLab)
+                    label.set_text(manLab, "M ✗")
+                    label.set_color(manLab, color.new(color.gray, 40))
+                state := Phase.idle
+                lastEndBar := bar_index
+                f_trim()
+
+// ══════════════════════════════════════
+// 11. EXTENSION OF ACTIVE OBJECTS (every bar, incl. realtime)
+// ══════════════════════════════════════
+if state == Phase.accum
+    if not na(accBox)
+        box.set_right(accBox, bar_index)      // fix B5: frozen on the sweep bar; grows again on re-arm
+if state == Phase.sweepPending
+    if not na(swBox)
+        box.set_right(swBox, bar_index)
+if state == Phase.dist
+    if not na(entLn)
+        line.set_x2(entLn, bar_index + LINE_UPDATE_BARS)
+    if not na(stopLn)
+        line.set_x2(stopLn, bar_index + LINE_UPDATE_BARS)
+    if not na(tgtLn)
+        line.set_x2(tgtLn, bar_index + LINE_UPDATE_BARS)
+    if not na(entLab)
+        label.set_x(entLab, bar_index + LINE_UPDATE_BARS + LABEL_OFFSET_BARS)
+    if not na(stopLab)
+        label.set_x(stopLab, bar_index + LINE_UPDATE_BARS + LABEL_OFFSET_BARS)
+    if not na(tgtLab)
+        label.set_x(tgtLab, bar_index + LINE_UPDATE_BARS + LABEL_OFFSET_BARS)
+    if not na(dstBox)
+        distHi := math.max(distHi, high)
+        distLo := math.min(distLo, low)
+        box.set_top(dstBox, distHi)
+        box.set_bottom(dstBox, distLo)
+        box.set_right(dstBox, bar_index)
+
+// ── OrGa reference levels ─────────────────────────────────
+plot(showPdhPdlInput ? pdh : na, "OrGa PDH", color = PD_COLOR, linewidth = 1, style = plot.style_stepline)
+plot(showPdhPdlInput ? pdl : na, "OrGa PDL", color = PD_COLOR, linewidth = 1, style = plot.style_stepline)
+plot(showLondonHLInput ? londonHigh : na, "OrGa London High", color = LDN_COLOR, linewidth = 1, style = plot.style_stepline)
+plot(showLondonHLInput ? londonLow : na, "OrGa London Low", color = LDN_COLOR, linewidth = 1, style = plot.style_stepline)
+plot(showDailyOpenInput ? dailyOpen : na, "OrGa Daily Open", color = DOPEN_COLOR, linewidth = 1, style = plot.style_stepline)
+plot(showNyVwapInput ? nySessionVwap : na, "OrGa NY Session VWAP", color = VWAP_COLOR, linewidth = 2)
+
+// Killzone highlight (OrGa default ON; NY sweep window enabled by default)
+bgcolor(showSessionsInput and inKZ ? color.new(color.blue, 94) : na)
+
+// ══════════════════════════════════════
+// 12. DASHBOARD (walk-forward statistics + active reference levels)
+// ══════════════════════════════════════
+dashPos = switch dashPosStrInput
+    "Top Left"     => position.top_left
+    "Top Right"    => position.top_right
+    "Bottom Left"  => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    "Middle Right" => position.middle_right
+    => position.top_right
+
+f_phaseName() =>
+    switch state
+        Phase.idle         => "IDLE"
+        Phase.accum        => "ACCUMULATION"
+        Phase.sweepPending => "SWEEP?"
+        Phase.dist         => "DISTRIBUTION"
+        => "?"
+
+f_phaseBars() =>
+    switch state
+        Phase.accum        => bar_index - rangeStartBar
+        Phase.sweepPending => bar_index - sweepBar
+        Phase.dist         => bar_index - distStartBar
+        => 0
+
+f_action() =>
+    switch state
+        Phase.idle         => warmedUp ? "Scanning for compression" : "Warming up"
+        Phase.accum        => rearmUsed ? "Re-arm: awaiting 2nd-side sweep" : bar_index - rangeStartBar < minRangeBarsInput ? "Range maturing" : "Awaiting boundary sweep"
+        Phase.sweepPending => "Sweep! Awaiting return inside"
+        Phase.dist         => distDir == 1 ? "Distribution ↑ — target live" : "Distribution ↓ — target live"
+        => "—"
+
+var table dashTable = na
+
+if showDashInput and barstate.islast
+    int marketRows = showMarketSecInput ? 7 : 0
+    int cycleRows  = showCycleSecInput ? (state == Phase.dist ? 8 : 2) : 0
+    int statsRows  = showStatsSecInput ? 9 : 0
+    int totalRows  = 2 + marketRows + cycleRows + statsRows
+
+    // Dynamic height: delete + recreate (documented exception to the var-table rule)
+    if not na(dashTable)
+        table.delete(dashTable)
+    dashTable := table.new(dashPos, 2, totalRows, bgcolor = TABLE_BG, border_color = TABLE_BORDER, border_width = 1, frame_color = TABLE_BORDER, frame_width = 1)
+
+    int   r   = 0
+    bool  zeb = false
+    color rb  = TABLE_BG
+
+    // ── Header (phase-colored) ──
+    color  headerBg  = state == Phase.dist ? (distDir == 1 ? HEADER_BG_BULL : HEADER_BG_BEAR) : HEADER_BG
+    string headerDir = state == Phase.dist ? (distDir == 1 ? " ▲" : " ▼") : ""
+    table.cell(dashTable, 0, r, "◆ Po3 · " + f_phaseName() + headerDir, text_color = HEADER_TEXT, bgcolor = headerBg, text_size = dashFontSize, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, r, 1, r)
+    r += 1
+
+    // ── Market section ──
+    if showMarketSecInput
+        table.cell(dashTable, 0, r, "— Market —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+
+        string phaseStr = not warmedUp ? "Warming up" : f_phaseName() + (state != Phase.idle ? " (" + str.tostring(f_phaseBars()) + "b)" : "")
+        color  phaseClr = not warmedUp ? TEXT_MUTED : state == Phase.dist ? (distDir == 1 ? BULL_TEXT : BEAR_TEXT) : state == Phase.idle ? TEXT_MUTED : NEUTRAL_TEXT
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Phase", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "FSM phase and bars spent in it")
+        table.cell(dashTable, 1, r, phaseStr, text_color = phaseClr, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        string cmpStr = not warmedUp ? "—" : str.tostring(pctRank, "#") + "p  " + buildGauge(100 - pctRank, 100, 6)
+        color  cmpClr = not warmedUp ? TEXT_MUTED : pctRank <= compressionPctInput ? BULL_TEXT : TEXT_COLOR
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Compression", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Donchian(20) width percentile (lower = tighter).\nGauge fills as compression tightens; green = below the\nrange-detection threshold")
+        table.cell(dashTable, 1, r, cmpStr, text_color = cmpClr, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        string rngStr = state != Phase.idle and not na(rangeLow) and not na(rangeHigh) ? fmtPrice(rangeLow) + " – " + fmtPrice(rangeHigh) : "—"
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Range", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Active accumulation range boundaries")
+        table.cell(dashTable, 1, r, rngStr, text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        string htfStr = not useHtfBiasInput ? "Off" : na(htfC) or na(htfE) ? "…" : (htfC > htfE ? "Bullish" : "Bearish") + (enforceHtfBiasInput ? " · HARD" : " · context")
+        color  htfClr = not useHtfBiasInput or na(htfC) or na(htfE) ? TEXT_MUTED : htfC > htfE ? BULL_TEXT : BEAR_TEXT
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "HTF Bias", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Higher-timeframe trend filter (close vs EMA50, last closed\nHTF bar). Off = every confirmed manipulation opens")
+        table.cell(dashTable, 1, r, htfStr, text_color = htfClr, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        string kzStr = inNyKZ ? "NY ACTIVE" : inLdnKZ ? "London ACTIVE" : "Outside"
+        kzStr += useKillzonesInput ? " · HARD" : " · context"
+        color kzClr = inNyKZ ? BULL_TEXT : inLdnKZ ? NEUTRAL_TEXT : TEXT_MUTED
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Sweep window", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "OrGa default: NY 09:30–12:00 America/New_York. Europe/Zurich chart time is converted automatically.")
+        table.cell(dashTable, 1, r, kzStr, text_color = kzClr, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        string tfWarn = timeframe.period != "15" ? " ⚠ (opt: 15M)" : ""
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "TF", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Chart timeframe. The model is tuned for 15M")
+        table.cell(dashTable, 1, r, timeframe.period + tfWarn, text_color = timeframe.period != "15" ? NEUTRAL_TEXT : TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+    // ── Cycle section ──
+    if showCycleSecInput
+        table.cell(dashTable, 0, r, "— Cycle —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+
+        if state == Phase.dist
+            string dirWord = distDir == 1 ? "Long" : "Short"
+            color  dirClr  = distDir == 1 ? BULL_TEXT : BEAR_TEXT
+            float  curRR   = riskR > 0 ? math.abs(tgtPrice - entryPrice) / riskR : na
+            color  rrClr   = na(curRR) ? TEXT_MUTED : curRR >= 1.5 ? BULL_TEXT : curRR >= 1.0 ? NEUTRAL_TEXT : BEAR_TEXT
+            float  riskPct = not na(entryPrice) and entryPrice != 0 ? math.abs(entryPrice - stopPrice) / entryPrice * 100 : na
+            color  rkClr   = na(riskPct) ? TEXT_MUTED : riskPct > 3.0 ? BEAR_TEXT : riskPct > 1.0 ? NEUTRAL_TEXT : BULL_TEXT
+
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "Entry", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Reference entry = the D-bar close (statistics anchor)")
+            table.cell(dashTable, 1, r, dirWord + " @ " + fmtPrice(entryPrice), text_color = dirClr, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "Stop", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Reference stop: beyond the full sweep excursion + ATR buffer")
+            table.cell(dashTable, 1, r, fmtPrice(stopPrice), text_color = colStopInput, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "Target", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Fib-extension distribution target: level " + str.tostring(fibExtInput, "#.###") + " of the\nmanipulation leg (0 = sweep tip, 1 = opposite boundary).\nNOT a take-profit")
+            table.cell(dashTable, 1, r, fmtPrice(tgtPrice), text_color = colTgtInput, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "R:R", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Risk:Reward of the reference model at the target")
+            table.cell(dashTable, 1, r, na(curRR) ? "—" : str.tostring(curRR, "#.##") + "R", text_color = rrClr, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "Risk", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Distance from entry to stop in % of entry price")
+            table.cell(dashTable, 1, r, na(riskPct) ? "—" : str.tostring(riskPct, "#.##") + "%", text_color = rkClr, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+
+            color confClr = distConfScore >= 3 ? BULL_TEXT : distConfScore == 2 ? NEUTRAL_TEXT : distConfScore == 1 ? TEXT_COLOR : TEXT_MUTED
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "Confluence", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "OrGa score captured on the D bar. PDH/PDL + London H/L are liquidity confluence; Daily Open + NY VWAP are directional alignment. Filter is OFF by default.")
+            table.cell(dashTable, 1, r, str.tostring(distConfScore) + "/" + str.tostring(distConfMax) + " · " + distConfGrade, text_color = confClr, text_size = dashFontSize, bgcolor = rb, tooltip = distConfText)
+            r += 1
+            zeb := not zeb
+
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "Age", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Bars since the distribution opened (timeout at " + str.tostring(distTimeoutBarsInput) + ")")
+            table.cell(dashTable, 1, r, str.tostring(bar_index - distStartBar) + " bars", text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+        else
+            table.cell(dashTable, 0, r, f_action(), text_color = TEXT_MUTED, text_size = dashFontSize, text_halign = text.align_center)
+            table.merge_cells(dashTable, 0, r, 1, r)
+            r += 1
+
+    // ── Stats section (period-filtered) ──
+    if showStatsSecInput
+        bool allTime = statsPeriodInput == "All-Time"
+        int   pT  = tgtN
+        int   pS  = stopN
+        int   pTo = timeoutN
+        float pSum = sumR
+        if statsPeriodInput == "24 Hours"
+            [t24, s24, o24, r24] = periodStats(cycTimes, cycOutc, cycR, time - MS_DAY)
+            pT := t24
+            pS := s24
+            pTo := o24
+            pSum := r24
+        else if statsPeriodInput == "30 Days"
+            [t30, s30, o30, r30] = periodStats(cycTimes, cycOutc, cycR, time - MS_DAY * 30)
+            pT := t30
+            pS := s30
+            pTo := o30
+            pSum := r30
+        int    pTotal   = pT + pS + pTo
+        bool   pctOK    = pTotal >= minSampleNInput
+        float  pTgtRate = pTotal > 0 ? pT / float(pTotal) * 100.0 : 0.0
+        string periodTag = statsPeriodInput == "24 Hours" ? "24H" : statsPeriodInput == "30 Days" ? "30D" : "All-Time"
+
+        table.cell(dashTable, 0, r, "— Stats · " + periodTag + " —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Cycles", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Closed cycles within the selected period.\n(ds N) = double-sweep cycles, All-Time only.\nResets on chart reload")
+        table.cell(dashTable, 1, r, pTotal > 0 ? str.tostring(pTotal) + (allTime and dsN > 0 ? " (ds " + str.tostring(dsN) + ")" : "") : "—", text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Target", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Cycles that reached the fib-extension target")
+        table.cell(dashTable, 1, r, pTotal > 0 ? str.tostring(pT) + (pctOK ? " (" + str.tostring(100.0 * pT / pTotal, "#.#") + "%)" : "") : "—", text_color = pTotal > 0 ? BULL_TEXT : TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Stop" + (allTime and ambigN > 0 ? " (amb " + str.tostring(ambigN) + ")" : ""), text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Cycles stopped out. Ambiguous bars (target + stop on one\nbar) count as STOP — conservative model")
+        table.cell(dashTable, 1, r, pTotal > 0 ? str.tostring(pS) + (pctOK ? " (" + str.tostring(100.0 * pS / pTotal, "#.#") + "%)" : "") : "—", text_color = pTotal > 0 ? BEAR_TEXT : TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Timeout", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Neither level reached within " + str.tostring(distTimeoutBarsInput) + " bars; closed at the\nactual R from the close")
+        table.cell(dashTable, 1, r, pTotal > 0 ? str.tostring(pTo) + (pctOK ? " (" + str.tostring(100.0 * pTo / pTotal, "#.#") + "%)" : "") : "—", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        string trStr = pTotal == 0 ? "—" : pctOK ? str.tostring(pTgtRate, "#.#") + "%  " + buildGauge(pTgtRate, 100, 8) : "collecting (" + str.tostring(pTotal) + "/" + str.tostring(minSampleNInput) + ")"
+        color  trClr = pTotal == 0 or not pctOK ? TEXT_MUTED : pTgtRate >= 55.0 ? BULL_TEXT : pTgtRate >= 45.0 ? NEUTRAL_TEXT : BEAR_TEXT
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Target rate", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Share of cycles reaching the target within the period.\nHidden until the minimum sample is collected")
+        table.cell(dashTable, 1, r, trStr, text_color = trClr, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        float  pAvg   = pTotal > 0 ? pSum / pTotal : na
+        string avgStr = pTotal == 0 ? "—" : pctOK ? str.tostring(pAvg, "#.##") + "R" + (allTime and dsN >= minSampleNInput ? " (ds " + str.tostring(dsSumR / dsN, "#.##") + ")" : "") : "collecting (" + str.tostring(pTotal) + "/" + str.tostring(minSampleNInput) + ")"
+        color  avgClr = pTotal == 0 or not pctOK ? TEXT_MUTED : pAvg >= 0.2 ? BULL_TEXT : pAvg >= -0.2 ? NEUTRAL_TEXT : BEAR_TEXT
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Avg R", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Average R per closed cycle for the period.\n(ds …) = average R of double-sweep cycles, All-Time only")
+        table.cell(dashTable, 1, r, avgStr, text_color = avgClr, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Form", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Last cycles regardless of period (newest right):\n▰ = target · ▱ = stop · ◌ = timeout")
+        table.cell(dashTable, 1, r, formStr == "" ? "—" : formStr, text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Failed / Breakout", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "All-Time. Failed = HTF filter rejected without re-arm.\nBreakout = sweep without return inside")
+        table.cell(dashTable, 1, r, str.tostring(failN) + " / " + str.tostring(brkN), text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+    // ── Footer ──
+    table.cell(dashTable, 0, r, "Po3 · " + INDICATOR_VERSION, text_color = TEXT_MUTED, text_size = dashFontSizeSub, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, r, 1, r)
+
+// ══════════════════════════════════════
+// 13. WATERMARK — WillyAlgoTrader
+// ══════════════════════════════════════
+if barstate.islast and showWatermarkInput
+    var wmTable = table.new(
+         position     = position.bottom_center,
+         columns      = 1,
+         rows         = 1,
+         bgcolor      = color.new(color.black, 100),
+         border_color = color.new(color.black, 100),
+         border_width = 0,
+         frame_color  = color.new(color.black, 100),
+         frame_width  = 0)
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader · OrGa",
+         text_color  = WM_COLOR,
+         text_size   = size.normal,
+         text_halign = text.align_center,
+         bgcolor     = color.new(color.black, 100))
+
+// ══════════════════════════════════════
+// ORGA WORKFLOW NOTES
+// ══════════════════════════════════════
+// Default workflow: 4H EMA50 context → 15M AMD cycle → optional 5M execution confirmation.
+// The 5M step is intentionally NOT auto-filtered here: lower-timeframe confirmation is execution logic,
+// while this indicator remains the 15M setup engine. This avoids lower-TF lookahead/reconstruction bias.
+// External confluence is informational by default. Enable the minimum-score filter only after validating
+// that it improves Avg R / hit-rate for the exact symbol and market regime you trade.
+
+// ══════════════════════════════════════
+// 14. ALERTS
+// ══════════════════════════════════════
+// OrGa 1.2 restores original-like core signal frequency by keeping the NY killzone and 4H bias as context by default.
+// Dedicated selectable entry alerts (OrGa 1.2): these fire ONLY on the
+// confirmed D / reference-entry bar, after HTF and optional confluence filters.
+alertcondition(alertsOnInput and longEntrySignal,  title = "🐊 OrGa LONG Entry",  message = "🐊 OrGa LONG ENTRY | {{ticker}} | TF: {{interval}} | Close: {{close}}")
+alertcondition(alertsOnInput and shortEntrySignal, title = "🐊 OrGa SHORT Entry", message = "🐊 OrGa SHORT ENTRY | {{ticker}} | TF: {{interval}} | Close: {{close}}")
+
+// Existing dynamic alerts remain available via:
+// Create Alert → Condition: this indicator → "Any alert() function call".
+// They include the full dynamic Entry / Stop / Target / R:R / Confluence data
+// and also the sweep + target/stop/timeout events.
+// Webhook JSON is enabled via "🔔 Alerts → Webhook JSON Format".

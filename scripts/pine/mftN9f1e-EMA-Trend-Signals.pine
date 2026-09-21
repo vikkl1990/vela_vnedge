@@ -1,0 +1,49 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © zebris_boris
+//
+// ──────────────────────────────────────────────────────────────
+//  EMA Trend Signals  ·  Boris Tatchou
+// ──────────────────────────────────────────────────────────────
+//  A clean, lightweight trend tool:
+//    • Two EMAs define the trend; the fast line and the fill
+//      between them are colored by direction (bull / bear).
+//    • Optional soft background tint shows the active regime.
+//    • Markers + alerts fire when the fast EMA crosses the slow.
+//  Free & open-source. For research/education — not financial advice.
+// ──────────────────────────────────────────────────────────────
+//@version=6
+indicator("EMA Trend Signals", overlay = true)
+
+// ── Inputs ─────────────────────────────────────────────────
+src       = input.source(close, "Source",             group = "EMAs")
+fastLen   = input.int(21, "Fast EMA length", minval = 1, group = "EMAs")
+slowLen   = input.int(55, "Slow EMA length", minval = 1, group = "EMAs")
+showBg    = input.bool(true, "Trend background", group = "Display")
+showMarks = input.bool(true, "Cross markers",    group = "Display")
+
+// ── Calculation ────────────────────────────────────────────
+fast = ta.ema(src, fastLen)
+slow = ta.ema(src, slowLen)
+bull = fast > slow
+
+crossUp   = ta.crossover(fast, slow)
+crossDown = ta.crossunder(fast, slow)
+
+// ── Style ──────────────────────────────────────────────────
+colUp    = color.new(#26a69a, 0)
+colDown  = color.new(#ef5350, 0)
+trendCol = bull ? colUp : colDown
+
+// ── Plots ──────────────────────────────────────────────────
+pF = plot(fast, "Fast EMA", color = trendCol,                  linewidth = 2)
+pS = plot(slow, "Slow EMA", color = color.new(color.gray, 20), linewidth = 1)
+fill(pF, pS, color = color.new(bull ? colUp : colDown, 85), title = "Trend fill")
+
+bgcolor(showBg ? color.new(bull ? colUp : colDown, 92) : na, title = "Trend background")
+
+plotshape(showMarks and crossUp,   "Cross Up",   shape.triangleup,   location.belowbar, colUp,   size = size.small)
+plotshape(showMarks and crossDown, "Cross Down", shape.triangledown, location.abovebar, colDown, size = size.small)
+
+// ── Alerts ─────────────────────────────────────────────────
+alertcondition(crossUp,   "EMA Cross Up",   "EMA Trend Signals: fast crossed ABOVE slow on {{ticker}} ({{interval}})")
+alertcondition(crossDown, "EMA Cross Down", "EMA Trend Signals: fast crossed BELOW slow on {{ticker}} ({{interval}})")

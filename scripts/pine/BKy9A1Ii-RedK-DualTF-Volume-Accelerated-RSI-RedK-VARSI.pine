@@ -1,0 +1,220 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © RedKTrader
+// Internal Build version : 1.20
+//
+//@version = 6
+indicator("RedK DualTF Volume-Accelerated RSI", shorttitle = 'RedK_VARSI v1.0', overlay = false, precision = 1)
+
+// =====================================================================================================
+//  RedK VARSI (Volume-Accelerated RSI)
+//  A reworked Pine v6 successor to the 2020 "RedK Vol_Weighted RSI", 
+//  with a request.security() - based higher-timeframe ("Context") calculation, 
+//  optional smoothing, a signal line, Dual TF alignment markers, and introduces 5 alerts.
+// =====================================================================================================
+
+
+// *****************************************************************************************************
+//  Selectable moving-average type
+// -----------------------------------------------------------------------------------------------------
+f_getMA(_data, _len, MAtype) =>
+    value = switch MAtype
+        'SMA' => ta.sma(_data, _len)
+        'EMA' => ta.ema(_data, _len)
+        'HMA' => ta.hma(_data, _len)
+        'RMA' => ta.rma(_data, _len)
+        => ta.wma(_data, _len)
+    value
+
+// *****************************************************************************************************
+//  Volume-Weighted RSI, using the selected MA method
+//  Note: change() and volume are both read in whatever context this runs in (chart or security),
+//  so when called inside request.security() it correctly uses the HTF close-change and HTF volume.
+// -----------------------------------------------------------------------------------------------------
+f_CalcVW_Rsi(int _len, string avg_type, bool _volWeighted) =>
+    _vol   = na(volume) or not _volWeighted ? 1.0 : volume
+    chg    = ta.change(close) * _vol
+    up     = f_getMA(math.max(chg, 0), _len, avg_type)
+    down   = f_getMA(-math.min(chg, 0), _len, avg_type)
+    rsiraw = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+    rsiraw
+
+
+// -----------------------------------------------------------------------------------------------------
+//   Inputs
+// -----------------------------------------------------------------------------------------------------
+grpC   = "Current Timeframe RSI"
+grpH   = "Context Timeframe RSI"
+grpsig = "Signal Line"
+grplvl = "Levels"
+disnon = display.none
+
+// --- Current TF -------------------------------------------------------------------------------------
+rsiLen   = input.int(14, minval = 1, title = "RSI Length", inline = "rsi", group = grpC)
+avg_type = input.string('RMA', title = "Averaging", options = ['EMA', 'HMA', 'RMA', 'SMA', 'WMA'],
+  inline = "rsi", group = grpC,
+  tooltip = "Averaging method for the current-TF RSI.\nRMA reproduces Wilder's classic RSI." +
+            "\nSet Length=14, Averaging=RMA, Smoothing=1, Volume Weighted=off to exactly match a standard RSI.")
+
+VolWeighted = input.bool(true, "Volume Weighted", group = grpC,
+  tooltip = '''When on, each bar's price change is weighted by that bar's volume before averaging. This
+  emphasises moves that happen on higher participation.
+  \nTurn off for a pure price-based RSI.''')
+
+smooth    = input.int(3, minval = 1, title = "Smoothing", inline = "smooth", group = grpC, display = disnon)
+smth_type = input.string('WMA', title = "Averaging", options = ['EMA', 'HMA', 'RMA', 'SMA', 'WMA'], display = disnon,
+  inline = "smooth", group = grpC, active = smooth > 1,
+  tooltip = "Optional smoothing to apply to Current TF RSI." +
+            "\nHelps remove noise but introduces lag. Keep to small values or disable.")
+
+col_rsi_long  = input.color(color.aqua, title = "Bullish", inline = "rsi_c", group = grpC)
+col_rsi_short = input.color(#f57f17,     title = "Bearish", inline = "rsi_c", group = grpC)
+
+// --- Signal line ------------------------------------------------------------------------------------
+signal_len   = input.int(5, "Length", minval = 1, inline = "sig", group = grpsig, display = disnon)
+sig_avg_type = input.string('EMA', title = "  Averaging", options = ['EMA', 'HMA', 'RMA', 'SMA', 'WMA'], display = disnon,
+  inline = "sig", group = grpsig, active = signal_len > 1,
+  tooltip = "Length and Averaging method for the RSI Signal Line.")
+col_signal   = input.color(color.blue, title = "Signal Line Color", active = signal_len > 1,
+  inline = "sig_c", group = grpsig)
+
+// --- Context (Higher) TF ----------------------------------------------------------------------------
+show_htf = input.bool(true, "Show Context RSI", group = grpH, display = disnon,
+  tooltip = "Disabling this turns VARSI into a single TF volume-weighted RSI, and hides the Context TF Plot.\n" +
+            "Also turns off the Alignment Markers & related alerts.")
+htf_mult   = input.int(5, "Context Multiplier (× chart TF)", minval = 2, maxval = 60, group = grpH, 
+  display = disnon, active = show_htf,
+  tooltip = "Context TF = this many times the current chart timeframe. e.g. 5 on a 1H chart ≈ 5H")
+            
+htf_update = input.string('Live Update', "Context Update", options = ['Live Update', 'Last Closed Bar'], group = grpH, 
+  display = disnon, active = show_htf,
+  tooltip = "Live Update (default): the Context RSI updates as the higher-TF bar develops — most responsive. " +
+            "Last Closed Bar: the Context RSI only changes when the higher-TF bar closes — steadier, no intrabar movement. " +
+            "Has no effect when the Context TF equals the chart TF.")
+
+col_rsiH_long  = input.color(#33aa00, title = "Bullish", inline = "htf_c", group = grpH, active = show_htf)
+col_rsiH_short = input.color(#ff1111, title = "Bearish", inline = "htf_c", group = grpH, active = show_htf)
+
+// --- Levels -----------------------------------------------------------------------------------------
+show_align = input.bool(true, "Show Alignment Markers", group = grplvl, active = show_htf,
+  tooltip = "Plot a marker when the Current TF RSI and the Context RSI agree on direction (both above / both below 50).")
+
+
+// =====================================================================================================
+//   Calculations
+// -----------------------------------------------------------------------------------------------------
+midline  = 50
+ob_level = 70   
+os_level = 30   
+
+// Current TF VW-RSI + optional smoothing
+rsiCTF_raw = f_CalcVW_Rsi(rsiLen, avg_type, VolWeighted)
+rsiCTF     = smooth > 1 ? f_getMA(rsiCTF_raw, smooth, smth_type) : rsiCTF_raw
+
+// Signal line
+rsi_sig = signal_len > 1 ? f_getMA(rsiCTF, signal_len, sig_avg_type) : rsiCTF
+
+// Resolve Context TF via the built-in (multiplier method)
+htf_tf = timeframe.from_seconds(int(timeframe.in_seconds(timeframe.period) * htf_mult))
+
+// Context TF must be >= chart TF. With minval=2 on the multiplier this is effectively always true,
+// a lower resolved TF can never plot a misleading faster-than-chart backdrop.
+htf_secs    = timeframe.in_seconds(htf_tf)
+chart_secs  = timeframe.in_seconds(timeframe.period)
+htf_invalid = htf_secs < chart_secs
+
+// Pull the Context VW-RSI.
+rsiHi_raw = request.security(syminfo.tickerid, htf_tf,
+             f_CalcVW_Rsi(rsiLen, avg_type, VolWeighted),
+             lookahead = barmerge.lookahead_off)
+
+// The confirmed-bar offset is only meaningful when the Context TF is strictly higher than the chart TF;
+// equal/lower uses the live value (avoids a pointless one-bar lag).
+htf_is_higher   = htf_secs > chart_secs
+use_last_closed = htf_update == 'Last Closed Bar' and htf_is_higher
+rsiHi = (htf_invalid or not show_htf) ? na : (use_last_closed ? rsiHi_raw[1] : rsiHi_raw)
+
+// Direction / alignment state (alignment requires a valid, shown Context)
+ctf_up   = rsiCTF > midline
+htf_up   = rsiHi  > midline
+aligned_up   = show_htf and not htf_invalid and ctf_up  and htf_up
+aligned_down = show_htf and not htf_invalid and (not ctf_up) and (not htf_up)
+
+
+// =====================================================================================================
+//   Plots
+// -----------------------------------------------------------------------------------------------------
+// Levels first so z-order keeps the main line on top
+
+dw          = display.data_window
+d_sl        = display.status_line
+dsp_dp_dw   = display.pane + display.data_window
+// if a higher TF is enabled, realted plots will show in panel and data window, otherwise hide all
+dsp_htf     = show_htf ? dsp_dp_dw + d_sl : disnon 
+dsp_htf_am  = show_htf ? dsp_dp_dw : disnon 
+
+hline(midline,  title = "Midline",     color = color.new(color.yellow, 50), linestyle = hline.style_dotted)
+hline(ob_level, title = "Overbought",  color = color.new(color.green,  30), linestyle = hline.style_dashed)
+hline(os_level, title = "Oversold",    color = color.new(color.red,    30), linestyle = hline.style_dashed)
+
+
+p1 = plot(rsiCTF, title = "Current RSI", color = ctf_up ? col_rsi_long : col_rsi_short, linewidth = 3)
+
+ps = plot(rsi_sig, title = "RSI Signal", color = col_signal, linewidth = 1, display = d_sl + dsp_dp_dw)
+
+p2 = plot(rsiHi, title = "Higher TF RSI",
+     color = htf_up ? col_rsiH_long : col_rsiH_short, linewidth = 1, display = dsp_htf)
+
+pl_midline = plot(midline, "midline ref", color = color.new(color.white, 100),
+     editable = false, display = display.none)
+
+// Context sentiment fill (above / below midline)
+fill(p2, pl_midline, top_value = 100, bottom_value = 50,
+    top_color = color.new(col_rsiH_long, 20), bottom_color = color.new(col_rsiH_long, 90))
+fill(pl_midline, p2, top_value = 50, bottom_value = 0,
+    top_color = color.new(col_rsiH_short, 90), bottom_color = color.new(col_rsiH_short, 20))
+
+//==========================================================================================================
+// Alignment markers - note to hide them also in data window if no HTF is plotted
+plotshape(show_align and aligned_up   and not aligned_up[1],   title = "Bull Alignment", 
+  display = not show_align ? disnon : dsp_htf_am,
+     style = shape.triangleup,   location = location.bottom, color = col_rsiH_long,  size = size.small)
+plotshape(show_align and aligned_down and not aligned_down[1], title = "Bear Alignment", 
+  display = not show_align ? disnon : dsp_htf_am,
+     style = shape.triangledown, location = location.top,    color = col_rsiH_short, size = size.small)
+
+
+// =====================================================================================================
+//   Alerts — all based on the single (Current TF) VARSI line,
+//      so they are independent of the Context setting. 
+// -----------------------------------------------------------------------------------------------------
+
+alertcondition(ta.crossover(rsiCTF, midline),  title = "VARSI crosses above midline (Bullish)",
+  message = "{{ticker}} — VARSI crossed ABOVE the midline (bullish)")
+alertcondition(ta.crossunder(rsiCTF, midline), title = "VARSI crosses below midline (Bearish)",
+  message = "{{ticker}} — VARSI crossed BELOW the midline (bearish)")
+alertcondition(ta.cross(rsiCTF, midline),      title = "VARSI swings around midline (Up or Down)",
+  message = "{{ticker}} — VARSI crossed the midline")
+
+alertcondition(ta.crossover(rsiCTF, ob_level), title = "VARSI enters Overbought zone",
+  message = "{{ticker}} — VARSI entered the Overbought zone")
+alertcondition(ta.crossunder(rsiCTF, os_level),title = "VARSI enters Oversold zone",
+  message = "{{ticker}} — VARSI entered the Oversold zone")
+
+
+// =====================================================================================================
+//  Extra debug: show the resolved Context TF in the Data Window. 
+// -----------------------------------------------------------------------------------------------------
+dbg = input.bool(false, "Debug: quick method to show selected Context TF in Data Window", group = grpH, active = show_htf,
+  tooltip = "Will display as minutes, then hours if > 60, then days if > 1,440.")
+
+htf_mins = htf_secs / 60.0
+
+
+plot(dbg and htf_mins <= 60                       ? htf_mins        : na, "Context TF (mins)", 
+  display = dbg and show_htf ? dw : disnon)
+plot(dbg and htf_mins >  60 and htf_mins <= 1440  ? htf_mins / 60.0 : na, "Context TF (hrs)",  
+  display = dbg and show_htf ? dw : disnon)
+plot(dbg and htf_mins >  1440                     ? htf_mins / 1440.0 : na, "Context TF (days)", 
+  display = dbg and show_htf ? dw : disnon)
+
+

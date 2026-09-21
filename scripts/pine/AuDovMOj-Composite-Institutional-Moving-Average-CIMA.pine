@@ -1,0 +1,50 @@
+//@version=6
+indicator("Composite Institutional MA (CIMA)", shorttitle="CIMA", overlay=true)
+
+// --- Inputs ---
+length       = input.int(126, "Institutional Lookback Length", minval=1)
+useCvd       = input.bool(true, "Enable Order Flow Delta Factor")
+useAbsorp    = input.bool(true, "Enable Stealth Absorption Factor")
+enableBands  = input.bool(false, "Enable Volatility Bands (±σ)")
+bandMult     = input.float(2.0, "Band Multiplier", minval=0.0, step=0.1)
+useMtf       = input.bool(false, "Enable Multi-Timeframe (MTF)")
+mtfFrame     = input.timeframe("D", "MTF Resolution")
+
+// --- 1. Order Flow / Volume Delta Proxy Engine ---
+bullVol   = (close - low) / math.max(high - low, syminfo.mintick) * volume
+bearVol   = (high - close) / math.max(high - low, syminfo.mintick) * volume
+delta     = bullVol - bearVol
+cvdFactor = useCvd ? ta.vwma(delta, 14) : 1.0
+
+// --- 2. Stealth Absorption Efficiency Engine ---
+candleRange      = math.max(high - low, syminfo.mintick)
+volEfficiency    = volume / candleRange
+avgEfficiency    = ta.vwma(volEfficiency, 50)
+absorptionWeight = useAbsorp ? (volEfficiency / avgEfficiency) : 1.0
+
+// --- 3. Composite Weight Calculation ---
+compositeWeight  = math.abs(cvdFactor) * absorptionWeight * volume
+compositeWeight := math.max(compositeWeight, 1.0)
+
+// --- 4. Core CIMA Baseline Calculation ---
+cimaNumerator   = ta.vwma(close * compositeWeight, length)
+cimaDenominator = ta.vwma(compositeWeight, length)
+localCima       = cimaNumerator / cimaDenominator
+
+// --- 5. Clean Multi-Timeframe (MTF) Security Fetch ---
+mtfCima         = request.security(syminfo.tickerid, mtfFrame, localCima, gaps=barmerge.gaps_off)
+cimaVal         = useMtf ? mtfCima : localCima
+
+// Standard Deviation Bands
+dev      = ta.stdev(close, length)
+upperDev = cimaVal + (dev * bandMult)
+lowerDev = cimaVal - (dev * bandMult)
+
+// --- Visual Outputs ---
+cimaColor = close >= cimaVal ? color.new(#00E676, 0) : color.new(#FF1744, 0)
+plot(cimaVal, "CIMA Baseline", color=cimaColor, linewidth=1)
+
+// Optional Bands
+pUpper = plot(enableBands ? upperDev : na, "Upper CIMA Band", color=color.new(#00E676, 50), linewidth=1)
+pLower = plot(enableBands ? lowerDev : na, "Lower CIMA Band", color=color.new(#FF1744, 50), linewidth=1)
+fill(pUpper, pLower, color=enableBands ? color.new(color.blue, 96) : na, title="CIMA Value Area")

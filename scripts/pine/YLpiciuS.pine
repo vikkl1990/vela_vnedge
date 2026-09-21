@@ -1,0 +1,349 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────
+//  TPO State Reader (TPO-STATE)
+//  Rolling composite value area / naked POC / LVN vacuum / POC drift / table
+//  Does not draw a profile — outputs the reading of one. Designed to sit on
+//  top of a built-in Volume Profile or any TPO script.
+// ─────────────────────────────────────────────────────────────────────────
+indicator("TPO State Reader (TPO-STATE)", shorttitle="TPO-STATE", overlay=true,
+     max_boxes_count=100, max_lines_count=100, max_labels_count=100, max_bars_back=1500)
+
+// ─────────────────────────────── INPUTS ─────────────────────────────────
+gPr = "① Profile"
+lbOver  = input.int(0, "Lookback bars (0 = auto by timeframe)", minval=0, maxval=1000, group=gPr,
+     tooltip="Auto: 1D->16 / 4H->96 / 1H->192 / 30m->192 / 15m->288 / 5m->288.\nThe span deliberately shortens on lower timeframes — a 16-day value area is meaningless for intraday trading, its edges sit so far away you never reach them.\nEnter a bar count to set the span yourself.")
+binMode = input.string("Auto (range / bins)", "Bin sizing",
+     options=["Auto (range / bins)", "Price %", "Fixed ticks"], group=gPr,
+     tooltip="Auto: scan the actual price range first, then divide by the target bin count -> resolution stays constant across symbols and timeframes, nothing to reset.\nPrice %: bin = last close x percent.\nFixed ticks: bin = ticks x mintick; the daily profile uses the same size.\nWARNING - fixed ticks must be recalculated per symbol: BTC mintick 0.1 -> 2500 ticks = $250; LTC mintick 0.01 -> 2500 ticks = $25.")
+tgtBins = input.int(40, "Target bin count (auto mode)", minval=15, maxval=120, group=gPr,
+     tooltip="Higher = finer resolution but vacuum zones fragment; lower = coarser but steadier.")
+binPct  = input.float(0.30, "Bin as % of price (Price % mode)", minval=0.02, maxval=5.0, step=0.05, group=gPr)
+binTicks= input.int(2500, "Bin height in ticks (Fixed ticks mode)", minval=1, group=gPr)
+vaPct   = input.float(70.0, "Value area %", minval=50.0, maxval=95.0, step=5.0, group=gPr,
+     tooltip="Market profile convention is 70%, roughly one standard deviation. Raising it widens the VA and blunts the edge signals.")
+
+gShow = "② Display"
+showVa  = input.bool(true,  "Value area (VAH / VPOC / VAL)", group=gShow)
+showNk  = input.bool(true,  "Naked POC (never revisited)", group=gShow)
+showLv  = input.bool(true,  "LVN vacuum zones", group=gShow)
+showTb  = input.bool(true,  "Status table", group=gShow)
+tbPos   = input.string("Top Right", "Table position",
+     options=["Top Right", "Bottom Right", "Top Left", "Bottom Left"], group=gShow)
+vaExt   = input.int(30, "Extend lines right (bars)", minval=0, maxval=200, group=gShow,
+     tooltip="If labels run off screen, drop this to 12 — or widen the chart's right margin until 30-40 empty bars are visible.")
+
+gNk = "③ Naked POC"
+nkMax   = input.int(6, "Max lines drawn", minval=1, maxval=20, group=gNk,
+     tooltip="Affects drawing only; the table count is unaffected.")
+nkRange = input.float(0, "Show within ±% (0 = auto, daily ATR x3)", minval=0, maxval=50, step=0.5, group=gNk)
+nkKeep  = input.int(90, "Track for N days", minval=5, maxval=200, group=gNk,
+     tooltip="How far back it actually reaches is also capped by how many bars the chart loads — 10,000 bars on a 5m chart is only 34 days.")
+
+gLv = "④ LVN vacuum zones"
+lvPct   = input.float(35.0, "Vacuum if volume below % of mean", minval=5.0, maxval=80.0, step=5.0, group=gLv,
+     tooltip="Above 50 you are boxing ordinary low-volume areas, not vacuums.")
+lvMinBin= input.int(2, "Minimum consecutive bins", minval=1, maxval=10, group=gLv,
+     tooltip="Raise to 3-4 when the target bin count is high, otherwise you get a scatter of fragments.")
+
+gCol = "⑤ Colors"
+colVah = input.color(#D85A30, "VAH", group=gCol, inline="a")
+colPoc = input.color(#534AB7, "VPOC", group=gCol, inline="a")
+colVal = input.color(#1D9E75, "VAL", group=gCol, inline="a")
+colNk  = input.color(#BA7517, "Naked POC", group=gCol, inline="b")
+colLv  = input.color(#888780, "Vacuum", group=gCol, inline="b")
+
+// ───────────────────────────── DERIVED ──────────────────────────────────
+_tfs = timeframe.in_seconds(timeframe.period)
+// Span shortens with the timeframe: intraday wants the last few days' value
+// area, not sixteen days of it
+_autoLb  = _tfs >= 86400 ? 16 : _tfs >= 14400 ? 96 : _tfs >= 3600 ? 192
+         : _tfs >= 1800 ? 192 : _tfs >= 900 ? 288 : _tfs >= 300 ? 288 : 240
+lookback = lbOver > 0 ? lbOver : _autoLb
+spanDays = lookback * _tfs / 86400.0
+bpd      = math.max(1, int(86400 / math.max(_tfs, 1)))
+
+// ─── persistent containers ───
+var map<int, float> dVol   = map.new<int, float>()
+var array<float>    dPoc   = array.new<float>()
+var array<int>      dBar   = array.new<int>()
+var array<bool>     dNaked = array.new<bool>()
+var float           dayBin = na   // daily profile bin size, locked per session
+
+dayStart = time("1D")
+newDay   = dayStart != nz(dayStart[1], dayStart)
+
+// [1] takes the previous completed day's ATR so an in-progress value never
+// repaints history
+atrDay = request.security(syminfo.tickerid, "1D", ta.atr(14)[1], lookahead=barmerge.lookahead_off)
+
+_binFixed = binTicks * syminfo.mintick
+_db       = binMode == "Fixed ticks" ? _binFixed : na(atrDay) ? close * 0.0015 : atrDay / 20
+dayBinN   = math.max(syminfo.mintick, math.round(_db / syminfo.mintick) * syminfo.mintick)
+
+// WARNING: persistent containers may only be mutated on bar close. Pine's
+//   rollback does not restore array/map internals, so a realtime bar would
+//   accumulate dVol repeatedly and flood dPoc with one day. Scalars are safe.
+if barstate.isconfirmed
+    // Session boundary: settle yesterday's POC using the OLD bin size
+    if newDay and dVol.size() > 0
+        ks   = dVol.keys()
+        best = ks.get(0)
+        for x in ks
+            if dVol.get(x) > dVol.get(best)
+                best := x
+        dPoc.push(best * dayBin + dayBin / 2)
+        dBar.push(bar_index)
+        dNaked.push(true)
+        dVol.clear()
+        if dPoc.size() > nkKeep
+            dPoc.shift()
+            dBar.shift()
+            dNaked.shift()
+
+    // Swap in the new bin size only after settling, so a single day's key
+    // space stays consistent end to end
+    if na(dayBin) or newDay
+        dayBin := dayBinN
+
+    // Accumulate this bar's volume into the daily profile
+    _lo = int(low / dayBin)
+    _hi = int(math.min(int(high / dayBin), _lo + 60))
+    _sh = nz(volume) / (_hi - _lo + 1)
+    for x = _lo to _hi
+        dVol.put(x, nz(dVol.get(x)) + _sh)
+
+// dayBin is still na on the very first bar
+if na(dayBin)
+    dayBin := dayBinN
+
+// Naked POC invalidation: traded through after its formation day (idempotent)
+if dPoc.size() > 0
+    for i = 0 to dPoc.size() - 1
+        if dNaked.get(i) and bar_index > dBar.get(i) + bpd
+            p = dPoc.get(i)
+            if low <= p and p <= high
+                dNaked.set(i, false)
+
+// WARNING: an intraday range must be paired with the DAILY ATR. Using the
+//   chart timeframe's ATR yields several hundred percent.
+var float dayHi = na
+var float dayLo = na
+if newDay or na(dayHi)
+    dayHi := high
+    dayLo := low
+else
+    dayHi := math.max(dayHi, high)
+    dayLo := math.min(dayLo, low)
+
+// ─── value area bounds for alerts (updated inside islast) ───
+var float vaH = na
+var float vaL = na
+var float vPc = na
+
+// ──────────────────────────── RENDERING ─────────────────────────────────
+var array<line>  lns = array.new<line>()
+var array<box>   bxs = array.new<box>()
+var array<label> lbs = array.new<label>()
+var table        tb  = na
+
+if barstate.islast
+    if lns.size() > 0
+        for l in lns
+            l.delete()
+        lns.clear()
+    if bxs.size() > 0
+        for b in bxs
+            b.delete()
+        bxs.clear()
+    if lbs.size() > 0
+        for l in lbs
+            l.delete()
+        lbs.clear()
+
+    // WARNING: math.max(1,..) guards bar_index=0 — Pine's for runs backwards
+    //   when to<from and would reference high[-1]
+    n = int(math.max(1, math.min(lookback, bar_index)))
+
+    // ── pass 1: scan the actual price range ──
+    rHi = high
+    rLo = low
+    for i = 0 to n - 1
+        rHi := math.max(rHi, high[i])
+        rLo := math.min(rLo, low[i])
+
+    _cb  = binMode == "Fixed ticks" ? _binFixed
+         : binMode == "Price %"     ? close * binPct / 100
+         : (rHi - rLo) / tgtBins
+    cBin = math.max(syminfo.mintick, math.round(_cb / syminfo.mintick) * syminfo.mintick)
+
+    // ── pass 2: rebuild the composite profile at that bin size ──
+    cVol = map.new<int, float>()
+    for i = 0 to n - 1
+        a  = int(low[i] / cBin)
+        z  = int(math.min(int(high[i] / cBin), a + 60))
+        sh = nz(volume[i]) / (z - a + 1)
+        for x = a to z
+            cVol.put(x, nz(cVol.get(x)) + sh)
+
+    cKeys = cVol.keys()
+    total = 0.0
+    for x in cKeys
+        total += cVol.get(x)
+
+    poc = cKeys.get(0)
+    for x in cKeys
+        if cVol.get(x) > cVol.get(poc)
+            poc := x
+
+    // Value area: expand outward from the POC until the target % is reached
+    vhi = poc
+    vlo = poc
+    acc = cVol.get(poc)
+    tgt = total * vaPct / 100
+    while acc < tgt
+        up = nz(cVol.get(vhi + 1))
+        dn = nz(cVol.get(vlo - 1))
+        if up == 0 and dn == 0
+            break
+        if up >= dn
+            vhi := vhi + 1
+            acc += up
+        else
+            vlo := vlo - 1
+            acc += dn
+
+    vPc := poc * cBin + cBin / 2
+    vaH := vhi * cBin + cBin
+    vaL := vlo * cBin
+    rgt = bar_index + vaExt
+    nkX = int(bar_index + vaExt * 0.45)   // offset nPOC labels left so they do not stack on the VA labels
+
+    if showVa
+        lns.push(line.new(bar_index - n + 1, vaH, rgt, vaH, color=colVah, width=2, xloc=xloc.bar_index))
+        lns.push(line.new(bar_index - n + 1, vPc, rgt, vPc, color=colPoc, width=2, xloc=xloc.bar_index))
+        lns.push(line.new(bar_index - n + 1, vaL, rgt, vaL, color=colVal, width=2, xloc=xloc.bar_index))
+        lbs.push(label.new(rgt, vaH, "VAH " + str.tostring(vaH, format.mintick),
+             xloc=xloc.bar_index, style=label.style_label_left,
+             color=color.new(colVah, 85), textcolor=colVah, size=size.small))
+        lbs.push(label.new(rgt, vPc, "VPOC " + str.tostring(vPc, format.mintick),
+             xloc=xloc.bar_index, style=label.style_label_left,
+             color=color.new(colPoc, 85), textcolor=colPoc, size=size.small))
+        lbs.push(label.new(rgt, vaL, "VAL " + str.tostring(vaL, format.mintick),
+             xloc=xloc.bar_index, style=label.style_label_left,
+             color=color.new(colVal, 85), textcolor=colVal, size=size.small))
+
+    // ── LVN vacuum zones (always computed, drawn only if enabled) ──
+    lvCount = 0
+    if cKeys.size() > 0
+        mean = total / cKeys.size()
+        thr  = mean * lvPct / 100
+        srt  = cKeys.copy()
+        srt.sort(order.ascending)
+        int runA = na
+        int runB = na
+        for x in srt
+            if cVol.get(x) < thr
+                runA := na(runA) ? x : runA
+                runB := x
+            else
+                if not na(runA) and runB - runA + 1 >= lvMinBin
+                    _t = runB * cBin + cBin
+                    _b = runA * cBin
+                    lvCount += 1
+                    if showLv
+                        bxs.push(box.new(bar_index - n + 1, _t, rgt, _b,
+                             border_color=color.new(colLv, 25), border_width=1,
+                             border_style=line.style_dashed,
+                             bgcolor=color.new(colLv, 88), xloc=xloc.bar_index))
+                runA := na
+                runB := na
+        if not na(runA) and runB - runA + 1 >= lvMinBin
+            _t2 = runB * cBin + cBin
+            _b2 = runA * cBin
+            lvCount += 1
+            if showLv
+                bxs.push(box.new(bar_index - n + 1, _t2, rgt, _b2,
+                     border_color=color.new(colLv, 25), border_width=1,
+                     border_style=line.style_dashed,
+                     bgcolor=color.new(colLv, 88), xloc=xloc.bar_index))
+
+    // ── Naked POC ──
+    float nkNear = na
+    int   nkCount = 0
+    if dPoc.size() > 0
+        lim   = nkRange > 0 ? close * nkRange / 100 : nz(atrDay, close * 0.03) * 3
+        shown = 0
+        for i = dPoc.size() - 1 to 0
+            if dNaked.get(i)
+                p = dPoc.get(i)
+                if math.abs(p - close) <= lim
+                    nkCount += 1
+                    if na(nkNear) or math.abs(p - close) < math.abs(nkNear - close)
+                        nkNear := p
+                    if showNk and shown < nkMax
+                        // WARNING: clamp the start inside the historical buffer
+                        //   or this throws "historical offset beyond limit"
+                        _nkL = int(math.max(dBar.get(i), bar_index - 1000))
+                        lns.push(line.new(_nkL, p, rgt, p, color=colNk,
+                             width=1, style=line.style_dashed, xloc=xloc.bar_index))
+                        lbs.push(label.new(nkX, p, "nPOC " + str.tostring(p, format.mintick),
+                             xloc=xloc.bar_index, style=label.style_label_left,
+                             color=color.new(colNk, 85), textcolor=colNk, size=size.small))
+                        shown += 1
+
+    // ── POC drift ──
+    pocTrend = "Insufficient data"
+    if dPoc.size() >= 3
+        p0 = dPoc.get(dPoc.size() - 1)
+        p1 = dPoc.get(dPoc.size() - 2)
+        p2 = dPoc.get(dPoc.size() - 3)
+        span = math.max(math.abs(p0 - p1), math.abs(p1 - p2))
+        pocTrend := span <= dayBin * 1.5 ? "Flat (balanced)" : p0 > p2 ? "Rising (buyers)" : "Falling (sellers)"
+
+    // ── state ──
+    state = close > vaH ? "Above VA (bullish)" : close < vaL ? "Below VA (bearish)" : "Inside VA (balanced)"
+    stCol = close > vaH ? colVah : close < vaL ? colVal : colPoc
+    comp  = not na(atrDay) and atrDay > 0 ? (dayHi - dayLo) / atrDay * 100 : na
+    binN  = cKeys.size()
+
+    // ── status table ──
+    if showTb
+        pos = tbPos == "Top Right" ? position.top_right : tbPos == "Bottom Right" ? position.bottom_right : tbPos == "Top Left" ? position.top_left : position.bottom_left
+        if na(tb)
+            tb := table.new(pos, 2, 10, border_width=1)
+        tb.clear(0, 0, 1, 9)
+        tb.set_position(pos)
+
+        tb.cell(0, 0, "State", text_color=chart.fg_color, text_size=size.small, bgcolor=color.new(chart.fg_color, 92))
+        tb.cell(1, 0, state, text_color=stCol, text_size=size.small, bgcolor=color.new(stCol, 88))
+        tb.cell(0, 1, "VAH", text_color=chart.fg_color, text_size=size.small)
+        tb.cell(1, 1, str.tostring(vaH, format.mintick), text_color=colVah, text_size=size.small)
+        tb.cell(0, 2, "VPOC", text_color=chart.fg_color, text_size=size.small)
+        tb.cell(1, 2, str.tostring(vPc, format.mintick), text_color=colPoc, text_size=size.small)
+        tb.cell(0, 3, "VAL", text_color=chart.fg_color, text_size=size.small)
+        tb.cell(1, 3, str.tostring(vaL, format.mintick), text_color=colVal, text_size=size.small)
+        tb.cell(0, 4, "POC drift", text_color=chart.fg_color, text_size=size.small)
+        tb.cell(1, 4, pocTrend, text_color=chart.fg_color, text_size=size.small)
+        tb.cell(0, 5, "Day range", text_color=chart.fg_color, text_size=size.small)
+        tb.cell(1, 5, na(comp) ? "—" : str.tostring(comp, "#") + "% of dATR", text_color=chart.fg_color, text_size=size.small)
+        tb.cell(0, 6, "Naked POC", text_color=chart.fg_color, text_size=size.small)
+        tb.cell(1, 6, nkCount == 0 ? "none" : str.tostring(nkNear, format.mintick) + "  (" + str.tostring(nkCount) + ")",
+             text_color=colNk, text_size=size.small)
+        tb.cell(0, 7, "Vacuum zones", text_color=chart.fg_color, text_size=size.small)
+        tb.cell(1, 7, str.tostring(lvCount), text_color=colLv, text_size=size.small)
+        tb.cell(0, 8, "Bins", text_color=chart.fg_color, text_size=size.small)
+        tb.cell(1, 8, str.tostring(binN) + (binN < 15 ? "  ⚠ too coarse" : ""),
+             text_color=binN < 15 ? color.red : color.new(chart.fg_color, 40), text_size=size.small,
+             bgcolor=binN < 15 ? color.new(color.red, 80) : na)
+        tb.cell(0, 9, "Sample", text_color=chart.fg_color, text_size=size.small)
+        tb.cell(1, 9, str.tostring(spanDays, "#.#") + "d · " + str.tostring(lookback) + "b · bin " + str.tostring(cBin, format.mintick),
+             text_color=color.new(chart.fg_color, 40), text_size=size.small)
+
+// ─── Alerts (ta.cross must evaluate every bar -> assign to a global first) ───
+pocCross = ta.cross(close, nz(vPc, close))
+alertcondition(not na(vaH) and close > vaH and close[1] <= vaH,
+     "Close above VAH", "Price closed outside the value area high — upside scenario active, check whether a vacuum sits immediately above")
+alertcondition(not na(vaL) and close < vaL and close[1] >= vaL,
+     "Close below VAL", "Price closed outside the value area low — downside scenario active, check whether a vacuum sits immediately below")
+alertcondition(not na(vPc) and pocCross,
+     "VPOC cross", "Price crossed the composite POC — the balance axis has changed hands")

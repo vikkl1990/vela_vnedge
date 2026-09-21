@@ -1,0 +1,644 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © GBB — "no hype, just data"
+//
+// ============================================================================
+// Fair Value Gaps [GBB]
+//@version=6
+indicator("Real Fair Value Gaps [GBB]", shorttitle = "RFVG [GBB]", overlay = true,
+     max_boxes_count = 500, max_lines_count = 100, max_labels_count = 50, max_bars_back = 500)
+
+// ---------------------------------------------------------------------------
+// 1. Inputs
+// ---------------------------------------------------------------------------
+g_det  = "Detection"
+g_mit  = "Mitigation"
+g_htf  = "Higher timeframe"
+g_look = "Look"
+g_disp = "Display"
+
+sizeAtr    = input.float(0.0, "Min size (ATR x)", minval = 0, step = 0.1, group = g_det,
+     tooltip = "Ignore gaps smaller than this multiple of ATR(14) on the gap's own timeframe. 0 = off.")
+autoThresh = input.bool(false, "Auto threshold", group = g_det,
+     tooltip = "Keep a gap only if its height relative to price is above the running mean of all candidates so far. Overrides Min size.")
+needDisp   = input.bool(false, "Require displacement", group = g_det,
+     tooltip = "Candle 2 must close beyond candle 1's extreme (LuxAlgo rule).")
+
+mitSource  = input.string("Wick", "Source", options = ["Wick", "Close"], group = g_mit)
+mitPoint   = input.string("Far edge", "Point", options = ["Near edge", "Midpoint", "Far edge"], group = g_mit,
+     tooltip = "A gap is mitigated when the source reaches this level. Far edge = fully filled.")
+trackInv   = input.bool(true, "Track inversions", group = g_mit,
+     tooltip = "A close beyond the far edge flips the gap's colour and bias instead of retiring it.")
+
+htfOn      = input.bool(true, "Enable", group = g_htf)
+htfIn      = input.timeframe("", "Timeframe", group = g_htf,
+     tooltip = "Empty = one step above the chart (1m->15m, 5m->1H, 15m->4H, 1H->D, 4H->W, D->W).")
+
+palette    = input.string("GBB", "Palette", options = ["GBB", "Calm blue-amber", "Custom"], group = g_look)
+customUp   = input.color(#00E676, "Custom up", inline = "cc", group = g_look)
+customDn   = input.color(#FF3D71, "down", inline = "cc", group = g_look)
+glowPct    = input.int(100, "Glow intensity (%)", minval = 0, maxval = 150, group = g_look)
+spotN      = input.int(6, "Spotlight gaps", minval = 0, maxval = 20, group = g_look,
+     tooltip = "Only the N active gaps nearest to price carry the full glow. Others keep a thin outline.")
+fadeBars   = input.int(100, "Fade over (bars)", minval = 1, group = g_look,
+     tooltip = "Glow decays to half strength over this many bars, then holds.")
+keepBars   = input.int(500, "Keep mitigated (bars)", minval = 0, group = g_look)
+labelMode  = input.string("HTF badge", "Labels", options = ["HTF badge", "All", "None"], group = g_look)
+showAtr    = input.float(6.0, "Show gaps within (ATR x)", minval = 0, step = 1, group = g_look,
+     tooltip = "Gaps farther than this many ATR(14) from the close are tracked but not drawn, so far-away gaps do not stretch the price scale. 0 = draw everything.")
+
+showTable  = input.bool(true, "Show info table", group = g_disp)
+
+
+// ---------------------------------------------------------------------------
+// 2. Constants (not user-facing)
+// ---------------------------------------------------------------------------
+// GBB palette (shared with Modern VWAP [GBB])
+const color C_NEUTRAL = #787B86
+const color C_BUY     = #00E676
+const color C_SELL    = #FF3D71
+const color C_CALM_UP = #2979FF
+const color C_CALM_DN = #FFB000
+// warning colours (independent of the regime palette above; kept separate since
+// the amber hex is already spoken for by the calm-blue-amber palette variant)
+const color C_AMBER_ = #FFB000
+const color C_RED_   = #FF3D71
+const color C_PANEL  = #1E222D   // dashboard cell background, independent of the chart theme
+
+const int ST_FRESH   = 0
+const int ST_TOUCHED = 1
+const int ST_MIDTAP  = 2
+const int ST_MIT     = 3
+
+const int EV_NONE     = 0
+const int EV_NEW_BULL = 1
+const int EV_NEW_BEAR = 2
+const int EV_TOUCH    = 3
+const int EV_MIDTAP   = 4
+const int EV_MIT      = 5
+const int EV_INV      = 6
+
+const float T_BASE  = 93.0   // base box fill transparency
+const float T_BAND1 = 89.0   // band 1 (mid +- 0.40 h)
+const float T_BAND2 = 85.0   // band 2 (mid +- 0.30 h)
+const float T_BAND3 = 81.0   // band 3 (mid +- 0.20 h)
+const float T_BAND4 = 77.0   // band 4 (mid +- 0.10 h)
+const float T_GHOST = 96.0   // visible but non-spotlight active gap (spec §4.7)
+const float BIG     = 1e300
+
+int MAX_RECORDS = 500 - 7 * spotN - 2   // spotlight layers: 4 bands + mid + fill + notch per gap
+
+color cUp = palette == "GBB" ? C_BUY  : palette == "Calm blue-amber" ? C_CALM_UP : customUp
+color cDn = palette == "GBB" ? C_SELL : palette == "Calm blue-amber" ? C_CALM_DN : customDn
+
+// ---------------------------------------------------------------------------
+// 3. Types and state
+// ---------------------------------------------------------------------------
+type Gap
+    float top
+    float bottom
+    float mid
+    int   dir          // +1 bull, -1 bear (flips on inversion)
+    int   layer        // 0 chart, 1 HTF
+    int   createdBar   // freshness anchor; reset on inversion
+    int   createdTime
+    int   leftBar      // chart layer: bar_index of candle 1
+    int   leftTime     // HTF layer: open time of candle 1
+    int   state        // ST_*
+    bool  inverted
+    float maxPen       // deepest penetration in price units, clamped to height
+    int   mitBar
+    int   mitTime      // time of the mitigation bar; outline right edge
+    bool  spot         // currently carries the glow layers
+    float lastT        // last applied base transparency (restyle gate)
+    bool  dirty        // force restyle on next pass
+    box   bBase
+    box   bBand1
+    box   bBand2
+    box   bBand3
+    box   bBand4
+    box   bMid
+    box   bFill
+    box   bNotch
+    label lChip
+
+type State
+    bool  capHit       // latched: an active gap was evicted for budget
+    float atSum0       // auto-threshold running sum, chart layer
+    int   atN0
+    float atSum1       // auto-threshold running sum, HTF layer
+    int   atN1
+
+var array<Gap> gaps = array.new<Gap>()      // every live record, oldest first
+var State S = State.new(false, 0.0, 0, 0.0, 0)
+var int cumMit     = 0
+var int cumMit0    = 0
+var int cumCreated = 0
+
+// top-level, unconditional
+float atr14 = ta.atr(14)
+
+// ---------------------------------------------------------------------------
+// 4. Pure helpers
+// ---------------------------------------------------------------------------
+f_reach(int d, float v, float lvl) =>
+    d > 0 ? v <= lvl : v >= lvl
+
+f_beyond(int d, float v, float lvl) =>
+    d > 0 ? v < lvl : v > lvl
+
+// c1 = oldest candle, c3 = newest. Returns [dir, top, bottom]; dir 0 = none.
+f_detect(float h1, float l1, float c2, float h3, float l3, bool useDisp) =>
+    int d = 0
+    float t = na
+    float b = na
+    if l3 > h1 and (not useDisp or c2 > h1)
+        d := 1
+        t := l3
+        b := h1
+    else if h3 < l1 and (not useDisp or c2 < l1)
+        d := -1
+        t := l1
+        b := h3
+    [d, t, b]
+
+f_col(Gap g) =>
+    g.dir > 0 ? cUp : cDn
+
+f_fresh(Gap g) =>
+    math.max(0.5, 1.0 - 0.5 * (bar_index - g.createdBar) / fadeBars)
+
+// spec §4.2
+f_transp(Gap g, float base) =>
+    float mult = (g.layer == 1 ? 0.8 : 1.0) * (g.inverted ? 0.7 : 1.0)
+    float t = 100.0 - (100.0 - base) * (glowPct / 100.0) * f_fresh(g) * mult
+    math.max(0.0, math.min(100.0, t))
+
+f_htfAuto(string tf) =>
+    int s = timeframe.in_seconds(tf)
+    s <= 180 ? "15" : s <= 300 ? "60" : s <= 1800 ? "240" : s <= 7200 ? "D" : s <= 86400 ? "W" : "M"
+
+f_tfLabel(string tf) =>
+    int s = timeframe.in_seconds(tf)
+    s < 3600 ? str.tostring(s / 60) + "m" : s < 86400 ? str.tostring(s / 3600) + "H" : s == 86400 ? "D" : s == 604800 ? "W" : "M"
+
+string htf      = htfIn == "" ? f_htfAuto(timeframe.period) : htfIn
+bool   htfValid = htfOn and timeframe.in_seconds(htf) > timeframe.in_seconds(timeframe.period)
+string htfLabel = f_tfLabel(htf)
+
+// ---------------------------------------------------------------------------
+// 5. Drawing helpers
+// ---------------------------------------------------------------------------
+
+// All boxes anchor by time: bar-index anchors older than ~10k bars raise RE10026.
+f_newBox(Gap g, float t, float b, color bg, color bc, string bs) =>
+    box.new(g.leftTime, t, time, b, xloc = xloc.bar_time, border_color = bc, border_width = 1,
+         border_style = bs, bgcolor = bg, extend = extend.right)
+
+// consumed portion: from the entered edge to the deepest penetration (spec §4.1)
+f_fillBounds(Gap g) =>
+    float ft = na
+    float fb = na
+    if g.dir > 0
+        ft := g.top
+        fb := g.top - g.maxPen
+    else
+        ft := g.bottom + g.maxPen
+        fb := g.bottom
+    [ft, fb]
+
+// unconsumed remainder: the gap boxes are clipped to it so the zone visibly
+// shrinks as price trades into it, without painting over what is behind
+f_remBounds(Gap g) =>
+    float rt = g.top
+    float rb = g.bottom
+    if g.state >= ST_TOUCHED and g.maxPen > 0
+        if g.dir > 0
+            rt := g.top - g.maxPen
+        else
+            rb := g.bottom + g.maxPen
+    [rt, rb]
+
+// clip a box to the remainder; a fully consumed box collapses to zero height
+f_clip(box bx, float t, float b, float rt, float rb) =>
+    float ct = math.min(t, rt)
+    float cb = math.max(b, rb)
+    if ct < cb
+        cb := ct
+    box.set_top(bx, ct)
+    box.set_bottom(bx, cb)
+
+f_borderStyle(Gap g) =>
+    g.inverted ? line.style_dotted : g.layer == 1 ? line.style_dashed : line.style_solid
+
+// distance from the close to the zone (0 inside); shared by the spotlight and the visibility window
+f_dist(Gap g) =>
+    close >= g.bottom and close <= g.top ? 0.0 : math.min(math.abs(close - g.top), math.abs(close - g.bottom))
+
+// spec §4.7: far gaps keep their record and state but draw nothing
+f_visible(Gap g) =>
+    showAtr <= 0 or na(atr14) or f_dist(g) <= showAtr * atr14
+
+// spec §4.5
+f_label(Gap g) =>
+    string s = ""
+    if g.state != ST_MIT and labelMode != "None" and g.spot
+        if g.layer == 0 and labelMode == "All"
+            s := "FVG"
+            if g.state >= ST_TOUCHED
+                s := "FVG · " + str.tostring(100.0 * g.maxPen / (g.top - g.bottom), "0") + "%"
+    box.set_text(g.bBase, s)
+    box.set_text_size(g.bBase, g.layer == 1 ? size.small : size.tiny)   // HTF badge reads at 400 bars; chart-layer text stays tiny so thin gaps do not overflow
+    box.set_text_color(g.bBase, color.new(f_col(g), 20))
+    box.set_text_halign(g.bBase, text.align_right)
+    box.set_text_valign(g.bBase, text.align_center)
+
+// chip text: "<TF> · <mid>" for HTF gaps, "IFVG · <mid>" after inversion (R2/R6)
+f_chipTxt(Gap g) =>
+    string pre = g.inverted ? "IFVG · " : g.layer == 1 ? htfLabel + " · " : ""
+    pre + str.tostring(g.mid, format.mintick)
+
+f_spotOn(Gap g) =>
+    color c = f_col(g)
+    float h = g.top - g.bottom
+    g.bBand1 := f_newBox(g, g.mid + 0.40 * h, g.mid - 0.40 * h, color.new(c, f_transp(g, T_BAND1)), color.new(c, 100), line.style_solid)
+    g.bBand2 := f_newBox(g, g.mid + 0.30 * h, g.mid - 0.30 * h, color.new(c, f_transp(g, T_BAND2)), color.new(c, 100), line.style_solid)
+    g.bBand3 := f_newBox(g, g.mid + 0.20 * h, g.mid - 0.20 * h, color.new(c, f_transp(g, T_BAND3)), color.new(c, 100), line.style_solid)
+    g.bBand4 := f_newBox(g, g.mid + 0.10 * h, g.mid - 0.10 * h, color.new(c, f_transp(g, T_BAND4)), color.new(c, 100), line.style_solid)
+    g.bMid   := f_newBox(g, g.mid, g.mid, color.new(c, 100), color.new(c, 20), line.style_dotted)
+    // origin notch: one chart bar wide at the birth candle (R4) — chart TF for both
+    // layers, otherwise an HTF notch becomes a huge solid slab on a low-TF chart
+    int wMs   = 1000 * timeframe.in_seconds(timeframe.period)
+    g.bNotch := box.new(g.leftTime, g.top, g.leftTime + wMs, g.bottom, xloc = xloc.bar_time,
+         border_color = color.new(c, 100), bgcolor = color.new(c, 30))
+    // midpoint price chip riding the right edge (R2); carries the HTF / IFVG tag (R6)
+    if labelMode != "None"
+        g.lChip := label.new(bar_index, g.mid, f_chipTxt(g), style = label.style_label_left,
+             color = color.new(C_PANEL, 15), textcolor = c, size = size.small)
+    g.spot  := true
+    g.dirty := true
+
+f_spotOff(Gap g) =>
+    box.delete(g.bBand1)
+    box.delete(g.bBand2)
+    box.delete(g.bBand3)
+    box.delete(g.bBand4)
+    box.delete(g.bMid)
+    box.delete(g.bFill)
+    box.delete(g.bNotch)
+    label.delete(g.lChip)
+    g.bBand1 := box(na)
+    g.bBand2 := box(na)
+    g.bBand3 := box(na)
+    g.bBand4 := box(na)
+    g.bMid   := box(na)
+    g.bFill  := box(na)
+    g.bNotch := box(na)
+    g.lChip  := label(na)
+    g.spot   := false
+    g.dirty  := true
+
+// per-bar restyle of an active gap; gated so old, unchanged gaps cost nothing (spec §4.2)
+f_style(Gap g) =>
+    color c  = f_col(g)
+    float tb = g.spot ? f_transp(g, T_BASE) : T_GHOST
+    if g.dirty or math.abs(tb - g.lastT) >= 1.0
+        g.lastT := tb
+        [rt, rb] = f_remBounds(g)
+        float h  = g.top - g.bottom
+        box.set_bgcolor(g.bBase, color.new(c, tb))
+        box.set_border_color(g.bBase, color.new(c, g.spot ? 35 : 75))
+        box.set_border_style(g.bBase, f_borderStyle(g))
+        f_clip(g.bBase, g.top, g.bottom, rt, rb)
+        if g.spot
+            box.set_bgcolor(g.bBand1, color.new(c, f_transp(g, T_BAND1)))
+            box.set_bgcolor(g.bBand2, color.new(c, f_transp(g, T_BAND2)))
+            box.set_bgcolor(g.bBand3, color.new(c, f_transp(g, T_BAND3)))
+            box.set_bgcolor(g.bBand4, color.new(c, f_transp(g, T_BAND4)))
+            f_clip(g.bBand1, g.mid + 0.40 * h, g.mid - 0.40 * h, rt, rb)
+            f_clip(g.bBand2, g.mid + 0.30 * h, g.mid - 0.30 * h, rt, rb)
+            f_clip(g.bBand3, g.mid + 0.20 * h, g.mid - 0.20 * h, rt, rb)
+            f_clip(g.bBand4, g.mid + 0.10 * h, g.mid - 0.10 * h, rt, rb)
+            f_clip(g.bNotch, g.top, g.bottom, rt, rb)
+            // the dotted midpoint line only while the midpoint is still unconsumed
+            bool midLeft = g.mid <= rt and g.mid >= rb
+            box.set_border_color(g.bMid, color.new(c, midLeft ? 20 : 100))
+            box.set_bgcolor(g.bNotch, color.new(c, 30))
+            if not na(g.lChip)
+                label.set_text(g.lChip, f_chipTxt(g))
+                label.set_color(g.lChip, color.new(C_PANEL, 15))
+                label.set_textcolor(g.lChip, c)
+        if not na(g.bFill)
+            box.set_border_color(g.bFill, color.new(c, 55))
+        f_label(g)
+        g.dirty := false
+    if g.spot and g.state >= ST_TOUCHED and g.maxPen > 0
+        [ft, fb] = f_fillBounds(g)
+        if na(g.bFill)
+            g.bFill := f_newBox(g, ft, fb, color.new(c, 100), color.new(c, 55), line.style_dashed)
+        box.set_top(g.bFill, ft)        // unconditional: harmless right after creation, needed on later bars
+        box.set_bottom(g.bFill, fb)
+    if g.spot and not na(g.lChip)
+        label.set_x(g.lChip, bar_index)     // chip rides the right edge
+
+// mitigated look: dim dashed outline frozen at the mitigation bar (spec §4.1)
+f_outline(Gap g) =>
+    f_spotOff(g)
+    box.set_extend(g.bBase, extend.none)
+    box.set_right(g.bBase, g.mitTime)
+    box.set_top(g.bBase, g.top)
+    box.set_bottom(g.bBase, g.bottom)
+    box.set_bgcolor(g.bBase, color.new(C_NEUTRAL, 98))
+    box.set_border_color(g.bBase, color.new(C_NEUTRAL, 85))
+    box.set_border_style(g.bBase, line.style_dashed)
+    box.set_text(g.bBase, "")
+
+// create the base box for a record that is (back) inside the visibility window (spec §4.7)
+f_baseOn(Gap g) =>
+    color c = f_col(g)
+    g.bBase := f_newBox(g, g.top, g.bottom, color.new(c, 100), color.new(c, 100), f_borderStyle(g))
+    g.lastT := -1.0
+    g.dirty := true
+    if g.state == ST_MIT
+        f_outline(g)
+
+// remove every box of a record that left the window; the record and its state stay
+f_baseOff(Gap g) =>
+    f_spotOff(g)
+    box.delete(g.bBase)
+    g.bBase := box(na)
+
+f_drop(Gap g) =>
+    f_baseOff(g)
+
+// ---------------------------------------------------------------------------
+// 6. Lifecycle   (mirror of fvg_ref.Engine — keep the operation order identical)
+// ---------------------------------------------------------------------------
+// spec §2 filters. Auto threshold records every candidate, pass or fail.
+f_passes(int layer, float h, float atrV, float price) =>
+    bool ok = true
+    if autoThresh
+        float rel  = h / price
+        float mean = layer == 0 ? (S.atN0 > 0 ? S.atSum0 / S.atN0 : 0.0) : (S.atN1 > 0 ? S.atSum1 / S.atN1 : 0.0)
+        if layer == 0
+            S.atSum0 += rel
+            S.atN0   += 1
+        else
+            S.atSum1 += rel
+            S.atN1   += 1
+        ok := rel > mean
+    else if sizeAtr > 0
+        ok := not na(atrV) and h >= sizeAtr * atrV
+    ok
+
+f_mitigate(Gap g) =>
+    g.state   := ST_MIT
+    g.mitBar  := bar_index
+    g.mitTime := time
+    if not na(g.bBase)
+        f_outline(g)
+
+f_invert(Gap g) =>
+    g.dir         := -g.dir
+    g.inverted    := true
+    g.state       := ST_FRESH
+    g.maxPen      := 0.0
+    g.createdBar  := bar_index
+    g.createdTime := time
+    box.delete(g.bFill)
+    g.bFill := box(na)
+    g.dirty := true
+
+// spec §3.2, one active gap, one bar. Returns the highest event code.
+f_update(Gap g, float hi, float lo, float cl, bool closeValid) =>
+    int   ev   = EV_NONE
+    float w    = g.dir > 0 ? lo : hi
+    float near = g.dir > 0 ? g.top : g.bottom
+    float far  = g.dir > 0 ? g.bottom : g.top
+    float h    = g.top - g.bottom
+    if f_reach(g.dir, w, near)
+        float pen = g.dir > 0 ? g.top - lo : hi - g.bottom
+        float np  = math.min(h, math.max(g.maxPen, pen))
+        if np != g.maxPen
+            g.maxPen := np
+            g.dirty  := true
+        if g.state < ST_TOUCHED
+            g.state := ST_TOUCHED
+            ev := EV_TOUCH
+        if g.state < ST_MIDTAP and f_reach(g.dir, w, g.mid)
+            g.state := ST_MIDTAP
+            ev := EV_MIDTAP
+    bool done = false
+    if closeValid and f_beyond(g.dir, cl, far)
+        if trackInv and not g.inverted
+            f_invert(g)
+            ev := EV_INV
+        else
+            f_mitigate(g)
+            ev := EV_MIT
+        done := true
+    if not done
+        float point = mitPoint == "Near edge" ? near : mitPoint == "Midpoint" ? g.mid : far
+        float src   = mitSource == "Wick" ? w : (closeValid ? cl : na)
+        if not na(src) and f_reach(g.dir, src, point)
+            f_mitigate(g)
+            ev := EV_MIT
+    ev
+
+// spec §4.3: evict before creating when the record cap is reached
+f_budget() =>
+    if gaps.size() >= MAX_RECORDS
+        int victim = -1
+        int key    = 0
+        for [i, g] in gaps
+            if g.state == ST_MIT and (victim < 0 or g.mitBar < key)
+                victim := i
+                key    := g.mitBar
+        if victim < 0
+            for [i, g] in gaps
+                if not g.spot and (victim < 0 or g.createdBar < key)
+                    victim := i
+                    key    := g.createdBar
+            if victim >= 0
+                S.capHit := true
+        if victim >= 0
+            f_drop(gaps.get(victim))
+            gaps.remove(victim)
+
+f_add(int d, float t, float b, int layer, int leftBar, int leftTime) =>
+    f_budget()
+    Gap g = Gap.new(top = t, bottom = b, mid = (t + b) / 2.0, dir = d, layer = layer,
+         createdBar = bar_index, createdTime = time, leftBar = leftBar, leftTime = leftTime,
+         state = ST_FRESH, inverted = false, maxPen = 0.0, mitBar = -1, mitTime = -1, spot = false,
+         lastT = -1.0, dirty = true,
+         bBase = box(na), bBand1 = box(na), bBand2 = box(na), bMid = box(na), bFill = box(na))
+    gaps.push(g)
+
+// spec §4.3: the spotN active gaps nearest to close; ties -> lowest index (strict '<')
+f_spotlight() =>
+    int n = gaps.size()
+    if n > 0
+        array<float> dist   = array.new<float>(n, BIG)
+        array<bool>  chosen = array.new<bool>(n, false)
+        for [i, g] in gaps
+            if g.state != ST_MIT and not na(g.bBase)
+                dist.set(i, f_dist(g))
+        if spotN > 0
+            for k = 1 to spotN
+                int   best = -1
+                float bd   = BIG
+                for i = 0 to n - 1
+                    if not chosen.get(i) and dist.get(i) < bd
+                        bd   := dist.get(i)
+                        best := i
+                if best >= 0 and bd < BIG
+                    chosen.set(best, true)
+        for [i, g] in gaps
+            bool want = chosen.get(i)
+            if want and not g.spot
+                f_spotOn(g)
+            else if not want and g.spot
+                f_spotOff(g)
+
+// ---------------------------------------------------------------------------
+// 7. Higher timeframe   (spec §5; values come only from completed HTF candles)
+// ---------------------------------------------------------------------------
+// top-level, unconditional. [1] and older = completed HTF candles; never repaints.
+[hH1, hL1, hH3, hL3, hC1, hC2, hT1, hT3, hAtr] = request.security(syminfo.tickerid, htf,
+     [high[1], low[1], high[3], low[3], close[1], close[2], time[1], time[3], ta.atr(14)[1]],
+     lookahead = barmerge.lookahead_on)
+bool htfNew = ta.change(time(htf)) != 0     // first chart bar of a new HTF period
+
+// ---------------------------------------------------------------------------
+// 8. Per-bar engine   (order: 1 update actives, 2 prune, 3 detect chart, 4 detect HTF, 5 spotlight, 6 style)
+// ---------------------------------------------------------------------------
+int  evBar     = 0
+bool evNewBull = false
+bool evNewBear = false
+bool evHtfBull = false
+bool evHtfBear = false
+bool evTouch   = false
+bool evMidtap  = false
+bool evMit     = false
+bool evInv     = false
+
+if barstate.isconfirmed
+    // 1. update actives
+    for g in gaps
+        if g.state != ST_MIT
+            bool  cv = g.layer == 0 ? true : htfNew
+            float cl = g.layer == 0 ? close : hC1
+            int ev = f_update(g, high, low, cl, cv)
+            if g.layer == 0
+                evBar := math.max(evBar, ev)
+            if ev == EV_MIT
+                cumMit += 1
+                if g.layer == 0
+                    cumMit0 += 1
+            evTouch  := evTouch  or ev == EV_TOUCH
+            evMidtap := evMidtap or ev == EV_MIDTAP
+            evMit    := evMit    or ev == EV_MIT
+            evInv    := evInv    or ev == EV_INV
+    // 2. prune retired records
+    if gaps.size() > 0
+        for i = gaps.size() - 1 to 0
+            Gap g = gaps.get(i)
+            if g.state == ST_MIT and bar_index - g.mitBar > keepBars
+                f_drop(g)
+                gaps.remove(i)
+    // 3. detect on the chart timeframe (candle 3 = this bar)
+    if bar_index >= 2
+        [d, t, b] = f_detect(high[2], low[2], close[1], high, low, needDisp)
+        if d != 0 and f_passes(0, t - b, atr14, close)
+            f_add(d, t, b, 0, bar_index - 2, time[2])
+            cumCreated += 1
+            evBar     := math.max(evBar, d > 0 ? EV_NEW_BULL : EV_NEW_BEAR)
+            evNewBull := evNewBull or d > 0
+            evNewBear := evNewBear or d < 0
+    // 4. detect on the higher timeframe: the just-completed HTF candle is candle 3
+    if htfValid and htfNew
+        [d2, t2, b2] = f_detect(hH3, hL3, hC2, hH1, hL1, needDisp)
+        if d2 != 0 and f_passes(1, t2 - b2, hAtr, hC1)
+            f_add(d2, t2, b2, 1, na, hT3)
+            cumCreated += 1
+            evHtfBull := evHtfBull or d2 > 0
+            evHtfBear := evHtfBear or d2 < 0
+    // 5. visibility window (spec §4.7), then spotlight among visible active gaps
+    for g in gaps
+        bool vis = f_visible(g)
+        if vis and na(g.bBase)
+            f_baseOn(g)
+        else if not vis and not na(g.bBase)
+            f_baseOff(g)
+    f_spotlight()
+    // 6. style
+    for g in gaps
+        if g.state != ST_MIT and not na(g.bBase)
+            f_style(g)
+
+// ---------------------------------------------------------------------------
+// 9. Counts, hidden plots, dashboard, alerts   (Task 10)
+// ---------------------------------------------------------------------------
+int nBull = 0
+int nBear = 0
+int nHtf  = 0
+int nFar  = 0
+for g in gaps
+    if g.state != ST_MIT
+        if na(g.bBase)
+            nFar += 1
+        if g.layer == 1
+            nHtf += 1
+        else if g.dir > 0
+            nBull += 1
+        else
+            nBear += 1
+
+plot(nBull,  "nBullActive", display = display.data_window)
+plot(nBear,  "nBearActive", display = display.data_window)
+plot(cumMit0, "nMitigated", display = display.data_window)
+plot(nHtf,   "nHtfActive",  display = display.data_window)
+plot(evBar,  "lastEvent",   display = display.data_window)
+
+// nearest active gap above / below the close (dashboard only)
+float nearAbove = na
+float nearBelow = na
+for g in gaps
+    if g.state != ST_MIT
+        if g.bottom > close and (na(nearAbove) or g.bottom < nearAbove)
+            nearAbove := g.bottom
+        if g.top < close and (na(nearBelow) or g.top > nearBelow)
+            nearBelow := g.top
+
+var table tbl = table.new(position.top_right, 2, 7, border_width = 0, frame_color = #2A2F3A, frame_width = 1)
+if showTable and barstate.islast
+    string warn    = S.capHit ? "budget hit: oldest gaps dropped" : (htfOn and not htfValid) ? "HTF off: not above chart TF" : ""
+    color  warnCol = S.capHit ? C_RED_ : C_AMBER_
+    int    fillN   = cumCreated > 0 ? math.round(10.0 * cumMit / cumCreated) : 0
+    string fillTxt = cumCreated > 0 ? str.repeat("▰", fillN) + str.repeat("▱", 10 - fillN) + " " + str.tostring(100.0 * cumMit / cumCreated, "0") + "%" : "—"
+    color  bg      = color.new(C_PANEL, 0)
+    bool   hasWarn = warn != ""
+    table.cell(tbl, 0, 0, "FVG · GBB", text_color = color.white, bgcolor = bg, text_size = size.small, text_halign = text.align_left)
+    table.cell(tbl, 1, 0, htfValid ? htfLabel + " · " + str.tostring(nHtf) + " active" : (htfOn ? "HTF off: not above chart TF" : "HTF off"), text_color = C_NEUTRAL, bgcolor = bg, text_size = size.tiny, text_halign = text.align_right)
+    table.cell(tbl, 0, 1, "Active", text_color = C_NEUTRAL, bgcolor = bg, text_size = size.small, text_halign = text.align_left)
+    table.cell(tbl, 1, 1, str.tostring(nBull) + " bull · " + str.tostring(nBear) + " bear · " + str.tostring(nFar) + " far", text_color = color.white, bgcolor = bg, text_size = size.small, text_halign = text.align_right)
+    table.cell(tbl, 0, 2, "Above", text_color = C_NEUTRAL, bgcolor = bg, text_size = size.small, text_halign = text.align_left)
+    table.cell(tbl, 1, 2, na(nearAbove) ? "—" : str.tostring(nearAbove, format.mintick), text_color = cDn, bgcolor = bg, text_size = size.small, text_halign = text.align_right)
+    table.cell(tbl, 0, 3, "Below", text_color = C_NEUTRAL, bgcolor = bg, text_size = size.small, text_halign = text.align_left)
+    table.cell(tbl, 1, 3, na(nearBelow) ? "—" : str.tostring(nearBelow, format.mintick), text_color = cUp, bgcolor = bg, text_size = size.small, text_halign = text.align_right)
+    table.cell(tbl, 0, 4, "Fill rate", text_color = C_NEUTRAL, bgcolor = bg, text_size = size.small, text_halign = text.align_left)
+    table.cell(tbl, 1, 4, fillTxt, text_color = cUp, bgcolor = bg, text_size = size.small, text_halign = text.align_right)
+    table.cell(tbl, 0, 5, hasWarn ? "Warning" : "", text_color = warnCol, bgcolor = bg, text_size = size.tiny, text_halign = text.align_left)
+    table.cell(tbl, 1, 5, hasWarn ? warn : "", text_color = warnCol, bgcolor = bg, text_size = size.tiny, text_halign = text.align_right)
+    table.cell(tbl, 0, 6, "running counts on loaded bars — not a backtest", text_color = color.new(C_NEUTRAL, 30), bgcolor = bg, text_size = size.tiny, text_halign = text.align_left)
+    table.merge_cells(tbl, 0, 6, 1, 6)
+
+// alerts — confirmed bars only (all ev* flags are set inside the isconfirmed block)
+alertcondition(evNewBull, "New bullish FVG",     "FVG [GBB] {{ticker}} {{interval}}: new bullish gap")
+alertcondition(evNewBear, "New bearish FVG",     "FVG [GBB] {{ticker}} {{interval}}: new bearish gap")
+alertcondition(evHtfBull, "New HTF bullish FVG", "FVG [GBB] {{ticker}} {{interval}}: new higher-timeframe bullish gap")
+alertcondition(evHtfBear, "New HTF bearish FVG", "FVG [GBB] {{ticker}} {{interval}}: new higher-timeframe bearish gap")
+alertcondition(evTouch,   "Price entered a gap", "FVG [GBB] {{ticker}} {{interval}}: price entered a gap")
+alertcondition(evMidtap,  "Midpoint tapped",     "FVG [GBB] {{ticker}} {{interval}}: gap midpoint tapped")
+alertcondition(evMit,     "Gap mitigated",       "FVG [GBB] {{ticker}} {{interval}}: gap mitigated")
+alertcondition(evInv,     "Gap inverted",        "FVG [GBB] {{ticker}} {{interval}}: gap inverted")
+

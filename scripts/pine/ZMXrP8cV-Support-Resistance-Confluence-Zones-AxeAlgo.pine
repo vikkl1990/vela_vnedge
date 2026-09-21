@@ -1,0 +1,794 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AxeAlgo
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+//  Support Resistance Confluence Zones [AxeAlgo]
+// ─────────────────────────────────────────────────────────────────────────────
+//  Auto-detects support & resistance the way an institutional discretionary
+//  trader actually draws them — not a single pivot line, but a CONFLUENCE ZONE
+//  built from every pivot high/low that lands close enough together to matter.
+//
+//   • Zones only appear once at least 2 pivots agree on a level — zero single-
+//     touch noise, nothing to draw by hand.
+//   • Smart De-Cluttering: Automatically prioritizes the most actionable Key
+//     Levels and limits active stacked bands per side to keep charts pristine.
+//   • Volume-Weighted POC Anchor: Equilibrium line tracks the highest-volume
+//     institutional anchor price inside the zone cluster for pinpoint accuracy.
+//   • High-Contrast Glowing Badges: Crisp, dual-tone pills readable across all
+//     dark, light, and custom chart themes.
+//   • Structural Memory: Tracks pre-break and post-flip retests (e.g. ×3+2)
+//     so you know exactly how many times each cycle respected the shelf.
+//   • Institutional Rejection Markers: Highlights confirmed pinbar/sweep
+//     reactions off high-confluence zones.
+//   • Live HUD Market Structure Bias: Real-time boundary collision engine
+//     detects zone tests, rejections, breakout pressure, and ATR ranges.
+//   • Multi-layer Confluence: Scores zones 0-100 combining touch count,
+//     higher-timeframe swing alignment (◈), psychological round numbers (◎),
+//     and institutional volume spikes (Ⓥ).
+//   • Non-Repainting: Pivots confirm `pvRight` bars after the swing and never
+//     move; retests, breaks, and flips are evaluated on confirmed closes only.
+// ─────────────────────────────────────────────────────────────────────────────
+
+indicator("Support Resistance Confluence Zones [AxeAlgo]", overlay = true, max_boxes_count = 120, max_lines_count = 120, max_labels_count = 180, max_bars_back = 500)
+
+// ═════════════════════════ Inputs ═════════════════════════
+
+// ───────── 1. QUICK START & SMART FILTERING ─────────
+g00 = "1. QUICK START & DE-CLUTTERING"
+autoTune      = input.bool(true, "🎯 Auto-Tune To Timeframe", group = g00, tooltip = "Auto-scales pivot length to your chart's timeframe. Turn off to set Pivot Length manually below.")
+flipOnBreak   = input.bool(true, "🔄 Flip Broken Zones (S ⇄ R)", group = g00, tooltip = "When a zone is closed through, it flips role instead of disappearing — broken resistance becomes support and vice versa.")
+maxLevelsSide = input.int(4, "Max Active Levels Per Direction", minval = 1, maxval = 10, group = g00, tooltip = "Smart De-Cluttering: Limits the number of active resistance levels above and support levels below price to eliminate stacked chart noise.")
+minScoreShow  = input.int(0, "Min Confluence Score To Display", minval = 0, maxval = 90, step = 10, group = g00, tooltip = "Set higher (e.g. 50 or 60) to hide weak intermediate zones and display only verified structural shelves.")
+
+// ───────── 2. WHAT TO SHOW ─────────
+g01 = "2. WHAT TO SHOW"
+showBadges      = input.bool(true, "Show Confluence Badges", group = g01, tooltip = "Labels each zone with a high-contrast pill containing its 0-100 score, touch count, and tags. 80+ score earns a ★ prefix.")
+badgeSizeTxt    = input.string("Small", "Badge Text Size", options = ["Tiny", "Small", "Normal"], group = g01)
+showMidline     = input.bool(true, "Show Zone Midline / Anchor", group = g01, tooltip = "Draws an equilibrium line through the zone.")
+midlineMode     = input.string("Volume POC Anchor", "Midline Mode", options = ["Volume POC Anchor", "50% Geometric Midline"], group = g01, tooltip = "Volume POC Anchor locks to the highest-volume pivot inside the cluster for institutional precision. 50% Geometric is a simple midpoint.")
+showTentative   = input.bool(false, "Show Developing (Single-Pivot) Levels", group = g01, tooltip = "Draws faint dashed lines for lone swing highs/lows awaiting a 2nd pivot to establish full confluence.")
+showFlipMarkers = input.bool(false, "Show ⇄ Flip Markers", group = g01, tooltip = "Marks the exact bar where a zone broke and changed role.")
+showRejections  = input.bool(false, "Show Rejection / Sweep Markers", group = g01, tooltip = "Plots subtle ▲/▼ rejection markers when price wicks into a high-confluence zone and closes outside.")
+showDash        = input.bool(false, "Show Institutional Dashboard", group = g01, tooltip = "Real-time institutional HUD reporting active zones, nearest levels, strongest shelf, and market structure bias.")
+
+// ───────── 3. PIVOT DETECTION ─────────
+g02 = "3. PIVOT DETECTION"
+pivotLenIn = input.int(10, "Pivot Length (bars)", minval = 3, maxval = 60, group = g02, tooltip = "Ignored when Auto-Tune is on.")
+pvRight    = input.int(3, "Confirmation Bars", minval = 1, maxval = 10, group = g02, tooltip = "Bars to the right required to confirm a pivot. Higher = fewer false pivots, slower to appear.")
+atrLen     = input.int(14, "ATR Length", minval = 2, maxval = 100, group = g02)
+
+// ───────── 4. ZONE CLUSTERING ─────────
+g03 = "4. ZONE CLUSTERING"
+clusterTolAtr = input.float(0.35, "Cluster Tolerance (× ATR)", minval = 0.05, maxval = 2.0, step = 0.05, group = g03, tooltip = "Pivots within this distance of each other merge into one confluence zone. Raise for fewer, wider zones.")
+minHeightAtr  = input.float(0.08, "Min Zone Height (× ATR)", minval = 0.01, maxval = 1.0, step = 0.01, group = g03, tooltip = "Zones thinner than this are padded so they stay visible.")
+maxHeightAtr  = input.float(1.5, "Max Zone Height (× ATR)", minval = 0.5, maxval = 8.0, step = 0.1, group = g03, tooltip = "Caps how wide a merged zone can grow.")
+
+// ───────── 5. CONFLUENCE BOOSTERS ─────────
+g04h = "5. CONFLUENCE BOOSTERS"
+useHtf      = input.bool(true, "◈ Boost Zones Aligned With HTF Structure", group = g04h, tooltip = "Zones that line up with a higher-timeframe swing high/low score higher and get a ◈ tag — genuine multi-timeframe confluence.")
+htfModeIn   = input.string("Auto (Higher TF)", "HTF Resolution", options = ["Auto (Higher TF)", "Manual"], group = g04h)
+htfManual   = input.timeframe("240", "Manual HTF Timeframe", group = g04h, tooltip = "Used only when HTF Resolution = Manual.")
+htfTolAtr   = input.float(0.5, "HTF Alignment Tolerance (× ATR)", minval = 0.1, maxval = 3.0, step = 0.1, group = g04h, tooltip = "How close a zone's level needs to be to the HTF pivot to count as aligned.")
+useRoundNum = input.bool(true, "◎ Boost Zones Near Round Numbers", group = g04h, tooltip = "Zones landing near psychological institutional round numbers (00 figures, 50 half-figures, $100/$1000 whole levels) score higher and get a ◎ tag.")
+roundTolAtr = input.float(0.15, "Round Number Tolerance (× ATR)", minval = 0.02, maxval = 1.0, step = 0.01, group = g04h, tooltip = "How close a zone's level needs to be to a round number to count as aligned.")
+useVolBoost = input.bool(true, "Ⓥ Boost Zones Formed On High Volume", group = g04h, tooltip = "Zones formed or retested on institutional volume spikes (> 1.5× volume 20-SMA) score higher and get a Ⓥ tag.")
+
+// ───────── 6. RETEST & LIFECYCLE ─────────
+g04 = "6. RETEST & LIFECYCLE"
+retestSepBars = input.int(5, "Min Bars Between Retests", minval = 1, maxval = 30, group = g04, tooltip = "Debounce — a zone counts at most one retest per this many bars, so chop sitting inside it doesn't inflate the badge.")
+rayExt        = input.int(22, "Zone Forward Extension (bars)", minval = 5, maxval = 100, group = g04)
+bufferMaxAge  = input.int(100, "Unpaired Pivot Memory (bars)", minval = 10, maxval = 400, group = g04, tooltip = "A lone pivot waiting for a second one to cluster with expires after this long.")
+zoneFarAtr    = input.float(20.0, "Auto-Cull Distance (× ATR)", minval = 5.0, maxval = 60.0, step = 1.0, group = g04, tooltip = "Drops zones this far from price as stale.")
+fadeStartAtr  = input.float(3.0, "Fade Start Distance (× ATR)", minval = 0.5, maxval = 20.0, step = 0.5, group = g04, tooltip = "Zones beyond this distance from price start fading toward the Auto-Cull boundary, keeping the eye on what is actionable now.")
+maxZones      = input.int(12, "Max Zones In Memory", minval = 2, maxval = 30, group = g04, tooltip = "Oldest zones drop off first.")
+
+// ───────── 7. DASHBOARD ─────────
+g05 = "7. DASHBOARD"
+tblPosTxt  = input.string("Top Right", "Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = g05)
+tblSizeTxt = input.string("Small", "Text Size", options = ["Tiny", "Small", "Normal"], group = g05)
+
+// ───────── 8. COLORS ─────────
+g06 = "8. COLORS"
+resCol  = input.color(#b22833, "Resistance Zone", inline = "c1", group = g06)
+supCol  = input.color(#D4AF37, "Support Zone", inline = "c1", group = g06)
+flipCol = input.color(#FFD400, "Flip Marker", inline = "c2", group = g06)
+rejCol  = input.color(#b22833, "Rejection Marker", inline = "c2", group = g06)
+
+// ───────── 9. WATERMARK ─────────
+wmGrp   = " A X E A L G O "
+wmTheme = input.string("Dark", "Watermark Theme", options = ["Auto", "Dark", "Light"], group = wmGrp, tooltip = "Auto = detect chart background.")
+
+// ═════════════════════════ Helpers ═════════════════════════
+
+f_tablePos(t) =>
+    switch t
+        "Top Right"    => position.top_right
+        "Top Left"     => position.top_left
+        "Bottom Right" => position.bottom_right
+        "Bottom Left"  => position.bottom_left
+        => position.top_right
+
+f_size(t) =>
+    switch t
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        => size.small
+
+f_autoPivLen() =>
+    s = timeframe.in_seconds(timeframe.period)
+    switch
+        s <= 60    => 8
+        s <= 300   => 10
+        s <= 3600  => 14
+        s <= 14400 => 18
+        => 24
+
+f_capLabels(a, c) =>
+    while array.size(a) > c
+        label.delete(array.shift(a))
+
+f_pruneBuf(buf, bufB, bufV, bufVol, maxAge) =>
+    if array.size(buf) > 0
+        for k = array.size(buf) - 1 to 0
+            if bar_index - array.get(bufB, k) > maxAge
+                array.remove(buf, k)
+                array.remove(bufB, k)
+                array.remove(bufV, k)
+                array.remove(bufVol, k)
+
+// ═════════════════════════ Core series ═════════════════════════
+atrVal = ta.atr(atrLen)
+pivLen = autoTune ? f_autoPivLen() : pivotLenIn
+
+ph = ta.pivothigh(high, pivLen, pvRight)
+pl = ta.pivotlow(low,  pivLen, pvRight)
+pxHi  = high[pvRight]
+pxLo  = low[pvRight]
+pvBar = bar_index - pvRight
+
+volSma    = ta.sma(volume, 20)
+isHighVol = not na(volume) and not na(volSma) and volSma > 0 and volume > volSma * 1.5
+pvHiVol   = isHighVol[pvRight]
+pvRawVol  = nz(volume[pvRight], 0.0)
+
+// ═════════════════════════ HTF Confluence ═════════════════════════
+f_autoHtf() =>
+    s = timeframe.in_seconds(timeframe.period)
+    switch
+        s <= 60    => "15"
+        s <= 300   => "60"
+        s <= 900   => "240"
+        s <= 3600  => "D"
+        s <= 14400 => "W"
+        => "M"
+
+// Stable HTF swing confirmation prevents lookahead/repainting
+f_htfPivots() =>
+    hPh = ta.pivothigh(high, 5, 2)
+    hPl = ta.pivotlow(low, 5, 2)
+    hHi = ta.valuewhen(not na(hPh), high[2], 0)
+    hLo = ta.valuewhen(not na(hPl), low[2], 0)
+    [hHi, hLo]
+
+htfTf = htfModeIn == "Manual" ? htfManual : f_autoHtf()
+mtfOK = timeframe.in_seconds(htfTf) > timeframe.in_seconds(timeframe.period)
+[htfHiRaw, htfLoRaw] = request.security(syminfo.tickerid, htfTf, f_htfPivots(), lookahead = barmerge.lookahead_off)
+htfHi = useHtf and mtfOK ? htfHiRaw : na
+htfLo = useHtf and mtfOK ? htfLoRaw : na
+
+// ═════════════════════════ Types ═════════════════════════
+type SRZone
+    box   bx
+    label lb
+    line  lnMid          // equilibrium / volume POC centerline
+    float top
+    float bot
+    int   dir            // 1 = resistance, -1 = support (current role)
+    int   touch          // touches in current role
+    int   preTouch       // touches prior to role flip
+    int   flipCount      // number of times flipped
+    int   born
+    int   lastTouchBar
+    bool  hasVol         // institutional volume spike on formation or retest
+    float pocPx          // price of pivot with highest volume in zone cluster
+    float maxVol         // highest volume recorded among cluster pivots
+    bool  visible        // currently passing de-clutter / min-score filters
+    bool  isBest         // the single highest-scoring visible zone on chart
+
+var array<SRZone> zones      = array.new<SRZone>()
+var array<float>  hiBuf      = array.new<float>()
+var array<int>    hiBufB     = array.new<int>()
+var array<bool>   hiBufV     = array.new<bool>()
+var array<float>  hiBufVol   = array.new<float>()
+var array<float>  loBuf      = array.new<float>()
+var array<int>    loBufB     = array.new<int>()
+var array<bool>   loBufV     = array.new<bool>()
+var array<float>  loBufVol   = array.new<float>()
+var array<label>  flipLbl    = array.new<label>()
+var array<label>  rejLbl     = array.new<label>()
+var array<line>   ghostLines = array.new<line>()
+
+// bar-scope alert flags
+var bool sigFlipToSupport    = false
+var bool sigFlipToResistance = false
+var bool sigRetest           = false
+var bool sigNewZone          = false
+var bool sigRejection        = false
+sigFlipToSupport    := false
+sigFlipToResistance := false
+sigRetest           := false
+sigNewZone          := false
+sigRejection        := false
+
+// Multi-tier institutional round number engine with zero guard
+f_isRoundNear(px) =>
+    absPx = math.abs(px)
+    if absPx <= 0.0 or na(absPx) or na(atrVal) or atrVal <= 0
+        false
+    else
+        mag   = math.floor(math.log10(absPx))
+        b1    = math.pow(10, mag)
+        b01   = b1 / 10.0
+        b001  = b1 / 100.0
+        b0005 = b001 / 2.0
+
+        n1  = math.round(absPx / b01) * b01
+        n2  = math.round(absPx / (b01 / 2.0)) * (b01 / 2.0)
+        n3  = math.round(absPx / b001) * b001
+        n4  = math.round(absPx / b0005) * b0005
+        tol = roundTolAtr * atrVal
+        math.abs(absPx - n1) <= tol or math.abs(absPx - n2) <= tol or math.abs(absPx - n3) <= tol or math.abs(absPx - n4) <= tol
+
+// Unified 0-100 confluence score
+f_confluenceScore(touch, aligned, roundNear, hasVol) =>
+    // Asymptotic approach to 80 instead of a hard linear cap — a zone with
+    // 40 touches now scores meaningfully higher than one with 10, and one
+    // with 10 higher than one with 5. No touch count ever fully saturates
+    // the curve, so heavily-tested zones keep separating from each other
+    // instead of all bunching at the same ceiling.
+    t = math.max(touch, 2)
+    touchScore = 80.0 - 40.0 / (1.0 + (t - 2) * 0.15)
+    bonus = (aligned ? 8 : 0) + (roundNear ? 6 : 0) + (hasVol ? 6 : 0)
+    int(math.min(100, touchScore + bonus))
+
+// Zone thickness bounds
+f_zoneBounds(rawTop, rawBot) =>
+    float top = rawTop
+    float bot = rawBot
+    minH = math.max(minHeightAtr * atrVal, clusterTolAtr * atrVal * 0.5)
+    if top - bot < minH
+        mid = (top + bot) / 2
+        top := mid + minH / 2
+        bot := mid - minH / 2
+    if top - bot > maxHeightAtr * atrVal
+        mid2 = (top + bot) / 2
+        top := mid2 + maxHeightAtr * atrVal / 2
+        bot := mid2 - maxHeightAtr * atrVal / 2
+    [top, bot]
+
+// Visual hierarchy tiers
+f_zoneStyle(score) =>
+    if score >= 80
+        [3, 15, 78]
+    else if score >= 60
+        [2, 40, 86]
+    else
+        [1, 65, 93]
+
+f_zoneMidline(z) =>
+    midlineMode == "Volume POC Anchor" and not na(z.pocPx) and z.pocPx >= z.bot and z.pocPx <= z.top ? z.pocPx : (z.top + z.bot) / 2
+
+// Shared score calc, used to find the single best shelf on chart
+f_zoneScore(z) =>
+    mid = f_zoneMidline(z)
+    htfLevel = z.dir == 1 ? htfHi : htfLo
+    aligned = useHtf and not na(htfLevel) and not na(atrVal) and atrVal > 0 and math.abs(mid - htfLevel) <= htfTolAtr * atrVal
+    roundNear = useRoundNum and not na(atrVal) and atrVal > 0 and f_isRoundNear(mid)
+    f_confluenceScore(z.touch + z.preTouch, aligned, roundNear, z.hasVol and useVolBoost)
+
+f_applyZoneStyle(z, isVisible) =>
+    if not isVisible
+        box.set_border_color(z.bx, color.new(color.white, 100))
+        box.set_bgcolor(z.bx, color.new(color.white, 100))
+        if not na(z.lnMid)
+            line.set_color(z.lnMid, color.new(color.white, 100))
+        if not na(z.lb)
+            label.set_text(z.lb, "")
+            label.set_color(z.lb, color.new(color.white, 100))
+            label.set_textcolor(z.lb, color.new(color.white, 100))
+    else
+        zc = z.dir == 1 ? resCol : supCol
+        midZ = f_zoneMidline(z)
+        atrOK2 = not na(atrVal) and atrVal > 0
+        htfLevel = z.dir == 1 ? htfHi : htfLo
+        aligned = useHtf and not na(htfLevel) and atrOK2 and math.abs(midZ - htfLevel) <= htfTolAtr * atrVal
+        roundNear = useRoundNum and atrOK2 and f_isRoundNear(midZ)
+        score = f_confluenceScore(z.touch + z.preTouch, aligned, roundNear, z.hasVol and useVolBoost)
+        [bwRaw, btRaw, bgtRaw] = f_zoneStyle(score)
+        int bw  = bwRaw
+        int bt  = btRaw
+        int bgt = bgtRaw
+
+        // Dynamic distance fade
+        distAtr  = atrOK2 ? math.abs(midZ - close) / atrVal : 0.0
+        fadeSpan = math.max(zoneFarAtr - fadeStartAtr, 1.0)
+        fadeAdd  = distAtr <= fadeStartAtr ? 0.0 : math.min(30.0, (distAtr - fadeStartAtr) / fadeSpan * 30.0)
+        bt  := math.min(bt + int(math.round(fadeAdd)), 95)
+        bgt := math.min(bgt + int(math.round(fadeAdd * 0.6)), 97)
+
+        // Crown the single strongest shelf on the whole chart with a
+        // brighter, thicker border so it reads at a glance — not just
+        // via the dashboard's "Strongest Shelf" row.
+        if z.isBest
+            bw := bw + 1
+            bt := math.max(bt - 15, 0)
+
+        box.set_border_width(z.bx, bw)
+        box.set_border_color(z.bx, color.new(zc, bt))
+        box.set_bgcolor(z.bx, color.new(zc, bgt))
+
+        if not na(z.lnMid)
+            line.set_xy1(z.lnMid, math.max(0, z.born), midZ)
+            line.set_xy2(z.lnMid, bar_index + rayExt, midZ)
+            line.set_color(z.lnMid, color.new(zc, math.min(bt + 15, 95)))
+
+        if not na(z.lb)
+            tag = z.dir == 1 ? "RES" : "SUP"
+            crown = z.isBest ? "♛ " : ""
+            star = score >= 80 ? "★ " : ""
+            touchTxt = z.flipCount > 0 and z.preTouch > 0 ? str.tostring(z.preTouch) + "+" + str.tostring(z.touch) + "×" : str.tostring(z.touch) + "×"
+            boosters = (aligned ? " ◈" : "") + (roundNear ? " ◎" : "") + (z.hasVol and useVolBoost ? " Ⓥ" : "")
+            txt = crown + star + tag + " " + str.tostring(score) + " | " + touchTxt + boosters
+
+            // High-contrast badge palette
+            badgeBg = z.dir == 1 ? color.new(#2D140C, 6) : color.new(#182414, 6)
+            badgeTxtCol = z.dir == 1 ? #FF9575 : #E5C158
+            label.set_text(z.lb, txt)
+            label.set_textcolor(z.lb, badgeTxtCol)
+            label.set_color(z.lb, badgeBg)
+            label.set_size(z.lb, f_size(badgeSizeTxt))
+
+            // Rich on-hover explanatory tooltip
+            tip = (z.dir == 1 ? "🔴 RESISTANCE CONFLUENCE ZONE" : "🟢 SUPPORT CONFLUENCE ZONE") + "\n" +
+                  "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                  "• Confluence Score: " + str.tostring(score) + " / 100" + (score >= 80 ? " (★ Major Shelf)" : "") + "\n" +
+                  "• Total Touches: " + str.tostring(z.touch + z.preTouch) + "×" + (z.flipCount > 0 ? " (" + str.tostring(z.preTouch) + " pre-flip + " + str.tostring(z.touch) + " post-flip)" : "") + "\n" +
+                  "• Center / Anchor: " + str.tostring(midZ, format.mintick) + "\n" +
+                  "• Boundary Span: " + str.tostring(z.bot, format.mintick) + " — " + str.tostring(z.top, format.mintick) + "\n" +
+                  "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                  "Confluence Factors Active:\n" +
+                  (aligned ? " [◈] Higher-Timeframe Structure Alignment\n" : "") +
+                  (roundNear ? " [◎] Near Psychological Round Number\n" : "") +
+                  (z.hasVol and useVolBoost ? " [Ⓥ] Formed/Retested on Institutional Volume Spike\n" : "") +
+                  "Tip: Broken zones automatically flip role on confirmed candle close."
+            label.set_tooltip(z.lb, tip)
+
+f_addZone(dir, top0, bot0, bornBar, hasVol, pocPx, maxVol) =>
+    [top, bot] = f_zoneBounds(top0, bot0)
+    zc = dir == 1 ? resCol : supCol
+    mid = midlineMode == "Volume POC Anchor" and not na(pocPx) and pocPx >= bot and pocPx <= top ? pocPx : (top + bot) / 2
+    bx = box.new(math.max(0, bornBar), top, bar_index + rayExt, bot, border_color = color.new(zc, 50), bgcolor = color.new(zc, 88), border_width = 1)
+    lnMid = showMidline ? line.new(math.max(0, bornBar), mid, bar_index + rayExt, mid, style = line.style_dashed, color = color.new(zc, 65), width = 1) : na
+    badgeBg = dir == 1 ? color.new(#2D140C, 6) : color.new(#182414, 6)
+    badgeTxtCol = dir == 1 ? #FF9575 : #E5C158
+    lb = showBadges ? label.new(bar_index + rayExt, mid, "", xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left, color = badgeBg, textcolor = badgeTxtCol, size = f_size(badgeSizeTxt)) : na
+    array.push(zones, SRZone.new(bx, lb, lnMid, top, bot, dir, 2, 0, 0, bornBar, bar_index, hasVol, pocPx, maxVol, true, false))
+    newZ = array.get(zones, array.size(zones) - 1)
+    f_applyZoneStyle(newZ, true)
+    true
+
+// Synchronizes tentative single-pivot ghost lines
+f_syncGhostLines() =>
+    while array.size(ghostLines) > 0
+        line.delete(array.pop(ghostLines))
+    if showTentative
+        if array.size(hiBuf) > 0
+            for k = 0 to array.size(hiBuf) - 1
+                ln = line.new(math.max(0, array.get(hiBufB, k)), array.get(hiBuf, k), bar_index + rayExt, array.get(hiBuf, k), style = line.style_dashed, color = color.new(resCol, 55), width = 1)
+                array.push(ghostLines, ln)
+        if array.size(loBuf) > 0
+            for k = 0 to array.size(loBuf) - 1
+                ln = line.new(math.max(0, array.get(loBufB, k)), array.get(loBuf, k), bar_index + rayExt, array.get(loBuf, k), style = line.style_dashed, color = color.new(supCol, 55), width = 1)
+                array.push(ghostLines, ln)
+
+// Merge or create zone with Volume POC anchor tracking
+f_processPivot(dir, px, isVol, rawVol, bufF, bufB, bufV, bufVol) =>
+    bool created = false
+    merged = false
+    for z in zones
+        if z.dir == dir and px >= z.bot - clusterTolAtr * atrVal and px <= z.top + clusterTolAtr * atrVal
+            [newTop, newBot] = f_zoneBounds(math.max(z.top, px), math.min(z.bot, px))
+            z.top := newTop
+            z.bot := newBot
+            z.touch := z.touch + 1
+            z.lastTouchBar := bar_index
+            z.hasVol := z.hasVol or isVol
+            if rawVol > z.maxVol
+                z.maxVol := rawVol
+                z.pocPx  := px
+            box.set_top(z.bx, z.top)
+            box.set_bottom(z.bx, z.bot)
+            f_applyZoneStyle(z, true)
+            merged := true
+            break
+    if not merged
+        f_pruneBuf(bufF, bufB, bufV, bufVol, bufferMaxAge)
+        pairIdx = -1
+        if array.size(bufF) > 0
+            for k = 0 to array.size(bufF) - 1
+                if math.abs(array.get(bufF, k) - px) <= clusterTolAtr * atrVal
+                    pairIdx := k
+                    break
+        if pairIdx >= 0
+            pairPx  = array.get(bufF, pairIdx)
+            pairBar = array.get(bufB, pairIdx)
+            pairVol = array.get(bufV, pairIdx)
+            pairRawVol = array.get(bufVol, pairIdx)
+            poc = rawVol >= pairRawVol ? px : pairPx
+            maxV = math.max(rawVol, pairRawVol)
+            f_addZone(dir, math.max(pairPx, px), math.min(pairPx, px), math.min(pairBar, pvBar), pairVol or isVol, poc, maxV)
+            created := true
+            array.remove(bufF, pairIdx)
+            array.remove(bufB, pairIdx)
+            array.remove(bufV, pairIdx)
+            array.remove(bufVol, pairIdx)
+        else
+            array.push(bufF, px)
+            array.push(bufB, pvBar)
+            array.push(bufV, isVol)
+            array.push(bufVol, rawVol)
+            if array.size(bufF) > 20
+                array.shift(bufF)
+                array.shift(bufB)
+                array.shift(bufV)
+                array.shift(bufVol)
+    created
+
+// Combine overlapping zones
+f_mergeZones() =>
+    if array.size(zones) > 1
+        for i = array.size(zones) - 1 to 1
+            zi = array.get(zones, i)
+            for j = i - 1 to 0
+                zj = array.get(zones, j)
+                if zi.dir == zj.dir and zi.top >= zj.bot - clusterTolAtr * atrVal and zi.bot <= zj.top + clusterTolAtr * atrVal
+                    [nt, nb] = f_zoneBounds(math.max(zi.top, zj.top), math.min(zi.bot, zj.bot))
+                    zj.top := nt
+                    zj.bot := nb
+                    zj.touch := zj.touch + zi.touch
+                    zj.preTouch := zj.preTouch + zi.preTouch
+                    zj.lastTouchBar := math.max(zi.lastTouchBar, zj.lastTouchBar)
+                    zj.born := math.min(zi.born, zj.born)
+                    zj.hasVol := zj.hasVol or zi.hasVol
+                    if zi.maxVol > zj.maxVol
+                        zj.maxVol := zi.maxVol
+                        zj.pocPx  := zi.pocPx
+                    box.set_top(zj.bx, zj.top)
+                    box.set_bottom(zj.bx, zj.bot)
+                    box.set_left(zj.bx, math.max(0, zj.born))
+                    f_applyZoneStyle(zj, true)
+                    box.delete(zi.bx)
+                    if not na(zi.lnMid)
+                        line.delete(zi.lnMid)
+                    if not na(zi.lb)
+                        label.delete(zi.lb)
+                    array.remove(zones, i)
+                    break
+
+if barstate.isconfirmed and not na(atrVal) and atrVal > 0
+    if not na(ph)
+        if f_processPivot(1, pxHi, pvHiVol, pvRawVol, hiBuf, hiBufB, hiBufV, hiBufVol)
+            sigNewZone := true
+    if not na(pl)
+        if f_processPivot(-1, pxLo, pvHiVol, pvRawVol, loBuf, loBufB, loBufV, loBufVol)
+            sigNewZone := true
+    f_mergeZones()
+    f_syncGhostLines()
+
+// ═════════════════════════ Smart De-Cluttering & Zone Visibility ═════════════════════════
+f_isZoneVisible(z, rCount, sCount) =>
+    bool ok = true
+    mid = f_zoneMidline(z)
+    htfLevel = z.dir == 1 ? htfHi : htfLo
+    aligned = useHtf and not na(htfLevel) and not na(atrVal) and atrVal > 0 and math.abs(mid - htfLevel) <= htfTolAtr * atrVal
+    roundNear = useRoundNum and not na(atrVal) and atrVal > 0 and f_isRoundNear(mid)
+    sc = f_confluenceScore(z.touch + z.preTouch, aligned, roundNear, z.hasVol and useVolBoost)
+    if sc < minScoreShow
+        ok := false
+    if ok and (close < z.bot and z.dir == 1 and rCount > maxLevelsSide)
+        ok := false
+    if ok and (close > z.top and z.dir == -1 and sCount > maxLevelsSide)
+        ok := false
+    ok
+
+// Update right-edge extension and visibility filtering
+if array.size(zones) > 0
+    for z in zones
+        box.set_right(z.bx, bar_index + rayExt)
+        if not na(z.lb)
+            label.set_x(z.lb, bar_index + rayExt)
+            label.set_y(z.lb, f_zoneMidline(z))
+
+    // Rank each zone by actual distance from price (not array/creation order),
+    // so "Max Active Levels Per Direction" keeps the NEAREST shelves, not
+    // whichever ones happen to be earliest in the zones array.
+    for i = 0 to array.size(zones) - 1
+        z     = array.get(zones, i)
+        mid   = f_zoneMidline(z)
+        isR   = mid > close and z.dir == 1
+        isS   = mid < close and z.dir == -1
+        distZ = math.abs(mid - close)
+        int rRankZ = 0
+        int sRankZ = 0
+        if isR or isS
+            for j = 0 to array.size(zones) - 1
+                if j != i
+                    z2    = array.get(zones, j)
+                    mid2  = f_zoneMidline(z2)
+                    isR2  = mid2 > close and z2.dir == 1
+                    isS2  = mid2 < close and z2.dir == -1
+                    dist2 = math.abs(mid2 - close)
+                    if isR and isR2 and dist2 < distZ
+                        rRankZ += 1
+                    if isS and isS2 and dist2 < distZ
+                        sRankZ += 1
+        bool vis = f_isZoneVisible(z, isR ? rRankZ + 1 : 0, isS ? sRankZ + 1 : 0)
+        z.visible := vis
+
+    // Find the single highest-scoring VISIBLE zone on the whole chart and
+    // crown it — a trader shouldn't have to open the dashboard to see
+    // which shelf is the strongest one currently on screen.
+    int   bestI     = -1
+    float bestScore = -1.0
+    for i = 0 to array.size(zones) - 1
+        z = array.get(zones, i)
+        if z.visible
+            sc = f_zoneScore(z)
+            if sc > bestScore
+                bestScore := sc
+                bestI     := i
+
+    for i = 0 to array.size(zones) - 1
+        z = array.get(zones, i)
+        z.isBest := i == bestI
+        f_applyZoneStyle(z, z.visible)
+
+if array.size(ghostLines) > 0
+    for gl in ghostLines
+        line.set_x2(gl, bar_index + rayExt)
+
+// ═════════════════════════ Retest / break / flip / rejection lifecycle ═════════════════════════
+if barstate.isconfirmed and array.size(zones) > 0 and not na(atrVal) and atrVal > 0
+    for i = array.size(zones) - 1 to 0
+        z = array.get(zones, i)
+        bool removed = false
+        if z.born != bar_index
+            through = z.dir == 1 ? close > z.top : close < z.bot
+            if through
+                if flipOnBreak
+                    if z.dir == 1
+                        sigFlipToSupport := true
+                    else
+                        sigFlipToResistance := true
+                    z.dir := z.dir * -1
+                    z.preTouch := z.preTouch + z.touch
+                    z.touch := 1
+                    z.flipCount := z.flipCount + 1
+                    z.lastTouchBar := bar_index
+                    f_applyZoneStyle(z, true)
+                    if showFlipMarkers
+                        flipTip = "🔄 S/R ROLE FLIP\n" +
+                                  "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                                  "A confirmed candle closed through this zone, causing it to flip role:\n" +
+                                  "• Old Role: " + (z.dir == 1 ? "Support (Broken)" : "Resistance (Broken)") + "\n" +
+                                  "• New Role: " + (z.dir == 1 ? "New Resistance" : "New Support") + "\n" +
+                                  "• Flip Level: " + str.tostring(z.dir == 1 ? z.bot : z.top, format.mintick) + "\n" +
+                                  "• Historical Memory: " + str.tostring(z.preTouch) + " touches prior to break."
+                        fm = label.new(bar_index, z.dir == 1 ? z.bot : z.top, "⇄", xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, textcolor = color.new(flipCol, 0), size = size.small, tooltip = flipTip)
+                        array.push(flipLbl, fm)
+                        f_capLabels(flipLbl, 20)
+                else
+                    box.delete(z.bx)
+                    if not na(z.lnMid)
+                        line.delete(z.lnMid)
+                    if not na(z.lb)
+                        label.delete(z.lb)
+                    array.remove(zones, i)
+                    removed := true
+            else
+                overlap = low <= z.top and high >= z.bot
+                if overlap
+                    if (bar_index - z.lastTouchBar) >= retestSepBars
+                        z.touch := z.touch + 1
+                        z.lastTouchBar := bar_index
+                        if isHighVol
+                            z.hasVol := true
+                        sigRetest := true
+                        f_applyZoneStyle(z, true)
+
+                    // Institutional Liquidity Sweep / Rejection Pinbar Check
+                    if showRejections
+                        htfLevel = z.dir == 1 ? htfHi : htfLo
+                        aligned = useHtf and not na(htfLevel) and math.abs(f_zoneMidline(z) - htfLevel) <= htfTolAtr * atrVal
+                        roundNear = useRoundNum and f_isRoundNear(f_zoneMidline(z))
+                        score = f_confluenceScore(z.touch + z.preTouch, aligned, roundNear, z.hasVol and useVolBoost)
+                        if score >= 60
+                            // Resistance rejection: wicks in and closes bearish below zone
+                            if z.dir == 1 and high >= z.bot and close < z.bot and close < open
+                                resRejTip = "🔻 RESISTANCE REJECTION (SWEEP)\n" +
+                                             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                                             "Price wicked into an active Resistance shelf (" + str.tostring(score) + "/100 score) and closed bearishly back below it.\n" +
+                                             "• Zone Span: " + str.tostring(z.bot, format.mintick) + " — " + str.tostring(z.top, format.mintick) + "\n" +
+                                             "• Candle High: " + str.tostring(high, format.mintick) + "\n" +
+                                             "• Consequence: Confirms seller defense & liquidity grab."
+                                rj = label.new(bar_index, high, "▼", xloc = xloc.bar_index, yloc = yloc.abovebar, style = label.style_none, textcolor = color.new(rejCol, 10), size = size.tiny, tooltip = resRejTip)
+                                array.push(rejLbl, rj)
+                                f_capLabels(rejLbl, 25)
+                                sigRejection := true
+                            // Support rejection: wicks in and closes bullish above zone
+                            else if z.dir == -1 and low <= z.top and close > z.top and close > open
+                                supRejTip = "🔺 SUPPORT REJECTION (SWEEP)\n" +
+                                             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                                             "Price wicked into an active Support shelf (" + str.tostring(score) + "/100 score) and closed bullishly back above it.\n" +
+                                             "• Zone Span: " + str.tostring(z.bot, format.mintick) + " — " + str.tostring(z.top, format.mintick) + "\n" +
+                                             "• Candle Low: " + str.tostring(low, format.mintick) + "\n" +
+                                             "• Consequence: Confirms buyer defense & liquidity grab."
+                                rj = label.new(bar_index, low, "▲", xloc = xloc.bar_index, yloc = yloc.belowbar, style = label.style_none, textcolor = color.new(supCol, 10), size = size.tiny, tooltip = supRejTip)
+                                array.push(rejLbl, rj)
+                                f_capLabels(rejLbl, 25)
+                                sigRejection := true
+        if not removed
+            midZ = f_zoneMidline(z)
+            if math.abs(close - midZ) > zoneFarAtr * atrVal
+                box.delete(z.bx)
+                if not na(z.lnMid)
+                    line.delete(z.lnMid)
+                if not na(z.lb)
+                    label.delete(z.lb)
+                array.remove(zones, i)
+
+    while array.size(zones) > maxZones
+        z0 = array.shift(zones)
+        box.delete(z0.bx)
+        if not na(z0.lnMid)
+            line.delete(z0.lnMid)
+        if not na(z0.lb)
+            label.delete(z0.lb)
+
+// ═════════════════════════ Dashboard with Full Boundary Collision ═════════════════════════
+var table dash = table.new(f_tablePos(tblPosTxt), 2, 6, bgcolor = color.new(#14110B, 8), border_color = color.new(#D4AF37, 64), border_width = 1, frame_color = color.new(#D4AF37, 52), frame_width = 1)
+if showDash and barstate.islast
+    ts   = f_size(tblSizeTxt)
+    lblC = #C9B37E
+    valC = #F5F5F5
+    ttlC = #FFD400
+
+    atrOK = not na(atrVal) and atrVal > 0
+
+    float aboveDist   = na
+    float abovePx     = na
+    string aboveRole  = "—"
+    float belowDist   = na
+    float belowPx     = na
+    string belowRole  = "—"
+    float atDist      = na
+    float atPx        = na
+    string atRole     = "—"
+    string atDetail   = "—"
+    int   strongScore = -1
+    int   strongTouch = 0
+    float strongPx    = na
+    string strongRole = "—"
+
+    if array.size(zones) > 0
+        for z in zones
+            if not z.visible
+                continue
+            mid = f_zoneMidline(z)
+            d = math.abs(mid - close)
+
+            // Accurate boundary collision detection
+            isInside = close >= z.bot and close <= z.top
+            isTesting = (z.dir == 1 and high >= z.bot and close <= z.top + 0.15 * (atrOK ? atrVal : 1.0)) or (z.dir == -1 and low <= z.top and close >= z.bot - 0.15 * (atrOK ? atrVal : 1.0))
+
+            if isInside or isTesting
+                if na(atDist) or d < atDist
+                    atDist   := d
+                    atPx     := mid
+                    atRole   := z.dir == 1 ? "R" : "S"
+                    atDetail := isInside ? (z.dir == 1 ? "Inside Res" : "Inside Sup") : (z.dir == 1 ? "Testing Res" : "Testing Sup")
+            else if mid > close and (na(aboveDist) or mid - close < aboveDist)
+                aboveDist := mid - close
+                abovePx   := mid
+                aboveRole := z.dir == 1 ? "R" : "S"
+            else if mid < close and (na(belowDist) or close - mid < belowDist)
+                belowDist := close - mid
+                belowPx   := mid
+                belowRole := z.dir == 1 ? "R" : "S"
+
+            htfLevel  = z.dir == 1 ? htfHi : htfLo
+            aligned   = useHtf and not na(htfLevel) and atrOK and math.abs(mid - htfLevel) <= htfTolAtr * atrVal
+            roundNear = useRoundNum and atrOK and f_isRoundNear(mid)
+            sc = f_confluenceScore(z.touch + z.preTouch, aligned, roundNear, z.hasVol and useVolBoost)
+            if sc > strongScore
+                strongScore := sc
+                strongTouch := z.touch + z.preTouch
+                strongPx    := mid
+                strongRole  := z.dir == 1 ? "R" : "S"
+
+    atTxt     = na(atPx)     ? "—" : atDetail   + " @" + str.tostring(atPx,     format.mintick)
+    aboveTxt  = na(abovePx)  ? "—" : aboveRole  + " "  + str.tostring(abovePx,  format.mintick) + (atrOK ? "  (" + str.tostring(aboveDist / atrVal, "#.#") + " ATR)" : "")
+    belowTxt  = na(belowPx)  ? "—" : belowRole  + " "  + str.tostring(belowPx,  format.mintick) + (atrOK ? "  (" + str.tostring(belowDist / atrVal, "#.#") + " ATR)" : "")
+    strongTxt = na(strongPx) ? "—" : strongRole + " "  + str.tostring(strongScore) + " | " + str.tostring(strongTouch) + "×  @" + str.tostring(strongPx, format.mintick)
+
+    atCol    = atRole == "R" ? resCol : (atRole == "S" ? supCol : lblC)
+    aboveCol = aboveRole == "R" ? resCol : (aboveRole == "S" ? supCol : lblC)
+    belowCol = belowRole == "R" ? resCol : (belowRole == "S" ? supCol : lblC)
+
+    // Evaluate overall market structure bias
+    string stateTxt = "No Active Zones"
+    color  stateCol = valC
+    if array.size(zones) > 0
+        if not na(atPx)
+            stateTxt := atDetail
+            stateCol := atRole == "R" ? resCol : supCol
+        else if not na(abovePx) and na(belowPx)
+            stateTxt := "Below All Shelves (Bearish Floor)"
+            stateCol := resCol
+        else if na(abovePx) and not na(belowPx)
+            stateTxt := "Above All Shelves (Bullish Sky)"
+            stateCol := supCol
+        else if not na(abovePx) and not na(belowPx)
+            stateTxt := "In Range (Between S & R)"
+            stateCol := #FFD400
+
+    table.cell(dash, 0, 0, "◆ AUTO S/R", text_color = ttlC, text_size = ts, tooltip = "Institutional Confluence Support & Resistance scored 0-100 (touch frequency + HTF structural alignment + round-number proximity + volume confirmation). Features smart de-cluttering, volume-weighted POC anchors, pre/post flip memory, and boundary collision tracking.")
+    table.cell(dash, 1, 0, str.tostring(array.size(zones)) + " active zones", text_color = valC, text_size = ts)
+
+    table.cell(dash, 0, 1, "At Price", text_color = lblC, text_size = ts)
+    table.cell(dash, 1, 1, atTxt, text_color = atCol, text_size = ts)
+
+    table.cell(dash, 0, 2, "Nearest Above", text_color = lblC, text_size = ts)
+    table.cell(dash, 1, 2, aboveTxt, text_color = aboveCol, text_size = ts)
+
+    table.cell(dash, 0, 3, "Nearest Below", text_color = lblC, text_size = ts)
+    table.cell(dash, 1, 3, belowTxt, text_color = belowCol, text_size = ts)
+
+    table.cell(dash, 0, 4, "Strongest Shelf", text_color = lblC, text_size = ts)
+    table.cell(dash, 1, 4, strongTxt, text_color = ttlC, text_size = ts)
+
+    table.cell(dash, 0, 5, "Structure State", text_color = lblC, text_size = ts)
+    table.cell(dash, 1, 5, stateTxt, text_color = stateCol, text_size = ts)
+
+// ═════════════════════════ Alerts ═════════════════════════
+alertcondition(sigFlipToSupport,    title = "Resistance Flipped To Support", message = "{{ticker}} {{interval}}: A resistance zone broke and has flipped role to support.")
+alertcondition(sigFlipToResistance, title = "Support Flipped To Resistance", message = "{{ticker}} {{interval}}: A support zone broke and has flipped role to resistance.")
+alertcondition(sigRetest,           title = "S/R Zone Retested", message = "{{ticker}} {{interval}}: Price retested an active support/resistance confluence zone.")
+alertcondition(sigNewZone,          title = "New S/R Zone Formed", message = "{{ticker}} {{interval}}: A new support/resistance confluence zone has formed.")
+alertcondition(sigRejection,        title = "S/R Zone Rejection Confirmed", message = "{{ticker}} {{interval}}: Price wicked into an active confluence zone and closed with a confirmed rejection.")
+
+// Dynamic Webhook-Friendly Alert Dispatcher
+if barstate.isconfirmed
+    if sigFlipToSupport
+        alert(syminfo.ticker + " [" + timeframe.period + "] S/R Flip: Resistance broke & flipped to Support @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+    if sigFlipToResistance
+        alert(syminfo.ticker + " [" + timeframe.period + "] S/R Flip: Support broke & flipped to Resistance @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+    if sigRetest
+        alert(syminfo.ticker + " [" + timeframe.period + "] S/R Retest: Active confluence zone retested @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+    if sigNewZone
+        alert(syminfo.ticker + " [" + timeframe.period + "] S/R New Zone: Fresh confluence zone established", alert.freq_once_per_bar_close)
+    if sigRejection
+        alert(syminfo.ticker + " [" + timeframe.period + "] S/R Rejection: Confirmed price sweep/rejection off confluence shelf @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+
+// ═════════════════════════ Watermark ═════════════════════════
+var table wm = table.new(position.bottom_center, 2, 1, frame_width = 1, border_width = 0)
+if barstate.islast
+    wmDark     = wmTheme == "Dark" or (wmTheme == "Auto" and (color.r(chart.bg_color) * 299 + color.g(chart.bg_color) * 587 + color.b(chart.bg_color) * 114) / 1000 < 128)
+    wm_bg      = wmDark ? color.new(#14110B, 0) : color.new(#F2EAD3, 0)
+    wm_dot_col = wmDark ? color.new(#D4AF37, 15) : color.new(#B8860B, 10)
+    wm_txt_col = wmDark ? color.new(#C9B37E, 0)  : color.new(#7A6423, 0)
+    wm_frm_col = wmDark ? color.new(#C9A227, 60) : color.new(#B8860B, 60)
+    table.set_frame_color(wm, wm_frm_col)
+    table.cell(wm, 0, 0, " ◆ ", bgcolor = wm_bg, text_color = wm_dot_col, text_size = size.small, text_halign = text.align_center, text_valign = text.align_center)
+    table.cell(wm, 1, 0, " A X E A L G O ", bgcolor = wm_bg, text_color = wm_txt_col, text_size = size.small, text_halign = text.align_left, text_valign = text.align_center)

@@ -1,0 +1,63 @@
+
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © EduWarlock from Tradencia Traders
+
+//@version=6
+indicator("TCloud", overlay=true)
+
+// === Inputs ===
+tilsonLongLen = input.int(15, title="Tilson Long Period", minval=1)
+tilsonShortLen = input.int(4, title="Tilson Short Period", minval=1)
+tilsonLongFactor = input.float(0.55, title="Tilson Long Factor", step=0.01)
+tilsonShortFactor = input.float(0.38, title="Tilson Short Factor", step=0.01)
+
+colorUp = input.color(color.blue, title="Cloud Color (Short > Long)")
+colorDown = input.color(color.red, title="Cloud Color (Long > Short)")
+showCloud = input.bool(true, title="Mostrar Nuvem Tilson")
+
+atrPeriod = input.int(10, title="ATR Length", minval=1)
+factor = input.float(3.0, title="Factor", minval=0.01, step=0.01)
+showATR = input.bool(true, title="Mostrar Linha ATR")
+
+// === Tilson Function ===
+tilsonMA(src, length, vfactor) =>
+    e1 = ta.ema(src, length)
+    e2 = ta.ema(e1, length)
+    e3 = ta.ema(e2, length)
+    e4 = ta.ema(e3, length)
+    e5 = ta.ema(e4, length)
+    e6 = ta.ema(e5, length)
+    c1 = -vfactor * vfactor * vfactor
+    c2 = 3 * vfactor * vfactor + 3 * vfactor * vfactor * vfactor
+    c3 = -6 * vfactor * vfactor - 3 * vfactor - 3 * vfactor * vfactor * vfactor
+    c4 = 1 + 3 * vfactor + vfactor * vfactor * vfactor + 3 * vfactor * vfactor
+    T3 = c1 * e6 + c2 * e5 + c3 * e4 + c4 * e3
+    T3
+
+// === Cálculo Tilson ===
+tilsonShort = tilsonMA(close, tilsonShortLen, tilsonShortFactor)
+tilsonLong = tilsonMA(close, tilsonLongLen, tilsonLongFactor)
+
+// === Plot Tilsons ===
+plotShort = plot(tilsonShort, title="Tilson Short", color=color.new(colorUp, 0))
+plotLong = plot(tilsonLong, title="Tilson Long", color=color.new(colorDown, 0))
+
+// === Nuvem ===
+fill(plotShort, plotLong, color=showCloud ? (tilsonShort > tilsonLong ? color.new(colorUp, 80) : color.new(colorDown, 80)) : na, title="Tilson Cloud")
+
+// === Cores dos candles ===
+minTilson = math.min(tilsonShort, tilsonLong)
+maxTilson = math.max(tilsonShort, tilsonLong)
+
+candleColor = close > maxTilson ? color.blue : close < minTilson ? color.red : color.white
+
+barcolor(candleColor, title="Candle Color")
+
+// === Linha baseada no ATR (Supertrend) ===
+[atrLine, atrDirection] = ta.supertrend(factor, atrPeriod)
+
+// Azul: preço acima da linha
+plot(showATR and atrDirection < 0 ? atrLine : na, title="ATR Azul", color=color.blue, linewidth=2, style=plot.style_linebr)
+
+// Vermelho: preço abaixo da linha
+plot(showATR and atrDirection > 0 ? atrLine : na, title="ATR Vermelho", color=color.red, linewidth=2, style=plot.style_linebr)

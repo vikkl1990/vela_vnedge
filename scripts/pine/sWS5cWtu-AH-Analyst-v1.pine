@@ -1,0 +1,497 @@
+//@version=6
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlpHay
+
+const string indVersion = "1.1.0"
+const string indType = "Analyst"
+const string indName = "AH " + indType + " v" + indVersion
+indicator(indName, indType, overlay = true, max_lines_count = 10, max_labels_count = 10, max_boxes_count = 1)
+
+const color cxx  = color.rgb(255, 255, 255, 100)
+const color cwht = color.rgb(255, 255, 255)
+const color cred = color.rgb(242, 53, 69)
+const color cgrn = color.rgb(10, 153, 129)
+const color cblu = color.rgb(40, 98, 255)
+const color cprp = color.rgb(156, 39, 176)
+const color ccrm = color.rgb(248, 236, 202)
+const color lbc1 = color.rgb(128, 128, 128)
+
+// Report anchors and shared cell rendering.
+enum TablePosition
+    TopLeft
+    TopCenter
+    TopRight
+    MidLeft
+    MidCenter
+    MidRight
+    BotLeft
+    BotCenter
+    BotRight
+
+method getPosition(TablePosition this) =>
+    switch this
+        TablePosition.TopLeft => position.top_left
+        TablePosition.TopCenter => position.top_center
+        TablePosition.TopRight => position.top_right
+        TablePosition.MidLeft => position.middle_left
+        TablePosition.MidCenter => position.middle_center
+        TablePosition.MidRight => position.middle_right
+        TablePosition.BotLeft => position.bottom_left
+        TablePosition.BotCenter => position.bottom_center
+        TablePosition.BotRight => position.bottom_right
+        => position.middle_center
+
+// horAlign/verAlign control text placement; txtSize is the shared report text size.
+method addCell(table this, int columnId, int rowId, string title, color txtColor, string horAlign= na, int txtSize= na, string tooltip= na, color bgColor= na, string verAlign= na, bool isBold= false, bool isItalic= false) =>
+    table.cell(this, columnId, rowId, title, 0, 0, txtColor, na(horAlign)?text.align_right:horAlign, na(verAlign)?text.align_center:verAlign, na(txtSize)?10:txtSize, na(bgColor)?cxx:bgColor, tooltip, font.family_monospace)
+    if isBold and isItalic
+        table.cell_set_text_formatting(this, columnId, rowId, text.format_bold+text.format_italic)
+    else if isBold
+        table.cell_set_text_formatting(this, columnId, rowId, text.format_bold)
+    else if isItalic
+        table.cell_set_text_formatting(this, columnId, rowId, text.format_italic)
+    this
+
+// Use the same field format for report values and comparison tooltips.
+method toText(float this, string format= "#.##", bool isFormatAlt= false, float target= 0.0, int multiplier= 1) =>
+    string out = ""
+    if not na(this)
+        if format == format.percent
+            float pct = this * multiplier
+            out := str.tostring(pct, "#.##") + "%"
+            if isFormatAlt and pct >= target
+                out := "+" + out
+        else
+            out := isFormatAlt ? this <= target ? str.tostring(this, format) : "+" + str.tostring(this, format) : str.tostring(this, format)
+    out
+
+// Assessment is stored separately from display colors.
+assessment(float value, float target = 0.0) =>
+    na(value) or na(target) ? 0 : value > target ? 1 : value < target ? -1 : 0
+
+assessmentColor(int state) => state > 0 ? cgrn : state < 0 ? cred : cblu
+
+formatDate(int stamp) => na(stamp) ? "—" : str.format_time(stamp, "yyyy-MM-dd", syminfo.timezone)
+
+formatValue(float value, string numberFormat, bool signed = false) =>
+    na(value) ? "—" : value.toText(numberFormat, signed)
+
+targetGap(float target, float reference) =>
+    not na(target) and not na(reference) and reference > 0 ? 100.0 * (target / reference - 1.0) : na
+
+const string s02 = "🟥"
+const string s04 = "⬜️"
+const string s05 = "🟦"
+const string s08 = "🟩"
+
+type AnalystStyle
+    int TextSize = na
+    color LabelColor = na
+    color TitleColor = na
+    color BackgroundColor = na
+    color HighlightColor = na
+    color TargetBorderColor = na
+    color TargetBackgroundColor = na
+    int TagSize = na
+    int EventTextSize = na
+
+method init(AnalystStyle this) =>
+    AnalystStyle out = na(this) ? AnalystStyle.new() : this
+    out.TextSize := na(out.TextSize) ? 12 : out.TextSize
+    out.LabelColor := na(out.LabelColor) ? lbc1 : out.LabelColor
+    out.TitleColor := na(out.TitleColor) ? lbc1 : out.TitleColor
+    out.BackgroundColor := na(out.BackgroundColor) ? cxx : out.BackgroundColor
+    out.HighlightColor := na(out.HighlightColor) ? ccrm : out.HighlightColor
+    out.EventTextSize := na(out.EventTextSize) ? 12 : out.EventTextSize
+    out.TagSize := na(out.TagSize) ? 8 : out.TagSize
+    out.TargetBorderColor := na(out.TargetBorderColor) ? cprp : out.TargetBorderColor
+    out.TargetBackgroundColor := na(out.TargetBackgroundColor) ? color.new(cprp, 97) : out.TargetBackgroundColor
+    out
+
+type AnalystItem
+    string Title
+    float Value
+    string Format
+    string Tooltip
+    int Assessment = 0
+    bool Signed = false
+    string Display = na
+
+method print(AnalystItem this, table panel, int col, int row, AnalystStyle style) =>
+    float value = this.Value
+    bool textValue = not na(this.Display)
+    bool missing = textValue ? this.Display == "—" : na(value)
+    color ink = missing ? style.LabelColor : assessmentColor(this.Assessment)
+    string content = textValue ? this.Display : formatValue(value, this.Format, this.Signed)
+    panel.addCell(col, row, this.Title, style.LabelColor, text.align_left, style.TextSize, this.Tooltip, style.BackgroundColor)
+    panel.addCell(col + 1, row, content, ink, text.align_right, style.TextSize, this.Tooltip, style.BackgroundColor)
+    string symbol = textValue ? "" : missing ? s04 : this.Assessment > 0 ? s08 : this.Assessment < 0 ? s02 : s05
+    panel.addCell(col + 2, row, symbol, ink, text.align_center, style.TextSize, this.Tooltip, style.BackgroundColor)
+    this
+
+type Ratings
+    int StrongBuy = na
+    int Buy = na
+    int Hold = na
+    int Sell = na
+    int StrongSell = na
+    int Total = na
+    int Date = na
+
+type Targets
+    float Low = na
+    float High = na
+    float Median = na
+    float Average = na
+    int Count = na
+    int Date = na
+
+type Earnings
+    float Reported = na
+    float Estimate = na
+    float Standardized = na
+    int ObservedAt = na
+    float FutureEps = na
+    float FutureRevenue = na
+    int PeriodEnd = na
+    int ReportDate = na
+
+// Keep values from the same incoming earnings observation together.
+method record(Earnings this, float actual, float estimate, float standardized, int stamp) =>
+    if not na(actual) or not na(estimate) or not na(standardized)
+        this.Reported := actual
+        this.Estimate := estimate
+        this.Standardized := standardized
+        this.ObservedAt := stamp
+    this
+
+method toTooltip(Ratings this) =>
+    array<string> rows = array.from(
+        "Analyst ratings",
+        "Strong buy: " + formatValue(float(this.StrongBuy), "#"),
+        "Buy: " + formatValue(float(this.Buy), "#"),
+        "Hold: " + formatValue(float(this.Hold), "#"),
+        "Sell: " + formatValue(float(this.Sell), "#"),
+        "Strong sell: " + formatValue(float(this.StrongSell), "#"),
+        "Total: " + formatValue(float(this.Total), "#"),
+        "Date: " + formatDate(this.Date)
+    )
+    rows.join("\n")
+
+method toTooltip(Targets this, string currency) =>
+    array<string> rows = array.from(
+        "Price targets (" + currency + ")",
+        "High: " + formatValue(this.High, format.mintick),
+        "Median: " + formatValue(this.Median, format.mintick),
+        "Average: " + formatValue(this.Average, format.mintick),
+        "Low: " + formatValue(this.Low, format.mintick),
+        "Estimates: " + formatValue(float(this.Count), "#"),
+        "Date: " + formatDate(this.Date)
+    )
+    rows.join("\n")
+
+method toTooltip(Earnings this, string currency, bool next = false) =>
+    array<string> rows = array.new<string>()
+    if next
+        rows.push("Next earnings (" + currency + ")")
+        rows.push("Expected EPS: " + formatValue(this.FutureEps, "#.###"))
+        rows.push("Expected revenue: " + formatValue(this.FutureRevenue, format.volume))
+        rows.push("Period end: " + formatDate(this.PeriodEnd))
+        rows.push("Report date: " + formatDate(this.ReportDate))
+    else
+        float surprise = this.Reported - this.Estimate
+        rows.push("Last earnings (" + currency + ")")
+        rows.push("Reported EPS: " + formatValue(this.Reported, "#.###"))
+        rows.push("Estimated EPS: " + formatValue(this.Estimate, "#.###"))
+        rows.push("EPS surprise: " + formatValue(surprise, "#.###", true))
+        rows.push("Standardized EPS: " + formatValue(this.Standardized, "#.###"))
+        rows.push("Observed date: " + formatDate(this.ObservedAt))
+    rows.join("\n")
+
+// Index the first loaded bar of each exchange-calendar day.
+type DateIndex
+    array<int> Days = na
+    array<int> Opens = na
+    array<int> Ends = na
+
+method init(DateIndex this) =>
+    this.Days := array.new<int>()
+    this.Opens := array.new<int>()
+    this.Ends := array.new<int>()
+    this
+
+calendarDay(int stamp) =>
+    timestamp(syminfo.timezone, year(stamp, syminfo.timezone), month(stamp, syminfo.timezone), dayofmonth(stamp, syminfo.timezone), 0, 0)
+
+method record(DateIndex this, int opened, int closed) =>
+    int day = calendarDay(opened)
+    if this.Days.size() == 0 or this.Days.last() != day
+        if this.Days.size() >= 100000
+            this.Days.shift()
+            this.Opens.shift()
+            this.Ends.shift()
+        this.Days.push(day)
+        this.Opens.push(opened)
+        this.Ends.push(closed)
+    this
+
+// Find the first bar on the source date, or the next loaded trading day.
+// A weekly/monthly bar containing the date takes precedence over the next bar.
+method locate(DateIndex this, int stamp) =>
+    int out = na
+    int count = this.Days.size()
+    if not na(stamp) and count > 0
+        int day = calendarDay(stamp)
+        int left = 0
+        int right = count
+        while left < right
+            int middle = int(math.floor((left + right) / 2.0))
+            if this.Days.get(middle) < day
+                left := middle + 1
+            else
+                right := middle
+        if left < count and this.Days.get(left) == day
+            out := this.Opens.get(left)
+        else if left > 0 and not timeframe.isintraday and this.Ends.get(left - 1) > day
+            out := this.Opens.get(left - 1)
+        else if left > 0 and left < count
+            out := this.Opens.get(left)
+    out
+
+type AnalystEngine
+    string Currency
+    TablePosition Position
+    AnalystStyle Style
+    bool ShowReport = true
+    bool ShowTargets = false
+    DateIndex Dates = na
+    Ratings Ratings = na
+    Targets Targets = na
+    Earnings Earnings = na
+    array<AnalystItem> Items = na
+    float Reference = na
+    int SnapshotEnd = na
+    box __targetBox = na
+    table __report = na
+    array<label> __labels = na
+    array<line> __lines = na
+
+method init(AnalystEngine this) =>
+    this.Style := this.Style.init()
+    this.Dates := DateIndex.new().init()
+    this.Ratings := Ratings.new()
+    this.Targets := Targets.new()
+    this.Earnings := Earnings.new()
+    this.Items := array.new<AnalystItem>()
+    this.__labels := array.new<label>()
+    this.__lines := array.new<line>()
+    this
+
+method addItem(AnalystEngine this, string title, float value, string numberFormat, string tip, int state = 0, bool signed = false, string display = na) =>
+    this.Items.push(AnalystItem.new(title, value, numberFormat, tip, state, signed, display))
+    this
+
+method heading(table this, int row, int lastCol, string title, AnalystStyle style, string tip = "") =>
+    this.merge_cells(0, row, lastCol, row)
+    this.addCell(0, row, title, style.TitleColor, text.align_left, style.TextSize, tip, style.HighlightColor, isBold = true)
+    row + 1
+
+method fillItems(AnalystEngine this) =>
+    this.Items.clear()
+    Ratings r = this.Ratings
+    Targets t = this.Targets
+    Earnings e = this.Earnings
+    string ratingsTip = "Latest recommendation set: " + formatDate(r.Date) + ". Counts describe analyst opinions."
+    this.addItem("Strong buy", r.StrongBuy, "#", ratingsTip, r.StrongBuy > 0 ? 1 : 0)
+    this.addItem("Buy", r.Buy, "#", ratingsTip, r.Buy > 0 ? 1 : 0)
+    this.addItem("Hold", r.Hold, "#", ratingsTip)
+    this.addItem("Recommendations", r.Total, "#", "Total recommendations in the latest set; separate from the price-target estimate count.")
+    this.addItem("Strong sell", r.StrongSell, "#", ratingsTip, r.StrongSell > 0 ? -1 : 0)
+    this.addItem("Sell", r.Sell, "#", ratingsTip, r.Sell > 0 ? -1 : 0)
+    bool complete = not na(r.StrongBuy) and not na(r.Buy) and not na(r.Hold) and not na(r.Sell) and not na(r.StrongSell)
+    bool consistent = complete and r.Total > 0 and r.StrongBuy + r.Buy + r.Hold + r.Sell + r.StrongSell == r.Total
+    float buyShare = consistent ? 100.0 * (r.StrongBuy + r.Buy) / r.Total : na
+    float holdShare = consistent ? 100.0 * r.Hold / r.Total : na
+    float sellShare = consistent ? 100.0 * (r.StrongSell + r.Sell) / r.Total : na
+    string shareTip = "Share of the latest recommendation set, not a percentile rank. All five counts must be available and sum to the positive total."
+    string denominator = " / " + formatValue(float(r.Total), "#") + " recommendations. "
+    this.addItem("Buy share", buyShare, format.percent, formatValue(float(r.StrongBuy + r.Buy), "#") + denominator + "Strong buy + Buy. " + shareTip)
+    this.addItem("Hold share", holdShare, format.percent, formatValue(float(r.Hold), "#") + denominator + "Hold. " + shareTip)
+    this.addItem("Sell share", sellShare, format.percent, formatValue(float(r.StrongSell + r.Sell), "#") + denominator + "Strong sell + Sell. " + shareTip)
+    this.addItem("Set date", na, "#", ratingsTip, display = formatDate(r.Date))
+    string targetTip = "Latest annual price-target set: " + formatDate(t.Date) + ". Green means above the reference price; red means below it."
+    string referenceTip = "Reference: latest standard-chart close on the selected chart timeframe, including its developing bar. " + formatValue(this.Reference, "#.###") + " " + this.Currency
+    this.addItem("Target low", t.Low, "#.###", targetTip, assessment(t.Low, this.Reference))
+    this.addItem("Target high", t.High, "#.###", targetTip, assessment(t.High, this.Reference))
+    this.addItem("Target median", t.Median, "#.###", targetTip, assessment(t.Median, this.Reference))
+    this.addItem("Target average", t.Average, "#.###", targetTip, assessment(t.Average, this.Reference))
+    float medianGap = targetGap(t.Median, this.Reference)
+    float averageGap = targetGap(t.Average, this.Reference)
+    string gapTip = "(Target / reference price − 1) × 100. " + referenceTip
+    this.addItem("Median gap", medianGap, format.percent, gapTip, assessment(medianGap), signed = true)
+    this.addItem("Average gap", averageGap, format.percent, gapTip, assessment(averageGap), signed = true)
+    this.addItem("Target estimates", t.Count, "#", "Number of estimates supporting the price-target set. It can differ from the recommendation count.")
+    this.addItem("Set date", na, "#", targetTip, display = formatDate(t.Date))
+    this.addItem("Reference price", this.Reference, "#.###", referenceTip)
+    this.addItem("Reference date", na, "#", "Date of the reference chart bar in the exchange time zone.", display = formatDate(time))
+    float surprise = e.Reported - e.Estimate
+    float surprisePct = not na(surprise) and math.abs(e.Estimate) > 0 ? 100.0 * surprise / math.abs(e.Estimate) : na
+    string earningsTip = "Latest observed EPS sample: " + formatDate(e.ObservedAt) + ". The observation is mapped to a chart bar; its date is not the fiscal period end."
+    string surpriseTip = "As reported EPS − estimated EPS for the same incoming observation. Above expectation is green; below expectation is red. Reported: " + formatValue(e.Reported, "#.###") + "; estimate: " + formatValue(e.Estimate, "#.###") + " " + this.Currency
+    this.addItem("Reported EPS", e.Reported, "#.###", earningsTip + " As reported; assessed against estimated EPS.", assessment(e.Reported, e.Estimate))
+    this.addItem("Estimated EPS", e.Estimate, "#.###", earningsTip + " Analyst expectation associated with the reported result.")
+    this.addItem("EPS surprise", surprise, "#.###", surpriseTip, assessment(surprise), true)
+    this.addItem("Surprise %", surprisePct, format.percent, "(Reported − estimate) / absolute estimate × 100. A zero estimate has no percentage result. " + surpriseTip, assessment(surprisePct), signed = true)
+    this.addItem("Standardized EPS", e.Standardized, "#.###", "Fully diluted GAAP EPS. Displayed separately because its accounting basis can differ from reported and estimated EPS.")
+    this.addItem("Observed date", na, "#", earningsTip, display = formatDate(e.ObservedAt))
+    this.addItem("Expected EPS", e.FutureEps, "#.###", "EPS estimate for the next earnings report. An expectation, not a reported result.")
+    this.addItem("Expected revenue", e.FutureRevenue, format.volume, "Revenue estimate for the next earnings report.")
+    this.addItem("Period end", na, "#", "End of the fiscal period covered by the next report.", display = formatDate(e.PeriodEnd))
+    this.addItem("Report date", na, "#", "Expected announcement date. The provider may estimate this date when the company has not confirmed it.", display = formatDate(e.ReportDate))
+    this
+
+method eraseDrawings(AnalystEngine this) =>
+    if not na(this.__targetBox)
+        this.__targetBox.delete()
+        this.__targetBox := na
+    for item in this.__labels
+        item.delete()
+    for item in this.__lines
+        item.delete()
+    this.__labels.clear()
+    this.__lines.clear()
+    this
+
+method dateLabel(AnalystEngine this, int stamp, string title, string tip, bool above = true, bool observed = false) =>
+    int anchor = observed ? stamp : this.Dates.locate(stamp)
+    if not na(anchor) and anchor <= last_bar_time
+        // AH anchor spacing goes on the candle-facing side of the triangle.
+        string spacing = "\n\n"
+        string content = above ? title + "\n▼" + spacing : spacing + "▲\n" + title
+        this.__labels.push(label.new(anchor, na, content, xloc = xloc.bar_time, yloc = above ? yloc.abovebar : yloc.belowbar, color = cxx, style = above ? label.style_label_down : label.style_label_up, textcolor = this.Style.LabelColor, size = this.Style.EventTextSize, tooltip = tip, text_font_family = font.family_monospace))
+    this
+
+// Target tags share the right endpoint and use exact prices, following AH printTag.
+method targetTag(AnalystEngine this, float value, string title, string tagStyle) =>
+    color ink = this.Style.TargetBorderColor
+    string content = title + ": " + formatValue(value, format.mintick)
+    chart.point point = chart.point.from_time(this.Earnings.ReportDate, value)
+    this.__labels.push(label.new(point, content, xloc = xloc.bar_time, yloc = yloc.price, color = cxx, style = tagStyle, textcolor = ink, size = this.Style.TagSize, textalign = text.align_right, tooltip = this.Targets.toTooltip(this.Currency), text_font_family = font.family_monospace))
+    this
+
+method targetLine(AnalystEngine this, float value, string title, string lineStyle) =>
+    if not na(value) and value >= this.Targets.Low and value <= this.Targets.High
+        color ink = this.Style.TargetBorderColor
+        this.__lines.push(line.new(this.Targets.Date, value, this.Earnings.ReportDate, value, xloc = xloc.bar_time, extend = extend.none, color = ink, style = lineStyle, width = 1))
+        this.targetTag(value, title, label.style_label_down)
+    this
+
+// Next earnings bounds the display window, not the analysts' forecast horizon.
+method printTargets(AnalystEngine this) =>
+    Targets t = this.Targets
+    int right = this.Earnings.ReportDate
+    bool valid = not na(t.Date) and not na(right) and not na(this.SnapshotEnd) and t.Date < this.SnapshotEnd and right > t.Date and not na(t.High) and not na(t.Low) and t.High > t.Low
+    if valid
+        this.__targetBox := box.new(t.Date, t.High, right, t.Low, border_color = this.Style.TargetBorderColor, border_width = 1, border_style = line.style_dotted, extend = extend.none, xloc = xloc.bar_time, bgcolor = this.Style.TargetBackgroundColor)
+        this.targetTag(t.High, "High", label.style_label_down)
+        this.targetTag(t.Low, "Low", label.style_label_up)
+        this.targetLine(t.Median, "Median", line.style_dashed)
+        this.targetLine(t.Average, "Average", line.style_dashed)
+    this
+
+// The engine owns its panel and drawings; presentation runs on the last bar only.
+method print(AnalystEngine this) =>
+    if barstate.islast
+        this.eraseDrawings()
+        if not na(this.__report)
+            this.__report.delete()
+            this.__report := na
+        if this.ShowReport
+            this.fillItems()
+            int block = 3
+            int right = block + 1
+            int lastCol = right + block - 1
+            this.__report := table.new(this.Position.getPosition(), lastCol + 1, 21, bgcolor = cxx, frame_width = 0, border_width = 0)
+            int row = this.__report.heading(0, lastCol, syminfo.ticker + " (Analyst − " + this.Currency + ")", this.Style)
+            string identity = syminfo.description + (na(syminfo.sector) ? "" : " · " + syminfo.sector)
+            this.__report.merge_cells(0, row, lastCol, row)
+            this.__report.addCell(0, row, str.length(identity) > 65 ? str.substring(identity, 0, 65) + "…" : identity, this.Style.LabelColor, text.align_left, this.Style.TextSize, identity, this.Style.BackgroundColor)
+            row += 1
+            array<string> titles = array.from("Analyst ratings", "Price targets", "Last earnings", "Next earnings")
+            array<int> counts = array.from(10, 10, 6, 4)
+            int index = 0
+            for group = 0 to titles.size() - 1
+                row := this.__report.heading(row, lastCol, titles.get(group), this.Style)
+                int end = index + counts.get(group)
+                while index < end
+                    this.Items.get(index).print(this.__report, 0, row, this.Style)
+                    this.Items.get(index + 1).print(this.__report, right, row, this.Style)
+                    index += 2
+                    row += 1
+        this.dateLabel(this.Ratings.Date, "Ratings", this.Ratings.toTooltip())
+        this.dateLabel(this.Targets.Date, "Targets", this.Targets.toTooltip(this.Currency), false)
+        this.dateLabel(this.Earnings.ObservedAt, "EPS", this.Earnings.toTooltip(this.Currency), observed = true)
+        if not na(this.Earnings.ReportDate) and this.Earnings.ReportDate > last_bar_time and not na(this.Reference)
+            this.__lines.push(line.new(this.Earnings.ReportDate, this.Reference, this.Earnings.ReportDate, this.Reference + syminfo.mintick, xloc = xloc.bar_time, extend = extend.both, color = color.new(this.Style.LabelColor, 65), style = line.style_dotted))
+            this.__labels.push(label.new(this.Earnings.ReportDate, this.Reference, "◻︎ Next EPS\n" + formatDate(this.Earnings.ReportDate), xloc = xloc.bar_time, color = cxx, style = label.style_label_left, textcolor = this.Style.LabelColor, size = this.Style.EventTextSize, tooltip = this.Earnings.toTooltip(this.Currency, true), text_font_family = font.family_monospace))
+        if this.ShowTargets
+            this.printTargets()
+    this
+
+var bool showReport = input.bool(true, "Show report", group = "Report")
+var TablePosition tablePos = input.enum(TablePosition.TopRight, "Position", group = "Report")
+var int lsz = input.int(12, "Text size", minval = 8, maxval = 20, group = "Report", tooltip = "Text size for the report table.")
+var color labelColor = input.color(lbc1, "Label color", group = "Report")
+var color titleColor = input.color(lbc1, "Title color", group = "Report")
+var color backgroundColor = input.color(cxx, "Background color", group = "Report")
+var color highlightColor = input.color(ccrm, "Highlight color", group = "Report", tooltip = "Background and transparency of the main title and group headings.")
+var bool showTargets = input.bool(false, "Targets", group = "Chart", tooltip = "Show the Low–High box and Median/Average levels from the target set date to the next earnings report date.")
+var int eventTextSize = input.int(12, "Event text size", minval = 6, maxval = 20, group = "Chart", tooltip = "Text size for Ratings, Targets, EPS and Next EPS chart annotations.")
+var int tagSize = input.int(8, "Target text size", minval = 6, maxval = 20, group = "Chart", tooltip = "Text size for High, Low, Median and Average target tags.")
+var color targetBorderColor = input.color(cprp, "Border color", group = "Chart", tooltip = "Shared color for the target-box border, Median/Average lines and four target price tags.")
+var color targetBackgroundColor = input.color(color.new(cprp, 97), "Background color", group = "Chart", tooltip = "Target-box fill; use 100 transparency for a completely empty interior.")
+
+var string symbolId = ticker.standard(syminfo.tickerid)
+var AnalystEngine ind = na
+if na(ind)
+    ind := AnalystEngine.new(
+        Currency = syminfo.currency,
+        Position = tablePos,
+        Style = AnalystStyle.new(lsz, labelColor, titleColor, backgroundColor, highlightColor, targetBorderColor, targetBackgroundColor, tagSize, eventTextSize),
+        ShowReport = showReport,
+        ShowTargets = showTargets
+    ).init()
+
+// Keep requests in one scope; one daily tuple supplies both analyst sets and their time boundary.
+float reference = request.security(symbolId, timeframe.period, close, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true, currency = syminfo.currency)
+[strongBuy, buy, hold, sell, strongSell, recommendations, ratingsDate, targetLow, targetHigh, targetMedian, targetAverage, targetCount, targetsDate, snapshotEnd] = request.security(
+    symbolId, "1D",
+    [syminfo.recommendations_buy_strong, syminfo.recommendations_buy, syminfo.recommendations_hold, syminfo.recommendations_sell, syminfo.recommendations_sell_strong, syminfo.recommendations_total, syminfo.recommendations_date, syminfo.target_price_low, syminfo.target_price_high, syminfo.target_price_median, syminfo.target_price_average, int(syminfo.target_price_estimates), syminfo.target_price_date, time_close],
+    gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true
+)
+float actual = request.earnings(symbolId, earnings.actual, gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true, currency = syminfo.currency)
+float estimate = request.earnings(symbolId, earnings.estimate, gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true, currency = syminfo.currency)
+float standardized = request.earnings(symbolId, earnings.standardized, gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true, currency = syminfo.currency)
+
+ind.Dates.record(time, time_close)
+ind.Reference := reference
+ind.SnapshotEnd := snapshotEnd
+ind.Ratings.StrongBuy := strongBuy
+ind.Ratings.Buy := buy
+ind.Ratings.Hold := hold
+ind.Ratings.Sell := sell
+ind.Ratings.StrongSell := strongSell
+ind.Ratings.Total := recommendations
+ind.Ratings.Date := ratingsDate
+ind.Targets.Low := targetLow
+ind.Targets.High := targetHigh
+ind.Targets.Median := targetMedian
+ind.Targets.Average := targetAverage
+ind.Targets.Count := targetCount
+ind.Targets.Date := targetsDate
+ind.Earnings.record(actual, estimate, standardized, time)
+ind.Earnings.FutureEps := earnings.future_eps
+ind.Earnings.FutureRevenue := earnings.future_revenue
+ind.Earnings.PeriodEnd := earnings.future_period_end_time
+ind.Earnings.ReportDate := earnings.future_time
+ind.print()

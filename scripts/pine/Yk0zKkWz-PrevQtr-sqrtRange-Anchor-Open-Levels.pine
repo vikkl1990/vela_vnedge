@@ -1,0 +1,736 @@
+// @version=6
+// Prev Quarter sqrtRange -> Anchor Open Levels — ES / NQ / Stocks  (v6)
+// Anchor toggle: RTH open / ETH open / Weekly open / Quarterly open
+// No tick rounding — raw price levels. Reference-level plots removed.
+// Table adds a Nearest-level / distance-to-price section.
+// Uses request.security for all multi-TF data so it works on any chart timeframe
+// v6: ETH session now auto-detects futures (18:00 ET Globex open) vs.
+//     stocks/ETFs (04:00 ET pre-market open) via syminfo.type, with a manual
+//     override; added a Nearest-level/distance table block; added optional
+//     alertcondition-driven level-cross alerts. Ported to Pine Script v6.
+// v5: table condensed to a 4-col / 2-stat-per-row layout (fewer rows, columns
+//     actually used instead of manual space-padding); RTH/Session/Weekly range
+//     block now colors as a unit (up/down color) based on close vs. that
+//     period's own open, matching the Delta block's convention
+
+indicator("PrevQtr sqrtRange -> Anchor Open Levels", shorttitle="PQsqrtR Lvls", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ─── Inputs ───────────────────────────────────────────────────────────────────
+
+var g_calc     = "① Levels"
+anchor_mode    = input.string("RTH Open", "Anchor from",
+     options=["RTH Open", "ETH Open", "Weekly Open", "Quarterly Open"], group=g_calc,
+     tooltip="Session the levels/open line are latched to. Prev RTH High/Low, RTH Rng and RTH Δ stay tied to actual RTH regardless of this setting.")
+eth_auto       = input.bool(true, "Auto-detect ETH session", group=g_calc,
+     tooltip="ON: futures use the 18:00 ET Globex open, stocks/ETFs/indices use the 04:00 ET pre-market open, based on syminfo.type. OFF: use the manual session below for everything.")
+eth_session_ov = input.session("0400-0930", "ETH session (if auto off)", group=g_calc,
+     tooltip="Only used when Auto-detect ETH session is off.")
+sqrt_mult      = input.float(2.0,  "sqrtR multiplier",  step=0.5,  group=g_calc)
+num_levels     = input.int(4,      "Levels each side",  minval=1, maxval=8, group=g_calc)
+
+var g_style    = "② Appearance"
+col_open       = input.color(color.new(color.white,  0), "Open line",      group=g_style)
+col_up         = input.color(color.new(#00c4ff,      0), "Above levels",   group=g_style)
+col_dn         = input.color(color.new(#ff6b6b,      0), "Below levels",   group=g_style)
+col_mid        = input.color(color.new(color.white, 70), "Midpoint line",  group=g_style)
+col_quarter    = input.color(color.new(color.white, 0),  "Quarter line base color", group=g_style,
+     tooltip="Base color for the 1/4-of-band lines. Actual on-chart opacity is set separately below so you can dial it back without hunting through the color picker.")
+col_band_up_a  = input.color(color.new(#00c4ff,     88), "Band up A",      group=g_style)
+col_band_up_b  = input.color(color.new(#a855f7,     88), "Band up B",      group=g_style)
+col_band_dn_a  = input.color(color.new(#ff6b6b,     88), "Band dn A",      group=g_style)
+col_band_dn_b  = input.color(color.new(#f97316,     88), "Band dn B",      group=g_style)
+lw_open        = input.int(2, "Open line width",  minval=1, maxval=4, group=g_style)
+lw_lvl         = input.int(1, "Level line width", minval=1, maxval=4, group=g_style)
+show_mid       = input.bool(true, "Show midpoints",  group=g_style)
+show_quarter   = input.bool(false, "Show 1/4 lines", group=g_style,
+     tooltip="Adds a line 25% of the way through each band (open→level 1, level 1→level 2, etc.), same placement logic as the midpoint line. Off by default — turn on only the fraction you actually watch.")
+show_three_qtr = input.bool(false, "Show 3/4 lines", group=g_style,
+     tooltip="Adds a line 75% of the way through each band. Shares the color/opacity/style settings below with the 1/4 line so the two read as one family instead of adding more knobs.")
+quarter_opacity = input.int(35, "Quarter line opacity %", minval=0, maxval=100, group=g_style,
+     tooltip="0 = invisible, 100 = fully solid. Kept low by default so it reads as a faint guide, not another hard level.")
+quarter_style_str = input.string("Dotted", "Quarter line type",
+     options=["Solid", "Dashed", "Dotted"], group=g_style)
+quarter_show_label = input.bool(false, "Show 1/4 & 3/4 line labels", group=g_style,
+     tooltip="Off by default — the lines alone are usually enough; labels add more visual clutter than the midpoint label does since there can be up to 2x more of these lines.")
+label_right    = input.bool(true, "Labels on right", group=g_style)
+tbl_pos_str    = input.string("Top Right", "Table position",
+     options=["Top Right","Top Left","Bottom Right","Bottom Left"], group=g_style)
+
+var g_prev     = "③ History"
+// Fixed windows, not exposed as toggles — 6 anchor-periods back for the drawn
+// levels, 5 for the hit tracker below.
+HIST_DRAW_DAYS  = 6
+hist_fade      = input.int(45, "History fade", minval=20, maxval=90, step=5, group=g_prev,
+     tooltip="Same fade applied to all 6 history periods (matches how the original single prev-day fade worked).")
+
+var g_tbl      = "④ Table"
+show_tbl       = input.bool(true, "Show table",       group=g_tbl)
+tbl_qtr_data   = input.bool(true, "Quarter data",     group=g_tbl)
+tbl_fractions  = input.bool(true, "Unit fractions",   group=g_tbl)
+tbl_week       = input.bool(true, "Weekly & prev day", group=g_tbl)
+tbl_ranges     = input.bool(true, "Range stats (High/Low/Dist)", group=g_tbl)
+tbl_delta      = input.bool(true, "Cumulative delta", group=g_tbl)
+
+var g_alert    = "⑤ Alerts"
+alerts_on      = input.bool(false, "Enable level-cross alerts", group=g_alert,
+     tooltip="Fires one alert() call per level, per side, the bar price crosses it. Set up a TradingView alert on this indicator with condition 'Any alert() function call'.")
+alert_open_on  = input.bool(true, "Also alert on anchor-open cross", group=g_alert)
+
+// ─── Table position ───────────────────────────────────────────────────────────
+
+f_tbl_pos() =>
+    switch tbl_pos_str
+        "Top Left"     => position.top_left
+        "Bottom Right" => position.bottom_right
+        "Bottom Left"  => position.bottom_left
+        =>               position.top_right
+
+// ─── Session helpers (timeframe-safe) ────────────────────────────────────────
+// We detect sessions on the chart timeframe via time().
+// For intraday TFs this fires on the correct bar.
+// For daily+ TFs rth_new fires on the daily bar that contains 09:30.
+//
+// ETH session auto-detect: futures trade Globex overnight (18:00-09:30 ET).
+// Stocks/ETFs/indices don't have that session at all — their extended-hours
+// window starts at 04:00 ET pre-market. Using the futures session on a stock
+// means in_on never lines up with that symbol's actual pre-market, so the
+// "ETH Open" anchor silently anchors to the wrong bar (or never fires) on
+// non-futures charts. syminfo.type switches this automatically per symbol.
+
+eth_session = eth_auto ? (syminfo.type == "futures" ? "1800-0930" : "0400-0930") : eth_session_ov
+
+in_rth   = not na(time(timeframe.period, "0930-1600", "America/New_York"))
+in_on    = not na(time(timeframe.period, eth_session, "America/New_York"))
+rth_new  = in_rth and not in_rth[1]
+eth_new     = in_on and not in_on[1]
+new_week    = ta.change(time("W"))  != 0
+new_quarter = ta.change(time("3M")) != 0
+
+// ─── Anchor selection ─────────────────────────────────────────────────────────
+// This single boolean drives everything that used to be keyed off "rth_new":
+// the open-line latch, quarter hi/lo latch, level drawing/freeze, TTF resets,
+// and history capture. Prev RTH Hi/Lo, RTH Rng and RTH Δ deliberately stay
+// tied to actual rth_new/rth_end/in_rth below, independent of this toggle.
+
+anchor_new = anchor_mode == "ETH Open" ? eth_new
+     : anchor_mode == "Weekly Open" ? new_week
+     : anchor_mode == "Quarterly Open" ? new_quarter
+     : rth_new
+anchor_tag = anchor_mode == "ETH Open" ? "ETH"
+     : anchor_mode == "Weekly Open" ? "WEEK"
+     : anchor_mode == "Quarterly Open" ? "QTR"
+     : "RTH"
+
+// ─── Pull quarterly H/L via request.security on "3M" resolution ──────────────
+// "3M" is the quarterly timeframe in Pine.
+// lookahead=barmerge.lookahead_off ensures we never peek into the future.
+// [1] shifts back one completed quarter.
+
+pq_hi_raw = request.security(syminfo.tickerid, "3M", high[1],  lookahead=barmerge.lookahead_off)
+pq_lo_raw = request.security(syminfo.tickerid, "3M", low[1],   lookahead=barmerge.lookahead_off)
+
+var float pq_hi = float(na)
+var float pq_lo = float(na)
+
+// ─── Anchor-period state (persists across bars, reset at anchor_new) ────────
+
+var float anchor_open      = float(na)
+var int   anchor_open_time = na
+var float anchor_hi        = float(na)
+var float anchor_lo        = float(na)
+var float anchor_close     = float(na)
+
+// ─── Reset anchor-period state at the start of each new anchor period ───────
+
+if anchor_new
+    pq_hi := pq_hi_raw
+    pq_lo := pq_lo_raw
+    anchor_open      := open
+    anchor_open_time := time
+    anchor_hi        := high
+    anchor_lo        := low
+else
+    anchor_hi := na(anchor_hi) ? high : math.max(anchor_hi, high)
+    anchor_lo := na(anchor_lo) ? low  : math.min(anchor_lo, low)
+
+anchor_close := close
+
+// ─── RTH High / Low / Close (always tied to actual RTH, independent of anchor) ─
+
+var float live_rth_hi = float(na)
+var float live_rth_lo = float(na)
+var float live_rth_close = float(na)
+var float live_rth_open = float(na)
+
+if rth_new
+    live_rth_hi := high
+    live_rth_lo := low
+    live_rth_open := open
+if in_rth
+    live_rth_hi := math.max(live_rth_hi, high)
+    live_rth_lo := math.min(live_rth_lo, low)
+    live_rth_close := close
+
+// ─── Full session High / Low (Globex/pre-market open -> RTH close) ──────────
+
+var float sess_hi = float(na)
+var float sess_lo = float(na)
+var float sess_open = float(na)
+if eth_new
+    sess_hi := high
+    sess_lo := low
+    sess_open := open
+if in_on or in_rth
+    sess_hi := na(sess_hi) ? high : math.max(sess_hi, high)
+    sess_lo := na(sess_lo) ? low  : math.min(sess_lo, low)
+
+// ─── This week's High / Low so far ───────────────────────────────────────────
+
+var float week_hi = float(na)
+var float week_lo = float(na)
+var float week_open = float(na)
+if new_week
+    week_hi := high
+    week_lo := low
+    week_open := open
+else
+    week_hi := na(week_hi) ? high : math.max(week_hi, high)
+    week_lo := na(week_lo) ? low  : math.min(week_lo, low)
+
+// ─── Previous day OHLC (full daily bar via request.security) ─────────────────
+
+prev_d_open  = request.security(syminfo.tickerid, "D", open[1],  lookahead=barmerge.lookahead_off)
+prev_d_high  = request.security(syminfo.tickerid, "D", high[1],  lookahead=barmerge.lookahead_off)
+prev_d_low   = request.security(syminfo.tickerid, "D", low[1],   lookahead=barmerge.lookahead_off)
+prev_d_close = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_off)
+
+// ─── Core math ───────────────────────────────────────────────────────────────
+// pq_hi/pq_lo have already been reset above (if this is an anchor_new bar), so
+// this reflects the CURRENT anchor period's unit.
+
+pq_range  = not na(pq_hi) and not na(pq_lo) ? pq_hi - pq_lo : na
+pq_sqrt   = not na(pq_range) and pq_range > 0 ? math.sqrt(pq_range) : na
+pq_unit   = not na(pq_sqrt) ? pq_sqrt * sqrt_mult : na
+
+// ─── Level prices ─────────────────────────────────────────────────────────────
+
+f_up(n) => not na(anchor_open) and not na(pq_unit) ? anchor_open + pq_unit * n : na
+f_dn(n) => not na(anchor_open) and not na(pq_unit) ? anchor_open - pq_unit * n : na
+
+up1 = f_up(1), up2 = f_up(2), up3 = f_up(3), up4 = f_up(4)
+up5 = f_up(5), up6 = f_up(6), up7 = f_up(7), up8 = f_up(8)
+dn1 = f_dn(1), dn2 = f_dn(2), dn3 = f_dn(3), dn4 = f_dn(4)
+dn5 = f_dn(5), dn6 = f_dn(6), dn7 = f_dn(7), dn8 = f_dn(8)
+
+lvl_up_arr = array.from(up1, up2, up3, up4, up5, up6, up7, up8)
+lvl_dn_arr = array.from(dn1, dn2, dn3, dn4, dn5, dn6, dn7, dn8)
+
+// ─── Unit fractions (half / quarter) ─────────────────────────────────────────
+
+half_unit    = not na(pq_unit) ? pq_unit / 2 : na
+quarter_unit = not na(pq_unit) ? pq_unit / 4 : na
+
+// ─── Range stats (RTH / full session / week) ─────────────────────────────────
+
+rth_rng  = not na(live_rth_hi) and not na(live_rth_lo) ? live_rth_hi - live_rth_lo : na
+sess_rng = not na(sess_hi)     and not na(sess_lo)     ? sess_hi     - sess_lo     : na
+week_rng = not na(week_hi)     and not na(week_lo)     ? week_hi     - week_lo     : na
+
+// ─── Cumulative delta (RTH + full session) ───────────────────────────────────
+// RTH-only delta resets at the 09:30 open, same as before. Session delta
+// resets at the ETH open (auto-detected above) and keeps accumulating through
+// RTH close, so the Delta block isn't just a dash for the pre-RTH hours of
+// the day. Both are independent of the anchor toggle.
+
+var float rth_cum_delta  = 0.0
+var float rth_up_vol     = 0.0
+var float rth_dn_vol     = 0.0
+var float rth_total_vol  = 0.0
+
+var float sess_cum_delta = 0.0
+var float sess_up_vol    = 0.0
+var float sess_dn_vol    = 0.0
+var float sess_total_vol = 0.0
+
+if rth_new
+    rth_cum_delta := 0.0
+    rth_up_vol    := 0.0
+    rth_dn_vol    := 0.0
+    rth_total_vol := 0.0
+
+if eth_new
+    sess_cum_delta := 0.0
+    sess_up_vol    := 0.0
+    sess_dn_vol    := 0.0
+    sess_total_vol := 0.0
+
+if in_rth and not na(volume)
+    bar_up         = close >= open ? volume : 0.0
+    bar_dn         = close <  open ? volume : 0.0
+    rth_up_vol    := rth_up_vol + bar_up
+    rth_dn_vol    := rth_dn_vol + bar_dn
+    rth_cum_delta := rth_up_vol - rth_dn_vol
+    rth_total_vol := rth_total_vol + volume
+
+if (in_rth or in_on) and not na(volume)
+    bar_up_s        = close >= open ? volume : 0.0
+    bar_dn_s        = close <  open ? volume : 0.0
+    sess_up_vol    := sess_up_vol + bar_up_s
+    sess_dn_vol    := sess_dn_vol + bar_dn_s
+    sess_cum_delta := sess_up_vol - sess_dn_vol
+    sess_total_vol := sess_total_vol + volume
+
+delta_pct      = rth_total_vol  > 0 ? (rth_cum_delta  / rth_total_vol)  * 100 : 0.0
+sess_delta_pct = sess_total_vol > 0 ? (sess_cum_delta / sess_total_vol) * 100 : 0.0
+
+// ─── Plots ────────────────────────────────────────────────────────────────────
+
+plot(anchor_open, "Anchor Open", col_open, lw_open, plot.style_linebr)
+
+// ─── Drawing helpers ──────────────────────────────────────────────────────────
+
+draw_line(price, col, lw, ls) =>
+    line.new(bar_index, price, bar_index, price,
+         extend=extend.none, color=col, width=lw, style=ls)
+
+mk_label(bi, lvl, txt, col) =>
+    style = label_right ? label.style_label_left : label.style_label_right
+    label.new(bi, lvl, txt, style=style,
+         color=color.new(col, 80), textcolor=col, size=size.small)
+
+f_quarter_style() =>
+    switch quarter_style_str
+        "Solid"  => line.style_solid
+        "Dashed" => line.style_dashed
+        => line.style_dotted
+
+// transparency = 100 - opacity, since color.new's 2nd arg is % transparent
+quarter_col = color.new(col_quarter, 100 - quarter_opacity)
+
+f_fade_band(col, fade) =>
+    // Blends col the given % of the way toward fully transparent, starting
+    // from col's own base transparency. For a line (base ~0) this reduces to
+    // exactly `fade`, matching how history lines already fade — bands just
+    // start further along since they're already partly transparent.
+    base_t = color.t(col)
+    color.new(col, math.round(base_t + (100 - base_t) * fade / 100))
+
+// ─── Object arrays ────────────────────────────────────────────────────────────
+// "Today's" (current-period) live objects — these get extended to bar_index
+// every bar while the period is open, exactly like the original script.
+
+var line[]     line_arr     = array.new_line()
+var linefill[] fill_arr     = array.new_linefill()
+var label[]    lbl_arr      = array.new_label()
+var color[]    line_col_arr = array.new_color()
+var label[]    open_lbl_arr = array.new_label()
+var line       open_line_ref = na
+var line[]     up_line_arr  = array.new_line()   // level lines only (no mid-lines) — used to rebuild fills after freeze
+var line[]     dn_line_arr  = array.new_line()
+
+// History: 6 rotating "slots", one per kept anchor period. Each slot holds the
+// FROZEN, FADED versions of that period's actual line objects — same
+// technique the original used for its single previous day, just repeated
+// across 6 slots. Bands are dynamic: Pine hard-caps linefills at 50 objects
+// total, so we compute how many history periods can actually get bands
+// (based on num_levels) and fill that many, evicting the oldest banded
+// period as new ones qualify.
+
+var line[] slot_line_0 = array.new_line()
+var line[] slot_line_1 = array.new_line()
+var line[] slot_line_2 = array.new_line()
+var line[] slot_line_3 = array.new_line()
+var line[] slot_line_4 = array.new_line()
+var line[] slot_line_5 = array.new_line()
+var int    slot_idx = 0   // which slot gets overwritten next (the oldest one)
+
+var linefill[] slot_fill_0 = array.new_linefill()
+var linefill[] slot_fill_1 = array.new_linefill()
+var linefill[] slot_fill_2 = array.new_linefill()
+var linefill[] slot_fill_3 = array.new_linefill()
+var linefill[] slot_fill_4 = array.new_linefill()
+var linefill[] slot_fill_5 = array.new_linefill()
+var int[]  banded_queue = array.new_int()   // slot indices currently holding bands, newest at front
+
+f_slot(idx) =>
+    switch idx
+        0 => slot_line_0
+        1 => slot_line_1
+        2 => slot_line_2
+        3 => slot_line_3
+        4 => slot_line_4
+        5 => slot_line_5
+        => slot_line_0
+
+f_slot_fill(idx) =>
+    switch idx
+        0 => slot_fill_0
+        1 => slot_fill_1
+        2 => slot_fill_2
+        3 => slot_fill_3
+        4 => slot_fill_4
+        5 => slot_fill_5
+        => slot_fill_0
+
+// ─── Stretch lines + reposition labels ───────────────────────────────────────
+// Only the current period's live objects get stretched — history slots are
+// frozen once and never touched again, so they stay fixed at the bars where
+// that period actually happened.
+
+if not anchor_new and barstate.islast
+    for ln in line_arr
+        line.set_x2(ln, bar_index)
+    for lb in lbl_arr
+        label.set_x(lb, bar_index)
+        label.set_style(lb, label_right ? label.style_label_left : label.style_label_right)
+    for lb in open_lbl_arr
+        label.set_x(lb, bar_index)
+        label.set_style(lb, label_right ? label.style_label_left : label.style_label_right)
+
+// ─── Draw levels at anchor open ───────────────────────────────────────────────
+
+if anchor_new
+
+    // ── Freeze the just-completed period's objects into the oldest slot ──
+    // Same mechanism as the original: fade the line color, freeze x2 at the
+    // current bar (start of the new period = end of the old one), set
+    // extend to none, and stop touching them. We just rotate through 6
+    // slots instead of overwriting a single "previous day" pool.
+
+    cur_slot = f_slot(slot_idx)
+    cur_fill = f_slot_fill(slot_idx)
+
+    for ln in cur_slot
+        line.delete(ln)
+    array.clear(cur_slot)
+    for lf in cur_fill
+        linefill.delete(lf)
+    array.clear(cur_fill)
+
+    // This slot's old fills are gone — drop it from the recency queue if present
+    q_pos = array.indexof(banded_queue, slot_idx)
+    if q_pos >= 0
+        array.remove(banded_queue, q_pos)
+
+    int ln_sz = array.size(line_arr)
+    if ln_sz > 0 and array.size(line_col_arr) == ln_sz
+        for i = 0 to ln_sz - 1
+            ln  = array.get(line_arr, i)
+            col = array.get(line_col_arr, i)
+            line.set_color(ln, color.new(col, hist_fade))
+            line.set_x2(ln, bar_index)
+            line.set_extend(ln, extend.none)
+            array.push(cur_slot, ln)
+
+    for lf in fill_arr
+        linefill.delete(lf)
+
+    // How many history periods can actually get bands, given Pine's fixed
+    // 50-linefill cap and today's own reserved fill count (num_levels*2)?
+    day_fill_cost = num_levels * 2
+    max_band_days = math.max(0, int(math.floor((50 - day_fill_cost) / day_fill_cost)))
+
+    // Evict the oldest banded period(s) until this new one fits the budget
+    while array.size(banded_queue) >= max_band_days and array.size(banded_queue) > 0
+        oldest_slot = array.pop(banded_queue)
+        oldest_fill = f_slot_fill(oldest_slot)
+        for lf in oldest_fill
+            linefill.delete(lf)
+        array.clear(oldest_fill)
+
+    if max_band_days > 0 and not na(open_line_ref)
+        ln_prev = open_line_ref
+        for i = 0 to array.size(up_line_arr) - 1
+            ln_u = array.get(up_line_arr, i)
+            band_col = f_fade_band(i % 2 == 0 ? col_band_up_a : col_band_up_b, hist_fade)
+            array.push(cur_fill, linefill.new(ln_prev, ln_u, band_col))
+            ln_prev := ln_u
+        ln_prev := open_line_ref
+        for i = 0 to array.size(dn_line_arr) - 1
+            ln_d = array.get(dn_line_arr, i)
+            band_col = f_fade_band(i % 2 == 0 ? col_band_dn_a : col_band_dn_b, hist_fade)
+            array.push(cur_fill, linefill.new(ln_prev, ln_d, band_col))
+            ln_prev := ln_d
+        array.unshift(banded_queue, slot_idx)
+
+    for lb in lbl_arr
+        label.delete(lb)
+    for lb in open_lbl_arr
+        label.delete(lb)
+
+    slot_idx := (slot_idx + 1) % HIST_DRAW_DAYS
+
+    array.clear(line_arr)
+    array.clear(fill_arr)
+    array.clear(lbl_arr)
+    array.clear(line_col_arr)
+    array.clear(open_lbl_arr)
+    array.clear(up_line_arr)
+    array.clear(dn_line_arr)
+    open_line_ref := na
+
+    if not na(pq_unit)
+
+        // ── Open line ──
+        ln_open = draw_line(anchor_open, col_open, lw_open, line.style_solid)
+        array.push(line_arr,     ln_open)
+        array.push(line_col_arr, col_open)
+        array.push(open_lbl_arr, mk_label(bar_index, anchor_open,
+             anchor_tag + " OPEN  " + str.tostring(anchor_open, "#.##"), col_open))
+        open_line_ref := ln_open
+
+        ups = array.from(up1, up2, up3, up4, up5, up6, up7, up8)
+        dns = array.from(dn1, dn2, dn3, dn4, dn5, dn6, dn7, dn8)
+
+        // ── Up levels ──
+        ln_prev    = ln_open
+        price_prev = anchor_open
+        for i = 0 to num_levels - 1
+            u     = array.get(ups, i)
+            u_col = color.new(col_up, i * 10)
+            ln_u  = draw_line(u, u_col, lw_lvl, line.style_solid)
+            array.push(line_arr,     ln_u)
+            array.push(line_col_arr, u_col)
+            array.push(up_line_arr,  ln_u)
+            array.push(fill_arr, linefill.new(ln_prev, ln_u, i % 2 == 0 ? col_band_up_a : col_band_up_b))
+            array.push(lbl_arr, mk_label(bar_index, u,
+                 "+" + str.tostring(i+1) + "  " + str.tostring(u, "#.##"), col_up))
+            if show_mid
+                mid_p = (price_prev + u) / 2
+                ln_m  = draw_line(mid_p, col_mid, 1, line.style_dashed)
+                array.push(line_arr,     ln_m)
+                array.push(line_col_arr, col_mid)
+                array.push(lbl_arr, mk_label(bar_index, mid_p,
+                     "mid  " + str.tostring(mid_p, "#.##"), col_mid))
+            if show_quarter
+                q_p  = price_prev + (u - price_prev) * 0.25
+                ln_q = draw_line(q_p, quarter_col, 1, f_quarter_style())
+                array.push(line_arr,     ln_q)
+                array.push(line_col_arr, quarter_col)
+                if quarter_show_label
+                    array.push(lbl_arr, mk_label(bar_index, q_p,
+                         "¼  " + str.tostring(q_p, "#.##"), quarter_col))
+            if show_three_qtr
+                q3_p = price_prev + (u - price_prev) * 0.75
+                ln_q3 = draw_line(q3_p, quarter_col, 1, f_quarter_style())
+                array.push(line_arr,     ln_q3)
+                array.push(line_col_arr, quarter_col)
+                if quarter_show_label
+                    array.push(lbl_arr, mk_label(bar_index, q3_p,
+                         "¾  " + str.tostring(q3_p, "#.##"), quarter_col))
+            ln_prev    := ln_u
+            price_prev := u
+
+        // ── Down levels ──
+        ln_prev    := ln_open
+        price_prev := anchor_open
+        for i = 0 to num_levels - 1
+            d     = array.get(dns, i)
+            d_col = color.new(col_dn, i * 10)
+            ln_d  = draw_line(d, d_col, lw_lvl, line.style_solid)
+            array.push(line_arr,     ln_d)
+            array.push(line_col_arr, d_col)
+            array.push(dn_line_arr,  ln_d)
+            array.push(fill_arr, linefill.new(ln_prev, ln_d, i % 2 == 0 ? col_band_dn_a : col_band_dn_b))
+            array.push(lbl_arr, mk_label(bar_index, d,
+                 "-" + str.tostring(i+1) + "  " + str.tostring(d, "#.##"), col_dn))
+            if show_mid
+                mid_p = (price_prev + d) / 2
+                ln_m  = draw_line(mid_p, col_mid, 1, line.style_dashed)
+                array.push(line_arr,     ln_m)
+                array.push(line_col_arr, col_mid)
+                array.push(lbl_arr, mk_label(bar_index, mid_p,
+                     "mid  " + str.tostring(mid_p, "#.##"), col_mid))
+            if show_quarter
+                q_p  = price_prev - (price_prev - d) * 0.25
+                ln_q = draw_line(q_p, quarter_col, 1, f_quarter_style())
+                array.push(line_arr,     ln_q)
+                array.push(line_col_arr, quarter_col)
+                if quarter_show_label
+                    array.push(lbl_arr, mk_label(bar_index, q_p,
+                         "¼  " + str.tostring(q_p, "#.##"), quarter_col))
+            if show_three_qtr
+                q3_p = price_prev - (price_prev - d) * 0.75
+                ln_q3 = draw_line(q3_p, quarter_col, 1, f_quarter_style())
+                array.push(line_arr,     ln_q3)
+                array.push(line_col_arr, quarter_col)
+                if quarter_show_label
+                    array.push(lbl_arr, mk_label(bar_index, q3_p,
+                         "¾  " + str.tostring(q3_p, "#.##"), quarter_col))
+            ln_prev    := ln_d
+            price_prev := d
+
+// ─── Level-cross alerts ───────────────────────────────────────────────────────
+// Fires once per bar close when price crosses a level. Uses ta.crossover /
+// ta.crossunder against the *current* anchor period's levels, so a level
+// re-tagged later in the same period will re-fire (useful for chop/retest
+// reads). Guarded by not na(pq_unit) so nothing fires before the first full
+// anchor period has a valid unit. Set the TradingView alert condition to
+// "Any alert() function call" on this indicator to receive these.
+
+if alerts_on and not na(pq_unit) and not na(anchor_open)
+    for i = 1 to num_levels
+        u = array.get(lvl_up_arr, i - 1)
+        d = array.get(lvl_dn_arr, i - 1)
+        if not na(u) and ta.crossover(close, u)
+            alert(syminfo.ticker + " " + anchor_tag + " +" + str.tostring(i) + " hit @ " + str.tostring(u, "#.##"), alert.freq_once_per_bar)
+        if not na(d) and ta.crossunder(close, d)
+            alert(syminfo.ticker + " " + anchor_tag + " -" + str.tostring(i) + " hit @ " + str.tostring(d, "#.##"), alert.freq_once_per_bar)
+    if alert_open_on
+        if ta.crossover(close, anchor_open)
+            alert(syminfo.ticker + " " + anchor_tag + " OPEN reclaimed @ " + str.tostring(anchor_open, "#.##"), alert.freq_once_per_bar)
+        if ta.crossunder(close, anchor_open)
+            alert(syminfo.ticker + " " + anchor_tag + " OPEN lost @ " + str.tostring(anchor_open, "#.##"), alert.freq_once_per_bar)
+
+// ─── Info table ───────────────────────────────────────────────────────────────
+// Same architecture as the "sqrtR Levels + Sessions" reference: one column,
+// each data row is a single monospace-padded "label + value" string sharing
+// one text color, section dividers are plain centered text rows. No manual
+// left/right cell splitting.
+
+var table      tbl     = na
+var string[]   row_txt = array.new_string()
+var color[]    row_col = array.new_color()
+var bool[]     row_sep = array.new_bool()
+
+// Dedicated up/down colors for directional reads (Delta, RTH/Globex/Weekly
+// range blocks) — kept separate from col_up/col_dn (which color the drawn
+// levels/bands) so "up vs down" reads consistently no matter what the level
+// colors are set to.
+c_bull = color.new(#00c4ff, 0)   // cyan blue
+c_bear = color.new(#ff8080, 0)   // lighter red
+
+pad(s, w) =>
+    out = s
+    for _i = 0 to w - str.length(s) - 1
+        out := out + " "
+    out
+
+push_sep(txt) =>
+    array.push(row_txt, txt)
+    array.push(row_col, color.new(color.gray, 30))
+    array.push(row_sep, true)
+
+push_row(lbl, val, col) =>
+    array.push(row_txt, pad(lbl, 14) + val)
+    array.push(row_col, col)
+    array.push(row_sep, false)
+
+if show_tbl and barstate.islast
+
+    array.clear(row_txt)
+    array.clear(row_col)
+    array.clear(row_sep)
+
+    // Header
+    array.push(row_txt, "  PQsqrtR Levels — " + anchor_tag)
+    array.push(row_col, color.gray)
+    array.push(row_sep, true)
+
+    // ── PQ ──
+    if tbl_qtr_data or tbl_fractions
+        push_sep("─── PQ ───")
+        if tbl_qtr_data
+            push_row("Hi",    not na(pq_hi)    ? str.tostring(pq_hi, "#.##")     : "-", col_up)
+            push_row("Lo",    not na(pq_lo)    ? str.tostring(pq_lo, "#.##")     : "-", col_dn)
+            push_row("Range", not na(pq_range) ? str.tostring(pq_range, "#.##")  : "-", color.gray)
+            push_row("sqrtR", not na(pq_sqrt)  ? str.tostring(pq_sqrt, "#.####") : "-", color.gray)
+            push_row("Mult",  str.tostring(sqrt_mult, "#.##") + "x",                    color.gray)
+            push_row("Unit",  not na(pq_unit)  ? str.tostring(pq_unit, "#.##")   : "-", color.white)
+        if tbl_fractions
+            push_row("Half unit",    not na(half_unit)    ? str.tostring(half_unit, "#.##")    : "-", color.white)
+            push_row("Quarter unit", not na(quarter_unit) ? str.tostring(quarter_unit, "#.##") : "-", color.white)
+
+    // ── Previous day ──
+    if tbl_week
+        push_sep("─── Prev Day ───")
+        push_row("Open",  not na(prev_d_open)  ? str.tostring(prev_d_open, "#.##")  : "-", color.white)
+        push_row("High",  not na(prev_d_high)  ? str.tostring(prev_d_high, "#.##")  : "-", col_up)
+        push_row("Low",   not na(prev_d_low)   ? str.tostring(prev_d_low, "#.##")   : "-", col_dn)
+        push_row("Close", not na(prev_d_close) ? str.tostring(prev_d_close, "#.##") : "-", color.white)
+
+    // ── Sessions ──
+    if tbl_ranges
+        push_sep("─── Sessions ───")
+
+        // Each block (RTH / Globex-or-premkt / Weekly) is colored as a single
+        // unit — High, Low, both distances, and Range all share one color —
+        // cyan if price is currently above THAT period's own open, red if below.
+        rth_dir = not na(live_rth_open) ? (close >= live_rth_open ? c_bull : c_bear) : color.gray
+        rth_dist_up = not na(live_rth_hi) ? live_rth_hi - close : na
+        rth_dist_dn = not na(live_rth_lo) ? close - live_rth_lo : na
+        push_sep("  RTH")
+        push_row("High",     not na(live_rth_hi)  ? str.tostring(live_rth_hi, format.mintick) : "-", rth_dir)
+        push_row("Low",      not na(live_rth_lo)  ? str.tostring(live_rth_lo, format.mintick) : "-", rth_dir)
+        push_row("↓ Dist",   not na(rth_dist_up)  ? str.tostring(rth_dist_up, format.mintick)  : "-", rth_dir)
+        push_row("↑ Dist",   not na(rth_dist_dn)  ? str.tostring(rth_dist_dn, format.mintick)  : "-", rth_dir)
+        push_row("Range",    not na(rth_rng)      ? str.tostring(rth_rng, format.mintick)      : "-", rth_dir)
+
+        sess_dir = not na(sess_open) ? (close >= sess_open ? c_bull : c_bear) : color.gray
+        sess_dist_up = not na(sess_hi) ? sess_hi - close : na
+        sess_dist_dn = not na(sess_lo) ? close - sess_lo : na
+        push_sep(syminfo.type == "futures" ? "  Globex" : "  Ext.Hrs")
+        push_row("High",     not na(sess_hi)      ? str.tostring(sess_hi, format.mintick)      : "-", sess_dir)
+        push_row("Low",      not na(sess_lo)      ? str.tostring(sess_lo, format.mintick)      : "-", sess_dir)
+        push_row("↓ Dist",   not na(sess_dist_up) ? str.tostring(sess_dist_up, format.mintick) : "-", sess_dir)
+        push_row("↑ Dist",   not na(sess_dist_dn) ? str.tostring(sess_dist_dn, format.mintick) : "-", sess_dir)
+        push_row("Range",    not na(sess_rng)     ? str.tostring(sess_rng, format.mintick)     : "-", sess_dir)
+
+        week_dir = not na(week_open) ? (close >= week_open ? c_bull : c_bear) : color.gray
+        week_dist_up = not na(week_hi) ? week_hi - close : na
+        week_dist_dn = not na(week_lo) ? close - week_lo : na
+        push_sep("  Weekly")
+        push_row("High",     not na(week_hi)      ? str.tostring(week_hi, format.mintick)      : "-", week_dir)
+        push_row("Low",      not na(week_lo)      ? str.tostring(week_lo, format.mintick)      : "-", week_dir)
+        push_row("↓ Dist",   not na(week_dist_up) ? str.tostring(week_dist_up, format.mintick) : "-", week_dir)
+        push_row("↑ Dist",   not na(week_dist_dn) ? str.tostring(week_dist_dn, format.mintick) : "-", week_dir)
+        push_row("Range",    not na(week_rng)     ? str.tostring(week_rng, format.mintick)     : "-", week_dir)
+
+    // ── Delta ──
+    if tbl_delta
+        push_sep("─── Delta ───")
+        sess_col = color.gray
+        sess_str = "-"
+        if in_rth or in_on
+            sess_col := sess_cum_delta >= 0 ? c_bull : c_bear
+            sess_str := (sess_cum_delta >= 0 ? "+" : "") + str.tostring(math.round(sess_cum_delta), "#") +
+                 " (" + (sess_delta_pct >= 0 ? "+" : "") + str.tostring(sess_delta_pct, "#.1") + "%)"
+
+        rth_col = color.gray
+        rth_str = "-"
+        if in_rth
+            rth_col := rth_cum_delta >= 0 ? c_bull : c_bear
+            rth_str := (rth_cum_delta >= 0 ? "+" : "") + str.tostring(math.round(rth_cum_delta), "#") +
+                 " (" + (delta_pct >= 0 ? "+" : "") + str.tostring(delta_pct, "#.1") + "%)"
+
+        push_row("Cum Δ", sess_str, sess_col)
+        push_row("RTH Δ", rth_str, rth_col)
+
+        if in_rth or in_on
+            push_row("Up vol", str.tostring(math.round(sess_up_vol), "#"), color.new(c_bull, 20))
+            push_row("Dn vol", str.tostring(math.round(sess_dn_vol), "#"), color.new(c_bear, 20))
+        else
+            push_row("Up vol", "-", color.gray)
+            push_row("Dn vol", "-", color.gray)
+
+    int n_rows = array.size(row_txt)
+    if not na(tbl)
+        table.delete(tbl)
+    tbl := table.new(f_tbl_pos(), 1, n_rows,
+         border_color=color.new(color.gray, 70), border_width=1,
+         frame_color =color.new(color.gray, 70), frame_width =1)
+
+    for i = 0 to n_rows - 1
+        is_sep = array.get(row_sep, i)
+        txt    = array.get(row_txt, i)
+        col    = array.get(row_col, i)
+        if is_sep
+            table.cell(tbl, 0, i, txt,
+                 text_color=col, text_size=size.small,
+                 text_halign=text.align_center,
+                 bgcolor=color.new(color.gray, 88))
+        else
+            table.cell(tbl, 0, i, txt,
+                 text_color=col, text_size=size.small,
+                 text_halign=text.align_left,
+                 bgcolor=color.new(color.gray, 95))

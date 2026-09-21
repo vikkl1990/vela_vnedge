@@ -1,0 +1,163 @@
+//@version=6
+// ============================================================================
+// CHANGELOG & REVISION TRACKER:
+// v1.0.0 - Initial session logic and PDH/PDL level plots.
+// v1.1.0 - Switched to strict calendar day tracking to fix Sunday/Monday day combining.
+// v1.2.0 - Added built-in alert conditions for Bullish, Bearish, and Any BOS.
+// v1.3.0 - Enforced strict sequence logic so PD breaks must occur before BOS evaluation.
+// v1.4.0 - Removed price boundary filters on post-PD break swings to catch all BOS structures.
+// v1.5.0 - Explicitly anchored //@version=6 at line 1 to resolve Pine compiler errors.
+// v1.6.0 - Upgraded BOS engine to array tracking to prevent swing overwriting.
+// v1.7.0 - Added auto-removal of BOS lines and labels when levels are mitigated.
+// v1.8.0 - Fixed loop execution error by calculating crossover logic outside array loops.
+// v1.9.0 - Reverted mitigation deletion; BOS elements remain on chart post-PD break.
+// v2.0.0 - Overhauled BOS engine to active single-level tracking to eliminate chart clutter.
+// v2.1.0 - Enforced strict boundary check so BOS prints ONLY inside PDH and PDL levels.
+// v2.2.0 - Enabled multi-trigger tracking so every individual cross above PDH or below PDL prints an arrow.
+// v4.0.0 - Removed all FVG features, cleaning indicator down to Previous Day Levels, Break Arrows, and BOS.
+// ============================================================================
+indicator("Previous Day Levels & BOS (v4.0.0)", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// ============================================================================
+// INPUTS & SCRIPT REVISION INFO
+// ============================================================================
+grpInfo     = "Script Info & Versioning"
+scriptVer   = input.string("v4.0.0", "Current Revision", group = grpInfo, tooltip = "Tracks script version iterations")
+
+grpLevels   = "Previous Day High / Low"
+showLevels  = input.bool(true, "Show Previous Day High/Low Lines", group = grpLevels)
+highColor   = input.color(color.green, "Previous Day High Color", group = grpLevels)
+lowColor    = input.color(color.red, "Previous Day Low Color", group = grpLevels)
+lineWidthIn = input.int(1, "Line Width", minval = 1, maxval = 5, group = grpLevels)
+
+grpBreaks      = "Break Signals"
+showBreaks     = input.bool(true, "Show Break Signals", group = grpBreaks)
+breakHighColor = input.color(color.red, "Break Above Prev High Color (Red Arrow)", group = grpBreaks)
+breakLowColor  = input.color(color.green, "Break Below Prev Low Color (Green Arrow)", group = grpBreaks)
+
+grpBOS         = "Structure Breaks (BOS)"
+showBOS        = input.bool(true, "Show Structure Breaks", group = grpBOS)
+swingLenIn     = input.int(5, "Swing Detection Length", minval = 2, maxval = 50, group = grpBOS, tooltip = "Pivot length for structure swings")
+bosUpColor     = input.color(color.teal, "Bullish BOS Color", group = grpBOS)
+bosDnColor     = input.color(color.maroon, "Bearish BOS Color", group = grpBOS)
+bosLabelSizeIn = input.string("Small", "Label Size", options = ["Tiny", "Small", "Normal"], group = grpBOS)
+
+// ============================================================================
+// HELPERS
+// ============================================================================
+getLabelSize(string s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        => size.small
+
+// ============================================================================
+// STRICT CALENDAR DAY TRACKING
+// ============================================================================
+isNewCalendarDay = ta.change(dayofmonth) != 0
+
+var float curDayHigh = high
+var float curDayLow  = low
+var float pdHigh     = na
+var float pdLow      = na
+
+var bool wasBelowPDH = true
+var bool wasAbovePDL = true
+var bool hadCrossedPD = false
+
+var float activeSwingHigh = na
+var int   activeSwingHighBar = na
+var float activeSwingLow  = na
+var int   activeSwingLowBar  = na
+
+if isNewCalendarDay
+    pdHigh     := curDayHigh
+    pdLow      := curDayLow
+    curDayHigh := high
+    curDayLow  := low
+    
+    wasBelowPDH  := true
+    wasAbovePDL  := true
+    hadCrossedPD := false
+    
+    activeSwingHigh    := na
+    activeSwingHighBar := na
+    activeSwingLow     := na
+    activeSwingLowBar  := na
+else
+    curDayHigh := math.max(nz(curDayHigh, high), high)
+    curDayLow  := math.min(nz(curDayLow, low), low)
+
+plot(showLevels ? pdHigh : na, title = "Previous Day High", color = highColor, linewidth = lineWidthIn, style = plot.style_linebr)
+plot(showLevels ? pdLow  : na, title = "Previous Day Low",  color = lowColor,  linewidth = lineWidthIn, style = plot.style_linebr)
+
+// ============================================================================
+// MULTI-TRIGGER BREAK SIGNALS
+// ============================================================================
+if high < pdHigh
+    wasBelowPDH := true
+
+if low > pdLow
+    wasAbovePDL := true
+
+breakAboveHigh = showBreaks and not na(pdHigh) and wasBelowPDH and high >= pdHigh
+breakBelowLow  = showBreaks and not na(pdLow)  and wasAbovePDL and low <= pdLow
+
+if breakAboveHigh
+    wasBelowPDH  := false
+    hadCrossedPD := true
+
+if breakBelowLow
+    wasAbovePDL  := false
+    hadCrossedPD := true
+
+plotshape(breakAboveHigh, title = "Break Above Previous Day High", style = shape.triangledown, location = location.abovebar, color = breakHighColor, size = size.small)
+plotshape(breakBelowLow,  title = "Break Below Previous Day Low",  style = shape.triangleup,   location = location.belowbar, color = breakLowColor,  size = size.small)
+
+// ============================================================================
+// STRUCTURE BREAKS (BOS) - STRICT IN-RANGE CHECKING
+// ============================================================================
+ph = ta.pivothigh(high, swingLenIn, swingLenIn)
+pl = ta.pivotlow(low, swingLenIn, swingLenIn)
+
+if hadCrossedPD
+    if not na(ph) and ph < pdHigh and ph > pdLow
+        activeSwingHigh    := ph
+        activeSwingHighBar := bar_index[swingLenIn]
+
+    if not na(pl) and pl < pdHigh and pl > pdLow
+        activeSwingLow     := pl
+        activeSwingLowBar  := bar_index[swingLenIn]
+
+bool bullBosTriggered = false
+bool bearBosTriggered = false
+
+if hadCrossedPD and not na(activeSwingHigh) and activeSwingHigh < pdHigh and activeSwingHigh > pdLow
+    if close[1] <= activeSwingHigh and close > activeSwingHigh
+        bullBosTriggered := true
+        if showBOS
+            line.new(x1 = activeSwingHighBar, y1 = activeSwingHigh, x2 = bar_index, y2 = activeSwingHigh, xloc = xloc.bar_index, color = bosUpColor, style = line.style_dashed)
+            int midBar = math.floor((activeSwingHighBar + bar_index) / 2)
+            label.new(x = midBar, y = activeSwingHigh, text = "BOS", xloc = xloc.bar_index, style = label.style_label_down, color = color(na), textcolor = bosUpColor, size = getLabelSize(bosLabelSizeIn))
+        
+        activeSwingHigh    := na
+        activeSwingHighBar := na
+
+if hadCrossedPD and not na(activeSwingLow) and activeSwingLow < pdHigh and activeSwingLow > pdLow
+    if close[1] >= activeSwingLow and close < activeSwingLow
+        bearBosTriggered := true
+        if showBOS
+            line.new(x1 = activeSwingLowBar, y1 = activeSwingLow, x2 = bar_index, y2 = activeSwingLow, xloc = xloc.bar_index, color = bosDnColor, style = line.style_dashed)
+            int midBar = math.floor((activeSwingLowBar + bar_index) / 2)
+            label.new(x = midBar, y = activeSwingLow, text = "BOS", xloc = xloc.bar_index, style = label.style_label_up, color = color(na), textcolor = bosDnColor, size = getLabelSize(bosLabelSizeIn))
+        
+        activeSwingLow    := na
+        activeSwingLowBar := na
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+alertcondition(bullBosTriggered, title = "Bullish BOS", message = "{{ticker}} - Bullish BOS Formed at {{close}}")
+alertcondition(bearBosTriggered, title = "Bearish BOS", message = "{{ticker}} - Bearish BOS Formed at {{close}}")
+alertcondition(bullBosTriggered or bearBosTriggered, title = "Any BOS", message = "{{ticker}} - Structure Break (BOS) Formed at {{close}}")

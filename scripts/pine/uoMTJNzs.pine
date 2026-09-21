@@ -1,0 +1,684 @@
+//@version=6
+indicator("ATK/DEF — Temporal Session Swing State Engine", overlay=true, precision=0,
+     max_labels_count=500, max_boxes_count=500,
+     max_bars_back=500)
+
+// ============================================
+// ===== Inputs =====
+// ============================================
+leftBars      = input.int(5, "Left Bars",  minval=1, group="=== Swing ===")
+rightBars     = input.int(5, "Right Bars", minval=1, group="=== Swing ===")
+showLabels    = input.bool(true, "Show Pivot Labels",       group="=== Swing ===")
+showTimeZones = input.bool(true, "Show Session Background", group="=== Session ===")
+showSessBox   = input.bool(true, "Show Session Box",        group="=== Session Visual ===")
+showSessLabel = input.bool(true, "Show Session Labels",     group="=== Session Visual ===")
+showBreakLbl  = input.bool(true, "Show Break Labels",       group="=== Session Visual ===")
+alertLiqLow   = input.bool(true, "Alert: Liquidity Low",    group="=== Alerts ===")
+alertVolLow   = input.bool(true, "Alert: Volume Low",       group="=== Alerts ===")
+atrLen        = input.int(14, "ATR Length",     minval=1, group="=== Volatility ===")
+atrAvgLen     = input.int(50, "ATR Avg Length", minval=1, group="=== Volatility ===")
+
+// ============================================
+// 多周期数据（只保留用到的字段）
+// ============================================
+[hHigh, hLow] = request.security(syminfo.tickerid, "M",  [high[1], low[1]], lookahead=barmerge.lookahead_off)
+[wHigh, wLow] = request.security(syminfo.tickerid, "W",  [high[1], low[1]], lookahead=barmerge.lookahead_off)
+[dHigh, dLow] = request.security(syminfo.tickerid, "D",  [high[1], low[1]], lookahead=barmerge.lookahead_off)
+[f4High, f4Low] = request.security(syminfo.tickerid, "240", [high[1], low[1]], lookahead=barmerge.lookahead_off)
+[f1High, f1Low] = request.security(syminfo.tickerid, "60",  [high[1], low[1]], lookahead=barmerge.lookahead_off)
+[f15High, f15Low] = request.security(syminfo.tickerid, "15", [high[1], low[1]], lookahead=barmerge.lookahead_off)
+
+hVolAvg  = request.security(syminfo.tickerid, "M",   ta.sma(volume, 20), lookahead=barmerge.lookahead_off)
+wVolAvg  = request.security(syminfo.tickerid, "W",   ta.sma(volume, 20), lookahead=barmerge.lookahead_off)
+dVolAvg  = request.security(syminfo.tickerid, "D",   ta.sma(volume, 20), lookahead=barmerge.lookahead_off)
+f4VolAvg = request.security(syminfo.tickerid, "240", ta.sma(volume, 20), lookahead=barmerge.lookahead_off)
+f1VolAvg = request.security(syminfo.tickerid, "60",  ta.sma(volume, 20), lookahead=barmerge.lookahead_off)
+
+// ============================================
+// Session 检测（自动跟随交易所时区）
+// ============================================
+exTz = syminfo.timezone
+
+isAsian   = not na(time(timeframe.period, "0000-0900:1234567", exTz))
+isLondon  = not na(time(timeframe.period, "0700-1600:1234567", exTz))
+isNewyork = not na(time(timeframe.period, "1200-2100:1234567", exTz))
+
+bgcolor(showTimeZones and isAsian   ? color.rgb(255,200,100,15) : na, title="Asian BG")
+bgcolor(showTimeZones and isLondon  ? color.rgb(100,200,255,15) : na, title="London BG")
+bgcolor(showTimeZones and isNewyork ? color.rgb(200,200,255,15) : na, title="Newyork BG")
+
+// ============================================
+// Session State
+// ============================================
+var float asianHigh  = na
+var float asianLow   = na
+var float asianOpen  = na
+var float asianClose = na
+var int   asianBars  = 0
+
+var float lonHigh  = na
+var float lonLow   = na
+var float lonOpen  = na
+var float lonClose = na
+var int   lonBars  = 0
+
+var float nyHigh  = na
+var float nyLow   = na
+var float nyOpen  = na
+var float nyClose = na
+var int   nyBars  = 0
+
+var bool asianBullRaw = false
+var bool asianBearRaw = false
+var bool lonBullRaw   = false
+var bool lonBearRaw   = false
+var bool nyBullRaw    = false
+var bool nyBearRaw    = false
+
+var int asianStartBar = na
+var int lonStartBar   = na
+var int nyStartBar    = na
+
+if ta.change(time("D")) != 0
+    asianHigh  := na
+    asianLow   := na
+    asianOpen  := na
+    asianClose := na
+    asianBars  := 0
+    asianStartBar := na
+    lonHigh    := na
+    lonLow     := na
+    lonOpen    := na
+    lonClose   := na
+    lonBars    := 0
+    lonStartBar := na
+    nyHigh     := na
+    nyLow      := na
+    nyOpen     := na
+    nyClose    := na
+    nyBars     := 0
+    nyStartBar := na
+    asianBullRaw := false
+    asianBearRaw := false
+    lonBullRaw   := false
+    lonBearRaw   := false
+    nyBullRaw    := false
+    nyBearRaw    := false
+
+if isAsian and asianBars > 0 and not na(asianHigh)
+    if close > asianHigh
+        asianBullRaw := true
+    if close < asianLow
+        asianBearRaw := true
+
+if isAsian
+    if asianBars == 0
+        asianStartBar := bar_index
+    asianHigh  := na(asianHigh) ? high : math.max(asianHigh, high)
+    asianLow   := na(asianLow)  ? low  : math.min(asianLow, low)
+    asianOpen  := na(asianOpen) ? open : asianOpen
+    asianClose := close
+    asianBars  := asianBars + 1
+
+if isLondon and lonBars > 0 and not na(lonHigh)
+    if close > lonHigh
+        lonBullRaw := true
+    if close < lonLow
+        lonBearRaw := true
+
+if isLondon
+    if lonBars == 0
+        lonStartBar := bar_index
+    lonHigh  := na(lonHigh) ? high : math.max(lonHigh, high)
+    lonLow   := na(lonLow)  ? low  : math.min(lonLow, low)
+    lonOpen  := na(lonOpen) ? open : lonOpen
+    lonClose := close
+    lonBars  := lonBars + 1
+
+if isNewyork and nyBars > 0 and not na(nyHigh)
+    if close > nyHigh
+        nyBullRaw := true
+    if close < nyLow
+        nyBearRaw := true
+
+if isNewyork
+    if nyBars == 0
+        nyStartBar := bar_index
+    nyHigh  := na(nyHigh) ? high : math.max(nyHigh, high)
+    nyLow   := na(nyLow)  ? low  : math.min(nyLow, low)
+    nyOpen  := na(nyOpen) ? open : nyOpen
+    nyClose := close
+    nyBars  := nyBars + 1
+
+// ============================================
+// 格式化
+// ============================================
+fmt(f) => na(f) ? "➖" : str.tostring(f, "#.##")
+fmtV(f) => na(f) ? "➖" : str.tostring(f, "#,###")
+fmtR(f) => na(f) ? "➖" : str.tostring(f, "#.##")
+
+// ============================================
+// Layer 1 表格（右上）
+// ============================================
+var table p1 = table.new(position.top_right, 8, 6, bgcolor=color.rgb(0,0,0,85), border_color=color.rgb(80,80,80,80), border_width=1)
+
+liqR(v, a) => na(a) or a == 0 ? na : v / a
+liqC(r) => na(r) ? color.rgb(150,150,150) : r > 1.2 ? color.rgb(255,100,100) : r > 0.8 ? color.rgb(255,200,100) : color.rgb(100,200,255)
+
+row1(t, r, lay, per, col, bg, hi, lo, lr) =>
+    table.cell(t, 0, r, lay, text_color=col, text_size=size.small, bgcolor=bg)
+    table.cell(t, 1, r, per, text_color=col, text_size=size.small, bgcolor=bg)
+    table.cell(t, 2, r, fmt(hi), text_color=color.rgb(255,100,100), text_size=size.small)
+    table.cell(t, 3, r, fmt(lo), text_color=color.rgb(100,255,100), text_size=size.small)
+    table.cell(t, 4, r, fmtR(lr), text_color=liqC(lr), text_size=size.small)
+
+if barstate.islast
+    string[] hd1 = array.from("LAYER","PERIOD","HIGH","LOW","LIQUIDITY")
+    for i = 0 to 4
+        table.cell(p1, i, 0, array.get(hd1, i), text_color=color.white, text_size=size.small, bgcolor=color.rgb(40,40,40))
+
+    color hc = color.rgb(255,200,100)
+    color hb = color.rgb(60,30,0)
+    color mc = color.rgb(100,200,255)
+    color mb = color.rgb(0,40,60)
+    color lc = color.rgb(200,200,255)
+    color lb = color.rgb(30,30,60)
+
+    row1(p1, 1, "HTF","Monthly", hc, hb, hHigh, hLow, liqR(volume, hVolAvg))
+    row1(p1, 2, "HTF","Weekly",  hc, hb, wHigh, wLow, liqR(volume, wVolAvg))
+    row1(p1, 3, "MTF","Daily",   mc, mb, dHigh, dLow, liqR(volume, dVolAvg))
+    row1(p1, 4, "LTF","4-Hour",  lc, lb, f4High, f4Low, liqR(volume, f4VolAvg))
+    row1(p1, 5, "LTF","1-Hour",  lc, lb, f1High, f1Low, liqR(volume, f1VolAvg))
+
+// ============================================
+// Layer 2 表格（右下）
+// ============================================
+swingTrend(float c, float o, float hi, float lo, int bars) =>
+    bars == 0 or na(c) or na(o) or na(hi) or na(lo) or hi == lo ? "⏳ Wait" :
+     ((c - lo) / (hi - lo)) >= 0.70 and c > o ? "📈 Strong Up"   :
+     ((c - lo) / (hi - lo)) >= 0.55 and c > o ? "📈 Up"          :
+     ((c - lo) / (hi - lo)) <= 0.30 and c < o ? "📉 Strong Down" :
+     ((c - lo) / (hi - lo)) <= 0.45 and c < o ? "📉 Down"        :
+     math.abs(c - o) / o < 0.005              ? "➖ Range"        :
+     c > o                                    ? "📈 Up"          :
+     c < o                                    ? "📉 Down"        : "➖ Range"
+
+cSwing(string s) =>
+    s == "📈 Strong Up"   ? color.rgb(0,255,0)     :
+     s == "📈 Up"          ? color.rgb(0,200,100)   :
+     s == "📉 Down"        ? color.rgb(255,150,150) :
+     s == "📉 Strong Down" ? color.rgb(255,0,0)     :
+     s == "➖ Range"        ? color.rgb(150,150,150) : color.rgb(180,180,180)
+
+brst(v, b, a) => b == 0 or na(a) or a == 0 ? "➖ None" : v / b > a * 1.2 ? "💥 Burst" : v / b > a * 0.8 ? "📊 Normal" : "💧 Quiet"
+
+var table p2 = table.new(position.bottom_right, 5, 4,
+     bgcolor=color.rgb(0,0,0,85), border_color=color.rgb(80,80,80,80), border_width=1)
+
+row2s(t, r, nm, tm, col, bg, micro, minor, major) =>
+    table.cell(t, 0, r, nm,    text_color=col, text_size=size.small, bgcolor=bg)
+    table.cell(t, 1, r, tm,    text_color=color.rgb(200,200,200), text_size=size.small)
+    table.cell(t, 2, r, micro, text_color=cSwing(micro), text_size=size.small)
+    table.cell(t, 3, r, minor, text_color=cSwing(minor), text_size=size.small)
+    table.cell(t, 4, r, major, text_color=cSwing(major), text_size=size.small)
+
+if barstate.islast
+    string[] hd2 = array.from("SESSION", "TIME", "MICRO SWING", "MINOR SWING", "MAJOR SWING")
+    for i = 0 to 4
+        table.cell(p2, i, 0, array.get(hd2, i),
+             text_color=color.white, text_size=size.small, bgcolor=color.rgb(40,40,40))
+
+    row2s(p2, 1, "🌏 Asian",   "00-09 " + exTz, color.rgb(255,200,100), color.rgb(60,30,0),
+         swingTrend(asianClose, asianOpen, f15High, f15Low, asianBars),
+         swingTrend(asianClose, asianOpen, f1High,  f1Low,  asianBars),
+         swingTrend(asianClose, asianOpen, f4High,  f4Low,  asianBars))
+
+    row2s(p2, 2, "🌍 London",  "07-16 " + exTz, color.rgb(100,200,255), color.rgb(0,40,60),
+         swingTrend(lonClose, lonOpen, f15High, f15Low, lonBars),
+         swingTrend(lonClose, lonOpen, f1High,  f1Low,  lonBars),
+         swingTrend(lonClose, lonOpen, f4High,  f4Low,  lonBars))
+
+    row2s(p2, 3, "🌎 Newyork", "12-21 " + exTz, color.rgb(200,200,255), color.rgb(30,30,60),
+         swingTrend(nyClose, nyOpen, f15High, f15Low, nyBars),
+         swingTrend(nyClose, nyOpen, f1High,  f1Low,  nyBars),
+         swingTrend(nyClose, nyOpen, f4High,  f4Low,  nyBars))
+
+// ============================================
+// Layer 3
+// ============================================
+atr      = ta.atr(atrLen)
+atrAvg   = ta.sma(atr, atrAvgLen)
+atrRatio = na(atrAvg) or atrAvg == 0 ? na : atr / atrAvg
+atrDir   = na(atr[1]) ? "➖ Flat" : atr > atr[1] ? "📈 Expanding" : atr < atr[1] ? "📉 Contracting" : "➖ Flat"
+
+posPct(c, hi, lo) => na(hi) or na(lo) or hi == lo ? na : (c - lo) / (hi - lo)
+
+posH  = posPct(close, hHigh,  hLow)
+posW  = posPct(close, wHigh,  wLow)
+posD  = posPct(close, dHigh,  dLow)
+posF4 = posPct(close, f4High, f4Low)
+posF1 = posPct(close, f1High, f1Low)
+
+posVals  = array.from(posH, posW, posD, posF4, posF1)
+posClean = array.new_float()
+for i = 0 to array.size(posVals) - 1
+    v = array.get(posVals, i)
+    if not na(v)
+        array.push(posClean, v)
+
+posAvg = array.size(posClean) > 0 ? array.avg(posClean) : na
+
+posLbl(p) =>
+    na(p) ? "➖ Unknown" :
+     p < 0.20 ? "🟢 Deep Low"  :
+     p < 0.35 ? "🟩 Low"       :
+     p < 0.65 ? "🟨 Mid"       :
+     p < 0.80 ? "🟧 High"      : "🔴 Deep High"
+
+volRatioNow = na(atrAvg) or atrAvg == 0 ? na : volume / ta.sma(volume, 20)
+
+behavior(p, vr, vq) =>
+    na(p) or na(vr) ? "➖ Wait" :
+     p < 0.35 and vr > 1.3 and vq == "🔥 High"    ? "🚀 Accumulation" :
+     p > 0.65 and vr > 1.3 and vq == "🔥 High"    ? "💎 Distribution" :
+     p > 0.35 and p < 0.65 and vr > 2.0           ? "🌀 Shakeout"     :
+     p > 0.65 and vr < 1.3                        ? "📈 Markup"       :
+     p < 0.35 and vr < 1.3                        ? "📉 Markdown"     :
+     p > 0.35 and p < 0.65 and vr < 0.7           ? "➖ Range"        : "⏳ Wait"
+
+volQ        = brst(volume, 1, ta.sma(volume, 20))
+curBehavior = behavior(posAvg, volRatioNow, volQ)
+
+cVol(ratio) =>
+    na(ratio)   ? color.rgb(150,150,150) :
+     ratio < 0.7 ? color.rgb(100,200,255) :
+     ratio < 1.3 ? color.rgb(200,200,200) :
+     ratio < 2.0 ? color.rgb(255,200,100) : color.rgb(255,100,100)
+
+cAtrDir(s) =>
+    s == "📈 Expanding"   ? color.rgb(255,120,0) :
+     s == "📉 Contracting" ? color.rgb(100,200,255) : color.rgb(180,180,180)
+
+cPos(p) =>
+    na(p)    ? color.rgb(150,150,150) :
+     p < 0.35 ? color.rgb(0,255,100) :
+     p > 0.65 ? color.rgb(255,100,100) : color.rgb(255,200,100)
+
+swingFreq(float c, float hi, float lo) => na(c) or na(hi) or na(lo) or hi == lo ? na : (c - lo) / (hi - lo)
+
+freqGrade(float f) =>
+    na(f)      ? "➖" :
+     f < 0.25  ? "A"  :
+     f < 0.50  ? "B"  :
+     f < 0.75  ? "C"  : "D"
+
+cGrade(string g) =>
+    g == "A" ? color.rgb(0,255,100)   :
+     g == "B" ? color.rgb(150,255,100) :
+     g == "C" ? color.rgb(255,200,100) :
+     g == "D" ? color.rgb(255,100,100) : color.rgb(150,150,150)
+
+var table p3 = table.new(position.bottom_left, 8, 6,
+     bgcolor=color.rgb(0,0,0,85), border_color=color.rgb(80,80,80,80), border_width=1)
+
+row3(t, r, per, layerCol, layerBg, posVal, microF, minorF, majorF, lvl, atrDirStr, atrRatioVal) =>
+    table.cell(t, 0, r, per, text_color=layerCol, text_size=size.small, bgcolor=layerBg)
+    table.cell(t, 1, r, na(posVal) ? "➖" : str.tostring(posVal * 100, "#.#") + "%",
+         text_color=cPos(posVal), text_size=size.small)
+    table.cell(t, 2, r, freqGrade(microF), text_color=cGrade(freqGrade(microF)), text_size=size.small)
+    table.cell(t, 3, r, freqGrade(minorF), text_color=cGrade(freqGrade(minorF)), text_size=size.small)
+    table.cell(t, 4, r, freqGrade(majorF), text_color=cGrade(freqGrade(majorF)), text_size=size.small)
+    table.cell(t, 5, r, lvl, text_color=cPos(posVal), text_size=size.small)
+    table.cell(t, 6, r, atrDirStr, text_color=cAtrDir(atrDirStr), text_size=size.small)
+    table.cell(t, 7, r, na(atrRatioVal) ? "➖" : str.tostring(atrRatioVal, "#.##"),
+         text_color=cVol(atrRatioVal), text_size=size.small)
+
+if barstate.islast
+    string[] hd3 = array.from("Period", "Position", "Micro (15m)", "Minor (1H)", "Major (4H)", "Level", "ATR Dir", "ATR Ratio")
+    for i = 0 to 7
+        table.cell(p3, i, 0, array.get(hd3, i),
+             text_color=color.white, text_size=size.small, bgcolor=color.rgb(40,40,40))
+
+    microF = swingFreq(close, f15High, f15Low)
+    minorF = swingFreq(close, f1High,  f1Low)
+    majorF = swingFreq(close, f4High,  f4Low)
+
+    color hc2 = color.rgb(255,200,100)
+    color hb2 = color.rgb(60,30,0)
+    color mc2 = color.rgb(100,200,255)
+    color mb2 = color.rgb(0,40,60)
+    color lc2 = color.rgb(200,200,255)
+    color lb2 = color.rgb(30,30,60)
+
+    row3(p3, 1, "Monthly", hc2, hb2, posH,  microF, minorF, majorF, posLbl(posH),  atrDir, atrRatio)
+    row3(p3, 2, "Weekly",  hc2, hb2, posW,  microF, minorF, majorF, posLbl(posW),  atrDir, atrRatio)
+    row3(p3, 3, "Daily",   mc2, mb2, posD,  microF, minorF, majorF, posLbl(posD),  atrDir, atrRatio)
+    row3(p3, 4, "4-Hour",  lc2, lb2, posF4, microF, minorF, majorF, posLbl(posF4), atrDir, atrRatio)
+    row3(p3, 5, "1-Hour",  lc2, lb2, posF1, microF, minorF, majorF, posLbl(posF1), atrDir, atrRatio)
+
+// ---------- 摘要面板（左中） ----------
+swingFreqLbl(float p) =>
+    na(p) ? "➖ Unknown" :
+     p < 0.20 ? "❄️ Very Low Freq"  :
+     p < 0.40 ? "🌤️ Low Freq"       :
+     p < 0.60 ? "📊 Normal Freq"     :
+     p < 0.80 ? "🔥 High Freq"       : "🌋 Extreme Freq"
+
+var int upCount = 0
+var int downCount = 0
+upCount := 0
+downCount := 0
+for i = 0 to array.size(posClean) - 1
+    v = array.get(posClean, i)
+    if not na(v)
+        if v > 0.55
+            upCount += 1
+        if v < 0.45
+            downCount += 1
+
+swingAltLbl(int up, int dn) =>
+    up + dn == 0 ? "➖ Unknown" :
+     up > dn * 2 ? "📈 Up Dominant"  :
+     dn > up * 2 ? "📉 Down Dominant" :
+     up > dn     ? "🟢 Up Bias"       :
+     dn > up     ? "🔴 Down Bias"     : "⚖️ Balanced"
+
+effVal = na(atr) or atr == 0 ? na : ((hHigh - hLow) + (wHigh - wLow) + (dHigh - dLow) + (f4High - f4Low) + (f1High - f1Low)) / 5 / atr
+
+swingEffLbl(float e) =>
+    na(e) ? "➖ Unknown" :
+     e < 5   ? "❄️ Low Efficiency"     :
+     e < 15  ? "🌤️ Normal Efficiency"  :
+     e < 30  ? "🔥 High Efficiency"    : "🌋 Extreme Efficiency"
+
+swingTestLbl(float p) =>
+    na(p) ? "➖ Unknown" :
+     p < 0.15 ? "🔽 Testing Low"    :
+     p > 0.85 ? "🔼 Testing High"   :
+     p < 0.35 ? "🟢 Near Low"       :
+     p > 0.65 ? "🔴 Near High"      : "➖ No Test"
+
+accUp   = close > hHigh - (hHigh - hLow) * 0.20
+accDown = close < hLow  + (hHigh - hLow) * 0.20
+
+swingAccLbl(bool up, bool dn) =>
+    up and not dn ? "✅ Accepted High"  :
+     dn and not up ? "✅ Accepted Low"   :
+     up and dn     ? "⚠️ Conflicted"     : "➖ Mid Range"
+
+cFreqLbl(string s) =>
+    s == "❄️ Very Low Freq"   ? color.rgb(100,200,255) :
+     s == "🌤️ Low Freq"        ? color.rgb(150,200,255) :
+     s == "📊 Normal Freq"      ? color.rgb(200,200,200) :
+     s == "🔥 High Freq"        ? color.rgb(255,200,100) :
+     s == "🌋 Extreme Freq"     ? color.rgb(255,100,100) : color.rgb(150,150,150)
+
+cAltLbl(string s) =>
+    s == "📈 Up Dominant"   ? color.rgb(0,255,0)   :
+     s == "🟢 Up Bias"       ? color.rgb(0,200,100) :
+     s == "⚖️ Balanced"      ? color.rgb(200,200,200) :
+     s == "🔴 Down Bias"     ? color.rgb(255,150,150) :
+     s == "📉 Down Dominant" ? color.rgb(255,0,0)   : color.rgb(150,150,150)
+
+cEffLbl(string s) =>
+    s == "❄️ Low Efficiency"     ? color.rgb(100,200,255) :
+     s == "🌤️ Normal Efficiency"  ? color.rgb(200,200,200) :
+     s == "🔥 High Efficiency"    ? color.rgb(255,200,100) :
+     s == "🌋 Extreme Efficiency" ? color.rgb(255,100,100) : color.rgb(150,150,150)
+
+cTestLbl(string s) =>
+    s == "🔽 Testing Low"  ? color.rgb(0,255,100) :
+     s == "🟢 Near Low"     ? color.rgb(150,255,150) :
+     s == "🔴 Near High"    ? color.rgb(255,150,150) :
+     s == "🔼 Testing High" ? color.rgb(255,0,0) :
+     s == "➖ No Test"       ? color.rgb(150,150,150) : color.rgb(180,180,180)
+
+cAccLbl(string s) =>
+    s == "✅ Accepted High" ? color.rgb(255,100,100) :
+     s == "✅ Accepted Low"  ? color.rgb(0,255,100)   :
+     s == "⚠️ Conflicted"    ? color.rgb(255,200,100) :
+     s == "➖ Mid Range"      ? color.rgb(150,150,150) : color.rgb(180,180,180)
+
+var table p4 = table.new(position.middle_left, 2, 5,
+     bgcolor=color.rgb(0,0,0,85), border_color=color.rgb(80,80,80,80), border_width=1)
+
+if barstate.islast
+    sfText = swingFreqLbl(posAvg)
+    table.cell(p4, 0, 0, "Swing Frequency", text_color=color.white, text_size=size.small, bgcolor=color.rgb(40,40,40))
+    table.cell(p4, 1, 0, sfText, text_color=cFreqLbl(sfText), text_size=size.small)
+
+    saText = swingAltLbl(upCount, downCount)
+    table.cell(p4, 0, 1, "Swing Alternation", text_color=color.white, text_size=size.small, bgcolor=color.rgb(40,40,40))
+    table.cell(p4, 1, 1, saText, text_color=cAltLbl(saText), text_size=size.small)
+
+    seText = swingEffLbl(effVal)
+    table.cell(p4, 0, 2, "Swing Efficiency", text_color=color.white, text_size=size.small, bgcolor=color.rgb(40,40,40))
+    table.cell(p4, 1, 2, seText, text_color=cEffLbl(seText), text_size=size.small)
+
+    stText = swingTestLbl(posAvg)
+    table.cell(p4, 0, 3, "Swing Test Structure", text_color=color.white, text_size=size.small, bgcolor=color.rgb(40,40,40))
+    table.cell(p4, 1, 3, stText, text_color=cTestLbl(stText), text_size=size.small)
+
+    sa2Text = swingAccLbl(accUp, accDown)
+    table.cell(p4, 0, 4, "Swing Acceptance", text_color=color.white, text_size=size.small, bgcolor=color.rgb(40,40,40))
+    table.cell(p4, 1, 4, sa2Text, text_color=cAccLbl(sa2Text), text_size=size.small)
+
+// ============================================
+// FIFO 管理（全部对象纳入）
+// ============================================
+MAX_BOX     = 50   // 3 box 队列 × 50 = 150 ≤ 500
+MAX_SESSION = 50   // 6 Session 标签队列 × 50 = 300
+MAX_BREAK   = 25   // 6 Break 标签队列 × 25 = 150
+MAX_SWING   = 2    // Swing 2 个（每次 delete 旧的，独立管理）
+// Label 合计 = 300 + 150 + 2 = 452 ≤ 500 ✅
+// Box 合计 = 150 ≤ 500 ✅
+
+var array<box>   asianBoxQ = array.new<box>()
+var array<box>   lonBoxQ   = array.new<box>()
+var array<box>   nyBoxQ    = array.new<box>()
+
+var array<label> asianHiLblQ = array.new<label>()
+var array<label> asianLoLblQ = array.new<label>()
+var array<label> lonHiLblQ   = array.new<label>()
+var array<label> lonLoLblQ   = array.new<label>()
+var array<label> nyHiLblQ    = array.new<label>()
+var array<label> nyLoLblQ    = array.new<label>()
+
+var array<label> asianBullQ = array.new<label>()
+var array<label> asianBearQ = array.new<label>()
+var array<label> lonBullQ   = array.new<label>()
+var array<label> lonBearQ   = array.new<label>()
+var array<label> nyBullQ    = array.new<label>()
+var array<label> nyBearQ    = array.new<label>()
+
+pushBoxFIFO(array<box> q, box b, int maxN) =>
+    array.push(q, b)
+    if array.size(q) > maxN
+        box.delete(array.shift(q))
+
+pushLblFIFO(array<label> q, label l, int maxN) =>
+    array.push(q, l)
+    if array.size(q) > maxN
+        label.delete(array.shift(q))
+
+asianEnd = isAsian[1] and not isAsian
+lonEnd   = isLondon[1] and not isLondon
+nyEnd    = isNewyork[1] and not isNewyork
+
+asianBoxCol   = color.new(color.rgb(255,200,100), 80)
+londonBoxCol  = color.new(color.rgb(100,200,255), 80)
+nyBoxCol      = color.new(color.rgb(200,200,255), 80)
+
+asianLineCol  = color.rgb(255,200,100)
+londonLineCol = color.rgb(100,200,255)
+nyLineCol     = color.rgb(200,200,255)
+
+if showSessBox and asianEnd and not na(asianStartBar) and not na(asianHigh) and not na(asianLow)
+    b = box.new(left=asianStartBar, top=asianHigh, right=bar_index, bottom=asianLow,
+         xloc=xloc.bar_index, bgcolor=asianBoxCol, border_color=asianLineCol, border_width=1)
+    pushBoxFIFO(asianBoxQ, b, MAX_BOX)
+
+if showSessLabel and asianEnd and not na(asianHigh)
+    lh = label.new(x=bar_index, y=asianHigh, text="ASIAN HIGH AVG\n" + str.tostring(asianHigh, "#.##"),
+         color=color.new(asianLineCol,20), textcolor=color.white, style=label.style_label_left, size=size.small)
+    pushLblFIFO(asianHiLblQ, lh, MAX_SESSION)
+
+if showSessLabel and asianEnd and not na(asianLow)
+    ll = label.new(x=bar_index, y=asianLow, text="ASIAN LOW AVG\n" + str.tostring(asianLow, "#.##"),
+         color=color.new(asianLineCol,20), textcolor=color.white, style=label.style_label_left, size=size.small)
+    pushLblFIFO(asianLoLblQ, ll, MAX_SESSION)
+
+if showSessBox and lonEnd and not na(lonStartBar) and not na(lonHigh) and not na(lonLow)
+    b = box.new(left=lonStartBar, top=lonHigh, right=bar_index, bottom=lonLow,
+         xloc=xloc.bar_index, bgcolor=londonBoxCol, border_color=londonLineCol, border_width=1)
+    pushBoxFIFO(lonBoxQ, b, MAX_BOX)
+
+if showSessLabel and lonEnd and not na(lonHigh)
+    lh = label.new(x=bar_index, y=lonHigh, text="LONDON HIGH AVG\n" + str.tostring(lonHigh, "#.##"),
+         color=color.new(londonLineCol,20), textcolor=color.white, style=label.style_label_left, size=size.small)
+    pushLblFIFO(lonHiLblQ, lh, MAX_SESSION)
+
+if showSessLabel and lonEnd and not na(lonLow)
+    ll = label.new(x=bar_index, y=lonLow, text="LONDON LOW AVG\n" + str.tostring(lonLow, "#.##"),
+         color=color.new(londonLineCol,20), textcolor=color.white, style=label.style_label_left, size=size.small)
+    pushLblFIFO(lonLoLblQ, ll, MAX_SESSION)
+
+if showSessBox and nyEnd and not na(nyStartBar) and not na(nyHigh) and not na(nyLow)
+    b = box.new(left=nyStartBar, top=nyHigh, right=bar_index, bottom=nyLow,
+         xloc=xloc.bar_index, bgcolor=nyBoxCol, border_color=nyLineCol, border_width=1)
+    pushBoxFIFO(nyBoxQ, b, MAX_BOX)
+
+if showSessLabel and nyEnd and not na(nyHigh)
+    lh = label.new(x=bar_index, y=nyHigh, text="NEWYORK HIGH AVG\n" + str.tostring(nyHigh, "#.##"),
+         color=color.new(nyLineCol,20), textcolor=color.white, style=label.style_label_left, size=size.small)
+    pushLblFIFO(nyHiLblQ, lh, MAX_SESSION)
+
+if showSessLabel and nyEnd and not na(nyLow)
+    ll = label.new(x=bar_index, y=nyLow, text="NEWYORK LOW AVG\n" + str.tostring(nyLow, "#.##"),
+         color=color.new(nyLineCol,20), textcolor=color.white, style=label.style_label_left, size=size.small)
+    pushLblFIFO(nyLoLblQ, ll, MAX_SESSION)
+
+// ============================================
+// Bull / Bear Break（FIFO 上限 25）
+// ============================================
+bullBreakCol  = color.rgb(0,200,0)
+bearBreakCol  = color.rgb(255,50,50)
+
+var bool asianBullDone = false
+var bool asianBearDone = false
+var bool lonBullDone   = false
+var bool lonBearDone   = false
+var bool nyBullDone    = false
+var bool nyBearDone    = false
+
+if ta.change(time("D")) != 0
+    asianBullDone := false
+    asianBearDone := false
+    lonBullDone   := false
+    lonBearDone   := false
+    nyBullDone    := false
+    nyBearDone    := false
+
+asianBullCond = showBreakLbl and asianBullRaw and not asianBullDone
+asianBearCond = showBreakLbl and asianBearRaw and not asianBearDone
+lonBullCond   = showBreakLbl and lonBullRaw   and not lonBullDone
+lonBearCond   = showBreakLbl and lonBearRaw   and not lonBearDone
+nyBullCond    = showBreakLbl and nyBullRaw    and not nyBullDone
+nyBearCond    = showBreakLbl and nyBearRaw    and not nyBearDone
+
+asianBullConfirm = asianBullCond and barstate.isconfirmed
+asianBearConfirm = asianBearCond and barstate.isconfirmed
+lonBullConfirm   = lonBullCond   and barstate.isconfirmed
+lonBearConfirm   = lonBearCond   and barstate.isconfirmed
+nyBullConfirm    = nyBullCond    and barstate.isconfirmed
+nyBearConfirm    = nyBearCond    and barstate.isconfirmed
+
+if asianBullCond
+    lb = label.new(bar_index, high, text="🟢 ASIAN BULL BREAK", color=color.new(bullBreakCol,20), textcolor=color.white, style=label.style_label_down, size=size.small)
+    pushLblFIFO(asianBullQ, lb, MAX_BREAK)
+if asianBearCond
+    lb = label.new(bar_index, low,  text="🔴 ASIAN BEAR BREAK", color=color.new(bearBreakCol,20), textcolor=color.white, style=label.style_label_up,   size=size.small)
+    pushLblFIFO(asianBearQ, lb, MAX_BREAK)
+if lonBullCond
+    lb = label.new(bar_index, high, text="🟢 LONDON BULL BREAK", color=color.new(bullBreakCol,20), textcolor=color.white, style=label.style_label_down, size=size.small)
+    pushLblFIFO(lonBullQ, lb, MAX_BREAK)
+if lonBearCond
+    lb = label.new(bar_index, low,  text="🔴 LONDON BEAR BREAK", color=color.new(bearBreakCol,20), textcolor=color.white, style=label.style_label_up,   size=size.small)
+    pushLblFIFO(lonBearQ, lb, MAX_BREAK)
+if nyBullCond
+    lb = label.new(bar_index, high, text="🟢 NEWYORK BULL BREAK", color=color.new(bullBreakCol,20), textcolor=color.white, style=label.style_label_down, size=size.small)
+    pushLblFIFO(nyBullQ, lb, MAX_BREAK)
+if nyBearCond
+    lb = label.new(bar_index, low,  text="🔴 NEWYORK BEAR BREAK", color=color.new(bearBreakCol,20), textcolor=color.white, style=label.style_label_up,   size=size.small)
+    pushLblFIFO(nyBearQ, lb, MAX_BREAK)
+
+if asianBullConfirm
+    asianBullDone := true
+if asianBearConfirm
+    asianBearDone := true
+if lonBullConfirm
+    lonBullDone := true
+if lonBearConfirm
+    lonBearDone := true
+if nyBullConfirm
+    nyBullDone := true
+if nyBearConfirm
+    nyBearDone := true
+
+// ============================================
+// Swing High/Low（独立 FIFO 管理，上限 2 个，每次删旧）
+// ============================================
+sh = ta.pivothigh(leftBars, rightBars)
+sl = ta.pivotlow(leftBars, rightBars)
+
+var label lh = na
+var label ll = na
+
+if showLabels and not na(sh)
+    label.delete(lh)
+    lh := label.new(bar_index[rightBars], sh, text="🔴 R\n" + str.tostring(sh, "#.##"), color=color.rgb(200,0,0,85), textcolor=color.white, style=label.style_label_down, size=size.small)
+
+if showLabels and not na(sl)
+    label.delete(ll)
+    ll := label.new(bar_index[rightBars], sl, text="🟢 S\n" + str.tostring(sl, "#.##"), color=color.rgb(0,150,0,85), textcolor=color.white, style=label.style_label_up, size=size.small)
+
+// ============================================
+// 警报 1/3：流动性低 + 成交量低
+// ============================================
+hLiqR  = liqR(volume, hVolAvg)
+wLiqR  = liqR(volume, wVolAvg)
+dLiqR  = liqR(volume, dVolAvg)
+f4LiqR = liqR(volume, f4VolAvg)
+f1LiqR = liqR(volume, f1VolAvg)
+
+liqLowHTF = (not na(hLiqR)  and hLiqR  < 0.8) or (not na(wLiqR)  and wLiqR  < 0.8)
+liqLowMTF = (not na(dLiqR)  and dLiqR  < 0.8)
+liqLowLTF = (not na(f4LiqR) and f4LiqR < 0.8) or (not na(f1LiqR) and f1LiqR < 0.8)
+
+alertcondition(alertLiqLow and liqLowHTF and barstate.isconfirmed, title="Liquidity Low — HTF", message="⚠️ Liquidity LOW on HTF (M/W) | sym={{ticker}} | price={{close}}")
+alertcondition(alertLiqLow and liqLowMTF and barstate.isconfirmed, title="Liquidity Low — MTF", message="⚠️ Liquidity LOW on MTF (D) | sym={{ticker}} | price={{close}}")
+alertcondition(alertLiqLow and liqLowLTF and barstate.isconfirmed, title="Liquidity Low — LTF", message="⚠️ Liquidity LOW on LTF (4H/1H) | sym={{ticker}} | price={{close}}")
+
+curAvg   = ta.sma(volume, 20)
+volIsLow = not na(curAvg) and curAvg > 0 and volume < curAvg * 0.8
+
+alertcondition(alertVolLow and volIsLow and barstate.isconfirmed, title="Volume Low — Current TF", message="💧 Volume LOW on current TF | sym={{ticker}} | price={{close}} | vol={{volume}}")
+
+// ============================================
+// 警报 2/3：行为 + 波动
+// ============================================
+alertcondition(curBehavior == "🚀 Accumulation" and barstate.isconfirmed, title="Behavior — Accumulation", message="🚀 Accumulation detected | {{ticker}} @ {{close}}")
+alertcondition(curBehavior == "💎 Distribution" and barstate.isconfirmed, title="Behavior — Distribution", message="💎 Distribution detected | {{ticker}} @ {{close}}")
+alertcondition(curBehavior == "🌀 Shakeout" and barstate.isconfirmed, title="Behavior — Shakeout", message="🌀 Shakeout detected | {{ticker}} @ {{close}}")
+alertcondition(atrRatio > 2.0 and barstate.isconfirmed, title="Volatility — Extreme", message="🌋 Volatility EXTREME ({{close}}) | ATR ratio > 2.0")
+alertcondition(atrRatio < 0.7 and barstate.isconfirmed, title="Volatility — Very Low", message="❄️ Volatility VERY LOW ({{close}}) | ATR ratio < 0.7")
+
+// ============================================
+// 警报 3/3：Session Bull/Bear Break
+// ============================================
+alertcondition(asianBullConfirm, title="Asian Bull Break",   message="🟢 ASIAN BULL BREAK | {{ticker}} @ {{close}}")
+alertcondition(asianBearConfirm, title="Asian Bear Break",   message="🔴 ASIAN BEAR BREAK | {{ticker}} @ {{close}}")
+alertcondition(lonBullConfirm,   title="London Bull Break",  message="🟢 LONDON BULL BREAK | {{ticker}} @ {{close}}")
+alertcondition(lonBearConfirm,   title="London Bear Break",  message="🔴 LONDON BEAR BREAK | {{ticker}} @ {{close}}")
+alertcondition(nyBullConfirm,    title="Newyork Bull Break", message="🟢 NEWYORK BULL BREAK | {{ticker}} @ {{close}}")
+alertcondition(nyBearConfirm,    title="Newyork Bear Break", message="🔴 NEWYORK BEAR BREAK | {{ticker}} @ {{close}}")

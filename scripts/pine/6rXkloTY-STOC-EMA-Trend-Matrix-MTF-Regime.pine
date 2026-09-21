@@ -1,0 +1,192 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BoobeshDasarath93
+
+//@version=6
+indicator("STOC - EMA Trend Matrix + MTF Regime", overlay=true)
+
+// DISPLAY
+string displayGroup = "Dashboard"
+bool showDashboard = input.bool(true, "Show dashboard", group=displayGroup)
+string themeInput = input.string("Auto", "Theme", options=["Auto", "Light", "Dark"], group=displayGroup)
+string sizeInput = input.string("Normal", "Text size", options=["Small", "Normal", "Large"], group=displayGroup)
+string positionInput = input.string("Top Right", "Position", options=["Top Left", "Top Right", "Middle Left", "Middle Right", "Bottom Left", "Bottom Right"], group=displayGroup)
+bool showValues = input.bool(true, "Show EMA values", group=displayGroup)
+
+bool lightTheme = themeInput == "Light" or (themeInput == "Auto" and chart.fg_color == color.rgb(15, 15, 15))
+color bodyBg = lightTheme ? color.rgb(255, 255, 255) : color.rgb(22, 27, 36)
+color alternateBg = lightTheme ? color.rgb(241, 245, 249) : color.rgb(30, 37, 49)
+color bodyText = lightTheme ? color.rgb(25, 35, 50) : color.rgb(232, 237, 245)
+color headerBg = lightTheme ? color.rgb(222, 231, 241) : color.rgb(42, 53, 70)
+color titleBg = lightTheme ? color.rgb(25, 48, 76) : color.rgb(13, 19, 29)
+color borderColor = lightTheme ? color.rgb(199, 210, 224) : color.rgb(68, 80, 98)
+color bullBg = lightTheme ? color.rgb(218, 245, 230) : color.rgb(19, 65, 49)
+color bullText = lightTheme ? color.rgb(13, 102, 58) : color.rgb(114, 235, 166)
+color bearBg = lightTheme ? color.rgb(255, 228, 228) : color.rgb(77, 32, 40)
+color bearText = lightTheme ? color.rgb(166, 30, 43) : color.rgb(255, 150, 158)
+color neutralBg = lightTheme ? color.rgb(232, 236, 243) : color.rgb(49, 57, 72)
+color neutralText = lightTheme ? color.rgb(75, 85, 103) : color.rgb(203, 211, 224)
+string textSize = sizeInput == "Small" ? size.small : sizeInput == "Large" ? size.large : size.normal
+string tablePosition = switch positionInput
+    "Top Left" => position.top_left
+    "Middle Left" => position.middle_left
+    "Middle Right" => position.middle_right
+    "Bottom Left" => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    => position.top_right
+
+// STATES: +1 bullish, -1 bearish, 0 neutral, na unavailable.
+f_pair(float fast, float slow) =>
+    na(fast) or na(slow) ? int(na) : fast > slow ? 1 : fast < slow ? -1 : 0
+
+f_regime(float fast, float middle, float slow) =>
+    na(fast) or na(middle) or na(slow) ? int(na) : fast > middle and middle > slow ? 1 : fast < middle and middle < slow ? -1 : 0
+
+f_stateText(int state) =>
+    na(state) ? "N/A" : state == 1 ? "Bullish" : state == -1 ? "Bearish" : "Neutral"
+
+f_stateBg(int state) =>
+    na(state) ? neutralBg : state > 0 ? bullBg : state < 0 ? bearBg : neutralBg
+
+f_stateColor(int state) =>
+    na(state) ? neutralText : state > 0 ? bullText : state < 0 ? bearText : neutralText
+
+f_price(float value) =>
+    not showValues ? "-" : na(value) ? "N/A" : str.tostring(value, format.mintick)
+
+f_cell(table t, int column, int row, string value, color bg, color fg) =>
+    table.cell(t, column, row, value, bgcolor=bg, text_color=fg, text_size=textSize)
+
+f_status(table t, int column, int row, int state) =>
+    f_cell(t, column, row, f_stateText(state), f_stateBg(state), f_stateColor(state))
+
+f_pairRow(table t, int row, string label, float fast, float slow) =>
+    color bg = row % 2 == 0 ? bodyBg : alternateBg
+    f_cell(t, 0, row, label, bg, bodyText)
+    f_cell(t, 1, row, f_price(fast), bg, bodyText)
+    f_cell(t, 2, row, f_price(slow), bg, bodyText)
+    f_status(t, 3, row, f_pair(fast, slow))
+
+f_regimeRow(table t, int row, string style, string tf, string lengths, int state) =>
+    color bg = row % 2 == 0 ? bodyBg : alternateBg
+    f_cell(t, 0, row, style, bg, bodyText)
+    f_cell(t, 1, row, tf, bg, bodyText)
+    f_cell(t, 2, row, lengths, bg, bodyText)
+    f_status(t, 3, row, state)
+
+f_counts(array<int> states) =>
+    int bulls = 0
+    int bears = 0
+    int neutral = 0
+    int missing = 0
+    for state in states
+        if na(state)
+            missing += 1
+        else if state == 1
+            bulls += 1
+        else if state == -1
+            bears += 1
+        else
+            neutral += 1
+    [bulls, bears, neutral, missing]
+
+f_countText(int bulls, int bears, int neutral, int missing) =>
+    str.tostring(bulls) + "B / " + str.tostring(bears) + "S / " + str.tostring(neutral) + "N" + (missing > 0 ? " / " + str.tostring(missing) + " N/A" : "")
+
+f_score(int bulls, int bears, int missing, int total) =>
+    missing > 0 ? float(na) : 100.0 * (bulls - bears) / total
+
+f_scoreText(float score) =>
+    na(score) ? "N/A" : (score > 0 ? "+" : "") + str.tostring(score, "0.0")
+
+// Calculate every EMA on EVERY bar. Never calculate ta.ema only inside
+// barstate.islast: the recursive calculation needs historical execution.
+float ema5 = ta.ema(close, 5)
+float ema8 = ta.ema(close, 8)
+float ema9 = ta.ema(close, 9)
+float ema10 = ta.ema(close, 10)
+float ema13 = ta.ema(close, 13)
+float ema20 = ta.ema(close, 20)
+float ema21 = ta.ema(close, 21)
+float ema30 = ta.ema(close, 30)
+float ema50 = ta.ema(close, 50)
+
+// Preserve the original live MTF behavior. Open requested candles can change.
+// When requesting below the chart timeframe, request.security samples one
+// intrabar per chart bar; it does not aggregate every lower-timeframe candle.
+[intra5, intra8, intra13] = request.security(syminfo.tickerid, "5", [ta.ema(close, 5), ta.ema(close, 8), ta.ema(close, 13)], lookahead=barmerge.lookahead_off)
+[swing9, swing14, swing21] = request.security(syminfo.tickerid, "60", [ta.ema(close, 9), ta.ema(close, 14), ta.ema(close, 21)], lookahead=barmerge.lookahead_off)
+[pos10, pos20, pos30] = request.security(syminfo.tickerid, "D", [ta.ema(close, 10), ta.ema(close, 20), ta.ema(close, 30)], lookahead=barmerge.lookahead_off)
+[long30, long50, long200] = request.security(syminfo.tickerid, "W", [ta.ema(close, 30), ta.ema(close, 50), ta.ema(close, 200)], lookahead=barmerge.lookahead_off)
+
+int intradayTrend = f_regime(intra5, intra8, intra13)
+int swingTrend = f_regime(swing9, swing14, swing21)
+int positionalTrend = f_regime(pos10, pos20, pos30)
+int longTermTrend = f_regime(long30, long50, long200)
+
+// Equal votes within each section. Sections are NOT blended, since EMA pairs
+// are correlated and chart-timeframe votes should not overwhelm MTF regimes.
+[emaBulls, emaBears, emaNeutral, emaMissing] = f_counts(array.from(f_pair(ema5, ema8), f_pair(ema8, ema13), f_pair(ema10, ema20), f_pair(ema9, ema21), f_pair(ema13, ema21), f_pair(ema21, ema30), f_pair(ema30, ema50)))
+[mtfBulls, mtfBears, mtfNeutral, mtfMissing] = f_counts(array.from(intradayTrend, swingTrend, positionalTrend, longTermTrend))
+float emaScore = f_score(emaBulls, emaBears, emaMissing, 7)
+float mtfScore = f_score(mtfBulls, mtfBears, mtfMissing, 4)
+
+// Overall bias uses actual bullish AND bearish alignment, not merely the
+// absence of bullish votes. Four neutral regimes must remain neutral.
+string overallBias = mtfMissing > 0 ? "Insufficient data" : mtfBulls == 4 ? "Strong Bullish" : mtfBears == 4 ? "Strong Bearish" : mtfBulls >= 3 ? "Bullish" : mtfBears >= 3 ? "Bearish" : "Neutral / Mixed"
+int overallState = mtfMissing > 0 ? int(na) : mtfBulls >= 3 ? 1 : mtfBears >= 3 ? -1 : 0
+
+// TABLE: define merged areas once; update cell contents only on the last bar.
+var table dashboard = table.new(tablePosition, 4, 22, bgcolor=bodyBg, frame_color=borderColor, frame_width=1, border_color=borderColor, border_width=1)
+if barstate.isfirst
+    table.merge_cells(dashboard, 0, 0, 3, 0)
+    table.merge_cells(dashboard, 0, 9, 3, 9)
+    table.merge_cells(dashboard, 0, 10, 3, 10)
+    table.merge_cells(dashboard, 0, 16, 3, 16)
+    table.merge_cells(dashboard, 2, 20, 3, 20)
+    table.merge_cells(dashboard, 0, 21, 3, 21)
+
+if barstate.islast
+    if not showDashboard
+        table.clear(dashboard, 0, 0, 3, 21)
+    else
+        f_cell(dashboard, 0, 0, "EMA TREND MATRIX", titleBg, color.white)
+        f_cell(dashboard, 0, 1, "EMA Pair", headerBg, bodyText)
+        f_cell(dashboard, 1, 1, "Fast EMA", headerBg, bodyText)
+        f_cell(dashboard, 2, 1, "Slow EMA", headerBg, bodyText)
+        f_cell(dashboard, 3, 1, "Trend", headerBg, bodyText)
+        f_pairRow(dashboard, 2, "5 / 8", ema5, ema8)
+        f_pairRow(dashboard, 3, "8 / 13", ema8, ema13)
+        f_pairRow(dashboard, 4, "10 / 20", ema10, ema20)
+        f_pairRow(dashboard, 5, "9 / 21", ema9, ema21)
+        f_pairRow(dashboard, 6, "13 / 21", ema13, ema21)
+        f_pairRow(dashboard, 7, "21 / 30", ema21, ema30)
+        f_pairRow(dashboard, 8, "30 / 50", ema30, ema50)
+        f_cell(dashboard, 0, 9, "Chart TF: " + timeframe.period + " | Bullish pairs: " + str.tostring(emaBulls) + " / 7", headerBg, bodyText)
+        f_cell(dashboard, 0, 10, "MULTI-TIMEFRAME MARKET REGIME", titleBg, color.white)
+        f_cell(dashboard, 0, 11, "Style", headerBg, bodyText)
+        f_cell(dashboard, 1, 11, "Timeframe", headerBg, bodyText)
+        f_cell(dashboard, 2, 11, "EMA Lengths", headerBg, bodyText)
+        f_cell(dashboard, 3, 11, "Trend", headerBg, bodyText)
+        f_regimeRow(dashboard, 12, "Intraday", "5 Min", "5 / 8 / 13", intradayTrend)
+        f_regimeRow(dashboard, 13, "Swing", "1 Hour", "9 / 14 / 21", swingTrend)
+        f_regimeRow(dashboard, 14, "Positional", "1 Day", "10 / 20 / 30", positionalTrend)
+        f_regimeRow(dashboard, 15, "Long Term", "1 Week", "30 / 50 / 200", longTermTrend)
+        f_cell(dashboard, 0, 16, "TREND SCORE | -100 TO +100", titleBg, color.white)
+        f_cell(dashboard, 0, 17, "Section", headerBg, bodyText)
+        f_cell(dashboard, 1, 17, "Bullish", headerBg, bodyText)
+        f_cell(dashboard, 2, 17, "B / S / N", headerBg, bodyText)
+        f_cell(dashboard, 3, 17, "Net Score", headerBg, bodyText)
+        f_cell(dashboard, 0, 18, "EMA Matrix", bodyBg, bodyText)
+        f_cell(dashboard, 1, 18, str.tostring(emaBulls) + " / 7", bodyBg, bodyText)
+        f_cell(dashboard, 2, 18, f_countText(emaBulls, emaBears, emaNeutral, emaMissing), bodyBg, bodyText)
+        int emaDirection = na(emaScore) ? int(na) : emaScore > 0 ? 1 : emaScore < 0 ? -1 : 0
+        f_cell(dashboard, 3, 18, f_scoreText(emaScore), f_stateBg(emaDirection), f_stateColor(emaDirection))
+        f_cell(dashboard, 0, 19, "MTF Regime", alternateBg, bodyText)
+        f_cell(dashboard, 1, 19, str.tostring(mtfBulls) + " / 4", alternateBg, bodyText)
+        f_cell(dashboard, 2, 19, f_countText(mtfBulls, mtfBears, mtfNeutral, mtfMissing), alternateBg, bodyText)
+        int mtfDirection = na(mtfScore) ? int(na) : mtfScore > 0 ? 1 : mtfScore < 0 ? -1 : 0
+        f_cell(dashboard, 3, 19, f_scoreText(mtfScore), f_stateBg(mtfDirection), f_stateColor(mtfDirection))
+        f_cell(dashboard, 0, 20, "Overall Bias", headerBg, bodyText)
+        f_cell(dashboard, 1, 20, "MTF", headerBg, bodyText)
+        f_cell(dashboard, 2, 20, overallBias, f_stateBg(overallState), f_stateColor(overallState))
+        f_cell(dashboard, 0, 21, "B = Bullish | S = Bearish | N = Neutral\nLIVE values: open candles can change", headerBg, bodyText)

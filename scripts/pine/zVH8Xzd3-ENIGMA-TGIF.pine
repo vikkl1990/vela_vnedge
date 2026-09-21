@@ -1,0 +1,1477 @@
+//@version=6
+indicator(
+     "ENIGMA // TGIF · MONO RAIL v2.3",
+     shorttitle="ENIGMA · TGIF",
+     overlay=true,
+     max_boxes_count=2,
+     max_lines_count=16,
+     max_labels_count=6,
+     max_bars_back=500
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ENIGMA // TGIF · MONO RAIL v2.3
+//
+// A compact Friday HTF instrument built to live OUTSIDE ENIGMA · LEVELS.
+//
+// VISUAL LANGUAGE
+// • One canonical black / white miniature weekly candle.
+// • Split wicks: upper wick stops at body top, lower wick starts at body bottom.
+// • Weekly EQ is only a short local notch through the candle.
+// • TGIF never paints through price action and never overlaps the LEVELS lane.
+// • Friday High model → attached 20–30 black micro-bracket.
+// • Friday Low model  → attached 70–80 black micro-bracket.
+// • Active model = crisp monochrome badge / bracket.
+// • Delivered model = automatically fades into secondary context.
+// • No prices or percentage text on chart; details live in hover / Data Window.
+// • Default rail contract reserves a full label lane before TGIF begins.
+//
+// SOURCE
+// • Weekly owner = Sunday 18:00 New York.
+// • One invariant M1 stream supplies weekly O/H/L/C + Friday clock.
+// • Micros can source the corresponding E-mini contract.
+//
+// CAUSALITY
+// • Friday ownership is determined by the M1 timestamp of the weekly extreme.
+// • Interaction on the same source minute as the defining extreme is not credited.
+// • Friday snapshot freezes after the configured Friday window.
+//
+// MEMORY
+// • One request.security().
+// • No arrays.
+// • No object history.
+// • Objects are created once and mutated.
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+string TZ = "America/New_York"
+
+string G_MODEL = "01 · Model"
+string G_RAIL  = "02 · Rail"
+string G_STYLE = "03 · Atelier"
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 01 · INPUTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+bool showTGIF = input.bool(
+     true,
+     "TGIF · Friday Model",
+     group=G_MODEL
+)
+
+string fridayWindow = input.session(
+     "0830-1600",
+     "Friday window",
+     group=G_MODEL,
+     tooltip="New York time. Sourced on invariant M1."
+)
+
+int maxTfMinutes = input.int(
+     60,
+     "Max chart TF · minutes",
+     minval=1,
+     maxval=240,
+     group=G_MODEL
+)
+
+bool microsUseMini = input.bool(
+     true,
+     "Micros → E-mini source",
+     group=G_MODEL,
+     tooltip="MNQ→NQ, MES→ES, MYM→YM, M2K→RTY."
+)
+
+bool keepFridayClose = input.bool(
+     true,
+     "Keep Friday snapshot",
+     group=G_MODEL,
+     tooltip="Keeps Friday's frozen weekly microframe until the next Sunday 18:00 rollover."
+)
+
+string visibilityMode = input.string(
+     "TGIF only",
+     "Widget visibility",
+     options=["TGIF only", "Friday profile"],
+     group=G_MODEL,
+     tooltip="TGIF only = show only when Friday owns a weekly extreme. Friday profile = show the weekly microframe throughout Friday."
+)
+
+// ── rail geometry ────────────────────────────────────────────────────
+int levelsRailBars = input.int(
+     36,
+     "LEVELS rail · bars",
+     minval=12,
+     maxval=120,
+     group=G_RAIL,
+     tooltip="Shared LEVELS rail anchor. Keep this aligned with ENIGMA · LEVELS."
+)
+
+int levelsLabelReserveBars = input.int(
+     18,
+     "LEVELS labels · reserve",
+     minval=6,
+     maxval=40,
+     group=G_RAIL,
+     tooltip="Dedicated space for BSL/SSL pills and the right-side LEVELS labels. TGIF begins only after this reserve."
+)
+
+int tgifGapAfterLevels = input.int(
+     6,
+     "Gap after LEVELS",
+     minval=2,
+     maxval=20,
+     group=G_RAIL
+)
+
+int tgifLocalOffset = input.int(
+     0,
+     "TGIF local offset",
+     minval=-10,
+     maxval=30,
+     group=G_RAIL,
+     tooltip="Fine adjustment after the shared LEVELS rail + label reserve."
+)
+
+string instrumentSize = input.string(
+     "Standard",
+     "Instrument size",
+     options=["Compact", "Standard", "Large"],
+     group=G_RAIL
+)
+
+bool showWeekTag = input.bool(
+     true,
+     "W badge",
+     inline="ids",
+     group=G_RAIL
+)
+
+string tgifIdentity = input.string(
+     "Pill",
+     "TGIF identity",
+     options=["Pill", "Sigil", "Off"],
+     inline="ids",
+     group=G_RAIL,
+     tooltip="Pill = black/white TGIF badge attached to the bracket. Sigil = minimal diamond. Off = geometry only."
+)
+
+bool showEQ = input.bool(
+     true,
+     "Weekly EQ notch",
+     group=G_RAIL
+)
+
+// ── atelier ──────────────────────────────────────────────────────────
+color inkInput = input.color(
+     #0A0A0A,
+     "Ink",
+     inline="mono",
+     group=G_STYLE
+)
+
+color paperInput = input.color(
+     #FFFFFF,
+     "Paper",
+     inline="mono",
+     group=G_STYLE
+)
+
+int wickFade = input.int(
+     24,
+     "Wick",
+     minval=0,
+     maxval=85,
+     group=G_STYLE
+)
+
+int bodyBorderFade = input.int(
+     10,
+     "Body border",
+     minval=0,
+     maxval=85,
+     group=G_STYLE
+)
+
+int eqFade = input.int(
+     64,
+     "EQ notch",
+     minval=20,
+     maxval=92,
+     group=G_STYLE
+)
+
+int bracketFillFade = input.int(
+     89,
+     "TGIF bracket fill",
+     minval=76,
+     maxval=98,
+     group=G_STYLE
+)
+
+int bracketEdgeFade = input.int(
+     14,
+     "TGIF bracket edge",
+     minval=0,
+     maxval=82,
+     group=G_STYLE
+)
+
+string labelScale = input.string(
+     "Small",
+     "Labels",
+     options=["Tiny", "Small", "Normal"],
+     group=G_STYLE
+)
+
+f_label_size() =>
+    labelScale == "Tiny" ? size.tiny :
+     labelScale == "Normal" ? size.normal :
+     size.small
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 02 · WEEK OWNER / SOURCE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+f_ny_week_owner(int ts) =>
+    int dow = dayofweek(ts, TZ)
+
+    int daysBack =
+         dow == dayofweek.sunday ?
+         0 :
+         dow - dayofweek.sunday
+
+    int candidate = timestamp(
+         TZ,
+         year(ts, TZ),
+         month(ts, TZ),
+         dayofmonth(ts, TZ) - daysBack,
+         18,
+         0
+    )
+
+    ts >= candidate ?
+         candidate :
+         timestamp(
+              TZ,
+              year(candidate, TZ),
+              month(candidate, TZ),
+              dayofmonth(candidate, TZ) - 7,
+              18,
+              0
+         )
+
+string chartRoot = syminfo.root
+
+string refRoot =
+     chartRoot == "MNQ" ? "NQ" :
+     chartRoot == "MES" ? "ES" :
+     chartRoot == "MYM" ? "YM" :
+     chartRoot == "M2K" ? "RTY" :
+     chartRoot
+
+bool isMappedMicro =
+     refRoot != chartRoot
+
+string expirySuffix =
+     isMappedMicro ?
+     str.substring(
+          syminfo.ticker,
+          str.length(chartRoot)
+     ) :
+     ""
+
+string sourceId =
+     microsUseMini and isMappedMicro ?
+     syminfo.prefix + ":" + refRoot + expirySuffix :
+     syminfo.tickerid
+
+f_tgif_m1_stream() =>
+    var float wkO = na
+    var float wkH = na
+    var float wkL = na
+
+    var int wkHTs = na
+    var int wkLTs = na
+    var int wkOwner = na
+
+    var int friEnd = na
+
+    int ownerNow =
+         f_ny_week_owner(time)
+
+    bool newWeek =
+         na(wkOwner) or
+         ownerNow != wkOwner
+
+    if newWeek
+        wkOwner := ownerNow
+
+        wkO := open
+        wkH := high
+        wkL := low
+
+        wkHTs := time
+        wkLTs := time
+
+        friEnd := na
+    else
+        if na(wkH) or high > wkH
+            wkH := high
+            wkHTs := time
+
+        if na(wkL) or low < wkL
+            wkL := low
+            wkLTs := time
+
+    bool fridayNow =
+         dayofweek(time, TZ) == dayofweek.friday
+
+    bool inside =
+         fridayNow and
+         not na(
+              time(
+                   "",
+                   fridayWindow,
+                   TZ
+              )
+         )
+
+    bool prevInside =
+         bar_index > 0 ?
+         (
+              dayofweek(time[1], TZ) == dayofweek.friday and
+              not na(
+                   time(
+                        "",
+                        fridayWindow,
+                        TZ
+                   )[1]
+              )
+         ) :
+         false
+
+    if not inside and prevInside
+        friEnd := time
+
+    [wkO, wkH, wkL, close, wkHTs, wkLTs, wkOwner, inside, friEnd, time]
+
+[srcWkO, srcWkH, srcWkL, srcWkC, srcWkHTs, srcWkLTs, srcWeekOwner, srcInWindow, srcFriEnd, srcClock] = request.security(
+     sourceId,
+     "1",
+     f_tgif_m1_stream(),
+     gaps=barmerge.gaps_off,
+     lookahead=barmerge.lookahead_off,
+     calc_bars_count=9000
+)
+
+int tfSec =
+     timeframe.in_seconds()
+
+bool tfAllowed =
+     showTGIF and
+     chart.is_standard and
+     timeframe.isintraday and
+     not na(tfSec) and
+     tfSec <= maxTfMinutes * 60
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 03 · FRIDAY SNAPSHOT
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var int profileOwner = na
+
+var float profileOpen = na
+var float profileHigh = na
+var float profileLow = na
+var float profileClose = na
+
+var int profileHighTs = na
+var int profileLowTs = na
+
+var bool profileBuilt = false
+
+var int upperAnchorKey = na
+var int lowerAnchorKey = na
+
+var bool upperTouched = false
+var bool lowerTouched = false
+
+bool ownerChanged =
+     not na(srcWeekOwner) and
+     (
+          na(profileOwner) or
+          srcWeekOwner != profileOwner
+     )
+
+if ownerChanged
+    profileOwner := srcWeekOwner
+
+    profileOpen := na
+    profileHigh := na
+    profileLow := na
+    profileClose := na
+
+    profileHighTs := na
+    profileLowTs := na
+
+    profileBuilt := false
+
+    upperAnchorKey := na
+    lowerAnchorKey := na
+
+    upperTouched := false
+    lowerTouched := false
+
+if tfAllowed and srcInWindow
+    profileOpen := srcWkO
+    profileHigh := srcWkH
+    profileLow := srcWkL
+    profileClose := srcWkC
+
+    profileHighTs := srcWkHTs
+    profileLowTs := srcWkLTs
+
+    profileBuilt := true
+
+else if not keepFridayClose and not srcInWindow
+    profileBuilt := false
+
+float weekRange =
+     profileBuilt and
+     not na(profileHigh) and
+     not na(profileLow) ?
+     profileHigh - profileLow :
+     na
+
+bool rangeValid =
+     not na(weekRange) and
+     weekRange > syminfo.mintick
+
+bool upperArmed =
+     rangeValid and
+     not na(profileHighTs) and
+     dayofweek(profileHighTs, TZ) == dayofweek.friday
+
+bool lowerArmed =
+     rangeValid and
+     not na(profileLowTs) and
+     dayofweek(profileLowTs, TZ) == dayofweek.friday
+
+float p20 =
+     rangeValid ?
+     profileHigh - weekRange * 0.20 :
+     na
+
+float p30 =
+     rangeValid ?
+     profileHigh - weekRange * 0.30 :
+     na
+
+float p50 =
+     rangeValid ?
+     math.avg(
+          profileHigh,
+          profileLow
+     ) :
+     na
+
+float p70 =
+     rangeValid ?
+     profileLow + weekRange * 0.30 :
+     na
+
+float p80 =
+     rangeValid ?
+     profileLow + weekRange * 0.20 :
+     na
+
+bool upperRearmed =
+     upperArmed and
+     (
+          na(upperAnchorKey) or
+          upperAnchorKey != profileHighTs
+     )
+
+bool lowerRearmed =
+     lowerArmed and
+     (
+          na(lowerAnchorKey) or
+          lowerAnchorKey != profileLowTs
+     )
+
+bool upperArmedEvent = false
+bool lowerArmedEvent = false
+
+bool upperHitEvent = false
+bool lowerHitEvent = false
+
+if upperRearmed
+    upperAnchorKey := profileHighTs
+    upperTouched := false
+    upperArmedEvent := true
+
+if lowerRearmed
+    lowerAnchorKey := profileLowTs
+    lowerTouched := false
+    lowerArmedEvent := true
+
+// Same-source-minute touch is not credited.
+if upperArmed and not upperTouched and srcClock > profileHighTs and high >= p30 and low <= p20
+    upperTouched := true
+    upperHitEvent := true
+
+if lowerArmed and not lowerTouched and srcClock > profileLowTs and high >= p80 and low <= p70
+    lowerTouched := true
+    lowerHitEvent := true
+
+bool anyArmed =
+     upperArmed or
+     lowerArmed
+
+bool widgetVisible =
+     tfAllowed and
+     profileBuilt and
+     rangeValid and
+     (
+          visibilityMode == "Friday profile" or
+          anyArmed
+     )
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 04 · MICROFRAME OBJECT BOOK
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var line wickUp = na
+var line wickDn = na
+var box weekBody = na
+var line eqTick = na
+
+var line upper20 = na
+var line upper30 = na
+var line upperEdge = na
+var linefill upperFill = na
+
+var line lower70 = na
+var line lower80 = na
+var line lowerEdge = na
+var linefill lowerFill = na
+
+var label weekTag = na
+var label upperTag = na
+var label lowerTag = na
+
+f_del_line(line ln) =>
+    if not na(ln)
+        line.delete(ln)
+    0
+
+f_del_box(box bx) =>
+    if not na(bx)
+        box.delete(bx)
+    0
+
+f_del_fill(linefill lf) =>
+    if not na(lf)
+        linefill.delete(lf)
+    0
+
+f_del_label(label lb) =>
+    if not na(lb)
+        label.delete(lb)
+    0
+
+color fg = chart.fg_color
+color bg = chart.bg_color
+
+// ENIGMA monochrome rail language.
+// Ink / paper are explicit so the widget remains black/white even on a grey chart.
+color ink = inkInput
+color paper = paperInput
+color transparent = color.new(ink, 100)
+
+// Instrument geometry — deterministic and independent of zoom.
+int bodyWidth =
+     instrumentSize == "Compact" ? 2 :
+     instrumentSize == "Large" ? 6 :
+     4
+
+int halfBody =
+     math.max(
+          1,
+          int(
+               math.floor(
+                    bodyWidth * 0.5
+               )
+          )
+     )
+
+// IMPORTANT:
+// TGIF is deliberately OUTSIDE the entire LEVELS label lane.
+// Separate Pine indicators cannot read one another's object coordinates,
+// so both modules share a deterministic rail contract instead.
+int levelsOutsideEdgeX =
+     bar_index +
+     levelsRailBars +
+     levelsLabelReserveBars
+
+int candleX =
+     levelsOutsideEdgeX +
+     tgifGapAfterLevels +
+     tgifLocalOffset
+
+int bodyLeft =
+     candleX - halfBody
+
+int bodyRight =
+     candleX + halfBody
+
+// Micro-bracket is attached to the OUTSIDE of the weekly candle.
+int bracketNear =
+     bodyRight + 2
+
+int bracketFar =
+     bracketNear +
+     (
+          instrumentSize == "Compact" ?
+          2 :
+          3
+     )
+
+int labelX =
+     bracketFar + 2
+
+float exactBodyTop =
+     widgetVisible ?
+     math.max(
+          profileOpen,
+          profileClose
+     ) :
+     na
+
+float exactBodyBottom =
+     widgetVisible ?
+     math.min(
+          profileOpen,
+          profileClose
+     ) :
+     na
+
+float minVisualBody =
+     widgetVisible ?
+     math.max(
+          syminfo.mintick * 2.0,
+          weekRange * 0.005
+     ) :
+     na
+
+float exactBodyHeight =
+     widgetVisible ?
+     exactBodyTop - exactBodyBottom :
+     na
+
+float bodyMid =
+     widgetVisible ?
+     math.avg(
+          profileOpen,
+          profileClose
+     ) :
+     na
+
+float bodyTop =
+     widgetVisible and exactBodyHeight < minVisualBody ?
+     bodyMid + minVisualBody * 0.5 :
+     exactBodyTop
+
+float bodyBottom =
+     widgetVisible and exactBodyHeight < minVisualBody ?
+     bodyMid - minVisualBody * 0.5 :
+     exactBodyBottom
+
+bool bullishWeek =
+     widgetVisible and
+     profileClose > profileOpen
+
+bool bearishWeek =
+     widgetVisible and
+     profileClose < profileOpen
+
+color wickInk =
+     color.new(
+          ink,
+          wickFade
+     )
+
+color bodyBorder =
+     color.new(
+          ink,
+          bodyBorderFade
+     )
+
+// Black / white weekly-candle grammar:
+// • bullish = white paper body
+// • bearish = black graphite body
+// • doji = quiet grey-black
+color bodyFill =
+     bullishWeek ?
+     paper :
+     bearishWeek ?
+     ink :
+     color.new(ink, 70)
+
+color eqInk =
+     color.new(
+          ink,
+          eqFade
+     )
+
+// TGIF is intentionally MONOCHROME.
+// Open brackets are crisp black; delivered brackets recede.
+color upperBracketInk =
+     color.new(
+          ink,
+          upperTouched ?
+          math.min(
+               94,
+               bracketEdgeFade + 48
+          ) :
+          bracketEdgeFade
+     )
+
+color lowerBracketInk =
+     color.new(
+          ink,
+          lowerTouched ?
+          math.min(
+               94,
+               bracketEdgeFade + 48
+          ) :
+          bracketEdgeFade
+     )
+
+color upperBracketFill =
+     color.new(
+          ink,
+          upperTouched ?
+          math.min(
+               99,
+               bracketFillFade + 7
+          ) :
+          bracketFillFade
+     )
+
+color lowerBracketFill =
+     color.new(
+          ink,
+          lowerTouched ?
+          math.min(
+               99,
+               bracketFillFade + 7
+          ) :
+          bracketFillFade
+     )
+
+string upperState =
+     upperTouched ?
+     "DELIVERED" :
+     "OPEN"
+
+string lowerState =
+     lowerTouched ?
+     "DELIVERED" :
+     "OPEN"
+
+string modelName =
+     upperArmed and lowerArmed ?
+     "Friday High + Low" :
+     upperArmed ?
+     "Friday High" :
+     lowerArmed ?
+     "Friday Low" :
+     "Friday Profile"
+
+string weeklyTooltip =
+     "ENIGMA · TGIF · WEEKLY\n" +
+     modelName + "\n\n" +
+     "O  " + str.tostring(profileOpen, format.mintick) + "\n" +
+     "H  " + str.tostring(profileHigh, format.mintick) + "\n" +
+     "EQ " + str.tostring(p50, format.mintick) + "\n" +
+     "L  " + str.tostring(profileLow, format.mintick) + "\n" +
+     "C  " + str.tostring(profileClose, format.mintick)
+
+string upperTooltip =
+     "TGIF · FRIDAY HIGH\n" +
+     "20%  " + str.tostring(p20, format.mintick) + "\n" +
+     "30%  " + str.tostring(p30, format.mintick) + "\n" +
+     "State  " + upperState
+
+string lowerTooltip =
+     "TGIF · FRIDAY LOW\n" +
+     "70%  " + str.tostring(p70, format.mintick) + "\n" +
+     "80%  " + str.tostring(p80, format.mintick) + "\n" +
+     "State  " + lowerState
+
+string tagText =
+     tgifIdentity == "Pill" ?
+     "TGIF" :
+     tgifIdentity == "Sigil" ?
+     "◈" :
+     ""
+
+bool tagIsPill =
+     tgifIdentity == "Pill"
+
+if not widgetVisible
+    f_del_line(wickUp)
+    f_del_line(wickDn)
+    f_del_box(weekBody)
+    f_del_line(eqTick)
+
+    f_del_fill(upperFill)
+    f_del_line(upper20)
+    f_del_line(upper30)
+    f_del_line(upperEdge)
+
+    f_del_fill(lowerFill)
+    f_del_line(lower70)
+    f_del_line(lower80)
+    f_del_line(lowerEdge)
+
+    f_del_label(weekTag)
+    f_del_label(upperTag)
+    f_del_label(lowerTag)
+
+    wickUp := na
+    wickDn := na
+    weekBody := na
+    eqTick := na
+
+    upperFill := na
+    upper20 := na
+    upper30 := na
+    upperEdge := na
+
+    lowerFill := na
+    lower70 := na
+    lower80 := na
+    lowerEdge := na
+
+    weekTag := na
+    upperTag := na
+    lowerTag := na
+
+else
+    // ── canonical split weekly candle ────────────────────────────────
+    if na(weekBody)
+        weekBody := box.new(
+             bodyLeft,
+             bodyTop,
+             bodyRight,
+             bodyBottom,
+             xloc=xloc.bar_index,
+             border_color=bodyBorder,
+             border_width=1,
+             bgcolor=bodyFill
+        )
+
+        wickUp := line.new(
+             candleX,
+             bodyTop,
+             candleX,
+             profileHigh,
+             xloc=xloc.bar_index,
+             color=wickInk,
+             width=1
+        )
+
+        wickDn := line.new(
+             candleX,
+             bodyBottom,
+             candleX,
+             profileLow,
+             xloc=xloc.bar_index,
+             color=wickInk,
+             width=1
+        )
+    else
+        box.set_left(
+             weekBody,
+             bodyLeft
+        )
+
+        box.set_right(
+             weekBody,
+             bodyRight
+        )
+
+        box.set_top(
+             weekBody,
+             bodyTop
+        )
+
+        box.set_bottom(
+             weekBody,
+             bodyBottom
+        )
+
+        box.set_border_color(
+             weekBody,
+             bodyBorder
+        )
+
+        box.set_bgcolor(
+             weekBody,
+             bodyFill
+        )
+
+        line.set_xy1(
+             wickUp,
+             candleX,
+             bodyTop
+        )
+
+        line.set_xy2(
+             wickUp,
+             candleX,
+             profileHigh
+        )
+
+        line.set_color(
+             wickUp,
+             wickInk
+        )
+
+        line.set_xy1(
+             wickDn,
+             candleX,
+             bodyBottom
+        )
+
+        line.set_xy2(
+             wickDn,
+             candleX,
+             profileLow
+        )
+
+        line.set_color(
+             wickDn,
+             wickInk
+        )
+
+    // ── weekly EQ · tiny local notch, never a chart line ────────────
+    if showEQ
+        if na(eqTick)
+            eqTick := line.new(
+                 bodyLeft - 1,
+                 p50,
+                 bodyRight + 1,
+                 p50,
+                 xloc=xloc.bar_index,
+                 color=eqInk,
+                 width=1,
+                 style=line.style_dotted
+            )
+        else
+            line.set_xy1(
+                 eqTick,
+                 bodyLeft - 1,
+                 p50
+            )
+
+            line.set_xy2(
+                 eqTick,
+                 bodyRight + 1,
+                 p50
+            )
+
+            line.set_color(
+                 eqTick,
+                 eqInk
+            )
+
+    else if not na(eqTick)
+        line.delete(eqTick)
+        eqTick := na
+
+    // ── Friday HIGH · attached 20–30 micro-bracket ──────────────────
+    if upperArmed
+        if na(upper20)
+            upper20 := line.new(
+                 bracketNear,
+                 p20,
+                 bracketFar,
+                 p20,
+                 xloc=xloc.bar_index,
+                 color=upperBracketInk,
+                 width=2
+            )
+
+            upper30 := line.new(
+                 bracketNear,
+                 p30,
+                 bracketFar,
+                 p30,
+                 xloc=xloc.bar_index,
+                 color=upperBracketInk,
+                 width=2
+            )
+
+            upperEdge := line.new(
+                 bracketFar,
+                 p20,
+                 bracketFar,
+                 p30,
+                 xloc=xloc.bar_index,
+                 color=upperBracketInk,
+                 width=1
+            )
+
+            upperFill := linefill.new(
+                 upper20,
+                 upper30,
+                 upperBracketFill
+            )
+        else
+            line.set_xy1(
+                 upper20,
+                 bracketNear,
+                 p20
+            )
+
+            line.set_xy2(
+                 upper20,
+                 bracketFar,
+                 p20
+            )
+
+            line.set_color(
+                 upper20,
+                 upperBracketInk
+            )
+
+            line.set_xy1(
+                 upper30,
+                 bracketNear,
+                 p30
+            )
+
+            line.set_xy2(
+                 upper30,
+                 bracketFar,
+                 p30
+            )
+
+            line.set_color(
+                 upper30,
+                 upperBracketInk
+            )
+
+            line.set_xy1(
+                 upperEdge,
+                 bracketFar,
+                 p20
+            )
+
+            line.set_xy2(
+                 upperEdge,
+                 bracketFar,
+                 p30
+            )
+
+            line.set_color(
+                 upperEdge,
+                 upperBracketInk
+            )
+
+            linefill.set_color(
+                 upperFill,
+                 upperBracketFill
+            )
+
+        if tgifIdentity != "Off"
+            float upperY =
+                 math.avg(
+                      p20,
+                      p30
+                 )
+
+            if na(upperTag)
+                upperTag := label.new(
+                     labelX,
+                     upperY,
+                     tagText,
+                     xloc=xloc.bar_index,
+                     yloc=yloc.price,
+                     style=tagIsPill ? label.style_label_left : label.style_none,
+                     color=tagIsPill ? color.new(ink, upperTouched ? 58 : 0) : transparent,
+                     textcolor=tagIsPill ? paper : color.new(ink, upperTouched ? 58 : 0),
+                     size=f_label_size(),
+                     tooltip=upperTooltip
+                )
+            else
+                label.set_xy(
+                     upperTag,
+                     labelX,
+                     upperY
+                )
+
+                label.set_text(
+                     upperTag,
+                     tagText
+                )
+
+                label.set_style(
+                     upperTag,
+                     tagIsPill ? label.style_label_left : label.style_none
+                )
+
+                label.set_color(
+                     upperTag,
+                     tagIsPill ? color.new(ink, upperTouched ? 58 : 0) : transparent
+                )
+
+                label.set_textcolor(
+                     upperTag,
+                     tagIsPill ? paper : color.new(ink, upperTouched ? 58 : 0)
+                )
+
+                label.set_tooltip(
+                     upperTag,
+                     upperTooltip
+                )
+
+        else if not na(upperTag)
+            label.delete(upperTag)
+            upperTag := na
+
+    else
+        f_del_fill(upperFill)
+        f_del_line(upper20)
+        f_del_line(upper30)
+        f_del_line(upperEdge)
+        f_del_label(upperTag)
+
+        upperFill := na
+        upper20 := na
+        upper30 := na
+        upperEdge := na
+        upperTag := na
+
+    // ── Friday LOW · attached 70–80 micro-bracket ───────────────────
+    if lowerArmed
+        if na(lower70)
+            lower70 := line.new(
+                 bracketNear,
+                 p70,
+                 bracketFar,
+                 p70,
+                 xloc=xloc.bar_index,
+                 color=lowerBracketInk,
+                 width=2
+            )
+
+            lower80 := line.new(
+                 bracketNear,
+                 p80,
+                 bracketFar,
+                 p80,
+                 xloc=xloc.bar_index,
+                 color=lowerBracketInk,
+                 width=2
+            )
+
+            lowerEdge := line.new(
+                 bracketFar,
+                 p70,
+                 bracketFar,
+                 p80,
+                 xloc=xloc.bar_index,
+                 color=lowerBracketInk,
+                 width=1
+            )
+
+            lowerFill := linefill.new(
+                 lower70,
+                 lower80,
+                 lowerBracketFill
+            )
+        else
+            line.set_xy1(
+                 lower70,
+                 bracketNear,
+                 p70
+            )
+
+            line.set_xy2(
+                 lower70,
+                 bracketFar,
+                 p70
+            )
+
+            line.set_color(
+                 lower70,
+                 lowerBracketInk
+            )
+
+            line.set_xy1(
+                 lower80,
+                 bracketNear,
+                 p80
+            )
+
+            line.set_xy2(
+                 lower80,
+                 bracketFar,
+                 p80
+            )
+
+            line.set_color(
+                 lower80,
+                 lowerBracketInk
+            )
+
+            line.set_xy1(
+                 lowerEdge,
+                 bracketFar,
+                 p70
+            )
+
+            line.set_xy2(
+                 lowerEdge,
+                 bracketFar,
+                 p80
+            )
+
+            line.set_color(
+                 lowerEdge,
+                 lowerBracketInk
+            )
+
+            linefill.set_color(
+                 lowerFill,
+                 lowerBracketFill
+            )
+
+        if tgifIdentity != "Off"
+            float lowerY =
+                 math.avg(
+                      p70,
+                      p80
+                 )
+
+            if na(lowerTag)
+                lowerTag := label.new(
+                     labelX,
+                     lowerY,
+                     tagText,
+                     xloc=xloc.bar_index,
+                     yloc=yloc.price,
+                     style=tagIsPill ? label.style_label_left : label.style_none,
+                     color=tagIsPill ? color.new(ink, lowerTouched ? 58 : 0) : transparent,
+                     textcolor=tagIsPill ? paper : color.new(ink, lowerTouched ? 58 : 0),
+                     size=f_label_size(),
+                     tooltip=lowerTooltip
+                )
+            else
+                label.set_xy(
+                     lowerTag,
+                     labelX,
+                     lowerY
+                )
+
+                label.set_text(
+                     lowerTag,
+                     tagText
+                )
+
+                label.set_style(
+                     lowerTag,
+                     tagIsPill ? label.style_label_left : label.style_none
+                )
+
+                label.set_color(
+                     lowerTag,
+                     tagIsPill ? color.new(ink, lowerTouched ? 58 : 0) : transparent
+                )
+
+                label.set_textcolor(
+                     lowerTag,
+                     tagIsPill ? paper : color.new(ink, lowerTouched ? 58 : 0)
+                )
+
+                label.set_tooltip(
+                     lowerTag,
+                     lowerTooltip
+                )
+
+        else if not na(lowerTag)
+            label.delete(lowerTag)
+            lowerTag := na
+
+    else
+        f_del_fill(lowerFill)
+        f_del_line(lower70)
+        f_del_line(lower80)
+        f_del_line(lowerEdge)
+        f_del_label(lowerTag)
+
+        lowerFill := na
+        lower70 := na
+        lower80 := na
+        lowerEdge := na
+        lowerTag := na
+
+    // ── restrained weekly identity ───────────────────────────────────
+    if showWeekTag
+        float tagAir =
+             math.max(
+                  syminfo.mintick * 4.0,
+                  weekRange * 0.010
+             )
+
+        float weekTagY =
+             profileHigh +
+             tagAir
+
+        if na(weekTag)
+            weekTag := label.new(
+                 candleX,
+                 weekTagY,
+                 "W",
+                 xloc=xloc.bar_index,
+                 yloc=yloc.price,
+                 style=label.style_label_down,
+                 color=ink,
+                 textcolor=paper,
+                 size=f_label_size(),
+                 tooltip=weeklyTooltip
+            )
+        else
+            label.set_xy(
+                 weekTag,
+                 candleX,
+                 weekTagY
+            )
+
+            label.set_style(
+                 weekTag,
+                 label.style_label_down
+            )
+
+            label.set_color(
+                 weekTag,
+                 ink
+            )
+
+            label.set_textcolor(
+                 weekTag,
+                 paper
+            )
+
+            label.set_tooltip(
+                 weekTag,
+                 weeklyTooltip
+            )
+
+    else if not na(weekTag)
+        label.delete(weekTag)
+        weekTag := na
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 05 · DATA / ALERTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+plot(
+     widgetVisible ? profileOpen : na,
+     "TGIF · Weekly Open",
+     color=color.new(ink, 100),
+     display=display.data_window,
+     editable=false
+)
+
+plot(
+     widgetVisible ? profileHigh : na,
+     "TGIF · Weekly High",
+     color=color.new(ink, 100),
+     display=display.data_window,
+     editable=false
+)
+
+plot(
+     widgetVisible ? profileLow : na,
+     "TGIF · Weekly Low",
+     color=color.new(ink, 100),
+     display=display.data_window,
+     editable=false
+)
+
+plot(
+     widgetVisible ? profileClose : na,
+     "TGIF · Weekly Close",
+     color=color.new(ink, 100),
+     display=display.data_window,
+     editable=false
+)
+
+plot(
+     widgetVisible ? p50 : na,
+     "TGIF · Weekly EQ",
+     color=color.new(ink, 100),
+     display=display.data_window,
+     editable=false
+)
+
+plot(
+     upperArmed ? p20 : na,
+     "TGIF · Upper 20%",
+     color=color.new(ink, 100),
+     display=display.data_window,
+     editable=false
+)
+
+plot(
+     upperArmed ? p30 : na,
+     "TGIF · Upper 30%",
+     color=color.new(ink, 100),
+     display=display.data_window,
+     editable=false
+)
+
+plot(
+     lowerArmed ? p70 : na,
+     "TGIF · Lower 70%",
+     color=color.new(ink, 100),
+     display=display.data_window,
+     editable=false
+)
+
+plot(
+     lowerArmed ? p80 : na,
+     "TGIF · Lower 80%",
+     color=color.new(ink, 100),
+     display=display.data_window,
+     editable=false
+)
+
+alertcondition(
+     upperArmedEvent,
+     "TGIF Friday High Armed",
+     "ENIGMA TGIF — Friday weekly-high model armed."
+)
+
+alertcondition(
+     lowerArmedEvent,
+     "TGIF Friday Low Armed",
+     "ENIGMA TGIF — Friday weekly-low model armed."
+)
+
+alertcondition(
+     upperHitEvent,
+     "TGIF Upper Bracket Entered",
+     "ENIGMA TGIF — upper Friday TGIF bracket entered."
+)
+
+alertcondition(
+     lowerHitEvent,
+     "TGIF Lower Bracket Entered",
+     "ENIGMA TGIF — lower Friday TGIF bracket entered."
+)

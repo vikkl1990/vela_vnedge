@@ -1,0 +1,245 @@
+//@version=6
+indicator("Minimal Multi-Strategy Overlay", overlay=true, max_boxes_count=200, max_lines_count=200, max_labels_count=200)
+
+// ============================================================
+// Adapts to whatever timeframe the chart is on automatically.
+// Session/HTF-based tools (CRT range, prior day, VWAP) auto-hide
+// on daily+ charts since those concepts only apply intraday.
+// ============================================================
+
+// ---------------- Master toggles ----------------
+showCRT    = input.bool(true,  "CRT / PO3 Range",   group="Levels")
+showON     = input.bool(false, "Overnight High/Low", group="Levels")
+showPDHL   = input.bool(true,  "Prior Day High/Low", group="Levels")
+showVWAP   = input.bool(true,  "Session VWAP",       group="Levels")
+showFVG    = input.bool(true,  "Fair Value Gaps",    group="FVG / IFVG")
+showFVGLbl = input.bool(true,  "FVG Text Labels",    group="FVG / IFVG")
+showSMT    = input.bool(true,  "SMT Divergence",     group="SMT Divergence")
+
+// ---------------- CRT / PO3 settings ----------------
+crtTF = input.timeframe("240", "CRT / PO3 Timeframe (prior candle's range)", group="Levels")
+
+// ---------------- Overnight session ----------------
+onSession = input.session("1800-0930", "Overnight Window", group="Levels")
+sessTZ    = input.string("America/New_York", "Session Timezone", group="Levels")
+
+// ---------------- FVG / IFVG settings ----------------
+minGapTicks = input.float(0.0, "Min FVG Size (ticks, 0 = off)", minval=0.0, group="FVG / IFVG")
+maxSessions = input.int(3, "Max Trading Sessions to Keep a Zone", minval=1, maxval=20, group="FVG / IFVG")
+
+// ---------------- SMT settings ----------------
+corrSymbol      = input.symbol("CME_MINI:ES1!", "Correlated Symbol", group="SMT Divergence")
+pivotLen        = input.int(5,  "Pivot Lookback (bars each side)",   minval=1, maxval=30,  group="SMT Divergence")
+maxPivotAgeBars = input.int(20, "Max Bars Between Pivots",           minval=1, maxval=200, group="SMT Divergence")
+
+// ---------------- Style: one hue for structure, one for bull, one for bear ----------------
+lineWidth  = input.int(1, "Line Width", minval=1, maxval=3, group="Style")
+levelColor = input.color(color.yellow, "Reference Lines (CRT / Prior Day / VWAP)", group="Style")
+bullColor  = input.color(color.new(color.black, 0), "Bullish Color", group="Style")
+bearColor  = input.color(color.new(#8b2e2e, 0),    "Bearish Color", group="Style")
+
+isIntraday = timeframe.isintraday
+
+// Trading-session counter: increments once per new exchange trading day,
+// regardless of chart timeframe, so zone lifetime can be set in sessions
+// instead of a bar count that would mean something different on every timeframe.
+var int sessionCounter = 0
+newTradingSession = ta.change(time("D")) != 0
+if newTradingSession
+    sessionCounter += 1
+
+// ================== CRT / PO3 Range (prior HTF candle's high/low) ==================
+crtHigh = request.security(syminfo.tickerid, crtTF, high[1], lookahead=barmerge.lookahead_off)
+crtLow  = request.security(syminfo.tickerid, crtTF, low[1],  lookahead=barmerge.lookahead_off)
+
+plot(isIntraday and showCRT ? crtHigh : na, "CRT High", color=levelColor, linewidth=lineWidth, display=display.none)
+plot(isIntraday and showCRT ? crtLow  : na, "CRT Low",  color=levelColor, linewidth=lineWidth, display=display.none)
+
+// Manipulation + reversal: price sweeps outside the prior HTF range then closes back inside it
+crtBullish = isIntraday and showCRT and low < crtLow and close > crtLow
+crtBearish = isIntraday and showCRT and high > crtHigh and close < crtHigh
+
+if crtBullish
+    label.new(bar_index, low, "", style=label.style_circle, color=bullColor, size=size.tiny,
+         tooltip="CRT: swept below prior " + crtTF + " low and closed back above it")
+if crtBearish
+    label.new(bar_index, high, "", style=label.style_circle, color=bearColor, size=size.tiny,
+         tooltip="CRT: swept above prior " + crtTF + " high and closed back below it")
+
+// ================== Overnight High/Low ==================
+var line  onHiLine = na
+var line  onLoLine = na
+var float onHigh   = na
+var float onLow    = na
+
+inON  = isIntraday and not na(time(timeframe.period, onSession, sessTZ))
+newON = inON and not inON[1]
+onColor = color.new(levelColor, 60)
+
+if showON and newON
+    if not na(onHiLine)
+        line.delete(onHiLine)
+        line.delete(onLoLine)
+    onHigh   := high
+    onLow    := low
+    onHiLine := line.new(bar_index, onHigh, bar_index, onHigh, extend=extend.right, color=onColor, width=lineWidth, style=line.style_dashed)
+    onLoLine := line.new(bar_index, onLow,  bar_index, onLow,  extend=extend.right, color=onColor, width=lineWidth, style=line.style_dashed)
+else if showON and inON
+    onHigh := math.max(onHigh, high)
+    onLow  := math.min(onLow, low)
+    line.set_y1(onHiLine, onHigh)
+    line.set_y2(onHiLine, onHigh)
+    line.set_y1(onLoLine, onLow)
+    line.set_y2(onLoLine, onLow)
+
+// ================== Prior Day High/Low ==================
+pdHigh = request.security(syminfo.tickerid, "1D", high[1], lookahead=barmerge.lookahead_off)
+pdLow  = request.security(syminfo.tickerid, "1D", low[1],  lookahead=barmerge.lookahead_off)
+pdColor = color.new(levelColor, 40)
+
+plot(isIntraday and showPDHL ? pdHigh : na, "Prior Day High", color=pdColor, linewidth=lineWidth, style=plot.style_linebr, display=display.none)
+plot(isIntraday and showPDHL ? pdLow  : na, "Prior Day Low",  color=pdColor, linewidth=lineWidth, style=plot.style_linebr, display=display.none)
+
+// ================== Session VWAP ==================
+vwapVal = isIntraday and showVWAP ? ta.vwap(hlc3) : na
+plot(vwapVal, "Session VWAP", color=color.new(levelColor, 20), linewidth=lineWidth, display=display.none)
+
+// ================== Fair Value Gaps / Inverse FVGs ==================
+type FVG
+    box    zoneBox
+    label  zoneLabel
+    string kind
+    bool   inverted
+    float  top
+    float  bottom
+    int    startSession
+
+var FVG[] fvgs = array.new<FVG>()
+
+tickSize = syminfo.mintick
+minGap   = minGapTicks * tickSize
+
+bullGap = low > high[2]
+bearGap = high < low[2]
+
+if showFVG and bullGap and (low - high[2]) >= minGap
+    b = box.new(bar_index[2], low, bar_index, high[2], border_color=bullColor, bgcolor=color.new(bullColor, 85), extend=extend.none)
+    label lbl = na
+    if showFVGLbl
+        lbl := label.new(bar_index, (low + high[2]) / 2, "FVG", style=label.style_none, textcolor=bullColor, size=size.tiny)
+    array.push(fvgs, FVG.new(b, lbl, "bull", false, low, high[2], sessionCounter))
+
+if showFVG and bearGap and (low[2] - high) >= minGap
+    b2 = box.new(bar_index[2], low[2], bar_index, high, border_color=bearColor, bgcolor=color.new(bearColor, 85), extend=extend.none)
+    label lbl2 = na
+    if showFVGLbl
+        lbl2 := label.new(bar_index, (low[2] + high) / 2, "FVG", style=label.style_none, textcolor=bearColor, size=size.tiny)
+    array.push(fvgs, FVG.new(b2, lbl2, "bear", false, low[2], high, sessionCounter))
+
+if array.size(fvgs) > 0
+    for i = array.size(fvgs) - 1 to 0
+        f = array.get(fvgs, i)
+        box.set_right(f.zoneBox, bar_index)
+        if showFVGLbl and not na(f.zoneLabel)
+            label.set_x(f.zoneLabel, bar_index)
+
+        if f.kind == "bull" and not f.inverted and close < f.bottom
+            f.inverted := true
+            box.set_border_color(f.zoneBox, bearColor)
+            box.set_bgcolor(f.zoneBox, color.new(bearColor, 85))
+            if showFVGLbl and not na(f.zoneLabel)
+                label.set_text(f.zoneLabel, "IFVG")
+                label.set_textcolor(f.zoneLabel, bearColor)
+            alert("Bullish FVG inverted -> Bearish IFVG on " + syminfo.ticker, alert.freq_once_per_bar)
+        else if f.kind == "bear" and not f.inverted and close > f.top
+            f.inverted := true
+            box.set_border_color(f.zoneBox, bullColor)
+            box.set_bgcolor(f.zoneBox, color.new(bullColor, 85))
+            if showFVGLbl and not na(f.zoneLabel)
+                label.set_text(f.zoneLabel, "IFVG")
+                label.set_textcolor(f.zoneLabel, bullColor)
+            alert("Bearish FVG inverted -> Bullish IFVG on " + syminfo.ticker, alert.freq_once_per_bar)
+        else if f.kind == "bull" and f.inverted and close > f.top
+            // Bearish IFVG got reclaimed -- the reversal thesis failed, so it's no longer valid
+            box.delete(f.zoneBox)
+            if not na(f.zoneLabel)
+                label.delete(f.zoneLabel)
+            array.remove(fvgs, i)
+            continue
+        else if f.kind == "bear" and f.inverted and close < f.bottom
+            // Bullish IFVG got reclaimed -- the reversal thesis failed, so it's no longer valid
+            box.delete(f.zoneBox)
+            if not na(f.zoneLabel)
+                label.delete(f.zoneLabel)
+            array.remove(fvgs, i)
+            continue
+
+        if sessionCounter - f.startSession >= maxSessions
+            box.delete(f.zoneBox)
+            if not na(f.zoneLabel)
+                label.delete(f.zoneLabel)
+            array.remove(fvgs, i)
+
+// ================== SMT Divergence ==================
+f_pivotHigh(len) => ta.pivothigh(high, len, len)
+f_pivotLow(len)  => ta.pivotlow(low, len, len)
+
+mainPH = f_pivotHigh(pivotLen)
+mainPL = f_pivotLow(pivotLen)
+corrPH = request.security(corrSymbol, timeframe.period, f_pivotHigh(pivotLen), lookahead=barmerge.lookahead_off)
+corrPL = request.security(corrSymbol, timeframe.period, f_pivotLow(pivotLen),  lookahead=barmerge.lookahead_off)
+
+var float mHigh1 = na
+var float mHigh2 = na
+var float cHigh1 = na
+var float cHigh2 = na
+var int   cHighBar = na
+var float mLow1 = na
+var float mLow2 = na
+var float cLow1 = na
+var float cLow2 = na
+var int   cLowBar = na
+
+if not na(corrPH)
+    cHigh1 := cHigh2
+    cHigh2 := corrPH
+    cHighBar := bar_index
+if not na(corrPL)
+    cLow1 := cLow2
+    cLow2 := corrPL
+    cLowBar := bar_index
+
+bearishSMT = false
+bullishSMT = false
+
+if not na(mainPH)
+    mHigh1 := mHigh2
+    mHigh2 := mainPH
+    if not na(mHigh1) and not na(cHigh1) and not na(cHigh2) and (bar_index - cHighBar) <= maxPivotAgeBars
+        if mHigh2 > mHigh1 and cHigh2 < cHigh1
+            bearishSMT := true
+
+if not na(mainPL)
+    mLow1 := mLow2
+    mLow2 := mainPL
+    if not na(mLow1) and not na(cLow1) and not na(cLow2) and (bar_index - cLowBar) <= maxPivotAgeBars
+        if mLow2 < mLow1 and cLow2 > cLow1
+            bullishSMT := true
+
+if showSMT and bearishSMT
+    label.new(bar_index - pivotLen, mainPH, "SMT", style=label.style_label_down, color=bearColor, textcolor=color.white, size=size.small,
+         tooltip="Bearish SMT: " + syminfo.ticker + " higher high, " + corrSymbol + " lower high")
+    alert("Bearish SMT divergence vs " + corrSymbol, alert.freq_once_per_bar)
+
+if showSMT and bullishSMT
+    label.new(bar_index - pivotLen, mainPL, "SMT", style=label.style_label_up, color=bullColor, textcolor=color.white, size=size.small,
+         tooltip="Bullish SMT: " + syminfo.ticker + " lower low, " + corrSymbol + " higher low")
+    alert("Bullish SMT divergence vs " + corrSymbol, alert.freq_once_per_bar)
+
+// ---------------- Alert conditions ----------------
+alertcondition(bullGap,    title="New Bullish FVG",         message="New bullish FVG formed")
+alertcondition(bearGap,    title="New Bearish FVG",         message="New bearish FVG formed")
+alertcondition(bullishSMT, title="Bullish SMT Divergence",  message="Bullish SMT divergence detected")
+alertcondition(bearishSMT, title="Bearish SMT Divergence",  message="Bearish SMT divergence detected")
+alertcondition(crtBullish, title="CRT Bullish Reversal",    message="CRT bullish manipulation/reversal detected")
+alertcondition(crtBearish, title="CRT Bearish Reversal",    message="CRT bearish manipulation/reversal detected")

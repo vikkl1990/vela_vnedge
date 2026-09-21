@@ -1,0 +1,217 @@
+//@version=6
+indicator('CRT [odnac]', overlay = true, max_labels_count = 500)
+
+display_option = display.all - display.status_line
+
+// ==========================================
+// 1. Inputs
+// ==========================================
+use_auto_htf = input.bool(true, 'Auto Higher Timeframe Mapping', group = 'Higher Timeframe Settings', tooltip = 'When checked, automatically maps to the chart timeframe; when unchecked, manual settings below apply.')
+manual_htf = input.timeframe('240', 'Manual Higher Timeframe Selection', group = 'Higher Timeframe Settings', tooltip = 'Freely select the higher timeframe to use when auto mapping is disabled.', display = display_option)
+
+enable_long = input.bool(true, 'Enable Long Signals')
+enable_short = input.bool(true, 'Enable Short Signals')
+
+max_htf_bars = input.int(1, 'Max HTF Bars Allowed After Sweep', minval = 1, group = 'Signal Settings', tooltip = 'Defines how many HTF bars are allowed for entry after a liquidity sweep occurs.')
+
+// --- Session & Time Settings ---
+use_weekend_filter = input.bool(false, 'Enable Weekend Trading Filter', group = 'Session & Time Settings')
+use_time_filter = input.bool(false, 'Enable Specific Time Filter', group = 'Session & Time Settings')
+trading_session = input.session('0900-1800', 'Trading Session (HHMM-HHMM)', group = 'Session & Time Settings', display = display_option)
+session_tz = input.string('Asia/Seoul', 'Timezone', options = ['Asia/Seoul', 'UTC', 'America/New_York'], group = 'Session & Time Settings', display = display_option)
+
+// ==========================================
+// 2. Higher Timeframe (HTF) Determination
+// ==========================================
+auto_htf = switch timeframe.period
+    '1'   => '15'
+    '3'   => '15'
+    '5'   => '60'
+    '10'  => '60'
+    '15'  => '240'
+    '30'  => '240'
+    '60'  => 'D'
+    '120' => 'D'
+    '180' => 'D'
+    '240' => 'W'
+    '360' => 'W'
+    '720' => 'W'
+    'D'   => 'M'
+    'W'   => '12M'
+    => '240'
+
+string htf = use_auto_htf ? auto_htf : manual_htf
+
+// ==========================================
+// 3. Time & Weekend Session Calculation
+// ==========================================
+is_weekend = dayofweek == dayofweek.saturday or dayofweek == dayofweek.sunday
+in_time_session = not na(time(timeframe.period, trading_session + ':1234567', session_tz))
+in_session = (not use_time_filter or in_time_session) and not(use_weekend_filter and is_weekend)
+
+// ==========================================
+// 4. Dynamic TF Ratio Calculation
+// ==========================================
+htf_minutes = timeframe.isseconds ? timeframe.multiplier / 60 : timeframe.isminutes ? timeframe.multiplier : timeframe.isdaily ? 1440 : 1440
+target_htf_minutes = timeframe.in_seconds(htf) / 60
+tf_ratio = math.max(1, math.round(target_htf_minutes / htf_minutes))
+
+htf_change = ta.change(time(htf)) != 0
+
+// ==========================================
+// 5. State Variables Definition
+// ==========================================
+var float a_cand_low = na
+var int a_cand_low_idx = na
+var float a_cand_high = na
+var int a_cand_high_idx = na
+
+var int htf_bars_since_long_sweep = 0
+var bool b_sweep_long_occurred = false
+var float b_cand_low = na
+var float c_cand_high = na
+var bool entry_triggered_long = false
+
+var int htf_bars_since_short_sweep = 0
+var bool b_sweep_short_occurred = false
+var float b_cand_high = na
+var float c_cand_low = na
+var bool entry_triggered_short = false
+
+// ==========================================
+// 6. HTF Bar Transition Count & Reset Logic
+// ==========================================
+if htf_change
+    if b_sweep_long_occurred
+        htf_bars_since_long_sweep := htf_bars_since_long_sweep + 1
+        if htf_bars_since_long_sweep >= max_htf_bars
+            b_sweep_long_occurred := false
+            b_cand_low := na
+            c_cand_high := na
+            entry_triggered_long := false
+            entry_triggered_long
+
+    if b_sweep_short_occurred
+        htf_bars_since_short_sweep := htf_bars_since_short_sweep + 1
+        if htf_bars_since_short_sweep >= max_htf_bars
+            b_sweep_short_occurred := false
+            b_cand_high := na
+            c_cand_low := na
+            entry_triggered_short := false
+            entry_triggered_short
+
+    a_cand_low := low[1]
+    a_cand_low_idx := bar_index - 1
+    a_cand_high := high[1]
+    a_cand_high_idx := bar_index - 1
+
+    for i = 1 to tf_ratio by 1
+        if low[i] <= a_cand_low
+            a_cand_low := low[i]
+            a_cand_low_idx := bar_index - i
+            a_cand_low_idx
+
+        if high[i] >= a_cand_high
+            a_cand_high := high[i]
+            a_cand_high_idx := bar_index - i
+            a_cand_high_idx
+
+// ==========================================
+// 7. Long Sweep & C High Calculation
+// ==========================================
+if not na(a_cand_low) and enable_long
+    if not b_sweep_long_occurred and low < a_cand_low
+        b_sweep_long_occurred := true
+        htf_bars_since_long_sweep := 0
+        b_cand_low := low
+        entry_triggered_long := false
+
+        int lookback_bars = bar_index - a_cand_low_idx
+        float max_c = high
+
+        if lookback_bars >= 0
+            for i = 0 to lookback_bars by 1
+                if high[i] >= max_c
+                    max_c := high[i]
+                    max_c
+
+        c_cand_high := max_c
+        c_cand_high
+
+    else if b_sweep_long_occurred and low < b_cand_low
+        htf_bars_since_long_sweep := 0
+        b_cand_low := low
+        entry_triggered_long := false
+
+        int lookback_bars = bar_index - a_cand_low_idx
+        float max_c = high
+
+        if lookback_bars >= 0
+            for i = 0 to lookback_bars by 1
+                if high[i] >= max_c
+                    max_c := high[i]
+                    max_c
+
+        c_cand_high := max_c
+        c_cand_high
+
+// ==========================================
+// 8. Short Sweep & C Low Calculation
+// ==========================================
+if not na(a_cand_high) and enable_short
+    if not b_sweep_short_occurred and high > a_cand_high
+        b_sweep_short_occurred := true
+        htf_bars_since_short_sweep := 0
+        b_cand_high := high
+        entry_triggered_short := false
+
+        int lookback_bars = bar_index - a_cand_high_idx
+        float min_c = low
+
+        if lookback_bars >= 0
+            for i = 0 to lookback_bars by 1
+                if low[i] <= min_c
+                    min_c := low[i]
+                    min_c
+
+        c_cand_low := min_c
+        c_cand_low
+
+    else if b_sweep_short_occurred and high > b_cand_high
+        htf_bars_since_short_sweep := 0
+        b_cand_high := high
+        entry_triggered_short := false
+
+        int lookback_bars = bar_index - a_cand_high_idx
+        float min_c = low
+
+        if lookback_bars >= 0
+            for i = 0 to lookback_bars by 1
+                if low[i] <= min_c
+                    min_c := low[i]
+                    min_c
+
+        c_cand_low := min_c
+        c_cand_low
+
+// ==========================================
+// 9. Signal Conditions & Arrow Plotting
+// ==========================================
+long_breakout = b_sweep_long_occurred and not na(c_cand_high) and ta.crossover(close, c_cand_high)
+short_breakout = b_sweep_short_occurred and not na(c_cand_low) and ta.crossunder(close, c_cand_low)
+
+long_condition = in_session and enable_long and long_breakout and not entry_triggered_long
+short_condition = in_session and enable_short and short_breakout and not entry_triggered_short
+
+if long_condition
+    entry_triggered_long := true
+    label.new(bar_index, low - ta.atr(14), text = '⇧', color = color.new(color.white, 30), textcolor = color.new(color.white, 30), style = label.style_none, size = size.small)
+
+if short_condition
+    entry_triggered_short := true
+    label.new(bar_index, high + ta.atr(14), text = '⇩', color = color.new(color.white, 30), textcolor = color.new(color.white, 30), style = label.style_none, size = size.small)
+
+// ==========================================
+// 10. Visualization (Session Background)
+// ==========================================
+// bgcolor(in_session ? color.new(#1e88e5, 90) : na, title = 'Trading Session Background')

@@ -1,0 +1,121 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © verticetrading
+//
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// SESSION KILLZONES + OPENING RANGE [verticetrading]
+//
+// WHAT IT DOES
+//   Draws the Asia / London / New York sessions as live boxes with their
+//   opening range, and annotates each one with evidence: the developing
+//   range compared against that session's own last 20 sessions
+//   ("range at 64% of typical").
+//
+// HOW IT WORKS
+//   Sessions are evaluated in a user-selected timezone (New York default,
+//   the conventional anchor for FX sessions). Each session instance stores
+//   its final range; the live annotation compares against that average.
+//   Opening-range breakouts are detected on confirmed closes only.
+//
+// DESIGN RULES
+//   - Evidence over decoration; bilingual UI (English / Español).
+// ─────────────────────────────────────────────────────────────────────────────
+indicator("Session Killzones + Opening Range [verticetrading]", shorttitle = "verticetrading - Killzones", overlay = true, max_boxes_count = 150, max_labels_count = 100, max_lines_count = 100)
+
+// ══ Inputs ════════════════════════════════════════════════════════════════
+grpG = "General"
+lang  = input.string("English", "Language / Idioma", options = ["English", "Español"], group = grpG)
+tzSel = input.string("New York", "Sessions timezone / Huso de las sesiones", options = ["Exchange", "UTC", "New York", "London", "Central America (GMT-6)", "Mexico City", "Madrid / Paris / Berlin", "Tokyo"], group = grpG, tooltip = "FX/metal sessions are usually defined in New York time — the daily close anchor / Las sesiones de FX/metales suelen definirse en hora de Nueva York — el ancla del cierre diario.")
+orMin = input.int(30, "Opening range (minutes) / Rango de apertura (minutos)", minval = 5, maxval = 120, group = grpG, tooltip = "The first minutes of each session; breaking this range is a classic entry trigger / Los primeros minutos de cada sesión; romper este rango es un gatillo de entrada clásico.")
+
+
+grpA = "Session: Asia"
+enA   = input.bool(true, "Show Asia", group = grpA)
+sessA = input.session("1800-0300", "Hours", group = grpA)
+colA  = input.color(color.new(#8d6ee8, 0), "Color", group = grpA)
+
+grpL = "Session: London"
+enL   = input.bool(true, "Show London", group = grpL)
+sessL = input.session("0300-1130", "Hours", group = grpL)
+colL  = input.color(color.new(#2f9e9a, 0), "Color", group = grpL)
+
+grpN = "Session: New York"
+enN   = input.bool(true, "Show New York", group = grpN)
+sessN = input.session("0800-1700", "Hours", group = grpN)
+colN  = input.color(color.new(#e8a33d, 0), "Color", group = grpN)
+
+f_t(string en, string es) =>
+    lang == "English" ? en : es
+
+tzUse = switch tzSel
+    "Exchange"                => syminfo.timezone
+    "UTC"                     => "UTC"
+    "New York"                => "America/New_York"
+    "London"                  => "Europe/London"
+    "Central America (GMT-6)"   => "America/Guatemala"
+    "Mexico City"             => "America/Mexico_City"
+    "Madrid / Paris / Berlin" => "Europe/Madrid"
+    => "Asia/Tokyo"
+
+orBars = math.max(1, math.round(orMin * 60 / timeframe.in_seconds()))
+
+// ══ Session engine (per-call-site `var` state keeps each session isolated) ══
+f_session(bool en, string sess, string name, color col) =>
+    inSess   = en and not na(time(timeframe.period, sess, tzUse))
+    startBar = inSess and not inSess[1]
+    endBar   = not inSess and inSess[1]
+    var box   bx    = na
+    var box   orBx  = na
+    var label lb    = na
+    var float sHi   = na
+    var float sLo   = na
+    var float orHi  = na
+    var float orLo  = na
+    var int   sBars = 0
+    var ranges = array.new<float>()
+    if startBar
+        sHi   := high
+        sLo   := low
+        orHi  := high
+        orLo  := low
+        sBars := 1
+        bx    := box.new(bar_index, high, bar_index, low, border_color = color.new(col, 40), bgcolor = color.new(col, 92))
+        orBx  := box.new(bar_index, high, bar_index, low, border_color = na, bgcolor = color.new(col, 78))
+        lb    := label.new(bar_index, high, name, style = label.style_label_down, color = color.new(col, 70), textcolor = color.white, size = size.small)
+    else if inSess
+        sBars += 1
+        sHi := math.max(sHi, high)
+        sLo := math.min(sLo, low)
+        box.set_top(bx, sHi)
+        box.set_bottom(bx, sLo)
+        box.set_right(bx, bar_index)
+        if sBars <= orBars
+            orHi := math.max(orHi, high)
+            orLo := math.min(orLo, low)
+            box.set_top(orBx, orHi)
+            box.set_bottom(orBx, orLo)
+        box.set_right(orBx, bar_index)
+        label.set_y(lb, sHi)
+        // Live annotation: current range vs the typical range of the last 20 sessions.
+        if array.size(ranges) >= 5
+            typRng = array.avg(ranges)
+            pctTyp = math.round((sHi - sLo) / typRng * 100)
+            label.set_text(lb, name + " · " + str.format(f_t("range at {0}% of typical", "rango al {0}% de lo típico"), pctTyp))
+    if endBar and not na(sHi)
+        array.push(ranges, sHi - sLo)
+        if array.size(ranges) > 20
+            array.shift(ranges)
+    // Breakout of the opening range after it completes (confirmed bars only).
+    orDone  = inSess and sBars > orBars
+    brkUp   = orDone and barstate.isconfirmed and close > orHi and close[1] <= orHi
+    brkDown = orDone and barstate.isconfirmed and close < orLo and close[1] >= orLo
+    [startBar, brkUp, brkDown, inSess]
+
+[aStart, aBrkUp, aBrkDn, aIn] = f_session(enA, sessA, f_t("Asia", "Asia"), colA)
+[lStart, lBrkUp, lBrkDn, lIn] = f_session(enL, sessL, f_t("London", "Londres"), colL)
+[nStart, nBrkUp, nBrkDn, nIn] = f_session(enN, sessN, f_t("New York", "Nueva York"), colN)
+
+// ══ Alerts ════════════════════════════════════════════════════════════════
+alertcondition(aStart or lStart or nStart, "Session opened", "Killzones: a session just opened on {{ticker}}")
+alertcondition(aBrkUp or lBrkUp or nBrkUp, "Opening range broken UP", "Killzones: opening range broken to the upside on {{ticker}} ({{interval}})")
+alertcondition(aBrkDn or lBrkDn or nBrkDn, "Opening range broken DOWN", "Killzones: opening range broken to the downside on {{ticker}} ({{interval}})")

@@ -1,0 +1,295 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// Cipher B — Adaptive v6
+//
+// How it auto-adjusts to BTC / alts / memes:
+//   1. ASSET PROFILE — annualized realized volatility of the chart is mapped to a
+//      0…1 factor (0 = large cap like BTC/ETH, 1 = meme). Manual override exists.
+//      The factor stretches WaveTrend smoothing so noisy coins whipsaw less.
+//   2. LEVELS — OB/OS default to the 95th/5th percentile of WT1 over a lookback,
+//      so BTC on 1D and a meme on 5m each get levels that fit their own swings.
+//      Fixed mode still exists and is stretched by the profile.
+//   3. DIVERGENCE — pivots on the oscillator, fire once, drawn at the real pivot
+//      bar, connected with a line, capped by max distance.
+//   4. SIGNALS — three tiers: dim mid-range cross, zone cross, STRONG (extreme
+//      zone or fresh divergence).
+// ─────────────────────────────────────────────────────────────────────────────
+indicator("Cipher B — Adaptive v6", shorttitle="Cipher B Adaptive", overlay=false, max_lines_count=200)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ═════════════════════════════════════════════════════════════════════════════
+gProf = "1 · Asset Profile (auto-adjust)"
+profileIn  = input.string("Auto", "Profile", options=["Auto", "Large Cap", "Alt", "Meme"], group=gProf,
+     tooltip="Auto = classify from the annualized realized volatility of this chart. Pick a profile to override.")
+volLen     = input.int(100, "Volatility lookback (bars)", minval=20, maxval=500, group=gProf)
+lcVolMax   = input.float(75.0, "Large-cap vol ceiling %", minval=10, maxval=300, step=5, group=gProf,
+     tooltip="Annualized vol below this = LARGE CAP (BTC/ETH). Above the meme floor = MEME. Between = ALT.")
+memeVolMin = input.float(150.0, "Meme vol floor %", minval=20, maxval=600, step=5, group=gProf)
+adaptLen   = input.bool(true, "Stretch smoothing on volatile coins", group=gProf,
+     tooltip="Channel/Average lengths grow by up to this % as the coin moves from large-cap to meme tier. Cuts whipsaw crosses.")
+lenStretch = input.float(30.0, "Max length stretch %", minval=0, maxval=100, step=5, group=gProf)
+
+gCore = "2 · WaveTrend"
+n1     = input.int(10, "Channel Length", minval=5, maxval=50, group=gCore)
+n2     = input.int(21, "Average Length", minval=5, maxval=50, group=gCore)
+wt2Len = input.int(4, "Signal (WT2) Length", minval=2, maxval=10, group=gCore)
+
+gLvl = "3 · OB / OS Levels"
+lvlMode    = input.string("Adaptive", "Level mode", options=["Adaptive", "Fixed"], group=gLvl,
+     tooltip="Adaptive: OB/OS = high/low percentile of WT1 over the lookback, so every coin gets levels that fit its own swing range. Fixed: manual levels, stretched by profile.")
+lvlLen     = input.int(300, "Adaptive lookback (bars)", minval=50, maxval=1000, group=gLvl)
+lvlPct     = input.float(95.0, "Extreme percentile", minval=80, maxval=99.5, step=0.5, group=gLvl)
+innerRatio = input.float(0.88, "Inner level ratio", minval=0.5, maxval=0.98, step=0.01, group=gLvl,
+     tooltip="OB2 = OB1 × ratio, OS2 = OS1 × ratio. Original Cipher B: 53/60 ≈ 0.88")
+lvlFloor   = input.float(40.0, "Min |level|", minval=20, maxval=80, group=gLvl)
+lvlCeil    = input.float(95.0, "Max |level|", minval=50, maxval=150, group=gLvl)
+symLevels  = input.bool(false, "Symmetric levels", group=gLvl,
+     tooltip="On: same distance above and below zero. Off: asymmetric — in an uptrend OS sits shallower and OB deeper (trend-aware).")
+obFixed    = input.float(60.0, "Fixed OB", minval=30, maxval=100, group=gLvl)
+osFixed    = input.float(-60.0, "Fixed OS", minval=-100, maxval=-30, group=gLvl)
+lvlStretch = input.float(35.0, "Fixed-level stretch on memes %", minval=0, maxval=100, step=5, group=gLvl)
+
+gDiv = "4 · Divergence"
+showDiv    = input.bool(true, "Regular divergence", group=gDiv)
+showHid    = input.bool(false, "Hidden divergence", group=gDiv)
+pivotLen   = input.int(5, "Pivot length", minval=2, maxval=15, group=gDiv)
+maxDivBars = input.int(60, "Max bars between pivots", minval=10, maxval=300, group=gDiv)
+divZone    = input.bool(true, "Only from OB/OS zone", group=gDiv,
+     tooltip="At least one of the two oscillator pivots must sit beyond OB2/OS2.")
+drawDivLn  = input.bool(true, "Draw divergence lines", group=gDiv)
+
+gSig = "5 · Signals"
+showAllX  = input.bool(true, "Show mid-range crosses (dim)", group=gSig)
+divMemory = input.int(20, "Divergence memory (bars)", minval=1, maxval=100, group=gSig,
+     tooltip="A zone cross within this many bars after a divergence is upgraded to a STRONG signal.")
+
+gMF = "6 · Money Flow"
+showMF = input.bool(true, "Show money flow", group=gMF)
+mfLen  = input.int(60, "Period", minval=5, maxval=200, group=gMF)
+mfMult = input.int(150, "Multiplier", minval=10, maxval=500, group=gMF)
+
+gVis = "7 · Visuals"
+showHist  = input.bool(true, "Momentum histogram", group=gVis)
+showVwap  = input.bool(false, "VWAP baseline", group=gVis)
+showTable = input.bool(true, "Info table", group=gVis)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═════════════════════════════════════════════════════════════════════════════
+// EMA that accepts a series length (ta.ema only takes a simple int)
+f_ema(float src, float len) =>
+    float a = 2.0 / (len + 1.0)
+    float e = na
+    e := na(e[1]) ? src : a * src + (1.0 - a) * e[1]
+    e
+
+f_clamp(float x, float lo, float hi) => math.max(lo, math.min(hi, x))
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ASSET PROFILE — annualized realized vol → factor 0 (large cap) … 1 (meme)
+// ═════════════════════════════════════════════════════════════════════════════
+secPerBar   = nz(timeframe.in_seconds(), 86400)
+barsPerYear = 365.0 * 86400.0 / secPerBar
+logRet      = nz(math.log(close / close[1]))
+rvRaw       = ta.stdev(logRet, volLen) * math.sqrt(barsPerYear) * 100.0
+rv          = nz(ta.ema(rvRaw, 20), (lcVolMax + memeVolMin) / 2.0)
+
+volSpan = math.max(memeVolMin - lcVolMax, 1.0)
+vfAuto  = f_clamp((rv - lcVolMax) / volSpan, 0.0, 1.0)
+vf = switch profileIn
+    "Large Cap" => 0.0
+    "Alt"       => 0.5
+    "Meme"      => 1.0
+    => vfAuto
+profileName = switch profileIn
+    "Auto" => rv < lcVolMax ? "LARGE CAP" : rv > memeVolMin ? "MEME" : "ALT"
+    => str.upper(profileIn)
+
+lenMult = adaptLen ? 1.0 + lenStretch / 100.0 * vf : 1.0
+chanLen = n1 * lenMult
+avgLen  = n2 * lenMult
+
+// ═════════════════════════════════════════════════════════════════════════════
+// WAVETREND CORE
+// ═════════════════════════════════════════════════════════════════════════════
+ap     = hlc3
+esa    = f_ema(ap, chanLen)
+dev    = f_ema(math.abs(ap - esa), chanLen)
+ci     = dev != 0 ? (ap - esa) / (0.015 * dev) : 0.0
+wt1    = f_ema(ci, avgLen)
+wt2    = ta.sma(wt1, wt2Len)
+wtDiff = wt1 - wt2
+wtBull = wt1 > wt2
+
+// Money flow (Cipher B style RSI-MFI wave), guarded against zero-range bars
+mfRange = high - low
+mfRaw   = mfRange > 0 ? (close - open) / mfRange * mfMult : 0.0
+mf      = ta.sma(mfRaw, mfLen)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// LEVELS — adaptive (percentile of WT1) or fixed (stretched by profile)
+// ═════════════════════════════════════════════════════════════════════════════
+fixedMult = 1.0 + lvlStretch / 100.0 * vf
+obBase    = obFixed * fixedMult
+osBase    = osFixed * fixedMult
+
+pHi = ta.percentile_nearest_rank(wt1, lvlLen, lvlPct)
+pLo = ta.percentile_nearest_rank(wt1, lvlLen, 100.0 - lvlPct)
+obAdaptRaw = f_clamp(nz(pHi, obBase),  lvlFloor, lvlCeil)
+osAdaptRaw = f_clamp(nz(pLo, osBase), -lvlCeil, -lvlFloor)
+obAdapt = symLevels ? math.max(obAdaptRaw, -osAdaptRaw) : obAdaptRaw
+osAdapt = symLevels ? -obAdapt : osAdaptRaw
+
+adaptive = lvlMode == "Adaptive"
+obLevel1 = adaptive ? obAdapt : obBase
+osLevel1 = adaptive ? osAdapt : osBase
+obLevel2 = obLevel1 * innerRatio
+osLevel2 = osLevel1 * innerRatio
+
+// ═════════════════════════════════════════════════════════════════════════════
+// DIVERGENCE — pivots on the oscillator, price read in the window around them
+// ═════════════════════════════════════════════════════════════════════════════
+plFound = not na(ta.pivotlow(wt1, pivotLen, pivotLen))
+phFound = not na(ta.pivothigh(wt1, pivotLen, pivotLen))
+
+win         = 2 * pivotLen + 1
+oscAtPivot  = wt1[pivotLen]
+lowAtPivot  = ta.lowest(low, win)
+highAtPivot = ta.highest(high, win)
+
+prevOscLow    = ta.valuewhen(plFound, oscAtPivot, 1)
+prevPriceLow  = ta.valuewhen(plFound, lowAtPivot, 1)
+prevLowBar    = ta.valuewhen(plFound, bar_index, 1)
+prevOscHigh   = ta.valuewhen(phFound, oscAtPivot, 1)
+prevPriceHigh = ta.valuewhen(phFound, highAtPivot, 1)
+prevHighBar   = ta.valuewhen(phFound, bar_index, 1)
+
+lowPairOk  = plFound and not na(prevLowBar)  and bar_index - prevLowBar  <= maxDivBars
+highPairOk = phFound and not na(prevHighBar) and bar_index - prevHighBar <= maxDivBars
+
+bullZoneOk = not divZone or (oscAtPivot < 0 and (oscAtPivot < osLevel2 or prevOscLow  < osLevel2))
+bearZoneOk = not divZone or (oscAtPivot > 0 and (oscAtPivot > obLevel2 or prevOscHigh > obLevel2))
+
+bullDiv = lowPairOk  and lowAtPivot  < prevPriceLow  and oscAtPivot > prevOscLow  and bullZoneOk
+bearDiv = highPairOk and highAtPivot > prevPriceHigh and oscAtPivot < prevOscHigh and bearZoneOk
+hidBull = lowPairOk  and lowAtPivot  > prevPriceLow  and oscAtPivot < prevOscLow  and oscAtPivot < 0
+hidBear = highPairOk and highAtPivot < prevPriceHigh and oscAtPivot > prevOscHigh and oscAtPivot > 0
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SIGNALS — three tiers
+// ═════════════════════════════════════════════════════════════════════════════
+bullCross = ta.crossover(wt1, wt2)
+bearCross = ta.crossunder(wt1, wt2)
+bullZone  = bullCross and wt2 <= osLevel2
+bearZone  = bearCross and wt2 >= obLevel2
+
+recentBullDiv = nz(ta.barssince(bullDiv), 100000) <= divMemory
+recentBearDiv = nz(ta.barssince(bearDiv), 100000) <= divMemory
+strongBull = bullZone and (wt2 <= osLevel1 or recentBullDiv)
+strongBear = bearZone and (wt2 >= obLevel1 or recentBearDiv)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// PLOTTING
+// ═════════════════════════════════════════════════════════════════════════════
+cWt1   = #2196F3
+cWt2   = #0D47A1
+cBull  = #00E676
+cBear  = #FF5252
+cGold  = #FFD740
+cOrng  = #FF9100
+cMfIn  = #3EE145
+cMfOut = #FF3D2E
+cGrey  = #888888
+
+// extreme-zone background
+bgcolor(wt1 > obLevel1 ? color.new(cBear, 92) : wt1 < osLevel1 ? color.new(cBull, 92) : na, title="Extreme zones")
+
+// money flow wave (drawn first so it sits behind everything)
+plot(showMF ? mf : na, "Money Flow", color=mf > 0 ? color.new(cMfIn, 70) : color.new(cMfOut, 70), style=plot.style_area)
+
+// VWAP baseline, normalised to the oscillator scale
+vwapLine = ta.vwap(hlc3)
+vHi      = ta.highest(vwapLine, 50)
+vLo      = ta.lowest(vwapLine, 50)
+vwapNorm = vHi != vLo ? (vwapLine - vLo) / (vHi - vLo) * 100.0 - 50.0 : 0.0
+plot(showVwap ? vwapNorm : na, "VWAP", color=color.new(#FF00FF, 70))
+
+// levels are plotted (not hline) because they move with the market
+pOb1 = plot(obLevel1, "OB1", color=color.new(cBear, 55))
+pOb2 = plot(obLevel2, "OB2", color=color.new(cBear, 75))
+pOs2 = plot(osLevel2, "OS2", color=color.new(cBull, 75))
+pOs1 = plot(osLevel1, "OS1", color=color.new(cBull, 55))
+fill(pOb1, pOb2, color=color.new(cBear, 90), title="OB band")
+fill(pOs1, pOs2, color=color.new(cBull, 90), title="OS band")
+plot(0, "Zero", color=color.new(cGrey, 50))
+
+// waves + momentum cloud
+pWt1 = plot(wt1, "WT1", color=cWt1, linewidth=2)
+plot(wt1, "WT1 fill", color=color.new(cWt1, 85), style=plot.style_area)
+pWt2 = plot(wt2, "WT2", color=cWt2, linewidth=2)
+fill(pWt1, pWt2, color=wtBull ? color.new(cBull, 75) : color.new(cBear, 75), title="Momentum cloud")
+plot(showHist ? wtDiff : na, "Momentum", color=wtDiff > 0 ? color.new(cBull, 60) : color.new(cBear, 60), style=plot.style_histogram, linewidth=2)
+
+// cross tiers
+plotshape(showAllX and bullCross and not bullZone ? wt2 : na, "Bull cross", style=shape.circle, location=location.absolute, color=color.new(cBull, 65), size=size.tiny)
+plotshape(showAllX and bearCross and not bearZone ? wt2 : na, "Bear cross", style=shape.circle, location=location.absolute, color=color.new(cBear, 65), size=size.tiny)
+plotshape(bullZone and not strongBull ? wt2 : na, "Buy (OS cross)",  style=shape.circle,  location=location.absolute, color=cBull, size=size.small)
+plotshape(bearZone and not strongBear ? wt2 : na, "Sell (OB cross)", style=shape.circle,  location=location.absolute, color=cBear, size=size.small)
+plotshape(strongBull ? wt2 : na, "STRONG buy",  style=shape.diamond, location=location.absolute, color=cGold, size=size.small)
+plotshape(strongBear ? wt2 : na, "STRONG sell", style=shape.diamond, location=location.absolute, color=cOrng, size=size.small)
+
+// divergence markers, drawn at the actual pivot bar
+plotshape(showDiv and bullDiv ? oscAtPivot : na, "Bull div", style=shape.triangleup,   location=location.absolute, color=cBull, offset=-pivotLen, size=size.small, text="DIV", textcolor=color.white)
+plotshape(showDiv and bearDiv ? oscAtPivot : na, "Bear div", style=shape.triangledown, location=location.absolute, color=cBear, offset=-pivotLen, size=size.small, text="DIV", textcolor=color.white)
+plotshape(showHid and hidBull ? oscAtPivot : na, "Hidden bull div", style=shape.triangleup,   location=location.absolute, color=color.new(cBull, 40), offset=-pivotLen, size=size.tiny, text="H", textcolor=color.white)
+plotshape(showHid and hidBear ? oscAtPivot : na, "Hidden bear div", style=shape.triangledown, location=location.absolute, color=color.new(cBear, 40), offset=-pivotLen, size=size.tiny, text="H", textcolor=color.white)
+
+if drawDivLn
+    if showDiv and bullDiv
+        line.new(prevLowBar - pivotLen, prevOscLow, bar_index - pivotLen, oscAtPivot, color=cBull, width=2)
+    if showDiv and bearDiv
+        line.new(prevHighBar - pivotLen, prevOscHigh, bar_index - pivotLen, oscAtPivot, color=cBear, width=2)
+    if showHid and hidBull
+        line.new(prevLowBar - pivotLen, prevOscLow, bar_index - pivotLen, oscAtPivot, color=color.new(cBull, 30), style=line.style_dashed)
+    if showHid and hidBear
+        line.new(prevHighBar - pivotLen, prevOscHigh, bar_index - pivotLen, oscAtPivot, color=color.new(cBear, 30), style=line.style_dashed)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// INFO TABLE
+// ═════════════════════════════════════════════════════════════════════════════
+var table infoBox = table.new(position.top_right, 2, 10, bgcolor=color.new(#0A0A0A, 10), border_width=1, border_color=color.new(#333333, 0))
+
+f_row(int r, string k, string v, color vc) =>
+    table.cell(infoBox, 0, r, k, text_color=#AAAAAA, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(infoBox, 1, r, v, text_color=vc, text_size=size.tiny, text_halign=text.align_right)
+
+if showTable and barstate.islast
+    zoneTxt = wt1 > obLevel1 ? "EXTREME OB" : wt1 > obLevel2 ? "OVERBOUGHT" : wt1 < osLevel1 ? "EXTREME OS" : wt1 < osLevel2 ? "OVERSOLD" : "NEUTRAL"
+    zoneCol = wt1 > obLevel1 ? cBear : wt1 > obLevel2 ? cOrng : wt1 < osLevel1 ? cBull : wt1 < osLevel2 ? #29B6F6 : cGrey
+    profCol = vf < 0.25 ? #29B6F6 : vf > 0.75 ? cOrng : cGold
+    table.cell(infoBox, 0, 0, "CIPHER B", text_color=#FFFFFF, text_size=size.small, text_halign=text.align_left)
+    table.cell(infoBox, 1, 0, "ADAPTIVE", text_color=cWt1, text_size=size.small, text_halign=text.align_right)
+    f_row(1, "Profile",    profileName + (profileIn == "Auto" ? " · auto" : " · manual"), profCol)
+    f_row(2, "Ann. vol",   str.tostring(rv, "#") + "%", profCol)
+    f_row(3, "Lengths",    str.tostring(chanLen, "#.#") + " / " + str.tostring(avgLen, "#.#"), #DDDDDD)
+    f_row(4, "OB / OS",    "+" + str.tostring(obLevel1, "#") + " / " + str.tostring(osLevel1, "#"), #DDDDDD)
+    f_row(5, "WT1",        str.tostring(wt1, "#.#"), cWt1)
+    f_row(6, "WT2",        str.tostring(wt2, "#.#"), #64B5F6)
+    f_row(7, "Zone",       zoneTxt, zoneCol)
+    f_row(8, "Momentum",   wtBull ? "BULLISH" : "BEARISH", wtBull ? cBull : cBear)
+    f_row(9, "Money flow", (mf > 0 ? "IN " : "OUT ") + str.tostring(mf, "#.#"), mf > 0 ? cMfIn : cMfOut)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ALERTS
+// ═════════════════════════════════════════════════════════════════════════════
+alertcondition(bullCross,  "WT bull cross (any)",   "🟢 {{ticker}} WT bull cross @ {{close}}")
+alertcondition(bearCross,  "WT bear cross (any)",   "🔴 {{ticker}} WT bear cross @ {{close}}")
+alertcondition(bullZone,   "Buy — cross in OS",     "🟢 {{ticker}} bull cross in oversold zone @ {{close}}")
+alertcondition(bearZone,   "Sell — cross in OB",    "🔴 {{ticker}} bear cross in overbought zone @ {{close}}")
+alertcondition(strongBull, "STRONG buy",            "💎🟢 {{ticker}} STRONG buy @ {{close}}")
+alertcondition(strongBear, "STRONG sell",           "💎🔴 {{ticker}} STRONG sell @ {{close}}")
+alertcondition(bullDiv,    "Bullish divergence",    "🟢🟢 {{ticker}} bull divergence — scout long")
+alertcondition(bearDiv,    "Bearish divergence",    "🔴🔴 {{ticker}} bear divergence — scout short")
+alertcondition(hidBull,    "Hidden bull divergence","🟢 {{ticker}} hidden bull div — trend continuation")
+alertcondition(hidBear,    "Hidden bear divergence","🔴 {{ticker}} hidden bear div — trend continuation")

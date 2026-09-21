@@ -1,0 +1,390 @@
+//@version=6
+indicator("Historical Context Levels", overlay = true, max_lines_count = 201, max_labels_count = 261, max_boxes_count = 60)
+
+// Standalone indicator. No data subscription or network connection is required.
+// Starts empty; optional synthetic demo uses invented observations, not market evidence.
+// Compatible with raw point moves and externally supplied MLV4/MLV5 data.
+string dataMode = input.string("Raw values", "Data source", options = ["Synthetic demo", "Raw values", "Imported data"])
+bool isDemo = dataMode == "Synthetic demo"
+bool isRaw = dataMode == "Raw values"
+string samplePayload = "MLV5|US500|U:points|M:observations|C:0|H:|NH:0|AH:|BH:|TH:|RH:|L:|NL:0|AL:|BL:|TL:|RL:|E:-20,-10,0,10,20,30,40,50,60,70|NE:10|AE:7633|BE:SYNTHETIC demonstration / invented point offsets|TE:No market dates - synthetic sample|RE:1,2,8,7,6,5,4,3,2,1|ZE:3|F:SYNTHETIC DEMO - not market research|PH:|PL:|PE:-20,0,2,0,20,2,20,40,2,40,60,2,60,70,2"
+string importedPayload = input.text_area("", "Research data (MLV4/MLV5)", tooltip = "Paste values-only data. No code, login or live feed. Counts and provenance are supplied by the author, not independently verified by this indicator.")
+string rawProduct = input.string("US500", "Raw values product", options = ["US500", "AUS200", "UK100", "BTC", "VIX"], group = "Raw values")
+string rawLayer = input.string("Finish (Edge)", "Raw values layer", options = ["High", "Low", "Finish (Edge)"], group = "Raw values")
+string rawInput = input.text_area("", "Point moves (comma, newline or tab separated)", group = "Raw values", tooltip = "Paste signed point moves such as -20, 0, 15 or a column copied from a spreadsheet. Maximum 200 values. Blank, malformed or excess values are rejected.")
+// MLV5 adds full-sample histogram bins. MLV4 remains usable in Levels mode only.
+string chartLayout = input.string("Levels", "Chart layout", options = ["Levels", "Profile", "Levels + Profile"])
+int profileWidth = input.int(24, "Profile width (bars)", minval = 5, maxval = 80, group = "Distribution Profile")
+int profileOffset = input.int(5, "Profile offset (bars)", minval = 0, maxval = 200, group = "Distribution Profile")
+bool showProfileCounts = input.bool(false, "Show profile counts", group = "Distribution Profile", tooltip = "Counts and percentages refer to results IN each band, not cumulative reach rates. All three profiles share one frequency scale.")
+string anchorMode = input.string("Entered anchor price", "Anchor mode", options = ["Chart-clicked anchor", "Entered anchor price", "Imported reference"])
+float clickedAnchor = input.price(7633.0, "Chart anchor price", confirm = false)
+bool confirmChartScale = input.bool(false, "Confirm unrecognised chart uses this product's point scale", tooltip = "Only enable for an equivalent instrument quoted in the same index points. ETFs such as SPY do not use US500 index points.")
+bool showHigh = input.bool(true, "Show HIGH levels", group = "Layers")
+bool showLow = input.bool(true, "Show LOW levels", group = "Layers")
+bool showEdge = input.bool(true, "Show EDGE levels", group = "Layers")
+bool showAnchor = input.bool(true, "Show anchor", group = "Layers")
+bool showLabels = input.bool(true, "Show level labels", group = "Layers")
+bool compactLabels = input.bool(true, "Compact labels (group nearby)", group = "Labels", tooltip = "One-line labels to the right of price. Nearby labels share a price-range tag; hover for EVERY level's counts. All horizontal lines remain at their exact prices. Turn off for the older detailed labels.")
+int labelOffset = input.int(6, "Label offset (bars)", minval = 0, maxval = 200, group = "Labels")
+float labelSpacing = input.float(1.0, "Label spacing", minval = 0.25, maxval = 4, step = 0.25, group = "Labels", tooltip = "Higher values group more nearby labels. Grouping affects text only, never levels or percentages.")
+string levelTextSize = input.string("Large", "Level text size", options = ["Small", "Medium", "Large"], group = "Layers")
+string labelTextSize = levelTextSize == "Small" ? size.small : levelTextSize == "Medium" ? size.normal : size.large
+bool showSetupCard = input.bool(true, "Show setup card")
+bool showSourceDetails = input.bool(true, "Show source details", tooltip = "Display each layer's original session, reference price and capture time in the setup card. Enabled by default so the source window remains visible.")
+bool extendBothWays = input.bool(true, "Extend lines both ways")
+color highColor = input.color(color.rgb(34, 197, 94), "HIGH colour")
+color lowColor = input.color(color.rgb(239, 68, 68), "LOW colour")
+color edgeColor = input.color(color.rgb(245, 158, 11), "EDGE colour")
+color anchorColor = input.color(color.rgb(167, 139, 250), "Anchor colour")
+var array<line> lines = array.new<line>()
+var array<label> labels = array.new<label>()
+var array<label> levelLabels = array.new<label>()
+var array<float> labelPrices = array.new<float>()
+var array<string> labelNames = array.new<string>()
+var array<string> labelRows = array.new<string>()
+var array<box> profileBoxes = array.new<box>()
+string cardLocation = input.string("Bottom left", "Source card position", options = ["Top left", "Top right", "Bottom left", "Bottom right"])
+string cardPosition = cardLocation == "Top left" ? position.top_left : cardLocation == "Top right" ? position.top_right : cardLocation == "Bottom right" ? position.bottom_right : position.bottom_left
+var table card = table.new(cardPosition, 2, 10, border_width = 1)
+
+field(array<string> parts, string key) =>
+    string result = ""
+    for item in parts
+        if str.startswith(item, key + ":")
+            result := str.substring(item, str.length(key) + 1)
+    result
+
+uniqueField(array<string> parts, string key) =>
+    int count = 0
+    for item in parts
+        if str.startswith(item, key + ":")
+            count += 1
+    count == 1
+
+numbers(string raw) =>
+    array<float> values = array.new<float>()
+    bool valid = true
+    if str.length(raw) > 0
+        for token in str.split(raw, ",")
+            float n = str.tonumber(token)
+            if str.length(str.trim(token)) == 0 or na(n) or math.abs(n) > 1000000000000
+                valid := false
+            else
+                array.push(values, n)
+    [values, valid]
+
+// Raw mode accepts the common clipboard shapes used by spreadsheets and chat:
+// comma-separated, newline-separated, tab-separated, or any combination.
+rawValues(string raw) =>
+    array<float> values = array.new<float>()
+    string sourceCsv = ""
+    bool valid = str.length(raw) <= 20000
+    string normalised = str.trim(raw)
+    normalised := str.replace_all(normalised, "\r\n", "\n")
+    normalised := str.replace_all(normalised, "\r", "\n")
+    if str.contains(normalised, "|") or str.length(normalised) == 0
+        valid := false
+    else if valid
+        // Commas delimit required fields; whitespace can surround those fields.
+        // Within a comma field, spreadsheet rows/tabs delimit observations.
+        for fieldText in str.split(normalised, ",")
+            string fieldValue = str.trim(fieldText)
+            if str.length(fieldValue) == 0
+                valid := false
+            else
+                for token in str.split(str.replace_all(fieldValue, "\t", "\n"), "\n")
+                    string clean = str.trim(token)
+                    float n = str.tonumber(clean)
+                    if str.length(clean) == 0 or na(n) or math.abs(n) > 1000000000000
+                        valid := false
+                    else if array.size(values) < 200
+                        array.push(values, n)
+                        sourceCsv += (str.length(sourceCsv) == 0 ? "" : ",") + clean
+                    else
+                        valid := false
+    valid := valid and array.size(values) > 0
+    [values, valid, sourceCsv]
+
+csv(array<float> values) =>
+    string result = ""
+    for value in values
+        result += (str.length(result) == 0 ? "" : ",") + str.tostring(value, "#.##############")
+    result
+
+rawCounts(array<float> observations, string layer) =>
+    array<float> counts = array.new<float>()
+    for level in observations
+        float count = 0
+        for observation in observations
+            bool reached = layer == "HIGH" ? observation >= level : layer == "LOW" ? observation <= level : (level < 0 ? observation <= level : observation >= level)
+            if reached
+                count += 1
+        array.push(counts, count)
+    counts
+
+
+knownProduct(string product) =>
+    string ticker = str.upper(syminfo.ticker)
+    string root = str.upper(syminfo.root)
+    string exchange = str.upper(syminfo.prefix)
+    bool indexQuote = syminfo.type == "index" or syminfo.type == "cfd"
+    bool futuresQuote = syminfo.type == "futures"
+    bool cryptoQuote = syminfo.type == "crypto" or syminfo.type == "spot" or syminfo.type == "swap" or syminfo.type == "cfd"
+    switch product
+        "US500" => (indexQuote and (ticker == "US500" or ticker == "SPX500" or ticker == "SPX500USD" or ticker == "SPX")) or (futuresQuote and str.startswith(exchange, "CME") and (root == "ES" or root == "MES"))
+        "AUS200" => (indexQuote and (ticker == "AUS200" or ticker == "AUSTRALIA200CFD" or ticker == "AU200AUD" or ticker == "XJO")) or (futuresQuote and str.startswith(exchange, "ASX") and root == "AP")
+        "UK100" => (indexQuote and (ticker == "UK100" or ticker == "UK100GBP" or ticker == "UKX")) or (futuresQuote and str.startswith(exchange, "ICEEUR") and root == "Z")
+        "BTC" => cryptoQuote and (ticker == "BTCUSD" or ticker == "BTCUSDT" or ticker == "BTCUSDC")
+        "VIX" => (indexQuote and ticker == "VIX") or (futuresQuote and str.startswith(exchange, "CBOE") and root == "VX")
+        => false
+
+validCounts(array<float> counts, int levelCount, float sampleCount) =>
+    bool valid = array.size(counts) == levelCount
+    for n in counts
+        valid := valid and not na(n) and n >= 0 and n <= sampleCount and n == math.floor(n)
+    valid
+
+frequency(float count, float sampleCount) =>
+    str.tostring(count, "#") + "/" + str.tostring(sampleCount, "#") + " (" + str.tostring(100 * count / sampleCount, "0.#") + "%)"
+
+validProfile(array<float> bins, float sampleCount) =>
+    int length = array.size(bins)
+    bool valid = length % 3 == 0 and length <= 60 and not na(sampleCount) and sampleCount >= 0 and sampleCount <= 5000 and sampleCount == math.floor(sampleCount)
+    float total = 0
+    if valid and length > 0
+        for i = 0 to length - 1 by 3
+            float lo = array.get(bins, i)
+            float hi = array.get(bins, i + 1)
+            float n = array.get(bins, i + 2)
+            valid := valid and lo <= hi and (lo != hi or length == 3) and n >= 0 and n <= sampleCount and n == math.floor(n)
+            if i > 0
+                valid := valid and lo == array.get(bins, i - 2)
+            total += n
+    valid and total == sampleCount and (sampleCount == 0 ? length == 0 : length > 0)
+
+profilePeak(array<float> bins, float sampleCount) =>
+    float peak = 0
+    if sampleCount > 0 and array.size(bins) > 0 and array.size(bins) % 3 == 0
+        for i = 2 to array.size(bins) - 1 by 3
+            peak := math.max(peak, array.get(bins, i) / sampleCount)
+    peak
+
+drawProfile(array<float> bins, float sampleCount, string name, color colour, float anchor, int lane, float peak) =>
+    if sampleCount > 0 and peak > 0
+        int right = bar_index + profileOffset + profileWidth + lane * (profileWidth + 6)
+        for i = 0 to array.size(bins) - 1 by 3
+            float count = array.get(bins, i + 2)
+            if count > 0
+                float lower = math.round_to_mintick(anchor + array.get(bins, i))
+                float upper = math.round_to_mintick(anchor + array.get(bins, i + 1))
+                if upper <= lower
+                    upper := lower + syminfo.mintick / 2
+                    lower -= syminfo.mintick / 2
+                int width = math.max(1, int(math.round(profileWidth * (count / sampleCount) / peak)))
+                array.push(profileBoxes, box.new(right - width, upper, right, lower, border_color = color.new(colour, 30), bgcolor = color.new(colour, 50)))
+                if showProfileCounts
+                    string info = name + " results in offset band [" + str.tostring(array.get(bins, i)) + ", " + str.tostring(array.get(bins, i + 1)) + (i == array.size(bins) - 3 ? "]" : ")") + ".\nCount from the full sample before chart tick rounding. Bars share a frequency scale; not volume, reach or reversal probability."
+                    array.push(labels, label.new(right, (lower + upper) / 2, name + " " + frequency(count, sampleCount), style = label.style_label_left, color = color.new(colour, 90), textcolor = colour, size = size.small, tooltip = info))
+
+draw(array<float> values, array<float> counts, float sampleCount, float zeroBelow, string name, color colour, float anchor, bool percentiles) =>
+    array<string> percentNames = array.from("P10", "P25", "P50", "P75", "P90")
+    if array.size(values) > 0
+        for i = 0 to array.size(values) - 1
+            float offset = array.get(values, i)
+            float price = math.round_to_mintick(anchor + offset)
+            array.push(lines, line.new(bar_index, price, bar_index + 1, price, extend = extendBothWays ? extend.both : extend.right, color = colour, style = name == "EDGE" ? line.style_dashed : line.style_solid))
+            if showLabels
+                string signed = offset > 0 ? "+" + str.tostring(offset) : str.tostring(offset)
+                string rate = frequency(array.get(counts, i), sampleCount)
+                string direction = offset < 0 ? "≤" : "≥"
+                string history = name == "EDGE" ? "Historically finished " + direction + " " + signed + ": " + rate : "Historically reached " + rate
+                if name == "EDGE" and offset == 0
+                    history := "Historically finished ≥ 0: " + rate + "\nHistorically finished ≤ 0: " + frequency(zeroBelow, sampleCount)
+                string rule = name == "HIGH" ? "High >= offset" : name == "LOW" ? "Low <= offset" : offset == 0 ? "Finish >= 0 and finish <= 0; zero outcomes count in both" : offset < 0 ? "Finish <= offset (not an intraday touch count)" : "Finish >= offset (not an intraday touch count)"
+                if isDemo
+                    history := str.replace_all(history, "Historically", "Synthetic sample")
+                string placement = percentiles ? array.get(percentNames, i) + " placement. " : (isDemo ? "Synthetic observation. " : "Historical observation. ")
+                string row = name + " " + str.tostring(price, format.mintick) + " (" + signed + ") · " + history + " · " + placement
+                string info = row + "\n" + rule + ". Ties included; denominator is the full sample for this set. Counts use signed offsets at export precision, before chart-price tick rounding. Historical results, not future probabilities."
+                if isDemo
+                    info := "SYNTHETIC DEMO: invented values, not market observations.\n" + info
+                string pct = str.tostring(100 * array.get(counts, i) / sampleCount, "0.#") + "%"
+                string shortRate = name != "EDGE" ? pct + " reached" : offset == 0 ? pct + " ≥ / " + str.tostring(100 * zeroBelow / sampleCount, "0.#") + "% ≤" : pct + " finish " + direction
+                string labelCaption = compactLabels ? name + " " + str.tostring(price, format.mintick) + " · " + shortRate : name + " " + signed + " · " + str.tostring(price, format.mintick) + "\n" + history
+                labelCaption := (isDemo ? "DEMO " : "") + labelCaption
+                label tag = label.new(compactLabels ? bar_index + labelOffset : bar_index, price, labelCaption, style = compactLabels ? label.style_label_left : label.style_label_right, color = compactLabels ? color.rgb(15, 23, 42) : color.new(colour, 85), textcolor = colour, size = labelTextSize, tooltip = info)
+                array.push(labels, tag)
+                array.push(levelLabels, tag)
+                array.push(labelPrices, price)
+                array.push(labelNames, name)
+                array.push(labelRows, row)
+
+groupLevelLabels() =>
+    int count = array.size(levelLabels)
+    if compactLabels and count > 1
+        array<int> indices = array.sort_indices(labelPrices, order.ascending)
+        float span = array.max(labelPrices) - array.min(labelPrices)
+        float gap = math.max(span / 12, syminfo.mintick * 3) * labelSpacing
+        int start = 0
+        while start < count
+            int first = array.get(indices, start)
+            float lower = array.get(labelPrices, first)
+            float upper = lower
+            string name = array.get(labelNames, first)
+            string details = array.get(labelRows, first)
+            int end = start + 1
+            while end < count
+                int next = array.get(indices, end)
+                if array.get(labelPrices, next) - lower >= gap
+                    break
+                upper := array.get(labelPrices, next)
+                if array.get(labelNames, next) != name
+                    name := "MIXED"
+                details += "\n" + array.get(labelRows, next)
+                label.delete(array.get(levelLabels, next))
+                end += 1
+            if end - start > 1
+                label tag = array.get(levelLabels, first)
+                string prices = str.tostring(lower, format.mintick) + (upper == lower ? "" : "–" + str.tostring(upper, format.mintick))
+                label.set_text(tag, (isDemo ? "DEMO " : "") + name + " " + prices + " · " + str.tostring(end - start) + " levels")
+                label.set_tooltip(tag, "Grouped labels only — all horizontal lines remain at their exact prices.\n" + details + "\nHIGH/LOW: historically reached. EDGE: historically finished, not intraday touches. Inclusive counts from each set's full sample before chart tick rounding; not future probabilities.")
+                if name == "MIXED"
+                    label.set_textcolor(tag, color.white)
+            start := end
+
+cell(int row, string title, string value, color colour) =>
+    color bg = color.new(color.rgb(15, 23, 42), 5)
+    table.cell(card, 0, row, title, bgcolor = bg, text_color = color.silver, text_size = size.small)
+    table.cell(card, 1, row, value, bgcolor = bg, text_color = colour, text_size = size.small)
+
+if barstate.islast
+    [rawValuesArray, rawInputValid, rawSourceCsv] = rawValues(isRaw ? rawInput : "")
+    string rawLayerName = rawLayer == "High" ? "HIGH" : rawLayer == "Low" ? "LOW" : "EDGE"
+    array<float> rawCountsArray = array.new<float>()
+    float rawZeroBelow = 0
+    rawCountsArray := rawInputValid ? rawCounts(rawValuesArray, rawLayerName) : array.new<float>()
+    if rawLayerName == "EDGE"
+        for observation in rawValuesArray
+            if observation <= 0
+                rawZeroBelow += 1
+    string rawH = rawLayerName == "HIGH" and rawInputValid ? rawSourceCsv : ""
+    string rawL = rawLayerName == "LOW" and rawInputValid ? rawSourceCsv : ""
+    string rawE = rawLayerName == "EDGE" and rawInputValid ? rawSourceCsv : ""
+    string rawRH = rawLayerName == "HIGH" and rawInputValid ? csv(rawCountsArray) : ""
+    string rawRL = rawLayerName == "LOW" and rawInputValid ? csv(rawCountsArray) : ""
+    string rawRE = rawLayerName == "EDGE" and rawInputValid ? csv(rawCountsArray) : ""
+    string rawN = rawInputValid ? str.tostring(array.size(rawValuesArray)) : "0"
+    string rawZ = rawLayerName == "EDGE" and rawInputValid ? str.tostring(rawZeroBelow) : "0"
+    string rawPayload = "MLV4|" + rawProduct + "|U:points|M:observations|C:0|H:" + rawH + "|NH:" + (rawLayerName == "HIGH" ? rawN : "0") + "|AH:|BH:Raw point values supplied by the user|TH:Manual input|RH:" + rawRH + "|L:" + rawL + "|NL:" + (rawLayerName == "LOW" ? rawN : "0") + "|AL:|BL:Raw point values supplied by the user|TL:Manual input|RL:" + rawRL + "|E:" + rawE + "|NE:" + (rawLayerName == "EDGE" ? rawN : "0") + "|AE:|BE:Raw point values supplied by the user|TE:Manual input|RE:" + rawRE + "|ZE:" + rawZ + "|F:RAW VALUES - user supplied point moves; source dates and filters unspecified"
+    string payload = isDemo ? samplePayload : isRaw ? rawPayload : importedPayload
+    while array.size(lines) > 0
+        line.delete(array.pop(lines))
+    while array.size(labels) > 0
+        label.delete(array.pop(labels))
+    array.clear(levelLabels)
+    array.clear(labelPrices)
+    array.clear(labelNames)
+    array.clear(labelRows)
+    while array.size(profileBoxes) > 0
+        box.delete(array.pop(profileBoxes))
+    table.clear(card, 0, 0, 1, 9)
+    array<string> parts = str.split(payload, "|")
+    bool hasProfiles = array.size(parts) == 28 and array.get(parts, 0) == "MLV5"
+    bool versionOk = hasProfiles or (array.size(parts) == 25 and array.get(parts, 0) == "MLV4")
+    bool wantLevels = chartLayout != "Profile"
+    bool wantProfile = chartLayout != "Levels"
+    string product = array.size(parts) > 1 ? array.get(parts, 1) : ""
+    string mode = field(parts, "M")
+    bool percentiles = mode == "percentiles"
+    bool comparison = field(parts, "C") == "1"
+    [highs, highValid] = numbers(field(parts, "H"))
+    [lows, lowValid] = numbers(field(parts, "L"))
+    [edges, edgeValid] = numbers(field(parts, "E"))
+    [highCounts, highCountsValid] = numbers(field(parts, "RH"))
+    [lowCounts, lowCountsValid] = numbers(field(parts, "RL"))
+    [edgeCounts, edgeCountsValid] = numbers(field(parts, "RE"))
+    float nh = str.tonumber(field(parts, "NH"))
+    float nl = str.tonumber(field(parts, "NL"))
+    float ne = str.tonumber(field(parts, "NE"))
+    float zeroBelow = str.tonumber(field(parts, "ZE"))
+    [highProfile, phValid] = numbers(field(parts, "PH"))
+    [lowProfile, plValid] = numbers(field(parts, "PL"))
+    [edgeProfile, peValid] = numbers(field(parts, "PE"))
+    bool profilesValid = uniqueField(parts, "PH") and uniqueField(parts, "PL") and uniqueField(parts, "PE") and phValid and plValid and peValid and validProfile(highProfile, nh) and validProfile(lowProfile, nl) and validProfile(edgeProfile, ne)
+    int total = array.size(highs) + array.size(lows) + array.size(edges)
+    bool valid = versionOk and field(parts, "U") == "points" and (percentiles or mode == "observations") and (field(parts, "C") == "0" or comparison) and highValid and lowValid and edgeValid and total > 0 and total <= 200
+    valid := valid and highCountsValid and lowCountsValid and edgeCountsValid and validCounts(highCounts, array.size(highs), nh) and validCounts(lowCounts, array.size(lows), nl) and validCounts(edgeCounts, array.size(edges), ne)
+    valid := valid and not na(zeroBelow) and zeroBelow >= 0 and zeroBelow <= ne and zeroBelow == math.floor(zeroBelow)
+    valid := valid and (not hasProfiles or profilesValid)
+    valid := valid and (not isRaw or rawInputValid)
+    array<string> requiredKeys = array.from("U", "M", "C", "H", "NH", "AH", "BH", "TH", "RH", "L", "NL", "AL", "BL", "TL", "RL", "E", "NE", "AE", "BE", "TE", "RE", "ZE", "F")
+    for key in requiredKeys
+        valid := valid and uniqueField(parts, key)
+    array<string> keys = array.from("H", "L", "E")
+    array<int> sizes = array.from(array.size(highs), array.size(lows), array.size(edges))
+    float reference = na
+    bool sameReference = true
+    string basis = ""
+    for i = 0 to 2
+        string key = array.get(keys, i)
+        int count = array.get(sizes, i)
+        float n = str.tonumber(field(parts, "N" + key))
+        float price = str.tonumber(field(parts, "A" + key))
+        string sourceBasis = field(parts, "B" + key)
+        valid := valid and not na(n) and n >= 0 and n <= 5000 and n == math.floor(n) and (percentiles ? (n == 0 ? count == 0 : count == 5) : n == count)
+        if count > 0
+            valid := valid and str.length(sourceBasis) > 0 and str.length(field(parts, "T" + key)) > 0
+            if na(price) or price <= 0
+                sameReference := false
+            else if na(reference)
+                reference := price
+                basis := sourceBasis
+            else if price != reference or sourceBasis != basis
+                sameReference := false
+    bool chartOk = knownProduct(product) or confirmChartScale
+    bool useReference = anchorMode == "Imported reference"
+    float anchor = useReference ? reference : clickedAnchor
+    bool anchorOk = not na(anchor) and anchor > 0 and (not useReference or (sameReference and not comparison))
+    bool moved = not useReference and (not sameReference or comparison or (not na(reference) and math.abs(anchor - reference) >= syminfo.mintick))
+    bool awaitingInput = isRaw and str.length(str.trim(rawInput)) == 0
+    string status = awaitingInput ? "Paste your point moves to begin" : isRaw and not rawInputValid ? "Raw values invalid — use signed numbers separated by commas, lines or tabs (1–200)" : not versionOk ? "Paste valid MLV4/MLV5 data in Inputs" : wantProfile and not hasProfiles ? "Profile needs MLV5 data; select Levels for MLV4" : not valid ? "Invalid or oversized setup" : not chartOk ? "Chart/product mismatch — levels blocked" : not anchorOk ? "Choose chart anchor; shared reference unavailable" : isRaw ? "Raw levels loaded" : moved ? "Rebased comparison" : "Levels loaded"
+    bool ready = valid and chartOk and anchorOk and (not wantProfile or hasProfiles)
+    if ready
+        if showAnchor
+            array.push(lines, line.new(bar_index, anchor, bar_index + 1, anchor, extend = extend.both, color = anchorColor, style = line.style_dashed, width = 2))
+        if showHigh and wantLevels
+            draw(highs, highCounts, nh, 0, "HIGH", highColor, anchor, percentiles)
+        if showLow and wantLevels
+            draw(lows, lowCounts, nl, 0, "LOW", lowColor, anchor, percentiles)
+        if showEdge and wantLevels
+            draw(edges, edgeCounts, ne, zeroBelow, "EDGE", edgeColor, anchor, percentiles)
+        groupLevelLabels()
+        if wantProfile
+            float peak = math.max(profilePeak(highProfile, nh), profilePeak(lowProfile, nl), profilePeak(edgeProfile, ne))
+            if showHigh
+                drawProfile(highProfile, nh, "HIGH", highColor, anchor, 0, peak)
+            if showLow
+                drawProfile(lowProfile, nl, "LOW", lowColor, anchor, 1, peak)
+            if showEdge
+                drawProfile(edgeProfile, ne, "EDGE", edgeColor, anchor, 2, peak)
+    // Blocking errors stay visible even when the optional context card is off.
+    if awaitingInput
+        cell(0, "HISTORICAL CONTEXT", "Paste your point moves to begin", color.white)
+        cell(1, "Settings > Inputs", "Choose product and layer, paste point moves, then set your anchor price.", color.silver)
+        cell(2, "Optional example", "Select Synthetic demo under Data source to explore invented values.", color.silver)
+    else if showSetupCard or not ready
+        cell(0, "HISTORICAL CONTEXT", status, ready and not moved ? color.lime : color.orange)
+        cell(1, "Product / chart", product + " / " + syminfo.tickerid, color.white)
+        cell(2, "Layout", chartLayout + (wantLevels ? (percentiles ? " · percentile levels" : " · historical levels") : " · full-sample frequency"), color.white)
+        cell(3, "Observations H / L / E", "H " + field(parts, "NH") + (showHigh ? "" : " (off)") + " / L " + field(parts, "NL") + (showLow ? "" : " (off)") + " / E " + field(parts, "NE") + (showEdge ? "" : " (off)"), color.white)
+        cell(4, "Chart anchor", str.tostring(anchor, format.mintick) + (useReference ? " · exported reference" : anchorMode == "Entered anchor price" ? " · entered price" : " · chart selected"), anchorColor)
+        if showSourceDetails
+            for i = 0 to 2
+                string key = array.get(keys, i)
+                string context = array.get(sizes, i) == 0 ? "No observations" : field(parts, "B" + key) + "\nReference " + (str.length(field(parts, "A" + key)) == 0 ? "unavailable" : field(parts, "A" + key)) + "\nCaptured " + field(parts, "T" + key)
+                cell(5 + i, key + " source", context, color.white)
+        cell(showSourceDetails ? 8 : 5, "Filters", str.replace_all(field(parts, "F"), "~", "\n"), color.white)
+    // Always show provenance notice, including when the optional context card is off.
+    if not awaitingInput
+        cell(9, isDemo ? "SYNTHETIC DEMO" : isRaw ? "RAW VALUES" : "IMPORTED DATA", isDemo ? "Invented observations; not market research" : isRaw ? "User-supplied point moves; dates and filters unspecified" : "Author-supplied historical counts; not a forecast", color.orange)

@@ -1,0 +1,1515 @@
+//@version=6
+indicator("MACD + Impulse MACD - Normalized Momentum Scale", "MACD", overlay=false, max_bars_back=5000, calc_bars_count=1500, max_labels_count=100, max_lines_count=50)
+
+
+
+// ==============================================================================================
+// 🟢 REGION: Script Overview
+// ==============================================================================================
+//
+// MACD + IMPULSE — NORMALIZED MOMENTUM SCALE
+//
+// WHAT THIS INDICATOR IS
+// • This indicator places standard Price MACD and Impulse MACD on one shared, volatility-normalized
+//   -100…+100 coordinate so their direction, crossover structure, histogram strength, and higher-timeframe
+//   context can be compared without relying on their unrelated native price-unit scales.
+// • Standard Price MACD uses the familiar 12 / 26 / 9 architecture by default, with user-adjustable
+//   Fast / Slow / Signal lengths.
+// • Impulse MACD uses a 34-period smoothed High/Low envelope around a 34-period zero-lag EMA midline,
+//   with a 9-period Signal by default; its MA / Signal lengths are also user-adjustable.
+// • The Impulse MACD implementation is inspired by LazyBear's public Impulse MACD:
+//      https://www.tradingview.com/v/qt6xLfLi/
+//
+//
+// PRIOR WORK / ATTRIBUTION
+// • Volatility-normalized MACD has important prior published work in Alex Spiroglou's
+//   "MACD-V: Volatility Normalised Momentum" (2022).
+// • Original MACD-V TradingView publication:
+//      https://www.tradingview.com/script/mMMHCZUx-AS-MACD-v-Hist-Alex-Spiroglou-S-M-A-R-T-TRADER-SYSTEMS/
+// • MACD-V uses a linear ATR-normalized MACD architecture built around:
+//      MACD → divide by ATR26 → ×100 → EMA normalized series → histogram.
+// • This script uses a materially different order of operations:
+//      raw MACD + raw classic Signal + raw classic Histogram
+//      → independently divide each by ATR14
+//      → independently map each through the nonlinear bounded Normalized Momentum Scale.
+// • In practical terms, this script preserves the conventional raw MACD / Signal relationship first,
+//   then expresses MACD, Signal, and the true raw Histogram on a common volatility-relative coordinate.
+// • MACD-V and its research remain the work of Alex Spiroglou; the attribution above recognizes that
+//   prior work in volatility-normalized MACD while distinguishing the implementation used here.
+// • The Impulse MACD implementation is separately inspired by LazyBear's public Impulse MACD:
+//      https://www.tradingview.com/v/qt6xLfLi/
+//
+// WHY USE A NORMALIZED MOMENTUM SCALE?
+// • Native MACD values are expressed in price units. That creates three practical problems:
+//      1) the same raw MACD number means something very different on a $20 stock, a $500 stock, or crypto;
+//      2) the same instrument naturally produces different MACD magnitudes on different timeframes;
+//      3) standard MACD and Impulse MACD are built from different geometry, so their raw magnitudes are
+//         not directly comparable even when both are describing momentum.
+// • The first step is therefore ATR14 normalization:
+//      raw momentum value ÷ ATR14.
+// • This converts each reading from raw price distance into units of prevailing volatility. A reading is
+//   no longer asking "how many dollars apart are these averages?" but rather "how large is this momentum
+//   displacement relative to the instrument's current volatility?"
+//
+// NORMALIZED MOMENTUM SCALE (NMS)
+// • ATR normalization solves the price-unit problem, but a simple linear plot still creates a display problem.
+//   If the pane is scaled to preserve rare large excursions, ordinary MACD movement gets compressed around zero.
+//   If it is scaled for ordinary movement, occasional large momentum expansions dominate the pane.
+// • The Normalized Momentum Scale solves that tradeoff with a monotonic nonlinear transfer from ATR-relative
+//   momentum into a bounded -100…+100 coordinate.
+// • The center of the scale intentionally receives more visual resolution, while increasingly uncommon
+//   volatility-relative expansion requires progressively larger raw movement to approach the outer levels.
+// • Fixed absolute-value reference anchors are:
+//      0.00 ATR → 0
+//      0.70 ATR → 34
+//      1.25 ATR → 55
+//      2.50 ATR → 65
+//      4.00 ATR → 75
+//      7.00 ATR → 89
+//      12.0 ATR → 95
+//      20.0 ATR → 100
+// • Positive values indicate positive signed momentum displacement; negative values indicate negative displacement.
+// • These values are NOT probabilities, percentages, or automatic overbought / oversold signals. They are a
+//   standardized description of signed momentum magnitude relative to volatility.
+//
+// WHY THIS WORKS FOR MACD / SIGNAL PAIRS
+// • MACD and its Signal are each normalized by the same ATR14 denominator on the same bar and then passed through
+//   the same monotonic NMS transfer.
+// • Because the transfer preserves ordering, MACD / Signal crossover ownership is preserved while both lines gain
+//   a standardized coordinate.
+// • The same treatment is applied independently to Impulse MACD and its Signal.
+// • This lets the user compare not only which line is leading, but also how far the entire pair has migrated
+//   through a common volatility-relative momentum range.
+//
+// HISTOGRAMS ARE MAPPED FROM THEIR TRUE RAW DIFFERENCE
+// • Standard MACD Histogram is:
+//      raw MACD − raw MACD Signal.
+// • Impulse Hist is:
+//      raw Impulse MACD − raw Impulse Signal.
+// • Each true raw histogram is divided by ATR14 and passed through NMS independently.
+// • The histogram is intentionally NOT calculated by subtracting the two already-normalized NMS lines.
+//   Subtracting values after a nonlinear transfer would distort the magnitude of the original histogram.
+// • Standard MACD Hist uses the MACD pair color:
+//      positive = teal;
+//      negative = Bear Fall magenta.
+// • Impulse Hist uses a separate visual palette:
+//      positive = orange;
+//      negative = light purple.
+//
+// STANDARD MACD + IMPULSE MACD TOGETHER
+// • Standard MACD responds directly to the relationship between two exponential averages of Close.
+// • Impulse MACD adds a different perspective: its zero-lag EMA midline must extend beyond a smoothed High/Low
+//   envelope before the raw Impulse value moves away from zero.
+// • Putting both on the same NMS coordinate makes their differences useful rather than confusing.
+// • Agreement can show momentum that is being expressed by both conventional MACD structure and the filtered
+//   Impulse framework.
+// • Disagreement can show that one momentum model is expanding or rolling over before the other.
+// • The indicator is therefore designed as a comparison / context tool, not as an attempt to make the two
+//   MACD families mathematically identical.
+//
+// DEVELOPING AUTO-NEXT-HTF MACD HIST
+// • A Developing higher-timeframe MACD Histogram is calculated natively on the automatically selected next HTF.
+// • The higher-timeframe engine recalculates the complete selected MACD Fast / Slow / Signal lengths and its own
+//   ATR14 inside that HTF context before applying NMS.
+// • It is NOT a resampled chart-timeframe histogram.
+// • Transport uses gaps_off + lookahead_off with no confirmed-bar [1] offset.
+// • The result is deliberately DEVELOPING and can continue changing until the active higher-timeframe candle closes.
+// • This provides immediate context for whether the current chart-timeframe histogram is aligned with, diverging
+//   from, or moving ahead of the developing momentum structure one timeframe above.
+//
+// DISPLAY ARCHITECTURE
+// • MACD / Signal = foreground pair; default Line / Width 1 / Transparency 65.
+// • Impulse MACD / Signal = contextual backdrop pair; both default Line / Width 1 / Transparency 65.
+// • MACD Hist and Impulse Hist default Histogram.
+// • Developing HTF MACD Hist defaults Line so it can be read as context without becoming a third competing histogram.
+// • MACD / Signal and Impulse MACD / Signal each have independent fill controls.
+// • The entire MACD family shares one user-adjustable Bull / Bear / Neutral palette:
+//      MACD / Signal plots, fill, MACD Hist, Developing HTF MACD Hist, and right labels.
+// • The entire Impulse family shares one user-adjustable Bull / Bear / Neutral palette:
+//      Impulse MACD / Signal plots, fill, Impulse Hist, and right labels.
+// • Transparency remains independently adjustable by visual layer.
+// • Line / Columns / Histogram presentation is available where applicable.
+// • Default Last N = 144 across the primary displayed families.
+// • Historical plot / fill windows use native show_last.
+//
+// PRICE-PANE COMPANION
+// • Optional force-overlay candles plot the chart's actual Open / High / Low / Close on the main price pane.
+// • Candle / follow-line color source:
+//      MACD Hist = DEFAULT;
+//      Impulse Hist.
+// • The selected histogram supplies COLOR only; candle geometry remains native chart OHLC.
+// • Candle transparency defaults:
+//      Body = 75;
+//      Wick = 0;
+//      Border = 0.
+// • A lightweight Close bar-to-bar follow line is always force-overlaid using the same selected histogram color.
+// • The follow line is intentionally hardcoded to Last N 2 / Width 1 / Transparency 0.
+// • No additional momentum kernels are created; the price-pane companion reuses existing histogram state colors.
+//
+// FOCUSED NMS GUIDES
+// • Guide ladder:
+//      -100 / -89 / -75 / -55 / -34 / -13 / 0 / 13 / 34 / 55 / 75 / 89 / 100.
+// • Zero remains the fixed center reference.
+// • Non-zero guides are proximity-gated against the CURRENTLY VISIBLE plotted geometry:
+//      MACD / Signal,
+//      MACD Hist,
+//      Developing HTF MACD Hist,
+//      Impulse MACD / Signal,
+//      Impulse Hist.
+// • A guide is shown only when at least one visible plotted value is genuinely close to that NMS rung.
+// • Capture radius = max(6 NMS points, 35% of that rung's nearest ladder spacing).
+// • This avoids filling the pane with distant levels such as ±55 / ±75 when no visible momentum series is
+//   actually approaching those areas.
+// • ±100 additionally requires visible plotted geometry beyond ±95.
+// • Guide COLORS remain MACD-state colors; guide VISIBILITY responds to all visible momentum geometry.
+// • Guide labels default SHOW; guide lines remain optional.
+//
+// RIGHT-SIDE TELEMETRY
+// • One dynamic First Label Padding / Padding Between Labels system manages all right-side telemetry.
+// • Padding modes:
+//      Individual = DEFAULT;
+//      Grouped = all visible telemetry labels share the first-padding lane.
+// • Individual order:
+//      Guide Levels
+//      → MACD Hist
+//      → MACD
+//      → MACD Signal
+//      → Developing HTF MACD Hist
+//      → Impulse Hist
+//      → Impulse MACD
+//      → Impulse Signal.
+// • Only visible labels consume Individual spacing.
+// • No forward bar_index offsets are used.
+// • MACD / Signal and Impulse MACD / Signal crossover ages are inclusive:
+//      the crossover bar itself = 1ba.
+// • Crossover age follows directional ownership:
+//      Bull state → ba on MACD / Impulse MACD;
+//      Bear state → ba on the corresponding Signal label.
+//
+// HOW TO READ IT
+// • Start with sign:
+//      above 0 = positive signed momentum;
+//      below 0 = negative signed momentum.
+// • Then look at pair ownership:
+//      MACD above Signal or Impulse MACD above Signal indicates the faster momentum component currently leads.
+// • Then look at magnitude on NMS:
+//      a move from 13 → 34 is materially different from 55 → 75 because the outer scale requires progressively
+//      larger ATR-relative expansion.
+// • Use the histograms to judge the current distance between each MACD family and its Signal.
+// • Use the Developing HTF MACD Hist to compare local histogram direction / magnitude with the next timeframe.
+// • Read agreement, disagreement, expansion, contraction, and crossover age together rather than treating any
+//   single NMS level as a standalone trading signal.
+//
+// IMPORTANT
+// • The Normalized Momentum Scale is a descriptive momentum coordinate, not a prediction model.
+// • It does not change the underlying MACD / Signal relationships; it changes how their volatility-relative
+//   magnitude is represented so multiple momentum families can be compared in one bounded pane.
+// • All calculations remain derived from historical / developing market data and should be used as context,
+//   not as a guarantee of future price direction.
+//
+// ==============================================================================================
+// 🔴 END REGION: Script Overview
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Constants
+// ==============================================================================================
+
+// 🔹 Display vocabulary
+const string SHOW = "Show"
+const string HIDE = "Hide"
+const string STYLE_LINE = "Line"
+const string STYLE_COLUMNS = "Columns"
+const string STYLE_HISTOGRAM = "Histogram"
+const string GUIDE_LABELS = "Labels Only"
+const string GUIDE_BOTH = "Lines + Labels"
+const string GUIDE_HIDE = "Hide"
+const string LABEL_PADDING_GROUPED = "Grouped"
+const string LABEL_PADDING_INDIVIDUAL = "Individual"
+
+const string PRICE_SOURCE_MACD_HIST = "MACD Hist"
+const string PRICE_SOURCE_IMPULSE_HIST = "Impulse Hist"
+
+// 🔹 Input groups
+const string G_MACD = "01 — MACD / Signal"
+const string G_HIST = "02 — MACD Histogram"
+const string G_IMPULSE = "03 — Impulse / Signal"
+const string G_GUIDES = "04 — Focused Guides"
+const string G_RIGHT_LABELS = "05 — Right-Side Labels"
+const string G_PRICE_OVERLAY = "06 — Price Pane Overlay"
+
+// 🔹 Price MACD defaults
+const int MACD_FAST_LEN_DEFAULT = 12
+const int MACD_SLOW_LEN_DEFAULT = 26
+const int MACD_SIGNAL_LEN_DEFAULT = 9
+
+// 🔹 Canonical LazyBear Impulse defaults
+const int IMPULSE_MA_LEN_DEFAULT = 34
+const int IMPULSE_SIGNAL_LEN_DEFAULT = 9
+
+// 🔹 Shared volatility normalization
+const int ATR_LEN = 14
+const int PAIR_LAST_N_DEFAULT = 144
+
+// 🔹 Canonical pair palette
+const color COL_BULL = color.teal
+const color COL_BEAR = #f51673
+const color COL_NEUTRAL = color.rgb(165, 165, 165)
+
+// 🔹 Impulse Histogram palette
+const color COL_IMPULSE_HIST_BULL = #ff8400
+const color COL_IMPULSE_HIST_BEAR = color.rgb(157, 78, 221)
+
+// 🔹 Focused guide palette
+const color COL_GUIDE_POS_PENDING = color.teal
+const color COL_GUIDE_POS_PASSED = #ffe102
+const color COL_GUIDE_NEG_BELOW = #f51673
+const color COL_GUIDE_NEG_PASSED = color.rgb(165, 165, 165)
+const color COL_GUIDE_ZERO = color.rgb(165, 165, 165)
+const color COL_POS_EXTREME = #f76300
+const color COL_NEG_EXTREME = #7a00a0
+
+// 🔹 Focused guide proximity + line defaults
+const float GUIDE_PROXIMITY_FLOOR = 6.0
+const float GUIDE_PROXIMITY_FRACTION = 0.35
+const int GUIDE_LINE_LAST_N_DEFAULT = 2
+const int GUIDE_LINE_WIDTH_DEFAULT = 1
+
+// 🔹 Hardcoded price-pane follow-line baseline
+const int PRICE_FOLLOW_LAST_N = 2
+const int PRICE_FOLLOW_WIDTH = 1
+const int PRICE_FOLLOW_TRANSP = 0
+
+const float DIRECTION_EPS = 1e-8
+
+// ==============================================================================================
+// 🔴 END REGION: Constants
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Tooltips
+// ==============================================================================================
+
+// 🔹 MACD / Signal explanation
+const string TT_MACD =
+     "PRICE MACD / SIGNAL — NORMALIZED MOMENTUM SCALE\n\n" +
+     "Default raw MACD = EMA12(Close) − EMA26(Close). Signal = EMA9(raw MACD). Fast / Slow / Signal lengths are user-adjustable.\n\n" +
+     "Each raw line is divided by ATR14 and independently passed through the fixed Normalized Momentum Scale transfer. " +
+     "This preserves true crossover/order while placing both lines on a bounded -100…+100 volatility-relative coordinate.\n\n" +
+     "MACD > Signal uses the shared Bull color. Signal > MACD uses the shared Bear color. The same Bull / Bear / Neutral palette drives both the MACD / Signal plots and their fill; fill transparency remains independent.\n\n" +
+     "Display Style controls both pair members. Last N uses native show_last."
+
+// 🔹 MACD Histogram explanation
+const string TT_HIST =
+     "ACTUAL MACD HISTOGRAM — NORMALIZED MOMENTUM SCALE\n\n" +
+     "Raw Histogram = raw MACD − raw Signal.\n\n" +
+     "The raw histogram is divided by ATR14 and passed through Normalized Momentum Scale independently. " +
+     "It is NOT calculated by subtracting the already-remapped semantic MACD and Signal lines, because that would distort magnitude after the nonlinear transfer.\n\n" +
+     "The MACD Histogram inherits the shared MACD Bull / Bear / Neutral palette."
+
+// 🔹 Developing HTF MACD Histogram explanation
+const string TT_HTF_HIST =
+     "DEVELOPING AUTO-NEXT-HTF MACD HISTOGRAM — NMS\n\n" +
+     "The complete Price MACD Histogram is calculated natively on the automatically selected next higher timeframe:\n" +
+     "EMA12(Close) − EMA26(Close) → EMA9 Signal → raw Histogram → ÷ native HTF ATR14 → Normalized Momentum Scale.\n\n" +
+     "Transport uses gaps_off + lookahead_off with no [1] confirmed-bar offset. This is a developing HTF reading, so its value can continue changing until the active higher-timeframe candle closes.\n\n" +
+     "Default presentation = Line / SHOW, Last N = 144. The Developing HTF Histogram inherits the shared MACD Bull / Bear / Neutral palette. The right label shows the actual selected HTF."
+
+// 🔹 Impulse / Signal explanation
+const string TT_IMPULSE =
+     "IMPULSE MACD / SIGNAL — NORMALIZED MOMENTUM SCALE\n\n" +
+     "LazyBear ownership:\n" +
+     "• ImpulseMACD = md.\n" +
+     "• Signal = sb = SMA(md, Signal Length).\n" +
+     "• Impulse Hist = sh = md − sb.\n\n" +
+     "Default source architecture = HLC3 + SMMA/RMA34 High/Low envelope + ZLEMA34 midline. MA Length and Signal Length are user-adjustable. " +
+     "ImpulseMACD measures how far the ZLEMA extends outside the smoothed High/Low envelope; zero means the midline remains inside the envelope.\n\n" +
+     "Raw ImpulseMACD and Signal are each divided by ATR14 and independently passed through the SAME fixed Normalized Momentum Scale transfer as Price MACD / Signal.\n\n" +
+     "DEFAULT PRESENTATION:\n" +
+     "• ImpulseMACD = Histogram.\n" +
+     "• Impulse Signal = Line.\n" +
+     "• Impulse Hist = Histogram / SHOW.\n\n" +
+     "ImpulseMACD > Signal uses the shared Impulse Bull color. Signal > ImpulseMACD uses the shared Impulse Bear color. The same Bull / Bear / Neutral palette drives the Impulse plots, fill, histogram, and right labels."
+
+// 🔹 Impulse Histogram explanation
+const string TT_IMPULSE_HIST =
+     "IMPULSEHISTO — LAZYBEAR sh = md − sb — NORMALIZED MOMENTUM SCALE\n\n" +
+     "This is the original LazyBear Impulse Hist relationship: sh = md − sb, where md is ImpulseMACD and sb is its SMA9 Signal.\n\n" +
+     "The raw Impulse histogram is divided by ATR14 and passed through Normalized Momentum Scale independently. " +
+     "It is NOT calculated by subtracting the already-remapped semantic Impulse and Signal values.\n\n" +
+     "The Impulse Histogram inherits the shared Impulse Bull / Bear / Neutral palette. Defaults remain orange bullish, light purple bearish, and neutral gray.\n\n" +
+     "The Impulse histogram renders behind the standard MACD histogram and shares the Impulse Last-N window."
+
+// 🔹 Focused guides
+const string TT_GUIDES =
+     "FOCUSED SEMANTIC GUIDES\n\n" +
+     "Zero always remains available as the center reference. Non-zero guide visibility is based on proximity to the CURRENTLY VISIBLE plotted geometry — MACD / Signal, MACD Hist, Developing HTF MACD Hist, ImpulseMACD / Signal, and Impulse Hist.\n\n" +
+     "A guide appears only when at least one visible plotted value is genuinely close to that semantic rung. Capture radius = max(6 semantic points, 35% of the rung's nearest ladder spacing). This prevents distant ±55 / ±75 guides from appearing simply because they are the next rungs beyond MACD.\n\n" +
+     "Guide levels = 0 / ±13 / ±34 / ±55 / ±75 / ±89 / ±100. ±100 additionally requires visible plotted geometry beyond ±95.\n\n" +
+     "Guide COLORS remain MACD-state colors; only guide VISIBILITY uses all visible geometry. Labels Only is the default. Lines + Labels adds short right-edge dotted/dashed guide segments."
+
+// 🔹 Price-pane overlay
+const string TT_PRICE_OVERLAY =
+     "PRICE PANE OVERLAY\n\n" +
+     "Plots actual chart OHLC on the main price pane with force_overlay=true while this indicator remains in its oscillator pane.\n\n" +
+     "Color Source:\n" +
+     "• MACD Hist = candle / follow-line color follows the sign of the standard MACD Histogram.\n" +
+     "• Impulse Hist = candle / follow-line color follows the sign of the Impulse Histogram.\n\n" +
+     "The default source is MACD Hist. Candle body / wick / border transparency are independently adjustable.\n\n" +
+     "A hardcoded Close bar-to-bar follow line also uses the selected histogram color source. It always shows only the most recent 2 bars."
+
+const string TT_PRICE_CANDLE_TRANSP =
+     "Independent transparency controls for the force-overlay price candles.\n\n" +
+     "Defaults:\n" +
+     "• Body = 75\n" +
+     "• Wick = 0\n" +
+     "• Border = 0"
+
+// 🔹 Canonical padding
+const string TT_PADDING =
+     "One dynamic right-label padding engine.\n\n" +
+     "Individual — DEFAULT. Every visible telemetry label owns its own horizontal lane.\n" +
+     "Grouped — all visible telemetry labels share the first-padding lane.\n\n" +
+     "Order: Guide Levels → MACD Histogram → MACD → MACD Signal → HTF MACD Histogram → Impulse Hist → ImpulseMACD → Impulse Signal.\n\n" +
+     "All active guide rungs remain one Guide family. First Label Padding controls the first visible lane. " +
+     "Padding Between Labels controls the standard distance to each next visible label in Individual mode. " +
+     "A +2 EM visual compensation is applied after ImpulseMACD so the wider Impulse pair does not crowd its neighbor. " +
+     "Only visible labels consume spacing.\n\n" +
+     "No forward bar_index offset is used."
+
+// ==============================================================================================
+// 🔴 END REGION: Tooltips
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Inputs
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: MACD / Signal Foreground
+// ──────────────────────────────────────────────
+
+// 🔹 Calculation lengths
+int in_macdFastLen = input.int(MACD_FAST_LEN_DEFAULT, "MACD Fast Length", minval=1, maxval=500, group=G_MACD, tooltip=TT_MACD)
+int in_macdSlowLen = input.int(MACD_SLOW_LEN_DEFAULT, "MACD Slow Length", minval=1, maxval=500, group=G_MACD, tooltip=TT_MACD)
+int in_macdSignalLen = input.int(MACD_SIGNAL_LEN_DEFAULT, "MACD Signal Length", minval=1, maxval=500, group=G_MACD, tooltip=TT_MACD)
+
+// 🔹 Pair presentation
+string in_macdDisplayMode = input.string(SHOW, "MACD / Signal Display", options=[SHOW, HIDE], group=G_MACD, tooltip=TT_MACD)
+bool showMacdPair = in_macdDisplayMode == SHOW
+string in_macdStyle = input.string(STYLE_LINE, "  ↳ Display Style", options=[STYLE_LINE, STYLE_COLUMNS, STYLE_HISTOGRAM], group=G_MACD, active=showMacdPair, tooltip=TT_MACD)
+int in_macdLastN = input.int(PAIR_LAST_N_DEFAULT, "  ↳ Last N Bars", minval=1, maxval=5000, group=G_MACD, active=showMacdPair)
+int in_macdWidth = input.int(1, "  ↳ Width", minval=1, maxval=5, group=G_MACD, active=showMacdPair)
+int in_macdTransp = input.int(65, "  ↳ Plot Transparency", minval=0, maxval=100, group=G_MACD, active=showMacdPair)
+
+// 🔹 Shared MACD / Signal plot + fill colors
+color in_macdBullColor = input.color(COL_BULL, "Bull", group=G_MACD, inline="macdSharedColors")
+color in_macdBearColor = input.color(COL_BEAR, "Bear", group=G_MACD, inline="macdSharedColors")
+color in_macdNeutralColor = input.color(COL_NEUTRAL, "Neutral", group=G_MACD, inline="macdSharedColors")
+
+// 🔹 Pair fill
+string in_macdFillMode = input.string(SHOW, "MACD / Signal Fill", options=[SHOW, HIDE], group=G_MACD, tooltip=TT_MACD)
+bool showMacdFill = in_macdFillMode == SHOW
+int in_macdFillTransp = input.int(75, "  ↳ Fill Transparency", minval=0, maxval=100, group=G_MACD, active=showMacdFill)
+
+// 🔹 Pair right labels
+string in_macdRightLabelsMode = input.string(SHOW, "MACD / Signal Right-Side Labels", options=[SHOW, HIDE], group=G_MACD)
+bool showMacdRightLabels = in_macdRightLabelsMode == SHOW
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Actual MACD Histogram
+// ──────────────────────────────────────────────
+
+// 🔹 Histogram presentation
+string in_histDisplayMode = input.string(SHOW, "MACD Histogram Display", options=[SHOW, HIDE], group=G_HIST, tooltip=TT_HIST)
+bool showMacdHist = in_histDisplayMode == SHOW
+string in_histStyle = input.string(STYLE_HISTOGRAM, "  ↳ Display Style", options=[STYLE_LINE, STYLE_COLUMNS, STYLE_HISTOGRAM], group=G_HIST, active=showMacdHist, tooltip=TT_HIST)
+int in_histLastN = input.int(PAIR_LAST_N_DEFAULT, "  ↳ Last N Bars", minval=1, maxval=5000, group=G_HIST, active=showMacdHist)
+int in_histWidth = input.int(2, "  ↳ Width", minval=1, maxval=5, group=G_HIST, active=showMacdHist)
+int in_histTransp = input.int(35, "  ↳ Transparency", minval=0, maxval=100, group=G_HIST, active=showMacdHist)
+
+// 🔹 Histogram right label
+string in_histRightLabelMode = input.string(SHOW, "MACD Histogram Right-Side Label", options=[SHOW, HIDE], group=G_HIST)
+bool showMacdHistRightLabel = in_histRightLabelMode == SHOW
+
+// 🔹 Developing Auto-Next-HTF MACD Histogram
+string in_htfHistDisplayMode = input.string(SHOW, "Developing HTF MACD Hist", options=[SHOW, HIDE], group=G_HIST, tooltip=TT_HTF_HIST)
+bool showHtfMacdHist = in_htfHistDisplayMode == SHOW
+string in_htfHistStyle = input.string(STYLE_LINE, "  ↳ HTF Display Style", options=[STYLE_LINE, STYLE_COLUMNS, STYLE_HISTOGRAM], group=G_HIST, active=showHtfMacdHist, tooltip=TT_HTF_HIST)
+int in_htfHistLastN = input.int(PAIR_LAST_N_DEFAULT, "  ↳ HTF Last N Bars", minval=1, maxval=5000, group=G_HIST, active=showHtfMacdHist)
+int in_htfHistWidth = input.int(2, "  ↳ HTF Width", minval=1, maxval=5, group=G_HIST, active=showHtfMacdHist)
+int in_htfHistTransp = input.int(0, "  ↳ HTF Transparency", minval=0, maxval=100, group=G_HIST, active=showHtfMacdHist)
+
+string in_htfHistRightLabelMode = input.string(SHOW, "HTF MACD Hist Right-Side Label", options=[SHOW, HIDE], group=G_HIST, tooltip=TT_HTF_HIST)
+bool showHtfMacdHistRightLabel = in_htfHistRightLabelMode == SHOW
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Impulse / Signal Backdrop
+// ──────────────────────────────────────────────
+
+// 🔹 Calculation lengths
+int in_impulseMaLen = input.int(IMPULSE_MA_LEN_DEFAULT, "Impulse MACD MA Length", minval=1, maxval=500, group=G_IMPULSE, tooltip=TT_IMPULSE)
+int in_impulseSignalLen = input.int(IMPULSE_SIGNAL_LEN_DEFAULT, "Impulse Signal / Hist Length", minval=1, maxval=500, group=G_IMPULSE, tooltip=TT_IMPULSE)
+
+// 🔹 Pair presentation
+string in_impulseDisplayMode = input.string(SHOW, "ImpulseMACD / Signal Display", options=[SHOW, HIDE], group=G_IMPULSE, tooltip=TT_IMPULSE)
+bool showImpulsePair = in_impulseDisplayMode == SHOW
+string in_impulseMacdStyle = input.string(STYLE_LINE, "  ↳ ImpulseMACD Style", options=[STYLE_LINE, STYLE_COLUMNS, STYLE_HISTOGRAM], group=G_IMPULSE, active=showImpulsePair, tooltip=TT_IMPULSE)
+string in_impulseSignalStyle = input.string(STYLE_LINE, "  ↳ Impulse Signal Style", options=[STYLE_LINE, STYLE_COLUMNS, STYLE_HISTOGRAM], group=G_IMPULSE, active=showImpulsePair, tooltip=TT_IMPULSE)
+int in_impulseLastN = input.int(PAIR_LAST_N_DEFAULT, "  ↳ Last N Bars", minval=1, maxval=5000, group=G_IMPULSE, active=showImpulsePair)
+int in_impulseWidth = input.int(1, "  ↳ Width", minval=1, maxval=5, group=G_IMPULSE, active=showImpulsePair)
+int in_impulseTransp = input.int(65, "  ↳ Plot Transparency", minval=0, maxval=100, group=G_IMPULSE, active=showImpulsePair)
+
+// 🔹 Shared Impulse MACD / Signal / Hist plot + fill colors
+color in_impulseBullColor = input.color(COL_IMPULSE_HIST_BULL, "Bull", group=G_IMPULSE, inline="impulseSharedColors")
+color in_impulseBearColor = input.color(COL_IMPULSE_HIST_BEAR, "Bear", group=G_IMPULSE, inline="impulseSharedColors")
+color in_impulseNeutralColor = input.color(COL_NEUTRAL, "Neutral", group=G_IMPULSE, inline="impulseSharedColors")
+
+// 🔹 Pair fill
+string in_impulseFillMode = input.string(SHOW, "Impulse / Signal Fill", options=[SHOW, HIDE], group=G_IMPULSE, tooltip=TT_IMPULSE)
+bool showImpulseFill = in_impulseFillMode == SHOW
+int in_impulseFillTransp = input.int(90, "  ↳ Fill Transparency", minval=0, maxval=100, group=G_IMPULSE, active=showImpulseFill)
+
+// 🔹 Pair right labels
+string in_impulseRightLabelsMode = input.string(SHOW, "Impulse / Signal Right-Side Labels", options=[SHOW, HIDE], group=G_IMPULSE)
+bool showImpulseRightLabels = in_impulseRightLabelsMode == SHOW
+
+// 🔹 Actual Impulse MACD Histogram
+string in_impulseHistDisplayMode = input.string(SHOW, "Impulse Hist Display", options=[SHOW, HIDE], group=G_IMPULSE, tooltip=TT_IMPULSE_HIST)
+bool showImpulseHist = in_impulseHistDisplayMode == SHOW
+string in_impulseHistStyle = input.string(STYLE_HISTOGRAM, "  ↳ Histogram Style", options=[STYLE_LINE, STYLE_COLUMNS, STYLE_HISTOGRAM], group=G_IMPULSE, active=showImpulseHist, tooltip=TT_IMPULSE_HIST)
+int in_impulseHistWidth = input.int(3, "  ↳ Histogram Width", minval=1, maxval=5, group=G_IMPULSE, active=showImpulseHist)
+int in_impulseHistTransp = input.int(45, "  ↳ Histogram Transparency", minval=0, maxval=100, group=G_IMPULSE, active=showImpulseHist)
+
+string in_impulseHistRightLabelMode = input.string(SHOW, "Impulse Hist Right-Side Label", options=[SHOW, HIDE], group=G_IMPULSE, tooltip=TT_IMPULSE_HIST)
+bool showImpulseHistRightLabel = in_impulseHistRightLabelMode == SHOW
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Focused Semantic Guides
+// ──────────────────────────────────────────────
+
+// 🔹 Focused guide display only
+string in_guideMode = input.string(GUIDE_LABELS, "Focused Guide Display", options=[GUIDE_LABELS, GUIDE_BOTH, GUIDE_HIDE], group=G_GUIDES, tooltip=TT_GUIDES)
+bool showGuideLabels = in_guideMode != GUIDE_HIDE
+bool showGuideLines = in_guideMode == GUIDE_BOTH
+bool guideEngineActive = showGuideLabels or showGuideLines
+
+int in_guideLineLastN = input.int(GUIDE_LINE_LAST_N_DEFAULT, "  ↳ Guide Line Last N Bars", minval=1, maxval=5000, group=G_GUIDES, active=showGuideLines)
+int in_guideLineWidth = input.int(GUIDE_LINE_WIDTH_DEFAULT, "  ↳ Guide Line Width", minval=1, maxval=5, group=G_GUIDES, active=showGuideLines)
+int in_guideLineTransp = input.int(78, "  ↳ Guide Line Transparency", minval=0, maxval=100, group=G_GUIDES, active=showGuideLines)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Canonical Right-Label Padding
+// ──────────────────────────────────────────────
+
+// 🔹 First / spaced construct
+string in_rightLabelPaddingMode = input.string(LABEL_PADDING_INDIVIDUAL, "Label Padding Mode", options=[LABEL_PADDING_GROUPED, LABEL_PADDING_INDIVIDUAL], group=G_RIGHT_LABELS, tooltip=TT_PADDING)
+bool useGroupedRightLabelPadding = in_rightLabelPaddingMode == LABEL_PADDING_GROUPED
+int in_rightLabelBasePad = input.int(2, "First Label Padding", minval=0, maxval=100, group=G_RIGHT_LABELS, tooltip=TT_PADDING)
+int in_rightLabelPadStep = input.int(5, "Padding Between Labels", minval=1, maxval=40, group=G_RIGHT_LABELS, tooltip=TT_PADDING)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Price Pane Overlay
+// ──────────────────────────────────────────────
+
+// 🔹 Histogram-owned overlay source
+string in_priceOverlaySource = input.string(PRICE_SOURCE_MACD_HIST, "Price Pane Color Source", options=[PRICE_SOURCE_MACD_HIST, PRICE_SOURCE_IMPULSE_HIST], group=G_PRICE_OVERLAY, tooltip=TT_PRICE_OVERLAY)
+
+// 🔹 Force-overlay actual OHLC candles
+string in_priceCandlesMode = input.string(SHOW, "Price Pane Candles", options=[SHOW, HIDE], group=G_PRICE_OVERLAY, tooltip=TT_PRICE_OVERLAY)
+bool showPricePaneCandles = in_priceCandlesMode == SHOW
+
+int in_priceCandleBodyTransp = input.int(75, "  ↳ Body Transparency", minval=0, maxval=100, group=G_PRICE_OVERLAY, active=showPricePaneCandles, tooltip=TT_PRICE_CANDLE_TRANSP)
+int in_priceCandleWickTransp = input.int(0, "  ↳ Wick Transparency", minval=0, maxval=100, group=G_PRICE_OVERLAY, active=showPricePaneCandles, tooltip=TT_PRICE_CANDLE_TRANSP)
+int in_priceCandleBorderTransp = input.int(0, "  ↳ Border Transparency", minval=0, maxval=100, group=G_PRICE_OVERLAY, active=showPricePaneCandles, tooltip=TT_PRICE_CANDLE_TRANSP)
+
+// ==============================================================================================
+// 🔴 END REGION: Inputs
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Helpers
+// ==============================================================================================
+
+// 🔹 Math / Normalized Momentum Scale (NMS)
+f_dir(float _x) =>
+    _x > 0.0 ? 1.0 : _x < 0.0 ? -1.0 : 0.0
+
+f_lerp(float _x, float _x0, float _x1, float _y0, float _y1) =>
+    _x1 == _x0 ? _y1 : _y0 + ((_x - _x0) / (_x1 - _x0)) * (_y1 - _y0)
+
+f_cap100(float _x) =>
+    math.min(math.max(_x, 0.0), 100.0)
+
+f_wideSemanticMag(float _x) =>
+    float _m = math.abs(_x)
+    float _y =
+         _m <= 0.70 ? f_lerp(_m, 0.00, 0.70, 0.0, 34.0) :
+         _m <= 1.25 ? f_lerp(_m, 0.70, 1.25, 34.0, 55.0) :
+         _m <= 2.50 ? f_lerp(_m, 1.25, 2.50, 55.0, 65.0) :
+         _m <= 4.00 ? f_lerp(_m, 2.50, 4.00, 65.0, 75.0) :
+         _m <= 7.00 ? f_lerp(_m, 4.00, 7.00, 75.0, 89.0) :
+         _m <= 12.0 ? f_lerp(_m, 7.00, 12.0, 89.0, 95.0) :
+         _m <= 20.0 ? f_lerp(_m, 12.0, 20.0, 95.0, 100.0) :
+                      100.0
+    f_cap100(_y)
+
+f_wideSemantic(float _x) =>
+    f_dir(_x) * f_wideSemanticMag(_x)
+
+// 🔹 Canonical Auto-Next-HTF ladder
+f_getNextTf() =>
+    float _mult = timeframe.multiplier
+    string _nextTf = "1D"
+
+    if timeframe.isseconds
+        if timeframe.period == "1S"
+            _nextTf := "5S"
+        else if timeframe.period == "5S"
+            _nextTf := "10S"
+        else if timeframe.period == "10S"
+            _nextTf := "15S"
+        else if timeframe.period == "15S"
+            _nextTf := "30S"
+        else if timeframe.period == "30S"
+            _nextTf := "45S"
+        else
+            _nextTf := "1"
+    else if timeframe.isminutes
+        if _mult <= 1
+            _nextTf := "3"
+        else if _mult <= 2
+            _nextTf := "4"
+        else if _mult <= 3
+            _nextTf := "5"
+        else if _mult <= 5
+            _nextTf := "10"
+        else if _mult <= 10
+            _nextTf := "15"
+        else if _mult <= 15
+            _nextTf := "30"
+        else if _mult <= 30
+            _nextTf := "60"
+        else if _mult <= 60
+            _nextTf := "120"
+        else if _mult <= 120
+            _nextTf := "240"
+        else if _mult <= 240
+            _nextTf := "480"
+        else
+            _nextTf := "D"
+    else if timeframe.isdaily
+        _nextTf := "1W"
+    else if timeframe.isweekly
+        _nextTf := "2W"
+    else if timeframe.ismonthly
+        _nextTf := "2M"
+
+    _nextTf
+
+f_prettyTfValue(string _tf) =>
+    float _numericTf = str.tonumber(_tf)
+    if not na(_numericTf)
+        int _minutes = int(_numericTf)
+        _minutes >= 60 and _minutes % 60 == 0 ?
+         str.tostring(int(_minutes / 60)) + "h" :
+         str.tostring(_minutes) + "m"
+    else
+        _tf == "D" or _tf == "1D" ? "1D" :
+         _tf == "W" or _tf == "1W" ? "1W" :
+         _tf == "2W" ? "2W" :
+         _tf == "M" or _tf == "1M" ? "1M" :
+         _tf == "2M" ? "2M" :
+         str.lower(_tf)
+
+// 🔹 Native higher-timeframe MACD Histogram → ATR14 → NMS
+f_macdHistWideSemanticNative(
+     int _fastLen,
+     int _slowLen,
+     int _signalLen) =>
+    float _fast = ta.ema(close, _fastLen)
+    float _slow = ta.ema(close, _slowLen)
+    float _macd = _fast - _slow
+    float _signal = ta.ema(_macd, _signalLen)
+    float _hist = _macd - _signal
+    float _atr = ta.atr(ATR_LEN)
+    float _histAtr = not na(_atr) and _atr > 0.0 ? _hist / _atr : na
+    not na(_histAtr) ? f_wideSemantic(_histAtr) : na
+
+// 🔹 Formatting
+f_padding(int _n) =>
+    str.repeat(" ", math.max(_n, 0))
+
+f_plain1Trim(float _v) =>
+    if na(_v)
+        "n/a"
+    else
+        float _oneDecimal = math.round(_v * 10.0) / 10.0
+        float _whole = math.round(_oneDecimal)
+        math.abs(_oneDecimal - _whole) < 0.0001 ?
+         str.tostring(int(_whole)) :
+         str.tostring(_oneDecimal, "#.0")
+
+f_barsAgoText(int _bars) =>
+    na(_bars) ? "n/a" : str.tostring(_bars) + "ba"
+
+// 🔹 Dynamic right-label lane allocator
+f_buildRightLabelPads(
+     array<bool> _visible,
+     array<int> _extraAfter,
+     bool _grouped,
+     int _basePad,
+     int _step) =>
+    int _count = array.size(_visible)
+    array<int> _pads = array.new_int(_count, _basePad)
+    int _cursor = _basePad
+
+    if _count > 0 and not _grouped
+        for _index = 0 to _count - 1
+            array.set(_pads, _index, _cursor)
+
+            if array.get(_visible, _index)
+                int _extra =
+                     _index < array.size(_extraAfter) ?
+                     array.get(_extraAfter, _index) :
+                     0
+
+                _cursor += _step + _extra
+
+    _pads
+
+// 🔹 Label lifecycle
+f_syncRightValueLabel(
+     label _label,
+     bool _show,
+     int _x,
+     float _y,
+     string _text,
+     color _textColor) =>
+    label _out = _label
+    color _invisible = color.new(color.black, 100)
+    bool _valid = _show and not na(_x) and not na(_y)
+
+    if _valid
+        if na(_out)
+            _out := label.new(
+                 _x, _y, _text,
+                 xloc=xloc.bar_index,
+                 yloc=yloc.price,
+                 style=label.style_label_left,
+                 color=_invisible,
+                 textcolor=_textColor,
+                 textalign=text.align_center,
+                 size=size.normal)
+        else
+            label.set_xy(_out, _x, _y)
+            label.set_text(_out, _text)
+            label.set_color(_out, _invisible)
+            label.set_textcolor(_out, _textColor)
+            label.set_style(_out, label.style_label_left)
+            label.set_textalign(_out, text.align_center)
+            label.set_size(_out, size.normal)
+    else if not na(_out)
+        label.delete(_out)
+        _out := na
+
+    _out
+
+// 🔹 Focused guide palette
+f_guideStateColor(float _level, float _osc) =>
+    na(_osc) ?
+     (_level > 0.0 ? COL_GUIDE_POS_PENDING :
+      _level < 0.0 ? COL_GUIDE_NEG_BELOW :
+      COL_GUIDE_ZERO) :
+     _level >= 100.0 - DIRECTION_EPS and _osc >= 100.0 - DIRECTION_EPS ?
+     COL_POS_EXTREME :
+     _level <= -100.0 + DIRECTION_EPS and _osc <= -100.0 + DIRECTION_EPS ?
+     COL_NEG_EXTREME :
+     _level < 0.0 ?
+     (_osc <= _level ? COL_GUIDE_NEG_BELOW : COL_GUIDE_NEG_PASSED) :
+     _level > 0.0 ?
+     (_osc > _level ? COL_GUIDE_POS_PASSED : COL_GUIDE_POS_PENDING) :
+     COL_GUIDE_ZERO
+
+f_guideCaptureRadius(array<float> _levels, int _index) =>
+    int _count = array.size(_levels)
+    float _level = array.get(_levels, _index)
+    float _leftGap =
+         _index > 0 ?
+         math.abs(_level - array.get(_levels, _index - 1)) :
+         na
+    float _rightGap =
+         _index < _count - 1 ?
+         math.abs(array.get(_levels, _index + 1) - _level) :
+         na
+
+    float _nearestGap =
+         na(_leftGap) ?
+         _rightGap :
+         na(_rightGap) ?
+         _leftGap :
+         math.min(_leftGap, _rightGap)
+
+    math.max(GUIDE_PROXIMITY_FLOOR, _nearestGap * GUIDE_PROXIMITY_FRACTION)
+
+f_guideLabelText(float _level) =>
+    str.tostring(int(math.round(_level)))
+
+// 🔹 Guide line lifecycle
+f_syncGuideLine(
+     line _line,
+     bool _show,
+     int _left,
+     int _right,
+     float _level,
+     color _color) =>
+    line _out = _line
+    bool _valid = _show and not na(_level) and _right >= _left
+
+    if _valid
+        color _finalColor = color.new(_color, in_guideLineTransp)
+        string _style = math.abs(_level) < 0.000001 ? line.style_dashed : line.style_dotted
+
+        if na(_out)
+            _out := line.new(
+                 _left, _level,
+                 _right, _level,
+                 xloc=xloc.bar_index,
+                 extend=extend.none,
+                 color=_finalColor,
+                 style=_style,
+                 width=in_guideLineWidth)
+        else
+            line.set_xy1(_out, _left, _level)
+            line.set_xy2(_out, _right, _level)
+            line.set_color(_out, _finalColor)
+            line.set_style(_out, _style)
+            line.set_width(_out, in_guideLineWidth)
+    else if not na(_out)
+        line.delete(_out)
+        _out := na
+
+    _out
+
+f_syncGuideLabel(
+     label _label,
+     bool _show,
+     int _x,
+     float _level,
+     color _color,
+     int _pad) =>
+    string _text = f_padding(_pad) + f_guideLabelText(_level)
+    f_syncRightValueLabel(_label, _show, _x, _level, _text, _color)
+
+// ==============================================================================================
+// 🔴 END REGION: Helpers
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Continuous Momentum Kernels
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Shared ATR14
+// ──────────────────────────────────────────────
+
+// 🔹 Volatility denominator executes continuously
+float atr14 = ta.atr(ATR_LEN)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Standard Price MACD 12/26/9
+// ──────────────────────────────────────────────
+
+// 🔹 Native raw MACD family
+float macdFast = ta.ema(close, in_macdFastLen)
+float macdSlow = ta.ema(close, in_macdSlowLen)
+float macdRaw = macdFast - macdSlow
+float macdSignalRaw = ta.ema(macdRaw, in_macdSignalLen)
+float macdHistRaw = macdRaw - macdSignalRaw
+
+// 🔹 ATR14 → NMS adapter
+float macdAtr = not na(atr14) and atr14 > 0.0 ? macdRaw / atr14 : na
+float macdSignalAtr = not na(atr14) and atr14 > 0.0 ? macdSignalRaw / atr14 : na
+float macdHistAtr = not na(atr14) and atr14 > 0.0 ? macdHistRaw / atr14 : na
+
+float macdLine = not na(macdAtr) ? f_wideSemantic(macdAtr) : na
+float macdSignalLine = not na(macdSignalAtr) ? f_wideSemantic(macdSignalAtr) : na
+float macdHist = not na(macdHistAtr) ? f_wideSemantic(macdHistAtr) : na
+
+// 🔹 Pair order + inclusive crossover age
+bool macdAboveSignal = not na(macdRaw) and not na(macdSignalRaw) and macdRaw > macdSignalRaw
+bool macdSignalAbove = not na(macdRaw) and not na(macdSignalRaw) and macdSignalRaw > macdRaw
+bool macdCross = ta.cross(macdRaw, macdSignalRaw)
+
+int macdBarsSinceCrossRaw = ta.barssince(macdCross)
+int macdBarsSinceCross =
+     na(macdBarsSinceCrossRaw) ?
+     na :
+     macdBarsSinceCrossRaw + 1
+
+color macdPairColor =
+     macdAboveSignal ? in_macdBullColor :
+     macdSignalAbove ? in_macdBearColor :
+     in_macdNeutralColor
+
+color macdHistColor =
+     macdHistRaw > 0.0 ? in_macdBullColor :
+     macdHistRaw < 0.0 ? in_macdBearColor :
+     in_macdNeutralColor
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: LazyBear-Style Impulse 34/9
+// ──────────────────────────────────────────────
+
+// 🔹 Native raw Impulse family
+float impulseSmmaHigh = ta.rma(high, in_impulseMaLen)
+float impulseSmmaLow = ta.rma(low, in_impulseMaLen)
+
+float impulseZlemaEma1 = ta.ema(hlc3, in_impulseMaLen)
+float impulseZlemaEma2 = ta.ema(impulseZlemaEma1, in_impulseMaLen)
+float impulseMidline = impulseZlemaEma1 + (impulseZlemaEma1 - impulseZlemaEma2)
+
+float impulseRaw =
+     impulseMidline > impulseSmmaHigh ?
+     impulseMidline - impulseSmmaHigh :
+     impulseMidline < impulseSmmaLow ?
+     impulseMidline - impulseSmmaLow :
+     0.0
+
+float impulseSignalRaw = ta.sma(impulseRaw, in_impulseSignalLen)
+float impulseHistRaw = impulseRaw - impulseSignalRaw
+
+// 🔹 ATR14 → same NMS adapter
+float impulseAtr = not na(atr14) and atr14 > 0.0 ? impulseRaw / atr14 : na
+float impulseSignalAtr = not na(atr14) and atr14 > 0.0 ? impulseSignalRaw / atr14 : na
+float impulseHistAtr = not na(atr14) and atr14 > 0.0 ? impulseHistRaw / atr14 : na
+
+float impulseLine = not na(impulseAtr) ? f_wideSemantic(impulseAtr) : na
+float impulseSignalLine = not na(impulseSignalAtr) ? f_wideSemantic(impulseSignalAtr) : na
+float impulseHist = not na(impulseHistAtr) ? f_wideSemantic(impulseHistAtr) : na
+
+// 🔹 Pair order + inclusive crossover age
+bool impulseAboveSignal = not na(impulseRaw) and not na(impulseSignalRaw) and impulseRaw > impulseSignalRaw
+bool impulseSignalAbove = not na(impulseRaw) and not na(impulseSignalRaw) and impulseSignalRaw > impulseRaw
+bool impulseCross = ta.cross(impulseRaw, impulseSignalRaw)
+
+int impulseBarsSinceCrossRaw = ta.barssince(impulseCross)
+int impulseBarsSinceCross =
+     na(impulseBarsSinceCrossRaw) ?
+     na :
+     impulseBarsSinceCrossRaw + 1
+
+color impulsePairColor =
+     impulseAboveSignal ? in_impulseBullColor :
+     impulseSignalAbove ? in_impulseBearColor :
+     in_impulseNeutralColor
+
+color impulseHistColor =
+     impulseHistRaw > 0.0 ? in_impulseBullColor :
+     impulseHistRaw < 0.0 ? in_impulseBearColor :
+     in_impulseNeutralColor
+
+// ==============================================================================================
+// 🔴 END REGION: Continuous Momentum Kernels
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Developing HTF MACD Histogram
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Native Auto-Next-HTF Transport
+// ──────────────────────────────────────────────
+
+// 🔹 Developing only: native HTF calculation, gaps_off, lookahead_off, no confirmed [1] offset
+string macdHistHtfTf = f_getNextTf()
+
+float macdHistHtfDeveloping =
+     request.security(
+         syminfo.tickerid,
+         macdHistHtfTf,
+         f_macdHistWideSemanticNative(
+             in_macdFastLen,
+             in_macdSlowLen,
+             in_macdSignalLen),
+         gaps=barmerge.gaps_off,
+         lookahead=barmerge.lookahead_off)
+
+color macdHistHtfColor =
+     macdHistHtfDeveloping > 0.0 ? in_macdBullColor :
+     macdHistHtfDeveloping < 0.0 ? in_macdBearColor :
+     in_macdNeutralColor
+
+// ==============================================================================================
+// 🔴 END REGION: Developing HTF MACD Histogram
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Price Pane Overlay Mapping
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Histogram-Owned Price Color
+// ──────────────────────────────────────────────
+
+// 🔹 One source selector drives both force-overlay candles and the hardcoded follow line
+bool useImpulsePriceOverlay = in_priceOverlaySource == PRICE_SOURCE_IMPULSE_HIST
+
+color pricePaneBaseColor =
+     useImpulsePriceOverlay ?
+     impulseHistColor :
+     macdHistColor
+
+color pricePaneCandleBodyColor = color.new(pricePaneBaseColor, in_priceCandleBodyTransp)
+color pricePaneCandleWickColor = color.new(pricePaneBaseColor, in_priceCandleWickTransp)
+color pricePaneCandleBorderColor = color.new(pricePaneBaseColor, in_priceCandleBorderTransp)
+
+// ==============================================================================================
+// 🔴 END REGION: Price Pane Overlay Mapping
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Plot Presentation
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Impulse Histogram — Deep Backdrop
+// ──────────────────────────────────────────────
+
+// 🔹 Original LazyBear sh = md - sb, independently mapped to Normalized Momentum Scale
+plot(
+     showImpulseHist ? impulseHist : na,
+     title="Impulse Hist — NMS",
+     color=color.new(impulseHistColor, in_impulseHistTransp),
+     linewidth=in_impulseHistWidth,
+     style=in_impulseHistStyle == STYLE_COLUMNS ? plot.style_columns :
+           in_impulseHistStyle == STYLE_HISTOGRAM ? plot.style_histogram :
+           plot.style_line,
+     histbase=0.0,
+     show_last=in_impulseLastN)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Impulse / Signal — Backdrop
+// ──────────────────────────────────────────────
+
+// 🔹 Transparent anchors keep fill geometry independent from visible plot style
+plotImpulseFillAnchor =
+     plot(
+         showImpulseFill ? impulseLine : na,
+         title="Impulse Fill Anchor",
+         color=color.new(impulsePairColor, 100),
+         linewidth=1,
+         style=plot.style_line,
+         show_last=in_impulseLastN)
+
+plotImpulseSignalFillAnchor =
+     plot(
+         showImpulseFill ? impulseSignalLine : na,
+         title="Impulse Signal Fill Anchor",
+         color=color.new(impulsePairColor, 100),
+         linewidth=1,
+         style=plot.style_line,
+         show_last=in_impulseLastN)
+
+fill(
+     plotImpulseFillAnchor,
+     plotImpulseSignalFillAnchor,
+     color=showImpulseFill ? color.new(impulsePairColor, in_impulseFillTransp) : na,
+     title="Impulse / Signal Fill",
+     show_last=in_impulseLastN,
+     fillgaps=false)
+
+// 🔹 Visible Impulse pair
+plot(
+     showImpulsePair ? impulseLine : na,
+     title="ImpulseMACD — NMS",
+     color=color.new(impulsePairColor, in_impulseTransp),
+     linewidth=in_impulseWidth,
+     style=in_impulseMacdStyle == STYLE_COLUMNS ? plot.style_columns :
+           in_impulseMacdStyle == STYLE_HISTOGRAM ? plot.style_histogram :
+           plot.style_line,
+     histbase=0.0,
+     show_last=in_impulseLastN)
+
+plot(
+     showImpulsePair ? impulseSignalLine : na,
+     title="Impulse Signal — NMS",
+     color=color.new(impulsePairColor, in_impulseTransp),
+     linewidth=in_impulseWidth,
+     style=in_impulseSignalStyle == STYLE_COLUMNS ? plot.style_columns :
+           in_impulseSignalStyle == STYLE_HISTOGRAM ? plot.style_histogram :
+           plot.style_line,
+     histbase=0.0,
+     show_last=in_impulseLastN)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Actual MACD Histogram — Foreground Histogram
+// ──────────────────────────────────────────────
+
+// 🔹 True raw MACD - Signal histogram sits in front of the Impulse backdrop
+plot(
+     showMacdHist ? macdHist : na,
+     title="MACD Histogram — NMS",
+     color=color.new(macdHistColor, in_histTransp),
+     linewidth=in_histWidth,
+     style=in_histStyle == STYLE_COLUMNS ? plot.style_columns :
+           in_histStyle == STYLE_HISTOGRAM ? plot.style_histogram :
+           plot.style_line,
+     histbase=0.0,
+     show_last=in_histLastN)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Developing HTF MACD Histogram
+// ──────────────────────────────────────────────
+
+// 🔹 Developing HTF context overlays the chart-TF histogram
+plot(
+     showHtfMacdHist ? macdHistHtfDeveloping : na,
+     title="Developing HTF MACD Histogram — NMS",
+     color=color.new(macdHistHtfColor, in_htfHistTransp),
+     linewidth=in_htfHistWidth,
+     style=in_htfHistStyle == STYLE_COLUMNS ? plot.style_columns :
+           in_htfHistStyle == STYLE_HISTOGRAM ? plot.style_histogram :
+           plot.style_line,
+     histbase=0.0,
+     show_last=in_htfHistLastN)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: MACD / Signal — Foreground
+// ──────────────────────────────────────────────
+
+// 🔹 Transparent anchors keep fill geometry independent from visible plot style
+plotMacdFillAnchor =
+     plot(
+         showMacdFill ? macdLine : na,
+         title="MACD Fill Anchor",
+         color=color.new(macdPairColor, 100),
+         linewidth=1,
+         style=plot.style_line,
+         show_last=in_macdLastN)
+
+plotMacdSignalFillAnchor =
+     plot(
+         showMacdFill ? macdSignalLine : na,
+         title="MACD Signal Fill Anchor",
+         color=color.new(macdPairColor, 100),
+         linewidth=1,
+         style=plot.style_line,
+         show_last=in_macdLastN)
+
+fill(
+     plotMacdFillAnchor,
+     plotMacdSignalFillAnchor,
+     color=showMacdFill ? color.new(macdPairColor, in_macdFillTransp) : na,
+     title="MACD / Signal Fill",
+     show_last=in_macdLastN,
+     fillgaps=false)
+
+// 🔹 Visible MACD pair
+plot(
+     showMacdPair ? macdLine : na,
+     title="MACD — NMS",
+     color=color.new(macdPairColor, in_macdTransp),
+     linewidth=in_macdWidth,
+     style=in_macdStyle == STYLE_COLUMNS ? plot.style_columns :
+           in_macdStyle == STYLE_HISTOGRAM ? plot.style_histogram :
+           plot.style_line,
+     histbase=0.0,
+     show_last=in_macdLastN)
+
+plot(
+     showMacdPair ? macdSignalLine : na,
+     title="MACD Signal — NMS",
+     color=color.new(macdPairColor, in_macdTransp),
+     linewidth=in_macdWidth,
+     style=in_macdStyle == STYLE_COLUMNS ? plot.style_columns :
+           in_macdStyle == STYLE_HISTOGRAM ? plot.style_histogram :
+           plot.style_line,
+     histbase=0.0,
+     show_last=in_macdLastN)
+
+// ==============================================================================================
+// 🔴 END REGION: Plot Presentation
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Price Pane Overlay
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Force-Overlay Price Candles
+// ──────────────────────────────────────────────
+
+// 🔹 Actual chart OHLC; selected MACD/Impulse histogram supplies color only
+plotcandle(
+     open=showPricePaneCandles ? open : na,
+     high=showPricePaneCandles ? high : na,
+     low=showPricePaneCandles ? low : na,
+     close=showPricePaneCandles ? close : na,
+     title="NMS Price Pane Candles",
+     color=showPricePaneCandles ? pricePaneCandleBodyColor : na,
+     wickcolor=showPricePaneCandles ? pricePaneCandleWickColor : na,
+     bordercolor=showPricePaneCandles ? pricePaneCandleBorderColor : na,
+     force_overlay=true,
+     editable=false)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Hardcoded Bar-to-Bar Follow Line
+// ──────────────────────────────────────────────
+
+// 🔹 Actual chart Close; fixed Last N = 2 and follows the same selected histogram color source
+plot(
+     close,
+     title="NMS Price Bar-to-Bar Follow Line",
+     color=color.new(pricePaneBaseColor, PRICE_FOLLOW_TRANSP),
+     linewidth=PRICE_FOLLOW_WIDTH,
+     style=plot.style_linebr,
+     show_last=PRICE_FOLLOW_LAST_N,
+     force_overlay=true,
+     editable=false)
+
+// ==============================================================================================
+// 🔴 END REGION: Price Pane Overlay
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Unified Right-Side Label Padding
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Visible-Label Lane Allocation
+// ──────────────────────────────────────────────
+
+// 🔹 Individual = one lane per visible label with +2 EM after ImpulseMACD and -1 EM on Impulse Signal; Grouped = one shared lane
+int guideRightPad = in_rightLabelBasePad
+int macdHistRightPad = in_rightLabelBasePad
+int macdRightPad = in_rightLabelBasePad
+int macdSignalRightPad = in_rightLabelBasePad
+int htfMacdHistRightPad = in_rightLabelBasePad
+int impulseHistRightPad = in_rightLabelBasePad
+int impulseRightPad = in_rightLabelBasePad
+int impulseSignalRightPad = in_rightLabelBasePad
+
+if barstate.islast
+    array<bool> _rightLabelVisible =
+         array.from(
+             showGuideLabels,
+             showMacdHistRightLabel and not na(macdHist),
+             showMacdRightLabels and not na(macdLine),
+             showMacdRightLabels and not na(macdSignalLine),
+             showHtfMacdHistRightLabel and not na(macdHistHtfDeveloping),
+             showImpulseHistRightLabel and not na(impulseHist),
+             showImpulseRightLabels and not na(impulseLine),
+             showImpulseRightLabels and not na(impulseSignalLine))
+
+    array<int> _rightLabelExtraAfter =
+         array.from(
+             0,
+             0,
+             0,
+             0,
+             0,
+             0,
+             2,
+             0)
+
+    array<int> _rightLabelPads =
+         f_buildRightLabelPads(
+             _rightLabelVisible,
+             _rightLabelExtraAfter,
+             useGroupedRightLabelPadding,
+             in_rightLabelBasePad,
+             in_rightLabelPadStep)
+
+    guideRightPad := array.get(_rightLabelPads, 0)
+    macdHistRightPad := array.get(_rightLabelPads, 1)
+    macdRightPad := array.get(_rightLabelPads, 2)
+    macdSignalRightPad := array.get(_rightLabelPads, 3)
+    htfMacdHistRightPad := array.get(_rightLabelPads, 4)
+    impulseHistRightPad := array.get(_rightLabelPads, 5)
+    impulseRightPad := array.get(_rightLabelPads, 6)
+    impulseSignalRightPad :=
+         useGroupedRightLabelPadding ?
+         array.get(_rightLabelPads, 7) :
+         math.max(array.get(_rightLabelPads, 7) - 1, 0)
+
+// ==============================================================================================
+// 🔴 END REGION: Unified Right-Side Label Padding
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Focused Semantic Guide Ladder
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Focused Visible-Geometry Guide Selection
+// ──────────────────────────────────────────────
+
+// 🔹 Fixed semantic ladder
+var array<float> guideLevels =
+     array.from(
+         -100.0, -89.0, -75.0, -55.0, -34.0, -13.0,
+         0.0,
+         13.0, 34.0, 55.0, 75.0, 89.0, 100.0)
+
+var array<line> guideLines = array.new_line()
+var array<label> guideLabels = array.new_label()
+
+if barstate.islast and guideEngineActive
+    int _count = array.size(guideLevels)
+
+    // 🔹 Build focus geometry only from families that are actually visible on the pane
+    array<float> _visibleGuideValues = array.new_float()
+
+    bool _macdPairGeometryVisible = showMacdPair or showMacdFill
+    bool _impulsePairGeometryVisible = showImpulsePair or showImpulseFill
+
+    if _macdPairGeometryVisible
+        if not na(macdLine)
+            array.push(_visibleGuideValues, macdLine)
+
+        if not na(macdSignalLine)
+            array.push(_visibleGuideValues, macdSignalLine)
+
+    if showMacdHist and not na(macdHist)
+        array.push(_visibleGuideValues, macdHist)
+
+    if showHtfMacdHist and not na(macdHistHtfDeveloping)
+        array.push(_visibleGuideValues, macdHistHtfDeveloping)
+
+    if _impulsePairGeometryVisible
+        if not na(impulseLine)
+            array.push(_visibleGuideValues, impulseLine)
+
+        if not na(impulseSignalLine)
+            array.push(_visibleGuideValues, impulseSignalLine)
+
+    if showImpulseHist and not na(impulseHist)
+        array.push(_visibleGuideValues, impulseHist)
+
+    float _visibleMax = na
+    float _visibleMin = na
+    int _visibleCount = array.size(_visibleGuideValues)
+
+    if _visibleCount > 0
+        for _valueIndex = 0 to _visibleCount - 1
+            float _value = array.get(_visibleGuideValues, _valueIndex)
+            _visibleMax := na(_visibleMax) ? _value : math.max(_visibleMax, _value)
+            _visibleMin := na(_visibleMin) ? _value : math.min(_visibleMin, _value)
+
+    int _rightIndex = bar_index
+    int _leftIndex = math.max(bar_index - in_guideLineLastN + 1, 0)
+
+    if showGuideLines
+        while array.size(guideLines) < _count
+            array.push(guideLines, na)
+
+    if showGuideLabels
+        while array.size(guideLabels) < _count
+            array.push(guideLabels, na)
+
+    // 🔹 Zero always shows; every other rung must be close to at least one visible plotted value
+    for _index = 0 to _count - 1
+        float _level = array.get(guideLevels, _index)
+        bool _isZero = math.abs(_level) < 0.000001
+        float _captureRadius = f_guideCaptureRadius(guideLevels, _index)
+
+        bool _nearVisibleGeometry = false
+
+        if not _isZero and _visibleCount > 0
+            for _valueIndex = 0 to _visibleCount - 1
+                float _value = array.get(_visibleGuideValues, _valueIndex)
+
+                if math.abs(_value - _level) <= _captureRadius
+                    _nearVisibleGeometry := true
+                    break
+
+        bool _ceilingEligible =
+             _level >= 100.0 - DIRECTION_EPS ?
+             not na(_visibleMax) and _visibleMax > 95.0 :
+             _level <= -100.0 + DIRECTION_EPS ?
+             not na(_visibleMin) and _visibleMin < -95.0 :
+             true
+
+        bool _showLevel =
+             _isZero or
+             (_nearVisibleGeometry and _ceilingEligible)
+
+        color _guideColor = f_guideStateColor(_level, macdLine)
+
+        if showGuideLines
+            line _line = array.get(guideLines, _index)
+            _line :=
+                 f_syncGuideLine(
+                     _line,
+                     _showLevel,
+                     _leftIndex,
+                     _rightIndex,
+                     _level,
+                     _guideColor)
+            array.set(guideLines, _index, _line)
+
+        if showGuideLabels
+            label _label = array.get(guideLabels, _index)
+            _label :=
+                 f_syncGuideLabel(
+                     _label,
+                     _showLevel,
+                     _rightIndex,
+                     _level,
+                     _guideColor,
+                     guideRightPad)
+            array.set(guideLabels, _index, _label)
+
+else if barstate.islast and not guideEngineActive
+    int _lineCount = array.size(guideLines)
+    if _lineCount > 0
+        for _i = 0 to _lineCount - 1
+            line _line = array.get(guideLines, _i)
+            if not na(_line)
+                line.delete(_line)
+                array.set(guideLines, _i, na)
+
+    int _labelCount = array.size(guideLabels)
+    if _labelCount > 0
+        for _i = 0 to _labelCount - 1
+            label _label = array.get(guideLabels, _i)
+            if not na(_label)
+                label.delete(_label)
+                array.set(guideLabels, _i, na)
+
+// ==============================================================================================
+// 🔴 END REGION: Focused Semantic Guide Ladder
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: MACD / Impulse / Histogram Right-Side Labels
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Last-Bar Pair Telemetry
+// ──────────────────────────────────────────────
+
+// 🔹 Pair members share lanes and remain on true semantic coordinates
+var label macdRightLabel = na
+var label macdSignalRightLabel = na
+var label macdHistRightLabel = na
+var label htfMacdHistRightLabel = na
+var label impulseRightLabel = na
+var label impulseSignalRightLabel = na
+var label impulseHistRightLabel = na
+
+if barstate.islast
+    string _macdSpacer = f_padding(macdRightPad)
+    string _macdSignalSpacer = f_padding(macdSignalRightPad)
+    string _histSpacer = f_padding(macdHistRightPad)
+    string _htfHistSpacer = f_padding(htfMacdHistRightPad)
+    string _impulseSpacer = f_padding(impulseRightPad)
+    string _impulseSignalSpacer = f_padding(impulseSignalRightPad)
+    string _impulseHistSpacer = f_padding(impulseHistRightPad)
+
+    string _macdText =
+         _macdSpacer + "MACD" + "\n" +
+         _macdSpacer + f_plain1Trim(macdLine) +
+         (macdAboveSignal ? "\n" + _macdSpacer + f_barsAgoText(macdBarsSinceCross) : "")
+
+    string _macdSignalText =
+         _macdSignalSpacer + "MACD" + "\n" +
+         _macdSignalSpacer + "Signal" + "\n" +
+         _macdSignalSpacer + f_plain1Trim(macdSignalLine) +
+         (macdSignalAbove ? "\n" + _macdSignalSpacer + f_barsAgoText(macdBarsSinceCross) : "")
+
+    string _histText =
+         _histSpacer + "MACD" + "\n" +
+         _histSpacer + "Hist" + "\n" +
+         _histSpacer + f_plain1Trim(macdHist)
+
+    string _htfHistText =
+         _htfHistSpacer + f_prettyTfValue(macdHistHtfTf) + "\n" +
+         _htfHistSpacer + "MACD" + "\n" +
+         _htfHistSpacer + "Hist" + "\n" +
+         _htfHistSpacer + f_plain1Trim(macdHistHtfDeveloping)
+
+    string _impulseText =
+         _impulseSpacer + "Impulse" + "\n" +
+         _impulseSpacer + "MACD" + "\n" +
+         _impulseSpacer + f_plain1Trim(impulseLine) +
+         (impulseAboveSignal ? "\n" + _impulseSpacer + f_barsAgoText(impulseBarsSinceCross) : "")
+
+    string _impulseSignalText =
+         _impulseSignalSpacer + "Impulse" + "\n" +
+         _impulseSignalSpacer + "Signal" + "\n" +
+         _impulseSignalSpacer + f_plain1Trim(impulseSignalLine) +
+         (impulseSignalAbove ? "\n" + _impulseSignalSpacer + f_barsAgoText(impulseBarsSinceCross) : "")
+
+    string _impulseHistText =
+         _impulseHistSpacer + "Impulse" + "\n" +
+         _impulseHistSpacer + "Hist" + "\n" +
+         _impulseHistSpacer + f_plain1Trim(impulseHist)
+
+    macdRightLabel :=
+         f_syncRightValueLabel(
+             macdRightLabel,
+             showMacdRightLabels,
+             bar_index,
+             macdLine,
+             _macdText,
+             macdPairColor)
+
+    macdSignalRightLabel :=
+         f_syncRightValueLabel(
+             macdSignalRightLabel,
+             showMacdRightLabels,
+             bar_index,
+             macdSignalLine,
+             _macdSignalText,
+             macdPairColor)
+
+    macdHistRightLabel :=
+         f_syncRightValueLabel(
+             macdHistRightLabel,
+             showMacdHistRightLabel,
+             bar_index,
+             macdHist,
+             _histText,
+             macdHistColor)
+
+    htfMacdHistRightLabel :=
+         f_syncRightValueLabel(
+             htfMacdHistRightLabel,
+             showHtfMacdHistRightLabel,
+             bar_index,
+             macdHistHtfDeveloping,
+             _htfHistText,
+             macdHistHtfColor)
+
+    impulseRightLabel :=
+         f_syncRightValueLabel(
+             impulseRightLabel,
+             showImpulseRightLabels,
+             bar_index,
+             impulseLine,
+             _impulseText,
+             impulsePairColor)
+
+    impulseSignalRightLabel :=
+         f_syncRightValueLabel(
+             impulseSignalRightLabel,
+             showImpulseRightLabels,
+             bar_index,
+             impulseSignalLine,
+             _impulseSignalText,
+             impulsePairColor)
+
+    impulseHistRightLabel :=
+         f_syncRightValueLabel(
+             impulseHistRightLabel,
+             showImpulseHistRightLabel,
+             bar_index,
+             impulseHist,
+             _impulseHistText,
+             impulseHistColor)
+
+// ==============================================================================================
+// 🔴 END REGION: MACD / Impulse / Histogram Right-Side Labels
+// ==============================================================================================

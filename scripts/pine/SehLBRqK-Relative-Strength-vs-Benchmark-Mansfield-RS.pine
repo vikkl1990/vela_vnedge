@@ -1,0 +1,32 @@
+//@version=6
+indicator("Mansfield Relative Strength vs Benchmark", overlay=false)
+
+// ================= INPUTS =================
+benchmarkSymbol = input.symbol("NSE:NIFTY", "Benchmark / Index")
+maLen           = input.int(200, "Smoothing MA Length", minval=10)
+
+// ================= CALCULATION =================
+benchClose = request.security(benchmarkSymbol, timeframe.period, close)
+
+ratio   = close / benchClose
+ratioMA = ta.sma(ratio, maLen)
+rsm     = (ratio / ratioMA - 1) * 100
+
+// ================= PLOT =================
+rsmColor = rsm >= 0 ? color.new(color.green, 0) : color.new(color.red, 0)
+
+plot(rsm, title="Mansfield RS", color=rsmColor, style=plot.style_columns)
+hline(0, title="Zero Line", color=color.gray, linestyle=hline.style_solid)
+
+bgcolor(rsm >= 0 ? color.new(color.green, 92) : color.new(color.red, 92))
+
+// ================= ZERO-LINE CROSS MARKERS =================
+crossUp   = ta.crossover(rsm, 0)
+crossDown = ta.crossunder(rsm, 0)
+
+plotshape(crossUp, title="Turned Outperformer", style=shape.triangleup, location=location.bottom, color=color.green, size=size.tiny)
+plotshape(crossDown, title="Turned Underperformer", style=shape.triangledown, location=location.top, color=color.red, size=size.tiny)
+
+// ================= ALERTS =================
+alertcondition(crossUp, title="RS Turned Positive", message="{{ticker}}: relative strength turned positive vs benchmark")
+alertcondition(crossDown, title="RS Turned Negative", message="{{ticker}}: relative strength turned negative vs benchmark")

@@ -1,0 +1,114 @@
+//@version=6
+indicator("Gap Acceptance Guard", "Gap Acceptance Guard", overlay = true, max_labels_count = 300, max_lines_count = 20, max_boxes_count = 10)
+
+// ── Inputs
+atrLen          = input.int(14, "ATR length", minval = 2)
+minGapAtr       = input.float(0.50, "Minimum gap (previous ATR)", minval = 0.05, step = 0.05)
+fullGapOnly     = input.bool(false, "Require gap beyond previous range")
+acceptDepthPct  = input.float(50.0, "Acceptance boundary inside gap (%)", minval = 10, maxval = 90, step = 5)
+holdBars        = input.int(2, "Required closes", minval = 1, maxval = 5)
+extensionAtr    = input.float(0.25, "Required extension (ATR)", minval = 0, step = 0.05)
+minEfficiency   = input.float(45.0, "Minimum path efficiency (%)", minval = 0, maxval = 100, step = 5)
+maxBars         = input.int(8, "Observation bars", minval = 2, maxval = 30)
+showZones       = input.bool(true, "Show active gap zone")
+showHistory     = input.bool(true, "Show completed markers")
+
+atr = ta.atr(atrLen)
+ready = bar_index > atrLen and not na(atr[1]) and atr[1] > 0
+isPeriodOpen = timeframe.isintraday ? timeframe.change("D") : true
+gap = open - close[1]
+gapUpRaw = ready and isPeriodOpen and gap >= atr[1] * minGapAtr
+gapDnRaw = ready and isPeriodOpen and gap <= -atr[1] * minGapAtr
+eventBoundary = close[1] + gap * acceptDepthPct / 100
+gapUp = gapUpRaw and (not fullGapOnly or open > high[1]) and close > eventBoundary
+gapDn = gapDnRaw and (not fullGapOnly or open < low[1]) and close < eventBoundary
+
+// ── Episode state
+var bool active = false
+var int dir = 0
+var int age = 0
+var int held = 0
+var float gapOpen = na
+var float fillLine = na
+var float acceptLine = na
+var float eventExtreme = na
+var float frozenAtr = na
+var float originClose = na
+var float path = 0.0
+var bool fillTouched = false
+
+bool startUp = false
+bool startDn = false
+bool acceptedUp = false
+bool acceptedDn = false
+bool rejected = false
+bool invalidated = false
+bool timedOut = false
+bool fillNow = false
+
+if barstate.isconfirmed
+    if active
+        age += 1
+        path += math.abs(close - close[1])
+        beyondAcceptance = dir == 1 ? close > acceptLine : close < acceptLine
+        held := beyondAcceptance ? held + 1 : 0
+        touched = dir == 1 ? low <= fillLine : high >= fillLine
+        fillNow := touched and not fillTouched
+        fillTouched := fillTouched or touched
+        fullFailure = dir == 1 ? close < fillLine : close > fillLine
+        acceptanceLost = dir == 1 ? close < acceptLine : close > acceptLine
+        extensionReached = dir == 1 ? high >= eventExtreme + frozenAtr * extensionAtr : low <= eventExtreme - frozenAtr * extensionAtr
+        progress = dir * (close - originClose)
+        efficiency = path > 0 ? math.max(progress, 0) / path * 100 : 0.0
+        qualifies = held >= holdBars and extensionReached and efficiency >= minEfficiency
+        if fullFailure
+            invalidated := true
+            active := false
+        else if acceptanceLost
+            rejected := true
+            active := false
+        else if qualifies
+            acceptedUp := dir == 1
+            acceptedDn := dir == -1
+            active := false
+        else if age >= maxBars
+            timedOut := true
+            active := false
+    else if gapUp or gapDn
+        dir := gapUp ? 1 : -1
+        active := true
+        age := 0
+        held := 1
+        gapOpen := open
+        fillLine := close[1]
+        acceptLine := close[1] + gap * acceptDepthPct / 100
+        eventExtreme := dir == 1 ? high : low
+        frozenAtr := atr[1]
+        originClose := close
+        path := 0.0
+        fillTouched := dir == 1 ? low <= fillLine : high >= fillLine
+        startUp := dir == 1
+        startDn := dir == -1
+
+// ── Clean chart-first visuals
+zoneTop = active ? math.max(gapOpen, fillLine) : na
+zoneBottom = active ? math.min(gapOpen, fillLine) : na
+pTop = plot(showZones ? zoneTop : na, "Active gap top", color = color.new(dir == 1 ? color.teal : color.red, 45), style = plot.style_linebr)
+pBottom = plot(showZones ? zoneBottom : na, "Active gap bottom", color = color.new(dir == 1 ? color.teal : color.red, 45), style = plot.style_linebr)
+fill(pTop, pBottom, color = showZones ? color.new(dir == 1 ? color.teal : color.red, 90) : na, title = "Active gap zone")
+plot(active ? acceptLine : na, "Acceptance boundary", color = color.orange, linewidth = 2, style = plot.style_linebr)
+plot(active ? fillLine : na, "Previous close / fill line", color = color.new(color.gray, 20), linewidth = 1, style = plot.style_linebr)
+plot(active ? (dir == 1 ? eventExtreme + frozenAtr * extensionAtr : eventExtreme - frozenAtr * extensionAtr) : na, "Required extension", color = color.new(color.blue, 20), style = plot.style_linebr)
+
+plotshape(startUp, "Bullish gap", shape.labelup, location.belowbar, color.new(color.teal, 0), text = "G+", textcolor = color.white, size = size.tiny)
+plotshape(startDn, "Bearish gap", shape.labeldown, location.abovebar, color.new(color.red, 0), text = "G−", textcolor = color.white, size = size.tiny)
+plotshape(showHistory and acceptedUp, "Bullish gap accepted", shape.labelup, location.belowbar, color.new(color.green, 0), text = "A+", textcolor = color.white, size = size.tiny)
+plotshape(showHistory and acceptedDn, "Bearish gap accepted", shape.labeldown, location.abovebar, color.new(color.maroon, 0), text = "A−", textcolor = color.white, size = size.tiny)
+plotshape(showHistory and rejected, "Acceptance lost", shape.xcross, location.abovebar, color.orange, text = "R", textcolor = color.orange, size = size.tiny)
+plotshape(showHistory and invalidated, "Gap invalidated", shape.labeldown, location.abovebar, color.new(color.purple, 0), text = "X", textcolor = color.white, size = size.tiny)
+plotshape(showHistory and timedOut, "Gap timed out", shape.circle, location.abovebar, color.new(color.gray, 10), text = "T", textcolor = color.white, size = size.tiny)
+plotshape(showHistory and fillNow ? fillLine : na, "Gap fill touched", shape.diamond, location.absolute, color.new(color.yellow, 0), size = size.tiny)
+
+alertcondition(startUp or startDn, "New qualifying gap", "Gap Acceptance Guard: a new qualifying gap entered observation.")
+alertcondition(acceptedUp or acceptedDn, "Gap accepted", "Gap Acceptance Guard: gap acceptance confirmed.")
+alertcondition(rejected or invalidated, "Gap failed", "Gap Acceptance Guard: gap acceptance failed.")

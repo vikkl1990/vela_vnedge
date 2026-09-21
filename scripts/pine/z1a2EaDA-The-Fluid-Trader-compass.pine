@@ -1,0 +1,117 @@
+//@version=6
+indicator("The Fluid Trader compass", overlay=true)
+
+// --- 1. Settings (3 Events) ---
+buffer_min = input.int(3, "Buffer (minutes)")
+
+var g1 = "News Event 1"
+u1 = input.bool(true, "Activate Event 1", group=g1)
+n1 = input.string("Event 1", "Event Name", group=g1)
+t1 = input.time(timestamp("2026-01-19 14:30"), "Date & Time", group=g1)
+
+var g2 = "News Event 2"
+u2 = input.bool(true, "Activate Event 2", group=g2)
+n2 = input.string("Event 2", "Event Name", group=g2)
+t2 = input.time(timestamp("2026-01-19 16:00"), "Date & Time", group=g2)
+
+var g3 = "News Event 3"
+u3 = input.bool(true, "Activate Event 3", group=g3)
+n3 = input.string("Event 3", "Event Name", group=g3)
+t3 = input.time(timestamp("2026-01-19 20:00"), "Date & Time", group=g3)
+
+// --- 2. Logic: Crypto Warnings (UTC Time - DST Proof) ---
+ms = buffer_min * 60 * 1000
+
+z1 = u1 and time >= (t1 - ms) and time <= (t1 + ms)
+z2 = u2 and time >= (t2 - ms) and time <= (t2 + ms)
+z3 = u3 and time >= (t3 - ms) and time <= (t3 + ms)
+
+is_restricted = z1 or z2 or z3
+
+// Time Detection for Standard Crypto/BTC (UTC Time)
+is_59 = minute(time) == 59
+utc_hour = hour(time, "UTC")
+
+// Standard Crypto Daily close is 00:00 UTC (DST Proof)
+is_daily_warning = is_59 and utc_hour == 23
+// Standard Crypto 4H closes
+is_4h_warning = is_59 and (utc_hour % 4 == 3) and not is_daily_warning
+// The 1H close falls on all other remaining hours
+is_1h_warning = is_59 and not is_4h_warning and not is_daily_warning
+
+// --- 3. FTMO Weekend Close Logic (New York Time - DST Proof) ---
+// Forex markten sluiten ALTIJD om 17:00 New York Time, onafhankelijk van EU winter/zomertijd!
+tz_ny = "America/New_York"
+ny_day  = dayofweek(time, tz_ny)
+ny_hour = hour(time, tz_ny)
+ny_min  = minute(time, tz_ny)
+
+// EXTREME visuele waarschuwing (achtergrond + grote pop-up) Vrijdag 16:50 tot 16:55 NY Tijd (22:50 - 22:55 NL)
+is_ftmo_visual = ny_day == dayofweek.friday and ny_hour == 16 and ny_min >= 50 and ny_min <= 55
+
+// Weekend Blokkering: Vrijdag 16:50 NY Tijd tot Zondag 17:00 NY Tijd
+is_ftmo_weekend = false
+if (ny_day == dayofweek.friday and (ny_hour > 16 or (ny_hour == 16 and ny_min >= 50)))
+    is_ftmo_weekend := true
+else if (ny_day == dayofweek.saturday)
+    is_ftmo_weekend := true
+else if (ny_day == dayofweek.sunday and ny_hour < 17)
+    is_ftmo_weekend := true
+
+// Externe alerts voor push/app notificaties
+alertcondition(ny_day == dayofweek.friday and ny_hour == 16 and ny_min == 50, title="FTMO Weekend Close", message="🚨 Close FTMO positions (Standard Account)! 🚨")
+alertcondition(ny_day == dayofweek.sunday and ny_hour == 17 and ny_min == 0, title="FTMO Weekend Open", message="✅ FTMO Market Open! Trading OK.")
+
+
+// --- 4. Visuals op de grafiek ---
+// Aggressive red candles voor restricties, dark red voor FTMO visual
+barcolor(is_restricted ? #ff0000 : is_ftmo_visual ? #B71C1C : na)
+
+// Danger zone background
+bgcolor(is_restricted ? color.new(#ff0000, 85) : is_ftmo_visual ? color.new(#B71C1C, 75) : na)
+
+// Kruisjes voor nieuws events
+mid_point = math.avg(open, close)
+plotchar(is_restricted ? mid_point : na, "Red Cross", char='❌', location=location.absolute, color=#ff0000, size=size.small)
+plotchar(is_restricted ? mid_point : na, "Black Cross", char='✖', location=location.absolute, color=#000000, size=size.tiny)
+
+
+// --- 5. Dashboards & Logo ---
+var tb = table.new(position.top_right, 1, 1)
+var popup_tb = table.new(position.middle_center, 1, 1)
+var logo_tb = table.new(position.bottom_left, 3, 2)
+
+if barstate.islast
+    // -- Logo logica --
+    bg_logo = color.new(#000000, 30) 
+    
+    table.cell(logo_tb, 0, 0, "T", text_color=#00BFFF, text_size=size.large, text_font_family=font.family_monospace, bgcolor=bg_logo)
+    table.cell(logo_tb, 1, 0, "F", text_color=color.white, text_size=size.large, text_font_family=font.family_monospace, bgcolor=bg_logo)
+    table.cell(logo_tb, 2, 0, "T", text_color=#00BFFF, text_size=size.large, text_font_family=font.family_monospace, bgcolor=bg_logo)
+    table.cell(logo_tb, 1, 1, "\n\n", bgcolor=na)
+
+    // -- Kleine dashboard logica --
+    // Zodra het grote bord weg is (22:55 NL tijd), springt deze over op NO TRADING tot zondagavond
+    txt = is_ftmo_visual ? "" :
+          is_ftmo_weekend ? "🛑 NO TRADING (FTMO STANDARD)" :
+          is_restricted ? "🛑 NEWS EVENT! NO-TRADE ZONE!" : 
+          is_daily_warning ? "🔥 ALERT (1m to Daily-Open)" : 
+          is_4h_warning ? "⚠️ ALERT (1m to 4H-Open)" : 
+          is_1h_warning ? "⏱️ ALERT (1m to 1H-Open)" : 
+          "✅ TRADING: OK."
+          
+    bg  = is_ftmo_visual ? na : 
+          is_ftmo_weekend ? color.new(#B71C1C, 20) :  // Donkerrood voor het hele weekend
+          is_restricted ? #ff0000 : 
+          is_daily_warning ? #9C27B0 : 
+          is_4h_warning ? #FF9800 :    
+          is_1h_warning ? #2196F3 :    
+          #008000                      
+          
+    table.cell(tb, 0, 0, txt, text_color=is_ftmo_visual ? na : color.white, bgcolor=bg)
+    
+    // -- Grote Scherm Overlay Logica (Vrijdag 10 min voor sluiting) --
+    if is_ftmo_visual
+        table.cell(popup_tb, 0, 0, "🚨 CLOSE POSITIONS (FTMO standard account)! 🚨", text_color=color.white, text_size=size.large, bgcolor=color.new(#B71C1C, 10))
+    else
+        table.cell(popup_tb, 0, 0, "", bgcolor=na)

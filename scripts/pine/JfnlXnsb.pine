@@ -1,0 +1,78 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © gregorfun
+
+//@version=6
+indicator("BT Trend Quality")
+plot(close)
+fastLength = input.int(9, "EMA length", minval=1, maxval=500, group="Structure")
+slowLength = input.int(200, "DEMA length", minval=2, maxval=500, group="Structure")
+separationLimit = input.float(0.30, "Separation threshold (%)", minval=0, step=0.05, group="Structure")
+breakoutLength = input.int(10, "Prior high lookback", minval=1, maxval=500, group="Structure")
+breakoutBuffer = input.float(0.10, "Prior high buffer (%)", minval=0, step=0.05, group="Structure")
+volumeLength = input.int(20, "Volume average length", minval=2, maxval=500, group="Participation")
+volumeLimit = input.float(1.10, "Relative volume threshold", minval=0, step=0.05, group="Participation")
+diLength = input.int(14, "DI length", minval=2, maxval=100, group="Direction")
+adxLength = input.int(14, "ADX smoothing", minval=2, maxval=100, group="Direction")
+spreadLimit = input.float(10.0, "DI+ minus DI- threshold", minval=0, step=1, group="Direction")
+fast = ta.ema(close, fastLength)
+slowEma = ta.ema(close, slowLength)
+slow = 2 * slowEma - ta.ema(slowEma, slowLength)
+priorHigh = ta.highest(high, breakoutLength)[1]
+meanVolume = ta.sma(volume, volumeLength)
+[diPlus, diMinus, adx] = ta.dmi(diLength, adxLength)
+separation = slow > 0 ? 100 * (fast - slow) / slow : na
+highDistance = priorHigh > 0 ? 100 * (close / priorHigh - 1) : na
+relativeVolume = not na(volume) and meanVolume > 0 ? volume / meanVolume : na
+spread = diPlus - diMinus
+warmup = math.max(2 * math.max(slowLength, fastLength), math.max(breakoutLength + 1, math.max(volumeLength, diLength + adxLength)))
+ready = bar_index >= warmup
+// -1 denotes unavailable data; it must never silently become a failed filter.
+state(float value, float threshold, bool inclusive) =>
+    not ready or na(value) ? -1 : (inclusive ? value >= threshold : value > threshold) ? 1 : 0
+sepState = state(separation, separationLimit, true)
+volState = state(relativeVolume, volumeLimit, false)
+diState = state(spread, spreadLimit, true)
+highState = state(highDistance, breakoutBuffer, false)
+changed(int value) =>
+    barstate.isconfirmed and value >= 0 and value[1] >= 0 and value != value[1]
+alertcondition(changed(sepState), "Separation state changed", "Trend Quality: EMA/DEMA separation state changed at bar close. {{ticker}} {{interval}}")
+alertcondition(changed(volState), "Relative volume state changed", "Trend Quality: relative volume state changed at bar close. {{ticker}} {{interval}}")
+alertcondition(changed(diState), "DI spread state changed", "Trend Quality: DI spread state changed at bar close. {{ticker}} {{interval}}")
+alertcondition(changed(highState), "Prior high state changed", "Trend Quality: prior high distance state changed at bar close. {{ticker}} {{interval}}")
+tone(int value, color active) =>
+    value < 0 ? color.new(color.gray, 80) : value == 1 ? active : color.new(color.gray, 55)
+plot(barstate.isconfirmed and ready ? 4 : na, "EMA/DEMA separation lane", tone(sepState, color.teal), 4, plot.style_circles)
+plot(barstate.isconfirmed and ready ? 3 : na, "Relative volume lane", tone(volState, color.blue), 4, plot.style_circles)
+plot(barstate.isconfirmed and ready ? 2 : na, "DI spread lane", tone(diState, color.green), 4, plot.style_circles)
+plot(barstate.isconfirmed and ready ? 1 : na, "Prior high lane", tone(highState, color.fuchsia), 4, plot.style_circles)
+plot(5, "Upper margin", color.new(color.gray, 100), editable=false)
+plot(0, "Lower margin", color.new(color.gray, 100), editable=false)
+// Live table/data-window values remain on the latest closed bar.
+offset = barstate.isconfirmed ? 0 : 1
+shownSeparation = ready[offset] ? separation[offset] : na
+shownVolume = ready[offset] ? relativeVolume[offset] : na
+shownSpread = ready[offset] ? spread[offset] : na
+shownHigh = ready[offset] ? highDistance[offset] : na
+plot(shownSeparation, "Separation (%)", display=display.data_window)
+plot(shownVolume, "Relative volume (x)", display=display.data_window)
+plot(shownSpread, "DI+ minus DI-", display=display.data_window)
+plot(shownHigh, "Distance above prior high (%)", display=display.data_window)
+plot(ready[offset] ? adx[offset] : na, "ADX context", display=display.data_window)
+formatValue(float value, string unit) =>
+    na(value) ? "N/A" : str.tostring(value, "#.00") + unit
+var table panel = table.new(position.top_right, 3, 6, bgcolor=color.new(color.black, 15), border_width=1, border_color=color.new(color.gray, 65))
+row(int index, string label, float value, string unit, int status, color active) =>
+    table.cell(panel, 0, index, label, text_color=color.white, text_size=size.small)
+    table.cell(panel, 1, index, formatValue(value, unit), text_color=color.white, text_size=size.small)
+    table.cell(panel, 2, index, status < 0 ? "N/A" : status == 1 ? "Above" : "Below", bgcolor=tone(status, active), text_color=color.white, text_size=size.small)
+if barstate.islast
+    table.cell(panel, 0, 0, "bot-trade.de", text_color=color.white, text_size=size.small)
+    table.cell(panel, 1, 0, "Closed bar", text_color=color.silver, text_size=size.small)
+    table.cell(panel, 2, 0, timeframe.period, text_color=color.silver, text_size=size.small)
+    row(1, "4 | Separation", shownSeparation, "%", sepState[offset], color.teal)
+    row(2, "3 | Relative volume", shownVolume, "x", volState[offset], color.blue)
+    row(3, "2 | DI spread", shownSpread, "", diState[offset], color.green)
+    row(4, "1 | Prior high", shownHigh, "%", highState[offset], color.fuchsia)
+    table.cell(panel, 0, 5, "ADX", text_color=color.silver, text_size=size.small)
+    table.cell(panel, 1, 5, formatValue(ready[offset] ? adx[offset] : na, ""), text_color=color.silver, text_size=size.small)
+    table.cell(panel, 2, 5, ready[offset] ? "Context" : "Warmup", text_color=color.silver, text_size=size.small)

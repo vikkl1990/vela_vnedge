@@ -1,0 +1,219 @@
+//@version=6
+indicator("Volatility", overlay = false, max_bars_back = 5000, precision = 2)
+
+// ── Layout ───────────────────────────────────────────────
+layout = input.string("Mirrored", "Layout", options = ["Mirrored", "Stacked"], group = "Layout",
+     tooltip = "Mirrored: bodies plot up from zero, wicks plot down from zero — two independent histograms.\nStacked: full range column with the body drawn solid inside it, wick portion is the remainder.")
+splitWicks = input.bool(false, "Split wicks into upper / lower", group = "Layout",
+     tooltip = "Mirrored layout only. Upper wick and lower wick stack below zero instead of one combined wick column.")
+
+// ── Average window ───────────────────────────────────────
+lookbackMode = input.string("Candles", "Average over", options = ["Candles", "Time"], group = "Average",
+     tooltip = "Candles: a fixed number of bars, whatever the chart timeframe.\nTime: a clock window, converted to bars on the current timeframe.")
+candleCount  = input.int(50, "Number of candles", minval = 1, maxval = 4900, group = "Average",
+     tooltip = "Used when 'Average over' = Candles.")
+lookbackAmt  = input.int(24, "Time amount", minval = 1, group = "Average")
+lookbackUnit = input.string("Hours", "Time unit", options = ["Minutes", "Hours", "Days"], group = "Average")
+showAvg      = input.bool(true, "Show average lines", group = "Average")
+
+// ── Coloring ─────────────────────────────────────────────
+colorMode  = input.string("Above/below average", "Column color mode", options = ["Above/below average", "Up/down candle", "Flat"], group = "Coloring")
+markSpikes = input.bool(true, "Highlight spikes", group = "Coloring")
+spikeMult  = input.float(2.0, "Spike threshold (× avg)", minval = 1.0, step = 0.1, group = "Coloring")
+
+// ── Colors (dark purple theme) ───────────────────────────
+colBodyBelow = input.color(color.new(#7E57C2, 55), "Body — below average", group = "Colors — Body")
+colBodyAbove = input.color(color.new(#B388FF, 15), "Body — above average", group = "Colors — Body")
+colBodySpike = input.color(color.new(#E1BEE7, 0),  "Body — spike",         group = "Colors — Body")
+
+colWickBelow = input.color(color.new(#4A3B6B, 45), "Wick — below average", group = "Colors — Wick")
+colWickAbove = input.color(color.new(#9575CD, 20), "Wick — above average", group = "Colors — Wick")
+colWickSpike = input.color(color.new(#CE93D8, 0),  "Wick — spike",         group = "Colors — Wick")
+colLoWick    = input.color(color.new(#9575CD, 30), "Lower wick (split)",   group = "Colors — Wick")
+colUpWick    = input.color(color.new(#E1BEE7, 25), "Upper wick (split)",   group = "Colors — Wick")
+
+colUp    = input.color(color.new(#089981, 35), "Up candle",   group = "Colors — Candle direction")
+colDown  = input.color(color.new(#F23645, 35), "Down candle", group = "Colors — Candle direction")
+colFlat  = input.color(color.new(#7E57C2, 35), "Flat",        group = "Colors — Candle direction")
+
+colAvgBody = input.color(#E1BEE7, "Avg body line", group = "Colors — Lines")
+colAvgWick = input.color(#9575CD, "Avg wick line", group = "Colors — Lines")
+colZero    = input.color(color.new(#7E57C2, 40), "Zero line", group = "Colors — Lines")
+
+// ── Avg candle (drawn on the price pane) ─────────────────
+showGhost   = input.bool(true, "Show avg candle on price chart", group = "Avg Candle")
+bodyMode    = input.string("Net (signed)", "Body represents", options = ["Net (signed)", "Absolute size"], group = "Avg Candle",
+     tooltip = "Net (signed): average of (close - open). Points the way the lookback actually drifted — small body when moves cancel out in consolidation.\nAbsolute size: average of |close - open|. Always a big body regardless of direction.")
+flatPct     = input.float(10.0, "Flat threshold (% of avg range)", minval = 0, maxval = 100, step = 1, group = "Avg Candle",
+     tooltip = "If the net body is smaller than this share of the average range, the candle is drawn neutral — no trend either way.")
+ghostOffset = input.int(10, "Bars to the right of price", minval = 2, maxval = 100, group = "Avg Candle")
+ghostWidth  = input.int(4,  "Candle width (bars)", minval = 1, maxval = 30, group = "Avg Candle")
+ghostLblOn  = input.bool(true, "Label with values", group = "Avg Candle")
+
+colGhostUp   = input.color(color.new(#B388FF, 25), "Avg candle — bullish", group = "Colors — Avg Candle")
+colGhostDown = input.color(color.new(#5E35B1, 20), "Avg candle — bearish", group = "Colors — Avg Candle")
+colGhostFlat = input.color(color.new(#4A3B6B, 35), "Avg candle — neutral", group = "Colors — Avg Candle")
+colGhostUpW  = input.color(#E1BEE7, "Avg upper wick", group = "Colors — Avg Candle")
+colGhostLoW  = input.color(#9575CD, "Avg lower wick", group = "Colors — Avg Candle")
+colGhostTxt  = input.color(#D6D0E4, "Avg candle label", group = "Colors — Avg Candle")
+
+// ── HUD ──────────────────────────────────────────────────
+showHud = input.bool(true, "Show readout", group = "HUD")
+posOpt  = input.string("Top Right", "HUD position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = "HUD")
+
+// ── Lookback → bars on current chart timeframe ───────────
+byCandles   = lookbackMode == "Candles"
+unitMinutes = lookbackUnit == "Minutes" ? 1 : lookbackUnit == "Hours" ? 60 : 1440
+barMins     = timeframe.in_seconds() / 60.0
+barsWanted  = byCandles ? candleCount : math.max(1, int(math.round((lookbackAmt * unitMinutes) / barMins)))
+barsBack    = math.min(math.min(barsWanted, 4900), bar_index + 1)
+capped      = barsWanted > barsBack
+winTxt      = byCandles ? str.tostring(barsBack) + " candles" : str.tostring(lookbackAmt) + " " + lookbackUnit + " (" + str.tostring(barsBack) + ")"
+
+// ── Per-bar components ───────────────────────────────────
+barBody  = math.abs(close - open)
+barUpW   = high - math.max(open, close)
+barLoW   = math.min(open, close) - low
+barWicks = barUpW + barLoW
+barRange = high - low                       // == barBody + barWicks
+
+// ── Rolling averages ─────────────────────────────────────
+avgNet   = ta.sma(close - open, barsBack)   // signed: direction of the lookback
+avgBody  = ta.sma(barBody,  barsBack)
+avgWicks = ta.sma(barWicks, barsBack)
+avgRange = ta.sma(barRange, barsBack)
+avgUpW   = ta.sma(barUpW,   barsBack)
+avgLoW   = ta.sma(barLoW,   barsBack)
+
+// ── Column colors ────────────────────────────────────────
+bodySpike = markSpikes and not na(avgBody)  and barBody  >= avgBody  * spikeMult
+wickSpike = markSpikes and not na(avgWicks) and barWicks >= avgWicks * spikeMult
+dirCol    = close > open ? colUp : close < open ? colDown : colFlat
+
+bodyCol = colorMode == "Up/down candle" ? dirCol :
+          colorMode == "Flat"           ? colFlat :
+          bodySpike                     ? colBodySpike :
+          (not na(avgBody) and barBody >= avgBody ? colBodyAbove : colBodyBelow)
+
+wickCol = colorMode == "Up/down candle" ? color.new(dirCol, 60) :
+          colorMode == "Flat"           ? color.new(colFlat, 25) :
+          wickSpike                     ? colWickSpike :
+          (not na(avgWicks) and barWicks >= avgWicks ? colWickAbove : colWickBelow)
+
+mirrored = layout == "Mirrored"
+
+// ── Histogram 1: bodies ──────────────────────────────────
+// Mirrored → plots up from zero. Stacked → the solid inner column.
+plot(barBody, "Body", color = bodyCol, style = plot.style_columns)
+
+// ── Histogram 2: wicks ───────────────────────────────────
+// Mirrored → plots down from zero (combined, or split upper/lower).
+// Stacked → full range column behind the body, so the visible
+// remainder above the body IS the wick portion.
+plot(mirrored ? (splitWicks ? -barLoW : -barWicks) : barRange,
+     "Wicks", color = mirrored ? (splitWicks ? colLoWick : wickCol) : wickCol,
+     style = plot.style_columns)
+plot(mirrored and splitWicks ? -(barLoW + barUpW) : na, "Upper wick", color = colUpWick, style = plot.style_columns)
+
+hline(0, "Zero", color = colZero, linestyle = hline.style_solid)
+
+// ── Average lines ────────────────────────────────────────
+plot(showAvg ? avgBody : na, "Avg body", color = colAvgBody, linewidth = 2)
+plot(showAvg ? (mirrored ? -avgWicks : avgRange) : na, "Avg wicks", color = colAvgWick, linewidth = 2)
+plot(showAvg and markSpikes ? avgBody * spikeMult : na, "Body spike level", color = color.new(colAvgBody, 70), style = plot.style_stepline)
+plot(showAvg and markSpikes ? (mirrored ? -avgWicks * spikeMult : avgRange * spikeMult) : na, "Wick spike level", color = color.new(colAvgWick, 70), style = plot.style_stepline)
+
+// ── Avg candle on the price pane ─────────────────────────
+// Body height = avg net move (or avg absolute body), wicks are the
+// avg upper and avg lower wick drawn separately off that body.
+// force_overlay puts it on the price chart even though this
+// indicator lives in its own pane.
+var box   gBody = na
+var line  gUpW  = na
+var line  gLoW  = na
+var label gLbl  = na
+
+if barstate.islast
+    box.delete(gBody)
+    line.delete(gUpW)
+    line.delete(gLoW)
+    label.delete(gLbl)
+
+    if showGhost and not na(avgNet)
+        useNet   = bodyMode == "Net (signed)"
+        bodyH    = useNet ? math.abs(avgNet) : avgBody
+        flatLim  = avgRange * flatPct / 100.0
+        isFlat   = useNet and math.abs(avgNet) < flatLim
+        bull     = avgNet > 0
+        bodyFill = isFlat ? colGhostFlat : bull ? colGhostUp : colGhostDown
+
+        mid     = close
+        bodyTop = mid + bodyH / 2
+        bodyBot = mid - bodyH / 2
+        wickTop = bodyTop + avgUpW
+        wickBot = bodyBot - avgLoW
+
+        // Build outward from the centre so the wicks sit dead-centre on the
+        // body for any width — rounding a midpoint puts odd widths half a bar off.
+        halfW   = math.max(1, int(ghostWidth / 2))
+        xCenter = bar_index + ghostOffset + halfW
+        xLeft   = xCenter - halfW
+        xRight  = xCenter + halfW
+
+        gBody := box.new(xLeft, bodyTop, xRight, bodyBot, xloc = xloc.bar_index,
+             border_width = 0, bgcolor = bodyFill, force_overlay = true)
+        gUpW  := line.new(xCenter, bodyTop, xCenter, wickTop, xloc = xloc.bar_index,
+             color = colGhostUpW, width = 2, force_overlay = true)
+        gLoW  := line.new(xCenter, bodyBot, xCenter, wickBot, xloc = xloc.bar_index,
+             color = colGhostLoW, width = 2, force_overlay = true)
+
+        if ghostLblOn
+            dirTxt = isFlat ? "FLAT" : bull ? "▲" : "▼"
+            txt = "AVG " + dirTxt + "\n" +
+                 "body " + str.tostring(useNet ? avgNet : avgBody, format.mintick) + "\n" +
+                 "up wick " + str.tostring(avgUpW, format.mintick) + "\n" +
+                 "lo wick " + str.tostring(avgLoW, format.mintick)
+            gLbl := label.new(xCenter, wickTop, txt, xloc = xloc.bar_index, style = label.style_label_down,
+                 color = color.new(color.black, 100), textcolor = colGhostTxt, size = size.small, force_overlay = true)
+
+// ── Readout ──────────────────────────────────────────────
+pos = posOpt == "Top Right" ? position.top_right :
+      posOpt == "Top Left" ? position.top_left :
+      posOpt == "Bottom Right" ? position.bottom_right : position.bottom_left
+
+fmt(float v) => na(v) ? "n/a" : str.tostring(v, format.mintick)
+pct(float v, float a) => na(a) or a == 0 ? "n/a" : str.tostring(v / a * 100, "#") + "%"
+
+var table hud = table.new(pos, 3, 7, bgcolor = color.new(#140A26, 15), border_width = 1, border_color = color.new(#7E57C2, 45))
+
+if barstate.islast and showHud
+    table.clear(hud, 0, 0, 2, 6)
+    r = 0
+    table.cell(hud, 0, r, winTxt + (capped ? " ⚠ capped" : ""), text_color = #8A7FA8, text_size = size.small)
+    table.cell(hud, 1, r, "now", text_color = #8A7FA8, text_size = size.small)
+    table.cell(hud, 2, r, "avg", text_color = #8A7FA8, text_size = size.small)
+    r += 1
+    table.cell(hud, 0, r, "Body", text_color = #D6D0E4, text_size = size.small, text_halign = text.align_left)
+    table.cell(hud, 1, r, fmt(barBody), text_color = bodyCol, text_size = size.small)
+    table.cell(hud, 2, r, fmt(avgBody), text_color = colAvgBody, text_size = size.small)
+    r += 1
+    table.cell(hud, 0, r, "Wicks", text_color = #D6D0E4, text_size = size.small, text_halign = text.align_left)
+    table.cell(hud, 1, r, fmt(barWicks), text_color = wickCol, text_size = size.small)
+    table.cell(hud, 2, r, fmt(avgWicks), text_color = colAvgWick, text_size = size.small)
+    r += 1
+    table.cell(hud, 0, r, "  upper / lower", text_color = #8A7FA8, text_size = size.small, text_halign = text.align_left)
+    table.cell(hud, 1, r, fmt(barUpW) + " / " + fmt(barLoW), text_color = #D6D0E4, text_size = size.small)
+    table.cell(hud, 2, r, fmt(avgUpW) + " / " + fmt(avgLoW), text_color = #8A7FA8, text_size = size.small)
+    r += 1
+    table.cell(hud, 0, r, "Range", text_color = #D6D0E4, text_size = size.small, text_halign = text.align_left)
+    table.cell(hud, 1, r, fmt(barRange), text_color = #D6D0E4, text_size = size.small)
+    table.cell(hud, 2, r, fmt(avgRange), text_color = #D6D0E4, text_size = size.small)
+    r += 1
+    table.cell(hud, 0, r, "Body share of range", text_color = #D6D0E4, text_size = size.small, text_halign = text.align_left)
+    table.cell(hud, 1, r, pct(barBody, barRange), text_color = bodyCol, text_size = size.small)
+    table.cell(hud, 2, r, pct(avgBody, avgRange), text_color = colAvgBody, text_size = size.small)
+    r += 1
+    netFlat = not na(avgNet) and math.abs(avgNet) < avgRange * flatPct / 100.0
+    table.cell(hud, 0, r, "Net drift", text_color = #D6D0E4, text_size = size.small, text_halign = text.align_left)
+    table.cell(hud, 1, r, netFlat ? "flat" : na(avgNet) ? "n/a" : avgNet > 0 ? "▲ up" : "▼ down", text_color = netFlat ? colGhostFlat : na(avgNet) or avgNet > 0 ? colGhostUpW : colGhostLoW, text_size = size.small)
+    table.cell(hud, 2, r, fmt(avgNet), text_color = #D6D0E4, text_size = size.small)

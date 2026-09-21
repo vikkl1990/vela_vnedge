@@ -1,0 +1,391 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0
+// International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © AlgoNorth
+//@version=6
+indicator("Forward Move Profile [AlgoNorth]", overlay = true, max_bars_back = 500, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 50, max_polylines_count = 100)
+
+// ─── Inputs ───────────────────────────────────────────────────────────────────
+
+string G_M = "Model"
+horizon = input.int(30, "Horizon (bars)", minval = 2, maxval = 300, group = G_M, display = display.none, tooltip = "How many bars ahead each sample looks. For every past bar with enough history, the script records the price change from that bar's close to the close this many bars later.")
+atrLen  = input.int(14, "ATR length", minval = 1, group = G_M, display = display.none, tooltip = "Length of the average true range (ATR) used to size each sample. Every sample is measured in ATRs at its own start, then drawn using the ATR at the bar where it is shown: the current ATR for the live profile, that bar's ATR for a ghost profile.")
+maxSamp = input.int(20000, "Max samples", minval = 100, maxval = 20000, group = G_M, display = display.none, tooltip = "Most recent samples kept. Older samples are dropped. Also caps the history used by the ghosts and the path fan.")
+raceK   = input.float(1.0, "Race distance (× ATR)", minval = 0.1, step = 0.1, group = G_M, display = display.none, tooltip = "Distance above and below the start price, in ATRs. For each past sample the script records which level price touched first and how many bars that took. Table shares count only samples where one level was clearly touched first.")
+
+string G_S = "Session"
+useSess = input.bool(false, "Limit to session", group = G_S, display = display.none, tooltip = "When on, a sample only counts if it starts and ends inside the same session. Two or more missing bars in a row also start a new session.")
+sessIn  = input.session("0930-1600", "Session", group = G_S, display = display.none, tooltip = "Session window used when the session limit is on.")
+tzIn    = input.string("America/New_York", "Session timezone", group = G_S, display = display.none, tooltip = "Timezone the session window is read in. Also used for the table's Last bar time.")
+
+string G_P = "Profile"
+rangeK  = input.float(0.0, "Profile range (± ATR, 0 = auto)", minval = 0.0, step = 0.5, group = G_P, display = display.none, tooltip = "Price range the rows cover above and below the current price, in ATRs. 0 fits the range so almost every past sample is drawn. Samples beyond the range are counted in the table as outside range.")
+nBins   = input.int(41, "Rows", minval = 11, maxval = 89, group = G_P, display = display.none, tooltip = "Number of rows across the profile range. Each row's length shows how many past samples ended in that price band.")
+profLen = input.int(40, "Profile width (bars)", minval = 10, maxval = 150, group = G_P, display = display.none, tooltip = "Length of the longest row, in bars.")
+gapBars = input.int(4, "Gap before profile (bars)", minval = 1, maxval = 20, group = G_P, display = display.none, tooltip = "Gap between the end of the path fan and the profile. With the fan off, the gap from the last candle.")
+unitsIn = input.string("Auto", "Units", options = ["Auto", "Ticks", "Points", "Pips", "Percent"], group = G_P, display = display.none, tooltip = "How moves are written in the labels and table. Auto picks ticks for futures, pips for forex, percent for crypto and points for everything else. Pips assume a 5-digit quote.")
+
+string G_L = "Look"
+palette  = input.string("Green / Red", "Palette", options = ["Green / Red", "Aurora", "Heat"], group = G_L, display = display.none, tooltip = "Colours for rows above and below the current price. Green / Red suits monochrome candles; Aurora (cyan / magenta) and Heat (orange / red) stand out on green/red candles.")
+peakOn   = input.bool(true, "Highlight most common row", group = G_L, display = display.none, tooltip = "Draw the row where the most past samples ended in its own colour, with its value written inside it. If two rows tie, the lower one is highlighted.")
+peakCol  = input.color(#ffd23f, "Most common row colour", group = G_L, display = display.none, tooltip = "Colour for the most common row, the ghost dots and the dashed lines joining each ghost to its outcome.")
+depth    = input.int(2, "3D depth (bars)", minval = 0, maxval = 6, group = G_L, display = display.none, tooltip = "How far each row is extruded to the right, in bars, for the 3D look. 0 draws flat rows.")
+showHi   = input.bool(true, "Top edge highlight", group = G_L, display = display.none, tooltip = "Thin line along the top of each row in the chart's text colour, stronger on rows with more samples.")
+fanOn    = input.bool(true, "Path fan", group = G_L, display = display.none, tooltip = "Fan from the last candle to the profile, measured at six steps across the horizon and joined by straight lines. The centre line is the median outcome. The bands show where the middle 20%, 50% and 80% of past samples ended.")
+ghostN   = input.int(4, "Ghost profiles", minval = 0, maxval = 8, group = G_L, display = display.none, tooltip = "Simplified copies of the profile as it stood at earlier bars (31 rows, a third of the width), each with a dot at the close one horizon later. The first sits one horizon back; the rest follow at Ghost spacing. 0 turns them off.")
+ghostGap = input.int(30, "Ghost spacing (bars)", minval = 5, maxval = 500, group = G_L, display = display.none, tooltip = "Bars between ghost profiles after the first, which always sits one horizon back from the last closed candle.")
+showLbl  = input.bool(true, "Show percentile labels", group = G_L, display = display.none, tooltip = "Label the 90th percentile, median and 10th percentile outcomes. About 8 in 10 past samples ended between P10 and P90.")
+
+string G_T = "Table"
+showTbl = input.bool(true, "Show table", group = G_T, display = display.none, tooltip = "Show the statistics table.")
+tblPos  = input.string("Top right", "Table corner", options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = G_T, display = display.none, tooltip = "Chart corner for the statistics table. Use different corners when several instances are loaded.")
+tblSize = input.string("Small", "Text size", options = ["Tiny", "Small", "Normal"], group = G_T, display = display.none, tooltip = "Table text size.")
+
+// ─── Palette ──────────────────────────────────────────────────────────────────
+
+color upCol = palette == "Heat" ? #ff8c00 : palette == "Aurora" ? #29e7ff : #089981
+color dnCol = palette == "Heat" ? #ff5a1f : palette == "Aurora" ? #ff4fd8 : #f23645
+color greyC = #787b86
+color fg    = chart.fg_color
+string unitUse = unitsIn != "Auto" ? unitsIn : syminfo.type == "futures" ? "Ticks" : syminfo.type == "forex" ? "Pips" : syminfo.type == "crypto" ? "Percent" : "Points"
+
+// ─── Session ──────────────────────────────────────────────────────────────────
+
+bool inSess = useSess ? not na(time(timeframe.period, sessIn, tzIn)) : true
+var int sessId = 0
+bool gapBar = time - time[1] > 2 * timeframe.in_seconds() * 1000
+if useSess and inSess and (not inSess[1] or gapBar)
+    sessId += 1
+
+float atrV = ta.atr(atrLen)
+
+// ─── Samples ──────────────────────────────────────────────────────────────────
+
+var array<float> samp  = array.new<float>()
+var array<int>   raceA = array.new<int>()
+var array<int>   tUpA  = array.new<int>()
+var array<int>   tDnA  = array.new<int>()
+
+if barstate.isconfirmed and bar_index > horizon + atrLen
+    float a0 = atrV[horizon]
+    float c0 = close[horizon]
+    bool  ok = not na(a0) and a0 > 0 and (not useSess or (inSess[horizon] and inSess and sessId[horizon] == sessId))
+    if ok
+        float upLvl = c0 + raceK * a0
+        float dnLvl = c0 - raceK * a0
+        int   tUp   = -1
+        int   tDn   = -1
+        for s = 1 to horizon
+            int off = horizon - s
+            if tUp < 0 and high[off] >= upLvl
+                tUp := s
+            if tDn < 0 and low[off] <= dnLvl
+                tDn := s
+        int race = tUp > 0 and (tDn < 0 or tUp < tDn) ? 1 : tDn > 0 and (tUp < 0 or tDn < tUp) ? -1 : tUp > 0 and tUp == tDn ? 2 : 0
+        array.push(samp, (close - c0) / a0)
+        array.push(raceA, race)
+        array.push(tUpA, tUp)
+        array.push(tDnA, tDn)
+        if array.size(samp) > maxSamp
+            array.shift(samp)
+            array.shift(raceA)
+            array.shift(tUpA)
+            array.shift(tDnA)
+
+// ─── History ──────────────────────────────────────────────────────────────────
+
+var array<float> closeA = array.new<float>()
+var array<float> atrA   = array.new<float>()
+var array<int>   sessA  = array.new<int>()
+var int lastPushBar = na
+
+if barstate.isconfirmed
+    array.push(closeA, close)
+    array.push(atrA, atrV)
+    array.push(sessA, inSess ? sessId : -1)
+    lastPushBar := bar_index
+    if array.size(closeA) > maxSamp + horizon + 2
+        array.shift(closeA)
+        array.shift(atrA)
+        array.shift(sessA)
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+fmt(float r, float a) =>
+    float v = r * a
+    unitUse == "Ticks"   ? str.tostring(v / syminfo.mintick, "+#;-#") + "t" :
+     unitUse == "Pips"    ? str.tostring(v / (syminfo.mintick * 10), "+0.0;-0.0") + "p" :
+     unitUse == "Percent" ? str.tostring(100 * v / close, "+0.00;-0.00") + "%" :
+     (v >= 0 ? "+" : "") + str.tostring(v, format.mintick)
+
+pct(int n, int t) =>
+    t > 0 ? str.tostring(100.0 * n / t, "0.0") + "%" : "–"
+
+tfTxt() =>
+    timeframe.isminutes ? (timeframe.multiplier % 60 == 0 ? str.tostring(timeframe.multiplier / 60) + "h" : timeframe.period + "m") : timeframe.period
+
+outcomes(int h, int endIdx) =>
+    array<float> out = array.new<float>()
+    if endIdx - h >= 0
+        for i = 0 to endIdx - h
+            float a = array.get(atrA, i)
+            int   s = array.get(sessA, i)
+            if not na(a) and a > 0 and (not useSess or (s >= 0 and s == array.get(sessA, i + h)))
+                array.push(out, (array.get(closeA, i + h) - array.get(closeA, i)) / a)
+    out
+
+pctS(array<float> a, float p) =>
+    int   n  = array.size(a)
+    float r  = p / 100 * (n - 1)
+    int   lo = math.floor(r)
+    int   hi = math.min(n - 1, lo + 1)
+    array.get(a, lo) + (r - lo) * (array.get(a, hi) - array.get(a, lo))
+
+// ─── Drawing state ────────────────────────────────────────────────────────────
+
+var array<box>      bxs = array.new<box>()
+var array<line>     lns = array.new<line>()
+var array<label>    lbs = array.new<label>()
+var array<polyline> pls = array.new<polyline>()
+
+var float p50g     = na
+var int   raceLead = na
+
+tPos  = tblPos == "Top left" ? position.top_left : tblPos == "Bottom left" ? position.bottom_left : tblPos == "Bottom right" ? position.bottom_right : position.top_right
+tSize = tblSize == "Tiny" ? size.tiny : tblSize == "Normal" ? size.normal : size.small
+
+var table tbl = table.new(tPos, 2, 11, bgcolor = color.new(chart.bg_color, 15), border_width = 0, frame_color = color.new(greyC, 70), frame_width = 1)
+
+row(int r, string k, string v, color vc) =>
+    table.cell(tbl, 0, r, k, text_color = color.new(greyC, 0), text_size = tSize, text_halign = text.align_left)
+    table.cell(tbl, 1, r, v, text_color = vc, text_size = tSize, text_halign = text.align_right)
+
+band(array<int> hx, array<float> up, array<float> dn, color col, int tr) =>
+    int m = array.size(hx)
+    array<chart.point> pts = array.new<chart.point>()
+    for k = 0 to m - 1
+        array.push(pts, chart.point.from_index(bar_index + array.get(hx, k), close + array.get(up, k) * atrV))
+    for k = m - 1 to 0
+        array.push(pts, chart.point.from_index(bar_index + array.get(hx, k), close + array.get(dn, k) * atrV))
+    polyline.new(pts, closed = true, line_color = color.new(col, 100), fill_color = color.new(col, tr))
+
+path(array<int> hx, array<float> md, color col, int tr, int w) =>
+    int m = array.size(hx)
+    array<chart.point> pts = array.new<chart.point>()
+    for k = 0 to m - 1
+        array.push(pts, chart.point.from_index(bar_index + array.get(hx, k), close + array.get(md, k) * atrV))
+    polyline.new(pts, closed = false, line_color = color.new(col, tr), line_width = w)
+
+// ─── Profile ──────────────────────────────────────────────────────────────────
+
+if barstate.islast
+    for b in bxs
+        box.delete(b)
+    array.clear(bxs)
+    for l in lns
+        line.delete(l)
+    array.clear(lns)
+    for l in lbs
+        label.delete(l)
+    array.clear(lbs)
+    for p in pls
+        polyline.delete(p)
+    array.clear(pls)
+
+    int n = array.size(samp)
+
+    if n >= 30 and not na(atrV)
+        float p02 = array.percentile_linear_interpolation(samp, 2)
+        float p10 = array.percentile_linear_interpolation(samp, 10)
+        float p25 = array.percentile_linear_interpolation(samp, 25)
+        float p40 = array.percentile_linear_interpolation(samp, 40)
+        float p50 = array.percentile_linear_interpolation(samp, 50)
+        float p60 = array.percentile_linear_interpolation(samp, 60)
+        float p75 = array.percentile_linear_interpolation(samp, 75)
+        float p90 = array.percentile_linear_interpolation(samp, 90)
+        float p98 = array.percentile_linear_interpolation(samp, 98)
+        p50g := p50
+
+        float rangeU = rangeK > 0 ? rangeK : math.max(0.5, math.max(math.abs(p02), math.abs(p98)))
+        float binW   = 2 * rangeU / nBins
+        array<int> cnt = array.new<int>(nBins, 0)
+        int outUp = 0
+        int outDn = 0
+        for r in samp
+            if r > rangeU
+                outUp += 1
+            else if r < -rangeU
+                outDn += 1
+            else
+                int bi = math.min(nBins - 1, math.floor((r + rangeU) / binW))
+                array.set(cnt, bi, array.get(cnt, bi) + 1)
+
+        int   lastIdx = array.size(closeA) - 1
+        int   x0      = bar_index + (fanOn ? horizon : 0) + gapBars
+        int   x1      = x0 + profLen
+        int   xL      = x1 + depth + 1
+        int   mxC     = math.max(1, array.max(cnt))
+        int   peakI   = array.indexof(cnt, mxC)
+        float rowH    = binW * atrV
+        float pad     = rowH * 0.08
+        float dy      = -rowH * 0.5
+
+        if ghostN > 0
+            int gBins = 31
+            float gW  = 2 * rangeU / gBins
+            for g = 1 to ghostN
+                int b   = lastPushBar - horizon - (g - 1) * ghostGap
+                int idx = lastIdx - (lastPushBar - b)
+                if idx >= horizon + 30 and idx + horizon <= lastIdx
+                    float cA = array.get(closeA, idx)
+                    float aA = array.get(atrA, idx)
+                    array<float> arr = outcomes(horizon, idx)
+                    if array.size(arr) >= 30 and aA > 0
+                        array<int> gc = array.new<int>(gBins, 0)
+                        for r in arr
+                            if math.abs(r) <= rangeU
+                                int bi = math.min(gBins - 1, math.floor((r + rangeU) / gW))
+                                array.set(gc, bi, array.get(gc, bi) + 1)
+                        int gMax = math.max(1, array.max(gc))
+                        for i = 0 to gBins - 1
+                            int c = array.get(gc, i)
+                            if c > 0
+                                float mid = -rangeU + (i + 0.5) * gW
+                                float lo  = cA + (-rangeU + i * gW) * aA
+                                float hi  = lo + gW * aA
+                                int   len = math.max(1, math.round(profLen * 0.35 * c / gMax))
+                                color gb  = mid > gW * 0.5 ? upCol : mid < -gW * 0.5 ? dnCol : color.new(greyC, 60)
+                                array.push(bxs, box.new(b + 1, hi - gW * aA * 0.1, b + 1 + len, lo + gW * aA * 0.1, border_width = 0, bgcolor = color.from_gradient(c, 0, gMax, color.new(gb, 94), color.new(gb, 72))))
+                        float cOut = array.get(closeA, idx + horizon)
+                        array.push(lns, line.new(b, cA, b + horizon, cOut, color = color.new(peakCol, 15), style = line.style_dashed, width = 2))
+                        array.push(lbs, label.new(b + horizon, cOut, "●", style = label.style_none, textcolor = peakCol, size = size.large))
+
+        if fanOn
+            int steps = 6
+            array<int>   fH  = array.from(0)
+            array<float> f10 = array.from(0.0)
+            array<float> f25 = array.from(0.0)
+            array<float> f40 = array.from(0.0)
+            array<float> f50 = array.from(0.0)
+            array<float> f60 = array.from(0.0)
+            array<float> f75 = array.from(0.0)
+            array<float> f90 = array.from(0.0)
+            for k = 1 to steps
+                int h = math.max(1, math.round(horizon * k / steps))
+                if k == steps
+                    array.push(fH, horizon)
+                    array.push(f10, p10), array.push(f25, p25), array.push(f40, p40), array.push(f50, p50)
+                    array.push(f60, p60), array.push(f75, p75), array.push(f90, p90)
+                else
+                    array<float> arr = outcomes(h, lastIdx)
+                    if array.size(arr) >= 30
+                        array.sort(arr)
+                        array.push(fH, h)
+                        array.push(f10, pctS(arr, 10)), array.push(f25, pctS(arr, 25)), array.push(f40, pctS(arr, 40)), array.push(f50, pctS(arr, 50))
+                        array.push(f60, pctS(arr, 60)), array.push(f75, pctS(arr, 75)), array.push(f90, pctS(arr, 90))
+            array.push(pls, band(fH, f90, f50, upCol, 90))
+            array.push(pls, band(fH, f50, f10, dnCol, 90))
+            array.push(pls, band(fH, f75, f50, upCol, 84))
+            array.push(pls, band(fH, f50, f25, dnCol, 84))
+            array.push(pls, band(fH, f60, f50, upCol, 74))
+            array.push(pls, band(fH, f50, f40, dnCol, 74))
+            array.push(pls, path(fH, f50, fg, 88, 5))
+            array.push(pls, path(fH, f50, fg, 70, 3))
+            array.push(pls, path(fH, f50, fg, 0, 1))
+
+        for i = 0 to nBins - 1
+            int c = array.get(cnt, i)
+            if c > 0
+                float mid    = -rangeU + (i + 0.5) * binW
+                float lo     = close + (-rangeU + i * binW) * atrV
+                float hi     = lo + binW * atrV
+                int   len    = math.max(1, math.round(profLen * c / mxC))
+                bool  isPeak = peakOn and i == peakI
+                color base   = isPeak ? peakCol : mid > binW * 0.5 ? upCol : mid < -binW * 0.5 ? dnCol : color.new(greyC, 0)
+                float yT     = hi - pad
+                float yB     = lo + pad
+
+                if depth > 0
+                    array.push(pls, polyline.new(array.from(
+                         chart.point.from_index(x0, yB),
+                         chart.point.from_index(x0 + depth, yB + dy),
+                         chart.point.from_index(x0 + len + depth, yB + dy),
+                         chart.point.from_index(x0 + len + depth, yT + dy),
+                         chart.point.from_index(x0 + len, yT),
+                         chart.point.from_index(x0 + len, yB)),
+                         closed = true, line_color = color.new(base, 100), fill_color = isPeak ? color.new(base, 40) : color.from_gradient(c, 0, mxC, color.new(base, 88), color.new(base, 45))))
+
+                array.push(bxs, box.new(x0, yT, x0 + len, yB, border_width = 0, bgcolor = isPeak ? color.new(base, 0) : color.from_gradient(c, 0, mxC, color.new(base, 80), color.new(base, 0))))
+
+                if showHi
+                    array.push(lns, line.new(x0, yT, x0 + len, yT, color = isPeak ? color.new(fg, 20) : color.from_gradient(c, 0, mxC, color.new(fg, 95), color.new(fg, 45)), width = 1))
+
+                if isPeak
+                    array.push(lbs, label.new(x0 + len, (yT + yB) / 2, "MOST COMMON " + fmt(mid, atrV), style = label.style_label_right, color = color.new(#000000, 100), textcolor = #000000, size = size.small))
+
+        array.push(lns, line.new(x0, close, x1, close, color = color.new(greyC, 40)))
+        array.push(lns, line.new(x0 - gapBars, close + p50 * atrV, x1 + depth, close + p50 * atrV, color = color.new(fg, 88), width = 5))
+        array.push(lns, line.new(x0 - gapBars, close + p50 * atrV, x1 + depth, close + p50 * atrV, color = color.new(fg, 70), width = 3))
+        array.push(lns, line.new(x0 - gapBars, close + p50 * atrV, x1 + depth, close + p50 * atrV, color = color.new(fg, 0), width = 1))
+        array.push(lns, line.new(x0, close + p90 * atrV, x1 + depth, close + p90 * atrV, color = color.new(upCol, 30), style = line.style_dotted))
+        array.push(lns, line.new(x0, close + p10 * atrV, x1 + depth, close + p10 * atrV, color = color.new(dnCol, 30), style = line.style_dotted))
+
+        if showLbl
+            array.push(lbs, label.new(xL, close + p90 * atrV, "P90 " + fmt(p90, atrV), style = label.style_label_left, color = color.new(#000000, 100), textcolor = upCol, size = size.normal))
+            array.push(lbs, label.new(xL, close + p50 * atrV, "Median " + fmt(p50, atrV), style = label.style_label_left, color = color.new(#000000, 100), textcolor = fg, size = size.normal))
+            array.push(lbs, label.new(xL, close + p10 * atrV, "P10 " + fmt(p10, atrV), style = label.style_label_left, color = color.new(#000000, 100), textcolor = dnCol, size = size.normal))
+
+        int   ups = 0
+        int   dns = 0
+        float upS = 0.0
+        float dnS = 0.0
+        for r in samp
+            if r > 0
+                ups += 1
+                upS += r
+            else if r < 0
+                dns += 1
+                dnS += r
+        int   rU = 0
+        int   rD = 0
+        float bU = 0.0
+        float bD = 0.0
+        for j = 0 to n - 1
+            int rc = array.get(raceA, j)
+            if rc == 1
+                rU += 1
+                bU += array.get(tUpA, j)
+            else if rc == -1
+                rD += 1
+                bD += array.get(tDnA, j)
+        raceLead := rD > rU ? -1 : rU > rD ? 1 : 0
+
+        if showTbl
+            table.cell(tbl, 0, 0, "FORWARD MOVE PROFILE", text_color = upCol, text_size = tSize, text_halign = text.align_left)
+            table.cell(tbl, 1, 0, syminfo.ticker + " · " + tfTxt(), text_color = fg, text_size = tSize, text_halign = text.align_right)
+            row(1, "Settings", "Horizon " + str.tostring(horizon) + " · ATR " + str.tostring(atrLen) + " · race ±" + str.tostring(raceK) + " ATR" + (useSess ? " · " + sessIn : ""), fg)
+            row(2, "Past samples", str.tostring(n) + " (outside range ▲" + str.tostring(outUp) + " ▼" + str.tostring(outDn) + ")", fg)
+            row(3, "Ended higher / lower (rest flat)", pct(ups, n) + " / " + pct(dns, n), fg)
+            row(4, "Avg move higher / lower", fmt(ups > 0 ? upS / ups : 0, atrV) + " / " + fmt(dns > 0 ? dnS / dns : 0, atrV), fg)
+            row(5, "P90 / median / P10 outcome", fmt(p90, atrV) + " / " + fmt(p50, atrV) + " / " + fmt(p10, atrV), fg)
+            row(6, "Size of P10 ÷ size of P90", p90 > 0 ? str.tostring(math.abs(p10) / p90, "0.00") + "×" : "–", math.abs(p10) > p90 ? dnCol : upCol)
+            row(7, "First touched · +" + str.tostring(raceK) + " ATR / −" + str.tostring(raceK) + " ATR", pct(rU, rU + rD) + " / " + pct(rD, rU + rD), rD > rU ? dnCol : upCol)
+            row(8, "Avg bars to first touch · up / down", (rU > 0 ? str.tostring(bU / rU, "#.0") : "–") + " / " + (rD > 0 ? str.tostring(bD / rD, "#.0") : "–"), fg)
+            row(9, "Current ATR", str.replace(fmt(1.0, atrV), "+", "", 0), fg)
+            row(10, "Last bar", str.format_time(time, "yyyy-MM-dd HH:mm", tzIn) + " · " + str.tostring(bar_index + 1, "#,###") + " bars loaded", fg)
+    else if showTbl
+        table.cell(tbl, 0, 0, "FORWARD MOVE PROFILE", text_color = upCol, text_size = tSize, text_halign = text.align_left)
+        table.cell(tbl, 1, 0, syminfo.ticker + " · " + tfTxt(), text_color = fg, text_size = tSize, text_halign = text.align_right)
+        row(1, "Collecting past samples", str.tostring(n) + " / 30", fg)
+        row(2, "Last bar", str.format_time(time, "yyyy-MM-dd HH:mm", tzIn) + " · " + str.tostring(bar_index + 1, "#,###") + " bars loaded", fg)
+
+// ─── Alerts ───────────────────────────────────────────────────────────────────
+
+bool medUp   = barstate.islast and not na(p50g) and not na(p50g[1]) and p50g > 0 and p50g[1] <= 0
+bool medDn   = barstate.islast and not na(p50g) and not na(p50g[1]) and p50g < 0 and p50g[1] >= 0
+bool leadUp  = barstate.islast and not na(raceLead) and not na(raceLead[1]) and raceLead == 1 and raceLead[1] != 1
+bool leadDn  = barstate.islast and not na(raceLead) and not na(raceLead[1]) and raceLead == -1 and raceLead[1] != -1
+
+alertcondition(medUp,  "Median outcome turned positive", "Forward Move Profile: median outcome is now positive on {{exchange}}:{{ticker}}, {{interval}}")
+alertcondition(medDn,  "Median outcome turned negative", "Forward Move Profile: median outcome is now negative on {{exchange}}:{{ticker}}, {{interval}}")
+alertcondition(leadUp, "Up level now touched first more often", "Forward Move Profile: the up race level is now touched first more often in past samples on {{exchange}}:{{ticker}}, {{interval}}")
+alertcondition(leadDn, "Down level now touched first more often", "Forward Move Profile: the down race level is now touched first more often in past samples on {{exchange}}:{{ticker}}, {{interval}}")

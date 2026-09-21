@@ -1,0 +1,775 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © barefootgreenback
+// Version final 5.8 - Force HTF candle overlay refresh after volume profile redraw
+// Volume allocation model adapted from LonesomeTheBlue's Volume Profile / Fixed Range (MPL 2.0).
+
+//@version=6
+indicator("BFG Profil3d", shorttitle="Profil3d", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500, max_bars_back=5000, explicit_plot_zorder=true)
+
+//════════════════════════════════════════════════════════════════════
+// CONSTANTS
+//════════════════════════════════════════════════════════════════════
+color COL_TRANSPARENT = color.new(color.rgb(0, 0, 0), 100)
+int   MAX_ROWS        = 200
+int   OVERLAY_CANDLE_WIDTH   = 3
+int   OVERLAY_CANDLE_SPACING = 0
+int   RIGHT_EDGE_PADDING     = 0
+
+//════════════════════════════════════════════════════════════════════
+// TOOLTIP TEXT
+//════════════════════════════════════════════════════════════════════
+string TT_SourceMode  = "Rolling HTF Window uses the most recent higher-timeframe overlay window and is the default Profil3d mode. Session Window restricts the profile and HTF overlay to the selected market session."
+string TT_OverlayTf   = "Must be higher than the chart timeframe. Example: on a 1-minute chart, use 3m, 5m, 15m, etc."
+string TT_BarsToShow  = "Number of higher-timeframe candles used for the overlay window. The profile uses all chart-timeframe bars inside that same window. Example: 10 candles of 3m on a 1-minute chart profiles thirty 1-minute bars."
+string TT_RowsLayout  = "Number of Rows uses Row Size as the total row count. Ticks Per Row uses Row Size as the tick height of each profile row."
+string TT_RowSize     = "When Rows Layout is Number of Rows, this is the row count. When Rows Layout is Ticks Per Row, this is ticks per row. Row Size strongly affects profile definition and smoothness."
+string TT_ProfileDepth = "Multiplies the volume-profile data window while leaving the HTF candle overlay unchanged. 1x uses the same window as the overlay candles; higher values look farther back for the profile only."
+string TT_RowFill     = "Controls how much vertical space each profile row fills inside its price band. Lower values create more visible gap between rows; higher values make the profile more solid. Pine cannot guarantee exact pixel gaps at every zoom level."
+string TT_VolMode     = "Up/Down splits volume by candle direction. Total draws one total-volume bar per row. Delta uses directional volume approximation because Pine normally does not provide true bid/ask delta."
+string TT_LastOffset   = "Number of blank chart bars between the latest chart bar and the first HTF overlay candle. Pine cannot lock drawings to the native price-scale edge like VRVP, so this is the reliable right-side placement control."
+string TT_RangeLine  = "Draws finite range high/low lines from the chart candle that set the overlay range to the right-side overlay panel. These lines do not extend across the whole chart."
+string TT_LineStyle   = "Line style used for the selected dynamic drawing object. Dynamic line.new objects cannot expose TradingView Style-tab line controls, so Profil3d provides these BFG input controls instead."
+
+//════════════════════════════════════════════════════════════════════
+// INPUTS
+//════════════════════════════════════════════════════════════════════
+string groupOffset  = "Indicator Offset"
+string groupSession = "Session Parameters"
+string groupCandle  = "Candle Overlay"
+string groupProfile = "Volume Profile"
+
+int    lastBarOffset    = input.int(22, "Indicator Offset Bars", minval=1, maxval=300, group=groupOffset, tooltip=TT_LastOffset)
+
+string sourceMode       = input.string("Rolling HTF Window", "Profile Source", options=["Rolling HTF Window", "Session Window"], group=groupSession, tooltip=TT_SourceMode)
+string sessionTemplate  = input.string("Auto Detect", "Session Template", options=["Auto Detect", "Equity Core", "Equity Globex", "Metals NY Active", "Energy NY Active", "Crypto UTC Day", "Global FX London", "Global FX Tokyo", "Global FX Hong Kong", "Custom"], group=groupSession)
+string customSession    = input.session("0930-1600", "Custom Session", group=groupSession)
+string customTimezone   = input.string("America/New_York", "Custom Timezone", options=["America/New_York", "America/Chicago", "Europe/London", "Asia/Tokyo", "Asia/Hong_Kong", "Asia/Singapore", "Etc/UTC"], group=groupSession)
+
+string overlayTf        = input.timeframe("15", "Overlay Timeframe", group=groupCandle, tooltip=TT_OverlayTf)
+int    overlayBars      = input.int(10, "Overlay Bars To Show", minval=1, maxval=100, group=groupCandle, tooltip=TT_BarsToShow)
+// Candle overlay is intentionally on by default. Profil3d is designed as a volume profile with higher-timeframe candle overlay.
+bool   showOverlay      = input.bool(true, "Show HTF Candle Overlay", group=groupCandle)
+bool   showOverlayTfLab = input.bool(true, "Show Overlay Timeframe Label", group=groupCandle)
+bool   showOverlayTimes = input.bool(true, "Show Overlay Candle Times", group=groupCandle)
+bool   showRangeLines   = input.bool(true, "Show Range High / Low Lines", group=groupCandle, tooltip=TT_RangeLine)
+color  candleUpCol      = input.color(color.rgb(0, 80, 255, 0), "Overlay Up Candle", group=groupCandle)
+color  candleDownCol    = input.color(color.rgb(255, 80, 0, 0), "Overlay Down Candle", group=groupCandle)
+color  candleWickCol    = input.color(color.rgb(255, 255, 255, 0), "Overlay Wick", group=groupCandle)
+color  candleBorderCol  = input.color(color.rgb(0, 0, 0, 0), "Overlay Candle Border", group=groupCandle)
+color  overlayTextCol   = input.color(color.rgb(245, 245, 245, 0), "Overlay Text", group=groupCandle)
+color  rangeHighCol     = input.color(color.rgb(255, 0, 128, 0), "Range High", inline="rh", group=groupCandle)
+int    rangeHighWidth   = input.int(1, "Width", minval=1, maxval=5, inline="rh", group=groupCandle)
+string rangeHighStyleIn = input.string("Dotted", "Style", options=["Solid", "Dashed", "Dotted"], inline="rh", group=groupCandle, tooltip=TT_LineStyle)
+color  rangeLowCol      = input.color(color.rgb(0, 255, 128, 0), "Range Low", inline="rl", group=groupCandle)
+int    rangeLowWidth    = input.int(1, "Width", minval=1, maxval=5, inline="rl", group=groupCandle)
+string rangeLowStyleIn  = input.string("Dotted", "Style", options=["Solid", "Dashed", "Dotted"], inline="rl", group=groupCandle, tooltip=TT_LineStyle)
+
+string rowsLayout       = input.string("Ticks Per Row", "Rows Layout", options=["Number of Rows", "Ticks Per Row"], group=groupProfile, tooltip=TT_RowsLayout)
+int    rowSize          = input.int(20, "Row Size", minval=1, maxval=400, group=groupProfile, tooltip=TT_RowSize)
+int    profileRowFillPct = input.int(80, "Row Fill %", minval=10, maxval=100, group=groupProfile, tooltip=TT_RowFill)
+string volumeMode       = input.string("Up/Down", "Volume", options=["Up/Down", "Total", "Delta"], group=groupProfile, tooltip=TT_VolMode)
+int    valueAreaPct     = input.int(70, "Value Area Volume", minval=1, maxval=100, group=groupProfile)
+string profileDepth     = input.string("1x Overlay", "Profile Depth", options=["1x Overlay", "2x Overlay", "3x Overlay", "4x Overlay", "5x Overlay"], group=groupProfile, tooltip=TT_ProfileDepth)
+bool   showProfile      = input.bool(true, "Show Volume Profile", group=groupProfile)
+bool   showStatusTable  = input.bool(true, "Show Status Table", group=groupProfile)
+bool   extendLinesLeft  = input.bool(true, "Extend POC / VAH / VAL Left", group=groupProfile)
+color  upVaCol          = input.color(color.rgb(76, 175, 80, 30), "Up Volume", group=groupProfile)
+color  downVaCol        = input.color(color.rgb(244, 67, 54, 30), "Down Volume", group=groupProfile)
+color  upOuterCol       = input.color(color.rgb(33, 150, 243, 30), "Up Outside Volume", group=groupProfile)
+color  downOuterCol     = input.color(color.rgb(255, 152, 0, 30), "Down Outside Volume", group=groupProfile)
+color  totalVaCol       = input.color(color.rgb(0, 150, 136, 30), "Total Volume", group=groupProfile)
+color  totalOuterCol    = input.color(color.rgb(0, 188, 212, 30), "Total Outside Volume", group=groupProfile)
+color  pocCol           = input.color(color.rgb(255, 235, 59, 0), "POC", inline="poc", group=groupProfile)
+int    pocWidth         = input.int(2, "Width", minval=1, maxval=5, inline="poc", group=groupProfile)
+string pocStyleIn       = input.string("Solid", "Style", options=["Solid", "Dashed", "Dotted"], inline="poc", group=groupProfile, tooltip=TT_LineStyle)
+color  vahCol           = input.color(color.rgb(255, 82, 82, 0), "VAH", inline="vah", group=groupProfile)
+int    vahWidth         = input.int(1, "Width", minval=1, maxval=5, inline="vah", group=groupProfile)
+string vahStyleIn       = input.string("Solid", "Style", options=["Solid", "Dashed", "Dotted"], inline="vah", group=groupProfile, tooltip=TT_LineStyle)
+color  valCol           = input.color(color.rgb(0, 230, 170, 0), "VAL", inline="val", group=groupProfile)
+int    valWidth         = input.int(1, "Width", minval=1, maxval=5, inline="val", group=groupProfile)
+string valStyleIn       = input.string("Solid", "Style", options=["Solid", "Dashed", "Dotted"], inline="val", group=groupProfile, tooltip=TT_LineStyle)
+
+int profileLookbackMult = profileDepth == "5x Overlay" ? 5 : profileDepth == "4x Overlay" ? 4 : profileDepth == "3x Overlay" ? 3 : profileDepth == "2x Overlay" ? 2 : 1
+
+//════════════════════════════════════════════════════════════════════
+// DRAWING STATE
+//════════════════════════════════════════════════════════════════════
+var box[]  profileBoxes = array.new_box()
+var box[]  candleBoxes  = array.new_box()
+var line[] profileLines = array.new_line()
+var line[] rangeLines   = array.new_line()
+var line[] wickLines    = array.new_line()
+var label[] overlayLabs = array.new_label()
+var table  statusTable  = table.new(position.bottom_right, 1, 1)
+
+//════════════════════════════════════════════════════════════════════
+// DATA STATE
+//════════════════════════════════════════════════════════════════════
+var float[] htfOpen   = array.new_float()
+var float[] htfHigh   = array.new_float()
+var float[] htfLow    = array.new_float()
+var float[] htfClose  = array.new_float()
+var float[] htfVol    = array.new_float()
+var int[]   htfStart  = array.new_int()
+var int[]   htfFinish = array.new_int()
+
+var float[] srcOpen   = array.new_float()
+var float[] srcHigh   = array.new_float()
+var float[] srcLow    = array.new_float()
+var float[] srcClose  = array.new_float()
+var float[] srcVol    = array.new_float()
+var int[]   srcStart  = array.new_int()
+var int[]   srcFinish = array.new_int()
+var int[]   srcIndex  = array.new_int()
+
+var float curOpen  = na
+var float curHigh  = na
+var float curLow   = na
+var float curClose = na
+var float curVol   = na
+var int   curStart = na
+var int   curEnd   = na
+var bool  curLive  = false
+
+var float[] profUp     = array.new_float(MAX_ROWS, 0.0)
+var float[] profDown   = array.new_float(MAX_ROWS, 0.0)
+var float[] profTotal  = array.new_float(MAX_ROWS, 0.0)
+var bool[]  profInVA   = array.new_bool(MAX_ROWS, false)
+
+//════════════════════════════════════════════════════════════════════
+// HELPERS
+//════════════════════════════════════════════════════════════════════
+f_line_style(string _style) =>
+    _style == "Solid" ? line.style_solid : _style == "Dashed" ? line.style_dashed : line.style_dotted
+
+f_tf_display(string _tf) =>
+    float n = str.tonumber(_tf)
+    string out = _tf
+    if not na(n)
+        int mins = int(n)
+        out := mins >= 60 and mins % 60 == 0 ? str.tostring(int(mins / 60)) + "h" : str.tostring(mins) + "m"
+    else
+        out := _tf == "D" ? "1D" : _tf == "W" ? "1W" : _tf == "M" ? "1M" : _tf
+    out
+
+f_session_tag(string _name) =>
+    string out = _name
+    if _name == "Equity Core"
+        out := "Core"
+    else if _name == "Equity Globex"
+        out := "Globex"
+    else if _name == "Metals NY Active"
+        out := "Metals"
+    else if _name == "Energy NY Active"
+        out := "Energy"
+    else if _name == "Crypto UTC Day"
+        out := "Crypto"
+    else if _name == "Global FX London"
+        out := "London"
+    else if _name == "Global FX Tokyo"
+        out := "Tokyo"
+    else if _name == "Global FX Hong Kong"
+        out := "Hong Kong"
+    else if _name == "Custom"
+        out := "Custom"
+    out
+
+f_range_overlap(float _aLow, float _aHigh, float _bLow, float _bHigh) =>
+    math.max(0.0, math.min(_aHigh, _bHigh) - math.max(_aLow, _bLow))
+
+f_add_profile_volume(float _o, float _h, float _l, float _c, float _v, float _pLow, float _rowHeight, int _rows) =>
+    float v = math.max(nz(_v, 0.0), 0.0)
+    if v > 0 and not na(_o) and not na(_h) and not na(_l) and not na(_c)
+        float bodyTop   = math.max(_o, _c)
+        float bodyBot   = math.min(_o, _c)
+        float candleHigh = math.max(_h, bodyTop)
+        float candleLow  = math.min(_l, bodyBot)
+        float topWick   = math.max(candleHigh - bodyTop, 0.0)
+        float botWick   = math.max(bodyBot - candleLow, 0.0)
+        float body      = math.max(bodyTop - bodyBot, 0.0)
+        float denom     = body + topWick * 2.0 + botWick * 2.0
+        bool  bodyUp    = _c >= _o
+
+        if denom <= 0
+            int rowIdx = int(math.floor((_c - _pLow) / _rowHeight))
+            rowIdx := math.max(0, math.min(_rows - 1, rowIdx))
+            float halfVol = v * 0.5
+            array.set(profUp, rowIdx, array.get(profUp, rowIdx) + halfVol)
+            array.set(profDown, rowIdx, array.get(profDown, rowIdx) + halfVol)
+        else
+            float bodyVol = body * v / denom
+            float topVol  = topWick * 2.0 * v / denom
+            float botVol  = botWick * 2.0 * v / denom
+            for r = 0 to _rows - 1
+                float rowBot = _pLow + _rowHeight * r
+                float rowTop = rowBot + _rowHeight
+
+                if body > 0
+                    float bodyPart = f_range_overlap(rowBot, rowTop, bodyBot, bodyTop) * bodyVol / body
+                    if bodyPart > 0
+                        if bodyUp
+                            array.set(profUp, r, array.get(profUp, r) + bodyPart)
+                        else
+                            array.set(profDown, r, array.get(profDown, r) + bodyPart)
+
+                if topWick > 0
+                    float topPart = f_range_overlap(rowBot, rowTop, bodyTop, candleHigh) * topVol / topWick
+                    if topPart > 0
+                        array.set(profUp, r, array.get(profUp, r) + topPart * 0.5)
+                        array.set(profDown, r, array.get(profDown, r) + topPart * 0.5)
+
+                if botWick > 0
+                    float botPart = f_range_overlap(rowBot, rowTop, candleLow, bodyBot) * botVol / botWick
+                    if botPart > 0
+                        array.set(profUp, r, array.get(profUp, r) + botPart * 0.5)
+                        array.set(profDown, r, array.get(profDown, r) + botPart * 0.5)
+
+f_clear_boxes(box[] _arr) =>
+    if array.size(_arr) > 0
+        for i = 0 to array.size(_arr) - 1
+            box b = array.get(_arr, i)
+            if not na(b)
+                box.delete(b)
+    array.clear(_arr)
+
+f_trim_boxes_to(box[] _arr, int _keep) =>
+    int keep = math.max(_keep, 0)
+    while array.size(_arr) > keep
+        box b = array.pop(_arr)
+        if not na(b)
+            box.delete(b)
+
+f_set_profile_box(box[] _arr, int _slot, int _left, float _top, int _right, float _bottom, color _bg) =>
+    if _slot < array.size(_arr)
+        box b = array.get(_arr, _slot)
+        if not na(b)
+            box.set_left(b, _left)
+            box.set_right(b, _right)
+            box.set_top(b, _top)
+            box.set_bottom(b, _bottom)
+            box.set_border_color(b, COL_TRANSPARENT)
+            box.set_bgcolor(b, _bg)
+    else
+        array.push(_arr, box.new(_left, _top, _right, _bottom, xloc=xloc.bar_index, border_color=COL_TRANSPARENT, bgcolor=_bg))
+
+f_clear_lines(line[] _arr) =>
+    if array.size(_arr) > 0
+        for i = 0 to array.size(_arr) - 1
+            line l = array.get(_arr, i)
+            if not na(l)
+                line.delete(l)
+    array.clear(_arr)
+
+f_clear_labels(label[] _arr) =>
+    if array.size(_arr) > 0
+        for i = 0 to array.size(_arr) - 1
+            label lb = array.get(_arr, i)
+            if not na(lb)
+                label.delete(lb)
+    array.clear(_arr)
+
+f_clear_data() =>
+    array.clear(htfOpen)
+    array.clear(htfHigh)
+    array.clear(htfLow)
+    array.clear(htfClose)
+    array.clear(htfVol)
+    array.clear(htfStart)
+    array.clear(htfFinish)
+    array.clear(srcOpen)
+    array.clear(srcHigh)
+    array.clear(srcLow)
+    array.clear(srcClose)
+    array.clear(srcVol)
+    array.clear(srcStart)
+    array.clear(srcFinish)
+    array.clear(srcIndex)
+
+f_trim_source_data(int _maxBars) =>
+    int keep = math.max(_maxBars, 1)
+    while array.size(srcOpen) > keep
+        array.shift(srcOpen)
+        array.shift(srcHigh)
+        array.shift(srcLow)
+        array.shift(srcClose)
+        array.shift(srcVol)
+        array.shift(srcStart)
+        array.shift(srcFinish)
+        array.shift(srcIndex)
+
+f_push_source(float _o, float _h, float _l, float _c, float _v, int _t0, int _t1, int _barIndex, int _maxBars) =>
+    if not na(_o) and not na(_h) and not na(_l) and not na(_c) and not na(_v)
+        array.push(srcOpen, _o)
+        array.push(srcHigh, _h)
+        array.push(srcLow, _l)
+        array.push(srcClose, _c)
+        array.push(srcVol, math.max(_v, 0.0))
+        array.push(srcStart, _t0)
+        array.push(srcFinish, _t1)
+        array.push(srcIndex, _barIndex)
+        f_trim_source_data(_maxBars)
+
+f_trim_data(int _maxBars) =>
+    int keep = math.max(_maxBars, 1)
+    while array.size(htfOpen) > keep
+        array.shift(htfOpen)
+        array.shift(htfHigh)
+        array.shift(htfLow)
+        array.shift(htfClose)
+        array.shift(htfVol)
+        array.shift(htfStart)
+        array.shift(htfFinish)
+
+f_push_htf(float _o, float _h, float _l, float _c, float _v, int _t0, int _t1, int _maxBars) =>
+    if not na(_o) and not na(_h) and not na(_l) and not na(_c) and not na(_v)
+        array.push(htfOpen, _o)
+        array.push(htfHigh, _h)
+        array.push(htfLow, _l)
+        array.push(htfClose, _c)
+        array.push(htfVol, math.max(_v, 0.0))
+        array.push(htfStart, _t0)
+        array.push(htfFinish, _t1)
+        f_trim_data(_maxBars)
+
+f_session_name(string _template, string _root, string _ticker) =>
+    string out = "Custom"
+    bool isCrypto = syminfo.type == "crypto"
+    bool isMetal  = _root == "GC" or _root == "MGC" or _root == "SI" or _root == "SIL" or _root == "HG" or _root == "PL" or _root == "PA"
+    bool isEnergy = _root == "CL" or _root == "MCL" or _root == "NG" or _root == "QG" or _root == "RB" or _root == "HO"
+    if _template == "Auto Detect"
+        out := isCrypto ? "Crypto UTC Day" : isMetal ? "Metals NY Active" : isEnergy ? "Energy NY Active" : "Equity Core"
+    else
+        out := _template
+    out
+
+f_session_string(string _name) =>
+    string out = customSession
+    if _name == "Equity Core"
+        out := "0930-1600"
+    else if _name == "Equity Globex"
+        out := "1800-1700"
+    else if _name == "Metals NY Active"
+        out := "0820-1330"
+    else if _name == "Energy NY Active"
+        out := "0900-1430"
+    else if _name == "Crypto UTC Day"
+        out := "0000-2359"
+    else if _name == "Global FX London"
+        out := "0800-1700"
+    else if _name == "Global FX Tokyo"
+        out := "0900-1500"
+    else if _name == "Global FX Hong Kong"
+        out := "0930-1600"
+    out
+
+f_session_tz(string _name) =>
+    string out = customTimezone
+    if _name == "Equity Core" or _name == "Equity Globex" or _name == "Metals NY Active" or _name == "Energy NY Active"
+        out := "America/New_York"
+    else if _name == "Crypto UTC Day"
+        out := "Etc/UTC"
+    else if _name == "Global FX London"
+        out := "Europe/London"
+    else if _name == "Global FX Tokyo"
+        out := "Asia/Tokyo"
+    else if _name == "Global FX Hong Kong"
+        out := "Asia/Hong_Kong"
+    out
+
+f_get_o(int _idx, int _histSize) =>
+    _idx < _histSize ? array.get(htfOpen, _idx) : curOpen
+
+f_get_h(int _idx, int _histSize) =>
+    _idx < _histSize ? array.get(htfHigh, _idx) : curHigh
+
+f_get_l(int _idx, int _histSize) =>
+    _idx < _histSize ? array.get(htfLow, _idx) : curLow
+
+f_get_c(int _idx, int _histSize) =>
+    _idx < _histSize ? array.get(htfClose, _idx) : curClose
+
+f_get_v(int _idx, int _histSize) =>
+    _idx < _histSize ? array.get(htfVol, _idx) : curVol
+
+f_get_t0(int _idx, int _histSize) =>
+    _idx < _histSize ? array.get(htfStart, _idx) : curStart
+
+f_get_t1(int _idx, int _histSize) =>
+    _idx < _histSize ? array.get(htfFinish, _idx) : curEnd
+
+//════════════════════════════════════════════════════════════════════
+// SESSION AND TIMEFRAME STATE
+//════════════════════════════════════════════════════════════════════
+string rootRaw    = str.upper(syminfo.root)
+string tickerRaw  = str.upper(syminfo.ticker)
+string activeRoot = rootRaw != "" ? rootRaw : tickerRaw
+string sessionNm  = f_session_name(sessionTemplate, activeRoot, tickerRaw)
+string sessionStr = f_session_string(sessionNm)
+string sessionTz  = f_session_tz(sessionNm)
+
+bool useSessionOverlay = sourceMode == "Session Window"
+bool inSession         = not na(time(timeframe.period, sessionStr, sessionTz))
+bool wasInSession     = bar_index > 0 ? inSession[1] : false
+bool newSession        = useSessionOverlay and inSession and not wasInSession
+bool endSession        = useSessionOverlay and not inSession and wasInSession
+bool sourceAllowed     = useSessionOverlay ? inSession : true
+
+float chartSec   = timeframe.in_seconds(timeframe.period)
+float overlaySec = timeframe.in_seconds(overlayTf)
+bool  tfKnown    = not na(chartSec) and not na(overlaySec)
+bool  validTf    = tfKnown and overlaySec > chartSec
+int   sourceKeep  = tfKnown ? math.min(5000, math.max(overlayBars * profileLookbackMult * int(math.ceil(overlaySec / chartSec)) + 50, overlayBars + 50)) : 5000
+
+int  overlayStartRaw = time(overlayTf)
+bool newOverlayBar   = not na(overlayStartRaw) and overlayStartRaw != overlayStartRaw[1]
+
+//════════════════════════════════════════════════════════════════════
+// HIGHER-TIMEFRAME AGGREGATION
+//════════════════════════════════════════════════════════════════════
+if validTf
+    if newSession
+        f_clear_data()
+        curOpen  := na
+        curHigh  := na
+        curLow   := na
+        curClose := na
+        curVol   := na
+        curStart := na
+        curEnd   := na
+        curLive  := false
+
+    if endSession and curLive
+        f_push_htf(curOpen, curHigh, curLow, curClose, curVol, curStart, curEnd, overlayBars * profileLookbackMult)
+        curOpen  := na
+        curHigh  := na
+        curLow   := na
+        curClose := na
+        curVol   := na
+        curStart := na
+        curEnd   := na
+        curLive  := false
+
+    if sourceAllowed
+        f_push_source(open, high, low, close, nz(volume, 0.0), time, time_close, bar_index, sourceKeep)
+        if not curLive
+            curOpen  := open
+            curHigh  := high
+            curLow   := low
+            curClose := close
+            curVol   := nz(volume, 0.0)
+            curStart := time
+            curEnd   := time_close
+            curLive  := true
+        else if newOverlayBar
+            f_push_htf(curOpen, curHigh, curLow, curClose, curVol, curStart, curEnd, overlayBars * profileLookbackMult)
+            curOpen  := open
+            curHigh  := high
+            curLow   := low
+            curClose := close
+            curVol   := nz(volume, 0.0)
+            curStart := time
+            curEnd   := time_close
+            curLive  := true
+        else
+            curHigh  := math.max(curHigh, high)
+            curLow   := math.min(curLow, low)
+            curClose := close
+            curVol   := nz(curVol, 0.0) + nz(volume, 0.0)
+            curEnd   := time_close
+else
+    curLive := false
+
+//════════════════════════════════════════════════════════════════════
+// LIVE / REPLAY DRAW
+//════════════════════════════════════════════════════════════════════
+// Bar Replay does not always behave like a normal live last bar.
+// islastconfirmedhistory catches the current replay/confirmed edge without forcing every historical bar to redraw.
+bool drawNow = barstate.islast or barstate.islastconfirmedhistory or barstate.isrealtime
+
+if drawNow
+    // Profile boxes are persistent and are updated in-place so they remain the older box layer.
+    // HTF candle boxes are deleted and recreated after the profile pass to force them above the profile.
+    f_clear_boxes(candleBoxes)
+    f_clear_lines(profileLines)
+    f_clear_lines(rangeLines)
+    f_clear_lines(wickLines)
+    f_clear_labels(overlayLabs)
+
+    int histSize       = array.size(htfOpen)
+    int totalAvailable = histSize + (curLive ? 1 : 0)
+    int drawCount      = math.min(overlayBars, totalAvailable)
+
+    string statusText = ""
+    if not validTf
+        statusText := "Profil3d: Overlay TF must be higher than chart TF."
+    else if useSessionOverlay and not inSession and totalAvailable == 0
+        statusText := "Profil3d: Waiting for " + sessionNm + " session."
+    else if drawCount == 0
+        statusText := "Profil3d: Waiting for HTF source data."
+    else
+        statusText := "Profil3d  " + sessionNm + "  " + f_tf_display(overlayTf) + " x " + str.tostring(drawCount) + (profileLookbackMult > 1 ? "  VP " + str.tostring(profileLookbackMult) + "x" : "")
+
+    if showStatusTable
+        color statusBg = validTf ? color.rgb(0, 0, 0, 80) : color.rgb(255, 82, 82, 25)
+        color statusTx = validTf ? color.rgb(220, 220, 220) : color.rgb(255, 255, 255)
+        table.cell(statusTable, 0, 0, statusText, text_color=statusTx, bgcolor=statusBg, text_size=size.small)
+    else
+        table.cell(statusTable, 0, 0, "", text_color=COL_TRANSPARENT, bgcolor=COL_TRANSPARENT)
+
+    if not (validTf and drawCount > 0)
+        f_trim_boxes_to(profileBoxes, 0)
+
+    if validTf and drawCount > 0
+        int   firstIdx    = totalAvailable - drawCount
+        int   lastIdx     = firstIdx + drawCount - 1
+        int   windowStart = f_get_t0(firstIdx, histSize)
+        int   windowEnd   = f_get_t1(lastIdx, histSize)
+        int   intendedWindowMs = int(math.round(overlaySec * 1000.0 * drawCount * profileLookbackMult))
+        int   profileWindowStart = profileLookbackMult > 1 ? windowEnd - intendedWindowMs : windowStart
+        int   profileFirstIdx = math.max(0, totalAvailable - drawCount * profileLookbackMult)
+        float pHigh       = na
+        float pLow        = na
+        float overlayHigh = na
+        float overlayLow  = na
+        int   rangeHighX  = bar_index
+        int   rangeLowX   = bar_index
+        int   srcSize     = array.size(srcOpen)
+        int   srcCount    = 0
+
+        for sIdx = 0 to srcSize - 1
+            int st = array.get(srcStart, sIdx)
+            int en = array.get(srcFinish, sIdx)
+            float sh = array.get(srcHigh, sIdx)
+            float sl = array.get(srcLow, sIdx)
+            int sx = array.get(srcIndex, sIdx)
+            bool insideOverlayWindow = st >= windowStart and en <= windowEnd
+            bool insideProfileWindow = st >= profileWindowStart and en <= windowEnd
+            if insideOverlayWindow
+                if na(overlayHigh) or sh > overlayHigh
+                    overlayHigh := sh
+                    rangeHighX := sx
+                if na(overlayLow) or sl < overlayLow
+                    overlayLow := sl
+                    rangeLowX := sx
+            if insideProfileWindow
+                pHigh := na(pHigh) ? sh : math.max(pHigh, sh)
+                pLow  := na(pLow) ? sl : math.min(pLow, sl)
+                srcCount += 1
+
+        if srcCount == 0
+            for idx = profileFirstIdx to totalAvailable - 1
+                float bh = f_get_h(idx, histSize)
+                float bl = f_get_l(idx, histSize)
+                pHigh := na(pHigh) ? bh : math.max(pHigh, bh)
+                pLow  := na(pLow) ? bl : math.min(pLow, bl)
+            for j = 0 to drawCount - 1
+                int oIdx = firstIdx + j
+                float oh = f_get_h(oIdx, histSize)
+                float ol = f_get_l(oIdx, histSize)
+                if na(overlayHigh) or oh > overlayHigh
+                    overlayHigh := oh
+                    rangeHighX := bar_index
+                if na(overlayLow) or ol < overlayLow
+                    overlayLow := ol
+                    rangeLowX := bar_index
+
+        float priceRange = pHigh - pLow
+        if not na(pHigh) and not na(pLow) and priceRange <= 0
+            priceRange := syminfo.mintick
+            pHigh += syminfo.mintick * 0.5
+            pLow  -= syminfo.mintick * 0.5
+
+        int activeRows = rowsLayout == "Number of Rows" ? rowSize : int(math.ceil(priceRange / (rowSize * syminfo.mintick)))
+        activeRows := math.max(1, math.min(MAX_ROWS, activeRows))
+
+        float rowHeight = rowsLayout == "Number of Rows" ? priceRange / activeRows : rowSize * syminfo.mintick
+        rowHeight := rowHeight <= 0 ? syminfo.mintick : rowHeight
+
+        array.fill(profUp, 0.0)
+        array.fill(profDown, 0.0)
+        array.fill(profTotal, 0.0)
+        array.fill(profInVA, false)
+
+        if srcCount > 0
+            for sIdx = 0 to srcSize - 1
+                int st = array.get(srcStart, sIdx)
+                int en = array.get(srcFinish, sIdx)
+                bool insideWindow = st >= profileWindowStart and en <= windowEnd
+                if insideWindow
+                    f_add_profile_volume(array.get(srcOpen, sIdx), array.get(srcHigh, sIdx), array.get(srcLow, sIdx), array.get(srcClose, sIdx), array.get(srcVol, sIdx), pLow, rowHeight, activeRows)
+        else
+            for idx = profileFirstIdx to totalAvailable - 1
+                f_add_profile_volume(f_get_o(idx, histSize), f_get_h(idx, histSize), f_get_l(idx, histSize), f_get_c(idx, histSize), f_get_v(idx, histSize), pLow, rowHeight, activeRows)
+
+        float allVol      = 0.0
+        float maxRowVol   = 0.0
+        float maxDeltaVol = 0.0
+        int   pocIdx      = 0
+
+        for r = 0 to activeRows - 1
+            float u = array.get(profUp, r)
+            float d = array.get(profDown, r)
+            float t = u + d
+            float deltaAbs = math.abs(u - d)
+            array.set(profTotal, r, t)
+            allVol += t
+            if t > maxRowVol
+                maxRowVol := t
+                pocIdx := r
+            maxDeltaVol := math.max(maxDeltaVol, deltaAbs)
+
+        int vaLowIdx  = pocIdx
+        int vaHighIdx = pocIdx
+        float vaAcc   = array.get(profTotal, pocIdx)
+        float vaNeed  = allVol * valueAreaPct / 100.0
+
+        if allVol > 0
+            array.set(profInVA, pocIdx, true)
+            while vaAcc < vaNeed and (vaLowIdx > 0 or vaHighIdx < activeRows - 1)
+                float nextLowVol  = vaLowIdx > 0 ? array.get(profTotal, vaLowIdx - 1) : -1.0
+                float nextHighVol = vaHighIdx < activeRows - 1 ? array.get(profTotal, vaHighIdx + 1) : -1.0
+                if nextHighVol >= nextLowVol and vaHighIdx < activeRows - 1
+                    vaHighIdx += 1
+                    vaAcc += math.max(nextHighVol, 0.0)
+                    array.set(profInVA, vaHighIdx, true)
+                else if vaLowIdx > 0
+                    vaLowIdx -= 1
+                    vaAcc += math.max(nextLowVol, 0.0)
+                    array.set(profInVA, vaLowIdx, true)
+                else
+                    break
+
+        int candleGroupWidth = drawCount * OVERLAY_CANDLE_WIDTH + math.max(drawCount - 1, 0) * OVERLAY_CANDLE_SPACING
+        int profileBoxWidth  = candleGroupWidth + RIGHT_EDGE_PADDING
+        int histogramWidth   = math.max(1, candleGroupWidth)
+        int overlayLeft      = bar_index + lastBarOffset
+        int rightEdge        = overlayLeft + profileBoxWidth
+        int profileLeft      = rightEdge - histogramWidth
+        int drawLeft         = profileLeft
+        int drawRight        = rightEdge
+        lineExtend = extendLinesLeft ? extend.left : extend.none
+        float pocPrice = pLow + rowHeight * (pocIdx + 0.5)
+        float vahPrice = pLow + rowHeight * (vaHighIdx + 1)
+        float valPrice = pLow + rowHeight * vaLowIdx
+        int   profileBoxSlot = 0
+
+        if showProfile and allVol > 0
+            for r = 0 to activeRows - 1
+                float rowBase   = pLow + rowHeight * r
+                float rowFill   = rowHeight * profileRowFillPct / 100.0
+                float rowGap    = math.max(rowHeight - rowFill, 0.0)
+                float rowBot    = rowBase + rowGap * 0.5
+                float rowTop    = rowBot + rowFill
+                bool inVA = array.get(profInVA, r)
+                float u = array.get(profUp, r)
+                float d = array.get(profDown, r)
+                float t = array.get(profTotal, r)
+
+                if volumeMode == "Up/Down"
+                    int totalWidth = maxRowVol > 0 ? int(math.round(histogramWidth * t / maxRowVol)) : 0
+                    totalWidth := math.max(0, math.min(histogramWidth, totalWidth))
+                    int upWidth = t > 0 ? int(math.round(totalWidth * u / t)) : 0
+                    upWidth := math.max(0, math.min(totalWidth, upWidth))
+                    int downWidth = totalWidth - upWidth
+                    int upLeft = rightEdge - upWidth
+                    int downLeft = upLeft - downWidth
+                    color uCol = inVA ? upVaCol : upOuterCol
+                    color dCol = inVA ? downVaCol : downOuterCol
+                    if downWidth > 0
+                        f_set_profile_box(profileBoxes, profileBoxSlot, downLeft, rowTop, upLeft, rowBot, dCol)
+                        profileBoxSlot += 1
+                    if upWidth > 0
+                        f_set_profile_box(profileBoxes, profileBoxSlot, upLeft, rowTop, rightEdge, rowBot, uCol)
+                        profileBoxSlot += 1
+                else if volumeMode == "Total"
+                    int totalWidth = maxRowVol > 0 ? int(math.round(histogramWidth * t / maxRowVol)) : 0
+                    totalWidth := math.max(0, math.min(histogramWidth, totalWidth))
+                    color tCol = inVA ? totalVaCol : totalOuterCol
+                    if totalWidth > 0
+                        f_set_profile_box(profileBoxes, profileBoxSlot, rightEdge - totalWidth, rowTop, rightEdge, rowBot, tCol)
+                        profileBoxSlot += 1
+                else
+                    float delta = u - d
+                    int deltaWidth = maxDeltaVol > 0 ? int(math.round(histogramWidth * math.abs(delta) / maxDeltaVol)) : 0
+                    deltaWidth := math.max(0, math.min(histogramWidth, deltaWidth))
+                    color deltaCol = delta >= 0 ? (inVA ? upVaCol : upOuterCol) : (inVA ? downVaCol : downOuterCol)
+                    if deltaWidth > 0
+                        f_set_profile_box(profileBoxes, profileBoxSlot, rightEdge - deltaWidth, rowTop, rightEdge, rowBot, deltaCol)
+                        profileBoxSlot += 1
+
+        f_trim_boxes_to(profileBoxes, profileBoxSlot)
+
+        if showProfile and allVol > 0
+            array.push(profileLines, line.new(drawLeft, pocPrice, drawRight, pocPrice, xloc=xloc.bar_index, extend=lineExtend, color=pocCol, width=pocWidth, style=f_line_style(pocStyleIn)))
+            array.push(profileLines, line.new(drawLeft, vahPrice, drawRight, vahPrice, xloc=xloc.bar_index, extend=lineExtend, color=vahCol, width=vahWidth, style=f_line_style(vahStyleIn)))
+            array.push(profileLines, line.new(drawLeft, valPrice, drawRight, valPrice, xloc=xloc.bar_index, extend=lineExtend, color=valCol, width=valWidth, style=f_line_style(valStyleIn)))
+
+        if showRangeLines and not na(overlayHigh) and not na(overlayLow)
+            int rhX = math.min(rangeHighX, drawRight)
+            int rlX = math.min(rangeLowX, drawRight)
+            array.push(rangeLines, line.new(rhX, overlayHigh, drawRight, overlayHigh, xloc=xloc.bar_index, extend=extend.none, color=rangeHighCol, width=rangeHighWidth, style=f_line_style(rangeHighStyleIn)))
+            array.push(rangeLines, line.new(rlX, overlayLow, drawRight, overlayLow, xloc=xloc.bar_index, extend=extend.none, color=rangeLowCol, width=rangeLowWidth, style=f_line_style(rangeLowStyleIn)))
+
+        // Final overlay refresh pass. Candle bodies are recreated after the profile box update pass,
+        // which keeps the HTF candle boxes visually above the volume profile boxes.
+        if showOverlay
+            int overlayRight = rightEdge - RIGHT_EDGE_PADDING
+            int candleStep   = OVERLAY_CANDLE_WIDTH + OVERLAY_CANDLE_SPACING
+            float labelPad   = math.max(rowHeight * 1.5, priceRange * 0.025)
+            string tfLabel   = f_tf_display(overlayTf) + (sessionTemplate == "Auto Detect" ? "\n" + f_session_tag(sessionNm) : "")
+            float newestHigh = f_get_h(firstIdx + drawCount - 1, histSize)
+            int newestX1     = overlayLeft + (drawCount - 1) * candleStep
+            int newestX2     = newestX1 + math.max(OVERLAY_CANDLE_WIDTH - 1, 1)
+            int tfLabelX     = newestX1 + int(math.floor((newestX2 - newestX1) * 0.5))
+            float tfLabelY   = newestHigh + labelPad * 0.65
+
+            // BFG hard hierarchy: profile boxes -> profile lines -> range lines -> wick lines -> candle bodies -> labels.
+            // Wick lines are intentionally used instead of wick boxes because boxes cannot be thinner than one bar-index column.
+            for j = 0 to drawCount - 1
+                int idx = firstIdx + j
+                float bo = f_get_o(idx, histSize)
+                float bh = f_get_h(idx, histSize)
+                float bl = f_get_l(idx, histSize)
+                float bc = f_get_c(idx, histSize)
+                int x1 = overlayLeft + j * candleStep
+                int x2 = x1 + math.max(OVERLAY_CANDLE_WIDTH - 1, 1)
+                int xCenter = x1 + int(math.floor((x2 - x1) * 0.5))
+                float bodyTop = math.max(bo, bc)
+                float bodyBot = math.min(bo, bc)
+                if bodyTop == bodyBot
+                    bodyTop += syminfo.mintick * 0.5
+                    bodyBot -= syminfo.mintick * 0.5
+                if bh > bodyTop
+                    array.push(wickLines, line.new(xCenter, bh, xCenter, bodyTop, xloc=xloc.bar_index, color=candleWickCol, width=1))
+                if bl < bodyBot
+                    array.push(wickLines, line.new(xCenter, bodyBot, xCenter, bl, xloc=xloc.bar_index, color=candleWickCol, width=1))
+
+            // Candle body boxes are drawn after all wick lines so candle bodies stay visually dominant.
+            for j = 0 to drawCount - 1
+                int idx = firstIdx + j
+                float bo = f_get_o(idx, histSize)
+                float bc = f_get_c(idx, histSize)
+                bool isUp = bc >= bo
+                int x1 = overlayLeft + j * candleStep
+                int x2 = x1 + math.max(OVERLAY_CANDLE_WIDTH - 1, 1)
+                float bodyTop = math.max(bo, bc)
+                float bodyBot = math.min(bo, bc)
+                if bodyTop == bodyBot
+                    bodyTop += syminfo.mintick * 0.5
+                    bodyBot -= syminfo.mintick * 0.5
+                color bodyCol = isUp ? candleUpCol : candleDownCol
+                array.push(candleBoxes, box.new(x1, bodyTop, x2, bodyBot, xloc=xloc.bar_index, border_color=candleBorderCol, border_width=1, bgcolor=bodyCol))
+
+            // Labels are drawn last in the overlay stack.
+            if showOverlayTfLab
+                array.push(overlayLabs, label.new(tfLabelX, tfLabelY, tfLabel, xloc=xloc.bar_index, yloc=yloc.price, style=label.style_none, textcolor=overlayTextCol, color=COL_TRANSPARENT, size=size.normal, textalign=text.align_center))
+            if showOverlayTimes
+                for j = 0 to drawCount - 1
+                    int idx = firstIdx + j
+                    float bl = f_get_l(idx, histSize)
+                    int x1 = overlayLeft + j * candleStep
+                    int x2 = x1 + math.max(OVERLAY_CANDLE_WIDTH - 1, 1)
+                    int xCenter = x1 + int(math.floor((x2 - x1) * 0.5))
+                    int t0 = f_get_t0(idx, histSize)
+                    string tText = str.format_time(t0, "HH:mm", sessionTz)
+                    array.push(overlayLabs, label.new(xCenter, bl - labelPad, tText, xloc=xloc.bar_index, yloc=yloc.price, style=label.style_none, textcolor=overlayTextCol, color=COL_TRANSPARENT, size=size.small, textalign=text.align_center))

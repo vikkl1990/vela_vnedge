@@ -1,0 +1,476 @@
+// =============================================================================
+// RTH Gap Tracker + Expected Move  —  Pine Script v6
+//
+// PART 1 — RTH gaps
+// The script measures the gap between the RTH close of the last session and
+// the RTH open of the new session. It draws a box for each gap.
+// - Each gap extends a fixed number of bars to the right of the last bar. All
+//   open gaps move forward on every new bar.
+// - When price moves into a gap, the gap becomes smaller at that bar only. The
+//   part on the left of that bar keeps its full height. The result is a
+//   staircase. It shows the size of the gap at each bar of its history.
+// - The script deletes a gap when price crosses it fully.
+//
+// PART 2 — Standard deviation of the day (Rule of 16)
+// The script divides the volatility index by 16 to get the expected move for
+// one day. It draws the sigma levels as horizontal lines for the current
+// session. The levels do not move during the session.
+// - Each level has its own color, line style and width.
+// - A label shows the sigma and the price, or only the sigma. The current
+//   session and the past sessions each have their own label settings.
+// - If "Keep past sessions" is off, the script deletes the old lines at the
+//   start of a new session.
+// - If "Keep past sessions" is on, the script keeps the old lines for
+//   backtests. Each old line stops at the last RTH bar of its session.
+// The script selects the volatility index automatically from the chart symbol.
+//
+// PART 3 — Sigma table
+// The table shows the levels of the current session from the highest to the
+// lowest. A row for the last price stands between the level above price and
+// the level below price. A second column shows the distance from price to
+// each level. The distance column is optional. The table updates on each tick
+// of the last bar.
+//
+// Use an intraday timeframe. The RTH session is not available on daily charts
+// or higher. The script works on 24-hour charts and on charts that show
+// regular trading hours only.
+// =============================================================================
+
+//@version=6
+indicator("RTH Gaps and Expected Move", "RTH Gaps + EM", overlay = true,
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+// ------------------------------------------------------------------ Inputs --
+string G_SES = "Session"
+string G_GAP = "Gaps"
+string G_STY = "Gap style"
+string G_SD  = "Standard deviation (Rule of 16)"
+string G_LVL = "Sigma levels"
+string G_LBL = "Sigma labels"
+string G_HIS = "Sigma history"
+string G_TAB = "Sigma table"
+
+sessionRth = input.session("0930-1600:23456", "RTH session", group = G_SES,
+     tooltip = "Regular trading hours. The days come after the colon. 1 = Sunday, 7 = Saturday.")
+tzRth = input.string("America/New_York", "Timezone", group = G_SES,
+     options = ["America/New_York", "America/Chicago", "Europe/Berlin", "Europe/London", "Asia/Tokyo", "UTC"],
+     tooltip = "Timezone of the session times above. It is not the chart timezone.")
+
+extendBars = input.int(20, "Extend right (bars)", minval = 1, maxval = 400, group = G_GAP,
+     tooltip = "Number of bars that each gap and each sigma line extends to the right of the last bar.")
+showGaps = input.bool(true, "Show gaps", group = G_GAP)
+minTicks = input.int(1, "Minimum gap size (ticks)", minval = 0, group = G_GAP,
+     tooltip = "The script ignores gaps that are smaller than this value.")
+maxGaps = input.int(10, "Maximum number of gaps", minval = 1, maxval = 50, group = G_GAP,
+     tooltip = "The script deletes the oldest gap when the chart has more gaps than this value.")
+maxSteps = input.int(30, "Maximum steps per gap", minval = 1, maxval = 200, group = G_GAP,
+     tooltip = "Each bar that makes a gap smaller adds one step. At this limit, the last step becomes smaller and no new step starts. A limit is necessary, because TradingView permits 500 boxes for one script.")
+
+upBg = input.color(color.new(#089981, 82), "Gap up", inline = "up", group = G_STY)
+upBc = input.color(color.new(#089981, 25), "", inline = "up", group = G_STY)
+dnBg = input.color(color.new(#f23645, 82), "Gap down", inline = "dn", group = G_STY)
+dnBc = input.color(color.new(#f23645, 25), "", inline = "dn", group = G_STY)
+borderWidth = input.int(1, "Border width", minval = 0, maxval = 4, group = G_STY)
+
+showSd = input.bool(true, "Show standard deviation", group = G_SD)
+volInput = input.string("", "Volatility index", group = G_SD,
+     tooltip = "Keep this field empty for automatic selection: VXN for Nasdaq symbols, RVX for Russell, VXD for Dow, VIX for all other symbols. Write a symbol here to use a different index.")
+sdDivisor = input.float(16.0, "Divisor", minval = 1.0, step = 0.01, group = G_SD,
+     tooltip = "Rule of 16. The exact value is the square root of the number of trading days in one year: sqrt(252) = 15.87.")
+sdAnchor = input.string("Previous RTH close", "Anchor price", group = G_SD,
+     options = ["Previous RTH close", "Session open"],
+     tooltip = "Price from which the script measures the expected move.")
+
+// One row for each level: show, color, line style, width.
+showAnchor = input.bool(true, "Anchor", inline = "an", group = G_LVL)
+anCol   = input.color(color.new(#787b86, 40), "", inline = "an", group = G_LVL)
+anStyle = input.string("Solid", "", options = ["Solid", "Dashed", "Dotted"], inline = "an", group = G_LVL)
+anWidth = input.int(1, "", minval = 1, maxval = 4, inline = "an", group = G_LVL,
+     tooltip = "Each row sets the color, the line style and the width of one level. The up line and the down line of a level use the same settings.")
+
+sd05 = input.bool(true, "0.5σ", inline = "l05", group = G_LVL)
+c05  = input.color(color.new(#787b86, 0), "", inline = "l05", group = G_LVL)
+st05 = input.string("Dotted", "", options = ["Solid", "Dashed", "Dotted"], inline = "l05", group = G_LVL)
+w05  = input.int(1, "", minval = 1, maxval = 4, inline = "l05", group = G_LVL)
+
+sd1 = input.bool(true, "1σ", inline = "l1", group = G_LVL)
+c1  = input.color(color.new(#2962ff, 0), "", inline = "l1", group = G_LVL)
+st1 = input.string("Dashed", "", options = ["Solid", "Dashed", "Dotted"], inline = "l1", group = G_LVL)
+w1  = input.int(1, "", minval = 1, maxval = 4, inline = "l1", group = G_LVL)
+
+sd2 = input.bool(true, "2σ", inline = "l2", group = G_LVL)
+c2  = input.color(color.new(#ff9800, 0), "", inline = "l2", group = G_LVL)
+st2 = input.string("Dashed", "", options = ["Solid", "Dashed", "Dotted"], inline = "l2", group = G_LVL)
+w2  = input.int(1, "", minval = 1, maxval = 4, inline = "l2", group = G_LVL)
+
+sd3 = input.bool(false, "3σ", inline = "l3", group = G_LVL)
+c3  = input.color(color.new(#9c27b0, 0), "", inline = "l3", group = G_LVL)
+st3 = input.string("Solid", "", options = ["Solid", "Dashed", "Dotted"], inline = "l3", group = G_LVL)
+w3  = input.int(1, "", minval = 1, maxval = 4, inline = "l3", group = G_LVL)
+
+showAnyLabels = input.bool(true, "Show sigma labels", group = G_LBL,
+     tooltip = "Main switch for the labels. Off hides the labels of the current session and of the past sessions. The lines and the table do not change.")
+showLabels = input.bool(true, "Current session", inline = "lc", group = G_LBL)
+txtCur     = input.string("Sigma and price", "", options = ["Sigma and price", "Sigma only"], inline = "lc", group = G_LBL,
+     tooltip = "Sigma and price: +1σ 21450.25. Sigma only: +1σ. With Sigma only, the anchor label shows 0σ.")
+showPastLabels = input.bool(true, "Past sessions", inline = "lp", group = G_LBL)
+txtPast        = input.string("Sigma only", "", options = ["Sigma and price", "Sigma only"], inline = "lp", group = G_LBL,
+     tooltip = "The script shows these labels only when 'Keep past sessions' is on. Each label stands above its line, at the last RTH bar of its session.")
+
+sdHistory = input.bool(false, "Keep past sessions", group = G_HIS,
+     tooltip = "Keep the sigma lines of past sessions for backtests. Each old line stops at the last RTH bar of its session.")
+sdHistMax = input.int(20, "Maximum past sessions", minval = 1, maxval = 50, group = G_HIS,
+     tooltip = "The script deletes the oldest session when the chart has more past sessions than this value. TradingView permits 500 lines and 500 labels for one script.")
+
+showTable = input.bool(true, "Show table", group = G_TAB)
+tablePosIn = input.string("Top right", "Position", group = G_TAB,
+     options = ["Top left", "Top center", "Top right", "Middle left", "Middle right", "Bottom left", "Bottom center", "Bottom right"])
+tableSizeIn = input.string("Small", "Text size", options = ["Tiny", "Small", "Normal", "Large"], group = G_TAB)
+showDist = input.bool(true, "Show distance", inline = "td", group = G_TAB)
+distUnit = input.string("Points", "", options = ["Points", "Ticks", "Percent"], inline = "td", group = G_TAB,
+     tooltip = "Distance from the last price to each level. A plus sign shows a level above price. A minus sign shows a level below price. Switch the option off for a table with the prices only.")
+showCurPrice = input.bool(true, "Show current price location", group = G_TAB,
+     tooltip = "Row for the last price, between the level above price and the level below price. Off shows the levels only.")
+tablePrices = input.bool(true, "Show prices", group = G_TAB,
+     tooltip = "Second column with the price of each level.")
+tableBg = input.color(color.new(#1e222d, 20), "Background", inline = "tc", group = G_TAB)
+tableTxt = input.color(color.new(#d1d4dc, 0), "Text", inline = "tc", group = G_TAB,
+     tooltip = "The level rows use the color of their level. This color is for the header and the price row.")
+tableLineCol = input.color(color.new(#787b86, 40), "Lines", inline = "tl", group = G_TAB)
+tableLineW = input.int(1, "", minval = 0, maxval = 4, inline = "tl", group = G_TAB,
+     tooltip = "Grid lines between the cells and frame around the table. Width 0 hides them. For a table with lines only, set the background to 100 % transparency.")
+
+bool curShort  = txtCur  == "Sigma only"
+bool pastShort = txtPast == "Sigma only"
+
+// The main switch and the switch of the session must both be on.
+bool labelsCur  = showAnyLabels and showLabels
+bool labelsPast = showAnyLabels and showPastLabels
+
+// ------------------------------------------------------------------- Types --
+// A Gap holds all of its steps and its two live edges. The last step in the
+// array is the active step. Only the active step changes its height and its
+// right end. The steps on the left of it stay as they were.
+type Gap
+    array<box> parts
+    float      top
+    float      bot
+    bool       isUp      // true = the session opened above the last RTH close
+    int        startBar  // bar at which the active step starts
+
+// A Level is one horizontal sigma line with its label. The script also keeps
+// the price, the two label texts and the color. It uses them to make the
+// label again when the session becomes a past session, and for the table.
+type Level
+    line   ln
+    label  lb
+    float  price
+    string txtFull
+    string txtShort
+    color  col
+
+// A Day holds the levels of one past session. The script uses it only when
+// "Keep past sessions" is on.
+type Day
+    array<Level> items
+
+var array<Gap>   gaps    = array.new<Gap>()
+var array<Level> levels  = array.new<Level>()
+var array<Day>   history = array.new<Day>()
+
+var float lastRthClose = na
+var float lastVolClose = na
+var int   lastRthBar   = na
+var int   lastSessDay  = -1
+
+// --------------------------------------------------------------- Functions --
+// Make one step of a gap. The update loop sets the right end again on each bar.
+makeStep(left, top, bot, isUp) =>
+    box.new(left, top, left + extendBars, bot,
+         xloc         = xloc.bar_index,
+         border_color = isUp ? upBc : dnBc,
+         border_width = borderWidth,
+         bgcolor      = isUp ? upBg : dnBg)
+
+// Change the name of a line style into the line style.
+styleOf(string s) =>
+    s == "Solid" ? line.style_solid : s == "Dotted" ? line.style_dotted : line.style_dashed
+
+// Make one sigma line and its label. The update loop sets the right end again
+// on each bar.
+addLevel(float price, string txtFull, string txtShort, color col, string sty, int w) =>
+    line ln = line.new(bar_index, price, bar_index + extendBars, price,
+         xloc = xloc.bar_index, color = col, style = styleOf(sty), width = w)
+    label lb = na
+    if labelsCur
+        lb := label.new(bar_index + extendBars, price, curShort ? txtShort : txtFull,
+             xloc      = xloc.bar_index,
+             style     = label.style_label_left,
+             color     = color.new(color.black, 100),
+             textcolor = col,
+             size      = size.small)
+    levels.push(Level.new(ln, lb, price, txtFull, txtShort, col))
+
+// Make the up line and the down line of one sigma multiple.
+addPair(float base, float sigma, float m, color col, string sty, int w) =>
+    string n  = str.tostring(m, "#.#") + "σ"
+    float  up = base + m * sigma
+    float  dn = base - m * sigma
+    addLevel(up, "+" + n + "  " + str.tostring(up, format.mintick), "+" + n, col, sty, w)
+    addLevel(dn, "-" + n + "  " + str.tostring(dn, format.mintick), "-" + n, col, sty, w)
+
+// Distance from the last price to a level, in the unit of the input.
+distText(float price) =>
+    float d = price - close
+    string s = distUnit == "Ticks"   ? str.tostring(d / syminfo.mintick, "#.##") :
+               distUnit == "Percent" ? str.tostring(d / close * 100.0, "#.##") + "%" :
+               str.tostring(d, format.mintick)
+    d > 0 ? "+" + s : s
+
+// --------------------------------------------------------- Volatility index --
+// Select the index from the chart symbol. The manual input has priority.
+string volAuto = str.contains(syminfo.ticker, "NQ") or str.contains(syminfo.ticker, "NDX") or str.contains(syminfo.ticker, "QQQ") ? "CBOE:VXN" :
+     str.contains(syminfo.ticker, "RTY") or str.contains(syminfo.ticker, "IWM") ? "CBOE:RVX" :
+     str.contains(syminfo.ticker, "YM") or str.contains(syminfo.ticker, "DIA") ? "CBOE:VXD" : "CBOE:VIX"
+string volSym  = volInput == "" ? volAuto : volInput
+string volName = str.replace_all(volSym, "CBOE:", "")
+
+// Take the index on the chart timeframe. The script keeps the last value of
+// the RTH session and uses it on the next session. This value is equal to the
+// close of the index and cannot repaint.
+float volNow = request.security(volSym, timeframe.period, close, ignore_invalid_symbol = true)
+
+// ----------------------------------------------------------------- Session --
+if not timeframe.isintraday
+    runtime.error("RTH Gap Tracker needs an intraday timeframe.")
+
+// A new session starts at the first in-session bar of a new calendar day. The
+// day comes from the session timezone. Do not use a change from out-of-session
+// to in-session. A chart that shows regular trading hours only has no bar
+// between two sessions. Such a change never occurs there.
+bool inSession  = not na(time(timeframe.period, sessionRth, tzRth))
+int  sessDay    = dayofmonth(time, tzRth)
+bool newSession = inSession and sessDay != lastSessDay
+
+// -------------------------------------------------------- Create a new gap --
+// The first RTH bar of a session opens the gap. The reference is the close of
+// the last RTH bar of the session before.
+if newSession and showGaps and not na(lastRthClose)
+    float top = math.max(open, lastRthClose)
+    float bot = math.min(open, lastRthClose)
+
+    if top - bot > 0 and top - bot >= minTicks * syminfo.mintick
+        bool isUp = open > lastRthClose
+        gaps.push(Gap.new(array.from(makeStep(bar_index, top, bot, isUp)), top, bot, isUp, bar_index))
+
+        if gaps.size() > maxGaps
+            Gap oldest = gaps.shift()
+            for b in oldest.parts
+                box.delete(b)
+
+// ------------------------------------------ Standard deviation of the day --
+// At the start of a session, the script handles the levels of the last session.
+// If "Keep past sessions" is on, it stops each line at the last RTH bar of that
+// session. It replaces the label with a past-session label, or deletes it. If
+// the option is off, it deletes the lines and the labels. Then it draws the
+// levels of the new session.
+if newSession and showSd
+    if sdHistory and levels.size() > 0
+        for lv in levels
+            line.set_x2(lv.ln, lastRthBar)
+            label.delete(lv.lb)
+            lv.lb := na
+            if labelsPast
+                lv.lb := label.new(lastRthBar, lv.price, pastShort ? lv.txtShort : lv.txtFull,
+                     xloc      = xloc.bar_index,
+                     style     = label.style_label_lower_right,
+                     color     = color.new(color.black, 100),
+                     textcolor = lv.col,
+                     size      = size.small)
+        history.push(Day.new(levels.copy()))
+
+        if history.size() > sdHistMax
+            Day oldestDay = history.shift()
+            for lv in oldestDay.items
+                line.delete(lv.ln)
+                label.delete(lv.lb)
+    else
+        for lv in levels
+            line.delete(lv.ln)
+            label.delete(lv.lb)
+    levels.clear()
+
+    float anchor = sdAnchor == "Session open" ? open : lastRthClose
+    float vol    = lastVolClose
+
+    if not na(anchor) and not na(vol) and vol > 0
+        float sd = anchor * vol / sdDivisor / 100.0
+
+        if showAnchor
+            addLevel(anchor, volName + " " + str.tostring(vol, "#.##") + "  1σ " + str.tostring(sd, format.mintick), "0σ", anCol, anStyle, anWidth)
+        if sd05
+            addPair(anchor, sd, 0.5, c05, st05, w05)
+        if sd1
+            addPair(anchor, sd, 1.0, c1, st1, w1)
+        if sd2
+            addPair(anchor, sd, 2.0, c2, st2, w2)
+        if sd3
+            addPair(anchor, sd, 3.0, c3, st3, w3)
+
+// Keep the close and the bar index of the last RTH bar, the volatility index
+// and the day of the session. The next session uses these values.
+if inSession
+    lastRthClose := close
+    lastRthBar   := bar_index
+    lastSessDay  := sessDay
+    if not na(volNow)
+        lastVolClose := volNow
+
+// -------------------------------------------- Mitigation, steps, extension --
+if gaps.size() > 0
+    for i = gaps.size() - 1 to 0
+        Gap g = gaps.get(i)
+
+        float newTop  = g.top
+        float newBot  = g.bot
+        bool  crossed = false
+
+        if g.isUp
+            // The gap is below the session open. Price fills it from the top.
+            if low <= g.bot
+                crossed := true
+            else if low < g.top
+                newTop := low
+        else
+            // The gap is above the session open. Price fills it from the bottom.
+            if high >= g.top
+                crossed := true
+            else if high > g.bot
+                newBot := high
+
+        if crossed
+            // Price crossed the gap fully. Delete the gap and all of its steps.
+            for b in g.parts
+                box.delete(b)
+            gaps.remove(i)
+            continue
+
+        bool smaller = newTop != g.top or newBot != g.bot
+        g.top := newTop
+        g.bot := newBot
+
+        box active = g.parts.last()
+
+        // Start a new step when this bar makes the gap smaller. The step
+        // before it keeps its height and stops at the bar on the left. Do not
+        // start a second step on the same bar. Then the active step only
+        // becomes smaller.
+        if smaller and bar_index > g.startBar and g.parts.size() < maxSteps
+            box.set_right(active, bar_index - 1)
+            active := makeStep(bar_index - 1, g.top, g.bot, g.isUp)
+            g.parts.push(active)
+            g.startBar := bar_index
+
+        box.set_top(active, g.top)
+        box.set_bottom(active, g.bot)
+        box.set_right(active, bar_index + extendBars)
+
+// ------------------------------------------------- Extend the sigma lines --
+// Only the lines of the current session move forward. The lines of past
+// sessions stay at the last RTH bar of their session.
+if levels.size() > 0
+    int right = bar_index + extendBars
+    for lv in levels
+        line.set_x2(lv.ln, right)
+        if not na(lv.lb)
+            label.set_x(lv.lb, right)
+
+// -------------------------------------------------------------- The table --
+// The table has a maximum of 3 columns and 11 rows: one header row, one row
+// for each of the 9 levels, one row for the last price. The script makes the
+// table one time. On the last bar it makes the content again. Thus the table
+// updates on each tick.
+var table sdTable = table.new(position.top_right, 3, 11,
+     bgcolor = color.new(color.black, 100))
+
+// Change the name of a position into the position.
+posOf(string s) =>
+    s == "Top left"      ? position.top_left     :
+     s == "Top center"   ? position.top_center   :
+     s == "Top right"    ? position.top_right    :
+     s == "Middle left"  ? position.middle_left  :
+     s == "Middle right" ? position.middle_right :
+     s == "Bottom left"  ? position.bottom_left  :
+     s == "Bottom center"? position.bottom_center: position.bottom_right
+
+if barstate.islast
+    table.clear(sdTable, 0, 0, 2, 10)
+
+    if showTable and levels.size() > 0
+        table.set_position(sdTable, posOf(tablePosIn))
+        // The grid lines and the frame use the same color and the same width.
+        // Width 0 hides them.
+        table.set_border_color(sdTable, tableLineCol)
+        table.set_border_width(sdTable, tableLineW)
+        table.set_frame_color(sdTable, tableLineCol)
+        table.set_frame_width(sdTable, tableLineW)
+        string sz = tableSizeIn == "Tiny" ? size.tiny : tableSizeIn == "Normal" ? size.normal :
+             tableSizeIn == "Large" ? size.large : size.small
+
+        // Column 0 = name, column 1 = price, column 2 = distance. A column
+        // that is off gets no cell. Then it has no width.
+        int cPrice = tablePrices ? 1 : -1
+        int cDist  = showDist ? (tablePrices ? 2 : 1) : -1
+
+        table.cell(sdTable, 0, 0, "Level", text_color = tableTxt, text_size = sz,
+             bgcolor = tableBg, text_halign = text.align_left)
+        if cPrice >= 0
+            table.cell(sdTable, cPrice, 0, "Price", text_color = tableTxt, text_size = sz,
+                 bgcolor = tableBg, text_halign = text.align_right)
+        if cDist >= 0
+            table.cell(sdTable, cDist, 0, distUnit == "Percent" ? "Dist %" : distUnit == "Ticks" ? "Ticks" : "Dist",
+                 text_color = tableTxt, text_size = sz, bgcolor = tableBg, text_halign = text.align_right)
+
+        // Sort the levels from the highest price to the lowest price.
+        array<float> prices = array.new<float>()
+        for lv in levels
+            prices.push(lv.price)
+        array<int> ranked = prices.sort_indices(order.descending)
+
+        int  row  = 1
+        bool done = not showCurPrice   // true after the price row is written, or when it is off
+
+        for i = 0 to ranked.size() - 1
+            Level lv = levels.get(ranked.get(i))
+
+            // The price row comes before the first level that is below price.
+            if not done and close > lv.price
+                table.cell(sdTable, 0, row, "Price", text_color = tableTxt, text_size = sz,
+                     bgcolor = tableBg, text_halign = text.align_left)
+                if cPrice >= 0
+                    table.cell(sdTable, cPrice, row, str.tostring(close, format.mintick),
+                         text_color = tableTxt, text_size = sz, bgcolor = tableBg, text_halign = text.align_right)
+                if cDist >= 0
+                    table.cell(sdTable, cDist, row, "", bgcolor = tableBg)
+                row  += 1
+                done := true
+
+            table.cell(sdTable, 0, row, lv.txtShort, text_color = lv.col, text_size = sz,
+                 bgcolor = tableBg, text_halign = text.align_left)
+            if cPrice >= 0
+                table.cell(sdTable, cPrice, row, str.tostring(lv.price, format.mintick),
+                     text_color = lv.col, text_size = sz, bgcolor = tableBg, text_halign = text.align_right)
+            if cDist >= 0
+                table.cell(sdTable, cDist, row, distText(lv.price), text_color = lv.col,
+                     text_size = sz, bgcolor = tableBg, text_halign = text.align_right)
+            row += 1
+
+        // Price is below all levels. The price row comes last.
+        if not done
+            table.cell(sdTable, 0, row, "Price", text_color = tableTxt, text_size = sz,
+                 bgcolor = tableBg, text_halign = text.align_left)
+            if cPrice >= 0
+                table.cell(sdTable, cPrice, row, str.tostring(close, format.mintick),
+                     text_color = tableTxt, text_size = sz, bgcolor = tableBg, text_halign = text.align_right)
+            if cDist >= 0
+                table.cell(sdTable, cDist, row, "", bgcolor = tableBg)

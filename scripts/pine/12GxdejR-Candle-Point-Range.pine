@@ -1,0 +1,140 @@
+//@version=6
+indicator("Candle Point Range", overlay=true, max_labels_count=500)
+
+// ─────────────────────────────────────────────
+// Settings
+// ─────────────────────────────────────────────
+
+showRange      = input.bool(true, "Show Candle Range")
+barsToShow     = input.int(200, "Number of Bars to Show", minval=1, maxval=500)
+offsetPercent  = input.float(10.0, "Label Offset % of Candle Range", minval=0)
+
+showAverages = input.bool(true, "Show Average Range Table")
+
+// Custom average periods
+avgPeriod1 = input.int(20, "Average Period 1", minval=1)
+avgPeriod2 = input.int(50, "Average Period 2", minval=1)
+avgPeriod3 = input.int(200, "Average Period 3", minval=1)
+
+// ─────────────────────────────────────────────
+// Candle Range
+// ─────────────────────────────────────────────
+
+candleRange = high - low
+
+offset = candleRange * (offsetPercent / 100)
+labelY = low - offset
+
+showThisBar = bar_index >= last_bar_index - barsToShow
+
+if showRange and showThisBar
+    label.new(
+         bar_index,
+         labelY,
+         str.tostring(candleRange, format.mintick),
+         yloc=yloc.price,
+         style=label.style_none,
+         textcolor=color.white,
+         size=size.small
+     )
+
+// ─────────────────────────────────────────────
+// Average Candle Ranges
+// ─────────────────────────────────────────────
+
+avg1 = ta.sma(candleRange, avgPeriod1)
+avg2 = ta.sma(candleRange, avgPeriod2)
+avg3 = ta.sma(candleRange, avgPeriod3)
+
+// ─────────────────────────────────────────────
+// Top Right Table
+// ─────────────────────────────────────────────
+
+var table rangeTable = table.new(
+     position.top_right,
+     2,
+     4,
+     border_width=1
+)
+
+if barstate.islast
+    if showAverages
+
+        // Header
+        table.cell(
+             rangeTable,
+             0,
+             0,
+             "Period",
+             text_color=color.white,
+             bgcolor=color.gray
+         )
+
+        table.cell(
+             rangeTable,
+             1,
+             0,
+             "Avg Range",
+             text_color=color.white,
+             bgcolor=color.gray
+         )
+
+        // Average 1
+        table.cell(
+             rangeTable,
+             0,
+             1,
+             str.tostring(avgPeriod1),
+              text_color=color.white,
+             bgcolor=color.gray
+         )
+
+        table.cell(
+             rangeTable,
+             1,
+             1,
+             str.tostring(avg1, format.mintick),
+              text_color=color.white,
+             bgcolor=color.gray
+         )
+
+        // Average 2
+        table.cell(
+             rangeTable,
+             0,
+             2,
+             str.tostring(avgPeriod2),
+              text_color=color.white,
+             bgcolor=color.gray
+         )
+
+        table.cell(
+             rangeTable,
+             1,
+             2,
+             str.tostring(avg2, format.mintick),
+              text_color=color.white,
+             bgcolor=color.gray
+         )
+
+        // Average 3
+        table.cell(
+             rangeTable,
+             0,
+             3,
+             str.tostring(avgPeriod3),
+              text_color=color.white,
+             bgcolor=color.gray
+         )
+
+        table.cell(
+             rangeTable,
+             1,
+             3,
+             str.tostring(avg3, format.mintick),
+              text_color=color.white,
+             bgcolor=color.gray
+         )
+
+    else
+        table.clear(rangeTable, 0, 0, 1, 3)

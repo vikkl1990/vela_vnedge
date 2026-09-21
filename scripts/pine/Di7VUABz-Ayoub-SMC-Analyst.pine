@@ -1,0 +1,168 @@
+//@version=6
+indicator("Ayoub SMC Analyst", shorttitle="AYOUB SMC", overlay=true, max_lines_count=20, max_labels_count=30)
+
+// SETTINGS
+sensitivity = input.int(5, "Structure Sensitivity", minval=2, maxval=15)
+showLabels = input.bool(true, "Show Labels")
+showTargets = input.bool(true, "Show Targets")
+showPath = input.bool(true, "Show Analyst Path")
+
+// COLORS
+bull = color.rgb(0, 170, 145)
+bear = color.rgb(215, 70, 80)
+gold = color.rgb(210, 165, 60)
+gray = color.rgb(120, 125, 135)
+
+// SWING POINTS
+swingHigh = ta.pivothigh(high, sensitivity, sensitivity)
+swingLow = ta.pivotlow(low, sensitivity, sensitivity)
+
+lastHigh = ta.valuewhen(not na(swingHigh), swingHigh, 0)
+lastLow = ta.valuewhen(not na(swingLow), swingLow, 0)
+
+previousHigh = ta.valuewhen(not na(swingHigh), swingHigh, 1)
+previousLow = ta.valuewhen(not na(swingLow), swingLow, 1)
+
+// MARKET STRUCTURE
+isHH = not na(swingHigh) and not na(previousHigh) and swingHigh > previousHigh
+isLH = not na(swingHigh) and not na(previousHigh) and swingHigh < previousHigh
+isHL = not na(swingLow) and not na(previousLow) and swingLow > previousLow
+isLL = not na(swingLow) and not na(previousLow) and swingLow < previousLow
+
+// BOS
+bullBOS = not na(lastHigh) and ta.crossover(close, lastHigh)
+bearBOS = not na(lastLow) and ta.crossunder(close, lastLow)
+
+// RANGE
+validRange = not na(lastHigh) and not na(lastLow) and lastHigh > lastLow
+equilibrium = validRange ? (lastHigh + lastLow) / 2.0 : na
+rangeSize = validRange ? lastHigh - lastLow : ta.atr(14)
+
+// PREMIUM DISCOUNT
+premiumTop = validRange ? lastHigh : na
+premiumBase = validRange ? equilibrium : na
+discountTop = validRange ? equilibrium : na
+discountBottom = validRange ? lastLow : na
+
+premiumPlot1 = plot(premiumTop, "Premium High", color=color.new(bear, 100))
+premiumPlot2 = plot(premiumBase, "Premium Base", color=color.new(bear, 100))
+discountPlot1 = plot(discountTop, "Discount Base", color=color.new(bull, 100))
+discountPlot2 = plot(discountBottom, "Discount Low", color=color.new(bull, 100))
+
+fill(premiumPlot1, premiumPlot2, color=color.new(bear, 94), title="Premium Zone")
+fill(discountPlot1, discountPlot2, color=color.new(bull, 94), title="Discount Zone")
+
+// KEY STRUCTURE LEVELS
+plot(lastHigh, "Major Resistance", color=color.new(bear, 25), linewidth=2, style=plot.style_stepline)
+plot(lastLow, "Major Support", color=color.new(bull, 25), linewidth=2, style=plot.style_stepline)
+plot(equilibrium, "Equilibrium", color=color.new(gray, 55), linewidth=1)
+
+// TREND
+ema21 = ta.ema(close, 21)
+ema55 = ta.ema(close, 55)
+
+bullTrend = ema21 > ema55
+bearTrend = ema21 < ema55
+
+plot(ema21, "Short Trend", color=color.new(bull, 85), linewidth=1)
+plot(ema55, "Long Trend", color=color.new(bear, 85), linewidth=1)
+
+// FVG
+bullFVG = low > high[2]
+bearFVG = high < low[2]
+
+// LIQUIDITY SWEEPS
+buySideSweep = not na(lastHigh) and high > lastHigh and close < lastHigh
+sellSideSweep = not na(lastLow) and low < lastLow and close > lastLow
+
+// MARKET SCENARIO
+bullScenario = bullTrend and validRange and close > equilibrium
+bearScenario = bearTrend and validRange and close < equilibrium
+
+// BULL TARGETS
+bullTarget1 = validRange ? lastHigh : na
+bullTarget2 = validRange ? lastHigh + rangeSize * 0.50 : na
+bullTarget3 = validRange ? lastHigh + rangeSize : na
+
+// BEAR TARGETS
+bearTarget1 = validRange ? lastLow : na
+bearTarget2 = validRange ? lastLow - rangeSize * 0.50 : na
+bearTarget3 = validRange ? lastLow - rangeSize : na
+
+// TARGET PLOTS
+plot(showTargets and bullScenario ? bullTarget1 : na, "Bull Target 1", color=color.new(bull, 30), linewidth=1, style=plot.style_linebr)
+plot(showTargets and bullScenario ? bullTarget2 : na, "Bull Target 2", color=color.new(bull, 50), linewidth=1, style=plot.style_linebr)
+plot(showTargets and bullScenario ? bullTarget3 : na, "Bull Target 3", color=color.new(bull, 70), linewidth=1, style=plot.style_linebr)
+
+plot(showTargets and bearScenario ? bearTarget1 : na, "Bear Target 1", color=color.new(bear, 30), linewidth=1, style=plot.style_linebr)
+plot(showTargets and bearScenario ? bearTarget2 : na, "Bear Target 2", color=color.new(bear, 50), linewidth=1, style=plot.style_linebr)
+plot(showTargets and bearScenario ? bearTarget3 : na, "Bear Target 3", color=color.new(bear, 70), linewidth=1, style=plot.style_linebr)
+
+// HH HL LH LL
+plotshape(showLabels and isHH, title="Higher High", style=shape.labeldown, location=location.abovebar, color=color.new(gold, 15), text="HH", textcolor=color.white, size=size.tiny)
+plotshape(showLabels and isHL, title="Higher Low", style=shape.labelup, location=location.belowbar, color=color.new(bull, 25), text="HL", textcolor=color.white, size=size.tiny)
+plotshape(showLabels and isLH, title="Lower High", style=shape.labeldown, location=location.abovebar, color=color.new(bear, 30), text="LH", textcolor=color.white, size=size.tiny)
+plotshape(showLabels and isLL, title="Lower Low", style=shape.labelup, location=location.belowbar, color=color.new(bear, 30), text="LL", textcolor=color.white, size=size.tiny)
+
+// BOS
+plotshape(showLabels and bullBOS, title="Bullish BOS", style=shape.labelup, location=location.belowbar, color=bull, text="BOS", textcolor=color.white, size=size.tiny)
+plotshape(showLabels and bearBOS, title="Bearish BOS", style=shape.labeldown, location=location.abovebar, color=bear, text="BOS", textcolor=color.white, size=size.tiny)
+
+// LIQUIDITY
+plotshape(showLabels and buySideSweep, title="Buy Side Liquidity", style=shape.labeldown, location=location.abovebar, color=bear, text="LIQ", textcolor=color.white, size=size.tiny)
+plotshape(showLabels and sellSideSweep, title="Sell Side Liquidity", style=shape.labelup, location=location.belowbar, color=bull, text="LIQ", textcolor=color.white, size=size.tiny)
+
+// FVG
+plotshape(showLabels and bullFVG, title="Bullish FVG", style=shape.diamond, location=location.belowbar, color=bull, text="FVG", textcolor=color.white, size=size.tiny)
+plotshape(showLabels and bearFVG, title="Bearish FVG", style=shape.diamond, location=location.abovebar, color=bear, text="FVG", textcolor=color.white, size=size.tiny)
+
+// ANALYST PATH VARIABLES
+var line pathA = na
+var line pathB = na
+var line pathC = na
+
+// DELETE OLD PATH
+if barstate.islast and not na(pathA)
+    line.delete(pathA)
+
+if barstate.islast and not na(pathB)
+    line.delete(pathB)
+
+if barstate.islast and not na(pathC)
+    line.delete(pathC)
+
+// RESET PATH
+if barstate.islast
+    pathA := na
+
+if barstate.islast
+    pathB := na
+
+if barstate.islast
+    pathC := na
+
+// BULLISH PROJECTED PATH
+if barstate.islast and showPath and showTargets and bullScenario
+    pathA := line.new(bar_index, close, bar_index + 8, bullTarget1, color=color.new(bull, 25), width=2)
+
+if barstate.islast and showPath and showTargets and bullScenario
+    pathB := line.new(bar_index + 8, bullTarget1, bar_index + 16, bullTarget2, color=color.new(bull, 40), width=2)
+
+if barstate.islast and showPath and showTargets and bullScenario
+    pathC := line.new(bar_index + 16, bullTarget2, bar_index + 24, bullTarget3, color=color.new(bull, 55), width=2)
+
+// BEARISH PROJECTED PATH
+if barstate.islast and showPath and showTargets and bearScenario
+    pathA := line.new(bar_index, close, bar_index + 8, bearTarget1, color=color.new(bear, 25), width=2)
+
+if barstate.islast and showPath and showTargets and bearScenario
+    pathB := line.new(bar_index + 8, bearTarget1, bar_index + 16, bearTarget2, color=color.new(bear, 40), width=2)
+
+if barstate.islast and showPath and showTargets and bearScenario
+    pathC := line.new(bar_index + 16, bearTarget2, bar_index + 24, bearTarget3, color=color.new(bear, 55), width=2)
+
+// ALERTS
+alertcondition(bullBOS, title="Bullish BOS", message="Bullish market structure breakout detected.")
+alertcondition(bearBOS, title="Bearish BOS", message="Bearish market structure breakdown detected.")
+alertcondition(buySideSweep, title="Buy Side Liquidity Sweep", message="Buy side liquidity sweep detected.")
+alertcondition(sellSideSweep, title="Sell Side Liquidity Sweep", message="Sell side liquidity sweep detected.")

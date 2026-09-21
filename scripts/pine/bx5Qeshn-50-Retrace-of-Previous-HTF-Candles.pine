@@ -1,0 +1,125 @@
+//@version=6
+indicator("50% Retrace of Previous HTF Candles", overlay = true, max_lines_count = 500)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// INDICATOR SUMMARY
+// ══════════════════════════════════════════════════════════════════════════════
+// 
+// Name: 50% Retrace of Previous HTF Candles
+// 
+// Purpose:
+//   Plots the 50% midpoint (retrace level) of the most recently completed 
+//   candle on five higher timeframes: Daily, 4-Hour, 1-Hour, 30-Minute, and 15-Minute.
+// 
+// How it works:
+//   - Uses request.security() to fetch the previous (closed) candle's High and Low
+//   - Calculates the exact midpoint: (High + Low) / 2
+//   - Draws a horizontal line that starts at the close of that previous HTF candle
+//   - The line stops a few bars after the current candle
+//   - A label is placed to the right of the line for easy identification
+// 
+// Timeframes & Colors (Coral family):
+//   - Daily → Deep Coral
+//   - 4H    → Classic Coral
+//   - 1H    → Light Coral
+//   - 30m   → Soft Coral
+//   - 15m   → Pale Coral
+// 
+// Features:
+//   - Non-repainting (only uses fully closed HTF candles)
+//   - Individual toggles for each timeframe
+//   - Customizable colors, line width, and line style
+//   - Clean labels: "50% RTC - Daily", "50% RTC - 4H", etc.
+// 
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ─── Inputs ────────────────────────────────────────────────────────────────
+showDaily = input.bool(true, "Show Daily 50%")
+show4H    = input.bool(true, "Show 4H 50%")
+show1H    = input.bool(true, "Show 1H 50%")
+show30m   = input.bool(true, "Show 30m 50%")
+show15m   = input.bool(true, "Show 15m 50%")
+
+// Different shades of Coral
+colDaily = input.color(#E63946, "Daily Color")  // Deep Coral
+col4H    = input.color(#FF6B6B, "4H Color")     // Classic Coral
+col1H    = input.color(#FF8E8E, "1H Color")     // Light Coral
+col30m   = input.color(#FFA5A5, "30m Color")    // Soft Coral
+col15m   = input.color(#FFC2C2, "15m Color")    // Pale Coral
+
+lineWidth = input.int(1, "Line Width", minval = 1, maxval = 5)
+lineStyle = input.string("Solid", "Line Style", options = ["Solid", "Dashed", "Dotted"])
+
+// ─── Helper function to get 50% of previous HTF candle ─────────────────────
+f_getMid(string tf) =>
+    [h, l, t] = request.security(syminfo.tickerid, tf, [high[1], low[1], time_close[1]], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+    [math.avg(h, l), t]
+
+// ─── Get data for each timeframe ───────────────────────────────────────────
+[midDaily, timeDaily] = f_getMid("D")
+[mid4H,    time4H]    = f_getMid("240")
+[mid1H,    time1H]    = f_getMid("60")
+[mid30m,   time30m]   = f_getMid("30")
+[mid15m,   time15m]   = f_getMid("15")
+
+// ─── Line style ────────────────────────────────────────────────────────────
+lineStyleEnum = switch lineStyle
+    "Dashed" => line.style_dashed
+    "Dotted" => line.style_dotted
+    => line.style_solid
+
+// ─── Drawing objects ───────────────────────────────────────────────────────
+var line lineDaily = na
+var line line4H    = na
+var line line1H    = na
+var line line30m   = na
+var line line15m   = na
+
+var label labDaily = na
+var label lab4H    = na
+var label lab1H    = na
+var label lab30m   = na
+var label lab15m   = na
+
+if barstate.islast
+    // Clean previous drawings
+    line.delete(lineDaily)
+    line.delete(line4H)
+    line.delete(line1H)
+    line.delete(line30m)
+    line.delete(line15m)
+    label.delete(labDaily)
+    label.delete(lab4H)
+    label.delete(lab1H)
+    label.delete(lab30m)
+    label.delete(lab15m)
+
+    // Small offset so the line stops just past the current candle
+    int barDuration = time - time[1]
+    int lineEnd     = time + barDuration * 4
+    int labelPos    = time + barDuration * 7
+
+    // ─── Daily ─────────────────────────────────────────────────────────────
+    if showDaily and not na(midDaily) and not na(timeDaily)
+        lineDaily := line.new(timeDaily, midDaily, lineEnd, midDaily, xloc = xloc.bar_time, extend = extend.none, color = colDaily, width = lineWidth, style = lineStyleEnum)
+        labDaily  := label.new(labelPos, midDaily, "50% RTC - Daily", xloc = xloc.bar_time, style = label.style_label_left, color = color.new(colDaily, 85), textcolor = colDaily, size = size.small)
+
+    // ─── 4H ────────────────────────────────────────────────────────────────
+    if show4H and not na(mid4H) and not na(time4H)
+        line4H := line.new(time4H, mid4H, lineEnd, mid4H, xloc = xloc.bar_time, extend = extend.none, color = col4H, width = lineWidth, style = lineStyleEnum)
+        lab4H  := label.new(labelPos, mid4H, "50% RTC - 4H", xloc = xloc.bar_time, style = label.style_label_left, color = color.new(col4H, 85), textcolor = col4H, size = size.small)
+
+    // ─── 1H ────────────────────────────────────────────────────────────────
+    if show1H and not na(mid1H) and not na(time1H)
+        line1H := line.new(time1H, mid1H, lineEnd, mid1H, xloc = xloc.bar_time, extend = extend.none, color = col1H, width = lineWidth, style = lineStyleEnum)
+        lab1H  := label.new(labelPos, mid1H, "50% RTC - 1H", xloc = xloc.bar_time, style = label.style_label_left, color = color.new(col1H, 85), textcolor = col1H, size = size.small)
+
+    // ─── 30m ───────────────────────────────────────────────────────────────
+    if show30m and not na(mid30m) and not na(time30m)
+        line30m := line.new(time30m, mid30m, lineEnd, mid30m, xloc = xloc.bar_time, extend = extend.none, color = col30m, width = lineWidth, style = lineStyleEnum)
+        lab30m  := label.new(labelPos, mid30m, "50% RTC - 30m", xloc = xloc.bar_time, style = label.style_label_left, color = color.new(col30m, 85), textcolor = col30m, size = size.small)
+
+    // ─── 15m ───────────────────────────────────────────────────────────────
+    if show15m and not na(mid15m) and not na(time15m)
+        line15m := line.new(time15m, mid15m, lineEnd, mid15m, xloc = xloc.bar_time, extend = extend.none, color = col15m, width = lineWidth, style = lineStyleEnum)
+        lab15m  := label.new(labelPos, mid15m, "50% RTC - 15m", xloc = xloc.bar_time, style = label.style_label_left, color = color.new(col15m, 85), textcolor = col15m, size = size.small)

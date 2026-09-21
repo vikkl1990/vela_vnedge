@@ -1,0 +1,317 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © RedKTrader — RedK Multi-Modal Trailing Stop (RedK MMTStop)
+// internal build: v1.00
+
+//@version = 6
+indicator("RedK Multi-Modal TrailingStop v1.0", shorttitle="RedK MMTStop v1.0", overlay=true)
+// *******************************************************************************************************************
+// A small function to apply current symbol's tick precision, then force proper thousands formatting
+fixtick(_value) =>
+    Fix_format = str.tostring(math.round_to_mintick(_value), "#,###.######")
+// *******************************************************************************************************************
+
+// ==================================================================================================================
+// Input Sections
+// ==================================================================================================================
+grpMethod   = "Trailing Stop Calculation Method"
+grpATR      = "ATR / Supertrend"
+grpStyles   = "Visuals and Other Settings"
+disnon      = display.none
+
+
+//  METHOD SELECTION
+// ==================================================================================================================
+
+TStop_mode = input.string("ATR / Supertrend", "Trailing method",
+     options=["ATR / Supertrend", "Chandelier", "Donchian", "StdDev Channel", "Fixed %"],
+     group=grpMethod,
+     tooltip = '''ATR/Supertrend: trails an ATR-based (volatility) distance from price.
+     \nChandelier: hangs an ATR distance off the recent swing high/low.
+     \nDonchian: trails to the recent swing low/high (Turtle-style).
+     \nStdDev Channel: trails a statistical (Bollinger-band style) distance.
+     \nFixed %: trails a set percentage of price.''')
+
+// Which mode is active — used to enable/disable each mode's inputs below.
+isATR  = TStop_mode == "ATR / Supertrend"
+isChan = TStop_mode == "Chandelier"
+isDonc = TStop_mode == "Donchian"
+isSD   = TStop_mode == "StdDev Channel"
+isPct  = TStop_mode == "Fixed %"
+// Anchor source applies only to the distance methods (ATR / StdDev / Fixed %).
+usesAnchor = isATR or isSD or isPct
+
+anchorSrc = input.source(hl2, "Anchor price source", group=grpMethod, active=usesAnchor, display=disnon,
+     tooltip='''Reference price the ATR / StdDev / Fixed % distance is measured from.
+     \nChandelier and Donchian use swing highs/lows instead and ignore this.''')
+
+// ── ATR / Supertrend ──
+atrLen    = input.int(10, "ATR length",        minval=1, inline = grpATR, group = grpATR, active=isATR, display=disnon)
+atrMult   = input.float(3.0, "Multiplier", step=0.1, minval=0.1, inline = grpATR, group = grpATR, active=isATR, display=disnon)
+useMTF    = input.bool(false, "Use HTF ATR", inline='ATR HTF',  group = grpATR, active=isATR, display=disnon)
+atrTF     = input.timeframe("240", "⠀⠀⠀⠀⠀⠀⠀HTF timeframe", inline='ATR HTF', group = grpATR, active=isATR, display=disnon,
+  tooltip="Pick a timeframe higher than the chart's.")
+
+// ── Chandelier ──
+chLen     = input.int(22, "Chandelier Lookback", minval=1, group="Chandelier", active=isChan, display=disnon,
+  tooltip ="Bars used to find the swing high/low the stop hangs from.")
+chAtrLen  = input.int(14, "Chandelier ATR length", minval=1, inline='chandatr', group="Chandelier", active=isChan,display=disnon)
+chMult    = input.float(3.0, "Multiplier", step=0.1, minval=0.1, inline='chandatr', group="Chandelier", active=isChan,display=disnon)
+
+// ── Donchian ──
+dcLen     = input.int(20, "Donchian Lookback", minval=1, group="Donchian", active=isDonc, display=disnon,
+  tooltip="Bars used for the swing low (long) / swing high (short) the stop trails to.")
+
+// ── StdDev Channel ──
+sdLen     = input.int(20, "StdDev Length",     minval=2, inline = 'stddiv', group="StdDev Channel", active=isSD,display=disnon)
+sdMult    = input.float(2.0, "⠀⠀⠀⠀⠀Multiplier", step=0.10, minval=0.20, inline = 'stddiv', group="StdDev Channel", active=isSD,display=disnon)
+
+// ── Fixed % ──
+pctOff    = input.float(5.0, "Fixed Trail %",  step=0.5, minval=0.1, group="Fixed %", active=isPct,display=disnon)
+
+// ──  Visuals and Other Settings  ──
+//  SAFE ZONE (criticality) — how close is price to the stop
+//  Uses a standard ATR to measure the price-to-stop gap for EVERY method, so the
+//  warning works even for Fixed % and Donchian (whose own math has no ATR).
+// ==================================================================================================================
+
+showBands  = input.bool(true, "Show colored safe zone⠀⠀⠀⠀⠀", inline = "bands", group=grpStyles, display=disnon)
+showBBs  = input.bool(true, "Show band borders", inline = "bands", group=grpStyles, display=disnon,
+     tooltip="Show shaded safe zone & its band border." +
+     "\nDefaults are 🔴 RED nearest the stop (Critical), 🟡 AMBER mid-zone (Watch), 🟢 GREEN farthest (Safe).")
+
+critAtrLen = input.int(14, "Safe Zone's ATR Length", minval = 1, group=grpStyles, inline ="sz1", active = showBands,display=disnon)
+safeZone   = input.float(2.0, " ATR Multiplier", step = 0.1, minval = 0.5, group=grpStyles, inline ="sz1", active = showBands,display=disnon,
+     tooltip='''ATR Length & Multiplier used only to calculate the Trailing Stop Safe Zone bands.
+     \nAt or above these bands = Safe.\nBetween this and half its value = Watch.\nBelow half = Critical.
+     \nExample: multiplier = 2.00 means: Safe ≥ 2.00x ATR, Watch 1.00–2.00x ATR, Critical < 1.00x ATR.''')
+
+safeCol    = input.color(color.new(#33aa00, 50), "Safe band",     group=grpStyles, inline="sz2", active = showBands)
+watchCol   = input.color(color.new(#fdd835, 70), "Watch band",    group=grpStyles, inline="sz2", active = showBands)
+critCol    = input.color(color.new(#ff1111, 60), "Critical band", group=grpStyles, inline="sz2", active = showBands)
+
+upColor   = input.color(color.teal, "Uptrend Stop Line",   inline = 'style', group = grpStyles)
+dnColor   = input.color(color.orange,  "⠀⠀⠀⠀⠀⠀⠀⠀Downtrend Stop Line", inline = 'style', group = grpStyles)
+showFlips = input.bool(true, "Show flip markers", group = grpStyles)
+
+// Info table appearance
+tblSizeOpt = input.string("Small", "Table text size", options=["Small", "Normal", "Large"], group = grpStyles, inline='tbl',
+  tooltip="Text size of the on-chart info table.",display=disnon)
+tblPosOpt  = input.string("Top Right", "⠀⠀⠀⠀Table position", options=["Top Right", "Middle Right", "Bottom Right"], 
+  group = grpStyles, inline='tbl', tooltip="Position of the info table.",display=disnon)
+
+// ==================================================================================================================
+//  PER-METHOD (anchor, dist) ENGINE
+//  Every method resolves to a long-side stop candidate (loStop) and a
+//  short-side stop candidate (hiStop). One shared ratchet consumes them, so
+//  adding a method never touches the trailing / flip / alert logic below.
+// ==================================================================================================================
+
+// HTF ATR guard: the chosen HTF must be HIGHER than the chart timeframe.
+// Only checked when Use HTF ATR is on. When invalid, we warn and hide plots (see Visuals).
+htfInvalid = useMTF and (timeframe.in_seconds(atrTF) < timeframe.in_seconds())
+
+// Use the last CLOSED higher-timeframe bar, so the HTF value does not repaint intrabar
+atrMTF = request.security(syminfo.tickerid, atrTF, ta.atr(atrLen)[1], lookahead=barmerge.lookahead_off)
+atrVal = useMTF ? atrMTF : ta.atr(atrLen)
+
+// -- distance-from-anchor methods share this pattern --
+distATR = atrVal * atrMult
+distSD  = ta.stdev(anchorSrc, sdLen) * sdMult
+distPct = anchorSrc * pctOff / 100
+
+// -- swing-anchored methods compute their own stop levels directly --
+chAtr   = ta.atr(chAtrLen)
+chHi    = ta.highest(high, chLen)
+chLo    = ta.lowest(low,  chLen)
+chLoStop = chHi - chAtr * chMult   // long stop hangs below recent high
+chHiStop = chLo + chAtr * chMult   // short stop hangs above recent low
+
+dcLo    = ta.lowest(low,  dcLen)   // long stop trails the swing low
+dcHi    = ta.highest(high, dcLen)  // short stop trails the swing high
+
+// Resolve the two raw stop candidates for the active method
+loStop = isChan ? chLoStop :
+         isDonc ? dcLo :
+         isSD   ? anchorSrc - distSD :
+         isPct  ? anchorSrc - distPct :
+                  anchorSrc - distATR
+
+hiStop = isChan ? chHiStop :
+         isDonc ? dcHi :
+         isSD   ? anchorSrc + distSD :
+         isPct  ? anchorSrc + distPct :
+                  anchorSrc + distATR
+
+// Distance value for the info box.
+// Measured to the active direction
+// For ATR / StdDev / Fixed % the distance IS a setting, so it is exact.
+// For Chandelier / Donchian the stop comes from swing highs/lows, so the gap
+// shown is only an estimate of "how far is my stop right now".
+isEstimate = isChan or isDonc
+
+// ==================================================================================================================
+//  SHARED RATCHET — one implementation for all methods
+//  Stop moves toward price but never away, until a close breaks it.
+// ==================================================================================================================
+upTr = loStop
+upTr := close[1] > nz(upTr[1]) ? math.max(loStop, nz(upTr[1])) : loStop
+
+dnTr = hiStop
+dnTr := close[1] < nz(dnTr[1]) ? math.min(hiStop, nz(dnTr[1])) : hiStop
+
+var int trend = 1
+trend := close > nz(dnTr[1], dnTr) ? 1 : close < nz(upTr[1], upTr) ? -1 : nz(trend[1], 1)
+
+stopLine = trend == 1 ? upTr : dnTr
+
+// ── Criticality: how much cushion (in ATR) between price and the active stop ──
+// Positive gap = price is on the safe side of the stop. As price nears the stop
+// the gap shrinks toward 0. Measured with a standard ATR so it works for all methods.
+critAtr   = ta.atr(critAtrLen)
+gapATR    = critAtr > 0 ? math.abs(close - stopLine) / critAtr : na
+watchZone = safeZone / 2.0
+critZone  = na(gapATR)         ? "safe" : gapATR >= safeZone  ? "safe" : gapATR >= watchZone ? "watch" : "critical"
+critOrb   = critZone == "safe" ? "🟢" : critZone == "watch" ? "🟡" : "🔴"
+critWord  = critZone == "safe" ? "Safe" : critZone == "watch" ? "Watch" : "Critical"
+critColor = critZone == "safe" ? color.green : critZone == "watch" ? color.yellow : color.red
+
+// Band boundary PRICES, anchored on the stop line and stepping toward price.
+// Long: stop is below price, bands rise above the stop.
+// Short: stop is above price, bands fall below the stop.
+dir       = trend == 1 ? 1.0 : -1.0
+critBound = stopLine + dir * watchZone * critAtr   // stop → this = Critical band
+safeBound = stopLine + dir * safeZone  * critAtr   // critBound → this = Watch band; beyond = Safe
+
+// ==================================================================================================================
+//  SIGNALS
+// ==================================================================================================================
+
+flipUp = trend == 1  and trend[1] == -1
+flipDn = trend == -1 and trend[1] == 1
+
+// ==================================================================================================================
+//  Plots & Visuals 
+// ==================================================================================================================
+// ── HTF guard: when the chosen HTF is invalid, hide everything and show a red warning ──
+showViz = not htfInvalid
+
+// ── Colored safe bands (anchored on the stop, stepping toward price)
+// 2 graded fills: Critical (stop→critBound), Watch (critBound→safeBound)
+// Fill is hidden when showBands is off. below plots are helpers, we don't want them to show
+hiddenCol   = color.new(color.gray, 100)
+bbCol       = color.new(#787b86, 40)
+dspFill     = showBands ? display.all : display.none
+disBBs      = showBBs ? display.pane + display.price_scale : disnon
+// show or hide safe zone bands - they're really there all the time, just not displayed
+pStop  = plot(showViz? stopLine  : na, "band: stop",     
+  color = hiddenCol, display = disnon)                      // this band always hidden
+
+pCrit  = plot(showViz? critBound : na, "band: critical", 
+  color = showBBs ? bbCol : hiddenCol, display = disBBs)
+
+pSafe  = plot(showViz? safeBound : na, "band: safe",     
+  color = showBBs ? bbCol : hiddenCol, display = disBBs)
+
+// 2 Gradient Fills 
+fill(pStop, pCrit ,
+top_value = stopLine,
+bottom_value = critBound,
+top_color = critCol,
+bottom_color = watchCol,
+title = "Critical band fill",
+display = dspFill)
+
+fill(pCrit, pSafe,
+top_value = critBound,
+bottom_value = safeBound,
+top_color = watchCol,
+bottom_color = safeCol,
+title = "Watch band fill",
+display = dspFill)
+
+plot(showViz ? stopLine : na, "Trail Stop", color=trend == 1 ? upColor : dnColor, 
+  linewidth=3, style=plot.style_linebr)
+
+// workaround the visual overlap that will always happen with that marker - push the shape by 1xATR
+plotshape(showViz and showFlips and flipUp ? stopLine - critAtr: na, "Flip UP",   shape.triangleup,   
+  location.absolute, upColor, size=size.small, text="FLIP", textcolor=upColor, display = display.pane)
+
+plotshape(showViz and showFlips and flipDn ? stopLine + critAtr: na, "Flip DOWN", shape.triangledown, 
+  location.absolute, dnColor, size=size.small, text="\nFLIP", textcolor=dnColor, display = display.pane)
+
+// Red warning when the chosen HTF is lower than the chart timeframe
+if htfInvalid and barstate.islast
+    label.new(bar_index, high, "⚠ HTF ATR timeframe (" + atrTF + 
+    ") is LOWER than the chart.\n\nPick a higher timeframe, or turn off 'Use HTF ATR'.",
+    color=color.new(#830e2a, 0), textcolor=color.white, style=label.style_label_down, size=size.large)
+
+// ==================================================================================================================
+// Prep stuff
+
+methodLabel = isChan ? "Chandelier · " + str.tostring(chMult, "#.00") + "x ATR(" + str.tostring(chAtrLen) + ")" :
+              isDonc ? "Donchian · " + str.tostring(dcLen) + " bars" :
+              isSD   ? "StdDev · " + str.tostring(sdMult, "#.00") + "x" :
+              isPct  ? "Fixed% · " + str.tostring(pctOff, "#.00") + "%" :
+                       "ATR / SuperTrend · " + str.tostring(atrMult, "#.00") + "x ATR(" + str.tostring(atrLen) + ")"
+titleText = methodLabel
+
+// Distance to the active-side stop (long stop when long, short stop when short).
+distNow = math.abs(close - stopLine)
+
+// Build the distance text per method type:
+//   Fixed %             -> the user's percentage setting (fixed), e.g. "5.00% (setting)"
+//   ATR / StdDev        -> live distance in the symbol's currency (changes each bar), e.g. "3.50 USD (current)"
+//   Chandelier/Donchian -> distance in currency, tagged as an estimate, e.g. "3.50 USD (estimate)"
+distText = isPct ?
+             str.tostring(pctOff, "#.00") + "% (setting)" :
+           isEstimate ?
+             fixtick(distNow) + " " + syminfo.currency + " (estimate)" :
+             fixtick(distNow) + " " + syminfo.currency + " (current)"
+
+sideText = trend == 1 ? "from Long side" : "from Short side"
+
+// ── ATR-expression formatter: always "a.bx ATR(len)" so the table is self-documenting ──
+// The Safe Zone gap is measured with the Safe Zone's own ATR length (critAtrLen) and
+// the safe multiplier (safeZone). Shows e.g. "2.00x ATR(14)".
+safeAtrExpr = str.tostring(safeZone, "#.00") + "x ATR(" + str.tostring(critAtrLen) + ")"
+
+// ==================================================================================================================
+// Prepare and print the table
+// table size options 
+tblSize = tblSizeOpt == "Large" ? size.large : tblSizeOpt == "Normal" ? size.normal : size.small
+
+// table position options
+tblPos  = tblPosOpt == "Top Right"    ? position.top_right :
+  tblPosOpt == "Middle Right" ? position.middle_right :
+  position.bottom_right
+
+// Numeric flip signal -- only for the Data Window, alerts, and Pine Screener
+// +1 = flip up this bar, -1 = flip down this bar, 0 = no flip.
+flipSignal = flipUp ? 1 : flipDn ? -1 : 0
+plot(flipSignal, "Flip signal", color=hiddenCol, display=display.data_window)
+
+var table info = table.new(tblPos, 1, 8, bgcolor=color.new(color.black, 80))
+if barstate.islast and showViz
+    table.cell(info, 0, 0, "───────  RedK MMTStop  ───────", text_color=trend == 1 ? upColor : dnColor, text_size=tblSize)
+    table.cell(info, 0, 1, titleText, text_color=color.white, text_size=tblSize)
+    table.cell(info, 0, 2, (trend == 1 ? "▲ Long stop: " : "▼ Short stop: ") + fixtick(stopLine), 
+      text_color=trend == 1 ? upColor : dnColor, text_size=tblSize)
+    table.cell(info, 0, 3, "Dist: " + distText, text_color=color.white, text_size=tblSize)
+    table.cell(info, 0, 4, sideText, text_color=color.white, text_size=tblSize)
+    table.cell(info, 0, 5, critOrb + " " + critWord + " → " + str.tostring(gapATR, "#.00") + "x ATR(" + str.tostring(critAtrLen) + ") to stop", 
+      text_color=critColor, text_size=tblSize)
+    table.cell(info, 0, 6, "🔴→🟡 at " + fixtick(critBound), text_color=color.new(color.yellow, 0), text_size=tblSize)
+    table.cell(info, 0, 7, "🟡→🟢 at " + fixtick(safeBound), text_color=color.new(color.green, 0), text_size=tblSize)
+
+
+// ==================================================================================================================
+//  ALERTS — consistent across all methods
+// ==================================================================================================================
+
+alertcondition(flipUp, "Trailing flip UP",   "RedK MMTStop: trend flipped UP — stop now trails price from below")
+alertcondition(flipDn, "Trailing flip DOWN", "RedK MMTStop: trend flipped DOWN — stop now sits overhead")
+alertcondition(ta.crossunder(close, stopLine), "Close under stop", "RedK MMTStop: close crossed BELOW the trailing stop")
+alertcondition(ta.crossover(close, stopLine),  "Close over stop",  "RedK MMTStop: close crossed ABOVE the trailing stop")
+alertcondition(critZone == "critical" and critZone[1] != "critical", "Entered CRITICAL zone", 
+  "RedK MMTStop: price entered the CRITICAL zone. Buffer under 0.5x safe distance. Consider closing manually.")
+

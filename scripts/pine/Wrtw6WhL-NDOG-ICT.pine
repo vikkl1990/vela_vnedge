@@ -1,0 +1,855 @@
+//@version=6
+
+indicator("NDOG - ICT", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=10)
+
+//------------------------------------------------------------------------------
+
+// New Day Opening Gap (NDOG) companion for the HTF FVG Reaction Bias indicator.
+
+//
+
+// Fixed New York definition:
+
+// - Prior-session reference: close of the 16:30 New York 30-minute candle.
+
+// - New-session reference: open of the 18:00 New York 30-minute candle.
+
+// - The latest/current 18:00 session gap remains the active gap.
+
+// - Optional historical NDOGs can be displayed for a configurable lookback.
+
+//
+
+// Bias override:
+
+// - Gap up (18:00 open above 16:30 close): bearish until the lower boundary
+
+//   is reached and the gap is fully filled.
+
+// - Gap down (18:00 open below 16:30 close): bullish until the upper boundary
+
+//   is reached and the gap is fully filled.
+
+// - When filled, or when the override is disabled, defer to the normal HTF
+
+//   Bias indicator.
+
+//------------------------------------------------------------------------------
+
+//==============================================================================
+
+// 01. NDOG LOGIC
+
+//==============================================================================
+
+groupLogic = "01. NDOG Logic"
+
+enableNDOG = input.bool(true, "Enable current-session NDOG", group=groupLogic)
+
+enableBiasOverride = input.bool(true, "Enable NDOG bias override", group=groupLogic)
+
+minimumGapPoints = input.float(0.25, "Minimum NDOG size in points", minval=0.0, step=0.25, group=groupLogic)
+
+sessionTimezone = input.string("America/New_York", "Session timezone", group=groupLogic)
+
+//==============================================================================
+
+// 02. NDOG VISUALS
+
+//==============================================================================
+
+groupVisual = "02. NDOG Visuals"
+
+showGapBox = input.bool(true, "Show current NDOG box", group=groupVisual)
+
+showBoundaryLines = input.bool(true, "Show top and bottom lines", group=groupVisual)
+
+showMidpointLine = input.bool(true, "Show midpoint line", group=groupVisual)
+
+showPriceLabels = input.bool(true, "Show price labels", group=groupVisual)
+
+gapBoxColor = input.color(color.new(color.purple, 84), "Gap box color", group=groupVisual)
+
+boundaryLineColor = input.color(color.purple, "Top and bottom line color", group=groupVisual)
+
+midpointLineColor = input.color(color.purple, "Midpoint line color", group=groupVisual)
+
+boundaryLineWidth = input.int(1, "Top and bottom line width", minval=1, maxval=5, group=groupVisual)
+
+midpointLineWidth = input.int(3, "Midpoint dashed-line width", minval=1, maxval=5, group=groupVisual)
+
+labelTextColor = input.color(color.white, "Price-label text color", group=groupVisual)
+
+labelBackgroundColor = input.color(color.new(color.purple, 20), "Price-label background", group=groupVisual)
+
+//==============================================================================
+
+// 03. NDOG TABLE
+
+//==============================================================================
+
+groupTable = "03. NDOG Status Table"
+
+showStatusTable = input.bool(true, "Show NDOG status table", group=groupTable)
+
+tablePositionInput = input.string("Middle Right", "Table position", options=["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group=groupTable)
+
+tableTextSizeInput = input.string("Small", "Table text size", options=["Tiny", "Small", "Normal"], group=groupTable)
+
+tableHeaderColor = input.color(color.new(color.black, 0), "Header background", group=groupTable)
+
+tableActiveColor = input.color(color.new(color.purple, 25), "Active-override background", group=groupTable)
+
+tableInactiveColor = input.color(color.new(color.gray, 75), "Inactive background", group=groupTable)
+
+tableTextColor = input.color(color.white, "Table text color", group=groupTable)
+
+//==============================================================================
+
+// 04. ALERTS
+
+//==============================================================================
+
+groupAlerts = "04. NDOG Alerts"
+
+enableNewGapAlert = input.bool(true, "Alert when a new NDOG forms", group=groupAlerts)
+
+enableTopAlert = input.bool(true, "Alert when price reaches NDOG top", group=groupAlerts)
+
+enableMidpointAlert = input.bool(true, "Alert when price reaches NDOG midpoint", group=groupAlerts)
+
+enableBottomAlert = input.bool(true, "Alert when price reaches NDOG bottom", group=groupAlerts)
+
+enableFullFillAlert = input.bool(true, "Alert when NDOG is fully filled", group=groupAlerts)
+
+enableOverrideAlert = input.bool(true, "Alert when NDOG override changes", group=groupAlerts)
+
+enableDynamicAlertCalls = input.bool(true, "Enable detailed alert() messages", group=groupAlerts)
+
+//==============================================================================
+
+// 05. HISTORICAL NDOGS
+
+//==============================================================================
+
+groupHistory = "05. Historical NDOGs"
+
+showHistoricalGaps = input.bool(false, "Show historical NDOGs", group=groupHistory)
+
+historicalLookbackInput = input.string("30 Days", "Historical lookback", options=["30 Days", "60 Days", "90 Days", "180 Days", "240 Days"], group=groupHistory)
+
+// Historical storage is separate from the current-session state. This preserves
+
+// the existing current NDOG, alerts, bias override, labels, and status table.
+
+var int[] historicalOpenTimes = array.new_int()
+
+var float[] historicalTops = array.new_float()
+
+var float[] historicalMids = array.new_float()
+
+var float[] historicalBottoms = array.new_float()
+
+var bool[] historicalGapUps = array.new_bool()
+
+var bool[] historicalFilled = array.new_bool()
+
+var int[] historicalFillTimes = array.new_int()
+
+var box[] historicalRangeBoxes = array.new_box()
+
+var line[] historicalMidLines = array.new_line()
+
+var int lastHistoricalOpenTime = na
+
+//==============================================================================
+
+// HELPERS
+
+//==============================================================================
+
+f_table_position() =>
+
+    tablePositionInput == "Top Left" ? position.top_left :
+
+     tablePositionInput == "Top Center" ? position.top_center :
+
+     tablePositionInput == "Top Right" ? position.top_right :
+
+     tablePositionInput == "Middle Left" ? position.middle_left :
+
+     tablePositionInput == "Middle Center" ? position.middle_center :
+
+     tablePositionInput == "Middle Right" ? position.middle_right :
+
+     tablePositionInput == "Bottom Left" ? position.bottom_left :
+
+     tablePositionInput == "Bottom Center" ? position.bottom_center : position.bottom_right
+
+f_table_text_size() =>
+
+    tableTextSizeInput == "Tiny" ? size.tiny : tableTextSizeInput == "Small" ? size.small : size.normal
+
+f_price(float value) =>
+
+    str.tostring(value, format.mintick)
+
+f_time(int value) =>
+
+    na(value) ? "—" : str.format_time(value, "MMM dd HH:mm", sessionTimezone)
+
+f_delete_box(box b) =>
+
+    if not na(b)
+
+        box.delete(b)
+
+f_delete_line(line l) =>
+
+    if not na(l)
+
+        line.delete(l)
+
+f_delete_label(label l) =>
+
+    if not na(l)
+
+        label.delete(l)
+
+f_historical_lookback_days() =>
+
+    historicalLookbackInput == "30 Days" ? 30 :
+
+     historicalLookbackInput == "60 Days" ? 60 :
+
+     historicalLookbackInput == "90 Days" ? 90 :
+
+     historicalLookbackInput == "180 Days" ? 180 : 240
+
+f_delete_historical_objects(int index) =>
+
+    box rangeBox = array.get(historicalRangeBoxes, index)
+
+    line midLine = array.get(historicalMidLines, index)
+
+    if not na(rangeBox)
+
+        box.delete(rangeBox)
+
+    if not na(midLine)
+
+        line.delete(midLine)
+
+f_remove_historical_gap(int index) =>
+
+    f_delete_historical_objects(index)
+
+    array.remove(historicalOpenTimes, index)
+
+    array.remove(historicalTops, index)
+
+    array.remove(historicalMids, index)
+
+    array.remove(historicalBottoms, index)
+
+    array.remove(historicalGapUps, index)
+
+    array.remove(historicalFilled, index)
+
+    array.remove(historicalFillTimes, index)
+
+    array.remove(historicalRangeBoxes, index)
+
+    array.remove(historicalMidLines, index)
+
+f_prune_historical_gaps(int referenceTime) =>
+
+    int cutoffTime = referenceTime - f_historical_lookback_days() * 24 * 60 * 60 * 1000
+
+    int index = array.size(historicalOpenTimes) - 1
+
+    while index >= 0
+
+        if array.get(historicalOpenTimes, index) < cutoffTime
+
+            f_remove_historical_gap(index)
+
+        index -= 1
+
+f_sync_historical_gap(int index, int currentSessionOpenTime) =>
+
+    int formationTime = array.get(historicalOpenTimes, index)
+
+    bool isCurrentGap = formationTime == currentSessionOpenTime
+
+    bool shouldDisplay = showHistoricalGaps and not isCurrentGap
+
+    box rangeBox = array.get(historicalRangeBoxes, index)
+
+    line midLine = array.get(historicalMidLines, index)
+
+    if shouldDisplay
+
+        bool isFilled = array.get(historicalFilled, index)
+
+        int rightTime = isFilled ? array.get(historicalFillTimes, index) : time_close
+
+        float topPrice = array.get(historicalTops, index)
+
+        float midPrice = array.get(historicalMids, index)
+
+        float bottomPrice = array.get(historicalBottoms, index)
+
+        bool needRangeBox = showGapBox or showBoundaryLines
+
+        if needRangeBox
+
+            color historicalBoxFill = showGapBox ? gapBoxColor : color.new(gapBoxColor, 100)
+
+            color historicalBorderColor = showBoundaryLines ? boundaryLineColor : color.new(boundaryLineColor, 100)
+
+            int historicalBorderWidth = showBoundaryLines ? boundaryLineWidth : 0
+
+            if na(rangeBox)
+
+                rangeBox := box.new(left=formationTime, top=topPrice, right=rightTime, bottom=bottomPrice, xloc=xloc.bar_time, extend=isFilled ? extend.none : extend.right, bgcolor=historicalBoxFill, border_color=historicalBorderColor, border_width=historicalBorderWidth, force_overlay=true)
+
+            else
+
+                box.set_lefttop(rangeBox, formationTime, topPrice)
+
+                box.set_rightbottom(rangeBox, rightTime, bottomPrice)
+
+                box.set_extend(rangeBox, isFilled ? extend.none : extend.right)
+
+                box.set_bgcolor(rangeBox, historicalBoxFill)
+
+                box.set_border_color(rangeBox, historicalBorderColor)
+
+                box.set_border_width(rangeBox, historicalBorderWidth)
+
+        else if not na(rangeBox)
+
+            box.delete(rangeBox)
+
+            rangeBox := na
+
+        if showMidpointLine
+
+            if na(midLine)
+
+                midLine := line.new(x1=formationTime, y1=midPrice, x2=rightTime, y2=midPrice, xloc=xloc.bar_time, extend=isFilled ? extend.none : extend.right, color=midpointLineColor, style=line.style_dashed, width=midpointLineWidth, force_overlay=true)
+
+            else
+
+                line.set_xy1(midLine, formationTime, midPrice)
+
+                line.set_xy2(midLine, rightTime, midPrice)
+
+                line.set_extend(midLine, isFilled ? extend.none : extend.right)
+
+                line.set_color(midLine, midpointLineColor)
+
+                line.set_style(midLine, line.style_dashed)
+
+                line.set_width(midLine, midpointLineWidth)
+
+        else if not na(midLine)
+
+            line.delete(midLine)
+
+            midLine := na
+
+    else
+
+        if not na(rangeBox)
+
+            box.delete(rangeBox)
+
+            rangeBox := na
+
+        if not na(midLine)
+
+            line.delete(midLine)
+
+            midLine := na
+
+    array.set(historicalRangeBoxes, index, rangeBox)
+
+    array.set(historicalMidLines, index, midLine)
+
+//==============================================================================
+
+// 30-MINUTE SESSION REFERENCES
+
+//==============================================================================
+
+// valuewhen() is evaluated inside the 30-minute context. This preserves the
+
+// most recent 16:30 close and 18:00 open even when the chart timeframe differs.
+
+float latest1630Close = request.security(syminfo.tickerid, "30", ta.valuewhen(hour(time, sessionTimezone) == 16 and minute(time, sessionTimezone) == 30, close, 0), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+int latest1630CloseTime = request.security(syminfo.tickerid, "30", ta.valuewhen(hour(time, sessionTimezone) == 16 and minute(time, sessionTimezone) == 30, time_close, 0), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+float latest1800Open = request.security(syminfo.tickerid, "30", ta.valuewhen(hour(time, sessionTimezone) == 18 and minute(time, sessionTimezone) == 0, open, 0), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+int latest1800OpenTime = request.security(syminfo.tickerid, "30", ta.valuewhen(hour(time, sessionTimezone) == 18 and minute(time, sessionTimezone) == 0, time, 0), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+bool referencesValid = not na(latest1630Close) and not na(latest1630CloseTime) and not na(latest1800Open) and not na(latest1800OpenTime) and latest1630CloseTime <= latest1800OpenTime
+
+bool newSessionGap = referencesValid and (na(latest1800OpenTime[1]) or latest1800OpenTime != latest1800OpenTime[1])
+
+//==============================================================================
+
+// CURRENT-SESSION STATE
+
+//==============================================================================
+
+var int activeSessionOpenTime = na
+
+var float gapTop = na
+
+var float gapMid = na
+
+var float gapBottom = na
+
+var bool gapUp = false
+
+var bool gapExists = false
+
+var bool gapFilled = false
+
+var int gapFillTime = na
+
+var bool topAlerted = false
+
+var bool midpointAlerted = false
+
+var bool bottomAlerted = false
+
+var bool priorOverrideActive = false
+
+var box ndogBox = na
+
+var line topLine = na
+
+var line midpointLine = na
+
+var line bottomLine = na
+
+var label topLabel = na
+
+var label midpointLabel = na
+
+var label bottomLabel = na
+
+bool newGapEvent = false
+
+bool topTouchEvent = false
+
+bool midpointTouchEvent = false
+
+bool bottomTouchEvent = false
+
+bool fullFillEvent = false
+
+if enableNDOG and newSessionGap
+
+    // Remove only the preceding current-session drawings. Historical drawings
+
+    // are managed independently by the optional historical NDOG layer.
+
+    f_delete_box(ndogBox)
+
+    f_delete_line(topLine)
+
+    f_delete_line(midpointLine)
+
+    f_delete_line(bottomLine)
+
+    f_delete_label(topLabel)
+
+    f_delete_label(midpointLabel)
+
+    f_delete_label(bottomLabel)
+
+    ndogBox := na
+
+    topLine := na
+
+    midpointLine := na
+
+    bottomLine := na
+
+    topLabel := na
+
+    midpointLabel := na
+
+    bottomLabel := na
+
+    activeSessionOpenTime := latest1800OpenTime
+
+    gapTop := math.max(latest1630Close, latest1800Open)
+
+    gapBottom := math.min(latest1630Close, latest1800Open)
+
+    gapMid := (gapTop + gapBottom) / 2.0
+
+    gapUp := latest1800Open > latest1630Close
+
+    gapExists := gapTop - gapBottom >= minimumGapPoints
+
+    gapFilled := false
+
+    gapFillTime := na
+
+    topAlerted := false
+
+    midpointAlerted := false
+
+    bottomAlerted := false
+
+    newGapEvent := gapExists
+
+    if gapExists
+
+        int initialRight = activeSessionOpenTime + 30 * 60 * 1000
+
+        if showGapBox
+
+            ndogBox := box.new(left=activeSessionOpenTime, top=gapTop, right=initialRight, bottom=gapBottom, xloc=xloc.bar_time, extend=extend.right, bgcolor=gapBoxColor, border_color=color.new(boundaryLineColor, 100), border_width=0, text="NDOG", text_color=labelTextColor, text_size=size.tiny, text_halign=text.align_right, text_valign=text.align_center, force_overlay=true)
+
+        if showBoundaryLines
+
+            topLine := line.new(x1=activeSessionOpenTime, y1=gapTop, x2=initialRight, y2=gapTop, xloc=xloc.bar_time, extend=extend.right, color=boundaryLineColor, style=line.style_solid, width=boundaryLineWidth, force_overlay=true)
+
+            bottomLine := line.new(x1=activeSessionOpenTime, y1=gapBottom, x2=initialRight, y2=gapBottom, xloc=xloc.bar_time, extend=extend.right, color=boundaryLineColor, style=line.style_solid, width=boundaryLineWidth, force_overlay=true)
+
+        if showMidpointLine
+
+            midpointLine := line.new(x1=activeSessionOpenTime, y1=gapMid, x2=initialRight, y2=gapMid, xloc=xloc.bar_time, extend=extend.right, color=midpointLineColor, style=line.style_dashed, width=midpointLineWidth, force_overlay=true)
+
+        if showPriceLabels
+
+            topLabel := label.new(x=initialRight, y=gapTop, xloc=xloc.bar_time, text="Top " + f_price(gapTop), style=label.style_label_left, color=labelBackgroundColor, textcolor=labelTextColor, size=size.tiny, force_overlay=true)
+
+            midpointLabel := label.new(x=initialRight, y=gapMid, xloc=xloc.bar_time, text="Mid " + f_price(gapMid), style=label.style_label_left, color=labelBackgroundColor, textcolor=labelTextColor, size=size.tiny, force_overlay=true)
+
+            bottomLabel := label.new(x=initialRight, y=gapBottom, xloc=xloc.bar_time, text="Bottom " + f_price(gapBottom), style=label.style_label_left, color=labelBackgroundColor, textcolor=labelTextColor, size=size.tiny, force_overlay=true)
+
+// Capture every qualifying NDOG independently for the selected historical
+
+// lookback. The newest entry is excluded from historical rendering because the
+
+// existing current-session drawings already represent it.
+
+if enableNDOG and newSessionGap and referencesValid and (na(lastHistoricalOpenTime) or latest1800OpenTime != lastHistoricalOpenTime)
+
+    float historicalTop = math.max(latest1630Close, latest1800Open)
+
+    float historicalBottom = math.min(latest1630Close, latest1800Open)
+
+    float historicalMid = (historicalTop + historicalBottom) / 2.0
+
+    bool historicalQualifies = historicalTop - historicalBottom >= minimumGapPoints
+
+    lastHistoricalOpenTime := latest1800OpenTime
+
+    if historicalQualifies
+
+        array.push(historicalOpenTimes, latest1800OpenTime)
+
+        array.push(historicalTops, historicalTop)
+
+        array.push(historicalMids, historicalMid)
+
+        array.push(historicalBottoms, historicalBottom)
+
+        array.push(historicalGapUps, latest1800Open > latest1630Close)
+
+        array.push(historicalFilled, false)
+
+        array.push(historicalFillTimes, na)
+
+        array.push(historicalRangeBoxes, na)
+
+        array.push(historicalMidLines, na)
+
+// If the user disables the NDOG module, remove its drawings without touching
+
+// any HTF Bias logic.
+
+if not enableNDOG
+
+    f_delete_box(ndogBox)
+
+    f_delete_line(topLine)
+
+    f_delete_line(midpointLine)
+
+    f_delete_line(bottomLine)
+
+    f_delete_label(topLabel)
+
+    f_delete_label(midpointLabel)
+
+    f_delete_label(bottomLabel)
+
+    ndogBox := na
+
+    topLine := na
+
+    midpointLine := na
+
+    bottomLine := na
+
+    topLabel := na
+
+    midpointLabel := na
+
+    bottomLabel := na
+
+    gapExists := false
+
+    gapFilled := false
+
+// Keep labels attached to the right edge of the latest visible chart data.
+
+if barstate.islast and gapExists and showPriceLabels
+
+    int labelTime = time_close + math.max(1, timeframe.in_seconds()) * 1000
+
+    if not na(topLabel)
+
+        label.set_x(topLabel, labelTime)
+
+        label.set_y(topLabel, gapTop)
+
+    if not na(midpointLabel)
+
+        label.set_x(midpointLabel, labelTime)
+
+        label.set_y(midpointLabel, gapMid)
+
+    if not na(bottomLabel)
+
+        label.set_x(bottomLabel, labelTime)
+
+        label.set_y(bottomLabel, gapBottom)
+
+//==============================================================================
+
+// LEVEL TOUCHES AND FULL FILL
+
+//==============================================================================
+
+bool afterGapFormation = enableNDOG and gapExists and not na(activeSessionOpenTime) and time >= activeSessionOpenTime
+
+if afterGapFormation
+
+    bool topTouched = low <= gapTop and high >= gapTop
+
+    bool midpointTouched = low <= gapMid and high >= gapMid
+
+    bool bottomTouched = low <= gapBottom and high >= gapBottom
+
+    if topTouched and not topAlerted
+
+        topAlerted := true
+
+        topTouchEvent := true
+
+    if midpointTouched and not midpointAlerted
+
+        midpointAlerted := true
+
+        midpointTouchEvent := true
+
+    if bottomTouched and not bottomAlerted
+
+        bottomAlerted := true
+
+        bottomTouchEvent := true
+
+    bool fullyFilledNow = gapUp ? low <= gapBottom : high >= gapTop
+
+    if fullyFilledNow and not gapFilled
+
+        gapFilled := true
+
+        gapFillTime := time
+
+        fullFillEvent := true
+
+//==============================================================================
+
+// HISTORICAL GAP LIFECYCLE
+
+//==============================================================================
+
+// Historical gaps use the same qualification threshold and visual settings as
+
+// the current NDOG. Filled gaps stop at their fill bar; unfilled gaps continue
+
+// extending to the right.
+
+if enableNDOG and array.size(historicalOpenTimes) > 0
+
+    int historicalIndex = 0
+
+    while historicalIndex < array.size(historicalOpenTimes)
+
+        int formationTime = array.get(historicalOpenTimes, historicalIndex)
+
+        bool isFilled = array.get(historicalFilled, historicalIndex)
+
+        if not isFilled and time >= formationTime
+
+            bool isGapUp = array.get(historicalGapUps, historicalIndex)
+
+            float historicalTop = array.get(historicalTops, historicalIndex)
+
+            float historicalBottom = array.get(historicalBottoms, historicalIndex)
+
+            bool historicalFillNow = isGapUp ? low <= historicalBottom : high >= historicalTop
+
+            if historicalFillNow
+
+                array.set(historicalFilled, historicalIndex, true)
+
+                array.set(historicalFillTimes, historicalIndex, time)
+
+        historicalIndex += 1
+
+    f_prune_historical_gaps(time_close)
+
+    historicalIndex := 0
+
+    while historicalIndex < array.size(historicalOpenTimes)
+
+        f_sync_historical_gap(historicalIndex, activeSessionOpenTime)
+
+        historicalIndex += 1
+
+//==============================================================================
+
+// BIAS OVERRIDE
+
+//==============================================================================
+
+// The override remains locked until the far boundary is reached. A partial
+
+// retracement inside the gap does not deactivate it.
+
+int ndogOverrideDirection = enableNDOG and enableBiasOverride and gapExists and not gapFilled ? (gapUp ? -1 : 1) : 0
+
+bool overrideActive = ndogOverrideDirection != 0
+
+bool overrideChanged = overrideActive != priorOverrideActive or (overrideActive and ndogOverrideDirection != nz(ndogOverrideDirection[1]))
+
+if overrideChanged
+
+    priorOverrideActive := overrideActive
+
+string overrideText = ndogOverrideDirection == -1 ? "BEARISH OVERRIDE" : ndogOverrideDirection == 1 ? "BULLISH OVERRIDE" : "HTF BIAS NORMAL"
+
+string gapDirectionText = not gapExists ? "No qualifying gap" : gapUp ? "Gap up" : "Gap down"
+
+string fillText = not gapExists ? "—" : gapFilled ? "FILLED " + f_time(gapFillTime) : "UNFILLED"
+
+// Hidden numeric output for future integration: -1 bearish override,
+
+// +1 bullish override, 0 normal HTF Bias operation.
+
+plot(ndogOverrideDirection, "NDOG Bias Override", display=display.none)
+
+//==============================================================================
+
+// ALERTS
+
+//==============================================================================
+
+if enableDynamicAlertCalls
+
+    if newGapEvent and enableNewGapAlert
+
+        alert("NEW NDOG | " + gapDirectionText + " | Prior 16:30 close: " + f_price(latest1630Close) + " | 18:00 open: " + f_price(latest1800Open) + " | Top: " + f_price(gapTop) + " | Mid: " + f_price(gapMid) + " | Bottom: " + f_price(gapBottom) + " | Override: " + overrideText, alert.freq_once_per_bar)
+
+    if topTouchEvent and enableTopAlert
+
+        alert("NDOG TOP REACHED | " + f_price(gapTop) + " | Session: " + f_time(activeSessionOpenTime), alert.freq_once_per_bar)
+
+    if midpointTouchEvent and enableMidpointAlert
+
+        alert("NDOG MIDPOINT REACHED | " + f_price(gapMid) + " | Session: " + f_time(activeSessionOpenTime), alert.freq_once_per_bar)
+
+    if bottomTouchEvent and enableBottomAlert
+
+        alert("NDOG BOTTOM REACHED | " + f_price(gapBottom) + " | Session: " + f_time(activeSessionOpenTime), alert.freq_once_per_bar)
+
+    if fullFillEvent and enableFullFillAlert
+
+        alert("NDOG FULLY FILLED | Normal HTF Bias operation restored | Fill time: " + f_time(gapFillTime), alert.freq_once_per_bar)
+
+    if overrideChanged and enableOverrideAlert
+
+        alert("NDOG OVERRIDE CHANGED | " + overrideText + " | Session: " + f_time(activeSessionOpenTime), alert.freq_once_per_bar)
+
+alertcondition(newGapEvent, "New NDOG formed", "A new current-session New Day Opening Gap formed.")
+
+alertcondition(topTouchEvent, "NDOG top reached", "Price reached the current NDOG top boundary.")
+
+alertcondition(midpointTouchEvent, "NDOG midpoint reached", "Price reached the current NDOG midpoint.")
+
+alertcondition(bottomTouchEvent, "NDOG bottom reached", "Price reached the current NDOG bottom boundary.")
+
+alertcondition(fullFillEvent, "NDOG fully filled", "The current NDOG has been completely filled.")
+
+alertcondition(overrideChanged, "NDOG override changed", "The NDOG directional override changed.")
+
+//==============================================================================
+
+// STATUS TABLE
+
+//==============================================================================
+
+var table statusTable = table.new(f_table_position(), 2, 7, border_width=1)
+
+if barstate.islast
+
+    if showStatusTable
+
+        color stateBg = overrideActive ? tableActiveColor : tableInactiveColor
+
+        table.cell(statusTable, 0, 0, "NDOG Field", bgcolor=tableHeaderColor, text_color=tableTextColor, text_size=f_table_text_size())
+
+        table.cell(statusTable, 1, 0, "Current State", bgcolor=tableHeaderColor, text_color=tableTextColor, text_size=f_table_text_size())
+
+        table.cell(statusTable, 0, 1, "Session Open", bgcolor=stateBg, text_color=tableTextColor, text_size=f_table_text_size())
+
+        table.cell(statusTable, 1, 1, f_time(activeSessionOpenTime), bgcolor=stateBg, text_color=tableTextColor, text_size=f_table_text_size())
+
+        table.cell(statusTable, 0, 2, "Gap Direction", bgcolor=stateBg, text_color=tableTextColor, text_size=f_table_text_size())
+
+        table.cell(statusTable, 1, 2, gapDirectionText, bgcolor=stateBg, text_color=tableTextColor, text_size=f_table_text_size())
+
+        table.cell(statusTable, 0, 3, "Bias Override", bgcolor=stateBg, text_color=tableTextColor, text_size=f_table_text_size())
+
+        table.cell(statusTable, 1, 3, overrideText, bgcolor=stateBg, text_color=tableTextColor, text_size=f_table_text_size())
+
+        table.cell(statusTable, 0, 4, "Top / Mid / Bottom", bgcolor=stateBg, text_color=tableTextColor, text_size=f_table_text_size())
+
+        table.cell(statusTable, 1, 4, gapExists ? f_price(gapTop) + " / " + f_price(gapMid) + " / " + f_price(gapBottom) : "—", bgcolor=stateBg, text_color=tableTextColor, text_size=f_table_text_size())
+
+        table.cell(statusTable, 0, 5, "Fill Status", bgcolor=stateBg, text_color=tableTextColor, text_size=f_table_text_size())
+
+        table.cell(statusTable, 1, 5, fillText, bgcolor=stateBg, text_color=tableTextColor, text_size=f_table_text_size())
+
+        table.cell(statusTable, 0, 6, "Normal HTF Bias", bgcolor=stateBg, text_color=tableTextColor, text_size=f_table_text_size())
+
+        table.cell(statusTable, 1, 6, overrideActive ? "Temporarily overridden" : "Active", bgcolor=stateBg, text_color=tableTextColor, text_size=f_table_text_size())
+
+    else
+
+        table.clear(statusTable, 0, 0, 1, 6)

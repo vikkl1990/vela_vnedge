@@ -1,0 +1,348 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//@version=6
+strategy("Liquidity Sweep Reversal Strategy", "Sweep Reversal Strategy", overlay = true,
+     max_boxes_count = 600, max_lines_count = 500, max_labels_count = 300,
+     default_qty_type = strategy.percent_of_equity, default_qty_value = 10,
+     initial_capital = 10000, currency = currency.USD,
+     commission_type = strategy.commission.percent, commission_value = 0.04,
+     slippage = 1)
+
+// ── Colors ───────────────────────────────────────────────────────────────
+color DATA    = #DBDBDB
+color HEADERS = #808080
+color BG      = #161616
+color BORDERS = #2E2E2E
+color GOLD    = #eab308
+
+// ── Inputs ──────────────────────────────────────────────────────────────
+grpCore  = "Swing Detection"
+grpTrade = "Trade Management"
+grpFilt  = "Filters"
+grpVis   = "Visuals"
+grpDash  = "Dashboard"
+
+pivotLen   = input.int(7, "Pivot Lookback (L/R bars)", minval = 2, group = grpCore)
+maxAge     = input.int(150, "Level Max Age (bars)", minval = 20, group = grpCore)
+minGapATR  = input.float(0.25, "Min Level Spacing (x ATR)", minval = 0, step = 0.05, group = grpCore)
+
+slAtrMult      = input.float(1.2, "Stop Loss (x ATR beyond wick)", minval = 0.1, step = 0.1, group = grpTrade)
+minRiskATR     = input.float(0.5, "Min Stop Distance (x ATR)", minval = 0, step = 0.1, group = grpTrade)
+rrRatio        = input.float(1.5, "Reward:Risk Ratio", minval = 0.5, step = 0.25, group = grpTrade)
+useBreakeven   = input.bool(true, "Move Stop to Breakeven", group = grpTrade)
+breakevenAtPct = input.float(50, "Breakeven Trigger (% to TP)", minval = 10, maxval = 90, group = grpTrade)
+allowLongs     = input.bool(true, "Allow Longs (sweep-low)", group = grpTrade)
+allowShorts    = input.bool(true, "Allow Shorts (sweep-high)", group = grpTrade)
+
+useVolFilt     = input.bool(true, "Require Volume Spike on Sweep", group = grpFilt)
+volMult        = input.float(1.3, "Volume SMA Multiplier", minval = 1, step = 0.1, group = grpFilt)
+useWickFilt    = input.bool(true, "Require Strong Rejection Wick", group = grpFilt, tooltip = "Sweep bar's wick beyond the level must be at least this many times its body size.")
+minWickRatio   = input.float(1.5, "Min Wick:Body Ratio", minval = 0.5, step = 0.1, group = grpFilt)
+useConfirm     = input.bool(true, "Require Next-Bar Confirmation", group = grpFilt, tooltip = "Waits one extra bar after the sweep and only enters if price continues in the reversal direction past the sweep bar's midpoint. Reduces whipsaw entries.")
+useSession     = input.bool(true, "Restrict to Session Window", group = grpFilt)
+sessWindow     = input.session("1200-1600", "Session (Exchange TZ)", group = grpFilt, tooltip = "Default is the London/NY overlap — the highest-liquidity window, not just 'business hours'.")
+
+bullCol         = input.color(#26a69a, "Bullish (Low) Sweep Color", group = grpVis)
+bearCol         = input.color(#ef5350, "Bearish (High) Sweep Color", group = grpVis)
+zoneTransp      = input.int(85, "Zone Fill Transparency", minval = 0, maxval = 100, group = grpVis)
+showZones       = input.bool(true, "Show Liquidity Zones", group = grpVis)
+showTradeLvls   = input.bool(true, "Show Entry/SL/TP Lines (all trades)", group = grpVis)
+tradeLineMaxAge = input.int(200, "Trade Line Max Age (bars)", minval = 20, group = grpVis, tooltip = "How long a closed trade's entry/SL/TP lines remain on the chart before being removed.")
+showLabels      = input.bool(true, "Show Trade Labels", group = grpVis)
+
+showDash = input.bool(true, "Show Dashboard", group = grpDash)
+dashPos  = input.string("Top Right", "Position", options = ["Top Right", "Bottom Right", "Bottom Left"], group = grpDash)
+dashSize = input.string("Small", "Size", options = ["Tiny", "Small", "Normal", "Large"], group = grpDash)
+
+// ── Indicators ────────────────────────────────────────────────────────────
+atr    = ta.atr(14)
+volSMA = ta.sma(volume, 20)
+
+pivH = ta.pivothigh(high, pivotLen, pivotLen)
+pivL = ta.pivotlow(low, pivotLen, pivotLen)
+
+bool inSession = not na(time(timeframe.period, sessWindow))
+
+var parsedPos  = dashPos == "Top Right" ? position.top_right : dashPos == "Bottom Right" ? position.bottom_right : position.bottom_left
+var parsedSize = dashSize == "Tiny" ? size.tiny : dashSize == "Small" ? size.small : dashSize == "Normal" ? size.normal : size.large
+
+// ── A swing high/low waiting to be swept ──────────────────────────────────
+type Level
+    float price
+    int   bar
+    box   zone
+    line  mid
+
+var Level[] highs = array.new<Level>()
+var Level[] lows  = array.new<Level>()
+
+// ── One trade's entry/SL/TP lines, kept even after the trade closes ───────
+type TradeVisual
+    line  enLine
+    line  slLine
+    line  tpLine
+    int   bornBar
+    bool  isOpen
+
+var TradeVisual[] tradeVisuals = array.new<TradeVisual>()
+var int openVisualIdx = -1   // index of the currently open trade's visual, -1 if flat
+
+var int wins        = 0
+var int losses      = 0
+var int totalTrades = 0
+var float activeSL    = na
+var float activeTP    = na
+var float activeEntry = na
+var bool  beDone      = false
+
+// Holds a sweep for one bar so we can check next-bar follow-through
+var bool  pendingLong  = false
+var bool  pendingShort = false
+var float pendingWick  = na
+var float pendingMid   = na
+
+// True if px is too close to an existing level (avoids duplicate/cluttered levels)
+tooClose(array<Level> arr, float px) =>
+    bool close_ = false
+    for lv in arr
+        if math.abs(lv.price - px) < atr * minGapATR
+            close_ := true
+    close_
+
+// ── Save new swing highs/lows as levels to watch for a sweep ──────────────
+if not na(pivH)
+    float px = pivH
+    if not tooClose(highs, px)
+        bx = showZones ? box.new(bar_index - pivotLen, px, bar_index, px - atr * 0.3,
+             bgcolor = color.new(bearCol, zoneTransp), border_color = color.new(bearCol, 60), border_width = 1) : na
+        ml = showZones ? line.new(bar_index - pivotLen, px, bar_index, px, color = color.new(bearCol, 25), style = line.style_dotted) : na
+        array.push(highs, Level.new(px, bar_index - pivotLen, bx, ml))
+
+if not na(pivL)
+    float px = pivL
+    if not tooClose(lows, px)
+        bx = showZones ? box.new(bar_index - pivotLen, px + atr * 0.3, bar_index, px,
+             bgcolor = color.new(bullCol, zoneTransp), border_color = color.new(bullCol, 60), border_width = 1) : na
+        ml = showZones ? line.new(bar_index - pivotLen, px, bar_index, px, color = color.new(bullCol, 25), style = line.style_dotted) : na
+        array.push(lows, Level.new(px, bar_index - pivotLen, bx, ml))
+
+// ── Check each saved high: swept, expired, or still waiting? ──────────────
+bool sweepHighSignal = false
+float sweepHighWick  = na
+
+int hi = 0
+while hi < array.size(highs)
+    lv = array.get(highs, hi)
+    if showZones
+        box.set_right(lv.zone, bar_index)
+        line.set_x2(lv.mid, bar_index)
+
+    bool wicked  = high > lv.price and close < lv.price   // wicked through, closed back inside
+    float body   = math.abs(close - open)
+    float wickSz = high - math.max(close, open)
+    bool wickOK  = not useWickFilt or (body > 0 and wickSz / body >= minWickRatio) or (body == 0 and wickSz > 0)
+    bool volOK   = not useVolFilt or volume > volSMA * volMult
+    bool aged    = (bar_index - lv.bar) > maxAge
+
+    if wicked and volOK and wickOK
+        sweepHighSignal := true
+        sweepHighWick   := math.max(na(sweepHighWick) ? high : sweepHighWick, high)
+        box.delete(lv.zone)
+        line.delete(lv.mid)
+        array.remove(highs, hi)
+    else if aged
+        box.delete(lv.zone)
+        line.delete(lv.mid)
+        array.remove(highs, hi)
+    else
+        hi += 1
+
+// ── Check each saved low: swept, expired, or still waiting? ────────────────
+bool sweepLowSignal = false
+float sweepLowWick  = na
+
+int li = 0
+while li < array.size(lows)
+    lv = array.get(lows, li)
+    if showZones
+        box.set_right(lv.zone, bar_index)
+        line.set_x2(lv.mid, bar_index)
+
+    bool wicked  = low < lv.price and close > lv.price
+    float body   = math.abs(close - open)
+    float wickSz = math.min(close, open) - low
+    bool wickOK  = not useWickFilt or (body > 0 and wickSz / body >= minWickRatio) or (body == 0 and wickSz > 0)
+    bool volOK   = not useVolFilt or volume > volSMA * volMult
+    bool aged    = (bar_index - lv.bar) > maxAge
+
+    if wicked and volOK and wickOK
+        sweepLowSignal := true
+        sweepLowWick   := math.min(na(sweepLowWick) ? low : sweepLowWick, low)
+        box.delete(lv.zone)
+        line.delete(lv.mid)
+        array.remove(lows, li)
+    else if aged
+        box.delete(lv.zone)
+        line.delete(lv.mid)
+        array.remove(lows, li)
+    else
+        li += 1
+
+// ── Work out stop/target for a trade; reject if the stop is too tight ─────
+calcTradeLevels(bool isLong, float wickLvl) =>
+    float sl = isLong ? wickLvl - atr * slAtrMult : wickLvl + atr * slAtrMult
+    float risk = isLong ? close - sl : sl - close
+    bool qualifies = risk >= atr * minRiskATR
+    float tp = qualifies ? (isLong ? close + risk * rrRatio : close - risk * rrRatio) : na
+    [qualifies, sl, tp]
+
+// ── Decide if we're entering this bar, and off which sweep ────────────────
+bool  doLong  = false
+bool  doShort = false
+float wickLvl = na
+bool sessionOK = not useSession or inSession
+
+if strategy.position_size == 0
+    if useConfirm
+        // A sweep from last bar only triggers if price kept moving our way
+        if pendingLong and close > pendingMid and allowLongs and sessionOK
+            doLong  := true
+            wickLvl := pendingWick
+        if pendingShort and close < pendingMid and allowShorts and sessionOK
+            doShort := true
+            wickLvl := pendingWick
+        pendingLong  := false
+        pendingShort := false
+
+        // Today's sweep becomes tomorrow's "pending" check
+        if sweepLowSignal
+            pendingLong := true
+            pendingWick := sweepLowWick
+            pendingMid  := math.avg(sweepLowWick, close)
+        if sweepHighSignal
+            pendingShort := true
+            pendingWick  := sweepHighWick
+            pendingMid   := math.avg(sweepHighWick, close)
+    else
+        // No confirmation delay — enter right on the sweep bar
+        if sweepLowSignal and allowLongs and sessionOK
+            doLong  := true
+            wickLvl := sweepLowWick
+        if sweepHighSignal and allowShorts and sessionOK
+            doShort := true
+            wickLvl := sweepHighWick
+
+// ── Open the trade and draw its entry/SL/TP lines ──────────────────────────
+if doLong or doShort
+    bool isLong = doLong
+    [qualifies, sl, tp] = calcTradeLevels(isLong, wickLvl)
+    if qualifies
+        strategy.entry(isLong ? "Long" : "Short", isLong ? strategy.long : strategy.short)
+        strategy.exit(isLong ? "Long Exit" : "Short Exit", isLong ? "Long" : "Short", stop = sl, limit = tp)
+        activeSL    := sl
+        activeTP    := tp
+        activeEntry := close
+        beDone      := false
+
+        if showTradeLvls
+            enL = line.new(bar_index, close, bar_index, close, color = color.new(DATA, 20), style = line.style_dashed)
+            slL = line.new(bar_index, sl, bar_index, sl, color = color.new(bearCol, 10), width = 1)
+            tpL = line.new(bar_index, tp, bar_index, tp, color = color.new(bullCol, 10), width = 1)
+            array.push(tradeVisuals, TradeVisual.new(enL, slL, tpL, bar_index, true))
+            openVisualIdx := array.size(tradeVisuals) - 1
+        if showLabels
+            label.new(bar_index, isLong ? low : high, isLong ? "LONG" : "SHORT",
+                 style = isLong ? label.style_label_up : label.style_label_down,
+                 color = color.new(isLong ? bullCol : bearCol, 10), textcolor = color.white, size = size.tiny)
+
+// ── Keep stretching the open trade's lines forward each bar ────────────────
+if showTradeLvls and openVisualIdx >= 0 and openVisualIdx < array.size(tradeVisuals)
+    tv = array.get(tradeVisuals, openVisualIdx)
+    if tv.isOpen
+        line.set_x2(tv.enLine, bar_index)
+        line.set_x2(tv.slLine, bar_index)
+        line.set_x2(tv.tpLine, bar_index)
+
+// ── Move stop to breakeven once price is far enough toward target ─────────
+if strategy.position_size != 0 and useBreakeven and not beDone and not na(activeEntry)
+    bool isLongPos = strategy.position_size > 0
+    float triggerLvl = isLongPos ?
+         activeEntry + (activeTP - activeEntry) * (breakevenAtPct / 100.0) :
+         activeEntry - (activeEntry - activeTP) * (breakevenAtPct / 100.0)
+    bool hit = isLongPos ? high >= triggerLvl : low <= triggerLvl
+    if hit
+        strategy.exit(isLongPos ? "Long Exit" : "Short Exit", isLongPos ? "Long" : "Short",
+             stop = activeEntry, limit = activeTP)
+        if showTradeLvls and openVisualIdx >= 0 and openVisualIdx < array.size(tradeVisuals)
+            tv = array.get(tradeVisuals, openVisualIdx)
+            line.set_y1(tv.slLine, activeEntry)
+            line.set_y2(tv.slLine, activeEntry)
+        beDone := true
+
+// ── Freeze a trade's lines once it's actually closed ───────────────────────
+// (skip the entry bar itself, since a fresh entry hasn't filled yet)
+if strategy.position_size == 0 and openVisualIdx >= 0 and openVisualIdx < array.size(tradeVisuals)
+    tv = array.get(tradeVisuals, openVisualIdx)
+    if tv.isOpen and bar_index > tv.bornBar
+        tv.isOpen := false
+        openVisualIdx := -1
+
+// ── Remove old closed-trade lines so the chart doesn't get too busy ───────
+if showTradeLvls and barstate.isconfirmed
+    int ti = 0
+    while ti < array.size(tradeVisuals)
+        tv = array.get(tradeVisuals, ti)
+        bool tooOld = not tv.isOpen and (bar_index - tv.bornBar) > tradeLineMaxAge
+        if tooOld
+            line.delete(tv.enLine)
+            line.delete(tv.slLine)
+            line.delete(tv.tpLine)
+            array.remove(tradeVisuals, ti)
+            if ti < openVisualIdx
+                openVisualIdx -= 1
+        else
+            ti += 1
+
+// ── Track wins/losses for the dashboard ────────────────────────────────────
+if strategy.closedtrades > strategy.closedtrades[1]
+    totalTrades += 1
+    float lastPL = strategy.closedtrades.profit(strategy.closedtrades - 1)
+    if lastPL > 0
+        wins += 1
+    else
+        losses += 1
+
+// ── Dashboard ────────────────────────────────────────────────────────────────
+cell(table t, int c, int r, string txt, color clr = #DBDBDB, align = text.align_right, color bg = na, float h = 0) =>
+    table.cell(t, c, r, txt, text_color = clr, text_size = parsedSize, text_halign = align, bgcolor = bg, height = h)
+
+divider(table t, int r) =>
+    table.merge_cells(t, 0, r, 1, r)
+    cell(t, 0, r, "━━━━━━━━━━━━━━", align = text.align_center, h = 0.5, clr = BORDERS)
+
+var table d = table.new(parsedPos, 2, 9, bgcolor = BG, border_width = 0, frame_color = BORDERS, frame_width = 1)
+
+if showDash and barstate.islast
+    float winRate = totalTrades > 0 ? (wins / float(totalTrades)) * 100 : 0
+
+    table.merge_cells(d, 0, 0, 1, 0)
+    cell(d, 0, 0, "Sweep Reversal Strategy", align = text.align_center)
+    divider(d, 1)
+
+    cell(d, 0, 2, "Total Trades", clr = HEADERS, align = text.align_left)
+    cell(d, 1, 2, str.tostring(totalTrades))
+    cell(d, 0, 3, "Wins / Losses", clr = HEADERS, align = text.align_left)
+    cell(d, 1, 3, str.tostring(wins) + " / " + str.tostring(losses))
+
+    divider(d, 4)
+
+    cell(d, 0, 5, "Win Rate", clr = HEADERS, align = text.align_left)
+    cell(d, 1, 5, str.tostring(math.round(winRate, 1)) + "%", clr = winRate >= 50 ? bullCol : bearCol)
+    cell(d, 0, 6, "Net Profit", clr = HEADERS, align = text.align_left)
+    cell(d, 1, 6, str.tostring(math.round(strategy.netprofit, 2)), clr = strategy.netprofit >= 0 ? bullCol : bearCol)
+
+    divider(d, 7)
+
+    cell(d, 0, 8, "Position", clr = HEADERS, align = text.align_left)
+    cell(d, 1, 8, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT",
+         clr = strategy.position_size > 0 ? bullCol : strategy.position_size < 0 ? bearCol : GOLD)
+

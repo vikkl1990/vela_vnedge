@@ -1,0 +1,1480 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © SG_Group
+
+//@version=6
+indicator("Swing High Low - Confirmation Spectrum", overlay = true,
+     max_bars_back = 1000, max_labels_count = 500, max_lines_count = 500)
+
+// Closed-bar observations, not trading instructions.
+// A fixed left window and THREE progressively longer right windows are used.
+// Stages II and III test the SAME accepted stage-I origin, not a new origin.
+// Original detection, retention cohorts, chart renderer and alerts are retained.
+// Adds same-origin price-definition tests and a fixed-horizon ordered path study.
+// New cohort membership is frozen at Stage I, not selected by later survival.
+// A separate fixed-horizon audit measures price paths AFTER each confirmation.
+// All audit stages are released together at origin + rightThree + auditHorizon.
+// No best-stage selection, prediction, entries, exits or return simulation.
+// The chart renderer uses frozen event snapshots, never later survival results.
+// Visual thinning and zoom can change displayed symbols, NOT detected events.
+// Triangles = I; small circles = II; small diamonds = III.
+// Captions are sparse, transparent and limited to recent stage-I markers.
+// Optional origin placement is explicitly BACKDATED and is off by default.
+// No imported libraries, external data, future requests or proprietary models.
+
+const string G1 = "01 - Swing detection"
+const string G2 = "02 - Shape and comparisons"
+const string G3 = "03 - Chart annotations"
+const string G4 = "04 - Colors and typography"
+const string G5 = "05 - Research readout"
+const string G6 = "06 - Post-confirmation research"
+const string G7 = "07 - Definition and ordered-path study"
+
+int leftBars = input.int(6, "Left context bars", minval = 1, maxval = 200,
+     group = G1, display = display.none,
+     tooltip = "The same left window is retained for all three stages. These are right-span persistence tests, not three symmetric pivot lengths.")
+int rightOne = input.int(3, "Stage I: right bars", minval = 1, maxval = 100,
+     group = G1, display = display.none)
+int extraTwo = input.int(5, "Stage II: additional right bars", minval = 1, maxval = 200,
+     group = G1, display = display.none,
+     tooltip = "Added to Stage I. Default: 3 + 5 = 8 right bars from the origin.")
+int extraThree = input.int(13, "Stage III: additional right bars", minval = 1, maxval = 300,
+     group = G1, display = display.none,
+     tooltip = "Added to Stage II. Default: 3 + 5 + 13 = 21 right bars from the origin.")
+string priceMode = input.string("Wicks", "Price definition", options = ["Wicks", "Bodies", "Close"],
+     group = G1, display = display.none,
+     tooltip = "Wicks: high/low. Bodies: max(open, close)/min(open, close). Close: close for both sides. ATR always uses chart OHLC.")
+string tieMode = input.string("Rightmost", "Equal-extreme selection", options = ["Rightmost", "Leftmost", "Strict"],
+     group = G1, display = display.none,
+     tooltip = "Within the selected windows: Rightmost permits equal older extremes, but no equal newer extreme. Leftmost does the reverse. Strict permits no equality on either side. This does not merge all equal prices across unlimited history.")
+int sameSideGap = input.int(3, "Minimum same-side spacing (bars)", minval = 0, maxval = 200,
+     group = G1, display = display.none,
+     tooltip = "Spacing between accepted stage-I origins of the same side. Zero disables this filter. Highs and lows are independent; alternation is not forced.")
+
+int atrLength = input.int(14, "ATR normalization length", minval = 1, maxval = 200,
+     group = G2, display = display.none)
+float minimumDepth = input.float(0.20, "Minimum two-sided shoulder depth (ATR)", minval = 0.0, maxval = 10.0, step = 0.05,
+     group = G2, display = display.none,
+     tooltip = "Uses the smaller source-price retreat on the left and initial right window, excluding the origin bar. Divided by ATR at the origin, then frozen. Zero disables the filter. It is a shape measure, not confidence or probability.")
+int equalTicks = input.int(1, "HH / LH / HL / LL equality tolerance (ticks)", minval = 0, maxval = 100,
+     group = G2, display = display.none,
+     tooltip = "Only affects comparison with the previous accepted same-side origin. It does not change the pivot tie rule. EH and EL mean equal within this tolerance.")
+
+string placement = input.string("Confirmation bars", "Stage-I marker placement",
+     options = ["Confirmation bars", "Origin bars (backdated)"],
+     group = G3, display = display.none,
+     tooltip = "Confirmation bars: a triangle marks the bar that confirms the earlier origin. Origin bars: the triangle is placed back on its origin only AFTER confirmation, with a dotted delay trace. Stages II and III always stay on their confirmation bars.")
+bool drawHighs = input.bool(true, "Highs", inline = "sides", group = G3, display = display.none)
+bool drawLows = input.bool(true, "Lows", inline = "sides", group = G3, display = display.none)
+bool drawTwo = input.bool(true, "Stage II dots", inline = "stages", group = G3, display = display.none)
+bool drawThree = input.bool(true, "Stage III diamonds", inline = "stages", group = G3, display = display.none)
+string densityMode = input.string("Adaptive", "Chart density",
+     options = ["Adaptive", "Fixed spacing", "All within limits"],
+     group = G3, display = display.none,
+     tooltip = "Adaptive uses the actual number of visible closed bars to thin chart symbols. Fixed spacing uses the minimum visual gap only. All within limits disables spacing filters. All modes keep detection, the readout, Data Window events and alerts unchanged.")
+int densitySlots = input.int(45, "Adaptive horizontal slots per side", minval = 10, maxval = 150,
+     group = G3, display = display.none,
+     tooltip = "Lower values produce fewer, more widely separated symbols when zoomed out. This is a bar-based density estimate, not pixel-level collision detection.")
+int visualGap = input.int(3, "Minimum visual spacing (bars)", minval = 0, maxval = 100,
+     group = G3, display = display.none,
+     tooltip = "Display only. This does NOT change Minimum same-side spacing in the detection settings. High and low symbols are spaced separately, newest first.")
+int primaryLimit = input.int(30, "Stage-I markers per side", minval = 3, maxval = 120,
+     group = G3, display = display.none)
+int receiptLimit = input.int(6, "Stage-II / III markers per side", minval = 0, maxval = 40,
+     group = G3, display = display.none,
+     tooltip = "A separate budget prevents later confirmations from crowding out the primary swing markers. Zero hides their chart symbols only.")
+int receiptAge = input.int(100, "Stage-II / III recent window (bars; 0 = all visible)", minval = 0, maxval = 20000,
+     group = G3, display = display.none,
+     tooltip = "Measured from the last visible closed bar. Later-stage statistics and alerts still use every detected event, including hidden symbols.")
+int annotationAge = input.int(0, "Overall visual age limit (bars; 0 = all visible)", minval = 0, maxval = 20000,
+     group = G3, display = display.none,
+     tooltip = "Measured from each event's confirmation to the last visible closed bar. Panning rebuilds symbols for that visible window. This is not a filter on the research sample.")
+int captionsPerSide = input.int(1, "Recent Stage-I captions per side", minval = 0, maxval = 6,
+     group = G3, display = display.none,
+     tooltip = "Default: at most one high caption and one low caption. Older points remain small symbols with hover details. Zero uses symbols only.")
+string detailMode = input.string("Class", "Caption content",
+     options = ["Class", "Class + stage", "Class + origin price"],
+     group = G3, display = display.none)
+float markerGap = input.float(0.35, "Minimum candle clearance (ATR)", minval = 0.05, maxval = 3.0, step = 0.05,
+     group = G3, display = display.none)
+float visiblePadding = input.float(1.0, "Clearance floor (% of visible price range)", minval = 0.0, maxval = 3.0, step = 0.1,
+     group = G3, display = display.none,
+     tooltip = "Keeps symbols away from candle wicks when the chart is zoomed out. The renderer uses the larger of this floor and the ATR clearance. It does not know the pane's exact pixel dimensions or manually stretched price scale.")
+bool drawPins = input.bool(true, "Fine Stage-I precision pins", group = G3, display = display.none,
+     tooltip = "Thin, translucent connectors for primary markers only. In origin mode they point to the selected origin price; otherwise to the confirmation candle. Later-stage dots and diamonds have no pins.")
+int traceWidth = input.int(1, "Pin / delay-trace width", minval = 1, maxval = 3,
+     group = G3, display = display.none)
+
+color highColor = input.color(#FF4FCB, "High", inline = "c1", group = G4, display = display.none)
+color lowColor = input.color(#35F5AC, "Low", inline = "c1", group = G4, display = display.none)
+color accentColor = input.color(#54DFFF, "Readout accent", inline = "c2", group = G4, display = display.none)
+color noticeColor = input.color(#FFD45C, "Timing notice", inline = "c2", group = G4, display = display.none)
+color cardColor = input.color(#101A2C, "Readout background", group = G4, display = display.none)
+color cardText = input.color(#EEF4FF, "Readout text", group = G4, display = display.none)
+string markerSize = input.string("Tiny", "Stage-I symbol size", options = ["Tiny", "Small", "Normal"],
+     group = G4, display = display.none)
+string receiptSize = input.string("Tiny", "Stage-II / III symbol size", options = ["Tiny", "Small"],
+     group = G4, display = display.none)
+int captionSize = input.int(11, "Caption font size", minval = 8, maxval = 20,
+     group = G4, display = display.none)
+int receiptTransparency = input.int(45, "Stage-II / III transparency", minval = 0, maxval = 85,
+     group = G4, display = display.none)
+bool boldText = input.bool(true, "Bold text", group = G4, display = display.none)
+
+bool showReadout = input.bool(true, "Show compact readout", group = G5, display = display.none)
+string readoutPosition = input.string("Top right", "Position",
+     options = ["Top right", "Bottom right", "Top left", "Bottom left"],
+     group = G5, display = display.none)
+int readoutSize = input.int(11, "Readout font size", minval = 8, maxval = 20,
+     group = G5, display = display.none)
+float rightInset = input.float(1.2, "Outer horizontal inset (%)", minval = 0.0, maxval = 8.0, step = 0.2,
+     group = G5, display = display.none,
+     tooltip = "Transparent outer gutter, useful near native chart High/Low labels. Percentage of the indicator's available width.")
+int cohortSize = input.int(100, "Completed observations per side", minval = 10, maxval = 1000,
+     group = G5, display = display.none,
+     tooltip = "Rolling sample of the latest fully observed stage-I origins on each side. Both stage-retention rates use this SAME stage-III-complete denominator. Pending origins and missing-data observations are excluded.")
+bool showMeters = input.bool(true, "Retention mini-bars", group = G5, display = display.none)
+bool showIcons = input.bool(true, "Readout icons", group = G5, display = display.none,
+     tooltip = "Adds small symbols to the existing cells only. No rows or columns are added. A filled square means the observation window is complete, not that the extreme survived.")
+
+bool auditEnabled = input.bool(true, "Enable post-confirmation research", group = G6, display = display.none,
+     tooltip = "A separate descriptive study, not a signal filter. Each attained stage is followed for the same number of bars AFTER its confirmation close. Details appear in readout tooltips and the Data Window. Original readout values, detections, chart markers and alerts do not change.")
+int auditHorizon = input.int(12, "Bars AFTER each confirmation", minval = 1, maxval = 150,
+     group = G6, display = display.none,
+     tooltip = "Excludes the confirmation candle. The next H completed candles are measured from the confirmation close. The entire origin is admitted to the completed audit sample only at origin + Stage-III right bars + H, even when later stages were not attained.")
+string auditSampling = input.string("All accepted origins", "Audit sample admission",
+     options = ["All accepted origins", "Non-overlapping per side"], group = G6, display = display.none,
+     tooltip = "All: audit every accepted Stage-I origin. Non-overlapping: admit an origin only when its Stage-I confirmation bar is strictly after the prior admitted origin's common maturity bar on that side. Admission is decided at Stage I, without using its outcome. High and low samples remain separate and may overlap each other. Non-overlap does not establish statistical independence.")
+bool auditOutputs = input.bool(true, "Additional Data Window outputs", group = G6, display = display.none,
+     tooltip = "Adds historical cohort means, stage sample sizes, held percentages, matched-origin comparisons and individual results at their COMMON maturity bar. Original six stage-price outputs are retained regardless. No extra chart plots or price-scale values.")
+
+bool studyEnabled = input.bool(true, "Enable definition and path study", group = G7, display = display.none,
+     tooltip = "Adds research only. Origin price: same-origin definition tests. Origin age: ordered post-I path. Depth / ATR: birth-classified groups. No new chart marks or changes to original cells' displayed values.")
+int studyHorizon = input.int(24, "Ordered path: bars AFTER Stage I", minval = 1, maxval = 150,
+     group = G7, display = display.none,
+     tooltip = "The confirmation candle is excluded. A completed record becomes available at origin + max(Stage-III right bars, Stage-I right bars + this horizon). No event after that deadline enters its path.")
+float breachATR = input.float(0.05, "Outside-level buffer (origin ATR)", minval = 0.0, maxval = 5.0, step = 0.05,
+     group = G7, display = display.none,
+     tooltip = "An outside wick or close must STRICTLY exceed the original selected-source price plus this outward buffer. The actual buffer is max(ATR buffer, tick buffer), frozen at the origin. This is separate from pivot equality rules.")
+int breachTicks = input.int(1, "Minimum outside buffer (ticks)", minval = 0, maxval = 100,
+     group = G7, display = display.none)
+int outsideCloses = input.int(2, "Consecutive outside closes for acceptance", minval = 1, maxval = 10,
+     group = G7, display = display.none,
+     tooltip = "A descriptive milestone, not a breakout or trading recommendation. The first completed run is recorded; equality and any other non-outside close reset the run.")
+float returnATR = input.float(0.05, "Inside-return clearance (origin ATR)", minval = 0.0, maxval = 5.0, step = 0.05,
+     group = G7, display = display.none,
+     tooltip = "After outside acceptance, a return close must be STRICTLY on the original inside side by this distance. No same-bar return is inferred from a wick.")
+int insideCloses = input.int(1, "Consecutive inside closes for return", minval = 1, maxval = 10,
+     group = G7, display = display.none)
+float departureATR = input.float(1.0, "Inward excursion milestone (origin ATR)", minval = 0.05, maxval = 10.0, step = 0.05,
+     group = G7, display = display.none,
+     tooltip = "Measured from the Stage-I confirmation CLOSE, away from the high/low. First reach uses candle wicks. If it and the outside wick first occur on the same candle, order is explicitly unknown. Not a target or stop.")
+string studySampling = input.string("All accepted origins", "Definition/path sample admission",
+     options = ["All accepted origins", "Non-overlapping per side"], group = G7, display = display.none,
+     tooltip = "A separate sample from the older post-confirmation audit. Non-overlap is decided at Stage I and requires confirmation strictly after the preceding admitted origin's common maturity. No outcome-based replacement. Opposite-side samples may overlap.")
+int studyCapacity = input.int(100, "Completed definition/path records per side", minval = 10, maxval = 500,
+     group = G7, display = display.none)
+int studyInspect = input.int(0, "Inspect record (0 = latest origin, 1 = latest completed)", minval = 0, maxval = 500,
+     group = G7, display = display.none,
+     tooltip = "Controls ONLY the new tooltip sections. 0 follows the latest accepted origin, possibly unfinished or not admitted. 1, 2, ... select newest, second-newest, ... completed admitted records per side. Their origin times are printed explicitly. Original cell values, chart and all research samples stay unchanged.")
+bool studyOutputs = input.bool(true, "Definition/path Data Window records", group = G7, display = display.none,
+     tooltip = "Six additional outputs: completed record origin time, initial definition agreement count, and ordered-path code for each side. Values appear on their common maturity candle only. Code -1 means unusable path, never a success or failure.")
+
+
+int rightTwo = rightOne + extraTwo
+int rightThree = rightTwo + extraThree
+int scheduleSize = rightThree + 1
+bool backdated = placement == "Origin bars (backdated)"
+float atrNow = ta.atr(atrLength)
+float upperSource = priceMode == "Wicks" ? high : priceMode == "Bodies" ? math.max(open, close) : close
+float lowerSource = priceMode == "Wicks" ? low : priceMode == "Bodies" ? math.min(open, close) : close
+
+// One origin is shared by the schedule and latest-origin readout.
+// Its drawings are immutable, separate objects.
+type Origin
+    int originBar
+    int originTime
+    float price
+    float atrAtOrigin
+    float depth
+    string classification
+    float initialDrift
+    int attained = 1
+    bool passedTwo = false
+    bool finished = false
+    bool missingData = false
+
+type Outcome
+    bool retainedTwo
+    bool retainedThree
+    float pairedExtra
+
+type SideBook
+    array<Origin> schedule
+    array<Outcome> sample
+    Origin latest = na
+    int head = 0
+    int completedN = 0
+    int retainedTwoN = 0
+    int retainedThreeN = 0
+    float extraSum = 0.0
+    int extraN = 0
+    int acceptedTotal = 0
+    int resolvedTotal = 0
+    int missingTotal = 0
+    int rawTotal = 0
+    int filteredTotal = 0
+
+// Separate research records. None is used by the detector or chart renderer.
+type AuditMeasure
+    float drift
+    float away
+    float toward
+    bool held
+
+type AuditRow
+    AuditMeasure one
+    AuditMeasure two
+    AuditMeasure three
+    int originTime
+    int availableTime
+
+type AuditTotals
+    int n = 0
+    int heldN = 0
+    float driftSum = 0.0
+    float awaySum = 0.0
+    float towardSum = 0.0
+
+type AuditBook
+    array<AuditRow> sample
+    array<AuditTotals> stages
+    array<AuditTotals> matched
+    int head = 0
+    int count = 0
+    int admittedTotal = 0
+    int finishedTotal = 0
+    int invalidTotal = 0
+    int skippedTotal = 0
+    int lastAdmittedBar = na
+    AuditRow latest = na
+
+f_newAuditBook() =>
+    array<AuditTotals> stages = array.new<AuditTotals>()
+    array<AuditTotals> matched = array.new<AuditTotals>()
+    for stage = 0 to 2
+        // Each slot needs its own object, not three references to one object.
+        array.push(stages, AuditTotals.new())
+        array.push(matched, AuditTotals.new())
+    AuditBook.new(array.new<AuditRow>(cohortSize, na), stages, matched)
+
+var AuditBook highAudit = f_newAuditBook()
+var AuditBook lowAudit = f_newAuditBook()
+
+// Same-origin geometry and ordered-path research. These records never feed
+// back into the accepted pivots, original cohorts, alerts or chart renderer.
+type DefinitionFrame
+    int wickMask
+    int bodyMask
+    int closeMask
+    float wickMargin
+    float bodyMargin
+    float closeMargin
+
+type OrderedPath
+    int code
+    int orderCode
+    int firstOutside
+    int firstDeparture
+    int acceptedAt
+    int returnedAt
+    int outsideN
+    bool confirmationWickOutside
+    float maxOutside
+    float preOutsideAway
+    float endDrift
+
+type StudyRecord
+    int originBar
+    int originTime
+    int confirmedTime
+    float originPrice
+    float originATR
+    DefinitionFrame one
+    bool admitted = false
+    DefinitionFrame two = na
+    DefinitionFrame three = na
+    OrderedPath path = na
+    bool complete = false
+    int completedTime = na
+
+type DefinitionTotals
+    int n = 0
+    int passed = 0
+
+type PathTotals
+    int n = 0
+    int breached = 0
+    int accepted = 0
+    int returned = 0
+    int sameBar = 0
+    int departureFirst = 0
+    int breachFirst = 0
+    float delaySum = 0.0
+    float driftSum = 0.0
+
+type StudyBook
+    array<StudyRecord> sample
+    array<DefinitionTotals> definitions
+    array<PathTotals> groups
+    StudyRecord latest = na
+    int head = 0
+    int count = 0
+    int admittedTotal = 0
+    int finishedTotal = 0
+    int invalidPathTotal = 0
+    int unknownInitialTotal = 0
+    int skippedTotal = 0
+    int lastAdmittedBar = na
+
+f_newStudyBook() =>
+    array<DefinitionTotals> definitions = array.new<DefinitionTotals>()
+    array<PathTotals> groups = array.new<PathTotals>()
+    for item = 0 to 8
+        array.push(definitions, DefinitionTotals.new())
+    array.push(groups, PathTotals.new())
+    array.push(groups, PathTotals.new())
+    StudyBook.new(array.new<StudyRecord>(studyCapacity, na), definitions, groups)
+
+var StudyBook highStudy = f_newStudyBook()
+var StudyBook lowStudy = f_newStudyBook()
+
+// Frozen presentation snapshots do not retain a mutable Origin reference.
+// Separate circular caches protect stage-I history from later-stage density.
+const int VISUAL_CACHE = 2400
+
+type MarkEvent
+    int markerBar
+    int markerTime
+    int knownBar
+    int knownTime
+    float edge
+    float anchor
+    float unit
+    float originPrice
+    string classification
+    int stage
+    bool isHigh
+    string helpText
+
+type MarkCache
+    array<MarkEvent> records
+    int head = 0
+    int count = 0
+
+f_newBook() =>
+    SideBook.new(array.new<Origin>(scheduleSize, na), array.new<Outcome>(cohortSize, na))
+
+var SideBook highBook = f_newBook()
+var SideBook lowBook = f_newBook()
+var MarkCache primaryCache = MarkCache.new(array.new<MarkEvent>(VISUAL_CACHE, na))
+var MarkCache receiptCache = MarkCache.new(array.new<MarkEvent>(VISUAL_CACHE, na))
+var array<label> chartLabels = array.new<label>()
+var array<line> chartLines = array.new<line>()
+var int firstVisibleClosed = na
+var int lastVisibleClosed = na
+var float visibleHigh = na
+var float visibleLow = na
+var int lastClosedBar = na
+
+f_number(float value) =>
+    na(value) ? "--" : str.tostring(value, "0.00")
+
+f_price(float value) =>
+    na(value) ? "--" : str.tostring(value, format.mintick)
+
+f_side(bool isHigh) =>
+    isHigh ? "H" : "L"
+
+f_roman(int stage) =>
+    stage == 1 ? "I" : stage == 2 ? "II" : "III"
+
+f_rightPass(float peak, float rightMaximum) =>
+    not na(rightMaximum) and (tieMode == "Leftmost" ? peak >= rightMaximum : peak > rightMaximum)
+
+f_classify(float currentPrice, float priorPrice, bool isHigh) =>
+    float tolerance = equalTicks * syminfo.mintick
+    string result = f_side(isHigh)
+    if not na(priorPrice)
+        if math.abs(currentPrice - priorPrice) <= tolerance
+            result := isHigh ? "EH" : "EL"
+        else if currentPrice > priorPrice
+            result := isHigh ? "HH" : "HL"
+        else
+            result := isHigh ? "LH" : "LL"
+    result
+
+f_cachePush(MarkCache cache, MarkEvent event) =>
+    array.set(cache.records, cache.head, event)
+    cache.head := (cache.head + 1) % VISUAL_CACHE
+    cache.count := math.min(cache.count + 1, VISUAL_CACHE)
+    0
+
+f_recent(MarkCache cache, int offset) =>
+    int slot = (cache.head - 1 - offset + VISUAL_CACHE) % VISUAL_CACHE
+    array.get(cache.records, slot)
+
+f_clearChart() =>
+    while array.size(chartLabels) > 0
+        label.delete(array.pop(chartLabels))
+    while array.size(chartLines) > 0
+        line.delete(array.pop(chartLines))
+    0
+
+f_symbolSize(string selection) =>
+    selection == "Normal" ? size.normal : selection == "Small" ? size.small : size.tiny
+
+f_tooltip(Origin item, bool isHigh, int stage, float drift) =>
+    int lag = stage == 1 ? rightOne : stage == 2 ? rightTwo : rightThree
+    string msg = (isHigh ? "SWING HIGH" : "SWING LOW") + " | Stage " + f_roman(stage)
+    msg += "\nOrigin price: " + f_price(item.price)
+    msg += "\nOrigin bar: " + str.format_time(item.originTime, "yyyy-MM-dd HH:mm", syminfo.timezone)
+    msg += "\nConfirmation bar: " + str.format_time(time, "yyyy-MM-dd HH:mm", syminfo.timezone)
+    msg += "\nTimes are bar-open times in " + syminfo.timezone + "; known only at confirmation-bar close."
+    msg += "\nRight-side delay: " + str.tostring(lag) + " bars"
+    msg += "\nInitial class: " + item.classification
+    msg += "\nInitial shoulder depth: " + f_number(item.depth) + " ATR"
+    msg += "\nOrigin-to-confirmation close drift: " + f_number(drift) + " ATR"
+    msg += "\nATR is frozen at the origin. Drift is not a return or trading result."
+    msg += "\nStages II / III retest this same origin with longer right windows."
+    msg += stage == 1 and backdated ? "\nBACKDATED: this origin annotation was created only after Stage I confirmation." : "\nPlaced on the actual confirmation bar; the pivot occurred earlier."
+    msg += "\nSymbols can be thinned for readability; the event remains in research outputs."
+    msg += "\nLater non-retention does not revise this event. No trade recommendation."
+    msg
+
+// The detector calls this function at the same places as before.
+// It records a snapshot only; it never changes the origin or research books.
+f_draw(Origin item, bool isHigh, int stage, float drift) =>
+    bool sideEnabled = isHigh ? drawHighs : drawLows
+    bool stageEnabled = stage == 1 or (stage == 2 and drawTwo) or (stage == 3 and drawThree)
+    bool atOrigin = stage == 1 and backdated
+    int markerTime = atOrigin ? item.originTime : time
+    bool inView = markerTime >= chart.left_visible_bar_time and markerTime <= chart.right_visible_bar_time
+    // Even in backdated mode, require confirmation by the visible right edge.
+    bool knownInView = time <= chart.right_visible_bar_time
+    if sideEnabled and stageEnabled and inView and knownInView
+        float unit = atOrigin ? item.atrAtOrigin : atrNow
+        float candleRange = atOrigin ? high[rightOne] - low[rightOne] : high - low
+        unit := na(unit) or unit <= 0.0 ? math.max(nz(candleRange, syminfo.mintick), syminfo.mintick) : unit
+        float edge = atOrigin ? (isHigh ? high[rightOne] : low[rightOne]) : (isHigh ? high : low)
+        float anchor = atOrigin ? item.price : edge
+        int markerBar = atOrigin ? item.originBar : bar_index
+        MarkEvent event = MarkEvent.new(markerBar, markerTime, bar_index, time,
+             edge, anchor, unit, item.price, item.classification, stage, isHigh,
+             f_tooltip(item, isHigh, stage, drift))
+        if stage == 1
+            f_cachePush(primaryCache, event)
+        else
+            f_cachePush(receiptCache, event)
+    0
+
+f_eventVisible(MarkEvent event, int rightEdge, bool laterStage) =>
+    int age = rightEdge - event.knownBar
+    bool overallOK = annotationAge == 0 or age <= annotationAge
+    bool laterOK = not laterStage or receiptAge == 0 or age <= receiptAge
+    age >= 0 and overallOK and laterOK
+
+f_paint(MarkEvent event, float priceSpan, bool withCaption) =>
+    float direction = event.isHigh ? 1.0 : -1.0
+    color sideColor = event.isHigh ? highColor : lowColor
+    float padding = math.max(event.unit * markerGap, priceSpan * visiblePadding * 0.01)
+    float lane = event.stage == 1 ? 1.0 : event.stage == 2 ? 2.5 : 4.0
+    float symbolPrice = event.edge + direction * padding * lane
+    string symbolStyle = event.stage == 1 ? (event.isHigh ? label.style_triangledown : label.style_triangleup) : event.stage == 2 ? label.style_circle : label.style_diamond
+    int transparency = event.stage == 1 ? 0 : event.stage == 2 ? receiptTransparency : math.max(0, receiptTransparency - 20)
+    label symbol = label.new(event.markerTime, symbolPrice, "",
+         xloc = xloc.bar_time, yloc = yloc.price,
+         style = symbolStyle, color = color.new(sideColor, transparency),
+         size = f_symbolSize(event.stage == 1 ? markerSize : receiptSize),
+         tooltip = event.helpText)
+    array.push(chartLabels, symbol)
+    if event.stage == 1
+        if drawPins
+            line pin = line.new(event.markerTime, event.anchor, event.markerTime, symbolPrice,
+                 xloc = xloc.bar_time, color = color.new(sideColor, 65), width = traceWidth)
+            array.push(chartLines, pin)
+        if backdated
+            line delayTrace = line.new(event.markerTime, event.originPrice, event.knownTime, event.originPrice,
+                 xloc = xloc.bar_time, color = color.new(sideColor, 70),
+                 style = line.style_dotted, width = traceWidth)
+            array.push(chartLines, delayTrace)
+        if withCaption
+            string caption = event.classification
+            if detailMode == "Class + stage"
+                caption += " I"
+            else if detailMode == "Class + origin price"
+                caption += "\n" + f_price(event.originPrice)
+            float captionPrice = event.edge + direction * padding * 6.0
+            label captionLabel = label.new(event.markerTime, captionPrice, caption,
+                 xloc = xloc.bar_time, yloc = yloc.price,
+                 style = label.style_none, color = color.new(sideColor, 100),
+                 textcolor = sideColor, size = captionSize,
+                 textalign = text.align_center,
+                 text_formatting = boldText ? text.format_bold : text.format_none,
+                 tooltip = event.helpText)
+            array.push(chartLabels, captionLabel)
+    0
+
+f_renderPrimary(bool isHigh, int rightEdge, int gapBars, int captionGap, float priceSpan) =>
+    int drawn = 0
+    int captions = 0
+    int newerBar = na
+    int newerCaptionBar = na
+    if primaryCache.count > 0
+        for offset = 0 to primaryCache.count - 1
+            MarkEvent event = f_recent(primaryCache, offset)
+            if annotationAge > 0 and rightEdge - event.knownBar > annotationAge
+                break
+            if event.isHigh == isHigh and f_eventVisible(event, rightEdge, false)
+                bool separated = na(newerBar) or newerBar - event.markerBar >= gapBars
+                if separated
+                    bool captionRoom = na(newerCaptionBar) or newerCaptionBar - event.markerBar >= captionGap
+                    bool withCaption = captions < captionsPerSide and captionRoom
+                    f_paint(event, priceSpan, withCaption)
+                    newerBar := event.markerBar
+                    drawn += 1
+                    if withCaption
+                        newerCaptionBar := event.markerBar
+                        captions += 1
+                    if drawn >= primaryLimit
+                        break
+    0
+
+f_renderReceipts(bool isHigh, int rightEdge, int gapBars, float priceSpan) =>
+    int drawn = 0
+    int newerBar = na
+    if receiptCache.count > 0 and receiptLimit > 0
+        for offset = 0 to receiptCache.count - 1
+            MarkEvent event = f_recent(receiptCache, offset)
+            int age = rightEdge - event.knownBar
+            if (annotationAge > 0 and age > annotationAge) or (receiptAge > 0 and age > receiptAge)
+                break
+            if event.isHigh == isHigh and f_eventVisible(event, rightEdge, true)
+                // The unchanged detector processes III before II per side/bar.
+                // Reverse traversal therefore sees II first. Prefer the III
+                // symbol when both occur on the same side/bar in compact modes.
+                bool preferThree = false
+                if densityMode != "All within limits" and event.stage == 2 and offset + 1 < receiptCache.count
+                    MarkEvent prior = f_recent(receiptCache, offset + 1)
+                    preferThree := prior.isHigh == isHigh and prior.knownBar == event.knownBar and prior.stage == 3
+                bool separated = na(newerBar) or newerBar - event.markerBar >= gapBars
+                if separated and not preferThree
+                    f_paint(event, priceSpan, false)
+                    newerBar := event.markerBar
+                    drawn += 1
+                    if drawn >= receiptLimit
+                        break
+    0
+
+f_renderChart() =>
+    // Rebuild ONLY on the last confirmed historical bar or a realtime close.
+    // No label creation/deletion loop runs on every open-bar price update.
+    f_clearChart()
+    if not na(firstVisibleClosed) and not na(lastVisibleClosed)
+        int visibleBars = math.max(1, lastVisibleClosed - firstVisibleClosed + 1)
+        float priceSpan = math.max(nz(visibleHigh - visibleLow, syminfo.mintick), syminfo.mintick)
+        int primaryGap = densityMode == "All within limits" ? 0 : densityMode == "Fixed spacing" ? visualGap : math.max(visualGap, int(math.ceil(float(visibleBars) / densitySlots)))
+        int laterGap = densityMode == "All within limits" ? 0 : densityMode == "Fixed spacing" ? visualGap : math.max(visualGap, int(math.ceil(float(visibleBars) / (densitySlots * 0.65))))
+        int captionGap = math.max(primaryGap, int(math.ceil(float(visibleBars) / 12.0)))
+        if drawHighs
+            f_renderReceipts(true, lastVisibleClosed, laterGap, priceSpan)
+        if drawLows
+            f_renderReceipts(false, lastVisibleClosed, laterGap, priceSpan)
+        // Primary symbols and their sparse captions are painted last.
+        if drawHighs
+            f_renderPrimary(true, lastVisibleClosed, primaryGap, captionGap, priceSpan)
+        if drawLows
+            f_renderPrimary(false, lastVisibleClosed, primaryGap, captionGap, priceSpan)
+    0
+
+f_addOutcome(SideBook book, bool retainedTwo, bool retainedThree, float pairedExtra) =>
+    Outcome old = array.get(book.sample, book.head)
+    if not na(old)
+        book.retainedTwoN -= old.retainedTwo ? 1 : 0
+        book.retainedThreeN -= old.retainedThree ? 1 : 0
+        if not na(old.pairedExtra)
+            book.extraSum -= old.pairedExtra
+            book.extraN -= 1
+    else
+        book.completedN += 1
+    array.set(book.sample, book.head, Outcome.new(retainedTwo, retainedThree, pairedExtra))
+    book.retainedTwoN += retainedTwo ? 1 : 0
+    book.retainedThreeN += retainedThree ? 1 : 0
+    if not na(pairedExtra)
+        book.extraSum += pairedExtra
+        book.extraN += 1
+    book.head := (book.head + 1) % cohortSize
+    0
+
+// Called UNCONDITIONALLY once per side per bar. Rolling calculations are
+// therefore evaluated consistently, including on an open realtime bar.
+// All persistent state, annotations and event outputs commit only at close.
+f_process(SideBook book, bool isHigh, float sourcePrice) =>
+    float direction = isHigh ? 1.0 : -1.0
+    float normalizedSource = direction * sourcePrice
+    float peak = normalizedSource[rightOne]
+    float leftMaximum = ta.highest(normalizedSource, leftBars)[rightOne + 1]
+    float leftMinimum = ta.lowest(normalizedSource, leftBars)[rightOne + 1]
+    float oneMaximum = ta.highest(normalizedSource, rightOne)
+    float oneMinimum = ta.lowest(normalizedSource, rightOne)
+    float twoMaximum = ta.highest(normalizedSource, rightTwo)
+    float threeMaximum = ta.highest(normalizedSource, rightThree)
+    int sinceMissing = ta.barssince(na(normalizedSource))
+    int validRun = na(sinceMissing) ? bar_index + 1 : sinceMissing
+    float frozenATR = atrNow[rightOne]
+    bool atrUsable = not na(frozenATR) and frozenATR > 0.0
+    float depth = atrUsable ? math.min(peak - leftMinimum, peak - oneMinimum) / frozenATR : na
+    float eventOne = na
+    float eventTwo = na
+    float eventThree = na
+    bool cohortFinished = false
+    if barstate.isconfirmed
+        // Resolve exact scheduled origins. No scan through all past pivots.
+        if bar_index >= rightThree
+            int originIndex = bar_index - rightThree
+            int slot = originIndex % scheduleSize
+            Origin item = array.get(book.schedule, slot)
+            if not na(item)
+                if item.originBar == originIndex
+                    bool completeData = validRun >= rightThree
+                    bool retained = completeData and item.passedTwo and f_rightPass(direction * item.price, threeMaximum)
+                    float drift = not na(item.atrAtOrigin) and item.atrAtOrigin > 0.0 ? direction * (item.price - close) / item.atrAtOrigin : na
+                    item.finished := true
+                    item.missingData := item.missingData or not completeData
+                    if retained
+                        item.attained := 3
+                        eventThree := item.price
+                        f_draw(item, isHigh, 3, drift)
+                    book.resolvedTotal += 1
+                    if completeData and not item.missingData
+                        float pairedExtra = retained and not na(drift) and not na(item.initialDrift) ? drift - item.initialDrift : na
+                        f_addOutcome(book, item.passedTwo, retained, pairedExtra)
+                    else
+                        book.missingTotal += 1
+                    cohortFinished := true
+                    array.set(book.schedule, slot, na)
+        if bar_index >= rightTwo
+            int originIndex = bar_index - rightTwo
+            Origin item = array.get(book.schedule, originIndex % scheduleSize)
+            if not na(item)
+                if item.originBar == originIndex
+                    bool completeData = validRun >= rightTwo
+                    item.missingData := not completeData
+                    item.passedTwo := completeData and f_rightPass(direction * item.price, twoMaximum)
+                    if item.passedTwo
+                        item.attained := 2
+                        float drift = not na(item.atrAtOrigin) and item.atrAtOrigin > 0.0 ? direction * (item.price - close) / item.atrAtOrigin : na
+                        eventTwo := item.price
+                        f_draw(item, isHigh, 2, drift)
+        // All three stages share the initial left test, tie policy and filters.
+        bool ready = validRun >= leftBars + rightOne + 1
+        bool leftOK = tieMode == "Rightmost" ? peak >= leftMaximum : peak > leftMaximum
+        bool raw = ready and not na(peak) and leftOK and f_rightPass(peak, oneMaximum)
+        if raw
+            book.rawTotal += 1
+            int originIndex = bar_index - rightOne
+            bool spacingOK = na(book.latest) ? true : originIndex - book.latest.originBar >= sameSideGap
+            bool depthOK = minimumDepth == 0.0 or (not na(depth) and depth >= minimumDepth)
+            if spacingOK and depthOK
+                float actualPrice = direction * peak
+                float priorPrice = na(book.latest) ? na : book.latest.price
+                string classification = f_classify(actualPrice, priorPrice, isHigh)
+                float drift = atrUsable ? direction * (actualPrice - close) / frozenATR : na
+                Origin item = Origin.new(originIndex, time[rightOne], actualPrice, frozenATR,
+                     depth, classification, drift)
+                array.set(book.schedule, originIndex % scheduleSize, item)
+                book.latest := item
+                book.acceptedTotal += 1
+                eventOne := actualPrice
+                f_draw(item, isHigh, 1, drift)
+            else
+                book.filteredTotal += 1
+    [eventOne, eventTwo, eventThree, cohortFinished]
+
+// Fixed-time audit engine. No variable in this section changes pivot acceptance.
+// A high's positive drift means a lower later close; a low's positive drift
+// means a higher later close. These are price differences in origin-ATR units,
+// NOT returns, profits, win rates or estimates of a future success probability.
+f_auditPart(AuditRow row, int stage) =>
+    stage == 1 ? row.one : stage == 2 ? row.two : row.three
+
+f_updateAuditTotals(AuditTotals totals, AuditMeasure part, int direction) =>
+    if not na(part)
+        totals.n += direction
+        totals.heldN += part.held ? direction : 0
+        totals.driftSum += direction * part.drift
+        totals.awaySum += direction * part.away
+        totals.towardSum += direction * part.toward
+        if totals.n == 0
+            // Clear residual floating-point cancellation when a group empties.
+            totals.heldN := 0
+            totals.driftSum := 0.0
+            totals.awaySum := 0.0
+            totals.towardSum := 0.0
+    0
+
+f_accumulateAudit(AuditBook book, AuditRow row, int direction) =>
+    if not na(row)
+        bool matchedOrigin = not na(row.three)
+        for stage = 1 to 3
+            AuditMeasure part = f_auditPart(row, stage)
+            f_updateAuditTotals(array.get(book.stages, stage - 1), part, direction)
+            if matchedOrigin
+                // Exactly the same Stage-III-retained origins for all three.
+                f_updateAuditTotals(array.get(book.matched, stage - 1), part, direction)
+    0
+
+f_storeAudit(AuditBook book, AuditRow row) =>
+    AuditRow prior = array.get(book.sample, book.head)
+    if not na(prior)
+        f_accumulateAudit(book, prior, -1)
+    else
+        book.count += 1
+    array.set(book.sample, book.head, row)
+    f_accumulateAudit(book, row, 1)
+    book.head := (book.head + 1) % cohortSize
+    book.latest := row
+    0
+
+f_measureAfter(bool isHigh, float originPrice, float frozenATR,
+     float referenceClose, float horizonClose, float windowHigh,
+     float windowLow, float windowExtreme) =>
+    float direction = isHigh ? 1.0 : -1.0
+    float drift = direction * (referenceClose - horizonClose) / frozenATR
+    float away = math.max(0.0, isHigh ? referenceClose - windowLow : windowHigh - referenceClose) / frozenATR
+    float toward = math.max(0.0, isHigh ? windowHigh - referenceClose : referenceClose - windowLow) / frozenATR
+    // Match the chosen pivot tie rule and price definition for level retention.
+    // Excursions themselves use chart wick high/low, irrespective of priceMode.
+    bool held = f_rightPass(direction * originPrice, windowExtreme)
+    AuditMeasure.new(drift, away, toward, held)
+
+// Called at two separate, unconditional call sites (one per side) on EVERY bar.
+// This maintains histories even on an open bar. Persistent changes commit only
+// on bar close. No forward request, pivot-to-pivot exit or active-origin scan.
+f_runAudit(AuditBook book, bool isHigh, float firstEvent, float secondEvent,
+     float thirdEvent, float sideSource) =>
+    int shiftOne = rightThree - rightOne
+    int shiftTwo = rightThree - rightTwo
+    int dueLag = shiftOne + auditHorizon
+    float direction = isHigh ? 1.0 : -1.0
+    float rollingHigh = ta.highest(high, auditHorizon)
+    float rollingLow = ta.lowest(low, auditHorizon)
+    float rollingExtreme = ta.highest(direction * sideSource, auditHorizon)
+    bool missing = na(open) or na(high) or na(low) or na(close) or na(sideSource)
+    int sinceMissing = ta.barssince(missing)
+    int validRun = na(sinceMissing) ? bar_index + 1 : sinceMissing
+    bool admitted = false
+    bool completed = false
+    AuditRow result = na
+    if barstate.isconfirmed and auditEnabled
+        if not na(firstEvent)
+            bool admissionOK = auditSampling == "All accepted origins" or na(book.lastAdmittedBar) or bar_index > book.lastAdmittedBar + dueLag
+            if admissionOK
+                admitted := true
+                book.lastAdmittedBar := bar_index
+                book.admittedTotal += 1
+            else
+                book.skippedTotal += 1
+        if bar_index >= dueLag and admitted[dueLag] and not na(firstEvent[dueLag])
+            completed := true
+            book.finishedTotal += 1
+            float originPrice = firstEvent[dueLag]
+            float frozenATR = atrNow[rightThree + auditHorizon]
+            bool attainedTwo = not na(secondEvent[auditHorizon + shiftTwo])
+            bool attainedThree = not na(thirdEvent[auditHorizon])
+            bool chronologyOK = not attainedThree or attainedTwo
+            // Require a complete contiguous path from first confirmation to
+            // common maturity. Missing paths are excluded, not turned into holds.
+            bool usable = validRun >= dueLag + 1 and not na(frozenATR) and frozenATR > 0.0 and chronologyOK
+            if usable
+                // At common maturity t, window ending t-shiftOne covers only
+                // the H bars AFTER stage I, and t-shiftTwo does so for stage II.
+                AuditMeasure one = f_measureAfter(isHigh, originPrice, frozenATR,
+                     close[dueLag], close[shiftOne], rollingHigh[shiftOne],
+                     rollingLow[shiftOne], rollingExtreme[shiftOne])
+                AuditMeasure two = na
+                AuditMeasure three = na
+                if attainedTwo
+                    two := f_measureAfter(isHigh, originPrice, frozenATR,
+                         close[auditHorizon + shiftTwo], close[shiftTwo],
+                         rollingHigh[shiftTwo], rollingLow[shiftTwo], rollingExtreme[shiftTwo])
+                if attainedThree
+                    three := f_measureAfter(isHigh, originPrice, frozenATR,
+                         close[auditHorizon], close, rollingHigh, rollingLow, rollingExtreme)
+                result := AuditRow.new(one, two, three, time[rightThree + auditHorizon], time)
+                f_storeAudit(book, result)
+            else
+                book.invalidTotal += 1
+    [result, completed]
+
+f_auditMean(AuditBook book, int stage, bool matchedOnly, string measure) =>
+    AuditTotals totals = array.get(matchedOnly ? book.matched : book.stages, stage - 1)
+    float result = na
+    if totals.n > 0
+        result := measure == "away" ? totals.awaySum / totals.n : measure == "toward" ? totals.towardSum / totals.n : totals.driftSum / totals.n
+    result
+
+f_auditHeld(AuditBook book, int stage) =>
+    AuditTotals totals = array.get(book.stages, stage - 1)
+    totals.n > 0 ? 100.0 * totals.heldN / totals.n : na
+
+f_auditN(AuditBook book, int stage, bool matchedOnly) =>
+    AuditTotals totals = array.get(matchedOnly ? book.matched : book.stages, stage - 1)
+    totals.n
+
+f_auditEventValue(AuditRow row, int stage, string measure) =>
+    float value = na
+    if not na(row)
+        AuditMeasure part = f_auditPart(row, stage)
+        if not na(part)
+            value := measure == "held" ? (part.held ? 1.0 : 0.0) : part.drift
+    value
+
+f_readoutIcon(string symbol, string caption) =>
+    showIcons ? symbol + " " + caption : caption
+
+f_auditHelp(AuditBook book, int stage) =>
+    string msg = "\n\nPOST-CONFIRMATION RESEARCH - Stage " + f_roman(stage)
+    if not auditEnabled
+        msg += "\nDisabled in Research settings. Original retention values are unchanged."
+    else
+        int sampleN = f_auditN(book, stage, false)
+        msg += "\nNext " + str.tostring(auditHorizon) + " closed bars AFTER confirmation; confirmation candle excluded."
+        msg += "\nStage sample N: " + str.tostring(sampleN) + " / " + str.tostring(book.count) + " completed initial origins"
+        msg += "\nMean close drift: " + f_number(f_auditMean(book, stage, false, "drift")) + " origin ATR"
+        msg += "\nMean maximum away: " + f_number(f_auditMean(book, stage, false, "away")) + " origin ATR"
+        msg += "\nMean maximum toward: " + f_number(f_auditMean(book, stage, false, "toward")) + " origin ATR"
+        msg += "\nOrigin held after confirmation: " + f_number(f_auditHeld(book, stage)) + "%"
+        msg += "\nPositive drift means away from the high/low, not a trading return. Excursions use candle wicks; holds use " + priceMode + " / " + tieMode + "."
+        msg += "\nAll stages share an origin-level maturity date. Stage samples differ because later stages can be absent; no predictive superiority follows from their means."
+        msg += "\nSampling: " + auditSampling + ". Pending: " + str.tostring(book.admittedTotal - book.finishedTotal)
+    msg
+
+f_matchedHelp(AuditBook book) =>
+    string msg = "\n\nMATCHED POST-CONFIRMATION COMPARISON"
+    if not auditEnabled
+        msg += "\nDisabled in Research settings."
+    else
+        int matchedN = f_auditN(book, 3, true)
+        msg += "\nSame Stage-III-retained origins, N = " + str.tostring(matchedN)
+        msg += "\nMean next-" + str.tostring(auditHorizon) + "-bar drift in origin ATR:"
+        msg += "\nI: " + f_number(f_auditMean(book, 1, true, "drift"))
+        msg += " | II: " + f_number(f_auditMean(book, 2, true, "drift"))
+        msg += " | III: " + f_number(f_auditMean(book, 3, true, "drift"))
+        msg += "\nPaired III minus I: " + f_number(f_auditMean(book, 3, true, "drift") - f_auditMean(book, 1, true, "drift"))
+        msg += "\nCONDITIONAL on later Stage-III attainment. Early-stage windows can overlap the later confirmation interval. This is not an unbiased advantage test, automatic stage selection or a causal estimate of the value of waiting."
+        msg += "\nThe number printed in the cell remains the ORIGINAL pre-III confirmation drift, not this post-confirmation comparison."
+    msg
+
+f_auditCountsHelp(AuditBook book) =>
+    string msg = "\n\nPOST-CONFIRMATION SAMPLE ACCOUNTING"
+    if not auditEnabled
+        msg += "\nDisabled."
+    else
+        msg += "\nCompleted rolling initial-origin sample: " + str.tostring(book.count)
+        msg += "\nAdmitted / matured / pending: " + str.tostring(book.admittedTotal) + " / " + str.tostring(book.finishedTotal) + " / " + str.tostring(book.admittedTotal - book.finishedTotal)
+        msg += "\nMissing-data or unusable-ATR exclusions: " + str.tostring(book.invalidTotal)
+        msg += "\nNon-overlap admission skips: " + str.tostring(book.skippedTotal)
+        msg += "\nCommon availability: origin + " + str.tostring(rightThree + auditHorizon) + " bars. Each stage measures its OWN next " + str.tostring(auditHorizon) + " bars."
+        msg += "\nNo uncompleted origin is treated as a hold or a failure. No inference of independent observations."
+        if not na(book.latest)
+            msg += "\nLatest completed origin: " + str.format_time(book.latest.originTime, "yyyy-MM-dd HH:mm", syminfo.timezone)
+            msg += "\nAvailable after close of bar: " + str.format_time(book.latest.availableTime, "yyyy-MM-dd HH:mm", syminfo.timezone)
+        msg += "\nThe N / open cell still displays the original retention-cohort counts. This later-maturing audit has separate counts."
+    msg
+
+// ---------- Same-origin definition stress tests ----------
+// Mask bits: Rightmost=1, Leftmost=2, Strict=4. A strict peak passes
+// all three (mask 7). -1 means missing/invalid source history, not failure.
+f_definitionMask(float peak, float leftPeak, float rightPeak, bool valid) =>
+    int mask = -1
+    if valid and not na(peak) and not na(leftPeak) and not na(rightPeak)
+        bool rightmost = peak >= leftPeak and peak > rightPeak
+        bool leftmost = peak > leftPeak and peak >= rightPeak
+        bool strict = peak > leftPeak and peak > rightPeak
+        mask := (rightmost ? 1 : 0) + (leftmost ? 2 : 0) + (strict ? 4 : 0)
+    mask
+
+f_margin(float peak, float older, float newer, int mask, float unit) =>
+    mask >= 0 and not na(unit) and unit > 0.0 ? (peak - math.max(older, newer)) / unit : na
+
+// Called unconditionally once per definition and side on every bar.
+// Reuses one left-extreme history, rather than scanning all left/right bars.
+f_definitionProbe(float sourcePrice) =>
+    float older = ta.highest(sourcePrice, leftBars)
+    float r1 = ta.highest(sourcePrice, rightOne)
+    float r2 = ta.highest(sourcePrice, rightTwo)
+    float r3 = ta.highest(sourcePrice, rightThree)
+    int sinceMissing = ta.barssince(na(sourcePrice))
+    int validRun = na(sinceMissing) ? bar_index + 1 : sinceMissing
+    int m1 = f_definitionMask(sourcePrice[rightOne], older[rightOne + 1], r1, validRun >= leftBars + rightOne + 1)
+    int m2 = f_definitionMask(sourcePrice[rightTwo], older[rightTwo + 1], r2, validRun >= leftBars + rightTwo + 1)
+    int m3 = f_definitionMask(sourcePrice[rightThree], older[rightThree + 1], r3, validRun >= leftBars + rightThree + 1)
+    float a1 = f_margin(sourcePrice[rightOne], older[rightOne + 1], r1, m1, atrNow[rightOne])
+    float a2 = f_margin(sourcePrice[rightTwo], older[rightTwo + 1], r2, m2, atrNow[rightTwo])
+    float a3 = f_margin(sourcePrice[rightThree], older[rightThree + 1], r3, m3, atrNow[rightThree])
+    [m1, m2, m3, a1, a2, a3]
+
+f_rulePass(int mask) =>
+    int bit = tieMode == "Rightmost" ? 1 : tieMode == "Leftmost" ? 2 : 4
+    mask >= 0 and int(math.floor(float(mask) / bit)) % 2 == 1
+
+f_definitionKnown(DefinitionFrame frame) =>
+    not na(frame) and frame.wickMask >= 0 and frame.bodyMask >= 0 and frame.closeMask >= 0
+
+f_agreement(DefinitionFrame frame) =>
+    int count = na
+    if f_definitionKnown(frame)
+        count := (f_rulePass(frame.wickMask) ? 1 : 0) + (f_rulePass(frame.bodyMask) ? 1 : 0) + (f_rulePass(frame.closeMask) ? 1 : 0)
+    count
+
+f_studyFrame(StudyRecord rec, int stage) =>
+    stage == 1 ? rec.one : stage == 2 ? rec.two : rec.three
+
+// ---------- Ordered path, measured AFTER the first confirmation ----------
+// Per accepted record, scan at most studyHorizon bars ONCE at its maturity.
+// No active-origin sweep on every bar; no window moves after a record matures.
+f_orderedPath(StudyRecord rec, bool isHigh, int startLag) =>
+    OrderedPath result = na
+    float direction = isHigh ? 1.0 : -1.0
+    float unit = rec.originATR
+    float referenceClose = close[startLag]
+    bool valid = not na(unit) and unit > 0.0 and not na(referenceClose)
+    // Check the reference candle as well as every subsequent observation.
+    valid := valid and not na(open[startLag]) and not na(high[startLag]) and not na(low[startLag])
+    valid := valid and high[startLag] >= math.max(open[startLag], referenceClose) and low[startLag] <= math.min(open[startLag], referenceClose)
+    float buffer = math.max(breachTicks * syminfo.mintick, breachATR * unit)
+    float insideBuffer = returnATR * unit
+    float departure = departureATR * unit
+    int firstOutside = na
+    int firstDeparture = na
+    int acceptedAt = na
+    int returnedAt = na
+    int outsideRun = 0
+    int insideRun = 0
+    int outsideN = 0
+    float maxOutside = 0.0
+    float preOutsideAway = 0.0
+    bool referenceOutside = direction * ((isHigh ? high[startLag] : low[startLag]) - rec.originPrice) > buffer
+    if valid
+        for step = 1 to studyHorizon
+            int offset = startLag - step
+            float h = high[offset]
+            float l = low[offset]
+            float o = open[offset]
+            float c = close[offset]
+            bool candleOK = not na(h) and not na(l) and not na(o) and not na(c)
+            candleOK := candleOK and h >= math.max(o, c) and l <= math.min(o, c)
+            if not candleOK
+                valid := false
+                break
+            float outward = direction * ((isHigh ? h : l) - rec.originPrice)
+            float inward = direction * (referenceClose - (isHigh ? l : h))
+            bool wickOutside = outward > buffer
+            bool closeOutside = direction * (c - rec.originPrice) > buffer
+            bool closeInside = direction * (c - rec.originPrice) < -insideBuffer
+            if na(firstOutside)
+                if wickOutside
+                    firstOutside := step
+                else
+                    // EXCLUDE the first outside candle: its wick order is unknown.
+                    preOutsideAway := math.max(preOutsideAway, math.max(0.0, inward) / unit)
+            if na(firstDeparture) and inward >= departure
+                firstDeparture := step
+            maxOutside := math.max(maxOutside, math.max(0.0, outward) / unit)
+            outsideN += closeOutside ? 1 : 0
+            outsideRun := closeOutside ? outsideRun + 1 : 0
+            if na(acceptedAt) and outsideRun >= outsideCloses
+                acceptedAt := step
+            // A return requires later completed candles, never an intrabar wick.
+            if not na(acceptedAt) and step > acceptedAt and na(returnedAt)
+                insideRun := closeInside ? insideRun + 1 : 0
+                if insideRun >= insideCloses
+                    returnedAt := step
+        if valid
+            int pathCode = na(firstOutside) ? 0 : na(acceptedAt) ? 1 : na(returnedAt) ? 2 : 3
+            int orderCode = 0
+            if not na(firstOutside) and not na(firstDeparture)
+                orderCode := firstOutside == firstDeparture ? 3 : firstDeparture < firstOutside ? 1 : 2
+            else if not na(firstDeparture)
+                orderCode := 1
+            else if not na(firstOutside)
+                orderCode := 2
+            float endDrift = direction * (referenceClose - close[startLag - studyHorizon]) / unit
+            result := OrderedPath.new(pathCode, orderCode, firstOutside, firstDeparture, acceptedAt, returnedAt,
+                 outsideN, referenceOutside, maxOutside, preOutsideAway, endDrift)
+    result
+
+f_updateStudy(StudyBook book, StudyRecord rec, int sign) =>
+    // Definition rates describe raw geometry; depth and spacing are NOT rerun.
+    for stage = 1 to 3
+        DefinitionFrame frame = f_studyFrame(rec, stage)
+        if not na(frame)
+            for sourceIndex = 0 to 2
+                int mask = sourceIndex == 0 ? frame.wickMask : sourceIndex == 1 ? frame.bodyMask : frame.closeMask
+                if mask >= 0
+                    DefinitionTotals totals = array.get(book.definitions, (stage - 1) * 3 + sourceIndex)
+                    totals.n += sign
+                    totals.passed += f_rulePass(mask) ? sign : 0
+    int agreement = f_agreement(rec.one)
+    if not na(rec.path) and not na(agreement)
+        // Group membership was fixed at Stage I, never by eventual Stage III.
+        PathTotals totals = array.get(book.groups, agreement == 3 ? 0 : 1)
+        totals.n += sign
+        totals.breached += rec.path.code >= 1 ? sign : 0
+        totals.accepted += rec.path.code >= 2 ? sign : 0
+        totals.returned += rec.path.code == 3 ? sign : 0
+        totals.sameBar += rec.path.orderCode == 3 ? sign : 0
+        totals.departureFirst += rec.path.orderCode == 1 ? sign : 0
+        totals.breachFirst += rec.path.orderCode == 2 ? sign : 0
+        if rec.path.code == 3
+            totals.delaySum += sign * (rec.path.returnedAt - rec.path.acceptedAt)
+        totals.driftSum += sign * rec.path.endDrift
+        if totals.n == 0
+            totals.delaySum := 0.0
+            totals.driftSum := 0.0
+    0
+
+f_storeStudy(StudyBook book, StudyRecord rec) =>
+    StudyRecord prior = array.get(book.sample, book.head)
+    if not na(prior)
+        f_updateStudy(book, prior, -1)
+    else
+        book.count += 1
+    array.set(book.sample, book.head, rec)
+    f_updateStudy(book, rec, 1)
+    book.head := (book.head + 1) % studyCapacity
+    0
+
+// One unconditional call per side. Series of birth-object references provides
+// exact scheduling, without searching through a growing collection of pivots.
+// Only THIS module mutates its records; chart snapshots remain separate.
+f_runStudy(StudyBook book, bool isHigh, float firstEvent) =>
+    float direction = isHigh ? 1.0 : -1.0
+    bool goodOHLC = not na(open) and not na(high) and not na(low) and not na(close)
+    goodOHLC := goodOHLC and high >= math.max(open, close) and low <= math.min(open, close)
+    float wick = goodOHLC ? direction * (isHigh ? high : low) : na
+    float body = goodOHLC ? direction * (isHigh ? math.max(open, close) : math.min(open, close)) : na
+    float closing = goodOHLC ? direction * close : na
+    [w1, w2, w3, wm1, wm2, wm3] = f_definitionProbe(wick)
+    [b1, b2, b3, bm1, bm2, bm3] = f_definitionProbe(body)
+    [c1, c2, c3, cm1, cm2, cm3] = f_definitionProbe(closing)
+    int commonSpan = math.max(rightThree, rightOne + studyHorizon)
+    int commonLag = commonSpan - rightOne
+    StudyRecord born = na
+    StudyRecord completed = na
+    if barstate.isconfirmed and studyEnabled
+        if not na(firstEvent)
+            bool admit = studySampling == "All accepted origins" or na(book.lastAdmittedBar) or bar_index > book.lastAdmittedBar + commonLag
+            born := StudyRecord.new(bar_index - rightOne, time[rightOne], time, firstEvent, atrNow[rightOne],
+                 DefinitionFrame.new(w1, b1, c1, wm1, bm1, cm1), admitted = admit)
+            book.latest := born
+            if admit
+                book.admittedTotal += 1
+                book.lastAdmittedBar := bar_index
+            else
+                book.skippedTotal += 1
+        // The same timestamp is tested even if the PRIMARY detector did NOT
+        // attain II / III. Never substitute a neighboring alternative pivot.
+        StudyRecord atTwo = born[rightTwo - rightOne]
+        if not na(atTwo)
+            atTwo.two := DefinitionFrame.new(w2, b2, c2, wm2, bm2, cm2)
+        StudyRecord atThree = born[rightThree - rightOne]
+        if not na(atThree)
+            atThree.three := DefinitionFrame.new(w3, b3, c3, wm3, bm3, cm3)
+        StudyRecord due = born[commonLag]
+        if not na(due)
+            due.complete := true
+            due.completedTime := time
+            if due.admitted
+                due.path := f_orderedPath(due, isHigh, commonLag)
+                book.finishedTotal += 1
+                if na(f_agreement(due.one))
+                    book.unknownInitialTotal += 1
+                if na(due.path)
+                    book.invalidPathTotal += 1
+                f_storeStudy(book, due)
+                completed := due
+    completed
+
+// ---------- Existing-cell inspection; no new table rows or chart objects ----------
+f_studyPick(StudyBook book) =>
+    StudyRecord rec = na
+    if studyInspect == 0
+        rec := book.latest
+    else if studyInspect <= book.count
+        rec := array.get(book.sample, (book.head - studyInspect + studyCapacity) % studyCapacity)
+    rec
+
+f_studyIdentity(StudyRecord rec) =>
+    string msg = studyInspect == 0 ? "Latest accepted origin" : "Completed admitted record #" + str.tostring(studyInspect)
+    msg += ": " + str.format_time(rec.originTime, "yyyy-MM-dd HH:mm", syminfo.timezone)
+    msg += "\nOrigin price: " + f_price(rec.originPrice) + "; confirmed: " + str.format_time(rec.confirmedTime, "yyyy-MM-dd HH:mm", syminfo.timezone)
+    msg += "\nBar-open times; observations available only after the relevant bar closes."
+    if studyInspect > 0
+        msg += "\nThis inspected historical record need NOT match the original cell's latest-origin value."
+    msg
+
+f_maskText(int mask) =>
+    string result = "???"
+    if mask >= 0
+        result := (mask % 2 == 1 ? "R" : "-") + (int(math.floor(float(mask) / 2)) % 2 == 1 ? "L" : "-") + (int(math.floor(float(mask) / 4)) % 2 == 1 ? "S" : "-")
+    result
+
+f_frameText(DefinitionFrame frame, int stage) =>
+    string result = f_roman(stage) + ": pending"
+    if not na(frame)
+        result := f_roman(stage) + "  W[" + f_maskText(frame.wickMask) + "] B[" + f_maskText(frame.bodyMask) + "] C[" + f_maskText(frame.closeMask) + "]"
+        int agreement = f_agreement(frame)
+        result += "  " + (na(agreement) ? "?" : str.tostring(agreement)) + "/3 (" + tieMode + ")"
+    result
+
+f_definitionHelp(StudyBook book) =>
+    string msg = "\n\nSAME-ORIGIN DEFINITION STRESS TEST"
+    StudyRecord rec = f_studyPick(book)
+    if not studyEnabled
+        msg += "\nDisabled in Definition and path settings."
+    else if na(rec)
+        msg += "\nNo record at the selected inspection offset."
+    else
+        msg += "\n" + f_studyIdentity(rec)
+        msg += "\n" + f_frameText(rec.one, 1) + "\n" + f_frameText(rec.two, 2) + "\n" + f_frameText(rec.three, 3)
+        msg += "\nW = wick, B = body edge, C = close. R = Rightmost, L = Leftmost, S = Strict. - = failed; ? = missing data."
+        msg += "\nSame origin BAR under each definition's OWN price. Raw geometry only; no alternate depth/spacing filters, nearby replacement pivot, parameter ranking or success probability."
+        msg += "\nII/III rows are tested even when the original selected-source origin failed that stage. They do not promote or redraw its marker."
+    msg
+
+f_lagText(int value) =>
+    na(value) ? "not observed" : str.tostring(value) + " b"
+
+f_pathCodeText(int code) =>
+    code == 0 ? "No outside wick in window" : code == 1 ? "Outside wick, no close-run acceptance" : code == 2 ? "Outside accepted, no inside return" : "Outside accepted, then inside return"
+
+f_orderText(int code) =>
+    code == 0 ? "Neither milestone reached" : code == 1 ? "Inward excursion first (outside wick may be absent)" : code == 2 ? "Outside wick first (inward excursion may be absent)" : "SAME BAR - intrabar order unknown"
+
+f_pathHelp(StudyBook book) =>
+    string msg = "\n\nORDERED POST-I PATH"
+    StudyRecord rec = f_studyPick(book)
+    if not studyEnabled
+        msg += "\nDisabled."
+    else if na(rec)
+        msg += "\nNo record at the selected inspection offset."
+    else
+        msg += "\n" + f_studyIdentity(rec)
+        if not rec.admitted
+            msg += "\nNot admitted to path study by the precommitted non-overlap rule. Raw definition tests remain available."
+        else if not rec.complete
+            int remaining = rec.originBar + math.max(rightThree, rightOne + studyHorizon) - lastClosedBar
+            msg += "\nPending common maturity: " + str.tostring(math.max(0, remaining)) + " bars. No unfinished outcome enters cohort rates."
+        else if na(rec.path)
+            msg += "\nUnusable path: missing/malformed OHLC or non-positive/missing origin ATR. Excluded from path groups, not counted as a hold/failure."
+        else
+            OrderedPath path = rec.path
+            msg += "\nNext " + str.tostring(studyHorizon) + " bars after I; confirmation candle EXCLUDED."
+            msg += "\n" + f_pathCodeText(path.code) + " (code " + str.tostring(path.code) + ")"
+            msg += "\nFirst outside wick: " + f_lagText(path.firstOutside) + "; first inward excursion: " + f_lagText(path.firstDeparture)
+            msg += "\n" + f_orderText(path.orderCode)
+            msg += "\nOutside-close acceptance: " + f_lagText(path.acceptedAt) + "; inside-close return: " + f_lagText(path.returnedAt)
+            msg += "\nOutside closes: " + str.tostring(path.outsideN) + "/" + str.tostring(studyHorizon)
+            msg += "\nMaximum outward distance from origin: " + f_number(path.maxOutside) + " ATR"
+            msg += "\nMaximum inward move before outside-wick candle: " + f_number(path.preOutsideAway) + " ATR"
+            msg += "\nConfirmation-to-horizon close drift: " + f_number(path.endDrift) + " ATR"
+            msg += "\nConfirmation candle already had outside wick: " + (path.confirmationWickOutside ? "yes" : "no")
+            msg += "\nFirst means first AFTER confirmation, not first since origin. Return is an attained historical milestone, not a statement that the level still holds at the window end."
+            msg += "\nNo intrabar sequence, trade fill, causal liquidity story or trading result is inferred."
+    msg
+
+f_groupText(PathTotals totals, string name) =>
+    string msg = name + ": N=" + str.tostring(totals.n)
+    msg += "; wick/accepted/returned=" + str.tostring(totals.breached) + "/" + str.tostring(totals.accepted) + "/" + str.tostring(totals.returned)
+    if totals.n > 0
+        msg += "\nOutside acceptance: " + str.tostring(100.0 * totals.accepted / totals.n, "0.0") + "% of group"
+        msg += "; end drift: " + f_number(totals.driftSum / totals.n) + " ATR"
+    if totals.accepted > 0
+        msg += "\nReturned: " + str.tostring(100.0 * totals.returned / totals.accepted, "0.0") + "% of ACCEPTED outside-close runs"
+    if totals.returned > 0
+        msg += "; mean return delay: " + f_number(totals.delaySum / totals.returned) + " b (returned subset)"
+    msg += "\nMilestone order: inward/outside/same-bar=" + str.tostring(totals.departureFirst) + "/" + str.tostring(totals.breachFirst) + "/" + str.tostring(totals.sameBar)
+    msg += "; neither=" + str.tostring(totals.n - totals.departureFirst - totals.breachFirst - totals.sameBar)
+    msg
+
+f_groupHelp(StudyBook book) =>
+    string msg = "\n\nDEFINITION MARGINS AND BIRTH-CLASSIFIED PATHS"
+    if not studyEnabled
+        msg += "\nDisabled."
+    else
+        StudyRecord rec = f_studyPick(book)
+        if not na(rec)
+            msg += "\n" + f_studyIdentity(rec)
+            for stage = 1 to 3
+                DefinitionFrame frame = f_studyFrame(rec, stage)
+                if not na(frame)
+                    msg += "\n" + f_roman(stage) + " signed margin W/B/C: " + f_number(frame.wickMargin) + "/" + f_number(frame.bodyMargin) + "/" + f_number(frame.closeMargin) + " ATR"
+            msg += "\nMargin = signed origin-to-largest-competing-extreme separation, in origin ATR. Positive = strictly isolated; zero = tie; negative = exceeded. This is NOT the original shoulder-depth number."
+        msg += "\n\n" + f_groupText(array.get(book.groups, 0), "All three definitions at I")
+        msg += "\n\n" + f_groupText(array.get(book.groups, 1), "Definition-sensitive at I")
+        msg += "\nGroups are frozen at first confirmation under " + tieMode + ", NOT selected by later Stage-III retention. Only completed usable paths enter these group counts."
+        msg += "\nDifferent price shapes, non-independent observations and window censoring remain. These are descriptive comparisons, not causal superiority or a recommended filter."
+    msg
+
+f_studyCountsHelp(StudyBook book) =>
+    string msg = "\n\nDEFINITION / ORDERED-PATH SAMPLE"
+    if not studyEnabled
+        msg += "\nDisabled."
+    else
+        msg += "\nCompleted retained records: " + str.tostring(book.count) + "/" + str.tostring(studyCapacity)
+        msg += "\nAdmitted/matured/pending: " + str.tostring(book.admittedTotal) + "/" + str.tostring(book.finishedTotal) + "/" + str.tostring(book.admittedTotal - book.finishedTotal)
+        msg += "\nLifetime unusable paths: " + str.tostring(book.invalidPathTotal) + "; admission skips: " + str.tostring(book.skippedTotal)
+        msg += "\nLifetime unknown initial definitions: " + str.tostring(book.unknownInitialTotal) + " (may overlap unusable paths). These records cannot enter either birth-classified path group."
+        msg += "\nRaw definition passes / known completed records (" + tieMode + "):"
+        for stage = 1 to 3
+            msg += "\n" + f_roman(stage) + " W/B/C: "
+            for sourceIndex = 0 to 2
+                DefinitionTotals totals = array.get(book.definitions, (stage - 1) * 3 + sourceIndex)
+                msg += (sourceIndex > 0 ? " | " : "") + str.tostring(totals.passed) + "/" + str.tostring(totals.n)
+        msg += "\nCommon maturity = origin + " + str.tostring(math.max(rightThree, rightOne + studyHorizon)) + " bars. Missing paths may still have valid definition tests."
+        msg += "\nThis sample is separate from BOTH older studies; the N / open cell's original values are unchanged."
+    msg
+
+
+if barstate.isconfirmed
+    lastClosedBar := bar_index
+    if time >= chart.left_visible_bar_time and time <= chart.right_visible_bar_time
+        firstVisibleClosed := na(firstVisibleClosed) ? bar_index : firstVisibleClosed
+        lastVisibleClosed := bar_index
+        if not na(high)
+            visibleHigh := na(visibleHigh) ? high : math.max(visibleHigh, high)
+        if not na(low)
+            visibleLow := na(visibleLow) ? low : math.min(visibleLow, low)
+
+[highOne, highTwo, highThree, highCohortFinished] = f_process(highBook, true, upperSource)
+[lowOne, lowTwo, lowThree, lowCohortFinished] = f_process(lowBook, false, lowerSource)
+
+[highAuditEvent, highAuditCompleted] = f_runAudit(highAudit, true, highOne, highTwo, highThree, upperSource)
+[lowAuditEvent, lowAuditCompleted] = f_runAudit(lowAudit, false, lowOne, lowTwo, lowThree, lowerSource)
+
+StudyRecord highStudyEvent = f_runStudy(highStudy, true, highOne)
+StudyRecord lowStudyEvent = f_runStudy(lowStudy, false, lowOne)
+
+
+// Drawings are presentation-only. Maximum active objects at input extremes:
+// 2 * (120 primary + 40 later-stage + 6 captions) = 332 labels.
+// 2 * 120 primary * (one pin + one optional delay trace) = 480 lines.
+if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
+    f_renderChart()
+
+// Table content is evaluated only at the last chart bar and describes the
+// latest CLOSED-bar state. It is not a historical-cursor reconstruction.
+f_position() =>
+    switch readoutPosition
+        "Bottom right" => position.bottom_right
+        "Top left" => position.top_left
+        "Bottom left" => position.bottom_left
+        => position.top_right
+
+bool leftAligned = readoutPosition == "Top left" or readoutPosition == "Bottom left"
+int contentStart = leftAligned ? 1 : 0
+int gutterColumn = leftAligned ? 0 : 3
+var table readout = table.new(f_position(), 4, 13, bgcolor = color.new(cardColor, 100),
+     frame_width = 0, border_width = 0)
+
+f_cell(int column, int row, string content, color foreground, string helpText) =>
+    table.cell(readout, column, row, content, text_color = foreground,
+         bgcolor = cardColor, text_size = readoutSize, text_halign = text.align_center,
+         text_formatting = boldText ? text.format_bold : text.format_none, tooltip = helpText)
+    0
+
+f_meter(int numerator, int denominator) =>
+    string result = "--"
+    if denominator > 0
+        float ratio = float(numerator) / denominator
+        int filled = int(math.round(5.0 * ratio))
+        string barText = ""
+        if showMeters
+            for i = 1 to 5
+                barText += i <= filled ? "▰" : "▱"
+            barText += " "
+        result := barText + str.tostring(100.0 * ratio, "0") + "%"
+    result
+
+f_latestState(Origin item) =>
+    string result = "Waiting"
+    if not na(item)
+        result := item.classification + " " + str.tostring(item.attained) + "/3"
+        result += item.missingData ? " ?" : item.finished ? "" : " ..."
+    if showIcons
+        string symbol = na(item) ? "○" : item.missingData ? "!" : item.finished ? "■" : "◷"
+        result := symbol + " " + result
+    result
+
+f_bookColumn(SideBook book, int column, bool isHigh) =>
+    AuditBook audit = isHigh ? highAudit : lowAudit
+    StudyBook study = isHigh ? highStudy : lowStudy
+    Origin latest = book.latest
+    color sideColor = isHigh ? highColor : lowColor
+    int pending = book.acceptedTotal - book.resolvedTotal
+    string stateHelp = "No accepted origin yet."
+    if not na(latest)
+        int age = lastClosedBar - latest.originBar
+        stateHelp := "Origin: " + str.format_time(latest.originTime, "yyyy-MM-dd HH:mm", syminfo.timezone)
+        stateHelp += "\nLatest attained stage: " + f_roman(latest.attained)
+        stateHelp += "\nStage III observation finishes " + str.tostring(math.max(0, rightThree - age)) + " bars later."
+        stateHelp += "\nAttained stages remain historical facts; they do not mean the price is an unbroken level today."
+        if age >= rightTwo and not latest.passedTwo and not latest.missingData
+            stateHelp += "\nThis origin did not retain its extreme through Stage II. Its Stage-I record remains."
+        if latest.missingData
+            stateHelp += "\nMissing source data: excluded from the completed sample."
+    f_cell(column, 2, isHigh ? "▼ HIGH" : "▲ LOW", sideColor, "Highs and lows are separate observations. No assumed order inside a single bar." + f_auditHelp(audit, 1))
+    f_cell(column, 3, f_latestState(latest), sideColor, stateHelp + "\nIcons: circle = waiting; clock = observing; square = observation complete (NOT proof of retention); ! = missing data.")
+    f_cell(column, 4, na(latest) ? "--" : f_price(latest.price), cardText, "Price of the latest accepted Stage-I origin, using the selected price definition." + f_definitionHelp(study))
+    f_cell(column, 5, na(latest) ? "--" : str.tostring(lastClosedBar - latest.originBar) + " b", cardText, "Age from origin to the latest closed bar; not elapsed clock time." + f_pathHelp(study))
+    f_cell(column, 6, na(latest) ? "--" : f_number(latest.depth), cardText, "Two-sided shoulder depth measured and frozen at initial confirmation, in origin ATR units. Not confidence." + f_groupHelp(study))
+    string sampleHelp = "Same fully observed sample for both rates.\nN = " + str.tostring(book.completedN)
+    sampleHelp += "\nStage II retained = " + str.tostring(book.retainedTwoN) + "; Stage III retained = " + str.tostring(book.retainedThreeN)
+    sampleHelp += "\nPending origins are excluded, not treated as successes or failures. These are not win rates."
+    f_cell(column, 7, f_meter(book.retainedTwoN, book.completedN), sideColor, sampleHelp + f_auditHelp(audit, 2))
+    f_cell(column, 8, f_meter(book.retainedThreeN, book.completedN), sideColor, sampleHelp + f_auditHelp(audit, 3))
+    float pairedMean = book.extraN > 0 ? book.extraSum / book.extraN : na
+    f_cell(column, 9, f_number(pairedMean), cardText,
+         "Mean extra origin-to-close drift from Stage I to Stage III, ONLY among Stage-III-retained origins with usable ATR.\nPaired N = " + str.tostring(book.extraN) + "\nSame origins and same origin ATR in both measurements. Can be negative. This conditional descriptive sample is not a forecast or trading return." + f_matchedHelp(audit))
+    f_cell(column, 10, str.tostring(book.completedN) + " / " + str.tostring(pending), cardText,
+         "Completed rolling-sample size / still-observing origins.\nAccepted over loaded history = " + str.tostring(book.acceptedTotal) +
+         "\nMissing-data exclusions = " + str.tostring(book.missingTotal) +
+         "\nRaw initial candidates = " + str.tostring(book.rawTotal) +
+         "\nDepth/spacing rejections = " + str.tostring(book.filteredTotal) +
+         "\nDrawing limits do not change these statistics." + f_auditCountsHelp(audit) + f_studyCountsHelp(study))
+    0
+
+if barstate.isfirst
+    table.merge_cells(readout, contentStart, 1, contentStart + 2, 1)
+    table.merge_cells(readout, contentStart, 11, contentStart + 2, 11)
+    table.merge_cells(readout, contentStart, 12, contentStart + 2, 12)
+
+if barstate.islast
+    if showReadout
+        for row = 0 to 12
+            table.cell(readout, gutterColumn, row, "", width = rightInset, bgcolor = color.new(cardColor, 100))
+        for column = contentStart to contentStart + 2
+            table.cell(readout, column, 0, "", height = 0.7, bgcolor = color.new(cardColor, 100))
+        f_cell(contentStart, 1, f_readoutIcon("◈", "CONFIRMATION SPECTRUM"), accentColor, "Same origins, progressively longer right windows. Closed-bar observations only.\nAdditional research: hover Origin price for definition tests, Origin age for ordered paths, Depth / ATR for birth-classified groups. Select a completed record in settings group 07 to inspect historical details.")
+        f_cell(contentStart, 2, f_readoutIcon("≡", "OBSERVATION"), cardText, "The readout describes the latest closed bar, not the bar under the chart cursor.")
+        f_cell(contentStart, 3, f_readoutIcon("↳", "Latest"), cardText, "Class and latest attained stage. Three dots indicate an unfinished observation window.")
+        f_cell(contentStart, 4, f_readoutIcon("⊙", "Origin price"), cardText, "The original price is never moved to a later extreme.")
+        f_cell(contentStart, 5, f_readoutIcon("◷", "Origin age"), cardText, "Chart bars since the origin.")
+        f_cell(contentStart, 6, f_readoutIcon("↕", "Depth / ATR"), cardText, "Frozen two-sided shoulder depth.")
+        f_cell(contentStart, 7, f_readoutIcon("●", "II / I"), cardText, "Stage-II retention within the stage-III-complete initial cohort.")
+        f_cell(contentStart, 8, f_readoutIcon("◆", "III / I"), cardText, "Stage-III retention within the SAME completed initial cohort. Not win rate.")
+        f_cell(contentStart, 9, f_readoutIcon("Δ", "Extra III / ATR"), cardText, "Paired additional close drift for Stage-III-retained origins only.")
+        f_cell(contentStart, 10, f_readoutIcon("#", "N / open"), cardText, "Completed sample / pending observations.")
+        f_bookColumn(highBook, contentStart + 1, true)
+        f_bookColumn(lowBook, contentStart + 2, false)
+        string spanText = "I " + str.tostring(rightOne) + "  |  II " + str.tostring(rightTwo) + "  |  III " + str.tostring(rightThree) + " bars"
+        if showIcons
+            spanText := "△ " + spanText
+            spanText := str.replace_all(spanText, "|  II ", "|  ○ II ")
+            spanText := str.replace_all(spanText, "|  III ", "|  ◇ III ")
+        f_cell(contentStart, 11, spanText, accentColor, "All spans count right-side bars from the same origin. The left context remains " + str.tostring(leftBars) + " bars.")
+        string timingText = backdated ? "BACKDATED I  |  II / III at close" : "CONFIRMATION BARS  |  Close only"
+        if not chart.is_standard
+            timingText := backdated ? "BACKDATED I  |  Non-standard OHLC" : "CONFIRMATION  |  Non-standard OHLC"
+        f_cell(contentStart, 12, f_readoutIcon(backdated or not chart.is_standard ? "!" : "◷", timingText), noticeColor,
+             "Backdated placement is optional historical annotation, not knowledge available on the origin bar.\nOn non-standard charts, results describe the chart's constructed OHLC. Use standard candles for an ordinary price-history study.")
+    else
+        table.clear(readout, 0, 0, 3, 12)
+
+// Research outputs only: nothing is added to the status line or price scale.
+// Each price appears on its actual event bar; even origin-placement mode
+// never backdates the research series or alerts.
+plot(highOne, "High stage I price", display = display.data_window)
+plot(lowOne, "Low stage I price", display = display.data_window)
+plot(highTwo, "High stage II price", display = display.data_window)
+plot(lowTwo, "Low stage II price", display = display.data_window)
+plot(highThree, "High stage III price", display = display.data_window)
+plot(lowThree, "Low stage III price", display = display.data_window)
+
+bool anyStage = not na(highOne) or not na(lowOne) or not na(highTwo) or not na(lowTwo) or not na(highThree) or not na(lowThree)
+alertcondition(not na(highOne), "High - Stage I", "Stage-I swing high confirmed at bar close on {{ticker}} ({{interval}}). The origin is earlier. This is a price observation, not a trading instruction.")
+alertcondition(not na(lowOne), "Low - Stage I", "Stage-I swing low confirmed at bar close on {{ticker}} ({{interval}}). The origin is earlier. This is a price observation, not a trading instruction.")
+alertcondition(not na(highTwo), "High - Stage II", "An accepted swing-high origin retained its extreme through Stage II on {{ticker}} ({{interval}}). Confirmed at bar close; not a trading instruction.")
+alertcondition(not na(lowTwo), "Low - Stage II", "An accepted swing-low origin retained its extreme through Stage II on {{ticker}} ({{interval}}). Confirmed at bar close; not a trading instruction.")
+alertcondition(not na(highThree), "High - Stage III", "An accepted swing-high origin retained its extreme through Stage III on {{ticker}} ({{interval}}). Confirmed at bar close; not a trading instruction.")
+alertcondition(not na(lowThree), "Low - Stage III", "An accepted swing-low origin retained its extreme through Stage III on {{ticker}} ({{interval}}). Confirmed at bar close; not a trading instruction.")
+alertcondition(anyStage, "Any stage confirmed", "A swing-high or swing-low confirmation stage completed on {{ticker}} ({{interval}}). Read the chart or Data Window for the specific observations. Not a trading instruction.")
+alertcondition(highCohortFinished or lowCohortFinished, "Observation horizon completed", "A Stage-I origin reached its full observation horizon on {{ticker}} ({{interval}}), whether retained or not. This is a research update, not a trading instruction.")
+
+
+// POST-CONFIRMATION RESEARCH OUTPUTS
+// Cohort statistics commit only at common maturity, never at the origin.
+// Individual results are pulses on that maturity bar. A missing later-stage
+// result means the stage was not attained (or no usable row matured this bar).
+// The event origin timestamp identifies the originating candle; it is NOT
+// an instruction to move these results back onto that candle.
+bool showAuditData = auditEnabled and auditOutputs
+plot(showAuditData ? f_auditMean(highAudit, 1, false, "drift") : na, "High after 1: mean drift ATR", display = display.data_window)
+plot(showAuditData ? f_auditMean(highAudit, 2, false, "drift") : na, "High after 2: mean drift ATR", display = display.data_window)
+plot(showAuditData ? f_auditMean(highAudit, 3, false, "drift") : na, "High after 3: mean drift ATR", display = display.data_window)
+plot(showAuditData ? f_auditHeld(highAudit, 1) : na, "High after 1: origin held %", display = display.data_window)
+plot(showAuditData ? f_auditHeld(highAudit, 2) : na, "High after 2: origin held %", display = display.data_window)
+plot(showAuditData ? f_auditHeld(highAudit, 3) : na, "High after 3: origin held %", display = display.data_window)
+plot(showAuditData ? f_auditN(highAudit, 1, false) : na, "High after 1: stage N", display = display.data_window)
+plot(showAuditData ? f_auditN(highAudit, 2, false) : na, "High after 2: stage N", display = display.data_window)
+plot(showAuditData ? f_auditN(highAudit, 3, false) : na, "High after 3: stage N", display = display.data_window)
+plot(showAuditData ? f_auditEventValue(highAuditEvent, 1, "drift") : na, "High matured row: after 1 drift ATR", display = display.data_window)
+plot(showAuditData ? f_auditEventValue(highAuditEvent, 2, "drift") : na, "High matured row: after 2 drift ATR", display = display.data_window)
+plot(showAuditData ? f_auditEventValue(highAuditEvent, 3, "drift") : na, "High matured row: after 3 drift ATR", display = display.data_window)
+plot(showAuditData ? f_auditEventValue(highAuditEvent, 1, "held") : na, "High matured row: after 1 held 1 or 0", display = display.data_window)
+plot(showAuditData ? f_auditEventValue(highAuditEvent, 2, "held") : na, "High matured row: after 2 held 1 or 0", display = display.data_window)
+plot(showAuditData ? f_auditEventValue(highAuditEvent, 3, "held") : na, "High matured row: after 3 held 1 or 0", display = display.data_window)
+plot(showAuditData and not na(highAuditEvent) ? highAuditEvent.originTime : na, "High matured row: origin UNIX ms", display = display.data_window)
+plot(showAuditData ? f_auditN(highAudit, 3, true) : na, "High matched origins: N", display = display.data_window)
+plot(showAuditData ? f_auditMean(highAudit, 3, true, "drift") - f_auditMean(highAudit, 1, true, "drift") : na, "High matched origins: after 3 minus after 1 ATR", display = display.data_window)
+plot(showAuditData ? highAudit.admittedTotal - highAudit.finishedTotal : na, "High post-confirmation audit: pending", display = display.data_window)
+plot(showAuditData ? highAudit.invalidTotal : na, "High post-confirmation audit: exclusions", display = display.data_window)
+
+plot(showAuditData ? f_auditMean(lowAudit, 1, false, "drift") : na, "Low after 1: mean drift ATR", display = display.data_window)
+plot(showAuditData ? f_auditMean(lowAudit, 2, false, "drift") : na, "Low after 2: mean drift ATR", display = display.data_window)
+plot(showAuditData ? f_auditMean(lowAudit, 3, false, "drift") : na, "Low after 3: mean drift ATR", display = display.data_window)
+plot(showAuditData ? f_auditHeld(lowAudit, 1) : na, "Low after 1: origin held %", display = display.data_window)
+plot(showAuditData ? f_auditHeld(lowAudit, 2) : na, "Low after 2: origin held %", display = display.data_window)
+plot(showAuditData ? f_auditHeld(lowAudit, 3) : na, "Low after 3: origin held %", display = display.data_window)
+plot(showAuditData ? f_auditN(lowAudit, 1, false) : na, "Low after 1: stage N", display = display.data_window)
+plot(showAuditData ? f_auditN(lowAudit, 2, false) : na, "Low after 2: stage N", display = display.data_window)
+plot(showAuditData ? f_auditN(lowAudit, 3, false) : na, "Low after 3: stage N", display = display.data_window)
+plot(showAuditData ? f_auditEventValue(lowAuditEvent, 1, "drift") : na, "Low matured row: after 1 drift ATR", display = display.data_window)
+plot(showAuditData ? f_auditEventValue(lowAuditEvent, 2, "drift") : na, "Low matured row: after 2 drift ATR", display = display.data_window)
+plot(showAuditData ? f_auditEventValue(lowAuditEvent, 3, "drift") : na, "Low matured row: after 3 drift ATR", display = display.data_window)
+plot(showAuditData ? f_auditEventValue(lowAuditEvent, 1, "held") : na, "Low matured row: after 1 held 1 or 0", display = display.data_window)
+plot(showAuditData ? f_auditEventValue(lowAuditEvent, 2, "held") : na, "Low matured row: after 2 held 1 or 0", display = display.data_window)
+plot(showAuditData ? f_auditEventValue(lowAuditEvent, 3, "held") : na, "Low matured row: after 3 held 1 or 0", display = display.data_window)
+plot(showAuditData and not na(lowAuditEvent) ? lowAuditEvent.originTime : na, "Low matured row: origin UNIX ms", display = display.data_window)
+plot(showAuditData ? f_auditN(lowAudit, 3, true) : na, "Low matched origins: N", display = display.data_window)
+plot(showAuditData ? f_auditMean(lowAudit, 3, true, "drift") - f_auditMean(lowAudit, 1, true, "drift") : na, "Low matched origins: after 3 minus after 1 ATR", display = display.data_window)
+plot(showAuditData ? lowAudit.admittedTotal - lowAudit.finishedTotal : na, "Low post-confirmation audit: pending", display = display.data_window)
+plot(showAuditData ? lowAudit.invalidTotal : na, "Low post-confirmation audit: exclusions", display = display.data_window)
+
+alertcondition(highAuditCompleted, "High - Post-confirmation horizon completed", "A swing-high origin reached the common post-confirmation research horizon on {{ticker}} ({{interval}}). Unusable paths are excluded. This is a descriptive research update, not a trade signal.")
+alertcondition(lowAuditCompleted, "Low - Post-confirmation horizon completed", "A swing-low origin reached the common post-confirmation research horizon on {{ticker}} ({{interval}}). Unusable paths are excluded. This is a descriptive research update, not a trade signal.")
+
+
+// DEFINITION / ORDERED-PATH OUTPUTS: fixed event-time records, never backdated.
+// The path code is a descriptive milestone: -1 unusable, 0 no outside wick,
+// 1 outside wick without close-run acceptance, 2 accepted without return,
+// 3 accepted then returned. Code 3 does not imply the final close is inside.
+bool showStudyData = studyEnabled and studyOutputs
+plot(showStudyData and not na(highStudyEvent) ? highStudyEvent.originTime : na, "High definition/path: origin UNIX ms", display = display.data_window)
+plot(showStudyData and not na(highStudyEvent) ? f_agreement(highStudyEvent.one) : na, "High definition/path: initial agreement 0-3", display = display.data_window)
+plot(showStudyData and not na(highStudyEvent) ? (na(highStudyEvent.path) ? -1 : highStudyEvent.path.code) : na, "High definition/path: ordered path code", display = display.data_window)
+plot(showStudyData and not na(lowStudyEvent) ? lowStudyEvent.originTime : na, "Low definition/path: origin UNIX ms", display = display.data_window)
+plot(showStudyData and not na(lowStudyEvent) ? f_agreement(lowStudyEvent.one) : na, "Low definition/path: initial agreement 0-3", display = display.data_window)
+plot(showStudyData and not na(lowStudyEvent) ? (na(lowStudyEvent.path) ? -1 : lowStudyEvent.path.code) : na, "Low definition/path: ordered path code", display = display.data_window)
+alertcondition(not na(highStudyEvent) or not na(lowStudyEvent), "Definition / ordered-path study completed", "A swing origin reached the definition and ordered-path study's common maturity on {{ticker}} ({{interval}}). Inspect Data Window records and readout tooltips. Unusable paths are separate; no trade recommendation.")

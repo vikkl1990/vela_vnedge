@@ -1,0 +1,536 @@
+// This Source Code Form is subject to the terms of the Mozilla Public License 2.0
+// at https://mozilla.org/MPL/2.0/
+//
+// Momentum Sequence Strategy+ [Herman]
+// Pine Script v6
+
+//@version=6
+
+strategy(
+     "Momentum Sequence Strategy [Herman]",
+     overlay = true,
+     pyramiding = 0,
+     initial_capital = 50000,
+     currency = currency.USD,
+     default_qty_type = strategy.fixed,
+     default_qty_value = 1,
+     commission_type = strategy.commission.cash_per_contract,
+     commission_value = 2.50,
+     slippage = 1,
+     margin_long = 5,
+     margin_short = 5
+)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// INPUT GROUPS
+// ═════════════════════════════════════════════════════════════════════════════
+
+string G_SEQUENCE = "Sequence Settings"
+string G_TRADE    = "Trade Settings"
+string G_VISUALS  = "Visuals"
+string G_TABLE    = "Statistics Table"
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SETTINGS
+// ═════════════════════════════════════════════════════════════════════════════
+
+followingCandles = input.int(
+     5,
+     title = "Following Candles",
+     options = [2, 3, 4, 5],
+     group = G_SEQUENCE,
+     tooltip = "Number of consecutive candles required after the main candle."
+)
+
+takeProfitR = input.string(
+     "1.5R",
+     title = "Take Profit",
+     options = ["0.5R", "1R", "1.5R", "2R"],
+     group = G_TRADE
+)
+
+enableLongTrades = input.bool(
+     true,
+     title = "Long Trades",
+     group = G_TRADE,
+     tooltip = "Enable or disable Long trades."
+)
+
+enableShortTrades = input.bool(
+     false,
+     title = "Short Trades",
+     group = G_TRADE,
+     tooltip = "Enable or disable Short trades."
+)
+
+showSignal = input.bool(
+     true,
+     title = "Show Entry Signal",
+     group = G_VISUALS
+)
+
+showSLTP = input.bool(
+     true,
+     title = "Show Stop Loss / Take Profit",
+     group = G_VISUALS
+)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// STATISTICS TABLE SETTINGS
+// ═════════════════════════════════════════════════════════════════════════════
+
+showTable = input.bool(
+     true,
+     "Show Table",
+     group = G_TABLE
+)
+
+tableTheme = input.string(
+     "Light",
+     "Theme",
+     options = ["Dark", "Light"],
+     group = G_TABLE
+)
+
+tableSize = input.string(
+     "small",
+     "Size",
+     options = ["tiny", "small", "normal", "large"],
+     group = G_TABLE
+)
+
+tablePos = input.string(
+     position.top_right,
+     "Position",
+     options = [
+         position.top_right,
+         position.bottom_right,
+         position.top_left,
+         position.bottom_left
+     ],
+     group = G_TABLE
+)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// R MULTIPLE
+// ═════════════════════════════════════════════════════════════════════════════
+
+rrMultiple = switch takeProfitR
+    "0.5R" => 0.5
+    "1R"   => 1.0
+    "1.5R" => 1.5
+    "2R"   => 2.0
+    => 1.5
+
+// ═════════════════════════════════════════════════════════════════════════════
+// VARIABLES
+// ═════════════════════════════════════════════════════════════════════════════
+
+var float stopLossPrice = na
+var float takeProfitPrice = na
+
+var float stopLossPriceDisplay = na
+var float takeProfitPriceDisplay = na
+
+// ═════════════════════════════════════════════════════════════════════════════
+// MAIN CANDLE
+// ═════════════════════════════════════════════════════════════════════════════
+
+mainBearish =
+     close[followingCandles] < open[followingCandles]
+
+mainBullish =
+     close[followingCandles] > open[followingCandles]
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FOLLOWING BULLISH SEQUENCE
+// ═════════════════════════════════════════════════════════════════════════════
+
+bool validBullishSequence = true
+
+for i = 0 to followingCandles - 1
+
+    // Every following candle must be bullish.
+    if close[i] <= open[i]
+        validBullishSequence := false
+
+    // Every following candle must stay above
+    // the low of the main bearish candle.
+    if low[i] <= low[followingCandles]
+        validBullishSequence := false
+
+    // Every newer candle must close higher
+    // than the previous candle.
+    if i < followingCandles - 1
+        if close[i] <= close[i + 1]
+            validBullishSequence := false
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FOLLOWING BEARISH SEQUENCE
+// ═════════════════════════════════════════════════════════════════════════════
+
+bool validBearishSequence = true
+
+for i = 0 to followingCandles - 1
+
+    // Every following candle must be bearish.
+    if close[i] >= open[i]
+        validBearishSequence := false
+
+    // Every following candle must stay below
+    // the high of the main bullish candle.
+    if high[i] >= high[followingCandles]
+        validBearishSequence := false
+
+    // Every newer candle must close lower
+    // than the previous candle.
+    if i < followingCandles - 1
+        if close[i] >= close[i + 1]
+            validBearishSequence := false
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FULL SETUPS
+// ═════════════════════════════════════════════════════════════════════════════
+
+longSetup =
+     mainBearish and
+     validBullishSequence
+
+shortSetup =
+     mainBullish and
+     validBearishSequence
+
+// ═════════════════════════════════════════════════════════════════════════════
+// LONG ENTRY
+// ═════════════════════════════════════════════════════════════════════════════
+
+if enableLongTrades and longSetup and strategy.position_size == 0
+
+    stopLossPrice := low[followingCandles]
+
+    longRisk = close - stopLossPrice
+
+    takeProfitPrice :=
+         close + longRisk * rrMultiple
+
+    strategy.entry(
+         "Long",
+         strategy.long
+    )
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SHORT ENTRY
+// ═════════════════════════════════════════════════════════════════════════════
+
+if enableShortTrades and shortSetup and strategy.position_size == 0
+
+    stopLossPrice := high[followingCandles]
+
+    shortRisk = stopLossPrice - close
+
+    takeProfitPrice :=
+         close - shortRisk * rrMultiple
+
+    strategy.entry(
+         "Short",
+         strategy.short
+    )
+
+// ═════════════════════════════════════════════════════════════════════════════
+// LONG EXIT
+// ═════════════════════════════════════════════════════════════════════════════
+
+if not na(stopLossPrice) and strategy.position_size > 0
+
+    strategy.exit(
+         "Long Take Profit / Stop Loss",
+         from_entry = "Long",
+         stop = stopLossPrice,
+         limit = takeProfitPrice
+    )
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SHORT EXIT
+// ═════════════════════════════════════════════════════════════════════════════
+
+if not na(stopLossPrice) and strategy.position_size < 0
+
+    strategy.exit(
+         "Short Take Profit / Stop Loss",
+         from_entry = "Short",
+         stop = stopLossPrice,
+         limit = takeProfitPrice
+    )
+
+// ═════════════════════════════════════════════════════════════════════════════
+// DISPLAY LEVELS
+// ═════════════════════════════════════════════════════════════════════════════
+
+if strategy.position_size == 0
+
+    stopLossPriceDisplay := na
+    takeProfitPriceDisplay := na
+
+else
+
+    stopLossPriceDisplay := stopLossPrice
+    takeProfitPriceDisplay := takeProfitPrice
+
+// ═════════════════════════════════════════════════════════════════════════════
+// TABLE PALETTE
+// ═════════════════════════════════════════════════════════════════════════════
+
+var color c_green = na
+var color c_red   = na
+var color c_nbg   = na
+var color c_ntxt  = na
+var color c_hdr   = na
+var color c_sep   = na
+
+if tableTheme == "Dark"
+
+    c_green := #29a071
+    c_red   := #e54b4b
+
+    c_nbg   := #2a2e39
+    c_ntxt  := #e0e0e0
+
+    c_hdr   := #3c415e
+    c_sep   := #454955
+
+else
+
+    c_green := #29a071
+    c_red   := #e54b4b
+
+    c_nbg   := #f7f7f7
+    c_ntxt  := #1e2025
+
+    c_hdr   := #e5eef7
+    c_sep   := #e1e4e6
+
+color c_dhdr = #f0f3f6
+
+color nbg2 = color.new(c_nbg, 50)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// TABLE HELPERS
+// ═════════════════════════════════════════════════════════════════════════════
+
+font_sz(sz) =>
+
+    switch sz
+        "tiny"   => size.tiny
+        "small"  => size.small
+        "normal" => size.normal
+        "large"  => size.large
+        => size.small
+
+// ═════════════════════════════════════════════════════════════════════════════
+// STATISTICS TABLE
+// ═════════════════════════════════════════════════════════════════════════════
+
+var table tbl = table.new(
+     tablePos,
+     2,
+     6
+)
+
+if barstate.islast
+
+    table.clear(
+         tbl,
+         0,
+         0,
+         1,
+         5
+    )
+
+    if showTable
+
+        int r = 0
+
+        fsz = font_sz(tableSize)
+
+        // TITLE
+
+        table.cell(
+             tbl,
+             0,
+             r,
+             "Momentum Sequence Strategy [Herman]",
+             text_color = c_ntxt,
+             bgcolor = c_hdr,
+             text_size = fsz
+        )
+
+        table.cell(
+             tbl,
+             1,
+             r,
+             "",
+             text_color = c_ntxt,
+             bgcolor = c_hdr
+        )
+
+        r += 1
+
+        // SECTION HEADER
+
+        table.cell(
+             tbl,
+             0,
+             r,
+             "Current Settings",
+             text_color = c_ntxt,
+             bgcolor = c_dhdr,
+             text_size = fsz
+        )
+
+        table.cell(
+             tbl,
+             1,
+             r,
+             "",
+             bgcolor = c_dhdr
+        )
+
+        r += 1
+
+        // TAKE PROFIT
+
+        table.cell(
+             tbl,
+             0,
+             r,
+             "Take Profit",
+             bgcolor = nbg2,
+             text_color = c_ntxt,
+             text_size = fsz
+        )
+
+        table.cell(
+             tbl,
+             1,
+             r,
+             takeProfitR,
+             bgcolor = nbg2,
+             text_color = c_ntxt,
+             text_size = fsz
+        )
+
+        r += 1
+
+        // CONSECUTIVE CANDLES
+
+        table.cell(
+             tbl,
+             0,
+             r,
+             "Consecutive Candles",
+             bgcolor = c_nbg,
+             text_color = c_ntxt,
+             text_size = fsz
+        )
+
+        table.cell(
+             tbl,
+             1,
+             r,
+             str.tostring(followingCandles),
+             bgcolor = c_nbg,
+             text_color = c_ntxt,
+             text_size = fsz
+        )
+
+        r += 1
+
+        // LONG TRADES
+
+        table.cell(
+             tbl,
+             0,
+             r,
+             "Long Trades",
+             bgcolor = nbg2,
+             text_color = c_ntxt,
+             text_size = fsz
+        )
+
+        table.cell(
+             tbl,
+             1,
+             r,
+             enableLongTrades ? "ON" : "OFF",
+             bgcolor = nbg2,
+             text_color = enableLongTrades ? c_green : c_red,
+             text_size = fsz
+        )
+
+        r += 1
+
+        // SHORT TRADES
+
+        table.cell(
+             tbl,
+             0,
+             r,
+             "Short Trades",
+             bgcolor = c_nbg,
+             text_color = c_ntxt,
+             text_size = fsz
+        )
+
+        table.cell(
+             tbl,
+             1,
+             r,
+             enableShortTrades ? "ON" : "OFF",
+             bgcolor = c_nbg,
+             text_color = enableShortTrades ? c_green : c_red,
+             text_size = fsz
+        )
+
+// ═════════════════════════════════════════════════════════════════════════════
+// VISUALS
+// ═════════════════════════════════════════════════════════════════════════════
+
+plotshape(
+     showSignal and
+     enableLongTrades and
+     longSetup and
+     strategy.position_size == 0,
+     title = "Long Setup",
+     location = location.belowbar,
+     color = color.green,
+     style = shape.triangleup,
+     size = size.small
+)
+
+plotshape(
+     showSignal and
+     enableShortTrades and
+     shortSetup and
+     strategy.position_size == 0,
+     title = "Short Setup",
+     location = location.abovebar,
+     color = color.red,
+     style = shape.triangledown,
+     size = size.small
+)
+
+plot(
+     showSLTP ? stopLossPriceDisplay : na,
+     color = color.red,
+     title = "Stop Loss",
+     linewidth = 2,
+     style = plot.style_linebr
+)
+
+plot(
+     showSLTP ? takeProfitPriceDisplay : na,
+     color = color.green,
+     title = "Take Profit",
+     linewidth = 2,
+     style = plot.style_linebr
+)

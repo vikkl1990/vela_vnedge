@@ -1,0 +1,63 @@
+//@version=6
+indicator("HTF Candle Box", overlay=true, max_boxes_count=500)
+
+// ─── INPUTS ────────────────────────────────────────────────────────────────
+string htf_res   = input.timeframe("W", "Higher Timeframe", group="HTF Candle Box")
+// input.color()'s own picker has a built-in opacity slider (next to the hex
+// value) — the color itself already carries fill strength, so no separate
+// transparency/opacity input is needed alongside it. Default is 75%
+// transparency (25% opacity) on both, per the user's requested default.
+color  bull_color = input.color(color.new(color.white, 75), "Bull / Bear Color", inline="dir_color", group="HTF Candle Box")
+color  bear_color = input.color(color.new(#2962FF, 75), "", inline="dir_color", group="HTF Candle Box")
+bool   show_border  = input.bool(false, "Show Border", group="HTF Candle Box")
+color  border_color = input.color(color.white, "Border Color", group="HTF Candle Box")
+string border_style = input.string("Solid", "Border Style", options=["Solid", "Dashed", "Dotted"], group="HTF Candle Box")
+int    border_width = input.int(2, "Border Width", minval=1, maxval=10, group="HTF Candle Box")
+
+// ─── HELPER: resolve style string ────────────────────────────────────────────
+f_style(s) =>
+    s == "Solid" ? line.style_solid : s == "Dotted" ? line.style_dotted : line.style_dashed
+
+// Skip entirely once the chart's own timeframe is already >= the target HTF —
+// e.g. a "weekly box" on a weekly (or coarser) chart would just be the bar
+// itself, so there's nothing meaningful to group.
+bool valid_tf = timeframe.in_seconds() < timeframe.in_seconds(htf_res)
+
+// ─── STATE ────────────────────────────────────────────────────────────────────
+var box   htf_box  = na
+var float htf_high = na
+var float htf_low  = na
+var float htf_open = na
+
+// time(htf_res) returns the open time of the HTF bar containing the current
+// chart bar; it changes exactly once per new HTF period, giving a clean
+// per-bar boundary check with no request.security() needed.
+bool new_period = ta.change(time(htf_res)) != 0
+
+if valid_tf
+    if barstate.isfirst or new_period
+        // Start of a new HTF period: freeze the previous box in place (simply
+        // stop mutating it) and open a fresh one-bar-wide box for this period.
+        htf_high := high
+        htf_low  := low
+        htf_open := open
+        // Direction is live, not just at period close: it's a comparison of
+        // the still-forming period's own open against the running close, same
+        // "grows/updates live" behavior already used for high/low — so a box
+        // can flip white<->blue intraperiod as price crosses back over the
+        // period's open, settling on whichever side it's on once the period
+        // actually closes.
+        color  cur_color = close >= htf_open ? bull_color : bear_color
+        htf_box  := box.new(bar_index, htf_high, bar_index, htf_low,
+             border_color=show_border ? border_color : na, border_width=border_width, border_style=f_style(border_style),
+             bgcolor=cur_color)
+    else
+        // Still inside the current HTF period: widen the box rightward and
+        // let its top/bottom track the period's running high/low so far.
+        htf_high := math.max(htf_high, high)
+        htf_low  := math.min(htf_low, low)
+        color cur_color = close >= htf_open ? bull_color : bear_color
+        box.set_top(htf_box, htf_high)
+        box.set_bottom(htf_box, htf_low)
+        box.set_right(htf_box, bar_index)
+        box.set_bgcolor(htf_box, cur_color)

@@ -1,0 +1,447 @@
+//@version=6
+indicator("ORB 9:30 (30m & 5m)", overlay=true, max_lines_count=500, max_boxes_count=500, dynamic_requests=true)
+
+// ───────────────────────────── INPUTS ─────────────────────────────
+grp30 = "30-Minute 9:30 Candle"
+show30High = input.bool(true,  "Show 30m High Line", group = grp30)
+show30Low  = input.bool(true,  "Show 30m Low Line",  group = grp30)
+color30    = input.color(color.new(color.blue, 0), "30m Line Color", group = grp30)
+days30     = input.int(5, "Days Back to Mark (30m)", minval = 1, maxval = 200, group = grp30)
+
+grp5 = "5-Minute 9:30 Candle"
+show5High  = input.bool(true,  "Show 5m High Line", group = grp5)
+show5Low   = input.bool(true,  "Show 5m Low Line",  group = grp5)
+color5     = input.color(color.new(color.orange, 0), "5m Line Color", group = grp5)
+days5      = input.int(5, "Days Back to Mark (5m)", minval = 1, maxval = 200, group = grp5)
+
+grpGen = "General"
+extendBars = input.int(20, "Extend line for next N candles (of that TF)", minval = 1, group = grpGen)
+lineWidth  = input.int(2, "Line Width", minval = 1, maxval = 5, group = grpGen)
+lineStyleIn = input.string("Solid", "Line Style", options = ["Solid", "Dashed", "Dotted"], group = grpGen)
+sessTZ     = input.string("America/New_York", "Session Timezone (handles DST automatically)", group = grpGen)
+
+// Engulfing detection borrowed from "Engulfing J" (run/base logic only — no
+// H/L lines, no bold pip-threshold, no countdown table, no debug, no
+// up/down theme colouring). Only colours the base candle when it gets
+// engulfed WHILE its own price range overlaps the ORB price band above
+// (the 5m high/low or 30m high/low, whichever applies to this chart's TF) —
+// checked all day, every time price revisits that band, not just at 9:30.
+grpEng           = "Engulfing Highlight (within ORB zone)"
+showEngulf       = input.bool(true, "Highlight engulfing candles", group = grpEng)
+showEngRegular   = input.bool(true, "Regular (1 candle engulfs base)",        group = grpEng)
+showEngIrregular = input.bool(true, "Irregular (run of candles engulfs base)", group = grpEng)
+bullEngColor     = input.color(color.new(color.lime, 0), "Bullish engulf colour", group = grpEng)
+bearEngColor     = input.color(color.new(color.red,  0), "Bearish engulf colour", group = grpEng)
+maxReach         = input.int(50, "Max run length to colour (bars back)", minval = 1, maxval = 50, group = grpEng, tooltip = "An irregular engulf that takes longer than this many candles to clear the base's wick will not be coloured. The base script (Engulfing J) capped this at 15, which is often too short on a 1m chart — raise it if valid engulfs are being missed.")
+
+// First candle whose BODY CLOSE breaks fully outside the active zone (5m or 30m
+// band, whichever applies to this chart's TF). Only the first breakout per zone
+// is flagged — the flag resets the next time that zone re-forms.
+grpBreak       = "First Zone Breakout"
+showBreakout   = input.bool(true, "Mark first breakout of the zone", group = grpBreak)
+bullBreakColor = input.color(color.new(color.teal, 0), "Bullish breakout colour", group = grpBreak)
+bearBreakColor = input.color(color.new(color.red,  0), "Bearish breakout colour", group = grpBreak)
+
+// MSNR retest-entry trade plan — 1-minute chart only, using the 5m zone.
+// Sequence: 5m zone forms -> first breakout sets the trade bias -> wait for
+// price to retrace back into/near the zone -> the first engulfing candle
+// there, in the breakout's direction, is the entry. Fixed pip SL/TP, drawn
+// as a plain entry line + risk/reward boxes — no text labels.
+grpTrade      = "MSNR Retest Entry Plan (1m chart, 5m zone)"
+showTradePlan = input.bool(true, "Show retest-entry trade plan", group = grpTrade)
+slPips        = input.float(300,  "Stop Loss (pips)",   minval = 1, group = grpTrade)
+tpPips        = input.float(1000, "Take Profit (pips)", minval = 1, group = grpTrade)
+entryColor    = input.color(color.new(color.blue, 0),   "Entry line colour",  group = grpTrade)
+riskColor     = input.color(color.new(color.red, 85),   "Risk zone colour",   group = grpTrade)
+rewardColor   = input.color(color.new(color.green, 85), "Reward zone colour", group = grpTrade)
+
+getStyle() =>
+    lineStyleIn == "Dashed" ? line.style_dashed : lineStyleIn == "Dotted" ? line.style_dotted : line.style_solid
+
+msDay = 86400000
+
+drawLine(_t, _y, _tfSec, _extendBars, _col, _within) =>
+    if _within and not na(_col)
+        endT = _t + _extendBars * _tfSec * 1000
+        line.new(x1 = _t, y1 = _y, x2 = endT, y2 = _y, xloc = xloc.bar_time,
+                  extend = extend.none, color = _col, width = lineWidth, style = getStyle())
+
+chartTfSec = timeframe.in_seconds(timeframe.period)
+tf30Sec = timeframe.in_seconds("30")
+tf5Sec  = timeframe.in_seconds("5")
+
+// Used by both the engulfing highlight (session-start gate) and the
+// first-breakout feature (which zone/chart it's scoped to)
+isOneMinChart  = timeframe.period == "1"
+isFiveMinChart = timeframe.period == "5"
+
+// Broker-independent pip size for the trade plan's SL/TP (mintick-based —
+// handles 3/5-digit FX quotes so a "pip" means the same thing across brokers)
+tradePipDigits = int(math.round(-math.log10(syminfo.mintick)))
+tradePipSize   = syminfo.mintick * ((tradePipDigits == 3 or tradePipDigits == 5) ? 10 : 1)
+
+c30h = show30High ? color30 : na
+c30l = show30Low  ? color30 : na
+c5h  = show5High  ? color5  : na
+c5l  = show5Low   ? color5  : na
+
+// Minutes-since-midnight (in session timezone) for the CURRENT bar's own open time
+minOfDay = hour(time, sessTZ) * 60 + minute(time, sessTZ)
+afterSessionOpen = minOfDay >= 570   // 9:30 onward, every day
+
+// Finalized opening-range price band (persists all day once formed, refreshed each
+// new session) — this is the "zone" the engulfing highlight checks against below.
+var float orbHigh30 = na
+var float orbLow30  = na
+var float orbHigh5  = na
+var float orbLow5   = na
+// Separate reset flags per zone — a 30m zone refresh must NOT clear the 5m
+// zone's flag (and vice versa), otherwise a chart using one zone could get a
+// second breakout re-armed by the other zone's unrelated reset.
+var bool  breakoutMarked5  = false
+var bool  breakoutMarked30 = false
+
+// MSNR retest-entry trade state (1m chart only) — one NEW trade armed per zone/day,
+// but each taken trade is kept on the chart as its own independent object (below)
+// for up to days5 days back, matching the 5-minute zone's own retention window.
+var int   tradeDir   = 0     // 0 = no trade context yet, 1 = long bias, -1 = short bias — reset every new zone
+var bool  entryTaken = false
+
+// BUG FIX: breakoutMarked5/30 (and orbHigh/orbLow) previously only reset when
+// THIS day's own zone window closed (9:35 / 10:00) — meaning between midnight
+// and that reset, the script was still holding YESTERDAY's breakout flag AND
+// YESTERDAY's zone bounds, incorrectly blocking (or wrongly permitting) the
+// engulfing highlight / breakout / retest logic before today's zone even
+// existed. Detect the actual calendar-day rollover (minOfDay dropping vs the
+// previous bar) and clear all of it right then, independent of the
+// zone-formation reset below — from midnight until today's zone forms, there
+// is genuinely no zone yet, so nothing should evaluate against one.
+newDay = minOfDay < minOfDay[1]
+if newDay
+    orbHigh30 := na
+    orbLow30  := na
+    orbHigh5  := na
+    orbLow5   := na
+    breakoutMarked5  := false
+    breakoutMarked30 := false
+    tradeDir      := 0
+    entryTaken    := false
+
+type TradePlan
+    int   dir       // 1 = long, -1 = short
+    float entryPx
+    float slPx
+    float tpPx
+    int   entryTime
+    bool  closed
+    line  lnEntry
+    line  lnSL
+    line  lnTP
+    box   bxRisk
+    box   bxReward
+
+var array<TradePlan> trades = array.new<TradePlan>()
+
+// ═══════════════════════════ 30-MINUTE TARGET (9:30–10:00 window) ═══════════════════════════
+if chartTfSec <= tf30Sec
+    // Chart bars are small enough to sit fully inside the 30-min window — accumulate directly, no multi-timeframe calls needed
+    var float sHigh30 = na
+    var float sLow30  = na
+    var int   sStart30 = na
+    var bool  wasIn30 = false
+
+    inWin30 = minOfDay >= 570 and minOfDay < 600   // 9:30–10:00
+
+    if inWin30
+        if not wasIn30
+            sHigh30 := high
+            sLow30  := low
+            sStart30 := time
+        else
+            sHigh30 := math.max(sHigh30, high)
+            sLow30  := math.min(sLow30, low)
+
+    if wasIn30 and not inWin30
+        within30 = (timenow - sStart30) <= days30 * msDay
+        drawLine(sStart30, sHigh30, tf30Sec, extendBars, c30h, within30)
+        drawLine(sStart30, sLow30,  tf30Sec, extendBars, c30l, within30)
+        orbHigh30 := sHigh30
+        orbLow30  := sLow30
+        breakoutMarked30 := false
+
+    wasIn30 := inWin30
+
+else
+    // Chart is coarser than 30m — look inside using intrabar data (confirmed working)
+    [h30arr, l30arr, t30arr] = request.security_lower_tf(syminfo.tickerid, "30", [high, low, time])
+    var float last30arrT = na
+    if array.size(t30arr) > 0
+        for i = 0 to array.size(t30arr) - 1
+            tt = array.get(t30arr, i)
+            if hour(tt, sessTZ) == 9 and minute(tt, sessTZ) == 30 and tt != last30arrT
+                last30arrT := tt
+                within30 = (timenow - tt) <= days30 * msDay
+                drawLine(tt, array.get(h30arr, i), tf30Sec, extendBars, c30h, within30)
+                drawLine(tt, array.get(l30arr, i), tf30Sec, extendBars, c30l, within30)
+
+// ═══════════════════════════ 5-MINUTE TARGET (9:30–9:35 window) ═══════════════════════════
+if chartTfSec <= tf5Sec
+    var float sHigh5 = na
+    var float sLow5  = na
+    var int   sStart5 = na
+    var bool  wasIn5 = false
+
+    inWin5 = minOfDay >= 570 and minOfDay < 575   // 9:30–9:35
+
+    if inWin5
+        if not wasIn5
+            sHigh5 := high
+            sLow5  := low
+            sStart5 := time
+        else
+            sHigh5 := math.max(sHigh5, high)
+            sLow5  := math.min(sLow5, low)
+
+    if wasIn5 and not inWin5
+        within5 = (timenow - sStart5) <= days5 * msDay
+        drawLine(sStart5, sHigh5, tf5Sec, extendBars, c5h, within5)
+        drawLine(sStart5, sLow5,  tf5Sec, extendBars, c5l, within5)
+        orbHigh5 := sHigh5
+        orbLow5  := sLow5
+        breakoutMarked5 := false
+        tradeDir      := 0
+        entryTaken    := false
+
+    wasIn5 := inWin5
+
+else
+    [h5arr, l5arr, t5arr] = request.security_lower_tf(syminfo.tickerid, "5", [high, low, time])
+    var float last5arrT = na
+    if array.size(t5arr) > 0
+        for i = 0 to array.size(t5arr) - 1
+            tt = array.get(t5arr, i)
+            if hour(tt, sessTZ) == 9 and minute(tt, sessTZ) == 30 and tt != last5arrT
+                last5arrT := tt
+                within5 = (timenow - tt) <= days5 * msDay
+                drawLine(tt, array.get(h5arr, i), tf5Sec, extendBars, c5h, within5)
+                drawLine(tt, array.get(l5arr, i), tf5Sec, extendBars, c5l, within5)
+
+// ═══════════════════════════ ENGULFING HIGHLIGHT — detection only ═══════════════════════════
+// Zone that applies to the current chart timeframe:
+//   chart <  5m (1m/2m/3m/4m) -> 5m zone  = the price band between the 5m OR high/low
+//   chart >= 5m and <= 30m    -> 30m zone = the price band between the 30m OR high/low
+useZone5  = chartTfSec < tf5Sec
+useZone30 = not useZone5 and chartTfSec <= tf30Sec
+
+zoneHigh = useZone5 ? orbHigh5 : useZone30 ? orbHigh30 : na
+zoneLow  = useZone5 ? orbLow5  : useZone30 ? orbLow30  : na
+
+// Base candle's own range overlaps the zone's price band
+inZone(hi, lo) => not na(zoneHigh) and not na(zoneLow) and hi >= zoneLow and lo <= zoneHigh
+
+engUp      = close >= open
+engBodyTop = math.max(open, close)
+engBodyBot = math.min(open, close)
+
+// Run of same-direction candles + the base (last opposite candle) it is eating —
+// same rule as "Engulfing J": regular = base cleared by the current candle alone
+// (runLen == 1), irregular = cleared by the accumulated run (runLen > 1).
+var bool  engInited  = false
+var bool  engRunUp   = false
+var int   engRunLen  = 0
+var float engRunTop  = na
+var float engRunBot  = na
+
+var float engBaseHigh = na
+var float engBaseLow  = na
+var bool  engBaseUp   = false
+var bool  engBaseDone = true
+
+if not engInited or engUp != engRunUp
+    engBaseHigh := high[1]
+    engBaseLow  := low[1]
+    engBaseUp   := not engUp
+    engBaseDone := false
+    engRunUp    := engUp
+    engRunLen   := 1
+    engRunTop   := engBodyTop
+    engRunBot   := engBodyBot
+    engInited   := true
+else
+    engRunLen  += 1
+    engRunTop  := math.max(engRunTop, engBodyTop)
+    engRunBot  := math.min(engRunBot, engBodyBot)
+
+engBaseValid  = not na(engBaseHigh)
+engBullOK     = engBaseValid and not engBaseUp and     engRunUp and engRunTop >= engBaseHigh
+engBearOK     = engBaseValid and     engBaseUp and not engRunUp and engRunBot <= engBaseLow
+engBaseInZone = inZone(engBaseHigh, engBaseLow)
+
+// Only mark engulfs from 9:30 onward, and only up through the zone's first
+// breakout candle (the breakout flag itself doesn't flip true until AFTER this
+// runs on the breakout bar, so that bar can still get coloured — the very next
+// bar onward is blocked, matching "coloured till the breakout candle").
+// On charts where breakout tracking doesn't apply (anything but 1m/5m), this
+// never blocks — same as before.
+hasBrokenOutForThisChart = isOneMinChart ? breakoutMarked5 : isFiveMinChart ? breakoutMarked30 : false
+
+engConfirm = not engBaseDone and engBaseValid and engBaseInZone and afterSessionOpen and not hasBrokenOutForThisChart and (engBullOK or engBearOK)
+if engConfirm
+    engBaseDone := true
+
+engMarkColor = engBullOK ? bullEngColor : bearEngColor
+
+// ── Debug: shows exactly why the pattern currently forming hasn't confirmed
+//    yet — same diagnostic your reference script (Engulfing J) used. "gap" is
+//    how far the run's cumulative BODY still needs to travel to clear the
+//    base's full WICK (the strict rule you asked to keep); once gap <= 0 it
+//    confirms on the next bar. Also shows whether zone/session/breakout gates
+//    are currently blocking it, so you can see which specific condition is
+//    failing on any candle you're checking. ──
+showDebug = input.bool(false, "Show live diagnostic label on forming pattern", group = "Debug")
+var label dbgLbl = na
+if showDebug
+    label.delete(dbgLbl)
+    if engBaseValid and not engBaseDone
+        gap    = engBaseUp ? engRunBot - engBaseLow : engBaseHigh - engRunTop
+        dirTxt = engBaseUp ? "base=DOWN(wait UP run)" : "base=UP(wait DOWN run)"
+        gapTxt = str.tostring(gap, format.mintick) + (gap <= 0 ? " (clears wick!)" : "")
+        dLblStyle = engBaseUp ? label.style_label_down : label.style_label_up
+        dTxt   = dirTxt + "\nrunLen=" + str.tostring(engRunLen) + "\ngap=" + gapTxt + "\ninZone=" + str.tostring(engBaseInZone) + "\nafterOpen=" + str.tostring(afterSessionOpen) + "\nbrokenOut=" + str.tostring(hasBrokenOutForThisChart)
+        dbgLbl := label.new(bar_index, engBaseUp ? engBaseLow : engBaseHigh, dTxt, style = dLblStyle, color = color.new(color.blue, 20), textcolor = color.white, size = size.tiny)
+
+paintEngBase(int k) => showEngulf and engConfirm and engRunLen == k and k <= maxReach and (k == 1 ? showEngRegular : showEngIrregular) ? engMarkColor : na
+barcolor(paintEngBase(1),  offset = -1)
+barcolor(paintEngBase(2),  offset = -2)
+barcolor(paintEngBase(3),  offset = -3)
+barcolor(paintEngBase(4),  offset = -4)
+barcolor(paintEngBase(5),  offset = -5)
+barcolor(paintEngBase(6),  offset = -6)
+barcolor(paintEngBase(7),  offset = -7)
+barcolor(paintEngBase(8),  offset = -8)
+barcolor(paintEngBase(9),  offset = -9)
+barcolor(paintEngBase(10), offset = -10)
+barcolor(paintEngBase(11), offset = -11)
+barcolor(paintEngBase(12), offset = -12)
+barcolor(paintEngBase(13), offset = -13)
+barcolor(paintEngBase(14), offset = -14)
+barcolor(paintEngBase(15), offset = -15)
+barcolor(paintEngBase(16), offset = -16)
+barcolor(paintEngBase(17), offset = -17)
+barcolor(paintEngBase(18), offset = -18)
+barcolor(paintEngBase(19), offset = -19)
+barcolor(paintEngBase(20), offset = -20)
+barcolor(paintEngBase(21), offset = -21)
+barcolor(paintEngBase(22), offset = -22)
+barcolor(paintEngBase(23), offset = -23)
+barcolor(paintEngBase(24), offset = -24)
+barcolor(paintEngBase(25), offset = -25)
+barcolor(paintEngBase(26), offset = -26)
+barcolor(paintEngBase(27), offset = -27)
+barcolor(paintEngBase(28), offset = -28)
+barcolor(paintEngBase(29), offset = -29)
+barcolor(paintEngBase(30), offset = -30)
+barcolor(paintEngBase(31), offset = -31)
+barcolor(paintEngBase(32), offset = -32)
+barcolor(paintEngBase(33), offset = -33)
+barcolor(paintEngBase(34), offset = -34)
+barcolor(paintEngBase(35), offset = -35)
+barcolor(paintEngBase(36), offset = -36)
+barcolor(paintEngBase(37), offset = -37)
+barcolor(paintEngBase(38), offset = -38)
+barcolor(paintEngBase(39), offset = -39)
+barcolor(paintEngBase(40), offset = -40)
+barcolor(paintEngBase(41), offset = -41)
+barcolor(paintEngBase(42), offset = -42)
+barcolor(paintEngBase(43), offset = -43)
+barcolor(paintEngBase(44), offset = -44)
+barcolor(paintEngBase(45), offset = -45)
+barcolor(paintEngBase(46), offset = -46)
+barcolor(paintEngBase(47), offset = -47)
+barcolor(paintEngBase(48), offset = -48)
+barcolor(paintEngBase(49), offset = -49)
+barcolor(paintEngBase(50), offset = -50)
+
+// ═══════════════════════════ FIRST ZONE BREAKOUT ═══════════════════════════
+// Only active on exactly the 1m or 5m chart (not the broader <5m / 5-30m
+// ranges the engulfing highlight uses):
+//   1m chart -> breakout of the 5m zone (5m OR high/low)
+//   5m chart -> breakout of the 30m zone (30m OR high/low)
+// Anywhere else, the zone is na and nothing fires.
+breakoutZoneHigh = isOneMinChart ? orbHigh5 : isFiveMinChart ? orbHigh30 : na
+breakoutZoneLow  = isOneMinChart ? orbLow5  : isFiveMinChart ? orbLow30  : na
+
+breakoutArmed = isOneMinChart ? not breakoutMarked5 : isFiveMinChart ? not breakoutMarked30 : false
+
+// Fires once per zone: the first bar whose CLOSE (body) ends up beyond the
+// band on either side, exactly like the screenshot's "body closing outside
+// the marked zone" callout.
+bullBreak = showBreakout and breakoutArmed and not na(breakoutZoneHigh) and close > breakoutZoneHigh
+bearBreak = showBreakout and breakoutArmed and not na(breakoutZoneLow)  and close < breakoutZoneLow
+
+if bullBreak or bearBreak
+    if isOneMinChart
+        breakoutMarked5 := true
+        tradeDir        := bullBreak ? 1 : -1
+        entryTaken      := false
+    else if isFiveMinChart
+        breakoutMarked30 := true
+
+plotshape(bullBreak, style = shape.triangleup,   location = location.belowbar, color = bullBreakColor, size = size.tiny, title = "Bullish Breakout")
+plotshape(bearBreak, style = shape.triangledown, location = location.abovebar, color = bearBreakColor, size = size.tiny, title = "Bearish Breakout")
+
+// ═══════════════════════════ MSNR RETEST ENTRY PLAN ═══════════════════════════
+// 1m chart, 5m zone only. tradeDir was set above at the first breakout.
+// Entry = the first engulfing candle, in tradeDir's direction, whose base
+// overlaps the zone (reusing engBaseInZone / engBullOK / engBearOK from the
+// engulfing section above — those run every bar regardless of the highlight's
+// own "stop after breakout" rule, so they're still live here for the retest).
+wantLong    = tradeDir == 1  and engBullOK
+wantShort   = tradeDir == -1 and engBearOK
+entrySignal = showTradePlan and isOneMinChart and tradeDir != 0 and not entryTaken and engBaseValid and engBaseInZone and (wantLong or wantShort)
+
+if entrySignal
+    entryTaken := true
+    // Entry = the base (engulfed) candle's OWN extreme, not the confirming
+    // candle's close — long uses its high (break above the swallowed bearish
+    // candle), short uses its low (break below the swallowed bullish candle).
+    epDir = tradeDir
+    epPx  = epDir == 1 ? engBaseHigh : engBaseLow
+    epSL  = epDir == 1 ? epPx - slPips * tradePipSize : epPx + slPips * tradePipSize
+    epTP  = epDir == 1 ? epPx + tpPips * tradePipSize : epPx - tpPips * tradePipSize
+
+    lnEntry  = line.new(bar_index, epPx, bar_index, epPx, color = entryColor, width = 2, style = line.style_dashed)
+    lnSL     = line.new(bar_index, epSL, bar_index, epSL, color = color.new(color.red, 0),   width = 1)
+    lnTP     = line.new(bar_index, epTP, bar_index, epTP, color = color.new(color.green, 0), width = 1)
+    bxRisk   = box.new(bar_index, epPx, bar_index, epSL, border_color = color.new(color.red, 40),   bgcolor = riskColor)
+    bxReward = box.new(bar_index, epPx, bar_index, epTP, border_color = color.new(color.green, 40), bgcolor = rewardColor)
+
+    array.push(trades, TradePlan.new(epDir, epPx, epSL, epTP, time, false, lnEntry, lnSL, lnTP, bxRisk, bxReward))
+
+// Each open trade keeps extending to the current bar and freezes once it
+// resolves; trades older than days5 (the same zone this plan is built on)
+// get their drawings removed and are dropped from the list. This is fully
+// independent of tradeDir/entryTaken (which only gate arming a NEW trade), so
+// an unresolved trade keeps being tracked correctly across a day boundary.
+if array.size(trades) > 0
+    for i = array.size(trades) - 1 to 0
+        p = array.get(trades, i)
+        if (timenow - p.entryTime) > days5 * msDay
+            line.delete(p.lnEntry)
+            line.delete(p.lnSL)
+            line.delete(p.lnTP)
+            box.delete(p.bxRisk)
+            box.delete(p.bxReward)
+            array.remove(trades, i)
+        else if not p.closed
+            line.set_x2(p.lnEntry, bar_index)
+            line.set_x2(p.lnSL, bar_index)
+            line.set_x2(p.lnTP, bar_index)
+            box.set_right(p.bxRisk, bar_index)
+            box.set_right(p.bxReward, bar_index)
+
+            if time > p.entryTime
+                hitSL = p.dir == 1 ? low  <= p.slPx : high >= p.slPx
+                hitTP = p.dir == 1 ? high >= p.tpPx : low  <= p.tpPx
+                if hitSL or hitTP
+                    p.closed := true

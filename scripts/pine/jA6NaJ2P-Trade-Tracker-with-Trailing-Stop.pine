@@ -1,0 +1,231 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © asg1994
+
+//@version=6
+indicator("Trade Tracker", overlay = true)
+
+// ── Settings ──────────────────────────────────────────
+dir             = input.string("Long", "Direction", options = ["Long", "Short"])
+startTime       = input.time(timestamp("2026-09-20 00:00"), "Trade start time (candle you entered on)")
+entryPrice      = input.price(100000, "Entry price")
+tpPrice         = input.price(101000, "Take profit (TP) price")
+slPrice         = input.price(99500,  "Stop loss (SL) price")
+activationPrice = input.price(100500, "Trailing stop activation price")
+callbackPct     = input.float(0.5, "Trailing callback (% pullback from best price)", minval = 0.01, step = 0.05)
+showTable       = input.bool(true, "Show status box")
+tableSizeIn     = input.string("Small", "Status box text size", options = ["Tiny", "Small", "Normal"])
+showLabels      = input.bool(true, "Show labels on the lines")
+showZones       = input.bool(true, "Show shaded zones (profit / risk)")
+labelOffset     = input.int(3, "Label distance from last candle (bars)", minval = 1, maxval = 50)
+
+isLong  = dir == "Long"
+tblSize = tableSizeIn == "Tiny" ? size.tiny : tableSizeIn == "Small" ? size.small : size.normal
+
+// ── Tracking the trade ────────────────────────────────
+var bool   activated  = false
+var bool   closed     = false
+var float  bestPrice  = na
+var string exitReason = ""
+var float  exitPrice  = na
+var int    exitTime   = na
+
+bool justActivated = false
+bool justClosed    = false
+
+// Trailing stop level as it stood BEFORE this candle (based on earlier candles only)
+float trailBefore = na(bestPrice) ? na : isLong ? bestPrice * (1 - callbackPct / 100) : bestPrice * (1 + callbackPct / 100)
+
+if time >= startTime and not closed
+    // Step 1: did the trade end on this candle?
+    // The SL is the floor; the trailing stop takes over once it is closer to price than the SL
+    float  stopLevel = slPrice
+    string stopName  = "SL"
+    if not na(trailBefore) and (isLong ? trailBefore > slPrice : trailBefore < slPrice)
+        stopLevel := trailBefore
+        stopName  := "Trailing stop"
+
+    bool stopHit = isLong ? low <= stopLevel : high >= stopLevel
+    bool tpHit   = isLong ? high >= tpPrice  : low <= tpPrice
+
+    // If both could have happened in one candle, assume the stop came first (cautious)
+    if stopHit
+        closed     := true
+        justClosed := true
+        exitReason := stopName
+        exitPrice  := stopLevel
+        exitTime   := time_close
+    else if tpHit
+        closed     := true
+        justClosed := true
+        exitReason := "TP"
+        exitPrice  := tpPrice
+        exitTime   := time_close
+
+    // Step 2: if still open, check activation and track the best price
+    if not closed
+        if not activated
+            if isLong ? high >= activationPrice : low <= activationPrice
+                activated     := true
+                justActivated := true
+        if activated
+            bestPrice := na(bestPrice) ? (isLong ? high : low) : (isLong ? math.max(bestPrice, high) : math.min(bestPrice, low))
+
+// ── Trailing stop level (after this candle's update) ──
+float trailStop = (closed or na(bestPrice)) ? na : isLong ? bestPrice * (1 - callbackPct / 100) : bestPrice * (1 + callbackPct / 100)
+
+// ── Lines on the chart (only while the trade is live) ─
+bool live = time >= startTime and (not closed or justClosed)
+
+plot(live ? entryPrice      : na, "Entry",               color = color.gray,   linewidth = 2, style = plot.style_linebr)
+plot(live ? tpPrice         : na, "TP",                  color = color.green,  linewidth = 2, style = plot.style_linebr)
+plot(live ? slPrice         : na, "SL",                  color = color.red,    linewidth = 2, style = plot.style_linebr)
+plot(live ? activationPrice : na, "Trailing activation", color = color.orange, linewidth = 1, style = plot.style_linebr)
+plot(closed ? na : bestPrice,     "Best price since activation", color = color.new(color.aqua, 50), linewidth = 1, style = plot.style_linebr)
+plot(trailStop,                   "Trailing stop",       color = color.yellow, linewidth = 2, style = plot.style_linebr)
+
+// ── Extending the lines to the right, with labels and zones ──
+// Plot lines can't run past the current candle, so we draw a separate line from the
+// current candle to the right, plus a name label and shaded zones.
+var array<line>  extLines  = array.new<line>()
+var array<label> extLabels = array.new<label>()
+var array<box>   extBoxes  = array.new<box>()
+
+f_level(float price, string name, color c, color tc = color.white, int w = 2) =>
+    array.push(extLines, line.new(bar_index, price, bar_index + 1, price, extend = extend.right, color = c, width = w))
+    if showLabels
+        array.push(extLabels, label.new(bar_index + labelOffset, price, name, style = label.style_label_left, color = color.new(c, 15), textcolor = tc, size = size.small))
+
+// Zones are anchored by TIME (startTime), not by candle number, so there is no 300-candle limit
+f_zone(float p1, float p2, color c) =>
+    array.push(extBoxes, box.new(startTime, math.max(p1, p2), time, math.min(p1, p2), xloc = xloc.bar_time, border_color = na, extend = extend.right, bgcolor = color.new(c, 88)))
+
+if barstate.islast
+    // Clear last update's drawings, then redraw
+    for l in extLines
+        line.delete(l)
+    for lb in extLabels
+        label.delete(lb)
+    for b in extBoxes
+        box.delete(b)
+    array.clear(extLines)
+    array.clear(extLabels)
+    array.clear(extBoxes)
+
+    // Only while the trade is live (started and not yet closed)
+    if time >= startTime and not closed
+        if showZones
+            f_zone(entryPrice, tpPrice, color.green)
+            f_zone(entryPrice, slPrice, color.red)
+        f_level(entryPrice,      "▶ Entry",               color.gray)
+        f_level(tpPrice,         "🎯 TP",                  color.green)
+        f_level(slPrice,         "🛑 SL",                  color.red)
+        f_level(activationPrice, "⚡ Trailing activation", color.orange, color.black, 1)
+        if activated and not na(trailStop)
+            f_level(trailStop,   "🔒 Trailing stop",       color.yellow, color.black)
+
+// ── Markers ───────────────────────────────────────────
+// Entry marker on the candle the trade started (up triangle for long, down for short)
+bool startedNow = time >= startTime and (na(time[1]) or time[1] < startTime)
+plotshape(startedNow and isLong     ? entryPrice : na, "Entry (long)",  style = shape.triangleup,   location = location.absolute, color = #00e676, size = size.small)
+plotshape(startedNow and not isLong ? entryPrice : na, "Entry (short)", style = shape.triangledown, location = location.absolute, color = #ff5252, size = size.small)
+
+plotshape(justActivated ? activationPrice : na, "Trailing activated", style = shape.circle,  location = location.absolute, color = color.orange, size = size.small)
+plotshape(justClosed and exitReason == "TP"            ? exitPrice : na, "TP hit",            style = shape.diamond, location = location.absolute, color = color.green,  size = size.small)
+plotshape(justClosed and exitReason == "SL"            ? exitPrice : na, "SL hit",            style = shape.xcross,  location = location.absolute, color = color.red,    size = size.small)
+plotshape(justClosed and exitReason == "Trailing stop" ? exitPrice : na, "Trailing stop hit", style = shape.xcross,  location = location.absolute, color = color.yellow, size = size.small)
+
+// ── Alerts ────────────────────────────────────────────
+if justActivated
+    alert("Trailing stop activated - now tracking the best price", alert.freq_once_per_bar)
+if justClosed
+    alert("Trade closed: " + exitReason + " hit at " + str.tostring(exitPrice, "#.##"), alert.freq_once_per_bar)
+
+// ── Status box ────────────────────────────────────────
+// Rows: 0 title | 1 status | 2 price | 3 move | 4 trail stop | 5 TP / SL away | 6 risk:reward
+//       7 trail risk:reward | 8 time in trade | 9 SL-to-TP bar | 10 SL-to-activation bar
+var table info = table.new(position.top_right, 2, 11, border_width = 1)
+
+if barstate.isfirst
+    // Make the title row and the two progress bar rows span both columns
+    table.cell(info, 0, 0,  "")
+    table.cell(info, 0, 9,  "")
+    table.cell(info, 0, 10, "")
+    table.merge_cells(info, 0, 0,  1, 0)
+    table.merge_cells(info, 0, 9,  1, 9)
+    table.merge_cells(info, 0, 10, 1, 10)
+
+f_row(int row, string label, string value, color bg = na, color tc = color.white) =>
+    table.cell(info, 0, row, label, text_color = color.white, text_halign = text.align_left,  text_size = tblSize, bgcolor = color.new(color.black, 20))
+    table.cell(info, 1, row, value, text_color = tc,          text_halign = text.align_right, text_size = tblSize, bgcolor = na(bg) ? color.new(color.black, 20) : bg)
+
+// Turns a length of time in milliseconds into text like "0d 05h 12m"
+f_dur(int ms) =>
+    int totalMin = int(ms / 60000)
+    int d = int(totalMin / 1440)
+    int h = int((totalMin % 1440) / 60)
+    int m = totalMin % 60
+    str.tostring(d) + "d " + str.tostring(h, "00") + "h " + str.tostring(m, "00") + "m"
+
+if showTable and barstate.islast
+    string statusIcon = closed ? (exitReason == "TP" ? "🎯 " : exitReason == "SL" ? "🛑 " : "🔒 ") : activated ? "🔒 " : "⏳ "
+    string status = statusIcon + (closed ? "Closed - " + exitReason : activated ? "Trailing on" : "Waiting")
+    color  statusColor = closed ? (exitReason == "TP" ? color.green : exitReason == "SL" ? color.red : color.orange) : activated ? color.teal : color.gray
+
+    float ref  = closed ? exitPrice : close
+    float move = isLong ? ref - entryPrice : entryPrice - ref
+    float toTp = isLong ? tpPrice - close : close - tpPrice
+    float toSl = isLong ? close - slPrice : slPrice - close
+    float toAct = math.max(0, isLong ? activationPrice - close : close - activationPrice)
+
+    string trailText = closed ? "-" : activated ? str.tostring(trailStop, "0.0") : "Off ($" + str.tostring(toAct, "0") + " away)"
+
+    // Risk : Reward, worked out from your entry, TP and SL (does not change as price moves)
+    float  risk   = math.abs(entryPrice - slPrice)
+    float  reward = math.abs(tpPrice - entryPrice)
+    string rrText = risk > 0 ? "1 : " + str.tostring(reward / risk, "0.0") : "-"
+
+    // Trail Risk : Reward = what you'd be up by when the trailing stop switches on, compared with your risk
+    float  trailReward = math.abs(activationPrice - entryPrice)
+    string trailRrText = risk > 0 ? "1 : " + str.tostring(trailReward / risk, "0.0") : "-"
+
+    // Time in trade: counts up while live, freezes at the exit candle once closed
+    int    endT    = closed ? exitTime : timenow
+    int    durMs   = int(math.max(0, endT - startTime))
+    string durText = f_dur(durMs)
+
+    // Green when the trade is in profit, red when it is losing
+    color pnlColor = move >= 0 ? #00e676 : #ff5252
+
+    // Progress bar 1: left end = SL, right end = TP (works the same for long and short)
+    float rawProgress = (ref - slPrice) / (tpPrice - slPrice)
+    float progress    = nz(math.max(0.0, math.min(1.0, rawProgress)))
+    int   barLen      = 8
+    int   filled      = int(math.round(progress * barLen))
+    string barText    = ""
+    for i = 0 to barLen - 1
+        barText += i < filled ? "█" : "░"
+
+    // CHANGED: Progress bar 2 now runs from SL (left) to the trailing activation price (right).
+    // Once the trailing stop has switched on, the bar stays full.
+    float trailRaw      = activated ? 1.0 : (ref - slPrice) / (activationPrice - slPrice)
+    float trailProgress = nz(math.max(0.0, math.min(1.0, trailRaw)))
+    int   trailFilled   = int(math.round(trailProgress * barLen))
+    string trailBar     = ""
+    for i = 0 to barLen - 1
+        trailBar += i < trailFilled ? "█" : "░"
+
+    // Title bar (green for long, red for short)
+    table.cell(info, 0, 0, isLong ? "▲ LONG" : "▼ SHORT", text_color = color.white, text_halign = text.align_center, text_size = tblSize, bgcolor = isLong ? #00897b : #c62828)
+
+    f_row(1, "Status",        status, statusColor)
+    f_row(2, "Price",         str.tostring(close, "0.0"))
+    f_row(3, "Move ($)",      (move >= 0 ? "+" : "") + str.tostring(move, "0.0"), color(na), pnlColor)
+    f_row(4, "Trail stop",    trailText)
+    f_row(5, "TP / SL away",  closed ? "-" : str.tostring(toTp, "0") + " / " + str.tostring(toSl, "0"))
+    f_row(6, "Risk : Reward", rrText)
+    f_row(7, "Trail R : R",   trailRrText)
+    f_row(8, "In trade",      durText)
+
+    // Progress bar rows 
+    table.cell(info, 0, 9,  "SL " + barText + " TP", text_color = pnlColor, text_halign = text.align_center, text_size = tblSize, bgcolor = color.new(color.black, 20))
+    table.cell(info, 0, 10, "SL " + trailBar + (activated ? " ACT ✓" : " ACT"), text_color = activated ? color.aqua : color.orange, text_halign = text.align_center, text_size = tblSize, bgcolor = color.new(color.black, 20))

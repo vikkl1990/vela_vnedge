@@ -1,0 +1,180 @@
+//@version=6
+strategy("RSI Bullish Divergence (Oversold) Breakout", shorttitle = "RSI BullDiv BO", overlay = true, initial_capital = 1000000, default_qty_type = strategy.percent_of_equity, default_qty_value = 100, commission_type = strategy.commission.percent, commission_value = 0.03, pyramiding = 0, margin_long = 0, margin_short = 0, max_lines_count = 500, max_labels_count = 500)
+
+// ---------------------------------------------------------------------------
+// RULES (long only, one position at a time)
+// SETUP   Two consecutive RSI pivot lows L1, L2:  RSI(L1) < oversold level,
+//         RSI(L2) > RSI(L1) (higher low on RSI), price low(L2) < price low(L1)
+//         (lower low on price), L2 is 5-60 bars after L1.
+// TRIGGER RSI closes above H = highest RSI between L1 and L2  -> buy next open.
+// TARGET  Highest price high between L1 and L2 (optional alternative: a multiple of risk).
+// STOP    Lowest price low since L2 (the 2nd price low), less optional buffer.
+// No look-ahead: every decision uses only bars that have already closed.
+// ---------------------------------------------------------------------------
+
+rsiLen   = input.int(14, "RSI length", minval = 2)
+osLevel  = input.float(30.0, "Oversold level")
+osMode   = input.string("First low", "Which RSI low must be below the oversold level", options = ["First low", "Both lows", "Either low", "No filter"])
+lbL      = input.int(5, "Pivot lookback left", minval = 1)
+lbR      = input.int(5, "Pivot lookback right", minval = 1)
+rangeMin = input.int(5, "Min bars between the two RSI lows", minval = 2)
+rangeMax = input.int(60, "Max bars between the two RSI lows", minval = 3)
+maxWait  = input.int(30, "Max bars after 2nd low to wait for RSI breakout", minval = 1)
+early    = input.bool(true, "RSI breakout may confirm the 2nd low (do not wait for right-side bars)")
+stopBuf  = input.float(0.0, "Stop buffer below 2nd price low (%)", minval = 0, step = 0.05)
+tgtMode  = input.string("Swing high between the two lows", "Target", options = ["Swing high between the two lows", "Multiple of risk"])
+tgtR     = input.float(2.0, "Risk multiple (only for target = Multiple of risk)", minval = 0.1, step = 0.25)
+minRR    = input.float(0.0, "Minimum reward:risk at signal (0 = off)", minval = 0, step = 0.1)
+showMark = input.bool(true, "Draw divergence lines and labels")
+useFrom  = input.bool(false, "Take trades only from the start date below")
+fromDate = input.time(timestamp("1995-11-03T00:00:00"), "Start date")
+dbgIn    = input.bool(false, "Debug: write pivots, setups and signals to Pine Logs")
+dbgFrom  = input.time(timestamp("2012-04-01T00:00:00"), "Debug window from")
+dbgTo    = input.time(timestamp("2012-06-15T00:00:00"), "Debug window to")
+
+r   = ta.rsi(close, rsiLen)
+dbg = dbgIn and time >= dbgFrom and time <= dbgTo
+
+// Bar history is kept in arrays (array index = bar_index). Unlike the [] operator,
+// an array returns the same value no matter where or how often a function is called,
+// so the helper functions below are safe to call conditionally.
+var array<float> aR  = array.new<float>()
+var array<float> aHi = array.new<float>()
+var array<float> aLo = array.new<float>()
+var array<int>   aTm = array.new<int>()
+aR.push(r)
+aHi.push(high)
+aLo.push(low)
+aTm.push(time)
+
+type State
+    int   pvBar  = na
+    float pvRsi  = na
+    float pvLow  = na
+    bool  active = false
+    int   p1     = na
+    int   p2     = na
+    float H      = na
+    float T      = na
+    float S      = na
+    float rsi1   = na
+    float rsi2   = na
+    float low1   = na
+    float low2   = na
+    int   lastP2 = -1
+
+var State st  = State.new()
+var float tgt = na
+var float stp = na
+
+d(int p) => str.format_time(aTm.get(p), "yyyy-MM-dd", syminfo.timezone)
+f2(float x) => str.tostring(x, "#.00")
+
+// RSI at bar p is lower than each of the lbL bars before it
+leftOk(int p) =>
+    bool ok = p - lbL >= 0
+    if ok
+        ok := not na(aR.get(p - lbL))
+    if ok
+        for i = 1 to lbL
+            if aR.get(p) >= aR.get(p - i)
+                ok := false
+                break
+    ok
+
+// RSI at bar p is lower than each of the k bars after it (p + k <= bar_index)
+rightOk(int p, int k) =>
+    bool ok = p >= 0
+    if ok
+        for i = 1 to k
+            if aR.get(p) >= aR.get(p + i)
+                ok := false
+                break
+    ok
+
+// Candidate 2nd low at bar p2 versus the last confirmed pivot low
+trySetup(State s, int p2) =>
+    bool created = false
+    if not na(s.pvBar) and p2 != s.lastP2
+        int gap = p2 - s.pvBar
+        float r2 = aR.get(p2)
+        bool osOk = switch osMode
+            "First low"  => s.pvRsi < osLevel
+            "Both lows"  => s.pvRsi < osLevel and r2 < osLevel
+            "Either low" => s.pvRsi < osLevel or r2 < osLevel
+            => true
+        if gap >= rangeMin and gap <= rangeMax and osOk and r2 > s.pvRsi and aLo.get(p2) < s.pvLow
+            float hh = aR.get(s.pvBar + 1)
+            float tt = aHi.get(s.pvBar + 1)
+            for i = s.pvBar + 1 to p2 - 1
+                hh := math.max(hh, aR.get(i))
+                tt := math.max(tt, aHi.get(i))
+            float ss = aLo.get(p2)
+            for i = p2 to bar_index
+                ss := math.min(ss, aLo.get(i))
+            s.active := true
+            s.p1     := s.pvBar
+            s.p2     := p2
+            s.H      := hh
+            s.T      := tt
+            s.S      := ss
+            s.rsi1   := s.pvRsi
+            s.rsi2   := aR.get(p2)
+            s.low1   := s.pvLow
+            s.low2   := aLo.get(p2)
+            s.lastP2 := p2
+            created  := true
+    created
+
+setupText(State s) => "L1=" + d(s.p1) + ";L2=" + d(s.p2) + ";rsi1=" + f2(s.rsi1) + ";rsi2=" + f2(s.rsi2) + ";H=" + f2(s.H) + ";T=" + f2(s.T) + ";S=" + f2(s.S)
+
+if not na(r)
+    // a) cancel a pending setup if RSI undercuts the 2nd low or the wait expires
+    if st.active and (r < st.rsi2 or bar_index - st.p2 > maxWait)
+        st.active := false
+
+    // b) fully confirmed RSI pivot low lbR bars ago
+    int pc = bar_index - lbR
+    if leftOk(pc) and rightOk(pc, lbR)
+        if dbg
+            log.info("PIVOT;" + d(pc) + ";rsi=" + f2(aR.get(pc)) + ";low=" + f2(aLo.get(pc)))
+        if trySetup(st, pc) and dbg
+            log.info("SETUP-confirmed;" + setupText(st))
+        st.pvBar := pc
+        st.pvRsi := aR.get(pc)
+        st.pvLow := aLo.get(pc)
+
+    // c) provisional RSI pivot low (left side complete, 1..lbR-1 bars on the right)
+    if early and lbR > 1
+        for k = 1 to lbR - 1
+            if leftOk(bar_index - k) and rightOk(bar_index - k, k)
+                if trySetup(st, bar_index - k) and dbg
+                    log.info("SETUP-early;" + setupText(st))
+                break
+
+    // d) trail stop to the lowest low since L2, then test the RSI breakout
+    if st.active
+        st.S := math.min(st.S, low)
+        if r > st.H
+            float sl = st.S * (1 - stopBuf / 100)
+            float tp = tgtMode == "Multiple of risk" ? close + tgtR * (close - sl) : st.T
+            bool ok = strategy.position_size == 0 and close < tp and close > sl and (not useFrom or time >= fromDate)
+            if ok and minRR > 0
+                ok := (tp - close) / (close - sl) >= minRR
+            if dbg
+                log.info("SIGNAL;" + d(bar_index) + ";taken=" + str.tostring(ok) + ";rsi=" + f2(r) + ";close=" + f2(close) + ";" + setupText(st))
+            if ok
+                tgt := tp
+                stp := sl
+                strategy.entry("BullDiv", strategy.long)
+                strategy.exit("Exit", "BullDiv", limit = tgt, stop = stp)
+                if showMark
+                    line.new(st.p1, st.low1, st.p2, st.low2, color = color.lime, width = 2)
+                    label.new(st.p2, st.low2, "Bull div\nRSI " + str.tostring(st.rsi1, "#.0") + " -> " + str.tostring(st.rsi2, "#.0") + "\nBreak > " + str.tostring(st.H, "#.0"), style = label.style_label_up, color = color.new(color.lime, 20), textcolor = color.black, size = size.small)
+            st.active := false
+
+inTrade = strategy.position_size > 0
+plot(inTrade ? tgt : na, "Target", color = color.green, style = plot.style_linebr, linewidth = 2)
+plot(inTrade ? stp : na, "Stop", color = color.red, style = plot.style_linebr, linewidth = 2)
+plot(r, "RSI", display = display.data_window)
+plot(st.active ? st.H : na, "Pending RSI trigger", display = display.data_window)

@@ -1,0 +1,50 @@
+//@version=6
+indicator("Liquidity Label", overlay = true)
+
+// ── Formula ──────────────────────────────────────────────────────
+grpF   = "Formula"
+unit   = input.string("Days", "Time unit", options = ["Days", "Minutes"], group = grpF)
+n      = input.int(50, "Period count (1-n)", minval = 1, group = grpF)
+src    = input.source(close, "Price source", group = grpF)
+dispU  = input.string("Crore", "Display unit", options = ["Crore", "Lakh", "Million", "Billion", "Raw"], group = grpF)
+dec    = input.int(2, "Decimals", minval = 0, maxval = 4, group = grpF)
+suffix = input.bool(true, "Show unit suffix (Cr / M)", group = grpF)
+
+// ── Look ─────────────────────────────────────────────────────────
+grpL   = "Label look"
+txtSz  = input.string("Large", "Text size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = grpL)
+txtCol = input.color(color.white, "Text color", group = grpL)
+bgCol  = input.color(#198ff7, "Background color", group = grpL)
+shape  = input.string("Down arrow", "Shape", options = ["Down arrow", "Box", "Text only"], group = grpL)
+
+// ── Margins ──────────────────────────────────────────────────────
+grpM   = "Margins"
+vMarg  = input.float(1.0, "Vertical margin (% of price above high)", minval = 0, step = 0.25, group = grpM)
+hMarg  = input.int(0, "Horizontal margin (bars right of candle)", minval = -50, maxval = 50, group = grpM)
+
+// ── Calc ─────────────────────────────────────────────────────────
+tf     = unit == "Days" ? "D" : "1"
+avgVol = request.security(syminfo.tickerid, tf, ta.sma(volume, n), lookahead = barmerge.lookahead_off)
+liq    = src * avgVol
+
+div = dispU == "Crore" ? 1e7 : dispU == "Lakh" ? 1e5 : dispU == "Million" ? 1e6 : dispU == "Billion" ? 1e9 : 1.0
+sfx = dispU == "Crore" ? " Cr" : dispU == "Lakh" ? " L" : dispU == "Million" ? " M" : dispU == "Billion" ? " B" : ""
+fmtStr = dec == 0 ? "#,###" : "#,###." + str.repeat("0", dec)
+txt = str.tostring(liq / div, fmtStr) + (suffix ? sfx : "")
+
+sz  = txtSz == "Tiny" ? size.tiny : txtSz == "Small" ? size.small : txtSz == "Normal" ? size.normal : txtSz == "Large" ? size.large : size.huge
+sty = shape == "Down arrow" ? label.style_label_down : shape == "Box" ? label.style_label_center : label.style_none
+
+// ── Draw ─────────────────────────────────────────────────────────
+var label lb = na
+if barstate.islast
+    yPos = high * (1 + vMarg / 100)
+    if na(lb)
+        lb := label.new(bar_index + hMarg, yPos, txt, xloc = xloc.bar_index, yloc = yloc.price, style = sty, color = bgCol, textcolor = shape == "Text only" ? txtCol : txtCol, size = sz)
+    else
+        label.set_xy(lb, bar_index + hMarg, yPos)
+        label.set_text(lb, txt)
+        label.set_style(lb, sty)
+        label.set_color(lb, bgCol)
+        label.set_textcolor(lb, txtCol)
+        label.set_size(lb, sz)

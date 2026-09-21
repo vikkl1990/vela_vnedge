@@ -1,0 +1,2816 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Auction Foundry
+
+//@version=6
+indicator(title = "Auto Harmonic Patterns [AFD]", shorttitle = "AHP [AFD]", overlay = true,
+     max_bars_back = 5000, max_polylines_count = 100, max_boxes_count = 100,
+     max_labels_count = 100, max_lines_count = 80)
+
+// Confirmed-pivot harmonic patterns with frozen Setup checks and configurable levels.
+// Drawings appear Swing strength bars after D and extend back to their anchors.
+
+// ======================== Constants ==========================================
+
+int   CHAIN_MAX     = 17
+int   SEEN_MAX      = 64
+int   FORM_MAX      = 8
+int   FORM_BANDS    = 3
+int   MAX_ACTIVE    = 3
+int   MAX_TRACKED   = 64
+int   MAX_HISTORY   = 24
+int   SIZE_MAX_UNITS = 9007199254740991
+int   SIZE_MAX_DECIMALS = 15
+float SIZE_MAX_VALUE = 1.0e300
+int   ALERT_TAIL_RESERVE = 256
+int   MAX_RESIDENT  = 176
+int   DRAW_MAX_BACK = 4500
+float MINOR_FRAC    = 0.382
+float AGE_SPAN_MULT = 1.0
+int   ID_MOD_A      = 1000000007
+int   ID_MOD_B      = 1000000009
+int   ID_BASE       = 31
+int   ID_WIDTH      = 7
+int   LANE_BOOK_MAX = 512
+color FAILED_COLOR  = color.silver
+int   FAILED_FADE   = 35
+int   DONE_FADE     = 30
+string ID_DIGITS    = "0123456789BCDFGHJKLMNPQRSTVWXYZ"
+int   ALERT_WINDOW_MS = 180000
+int   ALERT_MAX_CALLS = 12
+int   ALERT_QUEUE_MAX = 128
+int   ALERT_CHARS_MAX = 8000
+int   PROJ_EPISODE_MAX = 64
+int   EV_ADMISSION  = 1
+int   EV_LIFECYCLE  = 2
+int   EV_PROJECTION = 3
+string EV_SEP       = "\n--- AHP EVENT ---\n"
+string EV_OMIT_HEAD = "\n--- AHP OMITTED ---\n"
+
+float STRUCT_STOP_FLOOR_R = 0.1
+float SNAP_EPS = 1e-7
+
+int MAJOR_MIN  = 8
+int LEVELS_MAX = 6
+
+// A terminator, not a computation: every branch of an if/else chain must end on
+// one type, so value-less branches end here.
+noValue() =>
+    0
+
+string N_GARTLEY   = "Gartley"
+string N_BAT       = "Bat"
+string N_ALT_BAT   = "Alt Bat"
+string N_BUTTERFLY = "Butterfly"
+string N_CRAB      = "Crab"
+string N_DEEP_CRAB = "Deep Crab"
+string N_CYPHER    = "Cypher"
+string N_SHARK     = "Shark"
+string N_NEN_STAR  = "Nen Star"
+string N_FIVE_ZERO = "5-0"
+string N_ABCD      = "ABCD"
+string N_THREE_DRV = "Three Drives"
+
+string TREND_CONT = "continuation"
+string TREND_REV  = "reversal"
+
+string TREND_SWING = "Swing structure"
+string TREND_MA    = "Moving average"
+string TREND_BOTH  = "Both must agree"
+string MA_SMA      = "SMA"
+string MA_EMA      = "EMA"
+
+string ST_COMPLETE = "complete"
+string ST_RESOLVED = "resolved"
+string ST_AGED     = "aged"
+string WHY_C       = "closed_c"
+string WHY_D       = "closed_d"
+string WHY_AGE     = "age"
+string WHY_WINDOW  = "window"
+
+int HIT_NONE   = 0
+int HIT_TARGET = 1
+int HIT_STOP   = -1
+int HIT_BOTH   = 2
+
+string HIT_MARK      = " · Reached"
+string HIT_MARK_BOTH = " · Both reached in one bar"
+
+string OR_BOTH    = "Both"
+string OR_BULL    = "Bullish (W)"
+string OR_BEAR    = "Bearish (M)"
+string PRE_MIN    = "Minimal"
+string PRE_STD    = "Standard"
+string PRE_DET    = "Detailed"
+string PRE_CUSTOM = "Custom"
+string LBL_OFF    = "Off"
+string LBL_MARKER = "Marker"
+string LBL_NAME   = "Name"
+string CLOSE_KEEP  = "Keep"
+string CLOSE_CLEAR = "Clear"
+string RISK_AMOUNT  = "Amount"
+string RISK_PERCENT = "Percent"
+string ALERT_BRIEF = "Brief"
+string ALERT_FULL  = "Full"
+string ALERT_JSON  = "JSON"
+string TBL_TL = "Top left"
+string TBL_TC = "Top center"
+string TBL_TR = "Top right"
+string TBL_ML = "Mid left"
+string TBL_MC = "Mid center"
+string TBL_MR = "Mid right"
+string TBL_BL = "Bottom left"
+string TBL_BC = "Bottom center"
+string TBL_BR = "Bottom right"
+string TBL_SZ_TINY   = "Tiny"
+string TBL_SZ_SMALL  = "Small"
+string TBL_SZ_NORMAL = "Normal"
+string TBL_SZ_LARGE  = "Large"
+
+string ALERT_NOTE = "Descriptive only. Not a signal, not an order and not advice."
+string SETUP_NOTE = "Setup: every check held"
+string NO_SETUP_NOTE = "Not a Setup: "
+string PROJ_LINE = "Where the enabled five-point names' ratio windows put D for this X-A-B-C. " +
+     "At most three boxes; where more runs of windows survive, the nearest two are merged."
+
+string G_DETECT  = "Detection"
+string G_RETR    = "Patterns · Retracement"
+string G_EXT     = "Patterns · Extension"
+string G_EXTC    = "Patterns · Extended C"
+string G_DRIVES  = "Patterns · Drives"
+string G_PAT     = "Patterns"
+string G_LIFE    = "Lifecycle"
+string G_DISPLAY = "Display"
+string G_TRADE   = "Trade levels"
+string G_SETUP   = "Setup"
+string G_SIZE    = "Position size"
+string G_TABLE   = "Levels table"
+string G_ALERT   = "Alerts"
+
+int TBL_DATA_MAX = 3
+int TBL_COLS     = TBL_DATA_MAX + 1
+int TBL_ROWS     = 10
+int TBL_SPINE_TRANSP = 93
+int TBL_CHIP_TRANSP  = 85
+int TBL_FILL_TRANSP  = 75
+
+// ======================== Inputs =============================================
+
+int swingInput = input.int(8, "Swing strength", minval = 1, maxval = 50, group = G_DETECT,
+     display = display.none,
+     tooltip = "Bars a high or low must dominate to its left and to its right to count as a pivot.\n" +
+     "• A pivot confirms this many bars after its bar — that is the drawing lag.\n" +
+     "• Higher: fewer, larger swings. Lower: more, smaller ones.")
+int applyBarsInput = input.int(300, "Bars to apply", minval = 50, maxval = 2000,
+     group = G_DETECT, display = display.none,
+     tooltip = "Bars a completed pattern stays open before it is marked Aged out.\n" +
+     "• A close outside the D-to-C band ends it sooner.\n" +
+     "• It also ages out once its own X-to-D span has passed again after D.\n" +
+     "• The pivot chain has its own horizon, below.")
+float ratioTolInput = input.float(8.0, "Ratio tolerance %", minval = 0.0, maxval = 15.0,
+     step = 0.5, group = G_DETECT, display = display.none,
+     tooltip = "How far a leg ratio may sit outside its canonical window.\n" +
+     "• A percentage of the window's edge, applied both ways.\n" +
+     "• 0 tests the textbook figures exactly.\n" +
+     "• Every window a name declares must hold.\n" +
+     "• The pattern hover says when a match used this tolerance.")
+bool skipInput = input.bool(true, "Allow one skipped swing per leg", group = G_DETECT,
+     tooltip = "On: a leg may run across one minor swing.\n" +
+     "• Both of that swing's pivots must sit strictly inside the leg.\n" +
+     "• The counter-swing may be at most 0.382 of the leg.\n" +
+     "Off: every leg is two consecutive pivots.")
+int atrLenInput = input.int(14, "ATR length", minval = 2, maxval = 100, group = G_DETECT,
+     display = display.none,
+     tooltip = "Bars in the average true range.\n" +
+     "• Buffers the structure Stop, widens later lifecycle exits and caps R when the cap is set.\n" +
+     "• A simple average of true range.")
+int majorSwingInput = input.int(24, "Major swing strength", minval = 0, maxval = 100,
+     group = G_DETECT, display = display.none,
+     tooltip = "A second, larger swing reading with its own pivots and patterns.\n" +
+     "• Drawn one line-width heavier.\n" +
+     "• Under 8 is off; otherwise it must exceed Swing strength.\n" +
+     "• A pattern found by both readings is drawn once, by whichever confirms it first.")
+
+bool  retrInput  = input.bool(true, "Gartley · Bat · Alt Bat", group = G_RETR, inline = "r",
+     tooltip = "Draw the retracement family.\n" +
+     "• Off hides it on the chart only; the patterns are still detected and still count.")
+color retrColor  = input.color(#2962FF, "", group = G_RETR, inline = "r",
+     display = display.none)
+bool  extInput   = input.bool(true, "Butterfly · Crab · Deep Crab", group = G_EXT, inline = "e",
+     tooltip = "Draw the extension family. A drawing filter only.")
+color extColor   = input.color(#F23645, "", group = G_EXT, inline = "e",
+     display = display.none)
+bool  extcInput  = input.bool(true, "Cypher · Shark · Nen Star · 5-0", group = G_EXTC,
+     inline = "c", tooltip = "Draw the extended-C family. A drawing filter only.")
+color extcColor  = input.color(#FF9800, "", group = G_EXTC, inline = "c",
+     display = display.none)
+bool  drivesInput = input.bool(true, "Three Drives", group = G_DRIVES, inline = "d",
+     tooltip = "Draw Three Drives. A drawing filter only.")
+bool  abcdInput  = input.bool(false, "ABCD", group = G_DRIVES, inline = "d",
+     tooltip = "Draw ABCD. Off by default: it is the noisiest name.\n" +
+     "• Almost every four-pivot tail of a larger pattern is an ABCD.\n" +
+     "• CD must match AB within `Ratio tolerance %`.\n" +
+     "• An ABCD is never admitted where a five-point name completed on the same C-to-D leg on the same bar.\n" +
+     "• A drawing filter only.")
+color drivesColor = input.color(#26A69A, "", group = G_DRIVES, inline = "d",
+     display = display.none)
+string orientInput = input.string(OR_BOTH, "Orientation", options = [OR_BOTH, OR_BULL, OR_BEAR],
+     group = G_PAT, display = display.none,
+     tooltip = "Which orientation is drawn.\n" +
+     "• Bullish: the W, D is a low. Bearish: the M, D is a high.\n" +
+     "• The words name the shape only.\n" +
+     "• A drawing filter only.")
+
+int keptInput = input.int(5, "Patterns kept", minval = 0, maxval = 8, group = G_LIFE,
+     display = display.none,
+     tooltip = "Resolved or aged patterns kept on the chart, newest first. 0 keeps none.\n" +
+     "• Beside up to three open drawings per swing reading.\n" +
+     "• Further open patterns are tracked but hidden.\n" +
+     "• Each reading tracks 64 unfinished records, including resolved Setups still tracking levels.\n" +
+     "• Raw history keeps 24 records independently of this display setting; capacity skips are disclosed.")
+float resTolInput = input.float(0.0, "Resolution tolerance × ATR", minval = 0.0, maxval = 2.0,
+     step = 0.05, group = G_LIFE, display = display.none,
+     tooltip = "How far beyond C or D a close must sit to mark Closed above or Closed below, in ATRs.\n" +
+     "• Admission always uses the exact D-to-C band; this tolerance applies only on later bars.\n" +
+     "• 0: the first later close outside the D-to-C band settles it.")
+
+string presetInput = input.string(PRE_STD, "Preset", options = [PRE_MIN, PRE_STD, PRE_DET, PRE_CUSTOM],
+     group = G_DISPLAY, display = display.none,
+     tooltip = "Minimal: outline and name, every governed row off.\n" +
+     "Standard: adds the fill, the `Setup marker` and the `Levels table`.\n" +
+     "Detailed: also forming patterns and the projected D zone.\n" +
+     "Custom: the rows below as you set them.\n" +
+     "• `Show levels` and `Show PRZ` follow their own switches at every preset.\n" +
+     "• `Fill transparency` stays at your chosen value; presets only switch triangle fill on or off.\n" +
+     "• Greyed-out controls are set by the preset or unused while their parent option is off.")
+bool formingInput = input.bool(false, "Draw while forming", group = G_DISPLAY,
+     active = presetInput == PRE_CUSTOM,
+     tooltip = "Draw an X-A-B-C whose ratios still admit at least one name, before D exists.\n" +
+     "• Governed by `Preset` unless `Custom`.")
+// Resolve before dependent inputs so their active gates and drawings share one preset rule.
+bool   formingUsed  = presetInput == PRE_CUSTOM ? formingInput : presetInput == PRE_DET
+int formingMaxInput = input.int(2, "Forming patterns drawn", minval = 1, maxval = 3,
+     group = G_DISPLAY, active = formingUsed, display = display.none)
+bool fillInput = input.bool(true, "Fill triangles", group = G_DISPLAY,
+     active = presetInput == PRE_CUSTOM,
+     tooltip = "Fill two triangles on every open formation.\n" +
+     "• A finished formation keeps its outline and drops its fill.\n" +
+     "• Fill is geometry and does not depend on levels.\n" +
+     "• Standard and Detailed: fill on, regardless of this checkbox. Minimal: fill off.\n" +
+     "• Custom: this checkbox controls fill. `Fill transparency` sets its transparency.")
+// Resolve before the transparency input so its active gate uses the same rule as the drawing.
+bool   fillUsed     = presetInput == PRE_CUSTOM ? fillInput : presetInput != PRE_MIN
+int fillTranspInput = input.int(60, "Fill transparency", minval = 0, maxval = 100,
+     group = G_DISPLAY, active = fillUsed, display = display.none,
+     tooltip = "Triangle fill transparency: 0% solid, 100% invisible. Default: 60%.\n" +
+     "• Used by Standard and Detailed, or Custom with `Fill triangles` on. Minimal has no triangle fill.\n" +
+     "• Presets do not override this value. A finished formation has no triangle fill.\n" +
+     "• Does not change PRZ or Target/Stop shading.")
+bool projInput = input.bool(false, "Projected D zone", group = G_DISPLAY,
+     active = presetInput == PRE_CUSTOM and formingUsed,
+     tooltip = "With forming patterns drawn, also draw the band where the names' ratio windows put D.\n" +
+     "• Governed by `Preset` unless `Custom`.")
+string labelModeInput = input.string(LBL_NAME, "Pattern names", options = [LBL_OFF, LBL_MARKER, LBL_NAME],
+     group = G_DISPLAY, display = display.none,
+     tooltip = "Name: the pattern name and what price did once known.\n" +
+     "Marker: a visible W/M badge near D.\n" +
+     "• Formations at the same D share one label; hover lists their complete names and ordinals.\n" +
+     "Off: no label.")
+int lineWidthInput = input.int(1, "Line width", minval = 1, maxval = 3, group = G_DISPLAY,
+     display = display.none)
+
+bool showLevelsInput = input.bool(true, "Show levels", group = G_TRADE,
+     tooltip = "Entry, Target and Stop for each drawn open pattern.\n" +
+     "• Also for kept patterns under `Once reached: Keep`.\n" +
+     "• Every figure is your own multiple of the pattern's last leg.")
+float targetR1Input = input.float(0.382, "Target 1 (R)", minval = 0.1, maxval = 5.0,
+     step = 0.01, group = G_TRADE, active = showLevelsInput, display = display.none,
+     tooltip = "T1 = Entry + this × R (bullish; − bearish).\n" +
+     "• The three Target figures are sorted: the smallest is T1, whichever box it was typed in.\n" +
+     "• R = |C − D|, or the cap × ATR when the cap binds.")
+float targetR2Input = input.float(0.618, "Target 2 (R)", minval = 0.1, maxval = 5.0,
+     step = 0.01, group = G_TRADE, active = showLevelsInput, display = display.none,
+     tooltip = "T2 = Entry + this × R (bullish; − bearish).\n" +
+     "• The middle of the three Target figures, whichever box it was typed in.")
+float targetR3Input = input.float(1.0, "Target 3 (R)", minval = 0.1, maxval = 5.0,
+     step = 0.01, group = G_TRADE, active = showLevelsInput, display = display.none,
+     tooltip = "T3 = Entry + this × R (bullish; − bearish).\n" +
+     "• The largest of the three Target figures, whichever box it was typed in.\n" +
+     "• Its hit ends tracking, as the Stop does.")
+bool stopStructInput = input.bool(true, "Stop at structure", group = G_TRADE,
+     active = showLevelsInput,
+     tooltip = "On: Stop = D − `Stop buffer` × ATR (bullish; + bearish).\n" +
+     "• Floored at 0.1 × R from Entry, rounded to the tick away from Entry.\n" +
+     "• D is the pattern's final confirmed pivot.\n" +
+     "Off: Stop = Entry − `Stop (R)` × R (bullish; + bearish).\n" +
+     "• R is |C − D| either way, or the cap × ATR when the cap binds; no Target moves with this.")
+float stopRInput = input.float(0.25, "Stop (R)", minval = 0.05, maxval = 2.0, step = 0.05,
+     group = G_TRADE, active = showLevelsInput and not stopStructInput, display = display.none,
+     tooltip = "Stop = Entry − this × R (bullish; + bearish), when `Stop at structure` is off.")
+float rCapInput = input.float(0.0, "R cap × chart ATR", minval = 0.0, maxval = 20.0, step = 0.5,
+     group = G_TRADE, active = showLevelsInput, display = display.none,
+     tooltip = "R = min(|C − D|, this × ATR).\n" +
+     "• 0: off, R = |C − D|.\n" +
+     "• When the cap binds, every level is a multiple of that figure and the table marks the Entry cell `R capped`.")
+string onCloseInput = input.string(CLOSE_CLEAR, "Once reached", options = [CLOSE_CLEAR, CLOSE_KEEP],
+     group = G_TRADE, active = showLevelsInput, display = display.none,
+     tooltip = "Clear: a reached Target comes off; the whole set comes off once the highest " +
+     "Target or the Stop is reached.\n" +
+     "Keep: everything stays, reached labels marked · Reached.\n" +
+     "• The table keeps the record either way.")
+bool levelPriceInput = input.bool(true, "Prices on labels", group = G_TRADE,
+     active = showLevelsInput,
+     tooltip = "Entry's price on its label, rounded to the tick.\n" +
+     "• Target and Stop labels carry their R figures and no price.\n" +
+     "• Each level's exact price is in its hover, the table and the alerts.")
+color targetColorInput = input.color(#8C66FF, "Target colour", group = G_TRADE,
+     active = showLevelsInput, inline = "lc", display = display.none)
+color stopColorInput = input.color(#D9453D, "Stop colour", group = G_TRADE,
+     active = showLevelsInput, inline = "lc", display = display.none)
+float stopBufferInput = input.float(0.5, "Stop buffer × ATR", minval = 0.0, maxval = 3.0,
+     step = 0.05, group = G_TRADE, active = showLevelsInput and stopStructInput,
+     display = display.none,
+     tooltip = "With `Stop at structure` on: Stop = D − this × ATR (bullish; + bearish).\n" +
+     "• Then floored at 0.1 × R from Entry.\n" +
+     "• 0 puts the raw Stop on D and the floor decides.")
+
+bool requireTrendInput = input.bool(true, "Require trend context", group = G_SETUP,
+     tooltip = "A Setup must also have the prior trend `Trend basis` reads running its family's way.\n" +
+     "• Continuation names — Gartley, Bat, Cypher, Shark, ABCD: an uptrend before a bullish " +
+     "pattern, a downtrend before a bearish one.\n" +
+     "• Reversal names — Butterfly, Crab, Deep Crab, Alt Bat, Nen Star, 5-0, Three Drives: the opposite.\n" +
+     "• Swing structure: X and A against the two confirmed swings before them; a tie fails. " +
+     "Moving average: D against the average at D, and the average's own slope when one is set.\n" +
+     "• A reading with no direction — too few pivots, no average, or inside a band — fails the gate too.\n" +
+     "• Changes which completed patterns are Setups, never which are detected or drawn.\n" +
+     "• A completed pattern that fails it keeps its outline, PRZ, name and table row, and " +
+     "carries no Entry, Target or Stop prices — those exist only on a Setup.")
+bool przInput = input.bool(true, "Show PRZ", group = G_SETUP,
+     tooltip = "A box running forward from D over the outer envelope of the name's canonical projections.\n" +
+     "• XA (XC for the Cypher), BC and the AB=CD forms the literature lists, at tolerance 0.\n" +
+     "• A name with one projection has its band widened by `Ratio tolerance %` instead, marked " +
+     "± tolerance in the hover.\n" +
+     "• Every drawn completed pattern carries one, Setup or not.\n" +
+     "• A failed formation's box stops at the bar that failed it.\n" +
+     "• Follows this switch at every preset; aged history can hide its box.")
+bool markerInput = input.bool(true, "Setup marker", group = G_SETUP,
+     active = presetInput == PRE_CUSTOM,
+     tooltip = "A `Setup` label at D on a pattern where every check held.\n" +
+     "• The ratio windows, D inside the PRZ, D not past X where the name forbids it, " +
+     "the confirming close off D.\n" +
+     "• With `Require trend context` on, the prior trend too.\n" +
+     "• Governed by `Preset` unless `Custom`.")
+
+bool sizingInput = input.bool(false, "Show position size", group = G_SIZE,
+     tooltip = "Whole units your risk budget covers at this pattern's Stop, in the table and the Stop hover.\n" +
+     "• Budget ÷ Entry-to-Stop distance ÷ point value, rounded down.\n" +
+     "• An unavailable size includes its reason: invalid budget, distance, point value or numeric range.\n" +
+     "• 0: one unit already costs more than your budget.\n" +
+     "• The budget is assumed in the instrument's own currency; nothing is converted.\n" +
+     "• Sizes are never summed, counted or compared.")
+string riskBasisInput = input.string(RISK_AMOUNT, "Risk budget", options = [RISK_AMOUNT, RISK_PERCENT],
+     group = G_SIZE, active = sizingInput, display = display.none,
+     tooltip = "Amount: a flat budget per Setup. Percent: account size × percent.")
+float riskAmtInput = input.float(0.0, "Amount per Setup", minval = 0.0, step = 50.0,
+     group = G_SIZE, active = sizingInput and riskBasisInput == RISK_AMOUNT, display = display.none,
+     tooltip = "Risk per Setup, in the instrument's own currency.\n" +
+     "• 0: nothing is sized; the cell shows a dash.")
+float accountInput = input.float(0.0, "Account size", minval = 0.0, step = 1000.0,
+     group = G_SIZE, active = sizingInput and riskBasisInput == RISK_PERCENT, display = display.none,
+     tooltip = "The account the percentage is taken from.\n" +
+     "• 0: nothing is sized.")
+float riskPctInput = input.float(1.0, "Percent per Setup", minval = 0.0, maxval = 100.0, step = 0.05,
+     group = G_SIZE, active = sizingInput and riskBasisInput == RISK_PERCENT, display = display.none,
+     tooltip = "Share of the account one Setup may risk.")
+
+bool showTableInput = input.bool(true, "Show levels table", group = G_TABLE,
+     active = presetInput == PRE_CUSTOM,
+     tooltip = "The newest three drawn patterns carrying levels, one column each, oldest first.\n" +
+     "• With `Show trend context` on, also includes patterns without a Setup.\n" +
+     "• With `Show levels` off, only Pattern, Status and Prior trend remain.\n" +
+     "• Every price is the frozen figure its label carries.\n" +
+     "• Reached names levels, never counts them.\n" +
+     "• Governed by `Preset` unless `Custom`.")
+
+// ======================== Preset resolution ==================================
+// This sits here, directly under the last governed input, rather than after
+// the whole dialog: `Position and size` is greyed out while the table is off,
+// and that gate must be the GOVERNED reading - under Standard the preset turns
+// the table on, so its controls have to come alive with it. Pine cannot read a
+// variable declared later, so the rule lives above the input that reads it.
+
+bool   projUsed     = presetInput == PRE_CUSTOM ? projInput : presetInput == PRE_DET
+bool   tableUsed    = presetInput == PRE_CUSTOM ? showTableInput : presetInput != PRE_MIN
+bool   przUsed      = przInput
+bool   markerUsed   = presetInput == PRE_CUSTOM ? markerInput : presetInput != PRE_MIN
+bool   projDrawn    = formingUsed and projUsed
+
+string tablePosInput = input.string(TBL_TR, "Position and size", group = G_TABLE,
+     options = [TBL_TL, TBL_TC, TBL_TR, TBL_ML, TBL_MC, TBL_MR, TBL_BL, TBL_BC, TBL_BR],
+     inline = "t", active = tableUsed, display = display.none)
+string tableSizeInput = input.string(TBL_SZ_SMALL, "", group = G_TABLE,
+     options = [TBL_SZ_TINY, TBL_SZ_SMALL, TBL_SZ_NORMAL, TBL_SZ_LARGE],
+     inline = "t", active = tableUsed, display = display.none)
+
+string alertDetailInput = input.string(ALERT_BRIEF, "Format", options = [ALERT_BRIEF, ALERT_FULL, ALERT_JSON],
+     group = G_ALERT, display = display.none,
+     tooltip = "Brief: the pattern, symbol, timeframe and what happened.\n" +
+     "Full: that line, then Entry, each Target and the Stop; the size line when " +
+     "`Show position size` is on.\n" +
+     "JSON: the same fields as keys.\n" +
+     "• Admission and lifecycle alerts ignore drawing filters; level touches create no notification.\n" +
+     "• Whole oversized events are omitted and counted within the 8,000-character message cap.\n" +
+     "• No order field and no signal field in any format.")
+bool projAlertInput = input.bool(false, "Projected-D alert", group = G_ALERT,
+     tooltip = "Fire when a confirmed bar trades into a drawn projected D zone.\n" +
+     "• Needs the zone drawn.")
+
+bool greyAgedInput = input.bool(true, "Grey aged-out patterns", group = G_LIFE,
+     active = keptInput > 0,
+     tooltip = "Use grey for patterns marked Aged out and any of their visible overlays.\n" +
+     "• The name and the table Status still distinguish ageing from a close through D.\n" +
+     "• Does not change detection or tracking.")
+bool hideAgedInput = input.bool(true, "Hide aged levels and PRZ", group = G_LIFE,
+     active = keptInput > 0,
+     tooltip = "Hide Entry, T1–T3, Stop and PRZ drawings on patterns marked Aged out.\n" +
+     "• Overrides `Once reached: Keep` on those chart drawings.\n" +
+     "• Keeps the outline, name and frozen table record.")
+bool showTrendInput = input.bool(true, "Show trend context", group = G_TABLE,
+     active = tableUsed,
+     tooltip = "Prior trend for each table pattern, including patterns without a Setup.\n" +
+     "• Uses the reading `Trend basis` selects, frozen when D confirmed.\n" +
+     "• A missing direction, no direction inside a band, and insufficient history each carry a warning.\n" +
+     "• Does not change `Require trend context` or create a notification alert.")
+
+string trendBasisInput = input.string(TREND_SWING, "Trend basis", group = G_SETUP,
+     options = [TREND_SWING, TREND_MA, TREND_BOTH], display = display.none,
+     tooltip = "Which reading answers the prior-trend question at D.\n" +
+     "• Swing structure: the pattern's X and A against the two prior confirmed swings.\n" +
+     "• Moving average: where D sat against the average, and which way the average ran.\n" +
+     "• Both must agree: each reading must hold; either one unreadable is unreadable.\n" +
+     "• Changes which completed patterns are Setups, never which are detected or drawn.")
+string trendMaTypeInput = input.string(MA_EMA, "Trend average", group = G_SETUP,
+     options = [MA_SMA, MA_EMA], active = trendBasisInput != TREND_SWING,
+     display = display.none,
+     tooltip = "The average the moving-average reading uses, on close.")
+int trendMaLenInput = input.int(50, "Trend average length", minval = 2, maxval = 500,
+     group = G_SETUP, active = trendBasisInput != TREND_SWING, display = display.none,
+     tooltip = "Bars in the trend average.\n" +
+     "• The slope test compares the average at D with its own value this many bars earlier.")
+float trendMaBandInput = input.float(0.0, "Trend band × ATR", minval = 0.0, maxval = 5.0,
+     step = 0.1, group = G_SETUP, active = trendBasisInput != TREND_SWING,
+     display = display.none,
+     tooltip = "D must sit this far from the average, in D-bar ATR, before the reading commits.\n" +
+     "• 0 accepts any distance.\n" +
+     "• Inside the band the moving-average reading is not readable, not a failure.")
+float trendMaSlopeInput = input.float(0.0, "Trend slope × ATR", minval = 0.0, maxval = 5.0,
+     step = 0.1, group = G_SETUP, active = trendBasisInput != TREND_SWING,
+     display = display.none,
+     tooltip = "The average must also have moved this far, in D-bar ATR, over its own length, the same way.\n" +
+     "• 0 skips the slope test.\n" +
+     "• Inside the band the moving-average reading is not readable, not a failure.")
+int chainBarsInput = input.int(600, "Pivot chain bars", minval = 50, maxval = 4000,
+     group = G_DETECT, display = display.none,
+     tooltip = "Bars of pivot history the pattern search reads.\n" +
+     "• Higher: the Major reading can answer the prior-trend question more often.\n" +
+     "• Lower: a shorter chain and less work per bar.\n" +
+     "• `Bars to apply` no longer trims the chain; it ages completed patterns only.")
+
+// ======================== Types ==============================================
+
+type Chain
+    array<int>   bar
+    array<int>   stamp
+    array<int>   kind
+    array<float> price
+
+type Pattern
+    string name
+    int    swing
+    bool   levelsDrawn
+    bool   chartVisible
+    array<int>   bars
+    array<int>   stamps
+    array<float> prices
+    string formId
+    int    collisionOrdinal
+    int    orient
+    float  entry
+    int    doneBar
+    int    doneTime
+    string state
+    int    resolvedBar
+    string why
+    float  doneClose
+    string ratioText
+    string legText
+    bool   hasLevels
+    bool   trendKnown
+    bool   trendData
+    bool   trendOk
+    string trendText
+    float  przLo
+    float  przHi
+    bool   przOk
+    string przText
+    bool   xOk
+    bool   offD
+    bool   setupOk
+    float  r
+    bool   capped
+    float  stopP
+    float  t1
+    float  t2
+    float  t3
+    int    hit1Bar
+    int    hit2Bar
+    int    hit3Bar
+    int    hit1Time
+    int    hit2Time
+    int    hit3Time
+    int    hitWhich
+    int    hitBar
+    int    stopTime
+    polyline outline
+    polyline fill1
+    polyline fill2
+    line   entryLn
+    line   t1Ln
+    line   t2Ln
+    line   t3Ln
+    line   stopLn
+    label  entryLb
+    label  t1Lb
+    label  t2Lb
+    label  t3Lb
+    label  stopLb
+    box    t1Bx
+    box    t2Bx
+    box    t3Bx
+    box    stopBx
+    box    przBx
+
+type Forming
+    array<int>   bars
+    array<int>   stamps
+    array<float> prices
+    array<string> wnames
+    array<float>  wlos
+    array<float>  whis
+    int    orient
+    polyline outline
+    array<box> bands
+    label  lbl
+
+type Scale
+    int    swing
+    int    strength
+    Chain  ch
+    array<Pattern> active
+    array<Pattern> retained
+    array<Forming> forming
+    int capacitySkipped = 0
+
+// ======================== Functions: chain ===================================
+
+acceptPivot(Chain ch, float price, int pivotBar, int pivotStamp, int kind) =>
+    int n = array.size(ch.kind)
+    bool changed = false
+    if n > 0 and array.get(ch.kind, n - 1) == kind
+        float lastPrice = array.get(ch.price, n - 1)
+        bool atLeast = kind == 1 ? price >= lastPrice : price <= lastPrice
+        if atLeast
+            array.set(ch.price, n - 1, price)
+            array.set(ch.bar, n - 1, pivotBar)
+            array.set(ch.stamp, n - 1, pivotStamp)
+            changed := true
+        noValue()
+    else
+        array.push(ch.price, price)
+        array.push(ch.bar, pivotBar)
+        array.push(ch.stamp, pivotStamp)
+        array.push(ch.kind, kind)
+        while array.size(ch.kind) > CHAIN_MAX
+            array.shift(ch.price)
+            array.shift(ch.bar)
+            array.shift(ch.stamp)
+            array.shift(ch.kind)
+        changed := true
+        noValue()
+    changed
+
+trimAge(Chain ch, int barNow, int horizon) =>
+    while array.size(ch.bar) > 0 and barNow - array.get(ch.bar, 0) > horizon
+        array.shift(ch.price)
+        array.shift(ch.bar)
+        array.shift(ch.stamp)
+        array.shift(ch.kind)
+
+// ======================== Functions: enumeration =============================
+
+directedLeg(Chain ch, int iOld, int iNew) =>
+    array.get(ch.bar, iNew) > array.get(ch.bar, iOld) and
+     array.get(ch.kind, iNew) == -array.get(ch.kind, iOld) and
+     array.get(ch.kind, iNew) * (array.get(ch.price, iNew) - array.get(ch.price, iOld)) > 0
+
+dominant(Chain ch, int iOld, int iNew) =>
+    float pOld = array.get(ch.price, iOld)
+    float pNew = array.get(ch.price, iNew)
+    float lo = math.min(pOld, pNew)
+    float hi = math.max(pOld, pNew)
+    bool ok = true
+    if iNew - iOld > 1
+        for k = iOld + 1 to iNew - 1
+            float pk = array.get(ch.price, k)
+            if pk <= lo or pk >= hi
+                ok := false
+        if ok and iNew - iOld > 2
+            float cap = MINOR_FRAC * (hi - lo)
+            for k = iOld + 1 to iNew - 2
+                if math.abs(array.get(ch.price, k + 1) - array.get(ch.price, k)) > cap
+                    ok := false
+    ok
+
+candidateIdx(Chain ch, int count, int mask) =>
+    array<int> out = array.new<int>()
+    int n = array.size(ch.kind)
+    int legs = count - 1
+    int idx = n - 1
+    array<int> back = array.new<int>()
+    array.push(back, idx)
+    bool ok = true
+    for j = legs - 1 to 0
+        int span = math.floor(mask / math.pow(2, legs - 1 - j)) % 2 == 1 ? 3 : 1
+        idx := idx - span
+        if idx < 0
+            ok := false
+            noValue()
+        else
+            array.push(back, idx)
+            noValue()
+    if ok and array.size(back) > 0
+        for j = array.size(back) - 1 to 0
+            array.push(out, array.get(back, j))
+        for j = 0 to legs - 1
+            if not directedLeg(ch, array.get(out, j), array.get(out, j + 1)) or
+                 not dominant(ch, array.get(out, j), array.get(out, j + 1))
+                ok := false
+    if not ok
+        array.clear(out)
+    out
+
+// ======================== Functions: ratios and classifier ==================
+
+float tolUsed = ratioTolInput / 100.0
+
+lands(float v, float lo, float hi) =>
+    not na(v) and v >= lo * (1.0 - tolUsed) and v <= hi * (1.0 + tolUsed)
+
+ratioOf(float num, float den) =>
+    den == 0 ? na : num / den
+
+matchesName(string name, float xab, float abc, float bcd, float xad, float xc, float xcd,
+     float cdab) =>
+    switch name
+        N_GARTLEY   => lands(xab, 0.618, 0.618) and lands(abc, 0.382, 0.886) and
+             lands(bcd, 1.272, 1.618) and lands(xad, 0.786, 0.786)
+        N_BAT       => lands(xab, 0.382, 0.50) and lands(abc, 0.382, 0.886) and
+             lands(bcd, 1.618, 2.618) and lands(xad, 0.886, 0.886)
+        N_ALT_BAT   => lands(xab, 0.382, 0.382) and lands(abc, 0.382, 0.886) and
+             lands(bcd, 2.0, 3.618) and lands(xad, 1.13, 1.13)
+        N_BUTTERFLY => lands(xab, 0.786, 0.786) and lands(abc, 0.382, 0.886) and
+             lands(bcd, 1.618, 2.618) and lands(xad, 1.272, 1.618)
+        N_CRAB      => lands(xab, 0.382, 0.618) and lands(abc, 0.382, 0.886) and
+             lands(bcd, 2.24, 3.618) and lands(xad, 1.618, 1.618)
+        N_DEEP_CRAB => lands(xab, 0.886, 0.886) and lands(abc, 0.382, 0.886) and
+             lands(bcd, 2.24, 3.618) and lands(xad, 1.618, 1.618)
+        N_CYPHER    => lands(xab, 0.382, 0.618) and lands(xc, 1.272, 1.414) and
+             lands(xcd, 0.786, 0.786)
+        N_SHARK     => lands(abc, 1.13, 1.618) and lands(bcd, 1.618, 2.24) and
+             lands(xad, 0.886, 1.13)
+        N_NEN_STAR  => lands(xab, 0.382, 0.786) and lands(abc, 1.13, 1.414) and
+             lands(bcd, 1.272, 2.0) and lands(xad, 1.272, 1.272)
+        N_FIVE_ZERO => lands(xab, 1.13, 1.618) and lands(abc, 1.618, 2.24) and
+             lands(bcd, 0.50, 0.50)
+        N_ABCD      => lands(abc, 0.382, 0.886) and lands(bcd, 1.13, 2.618) and
+             lands(cdab, 1.0, 1.0)
+        => false
+
+classify5(float xab, float abc, float bcd, float xad, float xc, float xcd) =>
+    string out = ""
+    if matchesName(N_SHARK, xab, abc, bcd, xad, xc, xcd, na)
+        out := N_SHARK
+    else if matchesName(N_CYPHER, xab, abc, bcd, xad, xc, xcd, na)
+        out := N_CYPHER
+    else if matchesName(N_NEN_STAR, xab, abc, bcd, xad, xc, xcd, na)
+        out := N_NEN_STAR
+    else if matchesName(N_DEEP_CRAB, xab, abc, bcd, xad, xc, xcd, na)
+        out := N_DEEP_CRAB
+    else if matchesName(N_BUTTERFLY, xab, abc, bcd, xad, xc, xcd, na)
+        out := N_BUTTERFLY
+    else if matchesName(N_GARTLEY, xab, abc, bcd, xad, xc, xcd, na)
+        out := N_GARTLEY
+    else if matchesName(N_ALT_BAT, xab, abc, bcd, xad, xc, xcd, na)
+        out := N_ALT_BAT
+    else if matchesName(N_BAT, xab, abc, bcd, xad, xc, xcd, na)
+        out := N_BAT
+    else if matchesName(N_CRAB, xab, abc, bcd, xad, xc, xcd, na)
+        out := N_CRAB
+    out
+
+familyOf(string name) =>
+    name == N_GARTLEY or name == N_BAT or name == N_ALT_BAT ? 1 :
+     name == N_BUTTERFLY or name == N_CRAB or name == N_DEEP_CRAB ? 2 :
+     name == N_ABCD or name == N_THREE_DRV ? 4 : 3
+
+familyColor(string name) =>
+    int f = familyOf(name)
+    f == 1 ? retrColor : f == 2 ? extColor : f == 3 ? extcColor : drivesColor
+
+shownBy(string name) =>
+    int f = familyOf(name)
+    f == 1 ? retrInput : f == 2 ? extInput : f == 3 ? extcInput :
+     name == N_ABCD ? abcdInput : drivesInput
+
+// Declared here, above `retain`, because the retained cap reads them: Pine
+// resolves a call only against a definition above it.
+orientShown(Pattern p) =>
+    orientInput == OR_BOTH or (orientInput == OR_BULL and p.orient == 1) or
+     (orientInput == OR_BEAR and p.orient == -1)
+
+retainShown(Pattern p) => shownBy(p.name) and orientShown(p)
+
+fmtRatio(float v) =>
+    na(v) ? "—" : str.tostring(v, "0.000")
+
+ratioLine(string leg, float v, float lo, float hi) =>
+    string win = lo == hi ? " (" + str.tostring(lo, "0.###") + ")" :
+         " (" + str.tostring(lo, "0.###") + "–" + str.tostring(hi, "0.###") + ")"
+    string mark = not na(v) and (v < lo or v > hi) ? " ±tol" : ""
+    leg + " " + fmtRatio(v) + win + mark
+
+ratioTextOf(string name, float xab, float abc, float bcd, float xad, float xc, float xcd,
+     float cdab) =>
+    switch name
+        N_GARTLEY   => ratioLine("AB/XA", xab, 0.618, 0.618) + " · " + ratioLine("BC/AB", abc, 0.382, 0.886) +
+             " · " + ratioLine("CD/BC", bcd, 1.272, 1.618) + " · " + ratioLine("AD/XA", xad, 0.786, 0.786)
+        N_BAT       => ratioLine("AB/XA", xab, 0.382, 0.50) + " · " + ratioLine("BC/AB", abc, 0.382, 0.886) +
+             " · " + ratioLine("CD/BC", bcd, 1.618, 2.618) + " · " + ratioLine("AD/XA", xad, 0.886, 0.886)
+        N_ALT_BAT   => ratioLine("AB/XA", xab, 0.382, 0.382) + " · " + ratioLine("BC/AB", abc, 0.382, 0.886) +
+             " · " + ratioLine("CD/BC", bcd, 2.0, 3.618) + " · " + ratioLine("AD/XA", xad, 1.13, 1.13)
+        N_BUTTERFLY => ratioLine("AB/XA", xab, 0.786, 0.786) + " · " + ratioLine("BC/AB", abc, 0.382, 0.886) +
+             " · " + ratioLine("CD/BC", bcd, 1.618, 2.618) + " · " + ratioLine("AD/XA", xad, 1.272, 1.618)
+        N_CRAB      => ratioLine("AB/XA", xab, 0.382, 0.618) + " · " + ratioLine("BC/AB", abc, 0.382, 0.886) +
+             " · " + ratioLine("CD/BC", bcd, 2.24, 3.618) + " · " + ratioLine("AD/XA", xad, 1.618, 1.618)
+        N_DEEP_CRAB => ratioLine("AB/XA", xab, 0.886, 0.886) + " · " + ratioLine("BC/AB", abc, 0.382, 0.886) +
+             " · " + ratioLine("CD/BC", bcd, 2.24, 3.618) + " · " + ratioLine("AD/XA", xad, 1.618, 1.618)
+        N_CYPHER    => ratioLine("AB/XA", xab, 0.382, 0.618) + " · " + ratioLine("XC/XA", xc, 1.272, 1.414) +
+             " · " + ratioLine("CD/XC", xcd, 0.786, 0.786)
+        N_SHARK     => ratioLine("BC/AB", abc, 1.13, 1.618) + " · " + ratioLine("CD/BC", bcd, 1.618, 2.24) +
+             " · " + ratioLine("AD/XA", xad, 0.886, 1.13)
+        N_NEN_STAR  => ratioLine("AB/XA", xab, 0.382, 0.786) + " · " + ratioLine("BC/AB", abc, 1.13, 1.414) +
+             " · " + ratioLine("CD/BC", bcd, 1.272, 2.0) + " · " + ratioLine("AD/XA", xad, 1.272, 1.272)
+        N_FIVE_ZERO => ratioLine("AB/XA", xab, 1.13, 1.618) + " · " + ratioLine("BC/AB", abc, 1.618, 2.24) +
+             " · " + ratioLine("CD/BC", bcd, 0.50, 0.50)
+        N_ABCD      => ratioLine("BC/AB", abc, 0.382, 0.886) + " · " +
+             ratioLine("CD/BC", bcd, 1.13, 2.618) + " · " + ratioLine("CD/AB", cdab, 1.0, 1.0)
+        => ""
+
+// ======================== Functions: pools and keys ==========================
+
+var Scale minor = Scale.new(swing = 1, strength = swingInput,
+     ch = Chain.new(bar = array.new<int>(), stamp = array.new<int>(),
+         kind = array.new<int>(), price = array.new<float>()),
+     active = array.new<Pattern>(), retained = array.new<Pattern>(), forming = array.new<Forming>())
+var Scale major = Scale.new(swing = 2, strength = majorSwingInput,
+     ch = Chain.new(bar = array.new<int>(), stamp = array.new<int>(),
+         kind = array.new<int>(), price = array.new<float>()),
+     active = array.new<Pattern>(), retained = array.new<Pattern>(), forming = array.new<Forming>())
+var array<Scale>   scales   = array.from(minor, major)
+var array<string>  seenKeys = array.new<string>()
+var array<string>  residentKeys = array.new<string>()
+var array<string>  ordinalDKeys = array.new<string>()
+var array<int>     ordinalNext = array.new<int>()
+bool majorUsed = majorSwingInput >= MAJOR_MIN and majorSwingInput > swingInput
+bool chartSupported = chart.is_standard and not timeframe.isticks and
+     (timeframe.isseconds or timeframe.isminutes or timeframe.isdwm)
+
+keyOf(array<int> bars) =>
+    string k = ""
+    if array.size(bars) > 1
+        for j = 0 to array.size(bars) - 2
+            k := k + str.tostring(array.get(bars, j)) + ","
+    k
+
+positiveMod(int number, int modulus) =>
+    int remainder = number % modulus
+    remainder < 0 ? remainder + modulus : remainder
+
+addMod(int first, int other, int modulus) =>
+    positiveMod(positiveMod(first, modulus) + positiveMod(other, modulus), modulus)
+
+mulModSmall(int number, int multiplier, int modulus) =>
+    int result = 0
+    int addend = positiveMod(number, modulus)
+    int factor = multiplier
+    while factor > 0
+        if factor % 2 == 1
+            result := addMod(result, addend, modulus)
+        factor := int(math.floor(factor / 2.0))
+        if factor > 0
+            addend := addMod(addend, addend, modulus)
+    result
+
+idFixed(int number) =>
+    int value = number
+    string out = ""
+    for place = 0 to ID_WIDTH - 1
+        int digit = positiveMod(value, ID_BASE)
+        out := str.substring(ID_DIGITS, digit, digit + 1) + out
+        value := int(math.floor(value / float(ID_BASE)))
+    out
+
+timestampDigest(array<int> stamps, int initial, int multiplier, int modulus) =>
+    int acc = positiveMod(initial, modulus)
+    if array.size(stamps) > 1
+        for j = 0 to array.size(stamps) - 2
+            int folded = positiveMod(array.get(stamps, j), modulus)
+            acc := addMod(addMod(mulModSmall(acc, multiplier, modulus), folded, modulus),
+                 (j + 1) * 17, modulus)
+    acc
+
+formationIdOf(array<int> stamps) =>
+    int digestA = timestampDigest(stamps, 17, 131, ID_MOD_A)
+    int digestB = timestampDigest(stamps, 29, 137, ID_MOD_B)
+    "F" + idFixed(digestA) + "-" + idFixed(digestB)
+
+remember(string key) =>
+    array.push(seenKeys, key)
+    while array.size(seenKeys) > SEEN_MAX
+        array.shift(seenKeys)
+
+residentHas(string key) => array.indexof(residentKeys, key) >= 0
+
+rememberResident(string key) =>
+    if not residentHas(key)
+        if array.size(residentKeys) >= MAX_RESIDENT
+            runtime.error("Resident pattern capacity invariant exceeded")
+        array.push(residentKeys, key)
+    noValue()
+
+forgetResident(string key) =>
+    int at = array.indexof(residentKeys, key)
+    if at >= 0
+        array.remove(residentKeys, at)
+    noValue()
+
+legTextOf(array<int> bars) =>
+    string t = ""
+    if array.size(bars) > 1
+        for j = 1 to array.size(bars) - 1
+            t := t + (j > 1 ? " · " : "") + str.tostring(array.get(bars, j) - array.get(bars, j - 1))
+    t + " bars per leg, in anchor order"
+
+newPattern(Chain ch, int swing, string name, array<int> idx, float entryP, int doneB, string rText) =>
+    array<int>   bs = array.new<int>()
+    array<int>   ts = array.new<int>()
+    array<float> ps = array.new<float>()
+    for i in idx
+        array.push(bs, array.get(ch.bar, i))
+        array.push(ts, array.get(ch.stamp, i))
+        array.push(ps, array.get(ch.price, i))
+    int dKind = array.get(ch.kind, array.last(idx))
+    Pattern.new(name = name, swing = swing, levelsDrawn = false, chartVisible = false,
+         bars = bs, stamps = ts, prices = ps, formId = formationIdOf(ts), collisionOrdinal = 0,
+         orient = dKind == -1 ? 1 : -1,
+         entry = entryP, doneBar = doneB, doneTime = time, state = ST_COMPLETE,
+         resolvedBar = -1, why = "", doneClose = na, ratioText = rText,
+         legText = legTextOf(bs), hasLevels = true, trendKnown = true, trendData = true,
+         trendOk = true, trendText = "", przLo = na, przHi = na, przOk = true, przText = "", xOk = true,
+         offD = true, setupOk = true, r = na, capped = false,
+         stopP = na, t1 = na, t2 = na, t3 = na, hit1Bar = -1, hit2Bar = -1,
+         hit3Bar = -1, hit1Time = 0, hit2Time = 0, hit3Time = 0, hitWhich = HIT_NONE,
+         hitBar = -1, stopTime = 0)
+
+cPriceOf(Pattern p) => array.get(p.prices, array.size(p.prices) - 2)
+dPriceOf(Pattern p) => array.last(p.prices)
+xBarOf(Pattern p)   => array.get(p.bars, p.name == N_FIVE_ZERO ? 1 : 0)
+dBarOf(Pattern p)   => array.last(p.bars)
+dStampOf(Pattern p) => array.last(p.stamps)
+
+dPointKeyOf(Pattern p) =>
+    str.tostring(dStampOf(p)) + "|" + str.tostring(dBarOf(p)) + "|" +
+     str.tostring(dPriceOf(p), "0.################") + "|" + str.tostring(p.orient)
+
+assignCollisionOrdinal(Pattern p, bool willReside) =>
+    if willReside
+        string dKey = dPointKeyOf(p)
+        int at = array.indexof(ordinalDKeys, dKey)
+        if at >= 0
+            p.collisionOrdinal := array.get(ordinalNext, at)
+            array.set(ordinalNext, at, p.collisionOrdinal + 1)
+            noValue()
+        else
+            bool shared = false
+            int nextOrdinal = 1
+            for sc in scales
+                for current in sc.active
+                    if dPointKeyOf(current) == dKey
+                        shared := true
+                        if current.collisionOrdinal <= 0
+                            current.collisionOrdinal := 1
+                        if current.collisionOrdinal + 1 > nextOrdinal
+                            nextOrdinal := current.collisionOrdinal + 1
+                for current in sc.retained
+                    if dPointKeyOf(current) == dKey
+                        shared := true
+                        if current.collisionOrdinal <= 0
+                            current.collisionOrdinal := 1
+                        if current.collisionOrdinal + 1 > nextOrdinal
+                            nextOrdinal := current.collisionOrdinal + 1
+            if shared
+                p.collisionOrdinal := nextOrdinal
+                array.push(ordinalDKeys, dKey)
+                array.push(ordinalNext, nextOrdinal + 1)
+                while array.size(ordinalDKeys) > LANE_BOOK_MAX
+                    array.shift(ordinalDKeys)
+                    array.shift(ordinalNext)
+            noValue()
+    noValue()
+
+exitOf(Pattern p, float px, float tol) =>
+    p.orient * (px - cPriceOf(p)) > tol ? WHY_C :
+     p.orient * (dPriceOf(p) - px) > tol ? WHY_D : ""
+
+// ======================== Functions: the Setup gate's facts =================
+
+trendModeOf(string name) =>
+    name == N_GARTLEY or name == N_BAT or name == N_CYPHER or name == N_SHARK or
+     name == N_ABCD ? TREND_CONT : TREND_REV
+
+trendRead(Chain ch, string name, array<int> idx, int orient) =>
+    int first = array.first(idx)
+    string mode = trendModeOf(name)
+    bool known = true
+    float x = na
+    float a = na
+    float prevOpp = na
+    float prevSame = na
+    if name == N_FIVE_ZERO or name == N_THREE_DRV
+        if first < 1
+            known := false
+            noValue()
+        else
+            x := array.get(ch.price, array.get(idx, 1))
+            a := array.get(ch.price, array.get(idx, 2))
+            prevOpp := array.get(ch.price, array.get(idx, 0))
+            prevSame := array.get(ch.price, first - 1)
+            noValue()
+    else if name == N_ABCD
+        if first < 3
+            known := false
+            noValue()
+        else
+            x := array.get(ch.price, first - 1)
+            a := array.get(ch.price, array.get(idx, 0))
+            prevOpp := array.get(ch.price, first - 2)
+            prevSame := array.get(ch.price, first - 3)
+            noValue()
+    else
+        if first < 2
+            known := false
+            noValue()
+        else
+            x := array.get(ch.price, array.get(idx, 0))
+            a := array.get(ch.price, array.get(idx, 1))
+            prevOpp := array.get(ch.price, first - 1)
+            prevSame := array.get(ch.price, first - 2)
+            noValue()
+    bool ok = false
+    string txt = "Trend (" + mode + "): not readable, fewer than two confirmed pivots before X"
+    if known
+        int want = mode == TREND_CONT ? 1 : -1
+        ok := want * orient * (x - prevSame) > 0 and want * orient * (a - prevOpp) > 0
+        string sameWord = orient == 1 ? "low" : "high"
+        string oppWord = orient == 1 ? "high" : "low"
+        txt := "Trend (" + mode + "): X " + sameWord + " " + str.tostring(x, format.mintick) +
+             " vs prior " + sameWord + " " + str.tostring(prevSame, format.mintick) + " · A " +
+             oppWord + " " + str.tostring(a, format.mintick) + " vs prior " + oppWord + " " +
+             str.tostring(prevOpp, format.mintick) + " · " +
+             (ok ? "ran as the family asks" : "ran the other way")
+    [known, ok, txt]
+
+xOkOf(Pattern p) =>
+    float x = array.get(p.prices, p.name == N_FIVE_ZERO ? 1 : 0)
+    p.name != N_GARTLEY and p.name != N_BAT and p.name != N_CYPHER ? true :
+         p.orient * (dPriceOf(p) - x) > 0
+
+przPush(array<string> kinds, array<float> los, array<float> his, string kind, float lo, float hi) =>
+    array.push(kinds, kind)
+    array.push(los, lo)
+    array.push(his, hi)
+
+przComponents(string name, array<string> kinds, array<float> los, array<float> his) =>
+    if name == N_GARTLEY
+        przPush(kinds, los, his, "XA", 0.786, 0.786)
+        przPush(kinds, los, his, "BC", 1.272, 1.618)
+        przPush(kinds, los, his, "AB=CD", 1.0, 1.0)
+    else if name == N_BAT
+        przPush(kinds, los, his, "XA", 0.886, 0.886)
+        przPush(kinds, los, his, "BC", 1.618, 2.618)
+        przPush(kinds, los, his, "AB=CD", 1.0, 1.0)
+        przPush(kinds, los, his, "AB=CD", 1.27, 1.27)
+    else if name == N_ALT_BAT
+        przPush(kinds, los, his, "XA", 1.13, 1.13)
+        przPush(kinds, los, his, "BC", 2.0, 3.618)
+        przPush(kinds, los, his, "AB=CD", 1.618, 1.618)
+    else if name == N_BUTTERFLY
+        przPush(kinds, los, his, "XA", 1.272, 1.618)
+        przPush(kinds, los, his, "BC", 1.618, 2.618)
+        przPush(kinds, los, his, "AB=CD", 1.0, 1.0)
+        przPush(kinds, los, his, "AB=CD", 1.27, 1.27)
+    else if name == N_CRAB
+        przPush(kinds, los, his, "XA", 1.618, 1.618)
+        przPush(kinds, los, his, "BC", 2.24, 3.618)
+        przPush(kinds, los, his, "AB=CD", 1.27, 1.27)
+        przPush(kinds, los, his, "AB=CD", 1.618, 1.618)
+    else if name == N_DEEP_CRAB
+        przPush(kinds, los, his, "XA", 1.618, 1.618)
+        przPush(kinds, los, his, "BC", 2.24, 3.618)
+        przPush(kinds, los, his, "AB=CD", 1.27, 1.27)
+    else if name == N_CYPHER
+        przPush(kinds, los, his, "XC", 0.786, 0.786)
+    else if name == N_SHARK
+        przPush(kinds, los, his, "XA", 0.886, 1.13)
+        przPush(kinds, los, his, "BC", 1.618, 2.24)
+    else if name == N_NEN_STAR
+        przPush(kinds, los, his, "XA", 1.272, 1.272)
+        przPush(kinds, los, his, "BC", 1.272, 2.0)
+    else if name == N_FIVE_ZERO
+        przPush(kinds, los, his, "BC", 0.50, 0.50)
+        przPush(kinds, los, his, "AB=CD", 1.0, 1.0)
+    else if name == N_ABCD
+        przPush(kinds, los, his, "BC", 1.13, 2.618)
+        przPush(kinds, los, his, "AB=CD", 1.0, 1.0)
+    else
+        przPush(kinds, los, his, "BC", 1.272, 1.618)
+
+przOf(Pattern p) =>
+    int n = array.size(p.prices)
+    float c = array.get(p.prices, n - 2)
+    float b = array.get(p.prices, n - 3)
+    float a = n >= 4 ? array.get(p.prices, n - 4) : na
+    float x = n >= 5 ? array.get(p.prices, n - 5) : na
+    int dir = -p.orient
+    array<string> kinds = array.new<string>()
+    array<float> los = array.new<float>()
+    array<float> his = array.new<float>()
+    przComponents(p.name, kinds, los, his)
+    float lo = 1.0e300
+    float hi = -1.0e300
+    float anchor0 = na
+    string parts = ""
+    if array.size(kinds) > 0
+        for j = 0 to array.size(kinds) - 1
+            string kind = array.get(kinds, j)
+            float rLo = array.get(los, j)
+            float rHi = array.get(his, j)
+            float anchor = kind == "XA" ? a : c
+            float unit = kind == "XA" ? math.abs(a - x) : kind == "XC" ? math.abs(c - x) :
+                 kind == "BC" ? math.abs(c - b) : math.abs(b - a)
+            float p1 = anchor + dir * rLo * unit
+            float p2 = anchor + dir * rHi * unit
+            lo := math.min(lo, math.min(p1, p2))
+            hi := math.max(hi, math.max(p1, p2))
+            if na(anchor0)
+                anchor0 := anchor
+            string ratioTxt = rLo == rHi ? str.tostring(rLo, "0.###") :
+                 str.tostring(rLo, "0.###") + "–" + str.tostring(rHi, "0.###")
+            string priceTxt = p1 == p2 ? str.tostring(p1, format.mintick) :
+                 str.tostring(p1, format.mintick) + "–" + str.tostring(p2, format.mintick)
+            parts := parts + (j > 0 ? " · " : "") + ratioTxt + " " + kind + " " + priceTxt
+    if lo == hi
+        float half = tolUsed * math.abs(lo - anchor0)
+        lo := lo - half
+        hi := hi + half
+        parts := parts + " · ± tolerance"
+    string txt = "PRZ " + str.tostring(lo, format.mintick) + "–" +
+         str.tostring(hi, format.mintick) + ": " + parts
+    [lo, hi, txt]
+
+setupTrendLine(Pattern p) =>
+    requireTrendInput ? p.trendText :
+     p.trendText + "\n• Not required: this reading did not gate the Setup."
+
+setupFailText(Pattern p) =>
+    string out = ""
+    if not p.offD
+        out := "close on D"
+    if not p.xOk
+        out := out + (out == "" ? "" : " · ") + "D past X"
+    if not p.przOk
+        out := out + (out == "" ? "" : " · ") + "D outside PRZ"
+    if requireTrendInput
+        if not p.trendKnown
+            out := out + (out == "" ? "" : " · ") + "trend not readable"
+        else if not p.trendOk
+            out := out + (out == "" ? "" : " · ") + "prior trend ran the other way"
+    out
+
+withContext(Chain ch, array<int> idx, Pattern p) =>
+    [known, ok, ttxt] = trendRead(ch, p.name, idx, p.orient)
+    p.trendKnown := known
+    p.trendData := known
+    p.trendOk := ok
+    p.trendText := ttxt
+    p.xOk := xOkOf(p)
+    [lo, hi, ptxt] = przOf(p)
+    p.przLo := lo
+    p.przHi := hi
+    p.przText := ptxt
+    p.przOk := lo <= dPriceOf(p) and dPriceOf(p) <= hi
+    p
+
+maTrendRead(Pattern p, float maD, float riseD, float atr) =>
+    string head = "Average (" + trendMaTypeInput + " " + str.tostring(trendMaLenInput) + ")"
+    bool data = not na(maD) and not na(atr) and
+         (trendMaSlopeInput == 0.0 or not na(riseD))
+    bool known = data
+    bool ok = false
+    string txt = head + ": not readable, no average value at D"
+    if known
+        int want = (trendModeOf(p.name) == TREND_CONT ? 1 : -1) * p.orient
+        float band = trendMaBandInput * atr
+        float gap = dPriceOf(p) - maD
+        int place = gap > band ? 1 : gap < -band ? -1 : 0
+        float slopeBand = trendMaSlopeInput * atr
+        int rise = trendMaSlopeInput == 0.0 ? want :
+             riseD > slopeBand ? 1 : riseD < -slopeBand ? -1 : 0
+        known := place != 0 and rise != 0
+        ok := place == want and rise == want
+        string placeWord = place == 1 ? "above" : place == -1 ? "below" : "within the band around"
+        string riseWord = rise == 1 ? "rising" : rise == -1 ? "falling" : "flat"
+        txt := head + ": D " + str.tostring(dPriceOf(p), format.mintick) + " " + placeWord +
+             " " + str.tostring(maD, format.mintick) +
+             (trendMaSlopeInput == 0.0 ? "" : " · average " + riseWord) + " · " +
+             (not known ? "no direction taken" : ok ? "ran as the family asks" : "ran the other way")
+    [known, ok, txt, data]
+
+trendVerdict(Pattern p, float maD, float riseD, float atr) =>
+    if trendBasisInput != TREND_SWING
+        [maKnown, maOk, maTxt, maData] = maTrendRead(p, maD, riseD, atr)
+        if trendBasisInput == TREND_MA
+            p.trendKnown := maKnown
+            p.trendData := maData
+            p.trendOk := maOk
+            p.trendText := maTxt
+            noValue()
+        else
+            p.trendText := p.trendText + "\n" + maTxt
+            p.trendOk := p.trendOk and maOk
+            p.trendKnown := p.trendKnown and maKnown
+            p.trendData := p.trendData and maData
+            noValue()
+    p
+
+// ======================== Functions: detection ===============================
+
+detectAll(Scale sc, array<Pattern> found, float entryP, int doneB, bool allowSkip) =>
+    Chain ch = sc.ch
+    int n = array.size(ch.kind)
+    if n >= 4
+        int maskMax6 = allowSkip ? 31 : 0
+        int maskMax5 = allowSkip ? 15 : 0
+        int maskMax4 = allowSkip ? 7 : 0
+        for m = 0 to maskMax6
+            array<int> idx = candidateIdx(ch, 6, m)
+            if array.size(idx) == 6
+                float p0 = array.get(ch.price, array.get(idx, 0))
+                float d1 = array.get(ch.price, array.get(idx, 1))
+                float c1 = array.get(ch.price, array.get(idx, 2))
+                float d2 = array.get(ch.price, array.get(idx, 3))
+                float c2 = array.get(ch.price, array.get(idx, 4))
+                float d3 = array.get(ch.price, array.get(idx, 5))
+                float rc1 = ratioOf(math.abs(c1 - d1), math.abs(d1 - p0))
+                float rd2 = ratioOf(math.abs(d2 - c1), math.abs(c1 - d1))
+                float rc2 = ratioOf(math.abs(c2 - d2), math.abs(d2 - c1))
+                float rd3 = ratioOf(math.abs(d3 - c2), math.abs(c2 - d2))
+                if lands(rc1, 0.618, 0.786) and lands(rd2, 1.272, 1.618) and
+                     lands(rc2, 0.618, 0.786) and lands(rd3, 1.272, 1.618)
+                    string rt = ratioLine("C1", rc1, 0.618, 0.786) + " · " +
+                         ratioLine("D2", rd2, 1.272, 1.618) + " · " +
+                         ratioLine("C2", rc2, 0.618, 0.786) + " · " +
+                         ratioLine("D3", rd3, 1.272, 1.618)
+                    array.push(found, withContext(ch, idx,
+                         newPattern(ch, sc.swing, N_THREE_DRV, idx, entryP, doneB, rt)))
+        for m = 0 to maskMax6
+            array<int> idx = candidateIdx(ch, 6, m)
+            if array.size(idx) == 6
+                float p0 = array.get(ch.price, array.get(idx, 0))
+                float x  = array.get(ch.price, array.get(idx, 1))
+                float a  = array.get(ch.price, array.get(idx, 2))
+                float b  = array.get(ch.price, array.get(idx, 3))
+                float c  = array.get(ch.price, array.get(idx, 4))
+                float d  = array.get(ch.price, array.get(idx, 5))
+                if math.abs(x - a) <= math.abs(p0 - x)
+                    float xab = ratioOf(math.abs(a - b), math.abs(x - a))
+                    float abc = ratioOf(math.abs(b - c), math.abs(a - b))
+                    float bcd = ratioOf(math.abs(c - d), math.abs(b - c))
+                    if matchesName(N_FIVE_ZERO, xab, abc, bcd, na, na, na, na)
+                        array.push(found, withContext(ch, idx,
+                             newPattern(ch, sc.swing, N_FIVE_ZERO, idx, entryP, doneB,
+                             ratioTextOf(N_FIVE_ZERO, xab, abc, bcd, na, na, na, na))))
+        array<string> claimedCD = array.new<string>()
+        for m = 0 to maskMax5
+            array<int> idx = candidateIdx(ch, 5, m)
+            if array.size(idx) == 5
+                float x = array.get(ch.price, array.get(idx, 0))
+                float a = array.get(ch.price, array.get(idx, 1))
+                float b = array.get(ch.price, array.get(idx, 2))
+                float c = array.get(ch.price, array.get(idx, 3))
+                float d = array.get(ch.price, array.get(idx, 4))
+                float xa = math.abs(a - x)
+                float xab = ratioOf(math.abs(b - a), xa)
+                float abc = ratioOf(math.abs(c - b), math.abs(b - a))
+                float bcd = ratioOf(math.abs(d - c), math.abs(c - b))
+                float xad = ratioOf(math.abs(d - a), xa)
+                float xc  = ratioOf(math.abs(c - x), xa)
+                float xcd = ratioOf(math.abs(d - c), math.abs(c - x))
+                string name = classify5(xab, abc, bcd, xad, xc, xcd)
+                if name != ""
+                    array.push(found, withContext(ch, idx,
+                         newPattern(ch, sc.swing, name, idx, entryP, doneB,
+                         ratioTextOf(name, xab, abc, bcd, xad, xc, xcd, na))))
+                    array.push(claimedCD, str.tostring(array.get(idx, 3)) + "," +
+                         str.tostring(array.get(idx, 4)))
+        for m = 0 to maskMax4
+            array<int> idx = candidateIdx(ch, 4, m)
+            if array.size(idx) == 4
+                string cd = str.tostring(array.get(idx, 2)) + "," + str.tostring(array.get(idx, 3))
+                if array.indexof(claimedCD, cd) < 0
+                    float a = array.get(ch.price, array.get(idx, 0))
+                    float b = array.get(ch.price, array.get(idx, 1))
+                    float c = array.get(ch.price, array.get(idx, 2))
+                    float d = array.get(ch.price, array.get(idx, 3))
+                    float abc = ratioOf(math.abs(c - b), math.abs(b - a))
+                    float bcd = ratioOf(math.abs(d - c), math.abs(c - b))
+                    float cdab = ratioOf(math.abs(d - c), math.abs(b - a))
+                    if matchesName(N_ABCD, na, abc, bcd, na, na, na, cdab)
+                        array.push(found, withContext(ch, idx,
+                             newPattern(ch, sc.swing, N_ABCD, idx, entryP, doneB,
+                             ratioTextOf(N_ABCD, na, abc, bcd, na, na, na, cdab))))
+
+dWindow(string name, float x, float a, float b, float c, int cKind) =>
+    float xa = math.abs(a - x)
+    float ab = math.abs(b - a)
+    float bc = math.abs(c - b)
+    float xcLen = math.abs(c - x)
+    float xab = ratioOf(ab, xa)
+    float abc = ratioOf(bc, ab)
+    float xc  = ratioOf(xcLen, xa)
+    bool ok = true
+    float lo = -1.0e300
+    float hi = 1.0e300
+    int dir = -cKind
+    switch name
+        N_GARTLEY   => ok := lands(xab, 0.618, 0.618) and lands(abc, 0.382, 0.886)
+        N_BAT       => ok := lands(xab, 0.382, 0.50) and lands(abc, 0.382, 0.886)
+        N_ALT_BAT   => ok := lands(xab, 0.382, 0.382) and lands(abc, 0.382, 0.886)
+        N_BUTTERFLY => ok := lands(xab, 0.786, 0.786) and lands(abc, 0.382, 0.886)
+        N_CRAB      => ok := lands(xab, 0.382, 0.618) and lands(abc, 0.382, 0.886)
+        N_DEEP_CRAB => ok := lands(xab, 0.886, 0.886) and lands(abc, 0.382, 0.886)
+        N_CYPHER    => ok := lands(xab, 0.382, 0.618) and lands(xc, 1.272, 1.414)
+        N_SHARK     => ok := lands(abc, 1.13, 1.618)
+        N_NEN_STAR  => ok := lands(xab, 0.382, 0.786) and lands(abc, 1.13, 1.414)
+        => ok := false
+    if ok
+        float xadLo = na
+        float xadHi = na
+        float bcdLo = na
+        float bcdHi = na
+        float xcdLo = na
+        float xcdHi = na
+        if name == N_GARTLEY
+            xadLo := 0.786
+            xadHi := 0.786
+            bcdLo := 1.272
+            bcdHi := 1.618
+        else if name == N_BAT
+            xadLo := 0.886
+            xadHi := 0.886
+            bcdLo := 1.618
+            bcdHi := 2.618
+        else if name == N_ALT_BAT
+            xadLo := 1.13
+            xadHi := 1.13
+            bcdLo := 2.0
+            bcdHi := 3.618
+        else if name == N_BUTTERFLY
+            xadLo := 1.272
+            xadHi := 1.618
+            bcdLo := 1.618
+            bcdHi := 2.618
+        else if name == N_CRAB
+            xadLo := 1.618
+            xadHi := 1.618
+            bcdLo := 2.24
+            bcdHi := 3.618
+        else if name == N_DEEP_CRAB
+            xadLo := 1.618
+            xadHi := 1.618
+            bcdLo := 2.24
+            bcdHi := 3.618
+        else if name == N_CYPHER
+            xcdLo := 0.786
+            xcdHi := 0.786
+        else if name == N_SHARK
+            xadLo := 0.886
+            xadHi := 1.13
+            bcdLo := 1.618
+            bcdHi := 2.24
+        else if name == N_NEN_STAR
+            xadLo := 1.272
+            xadHi := 1.272
+            bcdLo := 1.272
+            bcdHi := 2.0
+        if not na(xadLo)
+            float p1 = a + dir * xadLo * (1.0 - tolUsed) * xa
+            float p2 = a + dir * xadHi * (1.0 + tolUsed) * xa
+            lo := math.max(lo, math.min(p1, p2))
+            hi := math.min(hi, math.max(p1, p2))
+        if not na(bcdLo)
+            float p1 = c + dir * bcdLo * (1.0 - tolUsed) * bc
+            float p2 = c + dir * bcdHi * (1.0 + tolUsed) * bc
+            lo := math.max(lo, math.min(p1, p2))
+            hi := math.min(hi, math.max(p1, p2))
+        if not na(xcdLo)
+            float p1 = c + dir * xcdLo * (1.0 - tolUsed) * xcLen
+            float p2 = c + dir * xcdHi * (1.0 + tolUsed) * xcLen
+            lo := math.max(lo, math.min(p1, p2))
+            hi := math.min(hi, math.max(p1, p2))
+        if lo > hi
+            ok := false
+    [ok, lo, hi]
+
+deleteForming(Forming f) =>
+    polyline.delete(f.outline)
+    for b in f.bands
+        box.delete(b)
+    array.clear(f.bands)
+    label.delete(f.lbl)
+
+mergeBands(array<float> los, array<float> his) =>
+    array<float> mlo = array.new<float>()
+    array<float> mhi = array.new<float>()
+    int n = array.size(los)
+    if n > 0
+        array<int> byLo = array.new<int>()
+        for i = 0 to n - 1
+            array.push(byLo, i)
+        if n > 1
+            for i = 0 to n - 1
+                for j = 0 to n - 2
+                    if array.get(los, array.get(byLo, j)) > array.get(los, array.get(byLo, j + 1))
+                        int t = array.get(byLo, j)
+                        array.set(byLo, j, array.get(byLo, j + 1))
+                        array.set(byLo, j + 1, t)
+        for i in byLo
+            float lo = array.get(los, i)
+            float hi = array.get(his, i)
+            int m = array.size(mlo)
+            if m > 0 and lo <= array.get(mhi, m - 1)
+                array.set(mhi, m - 1, math.max(array.get(mhi, m - 1), hi))
+                noValue()
+            else
+                array.push(mlo, lo)
+                array.push(mhi, hi)
+                noValue()
+        while array.size(mlo) > FORM_BANDS
+            int at = 0
+            float gap = 1.0e300
+            for j = 0 to array.size(mlo) - 2
+                float g = array.get(mlo, j + 1) - array.get(mhi, j)
+                if g < gap
+                    gap := g
+                    at := j
+            array.set(mhi, at, math.max(array.get(mhi, at), array.get(mhi, at + 1)))
+            array.remove(mlo, at + 1)
+            array.remove(mhi, at + 1)
+    [mlo, mhi]
+
+rebuildForming(Scale sc, bool allowSkip) =>
+    Chain ch = sc.ch
+    for f in sc.forming
+        deleteForming(f)
+    array.clear(sc.forming)
+    int maskMax4 = allowSkip ? 7 : 0
+    for m = 0 to maskMax4
+        array<int> idx = candidateIdx(ch, 4, m)
+        if array.size(idx) == 4
+            float x = array.get(ch.price, array.get(idx, 0))
+            float a = array.get(ch.price, array.get(idx, 1))
+            float b = array.get(ch.price, array.get(idx, 2))
+            float c = array.get(ch.price, array.get(idx, 3))
+            int cKind = array.get(ch.kind, array.get(idx, 3))
+            array<string> wnames = array.new<string>()
+            array<float> wlos = array.new<float>()
+            array<float> whis = array.new<float>()
+            array<string> names5 = array.from(N_SHARK, N_CYPHER, N_NEN_STAR, N_DEEP_CRAB,
+                 N_BUTTERFLY, N_GARTLEY, N_ALT_BAT, N_BAT, N_CRAB)
+            for nm in names5
+                [ok, wlo, whi] = dWindow(nm, x, a, b, c, cKind)
+                if ok
+                    array.push(wnames, nm)
+                    array.push(wlos, wlo)
+                    array.push(whis, whi)
+            if array.size(wnames) > 0
+                array<int>   bs = array.new<int>()
+                array<int>   st = array.new<int>()
+                array<float> ps = array.new<float>()
+                for i in idx
+                    array.push(bs, array.get(ch.bar, i))
+                    array.push(st, array.get(ch.stamp, i))
+                    array.push(ps, array.get(ch.price, i))
+                array.push(sc.forming, Forming.new(bars = bs, stamps = st, prices = ps,
+                     wnames = wnames, wlos = wlos, whis = whis, orient = cKind,
+                     bands = array.new<box>()))
+    while array.size(sc.forming) > FORM_MAX
+        deleteForming(array.shift(sc.forming))
+
+// ======================== Functions: levels ==================================
+
+cappedR(float raw, float capMult, float atr) =>
+    bool capped = false
+    float r = raw
+    if capMult > 0 and not na(atr) and atr > 0
+        float cap = capMult * atr
+        if raw > cap
+            r := cap
+            capped := true
+    [r, capped]
+
+structStopFloored(float raw, float entryP, int orient, float r) =>
+    float dist = orient * (entryP - raw)
+    entryP - orient * math.max(dist, STRUCT_STOP_FLOOR_R * r)
+
+structStopOf(float base, float entryP, int orient, float r, float atr) =>
+    structStopFloored(base - orient * stopBufferInput * atr, entryP, orient, r)
+
+stopBaseOf(Pattern p) =>
+    dPriceOf(p)
+
+nameRailPriceOf(Pattern p) =>
+    float edge = p.orient == 1 ? p.przLo : p.przHi
+    na(edge) ? dPriceOf(p) : edge
+
+levelTol() =>
+    na(syminfo.mintick) or syminfo.mintick <= 0 ? 0.0 : syminfo.mintick / 2.0
+
+snapTick(float x) =>
+    na(syminfo.mintick) or syminfo.mintick <= 0 ? x : math.round(x / syminfo.mintick) * syminfo.mintick
+
+snapAway(float x, float entryP, int dir) =>
+    float s  = snapTick(x)
+    float mt = na(syminfo.mintick) or syminfo.mintick <= 0 ? 0.0 : syminfo.mintick
+    mt <= 0 or dir * (s - entryP) > 0 ? s : entryP + dir * mt
+
+snapOutward(float x, float entryP, int dir) =>
+    float mt = na(syminfo.mintick) or syminfo.mintick <= 0 ? 0.0 : syminfo.mintick
+    float s  = mt <= 0 ? x :
+         dir > 0 ? math.ceil(x / mt - SNAP_EPS) * mt : math.floor(x / mt + SNAP_EPS) * mt
+    mt <= 0 or dir * (s - entryP) > 0 ? s : entryP + dir * mt
+
+tierReached(float p, int orient, float barHigh, float barLow) =>
+    float tol = levelTol()
+    orient == 1 ? barHigh >= p - tol : barLow <= p + tol
+
+levelHit(float targetP, float stopP, int orient, float barHigh, float barLow, bool tierThisBar) =>
+    float tol = levelTol()
+    bool tHit = orient == 1 ? barHigh >= targetP - tol : barLow  <= targetP + tol
+    bool sHit = orient == 1 ? barLow  <= stopP   + tol : barHigh >= stopP   - tol
+    sHit and (tHit or tierThisBar) ? HIT_BOTH : tHit ? HIT_TARGET : sHit ? HIT_STOP : HIT_NONE
+
+stopBasisText() => stopStructInput ? "structure" : str.tostring(stopRInput, "0.0#") + "R"
+
+stopRSuffix(Pattern p) =>
+    not stopStructInput or na(p.r) or p.r <= 0 ? "" :
+         " · " + str.tostring(math.abs(p.entry - p.stopP) / p.r, "0.0#") + "R"
+
+stopRText(Pattern p) =>
+    not stopStructInput ? str.tostring(stopRInput, "0.0#") :
+         na(p.r) or p.r <= 0 ? "" : str.tostring(math.abs(p.entry - p.stopP) / p.r, "0.0#")
+
+targetMult(int tier) =>
+    float lo  = math.min(targetR1Input, math.min(targetR2Input, targetR3Input))
+    float hi  = math.max(targetR1Input, math.max(targetR2Input, targetR3Input))
+    float mid = targetR1Input + targetR2Input + targetR3Input - lo - hi
+    tier == 3 ? hi : tier == 2 ? mid : lo
+
+sizeFinite(float value) =>
+    not na(value) and math.abs(value) <= SIZE_MAX_VALUE
+
+sizeDivmod(int a, int b) =>
+    int quotient = na
+    int remainder = na
+    if not na(a) and not na(b) and a >= 0 and a <= SIZE_MAX_UNITS and b > 0 and b <= SIZE_MAX_UNITS
+        int divisor = b
+        int bit = 1
+        for i = 0 to 52
+            if divisor <= a - divisor
+                divisor += divisor
+                bit += bit
+        quotient := 0
+        remainder := a
+        for i = 0 to 52
+            if bit > 0
+                if remainder >= divisor
+                    remainder -= divisor
+                    quotient += bit
+                divisor := math.floor(divisor / 2.0)
+                bit := math.floor(bit / 2.0)
+    [quotient, remainder]
+
+sizeGcd(int a, int b) =>
+    int left = a
+    int right = b
+    int passes = 0
+    while right != 0 and passes < 128
+        int next = left % right
+        left := right
+        right := next
+        passes += 1
+    int out = na
+    if right == 0
+        out := left
+    out
+
+sizeReduce(int n, int d) =>
+    int outN = na
+    int outD = na
+    if not na(n) and not na(d) and n >= 0 and n <= SIZE_MAX_UNITS and d > 0 and d <= SIZE_MAX_UNITS
+        int g = sizeGcd(n, d)
+        if not na(g) and g > 0
+            outN := math.floor(n / g)
+            outD := math.floor(d / g)
+    [outN, outD]
+
+sizeProduct(int a, int b) =>
+    int out = na
+    if not na(a) and not na(b) and a >= 0 and a <= SIZE_MAX_UNITS and b >= 0 and b <= SIZE_MAX_UNITS
+        if b == 0
+            out := 0
+        else if b == 1
+            out := a
+        else
+            [cap, unused] = sizeDivmod(SIZE_MAX_UNITS, b)
+            if a <= cap
+                out := a * b
+    out
+
+sizeMultiply(int aN, int aD, int bN, int bD) =>
+    [an, ad] = sizeReduce(aN, aD)
+    [bn, bd] = sizeReduce(bN, bD)
+    int outN = na
+    int outD = na
+    if not na(an) and not na(bn)
+        int g1 = sizeGcd(an, bd)
+        int g2 = sizeGcd(bn, ad)
+        [rn, rd] = sizeReduce(
+             sizeProduct(math.floor(an / g1), math.floor(bn / g2)),
+             sizeProduct(math.floor(ad / g2), math.floor(bd / g1)))
+        outN := rn
+        outD := rd
+    [outN, outD]
+
+sizeParse(string numberText) =>
+    int outN = na
+    int outD = na
+    if str.length(numberText) > 0 and str.length(numberText) <= 34
+        string clean = numberText
+        bool hasDot = str.contains(clean, ".")
+        for i = 0 to 33
+            if hasDot and str.endswith(clean, "0")
+                clean := str.substring(clean, 0, str.length(clean) - 1)
+        if str.endswith(clean, ".")
+            clean := str.substring(clean, 0, str.length(clean) - 1)
+        bool negative = str.length(clean) > 0 and str.substring(clean, 0, 1) == "-"
+        int start = negative ? 1 : 0
+        int n = 0
+        int d = 1
+        int decimalPlaces = 0
+        int digits = 0
+        [prefixCap, lastDigit] = sizeDivmod(SIZE_MAX_UNITS, 10)
+        bool dot = false
+        bool valid = str.length(clean) > start
+        if valid
+            for i = start to str.length(clean) - 1
+                string char = str.substring(clean, i, i + 1)
+                if char == "." and not dot
+                    dot := true
+                else
+                    float parsed = str.tonumber(char)
+                    if na(parsed)
+                        valid := false
+                    else if valid
+                        int digit = int(parsed)
+                        if n > prefixCap or (n == prefixCap and digit > lastDigit)
+                            valid := false
+                        else
+                            n := n * 10 + digit
+                            digits += 1
+                            if dot
+                                decimalPlaces += 1
+                                if decimalPlaces <= SIZE_MAX_DECIMALS
+                                    d *= 10
+                            valid := decimalPlaces <= SIZE_MAX_DECIMALS
+        if valid and digits > 0
+            [rn, rd] = sizeReduce(n, d)
+            outN := negative ? -rn : rn
+            outD := rd
+    [outN, outD]
+
+sizeInput(float value) =>
+    int outN = na
+    int outD = na
+    bool done = false
+    if sizeFinite(value)
+        for places = 0 to SIZE_MAX_DECIMALS
+            if not done
+                string fmt = places == 0 ? "0" : str.substring("0.###############", 0, places + 2)
+                string numberText = str.tostring(value, fmt)
+                float parsed = str.tonumber(numberText)
+                if not na(parsed) and math.sign(value - parsed) == 0
+                    [rn, rd] = sizeParse(numberText)
+                    outN := rn
+                    outD := rd
+                    done := true
+    [outN, outD]
+
+sizeDecimal(int n, int d) =>
+    [whole, initialRemainder] = sizeDivmod(n, d)
+    string out = ""
+    if not na(whole)
+        int remainder = initialRemainder
+        out := str.tostring(whole, "0") + (remainder > 0 ? "." : "")
+        for i = 0 to SIZE_MAX_DECIMALS - 1
+            if remainder > 0
+                int digit = 0
+                int next = 0
+                for j = 0 to 9
+                    if next >= d - remainder
+                        next -= d - remainder
+                        digit += 1
+                    else
+                        next += remainder
+                out := out + str.tostring(digit, "0")
+                remainder := next
+        if remainder != 0
+            out := ""
+    out
+
+sizeShort(int n, int d) =>
+    string out = str.tostring(n / float(d), "#.##")
+    out == "0" and n > 0 ? sizeDecimal(n, d) : out
+
+riskBudgetOf() =>
+    int outN = na
+    int outD = na
+    if sizingInput
+        if riskBasisInput == RISK_PERCENT
+            if sizeFinite(accountInput) and sizeFinite(riskPctInput) and math.sign(accountInput) > 0 and math.sign(riskPctInput) > 0
+                [an, ad] = sizeInput(accountInput)
+                [pn, pd] = sizeInput(riskPctInput)
+                if not na(an) and not na(pn)
+                    int ga = sizeGcd(an, 100)
+                    int remaining = math.floor(100 / ga)
+                    int gp = sizeGcd(pn, remaining)
+                    [partN, partD] = sizeMultiply(math.floor(an / ga), ad, math.floor(pn / gp), pd)
+                    [bn, bd] = sizeMultiply(partN, partD, 1, math.floor(remaining / gp))
+                    outN := bn
+                    outD := bd
+        else if sizeFinite(riskAmtInput) and math.sign(riskAmtInput) > 0
+            [bn, bd] = sizeInput(riskAmtInput)
+            outN := bn
+            outD := bd
+    [outN, outD]
+
+sizeTickIndex(float price) =>
+    int out = na
+    int move = syminfo.minmove
+    int priceScale = syminfo.pricescale
+    if sizeFinite(price) and sizeFinite(syminfo.mintick) and math.sign(syminfo.mintick) > 0 and
+         not na(move) and not na(priceScale) and move > 0 and priceScale > 0 and
+         move <= SIZE_MAX_UNITS and priceScale <= SIZE_MAX_UNITS
+        [pn, pd] = sizeParse(str.tostring(price, format.mintick))
+        [tn, td] = sizeMultiply(math.abs(pn), pd, priceScale, move)
+        if not na(tn) and td == 1
+            out := pn < 0 ? -tn : tn
+    out
+
+sizeDistance(float entryP, float stopP) =>
+    int entry = sizeTickIndex(entryP)
+    int stop = sizeTickIndex(stopP)
+    int outN = na
+    int outD = na
+    if not na(entry) and not na(stop)
+        bool opposite = (entry < 0) != (stop < 0)
+        if not opposite or math.abs(entry) <= SIZE_MAX_UNITS - math.abs(stop)
+            [dn, dd] = sizeMultiply(math.abs(entry - stop), 1, syminfo.minmove, syminfo.pricescale)
+            outN := dn
+            outD := dd
+    [outN, outD]
+
+sizeFrame(float entryP, float stopP, int budgetN, int budgetD) =>
+    int units = na
+    string why = ""
+    string frameText = ""
+    if not sizeFinite(entryP) or not sizeFinite(stopP)
+        why := "price unavailable or outside supported range"
+    else if na(budgetN) or budgetN <= 0
+        why := "budget unavailable, nonpositive or outside supported precision"
+    else
+        [dn, dd] = sizeDistance(entryP, stopP)
+        if na(dn) or dn <= 0
+            why := "Stop distance unavailable, nonpositive or outside supported range"
+        else if not sizeFinite(syminfo.pointvalue) or math.sign(syminfo.pointvalue) <= 0
+            why := "point value unavailable or nonpositive"
+        else
+            [pn, pd] = sizeInput(syminfo.pointvalue)
+            [cn, cd] = sizeMultiply(dn, dd, pn, pd)
+            [qn, qd] = sizeMultiply(budgetN, budgetD, cd, cn)
+            [count, unused] = sizeDivmod(qn, qd)
+            [tn, td] = sizeMultiply(count, 1, cn, cd)
+            string budgetExact = sizeDecimal(budgetN, budgetD)
+            string costExact = sizeDecimal(cn, cd)
+            if budgetExact == "" or costExact == "" or sizeDecimal(dn, dd) == "" or
+                 sizeDecimal(pn, pd) == "" or sizeDecimal(tn, td) == ""
+                why := "size outside supported precision or numeric range"
+            else
+                units := count
+                string budgetText = sizeShort(budgetN, budgetD)
+                string costText = sizeShort(cn, cd)
+                if units == 0 and budgetText == costText
+                    budgetText := budgetExact
+                    costText := costExact
+                string head = units == 0 ?
+                     "0 · one unit needs " + costText + " " + syminfo.currency + " · budget " + budgetText :
+                     str.tostring(units, "0") + " · " + sizeShort(tn, td) + " of " + budgetText + " " + syminfo.currency
+                frameText := head + " · (" + str.tostring(dn / float(dd), format.mintick) + " × " + sizeShort(pn, pd) + ")"
+    if na(units)
+        frameText := "— · " + why
+    [units, why, frameText]
+
+sizeText(float entryP, float stopP) =>
+    [bn, bd] = riskBudgetOf()
+    [units, why, out] = sizeFrame(entryP, stopP, bn, bd)
+    out
+
+rText(Pattern p) =>
+    "R = |C − D|" + (p.capped ? ", capped to " + str.tostring(rCapInput, "0.0#") + " × ATR" : "") +
+     " = " + str.tostring(p.r, format.mintick)
+
+targetTip(Pattern p, int tier, float tp) =>
+    "Target " + str.tostring(tier) + "\n• Price: " + str.tostring(tp, format.mintick) +
+     "\n• Offset: " + str.tostring(targetMult(tier), "0.0##") + "R " +
+     (p.orient == 1 ? "above" : "below") + " Entry, rounded to the tick." +
+     "\n• " + rText(p) + " (pattern distance)."
+
+stopTip(Pattern p) =>
+    string basis = stopStructInput ?
+         "• Basis: D (" + str.tostring(stopBaseOf(p), format.mintick) + ") " +
+         (p.orient == 1 ? "− " : "+ ") + str.tostring(stopBufferInput, "0.0#") +
+         " × ATR.\n• Minimum gap: " + str.tostring(STRUCT_STOP_FLOOR_R, "0.0#") +
+         "R from Entry; rounded outward to the tick." :
+         "• Basis: " + str.tostring(stopRInput, "0.0#") + "R " +
+         (p.orient == 1 ? "below" : "above") + " Entry, rounded to the tick."
+    string dist = "• Distance from Entry: " + str.tostring(math.abs(p.entry - p.stopP), format.mintick) +
+         (na(p.r) or p.r <= 0 ? "" : " = " + str.tostring(math.abs(p.entry - p.stopP) / p.r, "0.0#") + " × R")
+    string out = "Stop\n• Price: " + str.tostring(p.stopP, format.mintick) +
+         "\n" + dist + "\n" + basis + "\n• " + rText(p) + " (pattern distance)."
+    if sizingInput
+        out := out + "\n• At your risk: " + sizeText(p.entry, p.stopP)
+    out
+
+// ======================== Functions: words and alerts ========================
+
+nameOf(Pattern p) => (p.orient == 1 ? "Bullish " : "Bearish ") + p.name
+
+ordinalText(int ordinal) =>
+    switch ordinal
+        1 => "①"
+        2 => "②"
+        3 => "③"
+        4 => "④"
+        5 => "⑤"
+        6 => "⑥"
+        7 => "⑦"
+        8 => "⑧"
+        9 => "⑨"
+        10 => "⑩"
+        11 => "⑪"
+        12 => "⑫"
+        13 => "⑬"
+        14 => "⑭"
+        15 => "⑮"
+        16 => "⑯"
+        17 => "⑰"
+        18 => "⑱"
+        19 => "⑲"
+        20 => "⑳"
+        => ordinal > 20 ? "#" + str.tostring(ordinal) : ""
+
+ordinalSuffix(Pattern p) =>
+    string ordinal = ordinalText(p.collisionOrdinal)
+    ordinal == "" ? "" : " " + ordinal
+
+displayNameOf(Pattern p) => nameOf(p) + ordinalSuffix(p)
+
+markerTextOf(Pattern p) => (p.orient == 1 ? "W" : "M") + ordinalSuffix(p)
+
+outcomeWord(Pattern p) =>
+    p.state == ST_AGED ? "Aged out" :
+     p.state != ST_RESOLVED ? "" :
+     p.why == WHY_C ? (p.orient == 1 ? "Closed above C" : "Closed below C") :
+     (p.orient == 1 ? "Closed below D" : "Closed above D")
+
+labelTextOf(Pattern p) =>
+    string w = outcomeWord(p)
+    displayNameOf(p) + (w == "" ? "" : "\n" + w)
+
+hoverOf(Pattern p) =>
+    string t = displayNameOf(p) + (p.swing == 2 ? " · Major swing" : "")
+    string status = outcomeWord(p)
+    t := t + "\n• Status: " + (status == "" ? "Open" : status)
+    if p.collisionOrdinal > 0
+        t := t + "\n• " + ordinalText(p.collisionOrdinal) +
+             " links this drawing to its table column; index, not rank."
+    if p.hasLevels
+        t := t + "\n• Setup checks passed at confirmation."
+    else if p.state == ST_RESOLVED and p.resolvedBar == p.doneBar
+        t := t + "\n• No Entry: price left the pattern before D confirmed."
+    else
+        t := t + "\n• " + NO_SETUP_NOTE + setupFailText(p)
+    t := t + "\n• PRZ: " + str.tostring(p.przLo, format.mintick) + "–" +
+         str.tostring(p.przHi, format.mintick)
+    if str.contains(p.ratioText, "±tol")
+        t := t + "\n• Ratio match used your tolerance setting."
+    t
+
+setupLineOf(Pattern p) =>
+    p.setupOk ? SETUP_NOTE :
+     p.state == ST_RESOLVED and p.resolvedBar == p.doneBar ?
+     "Resolved on its admission bar; no Setup and no levels." :
+     NO_SETUP_NOTE + setupFailText(p)
+
+jsonEscape(string value) =>
+    string out = str.replace_all(value, "\\", "\\\\")
+    out := str.replace_all(out, '"', '\\"')
+    string digits = "0123456789abcdef"
+    for code = 0 to 31
+        int upper = int(math.floor(code / 16.0))
+        int lower = code % 16
+        string hex = str.substring(digits, upper, upper + 1) + str.substring(digits, lower, lower + 1)
+        string control = str.match(out, "\\x{" + hex + "}")
+        if not na(control) and str.length(control) > 0
+            out := str.replace_all(out, control, "\\u00" + hex)
+    out
+
+alertText(Pattern p, string event) =>
+    string head = nameOf(p) + " on " + syminfo.ticker + " " + timeframe.period + " — " + event
+    string out = head
+    bool withLevels = p.hasLevels and showLevelsInput and not na(p.r)
+    if alertDetailInput != ALERT_BRIEF
+        string sizeLine = withLevels and sizingInput ? sizeText(p.entry, p.stopP) : ""
+        if alertDetailInput == ALERT_JSON
+            out := '{"pattern":"' + jsonEscape(p.name) + '","orientation":"' +
+                 (p.orient == 1 ? "bullish" : "bearish") + '","event":"' + jsonEscape(event) +
+                 '","symbol":"' + jsonEscape(syminfo.ticker) + '","timeframe":"' + jsonEscape(timeframe.period) +
+                 '","bar_time":' + str.tostring(time) +
+                 ',"formation_id":"' + jsonEscape(p.formId) + '"' +
+                 ',"setup":' + (p.setupOk ? "true" : "false") +
+                 ',"setup_note":"' + jsonEscape(setupLineOf(p)) + '"' +
+                 ',"prz":[' + str.tostring(p.przLo, format.mintick) + ',' +
+                 str.tostring(p.przHi, format.mintick) + ']'
+            if withLevels
+                out := out + ',"entry":' + str.tostring(p.entry, format.mintick) +
+                     ',"stop":' + str.tostring(p.stopP, format.mintick) +
+                     ',"stop_basis":"' + jsonEscape(stopBasisText()) + '"' +
+                     ',"targets":[' + str.tostring(p.t1, format.mintick) + ',' +
+                     str.tostring(p.t2, format.mintick) + ',' +
+                     str.tostring(p.t3, format.mintick) + ']' +
+                     ',"target_r":[' + str.tostring(targetMult(1), "#.###") + ',' +
+                     str.tostring(targetMult(2), "#.###") + ',' +
+                     str.tostring(targetMult(3), "#.###") + ']' +
+                     ',"r":' + str.tostring(p.r, format.mintick)
+                if sizeLine != ""
+                    out := out + ',"size":"' + jsonEscape(sizeLine) + '"'
+            out := out + ',"note":"' + jsonEscape(ALERT_NOTE) + '"}'
+        else
+            out := out + "\n" + p.przText + "\n" + setupLineOf(p)
+            if withLevels
+                out := out + "\nEntry " + str.tostring(p.entry, format.mintick) +
+                     " · T1 " + str.tostring(p.t1, format.mintick) + " (" +
+                     str.tostring(targetMult(1), "0.0##") + "R)" +
+                     " · T2 " + str.tostring(p.t2, format.mintick) + " (" +
+                     str.tostring(targetMult(2), "0.0##") + "R)" +
+                     " · T3 " + str.tostring(p.t3, format.mintick) + " (" +
+                     str.tostring(targetMult(3), "0.0##") + "R)" +
+                     " · Stop " + str.tostring(p.stopP, format.mintick) + " (" +
+                     stopBasisText() + ")"
+                if sizeLine != ""
+                    out := out + "\nAt your risk: " + sizeLine
+            out := out + "\n" + ALERT_NOTE
+    out
+
+// ======================== The alert dispatcher ===============================
+// Declared before `Calculations` rather than after `Visuals`: the script
+// makes one alert() call per confirmed close, carrying every record enqueued
+// on that bar, so the flush has to run inside the same barstate.isconfirmed
+// block as the producers that fill its queue.
+
+var array<string> qText  = array.new<string>()
+var array<int>    qKind  = array.new<int>()
+var array<int>    qSeq   = array.new<int>()
+var array<int> sentAt = array.new<int>()
+
+int AS_QNEXT = 0
+int AS_OADM  = 1
+int AS_OLIF  = 2
+int AS_OPRJ  = 3
+int AS_OSEQ  = 4
+int AS_OAT   = 5
+// Pine refuses a function that reassigns a global scalar, so the dispatcher's
+// shared counters live in one array the functions mutate.
+var array<int> aState = array.from(0, 0, 0, 0, -1, 0)
+
+noteOmission(int kind, int seq) =>
+    if kind == EV_ADMISSION
+        array.set(aState, AS_OADM, array.get(aState, AS_OADM) + 1)
+    else if kind == EV_LIFECYCLE
+        array.set(aState, AS_OLIF, array.get(aState, AS_OLIF) + 1)
+    else
+        array.set(aState, AS_OPRJ, array.get(aState, AS_OPRJ) + 1)
+    if array.get(aState, AS_OSEQ) == -1
+        array.set(aState, AS_OSEQ, seq)
+        array.set(aState, AS_OAT, timenow)
+
+enqueue(string record, int kind) =>
+    if barstate.isrealtime
+        if array.size(qText) >= ALERT_QUEUE_MAX
+            int at = -1
+            if kind != EV_PROJECTION
+                for j = array.size(qKind) - 1 to 0
+                    if array.get(qKind, j) == EV_PROJECTION
+                        at := j
+                        break
+            if at >= 0
+                noteOmission(EV_PROJECTION, array.get(qSeq, at))
+                array.remove(qText, at)
+                array.remove(qKind, at)
+                array.remove(qSeq, at)
+                noValue()
+            else
+                noteOmission(kind, array.get(aState, AS_QNEXT))
+                array.set(aState, AS_QNEXT, array.get(aState, AS_QNEXT) + 1)
+                noValue()
+        if array.size(qText) < ALERT_QUEUE_MAX
+            array.push(qText, record)
+            array.push(qKind, kind)
+            array.push(qSeq, array.get(aState, AS_QNEXT))
+            array.set(aState, AS_QNEXT, array.get(aState, AS_QNEXT) + 1)
+            noValue()
+
+pruneSendWindow() =>
+    while array.size(sentAt) > 0 and timenow - array.first(sentAt) > ALERT_WINDOW_MS
+        array.shift(sentAt)
+
+omittedBlock(bool json) =>
+    string counts = json ?
+         '],"omitted":{"admission":' + str.tostring(array.get(aState, AS_OADM)) +
+          ',"lifecycle":' + str.tostring(array.get(aState, AS_OLIF)) +
+          ',"projection":' + str.tostring(array.get(aState, AS_OPRJ)) + '}}' :
+         (array.get(aState, AS_OSEQ) >= 0 ?
+          EV_OMIT_HEAD + "admission=" + str.tostring(array.get(aState, AS_OADM)) +
+          ";lifecycle=" + str.tostring(array.get(aState, AS_OLIF)) +
+          ";projection=" + str.tostring(array.get(aState, AS_OPRJ)) : "")
+    counts
+
+dispatchAlerts() =>
+    pruneSendWindow()
+    if (array.size(qText) > 0 or array.get(aState, AS_OSEQ) >= 0) and
+       array.size(sentAt) < ALERT_MAX_CALLS
+        bool json = alertDetailInput == ALERT_JSON
+        string head = json ? '{"events":[' : ""
+        int budget = ALERT_CHARS_MAX - str.length(head) - ALERT_TAIL_RESERVE
+        string body = ""
+        int taken = 0
+        while array.size(qText) > 0
+            string nxt = array.get(qText, 0)
+            string sep = taken == 0 ? "" : (json ? "," : EV_SEP)
+            if str.length(nxt) > budget
+                noteOmission(array.shift(qKind), array.shift(qSeq))
+                array.shift(qText)
+                continue
+            if str.length(body) + str.length(sep) + str.length(nxt) > budget
+                break
+            body := body + sep + nxt
+            array.shift(qText)
+            array.shift(qKind)
+            array.shift(qSeq)
+            taken := taken + 1
+        if taken > 0 or array.get(aState, AS_OSEQ) >= 0
+            string tail = omittedBlock(json)
+            alert(head + body + tail, alert.freq_all)
+            array.push(sentAt, timenow)
+            array.set(aState, AS_OADM, 0)
+            array.set(aState, AS_OLIF, 0)
+            array.set(aState, AS_OPRJ, 0)
+            array.set(aState, AS_OSEQ, -1)
+            noValue()
+
+// ======================== Functions: lifecycle ===============================
+
+limitBarOf(Pattern p) => dBarOf(p) + math.round(AGE_SPAN_MULT * (dBarOf(p) - xBarOf(p)))
+
+tradeBarLimit(Pattern p) =>
+    math.max(p.doneBar, math.min(limitBarOf(p), p.doneBar + applyBarsInput))
+
+stepPattern(Pattern p, int barNow, float px, float tol) =>
+    string out = ""
+    if p.state == ST_COMPLETE
+        int limit = limitBarOf(p)
+        if barNow >= limit or barNow - p.doneBar >= applyBarsInput
+            int windowBar = p.doneBar + applyBarsInput
+            p.resolvedBar := math.max(p.doneBar, math.min(limit, windowBar))
+            p.why := windowBar <= limit ? WHY_WINDOW : WHY_AGE
+            p.state := ST_AGED
+            out := WHY_AGE
+        else if barNow > p.doneBar
+            string why = exitOf(p, px, tol)
+            if why != ""
+                p.state := ST_RESOLVED
+                p.resolvedBar := barNow
+                p.why := why
+                p.doneClose := px
+                out := why
+    out
+
+deleteDrawings(Pattern p) =>
+    polyline.delete(p.outline)
+    if not na(p.fill1)
+        polyline.delete(p.fill1)
+    if not na(p.fill2)
+        polyline.delete(p.fill2)
+    line.delete(p.entryLn)
+    line.delete(p.t1Ln)
+    line.delete(p.t2Ln)
+    line.delete(p.t3Ln)
+    line.delete(p.stopLn)
+    label.delete(p.entryLb)
+    label.delete(p.t1Lb)
+    label.delete(p.t2Lb)
+    label.delete(p.t3Lb)
+    label.delete(p.stopLb)
+    box.delete(p.t1Bx)
+    box.delete(p.t2Bx)
+    box.delete(p.t3Bx)
+    box.delete(p.stopBx)
+    box.delete(p.przBx)
+
+poolHas(array<Pattern> arr, string key) =>
+    bool found = false
+    for p in arr
+        if keyOf(p.bars) == key
+            found := true
+            break
+    found
+
+retain(Scale sc, Pattern p) =>
+    while array.size(sc.retained) >= MAX_HISTORY
+        Pattern old = array.shift(sc.retained)
+        if not poolHas(sc.active, keyOf(old.bars))
+            forgetResident(keyOf(old.bars))
+        deleteDrawings(old)
+    rememberResident(keyOf(p.bars))
+    array.push(sc.retained, p)
+    noValue()
+
+admitOpen(Scale sc, Pattern p) =>
+    rememberResident(keyOf(p.bars))
+    array.push(sc.active, p)
+    noValue()
+
+trackLevels(array<Pattern> arr) =>
+    for p in arr
+        if p.hasLevels and p.hitWhich == HIT_NONE and bar_index > p.doneBar and
+             bar_index <= tradeBarLimit(p)
+            if p.hit1Bar == -1 and tierReached(p.t1, p.orient, high, low)
+                p.hit1Bar := bar_index
+                p.hit1Time := time
+            if p.hit2Bar == -1 and tierReached(p.t2, p.orient, high, low)
+                p.hit2Bar := bar_index
+                p.hit2Time := time
+            if p.hit3Bar == -1 and tierReached(p.t3, p.orient, high, low)
+                p.hit3Bar := bar_index
+                p.hit3Time := time
+            bool tierBar = p.hit1Bar == bar_index or p.hit2Bar == bar_index or p.hit3Bar == bar_index
+            int which = levelHit(p.t3, p.stopP, p.orient, high, low, tierBar)
+            if which != HIT_NONE
+                p.hitWhich := which
+                p.hitBar := bar_index
+                if which == HIT_STOP or which == HIT_BOTH
+                    p.stopTime := time
+
+// ======================== Calculations =======================================
+
+float atrValue = ta.sma(ta.tr(true), atrLenInput)
+
+// Both averages run every bar: a ta.* call cannot be conditional (`CW10002`).
+float trendMaSma = ta.sma(close, trendMaLenInput)
+float trendMaEma = ta.ema(close, trendMaLenInput)
+float trendMaValue = na(trendMaSma) ? na : (trendMaTypeInput == MA_SMA ? trendMaSma : trendMaEma)
+float trendMaRise = trendMaValue - trendMaValue[trendMaLenInput]
+
+float ph = ta.pivothigh(high, swingInput, swingInput)
+float pl = ta.pivotlow(low, swingInput, swingInput)
+// Computed every bar for the same reason, and ignored when the reading is off.
+int   majorLen = majorUsed ? majorSwingInput : swingInput
+float phM = ta.pivothigh(high, majorLen, majorLen)
+float plM = ta.pivotlow(low, majorLen, majorLen)
+
+resTolOf(float atr) => resTolInput == 0 ? 0.0 : resTolInput * atr
+
+onPivot(Scale sc, float px, int barNow, float atr, float maD, float riseD, float atrD) =>
+    if not na(atr)
+        array<Pattern> found = array.new<Pattern>()
+        detectAll(sc, found, px, barNow, skipInput)
+        for p in found
+            string key = keyOf(p.bars)
+            if array.indexof(seenKeys, key) < 0 and not residentHas(key)
+                string why = exitOf(p, p.entry, 0.0)
+                bool hasRoom = why != "" or barNow >= limitBarOf(p) or array.size(sc.active) < MAX_TRACKED
+                if hasRoom
+                    remember(key)
+                    assignCollisionOrdinal(p, true)
+                    float entrySnap = snapTick(p.entry)
+                    p.offD := p.orient * (entrySnap - dPriceOf(p)) > 0
+                    trendVerdict(p, maD, riseD, atrD)
+                    p.setupOk := why == "" and p.offD and p.xOk and p.przOk and
+                         (p.trendOk or not requireTrendInput)
+                    p.hasLevels := why == "" and p.setupOk
+                    if why != ""
+                        p.state := ST_RESOLVED
+                        p.resolvedBar := p.doneBar
+                        p.why := why
+                        p.doneClose := p.entry
+                        noValue()
+                    else if p.hasLevels
+                        float rawR = math.abs(dPriceOf(p) - cPriceOf(p))
+                        [r, capped] = cappedR(rawR, rCapInput, atr)
+                        p.r := r
+                        p.capped := capped
+                        p.entry := entrySnap
+                        p.t1 := snapAway(p.entry + p.orient * targetMult(1) * r, p.entry, p.orient)
+                        p.t2 := snapAway(p.entry + p.orient * targetMult(2) * r, p.entry, p.orient)
+                        p.t3 := snapAway(p.entry + p.orient * targetMult(3) * r, p.entry, p.orient)
+                        p.stopP := stopStructInput ?
+                             snapOutward(structStopOf(stopBaseOf(p), p.entry, p.orient, r, atr),
+                              p.entry, -p.orient) :
+                             snapAway(p.entry - p.orient * stopRInput * r, p.entry, -p.orient)
+                        noValue()
+                    string event = p.setupOk ? "Setup at D" :
+                         why == "" ? "completed at D, no Setup: " + setupFailText(p) :
+                         outcomeWord(p) + " before D confirmed"
+                    enqueue(alertText(p, event), EV_ADMISSION)
+                    string immediate = stepPattern(p, barNow, px, resTolOf(atr))
+                    if immediate != ""
+                        enqueue(alertText(p, outcomeWord(p)), EV_LIFECYCLE)
+                    if p.state == ST_COMPLETE
+                        admitOpen(sc, p)
+                    else
+                        retain(sc, p)
+                        noValue()
+                else
+                    sc.capacitySkipped := sc.capacitySkipped + 1
+    if formingUsed
+        rebuildForming(sc, skipInput)
+
+offerPivots(Scale sc, float phv, float plv, int len, float maD, float riseD, float atrD) =>
+    trimAge(sc.ch, bar_index, chainBarsInput)
+    if not na(phv)
+        if acceptPivot(sc.ch, phv, bar_index - len, time[len], 1)
+            onPivot(sc, close, bar_index, atrValue, maD, riseD, atrD)
+    if not na(plv)
+        if acceptPivot(sc.ch, plv, bar_index - len, time[len], -1)
+            onPivot(sc, close, bar_index, atrValue, maD, riseD, atrD)
+
+lifecycle(Scale sc) =>
+    trackLevels(sc.active)
+    if array.size(sc.active) > 0
+        float resTol = resTolOf(atrValue)
+        array<Pattern> still = array.new<Pattern>()
+        for p in sc.active
+            string out = stepPattern(p, bar_index, close, resTol)
+            if out != ""
+                enqueue(alertText(p, outcomeWord(p)), EV_LIFECYCLE)
+                retain(sc, p)
+        for p in sc.active
+            bool unfinished = p.state == ST_COMPLETE or
+                 (p.hasLevels and p.hitWhich == HIT_NONE and bar_index < tradeBarLimit(p))
+            if unfinished
+                array.push(still, p)
+            else if not poolHas(sc.retained, keyOf(p.bars))
+                forgetResident(keyOf(p.bars))
+                deleteDrawings(p)
+        sc.active := still
+
+expireForming(Scale sc) =>
+    int i = array.size(sc.forming) - 1
+    while i >= 0
+        Forming f = array.get(sc.forming, i)
+        bool valid = bar_index - array.first(f.bars) <= chainBarsInput
+        if valid
+            for j = 0 to array.size(f.bars) - 1
+                bool anchorPresent = false
+                if array.size(sc.ch.bar) > 0
+                    for k = 0 to array.size(sc.ch.bar) - 1
+                        if array.get(sc.ch.bar, k) == array.get(f.bars, j) and
+                             array.get(sc.ch.price, k) == array.get(f.prices, j) and
+                             array.get(sc.ch.stamp, k) == array.get(f.stamps, j) and
+                             array.get(sc.ch.kind, k) == (j % 2 == 1 ? f.orient : -f.orient)
+                            anchorPresent := true
+                            break
+                if not anchorPresent
+                    valid := false
+                    break
+        if not valid
+            deleteForming(array.remove(sc.forming, i))
+        i := i - 1
+
+var array<string> projKey    = array.new<string>()
+var array<bool>   projInside = array.new<bool>()
+
+projIdentity(Scale sc, Forming f, float lo, float hi) =>
+    string k = str.tostring(sc.swing)
+    for st in f.stamps
+        k := k + "|" + str.tostring(st)
+    k + "|" + str.tostring(lo, format.mintick) + "|" + str.tostring(hi, format.mintick)
+
+orientAllows(int orient) =>
+    orientInput == OR_BOTH or (orientInput == OR_BULL and orient == 1) or
+     (orientInput == OR_BEAR and orient == -1)
+
+formingView(Forming f) =>
+    array<float> flo = array.new<float>()
+    array<float> fhi = array.new<float>()
+    string names = ""
+    if orientAllows(f.orient) and array.size(f.wnames) > 0
+        for i = 0 to array.size(f.wnames) - 1
+            string nm = array.get(f.wnames, i)
+            if shownBy(nm)
+                array.push(flo, array.get(f.wlos, i))
+                array.push(fhi, array.get(f.whis, i))
+                names := names + (names == "" ? "" : ", ") + nm
+    [mlo, mhi] = mergeBands(flo, fhi)
+    [names, mlo, mhi]
+
+visibleForming(Scale sc) =>
+    array<Forming> out = array.new<Forming>()
+    if formingUsed and array.size(sc.forming) > 0
+        for i = array.size(sc.forming) - 1 to 0
+            Forming f = array.get(sc.forming, i)
+            if array.size(out) < formingMaxInput and
+                 bar_index - array.first(f.bars) <= DRAW_MAX_BACK
+                [names, mlo, mhi] = formingView(f)
+                if names != ""
+                    array.push(out, f)
+    out
+
+projectionText(float lo, float hi, string names) =>
+    alertDetailInput == ALERT_JSON ?
+         '{"event":"projected D zone contact","symbol":"' + jsonEscape(syminfo.ticker) +
+         '","timeframe":"' + jsonEscape(timeframe.period) + '","bar_time":' + str.tostring(time) +
+         ',"zone":[' + str.tostring(lo, format.mintick) + ',' + str.tostring(hi, format.mintick) +
+         '],"names":"' + jsonEscape(names) + '","note":"' + jsonEscape(ALERT_NOTE) + '"}' :
+         "Projected D zone on " + syminfo.ticker + " " + timeframe.period +
+         " — a bar traded into the zone " + str.tostring(lo, format.mintick) + "–" +
+         str.tostring(hi, format.mintick) + " (" + names + "). " + ALERT_NOTE
+
+projectedAlerts(Scale sc) =>
+    if projAlertInput and projDrawn
+        for f in visibleForming(sc)
+            [names, mlo, mhi] = formingView(f)
+            if array.size(mlo) > 0
+                for j = 0 to array.size(mlo) - 1
+                    float lo = array.get(mlo, j)
+                    float hi = array.get(mhi, j)
+                    string k = projIdentity(sc, f, lo, hi)
+                    bool touching = high >= lo and low <= hi
+                    int at = array.indexof(projKey, k)
+                    bool known = at >= 0
+                    bool inside = known and array.get(projInside, at)
+                    if touching and not inside
+                        enqueue(projectionText(lo, hi, names), EV_PROJECTION)
+                    if known
+                        array.set(projInside, at, touching)
+                        noValue()
+                    else
+                        array.push(projKey, k)
+                        array.push(projInside, touching)
+                        while array.size(projKey) > PROJ_EPISODE_MAX
+                            array.shift(projKey)
+                            array.shift(projInside)
+                        noValue()
+
+if barstate.isconfirmed and chartSupported
+    lifecycle(minor)
+    lifecycle(major)
+    offerPivots(minor, ph, pl, swingInput, trendMaValue[swingInput], trendMaRise[swingInput],
+         atrValue[swingInput])
+    if majorUsed
+        offerPivots(major, phM, plM, majorSwingInput,
+             trendMaValue[majorSwingInput], trendMaRise[majorSwingInput], atrValue[majorSwingInput])
+    expireForming(minor)
+    expireForming(major)
+    projectedAlerts(minor)
+    projectedAlerts(major)
+    dispatchAlerts()
+
+// ======================== Visuals ============================================
+
+tablePosOf() =>
+    switch tablePosInput
+        TBL_TL => position.top_left
+        TBL_TC => position.top_center
+        TBL_ML => position.middle_left
+        TBL_MC => position.middle_center
+        TBL_MR => position.middle_right
+        TBL_BL => position.bottom_left
+        TBL_BC => position.bottom_center
+        TBL_BR => position.bottom_right
+        => position.top_right
+
+tableSizeOf() =>
+    switch tableSizeInput
+        TBL_SZ_TINY   => size.tiny
+        TBL_SZ_NORMAL => size.normal
+        TBL_SZ_LARGE  => size.large
+        => size.small
+
+var table lvlTable = table.new(tablePosOf(), TBL_COLS, TBL_ROWS,
+     bgcolor = color.new(chart.bg_color, 0),
+     border_color = color.new(chart.fg_color, 80), border_width = 1,
+     frame_color = color.new(chart.fg_color, 55), frame_width = 1)
+
+// The binding platform limit here is the HISTORICAL BUFFER, not the 10,000-bar
+// past reach `xloc.bar_index` allows: a drawing coordinate that far behind the
+// last bar is charged against a buffer of at most 5,000 bars, and Pine sizes
+// that buffer itself. `DRAW_MAX_BACK` therefore sits under the declared
+// `max_bars_back`, so the declaration and this bound are two layers over the
+// same limit. Measured from `p.bars`'s first element, which is the leftmost
+// point the outline actually draws.
+drawable(Pattern p) => bar_index - array.first(p.bars) <= DRAW_MAX_BACK
+
+poolEligible(Pattern p) => p.chartVisible
+
+patternEligible(Pattern p) =>
+    poolEligible(p) and shownBy(p.name) and orientShown(p) and drawable(p)
+
+selectVisible(Scale sc) =>
+    for p in sc.active
+        p.chartVisible := false
+    for p in sc.retained
+        p.chartVisible := false
+    int shown = 0
+    if array.size(sc.active) > 0
+        for i = array.size(sc.active) - 1 to 0
+            Pattern p = array.get(sc.active, i)
+            if shown < MAX_ACTIVE and p.state == ST_COMPLETE and retainShown(p) and drawable(p)
+                p.chartVisible := true
+                shown := shown + 1
+    shown := 0
+    if array.size(sc.retained) > 0
+        for i = array.size(sc.retained) - 1 to 0
+            Pattern p = array.get(sc.retained, i)
+            if shown < keptInput and retainShown(p) and drawable(p)
+                p.chartVisible := true
+                shown := shown + 1
+
+failedOf(Pattern p) => p.state == ST_RESOLVED and p.why == WHY_D
+
+terminalOf(Pattern p) => p.state != ST_COMPLETE
+
+agedOf(Pattern p) => p.state == ST_AGED
+
+hideAgedOverlays(Pattern p) => hideAgedInput and agedOf(p)
+
+historyColor(Pattern p, color base) =>
+    greyAgedInput and agedOf(p) ? color.new(color.gray, color.t(base)) : base
+
+historyTint(Pattern p, color base, int transp) =>
+    bool grey = greyAgedInput and agedOf(p)
+    float usedTransp = grey ? 100.0 - (100.0 - color.t(base)) * (100.0 - transp) / 100.0 : transp
+    color.new(historyColor(p, base), usedTransp)
+
+levelFade(Pattern p) => failedOf(p) ? FAILED_FADE : terminalOf(p) ? DONE_FADE : 0
+
+levelTint(Pattern p, color base, int transp) =>
+    int fade = levelFade(p)
+    historyTint(p, base, int(math.round(100.0 - (100.0 - transp) * (100.0 - fade) / 100.0)))
+
+przStanding(Pattern p) => przUsed and not hideAgedOverlays(p)
+
+tableVisible() => tableUsed and (showLevelsInput or showTrendInput)
+
+tableEligible(Pattern p) => patternEligible(p) and (p.hasLevels or showTrendInput)
+
+trendWarning(Pattern p) => not p.trendKnown or not p.trendOk
+
+trendCellText(Pattern p) =>
+    int direction = (trendModeOf(p.name) == TREND_CONT ? 1 : -1) * p.orient
+    string directionWord = direction == 1 ? "uptrend" : "downtrend"
+    not p.trendKnown ? (p.trendData ? "⚠ No direction" : "⚠ Insufficient history") : p.trendOk ?
+     (direction == 1 ? "Uptrend present" : "Downtrend present") : "⚠ Missing " + directionWord
+
+trendCellTip(Pattern p) =>
+    string mode = trendModeOf(p.name)
+    int direction = (mode == TREND_CONT ? 1 : -1) * p.orient
+    "Prior trend\n• Family: " + mode + " — wants " +
+     (direction == 1 ? "an uptrend" : "a downtrend") + " before D.\n• " +
+     str.replace_all(p.trendText, "\n", "\n• ")
+
+tableTip() =>
+    string trendPart = not showTrendInput ? "" :
+         "\n• Prior trend basis: " + trendBasisInput + "." +
+         "\n• Frozen at D confirmation, never a reading of the current trend." +
+         (trendBasisInput == TREND_MA ? "" :
+          "\n• The swing reading compares the pattern's X and A with the two prior confirmed " +
+          "swings; ABCD and six-point names use their documented origin pivots.") +
+         (trendBasisInput == TREND_SWING ? "" :
+          "\n• The average reading reads D against the " + trendMaTypeInput + "(" +
+          str.tostring(trendMaLenInput) + ") at D" +
+          (trendMaSlopeInput == 0.0 ? "" : " and that average's own rise over its length") + ".") +
+         "\n• Require trend context: " +
+         (requireTrendInput ? "on." : "off; this reading does not gate Setup.")
+    string levelPart = not showLevelsInput ? "" :
+         "\n• Every price is the frozen figure its own label carries." +
+         "\n• Reached records levels price has touched, on the wick, from the bar after D confirmation." +
+         "\n• It follows the trade, not the formation: it keeps recording after Status is " +
+         "final, and each column names where its own record ends." +
+         "\n• A bar spanning a Target and the Stop is both; the order inside a bar is unknown." +
+         "\n• A column of dashes: Setup checks did not all hold at confirmation, so that " +
+         "pattern carries no Entry, Target or Stop."
+    "Levels table\n• One column per pattern — the newest three, oldest first." +
+     trendPart + levelPart
+
+liveRight(Pattern p) => terminalOf(p) ? p.resolvedBar : bar_index
+
+tradeRight(Pattern p) =>
+    p.hitWhich != HIT_NONE ? p.hitBar :
+     terminalOf(p) ? math.min(bar_index, tradeBarLimit(p)) : bar_index
+
+setupEligible(Pattern p) => patternEligible(p) and p.hasLevels and p.setupOk and
+     not terminalOf(p)
+
+pointsOf(array<int> bs, array<float> ps, int fromIdx, int toIdx) =>
+    array<chart.point> pts = array.new<chart.point>()
+    for j = fromIdx to toIdx
+        array.push(pts, chart.point.from_index(array.get(bs, j), array.get(ps, j)))
+    pts
+
+levelLabelText(string name, string rMult, float price, string suffix, bool withPrice) =>
+    string t = name + (rMult == "" ? "" : " (" + rMult + "R)") + suffix
+    withPrice ? t + " · " + str.tostring(price, format.mintick) : t
+
+levelsStanding(Pattern p) =>
+    p.hasLevels and showLevelsInput and not hideAgedOverlays(p) and
+     not (onCloseInput == CLOSE_CLEAR and p.hitWhich != HIT_NONE)
+
+tierWanted(Pattern p, int hitBar) =>
+    levelsStanding(p) and (hitBar < 0 or onCloseInput == CLOSE_KEEP)
+
+tierRight(Pattern p, int hitBar) =>
+    int edge = hitBar >= 0 ? hitBar : tradeRight(p)
+    math.min(edge, tradeRight(p))
+
+drawLevels(Pattern p) =>
+    int left = p.doneBar
+    color tc = targetColorInput
+    color sc = stopColorInput
+    bool entryWanted = levelsStanding(p)
+    int right = tradeRight(p)
+    if entryWanted
+        p.entryLn := line.new(left, p.entry, right, p.entry, color = levelTint(p, chart.fg_color, 30),
+             style = line.style_dotted, width = 1)
+        p.entryLb := label.new(chart.point.from_index(right, p.entry),
+             levelLabelText("Entry", "", p.entry, "", levelPriceInput), style = label.style_label_left,
+             color = levelTint(p, chart.fg_color, 85), textcolor = chart.fg_color,
+             size = size.small, tooltip = "Entry\n• Price: " + str.tostring(p.entry, format.mintick) +
+             "\n• D confirmation-bar close, rounded to the tick." +
+             "\n• Fixed when the pattern confirmed." +
+             "\n• " + rText(p) + " (pattern distance).")
+    float fromP = p.entry
+    for tier = 1 to 3
+        float tp = tier == 3 ? p.t3 : tier == 2 ? p.t2 : p.t1
+        int   hb = tier == 3 ? p.hit3Bar : tier == 2 ? p.hit2Bar : p.hit1Bar
+        if tierWanted(p, hb)
+            int r = tierRight(p, hb)
+            string mark = hb >= 0 ? HIT_MARK : ""
+            line ln = line.new(left, tp, r, tp, color = levelTint(p, tc, hb >= 0 ? 0 : 35),
+                 style = line.style_dotted, width = 1)
+            label lb = label.new(chart.point.from_index(r, tp),
+                 levelLabelText("T" + str.tostring(tier), str.tostring(targetMult(tier), "0.0##"), tp, mark, false),
+                 style = label.style_label_left, color = levelTint(p, tc, hb >= 0 ? 60 : 85),
+                 textcolor = chart.fg_color, size = size.small, tooltip = targetTip(p, tier, tp))
+            box bx = box.new(chart.point.from_index(left, math.max(fromP, tp)),
+                 chart.point.from_index(r, math.min(fromP, tp)),
+                 border_color = color.new(tc, 100), bgcolor = levelTint(p, tc, hb >= 0 ? 80 : 92))
+            if tier == 1
+                p.t1Ln := ln
+                p.t1Lb := lb
+                p.t1Bx := bx
+            else if tier == 2
+                p.t2Ln := ln
+                p.t2Lb := lb
+                p.t2Bx := bx
+            else
+                p.t3Ln := ln
+                p.t3Lb := lb
+                p.t3Bx := bx
+        fromP := tp
+    bool stopHit = p.hitWhich == HIT_STOP or p.hitWhich == HIT_BOTH
+    if levelsStanding(p)
+        int r = tierRight(p, stopHit ? p.hitBar : -1)
+        string mark = p.hitWhich == HIT_BOTH ? HIT_MARK_BOTH : stopHit ? HIT_MARK : ""
+        p.stopLn := line.new(left, p.stopP, r, p.stopP, color = levelTint(p, sc, stopHit ? 0 : 35),
+             style = line.style_dotted, width = 1)
+        p.stopLb := label.new(chart.point.from_index(r, p.stopP),
+             levelLabelText("Stop", stopRText(p), p.stopP, mark, false),
+             style = label.style_label_left, color = levelTint(p, sc, stopHit ? 60 : 85),
+             textcolor = chart.fg_color, size = size.small, tooltip = stopTip(p))
+        p.stopBx := box.new(chart.point.from_index(left, math.max(p.entry, p.stopP)),
+             chart.point.from_index(r, math.min(p.entry, p.stopP)),
+             border_color = color.new(sc, 100), bgcolor = levelTint(p, sc, stopHit ? 80 : 92))
+
+drawPattern(Pattern p) =>
+    deleteDrawings(p)
+    if patternEligible(p)
+        bool failed = failedOf(p)
+        bool over   = terminalOf(p)
+        int  fade   = failed ? FAILED_FADE : over ? DONE_FADE : 0
+        color c = failed ? FAILED_COLOR : historyColor(p, familyColor(p.name))
+        float baseT = color.t(c)
+        float doneT = 100.0 - (100.0 - baseT) * (100.0 - fade) / 100.0
+        int n = array.size(p.bars)
+        p.outline := polyline.new(pointsOf(p.bars, p.prices, 0, n - 1),
+             line_color = fade > 0 ? color.new(c, doneT) : c,
+             line_style = p.orient == 1 ? line.style_solid : line.style_dotted,
+             line_width = lineWidthInput + (p.swing == 2 ? 1 : 0))
+        if fillUsed and n >= 4 and n <= 6
+            color fc = color.new(c, over ? 100 : fillTranspInput)
+            color none = color.new(c, 100)
+            int firstStart = p.name == N_FIVE_ZERO ? 1 : 0
+            int secondStart = n == 4 ? 1 : n == 5 ? 2 : 3
+            p.fill1 := polyline.new(pointsOf(p.bars, p.prices, firstStart, firstStart + 2), closed = true,
+                 line_color = none, fill_color = fc)
+            p.fill2 := polyline.new(pointsOf(p.bars, p.prices, secondStart, secondStart + 2), closed = true,
+                 line_color = none, fill_color = fc)
+        if przStanding(p)
+            p.przBx := box.new(chart.point.from_index(dBarOf(p), p.przHi),
+                 chart.point.from_index(liveRight(p), p.przLo),
+                 border_color = historyTint(p, c, 60),
+                 border_width = 1, bgcolor = historyTint(p, c, 92), text = "",
+                 text_size = size.tiny, text_color = chart.fg_color,
+                 text_halign = text.align_center,
+                 text_valign = p.orient == 1 ? text.align_top : text.align_bottom)
+        if p.hasLevels and showLevelsInput and p.levelsDrawn
+            drawLevels(p)
+
+drawForming(Forming f, color c, string names, array<float> los, array<float> his) =>
+    deleteForming(f)
+    f.outline := polyline.new(pointsOf(f.bars, f.prices, 0, 3), line_color = color.new(c, 40),
+         line_style = line.style_dashed, line_width = lineWidthInput)
+    if projDrawn and array.size(los) > 0
+        int cBar = array.last(f.bars)
+        for j = 0 to array.size(los) - 1
+            array.push(f.bands, box.new(chart.point.from_index(cBar, array.get(his, j)),
+                 chart.point.from_index(bar_index, array.get(los, j)),
+                 border_color = color.new(c, 50), border_style = line.style_dashed,
+                 bgcolor = color.new(c, 94)))
+        f.lbl := label.new(chart.point.from_index(bar_index, array.first(los)), "Projected D zone",
+             style = label.style_label_left, color = color.new(c, 85), textcolor = chart.fg_color,
+             size = size.tiny, tooltip = "Admits: " + names + "\n" + PROJ_LINE)
+
+reachedText(Pattern p) =>
+    string txt = ""
+    for tier = 1 to 3
+        int hb = tier == 3 ? p.hit3Bar : tier == 2 ? p.hit2Bar : p.hit1Bar
+        if hb >= 0
+            txt := txt + (str.length(txt) > 0 ? ", " : "") + "T" + str.tostring(tier)
+    if p.hitWhich == HIT_STOP or p.hitWhich == HIT_BOTH
+        txt := txt + (str.length(txt) > 0 ? ", " : "") + "Stop"
+    txt == "" ? "—" : txt
+
+reachedTip(Pattern p) =>
+    "Reached\n• This pattern's record ends at the Stop, at T3, or " +
+     str.tostring(math.max(0, tradeBarLimit(p) - p.doneBar)) +
+     " bars after D confirmation, whichever comes first."
+
+levelCellText(float price, int at, int doneAt) =>
+    string txt = str.tostring(price, format.mintick)
+    if at > 0
+        string same = str.format_time(at, "yyyy-MM-dd", syminfo.timezone) ==
+             str.format_time(doneAt, "yyyy-MM-dd", syminfo.timezone) ? "HH:mm" : "d MMM HH:mm"
+        txt := txt + "  " + str.format_time(at, timeframe.isintraday ? same : "d MMM yyyy", syminfo.timezone)
+    txt
+
+fieldCell(int row, string name, string sz, string tip = "") =>
+    table.cell(lvlTable, 0, row, name, text_color = chart.fg_color, text_size = sz,
+         text_halign = text.align_left, text_formatting = text.format_bold,
+         bgcolor = color.new(chart.fg_color, TBL_SPINE_TRANSP), tooltip = tip)
+
+dataCell(int col, int row, string txt, string sz, color txtColor, color bg, string tip) =>
+    table.cell(lvlTable, col, row, txt, text_color = txtColor, text_size = sz,
+         text_halign = text.align_left, text_font_family = font.family_monospace,
+         bgcolor = bg, tooltip = tip)
+
+allPatterns() =>
+    array<Pattern> out = array.new<Pattern>()
+    for sc in scales
+        for p in sc.retained
+            array.push(out, p)
+        for p in sc.active
+            if not poolHas(out, keyOf(p.bars))
+                array.push(out, p)
+    out
+
+sortByDoneBar(array<Pattern> arr) =>
+    int n = array.size(arr)
+    if n > 1
+        for i = 0 to n - 1
+            for j = 0 to n - 2
+                Pattern a = array.get(arr, j)
+                Pattern b = array.get(arr, j + 1)
+                if a.doneBar > b.doneBar
+                    array.set(arr, j, b)
+                    array.set(arr, j + 1, a)
+    arr
+
+drawFormingSet(Scale sc) =>
+    for f in sc.forming
+        deleteForming(f)
+    for f in visibleForming(sc)
+        [names, mlo, mhi] = formingView(f)
+        drawForming(f, color.new(chart.fg_color, 0), names, mlo, mhi)
+
+var array<string> groupKeys = array.new<string>()
+var array<label> groupLabels = array.new<label>()
+var table configTable = table.new(tablePosInput == TBL_BC ? position.top_center : position.bottom_center, 1, 1)
+
+groupLabelWanted(Pattern p) =>
+    patternEligible(p) and (labelModeInput != LBL_OFF or przStanding(p) or
+     (markerUsed and setupEligible(p)))
+
+drawSharedLabels(array<Pattern> everything) =>
+    array<string> wanted = array.new<string>()
+    for p in everything
+        if groupLabelWanted(p) and array.indexof(wanted, dPointKeyOf(p)) < 0
+            array.push(wanted, dPointKeyOf(p))
+    int old = array.size(groupKeys) - 1
+    while old >= 0
+        if array.indexof(wanted, array.get(groupKeys, old)) < 0
+            label.delete(array.remove(groupLabels, old))
+            array.remove(groupKeys, old)
+        old := old - 1
+    for key in wanted
+        Pattern first = na
+        int count = 0
+        int setups = 0
+        bool anyPrz = false
+        float rail = na
+        string tip = ""
+        for p in everything
+            if groupLabelWanted(p) and dPointKeyOf(p) == key
+                if na(first) or (p.state == ST_COMPLETE and first.state != ST_COMPLETE) or
+                     ((p.state == ST_COMPLETE) == (first.state == ST_COMPLETE) and p.doneBar >= first.doneBar)
+                    first := p
+                count := count + 1
+                if markerUsed and setupEligible(p)
+                    setups := setups + 1
+                anyPrz := anyPrz or przStanding(p)
+                float edge = nameRailPriceOf(p)
+                rail := na(rail) ? edge : p.orient == 1 ? math.min(rail, edge) : math.max(rail, edge)
+                tip := tip + (tip == "" ? "" : "\n\n") + hoverOf(p) +
+                     "\n• " + p.przText + "\n• " + setupLineOf(p) + "\n• " + setupTrendLine(p)
+        string txt = labelModeInput == LBL_NAME ?
+             (count == 1 ? labelTextOf(first) : (first.orient == 1 ? "Bullish" : "Bearish") +
+              " · " + str.tostring(count) + " patterns") :
+             labelModeInput == LBL_MARKER ? (first.orient == 1 ? "W" : "M") +
+              (count > 1 ? " · " + str.tostring(count) : ordinalSuffix(first)) : anyPrz ? "PRZ" : ""
+        if setups > 0
+            txt := txt + (txt == "" ? "" : "\n") + "Setup" +
+                 (setups > 1 ? " · " + str.tostring(setups) : "")
+        int at = array.indexof(groupKeys, key)
+        color c = failedOf(first) ? FAILED_COLOR : historyColor(first, familyColor(first.name))
+        if at < 0
+            array.push(groupKeys, key)
+            array.push(groupLabels, label.new(dBarOf(first), rail, txt,
+                 style = first.orient == 1 ? label.style_label_up : label.style_label_down,
+                 color = historyTint(first, c, 70), textcolor = chart.fg_color, size = size.small, tooltip = tip))
+        else
+            label lb = array.get(groupLabels, at)
+            label.set_xy(lb, dBarOf(first), rail)
+            label.set_text(lb, txt)
+            label.set_tooltip(lb, tip)
+            label.set_color(lb, historyTint(first, c, 70))
+            label.set_textcolor(lb, chart.fg_color)
+    noValue()
+
+if barstate.islast
+    for sc in scales
+        selectVisible(sc)
+    array<Pattern> everything = allPatterns()
+    array<Pattern> standing = array.new<Pattern>()
+    for p in everything
+        p.levelsDrawn := false
+        if levelsStanding(p) and patternEligible(p)
+            array.push(standing, p)
+    sortByDoneBar(standing)
+    int nStanding = array.size(standing)
+    if nStanding > 0
+        for i = math.max(0, nStanding - LEVELS_MAX) to nStanding - 1
+            Pattern p = array.get(standing, i)
+            p.levelsDrawn := true
+    for p in everything
+        drawPattern(p)
+    for sc in scales
+        drawFormingSet(sc)
+    drawSharedLabels(everything)
+    string notice = not chartSupported ? "Configuration: standard time-based chart required" :
+         majorSwingInput >= MAJOR_MIN and not majorUsed ? "Configuration: Major strength must exceed Swing strength" : ""
+    int skipped = minor.capacitySkipped + major.capacitySkipped
+    if chartSupported and skipped > 0
+        notice := notice + (notice == "" ? "" : "\n") + "Unfinished capacity: " +
+             str.tostring(skipped) + " admissions skipped on loaded history"
+    table.cell(configTable, 0, 0, notice, text_color = chart.fg_color, text_size = size.small,
+         bgcolor = notice == "" ? na : color.new(chart.bg_color, 0))
+
+    table.clear(lvlTable, 0, 0, TBL_COLS - 1, TBL_ROWS - 1)
+    if tableVisible()
+        string sz = tableSizeOf()
+        array<Pattern> rows = array.new<Pattern>()
+        for p in everything
+            if tableEligible(p)
+                array.push(rows, p)
+        sortByDoneBar(rows)
+        while array.size(rows) > TBL_DATA_MAX
+            array.shift(rows)
+        if array.size(rows) > 0
+            int entryRow = showTrendInput ? 3 : 2
+            int reachedRow = entryRow + 5
+            int sizeRow = reachedRow + 1
+            fieldCell(0, "Pattern ⓘ", sz, tableTip())
+            fieldCell(1, "Status", sz)
+            if showTrendInput
+                fieldCell(2, "Prior trend", sz)
+            if showLevelsInput
+                fieldCell(entryRow, "Entry", sz)
+                for tier = 1 to 3
+                    fieldCell(entryRow + tier, "T" + str.tostring(tier) + " (" +
+                         str.tostring(targetMult(tier), "0.0##") + "R)", sz)
+                fieldCell(entryRow + 4, "Stop (" + stopBasisText() + ")", sz)
+                fieldCell(reachedRow, "Reached", sz)
+                if sizingInput
+                    fieldCell(sizeRow, "At your risk", sz)
+            int col = 1
+            for p in rows
+                color fc = familyColor(p.name)
+                color plain = chart.fg_color
+                string w = outcomeWord(p)
+                color heading = greyAgedInput and agedOf(p) ? plain :
+                     failedOf(p) ? FAILED_COLOR : color.new(fc, 0)
+                dataCell(col, 0, displayNameOf(p), sz, heading, historyTint(p, fc, TBL_CHIP_TRANSP), hoverOf(p))
+                dataCell(col, 1, w == "" ? "Open" : w, sz, plain, na, "")
+                if showTrendInput
+                    dataCell(col, 2, trendCellText(p), sz, plain,
+                         trendWarning(p) ? color.new(color.orange, TBL_FILL_TRANSP) : na, trendCellTip(p))
+                if showLevelsInput
+                    if p.hasLevels
+                        dataCell(col, entryRow, str.tostring(p.entry, format.mintick) +
+                             (p.capped ? "  R capped" : ""), sz, plain, na, "")
+                        for tier = 1 to 3
+                            float tp = tier == 3 ? p.t3 : tier == 2 ? p.t2 : p.t1
+                            int   at = tier == 3 ? p.hit3Time : tier == 2 ? p.hit2Time : p.hit1Time
+                            bool  hit = at > 0
+                            dataCell(col, entryRow + tier, levelCellText(tp, at, p.doneTime), sz, plain,
+                                 hit ? historyTint(p, targetColorInput, TBL_FILL_TRANSP) : na, "")
+                        bool stopHit = p.hitWhich == HIT_STOP or p.hitWhich == HIT_BOTH
+                        dataCell(col, entryRow + 4, levelCellText(p.stopP, p.stopTime, p.doneTime) + stopRSuffix(p), sz, plain,
+                             stopHit ? historyTint(p, stopColorInput, TBL_FILL_TRANSP) : na, "")
+                        dataCell(col, reachedRow, reachedText(p), sz, plain, na, reachedTip(p))
+                        if sizingInput
+                            dataCell(col, sizeRow, sizeText(p.entry, p.stopP), sz, plain, na, "")
+                    else
+                        int lastRow = sizingInput ? sizeRow : reachedRow
+                        for row = entryRow to lastRow
+                            dataCell(col, row, "—", sz, plain, na, "")
+                col := col + 1

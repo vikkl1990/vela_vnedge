@@ -1,0 +1,3197 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//@version=6
+// © goofyfarmer
+//
+// =============================================================================
+// CME Institutional Order Flow & AMT Lens
+// License: Mozilla Public License 2.0 (MPL 2.0)
+//
+// Foundations & Mathematical Attribution:
+// • Auction Market Theory (AMT) & Market Profile: J. Peter Steidlmayer (CBOT, 1985) & James Dalton (Mind Over Markets, 1990; Markets in Profile, 2007)
+// • Right-Margin Continuous Gaussian Volume Decomposition: Open-source architecture by @ata_sabanci (Mozilla Public License 2.0)
+// • Effort vs. Reward & Institutional Absorption Mechanics: Richard D. Wyckoff (The Law of Effort vs. Result)
+// • Rational Chebyshev Error Function & Normal CDF: Milton Abramowitz & Irene Stegun (Handbook of Mathematical Functions, NBS AMS 55, formula 7.1.26)
+// • Microstructure Data & Session Architecture: CME Group (Chicago Mercantile Exchange Level 3 MBO futures standards & 24H extended hours session succession)
+// =============================================================================
+indicator("CME Institutional Order Flow & AMT Lens",
+     shorttitle       = "CME LENS",
+     overlay          = true,
+     max_bars_back    = 5000,
+     max_lines_count  = 500,
+     max_labels_count = 500,
+     max_boxes_count  = 500)
+
+import TradingView/ta/14 as tvta
+
+// =============================================================================
+// SECTION 1: AUTO-ASSET DETECTION & DYNAMIC ASSET SCALES
+// =============================================================================
+
+string root_sym = syminfo.root
+string tick_sym = syminfo.ticker
+
+bool is_nq_asset  = str.contains(root_sym, "NQ") or str.contains(tick_sym, "NQ") or str.contains(tick_sym, "QQQ") or str.contains(tick_sym, "NDX") or str.contains(tick_sym, "US100") or str.contains(tick_sym, "NAS100")
+bool is_es_asset  = str.contains(root_sym, "ES") or str.contains(tick_sym, "ES") or str.contains(tick_sym, "SPY") or str.contains(tick_sym, "SPX") or str.contains(tick_sym, "US500") or str.contains(tick_sym, "SP500")
+bool is_rty_asset = str.contains(root_sym, "RTY") or str.contains(root_sym, "M2K") or str.contains(tick_sym, "RTY") or str.contains(tick_sym, "MRTY") or str.contains(tick_sym, "IWM") or str.contains(tick_sym, "RUT") or str.contains(tick_sym, "US2000")
+bool is_mbt_asset = str.contains(root_sym, "MBT") or str.contains(root_sym, "BTC") or str.contains(tick_sym, "MBT") or str.contains(tick_sym, "BTC") or str.contains(tick_sym, "IBIT")
+bool is_gc_asset  = str.contains(root_sym, "GC") or str.contains(root_sym, "MGC") or str.contains(tick_sym, "GC") or str.contains(tick_sym, "MGC") or str.contains(tick_sym, "GLD") or str.contains(tick_sym, "XAU")
+bool is_ym_asset  = str.contains(root_sym, "YM") or str.contains(root_sym, "MYM") or str.contains(tick_sym, "YM") or str.contains(tick_sym, "MYM") or str.contains(tick_sym, "DIA") or str.contains(tick_sym, "DJI") or str.contains(tick_sym, "US30")
+bool is_equity_asset = syminfo.type == "stock" or syminfo.type == "fund" or syminfo.type == "dr"
+bool is_crypto_asset = syminfo.type == "crypto" or str.contains(tick_sym, "USDT") or str.contains(tick_sym, "USDC") or str.contains(tick_sym, "BUSD") or str.contains(tick_sym, "DOGE") or str.contains(tick_sym, "ETH") or str.contains(tick_sym, "SOL")
+
+string detected_asset_name = is_crypto_asset ? ("Crypto (" + syminfo.ticker + ")") : is_equity_asset ? ("US Equities (" + syminfo.ticker + ")") : is_nq_asset ? "NQ (Nasdaq-100)" : is_es_asset ? "ES (S&P 500)" : is_ym_asset ? "YM (Dow Jones)" : is_rty_asset ? "RTY (Russell 2000)" : is_mbt_asset ? "MBT (Bitcoin)" : is_gc_asset ? "GC (Gold)" : "CME Futures"
+
+// Asset-Specific Scales
+float asset_tick_step = is_crypto_asset ? syminfo.mintick : (is_equity_asset ? 0.01 : is_nq_asset ? 0.25 : is_es_asset ? 0.25 : is_ym_asset ? 1.00 : is_rty_asset ? 0.10 : is_mbt_asset ? 5.00 : is_gc_asset ? 0.10 : syminfo.mintick)
+float asset_cluster_tol = (is_equity_asset or is_crypto_asset) ? math.max(close * 0.0015, syminfo.mintick * 4) : is_nq_asset ? 12.0 : is_es_asset ? 3.0 : is_ym_asset ? 30.0 : is_rty_asset ? 2.0 : is_mbt_asset ? 100.0 : is_gc_asset ? 4.0 : 12.0
+
+// =============================================================================
+// SECTION 2: USER INPUTS - STREAMLINED & INSTITUTIONAL
+// =============================================================================
+
+// --- 1. Execution Engine & Performance ---
+grp_perf = "1. Execution Engine & Performance"
+replayOptimized         = input.bool(true, "Fast Replay / Lightweight Mode (Universal Free & Premium)", group=grp_perf,
+     tooltip="UNCHECK THIS BOX TO ACTIVATE TRADINGVIEW PREMIUM DEFAULTS:\n\n• CHECKED (Default): Universal Fast Replay & Free tier mode using calibrated Geometric Proxy delta (zero data lag, zero paywall alerts).\n\n• UNCHECKED (Premium / Ultimate): Instantly activates Native Footprint CME tick-by-tick tape with diagonal ladder matching and continuous Gaussian density profiles.")
+engineInput             = input.string("Native Footprint (Tick Precision)", "Order Flow Engine (when Lightweight Disabled)",
+     options=["Native Footprint (Tick Precision)", "Geometric Proxy (Zero Lag / Replay)", "Intrabar (1m Low Memory)", "Intrabar (Sub-Minute)"], group=grp_perf,
+     tooltip="Volume delta calculation engine active when Lightweight Mode is unchecked. 'Native Footprint' provides CME tick-by-tick precision on TradingView Premium/Ultimate accounts.")
+
+// --- 2. Candlestick Style & Effort Absorption ---
+grp_candles = "2. Candlestick Style & Effort Absorption"
+candleStyle             = input.string("Native Bar Re-color (Zero Setup / Standard Candles)", "Candle Display Style",
+     options=["Native Bar Re-color (Zero Setup / Standard Candles)", "Ghost Glow (Semi-Transparent Body + Solid Wicks)", "Full Solid HD Candlestick", "Hollow (Wicks & Solid Borders Only)", "Disabled"], group=grp_candles,
+     tooltip="Selects visual presentation style for price candles:\n\n• Native Bar Re-color (Zero Setup): Seamless out-of-the-box recoloring of existing chart candles via barcolor(). Lowest GPU overhead, 0 plot slots, and requires zero manual chart settings adjustments.\n\n• Ghost Glow: Semi-transparent bodies with solid wicks & borders via plotcandle(). Engineered specifically to overlay cleanly on native Volume Footprints and Volume Profiles without obscuring numbers. (For best clarity, uncheck 'Body' in Chart Settings -> Symbol).\n\n• Full Solid HD: Traditional high-contrast solid candlesticks via plotcandle(). Masks underlying native candles.\n\n• Hollow: Wicks and solid borders only with transparent bodies.\n\n• Disabled: Suppresses candle coloring completely.")
+effortSensitivity       = input.int(5, "Institutional Effort Sensitivity (1 - 10)", minval=1, maxval=10, group=grp_candles,
+     tooltip="Unified sensitivity scale governing Institutional Order Flow & Absorption detection:\n\n• 1 - 3 (High-Frequency / Scalp): Captures sensitive, fast-moving absorption wicks on 30s-1m charts.\n• 5 - 6 (Standard CME Default): Institutional benchmark calibrated to passive limit order defenses at session extremes.\n• 7 - 8 (Conservative Institutional): Filters out minor order book noise, isolating high-volume institutional walls.\n• 9 - 10 (Macro / Fortress Defense): Ultra-strict threshold capturing major structural inflection points.\n\nSelf-calibrating across all timeframes via rolling volatility and volume distributions.")
+showEffortReward        = input.bool(true, "Color Effort vs. Reward Candles", group=grp_candles,
+     tooltip="Colors candles based on Auction Market Theory and volume delta absorption (Demand absorption, Supply absorption, Initiative drives, Muted consolidation).")
+
+// --- 3. Key Structural Levels & Right-Margin Dashes ---
+grp_levels = "3. Key Structural Levels & Right-Margin Dashes"
+showSmartLevelDashes    = input.bool(true, "Show Smart Key Level Dashes (Right Margin)", group=grp_levels,
+     tooltip="Renders compact, non-intrusive half-width key level dashes in the right margin for ON-HIGH, ON-LOW, ON-HB (50%), ON-POC, PD-HIGH, and PD-LOW. Eliminates long horizontal lines cutting across historical candles while keeping auction extremes clearly visible at the hard right edge.")
+showOvernightExtremes   = input.bool(true, "Show Overnight Extremes (ON-HIGH / ON-LOW)", group=grp_levels,
+     tooltip="Displays Overnight High (ON-HIGH) and Overnight Low (ON-LOW) structural boundary dashes in purple.")
+showHalfback            = input.bool(true, "Show Overnight Half-Back (50% Midpoint)", group=grp_levels,
+     tooltip="Projects the exact 50% midpoint of the overnight auction (Globex ONH to ONL) in orange.")
+showOvernightPoc        = input.bool(true, "Show Overnight Point of Control (ON-POC)", group=grp_levels,
+     tooltip="Displays the Point of Control (ON-POC) of the completed overnight auction.")
+showPriorCashLevels     = input.bool(true, "Show Prior Day Extremes (PD-HIGH / PD-LOW)", group=grp_levels,
+     tooltip="Displays Prior Day Cash RTH (09:30-16:00 EST) High and Low outer auction boundary dashes in gold.")
+showConfluentPoc        = input.bool(true, "Highlight Confluent Iron POC Cluster", group=grp_levels,
+     tooltip="Detects when Prior Day Cash VPOC and Overnight VPOC cluster closely together, highlighting high-probability institutional reaction zones.")
+levelLabelStyle         = input.string("Session Acronym (C-POC / ON-POC)", "Level Labels Style",
+     options=["Session Acronym (C-POC / ON-POC)", "Subtle Acronym (On Line)", "Compact Acronym Only", "Bulky Badges (Legacy)", "Hidden"], group=grp_levels,
+     tooltip="Controls visual presentation of level labels:\n• Session Acronym: Shows session tag and price ('C-POC 29484.75').\n• Subtle Acronym: Clean minimalist text directly on the line.\n• Compact Acronym: Letters only ('POC').\n• Bulky Badges: High-contrast opaque pill badges.\n• Hidden: Suppresses labels for pure minimalist lines.")
+
+// --- 4. Volume Profile Viewport & Dynamics ---
+grp_viewport = "4. Volume Profile Viewport & Dynamics"
+showSessionProfiles     = input.bool(true, "Show Session Volume Profiles", group=grp_viewport,
+     tooltip="Renders right-margin developing volume profile and completed session auction profiles across the chart.")
+profWidthModeInput      = input.string("Auto-Adaptive (Viewport & TF Scaled)", "Developing Profile Width",
+     options=["Auto-Adaptive (Viewport & TF Scaled)", "Fixed Compact (18 Bars)", "Fixed Balanced (24 Bars)", "Custom Bars"], group=grp_viewport,
+     tooltip="Controls horizontal footprint of the developing right-margin volume profile:\n• Auto-Adaptive: Dynamically scales profile width to ~18% of visible screen bars (clamped between 10 and 24 bars), preventing canvas stretching when zooming or switching timeframes.\n• Fixed Compact: Locks maximum profile width to a tight 18 bars (total ~20 bars with labels).\n• Fixed Balanced: 24 bars (total ~26 bars with labels).\n• Custom Bars: User-defined fixed width.")
+profCustomWidthInput    = input.int(20, "Custom Profile Width (Bars)", minval=8, maxval=40, group=grp_viewport,
+     tooltip="Custom width in bars when 'Custom Bars' is selected above.")
+profTimeframeMode       = input.string("Auto-Adaptive", "Profile Scope Horizon",
+     options=["Auto-Adaptive", "Sub-Session (Cash/ON)", "Daily Full Cycle (24H)", "Weekly (Mon-Fri)", "Monthly"], group=grp_viewport,
+     tooltip="Auction aggregation horizon:\n• Auto-Adaptive: Automatically selects Sub-Session (Cash/ON) on intraday charts, Daily on high timeframes.\n• Sub-Session: Distinct profiles for Cash RTH (09:30-16:00 EST) and Overnight Globex (18:00-09:30 EST).\n• Daily Full Cycle: Full 24-hour CME cycle (18:00-17:00 EST).\n• Weekly / Monthly: Macro institutional auction cycles.")
+priorSessionsCount      = input.int(15, "Completed Sessions to Display", minval=1, maxval=35, group=grp_viewport,
+     tooltip="Number of historical completed session volume profiles to render and keep active in memory.")
+extendVpocInput         = input.bool(true, "Extend Virgin POC to Live Bar", group=grp_viewport,
+     tooltip="Projects a horizontal dotted line forward from the most recent completed session VPOC until the live bar.")
+showSessionVa           = input.bool(true, "Show Session VAH / VAL Lines", group=grp_viewport,
+     tooltip="Plots Value Area High (VAH) and Value Area Low (VAL) boundary lines on session profiles.")
+showAmtShapes           = input.bool(true, "Show Dalton Profile Shape Badges ([D], [P], [b], [B])", group=grp_viewport,
+     tooltip="Displays Dalton Auction Market Theory profile shape badges:\n• [D]: Normal bell-shaped balance\n• [P]: Short-covering / aggressive buying initiative with high POC\n• [b]: Long-liquidation / aggressive selling drive with low POC\n• [B]: Double distribution profile with central LVN valley.")
+showOvlMetrics          = input.bool(true, "Show Ata Sabanci Overlap Metrics (OVL & Tilt %)", group=grp_viewport,
+     tooltip="Displays Ata Sabanci profile overlap coefficient (OVL %) and directional volume tilt on session labels and HUD.")
+showLvnCorridor         = input.bool(true, "Show LVN Vacuum Corridor (B-Shape)", group=grp_viewport,
+     tooltip="Detects and highlights Low Volume Nodes (LVN) liquidity vacuum corridors on B-Shape double distribution profiles.")
+
+// --- 5. Forward-Projected Imbalance Shelves ---
+grp_orderflow = "5. Forward-Projected Imbalance Shelves"
+showImbalanceShelves    = input.bool(true, "Project Stacked Imbalance Shelves", group=grp_orderflow,
+     tooltip="Projects forward-extending support and demand shelves from stacked diagonal order flow imbalances until price retests or penetrates the zone.")
+shelfBoxTransp          = input.int(88, "Imbalance Shelf Box Transp (%)", minval=0, maxval=100, group=grp_orderflow,
+     tooltip="Controls the fill transparency of stacked imbalance support/demand shelf boxes (0% = solid, 88% = translucent institutional shading, 100% = hidden).")
+maxActiveShelvesInput   = input.int(20, "Max Active Shelves", minval=5, maxval=40, group=grp_orderflow,
+     tooltip="Maximum number of active imbalance support/demand shelves maintained in memory simultaneously (older or mitigated shelves are evicted to maintain optimal rendering performance).")
+htfClutterFilter        = input.bool(true, "Auto-Suppress Intraday Overlays on Macro/HTF", group=grp_orderflow,
+     tooltip="Automatically hides intraday lines and micro-shelves on Daily and Weekly charts to keep macro charts clean and eliminate WebGL stutter.")
+
+// --- 6. Sub-Session Framing & Guidelines ---
+grp_frames = "6. Sub-Session Framing & Guidelines"
+showSessionFrames       = input.bool(true, "Show Subsession Framing Guidelines", group=grp_frames,
+     tooltip="Master toggle to enable or disable subsession framing guidelines at session extremes.")
+frameGeometryMode       = input.string("Ceiling & Floor Guidelines (No Vertical Lines)", "Session Framing Geometry",
+     options=["Ceiling & Floor Guidelines (No Vertical Lines)", "Full Enclosing Box", "None (Disabled)"], group=grp_frames,
+     tooltip="Full Enclosing Box draws a complete rectangle. Ceiling & Floor Guidelines draws clean horizontal high/low boundaries without vertical lines. None (Disabled) hides framing lines completely.")
+frameOutlineStyleChoice = input.string("Dotted", "Framing Line Style", options=["Solid", "Dotted", "Dashed"], inline="FrameLine", group=grp_frames)
+frameOutlineWidth       = input.int(2, "Width", minval=1, maxval=4, inline="FrameLine", group=grp_frames,
+     tooltip="Customizes line style (Solid/Dotted/Dashed) and pixel width for session framing boundaries.")
+frameOutlineTransp      = input.int(30, "Subsession Frame Transp (%)", minval=0, maxval=100, group=grp_frames,
+     tooltip="Controls opacity/transparency of the subsession frame borders (0% = solid, 30% = crisp dotted, 100% = completely hidden).")
+frameFillTransp         = input.int(100, "Subsession Fill Transp (%)", minval=0, maxval=100, group=grp_frames,
+     tooltip="Background fill opacity inside the subsession frame (100% = pure hollow wireframe with 100% click-through safety for the Ruler tool).")
+cashFrameCol            = input.color(#FFD700, "Cash Frame & Badge Color", inline="FrameCol", group=grp_frames,
+     tooltip="Border color for Cash RTH (09:30-16:00 EST) subsession framing outlines, PD-HIGH/LOW dashes, and Cash session badge text (default: Gold #FFD700).")
+onFrameCol              = input.color(#AB47BC, "Overnight Frame & Badge Color", inline="FrameCol", group=grp_frames,
+     tooltip="Border color for Overnight Globex (18:00-09:30 EST) subsession framing outlines, ON-HIGH/LOW dashes, and Overnight session badge text (default: Purple #AB47BC).")
+
+// --- 7. Heads-Up Display & Real-Time Telemetry ---
+grp_hud = "7. Heads-Up Display & Real-Time Telemetry"
+hudModeInput            = input.string("Full Educational Dashboard", "HUD Display Mode",
+     options=["Full Educational Dashboard", "Compact Status Pill", "Disabled"], group=grp_hud,
+     tooltip="Selects dashboard visual presentation:\n• Full Educational Dashboard: Comprehensive table with AMT shape, Value Area positioning, target distances, and absorption pulse.\n• Compact Status Pill: Minimalist status bar preserving chart canvas.\n• Disabled: Hides table completely.")
+hudPositionInput        = input.string("Bottom Right", "Dashboard Position",
+     options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=grp_hud,
+     tooltip="Corner placement of the HUD dashboard table on the chart.")
+showConfluentAlert      = input.bool(true, "Detect Imbalances at Key Levels", group=grp_hud,
+     tooltip="Detects and highlights when active stacked order flow imbalances coincide with key AMT levels (VAH, VAL, VPOC, or Overnight Half-Back).")
+
+// --- 8. Visual Palette: Candlesticks & Absorption ---
+grp_palette_candles = "8. Visual Palette: Candlesticks & Absorption"
+colBuyerAbsorb          = input.color(#FFD700, "Demand Absorption (Lows)", inline="Absorb", group=grp_palette_candles,
+     tooltip="Bullish buyer absorption candle color (aggressive market sellers absorbed on limit bids). Also dynamically styles bullish imbalance shelves and buyer volume profiles.")
+colSellerAbsorb         = input.color(#AB47BC, "Supply Absorption (Highs)", inline="Absorb", group=grp_palette_candles,
+     tooltip="Bearish seller absorption candle color (aggressive market buyers absorbed on limit asks). Also dynamically styles bearish imbalance shelves and seller volume profiles.")
+colBullDrive            = input.color(#00E676, "Initiative Bull Drive", inline="Drives", group=grp_palette_candles,
+     tooltip="High-volume initiative buying expansion drive (electric neon green).")
+colBearDrive            = input.color(#FF1744, "Initiative Bear Drive", inline="Drives", group=grp_palette_candles,
+     tooltip="High-volume initiative selling expansion drive (electric neon crimson).")
+colBullCandle           = input.color(#26A69A, "Standard Bull Bar", inline="StdBars", group=grp_palette_candles,
+     tooltip="Standard non-initiative bullish candle body/wick color (muted low-fatigue green).")
+colBearCandle           = input.color(#EF5350, "Standard Bear Bar", inline="StdBars", group=grp_palette_candles,
+     tooltip="Standard non-initiative bearish candle body/wick color (muted low-fatigue red).")
+colMutedNoise           = input.color(#373C4B, "Dead Volume / Micro-Chop", group=grp_palette_candles,
+     tooltip="Low relative volume or micro-range consolidation candle. Customizable for dark or white chart backgrounds.")
+
+// --- 9. Visual Palette: Key Levels & Profiles ---
+grp_palette_levels = "9. Visual Palette: Key Levels & Profiles"
+colPocInput             = input.color(#FFFFFF, "VPOC Level", inline="VaLevels", group=grp_palette_levels,
+     tooltip="Color of Point of Control (POC / VPOC) line, marking the exact price of heaviest volume execution.")
+colVahInput             = input.color(#00E5FF, "VAH & VAL Boundaries", inline="VaLevels", group=grp_palette_levels,
+     tooltip="Color of Value Area High (VAH) and Value Area Low (VAL) boundary lines, marking the 70% auction value boundaries.")
+colValInput             = colVahInput
+halfbackColInput        = input.color(#FF9800, "Overnight Half-Back (50%)", inline="SpecialLevels", group=grp_palette_levels,
+     tooltip="Color of the Overnight Half-Back (50% midpoint) line.")
+confluentColInput       = input.color(#CE93D8, "Confluent Iron POC", inline="SpecialLevels", group=grp_palette_levels,
+     tooltip="Color of the Confluent POC level when Prior Cash VPOC and Overnight VPOC align closely.")
+colLvnInput             = input.color(#E040FB, "LVN Corridor & Line", group=grp_palette_levels,
+     tooltip="Color for Low Volume Node (LVN) vacuum corridors and inflection lines.")
+profShadingMode         = input.string("Bid/Ask Dual-Tone", "Profile Shading Style",
+     options=["Bid/Ask Dual-Tone", "Monochrome Slate", "Monochrome Gold", "Monochrome Cyan"], group=grp_palette_levels,
+     tooltip="Selects color treatment for volume profile curves:\n• Bid/Ask Dual-Tone: Buyer and seller volume curves colored with Gold & Purple palette.\n• Monochrome Slate / Gold / Cyan: Unified single-tone curves.")
+profBuyCol              = input.color(#FFD700, "Buy Vol Profile", inline="ProfVol", group=grp_palette_levels,
+     tooltip="Volume profile color for buying volume (defaults to Gold #FFD700). Fully customizable.")
+profSellCol             = input.color(#AB47BC, "Sell Vol Profile", inline="ProfVol", group=grp_palette_levels,
+     tooltip="Volume profile color for selling volume (defaults to Purple #AB47BC). Fully customizable.")
+profFillTransp          = input.int(92, "Profile Fill Transp (%)", minval=0, maxval=100, group=grp_palette_levels,
+     tooltip="Controls fill opacity of the volume profile curves across all sessions (92% provides sleek institutional dual-tone overlap shading, 100% = borderless/outline only).")
+showProfOutline         = input.bool(true, "Profile Outline Contour", inline="ProfOut", group=grp_palette_levels)
+profOutlineWidth        = input.int(2, "Width", minval=1, maxval=4, inline="ProfOut", group=grp_palette_levels,
+     tooltip="Toggle outline border and customize thickness (1-4px) for developing and completed volume profile polyline curves.")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STANDARDIZED MATHEMATICAL CONSTANTS & INSTITUTIONAL CALIBRATIONS
+// (Automated Mathematical Constants & Engine Calibrations)
+// ─────────────────────────────────────────────────────────────────────────────
+string ltfOverrideInput        = "Auto"
+string tickGroupingMode        = "Auto-Adaptive (Row-Density Invariance)"
+int    manualTicksInput        = 4
+bool   useTodRvol              = true
+bool   ignoreZerosInput        = true
+int    imbTicksPerRow          = 0
+string priorLevelAnchor        = "Session Framing Only (No Multi-Day Lines)"
+string confToleranceMode       = "Auto-Asset Calibrated"
+float  confCustomTol           = 12.0
+int    confLookbackSess        = 4
+string levelLabelPos           = "Right Edge (Inside Box)"
+bool   useShieldPill           = true
+string profSpanMode            = "Expressive (50% Span)"
+int    profOffsetInput         = 2
+int    profLabelOverhang       = 2
+
+// Compact volume number formatter (K, M)
+f_volCompact(float v) =>
+    float av = math.abs(v)
+    string s = v < 0 ? "-" : ""
+    av >= 1e6 ? s + str.tostring(av / 1e6, "#.00") + "M" : (av >= 1e3 ? s + str.tostring(av / 1e3, "#.0") + "K" : s + str.tostring(av, "#"))
+
+// Viewport & Timeframe Adaptive Right-Margin Profile Width Engine
+int tf_sec_prof = timeframe.isseconds ? timeframe.multiplier : (timeframe.isintraday ? timeframe.multiplier * 60 : 86400)
+int bar_span_ms_g = tf_sec_prof * 1000
+int vis_time_span = not na(chart.left_visible_bar_time) and not na(chart.right_visible_bar_time) ? 
+     int(math.max(0, chart.right_visible_bar_time - chart.left_visible_bar_time)) : 0
+int vis_bars = (vis_time_span > 0 and bar_span_ms_g > 0) ? 
+     math.max(25, int(math.round(vis_time_span / bar_span_ms_g))) : 100
+
+int tf_adaptive_cap = tf_sec_prof <= 30 ? 26 : (tf_sec_prof <= 180 ? 22 : (tf_sec_prof <= 300 ? 18 : (tf_sec_prof <= 900 ? 14 : (tf_sec_prof <= 3600 ? 12 : 8))))
+
+int eff_prof_width = profWidthModeInput == "Fixed Compact (18 Bars)" ? 18 : (profWidthModeInput == "Fixed Balanced (24 Bars)" ? 24 : (profWidthModeInput == "Custom Bars" ? profCustomWidthInput : math.max(10, math.min(tf_adaptive_cap, int(vis_bars * 0.18)))))
+
+int    profWidthInput          = eff_prof_width
+int    profOutlineTransp       = 20
+bool   profDeltaModulation     = true
+bool   profOutlineSyncProfile  = true
+color  profOutlineCustomCol    = #00E5FF
+string profFontSizeInput       = "Small"
+string lvnDisplayMode          = "Inflection Line Only"
+string lvnExtendMode           = "Extend Until Mitigated"
+float  lvnValleyRatio          = 0.60
+string vaCalcMethod            = "Dalton Cumulative Mass (15%-85%)"
+string cryptoWeekendMode       = "Day/Night 7-Day (09:30-16:00 EST)"
+bool   waitFirstBarClose       = false
+string profBinScalingMode      = "Adaptive 5-Primes Scale"
+float  bellDivInput            = 3.0
+bool   profSmoothKde           = true
+int MAX_LOOKBACK = 4500
+int prof_bins    = replayOptimized ? 30 : 50
+
+// SECTION 3: DESIGN TOKENS & CANONICAL VARIABLES
+// =============================================================================
+
+// --- Master Institutional Effort Resolution Engine (Conformal 1-10 Scale) ---
+float s_norm         = (float(effortSensitivity) - 1.0) / 9.0  // Normalized linear parameter 0.0 to 1.0
+
+// 1. Footprint Imbalance Multiplier & Depth (Scalper: 2.2x/2-tier -> CME Standard: 2.9x/3-tier -> Whale: 3.8x/4-tier)
+float imbMultInput   = 2.2 + s_norm * 1.6
+int   imbDepthInput  = effortSensitivity <= 3 ? 2 : (effortSensitivity <= 8 ? 3 : 4)
+
+// 2. Standard Volume-Spread Absorption Thresholds (Continuous 1-10 Sensitivity Scaling)
+float req_rvol_absorb = 1.10 + s_norm * 0.90   // 1 -> 1.10x (Relaxed), 5 -> 1.50x (Standard), 10 -> 2.00x (Strict)
+float req_delta_ratio = 0.15 + s_norm * 0.25   // Minimum delta-to-volume absorption intensity
+
+// 3. Directional Momentum Expansion & Reclaim Wick Tuning
+float eff_body_drive = 0.55 + s_norm * 0.25   // 1 -> 55%, 5 -> 66%, 10 -> 80%
+float agg_wick_mult  = 0.85 + s_norm * 0.30   // 1 -> 0.85x, 5 -> 0.98x, 10 -> 1.15x
+float agg_rvol_mult  = 0.85 + s_norm * 0.45   // Scaled momentum volume floor mult
+
+// Canonical Overnight Framing State Defaults
+bool showOvernightBox   = false
+bool extendToPreMarket  = false
+int  overnightBoxTransp = 100
+
+// Canonical Transparencies & Widths (Standardized under the hood)
+bool rulerClickThrough = true
+int pocTransp          = 0
+int vahTransp          = 35
+int valTransp          = 35
+int hbTransp           = 20
+int confTransp         = 15
+int lvnFillTransp      = 92
+int shieldPillTransp   = 15
+
+int pocLineWidth       = 2
+int vahLineWidth       = 1
+int valLineWidth       = 1
+int hbLineWidth        = 2
+int confLineWidth      = 2
+string pocLineStyleInput   = "Solid"
+string vahLineStyleInput   = "Solid"
+string valLineStyleInput   = "Solid"
+string hbLineStyleInput    = "Dashed"
+string confLineStyleInput  = "Solid"
+string lvnLineStyleInput   = "Dotted"
+string frameOutlineStyle   = frameOutlineStyleChoice
+bool eff_show_frames       = showSessionFrames and (frameGeometryMode != "None (Disabled)")
+
+// Canonical Design Tokens
+color COL_GOLD_ABSORB   = colBuyerAbsorb
+color COL_PURPLE_DRIVE  = colSellerAbsorb
+color COL_SHELF_GOLD    = colBuyerAbsorb
+color COL_SHELF_PURPLE  = colSellerAbsorb
+color COL_MUTED_NOISE   = colMutedNoise
+color COL_OVERNIGHT_BOX = na
+color COL_CONFLUENT_POC = color.new(confluentColInput, confTransp)
+float eff_cluster_tol   = confToleranceMode == "Custom Points" ? confCustomTol : asset_cluster_tol
+color COL_HALFBACK      = color.new(halfbackColInput, hbTransp)
+color COL_POC_LINE      = color.new(colPocInput, pocTransp)
+color COL_VAH_LINE      = color.new(colVahInput, vahTransp)
+color COL_VAL_LINE      = color.new(colValInput, valTransp)
+color COL_LVN_CORRIDOR  = colLvnInput
+color COL_SHIELD_PILL   = color.new(color.rgb(12, 15, 24), shieldPillTransp)
+
+f_line_style(string s) =>
+    s == "Solid" ? line.style_solid : (s == "Dashed" ? line.style_dashed : line.style_dotted)
+
+string STYLE_POC_LINE  = f_line_style(pocLineStyleInput)
+string STYLE_VAH_LINE  = f_line_style(vahLineStyleInput)
+string STYLE_VAL_LINE  = f_line_style(valLineStyleInput)
+string STYLE_HALFBACK  = f_line_style(hbLineStyleInput)
+string STYLE_CONFLUENT = f_line_style(confLineStyleInput)
+string STYLE_FRAME_BOX  = f_line_style(frameOutlineStyle)
+string STYLE_LVN_LINE   = f_line_style(lvnLineStyleInput)
+string prof_lbl_size    = profFontSizeInput == "Tiny" ? size.tiny : (profFontSizeInput == "Normal" ? size.normal : (profFontSizeInput == "Large" ? size.large : size.small))
+
+// SECTION 4: EXACT MATHEMATICAL KERNEL (ATA SABANCI ENGINE)
+// =============================================================================
+
+// Standard normal cumulative distribution function (Abramowitz & Stegun 7.1.26)
+f_normCdf(float z) =>
+    float p  = 0.3275911
+    float a1 = 0.254829592
+    float a2 = -0.284496736
+    float a3 = 1.421413741
+    float a4 = -1.453152027
+    float a5 = 1.061405429
+    float t  = 1.0 / (1.0 + p * math.abs(z))
+    float r  = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * math.exp(-z * z / 2.0)
+    z >= 0.0 ? r : 1.0 - r
+
+// Chebyshev rational approximation for complementary error function (Residual < 100 PPM)
+f_profErfc(float x) =>
+    float ax = math.abs(x)
+    float t  = 1.0 / (1.0 + 0.5 * ax)
+    float tau = t * math.exp(-ax * ax - 1.26551223 +
+         t * ( 1.00002368 +
+         t * ( 0.37409196 +
+         t * ( 0.09678418 +
+         t * (-0.18628806 +
+         t * ( 0.27886807 +
+         t * (-1.13520398 +
+         t * ( 1.48851587 +
+         t * (-0.82215223 +
+         t *   0.17087277)))))))))
+    x >= 0.0 ? tau : 2.0 - tau
+
+// Gaussian CDF and PDF
+f_profNormCdf(float z) => 0.5 * f_profErfc(-z / 1.4142135623730951)
+f_profNormPdf(float z) => 0.3989422804014327 * math.exp(-0.5 * z * z)
+
+// Struct representation of Gaussian profile component
+type ProfComp
+    float mu
+    float sigma
+    float coef
+    float priceLo
+    float priceHi
+
+// Continuous density evaluation
+f_profDensity(float p, array<ProfComp> comps) =>
+    float dens = 0.0
+    for comp in comps
+        if p >= comp.priceLo and p <= comp.priceHi
+            dens += comp.coef * f_profNormPdf((p - comp.mu) / comp.sigma)
+    dens
+
+// Exact band mass integration
+f_profBandMass(float bandLo, float bandHi, array<ProfComp> comps) =>
+    float mass = 0.0
+    for comp in comps
+        float segLo = math.max(bandLo, comp.priceLo)
+        float segHi = math.min(bandHi, comp.priceHi)
+        if segHi > segLo
+            float zAll = f_profNormCdf((comp.priceHi - comp.mu) / comp.sigma) - f_profNormCdf((comp.priceLo - comp.mu) / comp.sigma)
+            if zAll > 0.0
+                float zSeg = f_profNormCdf((segHi - comp.mu) / comp.sigma) - f_profNormCdf((segLo - comp.mu) / comp.sigma)
+                mass += comp.coef * comp.sigma * zSeg
+    mass
+
+// Adaptive 5-Primes Discretization Function (Harmonic Anti-Aliasing against CME $0.25 ticks)
+f_adaptive_primes_bins(float span) =>
+    span <= 30.0 ? 41 : (span <= 60.0 ? 53 : (span <= 100.0 ? 71 : (span <= 160.0 ? 89 : 113)))
+
+// ── Ata Sabanci Exact Gaussian Kernel Profiling Engine ──────────────────────
+
+// Continuous Gaussian Kernel Allocation for Footprint Rows (Preserves 100% Exact Volume)
+f_deposit_fp_gaussian(array<float> b_bins, array<float> s_bins, float r_mid, float r_rng, float r_b, float r_s, float base_lo, float step, int res, float bellDiv) =>
+    if r_b + r_s > 0.0
+        float sg_r = math.max(syminfo.mintick * 0.5, math.max(r_rng, step) / bellDiv)
+        int b_s = math.max(0, math.min(res, int(math.floor((r_mid - 2.5 * sg_r - base_lo) / step))))
+        int b_e = math.max(0, math.min(res, int(math.ceil((r_mid + 2.5 * sg_r - base_lo) / step))))
+        if b_s == b_e
+            array.set(b_bins, b_s, array.get(b_bins, b_s) + r_b)
+            array.set(s_bins, b_s, array.get(s_bins, b_s) + r_s)
+        else
+            float sum_w = 0.0
+            for b = b_s to b_e
+                float p_b = base_lo + b * step
+                sum_w += f_profNormPdf((p_b - r_mid) / sg_r)
+            if sum_w > 0.0
+                for b = b_s to b_e
+                    float p_b = base_lo + b * step
+                    float w = f_profNormPdf((p_b - r_mid) / sg_r) / sum_w
+                    array.set(b_bins, b, array.get(b_bins, b) + r_b * w)
+                    array.set(s_bins, b, array.get(s_bins, b) + r_s * w)
+
+// Continuous Gaussian Kernel Allocation for Bar OHLCV Fallback (Ata Sabanci Exact Method)
+f_deposit_bar_gaussian(array<float> b_bins, array<float> s_bins, float bh, float bl, float bc, float bv, float sv, float base_lo, float step, int res, float bellDiv) =>
+    if bv + sv > 0.0
+        float rng = bh - bl
+        if rng <= 0.0
+            int b_flat = math.max(0, math.min(res, int(math.round((bc - base_lo) / step))))
+            array.set(b_bins, b_flat, array.get(b_bins, b_flat) + bv)
+            array.set(s_bins, b_flat, array.get(s_bins, b_flat) + sv)
+        else
+            float sg = math.max(syminfo.mintick * 0.5, rng / bellDiv)
+            float muB = bl + (bc - bl) * 0.5
+            float muS = bc + (bh - bc) * 0.5
+            int b_s = math.max(0, math.min(res, int(math.floor((bl - base_lo) / step))))
+            int b_e = math.max(0, math.min(res, int(math.ceil((bh - base_lo) / step))))
+            if b_s == b_e
+                array.set(b_bins, b_s, array.get(b_bins, b_s) + bv)
+                array.set(s_bins, b_s, array.get(s_bins, b_s) + sv)
+            else
+                float sum_wB = 0.0
+                float sum_wS = 0.0
+                for b = b_s to b_e
+                    float p_b = base_lo + b * step
+                    sum_wB += f_profNormPdf((p_b - muB) / sg)
+                    sum_wS += f_profNormPdf((p_b - muS) / sg)
+                for b = b_s to b_e
+                    float p_b = base_lo + b * step
+                    float uB = (p_b - muB) / sg
+                    float uS = (p_b - muS) / sg
+                    float wB = sum_wB > 0.0 ? f_profNormPdf(uB) / sum_wB : 0.0
+                    float wS = sum_wS > 0.0 ? f_profNormPdf(uS) / sum_wS : 0.0
+                    array.set(b_bins, b, array.get(b_bins, b) + bv * wB)
+                    array.set(s_bins, b, array.get(s_bins, b) + sv * wS)
+
+// Ata Sabanci 3-Tap Binomial Low-Pass Smoothing Filter (Preserves 100% Total Volume)
+f_smooth_profile(array<float> vals) =>
+    int n = array.size(vals)
+    if n >= 3
+        array<float> temp = array.copy(vals)
+        for k = 1 to n - 2
+            float v_prev = array.get(temp, k - 1)
+            float v_cur  = array.get(temp, k)
+            float v_next = array.get(temp, k + 1)
+            array.set(vals, k, 0.20 * v_prev + 0.60 * v_cur + 0.20 * v_next)
+
+
+// =============================================================================
+// SECTION 5: AUTO-ADAPTIVE TIMEFRAME TICK GROUPING
+// =============================================================================
+
+int tf_sec = timeframe.isseconds ? timeframe.multiplier : (timeframe.isintraday ? timeframe.multiplier * 60 : (timeframe.isdaily ? 86400 : (timeframe.isweekly ? 604800 : (timeframe.ismonthly ? 2592000 : 86400))))
+
+// Adaptive LVN Valley Depth Ratio (Compensates for higher-timeframe bar-range volume smearing)
+float tf_lvn_boost = tf_sec <= 180 ? 0.0 : (tf_sec <= 300 ? 0.06 : (tf_sec <= 900 ? 0.10 : 0.12))
+float effective_lvn_thresh_ratio = math.min(0.85, lvnValleyRatio + tf_lvn_boost)
+
+
+bool is_ltf_execution   = timeframe.isintraday and (timeframe.isminutes ? timeframe.multiplier <= 30 : true)
+bool is_macro_htf       = not is_ltf_execution
+bool is_daily_or_above  = timeframe.isdaily or timeframe.isweekly or timeframe.ismonthly or (tf_sec >= 86400)
+bool hide_intraday_overlays = htfClutterFilter and is_daily_or_above
+
+// Effective Profiler Horizon Resolution
+string eff_prof_mode = profTimeframeMode == "Auto-Adaptive" ? (
+      (timeframe.isweekly or timeframe.ismonthly) ? "Monthly" :
+      timeframe.isdaily ? "Weekly (Mon-Fri)" :
+      (timeframe.isintraday and (timeframe.isminutes ? timeframe.multiplier >= 30 : false)) ? "Daily Full Cycle (24H)" :
+      "Sub-Session (Cash/ON)") : profTimeframeMode
+
+bool is_subsession_mode  = eff_prof_mode == "Sub-Session (Cash/ON)"
+bool is_daily_cycle_mode = eff_prof_mode == "Daily Full Cycle (24H)"
+bool is_weekly_mode      = eff_prof_mode == "Weekly (Mon-Fri)"
+bool is_monthly_mode     = eff_prof_mode == "Monthly" 
+
+// Equities Footprint Baseline Simple Int (Categorical Ticker Scaling for Native Footprint Engine)
+int eq_base_fp = (str.contains(syminfo.ticker, "SPY") or str.contains(syminfo.ticker, "VOO")) ? 9 :
+                 (str.contains(syminfo.ticker, "QQQ") or str.contains(syminfo.ticker, "META")) ? 8 :
+                 (str.contains(syminfo.ticker, "MSFT")) ? 7 :
+                 (str.contains(syminfo.ticker, "AAPL") or str.contains(syminfo.ticker, "TSLA")) ? 4 :
+                 (str.contains(syminfo.ticker, "AMZN") or str.contains(syminfo.ticker, "GOOG") or str.contains(syminfo.ticker, "AMD")) ? 3 : 2
+
+// Crypto Footprint Baseline Simple Int (Compile-Time Ticker Scaling for Native Footprint Engine)
+int crypto_base_fp = (str.contains(tick_sym, "BTC") and not is_mbt_asset) ? 64 :
+                     str.contains(tick_sym, "ETH") ? 32 :
+                     str.contains(tick_sym, "SOL") ? 2  : 1
+
+// Default futures scaling parameters with dedicated equities baseline & crypto baseline
+int auto_ticks = 4
+if is_equity_asset
+    auto_ticks := tf_sec <= 60 ? math.max(1, int(eq_base_fp * 0.5)) : (tf_sec <= 300 ? eq_base_fp : (tf_sec <= 900 ? eq_base_fp * 2 : (tf_sec <= 3600 ? eq_base_fp * 5 : (tf_sec <= 14400 ? eq_base_fp * 12 : eq_base_fp * 25))))
+else if is_crypto_asset
+    auto_ticks := tf_sec <= 60 ? crypto_base_fp : (tf_sec <= 300 ? crypto_base_fp * 2 : (tf_sec <= 900 ? crypto_base_fp * 4 : (tf_sec <= 3600 ? crypto_base_fp * 10 : (tf_sec <= 14400 ? crypto_base_fp * 20 : crypto_base_fp * 40))))
+else if is_es_asset
+    auto_ticks := tf_sec <= 60 ? 1 : (tf_sec <= 300 ? 2 : (tf_sec <= 900 ? 3 : (tf_sec <= 3600 ? 12 : (tf_sec <= 14400 ? 24 : 40))))
+else if is_ym_asset
+    auto_ticks := tf_sec <= 60 ? 2 : (tf_sec <= 300 ? 4 : (tf_sec <= 900 ? 8 : (tf_sec <= 3600 ? 20 : (tf_sec <= 14400 ? 40 : 80))))
+else if is_rty_asset
+    auto_ticks := tf_sec <= 60 ? 1 : (tf_sec <= 300 ? 2 : (tf_sec <= 900 ? 4 : (tf_sec <= 3600 ? 12 : (tf_sec <= 14400 ? 24 : 40))))
+else if is_mbt_asset
+    auto_ticks := tf_sec <= 60 ? 1 : (tf_sec <= 300 ? 2 : (tf_sec <= 900 ? 4 : (tf_sec <= 3600 ? 20 : (tf_sec <= 14400 ? 60 : 120))))
+else
+    auto_ticks := tf_sec <= 60 ? 4 : (tf_sec <= 300 ? 8 : (tf_sec <= 900 ? 16 : (tf_sec <= 3600 ? 40 : (tf_sec <= 14400 ? 80 : 160))))
+
+// Continuous Approximate Math Scaling for All Equities & Crypto (Row-Density Invariance Law)
+float eq_tf_mult   = tf_sec <= 60 ? 0.5 : (tf_sec <= 300 ? 1.0 : (tf_sec <= 900 ? 2.0 : (tf_sec <= 3600 ? 5.0 : (tf_sec <= 14400 ? 12.5 : 25.0))))
+int eq_scaled_ticks = math.max(1, int(math.round((close / 60.0) * eq_tf_mult)))
+
+// Universal 1.0 bps Math Scaling for All Crypto (Ethereum $3,200 -> 32 ticks; Bitcoin $64,000 -> 64 ticks)
+float crypto_bps        = tf_sec <= 60 ? 0.0001 : (tf_sec <= 300 ? 0.0002 : (tf_sec <= 900 ? 0.0004 : (tf_sec <= 3600 ? 0.0010 : (tf_sec <= 14400 ? 0.0020 : 0.0040))))
+int crypto_scaled_ticks = math.max(1, int(math.round((close * crypto_bps) / math.max(syminfo.mintick, 1e-7))))
+
+// Simple int for request.footprint (compile-time compliant: must only use simple int)
+int effective_ticks = (imbTicksPerRow > 0) ? imbTicksPerRow : ((tickGroupingMode == "Manual Ticks" and manualTicksInput > 0) ? manualTicksInput : auto_ticks)
+
+// Dynamic active ticks used for continuous on-chart imbalance shelves & HUD
+int active_ticks     = (imbTicksPerRow > 0) ? imbTicksPerRow : ((tickGroupingMode == "Manual Ticks" and manualTicksInput > 0) ? manualTicksInput : (is_equity_asset ? eq_scaled_ticks : (is_crypto_asset ? crypto_scaled_ticks : auto_ticks)))
+float tick_group_pts = active_ticks * asset_tick_step
+float imb_tier_span  = tick_group_pts
+
+// Adaptive Intrabar Lower Timeframe
+string auto_ltf = timeframe.isseconds ? "1S" : (tf_sec <= 60 ? "15S" : (tf_sec <= 300 ? "1" : (tf_sec <= 900 ? "1" : "5")))
+string effective_ltf = engineInput == "Intrabar (1m Low Memory)" ? "1" : ((ltfOverrideInput != "Auto") ? ltfOverrideInput : auto_ltf)
+
+// =============================================================================
+// SECTION 6: TRUE INTRABAR DELTA & VOLUME ORDER FLOW ACQUISITION
+// =============================================================================
+
+// Engine Selection
+bool useFpEngine = not replayOptimized and (engineInput == "Native Footprint (Tick Precision)") and timeframe.isintraday
+bool useIbEngine = not replayOptimized and (engineInput == "Intrabar (1m Low Memory)" or engineInput == "Intrabar (Sub-Minute)") and is_ltf_execution
+
+// Native Footprint series acquisition (Pine Script v6 Native Footprint Engine)
+footprint engFp = useFpEngine ? request.footprint(ticks_per_row = effective_ticks, va_percent = 70, imbalance_percent = imbMultInput * 100.0) : na
+bool hasEngFp   = useFpEngine and not na(engFp)
+
+float ibUp = na
+float ibDn = na
+if useIbEngine
+    [u, d, _] = tvta.requestUpAndDownVolume(effective_ltf)
+    ibUp := u
+    ibDn := d
+
+float bar_range = math.max(high - low, syminfo.mintick)
+float geo_share = (close - low) / bar_range
+
+float ib_u   = math.abs(nz(ibUp))
+float ib_d   = math.abs(nz(ibDn))
+float ib_tot = ib_u + ib_d
+
+// Instantaneous real-time residual volume for active unclosed intrabar ticks
+float live_res_vol = math.max(0.0, volume - ib_tot)
+
+// Real-time residual tick blending with Footprint & Intrabar engines
+float fp_raw_b = (useFpEngine and hasEngFp) ? footprint.buy_volume(engFp) : na
+float fp_raw_s = (useFpEngine and hasEngFp) ? footprint.sell_volume(engFp) : na
+float fp_tot   = nz(fp_raw_b) + nz(fp_raw_s)
+float fp_res_vol = (useFpEngine and hasEngFp and not barstate.isconfirmed) ? math.max(0.0, volume - fp_tot) : 0.0
+
+float bar_buy_vol = if useFpEngine and hasEngFp
+    nz(fp_raw_b) + (fp_res_vol * geo_share)
+else if useIbEngine and ib_tot > 0.0
+    ib_u + (live_res_vol * geo_share)
+else
+    volume * geo_share
+
+float bar_sell_vol = if useFpEngine and hasEngFp
+    nz(fp_raw_s) + (fp_res_vol * (1.0 - geo_share))
+else if useIbEngine and ib_tot > 0.0
+    ib_d + (live_res_vol * (1.0 - geo_share))
+else
+    volume * (1.0 - geo_share)
+
+bar_buy_vol  := na(bar_buy_vol)  ? volume * geo_share       : bar_buy_vol
+bar_sell_vol := na(bar_sell_vol) ? volume * (1.0 - geo_share) : bar_sell_vol
+max_bars_back(bar_buy_vol, 5000)
+max_bars_back(bar_sell_vol, 5000)
+
+float bar_delta = if useFpEngine and hasEngFp
+    if not barstate.isconfirmed and fp_res_vol > 0.0
+        nz(footprint.delta(engFp)) + fp_res_vol * (2.0 * geo_share - 1.0)
+    else
+        footprint.delta(engFp)
+else
+    bar_buy_vol - bar_sell_vol
+bar_delta := na(bar_delta) ? (bar_buy_vol - bar_sell_vol) : bar_delta
+
+float engBuy  = bar_buy_vol
+float engSell = bar_sell_vol
+
+// =============================================================================
+// SECTION 7: HIGHER-TRUTH EFFORT VS. REWARD CANDLE ENGINE
+// =============================================================================
+
+float vol_ma20 = ta.sma(volume, 20)
+float rvol = vol_ma20 > 0 ? (volume / vol_ma20) : 1.0
+
+// Time-of-Day Relative Volume (TOD-RVOL) for 1-Hour Charts (Eliminates Diurnal Distortion)
+int bar_ny_hr = hour(time, "America/New_York")
+var array<float> tod_vol_sum   = array.new<float>(24, 0.0)
+var array<int>   tod_bar_count = array.new<int>(24, 0)
+
+bool is_hourly_chart = timeframe.isminutes and timeframe.multiplier == 60
+float tod_avg_vol = na
+
+if is_hourly_chart and useTodRvol
+    int hr_count = array.get(tod_bar_count, bar_ny_hr)
+    float hr_sum = array.get(tod_vol_sum, bar_ny_hr)
+    if hr_count >= 5
+        tod_avg_vol := hr_sum / float(hr_count)
+    if barstate.isconfirmed
+        array.set(tod_vol_sum, bar_ny_hr, hr_sum + volume)
+        array.set(tod_bar_count, bar_ny_hr, hr_count + 1)
+
+float effective_rvol = (is_hourly_chart and useTodRvol and not na(tod_avg_vol) and tod_avg_vol > 0) ? (volume / tod_avg_vol) : rvol
+
+// Intraday Real-Time Elapsed Pace of Volume (Effort Adaptation on Active Live Bar)
+float bar_duration = math.max(1000.0, float(time_close - time))
+float bar_elapsed  = math.max(1000.0, float(math.min(bar_duration, timenow - time)))
+float bar_fraction = (barstate.isrealtime and not barstate.isconfirmed) ? math.max(0.10, math.min(1.0, bar_elapsed / bar_duration)) : 1.0
+float live_rvol    = effective_rvol / bar_fraction
+
+float current_atr = ta.atr(14)
+float safe_atr = current_atr > 0 ? current_atr : bar_range
+
+float lower_wick = math.min(open, close) - low
+float upper_wick = high - math.max(open, close)
+float candle_body = math.abs(close - open)
+
+float lower_wick_pct = lower_wick / bar_range
+float upper_wick_pct = upper_wick / bar_range
+float body_pct = candle_body / bar_range
+
+// Adaptive Wick Absorption Thresholds
+float base_absorb_wick = tf_sec <= 60 ? 0.38 : (tf_sec <= 900 ? 0.35 : (tf_sec <= 14400 ? 0.30 : 0.25))
+float req_absorb_wick  = math.min(0.55, base_absorb_wick * agg_wick_mult)
+
+// Fast 50% Wick Reclaim Gate
+bool fast_wick_reclaim_bull = bar_range > 0 and (close >= low + 0.50 * bar_range)
+bool fast_wick_reclaim_bear = bar_range > 0 and (close <= high - 0.50 * bar_range)
+
+// Judas Swing Circuit Breaker (09:30 - 09:35 AM NY Time Opening Volatility Blackout)
+int m_of_d = hour(time, "America/New_York") * 60 + minute(time, "America/New_York")
+bool is_judas_blackout = (m_of_d >= 9 * 60 + 30 and m_of_d < 9 * 60 + 35)
+
+// =============================================================================
+// NATIVE FOOTPRINT DIAGONAL ROW SCANNER (PINE SCRIPT v6 COMPILED C++ ENGINE)
+// =============================================================================
+bool fp_detected_bull_stack = false
+bool fp_detected_bear_stack = false
+float fp_bull_stack_lo      = na
+float fp_bull_stack_hi      = na
+float fp_bear_stack_lo      = na
+float fp_bear_stack_hi      = na
+bool fp_trapped_longs       = false
+bool fp_trapped_shorts      = false
+bool fp_bottom_sell_imb     = false
+bool fp_top_buy_imb         = false
+
+// Institutional Volume Floor: filters out 1-contract zero-denominator anomalies on quiet ticks
+float min_imb_vol = is_equity_asset ? 10.0 : 1.0
+
+if useFpEngine and hasEngFp and (showEffortReward or showImbalanceShelves)
+    array<volume_row> fp_rows = footprint.rows(engFp)
+    int num_fp_rows = array.size(fp_rows)
+    if num_fp_rows >= 2
+        int cur_bull_stack = 0
+        int cur_bear_stack = 0
+        float temp_bull_lo = na
+        float temp_bear_lo = na
+        int bottom_cutoff  = math.max(1, int(math.floor(num_fp_rows * 0.25)))
+        int top_cutoff     = math.min(num_fp_rows - 2, int(math.floor(num_fp_rows * 0.75)))
+        
+        volume_row r_curr = array.get(fp_rows, 0)
+        float s_curr = volume_row.sell_volume(r_curr)
+        
+        if ignoreZerosInput
+            // Fast Path: TradingView Native Footprint Parity (Zeroes strictly ignored, hoisted outside loop)
+            for i = 0 to num_fp_rows - 2
+                volume_row r_next = array.get(fp_rows, i + 1)
+                float b_next = volume_row.buy_volume(r_next)
+                float s_next = volume_row.sell_volume(r_next)
+                
+                bool is_buy_imb  = (s_curr > 0.0 and b_next > 0.0 and b_next >= s_curr * imbMultInput and b_next >= min_imb_vol)
+                bool is_sell_imb = (b_next > 0.0 and s_curr > 0.0 and s_curr >= b_next * imbMultInput and s_curr >= min_imb_vol)
+                
+                // Microstructure Boundary Absorption: Low-tier sell aggression & High-tier buy aggression
+                if i < bottom_cutoff and is_sell_imb
+                    fp_bottom_sell_imb := true
+                if i >= top_cutoff and is_buy_imb
+                    fp_top_buy_imb := true
+
+                // Stacked Buy Imbalance (Strictly confined to imbDepthInput tier span)
+                if is_buy_imb
+                    cur_bull_stack += 1
+                    if cur_bull_stack == 1
+                        temp_bull_lo := volume_row.down_price(r_next)
+                    if cur_bull_stack == imbDepthInput
+                        fp_detected_bull_stack := true
+                        if na(fp_bull_stack_lo)
+                            fp_bull_stack_lo := temp_bull_lo
+                            fp_bull_stack_hi := volume_row.up_price(r_next)
+                else
+                    cur_bull_stack := 0
+                    temp_bull_lo   := na
+                    
+                // Stacked Sell Imbalance (Strictly confined to imbDepthInput tier span)
+                if is_sell_imb
+                    cur_bear_stack += 1
+                    if cur_bear_stack == 1
+                        temp_bear_lo := volume_row.down_price(r_curr)
+                    if cur_bear_stack == imbDepthInput
+                        fp_detected_bear_stack := true
+                        if na(fp_bear_stack_lo)
+                            fp_bear_stack_lo := temp_bear_lo
+                            fp_bear_stack_hi := volume_row.up_price(r_curr)
+                else
+                    cur_bear_stack := 0
+                    temp_bear_lo   := na
+                
+                // Slide window forward: avoids duplicate array.get and sell_volume lookups
+                r_curr := r_next
+                s_curr := s_next
+        else
+            // Compare Against Zero Mode (Fallback for non-standard footprint configurations)
+            for i = 0 to num_fp_rows - 2
+                volume_row r_next = array.get(fp_rows, i + 1)
+                float b_next = volume_row.buy_volume(r_next)
+                float s_next = volume_row.sell_volume(r_next)
+                
+                bool is_buy_imb  = s_curr > 0.0 ? (b_next >= s_curr * imbMultInput and b_next >= min_imb_vol) : (b_next >= min_imb_vol)
+                bool is_sell_imb = b_next > 0.0 ? (s_curr >= b_next * imbMultInput and s_curr >= min_imb_vol) : (s_curr >= min_imb_vol)
+                
+                // Microstructure Boundary Absorption: Low-tier sell aggression & High-tier buy aggression
+                if i < bottom_cutoff and is_sell_imb
+                    fp_bottom_sell_imb := true
+                if i >= top_cutoff and is_buy_imb
+                    fp_top_buy_imb := true
+
+                // Stacked Buy Imbalance (Strictly confined to imbDepthInput tier span)
+                if is_buy_imb
+                    cur_bull_stack += 1
+                    if cur_bull_stack == 1
+                        temp_bull_lo := volume_row.down_price(r_next)
+                    if cur_bull_stack == imbDepthInput
+                        fp_detected_bull_stack := true
+                        if na(fp_bull_stack_lo)
+                            fp_bull_stack_lo := temp_bull_lo
+                            fp_bull_stack_hi := volume_row.up_price(r_next)
+                else
+                    cur_bull_stack := 0
+                    temp_bull_lo   := na
+                    
+                // Stacked Sell Imbalance (Strictly confined to imbDepthInput tier span)
+                if is_sell_imb
+                    cur_bear_stack += 1
+                    if cur_bear_stack == 1
+                        temp_bear_lo := volume_row.down_price(r_curr)
+                    if cur_bear_stack == imbDepthInput
+                        fp_detected_bear_stack := true
+                        if na(fp_bear_stack_lo)
+                            fp_bear_stack_lo := temp_bear_lo
+                            fp_bear_stack_hi := volume_row.up_price(r_curr)
+                else
+                    cur_bear_stack := 0
+                    temp_bear_lo   := na
+                
+                // Slide window forward
+                r_curr := r_next
+                s_curr := s_next
+
+    // Intra-Candle Point of Control (POC) Trapped Liquidity Sentry
+    volume_row fp_poc_row = footprint.poc(engFp)
+    float fp_poc_p   = not na(fp_poc_row) ? (volume_row.up_price(fp_poc_row) + volume_row.down_price(fp_poc_row)) * 0.5 : na
+    float fp_poc_loc = not na(fp_poc_p) ? (fp_poc_p - low) / bar_range : na
+    fp_trapped_longs  := not na(fp_poc_loc) and (fp_poc_loc >= 0.80) and (close < fp_poc_p) and (bar_delta < 0 or live_rvol >= 1.10)
+    fp_trapped_shorts := not na(fp_poc_loc) and (fp_poc_loc <= 0.20) and (close > fp_poc_p) and (bar_delta > 0 or live_rvol >= 1.10)
+
+// Delta Intensity & Normalized Microstructure Effort Metrics
+float delta_pct      = volume > 0.0 ? (bar_delta / volume) * 100.0 : 0.0
+float abs_delta      = math.abs(bar_delta)
+float sma_abs_delta  = ta.sma(abs_delta, 20)
+float safe_sma_delta = sma_abs_delta > 0 ? sma_abs_delta : 1.0
+float safe_sma_vol   = vol_ma20 > 0 ? vol_ma20 : 1.0
+
+// 1. Volume-Spread & Delta Absorption Engine
+bool vol_effort_active = (live_rvol >= req_rvol_absorb) or (abs_delta / safe_sma_delta >= 1.25)
+bool absorb_bull_wick  = lower_wick_pct >= req_absorb_wick and fast_wick_reclaim_bull
+bool absorb_bear_wick  = upper_wick_pct >= req_absorb_wick and fast_wick_reclaim_bear
+
+bool std_bull_absorb = not is_judas_blackout and absorb_bull_wick and vol_effort_active and (bar_delta < 0.0 or fp_bottom_sell_imb or math.abs(delta_pct) >= req_delta_ratio * 100.0)
+bool std_bear_absorb = not is_judas_blackout and absorb_bear_wick and vol_effort_active and (bar_delta > 0.0 or fp_top_buy_imb or math.abs(delta_pct) >= req_delta_ratio * 100.0)
+
+bool is_bull_delta_div = (low < low[1] or low < low[2]) and bar_delta > 0.0 and (close > open or close > low + 0.35 * bar_range)
+bool is_bear_delta_div = (high > high[1] or high > high[2]) and bar_delta < 0.0 and (close < open or close < high - 0.35 * bar_range)
+
+// Intra-Candle Value Area Progression
+volume_row fp_vah_row = (useFpEngine and hasEngFp) ? footprint.vah(engFp) : na
+volume_row fp_val_row = (useFpEngine and hasEngFp) ? footprint.val(engFp) : na
+float bar_fp_vah = not na(fp_vah_row) ? volume_row.up_price(fp_vah_row) : (high - 0.15 * bar_range)
+float bar_fp_val = not na(fp_val_row) ? volume_row.down_price(fp_val_row) : (low + 0.15 * bar_range)
+
+bool is_gold_buyer_absorb    = (useFpEngine and hasEngFp) ? (fp_detected_bull_stack or fp_trapped_shorts or fp_bottom_sell_imb or std_bull_absorb or (is_bull_delta_div and live_rvol >= 1.10)) : std_bull_absorb
+bool is_purple_seller_absorb  = (useFpEngine and hasEngFp) ? (fp_detected_bear_stack or fp_trapped_longs or fp_top_buy_imb or std_bear_absorb or (is_bear_delta_div and live_rvol >= 1.10)) : std_bear_absorb
+
+// 3. Initiative Momentum Drives (High-volume directional expansion, body >= eff_body_drive)
+bool is_bull_drive = live_rvol >= (1.50 * agg_rvol_mult) and body_pct >= eff_body_drive and close > open and (bar_delta > 0 or delta_pct >= 25.0)
+bool is_bear_drive = live_rvol >= (1.50 * agg_rvol_mult) and body_pct >= eff_body_drive and close < open and (bar_delta < 0 or delta_pct <= -25.0)
+
+// 4. Muted Dead Churn: Volume dried up or micro-range chop (Gated strictly to CONFIRMED bars)
+// On live developing bars (not barstate.isconfirmed), volume has not finished accumulating!
+// Evaluating raw rvol < 0.70 live caused developing bars to camouflage in 85% transparent dark slate.
+bool is_muted_noise = showEffortReward and barstate.isconfirmed and (effective_rvol < 0.70 or bar_range < (0.40 * safe_atr))
+
+// Core Microstructure Classification (Engine Level - Universal across barcolor & plotcandle)
+bool cond_gold_absorb   = showEffortReward and is_gold_buyer_absorb and (not is_purple_seller_absorb or close >= open or bar_delta >= 0)
+bool cond_purple_absorb = showEffortReward and is_purple_seller_absorb and not cond_gold_absorb
+bool cond_muted_noise   = showEffortReward and is_muted_noise and not cond_gold_absorb and not cond_purple_absorb
+bool cond_bull_drive    = is_bull_drive and not cond_gold_absorb and not cond_purple_absorb and not cond_muted_noise
+bool cond_bear_drive    = is_bear_drive and not cond_gold_absorb and not cond_purple_absorb and not cond_muted_noise
+
+// 1. Native Barcolor Pipeline (Zero Setup / Standard Native Candles)
+// Repaints existing native chart candles directly via vertex shader attributes with 0 extra draw calls.
+bool is_native_mode = candleStyle == "Native Bar Re-color (Zero Setup / Standard Candles)"
+color native_bar_col = cond_gold_absorb   ? colBuyerAbsorb :
+                       cond_purple_absorb ? colSellerAbsorb :
+                       cond_muted_noise   ? colMutedNoise :
+                       cond_bull_drive    ? colBullDrive :
+                       cond_bear_drive    ? colBearDrive :
+                       (close >= open     ? colBullCandle : colBearCandle)
+barcolor(is_native_mode ? native_bar_col : na, title="Native Direct Barcolor")
+
+// 2. Discrete plotcandle() Pipeline (Ghost Glow, Full Solid HD, Hollow)
+int body_transp = candleStyle == "Ghost Glow (Semi-Transparent Body + Solid Wicks)" ? 75 : (candleStyle == "Hollow (Wicks & Solid Borders Only)" ? 100 : 0)
+bool use_plotcandle = (candleStyle == "Ghost Glow (Semi-Transparent Body + Solid Wicks)" or
+                       candleStyle == "Full Solid HD Candlestick" or
+                       candleStyle == "Hollow (Wicks & Solid Borders Only)")
+
+// Discrete States for Dedicated Constant-Wick Plotting (Eliminates WebGL Series Wickcolor Drop on Realtime Bars)
+bool is_gold_state   = use_plotcandle and cond_gold_absorb
+bool is_purple_state = use_plotcandle and cond_purple_absorb
+bool is_muted_state  = use_plotcandle and cond_muted_noise
+bool is_bull_state   = use_plotcandle and close >= open and not cond_gold_absorb and not cond_purple_absorb and not cond_muted_noise
+bool is_bear_state   = use_plotcandle and close < open and not cond_gold_absorb and not cond_purple_absorb and not cond_muted_noise
+
+// Dynamic Color Assignment for Active Candle States (Neon for Drives, Muted Ghost for Standard)
+color bull_wick_col = cond_bull_drive ? colBullDrive : colBullCandle
+color bear_wick_col = cond_bear_drive ? colBearDrive : colBearCandle
+
+// 1. Bullish Active Candle - Constant Wicks & Borders for 100% WebGL Realtime Reliability
+plotcandle(is_bull_state ? open : na, is_bull_state ? high : na, is_bull_state ? low : na, is_bull_state ? close : na,
+     title="Bullish Order Flow Candle",
+     color=color.new(bull_wick_col, cond_bull_drive ? math.min(body_transp, 20) : body_transp),
+     wickcolor=bull_wick_col,
+     bordercolor=bull_wick_col,
+     editable=false)
+
+// 2. Bearish Active Candle - Constant Wicks & Borders for 100% WebGL Realtime Reliability
+plotcandle(is_bear_state ? open : na, is_bear_state ? high : na, is_bear_state ? low : na, is_bear_state ? close : na,
+     title="Bearish Order Flow Candle",
+     color=color.new(bear_wick_col, cond_bear_drive ? math.min(body_transp, 20) : body_transp),
+     wickcolor=bear_wick_col,
+     bordercolor=bear_wick_col,
+     editable=false)
+
+// 3. Buyer Absorption (Demand Defense / Trapped Shorts) - Constant Wicks & Borders
+plotcandle(is_gold_state ? open : na, is_gold_state ? high : na, is_gold_state ? low : na, is_gold_state ? close : na,
+     title="Buyer Absorption Candle",
+     color=color.new(colBuyerAbsorb, body_transp),
+     wickcolor=colBuyerAbsorb,
+     bordercolor=colBuyerAbsorb,
+     editable=false)
+
+// 4. Seller Absorption (Supply Defense / Trapped Longs) - Constant Wicks & Borders
+plotcandle(is_purple_state ? open : na, is_purple_state ? high : na, is_purple_state ? low : na, is_purple_state ? close : na,
+     title="Seller Absorption Candle",
+     color=color.new(colSellerAbsorb, body_transp),
+     wickcolor=colSellerAbsorb,
+     bordercolor=colSellerAbsorb,
+     editable=false)
+
+// 5. Muted Low-Volume Consolidation (Gated to Confirmed Historical Bars Only)
+plotcandle(is_muted_state ? open : na, is_muted_state ? high : na, is_muted_state ? low : na, is_muted_state ? close : na,
+     title="Muted Consolidation Candle",
+     color=color.new(colMutedNoise, 85),
+     wickcolor=colMutedNoise,
+     bordercolor=colMutedNoise,
+     editable=false)
+
+// =============================================================================
+// SECTION 8: FORWARD-PROJECTED 3-STACKED IMBALANCE SHELVES
+// =============================================================================
+
+// Dynamic shelf structure
+type ImbShelf
+    box   bx
+    line  ln
+    float price
+    float risk_stop
+    bool  is_bull
+    int   start_bar
+
+var array<ImbShelf> active_shelves = array.new<ImbShelf>()
+
+// Detect stacked imbalances on current bar matching TradingView Native Footprint settings
+float tier_span     = imb_tier_span
+int num_tiers = math.max(int(bar_range / imb_tier_span), 1)
+
+bool detected_bull_stack = false
+bool detected_bear_stack = false
+float bull_shelf_lo = 0.0
+float bull_shelf_hi = 0.0
+float bear_shelf_lo = 0.0
+float bear_shelf_hi = 0.0
+
+if useFpEngine and hasEngFp
+    // 1. Direct Native Footprint Ladder Matching (Exact Price Tiers from CME Tape)
+    if fp_detected_bull_stack and not na(fp_bull_stack_lo) and not na(fp_bull_stack_hi)
+        detected_bull_stack := true
+        bull_shelf_lo := fp_bull_stack_lo
+        bull_shelf_hi := fp_bull_stack_hi
+    if fp_detected_bear_stack and not na(fp_bear_stack_lo) and not na(fp_bear_stack_hi)
+        detected_bear_stack := true
+        bear_shelf_lo := fp_bear_stack_lo
+        bear_shelf_hi := fp_bear_stack_hi
+else
+    // 2. Geometric Proxy Fallback (Bar Replay & Lightweight Mode)
+    if is_gold_buyer_absorb or is_bull_drive
+        detected_bull_stack := true
+        float raw_bull_p = low + (is_gold_buyer_absorb ? lower_wick * 0.5 : 0.0)
+        bull_shelf_lo := math.floor(raw_bull_p / imb_tier_span) * imb_tier_span
+        bull_shelf_hi := bull_shelf_lo + (imbDepthInput * imb_tier_span)
+    if is_purple_seller_absorb or is_bear_drive
+        detected_bear_stack := true
+        float raw_bear_p = high - (is_purple_seller_absorb ? upper_wick * 0.5 : 0.0)
+        bear_shelf_hi := math.ceil(raw_bear_p / imb_tier_span) * imb_tier_span
+        bear_shelf_lo := bear_shelf_hi - (imbDepthInput * imb_tier_span)
+
+// Project forward shelves
+if showImbalanceShelves and not hide_intraday_overlays
+    bool show_shelf_box = shelfBoxTransp < 100
+
+    if barstate.isconfirmed and detected_bull_stack and bull_shelf_hi > 0.0
+        float shelf_lo = bull_shelf_lo
+        float shelf_hi = bull_shelf_hi
+        box b = na
+        if show_shelf_box
+            color s_gold_bg  = color.new(COL_SHELF_GOLD, shelfBoxTransp)
+            color s_gold_brd = color.new(COL_SHELF_GOLD, math.max(0, shelfBoxTransp - 20))
+            b := box.new(bar_index, shelf_hi, bar_index + 1, shelf_lo,
+                 bgcolor=s_gold_bg, border_color=s_gold_brd, border_width=1)
+        array.push(active_shelves, ImbShelf.new(b, na, bull_shelf_lo, shelf_lo - safe_atr * 0.5, true, bar_index))
+
+    if barstate.isconfirmed and detected_bear_stack and bear_shelf_hi > 0.0
+        float shelf_hi = bear_shelf_hi
+        float shelf_lo = bear_shelf_lo
+        box b = na
+        if show_shelf_box
+            color s_purp_bg  = color.new(COL_SHELF_PURPLE, shelfBoxTransp)
+            color s_purp_brd = color.new(COL_SHELF_PURPLE, math.max(0, shelfBoxTransp - 20))
+            b := box.new(bar_index, shelf_hi, bar_index + 1, shelf_lo,
+                 bgcolor=s_purp_bg, border_color=s_purp_brd, border_width=1)
+        array.push(active_shelves, ImbShelf.new(b, na, bear_shelf_hi, shelf_hi + safe_atr * 0.5, false, bar_index))
+
+    // Manage active shelves: test mitigation and lock break bar (Zero-Overhead Event Architecture)
+    int shelf_count = array.size(active_shelves)
+    if shelf_count > 0
+        for i = shelf_count - 1 to 0
+            ImbShelf sh = array.get(active_shelves, i)
+            bool is_mitigated = false
+            
+            // Check if price penetrated through the shelf
+            if sh.is_bull
+                if close < sh.risk_stop or (low < sh.price - imb_tier_span and bar_index > sh.start_bar + 1)
+                    is_mitigated := true
+            else
+                if close > sh.risk_stop or (high > sh.price + imb_tier_span and bar_index > sh.start_bar + 1)
+                    is_mitigated := true
+
+            if is_mitigated
+                // Lock shelf at break bar once and evict (eliminates 99.9% of historical bar redraw drag)
+                if not na(sh.bx)
+                    box.set_right(sh.bx, bar_index)
+                if not na(sh.ln)
+                    line.set_x2(sh.ln, bar_index)
+                if barstate.isconfirmed
+                    array.remove(active_shelves, i)
+            else if barstate.islast
+                // Only extend unmitigated shelves forward when on the real-time/latest bar (eliminates 300,000+ historical mutations)
+                if not na(sh.bx)
+                    box.set_right(sh.bx, bar_index + 1)
+                if not na(sh.ln)
+                    line.set_x2(sh.ln, bar_index + 1)
+
+    // Bounded drawing budget: recycle if > maxActiveShelvesInput (eliminates array iteration drag)
+    if array.size(active_shelves) > maxActiveShelvesInput
+        ImbShelf old_sh = array.shift(active_shelves)
+        if not na(old_sh.bx)
+            box.delete(old_sh.bx)
+        if not na(old_sh.ln)
+            line.delete(old_sh.ln)
+
+
+// =============================================================================
+// SECTION 10: SESSION ARCHITECTURE, OVERNIGHT BOX & OVERNIGHT HALF-BACK RAY
+// =============================================================================
+
+// Multi-Session Gallery & Session Succession Tracking (Ata Sabanci Architecture)
+var array<int>  sess_starts    = array.new<int>()
+var array<bool> sess_is_cashes = array.new<bool>()
+
+// Unconditional ta.change evaluation on every bar (Guarantees historical consistency and eliminates CW10002)
+int t_cme_d      = time("D", "1800-1700:1234567", "America/New_York")
+int t_eq_d       = time("D", "0930-1600:23456", "America/New_York")
+int t_crypto_d   = time("D")
+int chg_cme_d    = ta.change(t_cme_d)
+int chg_eq_d     = ta.change(t_eq_d)
+int chg_crypto_d = ta.change(t_crypto_d)
+int chg_w        = ta.change(time("W"))
+int chg_m        = ta.change(time("M"))
+
+// True CME Globex Rollover (18:00 EST) - Bypassed for US Equities & 24/7 Crypto
+bool is_cme_rollover = not is_equity_asset and not is_crypto_asset and (chg_cme_d != 0)
+
+// RTH Cash Window (09:30 - 16:00 EST) & 24/7 Crypto Weekend Sub-Session Partitioning
+bool in_weekday_cash = not na(time(timeframe.period, "0930-1600:23456", "America/New_York"))
+int ny_dow           = dayofweek(time, "America/New_York")
+bool is_ny_weekend   = (ny_dow == 1 or ny_dow == 7)
+
+bool in_crypto_cash = in_weekday_cash
+if is_crypto_asset
+    if cryptoWeekendMode == "Day/Night 7-Day (09:30-16:00 EST)"
+        in_crypto_cash := not na(time(timeframe.period, "0930-1600:1234567", "America/New_York"))
+    else if cryptoWeekendMode == "12-Hour Halves (09:30 & 21:30 EST)"
+        if is_ny_weekend
+            in_crypto_cash := not na(time(timeframe.period, "0930-2130:1234567", "America/New_York"))
+        else
+            in_crypto_cash := in_weekday_cash
+    else
+        in_crypto_cash := in_weekday_cash
+
+bool in_cash_rth = is_crypto_asset ? in_crypto_cash : in_weekday_cash
+bool is_first_cash_bar = in_cash_rth and not in_cash_rth[1]
+
+// Overnight Window (18:00 to 09:30 EST for CME Futures; Seamless 16:00-09:30 EST for Equities & Crypto)
+string on_session_str = "1800-0930:1234567"
+bool in_overnight = (is_equity_asset or is_crypto_asset) ? (not in_cash_rth) : not na(time(timeframe.period, on_session_str, "America/New_York"))
+bool is_first_on_bar = in_overnight and not in_overnight[1]
+
+// Macro Rollovers (CME 24-Hour Session Synchronization)
+bool is_macro_daily_roll   = is_crypto_asset ? (chg_crypto_d != 0) : (is_equity_asset ? (chg_eq_d != 0) : (chg_cme_d != 0))
+bool is_macro_weekly_roll  = chg_w != 0
+bool is_macro_monthly_roll = chg_m != 0
+
+// Gated Session Transitions: Ensure session start logic runs EXACTLY ONCE per new session bar
+// Array-backed persistence prevents variable rollback across intra-bar ticks in Bar Replay
+var array<int> last_sess_markers = array.new<int>(4, -1) // [0: cash, 1: on, 2: roll/daily, 3: macro]
+
+bool is_new_cash_open = is_first_cash_bar and (array.get(last_sess_markers, 0) != bar_index)
+bool is_new_on_open   = is_first_on_bar   and (array.get(last_sess_markers, 1) != bar_index)
+
+if is_new_cash_open
+    array.set(last_sess_markers, 0, bar_index)
+if is_new_on_open
+    array.set(last_sess_markers, 1, bar_index)
+
+// Subsession Profile triggers (for Profile Gallery mode)
+bool is_new_cash_sess = is_subsession_mode and is_new_cash_open
+bool is_new_on_sess   = is_subsession_mode and is_new_on_open
+bool is_new_roll_sess = not is_equity_asset and not is_crypto_asset and is_subsession_mode and is_cme_rollover and (array.get(last_sess_markers, 2) != bar_index)
+
+bool is_new_daily_cycle   = is_daily_cycle_mode and (is_macro_daily_roll or (not is_crypto_asset and is_cme_rollover) or (is_equity_asset and is_first_cash_bar)) and (array.get(last_sess_markers, 2) != bar_index)
+bool is_new_weekly_cycle  = is_weekly_mode and is_macro_weekly_roll and (array.get(last_sess_markers, 3) != bar_index)
+bool is_new_monthly_cycle = is_monthly_mode and is_macro_monthly_roll and (array.get(last_sess_markers, 3) != bar_index)
+
+if is_new_roll_sess or is_new_daily_cycle
+    array.set(last_sess_markers, 2, bar_index)
+if is_new_weekly_cycle or is_new_monthly_cycle
+    array.set(last_sess_markers, 3, bar_index)
+
+bool is_new_sess = is_subsession_mode ? (is_new_cash_sess or is_new_on_sess or is_new_roll_sess) :
+     (is_daily_cycle_mode ? is_new_daily_cycle :
+     (is_weekly_mode ? is_new_weekly_cycle : is_new_monthly_cycle))
+
+if barstate.isfirst
+    array.push(sess_starts, 0)
+    array.push(sess_is_cashes, in_cash_rth)
+
+if is_new_sess
+    if array.size(sess_starts) == 1 and array.get(sess_starts, 0) == 0
+        array.set(sess_starts, 0, bar_index)
+        array.set(sess_is_cashes, 0, in_cash_rth)
+    else
+        array.unshift(sess_starts, bar_index)
+        array.unshift(sess_is_cashes, in_cash_rth)
+    if array.size(sess_starts) > 50
+        array.pop(sess_starts)
+        array.pop(sess_is_cashes)
+
+// Session Cumulative Volume Delta (CVD) & Total Session Volume Tracking
+var float sess_cum_delta = 0.0
+var float sess_cum_vol   = 0.0
+if is_new_sess
+    sess_cum_delta := bar_delta
+    sess_cum_vol   := nz(volume)
+else
+    sess_cum_delta += bar_delta
+    sess_cum_vol   += nz(volume)
+
+var float on_high_cur = na
+var float on_low_cur  = na
+var float on_high_locked = na
+var float on_low_locked  = na
+var int   on_start_idx = 0
+var box   on_box_inst = na
+var line  hb_line_inst = na
+var label hb_lbl_inst  = na
+var line  conf_poc_line = na
+var label conf_poc_lbl  = na
+var line  prior_poc_ln = na
+var line  prior_vah_ln = na
+var line  prior_val_ln = na
+var label prior_poc_lbl_inst = na
+var label prior_vah_lbl_inst = na
+var label prior_val_lbl_inst = na
+
+var float prior_cash_vpoc = na
+var float prior_cash_vah  = na
+var float prior_cash_val  = na
+
+var float on_vpoc = na
+var float latest_on_poc = na
+var float on_cum_vol = 0.0
+var float on_vol_weighted_p = 0.0
+
+if is_new_on_open or is_new_roll_sess
+    on_high_cur := high
+    on_low_cur  := low
+    on_start_idx := bar_index
+    on_cum_vol := volume
+    on_vol_weighted_p := close * volume
+else if in_overnight
+    on_high_cur := math.max(nz(on_high_cur, high), high)
+    on_low_cur  := math.min(nz(on_low_cur, low), low)
+    if barstate.isconfirmed
+        on_cum_vol += volume
+        on_vol_weighted_p += close * volume
+
+// Lock overnight levels when exiting overnight
+var int on_end_idx = 0
+var int cash_start_idx = 0
+var int prior_cash_start_idx = 0
+var int cash_end_idx = 0
+
+if (not in_overnight and in_overnight[1]) or is_new_cash_open
+    on_high_locked := on_high_cur
+    on_low_locked  := on_low_cur
+    on_end_idx     := bar_index[1]
+    if on_cum_vol > 0.0
+        on_vpoc := on_vol_weighted_p / on_cum_vol
+        latest_on_poc := on_vpoc
+
+if is_new_cash_open
+    cash_start_idx := bar_index
+    cash_end_idx   := 0
+
+// Overnight Half-Back (50% range midpoint)
+float on_halfback = (not na(on_high_locked) and not na(on_low_locked)) ? (on_high_locked + on_low_locked) * 0.5 : na
+
+bool no_proj_lines = showSmartLevelDashes or (priorLevelAnchor == "Session Framing Only (No Multi-Day Lines)")
+if no_proj_lines
+    if not na(hb_line_inst)
+        line.delete(hb_line_inst)
+        hb_line_inst := na
+    if not na(hb_lbl_inst)
+        label.delete(hb_lbl_inst)
+        hb_lbl_inst := na
+else if is_new_cash_open and showHalfback and not na(on_halfback) and not hide_intraday_overlays
+    line.delete(hb_line_inst)
+    label.delete(hb_lbl_inst)
+    int hb_x1 = (priorLevelAnchor == "Session Origin (Full Span)" and on_start_idx > 0) ? math.max(bar_index - 450, on_start_idx) : bar_index
+    hb_line_inst := line.new(hb_x1, on_halfback, bar_index + 40, on_halfback,
+         color=COL_HALFBACK, width=hbLineWidth, style=STYLE_HALFBACK)
+    if levelLabelStyle != "Hidden"
+        string live_hb_txt = levelLabelStyle == "Bulky Badges (Legacy)" ?
+             ("ON HALF-BACK (50%): " + str.tostring(on_halfback, format.mintick)) :
+             (levelLabelStyle == "Compact Acronym Only" ? "HB (50%)" :
+             (levelLabelStyle == "Session Acronym (C-POC / ON-POC)" ? ("ON-HB " + str.tostring(on_halfback, format.mintick)) :
+             ("ON HALF-BACK (50%): " + str.tostring(on_halfback, format.mintick))))
+        color live_hb_bg = levelLabelStyle == "Bulky Badges (Legacy)" ? color.new(halfbackColInput, 30) : (useShieldPill ? COL_SHIELD_PILL : color.new(color.black, 100))
+        color live_hb_tx = levelLabelStyle == "Bulky Badges (Legacy)" ? color.white : halfbackColInput
+        hb_lbl_inst := label.new(bar_index, on_halfback, live_hb_txt,
+             color=live_hb_bg, textcolor=live_hb_tx, style=label.style_label_left, size=prof_lbl_size)
+else if not is_new_cash_open and not na(hb_line_inst) and not hide_intraday_overlays
+    line.set_x2(hb_line_inst, bar_index + 10)
+    if not na(hb_lbl_inst) and levelLabelPos == "Right Edge (Inside Box)"
+        label.set_x(hb_lbl_inst, bar_index + 10)
+
+// Prior Cash Session Tracking (09:30 - 16:00)
+var float cur_cash_vol_w = 0.0
+var float cur_cash_vol_tot = 0.0
+var float cur_cash_hi = na
+var float cur_cash_lo = na
+var float prior_cash_hi_locked = na
+var float prior_cash_lo_locked = na
+
+if is_new_cash_open
+    cur_cash_vol_w := close * volume
+    cur_cash_vol_tot := volume
+    cur_cash_hi := high
+    cur_cash_lo := low
+else if in_cash_rth
+    if barstate.isconfirmed
+        cur_cash_vol_w += close * volume
+        cur_cash_vol_tot += volume
+    cur_cash_hi := math.max(nz(cur_cash_hi, high), high)
+    cur_cash_lo := math.min(nz(cur_cash_lo, low), low)
+
+if (not in_cash_rth and in_cash_rth[1]) or is_new_on_open
+    prior_cash_hi_locked := cur_cash_hi
+    prior_cash_lo_locked := cur_cash_lo
+    cash_end_idx := bar_index[1]
+    int raw_c_len = (cash_start_idx > 0 and bar_index >= cash_start_idx) ? (bar_index - cash_start_idx + 1) : 0
+    int c_len = math.min(raw_c_len, 450)
+    if c_len >= 2 and cash_start_idx > 0 and raw_c_len <= 500
+        float c_hi = -1e12
+        float c_lo = 1e12
+        float c_tot_v = 0.0
+        for i = 0 to c_len - 1
+            float bh = high[i]
+            float bl = low[i]
+            if not (na(bh) or na(bl))
+                c_hi := math.max(c_hi, bh)
+                c_lo := math.min(c_lo, bl)
+                c_tot_v += nz(volume[i])
+
+        float c_span = c_hi - c_lo
+        if c_span > 0.0 and c_tot_v > 0.0
+            int res_c = 40
+            float step_c = c_span / float(res_c)
+            array<float> c_bins = array.new<float>(res_c + 1, 0.0)
+            for i = 0 to c_len - 1
+                float bh = high[i]
+                float bl = low[i]
+                float bv = nz(volume[i])
+                float rng_c = bh - bl
+                if rng_c <= 0.0
+                    int b_flat = math.max(0, math.min(res_c, int(math.round((close[i] - c_lo) / step_c))))
+                    array.set(c_bins, b_flat, array.get(c_bins, b_flat) + bv)
+                else
+                    int b_s = math.max(0, math.min(res_c, int(math.floor((bl - c_lo) / step_c))))
+                    int b_e = math.max(0, math.min(res_c, int(math.floor((bh - c_lo) / step_c))))
+                    if b_s == b_e
+                        array.set(c_bins, b_s, array.get(c_bins, b_s) + bv)
+                    else
+                        for b = b_s to b_e
+                            float bin_fl = c_lo + b * step_c
+                            float bin_ce = bin_fl + step_c
+                            float o_lo = math.max(bl, bin_fl)
+                            float o_hi = math.min(bh, bin_ce)
+                            if o_hi > o_lo
+                                float w = (o_hi - o_lo) / rng_c
+                                array.set(c_bins, b, array.get(c_bins, b) + bv * w)
+
+            float max_v = 0.0
+            int poc_b = 0
+            for b = 0 to res_c
+                float vb = array.get(c_bins, b)
+                if vb > max_v
+                    max_v := vb
+                    poc_b := b
+
+            float p_vah_c = na
+            float p_val_c = na
+
+            if vaCalcMethod == "Dalton Cumulative Mass (15%-85%)"
+                float target_val_c = c_tot_v * 0.15
+                float target_vah_c = c_tot_v * 0.85
+                float cum_c = 0.0
+                int c_val_b = 0
+                int c_vah_b = res_c
+                bool found_val_c = false
+                bool found_vah_c = false
+                for b = 0 to res_c
+                    cum_c += array.get(c_bins, b)
+                    if not found_val_c and cum_c >= target_val_c
+                        c_val_b := b
+                        found_val_c := true
+                    if not found_vah_c and cum_c >= target_vah_c
+                        c_vah_b := b
+                        found_vah_c := true
+                        break
+                p_vah_c := math.min(c_hi, c_lo + (c_vah_b + 1.0) * step_c)
+                p_val_c := math.max(c_lo, c_lo + c_val_b * step_c)
+            else
+                // Canonical CBOT Dalton Steidlmayer 2-Bin Dual Expansion with LVN Decoupling
+                float target_va = c_tot_v * 0.70
+                float cur_va    = max_v
+                int va_up       = poc_b
+                int va_dn       = poc_b
+                float lvn_c_lim = max_v * 0.20
+
+                while cur_va < target_va and (va_up < res_c or va_dn > 0)
+                    float s_up = 0.0
+                    int u_cnt  = 0
+                    for k = 1 to 2
+                        if va_up + k <= res_c
+                            s_up += array.get(c_bins, va_up + k)
+                            u_cnt += 1
+
+                    float s_dn = 0.0
+                    int d_cnt  = 0
+                    for k = 1 to 2
+                        if va_dn - k >= 0
+                            s_dn += array.get(c_bins, va_dn - k)
+                            d_cnt += 1
+
+                    // Boundary / LVN Vacuum Decoupling: Prevent bimodal blowout across single-print void
+                    if va_up >= res_c and d_cnt > 0
+                        if (s_dn / float(d_cnt)) < lvn_c_lim and cur_va >= c_tot_v * 0.35
+                            break
+                    if va_dn <= 0 and u_cnt > 0
+                        if (s_up / float(u_cnt)) < lvn_c_lim and cur_va >= c_tot_v * 0.35
+                            break
+
+                    if s_up > s_dn and va_up < res_c
+                        va_up += u_cnt
+                        cur_va += s_up
+                    else if s_dn > s_up and va_dn > 0
+                        va_dn -= d_cnt
+                        cur_va += s_dn
+                    else if s_up == s_dn and (va_up < res_c or va_dn > 0)
+                        if u_cnt > 0 and d_cnt > 0
+                            if array.get(c_bins, va_up + 1) >= array.get(c_bins, va_dn - 1)
+                                va_up += u_cnt
+                                cur_va += s_up
+                            else
+                                va_dn -= d_cnt
+                                cur_va += s_dn
+                        else if u_cnt > 0
+                            va_up += u_cnt
+                            cur_va += s_up
+                        else if d_cnt > 0
+                            va_dn -= d_cnt
+                            cur_va += s_dn
+                        else
+                            break
+                    else if va_up < res_c
+                        va_up += u_cnt
+                        cur_va += s_up
+                    else if va_dn > 0
+                        va_dn -= d_cnt
+                        cur_va += s_dn
+                    else
+                        break
+
+                p_vah_c := math.min(c_hi, c_lo + math.min(float(res_c), float(va_up) + 1.0) * step_c)
+                p_val_c := math.max(c_lo, c_lo + math.max(0.0, float(va_dn)) * step_c)
+
+            prior_cash_vpoc := c_lo + (poc_b + 0.5) * step_c
+            prior_cash_vah  := p_vah_c
+            prior_cash_val  := p_val_c
+            prior_cash_start_idx := cash_start_idx
+
+// Multi-Session Confluent Iron POC Zone (High-Volume Cluster)
+bool is_poc_confluent = not na(prior_cash_vpoc) and not na(on_vpoc) and math.abs(prior_cash_vpoc - on_vpoc) <= eff_cluster_tol
+
+if no_proj_lines
+    if not na(conf_poc_line)
+        line.delete(conf_poc_line)
+        conf_poc_line := na
+    if not na(conf_poc_lbl)
+        label.delete(conf_poc_lbl)
+        conf_poc_lbl := na
+    if not na(prior_poc_ln)
+        line.delete(prior_poc_ln)
+        prior_poc_ln := na
+    if not na(prior_vah_ln)
+        line.delete(prior_vah_ln)
+        prior_vah_ln := na
+    if not na(prior_val_ln)
+        line.delete(prior_val_ln)
+        prior_val_ln := na
+    if not na(prior_poc_lbl_inst)
+        label.delete(prior_poc_lbl_inst)
+        prior_poc_lbl_inst := na
+    if not na(prior_vah_lbl_inst)
+        label.delete(prior_vah_lbl_inst)
+        prior_vah_lbl_inst := na
+    if not na(prior_val_lbl_inst)
+        label.delete(prior_val_lbl_inst)
+        prior_val_lbl_inst := na
+else if is_new_cash_open and showConfluentPoc and is_poc_confluent and not hide_intraday_overlays
+    float conf_mid = (prior_cash_vpoc + on_vpoc) * 0.5
+    line.delete(conf_poc_line)
+    label.delete(conf_poc_lbl)
+    int conf_x1 = (priorLevelAnchor == "Session Origin (Full Span)" and prior_cash_start_idx > 0) ? math.max(bar_index - 450, math.min(prior_cash_start_idx, on_start_idx)) : bar_index
+    conf_poc_line := line.new(conf_x1, conf_mid, bar_index + 60, conf_mid,
+         color=COL_CONFLUENT_POC, width=confLineWidth, style=STYLE_CONFLUENT)
+    if levelLabelStyle != "Hidden"
+        string live_conf_txt = levelLabelStyle == "Bulky Badges (Legacy)" ?
+             ("CONFLUENT IRON POC: " + str.tostring(conf_mid, format.mintick)) :
+             (levelLabelStyle == "Compact Acronym Only" ? "IRON POC" :
+             (levelLabelStyle == "Session Acronym (C-POC / ON-POC)" ? ("C-IRON-POC " + str.tostring(conf_mid, format.mintick)) :
+             ("CONFLUENT IRON POC " + str.tostring(conf_mid, format.mintick))))
+        color conf_lbl_bg = levelLabelStyle == "Bulky Badges (Legacy)" ? color.new(confluentColInput, 20) : (useShieldPill ? COL_SHIELD_PILL : color.new(color.black, 100))
+        color conf_lbl_tx = levelLabelStyle == "Bulky Badges (Legacy)" ? color.white : confluentColInput
+        conf_poc_lbl := label.new(bar_index, conf_mid, live_conf_txt,
+             color=conf_lbl_bg, textcolor=conf_lbl_tx, style=label.style_label_left, size=prof_lbl_size)
+else if not is_new_cash_open and not na(conf_poc_line) and not hide_intraday_overlays
+    line.set_x2(conf_poc_line, bar_index + 10)
+    if not na(conf_poc_lbl) and levelLabelPos == "Right Edge (Inside Box)"
+        label.set_x(conf_poc_lbl, bar_index + 10)
+
+// Prior Cash Levels lines & Explicit Session Labels
+
+if not no_proj_lines and is_new_cash_open and showPriorCashLevels and not na(prior_cash_vpoc) and not is_poc_confluent and not hide_intraday_overlays
+    line.delete(prior_poc_ln)
+    line.delete(prior_vah_ln)
+    line.delete(prior_val_ln)
+    label.delete(prior_poc_lbl_inst)
+    label.delete(prior_vah_lbl_inst)
+    label.delete(prior_val_lbl_inst)
+    int prior_x1 = (priorLevelAnchor == "Session Origin (Full Span)" and prior_cash_start_idx > 0) ? math.max(bar_index - 450, prior_cash_start_idx) : bar_index
+    prior_poc_ln := line.new(prior_x1, prior_cash_vpoc, bar_index + 40, prior_cash_vpoc, color=COL_POC_LINE, width=pocLineWidth, style=STYLE_POC_LINE)
+    prior_vah_ln := line.new(prior_x1, prior_cash_vah, bar_index + 40, prior_cash_vah, color=COL_VAH_LINE, width=vahLineWidth, style=STYLE_VAH_LINE)
+    prior_val_ln := line.new(prior_x1, prior_cash_val, bar_index + 40, prior_cash_val, color=COL_VAL_LINE, width=valLineWidth, style=STYLE_VAL_LINE)
+    color p_cash_lbl_bg = useShieldPill ? COL_SHIELD_PILL : color.new(color.black, 100)
+    if levelLabelStyle != "Hidden"
+        prior_poc_lbl_inst := label.new(bar_index, prior_cash_vpoc, "PRIOR CASH VPOC: " + str.tostring(prior_cash_vpoc, format.mintick), color=p_cash_lbl_bg, textcolor=colPocInput, style=label.style_label_left, size=size.tiny)
+        prior_vah_lbl_inst := label.new(bar_index, prior_cash_vah, "PRIOR CASH VAH: " + str.tostring(prior_cash_vah, format.mintick), color=p_cash_lbl_bg, textcolor=colVahInput, style=label.style_label_left, size=size.tiny)
+        prior_val_lbl_inst := label.new(bar_index, prior_cash_val, "PRIOR CASH VAL: " + str.tostring(prior_cash_val, format.mintick), color=p_cash_lbl_bg, textcolor=colValInput, style=label.style_label_left, size=size.tiny)
+else if not no_proj_lines and not is_new_cash_open and not hide_intraday_overlays
+    if not na(prior_poc_ln)
+        line.set_x2(prior_poc_ln, bar_index + 5)
+    if not na(prior_vah_ln)
+        line.set_x2(prior_vah_ln, bar_index + 5)
+    if not na(prior_val_ln)
+        line.set_x2(prior_val_ln, bar_index + 5)
+
+// SECTION 11: SESSION SUCCESSION VOLUME DELTA PROFILER (ATA SABANCI ENGINE)
+// =============================================================================
+
+var float cur_poc_ref    = na
+var float cur_vah_ref    = na
+var float cur_val_ref    = na
+var float cur_lvn_ref       = na
+var string cur_shape_ref    = "D"
+var float cur_ovl_ref       = na
+var float cur_tilt_ref      = na
+var string cur_ovl_word_ref = "BALANCED"
+
+var polyline dev_buy_poly    = na
+var polyline dev_sell_poly   = na
+var line     dev_poc_line    = na
+var line     dev_vah_line    = na
+var line     dev_val_line    = na
+var line     dev_lvn_line    = na
+var box      dev_lvn_box     = na
+var label    dev_lvn_lbl     = na
+var label    dev_poc_lbl     = na
+var label    dev_vah_lbl     = na
+var label    dev_val_lbl     = na
+var label    dev_shape_lbl   = na
+var box      dev_frame_box   = na
+var line     dev_hi_line     = na
+var line     dev_lo_line     = na
+
+// Smart Key Level Dashes (Right Margin Minimalist Projections)
+var line  dash_on_hi_ln   = na
+var label dash_on_hi_lbl  = na
+var line  dash_on_lo_ln   = na
+var label dash_on_lo_lbl  = na
+var line  dash_on_hb_ln   = na
+var label dash_on_hb_lbl  = na
+var line  dash_pd_hi_ln   = na
+var label dash_pd_hi_lbl  = na
+var line  dash_pd_lo_ln   = na
+var label dash_pd_lo_lbl  = na
+var line  dash_on_poc_ln  = na
+var label dash_on_poc_lbl = na
+
+// Multi-Session Prior Profile Drawing Arrays
+var array<polyline> prior_buy_polys   = array.new<polyline>()
+var array<polyline> prior_sell_polys  = array.new<polyline>()
+var array<line>     prior_poc_lines   = array.new<line>()
+var array<line>     prior_vah_lines   = array.new<line>()
+var array<line>     prior_val_lines   = array.new<line>()
+var array<line>     prior_lvn_lines   = array.new<line>()
+var array<box>      prior_lvn_boxes   = array.new<box>()
+var array<label>    prior_lvn_lbls    = array.new<label>()
+var array<line>     prior_ext_lines   = array.new<line>()
+var array<label>    prior_poc_lbls    = array.new<label>()
+var array<label>    prior_vah_lbls    = array.new<label>()
+var array<label>    prior_val_lbls    = array.new<label>()
+var array<label>    prior_shape_lbls  = array.new<label>()
+var array<box>      prior_session_boxes = array.new<box>()
+var array<line>     prior_session_lines = array.new<line>()
+var array<line>     prior_hb_lines      = array.new<line>()
+var array<label>    prior_hb_lbls       = array.new<label>()
+
+// OptiPine-Style Cadence Gate & Persistent Microstructure Caches (Array-backed to survive intrabar rollback in Bar Replay)
+var array<float> dev_cadence_cache   = array.new<float>(6, na) // [0: bar_idx, 1: close, 2: hi, 3: lo, 4: sess_bar, 5: volume]
+var array<int>   prior_cadence_cache = array.new<int>(2, -1)   // [0: prior_sess_bar, 1: is_active (1 or 0)]
+
+bool suppress_profile = htfClutterFilter and is_daily_or_above and is_subsession_mode
+
+// Dynamic Base Profile Colors based on Shading Mode
+color prof_base_b = profShadingMode == "Monochrome Slate" ? #78909C : (profShadingMode == "Monochrome Gold" ? #FFD54F : (profShadingMode == "Monochrome Cyan" ? #26C6DA : profBuyCol))
+color prof_base_s = profShadingMode == "Monochrome Slate" ? #546E7A : (profShadingMode == "Monochrome Gold" ? #FFCA28 : (profShadingMode == "Monochrome Cyan" ? #00ACC1 : profSellCol))
+
+// Volume Profile Unified Outline Line Tokens
+color eff_prof_line_b = profOutlineSyncProfile ? prof_base_b : profOutlineCustomCol
+color eff_prof_line_s = profOutlineSyncProfile ? prof_base_s : profOutlineCustomCol
+
+if barstate.islast and showSessionProfiles and array.size(sess_starts) > 0 and not suppress_profile
+    // ─────────────────────────────────────────────────────────────────────────
+    // 1. CURRENT DEVELOPING SESSION PROFILE (RENDERED ON RIGHT MARGIN)
+    // ─────────────────────────────────────────────────────────────────────────
+    int dev_start_bar = array.get(sess_starts, 0)
+    int dev_len       = math.max(1, bar_index - dev_start_bar + 1)
+    bool dev_is_cash  = array.get(sess_is_cashes, 0)
+    bool is_cur_sess_active = is_subsession_mode ? (dev_is_cash ? in_cash_rth : in_overnight) : true
+    bool is_opening_unconfirmed = waitFirstBarClose and (bar_index == dev_start_bar) and not barstate.isconfirmed
+    // The current/developing session profile must always project on the right margin — never blank during 16:00-18:00 halts or post-market
+    bool allow_dev_profile  = not is_opening_unconfirmed
+
+    if allow_dev_profile
+        // Cadence Gate: Only recompute developing profile on:
+        // 1. Initial calculation (na(c_last_price))
+        // 2. Bar advanced (bar_index != int(c_last_bar))
+        // 3. New session started (dev_start_bar != int(c_last_sess))
+        // 4. Developing High/Low breached (high > c_last_hi or low < c_last_lo)
+        // 5. Intra-bar price moved >= 2 full ticks
+        // 6. Institutional volume accumulation stride breached
+        float c_last_bar   = array.get(dev_cadence_cache, 0)
+        float c_last_price = array.get(dev_cadence_cache, 1)
+        float c_last_hi    = array.get(dev_cadence_cache, 2)
+        float c_last_lo    = array.get(dev_cadence_cache, 3)
+        float c_last_sess  = array.get(dev_cadence_cache, 4)
+        float c_last_vol   = array.get(dev_cadence_cache, 5)
+
+        float vol_stride   = is_equity_asset ? 5000.0 : (is_crypto_asset ? 10.0 : 100.0)
+        bool vol_jump      = na(c_last_vol) ? false : (volume - c_last_vol >= vol_stride)
+
+        float dev_price_step = math.max(3 * syminfo.mintick, asset_tick_step * 1.5)
+        bool need_dev_recalc = na(dev_buy_poly) or na(c_last_price) or (bar_index != int(c_last_bar)) or (dev_start_bar != int(c_last_sess)) or (na(c_last_hi) ? true : high > c_last_hi) or (na(c_last_lo) ? true : low < c_last_lo) or (math.abs(close - c_last_price) >= dev_price_step) or vol_jump
+
+        if need_dev_recalc
+            dev_start_bar := math.max(0, math.max(bar_index - MAX_LOOKBACK, dev_start_bar))
+            dev_len       := math.max(1, bar_index - dev_start_bar + 1)
+
+            float dev_hi = -1e12
+            float dev_lo = 1e12
+            float dev_tot_v = 0.0
+
+            int d_i_max = math.min(MAX_LOOKBACK, dev_len - 1)
+            for i = 0 to d_i_max
+                float bh = high[i]
+                float bl = low[i]
+                if not (na(bh) or na(bl))
+                    dev_hi := math.max(dev_hi, bh)
+                    dev_lo := math.min(dev_lo, bl)
+                    dev_tot_v += nz(volume[i])
+
+            float dev_span = dev_hi - dev_lo
+            if dev_span > 0.0 and dev_tot_v > 0.0
+                int res_d = profBinScalingMode == "Adaptive 5-Primes Scale" ? f_adaptive_primes_bins(dev_span) :
+                     (profBinScalingMode == "High-Density 71 Primes" ? 71 :
+                     (profBinScalingMode == "Ultra 89 Phi-Primes" ? 89 : 50))
+                float step_d = dev_span / float(res_d)
+                array<float> b_dev = array.new<float>(res_d + 1, 0.0)
+                array<float> s_dev = array.new<float>(res_d + 1, 0.0)
+
+                for i = 0 to d_i_max
+                    bool bar_has_fp = useFpEngine and hasEngFp and not na(engFp[i])
+                    array<volume_row> fp_bar_rows = bar_has_fp ? footprint.rows(engFp[i]) : na
+                    int num_r = not na(fp_bar_rows) ? array.size(fp_bar_rows) : 0
+
+                    if num_r > 0
+                        // 1. True Level-by-Level Microstructural Order Book Allocation (Ata Sabanci Continuous Gaussian KDE)
+                        for r = 0 to num_r - 1
+                            volume_row vr = array.get(fp_bar_rows, r)
+                            float r_up = volume_row.up_price(vr)
+                            float r_dn = volume_row.down_price(vr)
+                            float r_b  = volume_row.buy_volume(vr)
+                            float r_s  = volume_row.sell_volume(vr)
+                            float r_rng = r_up - r_dn
+                            float r_mid = (r_up + r_dn) * 0.5
+                            f_deposit_fp_gaussian(b_dev, s_dev, r_mid, r_rng, r_b, r_s, dev_lo, step_d, res_d, bellDivInput)
+
+                        // Instantaneous Real-time Tick Residual Injection for Bar 0 (Ata Sabanci Gaussian)
+                        if i == 0 and fp_res_vol > 0.0
+                            float res_b = fp_res_vol * geo_share
+                            float res_s = fp_res_vol * (1.0 - geo_share)
+                            f_deposit_fp_gaussian(b_dev, s_dev, close, syminfo.mintick, res_b, res_s, dev_lo, step_d, res_d, bellDivInput)
+                    else
+                        // 2. Continuous Gaussian Bar-Range Smearing Fallback (Ata Sabanci Exact Method)
+                        float bh = high[i]
+                        float bl = low[i]
+                        float bc = close[i]
+                        float bv = bar_buy_vol[i]
+                        float sv = bar_sell_vol[i]
+
+                        if na(bv) or na(sv) or (bv + sv <= 0.0)
+                            float p_tot = nz(volume[i])
+                            float p_split = (bh == bl) ? 0.5 : math.max(0.05, math.min(0.95, (bc - bl) / (bh - bl)))
+                            bv := p_tot * p_split
+                            sv := p_tot * (1.0 - p_split)
+
+                        f_deposit_bar_gaussian(b_dev, s_dev, bh, bl, bc, bv, sv, dev_lo, step_d, res_d, bellDivInput)
+
+                if profSmoothKde
+                    f_smooth_profile(b_dev)
+                    f_smooth_profile(s_dev)
+
+                float max_dev_b = 0.0
+                float max_dev_s = 0.0
+                float max_dev_tot = 0.0
+                int dev_poc_b = 0
+                float sum_dev_tot = 0.0
+                float sum_dev_b   = 0.0
+                float sum_dev_s   = 0.0
+
+                for b = 0 to res_d
+                    float vb = array.get(b_dev, b)
+                    float vs = array.get(s_dev, b)
+                    float vt = vb + vs
+                    sum_dev_b += vb
+                    sum_dev_s += vs
+                    max_dev_b := math.max(max_dev_b, vb)
+                    max_dev_s := math.max(max_dev_s, vs)
+                    if vt > max_dev_tot
+                        max_dev_tot := vt
+                        dev_poc_b := b
+                    sum_dev_tot += vt
+
+                // Ata Sabanci Exact Overlap Coefficient (OVL) & Balance Tilt Engine
+                float dev_ovl = 0.0
+                float dev_tilt = 0.0
+                string dev_ovl_word = "BALANCED"
+
+                if sum_dev_b > 0.0 and sum_dev_s > 0.0
+                    for b = 0 to res_d
+                        float pb = array.get(b_dev, b) / sum_dev_b
+                        float ps = array.get(s_dev, b) / sum_dev_s
+                        dev_ovl += math.min(pb, ps)
+                    dev_tilt := 100.0 * (sum_dev_b - sum_dev_s) / (sum_dev_b + sum_dev_s)
+                    dev_ovl_word := dev_ovl >= 0.75 ? "BALANCED" : (dev_tilt >= 5.0 ? "OFF BAL · BUY" : (dev_tilt <= -5.0 ? "OFF BAL · SELL" : "OFF BALANCE"))
+
+                float vMax_dev = math.max(max_dev_b, max_dev_s)
+                float dev_poc_px = dev_lo + (dev_poc_b + 0.5) * step_d
+                bool dev_poc_is_bull = array.get(b_dev, dev_poc_b) >= array.get(s_dev, dev_poc_b)
+                color dev_poc_col = dev_poc_is_bull ? COL_SHELF_GOLD : COL_SHELF_PURPLE
+
+                float dev_vah_px = na
+                float dev_val_px = na
+
+                if vaCalcMethod == "Dalton Cumulative Mass (15%-85%)"
+                    float target_val_dev = sum_dev_tot * 0.15
+                    float target_vah_dev = sum_dev_tot * 0.85
+                    float cum_dev = 0.0
+                    int dev_val_b = 0
+                    int dev_vah_b = res_d
+                    bool found_val_dev = false
+                    bool found_vah_dev = false
+                    for b = 0 to res_d
+                        cum_dev += array.get(b_dev, b) + array.get(s_dev, b)
+                        if not found_val_dev and cum_dev >= target_val_dev
+                            dev_val_b := b
+                            found_val_dev := true
+                        if not found_vah_dev and cum_dev >= target_vah_dev
+                            dev_vah_b := b
+                            found_vah_dev := true
+                            break
+                    dev_vah_px := math.min(dev_hi, dev_lo + (dev_vah_b + 1.0) * step_d)
+                    dev_val_px := math.max(dev_lo, dev_lo + dev_val_b * step_d)
+                else
+                    // Canonical CBOT Dalton Steidlmayer 2-Bin Dual Expansion with LVN Decoupling
+                    float target_dva = sum_dev_tot * 0.70
+                    float cur_dva    = max_dev_tot
+                    int dva_up       = dev_poc_b
+                    int dva_dn       = dev_poc_b
+                    float lvn_d_lim  = max_dev_tot * 0.20
+
+                    while cur_dva < target_dva and (dva_up < res_d or dva_dn > 0)
+                        float s_up = 0.0
+                        int u_cnt  = 0
+                        for k = 1 to 2
+                            if dva_up + k <= res_d
+                                s_up += array.get(b_dev, dva_up + k) + array.get(s_dev, dva_up + k)
+                                u_cnt += 1
+
+                        float s_dn = 0.0
+                        int d_cnt  = 0
+                        for k = 1 to 2
+                            if dva_dn - k >= 0
+                                s_dn += array.get(b_dev, dva_dn - k) + array.get(s_dev, dva_dn - k)
+                                d_cnt += 1
+
+                        // Boundary / LVN Vacuum Decoupling: Prevent bimodal blowout across single-print void
+                        if dva_up >= res_d and d_cnt > 0
+                            if (s_dn / float(d_cnt)) < lvn_d_lim and cur_dva >= sum_dev_tot * 0.35
+                                break
+                        if dva_dn <= 0 and u_cnt > 0
+                            if (s_up / float(u_cnt)) < lvn_d_lim and cur_dva >= sum_dev_tot * 0.35
+                                break
+
+                        if s_up > s_dn and dva_up < res_d
+                            dva_up += u_cnt
+                            cur_dva += s_up
+                        else if s_dn > s_up and dva_dn > 0
+                            dva_dn -= d_cnt
+                            cur_dva += s_dn
+                        else if s_up == s_dn and (dva_up < res_d or dva_dn > 0)
+                            if u_cnt > 0 and d_cnt > 0
+                                float imm_u = array.get(b_dev, dva_up + 1) + array.get(s_dev, dva_up + 1)
+                                float imm_d = array.get(b_dev, dva_dn - 1) + array.get(s_dev, dva_dn - 1)
+                                if imm_u >= imm_d
+                                    dva_up += u_cnt
+                                    cur_dva += s_up
+                                else
+                                    dva_dn -= d_cnt
+                                    cur_dva += s_dn
+                            else if u_cnt > 0
+                                dva_up += u_cnt
+                                cur_dva += s_up
+                            else if d_cnt > 0
+                                dva_dn -= d_cnt
+                                cur_dva += s_dn
+                            else
+                                break
+                        else if dva_up < res_d
+                            dva_up += u_cnt
+                            cur_dva += s_up
+                        else if dva_dn > 0
+                            dva_dn -= d_cnt
+                            cur_dva += s_dn
+                        else
+                            break
+
+                    dev_vah_px := math.min(dev_hi, dev_lo + math.min(float(res_d), float(dva_up) + 1.0) * step_d)
+                    dev_val_px := math.max(dev_lo, dev_lo + math.max(0.0, float(dva_dn)) * step_d)
+
+                // Dalton AMT Shape & LVN Corridor Detection
+                array<int> dev_peaks = array.new<int>()
+                for b = 1 to res_d - 1
+                    float prev_v = array.get(b_dev, b - 1) + array.get(s_dev, b - 1)
+                    float cur_v  = array.get(b_dev, b) + array.get(s_dev, b)
+                    float next_v = array.get(b_dev, b + 1) + array.get(s_dev, b + 1)
+                    if cur_v >= prev_v and cur_v >= next_v and (cur_v > prev_v or cur_v > next_v) and cur_v >= 0.35 * max_dev_tot
+                        array.push(dev_peaks, b)
+
+                bool is_dev_b_shape = false
+                float dev_lvn_px = na
+                float dev_lvn_lo = na
+                float dev_lvn_hi = na
+                if array.size(dev_peaks) >= 2
+                    int pk1 = array.get(dev_peaks, 0)
+                    int pk2 = array.get(dev_peaks, array.size(dev_peaks) - 1)
+                    if math.abs(pk2 - pk1) >= int(0.20 * res_d)
+                        float min_tr = 1e12
+                        int min_tr_b = -1
+                        for b = math.min(pk1, pk2) to math.max(pk1, pk2)
+                            float tot_k = array.get(b_dev, b) + array.get(s_dev, b)
+                            if tot_k < min_tr
+                                min_tr := tot_k
+                                min_tr_b := b
+                        float pk1_v = array.get(b_dev, pk1) + array.get(s_dev, pk1)
+                        float pk2_v = array.get(b_dev, pk2) + array.get(s_dev, pk2)
+                        float lvn_thresh_d = effective_lvn_thresh_ratio * math.min(pk1_v, pk2_v)
+                        if min_tr <= lvn_thresh_d
+                            is_dev_b_shape := true
+                            dev_lvn_px := dev_lo + (min_tr_b + 0.5) * step_d
+                            int p_lo = math.min(pk1, pk2)
+                            int p_hi = math.max(pk1, pk2)
+                            int v_dev_lo = min_tr_b
+                            while v_dev_lo > p_lo and (array.get(b_dev, v_dev_lo - 1) + array.get(s_dev, v_dev_lo - 1)) <= lvn_thresh_d
+                                v_dev_lo -= 1
+                            int v_dev_hi = min_tr_b
+                            while v_dev_hi < p_hi and (array.get(b_dev, v_dev_hi + 1) + array.get(s_dev, v_dev_hi + 1)) <= lvn_thresh_d
+                                v_dev_hi += 1
+                            dev_lvn_lo := dev_lo + v_dev_lo * step_d
+                            dev_lvn_hi := dev_lo + (v_dev_hi + 1) * step_d
+
+                float dev_poc_rel = (dev_poc_px - dev_lo) / dev_span
+                string dev_dalton = is_dev_b_shape ? "B" : (dev_poc_rel > 0.65 ? "P" : (dev_poc_rel < 0.35 ? "b" : "D"))
+
+                cur_poc_ref      := dev_poc_px
+                cur_vah_ref      := dev_vah_px
+                cur_val_ref      := dev_val_px
+                cur_lvn_ref      := dev_lvn_px
+                cur_shape_ref    := dev_dalton
+                cur_ovl_ref      := dev_ovl
+                cur_tilt_ref     := dev_tilt
+                cur_ovl_word_ref := dev_ovl_word
+
+                // ── Clear & Re-render Developing Polylines & Markers ──
+                if not na(dev_buy_poly)
+                    polyline.delete(dev_buy_poly)
+                if not na(dev_sell_poly)
+                    polyline.delete(dev_sell_poly)
+                if not na(dev_poc_line)
+                    line.delete(dev_poc_line)
+                if not na(dev_vah_line)
+                    line.delete(dev_vah_line)
+                if not na(dev_val_line)
+                    line.delete(dev_val_line)
+                if not na(dev_lvn_line)
+                    line.delete(dev_lvn_line)
+                    dev_lvn_line := na
+                if not na(dev_lvn_box)
+                    box.delete(dev_lvn_box)
+                    dev_lvn_box := na
+                if not na(dev_lvn_lbl)
+                    label.delete(dev_lvn_lbl)
+                    dev_lvn_lbl := na
+                if not na(dev_poc_lbl)
+                    label.delete(dev_poc_lbl)
+                if not na(dev_vah_lbl)
+                    label.delete(dev_vah_lbl)
+                if not na(dev_val_lbl)
+                    label.delete(dev_val_lbl)
+                if not na(dev_shape_lbl)
+                    label.delete(dev_shape_lbl)
+                if not na(dev_frame_box)
+                    box.delete(dev_frame_box)
+                    dev_frame_box := na
+                if not na(dev_hi_line)
+                    line.delete(dev_hi_line)
+                    dev_hi_line := na
+                if not na(dev_lo_line)
+                    line.delete(dev_lo_line)
+                    dev_lo_line := na
+
+                // Draw Developing Session Framing (Full Enclosing Box or Ceiling & Floor Guidelines)
+                if eff_show_frames
+                    color dev_f_col = dev_is_cash ? cashFrameCol : onFrameCol
+                    color dev_f_bg  = (rulerClickThrough or frameFillTransp >= 95) ? na : color.new(dev_f_col, frameFillTransp)
+                    if frameGeometryMode == "Full Enclosing Box"
+                        dev_frame_box := box.new(dev_start_bar, dev_hi, bar_index, dev_lo,
+                             bgcolor=dev_f_bg,
+                             border_color=color.new(dev_f_col, frameOutlineTransp),
+                             border_width=frameOutlineWidth, border_style=STYLE_FRAME_BOX)
+                    else
+                        dev_hi_line := line.new(dev_start_bar, dev_hi, bar_index, dev_hi,
+                             color=color.new(dev_f_col, frameOutlineTransp), width=frameOutlineWidth, style=STYLE_FRAME_BOX)
+                        dev_lo_line := line.new(dev_start_bar, dev_lo, bar_index, dev_lo,
+                             color=color.new(dev_f_col, frameOutlineTransp), width=frameOutlineWidth, style=STYLE_FRAME_BOX)
+
+                int base_x = bar_index + profOffsetInput
+
+                if vMax_dev > 0.0
+                    int b_glow_adj = profDeltaModulation ? (dev_tilt > 5.0 ? int(math.min(25.0, dev_tilt * 0.8)) : 0) : 0
+                    int s_glow_adj = profDeltaModulation ? (dev_tilt < -5.0 ? int(math.min(25.0, math.abs(dev_tilt) * 0.8)) : 0) : 0
+
+                    array<chart.point> ptsB = array.new<chart.point>()
+                    array.push(ptsB, chart.point.from_index(base_x, dev_lo))
+                    for b = 0 to res_d
+                        int xb = base_x + int(math.round(profWidthInput * array.get(b_dev, b) / vMax_dev))
+                        array.push(ptsB, chart.point.from_index(xb, dev_lo + b * step_d))
+                    array.push(ptsB, chart.point.from_index(base_x, dev_hi))
+                    color dev_b_fill = profFillTransp >= 100 ? na : color.new(prof_base_b, math.max(10, profFillTransp - b_glow_adj))
+                    color dev_b_line = (not showProfOutline or profOutlineTransp >= 100) ? na : color.new(eff_prof_line_b, math.max(0, profOutlineTransp - b_glow_adj))
+                    dev_buy_poly := polyline.new(ptsB, curved=false, closed=true,
+                         line_color=dev_b_line, fill_color=dev_b_fill, line_width=profOutlineWidth)
+
+                    array<chart.point> ptsS = array.new<chart.point>()
+                    array.push(ptsS, chart.point.from_index(base_x, dev_lo))
+                    for b = 0 to res_d
+                        int xs = base_x + int(math.round(profWidthInput * array.get(s_dev, b) / vMax_dev))
+                        array.push(ptsS, chart.point.from_index(xs, dev_lo + b * step_d))
+                    array.push(ptsS, chart.point.from_index(base_x, dev_hi))
+                    color dev_s_fill = profFillTransp >= 100 ? na : color.new(prof_base_s, math.max(10, profFillTransp - s_glow_adj))
+                    color dev_s_line = (not showProfOutline or profOutlineTransp >= 100) ? na : color.new(eff_prof_line_s, math.max(0, profOutlineTransp - s_glow_adj))
+                    dev_sell_poly := polyline.new(ptsS, curved=false, closed=true,
+                         line_color=dev_s_line, fill_color=dev_s_fill, line_width=profOutlineWidth)
+
+                    int r_edge_dev = base_x + profWidthInput + profLabelOverhang
+
+                    dev_poc_line := line.new(base_x, dev_poc_px, r_edge_dev, dev_poc_px,
+                         color=COL_POC_LINE, width=pocLineWidth, style=STYLE_POC_LINE)
+                    string dev_prefix = is_weekly_mode ? "Week " : (is_monthly_mode ? "Month " : (is_daily_cycle_mode ? "Day " : (dev_is_cash ? (is_crypto_asset ? "Day " : "Cash ") : (is_crypto_asset ? "Night " : "ON "))))
+
+                    if levelLabelStyle != "Hidden"
+                        string dev_poc_txt = levelLabelStyle == "Bulky Badges (Legacy)" ?
+                             (dev_prefix + "VPOC " + str.tostring(dev_poc_px, format.mintick) + " [" + dev_dalton + "]") :
+                             (levelLabelStyle == "Compact Acronym Only" ? "POC" :
+                             (levelLabelStyle == "Session Acronym (C-POC / ON-POC)" ? ((dev_is_cash ? "C-POC " : "ON-POC ") + str.tostring(dev_poc_px, format.mintick)) :
+                             ("POC " + str.tostring(dev_poc_px, format.mintick))))
+                        color dev_poc_bg = levelLabelStyle == "Bulky Badges (Legacy)" ? color.new(colPocInput, 20) : (useShieldPill ? COL_SHIELD_PILL : color.new(color.black, 100))
+                        color dev_poc_tx = levelLabelStyle == "Bulky Badges (Legacy)" ? color.white : colPocInput
+                        dev_poc_lbl := label.new(r_edge_dev, dev_poc_px, dev_poc_txt,
+                             color=dev_poc_bg, textcolor=dev_poc_tx, style=label.style_label_left, size=prof_lbl_size)
+
+                    if showSessionVa
+                        dev_vah_line := line.new(base_x, dev_vah_px, r_edge_dev, dev_vah_px,
+                             color=COL_VAH_LINE, width=vahLineWidth, style=STYLE_VAH_LINE)
+                        dev_val_line := line.new(base_x, dev_val_px, r_edge_dev, dev_val_px,
+                             color=COL_VAL_LINE, width=valLineWidth, style=STYLE_VAL_LINE)
+
+                        if levelLabelStyle != "Hidden"
+                            string dev_vah_txt = levelLabelStyle == "Compact Acronym Only" ? "VAH" :
+                                 (levelLabelStyle == "Session Acronym (C-POC / ON-POC)" ? ((dev_is_cash ? "C-VAH " : "ON-VAH ") + str.tostring(dev_vah_px, format.mintick)) :
+                                 ("VAH " + str.tostring(dev_vah_px, format.mintick)))
+                            string dev_val_txt = levelLabelStyle == "Compact Acronym Only" ? "VAL" :
+                                 (levelLabelStyle == "Session Acronym (C-POC / ON-POC)" ? ((dev_is_cash ? "C-VAL " : "ON-VAL ") + str.tostring(dev_val_px, format.mintick)) :
+                                 ("VAL " + str.tostring(dev_val_px, format.mintick)))
+                            color dev_va_bg = levelLabelStyle == "Bulky Badges (Legacy)" ? color.new(colVahInput, 30) : (useShieldPill ? COL_SHIELD_PILL : color.new(color.black, 100))
+                            color dev_vah_tx = levelLabelStyle == "Bulky Badges (Legacy)" ? color.white : colVahInput
+                            color dev_val_tx = levelLabelStyle == "Bulky Badges (Legacy)" ? color.white : colValInput
+                            dev_vah_lbl := label.new(r_edge_dev, dev_vah_px, dev_vah_txt,
+                                 color=dev_va_bg, textcolor=dev_vah_tx, style=label.style_label_left, size=prof_lbl_size)
+                            dev_val_lbl := label.new(r_edge_dev, dev_val_px, dev_val_txt,
+                                 color=dev_va_bg, textcolor=dev_val_tx, style=label.style_label_left, size=prof_lbl_size)
+
+                    if is_dev_b_shape and showLvnCorridor and not na(dev_lvn_px)
+                        int lvn_x2 = r_edge_dev
+                        if lvnDisplayMode != "Inflection Line Only" and not na(dev_lvn_hi) and not na(dev_lvn_lo)
+                            color lvn_dev_bg = (rulerClickThrough or lvnFillTransp >= 95) ? na : color.new(COL_LVN_CORRIDOR, lvnFillTransp)
+                            dev_lvn_box := box.new(base_x, dev_lvn_hi, lvn_x2, dev_lvn_lo,
+                                 bgcolor=lvn_dev_bg,
+                                 border_color=color.new(COL_LVN_CORRIDOR, math.max(0, lvnFillTransp - 40)),
+                                 border_width=1, border_style=STYLE_LVN_LINE)
+                        if lvnDisplayMode != "Shaded Corridor Box"
+                            dev_lvn_line := line.new(base_x, dev_lvn_px, lvn_x2, dev_lvn_px,
+                                 color=COL_LVN_CORRIDOR, width=1, style=STYLE_LVN_LINE)
+                        if levelLabelStyle != "Hidden"
+                            color dev_lvn_bg = useShieldPill ? COL_SHIELD_PILL : color.new(color.black, 100)
+                            string dev_lvn_txt = levelLabelStyle == "Compact Acronym Only" ? "LVN" : ("LVN " + str.tostring(dev_lvn_px, format.mintick))
+                            dev_lvn_lbl := label.new(lvn_x2, dev_lvn_px, dev_lvn_txt,
+                                 color=dev_lvn_bg, textcolor=COL_LVN_CORRIDOR, style=label.style_label_left, size=prof_lbl_size)
+
+                    if showAmtShapes
+                        string ovl_short_txt = (showOvlMetrics and not na(dev_ovl)) ? (" · OVL " + str.tostring(dev_ovl, "0.00") + " " + (dev_ovl >= 0.75 ? "BAL" : (dev_tilt >= 5.0 ? "BUY" : (dev_tilt <= -5.0 ? "SELL" : "IMB")))) : ""
+                        string dev_shape_txt = dev_prefix + "[" + dev_dalton + "]" + ovl_short_txt
+                        color dev_shape_bg = levelLabelStyle == "Bulky Badges (Legacy)" ? color.rgb(15, 18, 26) : (useShieldPill ? COL_SHIELD_PILL : color.new(color.black, 100))
+                        color dev_shape_tx = dev_is_cash ? cashFrameCol : onFrameCol
+                        string dev_ovl_tt  = "Ata Sabanci Order Flow Profiler:\n• Dalton Archetype: [" + dev_dalton + "]\n• Overlap Coef (OVL): " + str.tostring(dev_ovl, "0.00") + " (" + dev_ovl_word + ")\n• Balance Tilt: " + (dev_tilt >= 0 ? "+" : "") + str.tostring(dev_tilt, "0.1") + "%"
+                        int dev_center_x = base_x + int(profWidthInput * 0.5)
+                        dev_shape_lbl := label.new(dev_center_x, dev_hi, dev_shape_txt,
+                             color=dev_shape_bg, textcolor=dev_shape_tx,
+                             style=label.style_label_down, size=size.normal, tooltip=dev_ovl_tt)
+
+            // Cache Developing State
+            array.set(dev_cadence_cache, 0, float(bar_index))
+            array.set(dev_cadence_cache, 1, close)
+            array.set(dev_cadence_cache, 2, high)
+            array.set(dev_cadence_cache, 3, low)
+            array.set(dev_cadence_cache, 4, float(dev_start_bar))
+            array.set(dev_cadence_cache, 5, volume)
+        else
+            // If price hasn't breached cadence threshold, only update horizontal line lengths to right margin
+            int base_x = bar_index + profOffsetInput
+            int r_edge_dev = base_x + profWidthInput + profLabelOverhang
+            if not na(dev_poc_line)
+                line.set_x1(dev_poc_line, base_x)
+                line.set_x2(dev_poc_line, r_edge_dev)
+            if not na(dev_poc_lbl)
+                label.set_x(dev_poc_lbl, r_edge_dev)
+            if not na(dev_shape_lbl)
+                label.set_x(dev_shape_lbl, base_x + int(profWidthInput * 0.5))
+            if not na(dev_vah_line)
+                line.set_x1(dev_vah_line, base_x)
+                line.set_x2(dev_vah_line, r_edge_dev)
+            if not na(dev_val_line)
+                line.set_x1(dev_val_line, base_x)
+                line.set_x2(dev_val_line, r_edge_dev)
+            if not na(dev_lvn_line)
+                line.set_x1(dev_lvn_line, base_x)
+                line.set_x2(dev_lvn_line, r_edge_dev)
+            if not na(dev_lvn_box)
+                box.set_left(dev_lvn_box, base_x)
+                box.set_right(dev_lvn_box, r_edge_dev)
+            if not na(dev_lvn_lbl)
+                label.set_x(dev_lvn_lbl, r_edge_dev)
+            array.set(dev_cadence_cache, 0, float(bar_index))
+            array.set(dev_cadence_cache, 1, close)
+            array.set(dev_cadence_cache, 4, float(dev_start_bar))
+    else
+        // Clear Developing Profile on Session Closure, Inter-Session Halt, or Weekend Halt
+        if not na(dev_buy_poly)
+            polyline.delete(dev_buy_poly)
+            dev_buy_poly := na
+        if not na(dev_sell_poly)
+            polyline.delete(dev_sell_poly)
+            dev_sell_poly := na
+        if not na(dev_poc_line)
+            line.delete(dev_poc_line)
+            dev_poc_line := na
+        if not na(dev_vah_line)
+            line.delete(dev_vah_line)
+            dev_vah_line := na
+        if not na(dev_val_line)
+            line.delete(dev_val_line)
+            dev_val_line := na
+        if not na(dev_lvn_line)
+            line.delete(dev_lvn_line)
+            dev_lvn_line := na
+        if not na(dev_lvn_box)
+            box.delete(dev_lvn_box)
+            dev_lvn_box := na
+        if not na(dev_lvn_lbl)
+            label.delete(dev_lvn_lbl)
+            dev_lvn_lbl := na
+        if not na(dev_poc_lbl)
+            label.delete(dev_poc_lbl)
+            dev_poc_lbl := na
+        if not na(dev_vah_lbl)
+            label.delete(dev_vah_lbl)
+            dev_vah_lbl := na
+        if not na(dev_val_lbl)
+            label.delete(dev_val_lbl)
+            dev_val_lbl := na
+        if not na(dev_shape_lbl)
+            label.delete(dev_shape_lbl)
+            dev_shape_lbl := na
+        if not na(dev_frame_box)
+            box.delete(dev_frame_box)
+            dev_frame_box := na
+        if not na(dev_hi_line)
+            line.delete(dev_hi_line)
+            dev_hi_line := na
+        if not na(dev_lo_line)
+            line.delete(dev_lo_line)
+            dev_lo_line := na
+
+        array.fill(dev_cadence_cache, na)
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 2. COMPLETED PRIOR SESSION PROFILES GALLERY (ANCHORED AT SESSION BOUNDARIES)
+    // ─────────────────────────────────────────────────────────────────────────
+    int min_sess_req = 2
+    if array.size(sess_starts) >= min_sess_req
+        int latest_prior_start = array.get(sess_starts, 1)
+        int latest_prior_end   = array.get(sess_starts, 0) - 1
+
+        // Cadence Gate for Prior Sessions: Recompute on session handover or active state change
+        int c_last_prior_sess = array.get(prior_cadence_cache, 0)
+        int c_last_active     = array.size(prior_cadence_cache) > 1 ? array.get(prior_cadence_cache, 1) : -1
+        int cur_act_int       = is_cur_sess_active ? 1 : 0
+        bool need_prior_recalc = (array.size(prior_buy_polys) == 0) or (latest_prior_start != c_last_prior_sess) or (cur_act_int != c_last_active)
+
+        if need_prior_recalc
+            // ── Clear Previous Prior Session Drawings ──
+            for p in prior_buy_polys
+                polyline.delete(p)
+            array.clear(prior_buy_polys)
+
+            for p in prior_sell_polys
+                polyline.delete(p)
+            array.clear(prior_sell_polys)
+
+            for l in prior_poc_lines
+                line.delete(l)
+            array.clear(prior_poc_lines)
+
+            for l in prior_vah_lines
+                line.delete(l)
+            array.clear(prior_vah_lines)
+
+            for l in prior_val_lines
+                line.delete(l)
+            array.clear(prior_val_lines)
+
+            for l in prior_lvn_lines
+                line.delete(l)
+            array.clear(prior_lvn_lines)
+
+            for b in prior_lvn_boxes
+                box.delete(b)
+            array.clear(prior_lvn_boxes)
+
+            for lb in prior_lvn_lbls
+                label.delete(lb)
+            array.clear(prior_lvn_lbls)
+
+            for l in prior_ext_lines
+                line.delete(l)
+            array.clear(prior_ext_lines)
+
+            for lb in prior_poc_lbls
+                label.delete(lb)
+            array.clear(prior_poc_lbls)
+
+            for lb in prior_vah_lbls
+                label.delete(lb)
+            array.clear(prior_vah_lbls)
+
+            for lb in prior_val_lbls
+                label.delete(lb)
+            array.clear(prior_val_lbls)
+
+            for lb in prior_shape_lbls
+                label.delete(lb)
+            array.clear(prior_shape_lbls)
+
+            for b in prior_session_boxes
+                box.delete(b)
+            array.clear(prior_session_boxes)
+            for l in prior_session_lines
+                line.delete(l)
+            array.clear(prior_session_lines)
+
+            for l in prior_hb_lines
+                line.delete(l)
+            array.clear(prior_hb_lines)
+            for lb in prior_hb_lbls
+                label.delete(lb)
+            array.clear(prior_hb_lbls)
+
+            if not (is_cur_sess_active and in_cash_rth)
+                line.delete(hb_line_inst)
+                label.delete(hb_lbl_inst)
+                hb_line_inst := na
+                hb_lbl_inst := na
+                line.delete(conf_poc_line)
+                label.delete(conf_poc_lbl)
+                conf_poc_line := na
+                conf_poc_lbl := na
+                line.delete(prior_poc_ln)
+                line.delete(prior_vah_ln)
+                line.delete(prior_val_ln)
+                label.delete(prior_poc_lbl_inst)
+                label.delete(prior_vah_lbl_inst)
+                label.delete(prior_val_lbl_inst)
+                prior_poc_ln := na
+                prior_vah_ln := na
+                prior_val_ln := na
+                prior_poc_lbl_inst := na
+                prior_vah_lbl_inst := na
+                prior_val_lbl_inst := na
+
+            array<float>  poc_calc_pxs     = array.new<float>()
+            array<int>    poc_calc_starts  = array.new<int>()
+            array<int>    poc_calc_ends    = array.new<int>()
+            array<bool>   poc_calc_cashes  = array.new<bool>()
+            array<string> poc_calc_daltons = array.new<string>()
+            array<int>    poc_calc_s_idxs  = array.new<int>()
+
+            int s_start_idx = 1
+            int latest_closed_idx = 1
+            int max_prior_sessions = math.min(priorSessionsCount, array.size(sess_starts) - 1)
+            int r_edge_vis  = bar_index + profOffsetInput + profWidthInput + profLabelOverhang
+
+            for s_idx = s_start_idx to max_prior_sessions
+                int prior_start_bar = array.get(sess_starts, s_idx)
+                bool prior_is_cash  = array.get(sess_is_cashes, s_idx)
+                int prior_end_bar   = s_idx == 0 ? (prior_is_cash ? (cash_end_idx > 0 ? cash_end_idx : bar_index) : (on_end_idx > 0 ? on_end_idx : bar_index)) : (array.get(sess_starts, s_idx - 1) - 1)
+
+                prior_start_bar := math.max(0, math.max(bar_index - MAX_LOOKBACK, prior_start_bar))
+                prior_end_bar   := math.max(prior_start_bar, math.min(bar_index, prior_end_bar))
+                int prior_len   = prior_end_bar - prior_start_bar + 1
+
+                int p_i_min = math.max(0, bar_index - prior_end_bar)
+                int p_i_max = math.min(MAX_LOOKBACK, bar_index - prior_start_bar)
+                p_i_min := math.min(p_i_min, p_i_max)
+
+                if prior_len >= 2 and p_i_max >= p_i_min
+                    float prior_hi = -1e12
+                    float prior_lo = 1e12
+                    float prior_tot_v = 0.0
+
+                    for i = p_i_min to p_i_max
+                        float bh = high[i]
+                        float bl = low[i]
+                        if not (na(bh) or na(bl))
+                            prior_hi := math.max(prior_hi, bh)
+                            prior_lo := math.min(prior_lo, bl)
+                            prior_tot_v += nz(volume[i])
+
+                    float prior_span = prior_hi - prior_lo
+                    if prior_span > 0.0 and prior_tot_v > 0.0
+                        int res_p = profBinScalingMode == "Adaptive 5-Primes Scale" ? f_adaptive_primes_bins(prior_span) :
+                             (profBinScalingMode == "High-Density 71 Primes" ? 71 :
+                             (profBinScalingMode == "Ultra 89 Phi-Primes" ? 89 : 50))
+                        float step_p = prior_span / float(res_p)
+                        array<float> b_prior = array.new<float>(res_p + 1, 0.0)
+                        array<float> s_prior = array.new<float>(res_p + 1, 0.0)
+
+                        for i = p_i_min to p_i_max
+                            bool bar_has_fp_p = useFpEngine and hasEngFp and not na(engFp[i])
+                            array<volume_row> fp_bar_rows_p = bar_has_fp_p ? footprint.rows(engFp[i]) : na
+                            int num_r_p = not na(fp_bar_rows_p) ? array.size(fp_bar_rows_p) : 0
+
+                            if num_r_p > 0
+                                for r = 0 to num_r_p - 1
+                                    volume_row vr = array.get(fp_bar_rows_p, r)
+                                    float r_up = volume_row.up_price(vr)
+                                    float r_dn = volume_row.down_price(vr)
+                                    float r_b  = volume_row.buy_volume(vr)
+                                    float r_s  = volume_row.sell_volume(vr)
+                                    float r_rng = r_up - r_dn
+                                    float r_mid = (r_up + r_dn) * 0.5
+                                    f_deposit_fp_gaussian(b_prior, s_prior, r_mid, r_rng, r_b, r_s, prior_lo, step_p, res_p, bellDivInput)
+                            else
+                                float bh = high[i]
+                                float bl = low[i]
+                                float bc = close[i]
+                                float bv = bar_buy_vol[i]
+                                float sv = bar_sell_vol[i]
+
+                                if na(bv) or na(sv) or (bv + sv <= 0.0)
+                                    float p_tot = nz(volume[i])
+                                    float p_split = (bh == bl) ? 0.5 : math.max(0.05, math.min(0.95, (bc - bl) / (bh - bl)))
+                                    bv := p_tot * p_split
+                                    sv := p_tot * (1.0 - p_split)
+
+                                f_deposit_bar_gaussian(b_prior, s_prior, bh, bl, bc, bv, sv, prior_lo, step_p, res_p, bellDivInput)
+
+                        if profSmoothKde
+                            f_smooth_profile(b_prior)
+                            f_smooth_profile(s_prior)
+
+                        float max_prior_b = 0.0
+                        float max_prior_s = 0.0
+                        float max_prior_tot = 0.0
+                        int prior_poc_b = 0
+                        float sum_prior_tot = 0.0
+                        float sum_prior_b   = 0.0
+                        float sum_prior_s   = 0.0
+
+                        for b = 0 to res_p
+                            float vb = array.get(b_prior, b)
+                            float vs = array.get(s_prior, b)
+                            float vt = vb + vs
+                            sum_prior_b += vb
+                            sum_prior_s += vs
+                            max_prior_b := math.max(max_prior_b, vb)
+                            max_prior_s := math.max(max_prior_s, vs)
+                            if vt > max_prior_tot
+                                max_prior_tot := vt
+                                prior_poc_b := b
+                            sum_prior_tot += vt
+
+                        // Ata Sabanci Exact Overlap Coefficient (OVL) & Balance Tilt Engine
+                        float prior_ovl = 0.0
+                        float prior_tilt = 0.0
+                        string prior_ovl_word = "BALANCED"
+
+                        if sum_prior_b > 0.0 and sum_prior_s > 0.0
+                            for b = 0 to res_p
+                                float pb = array.get(b_prior, b) / sum_prior_b
+                                float ps = array.get(s_prior, b) / sum_prior_s
+                                prior_ovl += math.min(pb, ps)
+                            prior_tilt := 100.0 * (sum_prior_b - sum_prior_s) / (sum_prior_b + sum_prior_s)
+                            prior_ovl_word := prior_ovl >= 0.75 ? "BALANCED" : (prior_tilt >= 5.0 ? "OFF BAL · BUY" : (prior_tilt <= -5.0 ? "OFF BAL · SELL" : "OFF BALANCE"))
+
+                        float vMax_prior = math.max(max_prior_b, max_prior_s)
+                        float prior_poc_px = prior_lo + (prior_poc_b + 0.5) * step_p
+                        bool prior_poc_is_bull = array.get(b_prior, prior_poc_b) >= array.get(s_prior, prior_poc_b)
+                        color prior_poc_col = prior_poc_is_bull ? COL_SHELF_GOLD : COL_SHELF_PURPLE
+
+                        float prior_vah_px = na
+                        float prior_val_px = na
+
+                        if vaCalcMethod == "Dalton Cumulative Mass (15%-85%)"
+                            float target_val_prior = sum_prior_tot * 0.15
+                            float target_vah_prior = sum_prior_tot * 0.85
+                            float cum_prior = 0.0
+                            int prior_val_b = 0
+                            int prior_vah_b = res_p
+                            bool found_val_prior = false
+                            bool found_vah_prior = false
+                            for b = 0 to res_p
+                                cum_prior += array.get(b_prior, b) + array.get(s_prior, b)
+                                if not found_val_prior and cum_prior >= target_val_prior
+                                    prior_val_b := b
+                                    found_val_prior := true
+                                if not found_vah_prior and cum_prior >= target_vah_prior
+                                    prior_vah_b := b
+                                    found_vah_prior := true
+                                    break
+                            prior_vah_px := math.min(prior_hi, prior_lo + (prior_vah_b + 1.0) * step_p)
+                            prior_val_px := math.max(prior_lo, prior_lo + prior_val_b * step_p)
+                        else
+                            // Canonical CBOT Dalton Steidlmayer 2-Bin Dual Expansion with LVN Decoupling
+                            float target_pva = sum_prior_tot * 0.70
+                            float cur_pva    = max_prior_tot
+                            int pva_up       = prior_poc_b
+                            int pva_dn       = prior_poc_b
+                            float lvn_p_lim  = max_prior_tot * 0.20
+
+                            while cur_pva < target_pva and (pva_up < res_p or pva_dn > 0)
+                                float s_up = 0.0
+                                int u_cnt  = 0
+                                for k = 1 to 2
+                                    if pva_up + k <= res_p
+                                        s_up += array.get(b_prior, pva_up + k) + array.get(s_prior, pva_up + k)
+                                        u_cnt += 1
+
+                                float s_dn = 0.0
+                                int d_cnt  = 0
+                                for k = 1 to 2
+                                    if pva_dn - k >= 0
+                                        s_dn += array.get(b_prior, pva_dn - k) + array.get(s_prior, pva_dn - k)
+                                        d_cnt += 1
+
+                                // Boundary / LVN Vacuum Decoupling: Prevent bimodal blowout across single-print void
+                                if pva_up >= res_p and d_cnt > 0
+                                    if (s_dn / float(d_cnt)) < lvn_p_lim and cur_pva >= sum_prior_tot * 0.35
+                                        break
+                                if pva_dn <= 0 and u_cnt > 0
+                                    if (s_up / float(u_cnt)) < lvn_p_lim and cur_pva >= sum_prior_tot * 0.35
+                                        break
+
+                                if s_up > s_dn and pva_up < res_p
+                                    pva_up += u_cnt
+                                    cur_pva += s_up
+                                else if s_dn > s_up and pva_dn > 0
+                                    pva_dn -= d_cnt
+                                    cur_pva += s_dn
+                                else if s_up == s_dn and (pva_up < res_p or pva_dn > 0)
+                                    if u_cnt > 0 and d_cnt > 0
+                                        float imm_u = array.get(b_prior, pva_up + 1) + array.get(s_prior, pva_up + 1)
+                                        float imm_d = array.get(b_prior, pva_dn - 1) + array.get(s_prior, pva_dn - 1)
+                                        if imm_u >= imm_d
+                                            pva_up += u_cnt
+                                            cur_pva += s_up
+                                        else
+                                            pva_dn -= d_cnt
+                                            cur_pva += s_dn
+                                    else if u_cnt > 0
+                                        pva_up += u_cnt
+                                        cur_pva += s_up
+                                    else if d_cnt > 0
+                                        pva_dn -= d_cnt
+                                        cur_pva += s_dn
+                                    else
+                                        break
+                                else if pva_up < res_p
+                                    pva_up += u_cnt
+                                    cur_pva += s_up
+                                else if pva_dn > 0
+                                    pva_dn -= d_cnt
+                                    cur_pva += s_dn
+                                else
+                                    break
+
+                            prior_vah_px := math.min(prior_hi, prior_lo + math.min(float(res_p), float(pva_up) + 1.0) * step_p)
+                            prior_val_px := math.max(prior_lo, prior_lo + math.max(0.0, float(pva_dn)) * step_p)
+
+                        // AMT Shape & LVN
+                        array<int> prior_peaks = array.new<int>()
+                        for b = 1 to res_p - 1
+                            float prev_v = array.get(b_prior, b - 1) + array.get(s_prior, b - 1)
+                            float cur_v  = array.get(b_prior, b) + array.get(s_prior, b)
+                            float next_v = array.get(b_prior, b + 1) + array.get(s_prior, b + 1)
+                            if cur_v >= prev_v and cur_v >= next_v and (cur_v > prev_v or cur_v > next_v) and cur_v >= 0.35 * max_prior_tot
+                                array.push(prior_peaks, b)
+
+                        bool is_prior_b_shape = false
+                        float prior_lvn_px = na
+                        float prior_lvn_lo = na
+                        float prior_lvn_hi = na
+                        if array.size(prior_peaks) >= 2
+                            int pk1 = array.get(prior_peaks, 0)
+                            int pk2 = array.get(prior_peaks, array.size(prior_peaks) - 1)
+                            if math.abs(pk2 - pk1) >= int(0.20 * res_p)
+                                float min_tr = 1e12
+                                int min_tr_b = -1
+                                for b = math.min(pk1, pk2) to math.max(pk1, pk2)
+                                    float tot_k = array.get(b_prior, b) + array.get(s_prior, b)
+                                    if tot_k < min_tr
+                                        min_tr := tot_k
+                                        min_tr_b := b
+                                float pk1_v = array.get(b_prior, pk1) + array.get(s_prior, pk1)
+                                float pk2_v = array.get(b_prior, pk2) + array.get(s_prior, pk2)
+                                float lvn_thresh_p = effective_lvn_thresh_ratio * math.min(pk1_v, pk2_v)
+                                if min_tr <= lvn_thresh_p
+                                    is_prior_b_shape := true
+                                    prior_lvn_px := prior_lo + (min_tr_b + 0.5) * step_p
+                                    int p_lo = math.min(pk1, pk2)
+                                    int p_hi = math.max(pk1, pk2)
+                                    int v_lo = min_tr_b
+                                    while v_lo > p_lo and (array.get(b_prior, v_lo - 1) + array.get(s_prior, v_lo - 1)) <= lvn_thresh_p
+                                        v_lo -= 1
+                                    int v_hi = min_tr_b
+                                    while v_hi < p_hi and (array.get(b_prior, v_hi + 1) + array.get(s_prior, v_hi + 1)) <= lvn_thresh_p
+                                        v_hi += 1
+                                    prior_lvn_lo := prior_lo + v_lo * step_p
+                                    prior_lvn_hi := prior_lo + (v_hi + 1) * step_p
+
+                        float prior_poc_rel = (prior_poc_px - prior_lo) / prior_span
+                        string prior_dalton = is_prior_b_shape ? "B" : (prior_poc_rel > 0.65 ? "P" : (prior_poc_rel < 0.35 ? "b" : "D"))
+
+                        // Synchronize Section 10 with True Gaussian Profile Values on Latest Cash Session
+                        if s_idx == latest_closed_idx and prior_is_cash
+                            prior_cash_vpoc := prior_poc_px
+                            prior_cash_vah  := prior_vah_px
+                            prior_cash_val  := prior_val_px
+
+                        if s_idx == latest_closed_idx and not is_cur_sess_active
+                            cur_poc_ref      := prior_poc_px
+                            cur_vah_ref      := prior_vah_px
+                            cur_val_ref      := prior_val_px
+                            cur_lvn_ref      := prior_lvn_px
+                            cur_shape_ref    := prior_dalton
+                            cur_ovl_ref      := prior_ovl
+                            cur_tilt_ref     := prior_tilt
+                            cur_ovl_word_ref := prior_ovl_word
+
+                        // Draw Session Profile Framing Outline (Full Box or Ceiling & Floor Guidelines)
+                        if eff_show_frames
+                            color f_col = prior_is_cash ? cashFrameCol : onFrameCol
+                            color f_bg  = (rulerClickThrough or frameFillTransp >= 95) ? na : color.new(f_col, frameFillTransp)
+                            if frameGeometryMode == "Full Enclosing Box"
+                                box s_box = box.new(prior_start_bar, prior_hi, prior_end_bar, prior_lo,
+                                     bgcolor=f_bg,
+                                     border_color=color.new(f_col, frameOutlineTransp),
+                                     border_width=frameOutlineWidth, border_style=STYLE_FRAME_BOX)
+                                array.push(prior_session_boxes, s_box)
+                            else
+                                line s_hi = line.new(prior_start_bar, prior_hi, prior_end_bar, prior_hi,
+                                     color=color.new(f_col, frameOutlineTransp), width=frameOutlineWidth, style=STYLE_FRAME_BOX)
+                                line s_lo = line.new(prior_start_bar, prior_lo, prior_end_bar, prior_lo,
+                                     color=color.new(f_col, frameOutlineTransp), width=frameOutlineWidth, style=STYLE_FRAME_BOX)
+                                array.push(prior_session_lines, s_hi)
+                                array.push(prior_session_lines, s_lo)
+
+                        // Render Completed Session Profile Anchored at Session Origin Boundary
+                        float span_ratio = profSpanMode == "Compact (20% Span)" ? 0.20 : (profSpanMode == "Balanced (35% Span)" ? 0.35 : (profSpanMode == "Expressive (50% Span)" ? 0.50 : (profSpanMode == "Wide (65% Span)" ? 0.65 : 0.0)))
+                        int eff_w_prior = span_ratio > 0.0 ? math.max(10, int(prior_len * span_ratio)) : math.min(profWidthInput, int(prior_len * 0.75))
+                        int anchor_x = prior_start_bar
+
+                        if vMax_prior > 0.0
+                            int b_glow_adj_p = profDeltaModulation ? (prior_tilt > 5.0 ? int(math.min(25.0, prior_tilt * 0.8)) : 0) : 0
+                            int s_glow_adj_p = profDeltaModulation ? (prior_tilt < -5.0 ? int(math.min(25.0, math.abs(prior_tilt) * 0.8)) : 0) : 0
+                            color prior_b_fill = profFillTransp >= 100 ? na : color.new(prof_base_b, math.max(10, profFillTransp - b_glow_adj_p))
+                            color prior_b_line = (not showProfOutline or profOutlineTransp >= 100) ? na : color.new(eff_prof_line_b, math.max(0, profOutlineTransp - b_glow_adj_p))
+                            color prior_s_fill = profFillTransp >= 100 ? na : color.new(prof_base_s, math.max(10, profFillTransp - s_glow_adj_p))
+                            color prior_s_line = (not showProfOutline or profOutlineTransp >= 100) ? na : color.new(eff_prof_line_s, math.max(0, profOutlineTransp - s_glow_adj_p))
+
+                            array<chart.point> ptsB_p = array.new<chart.point>()
+                            array.push(ptsB_p, chart.point.from_index(anchor_x, prior_lo))
+                            for b = 0 to res_p
+                                int xb = anchor_x + int(math.round(eff_w_prior * array.get(b_prior, b) / vMax_prior))
+                                array.push(ptsB_p, chart.point.from_index(xb, prior_lo + b * step_p))
+                            array.push(ptsB_p, chart.point.from_index(anchor_x, prior_hi))
+                            polyline p_buy = polyline.new(ptsB_p, curved=false, closed=true,
+                                 line_color=prior_b_line, fill_color=prior_b_fill, line_width=profOutlineWidth)
+                            array.push(prior_buy_polys, p_buy)
+
+                            array<chart.point> ptsS_p = array.new<chart.point>()
+                            array.push(ptsS_p, chart.point.from_index(anchor_x, prior_lo))
+                            for b = 0 to res_p
+                                int xs = anchor_x + int(math.round(eff_w_prior * array.get(s_prior, b) / vMax_prior))
+                                array.push(ptsS_p, chart.point.from_index(xs, prior_lo + b * step_p))
+                            array.push(ptsS_p, chart.point.from_index(anchor_x, prior_hi))
+                            polyline p_sell = polyline.new(ptsS_p, curved=false, closed=true,
+                                 line_color=prior_s_line, fill_color=prior_s_fill, line_width=profOutlineWidth)
+                            array.push(prior_sell_polys, p_sell)
+
+                            // Record Session POC Metrics for Multi-Session Confluent Iron Wall Analysis
+                            array.push(poc_calc_pxs, prior_poc_px)
+                            array.push(poc_calc_starts, prior_start_bar)
+                            array.push(poc_calc_ends, prior_end_bar)
+                            array.push(poc_calc_cashes, prior_is_cash)
+                            array.push(poc_calc_daltons, prior_dalton)
+                            array.push(poc_calc_s_idxs, s_idx)
+
+                            if not prior_is_cash and s_idx == latest_closed_idx
+                                latest_on_poc := prior_poc_px
+
+                            string prior_prefix = is_weekly_mode ? "W-" : (is_monthly_mode ? "M-" : (is_daily_cycle_mode ? "D-" : (prior_is_cash ? (is_crypto_asset ? "Day " : "Cash ") : (is_crypto_asset ? "Night " : "ON "))))
+
+                            if showSessionVa
+                                int vah_x1 = anchor_x
+                                int vah_x2 = prior_end_bar
+                                line p_vah = line.new(vah_x1, prior_vah_px, vah_x2, prior_vah_px,
+                                     color=COL_VAH_LINE, width=vahLineWidth, style=STYLE_VAH_LINE)
+                                line p_val = line.new(vah_x1, prior_val_px, vah_x2, prior_val_px,
+                                     color=COL_VAL_LINE, width=valLineWidth, style=STYLE_VAL_LINE)
+                                array.push(prior_vah_lines, p_vah)
+                                array.push(prior_val_lines, p_val)
+
+                                if levelLabelStyle != "Hidden"
+                                    int p_lbl_x = (levelLabelPos == "Left Edge (Inside Box)" ? anchor_x :
+                                         (levelLabelPos == "Center of Session" ? int(math.round((anchor_x + prior_end_bar) * 0.5)) :
+                                         (levelLabelPos == "Right Edge (Outside Box)" ? prior_end_bar + 1 : prior_end_bar)))
+                                    string p_lbl_st = (levelLabelStyle == "Bulky Badges (Legacy)" ? label.style_label_right :
+                                         (levelLabelPos == "Center of Session" ? label.style_label_center :
+                                         (levelLabelPos == "Right Edge (Inside Box)" ? label.style_label_right : label.style_label_left)))
+                                    int eff_lbl_x = levelLabelStyle == "Bulky Badges (Legacy)" ? anchor_x : p_lbl_x
+
+                                    string prior_vah_txt = levelLabelStyle == "Bulky Badges (Legacy)" ?
+                                         (prior_prefix + "VAH " + str.tostring(prior_vah_px, format.mintick)) :
+                                         (levelLabelStyle == "Compact Acronym Only" ? "VAH" :
+                                         (levelLabelStyle == "Session Acronym (C-POC / ON-POC)" ? ((prior_is_cash ? "C-VAH " : "ON-VAH ") + str.tostring(prior_vah_px, format.mintick)) :
+                                         ("VAH " + str.tostring(prior_vah_px, format.mintick))))
+                                    string prior_val_txt = levelLabelStyle == "Bulky Badges (Legacy)" ?
+                                         (prior_prefix + "VAL " + str.tostring(prior_val_px, format.mintick)) :
+                                         (levelLabelStyle == "Compact Acronym Only" ? "VAL" :
+                                         (levelLabelStyle == "Session Acronym (C-POC / ON-POC)" ? ((prior_is_cash ? "C-VAL " : "ON-VAL ") + str.tostring(prior_val_px, format.mintick)) :
+                                         ("VAL " + str.tostring(prior_val_px, format.mintick))))
+
+                                    color p_va_bg = levelLabelStyle == "Bulky Badges (Legacy)" ? color.new(colVahInput, 30) : (useShieldPill ? COL_SHIELD_PILL : color.new(color.black, 100))
+                                    color p_vah_tx = levelLabelStyle == "Bulky Badges (Legacy)" ? color.white : colVahInput
+                                    color p_val_tx = levelLabelStyle == "Bulky Badges (Legacy)" ? color.white : colValInput
+
+                                    label p_vah_lbl = label.new(eff_lbl_x, prior_vah_px, prior_vah_txt,
+                                         color=p_va_bg, textcolor=p_vah_tx, style=p_lbl_st, size=prof_lbl_size)
+                                    label p_val_lbl = label.new(eff_lbl_x, prior_val_px, prior_val_txt,
+                                         color=p_va_bg, textcolor=p_val_tx, style=p_lbl_st, size=prof_lbl_size)
+                                    array.push(prior_vah_lbls, p_vah_lbl)
+                                    array.push(prior_val_lbls, p_val_lbl)
+
+                            if showHalfback and not prior_is_cash and not is_daily_cycle_mode and not is_weekly_mode and not is_monthly_mode
+                                bool is_covered_by_live = (is_cur_sess_active and in_cash_rth and s_idx == 1 and not na(hb_line_inst))
+                                if not is_covered_by_live
+                                    float prior_hb_px = (prior_hi + prior_lo) * 0.5
+                                    int hb_start = anchor_x
+                                    int hb_end   = prior_end_bar
+
+                                    line p_hb = line.new(hb_start, prior_hb_px, hb_end, prior_hb_px,
+                                         color=COL_HALFBACK, width=hbLineWidth, style=STYLE_HALFBACK)
+                                    array.push(prior_hb_lines, p_hb)
+
+                                    if levelLabelStyle != "Hidden"
+                                        int p_hb_lbl_x = (levelLabelPos == "Left Edge (Inside Box)" ? hb_start :
+                                             (levelLabelPos == "Center of Session" ? int(math.round((hb_start + hb_end) * 0.5)) :
+                                             (levelLabelPos == "Right Edge (Outside Box)" ? hb_end + 1 : hb_end)))
+                                        string p_hb_lbl_st = (levelLabelStyle == "Bulky Badges (Legacy)" ? label.style_label_right :
+                                             (levelLabelPos == "Center of Session" ? label.style_label_center :
+                                             (levelLabelPos == "Right Edge (Inside Box)" ? label.style_label_right : label.style_label_left)))
+                                        int eff_hb_lbl_x = levelLabelStyle == "Bulky Badges (Legacy)" ? hb_start : p_hb_lbl_x
+
+                                        string prior_hb_txt = levelLabelStyle == "Bulky Badges (Legacy)" ?
+                                             ("ON HALF-BACK (50%): " + str.tostring(prior_hb_px, format.mintick)) :
+                                             (levelLabelStyle == "Compact Acronym Only" ? "HB (50%)" :
+                                             (levelLabelStyle == "Session Acronym (C-POC / ON-POC)" ? ("ON-HB " + str.tostring(prior_hb_px, format.mintick)) :
+                                             ("ON HALF-BACK (50%): " + str.tostring(prior_hb_px, format.mintick))))
+
+                                        color p_hb_bg = levelLabelStyle == "Bulky Badges (Legacy)" ? color.new(halfbackColInput, 30) : (useShieldPill ? COL_SHIELD_PILL : color.new(color.black, 100))
+                                        color p_hb_tx = levelLabelStyle == "Bulky Badges (Legacy)" ? color.white : halfbackColInput
+
+                                        label p_hb_lbl = label.new(eff_hb_lbl_x, prior_hb_px, prior_hb_txt,
+                                             color=p_hb_bg, textcolor=p_hb_tx, style=p_hb_lbl_st, size=prof_lbl_size)
+                                        array.push(prior_hb_lbls, p_hb_lbl)
+
+                            if is_prior_b_shape and showLvnCorridor and not na(prior_lvn_px)
+                                int r_edge_lvn = prior_end_bar
+                                if lvnExtendMode == "Extend Until Mitigated" and priorLevelAnchor != "Session Framing Only (No Multi-Day Lines)"
+                                    if p_i_min > 0
+                                        int mit_i = -1
+                                        int f_i = p_i_min - 1
+                                        while f_i >= 0
+                                            float c_f = close[f_i]
+                                            if not na(c_f) and not na(prior_lvn_lo) and not na(prior_lvn_hi) and (c_f >= prior_lvn_lo and c_f <= prior_lvn_hi)
+                                                mit_i := f_i
+                                                break
+                                            f_i -= 1
+                                        if mit_i >= 0
+                                            r_edge_lvn := bar_index - mit_i
+                                        else
+                                            r_edge_lvn := r_edge_vis
+                                    else
+                                        r_edge_lvn := r_edge_vis
+
+                                int lvn_x1 = anchor_x
+
+                                // Shaded Corridor Box
+                                if lvnDisplayMode != "Inflection Line Only" and not na(prior_lvn_hi) and not na(prior_lvn_lo)
+                                    color prior_lvn_bg = (rulerClickThrough or lvnFillTransp >= 95) ? na : color.new(COL_LVN_CORRIDOR, lvnFillTransp)
+                                    box p_lvn_b = box.new(lvn_x1, prior_lvn_hi, r_edge_lvn, prior_lvn_lo,
+                                         bgcolor=prior_lvn_bg,
+                                         border_color=color.new(COL_LVN_CORRIDOR, math.max(0, lvnFillTransp - 40)),
+                                         border_width=1, border_style=STYLE_LVN_LINE)
+                                    array.push(prior_lvn_boxes, p_lvn_b)
+
+                                // Inflection Centerline
+                                if lvnDisplayMode != "Shaded Corridor Box"
+                                    line p_lvn = line.new(lvn_x1, prior_lvn_px, r_edge_lvn, prior_lvn_px,
+                                         color=COL_LVN_CORRIDOR, width=1, style=STYLE_LVN_LINE)
+                                    array.push(prior_lvn_lines, p_lvn)
+
+                                // Label with Knockout Shield Pill
+                                if levelLabelStyle != "Hidden"
+                                    int p_lvn_lbl_x = (levelLabelPos == "Left Edge (Inside Box)" ? anchor_x :
+                                         (levelLabelPos == "Center of Session" ? int(math.round((anchor_x + prior_end_bar) * 0.5)) :
+                                         (levelLabelPos == "Right Edge (Outside Box)" ? prior_end_bar + 1 : prior_end_bar)))
+                                    string p_lvn_lbl_st = (levelLabelStyle == "Bulky Badges (Legacy)" ? label.style_label_right :
+                                         (levelLabelPos == "Center of Session" ? label.style_label_center :
+                                         (levelLabelPos == "Right Edge (Inside Box)" ? label.style_label_right : label.style_label_left)))
+                                    int eff_lvn_lbl_x = levelLabelStyle == "Bulky Badges (Legacy)" ? anchor_x : p_lvn_lbl_x
+                                    string prior_lvn_txt = levelLabelStyle == "Bulky Badges (Legacy)" ?
+                                         (prior_prefix + "LVN " + str.tostring(prior_lvn_px, format.mintick)) :
+                                         (levelLabelStyle == "Compact Acronym Only" ? "LVN" :
+                                         (levelLabelStyle == "Session Acronym (C-POC / ON-POC)" ? ((prior_is_cash ? "C-LVN " : "ON-LVN ") + str.tostring(prior_lvn_px, format.mintick)) :
+                                         ("LVN " + str.tostring(prior_lvn_px, format.mintick))))
+                                    color p_lvn_bg = levelLabelStyle == "Bulky Badges (Legacy)" ? color.new(COL_LVN_CORRIDOR, 20) : (useShieldPill ? COL_SHIELD_PILL : color.new(color.black, 100))
+                                    color p_lvn_tx = levelLabelStyle == "Bulky Badges (Legacy)" ? color.white : COL_LVN_CORRIDOR
+                                    label p_lvn_lbl = label.new(eff_lvn_lbl_x, prior_lvn_px, prior_lvn_txt,
+                                         color=p_lvn_bg, textcolor=p_lvn_tx, style=p_lvn_lbl_st, size=prof_lbl_size)
+                                    array.push(prior_lvn_lbls, p_lvn_lbl)
+
+                            if showAmtShapes
+                                string p_ovl_short_txt = (showOvlMetrics and not na(prior_ovl)) ? (" · OVL " + str.tostring(prior_ovl, "0.00") + " " + (prior_ovl >= 0.75 ? "BAL" : (prior_tilt >= 5.0 ? "BUY" : (prior_tilt <= -5.0 ? "SELL" : "IMB")))) : ""
+                                string prior_shape_txt = prior_prefix + "[" + prior_dalton + "]" + p_ovl_short_txt
+                                color p_shape_bg = levelLabelStyle == "Bulky Badges (Legacy)" ? color.rgb(15, 18, 26) : (useShieldPill ? COL_SHIELD_PILL : color.new(color.black, 100))
+                                color p_shape_tx = prior_is_cash ? cashFrameCol : onFrameCol
+                                string p_ovl_tt  = "Ata Sabanci Order Flow Profiler:\n• Dalton Archetype: [" + prior_dalton + "]\n• Overlap Coef (OVL): " + str.tostring(prior_ovl, "0.00") + " (" + prior_ovl_word + ")\n• Balance Tilt: " + (prior_tilt >= 0 ? "+" : "") + str.tostring(prior_tilt, "0.1") + "%"
+                                int eff_shape_x = anchor_x + eff_w_prior + 2
+                                label p_shape = label.new(eff_shape_x, prior_hi, prior_shape_txt,
+                                     color=p_shape_bg, textcolor=p_shape_tx,
+                                     style=label.style_label_lower_left, size=prof_lbl_size, tooltip=p_ovl_tt)
+                                array.push(prior_shape_lbls, p_shape)
+
+            // ── Render Completed POCs with Multi-Session Confluent Iron Wall Clustering ──
+            int n_pocs = array.size(poc_calc_pxs)
+            for k = 0 to (n_pocs > 0 ? n_pocs - 1 : -1)
+                float k_px      = array.get(poc_calc_pxs, k)
+                int   k_start   = array.get(poc_calc_starts, k)
+                int   k_end     = array.get(poc_calc_ends, k)
+                bool  k_is_cash = array.get(poc_calc_cashes, k)
+                string k_dalton = array.get(poc_calc_daltons, k)
+                int   k_s_idx   = array.get(poc_calc_s_idxs, k)
+
+                int eff_k_start = k_start
+                int eff_k_end   = k_end
+
+                bool k_is_confluent = false
+                if showConfluentPoc and not na(k_px)
+                    for j = 0 to n_pocs - 1
+                        if j != k and math.abs(j - k) <= confLookbackSess
+                            float j_px = array.get(poc_calc_pxs, j)
+                            if not na(j_px) and math.abs(k_px - j_px) <= eff_cluster_tol
+                                k_is_confluent := true
+                                break
+
+                color eff_poc_col = k_is_confluent ? COL_CONFLUENT_POC : COL_POC_LINE
+                int   eff_poc_w   = k_is_confluent ? confLineWidth : pocLineWidth
+                string eff_poc_st = k_is_confluent ? STYLE_CONFLUENT : STYLE_POC_LINE
+
+                line p_poc = line.new(eff_k_start, k_px, eff_k_end, k_px,
+                     color=eff_poc_col, width=eff_poc_w, style=eff_poc_st)
+                array.push(prior_poc_lines, p_poc)
+
+                string k_pfx = is_weekly_mode ? "W-" : (is_monthly_mode ? "M-" : (is_daily_cycle_mode ? "D-" : (k_is_cash ? (is_crypto_asset ? "Day " : "Cash ") : (is_crypto_asset ? "Night " : "ON "))))
+
+                if levelLabelStyle != "Hidden"
+                    int p_lbl_x = (levelLabelPos == "Left Edge (Inside Box)" ? eff_k_start :
+                         (levelLabelPos == "Center of Session" ? int(math.round((eff_k_start + eff_k_end) * 0.5)) :
+                         (levelLabelPos == "Right Edge (Outside Box)" ? eff_k_end + 1 : eff_k_end)))
+                    string p_lbl_st = (levelLabelStyle == "Bulky Badges (Legacy)" ? label.style_label_right :
+                         (levelLabelPos == "Center of Session" ? label.style_label_center :
+                         (levelLabelPos == "Right Edge (Inside Box)" ? label.style_label_right : label.style_label_left)))
+                    int eff_lbl_x = levelLabelStyle == "Bulky Badges (Legacy)" ? eff_k_start : p_lbl_x
+
+                    string prior_poc_txt = ""
+                    if k_is_confluent
+                        prior_poc_txt := levelLabelStyle == "Bulky Badges (Legacy)" ?
+                             (k_pfx + "CONFLUENT IRON POC " + str.tostring(k_px, format.mintick) + " [" + k_dalton + "]") :
+                             (levelLabelStyle == "Compact Acronym Only" ? "IRON POC" :
+                             (levelLabelStyle == "Session Acronym (C-POC / ON-POC)" ? ((k_is_cash ? "C-IRON-POC " : "ON-IRON-POC ") + str.tostring(k_px, format.mintick)) :
+                             ("CONFLUENT POC " + str.tostring(k_px, format.mintick))))
+                    else
+                        prior_poc_txt := levelLabelStyle == "Bulky Badges (Legacy)" ?
+                             (k_pfx + "VPOC " + str.tostring(k_px, format.mintick) + " [" + k_dalton + "]") :
+                             (levelLabelStyle == "Compact Acronym Only" ? "POC" :
+                             (levelLabelStyle == "Session Acronym (C-POC / ON-POC)" ? ((k_is_cash ? "C-POC " : "ON-POC ") + str.tostring(k_px, format.mintick)) :
+                             ("POC " + str.tostring(k_px, format.mintick))))
+
+                    color p_poc_bg = levelLabelStyle == "Bulky Badges (Legacy)" ? color.new(k_is_confluent ? confluentColInput : colPocInput, 20) : (useShieldPill ? COL_SHIELD_PILL : color.new(color.black, 100))
+                    color p_poc_tx = levelLabelStyle == "Bulky Badges (Legacy)" ? color.white : (k_is_confluent ? confluentColInput : colPocInput)
+                    label p_lbl = label.new(eff_lbl_x, k_px, prior_poc_txt,
+                         color=p_poc_bg, textcolor=p_poc_tx, style=p_lbl_st, size=prof_lbl_size)
+                    array.push(prior_poc_lbls, p_lbl)
+
+                // Extending Virgin POC forward to live bar (for most recent completed session)
+                if extendVpocInput and k_s_idx == latest_closed_idx and priorLevelAnchor != "Session Framing Only (No Multi-Day Lines)"
+                    int r_edge = bar_index + profOffsetInput + profWidthInput + profLabelOverhang
+                    color ext_col = k_is_confluent ? color.new(confluentColInput, math.min(confTransp + 20, 90)) : color.new(colPocInput, math.min(pocTransp + 20, 90))
+                    line p_ext = line.new(k_end, k_px, r_edge, k_px,
+                         color=ext_col, width=math.max(1, pocLineWidth - 1), style=line.style_dotted)
+                    array.push(prior_ext_lines, p_ext)
+
+            // Cache Prior Cadence State
+            array.set(prior_cadence_cache, 0, latest_prior_start)
+            array.set(prior_cadence_cache, 1, cur_act_int)
+        else
+            // Prior session profiles are completely static — update active extension endpoints if bar advanced
+            int r_edge = bar_index + profOffsetInput + profWidthInput + profLabelOverhang
+            if extendVpocInput and array.size(prior_ext_lines) > 0
+                for l in prior_ext_lines
+                    line.set_x2(l, r_edge)
+            if lvnExtendMode == "Extend Until Mitigated" and priorLevelAnchor != "Session Framing Only (No Multi-Day Lines)"
+                for l in prior_lvn_lines
+                    if line.get_x2(l) >= bar_index - 1
+                        line.set_x2(l, r_edge)
+                for b in prior_lvn_boxes
+                    if box.get_right(b) >= bar_index - 1
+                        box.set_right(b, r_edge)
+
+// =============================================================================
+// SMART KEY LEVEL DASHES (RIGHT MARGIN MINIMALIST PROJECTIONS)
+// =============================================================================
+if barstate.islast
+    if showSmartLevelDashes and not hide_intraday_overlays
+        int d_x1 = bar_index + profOffsetInput
+        int d_w  = math.max(8, int(profWidthInput * 0.5))
+        int d_x2 = d_x1 + d_w
+        color pill_bg = useShieldPill ? COL_SHIELD_PILL : color.new(color.black, 100)
+
+        // 1. Overnight High
+        if showOvernightExtremes and not na(on_high_locked)
+            if na(dash_on_hi_ln)
+                dash_on_hi_ln := line.new(d_x1, on_high_locked, d_x2, on_high_locked, color=onFrameCol, width=1, style=line.style_dashed)
+            else
+                line.set_xy1(dash_on_hi_ln, d_x1, on_high_locked)
+                line.set_xy2(dash_on_hi_ln, d_x2, on_high_locked)
+                line.set_color(dash_on_hi_ln, onFrameCol)
+            if levelLabelStyle != "Hidden"
+                string txt = levelLabelStyle == "Compact Acronym Only" ? "ON-H" : ("ON-HIGH " + str.tostring(on_high_locked, format.mintick))
+                if na(dash_on_hi_lbl)
+                    dash_on_hi_lbl := label.new(d_x2, on_high_locked, txt, color=pill_bg, textcolor=onFrameCol, style=label.style_label_left, size=prof_lbl_size)
+                else
+                    label.set_xy(dash_on_hi_lbl, d_x2, on_high_locked)
+                    label.set_text(dash_on_hi_lbl, txt)
+                    label.set_color(dash_on_hi_lbl, pill_bg)
+                    label.set_textcolor(dash_on_hi_lbl, onFrameCol)
+            else if not na(dash_on_hi_lbl)
+                label.delete(dash_on_hi_lbl)
+                dash_on_hi_lbl := na
+        else
+            if not na(dash_on_hi_ln)
+                line.delete(dash_on_hi_ln)
+                dash_on_hi_ln := na
+            if not na(dash_on_hi_lbl)
+                label.delete(dash_on_hi_lbl)
+                dash_on_hi_lbl := na
+
+        // 2. Overnight Low
+        if showOvernightExtremes and not na(on_low_locked)
+            if na(dash_on_lo_ln)
+                dash_on_lo_ln := line.new(d_x1, on_low_locked, d_x2, on_low_locked, color=onFrameCol, width=1, style=line.style_dashed)
+            else
+                line.set_xy1(dash_on_lo_ln, d_x1, on_low_locked)
+                line.set_xy2(dash_on_lo_ln, d_x2, on_low_locked)
+                line.set_color(dash_on_lo_ln, onFrameCol)
+            if levelLabelStyle != "Hidden"
+                string txt = levelLabelStyle == "Compact Acronym Only" ? "ON-L" : ("ON-LOW " + str.tostring(on_low_locked, format.mintick))
+                if na(dash_on_lo_lbl)
+                    dash_on_lo_lbl := label.new(d_x2, on_low_locked, txt, color=pill_bg, textcolor=onFrameCol, style=label.style_label_left, size=prof_lbl_size)
+                else
+                    label.set_xy(dash_on_lo_lbl, d_x2, on_low_locked)
+                    label.set_text(dash_on_lo_lbl, txt)
+                    label.set_color(dash_on_lo_lbl, pill_bg)
+                    label.set_textcolor(dash_on_lo_lbl, onFrameCol)
+            else if not na(dash_on_lo_lbl)
+                label.delete(dash_on_lo_lbl)
+                dash_on_lo_lbl := na
+        else
+            if not na(dash_on_lo_ln)
+                line.delete(dash_on_lo_ln)
+                dash_on_lo_ln := na
+            if not na(dash_on_lo_lbl)
+                label.delete(dash_on_lo_lbl)
+                dash_on_lo_lbl := na
+
+        // 3. Overnight Half-Back (50% Midpoint)
+        if showHalfback and not na(on_halfback)
+            if na(dash_on_hb_ln)
+                dash_on_hb_ln := line.new(d_x1, on_halfback, d_x2, on_halfback, color=halfbackColInput, width=1, style=line.style_dashed)
+            else
+                line.set_xy1(dash_on_hb_ln, d_x1, on_halfback)
+                line.set_xy2(dash_on_hb_ln, d_x2, on_halfback)
+                line.set_color(dash_on_hb_ln, halfbackColInput)
+            if levelLabelStyle != "Hidden"
+                string txt = levelLabelStyle == "Compact Acronym Only" ? "HB (50%)" : ("ON-HB " + str.tostring(on_halfback, format.mintick))
+                if na(dash_on_hb_lbl)
+                    dash_on_hb_lbl := label.new(d_x2, on_halfback, txt, color=pill_bg, textcolor=halfbackColInput, style=label.style_label_left, size=prof_lbl_size)
+                else
+                    label.set_xy(dash_on_hb_lbl, d_x2, on_halfback)
+                    label.set_text(dash_on_hb_lbl, txt)
+                    label.set_color(dash_on_hb_lbl, pill_bg)
+                    label.set_textcolor(dash_on_hb_lbl, halfbackColInput)
+            else if not na(dash_on_hb_lbl)
+                label.delete(dash_on_hb_lbl)
+                dash_on_hb_lbl := na
+        else
+            if not na(dash_on_hb_ln)
+                line.delete(dash_on_hb_ln)
+                dash_on_hb_ln := na
+            if not na(dash_on_hb_lbl)
+                label.delete(dash_on_hb_lbl)
+                dash_on_hb_lbl := na
+
+        // 4. Prior Day Cash High
+        if showPriorCashLevels and not na(prior_cash_hi_locked)
+            if na(dash_pd_hi_ln)
+                dash_pd_hi_ln := line.new(d_x1, prior_cash_hi_locked, d_x2, prior_cash_hi_locked, color=cashFrameCol, width=1, style=line.style_dashed)
+            else
+                line.set_xy1(dash_pd_hi_ln, d_x1, prior_cash_hi_locked)
+                line.set_xy2(dash_pd_hi_ln, d_x2, prior_cash_hi_locked)
+                line.set_color(dash_pd_hi_ln, cashFrameCol)
+            if levelLabelStyle != "Hidden"
+                string txt = levelLabelStyle == "Compact Acronym Only" ? "PD-H" : ("PD-HIGH " + str.tostring(prior_cash_hi_locked, format.mintick))
+                if na(dash_pd_hi_lbl)
+                    dash_pd_hi_lbl := label.new(d_x2, prior_cash_hi_locked, txt, color=pill_bg, textcolor=cashFrameCol, style=label.style_label_left, size=prof_lbl_size)
+                else
+                    label.set_xy(dash_pd_hi_lbl, d_x2, prior_cash_hi_locked)
+                    label.set_text(dash_pd_hi_lbl, txt)
+                    label.set_color(dash_pd_hi_lbl, pill_bg)
+                    label.set_textcolor(dash_pd_hi_lbl, cashFrameCol)
+            else if not na(dash_pd_hi_lbl)
+                label.delete(dash_pd_hi_lbl)
+                dash_pd_hi_lbl := na
+        else
+            if not na(dash_pd_hi_ln)
+                line.delete(dash_pd_hi_ln)
+                dash_pd_hi_ln := na
+            if not na(dash_pd_hi_lbl)
+                label.delete(dash_pd_hi_lbl)
+                dash_pd_hi_lbl := na
+
+        // 5. Prior Day Cash Low
+        if showPriorCashLevels and not na(prior_cash_lo_locked)
+            if na(dash_pd_lo_ln)
+                dash_pd_lo_ln := line.new(d_x1, prior_cash_lo_locked, d_x2, prior_cash_lo_locked, color=cashFrameCol, width=1, style=line.style_dashed)
+            else
+                line.set_xy1(dash_pd_lo_ln, d_x1, prior_cash_lo_locked)
+                line.set_xy2(dash_pd_lo_ln, d_x2, prior_cash_lo_locked)
+                line.set_color(dash_pd_lo_ln, cashFrameCol)
+            if levelLabelStyle != "Hidden"
+                string txt = levelLabelStyle == "Compact Acronym Only" ? "PD-L" : ("PD-LOW " + str.tostring(prior_cash_lo_locked, format.mintick))
+                if na(dash_pd_lo_lbl)
+                    dash_pd_lo_lbl := label.new(d_x2, prior_cash_lo_locked, txt, color=pill_bg, textcolor=cashFrameCol, style=label.style_label_left, size=prof_lbl_size)
+                else
+                    label.set_xy(dash_pd_lo_lbl, d_x2, prior_cash_lo_locked)
+                    label.set_text(dash_pd_lo_lbl, txt)
+                    label.set_color(dash_pd_lo_lbl, pill_bg)
+                    label.set_textcolor(dash_pd_lo_lbl, cashFrameCol)
+            else if not na(dash_pd_lo_lbl)
+                label.delete(dash_pd_lo_lbl)
+                dash_pd_lo_lbl := na
+        else
+            if not na(dash_pd_lo_ln)
+                line.delete(dash_pd_lo_ln)
+                dash_pd_lo_ln := na
+            if not na(dash_pd_lo_lbl)
+                label.delete(dash_pd_lo_lbl)
+                dash_pd_lo_lbl := na
+
+        // 6. Overnight Point of Control (ON-POC)
+        float eff_on_poc = not na(latest_on_poc) ? latest_on_poc : on_vpoc
+        if showOvernightPoc and not na(eff_on_poc)
+            bool is_on_poc_confluent = showConfluentPoc and not na(cur_poc_ref) and math.abs(eff_on_poc - cur_poc_ref) <= eff_cluster_tol
+            color on_poc_dash_col = is_on_poc_confluent ? confluentColInput : colPocInput
+            if na(dash_on_poc_ln)
+                dash_on_poc_ln := line.new(d_x1, eff_on_poc, d_x2, eff_on_poc, color=on_poc_dash_col, width=is_on_poc_confluent ? 2 : 1, style=line.style_dashed)
+            else
+                line.set_xy1(dash_on_poc_ln, d_x1, eff_on_poc)
+                line.set_xy2(dash_on_poc_ln, d_x2, eff_on_poc)
+                line.set_color(dash_on_poc_ln, on_poc_dash_col)
+                line.set_width(dash_on_poc_ln, is_on_poc_confluent ? 2 : 1)
+            if levelLabelStyle != "Hidden"
+                string txt = is_on_poc_confluent ? 
+                     (levelLabelStyle == "Compact Acronym Only" ? "CONFL-POC" : ("CONFLUENT POC " + str.tostring(eff_on_poc, format.mintick))) :
+                     (levelLabelStyle == "Compact Acronym Only" ? "ON-POC" : ("ON-POC " + str.tostring(eff_on_poc, format.mintick)))
+                if na(dash_on_poc_lbl)
+                    dash_on_poc_lbl := label.new(d_x2, eff_on_poc, txt, color=pill_bg, textcolor=on_poc_dash_col, style=label.style_label_left, size=prof_lbl_size)
+                else
+                    label.set_xy(dash_on_poc_lbl, d_x2, eff_on_poc)
+                    label.set_text(dash_on_poc_lbl, txt)
+                    label.set_color(dash_on_poc_lbl, pill_bg)
+                    label.set_textcolor(dash_on_poc_lbl, on_poc_dash_col)
+            else if not na(dash_on_poc_lbl)
+                label.delete(dash_on_poc_lbl)
+                dash_on_poc_lbl := na
+        else
+            if not na(dash_on_poc_ln)
+                line.delete(dash_on_poc_ln)
+                dash_on_poc_ln := na
+            if not na(dash_on_poc_lbl)
+                label.delete(dash_on_poc_lbl)
+                dash_on_poc_lbl := na
+    else
+        if not na(dash_on_hi_ln)
+            line.delete(dash_on_hi_ln)
+            dash_on_hi_ln := na
+        if not na(dash_on_hi_lbl)
+            label.delete(dash_on_hi_lbl)
+            dash_on_hi_lbl := na
+        if not na(dash_on_lo_ln)
+            line.delete(dash_on_lo_ln)
+            dash_on_lo_ln := na
+        if not na(dash_on_lo_lbl)
+            label.delete(dash_on_lo_lbl)
+            dash_on_lo_lbl := na
+        if not na(dash_on_hb_ln)
+            line.delete(dash_on_hb_ln)
+            dash_on_hb_ln := na
+        if not na(dash_on_hb_lbl)
+            label.delete(dash_on_hb_lbl)
+            dash_on_hb_lbl := na
+        if not na(dash_pd_hi_ln)
+            line.delete(dash_pd_hi_ln)
+            dash_pd_hi_ln := na
+        if not na(dash_pd_hi_lbl)
+            label.delete(dash_pd_hi_lbl)
+            dash_pd_hi_lbl := na
+        if not na(dash_pd_lo_ln)
+            line.delete(dash_pd_lo_ln)
+            dash_pd_lo_ln := na
+        if not na(dash_pd_lo_lbl)
+            label.delete(dash_pd_lo_lbl)
+            dash_pd_lo_lbl := na
+        if not na(dash_on_poc_ln)
+            line.delete(dash_on_poc_ln)
+            dash_on_poc_ln := na
+        if not na(dash_on_poc_lbl)
+            label.delete(dash_on_poc_lbl)
+            dash_on_poc_lbl := na
+
+// =============================================================================
+// SECTION 12: INSTITUTIONAL HEADS-UP DISPLAY & EDUCATIONAL TABLE
+// =============================================================================
+
+// Unified Single-Table Architecture (Eliminates Screen Position Occlusion & Multi-Table Conflicts)
+var table hud_display = table.new(
+     hudPositionInput == "Top Right" ? position.top_right : (hudPositionInput == "Top Left" ? position.top_left : (hudPositionInput == "Bottom Right" ? position.bottom_right : position.bottom_left)),
+     3, 7, bgcolor=color.new(color.black, 100), border_color=color.new(color.black, 100), border_width=0)
+
+// Stabilized Order Flow State Machine (Eliminates High-Frequency Intra-Bar Flashing)
+var string latched_flow_interp = "Two-Sided Auction (Balanced Tape)"
+var color  latched_flow_col    = color.rgb(176, 190, 197)
+
+if barstate.isnew
+    latched_flow_interp := (fp_trapped_shorts[1] or std_bull_absorb[1]) ? "Confirmed: Demand Absorption at Lows" :
+         ((fp_trapped_longs[1] or std_bear_absorb[1]) ? "Confirmed: Supply Defense at Highs" :
+         (fp_bottom_sell_imb[1] ? "Confirmed: Footprint Iceberg Bid at Lows" :
+         (fp_top_buy_imb[1] ? "Confirmed: Footprint Iceberg Ask at Highs" :
+         (is_bull_delta_div[1] ? "Confirmed: Bullish Delta Divergence" :
+         (is_bear_delta_div[1] ? "Confirmed: Bearish Delta Divergence" :
+         (is_bull_drive[1] ? "Confirmed: Initiative Bull Drive" :
+         (is_bear_drive[1] ? "Confirmed: Initiative Bear Drive" : "Two-Sided Auction (Balanced Tape)")))))))
+    latched_flow_col := (fp_trapped_shorts[1] or std_bull_absorb[1] or fp_bottom_sell_imb[1]) ? COL_SHELF_GOLD :
+         ((fp_trapped_longs[1] or std_bear_absorb[1] or fp_top_buy_imb[1]) ? COL_SHELF_PURPLE :
+         ((is_bull_drive[1] or is_bull_delta_div[1]) ? #00E676 :
+         ((is_bear_drive[1] or is_bear_delta_div[1]) ? #FF1744 : color.rgb(176, 190, 197))))
+
+// Intra-bar latching: only upgrade live state when significant institutional volume is present
+bool live_tape_active = (volume >= vol_ma20 * 0.25) or (math.abs(bar_delta) >= math.max(15.0, safe_sma_delta * 0.30)) or barstate.isconfirmed
+
+if live_tape_active
+    if fp_trapped_shorts or std_bull_absorb
+        latched_flow_interp := "Active: Demand Absorption (Limit Bids)"
+        latched_flow_col    := COL_SHELF_GOLD
+    else if fp_trapped_longs or std_bear_absorb
+        latched_flow_interp := "Active: Supply Defense (Limit Asks)"
+        latched_flow_col    := COL_SHELF_PURPLE
+    else if fp_bottom_sell_imb
+        latched_flow_interp := "Active: Footprint Iceberg Bid at Lows"
+        latched_flow_col    := COL_SHELF_GOLD
+    else if fp_top_buy_imb
+        latched_flow_interp := "Active: Footprint Iceberg Ask at Highs"
+        latched_flow_col    := COL_SHELF_PURPLE
+    else if is_bull_delta_div
+        latched_flow_interp := "Active: Bullish Delta Divergence"
+        latched_flow_col    := #00E676
+    else if is_bear_delta_div
+        latched_flow_interp := "Active: Bearish Delta Divergence"
+        latched_flow_col    := #FF1744
+    else if is_bull_drive
+        latched_flow_interp := "Active: Initiative Bull Drive"
+        latched_flow_col    := #00E676
+    else if is_bear_drive
+        latched_flow_interp := "Active: Initiative Bear Drive"
+        latched_flow_col    := #FF1744
+
+// Diagnostic Script Stopwatch (PineCoders Benchmark Pattern)
+var int _t0_perf = na
+if barstate.islast
+    _t0_perf := barstate.islast ? timenow : na
+
+if barstate.islast and hudModeInput == "Disabled"
+    table.clear(hud_display, 0, 0, 2, 6)
+
+if barstate.islast and hudModeInput != "Disabled"
+    // Reference Structural Levels
+    float ref_poc = not na(cur_poc_ref) ? cur_poc_ref : (not na(prior_cash_vpoc) ? prior_cash_vpoc : close)
+    float ref_vah = not na(cur_vah_ref) ? cur_vah_ref : (not na(prior_cash_vah)  ? prior_cash_vah  : high)
+    float ref_val = not na(cur_val_ref) ? cur_val_ref : (not na(prior_cash_val)  ? prior_cash_val  : low)
+    string ref_shape = cur_shape_ref
+
+    // Safe tick step and unit formatters (Equities $ vs Futures pt)
+    float safe_tick_step = asset_tick_step > 0 ? asset_tick_step : 0.01
+    string unit_sfx      = is_equity_asset ? "" : " pt"
+    string unit_pfx      = is_equity_asset ? "$" : ""
+    string px_fmt        = is_equity_asset ? "#.00" : "#.#"
+
+    // Real-Time Distance to Reference Levels (in points and ticks)
+    float dist_poc_pts = close - ref_poc
+    float dist_vah_pts = close - ref_vah
+    float dist_val_pts = close - ref_val
+    float dist_hb_pts  = not na(on_halfback) ? (close - on_halfback) : na
+
+    // Active Engine & Footprint Telemetry
+    string active_engine_label = replayOptimized ? "Lightweight (Geo)" : 
+         (useFpEngine and hasEngFp ? "Native FP (v6)" : 
+         (useIbEngine ? ("Intrabar (" + effective_ltf + ")") : "Geo Proxy"))
+
+    // Real-time Session Volume, Session Delta (CVD), Bar Volume & Bar Delta
+    string bar_dir_glyph  = bar_delta > 0 ? "▲ " : (bar_delta < 0 ? "▼ " : "")
+    string bar_vol_str    = f_volCompact(volume) + " Vol"
+    string bar_delta_str  = bar_dir_glyph + (bar_delta >= 0 ? "+" : "") + str.tostring(bar_delta, "#,###") + " Δ (" + (delta_pct >= 0 ? "+" : "") + str.tostring(delta_pct, "0.0") + "%)"
+    string sess_dir_glyph = sess_cum_delta > 0 ? "▲ " : (sess_cum_delta < 0 ? "▼ " : "")
+    string sess_delta_str = sess_dir_glyph + (sess_cum_delta >= 0 ? "+" : "") + str.tostring(sess_cum_delta, "#,###") + " Δ"
+    string tape_flow_str  = "Sess: " + f_volCompact(sess_cum_vol) + " Vol (" + sess_delta_str + ") | Bar: " + bar_vol_str + " (" + bar_delta_str + ")"
+
+    // Dalton Value Area Migration Regime (Developing Value vs Prior Cash Value)
+    string va_migration_txt = ""
+    if not na(cur_vah_ref) and not na(cur_val_ref) and not na(prior_cash_vah) and not na(prior_cash_val)
+        if cur_val_ref > prior_cash_vah
+            va_migration_txt := "Higher Value (Bullish Initiative)"
+        else if cur_val_ref >= prior_cash_val and cur_vah_ref > prior_cash_vah
+            va_migration_txt := "Overlapping Higher (Bullish Bias)"
+        else if cur_vah_ref < prior_cash_val
+            va_migration_txt := "Lower Value (Bearish Initiative)"
+        else if cur_vah_ref <= prior_cash_vah and cur_val_ref < prior_cash_val
+            va_migration_txt := "Overlapping Lower (Bearish Bias)"
+        else if cur_vah_ref <= prior_cash_vah and cur_val_ref >= prior_cash_val
+            va_migration_txt := "Inside Value (Balanced Consolidation)"
+        else if cur_vah_ref >= prior_cash_vah and cur_val_ref <= prior_cash_val
+            va_migration_txt := "Outside / Expanding Value (Expansion)"
+        else
+            va_migration_txt := "Developing Value"
+
+    // Deterministic Auction State Machine & Target Resolution
+    string amt_state_txt  = ""
+    string amt_target_txt = ""
+    color  amt_state_col  = color.white
+
+    if close > ref_vah
+        amt_state_txt  := "Above Value (Premium Auction)"
+        amt_target_txt := "Pullback to VAH: " + unit_pfx + str.tostring(math.abs(dist_vah_pts), px_fmt) + unit_sfx + " (" + str.tostring(int(math.abs(dist_vah_pts) / safe_tick_step)) + "t)"
+        amt_state_col  := #00E676
+    else if close < ref_val
+        amt_state_txt  := "Below Value (Discount Auction)"
+        amt_target_txt := "Rally to VAL: " + unit_pfx + str.tostring(math.abs(dist_val_pts), px_fmt) + unit_sfx + " (" + str.tostring(int(math.abs(dist_val_pts) / safe_tick_step)) + "t)"
+        amt_state_col  := #FF1744
+    else
+        bool is_above_poc = close >= ref_poc
+        amt_state_txt  := "Inside Value Area (80% Rotation Active)"
+        amt_target_txt := is_above_poc ? 
+             ("To VPOC: " + unit_pfx + str.tostring(math.abs(dist_poc_pts), px_fmt) + unit_sfx + " | To VAL: " + unit_pfx + str.tostring(math.abs(dist_val_pts), px_fmt) + unit_sfx) : 
+             ("To VPOC: " + unit_pfx + str.tostring(math.abs(dist_poc_pts), px_fmt) + unit_sfx + " | To VAH: " + unit_pfx + str.tostring(math.abs(dist_vah_pts), px_fmt) + unit_sfx)
+        amt_state_col  := #FFD54F
+
+    // Confluent Order Flow Imbalance Detection at Structural Lines
+    string conf_shelf_msg = "None in Proximity"
+    color  conf_shelf_col = color.rgb(120, 144, 156)
+    if showConfluentAlert and array.size(active_shelves) > 0
+        for i = 0 to array.size(active_shelves) - 1
+            ImbShelf sh = array.get(active_shelves, i)
+            float d_val = math.abs(sh.price - ref_val)
+            float d_vah = math.abs(sh.price - ref_vah)
+            float d_poc = math.abs(sh.price - ref_poc)
+            float d_hb  = not na(on_halfback) ? math.abs(sh.price - on_halfback) : 99999.0
+
+            if d_val <= asset_cluster_tol and sh.is_bull
+                conf_shelf_msg := "Bull Shelf at VAL (" + str.tostring(sh.price, format.mintick) + ")"
+                conf_shelf_col := COL_SHELF_GOLD
+                break
+            else if d_vah <= asset_cluster_tol and not sh.is_bull
+                conf_shelf_msg := "Bear Shelf at VAH (" + str.tostring(sh.price, format.mintick) + ")"
+                conf_shelf_col := COL_SHELF_PURPLE
+                break
+            else if d_poc <= asset_cluster_tol
+                conf_shelf_msg := "Shelf at VPOC (" + str.tostring(sh.price, format.mintick) + ")"
+                conf_shelf_col := COL_POC_LINE
+                break
+            else if d_hb <= asset_cluster_tol
+                conf_shelf_msg := "Shelf at Half-Back (" + str.tostring(sh.price, format.mintick) + ")"
+                conf_shelf_col := COL_HALFBACK
+                break
+
+    // Dalton Shape AMT Interpretation & LVN Vacuum Telemetry
+    string shape_desc = ref_shape == "D" ? "Normal distribution (2-sided consensus)" : 
+         (ref_shape == "P" ? "Old sellers trapped; high value skew" : 
+         (ref_shape == "b" ? "Long liquidation; low value skew" : "Double distribution; LVN liquidity vacuum"))
+
+    // LVN Vacuum Corridor details for B-Shapes
+    string lvn_telemetry = ""
+    if ref_shape == "B" and not na(cur_lvn_ref)
+        float dist_lvn = close - cur_lvn_ref
+        lvn_telemetry := " | LVN: " + str.tostring(cur_lvn_ref, format.mintick) + " (" + (dist_lvn >= 0 ? "+" : "-") + unit_pfx + str.tostring(math.abs(dist_lvn), px_fmt) + unit_sfx + ")"
+
+    string shape_note = ref_shape == "D" ? "D-Shape profiles exhibit high mean-reversion tendency back to VPOC when sweeps fail outside Value Area." : 
+         (ref_shape == "B" ? "B-Shape double distributions exhibit rapid traversal velocity across the central LVN liquidity vacuum." : 
+         (ref_shape == "P" ? "P-Shape stems exhibit low support if price breaks back below the upper distribution node." : 
+         "b-Shape stems exhibit low resistance if price rallies back above the lower distribution node."))
+
+    // Visual Palette Tokens
+    color bg_hdr = color.rgb(20, 25, 38)
+    color bg_row = color.rgb(15, 18, 26)
+    color bg_alt = color.rgb(12, 15, 24)
+
+    if hudModeInput == "Compact Status Pill"
+        // Row 0: Asset + Shape, Auction State, Delta Flow
+        string pill_title = detected_asset_name + " [" + ref_shape + "]" + (not na(cur_ovl_ref) ? (" · OVL " + str.tostring(cur_ovl_ref, "0.00")) : "")
+        table.cell(hud_display, 0, 0, pill_title, text_color=color.white, text_size=size.small, bgcolor=bg_hdr)
+        table.cell(hud_display, 1, 0, amt_state_txt, text_color=amt_state_col, text_size=size.small, bgcolor=bg_hdr)
+        table.cell(hud_display, 2, 0, tape_flow_str, text_color=color.rgb(236, 239, 241), text_size=size.small, bgcolor=bg_hdr)
+
+        // Row 1: Engine + Ticks, Target / Rotation, Confluence Alert
+        string pill_target = is_poc_confluent ? "CONFLUENT POC ACTIVE | " + amt_target_txt : (conf_shelf_msg != "None in Proximity" ? conf_shelf_msg + " | " + amt_target_txt : amt_target_txt)
+        table.cell(hud_display, 0, 1, active_engine_label + " (" + str.tostring(active_ticks) + "t)", text_color=#00E5FF, text_size=size.tiny, bgcolor=bg_alt)
+        table.cell(hud_display, 1, 1, pill_target, text_color=color.rgb(255, 238, 88), text_size=size.tiny, bgcolor=bg_alt)
+        table.cell(hud_display, 2, 1, "RVOL: " + str.tostring(effective_rvol, "#.#") + "x | " + (is_weekly_mode ? "Weekly" : (is_monthly_mode ? "Monthly" : (is_daily_or_above ? "Macro" : "Sub-Sess"))), text_color=color.rgb(176, 190, 197), text_size=size.tiny, bgcolor=bg_alt)
+
+        // Cleanly clear rows 2 through 6 so no ghost text remains
+        table.clear(hud_display, 0, 2, 2, 6)
+
+    else if hudModeInput == "Full Educational Dashboard"
+        // Row 0: Header
+        string sess_horizon_tag = is_weekly_mode ? "Weekly" : (is_monthly_mode ? "Monthly" : (is_daily_or_above ? "Macro" : (in_cash_rth ? "Cash RTH" : "Overnight")))
+        table.cell(hud_display, 0, 0, "CME AMT & ORDER FLOW LENS", text_color=color.white, text_size=size.small, bgcolor=bg_hdr)
+        table.cell(hud_display, 1, 0, detected_asset_name + " (" + str.tostring(active_ticks) + "t / " + unit_pfx + str.tostring(tick_group_pts, px_fmt) + unit_sfx + ")", text_color=#00E5FF, text_size=size.small, bgcolor=bg_hdr)
+        table.cell(hud_display, 2, 0, active_engine_label + " | RVOL: " + str.tostring(effective_rvol, "#.#") + "x (" + (effective_rvol >= 2.0 ? "High Vol" : (effective_rvol >= 1.2 ? "Active" : "Normal")) + ") | " + sess_horizon_tag, text_color=color.rgb(176, 190, 197), text_size=size.small, bgcolor=bg_hdr)
+
+        // Row 1: Dalton Profile Shape, LVN Corridor & Ata Sabanci OVL
+        color shape_col = ref_shape == "B" ? #FFD700 : (not na(cur_ovl_ref) and cur_ovl_ref >= 0.75 ? #64B5F6 : (not na(cur_tilt_ref) and cur_tilt_ref >= 5.0 ? #00E676 : (not na(cur_tilt_ref) and cur_tilt_ref <= -5.0 ? #FF1744 : #BA68C8)))
+        string shape_title = "[" + ref_shape + "-Shape] " + (ref_shape == "D" ? "Balanced" : (ref_shape == "P" ? "Short Covering" : (ref_shape == "b" ? "Long Liquidation" : "Double Dist"))) + (not na(cur_ovl_ref) ? (" · OVL " + str.tostring(cur_ovl_ref, "0.00")) : "")
+        string ovl_regime_str = not na(cur_ovl_ref) ? ("[" + cur_ovl_word_ref + " · Tilt " + (cur_tilt_ref >= 0 ? "+" : "") + str.tostring(cur_tilt_ref, "0.1") + "%] ") : ""
+        table.cell(hud_display, 0, 1, "1. Dalton & OVL", text_color=color.white, text_size=size.small, bgcolor=bg_row)
+        table.cell(hud_display, 1, 1, shape_title, text_color=shape_col, text_size=size.small, bgcolor=bg_row)
+        table.cell(hud_display, 2, 1, ovl_regime_str + shape_desc + lvn_telemetry, text_color=color.rgb(207, 216, 220), text_size=size.tiny, bgcolor=bg_row)
+
+        // Row 2: Auction State & Target Distances
+        string va_mig_prefix = va_migration_txt != "" ? ("[" + va_migration_txt + "] ") : ""
+        table.cell(hud_display, 0, 2, "2. Auction State", text_color=color.white, text_size=size.small, bgcolor=bg_alt)
+        table.cell(hud_display, 1, 2, amt_state_txt, text_color=amt_state_col, text_size=size.small, bgcolor=bg_alt)
+        table.cell(hud_display, 2, 2, va_mig_prefix + amt_target_txt, text_color=color.rgb(255, 238, 88), text_size=size.tiny, bgcolor=bg_alt)
+
+        // Row 3: Overnight Half-Back (Auction Equilibrium Target)
+        string hb_reading = not na(on_halfback) ? 
+             (str.tostring(on_halfback, format.mintick) + (dist_hb_pts >= 0 ? " +" : " -") + unit_pfx + str.tostring(math.abs(dist_hb_pts), px_fmt) + unit_sfx) : 
+             (is_equity_asset ? "N/A (RTH Horizon)" : "N/A (Cash Horizon)")
+        string hb_interp  = not na(on_halfback) ? 
+             "Primary auction equilibrium target / structural inflection" : 
+             (is_equity_asset ? "Overnight session inactive on standard cash equity" : (is_crypto_asset ? "24/7 Global Session Active" : "Overnight midpoint inactive"))
+        table.cell(hud_display, 0, 3, "3. Overnight 50%", text_color=color.white, text_size=size.small, bgcolor=bg_row)
+        table.cell(hud_display, 1, 3, hb_reading, text_color=COL_HALFBACK, text_size=size.small, bgcolor=bg_row)
+        table.cell(hud_display, 2, 3, hb_interp, text_color=color.rgb(207, 216, 220), text_size=size.tiny, bgcolor=bg_row)
+
+        // Row 4: Tape & Footprint Delta Flow
+        table.cell(hud_display, 0, 4, "4. Tape & Delta", text_color=color.white, text_size=size.small, bgcolor=bg_alt)
+        table.cell(hud_display, 1, 4, tape_flow_str, text_color=color.rgb(236, 239, 241), text_size=size.small, bgcolor=bg_alt)
+        table.cell(hud_display, 2, 4, latched_flow_interp, text_color=latched_flow_col, text_size=size.tiny, bgcolor=bg_alt)
+
+        // Row 5: Confluence Alert
+        string conf_interp = conf_shelf_msg != "None in Proximity" ? "Institutional Limit Queue Defending Level" : (is_poc_confluent ? "Prior Cash VPOC & Overnight VPOC Clustered" : "No active shelves at key levels")
+        table.cell(hud_display, 0, 5, "5. Confluence Alert", text_color=color.white, text_size=size.small, bgcolor=bg_row)
+        table.cell(hud_display, 1, 5, is_poc_confluent ? "CONFLUENT POC CLUSTER" : conf_shelf_msg, text_color=is_poc_confluent ? COL_CONFLUENT_POC : conf_shelf_col, text_size=size.small, bgcolor=bg_row)
+        table.cell(hud_display, 2, 5, conf_interp, text_color=color.rgb(207, 216, 220), text_size=size.tiny, bgcolor=bg_row)
+
+        // Row 6: AMT Structural Reference Note
+        table.cell(hud_display, 0, 6, "AMT Framework", text_color=color.rgb(176, 190, 197), text_size=size.tiny, bgcolor=bg_alt)
+        table.cell(hud_display, 1, 6, shape_note, text_color=color.rgb(207, 216, 220), text_size=size.tiny, bgcolor=bg_alt)
+        table.cell(hud_display, 2, 6, "[Auction Market Theory Framework • Educational Standard]", text_color=color.rgb(120, 144, 156), text_size=size.tiny, bgcolor=bg_alt)
+
+    // Performance Profiler Budget Check
+    int _elapsed_ms = barstate.islast ? (timenow - _t0_perf) : 0
+    if _elapsed_ms > 25
+        log.warning("Pine Engine Warning: Execution budget exceeded 25ms (Actual: " + str.tostring(_elapsed_ms) + "ms)")
+
+
+// SECTION 13: INSTITUTIONAL ALERTS & ORDER FLOW DISPATCH
+// =============================================================================
+
+bool alert_absorb   = showEffortReward and barstate.isconfirmed and (is_gold_buyer_absorb or is_purple_seller_absorb)
+bool alert_cpoc     = showConfluentPoc and barstate.isconfirmed and is_poc_confluent
+bool alert_deltadiv = barstate.isconfirmed and (is_bull_delta_div or is_bear_delta_div)
+
+alertcondition(alert_absorb,   title="Institutional Absorption Candle", message="[CME LENS] Institutional volume absorption detected at candle extreme.")
+alertcondition(alert_cpoc,     title="Confluent Iron POC Cluster",     message="[CME LENS] Prior Cash VPOC and Overnight VPOC aligned within confluent tolerance.")
+alertcondition(alert_deltadiv, title="Order Flow Delta Divergence",     message="[CME LENS] Order Flow Delta Divergence confirmed against candle swing extreme.")

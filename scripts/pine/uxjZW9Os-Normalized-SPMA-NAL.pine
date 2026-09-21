@@ -1,0 +1,69 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © NordicAlphaLab
+
+//@version=6
+indicator("Normalized SPMA | NAL", "Normalized SPMA", overlay = false)
+
+//                                     ███╗   ██╗ █████╗ ██╗
+//                                     ████╗  ██║██╔══██╗██║
+//                                     ██╔██╗ ██║███████║██║
+//                                     ██║╚██╗██║██╔══██║██║
+//                                     ██║ ╚████║██║  ██║███████╗
+//                                     ╚═╝  ╚═══╝╚═╝  ╚═╝╚══════╝
+
+// ══════════════════════════════════════ ◈ Visuals & Tooltips ◈ ══════════════════════════════════════
+
+col_mode = input.string("Standard", title = "Color Mode", group = "Visuals", options = ["Standard", "Nordic", "Simple"])
+
+[col_up, col_dn, col_nu] = switch col_mode
+    "Standard" => [color.rgb(0, 255, 200), color.rgb(32, 94, 144), color.gray]
+    "Nordic"   => [color.rgb(0, 96, 175), color.rgb(150, 154, 169), color.gray]
+    "Simple"   => [color.lime, color.red, color.gray]
+
+// ══════════════════════════════════════ ◈ Inputs ◈ ══════════════════════════════════════
+
+G = "Normalized SPMA"
+
+Lookback   = input.int(50, "Percentrank Lookback", minval = 2, group = G, tooltip = "Number of historical bars used to rank the current returns.")
+GateInp    = input.int(50, "% Gate", minval = 0, maxval = 99, group = G, tooltip = "Minimum percentile rank required for the SPMA to update.")
+normLength = input.int(20, "Normalized SPMA Length", minval = 1, group = G)
+normSDLen  = input.int(30, "Normalized SD Length", minval = 2, group = G)
+
+// ══════════════════════════════════════ ◈ Logic ◈ ══════════════════════════════════════
+
+f_SPMA(simple int percentrank_lookback, simple int ma_length, simple int percentile_gate) =>
+    float Ret = close - close[1]
+    float Per = ta.percentrank(Ret, percentrank_lookback)
+    bool Gate = Per > percentile_gate
+    float emaValue = ta.ema(close, ma_length)
+
+    var float MA = na
+    MA := na(MA[1]) ? emaValue : Gate ? emaValue : MA[1]
+    MA
+
+float SPMA = f_SPMA(Lookback, normLength, GateInp)
+
+float normalizedSPMA = close != 0.0 ? -SPMA / close : na
+float normalizedSD = ta.stdev(normalizedSPMA, normSDLen)
+float normalizedLowerSD = normalizedSPMA - normalizedSD
+
+bool Long  = normalizedLowerSD > -1.0
+bool Short = normalizedSPMA < -1.0
+
+var int NAL = 0
+NAL := Long ? 1 : Short ? -1 : nz(NAL[1], 0)
+
+// ══════════════════════════════════════ ◈ Plots and Visuals ◈ ══════════════════════════════════════
+
+color col = NAL == 1 ? col_up : NAL == -1 ? col_dn : col_nu
+
+color normCol   = Short ? col_dn : col_nu
+color normSDCol = Long ? col_up : col_nu
+
+plot(normalizedSPMA, "Normalized SPMA", color = normCol, linewidth = 1)
+plot(normalizedLowerSD, "Normalized SPMA Lower SD", color = normSDCol, linewidth = 1)
+
+hline(-1.0, "Normalized Midline", color = color.new(color.white, 50), linestyle = hline.style_dashed)
+
+plotcandle(open, high, low, close, "Candles", color = col, wickcolor = col, bordercolor = col, display = display.pane, force_overlay = true)
+barcolor(col)

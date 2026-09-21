@@ -1,0 +1,282 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//@version=6
+indicator("5-Minute Bias + Level + Reaction Breakout Scalp", shorttitle="5M Reaction Scalp", overlay=true, max_labels_count=500, max_lines_count=200)
+
+// ============================================================================
+// This is a deliberately simple, mechanical version of the "boring" strategy
+// described in the reference video:
+//   1. Determine the 5-minute bias (bullish or bearish) from market structure.
+//   2. Only look for trades in the direction of that bias.
+//   3. Watch the most recent key swing level (support in an uptrend,
+//      resistance in a downtrend).
+//   4. Wait for price to react at that level with a candle that closes back
+//      in the bias direction (the "rejection"/reaction candle).
+//   5. Enter on a break of that reaction candle's high (longs) or low
+//      (shorts), stop below/above the setup, and take a quick, fixed
+//      reward-to-risk target.
+//   6. Cap it at a small number of trades per day - "one chart, one trade,
+//      I'm done" - rather than taking everything the market offers.
+// This is an educational mechanization of a discretionary approach, not
+// financial advice or a guaranteed edge. Test thoroughly before using it
+// with real size, especially on fast-moving futures like NQ/ES.
+// ============================================================================
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+grp_bias = "Bias & Key Levels"
+struct_len = input.int(5, "Swing Pivot Length (bias & levels)", minval=1, group=grp_bias, tooltip="Pivot left/right bars used to find swing highs/lows. These define both the bias (break of a swing = bias flip) and the key level watched for a reaction.")
+
+grp_reaction = "Reaction Candle"
+atr_len              = input.int(14, "ATR Length", group=grp_reaction)
+tolerance_atr_mult   = input.float(0.3, "Level Proximity Tolerance (x ATR)", minval=0.05, step=0.05, group=grp_reaction, tooltip="How close price must trade to the key level to count as 'reacting' at it.")
+require_wick_reject  = input.bool(false, "Also Require a Rejection Wick", group=grp_reaction, tooltip="If enabled, the reaction candle must also have a wick (in the bias direction) covering at least the % of its range set below.")
+reject_wick_ratio    = input.float(0.4, "Minimum Rejection Wick %", minval=0.1, maxval=0.9, step=0.05, group=grp_reaction)
+
+grp_entry = "Entry Trigger"
+breakout_mode      = input.string("Wick Break (Immediate)", "Breakout Confirmation", options=["Wick Break (Immediate)", "Close Break (Confirmed)"], group=grp_entry, tooltip="Wick Break fires the instant price ticks beyond the reaction candle's high/low, matching 'as soon as the market goes above that candle'. Close Break waits for the bar to close beyond it instead, for a slightly more conservative trigger.")
+max_wait_breakout = input.int(15, "Max Bars to Wait for Breakout", minval=1, group=grp_entry, tooltip="If price never breaks the reaction candle within this many bars, the setup is discarded and a new reaction is required.")
+
+grp_risk = "Risk / Reward"
+reward_r_multiple   = input.float(1.5, "Reward Multiple (R)", minval=0.5, step=0.1, group=grp_risk, tooltip="Target distance as a multiple of the stop distance, e.g. 1.5 = 1.5R. The video mentions quick 1:1 to 1:2 trades.")
+stop_buffer_atr_mult = input.float(0.1, "Extra Stop Buffer (x ATR)", minval=0.0, step=0.05, group=grp_risk, tooltip="Small extra cushion added beyond the reaction candle / key level when placing the stop.")
+
+grp_daily = "Trade Management"
+max_trades_per_day = input.int(1, "Max New Trades per Day", minval=1, maxval=10, group=grp_daily, tooltip="Caps how many fresh trades the script will signal per day, matching the video's 'one trade and I'm done' approach. Raise it if you want more than one shot per session.")
+session_tz          = input.string("America/New_York", "Timezone for Daily Reset", group=grp_daily)
+
+grp_disp = "Display"
+show_levels     = input.bool(true, "Show Key Level Line", group=grp_disp)
+show_reaction   = input.bool(true, "Show Reaction Candle Marker", group=grp_disp)
+show_trade_lines = input.bool(true, "Show Entry/Stop/Target Lines", group=grp_disp)
+show_labels     = input.bool(true, "Show BUY/SELL Labels", group=grp_disp)
+show_dash       = input.bool(true, "Show Status Dashboard", group=grp_disp)
+
+// ============================================================================
+// CORE SERIES
+// ============================================================================
+atrVal = ta.atr(atr_len)
+
+// ============================================================================
+// SWING STRUCTURE -> BIAS
+// ============================================================================
+ph = ta.pivothigh(high, struct_len, struct_len)
+pl = ta.pivotlow(low, struct_len, struct_len)
+var float lastSwingHigh = na
+var float lastSwingLow  = na
+if not na(ph)
+    lastSwingHigh := ph
+if not na(pl)
+    lastSwingLow := pl
+
+var string bias = "neutral"
+if not na(lastSwingLow) and close < lastSwingLow
+    bias := "bear"
+if not na(lastSwingHigh) and close > lastSwingHigh
+    bias := "bull"
+
+// The single key level to watch: support below in an uptrend, resistance above in a downtrend
+watchLevel = bias == "bull" ? lastSwingLow : bias == "bear" ? lastSwingHigh : float(na)
+plot(show_levels ? watchLevel : na, "Key Level (Support/Resistance)", color=color.new(color.purple, 0), style=plot.style_stepline, linewidth=1)
+
+// ============================================================================
+// DAILY RESET
+// ============================================================================
+newDay = ta.change(time("1D", session_tz)) != 0
+var int    dailyTrades = 0
+var int    dailyWins   = 0
+var int    dailyLosses = 0
+if newDay
+    dailyTrades := 0
+    dailyWins   := 0
+    dailyLosses := 0
+
+// ============================================================================
+// ACTIVE TRADE MONITOR (only one trade tracked at a time)
+// ============================================================================
+var string activeDir    = ""
+var float  activeEntry  = na
+var float  activeStop   = na
+var float  activeTarget = na
+var line   entryLn      = na
+var line   stopLn       = na
+var line   targetLn     = na
+
+if activeDir == "long"
+    if not na(entryLn)
+        line.set_x2(entryLn, bar_index)
+        line.set_x2(stopLn, bar_index)
+        line.set_x2(targetLn, bar_index)
+    if high >= activeTarget
+        dailyWins += 1
+        activeDir := ""
+    else if low <= activeStop
+        dailyLosses += 1
+        activeDir := ""
+else if activeDir == "short"
+    if not na(entryLn)
+        line.set_x2(entryLn, bar_index)
+        line.set_x2(stopLn, bar_index)
+        line.set_x2(targetLn, bar_index)
+    if low <= activeTarget
+        dailyWins += 1
+        activeDir := ""
+    else if high >= activeStop
+        dailyLosses += 1
+        activeDir := ""
+
+// ============================================================================
+// REACTION CANDLE DETECTION & BREAKOUT ENTRY
+// Only one setup ("armed") is tracked at a time, in the direction of the
+// current bias - matching the video's "I only want longs" / "I only want
+// shorts" single-minded approach.
+// ============================================================================
+rangeCur   = high - low
+wickTop    = high - math.max(open, close)
+wickBottom = math.min(open, close) - low
+
+var bool  armed        = false
+var string armedDir    = ""
+var float reactionHigh = na
+var float reactionLow  = na
+var int   reactionBar  = na
+
+bool buySignal  = false
+bool sellSignal = false
+
+// Fire independently of show_reaction so the alert works even with labels hidden
+bool bullReactionFired = false
+bool bearReactionFired = false
+
+// --- Look for a fresh reaction while nothing is armed ---
+if not armed
+    if bias == "bull" and not na(lastSwingLow)
+        nearLevel   = low <= lastSwingLow + tolerance_atr_mult * atrVal
+        bullishBar  = close > open
+        wickOk      = not require_wick_reject or (rangeCur > 0 and (wickBottom / rangeCur) >= reject_wick_ratio)
+        if nearLevel and bullishBar and wickOk
+            armed        := true
+            armedDir     := "long"
+            reactionHigh := high
+            reactionLow  := low
+            reactionBar  := bar_index
+            bullReactionFired := true
+            if show_reaction
+                label.new(bar_index, low - atrVal * 0.3, "Reaction", style=label.style_label_up, color=color.new(color.blue, 20), textcolor=color.white, size=size.tiny)
+
+    if bias == "bear" and not na(lastSwingHigh)
+        nearLevel   = high >= lastSwingHigh - tolerance_atr_mult * atrVal
+        bearishBar  = close < open
+        wickOk      = not require_wick_reject or (rangeCur > 0 and (wickTop / rangeCur) >= reject_wick_ratio)
+        if nearLevel and bearishBar and wickOk
+            armed        := true
+            armedDir     := "short"
+            reactionHigh := high
+            reactionLow  := low
+            reactionBar  := bar_index
+            bearReactionFired := true
+            if show_reaction
+                label.new(bar_index, high + atrVal * 0.3, "Reaction", style=label.style_label_down, color=color.new(color.blue, 20), textcolor=color.white, size=size.tiny)
+
+// --- Manage an armed setup: wait for breakout, timeout, or bias invalidation ---
+// (else if, not if: this must NOT run on the same bar a setup just got armed above,
+// or reactionHigh/Low would equal that bar's own high/low and trigger instantly.)
+else if armed
+    if armedDir == "long" and bias != "bull"
+        armed := false
+    else if armedDir == "short" and bias != "bear"
+        armed := false
+    else if (bar_index - reactionBar) > max_wait_breakout
+        armed := false
+    else if armedDir == "long"
+        brokeOut = breakout_mode == "Wick Break (Immediate)" ? high >= reactionHigh : close >= reactionHigh
+        if brokeOut
+            if activeDir == "" and dailyTrades < max_trades_per_day
+                entryPrice  = reactionHigh
+                stopPrice   = math.min(reactionLow, lastSwingLow) - stop_buffer_atr_mult * atrVal
+                riskDist    = entryPrice - stopPrice
+                targetPrice = entryPrice + riskDist * reward_r_multiple
+                buySignal   := true
+                activeDir    := "long"
+                activeEntry  := entryPrice
+                activeStop   := stopPrice
+                activeTarget := targetPrice
+                dailyTrades += 1
+                if show_trade_lines
+                    entryLn  := line.new(bar_index, entryPrice, bar_index, entryPrice, color=color.new(color.blue, 0), width=1, style=line.style_dashed)
+                    stopLn   := line.new(bar_index, stopPrice, bar_index, stopPrice, color=color.new(color.red, 0), width=1, style=line.style_dashed)
+                    targetLn := line.new(bar_index, targetPrice, bar_index, targetPrice, color=color.new(color.teal, 0), width=1, style=line.style_dashed)
+                if show_labels
+                    label.new(bar_index, low - atrVal * 0.8, "BUY", style=label.style_label_up, color=color.new(color.teal, 0), textcolor=color.white, size=size.normal)
+            armed := false
+    else if armedDir == "short"
+        brokeOut = breakout_mode == "Wick Break (Immediate)" ? low <= reactionLow : close <= reactionLow
+        if brokeOut
+            if activeDir == "" and dailyTrades < max_trades_per_day
+                entryPrice  = reactionLow
+                stopPrice   = math.max(reactionHigh, lastSwingHigh) + stop_buffer_atr_mult * atrVal
+                riskDist    = stopPrice - entryPrice
+                targetPrice = entryPrice - riskDist * reward_r_multiple
+                sellSignal  := true
+                activeDir    := "short"
+                activeEntry  := entryPrice
+                activeStop   := stopPrice
+                activeTarget := targetPrice
+                dailyTrades += 1
+                if show_trade_lines
+                    entryLn  := line.new(bar_index, entryPrice, bar_index, entryPrice, color=color.new(color.blue, 0), width=1, style=line.style_dashed)
+                    stopLn   := line.new(bar_index, stopPrice, bar_index, stopPrice, color=color.new(color.red, 0), width=1, style=line.style_dashed)
+                    targetLn := line.new(bar_index, targetPrice, bar_index, targetPrice, color=color.new(color.teal, 0), width=1, style=line.style_dashed)
+                if show_labels
+                    label.new(bar_index, high + atrVal * 0.8, "SELL", style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.normal)
+            armed := false
+
+// ============================================================================
+// SIGNAL MARKERS (arrows, in addition to the labels above)
+// ============================================================================
+plotshape(buySignal, title="Buy Signal", style=shape.triangleup, location=location.belowbar, color=color.new(color.teal, 0), size=size.small)
+plotshape(sellSignal, title="Sell Signal", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+alertcondition(bullReactionFired, "Bullish Reaction at Support", "Reaction candle printed at key support on {{ticker}} {{interval}} - watch for a breakout of its high.")
+alertcondition(bearReactionFired, "Bearish Reaction at Resistance", "Reaction candle printed at key resistance on {{ticker}} {{interval}} - watch for a breakout of its low.")
+alertcondition(bullReactionFired or bearReactionFired, "Any Reaction (Long or Short)", "A reaction candle just printed on {{ticker}} {{interval}} - setup is now armed, waiting for breakout.")
+
+alertcondition(buySignal, "Reaction Breakout BUY", "BUY signal on {{ticker}} {{interval}}: bullish bias, reaction at key support, breakout confirmed.")
+alertcondition(sellSignal, "Reaction Breakout SELL", "SELL signal on {{ticker}} {{interval}}: bearish bias, reaction at key resistance, breakout confirmed.")
+
+// ============================================================================
+// STATUS DASHBOARD
+// ============================================================================
+var table dash = table.new(position.top_right, 2, 6, border_width=1, border_color=color.new(color.gray, 50), frame_width=1, frame_color=color.new(color.gray, 50))
+labelBg = color.new(color.gray, 82)
+
+biasText  = bias == "bull" ? "Bullish ▲" : bias == "bear" ? "Bearish ▼" : "Neutral"
+biasColor = bias == "bull" ? color.new(color.teal, 0) : bias == "bear" ? color.new(color.red, 0) : color.new(color.gray, 40)
+
+armedText  = armed ? ("Armed (" + armedDir + ")") : "Waiting for reaction..."
+armedColor = armed ? color.new(color.orange, 20) : color.new(color.gray, 40)
+
+activeText  = activeDir == "" ? "None" : str.upper(activeDir) + " @ " + str.tostring(activeEntry, format.mintick)
+activeColor = activeDir == "long" ? color.new(color.teal, 0) : activeDir == "short" ? color.new(color.red, 0) : color.new(color.gray, 40)
+
+if show_dash and barstate.islast
+    table.cell(dash, 0, 0, "Bias", bgcolor=labelBg, text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 0, biasText, bgcolor=biasColor, text_color=color.white, text_size=size.small)
+
+    table.cell(dash, 0, 1, "Setup Status", bgcolor=labelBg, text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 1, armedText, bgcolor=armedColor, text_color=color.white, text_size=size.small)
+
+    table.cell(dash, 0, 2, "Active Trade", bgcolor=labelBg, text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 2, activeText, bgcolor=activeColor, text_color=color.white, text_size=size.small)
+
+    table.cell(dash, 0, 3, "Trades Today", bgcolor=labelBg, text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 3, str.tostring(dailyTrades) + " / " + str.tostring(max_trades_per_day), bgcolor=color.new(color.blue, 40), text_color=color.white, text_size=size.small)
+
+    table.cell(dash, 0, 4, "Today's Wins", bgcolor=labelBg, text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 4, str.tostring(dailyWins), bgcolor=color.new(color.teal, 40), text_color=color.white, text_size=size.small)
+
+    table.cell(dash, 0, 5, "Today's Losses", bgcolor=labelBg, text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 5, str.tostring(dailyLosses), bgcolor=color.new(color.red, 40), text_color=color.white, text_size=size.small)

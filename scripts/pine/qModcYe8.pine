@@ -1,0 +1,328 @@
+//@version=6
+indicator("Adaptive Market Volume – Forex & Gold", overlay = false, format = format.volume, dynamic_requests = true)
+
+string mode = input.string("Auto", "Volume Mode", options = ["Auto", "Native", "Local Relative", "Futures Proxy", "Hybrid"], group = "01. General")
+bool manual = input.bool(false, "Use Manual Proxy", group = "03. Forex / Gold Proxy")
+string manualSymbol = input.symbol("", "Manual Futures Proxy", group = "03. Forex / Gold Proxy", tooltip = "Empty disables the manual source; it never requests the chart symbol implicitly.")
+string proxyTF = input.timeframe("", "Proxy Timeframe", group = "03. Forex / Gold Proxy", tooltip = "Empty = Chart timeframe. Equal or higher timeframes are accepted. Lower timeframes automatically fall back to the chart timeframe.")
+string norm = input.string("Combined", "Normalization Mode", options = ["Moving Average", "Time-of-Day", "Combined"], group = "04. Normalization")
+int length = input.int(50, "Normalization Length", minval = 2, maxval = 5000, group = "04. Normalization")
+float maWeight = input.float(50, "MA Normalization Weight", minval = 0, maxval = 10000, group = "04. Normalization")
+float todWeight = input.float(50, "Time-of-Day Weight", minval = 0, maxval = 10000, group = "04. Normalization")
+int days = input.int(20, "Time-of-Day Lookback Days", minval = 1, maxval = 100, group = "05. Time-of-Day", tooltip = "Previous observed dates in each source, excluding today. Dates without bars do not occupy a slot.")
+int bucketMinutes = input.int(30, "Time Bucket Minutes", options = [15, 30, 60], group = "05. Time-of-Day")
+string timezone = input.string("America/New_York", "Normalization Timezone", options = ["America/New_York", "America/Chicago", "Europe/London", "Europe/Berlin", "Asia/Tokyo", "Asia/Hong_Kong", "Australia/Sydney", "America/Sao_Paulo", "Etc/UTC"], group = "05. Time-of-Day")
+float fxLocal = input.float(40, "Forex / Other Local Weight", minval = 0, maxval = 10000, group = "06. Hybrid Weights")
+float fxProxy = input.float(60, "Forex / Other Futures Weight", minval = 0, maxval = 10000, group = "06. Hybrid Weights")
+float goldLocal = input.float(30, "Gold Local Weight", minval = 0, maxval = 10000, group = "06. Hybrid Weights")
+float goldProxy = input.float(70, "Gold Futures Weight", minval = 0, maxval = 10000, group = "06. Hybrid Weights")
+float indexLocal = input.float(30, "Index Local Weight", minval = 0, maxval = 10000, group = "06. Hybrid Weights")
+float indexProxy = input.float(70, "Index Futures Weight", minval = 0, maxval = 10000, group = "06. Hybrid Weights")
+float energyLocal = input.float(30, "Energy Local Weight", minval = 0, maxval = 10000, group = "06. Hybrid Weights")
+float energyProxy = input.float(70, "Energy Futures Weight", minval = 0, maxval = 10000, group = "06. Hybrid Weights")
+string coloring = input.string("Candle Direction", "Bar Coloring", options = ["Candle Direction", "Relative Activity", "Hybrid Confirmation"], group = "07. Visualization")
+color bull = input.color(#26A69A, "Bullish Candle", group = "07. Visualization")
+color bear = input.color(#EF5350, "Bearish Candle", group = "07. Visualization")
+color lowColor = input.color(color.gray, "Low Activity", group = "07. Visualization")
+color normalColor = input.color(#78909C, "Normal Activity", group = "07. Visualization")
+color highColor = input.color(#42A5F5, "High Activity", group = "07. Visualization")
+color extremeColor = input.color(#AB47BC, "Extreme Activity", group = "07. Visualization")
+color confirmColor = input.color(#FFB300, "Hybrid Confirmation", group = "07. Visualization")
+bool showMA = input.bool(false, "Show Relative Volume MA", group = "07. Visualization")
+int displayLength = input.int(20, "Displayed Volume MA Length", minval = 1, maxval = 5000, group = "07. Visualization")
+bool showBaseline = input.bool(true, "Show Normal Baseline", group = "07. Visualization")
+bool showThresholds = input.bool(false, "Show Activity Thresholds", group = "08. Activity Thresholds")
+float lowInput = input.float(0.75, "Low Activity", minval = 0, group = "08. Activity Thresholds")
+float highInput = input.float(1.50, "High Activity", minval = 0.01, group = "08. Activity Thresholds")
+float extremeInput = input.float(2.00, "Extreme Activity", minval = 0.01, group = "08. Activity Thresholds")
+bool showInfo = input.bool(true, "Show Info Panel", group = "09. Info / Debug")
+bool debug = input.bool(false, "Show Debug Information", group = "09. Info / Debug")
+string displayMode = input.string("Relative Level", "Display Mode", options = ["Relative Level", "Relative Momentum", "Micro Z-Score", "Micro Contrast"], group = "10. Micro Analysis")
+int momentumLookback = input.int(3, "Momentum Lookback", minval = 1, maxval = 100, group = "10. Micro Analysis")
+int effortWindow = input.int(4, "Effort Window", minval = 1, maxval = 100, group = "10. Micro Analysis")
+int efficiencyATRLength = input.int(14, "Efficiency ATR Length", minval = 1, maxval = 5000, group = "10. Micro Analysis")
+int zScoreLength = input.int(20, "Z-Score Length", minval = 2, maxval = 500, group = "10. Micro Analysis")
+string contrastWindowMode = input.string("Auto ~60 Minutes", "Contrast Window Mode", options = ["Auto ~60 Minutes", "Manual Bars"], group = "10. Micro Analysis")
+int contrastLookbackBars = input.int(30, "Contrast Lookback Bars", minval = 5, maxval = 500, group = "10. Micro Analysis")
+float lowContrastPercentile = input.float(10, "Low Contrast Percentile", minval = 1, maxval = 49, group = "10. Micro Analysis")
+float highContrastPercentile = input.float(90, "High Contrast Percentile", minval = 51, maxval = 99, group = "10. Micro Analysis")
+float contrastFloor = input.float(0.15, "Contrast Floor", minval = 0, maxval = 10, group = "10. Micro Analysis")
+float contrastCeiling = input.float(1.50, "Contrast Ceiling", minval = 0.01, maxval = 10, group = "10. Micro Analysis")
+
+f_div(float numerator, float denominator) =>
+    not na(numerator) and not na(denominator) and denominator > 0 ? numerator / denominator : na
+
+// Missing sources are excluded. Two zero weights resolve deterministically to 50/50.
+f_mix(float a, float b, float wa, float wb) =>
+    bool av = not na(a)
+    bool bv = not na(b)
+    float effectiveA = av ? (bv ? (wa + wb > 0 ? wa / (wa + wb) : 0.5) : 1.0) : 0.0
+    float effectiveB = bv ? (av ? 1.0 - effectiveA : 1.0) : 0.0
+    float result = av and bv ? a * effectiveA + b * effectiveB : av ? a : bv ? b : na
+    [result, effectiveA, effectiveB]
+
+f_proxy(string pair) =>
+    switch pair
+        "EURUSD" => "CME:6E1!"
+        "GBPUSD" => "CME:6B1!"
+        "AUDUSD" => "CME:6A1!"
+        "NZDUSD" => "CME:6N1!"
+        "USDJPY" => "CME:6J1!"
+        "USDCHF" => "CME:6S1!"
+        "USDCAD" => "CME:6C1!"
+        "XAUUSD" => "COMEX:GC1!"
+        => ""
+
+f_currency(string c) =>
+    str.contains("|USD|EUR|GBP|JPY|CHF|CAD|AUD|NZD|CNH|CNY|HKD|SGD|SEK|NOK|DKK|ZAR|MXN|TRY|PLN|HUF|CZK|BRL|INR|KRW|ILS|THB|", "|" + c + "|") and str.length(c) == 3
+
+// One instance per call/context. Each bucket stores mean volume PER BAR per day.
+// The baseline averages those daily means over the previous N observed dates.
+// Today never enters its own baseline; missing buckets are excluded, not zeroed.
+// Intraday timeframes larger than the bucket, and non-time charts, use MA instead.
+f_normalize() =>
+    float raw = not na(volume) and volume >= 0 ? volume : na
+    float ma = ta.sma(raw, length)
+    int buckets = int(1440 / bucketMinutes)
+    var array<float> history = array.new_float(buckets * days, na)
+    var array<float> totals = array.new_float(buckets, 0.0)
+    var array<int> counts = array.new_int(buckets, 0)
+    var array<float> todaySum = array.new_float(buckets, 0.0)
+    var array<int> todayCount = array.new_int(buckets, 0)
+    var int previousDate = na
+    var int slot = 0
+    bool suitable = chart.is_standard and timeframe.isintraday and timeframe.in_seconds() <= bucketMinutes * 60
+    float tod = na
+    if norm != "Moving Average" and suitable
+        int dateKey = year(time, timezone) * 10000 + month(time, timezone) * 100 + dayofmonth(time, timezone)
+        int bucket = int((hour(time, timezone) * 60 + minute(time, timezone)) / bucketMinutes)
+        if na(previousDate)
+            previousDate := dateKey
+        if dateKey != previousDate
+            for i = 0 to buckets - 1
+                int index = slot * buckets + i
+                float old = array.get(history, index)
+                float total = array.get(totals, i)
+                int count = array.get(counts, i)
+                if not na(old)
+                    total -= old
+                    count -= 1
+                int n = array.get(todayCount, i)
+                float dailyMean = n > 0 ? array.get(todaySum, i) / n : na
+                if not na(dailyMean)
+                    total += dailyMean
+                    count += 1
+                array.set(history, index, dailyMean)
+                array.set(totals, i, count > 0 ? math.max(total, 0.0) : 0.0)
+                array.set(counts, i, count)
+                array.set(todaySum, i, 0.0)
+                array.set(todayCount, i, 0)
+            slot := (slot + 1) % days
+            previousDate := dateKey
+        int observations = array.get(counts, bucket)
+        tod := observations > 0 ? array.get(totals, bucket) / observations : na
+        // Pine rollback prevents repeated realtime ticks from accumulating twice.
+        if not na(raw)
+            array.set(todaySum, bucket, array.get(todaySum, bucket) + raw)
+            array.set(todayCount, bucket, array.get(todayCount, bucket) + 1)
+    float maRelative = f_div(raw, ma)
+    float todRelative = f_div(raw, tod)
+    [combined, _, _] = f_mix(maRelative, todRelative, maWeight, todWeight)
+    float relative = switch norm
+        "Moving Average" => maRelative
+        "Time-of-Day" => not na(todRelative) ? todRelative : maRelative
+        => combined
+    string method = switch norm
+        "Moving Average" => "MA"
+        "Time-of-Day" => not na(todRelative) ? "TOD" : "MA fallback"
+        => na(todRelative) ? "MA fallback" : na(maRelative) ? "TOD fallback" : "Combined"
+    // Combined has two baselines, not an arithmetic mean of raw baselines.
+    [raw, relative, ma, tod, method, time_close]
+
+string base = str.upper(syminfo.basecurrency)
+string quote = str.upper(syminfo.currency)
+string ticker = str.upper(syminfo.ticker)
+string clean = str.replace_all(str.replace_all(str.replace_all(ticker, "/", ""), "_", ""), "-", "")
+string prefix = str.length(clean) >= 6 ? str.substring(clean, 0, 6) : ""
+bool spotType = syminfo.type == "forex" or syminfo.type == "cfd" or syminfo.type == "index"
+bool gold = syminfo.type != "futures" and syminfo.type != "crypto" and ((base == "XAU" and quote == "USD") or (spotType and prefix == "XAUUSD"))
+bool currencies = f_currency(base) and f_currency(quote)
+bool tickerCurrencies = str.length(prefix) == 6 ? f_currency(str.substring(prefix, 0, 3)) and f_currency(str.substring(prefix, 3, 6)) : false
+bool forex = not gold and (syminfo.type == "forex" or (syminfo.type == "cfd" and (currencies or tickerCurrencies)))
+string pair = gold ? "XAUUSD" : currencies ? base + quote : prefix
+// Exact aliases with only explicit broker suffixes; never substring matching.
+// These continuous futures are activity proxies, not global CFD volume.
+f_cfdProxy(string name) =>
+    string suffix = "([.]?(CASH|CFD|SPOT|PRO|RAW|M))?$"
+    switch
+        str.length(str.match(name, "^(NAS100|NAS100F|US100|USTEC|NASDAQ100|NDX)" + suffix)) > 0 => "CME_MINI:NQ1!"
+        str.length(str.match(name, "^(US500|SP500|SPX500|SPX)" + suffix)) > 0 => "CME_MINI:ES1!"
+        str.length(str.match(name, "^(US30|DJ30|DOW30|DJI|DOW)" + suffix)) > 0 => "CBOT_MINI:YM1!"
+        str.length(str.match(name, "^(US2000|RUS2000|RUSSELL2000|RUT)" + suffix)) > 0 => "CME_MINI:RTY1!"
+        str.length(str.match(name, "^(JPN225|JP225|NIKKEI225|NI225)" + suffix)) > 0 => "OSE:NK2251!"
+        str.length(str.match(name, "^(HK50|HSI|HANGSENG|HANGSENG50)" + suffix)) > 0 => "HKEX:HSI1!"
+        str.length(str.match(name, "^(DE40|GER40|DAX40|DAX)" + suffix)) > 0 => "EUREX:FDAX1!"
+        str.length(str.match(name, "^(BRA50|IBOV|IBOVESPA)" + suffix)) > 0 => "BMFBOVESPA:WIN1!"
+        str.length(str.match(name, "^(XTIUSD|SPOTCRUDE|USOIL|WTI)" + suffix)) > 0 => "NYMEX:CL1!"
+        str.length(str.match(name, "^(NATGAS|NATURALGAS)" + suffix)) > 0 => "NYMEX:NG1!"
+        => ""
+
+string cfdTicker = str.replace_all(clean, " ", "")
+bool cfdEligible = not gold and not forex and (syminfo.type == "cfd" or syminfo.type == "index")
+string cfdProxy = cfdEligible ? f_cfdProxy(cfdTicker) : ""
+bool energy = cfdProxy == "NYMEX:CL1!" or cfdProxy == "NYMEX:NG1!"
+bool indexMarket = cfdProxy != "" and not energy
+string autoProxy = gold or forex ? f_proxy(pair) : cfdProxy
+string proxy = manual ? manualSymbol : autoProxy
+string market = gold ? "Gold" : forex ? "Forex" : syminfo.type == "crypto" ? "Crypto" : syminfo.type == "stock" ? "Stock" : syminfo.type == "futures" ? "Futures" : indexMarket ? "Index" : energy ? "Energy" : "Other"
+bool adaptive = gold or forex or indexMarket or energy
+string requested = mode == "Auto" ? (adaptive ? (proxy != "" ? "Hybrid" : "Local Relative") : "Native") : mode
+bool needProxy = proxy != "" and (requested == "Hybrid" or requested == "Futures Proxy")
+string requestedProxyTF = proxyTF == "" ? timeframe.period : proxyTF
+string effectiveProxyTF = timeframe.in_seconds(requestedProxyTF) < timeframe.in_seconds() ? timeframe.period : requestedProxyTF
+
+[localRaw, localRelative, localMA, localTOD, localMethod, _] = f_normalize()
+float proxyRaw = na
+float proxyRelative = na
+float proxyMA = na
+float proxyTOD = na
+string proxyMethod = "N/A"
+if needProxy
+    [pRaw, pRelative, pMA, pTOD, pMethod, pClose] = request.security(proxy, effectiveProxyTF, f_normalize(), gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+    // No forward-fill or use of a still-open external candle. With a different
+    // timeframe only a source close inside the chart interval is accepted.
+    bool aligned = not na(pClose) and pClose > time and pClose <= time_close
+    if aligned and barstate.isconfirmed
+        proxyRaw := pRaw
+        proxyRelative := pRelative
+        proxyMA := pMA
+        proxyTOD := pTOD
+        proxyMethod := pMethod
+
+// Futures volumes are contracts, NEVER inverted (including 6J, 6S, 6C).
+// Continuous 1! series have rollover effects. These are activity proxies,
+// not global spot volume. Default weights are experimental, not estimates.
+float localWeight = gold ? goldLocal : indexMarket ? indexLocal : energy ? energyLocal : fxLocal
+float futuresWeight = gold ? goldProxy : indexMarket ? indexProxy : energy ? energyProxy : fxProxy
+[hybrid, effectiveLocal, effectiveProxy] = f_mix(localRelative, proxyRelative, localWeight, futuresWeight)
+float result = switch requested
+    "Native" => volume
+    "Local Relative" => localRelative
+    "Futures Proxy" => proxyRelative
+    => hybrid
+string effectiveMode = requested
+string fallback = "None"
+if requested == "Hybrid"
+    if na(localRelative) and na(proxyRelative)
+        fallback := "Both unavailable"
+    else if na(proxyRelative)
+        effectiveMode := "Local Relative"
+        fallback := "Local only"
+    else if na(localRelative)
+        effectiveMode := "Futures Proxy"
+        fallback := "Proxy only"
+bool nativeScale = mode == "Native" or (mode == "Auto" and not adaptive)
+// Relative output is published at chart-bar close. Native retains live volume.
+// This avoids mixing a partial local candle with a confirmed external candle.
+float displayed = nativeScale or barstate.isconfirmed ? result : na
+float activity = nativeScale ? localRelative : displayed
+float highThreshold = math.max(highInput, lowInput)
+float extremeThreshold = math.max(extremeInput, highThreshold)
+// Candle direction is NOT buy/sell volume or aggressor-side classification.
+color barColor = close >= open ? bull : bear
+if coloring == "Relative Activity"
+    barColor := na(activity) ? normalColor : activity >= extremeThreshold ? extremeColor : activity >= highThreshold ? highColor : activity < lowInput ? lowColor : normalColor
+else if coloring == "Hybrid Confirmation" and requested == "Hybrid"
+    if not na(localRelative) and not na(proxyRelative) and localRelative > highThreshold and proxyRelative > highThreshold
+        barColor := confirmColor
+
+// Micro metrics use confirmed relative activity, including in Native mode.
+float analysisActivity = barstate.isconfirmed ? activity : na
+float relativeMomentum = 100.0 * (f_div(analysisActivity, analysisActivity[momentumLookback]) - 1.0)
+float effortSum = 0.0
+int validEffortBars = 0
+for i = 0 to effortWindow - 1
+    float sample = analysisActivity[i]
+    if not na(sample)
+        effortSum += sample
+        validEffortBars += 1
+// Missing observations are excluded, not treated as zero activity.
+float cumulativeEffort = barstate.isconfirmed and bar_index >= effortWindow - 1 and validEffortBars > 0 ? effortSum : na
+float averageEffort = f_div(cumulativeEffort, validEffortBars)
+// N recent candles span close[N] to close; N=1 measures one close-to-close move.
+float priceDisplacement = math.abs(close - close[effortWindow])
+float efficiencyATR = ta.atr(efficiencyATRLength)
+float priceResultATR = f_div(priceDisplacement, efficiencyATR)
+// Require activity throughout the price window to avoid efficiency from gaps.
+float efficiency = barstate.isconfirmed and validEffortBars == effortWindow ? f_div(priceResultATR, averageEffort) : na
+// SMA and stdev require zScoreLength valid observations; f_div guards zero/na.
+float meanActivity = ta.sma(analysisActivity, zScoreLength)
+float stdActivity = ta.stdev(analysisActivity, zScoreLength)
+float microZScore = f_div(analysisActivity - meanActivity, stdActivity)
+bool zScoreDisplay = displayMode == "Micro Z-Score"
+bool momentumDisplay = displayMode == "Relative Momentum"
+// Visual transform only. Non-intraday/nonstandard charts use the manual window.
+float contrastTFSeconds = timeframe.isintraday and chart.is_standard ? timeframe.in_seconds() : na
+int effectiveContrastLength = contrastWindowMode == "Auto ~60 Minutes" and not na(contrastTFSeconds) and contrastTFSeconds > 0 ? int(math.max(5, math.min(500, math.round(3600.0 / contrastTFSeconds)))) : contrastLookbackBars
+float effectiveLowPercentile = math.min(lowContrastPercentile, highContrastPercentile)
+float effectiveHighPercentile = math.max(lowContrastPercentile, highContrastPercentile)
+float effectiveFloor = math.min(contrastFloor, contrastCeiling)
+float effectiveCeiling = math.max(contrastFloor, contrastCeiling)
+float contrastLow = ta.percentile_linear_interpolation(analysisActivity, effectiveContrastLength, effectiveLowPercentile)
+float contrastHigh = ta.percentile_linear_interpolation(analysisActivity, effectiveContrastLength, effectiveHighPercentile)
+// Require a complete valid window; never fill missing activity with zero.
+float contrastValidFraction = ta.sma(not na(analysisActivity) ? 1.0 : 0.0, effectiveContrastLength)
+float contrastPosition = contrastValidFraction == 1.0 and effectiveLowPercentile < effectiveHighPercentile ? f_div(analysisActivity - contrastLow, contrastHigh - contrastLow) : na
+float contrastPositionClamped = not na(contrastPosition) ? math.max(0.0, math.min(1.0, contrastPosition)) : na
+float microContrast = effectiveFloor + contrastPositionClamped * (effectiveCeiling - effectiveFloor)
+bool contrastDisplay = displayMode == "Micro Contrast"
+float plotSeries = momentumDisplay ? relativeMomentum : zScoreDisplay ? microZScore : contrastDisplay ? microContrast : displayed
+
+plot(plotSeries, "Adaptive Volume", color = barColor, style = plot.style_columns)
+float displayedMA = ta.sma(plotSeries, displayLength)
+plot(showMA and not na(plotSeries) ? displayedMA : na, "Displayed Volume MA", color = color.orange, linewidth = 2)
+plot(showBaseline ? (contrastDisplay ? effectiveFloor : momentumDisplay or zScoreDisplay ? 0.0 : not nativeScale ? 1.0 : na) : na, "Normal Activity", color = color.new(color.gray, 45))
+plot(showThresholds and not momentumDisplay and not zScoreDisplay and not contrastDisplay and not nativeScale ? highThreshold : na, "High Activity Threshold", color = color.new(highColor, 45))
+plot(showThresholds and not momentumDisplay and not zScoreDisplay and not contrastDisplay and not nativeScale ? extremeThreshold : na, "Extreme Activity Threshold", color = color.new(extremeColor, 45))
+
+f_text(float value) =>
+    na(value) ? "N/A" : str.tostring(value, "#.###")
+
+f_row(table panel, int row, string label, string value) =>
+    table.cell(panel, 0, row, label, text_color = color.silver, text_size = size.tiny, text_halign = text.align_left)
+    table.cell(panel, 1, row, value, text_color = color.white, text_size = size.tiny, text_halign = text.align_right)
+
+var table panel = table.new(position.top_right, 2, 25, bgcolor = color.new(color.black, 22))
+if barstate.islast
+    table.clear(panel, 0, 0, 1, 24)
+    if showInfo or debug
+        string status = not needProxy ? (proxy == "" ? "N/A" : "Not requested") : not barstate.isconfirmed ? "Awaiting close" : not na(proxyRaw) ? "Available" : "N/A"
+        f_row(panel, 0, "Mode", mode == "Auto" ? "Auto / " + effectiveMode : effectiveMode)
+        f_row(panel, 1, "Detected Market", market)
+        f_row(panel, 2, "Local", not na(localRaw) ? "Available" : "N/A")
+        f_row(panel, 3, "Proxy", proxy == "" ? "N/A" : proxy)
+        f_row(panel, 4, "Proxy Status", status)
+        f_row(panel, 5, "Local Relative", f_text(localRelative))
+        f_row(panel, 6, "Proxy Relative", f_text(proxyRelative))
+        f_row(panel, 7, nativeScale ? "Final Volume" : "Final Activity", not nativeScale and not barstate.isconfirmed ? "Awaiting close" : f_text(displayed))
+        f_row(panel, 8, "Normalization", norm)
+        if debug
+            float wl = requested == "Hybrid" ? effectiveLocal : (requested == "Local Relative" or requested == "Native") and not na(result) ? 1.0 : 0.0
+            float wp = requested == "Hybrid" ? effectiveProxy : requested == "Futures Proxy" and not na(result) ? 1.0 : 0.0
+            f_row(panel, 9, "Ticker / type", syminfo.tickerid + " / " + syminfo.type)
+            f_row(panel, 10, "Automatic proxy", autoProxy == "" ? "N/A" : autoProxy)
+            f_row(panel, 11, "Effective proxy", proxy == "" ? "N/A" : proxy)
+            f_row(panel, 12, "Raw local / proxy", f_text(localRaw) + " / " + f_text(proxyRaw))
+            f_row(panel, 13, "Local baseline MA / TOD", f_text(localMA) + " / " + f_text(localTOD))
+            f_row(panel, 14, "Proxy baseline MA / TOD", f_text(proxyMA) + " / " + f_text(proxyTOD))
+            f_row(panel, 15, "Effective weights L / P", f_text(wl * 100) + "% / " + f_text(wp * 100) + "%")
+            f_row(panel, 16, "Source fallback", not nativeScale and not barstate.isconfirmed ? "Awaiting close" : fallback)
+            f_row(panel, 17, "Normalization L / P", localMethod + " / " + proxyMethod)
+            f_row(panel, 18, "Proxy timeframe", effectiveProxyTF)
+            f_row(panel, 19, "Time-of-Day", str.tostring(days) + " observed dates / " + timezone)
+        string momentumText = na(relativeMomentum) ? "N/A" : (relativeMomentum > 0 ? "+" : "") + str.tostring(relativeMomentum, "0.0") + "%"
+        f_row(panel, 20, "Participation Momentum", momentumText)
+        f_row(panel, 21, "Cumulative Effort", na(cumulativeEffort) ? "N/A" : str.tostring(cumulativeEffort, "0.000"))
+        f_row(panel, 22, "Efficiency", na(efficiency) ? "N/A" : str.tostring(efficiency, "0.000"))
+        f_row(panel, 23, "Micro Z-Score", na(microZScore) ? "N/A" : (microZScore > 0 ? "+" : "") + str.tostring(microZScore, "0.00"))
+        f_row(panel, 24, "Micro Contrast", na(microContrast) ? "N/A" : str.tostring(microContrast, "0.00"))

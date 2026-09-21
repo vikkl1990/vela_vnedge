@@ -1,0 +1,1782 @@
+//@version=6
+
+indicator(
+
+     "Smart Buy Sell Indicator V1",
+
+     overlay=true,
+
+     max_labels_count=500
+
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// BUY / SELL SETTINGS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+maType = input.string(
+
+     "EMA",
+
+     "Moving Average Type",
+
+     options=["EMA", "SMA"],
+
+     group="BUY / SELL Settings"
+
+)
+
+fastLen = input.int(
+
+     9,
+
+     "Fast MA Length",
+
+     minval=1,
+
+     group="BUY / SELL Settings"
+
+)
+
+slowLen = input.int(
+
+     21,
+
+     "Slow MA Length",
+
+     minval=2,
+
+     group="BUY / SELL Settings"
+
+)
+
+rsiLen = input.int(
+
+     14,
+
+     "RSI Length",
+
+     minval=2,
+
+     group="BUY / SELL Settings"
+
+)
+
+rsiBuy = input.int(
+
+     50,
+
+     "Minimum RSI for BUY",
+
+     minval=1,
+
+     maxval=99,
+
+     group="BUY / SELL Settings"
+
+)
+
+rsiSell = input.int(
+
+     50,
+
+     "Maximum RSI for SELL",
+
+     minval=1,
+
+     maxval=99,
+
+     group="BUY / SELL Settings"
+
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// 50 / 200 MA SETTINGS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+showMA50 = input.bool(
+
+     true,
+
+     "Show 50 MA",
+
+     group="50 / 200 MA Settings"
+
+)
+
+showMA200 = input.bool(
+
+     true,
+
+     "Show 200 MA",
+
+     group="50 / 200 MA Settings"
+
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// PURPLE DOT SETTINGS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+showPurpleDot = input.bool(
+
+     true,
+
+     "Show Purple Dot",
+
+     group="Purple Dot Settings"
+
+)
+
+minVolume = input.int(
+
+     500000,
+
+     "Minimum Volume",
+
+     minval=1,
+
+     group="Purple Dot Settings"
+
+)
+
+minPriceMove = input.float(
+
+     5.0,
+
+     "Minimum Price Increase %",
+
+     minval=0.1,
+
+     step=0.1,
+
+     group="Purple Dot Settings"
+
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// INSIDE BAR SETTINGS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+showInsideBarAsterisk = input.bool(
+
+     true,
+
+     "Show Inside Bar Asterisk",
+
+     group="Inside Bar Settings"
+
+)
+
+insideBarAsteriskSize = input.string(
+
+     "Micro Small",
+
+     "Asterisk Size",
+
+     options=[
+
+          "Micro Small",
+
+          "Tiny",
+
+          "Small"
+
+     ],
+
+     group="Inside Bar Settings"
+
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// NR7 SETTINGS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+showNR7 = input.bool(
+
+     true,
+
+     "Show NR7 Marker",
+
+     group="NR7 Settings"
+
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// NR5 SETTINGS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+showNR5 = input.bool(
+
+     true,
+
+     "Show NR5 Marker",
+
+     group="NR5 Settings"
+
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// HIGH VOLUME CANDLE SETTINGS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+showHighVolumeCandles = input.bool(
+
+     true,
+
+     "Highlight High Volume Candles",
+
+     group="High Volume Candle Settings"
+
+)
+
+volumePeriod = input.int(
+
+     20,
+
+     "Volume EMA Period",
+
+     minval=1,
+
+     group="High Volume Candle Settings"
+
+)
+
+volumeFactor = input.float(
+
+     1.25,
+
+     "Proportion to Average Volume",
+
+     minval=0,
+
+     step=0.05,
+
+     group="High Volume Candle Settings"
+
+)
+
+highVolumeBullColor = input.color(
+
+     color.lime,
+
+     "Bullish High Volume Color",
+
+     group="High Volume Candle Settings"
+
+)
+
+highVolumeBearColor = input.color(
+
+     color.red,
+
+     "Bearish High Volume Color",
+
+     group="High Volume Candle Settings"
+
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// PRIOR UPTREND SETTINGS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Mark Minervini Trend Template dashboard filter
+
+minervini52WWeeks = input.int(52, "Minervini 52W Lookback (Weeks)", minval=20, maxval=104, group="Trend Template Settings")
+
+minerviniHighMaxBelow = input.float(25.0, "Max % Below 52W High", minval=1.0, maxval=50.0, step=1.0, group="Trend Template Settings")
+
+minerviniLowMinAbove = input.float(30.0, "Min % Above 52W Low", minval=1.0, maxval=100.0, step=1.0, group="Trend Template Settings")
+
+ipoMinAdvance = input.float(10.0, "IPO Min % Above Listing Low", minval=0.0, maxval=100.0, step=1.0, group="Trend Template Settings", tooltip="Used automatically for stocks with fewer than 200 daily bars.")
+
+// User can select ANY TradingView symbol/index using the symbol picker.
+// NIFTY 50 is the default, but there is no hard-coded list of options.
+breadthSymbol = input.symbol(
+     "NSE:NIFTY",
+     "Market Breadth Index",
+     group="Market Breadth Settings",
+     tooltip="Select any TradingView index/symbol to use for Market Breadth."
+)
+
+breadthLookback = input.int(20, "Breadth SMA Period", minval=5, maxval=50, group="Market Breadth Settings")
+
+breadthMethod = input.string("Composite", "Breadth Method", options=["Simple", "Composite", "RSI-Based"], group="Market Breadth Settings")
+
+priorUptrendPct = input.float(50.0, "Prior Uptrend Min %", minval=1.0, step=1.0, group="Prior Uptrend Settings", tooltip="Minimum percentage gain from the lowest daily low during the selected lookback period.")
+
+priorUptrendWeeks = input.int(10, "Prior Uptrend Lookback (Weeks)", minval=1, maxval=52, group="Prior Uptrend Settings", tooltip="Uses approximately 5 trading days per week and calculates the current daily close's gain from the lowest low in this period.")
+
+
+
+// DASHBOARD SETTINGS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+showDashboard = input.bool(
+
+     true,
+
+     "Show Dashboard",
+
+     group="Dashboard"
+
+)
+
+// Dashboard text size
+
+dashboardSize = input.string(
+
+    "Small",
+
+    "Dashboard Text Size",
+
+    options=["Tiny", "Small", "Normal"],
+
+    group="Dashboard"
+
+)
+
+dashboardPosition = input.string(
+
+     "Top Right",
+
+     "Dashboard Position",
+
+     options=[
+
+          "Top Right",
+
+          "Top Left",
+
+          "Top Center",
+
+          "Middle Right",
+
+          "Middle Left",
+
+          "Middle Center",
+
+          "Bottom Right",
+
+          "Bottom Left",
+
+          "Bottom Center"
+
+     ],
+
+     group="Dashboard"
+
+)
+
+adrLen = input.int(
+
+     21,
+
+     "ADR Length",
+
+     minval=1,
+
+     group="Dashboard"
+
+)
+
+rvolLen = input.int(
+
+     20,
+
+     "RVOL Length",
+
+     minval=1,
+
+     group="Dashboard"
+
+)
+
+ssFirst5MinVolPct = input.float(
+
+     10.0,
+
+     "SS First 5-Min Volume % of Avg Daily Volume",
+
+     minval=1.0,
+
+     step=1.0,
+
+     group="Strong Start Settings",
+
+     tooltip="Default 10. Increase to 11 or 12 for a stricter Strong Start. The first 5 minutes' total volume must be at least this percentage of the average daily volume."
+
+)
+
+ssAvgDailyVolLen = input.int(
+
+     20,
+
+     "SS Avg Daily Volume Length",
+
+     minval=1,
+
+     group="Strong Start Settings"
+
+)
+
+turnoverLen = input.int(
+
+     20,
+
+     "Avg TO. Length",
+
+     minval=1,
+
+     group="Dashboard"
+
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// DASHBOARD POSITION
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+dashboardPos =
+
+     dashboardPosition == "Top Right" ? position.top_right :
+
+     dashboardPosition == "Top Left" ? position.top_left :
+
+     dashboardPosition == "Top Center" ? position.top_center :
+
+     dashboardPosition == "Middle Right" ? position.middle_right :
+
+     dashboardPosition == "Middle Left" ? position.middle_left :
+
+     dashboardPosition == "Middle Center" ? position.middle_center :
+
+     dashboardPosition == "Bottom Right" ? position.bottom_right :
+
+     dashboardPosition == "Bottom Left" ? position.bottom_left :
+
+     position.bottom_center
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// DASHBOARD TEXT SIZE
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+dashboardTextSize =
+
+     dashboardSize == "Tiny" ? size.tiny :
+
+     dashboardSize == "Small" ? size.small :
+
+     size.normal
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// MOVING AVERAGE CALCULATIONS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+fast =
+
+     maType == "EMA" ?
+
+     ta.ema(close, fastLen) :
+
+     ta.sma(close, fastLen)
+
+slow =
+
+     maType == "EMA" ?
+
+     ta.ema(close, slowLen) :
+
+     ta.sma(close, slowLen)
+
+ma50 =
+
+     maType == "EMA" ?
+
+     ta.ema(close, 50) :
+
+     ta.sma(close, 50)
+
+ma200 =
+
+     maType == "EMA" ?
+
+     ta.ema(close, 200) :
+
+     ta.sma(close, 200)
+
+rsi = ta.rsi(close, rsiLen)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// BUY / SELL SIGNALS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+buySignal =
+
+     ta.crossover(fast, slow) and
+
+     rsi >= rsiBuy
+
+sellSignal =
+
+     ta.crossunder(fast, slow) and
+
+     rsi <= rsiSell
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// PURPLE DOT LOGIC
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+purpleDotHighVolume =
+
+     volume >= minVolume
+
+priceUpPct =
+
+     not na(close[1]) ?
+
+     ((close - close[1]) / close[1]) * 100 :
+
+     na
+
+purpleDotSignal =
+
+     showPurpleDot and
+
+     purpleDotHighVolume and
+
+     priceUpPct >= minPriceMove
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// INSIDE BAR LOGIC
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+insideBar =
+
+     not na(high[1]) and
+
+     high < high[1] and
+
+     low > low[1]
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// NR7 LOGIC
+
+// NR7 = current candle has the narrowest range among the last 7 candles
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+candleRange = high - low
+
+// NR7 = narrowest range among the latest 7 candles
+
+nr7 = candleRange <= ta.lowest(candleRange, 7)
+
+// NR5 = narrowest range among the latest 5 candles
+
+nr5 = candleRange <= ta.lowest(candleRange, 5)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// HIGH VOLUME CANDLE LOGIC
+
+// Based on:
+
+// Volume > EMA(Volume, Period) × Factor
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+volumeCandleUp =
+
+     close > open
+
+volumeCandleDown =
+
+     open > close
+
+averageVolumeEMA =
+
+     ta.ema(
+
+          volume,
+
+          volumePeriod
+
+     )
+
+highVolumeCandle =
+
+     volume >
+
+     (
+
+          averageVolumeEMA *
+
+          volumeFactor
+
+     )
+
+highVolumeCandleColor =
+
+     showHighVolumeCandles ?
+
+     (
+
+          highVolumeCandle and volumeCandleUp ?
+
+          highVolumeBullColor :
+
+          highVolumeCandle and volumeCandleDown ?
+
+          highVolumeBearColor :
+
+          volumeCandleUp ?
+
+          color.silver :
+
+          color.gray
+
+     ) :
+
+     na
+
+barcolor(
+
+     highVolumeCandleColor,
+
+     title="Volume Candle Highlight"
+
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// POCKET PIVOT LOGIC
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ppLookback = 10
+
+// Highest volume among the previous 10 down-volume candles.
+ppDownVolume = close[1] < close[2] ? volume[1] : na
+highestDownVolume = ta.highest(ppDownVolume, ppLookback)
+
+pp_signal =
+
+     not na(highestDownVolume) and
+
+     highestDownVolume > 0 and
+
+     close >= close[1] and
+
+     volume > highestDownVolume
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// MOVING AVERAGE PLOTS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+plot(
+
+     fast,
+
+     title="Fast MA",
+
+     color=color.blue,
+
+     linewidth=2
+
+)
+
+plot(
+
+     slow,
+
+     title="Slow MA",
+
+     color=color.orange,
+
+     linewidth=2
+
+)
+
+plot(
+
+     showMA50 ? ma50 : na,
+
+     title="50 MA",
+
+     color=color.purple,
+
+     linewidth=2
+
+)
+
+plot(
+
+     showMA200 ? ma200 : na,
+
+     title="200 MA",
+
+     color=color.gray,
+
+     linewidth=2
+
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// B / S LABELS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+plotshape(
+
+     buySignal,
+
+     title="BUY",
+
+     text="B",
+
+     style=shape.labelup,
+
+     location=location.belowbar,
+
+     size=size.small,
+
+     color=color.new(color.green, 75),
+
+     textcolor=color.blue
+
+)
+
+plotshape(
+
+     sellSignal,
+
+     title="SELL",
+
+     text="S",
+
+     style=shape.labeldown,
+
+     location=location.abovebar,
+
+     size=size.small,
+
+     color=color.new(color.red, 75),
+
+     textcolor=color.red
+
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// INSIDE BAR ASTERISK
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+plotchar(
+
+     showInsideBarAsterisk and
+
+     insideBar and
+
+     insideBarAsteriskSize == "Micro Small",
+
+     title="Inside Bar Asterisk - Micro Small",
+
+     char="*",
+
+     location=location.abovebar,
+
+     color=color.rgb(190, 190, 190),
+
+     size=size.tiny
+
+)
+
+plotchar(
+
+     showInsideBarAsterisk and
+
+     insideBar and
+
+     insideBarAsteriskSize == "Tiny",
+
+     title="Inside Bar Asterisk - Tiny",
+
+     char="*",
+
+     location=location.abovebar,
+
+     color=color.rgb(190, 190, 190),
+
+     size=size.small
+
+)
+
+plotchar(
+
+     showInsideBarAsterisk and
+
+     insideBar and
+
+     insideBarAsteriskSize == "Small",
+
+     title="Inside Bar Asterisk - Small",
+
+     char="*",
+
+     location=location.abovebar,
+
+     color=color.rgb(190, 190, 190),
+
+     size=size.normal
+
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// NR7 MARKER — tiny red X
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+plotchar(
+
+    showNR7 and nr7,
+
+    title="NR7",
+
+    char="×",
+
+    location=location.belowbar,
+
+    color=color.rgb(220, 70, 70),
+
+    size=size.tiny
+
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// NR5 MARKER — extra-small orange plus
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// NR7 is also mathematically an NR5 candle. On an NR7 candle,
+
+// the NR7 "x" is given priority so the two symbols do not overlap.
+
+plotchar(
+
+     showNR5 and nr5 and not nr7,
+
+     title="NR5",
+
+     char="⁺",
+
+     location=location.belowbar,
+
+     color=color.orange,
+
+     size=size.tiny
+
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// PURPLE DOT PLOT
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+dotOffsetATR =
+
+     ta.atr(14) * 0.15
+
+microDotLevel =
+
+     purpleDotSignal ?
+
+     low - dotOffsetATR :
+
+     na
+
+plot(
+
+     microDotLevel,
+
+     title="High Volume + Strong Move",
+
+     style=plot.style_circles,
+
+     color=color.purple,
+
+     linewidth=2
+
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// DASHBOARD CALCULATIONS
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// ADR %
+
+dhigh = request.security(
+
+     syminfo.tickerid,
+
+     "D",
+
+     high
+
+)
+
+dlow = request.security(
+
+     syminfo.tickerid,
+
+     "D",
+
+     low
+
+)
+
+adrPct =
+
+     100 *
+
+     (
+
+          ta.ema(
+
+               dhigh / dlow,
+
+               adrLen
+
+          ) - 1
+
+     )
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// RVOL %
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+rvolAvg =
+
+     ta.sma(
+
+          volume[1],
+
+          rvolLen
+
+     )
+
+rvolPct =
+
+     rvolAvg > 0 ?
+
+     (volume / rvolAvg) * 100 :
+
+     na
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// 52 WEEK HIGH
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+high52Week = request.security(
+
+     syminfo.tickerid,
+
+     "D",
+
+     ta.highest(
+
+          high,
+
+          252
+
+     )
+
+)
+
+high52WeekPct =
+
+     high52Week > 0 ?
+
+     ((close / high52Week) - 1) * 100 :
+
+     na
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// ALL TIME HIGH
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var float ath = na
+
+ath :=
+
+     na(ath) ?
+
+     high :
+
+     math.max(
+
+          ath,
+
+          high
+
+     )
+
+athPct =
+
+     ath > 0 ?
+
+     ((close / ath) - 1) * 100 :
+
+     na
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// AVERAGE TURNOVER
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+dailyTurnover =
+
+     close * volume
+
+avgTO =
+
+     ta.sma(
+
+          dailyTurnover,
+
+          turnoverLen
+
+     ) / 10000000
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// STRONG START (SS)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// SS is calculated from the actual trading-day behaviour so it works
+// on BOTH intraday and DAILY charts.
+//
+// SS requires:
+// 1) Today's open is above the previous day's close.
+// 2) Today's low stays within 0.5% below the previous close.
+// 3) The first completed 5-minute volume is at least the selected
+//    percentage of the average daily volume from completed prior days.
+// 4) Today's price trades above the previous day's high.
+//
+// A day that qualifies on the intraday chart will therefore show
+// SS = YES on the corresponding DAILY candle as well.
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+const float SS_LOWMULT = 0.995
+
+dailyOpen = request.security(
+     syminfo.tickerid,
+     "D",
+     open,
+     lookahead=barmerge.lookahead_off
+)
+
+dailyLow = request.security(
+     syminfo.tickerid,
+     "D",
+     low,
+     lookahead=barmerge.lookahead_off
+)
+
+dailyHigh = request.security(
+     syminfo.tickerid,
+     "D",
+     high,
+     lookahead=barmerge.lookahead_off
+)
+
+prevDailyClose = request.security(
+     syminfo.tickerid,
+     "D",
+     close[1],
+     lookahead=barmerge.lookahead_off
+)
+
+prevDailyHigh = request.security(
+     syminfo.tickerid,
+     "D",
+     high[1],
+     lookahead=barmerge.lookahead_off
+)
+
+// First completed 5-minute candle volume of each trading day.
+// The captured value remains available for the rest of that day.
+ssFirst5MinVolume = request.security(
+     syminfo.tickerid,
+     "5",
+     ta.valuewhen(ta.change(time("D")) != 0, volume, 0),
+     lookahead=barmerge.lookahead_off
+)
+
+// Average daily volume from completed prior sessions only.
+ssAvgDailyVolume = request.security(
+     syminfo.tickerid,
+     "D",
+     ta.sma(volume, ssAvgDailyVolLen)[1],
+     lookahead=barmerge.lookahead_off
+)
+
+ssFirst5MinVolumePct =
+     not na(ssFirst5MinVolume) and
+     not na(ssAvgDailyVolume) and
+     ssAvgDailyVolume > 0 ?
+     (ssFirst5MinVolume / ssAvgDailyVolume) * 100 :
+     na
+
+ssEarlyVolumeOK =
+     not na(ssFirst5MinVolumePct) and
+     ssFirst5MinVolumePct >= ssFirst5MinVolPct
+
+// DAILY equivalent of an intraday previous-day-high breakout.
+// If today's high exceeds yesterday's high at any point, the day
+// qualifies for the breakout component of SS.
+ssPrevHighCrossed =
+     not na(dailyHigh) and
+     not na(prevDailyHigh) and
+     dailyHigh > prevDailyHigh
+
+ssBaseCondition =
+     not na(dailyOpen) and
+     not na(dailyLow) and
+     not na(prevDailyClose) and
+     dailyOpen > prevDailyClose and
+     dailyLow >= prevDailyClose * SS_LOWMULT
+
+strongStart =
+     ssBaseCondition and
+     ssEarlyVolumeOK and
+     ssPrevHighCrossed
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// DASHBOARD COLOUR LOGIC
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+greenBg =
+
+     color.new(
+
+          color.green,
+
+          20
+
+     )
+
+orangeBg =
+
+     color.new(
+
+          color.orange,
+
+          20
+
+     )
+
+redBg =
+
+     color.new(
+
+          color.red,
+
+          20
+
+     )
+
+// MARK MINERVINI TREND TEMPLATE / IPO-AWARE TREND FILTER
+
+// Stocks with 200 or more completed daily bars use the full Minervini template.
+
+// Newer IPOs automatically use an adaptive trend filter so missing 150/200 DMA
+
+// history does not automatically produce FAIL.
+
+// Robust IPO/new-listing history detection.
+
+// bar_index + 1 is counted on the symbol's own DAILY history and avoids
+
+// cumulative-history edge cases on recently listed stocks.
+
+minerviniDailyBars = request.security(
+
+     syminfo.tickerid,
+
+     "D",
+
+     bar_index + 1,
+
+     lookahead=barmerge.lookahead_off
+
+)
+
+minerviniIsNewIPO = minerviniDailyBars < 200
+
+minerviniLookbackBars = minervini52WWeeks * 5
+
+[minerviniClose, minerviniMA10, minerviniMA20, minerviniMA50, minerviniMA150, minerviniMA200, minerviniMA200MonthAgo, minerviniHigh, minerviniLow] =
+
+     request.security(
+
+         syminfo.tickerid,
+
+         "D",
+
+         [
+
+             close,
+
+             ta.sma(close, 10),
+
+             ta.sma(close, 20),
+
+             ta.sma(close, 50),
+
+             ta.sma(close, 150),
+
+             ta.sma(close, 200),
+
+             ta.sma(close, 200)[20],
+
+             ta.highest(high, math.min(minerviniLookbackBars, bar_index + 1)),
+
+             ta.lowest(low, math.min(minerviniLookbackBars, bar_index + 1))
+
+         ],
+
+         lookahead=barmerge.lookahead_off
+
+     )
+
+// FULL TREND FILTER FOR STOCKS WITH SUFFICIENT HISTORY
+
+minerviniAboveMAs =
+
+     not na(minerviniClose) and
+
+     not na(minerviniMA50) and
+
+     not na(minerviniMA150) and
+
+     not na(minerviniMA200) and
+
+     minerviniClose > minerviniMA50 and
+
+     minerviniClose > minerviniMA150 and
+
+     minerviniClose > minerviniMA200
+
+minerviniMAAlignment =
+
+     not na(minerviniMA50) and
+
+     not na(minerviniMA150) and
+
+     not na(minerviniMA200) and
+
+     minerviniMA50 > minerviniMA150 and
+
+     minerviniMA50 > minerviniMA200 and
+
+     minerviniMA150 > minerviniMA200
+
+minervini200Rising =
+
+     not na(minerviniMA200MonthAgo) and
+
+     not na(minerviniMA200) and
+
+     minerviniMA200 > minerviniMA200MonthAgo
+
+minerviniNearHigh =
+
+     not na(minerviniHigh) and
+
+     minerviniHigh > 0 and
+
+     ((minerviniHigh - minerviniClose) / minerviniHigh) * 100 <= minerviniHighMaxBelow
+
+minerviniAboveLow =
+
+     not na(minerviniLow) and
+
+     minerviniLow > 0 and
+
+     ((minerviniClose - minerviniLow) / minerviniLow) * 100 >= minerviniLowMinAbove
+
+minerviniTrendOK =
+
+     minerviniAboveMAs and
+
+     minerviniMAAlignment and
+
+     minervini200Rising and
+
+     minerviniNearHigh and
+
+     minerviniAboveLow
+
+// IPO-AWARE ADAPTIVE TREND FILTER
+
+// For very new IPOs, do not require a moving average that may not yet exist.
+
+// The filter progressively adds MA confirmation as sufficient daily history develops.
+
+ipoNearHigh =
+
+     not na(minerviniHigh) and
+
+     minerviniHigh > 0 and
+
+     ((minerviniHigh - minerviniClose) / minerviniHigh) * 100 <= minerviniHighMaxBelow
+
+ipoAdvanceFromLow =
+
+     not na(minerviniLow) and
+
+     minerviniLow > 0 and
+
+     ((minerviniClose - minerviniLow) / minerviniLow) * 100 >= ipoMinAdvance
+
+ipoTrend50Plus =
+
+     minerviniDailyBars >= 50 and
+
+     not na(minerviniMA20) and
+
+     not na(minerviniMA50) and
+
+     minerviniClose > minerviniMA20 and
+
+     minerviniClose > minerviniMA50 and
+
+     minerviniMA20 > minerviniMA50 and
+
+     ipoNearHigh and
+
+     ipoAdvanceFromLow
+
+ipoTrend20To49 =
+
+     minerviniDailyBars >= 20 and
+
+     minerviniDailyBars < 50 and
+
+     not na(minerviniMA20) and
+
+     minerviniClose > minerviniMA20 and
+
+     ipoNearHigh and
+
+     ipoAdvanceFromLow
+
+// Fewer than 20 daily bars: use price strength directly.
+
+// Once a 10-DMA exists, it is used only as an additional confirmation,
+
+// not as a mandatory condition that can incorrectly fail a strong new IPO.
+
+ipoTrendUnder20 =
+
+     minerviniDailyBars < 20 and
+
+     not na(minerviniClose) and
+
+     ipoNearHigh and
+
+     ipoAdvanceFromLow and
+
+     (
+
+         na(minerviniMA10) or
+
+         minerviniClose > minerviniMA10
+
+     )
+
+ipoTrendOK =
+
+     ipoTrend50Plus or
+
+     ipoTrend20To49 or
+
+     ipoTrendUnder20
+
+
+
+// FINAL TREND FILTER STATUS
+
+// IPO stocks automatically use the adaptive IPO logic; established stocks use
+
+// the complete Minervini-style trend template.
+
+minerviniPass =
+
+     minerviniIsNewIPO ?
+
+         ipoTrendOK :
+
+         minerviniTrendOK
+
+minerviniTrendText =
+
+     minerviniPass ? "PASS" : "FAIL"
+
+minerviniTrendColor =
+
+     minerviniPass ? greenBg : redBg
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// PRIOR UPTREND
+
+// Prior Uptrend calculation:
+
+// current daily close versus the lowest daily low during the selected lookback.
+
+// This is calculated on the Daily timeframe so the dashboard remains consistent
+
+// whether the chart is 5-minute, 15-minute, or Daily.
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+priorUptrendBars = priorUptrendWeeks * 5
+
+priorUptrendPctActual = request.security(
+
+     syminfo.tickerid,
+
+     "D",
+
+     ta.lowest(low, math.min(priorUptrendBars, bar_index + 1)) > 0 ?
+
+         ((close - ta.lowest(low, math.min(priorUptrendBars, bar_index + 1))) /
+
+          ta.lowest(low, math.min(priorUptrendBars, bar_index + 1))) * 100 :
+
+         na,
+
+     lookahead=barmerge.lookahead_off
+
+)
+
+priorUptrendOK =
+
+     not na(priorUptrendPctActual) and
+
+     priorUptrendPctActual >= priorUptrendPct
+
+priorUptrendText =
+
+     na(priorUptrendPctActual) ?
+
+         "N/A" :
+
+         str.tostring(priorUptrendPctActual, "#.0") + "%"
+
+priorUptrendColor =
+
+     priorUptrendOK ?
+
+         greenBg :
+
+         redBg
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// ADR GREEN WHEN >= 5%
+
+adrColor =
+
+     not na(adrPct) and
+
+     adrPct >= 5 ?
+
+     greenBg :
+
+     redBg
+
+// RVOL GREEN WHEN >= 100%
+
+rvolColor =
+
+     not na(rvolPct) and
+
+     rvolPct >= 100 ?
+
+     greenBg :
+
+     redBg
+
+// 52W HIGH GREEN WHEN WITHIN 25%
+
+high52Color =
+
+     not na(high52WeekPct) and
+
+     high52WeekPct >= -25 ?
+
+     greenBg :
+
+     redBg
+
+// ATH GREEN WHEN WITHIN 25%
+
+athColor =
+
+     not na(athPct) and
+
+     athPct >= -25 ?
+
+     greenBg :
+
+     redBg
+
+// AVG TURNOVER COLOUR LOGIC
+
+// Below 10 Cr = Red
+
+// 10 Cr to 19 Cr = Orange
+
+// Above 19 Cr = Green
+
+avgTOColor =
+
+     not na(avgTO) and avgTO > 19 ?
+
+     greenBg :
+
+     not na(avgTO) and avgTO >= 10 ?
+
+     orangeBg :
+
+     redBg
+
+// POCKET PIVOT
+
+ppColor =
+
+     pp_signal ?
+
+     greenBg :
+
+     redBg
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// MARKET BREADTH — ENHANCED 3-METHOD ENGINE
+// Uses the exact Market Breadth logic supplied by the user.
+//
+// Method 1: Simple — index vs configurable SMA.
+// Method 2: Composite — 0-100 score using price/SMA20,
+//            price/SMA50, SMA50/SMA200, RSI, volume and
+//            20-day range position.
+// Method 3: RSI-Based — RSI >= 50 is Healthy.
+//
+// The breadth index is evaluated on the chart timeframe,
+// matching the supplied source logic.
+
+// ── Base Data ──
+breadthClose = request.security(breadthSymbol, timeframe.period, close, lookahead=barmerge.lookahead_off)
+breadthHigh = request.security(breadthSymbol, timeframe.period, high, lookahead=barmerge.lookahead_off)
+breadthLow = request.security(breadthSymbol, timeframe.period, low, lookahead=barmerge.lookahead_off)
+breadthVol = request.security(breadthSymbol, timeframe.period, volume, lookahead=barmerge.lookahead_off)
+
+// ── Method 1: Simple (Index vs SMA) ──
+breadthSMA = ta.sma(breadthClose, breadthLookback)
+breadthSMA50 = ta.sma(breadthClose, 50)
+breadthSMA200 = ta.sma(breadthClose, 200)
+
+simpleBreadthHealthy = not na(breadthClose) and not na(breadthSMA) and breadthClose >= breadthSMA
+simpleBreadthValue = not na(breadthClose) and not na(breadthSMA) ? breadthClose / breadthSMA : na
+
+// ── Method 2: Composite Market Health Score (0-100) ──
+float f1_priceSMA = not na(breadthClose) and not na(breadthSMA) and breadthSMA > 0 ? (breadthClose - breadthSMA) / breadthSMA * 100 : 0
+float f1_score = f1_priceSMA > 2 ? 25 : f1_priceSMA > 0 ? 20 : f1_priceSMA > -2 ? 10 : f1_priceSMA > -5 ? 5 : 0
+
+float f2_priceSMA50 = not na(breadthClose) and not na(breadthSMA50) and breadthSMA50 > 0 ? (breadthClose - breadthSMA50) / breadthSMA50 * 100 : 0
+float f2_score = f2_priceSMA50 > 3 ? 20 : f2_priceSMA50 > 0 ? 15 : f2_priceSMA50 > -3 ? 8 : 0
+
+float f3_score = not na(breadthSMA50) and not na(breadthSMA200) and breadthSMA50 > breadthSMA200 ? 15 : 0
+
+float breadthRSI = ta.rsi(breadthClose, 14)
+float f4_score = not na(breadthRSI) ? (breadthRSI > 60 ? 20 : breadthRSI > 50 ? 15 : breadthRSI > 40 ? 10 : breadthRSI > 30 ? 5 : 0) : 0
+
+float breadthVolAvg = ta.sma(breadthVol, 20)
+float breadthVolRatio = not na(breadthVolAvg) and breadthVolAvg > 0 ? breadthVol / breadthVolAvg : 1
+float f5_score = breadthClose > breadthClose[1] and breadthVolRatio > 1.2 ? 10 : breadthClose > breadthClose[1] and breadthVolRatio > 1.0 ? 7 : 0
+
+float breadthHigh20 = ta.highest(breadthClose, 20)
+float breadthLow20 = ta.lowest(breadthClose, 20)
+float f6_score = not na(breadthHigh20) and not na(breadthLow20) and breadthHigh20 > breadthLow20 ? (breadthClose - breadthLow20) / (breadthHigh20 - breadthLow20) * 10 : 5
+
+float compositeBreadthScore = f1_score + f2_score + f3_score + f4_score + f5_score + f6_score
+compositeBreadthScore := math.max(0, math.min(100, compositeBreadthScore))
+
+// ── Method 3: RSI-Based ──
+float rsiBreadthScore = not na(breadthRSI) ? breadthRSI : 50
+bool rsiBreadthHealthy = not na(breadthRSI) and breadthRSI >= 50
+
+// ── Final Assignment ──
+breadthHealthy = breadthMethod == "Simple" ? simpleBreadthHealthy : breadthMethod == "Composite" ? compositeBreadthScore >= 60 : rsiBreadthHealthy
+breadthValue = breadthMethod == "Simple" ? simpleBreadthValue : breadthMethod == "Composite" ? compositeBreadthScore / 100 : (not na(breadthRSI) ? breadthRSI / 100 : na)
+
+breadthText = breadthMethod == "Simple" ? (breadthHealthy ? "Healthy" : "Weak") : breadthMethod == "Composite" ? (compositeBreadthScore >= 70 ? "Strong" : compositeBreadthScore >= 60 ? "Healthy" : compositeBreadthScore >= 40 ? "Neutral" : "Weak") : (rsiBreadthHealthy ? "Healthy" : "Weak")
+breadthDetail = breadthMethod == "Simple" ? (not na(simpleBreadthValue) ? " (" + str.tostring(simpleBreadthValue, "#.##") + "x)" : "") : breadthMethod == "Composite" ? " (" + str.tostring(compositeBreadthScore, "#.0") + "/100)" : (not na(breadthRSI) ? " (RSI " + str.tostring(breadthRSI, "#.0") + ")" : "")
+breadthColor = breadthMethod == "Simple" ? (breadthHealthy ? color.green : color.red) : breadthMethod == "Composite" ? (compositeBreadthScore >= 70 ? color.green : compositeBreadthScore >= 60 ? color.lime : compositeBreadthScore >= 40 ? color.yellow : color.red) : (rsiBreadthHealthy ? color.green : color.red)
+
+// DASHBOARD
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var table dashboard = table.new(
+
+     position.top_right,
+
+     2,
+
+     11,
+
+     border_width=1
+
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// UPDATE DASHBOARD
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if barstate.islast
+
+    table.set_position(dashboard, dashboardPos)
+
+    if showDashboard
+
+        // HEADER
+
+        table.cell(dashboard, 0, 0, "METRICS", text_color=color.white, bgcolor=color.rgb(30, 70, 120), text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        table.cell(dashboard, 1, 0, "VALUE", text_color=color.white, bgcolor=color.rgb(30, 70, 120), text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        // TREND FILTER
+
+        table.cell(dashboard, 0, 1, "Trend Filter", text_color=color.white, bgcolor=color.rgb(40, 40, 40), text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        table.cell(dashboard, 1, 1, minerviniPass ? "PASS" : "FAIL", text_color=color.white, bgcolor=minerviniPass ? greenBg : redBg, text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        // PRIOR UPTREND
+
+        table.cell(dashboard, 0, 2, "Prior Uptrend", text_color=color.white, bgcolor=color.rgb(40, 40, 40), text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        table.cell(dashboard, 1, 2, priorUptrendText, text_color=color.white, bgcolor=priorUptrendColor, text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        // ADR
+
+        table.cell(dashboard, 0, 3, "ADR %", text_color=color.white, bgcolor=color.rgb(40, 40, 40), text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        table.cell(dashboard, 1, 3, na(adrPct) ? "N/A" : str.tostring(adrPct, "#.0") + "%", text_color=color.white, bgcolor=adrColor, text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        // RVOL
+
+        table.cell(dashboard, 0, 4, "RVOL %", text_color=color.white, bgcolor=color.rgb(40, 40, 40), text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        table.cell(dashboard, 1, 4, na(rvolPct) ? "N/A" : str.tostring(math.round(rvolPct)) + "%", text_color=color.white, bgcolor=rvolColor, text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        // 52W HIGH
+
+        table.cell(dashboard, 0, 5, "52W High", text_color=color.white, bgcolor=color.rgb(40, 40, 40), text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        table.cell(dashboard, 1, 5, na(high52WeekPct) ? "N/A" : str.tostring(high52WeekPct, "#.0") + "%", text_color=color.white, bgcolor=high52Color, text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        // ATH
+
+        table.cell(dashboard, 0, 6, "ATH", text_color=color.white, bgcolor=color.rgb(40, 40, 40), text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        table.cell(dashboard, 1, 6, na(athPct) ? "N/A" : str.tostring(athPct, "#.0") + "%", text_color=color.white, bgcolor=athColor, text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        // AVG TURNOVER
+
+        table.cell(dashboard, 0, 7, "Avg TO.", text_color=color.white, bgcolor=color.rgb(40, 40, 40), text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        table.cell(dashboard, 1, 7, na(avgTO) ? "N/A" : str.tostring(avgTO, "#.##") + " Cr", text_color=color.white, bgcolor=avgTOColor, text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        // POCKET PIVOT
+
+        table.cell(dashboard, 0, 8, "PP", text_color=color.white, bgcolor=color.rgb(40, 40, 40), text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        table.cell(dashboard, 1, 8, pp_signal ? "YES" : "NO", text_color=color.white, bgcolor=ppColor, text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        // STRONG START
+
+        table.cell(dashboard, 0, 9, "SS", text_color=color.white, bgcolor=color.rgb(40, 40, 40), text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        table.cell(dashboard, 1, 9, strongStart ? "YES" : "NO", text_color=color.white, bgcolor=strongStart ? greenBg : redBg, text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        // MARKET BREADTH — LAST
+
+        table.cell(dashboard, 0, 10, "Mkt. Breadth", text_color=color.white, bgcolor=color.rgb(40, 40, 40), text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+        table.cell(dashboard, 1, 10, breadthText + breadthDetail, text_color=color.white, bgcolor=breadthColor, text_halign=text.align_center, text_valign=text.align_center, text_size=dashboardTextSize)
+
+    else
+
+        for row = 0 to 10
+
+            table.cell(dashboard, 0, row, "")
+
+            table.cell(dashboard, 1, row, "")

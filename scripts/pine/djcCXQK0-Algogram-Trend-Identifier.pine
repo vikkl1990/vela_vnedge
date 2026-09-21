@@ -1,0 +1,234 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ALGOGRAM
+
+//@version=6
+indicator('Algogram Trend Identifier', shorttitle='ATI', overlay=false, max_lines_count=500, max_bars_back=5000, scale=scale.right)
+
+// Input Parameters
+group_trend = "Trend Calculation Settings"
+preset_options = input.string(title='Preset', defval='15 Minute (Default)', options=['5 Minute', '15 Minute (Default)', '30 Minute', '1 Hour', 'Daily'], tooltip='Select a preset for different time frames', group=group_trend)
+src = input(close, title='Source', tooltip='Select the source of data for trend calculation', group=group_trend)
+
+// Define input fields with default values
+smooth = input.int(1, title='Smoothing', minval=1, tooltip='Number of bars for smoothing the input data', group=group_trend)
+length = input.int(50, title='Lookback Period', minval=1, tooltip='Number of bars for ALMA calculation', group=group_trend)
+band_length = input.int(20, title='Band Lookback Period', minval=1, tooltip='Number of bars for band calculation', group=group_trend)
+alma_offset = input.float(0.85, title='ALMA Offset', step=0.01, tooltip='Offset parameter for ALMA', group=group_trend)
+alma_sigma = input.int(6, title='ALMA Sigma', minval=0, tooltip='Sigma parameter for ALMA', group=group_trend)
+band_multiplier = input.float(1.0, title='Band Multiplier', tooltip='Multiplier for the band range', group=group_trend)
+highlight_trend = input.bool(true, title='Highlight Trend', tooltip='Highlight trend direction with colors', group=group_trend)
+fill_areas = input.bool(true, title='Fill Areas', tooltip='Fill areas between ALMA and RMS bands', group=group_trend)
+bar_coloring = input.bool(false, title='Color Bars', tooltip='Color bars based on trend direction', group=group_trend)
+
+// Apply preset values conditionally
+switch preset_options
+    '5 Minute'=>
+        smooth := 1
+        length := 20
+        band_length := 10
+        alma_sigma := 4
+    '15 Minute (Default)'=>
+        smooth := 1
+        length := 50
+        band_length := 20
+        alma_sigma := 6
+    '30 Minute'=>
+        smooth := 1
+        length := 75
+        band_length := 30
+        alma_sigma := 8
+    '1 Hour'=>
+        smooth := 2
+        length := 100
+        band_length := 40
+        alma_sigma := 10
+    'Daily'=>
+        smooth := 3
+        length := 200
+        band_length := 50
+        alma_sigma := 12
+
+group_thresholds = "Threshold Settings"
+upper_threshold = input.float(60.00000, title='Upper Threshold', step=0.0001, tooltip='Upper threshold for the oscillator', group=group_thresholds)
+upper_threshold_color = input.color(color.rgb(255, 82, 82, 50), title='Upper Threshold Color', tooltip='Color of the upper threshold line', group=group_thresholds)
+upper_threshold_thickness = input.int(1, title='Upper Threshold Line Thickness', minval=1, maxval=5, tooltip='Line thickness for the upper threshold', group=group_thresholds)
+upper_threshold_style = input.string('dashed', title='Upper Threshold Line Style', options=['solid', 'dashed', 'dotted'], tooltip='Line style for the upper threshold', group=group_thresholds)
+
+lower_threshold = input.float(-60.00000, title='Lower Threshold', step=0.0001, tooltip='Lower threshold for the oscillator', group=group_thresholds)
+lower_threshold_color = input.color(color.rgb(0, 230, 118, 50), title='Lower Threshold Color', tooltip='Color of the lower threshold line', group=group_thresholds)
+lower_threshold_thickness = input.int(1, title='Lower Threshold Line Thickness', minval=1, maxval=5, tooltip='Line thickness for the lower threshold', group=group_thresholds)
+lower_threshold_style = input.string('dashed', title='Lower Threshold Line Style', options=['solid', 'dashed', 'dotted'], tooltip='Line style for the lower threshold', group=group_thresholds)
+
+group_band = "Band Customization"
+cblen = input.bool(false, title='Custom Band Length?', tooltip='Enable custom band length (otherwise same as lookback period)', group=group_band)
+blen = input.int(25, title='Custom Band Length', tooltip='Custom number of bars for band calculation', group=group_band)
+
+group_consolidation = "Consolidation Settings"
+upper_consolidation = input.float(20.0, title='Upper Consolidation Threshold', tooltip='Upper threshold for consolidation period', group=group_consolidation)
+lower_consolidation = input.float(-20.0, title='Lower Consolidation Threshold', tooltip='Lower threshold for consolidation period', group=group_consolidation)
+consolidation_color_outside = input.color(color.rgb(255, 235, 59), title='Consolidation Color Outside Threshold', tooltip='Color of the consolidation lines when RMS is outside thresholds', group=group_consolidation)
+consolidation_color_inside = input.color(color.rgb(33, 150, 243), title='Consolidation Color Inside Threshold', tooltip='Color of the consolidation lines when RMS is within thresholds', group=group_consolidation)
+consolidation_thickness = input.int(1, title='Consolidation Line Thickness', minval=1, maxval=5, tooltip='Line thickness for consolidation threshold lines', group=group_consolidation)
+consolidation_style = input.string('dashed', title='Consolidation Line Style', options=['solid', 'dashed', 'dotted'], tooltip='Line style for consolidation threshold lines', group=group_consolidation)
+
+group_divergence = "Divergence Settings"
+show_divergences = input.bool(true, title='Show Divergences', tooltip='Enable to display divergence lines on the chart', group=group_divergence)
+divergence_length = input.int(20, title='Divergence Length', minval=1, tooltip='Number of bars to look back for divergence detection', group=group_divergence)
+max_distance = input.int(40, title='Maximum Distance Between Points', minval=1, tooltip='Maximum number of bars between divergence points', group=group_divergence)
+min_distance = input.int(2, title='Minimum Distance Between Points', minval=1, tooltip='Minimum number of bars between divergence points', group=group_divergence)
+bear_div_color = input.color(color.rgb(139, 0, 0, 0), title='Bearish Divergence Line Color', tooltip='Color for bearish divergence lines', group=group_divergence)
+bull_div_color = input.color(color.rgb(1, 50, 32, 0), title='Bullish Divergence Line Color', tooltip='Color for bullish divergence lines', group=group_divergence)
+bull_div_line_thickness = input.int(3, title='Bullish Divergence Line Thickness', minval=1, maxval=5, tooltip='Line thickness for bullish divergence lines', group=group_divergence)
+bear_div_line_thickness = input.int(3, title='Bearish Divergence Line Thickness', minval=1, maxval=5, tooltip='Line thickness for bearish divergence lines', group=group_divergence)
+bear_div_dot_color = input.color(color.rgb(139, 0, 0, 0), title='Bearish Divergence Dot Color', tooltip='Color for bearish divergence dots', group=group_divergence)
+bull_div_dot_color = input.color(color.rgb(1, 50, 32, 0), title='Bullish Divergence Dot Color', tooltip='Color for bullish divergence dots', group=group_divergence)
+div_dot_shape = input.string('circle', title='Divergence Dot Shape', options=['circle', 'square', 'diamond'], tooltip='Shape of the divergence dots', group=group_divergence)
+
+// Functions
+smoothstep(edge0, edge1, x) =>
+    t = na(x) ? na : (x - edge0) / (edge1 - edge0)
+    t := math.max(0, math.min(t, 1))
+    t * t * (3 - 2 * t)
+
+compress_if_needed(value) =>
+    value > 80 ? 80 + (smoothstep(80, 100, value) * 20) : value < -80 ? -80 - (smoothstep(80, 100, -value) * 20) : value
+
+f_top_fractal(src) =>
+    src[4] < src[2] and src[3] < src[2] and src[2] > src[1] and src[2] > src[0]
+
+f_bot_fractal(src) =>
+    src[4] > src[2] and src[3] > src[2] and src[2] < src[1] and src[2] < src[0]
+
+f_findDivs(src) =>
+    fractalTop = f_top_fractal(src) ? src[2] : na
+    fractalBot = f_bot_fractal(src) ? src[2] : na
+    highPrev = ta.valuewhen(not na(fractalTop), src[2], 0)[2]
+    highPrice = ta.valuewhen(not na(fractalTop), high[2], 0)[2]
+    lowPrev = ta.valuewhen(not na(fractalBot), src[2], 0)[2]
+    lowPrice = ta.valuewhen(not na(fractalBot), low[2], 0)[2]
+    bearSignal = not na(fractalTop) and high[2] > highPrice and src[2] < highPrev
+    bullSignal = not na(fractalBot) and low[2] < lowPrice and src[2] > lowPrev
+    [fractalTop, fractalBot, highPrev, lowPrev, bearSignal, bullSignal]
+
+// Calculations
+percentage_change = ta.change(src, smooth) / src * 100
+alma_pct_change = ta.alma(percentage_change, length, alma_offset, alma_sigma)
+blength = cblen ? blen : length
+
+norm_factor = 10000
+norm_alma_pct_change = alma_pct_change * norm_factor
+compressed_alma_pct_change = compress_if_needed(norm_alma_pct_change)
+
+adjusted_rms = band_multiplier * math.sqrt(math.sum(compressed_alma_pct_change * compressed_alma_pct_change, band_length) / band_length)
+rms = compress_if_needed(adjusted_rms)
+
+rms_upper = rms * 0.9
+rms_lower = -rms * 0.9
+
+trend_direction = compressed_alma_pct_change > rms_upper ? 1 : compressed_alma_pct_change < rms_lower ? -1 : 0
+trend_color = trend_direction == 1 ? color.rgb(0, 230, 118) : trend_direction == -1 ? color.rgb(255, 82, 82) : color.rgb(120, 123, 134)
+
+cdir = compressed_alma_pct_change > rms_upper ? 1 : compressed_alma_pct_change < rms_lower ? -1 : 0
+col = cdir == 1 ? color.rgb(0, 230, 118, 50) : cdir == -1 ? color.rgb(255, 82, 82, 50) : color.rgb(120, 123, 134)
+
+float[] compressed_array = array.new_float(length)
+for i = 0 to length - 1
+    array.set(compressed_array, i, compressed_alma_pct_change[i])
+upper_dynamic_threshold = array.percentile_nearest_rank(compressed_array, 95)
+lower_dynamic_threshold = array.percentile_nearest_rank(compressed_array, 5)
+
+// Plotting
+plot_alma = plot(compressed_alma_pct_change, title='ALMA', color=highlight_trend ? trend_color : color.rgb(33, 150, 243), linewidth=2)
+fplot = plot(compressed_alma_pct_change, color=highlight_trend ? col : color.rgb(33, 150, 243), linewidth=2)
+
+var float last_value = na
+var color trendline_color = na
+var int trend_state = 0 // 0: neutral, 1: uptrend, -1: downtrend
+var bool is_above_upper_rms = false
+var bool is_below_lower_rms = false
+
+if na(last_value)
+    last_value := compressed_alma_pct_change
+
+if compressed_alma_pct_change > rms_upper
+    is_above_upper_rms := true
+    is_below_lower_rms := false
+else if compressed_alma_pct_change < rms_lower
+    is_below_lower_rms := true
+    is_above_upper_rms := false
+
+if is_above_upper_rms and compressed_alma_pct_change < rms_upper
+    trend_state := -1
+else if is_below_lower_rms and compressed_alma_pct_change > rms_lower
+    trend_state := 1
+
+if trend_state == -1
+    trendline_color := color.rgb(255, 82, 82)
+else if trend_state == 1
+    trendline_color := color.rgb(0, 230, 118)
+else
+    trendline_color := na
+
+plot_alma_colored = plot(compressed_alma_pct_change, title='Colored ALMA', color=(highlight_trend and not (compressed_alma_pct_change > rms_upper or compressed_alma_pct_change < rms_lower)) ? trendline_color : na, linewidth=2)
+
+plot_pos_rms = plot(rms_upper, title='Positive RMS', color=color.rgb(156, 39, 176), linewidth=1)
+plot_neg_rms = plot(rms_lower, title='Negative RMS', color=color.rgb(156, 39, 176), linewidth=1)
+hline(0, 'Zero Line', color=color.rgb(120, 123, 134), linewidth=1, linestyle=hline.style_dashed)
+
+hline(upper_threshold, 'Upper Threshold', color=upper_threshold_color, linewidth=upper_threshold_thickness, linestyle=(upper_threshold_style == 'solid' ? hline.style_solid : (upper_threshold_style == 'dashed' ? hline.style_dashed : hline.style_dotted)))
+hline(lower_threshold, 'Lower Threshold', color=lower_threshold_color, linewidth=lower_threshold_thickness, linestyle=(lower_threshold_style == 'solid' ? hline.style_solid : (lower_threshold_style == 'dashed' ? hline.style_dashed : hline.style_dotted)))
+
+upper_consolidation_color = (rms < upper_consolidation and rms > lower_consolidation) ? consolidation_color_inside : consolidation_color_outside
+lower_consolidation_color = (rms < upper_consolidation and rms > lower_consolidation) ? consolidation_color_inside : consolidation_color_outside
+
+plot(upper_consolidation, title='Upper Consolidation Threshold', color=upper_consolidation_color, linewidth=consolidation_thickness, style=(consolidation_style == 'solid' ? plot.style_line : (consolidation_style == 'dashed' ? plot.style_linebr : plot.style_circles)))
+plot(lower_consolidation, title='Lower Consolidation Threshold', color=lower_consolidation_color, linewidth=consolidation_thickness, style=(consolidation_style == 'solid' ? plot.style_line : (consolidation_style == 'dashed' ? plot.style_linebr : plot.style_circles)))
+
+var bool fill_pos = (fill_areas and trend_direction > 0)
+var bool fill_neg = (fill_areas and trend_direction < 0)
+fill(plot_alma, plot_pos_rms, color=fill_pos ? color.new(color.rgb(255, 82, 82), 90) : na)
+fill(plot_alma, plot_neg_rms, color=fill_neg ? color.new(color.rgb(0, 230, 118), 90) : na)
+fill(fplot, plot_pos_rms, color=fill_areas and cdir > 0 ? color.new(col, 50) : na)
+fill(fplot, plot_neg_rms, color=fill_areas and cdir < 0 ? color.new(col, 50) : na)
+
+barcolor(bar_coloring ? trend_color : na)
+barcolor(color=bar_coloring ? col : na)
+
+[almaFractalTop, almaFractalBot, almaHighPrev, almaLowPrev, almaBearDiv, almaBullDiv] = f_findDivs(compressed_alma_pct_change)
+
+var line bearLine = na
+var line bullLine = na
+
+if almaBearDiv
+    bearLine := line.new(ta.valuewhen(almaBearDiv, bar_index, 0), ta.valuewhen(almaBearDiv, compressed_alma_pct_change, 0), bar_index[2], compressed_alma_pct_change[2], color=bear_div_color, width=bear_div_line_thickness)
+
+if almaBullDiv
+    bullLine := line.new(ta.valuewhen(almaBullDiv, bar_index, 0), ta.valuewhen(almaBullDiv, compressed_alma_pct_change, 0), bar_index[2], compressed_alma_pct_change[2], color=bull_div_color, width=bull_div_line_thickness)
+
+plotshape(series=show_divergences and almaBearDiv ? compressed_alma_pct_change[2] : na, 
+          title='Bearish Divergence Dot', 
+          location=location.top, 
+          color=bear_div_dot_color, 
+          size=size.tiny, 
+          style=(div_dot_shape == 'circle' ? shape.circle : div_dot_shape == 'square' ? shape.square : shape.diamond))
+
+plotshape(series=show_divergences and almaBullDiv ? compressed_alma_pct_change[2] : na, 
+          title='Bullish Divergence Dot', 
+          location=location.bottom, 
+          color=bull_div_dot_color, 
+          size=size.tiny, 
+          style=(div_dot_shape == 'circle' ? shape.circle : div_dot_shape == 'square' ? shape.square : shape.diamond))
+
+// Alert conditions
+alertcondition(compressed_alma_pct_change > upper_threshold, title="Crossing Upper Threshold", message="Compressed ALMA percentage change crossed above the upper threshold.")
+alertcondition(compressed_alma_pct_change < lower_threshold, title="Crossing Lower Threshold", message="Compressed ALMA percentage change crossed below the lower threshold.")
+alertcondition(compressed_alma_pct_change > 0 and compressed_alma_pct_change[1] <= 0, title="Crossing Above Zero Line", message="Compressed ALMA percentage change crossed above the zero line.")
+alertcondition(compressed_alma_pct_change < 0 and compressed_alma_pct_change[1] >= 0, title="Crossing Below Zero Line", message="Compressed ALMA percentage change crossed below the zero line.")
+alertcondition(trend_direction == 1, title="Uptrend", message="Trend direction is now up.")
+alertcondition(trend_direction == -1, title="Downtrend", message="Trend direction is now down.")
+alertcondition(almaBearDiv, title="Bearish Divergence", message="Bearish divergence detected.")
+alertcondition(almaBullDiv, title="Bullish Divergence", message="Bullish divergence detected.")
+alertcondition(cdir == 1, title="Current Direction Uptrend", message="Current direction is uptrend.")
+alertcondition(cdir == -1, title="Current Direction Downtrend", message="Current direction is downtrend.")
+alertcondition(rms > upper_consolidation and rms[1] <= upper_consolidation, title="RMS Crossing Above Upper Consolidation Threshold", message="RMS crossed above the upper consolidation threshold.")
+alertcondition(rms < lower_consolidation and rms[1] >= lower_consolidation, title="RMS Crossing Below Lower Consolidation Threshold", message="RMS crossed below the lower consolidation threshold.")

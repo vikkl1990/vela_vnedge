@@ -1,0 +1,99 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © MonkeyPhone
+
+//@version=6
+indicator("VantaGate Reversal Map v1.0", shorttitle="VantaGate v1", overlay=true)
+
+mapLength = input.int(55, "Regression Center Length", minval=10)
+atrLength = input.int(34, "Zone ATR Length", minval=5)
+innerDistance = input.float(1.10, "Zone Entry Distance", minval=0.25, step=0.05)
+outerDistance = input.float(1.80, "Zone Outer Distance", minval=0.50, step=0.05)
+liquidityLength = input.int(20, "Liquidity Lookback", minval=5)
+zoneMemory = input.int(12, "Zone Permission Memory", minval=1, maxval=50)
+rejectionThreshold = input.float(0.62, "Rejection Close Threshold", minval=0.50, maxval=0.90, step=0.01)
+showLiquidity = input.bool(true, "Show Prior Liquidity Levels")
+colorConfirmedBars = input.bool(true, "Color Confirmed Bars")
+
+mapCenter = ta.linreg(hlc3, mapLength, 0)
+mapAtr = math.max(ta.atr(atrLength), syminfo.mintick)
+upperInner = mapCenter + mapAtr * innerDistance
+upperOuter = mapCenter + mapAtr * outerDistance
+lowerInner = mapCenter - mapAtr * innerDistance
+lowerOuter = mapCenter - mapAtr * outerDistance
+priorLiquidityHigh = ta.highest(high[1], liquidityLength)
+priorLiquidityLow = ta.lowest(low[1], liquidityLength)
+candleRangeMap = math.max(high - low, syminfo.mintick)
+closeLocation = (close - low) / candleRangeMap
+
+lowerZoneTouch = low <= lowerInner
+upperZoneTouch = high >= upperInner
+lowerLiquiditySweep = low < priorLiquidityLow and close > priorLiquidityLow
+upperLiquiditySweep = high > priorLiquidityHigh and close < priorLiquidityHigh
+lowerAbsorption = lowerZoneTouch and closeLocation >= rejectionThreshold and close > open
+upperAbsorption = upperZoneTouch and closeLocation <= 1.0 - rejectionThreshold and close < open
+lowerZoneEvent = lowerZoneTouch and (lowerLiquiditySweep or lowerAbsorption)
+upperZoneEvent = upperZoneTouch and (upperLiquiditySweep or upperAbsorption)
+barsSinceLowerEvent = nz(ta.barssince(lowerZoneEvent), 100000)
+barsSinceUpperEvent = nz(ta.barssince(upperZoneEvent), 100000)
+lowerZoneReady = barsSinceLowerEvent <= zoneMemory
+upperZoneReady = barsSinceUpperEvent <= zoneMemory
+
+vantaEquilibrium = ta.ema(hlc3, 34)
+vantaVolatility = math.max(ta.atr(34), syminfo.mintick)
+vantaStretch = (hlc3 - vantaEquilibrium) / vantaVolatility
+vantaVelocity = (hlc3 - hlc3[5]) / (vantaVolatility * math.sqrt(5.0))
+vantaRecoil = vantaVelocity - ta.ema(vantaVelocity, 5)
+vantaCandleRange = math.max(high - low, syminfo.mintick)
+vantaUpperRejection = (high - math.max(open, close)) / vantaCandleRange
+vantaLowerRejection = (math.min(open, close) - low) / vantaCandleRange
+vantaRejectionBias = vantaUpperRejection - vantaLowerRejection
+vantaVolumeBaseline = ta.ema(nz(volume, 0.0), 34)
+vantaVolumeSurge = vantaVolumeBaseline > 0.0 ? math.max(0.0, math.min(nz(volume, 0.0) / vantaVolumeBaseline - 1.0, 2.0)) : 0.0
+vantaParticipatingRejection = vantaRejectionBias * (1.0 + 0.35 * vantaVolumeSurge)
+vantaFieldRaw = 0.46 * vantaStretch + 0.24 * vantaVelocity + 0.18 * vantaRecoil + 0.12 * vantaParticipatingRejection
+vantaField = ta.ema(vantaFieldRaw, 3)
+vantaNatural = 50.0 + 50.0 * vantaField / (1.0 + math.abs(vantaField))
+
+var int vantaUpperAge = 0
+var int vantaLowerAge = 0
+vantaUpperAge := vantaNatural >= 78.0 ? nz(vantaUpperAge[1]) + 1 : 0
+vantaLowerAge := vantaNatural <= 22.0 ? nz(vantaLowerAge[1]) + 1 : 0
+vantaExtremeAge = math.max(vantaUpperAge, vantaLowerAge)
+vantaRelease = 1.0 / (1.0 + math.max(vantaExtremeAge - 5, 0) * 0.12)
+vantaSpring = 50.0 + (vantaNatural - 50.0) * vantaRelease
+
+vantaBaseAlpha = 2.0 / 8.0
+vantaTension = math.min(math.abs(vantaSpring - 50.0) / 50.0, 1.0)
+vantaAdaptiveAlpha = vantaBaseAlpha * (1.0 - 0.45 * vantaTension)
+var float vantaGravity = na
+vantaGravity := na(vantaGravity[1]) ? vantaSpring : vantaGravity[1] + vantaAdaptiveAlpha * (vantaSpring - vantaGravity[1])
+
+vantaBottomArmed = ta.lowest(vantaSpring, 12) <= 22.0
+vantaTopArmed = ta.highest(vantaSpring, 12) >= 78.0
+vantaBuy = ta.crossover(vantaSpring, vantaGravity) and vantaBottomArmed and vantaSpring < 50.0 and vantaField > vantaField[1]
+vantaSell = ta.crossunder(vantaSpring, vantaGravity) and vantaTopArmed and vantaSpring > 50.0 and vantaField < vantaField[1]
+longGreenLight = barstate.isconfirmed and vantaBuy and lowerZoneReady
+shortGreenLight = barstate.isconfirmed and vantaSell and upperZoneReady
+
+centerPlot = plot(mapCenter, "Regression Center", color=color.new(color.silver, 20), linewidth=2)
+upperInnerPlot = plot(upperInner, "Upper Zone Entry", color=color.new(color.red, 35))
+upperOuterPlot = plot(upperOuter, "Upper Zone Outer", color=color.new(color.red, 65))
+lowerInnerPlot = plot(lowerInner, "Lower Zone Entry", color=color.new(color.aqua, 35))
+lowerOuterPlot = plot(lowerOuter, "Lower Zone Outer", color=color.new(color.aqua, 65))
+
+fill(upperInnerPlot, upperOuterPlot, color=upperZoneReady ? color.new(color.red, 78) : color.new(color.red, 91), title="Premium Reversal Zone")
+fill(lowerInnerPlot, lowerOuterPlot, color=lowerZoneReady ? color.new(color.aqua, 78) : color.new(color.aqua, 91), title="Discount Reversal Zone")
+
+plot(showLiquidity ? priorLiquidityHigh : na, "Prior Liquidity High", color=color.new(color.red, 72), style=plot.style_stepline)
+plot(showLiquidity ? priorLiquidityLow : na, "Prior Liquidity Low", color=color.new(color.teal, 72), style=plot.style_stepline)
+
+plotshape(lowerZoneEvent and barstate.isconfirmed, title="Lower Zone Armed", style=shape.diamond, location=location.belowbar, color=color.aqua, size=size.tiny)
+plotshape(upperZoneEvent and barstate.isconfirmed, title="Upper Zone Armed", style=shape.diamond, location=location.abovebar, color=color.fuchsia, size=size.tiny)
+plotshape(longGreenLight, title="Combined Long Green Light", style=shape.labelup, location=location.belowbar, color=color.rgb(0, 230, 150), size=size.small, text="LONG", textcolor=color.black)
+plotshape(shortGreenLight, title="Combined Short Green Light", style=shape.labeldown, location=location.abovebar, color=color.rgb(255, 70, 105), size=size.small, text="SHORT", textcolor=color.white)
+
+barcolor(colorConfirmedBars ? longGreenLight ? color.rgb(0, 230, 150) : shortGreenLight ? color.rgb(255, 70, 105) : na : na)
+
+alertcondition(longGreenLight or shortGreenLight, title="VantaGate — Any Green Light", message="VantaGate combined VantaSpring and price-zone confirmation on {{ticker}} {{interval}} at {{close}}")
+alertcondition(longGreenLight, title="VantaGate — Long Green Light", message="VantaGate LONG confirmation on {{ticker}} {{interval}} at {{close}}")
+alertcondition(shortGreenLight, title="VantaGate — Short Green Light", message="VantaGate SHORT confirmation on {{ticker}} {{interval}} at {{close}}")

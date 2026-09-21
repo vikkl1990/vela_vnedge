@@ -1,0 +1,1070 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © wintonbanks
+
+//@version=6
+indicator(title = '$ - Boxes +', overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 250, max_bars_back = 5000)
+
+// ───────────────────────────── HTF BOX SETTINGS ───────────────────────────
+const string GHB = 'HTF Box Settings ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+Interval = input.timeframe('60', 'Time Interval', tooltip = 'This allows you to change what HTF the indicator is outlining.', group = GHB, inline = '0')
+ShowPrevious = input.string('3', 'Number of Boxes', options = ['Show All', '1', '2', '3'], tooltip = 'how many candle boxes are visible on the chart', group = GHB, inline = '0')
+ShowCurrent = input.bool(true, 'Show Current HTF Candle', tooltip = 'Projects the box for the HTF candle still in progress across the full period, expanding as the high/low develops.', group = GHB, inline = '0.1')
+
+BoxShow = input.bool(true, 'Candle Boxes', group = GHB, inline = '1')
+BoxWidth = input.int(1, 'Width', minval = 0, group = GHB, inline = '1.1', display = display.none)
+BoxLineStyle = input.string('Dashed', '', options = ['Solid', 'Dashed', 'Dotted'], group = GHB, inline = '1.1')
+BoxLineStyleValue = BoxLineStyle == 'Dashed' ? line.style_dashed : BoxLineStyle == 'Dotted' ? line.style_dotted : line.style_solid
+BoxColor = input.color(color.new(#706c69, 75), '', group = GHB, inline = '1.1')
+
+BodyShow = input.bool(false, 'Include Body ', group = GHB, inline = '2')
+BodyWidth = input.int(1, 'Width', minval = 0, group = GHB, inline = '2.2', display = display.none)
+BodyLineStyle = input.string('Solid', '', options = ['Solid', 'Dashed', 'Dotted'], group = GHB, inline = '2.2')
+BodyLineStyleValue = BodyLineStyle == 'Dashed' ? line.style_dashed : BodyLineStyle == 'Dotted' ? line.style_dotted : line.style_solid
+BodyBullishColor = input.color(color.new(#66bb6a, 75), '', group = GHB, inline = '2.2')
+BodyBearishColor = input.color(color.new(#f7525f, 75), '', group = GHB, inline = '2.2')
+
+MidLineShow = input.bool(false, 'Show MidLine', group = GHB, inline = '3')
+MidLineWidth = input.int(3, 'Width', minval = 0, group = GHB, inline = '3.3', display = display.none)
+MidLineStyle = input.string('Solid', '', options = ['Solid', 'Dashed', 'Dotted'], group = GHB, inline = '3.3')
+MidLineStyleValue = MidLineStyle == 'Dashed' ? line.style_dashed : MidLineStyle == 'Dotted' ? line.style_dotted : line.style_solid
+MidLineColor = input.color(color.new(#706c69, 50), '', group = GHB, inline = '3.3')
+
+// ─────────────────────────────── LINE SETTINGS ────────────────────────────
+const string GLN = 'Line Settings ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+HideSideLines = input.bool(false, 'Hide Side Lines', inline = 'as1', group = GLN)
+ExtendLinesToCurrent = input.bool(false, 'Extend Lines to Current Candle', inline = 'as2', tooltip = 'Extend high/low lines of previous candle to current candle until price closes through the level. Only works when Hide Side Lines is toggled.', group = GLN)
+ExtendLinesTenCandles = input.bool(false, 'Extend Lines 10 Candles Ahead', inline = 'as2', tooltip = 'Extend high/low lines of previous candle 10 candles ahead of the current candle. Only works when Hide Side Lines is toggled.', group = GLN)
+DrawExactCandle = input.bool(false, 'Draw Lines from Exact Candle', inline = 'as2', tooltip = 'Extend Lines to Current Candle, Extend Lines 10 Candles Ahead, and Draw Lines from Exact Candle will only work when Hide Side Lines is toggled.', group = GLN)
+
+// ──────────────────────────── RANGE LABEL SETTINGS ────────────────────────
+const string GRL = 'Range Label Settings ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+BoxRangePips = input.bool(false, 'Show H/L Range Pips', inline = 'as3', group = GRL)
+BoxRangePercentage = input.bool(false, 'Show O/C Pips', inline = 'as3', group = GRL)
+BoxRangeTC = input.color(#b2b0b4, '', inline = 'as3', group = GRL)
+
+// ───────────────────────────── BOX FILL SETTINGS ──────────────────────────
+const string GBF = 'Box Fill Settings ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+BgLong = input.color(color.new(#66bb6a, 100), 'Bullish', group = GBF, inline = 'as4', tooltip = 'These colour selectors allow you to set the colour of the whole HTF box.')
+BgShort = input.color(color.new(#f7525f, 100), 'Bearish', group = GBF, inline = 'as4')
+
+// interval variables
+var float htfHigh = na // htf Candle High
+var float htfLow = na
+var float htfOpen = na
+var int htfBarIndex = na // Bar Index for start of HTF candle
+var int htfHighBarIndex = na // Bar Index for HTF high
+var int htfLowBarIndex = na // Bar Index for HTF low
+var float div = 1
+
+var box currentFill1 = na
+var line currentTop1 = na
+var line currentBottom1 = na
+var line currentLeft1 = na
+var line currentRight1 = na
+var box currentFill2 = na
+var line currentTop2 = na
+var line currentBottom2 = na
+var line currentLeft2 = na
+var line currentRight2 = na
+
+var box secondFill1 = na
+var line secondTop1 = na
+var line secondBottom1 = na
+var line secondLeft1 = na
+var line secondRight1 = na
+var box secondFill2 = na
+var line secondTop2 = na
+var line secondBottom2 = na
+var line secondLeft2 = na
+var line secondRight2 = na
+
+var box thirdFill1 = na
+var line thirdTop1 = na
+var line thirdBottom1 = na
+var line thirdLeft1 = na
+var line thirdRight1 = na
+var box thirdFill2 = na
+var line thirdTop2 = na
+var line thirdBottom2 = na
+var line thirdLeft2 = na
+var line thirdRight2 = na
+
+var label currentLabel = na
+var label secondLabel = na
+var label thirdLabel = na
+var line currentLine = na
+var line secondLine = na
+var line thirdLine = na
+
+// Handles for the current (in-progress) HTF candle
+var box liveFill1 = na
+var line liveTop1 = na
+var line liveBottom1 = na
+var line liveLeft1 = na
+var line liveRight1 = na
+var box liveFill2 = na
+var line liveTop2 = na
+var line liveBottom2 = na
+var line liveLeft2 = na
+var line liveRight2 = na
+var label liveLabel = na
+var line liveLine = na
+
+// Variables to store previous box data
+var float prevHtfHigh = na
+var float prevHtfLow = na
+var float prevHtfOpen = na
+var float prevHtfClose = na
+var int prevHtfBarIndex = na
+var int prevHtfBarEndIndex = na
+var int prevHtfHighBarIndex = na
+var int prevHtfLowBarIndex = na
+
+// Variables to store second previous box data
+var float secondPrevHtfHigh = na
+var float secondPrevHtfLow = na
+var float secondPrevHtfOpen = na
+var float secondPrevHtfClose = na
+var int secondPrevHtfBarIndex = na
+var int secondPrevHtfBarEndIndex = na
+var int secondPrevHtfHighBarIndex = na
+var int secondPrevHtfLowBarIndex = na
+
+// Variables to store third previous box data
+var float thirdPrevHtfHigh = na
+var float thirdPrevHtfLow = na
+var float thirdPrevHtfOpen = na
+var float thirdPrevHtfClose = na
+var int thirdPrevHtfBarIndex = na
+var int thirdPrevHtfBarEndIndex = na
+var int thirdPrevHtfHighBarIndex = na
+var int thirdPrevHtfLowBarIndex = na
+
+// Variables to track crossover bar indices and states
+var int highCrossoverBarIndex = na
+var int lowCrossoverBarIndex = na
+var bool highCrossed = false
+var bool lowCrossed = false
+
+// First Bar Checks
+if bar_index == 1
+    //First Bar Setup
+    if syminfo.type == 'forex'
+        div := 0.1 / syminfo.mintick
+        div
+
+// Test to see if there is a Change in the HTF
+htfTimeNow = time(Interval)
+bool changeHTF = ta.change(htfTimeNow) != 0
+
+barClose = barstate.islast ? close : close[1] // use the previous close unless it is the last bar
+barIndex = barstate.islast ? bar_index : bar_index - 1
+
+candleLong = barClose > htfOpen // v4 changed to previous bar close that would be part of the box
+BGColor = candleLong ? BgLong : BgShort // colour for direction (e.g. Red or Green box)
+BodyColorDynamic = candleLong ? BodyBullishColor : BodyBearishColor // Dynamic color for body based on bullish/bearish
+
+// Check for close crossover of previous candle's high/low
+bool xHigh = ta.crossover(close, prevHtfHigh)
+bool xLow = ta.crossunder(close, prevHtfLow)
+
+if ExtendLinesToCurrent and HideSideLines and not na(prevHtfHigh) and not na(prevHtfLow)
+    if xHigh and not highCrossed
+        highCrossoverBarIndex := bar_index
+        highCrossed := true
+        highCrossed
+    if xLow and not lowCrossed
+        lowCrossoverBarIndex := bar_index
+        lowCrossed := true
+        lowCrossed
+
+// Draw Boxes if a new HTF has occurred
+if changeHTF // new interval has occurred
+    // Reset crossover indices and states on new HTF candle
+    highCrossoverBarIndex := na
+    lowCrossoverBarIndex := na
+    highCrossed := false
+    lowCrossed := false
+
+    // Shift previous box data
+    if not na(prevHtfHigh)
+        thirdPrevHtfHigh := secondPrevHtfHigh
+        thirdPrevHtfLow := secondPrevHtfLow
+        thirdPrevHtfOpen := secondPrevHtfOpen
+        thirdPrevHtfClose := secondPrevHtfClose
+        thirdPrevHtfBarIndex := secondPrevHtfBarIndex
+        thirdPrevHtfBarEndIndex := secondPrevHtfBarEndIndex
+        thirdPrevHtfHighBarIndex := secondPrevHtfHighBarIndex
+        thirdPrevHtfLowBarIndex := secondPrevHtfLowBarIndex
+        secondPrevHtfHigh := prevHtfHigh
+        secondPrevHtfLow := prevHtfLow
+        secondPrevHtfOpen := prevHtfOpen
+        secondPrevHtfClose := prevHtfClose
+        secondPrevHtfBarIndex := prevHtfBarIndex
+        secondPrevHtfBarEndIndex := prevHtfBarEndIndex
+        secondPrevHtfHighBarIndex := prevHtfHighBarIndex
+        secondPrevHtfLowBarIndex := prevHtfLowBarIndex
+        secondPrevHtfLowBarIndex
+
+    // Store previous box data before updating
+    if not na(htfHigh) and not na(htfLow) and not na(htfOpen) and not na(htfBarIndex)
+        prevHtfHigh := htfHigh
+        prevHtfLow := htfLow
+        prevHtfOpen := htfOpen
+        prevHtfClose := barClose
+        prevHtfBarIndex := htfBarIndex
+        prevHtfBarEndIndex := bar_index - 1
+        prevHtfHighBarIndex := htfHighBarIndex
+        prevHtfLowBarIndex := htfLowBarIndex
+        prevHtfLowBarIndex
+
+    // Delete current boxes/labels/lines
+    box.delete(currentFill1)
+    line.delete(currentTop1)
+    line.delete(currentBottom1)
+    line.delete(currentLeft1)
+    line.delete(currentRight1)
+    box.delete(currentFill2)
+    line.delete(currentTop2)
+    line.delete(currentBottom2)
+    line.delete(currentLeft2)
+    line.delete(currentRight2)
+    box.delete(secondFill1)
+    line.delete(secondTop1)
+    line.delete(secondBottom1)
+    line.delete(secondLeft1)
+    line.delete(secondRight1)
+    box.delete(secondFill2)
+    line.delete(secondTop2)
+    line.delete(secondBottom2)
+    line.delete(secondLeft2)
+    line.delete(secondRight2)
+    box.delete(thirdFill1)
+    line.delete(thirdTop1)
+    line.delete(thirdBottom1)
+    line.delete(thirdLeft1)
+    line.delete(thirdRight1)
+    box.delete(thirdFill2)
+    line.delete(thirdTop2)
+    line.delete(thirdBottom2)
+    line.delete(thirdLeft2)
+    line.delete(thirdRight2)
+    label.delete(currentLabel)
+    label.delete(secondLabel)
+    label.delete(thirdLabel)
+    line.delete(currentLine)
+    line.delete(secondLine)
+    line.delete(thirdLine)
+
+    if ShowPrevious == '1' and not na(prevHtfHigh)
+        // Calculate color for previous box
+        prevCandleLong = prevHtfClose > prevHtfOpen
+        prevBGColor = prevCandleLong ? BgLong : BgShort
+        prevBodyColor = prevCandleLong ? BodyBullishColor : BodyBearishColor
+        // Draw only the previous box
+        l = prevHtfBarIndex
+        t = prevHtfHigh
+        r = ExtendLinesTenCandles and HideSideLines ? bar_index + 10 : ExtendLinesToCurrent and HideSideLines ? na(highCrossoverBarIndex) ? bar_index : highCrossoverBarIndex : prevHtfBarEndIndex
+        b = prevHtfLow
+        r_bottom = ExtendLinesTenCandles and HideSideLines ? bar_index + 10 : ExtendLinesToCurrent and HideSideLines ? na(lowCrossoverBarIndex) ? bar_index : lowCrossoverBarIndex : prevHtfBarEndIndex
+        bg = BodyShow ? na : prevBGColor
+        if BoxShow
+            if not na(bg)
+                currentFill1 := box.new(l, t, r, b, border_width = 0, bgcolor = bg)
+                currentFill1
+            if BoxWidth > 0
+                topLeftIndex = HideSideLines and DrawExactCandle ? prevHtfHighBarIndex : l
+                bottomLeftIndex = HideSideLines and DrawExactCandle ? prevHtfLowBarIndex : l
+                currentTop1 := line.new(topLeftIndex, t, r, t, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                currentBottom1 := line.new(bottomLeftIndex, b, r_bottom, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                if not HideSideLines
+                    currentLeft1 := line.new(l, t, l, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    currentRight1 := line.new(prevHtfBarEndIndex, t, prevHtfBarEndIndex, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    currentRight1
+
+        if BodyShow
+            body_top = prevCandleLong ? prevHtfClose : prevHtfOpen
+            body_bottom = prevCandleLong ? prevHtfOpen : prevHtfClose
+            currentFill2 := box.new(l, body_top, prevHtfBarEndIndex, body_bottom, border_width = 0, bgcolor = prevBodyColor)
+            if BodyWidth > 0
+                currentTop2 := line.new(l, body_top, prevHtfBarEndIndex, body_top, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                currentBottom2 := line.new(l, body_bottom, prevHtfBarEndIndex, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                if not HideSideLines
+                    currentLeft2 := line.new(l, body_top, l, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    currentRight2 := line.new(prevHtfBarEndIndex, body_top, prevHtfBarEndIndex, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    currentRight2
+
+        if BoxRangePips
+            r1 = math.abs(prevHtfHigh - prevHtfLow) * div
+            r2 = math.abs(prevHtfOpen - prevHtfClose) * div
+            r3 = r2 / r1
+            labelText = BoxRangePercentage ? str.tostring(r2, '#,##0.0#') + ' / ' + str.tostring(r1, '#,##0.0#') + ' = ' + str.tostring(r3, '0%') : str.tostring(r1, '#,##0.0#')
+            currentLabel := label.new(prevHtfBarIndex + (prevHtfBarEndIndex - prevHtfBarIndex) / 2, prevHtfHigh + syminfo.mintick * 30, labelText, style = label.style_none, textcolor = BoxRangeTC, textalign = text.align_right)
+            currentLabel
+
+        if MidLineShow
+            mp = math.avg(prevHtfLow, prevHtfHigh)
+            currentLine := line.new(prevHtfBarIndex, mp, prevHtfBarEndIndex, mp, xloc = xloc.bar_index, color = MidLineColor, style = MidLineStyleValue, width = MidLineWidth)
+            currentLine
+
+    else if ShowPrevious == '2' and not na(prevHtfHigh)
+        // Calculate color for previous box
+        prevCandleLong = prevHtfClose > prevHtfOpen
+        prevBGColor = prevCandleLong ? BgLong : BgShort
+        prevBodyColor = prevCandleLong ? BodyBullishColor : BodyBearishColor
+        // Draw previous box
+        l = prevHtfBarIndex
+        t = prevHtfHigh
+        r = ExtendLinesTenCandles and HideSideLines ? bar_index + 10 : ExtendLinesToCurrent and HideSideLines ? na(highCrossoverBarIndex) ? bar_index : highCrossoverBarIndex : prevHtfBarEndIndex
+        b = prevHtfLow
+        r_bottom = ExtendLinesTenCandles and HideSideLines ? bar_index + 10 : ExtendLinesToCurrent and HideSideLines ? na(lowCrossoverBarIndex) ? bar_index : lowCrossoverBarIndex : prevHtfBarEndIndex
+        bg = BodyShow ? na : prevBGColor
+        if BoxShow
+            if not na(bg)
+                currentFill1 := box.new(l, t, r, b, border_width = 0, bgcolor = bg)
+                currentFill1
+            if BoxWidth > 0
+                topLeftIndex = HideSideLines and DrawExactCandle ? prevHtfHighBarIndex : l
+                bottomLeftIndex = HideSideLines and DrawExactCandle ? prevHtfLowBarIndex : l
+                currentTop1 := line.new(topLeftIndex, t, r, t, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                currentBottom1 := line.new(bottomLeftIndex, b, r_bottom, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                if not HideSideLines
+                    currentLeft1 := line.new(l, t, l, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    currentRight1 := line.new(prevHtfBarEndIndex, t, prevHtfBarEndIndex, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    currentRight1
+
+        if BodyShow
+            body_top = prevCandleLong ? prevHtfClose : prevHtfOpen
+            body_bottom = prevCandleLong ? prevHtfOpen : prevHtfClose
+            currentFill2 := box.new(l, body_top, prevHtfBarEndIndex, body_bottom, border_width = 0, bgcolor = prevBodyColor)
+            if BodyWidth > 0
+                currentTop2 := line.new(l, body_top, prevHtfBarEndIndex, body_top, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                currentBottom2 := line.new(l, body_bottom, prevHtfBarEndIndex, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                if not HideSideLines
+                    currentLeft2 := line.new(l, body_top, l, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    currentRight2 := line.new(prevHtfBarEndIndex, body_top, prevHtfBarEndIndex, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    currentRight2
+
+        if BoxRangePips
+            r1 = math.abs(prevHtfHigh - prevHtfLow) * div
+            r2 = math.abs(prevHtfOpen - prevHtfClose) * div
+            r3 = r2 / r1
+            labelText = BoxRangePercentage ? str.tostring(r2, '#,##0.0#') + ' / ' + str.tostring(r1, '#,##0.0#') + ' = ' + str.tostring(r3, '0%') : str.tostring(r1, '#,##0.0#')
+            currentLabel := label.new(prevHtfBarIndex + (prevHtfBarEndIndex - prevHtfBarIndex) / 2, prevHtfHigh + syminfo.mintick * 30, labelText, style = label.style_none, textcolor = BoxRangeTC, textalign = text.align_right)
+            currentLabel
+
+        if MidLineShow
+            mp = math.avg(prevHtfLow, prevHtfHigh)
+            currentLine := line.new(prevHtfBarIndex, mp, prevHtfBarEndIndex, mp, xloc = xloc.bar_index, color = MidLineColor, style = MidLineStyleValue, width = MidLineWidth)
+            currentLine
+
+        // Draw second previous box if available
+        if not na(secondPrevHtfHigh)
+            // Calculate color for second previous box
+            secondCandleLong = secondPrevHtfClose > secondPrevHtfOpen
+            secondBGColor = secondCandleLong ? BgLong : BgShort
+            secondBodyColor = secondCandleLong ? BodyBullishColor : BodyBearishColor
+            l = secondPrevHtfBarIndex
+            t = secondPrevHtfHigh
+            r = secondPrevHtfBarEndIndex
+            b = secondPrevHtfLow
+            bg = BodyShow ? na : secondBGColor
+            if BoxShow
+                if not na(bg)
+                    secondFill1 := box.new(l, t, r, b, border_width = 0, bgcolor = bg)
+                    secondFill1
+                if BoxWidth > 0
+                    topLeftIndex = HideSideLines and DrawExactCandle ? secondPrevHtfHighBarIndex : l
+                    bottomLeftIndex = HideSideLines and DrawExactCandle ? secondPrevHtfLowBarIndex : l
+                    secondTop1 := line.new(topLeftIndex, t, r, t, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    secondBottom1 := line.new(bottomLeftIndex, b, r, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    if not HideSideLines
+                        secondLeft1 := line.new(l, t, l, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                        secondRight1 := line.new(r, t, r, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                        secondRight1
+
+            if BodyShow
+                body_top = secondCandleLong ? secondPrevHtfClose : secondPrevHtfOpen
+                body_bottom = secondCandleLong ? secondPrevHtfOpen : secondPrevHtfClose
+                secondFill2 := box.new(l, body_top, r, body_bottom, border_width = 0, bgcolor = secondBodyColor)
+                if BodyWidth > 0
+                    secondTop2 := line.new(l, body_top, r, body_top, xloc = xloc.bar_index, color = secondBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    secondBottom2 := line.new(l, body_bottom, r, body_bottom, xloc = xloc.bar_index, color = secondBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    if not HideSideLines
+                        secondLeft2 := line.new(l, body_top, l, body_bottom, xloc = xloc.bar_index, color = secondBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                        secondRight2 := line.new(r, body_top, r, body_bottom, xloc = xloc.bar_index, color = secondBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                        secondRight2
+
+            if BoxRangePips
+                r1 = math.abs(secondPrevHtfHigh - secondPrevHtfLow) * div
+                r2 = math.abs(secondPrevHtfOpen - secondPrevHtfClose) * div
+                r3 = r2 / r1
+                labelText = BoxRangePercentage ? str.tostring(r2, '#,##0.0#') + ' / ' + str.tostring(r1, '#,##0.0#') + ' = ' + str.tostring(r3, '0%') : str.tostring(r1, '#,##0.0#')
+                secondLabel := label.new(secondPrevHtfBarIndex + (secondPrevHtfBarEndIndex - secondPrevHtfBarIndex) / 2, secondPrevHtfHigh + syminfo.mintick * 30, labelText, style = label.style_none, textcolor = BoxRangeTC, textalign = text.align_right)
+                secondLabel
+
+            if MidLineShow
+                mp = math.avg(secondPrevHtfLow, secondPrevHtfHigh)
+                secondLine := line.new(secondPrevHtfBarIndex, mp, secondPrevHtfBarEndIndex, mp, xloc = xloc.bar_index, color = MidLineColor, style = MidLineStyleValue, width = MidLineWidth)
+                secondLine
+
+    else if ShowPrevious == '3' and not na(prevHtfHigh)
+        // Calculate color for previous box
+        prevCandleLong = prevHtfClose > prevHtfOpen
+        prevBGColor = prevCandleLong ? BgLong : BgShort
+        prevBodyColor = prevCandleLong ? BodyBullishColor : BodyBearishColor
+        // Draw previous box
+        l = prevHtfBarIndex
+        t = prevHtfHigh
+        r = ExtendLinesTenCandles and HideSideLines ? bar_index + 10 : ExtendLinesToCurrent and HideSideLines ? na(highCrossoverBarIndex) ? bar_index : highCrossoverBarIndex : prevHtfBarEndIndex
+        b = prevHtfLow
+        r_bottom = ExtendLinesTenCandles and HideSideLines ? bar_index + 10 : ExtendLinesToCurrent and HideSideLines ? na(lowCrossoverBarIndex) ? bar_index : lowCrossoverBarIndex : prevHtfBarEndIndex
+        bg = BodyShow ? na : prevBGColor
+        if BoxShow
+            if not na(bg)
+                currentFill1 := box.new(l, t, r, b, border_width = 0, bgcolor = bg)
+                currentFill1
+            if BoxWidth > 0
+                topLeftIndex = HideSideLines and DrawExactCandle ? prevHtfHighBarIndex : l
+                bottomLeftIndex = HideSideLines and DrawExactCandle ? prevHtfLowBarIndex : l
+                currentTop1 := line.new(topLeftIndex, t, r, t, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                currentBottom1 := line.new(bottomLeftIndex, b, r_bottom, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                if not HideSideLines
+                    currentLeft1 := line.new(l, t, l, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    currentRight1 := line.new(prevHtfBarEndIndex, t, prevHtfBarEndIndex, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    currentRight1
+
+        if BodyShow
+            body_top = prevCandleLong ? prevHtfClose : prevHtfOpen
+            body_bottom = prevCandleLong ? prevHtfOpen : prevHtfClose
+            currentFill2 := box.new(l, body_top, prevHtfBarEndIndex, body_bottom, border_width = 0, bgcolor = prevBodyColor)
+            if BodyWidth > 0
+                currentTop2 := line.new(l, body_top, prevHtfBarEndIndex, body_top, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                currentBottom2 := line.new(l, body_bottom, prevHtfBarEndIndex, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                if not HideSideLines
+                    currentLeft2 := line.new(l, body_top, l, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    currentRight2 := line.new(prevHtfBarEndIndex, body_top, prevHtfBarEndIndex, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    currentRight2
+
+        if BoxRangePips
+            r1 = math.abs(prevHtfHigh - prevHtfLow) * div
+            r2 = math.abs(prevHtfOpen - prevHtfClose) * div
+            r3 = r2 / r1
+            labelText = BoxRangePercentage ? str.tostring(r2, '#,##0.0#') + ' / ' + str.tostring(r1, '#,##0.0#') + ' = ' + str.tostring(r3, '0%') : str.tostring(r1, '#,##0.0#')
+            currentLabel := label.new(prevHtfBarIndex + (prevHtfBarEndIndex - prevHtfBarIndex) / 2, prevHtfHigh + syminfo.mintick * 30, labelText, style = label.style_none, textcolor = BoxRangeTC, textalign = text.align_right)
+            currentLabel
+
+        if MidLineShow
+            mp = math.avg(prevHtfLow, prevHtfHigh)
+            currentLine := line.new(prevHtfBarIndex, mp, prevHtfBarEndIndex, mp, xloc = xloc.bar_index, color = MidLineColor, style = MidLineStyleValue, width = MidLineWidth)
+            currentLine
+
+        // Draw second previous box if available
+        if not na(secondPrevHtfHigh)
+            // Calculate color for second previous box
+            secondCandleLong = secondPrevHtfClose > secondPrevHtfOpen
+            secondBGColor = secondCandleLong ? BgLong : BgShort
+            secondBodyColor = secondCandleLong ? BodyBullishColor : BodyBearishColor
+            l = secondPrevHtfBarIndex
+            t = secondPrevHtfHigh
+            r = secondPrevHtfBarEndIndex
+            b = secondPrevHtfLow
+            bg = BodyShow ? na : secondBGColor
+            if BoxShow
+                if not na(bg)
+                    secondFill1 := box.new(l, t, r, b, border_width = 0, bgcolor = bg)
+                    secondFill1
+                if BoxWidth > 0
+                    topLeftIndex = HideSideLines and DrawExactCandle ? secondPrevHtfHighBarIndex : l
+                    bottomLeftIndex = HideSideLines and DrawExactCandle ? secondPrevHtfLowBarIndex : l
+                    secondTop1 := line.new(topLeftIndex, t, r, t, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    secondBottom1 := line.new(bottomLeftIndex, b, r, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    if not HideSideLines
+                        secondLeft1 := line.new(l, t, l, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                        secondRight1 := line.new(r, t, r, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                        secondRight1
+
+            if BodyShow
+                body_top = secondCandleLong ? secondPrevHtfClose : secondPrevHtfOpen
+                body_bottom = secondCandleLong ? secondPrevHtfOpen : secondPrevHtfClose
+                secondFill2 := box.new(l, body_top, r, body_bottom, border_width = 0, bgcolor = secondBodyColor)
+                if BodyWidth > 0
+                    secondTop2 := line.new(l, body_top, r, body_top, xloc = xloc.bar_index, color = secondBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    secondBottom2 := line.new(l, body_bottom, r, body_bottom, xloc = xloc.bar_index, color = secondBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    if not HideSideLines
+                        secondLeft2 := line.new(l, body_top, l, body_bottom, xloc = xloc.bar_index, color = secondBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                        secondRight2 := line.new(r, body_top, r, body_bottom, xloc = xloc.bar_index, color = secondBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                        secondRight2
+
+            if BoxRangePips
+                r1 = math.abs(secondPrevHtfHigh - secondPrevHtfLow) * div
+                r2 = math.abs(secondPrevHtfOpen - secondPrevHtfClose) * div
+                r3 = r2 / r1
+                labelText = BoxRangePercentage ? str.tostring(r2, '#,##0.0#') + ' / ' + str.tostring(r1, '#,##0.0#') + ' = ' + str.tostring(r3, '0%') : str.tostring(r1, '#,##0.0#')
+                secondLabel := label.new(secondPrevHtfBarIndex + (secondPrevHtfBarEndIndex - secondPrevHtfBarIndex) / 2, secondPrevHtfHigh + syminfo.mintick * 30, labelText, style = label.style_none, textcolor = BoxRangeTC, textalign = text.align_right)
+                secondLabel
+
+            if MidLineShow
+                mp = math.avg(secondPrevHtfLow, secondPrevHtfHigh)
+                secondLine := line.new(secondPrevHtfBarIndex, mp, secondPrevHtfBarEndIndex, mp, xloc = xloc.bar_index, color = MidLineColor, style = MidLineStyleValue, width = MidLineWidth)
+                secondLine
+
+        // Draw third previous box if available
+        if not na(thirdPrevHtfHigh)
+            // Calculate color for third previous box
+            thirdCandleLong = thirdPrevHtfClose > thirdPrevHtfOpen
+            thirdBGColor = thirdCandleLong ? BgLong : BgShort
+            thirdBodyColor = thirdCandleLong ? BodyBullishColor : BodyBearishColor
+            l = thirdPrevHtfBarIndex
+            t = thirdPrevHtfHigh
+            r = thirdPrevHtfBarEndIndex
+            b = thirdPrevHtfLow
+            bg = BodyShow ? na : thirdBGColor
+            if BoxShow
+                if not na(bg)
+                    thirdFill1 := box.new(l, t, r, b, border_width = 0, bgcolor = bg)
+                    thirdFill1
+                if BoxWidth > 0
+                    topLeftIndex = HideSideLines and DrawExactCandle ? thirdPrevHtfHighBarIndex : l
+                    bottomLeftIndex = HideSideLines and DrawExactCandle ? thirdPrevHtfLowBarIndex : l
+                    thirdTop1 := line.new(topLeftIndex, t, r, t, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    thirdBottom1 := line.new(bottomLeftIndex, b, r, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    if not HideSideLines
+                        thirdLeft1 := line.new(l, t, l, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                        thirdRight1 := line.new(r, t, r, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                        thirdRight1
+
+            if BodyShow
+                body_top = thirdCandleLong ? thirdPrevHtfClose : thirdPrevHtfOpen
+                body_bottom = thirdCandleLong ? thirdPrevHtfOpen : thirdPrevHtfClose
+                thirdFill2 := box.new(l, body_top, r, body_bottom, border_width = 0, bgcolor = thirdBodyColor)
+                if BodyWidth > 0
+                    thirdTop2 := line.new(l, body_top, r, body_top, xloc = xloc.bar_index, color = thirdBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    thirdBottom2 := line.new(l, body_bottom, r, body_bottom, xloc = xloc.bar_index, color = thirdBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    if not HideSideLines
+                        thirdLeft2 := line.new(l, body_top, l, body_bottom, xloc = xloc.bar_index, color = thirdBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                        thirdRight2 := line.new(r, body_top, r, body_bottom, xloc = xloc.bar_index, color = thirdBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                        thirdRight2
+
+            if BoxRangePips
+                r1 = math.abs(thirdPrevHtfHigh - thirdPrevHtfLow) * div
+                r2 = math.abs(thirdPrevHtfOpen - thirdPrevHtfClose) * div
+                r3 = r2 / r1
+                labelText = BoxRangePercentage ? str.tostring(r2, '#,##0.0#') + ' / ' + str.tostring(r1, '#,##0.0#') + ' = ' + str.tostring(r3, '0%') : str.tostring(r1, '#,##0.0#')
+                thirdLabel := label.new(thirdPrevHtfBarIndex + (thirdPrevHtfBarEndIndex - thirdPrevHtfBarIndex) / 2, thirdPrevHtfHigh + syminfo.mintick * 30, labelText, style = label.style_none, textcolor = BoxRangeTC, textalign = text.align_right)
+                thirdLabel
+
+            if MidLineShow
+                mp = math.avg(thirdPrevHtfLow, thirdPrevHtfHigh)
+                thirdLine := line.new(thirdPrevHtfBarIndex, mp, thirdPrevHtfBarEndIndex, mp, xloc = xloc.bar_index, color = MidLineColor, style = MidLineStyleValue, width = MidLineWidth)
+                thirdLine
+
+    else // Draw all boxes as before
+        int completedR = bar_index - 1
+        l = htfBarIndex
+        t = htfHigh
+        r = completedR
+        b = htfLow
+        bg = BodyShow ? na : BGColor
+        if BoxShow
+            if not na(bg)
+                box.new(l, t, r, b, border_width = 0, bgcolor = bg)
+            if BoxWidth > 0
+                topLeftIndex = HideSideLines and DrawExactCandle ? htfHighBarIndex : l
+                bottomLeftIndex = HideSideLines and DrawExactCandle ? htfLowBarIndex : l
+                line.new(topLeftIndex, t, r, t, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                line.new(bottomLeftIndex, b, r, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                if not HideSideLines
+                    line.new(l, t, l, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    line.new(r, t, r, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+
+        if BodyShow
+            body_top = candleLong ? close[1] : htfOpen
+            body_bottom = candleLong ? htfOpen : close[1]
+            box.new(l, body_top, r, body_bottom, border_width = 0, bgcolor = BodyColorDynamic)
+            if BodyWidth > 0
+                line.new(l, body_top, r, body_top, xloc = xloc.bar_index, color = BodyColorDynamic, style = BodyLineStyleValue, width = BodyWidth)
+                line.new(l, body_bottom, r, body_bottom, xloc = xloc.bar_index, color = BodyColorDynamic, style = BodyLineStyleValue, width = BodyWidth)
+                if not HideSideLines
+                    line.new(l, body_top, l, body_bottom, xloc = xloc.bar_index, color = BodyColorDynamic, style = BodyLineStyleValue, width = BodyWidth)
+                    line.new(r, body_top, r, body_bottom, xloc = xloc.bar_index, color = BodyColorDynamic, style = BodyLineStyleValue, width = BodyWidth)
+
+        if BoxRangePips
+            r1 = math.abs(htfHigh - htfLow) * div
+            r2 = math.abs(htfOpen - barClose) * div
+            r3 = r2 / r1
+            labelText = BoxRangePercentage ? str.tostring(r2, '#,##0.0#') + ' / ' + str.tostring(r1, '#,##0.0#') + ' = ' + str.tostring(r3, '0%') : str.tostring(r1, '#,##0.0#')
+            label.new(htfBarIndex + (r - htfBarIndex) / 2, htfHigh + syminfo.mintick * 30, labelText, style = label.style_none, textcolor = BoxRangeTC, textalign = text.align_right)
+
+        if MidLineShow
+            mp = math.avg(htfLow, htfHigh)
+            line.new(htfBarIndex, mp, r, mp, xloc = xloc.bar_index, color = MidLineColor, style = MidLineStyleValue, width = MidLineWidth)
+
+    // Store next data points
+    htfOpen := open
+    htfBarIndex := bar_index
+    htfHigh := high
+    htfLow := low
+    htfHighBarIndex := bar_index
+    htfLowBarIndex := bar_index
+    htfLowBarIndex
+
+else // increment data points for HH or LL
+    if high > htfHigh
+        htfHigh := high
+        htfHighBarIndex := bar_index
+        htfHighBarIndex
+    if low < htfLow
+        htfLow := low
+        htfLowBarIndex := bar_index
+        htfLowBarIndex
+
+if barstate.islast // now on the last bar, Draw Boxes for the last HTF
+    // Delete current boxes/labels/lines
+    box.delete(currentFill1)
+    line.delete(currentTop1)
+    line.delete(currentBottom1)
+    line.delete(currentLeft1)
+    line.delete(currentRight1)
+    box.delete(currentFill2)
+    line.delete(currentTop2)
+    line.delete(currentBottom2)
+    line.delete(currentLeft2)
+    line.delete(currentRight2)
+    box.delete(secondFill1)
+    line.delete(secondTop1)
+    line.delete(secondBottom1)
+    line.delete(secondLeft1)
+    line.delete(secondRight1)
+    box.delete(secondFill2)
+    line.delete(secondTop2)
+    line.delete(secondBottom2)
+    line.delete(secondLeft2)
+    line.delete(secondRight2)
+    box.delete(thirdFill1)
+    line.delete(thirdTop1)
+    line.delete(thirdBottom1)
+    line.delete(thirdLeft1)
+    line.delete(thirdRight1)
+    box.delete(thirdFill2)
+    line.delete(thirdTop2)
+    line.delete(thirdBottom2)
+    line.delete(thirdLeft2)
+    line.delete(thirdRight2)
+    label.delete(currentLabel)
+    label.delete(secondLabel)
+    label.delete(thirdLabel)
+    line.delete(currentLine)
+    line.delete(secondLine)
+    line.delete(thirdLine)
+
+    if ShowPrevious == '1' and not na(prevHtfHigh)
+        // Calculate color for previous box
+        prevCandleLong = prevHtfClose > prevHtfOpen
+        prevBGColor = prevCandleLong ? BgLong : BgShort
+        prevBodyColor = prevCandleLong ? BodyBullishColor : BodyBearishColor
+        // Draw only the previous box
+        l = prevHtfBarIndex
+        t = prevHtfHigh
+        r = ExtendLinesTenCandles and HideSideLines ? bar_index + 10 : ExtendLinesToCurrent and HideSideLines ? na(highCrossoverBarIndex) ? bar_index : highCrossoverBarIndex : prevHtfBarEndIndex
+        b = prevHtfLow
+        r_bottom = ExtendLinesTenCandles and HideSideLines ? bar_index + 10 : ExtendLinesToCurrent and HideSideLines ? na(lowCrossoverBarIndex) ? bar_index : lowCrossoverBarIndex : prevHtfBarEndIndex
+        bg = BodyShow ? na : prevBGColor
+        if BoxShow
+            if not na(bg)
+                currentFill1 := box.new(l, t, r, b, border_width = 0, bgcolor = bg)
+                currentFill1
+            if BoxWidth > 0
+                topLeftIndex = HideSideLines and DrawExactCandle ? prevHtfHighBarIndex : l
+                bottomLeftIndex = HideSideLines and DrawExactCandle ? prevHtfLowBarIndex : l
+                currentTop1 := line.new(topLeftIndex, t, r, t, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                currentBottom1 := line.new(bottomLeftIndex, b, r_bottom, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                if not HideSideLines
+                    currentLeft1 := line.new(l, t, l, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    currentRight1 := line.new(prevHtfBarEndIndex, t, prevHtfBarEndIndex, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    currentRight1
+
+        if BodyShow
+            body_top = prevCandleLong ? prevHtfClose : prevHtfOpen
+            body_bottom = prevCandleLong ? prevHtfOpen : prevHtfClose
+            currentFill2 := box.new(l, body_top, prevHtfBarEndIndex, body_bottom, border_width = 0, bgcolor = prevBodyColor)
+            if BodyWidth > 0
+                currentTop2 := line.new(l, body_top, prevHtfBarEndIndex, body_top, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                currentBottom2 := line.new(l, body_bottom, prevHtfBarEndIndex, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                if not HideSideLines
+                    currentLeft2 := line.new(l, body_top, l, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    currentRight2 := line.new(prevHtfBarEndIndex, body_top, prevHtfBarEndIndex, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    currentRight2
+
+        if BoxRangePips
+            r1 = math.abs(prevHtfHigh - prevHtfLow) * div
+            r2 = math.abs(prevHtfOpen - prevHtfClose) * div
+            r3 = r2 / r1
+            labelText = BoxRangePercentage ? str.tostring(r2, '#,##0.0#') + ' / ' + str.tostring(r1, '#,##0.0#') + ' = ' + str.tostring(r3, '0%') : str.tostring(r1, '#,##0.0#')
+            currentLabel := label.new(prevHtfBarIndex + (prevHtfBarEndIndex - prevHtfBarIndex) / 2, prevHtfHigh + syminfo.mintick * 30, labelText, style = label.style_none, textcolor = BoxRangeTC, textalign = text.align_right)
+            currentLabel
+
+        if MidLineShow
+            mp = math.avg(prevHtfLow, prevHtfHigh)
+            currentLine := line.new(prevHtfBarIndex, mp, prevHtfBarEndIndex, mp, xloc = xloc.bar_index, color = MidLineColor, style = MidLineStyleValue, width = MidLineWidth)
+            currentLine
+
+    else if ShowPrevious == '2' and not na(prevHtfHigh)
+        // Calculate color for previous box
+        prevCandleLong = prevHtfClose > prevHtfOpen
+        prevBGColor = prevCandleLong ? BgLong : BgShort
+        prevBodyColor = prevCandleLong ? BodyBullishColor : BodyBearishColor
+        // Draw previous box
+        l = prevHtfBarIndex
+        t = prevHtfHigh
+        r = ExtendLinesTenCandles and HideSideLines ? bar_index + 10 : ExtendLinesToCurrent and HideSideLines ? na(highCrossoverBarIndex) ? bar_index : highCrossoverBarIndex : prevHtfBarEndIndex
+        b = prevHtfLow
+        r_bottom = ExtendLinesTenCandles and HideSideLines ? bar_index + 10 : ExtendLinesToCurrent and HideSideLines ? na(lowCrossoverBarIndex) ? bar_index : lowCrossoverBarIndex : prevHtfBarEndIndex
+        bg = BodyShow ? na : prevBGColor
+        if BoxShow
+            if not na(bg)
+                currentFill1 := box.new(l, t, r, b, border_width = 0, bgcolor = bg)
+                currentFill1
+            if BoxWidth > 0
+                topLeftIndex = HideSideLines and DrawExactCandle ? prevHtfHighBarIndex : l
+                bottomLeftIndex = HideSideLines and DrawExactCandle ? prevHtfLowBarIndex : l
+                currentTop1 := line.new(topLeftIndex, t, r, t, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                currentBottom1 := line.new(bottomLeftIndex, b, r_bottom, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                if not HideSideLines
+                    currentLeft1 := line.new(l, t, l, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    currentRight1 := line.new(prevHtfBarEndIndex, t, prevHtfBarEndIndex, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    currentRight1
+
+        if BodyShow
+            body_top = prevCandleLong ? prevHtfClose : prevHtfOpen
+            body_bottom = prevCandleLong ? prevHtfOpen : prevHtfClose
+            currentFill2 := box.new(l, body_top, prevHtfBarEndIndex, body_bottom, border_width = 0, bgcolor = prevBodyColor)
+            if BodyWidth > 0
+                currentTop2 := line.new(l, body_top, prevHtfBarEndIndex, body_top, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                currentBottom2 := line.new(l, body_bottom, prevHtfBarEndIndex, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                if not HideSideLines
+                    currentLeft2 := line.new(l, body_top, l, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    currentRight2 := line.new(prevHtfBarEndIndex, body_top, prevHtfBarEndIndex, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    currentRight2
+
+        if BoxRangePips
+            r1 = math.abs(prevHtfHigh - prevHtfLow) * div
+            r2 = math.abs(prevHtfOpen - prevHtfClose) * div
+            r3 = r2 / r1
+            labelText = BoxRangePercentage ? str.tostring(r2, '#,##0.0#') + ' / ' + str.tostring(r1, '#,##0.0#') + ' = ' + str.tostring(r3, '0%') : str.tostring(r1, '#,##0.0#')
+            currentLabel := label.new(prevHtfBarIndex + (prevHtfBarEndIndex - prevHtfBarIndex) / 2, prevHtfHigh + syminfo.mintick * 30, labelText, style = label.style_none, textcolor = BoxRangeTC, textalign = text.align_right)
+            currentLabel
+
+        if MidLineShow
+            mp = math.avg(prevHtfLow, prevHtfHigh)
+            currentLine := line.new(prevHtfBarIndex, mp, prevHtfBarEndIndex, mp, xloc = xloc.bar_index, color = MidLineColor, style = MidLineStyleValue, width = MidLineWidth)
+            currentLine
+
+        // Draw second previous box if available
+        if not na(secondPrevHtfHigh)
+            // Calculate color for second previous box
+            secondCandleLong = secondPrevHtfClose > secondPrevHtfOpen
+            secondBGColor = secondCandleLong ? BgLong : BgShort
+            secondBodyColor = secondCandleLong ? BodyBullishColor : BodyBearishColor
+            l = secondPrevHtfBarIndex
+            t = secondPrevHtfHigh
+            r = secondPrevHtfBarEndIndex
+            b = secondPrevHtfLow
+            bg = BodyShow ? na : secondBGColor
+            if BoxShow
+                if not na(bg)
+                    secondFill1 := box.new(l, t, r, b, border_width = 0, bgcolor = bg)
+                    secondFill1
+                if BoxWidth > 0
+                    topLeftIndex = HideSideLines and DrawExactCandle ? secondPrevHtfHighBarIndex : l
+                    bottomLeftIndex = HideSideLines and DrawExactCandle ? secondPrevHtfLowBarIndex : l
+                    secondTop1 := line.new(topLeftIndex, t, r, t, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    secondBottom1 := line.new(bottomLeftIndex, b, r, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    if not HideSideLines
+                        secondLeft1 := line.new(l, t, l, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                        secondRight1 := line.new(r, t, r, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                        secondRight1
+
+            if BodyShow
+                body_top = secondCandleLong ? secondPrevHtfClose : secondPrevHtfOpen
+                body_bottom = secondCandleLong ? secondPrevHtfOpen : secondPrevHtfClose
+                secondFill2 := box.new(l, body_top, r, body_bottom, border_width = 0, bgcolor = secondBodyColor)
+                if BodyWidth > 0
+                    secondTop2 := line.new(l, body_top, r, body_top, xloc = xloc.bar_index, color = secondBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    secondBottom2 := line.new(l, body_bottom, r, body_bottom, xloc = xloc.bar_index, color = secondBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    if not HideSideLines
+                        secondLeft2 := line.new(l, body_top, l, body_bottom, xloc = xloc.bar_index, color = secondBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                        secondRight2 := line.new(r, body_top, r, body_bottom, xloc = xloc.bar_index, color = secondBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                        secondRight2
+
+            if BoxRangePips
+                r1 = math.abs(secondPrevHtfHigh - secondPrevHtfLow) * div
+                r2 = math.abs(secondPrevHtfOpen - secondPrevHtfClose) * div
+                r3 = r2 / r1
+                labelText = BoxRangePercentage ? str.tostring(r2, '#,##0.0#') + ' / ' + str.tostring(r1, '#,##0.0#') + ' = ' + str.tostring(r3, '0%') : str.tostring(r1, '#,##0.0#')
+                secondLabel := label.new(secondPrevHtfBarIndex + (secondPrevHtfBarEndIndex - secondPrevHtfBarIndex) / 2, secondPrevHtfHigh + syminfo.mintick * 30, labelText, style = label.style_none, textcolor = BoxRangeTC, textalign = text.align_right)
+                secondLabel
+
+            if MidLineShow
+                mp = math.avg(secondPrevHtfLow, secondPrevHtfHigh)
+                secondLine := line.new(secondPrevHtfBarIndex, mp, secondPrevHtfBarEndIndex, mp, xloc = xloc.bar_index, color = MidLineColor, style = MidLineStyleValue, width = MidLineWidth)
+                secondLine
+
+    else if ShowPrevious == '3' and not na(prevHtfHigh)
+        // Calculate color for previous box
+        prevCandleLong = prevHtfClose > prevHtfOpen
+        prevBGColor = prevCandleLong ? BgLong : BgShort
+        prevBodyColor = prevCandleLong ? BodyBullishColor : BodyBearishColor
+        // Draw previous box
+        l = prevHtfBarIndex
+        t = prevHtfHigh
+        r = ExtendLinesTenCandles and HideSideLines ? bar_index + 10 : ExtendLinesToCurrent and HideSideLines ? na(highCrossoverBarIndex) ? bar_index : highCrossoverBarIndex : prevHtfBarEndIndex
+        b = prevHtfLow
+        r_bottom = ExtendLinesTenCandles and HideSideLines ? bar_index + 10 : ExtendLinesToCurrent and HideSideLines ? na(lowCrossoverBarIndex) ? bar_index : lowCrossoverBarIndex : prevHtfBarEndIndex
+        bg = BodyShow ? na : prevBGColor
+        if BoxShow
+            if not na(bg)
+                currentFill1 := box.new(l, t, r, b, border_width = 0, bgcolor = bg)
+                currentFill1
+            if BoxWidth > 0
+                topLeftIndex = HideSideLines and DrawExactCandle ? prevHtfHighBarIndex : l
+                bottomLeftIndex = HideSideLines and DrawExactCandle ? prevHtfLowBarIndex : l
+                currentTop1 := line.new(topLeftIndex, t, r, t, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                currentBottom1 := line.new(bottomLeftIndex, b, r_bottom, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                if not HideSideLines
+                    currentLeft1 := line.new(l, t, l, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    currentRight1 := line.new(prevHtfBarEndIndex, t, prevHtfBarEndIndex, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    currentRight1
+
+        if BodyShow
+            body_top = prevCandleLong ? prevHtfClose : prevHtfOpen
+            body_bottom = prevCandleLong ? prevHtfOpen : prevHtfClose
+            currentFill2 := box.new(l, body_top, prevHtfBarEndIndex, body_bottom, border_width = 0, bgcolor = prevBodyColor)
+            if BodyWidth > 0
+                currentTop2 := line.new(l, body_top, prevHtfBarEndIndex, body_top, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                currentBottom2 := line.new(l, body_bottom, prevHtfBarEndIndex, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                if not HideSideLines
+                    currentLeft2 := line.new(l, body_top, l, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    currentRight2 := line.new(prevHtfBarEndIndex, body_top, prevHtfBarEndIndex, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    currentRight2
+
+        if BoxRangePips
+            r1 = math.abs(prevHtfHigh - prevHtfLow) * div
+            r2 = math.abs(prevHtfOpen - prevHtfClose) * div
+            r3 = r2 / r1
+            labelText = BoxRangePercentage ? str.tostring(r2, '#,##0.0#') + ' / ' + str.tostring(r1, '#,##0.0#') + ' = ' + str.tostring(r3, '0%') : str.tostring(r1, '#,##0.0#')
+            currentLabel := label.new(prevHtfBarIndex + (prevHtfBarEndIndex - prevHtfBarIndex) / 2, prevHtfHigh + syminfo.mintick * 30, labelText, style = label.style_none, textcolor = BoxRangeTC, textalign = text.align_right)
+            currentLabel
+
+        if MidLineShow
+            mp = math.avg(prevHtfLow, prevHtfHigh)
+            currentLine := line.new(prevHtfBarIndex, mp, prevHtfBarEndIndex, mp, xloc = xloc.bar_index, color = MidLineColor, style = MidLineStyleValue, width = MidLineWidth)
+            currentLine
+
+        // Draw second previous box if available
+        if not na(secondPrevHtfHigh)
+            // Calculate color for second previous box
+            secondCandleLong = secondPrevHtfClose > secondPrevHtfOpen
+            secondBGColor = secondCandleLong ? BgLong : BgShort
+            secondBodyColor = secondCandleLong ? BodyBullishColor : BodyBearishColor
+            l = secondPrevHtfBarIndex
+            t = secondPrevHtfHigh
+            r = secondPrevHtfBarEndIndex
+            b = secondPrevHtfLow
+            bg = BodyShow ? na : secondBGColor
+            if BoxShow
+                if not na(bg)
+                    secondFill1 := box.new(l, t, r, b, border_width = 0, bgcolor = bg)
+                    secondFill1
+                if BoxWidth > 0
+                    topLeftIndex = HideSideLines and DrawExactCandle ? secondPrevHtfHighBarIndex : l
+                    bottomLeftIndex = HideSideLines and DrawExactCandle ? secondPrevHtfLowBarIndex : l
+                    secondTop1 := line.new(topLeftIndex, t, r, t, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    secondBottom1 := line.new(bottomLeftIndex, b, r, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    if not HideSideLines
+                        secondLeft1 := line.new(l, t, l, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                        secondRight1 := line.new(r, t, r, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                        secondRight1
+
+            if BodyShow
+                body_top = secondCandleLong ? secondPrevHtfClose : secondPrevHtfOpen
+                body_bottom = secondCandleLong ? secondPrevHtfOpen : secondPrevHtfClose
+                secondFill2 := box.new(l, body_top, r, body_bottom, border_width = 0, bgcolor = secondBodyColor)
+                if BodyWidth > 0
+                    secondTop2 := line.new(l, body_top, r, body_top, xloc = xloc.bar_index, color = secondBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    secondBottom2 := line.new(l, body_bottom, r, body_bottom, xloc = xloc.bar_index, color = secondBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    if not HideSideLines
+                        secondLeft2 := line.new(l, body_top, l, body_bottom, xloc = xloc.bar_index, color = secondBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                        secondRight2 := line.new(r, body_top, r, body_bottom, xloc = xloc.bar_index, color = secondBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                        secondRight2
+
+            if BoxRangePips
+                r1 = math.abs(secondPrevHtfHigh - secondPrevHtfLow) * div
+                r2 = math.abs(secondPrevHtfOpen - secondPrevHtfClose) * div
+                r3 = r2 / r1
+                labelText = BoxRangePercentage ? str.tostring(r2, '#,##0.0#') + ' / ' + str.tostring(r1, '#,##0.0#') + ' = ' + str.tostring(r3, '0%') : str.tostring(r1, '#,##0.0#')
+                secondLabel := label.new(secondPrevHtfBarIndex + (secondPrevHtfBarEndIndex - secondPrevHtfBarIndex) / 2, secondPrevHtfHigh + syminfo.mintick * 30, labelText, style = label.style_none, textcolor = BoxRangeTC, textalign = text.align_right)
+                secondLabel
+
+            if MidLineShow
+                mp = math.avg(secondPrevHtfLow, secondPrevHtfHigh)
+                secondLine := line.new(secondPrevHtfBarIndex, mp, secondPrevHtfBarEndIndex, mp, xloc = xloc.bar_index, color = MidLineColor, style = MidLineStyleValue, width = MidLineWidth)
+                secondLine
+
+        // Draw third previous box if available
+        if not na(thirdPrevHtfHigh)
+            // Calculate color for third previous box
+            thirdCandleLong = thirdPrevHtfClose > thirdPrevHtfOpen
+            thirdBGColor = thirdCandleLong ? BgLong : BgShort
+            thirdBodyColor = thirdCandleLong ? BodyBullishColor : BodyBearishColor
+            l = thirdPrevHtfBarIndex
+            t = thirdPrevHtfHigh
+            r = thirdPrevHtfBarEndIndex
+            b = thirdPrevHtfLow
+            bg = BodyShow ? na : thirdBGColor
+            if BoxShow
+                if not na(bg)
+                    thirdFill1 := box.new(l, t, r, b, border_width = 0, bgcolor = bg)
+                    thirdFill1
+                if BoxWidth > 0
+                    topLeftIndex = HideSideLines and DrawExactCandle ? thirdPrevHtfHighBarIndex : l
+                    bottomLeftIndex = HideSideLines and DrawExactCandle ? thirdPrevHtfLowBarIndex : l
+                    thirdTop1 := line.new(topLeftIndex, t, r, t, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    thirdBottom1 := line.new(bottomLeftIndex, b, r, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    if not HideSideLines
+                        thirdLeft1 := line.new(l, t, l, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                        thirdRight1 := line.new(r, t, r, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                        thirdRight1
+
+            if BodyShow
+                body_top = thirdCandleLong ? thirdPrevHtfClose : thirdPrevHtfOpen
+                body_bottom = thirdCandleLong ? thirdPrevHtfOpen : thirdPrevHtfClose
+                thirdFill2 := box.new(l, body_top, r, body_bottom, border_width = 0, bgcolor = thirdBodyColor)
+                if BodyWidth > 0
+                    thirdTop2 := line.new(l, body_top, r, body_top, xloc = xloc.bar_index, color = thirdBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    thirdBottom2 := line.new(l, body_bottom, r, body_bottom, xloc = xloc.bar_index, color = thirdBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    if not HideSideLines
+                        thirdLeft2 := line.new(l, body_top, l, body_bottom, xloc = xloc.bar_index, color = thirdBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                        thirdRight2 := line.new(r, body_top, r, body_bottom, xloc = xloc.bar_index, color = thirdBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                        thirdRight2
+
+            if BoxRangePips
+                r1 = math.abs(thirdPrevHtfHigh - thirdPrevHtfLow) * div
+                r2 = math.abs(thirdPrevHtfOpen - thirdPrevHtfClose) * div
+                r3 = r2 / r1
+                labelText = BoxRangePercentage ? str.tostring(r2, '#,##0.0#') + ' / ' + str.tostring(r1, '#,##0.0#') + ' = ' + str.tostring(r3, '0%') : str.tostring(r1, '#,##0.0#')
+                thirdLabel := label.new(thirdPrevHtfBarIndex + (thirdPrevHtfBarEndIndex - thirdPrevHtfBarIndex) / 2, thirdPrevHtfHigh + syminfo.mintick * 30, labelText, style = label.style_none, textcolor = BoxRangeTC, textalign = text.align_right)
+                thirdLabel
+
+            if MidLineShow
+                mp = math.avg(thirdPrevHtfLow, thirdPrevHtfHigh)
+                thirdLine := line.new(thirdPrevHtfBarIndex, mp, thirdPrevHtfBarEndIndex, mp, xloc = xloc.bar_index, color = MidLineColor, style = MidLineStyleValue, width = MidLineWidth)
+                thirdLine
+
+    else // For 'Show All', extend previous instead of showing current
+        if not na(prevHtfHigh)
+            // Calculate color for previous box
+            bool prevCandleLong = prevHtfClose > prevHtfOpen // Declare prevCandleLong
+            prevBGColor = prevCandleLong ? BgLong : BgShort
+            prevBodyColor = prevCandleLong ? BodyBullishColor : BodyBearishColor
+            // Draw only the previous box
+            l = prevHtfBarIndex
+            t = prevHtfHigh
+            r = ExtendLinesTenCandles and HideSideLines ? bar_index + 10 : ExtendLinesToCurrent and HideSideLines ? na(highCrossoverBarIndex) ? bar_index : highCrossoverBarIndex : prevHtfBarEndIndex
+            b = prevHtfLow
+            r_bottom = ExtendLinesTenCandles and HideSideLines ? bar_index + 10 : ExtendLinesToCurrent and HideSideLines ? na(lowCrossoverBarIndex) ? bar_index : lowCrossoverBarIndex : prevHtfBarEndIndex
+            bg = BodyShow ? na : prevBGColor
+            if BoxShow
+                if not na(bg)
+                    currentFill1 := box.new(l, t, r, b, border_width = 0, bgcolor = bg)
+                    currentFill1
+                if BoxWidth > 0
+                    topLeftIndex = HideSideLines and DrawExactCandle ? prevHtfHighBarIndex : l
+                    bottomLeftIndex = HideSideLines and DrawExactCandle ? prevHtfLowBarIndex : l
+                    currentTop1 := line.new(topLeftIndex, t, r, t, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    currentBottom1 := line.new(bottomLeftIndex, b, r_bottom, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                    if not HideSideLines
+                        currentLeft1 := line.new(l, t, l, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                        currentRight1 := line.new(prevHtfBarEndIndex, t, prevHtfBarEndIndex, b, xloc = xloc.bar_index, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                        currentRight1
+
+            if BodyShow
+                body_top = prevCandleLong ? prevHtfClose : prevHtfOpen
+                body_bottom = prevCandleLong ? prevHtfOpen : prevHtfClose
+                currentFill2 := box.new(l, body_top, prevHtfBarEndIndex, body_bottom, border_width = 0, bgcolor = prevBodyColor)
+                if BodyWidth > 0
+                    currentTop2 := line.new(l, body_top, prevHtfBarEndIndex, body_top, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    currentBottom2 := line.new(l, body_bottom, prevHtfBarEndIndex, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                    if not HideSideLines
+                        currentLeft2 := line.new(l, body_top, l, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                        currentRight2 := line.new(prevHtfBarEndIndex, body_top, prevHtfBarEndIndex, body_bottom, xloc = xloc.bar_index, color = prevBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                        currentRight2
+
+            if BoxRangePips
+                r1 = math.abs(prevHtfHigh - prevHtfLow) * div
+                r2 = math.abs(prevHtfOpen - prevHtfClose) * div
+                r3 = r2 / r1
+                labelText = BoxRangePercentage ? str.tostring(r2, '#,##0.0#') + ' / ' + str.tostring(r1, '#,##0.0#') + ' = ' + str.tostring(r3, '0%') : str.tostring(r1, '#,##0.0#')
+                currentLabel := label.new(prevHtfBarIndex + (prevHtfBarEndIndex - prevHtfBarIndex) / 2, prevHtfHigh + syminfo.mintick * 30, labelText, style = label.style_none, textcolor = BoxRangeTC, textalign = text.align_right)
+                currentLabel
+
+            if MidLineShow
+                mp = math.avg(prevHtfLow, prevHtfHigh)
+                currentLine := line.new(prevHtfBarIndex, mp, prevHtfBarEndIndex, mp, xloc = xloc.bar_index, color = MidLineColor, style = MidLineStyleValue, width = MidLineWidth)
+                currentLine
+
+    // Current (in-progress) HTF candle - projected forward across the full period
+    box.delete(liveFill1)
+    line.delete(liveTop1)
+    line.delete(liveBottom1)
+    line.delete(liveLeft1)
+    line.delete(liveRight1)
+    box.delete(liveFill2)
+    line.delete(liveTop2)
+    line.delete(liveBottom2)
+    line.delete(liveLeft2)
+    line.delete(liveRight2)
+    label.delete(liveLabel)
+    line.delete(liveLine)
+
+    if ShowCurrent and not na(htfHigh) and not na(htfTimeNow)
+        cLeft = htfTimeNow
+        cRight = cLeft + math.max(timeframe.in_seconds(Interval) - timeframe.in_seconds(timeframe.period), 0) * 1000
+        ct = htfHigh
+        cb = htfLow
+        liveLong = close > htfOpen
+        liveBG = liveLong ? BgLong : BgShort
+        liveBodyColor = liveLong ? BodyBullishColor : BodyBearishColor
+        cbg = BodyShow ? na : liveBG
+        if BoxShow
+            if not na(cbg)
+                liveFill1 := box.new(cLeft, ct, cRight, cb, xloc = xloc.bar_time, border_width = 0, bgcolor = cbg)
+                liveFill1
+            if BoxWidth > 0
+                liveTop1 := line.new(cLeft, ct, cRight, ct, xloc = xloc.bar_time, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                liveBottom1 := line.new(cLeft, cb, cRight, cb, xloc = xloc.bar_time, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                liveLeft1 := line.new(cLeft, ct, cLeft, cb, xloc = xloc.bar_time, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                liveRight1 := line.new(cRight, ct, cRight, cb, xloc = xloc.bar_time, color = BoxColor, style = BoxLineStyleValue, width = BoxWidth)
+                liveRight1
+
+        if BodyShow
+            cBodyTop = liveLong ? close : htfOpen
+            cBodyBot = liveLong ? htfOpen : close
+            liveFill2 := box.new(cLeft, cBodyTop, cRight, cBodyBot, xloc = xloc.bar_time, border_width = 0, bgcolor = liveBodyColor)
+            if BodyWidth > 0
+                liveTop2 := line.new(cLeft, cBodyTop, cRight, cBodyTop, xloc = xloc.bar_time, color = liveBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                liveBottom2 := line.new(cLeft, cBodyBot, cRight, cBodyBot, xloc = xloc.bar_time, color = liveBodyColor, style = BodyLineStyleValue, width = BodyWidth)
+                liveBottom2
+
+        if BoxRangePips
+            cr1 = math.abs(htfHigh - htfLow) * div
+            cr2 = math.abs(htfOpen - close) * div
+            cr3 = cr1 == 0 ? 0.0 : cr2 / cr1
+            cText = BoxRangePercentage ? str.tostring(cr2, '#,##0.0#') + ' / ' + str.tostring(cr1, '#,##0.0#') + ' = ' + str.tostring(cr3, '0%') : str.tostring(cr1, '#,##0.0#')
+            liveLabel := label.new(cLeft + (cRight - cLeft) / 2, htfHigh + syminfo.mintick * 30, cText, xloc = xloc.bar_time, style = label.style_none, textcolor = BoxRangeTC, textalign = text.align_right)
+            liveLabel
+
+        if MidLineShow
+            cmp = math.avg(htfLow, htfHigh)
+            liveLine := line.new(cLeft, cmp, cRight, cmp, xloc = xloc.bar_time, color = MidLineColor, style = MidLineStyleValue, width = MidLineWidth)
+            liveLine

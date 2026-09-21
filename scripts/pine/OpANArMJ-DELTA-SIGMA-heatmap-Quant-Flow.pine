@@ -1,0 +1,1019 @@
+//@version=6
+// This source code is subject to the Mozilla Public License 2.0: https://mozilla.org/MPL/2.0/
+// Conversion concept: user-supplied QQQ NDX NQ Price Converter, © PtGambler.
+// Session Atlas implementation: rewritten modules; no GitHub indicator code copied.
+indicator("Session Atlas · Quant / Flow", "Atlas Quant", overlay=true, behind_chart=false, max_bars_back=3000, max_lines_count=40, max_labels_count=40, max_boxes_count=96)
+
+// LAYERS: configuration → data adapters → pure models → state → presentation.
+// Volume delta and VP are OHLCV estimates. Sigma is a score, not a probability.
+const string G_MARKET = "80 · Trh a data"
+const string G_VIEW = "01 · Svíčky"
+const string G_DELTA = "11 · Delta"
+const string G_SIGMA = "10 · Sigma 2+"
+const string G_QUANT = "13 · Kvantitativní kontext"
+const string G_FLOW = "12 · Order flow"
+const string G_OPEN = "20 · Key opens"
+const string G_VWAP = "30 · VWAP"
+const string G_VP = "40 · Volume profile"
+const string G_CONV = "50 · Konverzní levely"
+const string G_OPTIONS = "45 · Opční mapa"
+const string G_STYLE = "60 · Panel a popisky"
+
+
+string mode = input.string("Sigma", "Režim svíček", options=["Delta", "Sigma"], group=G_VIEW, display=display.none)
+bool closedOnly = input.bool(true, "Heatmapa až po uzavření svíčky", group=G_VIEW, display=display.none)
+
+bool showMarkers = input.bool(true, "Sigma: směrové značky extrémů", group=G_SIGMA, display=display.none, active=mode == "Sigma")
+string sigmaModel = input.string("Rolling", "Referenční model", options=["Rolling", "EWMA", "Robustní MAD"], group=G_SIGMA, display=display.none, tooltip="Rolling: minulý průměr / odchylka. EWMA: exponenciální centrální rozptyl, warmup nejméně 5 poločasů. Robustní MAD: minulý medián / (1,4826 × MAD), odolnější vůči izolovaným šokům. Aktuální výnos není ve své referenci. Žádný model není pravděpodobnost.", active=mode == "Sigma")
+int lookback = input.int(100, "Rolling okno / EWMA warmup", minval=20, maxval=2000, group=G_SIGMA, display=display.none, active=mode == "Sigma")
+int sigmaHalfLife = input.int(50, "EWMA poločas (svíčky)", minval=5, maxval=500, group=G_SIGMA, display=display.none, active=mode == "Sigma" and sigmaModel == "EWMA")
+int robustLookback = input.int(100, "Robustní / empirické okno", minval=20, maxval=300, group=G_SIGMA, display=display.none, tooltip="Přesný medián a MAD z N předchozích výnosů. Stejné okno používá historický podíl v panelu. Limit 300 omezuje řazení na každé svíčce.", active=mode == "Sigma")
+string sigmaAlertMode = input.string("Začátek extrému", "Sigma alerty", options=["Začátek extrému", "Každá extrémní svíčka"], group=G_SIGMA, display=display.none, active=mode == "Sigma")
+int sigmaCooldown = input.int(3, "Minimální odstup alertů (bary)", minval=0, maxval=100, group=G_SIGMA, display=display.none, tooltip="Jeden společný odstup pro oba směry. Zablokovaná událost se neodkládá. Barvy a značky stále ukazují všechny extrémní svíčky.", active=mode == "Sigma")
+float sigmaThreshold = input.float(2.0, "Zvýraznění od |σ|", minval=2.0, maxval=5.0, step=0.25, group=G_SIGMA, display=display.none, active=mode == "Sigma")
+color sigma2Color = input.color(#4C9DDB, "2σ", inline="sigma", group=G_SIGMA, display=display.none, active=mode == "Sigma")
+color sigma3Color = input.color(#2BC4B6, "3σ", inline="sigma", group=G_SIGMA, display=display.none, active=mode == "Sigma")
+color sigma4Color = input.color(#A3D869, "4σ", inline="sigma", group=G_SIGMA, display=display.none, active=mode == "Sigma")
+color sigma5Color = input.color(#FFD166, "5σ+", inline="sigma", group=G_SIGMA, display=display.none, active=mode == "Sigma")
+
+bool showQuant = input.bool(true, "Historický podíl / volatilita / efektivita", group=G_QUANT, display=display.none, tooltip="Popisné statistiky, nikoli skóre kvality obchodu. Volatilita a efektivita používají pouze předchozí svíčky.")
+int quantFast = input.int(20, "Krátké okno volatility / efektivity", minval=5, maxval=100, group=G_QUANT, display=display.none, active=showQuant)
+int quantSlow = input.int(100, "Dlouhé okno volatility", minval=20, maxval=500, group=G_QUANT, display=display.none, tooltip="Musí být delší než krátké okno. Poměr >1 = vyšší nedávná volatilita; hranice 0,8 / 1,2 jsou popisné, ne optimalizované vstupy.", active=showQuant)
+
+string deltaSource = input.string("Původní proxy", "Zdroj", options=["Původní proxy", "Intrabarový odhad"], group=G_DELTA, display=display.none, tooltip="Proxy = znaménko svíčky × objem. Intrabary používají směr nižších svíček včetně doji pravidla. Ani jeden model není bid/ask delta.", active=mode == "Delta")
+int smoothingLength = input.int(60, "Vyhlazení WMA", minval=1, maxval=200, group=G_DELTA, display=display.none, active=mode == "Delta")
+float gradientScale = input.float(0.20, "Gradient scale", minval=0.10, maxval=0.30, step=0.01, group=G_DELTA, display=display.none, tooltip="Saturace při |WMA(delta)/SMA(objemu)| ≥ scale. 0,10 citlivější; 0,30 jemnější.", active=mode == "Delta")
+string deltaTf = input.timeframe("1", "Nižší timeframe", group=G_DELTA, display=display.none, active=mode == "Delta" and deltaSource == "Intrabarový odhad")
+color buyColor = input.color(#64ACFF, "Kladná", inline="delta", group=G_DELTA, display=display.none, active=mode == "Delta")
+color sellColor = input.color(#FF78B4, "Záporná", inline="delta", group=G_DELTA, display=display.none, active=mode == "Delta")
+
+bool showFlow = input.bool(true, "RTH CVD a delta %", group=G_FLOW, display=display.none, tooltip="Samostatný kontext vedle vybraných barev svíček. CVD sčítá směrový objem minut od přesného RTH open. Jde o OHLCV odhad podle pohybu ceny, nikoli záznam bid/ask exekucí nebo opční delta.")
+float flowThreshold = input.float(10.0, "Nesoulad ceny a toku od (%)", minval=1, maxval=100, step=1, group=G_FLOW, display=display.none, active=showFlow, tooltip="Cena proti RTH open a kumulativní delta mají opačný směr. Procentní práh filtruje slabou převahu. Nesoulad sám nepotvrzuje absorpci ani vstup do obchodu.")
+bool showFlowMarkers = input.bool(false, "Značka při vzniku nesouladu", group=G_FLOW, display=display.none, active=showFlow)
+
+bool showRthOpen = input.bool(true, "RTH open", inline="ro", group=G_OPEN, display=display.none)
+color rthOpenColor = input.color(#72C8EF, "", inline="ro", group=G_OPEN, display=display.none, active=showRthOpen)
+bool showDailyOpen = input.bool(true, "Daily candle open", inline="do", group=G_OPEN, display=display.none)
+color dailyOpenColor = input.color(#A6A8B5, "", inline="do", group=G_OPEN, display=display.none, active=showDailyOpen)
+bool showEthOpen = input.bool(false, "ETH open", inline="eo", group=G_OPEN, display=display.none)
+color ethOpenColor = input.color(#C0AFE8, "", inline="eo", group=G_OPEN, display=display.none, active=showEthOpen)
+
+bool showRthVwap = input.bool(true, "RTH VWAP", inline="rv", group=G_VWAP, display=display.none)
+color rthVwapColor = input.color(#EFC078, "", inline="rv", group=G_VWAP, display=display.none, active=showRthVwap)
+bool showEthVwap = input.bool(true, "ETH VWAP (včetně RTH)", inline="ev", group=G_VWAP, display=display.none)
+color ethVwapColor = input.color(#AA98E7, "", inline="ev", group=G_VWAP, display=display.none, active=showEthVwap)
+string vwapPrice = input.string("HLC3", "Minutová cena", options=["HLC3", "Close", "OHLC4"], group=G_VWAP, display=display.none, active=showRthVwap or showEthVwap)
+int vwapWidth = input.int(2, "Tloušťka", minval=1, maxval=4, group=G_VWAP, display=display.none, active=showRthVwap or showEthVwap)
+bool showVwapBands = input.bool(false, "Pásma cenové odchylky RTH", group=G_VWAP, display=display.none, tooltip="Objemově vážená směrodatná odchylka minutových cen kolem RTH VWAP. Odlišná veličina od sigma skóre výnosu svíčky.", active=showRthVwap)
+float vwapBandMult = input.float(2.0, "Násobek odchylky", minval=0.5, maxval=4, step=0.5, group=G_VWAP, display=display.none, active=showRthVwap and showVwapBands)
+
+bool showVp = input.bool(true, "Volume profile zapnutý", group=G_VP, display=display.none)
+string vpScope = input.string("RTH", "Rozsah", options=["RTH", "ETH", "Posledních N minutových svíček"], group=G_VP, display=display.none, tooltip="Profil z 1m OHLCV dostupných uvnitř svíček grafu. ETH profil vyžaduje zobrazení ETH v grafu a přesný začátek seance. Objem se rozděluje podle cenového překryvu; nejde o tickový volume-at-price.", active=showVp)
+int vpRows = input.int(48, "Cenové řádky", minval=12, maxval=96, group=G_VP, display=display.none, active=showVp)
+float vpPercent = input.float(70, "Value Area (%)", minval=50, maxval=99, step=1, group=G_VP, display=display.none, tooltip="Souvislé rozšíření od POC do dosažení/překročení podílu. Při shodě sousedů bližší k POC, pak horní. Konvence se může lišit od vestavěného VP.", active=showVp)
+int vpMinutes = input.int(390, "N minutových svíček", minval=30, maxval=2880, group=G_VP, display=display.none, active=showVp and vpScope == "Posledních N minutových svíček")
+bool vpHistogram = input.bool(true, "Histogram", inline="vpvis", group=G_VP, display=display.none, active=showVp)
+int vpWidth = input.int(36, "Maximální šířka (bary)", minval=10, maxval=100, group=G_VP, display=display.none, active=showVp)
+int vpOffset = input.int(18, "Odsazení doprava (bary)", minval=5, maxval=150, group=G_VP, display=display.none, active=showVp)
+bool vpLevels = input.bool(true, "POC / VAH / VAL", inline="vpvis", group=G_VP, display=display.none, active=showVp)
+color vpVaColor = input.color(#659DA9, "Value Area", inline="vpc", group=G_VP, display=display.none, active=showVp)
+color vpOutsideColor = input.color(#515969, "Mimo VA", inline="vpc", group=G_VP, display=display.none, active=showVp and vpHistogram)
+color vpPocColor = input.color(#F4D58D, "POC", inline="vpc", group=G_VP, display=display.none, active=showVp)
+
+bool showOptions = input.bool(false, "Opční mapa zapnutá", group=G_OPTIONS, display=display.none, tooltip="Pojmenované levely z vašeho opčního zdroje. Indikátor neodvozuje dealerskou gammu ani walls z OHLCV. Nula znamená nezadaný level; před použitím vyplňte časovou platnost.")
+string optionUnits = input.string("Graf", "Jednotky zadaných levelů", options=["Graf", "Zdroj konverze"], group=G_OPTIONS, display=display.none, active=showOptions, tooltip="Graf: ceny aktuálního symbolu. Zdroj konverze: např. QQQ levely na NQ podle zdroje v sekci Konverzní levely. Převádí se pouze cena, nikdy objem nebo order flow.")
+float optionCallInput = input.float(0.0, "Call wall (0 = vypnuto)", minval=0, group=G_OPTIONS, display=display.none, active=showOptions)
+float optionPutInput = input.float(0.0, "Put wall (0 = vypnuto)", minval=0, group=G_OPTIONS, display=display.none, active=showOptions)
+float optionGammaInput = input.float(0.0, "Gamma flip (0 = vypnuto)", minval=0, group=G_OPTIONS, display=display.none, active=showOptions)
+float optionOiInput = input.float(0.0, "High OI strike (0 = vypnuto)", minval=0, group=G_OPTIONS, display=display.none, active=showOptions)
+int optionValidFrom = input.time(0, "Platnost od", group=G_OPTIONS, display=display.none, active=showOptions, tooltip="Čas, od kterého byly zadané levely známé. Datum i čas zadáte v časové zóně zobrazené TradingView. Dnešní levely se nevykreslí do starší historie.")
+int optionValidUntil = input.time(0, "Platnost do", group=G_OPTIONS, display=display.none, active=showOptions, tooltip="Konec platnosti zdrojových dat, např. expirace 0DTE. Celá svíčka musí ležet uvnitř platnosti; po konci se mapa skryje. Při změně levelů aktualizujte oba časy.")
+string optionSourceNote = input.string("Ruční zadání", "Zdroj / poznámka", group=G_OPTIONS, display=display.none, active=showOptions)
+bool optionTouchAlerts = input.bool(false, "Událost při dotyku levelu", group=G_OPTIONS, display=display.none, active=showOptions, tooltip="Potvrzená svíčka protne aktivní level. Jen začátek souvislého dotyku; nejde o automatický obchodní signál.")
+
+bool showConversion = input.bool(false, "Konverzní levely zapnuté", group=G_CONV, display=display.none)
+bool needConversion = showConversion or (showOptions and optionUnits == "Zdroj konverze")
+string conversionFamily = input.string("Auto", "Rodina", options=["Auto", "Nasdaq", "S&P 500"], group=G_CONV, display=display.none, active=needConversion)
+string conversionSource = input.string("Auto", "Zdroj úrovní", options=["Auto", "ETF", "Cash index", "Futures", "Vlastní"], group=G_CONV, display=display.none, tooltip="Auto: na futures/indexu zdroj QQQ nebo SPY; na ETF zdroj NQ nebo ES. Volbou zdroje můžete převést jinou sadu levelů.", active=needConversion)
+string customSource = input.symbol("NASDAQ:QQQ", "Vlastní zdroj", group=G_CONV, display=display.none, active=needConversion and conversionSource == "Vlastní")
+string conversionTiming = input.string("Poslední společná RTH minuta", "Kalibrace poměru", options=["Poslední společná RTH minuta", "První minuta RTH"], group=G_CONV, display=display.none, tooltip="Poměr cen z přesně stejné potvrzené minuty RTH. První minuta vyžaduje přesný začátek RTH v obou feedech. Mimo RTH zůstává poměr zmrazený; při chybějícím páru panel ukazuje datum staré fixace. Lokální indikativní převod, nikoli futures fair value.", active=needConversion)
+float conversionStepInput = input.float(0.0, "Krok zdrojové ceny (0 = Auto)", minval=0.0, maxval=10000, group=G_CONV, display=display.none, tooltip="Auto: ETF 5, Nasdaq index/futures 100, S&P index/futures 25. Vlastní zdroj 5. Krok je vždy v jednotkách zdroje uvedeného u levelů.", active=needConversion)
+int conversionCount = input.int(4, "Počet levelů na každou stranu", minval=1, maxval=12, group=G_CONV, display=display.none, active=needConversion)
+color conversionColor = input.color(#8893A8, "Barva", group=G_CONV, display=display.none, active=needConversion)
+
+int outlinePct = input.int(12, "Jas obrysu (%)", minval=-50, maxval=50, group=G_STYLE, display=display.none)
+int wickPct = input.int(-12, "Jas knotu (%)", minval=-50, maxval=50, group=G_STYLE, display=display.none)
+bool showTags = input.bool(true, "Popisky úrovní", group=G_STYLE, display=display.none)
+bool showPanel = input.bool(true, "Stavový panel", group=G_STYLE, display=display.none)
+string panelCorner = input.string("Vpravo nahoře", "Umístění panelu", options=["Vpravo nahoře", "Vlevo nahoře", "Vpravo dole", "Vlevo dole"], group=G_STYLE, display=display.none, active=showPanel)
+string panelDetail = input.string("Přehled", "Obsah panelu", options=["Přehled", "Diagnostika"], group=G_STYLE, display=display.none, active=showPanel, tooltip="Přehled zobrazuje jen zapnuté moduly. Diagnostika přidá model, objem profilu a konverzní poměr.")
+string panelSize = input.string("Střední", "Velikost textu", options=["Malý", "Střední"], group=G_STYLE, display=display.none, active=showPanel)
+
+string profileInput = input.string("Auto", "Profil trhu", options=["Auto", "Futures NQ / ES", "ETF QQQ / SPY", "Index NDX / SPX", "Vlastní"], group=G_MARKET, display=display.none)
+bool allowIndexVolume = input.bool(false, "Indexový objem z feedu jako proxy", group=G_MARKET, display=display.none, tooltip="Cash index sám nemá uskutečněné obchody. Volitelný feedový objem je pouze proxy pro Delta, RTH VWAP a VP; jeho metodika závisí na poskytovateli.")
+string sessionTimezone = input.string("America/New_York", "Časová zóna seancí", group=G_MARKET, display=display.none)
+string customRth = input.session("0930-1600", "Vlastní RTH", group=G_MARKET, display=display.none, active=profileInput == "Vlastní")
+string customEth = input.session("1800-1700", "Vlastní ETH / celá seance", group=G_MARKET, display=display.none, active=profileInput == "Vlastní")
+// ── PURE HELPERS ─────────────────────────────────────────────────────────────
+adjustBrightness(color base, int percent) =>
+    float factor = 1.0 + percent / 100.0
+    int red = int(math.round(math.max(0.0, math.min(255.0, color.r(base) * factor))))
+    int green = int(math.round(math.max(0.0, math.min(255.0, color.g(base) * factor))))
+    int blue = int(math.round(math.max(0.0, math.min(255.0, color.b(base) * factor))))
+    color.rgb(red, green, blue)
+
+signedNumber(float value, string pattern) =>
+    na(value) ? "—" : (value > 0 ? "+" : "") + str.tostring(value, pattern)
+
+// FLOW_TESTABLE_START
+// Ratio first avoids overflow; x - x rejects a non-finite operand as well as na.
+flowPercent(float delta, float total) =>
+    bool valid = not na(delta) and not na(total) and not na(delta - delta) and not na(total - total) and total > 0 and math.abs(delta) <= total
+    valid ? (delta / total) * 100.0 : na
+
+// +1: RTH price down with positive flow; -1: RTH price up with negative flow.
+// This is a same-horizon disagreement, not a claim of absorption or dealer flow.
+flowDisagreement(float priceChange, float pct, float tick, float threshold) =>
+    bool valid = not na(priceChange) and not na(priceChange - priceChange) and not na(flowPercent(pct, 100.0)) and not na(tick) and not na(tick - tick) and tick > 0 and not na(threshold) and threshold > 0 and threshold <= 100
+    valid ? priceChange <= -tick and pct >= threshold ? 1 : priceChange >= tick and pct <= -threshold ? -1 : 0 : 0
+// FLOW_TESTABLE_END
+
+// TradingView's documented intrabar polarity rule, including equal-price dojis.
+intrabarVolume() =>
+    var int direction = 0
+    direction := close > open ? 1 : close < open ? -1 : close > close[1] ? 1 : close < close[1] ? -1 : direction
+    bool known = not na(volume) and volume >= 0 and (direction != 0 or volume == 0)
+    [known ? direction * volume : na, volume]
+
+// Calendar arithmetic in the session's IANA zone; do not subtract a fixed 24h at DST.
+latestAnchor(int stamp, string sessionHours, string zone) =>
+    int hh = int(str.tonumber(str.substring(sessionHours, 0, 2)))
+    int mm = int(str.tonumber(str.substring(sessionHours, 2, 4)))
+    int yy = year(stamp, zone)
+    int mo = month(stamp, zone)
+    int dd = dayofmonth(stamp, zone)
+    int today = timestamp(zone, yy, mo, dd, hh, mm)
+    stamp >= today ? today : timestamp(zone, yy, mo, dd - 1, hh, mm)
+
+// Executed inside the 1m full-session feed, not in the chart context.
+// An exact anchor must be present. A partial first session is never labelled full VWAP.
+sessionEngine(string rthHours, string ethHours, string zone, string priceChoice, bool flowEnabled) =>
+    int rKey = latestAnchor(time, rthHours, zone)
+    int eKey = latestAnchor(time, ethHours, zone)
+    bool inRth = not na(time(timeframe.period, rthHours + ":1234567", zone))
+    bool inEth = not na(time(timeframe.period, ethHours + ":1234567", zone))
+    float source = priceChoice == "Close" ? close : priceChoice == "OHLC4" ? ohlc4 : hlc3
+    bool valid = not na(volume) and volume >= 0 and not na(source)
+    var int savedRKey = na
+    var int savedEKey = na
+    var float rOpen = na
+    var float rPv = 0.0
+    var float rVol = 0.0
+    var float eOpen = na
+    var float rMean = 0.0
+    var float rM2 = 0.0
+    var float ePv = 0.0
+    var float eVol = 0.0
+    var bool rStarted = false
+    var bool eStarted = false
+    var bool rHealthy = true
+    var bool eHealthy = true
+    var float rCvd = 0.0
+    var float rFlowVolume = 0.0
+    var float rFlowLastClose = na
+    var int rFlowLastStamp = na
+    var bool rFlowHealthy = true
+    if na(savedRKey) or savedRKey != rKey
+        savedRKey := rKey
+        rOpen := na
+        rPv := 0.0
+        rVol := 0.0
+        rMean := 0.0
+        rM2 := 0.0
+        rStarted := false
+        rHealthy := true
+        rCvd := 0.0
+        rFlowVolume := 0.0
+        rFlowLastClose := na
+        rFlowLastStamp := na
+        rFlowHealthy := true
+    if na(savedEKey) or savedEKey != eKey
+        savedEKey := eKey
+        eOpen := na
+        ePv := 0.0
+        eVol := 0.0
+        eStarted := false
+        eHealthy := true
+    if inRth and time == rKey
+        rStarted := true
+        rOpen := open
+    if inEth and time == eKey
+        eStarted := true
+        eOpen := open
+    if inRth and rStarted
+        rHealthy := rHealthy and valid
+        if valid
+            rPv += source * volume
+            if volume > 0
+                float nextVol = rVol + volume
+                float deviation = source - rMean
+                rMean += volume / nextVol * deviation
+                rM2 += volume * deviation * (source - rMean)
+            rVol += volume
+    if inEth and eStarted
+        eHealthy := eHealthy and valid
+        if valid
+            ePv += source * volume
+            eVol += volume
+    // Keep polarity continuous through the full feed, including the pre-RTH minute.
+    // Accumulate only RTH records; the separate health flag never affects VWAP.
+    if flowEnabled
+        [minuteDelta, minuteVolume] = intrabarVolume()
+        if inRth and rStarted
+            // A missing minute cannot be distinguished from an unreported zero-trade minute.
+            // Strict continuity deliberately rejects both instead of publishing partial CVD.
+            bool contiguous = na(rFlowLastStamp) ? time == rKey : time == rFlowLastStamp + 60000
+            bool flowMinuteValid = contiguous and not na(minuteDelta) and not na(minuteDelta - minuteDelta) and not na(minuteVolume) and not na(minuteVolume - minuteVolume) and minuteVolume >= 0 and math.abs(minuteDelta) <= minuteVolume and not na(open) and not na(open - open) and not na(close) and not na(close - close) and not na(rOpen) and not na(rOpen - rOpen)
+            rFlowHealthy := rFlowHealthy and flowMinuteValid
+            if flowMinuteValid
+                rCvd += minuteDelta
+                rFlowVolume += minuteVolume
+                rFlowLastClose := close
+                rFlowLastStamp := time
+        // Calendar arithmetic also covers a custom overnight RTH and DST changes.
+        int rEndHour = int(str.tonumber(str.substring(rthHours, 5, 7)))
+        int rEndMinute = int(str.tonumber(str.substring(rthHours, 7, 9)))
+        int rStartMinutes = int(str.tonumber(str.substring(rthHours, 0, 2))) * 60 + int(str.tonumber(str.substring(rthHours, 2, 4)))
+        int rNextDay = rEndHour * 60 + rEndMinute <= rStartMinutes ? 1 : 0
+        int rEnd = timestamp(zone, year(rKey, zone), month(rKey, zone), dayofmonth(rKey, zone) + rNextDay, rEndHour, rEndMinute)
+        if rStarted and time >= rEnd
+            rFlowHealthy := rFlowHealthy and not na(rFlowLastStamp) and rFlowLastStamp == rEnd - 60000
+    bool currentRth = rStarted and rKey >= eKey
+    float ro = currentRth ? rOpen : na
+    float rv = currentRth and rHealthy and rVol > 0 ? rPv / rVol : na
+    float ev = eStarted and eHealthy and eVol > 0 ? ePv / eVol : na
+    bool flowReady = flowEnabled and currentRth and rFlowHealthy and not na(flowPercent(rCvd, rFlowVolume)) and not na(rFlowLastClose)
+    [ro, rv, ev, rKey, eKey, time, currentRth, eStarted, rHealthy and rVol > 0, eHealthy and eVol > 0, eStarted ? eOpen : na, not na(rv) ? math.sqrt(math.max(0, rM2 / rVol)) : na, flowReady ? rCvd : na, flowReady ? rFlowVolume : na, flowReady ? rFlowLastClose - rOpen : na]
+float backgroundLuma = color.r(chart.bg_color) * 0.299 + color.g(chart.bg_color) * 0.587 + color.b(chart.bg_color) * 0.114
+bool isDark = backgroundLuma < 128
+color surfaceColor = isDark ? #151B24 : #F5F5F7
+color contentColor = isDark ? #F2F2F7 : #1D1D1F
+color secondaryColor = isDark ? #A1A1AA : #626973
+color frameColor = isDark ? #354052 : #D2D2D7
+color neutralColor = isDark ? #717987 : #848B96
+
+bool isFutures = profileInput == "Futures NQ / ES" or (profileInput == "Auto" and syminfo.type == "futures")
+bool isCashIndex = profileInput == "Index NDX / SPX" or (profileInput == "Auto" and syminfo.type == "index")
+bool isCustom = profileInput == "Vlastní"
+bool volumeAllowed = not isCashIndex or allowIndexVolume
+string profileName = isCustom ? "Vlastní" : isFutures ? "Futures" : isCashIndex ? "Index" : "ETF / akcie"
+string rthHours = isCustom ? customRth : "0930-1600"
+string ethHours = isCustom ? customEth : isFutures ? "1800-1700" : "0400-2000"
+sessionMinute(string hours, int offset) =>
+    int(str.tonumber(str.substring(hours, offset, offset + 2))) * 60 + int(str.tonumber(str.substring(hours, offset + 2, offset + 4)))
+
+// Half-open intervals. Calendar end preserves overnight sessions across DST.
+sessionEnd(int anchor, string hours, string zone) =>
+    int endMinute = sessionMinute(hours, 5)
+    int nextDay = endMinute <= sessionMinute(hours, 0) ? 1 : 0
+    timestamp(zone, year(anchor, zone), month(anchor, zone), dayofmonth(anchor, zone) + nextDay, int(endMinute / 60), endMinute % 60)
+
+overlapsSession(int barStart, int barEnd, string hours, string zone) =>
+    int firstAnchor = latestAnchor(barStart, hours, zone)
+    int lastAnchor = latestAnchor(barEnd - 1, hours, zone)
+    bool firstOverlap = barStart < sessionEnd(firstAnchor, hours, zone) and barEnd > firstAnchor
+    bool lastOverlap = barStart < sessionEnd(lastAnchor, hours, zone) and barEnd > lastAnchor
+    barEnd > barStart and (firstOverlap or lastOverlap)
+
+int rStartMinute = sessionMinute(rthHours, 0)
+int eStartMinute = sessionMinute(ethHours, 0)
+int rDuration = (sessionMinute(rthHours, 5) - rStartMinute + 1439) % 1440 + 1
+int eDuration = (sessionMinute(ethHours, 5) - eStartMinute + 1439) % 1440 + 1
+int rOffset = (rStartMinute - eStartMinute + 1440) % 1440
+if barstate.isfirst and rOffset + rDuration > eDuration
+    runtime.error("Celá ETH seance musí obsahovat celou RTH seanci. Opravte časy ve vlastním profilu.")
+float chartSeconds = timeframe.in_seconds()
+bool supportedChart = chart.is_standard and timeframe.isintraday and not na(chartSeconds) and chartSeconds >= 60
+if barstate.isfirst and not supportedChart
+    runtime.error("Použijte standardní časový intradenní graf od 1 minuty. Heikin Ashi, Renko, tickové a denní grafy nejsou pro tento indikátor podporované.")
+// Preserve the user's original WMA/SMA sensitivity by default.
+bool validVolume = volumeAllowed and not na(volume) and volume >= 0
+float rawDelta = validVolume ? (close >= open ? volume : -volume) : na
+float deltaVolume = validVolume ? volume : na
+bool deltaBarValid = validVolume
+float intrabarCoverage = na
+bool lowerTfValid = timeframe.in_seconds(deltaTf) < chartSeconds
+if deltaSource == "Intrabarový odhad"
+    rawDelta := na
+    deltaVolume := na
+    deltaBarValid := false
+    if mode == "Delta" and volumeAllowed and lowerTfValid
+        [deltas, volumes] = request.security_lower_tf(syminfo.tickerid, deltaTf, intrabarVolume())
+        int count = array.size(deltas)
+        float sumDelta = 0.0
+        float sumVolume = 0.0
+        bool validIntrabars = count > 0
+        if count > 0
+            for i = 0 to count - 1
+                float d = array.get(deltas, i)
+                float v = array.get(volumes, i)
+                if na(d) or na(v) or v < 0
+                    validIntrabars := false
+                else
+                    sumDelta += d
+                    sumVolume += v
+        intrabarCoverage := validVolume and volume > 0 ? sumVolume / volume : na
+        // Reject materially incomplete intrabars; do not silently substitute candle delta.
+        bool covered = validVolume and (volume == 0 ? sumVolume == 0 : not na(intrabarCoverage) and math.abs(intrabarCoverage - 1.0) <= 0.01)
+        deltaBarValid := validIntrabars and covered
+        rawDelta := deltaBarValid ? sumDelta : na
+        deltaVolume := deltaBarValid ? sumVolume : na
+
+float smoothedDelta = ta.wma(rawDelta, smoothingLength)
+float avgVolume = ta.sma(deltaVolume, smoothingLength)
+float validFraction = ta.sma(deltaBarValid ? 1.0 : 0.0, smoothingLength)
+bool deltaReady = validFraction == 1.0 and not na(smoothedDelta) and not na(avgVolume) and avgVolume > 0
+float deltaPressure = deltaReady ? smoothedDelta / avgVolume : na
+float deltaRatio = deltaReady ? math.max(-1.0, math.min(1.0, deltaPressure / gradientScale)) : na
+color deltaColor = neutralColor
+if deltaReady
+    deltaColor := deltaRatio >= 0 ? color.from_gradient(deltaRatio, 0, 1, neutralColor, buyColor) : color.from_gradient(deltaRatio, -1, 0, sellColor, neutralColor)
+// QUANT_TESTABLE_START
+quantFinite(float value) =>
+    not na(value) and not na(value - value)
+
+// All deviations share ONE median of the SAME prior window. No rolling-residual shortcut.
+// Missing slots invalidate the full window; current sample never enters this array here.
+quantSnapshot(array<float> prior, float sample) =>
+    int n = array.size(prior)
+    int validCount = 0
+    float center = na
+    float scaledMad = na
+    float tailShare = na
+    if n > 0
+        for i = 0 to n - 1
+            if quantFinite(array.get(prior, i))
+                validCount += 1
+    if n >= 2 and validCount == n
+        center := array.median(prior)
+        array<float> deviations = array.new_float(n, 0.0)
+        float distance = math.abs(sample - center)
+        int atLeast = 0
+        for i = 0 to n - 1
+            float deviation = math.abs(array.get(prior, i) - center)
+            array.set(deviations, i, deviation)
+            if quantFinite(sample) and deviation >= distance
+                atLeast += 1
+        scaledMad := 1.482602218505602 * array.median(deviations)
+        tailShare := quantFinite(sample) ? 100.0 * atLeast / n : na
+    [center, scaledMad, tailShare, validCount]
+
+quantScore(float sample, float center, float scale) =>
+    quantFinite(sample) and quantFinite(center) and quantFinite(scale) and scale > 0 ? (sample - center) / scale : na
+
+// Slots are chart bars (including na), not a filtered sample of conveniently valid bars.
+appendQuant(array<float> values, float value, int capacity, int cursor) =>
+    int next = cursor
+    if capacity > 0
+        if array.size(values) < capacity
+            array.push(values, value)
+        else
+            array.set(values, cursor, value)
+            next := (cursor + 1) % capacity
+    next
+
+quantRatio(float fastSd, float slowSd) =>
+    quantFinite(fastSd) and quantFinite(slowSd) and fastSd >= 0 and slowSd > 0 ? fastSd / slowSd : na
+
+quantEfficiency(float netMove, float pathLength) =>
+    quantFinite(netMove) and quantFinite(pathLength) and pathLength > 0 ? math.max(0.0, math.min(1.0, math.abs(netMove) / pathLength)) : na
+// QUANT_TESTABLE_END
+
+// ── RETURN MODEL: score first, update state second ────────────────────────────
+float priceReturn = close > 0 and close[1] > 0 ? math.log(close / close[1]) : na
+bool returnSpansGap = not na(time_close[1]) and time > time_close[1]
+bool needRobustWindow = mode == "Sigma" and (sigmaModel == "Robustní MAD" or showQuant)
+var array<float> quantReturns = array.new_float()
+var int quantCursor = 0
+float robustCenter = na
+float robustScale = na
+float empiricalTail = na
+int quantValidCount = 0
+if needRobustWindow
+    [qCenter, qScale, qTail, qCount] = quantSnapshot(quantReturns, priceReturn)
+    quantValidCount := qCount
+    if array.size(quantReturns) == robustLookback
+        robustCenter := qCenter
+        robustScale := qScale
+        empiricalTail := qTail
+float rollingMean = ta.sma(priceReturn[1], lookback)
+float rollingSd = ta.stdev(priceReturn[1], lookback, true)
+float validReturnFraction = ta.sma(not na(priceReturn[1]) ? 1.0 : 0.0, lookback)
+float cumulativeValidReturns = ta.cum(not na(priceReturn[1]) ? 1.0 : 0.0)
+int rollingValidCount = int(cumulativeValidReturns - nz(cumulativeValidReturns[lookback]))
+var float ewMean = na
+var float ewVariance = 0.0
+var int ewCount = 0
+// One seed observation plus five complete half-lives of updates: seed weight <= 1/32.
+int ewWarmup = math.max(lookback, 1 + 5 * sigmaHalfLife)
+float meanReturn = sigmaModel == "Rolling" ? rollingMean : sigmaModel == "Robustní MAD" ? robustCenter : ewMean
+float sdReturn = sigmaModel == "Rolling" ? rollingSd : sigmaModel == "Robustní MAD" ? robustScale : math.sqrt(math.max(0, ewVariance))
+bool referenceReady = sigmaModel == "Rolling" ? validReturnFraction == 1.0 : sigmaModel == "Robustní MAD" ? quantValidCount == robustLookback : ewCount >= ewWarmup
+bool sigmaReady = referenceReady and not na(priceReturn) and not na(meanReturn) and not na(sdReturn) and sdReturn > 0
+float signedSigma = sigmaReady ? quantScore(priceReturn, meanReturn, sdReturn) : na
+float sigma = math.abs(signedSigma)
+int sigmaReferenceCount = sigmaModel == "EWMA" ? ewCount : sigmaModel == "Robustní MAD" ? quantValidCount : rollingValidCount
+int sigmaRequiredCount = sigmaModel == "EWMA" ? ewWarmup : sigmaModel == "Robustní MAD" ? robustLookback : lookback
+if needRobustWindow
+    quantCursor := appendQuant(quantReturns, priceReturn, robustLookback, quantCursor)
+if na(priceReturn)
+    ewMean := na
+    ewVariance := 0.0
+    ewCount := 0
+else
+    if ewCount == 0
+        ewMean := priceReturn
+    else
+        float alpha = 1.0 - math.exp(math.log(0.5) / sigmaHalfLife)
+        float deviation = priceReturn - ewMean
+        ewVariance := (1.0 - alpha) * (ewVariance + alpha * deviation * deviation)
+        ewMean += alpha * deviation
+    ewCount += 1
+
+sigmaTint(float score) =>
+    score < 3 ? color.from_gradient(score, 2, 3, sigma2Color, sigma3Color) : score < 4 ? color.from_gradient(score, 3, 4, sigma3Color, sigma4Color) : color.from_gradient(score, 4, 5, sigma4Color, sigma5Color)
+color sigmaColor = sigmaReady and sigma >= sigmaThreshold ? sigmaTint(sigma) : neutralColor
+bool showValues = not closedOnly or barstate.isconfirmed
+color candleColor = mode == "Delta" ? deltaColor : sigmaColor
+barcolor(showValues ? candleColor : na, title="Heatmapa těl", editable=false)
+plotcandle(showValues ? open : na, high, low, close, title="Heatmapa svíček", color=candleColor, wickcolor=adjustBrightness(candleColor, wickPct), bordercolor=adjustBrightness(candleColor, outlinePct), editable=false, display=display.pane)
+bool sigmaEvent = mode == "Sigma" and sigmaReady and sigma >= sigmaThreshold
+plotshape(showMarkers and showValues and sigmaEvent and signedSigma > 0, title="Sigma +2", style=shape.triangleup, location=location.belowbar, color=sigmaColor, size=size.tiny, editable=false, display=display.pane)
+plotshape(showMarkers and showValues and sigmaEvent and signedSigma < 0, title="Sigma −2", style=shape.triangledown, location=location.abovebar, color=sigmaColor, size=size.tiny, editable=false, display=display.pane)
+// Descriptive context. ALL reference quantities end at t-1, including efficiency.
+// Windows are chart bars, not same-clock observations; no intraday seasonality correction.
+float quantFastSd = ta.stdev(priceReturn[1], quantFast, true)
+float quantSlowSd = ta.stdev(priceReturn[1], quantSlow, true)
+float quantSlowValid = ta.sma(quantFinite(priceReturn[1]) ? 1.0 : 0.0, quantSlow)
+float quantFastValid = ta.sma(quantFinite(priceReturn[1]) ? 1.0 : 0.0, quantFast)
+float quantVolRatio = showQuant and quantFast < quantSlow and quantSlowValid == 1.0 ? quantRatio(quantFastSd, quantSlowSd) : na
+float quantNetMove = ta.sma(priceReturn[1], quantFast) * quantFast
+float quantPathLength = ta.sma(math.abs(priceReturn[1]), quantFast) * quantFast
+float quantPathEfficiency = showQuant and quantFastValid == 1.0 ? quantEfficiency(quantNetMove, quantPathLength) : na
+
+// Futures default/regular = full electronic session; equities need extended explicitly.
+string fullSessionTicker = ticker.modify(syminfo.tickerid, session=isFutures or isCashIndex ? session.regular : session.extended)
+[sessionRthOpen, sessionRthVwap, sessionEthVwap, sessionRKey, sessionEKey, sessionStamp, rthStarted, ethStarted, rthHasVolume, ethHasVolume, sessionEthOpen, sessionRthSd, sessionCvd, sessionFlowVolume, sessionFlowMove] = request.security(fullSessionTicker, "1", sessionEngine(rthHours, ethHours, sessionTimezone, vwapPrice, showFlow), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+// Match each result to the chart bar's last minute, avoiding forward-filled old sessions.
+// On live bars, only use time up to the current update.
+int contextStamp = barstate.isrealtime ? math.min(timenow, time_close - 1) : time_close - 1
+int expectedRKey = latestAnchor(contextStamp, rthHours, sessionTimezone)
+int expectedEKey = latestAnchor(contextStamp, ethHours, sessionTimezone)
+bool currentSession = sessionEKey == expectedEKey and sessionStamp >= expectedEKey
+float rthOpen = currentSession and sessionRKey == expectedRKey ? sessionRthOpen : na
+float rthVwap = volumeAllowed and currentSession and sessionRKey == expectedRKey ? sessionRthVwap : na
+float ethOpen = currentSession and not isCashIndex ? sessionEthOpen : na
+float rthSd = not na(rthVwap) ? sessionRthSd : na
+float ethVwap = currentSession and not isCashIndex ? sessionEthVwap : na
+// RTH price move freezes at the same last RTH minute as its CVD.
+// It must not use the after-hours chart close with a frozen RTH delta.
+bool flowContextReady = showFlow and volumeAllowed and currentSession and sessionRKey == expectedRKey
+float rthCvd = flowContextReady ? sessionCvd : na
+float rthFlowVolume = flowContextReady ? sessionFlowVolume : na
+float rthFlowPercent = flowPercent(rthCvd, rthFlowVolume)
+float rthFlowMove = flowContextReady and not na(rthFlowPercent) ? sessionFlowMove : na
+
+// Open and opening time are fixed when the daily candle starts: no future H/L/C.
+// Use the chart ticker so daily session/adjustment choices match that symbol's 1D chart.
+[dailyOpenValue, dailyStamp] = request.security(syminfo.tickerid, "1D", [open, time], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+float dailyOpen = dailyStamp <= contextStamp ? dailyOpenValue : na
+bool newRth = not na(rthOpen) and (na(rthOpen[1]) or sessionRKey != sessionRKey[1])
+bool newEth = not na(ethVwap) and (na(ethVwap[1]) or sessionEKey != sessionEKey[1])
+bool newEthOpen = not na(ethOpen) and (na(ethOpen[1]) or sessionEKey != sessionEKey[1])
+bool newDaily = not na(dailyOpen) and (na(dailyOpen[1]) or dailyStamp != dailyStamp[1])
+// Transparent reset segments prevent diagonal joins between separate sessions.
+plot(showRthOpen ? rthOpen : na, "RTH open", newRth ? na : rthOpenColor, 1, plot.style_linebr, editable=false, display=display.pane + display.price_scale, linestyle=plot.linestyle_dashed)
+plot(showDailyOpen ? dailyOpen : na, "Daily candle open", newDaily ? na : dailyOpenColor, 1, plot.style_linebr, editable=false, display=display.pane + display.price_scale, linestyle=plot.linestyle_dotted)
+plot(showRthVwap ? rthVwap : na, "VWAP · RTH", newRth ? na : rthVwapColor, vwapWidth, plot.style_linebr, editable=false, display=display.pane + display.price_scale)
+plot(showEthVwap ? ethVwap : na, "VWAP · ETH", newEth ? na : ethVwapColor, vwapWidth, plot.style_linebr, editable=false, display=display.pane + display.price_scale)
+
+plot(showEthOpen ? ethOpen : na, "ETH open", newEthOpen ? na : ethOpenColor, 1, plot.style_linebr, editable=false, display=display.pane + display.price_scale, linestyle=plot.linestyle_dotted)
+plot(showVwapBands and showRthVwap ? rthVwap + vwapBandMult * rthSd : na, "RTH VWAP horní pásmo", newRth ? na : color.new(rthVwapColor, 55), 1, plot.style_linebr, editable=false, display=display.pane)
+plot(showVwapBands and showRthVwap ? rthVwap - vwapBandMult * rthSd : na, "RTH VWAP spodní pásmo", newRth ? na : color.new(rthVwapColor, 55), 1, plot.style_linebr, editable=false, display=display.pane)
+// ── PURE VP MODEL · O(observations + rows) ────────────────────────────────────
+// TESTABLE_START
+snapBin(float position) =>
+    math.abs(position - math.round(position)) <= 1e-10 ? float(math.round(position)) : position
+
+profileModel(array<float> lows, array<float> highs, array<float> volumes, int rows, float fraction) =>
+    array<float> bins = array.new_float(rows, 0.0)
+    array<float> difference = array.new_float(rows + 1, 0.0)
+    float bottom = array.min(lows)
+    float top = array.max(highs)
+    float width = (top - bottom) / rows
+    float total = array.sum(volumes)
+    int count = array.size(lows)
+    if count > 0 and width > 0
+        for i = 0 to count - 1
+            float lo = array.get(lows, i)
+            float hi = array.get(highs, i)
+            float vol = array.get(volumes, i)
+            int first = math.max(0, math.min(rows - 1, int(math.floor(snapBin((lo - bottom) / width)))))
+            int last = math.max(0, math.min(rows - 1, int(math.ceil(snapBin((hi - bottom) / width))) - 1))
+            if hi == lo or first >= last
+                array.set(bins, first, array.get(bins, first) + vol)
+            else
+                float density = vol / (hi - lo)
+                float leftPart = density * (bottom + (first + 1) * width - lo)
+                float rightPart = density * (hi - (bottom + last * width))
+                array.set(bins, first, array.get(bins, first) + leftPart)
+                array.set(bins, last, array.get(bins, last) + rightPart)
+                if last > first + 1
+                    array.set(difference, first + 1, array.get(difference, first + 1) + density * width)
+                    array.set(difference, last, array.get(difference, last) - density * width)
+        float running = 0.0
+        for j = 0 to rows - 1
+            running += array.get(difference, j)
+            array.set(bins, j, math.max(0.0, array.get(bins, j) + running))
+    else if count > 0
+        array.set(bins, 0, total)
+    // Relative tolerance makes true ties deterministic despite summation noise.
+    float tolerance = math.max(1.0, total) * 1e-10
+    int poc = 0
+    for j = 1 to rows - 1
+        if array.get(bins, j) > array.get(bins, poc) + tolerance
+            poc := j
+    int vaLow = poc
+    int vaHigh = poc
+    float included = array.get(bins, poc)
+    while included + tolerance < total * fraction and (vaLow > 0 or vaHigh < rows - 1)
+        float below = vaLow > 0 ? array.get(bins, vaLow - 1) : -1.0
+        float above = vaHigh < rows - 1 ? array.get(bins, vaHigh + 1) : -1.0
+        bool tie = math.abs(above - below) <= tolerance
+        bool takeUpper = vaHigh < rows - 1 and (vaLow == 0 or above > below + tolerance or (tie and vaHigh + 1 - poc <= poc - (vaLow - 1)))
+        if takeUpper
+            vaHigh += 1
+            included += array.get(bins, vaHigh)
+        else
+            vaLow -= 1
+            included += array.get(bins, vaLow)
+    [bins, bottom, width, poc, vaLow, vaHigh, total]
+
+convertedPrice(float level, float ratio, float tick) =>
+    not na(ratio) and ratio > 0 and tick > 0 ? math.round(level * ratio / tick) * tick : na
+
+gridCenter(float target, float ratio, float step) =>
+    not na(ratio) and ratio > 0 and step > 0 ? math.round(target / ratio / step) * step : na
+// TESTABLE_END
+
+// ── VP DATA ADAPTER / BOUNDED STATE ──────────────────────────────────────────
+// Chart-visible 1m bars only: an RTH-only chart cannot provide an ETH VP.
+appendProfile(array<float> lows, array<float> highs, array<float> volumes, float lo, float hi, float vol, int capacity, int cursor) =>
+    int next = cursor
+    if array.size(lows) < capacity
+        array.push(lows, lo)
+        array.push(highs, hi)
+        array.push(volumes, vol)
+    else
+        array.set(lows, cursor, lo)
+        array.set(highs, cursor, hi)
+        array.set(volumes, cursor, vol)
+        next := (cursor + 1) % capacity
+    next
+
+var array<float> vpLows = array.new_float()
+var array<float> vpHighs = array.new_float()
+var array<float> vpVolumes = array.new_float()
+var int vpKey = na
+var int vpStart = na
+var bool vpAnchored = false
+var bool vpHealthy = true
+var bool vpTruncated = false
+var int vpCursor = 0
+bool vpRolling = vpScope == "Posledních N minutových svíček"
+bool vpAllowed = volumeAllowed and (vpScope != "ETH" or not isCashIndex)
+if showVp and vpAllowed
+    [minuteTimes, minuteLows, minuteHighs, minuteVolumes] = request.security_lower_tf(syminfo.tickerid, "1", [time, low, high, volume])
+    int minuteCount = array.size(minuteTimes)
+    float chartMinuteVolume = 0.0
+    bool allMinutesValid = minuteCount > 0
+    if minuteCount > 0
+        for i = 0 to minuteCount - 1
+            float v = array.get(minuteVolumes, i)
+            allMinutesValid := allMinutesValid and not na(v) and v >= 0
+            chartMinuteVolume += nz(v)
+    bool volumeCovered = not na(volume) and volume >= 0 and (volume == 0 ? chartMinuteVolume == 0 : math.abs(chartMinuteVolume / volume - 1.0) <= 0.01)
+    bool badCoverage = barstate.isconfirmed and (not allMinutesValid or not volumeCovered)
+    string selectedHours = vpScope == "ETH" ? ethHours : rthHours
+    int selectedStart = vpScope == "ETH" ? eStartMinute : rStartMinute
+    int endAnchor = latestAnchor(time_close - 1, selectedHours, sessionTimezone)
+    bool intersectsScope = vpRolling or overlapsSession(time, time_close, selectedHours, sessionTimezone)
+    if badCoverage and intersectsScope
+        if not vpRolling and (na(vpKey) or vpKey != endAnchor)
+            array.clear(vpLows)
+            array.clear(vpHighs)
+            array.clear(vpVolumes)
+            vpKey := endAnchor
+            vpStart := na
+            vpAnchored := false
+            vpHealthy := true
+            vpTruncated := false
+            vpCursor := 0
+        if not vpRolling
+            vpHealthy := false
+        int capacity = vpRolling ? vpMinutes : 2880
+        if not vpRolling and array.size(vpLows) >= capacity
+            vpTruncated := true
+        vpCursor := appendProfile(vpLows, vpHighs, vpVolumes, na, na, na, capacity, vpCursor)
+    if minuteCount > 0
+        for i = 0 to minuteCount - 1
+            int stamp = array.get(minuteTimes, i)
+            string hours = vpScope == "ETH" ? ethHours : rthHours
+            int anchor = latestAnchor(stamp, hours, sessionTimezone)
+            int duration = vpScope == "ETH" ? eDuration : rDuration
+            int minuteOfDay = hour(stamp, sessionTimezone) * 60 + minute(stamp, sessionTimezone)
+            bool inside = vpRolling or (minuteOfDay - selectedStart + 1440) % 1440 < duration
+            if inside
+                if not vpRolling and (na(vpKey) or vpKey != anchor)
+                    array.clear(vpLows)
+                    array.clear(vpHighs)
+                    array.clear(vpVolumes)
+                    vpKey := anchor
+                    vpStart := stamp
+                    vpAnchored := stamp == anchor
+                    vpHealthy := true
+                    vpTruncated := false
+                    vpCursor := 0
+                if vpRolling and na(vpStart)
+                    vpStart := stamp
+                float lo = array.get(minuteLows, i)
+                float hi = array.get(minuteHighs, i)
+                float vol = array.get(minuteVolumes, i)
+                bool valid = not badCoverage and not na(lo) and not na(hi) and hi >= lo and not na(vol) and vol >= 0
+                // Keep invalid records represented so rolling readiness can recover after eviction.
+                if not vpRolling
+                    vpHealthy := vpHealthy and valid
+                int capacity = vpRolling ? vpMinutes : 2880
+                if not vpRolling and array.size(vpLows) >= capacity
+                    vpTruncated := true
+                vpCursor := appendProfile(vpLows, vpHighs, vpVolumes, lo, hi, valid ? vol : na, capacity, vpCursor)
+float vpPoc = na
+float vpVal = na
+float vpVah = na
+float vpTotal = na
+string vpStatus = "Vypnuto"
+var array<box> vpBoxes = array.new_box()
+var array<line> vpLines = array.new_line()
+var array<label> vpTags = array.new_label()
+if barstate.isfirst
+    for i = 0 to vpRows - 1
+        array.push(vpBoxes, box.new(na, na, na, na, border_width=0))
+    for i = 0 to 2
+        array.push(vpLines, line.new(na, na, na, na, style=i == 0 ? line.style_solid : line.style_dashed))
+        array.push(vpTags, label.new(na, na, "", style=label.style_label_left, size=size.small))
+if barstate.islast
+    int records = array.size(vpLows)
+    bool recordsValid = records > 0
+    float inputTotal = 0.0
+    if records > 0
+        for i = 0 to records - 1
+            float vol = array.get(vpVolumes, i)
+            recordsValid := recordsValid and not na(vol) and not na(array.get(vpLows, i)) and not na(array.get(vpHighs, i))
+            inputTotal += nz(vol)
+    bool complete = vpRolling ? records >= vpMinutes : vpAnchored and vpHealthy and not vpTruncated
+    bool ready = showVp and vpAllowed and complete and recordsValid and inputTotal > 0
+    vpStatus := not showVp ? "Vypnuto" : not vpAllowed ? (isCashIndex and vpScope == "ETH" ? "Index nemá ETH" : "Index · objem nedostupný") : vpTruncated ? "Překročen limit historie" : not vpRolling and not vpAnchored ? "Čeká na začátek " + vpScope : not recordsValid or not vpHealthy ? "Neúplná minutová data" : vpRolling and not complete ? "Načítání " + str.tostring(records) + "/" + str.tostring(vpMinutes) : inputTotal <= 0 ? "Nulový objem" : vpRolling ? str.tostring(records) + " min · odhad" : vpScope + " " + str.format_time(vpKey, "MM-dd", sessionTimezone) + " · " + str.tostring(records) + "m"
+    // Hide pools first; existing objects are reused, never recreated per update.
+    for j = 0 to vpRows - 1
+        box.set_lefttop(array.get(vpBoxes, j), na, na)
+        box.set_rightbottom(array.get(vpBoxes, j), na, na)
+    for j = 0 to 2
+        line.set_xy1(array.get(vpLines, j), na, na)
+        line.set_xy2(array.get(vpLines, j), na, na)
+        label.set_xy(array.get(vpTags, j), na, na)
+        label.set_text(array.get(vpTags, j), "")
+    if ready
+        [bins, bottom, width, poc, val, vah, total] = profileModel(vpLows, vpHighs, vpVolumes, vpRows, vpPercent / 100.0)
+        vpPoc := width > 0 ? bottom + (poc + 0.5) * width : bottom
+        vpVal := width > 0 ? bottom + val * width : bottom
+        vpVah := width > 0 ? bottom + (vah + 1) * width : bottom
+        vpTotal := total
+        float maximum = array.max(bins)
+        int origin = bar_index + vpOffset
+        int displayedRows = width > 0 ? vpRows : 1
+        for j = 0 to displayedRows - 1
+            float binVol = array.get(bins, j)
+            if vpHistogram and binVol > 0
+                float lo = width > 0 ? bottom + j * width : bottom - syminfo.mintick * 0.5
+                float hi = width > 0 ? lo + width : bottom + syminfo.mintick * 0.5
+                int length = math.max(1, int(math.round(vpWidth * binVol / maximum)))
+                box item = array.get(vpBoxes, j)
+                box.set_lefttop(item, origin, hi)
+                box.set_rightbottom(item, origin + length, lo)
+                box.set_bgcolor(item, color.new(j == poc ? vpPocColor : j >= val and j <= vah ? vpVaColor : vpOutsideColor, 30))
+        if vpLevels
+            for j = 0 to 2
+                float value = j == 0 ? vpPoc : j == 1 ? vpVah : vpVal
+                color tint = j == 0 ? vpPocColor : vpVaColor
+                line item = array.get(vpLines, j)
+                line.set_xy1(item, math.max(0, bar_index - 30), value)
+                line.set_xy2(item, origin + vpWidth, value)
+                line.set_color(item, tint)
+                label tag = array.get(vpTags, j)
+                label.set_xy(tag, origin + vpWidth + 1, value)
+                label.set_text(tag, showTags ? (j == 0 ? "POC " : j == 1 ? "VAH " : "VAL ") + str.tostring(value, format.mintick) : "")
+                label.set_textcolor(tag, tint)
+                label.set_color(tag, color.new(surfaceColor, 15))
+// ── CONVERSION DATA ADAPTER / SYNCHRONOUS RTH SNAPSHOTS ───────────────────────
+rthSnapshot(string hours, string zone, bool firstOnly) =>
+    var float sample = na
+    var int stamp = na
+    var int endStamp = na
+    int key = latestAnchor(time, hours, zone)
+    bool inside = not na(time(timeframe.period, hours + ":1234567", zone))
+    if inside and (not firstOnly or time == key)
+        sample := close
+        stamp := time
+        endStamp := time_close
+    [sample, stamp, endStamp]
+
+bool nasdaqFamily = conversionFamily == "Nasdaq" or (conversionFamily == "Auto" and (syminfo.root == "NQ" or syminfo.root == "MNQ" or syminfo.ticker == "QQQ" or syminfo.ticker == "NDX"))
+bool knownFamily = conversionFamily != "Auto" or nasdaqFamily or syminfo.root == "ES" or syminfo.root == "MES" or syminfo.ticker == "SPY" or syminfo.ticker == "SPX"
+string conversionKind = conversionSource == "Auto" ? (isFutures or isCashIndex ? "ETF" : "Futures") : conversionSource
+string conversionSymbol = conversionKind == "Vlastní" ? customSource : conversionKind == "ETF" ? (nasdaqFamily ? "NASDAQ:QQQ" : "AMEX:SPY") : conversionKind == "Cash index" ? (nasdaqFamily ? "NASDAQ:NDX" : "SP:SPX") : nasdaqFamily ? "CME_MINI:NQ1!" : "CME_MINI:ES1!"
+float conversionStep = conversionStepInput > 0 ? conversionStepInput : conversionKind == "ETF" or conversionKind == "Vlastní" ? 5.0 : nasdaqFamily ? 100.0 : 25.0
+var float conversionRatio = na
+var int conversionStamp = na
+if needConversion and (knownFamily or conversionSource == "Vlastní")
+    bool firstOnly = conversionTiming == "První minuta RTH"
+    [targetPrice, targetTime, targetEnd] = request.security(fullSessionTicker, "1", rthSnapshot(rthHours, sessionTimezone, firstOnly), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+    [sourcePrice, sourceTime, sourceEnd] = request.security(conversionSymbol, "1", rthSnapshot(rthHours, sessionTimezone, firstOnly), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off, ignore_invalid_symbol=true)
+    bool synchronous = not na(targetTime) and targetTime == sourceTime and targetEnd == sourceEnd
+    bool confirmedSample = not na(targetEnd) and targetEnd <= (barstate.isrealtime ? timenow : time_close)
+    if barstate.isconfirmed and synchronous and confirmedSample and targetPrice > 0 and sourcePrice > 0
+        conversionRatio := targetPrice / sourcePrice
+        conversionStamp := targetTime
+var array<line> conversionLines = array.new_line()
+var array<label> conversionTags = array.new_label()
+if barstate.isfirst
+    for i = 0 to conversionCount * 2
+        array.push(conversionLines, line.new(na, na, na, na, style=line.style_dotted))
+        array.push(conversionTags, label.new(na, na, "", style=label.style_label_left, size=size.small))
+string conversionStatus = not showConversion ? "Vypnuto" : not knownFamily and conversionSource != "Vlastní" ? "Zvolte rodinu / vlastní zdroj" : na(conversionRatio) ? "Chybí synchronní RTH data" : "RTH fix " + str.format_time(conversionStamp, "MM-dd HH:mm", sessionTimezone)
+if barstate.islast
+    float center = gridCenter(close, conversionRatio, conversionStep)
+    float previousLevel = na
+    for i = 0 to conversionCount * 2
+        float sourceLevel = center + (i - conversionCount) * conversionStep
+        float targetLevel = convertedPrice(sourceLevel, conversionRatio, syminfo.mintick)
+        bool visible = showConversion and not na(targetLevel) and sourceLevel > 0 and (na(previousLevel) or targetLevel != previousLevel)
+        line item = array.get(conversionLines, i)
+        label tag = array.get(conversionTags, i)
+        line.set_xy1(item, bar_index - math.min(bar_index, 50), visible ? targetLevel : na)
+        line.set_xy2(item, bar_index + 9, visible ? targetLevel : na)
+        line.set_color(item, color.new(conversionColor, 35))
+        label.set_xy(tag, bar_index + 10, visible ? targetLevel : na)
+        label.set_text(tag, visible and showTags ? conversionSymbol + " " + str.tostring(sourceLevel, "#.####") + " → " + str.tostring(targetLevel, format.mintick) : "")
+        label.set_textcolor(tag, conversionColor)
+        label.set_color(tag, color.new(surfaceColor, 15))
+        if visible
+            previousLevel := targetLevel
+// ── OPTIONS CONTEXT: supplied levels, explicit validity, price-only mapping ──
+optionWindow(int validFrom, int validUntil, int barStart, int barEnd) =>
+    validFrom > 0 and validUntil > validFrom and barEnd > barStart and barStart >= validFrom and barEnd <= validUntil
+
+optionMapped(float sourceLevel, float ratio, float tick) =>
+    float mapped = sourceLevel > 0 ? convertedPrice(sourceLevel, ratio, tick) : na
+    not na(mapped) and mapped > 0 ? mapped : na
+
+nearestOption(array<float> levels, float price, float tick) =>
+    int best = -1
+    float distance = na
+    if array.size(levels) > 0 and not na(price) and tick > 0
+        for i = 0 to array.size(levels) - 1
+            float level = array.get(levels, i)
+            float nextDistance = math.abs(price - level) / tick
+            if not na(level) and (na(distance) or nextDistance < distance - 1e-7)
+                best := i
+                distance := nextDistance
+    [best, distance]
+
+bool optionHasLevels = optionCallInput > 0 or optionPutInput > 0 or optionGammaInput > 0 or optionOiInput > 0
+bool optionDatesSet = optionValidFrom > 0 and optionValidUntil > optionValidFrom
+bool optionInWindow = optionWindow(optionValidFrom, optionValidUntil, time, time_close)
+bool optionUsesConversion = optionUnits == "Zdroj konverze"
+// Use a ratio known at bar OPEN, so high/low touches never use a close-time fix.
+float optionRatio = optionUsesConversion ? conversionRatio[1] : 1.0
+int optionFixStamp = optionUsesConversion ? conversionStamp[1] : optionValidFrom
+bool optionRatioReady = not optionUsesConversion or (not na(optionRatio) and optionRatio > 0 and not na(optionFixStamp) and optionFixStamp >= optionValidFrom and optionFixStamp + 60000 <= time)
+bool optionMapReady = showOptions and optionHasLevels and optionInWindow and optionRatioReady
+float optionGamma = optionMapReady ? optionMapped(optionGammaInput, optionRatio, syminfo.mintick) : na
+float optionPut = optionMapReady ? optionMapped(optionPutInput, optionRatio, syminfo.mintick) : na
+float optionCall = optionMapReady ? optionMapped(optionCallInput, optionRatio, syminfo.mintick) : na
+float optionOi = optionMapReady ? optionMapped(optionOiInput, optionRatio, syminfo.mintick) : na
+// Deterministic tie priority: gamma flip, put wall, call wall, high OI strike.
+array<float> optionLevels = array.from(optionGamma, optionPut, optionCall, optionOi)
+array<string> optionNames = array.from("GAMMA FLIP", "PUT WALL", "CALL WALL", "HIGH OI")
+array<color> optionColors = array.from(color.rgb(242, 186, 91), color.rgb(82, 198, 181), color.rgb(206, 145, 255), color.rgb(141, 165, 209))
+[optionNearestIndex, optionDistance] = nearestOption(optionLevels, close, syminfo.mintick)
+string optionSymbol = optionUsesConversion ? conversionSymbol : syminfo.ticker
+string optionStatus = not showOptions ? "Vypnuto" : not optionHasLevels ? "Zadejte levely" : not optionDatesSet ? "Nastavte platnost" : not optionInWindow ? (time < optionValidFrom ? "Před platností" : "Mimo platnost") : not optionRatioReady ? "Chybí aktuální poměr" : "Platí do " + str.format_time(optionValidUntil, "MM-dd HH:mm", sessionTimezone)
+
+var array<line> optionLines = array.new_line()
+var array<label> optionTags = array.new_label()
+if barstate.isfirst
+    for i = 0 to 3
+        array.push(optionLines, line.new(na, na, na, na, xloc=xloc.bar_time, style=line.style_dashed, width=2))
+        array.push(optionTags, label.new(na, na, "", xloc=xloc.bar_time, style=label.style_label_left, size=size.small))
+if barstate.islast
+    for i = 0 to 3
+        float level = array.get(optionLevels, i)
+        bool duplicate = false
+        string caption = array.get(optionNames, i)
+        if i > 0
+            for j = 0 to i - 1
+                duplicate := duplicate or (not na(level) and level == array.get(optionLevels, j))
+        if i < 3
+            for j = i + 1 to 3
+                if not na(level) and level == array.get(optionLevels, j)
+                    caption += " / " + array.get(optionNames, j)
+        float visibleLevel = duplicate ? na : level
+        int right = math.min(optionValidUntil, time_close + int(chartSeconds * 1000) * 6)
+        line levelLine = array.get(optionLines, i)
+        label levelTag = array.get(optionTags, i)
+        int knownFrom = optionUsesConversion ? math.max(optionValidFrom, optionFixStamp + 60000) : optionValidFrom
+        line.set_xy1(levelLine, knownFrom, visibleLevel)
+        line.set_xy2(levelLine, right, visibleLevel)
+        line.set_color(levelLine, color.new(array.get(optionColors, i), 25))
+        label.set_xy(levelTag, right, visibleLevel)
+        label.set_text(levelTag, showTags and not na(visibleLevel) ? caption + "  " + str.tostring(visibleLevel, format.mintick) : "")
+        label.set_textcolor(levelTag, array.get(optionColors, i))
+        label.set_color(levelTag, color.new(surfaceColor, 10))
+        label.set_tooltip(levelTag, optionSourceNote + ". Zdrojové jednotky: " + optionSymbol + ". Platnost " + str.format_time(optionValidFrom, "MM-dd HH:mm", sessionTimezone) + " až " + str.format_time(optionValidUntil, "MM-dd HH:mm", sessionTimezone) + " " + sessionTimezone + ". Dodaný level, nikoli odhad dealerské pozice.")
+
+bool touchGamma = not na(optionGamma) and low <= optionGamma and high >= optionGamma
+bool touchPut = not na(optionPut) and low <= optionPut and high >= optionPut
+bool touchCall = not na(optionCall) and low <= optionCall and high >= optionCall
+bool touchOi = not na(optionOi) and low <= optionOi and high >= optionOi
+bool optionTouchStart = (touchGamma and not touchGamma[1]) or (touchPut and not touchPut[1]) or (touchCall and not touchCall[1]) or (touchOi and not touchOi[1])
+
+plot(optionGamma, "Opce · Gamma flip", display=display.data_window)
+plot(optionPut, "Opce · Put wall", display=display.data_window)
+plot(optionCall, "Opce · Call wall", display=display.data_window)
+plot(optionOi, "Opce · High OI strike", display=display.data_window)
+// Keep the Data Window restricted to the selected candle metric and actual price levels.
+plot(showValues and mode == "Delta" ? rawDelta : na, "Delta proxy · raw", display=display.data_window, format=format.volume)
+plot(showValues and mode == "Delta" and deltaReady ? smoothedDelta : na, "Delta proxy · WMA", display=display.data_window, format=format.volume)
+plot(showValues and mode == "Delta" ? deltaRatio : na, "Delta · gradient −1 až +1", display=display.data_window, precision=3)
+plot(showValues and mode == "Delta" ? intrabarCoverage * 100 : na, "Delta · intrabar coverage %", display=display.data_window, precision=2)
+plot(showValues and mode == "Sigma" ? signedSigma : na, "Sigma · signed", display=display.data_window, precision=3)
+plot(showValues and mode == "Sigma" ? sigma : na, "Sigma · absolute", display=display.data_window, precision=3)
+plot(showValues and showQuant and mode == "Sigma" ? empiricalTail : na, "Historie · stejně / více odchýlené výnosy %", display=display.data_window, precision=2)
+plot(showValues and showQuant ? quantVolRatio : na, "Volatilita · krátká / dlouhá (do t−1)", display=display.data_window, precision=3)
+plot(showValues and showQuant ? quantPathEfficiency : na, "Efektivita dráhy · 0 až 1 (do t−1)", display=display.data_window, precision=3)
+plot(rthOpen, "RTH open · hodnota", display=display.data_window)
+plot(dailyOpen, "Daily candle open · hodnota", display=display.data_window)
+plot(rthVwap, "VWAP RTH · hodnota", display=display.data_window)
+plot(ethVwap, "VWAP ETH · hodnota", display=display.data_window)
+// ── PRESENTATION: bounded labels, compact status, active metric only ──────────
+updateTag(label tag, float value, string caption, color tint) =>
+    label.set_xy(tag, bar_index + 3, value)
+    label.set_text(tag, showTags and not na(value) ? caption + "  " + str.tostring(value, format.mintick) : "")
+    label.set_color(tag, color.new(surfaceColor, 12))
+    label.set_textcolor(tag, tint)
+var label rthTag = label.new(na, na, "", style=label.style_label_left, size=size.small)
+var label dailyTag = label.new(na, na, "", style=label.style_label_left, size=size.small)
+var label ethTag = label.new(na, na, "", style=label.style_label_left, size=size.small)
+var label rvTag = label.new(na, na, "", style=label.style_label_left, size=size.small)
+var label evTag = label.new(na, na, "", style=label.style_label_left, size=size.small)
+if barstate.islast
+    bool sameRD = showRthOpen and showDailyOpen and not na(rthOpen) and not na(dailyOpen) and math.abs(rthOpen - dailyOpen) < syminfo.mintick * 0.5
+    bool sameRE = showRthOpen and showEthOpen and not na(rthOpen) and not na(ethOpen) and math.abs(rthOpen - ethOpen) < syminfo.mintick * 0.5
+    bool sameDE = showDailyOpen and showEthOpen and not na(dailyOpen) and not na(ethOpen) and math.abs(dailyOpen - ethOpen) < syminfo.mintick * 0.5
+    updateTag(rthTag, showRthOpen ? rthOpen : na, "RTH" + (sameRD ? " / D" : "") + (sameRE ? " / ETH" : "") + " OPEN", rthOpenColor)
+    updateTag(dailyTag, showDailyOpen and not sameRD ? dailyOpen : na, sameDE ? "D / ETH OPEN" : "D OPEN", dailyOpenColor)
+    updateTag(ethTag, showEthOpen and not sameRE and not sameDE ? ethOpen : na, "ETH OPEN", ethOpenColor)
+    updateTag(rvTag, showRthVwap ? rthVwap : na, isCashIndex ? "RTH VWAP PROXY" : "RTH VWAP", rthVwapColor)
+    updateTag(evTag, showEthVwap ? ethVwap : na, "ETH VWAP", ethVwapColor)
+
+bool usePrevious = closedOnly and not barstate.isconfirmed
+float panelDelta = usePrevious ? smoothedDelta[1] : smoothedDelta
+float panelRatio = usePrevious ? deltaRatio[1] : deltaRatio
+float panelSigma = usePrevious ? signedSigma[1] : signedSigma
+bool panelDeltaReady = usePrevious ? deltaReady[1] : deltaReady
+bool panelSigmaReady = usePrevious ? sigmaReady[1] : sigmaReady
+float panelTail = usePrevious ? empiricalTail[1] : empiricalTail
+float panelVolRatio = usePrevious ? quantVolRatio[1] : quantVolRatio
+float panelEfficiency = usePrevious ? quantPathEfficiency[1] : quantPathEfficiency
+int panelReferenceCount = usePrevious ? sigmaReferenceCount[1] : sigmaReferenceCount
+bool panelGap = usePrevious ? returnSpansGap[1] : returnSpansGap
+string scoreUnit = sigmaModel == "Robustní MAD" ? " σR" : " σ"
+float panelCvd = usePrevious ? rthCvd[1] : rthCvd
+float panelFlowPercent = usePrevious ? rthFlowPercent[1] : rthFlowPercent
+float panelFlowMove = usePrevious ? rthFlowMove[1] : rthFlowMove
+int panelFlowKey = usePrevious ? sessionRKey[1] : sessionRKey
+if panelFlowKey != expectedRKey
+    panelCvd := na
+    panelFlowPercent := na
+    panelFlowMove := na
+int panelDisagreement = flowDisagreement(panelFlowMove, panelFlowPercent, syminfo.mintick, flowThreshold)
+string metricStatus = mode == "Delta" ? panelDeltaReady ? signedNumber(panelDelta, format.volume) : "—" : panelSigmaReady ? signedNumber(panelSigma, "0.00") + scoreUnit : "—"
+color metricTint = mode == "Delta" and panelDeltaReady ? (panelRatio >= 0 ? buyColor : sellColor) : mode == "Sigma" and panelSigmaReady and math.abs(panelSigma) >= sigmaThreshold ? sigmaTint(math.abs(panelSigma)) : contentColor
+string metricHint = mode == "Delta" ? not volumeAllowed ? "Index · bez objemu" : deltaSource == "Intrabarový odhad" and not lowerTfValid ? "Zvolte nižší timeframe" : not panelDeltaReady ? "Načítání / neúplný objem" : "Scale " + str.tostring(gradientScale, "0.00") : not panelSigmaReady ? (panelReferenceCount < sigmaRequiredCount ? "Vzorky " + str.tostring(panelReferenceCount) + "/" + str.tostring(sigmaRequiredCount) : "Nulové rozpětí / chybí data") : (math.abs(panelSigma) < sigmaThreshold ? "Běžné rozpětí" : math.abs(panelSigma) >= 5 ? "Extrémní pohyb" : "Zvýšený pohyb") + (panelGap ? " · gap zahrnut" : "")
+string panelPosition = panelCorner == "Vlevo nahoře" ? position.top_left : panelCorner == "Vpravo dole" ? position.bottom_right : panelCorner == "Vlevo dole" ? position.bottom_left : position.top_right
+string panelTextSize = panelSize == "Malý" ? size.small : size.normal
+var table dashboard = table.new(panelPosition, 2, 20, bgcolor=surfaceColor, frame_color=frameColor, frame_width=1, border_width=0)
+panelRow(int row, string caption, string value, color tint, string hint) =>
+    table.cell(dashboard, 0, row, " " + caption + " ", text_color=tint, text_size=panelTextSize, text_halign=text.align_left, tooltip=hint)
+    table.cell(dashboard, 1, row, " " + value + " ", text_color=row == 1 ? metricTint : row == 2 ? secondaryColor : contentColor, text_size=row == 1 ? size.large : panelTextSize, text_halign=text.align_right, tooltip=hint)
+if barstate.islast
+    table.clear(dashboard, 0, 0, 1, 19)
+    if showPanel
+        panelRow(0, "ATLAS · QUANT", syminfo.ticker + " · " + timeframe.period, secondaryColor, profileName + ". Cenové statistiky a OHLCV flow. Seance v " + sessionTimezone + ".")
+        panelRow(1, mode == "Sigma" ? sigmaModel == "Robustní MAD" ? "ROBUSTNÍ σR" : "SIGMA" : "DELTA", metricStatus, contentColor, mode == "Sigma" ? "Logaritmický close-to-close výnos včetně gapů. Model " + sigmaModel + ". Robustní σR = (výnos − minulý medián) / (1,4826 × MAD). Škálovací konstanta nezaručuje normální rozdělení. Skóre není pravděpodobnost." : "Směrový OHLCV odhad. " + deltaSource + ". Nejde o bid/ask delta.")
+        panelRow(2, closedOnly ? "UZAVŘENÁ" : "ŽIVÁ", metricHint, secondaryColor, "Poslední " + (closedOnly ? "potvrzená" : "aktuální") + " svíčka. Sigma: modrá 2 → tyrkysová 3 → zelená 4 → žlutá 5+. Směr určuje znaménko a poloha značky.")
+        int row = 3
+        if showQuant
+            if mode == "Sigma"
+                panelRow(row, "STEJNÝ / VĚTŠÍ", na(panelTail) ? "Čeká na plné okno" : str.tostring(panelTail, "0.0") + "% · N " + str.tostring(robustLookback), secondaryColor, "Podíl předchozích N výnosů alespoň tak vzdálených od společného minulého mediánu jako sledovaný výnos, včetně shod. 0 % = v okně nebyl stejně velký pohyb; neznamená nulovou budoucí pravděpodobnost. Bez korekce denní sezónnosti. Rozlišení " + str.tostring(100.0 / robustLookback, "0.00") + " procentního bodu.")
+                row += 1
+            string volState = na(panelVolRatio) ? (quantFast >= quantSlow ? "Krátké musí být < dlouhé" : "Čeká / nulový rozptyl") : str.tostring(panelVolRatio, "0.00") + "× · " + (panelVolRatio >= 1.2 ? "vyšší" : panelVolRatio <= 0.8 ? "nižší" : "podobná")
+            panelRow(row, "VOLATILITA", volState, secondaryColor, "Poměr population SD výnosů za " + str.tostring(quantFast) + "/" + str.tostring(quantSlow) + " předchozích svíček, bez sledované svíčky. Hranice 0,8/1,2 jsou popisné. Poměr neříká směr příštího pohybu.")
+            row += 1
+            panelRow(row, "EFEKTIVITA DRÁHY", na(panelEfficiency) ? "Čeká / beze změny" : str.tostring(panelEfficiency * 100.0, "0") + "%", secondaryColor, "Absolutní součet / součet absolutních log výnosů za " + str.tostring(quantFast) + " předchozích svíček. 100 % = všechny změny stejným směrem; 0 % = návrat na počátek. Popis minulého průběhu, nikoli pravděpodobnost trendu.")
+            row += 1
+        if showFlow
+            string flowCaption = "CVD · RTH"
+            string flowValue = not volumeAllowed ? "Index · bez objemu" : na(panelCvd) ? "Čeká na kotvu / data" : signedNumber(panelCvd, format.volume) + " · " + signedNumber(panelFlowPercent, "0.0") + "%"
+            panelRow(row, flowCaption, flowValue, na(panelCvd) ? secondaryColor : panelCvd >= 0 ? buyColor : sellColor, "Směrový minutový OHLCV odhad od RTH open. Seance " + str.format_time(panelFlowKey, "yyyy-MM-dd", sessionTimezone) + ". Procento = 100 × CVD / objem RTH. Není to delta opce ani tok opčních obchodů.")
+            row += 1
+            if panelDisagreement != 0
+                panelRow(row, "NESOULAD", panelDisagreement > 0 ? "Cena ↓ / tok ↑" : "Cena ↑ / tok ↓", secondaryColor, "Obě veličiny mají stejný horizont od RTH open do poslední RTH minuty. Cena se po RTH pro toto srovnání nemění. Nesoulad nepotvrzuje absorpci.")
+                row += 1
+        if showOptions
+            panelRow(row, "OPČNÍ MAPA", optionStatus, color.rgb(206, 145, 255), optionSourceNote + ". Jednotky: " + optionSymbol + ". Převod používá poměr známý při otevření svíčky. Ručně zadané levely s časovou platností; pravidelná konverzní mřížka sama nevyjadřuje OI ani gammu.")
+            row += 1
+            if optionNearestIndex >= 0
+                panelRow(row, array.get(optionNames, optionNearestIndex), str.tostring(array.get(optionLevels, optionNearestIndex), format.mintick) + " · " + str.tostring(optionDistance, "0.0") + "t", array.get(optionColors, optionNearestIndex), "Nejbližší platný opční level a absolutní vzdálenost od aktuální ceny v tickech. Konverze převádí pouze cenu.")
+                row += 1
+        if showRthOpen or showDailyOpen or showEthOpen
+            string openState = (showRthOpen ? (na(rthOpen) ? "RTH čeká" : "RTH") : "") + (showDailyOpen ? (showRthOpen ? " · " : "") + (na(dailyOpen) ? "D čeká" : "D") : "") + (showEthOpen ? (showRthOpen or showDailyOpen ? " · " : "") + (isCashIndex ? "ETH nedostupné" : na(ethOpen) ? "ETH čeká" : "ETH") : "")
+            panelRow(row, "OPENS", openState, rthOpenColor, "Jen zapnuté úrovně. Čeká = v dostupné historii není přesný začátek seance. Shodné ceny sdílejí jeden popisek.")
+            row += 1
+        if not volumeAllowed and (showRthVwap or showEthVwap or showVp)
+            panelRow(row, "OBJEM", "Index · nedostupný", secondaryColor, "Cash index sám neobchoduje. VWAP a VP vyžadují objem. Volitelná indexová proxy je v Trh a data.")
+            row += 1
+        else
+            if showRthVwap
+                panelRow(row, "VWAP · RTH", na(rthVwap) ? "Čeká na kotvu / objem" : str.tostring(rthVwap, format.mintick), rthVwapColor, "Minutový VWAP. Po konci RTH držen do nové celé seance." + (isCashIndex ? " Indexová volume proxy." : ""))
+                row += 1
+            if showEthVwap
+                panelRow(row, "VWAP · ETH", isCashIndex ? "Index nemá ETH" : na(ethVwap) ? "Čeká na kotvu / objem" : str.tostring(ethVwap, format.mintick), ethVwapColor, "Celá seance včetně RTH. Vyžaduje přesný začátek a dostupný objem.")
+                row += 1
+            if showVp
+                panelRow(row, "VP · " + str.tostring(vpPercent, "0") + "%", vpStatus, vpVaColor, "OHLCV odhad. Datum označuje seanci profilu; poslední profil zůstává do nového rozsahu. Chybějící začátek: načtěte delší historii; pro ETH zapněte ETH graf.")
+                row += 1
+        if showConversion
+            string sourceName = str.contains(conversionSymbol, ":") ? str.substring(conversionSymbol, str.pos(conversionSymbol, ":") + 1) : conversionSymbol
+            panelRow(row, "LEVELY · " + sourceName, na(conversionRatio) ? conversionStatus : str.format_time(conversionStamp, "MM-dd HH:mm", sessionTimezone), conversionColor, "Zdroj " + conversionSymbol + ". Synchronní RTH fixace v " + sessionTimezone + "; mimo RTH zmrazená. Čas vyjadřuje stáří poměru.")
+            row += 1
+        if panelDetail == "Diagnostika"
+            panelRow(row, "MODEL", mode == "Sigma" ? sigmaModel + " · N " + str.tostring(sigmaRequiredCount) : "WMA " + str.tostring(smoothingLength), secondaryColor, "Sigma: jen minulá data. EWMA čeká nejméně 5 poločasů, aby potlačila vliv první hodnoty. Výnosy zahrnují mezery mezi seancemi. Delta používá WMA / SMA objemu.")
+            row += 1
+            if showVp and volumeAllowed
+                panelRow(row, "VP · OBJEM", na(vpTotal) ? "—" : str.tostring(vpTotal, format.volume), secondaryColor, "Součet přiděleného minutového objemu. Profil je aproximace, nikoli tickový volume-at-price.")
+                row += 1
+            if showConversion
+                panelRow(row, "POMĚR", na(conversionRatio) ? "—" : str.tostring(conversionRatio, "#.######"), secondaryColor, "Cena grafu / cena zdroje. Lokální přepočet; nikoli futures fair value.")
+
+plot(vpPoc, "VP · POC (poslední profil)", display=display.data_window)
+plot(vpVah, "VP · VAH (poslední profil)", display=display.data_window)
+plot(vpVal, "VP · VAL (poslední profil)", display=display.data_window)
+plot(vpTotal, "VP · objem (poslední profil)", display=display.data_window, format=format.volume)
+plot(showConversion ? conversionRatio : na, "Konverze · poměr", display=display.data_window, precision=6)
+// Confirmed candle alerts only; conditions are exclusive to the selected mode.
+bool sigmaExcursionStart = sigmaEvent and (not sigmaEvent[1] or math.sign(signedSigma) != math.sign(signedSigma[1]))
+var int lastSigmaAlert = na
+bool sigmaAlertCandidate = sigmaEvent and (sigmaAlertMode == "Každá extrémní svíčka" or sigmaExcursionStart)
+bool sigmaAlertFire = barstate.isconfirmed and sigmaAlertCandidate and (na(lastSigmaAlert) or bar_index - lastSigmaAlert >= sigmaCooldown)
+if sigmaAlertFire
+    lastSigmaAlert := bar_index
+alertcondition(sigmaAlertFire and signedSigma > 0, "Sigma 2+ · kladná", "Kladný extrém zvoleného sigma modelu na {{ticker}} {{interval}}. Close: {{close}}. Kontext, nikoli vstupní pokyn.")
+alertcondition(sigmaAlertFire and signedSigma < 0, "Sigma 2+ · záporná", "Záporný extrém zvoleného sigma modelu na {{ticker}} {{interval}}. Close: {{close}}. Kontext, nikoli vstupní pokyn.")
+bool deltaBuyStart = mode == "Delta" and deltaReady and deltaRatio >= 1 and deltaReady[1] and deltaRatio[1] < 1
+bool deltaSellStart = mode == "Delta" and deltaReady and deltaRatio <= -1 and deltaReady[1] and deltaRatio[1] > -1
+alertcondition(barstate.isconfirmed and deltaBuyStart, "Delta · kladná saturace", "Odhad delty dosáhl kladné saturace na {{ticker}} {{interval}}. Close: {{close}}.")
+alertcondition(barstate.isconfirmed and deltaSellStart, "Delta · záporná saturace", "Odhad delty dosáhl záporné saturace na {{ticker}} {{interval}}. Close: {{close}}.")
+
+int flowDisagreementNow = showFlow ? flowDisagreement(rthFlowMove, rthFlowPercent, syminfo.mintick, flowThreshold) : 0
+bool flowSessionChanged = na(sessionRKey[1]) or sessionRKey != sessionRKey[1]
+bool flowBuyDisagreement = flowDisagreementNow == 1 and (flowDisagreementNow[1] != 1 or flowSessionChanged)
+bool flowSellDisagreement = flowDisagreementNow == -1 and (flowDisagreementNow[1] != -1 or flowSessionChanged)
+plotshape(showFlowMarkers and barstate.isconfirmed and flowBuyDisagreement, "Flow · cena dolů / CVD nahoru", shape.diamond, location.belowbar, color=#64ACFF, size=size.tiny, text="F", editable=false, display=display.pane)
+plotshape(showFlowMarkers and barstate.isconfirmed and flowSellDisagreement, "Flow · cena nahoru / CVD dolů", shape.diamond, location.abovebar, color=#FF78B4, size=size.tiny, text="F", editable=false, display=display.pane)
+alertcondition(showFlow and barstate.isconfirmed and flowBuyDisagreement, "Flow · cena dolů / CVD nahoru", "Na {{ticker}} vznikl nesoulad RTH ceny a kladného CVD odhadu. Nejde o potvrzenou absorpci.")
+alertcondition(showFlow and barstate.isconfirmed and flowSellDisagreement, "Flow · cena nahoru / CVD dolů", "Na {{ticker}} vznikl nesoulad RTH ceny a záporného CVD odhadu. Nejde o potvrzenou absorpci.")
+alertcondition(optionTouchAlerts and barstate.isconfirmed and optionTouchStart, "Opce · dotyk platného levelu", "Potvrzená svíčka {{ticker}} {{interval}} protíná platný opční level. Zkontrolujte zdroj a čas platnosti mapy.")
+plot(showFlow ? rthCvd : na, "Flow · RTH CVD (1m OHLCV odhad)", display=display.data_window, format=format.volume)
+plot(showFlow ? rthFlowPercent : na, "Flow · RTH delta %", display=display.data_window, precision=2)

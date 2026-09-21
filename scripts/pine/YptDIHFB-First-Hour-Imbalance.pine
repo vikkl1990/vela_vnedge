@@ -1,0 +1,506 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Midniteblade
+
+//@version=6
+indicator("First-Hour Imbalance", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ==========================================
+// 1. SETTINGS
+// ==========================================
+
+group_main = "Main Logic"
+tz_manual = input.string("UTC-4", title="Timezone", options=["UTC-5", "UTC-4", "America/New_York", "Asia/Bangkok"], group=group_main)
+line_extension = input.int(15, title="Line Extension (bars)", minval=0, group=group_main)
+
+group_sess = "Sessions & First-Hour Windows"
+asia_sess      = input.session("2000-0000", title="Asian Session",   group=group_sess)
+asia_ib        = input.session("2000-2100", title="Asian IB Window", group=group_sess)
+col_asia       = input.color(color.new(color.yellow, 0), title="Asian Color", group=group_sess)
+
+london_sess    = input.session("0200-0500", title="London Session",   group=group_sess)
+london_ib      = input.session("0200-0300", title="London IB Window", group=group_sess)
+col_london     = input.color(color.new(color.teal, 0), title="London Color", group=group_sess)
+
+ny_am_sess     = input.session("0930-1100", title="NY AM Session",   group=group_sess)
+ny_am_ib       = input.session("0930-1030", title="NY AM IB Window", group=group_sess)
+col_ny_am      = input.color(color.new(color.orange, 0), title="NY AM Color", group=group_sess)
+
+ny_pm_sess     = input.session("1330-1600", title="NY PM Session",   group=group_sess)
+ny_pm_ib       = input.session("1330-1430", title="NY PM IB Window", group=group_sess)
+col_ny_pm      = input.color(color.new(color.fuchsia, 0), title="NY PM Color", group=group_sess)
+
+group_style = "Line & Label Style"
+show_lines     = input.bool(true,  title="Show Range Lines", group=group_style)
+show_labels    = input.bool(true,  title="Show IB Labels",   group=group_style)
+line_width     = input.int(2, title="Line Width", minval=1, group=group_style)
+mid_transp     = input.int(40, title="Midline Transparency", minval=0, maxval=100, group=group_style)
+label_size_input = input.string("Small", title="Text Size", options=["Tiny", "Small", "Normal", "Large", "Huge"], group=group_style)
+
+group_sig = "Sweep Signal (Definition A)"
+show_sweep_labels = input.bool(true, "Show Sweep Labels", group=group_sig)
+use_sweep_depth   = input.bool(false, "Use Sweep Depth", group=group_sig)
+sweep_depth_ticks = input.int(5, "Sweep Depth (Ticks)", minval=1, group=group_sig)
+confirm_bars      = input.int(1, "Confirm Bars (Close Back Inside)", minval=1, group=group_sig)
+use_disp_filter   = input.bool(false, "Use Displacement Filter", group=group_sig)
+disp_atr_mult     = input.float(1.0, "Displacement ATR Multiplier", minval=0.1, group=group_sig)
+use_vol_filter    = input.bool(false, "Use Volume Filter", group=group_sig)
+vol_mult          = input.float(1.5, "Volume Multiplier", minval=0.1, group=group_sig)
+vol_len           = input.int(20, "Volume Avg Length", minval=1, group=group_sig)
+use_htf_filter    = input.bool(false, "Use HTF Filter", group=group_sig)
+htf_ema_len       = input.int(200, "HTF EMA Length", minval=1, group=group_sig)
+htf_tf            = input.timeframe("240", "HTF Timeframe", group=group_sig)
+
+group_vis = "Dashboard"
+show_dashboard = input.bool(false, "Show Dashboard", group=group_vis)
+
+// ==========================================
+// 2. HELPERS
+// ==========================================
+
+is_in_session(sess) =>
+    not na(time(timeframe.period, sess + ":1234567", tz_manual))
+
+get_style(style_str) =>
+    out = line.style_solid
+    if style_str == "Dotted"
+        out := line.style_dotted
+    else if style_str == "Dashed"
+        out := line.style_dashed
+    out
+
+get_size(s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        "Huge"   => size.huge
+        => size.normal
+
+final_size   = get_size(label_size_input)
+atr_val      = ta.atr(14)
+vol_avg      = ta.sma(volume, vol_len)
+sweep_depth_val = sweep_depth_ticks * syminfo.mintick
+htf_ema      = request.security(syminfo.tickerid, htf_tf, ta.ema(close, htf_ema_len))
+
+// Session state constants
+var int ST_PRE       = 0
+var int ST_CAPTURING = 1
+var int ST_FROZEN    = 2
+var int ST_DONE      = 3
+
+// ==========================================
+// 3. SESSION STATE MACHINE (4 sessions)
+// ==========================================
+
+// --- Per-session state ---
+var int   st_asia   = ST_PRE
+var float ibh_asia  = na
+var float ibl_asia  = na
+var bool  hi_swept_asia = false
+var bool  lo_swept_asia = false
+var int   hi_confirm_asia = 0
+var int   lo_confirm_asia = 0
+var line  l_hi_asia  = na
+var line  l_mid_asia = na
+var line  l_lo_asia  = na
+var label lb_hi_asia  = na
+var label lb_mid_asia = na
+var label lb_lo_asia  = na
+
+var int   st_london = ST_PRE
+var float ibh_london = na
+var float ibl_london = na
+var line  l_hi_london  = na
+var line  l_mid_london = na
+var line  l_lo_london  = na
+var label lb_hi_london  = na
+var label lb_mid_london = na
+var label lb_lo_london  = na
+var int   hi_confirm_london = 0
+var int   lo_confirm_london = 0
+var bool  hi_swept_london = false
+var bool  lo_swept_london = false
+var line  l_hi_nyam  = na
+var line  l_mid_nyam = na
+var line  l_lo_nyam  = na
+var int   st_nyam   = ST_PRE
+var float ibh_nyam  = na
+var float ibl_nyam  = na
+var bool  hi_swept_nyam = false
+var bool  lo_swept_nyam = false
+var int   hi_confirm_nyam = 0
+var int   lo_confirm_nyam = 0
+
+var label lb_hi_nyam  = na
+var label lb_mid_nyam = na
+var label lb_lo_nyam  = na
+
+var int   st_nypm   = ST_PRE
+var float ibh_nypm  = na
+var float ibl_nypm  = na
+var bool  hi_swept_nypm = false
+var bool  lo_swept_nypm = false
+var int   hi_confirm_nypm = 0
+var int   lo_confirm_nypm = 0
+var line  l_hi_nypm  = na
+var line  l_mid_nypm = na
+var line  l_lo_nypm  = na
+var label lb_hi_nypm  = na
+var label lb_mid_nypm = na
+var label lb_lo_nypm  = na
+
+// --- Signal state ---
+var bool   sig_long  = false
+var bool   sig_short = false
+var string last_sig       = na
+var float  last_sig_price = na
+var int    last_sig_time  = na
+var string last_dir       = na
+var string last_sess      = na
+var table  dash_tbl = na
+
+sig_long  := false
+sig_short := false
+
+// ==========================================
+// 4. CORE: capture -> freeze -> watch
+// ==========================================
+
+// ---------- ASIA ----------
+in_asia_sess = is_in_session(asia_sess)
+in_asia_ib   = is_in_session(asia_ib)
+
+if in_asia_ib
+    st_asia := ST_CAPTURING
+    ibh_asia := na(ibh_asia) ? high : math.max(ibh_asia, high)
+    ibl_asia := na(ibl_asia) ? low  : math.min(ibl_asia, low)
+else if st_asia == ST_CAPTURING and not in_asia_ib
+    // window just closed -> freeze & draw
+    st_asia := ST_FROZEN
+    hi_swept_asia := false
+    lo_swept_asia := false
+    hi_confirm_asia := 0
+    lo_confirm_asia := 0
+    if show_lines and not na(ibh_asia) and not na(ibl_asia)
+        mid_asia = (ibh_asia + ibl_asia) / 2
+        l_hi_asia  := line.new(bar_index, ibh_asia, bar_index + line_extension, ibh_asia, color=col_asia, width=line_width)
+        l_mid_asia := line.new(bar_index, mid_asia, bar_index + line_extension, mid_asia, color=color.new(col_asia, mid_transp), width=1, style=line.style_dashed)
+        l_lo_asia  := line.new(bar_index, ibl_asia, bar_index + line_extension, ibl_asia, color=col_asia, width=line_width)
+        if show_labels
+            lb_hi_asia  := label.new(bar_index + line_extension, ibh_asia, "High IB", style=label.style_label_left, color=col_asia, textcolor=color.white, size=final_size)
+            lb_mid_asia := label.new(bar_index + line_extension, mid_asia, "50%",     style=label.style_label_left, color=color.new(col_asia, mid_transp), textcolor=color.white, size=final_size)
+            lb_lo_asia  := label.new(bar_index + line_extension, ibl_asia, "Low IB",  style=label.style_label_left, color=col_asia, textcolor=color.white, size=final_size)
+
+// while frozen and still inside session -> extend lines
+if st_asia == ST_FROZEN and in_asia_sess
+    if not na(l_hi_asia)
+        line.set_x2(l_hi_asia, bar_index + line_extension)
+        line.set_x2(l_mid_asia, bar_index + line_extension)
+        line.set_x2(l_lo_asia, bar_index + line_extension)
+    if not na(lb_hi_asia)
+        label.set_x(lb_hi_asia, bar_index + line_extension)
+        label.set_x(lb_mid_asia, bar_index + line_extension)
+        label.set_x(lb_lo_asia, bar_index + line_extension)
+
+// session ended -> done
+if st_asia == ST_FROZEN and not in_asia_sess
+    st_asia := ST_DONE
+
+// ---------- LONDON ----------
+in_london_sess = is_in_session(london_sess)
+in_london_ib   = is_in_session(london_ib)
+
+if in_london_ib
+    st_london := ST_CAPTURING
+    ibh_london := na(ibh_london) ? high : math.max(ibh_london, high)
+    ibl_london := na(ibl_london) ? low  : math.min(ibl_london, low)
+else if st_london == ST_CAPTURING and not in_london_ib
+    st_london := ST_FROZEN
+    hi_swept_london := false
+    lo_swept_london := false
+    hi_confirm_london := 0
+    lo_confirm_london := 0
+    if show_lines and not na(ibh_london) and not na(ibl_london)
+        mid_london = (ibh_london + ibl_london) / 2
+        l_hi_london  := line.new(bar_index, ibh_london, bar_index + line_extension, ibh_london, color=col_london, width=line_width)
+        l_mid_london := line.new(bar_index, mid_london, bar_index + line_extension, mid_london, color=color.new(col_london, mid_transp), width=1, style=line.style_dashed)
+        l_lo_london  := line.new(bar_index, ibl_london, bar_index + line_extension, ibl_london, color=col_london, width=line_width)
+        if show_labels
+            lb_hi_london  := label.new(bar_index + line_extension, ibh_london, "High IB", style=label.style_label_left, color=col_london, textcolor=color.white, size=final_size)
+            lb_mid_london := label.new(bar_index + line_extension, mid_london, "50%",     style=label.style_label_left, color=color.new(col_london, mid_transp), textcolor=color.white, size=final_size)
+            lb_lo_london  := label.new(bar_index + line_extension, ibl_london, "Low IB",  style=label.style_label_left, color=col_london, textcolor=color.white, size=final_size)
+
+if st_london == ST_FROZEN and in_london_sess
+    if not na(l_hi_london)
+        line.set_x2(l_hi_london, bar_index + line_extension)
+        line.set_x2(l_mid_london, bar_index + line_extension)
+        line.set_x2(l_lo_london, bar_index + line_extension)
+    if not na(lb_hi_london)
+        label.set_x(lb_hi_london, bar_index + line_extension)
+        label.set_x(lb_mid_london, bar_index + line_extension)
+        label.set_x(lb_lo_london, bar_index + line_extension)
+
+if st_london == ST_FROZEN and not in_london_sess
+    st_london := ST_DONE
+
+// ---------- NY AM ----------
+in_nyam_sess = is_in_session(ny_am_sess)
+in_nyam_ib   = is_in_session(ny_am_ib)
+
+if in_nyam_ib
+    st_nyam := ST_CAPTURING
+    ibh_nyam := na(ibh_nyam) ? high : math.max(ibh_nyam, high)
+    ibl_nyam := na(ibl_nyam) ? low  : math.min(ibl_nyam, low)
+else if st_nyam == ST_CAPTURING and not in_nyam_ib
+    st_nyam := ST_FROZEN
+    hi_swept_nyam := false
+    lo_swept_nyam := false
+    hi_confirm_nyam := 0
+    lo_confirm_nyam := 0
+    if show_lines and not na(ibh_nyam) and not na(ibl_nyam)
+        mid_nyam = (ibh_nyam + ibl_nyam) / 2
+        l_hi_nyam  := line.new(bar_index, ibh_nyam, bar_index + line_extension, ibh_nyam, color=col_ny_am, width=line_width)
+        l_mid_nyam := line.new(bar_index, mid_nyam, bar_index + line_extension, mid_nyam, color=color.new(col_ny_am, mid_transp), width=1, style=line.style_dashed)
+        l_lo_nyam  := line.new(bar_index, ibl_nyam, bar_index + line_extension, ibl_nyam, color=col_ny_am, width=line_width)
+        if show_labels
+            lb_hi_nyam  := label.new(bar_index + line_extension, ibh_nyam, "High IB", style=label.style_label_left, color=col_ny_am, textcolor=color.white, size=final_size)
+            lb_mid_nyam := label.new(bar_index + line_extension, mid_nyam, "50%",     style=label.style_label_left, color=color.new(col_ny_am, mid_transp), textcolor=color.white, size=final_size)
+            lb_lo_nyam  := label.new(bar_index + line_extension, ibl_nyam, "Low IB",  style=label.style_label_left, color=col_ny_am, textcolor=color.white, size=final_size)
+
+if st_nyam == ST_FROZEN and in_nyam_sess
+    if not na(l_hi_nyam)
+        line.set_x2(l_hi_nyam, bar_index + line_extension)
+        line.set_x2(l_mid_nyam, bar_index + line_extension)
+        line.set_x2(l_lo_nyam, bar_index + line_extension)
+    if not na(lb_hi_nyam)
+        label.set_x(lb_hi_nyam, bar_index + line_extension)
+        label.set_x(lb_mid_nyam, bar_index + line_extension)
+        label.set_x(lb_lo_nyam, bar_index + line_extension)
+
+if st_nyam == ST_FROZEN and not in_nyam_sess
+    st_nyam := ST_DONE
+
+// ---------- NY PM ----------
+in_nypm_sess = is_in_session(ny_pm_sess)
+in_nypm_ib   = is_in_session(ny_pm_ib)
+
+if in_nypm_ib
+    st_nypm := ST_CAPTURING
+    ibh_nypm := na(ibh_nypm) ? high : math.max(ibh_nypm, high)
+    ibl_nypm := na(ibl_nypm) ? low  : math.min(ibl_nypm, low)
+else if st_nypm == ST_CAPTURING and not in_nypm_ib
+    st_nypm := ST_FROZEN
+    hi_swept_nypm := false
+    lo_swept_nypm := false
+    hi_confirm_nypm := 0
+    lo_confirm_nypm := 0
+    if show_lines and not na(ibh_nypm) and not na(ibl_nypm)
+        mid_nypm = (ibh_nypm + ibl_nypm) / 2
+        l_hi_nypm  := line.new(bar_index, ibh_nypm, bar_index + line_extension, ibh_nypm, color=col_ny_pm, width=line_width)
+        l_mid_nypm := line.new(bar_index, mid_nypm, bar_index + line_extension, mid_nypm, color=color.new(col_ny_pm, mid_transp), width=1, style=line.style_dashed)
+        l_lo_nypm  := line.new(bar_index, ibl_nypm, bar_index + line_extension, ibl_nypm, color=col_ny_pm, width=line_width)
+        if show_labels
+            lb_hi_nypm  := label.new(bar_index + line_extension, ibh_nypm, "High IB", style=label.style_label_left, color=col_ny_pm, textcolor=color.white, size=final_size)
+            lb_mid_nypm := label.new(bar_index + line_extension, mid_nypm, "50%",     style=label.style_label_left, color=color.new(col_ny_pm, mid_transp), textcolor=color.white, size=final_size)
+            lb_lo_nypm  := label.new(bar_index + line_extension, ibl_nypm, "Low IB",  style=label.style_label_left, color=col_ny_pm, textcolor=color.white, size=final_size)
+
+if st_nypm == ST_FROZEN and in_nypm_sess
+    if not na(l_hi_nypm)
+        line.set_x2(l_hi_nypm, bar_index + line_extension)
+        line.set_x2(l_mid_nypm, bar_index + line_extension)
+        line.set_x2(l_lo_nypm, bar_index + line_extension)
+    if not na(lb_hi_nypm)
+        label.set_x(lb_hi_nypm, bar_index + line_extension)
+        label.set_x(lb_mid_nypm, bar_index + line_extension)
+        label.set_x(lb_lo_nypm, bar_index + line_extension)
+
+if st_nypm == ST_FROZEN and not in_nypm_sess
+    st_nypm := ST_DONE
+
+// ==========================================
+// 5. SWEEP DETECTION (Definition A)
+// ==========================================
+
+// --- generic evaluator for one boundary ---
+// dir_long = true means we're testing the LOW (sweep low -> long)
+// returns true when signal fires this bar
+
+filters_ok_long() =>
+    (not use_vol_filter or volume > vol_avg * vol_mult) and (not use_htf_filter or close > htf_ema)
+
+filters_ok_short() =>
+    (not use_vol_filter or volume > vol_avg * vol_mult) and (not use_htf_filter or close < htf_ema)
+
+// ---------- ASIA sweeps ----------
+if st_asia == ST_FROZEN and in_asia_sess and not na(ibh_asia)
+    // LOW boundary -> LONG
+    if not lo_swept_asia
+        if low <= ibl_asia - (use_sweep_depth ? sweep_depth_val : 0)
+            if close > ibl_asia
+                lo_confirm_asia += 1
+                if lo_confirm_asia >= confirm_bars and filters_ok_long() and (not use_disp_filter or (close - ibl_asia) >= disp_atr_mult * atr_val)
+                    lo_swept_asia := true
+                    sig_long := true
+                    last_sig := "Low IB Sweep"
+                    last_sig_price := ibl_asia
+                    last_sig_time := time
+                    last_dir := "LONG"
+                    last_sess := "Asia"
+                    if show_sweep_labels
+                        label.new(bar_index, ibl_asia, "LONG", style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.small)
+            else
+                lo_confirm_asia := 0
+    // HIGH boundary -> SHORT
+    if not hi_swept_asia
+        if high >= ibh_asia + (use_sweep_depth ? sweep_depth_val : 0)
+            if close < ibh_asia
+                hi_confirm_asia += 1
+                if hi_confirm_asia >= confirm_bars and filters_ok_short() and (not use_disp_filter or (ibh_asia - close) >= disp_atr_mult * atr_val)
+                    hi_swept_asia := true
+                    sig_short := true
+                    last_sig := "High IB Sweep"
+                    last_sig_price := ibh_asia
+                    last_sig_time := time
+                    last_dir := "SHORT"
+                    last_sess := "Asia"
+                    if show_sweep_labels
+                        label.new(bar_index, ibh_asia, "SHORT", style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+            else
+                hi_confirm_asia := 0
+
+// ---------- LONDON sweeps ----------
+if st_london == ST_FROZEN and in_london_sess and not na(ibh_london)
+    if not lo_swept_london
+        if low <= ibl_london - (use_sweep_depth ? sweep_depth_val : 0)
+            if close > ibl_london
+                lo_confirm_london += 1
+                if lo_confirm_london >= confirm_bars and filters_ok_long() and (not use_disp_filter or (close - ibl_london) >= disp_atr_mult * atr_val)
+                    lo_swept_london := true
+                    sig_long := true
+                    last_sig := "Low IB Sweep"
+                    last_sig_price := ibl_london
+                    last_sig_time := time
+                    last_dir := "LONG"
+                    last_sess := "London"
+                    if show_sweep_labels
+                        label.new(bar_index, ibl_london, "LONG", style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.small)
+            else
+                lo_confirm_london := 0
+    if not hi_swept_london
+        if high >= ibh_london + (use_sweep_depth ? sweep_depth_val : 0)
+            if close < ibh_london
+                hi_confirm_london += 1
+                if hi_confirm_london >= confirm_bars and filters_ok_short() and (not use_disp_filter or (ibh_london - close) >= disp_atr_mult * atr_val)
+                    hi_swept_london := true
+                    sig_short := true
+                    last_sig := "High IB Sweep"
+                    last_sig_price := ibh_london
+                    last_sig_time := time
+                    last_dir := "SHORT"
+                    last_sess := "London"
+                    if show_sweep_labels
+                        label.new(bar_index, ibh_london, "SHORT", style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+            else
+                hi_confirm_london := 0
+
+// ---------- NY AM sweeps ----------
+if st_nyam == ST_FROZEN and in_nyam_sess and not na(ibh_nyam)
+    if not lo_swept_nyam
+        if low <= ibl_nyam - (use_sweep_depth ? sweep_depth_val : 0)
+            if close > ibl_nyam
+                lo_confirm_nyam += 1
+                if lo_confirm_nyam >= confirm_bars and filters_ok_long() and (not use_disp_filter or (close - ibl_nyam) >= disp_atr_mult * atr_val)
+                    lo_swept_nyam := true
+                    sig_long := true
+                    last_sig := "Low IB Sweep"
+                    last_sig_price := ibl_nyam
+                    last_sig_time := time
+                    last_dir := "LONG"
+                    last_sess := "NY AM"
+                    if show_sweep_labels
+                        label.new(bar_index, ibl_nyam, "LONG", style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.small)
+            else
+                lo_confirm_nyam := 0
+    if not hi_swept_nyam
+        if high >= ibh_nyam + (use_sweep_depth ? sweep_depth_val : 0)
+            if close < ibh_nyam
+                hi_confirm_nyam += 1
+                if hi_confirm_nyam >= confirm_bars and filters_ok_short() and (not use_disp_filter or (ibh_nyam - close) >= disp_atr_mult * atr_val)
+                    hi_swept_nyam := true
+                    sig_short := true
+                    last_sig := "High IB Sweep"
+                    last_sig_price := ibh_nyam
+                    last_sig_time := time
+                    last_dir := "SHORT"
+                    last_sess := "NY AM"
+                    if show_sweep_labels
+                        label.new(bar_index, ibh_nyam, "SHORT", style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+            else
+                hi_confirm_nyam := 0
+
+// ---------- NY PM sweeps ----------
+if st_nypm == ST_FROZEN and in_nypm_sess and not na(ibh_nypm)
+    if not lo_swept_nypm
+        if low <= ibl_nypm - (use_sweep_depth ? sweep_depth_val : 0)
+            if close > ibl_nypm
+                lo_confirm_nypm += 1
+                if lo_confirm_nypm >= confirm_bars and filters_ok_long() and (not use_disp_filter or (close - ibl_nypm) >= disp_atr_mult * atr_val)
+                    lo_swept_nypm := true
+                    sig_long := true
+                    last_sig := "Low IB Sweep"
+                    last_sig_price := ibl_nypm
+                    last_sig_time := time
+                    last_dir := "LONG"
+                    last_sess := "NY PM"
+                    if show_sweep_labels
+                        label.new(bar_index, ibl_nypm, "LONG", style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.small)
+            else
+                lo_confirm_nypm := 0
+    if not hi_swept_nypm
+        if high >= ibh_nypm + (use_sweep_depth ? sweep_depth_val : 0)
+            if close < ibh_nypm
+                hi_confirm_nypm += 1
+                if hi_confirm_nypm >= confirm_bars and filters_ok_short() and (not use_disp_filter or (ibh_nypm - close) >= disp_atr_mult * atr_val)
+                    hi_swept_nypm := true
+                    sig_short := true
+                    last_sig := "High IB Sweep"
+                    last_sig_price := ibh_nypm
+                    last_sig_time := time
+                    last_dir := "SHORT"
+                    last_sess := "NY PM"
+                    if show_sweep_labels
+                        label.new(bar_index, ibh_nypm, "SHORT", style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+            else
+                hi_confirm_nypm := 0
+
+// ==========================================
+// 6. DASHBOARD
+// ==========================================
+
+if show_dashboard
+    if na(dash_tbl)
+        dash_tbl := table.new(position.top_right, 2, 6, bgcolor=color.new(color.black, 20), border_width=1, border_color=color.new(color.gray, 30))
+    table.cell(dash_tbl, 0, 0, "First-Hour Imbalance", text_color=color.white, text_size=size.small, bgcolor=color.new(color.blue, 40))
+    table.cell(dash_tbl, 1, 0, "", text_color=color.white, text_size=size.small, bgcolor=color.new(color.blue, 40))
+    table.cell(dash_tbl, 0, 1, "Session", text_color=color.gray, text_size=size.small)
+    table.cell(dash_tbl, 1, 1, na(last_sess) ? "—" : last_sess, text_color=color.white, text_size=size.small)
+    table.cell(dash_tbl, 0, 2, "Direction", text_color=color.gray, text_size=size.small)
+    table.cell(dash_tbl, 1, 2, na(last_dir) ? "—" : last_dir, text_color=na(last_dir) ? color.gray : (last_dir == "LONG" ? color.green : color.red), text_size=size.small)
+    table.cell(dash_tbl, 0, 3, "Last Signal", text_color=color.gray, text_size=size.small)
+    table.cell(dash_tbl, 1, 3, na(last_sig) ? "—" : last_sig, text_color=color.white, text_size=size.small)
+    table.cell(dash_tbl, 0, 4, "Signal Price", text_color=color.gray, text_size=size.small)
+    table.cell(dash_tbl, 1, 4, na(last_sig_price) ? "—" : str.tostring(last_sig_price, format.mintick), text_color=color.white, text_size=size.small)
+    table.cell(dash_tbl, 0, 5, "Signal Time", text_color=color.gray, text_size=size.small)
+    table.cell(dash_tbl, 1, 5, na(last_sig_time) ? "—" : str.format_time(last_sig_time, "HH:mm", tz_manual), text_color=color.white, text_size=size.small)
+else
+    if not na(dash_tbl)
+        table.delete(dash_tbl)
+        dash_tbl := na
+
+// ==========================================
+// 7. ALERTS
+// ==========================================
+
+alertcondition(sig_long,  title="IB Sweep LONG",  message="First-Hour Imbalance LOW sweep (LONG) at {{close}}")
+alertcondition(sig_short, title="IB Sweep SHORT", message="First-Hour Imbalance HIGH sweep (SHORT) at {{close}}")

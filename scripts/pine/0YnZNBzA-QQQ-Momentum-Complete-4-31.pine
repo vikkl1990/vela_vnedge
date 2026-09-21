@@ -1,0 +1,862 @@
+//@version=6
+indicator("QQQ Momentum Complete 4.46", "QQQ Complete 4.46", overlay = false, behind_chart = false, precision = 2, max_lines_count = 150, max_boxes_count = 250, max_labels_count = 300, max_bars_back = 1500)
+// Combined script: original Momentum in its own pane; price visuals forced onto the chart; no dashboard.
+// Add as a new instance when replacing an overlay=true version. Settings belong to the lower pane.
+// RSI shares the Momentum pane: (RSI - 50) / 50. Price drawings remain on the main chart.
+// Highlight the intraday bar containing the selected New York time, every calendar day.
+// This is a visual clock marker, independent of VWAP/session calculations.
+showOpenHighlight = input.bool(true, "Show Opening Candle Highlight", group = "Opening Candle")
+openHighlightHour = input.int(9, "Opening Time (NY)", minval = 0, maxval = 23, group = "Opening Candle", inline = "OpenTime", tooltip = "24-hour New York time: 9 : 30 means 09:30 AM, not 09:30 PM. Marks the bar containing that time each day, when that bar exists.")
+openHighlightMinute = input.int(30, ":", minval = 0, maxval = 59, group = "Opening Candle", inline = "OpenTime")
+string openHighlightTimezone = "America/New_York"
+openHighlightColor = input.color(color.new(#FFB74D, 65), "Highlight Color", group = "Opening Candle")
+int highlightTarget = timestamp(openHighlightTimezone, year(time, openHighlightTimezone), month(time, openHighlightTimezone), dayofmonth(time, openHighlightTimezone), openHighlightHour, openHighlightMinute)
+bool highlightOpeningBar = chart.is_standard and timeframe.isintraday and not na(time_close) and time <= highlightTarget and time_close > highlightTarget
+bgcolor(showOpenHighlight and highlightOpeningBar ? openHighlightColor : na, title = "Opening Candle Highlight", force_overlay = true)
+
+// Experimental settings. Uses chart OHLCV, not option-chain data.
+showMacd = input.bool(true, "Show MACD and Signal", group = "Display")
+fastLength = input.int(6, "MACD Fast Length", minval = 1, maxval = 100, group = "Momentum")
+slowLength = input.int(18, "MACD Slow Length", minval = 2, maxval = 200, group = "Momentum")
+signalLength = input.int(4, "MACD Signal Length", minval = 1, maxval = 100, group = "Momentum")
+atrLength = input.int(14, "ATR Length", minval = 2, maxval = 100, group = "Momentum")
+entryBand = input.float(0.15, "Direction Activation (ATR)", minval = 0.01, step = 0.01, group = "Momentum")
+exitBand = input.float(0.05, "Direction Release (ATR)", minval = 0, step = 0.01, group = "Momentum", tooltip = "Must be below Activation. A bullish phase remains bullish until the signal falls below this smaller positive threshold; bearish is mirrored.")
+phaseChange = input.float(0.04, "Building / Fading Change (ATR)", minval = 0.001, step = 0.01, group = "Momentum", tooltip = "Required cumulative histogram change from the phase extreme. Smaller changes do not switch the phase.")
+
+
+upStrong = input.color(#26A69A, "Positive Histogram Rising", group = "Colors")
+upWeak = input.color(#B2DFDB, "Positive Histogram Falling", group = "Colors")
+downStrong = input.color(#FF5252, "Negative Histogram Falling", group = "Colors")
+downWeak = input.color(#FFCDD2, "Negative Histogram Rising", group = "Colors")
+flatColor = input.color(#B0BEC5, "Neutral Color", group = "Colors")
+showTrends = input.bool(true, "Show Body Trend Lines", group = "Trend Lines")
+pivotBars = input.int(3, "Pivot Confirmation Bars", minval = 1, maxval = 20, group = "Trend Lines", tooltip = "A pivot is known only after this many later candles close. Anchors use min(Open, Close) or max(Open, Close), never wicks.")
+setsToKeep = input.int(3, "Line Pairs per Side to Keep", minval = 1, maxval = 10, group = "Trend Lines", tooltip = "Each line joins two confirmed body pivots selected from recent history. Keeps up to this many support lines and this many resistance lines, including history.")
+pivotHistory = input.int(8, "Pivot Candidates per Side", minval = 2, maxval = 12, group = "Trend Lines", tooltip = "Prioritizes the highest body pivot for resistance and lowest body pivot for support among retained candidates, then checks later anchors. Invalid pairs are skipped. Support must rise; resistance must fall. Active lines stay fixed until a close breaks them or the first anchor expires.")
+maxSpan = input.int(150, "Maximum Anchor Age (Bars)", minval = 20, maxval = 1000, group = "Trend Lines")
+minSpan = input.int(3, "Minimum Anchor Separation", minval = 1, maxval = 50, group = "Trend Lines")
+toleranceTicks = input.int(1, "Historical Close Tolerance (Ticks)", minval = 0, maxval = 20, group = "Trend Lines")
+bodyToleranceAtr = input.float(0.20, "Historical Close Allowance (ATR)", minval = 0.0, maxval = 1.0, step = 0.05, group = "Trend Lines", tooltip = "Allows small historical close crossings when validating a new candidate line only. Uses previous-bar ATR at each decision. Larger values tolerate deeper corrections.")
+supportColor = input.color(#26A69A, "Support Line Color", group = "Trend Lines")
+resistanceColor = input.color(#FF5252, "Resistance Line Color", group = "Trend Lines")
+trendWidth = input.int(3, "Active Trend Line Width", minval = 1, maxval = 5, group = "Trend Lines")
+historyWidth = input.int(2, "Historical Trend Line Width", minval = 1, maxval = 5, group = "Trend Lines")
+historyFade = input.int(40, "Historical Line Transparency", minval = 0, maxval = 95, group = "Trend Lines")
+volumeLength = input.int(20, "Relative Volume Length", minval = 2, maxval = 100, group = "Participation")
+
+volumeMode = input.string("Same Time", "Volume Baseline", options = ["Same Time", "Previous Bars"], group = "Participation", tooltip = "Same Time compares this candle with matching exchange-clock minutes on prior loaded trading dates. Standard minute charts up to 60m only. Missing matches are skipped; no automatic fallback.")
+volumeDays = input.int(20, "Volume History Days", minval = 5, maxval = 30, group = "Participation")
+volumeMinDays = input.int(5, "Minimum Matching Days", minval = 2, maxval = 30, group = "Participation")
+strongVolume = input.float(1.5, "Strong Relative Volume", minval = 1.1, step = 0.1, group = "Participation")
+volumeMoveThreshold = input.float(0.25, "Minimum Price Move / Prior ATR", minval = 0.01, step = 0.05, group = "Participation", tooltip = "At high relative volume, a smaller absolute close-to-close move is Stall. This is an adjustable classification threshold, not a prediction.")
+weakVolume = input.float(0.8, "Weak Relative Volume", minval = 0.1, maxval = 1.0, step = 0.1, group = "Participation")
+
+showVwap = input.bool(true, "Show VWAP", group = "Session Context")
+vwapAnchor = input.string("Full Day", "VWAP Session", options = ["Full Day", "Regular Session 09:30"], group = "Session Context", tooltip = "Full Day includes all available chart bars on each New York date, including extended hours if enabled on the chart. Resets daily. The first loaded date can be incomplete. Regular Session starts exactly at 09:30 and excludes extended hours.")
+vwapColor = input.color(#7E57C2, "VWAP Color", group = "Session Context")
+vwapWidth = input.int(2, "VWAP Line Width", minval = 1, maxval = 5, group = "Session Context")
+showPrevHigh = input.bool(true, "Show Previous Session High", group = "Session Context")
+showPrevLow = input.bool(true, "Show Previous Session Low", group = "Session Context")
+prevHighColor = input.color(#78909C, "Previous High Color", group = "Session Context")
+prevLowColor = input.color(#78909C, "Previous Low Color", group = "Session Context")
+prevLevelWidth = input.int(1, "Previous Session Line Width", minval = 1, maxval = 5, group = "Session Context")
+
+breakAtr = input.float(0.0, "Break Close Buffer (ATR)", minval = 0.0, step = 0.01, group = "Trend Lines")
+
+// Horizontal zones are independent of body trend-line anchors.
+showZones = input.bool(true, "Show Support / Resistance Zones", group = "Support / Resistance")
+zonePivotBars = input.int(5, "Zone Pivot Confirmation Bars", minval = 1, maxval = 20, group = "Support / Resistance", tooltip = "The zone appears after this many later candles close. Its left edge is drawn back to the source pivot candle; it was not known on that earlier candle.")
+zoneCount = input.int(3, "Maximum Zones per Side", minval = 1, maxval = 8, group = "Support / Resistance")
+zoneWidthAtr = input.float(0.20, "Zone Width (ATR)", minval = 0.01, maxval = 2, step = 0.05, group = "Support / Resistance", tooltip = "Width is fixed using ATR at the pivot candle. Support extends upward from the wick low; resistance extends downward from the wick high.")
+zoneMergeAtr = input.float(0.30, "Minimum Zone Separation (ATR)", minval = 0, maxval = 3, step = 0.05, group = "Support / Resistance", tooltip = "Skips a new zone if it overlaps or is too close to an existing zone on the same side.")
+zoneMaxAge = input.int(300, "Maximum Zone Age (Bars)", minval = 20, maxval = 1000, group = "Support / Resistance")
+zoneSupportColor = input.color(#26A69A, "Support Zone Color", group = "Support / Resistance")
+zoneResistanceColor = input.color(#FF5252, "Resistance Zone Color", group = "Support / Resistance")
+zoneTransparency = input.int(88, "Zone Fill Transparency", minval = 0, maxval = 100, group = "Support / Resistance")
+showFvg = input.bool(true, "Show Fair Value Gaps", group = "Fair Value Gaps")
+fvgMinAtr = input.float(0.05, "Minimum Gap (ATR)", minval = 0, maxval = 2, step = 0.01, group = "Fair Value Gaps")
+fvgCount = input.int(20, "Maximum FVG Zones", minval = 1, maxval = 50, group = "Fair Value Gaps")
+fvgContinuous = input.bool(true, "Exclude Session / Missing Bar Gaps", group = "Fair Value Gaps", tooltip = "Requires three consecutive intraday candles with no time gap or exchange-date change.")
+fvgBullColor = input.color(#26A69A, "Bullish FVG Color", group = "Fair Value Gaps")
+fvgBearColor = input.color(#FF5252, "Bearish FVG Color", group = "Fair Value Gaps")
+
+fvgMaxAge = input.int(300, "Maximum FVG Age (Bars)", minval = 10, maxval = 1000, group = "Fair Value Gaps")
+fvgTransparency = input.int(85, "FVG Fill Transparency", minval = 0, maxval = 100, group = "Fair Value Gaps")
+
+showSplitCandles = input.bool(true, "Show Estimated Buy / Sell Candles", group = "Candle Pressure", tooltip = "Visual estimate from closing position inside High-Low, NOT actual buy/sell volume or trade counts. Green is the lower body portion, red the upper; this does not locate trades within the candle.")
+pressureBuyColor = input.color(#26A69A, "Estimated Buy Color", group = "Candle Pressure")
+pressureSellColor = input.color(#FF5252, "Estimated Sell Color", group = "Candle Pressure")
+pressureLive = input.bool(true, "Use Live Candle", group = "Candle Pressure", tooltip = "Updates the developing candle on incoming price updates. The split estimates pressure from the close position within the high-low range, not actual buy/sell trades. Disable to show completed candles only.")
+
+showBos = input.bool(true, "Show BOS", group = "BOS / CHoCH")
+showChoch = input.bool(true, "Show CHoCH", group = "BOS / CHoCH")
+breakPivotBars = input.int(5, "Swing Confirmation Bars", minval = 1, maxval = 20, group = "BOS / CHoCH", tooltip = "Confirmed wick highs/lows. Each pivot becomes known only after this many subsequent candles close. Independent of body trend lines.")
+breakHistory = input.int(20, "Maximum Structure Marks", minval = 1, maxval = 50, group = "BOS / CHoCH")
+breakLevelAge = input.int(500, "Maximum Swing Age (Bars)", minval = 20, maxval = 2000, group = "BOS / CHoCH")
+breakBullColor = input.color(#26A69A, "Bullish Break Color", group = "BOS / CHoCH")
+breakBearColor = input.color(#FF5252, "Bearish Break Color", group = "BOS / CHoCH")
+breakLineWidth = input.int(1, "Structure Line Width", minval = 1, maxval = 4, group = "BOS / CHoCH")
+breakTextSize = input.string("Tiny", "Structure Text Size", options = ["Tiny", "Small", "Normal"], group = "BOS / CHoCH")
+
+emaPeriod1 = input.int(9, "EMA Period 1", minval = 1, maxval = 500, group = "EMA Lines")
+emaPeriod2 = input.int(21, "EMA Period 2", minval = 1, maxval = 500, group = "EMA Lines")
+emaPeriod3 = input.int(50, "EMA Period 3", minval = 1, maxval = 500, group = "EMA Lines")
+emaPeriod4 = input.int(100, "EMA Period 4", minval = 1, maxval = 500, group = "EMA Lines")
+
+if barstate.isfirst
+    if fastLength >= slowLength
+        runtime.error("MACD Fast Length must be below MACD Slow Length.")
+    if exitBand >= entryBand
+        runtime.error("Direction Release must be below Direction Activation.")
+    if volumeMinDays > volumeDays
+        runtime.error("Minimum Matching Days must not exceed Volume History Days.")
+    if minSpan > maxSpan
+        runtime.error("Minimum Anchor Separation must not exceed Maximum Anchor Age.")
+[rawMacd, rawSignal, rawHistogram] = ta.macd(close, fastLength, slowLength, signalLength)
+float atrValue = ta.atr(atrLength)
+float scale = atrValue[1]
+float momentum = scale > 0 ? rawMacd / scale : na
+float signal = scale > 0 ? rawSignal / scale : na
+float histogram = scale > 0 ? rawHistogram / scale : na
+bool ready = bar_index >= slowLength + signalLength and not na(histogram)
+// State changes only on completed candles. Direction is the slower signal line.
+var int direction = 0
+var bool building = false
+var float phaseExtreme = na
+if barstate.isconfirmed and ready
+    int nextDirection = direction
+    if direction == 0
+        nextDirection := signal >= entryBand ? 1 : signal <= -entryBand ? -1 : 0
+    else if direction == 1
+        nextDirection := signal <= -entryBand ? -1 : signal < exitBand ? 0 : 1
+    else
+        nextDirection := signal >= entryBand ? 1 : signal > -exitBand ? 0 : -1
+    float directionalHistogram = nextDirection * rawHistogram
+    if nextDirection != direction
+        building := nextDirection != 0 and directionalHistogram > 0
+        phaseExtreme := directionalHistogram
+    else if nextDirection != 0
+        float deltaRequired = phaseChange * scale
+        if building
+            phaseExtreme := math.max(nz(phaseExtreme, directionalHistogram), directionalHistogram)
+            if phaseExtreme - directionalHistogram >= deltaRequired or directionalHistogram <= -deltaRequired
+                building := false
+                phaseExtreme := directionalHistogram
+        else
+            phaseExtreme := math.min(nz(phaseExtreme, directionalHistogram), directionalHistogram)
+            if directionalHistogram > 0 and directionalHistogram - phaseExtreme >= deltaRequired
+                building := true
+                phaseExtreme := directionalHistogram
+    else
+        building := false
+        phaseExtreme := na
+    direction := nextDirection
+string phaseState = not ready ? "Warmup" : direction == 0 ? "Neutral" : direction == 1 ? (building ? "Bullish Building" : "Bullish Fading") : (building ? "Bearish Building" : "Bearish Fading")
+color phaseColor = direction == 1 ? upStrong : direction == -1 ? downStrong : flatColor
+// Standard MACD histogram colors describe acceleration, not the slower trend state.
+color histColor = rawHistogram >= 0 ? (rawHistogram > rawHistogram[1] ? upStrong : upWeak) : (rawHistogram < rawHistogram[1] ? downStrong : downWeak)
+
+// Original QQQ Momentum lower-pane plots.
+plot(ready ? histogram : na, "MACD Histogram / Prior ATR", color = histColor, style = plot.style_columns)
+plot(showMacd and ready ? momentum : na, "MACD / Prior ATR", color = #1565FF, linewidth = 1)
+plot(showMacd and ready ? signal : na, "Signal / Prior ATR", color = #FF8F00, linewidth = 1)
+hline(0, "Zero / RSI 50", color = color.gray)
+
+// RSI is mapped to -1..+1; zero corresponds to its native midpoint of 50.
+showRsiLine = input.bool(true, "Show RSI Line", group = "RSI")
+showRsiValue = input.bool(true, "Show Current RSI Value", group = "RSI")
+rsiLength = input.int(14, "RSI Length", minval = 2, maxval = 100, group = "RSI")
+rsiLineWidth = input.int(2, "RSI Line Width", minval = 1, maxval = 4, group = "RSI")
+rsiBullColor = input.color(#008A45, "RSI Above 50", group = "RSI")
+rsiBearColor = input.color(#C2185B, "RSI Below 50", group = "RSI")
+rsiNeutralColor = input.color(#9E9E9E, "RSI At 50", group = "RSI")
+float rsiValue = ta.rsi(close, rsiLength)
+float rsiMapped = (rsiValue - 50.0) / 50.0
+color rsiTint = na(rsiValue) or rsiValue == 50 ? rsiNeutralColor : rsiValue > 50 ? rsiBullColor : rsiBearColor
+plot(showRsiLine ? rsiMapped : na, "RSI (50 = Zero; 70 = +0.4; 30 = -0.4)", color = rsiTint, linewidth = rsiLineWidth)
+plot(rsiValue, "RSI Value (0-100)", display = display.data_window)
+var label rsiValueLabel = na
+if barstate.islast
+    if showRsiValue and not na(rsiValue)
+        if na(rsiValueLabel)
+            rsiValueLabel := label.new(bar_index + 1, rsiMapped, "", style = label.style_label_left, color = color.new(color.black, 100), textcolor = rsiTint, size = size.small)
+        label.set_xy(rsiValueLabel, bar_index + 1, rsiMapped)
+        label.set_text(rsiValueLabel, "RSI " + str.tostring(rsiValue, "0.0"))
+        label.set_textcolor(rsiValueLabel, rsiTint)
+        label.set_tooltip(rsiValueLabel, "Live RSI. Green: above 50; red: below 50; gray: exactly 50. The line uses (RSI - 50) / 50: 70 maps to +0.4 and 30 to -0.4. Extreme values do not automatically signal reversal. Developing candle values may change before close.")
+    else if not na(rsiValueLabel)
+        label.delete(rsiValueLabel)
+        rsiValueLabel := na
+
+
+
+
+
+
+
+// One ring row per loaded exchange date; store completed bars only.
+// The current date never enters its own baseline. Missing bars remain na.
+int ringRows = volumeDays + 1
+var array<float> volumeHistory = array.new_float(ringRows * 1440, na)
+var int dayRow = -1
+var int lastDate = na
+int dateKey = year(time, syminfo.timezone) * 10000 + month(time, syminfo.timezone) * 100 + dayofmonth(time, syminfo.timezone)
+int clockMinute = hour(time, syminfo.timezone) * 60 + minute(time, syminfo.timezone)
+bool timeVolumeSupported = timeframe.isminutes and timeframe.multiplier <= 60 and chart.is_standard
+float matchingTotal = 0.0
+int matchingDays = 0
+if timeVolumeSupported
+    if na(lastDate) or dateKey != lastDate
+        dayRow := (dayRow + 1) % ringRows
+        for slot = 0 to 1439
+            array.set(volumeHistory, dayRow * 1440 + slot, na)
+        lastDate := dateKey
+    for offset = 1 to volumeDays
+        int pastRow = (dayRow - offset + ringRows) % ringRows
+        float pastVolume = array.get(volumeHistory, pastRow * 1440 + clockMinute)
+        if not na(pastVolume)
+            matchingTotal += pastVolume
+            matchingDays += 1
+float rollingAverage = ta.sma(volume, volumeLength)[1]
+float timeAverage = matchingDays >= volumeMinDays ? matchingTotal / matchingDays : na
+float volumeAverage = volumeMode == "Same Time" ? timeAverage : rollingAverage
+float relativeVolume = volumeAverage > 0 and not na(volume) ? volume / volumeAverage : na
+if timeVolumeSupported and barstate.isconfirmed and not na(volume)
+    array.set(volumeHistory, dayRow * 1440 + clockMinute, volume)
+
+
+string volumeCoverage = volumeMode == "Same Time" ? (timeVolumeSupported ? str.tostring(matchingDays) + " matching days" : "Unsupported chart") : "Previous bars"
+float candleRange = high - low
+float bodyRatio = candleRange > 0 ? math.abs(close - open) / candleRange : 0.0
+bool lowProgress = bodyRatio < 0.3 or (scale > 0 and math.abs(close - open) / scale < 0.15)
+plot(relativeVolume, "Relative Volume", display = display.data_window)
+
+// Two body-pivot anchors plus a projection, all in bar-index coordinates.
+// Support slopes upward; resistance slopes downward. Old anchors never move.
+type BodyTrend
+    line segment
+    line projection
+    int x1
+    float y1
+    int x2
+    float y2
+    bool active
+    bool broken
+
+trendValue(BodyTrend t, int x) =>
+    t.y1 + (t.y2 - t.y1) * (x - t.x1) / (t.x2 - t.x1)
+
+freezeTrend(BodyTrend t, bool broken, color baseColor) =>
+    t.active := false
+    t.broken := broken
+    line.set_extend(t.projection, extend.none)
+    line.set_color(t.segment, color.new(baseColor, historyFade))
+    line.set_color(t.projection, color.new(baseColor, historyFade))
+    line.set_width(t.segment, historyWidth)
+    line.set_width(t.projection, historyWidth)
+    line.set_style(t.segment, broken ? line.style_dotted : line.style_solid)
+    line.set_style(t.projection, broken ? line.style_dotted : line.style_dashed)
+
+updateTrends(array<BodyTrend> trends, bool support, color baseColor) =>
+    for t in trends
+        if t.active
+            float level = trendValue(t, bar_index)
+            line.set_xy2(t.projection, bar_index, level)
+            // Only a completed close can invalidate the active line.
+            float buffer = nz(scale, 0.0) * breakAtr
+            bool violated = support ? close < level - buffer : close > level + buffer
+            if violated
+                freezeTrend(t, true, baseColor)
+            else if bar_index - t.x1 > maxSpan
+                // Retire stale anchors as history, without calling this a price break.
+                freezeTrend(t, false, baseColor)
+
+shouldReplace(array<BodyTrend> trends) =>
+    bool allowed = true
+    for t in trends
+        if t.active
+            allowed := false
+    allowed
+
+addTrend(array<BodyTrend> trends, int x1, float y1, int x2, float y2, color baseColor) =>
+    for previous in trends
+        if previous.active
+            freezeTrend(previous, false, baseColor)
+    float nowLevel = y1 + (y2 - y1) * (bar_index - x1) / (x2 - x1)
+    line segment = line.new(x1, y1, x2, y2, color = baseColor, width = trendWidth, force_overlay = true)
+    line projection = line.new(x2, y2, bar_index, nowLevel, xloc = xloc.bar_index, color = baseColor, width = trendWidth, style = line.style_dashed, extend = extend.right, force_overlay = true)
+    array.push(trends, BodyTrend.new(segment, projection, x1, y1, x2, y2, true, false))
+    if array.size(trends) > setsToKeep
+        BodyTrend oldest = array.shift(trends)
+        line.delete(oldest.segment)
+        line.delete(oldest.projection)
+
+float bodyLow = math.min(open, close)
+float bodyHigh = math.max(open, close)
+float pl = ta.pivotlow(bodyLow, pivotBars, pivotBars)
+float ph = ta.pivothigh(bodyHigh, pivotBars, pivotBars)
+float tolerance = math.max(toleranceTicks * syminfo.mintick, nz(scale, 0.0) * bodyToleranceAtr)
+type TrendPivot
+    int x
+    float y
+
+var array<TrendPivot> lowPivots = array.new<TrendPivot>()
+var array<TrendPivot> highPivots = array.new<TrendPivot>()
+var array<BodyTrend> supports = array.new<BodyTrend>()
+var array<BodyTrend> resistances = array.new<BodyTrend>()
+
+rememberPivot(array<TrendPivot> pivots, float value) =>
+    if not na(value)
+        array.push(pivots, TrendPivot.new(bar_index - pivotBars, value))
+        if array.size(pivots) > pivotHistory
+            array.shift(pivots)
+
+findTrend(array<TrendPivot> pivots, array<BodyTrend> trends, bool isSupport, color tint) =>
+    bool found = false
+    int count = array.size(pivots)
+    if count >= 2 and shouldReplace(trends)
+        // Prefer the most extreme eligible first anchor, then the newest later endpoint.
+        // Support ranks low to high; resistance ranks high to low.
+        array<float> priorities = array.new_float()
+        for candidate in pivots
+            array.push(priorities, isSupport ? candidate.y : -candidate.y)
+        array<int> ranked = array.sort_indices(priorities, order.ascending)
+        for rank = 0 to count - 1
+            TrendPivot first = array.get(pivots, array.get(ranked, rank))
+            for j = count - 1 to 1
+                TrendPivot second = array.get(pivots, j)
+                bool valid = second.x - first.x >= minSpan and bar_index - first.x <= maxSpan
+                valid := valid and (isSupport ? second.y > first.y : second.y < first.y)
+                // Never resurrect the same pair after a confirmed break.
+                for previous in trends
+                    if previous.x1 == first.x and previous.x2 == second.x
+                        valid := false
+                if valid
+                    float slope = (second.y - first.y) / (second.x - first.x)
+                    float currentLevel = first.y + slope * (bar_index - first.x)
+                    // A new line must not already be broken on its creation bar.
+                    valid := isSupport ? close >= currentLevel : close <= currentLevel
+                    if valid
+                        for ago = 1 to bar_index - first.x - 1
+                            float level = first.y + slope * (bar_index - ago - first.x)
+                            // Small historical corrections are allowed; candle opens and wicks do not reject a candidate.
+                            bool crossed = isSupport ? close[ago] < level - tolerance : close[ago] > level + tolerance
+                            if crossed
+                                valid := false
+                                break
+                    if valid
+                        addTrend(trends, first.x, first.y, second.x, second.y, tint)
+                        found := true
+                        break
+            if found
+                break
+    found
+
+if showTrends and barstate.isconfirmed
+    updateTrends(supports, true, supportColor)
+    updateTrends(resistances, false, resistanceColor)
+    rememberPivot(lowPivots, pl)
+    rememberPivot(highPivots, ph)
+    // Recheck completed candles while no current line exists; never move an active pair.
+    if shouldReplace(supports)
+        findTrend(lowPivots, supports, true, supportColor)
+    if shouldReplace(resistances)
+        findTrend(highPivots, resistances, false, resistanceColor)
+
+// Independent structure tracking: drawing filters do not select these pivots.
+var float structureLow = na
+var float previousStructureLow = na
+var float structureHigh = na
+var float previousStructureHigh = na
+if barstate.isconfirmed
+    if not na(pl)
+        previousStructureLow := structureLow
+        structureLow := pl
+    if not na(ph)
+        previousStructureHigh := structureHigh
+        structureHigh := ph
+bool structureReady = not na(previousStructureLow) and not na(previousStructureHigh)
+bool risingStructure = structureReady and structureLow > previousStructureLow and structureHigh > previousStructureHigh
+bool fallingStructure = structureReady and structureLow < previousStructureLow and structureHigh < previousStructureHigh
+string structureState = not structureReady ? "Waiting for Pivots" : risingStructure ? "Bullish / HH + HL" : fallingStructure ? "Bearish / LH + LL" : "Mixed"
+color structureColor = risingStructure ? upStrong : fallingStructure ? downStrong : flatColor
+
+// Session clock remains available for VWAP; no opening-range zone.
+bool sessionChartSupported = chart.is_standard and timeframe.isminutes and timeframe.multiplier <= 60
+bool openingCandle = hour(time, "America/New_York") == 9 and minute(time, "America/New_York") == 30
+int nyDate = year(time, "America/New_York") * 10000 + month(time, "America/New_York") * 100 + dayofmonth(time, "America/New_York")
+string momentumState = not ready ? "Warmup" : direction == 0 ? "Neutral" : direction == 1 ? (building ? "Up / Building" : "Up / Fading") : (building ? "Down / Building" : "Down / Fading")
+string relativeVolumeState = na(relativeVolume) ? "Unavailable" : str.tostring(relativeVolume, "0.00") + "x / " + (relativeVolume >= strongVolume ? "High" : relativeVolume <= weakVolume ? "Low" : "Normal")
+// Volume is participation, not a bullish/bearish vote: use a neutral accent.
+color relativeVolumeColor = na(relativeVolume) ? flatColor : relativeVolume >= strongVolume ? #42A5F5 : flatColor
+float pressureRange = high - low
+float buyPressure = pressureRange > 0 ? math.max(0, math.min(100, 100 * (close - low) / pressureRange)) : na
+float sellPressure = not na(buyPressure) ? 100 - buyPressure : na
+float splitBase = math.min(open, close)
+float splitTop = math.max(open, close)
+float splitLevel = splitBase + (splitTop - splitBase) * buyPressure / 100
+bool splitVisible = showSplitCandles and (pressureLive or barstate.isconfirmed) and not na(buyPressure) and splitTop > splitBase
+plotcandle(splitVisible ? splitBase : na, splitVisible ? high : na, splitVisible ? low : na, splitVisible ? splitLevel : na, title = "Estimated Buy Body", color = pressureBuyColor, wickcolor = color.gray, bordercolor = pressureBuyColor, force_overlay = true)
+plotcandle(splitVisible ? splitLevel : na, splitVisible ? splitTop : na, splitVisible ? splitLevel : na, splitVisible ? splitTop : na, title = "Estimated Sell Body", color = pressureSellColor, wickcolor = na, bordercolor = pressureSellColor, force_overlay = true)
+// Price-chart EMA overlays use the chart timeframe and configurable lengths.
+showPriceEmas = input.bool(true, "Show EMA Lines", group = "EMA Lines")
+emaLineWidth = input.int(2, "EMA Line Width", minval = 1, maxval = 4, group = "EMA Lines")
+ema9Color = input.color(#26A69A, "EMA 1 Color", group = "EMA Lines")
+ema21Color = input.color(#42A5F5, "EMA 2 Color", group = "EMA Lines")
+ema50Color = input.color(#FFB74D, "EMA 3 Color", group = "EMA Lines")
+ema100Color = input.color(#AB47BC, "EMA 4 Color", group = "EMA Lines")
+chartEma1 = ta.ema(close, emaPeriod1)
+chartEma2 = ta.ema(close, emaPeriod2)
+chartEma3 = ta.ema(close, emaPeriod3)
+chartEma4 = ta.ema(close, emaPeriod4)
+plot(showPriceEmas ? chartEma1 : na, "EMA 1 (Default 9)", color = ema9Color, linewidth = emaLineWidth, force_overlay = true)
+plot(showPriceEmas ? chartEma2 : na, "EMA 2 (Default 21)", color = ema21Color, linewidth = emaLineWidth, force_overlay = true)
+plot(showPriceEmas ? chartEma3 : na, "EMA 3 (Default 50)", color = ema50Color, linewidth = emaLineWidth, force_overlay = true)
+plot(showPriceEmas ? chartEma4 : na, "EMA 4 (Default 100)", color = ema100Color, linewidth = emaLineWidth, force_overlay = true)
+
+// Previous-day levels use regular hours. VWAP has a separate session choice.
+// Pine rollback recomputes the live bar from the previous committed sums,
+// so cumulative volume updates are not counted multiple times.
+bool contextSession = sessionChartSupported and session.ismarket and hour(time, "America/New_York") * 60 + minute(time, "America/New_York") >= 570 and hour(time, "America/New_York") < 16
+var int vwapDate = na
+var bool vwapStarted = false
+var bool vwapMissingVolume = false
+var float sumPriceVolume = 0.0
+var float sumVolume = 0.0
+if na(vwapDate) or nyDate != vwapDate
+    vwapDate := nyDate
+    vwapStarted := false
+    vwapMissingVolume := false
+    sumPriceVolume := 0.0
+    sumVolume := 0.0
+bool vwapInSession = vwapAnchor == "Full Day" ? sessionChartSupported : contextSession
+if vwapInSession and (vwapAnchor == "Full Day" or openingCandle)
+    vwapStarted := true
+if vwapInSession and vwapStarted
+    if na(volume)
+        vwapMissingVolume := true
+    else
+        sumPriceVolume += hlc3 * volume
+        sumVolume += volume
+float sessionVwap = vwapInSession and vwapStarted and not vwapMissingVolume and sumVolume > 0 ? sumPriceVolume / sumVolume : na
+// Previous completed regular-session DAILY bar, never the developing day.
+string regularSymbol = ticker.new(syminfo.prefix, syminfo.ticker, session.regular)
+[previousDayHigh, previousDayLow] = request.security(regularSymbol, "1D", [high[1], low[1]], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+// Hide connecting strokes at a new session even on regular-hours-only charts.
+bool sessionStartStroke = openingCandle or (not na(nyDate[1]) and nyDate != nyDate[1])
+bool vwapStartStroke = vwapAnchor == "Full Day" ? (not na(nyDate[1]) and nyDate != nyDate[1]) : sessionStartStroke
+plot(showVwap ? sessionVwap : na, "Session VWAP", color = vwapStartStroke ? na : vwapColor, linewidth = vwapWidth, style = plot.style_linebr, force_overlay = true)
+plot(showPrevHigh and contextSession ? previousDayHigh : na, "Previous Session High", color = sessionStartStroke ? na : prevHighColor, linewidth = prevLevelWidth, style = plot.style_linebr, force_overlay = true)
+plot(showPrevLow and contextSession ? previousDayLow : na, "Previous Session Low", color = sessionStartStroke ? na : prevLowColor, linewidth = prevLevelWidth, style = plot.style_linebr, force_overlay = true)
+
+// Zones are created only at pivot confirmation, then drawn back to the source candle.
+// The historical left edge identifies origin, not when the zone became available.
+var array<box> supportZones = array.new<box>()
+var array<box> resistanceZones = array.new<box>()
+maintainZones(array<box> zones, bool isSupport) =>
+    if array.size(zones) > 0
+        for i = array.size(zones) - 1 to 0
+            box z = array.get(zones, i)
+            bool invalid = isSupport ? close < box.get_bottom(z) : close > box.get_top(z)
+            bool expired = bar_index - (box.get_left(z) + zonePivotBars) >= zoneMaxAge
+            if invalid or expired
+                box.delete(array.remove(zones, i))
+            else
+                box.set_right(z, bar_index + 1)
+
+addZone(array<box> zones, int originBar, float bottom, float top, color tint, float separation) =>
+    bool distinct = true
+    if array.size(zones) > 0
+        for z in zones
+            if bottom <= box.get_top(z) + separation and top >= box.get_bottom(z) - separation
+                distinct := false
+    if distinct
+        box z = box.new(left = originBar, top = top, right = bar_index + 1, bottom = bottom, border_color = color.new(tint, 15), border_width = 2, bgcolor = color.new(tint, zoneTransparency), force_overlay = true)
+        array.push(zones, z)
+        if array.size(zones) > zoneCount
+            box.delete(array.shift(zones))
+
+float zoneLow = ta.pivotlow(low, zonePivotBars, zonePivotBars)
+float zoneHigh = ta.pivothigh(high, zonePivotBars, zonePivotBars)
+float pivotAtr = atrValue[zonePivotBars]
+float recentLowestClose = ta.lowest(close, zonePivotBars + 1)
+float recentHighestClose = ta.highest(close, zonePivotBars + 1)
+if showZones and barstate.isconfirmed
+    maintainZones(supportZones, true)
+    maintainZones(resistanceZones, false)
+    if not na(pivotAtr)
+        float zoneHeight = math.max(syminfo.mintick, pivotAtr * zoneWidthAtr)
+        float separation = pivotAtr * zoneMergeAtr
+        if not na(zoneLow) and recentLowestClose >= zoneLow
+            addZone(supportZones, bar_index - zonePivotBars, zoneLow, zoneLow + zoneHeight, zoneSupportColor, separation)
+        if not na(zoneHigh) and recentHighestClose <= zoneHigh
+            addZone(resistanceZones, bar_index - zonePivotBars, zoneHigh - zoneHeight, zoneHigh, zoneResistanceColor, separation)
+
+// Confirmed three-candle gaps, visually anchored at the middle impulse candle.
+// Fixed one-bar shadow: middle impulse candle to the confirming candle. No forward extension.
+// The footprint stays fixed; only the unfilled price interval shrinks.
+type FairValueGap
+    box area
+    bool bullish
+    int detectedAt
+
+removeGap(FairValueGap gap) =>
+    box.delete(gap.area)
+
+var array<FairValueGap> fvgZones = array.new<FairValueGap>()
+// Process existing gaps before detecting new ones. Confirmed wicks count as fills.
+if showFvg and barstate.isconfirmed and array.size(fvgZones) > 0
+    for i = array.size(fvgZones) - 1 to 0
+        FairValueGap gap = array.get(fvgZones, i)
+        float top = box.get_top(gap.area)
+        float bottom = box.get_bottom(gap.area)
+        bool filled = gap.bullish ? low <= bottom : high >= top
+        bool expired = bar_index - gap.detectedAt >= fvgMaxAge
+        if filled or expired
+            removeGap(array.remove(fvgZones, i))
+        else
+            if gap.bullish
+                top := math.min(top, low)
+            else
+                bottom := math.max(bottom, high)
+            box.set_top(gap.area, top)
+            box.set_bottom(gap.area, bottom)
+
+int expectedBarMs = int(timeframe.in_seconds() * 1000)
+bool sameExchangeDate = year(time) == year(time[2]) and month(time) == month(time[2]) and dayofmonth(time) == dayofmonth(time[2])
+bool continuousBars = timeframe.isintraday and time - time[1] == expectedBarMs and time[1] - time[2] == expectedBarMs and sameExchangeDate
+if showFvg and barstate.isconfirmed and bar_index >= 2 and not na(scale) and (not fvgContinuous or continuousBars)
+    float minGap = math.max(syminfo.mintick, scale * fvgMinAtr)
+    bool bullGap = low - high[2] >= minGap
+    bool bearGap = low[2] - high >= minGap
+    if bullGap or bearGap
+        float gapTop = bullGap ? low : low[2]
+        float gapBottom = bullGap ? high[2] : high
+        color gapColor = bullGap ? fvgBullColor : fvgBearColor
+        // Created only at the third candle close, despite the middle-candle anchor.
+        box marker = box.new(left = bar_index - 1, top = gapTop, right = bar_index, bottom = gapBottom, border_color = na, border_width = 0, bgcolor = color.new(gapColor, fvgTransparency), force_overlay = true)
+        array.push(fvgZones, FairValueGap.new(marker, bullGap, bar_index))
+        if array.size(fvgZones) > fvgCount
+            removeGap(array.shift(fvgZones))
+
+// Latest confirmed wick swings; bias follows the last confirmed break.
+// Initial break seeds direction and is labeled BOS; opposite breaks are CHoCH.
+// This is a swing-break model, not a protected-swing/inducement model.
+float breakPivotHigh = ta.pivothigh(high, breakPivotBars, breakPivotBars)
+float breakPivotLow = ta.pivotlow(low, breakPivotBars, breakPivotBars)
+var float watchedHigh = na
+var float watchedLow = na
+var int watchedHighBar = na
+var int watchedLowBar = na
+var int watchedHighTime = na
+var int watchedLowTime = na
+var bool highConsumed = true
+var bool lowConsumed = true
+var int breakBias = 0
+var array<line> structureLines = array.new<line>()
+var array<label> structureLabels = array.new<label>()
+string structureFont = breakTextSize == "Small" ? size.small : breakTextSize == "Normal" ? size.normal : size.tiny
+
+markStructure(int startTime, float level, bool bullish, bool changeOfCharacter) =>
+    color tint = bullish ? breakBullColor : breakBearColor
+    string caption = changeOfCharacter ? "CHoCH" : "BOS"
+    line stroke = line.new(startTime, level, time, level, xloc = xloc.bar_time, color = tint, style = changeOfCharacter ? line.style_solid : line.style_dashed, width = breakLineWidth, force_overlay = true)
+    int labelTime = startTime + int((time - startTime) / 2)
+    float labelLevel = level - math.max(syminfo.mintick, nz(scale, 0.0) * 0.05)
+    label tag = label.new(x = labelTime, y = labelLevel, text = caption, xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_up, color = color.new(tint, 100), textcolor = tint, size = structureFont, tooltip = (bullish ? "Bullish " : "Bearish ") + caption + ": confirmed close beyond a wick swing. The first break initializes direction as BOS. CHoCH indicates an opposite structure break, not a guaranteed reversal.", force_overlay = true)
+    array.push(structureLines, stroke)
+    array.push(structureLabels, tag)
+    if array.size(structureLines) > breakHistory
+        line.delete(array.shift(structureLines))
+        label.delete(array.shift(structureLabels))
+
+if barstate.isconfirmed
+    if not na(breakPivotHigh)
+        watchedHigh := breakPivotHigh
+        watchedHighBar := bar_index - breakPivotBars
+        watchedHighTime := time[breakPivotBars]
+        highConsumed := false
+    if not na(breakPivotLow)
+        watchedLow := breakPivotLow
+        watchedLowBar := bar_index - breakPivotBars
+        watchedLowTime := time[breakPivotBars]
+        lowConsumed := false
+    if not highConsumed and bar_index - watchedHighBar > breakLevelAge
+        highConsumed := true
+    if not lowConsumed and bar_index - watchedLowBar > breakLevelAge
+        lowConsumed := true
+    bool breakUp = not highConsumed and not na(watchedHigh) and close > watchedHigh and close[1] <= watchedHigh
+    bool breakDown = not lowConsumed and not na(watchedLow) and close < watchedLow and close[1] >= watchedLow
+    if breakUp
+        bool isChoch = breakBias == -1
+        highConsumed := true
+        breakBias := 1
+        if isChoch ? showChoch : showBos
+            markStructure(watchedHighTime, watchedHigh, true, isChoch)
+    else if breakDown
+        bool isChoch = breakBias == 1
+        lowConsumed := true
+        breakBias := -1
+        if isChoch ? showChoch : showBos
+            markStructure(watchedLowTime, watchedLow, false, isChoch)
+
+// Equal wick extremes. Historical connectors appear only when the second pivot is confirmed.
+showEql = input.bool(true, "Show Equal Lows (EQL)", group = "Equal Highs / Lows")
+showEqh = input.bool(true, "Show Equal Highs (EQH)", group = "Equal Highs / Lows")
+equalBars = input.int(3, "Confirmation Bars", minval = 1, maxval = 20, group = "Equal Highs / Lows")
+equalAtr = input.float(0.10, "Equality Tolerance (ATR)", minval = 0, maxval = 1, step = 0.05, group = "Equal Highs / Lows")
+equalTicks = input.int(1, "Minimum Tolerance (Ticks)", minval = 0, maxval = 20, group = "Equal Highs / Lows")
+equalMaxAge = input.int(100, "Maximum Separation (Bars)", minval = 2, maxval = 1000, group = "Equal Highs / Lows")
+equalKeep = input.int(10, "Maximum Equal-Level Marks", minval = 1, maxval = 30, group = "Equal Highs / Lows")
+equalLowColor = input.color(#26A69A, "EQL Color", group = "Equal Highs / Lows")
+equalHighColor = input.color(#FF5252, "EQH Color", group = "Equal Highs / Lows")
+float equalLow = ta.pivotlow(low, equalBars, equalBars)
+float equalHigh = ta.pivothigh(high, equalBars, equalBars)
+float equalTolerance = math.max(equalTicks * syminfo.mintick, nz(ta.atr(atrLength)[equalBars], 0.0) * equalAtr)
+var array<line> equalLines = array.new<line>()
+var array<label> equalLabels = array.new<label>()
+
+markEqual(float pivot, bool isLow, bool enabled) =>
+    var float previous = na
+    var int previousBar = na
+    var int previousTime = na
+    if barstate.isconfirmed and not na(pivot)
+        int pivotBar = bar_index - equalBars
+        int pivotTime = time[equalBars]
+        bool matches = not na(previous) and pivotBar - previousBar <= equalMaxAge and math.abs(pivot - previous) <= equalTolerance
+        if enabled and matches
+            color tint = isLow ? equalLowColor : equalHighColor
+            string caption = isLow ? "EQL" : "EQH"
+            line connector = line.new(previousTime, previous, pivotTime, pivot, xloc = xloc.bar_time, color = tint, width = 2, style = line.style_dotted, force_overlay = true)
+            float middleLevel = (previous + pivot) / 2 - math.max(syminfo.mintick, nz(scale, 0.0) * 0.05)
+            label captionLabel = label.new(previousTime + int((pivotTime - previousTime) / 2), middleLevel, caption, xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_up, color = color.new(tint, 100), textcolor = tint, size = structureFont, tooltip = caption + ": two consecutive confirmed wick pivots within tolerance. Known " + str.tostring(equalBars) + " bars after the second pivot. Historical connector, not a live unbroken level or a reversal signal. Confirmed at " + str.format_time(time_close, "MM-dd HH:mm", syminfo.timezone), force_overlay = true)
+            array.push(equalLines, connector)
+            array.push(equalLabels, captionLabel)
+            if array.size(equalLines) > equalKeep
+                line.delete(array.shift(equalLines))
+                label.delete(array.shift(equalLabels))
+        previous := pivot
+        previousBar := pivotBar
+        previousTime := pivotTime
+
+// Separate written calls maintain independent high/low pivot history.
+markEqual(equalLow, true, showEql)
+markEqual(equalHigh, false, showEqh)
+
+// Microstructure: independent price-action context, including when price visits an FVG.
+// This does not certify that an FVG held and does not estimate win probability.
+showMicro = input.bool(true, "Show Microstructure Status", group = "Microstructure")
+microTf = input.timeframe("1", "Analysis Timeframe", options = ["1", "3", "5"], group = "Microstructure")
+microPivot = input.int(2, "Swing Confirmation Bars", minval = 1, maxval = 5, group = "Microstructure", tooltip = "Pivots become known after this many analysis candles. No labels are backdated to the pivot candle.")
+microTimeout = input.int(30, "Reclaim Expiry (Analysis Bars)", minval = 5, maxval = 120, group = "Microstructure")
+microBufferTicks = input.int(1, "Close Break Buffer (Ticks)", minval = 0, maxval = 20, group = "Microstructure")
+microSize = input.string("Small", "Status Size", options = ["Tiny", "Small", "Normal"], group = "Microstructure")
+microBullColor = input.color(#26A69A, "Recovery / Rising Color", group = "Microstructure")
+microBearColor = input.color(#EF5350, "Decline / Falling Color", group = "Microstructure")
+microWaitColor = input.color(#D4A72C, "Reclaim Color", group = "Microstructure")
+
+// Codes: -3 Decline, -2 Reclaim Down, -1 Falling, 0 Mixed,
+//         1 Rising, 2 Reclaim Up, 3 Recovery.
+// Runs in the analysis timeframe. No barstate.isconfirmed inside a request:
+// the caller selects only results whose analysis candle has closed.
+microStructure() =>
+    float ph = ta.pivothigh(high, microPivot, microPivot)
+    float pl = ta.pivotlow(low, microPivot, microPivot)
+    var float lastH = na
+    var float prevH = na
+    var float lastL = na
+    var float prevL = na
+    var int mode = 0
+    var int started = na
+    var float guard = na
+    var float trigger = na
+    var int triggerBar = na
+    var float retest = na
+    float buffer = microBufferTicks * syminfo.mintick
+    // A long data gap breaks the continuity required for this short-term setup.
+    bool reset = not na(time_close[1]) and time - time_close[1] > 30 * 60000
+    if reset
+        lastH := na
+        prevH := na
+        lastL := na
+        prevL := na
+        mode := 0
+        started := na
+        guard := na
+        trigger := na
+        triggerBar := na
+        retest := na
+    // Discard pivots that straddle the reset gap.
+    int sinceGap = ta.barssince(reset)
+    bool pivotUsable = na(sinceGap) or sinceGap > 2 * microPivot
+    if not na(ph) and pivotUsable
+        prevH := lastH
+        lastH := ph
+    if not na(pl) and pivotUsable
+        prevL := lastL
+        lastL := pl
+    bool upBreak = not na(lastH) and close > lastH + buffer
+    bool downBreak = not na(lastL) and close < lastL - buffer
+    int before = mode
+    if math.abs(mode) == 2
+        int direction = mode > 0 ? 1 : -1
+        bool failed = direction == 1 ? close < guard - buffer : close > guard + buffer
+        bool expired = bar_index - started > microTimeout
+        if failed or expired
+            mode := -direction
+            guard := na
+            trigger := na
+            retest := na
+        else
+            // First post-reclaim swing establishes a fixed continuation trigger.
+            float turn = direction == 1 ? ph : pl
+            float pullback = direction == 1 ? pl : ph
+            int pivotAt = bar_index - microPivot
+            if na(trigger) and not na(turn) and pivotAt > started
+                trigger := turn
+                triggerBar := pivotAt
+            if not na(trigger) and not na(pullback) and pivotAt > triggerBar
+                bool holds = direction == 1 ? pullback > guard + buffer : pullback < guard - buffer
+                retest := holds ? pullback : na
+            // A later sweep cancels the previously confirmed retest.
+            if not na(retest) and (direction == 1 ? low < retest : high > retest)
+                retest := na
+            bool continues = not na(trigger) and not na(retest) and (direction == 1 ? close > trigger + buffer : close < trigger - buffer)
+            if continues
+                mode := direction * 3
+                guard := retest
+    else if math.abs(mode) == 3
+        int direction = mode > 0 ? 1 : -1
+        // Test the prior protection level before advancing it with a new pivot.
+        bool failed = direction == 1 ? close < guard - buffer : close > guard + buffer
+        if failed
+            mode := -direction
+            guard := na
+        else if direction == 1 and not na(pl)
+            guard := math.max(guard, pl)
+        else if direction == -1 and not na(ph)
+            guard := math.min(guard, ph)
+    else
+        if mode == 0
+            bool hhhl = not na(prevH) and not na(prevL) and lastH > prevH and lastL > prevL
+            bool lhll = not na(prevH) and not na(prevL) and lastH < prevH and lastL < prevL
+            mode := hhhl or upBreak ? 1 : lhll or downBreak ? -1 : 0
+        else if mode == -1 and upBreak and not na(lastL)
+            mode := 2
+            guard := math.min(lastL, low)
+        else if mode == 1 and downBreak and not na(lastH)
+            mode := -2
+            guard := math.max(lastH, high)
+        if math.abs(mode) == 2 and mode != before
+            started := bar_index
+            trigger := na
+            triggerBar := na
+            retest := na
+    [mode, time_close, guard, close]
+
+// Arrays contain all available intrabars, ordered by time. Historical coverage
+// depends on TradingView intrabar availability. Empty data never means Neutral.
+[microModes, microTimes, microGuards, microCloses] = request.security_lower_tf(syminfo.tickerid, microTf, microStructure(), ignore_invalid_timeframe = true)
+[localMicroMode, localMicroTime, localMicroGuard, localMicroClose] = microStructure()
+var int microShownMode = 0
+var int microShownTime = na
+var float microShownGuard = na
+var float microShownClose = na
+bool microSupported = chart.is_standard and timeframe.isintraday and timeframe.in_seconds() >= timeframe.in_seconds(microTf)
+bool microSameTf = timeframe.in_seconds() == timeframe.in_seconds(microTf)
+if microSupported
+    if microSameTf
+        if barstate.isconfirmed
+            microShownMode := localMicroMode
+            microShownTime := localMicroTime
+            microShownGuard := localMicroGuard
+            microShownClose := localMicroClose
+    else if array.size(microTimes) > 0
+        for i = 0 to array.size(microTimes) - 1
+            int closedAt = array.get(microTimes, i)
+            if not na(closedAt) and closedAt <= timenow
+                microShownMode := array.get(microModes, i)
+                microShownTime := closedAt
+                microShownGuard := array.get(microGuards, i)
+                microShownClose := array.get(microCloses, i)
+// Normal Pine rollback recomputes the current chart bar from its closed
+// intrabars on each update. No varip state and no future-looking pivot offsets.
+var label microStatus = na
+if barstate.islast
+    if not na(microStatus)
+        label.delete(microStatus)
+        microStatus := na
+    if showMicro
+        bool stale = na(microShownTime) or time - microShownTime > 30 * 60000
+        string stateCaption = switch microShownMode
+            3 => "Recovery"
+            2 => "Reclaim Up"
+            1 => "Rising"
+            -1 => "Falling"
+            -2 => "Reclaim Down"
+            -3 => "Decline"
+            => "Mixed"
+        string status = not microSupported ? "Use standard intraday chart >= analysis TF" : stale ? "No recent intrabar data" : stateCaption
+        color tint = not microSupported or stale or microShownMode == 0 ? color.gray : math.abs(microShownMode) == 2 ? microWaitColor : microShownMode > 0 ? microBullColor : microBearColor
+        string stamp = na(microShownTime) ? "Unavailable" : str.format_time(microShownTime, "HH:mm", "America/New_York") + " NY"
+        string details = "Last closed analysis candle: " + stamp + "\nReclaim: close broke an opposing swing.\nRecovery / Decline: confirmed retest, then continuation close.\nPivot delay: " + str.tostring(microPivot) + " analysis bars.\nIndependent microstructure; does not guarantee an FVG bounce."
+        if not na(microShownGuard) and not stale
+            details += "\nClose invalidation: " + str.tostring(microShownGuard, format.mintick) + " (plus configured break buffer)."
+        microStatus := label.new(bar_index + 1, close, microTf + "m | " + status, style = label.style_label_left, color = color.new(tint, 15), textcolor = color.white, size = microSize == "Tiny" ? size.tiny : microSize == "Normal" ? size.normal : size.small, tooltip = details, force_overlay = true)
+plot(microSupported and not na(microShownTime) ? microShownMode : na, "Microstructure State (-3 to 3)", display = display.data_window)
+
+
+// Swing Volume Bubbles, adapted from the Crypto conversation.
+// Uses candle OHLCV, not individual executions, bid/ask delta or order-book data.
+// Existing BOS / CHoCH engine is shared; no duplicate structure labels or alerts.
+showSwingBubbles = input.bool(true, "Show Swing Volume Bubbles", group = "Swing Volume Bubbles")
+bubblePivotBars = input.int(3, "Pivot Confirmation Bars", minval = 1, maxval = 20, group = "Swing Volume Bubbles")
+bubbleVolumeLength = input.int(50, "Volume Average Length", minval = 5, maxval = 500, group = "Swing Volume Bubbles", tooltip = "Simple average ending at the pivot candle, including its volume. The ratio is candle volume / this average.")
+bubbleMedium = input.float(1.5, "Medium Bubble (Relative Volume)", minval = 1.0, step = 0.1, group = "Swing Volume Bubbles")
+bubbleLarge = input.float(2.0, "Large Bubble (Relative Volume)", minval = 1.0, step = 0.1, group = "Swing Volume Bubbles")
+bubbleXL = input.float(2.5, "XL Bubble (Relative Volume)", minval = 1.0, step = 0.1, group = "Swing Volume Bubbles", tooltip = "Thresholds must satisfy Medium < Large < XL.")
+bubbleShowNormal = input.bool(false, "Show Normal Swing Pivots", group = "Swing Volume Bubbles")
+bubbleShowRatio = input.bool(false, "Show Volume Ratio", group = "Swing Volume Bubbles")
+bubbleKeep = input.int(60, "Maximum Bubble Markers", minval = 1, maxval = 150, group = "Swing Volume Bubbles")
+bubbleTint = input.color(#2DB450, "Bullish Pressure Bubble", group = "Swing Volume Bubbles")
+bubbleSellTint = input.color(#EF5350, "Bearish Pressure Bubble", group = "Swing Volume Bubbles")
+bubbleBalancedTint = input.color(#90A4AE, "Balanced Pressure Bubble", group = "Swing Volume Bubbles")
+bubbleColorMode = input.string("Close Position Estimate", "Bubble Color Mode", options = ["Close Position Estimate", "Single Color"], group = "Swing Volume Bubbles", tooltip = "Estimated price pressure, not actual buy/sell volume. Upper-range close is green, lower-range close red, middle gray. Size still measures total relative volume.")
+bubblePressureBand = input.float(0.10, "Neutral Half-Band", minval = 0.0, maxval = 0.45, step = 0.05, group = "Swing Volume Bubbles", tooltip = "0.10: closes above 60% of the candle range are bullish; below 40% bearish. Zero-range candles are neutral.")
+bubbleNormalTint = input.color(color.new(color.gray, 35), "Normal Pivot Color", group = "Swing Volume Bubbles")
+if showSwingBubbles and (bubbleMedium >= bubbleLarge or bubbleLarge >= bubbleXL)
+    runtime.error("Swing Volume Bubbles: use Medium < Large < XL.")
+float bubbleAverage = ta.sma(volume, bubbleVolumeLength)
+float bubbleHigh = ta.pivothigh(high, bubblePivotBars, bubblePivotBars)
+float bubbleLow = ta.pivotlow(low, bubblePivotBars, bubblePivotBars)
+float bubblePivotVolume = volume[bubblePivotBars]
+float bubblePivotAverage = bubbleAverage[bubblePivotBars]
+float bubbleRatio = not na(bubblePivotVolume) and not na(bubblePivotAverage) and bubblePivotAverage > 0 ? bubblePivotVolume / bubblePivotAverage : na
+var array<label> swingBubbleLabels = array.new<label>()
+
+addSwingBubble(float level, bool isHigh, float ratio) =>
+    bool elevated = ratio >= bubbleMedium
+    string markerSize = ratio >= bubbleXL ? size.huge : ratio >= bubbleLarge ? size.large : elevated ? size.normal : size.small
+    int fade = ratio >= bubbleXL ? 0 : ratio >= bubbleLarge ? 10 : 20
+    string symbol = elevated ? (ratio >= bubbleXL ? "◉" : "○") : "·"
+    string caption = symbol + (bubbleShowRatio ? "\n" + str.tostring(ratio, "#.##") + "x" : "")
+    float candleRange = high[bubblePivotBars] - low[bubblePivotBars]
+    float closePosition = candleRange > 0 ? (close[bubblePivotBars] - low[bubblePivotBars]) / candleRange : 0.5
+    int pressureSide = closePosition > 0.5 + bubblePressureBand ? 1 : closePosition < 0.5 - bubblePressureBand ? -1 : 0
+    color pressureTint = bubbleColorMode == "Single Color" ? bubbleTint : pressureSide > 0 ? bubbleTint : pressureSide < 0 ? bubbleSellTint : bubbleBalancedTint
+    string pressureNote = pressureSide > 0 ? "Bullish price pressure estimate" : pressureSide < 0 ? "Bearish price pressure estimate" : "Balanced price pressure estimate"
+    string hint = (isHigh ? "Swing High" : "Swing Low") + "\nPivot candle volume: " + str.tostring(bubblePivotVolume, format.volume) + "\nRelative volume: " + str.tostring(ratio, "#.##") + "x\nKnown only after " + str.tostring(bubblePivotBars) + " later candles closed.\nConfirmed at: " + str.format_time(time_close, "yyyy-MM-dd HH:mm", "America/New_York") + " NY\nMarker is placed on the earlier pivot candle. Not individual trades or a Buy/Sell signal."
+    hint += "\n" + pressureNote + "\nClose position: " + str.tostring(closePosition * 100, "#.0") + "% of candle range. Not measured buy/sell volume."
+    label dot = label.new(bar_index - bubblePivotBars, level, caption, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, textcolor = elevated ? color.new(pressureTint, fade) : bubbleNormalTint, size = markerSize, tooltip = hint, force_overlay = true)
+    array.push(swingBubbleLabels, dot)
+    if array.size(swingBubbleLabels) > bubbleKeep
+        label.delete(array.shift(swingBubbleLabels))
+
+// Volume and pivot must both be available. No zero substitute for missing data.
+if showSwingBubbles and chart.is_standard and barstate.isconfirmed and not na(bubbleRatio)
+    if bubbleRatio >= bubbleMedium or bubbleShowNormal
+        if not na(bubbleHigh)
+            addSwingBubble(bubbleHigh, true, bubbleRatio)
+        if not na(bubbleLow)
+            addSwingBubble(bubbleLow, false, bubbleRatio)

@@ -1,0 +1,1101 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Uncle_the_shooter
+
+//@version=6
+indicator("Key Level Sweep & Breakout", overlay = true, max_lines_count = 500, max_boxes_count = 500, max_labels_count = 500)
+
+// Inputs
+string NEWDAY_GROUP    = "1. Day / Week / Month Reset"
+string HIGH_GROUP      = "2. Previous Day High (PDH)"
+string LOW_GROUP       = "3. Previous Day Low (PDL)"
+string ATR_GROUP       = "4. ATR Levels (from Day Open)"
+string OPEN_GROUP      = "5. Day/Session Open"
+string WEEK_GROUP      = "6. Previous Week (PWH/PWL)"
+string MONTH_GROUP     = "7. Previous Month (PMH/PML)"
+string RANGE_GROUP     = "8. High-Low Range (Fill)"
+string RANGEDIV_GROUP  = "9. Range Division Levels"
+string SWEEP_GROUP     = "10. Sweep / Breakout Signals"
+string LABELS_GROUP    = "11. Labels (Global Settings)"
+string LIVEPRICE_GROUP = "12. Live Price at Line End"
+string STYLE_GROUP     = "13. History (Number of Past Levels)"
+string TABLE_GROUP     = "14. Distance-from-Levels Table"
+
+// 1. DAY / WEEK / MONTH RESET
+string dayModeInput = input.string("Instrument Session (default)", "Day Reset Method", group = NEWDAY_GROUP,
+     options = ["Instrument Session (default)", "Fixed Time (manual)"],
+     tooltip = "Determines the moment at which the indicator considers a new trading day to have started — and therefore when the previous day's PDH/PDL/Open/ATR are \"frozen\". The same rule also defines the week and month boundaries (PWH/PWL/PMH/PML).\n\n\"Instrument Session\" — reset follows the session defined for the given symbol (session.isfirstbar), depending on the exchange and traded instrument.\n\"Fixed Time\" — reset is set manually, to the minute, in a single chosen time zone — identical for every instrument, regardless of its native session.")
+int    fixedHourInput   = input.int(0, "Hour", group = NEWDAY_GROUP, inline = "fixedtime", minval = 0, maxval = 23,
+     tooltip = "Hour and minute (in the time zone defined below) at which the day reset occurs. Active only with the \"Fixed Time\" method.")
+int    fixedMinuteInput = input.int(0, "Minute", group = NEWDAY_GROUP, inline = "fixedtime", minval = 0, maxval = 59)
+int    utcOffsetHourInput   = input.int(2, "UTC Offset — Hours", group = NEWDAY_GROUP, inline = "utcoff", minval = -12, maxval = 14,
+     tooltip = "Time zone (offset from UTC) in which the reset time is calculated. Used only with the \"Fixed Time\" method.")
+int    utcOffsetMinuteInput = input.int(0, "minutes", group = NEWDAY_GROUP, inline = "utcoff", minval = 0, maxval = 59)
+string fixedTzInput = "UTC" + (utcOffsetHourInput >= 0 ? "+" : "-") + str.tostring(math.abs(utcOffsetHourInput)) + (utcOffsetMinuteInput > 0 ? ":" + str.tostring(utcOffsetMinuteInput, "00") : "")
+
+// 2. PDH — previous day's high
+bool   showHighInput   = input.bool(true, "Show", group = HIGH_GROUP, inline = "h1",
+     tooltip = "Draws the previous day's high (PDH) line — a typical resistance level and reference point for sweep/breakout signals.")
+color  highColorInput  = input.color(#f23645, "Color", group = HIGH_GROUP, inline = "h1")
+string highStyleInput  = input.string("Solid", "Style", group = HIGH_GROUP, inline = "h2", options = ["Solid", "Dashed", "Dotted"],
+     tooltip = "Style, width and transparency of the PDH line.")
+int    highWidthInput  = input.int(1, "Width", group = HIGH_GROUP, inline = "h2", minval = 1, maxval = 4)
+int    highTranspInput = input.int(15, "Transparency", group = HIGH_GROUP, inline = "h2", minval = 0, maxval = 100)
+
+// 3. PDL — previous day's low
+bool   showLowInput   = input.bool(true, "Show", group = LOW_GROUP, inline = "l1",
+     tooltip = "Draws the previous day's low (PDL) line — a typical support level and reference point for sweep/breakout signals.")
+color  lowColorInput  = input.color(#089981, "Color", group = LOW_GROUP, inline = "l1")
+string lowStyleInput  = input.string("Solid", "Style", group = LOW_GROUP, inline = "l2", options = ["Solid", "Dashed", "Dotted"],
+     tooltip = "Style, width and transparency of the PDL line.")
+int    lowWidthInput  = input.int(1, "Width", group = LOW_GROUP, inline = "l2", minval = 1, maxval = 4)
+int    lowTranspInput = input.int(15, "Transparency", group = LOW_GROUP, inline = "l2", minval = 0, maxval = 100)
+
+// 4. ATR — levels offset from the open by a multiple of ATR
+bool   showATRInput   = input.bool(true, "Show", group = ATR_GROUP, inline = "atr1",
+     tooltip = "Draws two lines at a fixed distance (in ATR multiples) above and below the day's opening price — a rough \"expected range\" for today's move.")
+color  atrColorInput  = input.color(#787b86, "Color", group = ATR_GROUP, inline = "atr1")
+string atrStyleInput  = input.string("Solid", "Style", group = ATR_GROUP, inline = "atr2", options = ["Solid", "Dashed", "Dotted"],
+     tooltip = "Style, width and transparency of the ATR High/Low lines.")
+int    atrWidthInput  = input.int(1, "Width", group = ATR_GROUP, inline = "atr2", minval = 1, maxval = 4)
+int    atrTranspInput = input.int(0, "Transparency", group = ATR_GROUP, inline = "atr2", minval = 0, maxval = 100)
+int    atrLengthInput      = input.int(14, "ATR Length", group = ATR_GROUP, minval = 1,
+     tooltip = "Number of periods used to calculate the Average True Range for the levels offset by a given ATR multiple from the open.")
+string atrTimeframeInput   = input.timeframe("D", "ATR Timeframe", group = ATR_GROUP,
+     tooltip = "ATR is calculated from closed bars of this timeframe (daily by default) and is fixed once at the start of the day, so it doesn't change during the session.")
+float  atrMultiplierInput  = input.float(1.0, "ATR Multiplier", group = ATR_GROUP, minval = 0.1, step = 0.1,
+     tooltip = "Distance of the ATR High/Low levels from the day's open, expressed as a multiple of the ATR value.")
+
+// 5. Day/session open
+bool   showOpenInput   = input.bool(true, "Show", group = OPEN_GROUP, inline = "o1",
+     tooltip = "Draws the current day/session opening price line — a reference point for judging whether the day is developing bullish or bearish.")
+color  openColorInput  = input.color(#787b86, "Color", group = OPEN_GROUP, inline = "o1")
+string openStyleInput  = input.string("Dashed", "Style", group = OPEN_GROUP, inline = "o2", options = ["Solid", "Dashed", "Dotted"],
+     tooltip = "Style, width and transparency of the open line.")
+int    openWidthInput  = input.int(1, "Width", group = OPEN_GROUP, inline = "o2", minval = 1, maxval = 4)
+int    openTranspInput = input.int(0, "Transparency", group = OPEN_GROUP, inline = "o2", minval = 0, maxval = 100)
+
+// 6. PWH / PWL — previous week
+bool   showPWHInput   = input.bool(true, "Show PWH", group = WEEK_GROUP, inline = "pwh1",
+     tooltip = "Draws the previous week's high (PWH) line — a significant resistance level on the weekly scale.")
+color  pwhColorInput  = input.color(#f23645, "Color", group = WEEK_GROUP, inline = "pwh1")
+string pwhStyleInput  = input.string("Solid", "Style", group = WEEK_GROUP, inline = "pwh2", options = ["Solid", "Dashed", "Dotted"],
+     tooltip = "Style, width and transparency of the PWH line.")
+int    pwhWidthInput  = input.int(2, "Width", group = WEEK_GROUP, inline = "pwh2", minval = 1, maxval = 4)
+int    pwhTranspInput = input.int(55, "Transparency", group = WEEK_GROUP, inline = "pwh2", minval = 0, maxval = 100)
+
+bool   showPWLInput   = input.bool(true, "Show PWL", group = WEEK_GROUP, inline = "pwl1",
+     tooltip = "Draws the previous week's low (PWL) line — a significant support level on the weekly scale.")
+color  pwlColorInput  = input.color(#089981, "Color", group = WEEK_GROUP, inline = "pwl1")
+string pwlStyleInput  = input.string("Solid", "Style", group = WEEK_GROUP, inline = "pwl2", options = ["Solid", "Dashed", "Dotted"],
+     tooltip = "Style, width and transparency of the PWL line.")
+int    pwlWidthInput  = input.int(2, "Width", group = WEEK_GROUP, inline = "pwl2", minval = 1, maxval = 4)
+int    pwlTranspInput = input.int(55, "Transparency", group = WEEK_GROUP, inline = "pwl2", minval = 0, maxval = 100)
+
+// 7. PMH / PML — previous month
+bool   showPMHInput   = input.bool(true, "Show PMH", group = MONTH_GROUP, inline = "pmh1",
+     tooltip = "Draws the previous month's high (PMH) line — a key resistance level on a broader time scale.")
+color  pmhColorInput  = input.color(#f23645, "Color", group = MONTH_GROUP, inline = "pmh1")
+string pmhStyleInput  = input.string("Solid", "Style", group = MONTH_GROUP, inline = "pmh2", options = ["Solid", "Dashed", "Dotted"],
+     tooltip = "Style, width and transparency of the PMH line.")
+int    pmhWidthInput  = input.int(3, "Width", group = MONTH_GROUP, inline = "pmh2", minval = 1, maxval = 4)
+int    pmhTranspInput = input.int(75, "Transparency", group = MONTH_GROUP, inline = "pmh2", minval = 0, maxval = 100)
+
+bool   showPMLInput   = input.bool(true, "Show PML", group = MONTH_GROUP, inline = "pml1",
+     tooltip = "Draws the previous month's low (PML) line — a key support level on a broader time scale.")
+color  pmlColorInput  = input.color(#089981, "Color", group = MONTH_GROUP, inline = "pml1")
+string pmlStyleInput  = input.string("Solid", "Style", group = MONTH_GROUP, inline = "pml2", options = ["Solid", "Dashed", "Dotted"],
+     tooltip = "Style, width and transparency of the PML line.")
+int    pmlWidthInput  = input.int(3, "Width", group = MONTH_GROUP, inline = "pml2", minval = 1, maxval = 4)
+int    pmlTranspInput = input.int(75, "Transparency", group = MONTH_GROUP, inline = "pml2", minval = 0, maxval = 100)
+
+// 8. High-Low range (box between PDH and PDL)
+bool   showRangeInput     = input.bool(true, "Show range (box) between High and Low", group = RANGE_GROUP,
+     tooltip = "Highlights the area between the previous day's high and low (PDH-PDL) as a colored rectangle or gradient, making it easier to visually gauge yesterday's range.")
+string rangeFillTypeInput = input.string("Gradient", "Fill Type", group = RANGE_GROUP, options = ["Two-Color", "Gradient"],
+     tooltip = "\"Two-Color\" splits the range into two equal halves (top and bottom), each in its own color. \"Gradient\" creates a smooth color transition between the top and bottom of the range.")
+color  rangeTopColorInput    = input.color(#f23645, "Top Half Color", group = RANGE_GROUP, inline = "gtop",
+     tooltip = "Color and transparency of the upper part of the range (near PDH).")
+int    rangeTopTranspInput   = input.int(85, "Transparency", group = RANGE_GROUP, inline = "gtop", minval = 0, maxval = 100)
+color  rangeBottomColorInput = input.color(#089981, "Bottom Half Color", group = RANGE_GROUP, inline = "gbot",
+     tooltip = "Color and transparency of the lower part of the range (near PDL).")
+int    rangeBottomTranspInput = input.int(85, "Transparency", group = RANGE_GROUP, inline = "gbot", minval = 0, maxval = 100)
+
+// 9. PDH-PDL range division levels (right of the chart)
+bool   showRangeDividersInput = input.bool(true, "Show PDH-PDL range division levels", group = RANGEDIV_GROUP,
+     tooltip = "Draws short horizontal segments just past the last candle at selected percentage levels of the previous day's range (PDH-PDL) — useful, for example, for identifying 25/50/75% zones.")
+float  divLevel1Input = input.float(0.25, "Level 1 (0-1, from PDL)", group = RANGEDIV_GROUP, minval = 0.0, maxval = 1.0, step = 0.01,
+     tooltip = "Level position as a fraction of the PDH-PDL range, measured from PDL (0 = PDL, 1 = PDH). Default 0.25 = 25% of the range.")
+float  divLevel2Input = input.float(0.50, "Level 2 (0-1, from PDL)", group = RANGEDIV_GROUP, minval = 0.0, maxval = 1.0, step = 0.01,
+     tooltip = "Level position as a fraction of the PDH-PDL range, measured from PDL. Default 0.50 = the midpoint of the range (equilibrium).")
+float  divLevel3Input = input.float(0.75, "Level 3 (0-1, from PDL)", group = RANGEDIV_GROUP, minval = 0.0, maxval = 1.0, step = 0.01,
+     tooltip = "Level position as a fraction of the PDH-PDL range, measured from PDL. Default 0.75 = 75% of the range.")
+color  divColorInput  = input.color(#787b86, "Line Color", group = RANGEDIV_GROUP, inline = "divc",
+     tooltip = "Color, width and style of the division-level segments.")
+int    divWidthInput  = input.int(1, "Width", group = RANGEDIV_GROUP, inline = "divc", minval = 1, maxval = 4)
+string divStyleInput  = input.string("Dotted", "Style", group = RANGEDIV_GROUP, options = ["Solid", "Dashed", "Dotted"])
+int    divLengthInput = input.int(20, "Segment Length (in bars)", group = RANGEDIV_GROUP, minval = 1, maxval = 500,
+     tooltip = "Length of each segment, counted in bars from the point where it starts (right after the last candle).")
+int    divOffsetInput = input.int(0, "Horizontal Offset", group = RANGEDIV_GROUP, minval = -500, maxval = 500,
+     tooltip = "0 = the segment begins at the first bar past the last candle. Negative values shift it left, positive values shift it further right.")
+bool   showDivLabelsInput = input.bool(true, "Show % labels at the division levels", group = RANGEDIV_GROUP,
+     tooltip = "Adds a percentage label at each range division level.")
+
+// 10. Sweep (reversal) and Breakout (continuation) signals
+bool   sweepPDHEnabled  = input.bool(true, "Sweep PDH", group = SWEEP_GROUP, inline = "sw1",
+     tooltip = "Detects a sweep (false breakout that reverses back) at the PDH and PDL levels — a wick pierces the level while the close returns to the other side.")
+bool   sweepPDLEnabled  = input.bool(true, "Sweep PDL", group = SWEEP_GROUP, inline = "sw1")
+bool   sweepATRHEnabled = input.bool(true, "Sweep ATR High", group = SWEEP_GROUP, inline = "sw2",
+     tooltip = "Detects a sweep at the ATR High and ATR Low levels.")
+bool   sweepATRLEnabled = input.bool(true, "Sweep ATR Low",  group = SWEEP_GROUP, inline = "sw2")
+bool   sweepPWHEnabled  = input.bool(true, "Sweep PWH", group = SWEEP_GROUP, inline = "sw3",
+     tooltip = "Detects a sweep at the weekly PWH and PWL levels.")
+bool   sweepPWLEnabled  = input.bool(true, "Sweep PWL", group = SWEEP_GROUP, inline = "sw3")
+bool   sweepPMHEnabled  = input.bool(true, "Sweep PMH", group = SWEEP_GROUP, inline = "sw4",
+     tooltip = "Detects a sweep at the monthly PMH and PML levels.")
+bool   sweepPMLEnabled  = input.bool(true, "Sweep PML", group = SWEEP_GROUP, inline = "sw4")
+
+bool   breakoutPDHEnabled  = input.bool(true, "Breakout PDH",     group = SWEEP_GROUP, inline = "bo1",
+     tooltip = "Detects a breakout (trend continuation) at the PDH and PDL levels — price breaks through the level and the close holds on the breakout side.")
+bool   breakoutPDLEnabled  = input.bool(true, "Breakout PDL",     group = SWEEP_GROUP, inline = "bo1")
+bool   breakoutATRHEnabled = input.bool(true, "Breakout ATR High", group = SWEEP_GROUP, inline = "bo2",
+     tooltip = "Detects a breakout at the ATR High and ATR Low levels.")
+bool   breakoutATRLEnabled = input.bool(true, "Breakout ATR Low",  group = SWEEP_GROUP, inline = "bo2")
+bool   breakoutPWHEnabled  = input.bool(true, "Breakout PWH", group = SWEEP_GROUP, inline = "bo3",
+     tooltip = "Detects a breakout at the weekly PWH and PWL levels.")
+bool   breakoutPWLEnabled  = input.bool(true, "Breakout PWL", group = SWEEP_GROUP, inline = "bo3")
+bool   breakoutPMHEnabled  = input.bool(true, "Breakout PMH", group = SWEEP_GROUP, inline = "bo4",
+     tooltip = "Detects a breakout at the monthly PMH and PML levels.")
+bool   breakoutPMLEnabled  = input.bool(true, "Breakout PML", group = SWEEP_GROUP, inline = "bo4")
+
+int    sweepConfirmBars = input.int(6, "Confirmation Window (bars)", group = SWEEP_GROUP, minval = 1, maxval = 20,
+     tooltip = "The counter starts on the candle whose wick pierced the level (bar 0 = breach). The confirming close — back on the other side of the level (sweep) or held on the breakout side (breakout) — must occur on a subsequent candle, not the same one as the breach: from bar 1 up to and including bar sweepConfirmBars. The breaching candle itself never triggers a signal from its own close.")
+color  sweepBuyColor    = input.color(#089981, "Buy Color",  group = SWEEP_GROUP, inline = "swcol",
+     tooltip = "Color used for bullish-bias signals — applied both to the sweep/breakout shapes on the chart and to color the distance-from-levels table.")
+color  sweepSellColor   = input.color(#f23645, "Sell Color", group = SWEEP_GROUP, inline = "swcol")
+bool   showSweepShapes  = input.bool(true,  "Show Sweep Signals", group = SWEEP_GROUP, inline = "swshow",
+     tooltip = "Draws shapes (diamonds) on the chart marking confirmed sweep signals.")
+bool   showBreakoutShapes = input.bool(true, "Show Breakouts", group = SWEEP_GROUP, inline = "swshow",
+     tooltip = "Draws shapes (triangles) on the chart marking confirmed breakout signals.")
+
+int    sweepAtrLengthInput    = input.int(14, "ATR Length (distance filter)", group = SWEEP_GROUP, minval = 1,
+     tooltip = "Length of the ATR used solely to filter the strength of sweep and breakout confirmations (see \"Min. Confirmation Distance\" below).")
+string sweepAtrTimeframeInput = input.timeframe("", "ATR Timeframe (distance filter)", group = SWEEP_GROUP,
+     tooltip = "Timeframe from which the ATR used to filter sweep/breakout confirmation strength is calculated. Empty field = current chart timeframe.")
+float  sweepAtrMultInput      = input.float(1.0, "Min. Confirmation Distance (x ATR)", group = SWEEP_GROUP, minval = 0.0, step = 0.1,
+     tooltip = "The confirming close (sweep or breakout) must be at least this many ATRs away from the breached level for the signal to be valid. A value of 0 means a breakout signal fires on any close outside the level, with no distance requirement.")
+
+// 11. Labels — global settings
+bool   showLabelsInput  = input.bool(true, "Show level labels (all)", group = LABELS_GROUP, inline = "lbl",
+     tooltip = "Master switch controlling all of the indicator's labels: PDH/PDL/PWH/PWL/PMH/PML/Open/ATR, the live-price labels at the end of the lines, and the percentage labels at the range division levels. Turning this off overrides the individual section settings.")
+string labelSizeInput   = input.string("Small", "", group = LABELS_GROUP, inline = "lbl", options = ["Tiny", "Small", "Normal", "Large"])
+int    labelOffsetDayInput   = input.int(4,  "Day (PDH/PDL/Open)", group = LABELS_GROUP, minval = 0, maxval = 200,
+     tooltip = "Horizontal offset (in bars) of the PDH, PDL and Open labels relative to where they were created.")
+int    labelOffsetAtrInput   = input.int(4,  "ATR (High/Low)", group = LABELS_GROUP, minval = 0, maxval = 200,
+     tooltip = "Horizontal offset (in bars) of the ATR High/Low labels.")
+int    labelOffsetWeekInput  = input.int(9,  "Week (PWH/PWL)", group = LABELS_GROUP, minval = 0, maxval = 200,
+     tooltip = "When the day, week and month boundaries coincide on the same bar, labels for the different levels could overlap. Increasing offset values (e.g. 3 / 8 / 15) stagger them to the right.")
+int    labelOffsetMonthInput = input.int(15, "Month (PMH/PML)", group = LABELS_GROUP, minval = 0, maxval = 200,
+     tooltip = "Horizontal offset (in bars) of the PMH/PML labels.")
+
+// 12. Live price at the end of active lines
+bool   showLivePriceInput     = input.bool(true, "Show price at the end of active lines", group = LIVEPRICE_GROUP,
+     tooltip = "Adds a label with the exact value at the right edge of each active line (PDH/PDL/PWH/PWL/PMH/PML/Open/ATR), updated on every bar without using up the object limit.")
+int    livePriceDecimalsInput = input.int(3, "Decimal places", group = LIVEPRICE_GROUP, minval = 0, maxval = 8,
+     tooltip = "Precision of the displayed value, e.g. 3 for instruments quoted below 10 cents.")
+int    livePriceOffsetInput   = input.int(2, "Label Offset (bars from last candle)", group = LIVEPRICE_GROUP, minval = 0, maxval = 50,
+     tooltip = "How many bars past the last candle the current-value label should appear.")
+
+
+// 13. History — how many past levels to keep on the chart
+int    maxDaysInput   = input.int(70, "Days back to show (PDH/PDL/Open/ATR)", group = STYLE_GROUP, minval = 1, maxval = 200, tooltip = "Older lines, labels and ranges will be automatically removed to keep the chart readable.")
+int    maxWeeksInput  = input.int(12, "Weeks back to show (PWH/PWL)", group = STYLE_GROUP, minval = 1, maxval = 52, tooltip = "Weekly levels are usually worth keeping for a shorter period than daily ones, so the chart doesn't get cluttered.")
+int    maxMonthsInput = input.int(3, "Months back to show (PMH/PML)", group = STYLE_GROUP, minval = 1, maxval = 24, tooltip = "Number of monthly high/low levels kept on the chart at the same time.")
+
+
+// 14. Distance-from-levels table (ATR / %)
+bool   showTableInput      = input.bool(true, "Show table", group = TABLE_GROUP,
+     tooltip = "Displays a table in the chart corner showing the current price's distance from each level (PDH/PDL/PWH/PWL/PMH/PML/ATR High/Low), expressed in ATR units and in percent.")
+string tablePositionInput  = input.string("Bottom Right", "Position", group = TABLE_GROUP, options = ["Top Right", "Bottom Right", "Top Left", "Bottom Left"],
+     tooltip = "The chart corner where the table should appear.")
+int    tableAtrLengthInput = input.int(14, "ATR Length (calculated on the current chart timeframe)", group = TABLE_GROUP, minval = 1, tooltip = "ATR for this table is always calculated on the current chart timeframe, regardless of the timeframe set in the \"ATR Levels\" section above.")
+int    tableDecimalsAtrInput = input.int(2, "Decimal places (xATR)", group = TABLE_GROUP, minval = 0, maxval = 6, inline = "tdec",
+     tooltip = "Precision of the values shown in the xATR and % columns.")
+int    tableDecimalsPctInput = input.int(2, "Decimal places (%)", group = TABLE_GROUP, minval = 0, maxval = 6, inline = "tdec")
+string tableTextSizeInput  = input.string("Small", "Text Size", group = TABLE_GROUP, options = ["Tiny", "Small", "Normal", "Large"],
+     tooltip = "Font size of the text in the table.")
+color  tableHeaderBgInput  = input.color(color.new(#131722, 0),  "Header Background", group = TABLE_GROUP, inline = "tbg",
+     tooltip = "Background color of the table header and rows.")
+color  tableBgInput        = input.color(color.new(#131722, 20), "Row Background", group = TABLE_GROUP, inline = "tbg")
+color  tableTextColorInput = input.color(#d1d4dc, "Text Color", group = TABLE_GROUP,
+     tooltip = "Default text color in the table, used when coloring by level position is disabled.")
+bool   tableColorBySideInput = input.bool(true, "Color by level position relative to price", group = TABLE_GROUP, tooltip = "Levels above the current price (resistance) are colored with the \"Sell\" color, levels below (support) with the \"Buy\" color from the Sweep section.")
+
+// Parsed settings
+f_lineStyle(string s) =>
+    switch s
+        "Solid"  => line.style_solid
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+        => line.style_solid
+
+highLineStyle = f_lineStyle(highStyleInput)
+lowLineStyle  = f_lineStyle(lowStyleInput)
+pwhLineStyle  = f_lineStyle(pwhStyleInput)
+pwlLineStyle  = f_lineStyle(pwlStyleInput)
+pmhLineStyle  = f_lineStyle(pmhStyleInput)
+pmlLineStyle  = f_lineStyle(pmlStyleInput)
+openLineStyle = f_lineStyle(openStyleInput)
+atrLineStyle  = f_lineStyle(atrStyleInput)
+divLineStyle  = f_lineStyle(divStyleInput)
+
+labelSize = switch labelSizeInput
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    "Large"  => size.large
+    => size.small
+
+f_decFormat(int n) =>
+    string fmt = "#"
+    if n > 0
+        fmt := fmt + "."
+        for i = 1 to n
+            fmt := fmt + "0"
+    fmt
+
+livePriceFmt = f_decFormat(livePriceDecimalsInput)
+
+tableTextSize = switch tableTextSizeInput
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    "Large"  => size.large
+    => size.small
+
+tablePos = switch tablePositionInput
+    "Top Right"    => position.top_right
+    "Bottom Right" => position.bottom_right
+    "Top Left"     => position.top_left
+    "Bottom Left"  => position.bottom_left
+    => position.top_right
+
+// The master label switch controls all of the indicator's labels in conjunction with their own individual toggles
+effShowLivePrice = showLabelsInput and showLivePriceInput
+effShowDivLabels = showLabelsInput and showDivLabelsInput
+
+// ATR always calculated on the current chart timeframe — used only for the distance table
+float tableATR = ta.atr(tableAtrLengthInput)
+
+// State — day
+var float dayHigh     = na
+var float dayLow      = na
+var float prevDayHigh = na
+var float prevDayLow  = na
+
+var line  highLine    = na
+var line  lowLine     = na
+var label highLabelId = na
+var label lowLabelId  = na
+
+var array<line>  highLines  = array.new<line>()
+var array<line>  lowLines   = array.new<line>()
+var array<label> highLabels = array.new<label>()
+var array<label> lowLabels  = array.new<label>()
+
+var box   rangeBoxTopId    = na
+var box   rangeBoxBottomId = na
+var array<box>   rangeBoxesTop    = array.new<box>()
+var array<box>   rangeBoxesBottom = array.new<box>()
+
+var float dayOpenPrice = na
+var float atrHighLevel = na
+var float atrLowLevel  = na
+
+var line  openLine      = na
+var label openLabelId   = na
+var array<line>  openLines  = array.new<line>()
+var array<label> openLabels = array.new<label>()
+
+var line  atrHighLine    = na
+var line  atrLowLine     = na
+var label atrHighLabelId = na
+var label atrLowLabelId  = na
+
+var array<line>  atrHighLines  = array.new<line>()
+var array<line>  atrLowLines   = array.new<line>()
+var array<label> atrHighLabels = array.new<label>()
+var array<label> atrLowLabels  = array.new<label>()
+
+// Live-price labels at the end of active lines
+var label livePriceLabelHigh = na
+var label livePriceLabelLow  = na
+var label livePriceLabelPWH  = na
+var label livePriceLabelPWL  = na
+var label livePriceLabelPMH  = na
+var label livePriceLabelPML  = na
+var label livePriceLabelOpen = na
+var label livePriceLabelATRH = na
+var label livePriceLabelATRL = na
+
+// PDH-PDL range division levels (to the right of the last candle)
+var line  divLine1  = na
+var line  divLine2  = na
+var line  divLine3  = na
+var label divLabel1 = na
+var label divLabel2 = na
+var label divLabel3 = na
+
+// Distance-from-levels table
+var table distTable = na
+
+// State — week / month
+var float weekHigh     = na
+var float weekLow      = na
+var float prevWeekHigh = na
+var float prevWeekLow  = na
+
+var line  pwhLine    = na
+var line  pwlLine    = na
+var label pwhLabelId = na
+var label pwlLabelId = na
+
+var array<line>  pwhLines  = array.new<line>()
+var array<line>  pwlLines  = array.new<line>()
+var array<label> pwhLabels = array.new<label>()
+var array<label> pwlLabels = array.new<label>()
+
+var float monthHigh     = na
+var float monthLow      = na
+var float prevMonthHigh = na
+var float prevMonthLow  = na
+
+var line  pmhLine    = na
+var line  pmlLine    = na
+var label pmhLabelId = na
+var label pmlLabelId = na
+
+var array<line>  pmhLines  = array.new<line>()
+var array<line>  pmlLines  = array.new<line>()
+var array<label> pmhLabels = array.new<label>()
+var array<label> pmlLabels = array.new<label>()
+
+// ---- Sweep state ----
+var bool pdhPending    = false
+var int  pdhPendingBar = na
+var bool pdhNeedsReset = false
+
+var bool pdlPending    = false
+var int  pdlPendingBar = na
+var bool pdlNeedsReset = false
+
+var bool atrhPending    = false
+var int  atrhPendingBar = na
+var bool atrhNeedsReset = false
+
+var bool atrlPending    = false
+var int  atrlPendingBar = na
+var bool atrlNeedsReset = false
+
+var bool pwhPending    = false
+var int  pwhPendingBar = na
+var bool pwhNeedsReset = false
+
+var bool pwlPending    = false
+var int  pwlPendingBar = na
+var bool pwlNeedsReset = false
+
+var bool pmhPending    = false
+var int  pmhPendingBar = na
+var bool pmhNeedsReset = false
+
+var bool pmlPending    = false
+var int  pmlPendingBar = na
+var bool pmlNeedsReset = false
+
+// New day detection
+
+int  fixedThresholdMs  = (fixedHourInput * 60 + fixedMinuteInput) * 60 * 1000
+int  adjTime           = time - fixedThresholdMs
+int  adjTimePrev       = time[1] - fixedThresholdMs
+int  fixedDayId        = year(adjTime, fixedTzInput) * 10000 + month(adjTime, fixedTzInput) * 100 + dayofmonth(adjTime, fixedTzInput)
+int  fixedDayIdPrev    = year(adjTimePrev, fixedTzInput) * 10000 + month(adjTimePrev, fixedTzInput) * 100 + dayofmonth(adjTimePrev, fixedTzInput)
+bool newDayFixed        = fixedDayId != fixedDayIdPrev
+
+bool newDay = dayModeInput == "Fixed Time (manual)" ? newDayFixed : session.isfirstbar
+
+// New week / month detection
+string higherTzInput = dayModeInput == "Fixed Time (manual)" ? fixedTzInput : syminfo.timezone
+int    refTime        = dayModeInput == "Fixed Time (manual)" ? adjTime     : time
+int    refTimePrev    = dayModeInput == "Fixed Time (manual)" ? adjTimePrev : time[1]
+
+int  weekId     = year(refTime, higherTzInput) * 100 + weekofyear(refTime, higherTzInput)
+int  weekIdPrev = year(refTimePrev, higherTzInput) * 100 + weekofyear(refTimePrev, higherTzInput)
+bool newWeek     = weekId != weekIdPrev
+
+int  monthId     = year(refTime, higherTzInput) * 100 + month(refTime, higherTzInput)
+int  monthIdPrev = year(refTimePrev, higherTzInput) * 100 + month(refTimePrev, higherTzInput)
+bool newMonth     = monthId != monthIdPrev
+
+// ATR calculated on the selected timeframe
+float dailyATR = request.security(syminfo.tickerid, atrTimeframeInput, ta.atr(atrLengthInput)[1], lookahead = barmerge.lookahead_off)
+
+// ATR used solely for the sweep confirmation distance filter (independent timeframe, current by default)
+float sweepFilterATR = request.security(syminfo.tickerid, sweepAtrTimeframeInput, ta.atr(sweepAtrLengthInput)[1], lookahead = barmerge.lookahead_off)
+
+// New day detection and drawing
+if newDay
+    prevDayHigh := dayHigh
+    prevDayLow  := dayLow
+    dayHigh      := high
+    dayLow       := low
+    dayOpenPrice := open
+
+    pdhPending     := false
+    pdhNeedsReset  := false
+    pdlPending     := false
+    pdlNeedsReset  := false
+    atrhPending    := false
+    atrhNeedsReset := false
+    atrlPending    := false
+    atrlNeedsReset := false
+
+    if not na(prevDayHigh)
+        if showHighInput
+            highLine := line.new(bar_index, prevDayHigh, bar_index, prevDayHigh, color = color.new(highColorInput, highTranspInput), width = highWidthInput, style = highLineStyle)
+            highLines.push(highLine)
+
+            if showLabelsInput
+                highLabelId := label.new(bar_index + labelOffsetDayInput, prevDayHigh, "PDH", color = #00000000, textcolor = highColorInput, style = label.style_label_down, size = labelSize)
+                highLabels.push(highLabelId)
+
+        if showLowInput
+            lowLine := line.new(bar_index, prevDayLow, bar_index, prevDayLow, color = color.new(lowColorInput, lowTranspInput), width = lowWidthInput, style = lowLineStyle)
+            lowLines.push(lowLine)
+
+            if showLabelsInput
+                lowLabelId := label.new(bar_index + labelOffsetDayInput, prevDayLow, "PDL", color = #00000000, textcolor = lowColorInput, style = label.style_label_up, size = labelSize)
+                lowLabels.push(lowLabelId)
+
+        if showRangeInput
+            if rangeFillTypeInput != "Gradient"
+                float rangeMid = (prevDayHigh + prevDayLow) / 2
+                rangeBoxTopId := box.new(bar_index, prevDayHigh, bar_index, rangeMid, bgcolor = color.new(rangeTopColorInput, rangeTopTranspInput), border_color = na)
+                rangeBoxBottomId := box.new(bar_index, rangeMid, bar_index, prevDayLow, bgcolor = color.new(rangeBottomColorInput, rangeBottomTranspInput), border_color = na)
+                rangeBoxesTop.push(rangeBoxTopId)
+                rangeBoxesBottom.push(rangeBoxBottomId)
+
+
+        if highLines.size() > maxDaysInput
+            line oldLine = highLines.shift()
+            oldLine.delete()
+        if lowLines.size() > maxDaysInput
+            line oldLine = lowLines.shift()
+            oldLine.delete()
+        if highLabels.size() > maxDaysInput
+            label oldLabel = highLabels.shift()
+            oldLabel.delete()
+        if lowLabels.size() > maxDaysInput
+            label oldLabel = lowLabels.shift()
+            oldLabel.delete()
+
+        if rangeBoxesTop.size() > maxDaysInput
+            box oldBox = rangeBoxesTop.shift()
+            oldBox.delete()
+        if rangeBoxesBottom.size() > maxDaysInput
+            box oldBox = rangeBoxesBottom.shift()
+            oldBox.delete()
+
+
+    if showOpenInput
+        openLine := line.new(bar_index, dayOpenPrice, bar_index, dayOpenPrice, color = color.new(openColorInput, openTranspInput), width = openWidthInput, style = openLineStyle)
+        openLines.push(openLine)
+
+        if showLabelsInput
+            openLabelId := label.new(bar_index + labelOffsetDayInput, dayOpenPrice, "Open", color = #00000000, textcolor = openColorInput, style = label.style_label_left, size = labelSize)
+            openLabels.push(openLabelId)
+
+        if openLines.size() > maxDaysInput
+            line oldLine = openLines.shift()
+            oldLine.delete()
+        if openLabels.size() > maxDaysInput
+            label oldLabel = openLabels.shift()
+            oldLabel.delete()
+
+    if showATRInput and not na(dailyATR)
+        atrHighLevel := dayOpenPrice + dailyATR * atrMultiplierInput
+        atrLowLevel  := dayOpenPrice - dailyATR * atrMultiplierInput
+
+        atrHighLine := line.new(bar_index, atrHighLevel, bar_index, atrHighLevel, color = color.new(atrColorInput, atrTranspInput), width = atrWidthInput, style = atrLineStyle)
+        atrLowLine  := line.new(bar_index, atrLowLevel, bar_index, atrLowLevel, color = color.new(atrColorInput, atrTranspInput), width = atrWidthInput, style = atrLineStyle)
+        atrHighLines.push(atrHighLine)
+        atrLowLines.push(atrLowLine)
+
+        if showLabelsInput
+            string atrLabelText = "ATR " + str.tostring(atrMultiplierInput, "#.##") + "x"
+            atrHighLabelId := label.new(bar_index + labelOffsetAtrInput, atrHighLevel, atrLabelText, color = #00000000, textcolor = atrColorInput, style = label.style_label_down, size = labelSize)
+            atrLowLabelId  := label.new(bar_index + labelOffsetAtrInput, atrLowLevel, atrLabelText, color = #00000000, textcolor = atrColorInput, style = label.style_label_up, size = labelSize)
+            atrHighLabels.push(atrHighLabelId)
+            atrLowLabels.push(atrLowLabelId)
+
+        if atrHighLines.size() > maxDaysInput
+            line oldLine = atrHighLines.shift()
+            oldLine.delete()
+        if atrLowLines.size() > maxDaysInput
+            line oldLine = atrLowLines.shift()
+            oldLine.delete()
+        if atrHighLabels.size() > maxDaysInput
+            label oldLabel = atrHighLabels.shift()
+            oldLabel.delete()
+        if atrLowLabels.size() > maxDaysInput
+            label oldLabel = atrLowLabels.shift()
+            oldLabel.delete()
+else
+    dayHigh := na(dayHigh) ? high : math.max(dayHigh, high)
+    dayLow  := na(dayLow)  ? low  : math.min(dayLow, low)
+
+// New week detection and PWH/PWL drawing
+if newWeek
+    prevWeekHigh := weekHigh
+    prevWeekLow  := weekLow
+    weekHigh     := high
+    weekLow      := low
+
+    pwhPending    := false
+    pwhNeedsReset := false
+    pwlPending    := false
+    pwlNeedsReset := false
+
+    if not na(prevWeekHigh)
+        if showPWHInput
+            pwhLine := line.new(bar_index, prevWeekHigh, bar_index, prevWeekHigh, color = color.new(pwhColorInput, pwhTranspInput), width = pwhWidthInput, style = pwhLineStyle)
+            pwhLines.push(pwhLine)
+
+            if showLabelsInput
+                pwhLabelId := label.new(bar_index + labelOffsetWeekInput, prevWeekHigh, "PWH", color = #00000000, textcolor = pwhColorInput, style = label.style_label_down, size = labelSize)
+                pwhLabels.push(pwhLabelId)
+
+        if showPWLInput
+            pwlLine := line.new(bar_index, prevWeekLow, bar_index, prevWeekLow, color = color.new(pwlColorInput, pwlTranspInput), width = pwlWidthInput, style = pwlLineStyle)
+            pwlLines.push(pwlLine)
+
+            if showLabelsInput
+                pwlLabelId := label.new(bar_index + labelOffsetWeekInput, prevWeekLow, "PWL", color = #00000000, textcolor = pwlColorInput, style = label.style_label_up, size = labelSize)
+                pwlLabels.push(pwlLabelId)
+
+        if pwhLines.size() > maxWeeksInput
+            line oldLine = pwhLines.shift()
+            oldLine.delete()
+        if pwlLines.size() > maxWeeksInput
+            line oldLine = pwlLines.shift()
+            oldLine.delete()
+        if pwhLabels.size() > maxWeeksInput
+            label oldLabel = pwhLabels.shift()
+            oldLabel.delete()
+        if pwlLabels.size() > maxWeeksInput
+            label oldLabel = pwlLabels.shift()
+            oldLabel.delete()
+else
+    weekHigh := na(weekHigh) ? high : math.max(weekHigh, high)
+    weekLow  := na(weekLow)  ? low  : math.min(weekLow, low)
+
+// New month detection and PMH/PML drawing
+if newMonth
+    prevMonthHigh := monthHigh
+    prevMonthLow  := monthLow
+    monthHigh     := high
+    monthLow      := low
+
+    pmhPending    := false
+    pmhNeedsReset := false
+    pmlPending    := false
+    pmlNeedsReset := false
+
+    if not na(prevMonthHigh)
+        if showPMHInput
+            pmhLine := line.new(bar_index, prevMonthHigh, bar_index, prevMonthHigh, color = color.new(pmhColorInput, pmhTranspInput), width = pmhWidthInput, style = pmhLineStyle)
+            pmhLines.push(pmhLine)
+
+            if showLabelsInput
+                pmhLabelId := label.new(bar_index + labelOffsetMonthInput, prevMonthHigh, "PMH", color = #00000000, textcolor = pmhColorInput, style = label.style_label_down, size = labelSize)
+                pmhLabels.push(pmhLabelId)
+
+        if showPMLInput
+            pmlLine := line.new(bar_index, prevMonthLow, bar_index, prevMonthLow, color = color.new(pmlColorInput, pmlTranspInput), width = pmlWidthInput, style = pmlLineStyle)
+            pmlLines.push(pmlLine)
+
+            if showLabelsInput
+                pmlLabelId := label.new(bar_index + labelOffsetMonthInput, prevMonthLow, "PML", color = #00000000, textcolor = pmlColorInput, style = label.style_label_up, size = labelSize)
+                pmlLabels.push(pmlLabelId)
+
+        if pmhLines.size() > maxMonthsInput
+            line oldLine = pmhLines.shift()
+            oldLine.delete()
+        if pmlLines.size() > maxMonthsInput
+            line oldLine = pmlLines.shift()
+            oldLine.delete()
+        if pmhLabels.size() > maxMonthsInput
+            label oldLabel = pmhLabels.shift()
+            oldLabel.delete()
+        if pmlLabels.size() > maxMonthsInput
+            label oldLabel = pmlLabels.shift()
+            oldLabel.delete()
+else
+    monthHigh := na(monthHigh) ? high : math.max(monthHigh, high)
+    monthLow  := na(monthLow)  ? low  : math.min(monthLow, low)
+
+// Extend to the current bar
+if not na(highLine)
+    highLine.set_x2(bar_index)
+
+if not na(lowLine)
+    lowLine.set_x2(bar_index)
+
+if showPWHInput and not na(pwhLine)
+    pwhLine.set_x2(bar_index)
+
+if showPWLInput and not na(pwlLine)
+    pwlLine.set_x2(bar_index)
+
+if showPMHInput and not na(pmhLine)
+    pmhLine.set_x2(bar_index)
+
+if showPMLInput and not na(pmlLine)
+    pmlLine.set_x2(bar_index)
+
+if showOpenInput and not na(openLine)
+    openLine.set_x2(bar_index)
+
+if showRangeInput and rangeFillTypeInput != "Gradient"
+    if not na(rangeBoxTopId)
+        rangeBoxTopId.set_right(bar_index)
+    if not na(rangeBoxBottomId)
+        rangeBoxBottomId.set_right(bar_index)
+
+if showATRInput and not na(atrHighLine)
+    atrHighLine.set_x2(bar_index)
+    atrLowLine.set_x2(bar_index)
+
+// High-Low range — Gradient mode
+gradTop    = showRangeInput and rangeFillTypeInput == "Gradient" and not na(prevDayHigh) ? prevDayHigh : na
+gradBottom = showRangeInput and rangeFillTypeInput == "Gradient" and not na(prevDayLow)  ? prevDayLow  : na
+
+gradTopPlot    = plot(gradTop,    title = "Range Gradient — top (technical)", style = plot.style_stepline, display = display.none, editable = false)
+gradBottomPlot = plot(gradBottom, title = "Range Gradient — bottom (technical)",  style = plot.style_stepline, display = display.none, editable = false)
+
+fill(gradTopPlot, gradBottomPlot, gradTop, gradBottom,
+     color.new(rangeTopColorInput, rangeTopTranspInput),
+     color.new(rangeBottomColorInput, rangeBottomTranspInput),
+     title = "High-Low Range (Gradient)")
+
+// Live price at the end of active lines
+f_updateLivePriceLabel(label lbl, bool active, float level, color txtColor) =>
+    label result = lbl
+    if active and not na(level)
+        string txt = str.tostring(level, livePriceFmt)
+        int lx = bar_index + livePriceOffsetInput
+        if na(result)
+            result := label.new(lx, level, txt, style = label.style_label_left, color = #00000000, textcolor = txtColor, size = labelSize)
+        else
+            result.set_xy(lx, level)
+            result.set_text(txt)
+            result.set_textcolor(txtColor)
+    else
+        if not na(result)
+            result.delete()
+            result := na
+    result
+
+if effShowLivePrice
+    livePriceLabelHigh := f_updateLivePriceLabel(livePriceLabelHigh, showHighInput and not na(highLine), prevDayHigh, highColorInput)
+    livePriceLabelLow  := f_updateLivePriceLabel(livePriceLabelLow,  showLowInput  and not na(lowLine),  prevDayLow,  lowColorInput)
+    livePriceLabelPWH  := f_updateLivePriceLabel(livePriceLabelPWH,  showPWHInput  and not na(pwhLine),  prevWeekHigh, pwhColorInput)
+    livePriceLabelPWL  := f_updateLivePriceLabel(livePriceLabelPWL,  showPWLInput  and not na(pwlLine),  prevWeekLow,  pwlColorInput)
+    livePriceLabelPMH  := f_updateLivePriceLabel(livePriceLabelPMH,  showPMHInput  and not na(pmhLine),  prevMonthHigh, pmhColorInput)
+    livePriceLabelPML  := f_updateLivePriceLabel(livePriceLabelPML,  showPMLInput  and not na(pmlLine),  prevMonthLow,  pmlColorInput)
+    livePriceLabelOpen := f_updateLivePriceLabel(livePriceLabelOpen, showOpenInput and not na(openLine), dayOpenPrice, openColorInput)
+    livePriceLabelATRH := f_updateLivePriceLabel(livePriceLabelATRH, showATRInput  and not na(atrHighLine), atrHighLevel, atrColorInput)
+    livePriceLabelATRL := f_updateLivePriceLabel(livePriceLabelATRL, showATRInput  and not na(atrLowLine),  atrLowLevel,  atrColorInput)
+else
+    livePriceLabelHigh := f_updateLivePriceLabel(livePriceLabelHigh, false, na, highColorInput)
+    livePriceLabelLow  := f_updateLivePriceLabel(livePriceLabelLow,  false, na, lowColorInput)
+    livePriceLabelPWH  := f_updateLivePriceLabel(livePriceLabelPWH,  false, na, pwhColorInput)
+    livePriceLabelPWL  := f_updateLivePriceLabel(livePriceLabelPWL,  false, na, pwlColorInput)
+    livePriceLabelPMH  := f_updateLivePriceLabel(livePriceLabelPMH,  false, na, pmhColorInput)
+    livePriceLabelPML  := f_updateLivePriceLabel(livePriceLabelPML,  false, na, pmlColorInput)
+    livePriceLabelOpen := f_updateLivePriceLabel(livePriceLabelOpen, false, na, openColorInput)
+    livePriceLabelATRH := f_updateLivePriceLabel(livePriceLabelATRH, false, na, atrColorInput)
+    livePriceLabelATRL := f_updateLivePriceLabel(livePriceLabelATRL, false, na, atrColorInput)
+
+// PDH-PDL range division levels
+if showRangeDividersInput and not na(prevDayHigh) and not na(prevDayLow)
+    float rangeSpanDiv = prevDayHigh - prevDayLow
+    float divLvl1 = prevDayLow + rangeSpanDiv * divLevel1Input
+    float divLvl2 = prevDayLow + rangeSpanDiv * divLevel2Input
+    float divLvl3 = prevDayLow + rangeSpanDiv * divLevel3Input
+
+    int dx1 = bar_index + 1 + divOffsetInput
+    int dx2 = dx1 + divLengthInput
+
+    if na(divLine1)
+        divLine1 := line.new(dx1, divLvl1, dx2, divLvl1, color = divColorInput, width = divWidthInput, style = divLineStyle)
+    else
+        divLine1.set_xy1(dx1, divLvl1)
+        divLine1.set_xy2(dx2, divLvl1)
+
+    if na(divLine2)
+        divLine2 := line.new(dx1, divLvl2, dx2, divLvl2, color = divColorInput, width = divWidthInput, style = divLineStyle)
+    else
+        divLine2.set_xy1(dx1, divLvl2)
+        divLine2.set_xy2(dx2, divLvl2)
+
+    if na(divLine3)
+        divLine3 := line.new(dx1, divLvl3, dx2, divLvl3, color = divColorInput, width = divWidthInput, style = divLineStyle)
+    else
+        divLine3.set_xy1(dx1, divLvl3)
+        divLine3.set_xy2(dx2, divLvl3)
+
+    if effShowDivLabels
+        string divTxt1 = str.tostring(divLevel1Input * 100, "#.#") + "%"
+        string divTxt2 = str.tostring(divLevel2Input * 100, "#.#") + "%"
+        string divTxt3 = str.tostring(divLevel3Input * 100, "#.#") + "%"
+        int dlx = dx2 + 1
+
+        if na(divLabel1)
+            divLabel1 := label.new(dlx, divLvl1, divTxt1, style = label.style_label_left, color = #00000000, textcolor = divColorInput, size = labelSize)
+        else
+            divLabel1.set_xy(dlx, divLvl1)
+            divLabel1.set_text(divTxt1)
+
+        if na(divLabel2)
+            divLabel2 := label.new(dlx, divLvl2, divTxt2, style = label.style_label_left, color = #00000000, textcolor = divColorInput, size = labelSize)
+        else
+            divLabel2.set_xy(dlx, divLvl2)
+            divLabel2.set_text(divTxt2)
+
+        if na(divLabel3)
+            divLabel3 := label.new(dlx, divLvl3, divTxt3, style = label.style_label_left, color = #00000000, textcolor = divColorInput, size = labelSize)
+        else
+            divLabel3.set_xy(dlx, divLvl3)
+            divLabel3.set_text(divTxt3)
+    else
+        if not na(divLabel1)
+            divLabel1.delete()
+            divLabel1 := na
+        if not na(divLabel2)
+            divLabel2.delete()
+            divLabel2 := na
+        if not na(divLabel3)
+            divLabel3.delete()
+            divLabel3 := na
+else
+    if not na(divLine1)
+        divLine1.delete()
+        divLine1 := na
+    if not na(divLine2)
+        divLine2.delete()
+        divLine2 := na
+    if not na(divLine3)
+        divLine3.delete()
+        divLine3 := na
+    if not na(divLabel1)
+        divLabel1.delete()
+        divLabel1 := na
+    if not na(divLabel2)
+        divLabel2.delete()
+        divLabel2 := na
+    if not na(divLabel3)
+        divLabel3.delete()
+        divLabel3 := na
+
+// Distance-from-levels table (ATR / %)
+f_addDistRow(int row, string levelLabel, float level) =>
+    if not na(level) and not na(distTable)
+        float distPrice = close - level
+        float distAtr   = (na(tableATR) or tableATR == 0) ? na : distPrice / tableATR
+        float distPct   = close == 0 ? na : distPrice / close * 100
+        color valColor   = tableColorBySideInput ? (level > close ? sweepSellColor : sweepBuyColor) : tableTextColorInput
+        string atrTxt = na(distAtr) ? "—" : str.tostring(distAtr, f_decFormat(tableDecimalsAtrInput)) + "x"
+        string pctTxt = na(distPct) ? "—" : str.tostring(distPct, f_decFormat(tableDecimalsPctInput)) + "%"
+        table.cell(distTable, 0, row, levelLabel, bgcolor = tableBgInput, text_color = tableTextColorInput, text_size = tableTextSize, text_halign = text.align_left)
+        table.cell(distTable, 1, row, str.tostring(level, livePriceFmt), bgcolor = tableBgInput, text_color = tableTextColorInput, text_size = tableTextSize)
+        table.cell(distTable, 2, row, atrTxt, bgcolor = tableBgInput, text_color = valColor, text_size = tableTextSize)
+        table.cell(distTable, 3, row, pctTxt, bgcolor = tableBgInput, text_color = valColor, text_size = tableTextSize)
+    else if not na(distTable)
+        table.cell(distTable, 0, row, levelLabel, bgcolor = tableBgInput, text_color = color.gray, text_size = tableTextSize, text_halign = text.align_left)
+        table.cell(distTable, 1, row, "—", bgcolor = tableBgInput, text_color = color.gray, text_size = tableTextSize)
+        table.cell(distTable, 2, row, "—", bgcolor = tableBgInput, text_color = color.gray, text_size = tableTextSize)
+        table.cell(distTable, 3, row, "—", bgcolor = tableBgInput, text_color = color.gray, text_size = tableTextSize)
+
+if showTableInput and barstate.islast
+    if na(distTable)
+        distTable := table.new(tablePos, 4, 9, border_width = 1)
+    else
+        table.clear(distTable, 0, 0, 3, 8)
+
+    table.cell(distTable, 0, 0, "Level",      bgcolor = tableHeaderBgInput, text_color = tableTextColorInput, text_size = tableTextSize, text_halign = text.align_left)
+    table.cell(distTable, 1, 0, "Price",      bgcolor = tableHeaderBgInput, text_color = tableTextColorInput, text_size = tableTextSize)
+    table.cell(distTable, 2, 0, "xATR",       bgcolor = tableHeaderBgInput, text_color = tableTextColorInput, text_size = tableTextSize)
+    table.cell(distTable, 3, 0, "%",          bgcolor = tableHeaderBgInput, text_color = tableTextColorInput, text_size = tableTextSize)
+
+    f_addDistRow(1, "PDH", prevDayHigh)
+    f_addDistRow(2, "PDL", prevDayLow)
+    f_addDistRow(3, "PWH", prevWeekHigh)
+    f_addDistRow(4, "PWL", prevWeekLow)
+    f_addDistRow(5, "PMH", prevMonthHigh)
+    f_addDistRow(6, "PML", prevMonthLow)
+    f_addDistRow(7, "ATR High", atrHighLevel)
+    f_addDistRow(8, "ATR Low", atrLowLevel)
+else if not showTableInput and not na(distTable)
+    table.delete(distTable)
+    distTable := na
+
+// PDH/PDL/PWH/PWL/PMH/PML/ATR sweep / breakout detection
+bool pdhSweepSell     = false
+bool pdlSweepBuy      = false
+bool atrhSweepSell    = false
+bool atrlSweepBuy     = false
+bool pwhSweepSell     = false
+bool pwlSweepBuy      = false
+bool pmhSweepSell     = false
+bool pmlSweepBuy      = false
+
+bool pdhBreakoutBuy   = false
+bool pdlBreakoutSell  = false
+bool atrhBreakoutBuy  = false
+bool atrlBreakoutSell = false
+bool pwhBreakoutBuy   = false
+bool pwlBreakoutSell  = false
+bool pmhBreakoutBuy   = false
+bool pmlBreakoutSell  = false
+
+bool haveFilterATR = not na(sweepFilterATR)
+
+if (sweepPDHEnabled or breakoutPDHEnabled) and not na(prevDayHigh)
+    if pdhNeedsReset and close < prevDayHigh
+        pdhNeedsReset := false
+
+    if not pdhPending and not pdhNeedsReset and high > prevDayHigh
+        pdhPending    := true
+        pdhPendingBar := bar_index
+
+    if pdhPending
+        int elapsed = bar_index - pdhPendingBar
+        if elapsed >= 1 and elapsed <= sweepConfirmBars and barstate.isconfirmed
+            if close < prevDayHigh and close < open
+                bool distOk = not haveFilterATR or sweepAtrMultInput <= 0 or (prevDayHigh - close) >= sweepAtrMultInput * sweepFilterATR
+                if sweepPDHEnabled and distOk
+                    pdhSweepSell := true
+                    pdhPending   := false
+            else if close > prevDayHigh and close > open
+                bool distOk = not haveFilterATR or sweepAtrMultInput <= 0 or (close - prevDayHigh) >= sweepAtrMultInput * sweepFilterATR
+                if breakoutPDHEnabled and distOk
+                    pdhBreakoutBuy := true
+                    pdhPending     := false
+                    pdhNeedsReset  := true
+        else if elapsed > sweepConfirmBars
+            pdhPending    := false
+
+if (sweepPDLEnabled or breakoutPDLEnabled) and not na(prevDayLow)
+    if pdlNeedsReset and close > prevDayLow
+        pdlNeedsReset := false
+
+    if not pdlPending and not pdlNeedsReset and low < prevDayLow
+        pdlPending    := true
+        pdlPendingBar := bar_index
+
+    if pdlPending
+        int elapsed = bar_index - pdlPendingBar
+        if elapsed >= 1 and elapsed <= sweepConfirmBars and barstate.isconfirmed
+            if close > prevDayLow and close > open
+                bool distOk = not haveFilterATR or sweepAtrMultInput <= 0 or (close - prevDayLow) >= sweepAtrMultInput * sweepFilterATR
+                if sweepPDLEnabled and distOk
+                    pdlSweepBuy := true
+                    pdlPending  := false
+            else if close < prevDayLow and close < open
+                bool distOk = not haveFilterATR or sweepAtrMultInput <= 0 or (prevDayLow - close) >= sweepAtrMultInput * sweepFilterATR
+                if breakoutPDLEnabled and distOk
+                    pdlBreakoutSell := true
+                    pdlPending      := false
+                    pdlNeedsReset   := true
+        else if elapsed > sweepConfirmBars
+            pdlPending    := false
+
+if (sweepATRHEnabled or breakoutATRHEnabled) and showATRInput and not na(atrHighLevel)
+    if atrhNeedsReset and close < atrHighLevel
+        atrhNeedsReset := false
+
+    if not atrhPending and not atrhNeedsReset and high > atrHighLevel
+        atrhPending    := true
+        atrhPendingBar := bar_index
+
+    if atrhPending
+        int elapsed = bar_index - atrhPendingBar
+        if elapsed >= 1 and elapsed <= sweepConfirmBars and barstate.isconfirmed
+            if close < atrHighLevel and close < open
+                bool distOk = not haveFilterATR or sweepAtrMultInput <= 0 or (atrHighLevel - close) >= sweepAtrMultInput * sweepFilterATR
+                if sweepATRHEnabled and distOk
+                    atrhSweepSell := true
+                    atrhPending   := false
+            else if close > atrHighLevel and close > open
+                bool distOk = not haveFilterATR or sweepAtrMultInput <= 0 or (close - atrHighLevel) >= sweepAtrMultInput * sweepFilterATR
+                if breakoutATRHEnabled and distOk
+                    atrhBreakoutBuy := true
+                    atrhPending     := false
+                    atrhNeedsReset  := true
+        else if elapsed > sweepConfirmBars
+            atrhPending    := false
+
+if (sweepATRLEnabled or breakoutATRLEnabled) and showATRInput and not na(atrLowLevel)
+    if atrlNeedsReset and close > atrLowLevel
+        atrlNeedsReset := false
+
+    if not atrlPending and not atrlNeedsReset and low < atrLowLevel
+        atrlPending    := true
+        atrlPendingBar := bar_index
+
+    if atrlPending
+        int elapsed = bar_index - atrlPendingBar
+        if elapsed >= 1 and elapsed <= sweepConfirmBars and barstate.isconfirmed
+            if close > atrLowLevel and close > open
+                bool distOk = not haveFilterATR or sweepAtrMultInput <= 0 or (close - atrLowLevel) >= sweepAtrMultInput * sweepFilterATR
+                if sweepATRLEnabled and distOk
+                    atrlSweepBuy := true
+                    atrlPending  := false
+            else if close < atrLowLevel and close < open
+                bool distOk = not haveFilterATR or sweepAtrMultInput <= 0 or (atrLowLevel - close) >= sweepAtrMultInput * sweepFilterATR
+                if breakoutATRLEnabled and distOk
+                    atrlBreakoutSell := true
+                    atrlPending      := false
+                    atrlNeedsReset   := true
+        else if elapsed > sweepConfirmBars
+            atrlPending    := false
+
+if (sweepPWHEnabled or breakoutPWHEnabled) and not na(prevWeekHigh)
+    if pwhNeedsReset and close < prevWeekHigh
+        pwhNeedsReset := false
+
+    if not pwhPending and not pwhNeedsReset and high > prevWeekHigh
+        pwhPending    := true
+        pwhPendingBar := bar_index
+
+    if pwhPending
+        int elapsed = bar_index - pwhPendingBar
+        if elapsed >= 1 and elapsed <= sweepConfirmBars and barstate.isconfirmed
+            if close < prevWeekHigh and close < open
+                bool distOk = not haveFilterATR or sweepAtrMultInput <= 0 or (prevWeekHigh - close) >= sweepAtrMultInput * sweepFilterATR
+                if sweepPWHEnabled and distOk
+                    pwhSweepSell := true
+                    pwhPending   := false
+            else if close > prevWeekHigh and close > open
+                bool distOk = not haveFilterATR or sweepAtrMultInput <= 0 or (close - prevWeekHigh) >= sweepAtrMultInput * sweepFilterATR
+                if breakoutPWHEnabled and distOk
+                    pwhBreakoutBuy := true
+                    pwhPending     := false
+                    pwhNeedsReset  := true
+        else if elapsed > sweepConfirmBars
+            pwhPending    := false
+
+if (sweepPWLEnabled or breakoutPWLEnabled) and not na(prevWeekLow)
+    if pwlNeedsReset and close > prevWeekLow
+        pwlNeedsReset := false
+
+    if not pwlPending and not pwlNeedsReset and low < prevWeekLow
+        pwlPending    := true
+        pwlPendingBar := bar_index
+
+    if pwlPending
+        int elapsed = bar_index - pwlPendingBar
+        if elapsed >= 1 and elapsed <= sweepConfirmBars and barstate.isconfirmed
+            if close > prevWeekLow and close > open
+                bool distOk = not haveFilterATR or sweepAtrMultInput <= 0 or (close - prevWeekLow) >= sweepAtrMultInput * sweepFilterATR
+                if sweepPWLEnabled and distOk
+                    pwlSweepBuy := true
+                    pwlPending  := false
+            else if close < prevWeekLow and close < open
+                bool distOk = not haveFilterATR or sweepAtrMultInput <= 0 or (prevWeekLow - close) >= sweepAtrMultInput * sweepFilterATR
+                if breakoutPWLEnabled and distOk
+                    pwlBreakoutSell := true
+                    pwlPending      := false
+                    pwlNeedsReset   := true
+        else if elapsed > sweepConfirmBars
+            pwlPending    := false
+
+if (sweepPMHEnabled or breakoutPMHEnabled) and not na(prevMonthHigh)
+    if pmhNeedsReset and close < prevMonthHigh
+        pmhNeedsReset := false
+
+    if not pmhPending and not pmhNeedsReset and high > prevMonthHigh
+        pmhPending    := true
+        pmhPendingBar := bar_index
+
+    if pmhPending
+        int elapsed = bar_index - pmhPendingBar
+        if elapsed >= 1 and elapsed <= sweepConfirmBars and barstate.isconfirmed
+            if close < prevMonthHigh and close < open
+                bool distOk = not haveFilterATR or sweepAtrMultInput <= 0 or (prevMonthHigh - close) >= sweepAtrMultInput * sweepFilterATR
+                if sweepPMHEnabled and distOk
+                    pmhSweepSell := true
+                    pmhPending   := false
+            else if close > prevMonthHigh and close > open
+                bool distOk = not haveFilterATR or sweepAtrMultInput <= 0 or (close - prevMonthHigh) >= sweepAtrMultInput * sweepFilterATR
+                if breakoutPMHEnabled and distOk
+                    pmhBreakoutBuy := true
+                    pmhPending     := false
+                    pmhNeedsReset  := true
+        else if elapsed > sweepConfirmBars
+            pmhPending    := false
+
+if (sweepPMLEnabled or breakoutPMLEnabled) and not na(prevMonthLow)
+    if pmlNeedsReset and close > prevMonthLow
+        pmlNeedsReset := false
+
+    if not pmlPending and not pmlNeedsReset and low < prevMonthLow
+        pmlPending    := true
+        pmlPendingBar := bar_index
+
+    if pmlPending
+        int elapsed = bar_index - pmlPendingBar
+        if elapsed >= 1 and elapsed <= sweepConfirmBars and barstate.isconfirmed
+            if close > prevMonthLow and close > open
+                bool distOk = not haveFilterATR or sweepAtrMultInput <= 0 or (close - prevMonthLow) >= sweepAtrMultInput * sweepFilterATR
+                if sweepPMLEnabled and distOk
+                    pmlSweepBuy := true
+                    pmlPending  := false
+            else if close < prevMonthLow and close < open
+                bool distOk = not haveFilterATR or sweepAtrMultInput <= 0 or (prevMonthLow - close) >= sweepAtrMultInput * sweepFilterATR
+                if breakoutPMLEnabled and distOk
+                    pmlBreakoutSell := true
+                    pmlPending      := false
+                    pmlNeedsReset   := true
+        else if elapsed > sweepConfirmBars
+            pmlPending    := false
+
+// ---- Signal shapes ----
+plotshape(showSweepShapes and (pdhSweepSell or atrhSweepSell or pwhSweepSell or pmhSweepSell), title = "Sweep Sell", style = shape.diamond, location = location.abovebar, color = sweepSellColor, size = size.tiny)
+plotshape(showSweepShapes and (pdlSweepBuy or atrlSweepBuy or pwlSweepBuy or pmlSweepBuy),  title = "Sweep Buy",  style = shape.diamond, location = location.belowbar, color = sweepBuyColor,  size = size.tiny)
+
+plotshape(showBreakoutShapes and (pdlBreakoutSell or atrlBreakoutSell or pwlBreakoutSell or pmlBreakoutSell), title = "Breakout Sell", style = shape.triangledown, location = location.abovebar, color = sweepSellColor, size = size.tiny)
+plotshape(showBreakoutShapes and (pdhBreakoutBuy or atrhBreakoutBuy or pwhBreakoutBuy or pmhBreakoutBuy),  title = "Breakout Buy",  style = shape.triangleup,   location = location.belowbar, color = sweepBuyColor,  size = size.tiny)
+
+// Alerts
+alertcondition(pdhSweepSell,  title = "PDH Sweep (Sell bias)",     message = "PDH Sweep — {{close}}")
+alertcondition(pdlSweepBuy,   title = "PDL Sweep (Buy bias)",      message = "PDL Sweep — {{close}}")
+alertcondition(atrhSweepSell, title = "ATR High Sweep (Sell bias)", message = "ATR High Sweep — {{close}}")
+alertcondition(atrlSweepBuy,  title = "ATR Low Sweep (Buy bias)",  message = "ATR Low Sweep — {{close}}")
+alertcondition(pwhSweepSell,  title = "PWH Sweep (Sell bias)",     message = "PWH Sweep — {{close}}")
+alertcondition(pwlSweepBuy,   title = "PWL Sweep (Buy bias)",      message = "PWL Sweep — {{close}}")
+alertcondition(pmhSweepSell,  title = "PMH Sweep (Sell bias)",     message = "PMH Sweep — {{close}}")
+alertcondition(pmlSweepBuy,   title = "PML Sweep (Buy bias)",      message = "PML Sweep — {{close}}")
+alertcondition(pdhSweepSell or atrhSweepSell or pwhSweepSell or pmhSweepSell, title = "Any Sweep Sell", message = "Sweep SELL — {{close}}")
+alertcondition(pdlSweepBuy  or atrlSweepBuy  or pwlSweepBuy  or pmlSweepBuy,  title = "Any Sweep Buy",  message = "Sweep BUY — {{close}}")
+
+alertcondition(pdhBreakoutBuy,   title = "PDH Breakout (Buy bias)",      message = "PDH Breakout — {{close}}")
+alertcondition(pdlBreakoutSell,  title = "PDL Breakdown (Sell bias)",    message = "PDL Breakdown — {{close}}")
+alertcondition(atrhBreakoutBuy,  title = "ATR High Breakout (Buy bias)", message = "ATR High Breakout — {{close}}")
+alertcondition(atrlBreakoutSell, title = "ATR Low Breakdown (Sell bias)", message = "ATR Low Breakdown — {{close}}")
+alertcondition(pwhBreakoutBuy,   title = "PWH Breakout (Buy bias)",      message = "PWH Breakout — {{close}}")
+alertcondition(pwlBreakoutSell,  title = "PWL Breakdown (Sell bias)",    message = "PWL Breakdown — {{close}}")
+alertcondition(pmhBreakoutBuy,   title = "PMH Breakout (Buy bias)",      message = "PMH Breakout — {{close}}")
+alertcondition(pmlBreakoutSell,  title = "PML Breakdown (Sell bias)",    message = "PML Breakdown — {{close}}")
+alertcondition(pdhBreakoutBuy  or atrhBreakoutBuy  or pwhBreakoutBuy  or pmhBreakoutBuy,  title = "Any Breakout Buy",  message = "Breakout BUY — {{close}}")
+alertcondition(pdlBreakoutSell or atrlBreakoutSell or pwlBreakoutSell or pmlBreakoutSell, title = "Any Breakdown Sell", message = "Breakdown SELL — {{close}}")

@@ -1,0 +1,49 @@
+//@version=6
+indicator("Weekly Midnight Lines", overlay=true)
+
+// ── Inputs ────────────────────────────────────────────────────────────
+tzMode      = input.string("Exchange", "Timezone", options=["Exchange", "Custom"], group="Timezone")
+customTz    = input.string("America/New_York", "Custom Timezone (used if 'Custom' selected above)", group="Timezone")
+resetDayStr = input.string("Sunday", "Week Reset Day", options=["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"], group="Week Reset")
+lineColor   = input.color(color.new(#424242, 72), "Line Color", group="Style")
+lineWidth   = input.int(1, "Line Width", minval=1, maxval=5, group="Style")
+
+tz = tzMode == "Exchange" ? syminfo.timezone : customTz
+
+resetDay = switch resetDayStr
+    "Sunday"    => dayofweek.sunday
+    "Monday"    => dayofweek.monday
+    "Tuesday"   => dayofweek.tuesday
+    "Wednesday" => dayofweek.wednesday
+    "Thursday"  => dayofweek.thursday
+    "Friday"    => dayofweek.friday
+    => dayofweek.saturday
+
+// ── Only active on 1H and below ─────────────────────────────────────────
+isValidTF = timeframe.isintraday and timeframe.in_seconds(timeframe.period) <= 3600
+
+// ── First bar of a new calendar day (used to trigger the weekly reset) ──
+// On forex-style feeds the week's first bar lands at the broker's Sunday
+// open (e.g. 18:00), not at true 00:00 - so this alone is NOT used to draw.
+newDayEvent = isValidTF and bar_index > 0 and dayofmonth(time, tz) != dayofmonth(time[1], tz)
+isResetDay  = dayofweek(time, tz) == resetDay
+
+// ── True midnight bar (00:00 exactly) - this is what actually gets drawn ─
+isMidnightBar = hour(time, tz) == 0 and minute(time, tz) == 0
+newDay        = newDayEvent and isMidnightBar
+
+// ── Keep every midnight line drawn so far this week ─────────────────────
+var line[] weekLines = array.new_line()
+
+// When the reset day opens (whatever time that bar actually lands on),
+// wipe out everything from the previous week
+if newDayEvent and isResetDay and array.size(weekLines) > 0
+    for i = 0 to array.size(weekLines) - 1
+        line.delete(array.get(weekLines, i))
+    array.clear(weekLines)
+
+// Draw a line only on true midnight bars, and remember it
+if newDay
+    newLine = line.new(x1=bar_index, y1=low, x2=bar_index, y2=high, xloc=xloc.bar_index, extend=extend.both, color=lineColor, style=line.style_solid, width=lineWidth)
+    array.push(weekLines, newLine)
+

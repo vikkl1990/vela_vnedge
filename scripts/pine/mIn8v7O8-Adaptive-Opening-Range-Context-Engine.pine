@@ -1,0 +1,362 @@
+//@version=6
+indicator("Adaptive Opening Range Context Engine", "Opening Range Context", overlay=true, max_labels_count=250, max_lines_count=120, max_boxes_count=120)
+
+// Original session-context framework.
+// No buy/sell signals, profit targets, probabilities, or performance claims.
+
+g1 = "01 - Opening Range"
+sess = input.session("0930-1000", "Opening Range Session", group=g1)
+tz = input.string("America/New_York", "Session Timezone", group=g1)
+rangeSource = input.string("HIGH/LOW", "Range Source", options=["HIGH/LOW","CLOSE"], group=g1)
+endSess = input.session("0930-1600", "Display Session", group=g1)
+
+// Context
+g2 = "02 - Adaptive Context"
+atrLen = input.int(14, "ATR Length", minval=5, group=g2)
+volLen = input.int(20, "Volume Baseline Length", minval=5, group=g2)
+acceptBars = input.int(2, "Acceptance Bars", minval=1, maxval=5, group=g2)
+retestATR = input.float(0.12, "Retest Tolerance (ATR)", minval=0.02, maxval=0.50, step=0.01, group=g2)
+showVolContext = input.bool(true, "Volume Participation Context", group=g2)
+
+// Visuals
+g3 = "03 - Visuals"
+showBox = input.bool(true, "Opening Range Box", group=g3)
+showMid = input.bool(true, "Range Equilibrium", group=g3)
+showLabels = input.bool(true, "Lifecycle Labels", group=g3)
+showDashboard = input.bool(true, "Context Dashboard", group=g3)
+showExtensions = input.bool(true, "Range Extensions", group=g3)
+showLevelTags = input.bool(true, "OR Level Tags", group=g3)
+showContextBands = input.bool(true, "Expansion Context Bands", group=g3)
+showProfile = input.bool(true, "Opening Range Participation Profile", group=g3)
+profileBins = input.int(20, "Profile Rows", minval=8, maxval=30, group=g3)
+profileWidth = input.int(22, "Profile Max Width (Bars)", minval=6, maxval=40, group=g3)
+showPOC = input.bool(true, "Profile POC", group=g3)
+extMult1 = input.float(0.5, "Extension 1", minval=0.1, maxval=3.0, step=0.1, group=g3)
+extMult2 = input.float(1.0, "Extension 2", minval=0.2, maxval=5.0, step=0.1, group=g3)
+
+atr = ta.atr(atrLen)
+atrSafe = math.max(atr, syminfo.mintick)
+volBase = ta.sma(volume, volLen)
+volRatio = na(volBase) or volBase == 0 ? na : volume / volBase
+
+// Default OR is 30 minutes. The engine requires an intraday chart no higher than
+// the opening-window duration so the range can be observed rather than inferred.
+maxTfSeconds = 30 * 60
+supportedTf = timeframe.isintraday and timeframe.in_seconds() <= maxTfSeconds
+rawInOR = not na(time(timeframe.period, sess, tz))
+rawInDisplay = not na(time(timeframe.period, endSess, tz))
+inOR = supportedTf and rawInOR
+inDisplay = supportedTf and rawInDisplay
+newOR = inOR and not inOR[1]
+endOR = not inOR and inOR[1]
+
+var float orHigh = na
+var float orLow = na
+var float orMid = na
+var float lockedATR = na
+var bool locked = false
+var int lockBar = na
+var string state = "WAITING"
+var int bias = 0
+var int outsideCount = 0
+var bool retested = false
+var bool expanded = false
+var box orBox = na
+var line midLine = na
+var line up1 = na
+var line up2 = na
+var line dn1 = na
+var line dn2 = na
+var label lastLabel = na
+var label hiTag = na
+var label midTag = na
+var label loTag = na
+var box upperBand = na
+var box lowerBand = na
+// Participation Profile: volume is assigned to price buckets using each opening-range
+// bar's typical price. It is a contextual participation proxy, not exchange volume-at-price.
+var array<float> orPxSamples = array.new_float()
+var array<float> orVolSamples = array.new_float()
+var array<box> profileBoxes = array.new_box()
+var line pocLine = na
+var label pocTag = na
+
+srcHi = rangeSource == "HIGH/LOW" ? high : math.max(open, close)
+srcLo = rangeSource == "HIGH/LOW" ? low : math.min(open, close)
+
+if newOR
+    orHigh := srcHi
+    orLow := srcLo
+    orMid := na
+    lockedATR := na
+    locked := false
+    lockBar := na
+    state := "FORMING"
+    bias := 0
+    outsideCount := 0
+    retested := false
+    expanded := false
+    array.clear(orPxSamples)
+    array.clear(orVolSamples)
+    for pb in profileBoxes
+        box.delete(pb)
+    array.clear(profileBoxes)
+    if not na(pocLine)
+        line.delete(pocLine)
+        pocLine := na
+    if not na(pocTag)
+        label.delete(pocTag)
+        pocTag := na
+    // Archive the completed session as subdued background context instead of
+    // deleting it. Current-session geometry remains visually dominant.
+    if not na(orBox)
+        box.set_bgcolor(orBox, color.new(color.rgb(105,113,119), 96))
+        box.set_border_color(orBox, color.new(color.rgb(105,113,119), 78))
+    if not na(midLine)
+        line.delete(midLine)
+    if not na(up1)
+        line.delete(up1)
+    if not na(up2)
+        line.delete(up2)
+    if not na(dn1)
+        line.delete(dn1)
+    if not na(dn2)
+        line.delete(dn2)
+    if not na(hiTag)
+        label.delete(hiTag)
+    if not na(midTag)
+        label.delete(midTag)
+    if not na(loTag)
+        label.delete(loTag)
+    if not na(upperBand)
+        box.delete(upperBand)
+    if not na(lowerBand)
+        box.delete(lowerBand)
+    if showBox
+        orBox := box.new(bar_index, orHigh, bar_index, orLow, bgcolor=color.new(color.silver, 90), border_color=color.new(color.gray, 35))
+
+if inOR
+    array.push(orPxSamples, hlc3)
+    array.push(orVolSamples, nz(volume, 0.0))
+    orHigh := na(orHigh) ? srcHi : math.max(orHigh, srcHi)
+    orLow := na(orLow) ? srcLo : math.min(orLow, srcLo)
+    orMid := (orHigh + orLow) * 0.5
+    if showBox and not na(orBox)
+        box.set_right(orBox, bar_index)
+        box.set_top(orBox, orHigh)
+        box.set_bottom(orBox, orLow)
+
+if endOR and not na(orHigh) and not na(orLow)
+    locked := true
+    lockedATR := atrSafe
+    lockBar := bar_index
+    orMid := (orHigh + orLow) * 0.5
+    state := "RANGE LOCKED"
+    if showBox and not na(orBox)
+        box.set_right(orBox, bar_index)
+        box.set_bgcolor(orBox, color.new(color.rgb(105,113,119), 92))
+        box.set_border_color(orBox, color.new(color.rgb(105,113,119), 55))
+    if showMid
+        midLine := line.new(bar_index, orMid, bar_index, orMid, extend=extend.none, color=color.new(color.rgb(105,113,119), 15), style=line.style_dotted)
+    rangeSize = orHigh - orLow
+    if showExtensions
+        up1 := line.new(bar_index, orHigh + rangeSize * extMult1, bar_index, orHigh + rangeSize * extMult1, extend=extend.none, color=color.new(color.rgb(0,145,120), 42), style=line.style_dashed)
+        up2 := line.new(bar_index, orHigh + rangeSize * extMult2, bar_index, orHigh + rangeSize * extMult2, extend=extend.none, color=color.new(color.rgb(0,145,120), 70), style=line.style_dotted)
+        dn1 := line.new(bar_index, orLow - rangeSize * extMult1, bar_index, orLow - rangeSize * extMult1, extend=extend.none, color=color.new(color.rgb(205,25,85), 42), style=line.style_dashed)
+        dn2 := line.new(bar_index, orLow - rangeSize * extMult2, bar_index, orLow - rangeSize * extMult2, extend=extend.none, color=color.new(color.rgb(205,25,85), 70), style=line.style_dotted)
+    if showContextBands
+        upperBand := box.new(bar_index, orHigh + rangeSize * extMult1, bar_index, orHigh, bgcolor=color.new(color.rgb(0,145,120), 94), border_color=color.new(color.rgb(0,145,120), 100))
+        lowerBand := box.new(bar_index, orLow, bar_index, orLow - rangeSize * extMult1, bgcolor=color.new(color.rgb(205,25,85), 94), border_color=color.new(color.rgb(205,25,85), 100))
+    if showLevelTags
+        hiTag := label.new(bar_index, orHigh, "OR HIGH", style=label.style_label_left, size=size.tiny, color=color.rgb(0,145,120), textcolor=color.white)
+        midTag := label.new(bar_index, orMid, "EQ", style=label.style_label_left, size=size.tiny, color=color.rgb(90,98,104), textcolor=color.white)
+        loTag := label.new(bar_index, orLow, "OR LOW", style=label.style_label_left, size=size.tiny, color=color.rgb(205,25,85), textcolor=color.white)
+    // Build an original opening-range participation profile from the bars that formed
+    // the range. Each bar contributes its full volume to the bucket containing hlc3.
+    // This keeps the module deterministic and transparent without claiming true order-book data.
+    if showProfile and rangeSize > syminfo.mintick and array.size(orPxSamples) > 0
+        bucketVol = array.new_float(profileBins, 0.0)
+        stepPx = rangeSize / profileBins
+        for i = 0 to array.size(orPxSamples) - 1
+            px = array.get(orPxSamples, i)
+            vv = array.get(orVolSamples, i)
+            idxRaw = int(math.floor((px - orLow) / stepPx))
+            idx = math.max(0, math.min(profileBins - 1, idxRaw))
+            array.set(bucketVol, idx, array.get(bucketVol, idx) + vv)
+        maxV = 0.0
+        pocIdx = 0
+        for i = 0 to profileBins - 1
+            bv = array.get(bucketVol, i)
+            if bv > maxV
+                maxV := bv
+                pocIdx := i
+        if maxV > 0
+            for i = 0 to profileBins - 1
+                bv = array.get(bucketVol, i)
+                frac = bv / maxV
+                w = math.max(1, int(math.round(profileWidth * frac)))
+                y0 = orLow + stepPx * i
+                y1 = y0 + stepPx
+                isPoc = i == pocIdx
+                pc = isPoc ? color.rgb(0,145,120) : color.rgb(20,155,175)
+                pb = box.new(bar_index - w, y1, bar_index, y0, bgcolor=color.new(pc, isPoc ? 18 : int(58 - 18 * frac)), border_color=color.new(pc, 100))
+                array.push(profileBoxes, pb)
+            pocPrice = orLow + stepPx * (pocIdx + 0.5)
+            if showPOC
+                pocLine := line.new(bar_index - profileWidth, pocPrice, bar_index, pocPrice, color=color.new(color.rgb(0,145,120), 0), width=2)
+                pocTag := label.new(bar_index, pocPrice, "OR POC", style=label.style_label_left, size=size.tiny, color=color.rgb(0,145,120), textcolor=color.white)
+
+// Keep locked-session references bounded to the configured display session.
+// This prevents completed sessions from drawing long step-like lines into the next day.
+if locked and inDisplay and bar_index > lockBar
+    if not na(orBox)
+        box.set_right(orBox, bar_index)
+    if not na(midLine)
+        line.set_x2(midLine, bar_index)
+    if not na(up1)
+        line.set_x2(up1, bar_index)
+    if not na(up2)
+        line.set_x2(up2, bar_index)
+    if not na(dn1)
+        line.set_x2(dn1, bar_index)
+    if not na(dn2)
+        line.set_x2(dn2, bar_index)
+    if not na(upperBand)
+        box.set_right(upperBand, bar_index)
+    if not na(lowerBand)
+        box.set_right(lowerBand, bar_index)
+    if not na(hiTag)
+        label.set_x(hiTag, bar_index)
+        label.set_y(hiTag, orHigh)
+    if not na(midTag)
+        label.set_x(midTag, bar_index)
+        label.set_y(midTag, orMid)
+    if not na(loTag)
+        label.set_x(loTag, bar_index)
+        label.set_y(loTag, orLow)
+    if showProfile and array.size(profileBoxes) > 0
+        maxProfileVolWidth = profileWidth
+        for i = 0 to array.size(profileBoxes) - 1
+            pb = array.get(profileBoxes, i)
+            currentWidth = box.get_right(pb) - box.get_left(pb)
+            box.set_left(pb, bar_index - currentWidth)
+            box.set_right(pb, bar_index)
+        if not na(pocLine)
+            line.set_x1(pocLine, bar_index - maxProfileVolWidth)
+            line.set_x2(pocLine, bar_index)
+        if not na(pocTag)
+            label.set_x(pocTag, bar_index)
+
+rangeSize = locked and not na(orHigh) and not na(orLow) ? orHigh - orLow : na
+rangeATR = locked and not na(lockedATR) ? rangeSize / math.max(lockedATR, syminfo.mintick) : na
+rangeQuality = na(rangeATR) ? "-" : rangeATR < 0.55 ? "COMPRESSED" : rangeATR > 1.60 ? "EXPANDED" : "BALANCED"
+volContext = not showVolContext or na(volRatio) ? "N/A" : volRatio >= 1.25 ? "ELEVATED" : volRatio <= 0.75 ? "LIGHT" : "NORMAL"
+
+bullAttempt = locked and inDisplay and bar_index > lockBar and close > orHigh
+bearAttempt = locked and inDisplay and bar_index > lockBar and close < orLow
+
+if barstate.isconfirmed and locked and inDisplay and bar_index > lockBar
+    if bias == 0
+        if bullAttempt
+            bias := 1
+            outsideCount := 1
+            state := "UPPER BREAK ATTEMPT"
+        else if bearAttempt
+            bias := -1
+            outsideCount := 1
+            state := "LOWER BREAK ATTEMPT"
+    else if bias == 1 and not retested
+        if close > orHigh
+            outsideCount += 1
+            if outsideCount >= acceptBars
+                state := "UPPER ACCEPTED"
+        else if close < orMid
+            state := "UPPER REJECTED"
+            bias := 0
+            outsideCount := 0
+        else if low <= orHigh + atrSafe * retestATR and close >= orHigh
+            retested := true
+            state := "UPPER RETEST"
+    else if bias == -1 and not retested
+        if close < orLow
+            outsideCount += 1
+            if outsideCount >= acceptBars
+                state := "LOWER ACCEPTED"
+        else if close > orMid
+            state := "LOWER REJECTED"
+            bias := 0
+            outsideCount := 0
+        else if high >= orLow - atrSafe * retestATR and close <= orLow
+            retested := true
+            state := "LOWER RETEST"
+    else if bias == 1 and retested
+        if close > orHigh + rangeSize * extMult1
+            expanded := true
+            state := "UPPER EXPANSION"
+        else if close < orMid
+            state := "UPPER FAILED"
+            bias := 0
+            retested := false
+            outsideCount := 0
+    else if bias == -1 and retested
+        if close < orLow - rangeSize * extMult1
+            expanded := true
+            state := "LOWER EXPANSION"
+        else if close > orMid
+            state := "LOWER FAILED"
+            bias := 0
+            retested := false
+            outsideCount := 0
+
+stateChanged = barstate.isconfirmed and state != state[1]
+if stateChanged and showLabels and locked and inDisplay
+    if not na(lastLabel)
+        label.delete(lastLabel)
+    isUp = str.contains(state, "UPPER")
+    isDn = str.contains(state, "LOWER")
+    col = isUp ? color.rgb(0,145,120) : isDn ? color.rgb(205,25,85) : color.rgb(90,98,104)
+    y = isUp ? high + atrSafe * 0.18 : isDn ? low - atrSafe * 0.18 : close
+    sty = isUp ? label.style_label_down : isDn ? label.style_label_up : label.style_label_left
+    lastLabel := label.new(bar_index, y, state, style=sty, size=size.tiny, color=col, textcolor=color.white)
+
+// Primary range boundaries remain visually dominant.
+showRangeNow = supportedTf and (inOR or (locked and inDisplay))
+// Explicitly break the series on each new opening-range session. This prevents
+// historical sessions from being connected by vertical/step-like bridges.
+showBoundaryNow = showRangeNow and not newOR
+pHi = plot(showBoundaryNow ? orHigh : na, "OR High", color=color.rgb(0,145,120), linewidth=2, style=plot.style_linebr)
+pLo = plot(showBoundaryNow ? orLow : na, "OR Low", color=color.rgb(205,25,85), linewidth=2, style=plot.style_linebr)
+fill(pHi, pLo, color=color.new(color.rgb(105,113,119), 92), title="Opening Range")
+
+var table dash = table.new(position.top_right, 2, 8, frame_width=1, border_width=1)
+if barstate.islast and showDashboard
+    white = color.rgb(255,255,255)
+    soft = color.rgb(247,249,250)
+    dark = color.rgb(28,34,37)
+    muted = color.rgb(105,113,119)
+    bullCol = color.rgb(0,145,120)
+    bearCol = color.rgb(205,25,85)
+    dashState = supportedTf ? state : "TIMEFRAME TOO HIGH"
+    stateCol = not supportedTf ? bearCol : str.contains(state,"UPPER") ? bullCol : str.contains(state,"LOWER") ? bearCol : dark
+    table.cell(dash,0,0,"OPENING RANGE CONTEXT",text_color=dark,bgcolor=white,text_size=size.small)
+    table.cell(dash,1,0,"v1.1",text_color=bullCol,bgcolor=white,text_size=size.small)
+    table.cell(dash,0,1,"STATE",text_color=muted,bgcolor=soft)
+    table.cell(dash,1,1,dashState,text_color=stateCol,bgcolor=soft)
+    table.cell(dash,0,2,"RANGE",text_color=muted,bgcolor=white)
+    table.cell(dash,1,2,rangeQuality,text_color=dark,bgcolor=white)
+    table.cell(dash,0,3,"RANGE / ATR",text_color=muted,bgcolor=soft)
+    table.cell(dash,1,3,na(rangeATR)?"-":str.tostring(rangeATR,"#.00"),text_color=dark,bgcolor=soft)
+    table.cell(dash,0,4,"VOLUME",text_color=muted,bgcolor=white)
+    table.cell(dash,1,4,supportedTf?volContext:"-",text_color=dark,bgcolor=white)
+    table.cell(dash,0,5,"MIDPOINT",text_color=muted,bgcolor=soft)
+    table.cell(dash,1,5,na(orMid)?"-":str.tostring(orMid,format.mintick),text_color=dark,bgcolor=soft)
+    table.cell(dash,0,6,"CONTEXT",text_color=muted,bgcolor=white)
+    table.cell(dash,1,6,not supportedTf?"-":bias==1?"UPPER":bias==-1?"LOWER":"NEUTRAL",text_color=not supportedTf?muted:bias==1?bullCol:bias==-1?bearCol:dark,bgcolor=white)
+    table.cell(dash,0,7,"PROFILE",text_color=muted,bgcolor=soft)
+    table.cell(dash,1,7,showProfile?"PARTICIPATION":"OFF",text_color=dark,bgcolor=soft)
+
+alertcondition(stateChanged and state == "UPPER BREAK ATTEMPT", "Upper Range Break Attempt", "Price closed above the locked opening range high.")
+alertcondition(stateChanged and state == "LOWER BREAK ATTEMPT", "Lower Range Break Attempt", "Price closed below the locked opening range low.")
+alertcondition(stateChanged and state == "UPPER ACCEPTED", "Upper Range Acceptance", "Price maintained confirmed closes above the opening range high.")
+alertcondition(stateChanged and state == "LOWER ACCEPTED", "Lower Range Acceptance", "Price maintained confirmed closes below the opening range low.")
+alertcondition(stateChanged and (state == "UPPER REJECTED" or state == "LOWER REJECTED" or state == "UPPER FAILED" or state == "LOWER FAILED"), "Opening Range Rejection", "An opening range break attempt returned into the range context.")

@@ -1,0 +1,76 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © SchizoQuant
+
+//@version=6
+indicator("Double-Smoothed Momentum MAD Trend", overlay=false)
+
+// USER INPUTS
+maSrc          = input.source(title="Source", defval=close, group="Momentum Settings", tooltip="Choose the price source used to calculate momentum before the double smoothing process.")
+momentumLength = input.int(title="Momentum Length", defval=1, minval=1, group="Momentum Settings", tooltip="Sets the price-difference period used as the momentum input. Lower values react faster, while higher values create a smoother underlying momentum measure.")
+smooth1        = input.int(title="First Smoothing", defval=1, minval=1, group="Smoothing", tooltip="Controls the first exponential smoothing of momentum and absolute momentum. Higher values reduce short-term noise.")
+smooth2        = input.int(title="Second Smoothing", defval=20, minval=1, group="Smoothing", tooltip="Controls the second exponential smoothing stage. Higher values create a smoother oscillator with slower response.")
+madLength      = input.int(title="MAD Length", defval=29, minval=2, group="MAD Bands", tooltip="Sets the lookback used to measure the mean absolute deviation of the double-smoothed momentum oscillator. Lower values adapt faster, while higher values create smoother thresholds.")
+madMult        = input.float(title="MAD Multiplier", defval=1.0, minval=0.1, step=0.1, group="MAD Bands", tooltip="Controls how far the bullish and bearish MAD thresholds are positioned from zero. Higher values require stronger momentum before the trend changes.")
+showMADBands   = input.bool(title="Show MAD Bands", defval=true, group="MAD Bands", tooltip="Display the zero-centered mean absolute deviation thresholds used to determine the trend.")
+showMADFill    = input.bool(title="Show MAD Fill", defval=true, group="MAD Bands", tooltip="Fill the area between the upper and lower MAD thresholds.")
+signalLength   = input.int(title="Signal Length", defval=3, minval=1, group="Signal Settings", tooltip="Smooths the oscillator to create an optional reference signal line. The signal line does not control the MAD-based trend.")
+showSignalLine = input.bool(title="Show Signal Line", defval=true, group="Visualization", tooltip="Display the smoothed signal line as a visual momentum reference.")
+showSignals    = input.bool(title="Show Signals", defval=true, group="Visualization", tooltip="Turn BULL and BEAR trend-change markers on or off.")
+colorBars      = input.bool(title="Color Bars", defval=true, group="Visualization", tooltip="Color the price candles according to the current MAD-based momentum trend.")
+longColor      = input.color(title="Bullish Color", defval=color.rgb(57, 255, 20), group="Color Settings", inline="1", tooltip="Main bullish color used for the oscillator, signals, bands, and candle coloring.")
+shortColor     = input.color(title="Bearish Color", defval=color.rgb(138, 43, 226), group="Color Settings", inline="1", tooltip="Main bearish color used for the oscillator, signals, bands, and candle coloring.")
+
+// CALCULATIONS
+momentum = maSrc - maSrc[momentumLength]
+
+smoothMomentum1 = ta.ema(momentum, smooth1)
+smoothMomentum2 = ta.ema(smoothMomentum1, smooth2)
+
+absoluteMomentum = math.abs(momentum)
+
+smoothAbsolute1 = ta.ema(absoluteMomentum, smooth1)
+smoothAbsolute2 = ta.ema(smoothAbsolute1, smooth2)
+
+tsi = smoothAbsolute2 != 0.0 ? 100.0 * smoothMomentum2 / smoothAbsolute2 : 0.0
+
+signalLine = ta.ema(tsi, signalLength)
+
+madBasis = ta.sma(tsi, madLength)
+madValue = ta.sma(math.abs(tsi - madBasis), madLength)
+
+upperBand = madMult * madValue
+lowerBand = -madMult * madValue
+
+// SIGNALS
+long = tsi > upperBand
+short = tsi < lowerBand
+
+var int SQ = 1
+
+if long
+    SQ := 1
+
+if short
+    SQ := -1
+
+longSignal = SQ == 1 and SQ[1] != 1
+shortSignal = SQ == -1 and SQ[1] != -1
+
+// COLORS
+col = SQ == 1 ? longColor : shortColor
+
+// PLOTS
+plot(tsi, title="Double-Smoothed Momentum", color=col, linewidth=2)
+plot(showSignalLine ? signalLine : na, title="Signal Line", color=color.new(col, 55), linewidth=1)
+upperBandPlot = plot(showMADBands ? upperBand : na, title="Upper MAD Band", color=color.new(longColor, 25), linewidth=1)
+lowerBandPlot = plot(showMADBands ? lowerBand : na, title="Lower MAD Band", color=color.new(shortColor, 25), linewidth=1)
+fill(upperBandPlot, lowerBandPlot, color=showMADBands and showMADFill ? color.new(col, 92) : na, title="MAD Band Fill")
+hline(0, title="Zero Line", color=color.gray)
+plot(tsi, title="Momentum Histogram", style=plot.style_columns, color=SQ == 1 ? color.new(longColor, 78) : color.new(shortColor, 78))
+plotshape(showSignals and longSignal, title="Bull Signal", style=shape.triangleup, location=location.belowbar, size=size.small, color=longColor, force_overlay=true, text="BULL", textcolor=color.white)
+plotshape(showSignals and shortSignal, title="Bear Signal", style=shape.triangledown, location=location.abovebar, size=size.small, color=shortColor, force_overlay=true, text="BEAR", textcolor=color.white)
+barcolor(colorBars ? col : na)
+
+// ALERTS
+alertcondition(longSignal, title="Bull Signal", message="Double-Smoothed Momentum MAD Trend Bull Signal on {{ticker}}")
+alertcondition(shortSignal, title="Bear Signal", message="Double-Smoothed Momentum MAD Trend Bear Signal on {{ticker}}")

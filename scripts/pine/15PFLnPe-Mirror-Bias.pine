@@ -1,0 +1,388 @@
+//@version=6
+indicator(
+     "Mirror Bias",
+     shorttitle = "Mirror Bias",
+     overlay = false,
+     format = format.price)
+
+
+//════════════════════════════════════════════════════════════
+// INPUTS
+//════════════════════════════════════════════════════════════
+
+//────────────────────────────────────────────────────────────
+// Candle appearance
+//────────────────────────────────────────────────────────────
+
+string candleColorMode = input.string(
+     "Original",
+     "Candle Colors",
+     options = ["Original", "Inverted", "Neutral"],
+     group = "Candles",
+     tooltip = "Original preserves bullish/bearish colors. Inverted swaps them. Neutral uses one color for all candles.")
+
+color bullColor = input.color(
+     color.green,
+     "Bullish",
+     group = "Candles")
+
+color bearColor = input.color(
+     color.red,
+     "Bearish",
+     group = "Candles")
+
+color neutralColor = input.color(
+     color.gray,
+     "Neutral",
+     group = "Candles")
+
+
+//────────────────────────────────────────────────────────────
+// Swing structure
+//────────────────────────────────────────────────────────────
+
+bool showStructure = input.bool(
+     false,
+     "Show Swing Structure",
+     group = "Structure",
+     tooltip = "Marks confirmed higher highs, lower highs, higher lows, and lower lows from the original price action.")
+
+int pivotLength = input.int(
+     3,
+     "Pivot Strength",
+     minval = 1,
+     maxval = 20,
+     group = "Structure",
+     tooltip = "Number of bars required on each side to confirm a swing point.")
+
+color structureHighColor = input.color(
+     color.red,
+     "High Structure",
+     group = "Structure")
+
+color structureLowColor = input.color(
+     color.green,
+     "Low Structure",
+     group = "Structure")
+
+
+//────────────────────────────────────────────────────────────
+// Context levels
+//────────────────────────────────────────────────────────────
+
+bool showDailyOpen = input.bool(
+     false,
+     "Daily Open",
+     group = "Context")
+
+bool showPreviousDay = input.bool(
+     false,
+     "Previous Day High / Low",
+     group = "Context")
+
+bool showVWAP = input.bool(
+     false,
+     "VWAP",
+     group = "Context")
+
+bool showEMA20 = input.bool(
+     false,
+     "20 EMA",
+     group = "Context")
+
+bool showEMA50 = input.bool(
+     false,
+     "50 EMA",
+     group = "Context")
+
+bool showEMA200 = input.bool(
+     false,
+     "200 EMA",
+     group = "Context")
+
+
+//────────────────────────────────────────────────────────────
+// Directional context
+//────────────────────────────────────────────────────────────
+
+bool showDirection = input.bool(
+     false,
+     "Show Original Direction",
+     group = "Direction",
+     tooltip = "Displays a small status badge describing the original market's relationship to the selected EMA. This is intentionally off by default.")
+
+string directionBasis = input.string(
+     "50 EMA",
+     "Direction Basis",
+     options = ["20 EMA", "50 EMA", "200 EMA"],
+     group = "Direction")
+
+
+//────────────────────────────────────────────────────────────
+// Axis
+//────────────────────────────────────────────────────────────
+
+bool showZeroAxis = input.bool(
+     false,
+     "Show Zero Axis",
+     group = "Axis",
+     tooltip = "Shows the mathematical mirror axis at zero. Enabling this can affect automatic scaling.")
+
+
+//════════════════════════════════════════════════════════════
+// MIRRORED OHLC
+//
+// True geometric reflection:
+//     P' = -P
+//
+// High and low reverse their roles after reflection.
+//════════════════════════════════════════════════════════════
+
+float mirrorOpen = -open
+float mirrorHigh = -low
+float mirrorLow = -high
+float mirrorClose = -close
+
+
+//════════════════════════════════════════════════════════════
+// CANDLE COLORS
+//════════════════════════════════════════════════════════════
+
+bool bullish = close >= open
+
+color candleColor =
+     candleColorMode == "Neutral"  ? neutralColor :
+     candleColorMode == "Inverted" ? (bullish ? bearColor : bullColor) :
+                                      (bullish ? bullColor : bearColor)
+
+
+//════════════════════════════════════════════════════════════
+// MAIN MIRRORED CANDLES
+//════════════════════════════════════════════════════════════
+
+plotcandle(
+     mirrorOpen,
+     mirrorHigh,
+     mirrorLow,
+     mirrorClose,
+     title = "Mirror Bias",
+     color = candleColor,
+     wickcolor = candleColor,
+     bordercolor = candleColor)
+
+
+//════════════════════════════════════════════════════════════
+// SWING STRUCTURE
+//
+// The labels describe the ORIGINAL price structure.
+//
+// Example:
+//   Original HH → appears visually as a lower point
+//   Original LL → appears visually as a higher point
+//
+// This is intentional: the labels tell you what happened while
+// the geometry forces you to perceive it upside down.
+//════════════════════════════════════════════════════════════
+
+float pivotHigh = ta.pivothigh(high, pivotLength, pivotLength)
+float pivotLow = ta.pivotlow(low, pivotLength, pivotLength)
+
+var float previousPivotHigh = na
+var float previousPivotLow = na
+
+bool isHH = false
+bool isLH = false
+bool isHL = false
+bool isLL = false
+
+if not na(pivotHigh)
+    isHH := na(previousPivotHigh) or pivotHigh > previousPivotHigh
+    isLH := not isHH
+    previousPivotHigh := pivotHigh
+
+if not na(pivotLow)
+    isHL := na(previousPivotLow) or pivotLow > previousPivotLow
+    isLL := not isHL
+    previousPivotLow := pivotLow
+
+
+// Original HH / LH become LOW points after mirroring.
+
+plotshape(
+     showStructure and isHH ? -pivotHigh : na,
+     title = "Higher High",
+     style = shape.labelup,
+     location = location.absolute,
+     offset = -pivotLength,
+     color = structureHighColor,
+     text = "HH",
+     textcolor = color.white,
+     size = size.tiny)
+
+plotshape(
+     showStructure and isLH ? -pivotHigh : na,
+     title = "Lower High",
+     style = shape.labelup,
+     location = location.absolute,
+     offset = -pivotLength,
+     color = structureHighColor,
+     text = "LH",
+     textcolor = color.white,
+     size = size.tiny)
+
+// Original HL / LL become HIGH points after mirroring.
+
+plotshape(
+     showStructure and isHL ? -pivotLow : na,
+     title = "Higher Low",
+     style = shape.labeldown,
+     location = location.absolute,
+     offset = -pivotLength,
+     color = structureLowColor,
+     text = "HL",
+     textcolor = color.white,
+     size = size.tiny)
+
+plotshape(
+     showStructure and isLL ? -pivotLow : na,
+     title = "Lower Low",
+     style = shape.labeldown,
+     location = location.absolute,
+     offset = -pivotLength,
+     color = structureLowColor,
+     text = "LL",
+     textcolor = color.white,
+     size = size.tiny)
+
+
+//════════════════════════════════════════════════════════════
+// DAILY CONTEXT
+//
+// One request retrieves all three values.
+// Previous-day values use [1], so they refer to the completed
+// prior daily bar.
+//════════════════════════════════════════════════════════════
+
+[dailyOpen, previousDayHigh, previousDayLow] =
+     request.security(
+         syminfo.tickerid,
+         "D",
+         [open, high[1], low[1]],
+         lookahead = barmerge.lookahead_on)
+
+
+// Mirror all reference levels.
+
+float mirroredDailyOpen = -dailyOpen
+float mirroredPreviousDayHigh = -previousDayHigh
+float mirroredPreviousDayLow = -previousDayLow
+
+
+plot(
+     showDailyOpen ? mirroredDailyOpen : na,
+     title = "Mirrored Daily Open",
+     color = color.orange,
+     linewidth = 1)
+
+plot(
+     showPreviousDay ? mirroredPreviousDayHigh : na,
+     title = "Mirrored Previous Day High",
+     color = color.new(color.red, 25),
+     linewidth = 1)
+
+plot(
+     showPreviousDay ? mirroredPreviousDayLow : na,
+     title = "Mirrored Previous Day Low",
+     color = color.new(color.green, 25),
+     linewidth = 1)
+
+
+//════════════════════════════════════════════════════════════
+// VWAP
+//════════════════════════════════════════════════════════════
+
+float sessionVWAP = ta.vwap(hlc3)
+
+plot(
+     showVWAP and timeframe.isintraday ? -sessionVWAP : na,
+     title = "Mirrored VWAP",
+     color = color.aqua,
+     linewidth = 1)
+
+
+//════════════════════════════════════════════════════════════
+// MOVING AVERAGES
+//
+// Calculate on the original price, then reflect the result.
+//════════════════════════════════════════════════════════════
+
+float ema20 = ta.ema(close, 20)
+float ema50 = ta.ema(close, 50)
+float ema200 = ta.ema(close, 200)
+
+plot(
+     showEMA20 ? -ema20 : na,
+     title = "Mirrored 20 EMA",
+     color = color.new(color.yellow, 15),
+     linewidth = 1)
+
+plot(
+     showEMA50 ? -ema50 : na,
+     title = "Mirrored 50 EMA",
+     color = color.new(color.blue, 15),
+     linewidth = 1)
+
+plot(
+     showEMA200 ? -ema200 : na,
+     title = "Mirrored 200 EMA",
+     color = color.new(color.purple, 15),
+     linewidth = 2)
+
+
+//════════════════════════════════════════════════════════════
+// ORIGINAL DIRECTION STATUS
+//════════════════════════════════════════════════════════════
+
+float selectedEMA =
+     directionBasis == "20 EMA"  ? ema20 :
+     directionBasis == "50 EMA"  ? ema50 :
+                                   ema200
+
+string directionText =
+     close > selectedEMA ? "BULLISH" :
+     close < selectedEMA ? "BEARISH" :
+                           "NEUTRAL"
+
+color directionColor =
+     close > selectedEMA ? bullColor :
+     close < selectedEMA ? bearColor :
+                           neutralColor
+
+var table directionTable = table.new(
+     position.top_right,
+     1,
+     1)
+
+if barstate.islast
+    table.cell(
+         directionTable,
+         0,
+         0,
+         showDirection ? "ORIGINAL: " + directionText : "",
+         text_color = color.white,
+         bgcolor = showDirection ? directionColor : color.new(color.black, 100))
+
+
+//════════════════════════════════════════════════════════════
+// MATHEMATICAL MIRROR AXIS
+//
+// Disabled by default because zero becomes part of the pane's
+// scaling calculation when displayed.
+//════════════════════════════════════════════════════════════
+
+hline(
+     0,
+     "Mirror Axis",
+     color = color.gray,
+     linestyle = hline.style_dashed,
+     display = showZeroAxis ? display.all : display.none)

@@ -1,0 +1,210 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © fehzy5138
+
+//@version=6
+indicator("Key Levels [Fehzy]", shorttitle="Key Levels", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ═════════════════════════ INPUTS ═════════════════════════
+string G0 = "General"
+string tz        = input.string("America/New_York", "Timezone (sessions / open)", group=G0)
+string styleIn   = input.string("Dotted", "Line style", options=["Dotted", "Dashed", "Solid"], group=G0)
+int    lineW     = input.int(1, "Line width", minval=1, maxval=4, group=G0)
+int    extBars   = input.int(10, "Extend beyond price (bars)", minval=0, maxval=100, group=G0)
+bool   showLbl   = input.bool(true, "Show labels", group=G0)
+bool   showPx    = input.bool(true, "Show price in label", group=G0)
+string lblSizeIn = input.string("Small", "Label size", options=["Tiny", "Small", "Normal"], group=G0)
+string sweptMode = input.string("Keep extending", "Swept levels", options=["Keep extending", "Stop at sweep", "Hide"], group=G0, tooltip="Applies to PDH/PDL, PWH/PWL and completed session highs/lows")
+
+string G1 = "Day / Week"
+bool  showDay = input.bool(true,  "Day High / Low",  inline="d",  group=G1)
+color colDay  = input.color(#FF9800, "",             inline="d",  group=G1)
+bool  showPD  = input.bool(true,  "PDH / PDL",       inline="pd", group=G1)
+color colPD   = input.color(#2962FF, "",             inline="pd", group=G1)
+bool  showWk  = input.bool(false, "Week High / Low", inline="w",  group=G1)
+color colWk   = input.color(#AB47BC, "",             inline="w",  group=G1)
+bool  showPW  = input.bool(true,  "PWH / PWL",       inline="pw", group=G1)
+color colPW   = input.color(#E91E63, "",             inline="pw", group=G1)
+
+string G2 = "Sessions (High / Low)"
+bool   showAsia = input.bool(true, "Asia",   inline="a", group=G2)
+string asiaSess = input.session("2000-0000", "", inline="a", group=G2)
+color  colAsia  = input.color(#FFC107, "",   inline="a", group=G2)
+bool   showLdn  = input.bool(true, "London", inline="l", group=G2)
+string ldnSess  = input.session("0200-0500", "", inline="l", group=G2)
+color  colLdn   = input.color(#00BCD4, "",   inline="l", group=G2)
+bool   showNy   = input.bool(true, "New York", inline="n", group=G2)
+string nySess   = input.session("0930-1600", "", inline="n", group=G2)
+color  colNy    = input.color(#4CAF50, "",   inline="n", group=G2)
+
+string G3 = "Market Open"
+bool   showDO  = input.bool(true,  "Daily Open",  inline="do", group=G3)
+color  colDO   = input.color(#9E9E9E, "",         inline="do", group=G3)
+bool   showWO  = input.bool(false, "Weekly Open", inline="wo", group=G3)
+color  colWO   = input.color(#795548, "",         inline="wo", group=G3)
+bool   showMO  = input.bool(true,  "Market Open price", inline="mo", group=G3)
+string moSess  = input.session("0930-1600", "",   inline="mo", group=G3)
+color  colMO   = input.color(#EF5350, "",         inline="mo", group=G3)
+bool   showMOv = input.bool(true, "Vertical line at market open", group=G3)
+
+// ═════════════════════════ HELPERS ═════════════════════════
+lnStyle = styleIn == "Dotted" ? line.style_dotted : styleIn == "Dashed" ? line.style_dashed : line.style_solid
+lblSize = lblSizeIn == "Tiny" ? size.tiny : lblSizeIn == "Normal" ? size.normal : size.small
+
+inSession(string s) =>
+    not na(time(timeframe.period, s + ":1234567", tz))
+
+// ═════════════════════════ TYPES ═════════════════════════
+type Period
+    float h
+    float l
+    int   ht
+    int   lt
+    float o
+    int   ot
+    float ph
+    float pl
+    int   pht
+    int   plt
+    int   phs
+    int   pls
+
+type Sess
+    float h
+    float l
+    int   ht
+    int   lt
+    int   hs
+    int   ls
+    bool  active = false
+
+method roll(Period p, bool isNew) =>
+    if isNew or na(p.h)
+        p.ph  := p.h
+        p.pl  := p.l
+        p.pht := p.ht
+        p.plt := p.lt
+        p.phs := na
+        p.pls := na
+        p.h   := high
+        p.l   := low
+        p.ht  := time
+        p.lt  := time
+        p.o   := open
+        p.ot  := time
+    else
+        if high > p.h
+            p.h  := high
+            p.ht := time
+        if low < p.l
+            p.l  := low
+            p.lt := time
+    if not na(p.ph) and na(p.phs) and high >= p.ph
+        p.phs := time
+    if not na(p.pl) and na(p.pls) and low <= p.pl
+        p.pls := time
+
+method track(Sess s, bool inS) =>
+    if inS
+        if not s.active
+            s.h  := high
+            s.l  := low
+            s.ht := time
+            s.lt := time
+            s.hs := na
+            s.ls := na
+        else
+            if high > s.h
+                s.h  := high
+                s.ht := time
+            if low < s.l
+                s.l  := low
+                s.lt := time
+    else if not na(s.h)
+        if na(s.hs) and high >= s.h
+            s.hs := time
+        if na(s.ls) and low <= s.l
+            s.ls := time
+    s.active := inS
+
+// ═════════════════════════ TRACKING ═════════════════════════
+bool intraday = timeframe.isintraday
+
+var Period dayLv = Period.new()
+var Period wkLv  = Period.new()
+dayLv.roll(timeframe.change("D"))
+wkLv.roll(timeframe.change("W"))
+
+var Sess asia = Sess.new()
+var Sess ldn  = Sess.new()
+var Sess ny   = Sess.new()
+bool inAsia = inSession(asiaSess)
+bool inLdn  = inSession(ldnSess)
+bool inNy   = inSession(nySess)
+asia.track(inAsia)
+ldn.track(inLdn)
+ny.track(inNy)
+
+var float moPx = na
+var int   moT  = na
+bool inMO = inSession(moSess)
+if inMO and not inMO[1]
+    moPx := open
+    moT  := time
+
+// ═════════════════════════ DRAWING ═════════════════════════
+var array<line>  lns  = array.new<line>()
+var array<label> lbls = array.new<label>()
+
+drawLevel(float px, int t1, int sweptT, string name, color col, int futT) =>
+    if not na(px) and not na(t1)
+        bool swept = not na(sweptT)
+        if not (swept and sweptMode == "Hide")
+            int t2 = swept and sweptMode == "Stop at sweep" ? sweptT : futT
+            lns.push(line.new(x1=t1, y1=px, x2=t2, y2=px, xloc=xloc.bar_time, extend=extend.none, color=col, style=lnStyle, width=lineW))
+            if showLbl
+                string txt = showPx ? name + "  " + str.tostring(px, format.mintick) : name
+                lbls.push(label.new(x=t2, y=px, text=txt, xloc=xloc.bar_time, yloc=yloc.price, color=color(na), style=label.style_label_left, textcolor=col, size=lblSize))
+
+drawSess(Sess s, string name, color col, int futT) =>
+    drawLevel(s.h, s.ht, s.hs, name + " H", col, futT)
+    drawLevel(s.l, s.lt, s.ls, name + " L", col, futT)
+
+if barstate.islast
+    for ln in lns
+        ln.delete()
+    lns.clear()
+    for lb in lbls
+        lb.delete()
+    lbls.clear()
+
+    int futT = time + extBars * timeframe.in_seconds() * 1000
+
+    if intraday
+        if showDay
+            drawLevel(dayLv.h, dayLv.ht, int(na), "DH", colDay, futT)
+            drawLevel(dayLv.l, dayLv.lt, int(na), "DL", colDay, futT)
+        if showPD
+            drawLevel(dayLv.ph, dayLv.pht, dayLv.phs, "PDH", colPD, futT)
+            drawLevel(dayLv.pl, dayLv.plt, dayLv.pls, "PDL", colPD, futT)
+        if showDO
+            drawLevel(dayLv.o, dayLv.ot, int(na), "Daily Open", colDO, futT)
+        if showAsia
+            drawSess(asia, "Asia", colAsia, futT)
+        if showLdn
+            drawSess(ldn, "LDN", colLdn, futT)
+        if showNy
+            drawSess(ny, "NY", colNy, futT)
+        if showMO
+            drawLevel(moPx, moT, int(na), "Mkt Open", colMO, futT)
+        if showMOv and not na(moT)
+            lns.push(line.new(x1=moT, y1=close, x2=moT, y2=close + syminfo.mintick, xloc=xloc.bar_time, extend=extend.both, color=colMO, style=lnStyle, width=lineW))
+
+    if intraday or timeframe.isdaily
+        if showWk
+            drawLevel(wkLv.h, wkLv.ht, int(na), "WH", colWk, futT)
+            drawLevel(wkLv.l, wkLv.lt, int(na), "WL", colWk, futT)
+        if showPW
+            drawLevel(wkLv.ph, wkLv.pht, wkLv.phs, "PWH", colPW, futT)
+            drawLevel(wkLv.pl, wkLv.plt, wkLv.pls, "PWL", colPW, futT)
+        if showWO
+            drawLevel(wkLv.o, wkLv.ot, int(na), "Weekly Open", colWO, futT)

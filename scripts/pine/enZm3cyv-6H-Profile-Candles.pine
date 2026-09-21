@@ -1,0 +1,39 @@
+//@version=6
+indicator("6H Profile Candles — WAT", overlay=true)
+
+// Nigerian time
+string tz = "Africa/Lagos"
+
+// Time offset
+int timeOffset = input.int(
+     0,
+     "Time Offset",
+     minval = -12,
+     maxval = 12
+)
+
+// Current Nigerian hour
+int h = hour(time, tz)
+
+// Apply offset
+int adjustedHour = (h + timeOffset + 24) % 24
+
+// Six-hour starting hours
+bool sixHourStart =
+     adjustedHour == 1 or
+     adjustedHour == 7 or
+     adjustedHour == 13 or
+     adjustedHour == 19
+
+// Supported charts
+bool validTF =
+     timeframe.isminutes and
+     (timeframe.multiplier == 60 or
+      timeframe.multiplier == 15 or
+      timeframe.multiplier == 5)
+
+// Gold
+bool goldCandle =
+     validTF and sixHourStart
+
+barcolor(goldCandle ? #FFD700 : na)

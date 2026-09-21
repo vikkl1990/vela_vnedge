@@ -1,0 +1,381 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BOSWaves
+
+//@version=6
+indicator(
+     "Market Structure Flow Map [BOSWaves]",
+     overlay = true,
+     max_polylines_count = 100,
+     max_labels_count = 300,
+     max_lines_count = 50,
+     max_bars_back = 500)
+
+// ┌────────────────────────────── BOSWaves ─ Groups ─────────────────────────────────┐
+// └──────────────────────────────────────────────────────────────────────────────────┘
+const string gStruct = "Structure"
+const string gFlow   = "Flow Strength"
+const string gRibbon = "Ribbon Rendering"
+const string gVis    = "Display"
+
+// ┌────────────────────────────── BOSWaves ─ Tooltips ────────────────────────────────┐
+// └───────────────────────────────────────────────────────────────────────────────────┘
+const string tt_swingLen   = "Pivot confirmation length used to define structural swing highs and lows. Higher values create fewer, larger structural events."
+const string tt_breakMode  = "Close requires price to close through structure. Wick allows the candle extreme to trigger the break."
+const string tt_dispWeight = "Contribution of displacement beyond the broken structure level to ribbon strength."
+const string tt_volWeight  = "Contribution of relative breakout volume to ribbon strength."
+const string tt_dispMax    = "Displacement in ATR multiples considered maximum strength. Values beyond this are capped."
+const string tt_volMax     = "Volume relative to its moving average considered maximum strength."
+const string tt_arc        = "Vertical curvature of each structure ribbon in ATR units."
+const string tt_maxEvents  = "Maximum number of historical BOS / CHoCH ribbons retained on the chart."
+const string tt_candles    = "Colors price candles according to the active structural regime."
+const string tt_labelSize  = "Size of the BOS / CHoCH event labels and structure node markers."
+const string tt_volLen     = "Lookback length used to calculate the average volume that breakout volume is compared against."
+const string tt_minWidth   = "Ribbon line width used for the weakest structural breaks."
+const string tt_maxWidth   = "Ribbon line width used for the strongest structural breaks."
+const string tt_showBOS    = "Toggles ribbons and labels for Break of Structure events, where price continues in the direction of the prevailing trend."
+const string tt_showCHoCH  = "Toggles ribbons and labels for Change of Character events, where price breaks structure against the prevailing trend."
+const string tt_showNodes  = "Toggles the circular markers plotted at the swing high or low that was broken to create each structural event."
+const string tt_bullCol    = "Color used for bullish Break of Structure ribbons and labels."
+const string tt_bearCol    = "Color used for bearish Break of Structure ribbons and labels."
+const string tt_bullShift  = "Color used for bullish Change of Character ribbons and labels."
+const string tt_bearShift  = "Color used for bearish Change of Character ribbons and labels."
+
+// ┌────────────────────────────── BOSWaves ─ Inputs ─────────────────────────────────┐
+// └──────────────────────────────────────────────────────────────────────────────────┘
+int    swingLen     = input.int(8, "Swing Length", minval = 2, maxval = 50, group = gStruct, tooltip = tt_swingLen)
+string breakMode    = input.string("Close", "Break Confirmation", options = ["Close", "Wick"], group = gStruct, tooltip = tt_breakMode)
+
+int    volLen       = input.int(20, "Volume Average", minval = 5, maxval = 100, group = gFlow, tooltip = tt_volLen)
+float  dispWeight   = input.float(0.6, "Displacement Weight", minval = 0, maxval = 1, step = 0.05, group = gFlow, tooltip = tt_dispWeight)
+float  volWeight    = input.float(0.4, "Volume Weight", minval = 0, maxval = 1, step = 0.05, group = gFlow, tooltip = tt_volWeight)
+float  maxDispATR   = input.float(0.8, "Max Displacement (ATR×)", minval = 0.1, maxval = 3, step = 0.1, group = gFlow, tooltip = tt_dispMax)
+float  maxVolRatio  = input.float(2.5, "Max Volume Ratio", minval = 1, maxval = 5, step = 0.1, group = gFlow, tooltip = tt_volMax)
+
+float  arcATR       = input.float(0.7, "Ribbon Arc (ATR×)", minval = 0.1, maxval = 3, step = 0.1, group = gRibbon, tooltip = tt_arc)
+int    minWidth     = input.int(2, "Minimum Width", minval = 1, maxval = 5, group = gRibbon, tooltip = tt_minWidth)
+int    maxWidth     = input.int(8, "Maximum Width", minval = 3, maxval = 12, group = gRibbon, tooltip = tt_maxWidth)
+int    maxEvents    = input.int(35, "Maximum Events", minval = 5, maxval = 70, group = gRibbon, tooltip = tt_maxEvents)
+
+bool   showBOS      = input.bool(true, "Show BOS", group = gVis, tooltip = tt_showBOS)
+bool   showCHoCH    = input.bool(true, "Show CHoCH", group = gVis, tooltip = tt_showCHoCH)
+bool   showNodes    = input.bool(true, "Show Structure Nodes", group = gVis, tooltip = tt_showNodes)
+bool   paintBars    = input.bool(false, "Color Candles", group = gVis, tooltip = tt_candles)
+string labelSizeIn  = input.string("Tiny", "Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = gVis, tooltip = tt_labelSize)
+
+color  bullCol      = input.color(#00e5ff, "Bullish", inline = "c1", group = gVis, tooltip = tt_bullCol)
+color  bearCol      = input.color(#ff3264, "Bearish", inline = "c1", group = gVis, tooltip = tt_bearCol)
+color  bullShiftCol = input.color(#00ff88, "Bull CHoCH", inline = "c2", group = gVis, tooltip = tt_bullShift)
+color  bearShiftCol = input.color(#ffb300, "Bear CHoCH", inline = "c2", group = gVis, tooltip = tt_bearShift)
+
+// ┌────────────────────────────── BOSWaves ─ Helpers ─────────────────────────────────┐
+// └───────────────────────────────────────────────────────────────────────────────────┘
+f_labelSize(string s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        "Huge"   => size.huge
+        => size.tiny
+
+string lblSize = f_labelSize(labelSizeIn)
+
+// ┌────────────────────────────── BOSWaves ─ Core Measurements ───────────────────────┐
+// └───────────────────────────────────────────────────────────────────────────────────┘
+float atr    = ta.atr(14)
+float volAvg = ta.sma(volume, volLen)
+
+float ph = ta.pivothigh(high, swingLen, swingLen)
+float pl = ta.pivotlow(low, swingLen, swingLen)
+
+// ┌────────────────────────────── BOSWaves ─ Structure State ─────────────────────────┐
+// └───────────────────────────────────────────────────────────────────────────────────┘
+var float lastHighPrice = na
+var float lastLowPrice  = na
+
+var int lastHighBar = na
+var int lastLowBar  = na
+
+var bool highBroken = false
+var bool lowBroken  = false
+
+var int structureState = 0
+
+if not na(ph)
+    lastHighPrice := ph
+    lastHighBar   := bar_index - swingLen
+    highBroken    := false
+
+if not na(pl)
+    lastLowPrice := pl
+    lastLowBar   := bar_index - swingLen
+    lowBroken    := false
+
+float bullBreakSrc = breakMode == "Close" ? close : high
+float bearBreakSrc = breakMode == "Close" ? close : low
+
+float bullPrevSrc = breakMode == "Close" ? close[1] : high[1]
+float bearPrevSrc = breakMode == "Close" ? close[1] : low[1]
+
+bool bullBreak =
+     not highBroken and
+     not na(lastHighPrice) and
+     bullBreakSrc > lastHighPrice and
+     bullPrevSrc <= lastHighPrice
+
+bool bearBreak =
+     not lowBroken and
+     not na(lastLowPrice) and
+     bearBreakSrc < lastLowPrice and
+     bearPrevSrc >= lastLowPrice
+
+// ┌────────────────────────────── BOSWaves ─ Drawing Storage ─────────────────────────┐
+// └───────────────────────────────────────────────────────────────────────────────────┘
+var polyline[] ribbonGlow = array.new<polyline>()
+var polyline[] ribbonBody = array.new<polyline>()
+var polyline[] ribbonCore = array.new<polyline>()
+
+var label[] eventLabels = array.new<label>()
+var label[] pivotNodes  = array.new<label>()
+
+// ┌────────────────────────────── BOSWaves ─ Bullish Break ───────────────────────────┐
+// └───────────────────────────────────────────────────────────────────────────────────┘
+if bullBreak
+    bool isCHoCH = structureState == -1
+    bool visible = isCHoCH ? showCHoCH : showBOS
+
+    highBroken := true
+
+    float breakPx = breakMode == "Close" ? close : high
+
+    float displacement = math.max(0, breakPx - lastHighPrice)
+    float dispN = atr > 0 ? math.min(displacement / (atr * maxDispATR), 1) : 0
+
+    float volRatio = volAvg > 0 ? volume / volAvg : 1
+    float volN = math.min(math.max((volRatio - 1) / math.max(maxVolRatio - 1, 0.01), 0), 1)
+
+    float weightTotal = math.max(dispWeight + volWeight, 0.01)
+    float strength = math.min(
+         (dispN * dispWeight + volN * volWeight) / weightTotal,
+         1)
+
+    int bodyWidth = int(math.round(
+         minWidth + strength * (maxWidth - minWidth)))
+
+    int glowWidth = math.min(bodyWidth + 5, 15)
+    int coreWidth = math.max(1, bodyWidth - 2)
+
+    color eventCol = isCHoCH ? bullShiftCol : bullCol
+
+    int startX = lastHighBar
+    int endX   = bar_index
+    int midX   = startX + int(math.round((endX - startX) * 0.52))
+
+    float distanceFactor = math.min(
+         math.max(float(endX - startX) / 40, 0.35),
+         1.5)
+
+    float arcHeight =
+         atr *
+         arcATR *
+         distanceFactor *
+         (0.7 + strength * 0.55)
+
+    float startY = lastHighPrice
+    float endY   = breakPx
+    float midY   = math.max(startY, endY) + arcHeight
+
+    if visible
+        ptsGlow = array.new<chart.point>()
+        ptsGlow.push(chart.point.from_index(startX, startY))
+        ptsGlow.push(chart.point.from_index(midX, midY))
+        ptsGlow.push(chart.point.from_index(endX, endY))
+
+        ptsBody = array.new<chart.point>()
+        ptsBody.push(chart.point.from_index(startX, startY))
+        ptsBody.push(chart.point.from_index(midX, midY))
+        ptsBody.push(chart.point.from_index(endX, endY))
+
+        ptsCore = array.new<chart.point>()
+        ptsCore.push(chart.point.from_index(startX, startY))
+        ptsCore.push(chart.point.from_index(midX, midY))
+        ptsCore.push(chart.point.from_index(endX, endY))
+
+        ribbonGlow.push(polyline.new(
+             ptsGlow,
+             curved = true,
+             line_color = color.new(eventCol, 82),
+             line_width = glowWidth))
+
+        ribbonBody.push(polyline.new(
+             ptsBody,
+             curved = true,
+             line_color = color.new(eventCol, 18),
+             line_width = bodyWidth))
+
+        ribbonCore.push(polyline.new(
+             ptsCore,
+             curved = true,
+             line_color = color.new(color.white, 18),
+             line_width = coreWidth))
+
+        if showNodes
+            pivotNodes.push(label.new(
+                 lastHighBar,
+                 lastHighPrice,
+                 "",
+                 style = label.style_circle,
+                 color = color.new(eventCol, 5),
+                 size = lblSize))
+
+        eventLabels.push(label.new(
+             bar_index,
+             endY + atr * 0.12,
+             isCHoCH ? "CHoCH" : "BOS",
+             style = label.style_label_down,
+             color = color.new(eventCol, 5),
+             textcolor = isCHoCH ? color.black : color.white,
+             size = lblSize))
+
+    structureState := 1
+
+// ┌────────────────────────────── BOSWaves ─ Bearish Break ───────────────────────────┐
+// └───────────────────────────────────────────────────────────────────────────────────┘
+if bearBreak
+    bool isCHoCH = structureState == 1
+    bool visible = isCHoCH ? showCHoCH : showBOS
+
+    lowBroken := true
+
+    float breakPx = breakMode == "Close" ? close : low
+
+    float displacement = math.max(0, lastLowPrice - breakPx)
+    float dispN = atr > 0 ? math.min(displacement / (atr * maxDispATR), 1) : 0
+
+    float volRatio = volAvg > 0 ? volume / volAvg : 1
+    float volN = math.min(math.max((volRatio - 1) / math.max(maxVolRatio - 1, 0.01), 0), 1)
+
+    float weightTotal = math.max(dispWeight + volWeight, 0.01)
+    float strength = math.min(
+         (dispN * dispWeight + volN * volWeight) / weightTotal,
+         1)
+
+    int bodyWidth = int(math.round(
+         minWidth + strength * (maxWidth - minWidth)))
+
+    int glowWidth = math.min(bodyWidth + 5, 15)
+    int coreWidth = math.max(1, bodyWidth - 2)
+
+    color eventCol = isCHoCH ? bearShiftCol : bearCol
+
+    int startX = lastLowBar
+    int endX   = bar_index
+    int midX   = startX + int(math.round((endX - startX) * 0.52))
+
+    float distanceFactor = math.min(
+         math.max(float(endX - startX) / 40, 0.35),
+         1.5)
+
+    float arcHeight =
+         atr *
+         arcATR *
+         distanceFactor *
+         (0.7 + strength * 0.55)
+
+    float startY = lastLowPrice
+    float endY   = breakPx
+    float midY   = math.min(startY, endY) - arcHeight
+
+    if visible
+        ptsGlow = array.new<chart.point>()
+        ptsGlow.push(chart.point.from_index(startX, startY))
+        ptsGlow.push(chart.point.from_index(midX, midY))
+        ptsGlow.push(chart.point.from_index(endX, endY))
+
+        ptsBody = array.new<chart.point>()
+        ptsBody.push(chart.point.from_index(startX, startY))
+        ptsBody.push(chart.point.from_index(midX, midY))
+        ptsBody.push(chart.point.from_index(endX, endY))
+
+        ptsCore = array.new<chart.point>()
+        ptsCore.push(chart.point.from_index(startX, startY))
+        ptsCore.push(chart.point.from_index(midX, midY))
+        ptsCore.push(chart.point.from_index(endX, endY))
+
+        ribbonGlow.push(polyline.new(
+             ptsGlow,
+             curved = true,
+             line_color = color.new(eventCol, 82),
+             line_width = glowWidth))
+
+        ribbonBody.push(polyline.new(
+             ptsBody,
+             curved = true,
+             line_color = color.new(eventCol, 18),
+             line_width = bodyWidth))
+
+        ribbonCore.push(polyline.new(
+             ptsCore,
+             curved = true,
+             line_color = color.new(color.white, 18),
+             line_width = coreWidth))
+
+        if showNodes
+            pivotNodes.push(label.new(
+                 lastLowBar,
+                 lastLowPrice,
+                 "",
+                 style = label.style_circle,
+                 color = color.new(eventCol, 5),
+                 size = lblSize))
+
+        eventLabels.push(label.new(
+             bar_index,
+             endY - atr * 0.12,
+             isCHoCH ? "CHoCH" : "BOS",
+             style = label.style_label_up,
+             color = color.new(eventCol, 5),
+             textcolor = isCHoCH ? color.black : color.white,
+             size = lblSize))
+
+    structureState := -1
+
+// ┌────────────────────────────── BOSWaves ─ Object Management ───────────────────────┐
+// └───────────────────────────────────────────────────────────────────────────────────┘
+while ribbonBody.size() > maxEvents
+    polyline.delete(ribbonBody.shift())
+
+while ribbonGlow.size() > maxEvents
+    polyline.delete(ribbonGlow.shift())
+
+while ribbonCore.size() > maxEvents
+    polyline.delete(ribbonCore.shift())
+
+while eventLabels.size() > maxEvents
+    label.delete(eventLabels.shift())
+
+while pivotNodes.size() > maxEvents
+    label.delete(pivotNodes.shift())
+
+// ┌────────────────────────────── BOSWaves ─ Candle Coloring ─────────────────────────┐
+// └───────────────────────────────────────────────────────────────────────────────────┘
+color stateCol = structureState == 1 ? bullCol : structureState == -1 ? bearCol : chart.fg_color
+
+color candleBody = paintBars ? color.new(stateCol, 18) : na
+color candleWick = paintBars ? color.new(stateCol, 35) : na
+
+plotcandle(
+     open,
+     high,
+     low,
+     close,
+     "Structure Candles",
+     color = candleBody,
+     wickcolor = candleWick,
+     bordercolor = candleBody,
+     display = paintBars ? display.all : display.none)
+
+// ┌────────────────────────────── BOSWaves ─ Alerts ─────────────────────────────────┐
+// └──────────────────────────────────────────────────────────────────────────────────┘
+alertcondition(bullBreak, "Bullish Structure Break", "Bullish structure break on {{ticker}}")
+alertcondition(bearBreak, "Bearish Structure Break", "Bearish structure break on {{ticker}}")

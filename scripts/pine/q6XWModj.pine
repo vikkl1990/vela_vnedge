@@ -1,0 +1,62 @@
+//@version=6
+indicator("EMA Speed Oscillator + RSI", shorttitle="EMA_Speed_RSI", overlay=false, precision=4)
+
+// ============ 1. PARAMETERS ============
+// Default optimized settings: EMA = 6, Lookback = 13
+length = input.int(6, title="EMA Period", minval=1)
+offset = input.int(13, title="Lookback Period", minval=1, tooltip="How many bars back to measure the EMA speed")
+
+// RSI Parameters
+rsi_length = input.int(14, title="RSI Period", minval=1)
+rsi_upper = input.int(70, title="RSI Overbought Level", minval=50, maxval=90)
+rsi_lower = input.int(30, title="RSI Oversold Level", minval=10, maxval=50)
+
+// ============ 2. CALCULATIONS ============
+// EMA Speed Calculation
+ema_value = ta.ema(close, length)
+ema_past = ta.ema(close, length)[offset]
+ema_speed = (ema_value - ema_past) / ema_past * 100
+
+// RSI Calculation
+rsi_value = ta.rsi(close, rsi_length)
+
+// Squeeze Zone Calculation (Near Zero Momentum)
+near_zero = math.abs(ema_speed) < 0.05
+
+// ============ 3. VISUALIZATION ============
+
+// A) EMA Speed (Colored Line)
+speed_color = ema_speed > 0 ? color.green : color.red
+plot(ema_speed, color=speed_color, title="EMA Speed", linewidth=2, style=plot.style_line)
+
+// B) RSI (Scaled to fit the oscillator view)
+rsi_scaled = (rsi_value / 50) - 1
+plot(rsi_scaled, color=color.new(color.orange, 0), title="RSI (Scaled)", linewidth=2)
+
+// C) Zero Reference Line
+hline(0, color=color.new(color.gray, 50), title="Zero Line", linestyle=hline.style_dashed)
+
+// D) RSI Overbought/Oversold Levels (Scaled)
+rsi_ob_scaled = (rsi_upper / 50) - 1
+rsi_os_scaled = (rsi_lower / 50) - 1
+hline(rsi_ob_scaled, color=color.new(color.red, 30), title="RSI Overbought", linestyle=hline.style_dotted)
+hline(rsi_os_scaled, color=color.new(color.green, 30), title="RSI Oversold", linestyle=hline.style_dotted)
+
+// E) Squeeze Zone Background
+bgcolor(near_zero ? color.new(color.purple, 85) : na, title="Flat / Squeeze Zone")
+
+// ============ 4. STATUS TABLE (Top Right) ============
+var table info_table = table.new(position.top_right, 2, 3, bgcolor=color.new(color.black, 80), border_color=color.gray)
+
+if barstate.islast
+    // Row 1: EMA Speed
+    table.cell(info_table, 0, 0, "EMA Speed:", text_color=color.white)
+    table.cell(info_table, 1, 0, str.tostring(ema_speed, "#.##") + " %", text_color=ema_speed > 0 ? color.green : color.red)
+    
+    // Row 2: RSI Value
+    table.cell(info_table, 0, 1, "RSI:", text_color=color.white)
+    table.cell(info_table, 1, 1, str.tostring(rsi_value, "#.##"), text_color=rsi_value > rsi_upper ? color.red : rsi_value < rsi_lower ? color.green : color.gray)
+    
+    // Row 3: Trend Status
+    table.cell(info_table, 0, 2, "Trend:", text_color=color.white)
+    table.cell(info_table, 1, 2, ema_speed > 0.05 ? "RISING ▲" : ema_speed < -0.05 ? "FALLING ▼" : "FLAT (Squeeze)", text_color=ema_speed > 0.05 ? color.green : ema_speed < -0.05 ? color.red : color.yellow)

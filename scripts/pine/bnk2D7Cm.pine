@@ -1,0 +1,25 @@
+//@version=6
+indicator("4H Close Dots", overlay=true)
+
+// Sadece 4H'dan düşük timeframe'lerde göster
+showDots = timeframe.in_seconds() < 14400
+
+// 4H mumunun kapanış fiyatı
+close4H = request.security(
+    syminfo.tickerid,
+    "240",
+    close,
+    lookahead=barmerge.lookahead_off
+)
+
+// Yeni 4H mum başladığında önceki 4H kapanmıştır
+new4H = ta.change(time("240")) != 0
+
+// 4H ve üzerinde hiçbir şey gösterme
+plot(
+    showDots and new4H ? close4H[1] : na,
+    title="4H Close",
+    style=plot.style_circles,
+    linewidth=4,
+    color=color.orange
+)

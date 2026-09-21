@@ -1,0 +1,46 @@
+//@version=6
+indicator("THMA MTF", overlay=true, shorttitle="THMA")
+
+// ─────────────────────────────────────────────────────────────
+// INPUTS
+// ─────────────────────────────────────────────────────────────
+srcInput    = input.source(close, "Source")
+lengthInput = input.int(21, "THMA Length", minval=3)
+
+useMTF      = input.bool(false, "Use Higher Timeframe?")
+htfInput    = input.timeframe("", "Higher Timeframe",
+                              tooltip="Leave empty = current chart TF. Enter e.g. '5' for 5 min, '60' for 1 h, etc.")
+
+// ─────────────────────────────────────────────────────────────
+// THMA FUNCTION
+// THMA = WMA( 3*WMA(src, L/3) - WMA(src, L/2) - WMA(src, L), L )
+// ─────────────────────────────────────────────────────────────
+thma(_src, _len) =>
+    // ensure integer lengths
+    len3 = math.round(_len / 3)
+    len2 = math.round(_len / 2)
+    len1 = _len
+
+    wma1 = ta.wma(_src, len3)
+    wma2 = ta.wma(_src, len2)
+    wma3 = ta.wma(_src, len1)
+
+    raw = 3 * wma1 - wma2 - wma3
+    ta.wma(raw, len1)
+
+// ─────────────────────────────────────────────────────────────
+// CALCULATION
+// If useMTF = false → htfInput ignored, liczymy na bieżącym TF
+// ─────────────────────────────────────────────────────────────
+thmaValue = useMTF and htfInput != "" ? request.security(syminfo.tickerid, htfInput, thma(srcInput, lengthInput)) : thma(srcInput, lengthInput)
+
+// ─────────────────────────────────────────────────────────────
+// COLOR LOGIC
+// Zielony, gdy cena (close) nad THMA; czerwony, gdy pod THMA
+// ─────────────────────────────────────────────────────────────
+thmaColor = close > thmaValue ? color.green : color.red
+
+// ─────────────────────────────────────────────────────────────
+// PLOT
+// ─────────────────────────────────────────────────────────────
+plot(thmaValue, "THMA", color=thmaColor, linewidth=2)

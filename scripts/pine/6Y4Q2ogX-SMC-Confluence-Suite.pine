@@ -1,0 +1,1096 @@
+//@version=6
+// =============================================================================
+//  SMC Confluence Suite — MTF Structure • Order Blocks • FVG • OTE • Score
+// -----------------------------------------------------------------------------
+//  R1  Repaint guard, object pruning, memory-leak fix, timeframe validation
+//  R2  Unified inputs, Zone UDT, deduplicated drawing helpers, shared utilities
+//  R3  Swing merging, ghost-BOS fix, seen-state tracking, OB anchored to BOS
+//  R4  Retro BOS, birth-time guard, FVG size filter, mitigation modes, OTE confluence
+//  R5  Alert engine with per-event toggles, cooldown and rich dynamic messages
+//  R6  Premium/Discount range, liquidity sweeps, EQH/EQL equal-level detection
+//  R7  Confluence Score 0-100 with letter grade and factor breakdown table
+//  R8  Panel layout cleanup: debug panel removed, compact signal dashboard
+//  R9  Alert reliability fix, alertcondition() support, full English localisation
+// =============================================================================
+
+indicator("SMC Confluence Suite", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+
+// ========================================================================== //
+// 0. STATUS-LINE VISIBILITY
+// ========================================================================== //
+// DSP_OFF  : hidden from the chart status line, still visible in the Data Window
+// DSP_ON   : the only input allowed to appear next to the indicator name
+DSP_OFF = display.data_window
+DSP_ON  = display.status_line + display.data_window
+
+// ========================================================================== //
+// 1. INPUTS
+// ========================================================================== //
+var string GRP_STRUCT = "1 · Market Structure"
+var string GRP_MTF    = "2 · Multi-Timeframe Swings"
+var string GRP_FVG    = "3 · Fair Value Gap"
+var string GRP_OB     = "4 · Order Block"
+var string GRP_ZONE   = "5 · Zone Display"
+var string GRP_RISK   = "6 · OTE & Risk Management"
+var string GRP_PD     = "7 · Premium / Discount"
+var string GRP_LIQ    = "8 · Liquidity"
+var string GRP_SCORE  = "9 · Confluence Score"
+var string GRP_ALERT  = "10 · Alerts"
+var string GRP_DASH   = "11 · Dashboard"
+
+// --- 1 Market Structure ---
+leftLen    = input.int(5, "Swing Left Length",  group = GRP_STRUCT, minval = 1, display = DSP_OFF)
+rightLen   = input.int(5, "Swing Right Length", group = GRP_STRUCT, minval = 1, display = DSP_OFF)
+bosUseWick = input.bool(false, "Confirm BOS with wicks", group = GRP_STRUCT, display = DSP_OFF)
+allowRetro = input.bool(true, "Allow Retro BOS (late confirmation)", group = GRP_STRUCT, display = DSP_OFF)
+maxObjects = input.int(300, "Max lines / labels kept", group = GRP_STRUCT, minval = 50, maxval = 480, display = DSP_OFF)
+
+// --- 2 MTF Swings ---
+tf1      = input.timeframe("15", "Timeframe 1", group = GRP_MTF, display = DSP_OFF)
+col1     = input.color(color.aqua, "TF1 colour", group = GRP_MTF, inline = "c1", display = DSP_OFF)
+tf2      = input.timeframe("60", "Timeframe 2", group = GRP_MTF, display = DSP_OFF)
+col2     = input.color(color.orange, "TF2 colour", group = GRP_MTF, inline = "c2", display = DSP_OFF)
+show_tag = input.bool(true, "Show High / Low tags", group = GRP_MTF, display = DSP_OFF)
+
+// --- 3 FVG ---
+show_fvg     = input.bool(true, "Show FVG", group = GRP_FVG, display = DSP_OFF)
+fvgFilter    = input.string("ATR", "Size filter", options = ["Off", "Points", "ATR", "Both"], group = GRP_FVG, display = DSP_OFF)
+fvgMinPts    = input.float(50, "Min size (points)", group = GRP_FVG, minval = 0, step = 10, display = DSP_OFF)
+fvgMinAtr    = input.float(0.25, "Min size (x ATR)", group = GRP_FVG, minval = 0, step = 0.05, display = DSP_OFF)
+fvgAtrLen    = input.int(14, "ATR length", group = GRP_FVG, minval = 1, display = DSP_OFF)
+maxFvgZones  = input.int(30, "Max FVG kept", group = GRP_FVG, minval = 1, maxval = 150, display = DSP_OFF)
+fvg_col_bull = input.color(color.new(color.green, 80), "Bullish", group = GRP_FVG, inline = "f", display = DSP_OFF)
+fvg_col_bear = input.color(color.new(color.red, 80),   "Bearish", group = GRP_FVG, inline = "f", display = DSP_OFF)
+
+// --- 4 Order Block ---
+show_ob      = input.bool(true, "Show Order Blocks", group = GRP_OB, display = DSP_OFF)
+obMode       = input.string("BOS-based (SMC)", "Detection mode", options = ["BOS-based (SMC)", "Displacement (Legacy)"], group = GRP_OB, display = DSP_OFF)
+obSource     = input.string("Both", "Structure source", options = ["TF1", "TF2", "Both"], group = GRP_OB, display = DSP_OFF)
+obLookback   = input.int(15, "Displacement lookback (bars)", group = GRP_OB, minval = 2, maxval = 50, display = DSP_OFF)
+obFallback   = input.bool(true, "Fall back to extreme bar if no opposite candle", group = GRP_OB, display = DSP_OFF)
+useExtFilter = input.bool(false, "Enable extreme-OB filter", group = GRP_OB, display = DSP_OFF)
+max_ob_show  = input.int(2, "Max OB per swing", group = GRP_OB, minval = 1, display = DSP_OFF)
+maxObZones   = input.int(20, "Max OB kept (per side)", group = GRP_OB, minval = 1, maxval = 100, display = DSP_OFF)
+ob_col_bull  = input.color(color.new(color.blue, 70),   "Bullish", group = GRP_OB, inline = "o", display = DSP_OFF)
+ob_col_bear  = input.color(color.new(color.orange, 70), "Bearish", group = GRP_OB, inline = "o", display = DSP_OFF)
+
+// --- 5 Zone Display ---
+mitigMode   = input.string("50% Fill", "Mitigation mode", options = ["Touch", "50% Fill", "Full Fill"], group = GRP_ZONE, display = DSP_OFF)
+showZoneTxt = input.bool(true, "Show label inside zone", group = GRP_ZONE, display = DSP_OFF)
+zoneTxtDir  = input.bool(false, "Append direction (OB BUY / FVG SELL)", group = GRP_ZONE, display = DSP_OFF)
+zoneTxtCol  = input.color(color.white, "Text colour", group = GRP_ZONE, inline = "zt", display = DSP_OFF)
+zoneTxtSize = input.string("Small", "Size", options = ["Tiny", "Small", "Normal", "Large"], group = GRP_ZONE, inline = "zt", display = DSP_OFF)
+
+// --- 6 OTE & Risk ---
+show_ote   = input.bool(true, "Show OTE zone", group = GRP_RISK, display = DSP_OFF)
+oteShallow = input.float(0.62,  "OTE shallow", group = GRP_RISK, minval = 0.1, maxval = 1.0, step = 0.005, display = DSP_OFF)
+oteMid     = input.float(0.705, "OTE mid (entry)", group = GRP_RISK, minval = 0.1, maxval = 1.0, step = 0.005, display = DSP_OFF)
+oteDeep    = input.float(0.79,  "OTE deep", group = GRP_RISK, minval = 0.1, maxval = 1.0, step = 0.005, display = DSP_OFF)
+snapEntry  = input.bool(true, "Snap entry to confluence zone", group = GRP_RISK, display = DSP_OFF)
+tp2Ext     = input.float(0.5, "TP2 fib extension", group = GRP_RISK, minval = 0.1, step = 0.1, display = DSP_OFF)
+ote_col    = input.color(color.new(color.purple, 70), "OTE zone colour", group = GRP_RISK, display = DSP_OFF)
+oteConfCol = input.color(color.lime, "Border colour when confluent", group = GRP_RISK, display = DSP_OFF)
+acc_size   = input.float(1000.0, "Account balance ($)", group = GRP_RISK, minval = 1, display = DSP_OFF)
+risk_pct   = input.float(1.0, "Risk per trade (%)", group = GRP_RISK, step = 0.1, minval = 0.1, display = DSP_OFF)
+slBuffer   = input.float(100, "SL buffer (points)", group = GRP_RISK, step = 1, minval = 0, display = DSP_OFF) / 100
+autoPV     = input.bool(false, "Auto point value", group = GRP_RISK, display = DSP_OFF)
+manualPV   = input.float(100, "Point value per lot ($)", group = GRP_RISK, minval = 0.0001, display = DSP_OFF)
+
+// --- 7 Premium / Discount ---
+show_pd   = input.bool(true, "Show Premium / Discount zones", group = GRP_PD, display = DSP_OFF)
+pdMode    = input.string("Dim Only", "P/D filter for OB & FVG", options = ["Off", "Filter Out", "Dim Only"], group = GRP_PD, display = DSP_OFF)
+pdShowEq  = input.bool(true, "Show equilibrium line (50%)", group = GRP_PD, display = DSP_OFF)
+pdPremCol = input.color(color.new(color.red, 92),   "Premium", group = GRP_PD, inline = "pd", display = DSP_OFF)
+pdDiscCol = input.color(color.new(color.green, 92), "Discount", group = GRP_PD, inline = "pd", display = DSP_OFF)
+pdEqCol   = input.color(color.new(color.gray, 40),  "EQ line", group = GRP_PD, display = DSP_OFF)
+
+// --- 8 Liquidity ---
+show_sweep    = input.bool(true, "Show liquidity sweeps", group = GRP_LIQ, display = DSP_OFF)
+swpLeft       = input.int(5, "Sweep pivot left",  group = GRP_LIQ, minval = 1, inline = "sp", display = DSP_OFF)
+swpRight      = input.int(2, "Right", group = GRP_LIQ, minval = 1, inline = "sp", display = DSP_OFF)
+sweepMinPen   = input.float(0.05, "Min penetration (x ATR)", group = GRP_LIQ, minval = 0, step = 0.05, display = DSP_OFF)
+sweepNeedBack = input.bool(true, "Require close back inside level", group = GRP_LIQ, display = DSP_OFF)
+sweepUpCol    = input.color(color.red,  "Sweep high", group = GRP_LIQ, inline = "sc", display = DSP_OFF)
+sweepDnCol    = input.color(color.lime, "Sweep low",  group = GRP_LIQ, inline = "sc", display = DSP_OFF)
+show_eq       = input.bool(true, "Show EQH / EQL", group = GRP_LIQ, display = DSP_OFF)
+eqTol         = input.float(0.10, "Equal-level tolerance (x ATR)", group = GRP_LIQ, minval = 0.01, step = 0.05, display = DSP_OFF)
+eqCol         = input.color(color.new(color.yellow, 20), "EQ line colour", group = GRP_LIQ, display = DSP_OFF)
+
+// --- 9 Confluence Score ---
+useScore   = input.bool(true, "Enable Confluence Score", group = GRP_SCORE, display = DSP_OFF)
+showScoreP = input.bool(true, "Show score breakdown table", group = GRP_SCORE, display = DSP_OFF)
+scDecay    = input.int(20, "Signal lifespan before score decays to 0 (bars)", group = GRP_SCORE, minval = 1, maxval = 500, display = DSP_OFF)
+scRrTarget = input.float(2.0, "R:R that earns full credit", group = GRP_SCORE, minval = 0.5, step = 0.5, display = DSP_OFF)
+scAlertLv  = input.int(70, "Alert threshold", group = GRP_SCORE, minval = 0, maxval = 100, display = DSP_OFF)
+scBgTint   = input.bool(false, "Tint background above threshold", group = GRP_SCORE, display = DSP_OFF)
+
+w_struct = input.float(20, "1 · Fresh BOS/CHoCH (TF1)", group = GRP_SCORE, minval = 0, maxval = 50, step = 5, display = DSP_OFF)
+w_htf    = input.float(15, "2 · TF2 trend aligned",     group = GRP_SCORE, minval = 0, maxval = 50, step = 5, display = DSP_OFF)
+w_ob     = input.float(15, "3 · OB inside OTE",         group = GRP_SCORE, minval = 0, maxval = 50, step = 5, display = DSP_OFF)
+w_fvg    = input.float(10, "4 · FVG inside OTE",        group = GRP_SCORE, minval = 0, maxval = 50, step = 5, display = DSP_OFF)
+w_pd     = input.float(15, "5 · Correct side of EQ",    group = GRP_SCORE, minval = 0, maxval = 50, step = 5, display = DSP_OFF)
+w_sweep  = input.float(10, "6 · Supporting sweep",      group = GRP_SCORE, minval = 0, maxval = 50, step = 5, display = DSP_OFF)
+w_ote    = input.float(10, "7 · Price inside OTE",      group = GRP_SCORE, minval = 0, maxval = 50, step = 5, display = DSP_OFF)
+w_rr     = input.float(10, "8 · R:R quality",           group = GRP_SCORE, minval = 0, maxval = 50, step = 5, display = DSP_OFF)
+w_fresh  = input.float(5,  "9 · Untouched zones left",  group = GRP_SCORE, minval = 0, maxval = 50, step = 5, display = DSP_OFF)
+
+// --- 10 Alerts ---
+// The only input rendered next to the indicator name on the chart
+alertMasterStr = input.string("ON", "Alerts", options = ["ON", "OFF"], group = GRP_ALERT, display = DSP_ON)
+bool alertMaster = alertMasterStr == "ON"
+
+alertOnClose  = input.bool(true, "Fire on bar close only", group = GRP_ALERT, tooltip = "OFF = intrabar (may repaint within the bar)", display = DSP_OFF)
+alertCooldown = input.int(0, "Cooldown per event type (bars)", group = GRP_ALERT, minval = 0, maxval = 200, tooltip = "0 = no throttling. Raise only if you get spammed.", display = DSP_OFF)
+alertPrefix   = input.string("SMC", "Message prefix", group = GRP_ALERT, display = DSP_OFF)
+
+a_bos1     = input.bool(true,  "BOS TF1",        group = GRP_ALERT, inline = "a1", display = DSP_OFF)
+a_choch1   = input.bool(true,  "CHoCH TF1",      group = GRP_ALERT, inline = "a1", display = DSP_OFF)
+a_bos2     = input.bool(true,  "BOS TF2",        group = GRP_ALERT, inline = "a2", display = DSP_OFF)
+a_choch2   = input.bool(true,  "CHoCH TF2",      group = GRP_ALERT, inline = "a2", display = DSP_OFF)
+a_retro    = input.bool(false, "Include Retro BOS*", group = GRP_ALERT, display = DSP_OFF)
+a_newOb    = input.bool(true,  "New OB",         group = GRP_ALERT, inline = "a3", display = DSP_OFF)
+a_newFvg   = input.bool(false, "New FVG",        group = GRP_ALERT, inline = "a3", display = DSP_OFF)
+a_touchOb  = input.bool(true,  "Price taps OB",  group = GRP_ALERT, inline = "a4", display = DSP_OFF)
+a_touchFvg = input.bool(false, "Price taps FVG", group = GRP_ALERT, inline = "a4", display = DSP_OFF)
+a_newOte   = input.bool(true,  "New OTE zone",   group = GRP_ALERT, inline = "a5", display = DSP_OFF)
+a_enterOte = input.bool(true,  "Price enters OTE", group = GRP_ALERT, inline = "a5", display = DSP_OFF)
+a_sweep    = input.bool(true,  "Liquidity sweep", group = GRP_ALERT, inline = "a6", display = DSP_OFF)
+a_eq       = input.bool(false, "EQH / EQL formed", group = GRP_ALERT, inline = "a6", display = DSP_OFF)
+a_score    = input.bool(true,  "Score crosses threshold", group = GRP_ALERT, display = DSP_OFF)
+
+// --- 11 Dashboard ---
+show_dash    = input.bool(true, "Show signal dashboard", group = GRP_DASH, display = DSP_OFF)
+showAlertRow = input.bool(false, "Show alert diagnostics row", group = GRP_DASH, tooltip = "Confirms the alert engine is actually firing", display = DSP_OFF)
+dashSize     = input.string("Small", "Dashboard font size", options = ["Tiny", "Small", "Normal"], group = GRP_DASH, display = DSP_OFF)
+
+// ========================================================================== //
+// 2. GLOBALS / VALIDATION
+// ========================================================================== //
+int  chartSec = timeframe.in_seconds(timeframe.period)
+bool tf1Valid = timeframe.in_seconds(tf1) >= chartSec
+bool tf2Valid = timeframe.in_seconds(tf2) >= chartSec
+bool tfWarn   = not tf1Valid or not tf2Valid
+
+// [K6] warning now says alerts are muted too
+string warnTxt = "Chart TF is higher than " + (not tf1Valid ? "TF1" : "") + (not tf1Valid and not tf2Valid ? " / " : "") + (not tf2Valid ? "TF2" : "") + " - that structure and its alerts are disabled"
+
+string zTxtSize = zoneTxtSize == "Tiny" ? size.tiny : zoneTxtSize == "Small" ? size.small : zoneTxtSize == "Normal" ? size.normal : size.large
+string dTxt     = dashSize == "Tiny" ? size.tiny : dashSize == "Small" ? size.small : size.normal
+
+float atrVal   = ta.atr(fvgAtrLen)
+float pointVal = autoPV ? (na(syminfo.pointvalue) or syminfo.pointvalue <= 0 ? manualPV : syminfo.pointvalue) : manualPV
+
+// ========================================================================== //
+// 3. USER-DEFINED TYPES
+// ========================================================================== //
+type SwingPoint
+    int   timeLoc
+    float price
+    int   ptype
+    bool  isBroken
+    int   confirmTime
+    line  ln
+    label lb
+
+type StructState
+    SwingPoint lastSwing
+    SwingPoint lastHigh
+    SwingPoint lastLow
+    int    trend
+    int    seenH
+    int    seenL
+    color  col
+    bool   enabled
+    int    retroSig
+    int    evt
+    bool   evtChoch
+    bool   evtRetro
+    float  evtPrice
+
+type Zone
+    box    bx
+    float  top
+    float  bottom
+    int    dir
+    int    originTime
+    int    birthTime
+    bool   mitigated
+    string kind
+    bool   touched      // [K3] real state - drives freshness score
+    bool   notified     // [K3] alert de-duplication only
+    bool   pdOk
+
+// ========================================================================== //
+// 4. STATE
+// ========================================================================== //
+var StructState st1 = StructState.new(na, na, na, 1, 0, 0, col1, false, 0, 0, false, false, na)
+var StructState st2 = StructState.new(na, na, na, 1, 0, 0, col2, false, 0, 0, false, false, na)
+
+var array<line>  structLines  = array.new<line>()
+var array<label> structLabels = array.new<label>()
+
+var array<Zone> fvgZones  = array.new<Zone>()
+var array<Zone> obBull    = array.new<Zone>()
+var array<Zone> obBear    = array.new<Zone>()
+var array<Zone> interBull = array.new<Zone>()
+var array<Zone> interBear = array.new<Zone>()
+
+// ========================================================================== //
+// 5. ALERT ENGINE
+// ========================================================================== //
+int ID_BOS1     = 0
+int ID_CHOCH1   = 1
+int ID_BOS2     = 2
+int ID_CHOCH2   = 3
+int ID_NEWOB    = 4
+int ID_NEWFVG   = 5
+int ID_TOUCHOB  = 6
+int ID_TOUCHFVG = 7
+int ID_NEWOTE   = 8
+int ID_ENTEROTE = 9
+int ID_SWEEP    = 10
+int ID_EQ       = 11
+int ID_SCORE    = 12
+
+var array<int> alertClock = array.new<int>(13, -1000000)
+// [K4] index 0 = total fired, index 1 = bar_index of last fire
+var array<int> alertStat  = array.new<int>(2, 0)
+
+fire(int id, bool enabled, string msg) =>
+    bool sent = false
+    if alertMaster and enabled
+        int last = array.get(alertClock, id)
+        if bar_index - last >= alertCooldown
+            array.set(alertClock, id, bar_index)
+            array.set(alertStat, 0, array.get(alertStat, 0) + 1)
+            array.set(alertStat, 1, bar_index)
+            if alertOnClose
+                alert(msg, alert.freq_once_per_bar_close)
+            else
+                alert(msg, alert.freq_once_per_bar)
+            sent := true
+    sent
+
+amsg(string body) =>
+    alertPrefix + " | " + syminfo.ticker + " " + timeframe.period + " | " + body + " @ " + str.tostring(close, format.mintick)
+
+// ========================================================================== //
+// 6. ZONE ENGINE
+// ========================================================================== //
+method destroy(Zone z) =>
+    box.delete(z.bx)
+    true
+
+method isMitigated(Zone z) =>
+    float h = z.top - z.bottom
+    bool res = false
+    if h > 0
+        float pen   = z.dir == 1 ? z.top - low : high - z.bottom
+        float ratio = pen / h
+        res := mitigMode == "Touch" ? ratio > 0 : mitigMode == "50% Fill" ? ratio >= 0.5 : ratio >= 1.0
+    res
+
+new_zone(int t, float top, float bottom, int dir, color bg, color border, string kind, bool pdOk) =>
+    color  useBg = pdOk ? bg : color.new(bg, 94)
+    color  useBd = na(border) ? border : (pdOk ? border : color.new(border, 90))
+    string txt   = (not showZoneTxt or not pdOk) ? "" : zoneTxtDir ? kind + (dir == 1 ? " BUY" : " SELL") : kind
+    box bx = box.new(left = t, top = top, right = t, bottom = bottom, border_color = useBd, border_style = line.style_solid, bgcolor = useBg, xloc = xloc.bar_time, extend = extend.right, text = txt, text_color = zoneTxtCol, text_halign = text.align_right, text_valign = text.align_center, text_size = zTxtSize)
+    Zone.new(bx, top, bottom, dir, t, time, false, kind, false, false, pdOk)
+
+detach(array<Zone> arr, Zone z) =>
+    int i = array.indexof(arr, z)
+    if i >= 0
+        array.remove(arr, i)
+    true
+
+has_zone_at(array<Zone> zones, int t) =>
+    bool found = false
+    int sz = array.size(zones)
+    if sz > 0
+        for i = 0 to sz - 1
+            if array.get(zones, i).originTime == t
+                found := true
+                break
+    found
+
+// [K2][K3] touch state is tracked independently of the alert toggle,
+//          so muting an alert no longer corrupts the freshness score
+scan_touch(array<Zone> zones, bool enabled, int id) =>
+    bool anyTouch = false
+    int sz = array.size(zones)
+    if sz > 0
+        for i = 0 to sz - 1
+            Zone z = array.get(zones, i)
+            if not z.touched and z.pdOk and time > z.birthTime and low <= z.top and high >= z.bottom
+                z.touched := true
+                anyTouch  := true
+                if not z.notified
+                    z.notified := true
+                    string side = z.dir == 1 ? "Bullish" : "Bearish"
+                    fire(id, enabled, amsg("Price tapped " + side + " " + z.kind + " [" + str.tostring(z.bottom, format.mintick) + " - " + str.tostring(z.top, format.mintick) + "]"))
+    anyTouch
+
+count_fresh(array<Zone> zones) =>
+    int c = 0
+    int sz = array.size(zones)
+    if sz > 0
+        for i = 0 to sz - 1
+            Zone z = array.get(zones, i)
+            if z.pdOk and not z.touched
+                c += 1
+    c
+
+manage_zones(array<Zone> zones, array<Zone> mirror, bool useMirror) =>
+    int sz = array.size(zones)
+    if sz > 0
+        for i = sz - 1 to 0
+            Zone z = array.get(zones, i)
+            if time > z.birthTime and z.isMitigated()
+                if useMirror
+                    detach(mirror, z)
+                z.destroy()
+                array.remove(zones, i)
+    true
+
+prune_zones(array<Zone> zones, array<Zone> mirror, bool useMirror, int maxN) =>
+    while array.size(zones) > maxN
+        Zone z = array.shift(zones)
+        if useMirror
+            detach(mirror, z)
+        z.destroy()
+    true
+
+// ========================================================================== //
+// 7. MTF FETCHING
+// ========================================================================== //
+get_mtf_pivots(int left, int right) =>
+    float ph = ta.pivothigh(high, left, right)
+    float pl = ta.pivotlow(low, left, right)
+
+    float last_ph     = ta.valuewhen(not na(ph), ph, 0)
+    int   last_time_h = int(ta.valuewhen(not na(ph), time[right], 0))
+    float last_pl     = ta.valuewhen(not na(pl), pl, 0)
+    int   last_time_l = int(ta.valuewhen(not na(pl), time[right], 0))
+
+    // [1] offset keeps the lookahead safe: only closed HTF values are returned
+    [last_ph[1], last_pl[1], last_time_h[1], last_time_l[1]]
+
+[ph1, pl1, pTimeH1, pTimeL1] = request.security(syminfo.tickerid, tf1, get_mtf_pivots(leftLen, rightLen), lookahead = barmerge.lookahead_on)
+[ph2, pl2, pTimeH2, pTimeL2] = request.security(syminfo.tickerid, tf2, get_mtf_pivots(leftLen, rightLen), lookahead = barmerge.lookahead_on)
+
+// ========================================================================== //
+// 8. SWING ENGINE
+// ========================================================================== //
+method push_swing(StructState st, int t, float p, int typ) =>
+    bool changed = false
+    bool sameRun = not na(st.lastSwing) and st.lastSwing.ptype == typ
+
+    if sameRun
+        SwingPoint cur = st.lastSwing
+        bool moreExtreme = typ == 1 ? p > cur.price : p < cur.price
+
+        if moreExtreme
+            cur.timeLoc     := t
+            cur.price       := p
+            cur.confirmTime := time
+            cur.isBroken    := false
+
+            if not na(cur.lb)
+                label.set_xy(cur.lb, t, p)
+            if not na(cur.ln)
+                line.set_x2(cur.ln, t)
+                line.set_y2(cur.ln, p)
+
+            if (typ == 1 and close > p) or (typ == -1 and close < p)
+                cur.isBroken := true
+                st.retroSig  := typ
+
+            changed := true
+    else
+        label lb = na
+        if show_tag
+            lb := label.new(x = t, y = p, text = typ == 1 ? "H" : "L", style = typ == 1 ? label.style_label_down : label.style_label_up, color = color.new(st.col, 50), textcolor = color.white, xloc = xloc.bar_time)
+            array.push(structLabels, lb)
+
+        line ln = na
+        if not na(st.lastSwing)
+            ln := line.new(x1 = st.lastSwing.timeLoc, y1 = st.lastSwing.price, x2 = t, y2 = p, color = st.col, style = line.style_dashed, xloc = xloc.bar_time)
+            array.push(structLines, ln)
+
+        SwingPoint sp = SwingPoint.new(t, p, typ, false, time, ln, lb)
+
+        if (typ == 1 and close > p) or (typ == -1 and close < p)
+            sp.isBroken := true
+            st.retroSig := typ
+
+        st.lastSwing := sp
+        if typ == 1
+            st.lastHigh := sp
+        else
+            st.lastLow := sp
+
+        changed := true
+
+    changed
+
+method update_swings(StructState st, float ph, float pl, int pTimeH, int pTimeL) =>
+    bool touched = false
+    int tH = int(nz(pTimeH))
+    int tL = int(nz(pTimeL))
+
+    bool gotH = st.enabled and not na(ph) and tH > 0 and tH != st.seenH
+    bool gotL = st.enabled and not na(pl) and tL > 0 and tL != st.seenL
+
+    if gotH and gotL
+        // replay in chronological order so the trend flips correctly
+        if tH <= tL
+            touched := st.push_swing(tH, ph, 1)
+            touched := st.push_swing(tL, pl, -1) or touched
+        else
+            touched := st.push_swing(tL, pl, -1)
+            touched := st.push_swing(tH, ph, 1) or touched
+        st.seenH := tH
+        st.seenL := tL
+    else if gotH
+        touched  := st.push_swing(tH, ph, 1)
+        st.seenH := tH
+    else if gotL
+        touched  := st.push_swing(tL, pl, -1)
+        st.seenL := tL
+
+    touched
+
+st1.enabled := tf1Valid
+st2.enabled := tf2Valid
+
+bool newSwing1 = st1.update_swings(ph1, pl1, pTimeH1, pTimeL1)
+bool newSwing2 = st2.update_swings(ph2, pl2, pTimeH2, pTimeL2)
+
+// ========================================================================== //
+// 9. BOS / CHoCH
+// ========================================================================== //
+draw_break(StructState st, SwingPoint sp, bool isBull, bool retro) =>
+    sp.isBroken := true
+    string base = isBull ? (st.trend == -1 ? "CHoCH" : "BOS") : (st.trend == 1 ? "CHoCH" : "BOS")
+    string txt  = retro ? base + "*" : base
+
+    ln = line.new(x1 = sp.timeLoc, y1 = sp.price, x2 = time, y2 = sp.price, color = st.col, style = retro ? line.style_dotted : line.style_solid, width = 2, xloc = xloc.bar_time)
+    array.push(structLines, ln)
+
+    lbl = label.new(x = int(math.avg(sp.timeLoc, time)), y = sp.price, text = txt, color = color.new(color.white, 100), textcolor = st.col, style = isBull ? label.style_label_down : label.style_label_up, size = size.small, xloc = xloc.bar_time)
+    array.push(structLabels, lbl)
+
+    st.evt      := isBull ? 1 : -1
+    st.evtChoch := base == "CHoCH"
+    st.evtRetro := retro
+    st.evtPrice := sp.price
+    st.trend    := isBull ? 1 : -1
+    true
+
+check_structure(StructState st) =>
+    st.evt := 0
+    float upRef = bosUseWick ? high : close
+    float dnRef = bosUseWick ? low  : close
+
+    bool bullBreak = st.enabled and not na(st.lastHigh) and not st.lastHigh.isBroken and time > st.lastHigh.confirmTime and upRef > st.lastHigh.price
+    bool bearBreak = st.enabled and not na(st.lastLow)  and not st.lastLow.isBroken  and time > st.lastLow.confirmTime  and dnRef < st.lastLow.price
+
+    bool retroBull = allowRetro and st.enabled and st.retroSig == 1  and not na(st.lastHigh)
+    bool retroBear = allowRetro and st.enabled and st.retroSig == -1 and not na(st.lastLow)
+    st.retroSig := 0
+
+    bool bearFirst = close >= open
+
+    if bullBreak and bearBreak
+        if bearFirst
+            draw_break(st, st.lastLow, false, false)
+            draw_break(st, st.lastHigh, true, false)
+        else
+            draw_break(st, st.lastHigh, true, false)
+            draw_break(st, st.lastLow, false, false)
+    else if bullBreak
+        draw_break(st, st.lastHigh, true, false)
+    else if bearBreak
+        draw_break(st, st.lastLow, false, false)
+    else if retroBull
+        draw_break(st, st.lastHigh, true, true)
+    else if retroBear
+        draw_break(st, st.lastLow, false, true)
+
+    [bullBreak or retroBull, bearBreak or retroBear]
+
+[bull1, bear1] = check_structure(st1)
+[bull2, bear2] = check_structure(st2)
+
+// [K1] exposed booleans, reused by both alert() and alertcondition()
+bool retroPass1 = a_retro or not st1.evtRetro
+bool retroPass2 = a_retro or not st2.evtRetro
+bool evBos1     = st1.evt != 0 and not st1.evtChoch and retroPass1
+bool evChoch1   = st1.evt != 0 and st1.evtChoch     and retroPass1
+bool evBos2     = st2.evt != 0 and not st2.evtChoch and retroPass2
+bool evChoch2   = st2.evt != 0 and st2.evtChoch     and retroPass2
+
+struct_alert(StructState st, string tfName, bool okBos, bool okChoch, int idBos, int idChoch) =>
+    bool sent = false
+    if st.evt != 0 and (a_retro or not st.evtRetro)
+        string dir  = st.evt == 1 ? "Bullish" : "Bearish"
+        string kind = (st.evtChoch ? "CHoCH" : "BOS") + (st.evtRetro ? "*" : "")
+        string body = kind + " " + dir + " [" + tfName + "] broke " + str.tostring(st.evtPrice, format.mintick)
+        sent := fire(st.evtChoch ? idChoch : idBos, st.evtChoch ? okChoch : okBos, amsg(body))
+    sent
+
+bool sA1 = struct_alert(st1, tf1, a_bos1, a_choch1, ID_BOS1, ID_CHOCH1)
+bool sA2 = struct_alert(st2, tf2, a_bos2, a_choch2, ID_BOS2, ID_CHOCH2)
+
+while array.size(structLines) > maxObjects
+    line.delete(array.shift(structLines))
+while array.size(structLabels) > maxObjects
+    label.delete(array.shift(structLabels))
+
+// ========================================================================== //
+// 10. PREMIUM / DISCOUNT
+// ========================================================================== //
+float rngHigh = na
+float rngLow  = na
+float rngEq   = na
+int   rngLeft = 0
+
+if not na(st1.lastHigh) and not na(st1.lastLow)
+    rngHigh := st1.lastHigh.price
+    rngLow  := st1.lastLow.price
+    rngEq   := math.avg(rngHigh, rngLow)
+    rngLeft := math.min(st1.lastHigh.timeLoc, st1.lastLow.timeLoc)
+
+pd_ok(int dir, float top, float bottom) =>
+    bool ok = true
+    if pdMode != "Off" and not na(rngEq)
+        float mid = math.avg(top, bottom)
+        ok := dir == 1 ? mid <= rngEq : mid >= rngEq
+    ok
+
+pd_allow_create(bool ok) =>
+    pdMode == "Filter Out" ? ok : true
+
+var box   pdPremBx = na
+var box   pdDiscBx = na
+var line  pdEqLn   = na
+var float lastRngH = na
+var float lastRngL = na
+
+if show_pd and not na(rngEq)
+    if rngHigh != lastRngH or rngLow != lastRngL
+        box.delete(pdPremBx)
+        box.delete(pdDiscBx)
+        line.delete(pdEqLn)
+        pdPremBx := box.new(left = rngLeft, top = rngHigh, right = time, bottom = rngEq, border_color = color.new(pdPremCol, 60), bgcolor = pdPremCol, xloc = xloc.bar_time, extend = extend.right, text = "PREMIUM", text_color = color.new(color.white, 45), text_halign = text.align_left, text_valign = text.align_top, text_size = size.tiny)
+        pdDiscBx := box.new(left = rngLeft, top = rngEq, right = time, bottom = rngLow, border_color = color.new(pdDiscCol, 60), bgcolor = pdDiscCol, xloc = xloc.bar_time, extend = extend.right, text = "DISCOUNT", text_color = color.new(color.white, 45), text_halign = text.align_left, text_valign = text.align_bottom, text_size = size.tiny)
+        if pdShowEq
+            pdEqLn := line.new(x1 = rngLeft, y1 = rngEq, x2 = time, y2 = rngEq, color = pdEqCol, style = line.style_dashed, width = 1, xloc = xloc.bar_time, extend = extend.right)
+        lastRngH := rngHigh
+        lastRngL := rngLow
+
+// ========================================================================== //
+// 11. FAIR VALUE GAP
+// ========================================================================== //
+fvg_size_ok(float top, float bottom) =>
+    float sz   = top - bottom
+    bool okPts = sz >= fvgMinPts / 100
+    bool okAtr = na(atrVal) ? true : sz >= atrVal * fvgMinAtr
+    fvgFilter == "Off" ? true : fvgFilter == "Points" ? okPts : fvgFilter == "ATR" ? okAtr : okPts and okAtr
+
+var bool newFvgUp = false
+var bool newFvgDn = false
+newFvgUp := false
+newFvgDn := false
+
+var bool evTouchFvg = false
+evTouchFvg := false
+
+if show_fvg
+    if low > high[2] and close[2] > open[2] and fvg_size_ok(low, high[2]) and not has_zone_at(fvgZones, time[2])
+        bool okPd = pd_ok(1, low, high[2])
+        if pd_allow_create(okPd)
+            array.push(fvgZones, new_zone(time[2], low, high[2], 1, fvg_col_bull, na, "FVG", okPd))
+            newFvgUp := okPd
+    if high < low[2] and close[2] < open[2] and fvg_size_ok(low[2], high) and not has_zone_at(fvgZones, time[2])
+        bool okPd = pd_ok(-1, low[2], high)
+        if pd_allow_create(okPd)
+            array.push(fvgZones, new_zone(time[2], low[2], high, -1, fvg_col_bear, na, "FVG", okPd))
+            newFvgDn := okPd
+
+    evTouchFvg := scan_touch(fvgZones, a_touchFvg, ID_TOUCHFVG)
+    manage_zones(fvgZones, fvgZones, false)
+    prune_zones(fvgZones, fvgZones, false, maxFvgZones)
+
+bool evNewFvg = newFvgUp or newFvgDn
+if evNewFvg
+    fire(ID_NEWFVG, a_newFvg, amsg("New " + (newFvgUp ? "Bullish" : "Bearish") + " FVG formed"))
+
+// ========================================================================== //
+// 12. ORDER BLOCK
+// ========================================================================== //
+find_ob_bar(int dir, int lookback) =>
+    int idx = -1
+    for i = 1 to lookback
+        bool hit = dir == 1 ? close[i] < open[i] : close[i] > open[i]
+        if hit
+            idx := i
+            break
+
+    if idx == -1 and obFallback
+        float best = dir == 1 ? low[1] : high[1]
+        idx := 1
+        for i = 2 to lookback
+            if dir == 1 and low[i] < best
+                best := low[i]
+                idx  := i
+            else if dir == -1 and high[i] > best
+                best := high[i]
+                idx  := i
+    idx
+
+create_ob(int dir, int lookback) =>
+    bool made = false
+    int idx = find_ob_bar(dir, lookback)
+    if idx >= 0
+        int t = time[idx]
+        array<Zone> master = dir == 1 ? obBull : obBear
+        array<Zone> inter  = dir == 1 ? interBull : interBear
+        if not has_zone_at(master, t)
+            bool okPd = pd_ok(dir, high[idx], low[idx])
+            if pd_allow_create(okPd)
+                color c = dir == 1 ? ob_col_bull : ob_col_bear
+                Zone z = new_zone(t, high[idx], low[idx], dir, c, c, "OB", okPd)
+                array.push(master, z)
+                array.push(inter, z)
+                made := okPd
+    made
+
+var bool newObUp = false
+var bool newObDn = false
+newObUp := false
+newObDn := false
+
+var bool evTouchOb = false
+evTouchOb := false
+
+if show_ob
+    if obMode == "BOS-based (SMC)"
+        bool useT1 = obSource == "TF1" or obSource == "Both"
+        bool useT2 = obSource == "TF2" or obSource == "Both"
+
+        bool trigBull = (useT1 and bull1) or (useT2 and bull2)
+        bool trigBear = (useT1 and bear1) or (useT2 and bear2)
+
+        if trigBull
+            newObUp := create_ob(1, obLookback)
+        if trigBear
+            newObDn := create_ob(-1, obLookback)
+    else
+        int d = 5
+        if low > high[d] and close[d] < open[d] and not has_zone_at(obBull, time[d])
+            bool okPd = pd_ok(1, high[d], low[d])
+            if pd_allow_create(okPd)
+                Zone z = new_zone(time[d], high[d], low[d], 1, ob_col_bull, ob_col_bull, "OB", okPd)
+                array.push(obBull, z)
+                array.push(interBull, z)
+                newObUp := okPd
+        if high < low[d] and close[d] > open[d] and not has_zone_at(obBear, time[d])
+            bool okPd = pd_ok(-1, high[d], low[d])
+            if pd_allow_create(okPd)
+                Zone z = new_zone(time[d], high[d], low[d], -1, ob_col_bear, ob_col_bear, "OB", okPd)
+                array.push(obBear, z)
+                array.push(interBear, z)
+                newObDn := okPd
+
+    bool tOb1 = scan_touch(obBull, a_touchOb, ID_TOUCHOB)
+    bool tOb2 = scan_touch(obBear, a_touchOb, ID_TOUCHOB)
+    evTouchOb := tOb1 or tOb2
+
+    manage_zones(obBull, interBull, true)
+    manage_zones(obBear, interBear, true)
+    prune_zones(obBull, interBull, true, maxObZones)
+    prune_zones(obBear, interBear, true, maxObZones)
+
+bool evNewOb = newObUp or newObDn
+if evNewOb
+    fire(ID_NEWOB, a_newOb, amsg("New " + (newObUp ? "Bullish" : "Bearish") + " Order Block created"))
+
+// ========================================================================== //
+// 13. EXTREME OB FILTER (opt-in)
+// ========================================================================== //
+filter_extreme_ob(array<Zone> inter, array<Zone> master, int maxShow, bool isHigh) =>
+    int sz = array.size(inter)
+    if sz > 0
+        if sz > maxShow
+            array<float> prices = array.new<float>()
+            for i = 0 to sz - 1
+                Zone z = array.get(inter, i)
+                array.push(prices, isHigh ? z.top : z.bottom)
+
+            array<int> sortedIdx = array.sort_indices(prices, isHigh ? order.descending : order.ascending)
+
+            for i = 0 to sz - 1
+                if i >= maxShow
+                    Zone zDel = array.get(inter, array.get(sortedIdx, i))
+                    detach(master, zDel)
+                    zDel.destroy()
+
+        array.clear(inter)
+    true
+
+if useExtFilter
+    if not na(ta.pivothigh(high, leftLen, rightLen))
+        filter_extreme_ob(interBear, obBear, max_ob_show, true)
+    if not na(ta.pivotlow(low, leftLen, rightLen))
+        filter_extreme_ob(interBull, obBull, max_ob_show, false)
+
+// ========================================================================== //
+// 14. LIQUIDITY SWEEP + EQH / EQL
+// ========================================================================== //
+float chPH = ta.pivothigh(high, swpLeft, swpRight)
+float chPL = ta.pivotlow(low, swpLeft, swpRight)
+
+var float liqH    = na
+var float liqL    = na
+var int   liqHt   = 0
+var int   liqLt   = 0
+var float prevPH  = na
+var int   prevPHt = 0
+var float prevPL  = na
+var int   prevPLt = 0
+
+float eqDist = na(atrVal) ? 0 : atrVal * eqTol
+
+bool evEq = false
+
+if not na(chPH)
+    if show_eq and not na(prevPH) and math.abs(chPH - prevPH) <= eqDist
+        line eqLn = line.new(x1 = prevPHt, y1 = math.avg(chPH, prevPH), x2 = time[swpRight], y2 = math.avg(chPH, prevPH), color = eqCol, style = line.style_dotted, width = 2, xloc = xloc.bar_time)
+        array.push(structLines, eqLn)
+        label eqLb = label.new(x = time[swpRight], y = math.avg(chPH, prevPH), text = "EQH", style = label.style_label_left, color = color.new(color.white, 100), textcolor = eqCol, size = size.tiny, xloc = xloc.bar_time)
+        array.push(structLabels, eqLb)
+        evEq := true
+        fire(ID_EQ, a_eq, amsg("EQH formed @ " + str.tostring(math.avg(chPH, prevPH), format.mintick)))
+    prevPH  := chPH
+    prevPHt := time[swpRight]
+    liqH    := chPH
+    liqHt   := time[swpRight]
+
+if not na(chPL)
+    if show_eq and not na(prevPL) and math.abs(chPL - prevPL) <= eqDist
+        line eqLn2 = line.new(x1 = prevPLt, y1 = math.avg(chPL, prevPL), x2 = time[swpRight], y2 = math.avg(chPL, prevPL), color = eqCol, style = line.style_dotted, width = 2, xloc = xloc.bar_time)
+        array.push(structLines, eqLn2)
+        label eqLb2 = label.new(x = time[swpRight], y = math.avg(chPL, prevPL), text = "EQL", style = label.style_label_left, color = color.new(color.white, 100), textcolor = eqCol, size = size.tiny, xloc = xloc.bar_time)
+        array.push(structLabels, eqLb2)
+        evEq := true
+        fire(ID_EQ, a_eq, amsg("EQL formed @ " + str.tostring(math.avg(chPL, prevPL), format.mintick)))
+    prevPL  := chPL
+    prevPLt := time[swpRight]
+    liqL    := chPL
+    liqLt   := time[swpRight]
+
+float minPen = na(atrVal) ? 0 : atrVal * sweepMinPen
+
+bool sweepUp = show_sweep and not na(liqH) and time > liqHt and high > liqH + minPen and (not sweepNeedBack or close < liqH)
+bool sweepDn = show_sweep and not na(liqL) and time > liqLt and low  < liqL - minPen and (not sweepNeedBack or close > liqL)
+
+if sweepUp
+    line swl = line.new(x1 = liqHt, y1 = liqH, x2 = time, y2 = liqH, color = sweepUpCol, style = line.style_dotted, width = 1, xloc = xloc.bar_time)
+    array.push(structLines, swl)
+    label swb = label.new(x = time, y = high, text = "SW-H", style = label.style_label_down, color = color.new(sweepUpCol, 25), textcolor = color.white, size = size.tiny, xloc = xloc.bar_time)
+    array.push(structLabels, swb)
+    fire(ID_SWEEP, a_sweep, amsg("Sweep HIGH - buy-side liquidity taken at " + str.tostring(liqH, format.mintick) + ", closed back inside (bearish bias)"))
+    liqH := high
+
+if sweepDn
+    line swl2 = line.new(x1 = liqLt, y1 = liqL, x2 = time, y2 = liqL, color = sweepDnCol, style = line.style_dotted, width = 1, xloc = xloc.bar_time)
+    array.push(structLines, swl2)
+    label swb2 = label.new(x = time, y = low, text = "SW-L", style = label.style_label_up, color = color.new(sweepDnCol, 25), textcolor = color.white, size = size.tiny, xloc = xloc.bar_time)
+    array.push(structLabels, swb2)
+    fire(ID_SWEEP, a_sweep, amsg("Sweep LOW - sell-side liquidity taken at " + str.tostring(liqL, format.mintick) + ", closed back inside (bullish bias)"))
+    liqL := low
+
+bool evSweep = sweepUp or sweepDn
+
+// ========================================================================== //
+// 15. OTE + CONFLUENCE
+// ========================================================================== //
+var box   oteBox            = na
+var float current_entry     = na
+var float current_entry_62  = na
+var float current_entry_79  = na
+var float current_sl        = na
+var float current_tp        = na
+var float current_tp2       = na
+var int   current_trade_dir = 0
+var int   last_ote_time     = 0
+var int   conf_ob           = 0
+var int   conf_fvg          = 0
+var float oteTopS           = na
+var float oteBotS           = na
+var bool  oteEntered        = false
+
+zone_overlap(array<Zone> zones, float top, float bottom, int dir) =>
+    int   cnt    = 0
+    float bestT  = na
+    float bestB  = na
+    float bestOv = 0.0
+    int sz = array.size(zones)
+    if sz > 0
+        for i = 0 to sz - 1
+            Zone z = array.get(zones, i)
+            if z.dir == dir and z.pdOk
+                float ov = math.min(top, z.top) - math.max(bottom, z.bottom)
+                if ov > 0
+                    cnt += 1
+                    if ov > bestOv
+                        bestOv := ov
+                        bestT  := math.min(top, z.top)
+                        bestB  := math.max(bottom, z.bottom)
+    [cnt, bestT, bestB]
+
+int current_htf_time = 0
+if not na(st1.lastHigh) and not na(st1.lastLow)
+    current_htf_time := math.max(st1.lastHigh.timeLoc, st1.lastLow.timeLoc)
+
+bool evNewOte = false
+
+if tf1Valid and current_htf_time != last_ote_time and current_htf_time > 0
+    float dist = math.abs(st1.lastHigh.price - st1.lastLow.price)
+
+    if dist > 0
+        bool  isLong  = st1.trend == 1
+        float anchor  = isLong ? st1.lastHigh.price : st1.lastLow.price
+        int   anchorT = isLong ? st1.lastHigh.timeLoc : st1.lastLow.timeLoc
+        int   sign    = isLong ? -1 : 1
+
+        current_entry_62  := anchor + sign * dist * oteShallow
+        current_entry_79  := anchor + sign * dist * oteDeep
+        current_entry     := anchor + sign * dist * oteMid
+        current_sl        := isLong ? st1.lastLow.price - slBuffer : st1.lastHigh.price + slBuffer
+        current_tp        := anchor
+        current_tp2       := anchor + (isLong ? 1 : -1) * dist * tp2Ext
+        current_trade_dir := isLong ? 1 : -1
+
+        float oteTop = math.max(current_entry_62, current_entry_79)
+        float oteBot = math.min(current_entry_62, current_entry_79)
+        int   dirNow = isLong ? 1 : -1
+
+        [cOb,  obT,  obB]  = zone_overlap(isLong ? obBull : obBear, oteTop, oteBot, dirNow)
+        [cFvg, fvgT, fvgB] = zone_overlap(fvgZones, oteTop, oteBot, dirNow)
+        conf_ob  := cOb
+        conf_fvg := cFvg
+
+        if snapEntry
+            if cOb > 0 and not na(obT)
+                current_entry := math.avg(obT, obB)
+            else if cFvg > 0 and not na(fvgT)
+                current_entry := math.avg(fvgT, fvgB)
+
+        oteTopS    := oteTop
+        oteBotS    := oteBot
+        oteEntered := false
+        evNewOte   := true
+
+        if show_ote
+            box.delete(oteBox)
+            bool hasConf = conf_ob + conf_fvg > 0
+            oteBox := box.new(left = anchorT, top = oteTop, right = anchorT, bottom = oteBot, border_color = hasConf ? oteConfCol : color.new(ote_col, 0), border_width = hasConf ? 3 : 2, bgcolor = ote_col, text = isLong ? "BUY" : "SELL", text_color = zoneTxtCol, text_halign = text.align_right, text_valign = text.align_center, text_size = zTxtSize, xloc = xloc.bar_time, extend = extend.right)
+
+        string confTxt = cOb + cFvg == 0 ? "no confluence" : (cOb > 0 ? "OB x" + str.tostring(cOb) : "") + (cOb > 0 and cFvg > 0 ? " + " : "") + (cFvg > 0 ? "FVG x" + str.tostring(cFvg) : "")
+        string pdTxt   = na(rngEq) ? "" : " | " + (math.avg(oteTop, oteBot) > rngEq ? "PREMIUM" : "DISCOUNT")
+        string oteBody = "New OTE " + (isLong ? "BUY" : "SELL") + " zone [" + str.tostring(oteBot, format.mintick) + " - " + str.tostring(oteTop, format.mintick) + "] | Entry " + str.tostring(current_entry, format.mintick) + " | SL " + str.tostring(current_sl, format.mintick) + " | TP " + str.tostring(current_tp, format.mintick) + " | " + confTxt + pdTxt
+        fire(ID_NEWOTE, a_newOte, amsg(oteBody))
+
+    last_ote_time := current_htf_time
+
+bool evEnterOte = false
+if not oteEntered and not na(oteTopS) and not na(oteBotS) and low <= oteTopS and high >= oteBotS
+    oteEntered := true
+    evEnterOte := true
+    fire(ID_ENTEROTE, a_enterOte, amsg("Price entered OTE " + (current_trade_dir == 1 ? "BUY" : "SELL") + " zone [" + str.tostring(oteBotS, format.mintick) + " - " + str.tostring(oteTopS, format.mintick) + "]"))
+
+// ========================================================================== //
+// 16. RISK MATH
+// ========================================================================== //
+float risk_usd    = acc_size * (risk_pct / 100)
+float entry_price = not na(current_entry) ? current_entry : close
+float sl_dist     = na(current_sl)  ? na : math.abs(entry_price - current_sl)
+float tp_dist     = na(current_tp)  ? na : math.abs(entry_price - current_tp)
+float tp2_dist    = na(current_tp2) ? na : math.abs(entry_price - current_tp2)
+
+float lot_size   = not na(sl_dist) and sl_dist > 0 and pointVal > 0 ? (risk_usd / (sl_dist * pointVal)) : na
+float profit_usd = not na(lot_size) and not na(tp_dist) ? lot_size * tp_dist * pointVal : na
+float rr1        = not na(sl_dist) and sl_dist > 0 and not na(tp_dist)  ? tp_dist / sl_dist  : na
+float rr2        = not na(sl_dist) and sl_dist > 0 and not na(tp2_dist) ? tp2_dist / sl_dist : na
+
+// ========================================================================== //
+// 17. CONFLUENCE SCORE
+// ========================================================================== //
+int bsBull1 = ta.barssince(st1.evt ==  1)
+int bsBear1 = ta.barssince(st1.evt == -1)
+int bsSwUp  = ta.barssince(sweepUp)
+int bsSwDn  = ta.barssince(sweepDn)
+
+// 1.0 when fresh, linearly fading to 0 at "decay" bars old
+recency(int bs, int decay) =>
+    float r = 0.0
+    if not na(bs) and bs <= decay
+        float d = math.max(decay, 1)
+        r := 1.0 - bs / d
+    r
+
+clamp01(float v) => math.max(0.0, math.min(1.0, v))
+
+int bias = current_trade_dir != 0 ? current_trade_dir : st1.trend
+
+float f_struct = bias == 1 ? recency(bsBull1, scDecay) : recency(bsBear1, scDecay)
+float f_htf    = st2.enabled and st2.trend == bias ? 1.0 : 0.0
+float f_ob     = clamp01(conf_ob  / 2.0)
+float f_fvg    = clamp01(conf_fvg / 2.0)
+
+float f_pd = 0.0
+if not na(rngEq) and rngHigh > rngLow
+    f_pd := bias == 1 ? clamp01((rngEq - close) / math.max(rngEq - rngLow, syminfo.mintick)) : clamp01((close - rngEq) / math.max(rngHigh - rngEq, syminfo.mintick))
+
+float f_sweep = bias == 1 ? recency(bsSwDn, scDecay) : recency(bsSwUp, scDecay)
+
+float f_ote = 0.0
+if not na(oteTopS) and not na(oteBotS)
+    if close <= oteTopS and close >= oteBotS
+        f_ote := 1.0
+    else
+        float gap = close > oteTopS ? close - oteTopS : oteBotS - close
+        float tol = na(atrVal) ? 0.0 : atrVal * 1.5
+        f_ote := tol > 0 and gap < tol ? 0.5 * (1.0 - gap / tol) : 0.0
+
+float f_rr = na(rr1) ? 0.0 : clamp01(rr1 / math.max(scRrTarget, 0.1))
+
+int   freshN  = bias == 1 ? count_fresh(obBull) : count_fresh(obBear)
+float f_fresh = clamp01(freshN / 2.0)
+
+float wSum  = w_struct + w_htf + w_ob + w_fvg + w_pd + w_sweep + w_ote + w_rr + w_fresh
+float raw   = f_struct * w_struct + f_htf * w_htf + f_ob * w_ob + f_fvg * w_fvg + f_pd * w_pd + f_sweep * w_sweep + f_ote * w_ote + f_rr * w_rr + f_fresh * w_fresh
+float score = wSum > 0 ? raw / wSum * 100 : 0.0
+
+grade_of(float s)  => s >= 85 ? "A+" : s >= 75 ? "A" : s >= 60 ? "B" : s >= 45 ? "C" : "D"
+grade_col(float s) => s >= 85 ? color.lime : s >= 75 ? color.green : s >= 60 ? color.yellow : s >= 45 ? color.orange : color.gray
+
+// fires on the cross only, not on every bar above the threshold
+bool evScore = useScore and bias != 0 and score >= scAlertLv and nz(score[1], 0) < scAlertLv
+if evScore
+    fire(ID_SCORE, a_score, amsg("Confluence Score " + str.tostring(score, "#") + "/100 (" + grade_of(score) + ") - bias " + (bias == 1 ? "BUY" : "SELL") + " | Entry " + str.tostring(current_entry, format.mintick) + " | SL " + str.tostring(current_sl, format.mintick) + " | R:R " + str.tostring(rr1, "#.##")))
+
+bgcolor(useScore and scBgTint and score >= scAlertLv ? color.new(bias == 1 ? color.green : color.red, 92) : na)
+
+// ========================================================================== //
+// 18. ALERT CONDITIONS  [K1]
+// ========================================================================== //
+// These appear as named entries in the alert dialog dropdown.
+// For the full dynamic messages, choose "Any alert() function call" instead.
+alertcondition(evBos1,     "BOS - TF1",            "SMC: Break of Structure on TF1 - {{ticker}} {{interval}} @ {{close}}")
+alertcondition(evChoch1,   "CHoCH - TF1",          "SMC: Change of Character on TF1 - {{ticker}} {{interval}} @ {{close}}")
+alertcondition(evBos2,     "BOS - TF2",            "SMC: Break of Structure on TF2 - {{ticker}} {{interval}} @ {{close}}")
+alertcondition(evChoch2,   "CHoCH - TF2",          "SMC: Change of Character on TF2 - {{ticker}} {{interval}} @ {{close}}")
+alertcondition(evNewOb,    "New Order Block",      "SMC: New Order Block created - {{ticker}} {{interval}} @ {{close}}")
+alertcondition(evNewFvg,   "New FVG",              "SMC: New Fair Value Gap - {{ticker}} {{interval}} @ {{close}}")
+alertcondition(evTouchOb,  "Price taps OB",        "SMC: Price tapped an Order Block - {{ticker}} {{interval}} @ {{close}}")
+alertcondition(evTouchFvg, "Price taps FVG",       "SMC: Price tapped an FVG - {{ticker}} {{interval}} @ {{close}}")
+alertcondition(evNewOte,   "New OTE zone",         "SMC: New OTE zone projected - {{ticker}} {{interval}} @ {{close}}")
+alertcondition(evEnterOte, "Price enters OTE",     "SMC: Price entered the OTE zone - {{ticker}} {{interval}} @ {{close}}")
+alertcondition(evSweep,    "Liquidity sweep",      "SMC: Liquidity sweep detected - {{ticker}} {{interval}} @ {{close}}")
+alertcondition(evEq,       "EQH / EQL formed",     "SMC: Equal highs/lows formed - {{ticker}} {{interval}} @ {{close}}")
+alertcondition(evScore,    "Score crosses level",  "SMC: Confluence Score crossed the alert threshold - {{ticker}} {{interval}} @ {{close}}")
+
+// ========================================================================== //
+// 19. PANELS
+// ========================================================================== //
+var table dash = table.new(position.top_right,    2, 10, border_width = 1, border_color = color.gray, bgcolor = color.new(color.black, 80))
+var table scr  = table.new(position.bottom_right, 3, 11, border_width = 1, border_color = color.new(color.gray, 50), bgcolor = color.new(color.black, 78))
+var bool  warnMerged = false
+
+fmt(float v, string f) => na(v) ? "-" : str.tostring(v, f)
+
+scrow(table t, int r, string name, float f, float w, string detail) =>
+    color c = f >= 0.99 ? color.lime : f > 0.01 ? color.yellow : color.new(color.gray, 30)
+    table.cell(t, 0, r, name,   text_color = color.white, text_size = size.tiny, text_halign = text.align_left)
+    table.cell(t, 1, r, detail, text_color = c, text_size = size.tiny)
+    table.cell(t, 2, r, str.tostring(f * w, "#.#") + "/" + str.tostring(w, "#"), text_color = c, text_size = size.tiny)
+    true
+
+if barstate.islast
+    // ---------- SIGNAL DASHBOARD ----------
+    if show_dash
+        string dir_txt = current_trade_dir == 1 ? "LONG" : current_trade_dir == -1 ? "SHORT" : "WAIT"
+        color  dir_col = current_trade_dir == 1 ? color.green : current_trade_dir == -1 ? color.red : color.gray
+
+        int    confN    = conf_ob + conf_fvg
+        string conf_txt = confN == 0 ? "-" : (conf_ob > 0 ? "OB" + str.tostring(conf_ob) : "") + (conf_ob > 0 and conf_fvg > 0 ? "+" : "") + (conf_fvg > 0 ? "FVG" + str.tostring(conf_fvg) : "")
+        color  conf_col = confN >= 2 ? color.lime : confN == 1 ? color.yellow : color.gray
+
+        bool   inPrem  = not na(rngEq) and close > rngEq
+        float  pdPct   = na(rngEq) or rngHigh == rngLow ? na : (close - rngLow) / (rngHigh - rngLow) * 100
+        string pd_txt  = na(rngEq) ? "-" : (inPrem ? "PREM " : "DISC ") + fmt(pdPct, "#") + "%"
+        color  pd_col  = na(rngEq) ? color.gray : (inPrem ? color.red : color.lime)
+        bool   aligned = current_trade_dir == 1 ? not inPrem : current_trade_dir == -1 ? inPrem : false
+
+        table.cell(dash, 0, 0, "SMC Setup", text_color = color.white, bgcolor = color.blue, text_size = dTxt)
+        table.cell(dash, 1, 0, dir_txt, text_color = color.white, bgcolor = dir_col, text_size = dTxt)
+
+        table.cell(dash, 0, 1, "Score", text_color = color.white, bgcolor = color.new(color.purple, 55), text_size = dTxt)
+        table.cell(dash, 1, 1, useScore ? str.tostring(score, "#") + "/100 [" + grade_of(score) + "]" : "OFF", text_color = useScore ? grade_col(score) : color.gray, bgcolor = color.new(color.purple, 55), text_size = dTxt)
+
+        table.cell(dash, 0, 2, "Price / PD", text_color = color.white, text_size = dTxt)
+        table.cell(dash, 1, 2, str.tostring(close, "#") + "  " + pd_txt + (aligned ? " OK" : ""), text_color = pd_col, text_size = dTxt)
+
+        table.cell(dash, 0, 3, "Entry" + (snapEntry and confN > 0 ? "*" : ""), text_color = color.white, text_size = dTxt)
+        table.cell(dash, 1, 3, fmt(current_entry, "#") + " (" + fmt(current_entry_62, "#") + "-" + fmt(current_entry_79, "#") + ")", text_color = color.yellow, text_size = dTxt)
+
+        table.cell(dash, 0, 4, "Stop Loss", text_color = color.white, text_size = dTxt)
+        table.cell(dash, 1, 4, fmt(current_sl, "#") + " (-$" + str.tostring(risk_usd, "#") + ")", text_color = color.red, text_size = dTxt)
+
+        table.cell(dash, 0, 5, "TP1 / TP2", text_color = color.white, text_size = dTxt)
+        table.cell(dash, 1, 5, fmt(current_tp, "#") + " / " + fmt(current_tp2, "#") + " (+$" + fmt(profit_usd, "#") + ")", text_color = color.green, text_size = dTxt)
+
+        table.cell(dash, 0, 6, "R:R / Conf", text_color = color.white, text_size = dTxt)
+        table.cell(dash, 1, 6, fmt(rr1, "#.##") + "/" + fmt(rr2, "#.##") + "  " + conf_txt, text_color = conf_col, text_size = dTxt)
+
+        table.cell(dash, 0, 7, "Lot / PtVal", text_color = color.white, text_size = dTxt)
+        table.cell(dash, 1, 7, fmt(lot_size, "#.##") + " / " + str.tostring(pointVal, "#.##"), text_color = color.aqua, text_size = dTxt)
+
+        // [K4] proof that the alert engine is alive
+        if showAlertRow
+            int    fired    = array.get(alertStat, 0)
+            int    lastBar  = array.get(alertStat, 1)
+            string agoTxt   = fired == 0 ? "never" : str.tostring(bar_index - lastBar) + " bars ago"
+            table.cell(dash, 0, 8, "Alerts", text_color = color.white, text_size = dTxt)
+            table.cell(dash, 1, 8, (alertMaster ? "ON" : "OFF") + " | " + str.tostring(fired) + " sent | " + agoTxt, text_color = alertMaster ? (fired > 0 ? color.lime : color.yellow) : color.gray, text_size = dTxt)
+
+    // ---------- SCORE BREAKDOWN ----------
+    if useScore and showScoreP
+        table.cell(scr, 0, 0, "SCORE " + (bias == 1 ? "BUY" : "SELL"), text_color = color.white, bgcolor = color.new(color.purple, 30), text_size = size.tiny, text_halign = text.align_left)
+        table.cell(scr, 1, 0, "state", text_color = color.white, bgcolor = color.new(color.purple, 30), text_size = size.tiny)
+        table.cell(scr, 2, 0, "pts", text_color = color.white, bgcolor = color.new(color.purple, 30), text_size = size.tiny)
+
+        scrow(scr, 1, "1 BOS/CHoCH " + tf1, f_struct, w_struct, f_struct > 0 ? str.tostring(bias == 1 ? bsBull1 : bsBear1, "#") + " bars ago" : "expired")
+        scrow(scr, 2, "2 HTF " + tf2 + " align", f_htf, w_htf, st2.enabled ? (st2.trend == 1 ? "up" : "down") + (f_htf > 0 ? " aligned" : " opposed") : "off")
+        scrow(scr, 3, "3 OB in OTE",    f_ob,    w_ob,    "x" + str.tostring(conf_ob))
+        scrow(scr, 4, "4 FVG in OTE",   f_fvg,   w_fvg,   "x" + str.tostring(conf_fvg))
+        scrow(scr, 5, "5 EQ side",      f_pd,    w_pd,    na(rngEq) ? "-" : str.tostring(f_pd * 100, "#") + "%")
+        scrow(scr, 6, "6 Sweep support", f_sweep, w_sweep, f_sweep > 0 ? str.tostring(bias == 1 ? bsSwDn : bsSwUp, "#") + " bars ago" : "none")
+        scrow(scr, 7, "7 Price in OTE", f_ote,   w_ote,   f_ote >= 0.99 ? "inside" : f_ote > 0 ? "near" : "far")
+        scrow(scr, 8, "8 R:R >= " + str.tostring(scRrTarget, "#.#"), f_rr, w_rr, fmt(rr1, "#.##"))
+        scrow(scr, 9, "9 Fresh zones",  f_fresh, w_fresh, str.tostring(freshN) + " left")
+
+        table.cell(scr, 0, 10, "TOTAL", text_color = color.white, bgcolor = color.new(color.black, 40), text_size = size.tiny, text_halign = text.align_left)
+        table.cell(scr, 1, 10, grade_of(score), text_color = grade_col(score), bgcolor = color.new(color.black, 40), text_size = size.tiny)
+        table.cell(scr, 2, 10, str.tostring(score, "#") + "/100", text_color = grade_col(score), bgcolor = color.new(color.black, 40), text_size = size.tiny)
+
+    // ---------- TIMEFRAME WARNING ----------
+    if tfWarn
+        table.cell(dash, 0, 9, warnTxt, text_color = color.white, bgcolor = color.new(color.red, 20), text_size = size.tiny, text_halign = text.align_left)
+        table.cell(dash, 1, 9, "", bgcolor = color.new(color.red, 20))
+        if not warnMerged
+            table.merge_cells(dash, 0, 9, 1, 9)
+            warnMerged := true

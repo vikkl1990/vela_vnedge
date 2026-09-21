@@ -1,0 +1,94 @@
+//@version=6
+indicator("Fixed Range Volume Delta", format = format.volume)
+
+import TradingView/ta/12
+
+// --- Range Selection ---
+grp_range = "Range Selection"
+startTime = input.time(timestamp("2026-06-01 00:00"), "Start Date & Time", group = grp_range)
+useCurrentBar = input.bool(false, "Extend to Current Bar (Ignore End Date)", group = grp_range)
+endTime   = input.time(timestamp("2026-08-18 00:00"), "End Date & Time", group = grp_range, active = not useCurrentBar)
+
+// --- Delta Calculation Settings ---
+grp_delta = "Delta Calculation"
+dataAggregationInput = input.string("Time", "Data aggregation", options = ["Time", "1 tick"], group = grp_delta)
+useTicks = dataAggregationInput == "1 tick"
+
+useCustomTimeframeInput = input.bool(false, "Use custom timeframe", group = grp_delta, active = not useTicks)
+lowerTimeframeInput = input.timeframe("1", "Timeframe", group = grp_delta, active = useCustomTimeframeInput and not useTicks)
+
+var lowerTimeframe = switch
+    useTicks                => "1T"
+    useCustomTimeframeInput => lowerTimeframeInput
+    timeframe.isseconds     => "1S"
+    timeframe.isintraday    => "1"
+    timeframe.isdaily       => "5"
+    => "60"
+
+// --- Delta & Volume Retrieval ---
+[openVolume, maxVolume, minVolume, lastVolume] = ta.requestVolumeDelta(lowerTimeframe)
+
+delta    = nz(lastVolume)
+totalVol = nz(volume)
+
+buyVol   = math.max(0.0, (totalVol + delta) / 2.0)
+sellVol  = math.max(0.0, (totalVol - delta) / 2.0)
+
+// --- Range Boundary Logic & Accumulation ---
+effectiveEndTime = useCurrentBar ? time_close : endTime
+inRange = (time >= startTime) and (time <= effectiveEndTime)
+isFirstRangeBar = inRange and not inRange[1]
+
+var float cumBuy   = 0.0
+var float cumSell  = 0.0
+var float cumDelta = 0.0
+var float cumTotal = 0.0
+
+if isFirstRangeBar
+    cumBuy   := 0.0
+    cumSell  := 0.0
+    cumDelta := 0.0
+    cumTotal := 0.0
+
+if inRange
+    cumBuy   += buyVol
+    cumSell  += sellVol
+    cumDelta += delta
+    cumTotal += totalVol
+
+// --- Visual Plotting (Matches Volume Delta Pane Exactly) ---
+candleColor = lastVolume > 0 ? color.teal : color.red
+
+// Plot identical candlestick delta only within selected range
+plotcandle(inRange ? openVolume : na, 
+           inRange ? maxVolume : na, 
+           inRange ? minVolume : na, 
+           inRange ? lastVolume : na, 
+           "Volume Delta", 
+           color = candleColor, 
+           bordercolor = candleColor, 
+           wickcolor = candleColor)
+
+hline(0, "Baseline (Zero)", color = color.gray, linestyle = hline.style_solid)
+bgcolor(inRange ? color.new(color.blue, 92) : na, title = "Active Range Highlight")
+
+// --- Summary Metric Box ---
+var table metricTable = table.new(position.top_right, 2, 4, bgcolor = color.new(color.black, 20), border_color = color.gray, border_width = 1)
+
+f_formatVol(float val) =>
+    math.abs(val) >= 1e6 ? str.tostring(val / 1e6, "#.##") + "M" :
+     math.abs(val) >= 1e3 ? str.tostring(val / 1e3, "#.##") + "K" :
+     str.tostring(val, "#.##")
+
+if barstate.islast
+    table.cell(metricTable, 0, 0, "Total Vol", text_color = color.white, text_size = size.small)
+    table.cell(metricTable, 1, 0, f_formatVol(cumTotal), text_color = color.yellow, text_size = size.small)
+
+    table.cell(metricTable, 0, 1, "Buy Vol", text_color = color.white, text_size = size.small)
+    table.cell(metricTable, 1, 1, f_formatVol(cumBuy), text_color = color.teal, text_size = size.small)
+
+    table.cell(metricTable, 0, 2, "Sell Vol", text_color = color.white, text_size = size.small)
+    table.cell(metricTable, 1, 2, f_formatVol(cumSell), text_color = color.red, text_size = size.small)
+
+    table.cell(metricTable, 0, 3, "Net Delta", text_color = color.white, text_size = size.small)
+    table.cell(metricTable, 1, 3, f_formatVol(cumDelta), text_color = cumDelta >= 0 ? color.teal : color.red, text_size = size.small)

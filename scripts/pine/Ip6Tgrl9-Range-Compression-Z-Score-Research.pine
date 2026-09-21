@@ -1,0 +1,259 @@
+//@version=6
+indicator("Range Compression Z-Score Research", shorttitle="Range Z Research D", overlay=false, max_boxes_count=500, max_labels_count=100, max_bars_back=1000)
+
+// ===== Inputs =====
+dailyTF                    = input.timeframe("D", "Research timeframe")
+rangeLen                   = input.int(6, "Completed daily bars in range", minval=3, maxval=15)
+historyLen                 = input.int(252, "Historical range sample", minval=50, maxval=1000)
+rangeMetric                = input.string("High-low range", "Range metric", options=["High-low range", "True range"])
+oscillatorMode             = input.string("Percentile rank", "Oscillator", options=["Percentile rank", "Z-score"])
+
+extremeMode                = input.string("Percentile OR Z-score", "Extreme tightness rule", options=["Percentile only", "Z-score only", "Percentile OR Z-score", "Percentile AND Z-score"])
+maxRangePercentile         = input.float(10.0, "Max range percentile", minval=0.1, maxval=50.0, step=0.5)
+maxRangeZScore             = input.float(-1.0, "Max range z-score", minval=-5.0, maxval=1.0, step=0.1)
+
+requireSideways            = input.bool(true, "Require sideways price action")
+maxNetDriftToBox           = input.float(0.35, "Max net drift / box width", minval=0.0, maxval=2.0, step=0.05)
+maxSlopePctOverWindow      = input.float(1.00, "Max regression slope % over range", minval=0.0, maxval=10.0, step=0.10)
+
+requireStableDailyRanges   = input.bool(true, "Require stable daily ranges")
+maxDailyRangeCv            = input.float(0.80, "Max daily range coefficient of variation", minval=0.0, maxval=3.0, step=0.05)
+maxSingleDayRangeToBox     = input.float(0.90, "Max single-day range / box width", minval=0.1, maxval=3.0, step=0.05)
+
+bufferMode                 = input.string("ATR fraction", "Breakout buffer mode", options=["ATR fraction", "Percent of price", "Ticks", "None"])
+atrLen                     = input.int(21, "ATR length for buffer", minval=5, maxval=100)
+atrBufferFraction          = input.float(0.05, "ATR buffer fraction", minval=0.0, step=0.01)
+priceBufferPct             = input.float(0.10, "Price buffer %", minval=0.0, step=0.01)
+tickBufferCount            = input.int(2, "Tick buffer", minval=0)
+repeatMode                 = input.string("Once Per Setup", "Alert repeat mode", options=["Once Per Setup", "Once Per Side Per Day"])
+minBreakoutBarRangePct     = input.float(0.0, "Min breakout bar range % of price (0 = off)", minval=0.0, maxval=20.0, step=0.05)
+breakoutBarAtrLen          = input.int(21, "Breakout bar ATR length", minval=2, maxval=200)
+minBreakoutBarRangeAtr     = input.float(0.0, "Min breakout bar range / chart ATR (0 = off)", minval=0.0, maxval=10.0, step=0.05)
+maxBreakoutBarRangeAtr     = input.float(0.0, "Max breakout bar range / chart ATR (0 = off)", minval=0.0, maxval=20.0, step=0.05)
+breakoutVolumeMaLen        = input.int(50, "Breakout volume SMA length", minval=1, maxval=500)
+minBreakoutVolumeMultiple  = input.float(0.0, "Min breakout volume / SMA (0 = off)", minval=0.0, maxval=10.0, step=0.05)
+
+showPriceBoxes             = input.bool(true, "Draw qualifying boxes on price chart")
+boxDrawingMode             = input.string("First day of streak", "Box drawing", options=["First day of streak", "Every qualifying day"])
+boxHistoryMode             = input.string("All kept boxes", "Box history", options=["All kept boxes", "Latest box only"])
+clearPriceBoxes            = input.bool(false, "Clear/hide stored price boxes")
+maxBoxesKept               = input.int(150, "Boxes kept", minval=10, maxval=500)
+showBoxText                = input.bool(true, "Show percentile/z-score in boxes")
+showCurrentLevels          = input.bool(true, "Show current qualifying box levels")
+showSetupStartMarkers      = input.bool(true, "Show new-box marker")
+showBreakoutMarkers        = input.bool(true, "Show breakout markers")
+showMarkerText             = input.bool(true, "Show marker text labels")
+showStatusTable            = input.bool(true, "Show status table")
+
+// ===== Helpers =====
+f_safeDiv(float num, float den) =>
+    not na(num) and not na(den) and den != 0.0 ? num / den : na
+
+f_price(float value) =>
+    na(value) ? "n/a" : str.tostring(value, format.mintick)
+
+f_number(float value) =>
+    na(value) ? "n/a" : str.tostring(value, "#.##")
+
+f_pct(float value) =>
+    na(value) ? "n/a" : str.tostring(value, "#.##") + "%"
+
+f_extremeOk(bool pctOk, bool zOk) =>
+    switch extremeMode
+        "Percentile only"        => pctOk
+        "Z-score only"           => zOk
+        "Percentile AND Z-score" => pctOk and zOk
+        => pctOk or zOk
+
+f_dailyResearch() =>
+    dailyRange = rangeMetric == "True range" ? ta.tr(true) : high - low
+    boxHigh = ta.highest(high, rangeLen)[1]
+    boxLow = ta.lowest(low, rangeLen)[1]
+    boxWidth = boxHigh - boxLow
+    boxClose = close[1]
+    rangePct = f_safeDiv(boxWidth, boxClose) * 100.0
+    rangeMean = ta.sma(rangePct, historyLen)[1]
+    rangeSd = ta.stdev(rangePct, historyLen)[1]
+    rangeZ = not na(rangeSd) and rangeSd != 0.0 ? (rangePct - rangeMean) / rangeSd : na
+    rangePercentile = ta.percentrank(rangePct, historyLen)[1]
+    netDrift = math.abs(close[1] - close[rangeLen])
+    driftToBox = f_safeDiv(netDrift, boxWidth)
+    regNow = ta.linreg(close, rangeLen, 0)[1]
+    regPrev = ta.linreg(close, rangeLen, 1)[1]
+    slopePct = f_safeDiv(math.abs(regNow - regPrev) * rangeLen, boxClose) * 100.0
+    avgDailyRange = ta.sma(dailyRange, rangeLen)[1]
+    sdDailyRange = ta.stdev(dailyRange, rangeLen)[1]
+    dailyRangeCv = f_safeDiv(sdDailyRange, avgDailyRange)
+    singleDayRangeToBox = f_safeDiv(ta.highest(dailyRange, rangeLen)[1], boxWidth)
+    atrValue = ta.atr(atrLen)[1]
+    enoughData = bar_index > historyLen + rangeLen + atrLen + 5
+    [boxHigh, boxLow, boxClose, rangePct, rangeZ, rangePercentile, driftToBox, slopePct, dailyRangeCv, singleDayRangeToBox, atrValue, time[rangeLen], time, bar_index, enoughData]
+
+// ===== Security Request =====
+lookaheadSetting = timeframe.isintraday ? barmerge.lookahead_on : barmerge.lookahead_off
+[boxHigh, boxLow, boxClose, rangePct, rangeZ, rangePercentile, driftToBox, slopePct, dailyRangeCv, singleDayRangeToBox, dailyAtr, boxStartTime, boxEndTime, dailyBarIndex, enoughData] = request.security(syminfo.tickerid, dailyTF, f_dailyResearch(), gaps=barmerge.gaps_off, lookahead=lookaheadSetting)
+
+// ===== Setup logic =====
+boxWidth                   = boxHigh - boxLow
+pctExtreme                 = not na(rangePercentile) and rangePercentile <= maxRangePercentile
+zExtreme                   = not na(rangeZ) and rangeZ <= maxRangeZScore
+tightnessExtreme           = enoughData and not na(boxWidth) and boxWidth > 0.0 and f_extremeOk(pctExtreme, zExtreme)
+sidewaysOk                 = not requireSideways or ((not na(driftToBox) and driftToBox <= maxNetDriftToBox) and (not na(slopePct) and slopePct <= maxSlopePctOverWindow))
+stableRangeOk              = not requireStableDailyRanges or ((not na(dailyRangeCv) and dailyRangeCv <= maxDailyRangeCv) and (not na(singleDayRangeToBox) and singleDayRangeToBox <= maxSingleDayRangeToBox))
+setupOk                    = tightnessExtreme and sidewaysOk and stableRangeOk
+
+// ===== Breakout logic (STRICTLY ON CONFIRMED CANDLE CLOSE) =====
+buffer = switch bufferMode
+    "ATR fraction"     => nz(dailyAtr) * atrBufferFraction
+    "Percent of price" => nz(boxClose) * priceBufferPct / 100.0
+    "Ticks"            => tickBufferCount * syminfo.mintick
+    => 0.0
+
+upperTrigger               = boxHigh + buffer
+lowerTrigger               = boxLow - buffer
+breakoutBarRange           = high - low
+breakoutBarRangePct        = f_safeDiv(breakoutBarRange, close) * 100.0
+breakoutBarRangeAtr        = f_safeDiv(breakoutBarRange, ta.atr(breakoutBarAtrLen))
+breakoutVolumeSma          = ta.sma(volume, breakoutVolumeMaLen)
+breakoutVolumeToAvg        = f_safeDiv(volume, breakoutVolumeSma)
+breakoutRangePctOk         = minBreakoutBarRangePct <= 0.0 or (not na(breakoutBarRangePct) and breakoutBarRangePct >= minBreakoutBarRangePct)
+breakoutRangeMinAtrOk      = minBreakoutBarRangeAtr <= 0.0 or (not na(breakoutBarRangeAtr) and breakoutBarRangeAtr >= minBreakoutBarRangeAtr)
+breakoutRangeMaxAtrOk      = maxBreakoutBarRangeAtr <= 0.0 or (not na(breakoutBarRangeAtr) and breakoutBarRangeAtr <= maxBreakoutBarRangeAtr)
+breakoutVolumeOk           = minBreakoutVolumeMultiple <= 0.0 or (not na(breakoutVolumeToAvg) and breakoutVolumeToAvg >= minBreakoutVolumeMultiple)
+breakoutBarOk              = breakoutRangePctOk and breakoutRangeMinAtrOk and breakoutRangeMaxAtrOk and breakoutVolumeOk
+
+// Strictly evaluate CLOSE on CONFIRMED bars (Wicks completely ignored)
+rawBreakUp                 = setupOk and breakoutBarOk and (close >= upperTrigger) and barstate.isconfirmed
+rawBreakDown               = setupOk and breakoutBarOk and (close <= lowerTrigger) and barstate.isconfirmed
+
+newDailyWindow             = ta.change(time(dailyTF)) != 0
+newSetupStreak             = setupOk and not setupOk[1]
+oneAlertPerSetup           = repeatMode == "Once Per Setup"
+
+var bool upFired           = false
+var bool downFired         = false
+var bool anyFired          = false
+
+if newSetupStreak or not setupOk
+    upFired := false
+    downFired := false
+    anyFired := false
+
+if newDailyWindow and not oneAlertPerSetup
+    upFired := false
+    downFired := false
+    anyFired := false
+
+canFireAny                 = oneAlertPerSetup ? not anyFired : true
+breakoutUp                 = rawBreakUp and canFireAny and not upFired
+breakoutDown               = rawBreakDown and canFireAny and not downFired and not (oneAlertPerSetup and breakoutUp)
+breakoutAny                = breakoutUp or breakoutDown
+
+if barstate.isconfirmed
+    if breakoutUp
+        upFired := true
+        anyFired := true
+    if breakoutDown
+        downFired := true
+        anyFired := true
+
+// ===== Oscillator pane =====
+oscValue                   = oscillatorMode == "Percentile rank" ? rangePercentile : rangeZ
+oscColor                   = setupOk ? color.lime : tightnessExtreme ? color.teal : color.gray
+thresholdValue             = oscillatorMode == "Percentile rank" ? maxRangePercentile : maxRangeZScore
+
+plot(oscValue, "Range rarity oscillator", color=oscColor, linewidth=2)
+plot(thresholdValue, "Extreme threshold", color=color.new(color.orange, 0), linewidth=1, style=plot.style_line)
+plot(oscillatorMode == "Percentile rank" ? 50.0 : 0.0, "Neutral reference", color=color.new(color.gray, 70), linewidth=1, style=plot.style_line)
+plotshape(setupOk, title="Qualified sideways compression", style=shape.circle, location=location.bottom, color=color.lime, size=size.tiny, text="Q")
+bgcolor(setupOk ? color.new(color.lime, 88) : tightnessExtreme ? color.new(color.teal, 92) : na, title="Compression pane background")
+
+// ===== Price chart visuals =====
+plotHigh                   = showCurrentLevels and setupOk ? boxHigh : na
+plotLow                    = showCurrentLevels and setupOk ? boxLow : na
+priceBoxColor              = rangePercentile <= 2.0 ? color.new(color.lime, 0) : rangePercentile <= 5.0 ? color.new(color.teal, 0) : color.new(color.blue, 0)
+priceFillColor             = rangePercentile <= 2.0 ? color.new(color.lime, 84) : rangePercentile <= 5.0 ? color.new(color.teal, 86) : color.new(color.blue, 88)
+pHigh                      = plot(plotHigh, "Current box high", color=priceBoxColor, linewidth=2, style=plot.style_linebr, force_overlay=true)
+pLow                       = plot(plotLow, "Current box low", color=priceBoxColor, linewidth=2, style=plot.style_linebr, force_overlay=true)
+plot(showCurrentLevels and setupOk ? upperTrigger : na, "Upper trigger", color=color.new(color.orange, 0), linewidth=1, style=plot.style_linebr, force_overlay=true)
+plot(showCurrentLevels and setupOk ? lowerTrigger : na, "Lower trigger", color=color.new(color.orange, 0), linewidth=1, style=plot.style_linebr, force_overlay=true)
+fill(pHigh, pLow, color=setupOk ? priceFillColor : na, title="Current qualified box fill")
+
+drawEveryWindow            = boxDrawingMode == "Every qualifying day"
+keepLatestBoxOnly          = boxHistoryMode == "Latest box only"
+drawSetupBox               = showPriceBoxes and not clearPriceBoxes and setupOk and not na(boxStartTime) and not na(boxEndTime) and (drawEveryWindow ? newDailyWindow : newSetupStreak)
+
+var array<box> setupBoxes  = array.new<box>()
+
+if clearPriceBoxes or not showPriceBoxes
+    while array.size(setupBoxes) > 0
+        oldBox = array.pop(setupBoxes)
+        box.delete(oldBox)
+
+if drawSetupBox
+    if keepLatestBoxOnly
+        while array.size(setupBoxes) > 0
+            oldBox = array.pop(setupBoxes)
+            box.delete(oldBox)
+    boxText = showBoxText ? "p" + f_number(rangePercentile) + "\nz" + f_number(rangeZ) : ""
+    setupBox = box.new(left=boxStartTime, top=boxHigh, right=boxEndTime, bottom=boxLow, xloc=xloc.bar_time, border_color=priceBoxColor, border_width=1, bgcolor=priceFillColor, text=boxText, text_color=color.white, text_size=size.tiny, force_overlay=true)
+    array.push(setupBoxes, setupBox)
+    if array.size(setupBoxes) > maxBoxesKept
+        oldBox = array.shift(setupBoxes)
+        box.delete(oldBox)
+
+plotshape(showPriceBoxes and not clearPriceBoxes and showSetupStartMarkers and showMarkerText and newSetupStreak, title="New qualified compression box", style=shape.diamond, location=location.belowbar, color=priceBoxColor, text="Z", textcolor=color.white, size=size.tiny, force_overlay=true)
+plotshape(showPriceBoxes and not clearPriceBoxes and showSetupStartMarkers and not showMarkerText and newSetupStreak, title="New qualified compression box marker", style=shape.diamond, location=location.belowbar, color=priceBoxColor, size=size.tiny, force_overlay=true)
+plotshape(showBreakoutMarkers and showMarkerText and breakoutUp, title="Upside breakout close", style=shape.triangleup, location=location.belowbar, color=color.lime, text="BO Up", textcolor=color.white, size=size.small, force_overlay=true)
+plotshape(showBreakoutMarkers and not showMarkerText and breakoutUp, title="Upside breakout close marker", style=shape.triangleup, location=location.belowbar, color=color.lime, size=size.small, force_overlay=true)
+plotshape(showBreakoutMarkers and showMarkerText and breakoutDown, title="Downside breakout close", style=shape.triangledown, location=location.abovebar, color=color.red, text="BO Dn", textcolor=color.white, size=size.small, force_overlay=true)
+plotshape(showBreakoutMarkers and not showMarkerText and breakoutDown, title="Downside breakout close marker", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, force_overlay=true)
+
+// ===== Status table =====
+var table statusTable = table.new(position.top_right, 2, 13, border_width=1)
+
+if barstate.islast
+    if showStatusTable
+        statusText = setupOk ? "QUALIFIED" : tightnessExtreme ? "TIGHT ONLY" : "WAIT"
+        statusColor = setupOk ? color.new(color.lime, 0) : tightnessExtreme ? color.new(color.teal, 0) : color.new(color.gray, 20)
+        table.cell(statusTable, 0, 0, "Status", text_color=color.white, bgcolor=color.new(color.black, 0))
+        table.cell(statusTable, 1, 0, statusText, text_color=color.white, bgcolor=statusColor)
+        table.cell(statusTable, 0, 1, "Range %", text_color=color.white, bgcolor=color.new(color.black, 0))
+        table.cell(statusTable, 1, 1, f_pct(rangePct), text_color=color.white, bgcolor=color.new(color.black, 80))
+        table.cell(statusTable, 0, 2, "Percentile", text_color=color.white, bgcolor=color.new(color.black, 0))
+        table.cell(statusTable, 1, 2, f_number(rangePercentile), text_color=color.white, bgcolor=pctExtreme ? color.new(color.teal, 25) : color.new(color.black, 80))
+        table.cell(statusTable, 0, 3, "Z-score", text_color=color.white, bgcolor=color.new(color.black, 0))
+        table.cell(statusTable, 1, 3, f_number(rangeZ), text_color=color.white, bgcolor=zExtreme ? color.new(color.teal, 25) : color.new(color.black, 80))
+        table.cell(statusTable, 0, 4, "Drift/box", text_color=color.white, bgcolor=color.new(color.black, 0))
+        table.cell(statusTable, 1, 4, f_number(driftToBox), text_color=color.white, bgcolor=sidewaysOk ? color.new(color.black, 80) : color.new(color.red, 40))
+        table.cell(statusTable, 0, 5, "Slope %", text_color=color.white, bgcolor=color.new(color.black, 0))
+        table.cell(statusTable, 1, 5, f_pct(slopePct), text_color=color.white, bgcolor=sidewaysOk ? color.new(color.black, 80) : color.new(color.red, 40))
+        table.cell(statusTable, 0, 6, "Range CV", text_color=color.white, bgcolor=color.new(color.black, 0))
+        table.cell(statusTable, 1, 6, f_number(dailyRangeCv), text_color=color.white, bgcolor=stableRangeOk ? color.new(color.black, 80) : color.new(color.red, 40))
+        table.cell(statusTable, 0, 7, "Bar range %", text_color=color.white, bgcolor=color.new(color.black, 0))
+        table.cell(statusTable, 1, 7, f_pct(breakoutBarRangePct), text_color=color.white, bgcolor=breakoutRangePctOk ? color.new(color.black, 80) : color.new(color.red, 40))
+        table.cell(statusTable, 0, 8, "Bar range/ATR", text_color=color.white, bgcolor=color.new(color.black, 0))
+        table.cell(statusTable, 1, 8, f_number(breakoutBarRangeAtr), text_color=color.white, bgcolor=(breakoutRangeMinAtrOk and breakoutRangeMaxAtrOk) ? color.new(color.black, 80) : color.new(color.red, 40))
+        table.cell(statusTable, 0, 9, "Volume/avg", text_color=color.white, bgcolor=color.new(color.black, 0))
+        table.cell(statusTable, 1, 9, f_number(breakoutVolumeToAvg), text_color=color.white, bgcolor=breakoutVolumeOk ? color.new(color.black, 80) : color.new(color.red, 40))
+        table.cell(statusTable, 0, 10, "Box", text_color=color.white, bgcolor=color.new(color.black, 0))
+        table.cell(statusTable, 1, 10, f_price(boxLow) + "-" + f_price(boxHigh), text_color=color.white, bgcolor=color.new(color.black, 80))
+        table.cell(statusTable, 0, 11, "Upper trig", text_color=color.white, bgcolor=color.new(color.black, 0))
+        table.cell(statusTable, 1, 11, f_price(upperTrigger), text_color=color.white, bgcolor=color.new(color.black, 80))
+        table.cell(statusTable, 0, 12, "Lower trig", text_color=color.white, bgcolor=color.new(color.black, 0))
+        table.cell(statusTable, 1, 12, f_price(lowerTrigger), text_color=color.white, bgcolor=color.new(color.black, 80))
+    else
+        for col = 0 to 1
+            for row = 0 to 12
+                table.cell(statusTable, col, row, "", text_color=color.new(color.white, 100), bgcolor=color.new(color.black, 100))
+
+// ===== Alerts =====
+alertcondition(breakoutUp, "Range Z Upside Breakout", "Upside range-compression breakout confirmed close on {{exchange}}:{{ticker}} at {{close}}.")
+alertcondition(breakoutDown, "Range Z Downside Breakout", "Downside range-compression breakout confirmed close on {{exchange}}:{{ticker}} at {{close}}.")
+alertcondition(breakoutAny, "Range Z Any Breakout", "Range-compression breakout confirmed close on {{exchange}}:{{ticker}} at {{close}}.")
+
+if breakoutUp
+    alert("UP range-compression breakout confirmed close | " + syminfo.ticker + " | close=" + f_price(close) + " | trigger=" + f_price(upperTrigger) + " | percentile=" + f_number(rangePercentile) + " | z=" + f_number(rangeZ) + " | drift/box=" + f_number(driftToBox) + " | barRange=" + f_pct(breakoutBarRangePct) + " | vol/avg=" + f_number(breakoutVolumeToAvg), alert.freq_once_per_bar_close)
+
+if breakoutDown
+    alert("DOWN range-compression breakout confirmed close | " + syminfo.ticker + " | close=" + f_price(close) + " | trigger=" + f_price(lowerTrigger) + " | percentile=" + f_number(rangePercentile) + " | z=" + f_number(rangeZ) + " | drift/box=" + f_number(driftToBox) + " | barRange=" + f_pct(breakoutBarRangePct) + " | vol/avg=" + f_number(breakoutVolumeToAvg), alert.freq_once_per_bar_close)

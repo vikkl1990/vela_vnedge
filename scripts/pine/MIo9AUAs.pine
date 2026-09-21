@@ -1,0 +1,407 @@
+//@version=6
+indicator("Swing H/L + Order Blocks", "Swing & OB", overlay = true, max_labels_count = 50, max_boxes_count = 500)
+
+// =============================================================================
+// INPUTS — Swing Highs/Lows
+// =============================================================================
+length = input(21, "Swing Length", group = "Swing H/L")
+swingTF = input.timeframe("5", "Swing Timeframe", group = "Swing H/L")
+
+swinghCss = input(color.rgb(255, 187, 0),  "Swing High Color", group = "Swing H/L — Style")
+swinglCss = input(color.rgb(255, 234, 0), "Swing Low Color",  group = "Swing H/L — Style")
+showswing = input.bool(true, "Afficher les swings")
+
+// =============================================================================
+// INPUTS — Order Blocks (paramètres globaux)
+// =============================================================================
+sens = input.int(28, minval = 1, title = "Sensitivity", group = "Order Blocks",
+     tooltip = "Diminuez pour afficher plus d'OB. Augmentez pour en afficher moins.")
+sensPct = sens / 100
+
+maxOB = input.int(10, "Max OB actifs par TF", minval = 1, group = "Order Blocks",
+     tooltip = "Nombre maximum d'OB non mitigés conservés par timeframe et par direction (bull/bear). Même limite appliquée aux OB mitigés grisés.")
+
+textOffsetBars = input.int(50, "Décalage texte OB (barres)", minval = 0, group = "Order Blocks",
+     tooltip = "Décale le texte du TF de X barres vers la droite depuis l'origine de l'OB.")
+
+OBMitigationType = input.string("Wick", title = "OB Mitigation Type",
+     options = ["Close", "Wick"], group = "Order Blocks",
+     tooltip = "Choisissez comment les Order Blocks sont mitigés")
+
+mitigationThreshold = input.float(50, "Seuil de mitigation (%)", minval = 1, maxval = 100, group = "Order Blocks",
+     tooltip = "% de pénétration dans l'OB nécessaire pour le considérer comme mitigé. 100% = traversée complète, 50% = mi-zone.")
+
+col_bull      = input.color(color.rgb(93, 180, 158), "Bullish OB Color", group = "Order Blocks")
+col_bear      = input.color(color.rgb(71, 96, 187),  "Bearish OB Color", group = "Order Blocks")
+col_mitigated = input.color(color.gray,              "Mitigated OB Color", group = "Order Blocks")
+
+buy_alert  = input.bool(true, "Buy Signal",  group = "Order Blocks — Alerts",
+     tooltip = "Alerte quand le prix touche le haut d'un OB haussier.")
+sell_alert = input.bool(true, "Sell Signal", group = "Order Blocks — Alerts",
+     tooltip = "Alerte quand le prix touche le bas d'un OB baissier.")
+
+// =============================================================================
+// INPUTS — Order Blocks : 4 Timeframes
+// =============================================================================
+show_tf1 = input.bool(true, "Show OB", inline = "tf1", group = "Order Blocks — Timeframes")
+tf1      = input.timeframe("5",   "TF 1", inline = "tf1", group = "Order Blocks — Timeframes")
+
+show_tf2 = input.bool(true, "Show OB", inline = "tf2", group = "Order Blocks — Timeframes")
+tf2      = input.timeframe("15", "TF 2", inline = "tf2", group = "Order Blocks — Timeframes")
+
+show_tf3 = input.bool(true, "Show OB", inline = "tf3", group = "Order Blocks — Timeframes")
+tf3      = input.timeframe("30","TF 3", inline = "tf3", group = "Order Blocks — Timeframes")
+
+show_tf4 = input.bool(true, "Show OB", inline = "tf4", group = "Order Blocks — Timeframes")
+tf4      = input.timeframe("60",  "TF 4", inline = "tf4", group = "Order Blocks — Timeframes")
+
+// =============================================================================
+// DESCRIPTIONS — Candle Patterns
+// =============================================================================
+hammer_   = "Hammer : corps court avec une longue mèche basse, en bas d'une tendance baissière."
+ihammer_  = "Inverted Hammer : mèche haute longue, mèche basse courte. Pression acheteuse probable."
+bulleng_  = "Bullish Engulfing : grande bougie verte englobe une petite rouge. Victoire des acheteurs."
+hanging_  = "Hanging Man : équivalent baissier du Hammer, en haut d'une tendance haussière."
+shooting_ = "Shooting Star : mèche haute longue en haut d'une tendance. Signal de retournement baissier."
+beareng_  = "Bearish Engulfing : grande bougie rouge englobe une petite verte. Signal baissier."
+
+// =============================================================================
+// UDT — Candle Pattern
+// =============================================================================
+type pattern
+    bool   condition
+    string title
+    string description
+
+// =============================================================================
+// FONCTIONS UTILITAIRES (partagées Swing + Order Blocks)
+// =============================================================================
+
+// Détecte un nouvel événement (id/time qui change entre deux bougies du chart)
+f_isNew(id) =>
+    not na(id) and (na(id[1]) or id != id[1])
+
+// Libellé lisible pour les alertes
+f_tfLabel(tf) =>
+    tf == "" ? timeframe.period : tf
+
+// Formate un timeframe Pine ("5","60","240","D","W") en libellé court ("5M","1H","4H","1D","1W")
+f_formatTF(tfIn) =>
+    tf = tfIn == "" ? timeframe.period : tfIn
+    string out = tf
+    if str.contains(tf, "D")
+        numPart = str.replace(tf, "D", "")
+        n = numPart == "" ? 1 : str.tonumber(numPart)
+        out := str.tostring(n, "#") + "D"
+    else if str.contains(tf, "W")
+        numPart = str.replace(tf, "W", "")
+        n = numPart == "" ? 1 : str.tonumber(numPart)
+        out := str.tostring(n, "#") + "W"
+    else if str.contains(tf, "M")
+        numPart = str.replace(tf, "M", "")
+        n = numPart == "" ? 1 : str.tonumber(numPart)
+        out := str.tostring(n, "#") + "MN"
+    else
+        mins = str.tonumber(tf)
+        if not na(mins)
+            if mins < 60
+                out := str.tostring(mins, "#") + "M"
+            else if mins < 1440
+                out := str.tostring(mins / 60, "#") + "H"
+            else
+                out := str.tostring(mins / 1440, "#") + "D"
+    out
+
+// Supprime les plus anciens au-delà de maxSize
+f_trimArr(arr, maxSize) =>
+    while array.size(arr) > maxSize
+        oldBox = array.shift(arr)
+        box.delete(oldBox)
+
+// Gestion mitigation + alerte, boîtes bullish : gèle et grise au lieu de supprimer
+f_manageBull(arr, mitPrice, alertOn, tfLabel, grayArr, maxSize) =>
+    if array.size(arr) > 0
+        for i = array.size(arr) - 1 to 0 by 1
+            b        = array.get(arr, i)
+            bot      = box.get_bottom(b)
+            top      = box.get_top(b)
+            mitLevel = top - (mitigationThreshold / 100) * (top - bot)
+            if mitPrice < mitLevel
+                array.remove(arr, i)
+                box.set_extend(b, extend.none)
+                box.set_right(b, time)
+                box.set_border_color(b, col_mitigated)
+                box.set_bgcolor(b, color.new(col_mitigated, 85))
+                box.set_text_color(b, col_mitigated)
+                array.push(grayArr, b)
+                f_trimArr(grayArr, maxSize)
+            else if low < top and alertOn
+                alert("Price inside Bullish OB (" + tfLabel + ")", alert.freq_once_per_bar)
+
+// Gestion mitigation + alerte, boîtes bearish : gèle et grise au lieu de supprimer
+f_manageBear(arr, mitPrice, alertOn, tfLabel, grayArr, maxSize) =>
+    if array.size(arr) > 0
+        for i = array.size(arr) - 1 to 0 by 1
+            b        = array.get(arr, i)
+            top      = box.get_top(b)
+            bot      = box.get_bottom(b)
+            mitLevel = bot + (mitigationThreshold / 100) * (top - bot)
+            if mitPrice > mitLevel
+                array.remove(arr, i)
+                box.set_extend(b, extend.none)
+                box.set_right(b, time)
+                box.set_border_color(b, col_mitigated)
+                box.set_bgcolor(b, color.new(col_mitigated, 85))
+                box.set_text_color(b, col_mitigated)
+                array.push(grayArr, b)
+                f_trimArr(grayArr, maxSize)
+            else if high > bot and alertOn
+                alert("Price inside Bearish OB (" + tfLabel + ")", alert.freq_once_per_bar)
+
+// Détection OB — exécutée par TF via request.security (état "var" indépendant par TF)
+f_ob() =>
+    var bool ob_created       = false
+    var bool ob_created_bull  = false
+    var int  cross_index_bear = na
+    var int  cross_index_bull = na
+
+    var float bull_top    = na
+    var float bull_bottom = na
+    var int   bull_time   = na
+    var int   bull_id     = na
+
+    var float bear_top    = na
+    var float bear_bottom = na
+    var int   bear_time   = na
+    var int   bear_id     = na
+
+    pc = (open - open[4]) / open[4] * 100
+
+    if ta.crossunder(pc, -sensPct)
+        ob_created := true
+
+    if ta.crossover(pc, sensPct)
+        ob_created_bull := true
+
+    // Bearish OB — dernière bougie verte dans la fenêtre 4-15
+    if ob_created
+        gapOkBear = na(cross_index_bear) or (bar_index - cross_index_bear > 5)
+        if gapOkBear
+            int last_green = -1
+            for i = 4 to 15 by 1
+                if close[i] > open[i]
+                    last_green := i
+                    break
+            if last_green >= 0
+                candTop = high[last_green]
+                candBot = low[last_green]
+                // Le prix a-t-il déjà cassé la zone entre l'origine et maintenant ?
+                alreadyBroken = OBMitigationType == "Close" ? ta.highest(close, last_green) > candTop : ta.highest(high, last_green) > candTop
+                if not alreadyBroken
+                    bear_top    := candTop
+                    bear_bottom := candBot
+                    bear_time   := time[last_green]
+                    bear_id     := bar_index[last_green]
+            cross_index_bear := bar_index
+        ob_created := false
+
+    // Bullish OB — dernière bougie rouge dans la fenêtre 4-15
+    if ob_created_bull
+        gapOkBull = na(cross_index_bull) or (bar_index - cross_index_bull > 5)
+        if gapOkBull
+            int last_red = -1
+            for i = 4 to 15 by 1
+                if close[i] < open[i]
+                    last_red := i
+                    break
+            if last_red >= 0
+                candTop = high[last_red]
+                candBot = low[last_red]
+                alreadyBroken = OBMitigationType == "Close" ? ta.lowest(close, last_red) < candBot : ta.lowest(low, last_red) < candBot
+                if not alreadyBroken
+                    bull_top    := candTop
+                    bull_bottom := candBot
+                    bull_time   := time[last_red]
+                    bull_id     := bar_index[last_red]
+            cross_index_bull := bar_index
+        ob_created_bull := false
+
+    [bull_id, bull_top, bull_bottom, bull_time, bear_id, bear_top, bear_bottom, bear_time]
+
+// Détection Swing H/L — exécutée sur swingTF via request.security
+f_swing() =>
+    var float phy = na
+    var float ply = na
+
+    ph = ta.pivothigh(length, length)
+    pl = ta.pivotlow(length, length)
+
+    string txt      = string(na)
+    float  txtPrice = float(na)
+    int    txtTime  = int(na)
+    bool   isHigh   = bool(na)
+
+    if not na(ph)
+        txt      := ph > phy ? "HH" : "LH"
+        txtPrice := ph
+        txtTime  := time[length]
+        isHigh   := true
+        phy := ph
+    else if not na(pl)
+        txt      := pl < ply ? "LL" : "HL"
+        txtPrice := pl
+        txtTime  := time[length]
+        isHigh   := false
+        ply := pl
+
+    [txtTime, txtPrice, txt, isHigh]
+
+// =============================================================================
+// SWING H/L — Calcul (TF configurable) et affichage des labels
+// =============================================================================
+[swingTime, swingPrice, swingTxt, swingIsHigh] = request.security(syminfo.tickerid, swingTF, f_swing(), lookahead = barmerge.lookahead_off)
+
+if showswing and f_isNew(swingTime)
+    label.new(x = swingTime, y = swingPrice, text = swingTxt,
+         xloc      = xloc.bar_time,
+         color     = color(na),
+         style     = swingIsHigh ? label.style_label_down : label.style_label_up,
+         textcolor = swingIsHigh ? swinghCss : swinglCss)
+
+// =============================================================================
+// ORDER BLOCKS — Mitigation source (prix courant du chart, indépendant de la TF de l'OB)
+// =============================================================================
+OBBullMitigation = OBMitigationType == "Close" ? close[1] : low
+OBBearMitigation = OBMitigationType == "Close" ? close[1] : high
+
+var array<box> longBoxes1  = array.new_box()
+var array<box> shortBoxes1 = array.new_box()
+var array<box> longBoxes2  = array.new_box()
+var array<box> shortBoxes2 = array.new_box()
+var array<box> longBoxes3  = array.new_box()
+var array<box> shortBoxes3 = array.new_box()
+var array<box> longBoxes4  = array.new_box()
+var array<box> shortBoxes4 = array.new_box()
+
+var array<box> grayBull1 = array.new_box()
+var array<box> grayBear1 = array.new_box()
+var array<box> grayBull2 = array.new_box()
+var array<box> grayBear2 = array.new_box()
+var array<box> grayBull3 = array.new_box()
+var array<box> grayBear3 = array.new_box()
+var array<box> grayBull4 = array.new_box()
+var array<box> grayBear4 = array.new_box()
+
+// =============================================================================
+// ORDER BLOCKS — TF 1
+// =============================================================================
+[b1_id, b1_top, b1_bot, b1_time, s1_id, s1_top, s1_bot, s1_time] = request.security(syminfo.tickerid, tf1, f_ob(), lookahead = barmerge.lookahead_off)
+
+if show_tf1 and f_isNew(b1_id)
+    newBox1 = box.new(left = b1_time, top = b1_top, bottom = b1_bot,
+         right = b1_time + textOffsetBars * timeframe.in_seconds(tf1) * 1000,
+         xloc = xloc.bar_time, extend = extend.right,
+         bgcolor = color.new(col_bull, 85), border_color = col_bull, border_style = line.style_solid,
+         text = f_formatTF(tf1), text_color = color.white, text_size = size.normal,
+         text_halign = text.align_center, text_valign = text.align_center)
+    array.push(longBoxes1, newBox1)
+    f_trimArr(longBoxes1, maxOB)
+
+if show_tf1 and f_isNew(s1_id)
+    newBox1s = box.new(left = s1_time, top = s1_top, bottom = s1_bot,
+         right = s1_time + textOffsetBars * timeframe.in_seconds(tf1) * 1000,
+         xloc = xloc.bar_time, extend = extend.right,
+         bgcolor = color.new(col_bear, 85), border_color = col_bear, border_style = line.style_solid,
+         text = f_formatTF(tf1), text_color = color.white, text_size = size.normal,
+         text_halign = text.align_center, text_valign = text.align_center)
+    array.push(shortBoxes1, newBox1s)
+    f_trimArr(shortBoxes1, maxOB)
+
+f_manageBull(longBoxes1, OBBullMitigation, buy_alert, f_tfLabel(tf1), grayBull1, maxOB)
+f_manageBear(shortBoxes1, OBBearMitigation, sell_alert, f_tfLabel(tf1), grayBear1, maxOB)
+
+// =============================================================================
+// ORDER BLOCKS — TF 2
+// =============================================================================
+[b2_id, b2_top, b2_bot, b2_time, s2_id, s2_top, s2_bot, s2_time] = request.security(syminfo.tickerid, tf2, f_ob(), lookahead = barmerge.lookahead_off)
+
+if show_tf2 and f_isNew(b2_id)
+    newBox2 = box.new(left = b2_time, top = b2_top, bottom = b2_bot,
+         right = b2_time + textOffsetBars * timeframe.in_seconds(tf2) * 1000,
+         xloc = xloc.bar_time, extend = extend.right,
+         bgcolor = color.new(col_bull, 85), border_color = col_bull, border_style = line.style_solid,
+         text = f_formatTF(tf2), text_color = color.white, text_size = size.normal,
+         text_halign = text.align_center, text_valign = text.align_center)
+    array.push(longBoxes2, newBox2)
+    f_trimArr(longBoxes2, maxOB)
+
+if show_tf2 and f_isNew(s2_id)
+    newBox2s = box.new(left = s2_time, top = s2_top, bottom = s2_bot,
+         right = s2_time + textOffsetBars * timeframe.in_seconds(tf2) * 1000,
+         xloc = xloc.bar_time, extend = extend.right,
+         bgcolor = color.new(col_bear, 85), border_color = col_bear, border_style = line.style_solid,
+         text = f_formatTF(tf2), text_color = color.white, text_size = size.normal,
+         text_halign = text.align_center, text_valign = text.align_center)
+    array.push(shortBoxes2, newBox2s)
+    f_trimArr(shortBoxes2, maxOB)
+
+f_manageBull(longBoxes2, OBBullMitigation, buy_alert, f_tfLabel(tf2), grayBull2, maxOB)
+f_manageBear(shortBoxes2, OBBearMitigation, sell_alert, f_tfLabel(tf2), grayBear2, maxOB)
+
+// =============================================================================
+// ORDER BLOCKS — TF 3
+// =============================================================================
+[b3_id, b3_top, b3_bot, b3_time, s3_id, s3_top, s3_bot, s3_time] = request.security(syminfo.tickerid, tf3, f_ob(), lookahead = barmerge.lookahead_off)
+
+if show_tf3 and f_isNew(b3_id)
+    newBox3 = box.new(left = b3_time, top = b3_top, bottom = b3_bot,
+         right = b3_time + textOffsetBars * timeframe.in_seconds(tf3) * 1000,
+         xloc = xloc.bar_time, extend = extend.right,
+         bgcolor = color.new(col_bull, 85), border_color = col_bull, border_style = line.style_solid,
+         text = f_formatTF(tf3), text_color = color.white, text_size = size.normal,
+         text_halign = text.align_center, text_valign = text.align_center)
+    array.push(longBoxes3, newBox3)
+    f_trimArr(longBoxes3, maxOB)
+
+if show_tf3 and f_isNew(s3_id)
+    newBox3s = box.new(left = s3_time, top = s3_top, bottom = s3_bot,
+         right = s3_time + textOffsetBars * timeframe.in_seconds(tf3) * 1000,
+         xloc = xloc.bar_time, extend = extend.right,
+         bgcolor = color.new(col_bear, 85), border_color = col_bear, border_style = line.style_solid,
+         text = f_formatTF(tf3), text_color = color.white, text_size = size.normal,
+         text_halign = text.align_center, text_valign = text.align_center)
+    array.push(shortBoxes3, newBox3s)
+    f_trimArr(shortBoxes3, maxOB)
+
+f_manageBull(longBoxes3, OBBullMitigation, buy_alert, f_tfLabel(tf3), grayBull3, maxOB)
+f_manageBear(shortBoxes3, OBBearMitigation, sell_alert, f_tfLabel(tf3), grayBear3, maxOB)
+
+// =============================================================================
+// ORDER BLOCKS — TF 4
+// =============================================================================
+[b4_id, b4_top, b4_bot, b4_time, s4_id, s4_top, s4_bot, s4_time] = request.security(syminfo.tickerid, tf4, f_ob(), lookahead = barmerge.lookahead_off)
+
+if show_tf4 and f_isNew(b4_id)
+    newBox4 = box.new(left = b4_time, top = b4_top, bottom = b4_bot,
+         right = b4_time + textOffsetBars * timeframe.in_seconds(tf4) * 1000,
+         xloc = xloc.bar_time, extend = extend.right,
+         bgcolor = color.new(col_bull, 85), border_color = col_bull, border_style = line.style_solid,
+         text = f_formatTF(tf4), text_color = color.white, text_size = size.normal,
+         text_halign = text.align_center, text_valign = text.align_center)
+    array.push(longBoxes4, newBox4)
+    f_trimArr(longBoxes4, maxOB)
+
+if show_tf4 and f_isNew(s4_id)
+    newBox4s = box.new(left = s4_time, top = s4_top, bottom = s4_bot,
+         right = s4_time + textOffsetBars * timeframe.in_seconds(tf4) * 1000,
+         xloc = xloc.bar_time, extend = extend.right,
+         bgcolor = color.new(col_bear, 85), border_color = col_bear, border_style = line.style_solid,
+         text = f_formatTF(tf4), text_color = color.white, text_size = size.normal,
+         text_halign = text.align_center, text_valign = text.align_center)
+    array.push(shortBoxes4, newBox4s)
+    f_trimArr(shortBoxes4, maxOB)
+
+f_manageBull(longBoxes4, OBBullMitigation, buy_alert, f_tfLabel(tf4), grayBull4, maxOB)
+f_manageBear(shortBoxes4, OBBearMitigation, sell_alert, f_tfLabel(tf4), grayBear4, maxOB)
+
+

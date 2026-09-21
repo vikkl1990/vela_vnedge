@@ -1,0 +1,541 @@
+// © 2026 MantisAlgo
+// All rights reserved.
+//@version=6
+// Title: Kinetic Trend & Momentum Oscillator: Driver Cluster [MantisAlgo]
+// Kind: indicator
+// Surface: pane
+// Signal: directional
+// Universe: chart
+// Repaint: bar_close
+// Horizon: intraday
+// Data: ohlcv
+// Scope: focused
+// Tags: Momentum, Oscillators, Dashboard, Volume, Signals, Alerts
+
+indicator("Kinetic Trend & Momentum Oscillator: Driver Cluster [MantisAlgo]", shorttitle="Driver", overlay=false, precision=2)
+
+// -----------------------------------------------------------------------------
+// Kinetic Trend & Momentum Oscillator: Driver Cluster [MantisAlgo]
+// Physical momentum and kinetic acceleration engine. Combines a 2-pole Ehlers
+// SuperSmoother with 1st-derivative velocity, 2nd-derivative acceleration torque,
+// Kaufman Efficiency Ratio (KER) traction, and relative volume (RVOL).
+// Evaluates an automotive transmission state machine (P/N, D1-D4, BRK, R1-R2)
+// paired with a high-definition 8-segment instrument cluster HUD.
+// -----------------------------------------------------------------------------
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 01 — Inputs
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+grpEngine = "Powertrain Engine"
+smoothCutoff = input.int(12, "SuperSmoother cutoff period", minval=3, maxval=50, group=grpEngine, tooltip="Cutoff wavelength for the 2-pole Ehlers SuperSmoother price filter.")
+accelLength = input.int(8, "Acceleration smoothing length", minval=1, maxval=30, group=grpEngine, tooltip="Smoothing window for 2nd-derivative acceleration torque calculation.")
+atrLength = input.int(14, "Velocity ATR normalization period", minval=1, maxval=100, group=grpEngine, tooltip="Lookback period for ATR volatility normalization of trend velocity.")
+kerLength = input.int(10, "Kaufman efficiency period (KER)", minval=2, maxval=50, group=grpEngine, tooltip="Lookback period for measuring directional displacement versus path noise traction.")
+pScale = input.float(0.6, "Physical momentum nominal scale (p)", minval=0.1, maxval=3.0, step=0.1, group=grpEngine, tooltip="Nominal reference ceiling for normalizing comprehensive physical momentum to 100%.")
+rvolLength = input.int(20, "Volume baseline lookback (RVOL)", minval=5, maxval=100, group=grpEngine, tooltip="Lookback window for relative volume torque baseline.")
+
+grpGears = "Gear & Lifecycle Calibration"
+launchThresh = input.float(0.5, "Launch ignition threshold (Z-Score)", minval=0.1, maxval=2.0, step=0.1, group=grpGears, tooltip="Normalized acceleration required to trigger 1st gear ignition.")
+brakeSens = input.float(1.0, "Brake sensitivity factor", minval=0.5, maxval=3.0, step=0.1, group=grpGears, tooltip="Threshold multiplier for detecting sharp deceleration brake events.")
+minCooldown = input.int(2, "Minimum state cooldown bars", minval=1, maxval=10, group=grpGears, tooltip="Minimum bars required before transitioning between opposing directional regimes.")
+
+// COCKPIT INPUTS BEGIN
+grpCockpit = "Steering Wheel & Pedals"
+showCockpit = input.bool(true, "Show steering wheel and pedals", group=grpCockpit)
+cockpitPosition = input.string("Top Right", "Cockpit position", options=["Top Right", "Middle Right", "Bottom Right", "Top Left", "Middle Left", "Bottom Left"], group=grpCockpit, tooltip="Position of the steering wheel and pedals on the main price chart.")
+cockpitClosedOnly = input.bool(true, "Change pedal state on closed bars only", group=grpCockpit, tooltip="Only the new cockpit waits for bar close. Original chart signals are unchanged. Disable for provisional live signals, which can disappear before close.")
+cockpitWidth = input.float(0.65, "Pixel width (% of main chart)", minval=0.3, maxval=1.5, step=0.05, group=grpCockpit)
+cockpitHeight = input.float(1.8, "Pixel height (% of main chart)", minval=0.8, maxval=3.0, step=0.1, group=grpCockpit, tooltip="Adjust width and height to keep the steering wheel round on your main chart.")
+// COCKPIT INPUTS END
+
+grpDisplay = "Display & Visual Layers"
+showTelemetryCard = input.bool(true, "Show digital instrument cluster card", group=grpDisplay, tooltip="Render the sleek minimalist instrument cluster card in the lower pane.")
+hudPosition = input.string("Top Right", "Instrument cluster position", options=["Top Right", "Middle Right", "Bottom Right", "Top Left", "Middle Left", "Bottom Left"], group=grpDisplay, tooltip="Screen alignment of the instrument cluster HUD card.")
+showBarColors = input.bool(true, "Colorize candles with driver momentum", group=grpDisplay, tooltip="Tint price candles with driver momentum phases: electric cyan for acceleration, violet for braking/deceleration, and hot coral for reverse.")
+showPriceSmoother = input.bool(true, "Show SuperSmoother baseline on price chart", group=grpDisplay, tooltip="Overlay the filtered Ehlers SuperSmoother price trajectory line directly on candles.")
+showDynoRibbon = input.bool(true, "Show Dyno power curve ribbon", group=grpDisplay, tooltip="Render the luminous gradient power fill between the velocity curve and centerline.")
+showTorqueLine = input.bool(true, "Show engine torque acceleration curve", group=grpDisplay, tooltip="Render the secondary 2nd-derivative acceleration torque line.")
+showVelocityLine = input.bool(true, "Show continuous velocity curve", group=grpDisplay, tooltip="Render the 1st-derivative trend velocity curve.")
+showMainChartSignals = input.bool(true, "Show signals on main price chart", group=grpDisplay, tooltip="Project drive, reverse, and brake signals directly onto the main price candles.")
+showDeadband = input.bool(true, "Show neutral deadband zone", group=grpDisplay, tooltip="Highlight the neutral idle band where momentum is indecisive.")
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 02 — Constants and display settings
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+COLOR_CYAN_LEAD = #00E5FF
+COLOR_BULL_CORE = #2BD97F
+COLOR_BEAR_LEAD = #FF2E63
+COLOR_BEAR_CORE = #FF5252
+COLOR_PURPLE    = #D070FB
+COLOR_SLATE     = #4A5568
+COLOR_MUTED     = #8899A6
+COLOR_BG_DARK   = #0A0E14
+COLOR_BG_CELL   = #111720
+COLOR_BG_CARD_BD= #222C38
+COLOR_TEXT_MAIN = #FFFFFF
+COLOR_TEXT_DIM  = #7A8B9E
+
+COLOR_BLUE_DARK  = #003B99
+COLOR_BLUE_MID   = #00D5FF
+COLOR_BLUE_LIGHT = #FFFFFF
+
+COLOR_BEAR_DARK  = #880E4F
+COLOR_BEAR_MID   = #FF2E63
+COLOR_BEAR_LIGHT = #FFFFFF
+
+COLOR_PURP_DARK  = #4A148C
+COLOR_PURP_MID   = #D070FB
+COLOR_PURP_LIGHT = #FFFFFF
+
+color bullColor  = COLOR_CYAN_LEAD
+color bearColor  = COLOR_BEAR_LEAD
+
+DEADBAND = 0.20
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 03 — Persistent state
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var int legState = 0        // 0: neutral/idle, 1: long drive active, -1: short reverse active
+var int currentGear = 0     // -1: BRK, 0: N, 1..4: D1..D4, -2..-3: R1..R2
+var string gearLabel = "N"
+var int barsSinceFlip = 999
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 04 — Calculation and state functions
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+f_supersmoother(series float src, simple int len) =>
+    float a1 = math.exp(-1.414 * math.pi / len)
+    float b1 = 2.0 * a1 * math.cos(1.414 * math.pi / len)
+    float c2 = b1
+    float c3 = -a1 * a1
+    float c1 = 1.0 - c2 - c3
+    var float filt = na
+    filt := na(filt[1]) ? src : c1 * (src + nz(src[1])) * 0.5 + c2 * nz(filt[1]) + c3 * nz(filt[2])
+    filt
+
+f_clamp(series float val, float minVal, float maxVal) =>
+    math.max(math.min(val, maxVal), minVal)
+
+f_seg_color(int s, int total, color cDark, color cMid, color cLight) =>
+    float half = float(total) * 0.5
+    float fs = float(s)
+    fs <= half ? color.from_gradient(fs, 1.0, half, cDark, cMid) : color.from_gradient(fs, half, float(total), cMid, cLight)
+
+f_resolve_table_pos(string posStr) =>
+    switch posStr
+        "Top Right"    => position.top_right
+        "Middle Right" => position.middle_right
+        "Bottom Right" => position.bottom_right
+        "Top Left"     => position.top_left
+        "Middle Left"  => position.middle_left
+        "Bottom Left"  => position.bottom_left
+        => position.top_right
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 05 — Runtime orchestration
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+barsSinceFlip += 1
+int warmUpBars = math.max(60, math.max(smoothCutoff * 3, kerLength * 2))
+bool isWarm = bar_index >= warmUpBars
+
+// 1. Ehlers 2-Pole SuperSmoother Filtering
+smoothPrice = f_supersmoother(hlc3, smoothCutoff)
+atrVal = ta.atr(atrLength)
+safeAtr = math.max(nz(atrVal), syminfo.mintick)
+
+// 2. Kaufman Efficiency Ratio (KER / Traction)
+priceChange = math.abs(smoothPrice - nz(smoothPrice[kerLength]))
+pathNoise   = math.sum(math.abs(smoothPrice - nz(smoothPrice[1])), kerLength)
+ker = pathNoise > 0.0 ? (priceChange / pathNoise) : 0.0
+traction = f_clamp(ker, 0.0, 1.0)
+
+// 3. 1st Derivative: Smooth ATR-normalized Velocity
+rawVel = (smoothPrice - nz(smoothPrice[1])) / safeAtr
+vel = ta.ema(rawVel, 4)
+
+// 4. 2nd Derivative: Smoothed Acceleration Torque
+rawAccel = vel - nz(vel[1])
+accel = ta.ema(rawAccel, accelLength)
+
+// 5. Acceleration score: accel is already ATR-normalized.
+// Dimensionless numerical floor; do not reintroduce price units here.
+stdevFloor = 0.000001
+stdevAccel = math.max(nz(ta.stdev(accel, 60)), stdevFloor)
+zAccel = isWarm ? (accel / stdevAccel) : 0.0
+torqueLine = accel * 3.5
+
+// 6. Relative Volume Torque (RVOL)
+volBaseline = ta.sma(volume, rvolLength)
+safeVolBase = math.max(nz(volBaseline), 1.0)
+rvol = volume / safeVolBase
+// Preserve the original formula whenever volume is available, including zero.
+// Only missing data bypasses the filter. RVOL itself stays na, not a fake 1x.
+bool hasVolume = not na(volume)
+bool volumePass = not hasVolume or rvol >= 0.75
+float volumeWeight = hasVolume ? rvol : 1.0
+
+// 7. Directional Traction-Scaled Physical Momentum (p = mass * |v| * efficiency)
+// Without volume, this is price-only momentum (unit multiplier).
+pVal = volumeWeight * math.abs(vel) * (0.4 + 0.6 * traction)
+pRatio = f_clamp(pVal / pScale, 0.0, 1.0)
+
+// Normalized Physical Power Ratios
+velRatio = f_clamp(math.abs(vel) / 0.6, 0.0, 1.0)
+accelRatio = f_clamp(math.abs(zAccel) / 2.5, 0.0, 1.0)
+volRatio = hasVolume ? f_clamp(rvol / 2.5, 0.0, 1.0) : 0.0
+
+// Hoisted series evaluations (CW10002 global scope compliance)
+crossDnVelHalfUpper = ta.crossunder(vel, DEADBAND * 0.5)
+crossUpVelHalfLower = ta.crossover(vel, -DEADBAND * 0.5)
+crossZeroVelDown    = ta.crossunder(vel, 0.0)
+crossZeroVelUp      = ta.crossover(vel, 0.0)
+crossOverheatAccel  = ta.crossover(math.abs(zAccel), 2.5)
+
+bool isNeutralBand = math.abs(vel) <= DEADBAND
+
+// 2-Stage Confirmation Lifecycle Triggers with KER Directional Traction
+bool bullLaunchReady = isWarm and vel > DEADBAND and zAccel > (launchThresh * 0.8) and ker >= 0.28 and volumePass
+bool bearLaunchReady = isWarm and vel < -DEADBAND and zAccel < (-launchThresh * 0.8) and ker >= 0.28 and volumePass
+
+// Calibrated Brake Triggers (recalibrated from 0.45σ to 0.85σ with structural deceleration check)
+bool triggerBullBrake = isWarm and legState == 1 and (accel < -brakeSens * 0.85 * stdevAccel or crossDnVelHalfUpper or crossZeroVelDown or (vel <= DEADBAND and accel < 0.0))
+bool triggerBearBrake = isWarm and legState == -1 and (accel > brakeSens * 0.85 * stdevAccel or crossUpVelHalfLower or crossZeroVelUp or (vel >= -DEADBAND and accel > 0.0))
+
+// Strict State Machine Execution with Cooldown Protection
+bool longLaunch = false
+bool shortLaunch = false
+bool brakeBull = false
+bool brakeBear = false
+
+if legState == 0
+    if bullLaunchReady and barsSinceFlip >= minCooldown
+        legState := 1
+        longLaunch := true
+        barsSinceFlip := 0
+    else if bearLaunchReady and barsSinceFlip >= minCooldown
+        legState := -1
+        shortLaunch := true
+        barsSinceFlip := 0
+else if legState == 1
+    if bearLaunchReady and barsSinceFlip >= minCooldown
+        legState := -1
+        shortLaunch := true
+        barsSinceFlip := 0
+    else if triggerBullBrake
+        legState := 0
+        brakeBull := true
+        barsSinceFlip := 0
+else if legState == -1
+    if bullLaunchReady and barsSinceFlip >= minCooldown
+        legState := 1
+        longLaunch := true
+        barsSinceFlip := 0
+    else if triggerBearBrake
+        legState := 0
+        brakeBear := true
+        barsSinceFlip := 0
+
+bool brakeEvent = brakeBull or brakeBear
+
+// Automotive Transmission Hysteresis State Machine
+string primaryState = "IDLE / NEUTRAL"
+color stateBg = COLOR_BG_CELL
+color stateTxt = COLOR_MUTED
+
+if brakeEvent or (legState == 0 and (vel > DEADBAND and accel < 0 or vel < -DEADBAND and accel > 0))
+    currentGear := -1
+    gearLabel := "BRK"
+    primaryState := "BRAKE / CAUTION"
+    stateBg := #321038
+    stateTxt := COLOR_PURPLE
+else if legState == 0
+    currentGear := 0
+    gearLabel := "N"
+    primaryState := "IDLE / NEUTRAL"
+    stateBg := COLOR_BG_CELL
+    stateTxt := COLOR_MUTED
+else if legState == 1
+    // Forward Drive Hysteresis (upshift threshold > downshift threshold)
+    if zAccel < -0.3
+        if currentGear > 2
+            currentGear := 2
+            gearLabel := "D2"
+        primaryState := "DECELERATING"
+        stateBg := #22142B
+        stateTxt := COLOR_PURPLE
+    else if zAccel > 2.1 or (currentGear >= 4 and zAccel >= 1.6)
+        currentGear := 4
+        gearLabel := "D4"
+        primaryState := "FULL THROTTLE"
+        stateBg := #0A2E28
+        stateTxt := COLOR_CYAN_LEAD
+    else if zAccel > 1.1 or (currentGear == 3 and zAccel >= 0.7)
+        currentGear := 3
+        gearLabel := "D3"
+        primaryState := "POWER ACCEL"
+        stateBg := #0A2822
+        stateTxt := COLOR_BULL_CORE
+    else if zAccel > 0.3 or currentGear == 2
+        currentGear := 2
+        gearLabel := "D2"
+        primaryState := "STEADY CRUISE"
+        stateBg := #0E201E
+        stateTxt := COLOR_BULL_CORE
+    else
+        currentGear := 1
+        gearLabel := "D1"
+        primaryState := "LAUNCH DRIVE"
+        stateBg := #0E201E
+        stateTxt := COLOR_BULL_CORE
+else if legState == -1
+    // Reverse Drive Hysteresis
+    if zAccel > 0.2
+        if currentGear <= -3
+            currentGear := -2
+            gearLabel := "R1"
+        primaryState := "REVERSE DECEL"
+        stateBg := #241420
+        stateTxt := COLOR_PURPLE
+    else if zAccel < -1.8 or (currentGear <= -3 and zAccel <= -1.3)
+        currentGear := -3
+        gearLabel := "R2"
+        primaryState := "REVERSE SURGE"
+        stateBg := #321218
+        stateTxt := COLOR_BEAR_LEAD
+    else
+        currentGear := -2
+        gearLabel := "R1"
+        primaryState := "REVERSE DRIVE"
+        stateBg := #241216
+        stateTxt := COLOR_BEAR_CORE
+
+// Synchronized Momentum Overheat Exhaustion Alert (acceleration Z-score overextension or full throttle capacity)
+bool isOverheated = isWarm and (math.abs(zAccel) >= 2.5 or pRatio >= 0.95)
+bool overheatAlert = isWarm and (crossOverheatAccel or (pRatio >= 0.95 and nz(pRatio[1]) < 0.95))
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 06 — Rendering and drawing lifecycle
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Unified Phase Color Logic (Zero-overhead unified resolution)
+color corePhaseColor = COLOR_SLATE
+if brakeEvent
+    corePhaseColor := COLOR_PURPLE
+else if legState == 1
+    corePhaseColor := (accel >= 0) ? COLOR_CYAN_LEAD : COLOR_PURPLE
+else if legState == -1
+    corePhaseColor := (accel <= 0) ? COLOR_BEAR_LEAD : COLOR_PURPLE
+
+color kineticColor = (corePhaseColor == COLOR_SLATE) ? color.new(COLOR_SLATE, 40) : corePhaseColor
+
+// 1. Colorize price candles
+barcolor(showBarColors ? kineticColor : na, title="Driver Momentum Bar Color")
+
+// 2. Overlay SuperSmoother Baseline on main chart
+plot(showPriceSmoother ? smoothPrice : na, "Price Momentum Baseline", color=kineticColor, linewidth=2, force_overlay=true, display=display.all - display.status_line)
+
+// Main Price Chart Overlay Signals (force_overlay=true)
+plotshape(showMainChartSignals and longLaunch, "Main Chart Drive", shape.triangleup, location.belowbar, color=COLOR_CYAN_LEAD, size=size.tiny, text="DRIVE", textcolor=COLOR_CYAN_LEAD, force_overlay=true, display=display.all - display.status_line)
+plotshape(showMainChartSignals and shortLaunch, "Main Chart Reverse", shape.triangledown, location.abovebar, color=COLOR_BEAR_LEAD, size=size.tiny, text="REVERSE", textcolor=COLOR_BEAR_LEAD, force_overlay=true, display=display.all - display.status_line)
+plotshape(showMainChartSignals and brakeBull, "Main Chart Bull Brake", shape.square, location.abovebar, color=COLOR_PURPLE, size=size.tiny, text="BRAKE", textcolor=COLOR_PURPLE, force_overlay=true, display=display.all - display.status_line)
+plotshape(showMainChartSignals and brakeBear, "Main Chart Bear Brake", shape.square, location.belowbar, color=COLOR_PURPLE, size=size.tiny, text="BRAKE", textcolor=COLOR_PURPLE, force_overlay=true, display=display.all - display.status_line)
+
+// Lower Pane Deadband Ribbon
+hUp = hline(DEADBAND, "Deadband Upper", color=color.new(COLOR_SLATE, 75), linestyle=hline.style_dotted)
+hZero = hline(0.0, "Zero Centerline", color=color.new(COLOR_MUTED, 60), linestyle=hline.style_solid)
+hDn = hline(-DEADBAND, "Deadband Lower", color=color.new(COLOR_SLATE, 75), linestyle=hline.style_dotted)
+fill(hUp, hDn, color=showDeadband ? color.new(COLOR_SLATE, 94) : color.new(color.black, 100), title="Neutral Deadband Fill")
+
+// Dyno Power Curve Luminous Ribbon Fill
+color dynoFillColor = (corePhaseColor == COLOR_SLATE) ? color.new(COLOR_SLATE, 92) : color.new(corePhaseColor, 45)
+pZero = plot(0.0, "Zero Base Reference", color=color.new(color.black, 100), display=display.none)
+pVel = plot(showVelocityLine ? vel : na, "Trend Velocity Boundary", color=corePhaseColor, linewidth=3)
+fill(pVel, pZero, color=showDynoRibbon ? dynoFillColor : color.new(color.black, 100), title="Dyno Power Flow Ribbon")
+
+// Secondary Engine Torque Acceleration Waveform
+color torqueColor = accel >= 0 ? color.new(COLOR_CYAN_LEAD, 20) : color.new(COLOR_BEAR_LEAD, 20)
+plot(showTorqueLine ? torqueLine : na, "Engine Torque Curve", color=torqueColor, linewidth=1, style=plot.style_line)
+
+
+// Digital Instrument Cluster HUD Table (10 Columns, 7 Rows)
+var table hud = table.new(f_resolve_table_pos(hudPosition), 10, 7, bgcolor=COLOR_BG_DARK, frame_color=COLOR_BG_CARD_BD, frame_width=1, border_width=0)
+
+if barstate.islast
+    if showTelemetryCard
+        // Dynamic Table Repositioning
+        table.set_position(hud, f_resolve_table_pos(hudPosition))
+        
+        // Row 0: Header Banner
+        table.merge_cells(hud, 0, 0, 9, 0)
+        table.cell(hud, 0, 0, "DRIVER INSTRUMENT CLUSTER", bgcolor=COLOR_BG_CELL, text_color=COLOR_TEXT_MAIN, text_size=size.small, text_halign=text.align_center)
+        
+        // Row 1: Authentic PRND Transmission Selector (Centered over the 8 LED Meters)
+        bool isBrake   = currentGear == -1
+        bool isPark    = isBrake or (currentGear == 0 and math.abs(vel) < 0.08)
+        bool isNeutral = currentGear == 0 and not isPark
+        bool isDrive   = currentGear > 0
+        bool isReverse = currentGear < -1
+
+        color cDimTxt = color.new(COLOR_MUTED, 55)
+
+        color pTxt = isBrake ? COLOR_PURPLE : (isPark ? COLOR_TEXT_MAIN : cDimTxt)
+        color rTxt = isReverse ? COLOR_BEAR_LEAD : cDimTxt
+        color nTxt = isNeutral ? COLOR_TEXT_MAIN : cDimTxt
+        color dTxt = isDrive   ? COLOR_CYAN_LEAD : cDimTxt
+
+        table.cell(hud, 0, 1, "", bgcolor=COLOR_BG_DARK)
+        table.merge_cells(hud, 1, 1, 2, 1)
+        table.cell(hud, 1, 1, "P", bgcolor=COLOR_BG_DARK, text_color=pTxt, text_size=size.small, text_halign=text.align_center)
+        table.merge_cells(hud, 3, 1, 4, 1)
+        table.cell(hud, 3, 1, "R", bgcolor=COLOR_BG_DARK, text_color=rTxt, text_size=size.small, text_halign=text.align_center)
+        table.merge_cells(hud, 5, 1, 6, 1)
+        table.cell(hud, 5, 1, "N", bgcolor=COLOR_BG_DARK, text_color=nTxt, text_size=size.small, text_halign=text.align_center)
+        table.merge_cells(hud, 7, 1, 8, 1)
+        table.cell(hud, 7, 1, "D", bgcolor=COLOR_BG_DARK, text_color=dTxt, text_size=size.small, text_halign=text.align_center)
+        table.cell(hud, 9, 1, "", bgcolor=COLOR_BG_DARK)
+        
+        // Calculate Active Segment Counts (0 to 8)
+        int velSegs   = int(math.round(velRatio * 8.0))
+        int accelSegs = int(math.round(accelRatio * 8.0))
+        int volSegs   = int(math.round(nz(volRatio) * 8.0))
+        int pSegs     = int(math.round(nz(pRatio) * 8.0))
+        
+        color cDark  = (vel >= 0.0) ? COLOR_BLUE_DARK  : COLOR_BEAR_DARK
+        color cMid   = (vel >= 0.0) ? COLOR_BLUE_MID   : COLOR_BEAR_MID
+        color cLight = (vel >= 0.0) ? COLOR_BLUE_LIGHT : COLOR_BEAR_LIGHT
+        if currentGear == -1
+            cDark  := COLOR_PURP_DARK
+            cMid   := COLOR_PURP_MID
+            cLight := COLOR_PURP_LIGHT
+
+        // Row 2: SPEED (Velocity)
+        string velSign = vel >= 0 ? "+" : ""
+        table.cell(hud, 0, 2, "SPEED", bgcolor=COLOR_BG_DARK, text_color=COLOR_TEXT_DIM, text_size=size.tiny, text_halign=text.align_left)
+        for s = 1 to 8
+            color col = s <= velSegs ? f_seg_color(s, 8, cDark, cMid, cLight) : color.new(COLOR_MUTED, 85)
+            table.cell(hud, s, 2, "■", bgcolor=COLOR_BG_DARK, text_color=col, text_size=size.tiny, text_halign=text.align_center)
+        table.cell(hud, 9, 2, velSign + str.tostring(vel, "#.#") + " ATR", bgcolor=COLOR_BG_DARK, text_color=COLOR_TEXT_MAIN, text_size=size.tiny, text_halign=text.align_right)
+        
+        // Row 3: TORQUE (Acceleration)
+        string accelSign = zAccel >= 0 ? "+" : ""
+        table.cell(hud, 0, 3, "TORQUE", bgcolor=COLOR_BG_DARK, text_color=COLOR_TEXT_DIM, text_size=size.tiny, text_halign=text.align_left)
+        for s = 1 to 8
+            color col = s <= accelSegs ? f_seg_color(s, 8, cDark, cMid, cLight) : color.new(COLOR_MUTED, 85)
+            table.cell(hud, s, 3, "■", bgcolor=COLOR_BG_DARK, text_color=col, text_size=size.tiny, text_halign=text.align_center)
+        table.cell(hud, 9, 3, accelSign + str.tostring(zAccel, "#.#") + "σ", bgcolor=COLOR_BG_DARK, text_color=COLOR_TEXT_MAIN, text_size=size.tiny, text_halign=text.align_right)
+        
+        // Row 4: BOOST (RVOL)
+        table.cell(hud, 0, 4, "BOOST", bgcolor=COLOR_BG_DARK, text_color=COLOR_TEXT_DIM, text_size=size.tiny, text_halign=text.align_left)
+        for s = 1 to 8
+            color col = s <= volSegs ? f_seg_color(s, 8, cDark, cMid, cLight) : color.new(COLOR_MUTED, 85)
+            table.cell(hud, s, 4, "■", bgcolor=COLOR_BG_DARK, text_color=col, text_size=size.tiny, text_halign=text.align_center)
+        string boostText = not hasVolume ? "NO VOLUME" : na(rvol) ? "N/A" : str.tostring(rvol, "#.#") + "x"
+        table.cell(hud, 9, 4, boostText, bgcolor=COLOR_BG_DARK, text_color=hasVolume ? COLOR_TEXT_MAIN : COLOR_MUTED, text_size=size.tiny, text_halign=text.align_right)
+        
+        // Row 5: POWER (p = mass * velocity * efficiency)
+        color heroBg = #121D2C
+        color pBarCol = pRatio >= 0.85 ? color.white : (vel >= 0.0 ? COLOR_CYAN_LEAD : COLOR_BEAR_LEAD)
+        if currentGear == -1
+            pBarCol := COLOR_PURPLE
+        string pText = na(pRatio) ? "N/A" : pRatio >= 0.95 ? "MAX" : str.tostring(pRatio * 100.0, "#") + "%"
+        table.cell(hud, 0, 5, "POWER", bgcolor=heroBg, text_color=COLOR_TEXT_MAIN, text_size=size.tiny, text_halign=text.align_left)
+        for s = 1 to 8
+            color col = s <= pSegs ? f_seg_color(s, 8, cDark, cMid, cLight) : color.new(COLOR_MUTED, 80)
+            table.cell(hud, s, 5, "■", bgcolor=heroBg, text_color=col, text_size=size.tiny, text_halign=text.align_center)
+        table.cell(hud, 9, 5, pText, bgcolor=heroBg, text_color=pBarCol, text_size=size.tiny, text_halign=text.align_right)
+        
+        // Row 6: Driving State & Dynamic Transmission Footer
+        table.merge_cells(hud, 0, 6, 9, 6)
+        string gearInfo = isDrive ? " (" + gearLabel + ")" : (isReverse ? " (" + gearLabel + ")" : "")
+        string overheatTag = isOverheated ? "  ·  OVERHEAT" : ""
+        string volumeModeTag = not hasVolume ? "  ·  PRICE ONLY" : ""
+        string footerText = primaryState + gearInfo + overheatTag + volumeModeTag
+        table.cell(hud, 0, 6, footerText, bgcolor=stateBg, text_color=stateTxt, text_size=size.tiny, text_halign=text.align_center)
+    else
+        table.clear(hud, 0, 0, 9, 6)
+
+// COCKPIT PANEL BEGIN
+// Last signal, not instantaneous gear: BRAKE stays lit until the next launch.
+// 0 = no signal yet, 1 = DRIVE, -1 = REVERSE, 2 = BRAKE.
+// Standard var intentionally preserves Pine rollback for provisional live bars.
+var int cockpitState = 0
+if not cockpitClosedOnly or barstate.isconfirmed
+    if brakeEvent
+        cockpitState := 2
+    else if longLaunch
+        cockpitState := 1
+    else if shortLaunch
+        cockpitState := -1
+
+// The cockpit overlays the price chart; the existing HUD stays in its own pane.
+
+var table cockpit = table.new(f_resolve_table_pos(cockpitPosition), 21, 25, bgcolor=COLOR_BG_DARK, frame_color=COLOR_BG_CARD_BD, frame_width=0, border_width=0, force_overlay=true)
+if barstate.isfirst
+    table.merge_cells(cockpit, 0, 0, 20, 0)
+    table.merge_cells(cockpit, 0, 16, 10, 16)
+    table.merge_cells(cockpit, 11, 16, 20, 16)
+    table.merge_cells(cockpit, 0, 24, 20, 24)
+
+if barstate.islast
+    if showCockpit
+        bool gasPressed = cockpitState == 1 or cockpitState == -1
+        bool brakePressed = cockpitState == 2
+        color activeColor = brakePressed ? COLOR_PURPLE : cockpitState == 1 ? COLOR_CYAN_LEAD : cockpitState == -1 ? COLOR_BEAR_LEAD : COLOR_SLATE
+        string signalText = cockpitState == 1 ? "DRIVE  |  ACCEL ON" : cockpitState == -1 ? "REVERSE  |  ACCEL ON" : brakePressed ? "BREAK  |  HOLD" : "NEUTRAL  |  STANDBY"
+        table.set_position(cockpit, f_resolve_table_pos(cockpitPosition))
+        table.set_frame_width(cockpit, 1)
+        table.set_frame_color(cockpit, color.new(activeColor, 40))
+        string directionBadge = cockpitState == 1 ? "DRIVE" : cockpitState == -1 ? "REVERSE" : brakePressed ? "BREAK" : "NEUTRAL"
+        table.cell(cockpit, 0, 0, directionBadge, height=7, bgcolor=COLOR_BG_CELL, text_color=activeColor, text_size=size.normal)
+        // Repaint the full grid so released pedals leave no stale pixels.
+        for y = 1 to 23
+            if y != 16
+                for x = 0 to 20
+                    color pixel = COLOR_BG_DARK
+                    float dx = float(x - 10)
+                    float dy = float(y - 8)
+                    float radius = math.sqrt(dx * dx + dy * dy)
+                    bool wheelRim = y <= 15 and radius >= 5.0 and radius <= 6.4
+                    bool wheelGlow = y <= 15 and radius > 6.4 and radius <= 7.4
+                    bool wheelSpoke = y <= 15 and radius < 5.0 and ((y == 8 and math.abs(dx) >= 2) or (x == 10 and y >= 9))
+                    bool wheelHub = math.abs(dx) <= 1 and math.abs(dy) <= 1
+                    if wheelGlow
+                        pixel := color.new(activeColor, 85)
+                    if wheelRim
+                        pixel := activeColor
+                    if wheelSpoke
+                        pixel := color.new(activeColor, 35)
+                    if wheelHub
+                        pixel := color.new(activeColor, 10)
+                    if x == 10 and y == 2
+                        pixel := COLOR_TEXT_MAIN
+                    // Pressed pedals move down one row inside their sockets.
+                    int brakeTop = brakePressed ? 19 : 18
+                    int gasTop = gasPressed ? 18 : 17
+                    bool brakeSocket = x >= 2 and x <= 9 and y >= 17 and y <= 23
+                    bool gasSocket = x >= 12 and x <= 17 and y >= 17 and y <= 23
+                    if brakeSocket or gasSocket
+                        pixel := #151F2B
+                    bool brakeFace = x >= 3 and x <= 8 and y >= brakeTop and y <= brakeTop + 2
+                    bool gasFace = x >= 13 and x <= 16 and y >= gasTop and y <= gasTop + 4
+                    if brakeFace
+                        pixel := brakePressed ? COLOR_PURPLE : #455568
+                        if y == brakeTop + 1 and (x == 4 or x == 6)
+                            pixel := brakePressed ? #F3D6FF : #7A8B9E
+                    if gasFace
+                        pixel := gasPressed ? activeColor : #455568
+                        if x == 14 and y > gasTop and y < gasTop + 4
+                            pixel := gasPressed ? COLOR_TEXT_MAIN : #7A8B9E
+                    table.cell(cockpit, x, y, "", width=cockpitWidth, height=cockpitHeight, bgcolor=pixel)
+        table.cell(cockpit, 0, 16, "BREAK", height=4, bgcolor=COLOR_BG_DARK, text_color=brakePressed ? COLOR_PURPLE : COLOR_MUTED, text_size=size.tiny)
+        table.cell(cockpit, 11, 16, "ACCEL", height=4, bgcolor=COLOR_BG_DARK, text_color=gasPressed ? activeColor : COLOR_MUTED, text_size=size.tiny)
+        table.cell(cockpit, 0, 24, signalText, height=5, bgcolor=color.new(activeColor, 85), text_color=cockpitState == 0 ? COLOR_MUTED : activeColor, text_size=size.tiny, tooltip=cockpitClosedOnly ? "Last confirmed signal. BREAK holds until the next DRIVE or REVERSE." : "Live provisional signal. May change before bar close.")
+    else
+        table.clear(cockpit, 0, 0, 20, 24)
+        table.set_frame_width(cockpit, 0)
+// COCKPIT PANEL END
+
+// Alert Conditions
+alertcondition(longLaunch, title="Launch Ignition (Forward)", message="Driver Cluster: Forward Drive Ignition Confirmed (D1).")
+alertcondition(shortLaunch, title="Launch Ignition (Reverse)", message="Driver Cluster: Reverse Ignition Confirmed (R1).")
+alertcondition(brakeEvent, title="Brake Deceleration Warning", message="Driver Cluster: Sharp Deceleration / Brake Event Detected.")
+alertcondition(overheatAlert, title="Momentum Overheat Alert", message="Driver Cluster: Momentum Acceleration Reached Overheat Exhaustion.")

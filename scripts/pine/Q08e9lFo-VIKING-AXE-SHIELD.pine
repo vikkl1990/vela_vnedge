@@ -1,0 +1,952 @@
+//@version=6
+indicator("⚔ VIKING + AXE & SHIELD ⚔", shorttitle="⚔ VIKING ⚔", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+// ============================================================================
+// ⚔ VIKING ⚔  —  Unified Panel
+// Order: ADX → P-RVOL → OBV → CMF → RSI → A/D Pressure
+// ============================================================================
+
+// ============================================================================
+// SETTINGS — MOVING AVERAGES
+// ============================================================================
+grpMA    = "Main Moving Averages"
+ma0_show = input.bool(true, "9 EMA",   group=grpMA)
+ma1_show = input.bool(true, "21 EMA",  group=grpMA)
+ma2_show = input.bool(true, "50 SMA",  group=grpMA)
+ma4_show = input.bool(true, "200 SMA", group=grpMA)
+
+ma0_color = color.new(#ffff00, 0)
+ma1_color = color.new(#ff9500, 0)
+ma2_color = color.new(#0080ff, 0)
+ma4_color = color.new(#ffffff, 0)
+
+// ============================================================================
+// SETTINGS — P-RVOL ENGINE
+// ============================================================================
+grpPrvol           = "P-RVOL Engine"
+prvol_lookbackDays = input.int(20, "Lookback Days", group=grpPrvol, minval=5, maxval=60)
+prvol_calcTf       = input.timeframe("15", "Calculation Timeframe", group=grpPrvol)
+prvol_rthSession   = input.session("0930-1600", "NYSE Trading Hours", group=grpPrvol)
+prvol_sessionTz    = input.string("America/New_York", "Session Timezone", group=grpPrvol)
+prvol_minCurvePct  = input.float(0.005, "Min Curve % To Project", group=grpPrvol, minval=0.001, maxval=0.10, step=0.001)
+prvol_threshold    = input.float(0.03,  "Sideways Threshold",     group=grpPrvol, minval=0.0, maxval=1.0, step=0.01)
+
+// ============================================================================
+// SETTINGS — VIKING DISPLAY
+// ============================================================================
+grpDisplay      = "Viking Display"
+table_pos_input = input.string("Top Right", "Position", options=["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right"], group=grpDisplay)
+text_size_input = input.string("Small", "Text Size", options=["Tiny","Small","Normal","Large"], group=grpDisplay)
+text_color      = input.color(color.new(#00d4ff, 0), "Header Color", group=grpDisplay)
+strong_color    = input.color(color.new(#00ff88, 0), "Strong",       group=grpDisplay)
+caution_color   = input.color(color.new(#ffcc00, 0), "Caution",      group=grpDisplay)
+broken_color    = input.color(color.new(#ff4444, 0), "Broken",       group=grpDisplay)
+
+white       = color.white
+transparent = color.new(color.black, 100)
+
+// ============================================================================
+// SETTINGS — AXE & SHIELD ZONE DETECTION
+// ============================================================================
+grpZone         = "Zone Detection"
+pivotLen        = input.int(5,     "Pivot Length",                minval=2,   maxval=20,   group=grpZone)
+minTouchGap     = input.int(5,     "Min Bars Between Touches",    minval=1,   maxval=50,   group=grpZone)
+breakConfBars   = input.int(2,     "Break Confirmation Bars",     minval=1,   maxval=5,    group=grpZone)
+maxZoneAge      = input.int(500,   "Max Zone Age (bars)",         minval=50,  maxval=5000, group=grpZone)
+maxZoneWidthATR = input.float(0.5, "Max Zone Width (x ATR)",      minval=0.1, maxval=5.0,  step=0.1, group=grpZone)
+maxZonesPerSide = input.int(5,     "Max Zones Per Side",          minval=1,   maxval=15,   group=grpZone)
+provLookback    = input.int(20,    "Provisional Lookback (bars)", minval=5,   maxval=100,  group=grpZone)
+
+// ============================================================================
+// SETTINGS — AXE & SHIELD SURVIVAL SCORING (internal only — not displayed)
+// ============================================================================
+grpSurvive = "Zone Survival (Internal)"
+w_respect  = input.float(0.35, "Weight: Close Respect",      minval=0.05, maxval=1.0, step=0.05, group=grpSurvive)
+w_damage   = input.float(0.30, "Weight: Penetration Damage", minval=0.05, maxval=1.0, step=0.05, group=grpSurvive)
+w_reaction = input.float(0.20, "Weight: Reaction Quality",   minval=0.05, maxval=1.0, step=0.05, group=grpSurvive)
+w_fatigue  = input.float(0.15, "Weight: Test Fatigue",       minval=0.05, maxval=1.0, step=0.05, group=grpSurvive)
+fatigue_pen= input.float(14.0, "Fatigue Penalty Per Extra Test", minval=1.0, maxval=40.0, step=1.0, group=grpSurvive)
+
+// ============================================================================
+// SETTINGS — AXE & SHIELD ZONE DISPLAY
+// ============================================================================
+grpZoneDisplay = "Zone Display"
+showUnproven   = input.bool(true,  "Show Unproven Zones",  group=grpZoneDisplay)
+showLabels     = input.bool(true,  "Show Zone Labels",     group=grpZoneDisplay)
+showPrice      = input.bool(true,  "Show Price",           group=grpZoneDisplay)
+
+// ============================================================================
+// SETTINGS — AXE & SHIELD COLORS
+// ============================================================================
+grpColors     = "Zone Colors"
+colSupport    = input.color(#089981, "Support Color",    group=grpColors)
+colResistance = input.color(#f23645, "Resistance Color", group=grpColors)
+
+// ============================================================================
+// SETTINGS — AXE & SHIELD EXPORTS
+// ============================================================================
+grpExports = "Zone Exports"
+exportS1   = input.bool(true, "Export Nearest Support",    group=grpExports)
+exportR1   = input.bool(true, "Export Nearest Resistance", group=grpExports)
+
+// ============================================================================
+// MOVING AVERAGES
+// ============================================================================
+ma9   = ta.ema(close, 9)
+ma21  = ta.ema(close, 21)
+ma50  = ta.sma(close, 50)
+ma200 = ta.sma(close, 200)
+
+ma9_rising = ma9 > ma9[3]
+
+ma9_slope  = ma9[4]  != 0 ? ((ma9  - ma9[4])  / ma9[4])  * 100.0 : 0.0
+ma21_slope = ma21[4] != 0 ? ((ma21 - ma21[4]) / ma21[4]) * 100.0 : 0.0
+ma50_slope = ma50[4] != 0 ? ((ma50 - ma50[4]) / ma50[4]) * 100.0 : 0.0
+
+plot(ma0_show ? ma9   : na, "9 EMA",   color=ma0_color, linewidth=1)
+plot(ma1_show ? ma21  : na, "21 EMA",  color=ma1_color, linewidth=1)
+plot(ma2_show ? ma50  : na, "50 SMA",  color=ma2_color, linewidth=2)
+plot(ma4_show ? ma200 : na, "200 SMA", color=ma4_color, linewidth=2)
+
+// ── MA PRICE LABELS — offset right past zone labels ──────────────────────────
+if barstate.islast
+    if ma0_show
+        label.new(bar_index + 8, ma9,   str.tostring(ma9,   format.mintick), color=color.new(color.black, 100), textcolor=ma0_color, style=label.style_label_left, size=size.small)
+    if ma1_show
+        label.new(bar_index + 8, ma21,  str.tostring(ma21,  format.mintick), color=color.new(color.black, 100), textcolor=ma1_color, style=label.style_label_left, size=size.small)
+    if ma2_show
+        label.new(bar_index + 8, ma50,  str.tostring(ma50,  format.mintick), color=color.new(color.black, 100), textcolor=ma2_color, style=label.style_label_left, size=size.small)
+    if ma4_show
+        label.new(bar_index + 8, ma200, str.tostring(ma200, format.mintick), color=color.new(color.black, 100), textcolor=ma4_color, style=label.style_label_left, size=size.small)
+
+// ============================================================================
+// HAMMER — MA STRUCTURE (calculations kept; not displayed)
+// ============================================================================
+price_above_21  = close > ma21
+price_above_50  = close > ma50
+price_above_200 = close > ma200
+price_below_21  = close < ma21
+price_below_50  = close < ma50
+
+ma1_above_ma2 = ma9  > ma21
+ma2_above_ma3 = ma21 > ma50
+ma3_above_ma4 = ma50 > ma200
+
+bullStack = ma9 > ma21 and ma21 > ma50 and ma50 > ma200
+bearStack = ma9 < ma21 and ma21 < ma50 and ma50 < ma200
+
+reclaimed_21 = price_above_21 and not price_above_21[3]
+reclaimed_50 = price_above_50 and not price_above_50[3]
+lost_21      = price_below_21 and not price_below_21[3]
+lost_50      = price_below_50 and not price_below_50[3]
+
+golden_cross           = ma3_above_ma4 and not (ma50 > ma200)[3]
+death_cross            = not ma3_above_ma4 and (ma50 > ma200)[3]
+ma50_approach_200_bull = not ma3_above_ma4 and ma50_slope > 0 and math.abs((ma50 - ma200) / ma200 * 100) < 3.0
+ma50_approach_200_bear = ma3_above_ma4 and ma50_slope < 0 and math.abs((ma50 - ma200) / ma200 * 100) < 3.0
+pressing_200_long      = price_above_50 and not price_above_200 and math.abs((close - ma200) / ma200 * 100) < 2.0
+
+price_21_pct  = ma21 != 0 ? ((close - ma21) / ma21) * 100.0 : 0.0
+pullback_long = price_21_pct >= -1.5 and price_21_pct <= 3.0 and price_above_21
+riding_9      = close > ma9 and ma9_slope > 0 and bullStack
+
+cross_9_21_above_50 = ma1_above_ma2 and ma2_above_ma3 and not (ma21 > ma50)[3]
+approach_9_21_to_50 = ma1_above_ma2 and not ma2_above_ma3 and ma21_slope > 0 and math.abs((ma21 - ma50) / ma50 * 100) < 3.0
+cross_9_21_below_50 = not ma1_above_ma2 and not ma2_above_ma3 and (ma21 > ma50)[3]
+
+isReversal   = reclaimed_21 or reclaimed_50 or lost_21 or lost_50
+isBreakout   = golden_cross or death_cross or ma50_approach_200_bull or ma50_approach_200_bear or pressing_200_long
+isEarlyTrend = not isReversal and not isBreakout and (cross_9_21_above_50 or approach_9_21_to_50 or cross_9_21_below_50)
+isTrendCont  = not isReversal and not isBreakout and not isEarlyTrend and (bullStack or bearStack or pullback_long or riding_9)
+
+string bias =
+     (isReversal   and (reclaimed_21 or reclaimed_50))                                ? "LONG"  :
+     (isReversal   and (lost_21 or lost_50))                                          ? "SHORT" :
+     (isBreakout   and (golden_cross or ma50_approach_200_bull or pressing_200_long)) ? "LONG"  :
+     (isBreakout   and (death_cross or ma50_approach_200_bear))                       ? "SHORT" :
+     (isEarlyTrend and (cross_9_21_above_50 or approach_9_21_to_50))                 ? "LONG"  :
+     (isEarlyTrend and cross_9_21_below_50)                                           ? "SHORT" :
+     (isTrendCont  and (bullStack or pullback_long or riding_9))                      ? "LONG"  :
+     (isTrendCont  and bearStack)                                                      ? "SHORT" :
+     "NONE"
+
+isLongBias  = bias == "LONG"
+isShortBias = bias == "SHORT"
+
+// ============================================================================
+// ADX / DMI
+// ============================================================================
+[diPlus, diMinus, adx] = ta.dmi(14, 14)
+adx_strong  = adx > 25
+adx_choppy  = adx < 20
+
+adx_col   = adx_strong ? strong_color : adx_choppy ? broken_color : caution_color
+adx_lbl   = adx_strong ? "Strong" : adx_choppy ? "Choppy" : "Building"
+adx_delta = adx - nz(adx[3], adx)
+adx_arrow = adx_delta > 3.0 ? " ↑↑" : adx_delta > 0.0 ? " ↑" : adx_delta < -3.0 ? " ↓↓" : adx_delta < 0.0 ? " ↓" : " →"
+
+// ============================================================================
+// CMF
+// ============================================================================
+cmf_period = 20
+mfm        = ((close - low) - (high - close)) / (high - low)
+mfv        = mfm * volume
+cmf        = math.sum(mfv, cmf_period) / math.sum(volume, cmf_period)
+
+// ============================================================================
+// FLOW ENGINE — OBV + CMF
+// ============================================================================
+// OBV
+obv_val      = ta.cum(math.sign(ta.change(close)) * volume)
+obv_ma       = ta.sma(obv_val, 10)
+obv_slope_5  = obv_val - obv_val[5]
+obv_slope_pct = math.abs(obv_val) > 0 ? obv_slope_5 / math.abs(obv_val) * 100.0 : 0.0
+
+obv_strong_buy  = obv_slope_5 > 0 and obv_slope_pct >  0.5
+obv_buy         = obv_slope_5 > 0 and not obv_strong_buy
+obv_strong_sell = obv_slope_5 < 0 and obv_slope_pct < -0.5
+obv_sell        = obv_slope_5 < 0 and not obv_strong_sell
+
+string obv_label = obv_strong_buy ? "Strong Buying ↑" : obv_buy ? "Buying ↑" : obv_strong_sell ? "Strong Selling ↓" : obv_sell ? "Selling ↓" : "Neutral →"
+
+// CMF direction
+cmf_slope = cmf - cmf[3]
+cmf_pos   = cmf > 0
+cmf_rising = cmf_slope > 0
+string cmf_label = cmf_pos and cmf_rising ? "Positive ↑" : cmf_pos and not cmf_rising ? "Positive →" : not cmf_pos and cmf_rising ? "Negative ↑" : "Negative ↓"
+
+// ============================================================================
+// RSI ENGINE
+// ============================================================================
+rsi_val      = ta.rsi(close, 14)
+rsi_baseline = ta.sma(rsi_val, 14)
+rsi_d5       = rsi_val - nz(rsi_val[5], rsi_val)
+rsi_dist     = rsi_val - rsi_baseline
+rsi_vel3      = rsi_val      - nz(rsi_val[3], rsi_val)
+rsi_prev_vel3 = nz(rsi_val[3], rsi_val) - nz(rsi_val[6], rsi_val)
+rsi_accel3    = rsi_vel3 - rsi_prev_vel3
+
+rsi_col = rsi_val >= 60 ? strong_color : rsi_val <= 40 ? broken_color : caution_color
+
+// ============================================================================
+// A/D PRESSURE ENGINE  (normalized ±100 scale — pane-free)
+// ============================================================================
+ad_mfm      = (high != low) ? ((close - low) - (high - close)) / (high - low) : 0.0
+ad_val      = ta.cum(ad_mfm * volume)
+
+ad_change20 = ad_val - nz(ad_val[20], ad_val)
+ad_volsum20 = math.sum(volume, 20)
+ad_pressure = ad_volsum20 != 0 ? math.max(-100.0, math.min(100.0, 100.0 * ad_change20 / ad_volsum20)) : 0.0
+ad_baseline = ta.sma(ad_pressure, 20)
+ad_d5       = ad_pressure - nz(ad_pressure[5], ad_pressure)
+ad_dist     = ad_pressure - ad_baseline
+ad_vel3      = ad_pressure      - nz(ad_pressure[3], ad_pressure)
+ad_prev_vel3 = nz(ad_pressure[3], ad_pressure) - nz(ad_pressure[6], ad_pressure)
+ad_accel3    = ad_vel3 - ad_prev_vel3
+
+ad_col = ad_pressure >= 20 ? strong_color : ad_pressure <= -20 ? broken_color : caution_color
+
+// ============================================================================
+// RS RATING
+// ============================================================================
+f_perc(score, hi, lo, rHi, rLo, w) =>
+    s  = score + (score - lo) * w
+    s  := s > hi - 1 ? hi - 1 : s
+    k1 = lo / rLo
+    k2 = (hi - 1) / rHi
+    k3 = (k1 - k2) / (hi - 1 - lo)
+    r  = s / (k1 - k3 * (score - lo))
+    r > rHi ? rHi : r < rLo ? rLo : r
+
+getDailyRsScore() =>
+    spx  = request.security('SP:SPX', 'D', close, lookahead=barmerge.lookahead_off)
+    bi   = bar_index
+    n63  = math.min(bi, 63)
+    n126 = math.min(bi, 126)
+    n189 = math.min(bi, 189)
+    n252 = math.min(bi, 252)
+    st   = 0.4*(close/close[n63]) + 0.2*(close/close[n126]) + 0.2*(close/close[n189]) + 0.2*(close/close[n252])
+    rf   = 0.4*(spx/spx[n63])     + 0.2*(spx/spx[n126])     + 0.2*(spx/spx[n189])     + 0.2*(spx/spx[n252])
+    st / rf * 100
+
+d_rs_score     = request.security(syminfo.tickerid, 'D', getDailyRsScore(),    lookahead=barmerge.lookahead_off)
+d_rs_score_lag = request.security(syminfo.tickerid, 'D', getDailyRsScore()[5], lookahead=barmerge.lookahead_off)
+
+curveRsPerf = request.seed('seed_fred6725_rs_rating', 'RSRATING', close)
+rs_delta    = ta.barssince(na(curveRsPerf) != true)
+
+var float[] pct_vals = array.new_float(7, 0.0)
+var int pct_count    = 0
+for i = rs_delta to 34 + rs_delta
+    cv = nz(curveRsPerf[i])
+    if not array.includes(pct_vals, cv) and pct_count < 7 and cv != 0
+        array.set(pct_vals, pct_count, cv)
+        pct_count := pct_count + 1
+
+float p99 = array.get(pct_vals, 0)
+float p90 = array.get(pct_vals, 1)
+float p70 = array.get(pct_vals, 2)
+float p50 = array.get(pct_vals, 3)
+float p30 = array.get(pct_vals, 4)
+float p10 = array.get(pct_vals, 5)
+float p01 = array.get(pct_vals, 6)
+
+float totalRsRating = -1.0
+if pct_count >= 7
+    if d_rs_score >= p99
+        totalRsRating := 99
+    else if d_rs_score <= p01
+        totalRsRating := 1
+    else if d_rs_score >= p90
+        totalRsRating := f_perc(d_rs_score, p99, p90, 98, 90, 0.33)
+    else if d_rs_score >= p70
+        totalRsRating := f_perc(d_rs_score, p90, p70, 89, 70, 2.1)
+    else if d_rs_score >= p50
+        totalRsRating := f_perc(d_rs_score, p70, p50, 69, 50, 0)
+    else if d_rs_score >= p30
+        totalRsRating := f_perc(d_rs_score, p50, p30, 49, 30, 0)
+    else if d_rs_score >= p10
+        totalRsRating := f_perc(d_rs_score, p30, p10, 29, 10, 0)
+    else
+        totalRsRating := f_perc(d_rs_score, p10, p01, 9, 2, 0)
+
+rs_rating = totalRsRating >= 0 ? int(totalRsRating) : 0
+rs_rising = d_rs_score > nz(d_rs_score_lag, d_rs_score)
+rs_arrow  = rs_rising ? " ↑" : " ↓"
+
+// ============================================================================
+// P-RVOL ENGINE
+// ============================================================================
+SLOTS_STORED           = 64
+MIN_FULL_SESSION_SLOTS = 20
+
+f_prvolCalc() =>
+    inRth       = not na(time(timeframe.period, prvol_rthSession, prvol_sessionTz))
+    sessionDate = year(time, prvol_sessionTz) * 10000 + month(time, prvol_sessionTz) * 100 + dayofmonth(time, prvol_sessionTz)
+    wasInRth    = inRth[1] == true
+    newSession  = inRth and (not wasInRth or sessionDate != sessionDate[1])
+    sameSession = inRth and wasInRth and sessionDate == sessionDate[1]
+
+    var int   historyPtr         = 0
+    var int   completedDays      = 0
+    var float completedDayVolSum = 0.0
+    var float sessionVol         = 0.0
+    var int   sessionSlot        = 0
+    var int   slotsSeen          = 0
+    var float heldPrvol          = na
+    var float heldPrvolDelta     = na
+
+    var array<float> dayVolHistory = array.new_float(prvol_lookbackDays, na)
+    var array<float> curveHistory  = array.new_float(SLOTS_STORED * prvol_lookbackDays, na)
+    var array<float> curveSums     = array.new_float(SLOTS_STORED, 0.0)
+    var array<int>   curveCounts   = array.new_int(SLOTS_STORED, 0)
+    var array<float> sessionCumVol = array.new_float(SLOTS_STORED, na)
+
+    if newSession
+        commitSlots = math.min(slotsSeen, SLOTS_STORED)
+        if sessionVol > 0 and commitSlots >= MIN_FULL_SESSION_SLOTS
+            oldDayVol = array.get(dayVolHistory, historyPtr)
+            if not na(oldDayVol)
+                completedDayVolSum -= oldDayVol
+                for i = 0 to SLOTS_STORED - 1
+                    histIndex = i * prvol_lookbackDays + historyPtr
+                    oldShare  = array.get(curveHistory, histIndex)
+                    if not na(oldShare)
+                        array.set(curveSums,    i, array.get(curveSums, i) - oldShare)
+                        array.set(curveCounts,  i, math.max(array.get(curveCounts, i) - 1, 0))
+                        array.set(curveHistory, histIndex, na)
+            else
+                completedDays += 1
+            array.set(dayVolHistory, historyPtr, sessionVol)
+            completedDayVolSum += sessionVol
+            for i = 0 to commitSlots - 1
+                cumAtSlot = array.get(sessionCumVol, i)
+                if not na(cumAtSlot)
+                    share     = math.min(cumAtSlot / sessionVol, 1.0)
+                    histIndex = i * prvol_lookbackDays + historyPtr
+                    array.set(curveHistory, histIndex, share)
+                    array.set(curveSums,   i, array.get(curveSums, i) + share)
+                    array.set(curveCounts, i, array.get(curveCounts, i) + 1)
+            historyPtr := (historyPtr + 1) % prvol_lookbackDays
+        sessionVol     := 0.0
+        sessionSlot    := 0
+        slotsSeen      := 0
+        heldPrvol      := na
+        heldPrvolDelta := na
+        for i = 0 to SLOTS_STORED - 1
+            array.set(sessionCumVol, i, na)
+
+    if inRth
+        sessionVol += nz(volume)
+        if sessionSlot < SLOTS_STORED
+            array.set(sessionCumVol, sessionSlot, sessionVol)
+            slotsSeen := sessionSlot + 1
+        sessionSlot += 1
+
+    activeSlot      = inRth ? math.min(math.max(sessionSlot - 1, 0), SLOTS_STORED - 1) : 0
+    curveCountNow   = inRth ? array.get(curveCounts, activeSlot) : 0
+    curvePctNow     = inRth and curveCountNow > 0 ? array.get(curveSums, activeSlot) / curveCountNow : na
+    avgSessionVol   = completedDays > 0 ? completedDayVolSum / completedDays : na
+    projectedVolNow = inRth and not na(curvePctNow) and curvePctNow >= prvol_minCurvePct ? sessionVol / curvePctNow : na
+    prvolNow        = not na(projectedVolNow) and not na(avgSessionVol) and avgSessionVol > 0 ? projectedVolNow / avgSessionVol : na
+    prvolDelta      = sameSession and not na(prvolNow) and not na(prvolNow[1]) ? prvolNow - prvolNow[1] : na
+    if inRth and not na(prvolNow)
+        heldPrvol      := prvolNow
+        heldPrvolDelta := prvolDelta
+    [heldPrvol, heldPrvolDelta]
+
+[prvol15Raw, prvolDelta15Raw] = request.security(syminfo.tickerid, prvol_calcTf, f_prvolCalc(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+ltfInRthExpr = not na(time(timeframe.period, prvol_rthSession, prvol_sessionTz))
+ltfDateExpr  = year(time, prvol_sessionTz) * 10000 + month(time, prvol_sessionTz) * 100 + dayofmonth(time, prvol_sessionTz)
+[ltfVolumes, ltfInRths, ltfDates] = request.security_lower_tf(syminfo.tickerid, prvol_calcTf, [volume, ltfInRthExpr, ltfDateExpr], ignore_invalid_timeframe=true)
+
+chartSeconds = timeframe.in_seconds(timeframe.period)
+calcSeconds  = timeframe.in_seconds(prvol_calcTf)
+useLtfEngine = not na(chartSeconds) and not na(calcSeconds) and chartSeconds > calcSeconds
+
+var int   ltfHistoryPtr         = 0
+var int   ltfCompletedDays      = 0
+var float ltfCompletedDayVolSum = 0.0
+var float ltfSessionVol         = 0.0
+var int   ltfSessionSlot        = 0
+var int   ltfSlotsSeen          = 0
+var bool  ltfPrevInRth          = false
+var int   ltfPrevSessionDate    = na
+var float ltfPrevPrvol          = na
+var float ltfHeldPrvol          = na
+var float ltfHeldPrvolDelta     = na
+
+var array<float> ltfDayVolHistory = array.new_float(prvol_lookbackDays, na)
+var array<float> ltfCurveHistory  = array.new_float(SLOTS_STORED * prvol_lookbackDays, na)
+var array<float> ltfCurveSums     = array.new_float(SLOTS_STORED, 0.0)
+var array<int>   ltfCurveCounts   = array.new_int(SLOTS_STORED, 0)
+var array<float> ltfSessionCumVol = array.new_float(SLOTS_STORED, na)
+
+if useLtfEngine and array.size(ltfVolumes) > 0
+    for j = 0 to array.size(ltfVolumes) - 1
+        ibVolume      = array.get(ltfVolumes, j)
+        ibInRth       = array.get(ltfInRths,  j)
+        ibSessionDate = array.get(ltfDates,   j)
+        ibNewSession  = ibInRth and (not ltfPrevInRth or ibSessionDate != ltfPrevSessionDate)
+        ibSameSession = ibInRth and ltfPrevInRth and ibSessionDate == ltfPrevSessionDate
+
+        if ibNewSession
+            commitSlots = math.min(ltfSlotsSeen, SLOTS_STORED)
+            if ltfSessionVol > 0 and commitSlots >= MIN_FULL_SESSION_SLOTS
+                oldDayVol = array.get(ltfDayVolHistory, ltfHistoryPtr)
+                if not na(oldDayVol)
+                    ltfCompletedDayVolSum -= oldDayVol
+                    for i = 0 to SLOTS_STORED - 1
+                        histIndex = i * prvol_lookbackDays + ltfHistoryPtr
+                        oldShare  = array.get(ltfCurveHistory, histIndex)
+                        if not na(oldShare)
+                            array.set(ltfCurveSums,    i, array.get(ltfCurveSums, i) - oldShare)
+                            array.set(ltfCurveCounts,  i, math.max(array.get(ltfCurveCounts, i) - 1, 0))
+                            array.set(ltfCurveHistory, histIndex, na)
+                else
+                    ltfCompletedDays += 1
+                array.set(ltfDayVolHistory, ltfHistoryPtr, ltfSessionVol)
+                ltfCompletedDayVolSum += ltfSessionVol
+                for i = 0 to commitSlots - 1
+                    cumAtSlot = array.get(ltfSessionCumVol, i)
+                    if not na(cumAtSlot)
+                        share     = math.min(cumAtSlot / ltfSessionVol, 1.0)
+                        histIndex = i * prvol_lookbackDays + ltfHistoryPtr
+                        array.set(ltfCurveHistory, histIndex, share)
+                        array.set(ltfCurveSums,   i, array.get(ltfCurveSums, i) + share)
+                        array.set(ltfCurveCounts, i, array.get(ltfCurveCounts, i) + 1)
+                ltfHistoryPtr := (ltfHistoryPtr + 1) % prvol_lookbackDays
+            ltfSessionVol     := 0.0
+            ltfSessionSlot    := 0
+            ltfSlotsSeen      := 0
+            ltfPrevPrvol      := na
+            ltfHeldPrvol      := na
+            ltfHeldPrvolDelta := na
+            for i = 0 to SLOTS_STORED - 1
+                array.set(ltfSessionCumVol, i, na)
+
+        if ibInRth
+            ltfSessionVol += nz(ibVolume)
+            if ltfSessionSlot < SLOTS_STORED
+                array.set(ltfSessionCumVol, ltfSessionSlot, ltfSessionVol)
+                ltfSlotsSeen := ltfSessionSlot + 1
+            ltfSessionSlot += 1
+            activeSlot      = math.min(math.max(ltfSessionSlot - 1, 0), SLOTS_STORED - 1)
+            curveCountNow   = array.get(ltfCurveCounts, activeSlot)
+            curvePctNow     = curveCountNow > 0 ? array.get(ltfCurveSums, activeSlot) / curveCountNow : na
+            avgSessionVol   = ltfCompletedDays > 0 ? ltfCompletedDayVolSum / ltfCompletedDays : na
+            projectedVolNow = not na(curvePctNow) and curvePctNow >= prvol_minCurvePct ? ltfSessionVol / curvePctNow : na
+            prvolNow        = not na(projectedVolNow) and not na(avgSessionVol) and avgSessionVol > 0 ? projectedVolNow / avgSessionVol : na
+            prvolDelta      = ibSameSession and not na(prvolNow) and not na(ltfPrevPrvol) ? prvolNow - ltfPrevPrvol : na
+            if not na(prvolNow)
+                ltfHeldPrvol      := prvolNow
+                ltfHeldPrvolDelta := prvolDelta
+                ltfPrevPrvol      := prvolNow
+
+        ltfPrevInRth       := ibInRth
+        ltfPrevSessionDate := ibSessionDate
+
+pRvol        = useLtfEngine and not na(ltfHeldPrvol) ? ltfHeldPrvol      : prvol15Raw
+prvolDelta15 = useLtfEngine and not na(ltfHeldPrvol) ? ltfHeldPrvolDelta : prvolDelta15Raw
+
+string pRvolArrow = na(prvolDelta15) ? " →" : prvolDelta15 > prvol_threshold ? " ↑↑" : prvolDelta15 < -prvol_threshold ? " ↓↓" : " →"
+string pRvolDisp  = na(pRvol) ? "—" : str.tostring(pRvol, "0.00") + "x"
+color  pRvolColor = na(pRvol) ? color.rgb(120,120,120) :
+     pRvol >= 2.0  ? color.rgb(0,230,90)   :
+     pRvol >= 1.5  ? color.rgb(0,200,70)   :
+     pRvol >= 1.25 ? color.rgb(130,200,50) :
+     pRvol >= 1.0  ? color.rgb(210,200,60) :
+     color.rgb(255,80,80)
+
+// ============================================================================
+// CONTEXT DATA
+// ============================================================================
+high_52w = ta.highest(high, 252)
+dist_52w = (close - high_52w) / high_52w * 100
+
+avg_vol    = ta.sma(volume, 50)
+vol_status = avg_vol > 500000 ? "Liquid" : avg_vol > 100000 ? "Thin" : "Avoid"
+fmt_vol(v) => v >= 1000000 ? str.tostring(math.round(v / 100000) / 10, "#.#") + "M" : v >= 1000 ? str.tostring(math.round(v / 100) / 10, "#.#") + "K" : str.tostring(v, "#")
+
+adr_pct = 100 * (ta.sma(high / low, 20) - 1)
+
+// ============================================================================
+// STAGE MARKERS (chart only — no table)
+// ============================================================================
+d_close  = request.security(syminfo.tickerid, "D", close,                 lookahead=barmerge.lookahead_off)
+d_ma200  = request.security(syminfo.tickerid, "D", ta.sma(close, 200),    lookahead=barmerge.lookahead_off)
+d_ma220  = request.security(syminfo.tickerid, "D", ta.sma(close, 220),    lookahead=barmerge.lookahead_off)
+d_ma201  = request.security(syminfo.tickerid, "D", ta.sma(close[1], 200), lookahead=barmerge.lookahead_off)
+d_open   = request.security(syminfo.tickerid, "D", open,                  lookahead=barmerge.lookahead_off)
+d_low    = request.security(syminfo.tickerid, "D", low,                   lookahead=barmerge.lookahead_off)
+
+d_sl200   = d_ma200 > d_ma220 ? 1 : d_ma200 < d_ma220 ? -1 : 0
+s2a_cross = ta.crossover(d_close, d_ma200) and d_sl200 >= 0
+gap_cross = d_open > d_ma201 and d_low > d_ma201 and d_sl200 >= 0 and d_close > d_ma200
+gap_new   = gap_cross and not gap_cross[1]
+
+// ============================================================================
+// AXE & SHIELD — ZONE TYPE
+// ============================================================================
+type Zone
+    int    originBar
+    float  top
+    float  bottom
+    float  pivotPrice
+    int    touches
+    int    lastTouchBar
+    int    direction        // 1 = support, -1 = resistance
+    int    breakCounter
+    bool   swept
+    bool   provisional
+    float  respectSum
+    float  damageSum
+    float  reactionSum
+    float  score
+    bool   inZone
+
+// ─── STORAGE ─────────────────────────────────────────────────────────────────
+var array<Zone> zones = array.new<Zone>()
+
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+bodyTop() => math.max(open, close)
+bodyBot() => math.min(open, close)
+clip01(float x) => math.max(0.0, math.min(1.0, x))
+
+// ─── ATR ─────────────────────────────────────────────────────────────────────
+atrVal = ta.atr(14)
+
+// ─── PROVISIONAL LEVEL TRACKING ──────────────────────────────────────────────
+provLow     = ta.lowest(low,   provLookback)
+provLowBar  = ta.lowestbars(low,  provLookback)
+provHigh    = ta.highest(high, provLookback)
+provHighBar = ta.highestbars(high, provLookback)
+
+var float provSupportPrice = na
+var int   provSupportBar   = na
+var float provResistPrice  = na
+var int   provResistBar    = na
+
+provSupportPrice := provLow
+provSupportBar   := bar_index + provLowBar
+provResistPrice  := provHigh
+provResistBar    := bar_index + provHighBar
+
+// ─── PIVOT DETECTION ─────────────────────────────────────────────────────────
+ph = ta.pivothigh(pivotLen, pivotLen)
+pl = ta.pivotlow(pivotLen,  pivotLen)
+
+if not na(ph)
+    pivBar = bar_index - pivotLen
+    rawTop = high[pivotLen]
+    rawBot = bodyTop()[pivotLen]
+
+    if rawTop <= rawBot
+        rawTop := rawBot + nz(atrVal, 0.01) * 0.05
+
+    maxW = nz(atrVal, 0.01) * maxZoneWidthATR
+    if rawTop - rawBot > maxW
+        rawBot := rawTop - maxW
+
+    merged = false
+    mergeThresh = nz(atrVal, 0.01) * maxZoneWidthATR
+    if zones.size() > 0
+        for i = 0 to zones.size() - 1
+            z = zones.get(i)
+            if z.direction == -1 and math.abs(z.pivotPrice - ph) <= mergeThresh
+                z.top          := math.max(z.top, rawTop)
+                z.bottom       := math.min(z.bottom, rawBot)
+                z.pivotPrice   := (z.pivotPrice * z.touches + ph) / (z.touches + 1)
+                z.touches      += 1
+                z.lastTouchBar := pivBar
+                merged         := true
+                break
+
+    if not merged
+        zones.push(Zone.new(pivBar, rawTop, rawBot, ph, 1, pivBar, -1, 0, false, false, 0.0, 0.0, 0.0, 85.0, false))
+
+if not na(pl)
+    pivBar = bar_index - pivotLen
+    rawTop = bodyBot()[pivotLen]
+    rawBot = low[pivotLen]
+
+    if rawTop <= rawBot
+        rawBot := rawTop - nz(atrVal, 0.01) * 0.05
+
+    maxW = nz(atrVal, 0.01) * maxZoneWidthATR
+    if rawTop - rawBot > maxW
+        rawTop := rawBot + maxW
+
+    merged = false
+    mergeThresh = nz(atrVal, 0.01) * maxZoneWidthATR
+    if zones.size() > 0
+        for i = 0 to zones.size() - 1
+            z = zones.get(i)
+            if z.direction == 1 and math.abs(z.pivotPrice - pl) <= mergeThresh
+                z.top          := math.max(z.top, rawTop)
+                z.bottom       := math.min(z.bottom, rawBot)
+                z.pivotPrice   := (z.pivotPrice * z.touches + pl) / (z.touches + 1)
+                z.touches      += 1
+                z.lastTouchBar := pivBar
+                merged         := true
+                break
+
+    if not merged
+        zones.push(Zone.new(pivBar, rawTop, rawBot, pl, 1, pivBar, 1, 0, false, false, 0.0, 0.0, 0.0, 85.0, false))
+
+// ─── ZONE INTERACTION + SURVIVAL SCORING ─────────────────────────────────────
+if zones.size() > 0
+    for i = zones.size() - 1 to 0
+        z = zones.get(i)
+        age = bar_index - z.originBar
+
+        if age > maxZoneAge
+            zones.remove(i)
+            continue
+
+        touched  = high >= z.bottom and low <= z.top
+        newTouch = touched and not z.inZone
+
+        if newTouch and not z.provisional
+            rawPen    = z.direction == 1 ? math.max(0.0, (z.bottom - low)  / atrVal) :
+                                           math.max(0.0, (high - z.top)    / atrVal)
+            bodyBreak = z.direction == 1 ? (close < z.bottom ? 0.5 : 0.0) :
+                                           (close > z.top    ? 0.5 : 0.0)
+            damage    = clip01(rawPen + bodyBreak)
+
+            respect_bull = close >= z.pivotPrice ? 1.0 : close >= z.bottom ? 0.5 : 0.0
+            respect_bear = close <= z.pivotPrice ? 1.0 : close <= z.top    ? 0.5 : 0.0
+            respect = z.direction == 1 ? respect_bull : respect_bear
+
+            reaction_bull = clip01((close - low)  / atrVal)
+            reaction_bear = clip01((high - close) / atrVal)
+            reaction = z.direction == 1 ? reaction_bull : reaction_bear
+
+            z.damageSum   += damage
+            z.respectSum  += respect
+            z.reactionSum += reaction
+
+        z.inZone := touched
+
+        touches = z.touches
+        avgDamage   = touches > 0 ? z.damageSum   / touches : 0.15
+        avgRespect  = touches > 0 ? z.respectSum  / touches : 0.85
+        avgReaction = touches > 0 ? z.reactionSum / touches : 0.70
+
+        closeScore    = clip01(avgRespect)           * 100.0
+        damageScore   = (1.0 - clip01(avgDamage))   * 100.0
+        reactionScore = clip01(avgReaction)          * 100.0
+        fatigueScore  = math.max(0.0, 100.0 - math.max(0, touches - 2) * fatigue_pen)
+
+        structBroken = z.direction == 1 ? close < z.bottom : close > z.top
+        survival = closeScore * w_respect + damageScore * w_damage + reactionScore * w_reaction + fatigueScore * w_fatigue
+
+        if structBroken
+            survival := math.min(survival, 35.0)
+        if touches >= 4 and avgDamage > 0.55
+            survival := math.min(survival, 28.0)
+
+        z.score := math.max(0.0, math.min(100.0, survival))
+
+        if z.direction == 1
+            if close < z.bottom
+                z.breakCounter += 1
+                if z.breakCounter >= breakConfBars
+                    z.direction    := -1
+                    z.breakCounter := 0
+                    z.swept        := false
+                    z.touches      := 1
+                    z.respectSum   := 0.0
+                    z.damageSum    := 0.0
+                    z.reactionSum  := 0.0
+                    z.score        := 68.0
+            else if z.breakCounter > 0 and close >= z.bottom
+                z.breakCounter := 0
+                z.swept        := true
+            else
+                z.breakCounter := 0
+                if low <= z.top and low >= z.bottom and close > z.top
+                    if bar_index - z.lastTouchBar >= minTouchGap
+                        z.touches      += 1
+                        z.lastTouchBar := bar_index
+
+            if z.top > 0 and close > z.top * 1.50 and age > 100
+                zones.remove(i)
+                continue
+        else
+            if close > z.top
+                z.breakCounter += 1
+                if z.breakCounter >= breakConfBars
+                    z.direction    := 1
+                    z.breakCounter := 0
+                    z.swept        := false
+                    z.touches      := 1
+                    z.respectSum   := 0.0
+                    z.damageSum    := 0.0
+                    z.reactionSum  := 0.0
+                    z.score        := 68.0
+            else if z.breakCounter > 0 and close <= z.top
+                z.breakCounter := 0
+                z.swept        := true
+            else
+                z.breakCounter := 0
+                if high >= z.bottom and high <= z.top and close < z.bottom
+                    if bar_index - z.lastTouchBar >= minTouchGap
+                        z.touches      += 1
+                        z.lastTouchBar := bar_index
+
+            if z.bottom > 0 and close < z.bottom * 0.60 and age > 100
+                zones.remove(i)
+                continue
+
+        zones.set(i, z)
+
+// ─── NEAREST S/R ─────────────────────────────────────────────────────────────
+var float nearestS   = na
+var float nearestR   = na
+var float scoreS     = na
+var float scoreR     = na
+var bool  sProvisional = false
+var bool  rProvisional = false
+
+nearestS     := na
+nearestR     := na
+scoreS       := na
+scoreR       := na
+sProvisional := false
+rProvisional := false
+
+if zones.size() > 0
+    bestScore = -1e10
+    bestIdx   = -1
+    for i = 0 to zones.size() - 1
+        z = zones.get(i)
+        if z.direction == -1 and z.bottom > close
+            dist  = z.bottom - close
+            score = z.score * 1000000.0 - dist
+            if score > bestScore
+                bestScore := score
+                bestIdx   := i
+
+    if bestIdx < 0
+        for i = 0 to zones.size() - 1
+            z = zones.get(i)
+            if z.direction == -1 and close >= z.bottom and close <= z.top
+                dist  = z.top - close
+                score = z.score * 1000000.0 - dist
+                if score > bestScore
+                    bestScore := score
+                    bestIdx   := i
+
+    if bestIdx >= 0
+        r1z      = zones.get(bestIdx)
+        nearestR := close < r1z.bottom ? r1z.bottom : r1z.top
+        scoreR   := r1z.score
+    else
+        if provResistPrice > close
+            nearestR     := provResistPrice
+            rProvisional := true
+            scoreR       := na
+
+    bestScore := -1e10
+    bestIdx   := -1
+    for i = 0 to zones.size() - 1
+        z = zones.get(i)
+        if z.direction == 1 and z.top < close
+            dist  = close - z.top
+            score = z.score * 1000000.0 - dist
+            if score > bestScore
+                bestScore := score
+                bestIdx   := i
+
+    if bestIdx < 0
+        for i = 0 to zones.size() - 1
+            z = zones.get(i)
+            if z.direction == 1 and close >= z.bottom and close <= z.top
+                dist  = close - z.bottom
+                score = z.score * 1000000.0 - dist
+                if score > bestScore
+                    bestScore := score
+                    bestIdx   := i
+
+    if bestIdx >= 0
+        s1z      = zones.get(bestIdx)
+        nearestS := close > s1z.top ? s1z.top : s1z.bottom
+        scoreS   := s1z.score
+    else
+        if provSupportPrice < close
+            nearestS     := provSupportPrice
+            sProvisional := true
+            scoreS       := na
+
+// ─── DRAWING — lines + price label only, no score or state ───────────────────
+if barstate.islast and zones.size() > 0
+
+    supIdxs  = array.new<int>()
+    supDists = array.new<float>()
+    resIdxs  = array.new<int>()
+    resDists = array.new<float>()
+
+    for i = 0 to zones.size() - 1
+        z = zones.get(i)
+        if z.direction == 1
+            dist = math.abs(close - z.top)
+            pos  = supDists.binary_search_rightmost(dist)
+            supDists.insert(pos, dist)
+            supIdxs.insert(pos, i)
+        else
+            dist = math.abs(close - z.bottom)
+            pos  = resDists.binary_search_rightmost(dist)
+            resDists.insert(pos, dist)
+            resIdxs.insert(pos, i)
+
+    toDraw = array.new<int>()
+    if supIdxs.size() > 0
+        for i = 0 to math.min(supIdxs.size(), maxZonesPerSide) - 1
+            toDraw.push(supIdxs.get(i))
+    if resIdxs.size() > 0
+        for i = 0 to math.min(resIdxs.size(), maxZonesPerSide) - 1
+            toDraw.push(resIdxs.get(i))
+
+    if toDraw.size() > 0
+        for i = 0 to toDraw.size() - 1
+            idx = toDraw.get(i)
+            z   = zones.get(idx)
+
+            if z.provisional and not showUnproven
+                continue
+
+            isSupport = z.direction == 1
+            baseCol   = isSupport ? colSupport : colResistance
+            lineCol   = z.provisional ? color.new(baseCol, 40) : baseCol
+            lineW     = 2
+            lstyle    = z.provisional ? line.style_dotted : line.style_solid
+
+            line.new(z.originBar, z.pivotPrice, bar_index, z.pivotPrice,
+                     color=lineCol, width=lineW, style=lstyle, extend=extend.none)
+
+            if showLabels
+                lbl = ""
+                if showPrice
+                    lbl := str.tostring(z.pivotPrice, format.mintick)
+                if z.provisional
+                    lbl := lbl + " △"
+                if z.swept
+                    lbl := lbl + " 🔥"
+
+                label.new(bar_index + 2, z.pivotPrice, lbl,
+                          color=color.new(color.black, 100),
+                          textcolor=lineCol,
+                          style=label.style_label_left, size=size.small)
+
+// ─── EXPORTS ─────────────────────────────────────────────────────────────────
+plot(exportS1 ? nearestS : na, "Nearest Support",    color=colSupport,    display=display.data_window + display.status_line)
+plot(exportR1 ? nearestR : na, "Nearest Resistance", color=colResistance, display=display.data_window + display.status_line)
+
+// ============================================================================
+// VIKING TABLE
+// 4 cols × 7 rows
+// Row 0          : header (merged)
+// Rows 1–4       : ADX/52W | P-RVOL/RS | OBV/ADR% | CMF/AvgVol
+// Row 5          : RSI  full readout (merged)
+// Row 6          : A/D  full readout (merged)
+// ============================================================================
+f_sign(float v) => v >= 0.0 ? "+" : ""
+
+table_size = text_size_input == "Tiny" ? size.tiny : text_size_input == "Normal" ? size.normal : text_size_input == "Large" ? size.large : size.small
+table_pos  = table_pos_input == "Top Right"    ? position.top_right    :
+             table_pos_input == "Top Left"     ? position.top_left     :
+             table_pos_input == "Bottom Right" ? position.bottom_right :
+             table_pos_input == "Bottom Left"  ? position.bottom_left  : position.middle_right
+
+var table vt = table.new(table_pos, 4, 7, bgcolor=transparent, border_width=0, frame_width=0)
+
+tc_lbl = color.new(#aaaaaa, 0)
+
+if barstate.islast
+    table.clear(vt, 0, 0, 3, 6)
+
+    // ── Row 0: Header ────────────────────────────────────────────────────────
+    table.cell(vt, 0, 0, "⚔  VIKING  ⚔", bgcolor=transparent, text_color=text_color, text_size=table_size, text_halign=text.align_center)
+    table.merge_cells(vt, 0, 0, 3, 0)
+
+    // ── Row 1: ADX | 52W Hi ──────────────────────────────────────────────────
+    table.cell(vt, 0, 1, "ADX",    bgcolor=transparent, text_color=tc_lbl,  text_size=table_size, text_halign=text.align_left)
+    table.cell(vt, 1, 1, str.tostring(adx, "#.#") + " " + adx_lbl + adx_arrow, bgcolor=transparent, text_color=adx_col, text_size=table_size, text_halign=text.align_left)
+    table.cell(vt, 2, 1, "52W Hi", bgcolor=transparent, text_color=tc_lbl,  text_size=table_size, text_halign=text.align_left)
+    table.cell(vt, 3, 1, str.tostring(dist_52w, "#.#") + "%", bgcolor=transparent, text_color=white, text_size=table_size, text_halign=text.align_left)
+
+    // ── Row 2: P-RVOL | RS ───────────────────────────────────────────────────
+    table.cell(vt, 0, 2, "P-RVOL", bgcolor=transparent, text_color=tc_lbl,     text_size=table_size, text_halign=text.align_left)
+    table.cell(vt, 1, 2, pRvolDisp + pRvolArrow,         bgcolor=transparent, text_color=pRvolColor, text_size=table_size, text_halign=text.align_left)
+    table.cell(vt, 2, 2, "RS",     bgcolor=transparent, text_color=tc_lbl,     text_size=table_size, text_halign=text.align_left)
+    table.cell(vt, 3, 2, rs_rating > 0 ? str.tostring(rs_rating) + rs_arrow : "—", bgcolor=transparent, text_color=white, text_size=table_size, text_halign=text.align_left)
+
+    // ── Row 3: OBV | ADR% ────────────────────────────────────────────────────
+    table.cell(vt, 0, 3, "OBV",    bgcolor=transparent, text_color=tc_lbl, text_size=table_size, text_halign=text.align_left)
+    table.cell(vt, 1, 3, obv_label,                      bgcolor=transparent, text_color=white,   text_size=table_size, text_halign=text.align_left)
+    table.cell(vt, 2, 3, "ADR%",   bgcolor=transparent, text_color=tc_lbl, text_size=table_size, text_halign=text.align_left)
+    table.cell(vt, 3, 3, str.tostring(adr_pct, "#.##") + "%", bgcolor=transparent, text_color=white, text_size=table_size, text_halign=text.align_left)
+
+    // ── Row 4: CMF | Avg Vol ─────────────────────────────────────────────────
+    table.cell(vt, 0, 4, "CMF",     bgcolor=transparent, text_color=tc_lbl, text_size=table_size, text_halign=text.align_left)
+    table.cell(vt, 1, 4, str.tostring(cmf, "#.##"),       bgcolor=transparent, text_color=white,   text_size=table_size, text_halign=text.align_left)
+    table.cell(vt, 2, 4, "Avg Vol", bgcolor=transparent, text_color=tc_lbl, text_size=table_size, text_halign=text.align_left)
+    table.cell(vt, 3, 4, fmt_vol(avg_vol) + "  " + vol_status, bgcolor=transparent, text_color=white, text_size=table_size, text_halign=text.align_left)
+
+    // ── Row 5: RSI full readout ───────────────────────────────────────────────
+    rsi_str = "RSI " + str.tostring(rsi_val, "#.#") +
+              "  |  Δ5 "    + f_sign(rsi_d5)    + str.tostring(rsi_d5,    "#.#") +
+              "  |  Dist "  + f_sign(rsi_dist)  + str.tostring(rsi_dist,  "#.#") +
+              "  |  Acc3 "  + f_sign(rsi_accel3) + str.tostring(rsi_accel3, "#.#")
+    table.cell(vt, 0, 5, rsi_str, bgcolor=transparent, text_color=rsi_col, text_size=table_size, text_halign=text.align_left)
+    table.merge_cells(vt, 0, 5, 3, 5)
+
+    // ── Row 6: A/D Pressure full readout ─────────────────────────────────────
+    ad_str = "A/D " + f_sign(ad_pressure) + str.tostring(ad_pressure, "#") +
+             "  |  Δ5 "    + f_sign(ad_d5)    + str.tostring(ad_d5,    "#") +
+             "  |  Dist "  + f_sign(ad_dist)  + str.tostring(ad_dist,  "#") +
+             "  |  Acc3 "  + f_sign(ad_accel3) + str.tostring(ad_accel3, "#")
+    table.cell(vt, 0, 6, ad_str, bgcolor=transparent, text_color=ad_col, text_size=table_size, text_halign=text.align_left)
+    table.merge_cells(vt, 0, 6, 3, 6)

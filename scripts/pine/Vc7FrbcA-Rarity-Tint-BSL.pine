@@ -1,0 +1,228 @@
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// © BarState Labs
+//@version=6
+indicator("Rarity Tint [BSL]", shorttitle = "BSL Rarity", overlay = true, max_bars_back = 5000)
+
+// Rarity Tint carries one number and nothing else: how many earlier bars on
+// this chart shared the current bar's state cell. The darker the background,
+// the fewer times this market has been where it is now, and the less any
+// statistic about it is worth.
+//
+// It says nothing about what follows a rare state, because it measures only how
+// much evidence exists. Which historical bars were the nearest analogs, and what
+// happened after them, is C-machine_learning-04 Analog Bar Finder.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inputs
+// ─────────────────────────────────────────────────────────────────────────────
+string GROUP_STATE = "01 · State cell"
+string GROUP_EVIDENCE = "02 · Evidence"
+string GROUP_DISPLAY = "03 · Display"
+
+bool useBuiltIn = input.bool(true, "Use the built-in three axes", group = GROUP_STATE,
+     tooltip = "The built-in axes are close minus an EMA, ATR and volume. Turn this off to drive all three axes from plots of indicators already loaded on this chart. Pine only lets input.source() default to a built-in price series, which is why the defaults live behind this switch rather than inside the three source inputs.")
+int emaLength = input.int(50, "Built-in axis 1 · EMA length", minval = 2, maxval = 1000, group = GROUP_STATE)
+int atrLength = input.int(14, "Built-in axis 2 · ATR length", minval = 2, maxval = 1000, group = GROUP_STATE)
+float sourceA = input.source(close, "Axis 1 · connected series", group = GROUP_STATE)
+float sourceB = input.source(close, "Axis 2 · connected series", group = GROUP_STATE)
+float sourceC = input.source(close, "Axis 3 · connected series", group = GROUP_STATE)
+
+int rankLength = input.int(100, "Rank window, bars", minval = 2, maxval = 5000, group = GROUP_EVIDENCE,
+     tooltip = "Each axis is ranked against its own previous values over this many bars, then cut into three equal slices. Three slices give 27 state cells.")
+int minimumBars = input.int(300, "Minimum counted bars before any tint", minval = 1, maxval = 100000, group = GROUP_EVIDENCE,
+     tooltip = "The product measures how much evidence exists, so it refuses to shade anything until it has counted at least this many bars. Below that the background stays clear and the panel says so.")
+int saturation = input.int(40, "Occurrences at full transparency", minval = 1, maxval = 100000, group = GROUP_EVIDENCE,
+     tooltip = "A cell seen this many times before is drawn as almost clear glass. The map between the count and the tint is logarithmic, because occurrence counts span orders of magnitude and a straight-line map would leave every rare state looking the same.")
+
+string panelPositionInput = input.string("Bottom center", "Panel position", options = ["Auto", "Top right", "Bottom right", "Top left", "Bottom left", "Top center", "Bottom center"],
+     group = GROUP_DISPLAY, tooltip = "Auto keeps the panel opposite the latest price within the visible chart range. Pick a corner by hand when another script already occupies this one.")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Palette
+// ─────────────────────────────────────────────────────────────────────────────
+color COLOR_BG = color.rgb(11, 14, 13)
+color COLOR_TEXT = color.rgb(242, 239, 232)
+color COLOR_MUTED = color.rgb(156, 161, 154)
+color COLOR_GREEN = color.rgb(82, 211, 151)
+color COLOR_AMBER = color.rgb(235, 184, 87)
+color COLOR_BLUE = color.rgb(104, 167, 255)
+color COLOR_VIOLET = color.rgb(178, 148, 255)
+
+int DARKEST_TRANSPARENCY = 55
+int LIGHTEST_TRANSPARENCY = 97
+
+f_chart_type() =>
+    chart.is_heikinashi ? "HEIKIN ASHI" :
+     chart.is_renko ? "RENKO" :
+     chart.is_kagi ? "KAGI" :
+     chart.is_pnf ? "POINT & FIGURE" :
+     chart.is_range ? "RANGE" : "NON-STANDARD"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The three axes
+//
+// Every ta. series is evaluated in global scope on every bar rather than inside
+// a condition, because a history-dependent function that only runs on some bars
+// carries a different history.
+// ─────────────────────────────────────────────────────────────────────────────
+bool configValid = rankLength >= 2 and rankLength <= 5000 and minimumBars >= 1 and saturation >= 1
+bool standardChart = chart.is_standard
+bool drawable = configValid and standardChart
+
+float emaValue = ta.ema(close, emaLength)
+float atrValue = ta.atr(atrLength)
+
+float axisA = useBuiltIn ? close - emaValue : sourceA
+float axisB = useBuiltIn ? atrValue : sourceB
+float axisC = useBuiltIn ? volume : sourceC
+
+// ta.percentrank reports the share of the PREVIOUS rankLength values that were
+// at or below the current one, so the bar is not inside its own reference
+// window and the result is na until that window is full. na here is warm-up,
+// never a resolved rank of zero.
+float rankA = ta.percentrank(axisA, rankLength)
+float rankB = ta.percentrank(axisB, rankLength)
+float rankC = ta.percentrank(axisC, rankLength)
+
+bool historyReady = not na(rankA) and not na(rankB) and not na(rankC)
+bool resolved = drawable and historyReady and barstate.isconfirmed
+bool forming = drawable and not barstate.isconfirmed
+
+f_tercile(float rank) =>
+    rank < 100.0 / 3.0 ? 0 : rank < 200.0 / 3.0 ? 1 : 2
+
+int cell = resolved ? f_tercile(rankA) * 9 + f_tercile(rankB) * 3 + f_tercile(rankC) : na
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Occurrence counting
+//
+// 27 counters, three orders of magnitude below Pine's array size limits and
+// rebuilt deterministically from loaded history on every run, so nothing has to
+// survive a reload.
+//
+// The counter is READ and then the bar is added. That ordering is the whole
+// product: a bar that counted itself would make every state look at least
+// once-seen, and the tint would be a statement about the arithmetic rather than
+// about the market.
+// ─────────────────────────────────────────────────────────────────────────────
+var array<int> cellCounts = array.new<int>(27, 0)
+var int countedBars = 0
+
+// The count of the last CONFIRMED bar is kept separately. On a live chart the
+// bar a reader is looking at is always the forming one, and the forming bar
+// deliberately shows no count. Without this the number the tint stands for
+// would never be visible at all.
+var int lastClosedSeen = na
+
+int seenBefore = na
+if resolved
+    seenBefore := array.get(cellCounts, cell)
+    array.set(cellCounts, cell, seenBefore + 1)
+    countedBars += 1
+    lastClosedSeen := seenBefore
+
+bool tinted = resolved and countedBars >= minimumBars
+
+// Transparency rises with the count on a logarithmic map: a state this market
+// has been in many times is almost clear glass, one it has barely visited is
+// nearly opaque. Transparency IS the sample size, so a reader cannot see the
+// claim without simultaneously seeing how much evidence stands behind it.
+float tintRatio = tinted ? math.min(1.0, math.log(1.0 + seenBefore) / math.log(1.0 + saturation)) : na
+int tintTransparency = tinted ?
+     int(math.round(DARKEST_TRANSPARENCY + (LIGHTEST_TRANSPARENCY - DARKEST_TRANSPARENCY) * tintRatio)) : na
+
+bgcolor(tinted ? color.new(COLOR_VIOLET, tintTransparency) : na, title = "Rarity tint")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Exported streams
+//
+// BarState Labs producer stream contract 1.1.0, declared in
+// docs/products/data-trust-painter-spec.md §5.1.
+//
+// The cell id is a label-code: cell 26 is not twice cell 13, so magnitude and
+// arithmetic carry no meaning and the profile that enumerates its alphabet is
+// the right one. The occurrence count is a numeric-value with a domain and a
+// unit, because it is a measured quantity whose order and size do mean
+// something.
+//
+// na on both means the product has no opinion yet — warm-up, an open bar, an
+// invalid configuration, a non-standard chart. A consumer must not read it as
+// state 0 or carry it forward with nz().
+// ─────────────────────────────────────────────────────────────────────────────
+plot(resolved ? float(cell) : na, "Rarity cell", display = display.data_window)
+plot(resolved ? float(seenBefore) : na, "Rarity occurrences", display = display.data_window)
+
+alertcondition(resolved and seenBefore == 0, "State never seen before",
+     "Rarity Tint closed a bar in a state cell that had not occurred earlier in the loaded history.")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Evidence panel
+//
+// Four cells, which is the declared budget. The count never appears without the
+// total it was drawn from, so a short chart cannot masquerade as a long one.
+// A Pine table has no dashed border, so an unfinished bar is marked the only
+// way a table can mark one: the word FORMING at raised transparency.
+// ─────────────────────────────────────────────────────────────────────────────
+bool inVisibleWindow = time >= chart.left_visible_bar_time and time <= chart.right_visible_bar_time
+var float visibleWindowHigh = na
+var float visibleWindowLow = na
+var float visibleWindowRightClose = na
+if inVisibleWindow
+    visibleWindowHigh := na(visibleWindowHigh) ? high : math.max(visibleWindowHigh, high)
+    visibleWindowLow := na(visibleWindowLow) ? low : math.min(visibleWindowLow, low)
+    visibleWindowRightClose := close
+
+float visibleWindowMid = not na(visibleWindowHigh) and not na(visibleWindowLow) ?
+     (visibleWindowHigh + visibleWindowLow) / 2.0 : na
+string automaticPanelPosition = not na(visibleWindowMid) and visibleWindowRightClose > visibleWindowMid ?
+     position.bottom_right : position.top_right
+string resolvedPanelPosition = panelPositionInput == "Top right" ? position.top_right :
+     panelPositionInput == "Bottom right" ? position.bottom_right :
+     panelPositionInput == "Top left" ? position.top_left :
+     panelPositionInput == "Bottom left" ? position.bottom_left :
+     panelPositionInput == "Top center" ? position.top_center :
+     panelPositionInput == "Bottom center" ? position.bottom_center : automaticPanelPosition
+
+var table panel = table.new(position.top_right, 2, 2, bgcolor = color.new(COLOR_BG, 3),
+     border_color = color.new(COLOR_MUTED, 65), border_width = 1)
+
+if barstate.islast
+    table.set_position(panel, resolvedPanelPosition)
+    if not standardChart
+        table.cell(panel, 0, 0, "BSL / RARITY · FROZEN", text_color = COLOR_AMBER,
+             bgcolor = color.new(COLOR_AMBER, 78), text_size = size.small, text_halign = text.align_left)
+        table.cell(panel, 1, 0, f_chart_type() + " BARS ARE SYNTHETIC", text_color = COLOR_TEXT,
+             bgcolor = color.new(COLOR_AMBER, 78), text_size = size.small, text_halign = text.align_left)
+        table.cell(panel, 0, 1, "BARS COUNTED", text_color = COLOR_MUTED, text_halign = text.align_left)
+        table.cell(panel, 1, 1, "0 · NO TINT, NO CELL, NO STREAMS", text_color = COLOR_TEXT,
+             text_halign = text.align_left)
+    else
+        string closedCount = na(lastClosedSeen) ? "" :
+             " · LAST CLOSED " + str.tostring(lastClosedSeen) +
+             (lastClosedSeen == 1 ? " TIME" : " TIMES")
+        string seenText = not configValid ? "CONFIG ERROR" :
+             forming ? "FORMING" + closedCount :
+             not historyReady ? "WARM-UP" :
+             na(seenBefore) ? "NO OPINION" :
+             str.tostring(seenBefore) + (seenBefore == 1 ? " TIME" : " TIMES")
+        // A table cannot be drawn dashed, so the unfinished bar is marked with
+        // a word at raised transparency instead of with a border style.
+        color seenColor = forming ? color.new(COLOR_TEXT, 45) :
+             not configValid ? COLOR_AMBER :
+             not historyReady ? COLOR_AMBER :
+             seenBefore == 0 ? COLOR_VIOLET : COLOR_TEXT
+        bool aboveSaturation = not na(lastClosedSeen) and lastClosedSeen >= saturation
+        string countedText = str.tostring(countedBars) +
+             (countedBars < minimumBars ? " · BELOW " + str.tostring(minimumBars) + " · NO TINT YET" :
+             aboveSaturation ?
+                  " · SATURATION " + str.tostring(saturation) +
+                  " · STATE SEEN MORE OFTEN · NO TINT · RAISE SATURATION TO SEE ONE" :
+             " · SATURATION " + str.tostring(saturation) + " · EVIDENCE ONLY · NO OUTCOME CLAIM")
+        color countedColor = countedBars < minimumBars or aboveSaturation ? COLOR_AMBER : COLOR_GREEN
+
+        table.cell(panel, 0, 0, "BSL / RARITY · SEEN BEFORE", text_color = COLOR_TEXT,
+             bgcolor = color.new(COLOR_BLUE, 70), text_size = size.small, text_halign = text.align_left)
+        table.cell(panel, 1, 0, seenText, text_color = seenColor,
+             bgcolor = color.new(COLOR_BLUE, 70), text_size = size.small)
+        table.cell(panel, 0, 1, "BARS COUNTED", text_color = COLOR_MUTED, text_halign = text.align_left)
+        table.cell(panel, 1, 1, countedText, text_color = countedColor, text_halign = text.align_left)

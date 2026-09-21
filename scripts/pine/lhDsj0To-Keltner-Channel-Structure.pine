@@ -1,0 +1,388 @@
+//@version=6
+indicator("Keltner Channel Structure", shorttitle="KCStruct", overlay=true, max_lines_count=500, max_labels_count=500)
+
+//──────────────────────────────────────────────────────────────────────────────
+// INPUTS
+//──────────────────────────────────────────────────────────────────────────────
+
+groupKC = "Keltner Channel"
+src       = input.source(close, "Source", group=groupKC)
+emaLength = input.int(20, "EMA Length", minval=1, group=groupKC)
+atrLength = input.int(10, "ATR Length", minval=1, group=groupKC)
+mult      = input.float(2.0, "ATR Multiplier", minval=0.1, step=0.1, group=groupKC)
+
+groupStructure = "Vertex Structure"
+slopeLength    = input.int(5, "Structure Slope Length", minval=1, group=groupStructure)
+momentumLength = input.int(5, "Momentum Length", minval=1, group=groupStructure)
+projectionBars = input.int(12, "Projection Bars", minval=3, maxval=50, group=groupStructure)
+
+groupVisual = "Visual"
+showProjection = input.bool(true, "Show Projected Path", group=groupVisual)
+showZones      = input.bool(true, "Show Structure Zones", group=groupVisual)
+showSignals    = input.bool(true, "Show Breakout Signals", group=groupVisual)
+showState      = input.bool(true, "Show Market State", group=groupVisual)
+showLabels     = input.bool(true, "Show Structure Labels", group=groupVisual)
+
+//──────────────────────────────────────────────────────────────────────────────
+// KELTNER CHANNEL
+//──────────────────────────────────────────────────────────────────────────────
+
+basis = ta.ema(src, emaLength)
+atr   = ta.atr(atrLength)
+
+upper = basis + atr * mult
+lower = basis - atr * mult
+
+// Channel width
+channelWidth = upper - lower
+
+//──────────────────────────────────────────────────────────────────────────────
+// STRUCTURE
+//──────────────────────────────────────────────────────────────────────────────
+
+basisSlope = basis - basis[slopeLength]
+priceMomentum = close - close[momentumLength]
+
+bullStructure = basisSlope > 0 and priceMomentum > 0
+bearStructure = basisSlope < 0 and priceMomentum < 0
+
+neutralStructure = not bullStructure and not bearStructure
+
+// Volatility expansion / contraction
+widthChange = channelWidth - channelWidth[1]
+
+expanding = widthChange > 0
+contracting = widthChange < 0
+
+//──────────────────────────────────────────────────────────────────────────────
+// BREAKOUT CONDITIONS
+//──────────────────────────────────────────────────────────────────────────────
+
+bullBreakout = close > upper and bullStructure
+bearBreakout = close < lower and bearStructure
+
+// Failed breakout / rejection
+bullRejection = high > upper and close < upper
+bearRejection = low < lower and close > lower
+
+//──────────────────────────────────────────────────────────────────────────────
+// MARKET STATE
+//──────────────────────────────────────────────────────────────────────────────
+
+strongBull = bullStructure and expanding and close > basis
+strongBear = bearStructure and expanding and close < basis
+
+compression = contracting and math.abs(basisSlope) < atr * 0.10
+
+marketState =
+     strongBull ? "BULLISH EXPANSION" :
+     strongBear ? "BEARISH EXPANSION" :
+     compression ? "COMPRESSION" :
+     bullStructure ? "BULLISH STRUCTURE" :
+     bearStructure ? "BEARISH STRUCTURE" :
+     "NEUTRAL"
+
+//──────────────────────────────────────────────────────────────────────────────
+// CHANNEL PLOTS
+//──────────────────────────────────────────────────────────────────────────────
+
+basisPlot = plot(
+     basis,
+     title="Keltner Basis",
+     color=color.white,
+     linewidth=2
+)
+
+upperPlot = plot(
+     upper,
+     title="Upper Channel",
+     color=color.new(color.blue, 20),
+     linewidth=1
+)
+
+lowerPlot = plot(
+     lower,
+     title="Lower Channel",
+     color=color.new(color.blue, 20),
+     linewidth=1
+)
+
+// Channel fill
+channelColor =
+     bullStructure ? color.new(color.blue, 90) :
+     bearStructure ? color.new(color.orange, 90) :
+     color.new(color.gray, 93)
+
+fill(upperPlot, lowerPlot, color=channelColor)
+
+//──────────────────────────────────────────────────────────────────────────────
+// STRUCTURE ZONES
+//──────────────────────────────────────────────────────────────────────────────
+
+upperStructure = basis + atr * mult * 0.55
+lowerStructure = basis - atr * mult * 0.55
+
+upperZonePlot = plot(
+     showZones ? upperStructure : na,
+     title="Upper Structure Zone",
+     color=color.new(color.blue, 100)
+)
+
+lowerZonePlot = plot(
+     showZones ? lowerStructure : na,
+     title="Lower Structure Zone",
+     color=color.new(color.orange, 100)
+)
+
+fill(
+     upperPlot,
+     upperZonePlot,
+     color=showZones and bullStructure ? color.new(color.blue, 88) : na
+)
+
+fill(
+     lowerPlot,
+     lowerZonePlot,
+     color=showZones and bearStructure ? color.new(color.orange, 88) : na
+)
+
+//──────────────────────────────────────────────────────────────────────────────
+// BREAKOUT VISUALS
+//──────────────────────────────────────────────────────────────────────────────
+
+plotshape(
+     showSignals and bullBreakout,
+     title="Bullish Breakout",
+     style=shape.triangleup,
+     location=location.belowbar,
+     color=color.blue,
+     size=size.small,
+     text="BUY"
+)
+
+plotshape(
+     showSignals and bearBreakout,
+     title="Bearish Breakout",
+     style=shape.triangledown,
+     location=location.abovebar,
+     color=color.orange,
+     size=size.small,
+     text="SELL"
+)
+
+// Failed breakout warnings
+plotshape(
+     showSignals and bullRejection,
+     title="Upper Rejection",
+     style=shape.circle,
+     location=location.abovebar,
+     color=color.new(color.orange, 20),
+     size=size.tiny
+)
+
+plotshape(
+     showSignals and bearRejection,
+     title="Lower Rejection",
+     style=shape.circle,
+     location=location.belowbar,
+     color=color.new(color.blue, 20),
+     size=size.tiny
+)
+
+//──────────────────────────────────────────────────────────────────────────────
+// PROJECTED PRICE PATH
+//──────────────────────────────────────────────────────────────────────────────
+
+// Normalize momentum relative to ATR.
+// This prevents the projection from becoming excessively large
+// across different instruments.
+normalizedMomentum = atr != 0 ? priceMomentum / atr : 0.0
+
+// Structural slope expressed relative to ATR.
+normalizedSlope = atr != 0 ? basisSlope / atr : 0.0
+
+// Combine trend structure and current momentum.
+directionStrength =
+     normalizedSlope * 0.65 +
+     normalizedMomentum * 0.35
+
+// Limit extreme projections.
+clampedStrength = math.max(-2.5, math.min(directionStrength, 2.5))
+
+// Projected move per bar.
+projectionStep = atr * clampedStrength * 0.18
+
+// Starting point.
+projectionStart = close
+
+// Projection endpoint.
+projectionEnd = projectionStart + projectionStep * projectionBars
+
+// Dynamic projection channel.
+projectionUpper =
+     projectionEnd + atr * mult * 0.45
+
+projectionLower =
+     projectionEnd - atr * mult * 0.45
+
+//──────────────────────────────────────────────────────────────────────────────
+// DRAW PROJECTED PATH
+//──────────────────────────────────────────────────────────────────────────────
+
+var line projectionLine = na
+var line projectionUpperLine = na
+var line projectionLowerLine = na
+
+if barstate.islast and showProjection
+
+    line.delete(projectionLine)
+    line.delete(projectionUpperLine)
+    line.delete(projectionLowerLine)
+
+    projectionColor =
+         clampedStrength > 0.25 ? color.blue :
+         clampedStrength < -0.25 ? color.orange :
+         color.gray
+
+    projectionLine := line.new(
+         bar_index,
+         projectionStart,
+         bar_index + projectionBars,
+         projectionEnd,
+         xloc=xloc.bar_index,
+         extend=extend.none,
+         color=projectionColor,
+         style=line.style_dashed,
+         width=3
+    )
+
+    projectionUpperLine := line.new(
+         bar_index,
+         projectionStart + atr * mult * 0.45,
+         bar_index + projectionBars,
+         projectionUpper,
+         xloc=xloc.bar_index,
+         extend=extend.none,
+         color=color.new(projectionColor, 65),
+         style=line.style_dotted,
+         width=1
+    )
+
+    projectionLowerLine := line.new(
+         bar_index,
+         projectionStart - atr * mult * 0.45,
+         bar_index + projectionBars,
+         projectionLower,
+         xloc=xloc.bar_index,
+         extend=extend.none,
+         color=color.new(projectionColor, 65),
+         style=line.style_dotted,
+         width=1
+    )
+
+//──────────────────────────────────────────────────────────────────────────────
+// STRUCTURE TRANSITION MARKERS
+//──────────────────────────────────────────────────────────────────────────────
+
+bullTransition = bullStructure and not bullStructure[1]
+bearTransition = bearStructure and not bearStructure[1]
+
+plotshape(
+     showSignals and bullTransition,
+     title="Bullish Structure Shift",
+     style=shape.diamond,
+     location=location.belowbar,
+     color=color.blue,
+     size=size.tiny
+)
+
+plotshape(
+     showSignals and bearTransition,
+     title="Bearish Structure Shift",
+     style=shape.diamond,
+     location=location.abovebar,
+     color=color.orange,
+     size=size.tiny
+)
+
+//──────────────────────────────────────────────────────────────────────────────
+// MARKET STATE LABEL
+//──────────────────────────────────────────────────────────────────────────────
+
+var label stateLabel = na
+
+if barstate.islast and showState
+
+    label.delete(stateLabel)
+
+    stateColor =
+         strongBull ? color.blue :
+         strongBear ? color.orange :
+         bullStructure ? color.new(color.blue, 25) :
+         bearStructure ? color.new(color.orange, 25) :
+         color.gray
+
+    stateLabel := label.new(
+         bar_index + 2,
+         upper + atr * 0.35,
+         marketState,
+         xloc=xloc.bar_index,
+         style=label.style_label_left,
+         color=stateColor,
+         textcolor=color.white,
+         size=size.small
+    )
+
+//──────────────────────────────────────────────────────────────────────────────
+// OPTIONAL STRUCTURE LABELS
+//──────────────────────────────────────────────────────────────────────────────
+
+if showLabels and bullTransition
+    label.new(
+         bar_index,
+         low - atr * 0.25,
+         "BULLISH\nSTRUCTURE",
+         style=label.style_label_up,
+         color=color.blue,
+         textcolor=color.white,
+         size=size.tiny
+    )
+
+if showLabels and bearTransition
+    label.new(
+         bar_index,
+         high + atr * 0.25,
+         "BEARISH\nSTRUCTURE",
+         style=label.style_label_down,
+         color=color.orange,
+         textcolor=color.white,
+         size=size.tiny
+    )
+
+//──────────────────────────────────────────────────────────────────────────────
+// ALERTS
+//──────────────────────────────────────────────────────────────────────────────
+
+alertcondition(
+     bullBreakout,
+     title="Vertex KC Bullish Breakout",
+     message="Vertex Keltner Channel Structure: Bullish breakout detected."
+)
+
+alertcondition(
+     bearBreakout,
+     title="Vertex KC Bearish Breakout",
+     message="Vertex Keltner Channel Structure: Bearish breakout detected."
+)
+
+alertcondition(
+     bullTransition,
+     title="Vertex Bullish Structure Shift",
+     message="Vertex Keltner Channel Structure: Bullish structure shift detected."
+)
+
+alertcondition(
+     bearTransition,
+     title="Vertex Bearish Structure Shift",
+     message="Vertex Keltner Channel Structure: Bearish structure shift detected."
+)

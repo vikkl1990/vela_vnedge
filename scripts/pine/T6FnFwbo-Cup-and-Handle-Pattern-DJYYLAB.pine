@@ -1,0 +1,571 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © DJYYLAB
+//@version=6
+indicator("Cup and Handle Pattern [DJYYLAB]", overlay = true, max_polylines_count = 100, max_lines_count = 500, max_labels_count = 500)
+
+// hidden plot, keeps the drawings on the main price scale
+plot(close, "price anchor", color = color.new(color.gray, 100), editable = false, display = display.none)
+
+// inputs
+grpD = "Detection (lengths in bars)"
+iMinCup   = input.int(30, "Cup length min (bars)", minval = 10, group = grpD)
+iMaxCup   = input.int(220, "Cup length max (bars)", minval = 30, group = grpD)
+iMinDepth = input.float(8.0, "Cup depth min %", minval = 1.0, group = grpD) / 100.0
+iMaxDepth = input.float(50.0, "Cup depth max %", minval = 5.0, group = grpD) / 100.0
+iMinHdl   = input.int(3, "Handle length min (bars)", minval = 2, group = grpD)
+iMaxHdl   = input.int(8, "Handle length max (bars)", minval = 3, group = grpD)
+iHdlDepth = input.float(10.0, "Handle depth max %", minval = 1.0, group = grpD) / 100.0
+iMaxWait  = input.int(30, "Max bars waiting for breakout", minval = 1, group = grpD)
+
+grpV = "Display"
+iShowN     = input.int(20, "Patterns to draw", minval = 1, maxval = 40, group = grpV)
+iShowPivot = input.bool(true, "Show pivot line", group = grpV)
+iShowTbl   = input.bool(true, "Show case table", group = grpV)
+iTblRows   = input.int(8, "Rows in case table", minval = 1, maxval = 20, group = grpV)
+cWait      = input.color(#2962FF, "Waiting", inline = "c1", group = grpV)
+cBroke     = input.color(#089981, "Broke out", inline = "c1", group = grpV)
+cBack      = input.color(#FF9800, "Back below pivot", inline = "c2", group = grpV)
+cDead      = input.color(#787B86, "Invalidated", inline = "c2", group = grpV)
+
+// fixed rules
+SWING_N        = 2      // swing point: confirmed by 2 bars on each side
+RIM_LOOKBACK   = 20     // left rim: high strictly above the previous 20 highs
+RIM_DESCENT    = 0.92   // left rim confirmed once a later close <= rim high x 0.92
+RIM_OVERSHOOT  = 0.03   // right rim may exceed the left rim by at most 3%; strict band is +/-3%
+RIM_SHORT_MAX  = 0.06   // right rim may fall short of the left rim by at most 6%
+INTRA_OVER     = 0.01   // no high inside the cup may exceed the left rim by more than 1%
+LOW_POS_MIN    = 0.30   // cup low position in time, as a fraction of the cup length
+LOW_POS_MAX    = 0.85
+ZONE_CEIL      = 0.35   // bottom zone = cup low + 35% of the cup depth
+ZONE_MIN_FRAC  = 0.15   // at least 15% of cup closes must sit in the bottom zone (no V shape)
+MAX_ONE_DAY    = 0.35   // right side: no single close-to-close gain above 35% of the cup depth
+MAX_GAP        = 0.15   // right side: no up gap above 15% of the cup depth
+HDL_BAND_LO    = 0.95   // handle high must be within 95%..103% of the right rim
+HDL_BAND_HI    = 1.03
+HDL_OF_CUP     = 0.50   // handle depth at most half of the cup depth
+HDL_LOW_IN_CUP = 0.49   // handle low must stay in the upper half of the cup
+HDL_SLOPE      = 0.01   // handle close slope at most +1% per bar
+HDL_RANGE      = 1.25   // handle average range / cup average range
+ANCHOR_TOL     = 0.04   // at least 2 handle highs within [handle high x 0.96, handle high]
+ANCHOR_MIN     = 2
+FLOOR_DD       = 0.10   // while waiting: close below right rim x 0.90 invalidates
+FAIL_WINDOW    = 5      // after breakout: a close <= pivot within 5 bars = back below pivot
+
+// bar data (closed bars only)
+var array<int>   aTime   = array.new<int>()
+var array<float> aO      = array.new<float>()
+var array<float> aH      = array.new<float>()
+var array<float> aL      = array.new<float>()
+var array<float> aC      = array.new<float>()
+var array<bool>  aSH     = array.new<bool>()
+var array<bool>  aSL     = array.new<bool>()
+var array<int>   aRimOk  = array.new<int>()     // bar where the left rim was confirmed, -1 = not yet
+var array<float> aRngCum = array.new<float>()   // running sum of (high - low) / close
+var array<int>   aRngCnt = array.new<int>()
+var array<int>   pending = array.new<int>()     // left rim candidates waiting for confirmation
+var array<int>   rims    = array.new<int>()     // confirmed left rims, ascending bar index
+
+type Pat
+    int      li
+    int      lo
+    int      ri
+    int      formed
+    float    L
+    float    cupLow
+    float    R
+    float    pivot
+    float    hLow
+    float    floorPx
+    int      stage  = 0     // 0 waiting, 1 broke out, 2 invalid before breakout, 3 done
+    int      waited = 0
+    int      brk    = -1
+    int      dead   = -1
+    int      hEnd   = -1
+    int      shown  = -1    // draw key on chart, -1 = not drawn
+    bool     primary = true // false = mostly inside a longer cup, not drawn
+    polyline arc
+    line     hdl
+    line     piv
+    label    tag
+
+var array<Pat> pats = array.new<Pat>()
+
+// helpers
+f_avgRange(int s, int e) =>
+    float sum = aRngCum.get(e) - (s > 0 ? aRngCum.get(s - 1) : 0.0)
+    int cnt = aRngCnt.get(e) - (s > 0 ? aRngCnt.get(s - 1) : 0)
+    cnt > 0 ? sum / cnt : na
+
+// handle checks that only need the right rim (cheap, run first)
+f_handleCore(int s, int e, float R) =>
+    float hi = aH.get(s)
+    float lo = aL.get(s)
+    for k = s to e
+        hi := math.max(hi, aH.get(k))
+        lo := math.min(lo, aL.get(k))
+    bool ok = hi >= R * HDL_BAND_LO and hi <= R * HDL_BAND_HI and hi > 0
+    if ok
+        ok := (hi - lo) / hi <= iHdlDepth
+    if ok
+        int n = e - s + 1
+        float c0 = aC.get(s)
+        if n < 2 or c0 <= 0
+            ok := false
+        else
+            float mx = (n - 1) / 2.0
+            float my = 0.0
+            for k = s to e
+                my += aC.get(k)
+            my := my / n
+            float num = 0.0
+            float den = 0.0
+            for k = s to e
+                float x = (k - s) - mx
+                num += x * (aC.get(k) - my)
+                den += x * x
+            ok := den != 0 and (num / den) / c0 <= HDL_SLOPE
+    if ok
+        int anc = 0
+        float band = hi * (1 - ANCHOR_TOL)
+        for k = s to e
+            float hk = aH.get(k)
+            if hk >= band and hk <= hi
+                anc += 1
+        ok := anc >= ANCHOR_MIN
+    [ok, hi, lo]
+
+// handle checks against the cup
+f_handleVsCup(int s, int e, float hi, float lo, int li, int ri, float L, float cupLow) =>
+    float dAmt = L - cupLow
+    bool ok = true
+    if dAmt > 0
+        ok := (hi - lo) / dAmt <= HDL_OF_CUP
+        if ok
+            ok := (lo - cupLow) / dAmt >= HDL_LOW_IN_CUP
+    if ok
+        float hr = f_avgRange(s, e)
+        float cr = f_avgRange(li, ri)
+        ok := not na(hr) and not na(cr) and cr > 0 and hr / cr <= HDL_RANGE
+    ok
+
+// cup with its right rim exactly at bar a, newest left rim first
+f_cupAt(int a) =>
+    bool found = false
+    int rli = -1
+    int rlo = -1
+    float rL = na
+    float rBot = na
+    float R = aH.get(a)
+    int nr = rims.size()
+    if nr > 0
+        for j = nr - 1 to 0
+            if found
+                break
+            int li = rims.get(j)
+            if li < a - iMaxCup + 1
+                break
+            float L = aH.get(li)
+            // confirmed swing high, rim confirmed by bar a
+            bool ok = li <= a - iMinCup and aSH.get(li) and li + SWING_N <= a and aRimOk.get(li) <= a
+            // high of bar a has to be near the left rim
+            if ok
+                ok := R >= L * (1 - RIM_SHORT_MAX) and R <= L * (1 + RIM_OVERSHOOT)
+            int lo = -1
+            float bot = na
+            if ok
+                lo := li + 1
+                bot := aL.get(li + 1)
+                for k = li + 1 to a - 1
+                    if aL.get(k) < bot
+                        bot := aL.get(k)
+                        lo := k
+                // lowest low must be a confirmed swing low
+                ok := aSL.get(lo) and lo + SWING_N <= a
+            float ceil = L * (1 + INTRA_OVER)
+            if ok and lo - 1 >= li + 1
+                for k = li + 1 to lo - 1
+                    if aH.get(k) > ceil
+                        ok := false
+                        break
+            if ok
+                float depth = (L - bot) / L
+                ok := depth >= iMinDepth and depth <= iMaxDepth
+            if ok
+                // first touch back at the rim (strict band, then wide band) must be bar a
+                float sLo = L * (1 - RIM_OVERSHOOT)
+                float bHi = L * (1 + RIM_OVERSHOOT)
+                float wLo = L * (1 - RIM_SHORT_MAX)
+                int fs = -1
+                int fw = -1
+                for k = lo + 1 to a
+                    float hk = aH.get(k)
+                    if fw < 0 and hk >= wLo and hk <= bHi
+                        fw := k
+                    if hk >= sLo and hk <= bHi
+                        fs := k
+                        break
+                ok := (fs >= 0 ? fs : fw) == a
+            if ok
+                int sessions = a - li + 1
+                ok := sessions >= iMinCup and sessions <= iMaxCup
+            if ok
+                ok := math.max(R - L, 0) / L <= RIM_OVERSHOOT and math.max(L - R, 0) / L <= RIM_SHORT_MAX
+            if ok and lo + 1 <= a - 1
+                for k = lo + 1 to a - 1
+                    if aH.get(k) > ceil
+                        ok := false
+                        break
+            if ok
+                float lp = float(lo - li) / float(a - li)
+                ok := lp >= LOW_POS_MIN and lp <= LOW_POS_MAX
+            if ok
+                float dAmt = L - bot
+                ok := dAmt > 0
+                if ok
+                    float zc = bot + dAmt * ZONE_CEIL
+                    int inZ = 0
+                    for k = li to a
+                        if aC.get(k) <= zc
+                            inZ += 1
+                    ok := float(inZ) / float(a - li + 1) >= ZONE_MIN_FRAC
+                if ok
+                    for k = lo + 1 to a
+                        float up = aC.get(k) - aC.get(k - 1)
+                        float gap = aO.get(k) - aH.get(k - 1)
+                        if (up > 0 and up / dAmt > MAX_ONE_DAY) or (gap > 0 and gap / dAmt > MAX_GAP)
+                            ok := false
+                            break
+            if ok
+                found := true
+                rli := li
+                rlo := lo
+                rL := L
+                rBot := bot
+    [found, rli, rlo, rL, rBot]
+
+// arc shape: smallest power that keeps the curve below the lows
+f_bowlPower(int iRim, float yRim, int iBot, float yBot) =>
+    int span = math.abs(iBot - iRim)
+    float h = yRim - yBot
+    float n = 2.0
+    if span >= 3 and h > 0
+        n := 1.2
+        int k0 = math.max(1, int(span * 0.12))
+        if k0 <= span - 1
+            for k = k0 to span - 1
+                int i = iBot > iRim ? iRim + k : iRim - k
+                float s = float(span - k) / float(span)
+                float r = (aL.get(i) - yBot) / h
+                if s > 0 and s < 1 and r > 0.02 and r < 1
+                    n := math.max(n, math.log(r) / math.log(s))
+        n := math.max(1.2, math.min(8.0, n))
+    n
+
+// 0 waiting, 1 broke out, 2 back below pivot within 5 bars, 3 invalidated
+f_outcome(Pat p, int t) =>
+    int code = 0
+    if p.brk >= 0
+        code := 1
+        int e = math.min(p.brk + FAIL_WINDOW, t)
+        if e >= p.brk + 1
+            for k = p.brk + 1 to e
+                if aC.get(k) <= p.pivot
+                    code := 2
+                    break
+    else if p.stage == 2
+        code := 3
+    code
+
+f_date(int idx) =>
+    str.format_time(aTime.get(idx), timeframe.isintraday ? "yyyy-MM-dd HH:mm" : "yyyy-MM-dd", syminfo.timezone)
+
+f_chgTxt(Pat p, int k, int t) =>
+    p.brk >= 0 and p.brk + k <= t ? str.tostring((aC.get(p.brk + k) / aC.get(p.brk) - 1) * 100, "#.#") + "%" : "-"
+
+f_resultTxt(int code) =>
+    code == 1 ? "Broke out" : code == 2 ? "Back below in 5 bars" : code == 3 ? "Invalidated" : "Waiting"
+
+// label tooltip
+f_tip(Pat p, int t) =>
+    int code = f_outcome(p, t)
+    string s = "Cup & Handle\nFormed " + f_date(p.formed)
+    s += "\nCup " + f_date(p.li) + " to " + f_date(p.ri) + ", " + str.tostring(p.ri - p.li + 1) + " bars, depth " + str.tostring((p.L - p.cupLow) / p.L * 100, "#.#") + "%"
+    s += "\nPivot " + str.tostring(p.pivot, format.mintick)
+    s += "\nResult " + f_resultTxt(code) + (p.brk >= 0 ? " (" + f_date(p.brk) + ")" : p.dead >= 0 ? " (" + f_date(p.dead) + ")" : "")
+    if p.brk >= 0 and p.dead >= 0
+        s += "\nClosed below handle low " + str.tostring(p.hLow, format.mintick) + " on " + f_date(p.dead)
+    if p.brk >= 0
+        s += "\nAfter breakout: +5 bars " + f_chgTxt(p, 5, t) + ", +10 bars " + f_chgTxt(p, 10, t) + ", +20 bars " + f_chgTxt(p, 20, t)
+    s
+
+f_color(int code) =>
+    code == 1 ? cBroke : code == 2 ? cBack : code == 3 ? cDead : cWait
+
+// redraw only when the outcome or the dead flag changes
+f_drawKey(Pat p, int t) =>
+    f_outcome(p, t) * 2 + (p.dead >= 0 ? 1 : 0)
+
+f_clear(Pat p) =>
+    if not na(p.arc)
+        p.arc.delete()
+    if not na(p.hdl)
+        p.hdl.delete()
+    if not na(p.piv)
+        p.piv.delete()
+    if not na(p.tag)
+        p.tag.delete()
+    p.arc := na
+    p.hdl := na
+    p.piv := na
+    p.tag := na
+    p.shown := -1
+
+// x uses bar time (bar_index fails more than 10000 bars back)
+f_draw(Pat p, int t) =>
+    int code = f_outcome(p, t)
+    int key = f_drawKey(p, t)
+    // grey once invalidated
+    color col = p.dead >= 0 ? cDead : f_color(code)
+    int pivEnd = p.brk >= 0 ? p.brk : p.dead >= 0 ? p.dead : t
+    if key != p.shown
+        f_clear(p)
+        array<chart.point> pts = array.new<chart.point>()
+        float nL = f_bowlPower(p.li, p.L, p.lo, p.cupLow)
+        float nR = f_bowlPower(p.ri, p.R, p.lo, p.cupLow)
+        int spanL = p.lo - p.li
+        int stL = math.max(1, math.min(spanL, 60))
+        for k = 0 to stL
+            int x = p.li + math.round(spanL * k / stL)
+            float s = 1.0 - float(x - p.li) / float(spanL)
+            pts.push(chart.point.from_time(aTime.get(x), p.cupLow + (p.L - p.cupLow) * math.pow(s, nL)))
+        int spanR = p.ri - p.lo
+        int stR = math.max(1, math.min(spanR, 60))
+        for k = 1 to stR
+            int x = p.lo + math.round(spanR * k / stR)
+            float s = float(x - p.lo) / float(spanR)
+            pts.push(chart.point.from_time(aTime.get(x), p.cupLow + (p.R - p.cupLow) * math.pow(s, nR)))
+        p.arc := polyline.new(pts, curved = false, closed = false, xloc = xloc.bar_time, line_color = col, line_width = 2)
+        p.hdl := line.new(aTime.get(p.ri), p.R, aTime.get(p.hEnd), math.min(aL.get(p.hEnd), p.R), xloc = xloc.bar_time, color = col, width = 2)
+        if iShowPivot
+            p.piv := line.new(aTime.get(p.ri + 1), p.pivot, aTime.get(pivEnd), p.pivot, xloc = xloc.bar_time, color = col, style = line.style_dashed, width = 1)
+        p.tag := label.new(aTime.get(p.li), p.L, "Cup & Handle", xloc = xloc.bar_time, style = label.style_label_down, color = col, textcolor = color.white, size = size.small, tooltip = f_tip(p, t))
+        p.shown := key
+    else
+        p.hdl.set_xy2(aTime.get(p.hEnd), math.min(aL.get(p.hEnd), p.R))
+        if iShowPivot and not na(p.piv)
+            p.piv.set_x2(aTime.get(pivEnd))
+        p.tag.set_tooltip(f_tip(p, t))
+    // return value (CE10235 otherwise)
+    code
+
+// overlapping cups: only the longest is drawn, and only the last iShowN
+// spans in calendar days on daily and above, minutes intraday
+f_day(int idx) =>
+    int tm = aTime.get(idx)
+    timeframe.isintraday ? int(tm / 60000) : year(tm, syminfo.timezone) * 372 + month(tm, syminfo.timezone) * 31 + dayofmonth(tm, syminfo.timezone)
+
+f_refresh(int t) =>
+    int n = pats.size()
+    if n > 0
+        array<float> spans = array.new<float>()
+        for j = 0 to n - 1
+            Pat q = pats.get(j)
+            q.primary := true
+            spans.push(f_day(q.hEnd) - f_day(q.li))
+        array<int> byLen = spans.sort_indices(order.descending)
+        for oi = 0 to n - 1
+            int bi = byLen.get(oi)
+            Pat big = pats.get(bi)
+            if big.primary
+                for j = 0 to n - 1
+                    Pat sm = pats.get(j)
+                    if j != bi and sm.primary
+                        int a0 = f_day(big.li)
+                        int b0 = f_day(big.hEnd)
+                        int c0 = f_day(sm.li)
+                        int d0 = f_day(sm.hEnd)
+                        int ov = math.max(0, math.min(b0, d0) - math.max(a0, c0))
+                        if d0 - c0 <= b0 - a0 and float(ov) / float(math.max(1, d0 - c0)) > 0.5
+                            sm.primary := false
+        int drawn = 0
+        for j = n - 1 to 0
+            Pat q = pats.get(j)
+            if q.primary and drawn < iShowN
+                drawn += 1
+                f_draw(q, t)
+            else if q.shown >= 0
+                f_clear(q)
+    n
+
+// handle line ends at the last bar where the handle is still valid
+f_handleEnd(Pat p, int t) =>
+    int ci = p.brk >= 0 ? p.brk - 1 : p.dead >= 0 ? p.dead : t
+    int top = math.min(ci, p.ri + iMaxHdl)
+    int he = p.formed
+    if top > p.formed
+        for x = top to p.formed + 1
+            int len = x - p.ri
+            if len >= iMinHdl and len <= iMaxHdl
+                [ok, hi, lo] = f_handleCore(p.ri + 1, x, p.R)
+                if ok and f_handleVsCup(p.ri + 1, x, hi, lo, p.li, p.ri, p.L, p.cupLow)
+                    he := x
+                    break
+    he
+
+// main
+if barstate.isconfirmed
+    int t = aH.size()
+    aTime.push(time)
+    aO.push(open)
+    aH.push(high)
+    aL.push(low)
+    aC.push(close)
+    aSH.push(false)
+    aSL.push(false)
+    aRimOk.push(-1)
+    bool rngOk = close > 0
+    aRngCum.push((t > 0 ? aRngCum.get(t - 1) : 0.0) + (rngOk ? (high - low) / close : 0.0))
+    aRngCnt.push((t > 0 ? aRngCnt.get(t - 1) : 0) + (rngOk ? 1 : 0))
+
+    // swing points (bar t-2 gets confirmed now)
+    if t >= 2 * SWING_N
+        int i = t - SWING_N
+        float hv = aH.get(i)
+        if aH.get(i - 2) < hv and aH.get(i - 1) < hv and aH.get(i + 1) <= hv and aH.get(i + 2) <= hv
+            aSH.set(i, true)
+        float lv = aL.get(i)
+        if aL.get(i - 2) > lv and aL.get(i - 1) > lv and aL.get(i + 1) >= lv and aL.get(i + 2) >= lv
+            aSL.set(i, true)
+
+    // left rim confirmation: later close <= 92% of the high
+    int np = pending.size()
+    if np > 0
+        for j = np - 1 to 0
+            int p = pending.get(j)
+            if close <= aH.get(p) * RIM_DESCENT
+                aRimOk.set(p, t)
+                pending.remove(j)
+                int pos = rims.size()
+                while pos > 0 and rims.get(pos - 1) > p
+                    pos -= 1
+                rims.insert(pos, p)
+            else if t - p > iMaxCup + iMaxHdl + 10
+                pending.remove(j)
+    while rims.size() > 0 and rims.get(0) < t - iMaxCup - iMaxHdl - 10
+        rims.shift()
+    if t >= RIM_LOOKBACK
+        float pm = aH.get(t - RIM_LOOKBACK)
+        for k = t - RIM_LOOKBACK to t - 1
+            pm := math.max(pm, aH.get(k))
+        if high > pm
+            pending.push(t)
+
+    // update existing patterns
+    bool needRefresh = false
+    int npat = pats.size()
+    if npat > 0
+        for j = 0 to npat - 1
+            Pat p = pats.get(j)
+            bool changed = false
+            if p.stage == 0
+                if close < p.floorPx
+                    p.stage := 2
+                    p.dead := t
+                    changed := true
+                else
+                    p.waited += 1
+                    if p.waited > iMaxWait
+                        p.stage := 2
+                        p.dead := t
+                        changed := true
+                    else if close > p.pivot
+                        p.stage := 1
+                        p.brk := t
+                        changed := true
+                        alert("Cup & Handle breakout on " + syminfo.ticker + ", close " + str.tostring(close, format.mintick) + " above pivot " + str.tostring(p.pivot, format.mintick), alert.freq_once_per_bar_close)
+                    else
+                        changed := true
+            else if p.stage == 1
+                // close under the handle low after breakout: mark dead, outcome stays (checked for 41 bars)
+                if close < p.hLow
+                    p.dead := t
+                    p.stage := 3
+                else if t - p.brk > 40
+                    p.stage := 3
+                changed := true
+            if changed
+                int he = f_handleEnd(p, t)
+                if he != p.hEnd or f_drawKey(p, t) != p.shown
+                    p.hEnd := he
+                    needRefresh := true
+                else if p.shown >= 0
+                    f_draw(p, t)
+
+    // look for a new pattern, shortest handle first
+    if t >= iMinCup + iMinHdl and iMinHdl <= iMaxHdl and iMinCup <= iMaxCup
+        bool got = false
+        for hl = iMinHdl to iMaxHdl
+            int a = t - hl
+            if got or a < iMinCup
+                break
+            [hOk, hi, lo] = f_handleCore(a + 1, t, aH.get(a))
+            if hOk
+                [cOk, li, clo, L, cLow] = f_cupAt(a)
+                if cOk
+                    // handle failed, try a longer one
+                    got := f_handleVsCup(a + 1, t, hi, lo, li, a, L, cLow)
+                    if got
+                        bool dup = false
+                        if pats.size() > 0
+                            for j = pats.size() - 1 to 0
+                                Pat q = pats.get(j)
+                                if q.li == li and q.lo == clo and q.ri == a
+                                    dup := true
+                                    break
+                                if q.formed < t - iMaxCup - 60
+                                    break
+                        if not dup
+                            Pat p = Pat.new(li = li, lo = clo, ri = a, formed = t, L = L, cupLow = cLow, R = aH.get(a), pivot = hi, hLow = lo, floorPx = aH.get(a) * (1 - FLOOR_DD))
+                            p.hEnd := t
+                            pats.push(p)
+                            needRefresh := true
+                            alert("Cup & Handle formed on " + syminfo.ticker + ", pivot " + str.tostring(hi, format.mintick), alert.freq_once_per_bar_close)
+    if needRefresh
+        f_refresh(t)
+
+// table
+var table tbl = table.new(position.top_right, 6, 22, bgcolor = color.new(color.black, 20), border_width = 1, border_color = color.new(color.gray, 70))
+if barstate.islast
+    tbl.clear(0, 0, 5, 21)
+    if iShowTbl
+        int t = aH.size() - 1
+        tbl.cell(0, 0, "Formed", text_color = color.silver, text_size = size.small)
+        tbl.cell(1, 0, "Pivot", text_color = color.silver, text_size = size.small)
+        tbl.cell(2, 0, "Result", text_color = color.silver, text_size = size.small)
+        tbl.cell(3, 0, "+5", text_color = color.silver, text_size = size.small)
+        tbl.cell(4, 0, "+10", text_color = color.silver, text_size = size.small)
+        tbl.cell(5, 0, "+20", text_color = color.silver, text_size = size.small)
+        int n = pats.size()
+        int hidden = 0
+        if n > 0
+            for j = 0 to n - 1
+                if not pats.get(j).primary
+                    hidden += 1
+        if n == 0
+            tbl.cell(0, 1, "No cup & handle on this chart", text_color = color.white, text_size = size.small)
+        else
+            int row = 1
+            for j = n - 1 to 0
+                Pat p = pats.get(j)
+                if not p.primary or row > iTblRows
+                    continue
+                int code = f_outcome(p, t)
+                tbl.cell(0, row, f_date(p.formed), text_color = color.white, text_size = size.small)
+                tbl.cell(1, row, str.tostring(p.pivot, format.mintick), text_color = color.white, text_size = size.small)
+                tbl.cell(2, row, f_resultTxt(code), text_color = color.white, bgcolor = color.new(f_color(code), 45), text_size = size.small)
+                tbl.cell(3, row, f_chgTxt(p, 5, t), text_color = color.white, text_size = size.small)
+                tbl.cell(4, row, f_chgTxt(p, 10, t), text_color = color.white, text_size = size.small)
+                tbl.cell(5, row, f_chgTxt(p, 20, t), text_color = color.white, text_size = size.small)
+                row += 1
+            if hidden > 0
+                tbl.cell(0, row, "+" + str.tostring(hidden) + " overlapped", text_color = color.silver, text_size = size.tiny, tooltip = str.tostring(hidden) + " cup & handle patterns sit mostly inside a longer one and are not drawn")

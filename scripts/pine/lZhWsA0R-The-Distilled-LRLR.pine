@@ -1,0 +1,147 @@
+//@version=6
+// ============================================================================
+//  THE DISTILLED LRLR   v2
+//  Low-resistance runs, standalone and nothing else.
+//
+//  A staggered run - swings laddering one way with nothing stacked at one
+//  price, which is why price travels through them.
+//
+//  v2: EQUAL / RELATIVE-EQUAL LEVELS REMOVED at Joe's call. The engine and its
+//      single-use pivot bits are still in DSTL_LRLR_EQ_v1.pine on the Desktop
+//      if they are ever wanted back - nothing was lost, only unshipped.
+//
+//  !! NOT A SIGNAL AND NOT SCORED. It marks where liquidity is thin. What price
+//     does on arrival is a separate question and this script does not answer it.
+// ============================================================================
+indicator("The Distilled LRLR", overlay = true,
+     max_lines_count = 500, max_labels_count = 500)
+
+gP_ = "Pivots"
+gL_ = "Low resistance runs"
+
+// The FINE fractal on purpose. A staggered run is a candle-level object; read
+// off a structural chain it does not exist.
+locStr = input.int(2, "Pivot strength (bars either side)", minval = 1, maxval = 20, group = gP_, tooltip = "Raising this finds fewer, larger runs; it does not make them better.")
+pStore = input.int(40, "Pivots remembered", minval = 10, maxval = 200, group = gP_)
+
+lrOn   = input.bool(true, "Draw low-resistance runs", group = gL_, tooltip = "A pair of ADJACENT fine swings stepping the SAME way - highs stepping down, or lows stepping up. The lean is the object: a rise leans on its rising lows, a fall on its falling highs. Those are the sides with nothing stacked at one price.\n\n!! THE SIGN MATTERS AND IT USED TO BE TAKEN AS AN ABSOLUTE. Measured against the marked examples, an unsigned gap accepts BOTH leans, so half of everything drawn ladders AGAINST the move it claims to describe. The test here is signed.")
+lrMin  = input.float(0.0, "  - step at least (x ATR)", minval = 0.0, maxval = 5.0, step = 0.05, group = gL_)
+lrMax  = input.float(2.0, "  - and at most (x ATR)", minval = 0.1, maxval = 20.0, step = 0.1, group = gL_, tooltip = "Beyond this the two swings are not a staggered run, they are two separate legs.")
+lrHide = input.bool(true, "  - remove a run once it is delivered into", group = gL_, tooltip = "Price reaching the OUTER end of the ladder has taken the thin ground the run described, so the run is no longer information - it is history. ON removes it. OFF greys it and leaves it as a record.\n\nThe pivot's own confirmation guarantees this cannot be stale on arrival: a pivot confirming means no bar within its window exceeded it, so a run cannot already have been delivered into on the bar it is drawn.")
+lrKeep = input.int(6, "  - runs kept PER SIDE", minval = 1, maxval = 30, group = gL_, tooltip = "!! PER SIDE, not shared. A shared cap lets a busy run of ladders on one side push every one of the other side's off the chart - the same crowding fault the sweep marks and the trendline breaks both had.")
+cLrU   = input.color(#26a69a, "  - rising lows / falling highs", inline = "lc", group = gL_)
+cLrD   = input.color(#f23645, "", inline = "lc", group = gL_)
+cLrX   = input.color(color.new(#787b86, 55), "  - delivered into", group = gL_)
+lrW    = input.int(1, "  - width", minval = 1, maxval = 4, inline = "lw", group = gL_)
+lrTx   = input.bool(true, "label", inline = "lw", group = gL_)
+
+color CIV = color.new(color.gray, 100)      // the house invisible ink, priced once
+float atr = ta.atr(14)
+
+// !! line.new REFUSES a bar_index more than a few thousand bars from the current
+//    one (RE10026). The left anchor is clamped; the right end is a real pivot
+//    bar and stays true, because a diagonal's SLOPE is the information.
+f_ax(int b) => math.max(nz(b, bar_index), bar_index - 4500)
+
+float lph = ta.pivothigh(locStr, locStr)
+float lpl = ta.pivotlow(locStr, locStr)
+
+// ============================================================================
+//  THE FINE PIVOT STORE
+// ============================================================================
+var array<float> phP = array.new_float()
+var array<int>   phB = array.new_int()
+var array<float> plP = array.new_float()
+var array<int>   plB = array.new_int()
+
+if barstate.isconfirmed
+    if not na(lph)
+        array.push(phP, lph)
+        array.push(phB, bar_index - locStr)
+        while array.size(phP) > pStore
+            array.shift(phP)
+            array.shift(phB)
+    if not na(lpl)
+        array.push(plP, lpl)
+        array.push(plB, bar_index - locStr)
+        while array.size(plP) > pStore
+            array.shift(plP)
+            array.shift(plB)
+
+// ============================================================================
+//  LRLR
+// ============================================================================
+var array<line>  lrLn = array.new<line>()
+var array<label> lrLb = array.new<label>()
+var array<float> lrLv = array.new_float()
+var array<bool>  lrUp = array.new<bool>()
+var array<bool>  lrDx = array.new<bool>()   // already delivered into?
+// !! A FUNCTION MAY MUTATE A REFERENCE TYPE BUT NEVER REASSIGN A GLOBAL SCALAR
+//    (CE10088), so the alert count travels in a one-element array.
+var array<int>   lrN  = array.new_int(1, 0)
+
+f_lrAdd(float p0, int b0, float p1, int b1, bool hi) =>
+    color c9 = hi ? cLrD : cLrU
+    array.push(lrLn, line.new(f_ax(b0), p0, b1, p1, color = c9, width = lrW, style = line.style_dotted))
+    // offset clear of the pivot itself, which is where a swing label would sit
+    array.push(lrLb, label.new(math.round(math.avg(f_ax(b0), b1)), math.avg(p0, p1), lrTx ? "LRLR" : "", style = label.style_none, color = CIV, textcolor = c9, size = size.tiny))
+    array.push(lrLv, hi ? math.max(p0, p1) : math.min(p0, p1))
+    array.push(lrUp, hi)
+    array.push(lrDx, false)
+    0
+
+f_lrDrop(int k) =>
+    line.delete(array.get(lrLn, k))
+    label.delete(array.get(lrLb, k))
+    array.remove(lrLn, k)
+    array.remove(lrLb, k)
+    array.remove(lrLv, k)
+    array.remove(lrUp, k)
+    array.remove(lrDx, k)
+    0
+
+if lrOn and barstate.isconfirmed
+    float lo9 = math.min(lrMin, lrMax * 0.9) * nz(atr[locStr], 0)
+    float hi9 = lrMax * nz(atr[locStr], 0)
+    // ADJACENT PIVOTS ONLY. Pairing across the whole store draws a diagonal
+    // spanning days; a run is a LOCAL object - the swing and the one before it.
+    if not na(lph) and array.size(phP) >= 2
+        float pv = array.get(phP, array.size(phP) - 2)
+        int   pb = array.get(phB, array.size(phB) - 2)
+        float d  = pv - lph                     // positive ONLY when the new high is LOWER
+        if d > lo9 and d <= hi9
+            f_lrAdd(pv, pb, lph, bar_index - locStr, true)
+    if not na(lpl) and array.size(plP) >= 2
+        float pv = array.get(plP, array.size(plP) - 2)
+        int   pb = array.get(plB, array.size(plB) - 2)
+        float d  = lpl - pv                     // positive ONLY when the new low is HIGHER
+        if d > lo9 and d <= hi9
+            f_lrAdd(pv, pb, lpl, bar_index - locStr, false)
+
+    // ---- DELIVERED INTO = INVALIDATED. Hidden, or greyed if you keep them ---
+    if array.size(lrLv) > 0
+        for k = array.size(lrLv) - 1 to 0
+            if not array.get(lrDx, k) and (array.get(lrUp, k) ? high >= array.get(lrLv, k) : low <= array.get(lrLv, k))
+                array.set(lrN, 0, array.get(lrN, 0) + 1)
+                if lrHide
+                    f_lrDrop(k)
+                else
+                    array.set(lrDx, k, true)
+                    line.set_color(array.get(lrLn, k), cLrX)
+                    label.set_textcolor(array.get(lrLb, k), cLrX)
+
+    // ---- PER-SIDE CULL, one pass after both sides have pushed --------------
+    if array.size(lrLn) > 0
+        int nU9 = 0
+        int nD9 = 0
+        for k9 = array.size(lrLn) - 1 to 0
+            bool u9 = array.get(lrUp, k9)
+            if u9
+                nU9 += 1
+            else
+                nD9 += 1
+            if (u9 ? nU9 : nD9) > lrKeep
+                f_lrDrop(k9)
+
+int lrNv = array.get(lrN, 0)
+alertcondition(ta.change(lrNv) > 0, "LRLR delivered into", "DSTL: a low-resistance run has been delivered into")

@@ -1,0 +1,61 @@
+//@version=6
+indicator("Vertex RSI Market Regime", shorttitle="VRSIRegime", overlay=false)
+
+// Inputs
+rsiLength = input.int(14, "RSI Length", minval=2)
+smoothLength = input.int(5, "Momentum Smoothing", minval=1)
+bullLevel = input.float(55.0, "Bullish Regime", minval=50.0, maxval=70.0)
+bearLevel = input.float(45.0, "Bearish Regime", minval=30.0, maxval=50.0)
+
+// RSI
+rsi = ta.rsi(close, rsiLength)
+momentum = ta.sma(rsi, smoothLength)
+
+// Market regime
+bullish = momentum > bullLevel
+bearish = momentum < bearLevel
+neutral = not bullish and not bearish
+
+// Plot RSI
+plot(rsi, "RSI", color=color.blue, linewidth=2)
+plot(momentum, "Momentum", color=color.orange, linewidth=2)
+
+// Reference levels
+hline(70, "Overbought", color=color.gray, linestyle=hline.style_dashed)
+hline(50, "Midline", color=color.gray)
+hline(30, "Oversold", color=color.gray, linestyle=hline.style_dashed)
+
+// Regime levels
+hline(bullLevel, "Bullish Regime", color=color.green, linestyle=hline.style_dotted)
+hline(bearLevel, "Bearish Regime", color=color.red, linestyle=hline.style_dotted)
+
+// Regime background
+bgcolor(
+     bullish ? color.new(color.green, 90) :
+     bearish ? color.new(color.red, 90) :
+     color.new(color.gray, 95)
+)
+
+// Regime transitions
+bullishTransition = bullish and not bullish[1]
+bearishTransition = bearish and not bearish[1]
+
+plotshape(
+     bullishTransition,
+     title="Bullish Regime Shift",
+     style=shape.triangleup,
+     location=location.bottom,
+     color=color.green,
+     size=size.tiny,
+     text="BULL"
+)
+
+plotshape(
+     bearishTransition,
+     title="Bearish Regime Shift",
+     style=shape.triangledown,
+     location=location.top,
+     color=color.red,
+     size=size.tiny,
+     text="BEAR"
+)

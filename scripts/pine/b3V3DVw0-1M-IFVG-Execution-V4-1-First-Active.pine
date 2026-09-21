@@ -1,0 +1,726 @@
+//@version=6
+indicator("1M IFVG Execution - V4.1 First Active", overlay=true, max_boxes_count=20, max_lines_count=40, max_labels_count=40)
+
+//==============================================================================
+// 1M FIRST-ACTIVE IFVG STATE MACHINE
+//------------------------------------------------------------------------------
+// Core conversion logic preserved:
+//   Bullish FVG: low > high[2]  -> bearish IFVG after close < gap low.
+//   Bearish FVG: high < low[2] -> bullish IFVG after close > gap high.
+//
+// V4.1 model rules:
+//   1) Plot only the FIRST active bullish IFVG and FIRST active bearish IFVG.
+//   2) Bullish and bearish active states are independent, so both may coexist.
+//   3) A same-direction second/third conversion from OLD source FVGs is ignored.
+//      A replacement must come from a genuinely NEW source-FVG run created after
+//      the current same-direction IFVG formed / was reset.
+//   4) Single source FVG = eligible immediately on conversion.
+//   5) Exactly TWO consecutive same-direction source FVGs = ONE structure.
+//      Wait until BOTH convert. Use the member that converts last. If both convert
+//      on the same bar, use the first-created member.
+//   6) Three-or-more consecutive source FVGs are rejected as a structure.
+//   7) Bullish active IFVG invalidates on a confirmed close below its lower edge.
+//      Bearish active IFVG invalidates on a confirmed close above its upper edge.
+//   8) No historical IFVG inventory is drawn. The model itself determines whether
+//      zero, one, or two active boxes are visible.
+//   9) Boundary and CE price labels are shown on the active zone only.
+//==============================================================================
+
+//------------------------------------------------------------------------------
+// 01. Master controls
+//------------------------------------------------------------------------------
+groupMaster = "01. Master Controls"
+enableIndicator = input.bool(true, "Enable indicator", group=groupMaster)
+enableBullish = input.bool(true, "Enable bullish first-active IFVG", group=groupMaster)
+enableBearish = input.bool(true, "Enable bearish first-active IFVG", group=groupMaster)
+showZoneText = input.bool(true, "Show IFVG zone text", group=groupMaster)
+
+//------------------------------------------------------------------------------
+// 02. Session controls — America/New_York
+//------------------------------------------------------------------------------
+groupSession = "02. Session Controls (ET)"
+displaySession = input.session("0930-1600", "Display / alert session", group=groupSession,
+     tooltip="Default visible operating window is 09:30-16:00 New York time.")
+stateSession = input.session("0700-1600", "Internal state-tracking window", group=groupSession,
+     tooltip="State starts earlier so a valid pre-09:30 IFVG (for example 09:27) can carry into the 09:30 display window if it remains valid.")
+
+//------------------------------------------------------------------------------
+// 03. Source FVG controls
+//------------------------------------------------------------------------------
+groupSource = "03. Source FVG Rules"
+minGap1 = input.float(0.75, "Minimum 1M source-gap size, points", minval=0.25, step=0.25, group=groupSource,
+     tooltip="Model default is 0.75 because gaps must be strictly larger than 0.50 points.")
+
+//------------------------------------------------------------------------------
+// 04. Active-zone visuals
+//------------------------------------------------------------------------------
+groupVisual = "04. Active IFVG Visuals"
+bullishBaseColor = input.color(color.rgb(0, 139, 170), "Bullish IFVG color", group=groupVisual)
+bearishBaseColor = input.color(color.rgb(132, 78, 170), "Bearish IFVG color", group=groupVisual)
+ifvgFillTransparency = input.int(87, "IFVG fill transparency", minval=0, maxval=100, group=groupVisual)
+borderTransparency = input.int(18, "IFVG border transparency", minval=0, maxval=100, group=groupVisual)
+boxBorderWidth = input.int(1, "IFVG border width", minval=0, maxval=4, group=groupVisual)
+zoneTextColor = input.color(color.new(color.white, 15), "IFVG zone text color", group=groupVisual)
+projectionBars = input.int(30, "Forward projection, 1-minute bars", minval=1, maxval=500, group=groupVisual,
+     tooltip="While an IFVG remains active, its right edge is refreshed every bar and projected this many 1-minute bars forward.")
+projectionAnchor = input.string("First FVG candle", "Box starts from", options=["First FVG candle", "FVG end candle"], group=groupVisual)
+
+showCeLine = input.bool(true, "Show CE line", group=groupVisual)
+ceLineColor = input.color(color.yellow, "CE line color", group=groupVisual)
+ceLineWidth = input.int(2, "CE line width", minval=1, maxval=4, group=groupVisual)
+ceLineStyleText = input.string("Solid", "CE line style", options=["Solid", "Dashed", "Dotted"], group=groupVisual)
+showPriceLabels = input.bool(true, "Show Boundary / CE price labels", group=groupVisual)
+priceLabelPosition = input.string("Middle", "Price-label position", options=["Middle", "Right edge"], group=groupVisual)
+ceLabelGapBars = input.int(5, "CE line gap around label, 1-minute bars", minval=0, maxval=30, group=groupVisual,
+     tooltip="When the CE price label is shown, the CE line stops before the text and resumes after it. Increase this if the line still appears too close to the label.")
+priceLabelTextSize = input.string("Small", "Price-label text size", options=["Tiny", "Small", "Normal", "Large", "Huge"], group=groupVisual)
+
+//------------------------------------------------------------------------------
+// 05. Alerts
+//------------------------------------------------------------------------------
+groupAlerts = "05. Alerts"
+enableFormationAlerts = input.bool(true, "Enable first-active formation / replacement alerts", group=groupAlerts)
+enableInvalidationAlerts = input.bool(true, "Enable active IFVG invalidation alerts", group=groupAlerts)
+enableBoundaryAlerts = input.bool(true, "Enable first Boundary-touch alerts", group=groupAlerts)
+enableCeAlerts = input.bool(true, "Enable first CE-touch alerts", group=groupAlerts)
+enableDynamicAlerts = input.bool(true, "Enable dynamic alert() messages", group=groupAlerts)
+
+//------------------------------------------------------------------------------
+// Routing / derived values
+//------------------------------------------------------------------------------
+isOneMinuteChart = timeframe.isminutes and timeframe.multiplier == 1
+canRun = enableIndicator and isOneMinuteChart
+minuteMs = 60 * 1000
+
+inDisplaySession = canRun and not na(time(timeframe.period, displaySession, "America/New_York"))
+inStateSession = canRun and not na(time(timeframe.period, stateSession, "America/New_York"))
+stateSessionStart = inStateSession and not inStateSession[1]
+stateSessionEnd = not inStateSession and inStateSession[1]
+displaySessionStart = inDisplaySession and not inDisplaySession[1]
+displaySessionEnd = not inDisplaySession and inDisplaySession[1]
+
+visBull = canRun and enableBullish
+visBear = canRun and enableBearish
+bullFill = color.new(bullishBaseColor, ifvgFillTransparency)
+bearFill = color.new(bearishBaseColor, ifvgFillTransparency)
+bullBorder = color.new(bullishBaseColor, borderTransparency)
+bearBorder = color.new(bearishBaseColor, borderTransparency)
+
+f_text_size(string choice) =>
+    choice == "Tiny" ? size.tiny :
+     choice == "Normal" ? size.normal :
+     choice == "Large" ? size.large :
+     choice == "Huge" ? size.huge : size.small
+
+labelTextSize = f_text_size(priceLabelTextSize)
+
+f_line_style(string choice) =>
+    choice == "Dashed" ? line.style_dashed :
+     choice == "Dotted" ? line.style_dotted : line.style_solid
+
+f_box_left(int firstCandleTime, int endCandleTime) =>
+    projectionAnchor == "First FVG candle" ? firstCandleTime : endCandleTime
+
+f_label_x(int leftTime, int rightTime) =>
+    priceLabelPosition == "Middle" ? leftTime + int(math.round((rightTime - leftTime) / 2.0)) : rightTime
+
+//------------------------------------------------------------------------------
+// Source-gap state
+//------------------------------------------------------------------------------
+type SourceGap
+    int id
+    int originalDir          // +1 bullish source FVG, -1 bearish source FVG
+    float lo
+    float hi
+    int firstCandleTime
+    int endCandleTime
+    int formedBar
+    int runId
+    int runSize
+    bool converted
+    int conversionBar
+    int conversionTime
+    bool handled
+
+//------------------------------------------------------------------------------
+// Active IFVG state
+//------------------------------------------------------------------------------
+type ActiveZone
+    bool active
+    int direction            // +1 bullish IFVG, -1 bearish IFVG
+    float lo
+    float hi
+    int leftTime
+    int formedBar
+    int formedTime
+    int sourceRunId
+    bool boundaryTouched
+    bool ceTouched
+    box bx
+    line ceLineLeft
+    line ceLineRight
+    label boundaryLabel
+    label ceLabel
+
+var array<SourceGap> bullSourceFvgs = array.new<SourceGap>()  // -> bearish IFVG on conversion
+var array<SourceGap> bearSourceFvgs = array.new<SourceGap>()  // -> bullish IFVG on conversion
+
+var ActiveZone bullActive = ActiveZone.new(false, 1, na, na, na, na, na, na, false, false, na, na, na, na, na)
+var ActiveZone bearActive = ActiveZone.new(false, -1, na, na, na, na, na, na, false, false, na, na, na, na, na)
+
+var int nextSourceId = 0
+var int nextRunId = 0
+
+var int lastBullSourceFormationBar = na
+var int lastBearSourceFormationBar = na
+var int currentBullSourceRunId = na
+var int currentBearSourceRunId = na
+var int currentBullSourceRunSize = 0
+var int currentBearSourceRunSize = 0
+
+// Directional cutoff: a same-direction replacement may only come from source FVGs
+// created AFTER this bar. This is what suppresses the second/third old IFVG.
+var int bullCutoffBar = na
+var int bearCutoffBar = na
+
+// Pending first source-run encountered during the current reversal.
+var int bullPendingRunId = na
+var int bearPendingRunId = na
+var int bullPendingLastSourceBar = na
+var int bearPendingLastSourceBar = na
+
+// Per-bar run IDs that had at least one new conversion.
+var array<int> bullConvertedRunIds = array.new_int() // bearish source -> bullish IFVG
+var array<int> bearConvertedRunIds = array.new_int() // bullish source -> bearish IFVG
+
+//------------------------------------------------------------------------------
+// Helper functions
+//------------------------------------------------------------------------------
+f_clear_active_visuals(ActiveZone z) =>
+    if not na(z.bx)
+        box.delete(z.bx)
+        z.bx := na
+    if not na(z.ceLineLeft)
+        line.delete(z.ceLineLeft)
+        z.ceLineLeft := na
+    if not na(z.ceLineRight)
+        line.delete(z.ceLineRight)
+        z.ceLineRight := na
+    if not na(z.boundaryLabel)
+        label.delete(z.boundaryLabel)
+        z.boundaryLabel := na
+    if not na(z.ceLabel)
+        label.delete(z.ceLabel)
+        z.ceLabel := na
+
+f_reset_active(ActiveZone z) =>
+    f_clear_active_visuals(z)
+    z.active := false
+    z.lo := na
+    z.hi := na
+    z.leftTime := na
+    z.formedBar := na
+    z.formedTime := na
+    z.sourceRunId := na
+    z.boundaryTouched := false
+    z.ceTouched := false
+
+f_update_run_size(array<SourceGap> gaps, int runId, int newSize) =>
+    if array.size(gaps) > 0
+        int i = 0
+        while i < array.size(gaps)
+            SourceGap g = array.get(gaps, i)
+            if g.runId == runId
+                g.runSize := newSize
+                array.set(gaps, i, g)
+            i += 1
+
+f_mark_run_handled(array<SourceGap> gaps, int runId) =>
+    if array.size(gaps) > 0
+        int i = 0
+        while i < array.size(gaps)
+            SourceGap g = array.get(gaps, i)
+            if g.runId == runId
+                g.handled := true
+                array.set(gaps, i, g)
+            i += 1
+
+// Returns:
+// [memberCount, convertedCount, declaredRunSize, firstSourceBar, lastSourceBar,
+//  selectedMemberIndex, anyUnhandled]
+// selected member = latest conversion; if tied, first-created member.
+f_run_info(array<SourceGap> gaps, int runId) =>
+    int memberCount = 0
+    int convertedCount = 0
+    int declaredRunSize = 0
+    int firstSourceBar = na
+    int lastSourceBar = na
+    int selectedIndex = -1
+    int latestConversionBar = na
+    int selectedSourceBar = na
+    bool anyUnhandled = false
+
+    if array.size(gaps) > 0
+        int i = 0
+        while i < array.size(gaps)
+            SourceGap g = array.get(gaps, i)
+            if g.runId == runId
+                memberCount += 1
+                declaredRunSize := math.max(declaredRunSize, g.runSize)
+                firstSourceBar := na(firstSourceBar) ? g.formedBar : math.min(firstSourceBar, g.formedBar)
+                lastSourceBar := na(lastSourceBar) ? g.formedBar : math.max(lastSourceBar, g.formedBar)
+                anyUnhandled := anyUnhandled or not g.handled
+                if g.converted
+                    convertedCount += 1
+                    bool laterConversion = na(latestConversionBar) or g.conversionBar > latestConversionBar
+                    bool sameConversionEarlierSource = not na(latestConversionBar) and g.conversionBar == latestConversionBar and (na(selectedSourceBar) or g.formedBar < selectedSourceBar)
+                    if laterConversion or sameConversionEarlierSource
+                        latestConversionBar := g.conversionBar
+                        selectedSourceBar := g.formedBar
+                        selectedIndex := i
+            i += 1
+
+    [memberCount, convertedCount, declaredRunSize, firstSourceBar, lastSourceBar, selectedIndex, anyUnhandled]
+
+f_add_unique_run(array<int> ids, int runId) =>
+    if not array.includes(ids, runId)
+        array.push(ids, runId)
+
+// Chooses the most recent newly-converting source run after the direction's cutoff.
+// If a newer run starts converting while an older two-gap run is still pending,
+// the newer run supersedes the stale pending candidate.
+f_choose_pending(array<SourceGap> gaps, array<int> convertedRunIds, int cutoffBar, int currentPendingId, int currentPendingLastBar) =>
+    int chosenId = currentPendingId
+    int chosenLastBar = currentPendingLastBar
+
+    if array.size(convertedRunIds) > 0
+        int i = 0
+        while i < array.size(convertedRunIds)
+            int rid = array.get(convertedRunIds, i)
+            [cnt, convCnt, rSize, firstBar, lastBar, selIdx, anyUnhandled] = f_run_info(gaps, rid)
+            bool afterCutoff = anyUnhandled and not na(firstBar) and (na(cutoffBar) or firstBar > cutoffBar)
+            bool moreRecent = na(chosenId) or na(chosenLastBar) or (not na(lastBar) and lastBar > chosenLastBar)
+            if afterCutoff and moreRecent
+                chosenId := rid
+                chosenLastBar := lastBar
+            i += 1
+
+    [chosenId, chosenLastBar]
+
+f_create_visuals(ActiveZone z) =>
+    if z.active
+        int rightTime = time_close + projectionBars * minuteMs
+        float boundary = z.direction == 1 ? z.hi : z.lo
+        float ce = (z.lo + z.hi) / 2.0
+        color base = z.direction == 1 ? bullishBaseColor : bearishBaseColor
+        color fill = z.direction == 1 ? bullFill : bearFill
+        color border = z.direction == 1 ? bullBorder : bearBorder
+        string zoneName = z.direction == 1 ? "1M Bullish IFVG\nFIRST ACTIVE" : "1M Bearish IFVG\nFIRST ACTIVE"
+        int labelX = f_label_x(z.leftTime, rightTime)
+
+        if na(z.bx)
+            z.bx := box.new(left=z.leftTime, top=z.hi, right=rightTime, bottom=z.lo, xloc=xloc.bar_time, extend=extend.none,
+                 bgcolor=fill, border_color=border, border_width=boxBorderWidth, border_style=line.style_dashed,
+                 text=showZoneText ? zoneName : "", text_color=zoneTextColor, text_size=size.tiny,
+                 text_halign=text.align_right, text_valign=text.align_center)
+
+        // Boundary intentionally has NO horizontal line. Keep only its price label.
+        // This removes the white Boundary line entirely.
+
+        // CE rendering: configurable Solid / Dashed / Dotted. When a price label is
+        // visible, split the line so no segment runs behind the CE + price text.
+        if showCeLine
+            int gapMs = ceLabelGapBars * minuteMs
+            if showPriceLabels and ceLabelGapBars > 0
+                if priceLabelPosition == "Middle"
+                    int leftEnd = math.max(z.leftTime, labelX - gapMs)
+                    int rightStart = math.min(rightTime, labelX + gapMs)
+                    if na(z.ceLineLeft) and leftEnd > z.leftTime
+                        z.ceLineLeft := line.new(x1=z.leftTime, y1=ce, x2=leftEnd, y2=ce, xloc=xloc.bar_time,
+                             extend=extend.none, color=ceLineColor, width=ceLineWidth, style=f_line_style(ceLineStyleText))
+                    if na(z.ceLineRight) and rightStart < rightTime
+                        z.ceLineRight := line.new(x1=rightStart, y1=ce, x2=rightTime, y2=ce, xloc=xloc.bar_time,
+                             extend=extend.none, color=ceLineColor, width=ceLineWidth, style=f_line_style(ceLineStyleText))
+                else
+                    // Right-edge label: stop the CE line before the label; there is no
+                    // useful right-side segment because the label sits at the box edge.
+                    int leftEnd = math.max(z.leftTime, rightTime - gapMs)
+                    if na(z.ceLineLeft) and leftEnd > z.leftTime
+                        z.ceLineLeft := line.new(x1=z.leftTime, y1=ce, x2=leftEnd, y2=ce, xloc=xloc.bar_time,
+                             extend=extend.none, color=ceLineColor, width=ceLineWidth, style=f_line_style(ceLineStyleText))
+            else if na(z.ceLineLeft)
+                z.ceLineLeft := line.new(x1=z.leftTime, y1=ce, x2=rightTime, y2=ce, xloc=xloc.bar_time,
+                     extend=extend.none, color=ceLineColor, width=ceLineWidth, style=f_line_style(ceLineStyleText))
+
+        if showPriceLabels
+            if na(z.boundaryLabel)
+                z.boundaryLabel := label.new(x=labelX, y=boundary, xloc=xloc.bar_time,
+                     text="Boundary " + str.tostring(boundary, format.mintick), style=label.style_label_center,
+                     textcolor=color.white, color=color.new(base, 82), size=labelTextSize)
+            if na(z.ceLabel)
+                z.ceLabel := label.new(x=labelX, y=ce, xloc=xloc.bar_time,
+                     text="CE " + str.tostring(ce, format.mintick), style=label.style_label_center,
+                     textcolor=ceLineColor, color=color.new(base, 35), size=labelTextSize)
+
+f_update_visuals(ActiveZone z) =>
+    if z.active
+        int rightTime = time_close + projectionBars * minuteMs
+        float boundary = z.direction == 1 ? z.hi : z.lo
+        float ce = (z.lo + z.hi) / 2.0
+        int labelX = f_label_x(z.leftTime, rightTime)
+
+        if not na(z.bx)
+            box.set_left(z.bx, z.leftTime)
+            box.set_right(z.bx, rightTime)
+            box.set_top(z.bx, z.hi)
+            box.set_bottom(z.bx, z.lo)
+            box.set_text(z.bx, showZoneText ? (z.direction == 1 ? "1M Bullish IFVG\nFIRST ACTIVE" : "1M Bearish IFVG\nFIRST ACTIVE") : "")
+
+        if showCeLine
+            int gapMs = ceLabelGapBars * minuteMs
+            if showPriceLabels and ceLabelGapBars > 0
+                if priceLabelPosition == "Middle"
+                    int leftEnd = math.max(z.leftTime, labelX - gapMs)
+                    int rightStart = math.min(rightTime, labelX + gapMs)
+                    if not na(z.ceLineLeft)
+                        line.set_xy1(z.ceLineLeft, z.leftTime, ce)
+                        line.set_xy2(z.ceLineLeft, leftEnd, ce)
+                        line.set_style(z.ceLineLeft, f_line_style(ceLineStyleText))
+                        line.set_width(z.ceLineLeft, ceLineWidth)
+                        line.set_color(z.ceLineLeft, ceLineColor)
+                    if not na(z.ceLineRight)
+                        line.set_xy1(z.ceLineRight, rightStart, ce)
+                        line.set_xy2(z.ceLineRight, rightTime, ce)
+                        line.set_style(z.ceLineRight, f_line_style(ceLineStyleText))
+                        line.set_width(z.ceLineRight, ceLineWidth)
+                        line.set_color(z.ceLineRight, ceLineColor)
+                else
+                    int leftEnd = math.max(z.leftTime, rightTime - gapMs)
+                    if not na(z.ceLineLeft)
+                        line.set_xy1(z.ceLineLeft, z.leftTime, ce)
+                        line.set_xy2(z.ceLineLeft, leftEnd, ce)
+                        line.set_style(z.ceLineLeft, f_line_style(ceLineStyleText))
+                        line.set_width(z.ceLineLeft, ceLineWidth)
+                        line.set_color(z.ceLineLeft, ceLineColor)
+            else
+                if not na(z.ceLineLeft)
+                    line.set_xy1(z.ceLineLeft, z.leftTime, ce)
+                    line.set_xy2(z.ceLineLeft, rightTime, ce)
+                    line.set_style(z.ceLineLeft, f_line_style(ceLineStyleText))
+                    line.set_width(z.ceLineLeft, ceLineWidth)
+                    line.set_color(z.ceLineLeft, ceLineColor)
+
+        if not na(z.boundaryLabel)
+            label.set_x(z.boundaryLabel, labelX)
+            label.set_y(z.boundaryLabel, boundary)
+            label.set_text(z.boundaryLabel, "Boundary " + str.tostring(boundary, format.mintick))
+        if not na(z.ceLabel)
+            label.set_x(z.ceLabel, labelX)
+            label.set_y(z.ceLabel, ce)
+            label.set_text(z.ceLabel, "CE " + str.tostring(ce, format.mintick))
+
+//------------------------------------------------------------------------------
+// Per-bar event pulses
+//------------------------------------------------------------------------------
+bool newBullIfvg = false
+bool newBearIfvg = false
+bool bullInvalidated = false
+bool bearInvalidated = false
+bool bullBoundaryReached = false
+bool bearBoundaryReached = false
+bool bullCeReached = false
+bool bearCeReached = false
+
+//------------------------------------------------------------------------------
+// Session reset / cleanup
+//------------------------------------------------------------------------------
+if stateSessionStart
+    array.clear(bullSourceFvgs)
+    array.clear(bearSourceFvgs)
+    array.clear(bullConvertedRunIds)
+    array.clear(bearConvertedRunIds)
+    f_reset_active(bullActive)
+    f_reset_active(bearActive)
+
+    lastBullSourceFormationBar := na
+    lastBearSourceFormationBar := na
+    currentBullSourceRunId := na
+    currentBearSourceRunId := na
+    currentBullSourceRunSize := 0
+    currentBearSourceRunSize := 0
+
+    bullCutoffBar := bar_index - 1
+    bearCutoffBar := bar_index - 1
+    bullPendingRunId := na
+    bearPendingRunId := na
+    bullPendingLastSourceBar := na
+    bearPendingLastSourceBar := na
+
+if stateSessionEnd
+    f_reset_active(bullActive)
+    f_reset_active(bearActive)
+    array.clear(bullSourceFvgs)
+    array.clear(bearSourceFvgs)
+    bullPendingRunId := na
+    bearPendingRunId := na
+    bullPendingLastSourceBar := na
+    bearPendingLastSourceBar := na
+
+if displaySessionEnd
+    f_clear_active_visuals(bullActive)
+    f_clear_active_visuals(bearActive)
+
+//------------------------------------------------------------------------------
+// Native 1M source processing + FIRST-ACTIVE state machine
+//------------------------------------------------------------------------------
+hasEnoughBars = bar_index >= 2
+sourceClosed = canRun and inStateSession and hasEnoughBars and barstate.isconfirmed
+
+if sourceClosed
+    array.clear(bullConvertedRunIds)
+    array.clear(bearConvertedRunIds)
+
+    // 1) Direct invalidation of the CURRENT active IFVG only.
+    if bullActive.active and close < bullActive.lo
+        bullInvalidated := inDisplaySession and visBull
+        if enableDynamicAlerts and enableInvalidationAlerts and inDisplaySession and visBull
+            alert(syminfo.ticker + ": FIRST bullish IFVG invalidated by close below " + str.tostring(bullActive.lo, format.mintick) + ".", alert.freq_once_per_bar)
+        // Remove only the active bullish drawing/state. Keep the directional cutoff
+        // and any newer pending bearish-source run: those source FVGs may be exactly
+        // what produces the NEXT first bullish IFVG after this failure.
+        f_reset_active(bullActive)
+
+    if bearActive.active and close > bearActive.hi
+        bearInvalidated := inDisplaySession and visBear
+        if enableDynamicAlerts and enableInvalidationAlerts and inDisplaySession and visBear
+            alert(syminfo.ticker + ": FIRST bearish IFVG invalidated by close above " + str.tostring(bearActive.hi, format.mintick) + ".", alert.freq_once_per_bar)
+        // Same mirror rule for bearish state: invalidating the active bearish IFVG
+        // does not erase newer bullish-source FVGs that can create the next first bearish IFVG.
+        f_reset_active(bearActive)
+
+    // 2) Convert EXISTING source FVGs. Do not draw individual IFVGs here.
+    //    Conversion only feeds the first-structure state machine below.
+    int i = 0
+    while i < array.size(bullSourceFvgs)
+        SourceGap g = array.get(bullSourceFvgs, i)
+        if not g.converted and close < g.lo
+            g.converted := true
+            g.conversionBar := bar_index
+            g.conversionTime := time_close
+            array.set(bullSourceFvgs, i, g)
+            f_add_unique_run(bearConvertedRunIds, g.runId)
+        i += 1
+
+    int j = 0
+    while j < array.size(bearSourceFvgs)
+        SourceGap g = array.get(bearSourceFvgs, j)
+        if not g.converted and close > g.hi
+            g.converted := true
+            g.conversionBar := bar_index
+            g.conversionTime := time_close
+            array.set(bearSourceFvgs, j, g)
+            f_add_unique_run(bullConvertedRunIds, g.runId)
+        j += 1
+
+    // 3) Bullish IFVG candidate: bearish source FVG(s) converting upward.
+    int oldBullPending = bullPendingRunId
+    [nextBullPending, nextBullPendingLast] = f_choose_pending(bearSourceFvgs, bullConvertedRunIds, bullCutoffBar, bullPendingRunId, bullPendingLastSourceBar)
+    if not na(oldBullPending) and nextBullPending != oldBullPending
+        f_mark_run_handled(bearSourceFvgs, oldBullPending)
+    bullPendingRunId := nextBullPending
+    bullPendingLastSourceBar := nextBullPendingLast
+
+    if not na(bullPendingRunId)
+        [cntBull, convBull, runSizeBull, firstBarBull, lastBarBull, selectedBullIndex, unhandledBull] = f_run_info(bearSourceFvgs, bullPendingRunId)
+
+        if runSizeBull >= 3
+            // Three-or-more consecutive source FVGs are not part of this model.
+            f_mark_run_handled(bearSourceFvgs, bullPendingRunId)
+            // Reject the 3+ run itself. Newer source runs formed after that run may still qualify.
+            bullCutoffBar := lastBarBull
+            bullPendingRunId := na
+            bullPendingLastSourceBar := na
+        else if runSizeBull >= 1 and runSizeBull <= 2 and convBull == cntBull and cntBull == runSizeBull and selectedBullIndex >= 0
+            SourceGap selectedBull = array.get(bearSourceFvgs, selectedBullIndex)
+
+            // New valid bullish first-structure replaces the prior bullish active zone only.
+            f_reset_active(bullActive)
+            bullActive.active := true
+            bullActive.direction := 1
+            bullActive.lo := selectedBull.lo
+            bullActive.hi := selectedBull.hi
+            bullActive.leftTime := f_box_left(selectedBull.firstCandleTime, selectedBull.endCandleTime)
+            bullActive.formedBar := bar_index
+            bullActive.formedTime := time_close
+            bullActive.sourceRunId := bullPendingRunId
+            bullActive.boundaryTouched := false
+            bullActive.ceTouched := false
+
+            f_mark_run_handled(bearSourceFvgs, bullPendingRunId)
+            bullCutoffBar := bar_index
+            bullPendingRunId := na
+            bullPendingLastSourceBar := na
+
+            newBullIfvg := inDisplaySession and visBull
+            if inDisplaySession and visBull
+                f_create_visuals(bullActive)
+                if enableDynamicAlerts and enableFormationAlerts
+                    float bullCe = (bullActive.lo + bullActive.hi) / 2.0
+                    alert(syminfo.ticker + ": FIRST bullish IFVG active. Boundary " + str.tostring(bullActive.hi, format.mintick) + ", CE " + str.tostring(bullCe, format.mintick) + ".", alert.freq_once_per_bar)
+
+    // 4) Bearish IFVG candidate: bullish source FVG(s) converting downward.
+    int oldBearPending = bearPendingRunId
+    [nextBearPending, nextBearPendingLast] = f_choose_pending(bullSourceFvgs, bearConvertedRunIds, bearCutoffBar, bearPendingRunId, bearPendingLastSourceBar)
+    if not na(oldBearPending) and nextBearPending != oldBearPending
+        f_mark_run_handled(bullSourceFvgs, oldBearPending)
+    bearPendingRunId := nextBearPending
+    bearPendingLastSourceBar := nextBearPendingLast
+
+    if not na(bearPendingRunId)
+        [cntBear, convBear, runSizeBear, firstBarBear, lastBarBear, selectedBearIndex, unhandledBear] = f_run_info(bullSourceFvgs, bearPendingRunId)
+
+        if runSizeBear >= 3
+            f_mark_run_handled(bullSourceFvgs, bearPendingRunId)
+            // Reject the 3+ run itself. Newer source runs formed after that run may still qualify.
+            bearCutoffBar := lastBarBear
+            bearPendingRunId := na
+            bearPendingLastSourceBar := na
+        else if runSizeBear >= 1 and runSizeBear <= 2 and convBear == cntBear and cntBear == runSizeBear and selectedBearIndex >= 0
+            SourceGap selectedBear = array.get(bullSourceFvgs, selectedBearIndex)
+
+            f_reset_active(bearActive)
+            bearActive.active := true
+            bearActive.direction := -1
+            bearActive.lo := selectedBear.lo
+            bearActive.hi := selectedBear.hi
+            bearActive.leftTime := f_box_left(selectedBear.firstCandleTime, selectedBear.endCandleTime)
+            bearActive.formedBar := bar_index
+            bearActive.formedTime := time_close
+            bearActive.sourceRunId := bearPendingRunId
+            bearActive.boundaryTouched := false
+            bearActive.ceTouched := false
+
+            f_mark_run_handled(bullSourceFvgs, bearPendingRunId)
+            bearCutoffBar := bar_index
+            bearPendingRunId := na
+            bearPendingLastSourceBar := na
+
+            newBearIfvg := inDisplaySession and visBear
+            if inDisplaySession and visBear
+                f_create_visuals(bearActive)
+                if enableDynamicAlerts and enableFormationAlerts
+                    float bearCe = (bearActive.lo + bearActive.hi) / 2.0
+                    alert(syminfo.ticker + ": FIRST bearish IFVG active. Boundary " + str.tostring(bearActive.lo, format.mintick) + ", CE " + str.tostring(bearCe, format.mintick) + ".", alert.freq_once_per_bar)
+
+    // 5) Create NEW source FVGs AFTER processing conversions.
+    bool bullishGap = low > high[2]
+    bool bearishGap = high < low[2]
+    float bullishGapSize = bullishGap ? low - high[2] : 0.0
+    float bearishGapSize = bearishGap ? low[2] - high : 0.0
+
+    if bullishGap and bullishGapSize >= minGap1
+        bool isConsecutiveBullSource = not na(lastBullSourceFormationBar) and lastBullSourceFormationBar == bar_index - 1
+        if isConsecutiveBullSource
+            currentBullSourceRunSize += 1
+            f_update_run_size(bullSourceFvgs, currentBullSourceRunId, currentBullSourceRunSize)
+        else
+            nextRunId += 1
+            currentBullSourceRunId := nextRunId
+            currentBullSourceRunSize := 1
+
+        nextSourceId += 1
+        SourceGap srcBull = SourceGap.new(nextSourceId, 1, high[2], low, time[2], time, bar_index,
+             currentBullSourceRunId, currentBullSourceRunSize, false, na, na, false)
+        array.push(bullSourceFvgs, srcBull)
+        lastBullSourceFormationBar := bar_index
+
+    if bearishGap and bearishGapSize >= minGap1
+        bool isConsecutiveBearSource = not na(lastBearSourceFormationBar) and lastBearSourceFormationBar == bar_index - 1
+        if isConsecutiveBearSource
+            currentBearSourceRunSize += 1
+            f_update_run_size(bearSourceFvgs, currentBearSourceRunId, currentBearSourceRunSize)
+        else
+            nextRunId += 1
+            currentBearSourceRunId := nextRunId
+            currentBearSourceRunSize := 1
+
+        nextSourceId += 1
+        SourceGap srcBear = SourceGap.new(nextSourceId, -1, high, low[2], time[2], time, bar_index,
+             currentBearSourceRunId, currentBearSourceRunSize, false, na, na, false)
+        array.push(bearSourceFvgs, srcBear)
+        lastBearSourceFormationBar := bar_index
+
+//------------------------------------------------------------------------------
+// Display: lazily draw a valid pre-09:30 carry-in at the start of the visible session.
+//------------------------------------------------------------------------------
+if displaySessionStart
+    if visBull and bullActive.active
+        f_create_visuals(bullActive)
+    if visBear and bearActive.active
+        f_create_visuals(bearActive)
+
+if inDisplaySession
+    if visBull and bullActive.active
+        if na(bullActive.bx)
+            f_create_visuals(bullActive)
+        f_update_visuals(bullActive)
+    else
+        f_clear_active_visuals(bullActive)
+
+    if visBear and bearActive.active
+        if na(bearActive.bx)
+            f_create_visuals(bearActive)
+        f_update_visuals(bearActive)
+    else
+        f_clear_active_visuals(bearActive)
+
+//------------------------------------------------------------------------------
+// First-touch tracking for CURRENT active zones only.
+// Bullish boundary = top. Bearish boundary = bottom.
+//------------------------------------------------------------------------------
+if canRun and inDisplaySession
+    if bullActive.active and bar_index > bullActive.formedBar
+        float bullBoundary = bullActive.hi
+        float bullCe = (bullActive.lo + bullActive.hi) / 2.0
+        if not bullActive.boundaryTouched and low <= bullBoundary
+            bullActive.boundaryTouched := true
+            bullBoundaryReached := visBull
+            if visBull and enableDynamicAlerts and enableBoundaryAlerts
+                alert(syminfo.ticker + ": FIRST bullish IFVG Boundary reached at " + str.tostring(bullBoundary, format.mintick) + ".", alert.freq_once_per_bar)
+        if not bullActive.ceTouched and low <= bullCe
+            bullActive.ceTouched := true
+            bullCeReached := visBull
+            if visBull and enableDynamicAlerts and enableCeAlerts
+                alert(syminfo.ticker + ": FIRST bullish IFVG CE reached at " + str.tostring(bullCe, format.mintick) + ".", alert.freq_once_per_bar)
+
+    if bearActive.active and bar_index > bearActive.formedBar
+        float bearBoundary = bearActive.lo
+        float bearCe = (bearActive.lo + bearActive.hi) / 2.0
+        if not bearActive.boundaryTouched and high >= bearBoundary
+            bearActive.boundaryTouched := true
+            bearBoundaryReached := visBear
+            if visBear and enableDynamicAlerts and enableBoundaryAlerts
+                alert(syminfo.ticker + ": FIRST bearish IFVG Boundary reached at " + str.tostring(bearBoundary, format.mintick) + ".", alert.freq_once_per_bar)
+        if not bearActive.ceTouched and high >= bearCe
+            bearActive.ceTouched := true
+            bearCeReached := visBear
+            if visBear and enableDynamicAlerts and enableCeAlerts
+                alert(syminfo.ticker + ": FIRST bearish IFVG CE reached at " + str.tostring(bearCe, format.mintick) + ".", alert.freq_once_per_bar)
+
+//------------------------------------------------------------------------------
+// Alert conditions exposed in TradingView's Create Alert dialog
+//------------------------------------------------------------------------------
+alertcondition(enableFormationAlerts and newBullIfvg, title="FIRST Bullish IFVG Active", message="{{ticker}}: first active bullish 1M IFVG formed/replaced.")
+alertcondition(enableFormationAlerts and newBearIfvg, title="FIRST Bearish IFVG Active", message="{{ticker}}: first active bearish 1M IFVG formed/replaced.")
+alertcondition(enableFormationAlerts and (newBullIfvg or newBearIfvg), title="FIRST IFVG Active - Any Direction", message="{{ticker}}: a first-active 1M IFVG formed/replaced.")
+
+alertcondition(enableInvalidationAlerts and bullInvalidated, title="FIRST Bullish IFVG Invalidated", message="{{ticker}}: active bullish 1M IFVG invalidated.")
+alertcondition(enableInvalidationAlerts and bearInvalidated, title="FIRST Bearish IFVG Invalidated", message="{{ticker}}: active bearish 1M IFVG invalidated.")
+
+alertcondition(enableBoundaryAlerts and bullBoundaryReached, title="FIRST Bullish IFVG Boundary Reached", message="{{ticker}}: price reached the active bullish IFVG Boundary.")
+alertcondition(enableBoundaryAlerts and bearBoundaryReached, title="FIRST Bearish IFVG Boundary Reached", message="{{ticker}}: price reached the active bearish IFVG Boundary.")
+alertcondition(enableBoundaryAlerts and (bullBoundaryReached or bearBoundaryReached), title="FIRST IFVG Boundary Reached - Any Direction", message="{{ticker}}: price reached an active IFVG Boundary.")
+
+alertcondition(enableCeAlerts and bullCeReached, title="FIRST Bullish IFVG CE Reached", message="{{ticker}}: price reached the active bullish IFVG CE.")
+alertcondition(enableCeAlerts and bearCeReached, title="FIRST Bearish IFVG CE Reached", message="{{ticker}}: price reached the active bearish IFVG CE.")
+alertcondition(enableCeAlerts and (bullCeReached or bearCeReached), title="FIRST IFVG CE Reached - Any Direction", message="{{ticker}}: price reached an active IFVG CE.")

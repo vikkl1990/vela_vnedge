@@ -1,0 +1,185 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/ MPL-2.0
+//@version=6
+indicator("Suspension Block Finder", shorttitle="SB Finder", overlay=true, max_boxes_count=500, max_lines_count=500)
+
+// --- Constants ---
+string FILTERS_GROUP = "Filters"
+string STYLE_GROUP = "Style"
+string BOXES_GROUP = "Boxes"
+string MITIGATION_GROUP = "Mitigation"
+string IMBALANCE_GROUP = "Imbalance"
+string STRENGTH_GROUP = "Strength Filter"
+
+// --- Inputs ---
+enableMacroFilter = input.bool(false, "Macro Toggle (XX:50 - XX:10 Only)", group=FILTERS_GROUP, tooltip="When enabled, only Suspension Blocks whose target candle formed from minute 50 through minute 10 are displayed.")
+imbalanceMode = input.string("Body Gaps", "VI Detection Mode", options=["Body Gaps", "Full Candle Gaps", "Opposite Body Gaps"], group=IMBALANCE_GROUP, tooltip="Body Gaps uses open/close ranges. Full Candle Gaps uses the complete candle ranges. Opposite Body Gaps requires C1 and C3 to occupy opposite sides of C2.")
+strengthFilterMode = input.string("Off", "Strength Filter", options=["Off", "Body Ratio", "ATR Range", "Both"], group=STRENGTH_GROUP, tooltip="Filters weak blocks using C2 body size, C2 range relative to ATR, or both conditions.")
+minimumBodyRatio = input.float(0.25, "Minimum C2 Body / Range", minval=0.0, maxval=1.0, step=0.05, group=STRENGTH_GROUP, tooltip="Minimum proportion of C2's full range that must be occupied by its body.")
+atrLength = input.int(14, "ATR Length", minval=1, group=STRENGTH_GROUP, tooltip="ATR lookback used by the ATR Range strength filter.")
+minimumRangeAtr = input.float(0.25, "Minimum C2 Range / ATR", minval=0.0, step=0.05, group=STRENGTH_GROUP, tooltip="Minimum C2 range expressed as a multiple of ATR.")
+
+bullishColor = input.color(color.new(color.green, 80), "Bullish Color", group=STYLE_GROUP, tooltip="Fill color for bullish Suspension Block zones.")
+bearishColor = input.color(color.new(color.red, 80), "Bearish Color", group=STYLE_GROUP, tooltip="Fill color for bearish Suspension Block zones.")
+
+mitigationMode = input.string("Wick Touch", "Mitigation Mode", options=["Wick Touch", "Close Inside", "CE Cross"], group=MITIGATION_GROUP, tooltip="Controls when an active block stops extending: any wick touch, a close inside the zone, or a candle range crossing CE.")
+enableInvalidation = input.bool(true, "Enable Invalidation", group=MITIGATION_GROUP, tooltip="Invalidates a bullish block when price closes below its low, or a bearish block when price closes above its high.")
+invalidationAction = input.string("Fade", "Invalidation Action", options=["Fade", "Delete"], group=MITIGATION_GROUP, tooltip="Choose whether invalidated blocks remain on the chart in a faded state or are deleted.")
+
+maxBoxesInput = input.int(100, "Maximum Boxes", minval=1, maxval=500, group=BOXES_GROUP, tooltip="Maximum number of Suspension Block zones retained on the chart. CE lines use the same limit.")
+
+// --- Storage ---
+var box[] sbBoxes = array.new_box()
+var line[] sbCeLines = array.new_line()
+var int[] sbCreationBars = array.new_int()
+var float[] sbTops = array.new_float()
+var float[] sbBottoms = array.new_float()
+var bool[] sbBullish = array.new_bool()
+var bool[] sbActive = array.new_bool()
+
+// --- Utility functions ---
+addSuspensionBlock(bool isBullish, int leftBar, int rightBar, float zoneTop, float zoneBottom) =>
+    color zoneColor = isBullish ? bullishColor : bearishColor
+    color borderColor = isBullish ? color.new(color.green, 15) : color.new(color.red, 15)
+    string zoneText = isBullish ? "Bullish SB" : "Bearish SB"
+    float equilibrium = (zoneTop + zoneBottom) / 2.0
+    box newBox = box.new(
+         left=leftBar,
+         top=zoneTop,
+         right=rightBar,
+         bottom=zoneBottom,
+         border_color=borderColor,
+         border_width=1,
+         border_style=line.style_solid,
+         extend=extend.right,
+         xloc=xloc.bar_index,
+         bgcolor=zoneColor,
+         text=zoneText,
+         text_color=color.new(chart.fg_color, 0),
+         text_size=size.small,
+         text_halign=text.align_center,
+         text_valign=text.align_center)
+    line newCeLine = line.new(
+         x1=leftBar,
+         y1=equilibrium,
+         x2=rightBar,
+         y2=equilibrium,
+         xloc=xloc.bar_index,
+         extend=extend.right,
+         color=color.white,
+         style=line.style_dashed,
+         width=1)
+    array.push(sbBoxes, newBox)
+    array.push(sbCeLines, newCeLine)
+    array.push(sbCreationBars, bar_index)
+    array.push(sbTops, zoneTop)
+    array.push(sbBottoms, zoneBottom)
+    array.push(sbBullish, isBullish)
+    array.push(sbActive, true)
+
+// --- Maintain, mitigate, and invalidate existing blocks ---
+if array.size(sbBoxes) > 0
+    for index = array.size(sbBoxes) - 1 to 0
+        if array.get(sbActive, index)
+            box zoneBox = array.get(sbBoxes, index)
+            line ceLine = array.get(sbCeLines, index)
+            int creationBar = array.get(sbCreationBars, index)
+            float zoneTop = array.get(sbTops, index)
+            float zoneBottom = array.get(sbBottoms, index)
+            bool isBullish = array.get(sbBullish, index)
+            bool futureBar = bar_index > creationBar
+            if futureBar
+                box.set_right(zoneBox, bar_index)
+                line.set_x2(ceLine, bar_index)
+            bool invalidated = futureBar and enableInvalidation and (isBullish ? close < zoneBottom : close > zoneTop)
+            bool wickTouch = high >= zoneBottom and low <= zoneTop
+            bool closeInside = close >= zoneBottom and close <= zoneTop
+            float equilibrium = (zoneTop + zoneBottom) / 2.0
+            bool ceCross = low <= equilibrium and high >= equilibrium
+            bool mitigated = futureBar and (mitigationMode == "Wick Touch" ? wickTouch : mitigationMode == "Close Inside" ? closeInside : ceCross)
+            if invalidated
+                if invalidationAction == "Delete"
+                    box.delete(zoneBox)
+                    line.delete(ceLine)
+                    array.remove(sbBoxes, index)
+                    array.remove(sbCeLines, index)
+                    array.remove(sbCreationBars, index)
+                    array.remove(sbTops, index)
+                    array.remove(sbBottoms, index)
+                    array.remove(sbBullish, index)
+                    array.remove(sbActive, index)
+                else
+                    box.set_right(zoneBox, bar_index)
+                    box.set_extend(zoneBox, extend.none)
+                    box.set_bgcolor(zoneBox, color.new(isBullish ? bullishColor : bearishColor, 93))
+                    box.set_text_color(zoneBox, color.new(chart.fg_color, 65))
+                    line.set_x2(ceLine, bar_index)
+                    line.set_extend(ceLine, extend.none)
+                    line.set_color(ceLine, color.new(color.white, 65))
+                    array.set(sbActive, index, false)
+            else if mitigated
+                box.set_right(zoneBox, bar_index)
+                box.set_extend(zoneBox, extend.none)
+                line.set_x2(ceLine, bar_index)
+                line.set_extend(ceLine, extend.none)
+                array.set(sbActive, index, false)
+
+// --- Enforce the user-selected object limit ---
+while array.size(sbBoxes) > maxBoxesInput
+    box oldestBox = array.shift(sbBoxes)
+    line oldestCeLine = array.shift(sbCeLines)
+    box.delete(oldestBox)
+    line.delete(oldestCeLine)
+    array.shift(sbCreationBars)
+    array.shift(sbTops)
+    array.shift(sbBottoms)
+    array.shift(sbBullish)
+    array.shift(sbActive)
+
+// --- Three-candle Suspension Block detection ---
+// The current bar is C3, the previous bar is C2, and two bars back is C1.
+bool enoughBars = bar_index >= 2
+
+float c1BodyHigh = enoughBars ? math.max(open[2], close[2]) : na
+float c1BodyLow = enoughBars ? math.min(open[2], close[2]) : na
+float c2BodyHigh = enoughBars ? math.max(open[1], close[1]) : na
+float c2BodyLow = enoughBars ? math.min(open[1], close[1]) : na
+float c3BodyHigh = enoughBars ? math.max(open, close) : na
+float c3BodyLow = enoughBars ? math.min(open, close) : na
+float c2Range = enoughBars ? high[1] - low[1] : na
+float c2BodySize = enoughBars ? math.abs(close[1] - open[1]) : na
+float c2BodyRatio = enoughBars and c2Range > 0.0 ? c2BodySize / c2Range : 0.0
+float c2Atr = ta.atr(atrLength)[1]
+
+bool c2BodyInsideC1Wick = enoughBars and c2BodyHigh <= high[2] and c2BodyLow >= low[2]
+bool bodyUpperImbalance = enoughBars and (c1BodyLow > c2BodyHigh or c3BodyLow > c2BodyHigh)
+bool bodyLowerImbalance = enoughBars and (c1BodyHigh < c2BodyLow or c3BodyHigh < c2BodyLow)
+bool fullUpperImbalance = enoughBars and (low[2] > c2BodyHigh or low > c2BodyHigh)
+bool fullLowerImbalance = enoughBars and (high[2] < c2BodyLow or high < c2BodyLow)
+bool oppositeBodyImbalance = enoughBars and ((c1BodyLow > c2BodyHigh and c3BodyHigh < c2BodyLow) or (c3BodyLow > c2BodyHigh and c1BodyHigh < c2BodyLow))
+
+bool hasRequiredImbalances = switch imbalanceMode
+    "Full Candle Gaps" => fullUpperImbalance and fullLowerImbalance
+    "Opposite Body Gaps" => oppositeBodyImbalance
+    => bodyUpperImbalance and bodyLowerImbalance
+
+bool bodyStrengthPasses = c2BodyRatio >= minimumBodyRatio
+bool atrStrengthPasses = not na(c2Atr) and c2Range >= c2Atr * minimumRangeAtr
+bool strengthPasses = switch strengthFilterMode
+    "Body Ratio" => bodyStrengthPasses
+    "ATR Range" => atrStrengthPasses
+    "Both" => bodyStrengthPasses and atrStrengthPasses
+    => true
+
+bool c2IsBullish = enoughBars and close[1] > open[1]
+bool c2IsBearish = enoughBars and close[1] < open[1]
+bool c2InMacroWindow = enoughBars and (minute(time[1]) >= 50 or minute(time[1]) <= 10)
+bool macroFilterPasses = not enableMacroFilter or c2InMacroWindow
+
+bool validSuspensionBlock = barstate.isconfirmed and c2BodyInsideC1Wick and hasRequiredImbalances and strengthPasses and macroFilterPasses
+
+if validSuspensionBlock and (c2IsBullish or c2IsBearish)
+    addSuspensionBlock(c2IsBullish, bar_index - 1, bar_index, high[1], low[1])
+
+// --- Alerts ---
+alertcondition(validSuspensionBlock and c2IsBullish, "Bullish Suspension Block", "A bullish Suspension Block has been confirmed.")
+alertcondition(validSuspensionBlock and c2IsBearish, "Bearish Suspension Block", "A bearish Suspension Block has been confirmed.")

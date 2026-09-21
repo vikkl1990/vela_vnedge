@@ -1,0 +1,469 @@
+//@version=6
+indicator("Footprint Delta Profile [SDT]", "FP Delta Profile", overlay = true, behind_chart = false, max_boxes_count = 500, max_lines_count = 20, max_polylines_count = 4, calc_bars_count = 3000)
+
+import Smart-Day-Trader/FootprintKit/1 as fpk
+
+var string G1 = "Data"
+resMode   = input.string("Auto", "Footprint resolution", options = ["Auto", "1", "2", "4", "8", "16", "32", "64", "Custom"], group = G1, tooltip = "ticks_per_row is a simple int and cannot be derived from series data. Auto scales it by chart timeframe; the measured suggestion for this symbol is shown in the table.")
+resManual = input.int(4, "Custom, ticks per row", minval = 1, group = G1)
+target    = input.int(20, "Target rows per bar", minval = 6, maxval = 60, group = G1, tooltip = "Used only to compute the suggestion.")
+imb       = input.int(300, "Imbalance threshold, %", minval = 100, group = G1)
+vaPct     = input.int(70, "Value area, %", minval = 30, maxval = 95, group = G1)
+
+var string G2 = "Profile window"
+anchor  = input.string("Auto", "Reset profile", options = ["Auto", "Day", "Week", "Month", "N bars", "None"], group = G2, tooltip = "Auto: day on intraday, month on daily, none on weekly and above. A period not larger than the chart timeframe is impossible and falls back to a bar count.")
+resetN  = input.int(150, "N bars", minval = 20, group = G2)
+maxRows = input.int(180, "Max profile rows", minval = 40, maxval = 240, group = G2, tooltip = "Row height is chosen automatically to stay under this limit.")
+
+var string G3 = "Profile"
+mode      = input.string("Delta", "Data mode", options = ["Volume", "Delta", "Bid × Ask"], group = G3, tooltip = "Volume: row length is total volume, coloured by delta sign. Delta: length is the size of the imbalance. Bid × Ask: aggressive sells and buys measured separately.")
+layout    = input.string("Two-sided", "Layout", options = ["One-sided", "Two-sided"], group = G3, tooltip = "One-sided: the row grows right from the axis. Two-sided: one part grows left, the other right.")
+form      = input.string("Fill", "Style", options = ["Fill", "Gradient", "Outline", "Ticks"], group = G3)
+sideSw    = input.bool(false, "Swap sides", group = G3)
+wingScale = input.string("Independent", "Wing scale", options = ["Shared", "Independent"], group = G3, tooltip = "Shared: both sides use one scale, so lengths are directly comparable. Independent: each side is stretched to its own maximum, which reveals shape differences but not absolute size. In Bid × Ask a symmetric look under a shared scale is normal, since delta is only a few percent of volume.")
+
+var string G4 = "Geometry"
+profGap = input.int(3,  "Offset from price, bars", minval = 0, maxval = 60, group = G4, tooltip = "Gap between the last candle and the profile. Under a two-sided layout the axis shifts automatically.")
+profLen = input.int(30, "Wing length, bars", minval = 5, maxval = 200, group = G4)
+opacity = input.int(45, "Transparency, %", minval = 0, maxval = 90, group = G4)
+dimOut  = input.int(15, "Dim outside value area, %", minval = 0, maxval = 60, group = G4)
+valMode = input.string("All", "Volume labels", options = ["None", "POC only", "Top 5", "All"], group = G4, tooltip = "Text is written inside the row box and scales with its height. No separate label objects are created.")
+
+var string G5 = "Lines"
+showVA   = input.bool(true, "POC and value area bounds", group = G5)
+pocW     = input.int(2, "POC width", minval = 1, maxval = 4, group = G5)
+pocSt    = input.string("Solid", "POC style", options = ["Solid", "Dashed", "Dotted"], group = G5)
+vaSt     = input.string("Dotted", "Bounds style", options = ["Solid", "Dashed", "Dotted"], group = G5)
+lineBack = input.int(300, "Extend lines back, bars", minval = 20, maxval = 1000, group = G5, tooltip = "How far left the POC and bound lines reach. A line never starts before the window opens.")
+
+var string G6 = "Theme and palette"
+theme   = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = G6, tooltip = "Auto reads the chart background brightness through chart.bg_color.")
+palette = input.string("Classic", "Palette", options = ["Classic", "Ocean", "Neon", "Mono", "Earth", "Custom"], group = G6)
+uBuy = input.color(#26a69a, "Buys",   group = G6, inline = "u")
+uSel = input.color(#ef5350, "Sells",  group = G6, inline = "u")
+uPoc = input.color(#ffd54f, "POC",    group = G6, inline = "v")
+uVa  = input.color(#7986cb, "Bounds", group = G6, inline = "v")
+
+var string G7 = "Table and markers"
+showTbl  = input.bool(true, "Table", group = G7)
+tblPos   = input.string("Top right", "Position", options = ["Top right", "Bottom right", "Top left", "Bottom left"], group = G7)
+tblSize  = input.string("Large", "Text size", options = ["Small", "Normal", "Large"], group = G7)
+showAbs  = input.bool(true, "Absorption", group = G7)
+absShare = input.float(0.45, "Volume share in a bar third ≥", minval = 0.3, maxval = 0.9, step = 0.05, group = G7)
+
+lum(color c) => na(c) ? 0.0 : (0.2126 * color.r(c) + 0.7152 * color.g(c) + 0.0722 * color.b(c)) / 255.0
+bool dark = theme == "Auto" ? (na(chart.bg_color) ? true : lum(chart.bg_color) < 0.5) : theme == "Dark"
+
+palBuy() =>
+    color r = uBuy
+    if palette == "Classic"
+        r := dark ? #26a69a : #00897b
+    else if palette == "Ocean"
+        r := dark ? #4dd0e1 : #00838f
+    else if palette == "Neon"
+        r := dark ? #00e5ff : #00838f
+    else if palette == "Mono"
+        r := dark ? #eceff1 : #263238
+    else if palette == "Earth"
+        r := dark ? #9ccc65 : #558b2f
+    r
+
+palSel() =>
+    color r = uSel
+    if palette == "Classic"
+        r := dark ? #ef5350 : #d32f2f
+    else if palette == "Ocean"
+        r := dark ? #9575cd : #4527a0
+    else if palette == "Neon"
+        r := dark ? #ff4081 : #c2185b
+    else if palette == "Mono"
+        r := dark ? #607d8b : #90a4ae
+    else if palette == "Earth"
+        r := dark ? #ff8a65 : #d84315
+    r
+
+palPoc() =>
+    color r = uPoc
+    if palette == "Classic"
+        r := dark ? #ffd54f : #ef6c00
+    else if palette == "Ocean"
+        r := dark ? #ffe082 : #e65100
+    else if palette == "Neon"
+        r := dark ? #eeff41 : #827717
+    else if palette == "Mono"
+        r := dark ? #ffffff : #000000
+    else if palette == "Earth"
+        r := dark ? #ffca28 : #ff8f00
+    r
+
+palVa() =>
+    color r = uVa
+    if palette == "Classic"
+        r := dark ? #7986cb : #3949ab
+    else if palette == "Ocean"
+        r := dark ? #4fc3f7 : #0277bd
+    else if palette == "Neon"
+        r := dark ? #b388ff : #6a1b9a
+    else if palette == "Mono"
+        r := dark ? #b0bec5 : #546e7a
+    else if palette == "Earth"
+        r := dark ? #a1887f : #5d4037
+    r
+
+color cBuy = palBuy()
+color cSel = palSel()
+color cPoc = palPoc()
+color cVa  = palVa()
+color cTxt = na(chart.fg_color) ? (dark ? color.white : color.black) : chart.fg_color
+color cTblBg = dark ? color.new(#131722, 12) : color.new(#ffffff, 8)
+
+lineStyle(string st) => st == "Dashed" ? line.style_dashed : st == "Dotted" ? line.style_dotted : line.style_solid
+txtSize = tblSize == "Large" ? size.normal : tblSize == "Normal" ? size.small : size.tiny
+
+chartSec  = timeframe.in_seconds()
+autoTicks = chartSec <= 60 ? 1 : chartSec <= 300 ? 2 : chartSec <= 900 ? 4 : chartSec <= 3600 ? 8 : chartSec <= 14400 ? 16 : chartSec <= 86400 ? 32 : 64
+ticks = resMode == "Auto" ? autoTicks : resMode == "1" ? 1 : resMode == "2" ? 2 : resMode == "4" ? 4 : resMode == "8" ? 8 : resMode == "16" ? 16 : resMode == "32" ? 32 : resMode == "64" ? 64 : resManual
+
+footprint fp = request.footprint(ticks, vaPct, imb)
+fpk.RowStats st = fpk.stats(fp)
+absr = fpk.absorption(fp, st, open, close, absShare)
+
+avgRange = ta.sma(high - low, 50)
+recTicks = math.max(1, math.round(avgRange / syminfo.mintick / target))
+
+autoAnc = chartSec < 86400 ? "D" : chartSec < 604800 ? "M" : ""
+ancTF   = anchor == "Auto" ? autoAnc : anchor == "Day" ? "D" : anchor == "Week" ? "W" : anchor == "Month" ? "M" : ""
+useBars = anchor == "N bars" or (ancTF != "" and timeframe.in_seconds(ancTF) <= chartSec)
+ancSafe = ancTF == "" ? "M" : ancTF
+
+ancChanged = ta.change(time(ancSafe)) != 0
+newWin = useBars ? (bar_index % resetN == 0) : (ancTF == "" ? false : ancChanged)
+
+barsWin = useBars ? resetN : math.max(20, int(timeframe.in_seconds(ancSafe) / math.max(1, chartSec)))
+estSpan = ta.atr(14) * math.sqrt(math.min(barsWin, 400)) * 2.0
+
+var fpk.Profile prof = na
+var float pStep   = na
+var int   winTime = 0
+var float cumDlt  = 0.0
+
+if na(prof) and st.n > 0 and not na(st.rowH) and st.rowH > 0 and not na(estSpan) and estSpan > 0
+    pStep   := math.max(st.rowH, math.ceil(estSpan / maxRows / st.rowH) * st.rowH)
+    prof    := fpk.newProfile(pStep)
+    winTime := time
+
+if newWin and not na(prof)
+    prof.reset()
+    winTime := time
+    cumDlt  := 0.0
+
+if barstate.isconfirmed and not na(fp) and not na(prof)
+    prof.feed(fp)
+    cumDlt += nz(st.delta)
+
+var array<box> pool = array.new<box>()
+var line lPoc = na
+var line lVah = na
+var line lVal = na
+var polyline pl = na
+
+if barstate.islast and not na(prof)
+    array<int>    sxL = array.new<int>()
+    array<float>  syT = array.new<float>()
+    array<int>    sxR = array.new<int>()
+    array<float>  syB = array.new<float>()
+    array<color>  sBg = array.new<color>()
+    array<color>  sBd = array.new<color>()
+    array<string> sTx = array.new<string>()
+    array<string> sHa = array.new<string>()
+    if not na(pl)
+        polyline.delete(pl)
+        pl := na
+
+    int n = array.size(prof.vol)
+    if n > 0
+        float mxV = 0.0
+        float mxD = 0.0
+        for i = 0 to n - 1
+            mxV := math.max(mxV, array.get(prof.vol, i))
+            mxD := math.max(mxD, math.abs(array.get(prof.dlt, i)))
+        if mxD <= 0
+            mxD := mxV
+
+        float pocP = prof.poc()
+        float vah = na
+        float val = na
+        [a1, b1] = prof.valueArea(vaPct / 100.0)
+        vah := a1
+        val := b1
+
+        bool  two  = layout == "Two-sided"
+        int   wing = two ? profLen : 0
+        int   x0   = bar_index + profGap + wing
+        float half = pStep / 2.0
+
+        array<float> wL = array.new<float>()
+        array<float> wR = array.new<float>()
+        array<color> kL = array.new<color>()
+        array<color> kR = array.new<color>()
+        array<float> vL = array.new<float>()
+        array<float> vR = array.new<float>()
+
+        for i = 0 to n - 1
+            float v = array.get(prof.vol, i)
+            float d = array.get(prof.dlt, i)
+            float sell = (v - d) / 2.0
+            float buy  = (v + d) / 2.0
+            float l = 0.0
+            float r = 0.0
+            float ql = 0.0
+            float qr = 0.0
+            color cl = na
+            color cr = na
+
+            if mode == "Volume"
+                float w = profLen * v / mxV
+                color c = d >= 0 ? cBuy : cSel
+                if two
+                    l := w / 2.0
+                    r := w / 2.0
+                    cl := c
+                    cr := c
+                    qr := v
+                else
+                    r := w
+                    cr := c
+                    qr := v
+
+            else if mode == "Delta"
+                float w = profLen * math.abs(d) / mxD
+                if two
+                    if d >= 0
+                        r := w
+                        cr := cBuy
+                        qr := math.abs(d)
+                    else
+                        l := w
+                        cl := cSel
+                        ql := math.abs(d)
+                else
+                    r := w
+                    cr := d >= 0 ? cBuy : cSel
+                    qr := math.abs(d)
+
+            else
+                l := profLen * math.max(0.0, sell) / mxV
+                r := profLen * math.max(0.0, buy) / mxV
+                cl := cSel
+                cr := cBuy
+                ql := math.max(0.0, sell)
+                qr := math.max(0.0, buy)
+
+            if sideSw
+                float t = l
+                l := r
+                r := t
+                float tq = ql
+                ql := qr
+                qr := tq
+                color tc = cl
+                cl := cr
+                cr := tc
+
+            array.push(wL, l)
+            array.push(wR, r)
+            array.push(kL, cl)
+            array.push(kR, cr)
+            array.push(vL, ql)
+            array.push(vR, qr)
+
+        if wingScale == "Independent" and n > 0
+            float mL = 0.0
+            float mR = 0.0
+            for i = 0 to n - 1
+                mL := math.max(mL, array.get(wL, i))
+                mR := math.max(mR, array.get(wR, i))
+            for i = 0 to n - 1
+                if mL > 0
+                    array.set(wL, i, array.get(wL, i) * profLen / mL)
+                if mR > 0
+                    array.set(wR, i, array.get(wR, i) * profLen / mR)
+
+        float thr5 = 0.0
+        if valMode == "Top 5" and n > 0
+            array<float> metric = array.new<float>()
+            for i = 0 to n - 1
+                array.push(metric, mode == "Delta" ? math.abs(array.get(prof.dlt, i)) : array.get(prof.vol, i))
+            array.sort(metric, order.descending)
+            thr5 := array.get(metric, math.min(4, array.size(metric) - 1))
+
+        if form == "Outline"
+            array<chart.point> pts = array.new<chart.point>()
+            for i = 0 to n - 1
+                float p = array.get(prof.price, i)
+                int   r = int(math.round(array.get(wR, i)))
+                array.push(pts, chart.point.from_index(x0 + r, p + half))
+                array.push(pts, chart.point.from_index(x0 + r, p - half))
+            for i = n - 1 to 0
+                float p = array.get(prof.price, i)
+                int   l = int(math.round(array.get(wL, i)))
+                array.push(pts, chart.point.from_index(x0 - l, p - half))
+                array.push(pts, chart.point.from_index(x0 - l, p + half))
+            pl := polyline.new(pts, closed = true, line_color = color.new(cVa, 25), fill_color = color.new(cVa, math.min(95, opacity + 35)), line_width = 1)
+        else
+            bool stacked = not two
+            for i = 0 to n - 1
+                float p = array.get(prof.price, i)
+                float v = array.get(prof.vol, i)
+                float d = array.get(prof.dlt, i)
+                bool  inV = not na(vah) and not na(val) and p <= vah and p >= val
+                int   tr  = math.min(95, opacity + (inV ? 0 : dimOut))
+                float hh  = form == "Ticks" ? half * 0.22 : half
+                float fl  = array.get(wL, i)
+                float fr  = array.get(wR, i)
+                int   li  = int(math.round(fl))
+                int   ri  = int(math.round(fr))
+                bool  isPoc = not na(pocP) and math.abs(p - pocP) < half
+                float met = mode == "Delta" ? math.abs(d) : v
+
+                bool showRow = valMode == "All" or (valMode == "Top 5" and met >= thr5) or (isPoc and valMode != "None")
+                string tL = showRow and array.get(vL, i) > 0 ? str.tostring(array.get(vL, i), format.volume) : ""
+                string tR = showRow and array.get(vR, i) > 0 ? str.tostring(array.get(vR, i), format.volume) : ""
+
+                color gl = form == "Gradient" ? color.from_gradient(v, 0, mxV, color.new(cVa, math.min(95, tr + 25)), color.new(array.get(kL, i), tr)) : color.new(array.get(kL, i), tr)
+                color gr = form == "Gradient" ? color.from_gradient(v, 0, mxV, color.new(cVa, math.min(95, tr + 25)), color.new(array.get(kR, i), tr)) : color.new(array.get(kR, i), tr)
+
+                if stacked
+                    float tot = fl + fr
+                    int   w1  = int(math.round(fl))
+                    int   wsum = int(math.round(tot))
+                    if w1 > 0
+                        array.push(sxL, x0)
+                        array.push(syT, p + hh)
+                        array.push(sxR, x0 + w1)
+                        array.push(syB, p - hh)
+                        array.push(sBg, gl)
+                        array.push(sBd, na)
+                        array.push(sTx, tL)
+                        array.push(sHa, text.align_left)
+                    if wsum - w1 > 0
+                        array.push(sxL, x0 + w1)
+                        array.push(syT, p + hh)
+                        array.push(sxR, x0 + wsum)
+                        array.push(syB, p - hh)
+                        array.push(sBg, gr)
+                        array.push(sBd, na)
+                        array.push(sTx, tR)
+                        array.push(sHa, text.align_right)
+                else
+                    if li > 0
+                        array.push(sxL, x0 - li)
+                        array.push(syT, p + hh)
+                        array.push(sxR, x0)
+                        array.push(syB, p - hh)
+                        array.push(sBg, gl)
+                        array.push(sBd, na)
+                        array.push(sTx, tL)
+                        array.push(sHa, text.align_left)
+                    if ri > 0
+                        array.push(sxL, x0)
+                        array.push(syT, p + hh)
+                        array.push(sxR, x0 + ri)
+                        array.push(syB, p - hh)
+                        array.push(sBg, gr)
+                        array.push(sBd, na)
+                        array.push(sTx, tR)
+                        array.push(sHa, text.align_right)
+
+                if isPoc
+                    int pa = stacked ? x0 : x0 - li
+                    int pb = stacked ? x0 + int(math.round(fl + fr)) : x0 + ri
+                    array.push(sxL, pa)
+                    array.push(syT, p + half)
+                    array.push(sxR, pb)
+                    array.push(syB, p - half)
+                    array.push(sBg, na)
+                    array.push(sBd, cPoc)
+                    array.push(sTx, "")
+                    array.push(sHa, text.align_center)
+
+        int need = array.size(sxL)
+        while array.size(pool) < need and array.size(pool) < 500
+            array.push(pool, box.new(bar_index, close, bar_index, close, xloc = xloc.bar_index, bgcolor = na, border_color = na, border_width = 1))
+        if array.size(pool) > 0
+            for i = 0 to array.size(pool) - 1
+                box bx = array.get(pool, i)
+                if i < need
+                    box.set_lefttop(bx, array.get(sxL, i), array.get(syT, i))
+                    box.set_rightbottom(bx, array.get(sxR, i), array.get(syB, i))
+                    box.set_bgcolor(bx, array.get(sBg, i))
+                    box.set_border_color(bx, array.get(sBd, i))
+                    box.set_text(bx, array.get(sTx, i))
+                    box.set_text_color(bx, cTxt)
+                    box.set_text_size(bx, size.auto)
+                    box.set_text_halign(bx, array.get(sHa, i))
+                    box.set_text_valign(bx, text.align_center)
+                    box.set_text_font_family(bx, font.family_monospace)
+                else
+                    box.set_bgcolor(bx, na)
+                    box.set_border_color(bx, na)
+                    box.set_text(bx, "")
+
+        if showVA and not na(pocP)
+            int barMs = timeframe.in_seconds() * 1000
+            int xa = math.max(winTime, time - lineBack * barMs)
+            int xb = time + (profGap + wing + profLen) * barMs
+            if na(lPoc)
+                lPoc := line.new(xa, pocP, xb, pocP, xloc = xloc.bar_time, width = pocW)
+                lVah := line.new(xa, pocP, xb, pocP, xloc = xloc.bar_time)
+                lVal := line.new(xa, pocP, xb, pocP, xloc = xloc.bar_time)
+            line.set_xy1(lPoc, xa, pocP)
+            line.set_xy2(lPoc, xb, pocP)
+            line.set_color(lPoc, color.new(cPoc, 15))
+            line.set_style(lPoc, lineStyle(pocSt))
+            line.set_width(lPoc, pocW)
+            line.set_xy1(lVah, xa, nz(vah, pocP))
+            line.set_xy2(lVah, xb, nz(vah, pocP))
+            line.set_color(lVah, color.new(cVa, 40))
+            line.set_style(lVah, lineStyle(vaSt))
+            line.set_xy1(lVal, xa, nz(val, pocP))
+            line.set_xy2(lVal, xb, nz(val, pocP))
+            line.set_color(lVal, color.new(cVa, 40))
+            line.set_style(lVal, lineStyle(vaSt))
+
+plotshape(showAbs and absr ==  1, "Sellers absorbed", shape.circle, location.belowbar, color.new(cBuy, 0), size = size.tiny)
+plotshape(showAbs and absr == -1, "Buyers absorbed",  shape.circle, location.abovebar, color.new(cSel, 0), size = size.tiny)
+
+tPos = switch tblPos
+    "Top right"    => position.top_right
+    "Bottom right" => position.bottom_right
+    "Top left"     => position.top_left
+    => position.bottom_left
+
+var table tb = table.new(tPos, 2, 7, frame_width = 1)
+
+cell(int r, string k, string v, color c, bool bold) =>
+    table.cell(tb, 0, r, k, text_color = color.new(cTxt, 30), text_size = txtSize, text_halign = text.align_left)
+    table.cell(tb, 1, r, v, text_color = c, text_size = txtSize, text_formatting = bold ? text.format_bold : text.format_none)
+
+if showTbl and barstate.islast
+    table.set_bgcolor(tb, cTblBg)
+    table.set_frame_color(tb, color.new(cTxt, 70))
+    float avgRows = (ticks * syminfo.mintick) > 0 ? avgRange / (ticks * syminfo.mintick) : na
+    bool atLimit = ticks <= 1 and recTicks <= 1
+    bool badRes  = not atLimit and not na(avgRows) and (avgRows < target / 2 or avgRows > target * 3)
+    float pocP = na(prof) ? na : prof.poc()
+    float vah = na
+    float val = na
+    if not na(prof)
+        [a2, b2] = prof.valueArea(vaPct / 100.0)
+        vah := a2
+        val := b2
+    string resTxt = (na(avgRows) ? "—" : str.tostring(math.round(avgRows))) + " · " + str.tostring(ticks) + "t" + (ticks == recTicks or atLimit ? "" : " · suggest " + str.tostring(recTicks)) + (atLimit ? " · limit" : "")
+    cell(0, "rows per bar", resTxt, badRes ? color.new(#ff7043, 0) : cTxt, badRes)
+    cell(1, "window", useBars ? str.tostring(resetN) + " bars" : ancTF == "" ? "none" : ancTF, cTxt, false)
+    cell(2, "POC", na(pocP) ? "—" : str.tostring(math.round_to_mintick(pocP)), cPoc, true)
+    cell(3, "value area", na(vah) or na(val) ? "—" : str.tostring(math.round_to_mintick(val)) + " – " + str.tostring(math.round_to_mintick(vah)), cTxt, false)
+    cell(4, "window delta", str.tostring(cumDlt, "#"), cumDlt > 0 ? cBuy : cumDlt < 0 ? cSel : cTxt, true)
+    cell(5, "window volume", na(prof) ? "—" : str.tostring(prof.sum(), format.volume), cTxt, false)
+    cell(6, "profile rows", na(prof) ? "—" : str.tostring(array.size(prof.vol)), cTxt, false)

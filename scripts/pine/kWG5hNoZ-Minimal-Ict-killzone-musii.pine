@@ -1,0 +1,678 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+//  musii · minimal  (2026-09-11 — rebuilt from the old all-in-one)
+//
+//  one job: sessions · true day open · 10am (powell) · turtle soup · smt
+//  everything is thin, lowercase, and can be forced to ONE colour.
+//  the old kitchen sink is in ict_all_in_one.pine.backup-v1-full-*
+// ─────────────────────────────────────────────────────────────────────────────
+indicator("musii · minimal", "musii", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+TZ = "America/New_York"
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  INPUTS
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── style ────────────────────────────────────────────────────────────────────
+gS = "style"
+mono     = input.bool(true,  "one colour for everything", group=gS, tooltip="forces every line, box, and label to the colour below. turn off to use per-feature colours.")
+monoCol  = input.color(#787b86, "colour", group=gS)
+txtSize  = input.string("tiny", "text size", options=["tiny", "small", "normal"], group=gS)
+lineW    = input.int(1, "line width", minval=1, maxval=3, group=gS)
+fillT    = input.int(70, "header fill transparency", minval=0, maxval=100, group=gS)
+daysBack = input.int(3, "sessions kept (days)", minval=1, maxval=15, group=gS, tooltip="how many past days of session headers / levels stay on the chart")
+
+// ── declutter ────────────────────────────────────────────────────────────────
+gD = "declutter"
+markAge   = input.int(150, "marks expire after (bars)", minval=10, maxval=2000, group=gD, tooltip="turtle soup + smt marks older than this are removed. bars, not minutes, so it tracks what's actually on screen at any timeframe.")
+tsInvalid = input.bool(true, "remove failed turtle soups", group=gD, tooltip="a bearish ts is dead once a candle closes back above the swept high (and vice versa). dead marks are deleted.")
+smtInvalid = input.bool(true, "remove failed smts", group=gD, tooltip="a bearish smt is dead once we close above the divergence high (and vice versa).")
+tsLookback = input.int(100, "swing pool age (bars)", minval=10, maxval=1000, group=gD, tooltip="swings older than this are no longer turtle-soup candidates. recent liquidity only.")
+farAtr    = input.float(10, "hide levels further than (× atr)", minval=0, maxval=100, step=0.5, group=gD, tooltip="past session headers / levels and open lines are hidden while price is this many atr(14) away, and come back when price returns. 0 = off.\n(if far lines ever squash your chart: right-click the price scale → scale price chart only.)")
+opensToday = input.bool(true, "opens: today only", group=gD, tooltip="off = keep past opens for as many days as sessions are kept")
+
+// ── sessions ─────────────────────────────────────────────────────────────────
+gK = "sessions"
+showHdr  = input.bool(true,  "header", group=gK, inline="k0", tooltip="a small labelled block floating above the session's high, spanning the session's time")
+showCur  = input.bool(true,  "curtains", group=gK, inline="k0", tooltip="faint vertical lines at the session's start and end, hanging down from the header")
+hdrMult  = input.float(1.5, "header size (× atr)", minval=0.2, maxval=10, step=0.1, group=gK, tooltip="header height and its gap above the session high, in multiples of atr(14). bigger = taller block, further above price.")
+curLen   = input.string("full chart", "curtain length", options=["full chart", "to session low"], group=gK, tooltip="full chart = infinite vertical line (tradingview can't extend one way only, so it also runs above the header).\nto session low = stops at the session's low. keeps auto-scale tight.")
+curT     = input.int(85, "curtain transparency", minval=0, maxval=100, group=gK)
+showHL   = input.bool(false, "high / low lines", group=gK, inline="k9")
+hlLabels = input.bool(false, "high / low labels", group=gK, inline="k9")
+hlExtend = input.string("until swept", "extend high / low", options=["until swept", "until next session", "session only"], group=gK, tooltip="until swept = line runs right until a candle trades through it.\nuntil next session = line runs until that same session opens again.\nsession only = line stops when the session ends.")
+hlStyle  = input.string("dotted", "line style", options=["dotted", "dashed", "solid"], group=gK)
+
+asiaOn = input.bool(true,  "", inline="k1", group=gK)
+asiaNm = input.string("asia", "", inline="k1", group=gK)
+asiaSe = input.session("2000-0000", "", inline="k1", group=gK)
+asiaCo = input.color(#5b7fa6, "", inline="k1", group=gK)
+
+lonOn = input.bool(true,  "", inline="k2", group=gK)
+lonNm = input.string("london", "", inline="k2", group=gK)
+lonSe = input.session("0200-0500", "", inline="k2", group=gK)
+lonCo = input.color(#a67c5b, "", inline="k2", group=gK)
+
+nyamOn = input.bool(true,  "", inline="k3", group=gK)
+nyamNm = input.string("ny-am", "", inline="k3", group=gK)
+nyamSe = input.session("0930-1100", "", inline="k3", group=gK)
+nyamCo = input.color(#5b8a6e, "", inline="k3", group=gK)
+
+lunchOn = input.bool(false, "", inline="k4", group=gK)
+lunchNm = input.string("lunch", "", inline="k4", group=gK)
+lunchSe = input.session("1200-1300", "", inline="k4", group=gK)
+lunchCo = input.color(#8a8a5b, "", inline="k4", group=gK)
+
+nypmOn = input.bool(true,  "", inline="k5", group=gK)
+nypmNm = input.string("ny-pm", "", inline="k5", group=gK)
+nypmSe = input.session("1330-1600", "", inline="k5", group=gK)
+nypmCo = input.color(#8a5b7f, "", inline="k5", group=gK)
+
+// ── opens ────────────────────────────────────────────────────────────────────
+gO = "opens"
+tdoOn   = input.bool(true, "true day open (00:00)", group=gO, inline="o1")
+tdoCo   = input.color(#787b86, "", group=gO, inline="o1")
+tenOn   = input.bool(true, "10am open (powell)", group=gO, inline="o2")
+tenCo   = input.color(#c9a227, "", group=gO, inline="o2")
+tenMode = input.string("open", "10am level", options=["open", "powell body edge"], group=gO, tooltip="open = the 10:00 open price (the 4h candle open).\npowell body edge = read the 10:00 candle on your chart tf: bearish close → body top, bullish close → body bottom.")
+tenEnd  = input.string("14:00 (4h close)", "10am line ends", options=["14:00 (4h close)", "16:00", "next 10am"], group=gO)
+tenJud  = input.bool(true, "mark 10am judas", group=gO, tooltip="first candle that wicks through the 10am level and closes back on the other side = the manipulation leg. one mark per day.")
+sixOn   = input.bool(false, "6pm open (futures)", group=gO, inline="o3")
+sixCo   = input.color(#787b86, "", group=gO, inline="o3")
+openStyle = input.string("solid", "line style", options=["solid", "dashed", "dotted"], group=gO)
+
+// ── htf opens (untapped only) ────────────────────────────────────────────────
+gH = "htf opens · untapped only"
+dOn = input.bool(true,  "daily",     group=gH, inline="h1")
+wOn = input.bool(true,  "weekly",    group=gH, inline="h1")
+mOn = input.bool(true,  "monthly",   group=gH, inline="h1")
+qOn = input.bool(false, "quarterly", group=gH, inline="h2")
+yOn = input.bool(false, "yearly",    group=gH, inline="h2")
+htfCo    = input.color(#787b86, "colour", group=gH)
+htfStyle = input.string("dashed", "line style", options=["dashed", "dotted", "solid"], group=gH)
+htfKeep  = input.int(3, "keep per timeframe", minval=1, maxval=12, group=gH, tooltip="how many untapped opens of each timeframe can be on the chart at once (newest kept). an open disappears the moment price trades back through it.")
+htfNeedLeave = input.bool(true, "price must leave first", group=gH, tooltip="on: an open only counts as tapped after a candle has fully closed away from it and price later trades back into it. off: any candle after the opening one that touches the level taps it.")
+
+// ── turtle soup ──────────────────────────────────────────────────────────────
+gT = "turtle soup"
+tsOn      = input.bool(true, "swing sweeps", group=gT, tooltip="wick takes a swing high/low, body closes back inside")
+tsLevels  = input.bool(true, "session high / low sweeps", group=gT, tooltip="same rule applied to the session highs and lows above")
+tsSwing   = input.int(5, "swing length", minval=2, maxval=30, group=gT)
+tsKzOnly  = input.bool(false, "only inside session boxes", group=gT, tooltip="ignore sweeps that happen outside an enabled session")
+tsLabel   = input.bool(true, "label", group=gT, inline="t1")
+tsText    = input.string("ts", "", group=gT, inline="t1")
+tsMax     = input.int(12, "max shown", minval=1, maxval=40, group=gT)
+tsBullCo  = input.color(#5b8a6e, "bull", group=gT, inline="t2")
+tsBearCo  = input.color(#a65b5b, "bear", group=gT, inline="t2")
+
+// ── smt ──────────────────────────────────────────────────────────────────────
+gM = "smt"
+smtOn    = input.bool(true, "smt divergence", group=gM)
+smtPair  = input.string("auto", "pair with", options=["auto", "es", "nq", "ym", "rty", "custom"], group=gM, tooltip="auto: nq↔es, mnq↔mes, ym/mym→es/mes, rty/m2k→es/mes — same contract month as your chart (nqz2026 pairs with esz2026, nq1! with es1!).\nes/nq/ym/rty: force that index, micro/mini matched to your chart.\ncustom: the symbol below.")
+smtSymIn = input.symbol("CME_MINI:ES1!", "custom symbol", group=gM)
+smtInv   = input.bool(false, "inverse correlation", group=gM, tooltip="on for pairs that move opposite (eurusd ↔ dxy)")
+smtSwing = input.int(5, "swing length", minval=2, maxval=30, group=gM)
+smtGap   = input.int(80, "max bars between the two swings", minval=5, maxval=500, group=gM, tooltip="a divergence between swings this far apart isn't the same move. keeps smt to the current leg.")
+smtMax   = input.int(8, "max shown", minval=1, maxval=30, group=gM)
+smtTag   = input.bool(true, "show pair name in label", group=gM, tooltip="smt·es instead of smt")
+smtBullCo = input.color(#5b8a6e, "bull", group=gM, inline="m1")
+smtBearCo = input.color(#a65b5b, "bear", group=gM, inline="m1")
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  HELPERS
+// ═════════════════════════════════════════════════════════════════════════════
+f_c(color c) => mono ? monoCol : c
+
+f_size(string s) => s == "tiny" ? size.tiny : s == "small" ? size.small : size.normal
+SZ = f_size(txtSize)
+
+f_style(string s) => s == "dotted" ? line.style_dotted : s == "dashed" ? line.style_dashed : line.style_solid
+HL_STYLE   = f_style(hlStyle)
+OPEN_STYLE = f_style(openStyle)
+HTF_STYLE  = f_style(htfStyle)
+
+// bar that contains a given NY clock time — intraday only (opens make no sense on D/W)
+f_at(string hhmm) => timeframe.isintraday and not na(time(timeframe.period, hhmm + ":1234567", TZ))
+
+nyHour = hour(time, TZ)
+atrRef = ta.atr(14)
+
+// price is "far" from a level band when it's more than farAtr atrs outside it
+f_far(float bandHi, float bandLo) => farAtr > 0 and (close > bandHi + farAtr * atrRef or close < bandLo - farAtr * atrRef)
+
+// evaluated every bar so time() history stays consistent, then gated by the toggles
+at00 = f_at("0000-0001")
+at18 = f_at("1800-1801")
+at10 = f_at("1000-1001")
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  TURTLE SOUP — shared drawer (used by swings, session levels, 10am judas)
+// ═════════════════════════════════════════════════════════════════════════════
+type TS
+    line  ln
+    label lb
+    int   dir
+    float lvl
+    int   born
+
+type TSState
+    int   lastBar
+    float lastLvl
+    bool  bull
+    bool  bear
+
+var TS[] tsArr = array.new<TS>()
+var TSState tsSt = TSState.new(na, na, false, false)
+tsSt.bull := false
+tsSt.bear := false
+
+// dir: 1 = bull (low swept), -1 = bear (high swept)
+// drawLine=false when the swept level already has its own line (session h/l, 10am open)
+f_ts(int dir, float lvl, int fromBar, string txt, bool drawLine) =>
+    dup = not na(tsSt.lastBar) and tsSt.lastBar == bar_index and math.abs(tsSt.lastLvl - lvl) <= syminfo.mintick * 2
+    if not dup
+        col = f_c(dir == 1 ? tsBullCo : tsBearCo)
+        ln  = drawLine ? line.new(fromBar, lvl, bar_index, lvl, color=col, width=lineW, style=line.style_dotted) : na
+        lb  = tsLabel ? label.new(bar_index, lvl, txt, style=dir == 1 ? label.style_label_up : label.style_label_down, color=color.new(col, 100), textcolor=col, size=SZ) : na
+        array.push(tsArr, TS.new(ln, lb, dir, lvl, bar_index))
+        tsSt.lastBar := bar_index
+        tsSt.lastLvl := lvl
+        if dir == 1
+            tsSt.bull := true
+        else
+            tsSt.bear := true
+        while array.size(tsArr) > tsMax
+            old = array.shift(tsArr)
+            line.delete(old.ln)
+            label.delete(old.lb)
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  SESSIONS
+// ═════════════════════════════════════════════════════════════════════════════
+// session membership (global so history is clean)
+asiaIn  = asiaOn  and not na(time(timeframe.period, asiaSe,  TZ))
+lonIn   = lonOn   and not na(time(timeframe.period, lonSe,   TZ))
+nyamIn  = nyamOn  and not na(time(timeframe.period, nyamSe,  TZ))
+lunchIn = lunchOn and not na(time(timeframe.period, lunchSe, TZ))
+nypmIn  = nypmOn  and not na(time(timeframe.period, nypmSe,  TZ))
+anySess = asiaIn or lonIn or nyamIn or lunchIn or nypmIn
+
+type Sess
+    box   bx      // header block
+    line  cl      // left curtain
+    line  cr      // right curtain
+    line  hi
+    line  lo
+    label hiL
+    label loL
+    float h
+    float l
+    float hgt     // header height (price units), fixed at session start
+    int   sb
+    bool  live
+    bool  hiDone
+    bool  loDone
+    bool  hidden
+
+f_sessKill(Sess s) =>
+    box.delete(s.bx)
+    line.delete(s.cl)
+    line.delete(s.cr)
+    line.delete(s.hi)
+    line.delete(s.lo)
+    label.delete(s.hiL)
+    label.delete(s.loL)
+
+f_sess(Sess[] arr, bool inS, bool inPrev, string nm, color co) =>
+    col = f_c(co)
+
+    // ── open a new session
+    if inS and not inPrev
+        if array.size(arr) > 0
+            prev = array.last(arr)
+            prev.live := false
+            if hlExtend == "until next session"
+                prev.hiDone := true
+                prev.loDone := true
+        hgt  = nz(atrRef, high - low) * hdrMult
+        top = high + 2 * hgt
+        bot = high + hgt
+        ext = curLen == "full chart" ? extend.both : extend.none
+        bx  = showHdr ? box.new(bar_index, top, bar_index, bot, border_color=color.new(col, 100), bgcolor=color.new(col, fillT), text=nm, text_size=SZ, text_color=color.new(col, 15), text_halign=text.align_center, text_valign=text.align_center) : na
+        cl  = showCur ? line.new(bar_index, top, bar_index, low, color=color.new(col, curT), width=1, style=line.style_solid, extend=ext) : na
+        cr  = showCur ? line.new(bar_index, top, bar_index, low, color=color.new(col, curT), width=1, style=line.style_solid, extend=ext) : na
+        hi  = showHL ? line.new(bar_index, high, bar_index, high, color=col, width=lineW, style=HL_STYLE) : na
+        lo  = showHL ? line.new(bar_index, low,  bar_index, low,  color=col, width=lineW, style=HL_STYLE) : na
+        hiL = showHL and hlLabels ? label.new(bar_index, high, nm + " h", style=label.style_label_left, color=color.new(col, 100), textcolor=col, size=SZ) : na
+        loL = showHL and hlLabels ? label.new(bar_index, low,  nm + " l", style=label.style_label_left, color=color.new(col, 100), textcolor=col, size=SZ) : na
+        array.push(arr, Sess.new(bx, cl, cr, hi, lo, hiL, loL, high, low, hgt, bar_index, true, false, false, false))
+        while array.size(arr) > daysBack
+            f_sessKill(array.shift(arr))
+
+    if array.size(arr) > 0
+        s = array.last(arr)
+
+        // ── forming
+        if s.live
+            if inS
+                s.h := math.max(s.h, high)
+                s.l := math.min(s.l, low)
+                top = s.h + 2 * s.hgt
+                bot = s.h + s.hgt
+                if not na(s.bx)
+                    box.set_right(s.bx, bar_index)
+                    box.set_top(s.bx, top)
+                    box.set_bottom(s.bx, bot)
+                if not na(s.cl)
+                    line.set_y1(s.cl, top)
+                    line.set_y2(s.cl, s.l)
+                    line.set_xy1(s.cr, bar_index, top)
+                    line.set_xy2(s.cr, bar_index, s.l)
+                if not na(s.hi)
+                    line.set_xy1(s.hi, s.sb, s.h)
+                    line.set_xy2(s.hi, bar_index, s.h)
+                    line.set_xy1(s.lo, s.sb, s.l)
+                    line.set_xy2(s.lo, bar_index, s.l)
+                if not na(s.hiL)
+                    label.set_xy(s.hiL, bar_index, s.h)
+                    label.set_xy(s.loL, bar_index, s.l)
+            else
+                s.live := false
+                if hlExtend == "session only"
+                    s.hiDone := true
+                    s.loDone := true
+
+        // ── far from price → hide the whole past session; back in range → show it
+        if not s.live
+            far = f_far(s.h + 2 * s.hgt, s.l)
+            if far != s.hidden
+                s.hidden := far
+                t = far ? 100 : 0
+                if not na(s.bx)
+                    box.set_bgcolor(s.bx, color.new(col, far ? 100 : fillT))
+                    box.set_text_color(s.bx, color.new(col, far ? 100 : 15))
+                if not na(s.cl)
+                    line.set_color(s.cl, color.new(col, far ? 100 : curT))
+                    line.set_color(s.cr, color.new(col, far ? 100 : curT))
+                if not na(s.hi)
+                    line.set_color(s.hi, color.new(col, t))
+                    line.set_color(s.lo, color.new(col, t))
+                if not na(s.hiL)
+                    label.set_textcolor(s.hiL, color.new(col, t))
+                    label.set_textcolor(s.loL, color.new(col, t))
+
+        // ── extending after close
+        if not s.live
+            if not s.hiDone
+                if not na(s.hi)
+                    line.set_x2(s.hi, bar_index)
+                if not na(s.hiL)
+                    label.set_x(s.hiL, bar_index)
+                if barstate.isconfirmed and high > s.h
+                    s.hiDone := true
+                    if tsLevels and close < s.h and (not tsKzOnly or anySess)
+                        f_ts(-1, s.h, s.sb, tsText, false)
+            if not s.loDone
+                if not na(s.lo)
+                    line.set_x2(s.lo, bar_index)
+                if not na(s.loL)
+                    label.set_x(s.loL, bar_index)
+                if barstate.isconfirmed and low < s.l
+                    s.loDone := true
+                    if tsLevels and close > s.l and (not tsKzOnly or anySess)
+                        f_ts(1, s.l, s.sb, tsText, false)
+
+var Sess[] asiaArr  = array.new<Sess>()
+var Sess[] lonArr   = array.new<Sess>()
+var Sess[] nyamArr  = array.new<Sess>()
+var Sess[] lunchArr = array.new<Sess>()
+var Sess[] nypmArr  = array.new<Sess>()
+
+f_sess(asiaArr,  asiaIn,  asiaIn[1],  asiaNm,  asiaCo)
+f_sess(lonArr,   lonIn,   lonIn[1],   lonNm,   lonCo)
+f_sess(nyamArr,  nyamIn,  nyamIn[1],  nyamNm,  nyamCo)
+f_sess(lunchArr, lunchIn, lunchIn[1], lunchNm, lunchCo)
+f_sess(nypmArr,  nypmIn,  nypmIn[1],  nypmNm,  nypmCo)
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  OPENS — true day open · 10am (powell) · 6pm
+// ═════════════════════════════════════════════════════════════════════════════
+type Opn
+    line  ln
+    label lb
+    float p
+    bool  live
+    bool  judas   // 10am only: manipulation already marked
+    bool  hidden
+
+f_opnKill(Opn o) =>
+    line.delete(o.ln)
+    label.delete(o.lb)
+
+// trig is true for the whole trigger bar; price may still move on that bar (body-edge mode)
+f_open(Opn[] arr, bool trig, bool trigPrev, float price, bool endNow, string nm, color co) =>
+    col = f_c(co)
+    if trig and not trigPrev
+        if array.size(arr) > 0
+            prev = array.last(arr)
+            prev.live := false
+        ln = line.new(bar_index, price, bar_index, price, color=col, width=lineW, style=OPEN_STYLE)
+        lb = label.new(bar_index, price, nm, style=label.style_label_left, color=color.new(col, 100), textcolor=col, size=SZ)
+        array.push(arr, Opn.new(ln, lb, price, true, false, false))
+        while array.size(arr) > (opensToday ? 1 : daysBack)
+            f_opnKill(array.shift(arr))
+    if array.size(arr) > 0
+        o = array.last(arr)
+        if o.live
+            if trig and not trigPrev
+                o.p := price
+                line.set_y1(o.ln, price)
+                line.set_y2(o.ln, price)
+                label.set_y(o.lb, price)
+            line.set_x2(o.ln, bar_index)
+            label.set_x(o.lb, bar_index)
+            if endNow and not trig
+                o.live := false
+        // far from price → hide (live or finished); back in range → show
+        far = f_far(o.p, o.p)
+        if far != o.hidden
+            o.hidden := far
+            line.set_color(o.ln, color.new(col, far ? 100 : 0))
+            label.set_textcolor(o.lb, color.new(col, far ? 100 : 0))
+
+// ── true day open: 00:00 ny
+tdoTrig = tdoOn and at00
+var Opn[] tdoArr = array.new<Opn>()
+f_open(tdoArr, tdoTrig, tdoTrig[1], open, false, "tdo", tdoCo)
+
+// ── 6pm futures open
+sixTrig = sixOn and at18
+var Opn[] sixArr = array.new<Opn>()
+f_open(sixArr, sixTrig, sixTrig[1], open, false, "6pm", sixCo)
+
+// ── 10am open (powell)
+tenTrig  = tenOn and at10
+tenPrice = tenMode == "open" ? open : (close < open ? math.max(open, close) : math.min(open, close))
+tenStop  = tenEnd == "14:00 (4h close)" ? nyHour >= 14 or nyHour < 10 : tenEnd == "16:00" ? nyHour >= 16 or nyHour < 10 : false
+var Opn[] tenArr = array.new<Opn>()
+f_open(tenArr, tenTrig, tenTrig[1], tenPrice, tenStop, "10am", tenCo)
+
+// judas through the 10am level: wick one side, close the other (first one only, confirmed bars)
+var bool tenJudasFired = false
+tenJudasFired := false
+if tenJud and array.size(tenArr) > 0 and barstate.isconfirmed
+    o = array.last(tenArr)
+    if o.live and not o.judas and not tenTrig
+        if low < o.p and close > o.p
+            f_ts(1, o.p, line.get_x1(o.ln), "judas", false)
+            o.judas := true
+            tenJudasFired := true
+        else if high > o.p and close < o.p
+            f_ts(-1, o.p, line.get_x1(o.ln), "judas", false)
+            o.judas := true
+            tenJudasFired := true
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  HTF OPENS — daily / weekly / monthly / quarterly / yearly, shown only while untapped
+// ═════════════════════════════════════════════════════════════════════════════
+type Htf
+    line  ln
+    label lb
+    float p
+    bool  left     // price has closed fully away from the level since it printed
+    bool  hidden
+
+f_htfKill(Htf o) =>
+    line.delete(o.ln)
+    label.delete(o.lb)
+
+// newP = first chart bar of a new period; the open of that bar is the period open
+f_htf(Htf[] arr, bool on, bool newP, string nm, color co) =>
+    col = f_c(co)
+    if on and newP
+        ln = line.new(bar_index, open, bar_index, open, color=col, width=lineW, style=HTF_STYLE)
+        lb = label.new(bar_index, open, nm, style=label.style_label_left, color=color.new(col, 100), textcolor=col, size=SZ)
+        array.push(arr, Htf.new(ln, lb, open, false, false))
+        while array.size(arr) > htfKeep
+            f_htfKill(array.shift(arr))
+    if array.size(arr) > 0
+        for i = array.size(arr) - 1 to 0
+            o = array.get(arr, i)
+            isOpeningBar = newP and i == array.size(arr) - 1
+            // tapped?  (never on the bar that printed it)
+            tapped = false
+            if barstate.isconfirmed and not isOpeningBar
+                if not o.left
+                    o.left := low > o.p or high < o.p
+                inside = low <= o.p and high >= o.p
+                tapped := inside and (o.left or not htfNeedLeave)
+            if tapped
+                f_htfKill(o)
+                array.remove(arr, i)
+                continue
+            line.set_x2(o.ln, bar_index)
+            label.set_x(o.lb, bar_index)
+            far = f_far(o.p, o.p)
+            if far != o.hidden
+                o.hidden := far
+                line.set_color(o.ln, color.new(col, far ? 100 : 0))
+                label.set_textcolor(o.lb, color.new(col, far ? 100 : 0))
+
+// period boundaries on the chart's own bars (D on futures = 18:00 ny session open)
+newD = timeframe.isintraday and nz(ta.change(time("D")))   != 0
+newW = timeframe.isintraday and nz(ta.change(time("W")))   != 0
+newM = timeframe.isintraday and nz(ta.change(time("M")))   != 0
+newQ = timeframe.isintraday and nz(ta.change(time("3M")))  != 0
+newY = timeframe.isintraday and nz(ta.change(time("12M"))) != 0
+
+var Htf[] dArr = array.new<Htf>()
+var Htf[] wArr = array.new<Htf>()
+var Htf[] mArr = array.new<Htf>()
+var Htf[] qArr = array.new<Htf>()
+var Htf[] yArr = array.new<Htf>()
+
+f_htf(dArr, dOn, newD, "day open",   htfCo)
+f_htf(wArr, wOn, newW, "week open",  htfCo)
+f_htf(mArr, mOn, newM, "month open", htfCo)
+f_htf(qArr, qOn, newQ, "qtr open",   htfCo)
+f_htf(yArr, yOn, newY, "year open",  htfCo)
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  TURTLE SOUP — swing sweeps
+// ═════════════════════════════════════════════════════════════════════════════
+var float[] swHi    = array.new_float()
+var int[]   swHiBar = array.new_int()
+var float[] swLo    = array.new_float()
+var int[]   swLoBar = array.new_int()
+SW_MAX = 20
+
+pivHi = ta.pivothigh(high, tsSwing, tsSwing)
+pivLo = ta.pivotlow(low, tsSwing, tsSwing)
+
+if not na(pivHi)
+    array.push(swHi, pivHi)
+    array.push(swHiBar, bar_index - tsSwing)
+if not na(pivLo)
+    array.push(swLo, pivLo)
+    array.push(swLoBar, bar_index - tsSwing)
+while array.size(swHi) > SW_MAX or (array.size(swHi) > 0 and bar_index - array.first(swHiBar) > tsLookback)
+    array.shift(swHi)
+    array.shift(swHiBar)
+while array.size(swLo) > SW_MAX or (array.size(swLo) > 0 and bar_index - array.first(swLoBar) > tsLookback)
+    array.shift(swLo)
+    array.shift(swLoBar)
+
+tsAllowed = tsOn and barstate.isconfirmed and (not tsKzOnly or anySess)
+
+if tsAllowed
+    // bear: wick over a swing high, close back under it
+    if array.size(swHi) > 0
+        for i = array.size(swHi) - 1 to 0
+            lvl = array.get(swHi, i)
+            if high > lvl
+                if close < lvl
+                    f_ts(-1, lvl, array.get(swHiBar, i), tsText, true)
+                array.remove(swHi, i)      // level is gone either way (swept or broken)
+                array.remove(swHiBar, i)
+    // bull: wick under a swing low, close back over it
+    if array.size(swLo) > 0
+        for i = array.size(swLo) - 1 to 0
+            lvl = array.get(swLo, i)
+            if low < lvl
+                if close > lvl
+                    f_ts(1, lvl, array.get(swLoBar, i), tsText, true)
+                array.remove(swLo, i)
+                array.remove(swLoBar, i)
+else if barstate.isconfirmed
+    // still retire broken levels when ts is off / filtered, so they don't fire later
+    if array.size(swHi) > 0
+        for i = array.size(swHi) - 1 to 0
+            if high > array.get(swHi, i)
+                array.remove(swHi, i)
+                array.remove(swHiBar, i)
+    if array.size(swLo) > 0
+        for i = array.size(swLo) - 1 to 0
+            if low < array.get(swLo, i)
+                array.remove(swLo, i)
+                array.remove(swLoBar, i)
+
+// ── expire old marks / delete failed ones
+if barstate.isconfirmed and array.size(tsArr) > 0
+    for i = array.size(tsArr) - 1 to 0
+        m = array.get(tsArr, i)
+        old  = bar_index - m.born > markAge
+        dead = tsInvalid and (m.dir == -1 ? close > m.lvl : close < m.lvl)
+        if old or dead
+            line.delete(m.ln)
+            label.delete(m.lb)
+            array.remove(tsArr, i)
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  SMT DIVERGENCE
+// ═════════════════════════════════════════════════════════════════════════════
+// ── pair symbol: mirror the chart's contract (same suffix: 1!, Z2026, …) on the paired root
+root    = syminfo.root
+isMicro = root == "MNQ" or root == "MES" or root == "MYM" or root == "M2K"
+// which index family are we on
+fam = root == "NQ" or root == "MNQ" ? "nq" : root == "ES" or root == "MES" ? "es" : root == "YM" or root == "MYM" ? "ym" : root == "RTY" or root == "M2K" ? "rty" : ""
+// target family
+want = smtPair == "auto" ? (fam == "es" ? "nq" : fam != "" ? "es" : "") : smtPair
+// target root, micro matched to chart
+pairRoot = want == "nq" ? (isMicro ? "MNQ" : "NQ") : want == "es" ? (isMicro ? "MES" : "ES") : want == "ym" ? (isMicro ? "MYM" : "YM") : want == "rty" ? (isMicro ? "M2K" : "RTY") : ""
+pairPfx  = want == "ym" ? "CBOT_MINI" : "CME_MINI"
+// syminfo.ticker is the bare "MNQ1!" / "NQZ2026" (tickerid can be a json blob on continuous contracts)
+rootPos  = str.pos(syminfo.ticker, root)
+rawSfx   = na(rootPos) ? "1!" : str.substring(syminfo.ticker, rootPos + str.length(root))
+sfxMatch = str.match(rawSfx, "^[A-Z0-9!]+")
+suffix   = na(sfxMatch) or sfxMatch == "" ? "1!" : sfxMatch
+autoSym  = pairRoot == "" ? smtSymIn : pairPfx + ":" + pairRoot + suffix
+smtSym   = smtPair == "custom" ? smtSymIn : autoSym
+smtName  = smtPair == "custom" ? str.lower(syminfo.ticker(smtSym)) : str.lower(pairRoot == "" ? syminfo.ticker(smtSym) : pairRoot)
+
+cmpH = request.security(smtSym, timeframe.period, high)
+cmpL = request.security(smtSym, timeframe.period, low)
+
+// our confirmed pivots. the pair is read over the SAME window (pivot ± swing length), so no need
+// for the pair to print its own pivot — "did it make a higher high across the same swing or not"
+mPH  = ta.pivothigh(high, smtSwing, smtSwing)
+mPL  = ta.pivotlow(low,   smtSwing, smtSwing)
+winH = ta.highest(cmpH, 2 * smtSwing + 1)   // pair's high over the same window
+winL = ta.lowest(cmpL,  2 * smtSwing + 1)   // pair's low over the same window
+
+type SMT
+    line  ln
+    label lb
+    int   dir
+    float lvl
+    int   born
+var SMT[] smtArr = array.new<SMT>()
+
+// last two swings: ours (price, bar) + the pair's extreme over each swing's window
+var float mH1  = na
+var float mH2  = na
+var int   mH1b = na
+var int   mH2b = na
+var float pH1  = na   // pair's high over our high-swing window
+var float pH2  = na
+var float qL1  = na   // pair's low over our high-swing window (inverse pairs)
+var float qL2  = na
+var float mL1  = na
+var float mL2  = na
+var int   mL1b = na
+var int   mL2b = na
+var float pL1  = na   // pair's low over our low-swing window
+var float pL2  = na
+var float qH1  = na   // pair's high over our low-swing window (inverse pairs)
+var float qH2  = na
+
+var bool smtBullFired = false
+var bool smtBearFired = false
+smtBullFired := false
+smtBearFired := false
+
+f_smtDraw(int dir, int x1, float y1, int x2, float y2) =>
+    col = f_c(dir == 1 ? smtBullCo : smtBearCo)
+    txt = smtTag ? "smt·" + smtName : "smt"
+    ln  = line.new(x1, y1, x2, y2, color=col, width=lineW, style=line.style_dashed)
+    lb  = label.new(x2, y2, txt, style=dir == 1 ? label.style_label_up : label.style_label_down, color=color.new(col, 100), textcolor=col, size=SZ)
+    array.push(smtArr, SMT.new(ln, lb, dir, y2, bar_index))
+    while array.size(smtArr) > smtMax
+        old = array.shift(smtArr)
+        line.delete(old.ln)
+        label.delete(old.lb)
+
+if not na(mPH)
+    mH2  := mH1
+    mH2b := mH1b
+    pH2  := pH1
+    qL2  := qL1
+    mH1  := mPH
+    mH1b := bar_index - smtSwing
+    pH1  := winH
+    qL1  := winL
+    // bear: we made a higher high, the pair did not (inverse pair: it did not make a lower low)
+    if smtOn and not na(mH2) and not na(pH2) and mH1b - mH2b <= smtGap
+        hh   = mH1 > mH2
+        fail = smtInv ? qL1 >= qL2 : pH1 <= pH2
+        if hh and fail
+            f_smtDraw(-1, mH2b, mH2, mH1b, mH1)
+            smtBearFired := true
+
+if not na(mPL)
+    mL2  := mL1
+    mL2b := mL1b
+    pL2  := pL1
+    qH2  := qH1
+    mL1  := mPL
+    mL1b := bar_index - smtSwing
+    pL1  := winL
+    qH1  := winH
+    // bull: we made a lower low, the pair did not (inverse pair: it did not make a higher high)
+    if smtOn and not na(mL2) and not na(pL2) and mL1b - mL2b <= smtGap
+        ll   = mL1 < mL2
+        fail = smtInv ? qH1 <= qH2 : pL1 >= pL2
+        if ll and fail
+            f_smtDraw(1, mL2b, mL2, mL1b, mL1)
+            smtBullFired := true
+
+// ── expire old smts / delete failed ones
+if barstate.isconfirmed and array.size(smtArr) > 0
+    for i = array.size(smtArr) - 1 to 0
+        m = array.get(smtArr, i)
+        old  = bar_index - m.born > markAge
+        dead = smtInvalid and (m.dir == -1 ? close > m.lvl : close < m.lvl)
+        if old or dead
+            line.delete(m.ln)
+            label.delete(m.lb)
+            array.remove(smtArr, i)
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  ALERTS
+// ═════════════════════════════════════════════════════════════════════════════
+alertcondition(tsSt.bull,   "turtle soup · bull", "bullish turtle soup on {{ticker}} {{interval}}")
+alertcondition(tsSt.bear,   "turtle soup · bear", "bearish turtle soup on {{ticker}} {{interval}}")
+alertcondition(smtBullFired,  "smt · bull",         "bullish smt on {{ticker}} {{interval}}")
+alertcondition(smtBearFired,  "smt · bear",         "bearish smt on {{ticker}} {{interval}}")
+alertcondition(tenJudasFired, "10am judas",         "10am judas on {{ticker}} {{interval}}")
+alertcondition(tenTrig and not tenTrig[1], "10am open", "10am open printed on {{ticker}}")

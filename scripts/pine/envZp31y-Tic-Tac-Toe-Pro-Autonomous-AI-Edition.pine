@@ -1,0 +1,624 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
+
+//@version=6
+indicator(
+     title = "Tic-Tac-Toe Pro • Autonomous AI Edition",
+     shorttitle = "TicTacAI",
+     overlay = false,
+     behind_chart = false,
+     calc_bars_count = 50
+)
+
+//══════════════════════════════════════════════════════════════════════
+// ENUMS & CONSTANTS
+//══════════════════════════════════════════════════════════════════════
+
+enum PlayAs
+    HumanFirst  = "Human (✕) • First"
+    AIFirst     = "AI Bot (✕) • First"
+
+enum AIDifficulty
+    Casual      = "Casual (Makes mistakes)"
+    Tactical    = "Tactical (Blocks & Attacks)"
+    Grandmaster = "Grandmaster (Unbeatable)"
+
+enum BoardPosition
+    Centre = "Centre"
+    Left   = "Left"
+    Right  = "Right"
+
+const string G_AI     = "🤖 GAME & OPPONENT AI"
+const string G_STYLE  = "🎨 THEME & VISUALS"
+const string G_LAYOUT = "📐 LAYOUT"
+
+//══════════════════════════════════════════════════════════════════════
+// INPUTS
+//══════════════════════════════════════════════════════════════════════
+
+string movesRecord =
+     input.text_area(
+         defval = "",
+         title = "Game Moves History",
+         tooltip =
+              "Enter moves separated by spaces or commas.\n\n" +
+              "When you submit your move, the AI computes its counter-move and updates the board immediately.\n\n" +
+              "Check the bottom status bar for copy-paste suggested history.",
+         group = G_AI
+     )
+
+PlayAs playOrder =
+     input.enum(
+         defval = PlayAs.HumanFirst,
+         title = "Order of Play",
+         group = G_AI
+     )
+
+AIDifficulty aiLevel =
+     input.enum(
+         defval = AIDifficulty.Grandmaster,
+         title = "AI Engine Intelligence",
+         group = G_AI
+     )
+
+int nextMove =
+     input.int(
+         defval = 5,
+         title = "Quick Move Selector (1-9)",
+         minval = 1,
+         maxval = 9,
+         tooltip =
+              "Reference Map:\n" +
+              "1  2  3\n" +
+              "4  5  6\n" +
+              "7  8  9",
+         group = G_AI
+     )
+
+string boardTheme =
+     input.string(
+         defval = "Cyber Neon",
+         title = "Board Color Theme",
+         options = [
+             "Cyber Neon",
+             "Midnight Pro",
+             "Ocean Blue",
+             "Matrix",
+             "Sunset",
+             "High Contrast"
+         ],
+         group = G_STYLE
+     )
+
+bool highlightLastMove =
+     input.bool(
+         true,
+         "Highlight AI / Last Move",
+         group = G_STYLE
+     )
+
+bool highlightWinningLine =
+     input.bool(
+         true,
+         "Highlight Winning Combination",
+         group = G_STYLE
+     )
+
+bool showCoordinates =
+     input.bool(
+         true,
+         "Show Cell Coordinates",
+         group = G_STYLE
+     )
+
+BoardPosition boardPosition =
+     input.enum(
+         BoardPosition.Centre,
+         "Board Alignment",
+         group = G_LAYOUT
+     )
+
+float cellWidth =
+     input.float(
+         8.0,
+         "Cell Width %",
+         minval = 3.0,
+         maxval = 20.0,
+         step = 0.5,
+         group = G_LAYOUT
+     )
+
+float cellHeight =
+     input.float(
+         12.0,
+         "Cell Height %",
+         minval = 3.0,
+         maxval = 25.0,
+         step = 0.5,
+         group = G_LAYOUT
+     )
+
+//══════════════════════════════════════════════════════════════════════
+// THEME PALETTES
+//══════════════════════════════════════════════════════════════════════
+
+color boardBg       = color.black
+color cellBg        = color.black
+color borderColor   = color.gray
+color headerBg      = color.black
+color labelBg       = color.black
+color humanColor    = color.red
+color aiColor       = color.blue
+color guideColor    = color.gray
+color lastMoveColor = color.orange
+color winColor      = color.lime
+color textColor     = color.white
+
+if boardTheme == "Cyber Neon"
+    boardBg       := color.rgb(8, 10, 20)
+    cellBg        := color.rgb(15, 18, 35)
+    borderColor   := color.rgb(0, 229, 255)
+    headerBg      := color.rgb(20, 25, 45)
+    labelBg       := color.rgb(12, 15, 30)
+    humanColor    := color.rgb(255, 45, 85)
+    aiColor       := color.rgb(0, 229, 255)
+    guideColor    := color.rgb(110, 130, 150)
+    lastMoveColor := color.new(color.rgb(255, 190, 0), 55)
+    winColor      := color.rgb(0, 255, 150)
+    textColor     := color.white
+else if boardTheme == "Midnight Pro"
+    boardBg       := color.rgb(15, 17, 22)
+    cellBg        := color.rgb(28, 31, 40)
+    borderColor   := color.rgb(90, 100, 120)
+    headerBg      := color.rgb(22, 25, 32)
+    labelBg       := color.rgb(18, 20, 26)
+    humanColor    := color.rgb(255, 82, 82)
+    aiColor       := color.rgb(80, 170, 255)
+    guideColor    := color.rgb(150, 155, 170)
+    lastMoveColor := color.new(color.orange, 60)
+    winColor      := color.rgb(90, 255, 150)
+    textColor     := color.rgb(240, 240, 245)
+else if boardTheme == "Ocean Blue"
+    boardBg       := color.rgb(5, 20, 35)
+    cellBg        := color.rgb(10, 40, 65)
+    borderColor   := color.rgb(0, 150, 220)
+    headerBg      := color.rgb(5, 35, 60)
+    labelBg       := color.rgb(5, 28, 50)
+    humanColor    := color.rgb(255, 110, 110)
+    aiColor       := color.rgb(0, 220, 255)
+    guideColor    := color.rgb(120, 180, 210)
+    lastMoveColor := color.new(color.yellow, 60)
+    winColor      := color.rgb(0, 255, 180)
+    textColor     := color.white
+else if boardTheme == "Matrix"
+    boardBg       := color.rgb(0, 10, 3)
+    cellBg        := color.rgb(0, 25, 8)
+    borderColor   := color.rgb(0, 255, 80)
+    headerBg      := color.rgb(0, 35, 10)
+    labelBg       := color.rgb(0, 18, 5)
+    humanColor    := color.rgb(255, 70, 70)
+    aiColor       := color.rgb(0, 255, 100)
+    guideColor    := color.rgb(60, 150, 90)
+    lastMoveColor := color.new(color.yellow, 55)
+    winColor      := color.rgb(0, 255, 100)
+    textColor     := color.rgb(180, 255, 200)
+else if boardTheme == "Sunset"
+    boardBg       := color.rgb(30, 12, 25)
+    cellBg        := color.rgb(55, 22, 45)
+    borderColor   := color.rgb(255, 120, 50)
+    headerBg      := color.rgb(75, 25, 40)
+    labelBg       := color.rgb(45, 15, 30)
+    humanColor    := color.rgb(255, 80, 110)
+    aiColor       := color.rgb(255, 190, 60)
+    guideColor    := color.rgb(200, 130, 140)
+    lastMoveColor := color.new(color.yellow, 55)
+    winColor      := color.rgb(100, 255, 160)
+    textColor     := color.white
+else
+    boardBg       := color.black
+    cellBg        := color.rgb(25, 25, 25)
+    borderColor   := color.white
+    headerBg      := color.rgb(40, 40, 40)
+    labelBg       := color.black
+    humanColor    := color.red
+    aiColor       := color.aqua
+    guideColor    := color.white
+    lastMoveColor := color.new(color.yellow, 35)
+    winColor      := color.lime
+    textColor     := color.white
+
+//══════════════════════════════════════════════════════════════════════
+// GAME & WIN EVALUATION
+//══════════════════════════════════════════════════════════════════════
+
+f_checkWinner(array<int> b) =>
+    int winner = 0
+
+    // Horizontal Lines
+    for r = 0 to 2
+        int i = r * 3
+        if array.get(b, i) != 0 and array.get(b, i) == array.get(b, i + 1) and array.get(b, i) == array.get(b, i + 2)
+            winner := array.get(b, i)
+
+    // Vertical Lines
+    if winner == 0
+        for c = 0 to 2
+            if array.get(b, c) != 0 and array.get(b, c) == array.get(b, c + 3) and array.get(b, c) == array.get(b, c + 6)
+                winner := array.get(b, c)
+
+    // Diagonal Lines
+    if winner == 0
+        if array.get(b, 0) != 0 and array.get(b, 0) == array.get(b, 4) and array.get(b, 0) == array.get(b, 8)
+            winner := array.get(b, 0)
+        else if array.get(b, 2) != 0 and array.get(b, 2) == array.get(b, 4) and array.get(b, 2) == array.get(b, 6)
+            winner := array.get(b, 2)
+
+    winner
+
+f_isFull(array<int> b) =>
+    bool full = true
+    for i = 0 to 8
+        if array.get(b, i) == 0
+            full := false
+            break
+    full
+
+f_parseMove(string token) =>
+    string t = str.trim(token)
+    int result = -1
+    if str.length(t) == 1
+        float value = str.tonumber(t)
+        if not na(value)
+            int cell = int(value)
+            if cell >= 1 and cell <= 9
+                result := cell - 1
+    result
+
+//══════════════════════════════════════════════════════════════════════
+// AI OPPONENT ALGORITHMIC ENGINE
+//══════════════════════════════════════════════════════════════════════
+
+// Find immediate win or immediate block
+f_findWinOrBlock(array<int> b, int mark) =>
+    int target = -1
+
+    // Rows
+    for r = 0 to 2
+        if target == -1
+            int i = r * 3
+            int c0 = array.get(b, i)
+            int c1 = array.get(b, i + 1)
+            int c2 = array.get(b, i + 2)
+
+            if c0 == 0 and c1 == mark and c2 == mark
+                target := i
+            else if c1 == 0 and c0 == mark and c2 == mark
+                target := i + 1
+            else if c2 == 0 and c0 == mark and c1 == mark
+                target := i + 2
+
+    // Columns
+    if target == -1
+        for c = 0 to 2
+            if target == -1
+                int c0 = array.get(b, c)
+                int c1 = array.get(b, c + 3)
+                int c2 = array.get(b, c + 6)
+
+                if c0 == 0 and c1 == mark and c2 == mark
+                    target := c
+                else if c1 == 0 and c0 == mark and c2 == mark
+                    target := c + 3
+                else if c2 == 0 and c0 == mark and c1 == mark
+                    target := c + 6
+
+    // Diagonals
+    if target == -1
+        int d0 = array.get(b, 0)
+        int d4 = array.get(b, 4)
+        int d8 = array.get(b, 8)
+        if d0 == 0 and d4 == mark and d8 == mark
+            target := 0
+        else if d4 == 0 and d0 == mark and d8 == mark
+            target := 4
+        else if d8 == 0 and d0 == mark and d4 == mark
+            target := 8
+
+    if target == -1
+        int d2 = array.get(b, 2)
+        int d4 = array.get(b, 4)
+        int d6 = array.get(b, 6)
+        if d2 == 0 and d4 == mark and d6 == mark
+            target := 2
+        else if d4 == 0 and d2 == mark and d6 == mark
+            target := 4
+        else if d6 == 0 and d2 == mark and d4 == mark
+            target := 6
+
+    target
+
+// Detect double-threat forks
+f_findFork(array<int> b, int mark) =>
+    int forkCell = -1
+    for i = 0 to 8
+        if forkCell == -1 and array.get(b, i) == 0
+            array.set(b, i, mark)
+            int threats = 0
+
+            for j = 0 to 8
+                if array.get(b, j) == 0
+                    array.set(b, j, mark)
+                    if f_checkWinner(b) == mark
+                        threats += 1
+                    array.set(b, j, 0)
+
+            array.set(b, i, 0)
+            if threats >= 2
+                forkCell := i
+    forkCell
+
+// Master AI decision tree
+f_computeAIMove(array<int> b, int aiMark, int humanMark, AIDifficulty diff) =>
+    int move = -1
+
+    if diff == AIDifficulty.Casual
+        // 1. Casual AI only takes immediate wins
+        move := f_findWinOrBlock(b, aiMark)
+        // 2. Plays center if free
+        if move == -1 and array.get(b, 4) == 0
+            move := 4
+        // 3. Otherwise picks first open cell
+        if move == -1
+            for i = 0 to 8
+                if array.get(b, i) == 0
+                    move := i
+                    break
+
+    else if diff == AIDifficulty.Tactical
+        // 1. Win immediately
+        move := f_findWinOrBlock(b, aiMark)
+        // 2. Block trader's win
+        if move == -1
+            move := f_findWinOrBlock(b, humanMark)
+        // 3. Take center
+        if move == -1 and array.get(b, 4) == 0
+            move := 4
+        // 4. Create fork
+        if move == -1
+            move := f_findFork(b, aiMark)
+
+    else
+        // GRANDMASTER UNBEATABLE STRATEGY
+        // 1. Win if possible
+        move := f_findWinOrBlock(b, aiMark)
+        // 2. Block trader win
+        if move == -1
+            move := f_findWinOrBlock(b, humanMark)
+        // 3. Create double-attack fork
+        if move == -1
+            move := f_findFork(b, aiMark)
+        // 4. Block opponent fork
+        if move == -1
+            move := f_findFork(b, humanMark)
+        // 5. Secure center cell
+        if move == -1 and array.get(b, 4) == 0
+            move := 4
+        // 6. Opposite corner trap counter
+        if move == -1
+            if array.get(b, 0) == humanMark and array.get(b, 8) == 0
+                move := 8
+            else if array.get(b, 8) == humanMark and array.get(b, 0) == 0
+                move := 0
+            else if array.get(b, 2) == humanMark and array.get(b, 6) == 0
+                move := 6
+            else if array.get(b, 6) == humanMark and array.get(b, 2) == 0
+                move := 2
+
+    // Fallback: Open corners
+    if move == -1
+        array<int> corners = array.new_int(4)
+        array.set(corners, 0, 0)
+        array.set(corners, 1, 2)
+        array.set(corners, 2, 6)
+        array.set(corners, 3, 8)
+
+        for n = 0 to array.size(corners) - 1
+            int c = array.get(corners, n)
+            if move == -1 and array.get(b, c) == 0
+                move := c
+
+    // Fallback: Open sides
+    if move == -1
+        array<int> sides = array.new_int(4)
+        array.set(sides, 0, 1)
+        array.set(sides, 1, 3)
+        array.set(sides, 2, 5)
+        array.set(sides, 3, 7)
+
+        for n = 0 to array.size(sides) - 1
+            int s = array.get(sides, n)
+            if move == -1 and array.get(b, s) == 0
+                move := s
+
+    move
+
+f_isWinningCell(array<int> b, int cell, int win) =>
+    bool winning = false
+    if win != 0 and array.get(b, cell) == win
+        int rowStart = int(math.floor(cell / 3.0)) * 3
+        if array.get(b, rowStart) == win and array.get(b, rowStart + 1) == win and array.get(b, rowStart + 2) == win
+            winning := true
+
+        int column = cell % 3
+        if array.get(b, column) == win and array.get(b, column + 3) == win and array.get(b, column + 6) == win
+            winning := true
+
+        if cell == 0 or cell == 4 or cell == 8
+            if array.get(b, 0) == win and array.get(b, 4) == win and array.get(b, 8) == win
+                winning := true
+
+        if cell == 2 or cell == 4 or cell == 6
+            if array.get(b, 2) == win and array.get(b, 4) == win and array.get(b, 6) == win
+                winning := true
+
+    winning
+
+//══════════════════════════════════════════════════════════════════════
+// GAME EXECUTION & AUTONOMOUS AI
+//══════════════════════════════════════════════════════════════════════
+
+var array<int> board = array.new_int(9, 0)
+
+string status = ""
+string errorText = ""
+int lastMove = -1
+int winner = 0
+
+// Mark 1 = X, Mark 2 = O
+int humanMark = playOrder == PlayAs.HumanFirst ? 1 : 2
+int aiMark    = humanMark == 1 ? 2 : 1
+
+string tablePosition = switch boardPosition
+    BoardPosition.Left  => position.middle_left
+    BoardPosition.Right => position.middle_right
+    => position.middle_center
+
+var table boardTable = table.new(
+     position = tablePosition,
+     columns = 4,
+     rows = 6,
+     border_width = 2,
+     border_color = borderColor,
+     frame_width = 3,
+     frame_color = borderColor
+ )
+
+if barstate.islast
+    // Clear the board
+    for i = 0 to 8
+        array.set(board, i, 0)
+
+    lastMove := -1
+    winner := 0
+    errorText := ""
+    int turn = 1
+    string reconstructedHistory = ""
+
+    // Parse player's submitted move sequence
+    string clean = str.replace_all(str.replace_all(movesRecord, ",", " "), "\n", " ")
+    string[] tokens = str.split(clean, " ")
+
+    if array.size(tokens) > 0
+        for i = 0 to array.size(tokens) - 1
+            if errorText == ""
+                string token = str.trim(array.get(tokens, i))
+                if token != ""
+                    if winner != 0 or f_isFull(board)
+                        errorText := "Game finished. Remove extra trailing moves."
+                    else
+                        int cell = f_parseMove(token)
+                        if cell < 0
+                            errorText := "Invalid move token: '" + token + "' (Use 1-9)"
+                        else if array.get(board, cell) != 0
+                            errorText := "Cell " + str.tostring(cell + 1) + " is already occupied."
+                        else
+                            array.set(board, cell, turn)
+                            lastMove := cell
+                            reconstructedHistory := (reconstructedHistory == "" ? "" : reconstructedHistory + " ") + str.tostring(cell + 1)
+                            winner := f_checkWinner(board)
+                            turn := turn == 1 ? 2 : 1
+
+    // Check if it's the AI's turn to counter-attack
+    int aiCounterMove = -1
+    if errorText == "" and winner == 0 and not f_isFull(board) and turn == aiMark
+        aiCounterMove := f_computeAIMove(board, aiMark, humanMark, aiLevel)
+        if aiCounterMove != -1
+            array.set(board, aiCounterMove, aiMark)
+            lastMove := aiCounterMove
+            reconstructedHistory := (reconstructedHistory == "" ? "" : reconstructedHistory + " ") + str.tostring(aiCounterMove + 1)
+            winner := f_checkWinner(board)
+            turn := turn == 1 ? 2 : 1
+
+    // Status / Next Move Guidance
+    if errorText != ""
+        status := "⚠ " + errorText
+    else if winner != 0
+        status := winner == humanMark ? "🏆 YOU WON! Defeated the AI!" : "🤖 AI ENGINE WINS! Better luck next trade."
+    else if f_isFull(board)
+        status := "🤝 DRAW GAME • Balanced standoff."
+    else
+        int selected = nextMove - 1
+        bool occupied = array.get(board, selected) != 0
+        if occupied
+            status := "⚠ Cell " + str.tostring(nextMove) + " is occupied! Select an open cell."
+        else
+            string suggested = (reconstructedHistory == "" ? "" : reconstructedHistory + " ") + str.tostring(nextMove)
+            status := "🎯 YOUR MOVE: Update history to -> [ " + suggested + " ]"
+
+    //──────────────────────────────────────────────────────────────────
+    // UI RENDER ENGINE
+    //──────────────────────────────────────────────────────────────────
+
+    // Header
+    string header = "🤖 TIC-TAC-TOE AI • " + str.tostring(aiLevel)
+    table.cell(boardTable, 0, 0, header, text_color = textColor, text_size = size.normal, bgcolor = headerBg, text_halign = text.align_center)
+
+    // Player Identification Banner
+    string pInfo = "YOU: " + (humanMark == 1 ? "✕" : "◯") + "   |   AI BOT: " + (aiMark == 1 ? "✕" : "◯") + (aiCounterMove != -1 ? " (Just played Cell " + str.tostring(aiCounterMove + 1) + ")" : "")
+    table.cell(boardTable, 0, 1, pInfo, text_color = textColor, text_size = size.small, bgcolor = labelBg, text_halign = text.align_center)
+
+    // 3x3 Grid
+    for r = 0 to 2
+        int tableRow = r + 2
+        for c = 0 to 2
+            int index = r * 3 + c
+            int mark = array.get(board, index)
+
+            string symbol = mark == humanMark ? (humanMark == 1 ? "✕" : "◯") : mark == aiMark ? (aiMark == 1 ? "✕" : "◯") : showCoordinates ? str.tostring(index + 1) : ""
+            color symbolColor = mark == humanMark ? humanColor : mark == aiMark ? aiColor : guideColor
+            color currentBg = cellBg
+
+            bool isWinnerCell = highlightWinningLine and f_isWinningCell(board, index, winner)
+
+            if isWinnerCell
+                currentBg := color.new(winColor, 65)
+            else if highlightLastMove and index == lastMove
+                currentBg := lastMoveColor
+
+            table.cell(
+                 boardTable,
+                 c + 1,
+                 tableRow,
+                 symbol,
+                 text_color = symbolColor,
+                 text_size = mark == 0 ? size.small : size.huge,
+                 bgcolor = currentBg,
+                 width = cellWidth,
+                 height = cellHeight,
+                 text_halign = text.align_center,
+                 text_valign = text.align_center
+             )
+
+        // Row indicator
+        string rowLabel = showCoordinates ? "R" + str.tostring(3 - r) : ""
+        table.cell(
+             boardTable,
+             0,
+             tableRow,
+             rowLabel,
+             text_color = textColor,
+             text_size = size.small,
+             bgcolor = labelBg,
+             width = 3.0,
+             height = cellHeight,
+             text_halign = text.align_center
+         )
+
+    // Status bar footer
+    color statusColor = errorText != "" ? color.new(color.red, 20) : winner == humanMark ? color.new(color.green, 35) : winner == aiMark ? color.new(color.red, 35) : headerBg
+    table.cell(boardTable, 0, 5, status, text_color = textColor, text_size = size.small, bgcolor = statusColor, text_halign = text.align_center)
+
+    // Merge banners
+    table.merge_cells(boardTable, 0, 0, 3, 0)
+    table.merge_cells(boardTable, 0, 1, 3, 1)
+    table.merge_cells(boardTable, 0, 5, 3, 5)

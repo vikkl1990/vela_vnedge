@@ -1,0 +1,169 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © taherbohari52
+
+//@version=6
+indicator("Position Size Calculator", overlay=true)
+
+// ── Account ───────────────────────────────────────────────────────────────────
+i_balance     = input.float(500000.0, "Account Balance (₹)",
+     minval=1, step=1000, group="Account",
+     tooltip="Your total trading account balance in Rupees.")
+
+// ── Allocation Tiers ──────────────────────────────────────────────────────────
+i_alloc1      = input.float(10.0, "Allocation % — Tier 1",
+     minval=0.01, maxval=100, step=0.5, group="Allocation Tiers",
+     tooltip="Percentage of account balance allocated to Tier 1 trade.")
+i_alloc2      = input.float(20.0, "Allocation % — Tier 2",
+     minval=0.01, maxval=100, step=0.5, group="Allocation Tiers",
+     tooltip="Percentage of account balance allocated to Tier 2 trade.")
+i_alloc3      = input.float(30.0, "Allocation % — Tier 3",
+     minval=0.01, maxval=100, step=0.5, group="Allocation Tiers",
+     tooltip="Percentage of account balance allocated to Tier 3 trade.")
+
+// ── Price Settings ────────────────────────────────────────────────────────────
+i_useManual   = input.bool(false, "Use Manual Entry Price",
+     group="Price Settings",
+     tooltip="Toggle ON to type the stock price manually. Toggle OFF to use the last completed candle close of the chosen timeframe.")
+i_manualPrice = input.float(100.0, "Manual Entry Price (₹)",
+     minval=0.01, step=0.05, group="Price Settings",
+     tooltip="Active only when 'Use Manual Entry Price' is ON.")
+i_tf          = input.timeframe("5", "Timeframe for Close Price",
+     group="Price Settings",
+     tooltip="When manual price is OFF, the indicator uses the closing price of the last completed candle of this timeframe. E.g. select 5 for 5-min close.")
+
+// ── Display ───────────────────────────────────────────────────────────────────
+i_showInv     = input.bool(true, "Show Investment Row",
+     group="Display",
+     tooltip="Toggle OFF to hide the investment amount row and show only shares.")
+i_hideMarketClosed = input.bool(false, "Hide Table When Market Closed",
+     group="Display",
+     tooltip="Toggle ON to automatically hide the table outside regular market hours.")
+i_tablePos    = input.string("top_right", "Table Position",
+     options=["top_right","top_left","top_center",
+              "bottom_right","bottom_left","bottom_center",
+              "middle_right","middle_left"],
+     group="Display")
+
+// ── Colors ────────────────────────────────────────────────────────────────────
+i_colBg     = input.color(#0d2b5e,                "Background",       group="Colors",
+     tooltip="Base color for the table. Row cells are derived from this with slight transparency.")
+i_colText   = input.color(color.white,             "Text",             group="Colors")
+i_colLabel  = input.color(#90caf9,                 "Column Headers",   group="Colors")
+i_colShares = input.color(#69f0ae,                 "Shares Highlight", group="Colors")
+i_colBorder = input.color(color.new(#1e4fa8, 40),  "Border",           group="Colors")
+
+// ── Price Logic ───────────────────────────────────────────────────────────────
+// Fetches the closing price of the last *completed* candle of the chosen timeframe.
+// lookahead_off ensures only confirmed candle closes are used (no future leakage).
+tf_close    = request.security(syminfo.tickerid, i_tf, close, lookahead=barmerge.lookahead_off)
+entry_price = i_useManual ? i_manualPrice : tf_close
+
+// ── Position Size Calculations ────────────────────────────────────────────────
+inv1 = i_balance * i_alloc1 / 100
+inv2 = i_balance * i_alloc2 / 100
+inv3 = i_balance * i_alloc3 / 100
+
+// math.floor → whole shares only; guarded against zero/invalid price
+shares1 = entry_price > 0 ? math.floor(inv1 / entry_price) : 0.0
+shares2 = entry_price > 0 ? math.floor(inv2 / entry_price) : 0.0
+shares3 = entry_price > 0 ? math.floor(inv3 / entry_price) : 0.0
+
+// ── Derived Colors ───────────────────────────────────────────────────────────
+C_SUBHDR = i_colBg
+C_ROW_A  = color.new(i_colBg, 15)
+C_ROW_B  = color.new(i_colBg, 10)
+C_TEXT   = i_colText
+C_LABEL  = i_colLabel
+C_GREEN  = i_colShares
+C_BORDER = i_colBorder
+
+// ── Table: deleted and recreated on last bar so row count adjusts dynamically ──
+var table tbl = na
+
+if barstate.islast
+    if not na(tbl)
+        table.delete(tbl)
+
+    // Render only when market is open, or when the hide-when-closed toggle is OFF.
+    // timenow <= time_close: wall-clock time is still within the last bar's period → market active.
+    // When market is closed, time_close (last bar's end) is hours in the past → condition false.
+    is_market_active = timenow <= time_close
+    if not i_hideMarketClosed or is_market_active
+        tbl_pos = switch i_tablePos
+            "top_left"      => position.top_left
+            "top_center"    => position.top_center
+            "bottom_right"  => position.bottom_right
+            "bottom_left"   => position.bottom_left
+            "bottom_center" => position.bottom_center
+            "middle_right"  => position.middle_right
+            "middle_left"   => position.middle_left
+            =>                 position.top_right
+
+        // 4 cols; 3 rows base + 1 optional investment row
+        n_rows = i_showInv ? 4 : 3
+        tbl   := table.new(tbl_pos, 4, n_rows, border_width=1, border_color=C_BORDER)
+
+        // Row 0 — Entry price info
+        // Build a human-readable timeframe label:
+        //   ""    → Chart (empty string = match chart timeframe)
+        //   "30S" → "30 sec"  (seconds: strip trailing S, add " sec")
+        //   "1D"  → "Daily"   (also handles bare "D")
+        //   "1W"  → "Weekly"  (also handles bare "W")
+        //   "1M"  → "Monthly" (also handles bare "M")
+        //   "5"   → "5 min"   (pure numeric = minutes)
+        tf_label = i_tf == ""              ? "Chart" :
+                   str.contains(i_tf, "S") ? str.substring(i_tf, 0, str.length(i_tf) - 1) + " sec" :
+                   str.contains(i_tf, "D") ? "Daily" :
+                   str.contains(i_tf, "W") ? "Weekly" :
+                   str.contains(i_tf, "M") ? "Monthly" :
+                   i_tf + " min"
+        price_label = i_useManual
+             ? "Manual Entry: ₹" + str.tostring(entry_price, "#.00")
+             : "Entry (" + tf_label + " close): ₹" + str.tostring(entry_price, "#.00")
+        table.cell(tbl, 0, 0, price_label,
+             bgcolor=C_SUBHDR, text_color=C_LABEL,
+             text_size=size.small, text_halign=text.align_center)
+        table.merge_cells(tbl, 0, 0, 3, 0)
+
+        // Row 1 — Column headers (just the allocation %)
+        table.cell(tbl, 0, 1, "",
+             bgcolor=C_ROW_B, text_color=C_LABEL, text_size=size.small)
+        table.cell(tbl, 1, 1, str.tostring(i_alloc1, "#.##") + "%",
+             bgcolor=C_ROW_B, text_color=C_LABEL,
+             text_size=size.small, text_halign=text.align_center)
+        table.cell(tbl, 2, 1, str.tostring(i_alloc2, "#.##") + "%",
+             bgcolor=C_ROW_B, text_color=C_LABEL,
+             text_size=size.small, text_halign=text.align_center)
+        table.cell(tbl, 3, 1, str.tostring(i_alloc3, "#.##") + "%",
+             bgcolor=C_ROW_B, text_color=C_LABEL,
+             text_size=size.small, text_halign=text.align_center)
+
+        // Row 2 (optional) — Investment amount
+        if i_showInv
+            table.cell(tbl, 0, 2, "Inv (₹)",
+                 bgcolor=C_ROW_A, text_color=C_TEXT,
+                 text_size=size.small, text_halign=text.align_left)
+            table.cell(tbl, 1, 2, "₹" + str.tostring(math.round(inv1), "###,###,###"),
+                 bgcolor=C_ROW_A, text_color=C_TEXT,
+                 text_size=size.small, text_halign=text.align_right)
+            table.cell(tbl, 2, 2, "₹" + str.tostring(math.round(inv2), "###,###,###"),
+                 bgcolor=C_ROW_A, text_color=C_TEXT,
+                 text_size=size.small, text_halign=text.align_right)
+            table.cell(tbl, 3, 2, "₹" + str.tostring(math.round(inv3), "###,###,###"),
+                 bgcolor=C_ROW_A, text_color=C_TEXT,
+                 text_size=size.small, text_halign=text.align_right)
+
+        // Last row — Shares (index shifts when inv row is hidden)
+        r_shares = i_showInv ? 3 : 2
+        table.cell(tbl, 0, r_shares, "Shares",
+             bgcolor=C_ROW_B, text_color=C_TEXT,
+             text_size=size.small, text_halign=text.align_left)
+        table.cell(tbl, 1, r_shares, str.tostring(shares1, "#0"),
+             bgcolor=C_ROW_B, text_color=C_GREEN,
+             text_size=size.normal, text_halign=text.align_center)
+        table.cell(tbl, 2, r_shares, str.tostring(shares2, "#0"),
+             bgcolor=C_ROW_B, text_color=C_GREEN,
+             text_size=size.normal, text_halign=text.align_center)
+        table.cell(tbl, 3, r_shares, str.tostring(shares3, "#0"),
+             bgcolor=C_ROW_B, text_color=C_GREEN,
+             text_size=size.normal, text_halign=text.align_center)

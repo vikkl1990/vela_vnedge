@@ -1,0 +1,50 @@
+// This Pine ScripScriptt® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © parthtraderalerts
+// @version=6
+indicator(title="EMA (Exponential Moving Average) by PARTHTRADERALERTS", shorttitle="EMA by PARTHTRADERALERTS", overlay=true)
+
+// --- EMA (Exponential Moving Average) SETTINGS ---
+show1 = input.bool(true, "EMA 1 (one)", inline="e1")
+len1 = input.int(9, "", minval=1, inline="e1")
+col1 = input.color(color.red, "", inline="e1")
+
+show2 = input.bool(true, "EMA 2 (two)", inline="e2")
+len2 = input.int(11, "", minval=1, inline="e2")
+col2 = input.color(color.green, "", inline="e2")
+
+show3 = input.bool(true, "EMA 3 (three)", inline="e3")
+len3 = input.int(45, "", minval=1, inline="e3")
+col3 = input.color(color.rgb(255, 0, 255), "", inline="e3")
+
+show4 = input.bool(false, "EMA 4 (four)", inline="e4")
+len4 = input.int(30, "", minval=1, inline="e4")
+col4 = input.color(color.blue, "", inline="e4")
+
+show5 = input.bool(false, "EMA 5 (five)", inline="e5")
+len5 = input.int(50, "", minval=1, inline="e5")
+col5 = input.color(color.orange, "", inline="e5")
+
+show6 = input.bool(false, "EMA 6 (six)", inline="e6")
+len6 = input.int(100, "", minval=1, inline="e6")
+col6 = input.color(color.rgb(165, 42, 42), "", inline="e6")
+
+// --- CALC ---
+ema1 = ta.ema(close, len1)
+ema2 = ta.ema(close, len2)
+ema3 = ta.ema(close, len3)
+ema4 = ta.ema(close, len4)
+ema5 = ta.ema(close, len5)
+ema6 = ta.ema(close, len6)
+
+// --- PLOT - FIXED ON CHART ---
+plot(show1 ? ema1 : na, title="EMA 🕐 ONE", color=col1, linewidth=2)
+plot(show2 ? ema2 : na, title="EMA 🕑 TWO", color=col2, linewidth=2)
+plot(show3 ? ema3 : na, title="EMA 🕒 THREE", color=col3, linewidth=2)
+plot(show4 ? ema4 : na, title="EMA 🕓 FOUR", color=col4, linewidth=2)
+plot(show5 ? ema5 : na, title="EMA 🕔 FIVE", color=col5, linewidth=2)
+plot(show6 ? ema6 : na, title="EMA 🕕 SIX", color=col6, linewidth=2)
+
+
+
+
+

@@ -1,0 +1,122 @@
+import TradingView/ta/14
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © blitz_locked
+
+//@version=6
+strategy("Supertrend Donchian Breakout", shorttitle = "STDB",
+     overlay = true,
+     initial_capital = 10000,
+     default_qty_type = strategy.percent_of_equity,
+     default_qty_value = 25,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.05,
+     slippage = 2,
+     process_orders_on_close = true)
+
+// ---------------------------------------------------------------------
+// Inputs
+// ---------------------------------------------------------------------
+grp_trend = "Trend Filter (Supertrend)"
+st_factor = input.float(3.0, "Supertrend Factor", minval = 0.5, step = 0.1, group = grp_trend)
+st_atr_len = input.int(10, "Supertrend ATR Length", minval = 1, group = grp_trend)
+
+grp_htf = "Higher Timeframe Confirmation"
+use_htf_filter = input.bool(true, "Require HTF Supertrend Agreement", group = grp_htf)
+htf_input = input.timeframe("240", "Higher Timeframe", group = grp_htf)
+
+grp_brk = "Breakout (Donchian Channel)"
+donchian_len = input.int(20, "Donchian Lookback (Bars)", minval = 5, group = grp_brk)
+
+grp_vol = "Volume Confirmation"
+use_vol_filter = input.bool(true, "Require Volume Spike", group = grp_vol)
+vol_ma_len = input.int(20, "Volume MA Length", minval = 1, group = grp_vol)
+vol_mult = input.float(1.5, "Volume Spike Multiplier", minval = 1.0, step = 0.1, group = grp_vol)
+
+grp_dir = "Direction"
+allow_long = input.bool(true, "Allow Long Trades", group = grp_dir)
+allow_short = input.bool(false, "Allow Short Trades", group = grp_dir)
+
+grp_risk = "Risk Management"
+atr_len_risk = input.int(14, "ATR Length (Stops)", minval = 1, group = grp_risk)
+stop_atr_mult = input.float(2.0, "Stop Loss (ATR x)", minval = 0.1, step = 0.1, group = grp_risk)
+target_atr_mult = input.float(3.0, "Take Profit (ATR x)", minval = 0.1, step = 0.1, group = grp_risk)
+exit_on_trend_flip = input.bool(true, "Also Exit if Supertrend Flips", group = grp_risk)
+
+// ---------------------------------------------------------------------
+// Indicators
+// ---------------------------------------------------------------------
+[st_line,st_dir]=ta.supertrend(st_factor,st_atr_len)
+uptrend = st_dir < 0
+
+// Higher-timeframe Supertrend, computed with the same factor/length so the
+// only thing that changes is the bar resolution feeding it.
+htf_supertrend()=>
+    [_,dir]=ta.supertrend(st_factor,st_atr_len)
+    dir
+
+htf_dir=request.security(syminfo.tickerid,htf_input,htf_supertrend(),lookahead = barmerge.lookahead_off)
+htf_uptrend=htf_dir < 0
+
+htf_ok_long = not use_htf_filter or htf_uptrend
+htf_ok_short = not use_htf_filter or not htf_uptrend
+
+upper_channel=ta.highest(high,donchian_len)[1]
+lower_channel=ta.lowest(low,donchian_len)[1]
+
+vol_avg = ta.sma(volume,vol_ma_len)
+vol_ok = use_vol_filter ? volume > vol_avg * vol_mult : true
+
+risk_atr = ta.atr(atr_len_risk)
+
+//Entry
+
+long_signal = allow_long and uptrend and htf_ok_long and close > lower_channel and vol_ok
+short_signal = allow_short and not uptrend and htf_ok_short and close < lower_channel and vol_ok
+
+if long_signal and strategy.position_size <= 0
+    strategy.entry("Long",strategy.long)
+
+if short_signal and strategy.position_size >=0
+    strategy.entry("Short",strategy.short)
+
+//Exit
+var float long_stop = na
+var float long_target = na
+var float short_stop = na
+var float short_target = na
+
+if long_signal and strategy.position_size[1] <= 0
+    long_stop:=close - risk_atr * stop_atr_mult
+    long_target:=close + risk_atr * target_atr_mult
+
+if short_signal and strategy.position_size[1]>=0
+    short_stop := close + risk_atr * stop_atr_mult
+    short_target := close - risk_atr * target_atr_mult
+
+if strategy.position_size > 0
+    strategy.exit("Long Exit", "Long", stop = long_stop, limit = long_target)
+    if exit_on_trend_flip and not uptrend
+        strategy.close("Long")
+
+
+if strategy.position_size < 0
+    strategy.exit("Short Exit", from_entry = "Short", stop = short_stop, limit = short_target)
+    if exit_on_trend_flip and uptrend
+        strategy.close("Short", comment = "Trend Flip")
+
+// ---------------------------------------------------------------------
+// Visualization
+// ---------------------------------------------------------------------
+plot(st_line, "Supertrend", color = uptrend ? color.new(color.teal, 0) : color.new(color.red, 0), linewidth = 2)
+upper_plot = plot(upper_channel, "Donchian Upper", color = color.new(color.gray, 60))
+lower_plot = plot(lower_channel, "Donchian Lower", color = color.new(color.gray, 60))
+fill(upper_plot, lower_plot, color = color.new(color.gray, 92), title = "Channel Fill")
+
+// Subtle background tint shows whether current TF and HTF trend agree
+bgcolor(use_htf_filter ? (uptrend == htf_uptrend ? (uptrend ? color.new(color.teal, 95) : color.new(color.red, 95)) : color.new(color.orange, 92)) : na, title = "HTF Agreement")
+
+plotshape(long_signal, "Long Entry", shape.triangleup, location.belowbar, color.new(color.teal, 0), size = size.small)
+plotshape(short_signal, "Short Entry", shape.triangledown, location.abovebar, color.new(color.red, 0), size = size.small)
+
+
+

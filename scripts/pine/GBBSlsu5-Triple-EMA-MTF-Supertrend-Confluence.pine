@@ -1,0 +1,1160 @@
+//@version=6
+
+indicator("Triple EMA + MTF Supertrend Confluence", overlay=true, max_labels_count=500)
+
+//────────────────────────────────────
+
+// INPUTS
+
+//────────────────────────────────────
+
+groupEMA = "EMA Settings"
+
+showEMA1 = input.bool(true, "Show EMA 1", group=groupEMA)
+
+showEMA2 = input.bool(true, "Show EMA 2", group=groupEMA)
+
+showEMA3 = input.bool(true, "Show EMA 3", group=groupEMA)
+
+ema1Length = input.int(20, "EMA 1 Length", minval=1, group=groupEMA)
+
+ema2Length = input.int(50, "EMA 2 Length", minval=1, group=groupEMA)
+
+ema3Length = input.int(200, "EMA 3 Length", minval=1, group=groupEMA)
+
+emaWidth = input.int(2, "EMA Line Width", minval=1, maxval=5, group=groupEMA)
+
+//────────────────────────────────────
+
+// SUPERTREND SETTINGS
+
+//────────────────────────────────────
+
+groupST = "Multi-Timeframe Supertrend"
+
+showSupertrend = input.bool(true, "Show Supertrend", group=groupST)
+
+supertrendTimeframe = input.timeframe(
+
+     "60",
+
+     "Supertrend Timeframe",
+
+     group=groupST
+
+ )
+
+supertrendFactor = input.float(
+
+     3.0,
+
+     "Supertrend Factor",
+
+     minval=0.1,
+
+     step=0.1,
+
+     group=groupST
+
+ )
+
+supertrendATRPeriod = input.int(
+
+     10,
+
+     "Supertrend ATR Period",
+
+     minval=1,
+
+     group=groupST
+
+ )
+
+supertrendWidth = input.int(
+
+     2,
+
+     "Supertrend Line Width",
+
+     minval=1,
+
+     maxval=5,
+
+     group=groupST
+
+ )
+
+showSupertrendLabels = input.bool(
+
+     true,
+
+     "Show Supertrend Flip Labels",
+
+     group=groupST
+
+ )
+
+showSupertrendShading = input.bool(
+
+     true,
+
+     "Show Supertrend Shading",
+
+     group=groupST
+
+ )
+
+shadingTransparency = input.int(
+
+     88,
+
+     "Shading Transparency",
+
+     minval=0,
+
+     maxval=100,
+
+     group=groupST
+
+ )
+
+//────────────────────────────────────
+
+// DISPLAY SETTINGS
+
+//────────────────────────────────────
+
+groupDisplay = "Display Settings"
+
+showFlipLabels = input.bool(
+
+     true,
+
+     "Show Individual EMA Flip Labels",
+
+     group=groupDisplay
+
+ )
+
+showConfluenceLabels = input.bool(
+
+     true,
+
+     "Show Confluence Labels",
+
+     group=groupDisplay
+
+ )
+
+showDashboard = input.bool(
+
+     true,
+
+     "Show Dashboard",
+
+     group=groupDisplay
+
+ )
+
+enableLabelExpiry = input.bool(
+
+     true,
+
+     "Enable Individual EMA Label Expiry",
+
+     group=groupDisplay
+
+ )
+
+labelExpiryBars = input.int(
+
+     50,
+
+     "Individual EMA Label Expiry (Candles)",
+
+     minval=1,
+
+     group=groupDisplay
+
+ )
+
+// Confluence label expiry settings
+groupConfluence = "Confluence Label Settings"
+enableConfluenceExpiry = input.bool(true, "Enable Confluence Label Expiry", group=groupConfluence)
+confluenceExpiryCandles = input.int(50, "Remove Confluence Labels After X Candles", minval=1, group=groupConfluence)
+keepLatestBullish = input.bool(true, "Keep Most Recent Bullish Label", group=groupConfluence)
+keepLatestBearish = input.bool(true, "Keep Most Recent Bearish Label", group=groupConfluence)
+
+//────────────────────────────────────
+
+// EMA CALCULATIONS
+
+//────────────────────────────────────
+
+ema1 = ta.ema(close, ema1Length)
+
+ema2 = ta.ema(close, ema2Length)
+
+ema3 = ta.ema(close, ema3Length)
+
+// EMA states
+
+ema1Bullish = close > ema1
+
+ema1Bearish = close < ema1
+
+ema2Bullish = close > ema2
+
+ema2Bearish = close < ema2
+
+ema3Bullish = close > ema3
+
+ema3Bearish = close < ema3
+
+// EMA colours
+
+ema1Color = color.blue
+
+ema2Color = color.yellow
+
+ema3Color = color.orange
+
+//────────────────────────────────────
+
+// EMA PLOTS
+
+//────────────────────────────────────
+
+plot(
+
+     showEMA1 ? ema1 : na,
+
+     title="EMA 1",
+
+     color=ema1Color,
+
+     linewidth=emaWidth
+
+ )
+
+plot(
+
+     showEMA2 ? ema2 : na,
+
+     title="EMA 2",
+
+     color=ema2Color,
+
+     linewidth=emaWidth
+
+ )
+
+plot(
+
+     showEMA3 ? ema3 : na,
+
+     title="EMA 3",
+
+     color=ema3Color,
+
+     linewidth=emaWidth
+
+ )
+
+//────────────────────────────────────
+
+// LABEL MANAGEMENT
+
+//────────────────────────────────────
+
+// Stores only individual EMA labels
+
+var array<label> emaLabels = array.new<label>()
+
+// Function for creating and storing EMA labels
+
+f_createEMALabel(_x, _y, _text, _style, _bgColor, _textColor) =>
+
+    newLabel = label.new(
+
+         _x,
+
+         _y,
+
+         _text,
+
+         style=_style,
+
+         color=_bgColor,
+
+         textcolor=_textColor,
+
+         size=size.tiny
+
+     )
+
+    array.push(emaLabels, newLabel)
+
+// Delete expired individual EMA labels
+
+if enableLabelExpiry and array.size(emaLabels) > 0
+
+    for i = array.size(emaLabels) - 1 to 0
+
+        currentLabel = array.get(emaLabels, i)
+
+        labelAge = bar_index - label.get_x(currentLabel)
+
+        if labelAge >= labelExpiryBars
+
+            label.delete(currentLabel)
+
+            array.remove(emaLabels, i)
+
+//────────────────────────────────────
+
+// INDIVIDUAL EMA FLIPS
+
+//────────────────────────────────────
+
+ema1BullishFlip = ema1Bullish and not ema1Bullish[1]
+
+ema1BearishFlip = ema1Bearish and not ema1Bearish[1]
+
+ema2BullishFlip = ema2Bullish and not ema2Bullish[1]
+
+ema2BearishFlip = ema2Bearish and not ema2Bearish[1]
+
+ema3BullishFlip = ema3Bullish and not ema3Bullish[1]
+
+ema3BearishFlip = ema3Bearish and not ema3Bearish[1]
+
+//────────────────────────────────────
+
+// EMA 1 LABELS
+
+//────────────────────────────────────
+
+if showFlipLabels and ema1BullishFlip and barstate.isconfirmed
+
+    f_createEMALabel(
+
+         bar_index,
+
+         low,
+
+         "EMA " + str.tostring(ema1Length) + "\nBULL",
+
+         label.style_label_up,
+
+         color.blue,
+
+         color.white
+
+     )
+
+if showFlipLabels and ema1BearishFlip and barstate.isconfirmed
+
+    f_createEMALabel(
+
+         bar_index,
+
+         high,
+
+         "EMA " + str.tostring(ema1Length) + "\nBEAR",
+
+         label.style_label_down,
+
+         color.blue,
+
+         color.white
+
+     )
+
+//────────────────────────────────────
+
+// EMA 2 LABELS
+
+//────────────────────────────────────
+
+if showFlipLabels and ema2BullishFlip and barstate.isconfirmed
+
+    f_createEMALabel(
+
+         bar_index,
+
+         low,
+
+         "EMA " + str.tostring(ema2Length) + "\nBULL",
+
+         label.style_label_up,
+
+         color.yellow,
+
+         color.black
+
+     )
+
+if showFlipLabels and ema2BearishFlip and barstate.isconfirmed
+
+    f_createEMALabel(
+
+         bar_index,
+
+         high,
+
+         "EMA " + str.tostring(ema2Length) + "\nBEAR",
+
+         label.style_label_down,
+
+         color.yellow,
+
+         color.black
+
+     )
+
+//────────────────────────────────────
+
+// EMA 3 LABELS
+
+//────────────────────────────────────
+
+if showFlipLabels and ema3BullishFlip and barstate.isconfirmed
+
+    f_createEMALabel(
+
+         bar_index,
+
+         low,
+
+         "EMA " + str.tostring(ema3Length) + "\nBULL",
+
+         label.style_label_up,
+
+         color.orange,
+
+         color.black
+
+     )
+
+if showFlipLabels and ema3BearishFlip and barstate.isconfirmed
+
+    f_createEMALabel(
+
+         bar_index,
+
+         high,
+
+         "EMA " + str.tostring(ema3Length) + "\nBEAR",
+
+         label.style_label_down,
+
+         color.orange,
+
+         color.black
+
+     )
+
+//────────────────────────────────────
+
+// MULTI-TIMEFRAME SUPERTREND
+
+//────────────────────────────────────
+
+[supertrendValue, supertrendDirection] =
+
+     request.security(
+
+         syminfo.tickerid,
+
+         supertrendTimeframe,
+
+         ta.supertrend(
+
+             supertrendFactor,
+
+             supertrendATRPeriod
+
+         ),
+
+         lookahead=barmerge.lookahead_off
+
+     )
+
+// Direction < 0 = bullish
+
+// Direction > 0 = bearish
+
+supertrendBullish = supertrendDirection < 0
+
+supertrendBearish = supertrendDirection > 0
+
+supertrendBullishFlip =
+
+     supertrendBullish and not supertrendBullish[1]
+
+supertrendBearishFlip =
+
+     supertrendBearish and not supertrendBearish[1]
+
+supertrendColor =
+
+     supertrendBullish ? color.green : color.red
+
+//────────────────────────────────────
+
+// SUPERTREND PLOT
+
+//────────────────────────────────────
+
+supertrendPlot = plot(
+
+     showSupertrend ? supertrendValue : na,
+
+     title="MTF Supertrend",
+
+     color=supertrendColor,
+
+     linewidth=supertrendWidth,
+
+     style=plot.style_linebr
+
+ )
+
+//────────────────────────────────────
+
+// SUPERTREND SHADING
+
+//────────────────────────────────────
+
+// Bullish area: Supertrend to candle low
+
+bullishBase = plot(
+
+     showSupertrend and
+
+     showSupertrendShading and
+
+     supertrendBullish ? low : na,
+
+     title="Bullish Shading Base",
+
+     display=display.none
+
+ )
+
+// Bearish area: Supertrend to candle high
+
+bearishBase = plot(
+
+     showSupertrend and
+
+     showSupertrendShading and
+
+     supertrendBearish ? high : na,
+
+     title="Bearish Shading Base",
+
+     display=display.none
+
+ )
+
+// Green bullish shading
+
+fill(
+
+     supertrendPlot,
+
+     bullishBase,
+
+     color=color.new(color.green, shadingTransparency),
+
+     title="Bullish Supertrend Shading"
+
+ )
+
+// Red bearish shading
+
+fill(
+
+     supertrendPlot,
+
+     bearishBase,
+
+     color=color.new(color.red, shadingTransparency),
+
+     title="Bearish Supertrend Shading"
+
+ )
+
+//────────────────────────────────────
+
+// SUPERTREND FLIP LABELS
+
+//────────────────────────────────────
+
+if showSupertrendLabels and
+
+     supertrendBullishFlip and
+
+     barstate.isconfirmed
+
+    label.new(
+
+         bar_index,
+
+         low,
+
+         "ST " + supertrendTimeframe + "\nBULL",
+
+         style=label.style_label_up,
+
+         color=color.green,
+
+         textcolor=color.white,
+
+         size=size.tiny
+
+     )
+
+if showSupertrendLabels and
+
+     supertrendBearishFlip and
+
+     barstate.isconfirmed
+
+    label.new(
+
+         bar_index,
+
+         high,
+
+         "ST " + supertrendTimeframe + "\nBEAR",
+
+         style=label.style_label_down,
+
+         color=color.red,
+
+         textcolor=color.white,
+
+         size=size.tiny
+
+     )
+
+//────────────────────────────────────
+
+// EMA CONFLUENCE
+
+//────────────────────────────────────
+
+allBullish = ema1Bullish and ema2Bullish and ema3Bullish
+
+allBearish = ema1Bearish and ema2Bearish and ema3Bearish
+
+confluenceState =
+
+     allBullish ? 1 :
+
+     allBearish ? -1 :
+
+     0
+
+previousState = confluenceState[1]
+
+bullishConfluence =
+
+     confluenceState == 1 and previousState != 1
+
+bearishConfluence =
+
+     confluenceState == -1 and previousState != -1
+
+neutralConfluence =
+
+     confluenceState == 0 and previousState != 0
+
+//────────────────────────────────────
+
+// CONFLUENCE LABELS
+
+//────────────────────────────────────
+
+var array<label> confluenceLabels = array.new<label>()
+var array<int> confluenceLabelBars = array.new<int>()
+var array<bool> confluenceLabelBullish = array.new<bool>()
+
+f_storeConfluenceLabel(_label, _isBullish) =>
+    array.push(confluenceLabels, _label)
+    array.push(confluenceLabelBars, bar_index)
+    array.push(confluenceLabelBullish, _isBullish)
+
+if showConfluenceLabels and bullishConfluence and barstate.isconfirmed
+    bullishLabel = label.new(x=bar_index, y=low, text="BULLISH\nCONFLUENCE", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_up, color=color.green, textcolor=color.white, size=size.small)
+    f_storeConfluenceLabel(bullishLabel, true)
+
+if showConfluenceLabels and bearishConfluence and barstate.isconfirmed
+    bearishLabel = label.new(x=bar_index, y=high, text="BEARISH\nCONFLUENCE", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=color.red, textcolor=color.white, size=size.small)
+    f_storeConfluenceLabel(bearishLabel, false)
+
+if enableConfluenceExpiry and array.size(confluenceLabels) > 0
+    latestBullishIndex = -1
+    latestBearishIndex = -1
+    for i = 0 to array.size(confluenceLabels) - 1
+        isBullish = array.get(confluenceLabelBullish, i)
+        if isBullish
+            latestBullishIndex := i
+        else
+            latestBearishIndex := i
+    for i = array.size(confluenceLabels) - 1 to 0
+        createdBar = array.get(confluenceLabelBars, i)
+        isBullish = array.get(confluenceLabelBullish, i)
+        preserveLatest = (isBullish and keepLatestBullish and i == latestBullishIndex) or (not isBullish and keepLatestBearish and i == latestBearishIndex)
+        if bar_index - createdBar >= confluenceExpiryCandles and not preserveLatest
+            label.delete(array.get(confluenceLabels, i))
+            array.remove(confluenceLabels, i)
+            array.remove(confluenceLabelBars, i)
+            array.remove(confluenceLabelBullish, i)
+
+//────────────────────────────────────
+
+// DASHBOARD
+
+//────────────────────────────────────
+
+var table dashboard = table.new(
+
+     position.top_right,
+
+     2,
+
+     6,
+
+     border_width=1
+
+ )
+
+statusText =
+
+     allBullish ? "BULLISH" :
+
+     allBearish ? "BEARISH" :
+
+     "NEUTRAL"
+
+statusColor =
+
+     allBullish ? color.green :
+
+     allBearish ? color.red :
+
+     color.gray
+
+supertrendStatus =
+
+     supertrendBullish ? "BULLISH" :
+
+     supertrendBearish ? "BEARISH" :
+
+     "NEUTRAL"
+
+supertrendStatusColor =
+
+     supertrendBullish ? color.green :
+
+     supertrendBearish ? color.red :
+
+     color.gray
+
+if barstate.islast and showDashboard
+
+    // Header
+
+    table.cell(
+
+         dashboard,
+
+         0,
+
+         0,
+
+         "EMA CONFLUENCE",
+
+         bgcolor=color.black,
+
+         text_color=color.white
+
+     )
+
+    table.cell(
+
+         dashboard,
+
+         1,
+
+         0,
+
+         "STATUS",
+
+         bgcolor=color.black,
+
+         text_color=color.white
+
+     )
+
+    // EMA 1
+
+    table.cell(
+
+         dashboard,
+
+         0,
+
+         1,
+
+         "EMA " + str.tostring(ema1Length),
+
+         bgcolor=color.blue,
+
+         text_color=color.white
+
+     )
+
+    table.cell(
+
+         dashboard,
+
+         1,
+
+         1,
+
+         ema1Bullish ? "BULLISH" : "BEARISH",
+
+         bgcolor=ema1Bullish ? color.green : color.red,
+
+         text_color=color.white
+
+     )
+
+    // EMA 2
+
+    table.cell(
+
+         dashboard,
+
+         0,
+
+         2,
+
+         "EMA " + str.tostring(ema2Length),
+
+         bgcolor=color.yellow,
+
+         text_color=color.black
+
+     )
+
+    table.cell(
+
+         dashboard,
+
+         1,
+
+         2,
+
+         ema2Bullish ? "BULLISH" : "BEARISH",
+
+         bgcolor=ema2Bullish ? color.green : color.red,
+
+         text_color=color.white
+
+     )
+
+    // EMA 3
+
+    table.cell(
+
+         dashboard,
+
+         0,
+
+         3,
+
+         "EMA " + str.tostring(ema3Length),
+
+         bgcolor=color.orange,
+
+         text_color=color.black
+
+     )
+
+    table.cell(
+
+         dashboard,
+
+         1,
+
+         3,
+
+         ema3Bullish ? "BULLISH" : "BEARISH",
+
+         bgcolor=ema3Bullish ? color.green : color.red,
+
+         text_color=color.white
+
+     )
+
+    // Overall EMA status
+
+    table.cell(
+
+         dashboard,
+
+         0,
+
+         4,
+
+         "EMA OVERALL",
+
+         bgcolor=color.black,
+
+         text_color=color.white
+
+     )
+
+    table.cell(
+
+         dashboard,
+
+         1,
+
+         4,
+
+         statusText,
+
+         bgcolor=statusColor,
+
+         text_color=color.white
+
+     )
+
+    // Supertrend status
+
+    table.cell(
+
+         dashboard,
+
+         0,
+
+         5,
+
+         "ST " + supertrendTimeframe,
+
+         bgcolor=color.black,
+
+         text_color=color.white
+
+     )
+
+    table.cell(
+
+         dashboard,
+
+         1,
+
+         5,
+
+         supertrendStatus,
+
+         bgcolor=supertrendStatusColor,
+
+         text_color=color.white
+
+     )
+
+// Clear dashboard when disabled
+
+if barstate.islast and not showDashboard
+
+    table.clear(dashboard, 0, 0, 1, 5)
+
+//────────────────────────────────────
+
+// ALERT CONDITIONS
+
+//────────────────────────────────────
+
+// EMA 1 alerts
+
+alertcondition(
+
+     ema1BullishFlip and barstate.isconfirmed,
+
+     title="EMA 1 Bullish Flip",
+
+     message="EMA 1 has flipped BULLISH."
+
+ )
+
+alertcondition(
+
+     ema1BearishFlip and barstate.isconfirmed,
+
+     title="EMA 1 Bearish Flip",
+
+     message="EMA 1 has flipped BEARISH."
+
+ )
+
+// EMA 2 alerts
+
+alertcondition(
+
+     ema2BullishFlip and barstate.isconfirmed,
+
+     title="EMA 2 Bullish Flip",
+
+     message="EMA 2 has flipped BULLISH."
+
+ )
+
+alertcondition(
+
+     ema2BearishFlip and barstate.isconfirmed,
+
+     title="EMA 2 Bearish Flip",
+
+     message="EMA 2 has flipped BEARISH."
+
+ )
+
+// EMA 3 alerts
+
+alertcondition(
+
+     ema3BullishFlip and barstate.isconfirmed,
+
+     title="EMA 3 Bullish Flip",
+
+     message="EMA 3 has flipped BULLISH."
+
+ )
+
+alertcondition(
+
+     ema3BearishFlip and barstate.isconfirmed,
+
+     title="EMA 3 Bearish Flip",
+
+     message="EMA 3 has flipped BEARISH."
+
+ )
+
+// Supertrend alerts
+
+alertcondition(
+
+     supertrendBullishFlip and barstate.isconfirmed,
+
+     title="MTF Supertrend Bullish Flip",
+
+     message="Multi-timeframe Supertrend has flipped BULLISH."
+
+ )
+
+alertcondition(
+
+     supertrendBearishFlip and barstate.isconfirmed,
+
+     title="MTF Supertrend Bearish Flip",
+
+     message="Multi-timeframe Supertrend has flipped BEARISH."
+
+ )
+
+// EMA confluence alerts
+
+alertcondition(
+
+     bullishConfluence and barstate.isconfirmed,
+
+     title="Bullish EMA Confluence",
+
+     message="BULLISH EMA CONFLUENCE: All three EMAs are bullish."
+
+ )
+
+alertcondition(
+
+     bearishConfluence and barstate.isconfirmed,
+
+     title="Bearish EMA Confluence",
+
+     message="BEARISH EMA CONFLUENCE: All three EMAs are bearish."
+
+ )
+
+alertcondition(
+
+     neutralConfluence and barstate.isconfirmed,
+
+     title="Neutral EMA Confluence",
+
+     message="NEUTRAL EMA CONFLUENCE: EMAs are no longer aligned."
+
+ )
+
+//────────────────────────────────────
+
+// DYNAMIC ALERTS
+
+//────────────────────────────────────
+
+if bullishConfluence and barstate.isconfirmed
+
+    alert(
+
+         "BULLISH EMA CONFLUENCE: All three EMAs are bullish.",
+
+         alert.freq_once_per_bar_close
+
+     )
+
+if bearishConfluence and barstate.isconfirmed
+
+    alert(
+
+         "BEARISH EMA CONFLUENCE: All three EMAs are bearish.",
+
+         alert.freq_once_per_bar_close
+
+     )
+
+if neutralConfluence and barstate.isconfirmed
+
+    alert(
+
+         "NEUTRAL EMA CONFLUENCE: EMAs are no longer aligned.",
+
+         alert.freq_once_per_bar_close
+
+     )
+
+if supertrendBullishFlip and barstate.isconfirmed
+
+    alert(
+
+         "MTF SUPERTREND BULLISH FLIP.",
+
+         alert.freq_once_per_bar_close
+
+     )
+
+if supertrendBearishFlip and barstate.isconfirmed
+
+    alert(
+
+         "MTF SUPERTREND BEARISH FLIP.",
+
+         alert.freq_once_per_bar_close
+
+     )

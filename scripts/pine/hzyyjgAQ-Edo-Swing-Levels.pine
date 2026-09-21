@@ -1,0 +1,195 @@
+// ─────────────────────────────────────────────────────────────────
+// ███████╗██████╗  ██████╗ ██╗      █████╗ ██████╗
+// ██╔════╝██╔══██╗██╔═══██╗██║     ██╔══██╗██╔══██╗
+// █████╗  ██║  ██║██║   ██║██║     ███████║██████╔╝
+// ██╔══╝  ██║  ██║██║   ██║██║     ██╔══██║██╔══██╗
+// ███████╗██████╔╝╚██████╔╝███████╗██║  ██║██████╔╝
+// ╚══════╝╚═════╝  ╚═════╝ ╚══════╝╚═╝  ╚═╝╚═════╝
+// ─────────────────────────────────────────────────────────────────
+// ███╗   ███╗ █████╗ ██████╗ ██╗  ██╗███████╗████████╗███████╗
+// ████╗ ████║██╔══██╗██╔══██╗██║ ██╔╝██╔════╝╚══██╔══╝██╔════╝
+// ██╔████╔██║███████║██████╔╝█████╔╝ █████╗     ██║   ███████╗
+// ██║╚██╔╝██║██╔══██║██╔══██╗██╔═██╗ ██╔══╝     ██║   ╚════██║
+// ██║ ╚═╝ ██║██║  ██║██║  ██║██║  ██╗███████╗   ██║   ███████║
+// ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝   ╚═╝   ╚══════╝
+// ─────────────────────────────────────────────────────────────────
+// © Edolab Markets
+
+//@version=6
+indicator("Edo Swing Levels", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// ================== SETTINGS — STRUCTURE ==================
+
+profile  = input.string("Swing", "Swing Profile", options = ["Scalper", "Swing", "Long Term"], group = "Structure", tooltip = "Scalper: fast swings (intraday)\nSwing: balanced (4H / D)\nLong Term: major swings only (W)")
+extendR  = input.int(12, "Extend levels (bars)", minval = 0, maxval = 100, group = "Structure", tooltip = "How far to project the active Strong/Weak levels to the right.")
+
+swingLen = profile == "Scalper" ? 5 : profile == "Long Term" ? 21 : 10
+
+// ================== SETTINGS — STYLE ==================
+
+highCol   = input.color(#ef5350, "High level", inline = "c1", group = "Style")
+lowCol    = input.color(#26a69a, "Low level",  inline = "c1", group = "Style")
+neutCol   = input.color(#787b86, "Neutral",    group = "Style")
+labelSize = input.string("Small", "Label Size", options = ["Tiny", "Small", "Normal"], group = "Style")
+themeMode = input.string("Dark",  "Theme Mode", options = ["Dark", "Light"], group = "Style", tooltip = "Match your TradingView background theme.")
+
+// ================== SETTINGS — PANEL ==================
+
+showPanel = input.bool(true, "Show Panel", group = "Panel")
+panelPos  = input.string("Top Right", "Panel Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = "Panel")
+panelSize = input.string("Small", "Panel Size", options = ["Tiny", "Small", "Normal"], group = "Panel")
+
+// ================== THEME ==================
+
+isDark   = themeMode == "Dark"
+textCol  = isDark ? #ffffff : #131722
+headerBg = isDark ? #2a2e39 : #d1d4dc
+subBg    = isDark ? #363a45 : #e0e3eb
+cellBg   = isDark ? #1e222d : #f0f3fa
+cellTxt  = isDark ? #d1d4dc : #363a45
+
+lblSizeTxt = labelSize == "Tiny" ? size.tiny : labelSize == "Normal" ? size.normal : size.small
+panSizeTxt = panelSize == "Tiny" ? size.tiny : panelSize == "Normal" ? size.normal : size.small
+
+// ================== SWING DETECTION ==================
+
+ph = ta.pivothigh(high, swingLen, swingLen)
+pl = ta.pivotlow(low,  swingLen, swingLen)
+
+var float upperLevel  = na   // last confirmed swing high (resistance)
+var int   upperBar    = na
+var float lowerLevel  = na   // last confirmed swing low  (support)
+var int   lowerBar    = na
+var bool  upperBroken = false
+var bool  lowerBroken = false
+
+newHigh = false
+newLow  = false
+
+if not na(ph)
+    upperLevel  := ph
+    upperBar    := bar_index - swingLen
+    upperBroken := false
+    newHigh     := true
+
+if not na(pl)
+    lowerLevel  := pl
+    lowerBar    := bar_index - swingLen
+    lowerBroken := false
+    newLow      := true
+
+// ================== MARKET STRUCTURE — trend via break of structure ==================
+// A Strong level is the one defending the current trend; breaking it flips the trend (CHoCH)
+// and the level becomes Weak (taken). Breaks validated on closed bars to avoid repainting.
+
+var int trend = 0   // 1 = bullish, -1 = bearish
+
+bullBreak = barstate.isconfirmed and not na(upperLevel) and not upperBroken and close > upperLevel
+bearBreak = barstate.isconfirmed and not na(lowerLevel) and not lowerBroken and close < lowerLevel
+
+strongHighTaken = false
+strongLowTaken  = false
+
+if bullBreak
+    strongHighTaken := trend < 0   // breaking the defended high in a bearish trend = CHoCH up
+    trend       := 1
+    upperBroken := true
+
+if bearBreak
+    strongLowTaken := trend > 0    // breaking the defended low in a bullish trend = CHoCH down
+    trend       := -1
+    lowerBroken := true
+
+// ================== DYNAMIC STRONG / WEAK LEVELS ==================
+// Bullish trend  -> Low is Strong (support that holds), High is Weak (will be taken).
+// Bearish trend  -> High is Strong (cap that holds),    Low is Weak.
+
+var line  hiLine = na
+var label hiLbl  = na
+var line  loLine = na
+var label loLbl  = na
+
+if barstate.islast
+    rightX = bar_index + extendR
+
+    // ---- HIGH level ----
+    if not na(upperLevel)
+        hiStrong = trend < 0
+        hiTxt = trend < 0 ? "Strong High" : trend > 0 ? "Weak High" : "High"
+        hiC   = trend == 0 ? neutCol : highCol
+        hiOp  = hiStrong ? 0 : 45
+        hiW   = hiStrong ? 2 : 1
+        hiSty = hiStrong ? line.style_solid : line.style_dashed
+        if na(hiLine)
+            hiLine := line.new(upperBar, upperLevel, rightX, upperLevel, color = color.new(hiC, hiOp), width = hiW, style = hiSty)
+            hiLbl  := label.new(rightX, upperLevel, hiTxt, style = label.style_label_left, color = color.new(hiC, 85), textcolor = hiC, size = lblSizeTxt)
+        else
+            line.set_xy1(hiLine, upperBar, upperLevel)
+            line.set_xy2(hiLine, rightX, upperLevel)
+            line.set_color(hiLine, color.new(hiC, hiOp))
+            line.set_width(hiLine, hiW)
+            line.set_style(hiLine, hiSty)
+            label.set_xy(hiLbl, rightX, upperLevel)
+            label.set_text(hiLbl, hiTxt)
+            label.set_textcolor(hiLbl, hiC)
+            label.set_color(hiLbl, color.new(hiC, 85))
+
+    // ---- LOW level ----
+    if not na(lowerLevel)
+        loStrong = trend > 0
+        loTxt = trend > 0 ? "Strong Low" : trend < 0 ? "Weak Low" : "Low"
+        loC   = trend == 0 ? neutCol : lowCol
+        loOp  = loStrong ? 0 : 45
+        loW   = loStrong ? 2 : 1
+        loSty = loStrong ? line.style_solid : line.style_dashed
+        if na(loLine)
+            loLine := line.new(lowerBar, lowerLevel, rightX, lowerLevel, color = color.new(loC, loOp), width = loW, style = loSty)
+            loLbl  := label.new(rightX, lowerLevel, loTxt, style = label.style_label_left, color = color.new(loC, 85), textcolor = loC, size = lblSizeTxt)
+        else
+            line.set_xy1(loLine, lowerBar, lowerLevel)
+            line.set_xy2(loLine, rightX, lowerLevel)
+            line.set_color(loLine, color.new(loC, loOp))
+            line.set_width(loLine, loW)
+            line.set_style(loLine, loSty)
+            label.set_xy(loLbl, rightX, lowerLevel)
+            label.set_text(loLbl, loTxt)
+            label.set_textcolor(loLbl, loC)
+            label.set_color(loLbl, color.new(loC, 85))
+
+// ================== PANEL ==================
+
+if showPanel and barstate.islast
+    panelPosTV = switch panelPos
+        "Top Right"    => position.top_right
+        "Top Left"     => position.top_left
+        "Bottom Right" => position.bottom_right
+        "Bottom Left"  => position.bottom_left
+        => position.top_right
+
+    var table panel = table.new(panelPosTV, 2, 4, frame_color = isDark ? #363a45 : #b2b5be, frame_width = 1, border_color = isDark ? #434651 : #c8cbda, border_width = 1)
+
+    biasTxt = trend > 0 ? "▲ BULLISH" : trend < 0 ? "▼ BEARISH" : "• NEUTRAL"
+    biasCol = trend > 0 ? lowCol : trend < 0 ? highCol : cellTxt
+    hiTag   = trend < 0 ? "Strong" : trend > 0 ? "Weak" : "—"
+    loTag   = trend > 0 ? "Strong" : trend < 0 ? "Weak" : "—"
+    hiVal   = na(upperLevel) ? "—" : str.tostring(upperLevel, format.mintick) + "  (" + hiTag + ")"
+    loVal   = na(lowerLevel) ? "—" : str.tostring(lowerLevel, format.mintick) + "  (" + loTag + ")"
+
+    table.cell(panel, 0, 0, "EDO SWING LEVELS", text_color = textCol, bgcolor = headerBg, text_size = panSizeTxt)
+    table.merge_cells(panel, 0, 0, 1, 0)
+
+    table.cell(panel, 0, 1, "Bias", text_color = cellTxt, bgcolor = cellBg, text_size = panSizeTxt)
+    table.cell(panel, 1, 1, biasTxt, text_color = biasCol, bgcolor = cellBg, text_size = panSizeTxt)
+
+    table.cell(panel, 0, 2, "High", text_color = color.new(highCol, 0), bgcolor = subBg, text_size = panSizeTxt)
+    table.cell(panel, 1, 2, hiVal,  text_color = color.new(highCol, 0), bgcolor = subBg, text_size = panSizeTxt)
+
+    table.cell(panel, 0, 3, "Low", text_color = color.new(lowCol, 0), bgcolor = cellBg, text_size = panSizeTxt)
+    table.cell(panel, 1, 3, loVal, text_color = color.new(lowCol, 0), bgcolor = cellBg, text_size = panSizeTxt)
+
+// ================== ALERTS ==================
+
+alertcondition(strongHighTaken, "Strong High taken", "Edo Swing Levels — Strong High taken (CHoCH up) on {{ticker}}")
+alertcondition(strongLowTaken,  "Strong Low taken",  "Edo Swing Levels — Strong Low taken (CHoCH down) on {{ticker}}")
+alertcondition(newHigh,         "New swing high",    "Edo Swing Levels — New swing high formed on {{ticker}}")
+alertcondition(newLow,          "New swing low",     "Edo Swing Levels — New swing low formed on {{ticker}}")

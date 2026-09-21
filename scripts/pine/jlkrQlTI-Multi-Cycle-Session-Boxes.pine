@@ -1,0 +1,272 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © graefe
+
+//@version=6
+indicator(title = "Multi Cycle Session Boxes", shorttitle = "Session", overlay = true, max_boxes_count = 500)
+
+
+// The mode names exist once as constants and are referenced everywhere,
+// so a typo becomes a compile error instead of a silent dead option.
+const string con_optDaily   = "Daily"
+const string con_optWeekly  = "Weekly"
+const string con_optMonthly = "Monthly"
+const string con_optYearly  = "Yearly"
+
+// Seven sessions at 70 boxes each stay below the max_boxes_count of 500.
+const int con_maxBoxesPerSession = 70
+
+// Points in time are compared as a single number; the factors shift month, day
+// and hour two decimal places to the left each.
+const int con_shift2 = 100
+const int con_shift4 = 10000
+const int con_shift6 = 1000000
+
+const string con_modeTooltip = "Determines which fields below are evaluated:\n\n" + con_optDaily + "     ->  hour : minute only\n\n" + con_optWeekly + "  ->  day (1 = Mon ... 7 = Sun) + hour : minute\n\n" + con_optMonthly + " ->  day (1 - 31) + hour : minute\n\n" + con_optYearly + "    ->  month + day + hour : minute"
+const string con_dayTooltip  = "In " + con_optWeekly + " mode both day fields only count up to 7. Higher values are treated as Sunday.\n\nIn " + con_optMonthly + " and " + con_optYearly + " mode, days the calendar month does not have are never reached. An out-of-range start skips the session for that month, an out-of-range end extends the box to the end of the month."
+
+const string con_grpTimezone = "Timezone"
+
+string inp_timezone = input.string(defval = "Europe/Berlin", title = "Timezone", group = con_grpTimezone, options = ["Exchange", "UTC", "Europe/Berlin", "Europe/London", "America/New_York", "America/Chicago", "Asia/Tokyo", "Asia/Shanghai", "Australia/Sydney"])
+
+
+// Seven identically built blocks: on/off switch and repeat mode, then the time
+// window from month down to minute, then fill and border.
+const string con_grpSession1 = "SESSION 1"
+bool   inp_show1 = input.bool(defval = true, title = "Show boxes", group = con_grpSession1)
+string inp_mode1 = input.string(defval = con_optWeekly, title = "Repeat", options = [con_optDaily, con_optWeekly, con_optMonthly, con_optYearly], group = con_grpSession1, tooltip = con_modeTooltip, active = inp_show1)
+bool   cal_showMonth1 = inp_show1 and inp_mode1 == con_optYearly
+bool   cal_showDay1   = inp_show1 and inp_mode1 != con_optDaily
+
+const string con_grpTime1 = "Session 1 Time (Start:End)"
+int inp_startMonth1  = input.int(defval = 4,  title = "Month", minval = 1, maxval = 12, inline = "month1", group = con_grpTime1, active = cal_showMonth1)
+int inp_endMonth1    = input.int(defval = 5,  title = ":", minval = 1, maxval = 12, inline = "month1", group = con_grpTime1, active = cal_showMonth1)
+int inp_startDay1    = input.int(defval = 1,  title = "Day", minval = 1, maxval = 31, inline = "day1", group = con_grpTime1, active = cal_showDay1)
+int inp_endDay1      = input.int(defval = 3,  title = ":", minval = 1, maxval = 31, tooltip = con_dayTooltip, inline = "day1", group = con_grpTime1, active = cal_showDay1)
+int inp_startHour1   = input.int(defval = 12, title = "Hour", minval = 0, maxval = 23, inline = "hour1", group = con_grpTime1, active = inp_show1)
+int inp_endHour1     = input.int(defval = 15, title = ":", minval = 0, maxval = 23, inline = "hour1", group = con_grpTime1, active = inp_show1)
+int inp_startMinute1 = input.int(defval = 0,  title = "Minute", minval = 0, maxval = 59, inline = "minute1", group = con_grpTime1, active = inp_show1)
+int inp_endMinute1   = input.int(defval = 30, title = ":", minval = 0, maxval = 59, inline = "minute1", group = con_grpTime1, active = inp_show1)
+
+const string con_grpGraphic1 = "Session 1 Graphic"
+color inp_fillColor1   = input.color(defval = color.new(color.teal, 88), title = "Fill", group = con_grpGraphic1, active = inp_show1)
+bool  inp_showBorder1  = input.bool(defval = true, title = "Border", inline = "bd1", group = con_grpGraphic1, active = inp_show1)
+color inp_borderColor1 = input.color(defval = color.new(color.teal, 40), title = "", inline = "bd1", group = con_grpGraphic1, active = inp_show1 and inp_showBorder1)
+int   inp_borderWidth1 = input.int(defval = 1, title = "", minval = 1, maxval = 4, inline = "bd1", group = con_grpGraphic1, active = inp_show1 and inp_showBorder1)
+
+const string con_grpSession2 = "SESSION 2"
+bool   inp_show2 = input.bool(defval = false, title = "Show boxes", group = con_grpSession2)
+string inp_mode2 = input.string(defval = con_optDaily, title = "Repeat", options = [con_optDaily, con_optWeekly, con_optMonthly, con_optYearly], group = con_grpSession2, tooltip = con_modeTooltip, active = inp_show2)
+bool   cal_showMonth2 = inp_show2 and inp_mode2 == con_optYearly
+bool   cal_showDay2   = inp_show2 and inp_mode2 != con_optDaily
+
+const string con_grpTime2 = "Session 2 Time (Start:End)"
+int inp_startMonth2  = input.int(defval = 4, title = "Month", minval = 1, maxval = 12, inline = "month2", group = con_grpTime2, active = cal_showMonth2)
+int inp_endMonth2    = input.int(defval = 5, title = ":", minval = 1, maxval = 12, inline = "month2", group = con_grpTime2, active = cal_showMonth2)
+int inp_startDay2    = input.int(defval = 1, title = "Day", minval = 1, maxval = 31, inline = "day2", group = con_grpTime2, active = cal_showDay2)
+int inp_endDay2      = input.int(defval = 3, title = ":", minval = 1, maxval = 31, tooltip = con_dayTooltip, inline = "day2", group = con_grpTime2, active = cal_showDay2)
+int inp_startHour2   = input.int(defval = 1, title = "Hour", minval = 0, maxval = 23, inline = "hour2", group = con_grpTime2, active = inp_show2)
+int inp_endHour2     = input.int(defval = 9, title = ":", minval = 0, maxval = 23, inline = "hour2", group = con_grpTime2, active = inp_show2)
+int inp_startMinute2 = input.int(defval = 0, title = "Minute", minval = 0, maxval = 59, inline = "minute2", group = con_grpTime2, active = inp_show2)
+int inp_endMinute2   = input.int(defval = 0, title = ":", minval = 0, maxval = 59, inline = "minute2", group = con_grpTime2, active = inp_show2)
+
+const string con_grpGraphic2 = "Session 2 Graphic"
+color inp_fillColor2   = input.color(defval = color.new(color.orange, 88), title = "Fill", group = con_grpGraphic2, active = inp_show2)
+bool  inp_showBorder2  = input.bool(defval = true, title = "Border", inline = "bd2", group = con_grpGraphic2, active = inp_show2)
+color inp_borderColor2 = input.color(defval = color.new(color.orange, 40), title = "", inline = "bd2", group = con_grpGraphic2, active = inp_show2 and inp_showBorder2)
+int   inp_borderWidth2 = input.int(defval = 1, title = "", minval = 1, maxval = 4, inline = "bd2", group = con_grpGraphic2, active = inp_show2 and inp_showBorder2)
+
+const string con_grpSession3 = "SESSION 3"
+bool   inp_show3 = input.bool(defval = false, title = "Show boxes", group = con_grpSession3)
+string inp_mode3 = input.string(defval = con_optDaily, title = "Repeat", options = [con_optDaily, con_optWeekly, con_optMonthly, con_optYearly], group = con_grpSession3, tooltip = con_modeTooltip, active = inp_show3)
+bool   cal_showMonth3 = inp_show3 and inp_mode3 == con_optYearly
+bool   cal_showDay3   = inp_show3 and inp_mode3 != con_optDaily
+
+const string con_grpTime3 = "Session 3 Time (Start:End)"
+int inp_startMonth3  = input.int(defval = 4,  title = "Month", minval = 1, maxval = 12, inline = "month3", group = con_grpTime3, active = cal_showMonth3)
+int inp_endMonth3    = input.int(defval = 5,  title = ":", minval = 1, maxval = 12, inline = "month3", group = con_grpTime3, active = cal_showMonth3)
+int inp_startDay3    = input.int(defval = 1,  title = "Day", minval = 1, maxval = 31, inline = "day3", group = con_grpTime3, active = cal_showDay3)
+int inp_endDay3      = input.int(defval = 3,  title = ":", minval = 1, maxval = 31, tooltip = con_dayTooltip, inline = "day3", group = con_grpTime3, active = cal_showDay3)
+int inp_startHour3   = input.int(defval = 9,  title = "Hour", minval = 0, maxval = 23, inline = "hour3", group = con_grpTime3, active = inp_show3)
+int inp_endHour3     = input.int(defval = 17, title = ":", minval = 0, maxval = 23, inline = "hour3", group = con_grpTime3, active = inp_show3)
+int inp_startMinute3 = input.int(defval = 0,  title = "Minute", minval = 0, maxval = 59, inline = "minute3", group = con_grpTime3, active = inp_show3)
+int inp_endMinute3   = input.int(defval = 30, title = ":", minval = 0, maxval = 59, inline = "minute3", group = con_grpTime3, active = inp_show3)
+
+const string con_grpGraphic3 = "Session 3 Graphic"
+color inp_fillColor3   = input.color(defval = color.new(color.purple, 88), title = "Fill", group = con_grpGraphic3, active = inp_show3)
+bool  inp_showBorder3  = input.bool(defval = true, title = "Border", inline = "bd3", group = con_grpGraphic3, active = inp_show3)
+color inp_borderColor3 = input.color(defval = color.new(color.purple, 40), title = "", inline = "bd3", group = con_grpGraphic3, active = inp_show3 and inp_showBorder3)
+int   inp_borderWidth3 = input.int(defval = 1, title = "", minval = 1, maxval = 4, inline = "bd3", group = con_grpGraphic3, active = inp_show3 and inp_showBorder3)
+
+const string con_grpSession4 = "SESSION 4"
+bool   inp_show4 = input.bool(defval = false, title = "Show boxes", group = con_grpSession4)
+string inp_mode4 = input.string(defval = con_optDaily, title = "Repeat", options = [con_optDaily, con_optWeekly, con_optMonthly, con_optYearly], group = con_grpSession4, tooltip = con_modeTooltip, active = inp_show4)
+bool   cal_showMonth4 = inp_show4 and inp_mode4 == con_optYearly
+bool   cal_showDay4   = inp_show4 and inp_mode4 != con_optDaily
+
+const string con_grpTime4 = "Session 4 Time (Start:End)"
+int inp_startMonth4  = input.int(defval = 4,  title = "Month", minval = 1, maxval = 12, inline = "month4", group = con_grpTime4, active = cal_showMonth4)
+int inp_endMonth4    = input.int(defval = 5,  title = ":", minval = 1, maxval = 12, inline = "month4", group = con_grpTime4, active = cal_showMonth4)
+int inp_startDay4    = input.int(defval = 1,  title = "Day", minval = 1, maxval = 31, inline = "day4", group = con_grpTime4, active = cal_showDay4)
+int inp_endDay4      = input.int(defval = 3,  title = ":", minval = 1, maxval = 31, tooltip = con_dayTooltip, inline = "day4", group = con_grpTime4, active = cal_showDay4)
+int inp_startHour4   = input.int(defval = 14, title = "Hour", minval = 0, maxval = 23, inline = "hour4", group = con_grpTime4, active = inp_show4)
+int inp_endHour4     = input.int(defval = 21, title = ":", minval = 0, maxval = 23, inline = "hour4", group = con_grpTime4, active = inp_show4)
+int inp_startMinute4 = input.int(defval = 30, title = "Minute", minval = 0, maxval = 59, inline = "minute4", group = con_grpTime4, active = inp_show4)
+int inp_endMinute4   = input.int(defval = 0,  title = ":", minval = 0, maxval = 59, inline = "minute4", group = con_grpTime4, active = inp_show4)
+
+const string con_grpGraphic4 = "Session 4 Graphic"
+color inp_fillColor4   = input.color(defval = color.new(color.blue, 88), title = "Fill", group = con_grpGraphic4, active = inp_show4)
+bool  inp_showBorder4  = input.bool(defval = true, title = "Border", inline = "bd4", group = con_grpGraphic4, active = inp_show4)
+color inp_borderColor4 = input.color(defval = color.new(color.blue, 40), title = "", inline = "bd4", group = con_grpGraphic4, active = inp_show4 and inp_showBorder4)
+int   inp_borderWidth4 = input.int(defval = 1, title = "", minval = 1, maxval = 4, inline = "bd4", group = con_grpGraphic4, active = inp_show4 and inp_showBorder4)
+
+const string con_grpSession5 = "SESSION 5"
+bool   inp_show5 = input.bool(defval = false, title = "Show boxes", group = con_grpSession5)
+string inp_mode5 = input.string(defval = con_optDaily, title = "Repeat", options = [con_optDaily, con_optWeekly, con_optMonthly, con_optYearly], group = con_grpSession5, tooltip = con_modeTooltip, active = inp_show5)
+bool   cal_showMonth5 = inp_show5 and inp_mode5 == con_optYearly
+bool   cal_showDay5   = inp_show5 and inp_mode5 != con_optDaily
+
+const string con_grpTime5 = "Session 5 Time (Start:End)"
+int inp_startMonth5  = input.int(defval = 4,  title = "Month", minval = 1, maxval = 12, inline = "month5", group = con_grpTime5, active = cal_showMonth5)
+int inp_endMonth5    = input.int(defval = 5,  title = ":", minval = 1, maxval = 12, inline = "month5", group = con_grpTime5, active = cal_showMonth5)
+int inp_startDay5    = input.int(defval = 1,  title = "Day", minval = 1, maxval = 31, inline = "day5", group = con_grpTime5, active = cal_showDay5)
+int inp_endDay5      = input.int(defval = 3,  title = ":", minval = 1, maxval = 31, tooltip = con_dayTooltip, inline = "day5", group = con_grpTime5, active = cal_showDay5)
+int inp_startHour5   = input.int(defval = 8,  title = "Hour", minval = 0, maxval = 23, inline = "hour5", group = con_grpTime5, active = inp_show5)
+int inp_endHour5     = input.int(defval = 16, title = ":", minval = 0, maxval = 23, inline = "hour5", group = con_grpTime5, active = inp_show5)
+int inp_startMinute5 = input.int(defval = 0,  title = "Minute", minval = 0, maxval = 59, inline = "minute5", group = con_grpTime5, active = inp_show5)
+int inp_endMinute5   = input.int(defval = 30, title = ":", minval = 0, maxval = 59, inline = "minute5", group = con_grpTime5, active = inp_show5)
+
+const string con_grpGraphic5 = "Session 5 Graphic"
+color inp_fillColor5   = input.color(defval = color.new(color.yellow, 88), title = "Fill", group = con_grpGraphic5, active = inp_show5)
+bool  inp_showBorder5  = input.bool(defval = true, title = "Border", inline = "bd5", group = con_grpGraphic5, active = inp_show5)
+color inp_borderColor5 = input.color(defval = color.new(color.yellow, 40), title = "", inline = "bd5", group = con_grpGraphic5, active = inp_show5 and inp_showBorder5)
+int   inp_borderWidth5 = input.int(defval = 1, title = "", minval = 1, maxval = 4, inline = "bd5", group = con_grpGraphic5, active = inp_show5 and inp_showBorder5)
+
+const string con_grpSession6 = "SESSION 6"
+bool   inp_show6 = input.bool(defval = false, title = "Show boxes", group = con_grpSession6)
+string inp_mode6 = input.string(defval = con_optDaily, title = "Repeat", options = [con_optDaily, con_optWeekly, con_optMonthly, con_optYearly], group = con_grpSession6, tooltip = con_modeTooltip, active = inp_show6)
+bool   cal_showMonth6 = inp_show6 and inp_mode6 == con_optYearly
+bool   cal_showDay6   = inp_show6 and inp_mode6 != con_optDaily
+
+const string con_grpTime6 = "Session 6 Time (Start:End)"
+int inp_startMonth6  = input.int(defval = 4,  title = "Month", minval = 1, maxval = 12, inline = "month6", group = con_grpTime6, active = cal_showMonth6)
+int inp_endMonth6    = input.int(defval = 5,  title = ":", minval = 1, maxval = 12, inline = "month6", group = con_grpTime6, active = cal_showMonth6)
+int inp_startDay6    = input.int(defval = 1,  title = "Day", minval = 1, maxval = 31, inline = "day6", group = con_grpTime6, active = cal_showDay6)
+int inp_endDay6      = input.int(defval = 3,  title = ":", minval = 1, maxval = 31, tooltip = con_dayTooltip, inline = "day6", group = con_grpTime6, active = cal_showDay6)
+int inp_startHour6   = input.int(defval = 22, title = "Hour", minval = 0, maxval = 23, inline = "hour6", group = con_grpTime6, active = inp_show6)
+int inp_endHour6     = input.int(defval = 6,  title = ":", minval = 0, maxval = 23, inline = "hour6", group = con_grpTime6, active = inp_show6)
+int inp_startMinute6 = input.int(defval = 0,  title = "Minute", minval = 0, maxval = 59, inline = "minute6", group = con_grpTime6, active = inp_show6)
+int inp_endMinute6   = input.int(defval = 0,  title = ":", minval = 0, maxval = 59, inline = "minute6", group = con_grpTime6, active = inp_show6)
+
+const string con_grpGraphic6 = "Session 6 Graphic"
+color inp_fillColor6   = input.color(defval = color.new(color.fuchsia, 88), title = "Fill", group = con_grpGraphic6, active = inp_show6)
+bool  inp_showBorder6  = input.bool(defval = true, title = "Border", inline = "bd6", group = con_grpGraphic6, active = inp_show6)
+color inp_borderColor6 = input.color(defval = color.new(color.fuchsia, 40), title = "", inline = "bd6", group = con_grpGraphic6, active = inp_show6 and inp_showBorder6)
+int   inp_borderWidth6 = input.int(defval = 1, title = "", minval = 1, maxval = 4, inline = "bd6", group = con_grpGraphic6, active = inp_show6 and inp_showBorder6)
+
+const string con_grpSession7 = "SESSION 7"
+bool   inp_show7 = input.bool(defval = false, title = "Show boxes", group = con_grpSession7)
+string inp_mode7 = input.string(defval = con_optDaily, title = "Repeat", options = [con_optDaily, con_optWeekly, con_optMonthly, con_optYearly], group = con_grpSession7, tooltip = con_modeTooltip, active = inp_show7)
+bool   cal_showMonth7 = inp_show7 and inp_mode7 == con_optYearly
+bool   cal_showDay7   = inp_show7 and inp_mode7 != con_optDaily
+
+const string con_grpTime7 = "Session 7 Time (Start:End)"
+int inp_startMonth7  = input.int(defval = 4,  title = "Month", minval = 1, maxval = 12, inline = "month7", group = con_grpTime7, active = cal_showMonth7)
+int inp_endMonth7    = input.int(defval = 5,  title = ":", minval = 1, maxval = 12, inline = "month7", group = con_grpTime7, active = cal_showMonth7)
+int inp_startDay7    = input.int(defval = 1,  title = "Day", minval = 1, maxval = 31, inline = "day7", group = con_grpTime7, active = cal_showDay7)
+int inp_endDay7      = input.int(defval = 3,  title = ":", minval = 1, maxval = 31, tooltip = con_dayTooltip, inline = "day7", group = con_grpTime7, active = cal_showDay7)
+int inp_startHour7   = input.int(defval = 0,  title = "Hour", minval = 0, maxval = 23, inline = "hour7", group = con_grpTime7, active = inp_show7)
+int inp_endHour7     = input.int(defval = 12, title = ":", minval = 0, maxval = 23, inline = "hour7", group = con_grpTime7, active = inp_show7)
+int inp_startMinute7 = input.int(defval = 0,  title = "Minute", minval = 0, maxval = 59, inline = "minute7", group = con_grpTime7, active = inp_show7)
+int inp_endMinute7   = input.int(defval = 0,  title = ":", minval = 0, maxval = 59, inline = "minute7", group = con_grpTime7, active = inp_show7)
+
+const string con_grpGraphic7 = "Session 7 Graphic"
+color inp_fillColor7   = input.color(defval = color.new(color.lime, 88), title = "Fill", group = con_grpGraphic7, active = inp_show7)
+bool  inp_showBorder7  = input.bool(defval = true, title = "Border", inline = "bd7", group = con_grpGraphic7, active = inp_show7)
+color inp_borderColor7 = input.color(defval = color.new(color.lime, 40), title = "", inline = "bd7", group = con_grpGraphic7, active = inp_show7 and inp_showBorder7)
+int   inp_borderWidth7 = input.int(defval = 1, title = "", minval = 1, maxval = 4, inline = "bd7", group = con_grpGraphic7, active = inp_show7 and inp_showBorder7)
+
+
+// All time components are read once in the selected timezone and passed on to
+// every session; dayofweek starts at Sunday and is converted to ISO counting
+// (1 = Monday).
+string cal_timezone = inp_timezone == "Exchange" ? syminfo.timezone : inp_timezone
+
+int cal_year       = year      (time, cal_timezone)
+int cal_month      = month     (time, cal_timezone)
+int cal_dayOfMonth = dayofmonth(time, cal_timezone)
+int cal_hour       = hour      (time, cal_timezone)
+int cal_minute     = minute    (time, cal_timezone)
+int cal_dayOfWeek  = dayofweek (time, cal_timezone)
+int cal_isoDay     = cal_dayOfWeek == 1 ? 7 : cal_dayOfWeek - 1
+int cal_weekOfYear = weekofyear(time, cal_timezone)
+
+int cal_timeKey = cal_hour * con_shift2 + cal_minute
+
+
+// Each call site keeps its own var instance of the state variables, so the seven
+// sessions run as seven state machines independent of one another.
+f_sessionBox(bool show, string mode, int startMonth, int endMonth, int startDay, int endDay, int startHour, int endHour, int startMinute, int endMinute, color fillColor, bool showBorder, color borderColor, int borderWidth, int barYear, int barMonth, int barDayOfMonth, int barIsoDay, int barWeekOfYear, int timeKey) =>
+    int cal_currentKey = switch mode
+        con_optDaily   => timeKey
+        con_optWeekly  => barIsoDay     * con_shift4 + timeKey
+        con_optMonthly => barDayOfMonth * con_shift4 + timeKey
+        =>                barMonth * con_shift6 + barDayOfMonth * con_shift4 + timeKey
+
+    int cal_startKey = switch mode
+        con_optDaily   => startHour * con_shift2 + startMinute
+        con_optWeekly  => math.min(startDay, 7) * con_shift4 + startHour * con_shift2 + startMinute
+        con_optMonthly => startDay * con_shift4 + startHour * con_shift2 + startMinute
+        =>                startMonth * con_shift6 + startDay * con_shift4 + startHour * con_shift2 + startMinute
+
+    int cal_endKey = switch mode
+        con_optDaily   => endHour * con_shift2 + endMinute
+        con_optWeekly  => math.min(endDay, 7) * con_shift4 + endHour * con_shift2 + endMinute
+        con_optMonthly => endDay * con_shift4 + endHour * con_shift2 + endMinute
+        =>                endMonth * con_shift6 + endDay * con_shift4 + endHour * con_shift2 + endMinute
+
+    bool cal_isWrapping = cal_startKey > cal_endKey
+
+    bool cal_inWindow = cal_startKey == cal_endKey ? true : cal_isWrapping ? (cal_currentKey >= cal_startKey or cal_currentKey < cal_endKey) : (cal_currentKey >= cal_startKey and cal_currentKey < cal_endKey)
+
+    int cal_periodId = switch mode
+        con_optDaily   => barYear * con_shift4 + barMonth * con_shift2 + barDayOfMonth
+        con_optWeekly  => barYear * con_shift2 + barWeekOfYear
+        con_optMonthly => barYear * con_shift2 + barMonth
+        =>                barYear
+
+    var int  cal_prevPeriodId = na
+    var bool cal_prevInWindow = false
+    bool cal_periodChanged = not na(cal_prevPeriodId) and cal_periodId != cal_prevPeriodId
+
+    bool cal_isStart = cal_inWindow and (not cal_prevInWindow or (not cal_isWrapping and cal_periodChanged))
+
+    var box[] outp_sessionBoxes = array.new<box>()
+    var box   outp_currentBox   = na
+
+    if show
+        if cal_isStart
+            outp_currentBox := box.new(left = bar_index, top = high, right = bar_index, bottom = low,
+                 xloc         = xloc.bar_index,
+                 border_color = showBorder ? borderColor : na,
+                 border_width = showBorder ? borderWidth : 0,
+                 bgcolor      = fillColor)
+            array.push(outp_sessionBoxes, outp_currentBox)
+            if array.size(outp_sessionBoxes) > con_maxBoxesPerSession
+                box.delete(array.shift(outp_sessionBoxes))
+
+        else if cal_inWindow and not na(outp_currentBox)
+            box.set_top   (outp_currentBox, math.max(box.get_top(outp_currentBox),    high))
+            box.set_bottom(outp_currentBox, math.min(box.get_bottom(outp_currentBox), low))
+            box.set_right (outp_currentBox, bar_index)
+
+    cal_prevInWindow := cal_inWindow
+    cal_prevPeriodId := cal_periodId
+
+
+f_sessionBox(inp_show1, inp_mode1, inp_startMonth1, inp_endMonth1, inp_startDay1, inp_endDay1, inp_startHour1, inp_endHour1, inp_startMinute1, inp_endMinute1, inp_fillColor1, inp_showBorder1, inp_borderColor1, inp_borderWidth1, cal_year, cal_month, cal_dayOfMonth, cal_isoDay, cal_weekOfYear, cal_timeKey)
+f_sessionBox(inp_show2, inp_mode2, inp_startMonth2, inp_endMonth2, inp_startDay2, inp_endDay2, inp_startHour2, inp_endHour2, inp_startMinute2, inp_endMinute2, inp_fillColor2, inp_showBorder2, inp_borderColor2, inp_borderWidth2, cal_year, cal_month, cal_dayOfMonth, cal_isoDay, cal_weekOfYear, cal_timeKey)
+f_sessionBox(inp_show3, inp_mode3, inp_startMonth3, inp_endMonth3, inp_startDay3, inp_endDay3, inp_startHour3, inp_endHour3, inp_startMinute3, inp_endMinute3, inp_fillColor3, inp_showBorder3, inp_borderColor3, inp_borderWidth3, cal_year, cal_month, cal_dayOfMonth, cal_isoDay, cal_weekOfYear, cal_timeKey)
+f_sessionBox(inp_show4, inp_mode4, inp_startMonth4, inp_endMonth4, inp_startDay4, inp_endDay4, inp_startHour4, inp_endHour4, inp_startMinute4, inp_endMinute4, inp_fillColor4, inp_showBorder4, inp_borderColor4, inp_borderWidth4, cal_year, cal_month, cal_dayOfMonth, cal_isoDay, cal_weekOfYear, cal_timeKey)
+f_sessionBox(inp_show5, inp_mode5, inp_startMonth5, inp_endMonth5, inp_startDay5, inp_endDay5, inp_startHour5, inp_endHour5, inp_startMinute5, inp_endMinute5, inp_fillColor5, inp_showBorder5, inp_borderColor5, inp_borderWidth5, cal_year, cal_month, cal_dayOfMonth, cal_isoDay, cal_weekOfYear, cal_timeKey)
+f_sessionBox(inp_show6, inp_mode6, inp_startMonth6, inp_endMonth6, inp_startDay6, inp_endDay6, inp_startHour6, inp_endHour6, inp_startMinute6, inp_endMinute6, inp_fillColor6, inp_showBorder6, inp_borderColor6, inp_borderWidth6, cal_year, cal_month, cal_dayOfMonth, cal_isoDay, cal_weekOfYear, cal_timeKey)
+f_sessionBox(inp_show7, inp_mode7, inp_startMonth7, inp_endMonth7, inp_startDay7, inp_endDay7, inp_startHour7, inp_endHour7, inp_startMinute7, inp_endMinute7, inp_fillColor7, inp_showBorder7, inp_borderColor7, inp_borderWidth7, cal_year, cal_month, cal_dayOfMonth, cal_isoDay, cal_weekOfYear, cal_timeKey)

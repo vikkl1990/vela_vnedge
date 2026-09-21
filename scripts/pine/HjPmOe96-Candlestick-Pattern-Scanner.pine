@@ -1,0 +1,858 @@
+//@version=6
+// Clean-room candlestick pattern scanner — an independent reconstruction of
+// the PUBLIC functionality of commercial candle scanners (Nison-style),
+// built entirely from publicly known candlestick definitions and original
+// math/thresholds. See docs/clean_room_candlestick_scanner_spec.md for the
+// full specification this file implements. No proprietary source was
+// obtained, decompiled, or copied — every threshold here is independently
+// chosen and disclosed inline, not reverse-engineered from another vendor.
+//
+// Architecture (per the spec's own diagram): OHLC -> Candle Geometry ->
+// Prior-Trend Context -> Pattern Qualification -> Standard/Strict Filter ->
+// Quality Score -> Label/Alert/Scanner output. Geometry and trend context
+// are computed independently and combined only inside each pattern
+// function — the same geometry (small body, long lower wick) means Hammer
+// under a prior downtrend and Hanging Man under a prior uptrend.
+//
+// Deviation from the spec's suggested file-section order: the QUALITY
+// ENGINE is defined BEFORE the PATTERN FUNCTIONS here (not after, as the
+// spec's own outline lists it) — Pine requires a function to be declared
+// before anything that calls it, and every pattern function calls
+// f_quality() internally.
+//
+// Scope choices for this v1 (all explicitly optional/deferred in the spec
+// itself): per-pattern alertcondition()s are skipped in favor of 4 generic
+// ones (Any Bullish/Bearish/Neutral/Any Pattern) plus one dynamic alert()
+// call carrying the actual pattern name(s)/quality/close — alertcondition()
+// messages in Pine can only use static template placeholders ({{ticker}}
+// etc.), not a per-bar computed pattern name, so alert() is what actually
+// satisfies the spec's "payload should include pattern, direction, quality"
+// requirement. The Rising/Falling Window "Window Type: Full Range vs Real
+// Body" configurable toggle is not implemented — Standard/Strict instead
+// tighten the same full-range gap definition (Strict requires a minimum
+// gap size in ATR terms), keeping every pattern on the same Off/Standard/
+// Strict framework the rest of the script uses.
+indicator("Candlestick Pattern Scanner", shorttitle="CandleScan", overlay=true, max_labels_count=500)
+
+// ==============================
+// INPUTS
+// ==============================
+var GRP_GENERAL = "General"
+var GRP_TREND = "Trend Engine"
+var GRP_PATTERNS = "Pattern Configuration"
+var GRP_APPEARANCE = "Appearance"
+var GRP_ALERTS = "Alerts"
+
+enableBullish = input.bool(true, "Enable Bullish Patterns", group=GRP_GENERAL)
+enableBearish = input.bool(true, "Enable Bearish Patterns", group=GRP_GENERAL)
+enableNeutral = input.bool(true, "Enable Neutral Patterns", group=GRP_GENERAL)
+displayModeInput = input.string("Highest Quality", "Display Mode", options=["All", "Highest Priority", "Highest Quality"], tooltip="How to resolve multiple patterns firing on the same bar. Priority order: five-candle > three-candle > two-candle > single-candle > neutral.", group=GRP_GENERAL)
+useFullNames = input.bool(false, "Use Full Names", tooltip="Off shows the 3-letter abbreviation instead.", group=GRP_GENERAL)
+showQualityScore = input.bool(true, "Show Quality Score", group=GRP_GENERAL)
+
+trendLookback = input.int(10, "Trend Lookback", minval=2, group=GRP_TREND)
+emaFastLen = input.int(5, "Fast EMA Length", minval=1, group=GRP_TREND)
+emaSlowLen = input.int(10, "Slow EMA Length", minval=1, group=GRP_TREND)
+trendStrongThreshold = input.float(1.25, "Trend Strong Threshold", minval=0.01, group=GRP_TREND)
+trendWeakThreshold = input.float(0.40, "Trend Weak Threshold", minval=0.01, group=GRP_TREND)
+useEfficiencyRatio = input.bool(true, "Use Efficiency Ratio", tooltip="Weights the price-displacement component by how directional (vs. noisy) the move was.", group=GRP_TREND)
+atrLength = input.int(14, "ATR Length", minval=1, group=GRP_TREND)
+tolFactorStd = input.float(0.10, "Tolerance Factor — Standard (x ATR)", minval=0.01, tooltip="Shared ATR-normalized tolerance for Tweezers/Counter-Attack/Sash/Separating-Line close-or-open matching.", group=GRP_TREND)
+tolFactorStrict = input.float(0.05, "Tolerance Factor — Strict (x ATR)", minval=0.01, group=GRP_TREND)
+
+hammerMode = input.string("Strict", "Hammer", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+invHammerMode = input.string("Strict", "Inverted Hammer", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+hangingManMode = input.string("Strict", "Hanging Man", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+shootingStarMode = input.string("Strict", "Shooting Star", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+dojiMode = input.string("Strict", "Doji", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+highWaveMode = input.string("Strict", "High Wave", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+bullEngulfMode = input.string("Strict", "Bullish Engulfing", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+bearEngulfMode = input.string("Strict", "Bearish Engulfing", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+bullHaramiMode = input.string("Strict", "Bull Harami", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+bearHaramiMode = input.string("Strict", "Bear Harami", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+piercingMode = input.string("Strict", "Piercing Pattern", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+darkCloudMode = input.string("Strict", "Dark Cloud Cover", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+tweezerBottomMode = input.string("Strict", "Tweezers Bottom", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+tweezerTopMode = input.string("Strict", "Tweezers Top", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+bullCounterMode = input.string("Strict", "Bull Counter Attack", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+bearCounterMode = input.string("Strict", "Bear Counter Attack", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+bullSashMode = input.string("Strict", "Bull Sash", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+bearSashMode = input.string("Strict", "Bear Sash", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+bullSeparatingMode = input.string("Strict", "Bull Separating Line", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+bearSeparatingMode = input.string("Strict", "Bear Separating Line", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+risingWindowMode = input.string("Strict", "Rising Window", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+fallingWindowMode = input.string("Strict", "Falling Window", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+morningStarMode = input.string("Strict", "Morning Star", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+eveningStarMode = input.string("Strict", "Evening Star", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+risingThreeMode = input.string("Strict", "Rising Three Methods", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+fallingThreeMode = input.string("Strict", "Falling Three Methods", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+threeWhiteSoldiersMode = input.string("Strict", "Three White Soldiers", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+threeBlackCrowsMode = input.string("Strict", "Three Black Crows", options=["Off", "Standard", "Strict"], group=GRP_PATTERNS)
+
+bullColor = input.color(color.teal, "Bullish Color", group=GRP_APPEARANCE)
+bearColor = input.color(color.red, "Bearish Color", group=GRP_APPEARANCE)
+neutralColor = input.color(color.gray, "Neutral Color", group=GRP_APPEARANCE)
+labelSizeInput = input.string("Small", "Label Size", options=["Tiny", "Small", "Normal", "Large"], group=GRP_APPEARANCE)
+labelOffsetAtr = input.float(0.5, "Label Position Offset (x ATR)", minval=0.0, group=GRP_APPEARANCE)
+labelTransparency = input.int(0, "Label Transparency", minval=0, maxval=100, group=GRP_APPEARANCE)
+showLegend = input.bool(true, "Show Legend Table", tooltip="Abbreviation -> full name reference, bottom-left of the chart.", group=GRP_APPEARANCE)
+
+enableBullishAlert = input.bool(true, "Enable Bullish Alert", group=GRP_ALERTS)
+enableBearishAlert = input.bool(true, "Enable Bearish Alert", group=GRP_ALERTS)
+enableNeutralAlert = input.bool(true, "Enable Neutral Alert", group=GRP_ALERTS)
+minAlertQuality = input.float(95.0, "Minimum Alert Quality", minval=0.0, maxval=100.0, tooltip="Also gates chart labels — a pattern below this quality is still counted in the Data Window, but never labeled on the chart or included in an alert.", group=GRP_ALERTS)
+
+// ==============================
+// CANDLE GEOMETRY ENGINE
+// ==============================
+type CandleMetrics
+    float o
+    float h
+    float l
+    float c
+    float rng
+    float body
+    float upperWick
+    float lowerWick
+    float bodyPct
+    float upperPct
+    float lowerPct
+    bool  isBull
+    bool  isBear
+    float closeLoc
+    float midBody
+
+f_metrics(float o, float h, float l, float c) =>
+    rng = h - l
+    body = math.abs(c - o)
+    upperWick = h - math.max(o, c)
+    lowerWick = math.min(o, c) - l
+    bodyPct = rng > 0.0 ? body / rng : 0.0
+    upperPct = rng > 0.0 ? upperWick / rng : 0.0
+    lowerPct = rng > 0.0 ? lowerWick / rng : 0.0
+    closeLoc = rng > 0.0 ? (c - l) / rng : 0.5
+    CandleMetrics.new(o=o, h=h, l=l, c=c, rng=rng, body=body, upperWick=upperWick, lowerWick=lowerWick, bodyPct=bodyPct, upperPct=upperPct, lowerPct=lowerPct, isBull=c > o, isBear=c < o, closeLoc=closeLoc, midBody=(o + c) / 2.0)
+
+m0 = f_metrics(open, high, low, close)
+m1 = f_metrics(open[1], high[1], low[1], close[1])
+m2 = f_metrics(open[2], high[2], low[2], close[2])
+m3 = f_metrics(open[3], high[3], low[3], close[3])
+m4 = f_metrics(open[4], high[4], low[4], close[4])
+
+hasRange = m0.rng > 0.0
+atrValue = ta.atr(atrLength)
+
+// ==============================
+// TREND ENGINE
+// ==============================
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+
+emaSlope = emaFast - emaFast[trendLookback]
+emaSlopeNorm = atrValue > 0.0 ? emaSlope / atrValue : 0.0
+
+displacement = close[1] - close[trendLookback]
+displacementNorm = atrValue > 0.0 ? displacement / atrValue : 0.0
+
+structureRaw = 0.0
+for i = 1 to trendLookback
+    structureRaw := structureRaw + (high[i] > high[i + 1] ? 1.0 : high[i] < high[i + 1] ? -1.0 : 0.0) + (low[i] > low[i + 1] ? 1.0 : low[i] < low[i + 1] ? -1.0 : 0.0)
+structureScore = structureRaw / (trendLookback * 2.0)
+
+noise = 0.0
+for i = 1 to trendLookback - 1
+    noise := noise + math.abs(close[i] - close[i + 1])
+erDirectionMag = math.abs(displacement)
+efficiencyRatio = noise > 0.0 ? erDirectionMag / noise : 0.0
+erDirScore = useEfficiencyRatio ? efficiencyRatio * (displacement > 0.0 ? 1.0 : displacement < 0.0 ? -1.0 : 0.0) : 0.0
+
+trendScoreRaw = 0.25 * emaSlopeNorm + 0.25 * displacementNorm + 0.25 * structureScore + 0.25 * erDirScore
+trendState = trendScoreRaw <= -trendStrongThreshold ? -2 : trendScoreRaw <= -trendWeakThreshold ? -1 : trendScoreRaw < trendWeakThreshold ? 0 : trendScoreRaw < trendStrongThreshold ? 1 : 2
+
+// ==============================
+// QUALITY ENGINE
+// ==============================
+// Deliberately generic (not bespoke per pattern) for v1 — a pattern only
+// reaches here after ALREADY passing its own geometry/trend gate, so this
+// just ranks "how much better than the bare minimum" a detection is.
+// Weights match the spec's own suggested split (0.40/0.30/0.15/0.15).
+f_geometryScore(CandleMetrics m) =>
+    bodyScore = (1.0 - math.min(1.0, m.bodyPct)) * 100.0
+    wickScore = math.min(1.0, m.upperPct + m.lowerPct) * 100.0
+    (bodyScore + wickScore) / 2.0
+
+f_trendScore(int trend, int direction) =>
+    aligned = direction == 1 ? -trend : direction == -1 ? trend : 0
+    math.max(0.0, math.min(100.0, (aligned + 2.0) / 4.0 * 100.0))
+
+f_locationScore(float closePrice) =>
+    lookback = 20
+    hh = ta.highest(high, lookback)
+    ll = ta.lowest(low, lookback)
+    spanRange = hh - ll
+    distFromLow = spanRange > 0.0 ? (closePrice - ll) / spanRange : 0.5
+    distFromHigh = spanRange > 0.0 ? (hh - closePrice) / spanRange : 0.5
+    math.max(distFromLow, distFromHigh) * 100.0
+
+f_volatilityScore(float rangeVal) =>
+    ratio = atrValue > 0.0 ? rangeVal / atrValue : 1.0
+    ratio >= 0.5 and ratio <= 2.0 ? 100.0 : ratio < 0.5 ? math.max(0.0, ratio / 0.5 * 100.0) : math.max(0.0, 100.0 - (ratio - 2.0) * 40.0)
+
+f_quality(CandleMetrics m, int trend, int direction) =>
+    f_geometryScore(m) * 0.40 + f_trendScore(trend, direction) * 0.30 + f_locationScore(m.c) * 0.15 + f_volatilityScore(m.rng) * 0.15
+
+// ==============================
+// PATTERN FUNCTIONS
+// ==============================
+// -- single candle --
+f_hammerGeom(bool strict) =>
+    lowerMin = strict ? 2.5 : 2.0
+    upperMax = strict ? 0.15 : 0.30
+    bodyMax = strict ? 0.30 : 0.40
+    closeLocMin = strict ? 0.70 : 0.0
+    hasRange and m0.body > 0.0 and m0.lowerWick >= lowerMin * m0.body and m0.upperWick <= upperMax * m0.body and m0.bodyPct <= bodyMax and m0.closeLoc >= closeLocMin
+
+f_hammer(bool strict) =>
+    geom = f_hammerGeom(strict)
+    trendOk = strict ? trendState == -2 : trendState <= -1
+    detected = geom and trendOk
+    quality = detected ? f_quality(m0, trendState, 1) : 0.0
+    [detected, quality]
+
+f_hangingMan(bool strict) =>
+    geom = f_hammerGeom(strict)
+    trendOk = strict ? trendState == 2 : trendState >= 1
+    detected = geom and trendOk
+    quality = detected ? f_quality(m0, trendState, -1) : 0.0
+    [detected, quality]
+
+f_invHammerGeom(bool strict) =>
+    upperMin = strict ? 2.5 : 2.0
+    lowerMax = strict ? 0.15 : 0.30
+    bodyMax = strict ? 0.30 : 0.40
+    hasRange and m0.body > 0.0 and m0.upperWick >= upperMin * m0.body and m0.lowerWick <= lowerMax * m0.body and m0.bodyPct <= bodyMax
+
+f_invertedHammer(bool strict) =>
+    geom = f_invHammerGeom(strict)
+    trendOk = strict ? trendState == -2 : trendState <= -1
+    detected = geom and trendOk
+    quality = detected ? f_quality(m0, trendState, 1) : 0.0
+    [detected, quality]
+
+f_shootingStar(bool strict) =>
+    geom = f_invHammerGeom(strict)
+    trendOk = strict ? trendState == 2 : trendState >= 1
+    detected = geom and trendOk
+    quality = detected ? f_quality(m0, trendState, -1) : 0.0
+    [detected, quality]
+
+f_doji(bool strict) =>
+    maxBodyPct = strict ? 0.05 : 0.10
+    detected = hasRange and m0.bodyPct <= maxBodyPct
+    quality = detected ? f_quality(m0, trendState, 0) : 0.0
+    [detected, quality]
+
+f_highWave(bool strict) =>
+    bodyMax = strict ? 0.20 : 0.30
+    wickMin = strict ? 0.30 : 0.25
+    detected = hasRange and m0.bodyPct <= bodyMax and m0.upperPct >= wickMin and m0.lowerPct >= wickMin
+    quality = detected ? f_quality(m0, trendState, 0) : 0.0
+    [detected, quality]
+
+// -- two candle --
+f_bullEngulfing(bool strict) =>
+    baseOk = m1.isBear and m0.isBull and m0.o <= m1.c and m0.c >= m1.o
+    strictOk = strict ? m0.body > m1.body and trendState == -2 : trendState <= -1
+    detected = hasRange and baseOk and strictOk
+    quality = detected ? f_quality(m0, trendState, 1) : 0.0
+    [detected, quality]
+
+f_bearEngulfing(bool strict) =>
+    baseOk = m1.isBull and m0.isBear and m0.o >= m1.c and m0.c <= m1.o
+    strictOk = strict ? m0.body > m1.body and trendState == 2 : trendState >= 1
+    detected = hasRange and baseOk and strictOk
+    quality = detected ? f_quality(m0, trendState, -1) : 0.0
+    [detected, quality]
+
+f_bullHarami(bool strict) =>
+    buffer = strict ? 0.0 : atrValue * 0.05
+    prevTop = math.max(m1.o, m1.c)
+    prevBot = math.min(m1.o, m1.c)
+    curTop = math.max(m0.o, m0.c)
+    curBot = math.min(m0.o, m0.c)
+    contained = curTop <= prevTop + buffer and curBot >= prevBot - buffer
+    prevLarge = m1.body >= atrValue * (strict ? 0.75 : 0.50)
+    curSmall = m1.body > 0.0 and m0.body <= m1.body * (strict ? 0.35 : 0.50)
+    trendOk = strict ? trendState == -2 : trendState <= -1
+    detected = hasRange and m1.isBear and contained and prevLarge and curSmall and trendOk
+    quality = detected ? f_quality(m0, trendState, 1) : 0.0
+    [detected, quality]
+
+f_bearHarami(bool strict) =>
+    buffer = strict ? 0.0 : atrValue * 0.05
+    prevTop = math.max(m1.o, m1.c)
+    prevBot = math.min(m1.o, m1.c)
+    curTop = math.max(m0.o, m0.c)
+    curBot = math.min(m0.o, m0.c)
+    contained = curTop <= prevTop + buffer and curBot >= prevBot - buffer
+    prevLarge = m1.body >= atrValue * (strict ? 0.75 : 0.50)
+    curSmall = m1.body > 0.0 and m0.body <= m1.body * (strict ? 0.35 : 0.50)
+    trendOk = strict ? trendState == 2 : trendState >= 1
+    detected = hasRange and m1.isBull and contained and prevLarge and curSmall and trendOk
+    quality = detected ? f_quality(m0, trendState, -1) : 0.0
+    [detected, quality]
+
+f_piercing(bool strict) =>
+    opensLow = m0.o <= m1.c
+    closesAbove = m0.c > m1.midBody
+    closesBelowPrevOpen = m0.c < m1.o
+    strictExtra = strict ? m1.bodyPct >= 0.5 and m0.bodyPct >= 0.5 and m0.c >= m1.midBody + (m1.o - m1.midBody) * 0.5 : true
+    trendOk = strict ? trendState == -2 : trendState <= -1
+    detected = hasRange and m1.isBear and m0.isBull and opensLow and closesAbove and closesBelowPrevOpen and strictExtra and trendOk
+    quality = detected ? f_quality(m0, trendState, 1) : 0.0
+    [detected, quality]
+
+f_darkCloudCover(bool strict) =>
+    opensHigh = m0.o >= m1.c
+    closesBelow = m0.c < m1.midBody
+    closesAbovePrevOpen = m0.c > m1.o
+    strictExtra = strict ? m1.bodyPct >= 0.5 and m0.bodyPct >= 0.5 and m0.c <= m1.midBody - (m1.midBody - m1.o) * 0.5 : true
+    trendOk = strict ? trendState == 2 : trendState >= 1
+    detected = hasRange and m1.isBull and m0.isBear and opensHigh and closesBelow and closesAbovePrevOpen and strictExtra and trendOk
+    quality = detected ? f_quality(m0, trendState, -1) : 0.0
+    [detected, quality]
+
+f_tweezerBottom(bool strict) =>
+    tol = strict ? atrValue * tolFactorStrict : atrValue * tolFactorStd
+    trendOk = strict ? trendState == -2 : trendState <= -1
+    detected = hasRange and math.abs(low - m1.l) <= tol and trendOk
+    quality = detected ? f_quality(m0, trendState, 1) : 0.0
+    [detected, quality]
+
+f_tweezerTop(bool strict) =>
+    tol = strict ? atrValue * tolFactorStrict : atrValue * tolFactorStd
+    trendOk = strict ? trendState == 2 : trendState >= 1
+    detected = hasRange and math.abs(high - m1.h) <= tol and trendOk
+    quality = detected ? f_quality(m0, trendState, -1) : 0.0
+    [detected, quality]
+
+f_bullCounterAttack(bool strict) =>
+    tol = strict ? atrValue * tolFactorStrict : atrValue * tolFactorStd
+    prevStrongBear = m1.isBear and m1.bodyPct >= (strict ? 0.6 : 0.4)
+    curStrongBull = m0.isBull and m0.bodyPct >= (strict ? 0.6 : 0.4)
+    closeMatch = math.abs(m0.c - m1.c) <= tol
+    trendOk = strict ? trendState == -2 : trendState <= -1
+    detected = hasRange and prevStrongBear and curStrongBull and closeMatch and trendOk
+    quality = detected ? f_quality(m0, trendState, 1) : 0.0
+    [detected, quality]
+
+f_bearCounterAttack(bool strict) =>
+    tol = strict ? atrValue * tolFactorStrict : atrValue * tolFactorStd
+    prevStrongBull = m1.isBull and m1.bodyPct >= (strict ? 0.6 : 0.4)
+    curStrongBear = m0.isBear and m0.bodyPct >= (strict ? 0.6 : 0.4)
+    closeMatch = math.abs(m0.c - m1.c) <= tol
+    trendOk = strict ? trendState == 2 : trendState >= 1
+    detected = hasRange and prevStrongBull and curStrongBear and closeMatch and trendOk
+    quality = detected ? f_quality(m0, trendState, -1) : 0.0
+    [detected, quality]
+
+f_bullSash(bool strict) =>
+    tol = strict ? atrValue * tolFactorStrict : atrValue * tolFactorStd
+    curStrongBull = m0.isBull and m0.bodyPct >= (strict ? 0.6 : 0.45)
+    opensNearPrevClose = math.abs(m0.o - m1.c) <= tol
+    closesDeep = m0.c >= (strict ? m1.o : m1.midBody)
+    trendOk = strict ? trendState == -2 : trendState <= -1
+    detected = hasRange and m1.isBear and curStrongBull and opensNearPrevClose and closesDeep and trendOk
+    quality = detected ? f_quality(m0, trendState, 1) : 0.0
+    [detected, quality]
+
+f_bearSash(bool strict) =>
+    tol = strict ? atrValue * tolFactorStrict : atrValue * tolFactorStd
+    curStrongBear = m0.isBear and m0.bodyPct >= (strict ? 0.6 : 0.45)
+    opensNearPrevClose = math.abs(m0.o - m1.c) <= tol
+    closesDeep = m0.c <= (strict ? m1.o : m1.midBody)
+    trendOk = strict ? trendState == 2 : trendState >= 1
+    detected = hasRange and m1.isBull and curStrongBear and opensNearPrevClose and closesDeep and trendOk
+    quality = detected ? f_quality(m0, trendState, -1) : 0.0
+    [detected, quality]
+
+f_bullSeparatingLine(bool strict) =>
+    tol = strict ? atrValue * tolFactorStrict : atrValue * tolFactorStd
+    curBull = m0.isBull and m0.bodyPct >= (strict ? 0.6 : 0.45)
+    sameOpen = math.abs(m0.o - m1.o) <= tol
+    trendOk = strict ? trendState == 2 : trendState >= 1
+    detected = hasRange and m1.isBear and curBull and sameOpen and trendOk
+    quality = detected ? f_quality(m0, trendState, 1) : 0.0
+    [detected, quality]
+
+f_bearSeparatingLine(bool strict) =>
+    tol = strict ? atrValue * tolFactorStrict : atrValue * tolFactorStd
+    curBear = m0.isBear and m0.bodyPct >= (strict ? 0.6 : 0.45)
+    sameOpen = math.abs(m0.o - m1.o) <= tol
+    trendOk = strict ? trendState == -2 : trendState <= -1
+    detected = hasRange and m1.isBull and curBear and sameOpen and trendOk
+    quality = detected ? f_quality(m0, trendState, -1) : 0.0
+    [detected, quality]
+
+f_risingWindow(bool strict) =>
+    gapSize = low - high[1]
+    minGap = strict ? atrValue * 0.15 : 0.0
+    detected = gapSize > minGap
+    quality = detected ? f_quality(m0, trendState, 1) : 0.0
+    [detected, quality]
+
+f_fallingWindow(bool strict) =>
+    gapSize = low[1] - high
+    minGap = strict ? atrValue * 0.15 : 0.0
+    detected = gapSize > minGap
+    quality = detected ? f_quality(m0, trendState, -1) : 0.0
+    [detected, quality]
+
+// -- three candle --
+f_morningStar(bool strict) =>
+    firstBearStrong = m2.isBear and m2.bodyPct >= (strict ? 0.6 : 0.4)
+    midSmall = m1.bodyPct <= (strict ? 0.15 : 0.30)
+    thirdBullStrong = m0.isBull and m0.bodyPct >= (strict ? 0.6 : 0.4)
+    closesInto = strict ? m0.c >= m2.o : m0.c > m2.midBody
+    trendOk = strict ? trendState == -2 : trendState <= -1
+    detected = hasRange and firstBearStrong and midSmall and thirdBullStrong and closesInto and trendOk
+    quality = detected ? f_quality(m0, trendState, 1) : 0.0
+    [detected, quality]
+
+f_eveningStar(bool strict) =>
+    firstBullStrong = m2.isBull and m2.bodyPct >= (strict ? 0.6 : 0.4)
+    midSmall = m1.bodyPct <= (strict ? 0.15 : 0.30)
+    thirdBearStrong = m0.isBear and m0.bodyPct >= (strict ? 0.6 : 0.4)
+    closesInto = strict ? m0.c <= m2.o : m0.c < m2.midBody
+    trendOk = strict ? trendState == 2 : trendState >= 1
+    detected = hasRange and firstBullStrong and midSmall and thirdBearStrong and closesInto and trendOk
+    quality = detected ? f_quality(m0, trendState, -1) : 0.0
+    [detected, quality]
+
+f_threeWhiteSoldiers(bool strict) =>
+    allBull = m2.isBull and m1.isBull and m0.isBull
+    higherCloses = m1.c > m2.c and m0.c > m1.c
+    bodyMin = strict ? atrValue * 0.5 : atrValue * 0.3
+    bodiesOk = m2.body >= bodyMin and m1.body >= bodyMin and m0.body >= bodyMin
+    opensInsideOk = not strict or (m1.o >= math.min(m2.o, m2.c) and m1.o <= math.max(m2.o, m2.c) and m0.o >= math.min(m1.o, m1.c) and m0.o <= math.max(m1.o, m1.c))
+    closeLocMin = strict ? 0.8 : 0.6
+    smallUpperWicks = m2.closeLoc >= closeLocMin and m1.closeLoc >= closeLocMin and m0.closeLoc >= closeLocMin
+    trendOk = strict ? trendState == -2 : trendState <= -1
+    detected = hasRange and allBull and higherCloses and bodiesOk and opensInsideOk and smallUpperWicks and trendOk
+    quality = detected ? f_quality(m0, trendState, 1) : 0.0
+    [detected, quality]
+
+f_threeBlackCrows(bool strict) =>
+    allBear = m2.isBear and m1.isBear and m0.isBear
+    lowerCloses = m1.c < m2.c and m0.c < m1.c
+    bodyMin = strict ? atrValue * 0.5 : atrValue * 0.3
+    bodiesOk = m2.body >= bodyMin and m1.body >= bodyMin and m0.body >= bodyMin
+    opensInsideOk = not strict or (m1.o >= math.min(m2.o, m2.c) and m1.o <= math.max(m2.o, m2.c) and m0.o >= math.min(m1.o, m1.c) and m0.o <= math.max(m1.o, m1.c))
+    closeLocMax = strict ? 0.2 : 0.4
+    smallLowerWicks = m2.closeLoc <= closeLocMax and m1.closeLoc <= closeLocMax and m0.closeLoc <= closeLocMax
+    trendOk = strict ? trendState == 2 : trendState >= 1
+    detected = hasRange and allBear and lowerCloses and bodiesOk and opensInsideOk and smallLowerWicks and trendOk
+    quality = detected ? f_quality(m0, trendState, -1) : 0.0
+    [detected, quality]
+
+// -- five candle --
+f_risingThree(bool strict) =>
+    c1Large = m4.isBull and m4.bodyPct >= (strict ? 0.6 : 0.4)
+    c1Top = math.max(m4.o, m4.c)
+    c1Bot = math.min(m4.o, m4.c)
+    contained2 = math.max(m3.o, m3.c) <= c1Top and math.min(m3.o, m3.c) >= c1Bot
+    contained3 = math.max(m2.o, m2.c) <= c1Top and math.min(m2.o, m2.c) >= c1Bot
+    contained4 = math.max(m1.o, m1.c) <= c1Top and math.min(m1.o, m1.c) >= c1Bot
+    middleContained = strict ? contained2 and contained3 and contained4 : (contained2 or contained3) and (contained3 or contained4)
+    c5Strong = m0.isBull and m0.bodyPct >= (strict ? 0.6 : 0.4)
+    breakout = strict ? m0.c > m4.h : m0.c >= m4.c
+    trendOk = strict ? trendState == 2 : trendState >= 1
+    detected = hasRange and c1Large and middleContained and c5Strong and breakout and trendOk
+    quality = detected ? f_quality(m0, trendState, 1) : 0.0
+    [detected, quality]
+
+f_fallingThree(bool strict) =>
+    c1Large = m4.isBear and m4.bodyPct >= (strict ? 0.6 : 0.4)
+    c1Top = math.max(m4.o, m4.c)
+    c1Bot = math.min(m4.o, m4.c)
+    contained2 = math.max(m3.o, m3.c) <= c1Top and math.min(m3.o, m3.c) >= c1Bot
+    contained3 = math.max(m2.o, m2.c) <= c1Top and math.min(m2.o, m2.c) >= c1Bot
+    contained4 = math.max(m1.o, m1.c) <= c1Top and math.min(m1.o, m1.c) >= c1Bot
+    middleContained = strict ? contained2 and contained3 and contained4 : (contained2 or contained3) and (contained3 or contained4)
+    c5Strong = m0.isBear and m0.bodyPct >= (strict ? 0.6 : 0.4)
+    breakout = strict ? m0.c < m4.l : m0.c <= m4.c
+    trendOk = strict ? trendState == -2 : trendState <= -1
+    detected = hasRange and c1Large and middleContained and c5Strong and breakout and trendOk
+    quality = detected ? f_quality(m0, trendState, -1) : 0.0
+    [detected, quality]
+
+// ==============================
+// SIGNAL RESOLUTION
+// ==============================
+type PatternSignal
+    string name
+    string abbrev
+    int    direction
+    float  quality
+    int    priority
+    bool   strict
+
+var int countHammer = 0
+var int countInvHammer = 0
+var int countBullCounter = 0
+var int countBullEngulf = 0
+var int countBullHarami = 0
+var int countPiercing = 0
+var int countBullSash = 0
+var int countBullSeparating = 0
+var int countTweezerBottom = 0
+var int countRisingWindow = 0
+var int countMorningStar = 0
+var int countRisingThree = 0
+var int countThreeWhiteSoldiers = 0
+
+var int countHangingMan = 0
+var int countShootingStar = 0
+var int countBearCounter = 0
+var int countBearEngulf = 0
+var int countBearHarami = 0
+var int countDarkCloud = 0
+var int countBearSash = 0
+var int countBearSeparating = 0
+var int countTweezerTop = 0
+var int countFallingWindow = 0
+var int countEveningStar = 0
+var int countFallingThree = 0
+var int countThreeBlackCrows = 0
+
+var int countDoji = 0
+var int countHighWave = 0
+
+allSignals = array.new<PatternSignal>()
+
+if enableBullish and hammerMode != "Off"
+    [on, q] = f_hammer(hammerMode == "Strict")
+    if on
+        countHammer += 1
+        array.push(allSignals, PatternSignal.new(name="Hammer", abbrev="HAM", direction=1, quality=q, priority=1, strict=hammerMode == "Strict"))
+if enableBullish and invHammerMode != "Off"
+    [on, q] = f_invertedHammer(invHammerMode == "Strict")
+    if on
+        countInvHammer += 1
+        array.push(allSignals, PatternSignal.new(name="Inverted Hammer", abbrev="IHM", direction=1, quality=q, priority=1, strict=invHammerMode == "Strict"))
+if enableBullish and bullCounterMode != "Off"
+    [on, q] = f_bullCounterAttack(bullCounterMode == "Strict")
+    if on
+        countBullCounter += 1
+        array.push(allSignals, PatternSignal.new(name="Bull Counter Attack", abbrev="BCA", direction=1, quality=q, priority=2, strict=bullCounterMode == "Strict"))
+if enableBullish and bullEngulfMode != "Off"
+    [on, q] = f_bullEngulfing(bullEngulfMode == "Strict")
+    if on
+        countBullEngulf += 1
+        array.push(allSignals, PatternSignal.new(name="Bullish Engulfing", abbrev="BUE", direction=1, quality=q, priority=2, strict=bullEngulfMode == "Strict"))
+if enableBullish and bullHaramiMode != "Off"
+    [on, q] = f_bullHarami(bullHaramiMode == "Strict")
+    if on
+        countBullHarami += 1
+        array.push(allSignals, PatternSignal.new(name="Bull Harami", abbrev="BUH", direction=1, quality=q, priority=2, strict=bullHaramiMode == "Strict"))
+if enableBullish and piercingMode != "Off"
+    [on, q] = f_piercing(piercingMode == "Strict")
+    if on
+        countPiercing += 1
+        array.push(allSignals, PatternSignal.new(name="Piercing Pattern", abbrev="PRC", direction=1, quality=q, priority=2, strict=piercingMode == "Strict"))
+if enableBullish and bullSashMode != "Off"
+    [on, q] = f_bullSash(bullSashMode == "Strict")
+    if on
+        countBullSash += 1
+        array.push(allSignals, PatternSignal.new(name="Bull Sash", abbrev="BUS", direction=1, quality=q, priority=2, strict=bullSashMode == "Strict"))
+if enableBullish and bullSeparatingMode != "Off"
+    [on, q] = f_bullSeparatingLine(bullSeparatingMode == "Strict")
+    if on
+        countBullSeparating += 1
+        array.push(allSignals, PatternSignal.new(name="Bull Separating Line", abbrev="BSL", direction=1, quality=q, priority=2, strict=bullSeparatingMode == "Strict"))
+if enableBullish and tweezerBottomMode != "Off"
+    [on, q] = f_tweezerBottom(tweezerBottomMode == "Strict")
+    if on
+        countTweezerBottom += 1
+        array.push(allSignals, PatternSignal.new(name="Tweezers Bottom", abbrev="TWB", direction=1, quality=q, priority=2, strict=tweezerBottomMode == "Strict"))
+if enableBullish and risingWindowMode != "Off"
+    [on, q] = f_risingWindow(risingWindowMode == "Strict")
+    if on
+        countRisingWindow += 1
+        array.push(allSignals, PatternSignal.new(name="Rising Window", abbrev="RWI", direction=1, quality=q, priority=2, strict=risingWindowMode == "Strict"))
+if enableBullish and morningStarMode != "Off"
+    [on, q] = f_morningStar(morningStarMode == "Strict")
+    if on
+        countMorningStar += 1
+        array.push(allSignals, PatternSignal.new(name="Morning Star", abbrev="MST", direction=1, quality=q, priority=3, strict=morningStarMode == "Strict"))
+if enableBullish and threeWhiteSoldiersMode != "Off"
+    [on, q] = f_threeWhiteSoldiers(threeWhiteSoldiersMode == "Strict")
+    if on
+        countThreeWhiteSoldiers += 1
+        array.push(allSignals, PatternSignal.new(name="Three White Soldiers", abbrev="TWS", direction=1, quality=q, priority=3, strict=threeWhiteSoldiersMode == "Strict"))
+if enableBullish and risingThreeMode != "Off"
+    [on, q] = f_risingThree(risingThreeMode == "Strict")
+    if on
+        countRisingThree += 1
+        array.push(allSignals, PatternSignal.new(name="Rising Three Methods", abbrev="RTH", direction=1, quality=q, priority=5, strict=risingThreeMode == "Strict"))
+
+if enableBearish and hangingManMode != "Off"
+    [on, q] = f_hangingMan(hangingManMode == "Strict")
+    if on
+        countHangingMan += 1
+        array.push(allSignals, PatternSignal.new(name="Hanging Man", abbrev="HGM", direction=-1, quality=q, priority=1, strict=hangingManMode == "Strict"))
+if enableBearish and shootingStarMode != "Off"
+    [on, q] = f_shootingStar(shootingStarMode == "Strict")
+    if on
+        countShootingStar += 1
+        array.push(allSignals, PatternSignal.new(name="Shooting Star", abbrev="SST", direction=-1, quality=q, priority=1, strict=shootingStarMode == "Strict"))
+if enableBearish and bearCounterMode != "Off"
+    [on, q] = f_bearCounterAttack(bearCounterMode == "Strict")
+    if on
+        countBearCounter += 1
+        array.push(allSignals, PatternSignal.new(name="Bear Counter Attack", abbrev="SCA", direction=-1, quality=q, priority=2, strict=bearCounterMode == "Strict"))
+if enableBearish and bearEngulfMode != "Off"
+    [on, q] = f_bearEngulfing(bearEngulfMode == "Strict")
+    if on
+        countBearEngulf += 1
+        array.push(allSignals, PatternSignal.new(name="Bearish Engulfing", abbrev="BEE", direction=-1, quality=q, priority=2, strict=bearEngulfMode == "Strict"))
+if enableBearish and bearHaramiMode != "Off"
+    [on, q] = f_bearHarami(bearHaramiMode == "Strict")
+    if on
+        countBearHarami += 1
+        array.push(allSignals, PatternSignal.new(name="Bear Harami", abbrev="BEH", direction=-1, quality=q, priority=2, strict=bearHaramiMode == "Strict"))
+if enableBearish and darkCloudMode != "Off"
+    [on, q] = f_darkCloudCover(darkCloudMode == "Strict")
+    if on
+        countDarkCloud += 1
+        array.push(allSignals, PatternSignal.new(name="Dark Cloud Cover", abbrev="DCC", direction=-1, quality=q, priority=2, strict=darkCloudMode == "Strict"))
+if enableBearish and bearSashMode != "Off"
+    [on, q] = f_bearSash(bearSashMode == "Strict")
+    if on
+        countBearSash += 1
+        array.push(allSignals, PatternSignal.new(name="Bear Sash", abbrev="BES", direction=-1, quality=q, priority=2, strict=bearSashMode == "Strict"))
+if enableBearish and bearSeparatingMode != "Off"
+    [on, q] = f_bearSeparatingLine(bearSeparatingMode == "Strict")
+    if on
+        countBearSeparating += 1
+        array.push(allSignals, PatternSignal.new(name="Bear Separating Line", abbrev="SEL", direction=-1, quality=q, priority=2, strict=bearSeparatingMode == "Strict"))
+if enableBearish and tweezerTopMode != "Off"
+    [on, q] = f_tweezerTop(tweezerTopMode == "Strict")
+    if on
+        countTweezerTop += 1
+        array.push(allSignals, PatternSignal.new(name="Tweezers Top", abbrev="TWT", direction=-1, quality=q, priority=2, strict=tweezerTopMode == "Strict"))
+if enableBearish and fallingWindowMode != "Off"
+    [on, q] = f_fallingWindow(fallingWindowMode == "Strict")
+    if on
+        countFallingWindow += 1
+        array.push(allSignals, PatternSignal.new(name="Falling Window", abbrev="FWI", direction=-1, quality=q, priority=2, strict=fallingWindowMode == "Strict"))
+if enableBearish and eveningStarMode != "Off"
+    [on, q] = f_eveningStar(eveningStarMode == "Strict")
+    if on
+        countEveningStar += 1
+        array.push(allSignals, PatternSignal.new(name="Evening Star", abbrev="EST", direction=-1, quality=q, priority=3, strict=eveningStarMode == "Strict"))
+if enableBearish and threeBlackCrowsMode != "Off"
+    [on, q] = f_threeBlackCrows(threeBlackCrowsMode == "Strict")
+    if on
+        countThreeBlackCrows += 1
+        array.push(allSignals, PatternSignal.new(name="Three Black Crows", abbrev="TBC", direction=-1, quality=q, priority=3, strict=threeBlackCrowsMode == "Strict"))
+if enableBearish and fallingThreeMode != "Off"
+    [on, q] = f_fallingThree(fallingThreeMode == "Strict")
+    if on
+        countFallingThree += 1
+        array.push(allSignals, PatternSignal.new(name="Falling Three Methods", abbrev="FTH", direction=-1, quality=q, priority=5, strict=fallingThreeMode == "Strict"))
+
+if enableNeutral and dojiMode != "Off"
+    [on, q] = f_doji(dojiMode == "Strict")
+    if on
+        countDoji += 1
+        array.push(allSignals, PatternSignal.new(name="Doji", abbrev="DOJ", direction=0, quality=q, priority=0, strict=dojiMode == "Strict"))
+if enableNeutral and highWaveMode != "Off"
+    [on, q] = f_highWave(highWaveMode == "Strict")
+    if on
+        countHighWave += 1
+        array.push(allSignals, PatternSignal.new(name="High Wave", abbrev="HWV", direction=0, quality=q, priority=0, strict=highWaveMode == "Strict"))
+
+// ---- filter by the alert-quality threshold, then resolve conflicts ----
+// Labels never render below Minimum Alert Quality — a pattern that
+// wouldn't even clear the bar for an alert doesn't get a chart label
+// either. The Data Window's per-pattern counts are unaffected: those are
+// tallied in allSignals above, before this filter, so they count every
+// detection regardless of quality.
+//
+// Guarded by array.size(allSignals) > 0, not just a bare
+// "for i = 0 to array.size(allSignals) - 1" — when allSignals is empty
+// (every bar with no history yet, e.g. bar 0), that upper bound is -1, and
+// Pine's `for` loop — with no explicit `by` step — infers a DESCENDING
+// step from comparing 0 to -1, so it still runs once for i=0 instead of
+// zero times, crashing array.get() on an empty array.
+qualifying = array.new<PatternSignal>()
+if array.size(allSignals) > 0
+    for i = 0 to array.size(allSignals) - 1
+        s = array.get(allSignals, i)
+        if s.quality >= minAlertQuality
+            array.push(qualifying, s)
+
+resolvedSignals = array.new<PatternSignal>()
+if array.size(qualifying) > 0
+    if displayModeInput == "All"
+        resolvedSignals := qualifying
+    else if displayModeInput == "Highest Priority"
+        bestIdx = 0
+        bestPriority = -1
+        bestQuality = -1.0
+        for i = 0 to array.size(qualifying) - 1
+            s = array.get(qualifying, i)
+            if s.priority > bestPriority or (s.priority == bestPriority and s.quality > bestQuality)
+                bestPriority := s.priority
+                bestQuality := s.quality
+                bestIdx := i
+        array.push(resolvedSignals, array.get(qualifying, bestIdx))
+    else
+        bestIdx = 0
+        bestQuality = -1.0
+        for i = 0 to array.size(qualifying) - 1
+            s = array.get(qualifying, i)
+            if s.quality > bestQuality
+                bestQuality := s.quality
+                bestIdx := i
+        array.push(resolvedSignals, array.get(qualifying, bestIdx))
+
+// ==============================
+// LABELS
+// ==============================
+if array.size(resolvedSignals) > 0
+    for i = 0 to array.size(resolvedSignals) - 1
+        s = array.get(resolvedSignals, i)
+        labelColor = s.direction == 1 ? bullColor : s.direction == -1 ? bearColor : neutralColor
+        neutralAbove = m0.closeLoc <= 0.5
+        placeAbove = s.direction == -1 or (s.direction == 0 and neutralAbove)
+        labelYOffset = labelOffsetAtr * atrValue
+        labelY = placeAbove ? high + labelYOffset : low - labelYOffset
+        labelStyle = placeAbove ? label.style_label_down : label.style_label_up
+        labelSize = labelSizeInput == "Tiny" ? size.tiny : labelSizeInput == "Small" ? size.small : labelSizeInput == "Normal" ? size.normal : size.large
+        txt = useFullNames ? s.name : s.abbrev
+        fullTxt = showQualityScore ? txt + "\n" + str.tostring(s.quality, "#") : txt
+        label.new(bar_index, labelY, fullTxt, style=labelStyle, color=color.new(labelColor, labelTransparency), textcolor=color.white, size=labelSize)
+
+// ==============================
+// ALERTS
+// ==============================
+anyBullishFound = false
+anyBearishFound = false
+anyNeutralFound = false
+alertMsg = ""
+if array.size(allSignals) > 0
+    for i = 0 to array.size(allSignals) - 1
+        s = array.get(allSignals, i)
+        if s.quality >= minAlertQuality
+            dirLabel = s.direction == 1 ? "Bullish" : s.direction == -1 ? "Bearish" : "Neutral"
+            if s.direction == 1
+                anyBullishFound := true
+            else if s.direction == -1
+                anyBearishFound := true
+            else
+                anyNeutralFound := true
+            alertMsg := alertMsg + (alertMsg == "" ? "" : " | ") + s.name + " (" + dirLabel + ", Q=" + str.tostring(s.quality, "#") + ")"
+
+bullishAlertOn = enableBullishAlert and anyBullishFound
+bearishAlertOn = enableBearishAlert and anyBearishFound
+neutralAlertOn = enableNeutralAlert and anyNeutralFound
+
+alertcondition(bullishAlertOn, title="Any Bullish Pattern", message="{{ticker}} | {{interval}} | Bullish candlestick pattern | Close={{close}}")
+alertcondition(bearishAlertOn, title="Any Bearish Pattern", message="{{ticker}} | {{interval}} | Bearish candlestick pattern | Close={{close}}")
+alertcondition(neutralAlertOn, title="Any Neutral Pattern", message="{{ticker}} | {{interval}} | Neutral candlestick pattern | Close={{close}}")
+alertcondition(bullishAlertOn or bearishAlertOn or neutralAlertOn, title="Any Pattern", message="{{ticker}} | {{interval}} | Candlestick pattern detected | Close={{close}}")
+
+if bullishAlertOn or bearishAlertOn or neutralAlertOn
+    alert(syminfo.ticker + " | " + timeframe.period + " | " + alertMsg + " | Close=" + str.tostring(close), alert.freq_once_per_bar)
+
+// ==============================
+// LEGEND TABLE — abbreviation -> full name reference
+// ==============================
+var table legendTable = table.new(position.bottom_left, 3, 14, border_width=1)
+
+if showLegend and barstate.islast
+    table.cell(legendTable, 0, 0, "Bullish", text_color=color.white, text_size=size.tiny, bgcolor=color.new(bullColor, 60))
+    table.cell(legendTable, 1, 0, "Bearish", text_color=color.white, text_size=size.tiny, bgcolor=color.new(bearColor, 60))
+    table.cell(legendTable, 2, 0, "Neutral", text_color=color.white, text_size=size.tiny, bgcolor=color.new(neutralColor, 60))
+
+    table.cell(legendTable, 0, 1, "HAM — Hammer", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 0, 2, "IHM — Inverted Hammer", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 0, 3, "BCA — Bull Counter Attack", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 0, 4, "BUE — Bullish Engulfing", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 0, 5, "BUH — Bull Harami", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 0, 6, "PRC — Piercing Pattern", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 0, 7, "BUS — Bull Sash", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 0, 8, "BSL — Bull Separating Line", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 0, 9, "TWB — Tweezers Bottom", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 0, 10, "RWI — Rising Window", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 0, 11, "MST — Morning Star", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 0, 12, "RTH — Rising Three Methods", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 0, 13, "TWS — Three White Soldiers", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+
+    table.cell(legendTable, 1, 1, "HGM — Hanging Man", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 1, 2, "SST — Shooting Star", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 1, 3, "SCA — Bear Counter Attack", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 1, 4, "BEE — Bearish Engulfing", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 1, 5, "BEH — Bear Harami", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 1, 6, "DCC — Dark Cloud Cover", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 1, 7, "BES — Bear Sash", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 1, 8, "SEL — Bear Separating Line", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 1, 9, "TWT — Tweezers Top", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 1, 10, "FWI — Falling Window", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 1, 11, "EST — Evening Star", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 1, 12, "FTH — Falling Three Methods", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 1, 13, "TBC — Three Black Crows", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+
+    table.cell(legendTable, 2, 1, "DOJ — Doji", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(legendTable, 2, 2, "HWV — High Wave", text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+
+// ==============================
+// DATA WINDOW — pattern-found summary (counts since the indicator loaded)
+// ==============================
+totalBullishFound = countHammer + countInvHammer + countBullCounter + countBullEngulf + countBullHarami + countPiercing + countBullSash + countBullSeparating + countTweezerBottom + countRisingWindow + countMorningStar + countRisingThree + countThreeWhiteSoldiers
+totalBearishFound = countHangingMan + countShootingStar + countBearCounter + countBearEngulf + countBearHarami + countDarkCloud + countBearSash + countBearSeparating + countTweezerTop + countFallingWindow + countEveningStar + countFallingThree + countThreeBlackCrows
+totalNeutralFound = countDoji + countHighWave
+
+plot(na, "── Pattern Counts: Bullish ──", display=display.data_window)
+plot(countHammer, "Hammer Found", display=display.data_window)
+plot(countInvHammer, "Inverted Hammer Found", display=display.data_window)
+plot(countBullCounter, "Bull Counter Attack Found", display=display.data_window)
+plot(countBullEngulf, "Bullish Engulfing Found", display=display.data_window)
+plot(countBullHarami, "Bull Harami Found", display=display.data_window)
+plot(countPiercing, "Piercing Pattern Found", display=display.data_window)
+plot(countBullSash, "Bull Sash Found", display=display.data_window)
+plot(countBullSeparating, "Bull Separating Line Found", display=display.data_window)
+plot(countTweezerBottom, "Tweezers Bottom Found", display=display.data_window)
+plot(countRisingWindow, "Rising Window Found", display=display.data_window)
+plot(countMorningStar, "Morning Star Found", display=display.data_window)
+plot(countRisingThree, "Rising Three Methods Found", display=display.data_window)
+plot(countThreeWhiteSoldiers, "Three White Soldiers Found", display=display.data_window)
+
+plot(na, "── Pattern Counts: Bearish ──", display=display.data_window)
+plot(countHangingMan, "Hanging Man Found", display=display.data_window)
+plot(countShootingStar, "Shooting Star Found", display=display.data_window)
+plot(countBearCounter, "Bear Counter Attack Found", display=display.data_window)
+plot(countBearEngulf, "Bearish Engulfing Found", display=display.data_window)
+plot(countBearHarami, "Bear Harami Found", display=display.data_window)
+plot(countDarkCloud, "Dark Cloud Cover Found", display=display.data_window)
+plot(countBearSash, "Bear Sash Found", display=display.data_window)
+plot(countBearSeparating, "Bear Separating Line Found", display=display.data_window)
+plot(countTweezerTop, "Tweezers Top Found", display=display.data_window)
+plot(countFallingWindow, "Falling Window Found", display=display.data_window)
+plot(countEveningStar, "Evening Star Found", display=display.data_window)
+plot(countFallingThree, "Falling Three Methods Found", display=display.data_window)
+plot(countThreeBlackCrows, "Three Black Crows Found", display=display.data_window)
+
+plot(na, "── Pattern Counts: Neutral ──", display=display.data_window)
+plot(countDoji, "Doji Found", display=display.data_window)
+plot(countHighWave, "High Wave Found", display=display.data_window)
+
+plot(na, "── Totals / Trend Context ──", display=display.data_window)
+plot(totalBullishFound, "Total Bullish Found", display=display.data_window)
+plot(totalBearishFound, "Total Bearish Found", display=display.data_window)
+plot(totalNeutralFound, "Total Neutral Found", display=display.data_window)
+plot(totalBullishFound + totalBearishFound + totalNeutralFound, "Total All Found", display=display.data_window)
+plot(trendState, "Trend State (-2..2)", display=display.data_window)
+plot(trendScoreRaw, "Trend Score (raw)", display=display.data_window)

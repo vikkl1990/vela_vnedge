@@ -1,0 +1,23 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TradeThink_Research
+
+//@version=6
+indicator("New Highs - New Lows (NYSE & Nasdaq) [TradeThink]", shorttitle = 'NH-NL[TradeThink]')
+
+adlType = input.string('NYSE', 'NH-NL Type', options = ['NYSE', 'Nasdaq', 'NYSE & Nasdaq'])
+
+NYHigh = request.security("HIGN", timeframe.period, close)
+NYLow = request.security("LOWN", timeframe.period, close)
+NQHigh = request.security("HIGQ", timeframe.period, close)
+NQLow = request.security("LOWQ", timeframe.period, close)
+
+NYDiff = NYHigh - NYLow
+NQDiff = NQHigh - NQLow
+
+diff = switch adlType
+    'NYSE' => NYDiff
+    'Nasdaq' => NQDiff
+    'NYSE & Nasdaq'=> NYDiff + NQDiff
+
+plot(diff)
+hline(0, color=color.gray)

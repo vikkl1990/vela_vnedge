@@ -1,0 +1,160 @@
+//@version=6
+// ══════════════════════════════════════════════════════════════════════
+//  Scalp FVG SMC [Mourad]
+//  Concu pour BTCUSD en 5m (fonctionne aussi en 1m / 3m).
+//   - Detecte UNIQUEMENT les FVG non combles
+//   - Aucun retard de pivot : 3 bougies cloturees suffisent
+//   - Taille des zones calibree sur l ATR
+//   - Filtre de biais sur timeframe superieur
+//   - Masque tout ce qui est a plus de X points du prix
+//   - Ticket complet : entree, stop, TP1/TP2, taille de position
+//   - Stop plancher a 1x ATR : jamais sorti par le bruit
+//   - Alerte native sur touche de zone
+// ══════════════════════════════════════════════════════════════════════
+indicator("Scalp FVG SMC [Mourad]", "Scalp FVG", overlay = true, max_boxes_count = 500)
+
+gZ        = "1 - Zones FVG"
+atrLen    = input.int(14,     "Longueur ATR",                   minval = 2,    group = gZ)
+minAtrMlt = input.float(0.25, "Taille mini du FVG (x ATR)",     minval = 0.0,  step = 0.05, group = gZ)
+maxAtrMlt = input.float(3.0,  "Taille maxi du FVG (x ATR)",     minval = 0.1,  step = 0.1,  group = gZ)
+useVol    = input.bool(true,  "Exiger un volume d impulsion",   group = gZ)
+volLen    = input.int(20,     "Moyenne de volume",              minval = 2,    group = gZ)
+volMlt    = input.float(1.3,  "Volume mini (x moyenne)",        minval = 1.0,  step = 0.1,  group = gZ)
+maxDist   = input.float(400,  "Distance maxi au prix (points)", minval = 10,   group = gZ)
+maxZones  = input.int(8,      "Zones gardees en memoire",       minval = 1,    maxval = 30, group = gZ)
+
+gB        = "2 - Biais"
+biasTF    = input.timeframe("15", "Timeframe du biais",         group = gB)
+biasLen   = input.int(21,     "EMA du biais",                   minval = 2,    group = gB)
+filtBias  = input.bool(true,  "Masquer les zones contre le biais", group = gB)
+
+gR        = "3 - Risque"
+capital   = input.float(100000, "Capital (USD)",                minval = 1,    group = gR)
+riskPct   = input.float(0.5,  "Risque par trade (%)",           minval = 0.01, step = 0.1, group = gR)
+bufAtr    = input.float(0.3,  "Marge sous la zone (x ATR)",     minval = 0.0,  step = 0.05, group = gR)
+minAtrStp = input.float(1.0,  "Stop plancher (x ATR)",          minval = 0.0,  step = 0.1,  group = gR)
+maxStop   = input.float(200,  "Stop maxi accepte (points)",     minval = 1,    group = gR)
+lotSize   = input.float(1.0,  "Taille du contrat (BTC / lot)",  minval = 0.01, group = gR)
+showTbl   = input.bool(true,  "Afficher le tableau",            group = gR)
+
+gC        = "4 - Couleurs"
+cBull     = input.color(color.new(#26a69a, 82), "Zone achat",   group = gC)
+cBear     = input.color(color.new(#ef5350, 82), "Zone vente",   group = gC)
+
+atr    = ta.atr(atrLen)
+volAvg = ta.sma(volume, volLen)
+
+[hC, hE] = request.security(syminfo.tickerid, biasTF, [close, ta.ema(close, biasLen)])
+bias = hC > hE ? 1 : hC < hE ? -1 : 0
+
+// Detection FVG sur 3 bougies CLOTUREES : [3], [2], [1]. Impulsion = [2].
+gapUp   = low[1] - high[3]
+gapDn   = low[3] - high[1]
+volOk   = not useVol or volume[2] > volAvg[2] * volMlt
+newBull = gapUp > 0 and gapUp >= atr[1] * minAtrMlt and gapUp <= atr[1] * maxAtrMlt and close[2] > open[2] and volOk
+newBear = gapDn > 0 and gapDn >= atr[1] * minAtrMlt and gapDn <= atr[1] * maxAtrMlt and close[2] < open[2] and volOk
+
+var array<box>   zBox = array.new<box>()
+var array<float> zTop = array.new<float>()
+var array<float> zBot = array.new<float>()
+var array<int>   zDir = array.new<int>()
+var array<bool>  zHit = array.new<bool>()
+
+if newBull or newBear
+    float t = newBull ? low[1]  : low[3]
+    float b = newBull ? high[3] : high[1]
+    int   d = newBull ? 1 : -1
+    bx = box.new(bar_index - 3, t, bar_index, b, border_color = color.new(d == 1 ? color.teal : color.red, 45), border_width = 1, bgcolor = d == 1 ? cBull : cBear, extend = extend.right)
+    array.push(zBox, bx)
+    array.push(zTop, t)
+    array.push(zBot, b)
+    array.push(zDir, d)
+    array.push(zHit, false)
+    if array.size(zBox) > maxZones
+        box.delete(array.shift(zBox))
+        array.shift(zTop)
+        array.shift(zBot)
+        array.shift(zDir)
+        array.shift(zHit)
+
+if array.size(zBox) > 0
+    for i = array.size(zBox) - 1 to 0
+        float t  = array.get(zTop, i)
+        float b  = array.get(zBot, i)
+        int   d  = array.get(zDir, i)
+        box   bx = array.get(zBox, i)
+        bool filled = d == 1 ? low <= b : high >= t
+        if filled
+            box.delete(bx)
+            array.remove(zBox, i)
+            array.remove(zTop, i)
+            array.remove(zBot, i)
+            array.remove(zDir, i)
+            array.remove(zHit, i)
+        else
+            float dist = close > t ? close - t : close < b ? b - close : 0.0
+            bool  vis  = dist <= maxDist and (not filtBias or d == bias)
+            box.set_bgcolor(bx, vis ? (d == 1 ? cBull : cBear) : color.new(color.gray, 100))
+            box.set_border_color(bx, vis ? color.new(d == 1 ? color.teal : color.red, 45) : color.new(color.gray, 100))
+            if vis and high >= b and low <= t and not array.get(zHit, i)
+                array.set(zHit, i, true)
+                alert("SCALP " + (d == 1 ? "ACHAT" : "VENTE") + " " + syminfo.ticker + " - zone " + str.tostring(b, format.mintick) + " / " + str.tostring(t, format.mintick) + " touchee a " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+
+var table tbl = table.new(position.top_right, 2, 9, border_width = 1, frame_width = 1, frame_color = color.new(color.gray, 50))
+
+if showTbl and barstate.islast
+    float bT = na
+    float bB = na
+    int   bD = 0
+    float bDist = 1e12
+    if array.size(zBox) > 0
+        for i = 0 to array.size(zBox) - 1
+            float t = array.get(zTop, i)
+            float b = array.get(zBot, i)
+            int   d = array.get(zDir, i)
+            if not filtBias or d == bias
+                float dist = close > t ? close - t : close < b ? b - close : 0.0
+                if dist <= maxDist and dist < bDist
+                    bDist := dist
+                    bT := t
+                    bB := b
+                    bD := d
+
+    float entry = na(bT) ? na : (bT + bB) / 2
+    // Stop structurel : au-dela de la zone + marge ATR, mais jamais
+    // plus serre que le plancher ATR (sinon le bruit le sort).
+    float sStr  = na(bT) ? na : bD == 1 ? entry - (bB - bufAtr * atr) : (bT + bufAtr * atr) - entry
+    float risk  = na(sStr) ? na : math.max(sStr, minAtrStp * atr)
+    float stop  = na(risk) ? na : bD == 1 ? entry - risk : entry + risk
+    float tp1   = na(risk) ? na : bD == 1 ? entry + 1.5 * risk : entry - 1.5 * risk
+    float tp2   = na(risk) ? na : bD == 1 ? entry + 2.5 * risk : entry - 2.5 * risk
+    float units = na(risk) or risk <= 0 ? na : math.floor(capital * riskPct / 100 / risk * 100) / 100
+    bool  ok    = not na(risk) and risk > 0 and risk <= maxStop
+
+    color cHdr = color.new(color.gray, 80)
+    color cTxt = chart.fg_color
+
+    table.clear(tbl, 0, 0, 1, 8)
+    table.cell(tbl, 0, 0, "Biais " + biasTF, bgcolor = cHdr, text_color = cTxt, text_size = size.small)
+    table.cell(tbl, 1, 0, bias == 1 ? "HAUSSIER" : bias == -1 ? "BAISSIER" : "NEUTRE", bgcolor = cHdr, text_color = bias == 1 ? color.teal : bias == -1 ? color.red : color.gray, text_size = size.small)
+
+    if na(bT)
+        table.cell(tbl, 0, 1, "Zone", text_color = cTxt, text_size = size.small)
+        table.cell(tbl, 1, 1, "aucune exploitable", text_color = color.gray, text_size = size.small)
+    else
+        table.cell(tbl, 0, 1, "Sens", text_color = cTxt, text_size = size.small)
+        table.cell(tbl, 1, 1, bD == 1 ? "ACHAT" : "VENTE", text_color = bD == 1 ? color.teal : color.red, text_size = size.small)
+        table.cell(tbl, 0, 2, "Zone", text_color = cTxt, text_size = size.small)
+        table.cell(tbl, 1, 2, str.tostring(bB, format.mintick) + " / " + str.tostring(bT, format.mintick), text_color = cTxt, text_size = size.small)
+        table.cell(tbl, 0, 3, "Distance", text_color = cTxt, text_size = size.small)
+        table.cell(tbl, 1, 3, str.tostring(bDist, "#") + " pts", text_color = cTxt, text_size = size.small)
+        table.cell(tbl, 0, 4, "Entree", text_color = cTxt, text_size = size.small)
+        table.cell(tbl, 1, 4, str.tostring(entry, format.mintick), text_color = cTxt, text_size = size.small)
+        table.cell(tbl, 0, 5, "Stop", text_color = cTxt, text_size = size.small)
+        table.cell(tbl, 1, 5, str.tostring(stop, format.mintick) + "  (" + str.tostring(risk, "#") + " pts)", text_color = ok ? cTxt : color.red, text_size = size.small)
+        table.cell(tbl, 0, 6, "TP1 / TP2", text_color = cTxt, text_size = size.small)
+        table.cell(tbl, 1, 6, str.tostring(tp1, format.mintick) + "  /  " + str.tostring(tp2, format.mintick), text_color = cTxt, text_size = size.small)
+        table.cell(tbl, 0, 7, "Taille", text_color = cTxt, text_size = size.small)
+        table.cell(tbl, 1, 7, ok ? str.tostring(units, "#.##") + " BTC = " + str.tostring(math.floor(units / lotSize * 100) / 100, "#.##") + " lots" : "-", text_color = cTxt, text_size = size.small)
+        table.cell(tbl, 0, 8, "Verdict", text_color = cTxt, text_size = size.small)
+        table.cell(tbl, 1, 8, ok ? "VALIDE (R:R 2.5)" : "REFUSE stop > " + str.tostring(maxStop, "#"), text_color = ok ? color.teal : color.red, text_size = size.small)

@@ -1,0 +1,2945 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Combined from:
+//   © TFlab — "ICT Venom Trading Model [TradingFinder] SMC NY Session"
+//   © TFlab — "Silver Bullet ICT Strategy [TradingFinder] 10-11 AM NY Time +FVG"
+//   © tradeforopp (TFO) — displacement detection logic
+//
+//@version=6
+// ==============================================================
+// ICT Combined — Venom + Silver Bullet + Displacement + Liquidity
+//
+// FOUR INDEPENDENT MODULES, one indicator:
+//
+//   1. VENOM NY MODEL   — dedicated instance, own sessions/toggle.
+//   2. SILVER BULLET A/B — two more instances of the same CISD engine,
+//                          defaulting to the 10-11 and 14-15 NY windows.
+//   3. DISPLACEMENT      — TFO stdev-of-range displacement + FVG marker.
+//   4. LIQUIDITY LEVELS  — prior day/week/month H/L, Asia H/L, London H/L,
+//                          with raid+rejection sweep detection.
+//   5. PREMARKET RANGE   — the 07:00–09:00 NY dealing range graded into
+//                          quadrants and octants, carried forward. Sets
+//                          premium/discount for the session.
+//   6. BODY / WICK LAW   — wicks may violate a 50% level, bodies may not.
+//                          Runs against the premarket grid, the first
+//                          presented FVG and the opening range gap.
+//   ⑭ SB ENTRIES         — graded entry markers where the modules line
+//                          up inside a Silver Bullet window: raid → FVG /
+//                          IFVG retest, or a first-presented FVG flip,
+//                          gated by the ORG CE draw, with a scorecard.
+//
+// The two TFlab scripts run the SAME CISD engine and differ only in
+// session wiring, staleness window and zone extension, so the engine is
+// parameterised once and instantiated three times. Each call site gets
+// its own `var` state, so the three run fully independently.
+//
+// FIXES APPLIED vs. the source scripts:
+//   1. Bar Back Check input is actually wired through (was hardcoded 120)
+//   2. Dead `ta.change(...)` clause removed (no-op, and in a bad scope)
+//   3. max_boxes_count declared (Drawing library was capped at 50)
+//   4. CISD colour inputs are actually used (were declared, never referenced)
+//   5. Opening range no longer absorbs the first bar of the trading window
+//   6. Phantom trigger on chart-left removed (CISD level 0.0 gate)
+//   7. Displacement bar colour + alert no longer repaint intrabar
+// ==============================================================
+indicator("ICT Combined — Venom / Silver Bullet / Displacement / Liquidity", "ICT Combo", overlay = true,
+     max_bars_back = 5000, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500,
+     dynamic_requests = true)
+
+// Order Block Refiner
+import TFlab/OrderBlockRefiner_TradingFinder/2 as Refiner
+// Order Block Drawing
+import TFlab/OrderBlockDrawing_TradingFinder/4 as Drawing
+// FVG Detector
+import TFlab/FVGDetectorLibrary/3 as FVG
+
+TZ = 'America/New_York'
+
+
+// ==============================================================
+// INPUTS — VENOM NY MODEL (independent)
+// ==============================================================
+gV = '① Venom NY Model'
+useV   = input.bool(true, 'Enable Venom model', group = gV)
+orV    = input.session('0800-0930', 'Opening range',  group = gV)
+tsV    = input.session('0930-1700', 'Trading permit', group = gV)
+staleV = input.int(270, 'CISD staleness (bars)', minval = 10, group = gV,
+     tooltip = 'A CISD level older than this many bars stops being monitored. Venom original: 270.')
+extV   = input.int(240, 'Zone extension (bars)', minval = 10, group = gV,
+     tooltip = 'How far right Order Block / FVG zones are projected. Venom original: 240.')
+
+// ==============================================================
+// INPUTS — SILVER BULLET WINDOWS
+// ==============================================================
+gWA = '② Silver Bullet — Window A'
+useA    = input.bool(true, 'Enable Window A', group = gWA)
+presetA = input.string('Silver Bullet AM', 'Preset', ['Silver Bullet AM', 'Silver Bullet PM', 'London Silver Bullet', 'Custom'],
+     tooltip = 'Silver Bullet AM      : OR 0900-1000 / trade 1000-1100' +
+     '\nSilver Bullet PM      : OR 1300-1400 / trade 1400-1500' +
+     '\nLondon Silver Bullet : OR 0200-0300 / trade 0300-0400', group = gWA)
+custORA = input.session('0900-1000', 'Custom opening range',  group = gWA)
+custTA  = input.session('1000-1100', 'Custom trading permit', group = gWA)
+
+gWB = '③ Silver Bullet — Window B'
+useB    = input.bool(true, 'Enable Window B', group = gWB)
+presetB = input.string('Silver Bullet PM', 'Preset', ['Silver Bullet AM', 'Silver Bullet PM', 'London Silver Bullet', 'Custom'], group = gWB)
+custORB = input.session('1300-1400', 'Custom opening range',  group = gWB)
+custTB  = input.session('1400-1500', 'Custom trading permit', group = gWB)
+
+gSB = 'Silver Bullet — shared settings'
+staleSB = input.int(90, 'CISD staleness (bars)', minval = 10, group = gSB,
+     tooltip = 'Silver Bullet original: 90.')
+extSB   = input.int(60, 'Zone extension (bars)', minval = 10, group = gSB,
+     tooltip = 'Silver Bullet original: 60.')
+
+gSess = 'Session Frame Display'
+showFrameV = input.bool(true, 'Draw Venom frame',    group = gSess, inline = 'fv')
+frameColV  = input.color(#9598a1, '',                group = gSess, inline = 'fv')
+showFrameA = input.bool(true, 'Draw Window A frame', group = gSess, inline = 'fa')
+frameColA  = input.color(#767f99, '',                group = gSess, inline = 'fa')
+showFrameB = input.bool(true, 'Draw Window B frame', group = gSess, inline = 'fb')
+frameColB  = input.color(#99857f, '',                group = gSess, inline = 'fb')
+
+
+// ==============================================================
+// INPUTS — ENGINE LOGIC (shared by all three instances)
+// ==============================================================
+gOB = 'Order Blocks Logical Setting'
+Refine   = input.bool(true, 'Refine Order Block', group = gOB, inline = 'Refine')
+RefineMe = input.string('Defensive', '', ['Defensive', 'Aggressive'], group = gOB, inline = 'Refine')
+MLOB     = input.string('Proximal', 'Mitigation Level OB', ['Proximal', '50 % OB', 'Distal'],
+     tooltip = 'Determines which level price must react to inside an Order Block.', group = gOB)
+
+gF = 'FVG Logical Setting'
+PFVGFilter     = input.bool(false, 'FVG Filter ............', group = gF, inline = 'FVG Filter')
+PFVGFilterType = input.string('Defensive', '', ['Very Aggressive', 'Aggressive', 'Defensive', 'Very Defensive'], group = gF, inline = 'FVG Filter',
+     tooltip = 'If "On", filters FVGs by zone width. From "Very Aggressive" to "Very Defensive" the required width increases.')
+MLFVG          = input.string('Proximal', 'Mitigation Level FVG', ['Proximal', '50 % OB', 'Distal'],
+     tooltip = 'Determines which level price must react to inside an FVG.', group = gF)
+
+gC = 'CISD Logical Setting'
+BarBackCheck = input.int(120, 'Bar Back Check', minval = 1,
+     tooltip = 'How far back to scan for the first opposing-body candle when setting the CISD level.' +
+     '\nNOTE: the published TFlab scripts hardcoded this to 120 and ignored their own input. 120 is kept as the default to match that behaviour.', group = gC)
+
+
+// ==============================================================
+// INPUTS — ZONE DISPLAY
+// ==============================================================
+gDOB = 'Order Block Display Setting'
+DOBShow  = input.bool(true, 'Demand Order Block', inline = 'DMOLB', group = gDOB)
+DOBColor = input.color(#3dec266b, '', inline = 'DMOLB', group = gDOB)
+SOBShow  = input.bool(true, 'Supply Order Block', inline = 'SSOLB', group = gDOB)
+SOBColor = input.color(#ff1e1e73, '', inline = 'SSOLB', group = gDOB)
+
+gDF = 'FVG Display Setting'
+DFVGShow  = input.bool(true, 'Demand FVG', inline = 'DFVG', group = gDF)
+DFVGColor = input.color(#4aa9f76c, '', inline = 'DFVG', group = gDF)
+SFVGShow  = input.bool(true, 'Supply FVG', inline = 'SFVG', group = gDF)
+SFVGColor = input.color(#f8a93270, '', inline = 'SFVG', group = gDF)
+
+gDC = 'CISD Display Setting'
+CISD_AShow   = input.bool(true, 'Show All CISD', group = gDC)
+CISD_HShow   = input.bool(true, 'Show High CISD', group = gDC, inline = 'CH')
+CISD_LShow   = input.bool(true, 'Show Low CISD',  group = gDC, inline = 'CL')
+CISD_HNColor = input.color(#ed1212, 'Name', group = gDC, inline = 'CH')
+CISD_LNColor = input.color(#16e61d, 'Name', group = gDC, inline = 'CL')
+CISD_HLColor = input.color(#b90000b8, 'Line', group = gDC, inline = 'CH')
+CISD_LLColor = input.color(#069206a7, 'Line', group = gDC, inline = 'CL')
+
+
+// ==============================================================
+// INPUTS — DISPLACEMENT MODULE (TFO)
+// ==============================================================
+gD = '④ Displacement (TFO)'
+showDisp       = input.bool(true, 'Enable displacement module', group = gD)
+dispWindowOnly = input.bool(true, 'Only inside an active trading window', group = gD)
+dispType       = input.string('Open to Close', 'Displacement type', ['Open to Close', 'High to Low'], group = gD)
+stdLen         = input.int(100, 'Displacement length', minval = 1, group = gD)
+stdX           = input.float(4.0, 'Displacement strength', minval = 0.0, step = 0.5, group = gD)
+showDispFvg    = input.bool(true, 'Draw displacement FVG marker box', group = gD)
+barsRight      = input.int(5, 'Extend marker right (bars)', minval = 1, maxval = 100, group = gD)
+dispColor      = input.color(color.yellow, 'Displacement bar colour', group = gD)
+cBullD         = input.color(color.new(color.green, 80), 'Bullish marker box', group = gD)
+cBearD         = input.color(color.new(color.red, 80),   'Bearish marker box', group = gD)
+
+
+// ==============================================================
+// INPUTS — LIQUIDITY LEVELS & SWEEPS
+// ==============================================================
+gL = '⑤ Liquidity Levels'
+useLiq     = input.bool(true, 'Enable liquidity levels', group = gL)
+liqTrail   = input.bool(false, 'Leave historical level trail', group = gL,
+     tooltip = 'Off  = one moving line per level (clean, cheap).' +
+     '\nOn = a new segment each time the level updates, leaving prior days/weeks on the chart.' +
+     '\nTradingView caps drawings at 500, so a trail across many levels will purge the oldest.')
+liqLblSize = input.string('tiny', 'Level label size', ['tiny', 'small', 'normal'], group = gL)
+
+gLd = 'Liquidity — which levels'
+sPDH = input.bool(true,  'Prior Day High / Low',   group = gLd, inline = 'pd')
+cPD  = input.color(#f7a600, '',                    group = gLd, inline = 'pd')
+sPWH = input.bool(true,  'Prior Week High / Low',  group = gLd, inline = 'pw')
+cPW  = input.color(#e040fb, '',                    group = gLd, inline = 'pw')
+sPMH = input.bool(false, 'Prior Month High / Low', group = gLd, inline = 'pm')
+cPM  = input.color(#00bcd4, '',                    group = gLd, inline = 'pm')
+sASI = input.bool(true,  'Asia High / Low',        group = gLd, inline = 'as')
+cASI = input.color(#7e57c2, '',                    group = gLd, inline = 'as')
+sLDN = input.bool(true,  'London High / Low',      group = gLd, inline = 'ld')
+cLDN = input.color(#26a69a, '',                    group = gLd, inline = 'ld')
+asiaSess = input.session('2000-0000', 'Asia session',   group = gLd, tooltip = 'New York time.')
+ldnSess  = input.session('0200-0500', 'London session', group = gLd, tooltip = 'New York time.')
+
+gLs = 'Liquidity — sweep detection'
+showSweep  = input.bool(true, 'Mark liquidity sweeps', group = gLs,
+     tooltip = 'A sweep is a raid + rejection: price trades THROUGH the level and closes back on the original side. A clean break that closes beyond the level is not a sweep.')
+sweepColB  = input.color(#ef5350, 'Buy-side swept (high taken)',  group = gLs)
+sweepColS  = input.color(#26a69a, 'Sell-side swept (low taken)',  group = gLs)
+dynAlerts  = input.bool(true, 'Emit dynamic alert() on sweeps', group = gLs,
+     tooltip = 'Adds a message to the "Any alert() function call" alert type, including the level name, level price and current price.')
+
+
+// ==============================================================
+// INPUTS — FIRST PRESENTED FVG (AM / PM)
+// ==============================================================
+gFP = '⑥ First Presented FVG'
+useFP     = input.bool(true, 'Enable first-presented FVG', group = gFP)
+fpAM      = input.session('0931-1300', 'AM session', group = gFP,
+     tooltip = 'The window is tested against the MIDDLE candle of the 3-candle pattern — the candle that creates the gap.' +
+     '\n\n0931 therefore means the 09:30 opening candle is never the FVG-forming candle.')
+fpPM      = input.session('1331-1600', 'PM session', group = gFP,
+     tooltip = 'As with the AM window, 1331 means the 13:30 candle is never the FVG-forming candle.')
+fpMinSize = input.float(0.0, 'Minimum gap size', minval = 0, step = 0.25, group = gFP,
+     tooltip = 'Ignore gaps narrower than this, in price units. 0 accepts any gap.')
+fpKeepDays = input.int(10, 'Keep last N days of gaps', minval = 1, maxval = 30, group = gFP,
+     tooltip = 'How many days of first-presented gaps stay on the chart. Older ones are deleted as new days form.')
+fpCarryAll = input.bool(true, 'Carry every retained gap to the current bar', group = gFP,
+     tooltip = 'On: all retained gaps keep extending right, so a Friday chart still shows the whole week plus the tail of the week before.' +
+     '\n\nOff: a gap stops at the end of its own day, unless the Monday rule below keeps it going.')
+fpCarryMon = input.bool(true, 'Always carry Monday through its week', group = gFP,
+     tooltip = 'Monday gaps keep extending until the end of that calendar week even when the setting above is off.')
+fpShowCE  = input.bool(true, 'Show consequent encroachment (50%)', group = gFP)
+fpBullCol = input.color(#26a69a33, 'Bullish', group = gFP, inline = 'fpc')
+fpBearCol = input.color(#ef535033, 'Bearish', group = gFP, inline = 'fpc')
+fpCECol   = input.color(#b2b5be, 'CE line', group = gFP, inline = 'fpc')
+
+
+// ==============================================================
+// INPUTS — OPENING RANGE GAP
+// ==============================================================
+gOG = '⑦ Opening Range Gap'
+useOG    = input.bool(true, 'Enable opening range gap', group = gOG)
+ogSess   = input.session('0930-1615', 'RTH session', group = gOG,
+     tooltip = 'The gap runs from the CLOSE of this session on the prior day to its OPEN today — the ICT Opening Range Gap. Consequent Encroachment is the 50% midpoint.' +
+     '\n\nDefault ends 16:15 to match CME index-futures RTH settlement. Use 0930-1600 for cash equities and indices.')
+ogMinSize = input.float(5.0, 'Minimum gap size', minval = 0, step = 0.25, group = gOG,
+     tooltip = 'Gaps narrower than this are ignored. In price units, not ticks.')
+ogExtend = input.int(120, 'Extend right (bars)', minval = 10, group = gOG)
+ogShowCE = input.bool(true, 'Show consequent encroachment (50%)', group = gOG)
+ogShowQt = input.bool(true, 'Show quadrants (25% / 75%)', group = gOG)
+ogCol    = input.color(#78909c26, 'Gap fill', group = gOG, inline = 'ogc')
+ogCECol  = input.color(#ffb74d, 'CE line', group = gOG, inline = 'ogc')
+ogQtCol  = input.color(#78909c99, 'Quadrants', group = gOG, inline = 'ogc')
+
+
+// ==============================================================
+// INPUTS — PREMARKET DEALING RANGE (07:00–09:00 NY)
+// ==============================================================
+g8 = '⑧ Premarket Dealing Range'
+usePM      = input.bool(true, 'Enable premarket dealing range', group = g8,
+     tooltip = 'The 07:00–09:00 New York pre-market dealing range, graded into quadrants and octants and carried forward across the session.' +
+     '\n\nAbove the 50% line the market is in PREMIUM, below it DISCOUNT — measured against THIS range, not the RTH or daily range.' +
+     '\n\nIntraday timeframes only.')
+pmSess     = input.session('0700-0900', 'Premarket window', group = g8,
+     tooltip = 'New York time. The highest high and lowest low of this window define the dealing range. It locks when the window closes and is then projected forward.')
+pmKeepDays = input.int(2, 'Keep last N days', minval = 1, maxval = 10, group = g8,
+     tooltip = 'How many days of grids stay on the chart. Older ones are deleted, drawings and all.')
+pmShowBox  = input.bool(true, 'Shade the window',        group = g8)
+pmShowEQ   = input.bool(true, 'Equilibrium (50%)',       group = g8)
+pmShowQt   = input.bool(true, 'Quadrants (25% / 75%)',   group = g8)
+pmShowOc   = input.bool(true, 'Octants (12.5% steps)',   group = g8)
+pmShowLbl  = input.bool(true, 'Level labels',            group = g8)
+pmHLCol    = input.color(#2962ff, 'Range H/L', group = g8, inline = 'pm1')
+pmEQCol    = input.color(#ffb74d, 'EQ',        group = g8, inline = 'pm1')
+pmQtCol    = input.color(#78909c, 'Quadrants', group = g8, inline = 'pm2')
+pmOcCol    = input.color(#546e7a, 'Octants',   group = g8, inline = 'pm2')
+pmBoxCol   = input.color(#2962ff14, 'Window shade', group = g8)
+
+
+// ==============================================================
+// INPUTS — BODY / WICK LAW
+// ==============================================================
+g9 = '⑨ Body / Wick Law'
+useBW   = input.bool(true, 'Enable body/wick law', group = g9,
+     tooltip = 'A PD array holds while the CANDLE BODIES stay on the correct side of its 50% (consequent encroachment):' +
+     '\n\n• Demand / bullish array — bodies stay in the UPPER half' +
+     '\n• Supply / bearish array — bodies stay in the LOWER half' +
+     '\n\nWicks are allowed to violate CE freely. Only a CLOSED body through CE counts as a violation.' +
+     '\n\nThe same test runs against the ⑧ grid levels: a wick that tags an octant while the body fails to reach it is a rejection.')
+bwTaps  = input.int(2, 'Taps to confirm', minval = 1, maxval = 10, group = g9,
+     tooltip = 'How many respected interactions before the array is marked confirmed. 1 fires on the first tap.')
+bwPMDR  = input.bool(true, 'Test ⑧ grid levels (wick tag, body fails)', group = g9)
+bwScope = input.string('Key levels', 'Grid levels to test', ['EQ only', 'Key levels', 'All drawn levels'], group = g9,
+     tooltip = 'Which grid levels generate rejection signals. This does not change which levels are DRAWN.' +
+     '\n\nKey levels means the range extremes, the quadrants and equilibrium. Testing all nine on a rangebound day produces more markers than the chart can usefully carry.')
+bwOnce  = input.bool(true, 'One signal per level per session', group = g9,
+     tooltip = 'A level that has signalled stays quiet for the rest of the session, the same way module ⑤ fires each swept level once.' +
+     '\n\nWith this off, a level re-signals every time the tap count is met — which on a day spent oscillating around equilibrium means a marker every few bars.')
+bwFP    = input.bool(true, 'Test ⑥ first-presented FVG',                group = g9)
+bwORG   = input.bool(true, 'Test ⑦ opening range gap',                  group = g9)
+bwMark  = input.bool(true, 'Draw markers', group = g9)
+bwOkCol = input.color(#26a69a, 'Respected', group = g9, inline = 'bwc')
+bwBadCol= input.color(#ef5350, 'Violated',  group = g9, inline = 'bwc')
+
+
+// ==============================================================
+// INPUTS — AM REGIME CLASSIFIER
+// ==============================================================
+g10 = '⑩ AM Regime'
+useRG = input.bool(true, 'Enable AM regime classifier', group = g10,
+     tooltip = 'Grades the 07:00–09:00 window and scores how likely the AM session is to consolidate rather than expand.' +
+     '\n\nTHIS IS A MEASUREMENT, NOT A RULE. It encodes a claim that has not been tested on your instrument. Run it read-only, compare the score against the realised outcome for a couple of months, then set the weights from your own data.')
+rgAM  = input.session('0930-1130', 'AM session to grade', group = g10,
+     tooltip = 'The window whose realised behaviour is compared against the premarket classification.')
+
+rgERthr  = input.float(1.60, 'Trending — efficiency (ER × √N) at least', minval = 0.5, step = 0.1, group = g10,
+     tooltip = 'Efficiency ratio is net displacement divided by the distance actually travelled, scaled by the square root of the bar count.' +
+     '\n\nA random walk sits near 1.0 on ANY timeframe, which is what makes this threshold portable. Higher means more directional.')
+rgCLRthr = input.float(0.70, 'Trending — close location at least', minval = 0.5, maxval = 1.0, step = 0.05, group = g10,
+     tooltip = 'Where the 09:00 close sits in the window range. 0.70 means the close is in the top 30% (up) or, mirrored, the bottom 30% (down).' +
+     '\n\nThis is the measure closest to what the eye judges as "trending".')
+rgExpMin = input.float(0.90, 'Trending — range vs 20-day median at least', minval = 0.1, step = 0.05, group = g10,
+     tooltip = 'Guards against efficient but tiny. A quiet directional drift is not a trend.')
+rgNeed   = input.int(2, 'Factors required to call it trending', minval = 1, maxval = 3, group = g10)
+
+rgTagNear = input.float(0.50, 'Key level counts only within this fraction of the range', minval = 0.05, maxval = 1.0, step = 0.05, group = g10,
+     tooltip = 'A level merely sitting inside the window range is not the same as the range having gone TO it. If price blew through a level on its way somewhere else, that level was not the destination and should not score.' +
+     '\n\n0.50 means the level must lie in the outer half of the range, measured from whichever extreme is relevant. The nearest level is still reported either way — this only controls whether it scores.')
+rgShallow = input.float(0.20, 'Shallow raid — penetration as a fraction of range', minval = 0.01, maxval = 1.0, step = 0.05, group = g10,
+     tooltip = 'How far past a key level counts as "barely got there". A shallow raid implies unfinished business and a likely revisit.')
+rgWide    = input.float(1.50, 'Range already expanded — multiple of median', minval = 1.0, step = 0.1, group = g10)
+
+rgWtrend = input.int(50, 'Score — trending',              minval = 0, maxval = 100, group = g10)
+rgWtag   = input.int(25, 'Score — key level tagged',      minval = 0, maxval = 100, group = g10)
+rgWshall = input.int(15, 'Score — raid was shallow',      minval = 0, maxval = 100, group = g10)
+rgWwide  = input.int(10, 'Score — range already expanded',minval = 0, maxval = 100, group = g10)
+rgConsAt = input.int(70, 'Consolidation expected at or above', minval = 0, maxval = 100, group = g10)
+rgExpAt  = input.int(40, 'Expansion likely below',             minval = 0, maxval = 100, group = g10)
+
+rgGate = input.bool(false, 'Let the score suppress ⑥ and ⑨ alerts on consolidation days', group = g10,
+     tooltip = 'OFF by default and it should stay off until you have calibrated the weights above against your own sessions.' +
+     '\n\nWhen ON, first-presented-FVG retest/CE alerts and body-law grid signals are silenced on days scoring at or above the consolidation threshold. Drawings are unaffected.')
+
+
+// ==============================================================
+// INPUTS — DASHBOARD
+// ==============================================================
+g11 = 'Dashboard'
+useDash  = input.bool(true, 'Show regime dashboard', group = g11)
+dashMode = input.string('Trade', 'Detail', ['Trade', 'Diagnostic'], group = g11,
+     tooltip = 'TRADE — two lines of fact: the premarket range, and where price sits inside it. Nothing that requires interpretation, nothing unproven. This is the default because a readout you consult mid-session should not be asking you to weigh evidence.' +
+     '\n\nDIAGNOSTIC — the full ⑩ breakdown: every factor, its pass or fail, and the composite score. Useful when reviewing, too much while trading.')
+dashPos  = input.string('Top right', 'Position', ['Top right', 'Middle right', 'Bottom right', 'Top left', 'Bottom left'], group = g11)
+dashSize = input.string('small', 'Text size', ['tiny', 'small', 'normal'], group = g11)
+dashHist = input.int(0, 'History rows', minval = 0, maxval = 25, group = g11,
+     tooltip = 'A rolling log of prior sessions: premarket classification against the realised AM outcome. This is the calibration record, not a trading readout — leave it at 0 during the session and raise it when reviewing.' +
+     '\n\nHistory only accumulates over bars the chart has actually loaded.')
+dashStats = input.bool(true, 'Show calibration study', group = g11,
+     tooltip = 'Sorts every logged session by how directional its premarket was, splits them into four equal groups, and reports the MEDIAN realised AM efficiency of each.' +
+     '\n\nThis answers the question without anyone having to guess a threshold first. If a directional premarket really does imply a choppy morning, the column falls as you read down — and the bottom group, the most directional premarkets, sits clearly below the top one.' +
+     '\n\nIf the four numbers are flat, there is no effect to threshold and ⑩ should be switched off. A binary trending/not split cannot tell you that; it can only tell you about whatever cut you already chose.' +
+     '\n\nNeeds at least 8 completed sessions. A minute chart loads days; a 5-minute chart loads months.')
+dashBg   = input.color(#1e222dcc, 'Background', group = g11, inline = 'dsh')
+dashTxt  = input.color(#d1d4dc,   'Text',       group = g11, inline = 'dsh')
+
+
+// ==============================================================
+// INPUTS — SUSPENSION BLOCKS
+// ==============================================================
+g12 = '⑫ Suspension Blocks'
+useSP = input.bool(true, 'Enable suspension blocks', group = g12,
+     tooltip = 'A suspension block is an FVG carrying a volume imbalance at BOTH ends — the middle candle\'s body is gapped away from its neighbour\'s body above AND below.' +
+     '\n\nAn ordinary FVG leaves one span of unvisited price. A suspension block leaves three stacked spans with no body trade anywhere across them, which is why it tends to be defended harder on the return.' +
+     '\n\nDetected on the CHART timeframe, not sourced from 1m — a suspension block is a property of the candles you are looking at.' +
+     '\n\nThe test is independent of the master geometry switch: whether a gap IS a suspension block is a fact about the candles, so it does not change when you stop drawing the extension.')
+spScope = input.string('Trading windows only', 'Where to scan', ['Everywhere', 'RTH only', 'Trading windows only'], group = g12,
+     tooltip = 'TRADING WINDOWS — only inside an active ①②③ permit. Fewest blocks, all of them inside a window you actually trade.' +
+     '\n\nRTH — the whole regular session below.' +
+     '\n\nEVERYWHERE — includes overnight. Useful for study, noisy for trading.')
+spSess    = input.session('0930-1600', 'RTH session', group = g12, tooltip = 'New York time. Used only by the RTH scope.')
+spMinSize = input.float(0.0, 'Minimum gap size', minval = 0, step = 0.25, group = g12,
+     tooltip = 'Measured wick-to-wick on the FVG itself, before the volume imbalance is added — the same convention module ⑥ uses. 0 keeps every one.')
+spKeep    = input.int(8, 'Keep last N', minval = 1, maxval = 50, group = g12,
+     tooltip = 'Older blocks are deleted, drawings and all. These accumulate faster than session-scoped zones do.')
+spExtend  = input.int(30, 'Extend right (bars)', minval = 1, group = g12)
+spShowLb  = input.bool(true, 'Label', group = g12)
+spBullCol = input.color(#26a69a40, 'Bullish', group = g12, inline = 'spc')
+spBearCol = input.color(#ef535040, 'Bearish', group = g12, inline = 'spc')
+
+
+// ==============================================================
+// INPUTS — NEW DAY / NEW WEEK OPENING GAPS
+// ==============================================================
+g13 = '⑬ NDOG / NWOG'
+useNW = input.bool(true, 'New Week Opening Gap (NWOG)', group = g13,
+     tooltip = 'Friday\'s settlement print to Sunday\'s 18:00 open — the gap the whole week opens against.' +
+     '\n\nDrawn as a solid block and kept indefinitely. A filled gap is NOT retired: price returns to these long after the first pass, which is the whole reason they are worth carrying.' +
+     '\n\nICT\'s convention is to keep the last five on the chart.')
+nwKeep = input.int(5, 'Keep last N', minval = 1, maxval = 20, group = g13)
+
+useND = input.bool(true, 'New Day Opening Gap (NDOG)', group = g13,
+     tooltip = 'The prior session\'s settlement print to the new session\'s 18:00 open, for each trading day.' +
+     '\n\nSame treatment as the NWOG — solid block, kept whether or not it has been traded through.')
+ndKeep = input.int(5, 'Keep last N', minval = 1, maxval = 30, group = g13)
+ndMon  = input.bool(false, 'Let NDOG also claim Monday', group = g13,
+     tooltip = 'OFF by default. Monday\'s new-day gap IS the new-week gap — the same Friday-close to Sunday-open span — so leaving this off avoids drawing the identical block twice in two colours.' +
+     '\n\nTurn it on only if you have the NWOG disabled and still want the Monday gap.')
+
+ngSettle  = input.session('1600-1615', 'Settlement window', group = g13,
+     tooltip = 'New York time. The close side of the gap is the final print of this window, not the 17:00 session close.' +
+     '\n\nIf the window never prints — holiday, half day, a data hole — no gap is drawn for that day rather than one measured against a stale close.' +
+     '\n\nIntraday only. On daily and above the gap is taken from the previous bar\'s close to the current bar\'s open, which is close but not identical.')
+ngMinSize = input.float(0.0, 'Minimum gap size', minval = 0, step = 0.25, group = g13)
+ngShowCE  = input.bool(true,  'Consequent encroachment (50%)', group = g13)
+ngShowLb  = input.bool(true,  'Labels', group = g13)
+ngLblDate = input.bool(true,  'Include the date in the label', group = g13,
+     tooltip = 'These persist for weeks, so the label is often the only way to tell which one you are looking at.')
+ngLblSize = input.string('tiny', 'Label size', ['tiny', 'small', 'normal'], group = g13)
+
+nwFill = input.color(#ab47bc26, 'NWOG  fill', group = g13, inline = 'nw')
+nwEdge = input.color(#ab47bc80, 'edge',       group = g13, inline = 'nw')
+ndFill = input.color(#78909c26, 'NDOG  fill', group = g13, inline = 'nd')
+ndEdge = input.color(#78909c80, 'edge',       group = g13, inline = 'nd')
+ngCECol = input.color(#fdd835, 'CE line', group = g13, inline = 'ng2')
+ngTxtCol= input.color(#b2b5be, 'Label',   group = g13, inline = 'ng2')
+
+
+// ==============================================================
+// INPUTS — SILVER BULLET ENTRIES
+// ==============================================================
+g14 = '⑭ Silver Bullet Entries'
+useSBE  = input.bool(true, 'Enable Silver Bullet entry signals', group = g14,
+     tooltip = 'Puts an entry marker where the other modules line up, graded A+ / A / B, with blocked setups shown as a grey X.' +
+     '\n\nThree setups arm it:' +
+     '\n• RAID → FVG — liquidity taken, then an FVG forms the other way. A TFO displacement candle (④) makes it A+, a plain FVG is A.' +
+     '\n• RAID → IFVG — liquidity taken, then a body closes through an opposing FVG, inverting it. A+.' +
+     '\n• FIRST PRESENTED FVG FLIP — a body closes clean through today\'s ⑥ gap from one side to the other (inversion, or a reclaim after inversion). A+.' +
+     '\n\nThe entry is the RETEST of that zone inside the window. The raid and the zone may form a few minutes early — see below — but the retest must be inside the window.')
+sbProfile = input.string('Custom', 'Settings profile', ['Custom', 'Prop'], group = g14,
+     tooltip = 'CUSTOM — every ⑭ setting below applies as set.' +
+     '\n\nPROP — locks the tested prop-account setup and ignores the matching settings below: Window A only (10:00–11:00) · setup must form inside the window · IFVG and first-presented flips on · limit entry at the near edge · max 3 per window · stop beyond the sweep wick (flips: swing extreme) · 1-point buffer · 35-point target · no break-even · skip any setup whose stop is wider than 40 points · ORG gate on within 150 points · no new trades after 2 losses in a day.')
+sbProp = sbProfile == 'Prop'
+sbUseAIn = input.bool(true, 'Window A', group = g14, inline = 'sbA')
+sbWinA  = input.session('1000-1100', '', group = g14, inline = 'sbA')
+sbUseBIn = input.bool(true, 'Window B', group = g14, inline = 'sbB')
+sbWinB  = input.session('1400-1500', '', group = g14, inline = 'sbB')
+sbGraceIn = input.int(0, 'Setup may form this many minutes before the window', minval = 0, maxval = 60, group = g14,
+     tooltip = 'With 0, only setups that form entirely inside the window count. Raise it to also take raids and displacements that print at 09:57–10:00 with the retest after 10:00.' +
+     '\n\nDefault 0: on NQ 1m and 5m, setups formed inside the window tested better than ones allowed to form 10 minutes early.')
+sbRaidLb  = input.int(20, 'Raid — prior range (bars)', minval = 3, maxval = 200, group = g14,
+     tooltip = 'A raid is price trading beyond the extreme of this many bars. Any ⑤ liquidity sweep also counts.')
+sbRaidWin = input.int(15, 'Raid — must be within the last (bars)', minval = 1, maxval = 60, group = g14,
+     tooltip = 'How recent the raid must be when the FVG or inversion forms. The raid extreme is also the default stop.')
+sbMinGap  = input.float(0.0, 'Minimum FVG size', minval = 0, step = 0.25, group = g14)
+sbUseIFVGIn = input.bool(true, 'Allow IFVG entries', group = g14)
+sbUseFPIn = input.bool(true, 'Allow first-presented FVG flip entries', group = g14,
+     tooltip = 'Needs ⑥ enabled.')
+sbEntryAtIn = input.string('Proximal edge', 'Enter at', ['Proximal edge', 'CE (50%)'], group = g14,
+     tooltip = 'PROXIMAL — the near edge of the zone.\nCE — the 50% of the zone. Fewer fills, better price.')
+sbTriggerIn = input.string('Confirmed retest', 'Entry trigger', ['Confirmed retest', 'Limit on touch'], group = g14,
+     tooltip = 'CONFIRMED — the retest candle must reach the level AND close back out on the trade side of it. Entry is that candle\'s close, stop no tighter than its wick. This is the "bodies could not close through" read, and it stops thin zones whipsawing you in chop.' +
+     '\n\nLIMIT ON TOUCH — a resting limit at the level. Better price, but fills on retests that go on to close straight through the zone.')
+sbZoneMax = input.int(30, 'Setup expires after (bars)', minval = 3, maxval = 200, group = g14)
+sbMaxWinIn = input.int(3, 'Max signals per window', minval = 1, maxval = 10, group = g14)
+
+g14r = '⑭ Entries — risk and scoring'
+sbStopModeIn = input.string('Raid extreme', 'Stop at', ['Raid extreme', 'Zone far edge', 'Retest candle'], group = g14r,
+     tooltip = 'RAID EXTREME — beyond the wick that took the liquidity.\nZONE FAR EDGE — beyond the far side of the FVG. Tighter.' +
+     '\nRETEST CANDLE — just beyond the wick of the candle that retested the zone and closed back out. The tightest structural stop, for prop-firm risk limits. Confirmed entries only; a limit entry falls back to the far edge.' +
+     '\n\nFirst-presented flips have no raid, so they use their own stop setting below.')
+sbFpStopIn = input.string('Swing extreme', 'Stop — 1st FVG flips', ['Swing extreme', 'Zone far edge', 'Fixed points', 'Retest candle'], group = g14r,
+     tooltip = 'First-presented gaps are often only 5–15 points wide, so a stop at the far edge is very tight — and tight stops tested badly.' +
+     '\n\nSWING EXTREME — beyond the lowest low (long) or highest high (short) of the last N bars, never tighter than the far edge.' +
+     '\nZONE FAR EDGE — the original behaviour.\nFIXED POINTS — a set distance from the entry.' +
+     '\nRETEST CANDLE — just beyond the wick of the confirming retest candle.')
+sbFpSwing = input.int(10, 'Stop — flip swing lookback (bars)', minval = 2, maxval = 100, group = g14r)
+sbFpPts   = input.float(25.0, 'Stop — flip fixed distance (points)', minval = 1, step = 0.25, group = g14r)
+sbBufIn    = input.float(1.0, 'Stop buffer (points)', minval = 0, step = 0.25, group = g14r)
+sbTgtModeIn = input.string('Fixed points', 'Target', ['Fixed points', 'R multiple'], group = g14r)
+sbTgtPtsIn = input.float(30.0, 'Target — points', minval = 0.25, step = 0.25, group = g14r,
+     tooltip = 'Default 30: with the stop beyond the sweep wick, 30 points out-earned 10, 15 and 20 across NQ 1m / 2m / 3m / 5m in the exit grid, at a lower win rate.')
+sbTgtR     = input.float(1.0, 'Target — R multiple', minval = 0.1, step = 0.1, group = g14r)
+sbBEIn     = input.float(0.0, 'Stop to break-even after (points, 0 = off)', minval = 0, step = 0.25, group = g14r)
+sbBECandleIn = input.bool(false, 'Stop to break-even when the next candle closes in profit', group = g14r,
+     tooltip = 'The manual habit: once the first candle after entry closes in your favour, the stop goes to entry. A trade that then comes back is a scratch, not a loss.')
+sbMaxRiskIn = input.float(0.0, 'Skip if stop is wider than (points, 0 = off)', minval = 0, step = 0.25, group = g14r)
+sbDayLossIn = input.int(0, 'No new trades after this many losses in a day (0 = off)', minval = 0, maxval = 10, group = g14r,
+     tooltip = 'A daily loss guard for funded accounts. Counts taken trades that hit their stop on the current New York day.')
+sbMaxHold  = input.int(60, 'Close at market after (bars)', minval = 1, maxval = 500, group = g14r)
+
+g14g = '⑭ Entries — ORG gate and grading'
+sbGateIn  = input.bool(true, 'ORG gate — do not fade the draw to CE', group = g14g,
+     tooltip = 'While today\'s ⑦ opening range gap has NOT had its CE tagged, and price is within the distance below of that CE, entries AGAINST the draw are blocked.' +
+     '\n\nGap up → draw is DOWN to CE → longs blocked.\nGap down → draw is UP to CE → shorts blocked.' +
+     '\n\nOnce CE is tagged the objective is done and the gate lifts. Blocked setups are still drawn (grey X) and scored separately, so you can see whether the gate is earning its keep.' +
+     '\n\nNeeds ⑦ enabled.')
+sbCEProxIn = input.float(150.0, 'Gate applies within (points of CE)', minval = 1, step = 5, group = g14g)
+sbCaution = input.bool(true, 'Grade B when an opposing first-presented FVG is in the target path', group = g14g,
+     tooltip = 'A first-presented gap ahead of the trade is resistance. A short into a bullish ⑥ gap, or a long into a bearish one, sitting between entry and target is graded B.')
+
+g14d = '⑭ Entries — display'
+sbLines   = input.bool(true, 'Draw stop and target', group = g14d)
+sbShadow  = input.bool(true, 'Show blocked setups (grey X)', group = g14d)
+sbKeep    = input.int(40, 'Keep last N trades drawn', minval = 5, maxval = 150, group = g14d)
+sbStats   = input.bool(true, 'Scorecard', group = g14d,
+     tooltip = 'Every signal is followed to target, stop, break-even or timeout, and tallied by grade. A bar that touches both stop and target is scored a LOSS.' +
+     '\n\nFills assume a resting limit at the entry level. Covers loaded chart history only.')
+sbStatsPos= input.string('Bottom right', 'Scorecard position', ['Top right', 'Middle right', 'Bottom right', 'Top left', 'Bottom left'], group = g14d)
+sbDyn     = input.bool(true, 'Emit dynamic alert() with entry, stop and target', group = g14d)
+sbGrid    = input.bool(false, 'Exit grid (research)', group = g14d,
+     tooltip = 'Replays every TAKEN entry against 4 stop rules — as set, zone edge, retest-candle wick, and retest wick with break-even on the next candle — × 4 fixed targets (10 / 15 / 20 / 30 points) at the same time, so one chart load scores 16 exit combinations.' +
+     '\n\nEach cell shows net points and win %, then net points for the OLDER and NEWER half of the trades. A combination that only wins in one half is noise.' +
+     '\n\nBreak-even applies to the fourth row only. Loaded bars only.')
+sbGridMax = input.float(0.0, 'Grid — skip trades whose stop is wider than (points, 0 = off)', minval = 0, step = 1, group = g14d,
+     tooltip = 'Set this to your prop-firm stop limit. For each stop row, trades whose stop would be wider than this are left out of that row — skipped, not squeezed — and each cell shows how many trades remain.')
+sbGridPos = input.string('Bottom left', 'Grid position', ['Top right', 'Middle right', 'Top left', 'Bottom left'], group = g14d)
+sbGridSel = input.string('All taken', 'Grid — which trades', ['All taken', 'A+', 'A', 'B', '1st FVG flips'], group = g14d,
+     tooltip = 'Score only one grade, or only the first-presented flips. With "1st FVG flips" the top row is the flip stop you have set and the Zone edge row is the old far-edge stop, so one load compares the two.')
+sbColAP   = input.color(#00e676, 'A+', group = g14d, inline = 'sbc')
+sbColA    = input.color(#29b6f6, 'A',  group = g14d, inline = 'sbc')
+sbColB    = input.color(#ffca28, 'B',  group = g14d, inline = 'sbc')
+sbColX    = input.color(#9598a1, 'Blocked', group = g14d, inline = 'sbc')
+
+// --- effective ⑭ settings: the Prop profile overrides the inputs above ---
+sbUseA     = sbProp ? true             : sbUseAIn
+sbUseB     = sbProp ? false            : sbUseBIn
+sbGrace    = sbProp ? 0                : sbGraceIn
+sbUseIFVG  = sbProp ? true             : sbUseIFVGIn
+sbUseFP    = sbProp ? true             : sbUseFPIn
+sbEntryAt  = sbProp ? 'Proximal edge'  : sbEntryAtIn
+sbTrigger  = sbProp ? 'Limit on touch' : sbTriggerIn
+sbMaxWin   = sbProp ? 3                : sbMaxWinIn
+sbStopMode = sbProp ? 'Raid extreme'   : sbStopModeIn
+sbFpStop   = sbProp ? 'Swing extreme'  : sbFpStopIn
+sbBuf      = sbProp ? 1.0              : sbBufIn
+sbTgtMode  = sbProp ? 'Fixed points'   : sbTgtModeIn
+sbTgtPts   = sbProp ? 35.0             : sbTgtPtsIn
+sbBE       = sbProp ? 0.0              : sbBEIn
+sbBECandle = sbProp ? false            : sbBECandleIn
+sbMaxRisk  = sbProp ? 40.0             : sbMaxRiskIn
+sbDayLoss  = sbProp ? 2                : sbDayLossIn
+sbGate     = sbProp ? true             : sbGateIn
+sbCEProx   = sbProp ? 150.0            : sbCEProxIn
+
+
+// ==============================================================
+// INPUTS — FVG GEOMETRY (volume imbalance)
+// ==============================================================
+gVI = 'FVG Geometry'
+incVI = input.bool(true, 'Extend FVGs to include adjacent volume imbalance', group = gVI,
+     tooltip = 'An FVG boundary is a WICK. Where the neighbouring candle body does not cover the space between that wick and the body edge, ' +
+     'the leftover space is a volume imbalance and is part of the same inefficiency.' +
+     '\n\nEach edge moves from the wick to the neighbouring candle BODY extreme when a body gap exists between the two candles. Bearish mirrors bullish.' +
+     '\n\nA boundary is only ever widened, never narrowed.' +
+     '\n\nThis is the master switch. It always governs the First Presented FVG (⑥), the displacement marker (④) and Suspension Blocks (⑫). Whether it also reaches modules ①②③ is controlled below.')
+uniFVG = input.bool(false, 'Apply the same geometry to ①②③', group = gVI,
+     tooltip = 'OFF by default because it changes zones you have already been looking at.' +
+     '\n\nThe FVG zones in the Venom and Silver Bullet modules come from the TFlab library, which draws them wick-to-wick with no volume imbalance. The result is that the SAME three-candle gap gets different boundaries depending on which module happens to draw it.' +
+     '\n\nTurn this on to widen the library FVGs the same way ④⑥⑫ are widened, so every FVG on the chart obeys one geometry.' +
+     '\n\nHOW IT IS APPLIED — the library is left to do its own detection and filtering; only the coordinates are adjusted, and only where the library actually returned a raw wick. Each edge is verified against the wick it should be before being widened, and an edge that does not match is left exactly as the library drew it. So a mismatch degrades to the old behaviour rather than to a wrong box.' +
+     '\n\nRun it beside the old geometry for a few sessions before trusting it. The diagnostic below reports whether it is engaging.')
+viDiag = input.bool(false, 'Show geometry diagnostic', group = gVI,
+     tooltip = 'A small counter, top left: how many library FVGs were offered to the widening logic, how many had an edge actually widened, and how many were rejected because the edge did not verify.' +
+     '\n\nIf OFFERED is climbing but WIDENED stays at zero, the override is not engaging and the toggle above is doing nothing — tell me and I will look at the bar convention.' +
+     '\n\nCounts are for the loaded chart history, not all time.')
+
+
+// ==============================================================
+// FVG GEOMETRY HELPERS
+//   Offsets are relative to the CONFIRMING bar: [2] = first candle,
+//   [1] = displacement candle, [0] = third/confirming candle.
+//   An FVG edge is a wick. Where the neighbouring candle's BODY does
+//   not reach that wick, the leftover space is a volume imbalance and
+//   belongs to the same inefficiency. Edges only ever widen.
+// ==============================================================
+//   Edges are compared against BODY extremes, not open/close directly —
+//   a candle's body top is max(open, close) whichever way it closed.
+//   Using close[] alone silently assumes candle direction and produces
+//   the wrong edge on an opposite-coloured candle.
+//   Each helper also reports the two imbalances it found:
+//     viHi — body gap at the UPPER end of the FVG
+//     viLo — body gap at the LOWER end
+//   Both true at once is a SUSPENSION BLOCK (⑫). The flags are computed
+//   OUTSIDE the incVI gate on purpose: whether a gap carries an imbalance
+//   is a fact about the candles, and must not change when the user stops
+//   drawing the extension.
+fvgBullEdges() =>
+    bLo0 = math.min(open,    close)
+    bHi1 = math.max(open[1], close[1])
+    bLo1 = math.min(open[1], close[1])
+    bHi2 = math.max(open[2], close[2])
+    viLo = bLo1 > bHi2                             // body gap below
+    viHi = bLo0 > bHi1                             // body gap above
+    bot  = incVI and viLo ? bHi2 : high[2]         // -> widen down
+    top  = incVI and viHi ? bLo0 : low[0]          // -> widen up
+    [top, bot, viHi, viLo]
+
+fvgBearEdges() =>
+    bHi0 = math.max(open,    close)
+    bLo1 = math.min(open[1], close[1])
+    bHi1 = math.max(open[1], close[1])
+    bLo2 = math.min(open[2], close[2])
+    viHi = bLo2 > bHi1                             // body gap above
+    viLo = bHi0 < bLo1                             // body gap below
+    top  = incVI and viHi ? bLo2 : low[2]          // -> widen up
+    bot  = incVI and viLo ? bHi0 : high[0]         // -> widen down
+    [top, bot, viHi, viLo]
+
+
+// ==============================================================
+// LIBRARY FVG GEOMETRY OVERRIDE  (modules ①②③)
+//   The TFlab detector returns a DISTAL (far) and PROXIMAL (near) edge
+//   drawn wick-to-wick. We keep its detection and its FVG Filter and
+//   adjust only the coordinates, so ①②③ agree with ④⑥⑫ about where an
+//   FVG's boundaries are.
+//
+//   Demand : distal = lower edge = high[2] , proximal = upper edge = low[0]
+//   Supply : distal = upper edge = low[2]  , proximal = lower edge = high[0]
+//
+//   We do NOT assume the detector's bar convention. Each edge is checked
+//   against the raw wick it ought to be; only a verified edge is widened,
+//   and an unverified one is passed through untouched. A convention change
+//   in the library therefore degrades to the old geometry rather than to a
+//   silently wrong box. The FVG Filter moves the proximal inward, so a
+//   filtered proximal simply fails its check and is left alone — the
+//   distal still widens.
+// ==============================================================
+//   Diagnostic counters are RETURNED rather than incremented in place —
+//   Pine forbids assigning to a global from inside a function, so the
+//   accumulation happens at global scope after the call.
+viBullOverride(bool cond, float dIn, float pIn) =>
+    [t, b, viHi, viLo] = fvgBullEdges()
+    dOK  = math.abs(dIn - high[2]) <= syminfo.mintick
+    pOK  = math.abs(pIn - low[0])  <= syminfo.mintick
+    on   = cond and uniFVG and incVI
+    dOut = on and dOK ? b : dIn
+    pOut = on and pOK ? t : pIn
+    seen = cond and uniFVG and barstate.isconfirmed
+    // viHi / viLo are deliberately unused here — suspension blocks are
+    // scanned once, by ⑫, rather than re-derived at every FVG call site.
+    [dOut, pOut,
+     seen,
+     seen and (dOut != dIn or pOut != pIn),
+     seen and (not dOK or not pOK)]
+
+viBearOverride(bool cond, float dIn, float pIn) =>
+    [t, b, viHi, viLo] = fvgBearEdges()
+    dOK  = math.abs(dIn - low[2])  <= syminfo.mintick
+    pOK  = math.abs(pIn - high[0]) <= syminfo.mintick
+    on   = cond and uniFVG and incVI
+    dOut = on and dOK ? t : dIn
+    pOut = on and pOK ? b : pIn
+    seen = cond and uniFVG and barstate.isconfirmed
+    // viHi / viLo are deliberately unused here — suspension blocks are
+    // scanned once, by ⑫, rather than re-derived at every FVG call site.
+    [dOut, pOut,
+     seen,
+     seen and (dOut != dIn or pOut != pIn),
+     seen and (not dOK or not pOK)]
+
+
+// ==============================================================
+// SESSION RESOLUTION
+// ==============================================================
+orA = presetA == 'Silver Bullet AM'     ? '0900-1000' :
+      presetA == 'Silver Bullet PM'     ? '1300-1400' :
+      presetA == 'London Silver Bullet' ? '0200-0300' : custORA
+tsA = presetA == 'Silver Bullet AM'     ? '1000-1100' :
+      presetA == 'Silver Bullet PM'     ? '1400-1500' :
+      presetA == 'London Silver Bullet' ? '0300-0400' : custTA
+
+orB = presetB == 'Silver Bullet AM'     ? '0900-1000' :
+      presetB == 'Silver Bullet PM'     ? '1300-1400' :
+      presetB == 'London Silver Bullet' ? '0200-0300' : custORB
+tsB = presetB == 'Silver Bullet AM'     ? '1000-1100' :
+      presetB == 'Silver Bullet PM'     ? '1400-1500' :
+      presetB == 'London Silver Bullet' ? '0300-0400' : custTB
+
+// int() wrap is required: math.sign() yields `series float`, and the
+// helper functions below declare their session flag as `series int`.
+inORV = int(math.sign(nz(time(timeframe.period, orV, TZ))))
+inTV  = int(math.sign(nz(time(timeframe.period, tsV, TZ))))
+inORA = int(math.sign(nz(time(timeframe.period, orA, TZ))))
+inTA  = int(math.sign(nz(time(timeframe.period, tsA, TZ))))
+inORB = int(math.sign(nz(time(timeframe.period, orB, TZ))))
+inTB  = int(math.sign(nz(time(timeframe.period, tsB, TZ))))
+
+one_hour = 60 * 60 * 1000
+ATR      = ta.atr(55)
+
+
+// ==============================================================
+// OPENING RANGE HIGH / LOW
+//   FIX #5: the source used `On_Session[1] == 1 or On_Session == 1`,
+//   which let the FIRST bar of the trading window extend the opening
+//   range. That made a break on that bar impossible to detect, because
+//   High_OR had already absorbed the bar's own high.
+// ==============================================================
+orHighLow(int onSession) =>
+    var float hi = na
+    var float lo = na
+    if onSession == 1 and onSession[1] == 0
+        hi := high
+        lo := low
+    else if onSession == 1
+        hi := math.max(high, hi)
+        lo := math.min(low, lo)
+    [hi, lo]
+
+[High_OR_V, Low_OR_V] = orHighLow(inORV)
+[High_OR_A, Low_OR_A] = orHighLow(inORA)
+[High_OR_B, Low_OR_B] = orHighLow(inORB)
+
+
+// ==============================================================
+// SESSION FRAME DRAWING
+// ==============================================================
+drawFrame(bool orStart, bool tStart, bool tEnd, float hiOR, float loOR, string txt, color col, bool show, float atr) =>
+    var line  lOR = na
+    var line  lTS = na
+    var line  lTE = na
+    var line  lHi = na
+    var line  lLo = na
+    var label lbl = na
+    if show
+        if orStart
+            lOR := line.new(time, low, time, low + atr, xloc = xloc.bar_time, extend = extend.both, style = line.style_dashed, color = col)
+        if tStart
+            lTS := line.new(time, low, time, low + atr, xloc = xloc.bar_time, extend = extend.both, style = line.style_dashed, color = col)
+            lHi := line.new(time, hiOR, time + one_hour, hiOR, xloc = xloc.bar_time, style = line.style_dotted, color = col)
+            lLo := line.new(time, loOR, time + one_hour, loOR, xloc = xloc.bar_time, style = line.style_dotted, color = col)
+            lbl := label.new(time, high + atr * 3, txt, xloc = xloc.bar_time, color = #00000000, textcolor = col, style = label.style_label_down, size = size.small)
+        if tEnd
+            lTE := line.new(time, low, time, low + atr, xloc = xloc.bar_time, extend = extend.both, style = line.style_dashed, color = col)
+            if not na(lHi)
+                lHi.set_x2(time)
+                lLo.set_x2(time)
+    // Same reason as drawLevel: keep the `if` a statement, not the return.
+    true
+
+drawFrame(inORV > inORV[1], inTV > inTV[1], inTV < inTV[1], High_OR_V, Low_OR_V, orV + ' → ' + tsV + '\nVenom NY', frameColV, useV and showFrameV, ATR)
+drawFrame(inORA > inORA[1], inTA > inTA[1], inTA < inTA[1], High_OR_A, Low_OR_A, orA + ' → ' + tsA + '\n' + presetA, frameColA, useA and showFrameA, ATR)
+drawFrame(inORB > inORB[1], inTB > inTB[1], inTB < inTB[1], High_OR_B, Low_OR_B, orB + ' → ' + tsB + '\n' + presetB, frameColB, useB and showFrameB, ATR)
+
+
+// ==============================================================
+// OPENING RANGE BREAK STATE
+// ==============================================================
+orBreak(int inT, float hiOR, float loOR) =>
+    var bool hiBreak = false
+    var bool loBreak = false
+    if inT == 0
+        hiBreak := false
+        loBreak := false
+    if inT == 1
+        if high > hiOR
+            hiBreak := true
+        if low < loOR
+            loBreak := true
+    [hiBreak, loBreak]
+
+[HiBreakV, LoBreakV] = orBreak(inTV, High_OR_V, Low_OR_V)
+[HiBreakA, LoBreakA] = orBreak(inTA, High_OR_A, Low_OR_A)
+[HiBreakB, LoBreakB] = orBreak(inTB, High_OR_B, Low_OR_B)
+
+Cond_High_V = useV and inTV == 1 and HiBreakV and not HiBreakV[1] and not LoBreakV
+Cond_Low_V  = useV and inTV == 1 and LoBreakV and not LoBreakV[1] and not HiBreakV
+Cond_High_A = useA and inTA == 1 and HiBreakA and not HiBreakA[1] and not LoBreakA
+Cond_Low_A  = useA and inTA == 1 and LoBreakA and not LoBreakA[1] and not HiBreakA
+Cond_High_B = useB and inTB == 1 and HiBreakB and not HiBreakB[1] and not LoBreakB
+Cond_Low_B  = useB and inTB == 1 and LoBreakB and not LoBreakB[1] and not HiBreakB
+
+
+// ==============================================================
+// FVG DETECTION (shared — session independent)
+// ==============================================================
+[DConditionFVG, DDFVG_raw, DPFVG_raw, BarDFVG, SConditionFVG, SDFVG_raw, SPFVG_raw, BarSFVG] =
+     FVG.FVGDetector(PFVGFilter ? 'On' : 'Off', PFVGFilterType, false, false)
+
+// Volume-imbalance geometry for ①②③. A no-op unless `uniFVG` is on; see
+// the override helpers above for why each edge is verified before it moves.
+[DDFVG, DPFVG, dSeen, dWide, dRef] = viBullOverride(DConditionFVG, DDFVG_raw, DPFVG_raw)
+[SDFVG, SPFVG, sSeen, sWide, sRef] = viBearOverride(SConditionFVG, SDFVG_raw, SPFVG_raw)
+
+var int viOffered = 0
+var int viWidened = 0
+var int viRefused = 0
+viOffered += (dSeen ? 1 : 0) + (sSeen ? 1 : 0)
+viWidened += (dWide ? 1 : 0) + (sWide ? 1 : 0)
+viRefused += (dRef  ? 1 : 0) + (sRef  ? 1 : 0)
+
+
+// ==============================================================
+// CISD ENGINE
+//   One instance per call site — Pine gives each call site its own
+//   `var` state, so Venom / Window A / Window B run independently.
+// ==============================================================
+cisdEngine(bool condHigh, bool condLow, int inT,
+     bool dCond, float dD, float dP, int dBar,
+     bool sCond, float sD, float sP, int sBar,
+     int barBack, int staleBars, string lbl,
+     bool aShow, bool hShow, bool lShow,
+     color hNameCol, color lNameCol, color hLineCol, color lLineCol, float atr) =>
+
+    var float CISDLvLP_L    = 0.0
+    var float CISDLvLP_H    = 0.0
+    var int   CISDLvLI_L    = 0
+    var int   CISDLvLI_H    = 0
+    // FIX #6: gate the reset logic until a level actually exists.
+    // Without this, CISDLvLP_L == 0.0 makes `close >= CISDLvLP_L` true on
+    // chart-left and fires a phantom bullish trigger / order block.
+    var bool  HasLevel_H    = false
+    var bool  HasLevel_L    = false
+    var bool  Permit_HSet   = true
+    var bool  Permit_LSet   = true
+    var bool  Permit_HReset = true
+    var bool  Permit_LReset = true
+
+    var line  CISD_LineH = na
+    var line  CISD_LineL = na
+    var label CISD_NameH = na
+    var label CISD_NameL = na
+    var label CISD_ShapH = na
+    var label CISD_ShapL = na
+
+    var bool  Bear_Trigger     = false
+    var bool  Bull_Trigger     = false
+    var bool  FVG_Bear_Trigger = false
+    var bool  FVG_Bull_Trigger = false
+
+    var int   Bear_FVG   = 0
+    var float Bear_FVG_D = 0.0
+    var float Bear_FVG_P = 0.0
+    var int   Bull_FVG   = 0
+    var float Bull_FVG_D = 0.0
+    var float Bull_FVG_P = 0.0
+
+    var FVG_Bear_D = array.new_float()
+    var FVG_Bear_P = array.new_float()
+    var FVG_Bear_I = array.new_int()
+    var FVG_Bull_D = array.new_float()
+    var FVG_Bull_P = array.new_float()
+    var FVG_Bull_I = array.new_int()
+
+    var float High_OB = na
+    var float Low_OB  = na
+    var int   Bear_I  = na
+    var int   Bull_I  = na
+
+    Body = close - open
+
+    // --- running session extreme, anchors the order block ---
+    if inT == 1 and inT[1] == 0
+        High_OB := high
+        Bear_I  := bar_index
+        Low_OB  := low
+        Bull_I  := bar_index
+    if inT[1] == 1
+        if high > High_OB
+            High_OB := high
+            Bear_I  := bar_index
+        if low < Low_OB
+            Low_OB := low
+            Bull_I := bar_index
+
+    // --- bearish CISD level (set on a high-side sweep of the OR) ---
+    if condHigh
+        Permit_HSet := true
+        for i = 1 to barBack by 1
+            if Body[i] < 0 and Permit_HSet
+                Permit_HReset := true
+                HasLevel_H    := true
+                CISDLvLP_H := i > 1 ? math.min(open[i - 1], open[i - 2]) : open[i - 1]
+                CISDLvLI_H := i > 1 ? (math.min(open[i - 1], open[i - 2]) == open[i - 2] ? bar_index[i - 2] : bar_index[i - 1]) : bar_index[i - 1]
+                if aShow and hShow
+                    CISD_LineH := line.new(CISDLvLI_H, CISDLvLP_H, bar_index, CISDLvLP_H, color = hLineCol, style = line.style_dotted)
+                    CISD_NameH := label.new(CISDLvLI_H + 1, low[bar_index - CISDLvLI_H] - atr * 0.3, lbl, color = #00000000, style = label.style_label_upper_left, textcolor = hNameCol, size = size.tiny)
+                Permit_HSet := false
+
+    if Permit_HReset and HasLevel_H and inT == 1
+        if sCond
+            FVG_Bear_I.push(sBar)
+            FVG_Bear_D.push(sD)
+            FVG_Bear_P.push(sP)
+        if FVG_Bear_I.size() > 0
+            if high > FVG_Bear_P.get(FVG_Bear_I.size() - 1)
+                FVG_Bear_I.remove(FVG_Bear_I.size() - 1)
+                FVG_Bear_D.remove(FVG_Bear_D.size() - 1)
+                FVG_Bear_P.remove(FVG_Bear_P.size() - 1)
+        if close >= CISDLvLP_H and (bar_index - CISDLvLI_H) <= staleBars and not na(CISD_LineH)
+            CISD_LineH.set_x2(bar_index + 1)
+        if close <= CISDLvLP_H and (bar_index - CISDLvLI_H) <= staleBars
+            Permit_HReset := false
+            if aShow and hShow
+                CISD_ShapH := label.new(bar_index, high + atr * 0.6, '', color = hNameCol, style = label.style_triangledown, size = size.tiny)
+
+    // --- bullish CISD level (set on a low-side sweep of the OR) ---
+    if condLow
+        Permit_LSet := true
+        for i = 1 to barBack by 1
+            if Body[i] > 0 and Permit_LSet
+                Permit_LReset := true
+                HasLevel_L    := true
+                CISDLvLP_L := i > 1 ? math.max(open[i - 1], open[i - 2]) : open[i - 1]
+                CISDLvLI_L := i > 1 ? (math.max(open[i - 1], open[i - 2]) == open[i - 2] ? bar_index[i - 2] : bar_index[i - 1]) : bar_index[i - 1]
+                if aShow and lShow
+                    CISD_LineL := line.new(CISDLvLI_L, CISDLvLP_L, bar_index, CISDLvLP_L, color = lLineCol, style = line.style_dotted)
+                    CISD_NameL := label.new(CISDLvLI_L + 1, high[bar_index - CISDLvLI_L] + atr * 0.6, lbl, color = #00000000, style = label.style_label_lower_right, textcolor = lNameCol, size = size.tiny)
+                Permit_LSet := false
+
+    if Permit_LReset and HasLevel_L and inT == 1
+        if dCond
+            FVG_Bull_I.push(dBar)
+            FVG_Bull_D.push(dD)
+            FVG_Bull_P.push(dP)
+        if FVG_Bull_I.size() > 0
+            if low < FVG_Bull_P.get(FVG_Bull_I.size() - 1)
+                FVG_Bull_I.remove(FVG_Bull_I.size() - 1)
+                FVG_Bull_D.remove(FVG_Bull_D.size() - 1)
+                FVG_Bull_P.remove(FVG_Bull_P.size() - 1)
+        if close <= CISDLvLP_L and (bar_index - CISDLvLI_L) <= staleBars and not na(CISD_LineL)
+            CISD_LineL.set_x2(bar_index + 1)
+        if close >= CISDLvLP_L and (bar_index - CISDLvLI_L) <= staleBars
+            Permit_LReset := false
+            if aShow and lShow
+                CISD_ShapL := label.new(bar_index, low - atr * 0.6, '', color = lNameCol, style = label.style_triangleup, size = size.tiny)
+
+    // --- latch the most recent unmitigated FVG ---
+    // FIX #2: the source had `... or (ta.change(size() > 0) and size() > 0)`.
+    // The right operand is a strict subset of the left, so it could never
+    // change the result, and ta.change() inside a conditional scope does not
+    // maintain a valid series anyway.
+    if inT == 1
+        if FVG_Bull_I.size() > 0
+            Bull_FVG   := FVG_Bull_I.get(FVG_Bull_I.size() - 1)
+            Bull_FVG_D := FVG_Bull_D.get(FVG_Bull_D.size() - 1)
+            Bull_FVG_P := FVG_Bull_P.get(FVG_Bull_P.size() - 1)
+        if FVG_Bear_I.size() > 0
+            Bear_FVG   := FVG_Bear_I.get(FVG_Bear_I.size() - 1)
+            Bear_FVG_D := FVG_Bear_D.get(FVG_Bear_D.size() - 1)
+            Bear_FVG_P := FVG_Bear_P.get(FVG_Bear_P.size() - 1)
+
+    // --- edge-detect the CISD confirmation ---
+    if Permit_HReset[1] and not Permit_HReset
+        Bear_Trigger     := true
+        FVG_Bear_Trigger := FVG_Bear_I.size() > 0 and Bear_FVG != 0
+    else
+        Bear_Trigger     := false
+        FVG_Bear_Trigger := false
+
+    if Permit_LReset[1] and not Permit_LReset
+        Bull_Trigger     := true
+        FVG_Bull_Trigger := FVG_Bull_I.size() > 0 and Bull_FVG != 0
+    else
+        Bull_Trigger     := false
+        FVG_Bull_Trigger := false
+
+    // --- end of session reset ---
+    if inT[1] == 0 and inT[2] == 1
+        Bear_FVG   := 0
+        Bear_FVG_D := 0.0
+        Bear_FVG_P := 0.0
+        Bull_FVG   := 0
+        Bull_FVG_D := 0.0
+        Bull_FVG_P := 0.0
+        High_OB    := na
+        Low_OB     := na
+        Bear_I     := na
+        Bull_I     := na
+        HasLevel_H := false
+        HasLevel_L := false
+        FVG_Bear_D.clear()
+        FVG_Bear_P.clear()
+        FVG_Bear_I.clear()
+        FVG_Bull_D.clear()
+        FVG_Bull_P.clear()
+        FVG_Bull_I.clear()
+
+    [Bull_Trigger, Bear_Trigger, FVG_Bull_Trigger, FVG_Bear_Trigger,
+     Bull_FVG, Bear_FVG, Bull_FVG_D, Bear_FVG_D, Bull_FVG_P, Bear_FVG_P, Bull_I, Bear_I]
+
+
+// ==============================================================
+// ① VENOM NY PIPELINE
+// ==============================================================
+[BullTrigV, BearTrigV, FvgBullTrigV, FvgBearTrigV, BullFvgV, BearFvgV, BullFvgDV, BearFvgDV, BullFvgPV, BearFvgPV, BullIV, BearIV] =
+     cisdEngine(Cond_High_V, Cond_Low_V, useV ? inTV : 0,
+     DConditionFVG, DDFVG, DPFVG, BarDFVG, SConditionFVG, SDFVG, SPFVG, BarSFVG,
+     BarBackCheck, staleV, 'CISD Venom',
+     CISD_AShow, CISD_HShow, CISD_LShow, CISD_HNColor, CISD_LNColor, CISD_HLColor, CISD_LLColor, ATR)
+
+[BuV_Xd1, BuV_Xd2, BuV_Yd12, BuV_Xp1, BuV_Xp2, BuV_Yp12] =
+     Refiner.OBRefiner('Demand', Refine ? 'On' : 'Off', RefineMe, BullTrigV, BullIV)
+[BeV_Xd1, BeV_Xd2, BeV_Yd12, BeV_Xp1, BeV_Xp2, BeV_Yp12] =
+     Refiner.OBRefiner('Supply', Refine ? 'On' : 'Off', RefineMe, BearTrigV, BearIV)
+
+Drawing.OBDrawing('Demand', BullTrigV,    BuV_Yd12,  BuV_Yp12,  BuV_Xd1,  useV and inTV == 1, extV, MLOB,  MLOB,  true, false, DOBShow,  false, DOBColor,  #ffffff00)
+Drawing.OBDrawing('Supply', BearTrigV,    BeV_Yd12,  BeV_Yp12,  BeV_Xd1,  useV and inTV == 1, extV, MLOB,  MLOB,  true, false, SOBShow,  false, SOBColor,  #ffffff00)
+Drawing.OBDrawing('Demand', FvgBullTrigV, BullFvgDV, BullFvgPV, BullFvgV, useV and inTV == 1, extV, MLFVG, MLFVG, true, false, DFVGShow, false, DFVGColor, #ffffff00)
+Drawing.OBDrawing('Supply', FvgBearTrigV, BearFvgDV, BearFvgPV, BearFvgV, useV and inTV == 1, extV, MLFVG, MLFVG, true, false, SFVGShow, false, SFVGColor, #ffffff00)
+
+
+// ==============================================================
+// ② SILVER BULLET — WINDOW A PIPELINE
+// ==============================================================
+[BullTrigA, BearTrigA, FvgBullTrigA, FvgBearTrigA, BullFvgA, BearFvgA, BullFvgDA, BearFvgDA, BullFvgPA, BearFvgPA, BullIA, BearIA] =
+     cisdEngine(Cond_High_A, Cond_Low_A, useA ? inTA : 0,
+     DConditionFVG, DDFVG, DPFVG, BarDFVG, SConditionFVG, SDFVG, SPFVG, BarSFVG,
+     BarBackCheck, staleSB, 'CISD A',
+     CISD_AShow, CISD_HShow, CISD_LShow, CISD_HNColor, CISD_LNColor, CISD_HLColor, CISD_LLColor, ATR)
+
+[BuA_Xd1, BuA_Xd2, BuA_Yd12, BuA_Xp1, BuA_Xp2, BuA_Yp12] =
+     Refiner.OBRefiner('Demand', Refine ? 'On' : 'Off', RefineMe, BullTrigA, BullIA)
+[BeA_Xd1, BeA_Xd2, BeA_Yd12, BeA_Xp1, BeA_Xp2, BeA_Yp12] =
+     Refiner.OBRefiner('Supply', Refine ? 'On' : 'Off', RefineMe, BearTrigA, BearIA)
+
+Drawing.OBDrawing('Demand', BullTrigA,    BuA_Yd12,  BuA_Yp12,  BuA_Xd1,  useA and inTA == 1, extSB, MLOB,  MLOB,  true, false, DOBShow,  false, DOBColor,  #ffffff00)
+Drawing.OBDrawing('Supply', BearTrigA,    BeA_Yd12,  BeA_Yp12,  BeA_Xd1,  useA and inTA == 1, extSB, MLOB,  MLOB,  true, false, SOBShow,  false, SOBColor,  #ffffff00)
+Drawing.OBDrawing('Demand', FvgBullTrigA, BullFvgDA, BullFvgPA, BullFvgA, useA and inTA == 1, extSB, MLFVG, MLFVG, true, false, DFVGShow, false, DFVGColor, #ffffff00)
+Drawing.OBDrawing('Supply', FvgBearTrigA, BearFvgDA, BearFvgPA, BearFvgA, useA and inTA == 1, extSB, MLFVG, MLFVG, true, false, SFVGShow, false, SFVGColor, #ffffff00)
+
+
+// ==============================================================
+// ③ SILVER BULLET — WINDOW B PIPELINE
+// ==============================================================
+[BullTrigB, BearTrigB, FvgBullTrigB, FvgBearTrigB, BullFvgB, BearFvgB, BullFvgDB, BearFvgDB, BullFvgPB, BearFvgPB, BullIB, BearIB] =
+     cisdEngine(Cond_High_B, Cond_Low_B, useB ? inTB : 0,
+     DConditionFVG, DDFVG, DPFVG, BarDFVG, SConditionFVG, SDFVG, SPFVG, BarSFVG,
+     BarBackCheck, staleSB, 'CISD B',
+     CISD_AShow, CISD_HShow, CISD_LShow, CISD_HNColor, CISD_LNColor, CISD_HLColor, CISD_LLColor, ATR)
+
+[BuB_Xd1, BuB_Xd2, BuB_Yd12, BuB_Xp1, BuB_Xp2, BuB_Yp12] =
+     Refiner.OBRefiner('Demand', Refine ? 'On' : 'Off', RefineMe, BullTrigB, BullIB)
+[BeB_Xd1, BeB_Xd2, BeB_Yd12, BeB_Xp1, BeB_Xp2, BeB_Yp12] =
+     Refiner.OBRefiner('Supply', Refine ? 'On' : 'Off', RefineMe, BearTrigB, BearIB)
+
+Drawing.OBDrawing('Demand', BullTrigB,    BuB_Yd12,  BuB_Yp12,  BuB_Xd1,  useB and inTB == 1, extSB, MLOB,  MLOB,  true, false, DOBShow,  false, DOBColor,  #ffffff00)
+Drawing.OBDrawing('Supply', BearTrigB,    BeB_Yd12,  BeB_Yp12,  BeB_Xd1,  useB and inTB == 1, extSB, MLOB,  MLOB,  true, false, SOBShow,  false, SOBColor,  #ffffff00)
+Drawing.OBDrawing('Demand', FvgBullTrigB, BullFvgDB, BullFvgPB, BullFvgB, useB and inTB == 1, extSB, MLFVG, MLFVG, true, false, DFVGShow, false, DFVGColor, #ffffff00)
+Drawing.OBDrawing('Supply', FvgBearTrigB, BearFvgDB, BearFvgPB, BearFvgB, useB and inTB == 1, extSB, MLFVG, MLFVG, true, false, SFVGShow, false, SFVGColor, #ffffff00)
+
+
+// ==============================================================
+// ④ DISPLACEMENT MODULE (TFO)
+//   [2] = bar before displacement, [1] = displacement candle, [0] = confirm
+//   FIX #7: newBull/newBear read low[0]/high[0] — the still-forming bar.
+//   Everything is now gated on barstate.isconfirmed so the yellow bar and
+//   the alert cannot appear and then vanish intrabar.
+// ==============================================================
+inAnyWindow = (useV and inTV == 1) or (useA and inTA == 1) or (useB and inTB == 1)
+dispGate    = showDisp and (not dispWindowOnly or inAnyWindow)
+
+crD  = dispType == 'Open to Close' ? math.abs(open - close) : high - low
+stdD = ta.stdev(crD, stdLen) * stdX
+
+dispBull = close[1] > open[1] and crD[1] > stdD[1]
+dispBear = close[1] < open[1] and crD[1] > stdD[1]
+newBullD = dispBull and high[2] < low[0]      // gap: bot = high[2], top = low[0]
+newBearD = dispBear and low[2]  > high[0]     // gap: bot = high[0], top = low[2]
+
+confBullD = barstate.isconfirmed and dispGate and newBullD
+confBearD = barstate.isconfirmed and dispGate and newBearD
+confDisp  = confBullD or confBearD
+
+barcolor(confDisp ? dispColor : na, offset = -1)
+
+[dispBullTop, dispBullBot, dispBullVIH, dispBullVIL] = fvgBullEdges()
+[dispBearTop, dispBearBot, dispBearVIH, dispBearVIL] = fvgBearEdges()
+
+// A displacement gap that carries an imbalance at BOTH ends is also a
+// suspension block (⑫). Same zone, drawn with a heavier border so the two
+// modules do not disagree about what you are looking at.
+dispBullSusp = dispBullVIH and dispBullVIL
+dispBearSusp = dispBearVIH and dispBearVIL
+
+if showDispFvg
+    if confBullD
+        box.new(bar_index - 2, dispBullTop, bar_index + barsRight, dispBullBot, border_color = color.new(color.green, 40), bgcolor = cBullD, border_width = dispBullSusp ? 2 : 1)
+    if confBearD
+        box.new(bar_index - 2, dispBearTop, bar_index + barsRight, dispBearBot, border_color = color.new(color.red, 40), bgcolor = cBearD, border_width = dispBearSusp ? 2 : 1)
+
+
+// ==============================================================
+// ⑤ LIQUIDITY LEVELS & SWEEP DETECTION
+// ==============================================================
+lblSize = liqLblSize == 'tiny' ? size.tiny : liqLblSize == 'small' ? size.small : size.normal
+
+// --- prior completed higher-timeframe extremes ---
+// `high[1]` + lookahead_on is the standard non-repainting idiom for the
+// PREVIOUS period's value: it asks for the already-closed bar, not the
+// forming one, so nothing is revealed early.
+//
+// Levels are read from the EXTENDED session whatever the chart shows, so an
+// RTH-only chart gets the same prior day/week/month extremes and the same
+// Asia/London ranges as an ETH chart. On an ETH chart this is the chart's
+// own series.
+liqExt = ticker.modify(syminfo.tickerid, session.extended)
+[pdH, pdL] = request.security(liqExt, 'D', [high[1], low[1]], lookahead = barmerge.lookahead_on)
+[pwH, pwL] = request.security(liqExt, 'W', [high[1], low[1]], lookahead = barmerge.lookahead_on)
+[pmH, pmL] = request.security(liqExt, 'M', [high[1], low[1]], lookahead = barmerge.lookahead_on)
+
+// --- most recently COMPLETED intraday session range ---
+sessionRange(string sess) =>
+    var float hi     = na
+    var float lo     = na
+    var float doneHi = na
+    var float doneLo = na
+    inS = not na(time(timeframe.period, sess, TZ))
+    if inS and not inS[1]
+        hi := high
+        lo := low
+    else if inS
+        hi := math.max(high, hi)
+        lo := math.min(low, lo)
+    if not inS and inS[1]
+        doneHi := hi
+        doneLo := lo
+    [doneHi, doneLo]
+
+// Asia and London trade outside RTH, so they are built on the extended
+// series and handed back to whatever bars the chart has.
+[asiaH, asiaL] = request.security(liqExt, timeframe.period, sessionRange(asiaSess))
+[ldnH,  ldnL]  = request.security(liqExt, timeframe.period, sessionRange(ldnSess))
+
+// --- draw one level ---
+drawLevel(float lvl, bool show, string txt, color col, bool trail) =>
+    var line  ln = na
+    var label lb = na
+    changed = na(lvl[1]) or lvl != lvl[1]
+    if show and not na(lvl)
+        if na(ln)
+            ln := line.new(bar_index, lvl, bar_index + 1, lvl, color = col, style = line.style_solid, width = 1)
+            lb := label.new(bar_index + 1, lvl, txt, style = label.style_label_left, color = #00000000, textcolor = col, size = lblSize)
+        else if changed and trail
+            ln := line.new(bar_index, lvl, bar_index + 1, lvl, color = col, style = line.style_solid, width = 1)
+            lb := label.new(bar_index + 1, lvl, txt, style = label.style_label_left, color = #00000000, textcolor = col, size = lblSize)
+        else
+            if changed
+                ln.set_xy1(bar_index, lvl)
+            ln.set_xy2(bar_index + 1, lvl)
+            lb.set_xy(bar_index + 1, lvl)
+    // Trailing constant so the `if` above is a statement, not the return
+    // value — its branches otherwise disagree (series label vs void).
+    true
+
+// --- raid + rejection: through the level, close back on the original side ---
+sweptHigh(float lvl, bool enable) =>
+    var bool fired = false
+    if na(lvl[1]) or lvl != lvl[1]
+        fired := false
+    sig = enable and not na(lvl) and not fired and high > lvl and close < lvl
+    if sig
+        fired := true
+    sig
+
+sweptLow(float lvl, bool enable) =>
+    var bool fired = false
+    if na(lvl[1]) or lvl != lvl[1]
+        fired := false
+    sig = enable and not na(lvl) and not fired and low < lvl and close > lvl
+    if sig
+        fired := true
+    sig
+
+onPD  = useLiq and sPDH
+onPW  = useLiq and sPWH
+onPM  = useLiq and sPMH
+onASI = useLiq and sASI
+onLDN = useLiq and sLDN
+
+drawLevel(pdH,   onPD,  'PDH',    cPD,  liqTrail)
+drawLevel(pdL,   onPD,  'PDL',    cPD,  liqTrail)
+drawLevel(pwH,   onPW,  'PWH',    cPW,  liqTrail)
+drawLevel(pwL,   onPW,  'PWL',    cPW,  liqTrail)
+drawLevel(pmH,   onPM,  'PMH',    cPM,  liqTrail)
+drawLevel(pmL,   onPM,  'PML',    cPM,  liqTrail)
+drawLevel(asiaH, onASI, 'Asia H', cASI, liqTrail)
+drawLevel(asiaL, onASI, 'Asia L', cASI, liqTrail)
+drawLevel(ldnH,  onLDN, 'LDN H',  cLDN, liqTrail)
+drawLevel(ldnL,  onLDN, 'LDN L',  cLDN, liqTrail)
+
+swPDH = sweptHigh(pdH,   onPD)
+swPDL = sweptLow (pdL,   onPD)
+swPWH = sweptHigh(pwH,   onPW)
+swPWL = sweptLow (pwL,   onPW)
+swPMH = sweptHigh(pmH,   onPM)
+swPML = sweptLow (pmL,   onPM)
+swASH = sweptHigh(asiaH, onASI)
+swASL = sweptLow (asiaL, onASI)
+swLDH = sweptHigh(ldnH,  onLDN)
+swLDL = sweptLow (ldnL,  onLDN)
+
+anyBuySide  = swPDH or swPWH or swPMH or swASH or swLDH   // highs taken -> sell-side setup
+anySellSide = swPDL or swPWL or swPML or swASL or swLDL   // lows taken  -> buy-side setup
+
+// --- one consolidated marker per bar, naming every level swept ---
+sweepTxtHi = (swPDH ? 'PDH ' : '') + (swPWH ? 'PWH ' : '') + (swPMH ? 'PMH ' : '') + (swASH ? 'AsiaH ' : '') + (swLDH ? 'LDNH ' : '')
+sweepTxtLo = (swPDL ? 'PDL ' : '') + (swPWL ? 'PWL ' : '') + (swPML ? 'PML ' : '') + (swASL ? 'AsiaL ' : '') + (swLDL ? 'LDNL ' : '')
+
+if showSweep and anyBuySide
+    label.new(bar_index, high + ATR * 0.5, '⌁ ' + str.trim(sweepTxtHi), color = #00000000, textcolor = sweepColB, style = label.style_label_down, size = lblSize)
+if showSweep and anySellSide
+    label.new(bar_index, low - ATR * 0.5, '⌁ ' + str.trim(sweepTxtLo), color = #00000000, textcolor = sweepColS, style = label.style_label_up, size = lblSize)
+
+// --- dynamic alert() with the actual level prices ---
+if dynAlerts and barstate.isconfirmed and (anyBuySide or anySellSide)
+    dir = anyBuySide and anySellSide ? 'BOTH SIDES' : anyBuySide ? 'SELL-SIDE SETUP (highs raided)' : 'BUY-SIDE SETUP (lows raided)'
+    lv  = anyBuySide ? str.trim(sweepTxtHi) : str.trim(sweepTxtLo)
+    alert(str.format('{0} {1} — LIQUIDITY SWEPT: {2} | {3} | price {4}',
+         syminfo.ticker, timeframe.period, lv, dir, str.tostring(close, format.mintick)), alert.freq_once_per_bar_close)
+
+
+// ==============================================================
+// ⑥ FIRST PRESENTED FVG (AM / PM)
+//   The first FVG to form inside the session, locked for that session.
+//   Marked with its formation time, and with Consequent Encroachment
+//   (the 50% midpoint) drawn as a dashed line.
+// ==============================================================
+// "HHMM-HHMM" -> [start, end] as minutes past midnight, New York time.
+// Parsed on the chart side so the 1m context can compare plain integers
+// instead of re-evaluating a session string in a lower-timeframe request.
+sessBounds(string s) =>
+    sh = int(str.tonumber(str.substring(s, 0, 2)))
+    sm = int(str.tonumber(str.substring(s, 2, 4)))
+    eh = int(str.tonumber(str.substring(s, 5, 7)))
+    em = int(str.tonumber(str.substring(s, 7, 9)))
+    [sh * 60 + sm, eh * 60 + em]
+
+// Evaluated in the 1-MINUTE context. Returns the gap or na.
+//
+// The window is tested against the MIDDLE candle — the one that creates
+// the gap — which is what fadi's original does (his `t3` argument is
+// passed time[1]). With a 0931 start the displacement candle must be
+// 09:31 or later, so the 09:30 opening candle is never the FVG-forming
+// candle. Testing the confirming candle instead would let the pattern
+// reach back to 09:29, before the open.
+fvg1m(int startMin, int endMin) =>
+    bull = low > high[2]
+    bear = high < low[2]
+    mdM  = hour(time[1], TZ) * 60 + minute(time[1], TZ)   // middle / displacement candle
+    inW  = mdM >= startMin and mdM < endMin
+    raw  = bull ? low - high[2] : bear ? low[2] - high : 0.0
+    float ft = na
+    float fb = na
+    float fd = na
+    int   fm = na
+    float fs = na   // 1.0 when the gap is a suspension block, 0.0 otherwise
+    if inW and (bull or bear) and raw >= fpMinSize
+        [bt, bb, bvh, bvl] = fvgBullEdges()
+        [st, sb, svh, svl] = fvgBearEdges()
+        ft := bull ? bt : st
+        fb := bull ? bb : sb
+        fd := bull ? 1.0 : -1.0
+        fm := time[1]   // anchor on the displacement candle, as fadi does
+        // Carried as a float because request.security_lower_tf returns
+        // parallel float arrays; there is no bool array form to use here.
+        fs := (bull ? (bvh and bvl) : (svh and svl)) ? 1.0 : 0.0
+    [ft, fb, fd, fm, fs]
+
+// First non-na entry across the parallel lower-timeframe arrays.
+pickLTF(array<float> at, array<float> ab, array<float> ad, array<int> am, array<float> av) =>
+    float rt = na
+    float rb = na
+    float rd = na
+    int   rm = na
+    float rs = na
+    if not na(at)
+        if at.size() > 0
+            for i = 0 to at.size() - 1
+                if not na(at.get(i))
+                    rt := at.get(i)
+                    rb := ab.get(i)
+                    rd := ad.get(i)
+                    rm := am.get(i)
+                    rs := av.get(i)
+                    break
+    [rt, rb, rd, rm, rs]
+
+// Always source from 1m, whatever the chart is showing.
+fpSource(int startMin, int endMin) =>
+    float rt = na
+    float rb = na
+    float rd = na
+    int   rm = na
+    float rs = na
+    if timeframe.isminutes and timeframe.multiplier == 1
+        [a1, b1, d1, m1, s1] = fvg1m(startMin, endMin)
+        rt := a1
+        rb := b1
+        rd := d1
+        rm := m1
+        rs := s1
+    else if timeframe.isminutes
+        [aa, ab, ad, am, av] = request.security_lower_tf(syminfo.tickerid, '1', fvg1m(startMin, endMin))
+        [p1, p2, p3, p4, p5] = pickLTF(aa, ab, ad, am, av)
+        rt := p1
+        rb := p2
+        rd := p3
+        rm := p4
+        rs := p5
+    [rt, rb, rd, rm, rs]
+
+// One retained first-presented gap. Gaps persist across days so a chart
+// late in the week still shows the whole week plus the tail of the one
+// before it — they stay relevant long after the day that made them.
+type FPGap
+    float top
+    float bot
+    bool  isBull
+    bool  isSusp      // ⑫ volume imbalance at BOTH ends
+    int   anchor      // ms timestamp of the displacement candle
+    int   dayKey      // yyyymmdd, New York
+    int   woy
+    bool  isMon
+    bool  ret
+    bool  ced
+    bool  bwComp     // body/wick law: a body has closed through CE the wrong way
+    int   bwHits     // consecutive interactions that respected CE
+    bool  bwConf     // confirmed — bwTaps respected interactions
+    box   bx
+    line  ln
+    label lb
+
+fpTrack(float srcT, float srcB, float srcD, int srcM, float srcS, int startMin, bool enable, string tag) =>
+    var array<FPGap> gaps = array.new<FPGap>()
+
+    dayKey = year(time, TZ) * 10000 + month(time, TZ) * 100 + dayofmonth(time, TZ)
+    curWoy = weekofyear(time, TZ)
+    md     = hour(time, TZ) * 60 + minute(time, TZ)
+    barMs  = time - time[1]
+
+    // First gap of THIS day for THIS session only — newest sits at the front.
+    haveToday = gaps.size() > 0 ? gaps.first().dayKey == dayKey : false
+
+    formed = false
+    if enable and not haveToday and not na(srcT) and md >= startMin and barstate.isconfirmed
+        g = FPGap.new()
+        g.top    := srcT
+        g.bot    := srcB
+        g.isBull := srcD > 0
+        g.isSusp := useSP and srcS == 1.0
+        g.anchor := srcM
+        g.dayKey := dayKey
+        g.woy    := curWoy
+        g.isMon  := dayofweek(time, TZ) == dayofweek.monday
+        g.ret    := false
+        g.ced    := false
+        g.bwComp := false
+        g.bwHits := 0
+        g.bwConf := false
+        col = g.isBull ? fpBullCol : fpBearCol
+        rt  = time + barMs
+        g.bx := box.new(g.anchor, g.top, rt, g.bot, xloc = xloc.bar_time,
+             border_color = color.new(col, 40), bgcolor = col)
+        if fpShowCE
+            g.ln := line.new(g.anchor, (g.top + g.bot) / 2, rt, (g.top + g.bot) / 2,
+                 xloc = xloc.bar_time, color = fpCECol, style = line.style_dashed)
+        g.lb := label.new(rt, (g.top + g.bot) / 2,
+             tag + (g.isSusp ? ' ⊟' : '') + '  ' + str.format_time(g.anchor, 'HH:mm', TZ), xloc = xloc.bar_time,
+             style = label.style_label_left, color = #00000000,
+             textcolor = color.new(col, 0), size = size.tiny)
+        // A first-presented gap that is also a suspension block gets a solid
+        // border. It is the same zone either way — this only says it carries
+        // an imbalance at both ends.
+        if g.isSusp
+            g.bx.set_border_width(2)
+        gaps.unshift(g)
+        formed := true
+        // drop the oldest beyond the retention window, drawings and all
+        while gaps.size() > fpKeepDays
+            old = gaps.pop()
+            old.bx.delete()
+            if not na(old.ln)
+                old.ln.delete()
+            old.lb.delete()
+
+    // Carry the retained gaps forward.
+    //   - carry-all  : every gap keeps extending
+    //   - Monday rule: Monday's gap runs to the end of its own week
+    //   - otherwise  : a gap stops at the end of its own day
+    if enable and gaps.size() > 0
+        rt2 = time + barMs
+        for g in gaps
+            carry = fpCarryAll or (fpCarryMon and g.isMon and g.woy == curWoy) or g.dayKey == dayKey
+            if carry
+                g.bx.set_right(rt2)
+                if not na(g.ln)
+                    g.ln.set_x2(rt2)
+                g.lb.set_x(rt2)
+
+    // Retest / CE alerts track the CURRENT day's gap only.
+    ret   = false
+    ceTap = false
+    bwOk  = false
+    bwBad = false
+    if enable and gaps.size() > 0 and not formed
+        g0 = gaps.first()
+        if g0.dayKey == dayKey
+            ce0 = (g0.top + g0.bot) / 2
+            if not g0.ret and low <= g0.top and high >= g0.bot
+                g0.ret := true
+                ret    := true
+            if not g0.ced and (g0.isBull ? low <= ce0 : high >= ce0)
+                g0.ced := true
+                ceTap  := true
+
+            // ⑨ BODY / WICK LAW
+            //   A demand gap holds while bodies stay in the upper half;
+            //   a supply gap while they stay in the lower half. Wicks are
+            //   free to violate CE — only a closed body counts. Evaluated
+            //   on confirmed bars only: an intrabar body is not a body.
+            if useBW and bwFP and not g0.bwComp and barstate.isconfirmed
+                bodyHi = math.max(open, close)
+                bodyLo = math.min(open, close)
+                if high >= g0.bot and low <= g0.top          // interacting with the gap
+                    if g0.isBull ? bodyLo < ce0 : bodyHi > ce0
+                        g0.bwComp := true
+                        bwBad     := true
+                        g0.bx.set_border_color(bwBadCol)
+                        g0.bx.set_border_style(line.style_dotted)
+                    else
+                        g0.bwHits := g0.bwHits + 1
+                        if g0.bwHits >= bwTaps and not g0.bwConf
+                            g0.bwConf := true
+                            bwOk      := true
+                            g0.bx.set_border_color(bwOkCol)
+    // `susp` fires on the forming bar only, alongside `formed`.
+    susp = formed and gaps.size() > 0 ? gaps.first().isSusp : false
+    // Today's gap, exposed for ⑭. na when this session has not printed one yet.
+    float todT = na
+    float todB = na
+    bool  todBull = false
+    if gaps.size() > 0
+        gf = gaps.first()
+        if gf.dayKey == dayKey
+            todT    := gf.top
+            todB    := gf.bot
+            todBull := gf.isBull
+    [formed, ret, ceTap, bwOk, bwBad, susp, todT, todB, todBull]
+
+[amStart, amEnd] = sessBounds(fpAM)
+[pmStart, pmEnd] = sessBounds(fpPM)
+[amT, amB, amD, amM, amS] = fpSource(amStart, amEnd)
+[pmT, pmB, pmD, pmM, pmS] = fpSource(pmStart, pmEnd)
+
+[fpAMform, fpAMret, fpAMce, fpAMbwOk, fpAMbwBad, fpAMsusp, fpAMtop, fpAMbot, fpAMbull] = fpTrack(amT, amB, amD, amM, amS, amStart, useFP, 'FP AM')
+[fpPMform, fpPMret, fpPMce, fpPMbwOk, fpPMbwBad, fpPMsusp, fpPMtop, fpPMbot, fpPMbull] = fpTrack(pmT, pmB, pmD, pmM, pmS, pmStart, useFP, 'FP PM')
+
+
+// ==============================================================
+// ⑦ OPENING RANGE GAP
+//   ICT's ORG: prior day's RTH CLOSE to today's RTH OPEN.
+//   Consequent Encroachment is the 50% midpoint. "Filled" means price
+//   traded back across the gap to the prior close.
+// ==============================================================
+orgTrack(bool enable) =>
+    var float prevC  = na
+    var float ogT    = na
+    var float ogB    = na
+    var int   ogBar  = na
+    var bool  ogUp   = false
+    var bool  ogCEd  = false
+    var bool  ogFlld = false
+    var box   bx  = na
+    var line  ln  = na
+    var line  q1  = na
+    var line  q3  = na
+    var label lb  = na
+
+    inS = not na(time(timeframe.period, ogSess, TZ))
+
+    // On an RTH-only chart there is no bar outside the session, so the
+    // session never visibly ends. A new New York calendar day that arrives
+    // while already in session is that case: the previous bar was
+    // yesterday's last session bar. On an ETH chart this never fires,
+    // because the session does not span midnight.
+    rthRoll = inS and inS[1] and dayofmonth(time, TZ) != dayofmonth(nz(time[1], time), TZ)
+
+    // last bar of the RTH session sets the reference close
+    if (inS[1] and not inS) or rthRoll
+        prevC := close[1]
+    sessStart = inS and (not inS[1] or rthRoll)
+
+    formed = false
+    if enable and sessStart and not na(prevC) and math.abs(open - prevC) > ogMinSize
+        ogT    := math.max(open, prevC)
+        ogB    := math.min(open, prevC)
+        ogUp   := open > prevC
+        ogBar  := bar_index
+        ogCEd  := false
+        ogFlld := false
+        formed := true
+        bx := box.new(ogBar, ogT, bar_index + 1, ogB, border_color = color.new(ogCECol, 60), bgcolor = ogCol)
+        if ogShowCE
+            ln := line.new(ogBar, (ogT + ogB) / 2, bar_index + 1, (ogT + ogB) / 2, color = ogCECol, style = line.style_dashed)
+        if ogShowQt
+            qtr = (ogT - ogB) / 4
+            q1 := line.new(ogBar, ogB + qtr,     bar_index + 1, ogB + qtr,     color = ogQtCol, style = line.style_dotted)
+            q3 := line.new(ogBar, ogT - qtr,     bar_index + 1, ogT - qtr,     color = ogQtCol, style = line.style_dotted)
+        lb := label.new(ogBar, ogT, 'ORG ' + (ogUp ? '▲' : '▼') + '  ' + str.tostring(ogT - ogB, format.mintick),
+             style = label.style_label_lower_left, color = #00000000, textcolor = ogCECol, size = size.tiny)
+
+    ce     = (ogT + ogB) / 2
+    ceTap  = false
+    filled = false
+    if enable and not na(ogT) and not na(ogBar)
+        if bar_index - ogBar <= ogExtend and not na(bx)
+            bx.set_right(bar_index + 1)
+            if ogShowCE and not na(ln)
+                ln.set_x2(bar_index + 1)
+            if ogShowQt and not na(q1)
+                q1.set_x2(bar_index + 1)
+                q3.set_x2(bar_index + 1)
+        if not ogCEd and (ogUp ? low <= ce : high >= ce)
+            ogCEd := true
+            ceTap := true
+        if not ogFlld and (ogUp ? low <= ogB : high >= ogT)
+            ogFlld := true
+            filled := true
+    [formed, ceTap, filled, ogT, ogB, ce]
+
+[ogForm, ogCEtap, ogFilled, ogTop, ogBot, ogCElvl] = orgTrack(useOG)
+
+
+// ==============================================================
+// ⑧ PREMARKET DEALING RANGE (07:00–09:00 NY)
+//   The high and low of the pre-market window form the dealing range
+//   for the session. Graded into eighths — the 0.50 line is
+//   equilibrium, 0.25/0.75 the quadrants, the rest octants — and
+//   carried forward. Premium and discount are measured against THIS
+//   range, not the RTH range and not the daily range.
+//
+//   The grid is fractal: the same eighths apply to any range (the ORG
+//   already draws its own quadrants, and the same treatment works on a
+//   New Week Opening Gap or an individual inefficiency).
+// ==============================================================
+// Grid index 0..8 runs low to high. 0 = range low, 4 = EQ, 8 = range high.
+pmFrac(int i)  => i / 8.0
+pmName(int i)  =>
+    i == 0 ? 'PMDR L' : i == 8 ? 'PMDR H' : i == 4 ? 'EQ 0.50' :
+     i == 2 ? '0.25 Q' : i == 6 ? '0.75 Q' : str.tostring(i / 8.0)
+pmOn(int i)    =>
+    (i == 0 or i == 8) ? true : i == 4 ? pmShowEQ : (i == 2 or i == 6) ? pmShowQt : pmShowOc
+pmCol(int i)   =>
+    (i == 0 or i == 8) ? pmHLCol : i == 4 ? pmEQCol : (i == 2 or i == 6) ? pmQtCol : pmOcCol
+pmStyle(int i) =>
+    (i == 0 or i == 8) ? line.style_solid : i == 4 ? line.style_dashed : line.style_dotted
+
+type PMDay
+    float hi
+    float lo
+    int   anchor      // ms timestamp of the first bar of the window
+    int   dayKey      // yyyymmdd, New York
+    box   bx
+    array<line>  lns
+    array<label> lbs
+
+pmdrTrack(bool enable) =>
+    var array<PMDay> days   = array.new<PMDay>()
+    var float curHi   = na
+    var float curLo   = na
+    var int   curAnch = na
+
+    dayKey = year(time, TZ) * 10000 + month(time, TZ) * 100 + dayofmonth(time, TZ)
+    barMs  = time - time[1]
+    inW    = not na(time(timeframe.period, pmSess, TZ))
+    ok     = enable and timeframe.isintraday
+
+    // Accumulate the window. The first bar of the window seeds it rather
+    // than extending the previous day's values.
+    if ok and inW and not inW[1]
+        curHi   := high
+        curLo   := low
+        curAnch := time
+    else if ok and inW
+        curHi := math.max(high, curHi)
+        curLo := math.min(low,  curLo)
+
+    // Window closed — lock the range and lay the grid.
+    locked = false
+    if ok and inW[1] and not inW and not na(curHi) and curHi > curLo
+        d = PMDay.new()
+        d.hi     := curHi
+        d.lo     := curLo
+        d.anchor := curAnch
+        d.dayKey := dayKey
+        d.lns    := array.new<line>()
+        d.lbs    := array.new<label>()
+        rng = d.hi - d.lo
+        rt  = time + barMs
+        if pmShowBox
+            d.bx := box.new(d.anchor, d.hi, rt, d.lo, xloc = xloc.bar_time,
+                 border_color = color.new(pmHLCol, 70), bgcolor = pmBoxCol)
+        for i = 0 to 8
+            if pmOn(i)
+                lv = d.lo + rng * pmFrac(i)
+                d.lns.push(line.new(d.anchor, lv, rt, lv, xloc = xloc.bar_time,
+                     color = pmCol(i), style = pmStyle(i), width = (i == 0 or i == 8) ? 2 : 1))
+                if pmShowLbl
+                    d.lbs.push(label.new(rt, lv, pmName(i), xloc = xloc.bar_time,
+                         style = label.style_label_left, color = #00000000,
+                         textcolor = pmCol(i), size = size.tiny))
+        days.unshift(d)
+        locked := true
+        while days.size() > pmKeepDays
+            old = days.pop()
+            if not na(old.bx)
+                old.bx.delete()
+            for l in old.lns
+                l.delete()
+            for b in old.lbs
+                b.delete()
+
+    // Carry the current day's grid to the right edge.
+    //   Nested rather than chained with `and`: Pine evaluates both sides
+    //   of a boolean operator, so days.first() must not be reachable
+    //   while the array is empty.
+    // Carry the MOST RECENT locked range forward, whatever day it came
+    //   from, until a new window closes and replaces it. Gating this on
+    //   "same calendar day" left the module blank from the 18:00 Globex
+    //   reopen until 09:00 the next morning — the whole overnight
+    //   session and the premarket itself, which is exactly when the
+    //   previous range is still the reference you are trading against.
+    float tHi = na
+    float tLo = na
+    if ok and days.size() > 0
+        d0  = days.first()
+        rt2 = time + barMs
+        if not na(d0.bx)
+            d0.bx.set_right(rt2)
+        for l in d0.lns
+            l.set_x2(rt2)
+        for b in d0.lbs
+            b.set_x(rt2)
+        tHi := d0.hi
+        tLo := d0.lo
+    [locked, tHi, tLo]
+
+[pmLocked, pmdrHi, pmdrLo] = pmdrTrack(usePM)
+
+pmdrRng    = pmdrHi - pmdrLo
+pmdrEQ  = (pmdrHi + pmdrLo) / 2
+inPremium  = not na(pmdrEQ) and close > pmdrEQ
+inDiscount = not na(pmdrEQ) and close < pmdrEQ
+pmEnterPrem = inPremium  and not inPremium[1]
+pmEnterDisc = inDiscount and not inDiscount[1]
+
+
+// ==============================================================
+// ⑨ BODY / WICK LAW
+//   "The wicks are allowed to do the damage, but the bodies just say
+//   absolutely not."
+//
+//   Two applications:
+//     A. GRID LEVELS — a wick tags a level while the body fails to
+//        reach it. Sustained over consecutive interactions this is a
+//        rejection: order flow is not continuing through that level.
+//     B. PD ARRAYS  — a demand array holds while bodies stay in the
+//        upper half, a supply array while they stay in the lower half.
+//        Only a CLOSED body through CE counts as a violation.
+// ==============================================================
+
+// --- A. Grid-level rejection -----------------------------------
+//   upReject : wick pierces the level from below, body stays under it
+//   dnReject : wick pierces from above, body stays over it
+//   A body that straddles or closes through the level resets the count,
+//   as does price clearing the level outright.
+// Which levels are eligible to SIGNAL. Independent of what is drawn:
+// on a rangebound day, testing all nine buries the chart in markers.
+bwTest(int i) =>
+    scoped = bwScope == 'EQ only'    ? i == 4 :
+             bwScope == 'Key levels' ? (i == 0 or i == 2 or i == 4 or i == 6 or i == 8) : true
+    pmOn(i) and scoped
+
+pmGridLaw(float hi, float lo, bool enable) =>
+    var array<int>  upCnt   = array.new<int>(9, 0)
+    var array<int>  dnCnt   = array.new<int>(9, 0)
+    var array<int>  lastDay = array.new<int>(9, 0)
+    var array<bool> fired   = array.new<bool>(9, false)
+
+    dayKey = year(time, TZ) * 10000 + month(time, TZ) * 100 + dayofmonth(time, TZ)
+
+    bool  upSig = false
+    bool  dnSig = false
+    float sigLv = na
+    string sigNm = ''
+
+    if enable and not na(hi) and hi > lo and barstate.isconfirmed
+        rng    = hi - lo
+        bodyHi = math.max(open, close)
+        bodyLo = math.min(open, close)
+        for i = 0 to 8
+            if bwTest(i)
+                lv = lo + rng * pmFrac(i)
+                if lastDay.get(i) != dayKey
+                    upCnt.set(i, 0)
+                    dnCnt.set(i, 0)
+                    fired.set(i, false)
+                    lastDay.set(i, dayKey)
+                armed = not bwOnce or not fired.get(i)
+                if bodyHi >= lv and bodyLo <= lv          // body sits on the level
+                    upCnt.set(i, 0)
+                    dnCnt.set(i, 0)
+                else if high >= lv and bodyHi < lv        // wick up through, body under
+                    upCnt.set(i, upCnt.get(i) + 1)
+                    dnCnt.set(i, 0)
+                    if upCnt.get(i) == bwTaps and armed
+                        upSig := true
+                        sigLv := lv
+                        sigNm := pmName(i)
+                        fired.set(i, true)
+                else if low <= lv and bodyLo > lv         // wick down through, body over
+                    dnCnt.set(i, dnCnt.get(i) + 1)
+                    upCnt.set(i, 0)
+                    if dnCnt.get(i) == bwTaps and armed
+                        dnSig := true
+                        sigLv := lv
+                        sigNm := pmName(i)
+                        fired.set(i, true)
+                else if low > lv                          // cleared it to the upside
+                    upCnt.set(i, 0)
+                else if high < lv                         // cleared it to the downside
+                    dnCnt.set(i, 0)
+    [upSig, dnSig, sigLv, sigNm]
+
+[pmRejUp, pmRejDn, pmRejLv, pmRejNm] = pmGridLaw(pmdrHi, pmdrLo, useBW and bwPMDR and usePM)
+
+if bwMark and pmRejUp
+    label.new(bar_index, pmRejLv, '▼ ' + pmRejNm, style = label.style_label_down,
+         color = #00000000, textcolor = bwBadCol, size = size.tiny)
+if bwMark and pmRejDn
+    label.new(bar_index, pmRejLv, '▲ ' + pmRejNm, style = label.style_label_up,
+         color = #00000000, textcolor = bwOkCol, size = size.tiny)
+
+
+// --- B. PD array integrity -------------------------------------
+//   polarity:  1 = demand (bodies hold the upper half)
+//             -1 = supply (bodies hold the lower half)
+//              0 = decide on first touch from the approach direction
+//   A change in the array's top resets the state, so each new array
+//   starts clean. Each call site keeps its own `var` state.
+pdBodyLaw(float top, float bot, int polarity, bool enable) =>
+    var bool  polSet  = false
+    var bool  demand  = false
+    var bool  comp    = false
+    var int   hits    = 0
+    var bool  conf    = false
+    var float lastTop = na
+
+    ok  = false
+    bad = false
+
+    if enable and not na(top) and top > bot and barstate.isconfirmed
+        if na(lastTop) or lastTop != top
+            lastTop := top
+            polSet  := false
+            comp    := false
+            hits    := 0
+            conf    := false
+        ce     = (top + bot) / 2
+        bodyHi = math.max(open, close)
+        bodyLo = math.min(open, close)
+        if high >= bot and low <= top and not comp
+            if not polSet
+                demand := polarity != 0 ? polarity > 0 : close[1] > ce
+                polSet := true
+            if demand ? bodyLo < ce : bodyHi > ce
+                comp := true
+                bad  := true
+            else
+                hits := hits + 1
+                if hits >= bwTaps and not conf
+                    conf := true
+                    ok   := true
+    [ok, bad, comp, demand]
+
+[ogBwOk, ogBwBad, ogBwComp, ogBwDemand] = pdBodyLaw(ogTop, ogBot, 0, useBW and bwORG and useOG)
+
+if bwMark and ogBwOk
+    label.new(bar_index, ogBwDemand ? ogBot : ogTop, 'ORG bodies held',
+         style = ogBwDemand ? label.style_label_up : label.style_label_down,
+         color = #00000000, textcolor = bwOkCol, size = size.tiny)
+if bwMark and ogBwBad
+    label.new(bar_index, ogBwDemand ? ogBot : ogTop, 'ORG body through CE',
+         style = ogBwDemand ? label.style_label_down : label.style_label_up,
+         color = #00000000, textcolor = bwBadCol, size = size.tiny)
+
+if bwMark and (fpAMbwOk or fpPMbwOk)
+    label.new(bar_index, close, 'FPFVG bodies held', style = label.style_label_left,
+         color = #00000000, textcolor = bwOkCol, size = size.tiny)
+if bwMark and (fpAMbwBad or fpPMbwBad)
+    label.new(bar_index, close, 'FPFVG body through CE', style = label.style_label_left,
+         color = #00000000, textcolor = bwBadCol, size = size.tiny)
+
+
+// ==============================================================
+// ⑩ AM REGIME CLASSIFIER
+//   The claim being encoded: a TRENDING 07:00–09:00 window implies a
+//   consolidating AM session, and the odds rise further if the window
+//   also traded to a key level — more so if it only just got there.
+//
+//   "Trending" is judged by eye on the source material, so it is scored
+//   here from three orthogonal measures rather than defined outright:
+//     A. directional efficiency, normalised so the threshold does not
+//        move with timeframe
+//     B. where the close sits in the range
+//     C. range size against its own 20-day median
+//
+//   Every threshold below is a starting guess, not a finding. The
+//   module also records what the AM session ACTUALLY did, so the
+//   classification can be checked against the outcome rather than
+//   trusted. Grading the outcome with the same efficiency measure makes
+//   the comparison direct: does a high premarket ER predict a low AM ER?
+// ==============================================================
+// Directional statistics for a session window, locked when it closes.
+//   erNorm = efficiency ratio × √(steps). Net displacement over k steps
+//   of a random walk scales with √k while the path travelled scales
+//   with k, so the raw ratio decays as 1/√k and this product sits near
+//   1.0 on any timeframe. That is what makes one threshold portable.
+sessStats(simple string sess, bool enable) =>
+    var float wOpen  = na
+    var float wHi    = na
+    var float wLo    = na
+    var float path   = 0.0
+    var int   nBar   = 0
+    var float outHi  = na
+    var float outLo  = na
+    var float outER  = na
+    var float outCLR = na
+
+    inW = not na(time(timeframe.period, sess, TZ))
+    ok  = enable and timeframe.isintraday
+
+    if ok and inW and not inW[1]
+        wOpen := open
+        wHi   := high
+        wLo   := low
+        path  := 0.0
+        nBar  := 1
+    else if ok and inW
+        wHi   := math.max(high, wHi)
+        wLo   := math.min(low,  wLo)
+        path  := path + math.abs(close - close[1])
+        nBar  := nBar + 1
+
+    // The window has just closed: close[1] is its final bar.
+    fresh = false
+    if ok and inW[1] and not inW and not na(wOpen) and wHi > wLo and path > 0 and nBar > 1
+        outHi  := wHi
+        outLo  := wLo
+        outER  := math.abs(close[1] - wOpen) / path * math.sqrt(nBar - 1)
+        outCLR := (close[1] - wLo) / (wHi - wLo)
+        fresh  := true
+    [fresh, outHi, outLo, outER, outCLR]
+
+[pmFresh, pmsHi, pmsLo, pmsER, pmsCLR] = sessStats(pmSess, useRG)
+[amFresh, amsHi, amsLo, amsER, amsCLR] = sessStats(rgAM,   useRG)
+
+fmtF(float x, simple string f) => na(x) ? '—' : str.tostring(x, f)
+tick(bool b) => b ? '✓' : '✗'
+
+type RegRow
+    int   dayKey
+    bool  trending
+    bool  tagged
+    int   score
+    float pmER
+    float pmCLR
+    float amER
+    float amRatio
+
+var array<float>  pmRangeHist = array.new<float>()
+var array<float>  amRangeHist = array.new<float>()
+var array<RegRow> regRows     = array.new<RegRow>()
+
+// Locked classification for the current day.
+var float rgMedian  = na
+var bool  rgFacER   = false
+var bool  rgFacCLR  = false
+var bool  rgFacExp  = false
+var int   rgFacN    = 0
+var bool  rgTrend   = false
+var bool  rgTagged  = false
+var string rgTagNm  = ''
+var float rgTagLv   = na
+var float rgTagPen  = na
+var bool  rgShall   = false
+var bool  rgWideRng = false
+var int   rgScore   = 0
+
+if pmFresh
+    rng = pmsHi - pmsLo
+    rgMedian := pmRangeHist.size() >= 5 ? pmRangeHist.median() : na
+
+    // --- A/B/C -------------------------------------------------
+    rgFacER  := not na(pmsER)  and pmsER >= rgERthr
+    rgFacCLR := not na(pmsCLR) and (pmsCLR >= rgCLRthr or pmsCLR <= 1.0 - rgCLRthr)
+    // No median yet means this factor cannot be judged, so it does not
+    // score. Crediting it would inflate every call for the first week.
+    rgFacExp := not na(rgMedian) and rng >= rgExpMin * rgMedian
+    rgFacN   := (rgFacER ? 1 : 0) + (rgFacCLR ? 1 : 0) + (rgFacExp ? 1 : 0)
+    rgTrend  := rgFacN >= rgNeed
+
+    // --- key level tagged inside the window --------------------
+    //   A level sitting inside the window's range was traded to.
+    //   Penetration is how far PAST it price went — measured from the
+    //   low for a low-type level, from the high for a high-type one.
+    //   The shallowest tag is the one that matters: barely reaching a
+    //   level is what leaves the business unfinished.
+    lvVal = array.from(pdH,    pdL,    pwH,    pwL,    pmH,    pmL,    asiaH,   asiaL,   ldnH,    ldnL)
+    lvNm  = array.from('PDH',  'PDL',  'PWH',  'PWL',  'PMH',  'PML',  'AsiaH', 'AsiaL', 'LDNH',  'LDNL')
+    lvHi  = array.from(true,   false,  true,   false,  true,   false,  true,    false,   true,    false)
+    rgTagNm  := ''
+    rgTagLv  := na
+    rgTagPen := na
+    for i = 0 to 9
+        v = lvVal.get(i)
+        if not na(v) and v >= pmsLo and v <= pmsHi
+            pen = lvHi.get(i) ? pmsHi - v : v - pmsLo
+            if na(rgTagPen) or pen < rgTagPen
+                rgTagPen := pen
+                rgTagLv  := v
+                rgTagNm  := lvNm.get(i)
+
+    // Being inside the range is not the same as being the destination.
+    // A level price blew through on the way somewhere else does not
+    // score; the nearest one is still reported so it can be seen.
+    rgTagged  := not na(rgTagPen) and rng > 0 and rgTagPen <= rgTagNear * rng
+    rgShall   := rgTagged and rgTagPen <= rgShallow * rng
+    rgWideRng := not na(rgMedian) and rng >= rgWide * rgMedian
+
+    rgScore := (rgTrend ? rgWtrend : 0) + (rgTagged ? rgWtag : 0) +
+               (rgShall ? rgWshall : 0) + (rgWideRng ? rgWwide : 0)
+    rgScore := int(math.min(rgScore, 100))
+
+    pmRangeHist.push(rng)
+    while pmRangeHist.size() > 20
+        pmRangeHist.shift()
+
+    r = RegRow.new()
+    r.dayKey   := year(time, TZ) * 10000 + month(time, TZ) * 100 + dayofmonth(time, TZ)
+    r.trending := rgTrend
+    r.tagged   := rgTagged
+    r.score    := rgScore
+    r.pmER     := pmsER
+    r.pmCLR    := pmsCLR
+    r.amER     := na
+    r.amRatio  := na
+    regRows.unshift(r)
+    // Deep retention: the summary below is only as good as its sample,
+    // and a 5-minute chart loads months of sessions.
+    while regRows.size() > 250
+        regRows.pop()
+
+// The AM window closed — record what actually happened.
+var float rgAmER    = na
+var float rgAmRatio = na
+if amFresh
+    amRng = amsHi - amsLo
+    amMed = amRangeHist.size() >= 5 ? amRangeHist.median() : na
+    rgAmER    := amsER
+    rgAmRatio := na(amMed) or amMed <= 0 ? na : amRng / amMed
+    amRangeHist.push(amRng)
+    while amRangeHist.size() > 20
+        amRangeHist.shift()
+    if regRows.size() > 0
+        r0 = regRows.first()
+        today = year(time, TZ) * 10000 + month(time, TZ) * 100 + dayofmonth(time, TZ)
+        if r0.dayKey == today
+            r0.amER    := rgAmER
+            r0.amRatio := rgAmRatio
+
+rgLabel = rgScore >= rgConsAt ? 'CONSOLIDATION EXPECTED' :
+          rgScore <  rgExpAt  ? 'EXPANSION LIKELY' : 'MIXED'
+rgLabelCol = rgScore >= rgConsAt ? #ef5350 : rgScore < rgExpAt ? #26a69a : #ffb74d
+rgConsDay  = useRG and rgScore >= rgConsAt
+rgGateOn   = rgGate and rgConsDay
+
+
+// ==============================================================
+// DASHBOARD
+//   Today's classification on top, the calibration log underneath.
+//   The log is the point: it puts the premarket call and the realised
+//   AM behaviour on the same row so the claim can be checked.
+// ==============================================================
+dashPosC = dashPos == 'Top right'    ? position.top_right :
+           dashPos == 'Middle right' ? position.middle_right :
+           dashPos == 'Bottom right' ? position.bottom_right :
+           dashPos == 'Top left'     ? position.top_left : position.bottom_left
+dashSizeC = dashSize == 'tiny' ? size.tiny : dashSize == 'small' ? size.small : size.normal
+
+// Helpers live at global scope — Pine will not accept a function
+// declared inside a conditional block.
+dashCell(table t, int c, int r, string s, color col, simple string sz) =>
+    t.cell(c, r, s, text_color = col, text_size = sz, text_halign = text.align_left)
+
+pad2(int v) => (v < 10 ? '0' : '') + str.tostring(v)
+
+rgShort = rgScore >= rgConsAt ? 'CONSOLIDATION' : rgScore < rgExpAt ? 'EXPANSION' : 'MIXED'
+
+// Row budget per detail level, then the optional blocks underneath.
+rBase  = dashMode == 'Trade' ? 2 : 11
+rStats = dashStats ? 8 : 0
+rHist  = dashHist > 0 ? 2 + dashHist : 0
+
+var table dash = na
+if useDash and useRG and barstate.islast and timeframe.isintraday
+    if na(dash)
+        dash := table.new(dashPosC, 4, rBase + rStats + rHist,
+             bgcolor = dashBg, border_color = color.new(dashTxt, 80), border_width = 1)
+
+    dim  = color.new(dashTxt, 45)
+    nowS = na(pmdrEQ) ? '—' : inPremium ? 'PREMIUM' : inDiscount ? 'DISCOUNT' : 'at EQ'
+
+    // --- TRADE: fact only, nothing that needs interpreting ---------
+    //   Deliberately no score and no verdict. A label reading
+    //   "CONSOLIDATION EXPECTED" on a trading screen gets acted on,
+    //   and ⑩ has not earned that. Where price sits in the premarket
+    //   range is mechanical and always true; that is what belongs here.
+    if dashMode == 'Trade'
+        pos = na(pmdrRng) or pmdrRng <= 0 ? na : (close - pmdrLo) / pmdrRng
+        dashCell(dash, 0, 0, 'PMDR', dashTxt, dashSizeC)
+        dashCell(dash, 1, 0, fmtF(pmdrLo, format.mintick) + ' – ' + fmtF(pmdrHi, format.mintick), dashTxt, dashSizeC)
+        dashCell(dash, 2, 0, na(pmdrRng) ? '' : fmtF(pmdrRng, format.mintick), dim, dashSizeC)
+        dashCell(dash, 0, 1, 'Now', dashTxt, dashSizeC)
+        dashCell(dash, 1, 1, nowS, inPremium ? #ef5350 : inDiscount ? #26a69a : dashTxt, dashSizeC)
+        dashCell(dash, 2, 1, na(pos) ? '' : str.tostring(pos, '#.##'), dim, dashSizeC)
+
+    // --- DIAGNOSTIC: every factor with its pass/fail --------------
+    else
+        dashCell(dash, 0, 0, 'ICT — AM REGIME', dashTxt, dashSizeC)
+        dashCell(dash, 1, 0, '07:00–09:00',     dim,     dashSizeC)
+        dashCell(dash, 0, 1, 'Premarket', dashTxt, dashSizeC)
+        dashCell(dash, 1, 1, fmtF(pmsLo, format.mintick) + ' – ' + fmtF(pmsHi, format.mintick), dashTxt, dashSizeC)
+        dashCell(dash, 2, 1, na(pmsHi) ? '' : fmtF(pmsHi - pmsLo, format.mintick), dim, dashSizeC)
+        dashCell(dash, 0, 2, 'ER × √N', dashTxt, dashSizeC)
+        dashCell(dash, 1, 2, fmtF(pmsER, '#.##'), dashTxt, dashSizeC)
+        dashCell(dash, 2, 2, tick(rgFacER), rgFacER ? #26a69a : #ef5350, dashSizeC)
+        dashCell(dash, 0, 3, 'Close location', dashTxt, dashSizeC)
+        dashCell(dash, 1, 3, fmtF(pmsCLR, '#.##'), dashTxt, dashSizeC)
+        dashCell(dash, 2, 3, tick(rgFacCLR), rgFacCLR ? #26a69a : #ef5350, dashSizeC)
+        dashCell(dash, 0, 4, 'Range / 20d med', dashTxt, dashSizeC)
+        dashCell(dash, 1, 4, na(rgMedian) or rgMedian <= 0 or na(pmsHi) ? '—' :
+             str.tostring((pmsHi - pmsLo) / rgMedian, '#.##') + '×', dashTxt, dashSizeC)
+        dashCell(dash, 2, 4, tick(rgFacExp), rgFacExp ? #26a69a : #ef5350, dashSizeC)
+        dashCell(dash, 0, 5, 'Trending', dashTxt, dashSizeC)
+        dashCell(dash, 1, 5, rgTrend ? 'YES' : 'no', rgTrend ? #ef5350 : dim, dashSizeC)
+        dashCell(dash, 2, 5, str.tostring(rgFacN) + '/3', dim, dashSizeC)
+        dashCell(dash, 0, 6, 'Key level', dashTxt, dashSizeC)
+        dashCell(dash, 1, 6, na(rgTagLv) ? 'none in range' : rgTagNm + ' ' + fmtF(rgTagLv, format.mintick),
+             rgTagged ? dashTxt : dim, dashSizeC)
+        dashCell(dash, 0, 7, 'Penetration', dashTxt, dashSizeC)
+        dashCell(dash, 1, 7, na(rgTagPen) ? '—' : fmtF(rgTagPen, format.mintick), dashTxt, dashSizeC)
+        dashCell(dash, 2, 7, na(rgTagLv) ? '' : rgShall ? 'shallow' : rgTagged ? 'near' : 'passed through',
+             rgShall ? #ef5350 : dim, dashSizeC)
+        dashCell(dash, 0, 8, 'SCORE', dashTxt, dashSizeC)
+        dashCell(dash, 1, 8, str.tostring(rgScore), rgLabelCol, dashSizeC)
+        dashCell(dash, 2, 8, rgLabel, rgLabelCol, dashSizeC)
+        dashCell(dash, 0, 9, 'Now', dashTxt, dashSizeC)
+        dashCell(dash, 1, 9, nowS, dashTxt, dashSizeC)
+        dashCell(dash, 0, 10, 'AM realised', dashTxt, dashSizeC)
+        dashCell(dash, 1, 10, na(rgAmER) ? 'pending' : 'ER ' + str.tostring(rgAmER, '#.##'),
+             na(rgAmER) ? dim : dashTxt, dashSizeC)
+        dashCell(dash, 2, 10, na(rgAmRatio) ? '' : str.tostring(rgAmRatio, '#.##') + '× med', dim, dashSizeC)
+
+    // --- CALIBRATION STUDY ----------------------------------------
+    //   A binary trending/not split can only report on the cut you
+    //   already chose. Sorting sessions by how directional the
+    //   premarket was and splitting into quartiles shows the SHAPE of
+    //   the relationship instead, which is what tells you whether a
+    //   threshold is worth setting and where it belongs.
+    //
+    //   Read the med AM ER column downward. Falling means the more
+    //   directional the premarket, the choppier the morning — the
+    //   claim ⑩ encodes. Flat means there is nothing to threshold.
+    if dashStats
+        pmVals = array.new<float>()
+        for rr in regRows
+            if not na(rr.amER) and not na(rr.pmER)
+                pmVals.push(rr.pmER)
+        nAll = pmVals.size()
+
+        dashCell(dash, 0, rBase, '', dim, dashSizeC)
+        dashCell(dash, 0, rBase + 1, 'PREMARKET ER', dashTxt, dashSizeC)
+        dashCell(dash, 1, rBase + 1, 'med AM ER', dim, dashSizeC)
+        dashCell(dash, 2, rBase + 1, nAll < 8 ? 'NEED 8+' : nAll < 40 ? 'THIN n=' + str.tostring(nAll) : 'n=' + str.tostring(nAll),
+             nAll < 40 ? #ffb74d : dim, dashSizeC)
+
+        if nAll >= 8
+            srt = pmVals.copy()
+            srt.sort(order.ascending)
+            c1 = srt.get(int(nAll * 0.25))
+            c2 = srt.get(int(nAll * 0.50))
+            c3 = srt.get(int(nAll * 0.75))
+            b0 = array.new<float>()
+            b1 = array.new<float>()
+            b2 = array.new<float>()
+            b3 = array.new<float>()
+            for rr in regRows
+                if not na(rr.amER) and not na(rr.pmER)
+                    if rr.pmER <= c1
+                        b0.push(rr.amER)
+                    else if rr.pmER <= c2
+                        b1.push(rr.amER)
+                    else if rr.pmER <= c3
+                        b2.push(rr.amER)
+                    else
+                        b3.push(rr.amER)
+            m0 = b0.size() > 0 ? b0.median() : na
+            m1 = b1.size() > 0 ? b1.median() : na
+            m2 = b2.size() > 0 ? b2.median() : na
+            m3 = b3.size() > 0 ? b3.median() : na
+
+            labs = array.from('Q1 flattest', 'Q2', 'Q3', 'Q4 most dir.')
+            meds = array.from(m0, m1, m2, m3)
+            cnts = array.from(b0.size(), b1.size(), b2.size(), b3.size())
+            for i = 0 to 3
+                mv = meds.get(i)
+                dashCell(dash, 0, rBase + 2 + i, labs.get(i), dashTxt, dashSizeC)
+                dashCell(dash, 1, rBase + 2 + i, na(mv) ? '—' : str.tostring(mv, '#.##'), dashTxt, dashSizeC)
+                dashCell(dash, 2, rBase + 2 + i, 'n=' + str.tostring(cnts.get(i)), dim, dashSizeC)
+
+            // Spread across the study. Negative is the direction the
+            // claim predicts; near zero means no relationship at all.
+            spread = na(m3) or na(m0) ? na : m3 - m0
+            verdict = na(spread) ? '' :
+                 spread <= -0.30 ? 'effect present' :
+                 spread <= -0.15 ? 'weak' :
+                 spread >= 0.15  ? 'inverted' : 'no effect'
+            vcol = na(spread) ? dim :
+                 spread <= -0.30 ? #26a69a : spread <= -0.15 ? #ffb74d : #ef5350
+            dashCell(dash, 0, rBase + 6, 'Q4 − Q1', dashTxt, dashSizeC)
+            dashCell(dash, 1, rBase + 6, na(spread) ? '—' : str.tostring(spread, '+#.##;-#.##'), vcol, dashSizeC)
+            dashCell(dash, 2, rBase + 6, verdict, vcol, dashSizeC)
+
+    // --- SESSION LOG ----------------------------------------------
+    if dashHist > 0
+        hTop = rBase + rStats
+        dashCell(dash, 0, hTop, '', dim, dashSizeC)
+        dashCell(dash, 0, hTop + 1, 'DATE',  dim, dashSizeC)
+        dashCell(dash, 1, hTop + 1, 'TREND', dim, dashSizeC)
+        dashCell(dash, 2, hTop + 1, 'SCORE', dim, dashSizeC)
+        dashCell(dash, 3, hTop + 1, 'AM ER', dim, dashSizeC)
+        for i = 0 to dashHist - 1
+            rw = hTop + 2 + i
+            if i < regRows.size()
+                rr = regRows.get(i)
+                mm = int((rr.dayKey % 10000) / 100)
+                dd = rr.dayKey % 100
+                dashCell(dash, 0, rw, pad2(mm) + '-' + pad2(dd), color.new(dashTxt, 20), dashSizeC)
+                dashCell(dash, 1, rw, rr.trending ? 'Y' : '·', rr.trending ? #ef5350 : dim, dashSizeC)
+                dashCell(dash, 2, rw, str.tostring(rr.score),
+                     rr.score >= rgConsAt ? #ef5350 : rr.score < rgExpAt ? #26a69a : #ffb74d, dashSizeC)
+                dashCell(dash, 3, rw, na(rr.amER) ? '—' : str.tostring(rr.amER, '#.##'), color.new(dashTxt, 20), dashSizeC)
+            else
+                dashCell(dash, 0, rw, '', dim, dashSizeC)
+                dashCell(dash, 1, rw, '', dim, dashSizeC)
+                dashCell(dash, 2, rw, '', dim, dashSizeC)
+                dashCell(dash, 3, rw, '', dim, dashSizeC)
+
+
+// ==============================================================
+// ⑫ SUSPENSION BLOCKS
+//   An FVG carrying a volume imbalance at BOTH ends — the displacement
+//   candle's body gapped away from its neighbour's body above AND below.
+//   Three stacked spans of price with no body trade across any of them.
+//
+//   Read from the CHART timeframe, not sourced from 1m. Module ⑥ goes to
+//   1m regardless of what you are viewing because a "first presented" gap
+//   has one true formation time and it is not up for negotiation. A
+//   suspension block makes no such claim — it is a property of the candles
+//   in front of you, so it is read from them.
+// ==============================================================
+type SuspBlk
+    box   bx
+    label lb
+
+var array<SuspBlk> spBlocks = array.new<SuspBlk>()
+
+inSpRTH   = not na(time(timeframe.period, spSess, TZ))
+spScopeOK = spScope == 'Everywhere' ? true :
+     spScope == 'RTH only'          ? inSpRTH :
+     (inTV == 1 or inTA == 1 or inTB == 1)
+
+spBullRaw = low > high[2]
+spBearRaw = high < low[2]
+spRawSize = spBullRaw ? low - high[2] : spBearRaw ? low[2] - high : 0.0
+
+[spBt, spBb, spBvh, spBvl] = fvgBullEdges()
+[spSt, spSb, spSvh, spSvl] = fvgBearEdges()
+
+spGate = useSP and spScopeOK and barstate.isconfirmed and spRawSize >= spMinSize
+spBull = spGate and spBullRaw and spBvh and spBvl
+spBear = spGate and spBearRaw and spSvh and spSvl
+
+if spBull or spBear
+    spTopV = spBull ? spBt : spSt
+    spBotV = spBull ? spBb : spSb
+    spColV = spBull ? spBullCol : spBearCol
+    spNew  = SuspBlk.new()
+    spNew.bx := box.new(bar_index - 2, spTopV, bar_index + spExtend, spBotV,
+         border_color = color.new(spColV, 0), bgcolor = spColV, border_width = 1)
+    if spShowLb
+        spNew.lb := label.new(bar_index + spExtend, (spTopV + spBotV) / 2, 'SUSP',
+             xloc = xloc.bar_index, style = label.style_label_left, color = #00000000,
+             textcolor = color.new(spColV, 0), size = size.tiny)
+    spBlocks.unshift(spNew)
+    while spBlocks.size() > spKeep
+        spOld = spBlocks.pop()
+        spOld.bx.delete()
+        if not na(spOld.lb)
+            spOld.lb.delete()
+
+
+// ==============================================================
+// ⑬ NEW DAY / NEW WEEK OPENING GAPS
+//   NDOG — the prior session's settlement print to the new session's
+//          18:00 open.
+//   NWOG — the same span across the weekend: Friday's settlement to the
+//          Sunday open. Monday's NDOG and the NWOG are the SAME object,
+//          so by default the NWOG owns Monday and the NDOG skips it.
+//
+//   These are not retired when filled. Price returns to them long after
+//   the first pass — that is the reason to carry them at all — so there
+//   is no mitigation state here, no fade, and no fill test. A block
+//   stays exactly as drawn until retention pushes it off the back.
+// ==============================================================
+type OpenGap
+    box   bx
+    line  ce
+    label lb
+
+ngLS = ngLblSize == 'tiny' ? size.tiny : ngLblSize == 'small' ? size.small : size.normal
+
+var array<OpenGap> nwGaps = array.new<OpenGap>()
+var array<OpenGap> ndGaps = array.new<OpenGap>()
+
+// Armed by the settlement window, CONSUMED when a gap is drawn. A window
+// that never prints — holiday, half day, data hole — therefore yields no
+// gap at all, rather than one measured against a stale close carried over
+// from some earlier day.
+var float ngSettleC = na
+if timeframe.isintraday and not na(time(timeframe.period, ngSettle, TZ))
+    ngSettleC := close
+
+ngNewDay = timeframe.change('D')
+// An 18:00 open belongs to the NEXT weekday. Shifting six hours forward
+// names the trading day rather than the calendar day.
+ngIsMon  = dayofweek(time + 21600000, TZ) == dayofweek.monday
+// Daily and above have no settlement window to read, so the gap spans the
+// previous bar's close to this bar's open. Close, but not identical.
+ngCloseEff = timeframe.isintraday ? ngSettleC : close[1]
+
+ngDrawGap(float gTop, float gBot, color fill, color edge, string tag) =>
+    g = OpenGap.new()
+    g.bx := box.new(bar_index, gTop, bar_index + 1, gBot,
+         border_color = edge, bgcolor = fill, border_width = 1)
+    if ngShowCE
+        g.ce := line.new(bar_index, (gTop + gBot) / 2, bar_index + 1, (gTop + gBot) / 2,
+             color = ngCECol, style = line.style_dashed)
+    if ngShowLb
+        g.lb := label.new(bar_index + 1, (gTop + gBot) / 2,
+             tag + (ngLblDate ? '  ' + str.format_time(time, 'dd MMM', TZ) : ''),
+             style = label.style_label_left, color = #00000000,
+             textcolor = ngTxtCol, size = ngLS)
+    g
+
+nwFormed = false
+ndFormed = false
+
+if ngNewDay and not na(ngCloseEff)
+    ngHi = math.max(open, ngCloseEff)
+    ngLo = math.min(open, ngCloseEff)
+    if ngHi - ngLo > 0 and ngHi - ngLo >= ngMinSize
+        if useNW and ngIsMon
+            nwGaps.unshift(ngDrawGap(ngHi, ngLo, nwFill, nwEdge, 'NWOG'))
+            nwFormed := true
+            while nwGaps.size() > nwKeep
+                ngOld = nwGaps.pop()
+                ngOld.bx.delete()
+                if not na(ngOld.ce)
+                    ngOld.ce.delete()
+                if not na(ngOld.lb)
+                    ngOld.lb.delete()
+        if useND and (not ngIsMon or ndMon)
+            ndGaps.unshift(ngDrawGap(ngHi, ngLo, ndFill, ndEdge, 'NDOG'))
+            ndFormed := true
+            while ndGaps.size() > ndKeep
+                ngOld2 = ndGaps.pop()
+                ngOld2.bx.delete()
+                if not na(ngOld2.ce)
+                    ngOld2.ce.delete()
+                if not na(ngOld2.lb)
+                    ngOld2.lb.delete()
+    // Consume the armed close whether or not it produced a gap, so a
+    // sub-threshold day cannot leave it primed for tomorrow.
+    ngSettleC := na
+
+// Walked forward on the last bar only. Historical bars never display an
+// intermediate right edge, so extending on every bar would be pure cost.
+if barstate.islast
+    for g in nwGaps
+        g.bx.set_right(bar_index + 1)
+        if not na(g.ce)
+            g.ce.set_x2(bar_index + 1)
+        if not na(g.lb)
+            g.lb.set_x(bar_index + 1)
+    for g in ndGaps
+        g.bx.set_right(bar_index + 1)
+        if not na(g.ce)
+            g.ce.set_x2(bar_index + 1)
+        if not na(g.lb)
+            g.lb.set_x(bar_index + 1)
+
+
+// ==============================================================
+// FVG GEOMETRY DIAGNOSTIC
+//   Only meaningful while the ①②③ override is on. OFFERED counts library
+//   FVGs handed to the widening logic; WIDENED counts those whose edges
+//   actually moved; REFUSED counts those where an edge did not verify as
+//   a raw wick and was passed through untouched.
+//
+//   OFFERED climbing with WIDENED at zero means the override is not
+//   engaging and the toggle is doing nothing.
+// ==============================================================
+var table viTbl = na
+if viDiag and barstate.islast
+    if na(viTbl)
+        viTbl := table.new(position.top_left, 2, 4, bgcolor = dashBg, border_width = 1,
+             border_color = color.new(dashTxt, 80))
+    viMode = not uniFVG ? 'library' : not incVI ? 'VI off' : 'unified'
+    table.cell(viTbl, 0, 0, 'FVG geometry', text_color = dashTxt,  text_size = size.tiny, text_halign = text.align_left)
+    table.cell(viTbl, 1, 0, viMode,         text_color = dashTxt,  text_size = size.tiny, text_halign = text.align_right)
+    table.cell(viTbl, 0, 1, 'offered',      text_color = color.new(dashTxt, 35), text_size = size.tiny, text_halign = text.align_left)
+    table.cell(viTbl, 1, 1, str.tostring(viOffered), text_color = dashTxt, text_size = size.tiny, text_halign = text.align_right)
+    table.cell(viTbl, 0, 2, 'widened',      text_color = color.new(dashTxt, 35), text_size = size.tiny, text_halign = text.align_left)
+    table.cell(viTbl, 1, 2, str.tostring(viWidened),
+         text_color = viOffered == 0 ? dashTxt : viWidened > 0 ? #26a69a : #ef5350, text_size = size.tiny, text_halign = text.align_right)
+    table.cell(viTbl, 0, 3, 'refused',      text_color = color.new(dashTxt, 35), text_size = size.tiny, text_halign = text.align_left)
+    table.cell(viTbl, 1, 3, str.tostring(viRefused), text_color = dashTxt, text_size = size.tiny, text_halign = text.align_right)
+
+
+// ==============================================================
+// ⑭ SILVER BULLET ENTRIES
+//   The only module that marks entries. It reads the other modules
+//   instead of re-deriving them, so a marker always agrees with the
+//   zones already drawn:
+//     raid    — an N-bar extreme taken, or any ⑤ sweep
+//     zone    — an FVG after the raid (A, or A+ when ④ made it),
+//               an opposing FVG inverted after the raid (A+), or a
+//               body flip through today's ⑥ gap (A+)
+//     entry   — the RETEST of that zone, inside the window
+//     gate    — ⑦: do not fade the draw to an untagged ORG CE
+//     caution — an opposing ⑥ gap between entry and target → B
+//   The raid and zone may form sbGrace minutes before the window;
+//   the retest must land inside it. Confirmed bars only.
+// ==============================================================
+sbOn  = useSBE and timeframe.isintraday
+sbDay = year(time, TZ) * 10000 + month(time, TZ) * 100 + dayofmonth(time, TZ)
+sbMd  = hour(time, TZ) * 60 + minute(time, TZ)
+[sbAStart, sbAEnd] = sessBounds(sbWinA)
+[sbBStart, sbBEnd] = sessBounds(sbWinB)
+
+sbInWinA = sbOn and sbUseA and sbMd >= sbAStart and sbMd < sbAEnd
+sbInWinB = sbOn and sbUseB and sbMd >= sbBStart and sbMd < sbBEnd
+sbInWin  = sbInWinA or sbInWinB
+sbInArm  = sbOn and ((sbUseA and sbMd >= sbAStart - sbGrace and sbMd < sbAEnd) or
+     (sbUseB and sbMd >= sbBStart - sbGrace and sbMd < sbBEnd))
+sbWinTag = sbInWinA ? 'Window A' : 'Window B'
+
+// --- raid: liquidity beyond the prior range, or a ⑤ sweep ---
+sbLoRef = ta.lowest(low, sbRaidLb)
+sbHiRef = ta.highest(high, sbRaidLb)
+sbLoWin = ta.lowest(low, sbRaidWin)
+sbHiWin = ta.highest(high, sbRaidWin)
+sbRaidLo = sbLoWin < sbLoRef[sbRaidWin] or nz(ta.barssince(anySellSide), 100000) < sbRaidWin
+sbRaidHi = sbHiWin > sbHiRef[sbRaidWin] or nz(ta.barssince(anyBuySide), 100000) < sbRaidWin
+
+// --- FVGs on this bar, with the same edge geometry as ④⑥⑫ ---
+sbBullNow = low > high[2] and low - high[2] >= sbMinGap
+sbBearNow = high < low[2] and low[2] - high >= sbMinGap
+[sbBullT, sbBullB, sbBullVH, sbBullVL] = fvgBullEdges()
+[sbBearT, sbBearB, sbBearVH, sbBearVL] = fvgBearEdges()
+
+// --- first-presented flip: a body closes clean through today's ⑥ gap ---
+//   side +1 = last body close above the gap, -1 = below. Closes inside
+//   the gap leave it unchanged, so a flip needs a full pass through.
+sbFpFlip(float t, float b, bool isBull, bool formedNow) =>
+    var int side = 0
+    up = false
+    dn = false
+    if na(t)
+        side := 0
+    else if formedNow
+        side := isBull ? 1 : -1
+    else if barstate.isconfirmed
+        nowSide = close > t ? 1 : close < b ? -1 : side
+        up   := side == -1 and nowSide == 1
+        dn   := side == 1 and nowSide == -1
+        side := nowSide
+    [up, dn]
+
+[sbAMup, sbAMdn] = sbFpFlip(fpAMtop, fpAMbot, fpAMbull, fpAMform)
+[sbPMup, sbPMdn] = sbFpFlip(fpPMtop, fpPMbot, fpPMbull, fpPMform)
+sbFpUp = sbUseFP and (sbAMup or sbPMup)
+sbFpDn = sbUseFP and (sbAMdn or sbPMdn)
+sbFpUT = sbPMup ? fpPMtop : fpAMtop
+sbFpUB = sbPMup ? fpPMbot : fpAMbot
+sbFpDT = sbPMdn ? fpPMtop : fpAMtop
+sbFpDB = sbPMdn ? fpPMbot : fpAMbot
+// swing extremes for the flip stop — hoisted so they update every bar
+sbFpLo = ta.lowest(low, sbFpSwing)
+sbFpHi = ta.highest(high, sbFpSwing)
+
+// --- one engine per direction; each call site keeps its own state ---
+//   dir  +1 long / -1 short. Long zones are entered at their TOP,
+//   short zones at their BOTTOM (or the CE of either).
+sbEngine(int dir, bool raid, float raidExt, bool fvgNow, float fvgT, float fvgB, bool dispNow,
+     bool oppNow, float oppT, float oppB, bool fpNow, float fpT, float fpB, float fpSwing, bool inArm, bool inWin) =>
+    var float  zT    = na
+    var float  zB    = na
+    var int    zBar  = na
+    var string zKind = ''
+    var float  zStop = na
+    var float  oT    = na
+    var float  oB    = na
+    var int    oBar  = na
+    fired = false
+    float  ePx  = na
+    float  sPx  = na
+    string kind = ''
+    float  fT   = na
+    float  fB   = na
+    if barstate.isconfirmed
+        // 1 — retest of an armed zone. Checked BEFORE arming, so a zone
+        //     can never fill on the bar that created it.
+        //     CONFIRMED: the bar must reach the level and CLOSE back out on
+        //     the trade side of it; entry is the close, and the stop is
+        //     widened to clear the retest wick if it poked further.
+        //     LIMIT: fills on touch — a retest bar that then closes through
+        //     the far edge still counts as filled, and the stop scores it.
+        if not na(zT)
+            lvl   = sbEntryAt == 'CE (50%)' ? (zT + zB) / 2 : dir == 1 ? zT : zB
+            conf  = sbTrigger == 'Confirmed retest'
+            touch = dir == 1 ? low <= lvl : high >= lvl
+            held  = not conf or (dir == 1 ? close > lvl : close < lvl)
+            if inWin and bar_index > zBar and touch and held
+                fired := true
+                ePx   := conf ? close : dir == 1 ? math.min(lvl, open) : math.max(lvl, open)
+                sPx   := conf ? (dir == 1 ? math.min(zStop, low - sbBuf) : math.max(zStop, high + sbBuf)) : zStop
+                // a fixed-distance flip stop is measured from the fill itself
+                if zKind == 'FP flip' and sbFpStop == 'Fixed points'
+                    sPx := ePx - dir * sbFpPts
+                // retest-candle stop: just beyond the wick of the confirming bar
+                if conf and (zKind == 'FP flip' ? sbFpStop == 'Retest candle' : sbStopMode == 'Retest candle')
+                    sPx := dir == 1 ? low - sbBuf : high + sbBuf
+                kind  := zKind
+                fT    := zT
+                fB    := zB
+                zT    := na
+            else if (dir == 1 ? close < zB : close > zT) or not inArm or bar_index - zBar > sbZoneMax
+                zT := na
+        // 2 — the latest opposing FVG is the inversion candidate
+        if oppNow
+            oT   := oppT
+            oB   := oppB
+            oBar := bar_index
+        // 3 — arm. The newest setup replaces an unfilled older one.
+        if inArm
+            if fpNow
+                zT    := fpT
+                zB    := fpB
+                zBar  := bar_index
+                zKind := 'FP flip'
+                zStop := sbFpStop == 'Swing extreme' ?
+                     (dir == 1 ? math.min(fpSwing, fpB) - sbBuf : math.max(fpSwing, fpT) + sbBuf) :
+                     (dir == 1 ? fpB - sbBuf : fpT + sbBuf)
+            else if raid and fvgNow
+                zT    := fvgT
+                zB    := fvgB
+                zBar  := bar_index
+                zKind := dispNow ? 'DISP' : 'FVG'
+                zStop := sbStopMode == 'Raid extreme' ? raidExt - dir * sbBuf : (dir == 1 ? fvgB : fvgT) - dir * sbBuf
+            else if sbUseIFVG and raid and not na(oT) and bar_index - oBar <= sbRaidLb and
+                 (dir == 1 ? close > oT and close[1] <= oT : close < oB and close[1] >= oB)
+                zT    := oT
+                zB    := oB
+                zBar  := bar_index
+                zKind := 'IFVG'
+                zStop := sbStopMode == 'Raid extreme' ? raidExt - dir * sbBuf : (dir == 1 ? oB : oT) - dir * sbBuf
+                oT    := na
+    [fired, ePx, sPx, kind, fT, fB]
+
+[sbLF, sbLPx, sbLStop, sbLKind, sbLZT, sbLZB] = sbEngine( 1, sbRaidLo, sbLoWin, sbBullNow, sbBullT, sbBullB, newBullD,
+     sbBearNow, sbBearT, sbBearB, sbFpUp, sbFpUT, sbFpUB, sbFpLo, sbInArm, sbInWin)
+[sbSF, sbSPx, sbSStop, sbSKind, sbSZT, sbSZB] = sbEngine(-1, sbRaidHi, sbHiWin, sbBearNow, sbBearT, sbBearB, newBearD,
+     sbBullNow, sbBullT, sbBullB, sbFpDn, sbFpDT, sbFpDB, sbFpHi, sbInArm, sbInWin)
+
+// --- ⑦ gate: today's ORG, its direction, and whether CE has traded ---
+var int  sbOrgDay = na
+var bool sbOrgUp  = false
+var bool sbCEd    = false
+if ogForm
+    sbOrgDay := sbDay
+    sbOrgUp  := open >= ogTop      // opened at the top of the gap = gap up
+    sbCEd    := false
+if ogCEtap
+    sbCEd := true
+sbGateOn = sbGate and useOG and sbOrgDay == sbDay and not sbCEd and not na(ogCElvl) and
+     math.abs(close - ogCElvl) <= sbCEProx
+sbBlockL = sbGateOn and sbOrgUp        // gap up draws DOWN to CE
+sbBlockS = sbGateOn and not sbOrgUp    // gap down draws UP to CE
+
+// --- caution: an opposing ⑥ gap sitting between entry and target ---
+sbObstacle(int dir, float e, float tg) =>
+    dir == 1 ?
+     (not na(fpAMtop) and not fpAMbull and fpAMbot > e and fpAMbot < tg) or
+     (not na(fpPMtop) and not fpPMbull and fpPMbot > e and fpPMbot < tg) :
+     (not na(fpAMtop) and fpAMbull and fpAMtop < e and fpAMtop > tg) or
+     (not na(fpPMtop) and fpPMbull and fpPMtop < e and fpPMtop > tg)
+
+// --- trade record and scorecard ---
+//   grade index: 0 = A+, 1 = A, 2 = B, 3 = blocked (shadow, never counted as taken)
+type SBTrade
+    int    dir
+    float  entry
+    float  stop
+    float  tgt
+    int    bar
+    int    grade
+    bool   beDone
+    bool   isOpen
+    string txt
+    label  lb
+    line   lnT
+    line   lnS
+
+var array<SBTrade> sbOpen = array.new<SBTrade>()
+var array<SBTrade> sbDrawn = array.new<SBTrade>()
+var array<int>   sbN   = array.from(0, 0, 0, 0)
+var array<int>   sbW   = array.from(0, 0, 0, 0)
+var array<int>   sbL   = array.from(0, 0, 0, 0)
+var array<int>   sbZ   = array.from(0, 0, 0, 0)       // break-even and time exits
+var array<float> sbPts = array.from(0.0, 0.0, 0.0, 0.0)
+// prop metrics over TAKEN trades, in closing order: equity, peak, max drawdown, worst trade
+var array<float> sbEq  = array.from(0.0, 0.0, 0.0, 0.0)
+// current and longest run of consecutive losses (a scratch does not reset it, a win does)
+var array<int>   sbStk = array.from(0, 0)
+// daily loss guard: [New York day key, losses taken that day]
+var array<int>   sbDayL = array.from(0, 0)
+
+sbGradeTxt(int g) => g == 0 ? 'A+' : g == 1 ? 'A' : g == 2 ? 'B' : 'X'
+sbGradeCol(int g) => g == 0 ? sbColAP : g == 1 ? sbColA : g == 2 ? sbColB : sbColX
+
+sbClose(SBTrade t, int outcome, float pts) =>
+    t.isOpen := false
+    g = t.grade
+    if outcome == 1
+        sbW.set(g, sbW.get(g) + 1)
+    else if outcome == -1
+        sbL.set(g, sbL.get(g) + 1)
+    else
+        sbZ.set(g, sbZ.get(g) + 1)
+    sbPts.set(g, sbPts.get(g) + pts)
+    if g < 3
+        eqNow = sbEq.get(0) + pts
+        sbEq.set(0, eqNow)
+        sbEq.set(1, math.max(sbEq.get(1), eqNow))
+        sbEq.set(2, math.max(sbEq.get(2), sbEq.get(1) - eqNow))
+        sbEq.set(3, math.min(sbEq.get(3), pts))
+        if outcome == -1
+            if sbDayL.get(0) != sbDay
+                sbDayL.set(0, sbDay)
+                sbDayL.set(1, 0)
+            sbDayL.set(1, sbDayL.get(1) + 1)
+        if outcome == -1
+            sbStk.set(0, sbStk.get(0) + 1)
+            sbStk.set(1, math.max(sbStk.get(1), sbStk.get(0)))
+        else if outcome == 1
+            sbStk.set(0, 0)
+    if not na(t.lb)
+        t.lb.set_text(t.txt + (outcome == 1 ? ' ✓ ' : outcome == -1 ? ' ✗ ' : ' ○ ') + str.tostring(pts, '+#.##;-#.##'))
+    if not na(t.lnT)
+        t.lnT.set_x2(bar_index)
+        t.lnS.set_x2(bar_index)
+    true
+
+sbMake(int dir, float px, float stp, string kind, bool blocked) =>
+    risk = math.abs(px - stp)
+    tg   = sbTgtMode == 'Fixed points' ? px + dir * sbTgtPts : px + dir * risk * sbTgtR
+    g    = blocked ? 3 : sbCaution and sbObstacle(dir, px, tg) ? 2 : kind == 'FVG' ? 1 : 0
+    t    = SBTrade.new(dir = dir, entry = px, stop = stp, tgt = tg, bar = bar_index, grade = g,
+         beDone = false, isOpen = true)
+    t.txt := blocked ? '✕ ' + kind : sbGradeTxt(g) + (dir == 1 ? ' ▲ ' : ' ▼ ') + kind
+    sbN.set(g, sbN.get(g) + 1)
+    if not blocked or sbShadow
+        tip = (dir == 1 ? 'LONG ' : 'SHORT ') + sbGradeTxt(g) + ' · ' + kind + ' · ' + sbWinTag +
+             (blocked ? '\nBLOCKED — fades the draw to an untagged ORG CE' : '') +
+             '\nEntry  ' + str.tostring(px, format.mintick) +
+             '\nStop   ' + str.tostring(stp, format.mintick) + '  (' + str.tostring(risk, format.mintick) + ' pts)' +
+             '\nTarget ' + str.tostring(tg, format.mintick)
+        col = sbGradeCol(g)
+        t.lb := label.new(bar_index, na, t.txt, yloc = dir == 1 ? yloc.belowbar : yloc.abovebar,
+             style = dir == 1 ? label.style_label_up : label.style_label_down,
+             color = blocked ? color.new(col, 60) : col, textcolor = #000000, size = size.tiny, tooltip = tip)
+        if sbLines and not blocked
+            t.lnT := line.new(bar_index, tg,  bar_index + 1, tg,  color = color.new(#26a69a, 20), style = line.style_dotted)
+            t.lnS := line.new(bar_index, stp, bar_index + 1, stp, color = color.new(#ef5350, 20), style = line.style_dotted)
+        sbDrawn.unshift(t)
+        while sbDrawn.size() > sbKeep
+            old = sbDrawn.pop()
+            old.lb.delete()
+            old.lb := na
+            if not na(old.lnT)
+                old.lnT.delete()
+                old.lnS.delete()
+                old.lnT := na
+                old.lnS := na
+    if sbDyn and not blocked
+        alert(str.format('{0} {1} — SB {2} {3} ({4}) {5} | entry {6} | stop {7} | target {8} | price {9}',
+             syminfo.ticker, timeframe.period, dir == 1 ? 'LONG' : 'SHORT', sbGradeTxt(g), kind, sbWinTag,
+             str.tostring(px, format.mintick), str.tostring(stp, format.mintick),
+             str.tostring(tg, format.mintick), str.tostring(close, format.mintick)), alert.freq_once_per_bar_close)
+    // LIMIT fills: the entry bar can already have run the stop — the order
+    // of wick events after the fill is unknown, so assume the worst.
+    // CONFIRMED fills happen at the close, after the bar's range printed,
+    // and the stop was already set beyond that range.
+    if sbTrigger == 'Limit on touch' and (dir == 1 ? low <= stp : high >= stp)
+        sbClose(t, -1, -risk)
+    else
+        sbOpen.push(t)
+    t
+
+// --- follow open trades: stop, target, break-even, time ---
+//   A bar touching both stop and target scores the stop.
+if barstate.isconfirmed and sbOpen.size() > 0
+    for i = sbOpen.size() - 1 to 0
+        t = sbOpen.get(i)
+        isL  = t.dir == 1
+        hitS = isL ? low <= t.stop : high >= t.stop
+        hitT = isL ? high >= t.tgt : low <= t.tgt
+        if hitS
+            sbClose(t, t.beDone ? 0 : -1, (t.stop - t.entry) * t.dir)
+        else if hitT
+            sbClose(t, 1, (t.tgt - t.entry) * t.dir)
+        else if bar_index - t.bar >= sbMaxHold
+            sbClose(t, 0, (close - t.entry) * t.dir)
+        else if not t.beDone and ((sbBE > 0 and (isL ? high >= t.entry + sbBE : low <= t.entry - sbBE)) or
+             (sbBECandle and bar_index == t.bar + 1 and (close - t.entry) * t.dir > 0))
+            t.beDone := true
+            t.stop   := t.entry
+            if not na(t.lnS)
+                t.lnS.set_y1(t.entry)
+                t.lnS.set_y2(t.entry)
+        if not t.isOpen
+            sbOpen.remove(i)
+        else if not na(t.lnT)
+            t.lnT.set_x2(bar_index + 1)
+            t.lnS.set_x2(bar_index + 1)
+
+// --- exit grid (research) ---
+//   Every TAKEN entry is replayed against 4 stop rules × 4 fixed targets
+//   from the same fill, so one chart load scores 16 exit combinations.
+//   Stops: as set · zone far edge · as set capped at cap 1 · capped at cap 2.
+//   Same scoring as the main scorecard (tie = loss, time exit at close),
+//   no break-even. Results split into older and newer halves of the trades.
+type SBGridTrade
+    int          dir
+    float        entry
+    int          bar
+    int          grade
+    string       kind
+    bool         be3
+    array<bool>  skip
+    array<float> stops
+    array<float> res
+    array<float> hit
+
+var array<float>       sbGT    = array.from(10.0, 15.0, 20.0, 30.0)
+var array<SBGridTrade> sbGOpen = array.new<SBGridTrade>()
+var array<SBGridTrade> sbGAll  = array.new<SBGridTrade>()
+
+sbGridMake(int dir, float px, float stp, float zt, float zb, int grade, string kind) =>
+    far = dir == 1 ? zb - sbBuf : zt + sbBuf
+    // confirmed entries fill at the close — the stop must clear that bar's wick
+    if sbTrigger == 'Confirmed retest'
+        far := dir == 1 ? math.min(far, low - sbBuf) : math.max(far, high + sbBuf)
+    if na(far) or (dir == 1 ? far >= px : far <= px)
+        far := stp
+    // retest-candle wick: the entry bar's own extreme
+    rt = dir == 1 ? low - sbBuf : high + sbBuf
+    if dir == 1 ? rt >= px : rt <= px
+        rt := far
+    g = SBGridTrade.new(dir = dir, entry = px, bar = bar_index, grade = grade, kind = kind, be3 = false,
+         stops = array.from(stp, far, rt, rt),
+         res = array.new<float>(16, na), hit = array.new<float>(16, na), skip = array.new<bool>(16, false))
+    // prop limit: a row whose stop is too wide simply does not take this trade
+    if sbGridMax > 0
+        for c = 0 to 15
+            if math.abs(px - g.stops.get(int(c / 4))) > sbGridMax
+                g.skip.set(c, true)
+    if sbTrigger == 'Limit on touch'
+        for c = 0 to 15
+            s = g.stops.get(int(c / 4))
+            if not g.skip.get(c) and (dir == 1 ? low <= s : high >= s)
+                g.res.set(c, (s - px) * dir)
+                g.hit.set(c, -1.0)
+    sbGAll.push(g)
+    sbGOpen.push(g)
+    true
+
+if barstate.isconfirmed and sbGOpen.size() > 0
+    for i = sbGOpen.size() - 1 to 0
+        gt   = sbGOpen.get(i)
+        live = 0
+        for c = 0 to 15
+            if na(gt.res.get(c)) and not gt.skip.get(c)
+                row = int(c / 4)
+                s   = row == 3 and gt.be3 ? gt.entry : gt.stops.get(row)
+                tp  = gt.entry + gt.dir * sbGT.get(c % 4)
+                if gt.dir == 1 ? low <= s : high >= s
+                    gt.res.set(c, (s - gt.entry) * gt.dir)
+                    gt.hit.set(c, s == gt.entry ? 0.0 : -1.0)
+                else if gt.dir == 1 ? high >= tp : low <= tp
+                    gt.res.set(c, sbGT.get(c % 4))
+                    gt.hit.set(c, 1.0)
+                else if bar_index - gt.bar >= sbMaxHold
+                    gt.res.set(c, (close - gt.entry) * gt.dir)
+                    gt.hit.set(c, 0.0)
+                else
+                    live += 1
+        // row 4: break-even once the first candle after entry closes in profit
+        //        (checked after this bar's stop/target, so it never saves a loss on the same bar)
+        if not gt.be3 and bar_index == gt.bar + 1 and (close - gt.entry) * gt.dir > 0
+            gt.be3 := true
+        if live == 0
+            sbGOpen.remove(i)
+
+// --- new entries, capped per window; blocked shadows do not count ---
+var int sbWinCount = 0
+var int sbWinKey   = na
+sbKeyNow = sbDay * 10 + (sbInWinA ? 1 : sbInWinB ? 2 : 0)
+// na-safe: `x != na` is na, which an `if` reads as false.
+if sbInWin and (na(sbWinKey) or sbKeyNow != sbWinKey)
+    sbWinKey   := sbKeyNow
+    sbWinCount := 0
+
+sbLOk = sbLF and sbLStop < sbLPx and (sbMaxRisk <= 0 or sbLPx - sbLStop <= sbMaxRisk)
+sbSOk = sbSF and sbSStop > sbSPx and (sbMaxRisk <= 0 or sbSStop - sbSPx <= sbMaxRisk)
+
+sbDayOk  = sbDayLoss == 0 or not (sbDayL.get(0) == sbDay and sbDayL.get(1) >= sbDayLoss)
+sbSigL   = false
+sbSigS   = false
+sbGradeL = -1
+sbGradeS = -1
+if sbLOk and sbDayOk and (sbBlockL or sbWinCount < sbMaxWin)
+    tL = sbMake(1, sbLPx, sbLStop, sbLKind, sbBlockL)
+    sbGradeL := tL.grade
+    if not sbBlockL
+        sbSigL     := true
+        sbWinCount += 1
+        if sbGrid
+            sbGridMake(1, sbLPx, sbLStop, sbLZT, sbLZB, tL.grade, sbLKind)
+if sbSOk and sbDayOk and (sbBlockS or sbWinCount < sbMaxWin)
+    tS = sbMake(-1, sbSPx, sbSStop, sbSKind, sbBlockS)
+    sbGradeS := tS.grade
+    if not sbBlockS
+        sbSigS     := true
+        sbWinCount += 1
+        if sbGrid
+            sbGridMake(-1, sbSPx, sbSStop, sbSZT, sbSZB, tS.grade, sbSKind)
+
+// --- scorecard ---
+sbPosC = sbStatsPos == 'Top right'    ? position.top_right :
+         sbStatsPos == 'Middle right' ? position.middle_right :
+         sbStatsPos == 'Bottom right' ? position.bottom_right :
+         sbStatsPos == 'Top left'     ? position.top_left : position.bottom_left
+
+var table sbTbl = na
+if sbOn and sbStats and barstate.islast
+    if na(sbTbl)
+        sbTbl := table.new(sbPosC, 5, 8, bgcolor = dashBg, border_color = color.new(dashTxt, 80), border_width = 1)
+    dimC = color.new(dashTxt, 45)
+    dashCell(sbTbl, 0, 0, '⑭ SB ENTRIES', dashTxt, dashSizeC)
+    dashCell(sbTbl, 1, 0, 'n',        dimC, dashSizeC)
+    dashCell(sbTbl, 2, 0, 'win %',    dimC, dashSizeC)
+    dashCell(sbTbl, 3, 0, 'net pts',  dimC, dashSizeC)
+    dashCell(sbTbl, 4, 0, 'W/L/○',    dimC, dashSizeC)
+    tN = 0
+    tW = 0
+    tL2 = 0
+    tZ = 0
+    tP = 0.0
+    for g = 0 to 3
+        n  = sbN.get(g)
+        w  = sbW.get(g)
+        l  = sbL.get(g)
+        z  = sbZ.get(g)
+        p  = sbPts.get(g)
+        rs = w + l + z
+        if g < 3
+            tN  += n
+            tW  += w
+            tL2 += l
+            tZ  += z
+            tP  += p
+        dashCell(sbTbl, 0, g + 1, g == 3 ? 'Blocked (gate)' : 'Grade ' + sbGradeTxt(g), sbGradeCol(g), dashSizeC)
+        dashCell(sbTbl, 1, g + 1, str.tostring(n), dashTxt, dashSizeC)
+        dashCell(sbTbl, 2, g + 1, rs > 0 ? str.tostring(100.0 * w / rs, '#') : '—', dashTxt, dashSizeC)
+        dashCell(sbTbl, 3, g + 1, str.tostring(p, '+#.##;-#.##'), p >= 0 ? #26a69a : #ef5350, dashSizeC)
+        dashCell(sbTbl, 4, g + 1, str.tostring(w) + '/' + str.tostring(l) + '/' + str.tostring(z), dimC, dashSizeC)
+    tR = tW + tL2 + tZ
+    dashCell(sbTbl, 0, 5, 'All taken', dashTxt, dashSizeC)
+    dashCell(sbTbl, 1, 5, str.tostring(tN), dashTxt, dashSizeC)
+    dashCell(sbTbl, 2, 5, tR > 0 ? str.tostring(100.0 * tW / tR, '#') : '—', dashTxt, dashSizeC)
+    dashCell(sbTbl, 3, 5, str.tostring(tP, '+#.##;-#.##'), tP >= 0 ? #26a69a : #ef5350, dashSizeC)
+    dashCell(sbTbl, 4, 5, str.tostring(tW) + '/' + str.tostring(tL2) + '/' + str.tostring(tZ), dimC, dashSizeC)
+    dashCell(sbTbl, 0, 6, 'Max drawdown', dashTxt, dashSizeC)
+    dashCell(sbTbl, 1, 6, str.tostring(-sbEq.get(2), '#.##'), #ef5350, dashSizeC)
+    dashCell(sbTbl, 2, 6, 'worst', dimC, dashSizeC)
+    dashCell(sbTbl, 3, 6, str.tostring(sbEq.get(3), '#.##'), #ef5350, dashSizeC)
+    dashCell(sbTbl, 4, 6, 'loss run ' + str.tostring(sbStk.get(1)), dimC, dashSizeC)
+    dashCell(sbTbl, 0, 7, 'loaded bars · tie = loss', dimC, dashSizeC)
+
+// --- exit grid table ---
+sbGPosC = sbGridPos == 'Bottom left'  ? position.bottom_left :
+          sbGridPos == 'Top left'     ? position.top_left :
+          sbGridPos == 'Middle right' ? position.middle_right : position.top_right
+
+var table sbGTbl = na
+if sbOn and sbGrid and barstate.islast
+    if na(sbGTbl)
+        sbGTbl := table.new(sbGPosC, 5, 7, bgcolor = dashBg, border_color = color.new(dashTxt, 80), border_width = 1)
+    nT   = sbGAll.size()
+    sel  = array.new<int>()
+    if nT > 0
+        for k = 0 to nT - 1
+            gk = sbGAll.get(k)
+            if sbGridSel == 'All taken' or (sbGridSel == 'A+' and gk.grade == 0) or (sbGridSel == 'A' and gk.grade == 1) or
+                 (sbGridSel == 'B' and gk.grade == 2) or (sbGridSel == '1st FVG flips' and gk.kind == 'FP flip')
+                sel.push(k)
+    nS   = sel.size()
+    half = int(nS / 2)
+    dimG = color.new(dashTxt, 45)
+    dashCell(sbGTbl, 0, 0, '⑭ EXIT GRID · ' + sbGridSel + '  n=' + str.tostring(nS), dashTxt, dashSizeC)
+    dashCell(sbGTbl, 0, 1, 'stop ↓ · target →', dimG, dashSizeC)
+    for ti = 0 to 3
+        dashCell(sbGTbl, ti + 1, 1, str.tostring(sbGT.get(ti), '#') + ' pts', dimG, dashSizeC)
+    stopNames = array.from(sbGridSel == '1st FVG flips' ? 'Flip stop (set)' : sbStopMode == 'Raid extreme' ? 'Sweep wick' :
+         sbStopMode == 'Zone far edge' ? 'As set (edge)' : 'As set (retest)', 'Zone edge', 'Retest wick', 'Retest + BE')
+    for si = 0 to 3
+        dashCell(sbGTbl, 0, si + 2, stopNames.get(si), dashTxt, dashSizeC)
+        for ti = 0 to 3
+            c   = si * 4 + ti
+            net = 0.0
+            h1  = 0.0
+            h2  = 0.0
+            wn  = 0
+            rs  = 0
+            if nS > 0
+                for j = 0 to nS - 1
+                    gk = sbGAll.get(sel.get(j))
+                    r  = gk.res.get(c)
+                    if not na(r)
+                        net += r
+                        rs  += 1
+                        if gk.hit.get(c) == 1.0
+                            wn += 1
+                        if j < half
+                            h1 += r
+                        else
+                            h2 += r
+            txt = str.tostring(net, '+#;-#') + '  ' + (rs > 0 ? str.tostring(100.0 * wn / rs, '#') + '%' : '—') + '  n' + str.tostring(rs) +
+                 '\n' + str.tostring(h1, '+#;-#') + ' | ' + str.tostring(h2, '+#;-#')
+            col = h1 > 0 and h2 > 0 ? #26a69a : h1 <= 0 and h2 <= 0 ? #ef5350 : #ffb74d
+            dashCell(sbGTbl, ti + 1, si + 2, txt, col, dashSizeC)
+    dashCell(sbGTbl, 0, 6, 'net · win% / older | newer', dimG, dashSizeC)
+
+
+// ==============================================================
+// ALERTS
+// ==============================================================
+alertcondition(BullTrigV, 'Venom: Bullish CISD', 'LONG  {{ticker}} {{interval}} — bullish CISD confirmed, Venom NY. Price {{close}}')
+alertcondition(BearTrigV, 'Venom: Bearish CISD', 'SHORT {{ticker}} {{interval}} — bearish CISD confirmed, Venom NY. Price {{close}}')
+alertcondition(FvgBullTrigV, 'Venom: Bullish CISD + FVG', 'LONG  {{ticker}} {{interval}} — bullish CISD + unmitigated demand FVG, Venom NY. Price {{close}}')
+alertcondition(FvgBearTrigV, 'Venom: Bearish CISD + FVG', 'SHORT {{ticker}} {{interval}} — bearish CISD + unmitigated supply FVG, Venom NY. Price {{close}}')
+
+alertcondition(BullTrigA, 'A: Bullish CISD', 'LONG  {{ticker}} {{interval}} — bullish CISD confirmed, Window A. Price {{close}}')
+alertcondition(BearTrigA, 'A: Bearish CISD', 'SHORT {{ticker}} {{interval}} — bearish CISD confirmed, Window A. Price {{close}}')
+alertcondition(FvgBullTrigA, 'A: Bullish CISD + FVG', 'LONG  {{ticker}} {{interval}} — bullish CISD + unmitigated demand FVG, Window A. Price {{close}}')
+alertcondition(FvgBearTrigA, 'A: Bearish CISD + FVG', 'SHORT {{ticker}} {{interval}} — bearish CISD + unmitigated supply FVG, Window A. Price {{close}}')
+
+alertcondition(BullTrigB, 'B: Bullish CISD', 'LONG  {{ticker}} {{interval}} — bullish CISD confirmed, Window B. Price {{close}}')
+alertcondition(BearTrigB, 'B: Bearish CISD', 'SHORT {{ticker}} {{interval}} — bearish CISD confirmed, Window B. Price {{close}}')
+alertcondition(FvgBullTrigB, 'B: Bullish CISD + FVG', 'LONG  {{ticker}} {{interval}} — bullish CISD + unmitigated demand FVG, Window B. Price {{close}}')
+alertcondition(FvgBearTrigB, 'B: Bearish CISD + FVG', 'SHORT {{ticker}} {{interval}} — bearish CISD + unmitigated supply FVG, Window B. Price {{close}}')
+
+alertcondition(confDisp,  'Displacement candle',  'Displacement + FVG candle formed — {{ticker}} {{interval}} @ {{close}}')
+alertcondition(confBullD, 'Bullish displacement', 'LONG  {{ticker}} {{interval}} — bullish displacement + FVG @ {{close}}')
+alertcondition(confBearD, 'Bearish displacement', 'SHORT {{ticker}} {{interval}} — bearish displacement + FVG @ {{close}}')
+
+alertcondition(anyBuySide,  'Sweep: any high taken', 'SHORT bias {{ticker}} {{interval}} — buy-side liquidity swept (raid + rejection of a prior high) @ {{close}}')
+alertcondition(anySellSide, 'Sweep: any low taken',  'LONG  bias {{ticker}} {{interval}} — sell-side liquidity swept (raid + rejection of a prior low) @ {{close}}')
+alertcondition(swPDH, 'Sweep: PDH',     'SHORT bias {{ticker}} {{interval}} — prior day high swept @ {{close}}')
+alertcondition(swPDL, 'Sweep: PDL',     'LONG  bias {{ticker}} {{interval}} — prior day low swept @ {{close}}')
+alertcondition(swPWH, 'Sweep: PWH',     'SHORT bias {{ticker}} {{interval}} — prior week high swept @ {{close}}')
+alertcondition(swPWL, 'Sweep: PWL',     'LONG  bias {{ticker}} {{interval}} — prior week low swept @ {{close}}')
+alertcondition(swPMH, 'Sweep: PMH',     'SHORT bias {{ticker}} {{interval}} — prior month high swept @ {{close}}')
+alertcondition(swPML, 'Sweep: PML',     'LONG  bias {{ticker}} {{interval}} — prior month low swept @ {{close}}')
+alertcondition(swASH, 'Sweep: Asia H',  'SHORT bias {{ticker}} {{interval}} — Asia session high swept @ {{close}}')
+alertcondition(swASL, 'Sweep: Asia L',  'LONG  bias {{ticker}} {{interval}} — Asia session low swept @ {{close}}')
+alertcondition(swLDH, 'Sweep: London H','SHORT bias {{ticker}} {{interval}} — London session high swept @ {{close}}')
+alertcondition(swLDL, 'Sweep: London L','LONG  bias {{ticker}} {{interval}} — London session low swept @ {{close}}')
+
+alertcondition(fpAMform, 'FPFVG AM: formed',  'First presented FVG of the AM session formed — {{ticker}} {{interval}} @ {{close}}')
+alertcondition(fpAMret and not rgGateOn, 'FPFVG AM: retest',  'First presented AM FVG retested — {{ticker}} {{interval}} @ {{close}}')
+alertcondition(fpAMce  and not rgGateOn, 'FPFVG AM: CE tap',  'First presented AM FVG consequent encroachment (50%) tapped — {{ticker}} {{interval}} @ {{close}}')
+alertcondition(fpPMform, 'FPFVG PM: formed',  'First presented FVG of the PM session formed — {{ticker}} {{interval}} @ {{close}}')
+alertcondition(fpPMret and not rgGateOn, 'FPFVG PM: retest',  'First presented PM FVG retested — {{ticker}} {{interval}} @ {{close}}')
+alertcondition(fpPMce  and not rgGateOn, 'FPFVG PM: CE tap',  'First presented PM FVG consequent encroachment (50%) tapped — {{ticker}} {{interval}} @ {{close}}')
+
+alertcondition(ogForm,   'ORG: formed',       'Opening range gap set for the day — {{ticker}} {{interval}} @ {{close}}')
+alertcondition(ogCEtap,  'ORG: CE tap',       'Opening range gap consequent encroachment (50%) tapped — {{ticker}} {{interval}} @ {{close}}')
+alertcondition(ogFilled, 'ORG: filled',       'Opening range gap filled to the prior close — {{ticker}} {{interval}} @ {{close}}')
+
+alertcondition(pmLocked,    'PMDR: range locked',   'Premarket dealing range locked at 09:00 — {{ticker}} {{interval}} @ {{close}}')
+alertcondition(pmEnterPrem, 'PMDR: into premium',   'SHORT bias {{ticker}} {{interval}} — price crossed above premarket equilibrium, now in PREMIUM @ {{close}}')
+alertcondition(pmEnterDisc, 'PMDR: into discount',  'LONG  bias {{ticker}} {{interval}} — price crossed below premarket equilibrium, now in DISCOUNT @ {{close}}')
+
+alertcondition(pmRejUp and not rgGateOn, 'Body law: grid rejection from below', 'SHORT bias {{ticker}} {{interval}} — wicks tag a premarket grid level, bodies fail to reach it @ {{close}}')
+alertcondition(pmRejDn and not rgGateOn, 'Body law: grid rejection from above', 'LONG  bias {{ticker}} {{interval}} — wicks pierce a premarket grid level, bodies hold above it @ {{close}}')
+
+alertcondition(pmFresh, 'Regime: classified at 09:00', 'Premarket window graded — {{ticker}} {{interval}}. See the dashboard for the score and factor breakdown.')
+alertcondition(pmFresh and rgScore >= rgConsAt, 'Regime: consolidation expected', 'CAUTION {{ticker}} {{interval}} — premarket trended into a key level. AM session scored as likely to consolidate. Treat morning signals sceptically.')
+alertcondition(pmFresh and rgScore <  rgExpAt,  'Regime: expansion likely',       'CLEAR {{ticker}} {{interval}} — premarket did not trend. AM session scored as likely to expand. Normal playbook.')
+alertcondition(amFresh, 'Regime: AM outcome recorded', 'AM session closed and graded — {{ticker}} {{interval}}. Compare against the premarket call in the dashboard log.')
+
+alertcondition(fpAMbwOk,  'Body law: FPFVG AM holding',   'First presented AM FVG holding — bodies respecting CE — {{ticker}} {{interval}} @ {{close}}')
+alertcondition(fpAMbwBad, 'Body law: FPFVG AM violated',  'First presented AM FVG compromised — body closed through CE — {{ticker}} {{interval}} @ {{close}}')
+alertcondition(fpPMbwOk,  'Body law: FPFVG PM holding',   'First presented PM FVG holding — bodies respecting CE — {{ticker}} {{interval}} @ {{close}}')
+alertcondition(fpPMbwBad, 'Body law: FPFVG PM violated',  'First presented PM FVG compromised — body closed through CE — {{ticker}} {{interval}} @ {{close}}')
+alertcondition(ogBwOk,    'Body law: ORG holding',        'Opening range gap holding — bodies respecting CE — {{ticker}} {{interval}} @ {{close}}')
+alertcondition(ogBwBad,   'Body law: ORG violated',       'Opening range gap compromised — body closed through CE — {{ticker}} {{interval}} @ {{close}}')
+
+alertcondition(spBull, 'Suspension block: bullish', 'LONG  bias {{ticker}} {{interval}} — bullish suspension block formed (FVG with volume imbalance at both ends) @ {{close}}')
+alertcondition(spBear, 'Suspension block: bearish', 'SHORT bias {{ticker}} {{interval}} — bearish suspension block formed (FVG with volume imbalance at both ends) @ {{close}}')
+alertcondition(spBull or spBear, 'Suspension block: any', 'Suspension block formed — {{ticker}} {{interval}} @ {{close}}')
+
+alertcondition(nwFormed, 'NWOG: formed', 'New week opening gap set — {{ticker}} {{interval}} @ {{close}}')
+alertcondition(ndFormed, 'NDOG: formed', 'New day opening gap set — {{ticker}} {{interval}} @ {{close}}')
+
+alertcondition(fpAMsusp, 'FPFVG AM: is a suspension block', 'First presented AM FVG is a SUSPENSION BLOCK — imbalance at both ends — {{ticker}} {{interval}} @ {{close}}')
+alertcondition(fpPMsusp, 'FPFVG PM: is a suspension block', 'First presented PM FVG is a SUSPENSION BLOCK — imbalance at both ends — {{ticker}} {{interval}} @ {{close}}')
+
+alertcondition(sbSigL, 'SB entry: LONG (any grade)',  'LONG  {{ticker}} {{interval}} — Silver Bullet entry: retest of raid / IFVG / first-presented zone @ {{close}}')
+alertcondition(sbSigS, 'SB entry: SHORT (any grade)', 'SHORT {{ticker}} {{interval}} — Silver Bullet entry: retest of raid / IFVG / first-presented zone @ {{close}}')
+alertcondition(sbSigL and sbGradeL == 0, 'SB entry: LONG A+',  'LONG  {{ticker}} {{interval}} — Silver Bullet A+ entry @ {{close}}')
+alertcondition(sbSigS and sbGradeS == 0, 'SB entry: SHORT A+', 'SHORT {{ticker}} {{interval}} — Silver Bullet A+ entry @ {{close}}')
